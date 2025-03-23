@@ -17,7 +17,7 @@ all: x_sys
 	mv $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
 	rm -fr $(TARGET_DIR)
 
-include $(SYS_ROOT_DIR)/platform/arm/make.inc
+include $(SYS_ROOT_DIR)/platform/make.inc
 
 x_sys: kernel_heads 
 	rm -f $(BUILD_DIR)/lib/libbsp.a
