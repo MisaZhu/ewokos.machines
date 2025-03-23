@@ -52,16 +52,6 @@ void sys_info_init_arch(void) {
 }
 
 void arch_vm(page_dir_entry_t* vm) {
-	//TODO:
-#ifdef KCONSOLE
-	if(_sys_info.fb.v_base != 0) {
-		map_pages_size(vm, 
-			_sys_info.fb.v_base,
-			_sys_info.fb.phy_base,
-			_sys_info.fb.size,
-			AP_RW_D, PTE_ATTR_DEV);
-	}
-#endif
 }
 
 int32_t  check_mem_map_arch(uint32_t phy_base, uint32_t size) {

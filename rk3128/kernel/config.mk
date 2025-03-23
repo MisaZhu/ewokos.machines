@@ -9,5 +9,3 @@ BSP=rk3128
 #DPI=yes
 #----multi core(SMP)------
 SMP=yes
-#----kernel console-------
-KERNEL_CONSOLE=yes

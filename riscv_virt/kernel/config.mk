@@ -8,7 +8,5 @@ ARCH=rv64
 #DPI=yes
 #----multi core(SMP)------
 SMP=no
-#----kernel console-------
-KERNEL_CONSOLE=no
 
 DEBUG=yes

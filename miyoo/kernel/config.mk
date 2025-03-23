@@ -5,5 +5,3 @@ ARCH_VER=v7
 
 #----multi core(SMP)------
 SMP=yes
-#----kernel console-------
-KERNEL_CONSOLE=yes
