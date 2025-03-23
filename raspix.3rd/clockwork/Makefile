@@ -1,5 +1,4 @@
 export MF=clockwork
-include ../make.inc
 
 all: 
 	mkdir -p build

@@ -1,5 +1,4 @@
 export MF=waveshare
-include ../../make.inc
 
 all: 
 	mkdir -p build

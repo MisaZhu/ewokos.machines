@@ -1,10 +1,14 @@
-ROOT_DIR=../..
-include $(ROOT_DIR)/../make.inc
+EWOKOS_ROOT_DIR = ../../../../..
+SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
+SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build
+
+MF_ROOT_DIR=../..
+include $(MF_ROOT_DIR)/../make.inc
 
 TASK_OBJS = xgo_buttond.o
 TASK = xgo_buttond
 
-BUILD_DIR = $(ROOT_DIR)/build/drivers/$(MF)
+BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)
 

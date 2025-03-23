@@ -1,5 +1,4 @@
 export MF=xgo
-include ../make.inc
 
 all: 
 	mkdir -p build
