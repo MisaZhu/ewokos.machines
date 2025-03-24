@@ -15,4 +15,4 @@ clean:
 	cd drivers/soundd; make clean
 	cd lib; make clean
 	cd apps/xgo; make clean
-	rm -r build
+	rm -fr build
