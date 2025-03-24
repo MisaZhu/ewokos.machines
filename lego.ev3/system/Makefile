@@ -7,7 +7,7 @@ TARGET_DIR = $(BUILD_DIR)/rootfs
 HW=ev3
 
 export ARCH=arm
-export NEON=yes
+export NEON=no
 export BSP_LFLAGS= -larch_ev3
 
 all: x_sys
