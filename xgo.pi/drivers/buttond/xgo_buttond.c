@@ -16,7 +16,7 @@ static gpio_key_t _gpio_keys[] = {
 	{23, KEY_LEFT},
 	{24, KEY_RIGHT},
 	{22, KEY_BUTTON_A},
-	{17, KEY_BUTTON_B},
+	{17, KEY_HOME},
 	{0,  0}
 };
 
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "xgo_button");
 	dev.read = xgo_button_read;
-	dev.loop_step = check_ux;
+	//dev.loop_step = check_ux;
 
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 	return 0;

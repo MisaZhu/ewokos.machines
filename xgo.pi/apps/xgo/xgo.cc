@@ -52,20 +52,6 @@ class XgoWidget: public Widget {
 		klog("bored... ACT: %d\n", act);
 		xgo_cmd(XGO_TYPE_SEND, XGO_CMD_ACT, act, NULL);
 	}
-
-	void draw_sys_info(graph_t* g, XTheme* theme, const grect_t& r) {
-		sys_info_t sys_info;
-		sys_state_t sys_state;
-		syscall1(SYS_GET_SYS_INFO, (int32_t)&sys_info);
-		syscall1(SYS_GET_SYS_STATE, (int32_t)&sys_state);
-		uint32_t fr_mem = sys_state.mem.free / (1024*1024);
-		uint32_t t_mem = sys_info.total_usable_mem_size / (1024*1024);
-		char txt[32] = { 0 };
-		snprintf(txt, 31, "Mem: %dM, Free: %dM", t_mem, fr_mem);
-
-		graph_draw_text_font(g, r.x + 10, r.y + r.h - 20,
-				txt, theme->getFont(), 16, 0xFFFFFFFF);
-	}
 	
 protected:
 	void onRepaint(graph_t* g, XTheme* theme, const grect_t& r) {
@@ -82,8 +68,6 @@ protected:
 						g, r.x + (r.w-img->w)/2, r.y + (r.h-img->h)/2, img->w, img->h, 0xff);
 			}
 		}
-
-		draw_sys_info(g, theme, r);
 
 		int8_t i = (bt / 10) - 1;
 		if(i < 0)
@@ -139,7 +123,7 @@ protected:
 				actionStep = 0;
 			return true;
 		}
-		else if(ev->value.im.value == KEY_BUTTON_B) {
+		else if(ev->value.im.value == KEY_LEFT) {
 			xgo_cmd(XGO_TYPE_SEND, XGO_CMD_ACT, XGO_ACT_STOP, NULL);
 			return true;
 		}
@@ -188,7 +172,7 @@ int main(int argc, char** argv) {
 	root->add(xgoW);
 	root->focus(xgoW);
 
-	win.open(&x, 0, -1, -1, 240, 240, "xgo", XWIN_STYLE_NORMAL|XWIN_STYLE_LAUNCHER);
+	win.open(&x, 0, -1, -1, 240, 240, "xgo", XWIN_STYLE_NORMAL);
 	win.setTimer(8);
 	win.max();
 	x.run(NULL, &win);

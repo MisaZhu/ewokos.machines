@@ -10,4 +10,5 @@
 @/bin/ipcserv /sbin/x/xwm_opencde &
 
 #@/bin/x/menubar &
-@/bin/x/xlauncher &
+#@/bin/x/xlauncher &
+@/apps/xapps/xapps -l &
