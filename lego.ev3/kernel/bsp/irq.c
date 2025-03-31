@@ -50,6 +50,11 @@
 
 /* memory mapping for the prime interrupt controller */
 #define cp_intc_write(val, reg) writel(val, INTC_BASE + reg)
+#define cp_intc_read(reg)      readl(INTC_BASE + reg)
+
+#define IRQ_UART0   25
+#define IRQ_UART1   53
+#define IRQ_UART2   61
 
 void irq_arch_init(void) {
     cp_intc_write(0, CP_INTC_GLOBAL_ENABLE);
@@ -87,20 +92,25 @@ void irq_arch_init(void) {
 
 void irq_enable(uint32_t irq) {
 	if(irq == IRQ_TIMER0){ 
-		  cp_intc_write(21, CP_INTC_SYS_ENABLE_IDX_SET);
-	}
+        irq = 21;
+    }
+    cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_SET); 
 }
 
 void irq_disable(uint32_t irq) {
 	if(irq == IRQ_TIMER0){
-		cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_CLR);
-    	cp_intc_write(21, CP_INTC_SYS_ENABLE_IDX_CLR);
-    	cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_SET);
-	}
+        irq = 21;
+    }
+	cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_CLR);
+   	cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_CLR);
+   	cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_SET);
 }
 
 inline uint32_t irq_get(void) {
-	cp_intc_write(21, CP_INTC_SYS_STAT_IDX_CLR); 
-	return IRQ_TIMER0;
+    uint32_t irq = cp_intc_read(CP_INTC_PRIO_IDX);
+    cp_intc_write(irq, CP_INTC_SYS_STAT_IDX_CLR); 
+    if(irq == 21)
+        irq = IRQ_TIMER0;
+	return irq;
 }
 
