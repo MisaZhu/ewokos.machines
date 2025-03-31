@@ -240,12 +240,12 @@ static uint32_t write_syscfg(uint32_t reg, uint32_t val, uint32_t mask){
 }
 
 void gpio_mux_cfg(int pin, int mode){
-	if(mode != MODE_GPIO)
-		return;
-
 	int idx = PINMUX[pin].idx;
 	int shift = PINMUX[pin].shift;
-	mode = PINMUX[pin].mode;
+	if(mode == MODE_GPIO)
+		mode = PINMUX[pin].mode;
+	else
+		mode &= 0xF;
 
 	write_syscfg(&pinmux_regs[idx], mode << shift, 0xf << shift);
 }
@@ -269,6 +269,8 @@ void ev3_gpio_config(int32_t pin, int32_t mode)
     	    temp |= mask;
     	}
     	writel(temp, &g->dir);
+	}else if(mode >= 16){
+		gpio_mux_cfg(pin, mode);
 	}
 }
 
