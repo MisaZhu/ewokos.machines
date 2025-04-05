@@ -10,7 +10,7 @@
 @set_stdio /dev/klog
 
 @/bin/ipcserv /drivers/rk3128/gpio_joystickd  /dev/joystick
-@/bin/ipcserv /drivers/vjoystickd             /dev/vjoystick /dev/joystick
+@/bin/ipcserv /drivers/vjoystickd             /dev/vjoystick /dev/joystick -m
 
 @/bin/ipcserv /drivers/timerd               
 @/bin/ipcserv /drivers/nulld                /dev/null
