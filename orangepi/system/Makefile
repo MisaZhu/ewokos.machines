@@ -39,9 +39,3 @@ clean:
 	cd $(EWOKOS_ROOT_DIR)/sw.extra/; make HW=$(HW) clean
 	rm -fr $(SYS_ROOT_DIR)/build/$(HW)
 	rm -fr $(MACHINE_BUILD_DIR)
-
-install:
-	mkdir -p $(INST_DIR)/$(ARCH)/$(HW)
-	cp -r $(BUILD_DIR)/include $(INST_DIR)/$(ARCH)/$(HW)/
-	cp -r $(BUILD_DIR)/lib $(INST_DIR)/$(ARCH)/$(HW)/ 
-	cp $(SYS_ROOT_DIR)/platform/$(ARCH)/make.rule $(INST_DIR)/$(ARCH)/
