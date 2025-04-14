@@ -7,7 +7,8 @@ TARGET_DIR = $(BUILD_DIR)/rootfs
 HW=virt
 
 export ARCH=riscv
-export NEON=yes
+#export NEON=yes
+#export FPU=yes
 export BSP_LFLAGS= -larch_virt
 
 all: x_sys

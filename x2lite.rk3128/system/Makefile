@@ -8,6 +8,7 @@ HW=rk3128
 
 export ARCH=arm
 export NEON=yes
+export FPU=yes
 export BSP_LFLAGS= -larch_rk3128
 
 all: x_sys
