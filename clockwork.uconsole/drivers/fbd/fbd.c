@@ -4,7 +4,7 @@
 #include <string.h>
 #include <fbd/fbd.h>
 #include <graph/graph.h>
-#include <upng/upng.h>
+#include <graph/graph_png.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
 #include <ewoksys/mmio.h>

@@ -10,7 +10,7 @@
 #include <ewoksys/keydef.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
-#include <upng/upng.h>
+#include <graph/graph_png.h>
 #include <xgo/xgo.h>
 
 using namespace Ewok;

@@ -17,10 +17,9 @@ $(FBD): $(FBD_OBJS) \
 		$(BUILD_DIR)/lib/libgraph.a \
 		$(BUILD_DIR)/lib/libfbd.a \
 		$(BUILD_DIR)/lib/libgraph.a \
-		$(BUILD_DIR)/lib/libupng.a \
 		$(BUILD_DIR)/lib/libtinyjson.a \
 		$(BUILD_DIR)/lib/libarch_rk3128.a
-	$(LD) -Ttext=100 $(FBD_OBJS) -o $(FBD) $(LDFLAGS) -larch_rk3128 -lfbd -lupng -lgraph -lbsp $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(FBD_OBJS) -o $(FBD) $(LDFLAGS) -larch_rk3128 -lfbd $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
 
 clean:
 	rm -f $(FBD_OBJS)

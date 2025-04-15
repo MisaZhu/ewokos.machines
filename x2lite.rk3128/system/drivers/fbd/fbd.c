@@ -4,7 +4,7 @@
 #include <string.h>
 #include <fbd/fbd.h>
 #include <graph/graph.h>
-#include <upng/upng.h>
+#include <graph/graph_png.h>
 #include <bsp/bsp_fb.h>
 
 int argv2rgb(uint8_t  *out,  uint32_t *in , int w, int h)
