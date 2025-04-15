@@ -1,4 +1,6 @@
 export MF=waveshare
+export HW=raspix
+export ARM=arm
 
 all: 
 	mkdir -p build

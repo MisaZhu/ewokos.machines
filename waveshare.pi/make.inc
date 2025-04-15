@@ -12,7 +12,7 @@ SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build
 #SDK_DIR= /usr/local/ewokos/$(ARCH)
 #ROOTFS_DIR= /usr/local/ewokos/$(ARCH)/$(HW)
 
-SDK_DIR= $(SYS_ROOT_DIR)/build
+SDK_DIR= $(SYS_ROOT_DIR)/build/$(HW)
 
 include $(SYS_ROOT_DIR)/platform/$(ARCH)/make.rule
 
