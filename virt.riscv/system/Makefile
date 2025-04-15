@@ -4,7 +4,7 @@ INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
-HW=virt
+export HW=virt
 
 export ARCH=riscv
 #export NEON=yes
@@ -37,5 +37,5 @@ clean:
 	cd $(SYS_ROOT_DIR)/xwin;make clean
 	cd $(SYS_ROOT_DIR)/gui;make clean
 	cd $(SYS_ROOT_DIR)/basic;make clean
-	rm -fr $(SYS_ROOT_DIR)/build
+	rm -fr $(BUILD_DIR)
 	rm -fr $(MACHINE_BUILD_DIR)

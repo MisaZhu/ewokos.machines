@@ -1,12 +1,13 @@
+export HW=orangepi
+export ARCH=arm
+
 EWOKOS_ROOT_DIR = ../../..
 SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
 INST_DIR = /usr/local/ewokos
-BUILD_DIR = $(SYS_ROOT_DIR)/build
+BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
-HW=orangepi
 
-export ARCH=arm
 #export G_2D_BOOST=yes
 export BSP_LFLAGS= -larch_orangepi
 
@@ -37,5 +38,5 @@ clean:
 	cd $(SYS_ROOT_DIR)/gui;make clean
 	cd $(SYS_ROOT_DIR)/basic;make clean
 	cd $(EWOKOS_ROOT_DIR)/sw.extra/; make HW=$(HW) clean
-	rm -fr $(SYS_ROOT_DIR)/build
+	rm -fr $(BUILD_DIR)
 	rm -fr $(MACHINE_BUILD_DIR)

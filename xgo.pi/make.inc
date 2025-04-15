@@ -7,12 +7,12 @@ export HW=raspix
 
 EWOKOS_ROOT_DIR = $(MF_ROOT_DIR)/../..
 SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
-SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build
+SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 
 #SDK_DIR= /usr/local/ewokos/$(ARCH)
 #ROOTFS_DIR= /usr/local/ewokos/$(ARCH)/$(HW)
 
-SDK_DIR= $(SYS_ROOT_DIR)/build
+SDK_DIR= $(SYS_ROOT_DIR)/build/$(HW)
 
 include $(SYS_ROOT_DIR)/platform/$(ARCH)/make.rule
 
