@@ -1,12 +1,13 @@
+export HW=virt
+export ARCH=riscv
+
 EWOKOS_ROOT_DIR = ../../..
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
 INST_DIR = /usr/local/ewokos
-BUILD_DIR = $(SYS_ROOT_DIR)/build
+BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
-export HW=virt
 
-export ARCH=riscv
 #export NEON=yes
 #export FPU=yes
 export BSP_LFLAGS= -larch_virt

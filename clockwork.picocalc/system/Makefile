@@ -1,12 +1,13 @@
+export HW=rk3506
+export ARCH=arm
+
 EWOKOS_ROOT_DIR = ../../..
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
 INST_DIR = /usr/local/ewokos
-BUILD_DIR = $(SYS_ROOT_DIR)/build
+BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
-HW=rk3506
 
-export ARCH=arm
 export NEON=yes
 export BSP_LFLAGS= -larch_rk3506
 
