@@ -15,7 +15,7 @@
 
 #define KEY_PRESS	1
 #define KEY_RELEASE	3
-#define KEY_TIMEOUT	100
+#define KEY_TIMEOUT	40
 
 struct kb_state{
 	int key;
@@ -56,16 +56,34 @@ static int kbd_read(int fd, int from_pid, fsinfo_t* node,
 	uint64_t now = kernel_tic_ms(0); 
 	int ret = rk_i2c_read(0x1f, 0x9,  key, 2, 0);
 	if(ret == 0){
+		bool macthed = false;
 		key[1] = key_remap(key[1]);
 		for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
-			if(kb_states[i].key == key[1] || kb_states[i].key == 0){
+			if(kb_states[i].key == key[1]){
+				macthed = true;
 				if(key[0] == 1){//press
 					kb_states[i].key = key[1];
 					kb_states[i].ts = now;
-				}else if(key[0] == 3){//release
+				}
+				else if(key[0] == 3){//release
 					kb_states[i].key = 0;
 				}
 				break;
+			}
+		}
+
+		if(!macthed) {
+			for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
+				if(kb_states[i].key == 0){
+					if(key[0] == 1){//press
+						kb_states[i].key = key[1];
+						kb_states[i].ts = now;
+					}
+					else if(key[0] == 3){//release
+						kb_states[i].key = 0;
+					}
+					break;
+				}
 			}
 		}
 	}
@@ -73,10 +91,11 @@ static int kbd_read(int fd, int from_pid, fsinfo_t* node,
 	int cnt = 0;
 	for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
 		if(kb_states[i].key != 0){
-			if(now - kb_states[i].ts >= KEY_TIMEOUT){
+			/*if(now - kb_states[i].ts >= KEY_TIMEOUT){
 				kb_states[i].key = 0;
 				continue;
 			}
+			*/
 			*(uint8_t*)buf++ = kb_states[i].key;	
 			cnt++;
 		}
