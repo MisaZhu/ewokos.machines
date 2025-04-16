@@ -9,6 +9,7 @@ MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
 export NEON=yes
+export VPU=yes
 export BSP_LFLAGS= -larch_rk3506
 
 all: x_sys
@@ -30,6 +31,7 @@ x_sys: kernel_heads
 	cd drivers;make
 	cd $(SYS_ROOT_DIR)/xwin;make
 	cp -r etc $(TARGET_DIR)/
+	cp -r usr $(TARGET_DIR)/
 
 clean:
 	cd libs;make clean
