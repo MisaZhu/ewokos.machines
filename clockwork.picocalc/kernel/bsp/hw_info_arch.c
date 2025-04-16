@@ -15,102 +15,34 @@ uint32_t _allocable_phy_mem_base = 0;
 
 
 #ifdef KERNEL_SMP
-extern char __entry[];
-
-enum pmu_power_domain {
-    PD_BCPU,
-    PD_BDSP,
-    PD_BUS,
-    PD_CPU_0,
-    PD_CPU_1,
-    PD_CPU_2,
-    PD_CPU_3,
-    PD_CS,
-    PD_GPU,
-    PD_HEVC,
-    PD_PERI,
-    PD_SCU,
-    PD_VIDEO,
-    PD_VIO,
+struct arm_smccc_res {
+    unsigned long a0;
+    unsigned long a1;
+    unsigned long a2;
+    unsigned long a3;
 };
 
-#define RK_CRU_VIRT                     (0x20000000)
-#define RK_BOOTRAM_VIRT                 (MMIO_BASE + 0x80000)
-
-#define RK312X_CRU_CLKGATES_CON_CNT 11
-#define RK312X_CRU_CLKGATE_CON		0xd0
-#define RK312X_CRU_CLKGATES_CON(i)	(RK312X_CRU_CLKGATE_CON + ((i) * 4))
-
-#define RK312X_CRU_SOFTRSTS_CON_CNT	(9)
-#define RK312X_CRU_SOFTRST_CON		0x110
-#define RK312X_CRU_SOFTRSTS_CON(i)	(RK312X_CRU_SOFTRST_CON + ((i) * 4))
-
-#define RK312X_IMEM_VIRT (RK_BOOTRAM_VIRT + 32*KB)
-
-#define writel(v,a) 	(*(volatile uint32_t *)(a) = (v))
-#define readl(a) 	(*(volatile uint32_t *)(a))
-
-#define cru_readl(offset)	readl(RK_CRU_VIRT + offset)
-#define cru_writel(v, offset)	do { writel(v, RK_CRU_VIRT + offset); dsb(); } while (0)
-
-static inline void dsb(void){
-    	__asm("dsb");
-}
-
-static inline void dsb_sev(void){
-    	__asm("dsb");
-    	__asm("sev");
-}
-
-static int rk312x_sys_set_power_domain(enum pmu_power_domain pd, uint32_t entry, bool on)
+static struct arm_smccc_res invoke_sip_fn_smc(unsigned long function_id, 
+		unsigned long arg0,unsigned long arg1,unsigned long arg2)
 {
-    uint32_t clks_save[RK312X_CRU_CLKGATES_CON_CNT];
-    uint32_t i, ret = 0;
-    for (i = 0; i < RK312X_CRU_CLKGATES_CON_CNT; i++) {
-        clks_save[i] = cru_readl(RK312X_CRU_CLKGATES_CON(i));
-    }
-
-    for (i = 0; i < RK312X_CRU_CLKGATES_CON_CNT; i++)
-        cru_writel(0xffff0000, RK312X_CRU_CLKGATES_CON(i));
-    if(on){
-        if (pd >= PD_CPU_0 && pd <= PD_CPU_3) {
-            writel(0x110000 << (pd - PD_CPU_0),
-                    RK_CRU_VIRT + RK312X_CRU_SOFTRSTS_CON(0));
-            dsb();
-            _delay(100);
-            writel(entry, RK312X_IMEM_VIRT + 8);
-            writel(0xDEADBEAF, RK312X_IMEM_VIRT + 4);
-            dsb_sev();
-        }
-    }else{
-        if (pd >= PD_CPU_0 && pd <= PD_CPU_3) {
-            writel(0x10001 << (pd - PD_CPU_0),
-                       RK_CRU_VIRT + RK312X_CRU_SOFTRSTS_CON(0));
-            dsb();
-        }
-    }
-
-    for (i = 0; i < RK312X_CRU_CLKGATES_CON_CNT; i++) {
-        cru_writel(clks_save[i] | 0xffff0000
-            , RK312X_CRU_CLKGATES_CON(i));
-    }
-
-    return ret;
+    struct arm_smccc_res res;
+    arm_smccc_smc(function_id, arg0, arg1, arg2, 0, 0, 0, 0, &res);
+    return res;
 }
 
-void __attribute__((optimize("O0"))) prepare_cores(void) {
-    for(uint32_t i = 1; i <  _sys_info.cores; i++)
-        rk312x_sys_set_power_domain(PD_CPU_0 + i, 0, false); 
+int psci_cpu_on(unsigned long cpuid, unsigned long entry_point)
+{
+    struct arm_smccc_res res;
+    res = invoke_sip_fn_smc(0x84000003, cpuid, entry_point, 0);
+    return res.a0;
 }
 
-inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { //TODO
-	uint32_t entry = V2P((uint32_t)(__entry) + _sys_info.kernel_base);
-    if(core_id == 1)
-       prepare_cores(); 
+extern char __entry[];
 
-    if(core_id < _sys_info.cores)
-        rk312x_sys_set_power_domain(PD_CPU_0 + core_id, entry, true);
+inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { 
+	psci_cpu_on(core_id, __entry);																		   
 }
+
 #endif
 
 void sys_info_init_arch(void) {
@@ -135,7 +67,7 @@ void sys_info_init_arch(void) {
     _sys_info.dma.phy_base = _allocable_phy_mem_top;
     _sys_info.dma.v_base = DMA_BASE;
 
-    _sys_info.cores = 1;
+    _sys_info.cores = 3;
 }
 
 void arch_vm(page_dir_entry_t* vm) {

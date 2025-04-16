@@ -66,31 +66,9 @@ static void delay(volatile uint64_t ns){
 	while(ns--);
 }
 
-void print_uint32(uint32_t v){
-
-	delay(1000);
-	*(uint32_t*)0xff0a0000 = '\r';
-	delay(1000);
-	*(uint32_t*)0xff0a0000 = '\n';
-
-	for(int i = 0; i < 8; i++){
-		uint8_t ch = (v >> ((7 - i)*4))&0xF;
-		if(ch <= 9)
-			ch += '0';
-		else
-			ch = ch - 10 + 'A';
-		 *(uint32_t*)0xff0a0000 = ch;
-		delay(10000);
-	}
-	*(uint32_t*)0xff0a0000 = '\r';
-	delay(1000);
-	*(uint32_t*)0xff0a0000 = '\n';
-}
-
 void _boot_start(void) {
 	set_boot_pgt(0x0, 0x0, 16*MB, 0);
 	set_boot_pgt(KERNEL_BASE, 0x0, 16*MB, 0);
-	set_boot_pgt(0xFF000000, 0xFF000000, 16*MB, 0);
 
 	load_boot_pgt();
 }

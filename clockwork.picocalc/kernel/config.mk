@@ -8,5 +8,5 @@ BSP=rk3506
 #----enable DPI display---
 #DPI=yes
 #----multi core(SMP)------
-#SMP=yes
+SMP=yes
 #DEBUG=yes
