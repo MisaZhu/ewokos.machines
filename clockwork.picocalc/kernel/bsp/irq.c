@@ -10,25 +10,23 @@ void irq_arch_init(void) {
 }
 
 inline uint32_t irq_get(void) {
-	int ack = gic_get_irq();
-	int irqno = ack & 0x3FF;
-	int core = get_core_id();//ack & (~0x3FF);
-	//if(irqno == 0)
-	//	printf("%s %d %d\n", __func__, core, irqno);
+	uint32_t irqno = gic_get_irq() & 0x3FF;
 	if(irqno == 27){
-		return IRQ_TIMER0;
+		irqno = IRQ_TIMER0;
 	}else if(irqno == 0){
-		return IRQ_IPI;
+		irqno = IRQ_IPI;
 	}
-	return 0;
+	return irqno;
 }
 
 inline void irq_enable(uint32_t irq) {
 	if(irq == IRQ_TIMER0)
-		gic_irq_enable(0, 27);
+		irq = 27;
+	gic_irq_enable(0, irq);
 }
 
 void irq_disable(uint32_t irq) {
 	if(irq == IRQ_TIMER0)
-	(void)irq;
+		irq = 27;
+	gic_irq_disable(0, irq);
 }

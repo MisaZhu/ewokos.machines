@@ -9,18 +9,15 @@
 #define min(a,b) ((a>b)?b:a)
 
 #define TRACE()  
-void udelay(volatile int x){
-    x*=50;
-    while(x--){
-        __asm("nop");
-    }
+static void _udelay(volatile int x){
+    while(x--);
 }
 
-#define DWMMC_DELAY(x) udelay(x) 
+#define DWMMC_DELAY(x) _udelay(x) 
 
 static int dwmci_wait_reset(struct dwmci_host *host, uint32_t value)
 {
-    unsigned long timeout = 1000;
+    unsigned long timeout = 10000;
     uint32_t ctrl;
 
     dwmci_writel(host, DWMCI_CTRL, value);
@@ -36,12 +33,12 @@ static int dwmci_wait_reset(struct dwmci_host *host, uint32_t value)
 
 static int dwmci_fifo_ready(struct dwmci_host *host, uint32_t bit, uint32_t *len)
 {
-    uint32_t timeout = 20000;
+    uint32_t timeout = 2000000;
 
     *len = dwmci_readl(host, DWMCI_STATUS);
     while (--timeout && (*len & bit)) {
         *len = dwmci_readl(host, DWMCI_STATUS);
-        DWMMC_DELAY(200);
+        DWMMC_DELAY(20);
     }
 
     if (!timeout) {
@@ -78,7 +75,7 @@ static int dwmci_data_transfer(struct dwmci_host *host, struct mmc_data *data)
     else
         buf = (uint32_t *)data->src;
 
-    timeout = 500;
+    timeout = 50000;
 
     size /= 4;
 
@@ -148,7 +145,7 @@ static int dwmci_data_transfer(struct dwmci_host *host, struct mmc_data *data)
             ret = -ETIMEDOUT;
             break;
         }
-        DWMMC_DELAY(100);
+        DWMMC_DELAY(10);
     }
 
     dwmci_writel(host, DWMCI_RINTSTS, mask);
@@ -161,7 +158,7 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
 
     TRACE();
     int ret = 0, flags = 0, i;
-    int timeout = 500;
+    int timeout = 50000;
     int retry = 1000;
     uint32_t mask;
 
@@ -172,7 +169,7 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
             return -ETIMEDOUT;
         }
         TRACE();
-        DWMMC_DELAY(100);
+        DWMMC_DELAY(10);
     }
 
     TRACE();
@@ -266,7 +263,7 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
         ret = dwmci_data_transfer(host, data);
     }
 
-    DWMMC_DELAY(100);
+    DWMMC_DELAY(10);
     return ret;
 }
 

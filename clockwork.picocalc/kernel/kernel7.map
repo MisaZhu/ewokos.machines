@@ -1,0 +1,763 @@
+
+Memory Configuration
+
+Name             Origin             Length             Attributes
+*default*        0x0000000000000000 0xffffffffffffffff
+
+Linker script and memory map
+
+LOAD bsp/dwmmc.o
+LOAD bsp/hw_info_arch.o
+LOAD bsp/irq.o
+LOAD bsp/timer.o
+LOAD bsp/sd.o
+LOAD bsp/gpio.o
+LOAD bsp/i2c.o
+LOAD bsp/uart.o
+LOAD bsp/start.o
+LOAD ../../../kernel/platform/arm/arch/v7/boot.o
+LOAD ../../../kernel/platform/arm/arch/v7/system.o
+LOAD ../../../kernel/platform/arm/arch/v7/mmu_pte_flags.o
+LOAD ../../../kernel/platform/arm/arch/common/src/interrupt.o
+LOAD ../../../kernel/platform/arm/arch/common/src/gic.o
+LOAD ../../../kernel/platform/arm/arch/common/src/irq.o
+LOAD ../../../kernel/platform/arm/arch/common/src/memcpy.o
+LOAD ../../../kernel/platform/arm/arch/common/src/mmu_arch.o
+LOAD ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod_a32.o
+LOAD ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod.o
+LOAD ../../../kernel/platform/arm/arch/v7/neon.o
+LOAD ../../../kernel/lib/src/kstring.o
+LOAD ../../../kernel/lib/src/mstr.o
+LOAD ../../../kernel/lib/src/atoi.o
+LOAD ../../../kernel/lib/src/vprintf.o
+LOAD ../../../kernel/lib/src/proto.o
+LOAD ../../../kernel/lib/src/queue.o
+LOAD ../../../kernel/lib/src/kprintf.o
+LOAD ../../../kernel/lib/ext2/src/partition.o
+LOAD ../../../kernel/lib/ext2/src/ext2read.o
+LOAD ../../../kernel/lib/sconf/src/sconf.o
+LOAD ../../../kernel/loadinit/sd/loadinit.o
+LOAD ../../../kernel/kernel/src/mm/kalloc.o
+LOAD ../../../kernel/kernel/src/mm/trunkmem.o
+LOAD ../../../kernel/kernel/src/mm/kmalloc.o
+LOAD ../../../kernel/kernel/src/mm/dma.o
+LOAD ../../../kernel/kernel/src/mm/shm.o
+LOAD ../../../kernel/kernel/src/mm/mmu.o
+LOAD ../../../kernel/kernel/src/smp/core.o
+LOAD ../../../kernel/kernel/src/irq.o
+LOAD ../../../kernel/kernel/src/svc.o
+LOAD ../../../kernel/kernel/src/semaphore.o
+LOAD ../../../kernel/kernel/src/proc.o
+LOAD ../../../kernel/kernel/src/ipc.o
+LOAD ../../../kernel/kernel/src/signal.o
+LOAD ../../../kernel/kernel/src/interrupt.o
+LOAD ../../../kernel/kernel/src/schedule.o
+LOAD ../../../kernel/kernel/src/system.o
+LOAD ../../../kernel/kernel/src/kevqueue.o
+LOAD ../../../kernel/kernel/src/kernel_config.o
+LOAD ../../../kernel/kernel/src/hw_info.o
+LOAD ../../../kernel/kernel/src/kernel.o
+                0x0000000080000000                base_address = 0x80000000
+                0x0000000000080000                start_address = 0x80000
+
+.init           0x0000000000080000     0x8000
+ *(.init .init.*)
+ .init          0x0000000000080000      0x1b8 ../../../kernel/platform/arm/arch/v7/boot.o
+                0x0000000000080000                __entry
+                0x0000000000080140                arm_smp_disable
+                0x0000000000080150                arm_smp_enable
+                0x0000000000080160                cpu_mmu_disable
+ */start*.o(.text .text.*)
+ .text          0x00000000000801b8      0x208 bsp/start.o
+                0x00000000000801b8                print_uint32
+                0x000000000008026c                _boot_start
+ .text.__stub   0x00000000000803c0       0x10 linker stubs
+ */start*.o(.rodata .rodata.*)
+ */start*.o(.data .data.*)
+ .data          0x00000000000803d0        0x0 bsp/start.o
+ */start*.o(.bss .bss.*)
+ *fill*         0x00000000000803d0     0x3c30 
+ .bss           0x0000000000084000     0x4000 bsp/start.o
+                0x000000000008c000                . = (. + 0x4000)
+                0x000000000008c000                _svc_start_stack = .
+                0x000000000008c000                _init_end = ALIGN (0x1000)
+                [!provide]                        PROVIDE (_kernel_start = (base_address + _init_end))
+
+.text           0x000000008008c000     0xb520 load address 0x000000000008c000
+ *(.text)
+ .text          0x000000008008c000      0x750 bsp/dwmmc.o
+                0x000000008008c000                udelay
+                0x000000008008c67c                mmc_set_blocklen
+                0x000000008008c6c0                mmc_read_blocks
+                0x000000008008c718                dwmci_init
+ .text          0x000000008008c750      0x184 bsp/hw_info_arch.o
+                0x000000008008c750                sys_info_init_arch
+                0x000000008008c840                arch_vm
+                0x000000008008c844                kalloc_arch
+                0x000000008008c894                check_mem_map_arch
+ .text          0x000000008008c8d4       0x50 bsp/irq.o
+                0x000000008008c8d4                irq_arch_init
+                0x000000008008c8e0                irq_get
+                0x000000008008c90c                irq_enable
+                0x000000008008c920                irq_disable
+ .text          0x000000008008c924       0xf0 bsp/timer.o
+                0x000000008008c924                write_cntv_tval
+                0x000000008008c92c                timer_set_interval
+                0x000000008008c99c                timer_clear_interrupt
+                0x000000008008c9c0                timer_read_sys_usec
+ .text          0x000000008008ca14       0x90 bsp/sd.o
+                0x000000008008ca14                sd_init
+                0x000000008008ca2c                sd_dev_read
+                0x000000008008ca6c                sd_dev_read_done
+                0x000000008008ca94                sd_dev_write
+                0x000000008008ca9c                sd_dev_write_done
+ .text          0x000000008008caa4      0xc08 bsp/gpio.o
+                0x000000008008d1cc                rk_gpio_init
+                0x000000008008d418                rk_gpio_config
+                0x000000008008d554                rk_gpio_pull
+                0x000000008008d558                rk_gpio_write
+                0x000000008008d628                rk_gpio_read
+ .text          0x000000008008d6ac      0x5c8 bsp/i2c.o
+                0x000000008008d80c                rk_i2c_read
+                0x000000008008d99c                rk_i2c_write
+                0x000000008008dba0                rk_i2c_init
+ .text          0x000000008008dc74       0x48 bsp/uart.o
+                0x000000008008dc74                uart_dev_init
+                0x000000008008dc7c                uart_write
+ .text          0x000000008008dcbc        0x0 ../../../kernel/platform/arm/arch/v7/boot.o
+ .text          0x000000008008dcbc      0x140 ../../../kernel/platform/arm/arch/v7/system.o
+                0x000000008008dcbc                __core_id
+                0x000000008008dcc8                __v7_flush_dcache_all
+                0x000000008008dd5c                __flush_dcache_all
+                0x000000008008dd6c                __flush_tlb
+                0x000000008008dd90                __set_translation_table_base
+                0x000000008008dd9c                __irq_enable
+                0x000000008008ddac                __irq_disable
+                0x000000008008ddbc                __smp_lock
+                0x000000008008dde4                __smp_unlock
+ .text          0x000000008008ddfc       0x7c ../../../kernel/platform/arm/arch/v7/mmu_pte_flags.o
+                0x000000008008ddfc                set_pte_flags
+ .text          0x000000008008de78      0x14c ../../../kernel/platform/arm/arch/common/src/interrupt.o
+                0x000000008008de78                interrupt_table_start
+                0x000000008008deac                interrupt_table_end
+ .text          0x000000008008dfc4      0x288 ../../../kernel/platform/arm/arch/common/src/gic.o
+                0x000000008008dfc4                get_gic_baseaddr
+                0x000000008008dfd4                gic_init
+                0x000000008008e024                gic_v2_gicd_get_address
+                0x000000008008e034                gic_v2_gicc_get_address
+                0x000000008008e048                gic_v2_irq_enable
+                0x000000008008e074                gic_v2_irq_disable
+                0x000000008008e0a0                gic_v2_irq_set_prio
+                0x000000008008e0f8                gic_irq_enable
+                0x000000008008e164                gic_irq_disable
+                0x000000008008e1c4                gic_eoi
+                0x000000008008e1dc                gic_get_irq
+                0x000000008008e20c                gic_gen_soft_irq
+                0x000000008008e234                gic_getack
+ .text          0x000000008008e24c       0x8c ../../../kernel/platform/arm/arch/common/src/irq.o
+                0x000000008008e24c                irq_enable_cpsr
+                0x000000008008e25c                irq_disable_cpsr
+                0x000000008008e26c                dump_ctx
+ .text          0x000000008008e2d8       0x1c ../../../kernel/platform/arm/arch/common/src/memcpy.o
+                0x000000008008e2d8                __memcpy32
+ .text          0x000000008008e2f4      0x254 ../../../kernel/platform/arm/arch/common/src/mmu_arch.o
+                0x000000008008e2f4                map_page
+                0x000000008008e3f0                unmap_page
+                0x000000008008e438                resolve_phy_address
+                0x000000008008e494                get_page_table_entry
+                0x000000008008e4dc                free_page_tables
+ .text          0x000000008008e548        0x8 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod_a32.o
+                0x000000008008e548                ret_idivmod_values
+                0x000000008008e54c                ret_uidivmod_values
+ .text          0x000000008008e550      0x228 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod.o
+                0x000000008008e5d8                __aeabi_uidiv
+                0x000000008008e610                __aeabi_uidivmod
+                0x000000008008e64c                __aeabi_idiv
+                0x000000008008e6e0                __aeabi_idivmod
+ .text          0x000000008008e778       0x20 ../../../kernel/platform/arm/arch/v7/neon.o
+                0x000000008008e778                _enable_neon
+ .text          0x000000008008e798      0x5f0 ../../../kernel/lib/src/kstring.o
+                0x000000008008e920                memcpy
+                0x000000008008e9a0                memset
+                0x000000008008ea8c                strcpy
+                0x000000008008eac0                sstrncpy
+                0x000000008008eb20                strcmp
+                0x000000008008eb80                strncmp
+                0x000000008008ec00                strchr
+                0x000000008008ec34                memcmp
+                0x000000008008ec70                strstr
+                0x000000008008ec74                strtok
+                0x000000008008ed50                strlen
+ .text          0x000000008008ed88      0x2b0 ../../../kernel/lib/src/mstr.o
+                0x000000008008ed88                str_reset
+                0x000000008008edc8                str_ncpy
+                0x000000008008ee64                str_cpy
+                0x000000008008ee84                str_new
+                0x000000008008eec0                str_add
+                0x000000008008ef6c                str_addc
+                0x000000008008f004                str_free
+ .text          0x000000008008f038      0x290 ../../../kernel/lib/src/atoi.o
+                0x000000008008f038                atoi_base
+                0x000000008008f28c                atoi
+ .text          0x000000008008f2c8      0x5bc ../../../kernel/lib/src/vprintf.o
+                0x000000008008f4ac                v_printf
+                0x000000008008f828                snprintf
+ .text          0x000000008008f884       0xdc ../../../kernel/lib/src/proto.o
+                0x000000008008f884                proto_init
+                0x000000008008f8a4                proto_copy
+                0x000000008008f910                proto_clear
+ .text          0x000000008008f960      0x278 ../../../kernel/lib/src/queue.o
+                0x000000008008f960                queue_init
+                0x000000008008f974                queue_push
+                0x000000008008f9d0                queue_push_head
+                0x000000008008fa28                queue_pop
+                0x000000008008fa84                queue_in
+                0x000000008008faac                queue_remove
+                0x000000008008fb14                queue_clear
+                0x000000008008fba8                queue_num
+                0x000000008008fbbc                queue_is_empty
+ .text          0x000000008008fbd8       0xb4 ../../../kernel/lib/src/kprintf.o
+                0x000000008008fc10                kout
+                0x000000008008fc38                printf
+ .text          0x000000008008fc8c      0x414 ../../../kernel/lib/ext2/src/partition.o
+                0x000000008008fc8c                get_rootfs_entry
+ .text          0x00000000800900a0      0x740 ../../../kernel/lib/ext2/src/ext2read.o
+                0x0000000080090184                read_partition
+                0x000000008009021c                partition_get
+                0x0000000080090264                sd_read_ext2
+ .text          0x00000000800907e0      0x4ec ../../../kernel/lib/sconf/src/sconf.o
+                0x00000000800907e0                sconf_parse
+                0x0000000080090b94                sconf_free
+                0x0000000080090be8                sconf_get_at
+                0x0000000080090bf8                sconf_get
+                0x0000000080090c7c                sconf_load
+ .text          0x0000000080090ccc       0xb4 ../../../kernel/loadinit/sd/loadinit.o
+                0x0000000080090ccc                load_init_proc
+ .text          0x0000000080090d80      0x1b8 ../../../kernel/kernel/src/mm/kalloc.o
+                0x0000000080090d80                page_ref_index
+                0x0000000080090da8                kalloc_reset
+                0x0000000080090dc4                kalloc_append
+                0x0000000080090e40                kalloc4k
+                0x0000000080090e60                kfree4k
+                0x0000000080090e7c                kalloc1k
+                0x0000000080090ee4                kfree1k
+                0x0000000080090f00                get_free_mem_size
+ .text          0x0000000080090f38      0x38c ../../../kernel/kernel/src/mm/trunkmem.o
+                0x0000000080090fac                get_block
+                0x0000000080090fc4                trunk_malloc
+                0x00000000800910fc                trunk_free_size
+                0x000000008009115c                trunk_free
+                0x00000000800912a0                trunk_msize
+ .text          0x00000000800912c4      0x214 ../../../kernel/kernel/src/mm/kmalloc.o
+                0x000000008009137c                kmalloc_init
+                0x0000000080091424                kmalloc
+                0x0000000080091478                kcalloc
+                0x00000000800914a8                kfree
+                0x00000000800914c4                kmalloc_free_size
+ .text          0x00000000800914d8      0x1b4 ../../../kernel/kernel/src/mm/dma.o
+                0x00000000800914d8                dma_init
+                0x000000008009152c                dma_release
+                0x00000000800915dc                dma_alloc
+ .text          0x000000008009168c      0x908 ../../../kernel/kernel/src/mm/shm.o
+                0x000000008009181c                shm_init
+                0x0000000080091854                shm_get
+                0x0000000080091bfc                shm_alloced_size
+                0x0000000080091c40                shm_proc_map
+                0x0000000080091e48                shm_map
+                0x0000000080091ea4                shm_proc_unmap_by_id
+                0x0000000080091ef0                shm_set_owner
+                0x0000000080091f3c                shm_proc_unmap
+ .text          0x0000000080091f94      0x218 ../../../kernel/kernel/src/mm/mmu.o
+                0x0000000080091f94                get_allocable_start
+                0x0000000080091fc8                map_pages
+                0x0000000080092034                map_pages_size
+                0x000000008009203c                unmap_pages
+                0x000000008009207c                resolve_kernel_address
+                0x00000000800920b4                map_page_ref
+                0x0000000080092114                unmap_page_ref
+ .text          0x00000000800921ac        0x0 ../../../kernel/kernel/src/smp/core.o
+ .text          0x00000000800921ac      0x494 ../../../kernel/kernel/src/irq.o
+                0x00000000800921ac                irq_handler
+                0x00000000800922b4                undef_abort_handler
+                0x000000008009233c                prefetch_abort_handler
+                0x00000000800923d0                data_abort_handler
+                0x00000000800925c0                irq_init
+ .text          0x0000000080092640      0xee8 ../../../kernel/kernel/src/svc.o
+                0x0000000080092640                svc_handler
+ .text          0x0000000080093528      0x2c4 ../../../kernel/kernel/src/semaphore.o
+                0x0000000080093528                semaphore_init
+                0x000000008009355c                semaphore_alloc
+                0x00000000800935dc                semaphore_free
+                0x0000000080093650                semaphore_enter
+                0x00000000800936f4                semaphore_quit
+                0x0000000080093788                semaphore_clear
+ .text          0x00000000800937ec     0x2ab4 ../../../kernel/kernel/src/proc.o
+                0x0000000080093e14                procs_init
+                0x0000000080093f58                proc_childof
+                0x0000000080093fcc                proc_get
+                0x0000000080094028                proc_get_by_uuid
+                0x00000000800940b4                get_current_proc
+                0x0000000080094114                get_current_core_proc
+                0x0000000080094178                set_current_proc
+                0x00000000800941b8                thread_stack_alloc
+                0x0000000080094310                thread_stack_free
+                0x00000000800943f0                proc_save_state
+                0x0000000080094414                proc_restore_state
+                0x0000000080094474                proc_switch
+                0x000000008009486c                proc_switch_multi_core
+                0x0000000080094888                proc_ready
+                0x00000000800948f4                proc_get_core_ready
+                0x0000000080094910                proc_have_ready_task
+                0x0000000080094954                proc_get_next_ready
+                0x0000000080094a34                proc_funeral
+                0x0000000080094d04                proc_zombie_funeral
+                0x0000000080094d7c                proc_malloc
+                0x0000000080094e1c                proc_msize
+                0x0000000080094e30                proc_free
+                0x0000000080094e9c                proc_create
+                0x00000000800951ac                proc_load_elf
+                0x00000000800954c8                proc_usleep
+                0x000000008009557c                proc_block_on
+                0x0000000080095628                proc_waitpid
+                0x00000000800956dc                kfork_raw
+                0x000000008009587c                kfork
+                0x000000008009598c                get_procs_num
+                0x0000000080095a00                get_procs
+                0x0000000080095aec                get_proc
+                0x0000000080095b80                renew_kernel_tic
+                0x0000000080095d00                renew_kernel_sec
+                0x0000000080095da0                proc_get_proc
+                0x0000000080095e10                proc_wakeup
+                0x0000000080095f44                proc_exit
+                0x00000000800961c8                get_proc_pid
+                0x0000000080096240                kfork_core_halt
+ .text          0x00000000800962a0      0x1e4 ../../../kernel/kernel/src/ipc.o
+                0x00000000800962a0                proc_ipc_setup
+                0x00000000800962d8                proc_ipc_get_task
+                0x00000000800962ec                proc_ipc_fetch
+                0x0000000080096300                proc_ipc_do_task
+                0x0000000080096380                proc_ipc_req
+                0x0000000080096444                proc_ipc_close
+                0x0000000080096478                proc_ipc_clear
+ .text          0x0000000080096484      0x13c ../../../kernel/kernel/src/signal.o
+                0x0000000080096484                proc_signal_setup
+                0x00000000800964ac                proc_signal_send
+                0x0000000080096548                proc_signal_end
+ .text          0x00000000800965c0      0x398 ../../../kernel/kernel/src/interrupt.o
+                0x000000008009667c                interrupt_init
+                0x0000000080096694                interrupt_setup
+                0x0000000080096770                interrupt_send
+                0x00000000800967e4                interrupt_soft_send
+                0x0000000080096834                interrupt_end
+                0x0000000080096904                interrupt_retrigger
+ .text          0x0000000080096958       0xbc ../../../kernel/kernel/src/schedule.o
+                0x0000000080096958                schedule
+ .text          0x0000000080096a14       0xd8 ../../../kernel/kernel/src/system.o
+                0x0000000080096a14                _delay
+                0x0000000080096a54                _delay_usec
+                0x0000000080096a94                _delay_msec
+                0x0000000080096aa4                flush_dcache
+                0x0000000080096aa8                flush_tlb
+                0x0000000080096ac4                set_translation_table_base
+                0x0000000080096ae4                halt
+ .text          0x0000000080096aec       0xe4 ../../../kernel/kernel/src/kevqueue.o
+                0x0000000080096aec                kev_init
+                0x0000000080096afc                kev_push
+                0x0000000080096b50                kev_pop
+ .text          0x0000000080096bd0      0x200 ../../../kernel/kernel/src/kernel_config.o
+                0x0000000080096bd0                load_kernel_config
+ .text          0x0000000080096dd0       0x44 ../../../kernel/kernel/src/hw_info.o
+                0x0000000080096dd0                sys_info_init
+ .text          0x0000000080096e14      0x70c ../../../kernel/kernel/src/kernel.o
+                0x00000000800970c4                set_vm
+                0x00000000800970e8                _kernel_entry_c
+ *(.text)
+
+.rodata.str1.4  0x0000000080097520      0x6d6 load address 0x0000000000097520
+ .rodata.str1.4
+                0x0000000080097520       0xcb bsp/dwmmc.o
+ *fill*         0x00000000800975eb        0x1 
+ .rodata.str1.4
+                0x00000000800975ec        0xe bsp/hw_info_arch.o
+ *fill*         0x00000000800975fa        0x2 
+ .rodata.str1.4
+                0x00000000800975fc      0x146 bsp/gpio.o
+ *fill*         0x0000000080097742        0x2 
+ .rodata.str1.4
+                0x0000000080097744       0x23 bsp/i2c.o
+ *fill*         0x0000000080097767        0x1 
+ .rodata.str1.4
+                0x0000000080097768       0x45 ../../../kernel/platform/arm/arch/common/src/irq.o
+ *fill*         0x00000000800977ad        0x3 
+ .rodata.str1.4
+                0x00000000800977b0       0x25 ../../../kernel/lib/src/vprintf.o
+ *fill*         0x00000000800977d5        0x3 
+ .rodata.str1.4
+                0x00000000800977d8       0x92 ../../../kernel/lib/ext2/src/partition.o
+ *fill*         0x000000008009786a        0x2 
+ .rodata.str1.4
+                0x000000008009786c        0x2 ../../../kernel/lib/ext2/src/ext2read.o
+ .rodata.str1.4
+                0x000000008009786e        0x2 ../../../kernel/lib/sconf/src/sconf.o
+                                          0x1 (size before relaxing)
+ *fill*         0x000000008009786e        0x2 
+ .rodata.str1.4
+                0x0000000080097870        0xb ../../../kernel/loadinit/sd/loadinit.o
+ *fill*         0x000000008009787b        0x1 
+ .rodata.str1.4
+                0x000000008009787c       0x22 ../../../kernel/kernel/src/mm/kmalloc.o
+ *fill*         0x000000008009789e        0x2 
+ .rodata.str1.4
+                0x00000000800978a0       0x19 ../../../kernel/kernel/src/mm/shm.o
+ *fill*         0x00000000800978b9        0x3 
+ .rodata.str1.4
+                0x00000000800978bc      0x199 ../../../kernel/kernel/src/irq.o
+ *fill*         0x0000000080097a55        0x3 
+ .rodata.str1.4
+                0x0000000080097a58       0x47 ../../../kernel/kernel/src/svc.o
+ *fill*         0x0000000080097a9f        0x1 
+ .rodata.str1.4
+                0x0000000080097aa0       0xcf ../../../kernel/kernel/src/proc.o
+ *fill*         0x0000000080097b6f        0x1 
+ .rodata.str1.4
+                0x0000000080097b70       0x23 ../../../kernel/kernel/src/schedule.o
+ *fill*         0x0000000080097b93        0x1 
+ .rodata.str1.4
+                0x0000000080097b94       0x62 ../../../kernel/kernel/src/kernel_config.o
+
+.rodata         0x0000000080097bf8      0x51a load address 0x0000000000097bf8
+ .rodata        0x0000000080097bf8       0x35 bsp/dwmmc.o
+ *fill*         0x0000000080097c2d        0x3 
+ .rodata        0x0000000080097c30       0x20 bsp/gpio.o
+ .rodata        0x0000000080097c50       0x10 ../../../kernel/lib/ext2/src/partition.o
+ .rodata        0x0000000080097c60      0x4b2 ../../../kernel/kernel/src/kernel.o
+
+.glue_7         0x0000000080098114        0x0 load address 0x0000000000098114
+ .glue_7        0x0000000080098114        0x0 linker stubs
+
+.glue_7t        0x0000000080098114        0x0 load address 0x0000000000098114
+ .glue_7t       0x0000000080098114        0x0 linker stubs
+
+.vfp11_veneer   0x0000000080098114        0x0 load address 0x0000000000098114
+ .vfp11_veneer  0x0000000080098114        0x0 linker stubs
+
+.v4_bx          0x0000000080098114        0x0 load address 0x0000000000098114
+ .v4_bx         0x0000000080098114        0x0 linker stubs
+
+.iplt           0x0000000080098114        0x0 load address 0x0000000000098114
+ .iplt          0x0000000080098114        0x0 bsp/dwmmc.o
+
+.rel.dyn        0x0000000080098114        0x0 load address 0x0000000000098114
+ .rel.iplt      0x0000000080098114        0x0 bsp/dwmmc.o
+ .rel.got       0x0000000080098114        0x0 bsp/dwmmc.o
+                0x0000000080099000                . = ALIGN (0x1000)
+
+.data           0x0000000080099000      0x2d0 load address 0x0000000000099000
+ *(.data*)
+ .data          0x0000000080099000       0x48 bsp/dwmmc.o
+ .data          0x0000000080099048        0x0 bsp/hw_info_arch.o
+ .data          0x0000000080099048        0x0 bsp/irq.o
+ .data          0x0000000080099048        0x4 bsp/timer.o
+                0x0000000080099048                _cntfrq
+ .data          0x000000008009904c        0x0 bsp/sd.o
+ .data          0x000000008009904c       0x9c bsp/gpio.o
+                0x0000000080099058                rk3506_gpio_groups
+                0x0000000080099068                default_cfg
+ .data.rel.local
+                0x00000000800990e8      0x1e0 bsp/gpio.o
+ .data          0x00000000800992c8        0x0 bsp/i2c.o
+ .data          0x00000000800992c8        0x0 bsp/uart.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/v7/boot.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/v7/system.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/v7/mmu_pte_flags.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/common/src/interrupt.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/common/src/gic.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/common/src/irq.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/common/src/memcpy.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/common/src/mmu_arch.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod_a32.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/platform/arm/arch/v7/neon.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/src/kstring.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/src/mstr.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/src/atoi.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/src/vprintf.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/src/proto.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/src/queue.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/src/kprintf.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/ext2/src/partition.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/ext2/src/ext2read.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/lib/sconf/src/sconf.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/loadinit/sd/loadinit.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/kernel/src/mm/kalloc.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/kernel/src/mm/trunkmem.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/kernel/src/mm/kmalloc.o
+ .data          0x00000000800992c8        0x0 ../../../kernel/kernel/src/mm/dma.o
+ .data          0x00000000800992c8        0x4 ../../../kernel/kernel/src/mm/shm.o
+ .data          0x00000000800992cc        0x0 ../../../kernel/kernel/src/mm/mmu.o
+ .data          0x00000000800992cc        0x0 ../../../kernel/kernel/src/smp/core.o
+ .data          0x00000000800992cc        0x0 ../../../kernel/kernel/src/irq.o
+ .data          0x00000000800992cc        0x0 ../../../kernel/kernel/src/svc.o
+ .data          0x00000000800992cc        0x0 ../../../kernel/kernel/src/semaphore.o
+ .data          0x00000000800992cc        0x4 ../../../kernel/kernel/src/proc.o
+                0x00000000800992cc                _core_proc_pid
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/ipc.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/signal.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/interrupt.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/schedule.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/system.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/kevqueue.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/kernel_config.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/hw_info.o
+ .data          0x00000000800992d0        0x0 ../../../kernel/kernel/src/kernel.o
+
+.igot.plt       0x00000000800992d0        0x0 load address 0x00000000000992d0
+ .igot.plt      0x00000000800992d0        0x0 bsp/dwmmc.o
+
+.got            0x00000000800992d0       0x58 load address 0x00000000000992d0
+ .got           0x00000000800992d0       0x58 bsp/dwmmc.o
+
+.got.plt        0x0000000080099328        0xc load address 0x0000000000099328
+ .got.plt       0x0000000080099328        0xc bsp/dwmmc.o
+                0x0000000080099328                _GLOBAL_OFFSET_TABLE_
+                0x000000008009a000                . = ALIGN (0x1000)
+                0x000000008009a000                _bss_start = .
+
+.bss            0x000000008009c000     0x7b64 load address 0x000000000009c000
+ *(.bss*)
+ .bss           0x000000008009c000        0x0 bsp/dwmmc.o
+ .bss           0x000000008009c000        0x8 bsp/hw_info_arch.o
+                0x000000008009c000                _allocable_phy_mem_base
+                0x000000008009c004                _allocable_phy_mem_top
+ .bss           0x000000008009c008        0x0 bsp/irq.o
+ .bss           0x000000008009c008        0x4 bsp/timer.o
+                0x000000008009c008                _timer_tval
+ .bss           0x000000008009c00c      0x200 bsp/sd.o
+ *fill*         0x000000008009c20c        0x4 
+ .bss           0x000000008009c210       0x14 bsp/gpio.o
+ .bss           0x000000008009c224        0x8 bsp/i2c.o
+ .bss           0x000000008009c22c        0x0 bsp/uart.o
+ .bss           0x000000008009c22c        0x0 ../../../kernel/platform/arm/arch/v7/boot.o
+ .bss           0x000000008009c22c        0x0 ../../../kernel/platform/arm/arch/v7/system.o
+ .bss           0x000000008009c22c        0x0 ../../../kernel/platform/arm/arch/v7/mmu_pte_flags.o
+ .bss           0x000000008009c22c        0x0 ../../../kernel/platform/arm/arch/common/src/interrupt.o
+ .bss           0x000000008009c22c        0x8 ../../../kernel/platform/arm/arch/common/src/gic.o
+ .bss           0x000000008009c234        0x0 ../../../kernel/platform/arm/arch/common/src/irq.o
+ .bss           0x000000008009c234        0x0 ../../../kernel/platform/arm/arch/common/src/memcpy.o
+ .bss           0x000000008009c234        0x0 ../../../kernel/platform/arm/arch/common/src/mmu_arch.o
+ .bss           0x000000008009c234        0x0 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod_a32.o
+ .bss           0x000000008009c234        0x0 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod.o
+ .bss           0x000000008009c234        0x0 ../../../kernel/platform/arm/arch/v7/neon.o
+ .bss           0x000000008009c234        0x4 ../../../kernel/lib/src/kstring.o
+ .bss           0x000000008009c238        0x0 ../../../kernel/lib/src/mstr.o
+ .bss           0x000000008009c238        0x0 ../../../kernel/lib/src/atoi.o
+ .bss           0x000000008009c238        0x0 ../../../kernel/lib/src/vprintf.o
+ .bss           0x000000008009c238        0x0 ../../../kernel/lib/src/proto.o
+ .bss           0x000000008009c238        0x0 ../../../kernel/lib/src/queue.o
+ .bss           0x000000008009c238      0x404 ../../../kernel/lib/src/kprintf.o
+ .bss           0x000000008009c63c      0x204 ../../../kernel/lib/ext2/src/partition.o
+ .bss           0x000000008009c840       0x50 ../../../kernel/lib/ext2/src/ext2read.o
+ .bss           0x000000008009c890        0x0 ../../../kernel/lib/sconf/src/sconf.o
+ .bss           0x000000008009c890        0x0 ../../../kernel/loadinit/sd/loadinit.o
+ *fill*         0x000000008009c890     0x3770 
+ .bss           0x00000000800a0000      0x410 ../../../kernel/kernel/src/mm/kalloc.o
+                0x00000000800a0404                _pages_ref
+ .bss           0x00000000800a0410        0x0 ../../../kernel/kernel/src/mm/trunkmem.o
+ .bss           0x00000000800a0410       0x24 ../../../kernel/kernel/src/mm/kmalloc.o
+ .bss           0x00000000800a0434        0x4 ../../../kernel/kernel/src/mm/dma.o
+ .bss           0x00000000800a0438        0xc ../../../kernel/kernel/src/mm/shm.o
+ .bss           0x00000000800a0444        0x0 ../../../kernel/kernel/src/mm/mmu.o
+ .bss           0x00000000800a0444        0x8 ../../../kernel/kernel/src/smp/core.o
+                0x00000000800a0444                _cpu_cores
+ *fill*         0x00000000800a044c        0x4 
+ .bss           0x00000000800a0450       0x1c ../../../kernel/kernel/src/irq.o
+                0x00000000800a0460                _kernel_usec
+                0x00000000800a0468                _kernel_sec
+ .bss           0x00000000800a046c      0x100 ../../../kernel/kernel/src/svc.o
+ .bss           0x00000000800a056c     0x3000 ../../../kernel/kernel/src/semaphore.o
+ .bss           0x00000000800a356c       0x2d ../../../kernel/kernel/src/proc.o
+                0x00000000800a3594                _ipc_uid
+                0x00000000800a3598                _core_proc_ready
+ .bss           0x00000000800a3599        0x0 ../../../kernel/kernel/src/ipc.o
+ .bss           0x00000000800a3599        0x0 ../../../kernel/kernel/src/signal.o
+ *fill*         0x00000000800a3599        0x3 
+ .bss           0x00000000800a359c      0x500 ../../../kernel/kernel/src/interrupt.o
+ .bss           0x00000000800a3a9c        0x0 ../../../kernel/kernel/src/schedule.o
+ .bss           0x00000000800a3a9c        0x0 ../../../kernel/kernel/src/system.o
+ .bss           0x00000000800a3a9c        0xc ../../../kernel/kernel/src/kevqueue.o
+ .bss           0x00000000800a3aa8       0x18 ../../../kernel/kernel/src/kernel_config.o
+                0x00000000800a3aa8                _kernel_config
+ .bss           0x00000000800a3ac0       0x9c ../../../kernel/kernel/src/hw_info.o
+                0x00000000800a3ac0                _sys_info
+ .bss           0x00000000800a3b5c        0x8 ../../../kernel/kernel/src/kernel.o
+                0x00000000800a3b5c                _kernel_vsyscall_info
+                0x00000000800a3b60                _kernel_vm
+                0x00000000800a4000                . = ALIGN (0x1000)
+                0x00000000800a4000                _bss_end = .
+                0x00000000800a8000                . = (. + 0x4000)
+                0x00000000800a8000                _irq_stack = .
+                0x00000000800ac000                . = (. + 0x4000)
+                0x00000000800ac000                _abt_stack = .
+                0x00000000800b0000                . = (. + 0x4000)
+                0x00000000800b0000                _undef_stack = .
+                0x00000000800b4000                . = (. + 0x4000)
+                0x00000000800b4000                _svc_stack = .
+                [!provide]                        PROVIDE (_kernel_sp = .)
+                0x00000000800b4000                . = ALIGN (0x1000)
+                0x00000000800b4000                PROVIDE (_kernel_end = .)
+OUTPUT(./kernel7.elf elf32-littlearm)
+LOAD linker stubs
+
+.comment        0x0000000000000000       0x40
+ .comment       0x0000000000000000       0x40 bsp/dwmmc.o
+                                         0x41 (size before relaxing)
+ .comment       0x0000000000000040       0x41 bsp/hw_info_arch.o
+ .comment       0x0000000000000040       0x41 bsp/irq.o
+ .comment       0x0000000000000040       0x41 bsp/timer.o
+ .comment       0x0000000000000040       0x41 bsp/sd.o
+ .comment       0x0000000000000040       0x41 bsp/gpio.o
+ .comment       0x0000000000000040       0x41 bsp/i2c.o
+ .comment       0x0000000000000040       0x41 bsp/uart.o
+ .comment       0x0000000000000040       0x41 bsp/start.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/platform/arm/arch/v7/mmu_pte_flags.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/platform/arm/arch/common/src/gic.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/platform/arm/arch/common/src/irq.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/platform/arm/arch/common/src/mmu_arch.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/platform/arm/arch/v7/neon.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/src/kstring.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/src/mstr.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/src/atoi.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/src/vprintf.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/src/proto.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/src/queue.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/src/kprintf.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/ext2/src/partition.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/ext2/src/ext2read.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/lib/sconf/src/sconf.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/loadinit/sd/loadinit.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/mm/kalloc.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/mm/trunkmem.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/mm/kmalloc.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/mm/dma.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/mm/shm.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/mm/mmu.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/smp/core.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/irq.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/svc.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/semaphore.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/proc.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/ipc.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/signal.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/interrupt.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/schedule.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/system.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/kevqueue.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/kernel_config.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/hw_info.o
+ .comment       0x0000000000000040       0x41 ../../../kernel/kernel/src/kernel.o
+
+.ARM.attributes
+                0x0000000000000000       0x33
+ .ARM.attributes
+                0x0000000000000000       0x35 bsp/dwmmc.o
+ .ARM.attributes
+                0x0000000000000035       0x35 bsp/hw_info_arch.o
+ .ARM.attributes
+                0x000000000000006a       0x35 bsp/irq.o
+ .ARM.attributes
+                0x000000000000009f       0x35 bsp/timer.o
+ .ARM.attributes
+                0x00000000000000d4       0x35 bsp/sd.o
+ .ARM.attributes
+                0x0000000000000109       0x35 bsp/gpio.o
+ .ARM.attributes
+                0x000000000000013e       0x35 bsp/i2c.o
+ .ARM.attributes
+                0x0000000000000173       0x35 bsp/uart.o
+ .ARM.attributes
+                0x00000000000001a8       0x35 bsp/start.o
+ .ARM.attributes
+                0x00000000000001dd       0x23 ../../../kernel/platform/arm/arch/v7/boot.o
+ .ARM.attributes
+                0x0000000000000200       0x23 ../../../kernel/platform/arm/arch/v7/system.o
+ .ARM.attributes
+                0x0000000000000223       0x35 ../../../kernel/platform/arm/arch/v7/mmu_pte_flags.o
+ .ARM.attributes
+                0x0000000000000258       0x23 ../../../kernel/platform/arm/arch/common/src/interrupt.o
+ .ARM.attributes
+                0x000000000000027b       0x35 ../../../kernel/platform/arm/arch/common/src/gic.o
+ .ARM.attributes
+                0x00000000000002b0       0x35 ../../../kernel/platform/arm/arch/common/src/irq.o
+ .ARM.attributes
+                0x00000000000002e5       0x23 ../../../kernel/platform/arm/arch/common/src/memcpy.o
+ .ARM.attributes
+                0x0000000000000308       0x35 ../../../kernel/platform/arm/arch/common/src/mmu_arch.o
+ .ARM.attributes
+                0x000000000000033d       0x23 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod_a32.o
+ .ARM.attributes
+                0x0000000000000360       0x35 ../../../kernel/platform/arm/arch/common/src/arm32_aeabi_divmod.o
+ .ARM.attributes
+                0x0000000000000395       0x35 ../../../kernel/platform/arm/arch/v7/neon.o
+ .ARM.attributes
+                0x00000000000003ca       0x35 ../../../kernel/lib/src/kstring.o
+ .ARM.attributes
+                0x00000000000003ff       0x35 ../../../kernel/lib/src/mstr.o
+ .ARM.attributes
+                0x0000000000000434       0x35 ../../../kernel/lib/src/atoi.o
+ .ARM.attributes
+                0x0000000000000469       0x35 ../../../kernel/lib/src/vprintf.o
+ .ARM.attributes
+                0x000000000000049e       0x35 ../../../kernel/lib/src/proto.o
+ .ARM.attributes
+                0x00000000000004d3       0x35 ../../../kernel/lib/src/queue.o
+ .ARM.attributes
+                0x0000000000000508       0x35 ../../../kernel/lib/src/kprintf.o
+ .ARM.attributes
+                0x000000000000053d       0x35 ../../../kernel/lib/ext2/src/partition.o
+ .ARM.attributes
+                0x0000000000000572       0x35 ../../../kernel/lib/ext2/src/ext2read.o
+ .ARM.attributes
+                0x00000000000005a7       0x35 ../../../kernel/lib/sconf/src/sconf.o
+ .ARM.attributes
+                0x00000000000005dc       0x35 ../../../kernel/loadinit/sd/loadinit.o
+ .ARM.attributes
+                0x0000000000000611       0x35 ../../../kernel/kernel/src/mm/kalloc.o
+ .ARM.attributes
+                0x0000000000000646       0x35 ../../../kernel/kernel/src/mm/trunkmem.o
+ .ARM.attributes
+                0x000000000000067b       0x35 ../../../kernel/kernel/src/mm/kmalloc.o
+ .ARM.attributes
+                0x00000000000006b0       0x35 ../../../kernel/kernel/src/mm/dma.o
+ .ARM.attributes
+                0x00000000000006e5       0x35 ../../../kernel/kernel/src/mm/shm.o
+ .ARM.attributes
+                0x000000000000071a       0x35 ../../../kernel/kernel/src/mm/mmu.o
+ .ARM.attributes
+                0x000000000000074f       0x35 ../../../kernel/kernel/src/smp/core.o
+ .ARM.attributes
+                0x0000000000000784       0x35 ../../../kernel/kernel/src/irq.o
+ .ARM.attributes
+                0x00000000000007b9       0x35 ../../../kernel/kernel/src/svc.o
+ .ARM.attributes
+                0x00000000000007ee       0x35 ../../../kernel/kernel/src/semaphore.o
+ .ARM.attributes
+                0x0000000000000823       0x35 ../../../kernel/kernel/src/proc.o
+ .ARM.attributes
+                0x0000000000000858       0x35 ../../../kernel/kernel/src/ipc.o
+ .ARM.attributes
+                0x000000000000088d       0x35 ../../../kernel/kernel/src/signal.o
+ .ARM.attributes
+                0x00000000000008c2       0x35 ../../../kernel/kernel/src/interrupt.o
+ .ARM.attributes
+                0x00000000000008f7       0x35 ../../../kernel/kernel/src/schedule.o
+ .ARM.attributes
+                0x000000000000092c       0x35 ../../../kernel/kernel/src/system.o
+ .ARM.attributes
+                0x0000000000000961       0x35 ../../../kernel/kernel/src/kevqueue.o
+ .ARM.attributes
+                0x0000000000000996       0x35 ../../../kernel/kernel/src/kernel_config.o
+ .ARM.attributes
+                0x00000000000009cb       0x35 ../../../kernel/kernel/src/hw_info.o
+ .ARM.attributes
+                0x0000000000000a00       0x35 ../../../kernel/kernel/src/kernel.o
