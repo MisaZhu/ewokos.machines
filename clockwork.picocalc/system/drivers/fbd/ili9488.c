@@ -178,7 +178,7 @@ void ili9488_init(void){
     spi_write_data(0x00);
 
     spi_write_command(0xB1); // Frame Rate Control
-    spi_write_data(0xA0);
+    spi_write_data(0xD0);
 
     spi_write_command(TFT_INVON);
 
