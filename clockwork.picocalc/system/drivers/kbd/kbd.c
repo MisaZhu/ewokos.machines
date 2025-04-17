@@ -24,6 +24,9 @@ struct kb_state{
 
 static struct kb_state kb_states[8] = {0};
 
+/*alt: 0xA1, lshift: 0xA2, rshift: 0xA3, ctrl: 0xA5, ?: 0xA4
+home: 0xD2, del: 0xD4, end: 0xD5, brk: 0xD8, esc: 0xB1
+*/
 static uint8_t key_remap(uint8_t key){
 	switch(key){
 		case 0xb5:
@@ -37,6 +40,8 @@ static uint8_t key_remap(uint8_t key){
 		case 0x0A:
 			return KEY_ENTER;
 		case 0xB1:
+			return KEY_ESC;
+		case 0xD2:
 			return KEY_HOME;
 		default:
 			return key;
@@ -85,22 +90,19 @@ static int kbd_loop(void* p) {
 	if(ret == 0){
 		uint8_t c = key[1];
 		bool macthed = false;
-		if(c >= 0xA1 && c <= 0xA5) {
-			//alt: 0xA1, lshift: 0xA2, rshift: 0xA3, ctrl: 0xA5, ?: 0xA4
+		if((c >= 0xA1 && c <= 0xA5) || c == KEY_HOME) {
 			if(c == 0xA5) {//ctrl
 				if(key[0] == 1)//press
 					_ctrl_down = true;
 				else if(key[0] == 3)//release
 					_ctrl_down = false;
 			}
-			usleep(20000);
 			return -1;
 		}
 		else {
 			c = key_remap(c);
 			if(_ctrl_down) {
 				do_ctrl(c);
-				usleep(20000);
 				return -1;
 			}
 			else {
