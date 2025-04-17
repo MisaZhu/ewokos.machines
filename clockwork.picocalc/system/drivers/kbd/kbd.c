@@ -23,6 +23,8 @@ struct kb_state{
 };
 
 static struct kb_state kb_states[8] = {0};
+static uint8_t _keys[4]  = {0};
+static uint8_t _key_num = 0;
 
 /*alt: 0xA1, lshift: 0xA2, rshift: 0xA3, ctrl: 0xA5, ?: 0xA4
 home: 0xD2, del: 0xD4, end: 0xD5, brk: 0xD8, esc: 0xB1
@@ -62,30 +64,26 @@ static void do_ctrl(uint8_t c) {
 	}
 }
 
-static charbuf_t *_buffer;
-
 static int kbd_read(int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
 	(void)fd;
 	(void)from_pid;
 	(void)node;
 	(void)offset;
-	(void)size;
 	(void)p;
 
-	char c;
-	int res = charbuf_pop(_buffer, &c);
-
-	if(res != 0)
-		return VFS_ERR_RETRY;
-
-	((char*)buf)[0] = c;
-	return 1;
+	int ret = 0;
+	for(int i=0; i<_key_num && i <size; i++) {
+		if(_keys[i] != 0) {
+			*(uint8_t*)buf++ = _keys[i];
+			ret++;
+		}
+	}
+	return ret ? ret:-1;
 }
 
-static int kbd_loop(void* p) {
+static int kbd_loop(void*) {
 	uint8_t key[2] = {0};
-	bool release_evt = false;
 	int ret = rk_i2c_read(0x1f, 0x9,  key, 2, 0);
 	if(ret == 0){
 		uint8_t c = key[1];
@@ -103,21 +101,20 @@ static int kbd_loop(void* p) {
 			c = key_remap(c);
 			if(_ctrl_down) {
 				do_ctrl(c);
+				usleep(20000);
 				return -1;
 			}
-			else {
-				for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
-					if(kb_states[i].key == c){
-						macthed = true;
-						if(key[0] == 1){//press
-							kb_states[i].key = c; 
-						}
-						else if(key[0] == 3){//release
-							kb_states[i].key = 0;
-							release_evt = true;
-						}
-						break;
+
+			for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
+				if(kb_states[i].key == c){
+					macthed = true;
+					if(key[0] == 1){//press
+						kb_states[i].key = c; 
 					}
+					else if(key[0] == 3){//release
+						kb_states[i].key = 0;
+					}
+					break;
 				}
 			}
 		}
@@ -130,7 +127,6 @@ static int kbd_loop(void* p) {
 					}
 					else if(key[0] == 3){//release
 						kb_states[i].key = 0;
-						release_evt = true;
 					}
 					break;
 				}
@@ -138,22 +134,16 @@ static int kbd_loop(void* p) {
 		}
 	}
 
-	bool wake = false;
+	_key_num = 0;
+	memset(_keys, 0, 4);
 	for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
 		if(kb_states[i].key != 0){
-			charbuf_push(_buffer, kb_states[i].key, true);
-			kb_states[i].key = 0;
-			wake = true;
+			_keys[_key_num] = kb_states[i].key;	
+			_key_num++;
+			if(_key_num >= 4)
+				break;
 		}
 	}
-
-	if(!wake && release_evt) {
-		charbuf_push(_buffer, 0, true);
-		wake = true;
-	}
-
-	if(wake)
-		proc_wakeup(RW_BLOCK_EVT);
 	usleep(20000);
 	return 0;
 }
@@ -167,12 +157,8 @@ int main(int argc, char** argv) {
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "keyboard");
 
-	_buffer = charbuf_new(0);
-
 	dev.read = kbd_read;
 	dev.loop_step = kbd_loop;
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
-
-	charbuf_free(_buffer);
 	return 0;
 }
