@@ -8,9 +8,8 @@
 
 #define LCD_RST 2
 #define LCD_DC	3
-#define LCD_CS	4
 
-static uint8_t _linebuffer[320*3];
+static uint8_t *_fb;
 static int _rectangle[4];
 
 static inline void sleep_ms(int ms){
@@ -19,26 +18,20 @@ static inline void sleep_ms(int ms){
 
 static inline void spi_write_data(uint8_t data){
     rk_gpio_write(LCD_DC, 1);
-    rk_gpio_write(LCD_CS, 0);
     rk_spi_write(&data, 1);
-    rk_gpio_write(LCD_CS, 1);
 }
 
 static inline uint8_t  spi_read_data(uint8_t reg){
 	uint8_t ret;
 	rk_gpio_write(LCD_DC, 0);
-    rk_gpio_write(LCD_CS, 0);
 	rk_spi_write(&reg, 1);
 	rk_spi_read(&ret, 1);
-    rk_gpio_write(LCD_CS, 1);
 	return ret;
 }
 
 static inline void spi_write_command(uint8_t data){
     rk_gpio_write(LCD_DC, 0);
-    rk_gpio_write(LCD_CS, 0);
     rk_spi_write(&data, 1);
-    rk_gpio_write(LCD_CS, 1);
 }
 
 static inline void spi_write_cd(uint8_t command, int len, ...) {
@@ -80,12 +73,10 @@ void ili9488_clear(uint32_t color) {
     rgb[2] = color >> 8;
     define_region_spi(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, 1);
     rk_gpio_write(LCD_DC, 1);
-    rk_gpio_write(LCD_CS, 0);
     for (i = 0; i < LCD_WIDTH * LCD_HEIGHT; i++) {
            rk_spi_write(rgb, 3);
     }
 
-	rk_gpio_write(LCD_CS, 1);
 }
 
 void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
@@ -95,18 +86,17 @@ void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
 
 	define_region_spi(x, y, x + w - 1, y + h - 1, 1);
     rk_gpio_write(LCD_DC, 1);
-    rk_gpio_write(LCD_CS, 0);
+	uint8_t *p = _fb;
     for (i = 0; i < h; i++) {
 		for(int j = 0; j < w; j++){
-			_linebuffer[j * 3 + 0] = ((uint8_t*)argb)[2]; 
-			_linebuffer[j * 3 + 1] = ((uint8_t*)argb)[1]; 
-			_linebuffer[j * 3 + 2] = ((uint8_t*)argb)[0]; 
+			*p++ = ((uint8_t*)argb)[2]; 
+			*p++ = ((uint8_t*)argb)[1]; 
+			*p++ = ((uint8_t*)argb)[0]; 
 			argb++;
 		}
-        rk_spi_write(_linebuffer, w * 3);
     }
 
-	rk_gpio_write(LCD_CS, 1);
+    rk_spi_write(_fb, w * h * 3);
 }
 
 void ili9488_init(void){
@@ -114,13 +104,13 @@ void ili9488_init(void){
 	rk_spi_init();
 	rk_gpio_config(LCD_RST , 1);
 	rk_gpio_config(LCD_DC,	1);
-	rk_gpio_config(LCD_CS, 1);
 
-	rk_gpio_write(LCD_CS, 1);
 	rk_gpio_write(LCD_RST, 0);
     proc_usleep(100);
 	rk_gpio_write(LCD_RST, 1);
 	proc_usleep(10000);
+
+	_fb = dma_map(320*320*3);
 
 	spi_write_command(0xE0); // Positive Gamma Control
     spi_write_data(0x00);
@@ -178,7 +168,7 @@ void ili9488_init(void){
     spi_write_data(0x00);
 
     spi_write_command(0xB1); // Frame Rate Control
-    spi_write_data(0xD0);
+    spi_write_data(0xA0);
 
     spi_write_command(TFT_INVON);
 

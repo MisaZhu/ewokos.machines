@@ -45,34 +45,34 @@
 #define SPI_XFER_MMAP_END   BIT(3)  /* Memory Mapped End */
 #define SPI_XFER_PREPARE    BIT(7)  /* Transfer skip waiting idle */
 
-typedef  volatile uint32_t u32;
+typedef  uint32_t u32;
 typedef  uint16_t u16;
 typedef  uint8_t u8;
 typedef  unsigned long ulong;
 typedef  unsigned int uint;
 
 struct rockchip_spi {
-    u32 ctrlr0;
-    u32 ctrlr1;
-    u32 enr;
-    u32 ser;
-    u32 baudr;
-    u32 txftlr;
-    u32 rxftlr;
-    u32 txflr;
-    u32 rxflr;
-    u32 sr;
-    u32 ipr;
-    u32 imr;
-    u32 isr;
-    u32 risr;
-    u32 icr;
-    u32 dmacr;
-    u32 dmatdlr;
-    u32 dmardlr;        /* 0x44 */
-    u32 reserved[0xef];
-    u32 txdr[0x100];    /* 0x400 */
-    u32 rxdr[0x100];    /* 0x800 */
+    volatile u32 ctrlr0;
+    volatile u32 ctrlr1;
+    volatile u32 enr;
+    volatile u32 ser;
+    volatile u32 baudr;
+    volatile u32 txftlr;
+    volatile u32 rxftlr;
+    volatile u32 txflr;
+    volatile u32 rxflr;
+    volatile u32 sr;
+    volatile u32 ipr;
+    volatile u32 imr;
+    volatile u32 isr;
+    volatile u32 risr;
+    volatile u32 icr;
+    volatile u32 dmacr;
+    volatile u32 dmatdlr;
+    volatile u32 dmardlr;        /* 0x44 */
+    volatile u32 reserved[0xef];
+    volatile u32 txdr[0x100];    /* 0x400 */
+    volatile u32 rxdr[0x100];    /* 0x800 */
 };
 
 /* CTRLR0 */
@@ -245,12 +245,12 @@ static inline int rkspi_wait_till_not_busy(struct rockchip_spi *regs)
     return 0;
 }
 
-static void rkspi_enable_chip(struct rockchip_spi *regs, bool enable)
+static inline void rkspi_enable_chip(struct rockchip_spi *regs, bool enable)
 {
     writel(enable ? 1 : 0, &regs->enr);
 }
 
-static void spi_cs_activate(uint cs)
+static inline void spi_cs_activate(uint cs)
 {
     struct rockchip_spi_priv *priv = &_spi;
     struct rockchip_spi *regs = priv->regs;
@@ -259,7 +259,7 @@ static void spi_cs_activate(uint cs)
     writel(1 << cs, &regs->ser);
 }
 
-static void spi_cs_deactivate(uint cs)
+static inline void spi_cs_deactivate(uint cs)
 {
     struct rockchip_spi_priv *priv = &_spi;
     struct rockchip_spi *regs = priv->regs;
@@ -268,14 +268,16 @@ static void spi_cs_deactivate(uint cs)
     writel(0, &regs->ser);
 }
 
-static int rockchip_spi_config(struct rockchip_spi_priv *priv, const void *dout)
+static inline int rockchip_spi_config(struct rockchip_spi_priv *priv, const void *dout, const void *din)
 {
     struct rockchip_spi *regs = priv->regs;
     uint ctrlr0 = priv->cr0;
     u32 tmod;
 
-    if (dout)
+    if (dout && din)
         tmod = TMOD_TR;
+	else if(dout)
+		tmod = TMOD_TO; 
     else
         tmod = TMOD_RO;
 
@@ -286,7 +288,7 @@ static int rockchip_spi_config(struct rockchip_spi_priv *priv, const void *dout)
 }
 
 
-static int rockchip_spi_xfer(int cs, unsigned int bitlen,
+static inline int rockchip_spi_xfer(int cs, unsigned int bitlen,
                const void *dout, void *din, unsigned long flags)
 {
     struct rockchip_spi_priv *priv = &_spi;
@@ -297,7 +299,7 @@ static int rockchip_spi_xfer(int cs, unsigned int bitlen,
     int toread, towrite;
     int ret;
 
-    rockchip_spi_config(priv, dout);
+    rockchip_spi_config(priv, dout, din);
 
     debug("%s: dout=%08x, din=%08x, len=%d, flags=%lx\n", __func__, dout, din,
           len, flags);
@@ -312,24 +314,21 @@ static int rockchip_spi_xfer(int cs, unsigned int bitlen,
         int todo = len;
 
         rkspi_enable_chip(regs, false);
-        writel(todo - 1, &regs->ctrlr1);
+		if(din)
+			writel(todo - 1, &regs->ctrlr1);
         rkspi_enable_chip(regs, true);
 
-        toread = todo;
-        towrite = todo;
+        toread = din?todo:0;
+        towrite = dout?todo:0;
         while (toread || towrite) {
             u32 status = readl(&regs->sr);
 
             if (towrite && !(status & SR_TF_FULL)) {
-                if (out)
-                    writel(out ? *out++ : 0, &regs->txdr);
+                writel(*out++, &regs->txdr);
                 towrite--;
             }
             if (toread && !(status & SR_RF_EMPT)) {
-                u32 byte = readl(&regs->rxdr);
-
-                if (in)
-                    *in++ = byte;
+                *in++ = readl(&regs->rxdr);
                 toread--;
             }
         }
@@ -419,15 +418,15 @@ static int rockchip_spi_claim_bus(int cs)
 }
 
 int rk_spi_read_write(uint8_t *tx, uint8_t *rx, int len){
-	return rockchip_spi_xfer(0 ,len*8, tx, rx, SPI_XFER_BEGIN );
+	return rockchip_spi_xfer(0 ,len*8, tx, rx, SPI_XFER_BEGIN|SPI_XFER_END);
 }
 
 int rk_spi_read(uint8_t *buf, int len){
-	return rockchip_spi_xfer(0 ,len*8, buf, buf, SPI_XFER_BEGIN );
+	return rockchip_spi_xfer(0 ,len*8, 0, buf, SPI_XFER_BEGIN|SPI_XFER_END);
 }
 
 int rk_spi_write(uint8_t *buf, int len){
-	return rockchip_spi_xfer(0 ,len*8, buf, 0, SPI_XFER_BEGIN );
+	return rockchip_spi_xfer(0 ,len*8, buf, 0, SPI_XFER_BEGIN|SPI_XFER_END);
 }
 
 int rk_spi_init(void){
@@ -437,13 +436,12 @@ int rk_spi_init(void){
 	rk_gpio_config(6, 83);
 	rk_gpio_config(5, 84);
 	rk_gpio_config(4, 85);
-	rk_gpio_config(3, 1);
-	rk_gpio_config(2, 1);
 
+	memset(&_spi, 0, sizeof(_spi));
 	_spi.regs = (struct rockchip_spi*)(_mmio_base + 0x120000); 
 	_spi.input_rate = 187500000;
-	_spi.max_freq = 100000000;
-	_spi.speed_hz = 100000000;
+	_spi.max_freq = _spi.input_rate/2;
+	_spi.speed_hz = _spi.input_rate/2;
 	_spi.bits_per_word = 8;
 	rockchip_spi_claim_bus(0);
 	return 0;
