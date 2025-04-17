@@ -7,5 +7,6 @@
 
     "font": "system",
     "font_size": 10,
-    "char_space": -1
+    "char_space": -1,
+    "line_space": -1
 }

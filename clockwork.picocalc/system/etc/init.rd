@@ -21,7 +21,10 @@
 @/bin/ipcserv /drivers/ramfsd               /tmp
 
 @/bin/ipcserv /sbin/sessiond
-#@/bin/bgrun /bin/session -r 
+
+@export UX_ID=1
+@/bin/ipcserv /drivers/consoled   /dev/console1 -i /dev/keyb0
+@/bin/bgrun /bin/session -r -t /dev/console1 
 
 @/bin/bgrun /sbin/x/xim_none   /dev/keyb0
 #@/bin/bgrun /sbin/x/xmouse     /dev/vjoystick 
