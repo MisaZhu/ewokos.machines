@@ -3,7 +3,7 @@
 @/bin/ipcserv /drivers/fontd          
 
 @export UX_ID=0
-@/bin/ipcserv /drivers/init_consoled  /dev/console0 -l 8 
+@/bin/ipcserv /drivers/consoled  /dev/console0 
 set_stdio /dev/console0
 @export KLOG_DEV=/dev/console0
 
