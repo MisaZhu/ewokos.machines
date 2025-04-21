@@ -6,7 +6,7 @@
     "unfocus_bg_color": "0xffaaaaaa",
 
     "font": "system",
-    "font_size": 6,
+    "font_size": 10,
     "char_space": 0,
     "line_space": 0
 }
