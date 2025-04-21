@@ -9,7 +9,7 @@ MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
 export NEON=yes
-export VPU=yes
+export FPU=yes
 export BSP_LFLAGS= -larch_rk3506
 
 all: x_sys
