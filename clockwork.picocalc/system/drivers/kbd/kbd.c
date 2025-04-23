@@ -45,6 +45,8 @@ static uint8_t key_remap(uint8_t key){
 			return KEY_ESC;
 		case 0xD2:
 			return KEY_HOME;
+		case 0xD5:
+			return KEY_END;
 		default:
 			return key;
 	}
