@@ -1,9 +1,10 @@
 {
     "font": "smallpixel",
     "font_size": 7,
-    "char_space": -2,
+    "char_space": -1,
     "line_space": 0,
-    "fg_color": "0xffffffff",
-    "bg_color": "0xff000000",
-    "icon": "/usr/system/icons/cpu.png"
+    "bg_color": "0xffffffff",
+    "fg_color": "0xff000000",
+    "icon": "none",
+    "#icon": "/usr/system/icons/cpu.png"
 }
