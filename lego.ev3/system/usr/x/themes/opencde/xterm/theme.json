@@ -1,0 +1,12 @@
+{
+    "bg_color": "0xffffffff",
+    "fg_color": "0xff000022",
+
+    "unfocus_fg_color": "0xff666666",
+    "unfocus_bg_color": "0xffaaaaaa",
+
+    "font": "smallpixel",
+    "font_size": 7,
+    "char_space": -2,
+    "line_space": 0
+}

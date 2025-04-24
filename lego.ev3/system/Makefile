@@ -30,6 +30,7 @@ x_sys: kernel_heads
 	cd drivers;make
 	cd $(SYS_ROOT_DIR)/xwin;make
 	cp -r etc $(TARGET_DIR)/
+	cp -r usr $(TARGET_DIR)/
 
 clean:
 	cd libs;make clean
