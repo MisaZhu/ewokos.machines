@@ -1,4 +1,5 @@
 #include <Widget/WidgetWin.h>
+#include <Widget/WidgetX.h>
 #include <Widget/Label.h>
 #include <x++/X.h>
 #include <unistd.h>
@@ -175,6 +176,6 @@ int main(int argc, char** argv) {
 	win.open(&x, 0, -1, -1, 240, 240, "xgo", XWIN_STYLE_NORMAL);
 	win.setTimer(8);
 	win.max();
-	x.run(NULL, &win);
+	widgetXRun(&x, &win);
 	return 0;
 }
