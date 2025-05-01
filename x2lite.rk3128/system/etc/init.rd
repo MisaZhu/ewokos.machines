@@ -3,6 +3,7 @@
 @/bin/ipcserv /drivers/rk3128/fbd            /dev/fb0
 @/bin/ipcserv /drivers/displayd             
 @/bin/ipcserv /drivers/fontd                
+@/bin/load_font
 
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled             /dev/klog
@@ -22,7 +23,6 @@
 @/bin/bgrun /sbin/x/xim_none   /dev/vjoystick 
 @/bin/bgrun /sbin/x/xmouse     /dev/vjoystick 
 
-#@/bin/load_font
 @/bin/ipcserv /drivers/xserverd             /dev/x
 @/bin/bgrun /sbin/x/xim_vkey 560 168
 @/bin/bgrun /bin/x/xsession misa 
