@@ -2,6 +2,7 @@
 @/bin/ipcserv /drivers/clockwork/fbd         /dev/fb0
 @/bin/ipcserv /drivers/displayd              
 @/bin/ipcserv /drivers/fontd                 
+@/bin/load_font
 
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled              /dev/klog
@@ -31,8 +32,6 @@
 @export UX_ID=2
 @/bin/ipcserv /drivers/consoled              /dev/console2 -i /dev/keyb0
 @/bin/bgrun /bin/session -r -t /dev/console2 
-
-#@/bin/load_font
 
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0 
 @/bin/bgrun /sbin/x/xim_none 
