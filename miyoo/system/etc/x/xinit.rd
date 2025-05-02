@@ -1,4 +1,4 @@
-@export X_AUTO_MAX=yes
+#@export X_AUTO_MAX=yes
 
 #@export XTHEME=openlook
 #@/bin/ipcserv /sbin/x/xwm_openlook
@@ -9,6 +9,6 @@
 @export XTHEME=opencde
 @/bin/ipcserv /sbin/x/xwm_opencde
 
-#@/bin/x/menubar &
-#@/bin/x/xlauncher &
-@/apps/xapps/xapps -l --item_size=120 --font_size=16 &
+@/bin/x/menubar &
+@/bin/x/xlauncher &
+#@/apps/xapps/xapps -l --item_size=120 --font_size=16 &
