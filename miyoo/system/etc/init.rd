@@ -1,6 +1,7 @@
 @/bin/ipcserv /drivers/miyoo/fbd      /dev/fb0
 @/bin/ipcserv /drivers/displayd       
 @/bin/ipcserv /drivers/fontd          
+@/bin/load_font
 
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled  /dev/klog
@@ -24,7 +25,5 @@
 @/bin/bgrun /sbin/x/xim_none   /dev/vjoystick 
 @/bin/bgrun /sbin/x/xmouse    /dev/vjoystick 
 @/bin/bgrun /sbin/x/xim_vkey 460 120
-
-#@/bin/load_font
 
 @/bin/bgrun /bin/x/xsession misa 

@@ -11,4 +11,4 @@
 
 #@/bin/x/menubar &
 #@/bin/x/xlauncher &
-@/apps/xapps/xapps -l --item_size=160 --font_size=18 &
+@/apps/xapps/xapps -l --item_size=120 --font_size=16 &
