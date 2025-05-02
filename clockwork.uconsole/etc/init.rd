@@ -29,9 +29,9 @@
 @/bin/ipcserv /drivers/consoled              /dev/console1 -i /dev/keyb0
 @/bin/bgrun /bin/session -r -t /dev/console1 
 
-@export UX_ID=2
-@/bin/ipcserv /drivers/consoled              /dev/console2 -i /dev/keyb0
-@/bin/bgrun /bin/session -r -t /dev/console2 
+#@export UX_ID=2
+#@/bin/ipcserv /drivers/consoled              /dev/console2 -i /dev/keyb0
+#@/bin/bgrun /bin/session -r -t /dev/console2 
 
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0 
 @/bin/bgrun /sbin/x/xim_none 
