@@ -17,9 +17,9 @@ static gpio_key_t _gpio_keys[] = {
 	{19, KEY_DOWN},
 	{5,  KEY_LEFT},
 	{26, KEY_RIGHT},
-	{13, KEY_BUTTON_A},
-	{21, KEY_BUTTON_START},
-	{20, KEY_BUTTON_SELECT},
+	{13, JOYSTICK_A},
+	{21, JOYSTICK_START},
+	{20, JOYSTICK_SELECT},
 	{16, KEY_HOME},
 	{0,  0}
 };
