@@ -1,0 +1,9 @@
+{
+    "fps": 60,
+    "bg_run": 0,
+    "##cursor": "mouse",
+    "#cursor": "none",
+    "cursor": "touch",
+    "logo": "/usr/system/icons/xlogo.png",
+    "gray_mode": 0
+}
