@@ -15,6 +15,7 @@
 @/bin/ipcserv /drivers/clockwork/usbd        /dev/hid0
 @/bin/ipcserv /drivers/raspix/hid_keybd      /dev/keyb0
 @/bin/ipcserv /drivers/raspix/hid_moused     /dev/mouse0
+@/bin/ipcserv /drivers/raspix/hid_joystickd  /dev/joystick0
 
 @/bin/ipcserv /drivers/ramfsd                /tmp
 @/bin/ipcserv /drivers/nulld                 /dev/null
@@ -34,7 +35,8 @@
 #@/bin/bgrun /bin/session -r -t /dev/console2 
 
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0 
-@/bin/bgrun /sbin/x/xim_none 
+@/bin/bgrun /sbin/x/xim_none /dev/keyb0
+@/bin/bgrun /sbin/x/xim_none /dev/joystick0
 
 @/bin/ipcserv /drivers/xserverd              /dev/x
 

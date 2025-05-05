@@ -17,14 +17,14 @@ static gpio_key_t _gpio_keys[] = {
 	{6,  KEY_DOWN},
 	{16, KEY_LEFT},
 	{13, KEY_RIGHT},
-	{21, KEY_BUTTON_A},
-	{20, KEY_BUTTON_B},
-	{12, KEY_BUTTON_Y},
-	{15, KEY_BUTTON_X},
-	{26, KEY_BUTTON_START},
-	{19, KEY_BUTTON_SELECT},
-	{14, KEY_HOME},
-	{23, KEY_BUTTON_L1},
+	{21, JOYSTICK_A},
+	{20, JOYSTICK_B},
+	{12, JOYSTICK_Y},
+	{15, JOYSTICK_X},
+	{26, JOYSTICK_START},
+	{19, JOYSTICK_SELECT},
+	{14, KEY_END},
+	{23, JOYSTICK_L1},
 	{0,  0}
 };
 

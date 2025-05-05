@@ -109,7 +109,7 @@ protected:
 		if(ev->state != XIM_STATE_RELEASE)
 			return false;
 
-		if(ev->value.im.value == KEY_BUTTON_A) {
+		if(ev->value.im.value == JOYSTICK_A) {
 			if(demoing)
 				xgo_cmd(XGO_TYPE_SEND, XGO_CMD_DEMO, 0x0, NULL);
 			else

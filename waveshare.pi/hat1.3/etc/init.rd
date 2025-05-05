@@ -4,6 +4,7 @@
 @/bin/ipcserv /drivers/waveshare/lcdhatd  /dev/fb0 
 @/bin/ipcserv /drivers/displayd           
 @/bin/ipcserv /drivers/fontd              
+@/bin/load_font
 
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled       
@@ -24,6 +25,5 @@
 @/bin/bgrun /sbin/x/xmouse     /dev/vjoystick
 @/bin/bgrun /sbin/x/xim_vkey 
 
-#@/bin/load_font
 @/bin/ipcserv /drivers/xserverd           /dev/x
 @/bin/bgrun /bin/x/xsession misa 
