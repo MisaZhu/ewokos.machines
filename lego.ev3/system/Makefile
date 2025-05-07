@@ -1,5 +1,6 @@
 export HW=ev3
 export ARCH=arm
+export ARCH_VER=v5
 
 EWOKOS_ROOT_DIR = ../../..
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
@@ -8,7 +9,6 @@ BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
-export NEON=no
 export BSP_LFLAGS= -larch_ev3
 
 all: x_sys

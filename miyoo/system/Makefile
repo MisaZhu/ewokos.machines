@@ -1,5 +1,6 @@
 export HW=miyoo
 export ARCH=arm
+export ARCH_VER=v7
 
 EWOKOS_ROOT_DIR = ../../..
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
@@ -8,8 +9,6 @@ BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
-export NEON=yes
-export FPU=yes
 export BSP_LFLAGS= -larch_miyoo
 
 all: x_sys

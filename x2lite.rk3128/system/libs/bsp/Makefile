@@ -12,12 +12,7 @@ CFLAGS += -I$(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I$(SYS_DIR)/gui/libs/graph/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
-ifeq ($(NEON),yes)
-CFLAGS += -mfpu=neon-vfpv4 -DNEON_BOOST
-CXXFLAGS += -mfpu=neon-vfpv4 -DNEON_BOOST
-endif
-
-LIB_BSP_OBJS = src/bsp_sd.o src/bsp_graph.o src/bsp_fb.o src/bsp_gpio.o
+LIB_BSP_OBJS = src/bsp_sd.o src/bsp_fb.o src/bsp_gpio.o
 
 BSP = $(TARGET_DIR)/lib/libbsp.a
 
