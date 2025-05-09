@@ -78,7 +78,7 @@ void kalloc_arch(void) {
 	kalloc_append(P2V(_allocable_phy_mem_base), P2V(_allocable_phy_mem_top));
 }
 
-int32_t  check_mem_map_arch(uint32_t phy_base, uint32_t size) {
+int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
 		return 0;
 	return -1;
