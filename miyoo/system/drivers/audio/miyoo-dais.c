@@ -373,7 +373,7 @@ int mi_cpu_dai_hw_params(struct snd_soc_dai *dai, struct snd_pcm_substream *subs
 	}
 
 	runtime->dma_area = (char *)bach->dma_areas;
-	runtime->dma_addr = (unsigned int)syscall1(SYS_V2P, (int32_t)runtime->dma_area);
+	runtime->dma_addr = (unsigned int)syscall1(SYS_V2P, (ewokos_addr_t)runtime->dma_area);
 	runtime->dma_bytes = frame_to_bytes(runtime, runtime->buffer_size); //TODO
 	/* clear allocated buffer */
 	memset(runtime->dma_area, 0, runtime->dma_bytes);

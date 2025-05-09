@@ -25,7 +25,7 @@ int32_t rk3128_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	(void)dep;
 
 	sys_info_t sysinfo;
-	syscall1(SYS_GET_SYS_INFO, (int32_t)&sysinfo);
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
 	_fb_info.width = 1024;
 	_fb_info.height = 600;
@@ -40,7 +40,7 @@ int32_t rk3128_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	_fb_info.xoffset = 0;
 	_fb_info.yoffset = 0;
 
-	syscall3(SYS_MEM_MAP, _fb_info.pointer, sysinfo.fb.phy_base, _fb_info.size_max);
+	syscall3(SYS_MEM_MAP, (ewokos_addr_t)_fb_info.pointer, (ewokos_addr_t)sysinfo.fb.phy_base, (ewokos_addr_t)_fb_info.size_max);
 
 	return 0;
 }

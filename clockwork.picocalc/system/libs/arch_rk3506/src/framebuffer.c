@@ -27,7 +27,7 @@ int32_t rk3506_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	(void)dep;
 
 	sys_info_t sysinfo;
-	syscall1(SYS_GET_SYS_INFO, (int32_t)&sysinfo);
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
 	_fb_info.width = 320;
 	_fb_info.height = 320;

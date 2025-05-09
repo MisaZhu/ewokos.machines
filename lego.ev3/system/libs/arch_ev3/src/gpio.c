@@ -236,7 +236,7 @@ static volatile uint32_t *pull_up_down;
 
 
 static uint32_t write_syscfg(uint32_t reg, uint32_t val, uint32_t mask){
-	return syscall3(SYS_MMIO_RW, reg, val, mask);
+	return syscall3(SYS_MMIO_RW, (ewokos_addr_t)reg, (ewokos_addr_t)val, (ewokos_addr_t)mask);
 }
 
 void gpio_mux_cfg(int pin, int mode){

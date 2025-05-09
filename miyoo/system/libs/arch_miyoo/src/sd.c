@@ -45,7 +45,7 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
 int32_t miyoo_sd_init(void) {
 	_mmio_base = mmio_map();
 	_sector_buf = 0x87e00000;
-	syscall3(SYS_MEM_MAP, _sector_buf, 0x27e00000, 4096);
+	syscall3(SYS_MEM_MAP, (ewokos_addr_t)_sector_buf, 0x27e00000, 4096);
 	sdmmc_init();
 	return 0;
 }
