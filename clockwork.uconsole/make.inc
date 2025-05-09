@@ -19,5 +19,3 @@ include $(SYS_ROOT_DIR)/platform/$(ARCH)/make.rule
 LDFLAGS = -L$(SDK_DIR)/lib
 CFLAGS += -I include -I $(SDK_DIR)/include
 CXXFLAGS += -I include -I $(SDK_DIR)/include
-
-EWOK_LIBC = -lewoksys -lc -lgloss -lsoftfloat
