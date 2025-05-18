@@ -11,9 +11,11 @@ BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)
 
-$(TASK): $(TASK_OBJS)
+$(TASK): $(TASK_OBJS) \
+		$(EWOK_LIBC_A)  \
+		lib/libcsud_$(ARCH).a
 	mkdir -p $(BUILD_DIR)
-	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  $(BSP_LFLAGS) $(EWOK_LIBC) -lcsud -lewoksys
+	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  $(BSP_LFLAGS) -lcsud_$(ARCH) $(EWOK_LIBC) -lewoksys
 
 clean:
 	rm -f $(TASK_OBJS)
