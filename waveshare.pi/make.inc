@@ -1,5 +1,5 @@
 ifeq ($(ARCH),)
-export ARCH=arm
+export ARCH=aarch64
 endif
 
 export BSP_LFLAGS= -larch_bcm283x
