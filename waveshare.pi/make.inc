@@ -2,6 +2,10 @@ ifeq ($(ARCH),)
 export ARCH=aarch64
 endif
 
+ifeq ($(ARCH),arm)
+export ARCH_VER=v7
+endif
+
 export BSP_LFLAGS= -larch_bcm283x
 export HW=raspix
 
