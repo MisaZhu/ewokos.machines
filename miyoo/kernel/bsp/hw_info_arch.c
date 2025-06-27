@@ -26,15 +26,15 @@ void sys_info_init_arch(void) {
 	_sys_info.mmio.phy_base = 0x1f000000;
 	_sys_info.mmio.size = 16*MB;
 
-	_sys_info.dma.size = DMA_SIZE;
+	_sys_info.sys_dma.size = DMA_SIZE;
 
 	_allocable_phy_mem_base = V2P(get_allocable_start());
 	_allocable_phy_mem_top = _sys_info.phy_offset +
 			_sys_info.total_usable_mem_size -
 			FB_SIZE - 
-			_sys_info.dma.size;
-	_sys_info.dma.phy_base = _allocable_phy_mem_top;
-	_sys_info.dma.v_base = DMA_V_BASE;
+			_sys_info.sys_dma.size;
+	_sys_info.sys_dma.phy_base = _allocable_phy_mem_top;
+	_sys_info.sys_dma.v_base = DMA_V_BASE;
 
 	_sys_info.gpu.phy_base = 0x27c00000; 
 	_sys_info.gpu.v_base = 0x87c00000; 

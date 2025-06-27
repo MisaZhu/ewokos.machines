@@ -26,14 +26,14 @@ void sys_info_init_arch(void) {
 	_sys_info.mmio.phy_base = 0x10000000;
 	
 	_sys_info.mmio.size = 32*KB;
-	_sys_info.dma.size = 256*1024;
+	_sys_info.sys_dma.size = 256*1024;
 
 	_allocable_phy_mem_base = V2P(get_allocable_start());
 	_allocable_phy_mem_top = _sys_info.phy_offset +
 			_sys_info.total_usable_mem_size -
-			_sys_info.dma.size;
-	_sys_info.dma.phy_base = _allocable_phy_mem_top;
-	_sys_info.dma.v_base = DMA_V_BASE;
+			_sys_info.sys_dma.size;
+	_sys_info.sys_dma.phy_base = _allocable_phy_mem_top;
+	_sys_info.sys_dma.v_base = DMA_V_BASE;
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
