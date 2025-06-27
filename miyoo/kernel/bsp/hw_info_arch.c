@@ -34,11 +34,11 @@ void sys_info_init_arch(void) {
 			FB_SIZE - 
 			_sys_info.dma.size;
 	_sys_info.dma.phy_base = _allocable_phy_mem_top;
-	_sys_info.dma.v_base = DMA_BASE;
+	_sys_info.dma.v_base = DMA_V_BASE;
 
-	_sys_info.fb.phy_base = 0x27c00000; 
-	_sys_info.fb.v_base = 0x87c00000; 
-	_sys_info.fb.size = FB_SIZE; 
+	_sys_info.gpu.phy_base = 0x27c00000; 
+	_sys_info.gpu.v_base = 0x87c00000; 
+	_sys_info.gpu.max_size = FB_SIZE; 
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
@@ -74,7 +74,7 @@ inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { //TOD
 
 void arch_vm(page_dir_entry_t* vm) {
 	//map frame buffer
-	map_pages_size(vm, _sys_info.fb.v_base, _sys_info.fb.phy_base, _sys_info.fb.size, AP_RW_D, PTE_ATTR_DEV);
+	map_pages_size(vm, _sys_info.gpu.v_base, _sys_info.gpu.phy_base, _sys_info.gpu.max_size, AP_RW_D, PTE_ATTR_DEV);
 
 	//map gic controller
 	uint32_t pgic = 0x16000000;
@@ -95,7 +95,7 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.fb.phy_base && size <= _sys_info.fb.size)
+	if(phy_base >= _sys_info.gpu.phy_base && size <= _sys_info.gpu.max_size)
 		return 0;
 	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
 		return 0;

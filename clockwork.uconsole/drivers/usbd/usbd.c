@@ -168,13 +168,13 @@ void* PlatformAllocateDMA(u32 size){
     if(size > 4096)
         return NULL;
 
-    void* ret =  dma_map(4096);
+    void* ret =  dma_alloc(0, 4096);
     klog("DMA: address: %08x\n", ret);
     return ret;
 }
 
 void* PlatformDMAVir2Phy(void*v){
-	return (void*)dma_phy_addr((uint32_t)v);
+	return (void*)dma_phy_addr(0, (uint32_t)v);
 }
 
 void LogPrint(const char* message, uint32_t messageLength) {

@@ -110,7 +110,7 @@ void ili9488_init(void){
 	rk_gpio_write(LCD_RST, 1);
 	proc_usleep(10000);
 
-	_fb = dma_map(320*320*3);
+	_fb = dma_alloc(0, 320*320*3);
 
 	spi_write_command(0xE0); // Positive Gamma Control
     spi_write_data(0x00);

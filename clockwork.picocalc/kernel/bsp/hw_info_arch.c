@@ -65,7 +65,7 @@ void sys_info_init_arch(void) {
             128*1024 -
             _sys_info.dma.size;
     _sys_info.dma.phy_base = _allocable_phy_mem_top;
-    _sys_info.dma.v_base = DMA_BASE;
+    _sys_info.dma.v_base = DMA_V_BASE;
 
     _sys_info.cores = 3;
 }

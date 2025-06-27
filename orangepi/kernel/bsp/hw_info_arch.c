@@ -34,7 +34,7 @@ void sys_info_init_arch(void) {
 	_allocable_phy_mem_base = V2P(get_allocable_start());
 	_sys_info.dma.phy_base = _allocable_phy_mem_base;
 	_sys_info.dma.size = DMA_SIZE;
-	_sys_info.dma.v_base = DMA_BASE;
+	_sys_info.dma.v_base = DMA_V_BASE;
 	_allocable_phy_mem_base += DMA_SIZE;
 
 	if(_sys_info.total_usable_mem_size <= 1*GB) {
@@ -55,7 +55,7 @@ void arch_vm(page_dir_entry_t* vm) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-    if(phy_base >= _sys_info.fb.phy_base && size <= _sys_info.fb.size)
+    if(phy_base >= _sys_info.gpu.phy_base && size <= _sys_info.gpu.max_size)
         return 0;
     if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
         return 0;

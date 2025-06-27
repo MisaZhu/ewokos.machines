@@ -48,15 +48,15 @@ static int dma_chain_size(dma_buf_t *chain){
 }
 
 void dma_chain_init(void){
-    uint8_t *buf =  (uint8_t*)dma_map(DMA_BUF_SIZE*DMA_BUF_CNT);
+    uint8_t *buf =  (uint8_t*)dma_alloc(0, DMA_BUF_SIZE*DMA_BUF_CNT);
 	
-	write32(DMA_BASE + DMA_CS, 0x1 << 31);
+	write32(DMA_V_BASE + DMA_CS, 0x1 << 31);
 
     for(int i = 0; i < DMA_BUF_CNT; i++){
         dma_buf[i] = (dma_buf_t*)(buf + i * DMA_BUF_SIZE);
 		memset(dma_buf[i], 0 , sizeof(dma_cb_t));
         dma_buf[i]->cb.ti = (1 << 26) | (1 << 3) | (1 << 8) | (2 << 16) | ( 1 << 6);
-        dma_buf[i]->cb.cb_ad = dma_phy_addr((uint32_t)dma_buf[i]) | 0xC0000000;
+        dma_buf[i]->cb.cb_ad = dma_phy_addr(0, (uint32_t)dma_buf[i]) | 0xC0000000;
         dma_buf[i]->cb.source_ad = dma_buf[i]->cb.cb_ad + sizeof(dma_cb_t);
         dma_buf[i]->cb.dest_ad = 0x7E203004;
         dma_buf[i]->cb.txfr_len = 0;
@@ -99,13 +99,13 @@ int dma_chain_push(const uint8_t *buf, int size){
 }
 
 void dma_chain_flush(void){
-	if((read32(DMA_BASE + DMA_CS) & 0x1) == 0){
+	if((read32(DMA_V_BASE + DMA_CS) & 0x1) == 0){
 		if(dma_chain_size(_chain) > DMA_BUF_TH){
-			write32(DMA_BASE + DMA_CONBLK_AD, _chain->cb.cb_ad);
-			write32(DMA_BASE + DMA_CS,  0x1|(0x8<<20)|(0x8<<16));
+			write32(DMA_V_BASE + DMA_CONBLK_AD, _chain->cb.cb_ad);
+			write32(DMA_V_BASE + DMA_CS,  0x1|(0x8<<20)|(0x8<<16));
 		}
 	}else{
-        uint32_t cb_ad = read32(DMA_BASE + DMA_CONBLK_AD);
+        uint32_t cb_ad = read32(DMA_V_BASE + DMA_CONBLK_AD);
         while(_chain != NULL){
             if(_chain->cb.cb_ad == cb_ad)
                 break;

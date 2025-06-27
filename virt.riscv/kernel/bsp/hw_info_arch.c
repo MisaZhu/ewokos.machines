@@ -33,7 +33,7 @@ void sys_info_init_arch(void) {
 			_sys_info.total_usable_mem_size -
 			_sys_info.dma.size;
 	_sys_info.dma.phy_base = _allocable_phy_mem_top;
-	_sys_info.dma.v_base = DMA_BASE;
+	_sys_info.dma.v_base = DMA_V_BASE;
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
@@ -55,7 +55,7 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.fb.phy_base && size <= _sys_info.fb.size)
+	if(phy_base >= _sys_info.gpu.phy_base && size <= _sys_info.gpu.max_size)
 		return 0;
 	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
 		return 0;

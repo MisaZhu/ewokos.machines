@@ -34,13 +34,13 @@ int32_t rk3128_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	_fb_info.depth = 32;
 	_fb_info.pitch = _fb_info.width*(_fb_info.depth/8);
 
-	_fb_info.pointer = sysinfo.fb.v_base; //GPU addr to ARM addr
+	_fb_info.pointer = sysinfo.gpu.v_base; //GPU addr to ARM addr
 	_fb_info.size = _fb_info.width*_fb_info.height*4;
 	_fb_info.size_max = (_fb_info.size + 4095)&(~4095);
 	_fb_info.xoffset = 0;
 	_fb_info.yoffset = 0;
 
-	syscall3(SYS_MEM_MAP, (ewokos_addr_t)_fb_info.pointer, (ewokos_addr_t)sysinfo.fb.phy_base, (ewokos_addr_t)_fb_info.size_max);
+	syscall3(SYS_MEM_MAP, (ewokos_addr_t)_fb_info.pointer, (ewokos_addr_t)sysinfo.gpu.phy_base, (ewokos_addr_t)_fb_info.size_max);
 
 	return 0;
 }
