@@ -15,7 +15,7 @@ $(TASK): $(TASK_OBJS) \
 		$(EWOK_LIBC_A)  \
 		lib/libcsud_$(ARCH).a
 	mkdir -p $(BUILD_DIR)
-	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  $(BSP_LFLAGS) -lcsud_$(ARCH) $(EWOK_LIBC) -lewoksys
+	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  $(BSP_LFLAGS) -lcsud_$(ARCH) $(EWOK_LIBC)
 
 clean:
 	rm -f $(TASK_OBJS)
