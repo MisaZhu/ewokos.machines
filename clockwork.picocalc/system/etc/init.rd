@@ -27,9 +27,10 @@
 @/bin/ipcserv /drivers/consoled   /dev/console1 -i /dev/keyb0
 @/bin/bgrun /bin/session -r -t /dev/console1 
 
+@/bin/ipcserv /drivers/xserverd             /dev/x
+
 @/bin/bgrun /sbin/x/xim_none   /dev/keyb0
 #@/bin/bgrun /sbin/x/xmouse     /dev/vjoystick 
-
-@/bin/ipcserv /drivers/xserverd             /dev/x
 #@/bin/bgrun /sbin/x/xim_vkey 560 168
+
 @/bin/bgrun /bin/x/xsession misa 
