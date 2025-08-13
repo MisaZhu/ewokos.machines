@@ -1,4 +1,4 @@
-@export X_AUTO_FULL_SCREEN=yes
+#@export X_AUTO_FULL_SCREEN=yes
 
 #@export XTHEME=openlook
 #@/bin/ipcserv /sbin/x/xwm_openlook
@@ -9,6 +9,7 @@
 @export XTHEME=opencde
 @/bin/ipcserv /sbin/x/xwm_opencde
 
+#@/apps/xapps/xapps -l --item_size=76 --font_size=12 &
+
 #@/bin/x/menubar &
-#@/bin/x/xlauncher &
-@/apps/xapps/xapps -l --item_size=76 --font_size=12 &
+@/bin/x/xlauncher &

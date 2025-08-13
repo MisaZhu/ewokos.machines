@@ -15,7 +15,7 @@
 @set_stdio /dev/klog
 
 @/bin/ipcserv /drivers/rk3506/kbd  /dev/keyb0
-@/bin/ipcserv /drivers/vjoystickd  /dev/vjoystick /dev/keyb0 -s 208
+@/bin/ipcserv /drivers/vjoystickd  /dev/vjoystick /dev/keyb0 -s 133 -m
 
 @/bin/ipcserv /drivers/timerd
 @/bin/ipcserv /drivers/nulld                /dev/null
