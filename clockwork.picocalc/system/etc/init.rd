@@ -15,9 +15,9 @@
 @set_stdio /dev/klog
 
 @/bin/ipcserv /drivers/rk3506/kbd  /dev/keyb0
-#@/bin/ipcserv /drivers/vjoystickd             /dev/vjoystick /dev/joystick
+@/bin/ipcserv /drivers/vjoystickd  /dev/vjoystick /dev/keyb0 -s 208
 
-@/bin/ipcserv /drivers/timerd               
+@/bin/ipcserv /drivers/timerd
 @/bin/ipcserv /drivers/nulld                /dev/null
 @/bin/ipcserv /drivers/ramfsd               /tmp
 
@@ -25,12 +25,10 @@
 
 @export UX_ID=1
 @/bin/ipcserv /drivers/consoled   /dev/console1 -i /dev/keyb0
-@/bin/bgrun /bin/session -r -t /dev/console1 
+@/bin/bgrun /bin/session -r -t /dev/console1
 
 @/bin/ipcserv /drivers/xserverd             /dev/x
-
-@/bin/bgrun /sbin/x/xim_none   /dev/keyb0
-#@/bin/bgrun /sbin/x/xmouse     /dev/vjoystick 
+@/bin/bgrun /sbin/x/xim_none   /dev/vjoystick
+@/bin/bgrun /sbin/x/xmouse     /dev/vjoystick
 #@/bin/bgrun /sbin/x/xim_vkey 560 168
-
-@/bin/bgrun /bin/x/xsession misa 
+@/bin/bgrun /bin/x/xsession misa
