@@ -27,7 +27,7 @@ static uint8_t _keys[4]  = {0};
 static uint8_t _key_num = 0;
 
 /*alt: 0xA1, lshift: 0xA2, rshift: 0xA3, ctrl: 0xA5, ?: 0xA4
-home: 0xD2, del: 0xD4, end: 0xD5, brk: 0xD8, esc: 0xB1
+home: 0xD2, del: 0xD4, end: 0xD5, brk: 0xD0, esc: 0xB1
 */
 static uint8_t key_remap(uint8_t key){
 	switch(key){
