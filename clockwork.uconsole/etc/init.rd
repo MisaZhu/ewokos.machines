@@ -12,7 +12,7 @@
 @/bin/ipcserv /drivers/raspix/uartd          /dev/tty0
 @/bin/ipcserv /drivers/timerd                
 
-@/bin/ipcserv /drivers/clockwork/usbd        /dev/hid0
+@/bin/ipcserv /drivers/raspix/usbd        /dev/hid0
 @/bin/ipcserv /drivers/raspix/hid_keybd      /dev/keyb0
 @/bin/ipcserv /drivers/raspix/hid_moused     /dev/mouse0
 @/bin/ipcserv /drivers/raspix/hid_joystickd  /dev/joystick0
