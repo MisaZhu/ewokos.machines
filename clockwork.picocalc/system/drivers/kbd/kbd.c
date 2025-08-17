@@ -31,6 +31,8 @@ home: 0xD2, del: 0xD4, end: 0xD5, brk: 0xD0, esc: 0xB1
 */
 static uint8_t key_remap(uint8_t key){
 	switch(key){
+		case 0xA5:
+			return KEY_CTRL;
 		case 0xb5:
 			return KEY_UP;
 		case 0xb6:
@@ -52,20 +54,6 @@ static uint8_t key_remap(uint8_t key){
 	}
 }
 
-static bool _ctrl_down = false;
-
-static void do_ctrl(uint8_t c) {
-	if(c >= '0' && c <= '9') {
-		core_set_active_ux(c - '0');
-	}
-	else if(c == 19) { //left 
-		core_prev_ux();
-	}
-	else if(c == 4) { //right
-		core_next_ux();
-	}
-}
-
 static int kbd_read(int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
 	(void)fd;
@@ -81,7 +69,9 @@ static int kbd_read(int fd, int from_pid, fsinfo_t* node,
 			ret++;
 		}
 	}
-	return ret ? ret:-1;
+	if(ret <= 0)
+		ret = VFS_ERR_RETRY;
+	return ret;
 }
 
 static int kbd_loop(void*) {
@@ -90,34 +80,17 @@ static int kbd_loop(void*) {
 	if(ret == 0){
 		uint8_t c = key[1];
 		bool macthed = false;
-		if((c >= 0xA1 && c <= 0xA5) || c == KEY_HOME) {
-			if(c == 0xA5) {//ctrl
-				if(key[0] == 1)//press
-					_ctrl_down = true;
-				else if(key[0] == 3)//release
-					_ctrl_down = false;
-			}
-			return -1;
-		}
-		else {
-			c = key_remap(c);
-			if(_ctrl_down) {
-				do_ctrl(c);
-				usleep(20000);
-				return -1;
-			}
-
-			for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
-				if(kb_states[i].key == c){
-					macthed = true;
-					if(key[0] == 1){//press
-						kb_states[i].key = c; 
-					}
-					else if(key[0] == 3){//release
-						kb_states[i].key = 0;
-					}
-					break;
+		c = key_remap(c);
+		for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
+			if(kb_states[i].key == c){
+				macthed = true;
+				if(key[0] == 1){//press
+					kb_states[i].key = c; 
 				}
+				else if(key[0] == 3){//release
+					kb_states[i].key = 0;
+				}
+				break;
 			}
 		}
 
@@ -146,7 +119,7 @@ static int kbd_loop(void*) {
 				break;
 		}
 	}
-	usleep(20000);
+	usleep(30000);
 	return 0;
 }
 
