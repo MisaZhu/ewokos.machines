@@ -28,8 +28,8 @@
 #define  JOYSTICK_L1_PIN		14
 #define  JOYSTICK_L2_PIN		13
 #define  JOYSTICK_R1_PIN		47
-//#define  JOYSTICK_R2_PIN		90
-#define  KEY_END_PIN		    90
+#define  JOYSTICK_R2_PIN		90
+//#define  KEY_END_PIN		    90
 #define  KEY_POWER_PIN			86
 
 #define DECLARE_GPIO_KEY(name, level)	{name, name##_PIN, level, !level}
@@ -50,11 +50,11 @@ struct gpio_pins{
 	DECLARE_GPIO_KEY(JOYSTICK_Y, GPIO_LOW),
 	DECLARE_GPIO_KEY(JOYSTICK_SELECT, GPIO_LOW),
 	DECLARE_GPIO_KEY(JOYSTICK_START, GPIO_LOW),
-	//DECLARE_GPIO_KEY(JOYSTICK_L1, GPIO_LOW),
+	DECLARE_GPIO_KEY(JOYSTICK_L1, GPIO_LOW),
 	DECLARE_GPIO_KEY(JOYSTICK_L2, GPIO_LOW),
-	//DECLARE_GPIO_KEY(JOYSTICK_R1, GPIO_LOW),
-	//DECLARE_GPIO_KEY(JOYSTICK_R2, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_END, GPIO_LOW),
+	DECLARE_GPIO_KEY(JOYSTICK_R1, GPIO_LOW),
+	DECLARE_GPIO_KEY(JOYSTICK_R2, GPIO_LOW),
+	//DECLARE_GPIO_KEY(KEY_END, GPIO_LOW),
 	DECLARE_GPIO_KEY(KEY_POWER, GPIO_HIGH),
 	DECLARE_GPIO_KEY(KEY_HOME, GPIO_LOW),
 };
@@ -154,20 +154,9 @@ static void check_power(void) {
 	}
 }
 
-static void check_ux(void) {
-	if(miyoo_gpio_read(JOYSTICK_L1_PIN) == 0){
-		core_prev_ux();
-	}
-	
-	if(miyoo_gpio_read(JOYSTICK_R1_PIN) == 0){
-		core_next_ux();
-	}
-}
-
 static int power_button(void* p) {
 	(void)p;
 	ipc_disable();
-	check_ux();
 	check_power();
 	ipc_enable();
 	proc_usleep(200000);
