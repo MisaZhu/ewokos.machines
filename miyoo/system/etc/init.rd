@@ -11,7 +11,8 @@
 #@/bin/ipcserv /drivers/miyoo/ms_uartd /dev/tty0
 
 @/bin/ipcserv /drivers/miyoo/gpio_joystickd     /dev/joystick
-@/bin/ipcserv /drivers/vjoystickd               /dev/vjoystick /dev/joystick -m
+@/bin/ipcserv /drivers/vkeybd                   /dev/vkeyb /dev/joystick -t j
+@/bin/ipcserv /drivers/vjoystickd               /dev/vjoystick /dev/vkeyb -m
 #@/bin/ipcserv /drivers/miyoo/audctrl            /dev/sound
 
 @/bin/ipcserv /drivers/timerd         
