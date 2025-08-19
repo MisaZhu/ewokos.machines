@@ -1,6 +1,5 @@
 {
     "fps": 60,
-    "bg_run": 1,
     "cursor": "mouse",
     "#cursor": "none",
     "##cursor": "touch",
