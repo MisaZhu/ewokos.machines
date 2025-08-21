@@ -6,6 +6,9 @@
 @/bin/ipcserv /sbin/splashd
 @/bin/splash -i /usr/system/images/logos/clockwork.png -m "start..."
 
+@/bin/splash -m "loading fonts" -p 5
+@/bin/load_font
+
 @/bin/splash -m "config tty_uart" -p 10
 @/bin/ipcserv /drivers/rk3506/uartd       /dev/tty0
 @export KLOG_DEV=/dev/tty0
@@ -39,9 +42,6 @@
 @export UX_ID=1
 @/bin/ipcserv /drivers/consoled   /dev/console1 -i /dev/keyb0
 @/bin/bgrun /bin/session -r -t /dev/console1
-
-@/bin/splash -m "loading fonts" -p 95
-@/bin/load_font
 
 @/bin/splash -m "starting X" -p 100
 @/bin/ipcserv /drivers/xserverd             /dev/x

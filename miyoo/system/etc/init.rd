@@ -3,7 +3,7 @@
 @/bin/ipcserv /drivers/fontd          
 
 @export UX_ID=0
-@/bin/ipcserv /sbin/splashd
+@/bin/ipcserv /sbin/splashd -w 480 -h 320
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
 
 @/bin/splash -m "loading console klog" -p 5
