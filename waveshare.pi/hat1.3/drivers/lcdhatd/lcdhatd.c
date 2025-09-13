@@ -273,7 +273,7 @@ static void LCD_1in3_Clear(UWORD Color) {
 	DEV_SPI_Write((uint8_t *)Image, LCD.WIDTH*LCD.HEIGHT*2);
 }
 
-void lcd_init(uint32_t w, uint32_t h, uint32_t rot) {
+void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
 	bcm283x_gpio_init();
 
 	bcm283x_gpio_config(LCD_CS, 1);
@@ -282,7 +282,7 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t rot) {
 	bcm283x_gpio_config(LCD_BL, 1);
 
 	bcm283x_spi_init();
-	bcm283x_spi_set_div(4);
+	bcm283x_spi_set_div(div);
 	bcm283x_spi_select(1);
 
 	LCD_1in3_Init(rot, w, h);

@@ -10,7 +10,7 @@ static uint32_t LCD_WIDTH = 240;
 
 
 int  do_flush(const void* buf, uint32_t size);
-void lcd_init(uint32_t w, uint32_t h, uint32_t rot);
+void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div);
 
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
@@ -35,12 +35,37 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	return 0;
 }
 
+static int _spi_div = 8;
+static int doargs(int argc, char* argv[]) {
+	int c = 0;
+	while (c != -1) {
+		c = getopt (argc, argv, "d:");
+		if(c == -1)
+			break;
+
+		switch (c) {
+		case 'd':
+			_spi_div = atoi(optarg);
+			break;
+		default:
+			c = -1;
+			break;
+		}
+	}
+	return optind;
+}
+
 int main(int argc, char** argv) {
+	_spi_div = 8;
 	uint32_t w=240, h=240;
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/fb0";
 	LCD_HEIGHT = h;
 	LCD_WIDTH = w;
-	lcd_init(w, h, G_ROTATE_NONE);
+
+	int opti = doargs(argc, argv);
+	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
+
+	lcd_init(w, h, G_ROTATE_NONE, _spi_div);
+
 
 	fbd_t fbd;
 	fbd.splash = NULL;
