@@ -2,5 +2,6 @@
     "width": 320,
     "height": 240,
     "rotate": 0,
+    "zoom": 0.6,
     "logo": "/usr/system/images/logos/clockwork.png"
 }

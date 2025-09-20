@@ -3,7 +3,7 @@
 @/bin/ipcserv /drivers/fontd                
 
 @export UX_ID=0
-@/bin/ipcserv /sbin/splashd
+@/bin/ipcserv /sbin/splashd -d
 @/bin/splash -i /usr/system/images/logos/clockwork.png -m "start..."
 
 @/bin/splash -m "loading fonts" -p 5
