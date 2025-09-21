@@ -47,5 +47,5 @@
 @/bin/ipcserv /drivers/xserverd             /dev/x
 @/bin/bgrun /sbin/x/xim_none   /dev/vjoystick
 @/bin/bgrun /sbin/x/xmouse     /dev/vjoystick
-#@/bin/bgrun /sbin/x/xim_vkey 560 168
+#@/bin/bgrun /sbin/x/xim_vkey -w 560 -h 168
 @/bin/bgrun /bin/x/xsession misa

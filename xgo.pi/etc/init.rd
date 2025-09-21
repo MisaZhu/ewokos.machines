@@ -16,7 +16,7 @@ set_stdio /dev/console0
 @/bin/ipcserv /drivers/xserverd       /dev/x
 
 @/bin/bgrun /sbin/x/xim_none   /dev/keyb0 
-@/bin/bgrun /sbin/x/xim_vkey 320 120
+@/bin/bgrun /sbin/x/xim_vkey -h 120
 
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/x/xsession misa

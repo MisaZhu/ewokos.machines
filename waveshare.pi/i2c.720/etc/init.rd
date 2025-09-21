@@ -22,5 +22,5 @@
 @/bin/ipcserv /drivers/xserverd        /dev/x
 
 @/bin/bgrun /sbin/x/xtouch 
-@/bin/bgrun /sbin/x/xim_vkey 560 168
+@/bin/bgrun /sbin/x/xim_vkey -h 168
 @/bin/bgrun /bin/x/xsession  misa 

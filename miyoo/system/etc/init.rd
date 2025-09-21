@@ -42,6 +42,6 @@
 
 @/bin/splash -m "starting X" -p 100
 @/bin/ipcserv /drivers/xserverd       /dev/x
-@/bin/bgrun /sbin/x/xim_vkey 460 120
+@/bin/bgrun /sbin/x/xim_vkey -h 120
 
 @/bin/bgrun /bin/x/xsession misa 
