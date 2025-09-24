@@ -23,8 +23,8 @@ static gpio_key_t _gpio_keys[] = {
 	{15, JOYSTICK_X},
 	{26, JOYSTICK_START},
 	{19, JOYSTICK_SELECT},
-	{14, KEY_END},
-	{23, JOYSTICK_L1},
+	{14, JOYSTICK_R1},
+	{23, KEY_HOME},
 	{0,  0}
 };
 

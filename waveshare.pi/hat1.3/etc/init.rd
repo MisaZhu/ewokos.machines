@@ -14,7 +14,7 @@
 #@/bin/ipcserv /drivers/waveshare/gamekbd  /dev/keyb0
 @/bin/ipcserv /drivers/waveshare/joykeybd /dev/keyb0
 @/bin/ipcserv /drivers/vkeybd             /dev/vkeyb /dev/keyb0 -t j
-@/bin/ipcserv /drivers/vjoystickd         /dev/vjoystick /dev/vkeyb -m -s 240
+@/bin/ipcserv /drivers/vjoystickd         /dev/vjoystick /dev/vkeyb -m
 
 @/bin/ipcserv /drivers/timerd             
 #@/bin/ipcserv /drivers/nulld              /dev/null
