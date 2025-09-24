@@ -1,5 +1,5 @@
-@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
-@set_stdio /dev/tty0
+#@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
+#@set_stdio /dev/tty0
 
 @/bin/ipcserv /drivers/waveshare/lcdhatd  /dev/fb0 
 @/bin/ipcserv /drivers/displayd           
@@ -13,11 +13,12 @@
 
 #@/bin/ipcserv /drivers/waveshare/gamekbd  /dev/keyb0
 @/bin/ipcserv /drivers/waveshare/joykeybd /dev/keyb0
-@/bin/ipcserv /drivers/vjoystickd         /dev/vjoystick /dev/keyb0
+@/bin/ipcserv /drivers/vkeybd             /dev/vkeyb /dev/keyb0 -t j
+@/bin/ipcserv /drivers/vjoystickd         /dev/vjoystick /dev/vkeyb -m -s 240
 
 @/bin/ipcserv /drivers/timerd             
-@/bin/ipcserv /drivers/nulld              /dev/null
-@/bin/ipcserv /drivers/ramfsd             /tmp
+#@/bin/ipcserv /drivers/nulld              /dev/null
+#@/bin/ipcserv /drivers/ramfsd             /tmp
 
 @/bin/ipcserv /sbin/sessiond
 
