@@ -56,7 +56,7 @@ static int doargs(int argc, char* argv[]) {
 }
 
 int main(int argc, char** argv) {
-	_spi_div = 8;
+	_spi_div = 16;
 	uint32_t w=240, h=240;
 	LCD_HEIGHT = h;
 	LCD_WIDTH = w;

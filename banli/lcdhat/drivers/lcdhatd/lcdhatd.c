@@ -8,16 +8,15 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 #include <ewoksys/syscall.h>
-#include "banli_1inch54.h"
 
 #define UBYTE   uint8_t
 #define UWORD   uint16_t
 #define UDOUBLE uint32_t
 
-#define LCD_CS   24
+#define LCD_CS   8
 #define LCD_RST  27
 #define LCD_DC   25
-#define LCD_BL   18
+#define LCD_BL   24
 
 #define DEV_Delay_ms(x) proc_usleep((x)*1000)
 #define DEV_Digital_Write bcm283x_gpio_write
@@ -115,10 +114,15 @@ static void LCD_SetAttributes(UBYTE rot, uint32_t w, uint32_t h) {
 	UBYTE MemoryAccessReg = 0x00;
 
 	//Get GRAM and LCD width and height
-	// 斑梨电子1.54寸LCD固定分辨率
-	LCD.HEIGHT	= BANLI_LCD_HEIGHT;
-	LCD.WIDTH   = BANLI_LCD_WIDTH;
-	MemoryAccessReg = 0X70;
+	if(rot == ROT_0 || rot == ROT_180) {
+		LCD.HEIGHT	= h;
+		LCD.WIDTH   = w;
+		MemoryAccessReg = 0X70;
+	} else {
+		LCD.HEIGHT	= w;
+		LCD.WIDTH   = h;
+		MemoryAccessReg = 0X00;
+	}
 
 	// Set the read / write scan direction of the frame memory
 	LCD_SendCommand(0x36); //MX, MY, RGB mode
@@ -130,26 +134,81 @@ function :	Initialize the lcd register
 parameter:
  ******************************************************************************/
 static void LCD_InitReg(void) {
-	// 斑梨电子1.54寸LCD专用初始化序列
-	LCD_SendCommand(ST7789_SWRESET);
-	usleep(120 * 1000);
-	
-	LCD_SendCommand(ST7789_SLPOUT);
-	usleep(120 * 1000);
-	
-	LCD_SendCommand(ST7789_COLMOD);
-	LCD_SendData_8Bit(0x55);  // RGB565格式
-	
-	LCD_SendCommand(ST7789_MADCTL);
-	LCD_SendData_8Bit(0x00);  // 内存访问控制
-	
-	LCD_SendCommand(ST7789_INVOFF);
-	
-	LCD_SendCommand(ST7789_NORON);
-	usleep(10 * 1000);
-	
-	LCD_SendCommand(ST7789_DISPON);
-	usleep(120 * 1000);
+	LCD_SendCommand(0x11); 
+	DEV_Delay_ms(120);
+	// LCD_SendCommand(0x36);
+	// LCD_SendData_8Bit(0x00);
+
+	LCD_SendCommand(0x3A); 
+	LCD_SendData_8Bit(0x05);
+
+	LCD_SendCommand(0xB2);
+	LCD_SendData_8Bit(0x0C);
+	LCD_SendData_8Bit(0x0C);
+	LCD_SendData_8Bit(0x00);
+	LCD_SendData_8Bit(0x33);
+	LCD_SendData_8Bit(0x33); 
+
+	LCD_SendCommand(0xB7); 
+	LCD_SendData_8Bit(0x35);  
+
+	LCD_SendCommand(0xBB);
+	LCD_SendData_8Bit(0x37);
+
+	LCD_SendCommand(0xC0);
+	LCD_SendData_8Bit(0x2C);
+
+	LCD_SendCommand(0xC2);
+	LCD_SendData_8Bit(0x01);
+
+	LCD_SendCommand(0xC3);
+	LCD_SendData_8Bit(0x12);   
+
+	LCD_SendCommand(0xC4);
+	LCD_SendData_8Bit(0x20);  
+
+	LCD_SendCommand(0xC6); 
+	LCD_SendData_8Bit(0x0F);    
+
+	LCD_SendCommand(0xD0); 
+	LCD_SendData_8Bit(0xA4);
+	LCD_SendData_8Bit(0xA1);
+
+	LCD_SendCommand(0xE0);
+	LCD_SendData_8Bit(0xD0);
+	LCD_SendData_8Bit(0x04);
+	LCD_SendData_8Bit(0x0D);
+	LCD_SendData_8Bit(0x11);
+	LCD_SendData_8Bit(0x13);
+	LCD_SendData_8Bit(0x2B);
+	LCD_SendData_8Bit(0x3F);
+	LCD_SendData_8Bit(0x54);
+	LCD_SendData_8Bit(0x4C);
+	LCD_SendData_8Bit(0x18);
+	LCD_SendData_8Bit(0x0D);
+	LCD_SendData_8Bit(0x0B);
+	LCD_SendData_8Bit(0x1F);
+	LCD_SendData_8Bit(0x23);
+
+	LCD_SendCommand(0xE1);
+	LCD_SendData_8Bit(0xD0);
+	LCD_SendData_8Bit(0x04);
+	LCD_SendData_8Bit(0x0C);
+	LCD_SendData_8Bit(0x11);
+	LCD_SendData_8Bit(0x13);
+	LCD_SendData_8Bit(0x2C);
+	LCD_SendData_8Bit(0x3F);
+	LCD_SendData_8Bit(0x44);
+	LCD_SendData_8Bit(0x51);
+	LCD_SendData_8Bit(0x2F);
+	LCD_SendData_8Bit(0x1F);
+	LCD_SendData_8Bit(0x1F);
+	LCD_SendData_8Bit(0x20);
+	LCD_SendData_8Bit(0x23);
+
+	LCD_SendCommand(0x21); 
+
+	LCD_SendCommand(0x29);
 }
 
 /********************************************************************************

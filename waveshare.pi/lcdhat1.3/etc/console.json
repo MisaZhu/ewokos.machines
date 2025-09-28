@@ -1,6 +1,6 @@
 {
-    "font": "smallpixel",
-    "font_size": 7,
+    "font": "system",
+    "font_size": 12,
     "char_space": 0,
     "fg_color": "0xffffffff",
     "bg_color": "0xff000000",
