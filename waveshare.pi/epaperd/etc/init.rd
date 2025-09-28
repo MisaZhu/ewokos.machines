@@ -1,5 +1,5 @@
-@/bin/ipcserv /drivers/waveshare/epaperd     /dev/fb0 
 @/bin/ipcserv /drivers/displayd              
+@/bin/ipcserv /drivers/waveshare/epaperd     /dev/fb0 
 @/bin/ipcserv /drivers/fontd                 
 
 @/bin/ipcserv /drivers/consoled              -u 0

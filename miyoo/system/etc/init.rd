@@ -1,5 +1,5 @@
-@/bin/ipcserv /drivers/miyoo/fbd      /dev/fb0
 @/bin/ipcserv /drivers/displayd       
+@/bin/ipcserv /drivers/miyoo/fbd      /dev/fb0
 @/bin/ipcserv /drivers/fontd          
 
 @export UX_ID=0

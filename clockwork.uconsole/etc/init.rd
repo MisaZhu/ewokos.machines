@@ -1,6 +1,6 @@
 @/bin/ipcserv /drivers/clockwork/powerd      /dev/power0
-@/bin/ipcserv /drivers/clockwork/fbd         /dev/fb0
 @/bin/ipcserv /drivers/displayd              
+@/bin/ipcserv /drivers/clockwork/fbd         /dev/fb0
 @/bin/ipcserv /drivers/fontd                 
 @/bin/load_font
 
