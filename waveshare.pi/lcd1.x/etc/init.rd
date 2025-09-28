@@ -1,8 +1,8 @@
 #@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
 #@set_stdio /dev/tty0
 
-@/bin/ipcserv /drivers/waveshare/lcdhatd  /dev/fb0 
 @/bin/ipcserv /drivers/displayd           
+@/bin/ipcserv /drivers/waveshare/lcdhatd  /dev/fb0 
 @/bin/ipcserv /drivers/fontd              
 @/bin/load_font
 
