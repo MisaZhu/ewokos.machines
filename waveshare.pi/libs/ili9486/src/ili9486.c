@@ -3,8 +3,8 @@
 #include <unistd.h>
 #include <string.h>
 #include <ewoksys/vdevice.h>
-#include <arch/bcm283x/gpio.h>
-#include <arch/bcm283x/spi.h>
+#include <bsp/bsp_gpio.h>
+#include <bsp/bsp_spi.h>
 #include <ili9486/ili9486.h>
 
 static int LCD_DC =	24;
@@ -32,14 +32,14 @@ static inline void delay(int32_t count) {
 
 /* LCD CONTROL */
 static inline void lcd_spi_send(uint8_t byte) {
-	bcm283x_spi_transfer(byte);
+	bsp_spi_transfer(byte);
 }
 
 /* Send command (char) to LCD  - OK */
 static inline void lcd_write_commmand(uint8_t command) {
-	bcm283x_gpio_write(LCD_DC, 0);
+	bsp_gpio_write(LCD_DC, 0);
 	lcd_spi_send(command);
-	bcm283x_gpio_write(LCD_DC, 1);
+	bsp_gpio_write(LCD_DC, 1);
 }
 
 /* Send Data (char) to LCD */
@@ -49,20 +49,20 @@ static inline void lcd_write_data(uint8_t Data) {
 
 /* Reset LCD */
 static inline void lcd_reset( void ) {
-	bcm283x_gpio_write(LCD_RST, 0);
+	bsp_gpio_write(LCD_RST, 0);
 	delay(200);
-	bcm283x_gpio_write(LCD_RST, 1);
+	bsp_gpio_write(LCD_RST, 1);
 	delay(200);
 }
 
 static inline void lcd_start(void) {
-	bcm283x_gpio_write(LCD_CS, 0);
-	bcm283x_spi_activate(1);
+	bsp_gpio_write(LCD_CS, 0);
+	bsp_spi_activate(1);
 }
 
 static inline void lcd_end(void) {
-	bcm283x_spi_activate(0);
-	bcm283x_gpio_write(LCD_CS, 1);
+	bsp_spi_activate(0);
+	bsp_gpio_write(LCD_CS, 1);
 }
 
 /*Ser rotation of the screen - changes x0 and y0*/
@@ -73,23 +73,23 @@ static inline void lcd_set_rotation(uint8_t rotation) {
 	switch(rotation) {
 		case SCREEN_VERTICAL_1:
 			lcd_write_data(0x48);
-			LCD_WIDTH = 320;
-			LCD_HEIGHT = 480;
+			LCD_WIDTH = LCD_SCREEN_HEIGHT;
+			LCD_HEIGHT = LCD_SCREEN_WIDTH;
 			break;
 		case SCREEN_HORIZONTAL_1:
 			lcd_write_data(0x28);
-			LCD_WIDTH  = 480;
-			LCD_HEIGHT = 320;
+			LCD_WIDTH  = LCD_SCREEN_WIDTH;
+			LCD_HEIGHT = LCD_SCREEN_HEIGHT;
 			break;
 		case SCREEN_VERTICAL_2:
 			lcd_write_data(0x98);
-			LCD_WIDTH  = 320;
-			LCD_HEIGHT = 480;
+			LCD_WIDTH  = LCD_SCREEN_HEIGHT;
+			LCD_HEIGHT = LCD_SCREEN_WIDTH;
 			break;
 		case SCREEN_HORIZONTAL_2:
 			lcd_write_data(0xF8);
-			LCD_WIDTH  = 480;
-			LCD_HEIGHT = 320;
+			LCD_WIDTH  = LCD_SCREEN_WIDTH;
+			LCD_HEIGHT = LCD_SCREEN_HEIGHT;
 			break;
 		default:
 			//EXIT IF SCREEN ROTATION NOT VALID!
@@ -131,7 +131,7 @@ static inline void lcd_show(void) {
 			c8[m++] = (color) & 0xff;
 			if(m >= SPI_FIFO_SIZE) {
 				m = 0;
-				bcm283x_spi_send_recv(c8, NULL, SPI_FIFO_SIZE);
+				bsp_spi_send_recv(c8, NULL, SPI_FIFO_SIZE);
 			}
 		}
 	}
@@ -153,7 +153,7 @@ void ili9486_flush(const void* buf, uint32_t size) {
 		_lcd_buffer[i] = ((r >> 3) <<11) | ((g >> 2) << 5) | (b >> 3);
 	}
 
-	bcm283x_spi_set_div(SPI_DIV);
+	bsp_spi_set_div(SPI_DIV);
 	lcd_start();
 	lcd_show();
 	lcd_end();
@@ -163,16 +163,17 @@ void ili9486_init(int pin_rs, int pin_cs, int pin_rst, int cdiv) {
 	LCD_DC = pin_rs;
 	LCD_CS = pin_cs;
 	LCD_RST = pin_rst;
-	bcm283x_gpio_init();
-	bcm283x_gpio_config(LCD_DC, GPIO_OUTPUT);
-	bcm283x_gpio_config(LCD_CS, GPIO_OUTPUT);
-	bcm283x_gpio_config(LCD_RST, GPIO_OUTPUT);
+	bsp_gpio_init();
+	bsp_gpio_config(LCD_DC, GPIO_OUTPUT);
+	bsp_gpio_config(LCD_CS, GPIO_OUTPUT);
+	bsp_gpio_config(LCD_RST, GPIO_OUTPUT);
 
 	lcd_reset();
 	if(cdiv > 0)
 		SPI_DIV = cdiv;
-	bcm283x_spi_set_div(SPI_DIV);
-	bcm283x_spi_select(SPI_SELECT_0);
+	bsp_spi_init();
+	bsp_spi_set_div(SPI_DIV);
+	bsp_spi_select(SPI_SELECT_0);
 
 	lcd_start();
 

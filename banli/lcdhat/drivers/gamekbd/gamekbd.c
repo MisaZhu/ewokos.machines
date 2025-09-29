@@ -5,7 +5,7 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/keydef.h>
-#include <arch/bcm283x/gpio.h>
+#include <bsp/bsp_gpio.h>
 
 typedef struct st_gpio_key {
 	uint32_t pin;

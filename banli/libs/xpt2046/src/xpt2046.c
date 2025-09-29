@@ -1,5 +1,5 @@
-#include <arch/bcm283x/gpio.h>
-#include <arch/bcm283x/spi.h>
+#include <bsp/bsp_gpio.h>
+#include <bsp/bsp_spi.h>
 #include <ewoksys/vdevice.h>
 #include <unistd.h>
 #include <stdlib.h>

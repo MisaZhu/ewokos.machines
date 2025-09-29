@@ -15,8 +15,8 @@
 
 #define LCD_CS   8
 #define LCD_RST  27
-#define LCD_DC   25
-#define LCD_BL   24
+#define LCD_DC   22
+//#define LCD_BL   18
 
 #define DEV_Delay_ms(x) proc_usleep((x)*1000)
 #define DEV_Digital_Write bsp_gpio_write
@@ -110,19 +110,10 @@ parameter:
  ********************************************************************************/
 static void LCD_SetAttributes(UBYTE rot, uint32_t w, uint32_t h) {
 	//Get the screen scan direction
-	LCD.ROT = rot;
+	LCD.ROT = 0;
+	LCD.HEIGHT	= h;
+	LCD.WIDTH   = w;
 	UBYTE MemoryAccessReg = 0x00;
-
-	//Get GRAM and LCD width and height
-	if(rot == ROT_0 || rot == ROT_180) {
-		LCD.HEIGHT	= h;
-		LCD.WIDTH   = w;
-		MemoryAccessReg = 0X70;
-	} else {
-		LCD.HEIGHT	= w;
-		LCD.WIDTH   = h;
-		MemoryAccessReg = 0X00;
-	}
 
 	// Set the read / write scan direction of the frame memory
 	LCD_SendCommand(0x36); //MX, MY, RGB mode
@@ -136,8 +127,8 @@ parameter:
 static void LCD_InitReg(void) {
 	LCD_SendCommand(0x11); 
 	DEV_Delay_ms(120);
-	// LCD_SendCommand(0x36);
-	// LCD_SendData_8Bit(0x00);
+	LCD_SendCommand(0x36);
+	LCD_SendData_8Bit(0x00);
 
 	LCD_SendCommand(0x3A); 
 	LCD_SendData_8Bit(0x05);
@@ -217,7 +208,7 @@ parameter:
  ********************************************************************************/
 static void LCD_1in3_Init(UBYTE rot, uint32_t w, uint32_t h) {
 	//Turn on the backlight
-	LCD_BL_1;
+	//LCD_BL_1;
 
 	//Hardware reset
 	LCD_Reset();
@@ -273,15 +264,17 @@ static void LCD_1in3_Clear(UWORD Color) {
 	DEV_SPI_Write((uint8_t *)Image, LCD.WIDTH*LCD.HEIGHT*2);
 }
 
+static uint32_t _div = 16;
 void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
 	bsp_gpio_init();
 
 	bsp_gpio_config(LCD_CS, 1);
 	bsp_gpio_config(LCD_RST, 1);
 	bsp_gpio_config(LCD_DC, 1);
-	bsp_gpio_config(LCD_BL, 1);
+	//bsp_gpio_config(LCD_BL, 1);
 
 	bsp_spi_init();
+	_div = div;
 	bsp_spi_set_div(div);
 	bsp_spi_select(1);
 
@@ -298,7 +291,9 @@ int  do_flush(const void* buf, uint32_t size) {
 	if(size < LCD.WIDTH * LCD.HEIGHT* 4)
 		return -1;
 
+	LCD_1in3_SetWindows(0, 0, LCD.WIDTH, LCD.HEIGHT);
 	LCD_DC_1;
+	bsp_spi_set_div(_div);
 	bsp_spi_activate(1);
 
 	uint32_t *src = (uint32_t*)buf;

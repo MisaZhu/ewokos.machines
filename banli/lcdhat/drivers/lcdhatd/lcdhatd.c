@@ -3,8 +3,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-#include <arch/bcm283x/gpio.h>
-#include <arch/bcm283x/spi.h>
+#include <bsp/bsp_gpio.h>
+#include <bsp/bsp_spi.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 #include <ewoksys/syscall.h>
