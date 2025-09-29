@@ -15,7 +15,7 @@
 
 #define LCD_CS   8
 #define LCD_RST  27
-#define LCD_DC   25
+#define LCD_DC   22
 #define LCD_BL   24
 
 #define DEV_Delay_ms(x) proc_usleep((x)*1000)

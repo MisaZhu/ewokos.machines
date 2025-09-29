@@ -14,17 +14,17 @@ typedef struct st_gpio_key {
 
 static gpio_key_t _gpio_keys[] = {
 	{5,  KEY_UP},
-	{6,  KEY_DOWN},
-	{16, KEY_LEFT},
-	{13, KEY_RIGHT},
+	{6,  KEY_RIGHT},
+	{13, KEY_LEFT},
+	{16, KEY_DOWN},
+	{19, JOYSTICK_START},
+	{26, JOYSTICK_SELECT},
 	{21, JOYSTICK_A},
 	{20, JOYSTICK_B},
+	{14, JOYSTICK_R1},
 	{12, JOYSTICK_Y},
 	{15, JOYSTICK_X},
-	{26, JOYSTICK_START},
-	{19, JOYSTICK_SELECT},
-	{14, JOYSTICK_R1},
-	{23, KEY_HOME},
+	{23, JOYSTICK_L1},
 	{0,  0}
 };
 
