@@ -19,7 +19,7 @@
 #define LCD_BL   24
 
 #define DEV_Delay_ms(x) proc_usleep((x)*1000)
-#define DEV_Digital_Write bcm283x_gpio_write
+#define DEV_Digital_Write bsp_gpio_write
 
 #define LCD_CS_0		DEV_Digital_Write(LCD_CS,0)
 #define LCD_CS_1		DEV_Digital_Write(LCD_CS,1)
@@ -46,10 +46,10 @@ typedef struct{
 static LCD_ATTRIBUTES LCD;
 
 static inline void DEV_SPI_Write(UBYTE* data, uint32_t sz) {
-	bcm283x_spi_activate(1);
+	bsp_spi_activate(1);
 	for(uint32_t i=0; i<sz; i++)
-		bcm283x_spi_transfer(data[i]);
-	bcm283x_spi_activate(0);
+		bsp_spi_transfer(data[i]);
+	bsp_spi_activate(0);
 }
 
 /******************************************************************************
@@ -275,17 +275,17 @@ static void LCD_1in3_Clear(UWORD Color) {
 
 static uint32_t _div = 16;
 void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
-	bcm283x_gpio_init();
+	bsp_gpio_init();
 
-	bcm283x_gpio_config(LCD_CS, 1);
-	bcm283x_gpio_config(LCD_RST, 1);
-	bcm283x_gpio_config(LCD_DC, 1);
-	bcm283x_gpio_config(LCD_BL, 1);
+	bsp_gpio_config(LCD_CS, 1);
+	bsp_gpio_config(LCD_RST, 1);
+	bsp_gpio_config(LCD_DC, 1);
+	bsp_gpio_config(LCD_BL, 1);
 
-	bcm283x_spi_init();
+	bsp_spi_init();
 	_div = div;
-	bcm283x_spi_set_div(div);
-	bcm283x_spi_select(1);
+	bsp_spi_set_div(div);
+	bsp_spi_select(1);
 
 	LCD_1in3_Init(rot, w, h);
 	LCD_1in3_SetWindows(0, 0, LCD.WIDTH, LCD.HEIGHT);
@@ -302,8 +302,8 @@ int  do_flush(const void* buf, uint32_t size) {
 
 	LCD_1in3_SetWindows(0, 0, LCD.WIDTH, LCD.HEIGHT);
 	LCD_DC_1;
-	bcm283x_spi_set_div(_div);
-	bcm283x_spi_activate(1);
+	bsp_spi_set_div(_div);
+	bsp_spi_activate(1);
 
 	uint32_t *src = (uint32_t*)buf;
 	uint32_t sz = LCD.HEIGHT*LCD.WIDTH;
@@ -317,7 +317,7 @@ int  do_flush(const void* buf, uint32_t size) {
 			c8[j++] = rgb32_rgb565((uint8_t*)&src[i]);
 			if(j >= SPI_FIFO_SIZE/2) {
 				j = 0;
-				bcm283x_spi_send_recv((uint8_t*)c8, NULL, SPI_FIFO_SIZE);
+				bsp_spi_send_recv((uint8_t*)c8, NULL, SPI_FIFO_SIZE);
 			}
 		}
 	}
@@ -326,11 +326,11 @@ int  do_flush(const void* buf, uint32_t size) {
 			c8[j++] = rgb32_rgb565((uint8_t*)&src[i - 1]);
 			if(j >= SPI_FIFO_SIZE/2) {
 				j = 0;
-				bcm283x_spi_send_recv((uint8_t*)c8, NULL, SPI_FIFO_SIZE);
+				bsp_spi_send_recv((uint8_t*)c8, NULL, SPI_FIFO_SIZE);
 			}
 		}
 	}
-	bcm283x_spi_activate(0);
+	bsp_spi_activate(0);
 	return 0;
 }
 

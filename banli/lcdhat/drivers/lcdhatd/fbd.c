@@ -59,9 +59,9 @@ static int tp_read(uint8_t* buf, uint32_t size) {
 	memset(buf, 0, size);
 	if(size >= 6) {
 		uint16_t* d = (uint16_t*)buf;
-		bcm283x_gpio_write(8, 1);
+		bsp_gpio_write(8, 1);
 		xpt2046_read(&d[0], &d[1], &d[2]);
-		bcm283x_gpio_write(8, 0);
+		bsp_gpio_write(8, 0);
 		//klog("tp_read: %d %d %d\n", d[0], d[1], d[2]);
 	}
 	return 6;	

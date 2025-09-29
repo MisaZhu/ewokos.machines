@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-void bsp_bsp_gpio_init(void) {
+void bsp_gpio_init(void) {
     rk_gpio_init();
 }
 

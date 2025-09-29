@@ -44,7 +44,7 @@ static int gamekb_read(int fd, int from_pid, fsinfo_t* node,
 		if(_gpio_keys[i].pin == 0)
 			break;
 
-		if(bcm283x_gpio_read(_gpio_keys[i].pin) == 0) {
+		if(bsp_gpio_read(_gpio_keys[i].pin) == 0) {
 			data[cnt] = _gpio_keys[i].key;
 			cnt++;
 		}
@@ -60,14 +60,14 @@ static void init_gpio(void) {
 		if(_gpio_keys[i].key == 0)
 			break;
 
-		bcm283x_gpio_config(_gpio_keys[i].pin, GPIO_INPUT);//input	
-		bcm283x_gpio_pull(_gpio_keys[i].pin, GPIO_PULL_UP); //pull up
+		bsp_gpio_config(_gpio_keys[i].pin, GPIO_INPUT);//input	
+		bsp_gpio_pull(_gpio_keys[i].pin, GPIO_PULL_UP); //pull up
 		i++;
 	}
 }
 
 int main(int argc, char** argv) {
-	bcm283x_gpio_init();
+	bsp_gpio_init();
 	init_gpio();
 
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/gamekb";
