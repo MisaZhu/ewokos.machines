@@ -32,7 +32,7 @@ static inline void delay(int32_t count) {
 
 /* LCD CONTROL */
 static inline void lcd_spi_send(uint8_t byte) {
-	bcm283x_spi_transfer16(byte);
+	bcm283x_spi_transfer(byte);
 }
 
 /* Send command (char) to LCD  - OK */
