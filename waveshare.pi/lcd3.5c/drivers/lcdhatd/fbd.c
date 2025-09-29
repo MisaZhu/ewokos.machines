@@ -12,11 +12,11 @@ int  do_flush(const void* buf, uint32_t size) {
 	return 0;
 }
 
-void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
+void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
 	const int lcd_dc = 24;
 	const int lcd_cs = 8;
 	const int lcd_rst = 25;
-	ili9486_init(lcd_dc, lcd_cs, lcd_rst, div);
+	ili9486_init(w, h, lcd_dc, lcd_cs, lcd_rst, div);
 }
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
@@ -82,12 +82,11 @@ int main(int argc, char** argv) {
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 
-	lcd_init(w, h, G_ROTATE_NONE, _spi_div);
+	lcd_init(w, h, _spi_div);
 
-	/*const int tp_cs = 7;
+	const int tp_cs = 7;
 	const int tp_irq = 17;
 	xpt2046_init(tp_cs, tp_irq, 64);
-	*/
 
 
 	fbd_t fbd;
@@ -95,7 +94,7 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	fbd.read = NULL;//tp_read;
+	fbd.read = tp_read;
 	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, G_ROTATE_NONE);
 	return ret;
 }

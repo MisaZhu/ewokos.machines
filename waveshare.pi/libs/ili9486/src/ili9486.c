@@ -13,8 +13,8 @@ static int LCD_RST = 25;
 static int SPI_DIV = 2;
 
 // Screen settings
-#define LCD_SCREEN_WIDTH 		480
-#define LCD_SCREEN_HEIGHT 		320
+#define DEF_SCREEN_WIDTH 		320
+#define DEF_SCREEN_HEIGHT 		240
 
 // Other define
 #define SCREEN_VERTICAL_1		0
@@ -22,9 +22,9 @@ static int SPI_DIV = 2;
 #define SCREEN_VERTICAL_2		2
 #define SCREEN_HORIZONTAL_2		3
 
-uint16_t _lcd_buffer[LCD_SCREEN_WIDTH * LCD_SCREEN_HEIGHT];
-uint16_t LCD_HEIGHT = LCD_SCREEN_HEIGHT;
-uint16_t LCD_WIDTH  = LCD_SCREEN_WIDTH;
+static uint16_t* _lcd_buffer = NULL;
+uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
+uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 
 static inline void delay(int32_t count) {
 	proc_usleep(count);
@@ -66,35 +66,13 @@ static inline void lcd_end(void) {
 }
 
 /*Ser rotation of the screen - changes x0 and y0*/
-static inline void lcd_set_rotation(uint8_t rotation) {
+static inline void lcd_set_buffer(uint16_t w, uint16_t h) {
 	lcd_write_commmand(0x36);
+	lcd_write_data(0x28);
 	delay(100);
-
-	switch(rotation) {
-		case SCREEN_VERTICAL_1:
-			lcd_write_data(0x48);
-			LCD_WIDTH = LCD_SCREEN_HEIGHT;
-			LCD_HEIGHT = LCD_SCREEN_WIDTH;
-			break;
-		case SCREEN_HORIZONTAL_1:
-			lcd_write_data(0x28);
-			LCD_WIDTH  = LCD_SCREEN_WIDTH;
-			LCD_HEIGHT = LCD_SCREEN_HEIGHT;
-			break;
-		case SCREEN_VERTICAL_2:
-			lcd_write_data(0x98);
-			LCD_WIDTH  = LCD_SCREEN_HEIGHT;
-			LCD_HEIGHT = LCD_SCREEN_WIDTH;
-			break;
-		case SCREEN_HORIZONTAL_2:
-			lcd_write_data(0xF8);
-			LCD_WIDTH  = LCD_SCREEN_WIDTH;
-			LCD_HEIGHT = LCD_SCREEN_HEIGHT;
-			break;
-		default:
-			//EXIT IF SCREEN ROTATION NOT VALID!
-			break;
-	}
+	LCD_WIDTH = w;
+	LCD_HEIGHT = h;
+	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
 }
 
 static inline void lcd_brightness(uint8_t brightness) {
@@ -105,26 +83,26 @@ static inline void lcd_brightness(uint8_t brightness) {
 
 static inline void lcd_show(void) {
 	int i, j, m = 0;
-	lcd_write_commmand(0x2B);
+	lcd_write_commmand(0x2A);
 	lcd_write_data(0x00);
 	lcd_write_data(0x00);
 	lcd_write_data(0x01);
 	lcd_write_data(0x3F);
 
-	lcd_write_commmand(0x2A);
+	lcd_write_commmand(0x2B);
 	lcd_write_data(0x00);
 	lcd_write_data(0x00);
-	lcd_write_data(0x01);
-	lcd_write_data(0xE0);
+	lcd_write_data(0x00);
+	lcd_write_data(0xEF);
 
 	lcd_write_commmand(0x2C); // Memory write?
 
 #define SPI_FIFO_SIZE  64
 	uint8_t c8[SPI_FIFO_SIZE];
 
-	for ( i = 0 ; i < 30  ; i ++ ) {
-		uint16_t *tx_data = (uint16_t*)&_lcd_buffer[5120*i];
-		int32_t data_sz = 5120;
+	for ( i = 0 ; i < (LCD_WIDTH*4/64) ; i ++ ) {
+		uint16_t *tx_data = (uint16_t*)&_lcd_buffer[16*LCD_HEIGHT*i];
+		int32_t data_sz = 16*LCD_HEIGHT;
 		for( j=0; j<data_sz; j++)  {
 			uint16_t color = tx_data[j];
 			c8[m++] = (color >> 8) & 0xff;
@@ -159,7 +137,7 @@ void ili9486_flush(const void* buf, uint32_t size) {
 	lcd_end();
 }
 
-void ili9486_init(int pin_rs, int pin_cs, int pin_rst, int cdiv) {
+void ili9486_init(uint16_t w, uint16_t h, int pin_rs, int pin_cs, int pin_rst, int cdiv) {
 	LCD_DC = pin_rs;
 	LCD_CS = pin_cs;
 	LCD_RST = pin_rst;
@@ -233,7 +211,7 @@ void ili9486_init(int pin_rs, int pin_cs, int pin_rst, int cdiv) {
 
 	//lcd_write_commmand(0x36); // Memory Access Control
 	//lcd_write_data(0x48);
-	lcd_set_rotation(SCREEN_HORIZONTAL_1);
+	lcd_set_buffer(w, h);
 	lcd_write_commmand(0x29); // Display ON
 	delay(150000);
 	lcd_end();

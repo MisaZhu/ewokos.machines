@@ -4,14 +4,20 @@
 #include <fcntl.h>
 #include <string.h>
 #include <fbd/fbd.h>
+#include <ili9486/ili9486.h>
+#include <xpt2046/xpt2046.h>
 
-static uint32_t LCD_WIDTH = 320;
-static uint32_t LCD_HEIGHT = 240;
+int  do_flush(const void* buf, uint32_t size) {
+	ili9486_flush(buf, size);
+	return 0;
+}
 
-
-int  do_flush(const void* buf, uint32_t size);
-void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div);
-
+void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
+	const int lcd_dc = 22;
+	const int lcd_cs = 8;
+	const int lcd_rst = 27;
+	ili9486_init(w, h, lcd_dc, lcd_cs, lcd_rst, div);
+}
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 	uint32_t sz = 4 * g->w * g->h;
@@ -76,12 +82,11 @@ int main(int argc, char** argv) {
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 
-	lcd_init(w, h, G_ROTATE_NONE, _spi_div);
+	lcd_init(w, h, _spi_div);
 
-	//const int tp_cs = 7;
-	//const int tp_irq = 17;
-	//xpt2046_init(tp_cs, tp_irq, 64);
-
+	const int tp_cs = 7;
+	const int tp_irq = 17;
+	xpt2046_init(tp_cs, tp_irq, 64);
 
 	fbd_t fbd;
 	fbd.splash = NULL;
