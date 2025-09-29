@@ -1,4 +1,8 @@
-TASK_OBJS = fbd.o lcdhatd.o
+EXTRA_LIBS_DIR = ../../../libs
+CFLAGS += -I $(EXTRA_LIBS_DIR)/xpt2046/include
+
+TASK_OBJS = fbd.o lcdhatd.o \
+		$(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.o
 TASK = lcdhatd 
 
 MF_ROOT_DIR=../..

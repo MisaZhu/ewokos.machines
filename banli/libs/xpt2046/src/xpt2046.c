@@ -42,9 +42,9 @@ static bool do_read(uint16_t* x, uint16_t* y){
 	uint16_t tx=0, ty=0;
 	uint16_t i=0;
 
-	bcm283x_spi_set_div(SPI_DIV);
 	bcm283x_gpio_write(TP_CS, 0);
 	bcm283x_spi_activate(1);
+	bcm283x_spi_set_div(SPI_DIV);
 
 
 	for(i=0; i<4; i++){
