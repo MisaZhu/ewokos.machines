@@ -27,6 +27,9 @@
 @/bin/splash -m "loading /dev/vjoystick" -p 30
 @/bin/ipcserv /drivers/vjoystickd         /dev/vjoystick /dev/vkeyb -m
 
+#@/bin/splash -m "loading /dev/touch0" -p 35
+#@/bin/ipcserv /drivers/banli/xpt2046d   /dev/touch0
+
 @/bin/splash -m "loading timer" -p 40
 @/bin/ipcserv /drivers/timerd             
 
@@ -38,6 +41,9 @@
 
 @/bin/splash -m "loading mouse" -p 60
 @/bin/bgrun /sbin/x/xmouse     /dev/vjoystick
+
+#@/bin/splash -m "loading touch" -p 65
+#@/bin/bgrun /sbin/x/xtouch 
 
 @/bin/splash -m "loading xim_vkey" -p 70
 @/bin/bgrun /sbin/x/xim_vkey 
