@@ -81,21 +81,27 @@ static inline void lcd_brightness(uint8_t brightness) {
 	lcd_write_data(brightness); // byc moze 2 bajty
 }
 
-static inline void lcd_show(void) {
-	int i, j, m = 0;
+static inline void lcd_set_size(uint16_t w, uint16_t h) {
+	w--;
+	h--;
 	lcd_write_commmand(0x2A);
 	lcd_write_data(0x00);
 	lcd_write_data(0x00);
-	lcd_write_data(0x01);
-	lcd_write_data(0x3F);
+	lcd_write_data((w >> 8) & 0xff);
+	lcd_write_data(w & 0xff);
 
 	lcd_write_commmand(0x2B);
 	lcd_write_data(0x00);
 	lcd_write_data(0x00);
-	lcd_write_data(0x00);
-	lcd_write_data(0xEF);
+	lcd_write_data((h >> 8) & 0xff);
+	lcd_write_data(h & 0xff);
 
 	lcd_write_commmand(0x2C); // Memory write?
+}
+
+static inline void lcd_show(void) {
+	int i, j, m = 0;
+	lcd_set_size(LCD_WIDTH, LCD_HEIGHT);
 
 #define SPI_FIFO_SIZE  64
 	uint8_t c8[SPI_FIFO_SIZE];
