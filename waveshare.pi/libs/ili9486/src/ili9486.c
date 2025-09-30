@@ -160,9 +160,10 @@ void ili9486_init(uint16_t w, uint16_t h, int pin_rs, int pin_cs, int pin_rst, i
 	bsp_spi_select(SPI_SELECT_0);
 
 	lcd_start();
+	lcd_write_command(0x01); // sw reset, wakeup
+	delay(150000);
 
 	lcd_write_command(0x28); // Display OFF
-
 	lcd_write_command(0x3A); // Interface Pixel Format
 	lcd_write_data(0x55);	// 16 bit/pixel
 
