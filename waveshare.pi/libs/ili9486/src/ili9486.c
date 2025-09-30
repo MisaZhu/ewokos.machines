@@ -36,7 +36,7 @@ static inline void lcd_spi_send(uint8_t byte) {
 }
 
 /* Send command (char) to LCD  - OK */
-static inline void lcd_write_commmand(uint8_t command) {
+static inline void lcd_write_command(uint8_t command) {
 	bsp_gpio_write(LCD_DC, 0);
 	lcd_spi_send(command);
 	bsp_gpio_write(LCD_DC, 1);
@@ -67,7 +67,7 @@ static inline void lcd_end(void) {
 
 /*Ser rotation of the screen - changes x0 and y0*/
 static inline void lcd_set_buffer(uint16_t w, uint16_t h) {
-	lcd_write_commmand(0x36);
+	lcd_write_command(0x36);
 	lcd_write_data(0x28);
 	delay(100);
 	LCD_WIDTH = w;
@@ -77,26 +77,26 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h) {
 
 static inline void lcd_brightness(uint8_t brightness) {
 	// chyba trzeba wczesniej zainicjalizowac - rejestr 0x53
-	lcd_write_commmand(0x51); // byc moze 2 bajty?
+	lcd_write_command(0x51); // byc moze 2 bajty?
 	lcd_write_data(brightness); // byc moze 2 bajty
 }
 
 static inline void lcd_set_size(uint16_t w, uint16_t h) {
 	w--;
 	h--;
-	lcd_write_commmand(0x2A);
+	lcd_write_command(0x2A);
 	lcd_write_data(0x00);
 	lcd_write_data(0x00);
 	lcd_write_data((w >> 8) & 0xff);
 	lcd_write_data(w & 0xff);
 
-	lcd_write_commmand(0x2B);
+	lcd_write_command(0x2B);
 	lcd_write_data(0x00);
 	lcd_write_data(0x00);
 	lcd_write_data((h >> 8) & 0xff);
 	lcd_write_data(h & 0xff);
 
-	lcd_write_commmand(0x2C); // Memory write?
+	lcd_write_command(0x2C); // Memory write?
 }
 
 static inline void lcd_show(void) {
@@ -161,21 +161,36 @@ void ili9486_init(uint16_t w, uint16_t h, int pin_rs, int pin_cs, int pin_rst, i
 
 	lcd_start();
 
-	lcd_write_commmand(0x28); // Display OFF
+	lcd_write_command(0x28); // Display OFF
 
-	lcd_write_commmand(0x3A); // Interface Pixel Format
+	lcd_write_command(0x3A); // Interface Pixel Format
 	lcd_write_data(0x55);	// 16 bit/pixel
 
-	lcd_write_commmand(0xC2); // Power Control 3 (For Normal Mode)
+	lcd_write_command(0xC2);
+	lcd_write_data(0x44);    // 保持原配置
+	lcd_write_command(0xC5);
+	lcd_write_data(0x3E);    // VCOMH = 4.0V
+	lcd_write_data(0x30);    // VCOML = -1.5V  
+	lcd_write_data(0x0B);    // VCOM偏移
+	lcd_write_data(0x0B);    // VCM输出
+
+	// 设置亮度 - 0x00(最暗) 到 0xFF(最亮)
+	lcd_write_command(0x51);    // Write Display Brightness
+	lcd_write_data(0xf0);       // 50% 亮度 (128/255)
+
+ 	lcd_write_command(0xB7);   // 进入扩展命令集
+    lcd_write_data(0x06);     // 启用抗闪烁模式
+
+	/*lcd_write_command(0xC2); // Power Control 3 (For Normal Mode)
 	lcd_write_data(0x44);    // Cos z napieciem
 
-	lcd_write_commmand(0xC5); // VCOM Control
+	lcd_write_command(0xC5); // VCOM Control
 	lcd_write_data(0x00);  // const
 	lcd_write_data(0x00);  // nVM ? 0x48
 	lcd_write_data(0x00);  // VCOM voltage ref
 	lcd_write_data(0x00);  // VCM out
 
-	lcd_write_commmand(0xE0); // PGAMCTRL(Positive Gamma Control)
+	lcd_write_command(0xE0); // PGAMCTRL(Positive Gamma Control)
 	lcd_write_data(0x0F);
 	lcd_write_data(0x1F);
 	lcd_write_data(0x1C);
@@ -192,7 +207,7 @@ void ili9486_init(uint16_t w, uint16_t h, int pin_rs, int pin_cs, int pin_rst, i
 	lcd_write_data(0x0D);
 	lcd_write_data(0x00);
 
-	lcd_write_commmand(0xE1); // NGAMCTRL (Negative Gamma Correction)
+	lcd_write_command(0xE1); // NGAMCTRL (Negative Gamma Correction)
 	lcd_write_data(0x0F);
 	lcd_write_data(0x32);
 	lcd_write_data(0x2E);
@@ -208,17 +223,18 @@ void ili9486_init(uint16_t w, uint16_t h, int pin_rs, int pin_cs, int pin_rst, i
 	lcd_write_data(0x24);
 	lcd_write_data(0x20);
 	lcd_write_data(0x00);
+	*/
 
-	lcd_write_commmand(0x11); // sw reset, wakeup
+	lcd_write_command(0x11); // sw reset, wakeup
 	delay(150000);
 
-	lcd_write_commmand(0x20); // Display Inversion OFF   RPi LCD (A)
-	//lcd_write_commmand(0x21); // Display Inversion ON    RPi LCD (B)
+	lcd_write_command(0x20); // Display Inversion OFF   RPi LCD (A)
+	//lcd_write_command(0x21); // Display Inversion ON    RPi LCD (B)
 
-	//lcd_write_commmand(0x36); // Memory Access Control
+	//lcd_write_command(0x36); // Memory Access Control
 	//lcd_write_data(0x48);
 	lcd_set_buffer(w, h);
-	lcd_write_commmand(0x29); // Display ON
+	lcd_write_command(0x29); // Display ON
 	delay(150000);
 	lcd_end();
 }

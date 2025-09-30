@@ -14,11 +14,14 @@
 @/bin/ipcserv /drivers/nulld                /dev/null
 @/bin/ipcserv /drivers/ramfsd               /tmp
 
+@/bin/ipcserv /drivers/waveshare/keybd      /dev/keyb0
+
 @/bin/ipcserv /sbin/sessiond
 #@/bin/bgrun /bin/session -r 
 
 @/bin/ipcserv /drivers/xserverd             /dev/x
 
+@/bin/bgrun /sbin/x/xim_none   /dev/keyb0 
 @/bin/bgrun /sbin/x/xtouch /dev/fb0 
 @/bin/bgrun /sbin/x/xim_vkey 
 

@@ -74,7 +74,7 @@ static int tp_read(uint8_t* buf, uint32_t size) {
 }
 
 int main(int argc, char** argv) {
-	_spi_div = 16;
+	_spi_div = 4;
 	uint32_t w=480, h=320;
 	LCD_HEIGHT = h;
 	LCD_WIDTH = w;
