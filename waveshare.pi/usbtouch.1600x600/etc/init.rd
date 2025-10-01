@@ -12,7 +12,7 @@
 set_stdio /dev/console0
 @export KLOG_DEV=/dev/console0
 
-@/bin/ipcserv /drivers/raspix/usbd          /dev/touch0
+@/bin/ipcserv /drivers/raspix/usbd.touch    /dev/touch0
 @/bin/ipcserv /drivers/timerd               
 @/bin/ipcserv /drivers/nulld                /dev/null
 @/bin/ipcserv /drivers/ramfsd               /tmp
