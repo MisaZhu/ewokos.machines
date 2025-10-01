@@ -3,7 +3,6 @@
 @/bin/ipcserv /drivers/displayd        
 @/bin/ipcserv /drivers/raspix/fbd      /dev/fb0
 @/bin/ipcserv /drivers/fontd           
-@/bin/load_font
 
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled       
@@ -19,6 +18,7 @@
 
 @/bin/ipcserv /sbin/sessiond
 
+@/bin/load_font
 @/bin/ipcserv /drivers/xserverd        /dev/x
 
 @/bin/bgrun /sbin/x/xtouch 
