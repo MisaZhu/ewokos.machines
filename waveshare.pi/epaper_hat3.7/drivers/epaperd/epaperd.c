@@ -351,7 +351,6 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
     // 初始化电子纸
     EPD_Init();
     EPD_Clear();
-    sleep(1);
 }
 
 /******************************************************************************
@@ -381,10 +380,10 @@ int do_flush(const void* buf, uint32_t size) {
         uint8_t b = color_b(c);
         
         // 计算灰度值
-        uint8_t gray = (r + g + b) / 3;
+        uint32_t gray = (r * 259 + g * 487 + b * 254) / 1000;
         // 将灰度值映射到4级灰度 (0-3)，其中0为黑色，3为白色
         uint8_t gray4;
-        if (gray < 32)
+        if (gray < 64)
             gray4 = 0; // 黑色
         else if (gray < 128)
             gray4 = 1; // gray1
