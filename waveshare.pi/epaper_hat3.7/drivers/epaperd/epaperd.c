@@ -380,7 +380,8 @@ int do_flush(const void* buf, uint32_t size) {
         uint8_t b = color_b(c);
         
         // 计算灰度值
-        uint32_t gray = (r * 259 + g * 487 + b * 254) / 1000;
+        uint32_t gray = (r * 300 + g * 400 + b * 300) / 1000;
+        //uint32_t gray = (r + g + b) / 3;
         // 将灰度值映射到4级灰度 (0-3)，其中0为黑色，3为白色
         uint8_t gray4;
         if (gray < 64)
