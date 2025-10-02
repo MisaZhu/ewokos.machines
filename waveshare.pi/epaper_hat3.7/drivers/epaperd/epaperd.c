@@ -358,6 +358,12 @@ function :  将RGB32格式转换为4灰度格式
 parameter:
     buf  : RGB32格式数据缓冲区
     size : 缓冲区大小
+
+    输入灰度值 黑色通道(0x24) 红色通道(0x26) 组合效果 
+    0 (黑色)      0             0          纯黑色 
+    2 (浅灰)      1             0          浅灰色 
+    1 (深灰)      0             1          深灰色 
+    3 (白色)      1             1          纯白色
 ******************************************************************************/
 int do_flush(const void* buf, uint32_t size) {
     uint32_t pixel_count = EPD_WIDTH * EPD_HEIGHT;
