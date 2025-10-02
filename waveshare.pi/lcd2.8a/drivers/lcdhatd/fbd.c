@@ -42,16 +42,20 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 }
 
 static int _spi_div = 8;
+const char* _conf_file = "";
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "d:");
+		c = getopt (argc, argv, "c:d:");
 		if(c == -1)
 			break;
 
 		switch (c) {
 		case 'd':
 			_spi_div = atoi(optarg);
+			break;
+		case 'c':
+			_conf_file = optarg;
 			break;
 		default:
 			c = -1;
@@ -94,6 +98,6 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 	fbd.read = tp_read;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, G_ROTATE_NONE);
+	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file);
 	return ret;
 }

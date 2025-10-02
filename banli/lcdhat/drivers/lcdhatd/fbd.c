@@ -89,6 +89,6 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 	fbd.read = tp_read;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, G_ROTATE_NONE);
+	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
 	return ret;
 }
