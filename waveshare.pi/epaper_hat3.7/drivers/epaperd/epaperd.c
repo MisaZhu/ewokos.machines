@@ -400,9 +400,9 @@ int do_flush(const void* buf, uint32_t size) {
         // 清除当前位置的两位，然后写入新的灰度值
         //_gray_buffer[byte_index] &= ~(0x03 << bit_offset);
         if(gray4 > 1)
-            _gray_buffer_black[byte_index] |= (1 << bit_offset);
-        if((gray4 & 0x01) != 0)
             _gray_buffer_red[byte_index] |= (1 << bit_offset);
+        if((gray4 & 0x01) != 0)
+            _gray_buffer_black[byte_index] |= (1 << bit_offset);
     }
 
     //klog("bytes: %d/%d\n", byte_count, pixel_count);
