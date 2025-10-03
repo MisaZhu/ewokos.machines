@@ -62,7 +62,7 @@ static int check_ux(void* p) {
 	(void)p;
 	ipc_disable();
 	if(bcm283x_gpio_read(23) == 0){
-		core_next_ux();
+		core_next_ux(0);
 	}
 	ipc_enable();
 	proc_usleep(200000);

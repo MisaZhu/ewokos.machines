@@ -21,6 +21,5 @@ set_stdio /dev/console0
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/x/xsession misa
 
-#setux 7
 #@/bin/bgrun /apps/xgo/xgo 
 
