@@ -50,7 +50,7 @@ class XgoWidget: public Widget {
 		static const uint8_t actNum = 2;
 		static uint8_t acts[actNum] = {XGO_ACT_SHAKE, XGO_ACT_HEIGHT};
 		uint8_t act = acts[random_to(actNum)];
-		klog("bored... ACT: %d\n", act);
+		slog("bored... ACT: %d\n", act);
 		xgo_cmd(XGO_TYPE_SEND, XGO_CMD_ACT, act, NULL);
 	}
 	
