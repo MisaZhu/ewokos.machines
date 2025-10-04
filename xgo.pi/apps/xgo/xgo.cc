@@ -33,7 +33,7 @@ class XgoWidget: public Widget {
 		for(int i=0; i<BATT_NUM; i++) {
 			char name[32];
 			snprintf(name, 31, "batt/batt%d.png", i);
-			battIcons[i] = png_image_new(X::getResName(name));
+			battIcons[i] = png_image_new(X::getResName(name).c_str());
 		}
 	}
 	
@@ -41,7 +41,7 @@ class XgoWidget: public Widget {
 		for(int i=0; i<EXPR_NUM; i++) {
 			char name[32];
 			snprintf(name, 31, "express/%d.png", i+1);
-			graph_t* img = png_image_new(X::getResName(name));
+			graph_t* img = png_image_new(X::getResName(name).c_str());
 			expressIcons[i] = img;
 		}
 	}
