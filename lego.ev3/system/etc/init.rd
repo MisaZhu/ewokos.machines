@@ -1,11 +1,14 @@
+@/bin/ipcserv /sbin/logd /dev/log
+
 @/bin/ipcserv /drivers/displayd        
 @/bin/ipcserv /drivers/ev3/fbd      /dev/fb0
 @/bin/ipcserv /drivers/fontd           
-@/bin/load_font
 
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled        -u 0
 @set_stdio /dev/console0
+
+@/bin/load_font
 
 @/bin/ipcserv /drivers/ev3/gpio_joystickd     /dev/joystick
 @/bin/ipcserv /drivers/ev3/adcd     /dev/adc0

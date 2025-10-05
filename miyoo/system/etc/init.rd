@@ -1,3 +1,5 @@
+@/bin/ipcserv /sbin/logd /dev/log
+
 @/bin/ipcserv /drivers/displayd       
 @/bin/ipcserv /drivers/miyoo/fbd      /dev/fb0
 @/bin/ipcserv /drivers/fontd          
@@ -6,11 +8,10 @@
 @/bin/ipcserv /sbin/splashd -w 480 -h 320
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
 
-@/bin/splash -m "loading console klog" -p 5
+@/bin/splash -m "loading console0" -p 5
 @export UX_ID=2
-@/bin/ipcserv /drivers/consoled  /dev/klog
-@export KLOG_DEV=/dev/klog
-@set_stdio /dev/klog
+@/bin/ipcserv /drivers/consoled  /dev/console0
+@set_stdio /dev/console0
 
 #@/bin/ipcserv /drivers/miyoo/ms_uartd /dev/tty0
 

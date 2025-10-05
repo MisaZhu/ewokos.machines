@@ -1,3 +1,5 @@
+@/bin/ipcserv /sbin/logd /dev/log
+
 #@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
 #@set_stdio /dev/tty0
 
@@ -15,7 +17,6 @@
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled       
 @set_stdio /dev/console0
-@export KLOG_DEV=/dev/console0
 
 @/bin/splash -m "loading /dev/keyb0" -p 20
 @/bin/ipcserv /drivers/banli/gamekbd  /dev/keyb0

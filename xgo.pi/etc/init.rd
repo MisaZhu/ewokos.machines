@@ -1,3 +1,5 @@
+@/bin/ipcserv /sbin/logd /dev/log 
+
 @/bin/ipcserv /drivers/displayd       
 @/bin/ipcserv /drivers/xgo/spilcdd    /dev/fb0
 @/bin/ipcserv /drivers/fontd          
@@ -5,7 +7,6 @@
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled  /dev/console0 
 set_stdio /dev/console0
-@export KLOG_DEV=/dev/console0
 
 @/bin/ipcserv /drivers/timerd         
 

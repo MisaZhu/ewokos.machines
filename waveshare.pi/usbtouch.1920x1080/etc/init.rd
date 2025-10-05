@@ -1,3 +1,5 @@
+@/bin/ipcserv /sbin/logd /dev/log
+
 #@/bin/ipcserv /drivers/raspix/spi2uartd     /dev/tty0 nr
 @/bin/ipcserv /drivers/raspix/uartd     /dev/tty0 nr
 @/bin/ipcserv /sbin/sessiond
@@ -10,7 +12,6 @@
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled             
 set_stdio /dev/console0
-@export KLOG_DEV=/dev/console0
 
 @/bin/ipcserv /drivers/raspix/usbd.touch    /dev/touch0
 @/bin/ipcserv /drivers/timerd               

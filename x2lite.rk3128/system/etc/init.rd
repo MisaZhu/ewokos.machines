@@ -1,3 +1,5 @@
+@/bin/ipcserv /sbin/logd /dev/log
+
 @/bin/ipcserv /drivers/rk3128/rk_uartd       /dev/tty0
 
 @/bin/ipcserv /drivers/displayd             
@@ -6,9 +8,8 @@
 @/bin/load_font
 
 @export UX_ID=0
-@/bin/ipcserv /drivers/consoled             /dev/klog
-@export KLOG_DEV=/dev/klog
-@set_stdio /dev/klog
+@/bin/ipcserv /drivers/consoled             /dev/console0
+@set_stdio /dev/console0
 
 @/bin/ipcserv /drivers/rk3128/gpio_joystickd  /dev/joystick
 @/bin/ipcserv /drivers/vkeybd                 /dev/vkeyb /dev/joystick -t j
