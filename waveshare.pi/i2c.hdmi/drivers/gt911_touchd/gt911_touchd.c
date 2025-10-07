@@ -5,8 +5,8 @@
 #include <ewoksys/vfs.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/mmio.h>
+#include "gt911/gt911.h"
 
-#include "gt911.h"
 static bool press = false;
 static	TouchCordinate_t cordinate[5];
 static 	uint8_t  number_of_cordinate = 0;
