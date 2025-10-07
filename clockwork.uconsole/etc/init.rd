@@ -1,4 +1,4 @@
-@/bin/ipcserv /sbin/logd /dev/log
+@/bin/ipcserv /drivers/logd /dev/log
 
 @/bin/ipcserv /drivers/clockwork/powerd      /dev/power0
 @/bin/ipcserv /drivers/displayd              

@@ -1,4 +1,4 @@
-@/bin/ipcserv /sbin/logd /dev/log
+@/bin/ipcserv /drivers/logd /dev/log
 
 @/bin/ipcserv /drivers/rk3128/rk_uartd       /dev/tty0
 

@@ -1,4 +1,4 @@
-@/bin/ipcserv /sbin/logd /dev/log
+@/bin/ipcserv /drivers/logd /dev/log
 
 @/bin/ipcserv /drivers/displayd       
 @/bin/ipcserv /drivers/miyoo/fbd      /dev/fb0
