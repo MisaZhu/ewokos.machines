@@ -85,10 +85,12 @@ protected:
 		if(timerStep == 0) {
 			xgo_cmd(XGO_TYPE_SEND, XGO_CMD_SET_FORCE_RT, 0x0, NULL);
 			//xgo_cmd(XGO_TYPE_SEND, XGO_CMD_SET_FORCE_ROLL, 0x0, NULL);
-		}
-		else if(timerStep == 1) {
 			loadExpressIcons();
 			expressLoaded = true;
+		}
+		else if(timerStep == 1) {
+			//loadExpressIcons();
+			//expressLoaded = true;
 		}
 		else if((timerStep % (timerFPS*60)) == 0) {
 			bored();
