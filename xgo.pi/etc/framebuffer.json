@@ -3,5 +3,6 @@
     "height": 240,
     "rotate": 0,
     "depth": 32,
+    "zoom": 0.7,
     "logo": "/usr/system/images/logos/ewokos.png"
 }
