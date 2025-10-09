@@ -2,7 +2,7 @@
 #include <gic.h>
 #ifdef KERNEL_SMP
 void cpu_core_ready(uint32_t core_id) {
-	gic_init(MMIO_BASE + 0x580000);
+	gic_init(MMIO_BASE + 0x581000, MMIO_BASE + 0x582000);
 	ipi_enable(core_id);
 	__irq_enable();
 }
