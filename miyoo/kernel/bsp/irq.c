@@ -5,7 +5,7 @@
 #include <gic.h>
 
 void irq_arch_init(void) {
-	gic_init(0);
+	gic_init(0, 0);
 }
 
 inline uint32_t irq_get(void) {

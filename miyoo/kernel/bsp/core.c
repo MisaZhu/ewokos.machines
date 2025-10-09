@@ -3,7 +3,7 @@
 
 #ifdef KERNEL_SMP
 void cpu_core_ready(uint32_t core_id) {
-	gic_init(0);
+	gic_init(0, 0);
 	gic_irq_enable(core_id, 0);
 	__irq_enable();
 }

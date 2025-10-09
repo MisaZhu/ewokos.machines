@@ -6,7 +6,7 @@
 #include <gic.h>
 
 void irq_arch_init(void) {
-	gic_init(MMIO_BASE + 0x138000);
+	gic_init(MMIO_BASE + 0x139000, MMIO_BASE + 0x13A000);
 }
 
 inline uint32_t irq_get(void) {
