@@ -2,9 +2,9 @@ export MF=waveshare
 
 all: 
 	mkdir -p build
-	cd drivers/rpi_lcdd; make
+	cd drivers/lcdhatd; make
 	cp -r etc build
 
 clean:	
-	cd drivers/rpi_lcdd; make clean
+	cd drivers/lcdhatd; make clean
 	rm -fr build

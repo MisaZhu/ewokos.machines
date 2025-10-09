@@ -33,7 +33,7 @@ class XgoWidget: public Widget {
 		for(int i=0; i<BATT_NUM; i++) {
 			char name[32];
 			snprintf(name, 31, "batt/batt%d.png", i);
-			battIcons[i] = png_image_new(X::getResName(name));
+			battIcons[i] = png_image_new(X::getResName(name).c_str());
 		}
 	}
 	
@@ -41,7 +41,7 @@ class XgoWidget: public Widget {
 		for(int i=0; i<EXPR_NUM; i++) {
 			char name[32];
 			snprintf(name, 31, "express/%d.png", i+1);
-			graph_t* img = png_image_new(X::getResName(name));
+			graph_t* img = png_image_new(X::getResName(name).c_str());
 			expressIcons[i] = img;
 		}
 	}
@@ -50,7 +50,7 @@ class XgoWidget: public Widget {
 		static const uint8_t actNum = 2;
 		static uint8_t acts[actNum] = {XGO_ACT_SHAKE, XGO_ACT_HEIGHT};
 		uint8_t act = acts[random_to(actNum)];
-		klog("bored... ACT: %d\n", act);
+		slog("bored... ACT: %d\n", act);
 		xgo_cmd(XGO_TYPE_SEND, XGO_CMD_ACT, act, NULL);
 	}
 	
@@ -85,10 +85,12 @@ protected:
 		if(timerStep == 0) {
 			xgo_cmd(XGO_TYPE_SEND, XGO_CMD_SET_FORCE_RT, 0x0, NULL);
 			//xgo_cmd(XGO_TYPE_SEND, XGO_CMD_SET_FORCE_ROLL, 0x0, NULL);
-		}
-		else if(timerStep == 1) {
 			loadExpressIcons();
 			expressLoaded = true;
+		}
+		else if(timerStep == 1) {
+			//loadExpressIcons();
+			//expressLoaded = true;
 		}
 		else if((timerStep % (timerFPS*60)) == 0) {
 			bored();
@@ -109,7 +111,7 @@ protected:
 		if(ev->state != XIM_STATE_RELEASE)
 			return false;
 
-		if(ev->value.im.value == JOYSTICK_A) {
+		if(ev->value.im.value == KEY_ENTER) {
 			if(demoing)
 				xgo_cmd(XGO_TYPE_SEND, XGO_CMD_DEMO, 0x0, NULL);
 			else
@@ -173,7 +175,7 @@ int main(int argc, char** argv) {
 	root->add(xgoW);
 	root->focus(xgoW);
 
-	win.open(&x, 0, -1, -1, 240, 240, "xgo", XWIN_STYLE_NORMAL);
+	win.open(&x, -1, -1, -1, 240, 240, "xgo", XWIN_STYLE_NORMAL);
 	win.setTimer(8);
 	win.max();
 	widgetXRun(&x, &win);

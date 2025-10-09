@@ -1,3 +1,5 @@
+@/bin/ipcserv /drivers/logd /dev/log
+
 @/bin/ipcserv /drivers/displayd             
 @/bin/ipcserv /drivers/rk3506/fbd            /dev/fb0
 @/bin/ipcserv /drivers/fontd                
@@ -11,7 +13,6 @@
 
 @/bin/splash -m "config tty_uart" -p 10
 @/bin/ipcserv /drivers/rk3506/uartd       /dev/tty0
-@export KLOG_DEV=/dev/tty0
 @set_stdio /dev/tty0
 @/bin/bgrun /bin/shell
 

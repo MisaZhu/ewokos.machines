@@ -1,13 +1,15 @@
+@/bin/ipcserv /drivers/logd /dev/log
+
 @/bin/ipcserv /drivers/clockwork/powerd      /dev/power0
 @/bin/ipcserv /drivers/displayd              
 @/bin/ipcserv /drivers/clockwork/fbd         /dev/fb0
 @/bin/ipcserv /drivers/fontd                 
-@/bin/load_font
 
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled              /dev/klog
 @set_stdio /dev/klog
-@export KLOG_DEV=/dev/klog
+
+@/bin/load_font
 
 @/bin/ipcserv /drivers/raspix/uartd          /dev/tty0
 @/bin/ipcserv /drivers/timerd                
@@ -22,7 +24,7 @@
 
 #@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
 #@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
-#@/bin/bgrun /bin/telnetd
+#@/bin/bgrun /sbin/telnetd
 
 @/bin/ipcserv /sbin/sessiond
 

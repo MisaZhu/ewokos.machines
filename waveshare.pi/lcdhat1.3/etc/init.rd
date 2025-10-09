@@ -1,3 +1,5 @@
+@/bin/ipcserv /drivers/logd /dev/log
+
 #@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
 #@set_stdio /dev/tty0
 
@@ -9,7 +11,6 @@
 @export UX_ID=0
 @/bin/ipcserv /drivers/consoled       
 @set_stdio /dev/console0
-@export KLOG_DEV=/dev/console0
 
 #@/bin/ipcserv /drivers/waveshare/gamekbd  /dev/keyb0
 @/bin/ipcserv /drivers/waveshare/joykeybd /dev/keyb0

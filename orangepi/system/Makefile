@@ -9,7 +9,7 @@ MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
 #export G_2D_BOOST=yes
-export BSP_LFLAGS= -larch_orangepi
+export BSP_LFLAGS= -lbsp -larch_orangepi
 
 all: x_sys
 	@echo "all done."

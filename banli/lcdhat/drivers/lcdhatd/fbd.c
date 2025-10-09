@@ -55,6 +55,18 @@ static int doargs(int argc, char* argv[]) {
 	return optind;
 }
 
+static int tp_read(uint8_t* buf, uint32_t size) {
+	memset(buf, 0, size);
+	if(size >= 6) {
+		uint16_t* d = (uint16_t*)buf;
+		bsp_gpio_write(8, 1);
+		xpt2046_read(&d[0], &d[1], &d[2]);
+		bsp_gpio_write(8, 0);
+		//klog("tp_read: %d %d %d\n", d[0], d[1], d[2]);
+	}
+	return 6;	
+}
+
 int main(int argc, char** argv) {
 	_spi_div = 16;
 	uint32_t w=240, h=240;
@@ -66,12 +78,17 @@ int main(int argc, char** argv) {
 
 	lcd_init(w, h, G_ROTATE_NONE, _spi_div);
 
+	const int tp_cs = 7;
+	const int tp_irq = 17;
+	xpt2046_init(tp_cs, tp_irq, 64);
+
 
 	fbd_t fbd;
 	fbd.splash = NULL;
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, G_ROTATE_NONE);
+	fbd.read = tp_read;
+	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
 	return ret;
 }

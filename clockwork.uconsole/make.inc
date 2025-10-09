@@ -6,7 +6,7 @@ ifeq ($(ARCH),arm)
 export ARCH_VER=v7
 endif
 
-export BSP_LFLAGS= -larch_bcm283x
+export BSP_LFLAGS= -lbsp -larch_bcm283x
 export HW=raspix
 
 EWOKOS_ROOT_DIR = $(MF_ROOT_DIR)/../..

@@ -5,7 +5,7 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/keydef.h>
-#include <arch/bcm283x/gpio.h>
+#include <bsp/bsp_gpio.h>
 
 typedef struct st_gpio_key {
 	uint32_t pin;
@@ -14,17 +14,17 @@ typedef struct st_gpio_key {
 
 static gpio_key_t _gpio_keys[] = {
 	{5,  KEY_UP},
-	{6,  KEY_DOWN},
-	{16, KEY_LEFT},
-	{13, KEY_RIGHT},
+	{6,  KEY_RIGHT},
+	{13, KEY_LEFT},
+	{16, KEY_DOWN},
+	{19, JOYSTICK_START},
+	{26, JOYSTICK_SELECT},
 	{21, JOYSTICK_A},
 	{20, JOYSTICK_B},
+	{14, JOYSTICK_R1},
 	{12, JOYSTICK_Y},
 	{15, JOYSTICK_X},
-	{26, JOYSTICK_START},
-	{19, JOYSTICK_SELECT},
-	{14, JOYSTICK_R1},
-	{23, KEY_HOME},
+	{23, JOYSTICK_L1},
 	{0,  0}
 };
 
@@ -44,7 +44,7 @@ static int gamekb_read(int fd, int from_pid, fsinfo_t* node,
 		if(_gpio_keys[i].pin == 0)
 			break;
 
-		if(bcm283x_gpio_read(_gpio_keys[i].pin) == 0) {
+		if(bsp_gpio_read(_gpio_keys[i].pin) == 0) {
 			data[cnt] = _gpio_keys[i].key;
 			cnt++;
 		}
@@ -60,14 +60,14 @@ static void init_gpio(void) {
 		if(_gpio_keys[i].key == 0)
 			break;
 
-		bcm283x_gpio_config(_gpio_keys[i].pin, GPIO_INPUT);//input	
-		bcm283x_gpio_pull(_gpio_keys[i].pin, GPIO_PULL_UP); //pull up
+		bsp_gpio_config(_gpio_keys[i].pin, GPIO_INPUT);//input	
+		bsp_gpio_pull(_gpio_keys[i].pin, GPIO_PULL_UP); //pull up
 		i++;
 	}
 }
 
 int main(int argc, char** argv) {
-	bcm283x_gpio_init();
+	bsp_gpio_init();
 	init_gpio();
 
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/gamekb";

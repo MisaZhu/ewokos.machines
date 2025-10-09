@@ -1,5 +1,5 @@
-#include <arch/bcm283x/gpio.h>
-#include <arch/bcm283x/spi.h>
+#include <bsp/bsp_gpio.h>
+#include <bsp/bsp_spi.h>
 #include <ewoksys/vdevice.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -18,21 +18,27 @@ static void TP_init(void) {
 	_down = false;
 	_x = _y = 0;
 	//klog("tp_init\n");
-	bcm283x_spi_set_div(SPI_DIV);
-	bcm283x_spi_select(SPI_SELECT_0);
+	bsp_spi_set_div(SPI_DIV);
+	bsp_spi_select(SPI_SELECT_0);
 
-	bcm283x_gpio_config(TP_CS, GPIO_OUTPUT);
-	bcm283x_gpio_config(TP_IRQ, GPIO_INPUT);
-	bcm283x_gpio_pull(TP_IRQ, GPIO_PULL_UP);
-	bcm283x_gpio_write(TP_CS, 1); // prevent blockage of the SPI bus
+	bsp_gpio_config(TP_CS, GPIO_OUTPUT);
+	bsp_gpio_config(TP_IRQ, GPIO_INPUT);
+	bsp_gpio_pull(TP_IRQ, GPIO_PULL_UP);
+	bsp_gpio_write(TP_CS, 1); // prevent blockage of the SPI bus
 	//klog("tp_init done\n");
+}
+
+static inline uint16_t bsp_spi_transfer16(uint16_t data) {
+	uint8_t hi = bsp_spi_transfer((data >> 8) & 0xff);
+	uint8_t low = bsp_spi_transfer(data & 0xff);
+	return (hi << 8) | low;
 }
 
 static uint32_t cmd(uint8_t cmd) {
 	uint16_t get_val;
 
-	bcm283x_spi_transfer(cmd);
-	get_val = bcm283x_spi_transfer16(0);
+	bsp_spi_transfer(cmd);
+	get_val = bsp_spi_transfer16(0);
 
 	uint32_t ret = get_val >> 4;
 	return ret;
@@ -42,9 +48,9 @@ static bool do_read(uint16_t* x, uint16_t* y){
 	uint16_t tx=0, ty=0;
 	uint16_t i=0;
 
-	bcm283x_spi_set_div(SPI_DIV);
-	bcm283x_gpio_write(TP_CS, 0);
-	bcm283x_spi_activate(1);
+	bsp_spi_set_div(SPI_DIV);
+	bsp_gpio_write(TP_CS, 0);
+	bsp_spi_activate(1);
 
 
 	for(i=0; i<4; i++){
@@ -52,8 +58,8 @@ static bool do_read(uint16_t* x, uint16_t* y){
 		ty += cmd(0xD0);  //y
 	}
 
-	bcm283x_spi_activate(0);
-	bcm283x_gpio_write(TP_CS, 1);
+	bsp_spi_activate(0);
+	bsp_gpio_write(TP_CS, 1);
 
 
 	*x = tx/4;
@@ -65,7 +71,7 @@ int xpt2046_read(uint16_t* press,  uint16_t* x, uint16_t* y) {
 	if(press == NULL || x == NULL || y == NULL)
 		return -1;
 
-	uint32_t t = bcm283x_gpio_read(TP_IRQ);
+	uint32_t t = bsp_gpio_read(TP_IRQ);
 	if(t == 1 && !_down)
  	   return -1;
 

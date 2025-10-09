@@ -55,5 +55,5 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	return fbd_run(&fbd, mnt_point, LCD_HEIGHT, LCD_WIDTH, G_ROTATE_NONE);
+	return fbd_run(&fbd, mnt_point, LCD_HEIGHT, LCD_WIDTH, "");
 }

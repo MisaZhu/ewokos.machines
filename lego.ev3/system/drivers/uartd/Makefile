@@ -15,7 +15,7 @@ EV3_UARTD = $(TARGET_DIR)/drivers/ev3/uartd
 $(EV3_UARTD): $(EV3_UARTD_OBJS) \
 		$(BUILD_DIR)/lib/libarch_ev3.a \
 		$(EWOK_LIBC_A) 
-	$(LD) -Ttext=100 $(EV3_UARTD_OBJS) -o $(EV3_UARTD) -larch_ev3 -lbsp $(BSP_LFLAGS) $(LDFLAGS) $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(EV3_UARTD_OBJS) -o $(EV3_UARTD) -larch_ev3  $(BSP_LFLAGS) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:
 	rm -f $(EV3_UARTD_OBJS) $(EV3_UARTD)
