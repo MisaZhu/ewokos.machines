@@ -21,6 +21,6 @@ set_stdio /dev/console0
 
 @/bin/ipcserv /drivers/xserverd             /dev/x
 @/bin/bgrun /sbin/x/xtouch 
-@/bin/bgrun /sbin/x/xim_vkey  -w 640 -h 120
+@/bin/bgrun /sbin/x/xim_vkey  -w 640 -h 160
 
 @/bin/bgrun /bin/x/xsession misa 
