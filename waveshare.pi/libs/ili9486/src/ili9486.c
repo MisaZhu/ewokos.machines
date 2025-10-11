@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <graph/graph.h>
 #include <ewoksys/vdevice.h>
 #include <bsp/bsp_gpio.h>
 #include <bsp/bsp_spi.h>
@@ -10,6 +11,7 @@
 static int LCD_DC =	24;
 static int LCD_CS	= 8;
 static int LCD_RST = 25;
+static int LCD_BL = 18;
 static int SPI_DIV = 2;
 
 // Screen settings
@@ -49,6 +51,8 @@ static inline void lcd_write_data(uint8_t Data) {
 
 /* Reset LCD */
 static inline void lcd_reset( void ) {
+	bsp_gpio_write(LCD_BL,1);
+
 	bsp_gpio_write(LCD_RST, 0);
 	delay(200);
 	bsp_gpio_write(LCD_RST, 1);
@@ -66,9 +70,24 @@ static inline void lcd_end(void) {
 }
 
 /*Ser rotation of the screen - changes x0 and y0*/
-static inline void lcd_set_buffer(uint16_t w, uint16_t h) {
+static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	lcd_write_command(0x36);
-	lcd_write_data(0x28);
+	 switch(rot) {
+        case G_ROTATE_NONE: // 0度
+            lcd_write_data(0x08);
+            break;
+        case G_ROTATE_90: // 90度
+            lcd_write_data(0x28);
+            break;
+        case G_ROTATE_180: // 180度
+            lcd_write_data(0xC8);
+            break;
+        case G_ROTATE_270: // 270度
+            lcd_write_data(0xE8);
+            break;
+        default:
+            lcd_write_data(0x08); // 默认0度
+    }
 	delay(100);
 	LCD_WIDTH = w;
 	LCD_HEIGHT = h;
@@ -143,14 +162,17 @@ void ili9486_flush(const void* buf, uint32_t size) {
 	lcd_end();
 }
 
-void ili9486_init(uint16_t w, uint16_t h, int pin_rs, int pin_cs, int pin_rst, int cdiv) {
-	LCD_DC = pin_rs;
+void ili9486_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
+		int pin_dc, int pin_cs, int pin_rst, int pin_bl, int cdiv) {
+	LCD_DC = pin_dc;
 	LCD_CS = pin_cs;
 	LCD_RST = pin_rst;
+	LCD_BL = pin_bl;
 	bsp_gpio_init();
 	bsp_gpio_config(LCD_DC, GPIO_OUTPUT);
 	bsp_gpio_config(LCD_CS, GPIO_OUTPUT);
 	bsp_gpio_config(LCD_RST, GPIO_OUTPUT);
+	bsp_gpio_config(LCD_BL, GPIO_OUTPUT);
 
 	lcd_reset();
 	if(cdiv > 0)
@@ -229,12 +251,14 @@ void ili9486_init(uint16_t w, uint16_t h, int pin_rs, int pin_cs, int pin_rst, i
 	lcd_write_command(0x11); // sw reset, wakeup
 	delay(150000);
 
-	lcd_write_command(0x20); // Display Inversion OFF   RPi LCD (A)
-	//lcd_write_command(0x21); // Display Inversion ON    RPi LCD (B)
+	if(inversion == 0)
+		lcd_write_command(0x20); // Display Inversion OFF   RPi LCD (A)
+	else
+		lcd_write_command(0x21); // Display Inversion ON    RPi LCD (B)
 
 	//lcd_write_command(0x36); // Memory Access Control
 	//lcd_write_data(0x48);
-	lcd_set_buffer(w, h);
+	lcd_set_buffer(w, h, rot);
 	lcd_write_command(0x29); // Display ON
 	delay(150000);
 	lcd_end();

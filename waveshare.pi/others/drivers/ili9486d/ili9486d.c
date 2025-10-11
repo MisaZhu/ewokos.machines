@@ -35,20 +35,21 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
   LCD_RST   LCD reset
   */
 int main(int argc, char** argv) {
-	int lcd_rs = 24;
+	int lcd_dc = 24;
 	int lcd_cs = 8;
 	int lcd_rst = 25;
+	int lcd_bl = 25;
 
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/fb0";
 
 	if(argc > 4) {
-		lcd_rs = atoi(argv[2]);
+		lcd_dc = atoi(argv[2]);
 		lcd_cs = atoi(argv[3]);
 		lcd_rst = atoi(argv[4]);
 	}
 
 	bcm283x_spi_init();
-	ili9486_init(lcd_rs, lcd_cs, lcd_rst, 2);
+	ili9486_init(320, 240, G_ROTATE_270, 0, lcd_dc, lcd_cs, lcd_rst, lcd_bl, 16);
 
 	fbd_t fbd;
 	fbd.splash = NULL;

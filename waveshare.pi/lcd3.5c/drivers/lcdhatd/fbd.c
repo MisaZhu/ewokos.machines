@@ -16,7 +16,8 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
 	const int lcd_dc = 24;
 	const int lcd_cs = 8;
 	const int lcd_rst = 25;
-	ili9486_init(w, h, lcd_dc, lcd_cs, lcd_rst, div);
+	const int lcd_bl = 18;
+	ili9486_init(w, h, G_ROTATE_90, 0, lcd_dc, lcd_cs, lcd_rst, lcd_bl, div);
 }
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
