@@ -19,7 +19,6 @@
 @/bin/splash -m "config console klog" -p 20
 @export UX_ID=6
 @/bin/ipcserv /drivers/consoled             /dev/klog
-@export KLOG_DEV=/dev/klog
 @set_stdio /dev/klog
 
 @/bin/splash -m "config  keyboard" -p 30
