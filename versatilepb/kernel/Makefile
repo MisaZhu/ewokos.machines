@@ -1,18 +1,18 @@
 include config.mk
 
-LDS_QEMU = mkos.lds.qemu.S
-LDS = mkos.lds.S
+LDS = mkos.lds.qemu.S
+#LDS = mkos.lds.S
 
 OS_IMG = kernel.img
 OS_ELF = kernel.elf
-OS_QEMU_IMG = kernel.qemu.img
-OS_QEMU_ELF = kernel.qemu.elf
+OS_QEMU_IMG = kernel.img
+OS_QEMU_ELF = kernel.elf
 
 QEMU_CMD = qemu-system-arm
+MACHINE=versatilepb
 
 EWOKOS_ROOT_DIR = ../../..
 SYS_DIR=../system
-MACHINE=raspix
 
 include make.bsp
 include $(EWOKOS_ROOT_DIR)/kernel/platform/arm/make.rule
