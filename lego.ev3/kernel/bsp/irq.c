@@ -97,6 +97,15 @@ void irq_enable(uint32_t irq) {
     cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_SET); 
 }
 
+void irq_enable_core(uint32_t core, uint32_t irq) {
+    (void)core;
+	if(irq == IRQ_TIMER0){ 
+        irq = 21;
+    }
+    cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_SET); 
+}
+
+
 void irq_disable(uint32_t irq) {
 	if(irq == IRQ_TIMER0){
         irq = 21;
