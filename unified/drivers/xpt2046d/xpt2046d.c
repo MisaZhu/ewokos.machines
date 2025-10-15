@@ -7,7 +7,7 @@
 #include <xpt2046/xpt2046.h>
 #include <ewoksys/vdevice.h>
 
-static int _spi_div = 64;
+static int _spi_div = 128;
 static int _tp_cs = 7;
 static int _tp_irq = 25;
 
@@ -56,7 +56,7 @@ static int tp_read(int fd, int from_pid, fsinfo_t* node,
 }
 
 int main(int argc, char** argv) {
-	_spi_div = 64;
+	_spi_div = 128;
 	_tp_cs = 7;
 	_tp_irq = 25;
 
