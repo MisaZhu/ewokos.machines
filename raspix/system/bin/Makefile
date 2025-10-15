@@ -4,3 +4,4 @@ all:
 
 clean:
 	cd aplay;make clean
+	cd bt;make clean
