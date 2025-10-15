@@ -79,7 +79,7 @@ static int tp_read(uint8_t* buf, uint32_t size) {
 }
 
 int main(int argc, char** argv) {
-	_spi_div = 16;
+	_spi_div = 8;
 	LCD_HEIGHT = 320;
 	LCD_WIDTH = 240;
 
@@ -88,16 +88,16 @@ int main(int argc, char** argv) {
 
 	lcd_init(LCD_WIDTH, LCD_HEIGHT, _spi_div);
 
-	//const int tp_cs = 7;
-	//const int tp_irq = 17;
-	//xpt2046_init(tp_cs, tp_irq, 64);
+	const int tp_cs = 7;
+	const int tp_irq = 17;
+	xpt2046_init(tp_cs, tp_irq, 64);
 
 	fbd_t fbd;
 	fbd.splash = NULL;
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	//fbd.read = tp_read;
+	fbd.read = tp_read;
 	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file);
 	return ret;
 }
