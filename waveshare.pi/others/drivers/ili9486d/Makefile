@@ -1,7 +1,7 @@
 MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/../make.inc
 
-EXTRA_LIBS_DIR = ../../../libs
+EXTRA_LIBS_DIR = ../../../../libs
 
 TASK_OBJS = ili9486d.o \
 		$(EXTRA_LIBS_DIR)/ili9486/src/ili9486.o

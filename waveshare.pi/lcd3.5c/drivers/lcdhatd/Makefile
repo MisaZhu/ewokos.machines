@@ -1,4 +1,4 @@
-EXTRA_LIBS_DIR = ../../../libs
+EXTRA_LIBS_DIR = ../../../../libs
 
 TASK_OBJS = \
 		$(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.o \

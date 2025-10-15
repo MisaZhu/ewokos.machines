@@ -1,4 +1,4 @@
-EXTRA_LIBS_DIR = ../../../libs
+EXTRA_LIBS_DIR = ../../../../libs
 CFLAGS += -I $(EXTRA_LIBS_DIR)/xpt2046/include
 
 TASK_OBJS = fbd.o lcdhatd.o \

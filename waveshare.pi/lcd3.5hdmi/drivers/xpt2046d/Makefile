@@ -1,7 +1,7 @@
 MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/../make.inc
 
-EXTRA_LIBS_DIR = ../../../libs
+EXTRA_LIBS_DIR = ../../../../libs
 
 TASK_OBJS = xpt2046d.o \
 		$(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.o

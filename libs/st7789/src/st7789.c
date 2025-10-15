@@ -6,13 +6,13 @@
 #include <ewoksys/vdevice.h>
 #include <bsp/bsp_gpio.h>
 #include <bsp/bsp_spi.h>
-#include <ili9486/ili9486.h>
+#include <st7789/st7789.h>
 
-static int LCD_DC =	24;
+static int LCD_DC =	22;
 static int LCD_CS	= 8;
-static int LCD_RST = 25;
+static int LCD_RST = 27;
 static int LCD_BL = 18;
-static int SPI_DIV = 2;
+static int SPI_DIV = 8;
 
 // Screen settings
 #define DEF_SCREEN_WIDTH 		320
@@ -71,10 +71,12 @@ static inline void lcd_end(void) {
 
 /*Ser rotation of the screen - changes x0 and y0*/
 static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
-	lcd_write_command(0x36);
-	 switch(rot) {
+	//Get the screen scan direction
+	uint8_t MemoryAccessReg = 0x00;
+
+	switch(rot) {
         case G_ROTATE_NONE: // 0度
-            lcd_write_data(0x08);
+            lcd_write_data(0x70);
             break;
         case G_ROTATE_90: // 90度
             lcd_write_data(0x28);
@@ -86,11 +88,13 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
             lcd_write_data(0xE8);
             break;
         default:
-            lcd_write_data(0x08); // 默认0度
+            lcd_write_data(0x70); // 默认0度
     }
+
+	// Set the read / write scan direction of the frame memory
+	lcd_write_command(0x36); //MX, MY, RGB mode
+	lcd_write_data(MemoryAccessReg);	//0x08 set RGB
 	delay(100);
-	LCD_WIDTH = w;
-	LCD_HEIGHT = h;
 	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
 }
 
@@ -140,7 +144,7 @@ static inline void lcd_show(void) {
 	}
 }
 
-void ili9486_flush(const void* buf, uint32_t size) {
+void st7789_flush(const void* buf, uint32_t size) {
 	if(size < LCD_WIDTH * LCD_HEIGHT* 4)
 		return;
 
@@ -162,7 +166,7 @@ void ili9486_flush(const void* buf, uint32_t size) {
 	lcd_end();
 }
 
-void ili9486_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
+void st7789_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 		int pin_dc, int pin_cs, int pin_rst, int pin_bl, int cdiv) {
 	LCD_DC = pin_dc;
 	LCD_CS = pin_cs;
@@ -182,74 +186,77 @@ void ili9486_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 	bsp_spi_select(SPI_SELECT_0);
 
 	lcd_start();
-	lcd_write_command(0x01); // sw reset, wakeup
-	delay(150000);
+	lcd_write_command(0x11); 
+	delay(120000);
+	// lcd_write_command(0x36);
+	// lcd_write_data(0x00);
 
-	lcd_write_command(0x28); // Display OFF
-	lcd_write_command(0x3A); // Interface Pixel Format
-	lcd_write_data(0x55);	// 16 bit/pixel
+	lcd_write_command(0x3A); 
+	lcd_write_data(0x05);
+
+	lcd_write_command(0xB2);
+	lcd_write_data(0x0C);
+	lcd_write_data(0x0C);
+	lcd_write_data(0x00);
+	lcd_write_data(0x33);
+	lcd_write_data(0x33); 
+
+	lcd_write_command(0xB7); 
+	lcd_write_data(0x35);  
+
+	lcd_write_command(0xBB);
+	lcd_write_data(0x37);
+
+	lcd_write_command(0xC0);
+	lcd_write_data(0x2C);
 
 	lcd_write_command(0xC2);
-	lcd_write_data(0x44);    // 保持原配置
-	lcd_write_command(0xC5);
-	lcd_write_data(0x3E);    // VCOMH = 4.0V
-	lcd_write_data(0x30);    // VCOML = -1.5V  
-	lcd_write_data(0x0B);    // VCOM偏移
-	lcd_write_data(0x0B);    // VCM输出
+	lcd_write_data(0x01);
 
-	// 设置亮度 - 0x00(最暗) 到 0xFF(最亮)
-	lcd_write_command(0x51);    // Write Display Brightness
-	lcd_write_data(0xf0);       // 50% 亮度 (128/255)
+	lcd_write_command(0xC3);
+	lcd_write_data(0x12);   
 
- 	lcd_write_command(0xB7);   // 进入扩展命令集
-    lcd_write_data(0x06);     // 启用抗闪烁模式
+	lcd_write_command(0xC4);
+	lcd_write_data(0x20);  
 
-	/*lcd_write_command(0xC2); // Power Control 3 (For Normal Mode)
-	lcd_write_data(0x44);    // Cos z napieciem
+	lcd_write_command(0xC6); 
+	lcd_write_data(0x0F);    
 
-	lcd_write_command(0xC5); // VCOM Control
-	lcd_write_data(0x00);  // const
-	lcd_write_data(0x00);  // nVM ? 0x48
-	lcd_write_data(0x00);  // VCOM voltage ref
-	lcd_write_data(0x00);  // VCM out
+	lcd_write_command(0xD0); 
+	lcd_write_data(0xA4);
+	lcd_write_data(0xA1);
 
-	lcd_write_command(0xE0); // PGAMCTRL(Positive Gamma Control)
-	lcd_write_data(0x0F);
-	lcd_write_data(0x1F);
-	lcd_write_data(0x1C);
-	lcd_write_data(0x0C);
-	lcd_write_data(0x0F);
-	lcd_write_data(0x08);
-	lcd_write_data(0x48);
-	lcd_write_data(0x98);
-	lcd_write_data(0x37);
-	lcd_write_data(0x0A);
-	lcd_write_data(0x13);
+	lcd_write_command(0xE0);
+	lcd_write_data(0xD0);
 	lcd_write_data(0x04);
+	lcd_write_data(0x0D);
 	lcd_write_data(0x11);
+	lcd_write_data(0x13);
+	lcd_write_data(0x2B);
+	lcd_write_data(0x3F);
+	lcd_write_data(0x54);
+	lcd_write_data(0x4C);
+	lcd_write_data(0x18);
 	lcd_write_data(0x0D);
-	lcd_write_data(0x00);
-
-	lcd_write_command(0xE1); // NGAMCTRL (Negative Gamma Correction)
-	lcd_write_data(0x0F);
-	lcd_write_data(0x32);
-	lcd_write_data(0x2E);
 	lcd_write_data(0x0B);
-	lcd_write_data(0x0D);
-	lcd_write_data(0x05);
-	lcd_write_data(0x47);
-	lcd_write_data(0x75);
-	lcd_write_data(0x37);
-	lcd_write_data(0x06);
-	lcd_write_data(0x10);
-	lcd_write_data(0x03);
-	lcd_write_data(0x24);
-	lcd_write_data(0x20);
-	lcd_write_data(0x00);
-	*/
+	lcd_write_data(0x1F);
+	lcd_write_data(0x23);
 
-	lcd_write_command(0x11); // sw reset, wakeup
-	delay(150000);
+	lcd_write_command(0xE1);
+	lcd_write_data(0xD0);
+	lcd_write_data(0x04);
+	lcd_write_data(0x0C);
+	lcd_write_data(0x11);
+	lcd_write_data(0x13);
+	lcd_write_data(0x2C);
+	lcd_write_data(0x3F);
+	lcd_write_data(0x44);
+	lcd_write_data(0x51);
+	lcd_write_data(0x2F);
+	lcd_write_data(0x1F);
+	lcd_write_data(0x1F);
+	lcd_write_data(0x20);
+	lcd_write_data(0x23);
 
 	if(inversion == 0)
 		lcd_write_command(0x20); // Display Inversion OFF   RPi LCD (A)
