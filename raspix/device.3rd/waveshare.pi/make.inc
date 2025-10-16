@@ -9,7 +9,7 @@ endif
 export BSP_LFLAGS= -lbsp -larch_bcm283x
 export HW=raspix
 
-EWOKOS_ROOT_DIR = $(MF_ROOT_DIR)/../../..
+EWOKOS_ROOT_DIR = $(MF_ROOT_DIR)/../../../../..
 SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
 SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build
 

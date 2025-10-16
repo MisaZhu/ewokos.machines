@@ -1,17 +1,13 @@
 ifeq ($(ARCH),)
-export ARCH=aarch64
-endif
-
-ifeq ($(ARCH),arm)
-export ARCH_VER=v7
+export ARCH=arm
 endif
 
 export BSP_LFLAGS= -lbsp -larch_bcm283x
 export HW=raspix
 
-EWOKOS_ROOT_DIR = $(MF_ROOT_DIR)/../..
+EWOKOS_ROOT_DIR = $(MF_ROOT_DIR)/../../../..
 SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
-SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build
+SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 
 #SDK_DIR= /usr/local/ewokos/$(ARCH)
 #ROOTFS_DIR= /usr/local/ewokos/$(ARCH)/$(HW)
