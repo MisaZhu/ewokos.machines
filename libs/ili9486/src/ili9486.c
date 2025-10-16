@@ -73,7 +73,7 @@ static inline void lcd_end(void) {
 static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	lcd_write_command(0x36);
 	switch(rot) {
-        case G_ROTATE_NONE: // 0度
+        case G_ROTATE_0: // 0度
             lcd_write_data(0x08);
             break;
         case G_ROTATE_90: // 90度

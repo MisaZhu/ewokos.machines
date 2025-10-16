@@ -16,6 +16,7 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
 	const int lcd_cs = 8;
 	const int lcd_rst = 27;
 	const int lcd_bl = 18;
+	LCD_MODE = LCD_MODE_1;
 	st77xx_init(w, h, G_ROTATE_270, 1, lcd_dc, lcd_cs, lcd_rst, lcd_bl, div);
 }
 

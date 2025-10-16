@@ -80,8 +80,8 @@ static int tp_read(uint8_t* buf, uint32_t size) {
 
 int main(int argc, char** argv) {
 	_spi_div = 8;
-	LCD_HEIGHT = 320;
-	LCD_WIDTH = 240;
+	LCD_HEIGHT = 240;
+	LCD_WIDTH = 320;
 
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";

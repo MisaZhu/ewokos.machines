@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 
-	lcd_init(w, h, G_ROTATE_NONE, _spi_div);
+	lcd_init(w, h, G_ROTATE_0, _spi_div);
 
 	fbd_t fbd;
 	fbd.splash = NULL;

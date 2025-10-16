@@ -27,6 +27,7 @@ static int SPI_DIV = 8;
 static uint16_t* _lcd_buffer = NULL;
 uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
+uint16_t LCD_MODE = LCD_MODE_0;
 
 static inline void delay(int32_t count) {
 	proc_usleep(count);
@@ -71,24 +72,44 @@ static inline void lcd_end(void) {
 
 /*Ser rotation of the screen - changes x0 and y0*/
 static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
-	//Get the screen scan direction
+	uint8_t mod = 0;
+	if(LCD_MODE == 0) {
+		mod = 0x00;
+		switch(rot) {
+			case G_ROTATE_90: // 90度
+				mod |= 0x70;
+				break;
+			case G_ROTATE_180: // 180度
+				mod |= 0x10;
+				break;
+			case G_ROTATE_270: // 270度
+				mod |= 0xB0;
+				break;
+			default: //G_ROTATE_0
+				mod |= 0x00;
+				break;
+		}
+	}
+	else {
+		mod = 0x08;
+		switch(rot) {
+			case G_ROTATE_90: // 90度
+				mod |= 0x20;
+				break;
+			case G_ROTATE_180: // 180度
+				mod |= 0x80;
+				break;
+			case G_ROTATE_270: // 270度
+				mod |= 0xf0;
+				break;
+			default: //G_ROTATE_0
+				mod |= 0x40;
+				break;
+		}
+	}
+
 	lcd_write_command(0x36); //MX, MY, RGB mode
-	switch(rot) {
-        case G_ROTATE_NONE: // 0度
-            lcd_write_data(0x48);
-            break;
-        case G_ROTATE_90: // 90度
-            lcd_write_data(0x28);
-            break;
-        case G_ROTATE_180: // 180度
-            lcd_write_data(0x88);
-            break;
-        case G_ROTATE_270: // 270度
-            lcd_write_data(0xf8);
-            break;
-        default:
-            lcd_write_data(0x48); // 默认0度
-    }
+    lcd_write_data(mod);
 	delay(100);
 	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
 }

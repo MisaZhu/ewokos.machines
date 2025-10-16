@@ -5,6 +5,12 @@
 
 extern uint16_t LCD_HEIGHT;
 extern uint16_t LCD_WIDTH;
+extern uint16_t LCD_MODE;
+
+enum {
+  LCD_MODE_0 = 0x00,
+  LCD_MODE_1
+};
 
 /*LCD_DC	Instruction/Data Register selection
   LCD_CS    LCD chip selection, low active
