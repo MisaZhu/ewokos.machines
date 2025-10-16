@@ -6,7 +6,7 @@
 #include <ewoksys/vdevice.h>
 #include <bsp/bsp_gpio.h>
 #include <bsp/bsp_spi.h>
-#include <st7789/st7789.h>
+#include <st77xx/st77xx.h>
 
 static int LCD_DC =	22;
 static int LCD_CS	= 8;
@@ -72,28 +72,23 @@ static inline void lcd_end(void) {
 /*Ser rotation of the screen - changes x0 and y0*/
 static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	//Get the screen scan direction
-	uint8_t MemoryAccessReg = 0x00;
-
+	lcd_write_command(0x36); //MX, MY, RGB mode
 	switch(rot) {
         case G_ROTATE_NONE: // 0度
-            lcd_write_data(0x70);
+            lcd_write_data(0x48);
             break;
         case G_ROTATE_90: // 90度
             lcd_write_data(0x28);
             break;
         case G_ROTATE_180: // 180度
-            lcd_write_data(0xC8);
+            lcd_write_data(0x88);
             break;
         case G_ROTATE_270: // 270度
-            lcd_write_data(0xE8);
+            lcd_write_data(0xf8);
             break;
         default:
-            lcd_write_data(0x70); // 默认0度
+            lcd_write_data(0x48); // 默认0度
     }
-
-	// Set the read / write scan direction of the frame memory
-	lcd_write_command(0x36); //MX, MY, RGB mode
-	lcd_write_data(MemoryAccessReg);	//0x08 set RGB
 	delay(100);
 	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
 }
@@ -144,7 +139,7 @@ static inline void lcd_show(void) {
 	}
 }
 
-void st7789_flush(const void* buf, uint32_t size) {
+void st77xx_flush(const void* buf, uint32_t size) {
 	if(size < LCD_WIDTH * LCD_HEIGHT* 4)
 		return;
 
@@ -166,7 +161,7 @@ void st7789_flush(const void* buf, uint32_t size) {
 	lcd_end();
 }
 
-void st7789_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
+void st77xx_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 		int pin_dc, int pin_cs, int pin_rst, int pin_bl, int cdiv) {
 	LCD_DC = pin_dc;
 	LCD_CS = pin_cs;
