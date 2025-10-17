@@ -4,13 +4,13 @@ basic:
 	cd usbd; make
 	cd usbd.touch; make
 	cd hid_keybd; make
-	cd hid_moused; make
 	cd hid_joystickd; make
 	cd spi2uart; make
 	cd wlan; make
 
 gui:
 	cd fbd; make
+	cd hid_moused; make
 
 clean:	
 	cd uartd; make clean

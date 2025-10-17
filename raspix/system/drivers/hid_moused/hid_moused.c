@@ -6,6 +6,7 @@
 #include <ewoksys/ipc.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/mmio.h>
+#include <mouse/mouse.h>
 #include <fcntl.h>
 
 static int hid;
@@ -16,7 +17,7 @@ static uint8_t x;
 static uint8_t y;
 static uint8_t has_data = 0;
 
-static int mouse_read(int fd, int from_pid, fsinfo_t* node,
+static int _read(int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
 	(void)fd;
 	(void)from_pid;
@@ -29,31 +30,29 @@ static int mouse_read(int fd, int from_pid, fsinfo_t* node,
 	
 	uint8_t* d = (uint8_t*)buf;
 	if(!has_data){
-		d[0] = 0;
 		return VFS_ERR_RETRY;
 	}
 
-	d[0] = 1;
-	if(btn == 1 || btn == 4){
-		d[1] = 2;
-		last_btn = 1;
-	}else if(btn == 0){
-		d[1] = last_btn;
-		last_btn = 0;
+	mouse_evt_t *evt = (mouse_evt_t *)buf;
+	evt->type = MOUSE_TYPE_REL;
+	if(btn){
+		evt->state = MOUSE_STATE_DOWN;
+		evt->button = btn;
+	}else if(last_btn){
+		evt->state = MOUSE_STATE_UP;
+		evt->button = last_btn;
+	}else{
+		evt->button = MOUSE_BUTTON_NONE;
+		evt->state = MOUSE_STATE_MOVE;
 	}
 
-	d[2] = x;
-	d[3] = y;
-
-	btn = 0;
-	x = 0; 
-	y = 0;
-
+	evt->x = x;
+	evt->y = y;
 	has_data = 0;
-	return 4;
+	return sizeof(mouse_evt_t);
 }
 
-static int loop(void* p) {
+static int _loop(void* p) {
 	(void)p;
 
 	ipc_disable();
@@ -101,8 +100,8 @@ int main(int argc, char** argv) {
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "mouse");
-	dev.loop_step = loop;
-	dev.read = mouse_read;
+	dev.loop_step = _loop;
+	dev.read = _read;
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 	return 0;
 }

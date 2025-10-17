@@ -2,11 +2,11 @@ basic:
 	cd ttyd; make
 	cd powerd; make
 	cd ps2keybd; make
-	cd ps2moused; make
 	cd smc91c111d; make
 
 gui:
 	cd fbd; make
+	cd ps2moused; make
 
 clean:	
 	cd ttyd; make clean
