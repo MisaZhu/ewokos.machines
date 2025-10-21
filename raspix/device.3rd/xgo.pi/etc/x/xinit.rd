@@ -11,6 +11,6 @@
 
 @/bin/mp3player /usr/system/sounds/start.mp3 &
 
-#@/bin/x/menubar &
+#@/bin/x/statusbar &
 #@/bin/x/xlauncher &
 @/apps/xapps/xapps -l &

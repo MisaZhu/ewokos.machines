@@ -9,6 +9,6 @@
 @export XTHEME=opencde
 @/bin/ipcserv /sbin/x/xwm_opencde
 
-@/bin/x/menubar &
+@/bin/x/statusbar &
 @/bin/x/xlauncher &
 #@/apps/xapps/xapps -l --item_size=120 --font_size=16 &

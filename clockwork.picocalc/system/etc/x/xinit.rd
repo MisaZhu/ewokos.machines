@@ -11,5 +11,5 @@
 
 #@/apps/xapps/xapps -l --item_size=76 --font_size=12 &
 
-#@/bin/x/menubar &
+#@/bin/x/statusbar &
 @/bin/x/xlauncher &
