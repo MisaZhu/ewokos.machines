@@ -10,11 +10,14 @@
 
 //#define I2C_BIT_DELAY() proc_usleep(i2c_wait) 
 
-static inline void udelay(volatile uint32_t loop){
+/*static inline void udelay(volatile uint32_t loop){
 	while(loop--){
 	}
 }
 #define I2C_BIT_DELAY() udelay(30000);
+*/
+
+#define I2C_BIT_DELAY() proc_usleep(3000);
 /*----------------------------------------------------------------------------*/
 static int32_t i2c_sda, i2c_scl, i2c_stop;
 static uint32_t i2c_wait;
