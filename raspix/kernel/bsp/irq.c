@@ -38,6 +38,14 @@ inline void irq_enable_core(uint32_t core, uint32_t irq) {
         irq_enable_pix(irq);
 }
 
+inline void irq_clear_core(uint32_t core, uint32_t irq) {
+
+}
+
+inline void irq_clear(uint32_t irq) {
+
+}
+
 void irq_disable_pi4(uint32_t irq);
 void irq_disable_pix(uint32_t irq);
 void irq_disable(uint32_t irq) {

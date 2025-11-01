@@ -31,6 +31,14 @@ void irq_enable_core(uint32_t core, uint32_t irq) {
 	irq_enable(irq);
 }
 
+inline void irq_clear_core(uint32_t core, uint32_t irq) {
+
+}
+
+inline void irq_clear(uint32_t irq) {
+
+}
+
 void irq_disable(uint32_t irq) {
 	pic_regs_t* pic = (pic_regs_t*)(PIC);
 	sic_regs_t* sic = (sic_regs_t*)(SIC);
