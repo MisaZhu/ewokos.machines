@@ -12,13 +12,13 @@ int32_t bcm283x_sd_init(void) {
 	return 0;
 }
 
-int32_t bcm283x_sd_read_sector(int32_t sector, void* buf) {
-	mmc_read_blocks(buf, sector, 1);
+int32_t bcm283x_sd_read_sector(int32_t sector, void* buf, int cnt) {
+	mmc_read_blocks(buf, sector, cnt);
 	return 0;
 }
 
-int32_t bcm283x_sd_write_sector(int32_t sector, const void* buf) {
-	mmc_write_blocks(sector, 1, buf);
+int32_t bcm283x_sd_write_sector(int32_t sector, const void* buf, int cnt) {
+	mmc_write_blocks(sector, cnt, buf);
 	return 0;
 }
 
