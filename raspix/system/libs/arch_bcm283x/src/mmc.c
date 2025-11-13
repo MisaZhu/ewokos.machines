@@ -426,6 +426,86 @@ static int sd_select_bus_width(struct mmc *mmc, int w)
 	return 0;
 }
 
+static int mmc_switch(struct mmc *mmc, int mode)
+{
+    struct mmc_cmd cmd;
+	struct mmc_data data;
+	uint8_t buf[64];
+	uint8_t mode_bit = 0;
+	int clock = 0;
+	int retry = 3;
+
+	switch(mode){
+		case UHS_SDR104:
+			mode = 0x03;
+			mode_bit = 0x4;
+			clock = 208000000;
+			break;
+		case UHS_SDR50:
+			mode = 0x02;
+			mode_bit = 0x2;
+			clock = 100000000;
+			break;
+		case UHS_SDR25:
+			mode = 0x01;
+			mode_bit = 0x1;
+			clock = 100000000;
+			break;
+		default:
+			return -EINVAL;
+	}
+
+	data.dest = buf;
+	data.blocks = 1;
+	data.blocksize = 64;
+	data.flags = MMC_DATA_READ;
+
+    cmd.cmdidx = MMC_CMD_SWITCH;
+    cmd.resp_type = MMC_RSP_R1b;
+    cmd.cmdarg = 0x0;
+
+    int ret = mmc_send_cmd(mmc, &cmd, &data);
+
+	if(!(buf[13] & mode_bit)){
+		klog("mmc_switch: mode %d failed\n", mode);
+		return -EINVAL;
+	}
+
+	if(buf[16] & 0xf == mode){
+		klog("mmc_switch: mode %d success\n", mode);
+		return 0;
+	}
+
+do_retry:
+	data.dest = buf;
+	data.blocks = 1;
+	data.blocksize = 64;
+	data.flags = MMC_DATA_READ;
+
+	cmd.cmdidx = MMC_CMD_SWITCH;
+	cmd.resp_type = MMC_RSP_R1b;
+	cmd.cmdarg = mode | (0x1 << 31)| 0xfffff0;
+	ret = mmc_send_cmd(mmc, &cmd, &data);
+	if(ret){
+		klog("mmc_switch:  failed\n");
+		return -EINVAL;
+	}	
+
+	if((buf[16] & 0xf) == mode){
+		mmc->clock = clock;
+		bcm2835_set_ios(_sdio, mmc->clock, mmc->bus_width);
+		return 0;
+	}
+
+	if((buf[16] & 0xf) == 0xf){
+		klog("mmc_switch: mode %d error\n", mode);
+		return -EINVAL;
+	}
+	if(retry-- > 0)	
+		goto do_retry;
+	return -EINVAL;
+}
+
 static int mmc_startup(struct mmc *mmc)
 {
 	int err, i;
@@ -478,29 +558,25 @@ static int mmc_startup(struct mmc *mmc)
 	mmc->csd[2] = cmd.response[2];
 	mmc->csd[3] = cmd.response[3];
 
-	if (mmc->version == MMC_VERSION_UNKNOWN) {
-		int version = (cmd.response[0] >> 26) & 0xf;
-
-		switch (version) {
-		case 0:
-			mmc->version = MMC_VERSION_1_2;
-			break;
-		case 1:
-			mmc->version = MMC_VERSION_1_4;
-			break;
-		case 2:
-			mmc->version = MMC_VERSION_2_2;
-			break;
-		case 3:
-			mmc->version = MMC_VERSION_3;
-			break;
-		case 4:
-			mmc->version = MMC_VERSION_4;
-			break;
-		default:
-			mmc->version = MMC_VERSION_1_2;
-			break;
-		}
+	switch ((cmd.response[0] >> 26) & 0xf) {
+	case 0:
+		mmc->version = MMC_VERSION_1_2;
+		break;
+	case 1:
+		mmc->version = MMC_VERSION_1_4;
+		break;
+	case 2:
+		mmc->version = MMC_VERSION_2_2;
+		break;
+	case 3:
+		mmc->version = MMC_VERSION_3;
+		break;
+	case 4:
+		mmc->version = MMC_VERSION_4;
+		break;
+	default:
+		mmc->version = MMC_VERSION_1_2;
+		break;
 	}
 
 	/* divide frequency by 10, since the mults are 10x bigger */
@@ -592,7 +668,10 @@ int mmc_init(void){
 	_mmc.bus_width = 4;
     _mmc.clock = 25000000;
 	bcm2835_set_ios(_sdio,_mmc.clock, _mmc.bus_width);
-    return mmc_startup(&_mmc);
+	mmc_startup(&_mmc);
+	mmc_switch(&_mmc, UHS_SDR25);
+	_mmc.has_init = true;
+	return 0;
 }
 
 int mmc_read_blocks(void *dst, lbaint_t start,

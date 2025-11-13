@@ -6,6 +6,7 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/interrupt.h>
 #include <ewoksys/mmio.h>
+#include <mouse/mouse.h>
 
 #define MOUSE_CR 0x00
 #define MOUSE_STAT 0x04
@@ -170,7 +171,7 @@ static mouse_info_t _minfo[MAX_MEVT];
 static uint32_t _minfo_num = 0;
 static uint32_t _minfo_index = 0;
 
-static int mouse_read(int fd, int from_pid, fsinfo_t* node,
+static int _read(int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
 	(void)fd;
 	(void)from_pid;
@@ -178,19 +179,29 @@ static int mouse_read(int fd, int from_pid, fsinfo_t* node,
 	(void)p;
 	(void)node;
 
-	uint8_t* d = (uint8_t*)buf;
-	d[0] = 0;
-
-	if(size >= 4 && _minfo_num > 0) {
-		d[0] = 1;
-		d[1] = _minfo[_minfo_index].btn;
-		d[2] = _minfo[_minfo_index].rx;
-		d[3] = _minfo[_minfo_index].ry;
+	static uint8_t last_btn = 0;
+	if(_minfo_num > 0) {
+		mouse_evt_t *evt = (mouse_evt_t *)buf;
+		evt->type = MOUSE_TYPE_REL;
+		if(_minfo[_minfo_index].btn != 0){
+			evt->button = _minfo[_minfo_index].btn;
+			evt->state = MOUSE_STATE_DOWN;
+			last_btn = evt->button;
+		}else if(last_btn){
+			evt->state = MOUSE_STATE_UP;
+			evt->button = last_btn;
+			last_btn = 0;
+		}else{	
+			evt->button = MOUSE_BUTTON_NONE;
+			evt->state = MOUSE_STATE_MOVE;
+		}
+		evt->x = _minfo[_minfo_index].rx;
+		evt->y = _minfo[_minfo_index].ry;
 		_minfo_index++;
 		if(_minfo_index >= _minfo_num) {
 			_minfo_num = _minfo_index = 0;
 		}
-		return 4;
+		return sizeof(mouse_evt_t);
 	}
 	return VFS_ERR_RETRY;
 }
@@ -239,7 +250,7 @@ int main(int argc, char** argv) {
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "mouse");
-	dev.read = mouse_read;
+	dev.read = _read;
 	//dev.loop_step = mouse_loop;
 
 	static interrupt_handler_t handler;
