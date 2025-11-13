@@ -396,7 +396,7 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 			      fsm_state != SDEDM_FSM_WRITESTART1 &&
 			      fsm_state != SDEDM_FSM_WRITESTART2))) {
 				hsts = readl(host->ioaddr + SDHSTS);
-				klog("fsm %x, hsts %08x\n", fsm_state, hsts);
+				//klog("fsm %x, hsts %08x\n", fsm_state, hsts);
 				if (hsts & SDHSTS_ERROR_MASK)
 					break;
 			}
@@ -536,6 +536,7 @@ static int bcm2835_transmit(struct bcm2835_host *host)
 				return ret;
 			/* Transfer complete */
 			host->data = NULL;
+			host->use_busy = false;
 		}
 	}
 
@@ -781,6 +782,7 @@ int bcm2835_power_on_module(uint32_t module)
 
 int bcm2835_set_sdhost_clock(uint32_t rate_hz, uint32_t *rate_1, uint32_t *rate_2)
 {
+	//klog("bcm2835_set_sdhost_clock: %d\n", rate_hz);
 	//ALLOC_CACHE_ALIGN_BUFFER(struct msg_set_sdhost_clock, msg_sdhost_clk, 1);
     mail_message_t msg;
     struct msg_set_sdhost_clock* msg_sdhost_clk = (struct msg_set_sdhost_clock*)dma_alloc(0, sizeof(struct msg_set_sdhost_clock));
@@ -914,7 +916,9 @@ static void bcm2835_set_clock(struct bcm2835_host *host, unsigned int clock)
 	host->ns_per_fifo_word = (1000000000 / clock) * 8;
 
 	/* Set the timeout to 500ms */
-	writel(clock, host->ioaddr + SDTOUT);
+	if(clock < 400000)
+		clock = 400000;
+	writel(clock * 2, host->ioaddr + SDTOUT);
 }
 
 int bcm2835_set_ios(struct bcm2835_host *host, int clock, int bus_width)
@@ -949,9 +953,9 @@ void* bcm283x_sdhost_init(void){
 
     _host.ioaddr = (void*)(_mmio_base + 0x202000);
     _host.max_clk = bcm2835_get_mmc_clock(4);
-    bcm2835_set_sdhost_clock(0, &clock_rate[0], &clock_rate[1]);
+    bcm2835_set_sdhost_clock(400000, &clock_rate[0], &clock_rate[1]);
     _host.firmware_sets_cdiv = (clock_rate[0] != (uint32_t)(~0));
-	//klog("sdio max clock:%d cdev:%d\n", _host.max_clk, _host.firmware_sets_cdiv);
+	//klog("sdio max:%d cdev:%d rate:%d %d\n", _host.max_clk, _host.firmware_sets_cdiv, clock_rate[0], clock_rate[1]);
 
     bcm2835_reset_internal(&_host);
 	return (void*)&_host;
