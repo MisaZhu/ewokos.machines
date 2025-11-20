@@ -2,7 +2,7 @@
 #define MAILBOX_H
 
 #include <stdint.h>
-#include <kernel/hw_info.h>
+#include <mm/mmu.h>
 
 #define MAILBOX_BASE (MMIO_BASE+0xB880)
 #define MAIL0_READ (((volatile mail_message_t *)(0x00 + MAILBOX_BASE)))
@@ -22,7 +22,9 @@ typedef struct {
     uint8_t full:1;
 } mail_status_t;
 
-void mailbox_read(uint8_t channel, mail_message_t* msg);
-void mailbox_send(uint8_t channel, mail_message_t* msg);
+uint32_t bcm283x_mailbox_init(void);
+void     bcm283x_mailbox_read(mail_message_t* msg);
+void     bcm283x_mailbox_send(mail_message_t* msg);
+void     bcm283x_mailbox_call(mail_message_t* msg);
 
 #endif

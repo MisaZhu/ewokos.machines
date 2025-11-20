@@ -26,8 +26,8 @@ static uint32_t bcm283x_board_revision(void) {
 	mail_message_t msg;
 	memset(&msg, 0, sizeof(mail_message_t));
 	msg.data = ((uint32_t)data + 0x40000000) >> 4;
-	mailbox_send(PROPERTY_CHANNEL, &msg);
-	mailbox_read(PROPERTY_CHANNEL, &msg);
+	msg.channel = PROPERTY_CHANNEL;
+	bcm283x_mailbox_call(&msg);
 
 #if __aarch64__
     clear_cache((char *)data, (char *)data + sizeof(data));

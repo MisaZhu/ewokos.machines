@@ -21,6 +21,7 @@ LIB_ARCH_BCM283X_OBJS = src/framebuffer.o \
 	src/mmc.o \
 	src/emmc.o \
 	src/sdhost.o \
+	src/sdhci.o \
 	src/auxspi.o 
 
 ARCH_BCM283X = $(TARGET_DIR)/lib/libarch_bcm283x.a
