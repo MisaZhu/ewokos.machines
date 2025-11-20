@@ -54,11 +54,11 @@ int32_t mini_uart_init(uint32_t baud) {
 	/** baudrate count = ((sys_clk/baudrate)/8)-1 */
 	put32(UART_BAUD_REG, get_baud(baud)); /** 16-bit baudrate counter */
 	/* disable pull-down default on tx/rx pins */
-	gpio_pull(UART_TXD_GPIO, GPIO_PULL_NONE);
-	gpio_pull(UART_RXD_GPIO, GPIO_PULL_NONE);
+	bcm283x_gpio_pull(UART_TXD_GPIO, bcm283x_gpio_pull_NONE);
+	bcm283x_gpio_pull(UART_RXD_GPIO, bcm283x_gpio_pull_NONE);
 	/* setup uart TX1/RX1 at pins 14/15 (ALTF5) */
-	gpio_config(UART_TXD_GPIO, GPIO_ALTF5);
-	gpio_config(UART_RXD_GPIO, GPIO_ALTF5);
+	bcm283x_gpio_config(UART_TXD_GPIO, GPIO_ALTF5);
+	bcm283x_gpio_config(UART_RXD_GPIO, GPIO_ALTF5);
 	/** ready to go? */
 	put32(UART_IIR_REG, 0xC6); /** clear TX/RX FIFO */
 	put32(UART_CNTL_REG, 0x03); /** enable TX/RX */

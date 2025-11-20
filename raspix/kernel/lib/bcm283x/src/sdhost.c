@@ -1,17 +1,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <mm/mmu.h>
 
-#include <ewoksys/mmio.h>
-#include <ewoksys/dma.h>
-#include <ewoksys/klog.h>
-#include <ewoksys/kernel_tic.h>
+#include <bcm283x/gpio.h>
+#include <bcm283x/mailbox.h>
+#include <bcm283x/mmc.h>
 
-#include <arch/bcm283x/gpio.h>
-#include <arch/bcm283x/mailbox.h>
-#include <arch/bcm283x/mmc.h>
-
-#define SDHOST_BASE  (_mmio_base + 0x202000)
+#define SDHOST_BASE  (MMIO_BASE + 0x202000)
 
 #define SDCMD  0x00 /* Command to SD card              - 16 R/W */
 #define SDARG  0x04 /* Argument to SD card             - 32 R/W */
@@ -149,6 +145,11 @@ struct bcm2835_host {
 
 static struct bcm2835_host _host;
 
+static uint64_t kernel_tic_ms(uint64_t start){
+	extern uint64_t timer_read_sys_usec(void);
+	return timer_read_sys_usec() / 1000 - start;
+}
+
 static inline int is_power_of_2(uint32_t x)
 {
 	return !(x & (x - 1));
@@ -156,22 +157,22 @@ static inline int is_power_of_2(uint32_t x)
 
 static void bcm2835_dumpregs(struct bcm2835_host *host)
 {
-	klog("=========== REGISTER DUMP ===========\n");
-	klog("SDCMD  0x%08x\n", readl(host->ioaddr + SDCMD));
-	klog("SDARG  0x%08x\n", readl(host->ioaddr + SDARG));
-	klog("SDTOUT 0x%08x\n", readl(host->ioaddr + SDTOUT));
-	klog("SDCDIV 0x%08x\n", readl(host->ioaddr + SDCDIV));
-	klog("SDRSP0 0x%08x\n", readl(host->ioaddr + SDRSP0));
-	klog("SDRSP1 0x%08x\n", readl(host->ioaddr + SDRSP1));
-	klog("SDRSP2 0x%08x\n", readl(host->ioaddr + SDRSP2));
-	klog("SDRSP3 0x%08x\n", readl(host->ioaddr + SDRSP3));
-	klog("SDHSTS 0x%08x\n", readl(host->ioaddr + SDHSTS));
-	klog("SDVDD  0x%08x\n", readl(host->ioaddr + SDVDD));
-	klog("SDEDM  0x%08x\n", readl(host->ioaddr + SDEDM));
-	klog("SDHCFG 0x%08x\n", readl(host->ioaddr + SDHCFG));
-	klog("SDHBCT 0x%08x\n", readl(host->ioaddr + SDHBCT));
-	klog("SDHBLC 0x%08x\n", readl(host->ioaddr + SDHBLC));
-	klog("===========================================\n");
+	printf("=========== REGISTER DUMP ===========\n");
+	printf("SDCMD  0x%08x\n", readl(host->ioaddr + SDCMD));
+	printf("SDARG  0x%08x\n", readl(host->ioaddr + SDARG));
+	printf("SDTOUT 0x%08x\n", readl(host->ioaddr + SDTOUT));
+	printf("SDCDIV 0x%08x\n", readl(host->ioaddr + SDCDIV));
+	printf("SDRSP0 0x%08x\n", readl(host->ioaddr + SDRSP0));
+	printf("SDRSP1 0x%08x\n", readl(host->ioaddr + SDRSP1));
+	printf("SDRSP2 0x%08x\n", readl(host->ioaddr + SDRSP2));
+	printf("SDRSP3 0x%08x\n", readl(host->ioaddr + SDRSP3));
+	printf("SDHSTS 0x%08x\n", readl(host->ioaddr + SDHSTS));
+	printf("SDVDD  0x%08x\n", readl(host->ioaddr + SDVDD));
+	printf("SDEDM  0x%08x\n", readl(host->ioaddr + SDEDM));
+	printf("SDHCFG 0x%08x\n", readl(host->ioaddr + SDHCFG));
+	printf("SDHBCT 0x%08x\n", readl(host->ioaddr + SDHBCT));
+	printf("SDHBLC 0x%08x\n", readl(host->ioaddr + SDHBLC));
+	printf("===========================================\n");
 }
 
 static int bcm283x_sdio_gpio_init(void){
@@ -199,7 +200,7 @@ static uint32_t bcm2835_read_wait_sdcmd(struct bcm2835_host *host)
             break;
     }
     if (timeout_us <= 0)
-		klog("%s: timeout (%d us)\n", __func__, timeout_us);
+		printf("%s: timeout (%d us)\n", __func__, timeout_us);
 
 	return value;
 }
@@ -228,10 +229,10 @@ static void bcm2835_reset_internal(struct bcm2835_host *host)
 		(FIFO_WRITE_THRESHOLD << SDEDM_WRITE_THRESHOLD_SHIFT);
 	writel(temp, host->ioaddr + SDEDM);
 	/* Wait for FIFO threshold to populate */
-	proc_usleep(20000);
+	_delay_usec(20000);
 	writel(SDVDD_POWER_ON, host->ioaddr + SDVDD);
 	/* Wait for all components to go through power on cycle */
-	proc_usleep(20000);
+	_delay_usec(20000);
 	host->clock = 0;
 	writel(host->hcfg, host->ioaddr + SDHCFG);
 	writel(SDCDIV_MAX_CDIV, host->ioaddr + SDCDIV);
@@ -248,7 +249,6 @@ static int bcm2835_check_cmd_error(struct bcm2835_host *host, uint32_t intmask)
 	if (!host->cmd)
 		return -EINVAL;
 
-	klog("sdhost_busy_irq: intmask %08x\n", intmask);
 	if (intmask & SDHSTS_CRC7_ERROR) {
 		ret = -EILSEQ;
 	} else if (intmask & (SDHSTS_CRC16_ERROR |
@@ -274,7 +274,7 @@ static int bcm2835_check_data_error(struct bcm2835_host *host, uint32_t intmask)
 		ret = -ETIMEDOUT;
 
 	if (ret)
-		klog("%s:%d %d\n", __func__, __LINE__, ret);
+		printf("%s:%d %d\n", __func__, __LINE__, ret);
 
 	return ret;
 }
@@ -306,7 +306,7 @@ static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 			uint64_t tlapse_ms = kernel_tic_ms(0) - tstart_ms;
 			if ( tlapse_ms > 1000 ) {
 
-				klog("wait_transfer_complete - still waiting after %lld ms\n",
+				printf("wait_transfer_complete - still waiting after %lld ms\n",
 					tlapse_ms);
 				bcm2835_dumpregs(host);
 				return -ETIMEDOUT;
@@ -318,7 +318,7 @@ static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 		sleep(0);
 		retry_count++;
 		if(retry_count > 10000) {
-			klog("wait_transfer_complete - still waiting after %d times\n",
+			printf("wait_transfer_complete - still waiting after %d times\n",
 				retry_count);
 			bcm2835_dumpregs(host);
 			return -ETIMEDOUT;
@@ -334,7 +334,6 @@ static void bcm2835_prepare_data(struct bcm2835_host *host, struct mmc_cmd *cmd,
 				 struct mmc_data *data)
 {
 	(void)cmd;
-
 	host->data = data;
 	if (!data)
 		return;
@@ -381,7 +380,6 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 			words = edm_fifo_fill(edm);
 		else
 			words = SDDATA_FIFO_WORDS - edm_fifo_fill(edm);
-
 		if (words < burst_words) {
 			int fsm_state = (edm & SDEDM_FSM_MASK);
 
@@ -397,7 +395,6 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 			      fsm_state != SDEDM_FSM_WRITESTART1 &&
 			      fsm_state != SDEDM_FSM_WRITESTART2))) {
 				hsts = readl(host->ioaddr + SDHSTS);
-				//klog("fsm %x, hsts %08x\n", fsm_state, hsts);
 				if (hsts & SDHSTS_ERROR_MASK)
 					break;
 			}
@@ -436,12 +433,12 @@ static int bcm2835_transfer_pio(struct bcm2835_host *host)
 	if (sdhsts & (SDHSTS_CRC16_ERROR |
 		      SDHSTS_CRC7_ERROR |
 		      SDHSTS_FIFO_ERROR)) {
-		klog("%s transfer error - HSTS %08x\n",
+		printf("%s transfer error - HSTS %08x\n",
 		       is_read ? "read" : "write", sdhsts);
 		ret =  -EILSEQ;
 	} else if ((sdhsts & (SDHSTS_CMD_TIME_OUT |
 			      SDHSTS_REW_TIME_OUT))) {
-		klog("%s timeout error - HSTS %08x\n",
+		printf("%s timeout error - HSTS %08x\n",
 		       is_read ? "read" : "write", sdhsts);
 		ret = -ETIMEDOUT;
 	}
@@ -459,7 +456,7 @@ static int bcm2835_finish_command(struct bcm2835_host *host)
 
 	/* Check for errors */
 	if (sdcmd & SDCMD_NEW_FLAG) {
-		klog("command never completed.\n");
+		printf("command never completed.\n");
 		bcm2835_dumpregs(host);
 		return -EIO;
 	} else if (sdcmd & SDCMD_FAIL_FLAG) {
@@ -473,9 +470,10 @@ static int bcm2835_finish_command(struct bcm2835_host *host)
 			if (sdhsts & SDHSTS_CMD_TIME_OUT) {
 				ret = -ETIMEDOUT;
 			} else {
-				klog("unexpected command %d error\n",
-				       host->cmd->cmdidx);
+				printf("unexpected command %d error %08x\n",
+				       host->cmd->cmdidx, sdhsts);
 				bcm2835_dumpregs(host);
+				while(1);
 				ret = -EILSEQ;
 			}
 
@@ -507,7 +505,6 @@ static int bcm2835_transmit(struct bcm2835_host *host)
 {
 	uint32_t intmask = readl(host->ioaddr + SDHSTS);
 	int ret;
-
 	/* Check for errors */
 	ret = bcm2835_check_data_error(host, intmask);
 	if (ret)
@@ -551,13 +548,13 @@ static int bcm2835_send_command(struct bcm2835_host *host, struct mmc_cmd *cmd,
 	uint32_t sdcmd, sdhsts;
 
 	if ((cmd->resp_type & MMC_RSP_136) && (cmd->resp_type & MMC_RSP_BUSY)) {
-		klog("unsupported response type!\n");
+		printf("unsupported response type!\n");
 		return -EINVAL;
 	}
 
 	sdcmd = bcm2835_read_wait_sdcmd(host);
 	if (sdcmd & SDCMD_NEW_FLAG) {
-		klog("previous command never completed.\n");
+		printf("previous command never completed.\n");
 		bcm2835_dumpregs(host);
 		return -EBUSY;
 	}
@@ -608,7 +605,7 @@ static int bcm2835_send_cmd(struct mmc_cmd *cmd,
 	int ret = 0;
 
 	if (data && !is_power_of_2(data->blocksize)) {
-		klog("unsupported block size (%d bytes)\n", data->blocksize);
+		printf("unsupported block size (%d bytes)\n", data->blocksize);
 
 		if (cmd)
 			return -EINVAL;
@@ -620,7 +617,7 @@ static int bcm2835_send_cmd(struct mmc_cmd *cmd,
 	if ((fsm != SDEDM_FSM_IDENTMODE) &&
 	    (fsm != SDEDM_FSM_DATAMODE) &&
 	    (cmd && cmd->cmdidx != MMC_CMD_STOP_TRANSMISSION)) {
-		klog("previous command (%d) not complete (EDM %08x)\n",
+		printf("previous command (%d) not complete (EDM %08x)\n",
 		       readl(host->ioaddr + SDCMD) & SDCMD_CMD_MASK, edm);
 		bcm2835_dumpregs(host);
 
@@ -754,103 +751,76 @@ struct msg_get_clock_rate {
 #define BCM2835_MBOX_PROP_CHAN		8
 
 
-int bcm2835_power_on_module(uint32_t module)
+static int bcm2835_power_on_module(uint32_t module)
 {
-	//ALLOC_CACHE_ALIGN_BUFFER(struct msg_set_power_state, msg_pwr, 1);
     mail_message_t msg;
-    struct msg_set_power_state* msg_pwr = (struct msg_set_power_state*)dma_alloc(0, sizeof(struct msg_set_power_state));
+    struct msg_set_power_state msg_pwr;
 
-	BCM2835_MBOX_INIT_HDR(msg_pwr);
-	BCM2835_MBOX_INIT_TAG(&msg_pwr->set_power_state,
+	BCM2835_MBOX_INIT_HDR(&msg_pwr);
+	BCM2835_MBOX_INIT_TAG(&msg_pwr.set_power_state,
 			      SET_POWER_STATE);
-	msg_pwr->set_power_state.body.req.device_id = module;
-	msg_pwr->set_power_state.body.req.state =
+	msg_pwr.set_power_state.body.req.device_id = module;
+	msg_pwr.set_power_state.body.req.state =
 		BCM2835_MBOX_SET_POWER_STATE_REQ_ON |
 		BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT;
 
-	// ret = bcm2835_mbox_call_prop(BCM2835_MBOX_PROP_CHAN,
-	// 			     &msg_pwr->hdr);
-	// if (ret) {
-	// 	klog("bcm2835: Could not set module %u power state\n",
-	// 	       module);
-	// 	return -EIO;
-	// }
-    msg.data = ((uint32_t)dma_phy_addr(0, msg_pwr) + 0x40000000) >> 4;	
+    msg.data = ((uint32_t)V2P(&msg_pwr) + 0xc0000000) >> 4;	
 	msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
 
 	return 0;
 }
 
-int bcm2835_set_sdhost_clock(uint32_t rate_hz, uint32_t *rate_1, uint32_t *rate_2)
+static int bcm2835_set_sdhost_clock(uint32_t rate_hz, uint32_t *rate_1, uint32_t *rate_2)
 {
-	//klog("bcm2835_set_sdhost_clock: %d\n", rate_hz);
-	//ALLOC_CACHE_ALIGN_BUFFER(struct msg_set_sdhost_clock, msg_sdhost_clk, 1);
     mail_message_t msg;
-    struct msg_set_sdhost_clock* msg_sdhost_clk = (struct msg_set_sdhost_clock*)dma_alloc(0, sizeof(struct msg_set_sdhost_clock));
+    struct msg_set_sdhost_clock msg_sdhost_clk;
 
-	BCM2835_MBOX_INIT_HDR(msg_sdhost_clk);
-	BCM2835_MBOX_INIT_TAG(&msg_sdhost_clk->set_sdhost_clock, SET_SDHOST_CLOCK);
+	BCM2835_MBOX_INIT_HDR(&msg_sdhost_clk);
+	BCM2835_MBOX_INIT_TAG(&msg_sdhost_clk.set_sdhost_clock, SET_SDHOST_CLOCK);
 
-	msg_sdhost_clk->set_sdhost_clock.body.req.rate_hz = rate_hz;
+	msg_sdhost_clk.set_sdhost_clock.body.req.rate_hz = rate_hz;
 
-	// ret = bcm2835_mbox_call_prop(BCM2835_MBOX_PROP_CHAN, &msg_sdhost_clk->hdr);
-	// if (ret) {
-	// 	klog("bcm2835: Could not query sdhost clock rate\n");
-	// 	return -EIO;
-	// }
-    msg.data = ((uint32_t)dma_phy_addr(0, msg_sdhost_clk) + 0x40000000) >> 4;	
+    msg.data = ((uint32_t)V2P(&msg_sdhost_clk) + 0xc0000000) >> 4;	
 	msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
-
-	*rate_1 = msg_sdhost_clk->set_sdhost_clock.body.resp.rate_1;
-	*rate_2 = msg_sdhost_clk->set_sdhost_clock.body.resp.rate_2;
+	*rate_1 = msg_sdhost_clk.set_sdhost_clock.body.resp.rate_1;
+	*rate_2 = msg_sdhost_clk.set_sdhost_clock.body.resp.rate_2;
 
 	return 0;
 }
 
-int bcm2835_get_mmc_clock(uint32_t clock_id)
+static int bcm2835_get_mmc_clock(uint32_t clock_id)
 {
-	//ALLOC_CACHE_ALIGN_BUFFER(struct msg_get_clock_rate, msg_clk, 1);
 	int ret;
 	uint32_t clock_rate = 0;
-    mail_message_t msg;
-    struct msg_get_clock_rate *msg_clk = (struct msg_get_clock_rate*)dma_alloc(0, sizeof(struct msg_get_clock_rate)); 
+    mail_message_t msg __attribute__((aligned(64)));
+    struct msg_get_clock_rate  msg_clk  __attribute__((aligned(64)));
 
 	ret = bcm2835_power_on_module(BCM2835_MBOX_POWER_DEVID_SDHCI);
 	if (ret)
 		return ret;
 
-	BCM2835_MBOX_INIT_HDR(msg_clk);
-	BCM2835_MBOX_INIT_TAG(&msg_clk->get_clock_rate, GET_CLOCK_RATE);
-	msg_clk->get_clock_rate.body.req.clock_id = clock_id;
+	BCM2835_MBOX_INIT_HDR(&msg_clk);
+	BCM2835_MBOX_INIT_TAG(&msg_clk.get_clock_rate, GET_CLOCK_RATE);
+	msg_clk.get_clock_rate.body.req.clock_id = clock_id;
 
-	// ret = bcm2835_mbox_call_prop(BCM2835_MBOX_PROP_CHAN, &msg_clk->hdr);
-	// if (ret) {
-	// 	klog("bcm2835: Could not query eMMC clock rate\n");
-	// 	return -EIO;
-	// }
-    msg.data = ((uint32_t)dma_phy_addr(0, msg_clk) + 0x40000000) >> 4;	
+    msg.data = ((uint32_t)V2P(&msg_clk) + 0xC0000000) >> 4;	
 	msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
 
-	clock_rate = msg_clk->get_clock_rate.body.resp.rate_hz;
+	clock_rate = msg_clk.get_clock_rate.body.resp.rate_hz;
 
 	if (clock_rate == 0) {
-		BCM2835_MBOX_INIT_HDR(msg_clk);
-		BCM2835_MBOX_INIT_TAG(&msg_clk->get_clock_rate, GET_MAX_CLOCK_RATE);
-		msg_clk->get_clock_rate.body.req.clock_id = clock_id;
+		BCM2835_MBOX_INIT_HDR(&msg_clk);
+		BCM2835_MBOX_INIT_TAG(&msg_clk.get_clock_rate, GET_MAX_CLOCK_RATE);
+		msg_clk.get_clock_rate.body.req.clock_id = clock_id;
 
-		// ret = bcm2835_mbox_call_prop(BCM2835_MBOX_PROP_CHAN, &msg_clk->hdr);
-		// if (ret) {
-		// 	klog("bcm2835: Could not query max eMMC clock rate\n");
-		// 	return -EIO;
-		// }
-        msg.data = ((uint32_t)msg_clk + 0x40000000) >> 4;	
+        msg.data = ((uint32_t)V2P(&msg_clk) + 0xc0000000) >> 4;	
 		msg.channel = PROPERTY_CHANNEL;
         bcm283x_mailbox_call(&msg);
 
-		clock_rate = msg_clk->get_clock_rate.body.resp.rate_hz;
+		clock_rate = msg_clk.get_clock_rate.body.resp.rate_hz;
 	}
 
 	return clock_rate;
@@ -861,7 +831,6 @@ static void bcm2835_set_clock(struct bcm2835_host *host, unsigned int clock)
 {
 	int div;
 	uint32_t clock_rate[2] = { 0 };
-
 	/* The SDCDIV register has 11 bits, and holds (div - 2).  But
 	 * in data mode the max is 50MHz wihout a minimum, and only
 	 * the bottom 3 bits are used. Since the switch over is
@@ -957,11 +926,10 @@ struct bus_ops* bcm283x_sdhost_init(void){
     uint32_t clock_rate[2] = { ~0 };
     bcm283x_sdio_gpio_init();
 
-    _host.ioaddr = (void*)(_mmio_base + 0x202000);
+    _host.ioaddr = (void*)(MMIO_BASE + 0x202000);
     _host.max_clk = bcm2835_get_mmc_clock(4);
     bcm2835_set_sdhost_clock(400000, &clock_rate[0], &clock_rate[1]);
     _host.firmware_sets_cdiv = (clock_rate[0] != (uint32_t)(~0));
-	//klog("sdio max:%d cdev:%d rate:%d %d\n", _host.max_clk, _host.firmware_sets_cdiv, clock_rate[0], clock_rate[1]);
 
     bcm2835_reset_internal(&_host);
 	return (void*)&_ops;

@@ -2,6 +2,7 @@
 #define __MMC_H__
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* SD/MMC version bits; 8 flags, 8 major, 8 minor, 8 change */
 #define SD_VERSION_SD	(1U << 31)
@@ -79,8 +80,8 @@ enum bus_mode {
 
 #define SD_DATA_4BIT	0x00040000
 
-#define IS_SD(x)	((x)->version & SD_VERSION_SD)
-#define IS_MMC(x)	((x)->version & MMC_VERSION_MMC)
+#define IS_SD(x)	(!!((x)->version & SD_VERSION_SD))
+#define IS_MMC(x)	(!!((x)->version & MMC_VERSION_MMC))
 
 #define MMC_DATA_READ		1
 #define MMC_DATA_WRITE		2
@@ -848,7 +849,7 @@ struct mmc{
 	struct bus_ops *ops;
 };
 
-int mmc_init(int pi4);
+int mmc_init(void);
 int mmc_read_blocks(void *dst, uint32_t start, uint32_t blkcnt);
 uint32_t mmc_write_blocks(uint32_t start,uint32_t blkcnt, const void *src);
 #endif /* __MVEBU_MMC_H__ */

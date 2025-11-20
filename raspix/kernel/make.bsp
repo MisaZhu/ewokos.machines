@@ -24,6 +24,9 @@ ARCH_OBJS += $(BSP_DIR)/ipi.o \
 endif
 
 ARCH_OBJS += ./lib/bcm283x/src/gpio.o \
+	./lib/bcm283x/src/sdhost.o \
+	./lib/bcm283x/src/sdhci.o \
+	./lib/bcm283x/src/mmc.o \
 	./lib/bcm283x/src/sd.o \
 	./lib/bcm283x/src/mailbox.o \
 	./lib/bcm283x/src/pl011_uart.o \
