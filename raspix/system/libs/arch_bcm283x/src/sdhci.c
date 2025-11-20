@@ -820,7 +820,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		flags = SDHCI_CMD_RESP_LONG;
 	else if (cmd->resp_type & MMC_RSP_BUSY) {
 		flags = SDHCI_CMD_RESP_SHORT_BUSY;
-		mask |= SDHCI_INT_DATA_END;
+		//mask |= SDHCI_INT_DATA_END;
 	} else
 		flags = SDHCI_CMD_RESP_SHORT;
 

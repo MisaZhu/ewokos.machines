@@ -668,10 +668,10 @@ int mmc_init(int pi4){
    	mmc_get_op_cond(&_mmc, false);
     //mmc_complete_op_cond(&_mmc);
 	_mmc.bus_width = 4;
-    _mmc.clock = 100000000;
+    _mmc.clock = 25000000;
 	_mmc.ops->set_ios(&_mmc);
 	mmc_startup(&_mmc);
-	//mmc_switch(&_mmc, UHS_SDR25);
+	mmc_switch(&_mmc, UHS_SDR25);
 	_mmc.has_init = true;
 	return 0;
 }
