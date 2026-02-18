@@ -7,7 +7,7 @@
 void irq_arch_init(void) {
 }
 
-void irq_enable(uint32_t irq) {
+void irq_enable_arch(uint32_t irq) {
        switch(irq){
               case IRQ_TIMER0:
                     csr_set((CSR_SIE), 0x20);
@@ -17,18 +17,18 @@ void irq_enable(uint32_t irq) {
        }
 }
 
-void irq_disable(uint32_t irq) {
+void irq_disable_arch(uint32_t irq) {
 
 }
 
-inline uint32_t irq_get(void) {
+inline uint32_t irq_get_arch(void) {
 	return IRQ_TIMER0;
 }
 
-inline uint32_t irq_get_unified(uint32_t irqno) {
+inline uint32_t irq_get_unified_arch(uint32_t irqno) {
 	return irqno;
 }
 
-inline void irq_eoi(uint32_t irq_raw) {
+inline void irq_eoi_arch(uint32_t irq_raw) {
        (void)irq_raw;
 }

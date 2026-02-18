@@ -21,19 +21,19 @@ void irq_eoi_pix(uint32_t irq_raw);
 uint32_t irq_get_unified_pi4(uint32_t irqno);
 uint32_t irq_get_unified_pix(uint32_t irqno);
 
-inline uint32_t irq_get(void) {
+inline uint32_t irq_get_arch(void) {
     if(_pi4)
         return irq_get_pi4();
     return irq_get_pix();
 }
 
-inline uint32_t irq_get_unified(uint32_t irqno) {
+inline uint32_t irq_get_unified_arch(uint32_t irqno) {
     if(_pi4)
 	    return irq_get_unified_pi4(irqno);
     return irq_get_unified_pix(irqno);
 }
 
-inline void irq_eoi(uint32_t irq_raw) {
+inline void irq_eoi_arch(uint32_t irq_raw) {
     if(_pi4)
 	    irq_eoi_pi4(irq_raw);
     else
@@ -42,31 +42,31 @@ inline void irq_eoi(uint32_t irq_raw) {
 
 void irq_enable_pi4(uint32_t core, uint32_t irq);
 void irq_enable_pix(uint32_t irq);
-inline void irq_enable(uint32_t irq) {
+inline void irq_enable_arch(uint32_t irq) {
     if(_pi4)
         irq_enable_pi4(0, irq);
     else
         irq_enable_pix(irq);
 }
 
-inline void irq_enable_core(uint32_t core, uint32_t irq) {
+inline void irq_enable_core_arch(uint32_t core, uint32_t irq) {
     if(_pi4)
         irq_enable_pi4(core, irq);
     else
         irq_enable_pix(irq);
 }
 
-inline void irq_clear_core(uint32_t core, uint32_t irq) {
+inline void irq_clear_core_arch(uint32_t core, uint32_t irq) {
 
 }
 
-inline void irq_clear(uint32_t irq) {
+inline void irq_clear_arch(uint32_t irq) {
 
 }
 
 void irq_disable_pi4(uint32_t irq);
 void irq_disable_pix(uint32_t irq);
-void irq_disable(uint32_t irq) {
+void irq_disable_arch(uint32_t irq) {
     if(_pi4)
         irq_disable_pi4(irq);
     else

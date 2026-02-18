@@ -12,7 +12,7 @@
 void irq_arch_init(void) {
 }
 
-void irq_enable(uint32_t irq) {
+void irq_enable_arch(uint32_t irq) {
 	pic_regs_t* pic = (pic_regs_t*)(PIC);
 	sic_regs_t* sic = (sic_regs_t*)(SIC);
 
@@ -26,20 +26,20 @@ void irq_enable(uint32_t irq) {
 	}
 }
 
-void irq_enable_core(uint32_t core, uint32_t irq) {
+void irq_enable_core_arch(uint32_t core, uint32_t irq) {
 	(void)core;
-	irq_enable(irq);
+	irq_enable_arch(irq);
 }
 
-inline void irq_clear_core(uint32_t core, uint32_t irq) {
-
-}
-
-inline void irq_clear(uint32_t irq) {
+inline void irq_clear_core_arch(uint32_t core, uint32_t irq) {
 
 }
 
-void irq_disable(uint32_t irq) {
+inline void irq_clear_arch(uint32_t irq) {
+
+}
+
+void irq_disable_arch(uint32_t irq) {
 	pic_regs_t* pic = (pic_regs_t*)(PIC);
 	sic_regs_t* sic = (sic_regs_t*)(SIC);
 	
@@ -63,7 +63,7 @@ static inline int get_irq_raw(uint32_t irq_status) {
 	return i;
 }
 
-inline uint32_t irq_get(void) {
+inline uint32_t irq_get_arch(void) {
 	uint32_t ret = 0;
 	pic_regs_t* pic = (pic_regs_t*)(PIC);
 	sic_regs_t* sic = (sic_regs_t*)(SIC);
@@ -81,11 +81,11 @@ inline uint32_t irq_get(void) {
 	return ret;
 }
 
-inline uint32_t irq_get_unified(uint32_t irqno) {
+inline uint32_t irq_get_unified_arch(uint32_t irqno) {
 	return irqno;
 }
 
-inline void irq_eoi(uint32_t irq_raw) {
+inline void irq_eoi_arch(uint32_t irq_raw) {
 	(void)irq_raw;
 }
 

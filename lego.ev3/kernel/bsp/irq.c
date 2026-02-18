@@ -90,14 +90,14 @@ void irq_arch_init(void) {
     cp_intc_write(1, CP_INTC_GLOBAL_ENABLE);
 }
 
-void irq_enable(uint32_t irq) {
+void irq_enable_arch(uint32_t irq) {
 	if(irq == IRQ_TIMER0){ 
         irq = 21;
     }
     cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_SET); 
 }
 
-void irq_enable_core(uint32_t core, uint32_t irq) {
+void irq_enable_core_arch(uint32_t core, uint32_t irq) {
     (void)core;
 	if(irq == IRQ_TIMER0){ 
         irq = 21;
@@ -105,15 +105,15 @@ void irq_enable_core(uint32_t core, uint32_t irq) {
     cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_SET); 
 }
 
-inline void irq_clear_core(uint32_t core, uint32_t irq) {
+inline void irq_clear_core_arch(uint32_t core, uint32_t irq) {
 
 }
 
-inline void irq_clear(uint32_t irq) {
+inline void irq_clear_arch(uint32_t irq) {
 
 }
 
-void irq_disable(uint32_t irq) {
+void irq_disable_arch(uint32_t irq) {
 	if(irq == IRQ_TIMER0){
         irq = 21;
     }
@@ -122,17 +122,17 @@ void irq_disable(uint32_t irq) {
    	cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_SET);
 }
 
-inline uint32_t irq_get(void) {
+inline uint32_t irq_get_arch(void) {
     uint32_t irq = cp_intc_read(CP_INTC_PRIO_IDX);
     cp_intc_write(irq, CP_INTC_SYS_STAT_IDX_CLR); 
 	return irq;
 }
 
-inline void irq_eoi(uint32_t irq_raw) {
+inline void irq_eoi_arch(uint32_t irq_raw) {
     (void)irq_raw;
 }
 
-inline uint32_t irq_get_unified(uint32_t irqno) {
+inline uint32_t irq_get_unified_arch(uint32_t irqno) {
     if(irqno == 21)
         return IRQ_TIMER0;
 	return irqno;

@@ -9,7 +9,7 @@ void irq_arch_init(void) {
 	gic_init(MMIO_BASE + 0x139000, MMIO_BASE + 0x13A000);
 }
 
-inline uint32_t irq_get(void) {
+inline uint32_t irq_get_arch(void) {
 	int ack = gic_get_irq();
 	int irqno = ack & 0x3FF;
 
@@ -19,7 +19,7 @@ inline uint32_t irq_get(void) {
 	return irqno;
 }
 
-inline uint32_t irq_get_unified(uint32_t irqno) {
+inline uint32_t irq_get_unified_arch(uint32_t irqno) {
 	if(irqno == 27){
 		irqno = IRQ_TIMER0;
 	}else if(irqno == 0){
@@ -28,28 +28,28 @@ inline uint32_t irq_get_unified(uint32_t irqno) {
 	return irqno;
 }
 
-inline void irq_eoi(uint32_t irq_raw) {
+inline void irq_eoi_arch(uint32_t irq_raw) {
 	gic_eoi(irq_raw);
 }
 
-inline void irq_enable(uint32_t irq) {
+inline void irq_enable_arch(uint32_t irq) {
 	if(irq == IRQ_TIMER0)
 		gic_irq_enable(0, 27);
 }
 
-inline void irq_enable_core(uint32_t core, uint32_t irq) {
+inline void irq_enable_core_arch(uint32_t core, uint32_t irq) {
 	if(irq == IRQ_TIMER0)
 		gic_irq_enable(core, 27);
 }
 
-inline void irq_clear_core(uint32_t core, uint32_t irq) {
+inline void irq_clear_core_arch(uint32_t core, uint32_t irq) {
 
 }
 
-inline void irq_clear(uint32_t irq) {
+inline void irq_clear_arch(uint32_t irq) {
 
 }
 
-void irq_disable(uint32_t irq) {
+void irq_disable_arch(uint32_t irq) {
 	(void)irq;
 }
