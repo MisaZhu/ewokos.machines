@@ -122,11 +122,17 @@ void irq_disable(uint32_t irq) {
    	cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_SET);
 }
 
-inline uint32_t irq_get(void) {
+inline uint32_t irq_get(uint32_t* irq_raw) {
     uint32_t irq = cp_intc_read(CP_INTC_PRIO_IDX);
+    *irq_raw = irq;
+
     cp_intc_write(irq, CP_INTC_SYS_STAT_IDX_CLR); 
     if(irq == 21)
         irq = IRQ_TIMER0;
 	return irq;
+}
+
+inline void irq_eoi(uint32_t irq_raw) {
+    (void)irq_raw;
 }
 

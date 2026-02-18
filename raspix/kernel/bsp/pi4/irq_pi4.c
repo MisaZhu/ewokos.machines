@@ -14,9 +14,10 @@ void irq_arch_init_pi4(void) {
 	set_vector_table(&interrupt_table_start);
 }
 
-uint32_t irq_get_pi4(void) {
+uint32_t irq_get_pi4(uint32_t* irq_raw) {
 	int ack = gic_get_irq();
     int irqno = ack & 0x3FF;
+    *irq_raw = irqno;
 
     if(irqno == 27){
         return IRQ_TIMER0;
@@ -24,6 +25,10 @@ uint32_t irq_get_pi4(void) {
         return IRQ_IPI;
     }
     return 0;
+}
+
+inline void irq_eoi_pi4(uint32_t irq_raw) {
+	gic_eoi(irq_raw);
 }
 
 void irq_enable_pi4(int core, uint32_t irq) {

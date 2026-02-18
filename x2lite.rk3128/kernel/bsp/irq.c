@@ -9,9 +9,11 @@ void irq_arch_init(void) {
 	gic_init(MMIO_BASE + 0x139000, MMIO_BASE + 0x13A000);
 }
 
-inline uint32_t irq_get(void) {
+inline uint32_t irq_get(uint32_t* irq_raw) {
 	int ack = gic_get_irq();
 	int irqno = ack & 0x3FF;
+	*irq_raw = irqno;
+
 	int core = get_core_id();//ack & (~0x3FF);
 	//if(irqno == 0)
 	//	printf("%s %d %d\n", __func__, core, irqno);
@@ -21,6 +23,10 @@ inline uint32_t irq_get(void) {
 		return IRQ_IPI;
 	}
 	return 0;
+}
+
+inline void irq_eoi(uint32_t irq_raw) {
+	gic_eoi(irq_raw);
 }
 
 inline void irq_enable(uint32_t irq) {
