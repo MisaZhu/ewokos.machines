@@ -9,20 +9,23 @@ void irq_arch_init(void) {
 	gic_init(MMIO_BASE + 0x139000, MMIO_BASE + 0x13A000);
 }
 
-inline uint32_t irq_get(uint32_t* irq_raw) {
+inline uint32_t irq_get(void) {
 	int ack = gic_get_irq();
 	int irqno = ack & 0x3FF;
-	*irq_raw = irqno;
 
-	int core = get_core_id();//ack & (~0x3FF);
+	//int core = get_core_id();//ack & (~0x3FF);
 	//if(irqno == 0)
 	//	printf("%s %d %d\n", __func__, core, irqno);
+	return irqno;
+}
+
+inline uint32_t irq_get_unified(uint32_t irqno) {
 	if(irqno == 27){
-		return IRQ_TIMER0;
+		irqno = IRQ_TIMER0;
 	}else if(irqno == 0){
-		return IRQ_IPI;
+		irqno = IRQ_IPI;
 	}
-	return 0;
+	return irqno;
 }
 
 inline void irq_eoi(uint32_t irq_raw) {

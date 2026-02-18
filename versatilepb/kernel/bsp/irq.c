@@ -63,8 +63,7 @@ static inline int get_irq_raw(uint32_t irq_status) {
 	return i;
 }
 
-inline uint32_t irq_get(uint32_t* irq_raw) {
-	(void)irq_raw;
+inline uint32_t irq_get(void) {
 	uint32_t ret = 0;
 	pic_regs_t* pic = (pic_regs_t*)(PIC);
 	sic_regs_t* sic = (sic_regs_t*)(SIC);
@@ -80,6 +79,10 @@ inline uint32_t irq_get(uint32_t* irq_raw) {
 		}
 	}
 	return ret;
+}
+
+inline uint32_t irq_get_unified(uint32_t irqno) {
+	return irqno;
 }
 
 inline void irq_eoi(uint32_t irq_raw) {

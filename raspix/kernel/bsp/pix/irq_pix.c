@@ -34,18 +34,20 @@ void irq_arch_init_pix(void) {
 	set_vector_table(&interrupt_table_start);
 }
 
-uint32_t irq_get_pix(uint32_t* irq_raw) {
+uint32_t irq_get_pix(void) {
 	uint32_t ret = 0;
 	uint32_t pending = read_core0_pending();
-	*irq_raw = pending & 0x08;
-
 	if (pending & 0x08 ) {
 		ret = IRQ_TIMER0;
 	}
 	return ret;
 }
 
-inline void irq_eoi_pix(uint32_t irq_raw) {
+uint32_t irq_get_unified_pix(uint32_t irqno) {
+	return irqno;
+}
+
+void irq_eoi_pix(uint32_t irq_raw) {
 	(void)irq_raw;
 }
 

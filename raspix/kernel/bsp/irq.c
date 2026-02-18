@@ -14,15 +14,23 @@ void irq_arch_init(void) {
         irq_arch_init_pix();
 }
 
-uint32_t irq_get_pi4(uint32_t* irq_raw);
-uint32_t irq_get_pix(uint32_t* irq_raw);
+uint32_t irq_get_pi4();
+uint32_t irq_get_pix();
 void irq_eoi_pi4(uint32_t irq_raw);
 void irq_eoi_pix(uint32_t irq_raw);
+uint32_t irq_get_unified_pi4(uint32_t irqno);
+uint32_t irq_get_unified_pix(uint32_t irqno);
 
-inline uint32_t irq_get(uint32_t* irq_raw) {
+inline uint32_t irq_get(void) {
     if(_pi4)
-        return irq_get_pi4(irq_raw);
-    return irq_get_pix(irq_raw);
+        return irq_get_pi4();
+    return irq_get_pix();
+}
+
+inline uint32_t irq_get_unified(uint32_t irqno) {
+    if(_pi4)
+	    return irq_get_unified_pi4(irqno);
+    return irq_get_unified_pix(irqno);
 }
 
 inline void irq_eoi(uint32_t irq_raw) {
