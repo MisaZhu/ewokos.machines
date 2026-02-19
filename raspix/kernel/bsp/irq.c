@@ -7,7 +7,7 @@
 
 void irq_arch_init_pi4(void);
 void irq_arch_init_pix(void);
-void irq_arch_init(void) {
+void irq_init_arch(void) {
     if(_pi4)
         irq_arch_init_pi4();
     else

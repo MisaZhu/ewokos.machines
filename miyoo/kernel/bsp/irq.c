@@ -4,7 +4,7 @@
 #include "timer_arch.h"
 #include <gic.h>
 
-void irq_arch_init(void) {
+void irq_init_arch(void) {
 	gic_init(0, 0);
 }
 

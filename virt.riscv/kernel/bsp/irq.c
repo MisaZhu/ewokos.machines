@@ -4,7 +4,7 @@
 #include <csr.h>
 #include <arch_context.h>
 
-void irq_arch_init(void) {
+void irq_init_arch(void) {
 }
 
 void irq_enable_arch(uint32_t irq) {

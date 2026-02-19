@@ -56,7 +56,7 @@
 #define IRQ_UART1   53
 #define IRQ_UART2   61
 
-void irq_arch_init(void) {
+void irq_init_arch(void) {
     cp_intc_write(0, CP_INTC_GLOBAL_ENABLE);
 
     /* Disable all host interrupts */
