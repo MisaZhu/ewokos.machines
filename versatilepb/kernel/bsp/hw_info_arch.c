@@ -27,7 +27,6 @@ void sys_info_init_arch(void) {
 	_sys_info.gpu.max_size = _framebuffer_end_raw - _framebuffer_base_raw;
 	_sys_info.gpu.size = _sys_info.gpu.max_size;
 
-	_allocable_phy_mem_base = V2P(get_allocable_start());
 	_allocable_phy_mem_top = _sys_info.phy_offset +  
 			_sys_info.total_usable_mem_size < _sys_info.mmio.phy_base ?
 			_sys_info.total_usable_mem_size : _sys_info.mmio.phy_base;

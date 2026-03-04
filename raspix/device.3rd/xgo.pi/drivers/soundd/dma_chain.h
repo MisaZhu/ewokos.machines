@@ -3,8 +3,6 @@
 
 #include <ewoksys/mmio.h>
 
-#define DMA_V_BASE				 (_mmio_base + 0x7000)
-
 #define DMA_CS                   0x00
 #define DMA_CONBLK_AD            0x04
 #define DMA_TI                   0x08

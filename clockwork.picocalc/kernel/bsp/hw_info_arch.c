@@ -45,6 +45,8 @@ inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) {
 
 #endif
 
+#define FB_SIZE (128*1024)
+
 void sys_info_init_arch(void) {
     memset(&_sys_info, 0, sizeof(sys_info_t));
 
@@ -58,14 +60,11 @@ void sys_info_init_arch(void) {
     _sys_info.mmio.phy_base = 0xFF000000;
     _sys_info.mmio.size = 12*MB;
 
-    _sys_info.sys_dma.size = DMA_SIZE;
-    _allocable_phy_mem_base = V2P(get_allocable_start());
-    _allocable_phy_mem_top = _sys_info.phy_offset +
-            _sys_info.total_usable_mem_size -
-            128*1024 -
-            _sys_info.sys_dma.size;
-    _sys_info.sys_dma.phy_base = _allocable_phy_mem_top;
-    _sys_info.sys_dma.v_base = DMA_V_BASE;
+	_allocable_phy_mem_top = _sys_info.phy_offset +
+			_sys_info.total_usable_mem_size - FB_SIZE;
+
+	_sys_info.kmalloc_size = 4*MB;
+	_sys_info.sys_dma.size = 4*MB;
 
     _sys_info.cores = 3;
 }

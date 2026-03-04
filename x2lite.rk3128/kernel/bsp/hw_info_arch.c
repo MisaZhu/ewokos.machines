@@ -124,7 +124,6 @@ void sys_info_init_arch(void) {
 	_sys_info.mmio.phy_base = 0x10000000;
 	_sys_info.mmio.size = 8*MB;
 
-	_allocable_phy_mem_base = V2P(get_allocable_start());
 	_allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size - 36*MB;
 
     _sys_info.gpu.phy_base = 0x6dd00000;

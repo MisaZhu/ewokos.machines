@@ -15,7 +15,6 @@
 #define CLOCK_BASE      (_mmio_base + 0x101000)
 #endif
 
-#define DMA_V_BASE        (_mmio_base + 0x007100)         /* DMA register base address */
 #define DMA_ENABLE      (DMA_V_BASE + 0xFF0)                   /* DMA global enable bits */
 
 #define BCM283x_PWMCLK_CNTL 40
