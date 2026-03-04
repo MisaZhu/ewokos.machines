@@ -7,9 +7,6 @@
 #include <kernel/core.h>
 #endif
 
-
-uint32_t allocable_phy_mem_top = 0;
-uint32_t allocable_phy_mem_base = 0;
 uint32_t _core_base_offset = 0;
 
 #define FB_SIZE (4*MB)
@@ -26,7 +23,7 @@ void sys_info_init_arch(void) {
 	_sys_info.mmio.phy_base = 0x1f000000;
 	_sys_info.mmio.size = 16*MB;
 
-	allocable_phy_mem_top = _sys_info.phy_offset +
+	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
 			_sys_info.total_usable_mem_size - FB_SIZE;
 
 	_sys_info.gpu.phy_base = 0x27c00000; 
@@ -87,7 +84,7 @@ void arch_vm(page_dir_entry_t* vm) {
 }
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(allocable_phy_mem_base), P2V(allocable_phy_mem_top));
+	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {

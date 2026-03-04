@@ -11,9 +11,6 @@
 #include <kernel/core.h>
 #endif
 
-
-uint32_t allocable_phy_mem_top = 0;
-uint32_t allocable_phy_mem_base = 0;
 uint32_t _core_base_offset = 0;
 uint32_t _uart_type = UART_MINI;
 uint32_t _pi4 = 0;
@@ -128,11 +125,11 @@ void sys_info_init_arch(void) {
 	_sys_info.gpu.max_size = FB_SIZE;
 
 	if(_sys_info.total_usable_mem_size <= 1*GB) {
-		allocable_phy_mem_top = _sys_info.phy_offset +
+		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
 				_sys_info.total_usable_mem_size - FB_SIZE;
 	}
 	else {
-		allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
+		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
 	}
 
 #ifdef KERNEL_SMP
@@ -177,12 +174,12 @@ void start_core(uint32_t core_id) {
 void kalloc_arch(void) {
 	if(_sys_info.total_usable_mem_size > 1*GB) {
 		//skip framebuffer mem block
-		//kalloc_append(P2V(allocable_phy_mem_base), P2V(_sys_info.gpu.phy_base));
-		kalloc_append(P2V(allocable_phy_mem_base), P2V(0x3c100000));
-		kalloc_append(P2V(1*GB), P2V(allocable_phy_mem_top));
+		//kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.gpu.phy_base));
+		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(0x3c100000));
+		kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
 	}
 	else
-		kalloc_append(P2V(allocable_phy_mem_base), P2V(allocable_phy_mem_top));
+		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {

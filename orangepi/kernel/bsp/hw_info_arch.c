@@ -8,9 +8,6 @@
 #include <kernel/core.h>
 #endif
 
-
-uint32_t allocable_phy_mem_top = 0;
-uint32_t allocable_phy_mem_base = 0;
 uint32_t _pi4 = 0;
 	
 #define FB_SIZE 64*MB
@@ -32,11 +29,11 @@ void sys_info_init_arch(void) {
 	_sys_info.mmio.size = 128*MB;
 
 	if(_sys_info.total_usable_mem_size <= 1*GB) {
-		allocable_phy_mem_top = _sys_info.phy_offset +
+		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
 				_sys_info.total_usable_mem_size - FB_SIZE;
 	}
 	else {
-		allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
+		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
 	}
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
@@ -110,5 +107,5 @@ void start_core(uint32_t core_id) {
 #endif
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(allocable_phy_mem_base), P2V(allocable_phy_mem_top));
+	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
