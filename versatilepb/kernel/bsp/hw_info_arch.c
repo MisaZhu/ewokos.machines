@@ -7,8 +7,8 @@ extern char _framebuffer_base_raw[];
 extern char _framebuffer_end_raw[];
 
 
-uint32_t _allocable_phy_mem_top = 0;
-uint32_t _allocable_phy_mem_base = 0;
+uint32_t allocable_phy_mem_top = 0;
+uint32_t allocable_phy_mem_base = 0;
 
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
@@ -27,7 +27,7 @@ void sys_info_init_arch(void) {
 	_sys_info.gpu.max_size = _framebuffer_end_raw - _framebuffer_base_raw;
 	_sys_info.gpu.size = _sys_info.gpu.max_size;
 
-	_allocable_phy_mem_top = _sys_info.phy_offset +  
+	allocable_phy_mem_top = _sys_info.phy_offset +  
 			_sys_info.total_usable_mem_size < _sys_info.mmio.phy_base ?
 			_sys_info.total_usable_mem_size : _sys_info.mmio.phy_base;
 	_sys_info.cores = 1;
@@ -38,7 +38,7 @@ void arch_vm(page_dir_entry_t* vm) {
 }
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(_allocable_phy_mem_base), P2V(_allocable_phy_mem_top));
+	kalloc_append(P2V(allocable_phy_mem_base), P2V(allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
