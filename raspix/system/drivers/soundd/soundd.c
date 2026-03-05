@@ -1,6 +1,7 @@
 #include <arch/bcm283x/gpio.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/syscall.h>
+#include <sysinfo.h>
 #include <string.h>
 #include <unistd.h>
 #include <ewoksys/dma.h>
@@ -15,6 +16,9 @@
 #define CLOCK_BASE      (_mmio_base + 0x101000)
 #endif
 
+static sys_info_t _sysinfo;
+
+#define DMA_V_BASE      _sysinfo.sys_dma.v_base
 #define DMA_ENABLE      (DMA_V_BASE + 0xFF0)                   /* DMA global enable bits */
 
 #define BCM283x_PWMCLK_CNTL 40
@@ -82,6 +86,8 @@ static dma_cb_t* _dma_cb = NULL;
 static uint32_t _dma_data_addr = 0;
 
 static void audio_init(void) {   
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sysinfo);
+
 	volatile unsigned* clk = (void*)CLOCK_BASE;
 	volatile unsigned* pwm = (void*)PWM_BASE;
 

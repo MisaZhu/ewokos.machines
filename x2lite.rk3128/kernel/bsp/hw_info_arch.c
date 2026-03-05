@@ -122,7 +122,6 @@ void sys_info_init_arch(void) {
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size - 36*MB;
 
     _sys_info.gpu.phy_base = 0x6dd00000;
-    _sys_info.gpu.v_base = FB_BASE;
     _sys_info.gpu.max_size = 1024*600*4;
     _sys_info.gpu.size = _sys_info.gpu.max_size;
 
