@@ -198,7 +198,7 @@ void fill_screen(uint32_t color) {
     buffer[17] = 0;
     
     // 目标缓冲区信息
-    buffer[18] = _fb_info.gpu_base;
+    buffer[18] = _fb_info.phy_base;
     buffer[19] = _fb_info.width;
     buffer[20] = _fb_info.height;
     buffer[21] = _fb_info.pitch;
@@ -260,7 +260,7 @@ void test(void) {
     // 执行带alpha通道的BLT操作，将圆形绘制到屏幕中心
     gpu_blt_with_alpha(
         src_phys_addr, 200, 200,           // 源图像信息
-        _fb_info.gpu_base,           // 目标地址（帧缓冲）
+        _fb_info.phy_base,           // 目标地址（帧缓冲）
         _fb_info.width, _fb_info.height, // 目标尺寸
         0, 0,                              // 源矩形起点
         300, 200,                          // 目标位置
@@ -321,14 +321,14 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	_fb_info.depth = fbinit->depth;
 	_fb_info.pitch = _fb_info.width*(_fb_info.depth/8);
 
-	_fb_info.gpu_base = ((uint32_t)fbinit->pointer) & 0x3fffffff; //GPU addr to ARM addr
+	_fb_info.phy_base = ((uint32_t)fbinit->pointer) & 0x3fffffff; //GPU addr to ARM addr
 	_fb_info.pointer = sysinfo.sys_dma.v_base + sysinfo.sys_dma.size;
 	_fb_info.size = fbinit->size;
 	_fb_info.xoffset = 0;
 	_fb_info.yoffset = 0;
 	_fb_info.size_max = 64*1024*1024;
-	syscall3(SYS_MEM_MAP,(ewokos_addr_t) _fb_info.pointer, (ewokos_addr_t)_fb_info.gpu_base, _fb_info.size_max);
-	_fb_info.dma_id = dma_set(_fb_info.gpu_base+_fb_info.size, _fb_info.size_max - _fb_info.size, true);
+	syscall3(SYS_MEM_MAP,(ewokos_addr_t) _fb_info.pointer, (ewokos_addr_t)_fb_info.phy_base, _fb_info.size_max);
+	_fb_info.dma_id = dma_set(_fb_info.phy_base+_fb_info.size, _fb_info.size_max - _fb_info.size, true);
 
 	dma_free(0, (ewokos_addr_t)fbinit);
 	//test();
