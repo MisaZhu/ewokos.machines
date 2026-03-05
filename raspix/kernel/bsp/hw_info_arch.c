@@ -120,11 +120,10 @@ void sys_info_init_arch(void) {
 	strcpy(_sys_info.arch, "armv7");
 #endif
 	_sys_info.mmio.size = 31*MB;
-	_sys_info.gpu.max_size = FB_SIZE;
 
 	if(_sys_info.total_usable_mem_size <= 1*GB) {
 		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-				_sys_info.total_usable_mem_size - _sys_info.gpu.max_size;
+				_sys_info.total_usable_mem_size - FB_SIZE;
 	}
 	else {
 		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
@@ -172,7 +171,6 @@ void start_core(uint32_t core_id) {
 void kalloc_arch(void) {
 	if(_sys_info.total_usable_mem_size > 1*GB) {
 		//skip framebuffer mem block
-		//kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.gpu.phy_base));
 		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(0x3c100000));
 		kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
 	}
@@ -181,7 +179,7 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.gpu.phy_base && size <= _sys_info.gpu.max_size)
+	if(phy_base >= _sys_info.total_phy_mem_size - FB_SIZE) //Framebuffer mem block
 		return 0;
 	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
 		return 0;

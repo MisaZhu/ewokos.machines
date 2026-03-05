@@ -322,12 +322,12 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	_fb_info.pitch = _fb_info.width*(_fb_info.depth/8);
 
 	_fb_info.gpu_base = ((uint32_t)fbinit->pointer) & 0x3fffffff; //GPU addr to ARM addr
-	_fb_info.pointer = sysinfo.gpu.v_base;
+	_fb_info.pointer = sysinfo.sys_dma.v_base + sysinfo.sys_dma.size;
 	_fb_info.size = fbinit->size;
 	_fb_info.xoffset = 0;
 	_fb_info.yoffset = 0;
-	_fb_info.size_max = sysinfo.gpu.max_size;
-	syscall3(SYS_MEM_MAP,(ewokos_addr_t) _fb_info.pointer, (ewokos_addr_t)_fb_info.gpu_base, (ewokos_addr_t)_fb_info.size_max);
+	_fb_info.size_max = 64*1024*1024;
+	syscall3(SYS_MEM_MAP,(ewokos_addr_t) _fb_info.pointer, (ewokos_addr_t)_fb_info.gpu_base, _fb_info.size_max);
 	_fb_info.dma_id = dma_set(_fb_info.gpu_base+_fb_info.size, _fb_info.size_max - _fb_info.size, true);
 
 	dma_free(0, (ewokos_addr_t)fbinit);

@@ -108,6 +108,8 @@ inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { //TOD
 }
 #endif
 
+#define FB_SIZE (1024*600*4)
+
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
 	strcpy(_sys_info.machine, "rk3128");
@@ -121,10 +123,6 @@ void sys_info_init_arch(void) {
 
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size - 36*MB;
 
-    _sys_info.gpu.phy_base = 0x6dd00000;
-    _sys_info.gpu.max_size = 1024*600*4;
-    _sys_info.gpu.size = _sys_info.gpu.max_size;
-
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
 #else
@@ -134,7 +132,7 @@ void sys_info_init_arch(void) {
 
 void arch_vm(page_dir_entry_t* vm) {
 	//map framebuffer
-	map_pages_size(vm, _sys_info.gpu.v_base, _sys_info.gpu.phy_base, _sys_info.gpu.max_size, AP_RW_D, PTE_ATTR_WRBACK);	
+	//map_pages_size(vm, _sys_info.gpu.v_base, _sys_info.gpu.phy_base, _sys_info.gpu.max_size, AP_RW_D, PTE_ATTR_WRBACK);	
 	map_pages_size(vm, _sys_info.mmio.phy_base+0x10000000, _sys_info.mmio.phy_base+0x10000000, _sys_info.mmio.size, AP_RW_D, PTE_ATTR_DEV);	
 	map_pages_size(vm, _sys_info.mmio.v_base+0x10000000, _sys_info.mmio.phy_base+0x10000000, _sys_info.mmio.size, AP_RW_D, PTE_ATTR_DEV);	
 }
@@ -144,7 +142,7 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.gpu.phy_base && size <= _sys_info.gpu.max_size)
+	if(phy_base >= 0x6dd00000 && size <= FB_SIZE)
 		return 0;
 	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
 		return 0;
