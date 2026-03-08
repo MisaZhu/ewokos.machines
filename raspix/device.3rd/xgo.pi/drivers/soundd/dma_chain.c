@@ -3,6 +3,8 @@
 #include <string.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/vfs.h>
+#include <sysinfo.h>
+#include <ewoksys/syscall.h>
 
 #include "dma_chain.h"
  
@@ -47,7 +49,11 @@ static int dma_chain_size(dma_buf_t *chain){
 	return ret;
 }
 
+static sys_info_t _sysinfo;
+#define DMA_V_BASE      _sysinfo.sys_dma.v_base
+
 void dma_chain_init(void){
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sysinfo);
     uint8_t *buf =  (uint8_t*)dma_alloc(0, DMA_BUF_SIZE*DMA_BUF_CNT);
 	
 	write32(DMA_V_BASE + DMA_CS, 0x1 << 31);
