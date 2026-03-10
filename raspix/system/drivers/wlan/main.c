@@ -241,6 +241,11 @@ static int net_dcntl(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) 
 			PF->addi(ret, brcm_check_data());
 			break;
 		}	
+		case 2: //get wifi state
+		{//get buffer count
+			PF->addi(ret, brcm_state());
+			break;
+		}
 		default:
 			break;
 	}
