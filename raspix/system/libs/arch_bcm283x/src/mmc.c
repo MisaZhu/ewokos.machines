@@ -794,7 +794,7 @@ uint32_t mmc_write_blocks(uint32_t start,
 	/* SPI multiblock writes terminate using a special
 	 * token, not a STOP_TRANSMISSION request.
 	 */
-	if (!mmc_host_is_spi(mmc) && blkcnt > 1) {
+	if (!mmc_host_is_spi(&_mmc) && blkcnt > 1) {
 		cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
 		cmd.cmdarg = 0;
 		cmd.resp_type = MMC_RSP_R1b;
