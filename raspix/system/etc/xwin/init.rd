@@ -21,7 +21,7 @@
 
 #@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
 #@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
-#@/bin/ipcserv /drivers/localtimed    /dev/localtime
+#@/bin/ipcserv /drivers/timed    /dev/time
 #@/bin/bgrun /sbin/telnetd
 
 @/bin/load_font
