@@ -34,6 +34,9 @@ final:
 basic: basic_sys final
 	@echo "all done."
 
+network: network_sys final
+	@echo "all done."
+
 gui: gui_sys final
 	@echo "all done."
 
@@ -42,13 +45,16 @@ basic_sys: kernel_heads
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
 	cd libs;make
 	cd $(SYS_ROOT_DIR)/basic;make
-	cd drivers;make basic
+	cd drivers;make
 	cd bin;make
 	@cp -r etc/basic/* ${TARGET_DIR}/etc
 
-gui_sys: basic_sys 
+network_sys: basic_sys
+	cd $(SYS_ROOT_DIR)/network;make
+	@cp -r etc/network/* ${TARGET_DIR}/etc
+
+gui_sys: network_sys
 	cd $(SYS_ROOT_DIR)/gui;make
-	cd drivers;make gui
 	@cp -r etc/gui/* ${TARGET_DIR}/etc
 
 x: x_sys final
