@@ -8,8 +8,8 @@
 #include <arch/bcm283x/pl011_uart.h>
 #include "firmware_3.h"
 
-inline uint8_t lo(uint16_t val) { return (uint8_t)(val & 0xff); }
-inline uint8_t hi(uint16_t val) { return (uint8_t)((val & 0xff00) >> 8); }
+uint8_t lo(uint16_t val) { return (uint8_t)(val & 0xff); }
+uint8_t hi(uint16_t val) { return (uint8_t)((val & 0xff00) >> 8); }
 
 enum {
     OGF_HOST_CONTROL          = 0x03,

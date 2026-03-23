@@ -6,11 +6,13 @@ basic:
 	cd hid_keybd; make
 	cd hid_joystickd; make
 	cd spi2uart; make
-	cd wlan; make
 
 gui:
 	cd fbd; make
 	cd hid_moused; make
+
+network:
+	cd wlan; make
 
 clean:	
 	cd uartd; make clean
