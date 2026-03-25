@@ -32,7 +32,7 @@ static int32_t bsp_sd_read_cache(uint32_t sector, void *buf){
 }
 
 static int32_t bsp_sd_write_cache(uint32_t sector, void *buf){
-	uint32_t l1 = (sector >> 21) & 0x1FF;
+	/*uint32_t l1 = (sector >> 21) & 0x1FF;
 	if(cache_entry[l1] == 0)
 		cache_entry[l1] = calloc(4096, 1);
 
@@ -45,11 +45,14 @@ static int32_t bsp_sd_write_cache(uint32_t sector, void *buf){
 	uint32_t l3 = (sector >> 3) & 0x1FF;
 	if(l3_entry[l3] == 0){
 		l3_entry[l3] = malloc(4096);
-		mmc_read_blocks(l3_entry[l3], sector&(~0x7),8);
+		mmc_read_blocks(l3_entry[l3], sector&(~0x7),1);
 	}
 	uint8_t *page = l3_entry[l3];
 	memcpy(page + (sector & 0x7) * 512, buf, 512);
-	//todo: need write back
+	// Write back the modified page to SD card
+	mmc_write_blocks(sector&(~0x7), 1, page);
+	*/
+	mmc_write_blocks(sector, 1, buf);
 	return 0;
 }
 

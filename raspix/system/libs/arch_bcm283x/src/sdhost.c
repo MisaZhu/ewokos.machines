@@ -295,7 +295,12 @@ static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 
 		if ((fsm == SDEDM_FSM_READWAIT) ||
 		    (fsm == SDEDM_FSM_WRITESTART1) ||
-		    (fsm == SDEDM_FSM_READDATA)) {
+		    (fsm == SDEDM_FSM_READDATA) ||
+		    (fsm == SDEDM_FSM_WRITEDATA) ||
+		    (fsm == SDEDM_FSM_WRITEWAIT1) ||
+		    (fsm == SDEDM_FSM_WRITEWAIT2) ||
+		    (fsm == SDEDM_FSM_WRITECRC) ||
+		    (fsm == SDEDM_FSM_WRITESTART2)) {
 			writel(edm | SDEDM_FORCE_DATA_MODE,
 			       host->ioaddr + SDEDM);
 			break;
@@ -355,18 +360,13 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 	uint32_t hsts = 0;
 	uint32_t *buf;
 
-	if (blksize % sizeof(uint32_t))
+	if (blksize % sizeof(uint32_t)) {
+		klog("transfer_block_pio: block size not multiple of 4: %zu\n", blksize);
 		return -EINVAL;
+	}
 
 	buf = is_read ? (uint32_t *)data->dest : (uint32_t *)data->src;
-
-	if (is_read)
-		data->dest += blksize;
-	else
-		data->src += blksize;
-
 	copy_words = blksize / sizeof(uint32_t);
-
 	/*
 	 * Copy all contents from/to the FIFO as far as it reaches,
 	 * then wait for it to fill/empty again and rewind.
@@ -392,14 +392,13 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 			    (!is_read &&
 			     (fsm_state != SDEDM_FSM_WRITEDATA &&
 			      fsm_state != SDEDM_FSM_WRITEWAIT1 &&
-			      fsm_state != SDEDM_FSM_WRITEWAIT2 &&
-			      fsm_state != SDEDM_FSM_WRITECRC &&
-			      fsm_state != SDEDM_FSM_WRITESTART1 &&
-			      fsm_state != SDEDM_FSM_WRITESTART2))) {
+			      fsm_state != SDEDM_FSM_WRITESTART1))) {
 				hsts = readl(host->ioaddr + SDHSTS);
-				//klog("fsm %x, hsts %08x\n", fsm_state, hsts);
-				if (hsts & SDHSTS_ERROR_MASK)
-					break;
+				if (hsts & SDHSTS_ERROR_MASK) {
+					klog("%s FSM state error: %x, HSTS %08x\n",
+					     is_read ? "read" : "write", fsm_state, hsts);
+					return -EILSEQ;
+				}
 			}
 			continue;
 		} else if (words > copy_words) {
@@ -408,15 +407,21 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 
 		copy_words -= words;
 		/* Copy current chunk to/from the FIFO */
+		//klog("transfer_block_pio: copying %d words\n", words);
 		while (words) {
 			if (is_read)
 				*(buf++) = readl(host->ioaddr + SDDATA);
-			else
+			else {
 				writel(*(buf++), host->ioaddr + SDDATA);
+			}
 			words--;
 		}
 	}
 
+	if (is_read)
+		data->dest += blksize;
+	else
+		data->src += blksize;
 	return 0;
 }
 
@@ -427,7 +432,8 @@ static int bcm2835_transfer_pio(struct bcm2835_host *host)
 	bool is_read;
 	int ret = 0;
 
-	is_read = (host->data->flags & MMC_DATA_READ) != 0;
+	bool is_write = (host->data->flags & MMC_DATA_WRITE) != 0;
+	is_read = !is_write;
 	ret = bcm2835_transfer_block_pio(host, is_read);
 	if (ret)
 		return ret;
@@ -588,10 +594,12 @@ static int bcm2835_send_command(struct bcm2835_host *host, struct mmc_cmd *cmd,
 	}
 
 	if (data) {
-		if (data->flags & MMC_DATA_WRITE)
+		if (data->flags & MMC_DATA_WRITE) {
 			sdcmd |= SDCMD_WRITE_CMD;
-		if (data->flags & MMC_DATA_READ)
+		}
+		if (data->flags & MMC_DATA_READ) {
 			sdcmd |= SDCMD_READ_CMD;
+		}
 	}
 
 	writel(sdcmd | SDCMD_NEW_FLAG, host->ioaddr + SDCMD);

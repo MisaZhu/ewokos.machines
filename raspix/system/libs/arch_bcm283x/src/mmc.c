@@ -64,8 +64,8 @@ int mmc_poll_for_busy(struct mmc *mmc, int timeout_ms)
 			return err;
 
 		if ((status & MMC_STATUS_RDY_FOR_DATA) &&
-		    (status & MMC_STATUS_CURR_STATE) !=
-		     MMC_STATE_PRG)
+		    ((status & MMC_STATUS_CURR_STATE) !=
+		     MMC_STATE_PRG))
 			break;
 
 		if (status & MMC_STATUS_MASK) {
@@ -798,15 +798,18 @@ uint32_t mmc_write_blocks(uint32_t start,
 		cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
 		cmd.cmdarg = 0;
 		cmd.resp_type = MMC_RSP_R1b;
+		klog("mmc write blocks: send stop cmd\n");
 		if (mmc_send_cmd(&_mmc, &cmd, NULL)) {
 			klog("mmc fail to send stop cmd\n");
 			return 0;
 		}
+		klog("mmc write blocks: send stop cmd\n");
 	}
 
 	/* Waiting for the ready status */
-	if (mmc_poll_for_busy(&_mmc, timeout_ms))
-		return 0;
+	int res = mmc_poll_for_busy(&_mmc, timeout_ms);
 
+	if(res)
+		return 0;
 	return blkcnt;
 }
