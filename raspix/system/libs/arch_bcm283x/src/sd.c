@@ -29,6 +29,7 @@ int32_t bcm283x_sd_read_sector(int32_t sector, void* buf, int cnt) {
 }
 
 int32_t bcm283x_sd_write_sector(int32_t sector, const void* buf, int cnt) {
+	/*
 	if (buf == NULL || cnt <= 0) {
 		return -1;
 	}
@@ -36,6 +37,7 @@ int32_t bcm283x_sd_write_sector(int32_t sector, const void* buf, int cnt) {
 	if (result != (uint32_t)cnt) {
 		return -1;
 	}
+	*/
 	return 0;
 }
 
