@@ -53,7 +53,7 @@ static int32_t bsp_sd_write_cache(uint32_t sector, void *buf){
 	mmc_write_blocks(sector&(~0x7), 1, page);
 	*/
 
-	//mmc_write_blocks(sector, 1, buf);
+	mmc_write_blocks(sector, 1, buf);
 	return 0;
 }
 
