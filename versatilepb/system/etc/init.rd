@@ -2,7 +2,7 @@
 @echo "|  < EwokOS MicroKernel >               |\n" 
 @echo "+---------------------------------------+\n"
 
-@/bin/splash -i /usr/system/images/logos/apple_old.png -m "/drivers/timerd" -p 20
+@/bin/splash -i /usr/system/images/logos/ewokos.png -m "/drivers/timerd" -p 20
 @/bin/ipcserv /drivers/timerd                 
 
 @/bin/splash  -m "config keyboard" -p 30
