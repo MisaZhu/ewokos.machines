@@ -26,6 +26,7 @@ x_sys: kernel_heads
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
 	cd libs;make
 	cd $(SYS_ROOT_DIR)/basic;make
+	cd $(SYS_ROOT_DIR)/network;make
 	cd $(SYS_ROOT_DIR)/gui;make
 	cd drivers;make
 	cd $(SYS_ROOT_DIR)/xwin;make
@@ -37,6 +38,7 @@ clean:
 	cd drivers;make clean
 	cd $(SYS_ROOT_DIR)/xwin;make clean
 	cd $(SYS_ROOT_DIR)/gui;make clean
+	cd $(SYS_ROOT_DIR)/network;make clean
 	cd $(SYS_ROOT_DIR)/basic;make clean
 	cd $(EWOKOS_ROOT_DIR)/sw.extra/; make HW=$(HW) clean
 	rm -fr $(BUILD_DIR)
