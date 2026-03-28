@@ -84,10 +84,10 @@ static int kbd_loop(void*) {
 		for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
 			if(kb_states[i].key == c){
 				macthed = true;
-				if(key[0] == 1){//press
+				if(key[0] == KEY_PRESS){//press
 					kb_states[i].key = c; 
 				}
-				else if(key[0] == 3){//release
+				else if(key[0] == KEY_RELEASE){//release
 					kb_states[i].key = 0;
 				}
 				break;
@@ -97,10 +97,10 @@ static int kbd_loop(void*) {
 		if(!macthed) {
 			for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
 				if(kb_states[i].key == 0){
-					if(key[0] == 1){//press
+					if(key[0] == KEY_PRESS){//press
 						kb_states[i].key = c;
 					}
-					else if(key[0] == 3){//release
+					else if(key[0] == KEY_RELEASE){//release
 						kb_states[i].key = 0;
 					}
 					break;
