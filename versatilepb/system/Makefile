@@ -13,9 +13,9 @@ all: x
 include $(SYS_ROOT_DIR)/platform/make.inc
 
 final:
-	rm -fr $(MACHINE_BUILD_DIR)
+#	rm -fr $(MACHINE_BUILD_DIR)
 	mkdir -p $(MACHINE_BUILD_DIR)
-	mv $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
+	cp -r $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
 	rm -fr $(TARGET_DIR)
 
 x_sys: kernel_heads

@@ -12,7 +12,7 @@ export BSP_LFLAGS= -lbsp -larch_orangepi
 
 all: x_sys
 	@echo "all done."
-	rm -fr $(MACHINE_BUILD_DIR)
+#	rm -fr $(MACHINE_BUILD_DIR)
 	mkdir -p $(MACHINE_BUILD_DIR)
 	mv $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
 	rm -fr $(TARGET_DIR)
