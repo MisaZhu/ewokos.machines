@@ -2,8 +2,7 @@ TASK_OBJS = keybd.o
 TASK = keybd 
 
 MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/../make.inc
-
+include $(MF_ROOT_DIR)/../../make.inc
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)

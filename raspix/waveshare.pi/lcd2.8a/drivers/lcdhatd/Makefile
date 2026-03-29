@@ -8,12 +8,11 @@ TASK_OBJS = \
 TASK = lcdhatd 
 
 MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/../make.inc
+include $(MF_ROOT_DIR)/../../make.inc
+BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 CFLAGS += -I $(EXTRA_LIBS_DIR)/xpt2046/include \
 	-I $(EXTRA_LIBS_DIR)/ili9486/include
-
-BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)
 

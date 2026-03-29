@@ -5,12 +5,12 @@ TASK_OBJS = \
 
 TASK = gt911_touchd 
 
+
 MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/../make.inc
+include $(MF_ROOT_DIR)/../../make.inc
+BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 CFLAGS += -I $(EXTRA_LIBS_DIR)/gt911/include
-
-BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)
 

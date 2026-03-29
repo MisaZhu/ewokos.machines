@@ -1,13 +1,14 @@
-SYS_DIR=../../../../../system/
+include ../../make.inc
+SYS_DIR=$(ewokos)/system/
 include $(SYS_DIR)/platform/riscv/make.rule
 
 BUILD_DIR = $(SYS_DIR)/build/$(HW)
 TARGET_DIR = $(BUILD_DIR)
 
-LDFLAGS = -L$(TARGET_DIR)/lib
+LDFLAGS = -L $(TARGET_DIR)/lib
 
-CFLAGS += -I$(SYS_DIR)/basic/libs/libc/ewoksys/include \
-	-I$(SYS_DIR)/basic/libs/sd/include \
+CFLAGS += -I $(SYS_DIR)/basic/libs/libc/ewoksys/include \
+	-I $(SYS_DIR)/basic/libs/sd/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 LIB_BSP_OBJS = src/bsp_sd.o

@@ -1,5 +1,3 @@
-export MF=raspix
-
 all: 
 	mkdir -p build
 	cd drivers/xpt2046d; make

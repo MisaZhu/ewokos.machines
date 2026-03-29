@@ -1,14 +1,15 @@
-SYS_DIR=../../../../../system/
+include ../../make.inc
+SYS_DIR=$(ewokos)/system/
 include $(SYS_DIR)/platform/arm/make.rule
 
 BUILD_DIR = $(SYS_DIR)/build/$(HW)
 TARGET_DIR = $(BUILD_DIR)
 
-LDFLAGS = -L$(TARGET_DIR)/lib
+LDFLAGS = -L $(TARGET_DIR)/lib
 
-CFLAGS += -I$(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
-	-I$(SYS_DIR)/basic/libs/sd/include \
-	-I$(SYS_DIR)/gui/libs/graph/include \
+CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
+	-I $(SYS_DIR)/basic/libs/sd/include \
+	-I $(SYS_DIR)/gui/libs/graph/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 ifeq ($(G_2D_BOOST),yes)

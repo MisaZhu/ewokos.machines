@@ -1,9 +1,9 @@
-MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/make.inc
-
 TASK_OBJS = soundd.o i2s.o wm8960.o dma_chain.o 
 TASK = soundd
 
+include ../../../make.inc
+
+MF_ROOT_DIR=../..
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)

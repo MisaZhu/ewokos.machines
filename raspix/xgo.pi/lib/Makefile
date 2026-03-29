@@ -1,11 +1,6 @@
-EWOKOS_ROOT_DIR = ../../../..
-SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
-SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build
+include ../../make.inc
 
-MF_ROOT_DIR=..
-include $(MF_ROOT_DIR)/make.inc
-
-BUILD_DIR = $(MF_ROOT_DIR)/build
+BUILD_DIR = $(SYS_BUILD_DIR)/$(HW)
 
 CFLAGS += -Iinclude
 

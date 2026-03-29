@@ -11,8 +11,12 @@ OS_QEMU_ELF = kernel.elf
 QEMU_CMD = qemu-system-arm
 MACHINE=versatilepb
 
-EWOKOS_ROOT_DIR = ../../..
-SYS_DIR=../system
+ifeq ($(ewokos),)
+ewokos=~/work/ewokos
+endif
+EWOKOS_ROOT_DIR = $(ewokos)
+
+SYS_DIR= (EWOKOS_ROOT_DIR)/system
 
 include make.bsp
 include $(EWOKOS_ROOT_DIR)/kernel/platform/arm/make.rule

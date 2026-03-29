@@ -1,9 +1,8 @@
-MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/make.inc
-
 TASK_OBJS = powerd.o
 TASK = powerd 
 
+MF_ROOT_DIR=../..
+include $(MF_ROOT_DIR)/make.inc
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)

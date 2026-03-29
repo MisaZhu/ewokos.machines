@@ -1,5 +1,6 @@
 MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/../make.inc
+include $(MF_ROOT_DIR)/../../make.inc
+BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 EXTRA_LIBS_DIR = ../../../../libs
 
@@ -9,8 +10,6 @@ TASK_OBJS = xpt2046d.o \
 CFLAGS += -I $(EXTRA_LIBS_DIR)/xpt2046/include 
 
 TASK = xpt2046d 
-
-BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)
 

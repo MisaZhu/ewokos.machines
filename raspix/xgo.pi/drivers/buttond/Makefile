@@ -1,9 +1,10 @@
-MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/make.inc
 
 TASK_OBJS = xgo_buttond.o
 TASK = xgo_buttond
 
+include ../../../make.inc
+
+MF_ROOT_DIR=../..
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)

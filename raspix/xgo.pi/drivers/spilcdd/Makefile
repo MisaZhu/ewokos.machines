@@ -1,9 +1,9 @@
-MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/make.inc
-
 TASK_OBJS = spilcdd.o lcd_reg.o
 TASK = spilcdd 
 
+include ../../../make.inc
+
+MF_ROOT_DIR=../..
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)

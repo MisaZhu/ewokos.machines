@@ -1,7 +1,6 @@
-export HW=orangepi
-export ARCH=arm
+include make.inc
 
-EWOKOS_ROOT_DIR = ../../..
+EWOKOS_ROOT_DIR = $(ewokos)
 SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
 INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)

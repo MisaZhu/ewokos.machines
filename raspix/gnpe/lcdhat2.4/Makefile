@@ -1,4 +1,4 @@
-export MF=gnpe
+export HW=gnpe
 
 all: 
 	mkdir -p build

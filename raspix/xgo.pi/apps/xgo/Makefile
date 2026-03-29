@@ -1,13 +1,13 @@
-MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/make.inc
-
 TASK_OBJS = xgo.o
-
 TASK = xgo
-BUILD_DIR = $(MF_ROOT_DIR)/build/apps/$(TASK)
 
-CXXFLAGS += -I $(MF_ROOT_DIR)/build/include
-LDFLAGS += -L$(MF_ROOT_DIR)/build/lib
+include ../../../make.inc
+
+CXXFLAGS += -I $(SYS_BUILD_DIR)/$(HW)/include
+LDFLAGS += -L $(SYS_BUILD_DIR)/$(HW)/lib
+
+MF_ROOT_DIR=../..
+BUILD_DIR = $(MF_ROOT_DIR)/build/apps/$(TASK)
 
 all: $(TASK)
 

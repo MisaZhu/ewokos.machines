@@ -1,15 +1,11 @@
-export HW=rk3128
-export ARCH=arm
-export ARCH_VER=v7
+include make.inc
 
-EWOKOS_ROOT_DIR = ../../..
+EWOKOS_ROOT_DIR = $(ewokos)
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
 INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
-
-export BSP_LFLAGS= -lbsp -larch_rk3128
 
 all: x_sys
 	@echo "all done."

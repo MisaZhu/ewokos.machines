@@ -1,9 +1,9 @@
 TASK_OBJS = gamekbd.o
 TASK = gamekbd 
 
-MF_ROOT_DIR=../..
-include $(MF_ROOT_DIR)/../make.inc
+include ../../../../make.inc
 
+MF_ROOT_DIR=../..
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
 all: $(TASK)

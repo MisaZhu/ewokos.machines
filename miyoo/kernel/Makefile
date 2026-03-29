@@ -10,6 +10,10 @@ OS_QEMU_ELF = kernel7.qemu.elf
 
 QEMU_CMD = qemu-system-aarch64
 
-EWOKOS_ROOT_DIR = ../../..
+ifeq ($(ewokos),)
+ewokos=~/work/ewokos
+endif
+EWOKOS_ROOT_DIR = $(ewokos)
+
 include make.bsp
 include $(EWOKOS_ROOT_DIR)/kernel/platform/arm/make.rule
