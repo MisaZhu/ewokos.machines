@@ -273,6 +273,14 @@ static inline int32_t play_avail(struct snd_pcm_runtime *runtime) {
 	return avail;
 }
 
+static inline int32_t capture_avail(struct snd_pcm_runtime *runtime) {
+	int32_t avail = runtime->status.appl_ptr - runtime->status.hw_ptr;
+	if (avail < 0) {
+		avail += runtime->boundary;
+	}
+	return avail;
+}
+
 static inline int32_t frames_ready(struct snd_pcm_runtime *runtime) {
 	int frames = runtime->buffer_size - play_avail(runtime);
 	if (frames >= 0) {

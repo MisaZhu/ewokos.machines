@@ -603,6 +603,71 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 	return (err < 0 ? err : written);
 }
 
+int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int frames)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	int offset = 0;
+	int avail = 0;
+	int read = 0;
+	int err = 0;
+
+	snd_pcm_lock(substream);
+	switch (runtime->status.state) {
+	case PCM_STATE_PREPARE:
+	case PCM_STATE_RUNNING:
+		break;
+	case PCM_STATE_XRUN:
+		snd_pcm_unlock(substream);
+		return -EPIPE;
+	default:
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
+	snd_pcm_unlock(substream);
+
+	avail = capture_avail(runtime);
+
+	while (frames > 0) {
+		int copy_frames = 0;
+		int to_end = 0;
+		int hw_ptr = 0;
+		int hw_offset = 0;
+
+		if (avail == 0) {
+			err = -EAGAIN;
+			break;
+		}
+
+		copy_frames = frames > avail ? avail : frames;
+		to_end = runtime->buffer_size - runtime->status.hw_ptr % runtime->buffer_size;
+		if (copy_frames > to_end) {
+			copy_frames = to_end;
+		}
+
+		hw_offset = runtime->status.hw_ptr % runtime->buffer_size;
+
+		char *hw_ptr_pos = runtime->dma_area + frame_to_bytes(runtime, hw_offset);
+		char *user_ptr = (char *)dest + frame_to_bytes(runtime, offset);
+		memcpy(user_ptr, hw_ptr_pos, frame_to_bytes(runtime, copy_frames));
+
+		hw_ptr = runtime->status.hw_ptr + copy_frames;
+		if (hw_ptr >= runtime->boundary) {
+			hw_ptr -= runtime->boundary;
+		}
+
+		offset += copy_frames;
+		frames -= copy_frames;
+		read += copy_frames;
+		avail -= copy_frames;
+
+		snd_pcm_lock(substream);
+		WRITE_LONG(&(runtime->status.hw_ptr), hw_ptr);
+		snd_pcm_unlock(substream);
+	}
+
+	return (err < 0 ? err : read);
+}
+
 int snd_pcm_buf_avail(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -920,6 +985,46 @@ int fdev_write(int fd, int from_pid, fsinfo_t* info, const void* buf, int size, 
 	return ret;
 }
 
+int fdev_read(int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p)
+{
+	UNUSED(fd);
+	UNUSED(from_pid);
+	UNUSED(info);
+	UNUSED(offset);
+
+	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	struct snd_pcm_substream *substream = pcm->substream;
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	int ret = 0;
+
+	snd_pcm_lock(substream);
+	switch (runtime->status.state) {
+	case PCM_STATE_PREPARE:
+	case PCM_STATE_RUNNING:
+		break;
+	case PCM_STATE_XRUN:
+		snd_pcm_unlock(substream);
+		return -EPIPE;
+	default:
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
+	snd_pcm_unlock(substream);
+
+	int avail = capture_avail(runtime);
+	if (avail == 0) {
+		return -EAGAIN;
+	}
+
+	int copy_frames = size > avail ? avail : size;
+	ret = snd_pcm_substream_read(substream, buf, copy_frames);
+	if (ret > 0) {
+		ret = ret * runtime->frame_size;
+	}
+
+	return ret;
+}
+
 int fdev_ctrl(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p)
 {
 	UNUSED(from_pid);
@@ -956,6 +1061,7 @@ int fdev_ctrl(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p)
 static struct file_operation vdev_ops = {
 	.open = fdev_open,
 	.close = fdev_close,
+	.read = fdev_read,
 	.write = fdev_write,
 	.dev_cntl = fdev_ctrl,
 };
@@ -975,6 +1081,7 @@ static int snd_pcm_device_create(struct snd_device *device)
 	vdev->open = fops->open;
 	vdev->close = fops->close;
 	vdev->dev_cntl = fops->dev_cntl;
+	vdev->read = fops->read;
 	vdev->write = fops->write;
 
 	vdev->extra_data = pcm;
