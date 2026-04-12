@@ -7,8 +7,6 @@ BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
-export BSP_LFLAGS= -lbsp -larch_miyoo
-
 all: x_sys
 	@echo "all done."
 #	rm -fr $(MACHINE_BUILD_DIR)
