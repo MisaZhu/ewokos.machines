@@ -4,14 +4,9 @@
 @/bin/ipcserv /drivers/miyoo/fbd      /dev/fb0
 @/bin/ipcserv /drivers/fontd          
 
-@export UX_ID=0
 @/bin/ipcserv /sbin/splashd -w 480 -h 320
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
 
-@/bin/splash -m "loading console0" -p 5
-@export UX_ID=2
-@/bin/ipcserv /drivers/consoled  /dev/console0
-@set_stdio /dev/console0
 
 #@/bin/ipcserv /drivers/miyoo/ms_uartd /dev/tty0
 
