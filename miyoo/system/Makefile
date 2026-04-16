@@ -11,8 +11,7 @@ all: x_sys
 	@echo "all done."
 #	rm -fr $(MACHINE_BUILD_DIR)
 	mkdir -p $(MACHINE_BUILD_DIR)
-	mv $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
-	rm -fr $(TARGET_DIR)
+	cp -r $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
