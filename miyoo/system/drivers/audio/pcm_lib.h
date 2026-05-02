@@ -58,24 +58,24 @@ struct pcm_config {
 };
 
 struct file_operation {
-	int (*dev_cntl)(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p);
-	int (*open)(int fd, int from_pid, fsinfo_t* info, int oflag, void* p);
-	int (*create)(fsinfo_t* info_to, fsinfo_t* info, void* p);
-	int (*close)(int fd, int from_pid, fsinfo_t* info, void* p);
-	int (*read)(int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p);
-	int (*write)(int fd, int from_pid, fsinfo_t* info, const void* buf, int size, int offset, void* p);
-	int (*read_block)(int from_pid, void* buf, int size, int index, void* p);
-	int (*write_block)(int from_pid, const void* buf, int size, int index, void* p);
-	int (*dma)(int fd, int from_pid, fsinfo_t* info, int* size, void* p);
-	int (*flush)(int fd, int from_pid, fsinfo_t* info, void* p);
-	int (*fcntl)(int fd, int from_pid, fsinfo_t* info, int cmd, proto_t* in, proto_t* out, void* p);
-	int (*mount)(fsinfo_t* mnt_point, void* p);
-	int (*umount)(fsinfo_t* mnt_point, void* p);
-	int (*unlink)(fsinfo_t* info, const char *fname, void* p);
-	int (*clear_buffer)(fsinfo_t* info, void* p);
-	void (*interrupt)(proto_t* in, void* p);
-	void (*handled)(void* p);
-	int (*loop_step)(void* p);
+	int (*dev_cntl)(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p);
+	int (*open)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, void* p);
+	int (*create)(vdevice_t* dev, fsinfo_t* info_to, fsinfo_t* info, void* p);
+	int (*close)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* p);
+	int (*read)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p);
+	int (*write)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void* buf, int size, int offset, void* p);
+	int (*read_block)(vdevice_t* dev, int from_pid, void* buf, int size, int index, void* p);
+	int (*write_block)(vdevice_t* dev, int from_pid, const void* buf, int size, int index, void* p);
+	int (*dma)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int* size, void* p);
+	int (*flush)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* p);
+	int (*fcntl)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int cmd, proto_t* in, proto_t* out, void* p);
+	int (*mount)(vdevice_t* dev, fsinfo_t* mnt_point, void* p);
+	int (*umount)(vdevice_t* dev, fsinfo_t* mnt_point, void* p);
+	int (*unlink)(vdevice_t* dev, fsinfo_t* info, const char *fname, void* p);
+	int (*clear_buffer)(vdevice_t* dev, fsinfo_t* info, void* p);
+	void (*interrupt)(vdevice_t* dev, proto_t* in, void* p);
+	void (*handled)(vdevice_t* dev, void* p);
+	int (*loop_step)(vdevice_t* dev, void* p);
 };
 
 struct snd_card {

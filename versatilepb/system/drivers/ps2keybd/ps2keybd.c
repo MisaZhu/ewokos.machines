@@ -129,8 +129,9 @@ static uint8_t to_key(uint8_t scode) {
 	return c;
 }
 
-static int keyb_read(int fd, int from_pid, fsinfo_t* node, 
+static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -158,7 +159,7 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	(void)p;
 	uint8_t key_scode = get_scode();
 	if(keyb_handle(key_scode) == 0) {
-		proc_wakeup(RW_BLOCK_EVT);
+		proc_wakeup(VFS_EVT_RW);
 	}
 	return;
 }

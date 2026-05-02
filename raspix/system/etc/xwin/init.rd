@@ -39,7 +39,7 @@
 #@/bin/splash -m "load fonts" -p 95
 #@/bin/load_font
 
-@/bin/splash -m "start x" -p 95
+@/bin/splash -m "start x" -p 100
 @/bin/ipcserv /drivers/xserverd        /dev/x
 
 @/bin/bgrun /sbin/x/xtouch

@@ -73,7 +73,8 @@ static void dispatch_data(uint8_t id, uint8_t *buf,  int size){
     }
 }
 
-static int usb_step(void* p) {
+static int usb_step(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;	
     uint8_t buf[64] = {0};
 
@@ -90,7 +91,7 @@ static int usb_step(void* p) {
             //klog("hid: %02x %02x %02x %02x %02x %02x %02x\n", 
             //buf[0], buf[1], buf[2],  buf[3], buf[4], buf[5], buf[6]);
             dispatch_data(buf[0], buf + 1, 7);
-            proc_wakeup(RW_BLOCK_EVT);
+            proc_wakeup(VFS_EVT_RW);
         }
     }
 
@@ -98,8 +99,9 @@ static int usb_step(void* p) {
 	return 0;
 }
 
-static int usb_read(int fd, int from_pid, fsinfo_t* node,
+static int usb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;
@@ -120,7 +122,8 @@ static int usb_read(int fd, int from_pid, fsinfo_t* node,
  }
 
 
-static int usb_open(int fd, int from_pid, fsinfo_t* node, int oflag, void* p) {
+static int usb_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, int oflag, void* p) {
+	(void)dev;
 	(void)oflag;
 	(void)node;
 	if(fd < 0)
@@ -137,7 +140,8 @@ static int usb_open(int fd, int from_pid, fsinfo_t* node, int oflag, void* p) {
 	return 0;
 }
 
-static int usb_close(int fd, int from_pid, uint32_t node, fsinfo_t* fsinfo, void* p) {
+static int usb_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t* fsinfo, void* p) {
+	(void)dev;
 	(void)node;
 	(void)fd;
     del_fd_info(get_fd_info(fd, from_pid));
@@ -146,8 +150,9 @@ static int usb_close(int fd, int from_pid, uint32_t node, fsinfo_t* fsinfo, void
 }
 
 
-static int usb_fcntl(int fd, int from_pid, fsinfo_t* info,
+static int usb_fcntl(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
     	int cmd, proto_t* in, proto_t* out, void* p) {
+	(void)dev;
     fd_info_t *ptr = get_fd_info(fd, from_pid);
     if(!ptr)
         return -1;

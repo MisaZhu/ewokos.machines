@@ -31,8 +31,9 @@ static bool _down = false;
 static int  hid;
 static char keys[3];
 
-static int keyb_read(int fd, int from_pid, fsinfo_t* node, 
+static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -89,7 +90,8 @@ uint8_t getKeyChar(uint8_t alt, uint8_t keycode){
     return 0;
 }
 
-static int loop(void* p) {
+static int loop(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;
 	int8_t buf[8];
 	ipc_disable();
@@ -103,12 +105,12 @@ static int loop(void* p) {
 		keys[2] = getKeyChar(buf[2], buf[4]);
 		_idle = false;
 		_down = true;
-		proc_wakeup(RW_BLOCK_EVT);
+		proc_wakeup(VFS_EVT_RW);
 	}
 	else {
 		memset(keys, 0, 3);
 		if(_down)
-			proc_wakeup(RW_BLOCK_EVT);
+			proc_wakeup(VFS_EVT_RW);
 		_down = false;
 	}
 

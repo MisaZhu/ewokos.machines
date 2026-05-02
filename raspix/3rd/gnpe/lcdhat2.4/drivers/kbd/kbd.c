@@ -28,8 +28,9 @@ static gpio_key_t _gpio_keys[] = {
 	{0,  0}
 };
 
-static int gamekb_read(int fd, int from_pid, fsinfo_t* node,
+static int gamekb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;

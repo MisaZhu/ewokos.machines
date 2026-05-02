@@ -105,8 +105,9 @@ int miyoo_gpio_read(int pin)
     }
 }
 
-static int joystick_read(int fd, int from_pid, fsinfo_t* node,
+static int joystick_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;
@@ -154,7 +155,8 @@ static void check_power(void) {
 	}
 }
 
-static int power_button(void* p) {
+static int power_button(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;
 	ipc_disable();
 	check_power();

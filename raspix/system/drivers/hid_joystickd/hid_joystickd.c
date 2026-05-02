@@ -15,8 +15,9 @@ static bool _idle = true;
 static bool _down = false;
 static uint8_t keys[3];
 
-static int joystick_read(int fd, int from_pid, fsinfo_t* node,
+static int joystick_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -46,7 +47,8 @@ typedef struct {
 	axis_t axis;
 }joystick_t;
 
-static int loop(void* p) {
+static int loop(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;
 
 	uint8_t buf[8];
@@ -93,12 +95,12 @@ static int loop(void* p) {
 
 		_idle = false;
 		_down = true;
-		proc_wakeup(RW_BLOCK_EVT);
+		proc_wakeup(VFS_EVT_RW);
 	}
 	else {
 		memset(keys, 0, 3);
 		if(_down)
-			proc_wakeup(RW_BLOCK_EVT);
+			proc_wakeup(VFS_EVT_RW);
 		_down = false;
 	}
 

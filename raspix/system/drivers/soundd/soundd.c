@@ -231,7 +231,8 @@ static int audio_stop(void) {
 	return 0;
 }
 
-static int sound_open(int fd, int from_pid, fsinfo_t *info, int oflag, void *p) {
+static int sound_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t *info, int oflag, void *p) {
+	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(from_pid);
 	UNUSED(info);
@@ -242,7 +243,8 @@ static int sound_open(int fd, int from_pid, fsinfo_t *info, int oflag, void *p) 
 	return 0;
 }
 
-static int sound_close(int fd, int from_pid, uint32_t node, fsinfo_t *info, void *p) {
+static int sound_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t *info, void *p) {
+	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(node);
 	UNUSED(info);
@@ -258,8 +260,9 @@ static int sound_close(int fd, int from_pid, uint32_t node, fsinfo_t *info, void
 	return 0;
 }
 
-static int sound_write(int fd, int from_pid, fsinfo_t *node,
+static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 					   const void *buf, int size, int offset, void *p) {
+	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(node);
 	UNUSED(p);
@@ -308,7 +311,8 @@ static int sound_write(int fd, int from_pid, fsinfo_t *node,
 	return size;
 }
 
-static int sound_dev_cntl(int from_pid, int cmd, proto_t *in, proto_t *ret, void *p) {
+static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, proto_t *ret, void *p) {
+	UNUSED(dev);
 	UNUSED(p);
 
 	int result = 0;

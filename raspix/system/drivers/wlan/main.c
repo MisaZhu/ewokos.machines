@@ -202,8 +202,9 @@ void clock_init(void){
 	}
 }
 
-static int net_read(int fd, int from_pid, fsinfo_t* node,
+static int net_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)p;
@@ -213,8 +214,9 @@ static int net_read(int fd, int from_pid, fsinfo_t* node,
 	return (len > 0)?len:VFS_ERR_RETRY; 
 }
 
-static int net_write(int fd, int from_pid, fsinfo_t* node,
+static int net_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		const void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -224,7 +226,8 @@ static int net_write(int fd, int from_pid, fsinfo_t* node,
 	return (len > 0)?len:VFS_ERR_RETRY; 
 }
 
-static int net_dcntl(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
+static int net_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
+	(void)dev;
 	char mac[6];
 	switch(cmd){
 		case 0:	{//get mac
@@ -252,7 +255,8 @@ static int net_dcntl(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) 
 	return 0;
 }
 
-char* net_dev_cmd(int from_pid, int argc, char** argv, void* p) {
+char* net_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) {
+	(void)dev;
 	if(strcmp(argv[0], "log") == 0) {
 		return brcm_get_log();
 	}

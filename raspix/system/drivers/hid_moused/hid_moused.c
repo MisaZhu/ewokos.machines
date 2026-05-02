@@ -17,8 +17,9 @@ static uint8_t x;
 static uint8_t y;
 static uint8_t has_data = 0;
 
-static int _read(int fd, int from_pid, fsinfo_t* node,
+static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -52,7 +53,8 @@ static int _read(int fd, int from_pid, fsinfo_t* node,
 	return sizeof(mouse_evt_t);
 }
 
-static int _loop(void* p) {
+static int _loop(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;
 
 	ipc_disable();
@@ -76,7 +78,7 @@ static int _loop(void* p) {
 
 	ipc_enable();
 	if(wakeup)
-		proc_wakeup(RW_BLOCK_EVT);
+		proc_wakeup(VFS_EVT_RW);
 	else
 		usleep(3000);
 	return 0;

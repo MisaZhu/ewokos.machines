@@ -171,8 +171,9 @@ static mouse_info_t _minfo[MAX_MEVT];
 static uint32_t _minfo_num = 0;
 static uint32_t _minfo_index = 0;
 
-static int _read(int fd, int from_pid, fsinfo_t* node,
+static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -210,7 +211,7 @@ static int _read(int fd, int from_pid, fsinfo_t* node,
 static int mouse_loop(void* p) {
 	if(mouse_handler(&_minfo) == 0) {
 		_has_data = true;
-		proc_wakeup(RW_BLOCK_EVT);
+		proc_wakeup(VFS_EVT_RW);
 	}
 	usleep(3000);
 	return 0;
@@ -231,7 +232,7 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 			memcpy(&_minfo[_minfo_num], &info, sizeof(mouse_info_t));
 			_minfo_num++;
 		}
-		proc_wakeup(RW_BLOCK_EVT);
+		proc_wakeup(VFS_EVT_RW);
 	}
 
 	//ipc_enable();

@@ -52,7 +52,8 @@ static int _release_count = 0;
 static int _last_x = 0;
 static int _last_y = 0;
 
-static int usb_step(void* p) {
+static int usb_step(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;	
 	//klog("detecting...\n");
     if(!TouchPersent()){
@@ -72,7 +73,7 @@ static int usb_step(void* p) {
         _release_count = 2;
         _last_x = event.x;
         _last_y = event.y;
-        proc_wakeup(RW_BLOCK_EVT);
+        proc_wakeup(VFS_EVT_RW);
 	}
     else if(_release_count > 0) {
         _release_count--;
@@ -82,7 +83,7 @@ static int usb_step(void* p) {
             _buf[2] = _last_y;
             //fprintf(stderr, "e:%d x:%d y:%d\n", _buf[0], _buf[1], _buf[2]);
             _hasData = 1;
-            proc_wakeup(RW_BLOCK_EVT);
+            proc_wakeup(VFS_EVT_RW);
         }
     }
         
@@ -102,7 +103,7 @@ static int usb_step(void* p) {
             klog("hid: %02x %02x %02x %02x %02x %02x %02x\n", 
             buf[0], buf[1], buf[2],  buf[3], buf[4], buf[5], buf[6]);
             //dispatch_data(buf[0], buf + 1, 7);
-            proc_wakeup(RW_BLOCK_EVT);
+            proc_wakeup(VFS_EVT_RW);
         }
     }
     */
@@ -111,8 +112,9 @@ static int usb_step(void* p) {
 	return 0;
 }
 
-static int touch_read(int fd, int from_pid, fsinfo_t* node,
+static int touch_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;

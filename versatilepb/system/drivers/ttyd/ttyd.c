@@ -44,8 +44,9 @@ int32_t uart_write(const void* data, uint32_t size) {
 
 static charbuf_t *_buffer;
 
-static int tty_read(int fd, int from_pid, fsinfo_t* node,
+static int tty_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -63,8 +64,9 @@ static int tty_read(int fd, int from_pid, fsinfo_t* node,
 	return 1;
 }
 
-static int tty_write(int fd, int from_pid, fsinfo_t* node,
+static int tty_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		const void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)node;
 	(void)from_pid;
@@ -78,7 +80,7 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	(void)p;
 	uint32_t data = get32(UART0 + UART_DATA);
 	charbuf_push(_buffer, data, true);
-	proc_wakeup(RW_BLOCK_EVT);
+	proc_wakeup(VFS_EVT_RW);
 }
 
 #define IRQ_RAW_UART0 12 //VPB uart0 interrupt at PIC bit12 

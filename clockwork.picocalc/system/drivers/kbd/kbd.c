@@ -54,8 +54,9 @@ static uint8_t key_remap(uint8_t key){
 	}
 }
 
-static int kbd_read(int fd, int from_pid, fsinfo_t* node,
+static int kbd_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;
@@ -74,7 +75,9 @@ static int kbd_read(int fd, int from_pid, fsinfo_t* node,
 	return ret;
 }
 
-static int kbd_loop(void*) {
+static int kbd_loop(vdevice_t* dev, void* p) {
+	(void)dev;
+	(void)p;
 	uint8_t key[2] = {0};
 	int ret = rk_i2c_read(0x1f, 0x9,  key, 2, 0);
 	if(ret == 0){

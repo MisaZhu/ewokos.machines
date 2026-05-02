@@ -938,9 +938,10 @@ static int snd_pcm_release(struct snd_pcm *pcm)
 
 
 /***** File operations: Make vdevice conectted with PCM ***/
-int fdev_open(int fd, int from_pid, fsinfo_t* info, int oflag, void* p)
+int fdev_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, void* p)
 {
 	KLOG("fdev_open() fd:%d from:%d\n", fd, from_pid);
+	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(from_pid);
 	UNUSED(info);
@@ -952,8 +953,9 @@ int fdev_open(int fd, int from_pid, fsinfo_t* info, int oflag, void* p)
 }
 
 
-int fdev_close(int fd, int from_pid, fsinfo_t* info, void* p)
+int fdev_close(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* p)
 {
+	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(from_pid);
 	UNUSED(info);
@@ -966,8 +968,9 @@ int fdev_close(int fd, int from_pid, fsinfo_t* info, void* p)
 }
 
 
-int fdev_write(int fd, int from_pid, fsinfo_t* info, const void* buf, int size, int offset, void* p)
+int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void* buf, int size, int offset, void* p)
 {
+	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(from_pid);
 	UNUSED(info);
@@ -985,8 +988,9 @@ int fdev_write(int fd, int from_pid, fsinfo_t* info, const void* buf, int size, 
 	return ret;
 }
 
-int fdev_read(int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p)
+int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p)
 {
+	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(from_pid);
 	UNUSED(info);
@@ -1025,8 +1029,9 @@ int fdev_read(int fd, int from_pid, fsinfo_t* info, void* buf, int size, int off
 	return ret;
 }
 
-int fdev_ctrl(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p)
+int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p)
 {
+	UNUSED(dev);
 	UNUSED(from_pid);
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	struct snd_pcm_substream *substream = pcm->substream;

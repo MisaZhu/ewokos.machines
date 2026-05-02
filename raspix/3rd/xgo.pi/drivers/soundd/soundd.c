@@ -15,8 +15,9 @@
 #include "wm8960.h"
 #include "dma_chain.h"
 
-static int audio_read(int fd, int from_pid, fsinfo_t* node, 
+static int audio_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -27,8 +28,9 @@ static int audio_read(int fd, int from_pid, fsinfo_t* node,
 	return VFS_ERR_RETRY;
 }
 
-static int audio_write(int fd, int from_pid, fsinfo_t* node,
+static int audio_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		const void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)node;
 	(void)from_pid;
@@ -39,13 +41,14 @@ static int audio_write(int fd, int from_pid, fsinfo_t* node,
 	return size?size:VFS_ERR_RETRY;
 }
 
-static int loop(void* p) {
+static int loop(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;
 
 	ipc_disable();
 	dma_chain_flush();
 	ipc_enable();
-	proc_wakeup(RW_BLOCK_EVT);	
+	proc_wakeup(VFS_EVT_RW);	
 	proc_usleep(100);
 	return 0;
 }

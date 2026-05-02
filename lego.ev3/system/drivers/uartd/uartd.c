@@ -20,8 +20,9 @@
 static fifo_t *_RxBuf;
 static fifo_t *_TxBuf;
 
-static int uart_read(int fd, int from_pid, fsinfo_t* node, 
+static int uart_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;
@@ -38,8 +39,9 @@ static int uart_read(int fd, int from_pid, fsinfo_t* node,
     return (i==0)?VFS_ERR_RETRY:i;
 }
 
-static int uart_write(int fd, int from_pid, fsinfo_t* node,
+static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		const void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)node;
 	(void)from_pid;
@@ -96,7 +98,7 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	}
 
 	if(rx){
-		proc_wakeup(RW_BLOCK_EVT);
+		proc_wakeup(VFS_EVT_RW);
 	}
 }
 

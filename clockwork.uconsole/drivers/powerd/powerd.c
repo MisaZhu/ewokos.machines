@@ -63,7 +63,8 @@ static void power_off(){
 		while(1);
 }
 
-static int power_step(void* p) {
+static int power_step(vdevice_t* dev, void* p) {
+	(void)dev;
 	(void)p;	
     int irq = bcm283x_gpio_read(2);
 	if(!irq){
@@ -79,8 +80,9 @@ static int power_step(void* p) {
 	return 0;
 }
 
-static int power_read(int fd, int from_pid, fsinfo_t* node,
+static int power_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;

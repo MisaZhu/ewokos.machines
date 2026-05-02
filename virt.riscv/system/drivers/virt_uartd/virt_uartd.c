@@ -33,8 +33,9 @@ static inline void uart_putc(char c) {
 }
 
 
-static int uart_read(int fd, int from_pid, fsinfo_t* node, 
+static int uart_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -48,8 +49,9 @@ static int uart_read(int fd, int from_pid, fsinfo_t* node,
     	return VFS_ERR_RETRY;
 }
 
-static int uart_write(int fd, int from_pid, fsinfo_t* node,
+static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		const void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)node;
 	(void)from_pid;

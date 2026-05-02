@@ -282,8 +282,9 @@ int32_t eth_init(void) {
 	return 0;
 }
 
-static int eth_read(int fd, int from_pid, fsinfo_t* node,
+static int eth_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)p;
@@ -301,8 +302,9 @@ static int eth_read(int fd, int from_pid, fsinfo_t* node,
 	return VFS_ERR_RETRY; 
 }
 
-static int eth_write(int fd, int from_pid, fsinfo_t* node,
+static int eth_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		const void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)offset;
@@ -319,7 +321,8 @@ static int eth_write(int fd, int from_pid, fsinfo_t* node,
 	return len;
 }
 
-static int eth_dcntl(int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
+static int eth_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
+	(void)dev;
 	uint8_t buf[6];
 	switch(cmd){
 		case 0:	{//get mac
@@ -355,7 +358,7 @@ static void timer_handler(void){
 			ipc_disable();
 			tx_queue_size--;
 			ipc_enable();	
-			proc_wakeup(RW_BLOCK_EVT);
+			proc_wakeup(VFS_EVT_RW);
 		}else{
 			ipc_disable();
 			eth_inqueue(&tx_queue, tx);
@@ -376,7 +379,7 @@ static void timer_handler(void){
 				eth_inqueue(&rx_queue, msg);
 				rx_queue_size++;
 				ipc_enable();
-				proc_wakeup(RW_BLOCK_EVT);
+				proc_wakeup(VFS_EVT_RW);
 				return;
 			}
 		}

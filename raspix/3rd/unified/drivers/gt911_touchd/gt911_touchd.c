@@ -12,8 +12,9 @@ static	TouchCordinate_t cordinate[5];
 static 	uint8_t  number_of_cordinate = 0;
 static 	uint64_t last_ts = 0;	
 
-static int tp_read(int fd, int from_pid, fsinfo_t* node,
+static int tp_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;

@@ -32,8 +32,9 @@
 uint16_t _adc_buf[MAX_CH];
 uint8_t	 _ch = 0;
 
-static int adcd_read(int fd, int from_pid, fsinfo_t* node, 
+static int adcd_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;
@@ -49,7 +50,8 @@ static int adcd_read(int fd, int from_pid, fsinfo_t* node,
 }
 
 static uint32_t _fps = 30;
-static int adcd_loop(void* p){
+static int adcd_loop(vdevice_t* dev, void* p){
+	(void)dev;
 	uint64_t tik = kernel_tic_ms(0);
 	uint32_t tm = 1000/_fps;
 

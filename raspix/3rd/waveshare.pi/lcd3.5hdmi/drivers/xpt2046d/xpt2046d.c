@@ -5,8 +5,9 @@
 #include <string.h>
 #include <ewoksys/vfs.h>
 
-static int tp_read(int fd, int from_pid, fsinfo_t* node,
+static int tp_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
+	(void)dev;
 	(void)fd;
 	(void)from_pid;
 	(void)node;
