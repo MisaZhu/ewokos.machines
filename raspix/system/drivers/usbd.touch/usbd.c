@@ -73,7 +73,7 @@ static int usb_step(vdevice_t* dev, void* p) {
         _release_count = 2;
         _last_x = event.x;
         _last_y = event.y;
-        proc_wakeup(VFS_EVT_RW);
+        vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 	}
     else if(_release_count > 0) {
         _release_count--;
@@ -83,31 +83,9 @@ static int usb_step(vdevice_t* dev, void* p) {
             _buf[2] = _last_y;
             //fprintf(stderr, "e:%d x:%d y:%d\n", _buf[0], _buf[1], _buf[2]);
             _hasData = 1;
-            proc_wakeup(VFS_EVT_RW);
+            vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
         }
     }
-        
-    /*
-    uint8_t buf[64] = {0};
-
-    if( !unifiedPersent()){
-        //klog("detecting...\n");
-        UsbCheckForChange(); 
-        proc_usleep(100000);
-        return 0;
-    }
-
-    if(unifiedPersent()){
-        int ret = unifiedGetEvent(buf);
-        if(ret == 0){
-            klog("hid: %02x %02x %02x %02x %02x %02x %02x\n", 
-            buf[0], buf[1], buf[2],  buf[3], buf[4], buf[5], buf[6]);
-            //dispatch_data(buf[0], buf + 1, 7);
-            proc_wakeup(VFS_EVT_RW);
-        }
-    }
-    */
-
     proc_usleep(10000);
 	return 0;
 }

@@ -344,6 +344,7 @@ static int eth_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t
 	return 0;
 }
 
+static vdevice_t* _dev = NULL;
 static void timer_handler(void){
 	int ret;
 	ipc_disable();
@@ -358,7 +359,7 @@ static void timer_handler(void){
 			ipc_disable();
 			tx_queue_size--;
 			ipc_enable();	
-			proc_wakeup(VFS_EVT_RW);
+			vfs_wakeup(_dev->mnt_info.node,  VFS_EVT_RD);
 		}else{
 			ipc_disable();
 			eth_inqueue(&tx_queue, tx);
@@ -379,7 +380,7 @@ static void timer_handler(void){
 				eth_inqueue(&rx_queue, msg);
 				rx_queue_size++;
 				ipc_enable();
-				proc_wakeup(VFS_EVT_RW);
+				vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 				return;
 			}
 		}
@@ -390,7 +391,8 @@ static void timer_handler(void){
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/eth0";
 	eth_init();
-	vdevice_t dev;
+	vdevice_t _dev;
+	_dev = &dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "eth");
 	dev.read = eth_read;

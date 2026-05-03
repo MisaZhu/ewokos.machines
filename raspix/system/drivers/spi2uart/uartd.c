@@ -64,7 +64,7 @@ static int loop(vdevice_t* dev, void* p) {
 		c = SC16IS750_read(&spiuart, SC16IS750_CHANNEL_B);
 		if(c != '\r' || !_no_return) {
 			charbuf_push(_RxBuf, c, true);
-			proc_wakeup(VFS_EVT_RW);
+			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 		}
 	}
 	ipc_enable();

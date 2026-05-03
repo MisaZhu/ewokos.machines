@@ -78,7 +78,7 @@ static int _loop(vdevice_t* dev, void* p) {
 
 	ipc_enable();
 	if(wakeup)
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 	else
 		usleep(3000);
 	return 0;

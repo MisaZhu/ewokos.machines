@@ -95,12 +95,12 @@ static int loop(vdevice_t* dev, void* p) {
 
 		_idle = false;
 		_down = true;
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	}
 	else {
 		memset(keys, 0, 3);
 		if(_down)
-			proc_wakeup(VFS_EVT_RW);
+			vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 		_down = false;
 	}
 

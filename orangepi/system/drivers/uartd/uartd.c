@@ -65,7 +65,7 @@ static int loop(vdevice_t* dev, void* p){
 
 	if((REG32(UART_LSR) & UART_LSR_DR)){
 		charbuf_push(_RxBuf, REG32(UART_TX), true);
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	}else{
 		proc_usleep(10);
 	}

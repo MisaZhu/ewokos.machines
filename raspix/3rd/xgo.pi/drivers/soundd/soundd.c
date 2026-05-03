@@ -48,7 +48,7 @@ static int loop(vdevice_t* dev, void* p) {
 	ipc_disable();
 	dma_chain_flush();
 	ipc_enable();
-	proc_wakeup(VFS_EVT_RW);	
+	vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);	
 	proc_usleep(100);
 	return 0;
 }

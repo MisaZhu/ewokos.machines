@@ -77,10 +77,10 @@ static int tty_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	(void)interrupt;
-	(void)p;
+	vdevice_t* dev = (vdevice_t*)p;
 	uint32_t data = get32(UART0 + UART_DATA);
 	charbuf_push(_buffer, data, true);
-	proc_wakeup(VFS_EVT_RW);
+	vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 }
 
 #define IRQ_RAW_UART0 12 //VPB uart0 interrupt at PIC bit12 
@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
 	dev.write = tty_write;
 
 	static interrupt_handler_t handler;
-	handler.data = 0;
+	handler.data = &dev;
 	handler.handler = interrupt_handle;
 	sys_interrupt_setup(IRQ_RAW_UART0, &handler);
 

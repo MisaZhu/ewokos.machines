@@ -76,7 +76,7 @@ static int loop(vdevice_t* dev, void* p) {
 			ipc_disable();
 			charbuf_push(_RxBuf, c, true);
 			ipc_enable();
-			proc_wakeup(VFS_EVT_RW);
+			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 		}
 	}
 	else {
@@ -85,7 +85,7 @@ static int loop(vdevice_t* dev, void* p) {
 			ipc_disable();
 			charbuf_push(_RxBuf, c, true);
 			ipc_enable();
-			proc_wakeup(VFS_EVT_RW);
+			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 		}
 	}
 	proc_usleep(10000);

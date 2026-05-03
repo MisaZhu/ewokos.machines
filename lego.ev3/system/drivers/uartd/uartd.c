@@ -77,7 +77,7 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 //
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	(void)interrupt;
-	(void)p;
+	vdevice_t* dev = (vdevice_t*)p;
 	char ch;
 	int rx = 0;
 
@@ -98,7 +98,7 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	}
 
 	if(rx){
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	}
 }
 
@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
 	//dev.loop_step = loop;
 
 	static interrupt_handler_t handler;
-	handler.data = 0;
+	handler.data = &dev;
 	handler.handler = interrupt_handle;
 	sys_interrupt_setup(53, &handler);
 	ev3_uart_enable_irq(UART_BASE, EV3_IRQ_RX, EV3_IRQ_ENABLE);

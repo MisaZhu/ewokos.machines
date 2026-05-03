@@ -105,12 +105,12 @@ static int loop(vdevice_t* dev, void* p) {
 		keys[2] = getKeyChar(buf[2], buf[4]);
 		_idle = false;
 		_down = true;
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 	}
 	else {
 		memset(keys, 0, 3);
 		if(_down)
-			proc_wakeup(VFS_EVT_RW);
+			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 		_down = false;
 	}
 

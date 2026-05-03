@@ -207,19 +207,8 @@ static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	return VFS_ERR_RETRY;
 }
 
-/*
-static int mouse_loop(void* p) {
-	if(mouse_handler(&_minfo) == 0) {
-		_has_data = true;
-		proc_wakeup(VFS_EVT_RW);
-	}
-	usleep(3000);
-	return 0;
-}
-*/
-
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
-	(void)p;
+	vdevice_t* dev = (vdevice_t*)p;
 	//ipc_disable();
 
 	mouse_info_t info;
@@ -232,7 +221,7 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 			memcpy(&_minfo[_minfo_num], &info, sizeof(mouse_info_t));
 			_minfo_num++;
 		}
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 	}
 
 	//ipc_enable();
@@ -255,7 +244,7 @@ int main(int argc, char** argv) {
 	//dev.loop_step = mouse_loop;
 
 	static interrupt_handler_t handler;
-	handler.data = 0;
+	handler.data = &dev;
 	handler.handler = interrupt_handle;
 	sys_interrupt_setup(IRQ_RAW_MOUSE, &handler);
 

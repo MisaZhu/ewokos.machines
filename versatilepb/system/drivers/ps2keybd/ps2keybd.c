@@ -156,10 +156,10 @@ static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 }
 
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
-	(void)p;
+	vdevice_t* dev = (vdevice_t*)p;
 	uint8_t key_scode = get_scode();
 	if(keyb_handle(key_scode) == 0) {
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
 	}
 	return;
 }
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
 	dev.read = keyb_read;
 
 	static interrupt_handler_t handler;
-	handler.data = 0;
+	handler.data = &dev;
 	handler.handler = interrupt_handle;
 	sys_interrupt_setup(IRQ_RAW_KEYB, &handler);
 

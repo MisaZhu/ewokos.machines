@@ -1600,7 +1600,7 @@ void brcmf_rx_event( struct sk_buff *skb)
     }else if(event_type == 0 && event_status == 0){
         brcm_log("Event: link up\n"); 
         bus->state = CONNECTED;
-        proc_wakeup(1);
+        vfs_wakeup(dev->mnt_info.node,  1);
     }else{
         brcm_log("Event: %d\n", event_type);
     }
@@ -1614,7 +1614,7 @@ void brcmf_rx_frame(struct sk_buff *skb)
     ipc_disable();
     queue_buffer_push(bus->rx_queue, skb->data, skb->len);
     ipc_enable();
-    proc_wakeup(1);
+    vfs_wakeup(dev->mnt_info.node,  1);
     skb_free(skb);
 }
 
@@ -2095,7 +2095,7 @@ static void brcmf_sdio_dpc(void)
         ipc_disable();
         int len = queue_buffer_pop(bus->tx_queue, pkt->data, MAX_FRAME_SIZE);
         ipc_enable();
-        proc_wakeup(1);
+        vfs_wakeup(dev->mnt_info.node,  1);
         skb_put(pkt, len);
         brcmf_sdio_txpkt_prep(pkt, 2);
         int ret = brcmf_sdiod_send_pkt(pkt);

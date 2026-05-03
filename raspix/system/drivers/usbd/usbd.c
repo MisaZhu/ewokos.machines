@@ -91,7 +91,7 @@ static int usb_step(vdevice_t* dev, void* p) {
             //klog("hid: %02x %02x %02x %02x %02x %02x %02x\n", 
             //buf[0], buf[1], buf[2],  buf[3], buf[4], buf[5], buf[6]);
             dispatch_data(buf[0], buf + 1, 7);
-            proc_wakeup(VFS_EVT_RW);
+            vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
         }
     }
 

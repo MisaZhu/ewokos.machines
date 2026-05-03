@@ -65,7 +65,7 @@ static int loop(vdevice_t* dev, void* p) {
 	}
 
 	if(rx){
-		proc_wakeup(VFS_EVT_RW);
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	}
 	proc_usleep(10);
 }
