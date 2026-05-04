@@ -75,12 +75,23 @@ static int tty_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	return uart_write(buf, size);
 }
 
+static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	(void)interrupt;
 	vdevice_t* dev = (vdevice_t*)p;
 	uint32_t data = get32(UART0 + UART_DATA);
 	charbuf_push(_buffer, data, true);
-	vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
+	_wakeup = true;
+}
+
+int loop_step(vdevice_t* dev, void* p) {
+	(void)p;
+	if(_wakeup) {
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		_wakeup = false;
+	}
+	usleep(3000);
+	return 0;
 }
 
 #define IRQ_RAW_UART0 12 //VPB uart0 interrupt at PIC bit12 
@@ -96,6 +107,7 @@ int main(int argc, char** argv) {
 	strcpy(dev.name, "tty");
 	dev.read = tty_read;
 	dev.write = tty_write;
+	dev.loop_step = loop_step;
 
 	static interrupt_handler_t handler;
 	handler.data = &dev;

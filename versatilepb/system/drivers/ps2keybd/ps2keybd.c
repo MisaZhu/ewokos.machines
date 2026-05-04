@@ -155,13 +155,24 @@ static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	return num;
 }
 
+static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	vdevice_t* dev = (vdevice_t*)p;
 	uint8_t key_scode = get_scode();
 	if(keyb_handle(key_scode) == 0) {
-		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
+		_wakeup = true;
 	}
 	return;
+}
+
+int loop_step(vdevice_t* dev, void* p) {
+	(void)p;
+	if(_wakeup) {
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		_wakeup = false;
+	}
+	usleep(3000);
+	return 0;
 }
 
 #define IRQ_RAW_KEYB (32+3) //VPB keyb interrupt at SIC bit3
@@ -175,6 +186,7 @@ int main(int argc, char** argv) {
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "keyb");
 	dev.read = keyb_read;
+	dev.loop_step = loop_step;
 
 	static interrupt_handler_t handler;
 	handler.data = &dev;

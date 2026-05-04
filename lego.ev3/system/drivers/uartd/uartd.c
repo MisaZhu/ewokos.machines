@@ -75,6 +75,7 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 //	return 0;
 //}
 //
+static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	(void)interrupt;
 	vdevice_t* dev = (vdevice_t*)p;
@@ -98,10 +99,19 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	}
 
 	if(rx){
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		_wakeup = true;
 	}
 }
 
+int loop_step(vdevice_t* dev, void* p) {
+	(void)p;
+	if(_wakeup) {
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		_wakeup = false;
+	}
+	usleep(3000);
+	return 0;
+}
 
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/tty1";
@@ -116,7 +126,7 @@ int main(int argc, char** argv) {
 	strcpy(dev.name, "uart");
 	dev.read = uart_read;
 	dev.write = uart_write;
-	//dev.loop_step = loop;
+	dev.loop_step = loop_step;
 
 	static interrupt_handler_t handler;
 	handler.data = &dev;

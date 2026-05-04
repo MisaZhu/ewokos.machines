@@ -207,6 +207,7 @@ static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	return VFS_ERR_RETRY;
 }
 
+static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 	vdevice_t* dev = (vdevice_t*)p;
 	//ipc_disable();
@@ -221,11 +222,21 @@ static void interrupt_handle(uint32_t interrupt, uint32_t p) {
 			memcpy(&_minfo[_minfo_num], &info, sizeof(mouse_info_t));
 			_minfo_num++;
 		}
-		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
+		_wakeup = true;
 	}
 
 	//ipc_enable();
 	return;
+}
+
+int loop_step(vdevice_t* dev, void* p) {
+	(void)p;
+	if(_wakeup) {
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		_wakeup = false;
+	}
+	usleep(3000);
+	return 0;
 }
 
 #define IRQ_RAW_MOUSE (32+4) //VPB mouse interrupt at SIC bit4
@@ -241,7 +252,7 @@ int main(int argc, char** argv) {
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "mouse");
 	dev.read = _read;
-	//dev.loop_step = mouse_loop;
+	dev.loop_step = loop_step;
 
 	static interrupt_handler_t handler;
 	handler.data = &dev;

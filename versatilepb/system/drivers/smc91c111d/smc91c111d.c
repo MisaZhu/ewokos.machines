@@ -345,6 +345,8 @@ static int eth_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t
 }
 
 static vdevice_t* _dev = NULL;
+static bool _wakeup = false;
+
 static void timer_handler(void){
 	int ret;
 	ipc_disable();
@@ -359,7 +361,7 @@ static void timer_handler(void){
 			ipc_disable();
 			tx_queue_size--;
 			ipc_enable();	
-			vfs_wakeup(_dev->mnt_info.node,  VFS_EVT_RD);
+			_wakeup = true;
 		}else{
 			ipc_disable();
 			eth_inqueue(&tx_queue, tx);
@@ -380,12 +382,22 @@ static void timer_handler(void){
 				eth_inqueue(&rx_queue, msg);
 				rx_queue_size++;
 				ipc_enable();
-				vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
+				_wakeup = true;
 				return;
 			}
 		}
 		free(tmp);
 	}
+}
+
+int loop_step(vdevice_t* dev, void* p) {
+	(void)p;
+	if(_wakeup) {
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		_wakeup = false;
+	}
+	usleep(3000);
+	return 0;
 }
 
 int main(int argc, char** argv) {
@@ -398,7 +410,7 @@ int main(int argc, char** argv) {
 	dev.read = eth_read;
 	dev.write = eth_write;
 	dev.dev_cntl = eth_dcntl;
-	//dev.loop_step = eth_loop;
+	dev.loop_step = loop_step;
 
 	uint32_t tid = timer_set(1000, timer_handler);
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0664);
