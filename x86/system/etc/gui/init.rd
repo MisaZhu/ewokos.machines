@@ -13,4 +13,7 @@
 @/bin/ipcserv /drivers/ramfsd          /tmp
 @/bin/ipcserv /drivers/nulld           /dev/null
 
+@/bin/ipcserv /drivers/x86/keybd   /dev/keyb0
+@/bin/ipcserv /drivers/x86/moused   /dev/mouse0
+
 @/bin/bgrun /bin/session -r -t /dev/console0
