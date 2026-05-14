@@ -1,3 +1,6 @@
+@/bin/ipcserv /drivers/displayd
+@/bin/ipcserv /drivers/x86/fbd /dev/fb0
+@/bin/ipcserv /drivers/fontd
 @/bin/ipcserv /drivers/x86/ttyd /dev/tty0
 @/bin/ipcserv /drivers/timerd
 @/bin/ipcserv /drivers/nulld /dev/null

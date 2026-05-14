@@ -19,12 +19,22 @@ static inline uint16_t x86_inw(uint16_t port) {
 	return value;
 }
 
+static inline uint32_t x86_inl(uint16_t port) {
+	uint32_t value;
+	__asm__ volatile ("inl %1, %0" : "=a"(value) : "Nd"(port));
+	return value;
+}
+
 static inline void x86_outb(uint16_t port, uint8_t value) {
 	__asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
 }
 
 static inline void x86_outw(uint16_t port, uint16_t value) {
 	__asm__ volatile ("outw %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline void x86_outl(uint16_t port, uint32_t value) {
+	__asm__ volatile ("outl %0, %1" : : "a"(value), "Nd"(port));
 }
 
 #endif

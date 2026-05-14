@@ -6,4 +6,4 @@ ifeq ($(ewokos),)
 ewokos=~/work/ewokos
 endif
 
-export BSP_LFLAGS= -lbsp -larch_x86
+export BSP_LFLAGS= -lbsp

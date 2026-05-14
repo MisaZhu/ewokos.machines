@@ -21,8 +21,8 @@ void sys_info_init_arch(void) {
 	if (_sys_info.total_usable_mem_size > (uint32_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset)) {
 		_sys_info.total_usable_mem_size = (uint32_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset);
 	}
-	_sys_info.mmio.phy_base = 0;
-	_sys_info.mmio.size = 0;
+	_sys_info.mmio.phy_base = 0xE0000000;
+	_sys_info.mmio.size = 0x20000000;
 	_sys_info.sys_dma.size = 16 * MB;
 	_sys_info.machine[0] = 'x';
 	_sys_info.machine[1] = '8';

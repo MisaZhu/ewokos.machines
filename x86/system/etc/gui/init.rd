@@ -2,6 +2,15 @@
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
 
-@/bin/ipcserv /drivers/timerd
-@/bin/ipcserv /drivers/ramfsd /tmp
-@/bin/ipcserv /drivers/nulld /dev/null
+@/bin/ipcserv /drivers/displayd        
+@/bin/ipcserv /drivers/x86/fbd      /dev/fb0
+@/bin/ipcserv /drivers/fontd           
+
+@/bin/ipcserv /drivers/consoled        -i /dev/keyb0
+@set_stdio /dev/console0
+
+@/bin/ipcserv /drivers/timerd          
+@/bin/ipcserv /drivers/ramfsd          /tmp
+@/bin/ipcserv /drivers/nulld           /dev/null
+
+@/bin/bgrun /bin/session -r -t /dev/console0
