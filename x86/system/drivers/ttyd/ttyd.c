@@ -4,18 +4,44 @@
 #include <ewoksys/vfs.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/charbuf.h>
-#include <ewoksys/syscall.h>
-#include <syscalls.h>
+#include <bsp/x86_pio.h>
+
+#define COM1_PORT 0x3F8
+
+static inline int uart_tx_ready(void) {
+	return (x86_inb(COM1_PORT + 5) & 0x20) != 0;
+}
+
+static inline int uart_rx_ready(void) {
+	return (x86_inb(COM1_PORT + 5) & 0x01) != 0;
+}
+
+static void uart_init(void) {
+	uint16_t divisor = 1; /* 115200 baud */
+	x86_outb(COM1_PORT + 1, 0x00);
+	x86_outb(COM1_PORT + 3, 0x80);
+	x86_outb(COM1_PORT + 0, divisor & 0xFF);
+	x86_outb(COM1_PORT + 1, divisor >> 8);
+	x86_outb(COM1_PORT + 3, 0x03);
+	x86_outb(COM1_PORT + 2, 0xC7);
+	x86_outb(COM1_PORT + 4, 0x0B);
+}
+
+static void uart_putc(char c) {
+	while (!uart_tx_ready()) {
+	}
+	x86_outb(COM1_PORT, (uint8_t)c);
+}
 
 static charbuf_t* _buffer = NULL;
 static bool _wakeup = false;
 
 static void tty_poll_input(void) {
 	for (;;) {
-		int ch = (int)syscall0(SYS_UART_GETC);
-		if (ch < 0) {
+		if (!uart_rx_ready()) {
 			break;
 		}
+		int ch = (int)x86_inb(COM1_PORT);
 		if (ch == '\r') {
 			ch = '\n';
 		}
@@ -68,7 +94,13 @@ static int tty_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
 	(void)offset;
 	(void)p;
 
-	syscall2(SYS_KPRINT, (ewokos_addr_t)buf, (ewokos_addr_t)size);
+	const char* s = (const char*)buf;
+	for (int i = 0; i < size; ++i) {
+		if (s[i] == '\n') {
+			uart_putc('\r');
+		}
+		uart_putc(s[i]);
+	}
 	return size;
 }
 
@@ -87,6 +119,7 @@ static int tty_loop(vdevice_t* dev, void* p) {
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1] : "/dev/tty0";
 
+	uart_init();
 	_buffer = charbuf_new(0);
 	if (_buffer == NULL) {
 		return -1;

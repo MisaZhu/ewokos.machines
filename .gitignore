@@ -2,6 +2,7 @@
 *.swp
 *_data.c
 .DS_*
+kernel*.boot
 kernel*.img
 kernel*.elf
 kernel*.asm
