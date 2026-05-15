@@ -14,6 +14,7 @@
 .global x86_ap_trampoline_boot_pml4
 .global x86_ap_trampoline_kernel_vm
 .global x86_ap_trampoline_stack
+.global x86_ap_trampoline_kernel_entry
 .global x86_ap_entry64
 .extern _slave_kernel_entry_c
 
@@ -36,7 +37,7 @@ x86_ap_trampoline_start:
     mov eax, cr0
     or eax, CR0_PE
     mov cr0, eax
-    jmp 0x08:(x86_ap_pm_entry - x86_ap_trampoline_start)
+    jmp 0x08:(X86_AP_TRAMPOLINE_PADDR + x86_ap_pm_entry - x86_ap_trampoline_start)
 
 .code32
 x86_ap_pm_entry:
@@ -66,11 +67,11 @@ x86_ap_pm_base:
     mov eax, cr0
     or eax, CR0_PG
     mov cr0, eax
-    jmp 0x08:(x86_ap_lm_entry - x86_ap_trampoline_start)
+    jmp 0x18:(X86_AP_TRAMPOLINE_PADDR + x86_ap_lm_entry - x86_ap_trampoline_start)
 
 .code64
 x86_ap_lm_entry:
-    mov ax, 0x10
+    mov ax, 0x20
     mov ds, ax
     mov es, ax
     mov ss, ax
@@ -78,16 +79,18 @@ x86_ap_lm_entry:
     mov fs, ax
     mov gs, ax
     mov rsp, X86_AP_TRAMPOLINE_PADDR + 0x0ff0
-    movabs rax, x86_ap_entry64
+    movabs rax, X86_AP_TRAMPOLINE_PADDR + x86_ap_entry64 - x86_ap_trampoline_start
     jmp rax
 
 .align 16
 x86_ap_gdt:
     .quad 0x0000000000000000
+    .quad 0x00cf9a000000ffff
+    .quad 0x00cf92000000ffff
     .quad 0x00af9a000000ffff
     .quad 0x00af92000000ffff
 x86_ap_gdt_ptr:
-    .word (3 * 8) - 1
+    .word (5 * 8) - 1
     .long 0
 
 .align 16
@@ -97,14 +100,47 @@ x86_ap_trampoline_kernel_vm:
     .quad 0
 x86_ap_trampoline_stack:
     .quad 0
-
-x86_ap_trampoline_end:
+x86_ap_trampoline_kernel_entry:
+    .quad 0
 
 .code64
 x86_ap_entry64:
-    mov rax, qword ptr [X86_AP_TRAMPOLINE_PADDR + x86_ap_trampoline_kernel_vm - x86_ap_trampoline_start]
+1:
+    mov dx, 0x3fd
+    in al, dx
+    test al, 0x20
+    jz 1b
+    mov dx, 0x3f8
+    mov al, 'A'
+    out dx, al
     mov rcx, qword ptr [X86_AP_TRAMPOLINE_PADDR + x86_ap_trampoline_stack - x86_ap_trampoline_start]
-    mov cr3, rax
+2:
+    mov dx, 0x3fd
+    in al, dx
+    test al, 0x20
+    jz 2b
+    mov dx, 0x3f8
+    mov al, 'B'
+    out dx, al
     mov rsp, rcx
+3:
+    mov dx, 0x3fd
+    in al, dx
+    test al, 0x20
+    jz 3b
+    mov dx, 0x3f8
+    mov al, 'C'
+    out dx, al
     xor ebp, ebp
-    jmp _slave_kernel_entry_c
+4:
+    mov dx, 0x3fd
+    in al, dx
+    test al, 0x20
+    jz 4b
+    mov dx, 0x3f8
+    mov al, 'D'
+    out dx, al
+    mov rax, qword ptr [X86_AP_TRAMPOLINE_PADDR + x86_ap_trampoline_kernel_entry - x86_ap_trampoline_start]
+    jmp rax
+
+x86_ap_trampoline_end:

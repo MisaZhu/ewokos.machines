@@ -2,6 +2,7 @@
 *.swp
 *_data.c
 .DS_*
+bootsect.bin
 kernel*.boot
 kernel*.img
 kernel*.elf

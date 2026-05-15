@@ -29,6 +29,7 @@
 #define LAPIC_ICR_ASSERT          0x00004000
 #define LAPIC_ICR_TRIGGER         0x00008000
 #define LAPIC_ICR_DELIVERY_BUSY   0x00001000
+#define LAPIC_ICR_ALL_EX_SELF     0x000c0000
 
 #define X86_AP_TRAMPOLINE_VADDR   (INTERRUPT_VECTOR_BASE - PAGE_SIZE)
 
@@ -37,6 +38,7 @@ extern uint8_t x86_ap_trampoline_end[];
 extern uint8_t x86_ap_trampoline_boot_pml4[];
 extern uint8_t x86_ap_trampoline_kernel_vm[];
 extern uint8_t x86_ap_trampoline_stack[];
+extern uint8_t x86_ap_trampoline_kernel_entry[];
 
 static inline void x86_cpuid(uint32_t leaf, uint32_t *eax, uint32_t *ebx,
 		uint32_t *ecx, uint32_t *edx) {
@@ -97,16 +99,22 @@ static inline void x86_lapic_write(uint32_t reg, uint32_t value) {
 	(void)x86_lapic_read(LAPIC_ID_REG);
 }
 
-static inline void x86_lapic_wait_icr(void) {
-	while ((x86_lapic_read(LAPIC_ICR_LOW_REG) & LAPIC_ICR_DELIVERY_BUSY) != 0) {
+static inline int x86_lapic_wait_icr(void) {
+	for (uint32_t i = 0; i < 1000000; i++) {
+		if ((x86_lapic_read(LAPIC_ICR_LOW_REG) & LAPIC_ICR_DELIVERY_BUSY) == 0) {
+			return 0;
+		}
 	}
+	return -1;
 }
 
 static inline void x86_lapic_send_ipi_raw(uint32_t apic_id, uint32_t icr_low) {
-	x86_lapic_wait_icr();
+	if (x86_lapic_wait_icr() != 0) {
+		return;
+	}
 	x86_lapic_write(LAPIC_ICR_HIGH_REG, apic_id << 24);
 	x86_lapic_write(LAPIC_ICR_LOW_REG, icr_low);
-	x86_lapic_wait_icr();
+	(void)x86_lapic_wait_icr();
 }
 
 void x86_lapic_init(void);

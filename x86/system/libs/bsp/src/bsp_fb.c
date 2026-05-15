@@ -1,5 +1,4 @@
 #include <stdint.h>
-#include <string.h>
 #include <bsp/bsp_fb.h>
 #include <bsp/x86_pio.h>
 #include <ewoksys/syscall.h>
@@ -40,6 +39,10 @@
 #define X86_FB_FALLBACK_PHY_BASE 0xFD000000u
 
 static fbinfo_t _fbinfo;
+
+static inline void fbinfo_reset(void) {
+	_fbinfo = (fbinfo_t){0};
+}
 
 static inline uint32_t align_up(uint32_t value, uint32_t align) {
 	return (value + align - 1) & (~(align - 1));
@@ -186,7 +189,7 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	find_display_bar0(&phy_base);
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
-	memset(&_fbinfo, 0, sizeof(_fbinfo));
+	fbinfo_reset();
 	_fbinfo.pointer = sysinfo.sys_dma.v_base + sysinfo.sys_dma.size;
 	_fbinfo.size = size;
 	_fbinfo.size_max = size_max;
@@ -205,7 +208,7 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 			(ewokos_addr_t)_fbinfo.pointer,
 			(ewokos_addr_t)_fbinfo.phy_base,
 			(ewokos_addr_t)_fbinfo.size_max) == 0) {
-		memset(&_fbinfo, 0, sizeof(_fbinfo));
+		fbinfo_reset();
 		return -1;
 	}
 	return 0;

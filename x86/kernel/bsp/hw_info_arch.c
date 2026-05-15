@@ -23,8 +23,8 @@ void sys_info_init_arch(void) {
 	if (_sys_info.total_usable_mem_size > (uint32_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset)) {
 		_sys_info.total_usable_mem_size = (uint32_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset);
 	}
-	_sys_info.mmio.phy_base = 0xE0000000;
-	_sys_info.mmio.size = 0x20000000;
+	_sys_info.mmio.phy_base = 0xFEC00000;
+	_sys_info.mmio.size = 0x00400000;
 	_sys_info.sys_dma.size = 16 * MB;
 	_sys_info.machine[0] = 'x';
 	_sys_info.machine[1] = '8';
@@ -65,12 +65,16 @@ void kalloc_arch(void) {
 }
 
 int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
+	ewokos_addr_t mmio_end;
+	ewokos_addr_t map_end;
 	if (_sys_info.mmio.size == 0) {
 		(void)phy_base;
 		(void)size;
 		return -1;
 	}
-	if (phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size) {
+	mmio_end = _sys_info.mmio.phy_base + _sys_info.mmio.size;
+	map_end = phy_base + size;
+	if (phy_base >= _sys_info.mmio.phy_base && map_end >= phy_base && map_end <= mmio_end) {
 		return 0;
 	}
 	return -1;
