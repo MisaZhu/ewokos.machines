@@ -6,3 +6,7 @@ ARCH_OBJS += $(BSP_DIR)/hw_info_arch.o \
 	$(BSP_DIR)/core.o \
 	$(BSP_DIR)/ipi.o \
 	$(BSP_DIR)/start.o
+
+ifeq ($(SMP),yes)
+ARCH_OBJS += $(BSP_DIR)/ap_boot.o
+endif

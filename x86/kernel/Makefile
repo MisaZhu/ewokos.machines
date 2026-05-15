@@ -12,6 +12,9 @@ BOOT_OBJ = $(BOOT_DIR)/bootsect.o
 BOOT_BIN = $(BOOT_DIR)/bootsect.bin
 QEMU_CMD = qemu-system-x86_64
 QEMU_FLAGS = -M $(QEMU_MACHINE) -m 512 -serial mon:stdio -no-reboot -no-shutdown
+ifeq ($(SMP),yes)
+QEMU_FLAGS += -smp $(QEMU_SMP_CORES)
+endif
 QEMU_ARGS += -boot a
 QEMU_ARGS += -drive file=$(OS_BOOT),format=raw,if=floppy
 QEMU_ARGS += -drive file=../system/root_$(ARCH).ext2,format=raw,if=ide,index=0,media=disk

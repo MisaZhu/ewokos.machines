@@ -1,7 +1,9 @@
 #include <kernel/irq.h>
 #include <kernel/system.h>
 #include <interrupt.h>
+#include <x86_smp.h>
 #include "arch.h"
+#include "x86_machine_smp.h"
 
 #define PIC1_CMD   0x20
 #define PIC1_DATA  0x21
@@ -203,9 +205,14 @@ static int irq_to_line(uint32_t irq) {
 }
 
 void irq_init_arch(void) {
-	idt_init();
 	pic_remap();
+	x86_irq_percpu_init();
+}
+
+void x86_irq_percpu_init(void) {
+	idt_init();
 	set_vector_table((ewokos_addr_t)&_idt_ptr);
+	x86_lapic_init();
 }
 
 void irq_enable_arch(uint32_t irq) {
@@ -256,6 +263,9 @@ uint32_t irq_get_arch(void) {
 }
 
 uint32_t irq_get_unified_arch(uint32_t irq_raw) {
+	if (irq_raw == X86_VECTOR_IPI) {
+		return IRQ_IPI;
+	}
 	if (irq_raw >= PIC_MASTER_OFFSET && irq_raw < PIC_MASTER_OFFSET + 16) {
 		uint32_t irq = irq_raw - PIC_MASTER_OFFSET;
 		if (irq == 0) {
@@ -267,6 +277,10 @@ uint32_t irq_get_unified_arch(uint32_t irq_raw) {
 }
 
 void irq_eoi_arch(uint32_t irq_raw) {
+	if (irq_raw == X86_VECTOR_IPI) {
+		x86_lapic_write(LAPIC_EOI_REG, 0);
+		return;
+	}
 	if (irq_raw >= PIC_SLAVE_OFFSET && irq_raw < PIC_SLAVE_OFFSET + 8) {
 		outb(PIC2_CMD, PIC_EOI);
 	}

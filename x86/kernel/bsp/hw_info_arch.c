@@ -1,5 +1,6 @@
 #include <kernel/hw_info.h>
 #include <kernel/kernel.h>
+#include <kernel/core.h>
 #include <kernel/system.h>
 #include <mm/mmu.h>
 #include <mm/kalloc.h>
@@ -7,6 +8,7 @@
 #include <kstring.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "x86_machine_smp.h"
 
 extern uint32_t interrupt_table_start;
 
@@ -35,12 +37,13 @@ void sys_info_init_arch(void) {
 	_sys_info.arch[4] = '6';
 	_sys_info.arch[5] = '4';
 	_sys_info.arch[6] = '\0';
-	_sys_info.cores = 1;
+	_sys_info.cores = get_cpu_cores();
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
 }
 
 void arch_vm(page_dir_entry_t* vm) {
-	(void)vm;
+	map_pages_size(vm, X86_AP_TRAMPOLINE_VADDR, X86_AP_TRAMPOLINE_PADDR,
+			PAGE_SIZE, AP_RW_D, PTE_ATTR_WRBACK);
 }
 
 void kalloc_arch(void) {
