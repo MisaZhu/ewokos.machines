@@ -45,10 +45,13 @@ void x86_start_ap(uint32_t apic_id) {
 }
 
 void ipi_send(uint32_t core_id) {
+	uint32_t apic_id;
+
 	if (core_id == get_core_id()) {
 		return;
 	}
-	x86_lapic_send_ipi_raw(core_id, X86_VECTOR_IPI);
+	apic_id = x86_core_id_to_apic_id(core_id);
+	x86_lapic_send_ipi_raw(apic_id, X86_VECTOR_IPI);
 }
 
 void ipi_clear(uint32_t core_id) {

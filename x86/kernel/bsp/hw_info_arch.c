@@ -14,6 +14,177 @@ extern uint32_t interrupt_table_start;
 
 ewokos_addr_t _core_base_offset = 0;
 
+typedef struct __attribute__((packed)) {
+	char signature[4];
+	uint32_t config_table;
+	uint8_t length;
+	uint8_t spec_rev;
+	uint8_t checksum;
+	uint8_t feature1;
+	uint8_t feature2;
+	uint8_t feature3[3];
+} x86_mp_floating_t;
+
+typedef struct __attribute__((packed)) {
+	char signature[4];
+	uint16_t base_table_length;
+	uint8_t spec_rev;
+	uint8_t checksum;
+	char oem_id[8];
+	char product_id[12];
+	uint32_t oem_table;
+	uint16_t oem_table_size;
+	uint16_t entry_count;
+	uint32_t lapic_addr;
+	uint16_t extended_table_length;
+	uint8_t extended_table_checksum;
+	uint8_t reserved;
+} x86_mp_config_t;
+
+typedef struct __attribute__((packed)) {
+	uint8_t type;
+	uint8_t apic_id;
+	uint8_t apic_version;
+	uint8_t cpu_flags;
+	uint32_t cpu_signature;
+	uint32_t feature_flags;
+	uint32_t reserved[2];
+} x86_mp_cpu_entry_t;
+
+#define X86_MP_CPU_ENTRY           0
+#define X86_MP_CPU_ENABLED         0x01
+#define X86_MP_CPU_BSP             0x02
+
+static uint8_t x86_sum_bytes(const void *ptr, uint32_t size) {
+	const uint8_t *p = (const uint8_t *)ptr;
+	uint8_t sum = 0;
+
+	for (uint32_t i = 0; i < size; i++) {
+		sum = (uint8_t)(sum + p[i]);
+	}
+	return sum;
+}
+
+static uint16_t x86_bda_read16(uintptr_t addr) {
+	uint16_t value;
+
+	__asm__ volatile("movw (%1), %0" : "=r"(value) : "r"(addr) : "memory");
+	return value;
+}
+
+static const x86_mp_floating_t* x86_find_mp_floating_in_range(uintptr_t start, uintptr_t end) {
+	for (uintptr_t addr = start; (addr + sizeof(x86_mp_floating_t)) <= end; addr += 16) {
+		const x86_mp_floating_t *mp = (const x86_mp_floating_t *)addr;
+
+		if (memcmp((void *)mp->signature, (void *)"_MP_", 4) != 0) {
+			continue;
+		}
+		if (mp->length == 0) {
+			continue;
+		}
+		if (x86_sum_bytes(mp, (uint32_t)mp->length * 16) != 0) {
+			continue;
+		}
+		return mp;
+	}
+	return NULL;
+}
+
+static const x86_mp_floating_t* x86_find_mp_floating(void) {
+	uintptr_t ebda_addr = ((uintptr_t)x86_bda_read16(0x40E)) << 4;
+	uintptr_t base_kb = (uintptr_t)x86_bda_read16(0x413);
+	const x86_mp_floating_t *mp;
+
+	if (ebda_addr != 0) {
+		mp = x86_find_mp_floating_in_range(ebda_addr, ebda_addr + 1024);
+		if (mp != NULL) {
+			return mp;
+		}
+	}
+
+	if (base_kb >= 1) {
+		uintptr_t top_of_base = base_kb * 1024;
+		mp = x86_find_mp_floating_in_range(top_of_base - 1024, top_of_base);
+		if (mp != NULL) {
+			return mp;
+		}
+	}
+
+	return x86_find_mp_floating_in_range(0xF0000, 0x100000);
+}
+
+static void x86_detect_mp_topology(void) {
+	const x86_mp_floating_t *mp;
+	const x86_mp_config_t *cfg;
+	const uint8_t *entry;
+	uint32_t count = 0;
+	uint8_t bsp_apic = 0xFF;
+	uint8_t apics[CPU_MAX_CORES];
+
+	memset(apics, 0xFF, sizeof(apics));
+	x86_smp_mapping_reset();
+	mp = x86_find_mp_floating();
+	if (mp == NULL || mp->config_table == 0) {
+		return;
+	}
+	if (mp->config_table < 0x400 || mp->config_table >= (1024 * MB)) {
+		return;
+	}
+
+	cfg = (const x86_mp_config_t *)(uintptr_t)mp->config_table;
+	if (memcmp((void *)cfg->signature, (void *)"PCMP", 4) != 0) {
+		return;
+	}
+	if (cfg->base_table_length < sizeof(x86_mp_config_t) ||
+			cfg->base_table_length > 4096) {
+		return;
+	}
+	if (x86_sum_bytes(cfg, cfg->base_table_length) != 0) {
+		return;
+	}
+
+	entry = (const uint8_t *)(cfg + 1);
+	for (uint32_t i = 0; i < cfg->entry_count && count < CPU_MAX_CORES; i++) {
+		switch (entry[0]) {
+		case X86_MP_CPU_ENTRY: {
+			const x86_mp_cpu_entry_t *cpu = (const x86_mp_cpu_entry_t *)entry;
+			if ((cpu->cpu_flags & X86_MP_CPU_ENABLED) != 0) {
+				if ((cpu->cpu_flags & X86_MP_CPU_BSP) != 0) {
+					bsp_apic = cpu->apic_id;
+				}
+				apics[count++] = cpu->apic_id;
+			}
+			entry += sizeof(x86_mp_cpu_entry_t);
+			break;
+		}
+		case 1:
+		case 2:
+		case 3:
+		case 4:
+			entry += 8;
+			break;
+		default:
+			return;
+		}
+	}
+
+	if (count == 0) {
+		return;
+	}
+
+	if (bsp_apic == 0xFF) {
+		bsp_apic = apics[0];
+	}
+
+	x86_smp_set_apic_id(0, bsp_apic);
+	for (uint32_t i = 0, core_id = 1; i < count && core_id < CPU_MAX_CORES; i++) {
+		if (apics[i] == bsp_apic) {
+			continue;
+		}
+		x86_smp_set_apic_id(core_id++, apics[i]);
+	}
+}
+
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
 	_sys_info.phy_offset = 0x00100000;
@@ -37,6 +208,7 @@ void sys_info_init_arch(void) {
 	_sys_info.arch[4] = '6';
 	_sys_info.arch[5] = '4';
 	_sys_info.arch[6] = '\0';
+	x86_detect_mp_topology();
 	_sys_info.cores = get_cpu_cores();
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
 }

@@ -120,5 +120,11 @@ static inline void x86_lapic_send_ipi_raw(uint32_t apic_id, uint32_t icr_low) {
 void x86_lapic_init(void);
 void x86_irq_percpu_init(void);
 void x86_start_ap(uint32_t apic_id);
+void x86_smp_mapping_reset(void);
+void x86_smp_mapping_init(void);
+void x86_smp_set_apic_id(uint32_t core_id, uint32_t apic_id);
+uint32_t x86_smp_detected_core_count(void);
+uint32_t x86_apic_id_to_core_id(uint32_t apic_id);
+uint32_t x86_core_id_to_apic_id(uint32_t core_id);
 
 #endif

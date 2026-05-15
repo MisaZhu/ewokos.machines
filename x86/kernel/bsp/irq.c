@@ -98,8 +98,6 @@ DECLARE_ISR(248) DECLARE_ISR(249) DECLARE_ISR(250) DECLARE_ISR(251)
 DECLARE_ISR(252) DECLARE_ISR(253) DECLARE_ISR(254) DECLARE_ISR(255)
 #undef DECLARE_ISR
 
-extern volatile uint32_t _x86_irq_raw;
-
 uint32_t interrupt_table_start = 0;
 uint32_t interrupt_table_end = 0;
 static idt_ptr_t _idt_ptr;
@@ -259,7 +257,11 @@ void irq_disable_arch(uint32_t irq) {
 }
 
 uint32_t irq_get_arch(void) {
-	return _x86_irq_raw;
+	/*
+	 * x86 raw IRQ vectors are taken directly from the trap frame by the
+	 * common kernel irq handler, so there is no per-platform global raw IRQ.
+	 */
+	return 0;
 }
 
 uint32_t irq_get_unified_arch(uint32_t irq_raw) {
