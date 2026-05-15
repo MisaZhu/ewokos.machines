@@ -39,6 +39,7 @@ extern uint8_t x86_ap_trampoline_boot_pml4[];
 extern uint8_t x86_ap_trampoline_kernel_vm[];
 extern uint8_t x86_ap_trampoline_stack[];
 extern uint8_t x86_ap_trampoline_kernel_entry[];
+extern uint8_t x86_ap_trampoline_core_id[];
 
 static inline void x86_cpuid(uint32_t leaf, uint32_t *eax, uint32_t *ebx,
 		uint32_t *ecx, uint32_t *edx) {

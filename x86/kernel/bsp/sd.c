@@ -1,5 +1,4 @@
 #include <dev/sd.h>
-#include <dev/uart.h>
 #include <kstring.h>
 #include "arch.h"
 
@@ -25,10 +24,6 @@
 
 static int32_t _pending_sector = -1;
 static uint8_t _write_buf[512];
-
-static void sd_trace(char c) {
-	(void)uart_write(&c, 1);
-}
 
 static void ata_400ns_wait(void) {
 	for (int i = 0; i < 4; ++i) {
@@ -95,14 +90,10 @@ int32_t sd_dev_read_done(void* buf) {
 	if (_pending_sector < 0) {
 		return -1;
 	}
-	if (_pending_sector < 4) {
-		sd_trace('0' + _pending_sector);
-	}
 	ata_select_lba28((uint32_t)_pending_sector);
 	outb(ATA_COMMAND, ATA_CMD_READ_PIO);
 	ata_400ns_wait();
 	if (ata_wait_drq() != 0) {
-		sd_trace('D');
 		return -1;
 	}
 	for (int i = 0; i < 256; ++i) {

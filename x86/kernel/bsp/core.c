@@ -113,6 +113,7 @@ static void __attribute__((unused)) x86_prepare_ap_trampoline(uint32_t core_id) 
 	uintptr_t offset_kernel_vm;
 	uintptr_t offset_stack;
 	uintptr_t offset_kernel_entry;
+	uintptr_t offset_core_id;
 	uint32_t size = (uint32_t)(x86_ap_trampoline_end - x86_ap_trampoline_start);
 	uint64_t stack_top;
 
@@ -122,6 +123,7 @@ static void __attribute__((unused)) x86_prepare_ap_trampoline(uint32_t core_id) 
 	offset_kernel_vm = (uintptr_t)(x86_ap_trampoline_kernel_vm - x86_ap_trampoline_start);
 	offset_stack = (uintptr_t)(x86_ap_trampoline_stack - x86_ap_trampoline_start);
 	offset_kernel_entry = (uintptr_t)(x86_ap_trampoline_kernel_entry - x86_ap_trampoline_start);
+	offset_core_id = (uintptr_t)(x86_ap_trampoline_core_id - x86_ap_trampoline_start);
 	stack_top = (uint64_t)(uintptr_t)&_ap_boot_stacks[core_id][PAGE_SIZE - 16];
 
 	put64((uintptr_t)trampoline + offset_boot_pml4, (uint64_t)(uintptr_t)&boot_pml4);
@@ -129,11 +131,12 @@ static void __attribute__((unused)) x86_prepare_ap_trampoline(uint32_t core_id) 
 		(uint64_t)V2P((ewokos_addr_t)_kernel_info.kernel_vm));
 	put64((uintptr_t)trampoline + offset_stack, stack_top);
 	put64((uintptr_t)trampoline + offset_kernel_entry, (uint64_t)(uintptr_t)&_slave_kernel_entry_c);
+	put32((uintptr_t)trampoline + offset_core_id, core_id);
 	flush_dcache();
 }
 
 void cpu_core_ready(uint32_t core_id) {
-	(void)core_id;
+	x86_smp_set_apic_id(core_id, __core_id() & 0xFFu);
 	x86_runtime_init();
 	x86_irq_percpu_init();
 	__irq_enable();

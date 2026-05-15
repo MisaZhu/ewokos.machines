@@ -3,15 +3,6 @@
 #include <kernel/system.h>
 #include "x86_machine_smp.h"
 
-static inline void smp_mark(char c) {
-	uint8_t ready;
-
-	do {
-		__asm__ volatile("inb %1, %0" : "=a"(ready) : "Nd"((uint16_t)0x3FD));
-	} while ((ready & 0x20) == 0);
-	__asm__ volatile("outb %0, %1" : : "a"((uint8_t)c), "Nd"((uint16_t)0x3F8));
-}
-
 void ipi_enable(uint32_t core_id) {
 	(void)core_id;
 }
@@ -29,8 +20,6 @@ void x86_lapic_init(void) {
 void x86_start_ap(uint32_t apic_id) {
 	uint32_t vector = X86_AP_TRAMPOLINE_PADDR >> 12;
 
-	smp_mark('<');
-	smp_mark((char)('0' + (apic_id % 10)));
 	x86_lapic_send_ipi_raw(apic_id, LAPIC_ICR_INIT | LAPIC_ICR_LEVEL |
 			LAPIC_ICR_ASSERT | LAPIC_ICR_TRIGGER);
 	_delay(10000000);
@@ -41,7 +30,6 @@ void x86_start_ap(uint32_t apic_id) {
 	_delay(1000000);
 	x86_lapic_send_ipi_raw(apic_id, LAPIC_ICR_STARTUP | vector);
 	_delay(1000000);
-	smp_mark('>');
 }
 
 void ipi_send(uint32_t core_id) {
