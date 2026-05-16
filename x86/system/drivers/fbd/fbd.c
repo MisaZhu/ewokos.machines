@@ -22,20 +22,24 @@ static void blt16(uint32_t* src, uint16_t* dst, uint32_t w, uint32_t h) {
 
 static uint32_t blt32(const fbinfo_t* fbinfo, const graph_t* g) {
 	uint32_t bytes_per_pixel = fbinfo->depth / 8;
-	volatile uint32_t* dst = (volatile uint32_t*)(uintptr_t)(fbinfo->pointer +
+	uint8_t* dst = (uint8_t*)(uintptr_t)(fbinfo->pointer +
 			fbinfo->yoffset * fbinfo->pitch +
 			fbinfo->xoffset * bytes_per_pixel);
 	const uint32_t* src = g->buffer;
-	uint32_t dst_stride = fbinfo->pitch / bytes_per_pixel;
+	uint32_t row_bytes = (uint32_t)g->w * bytes_per_pixel;
+	uint32_t total_bytes = (uint32_t)g->h * row_bytes;
+
+	if (fbinfo->pitch == row_bytes) {
+		memcpy(dst, src, total_bytes);
+		return total_bytes;
+	}
 
 	for (int32_t y = 0; y < g->h; ++y) {
-		volatile uint32_t* dst_row = dst + y * dst_stride;
-		const uint32_t* src_row = src + y * g->w;
-		for (int32_t x = 0; x < g->w; ++x) {
-			dst_row[x] = src_row[x];
-		}
+		uint8_t* dst_row = dst + y * fbinfo->pitch;
+		const uint8_t* src_row = (const uint8_t*)(src + y * g->w);
+		memcpy(dst_row, src_row, row_bytes);
 	}
-	return (uint32_t)g->w * (uint32_t)g->h * bytes_per_pixel;
+	return total_bytes;
 }
 
 static uint32_t blt16_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
