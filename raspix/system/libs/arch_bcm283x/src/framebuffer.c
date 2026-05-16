@@ -8,6 +8,10 @@
 
 static fbinfo_t _fb_info;
 
+static uint32_t align_up(uint32_t value, uint32_t align) {
+	return (value + align - 1) & (~(align - 1));
+}
+
 // 定义常用的 Mailbox 标签
 #define TAG_SET_PHYS_SIZE   0x00048003
 #define TAG_SET_VIRT_SIZE   0x00048004
@@ -276,19 +280,6 @@ void test(void) {
 	*/
 }
 
-typedef struct {
-	uint32_t width;
-	uint32_t height;
-	uint32_t vwidth;
-	uint32_t vheight;
-	uint32_t bytes;
-	uint32_t depth;
-	uint32_t ignorex;
-	uint32_t ignorey;
-	void * pointer;
-	uint32_t size;
-} fb_init_t;
-
 int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	memset(&_fb_info, 0, sizeof(fbinfo_t));
 	sys_info_t sysinfo;
@@ -296,41 +287,97 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 
 	bcm283x_mailbox_init();
 
-	fb_init_t* fbinit = (fb_init_t*)(dma_alloc(0, sizeof(fb_init_t)));
+	if (w == 0) {
+		w = 1024;
+	}
+	if (h == 0) {
+		h = 768;
+	}
+	if (dep != 16 && dep != 32) {
+		dep = 32;
+	}
 
-	memset(fbinit, 0, sizeof(fb_init_t));
-	fbinit->width = w;
-	fbinit->height = h;
-	fbinit->vwidth = fbinit->width;
-	fbinit->vheight = fbinit->height;
-	fbinit->depth = dep;
+	uint32_t* req = (uint32_t*)dma_alloc(0, 26 * sizeof(uint32_t));
+	if (req == NULL) {
+		return -1;
+	}
+
+	memset(req, 0, 26 * sizeof(uint32_t));
+	req[0] = 26 * sizeof(uint32_t);
+	req[1] = 0;
+	req[2] = TAG_SET_PHYS_SIZE;
+	req[3] = 8;
+	req[4] = 8;
+	req[5] = w;
+	req[6] = h;
+	req[7] = TAG_SET_VIRT_SIZE;
+	req[8] = 8;
+	req[9] = 8;
+	req[10] = w;
+	req[11] = h;
+	req[12] = TAG_SET_DEPTH;
+	req[13] = 4;
+	req[14] = 4;
+	req[15] = dep;
+	req[16] = TAG_ALLOCATE_FB;
+	req[17] = 8;
+	req[18] = 4;
+	req[19] = 16;
+	req[20] = 0;
+	req[21] = TAG_GET_PITCH;
+	req[22] = 4;
+	req[23] = 0;
+	req[24] = 0;
+	req[25] = 0;
 
 	mail_message_t msg;
 	memset(&msg, 0, sizeof(mail_message_t));
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)fbinit) | 0xC0000000) >> 4; // ARM addr to GPU addr
-	msg.channel = FRAMEBUFFER_CHANNEL;
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)req) | 0xC0000000) >> 4; // ARM addr to GPU addr
+	msg.channel = PROPERTY_CHANNEL;
 	bcm283x_mailbox_call(&msg);
 
-	if(fbinit->size == 0)
-		fbinit->size = w * h * 4;
+	uint32_t resp_w = req[5];
+	uint32_t resp_h = req[6];
+	uint32_t resp_vw = req[10];
+	uint32_t resp_vh = req[11];
+	uint32_t resp_dep = req[15];
+	uint32_t resp_phy = req[19] & 0x3fffffff; // GPU addr to ARM addr
+	uint32_t resp_size = req[20];
+	uint32_t resp_pitch = req[24];
+	dma_free(0, (ewokos_addr_t)req);
 
-	_fb_info.width = fbinit->width;
-	_fb_info.height = fbinit->height;
-	_fb_info.vwidth = fbinit->width;
-	_fb_info.vheight = fbinit->height;
-	_fb_info.depth = fbinit->depth;
-	_fb_info.pitch = _fb_info.width*(_fb_info.depth/8);
+	if ((resp_w == 0) || (resp_h == 0) || (resp_phy == 0) || (resp_size == 0)) {
+		memset(&_fb_info, 0, sizeof(fbinfo_t));
+		return -1;
+	}
 
-	_fb_info.phy_base = ((uint32_t)fbinit->pointer) & 0x3fffffff; //GPU addr to ARM addr
+	if (resp_dep != 16 && resp_dep != 32) {
+		memset(&_fb_info, 0, sizeof(fbinfo_t));
+		return -1;
+	}
+
+	_fb_info.width = resp_w;
+	_fb_info.height = resp_h;
+	_fb_info.vwidth = resp_vw != 0 ? resp_vw : resp_w;
+	_fb_info.vheight = resp_vh != 0 ? resp_vh : resp_h;
+	_fb_info.depth = resp_dep;
+	_fb_info.pitch = resp_pitch != 0 ? resp_pitch : (_fb_info.vwidth * (_fb_info.depth / 8));
+	_fb_info.phy_base = resp_phy;
 	_fb_info.pointer = sysinfo.sys_dma.v_base + sysinfo.sys_dma.size;
-	_fb_info.size = fbinit->size;
+	_fb_info.size = resp_size;
 	_fb_info.xoffset = 0;
 	_fb_info.yoffset = 0;
-	_fb_info.size_max = 64*1024*1024;
-	syscall3(SYS_MEM_MAP,(ewokos_addr_t) _fb_info.pointer, (ewokos_addr_t)_fb_info.phy_base, _fb_info.size_max);
-	_fb_info.dma_id = dma_set(_fb_info.phy_base+_fb_info.size, _fb_info.size_max - _fb_info.size, true);
+	_fb_info.size_max = align_up(resp_size, 4096);
+	_fb_info.dma_id = -1;
 
-	dma_free(0, (ewokos_addr_t)fbinit);
+	if (syscall3(SYS_MEM_MAP,
+			(ewokos_addr_t)_fb_info.pointer,
+			(ewokos_addr_t)_fb_info.phy_base,
+			(ewokos_addr_t)_fb_info.size_max) == 0) {
+		memset(&_fb_info, 0, sizeof(fbinfo_t));
+		return -1;
+	}
+
 	//test();
 	//sleep(3);
 	return 0;
