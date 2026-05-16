@@ -4,8 +4,8 @@ basic:
 
 gui:
 	cd fbd; make
-	cd keybd; make
-	cd moused; make
+	cd ps2keybd; make
+	cd ps2moused; make
 
 network:
 
@@ -13,5 +13,5 @@ clean:
 	cd ttyd; make clean
 	cd powerd; make clean
 	cd fbd; make clean
-	cd keybd; make clean
-	cd moused; make clean
+	cd ps2keybd; make clean
+	cd ps2moused; make clean

@@ -11,7 +11,7 @@ CFLAGS += -I $(BUILD_DIR)/include
 
 MOUSED_OBJS = moused.o
 
-MOUSED = $(TARGET_DIR)/drivers/x86/moused
+MOUSED = $(TARGET_DIR)/drivers/x86/ps2moused
 
 $(MOUSED): $(MOUSED_OBJS) \
 		$(BUILD_DIR)/lib/libewoksys.a

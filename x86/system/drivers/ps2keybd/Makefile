@@ -11,7 +11,7 @@ CFLAGS += -I $(BUILD_DIR)/include
 
 KEYBD_OBJS = keybd.o
 
-KEYBD = $(TARGET_DIR)/drivers/x86/keybd
+KEYBD = $(TARGET_DIR)/drivers/x86/ps2keybd
 
 $(KEYBD): $(KEYBD_OBJS) \
 		$(BUILD_DIR)/lib/libewoksys.a
