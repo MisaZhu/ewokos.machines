@@ -6,8 +6,12 @@
 #include <ewoksys/mmio.h>
 #include <sysinfo.h>
 
+#include <arch/miyoo/sd.h>
 #include "sdmmc.h"
 static uint8_t *_sector_buf;
+
+#define MIYOO_SD_BOUNCE_SECTORS 128U
+#define MIYOO_SD_BOUNCE_SIZE (MIYOO_SD_BOUNCE_SECTORS * 512U)
 
 static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg, uint16_t u16BlkCnt, uint16_t u16BlkSize, TransEmType eTransType, volatile uint8_t *pu8Buf)
 {
@@ -44,22 +48,33 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
  */
 int32_t miyoo_sd_init(void) {
 	_mmio_base = mmio_map();
-	_sector_buf = 0x87e00000;
-	syscall3(SYS_MEM_MAP, (ewokos_addr_t)_sector_buf, 0x27e00000, 4096);
+	_sector_buf = (uint8_t*)0x87e00000;
+	syscall3(SYS_MEM_MAP, (ewokos_addr_t)_sector_buf, 0x27e00000, MIYOO_SD_BOUNCE_SIZE);
 	sdmmc_init();
 	return 0;
 }
 
 
 int32_t miyoo_sd_read_sector(int32_t sector, void* buf) {
-	static RspStruct * pstRsp;
-	pstRsp = _SDMMC_DATAReq(0, 17, sector, 1, 512, EV_DMA, _sector_buf);  //CMD17
-	memcpy(buf, _sector_buf, 512);
-	return pstRsp->eErrCode;
+	return miyoo_sd_read_blocks(sector, buf, 1);
 }
 
 int32_t miyoo_sd_write_sector(int32_t sector, const void* buf) {
-
-	return 0;
+	return miyoo_sd_write_blocks(sector, buf, 1);
 }
 
+int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
+	static RspStruct * pstRsp;
+	uint8_t cmd = (count > 1) ? 18 : 17;
+	pstRsp = _SDMMC_DATAReq(0, cmd, sector, count, 512, EV_DMA, _sector_buf);
+	if(pstRsp->eErrCode == 0)
+		memcpy(buf, _sector_buf, count * 512U);
+	return pstRsp->eErrCode;
+}
+
+int32_t miyoo_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
+	(void)sector;
+	(void)buf;
+	(void)count;
+	return 0;
+}

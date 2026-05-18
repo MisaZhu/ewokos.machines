@@ -11,6 +11,8 @@
 @/bin/splash -m "start /dev/tty0" -p 10
 @/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
 
+@/bin/splash -m "start /dev/tty0" -p 15
+@/bin/ipcserv /drivers/raspix/soundd         /dev/sound0
 
 @/bin/splash -m "start /dev/timer" -p 20
 @/bin/ipcserv /drivers/timerd

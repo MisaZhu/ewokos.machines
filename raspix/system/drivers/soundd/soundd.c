@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <ewoksys/dma.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #define UNUSED(v) ((void)(v))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -82,6 +83,10 @@ static sys_info_t _sysinfo;
 #endif
 
 #define DMA_BUF_SIZE  (1024*16)
+#define DMA_SAMPLE_CAPACITY (DMA_BUF_SIZE / sizeof(uint32_t))
+#define PWM_BASE_CLOCK_HZ 54000000U
+#define DMA_WAIT_SLICE_US 200
+#define DMA_WAIT_RETRY_MAX 20000
 
 typedef struct dma_cb {
    unsigned int ti;
@@ -106,17 +111,142 @@ struct pcm_config {
 
 typedef struct {
 	dma_cb_t* dma_cb;
-	uint32_t dma_data_addr;
-	uint32_t dma_cb_phy;
-	uint32_t dma_data_addr_phy;
+	ewokos_addr_t dma_data_addr;
+	ewokos_addr_t dma_cb_phy;
+	ewokos_addr_t dma_data_addr_phy;
 	struct pcm_config pcm_cfg;
+	uint32_t pwm_range;
+	uint32_t frame_bytes;
+	uint32_t period_bytes;
+	uint32_t buffer_bytes;
+	uint32_t write_chunk_bytes;
 	bool configured;
 	bool prepared;
 	bool started;
+	int open_count;
 	int occupied_pid;
 } snd_dev_t;
 
 static snd_dev_t _snd = {0};
+
+static uint32_t audio_sample_bytes(int bit_depth) {
+	switch (bit_depth) {
+	case 8:
+		return 1;
+	case 16:
+		return 2;
+	case 24:
+		return 3;
+	case 32:
+		return 4;
+	default:
+		return 0;
+	}
+}
+
+static uint32_t audio_rate_to_pwm_range(int rate) {
+	uint64_t range = ((uint64_t)PWM_BASE_CLOCK_HZ + ((uint64_t)rate / 2ULL)) / (uint64_t)rate;
+	if (range < 2ULL) {
+		range = 2ULL;
+	}
+	if (range > 0xFFFFULL) {
+		range = 0xFFFFULL;
+	}
+	return (uint32_t)range;
+}
+
+static int32_t audio_pcm_sample_to_s32(const uint8_t* data, uint32_t sample_bytes) {
+	switch (sample_bytes) {
+	case 1:
+		return ((int32_t)data[0] - 128) * 16777216;
+	case 2: {
+		int16_t v = (int16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
+		return (int32_t)v * 65536;
+	}
+	case 3: {
+		int32_t v = (int32_t)((uint32_t)data[0] |
+				((uint32_t)data[1] << 8) |
+				((uint32_t)data[2] << 16));
+		if ((v & 0x00800000) != 0) {
+			v |= ~0x00FFFFFF;
+		}
+		return v * 256;
+	}
+	case 4:
+		return (int32_t)((uint32_t)data[0] |
+				((uint32_t)data[1] << 8) |
+				((uint32_t)data[2] << 16) |
+				((uint32_t)data[3] << 24));
+	default:
+		return 0;
+	}
+}
+
+static uint32_t audio_frame_to_pwm(const uint8_t* frame) {
+	uint32_t sample_bytes = audio_sample_bytes(_snd.pcm_cfg.bit_depth);
+	int64_t mixed = 0;
+	uint64_t scaled;
+	int32_t averaged;
+
+	for (int ch = 0; ch < _snd.pcm_cfg.channels; ch++) {
+		mixed += audio_pcm_sample_to_s32(frame + ((uint32_t)ch * sample_bytes), sample_bytes);
+	}
+
+	averaged = (int32_t)(mixed / _snd.pcm_cfg.channels);
+	scaled = (((uint64_t)((int64_t)averaged + 2147483648LL)) *
+			(uint64_t)(_snd.pwm_range - 1U)) >> 32;
+	if (scaled >= _snd.pwm_range) {
+		scaled = _snd.pwm_range - 1U;
+	}
+	return (uint32_t)scaled;
+}
+
+static uint32_t audio_fill_dma_buffer(const uint8_t* buf, int size) {
+	uint32_t frames = (uint32_t)(size / (int)_snd.frame_bytes);
+	uint32_t* pwm_data = (uint32_t*)(uintptr_t)_snd.dma_data_addr;
+
+	if (frames > DMA_SAMPLE_CAPACITY) {
+		frames = DMA_SAMPLE_CAPACITY;
+	}
+
+	for (uint32_t i = 0; i < frames; i++) {
+		pwm_data[i] = audio_frame_to_pwm(buf + (i * _snd.frame_bytes));
+	}
+	return frames;
+}
+
+static int audio_run_dma_transfer(uint32_t samples) {
+	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_V_BASE;
+	volatile uint32_t *dmae = (uint32_t *)(uintptr_t)DMA_ENABLE;
+	int retry = 0;
+
+	if (samples == 0) {
+		return 0;
+	}
+
+	_snd.dma_cb->txfr_len = samples * sizeof(uint32_t);
+
+	*(pwm + BCM283x_PWM_STATUS) = ERRORMASK;
+	*(pwm + BCM283x_PWM_RANGE) = _snd.pwm_range;
+	*(pwm + BCM283x_PWM_CONTROL) = BCM283x_PWM_USEFIFO | BCM283x_PWM_ENABLE | (1 << 6);
+	*(pwm + BCM283x_PWM_DMAC) = BCM283x_PWM_ENAB + 0x0707;
+
+	*dmae = DMA_EN0;
+	*(dma + DMA_CONBLK_AD) = (uint32_t)_snd.dma_cb_phy;
+	proc_usleep(DMA_WAIT_SLICE_US);
+	*(dma + DMA_CS) = DMA_ACTIVE;
+
+	while ((*(dma + DMA_CS)) & DMA_ACTIVE) {
+		if (retry++ > DMA_WAIT_RETRY_MAX) {
+			klog("sound: dma transfer timed out\n");
+			return -1;
+		}
+		proc_usleep(DMA_WAIT_SLICE_US);
+	}
+
+	return 0;
+}
 
 static void audio_deinit(void) {
 	if (_snd.dma_cb != NULL) {
@@ -127,40 +257,31 @@ static void audio_deinit(void) {
 		dma_free(0, _snd.dma_data_addr);
 		_snd.dma_data_addr = 0;
 	}
+	_snd.dma_cb_phy = 0;
+	_snd.dma_data_addr_phy = 0;
+	_snd.pwm_range = 0;
+	_snd.frame_bytes = 0;
+	_snd.period_bytes = 0;
+	_snd.buffer_bytes = 0;
+	_snd.write_chunk_bytes = 0;
+	memset(&_snd.pcm_cfg, 0, sizeof(_snd.pcm_cfg));
 	_snd.configured = false;
 	_snd.prepared = false;
 	_snd.started = false;
 }
 
 static int audio_init_pcm(const struct pcm_config *cfg) {
-	volatile uint32_t *pwm = (uint32_t *)PWM_BASE;
-	volatile uint32_t *clk = (uint32_t *)CLOCK_BASE;
-
-	uint32_t range_val;
-	switch (cfg->rate) {
-	case 8000:
-		range_val = 6750;
-		break;
-	case 16000:
-		range_val = 3375;
-		break;
-	case 44100:
-		range_val = 1228;
-		break;
-	case 48000:
-		range_val = 1125;
-		break;
-	default:
-		range_val = 1228;
-	}
+	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	uint32_t phy_pwm_base;
 
 	*(pwm + BCM283x_PWM_CONTROL) = 0;
 	proc_usleep(2000);
-	*(pwm + BCM283x_PWM_RANGE) = range_val;
-	*(pwm + BCM283x_PWM_CONTROL) = BCM283x_PWM_USEFIFO | BCM283x_PWM_ENABLE | 1<<6;
+	_snd.pwm_range = audio_rate_to_pwm_range(cfg->rate);
+	*(pwm + BCM283x_PWM_RANGE) = _snd.pwm_range;
+	*(pwm + BCM283x_PWM_CONTROL) = BCM283x_PWM_USEFIFO | BCM283x_PWM_ENABLE | (1 << 6);
 
 	_snd.dma_cb = (dma_cb_t*)(dma_alloc(0, sizeof(dma_cb_t)));
-	_snd.dma_data_addr = dma_alloc(0, DMA_BUF_SIZE);
+	_snd.dma_data_addr = (ewokos_addr_t)dma_alloc(0, DMA_BUF_SIZE);
 
 	if (_snd.dma_cb == NULL || _snd.dma_data_addr == 0) {
 		klog("sound: failed to allocate DMA buffer\n");
@@ -171,9 +292,9 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 	_snd.dma_cb_phy = dma_phy_addr(0, (ewokos_addr_t)_snd.dma_cb);
 	_snd.dma_data_addr_phy = dma_phy_addr(0, _snd.dma_data_addr);
 
-	uint32_t phy_pwm_base = syscall1(SYS_V2P, PWM_BASE);
+	phy_pwm_base = (uint32_t)syscall1(SYS_V2P, (ewokos_addr_t)PWM_BASE);
 	_snd.dma_cb->ti = DMA_DEST_DREQ + DMA_PERMAP + DMA_SRC_INC;
-	_snd.dma_cb->source_ad = _snd.dma_data_addr_phy;
+	_snd.dma_cb->source_ad = (uint32_t)_snd.dma_data_addr_phy;
 	_snd.dma_cb->dest_ad = phy_pwm_base + 0x18;
 	_snd.dma_cb->stride = 0x00;
 	_snd.dma_cb->nextconbk = 0x00;
@@ -187,11 +308,14 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 }
 
 static int audio_hw_params(const struct pcm_config *cfg) {
-	if (cfg->bit_depth != 8 && cfg->bit_depth != 16) {
+	uint32_t sample_bytes;
+
+	if (cfg->bit_depth != 8 && cfg->bit_depth != 16 &&
+			cfg->bit_depth != 24 && cfg->bit_depth != 32) {
 		klog("sound: unsupported bit depth: %d\n", cfg->bit_depth);
 		return -1;
 	}
-	if (cfg->rate != 8000 && cfg->rate != 16000 && cfg->rate != 44100 && cfg->rate != 48000) {
+	if (cfg->rate < 8000 || cfg->rate > 96000) {
 		klog("sound: unsupported rate: %d\n", cfg->rate);
 		return -1;
 	}
@@ -199,10 +323,24 @@ static int audio_hw_params(const struct pcm_config *cfg) {
 		klog("sound: unsupported channels: %d\n", cfg->channels);
 		return -1;
 	}
+	if (cfg->period_size <= 0 || cfg->period_count <= 0) {
+		klog("sound: invalid period config: %d x %d\n",
+				cfg->period_size, cfg->period_count);
+		return -1;
+	}
+
+	sample_bytes = audio_sample_bytes(cfg->bit_depth);
+	if (sample_bytes == 0) {
+		return -1;
+	}
 
 	audio_deinit();
 
 	memcpy(&_snd.pcm_cfg, cfg, sizeof(*cfg));
+	_snd.frame_bytes = (uint32_t)cfg->channels * sample_bytes;
+	_snd.period_bytes = (uint32_t)cfg->period_size * _snd.frame_bytes;
+	_snd.buffer_bytes = _snd.period_bytes * (uint32_t)cfg->period_count;
+	_snd.write_chunk_bytes = _snd.frame_bytes * DMA_SAMPLE_CAPACITY;
 	return audio_init_pcm(cfg);
 }
 
@@ -218,13 +356,16 @@ static int audio_start(void) {
 	if (!_snd.prepared) {
 		return -1;
 	}
+	if (_snd.started) {
+		return 0;
+	}
 	_snd.started = true;
 	return 0;
 }
 
 static int audio_stop(void) {
 	if (_snd.started) {
-		volatile uint32_t *pwm = (uint32_t *)PWM_BASE;
+		volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
 		*(pwm + BCM283x_PWM_CONTROL) = 0;
 		_snd.started = false;
 	}
@@ -239,7 +380,14 @@ static int sound_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t *info, int 
 	UNUSED(oflag);
 	UNUSED(p);
 
-	_snd.occupied_pid = proc_getpid(from_pid);
+	from_pid = proc_getpid(from_pid);
+	if (_snd.open_count > 0 && _snd.occupied_pid != from_pid) {
+		return -1;
+	}
+	audio_stop();
+	audio_deinit();
+	_snd.occupied_pid = from_pid;
+	_snd.open_count++;
 	return 0;
 }
 
@@ -250,8 +398,14 @@ static int sound_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsin
 	UNUSED(info);
 	UNUSED(p);
 
-	if (_snd.occupied_pid != proc_getpid(from_pid)) {
+	from_pid = proc_getpid(from_pid);
+	if (_snd.occupied_pid != from_pid || _snd.open_count <= 0) {
 		return -1;
+	}
+
+	_snd.open_count--;
+	if (_snd.open_count > 0) {
+		return 0;
 	}
 
 	audio_stop();
@@ -267,8 +421,16 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 	UNUSED(node);
 	UNUSED(p);
 
-	if (!_snd.configured || size <= 0 || _snd.occupied_pid != proc_getpid(from_pid)) {
+	int total = 0;
+	int consumed;
+	uint32_t samples;
+
+	from_pid = proc_getpid(from_pid);
+	if (!_snd.configured || size <= 0 || _snd.occupied_pid != from_pid) {
 		return -1;
+	}
+	if (offset < 0 || offset >= size) {
+		return 0;
 	}
 
 	if (!_snd.prepared) {
@@ -282,33 +444,32 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 		}
 	}
 
-	uint32_t max_size = DMA_BUF_SIZE / 4;
-	if ((uint32_t)size > max_size) {
-		size = max_size;
+	size -= offset;
+	if (_snd.frame_bytes == 0) {
+		return -1;
 	}
 
-	uint32_t *pdata = (uint32_t *)_snd.dma_data_addr;
-	for (int i = 0; i < size; i++) {
-		*(pdata + i) = *((uint8_t*)buf + offset + i);
+	size = (size / (int)_snd.frame_bytes) * (int)_snd.frame_bytes;
+	if (size == 0) {
+		return 0;
 	}
 
-	_snd.dma_cb->txfr_len = (uint32_t)size * 4;
-
-	volatile uint32_t *pwm = (uint32_t *)PWM_BASE;
-	volatile uint32_t *dma = (uint32_t *)DMA_V_BASE;
-	volatile uint32_t *dmae = (uint32_t *)DMA_ENABLE;
-
-	*(pwm + BCM283x_PWM_DMAC) = BCM283x_PWM_ENAB + 0x0707;
-	*dmae = DMA_EN0;
-	*(dma + DMA_CONBLK_AD) = _snd.dma_cb_phy;
-	proc_usleep(200);
-	*(dma + DMA_CS) = DMA_ACTIVE;
-
-	while ((*(dma + DMA_CS)) & 0x1) {
-		proc_usleep(200);
+	while (total < size) {
+		consumed = MIN(size - total, (int)_snd.write_chunk_bytes);
+		samples = audio_fill_dma_buffer((const uint8_t *)buf + offset + total, consumed);
+		if (samples == 0) {
+			break;
+		}
+		if (audio_run_dma_transfer(samples) != 0) {
+			if (total == 0) {
+				return -1;
+			}
+			break;
+		}
+		total += (int)(samples * _snd.frame_bytes);
 	}
 
-	return size;
+	return total;
 }
 
 static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, proto_t *ret, void *p) {
@@ -336,6 +497,17 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 	case CTRL_PCM_DEV_PRPARE:
 		result = audio_prepare();
 		break;
+	case CTRL_PCM_BUF_AVAIL:
+		if (!_snd.configured) {
+			result = -1;
+		}
+		else if (_snd.buffer_bytes == 0 || _snd.write_chunk_bytes == 0) {
+			result = -1;
+		}
+		else {
+			result = (int)MIN(_snd.buffer_bytes, _snd.write_chunk_bytes);
+		}
+		break;
 	default:
 		result = -1;
 		break;
@@ -348,7 +520,7 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 static void audio_hw_init(void) {
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sysinfo);
 
-	volatile uint32_t* clk = (void*)CLOCK_BASE;
+	volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
 
 #ifdef USE_PWM1
 	bcm283x_gpio_config(40, GPIO_ALTF5);
