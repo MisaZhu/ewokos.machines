@@ -8,8 +8,48 @@
 
 static fbinfo_t _fb_info;
 
+/*
+ * QEMU's Raspberry Pi mailbox/property emulation is happiest with the
+ * non-cached VC bus alias used elsewhere in raspix (board/sdhost/wlan).
+ */
+#define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
+#define MAILBOX_VC_ALIAS_COHERENT 0xC0000000u
+#define MAILBOX_RESPONSE_SUCCESS 0x80000000u
+
 static uint32_t align_up(uint32_t value, uint32_t align) {
 	return (value + align - 1) & (~(align - 1));
+}
+
+static int mailbox_call_with_alias(uint32_t* buffer, uint32_t alias, uint8_t channel) {
+	mail_message_t msg;
+	memset(&msg, 0, sizeof(mail_message_t));
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + alias) >> 4;
+	msg.channel = channel;
+	bcm283x_mailbox_call(&msg);
+	return (buffer[1] & MAILBOX_RESPONSE_SUCCESS) != 0;
+}
+
+static int mailbox_property_call_with_fallback(uint32_t* buffer) {
+	uint32_t size = buffer[0];
+	uint32_t* shadow = (uint32_t*)dma_alloc(0, size);
+
+	if (shadow != NULL) {
+		memcpy(shadow, buffer, size);
+	}
+
+	if (mailbox_call_with_alias(buffer, MAILBOX_VC_ALIAS_NONCACHED, PROPERTY_CHANNEL)) {
+		if (shadow != NULL) {
+			dma_free(0, (ewokos_addr_t)shadow);
+		}
+		return 0;
+	}
+
+	if (shadow != NULL) {
+		memcpy(buffer, shadow, size);
+		dma_free(0, (ewokos_addr_t)shadow);
+	}
+
+	return mailbox_call_with_alias(buffer, MAILBOX_VC_ALIAS_COHERENT, PROPERTY_CHANNEL) ? 0 : -1;
 }
 
 // 定义常用的 Mailbox 标签
@@ -42,7 +82,7 @@ uint32_t allocate_gpu_memory(uint32_t size, uint32_t alignment, uint32_t flags) 
     buffer[8] = 0;
     
 	mail_message_t msg;
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) | 0xC0000000) >> 4; // ARM addr to GPU addr
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
 	msg.channel = 8;
 	bcm283x_mailbox_call(&msg);
     
@@ -66,7 +106,7 @@ uint32_t lock_gpu_memory(uint32_t handle) {
     buffer[6] = 0;
 
 	mail_message_t msg;
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) | 0xC0000000) >> 4; // ARM addr to GPU addr
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
 	msg.channel = 8;
 	bcm283x_mailbox_call(&msg);
     
@@ -90,7 +130,7 @@ void unlock_gpu_memory(uint32_t handle) {
     buffer[6] = 0;
     
 	mail_message_t msg;
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) | 0xC0000000) >> 4; // ARM addr to GPU addr
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
 	msg.channel = 8;
 	bcm283x_mailbox_call(&msg);
 	dma_free(0, (ewokos_addr_t)buffer);
@@ -111,7 +151,7 @@ void free_gpu_memory(uint32_t handle) {
     buffer[6] = 0;
     
 	mail_message_t msg;
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) | 0xC0000000) >> 4; // ARM addr to GPU addr
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
 	msg.channel = 8;
 	bcm283x_mailbox_call(&msg);
 	dma_free(0, (ewokos_addr_t)buffer);
@@ -163,7 +203,7 @@ void gpu_blt_with_alpha(
     buffer[22] = 0; // 结束标记
     
 	mail_message_t msg;
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) | 0xC0000000) >> 4; // ARM addr to GPU addr
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
 	msg.channel = 8;
 	bcm283x_mailbox_call(&msg);
 	dma_free(0, (ewokos_addr_t)buffer);
@@ -210,7 +250,7 @@ void fill_screen(uint32_t color) {
     buffer[22] = 0; // 结束标记
 
 	mail_message_t msg;
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) | 0xC0000000) >> 4; // ARM addr to GPU addr
+	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
 	msg.channel = 8;
 	bcm283x_mailbox_call(&msg);
 	dma_free(0, (ewokos_addr_t)buffer);
@@ -330,11 +370,11 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	req[24] = 0;
 	req[25] = 0;
 
-	mail_message_t msg;
-	memset(&msg, 0, sizeof(mail_message_t));
-	msg.data = (dma_phy_addr(0, (ewokos_addr_t)req) | 0xC0000000) >> 4; // ARM addr to GPU addr
-	msg.channel = PROPERTY_CHANNEL;
-	bcm283x_mailbox_call(&msg);
+	if (mailbox_property_call_with_fallback(req) != 0) {
+		dma_free(0, (ewokos_addr_t)req);
+		klog("fb_init: mailbox call failed for both VC aliases\n");
+		return -1;
+	}
 
 	uint32_t resp_w = req[5];
 	uint32_t resp_h = req[6];
@@ -347,6 +387,8 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	dma_free(0, (ewokos_addr_t)req);
 
 	if ((resp_w == 0) || (resp_h == 0) || (resp_phy == 0) || (resp_size == 0)) {
+		klog("fb_init: mailbox failed w=%u h=%u phy=%x size=%u pitch=%u\n",
+				resp_w, resp_h, resp_phy, resp_size, resp_pitch);
 		memset(&_fb_info, 0, sizeof(fbinfo_t));
 		return -1;
 	}
@@ -374,6 +416,8 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 			(ewokos_addr_t)_fb_info.pointer,
 			(ewokos_addr_t)_fb_info.phy_base,
 			(ewokos_addr_t)_fb_info.size_max) == 0) {
+		klog("fb_init: mem_map failed v=%x phy=%x size=%u\n",
+				_fb_info.pointer, _fb_info.phy_base, _fb_info.size_max);
 		memset(&_fb_info, 0, sizeof(fbinfo_t));
 		return -1;
 	}

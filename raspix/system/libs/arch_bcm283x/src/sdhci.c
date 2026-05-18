@@ -916,15 +916,17 @@ static int sdhci_set_ios(struct mmc *mmc)
 {
     struct sdhci_host *host = &_host;
 
-	printf("set ios clock:%d bus:%d mode:%d\n", mmc->clock, mmc->bus_width, mmc->selected_mode);
-	if (mmc->clock != host->clock)
-		sdhci_set_clock(host, mmc->clock);
+	if (mmc->clock != host->clock) {
+		if (sdhci_set_clock(host, mmc->clock) != 0)
+			return -1;
+		host->clock = mmc->clock;
+	}
 
 	if (mmc->clk_disable)
 		sdhci_set_clock(host, 0);
 
 	sdhci_set_bus_width(host, mmc->bus_width);
-	//sdhci_set_select_mode(host, mmc->selected_mode);
+	sdhci_set_uhs_timing(host, mmc->selected_mode);
 	return 0;
 }
 

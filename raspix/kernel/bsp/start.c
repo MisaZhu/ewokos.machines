@@ -105,7 +105,7 @@ static void set_boot_pgt(uint64_t virt, uint64_t phy, uint32_t len, int is_dev) 
 #define PIX5_MMIO_PHY  0x7c000000
 #define PIX5_RP1_PHY   0x1c00000000L
 
-#define PIX_MMIO_SIZE 16*MB
+#define PIX_MMIO_SIZE 32*MB
 
 typedef struct {
     uint8_t channel: 4;
@@ -175,6 +175,8 @@ void _boot_start(void) {
 			set_boot_pgt(MMIO_BASE, PIX4_MMIO_PHY, PIX_MMIO_SIZE, 1);
 			break;
 		default:						//Pi 2, Pi 3
+			// Early secondary-core bring-up touches local peripheral registers at 0x40000000.
+			// Map a full 32 MB window so those accesses work before the final kernel VM is installed.
 			set_boot_pgt(MMIO_BASE, PIX3_MMIO_PHY, PIX_MMIO_SIZE, 1);
 			break;
 	}

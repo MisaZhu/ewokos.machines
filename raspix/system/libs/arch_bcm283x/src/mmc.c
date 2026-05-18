@@ -430,6 +430,7 @@ static int mmc_switch(struct mmc *mmc, int mode)
     struct mmc_cmd cmd;
 	struct mmc_data data;
 	uint8_t buf[64];
+	int target_mode = mode;
 	uint8_t mode_bit = 0;
 	int clock = 0;
 	int retry = 3;
@@ -448,7 +449,7 @@ static int mmc_switch(struct mmc *mmc, int mode)
 		case UHS_SDR25:
 			mode = 0x01;
 			mode_bit = 0x1;
-			clock = 100000000;
+		clock = 50000000;
 			break;
 		default:
 			return -EINVAL;
@@ -464,13 +465,16 @@ static int mmc_switch(struct mmc *mmc, int mode)
     cmd.cmdarg = 0x0;
 
     int ret = mmc_send_cmd(mmc, &cmd, &data);
+	if(ret)
+		return ret;
 
 	if(!(buf[13] & mode_bit)){
 		klog("mmc_switch: mode %d failed\n", mode);
 		return -EINVAL;
 	}
 
-	if(buf[16] & 0xf == mode){
+	if((buf[16] & 0xf) == mode){
+		mmc->selected_mode = target_mode;
 		klog("mmc_switch: mode %d success\n", mode);
 		return 0;
 	}
@@ -492,8 +496,8 @@ do_retry:
 
 	if((buf[16] & 0xf) == mode){
 		mmc->clock = clock;
-		mmc->ops->set_ios(mmc);
-		return 0;
+		mmc->selected_mode = target_mode;
+		return mmc->ops->set_ios(mmc);
 	}
 
 	if((buf[16] & 0xf) == 0xf){
@@ -647,6 +651,8 @@ static int mmc_startup(struct mmc *mmc)
 
 
 int mmc_init(int pi4){
+	int ret;
+
 	if(_mmc.has_init)
 		return 0;
 
@@ -656,6 +662,7 @@ int mmc_init(int pi4){
     _mmc.cfg = &_config; 
     _mmc.bus_width = 1;
     _mmc.clock = 400000;
+	_mmc.selected_mode = MMC_LEGACY;
     _mmc.has_init = false;
     _mmc.cfg->host_caps = MMC_MODE_4BIT | MMC_MODE_HS | MMC_MODE_HS_52MHz;
     _mmc.cfg->voltages = MMC_VDD_32_33 | MMC_VDD_33_34;
@@ -664,16 +671,28 @@ int mmc_init(int pi4){
 		_mmc.ops = bcm2711_sdhci_init();
 	else
 		_mmc.ops = bcm283x_sdhost_init();
+	if(_mmc.ops == NULL)
+		return -1;
 
-   	mmc_get_op_cond(&_mmc, false);
+   	ret = mmc_get_op_cond(&_mmc, false);
+	if(ret)
+		return ret;
     //mmc_complete_op_cond(&_mmc);
 	_mmc.bus_width = 4;
     _mmc.clock = 25000000;
-	_mmc.ops->set_ios(&_mmc);
-	mmc_startup(&_mmc);
-	mmc_switch(&_mmc, UHS_SDR25);
+	ret = _mmc.ops->set_ios(&_mmc);
+	if(ret)
+		return ret;
+	ret = mmc_startup(&_mmc);
+	if(ret)
+		return ret;
+	ret = mmc_switch(&_mmc, UHS_SDR25);
+	if(ret) {
+		klog("mmc_init: keep legacy timing, switch to SDR25 failed: %d\n", ret);
+		ret = 0;
+	}
 	_mmc.has_init = true;
-	return 0;
+	return ret;
 }
 
 int mmc_read_blocks(void *dst, lbaint_t start,
