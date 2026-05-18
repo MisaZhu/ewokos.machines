@@ -52,25 +52,33 @@ static int dma_chain_size(dma_buf_t *chain){
 static sys_info_t _sysinfo;
 #define DMA_V_BASE      _sysinfo.sys_dma.v_base
 
+#define ARM_PCM_BASE		(_mmio_base + 0x203000)
+#define ARM_PCM_FIFO_A		(ARM_PCM_BASE + 0x04)
+
 void dma_chain_init(void){
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sysinfo);
     uint8_t *buf =  (uint8_t*)dma_alloc(0, DMA_BUF_SIZE*DMA_BUF_CNT);
+	
+	if (buf == NULL) {
+		return;
+	}
+	
+	memset(buf, 0, DMA_BUF_SIZE*DMA_BUF_CNT);
 	
 	write32(DMA_V_BASE + DMA_CS, 0x1 << 31);
 
     for(int i = 0; i < DMA_BUF_CNT; i++){
         dma_buf[i] = (dma_buf_t*)(buf + i * DMA_BUF_SIZE);
-		memset(dma_buf[i], 0 , sizeof(dma_cb_t));
-        dma_buf[i]->cb.ti = (1 << 26) | (1 << 3) | (1 << 8) | (2 << 16) | ( 1 << 6);
+		dma_buf[i]->cb.flag = 0;
+		dma_buf[i]->cb.next = NULL;
+        dma_buf[i]->cb.ti = (1 << 8) | (1 << 6) | (1 << 3) | (1 << 26);
         dma_buf[i]->cb.cb_ad = dma_phy_addr(0, (uint32_t)dma_buf[i]) | 0xC0000000;
         dma_buf[i]->cb.source_ad = dma_buf[i]->cb.cb_ad + sizeof(dma_cb_t);
-        dma_buf[i]->cb.dest_ad = 0x7E203004;
+        dma_buf[i]->cb.dest_ad = syscall1(SYS_V2P, ARM_PCM_FIFO_A);
         dma_buf[i]->cb.txfr_len = 0;
         dma_buf[i]->cb.stride = 0;
         dma_buf[i]->cb.nextconbk = 0;
         dma_buf[i]->cb.debug = 0;
-		dma_buf[i]->cb.flag = 0;
-		dma_buf[i]->cb.next = 0;
     }
 
 	_chain = dma_buf_alloc(DMA_DATA_SIZE);

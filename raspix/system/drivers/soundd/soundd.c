@@ -349,8 +349,6 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 static void audio_hw_init(void) {
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sysinfo);
 
-	volatile uint32_t* clk = (void*)CLOCK_BASE;
-
 #ifdef USE_PWM1
 	bcm283x_gpio_config(40, GPIO_ALTF5);
 	bcm283x_gpio_config(41, GPIO_ALTF5);
@@ -360,11 +358,14 @@ static void audio_hw_init(void) {
 
 	proc_usleep(2000);
 
+	volatile uint32_t* clk = (void*)CLOCK_BASE;
 	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | (1 << 5);
 	proc_usleep(2000);
 
 	int idiv = 2;
 	*(clk + BCM283x_PWMCLK_DIV)  = PM_PASSWORD | (idiv<<12);
+	proc_usleep(2000);
+
 	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | 1;
 	proc_usleep(2000);
 }

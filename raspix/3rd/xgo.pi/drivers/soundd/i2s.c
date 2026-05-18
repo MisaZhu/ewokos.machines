@@ -33,8 +33,25 @@ void gpio_init(void) {
 }
 
 void clock_init(void){
+	uint32_t div;
+	switch(44100) {  // Default to 44100Hz, should be configurable
+		case 8000:
+			div = 1536;
+			break;
+		case 16000:
+			div = 768;
+			break;
+		case 44100:
+			div = 279;
+			break;
+		case 48000:
+			div = 256;
+			break;
+		default:
+			div = 279;  // 44100Hz default
+	}
 	write32(CM_BASE + CM_I2SCTL, CM_PASSWORD | CM_SRC_OSCILLATOR);
-	write32(CM_BASE + CM_I2SDIV, CM_PASSWORD |  (0x23<<12) | 0xA0);
+	write32(CM_BASE + CM_I2SDIV, CM_PASSWORD | ((div / 256) << 12) | (div % 256));
 	write32(CM_BASE + CM_I2SCTL, CM_PASSWORD | CM_SRC_OSCILLATOR | CM_ENABLE);
 }
 
@@ -74,11 +91,13 @@ void pcm_init(void){
 
 	uint32_t nModeA =   MODE_A_CLKI
 		 | 1 << 24
-	     | MODE_A_FSI
+	     | MODE_A_FSM
 	     | ((CHANS*CHANLEN-1) << MODE_A_FLEN__SHIFT)
 	     | (CHANLEN << MODE_A_FSLEN__SHIFT);
 
 	write32 (ARM_PCM_MODE_A, nModeA);
+
+	write32(ARM_PCM_DREQ_A, (48 << DREQ_A_TX__SHIFT) | (48 << DREQ_A_RX__SHIFT));
 
 	// set fifo
 	write32(ARM_PCM_CS_A, read32(ARM_PCM_CS_A) | (0x2 << CS_A_TXTHR__SHIFT));
