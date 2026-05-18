@@ -175,8 +175,9 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 	_snd.dma_cb->ti = DMA_DEST_DREQ + DMA_PERMAP + DMA_SRC_INC;
 	_snd.dma_cb->source_ad = _snd.dma_data_addr_phy;
 	_snd.dma_cb->dest_ad = phy_pwm_base + 0x18;
+	_snd.dma_cb->txfr_len = DMA_BUF_SIZE;
 	_snd.dma_cb->stride = 0x00;
-	_snd.dma_cb->nextconbk = 0x00;
+	_snd.dma_cb->nextconbk = _snd.dma_cb_phy;
 	_snd.dma_cb->null1 = 0x00;
 	_snd.dma_cb->null2 = 0x00;
 
