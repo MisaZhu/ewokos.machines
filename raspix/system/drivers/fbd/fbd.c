@@ -82,22 +82,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	return bsp_fb_init(w, h, dep);
 }
 
-static void splash(graph_t* g, const char* logo_fname) {
-	graph_clear(g, 0xffffffff);
-	if (logo_fname == NULL || logo_fname[0] == 0) {
-		return;
-	}
-
-	graph_t* logo = png_image_new(logo_fname);
-	if (logo == NULL) {
-		return;
-	}
-
-	graph_blt_alpha(logo, 0, 0, logo->w, logo->h,
-			g, (g->w - logo->w) / 2, (g->h - logo->h) / 2, logo->w, logo->h, 0xff);
-	graph_free(logo);
-}
-
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
@@ -124,7 +108,8 @@ int main(int argc, char** argv) {
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 
-	fbd.splash = splash;
+	//fbd.splash = splash;
+	fbd.splash = NULL;
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;

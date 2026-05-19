@@ -16,7 +16,7 @@ static fbinfo_t _fb_info;
 #define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
 #define MAILBOX_VC_ALIAS_COHERENT 0xC0000000u
 #define MAILBOX_RESPONSE_SUCCESS 0x80000000u
-#define PIXEL_ORDER_RGB 1u
+#define PIXEL_ORDER_BGR 0u
 
 static uint32_t align_up(uint32_t value, uint32_t align) {
 	return (value + align - 1) & (~(align - 1));
@@ -367,7 +367,7 @@ static void fb_build_request(uint32_t* req, uint32_t w, uint32_t h, uint32_t dep
 	req[16] = TAG_SET_PIXEL_ORDER;
 	req[17] = 4;
 	req[18] = 4;
-	req[19] = PIXEL_ORDER_RGB;
+	req[19] = PIXEL_ORDER_BGR;
 	req[20] = TAG_ALLOCATE_FB;
 	req[21] = 8;
 	req[22] = 4;
