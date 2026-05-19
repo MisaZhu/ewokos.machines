@@ -5,7 +5,6 @@
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/proto.h>
-#include <sysinfo.h>
 #include <string.h>
 #include <unistd.h>
 #include <ewoksys/dma.h>
@@ -30,10 +29,8 @@
 #define CLOCK_BASE      (_mmio_base + 0x101000)
 #endif
 
-static sys_info_t _sysinfo;
-
-#define DMA_V_BASE      _sysinfo.sys_dma.v_base
-#define DMA_ENABLE      (DMA_V_BASE + 0xFF0)
+#define DMA_BASE        (_mmio_base + 0x007000)
+#define DMA_ENABLE      (_mmio_base + 0x007FF0)
 
 #define BCM283x_PWMCLK_CNTL 40
 #define BCM283x_PWMCLK_DIV  41
@@ -217,7 +214,7 @@ static uint32_t audio_fill_dma_buffer(const uint8_t* buf, int size) {
 
 static int audio_run_dma_transfer(uint32_t samples) {
 	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
-	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_V_BASE;
+	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
 	volatile uint32_t *dmae = (uint32_t *)(uintptr_t)DMA_ENABLE;
 	int retry = 0;
 
@@ -518,8 +515,6 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 }
 
 static void audio_hw_init(void) {
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sysinfo);
-
 	volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
 
 #ifdef USE_PWM1

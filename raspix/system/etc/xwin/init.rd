@@ -1,6 +1,7 @@
 @export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log
 
+
 @/bin/ipcserv /drivers/displayd
 @/bin/ipcserv /drivers/raspix/fbd      /dev/fb0
 @/bin/ipcserv /drivers/fontd
@@ -10,6 +11,11 @@
 
 @/bin/splash -m "start /dev/tty0" -p 10
 @/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
+
+
+@/bin/splash -m "run sessiond" -p 12
+@/bin/ipcserv /sbin/sessiond
+@/bin/bgrun /bin/session -r -t /dev/tty0 
 
 @/bin/splash -m "start /dev/tty0" -p 15
 @/bin/ipcserv /drivers/raspix/soundd         /dev/sound0
@@ -34,9 +40,6 @@
 
 @/bin/splash -m "start /dev/time" -p 80
 @/bin/ipcserv /drivers/timed    /dev/time
-
-@/bin/splash -m "run sessiond" -p 90
-@/bin/ipcserv /sbin/sessiond
 
 #@/bin/splash -m "load fonts" -p 95
 #@/bin/load_font

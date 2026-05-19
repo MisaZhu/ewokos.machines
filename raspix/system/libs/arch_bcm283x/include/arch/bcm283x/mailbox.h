@@ -26,5 +26,6 @@ uint32_t bcm283x_mailbox_init(void);
 void     bcm283x_mailbox_read(mail_message_t* msg);
 void     bcm283x_mailbox_send(mail_message_t* msg);
 void     bcm283x_mailbox_call(mail_message_t* msg);
+int      bcm283x_mailbox_call_timeout(mail_message_t* msg, uint32_t timeout_loops);
 
 #endif

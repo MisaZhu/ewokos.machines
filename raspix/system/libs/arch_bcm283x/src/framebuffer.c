@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include <arch/bcm283x/mailbox.h>
 #include <arch/bcm283x/framebuffer.h>
@@ -15,6 +16,7 @@ static fbinfo_t _fb_info;
 #define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
 #define MAILBOX_VC_ALIAS_COHERENT 0xC0000000u
 #define MAILBOX_RESPONSE_SUCCESS 0x80000000u
+#define PIXEL_ORDER_RGB 1u
 
 static uint32_t align_up(uint32_t value, uint32_t align) {
 	return (value + align - 1) & (~(align - 1));
@@ -25,11 +27,13 @@ static int mailbox_call_with_alias(uint32_t* buffer, uint32_t alias, uint8_t cha
 	memset(&msg, 0, sizeof(mail_message_t));
 	msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + alias) >> 4;
 	msg.channel = channel;
-	bcm283x_mailbox_call(&msg);
-	return (buffer[1] & MAILBOX_RESPONSE_SUCCESS) != 0;
+	if (bcm283x_mailbox_call_timeout(&msg, 0) != 0) {
+		return -1;
+	}
+	return (buffer[1] & MAILBOX_RESPONSE_SUCCESS) != 0 ? 0 : -1;
 }
 
-static int mailbox_property_call_with_fallback(uint32_t* buffer) {
+static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias_used) {
 	uint32_t size = buffer[0];
 	uint32_t* shadow = (uint32_t*)dma_alloc(0, size);
 
@@ -37,7 +41,10 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer) {
 		memcpy(shadow, buffer, size);
 	}
 
-	if (mailbox_call_with_alias(buffer, MAILBOX_VC_ALIAS_NONCACHED, PROPERTY_CHANNEL)) {
+	if (mailbox_call_with_alias(buffer, MAILBOX_VC_ALIAS_NONCACHED, PROPERTY_CHANNEL) == 0) {
+		if (alias_used != NULL) {
+			*alias_used = MAILBOX_VC_ALIAS_NONCACHED;
+		}
 		if (shadow != NULL) {
 			dma_free(0, (ewokos_addr_t)shadow);
 		}
@@ -49,13 +56,20 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer) {
 		dma_free(0, (ewokos_addr_t)shadow);
 	}
 
-	return mailbox_call_with_alias(buffer, MAILBOX_VC_ALIAS_COHERENT, PROPERTY_CHANNEL) ? 0 : -1;
+	if (mailbox_call_with_alias(buffer, MAILBOX_VC_ALIAS_COHERENT, PROPERTY_CHANNEL) == 0) {
+		if (alias_used != NULL) {
+			*alias_used = MAILBOX_VC_ALIAS_COHERENT;
+		}
+		return 0;
+	}
+	return -1;
 }
 
 // 定义常用的 Mailbox 标签
 #define TAG_SET_PHYS_SIZE   0x00048003
 #define TAG_SET_VIRT_SIZE   0x00048004
 #define TAG_SET_DEPTH       0x00048005
+#define TAG_SET_PIXEL_ORDER 0x00048006
 #define TAG_ALLOCATE_FB     0x00040001
 #define TAG_GET_PITCH       0x00040008
 #define TAG_ALLOCATE_MEM    0x0003000C
@@ -320,30 +334,21 @@ void test(void) {
 	*/
 }
 
-int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
-	memset(&_fb_info, 0, sizeof(fbinfo_t));
-	sys_info_t sysinfo;
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+typedef struct {
+	uint32_t width;
+	uint32_t height;
+	uint32_t depth;
+} fb_mode_t;
 
-	bcm283x_mailbox_init();
+static int fb_mode_equal(const fb_mode_t* a, const fb_mode_t* b) {
+	return a->width == b->width &&
+			a->height == b->height &&
+			a->depth == b->depth;
+}
 
-	if (w == 0) {
-		w = 1024;
-	}
-	if (h == 0) {
-		h = 768;
-	}
-	if (dep != 16 && dep != 32) {
-		dep = 32;
-	}
-
-	uint32_t* req = (uint32_t*)dma_alloc(0, 26 * sizeof(uint32_t));
-	if (req == NULL) {
-		return -1;
-	}
-
-	memset(req, 0, 26 * sizeof(uint32_t));
-	req[0] = 26 * sizeof(uint32_t);
+static void fb_build_request(uint32_t* req, uint32_t w, uint32_t h, uint32_t dep) {
+	memset(req, 0, 30 * sizeof(uint32_t));
+	req[0] = 30 * sizeof(uint32_t);
 	req[1] = 0;
 	req[2] = TAG_SET_PHYS_SIZE;
 	req[3] = 8;
@@ -359,72 +364,143 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	req[13] = 4;
 	req[14] = 4;
 	req[15] = dep;
-	req[16] = TAG_ALLOCATE_FB;
-	req[17] = 8;
+	req[16] = TAG_SET_PIXEL_ORDER;
+	req[17] = 4;
 	req[18] = 4;
-	req[19] = 16;
-	req[20] = 0;
-	req[21] = TAG_GET_PITCH;
+	req[19] = PIXEL_ORDER_RGB;
+	req[20] = TAG_ALLOCATE_FB;
+	req[21] = 8;
 	req[22] = 4;
-	req[23] = 0;
+	req[23] = 16;
 	req[24] = 0;
-	req[25] = 0;
+	req[25] = TAG_GET_PITCH;
+	req[26] = 4;
+	req[27] = 0;
+	req[28] = 0;
+	req[29] = 0;
+}
 
-	if (mailbox_property_call_with_fallback(req) != 0) {
-		dma_free(0, (ewokos_addr_t)req);
-		klog("fb_init: mailbox call failed for both VC aliases\n");
+static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_t* info) {
+	uint32_t* req = (uint32_t*)dma_alloc(0, 30 * sizeof(uint32_t));
+	uint32_t alias_used = 0;
+	uint32_t resp_w;
+	uint32_t resp_h;
+	uint32_t resp_vw;
+	uint32_t resp_vh;
+	uint32_t resp_dep;
+	uint32_t resp_phy;
+	uint32_t resp_size;
+	uint32_t resp_pitch;
+
+	if (req == NULL) {
 		return -1;
 	}
 
-	uint32_t resp_w = req[5];
-	uint32_t resp_h = req[6];
-	uint32_t resp_vw = req[10];
-	uint32_t resp_vh = req[11];
-	uint32_t resp_dep = req[15];
-	uint32_t resp_phy = req[19] & 0x3fffffff; // GPU addr to ARM addr
-	uint32_t resp_size = req[20];
-	uint32_t resp_pitch = req[24];
+	fb_build_request(req, mode->width, mode->height, mode->depth);
+	if (mailbox_property_call_with_fallback(req, &alias_used) != 0) {
+		klog("fb_init: mailbox timeout/failed %ux%ux%u\n",
+				mode->width, mode->height, mode->depth);
+		dma_free(0, (ewokos_addr_t)req);
+		return -1;
+	}
+
+	resp_w = req[5];
+	resp_h = req[6];
+	resp_vw = req[10];
+	resp_vh = req[11];
+	resp_dep = req[15];
+	resp_phy = req[23] & 0x3fffffff; // GPU addr to ARM addr
+	resp_size = req[24];
+	resp_pitch = req[28];
 	dma_free(0, (ewokos_addr_t)req);
 
 	if ((resp_w == 0) || (resp_h == 0) || (resp_phy == 0) || (resp_size == 0)) {
-		klog("fb_init: mailbox failed w=%u h=%u phy=%x size=%u pitch=%u\n",
+		klog("fb_init: bad reply %ux%ux%u alias=%x => w=%u h=%u phy=%x size=%u pitch=%u\n",
+				mode->width, mode->height, mode->depth, alias_used,
 				resp_w, resp_h, resp_phy, resp_size, resp_pitch);
-		memset(&_fb_info, 0, sizeof(fbinfo_t));
 		return -1;
 	}
 
 	if (resp_dep != 16 && resp_dep != 32) {
-		memset(&_fb_info, 0, sizeof(fbinfo_t));
+		klog("fb_init: unsupported depth %u for %ux%ux%u\n",
+				resp_dep, mode->width, mode->height, mode->depth);
 		return -1;
 	}
 
-	_fb_info.width = resp_w;
-	_fb_info.height = resp_h;
-	_fb_info.vwidth = resp_vw != 0 ? resp_vw : resp_w;
-	_fb_info.vheight = resp_vh != 0 ? resp_vh : resp_h;
-	_fb_info.depth = resp_dep;
-	_fb_info.pitch = resp_pitch != 0 ? resp_pitch : (_fb_info.vwidth * (_fb_info.depth / 8));
-	_fb_info.phy_base = resp_phy;
-	_fb_info.pointer = sysinfo.sys_dma.v_base + sysinfo.sys_dma.size;
-	_fb_info.size = resp_size;
-	_fb_info.xoffset = 0;
-	_fb_info.yoffset = 0;
-	_fb_info.size_max = align_up(resp_size, 4096);
-	_fb_info.dma_id = -1;
+	memset(info, 0, sizeof(fbinfo_t));
+	info->width = resp_w;
+	info->height = resp_h;
+	info->vwidth = resp_vw != 0 ? resp_vw : resp_w;
+	info->vheight = resp_vh != 0 ? resp_vh : resp_h;
+	info->depth = resp_dep;
+	info->pitch = resp_pitch != 0 ? resp_pitch : (info->vwidth * (info->depth / 8));
+	info->phy_base = resp_phy;
+	info->pointer = sysinfo->sys_dma.v_base + sysinfo->sys_dma.size;
+	info->size = resp_size;
+	info->xoffset = 0;
+	info->yoffset = 0;
+	info->size_max = align_up(resp_size, 4096);
+	info->dma_id = -1;
 
 	if (syscall3(SYS_MEM_MAP,
-			(ewokos_addr_t)_fb_info.pointer,
-			(ewokos_addr_t)_fb_info.phy_base,
-			(ewokos_addr_t)_fb_info.size_max) == 0) {
-		klog("fb_init: mem_map failed v=%x phy=%x size=%u\n",
-				_fb_info.pointer, _fb_info.phy_base, _fb_info.size_max);
-		memset(&_fb_info, 0, sizeof(fbinfo_t));
+			(ewokos_addr_t)info->pointer,
+			(ewokos_addr_t)info->phy_base,
+			(ewokos_addr_t)info->size_max) == 0) {
+		klog("fb_init: mem_map failed %ux%ux%u alias=%x v=%x phy=%x size=%u\n",
+				mode->width, mode->height, mode->depth, alias_used,
+				info->pointer, info->phy_base, info->size_max);
+		memset(info, 0, sizeof(fbinfo_t));
 		return -1;
 	}
-
-	//test();
-	//sleep(3);
 	return 0;
+}
+
+int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
+	sys_info_t sysinfo;
+	fb_mode_t requested;
+	fb_mode_t fallbacks[] = {
+		{1024, 768, 32},
+		{800, 600, 32},
+		{640, 480, 32},
+		{640, 480, 16},
+	};
+
+	memset(&_fb_info, 0, sizeof(fbinfo_t));
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+
+	bcm283x_mailbox_init();
+
+	if (w == 0) {
+		w = 1024;
+	}
+	if (h == 0) {
+		h = 768;
+	}
+	if (dep != 16 && dep != 32) {
+		dep = 32;
+	}
+
+	requested.width = w;
+	requested.height = h;
+	requested.depth = dep;
+
+	if (fb_try_mode(&sysinfo, &requested, &_fb_info) == 0) {
+		return 0;
+	}
+
+	for (uint32_t i = 0; i < sizeof(fallbacks) / sizeof(fallbacks[0]); ++i) {
+		if (fb_mode_equal(&requested, &fallbacks[i])) {
+			continue;
+		}
+		if (fb_try_mode(&sysinfo, &fallbacks[i], &_fb_info) == 0) {
+			klog("fb_init: fallback %ux%ux%u -> %ux%ux%u\n",
+					requested.width, requested.height, requested.depth,
+					fallbacks[i].width, fallbacks[i].height, fallbacks[i].depth);
+			return 0;
+		}
+	}
+	klog("fb_init: all modes failed, last requested %ux%ux%u\n", w, h, dep);
+	return -1;
 }
 
 fbinfo_t* bcm283x_get_fbinfo(void) {
