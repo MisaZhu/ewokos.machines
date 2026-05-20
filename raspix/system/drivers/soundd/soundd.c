@@ -27,6 +27,7 @@
 #define PWM_BUS_BASE    0x7E20C000u
 #define PWM_FIFO_BUS_ADDR (PWM_BUS_BASE + 0x18u)
 #define DMA_VC_ALIAS_UNCACHED 0xC0000000u
+#define DMA_BUS_ADDR_MASK 0x3FFFFFFFu
 
 #define DMA_CHANNEL     5U
 #define DMA_BASE        (_mmio_base + 0x007000 + (DMA_CHANNEL * 0x100u))
@@ -141,6 +142,7 @@ typedef struct {
 	uint32_t dma_started_usec;
 	uint32_t dma_expected_usec;
 	uint32_t last_push_usec;
+	uint32_t diag_last_log_usec;
 	bool need_rebuffer;
 	bool configured;
 	bool prepared;
@@ -153,6 +155,8 @@ typedef struct {
 static snd_dev_t _snd = {0};
 
 static void sound_pump(vdevice_t* dev);
+static int audio_stop(void);
+static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec);
 
 #define DMA_SLOT_EMPTY   0U
 #define DMA_SLOT_FILLING 1U
@@ -338,6 +342,29 @@ static uint32_t audio_now_usec(void) {
 	}
 	return (uint32_t)(((uint64_t)(uint32_t)tv.tv_sec * 1000000ULL) +
 			(uint64_t)(uint32_t)tv.tv_usec);
+}
+
+static uint32_t audio_dma_current_cb_bus(void) {
+	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
+	return *(dma + DMA_CONBLK_AD);
+}
+
+static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bus) {
+	if (now_usec != 0 && _snd.diag_last_log_usec != 0 &&
+			audio_elapsed_usec(_snd.diag_last_log_usec, now_usec) < 500000U) {
+		return;
+	}
+	_snd.diag_last_log_usec = now_usec;
+	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u running=%d need_rebuffer=%d\n",
+			reason,
+			cb_bus,
+			_snd.active_count,
+			_snd.ready_count,
+			_snd.fill_slot,
+			audio_queue_pending_words(),
+			audio_queue_avail_bytes(),
+			_snd.dma_running ? 1 : 0,
+			_snd.need_rebuffer ? 1 : 0);
 }
 
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec) {
@@ -528,6 +555,17 @@ static bool audio_queue_finalize_fill_slot(void) {
 	return true;
 }
 
+static bool audio_queue_force_finalize_fill_slot(void) {
+	uint32_t slot = _snd.fill_slot;
+
+	if (slot >= DMA_BUFFER_SLOTS ||
+			_snd.slot_state[slot] != DMA_SLOT_FILLING ||
+			_snd.slot_words[slot] == 0) {
+		return false;
+	}
+	return audio_queue_finalize_fill_slot();
+}
+
 static uint32_t audio_queue_push_pcm(const uint8_t* buf, int size) {
 	uint32_t frames = (uint32_t)(size / (int)_snd.frame_bytes);
 	uint32_t avail = audio_queue_avail_frames();
@@ -601,6 +639,10 @@ static uint32_t audio_slot_dma_cb_bus(uint32_t slot) {
 			(ewokos_addr_t)(slot * sizeof(dma_cb_t))) | DMA_VC_ALIAS_UNCACHED;
 }
 
+static uint32_t audio_dma_cb_bus_normalize(uint32_t cb_bus) {
+	return cb_bus & DMA_BUS_ADDR_MASK;
+}
+
 static void audio_queue_complete_active_chain(void) {
 	for (uint32_t i = 0; i < _snd.active_count; i++) {
 		uint32_t slot = _snd.active_slots[i];
@@ -665,13 +707,14 @@ static bool audio_dma_active(void) {
 static uint32_t audio_dma_current_active_slot(void) {
 	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
 	uint32_t cb_bus = *(dma + DMA_CONBLK_AD);
+	uint32_t cb_bus_norm = audio_dma_cb_bus_normalize(cb_bus);
 
 	for (uint32_t i = 0; i < _snd.active_count; i++) {
 		uint32_t slot = _snd.active_slots[i];
 		if (slot >= DMA_BUFFER_SLOTS) {
 			continue;
 		}
-		if (audio_slot_dma_cb_bus(slot) == cb_bus) {
+		if (audio_dma_cb_bus_normalize(audio_slot_dma_cb_bus(slot)) == cb_bus_norm) {
 			return i;
 		}
 	}
@@ -690,6 +733,7 @@ static bool audio_queue_release_scheduled_active(uint32_t now_usec) {
 
 	current_active_idx = audio_dma_current_active_slot();
 	if (current_active_idx == DMA_SLOT_INVALID) {
+		audio_log_diag("active slot lost", now_usec, audio_dma_current_cb_bus());
 		return false;
 	}
 
@@ -848,8 +892,55 @@ static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_reb
 	return 0;
 }
 
+static bool audio_force_recover_stall(uint32_t now_usec) {
+	uint32_t slot = DMA_SLOT_INVALID;
+	uint32_t samples = 0;
+	bool rebuffer_start;
+
+	if (_snd.dma_running) {
+		if (!audio_dma_active() ||
+				(_snd.active_count > 0 &&
+				 audio_dma_current_active_slot() == DMA_SLOT_INVALID)) {
+			audio_log_diag("force drop active", now_usec, audio_dma_current_cb_bus());
+			_snd.dma_running = false;
+			_snd.dma_started_usec = 0;
+			_snd.dma_expected_usec = 0;
+			audio_queue_complete_active_chain();
+			if (audio_queue_pending_words() == 0) {
+				_snd.need_rebuffer = true;
+			}
+		}
+	}
+
+	if (_snd.dma_running) {
+		return false;
+	}
+
+	if (audio_queue_force_finalize_fill_slot()) {
+		audio_log_diag("force finalize fill", now_usec, audio_dma_current_cb_bus());
+	}
+
+	if (audio_queue_pending_words() == 0) {
+		return false;
+	}
+
+	rebuffer_start = _snd.need_rebuffer;
+	_snd.need_rebuffer = false;
+	if (!audio_queue_prepare_dma_chain(now_usec, &slot, &samples) || samples == 0) {
+		_snd.need_rebuffer = rebuffer_start;
+		return false;
+	}
+
+	audio_log_diag("force restart dma", now_usec, audio_dma_current_cb_bus());
+	audio_start_dma_transfer(slot, samples, rebuffer_start);
+	return true;
+}
+
 static void audio_service_locked(uint32_t now_usec, bool* wake_writer,
 		bool* start_dma, bool* rebuffer_start, uint32_t* slot, uint32_t* samples) {
+	bool stalled_no_dma = false;
+	bool stalled_active_lost = false;
+
 	if (!_snd.started) {
 		return;
 	}
@@ -867,6 +958,7 @@ static void audio_service_locked(uint32_t now_usec, bool* wake_writer,
 	else if (_snd.dma_running &&
 			_snd.dma_started_usec != 0 &&
 			audio_elapsed_usec(_snd.dma_started_usec, now_usec) > _snd.dma_expected_usec) {
+		audio_log_diag("dma watchdog", now_usec, audio_dma_current_cb_bus());
 		_snd.dma_running = false;
 		_snd.dma_started_usec = 0;
 		_snd.dma_expected_usec = 0;
@@ -892,12 +984,25 @@ static void audio_service_locked(uint32_t now_usec, bool* wake_writer,
 	if (!_snd.dma_running && audio_queue_pending_words() > 0 && *samples == 0) {
 		if (_snd.need_rebuffer &&
 				audio_queue_pending_words() < audio_queue_rebuffer_words_threshold()) {
-			return;
+			/* Fall through so the watchdog path below can break a stalled low-fill state. */
 		}
-		if (audio_queue_prepare_dma_chain(now_usec, slot, samples)) {
+		else if (audio_queue_prepare_dma_chain(now_usec, slot, samples)) {
 			*rebuffer_start = _snd.need_rebuffer;
 			_snd.need_rebuffer = false;
 			*start_dma = true;
+			*wake_writer = true;
+		}
+	}
+
+	if (_snd.last_push_usec != 0 &&
+			audio_elapsed_usec(_snd.last_push_usec, now_usec) >= DMA_START_IDLE_FLUSH_US &&
+			audio_queue_pending_words() > 0) {
+		stalled_no_dma = !_snd.dma_running;
+		stalled_active_lost = _snd.dma_running &&
+				_snd.active_count > 0 &&
+				audio_dma_current_active_slot() == DMA_SLOT_INVALID;
+		if ((stalled_no_dma || stalled_active_lost) &&
+				audio_force_recover_stall(now_usec)) {
 			*wake_writer = true;
 		}
 	}
@@ -1006,6 +1111,7 @@ static int audio_hw_params(const struct pcm_config *cfg) {
 		return -1;
 	}
 
+	audio_stop();
 	audio_deinit();
 
 	memcpy(&_snd.pcm_cfg, cfg, sizeof(*cfg));
@@ -1135,6 +1241,7 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 	int consumed;
 	uint32_t avail_bytes;
 	uint32_t pushed_frames;
+	uint32_t wait_start_usec = 0;
 
 	from_pid = proc_getpid(from_pid);
 	if (size <= 0 || _snd.occupied_pid != from_pid) {
@@ -1180,6 +1287,7 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 		if (consumed > 0) {
 			pushed_frames = audio_queue_push_pcm(src + total, consumed);
 			if (pushed_frames > 0) {
+				wait_start_usec = 0;
 				total += (int)(pushed_frames * _snd.frame_bytes);
 				audio_try_append_running_chain(audio_now_usec());
 				sound_pump(dev);
@@ -1188,19 +1296,41 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 		}
 
 		sound_pump(dev);
+		if (wait_start_usec == 0) {
+			wait_start_usec = audio_now_usec();
+		}
+		else {
+			uint32_t now_usec = audio_now_usec();
+			if (audio_elapsed_usec(wait_start_usec, now_usec) >= 500000U) {
+				if (audio_force_recover_stall(now_usec)) {
+					sound_pump(dev);
+				}
+				audio_log_diag("write wait", now_usec, audio_dma_current_cb_bus());
+				wait_start_usec = now_usec;
+			}
+		}
 		proc_usleep(sound_poll_sleep_usec());
 	}
 
 	return total;
 }
 
+static void sound_refresh_status(vdevice_t* dev) {
+	if (dev == NULL) {
+		return;
+	}
+	if (_snd.started || _snd.dma_running || audio_queue_pending_words() > 0) {
+		sound_pump(dev);
+	}
+}
+
 static uint32_t sound_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* p) {
-	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(from_pid);
 	UNUSED(info);
 	UNUSED(p);
 
+	sound_refresh_status(dev);
 	if (_snd.configured && audio_queue_avail_frames() > 0) {
 		return VFS_EVT_WR;
 	}
@@ -1234,7 +1364,6 @@ static int sound_loop(vdevice_t* dev, void* p) {
 }
 
 static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, proto_t *ret, void *p) {
-	UNUSED(dev);
 	UNUSED(p);
 
 	int result = 0;
@@ -1266,6 +1395,7 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 			result = -1;
 		}
 		else {
+			sound_refresh_status(dev);
 			result = (int)MIN(MIN(_snd.buffer_bytes, _snd.write_chunk_bytes),
 					audio_queue_avail_bytes());
 		}
