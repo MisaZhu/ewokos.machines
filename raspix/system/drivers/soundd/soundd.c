@@ -775,21 +775,41 @@ static bool audio_dma_active(void) {
 	return ((*(dma + DMA_CS)) & DMA_ACTIVE) != 0;
 }
 
+static uint32_t audio_dma_current_active_slot(void) {
+	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
+	uint32_t cb_bus = *(dma + DMA_CONBLK_AD);
+
+	for (uint32_t i = 0; i < _snd.active_count; i++) {
+		uint32_t slot = _snd.active_slots[i];
+		if (slot >= DMA_BUFFER_SLOTS) {
+			continue;
+		}
+		if (audio_slot_dma_cb_bus(slot) == cb_bus) {
+			return i;
+		}
+	}
+	return DMA_SLOT_INVALID;
+}
+
 static bool audio_queue_release_scheduled_active(uint32_t now_usec) {
 	bool released = false;
 	uint32_t released_slots = 0;
-	uint32_t elapsed_usec;
+	uint32_t current_active_idx;
+
+	UNUSED(now_usec);
 
 	if (!_snd.dma_running || _snd.dma_started_usec == 0 || _snd.active_count == 0) {
 		return false;
 	}
-	elapsed_usec = audio_elapsed_usec(_snd.dma_started_usec, now_usec);
-	while (_snd.active_count > 0) {
+
+	current_active_idx = audio_dma_current_active_slot();
+	if (current_active_idx == DMA_SLOT_INVALID) {
+		return false;
+	}
+
+	while (_snd.active_count > 0 && current_active_idx > 0) {
 		uint32_t slot = _snd.active_slots[0];
 
-		if (elapsed_usec < _snd.active_end_usec[0]) {
-			break;
-		}
 		_snd.slot_words[slot] = 0;
 		_snd.slot_state[slot] = DMA_SLOT_EMPTY;
 		for (uint32_t i = 1; i < _snd.active_count; i++) {
@@ -797,6 +817,7 @@ static bool audio_queue_release_scheduled_active(uint32_t now_usec) {
 			_snd.active_end_usec[i - 1] = _snd.active_end_usec[i];
 		}
 		_snd.active_count--;
+		current_active_idx--;
 		released = true;
 		released_slots++;
 	}
