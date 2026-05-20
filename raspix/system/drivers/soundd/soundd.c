@@ -86,6 +86,7 @@
 #define PWM_CLOCK_DIV_FRAC 0U
 #define SOUND_ACTIVE_SLEEP_US 100
 #define SOUND_IDLE_SLEEP_US 1000
+#define SOUND_DEEP_IDLE_SLEEP_US 20000
 #define DMA_START_IDLE_FLUSH_US 40000U
 #define DMA_WATCHDOG_MARGIN_US 200000U
 #define SOUND_DEFAULT_BIT_DEPTH 16
@@ -235,8 +236,19 @@ static uint32_t audio_queue_avail_bytes(void) {
 	return audio_queue_avail_frames() * _snd.frame_bytes;
 }
 
+static bool sound_has_pending_work(void) {
+	return _snd.dma_running || audio_queue_pending_words() > 0;
+}
+
 static uint32_t sound_poll_sleep_usec(void) {
-	if (_snd.dma_running || audio_queue_pending_words() > 0) {
+	if (_snd.open_count <= 0 &&
+			!_snd.configured &&
+			!_snd.prepared &&
+			!_snd.started &&
+			!sound_has_pending_work()) {
+		return SOUND_DEEP_IDLE_SLEEP_US;
+	}
+	if (sound_has_pending_work()) {
 		return SOUND_ACTIVE_SLEEP_US;
 	}
 	return SOUND_IDLE_SLEEP_US;
@@ -1319,7 +1331,7 @@ static void sound_refresh_status(vdevice_t* dev) {
 	if (dev == NULL) {
 		return;
 	}
-	if (_snd.started || _snd.dma_running || audio_queue_pending_words() > 0) {
+	if (sound_has_pending_work()) {
 		sound_pump(dev);
 	}
 }
@@ -1358,7 +1370,9 @@ static void sound_pump(vdevice_t* dev) {
 
 static int sound_loop(vdevice_t* dev, void* p) {
 	UNUSED(p);
-	sound_pump(dev);
+	if (sound_has_pending_work()) {
+		sound_pump(dev);
+	}
 	proc_usleep(sound_poll_sleep_usec());
 	return 0;
 }
