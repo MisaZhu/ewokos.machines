@@ -37,6 +37,7 @@ basic_sys: kernel_heads
 
 network_sys: basic_sys
 	cd $(SYS_ROOT_DIR)/network;make
+	cd drivers;make network
 	@cp -r etc/network/* ${TARGET_DIR}/etc
 
 gui_sys: network_sys

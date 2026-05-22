@@ -16,6 +16,7 @@
 #include <sdio/mmc.h>
 
 #include <ewoksys/ipc.h>
+#include <ewoksys/vdevice.h>
 
 #include "brcm.h"
 #include "chip.h"
@@ -359,6 +360,7 @@ struct brcmf_dev{
 };
 
 struct brcmf_dev *bus =  NULL;
+vdevice_t *dev =  NULL;
 static void brcmf_sdio_dpc(void);
 
 static inline uint8_t brcmf_sdio_getdatoffset(uint8_t *swheader)
