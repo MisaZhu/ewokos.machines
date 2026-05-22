@@ -5,6 +5,7 @@
 
 uint8_t* brcmf_fw_get_firmware(uint32_t* len);
 uint8_t* brcmf_fw_get_nvram(uint32_t* len);
+uint8_t* brcmf_fw_get_nvram_fallback_only(uint32_t* len);
 uint8_t* brcmf_fw_get_clm(uint32_t* len);
 
 #endif

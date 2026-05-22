@@ -39,14 +39,22 @@ int mmc_io_rw_direct_host(int write, unsigned fn,
 #endif
 
 	if (err){
+		brcm_log("[dbg] cmd52 transport fail w=%d fn=%u addr=0x%x in=0x%x err=%d stat_resp=0x%x\n",
+			write, fn, addr, in, err, cmd.response[0]);
 		return err;
 	}
 
 	if (cmd.response[0] & R5_ERROR){
+		brcm_log("[dbg] cmd52 r5 error w=%d fn=%u addr=0x%x resp=0x%x\n",
+			write, fn, addr, cmd.response[0]);
 		return -EIO;
 	}if (cmd.response[0] & R5_FUNCTION_NUMBER){
+		brcm_log("[dbg] cmd52 fn error w=%d fn=%u addr=0x%x resp=0x%x\n",
+			write, fn, addr, cmd.response[0]);
 		return -EINVAL;
 	}if (cmd.response[0] & R5_OUT_OF_RANGE){
+		brcm_log("[dbg] cmd52 range error w=%d fn=%u addr=0x%x resp=0x%x\n",
+			write, fn, addr, cmd.response[0]);
 		return -ERANGE;
 	}
 

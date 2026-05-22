@@ -2,6 +2,7 @@
 #include <string.h>
 #include <ewoksys/mmio.h>
 #include <arch/bcm283x/mailbox.h>
+#include <arch/bcm283x/gpio.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/mstr.h>
 #include <sdio/sdhci.h>
@@ -9,6 +10,8 @@
 #include <types.h>
 #include <brcm/brcm.h>
 #include <brcm/command.h>
+
+vdevice_t* _wland_dev = NULL;
 
 uint8_t buf[512];
 
@@ -179,6 +182,11 @@ void bcm283x_mbox_pin_ctrl(int idx, int dir, int on) {
 void clock_init(void){
 	int timeout = 1000;
 
+	/* Route GPCLK2 to the WLAN 32k pin before releasing the module reset. */
+	bcm283x_gpio_init();
+	bcm283x_gpio_config(43, GPIO_ALTF0);
+	usleep(20000);
+
 	//set 32.768 clock for wifi module
 	writel(CM_PASSWORD|0x1, CM_GP2CTL);
 	while(timeout--)  // Wait for clock to be !BUSY
@@ -272,12 +280,13 @@ int main(int argc, char** argv) {
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "wlan");
+	_wland_dev = &dev;
 	bcm283x_mbox_pin_ctrl(1, 1, 0);
 	bcm283x_mbox_pin_ctrl(2, 1, 0);
-	usleep(100000);
+	usleep(200000);
 	bcm283x_mbox_pin_ctrl(1, 1, 1);
 	bcm283x_mbox_pin_ctrl(2, 1, 1);
-	usleep(100000);
+	usleep(300000);
 	brcm_init();
 
 
@@ -292,4 +301,3 @@ int main(int argc, char** argv) {
 
 	return 0;
 }
-

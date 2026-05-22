@@ -450,8 +450,111 @@ uint8_t* brcmf_fw_get_firmware(uint32_t* len){
     return cyfmac43455_sdio_bin;
 }
 
+static uint8_t *brcmf_fw_get_nvram_fallback(uint32_t *len)
+{
+    static uint8_t nvram_buf[BRCMF_FW_MAX_NVRAM_SIZE + 4 + sizeof(uint32_t)];
+    uint32_t i;
+    uint32_t out = 0;
+    uint32_t line_start = 0;
+    bool in_comment = false;
+    bool boardrev_found = false;
+    uint32_t token;
+    uint32_t token_le;
+
+    memset(nvram_buf, 0, sizeof(nvram_buf));
+
+    for (i = 0; i < brcmfmac43455_sdio_txt_len; i++) {
+        char c = brcmfmac43455_sdio_txt[i];
+
+        if (c == '\r')
+            continue;
+
+        if (in_comment) {
+            if (c == '\n')
+                in_comment = false;
+            continue;
+        }
+
+        if (c == '#') {
+            in_comment = true;
+            continue;
+        }
+
+        if (c == '\n' || c == '\0') {
+            if (out > line_start) {
+                if (strncmp((const char *)&nvram_buf[line_start], "boardrev", 8) == 0)
+                    boardrev_found = true;
+                nvram_buf[out++] = '\0';
+            }
+            line_start = out;
+            continue;
+        }
+
+        if (c < 0x20 || c >= 0x7f)
+            continue;
+
+        if (out + 1 >= sizeof(nvram_buf) - sizeof(uint32_t))
+            break;
+
+        nvram_buf[out++] = (uint8_t)c;
+    }
+
+    if (out > line_start) {
+        if (strncmp((const char *)&nvram_buf[line_start], "boardrev", 8) == 0)
+            boardrev_found = true;
+        nvram_buf[out++] = '\0';
+    }
+
+    if (!boardrev_found) {
+        size_t dflt_len = strlen(BRCMF_FW_DEFAULT_BOARDREV);
+
+        if (out + dflt_len + 1 >= sizeof(nvram_buf) - sizeof(uint32_t)) {
+            *len = 0;
+            return NULL;
+        }
+        memcpy(&nvram_buf[out], BRCMF_FW_DEFAULT_BOARDREV, dflt_len);
+        out += dflt_len;
+        nvram_buf[out++] = '\0';
+    }
+
+    out = roundup(out + 1, 4);
+    token = out / 4;
+    token = (~token << 16) | (token & 0x0000FFFF);
+    token_le = cpu_to_le32(token);
+    memcpy(&nvram_buf[out], &token_le, sizeof(token_le));
+    out += sizeof(token_le);
+
+    *len = out;
+    return nvram_buf;
+}
+
+uint8_t* brcmf_fw_get_nvram_fallback_only(uint32_t* len)
+{
+    return brcmf_fw_get_nvram_fallback(len);
+}
+
 uint8_t* brcmf_fw_get_nvram(uint32_t* len){
-    return brcmf_fw_nvram_strip(brcmfmac43455_sdio_txt, brcmfmac43455_sdio_txt_len, len);
+    char *data;
+    uint8_t *nvram;
+
+    data = malloc(brcmfmac43455_sdio_txt_len + 1);
+    if (!data) {
+        *len = 0;
+        return NULL;
+    }
+
+    memcpy(data, brcmfmac43455_sdio_txt, brcmfmac43455_sdio_txt_len);
+    data[brcmfmac43455_sdio_txt_len] = '\0';
+
+    nvram = brcmf_fw_nvram_strip(data, brcmfmac43455_sdio_txt_len + 1, len);
+    free(data);
+
+    if (!nvram || *len == 0) {
+        brcm_log("nvram strip failed, using fallback parser\n");
+        return brcmf_fw_get_nvram_fallback(len);
+    }
+
+    return nvram;
 }
 
 uint8_t* brcmf_fw_get_clm(uint32_t* len){

@@ -6,6 +6,7 @@
 #include <pthread.h>
 
 #include <ewoksys/syscall.h>
+#include <ewoksys/klog.h>
 #include <ewoksys/charbuf.h>
 
 
@@ -37,7 +38,7 @@ void brcm_log(const char *format, ...) {
         i++;
     }
     pthread_mutex_unlock(&mutex);
-	//syscall2(SYS_KPRINT, (ewokos_addr_t)ring_buf, (ewokos_addr_t)strlen(ring_buf));
+    sout(temp_buf, (ewokos_addr_t)strlen(temp_buf));
 }
 
 char* brcm_get_log(void){

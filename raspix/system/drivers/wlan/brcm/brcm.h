@@ -3,6 +3,7 @@
 #define __BRCM_FMAC_H__
 
 #include <types.h>
+#include <ewoksys/vdevice.h>
 
 
 /*

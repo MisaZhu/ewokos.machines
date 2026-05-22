@@ -5,9 +5,9 @@
 @/bin/ipcserv /drivers/ramfsd          /tmp
 @/bin/ipcserv /drivers/nulld           /dev/null
 
-#@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
-#@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
-#@/bin/ipcserv /drivers/timed    /dev/time
+@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
+@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
+@/bin/ipcserv /drivers/timed    /dev/time
 
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0 
