@@ -13,6 +13,7 @@
 #include "core.h"
 #include "chip.h"
 #include "brcmu_wifi.h"
+#include "fweh.h"
 #include "nl80211.h"
 #include "firmware.h"
 
@@ -27,6 +28,23 @@
 #define BRCMF_DCMD_SMLEN    256
 #define BRCMF_DCMD_MEDLEN   1536
 #define BRCMF_DCMD_MAXLEN   8192
+#define WL_ESCAN_ACTION_START 1
+#define BRCMF_ESCAN_SYNC_ID 0x1234
+
+static const uint8_t brcmf_escan_ch_list[] = {
+    0x01, 0x10, 0x02, 0x10, 0x03, 0x10, 0x04, 0x10,
+    0x05, 0x10, 0x06, 0x10, 0x07, 0x10, 0x08, 0x10,
+    0x09, 0x10, 0x0a, 0x10, 0x0b, 0x10, 0x0c, 0x10,
+    0x0d, 0x10, 0x24, 0xd0, 0x28, 0xd0, 0x2c, 0xd0,
+    0x30, 0xd0, 0x95, 0xd0, 0x99, 0xd0, 0x9d, 0xd0,
+    0xa1, 0xd0, 0xa5, 0xd0
+};
+
+static void brcmf_eventmask_set(int8_t *mask, uint32_t event)
+{
+    if ((event / 8) < BRCMF_EVENTING_MASK_LEN)
+        mask[event / 8] |= (1 << (event % 8));
+}
 
 /* IOCTL from host to device are limited in length. A device can only handle
  * ethernet frame size. This limitation is to be applied by protocol layer.
@@ -348,6 +366,9 @@ int32_t brcmf_fil_iovar_data_set(int ifidx, char *name, const void *data,
         brcm_log("Creating iovar failed\n");
     }
 
+    if (err < 0)
+        brcm_log("iovar set %s failed (%d)\n", name, err);
+
     return err;
 }
 
@@ -369,6 +390,9 @@ int32_t brcmf_fil_iovar_data_get(int ifidx, char *name, void *data,
         err = -EPERM;
         brcm_log("Creating iovar failed\n");
     }
+
+    if (err < 0)
+        brcm_log("iovar get %s failed (%d)\n", name, err);
 
     return err;
 }
@@ -618,9 +642,18 @@ int brcmf_c_preinit_dcmds(void)
         goto done;
     }
 
-    /* Setup event_msgs, enable E_IF */
-    int8_t  eventmask[18] = {0x61, 0x15, 0x0b, 0x00, 0x02, 0x42, 0xc0, 0x11, 
-                             0x60, 0x09, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}; 
+    /* Setup event_msgs explicitly so scan/connect events are guaranteed on. */
+    int8_t eventmask[BRCMF_EVENTING_MASK_LEN] = {0};
+    brcmf_eventmask_set(eventmask, BRCMF_E_SET_SSID);
+    brcmf_eventmask_set(eventmask, BRCMF_E_AUTH);
+    brcmf_eventmask_set(eventmask, BRCMF_E_DEAUTH);
+    brcmf_eventmask_set(eventmask, BRCMF_E_ASSOC);
+    brcmf_eventmask_set(eventmask, BRCMF_E_DISASSOC);
+    brcmf_eventmask_set(eventmask, BRCMF_E_LINK);
+    brcmf_eventmask_set(eventmask, BRCMF_E_SCAN_COMPLETE);
+    brcmf_eventmask_set(eventmask, BRCMF_E_IF);
+    brcmf_eventmask_set(eventmask, BRCMF_E_PSK_SUP);
+    brcmf_eventmask_set(eventmask, BRCMF_E_ESCAN_RESULT);
     err = brcmf_fil_iovar_data_set(0, "event_msgs", eventmask, BRCMF_EVENTING_MASK_LEN);
     if (err) {
         brcm_log("Set event_msgs error (%d)\n", err);
@@ -635,9 +668,6 @@ int brcmf_c_preinit_dcmds(void)
         goto done;
     }
 
-    /* Enable tx beamforming, errors can be ignored (not supported) */
-    (void)brcmf_fil_iovar_int_set(0, "txbf", 1);
-
     struct brcmf_fil_bwcap_le band_bwcap;
     band_bwcap.band = 2;
     band_bwcap.bw_cap = 3;
@@ -645,7 +675,9 @@ int brcmf_c_preinit_dcmds(void)
     if (err < 0)
         brcm_log("set bw_cap error %d\n", err);
 
-    brcmf_fil_iovar_int_set(0, "tdls_enable", 1);
+    /* Keep bring-up on the minimal STA feature set first. Optional
+     * txbf/tdls knobs can be added back after scan/connect is stable.
+     */
     //set contry code to CN
     uint8_t ccreq[12] = {0x43, 0x4e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x4e, 0x00, 0x00};
     err = brcmf_fil_iovar_data_set(0, "country", &ccreq, sizeof(ccreq));
@@ -669,9 +701,9 @@ int brcmf_c_preinit_dcmds(void)
         brcm_log("Unable to set pm timeout, (%d)\n", err);
     }
 
-    brcmf_fil_iovar_int_set(0, "apsta", 1);
-
-    brcmf_fil_iovar_int_set(0, "p2p_disc", 1);
+    /* Keep preinit in plain STA mode for now. Extra AP/P2P interfaces add
+     * IF events and are not needed for scan/connect bring-up.
+     */
 
     /* Setup default scan channel time */
     err = brcmf_fil_cmd_int_set(0, BRCMF_C_SET_SCAN_CHANNEL_TIME,
@@ -696,12 +728,6 @@ static void brcmf_escan_prep(struct brcmf_scan_params_le *params_le)
     uint32_t n_ssids;
     uint32_t n_channels;
 
-    const uint8_t ch_list[44] = {0x01,0x10,0x02,0x10,0x03,0x10,0x04,0x10, 
-        0x05,0x10,0x06,0x10,0x07,0x10,0x08,0x10,0x09,0x10,0x0a,0x10, 
-        0x0b,0x10,0x0c,0x10,0x0d,0x10,0x24,0xd0,0x28,0xd0,0x2c,0xd0, 
-        0x30,0xd0,0x95,0xd0,0x99,0xd0,0x9d,0xd0,0xa1,0xd0,0xa5,0xd0 
-    };
-
     memset(params_le->bssid, 0xff, 6);
     params_le->bss_type = DOT11_BSSTYPE_ANY;
     params_le->scan_type = BRCMF_SCANTYPE_ACTIVE;
@@ -712,25 +738,30 @@ static void brcmf_escan_prep(struct brcmf_scan_params_le *params_le)
     memset(&params_le->ssid_le, 0, sizeof(params_le->ssid_le));
 
     n_ssids = 1;
-    n_channels = 22;
-    memcpy(params_le->channel_list, ch_list, sizeof(ch_list));
+    n_channels = ARRAY_SIZE(brcmf_escan_ch_list) / sizeof(__le16);
+    memcpy(params_le->channel_list, brcmf_escan_ch_list,
+           sizeof(brcmf_escan_ch_list));
 
+    /* Keep the request layout aligned with the earlier working escan path:
+     * explicit channel list plus one wildcard SSID entry appended after it.
+     */
     params_le->scan_type = BRCMF_SCANTYPE_PASSIVE;
-    /* Adding mask to channel numbers */
     params_le->channel_num =
         cpu_to_le32((n_ssids << BRCMF_SCAN_PARAMS_NSSID_SHIFT) |
-            (n_channels & BRCMF_SCAN_PARAMS_COUNT_MASK));
+                    (n_channels & BRCMF_SCAN_PARAMS_COUNT_MASK));
 }
 
 
 void scan(void)
 {
     int32_t params_size = BRCMF_SCAN_PARAMS_FIXED_SIZE +
-              offsetof(struct brcmf_escan_params_le, params_le) + 44 + 36;
+              offsetof(struct brcmf_escan_params_le, params_le) +
+              sizeof(brcmf_escan_ch_list) +
+              sizeof(struct brcmf_ssid_le);
     struct brcmf_escan_params_le *params;
     int32_t err;
 
-    brcm_log("E-SCAN START\n");
+    brcm_log("SCAN START\n");
 
     params = calloc(1, params_size);
     if (!params) {
@@ -739,8 +770,8 @@ void scan(void)
     }
     brcmf_escan_prep(&params->params_le);
     params->version = cpu_to_le32(BRCMF_ESCAN_REQ_VERSION);
-    params->action = cpu_to_le16(1);
-    params->sync_id = cpu_to_le16(0x1234);
+    params->action = cpu_to_le16(WL_ESCAN_ACTION_START);
+    params->sync_id = cpu_to_le16(BRCMF_ESCAN_SYNC_ID);
 
     err = brcmf_fil_iovar_data_set(0, "escan", params, params_size);
     if (err) {
@@ -750,6 +781,7 @@ void scan(void)
             brcm_log("error (%d)\n", err);
     }
 
+out:
     free(params);
 exit:
     return;

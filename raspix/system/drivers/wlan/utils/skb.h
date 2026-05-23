@@ -12,6 +12,7 @@ struct sk_buff{
 	//internal
 	uint8_t *mem;
 	uint32_t total;
+    uint8_t pooled;
 }; 
 
 struct sk_buff_head {
