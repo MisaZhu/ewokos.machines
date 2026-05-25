@@ -2,6 +2,7 @@
 #include <string.h>
 #include <ewoksys/mmio.h>
 #include <arch/bcm283x/mailbox.h>
+#include <arch/bcm283x/gpio.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/mstr.h>
 #include <sdio/sdhci.h>
@@ -180,6 +181,11 @@ void bcm283x_mbox_pin_ctrl(int idx, int dir, int on) {
 
 void clock_init(void){
 	int timeout = 1000;
+
+	/* Route GPCLK2 to the WLAN 32k pin before releasing module reset. */
+	bcm283x_gpio_init();
+	bcm283x_gpio_config(43, GPIO_ALTF0);
+	usleep(20000);
 
 	//set 32.768 clock for wifi module
 	writel(CM_PASSWORD|0x1, CM_GP2CTL);

@@ -11,7 +11,7 @@
 
 
 #define RING_BUF_SIZE 4096
-#define TEMP_BUF_SIZE 128
+#define TEMP_BUF_SIZE 512
 
 static charbuf_t *LogBuf;
 static char *temp_buf;
@@ -20,6 +20,8 @@ static pthread_mutex_t mutex;
 void log_init(void){
     LogBuf = charbuf_new(RING_BUF_SIZE);
     temp_buf = malloc(TEMP_BUF_SIZE);
+    if (temp_buf)
+        memset(temp_buf, 0, TEMP_BUF_SIZE);
     pthread_mutex_init(&mutex, NULL);
 }
 
@@ -27,9 +29,17 @@ void brcm_log(const char *format, ...) {
 	va_list ap;
     pthread_mutex_lock(&mutex);
     uint64_t ts = kernel_tic_ms(0);
-    int len = sprintf(temp_buf, "%d:", ts);
+    int len = snprintf(temp_buf, TEMP_BUF_SIZE, "%u:", (uint32_t)ts);
+    size_t remain;
+
+    if (len < 0)
+        len = 0;
+    if ((size_t)len >= TEMP_BUF_SIZE)
+        len = TEMP_BUF_SIZE - 1;
+    remain = TEMP_BUF_SIZE - (size_t)len;
+
 	va_start(ap, format);
-	vsnprintf(temp_buf + len, TEMP_BUF_SIZE, format, ap);
+	vsnprintf(temp_buf + len, remain, format, ap);
 	va_end(ap);
 
     int i = 0;

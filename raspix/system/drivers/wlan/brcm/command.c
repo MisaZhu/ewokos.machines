@@ -31,19 +31,44 @@
 #define WL_ESCAN_ACTION_START 1
 #define BRCMF_ESCAN_SYNC_ID 0x1234
 
-static const uint8_t brcmf_escan_ch_list[] = {
-    0x01, 0x10, 0x02, 0x10, 0x03, 0x10, 0x04, 0x10,
-    0x05, 0x10, 0x06, 0x10, 0x07, 0x10, 0x08, 0x10,
-    0x09, 0x10, 0x0a, 0x10, 0x0b, 0x10, 0x0c, 0x10,
-    0x0d, 0x10, 0x24, 0xd0, 0x28, 0xd0, 0x2c, 0xd0,
-    0x30, 0xd0, 0x95, 0xd0, 0x99, 0xd0, 0x9d, 0xd0,
-    0xa1, 0xd0, 0xa5, 0xd0
-};
-
 static void brcmf_eventmask_set(int8_t *mask, uint32_t event)
 {
     if ((event / 8) < BRCMF_EVENTING_MASK_LEN)
         mask[event / 8] |= (1 << (event % 8));
+}
+
+static const int8_t brcmf_eventmask_legacy[BRCMF_EVENTING_MASK_LEN] = {
+    0x61, 0x15, 0x0b, 0x00, 0x02, 0x42, 0xc0, 0x11,
+    0x60, 0x09, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00
+};
+
+static const char *brcmf_cmd_name(uint32_t cmd)
+{
+    switch (cmd) {
+    case BRCMF_C_UP:
+        return "UP";
+    case BRCMF_C_SET_SSID:
+        return "SET_SSID";
+    case BRCMF_C_SCAN:
+        return "SCAN";
+    case BRCMF_C_SCAN_RESULTS:
+        return "SCAN_RESULTS";
+    case BRCMF_C_GET_REVINFO:
+        return "GET_REVINFO";
+    case BRCMF_C_SET_SCAN_CHANNEL_TIME:
+        return "SET_SCAN_CHANNEL_TIME";
+    case BRCMF_C_SET_SCAN_UNASSOC_TIME:
+        return "SET_SCAN_UNASSOC_TIME";
+    case BRCMF_C_SET_VAR:
+        return "SET_VAR";
+    case BRCMF_C_GET_VAR:
+        return "GET_VAR";
+    case BRCMF_C_SET_WSEC_PMK:
+        return "SET_WSEC_PMK";
+    default:
+        return "CMD";
+    }
 }
 
 /* IOCTL from host to device are limited in length. A device can only handle
@@ -143,13 +168,14 @@ brcmf_proto_bcdc_msg(int ifidx, uint cmd, void *buf,
              uint len, bool set)
 {
     uint32_t flags;
+    uint32_t request_id;
     struct brcmf_proto_bcdc_dcmd *msg = (struct brcmf_proto_bcdc_dcmd *)(temp + 32);
     memset(msg, 0, sizeof(struct brcmf_proto_bcdc_dcmd));
-
 
     msg->cmd = cpu_to_le32(cmd);
     msg->len = cpu_to_le32(len);
     flags = (++reqid << BCDC_DCMD_ID_SHIFT);
+    request_id = reqid;
     if (set)
         flags |= BCDC_DCMD_SET;
     flags = (flags & ~BCDC_DCMD_IF_MASK) |
@@ -157,7 +183,7 @@ brcmf_proto_bcdc_msg(int ifidx, uint cmd, void *buf,
     msg->flags = cpu_to_le32(flags);
 
     if (buf)
-        memcpy( temp + 32 + sizeof(struct brcmf_proto_bcdc_dcmd), buf, len);
+        memcpy(temp + 32 + sizeof(struct brcmf_proto_bcdc_dcmd), buf, len);
 
     len += sizeof(struct brcmf_proto_bcdc_dcmd);
     if (len > BRCMF_TX_IOCTL_MAX_MSG_SIZE)
@@ -172,12 +198,14 @@ brcmf_proto_bcdc_msg(int ifidx, uint cmd, void *buf,
 static int brcmf_proto_bcdc_cmplt(uint32_t id, uint32_t len)
 {
     int ret;
+    int tries = 0;
 
     struct brcmf_proto_bcdc_dcmd *msg = (struct brcmf_proto_bcdc_dcmd *)(temp + 32);
     memset(msg, 0, sizeof(struct brcmf_proto_bcdc_dcmd));
 
     len += sizeof(struct brcmf_proto_bcdc_dcmd);
     do {
+        tries++;
         ret = brcmf_sdio_bus_rxctl((unsigned char*)msg, len);
         if (ret < 0)
             break;
@@ -279,6 +307,10 @@ static int32_t
 brcmf_fil_cmd_data(int ifidx, uint32_t cmd, void *data, uint32_t len, bool set)
 {
     int32_t err, fwerr;
+    const char *iovar_name = NULL;
+
+    if (cmd == BRCMF_C_SET_VAR && data)
+        iovar_name = (const char *)data;
 
     if (data != NULL)
         len = min_t(uint, len, BRCMF_DCMD_MAXLEN);
@@ -290,9 +322,11 @@ brcmf_fil_cmd_data(int ifidx, uint32_t cmd, void *data, uint32_t len, bool set)
                          data, len, &fwerr);
 
     if (err) {
-        brcm_log("Failed: error=%d\n", err);
+        brcm_log("cmd %s(%u) failed: error=%d set=%d len=%u\n",
+              brcmf_cmd_name(cmd), cmd, err, set ? 1 : 0, len);
     } else if (fwerr < 0) {
-        brcm_log("Firmware error: %d\n", fwerr);
+        brcm_log("cmd %s(%u) firmware error: %d set=%d len=%u\n",
+              brcmf_cmd_name(cmd), cmd, fwerr, set ? 1 : 0, len);
         err = -EBADE;
     }
     return err;
@@ -378,7 +412,6 @@ int32_t brcmf_fil_iovar_data_get(int ifidx, char *name, void *data,
     int32_t err;
     uint32_t buflen;
 
-
     buflen = brcmf_create_iovar(name, data, len, proto_buf,
                     sizeof(proto_buf));
     if (buflen) {
@@ -456,23 +489,23 @@ static int brcmf_set_join_pref(int ifidx)
 */
 static int brcmf_join(int ifidx, const char* ssid)
 {
-    struct brcmf_ext_join_params_le ext_join_params = {0};
+    struct brcmf_join_params_fixed_le {
+        struct brcmf_ssid_le ssid_le;
+        u8 bssid[ETH_ALEN];
+        __le32 chanspec_num;
+    } join_params = {0};
+    int params_size = sizeof(join_params);
 
     int ssid_len = min(strlen(ssid), 32);
-    ext_join_params.ssid_le.SSID_len = cpu_to_le32(ssid_len);
-    memcpy(&ext_join_params.ssid_le.SSID, ssid, strlen(ssid));
-    ext_join_params.scan_le.scan_type = -1;
-    ext_join_params.scan_le.home_time = cpu_to_le32(-1);
-    memset(ext_join_params.assoc_le.bssid, 0xFF, 6);
-    ext_join_params.scan_le.active_time = cpu_to_le32(-1);
-    ext_join_params.scan_le.passive_time = cpu_to_le32(-1);
-    ext_join_params.scan_le.nprobes = cpu_to_le32(-1);
-    ext_join_params.assoc_le.chanspec_num = cpu_to_le32(0);
+    join_params.ssid_le.SSID_len = cpu_to_le32(ssid_len);
+    memcpy(&join_params.ssid_le.SSID, ssid, ssid_len);
+    memset(join_params.bssid, 0xFF, ETH_ALEN);
+    join_params.chanspec_num = cpu_to_le32(0);
 
     brcmf_set_join_pref(0);
 
-    int err  = brcmf_fil_iovar_data_set(ifidx, "join", &ext_join_params,
-                     sizeof(ext_join_params) - 4);
+    int err  = brcmf_fil_cmd_data_set(ifidx, BRCMF_C_SET_SSID, &join_params,
+                     params_size);
 
     return err;
 }
@@ -530,29 +563,6 @@ static int brcmf_c_process_clm_blob(int ifidx)
 }
 
 
-static int brcmf_dump_revinfo(struct brcmf_rev_info *ri)
-{
-    brcm_log("vendorid: 0x%04x\n", ri->vendorid);
-    brcm_log("deviceid: 0x%04x\n", ri->deviceid);
-    brcm_log("radiorev: %x\n", ri->radiorev);
-    brcm_log("chip: %s\n", ri->chipname);
-    brcm_log("chippkg: %u\n", ri->chippkg);
-    brcm_log("corerev: %u\n", ri->corerev);
-    brcm_log("boardid: 0x%04x\n", ri->boardid);
-    brcm_log("boardvendor: 0x%04x\n", ri->boardvendor);
-    brcm_log("boardrev: %x\n", ri->boardrev);
-    brcm_log("driverrev: %x\n", ri->driverrev);
-    brcm_log("ucoderev: %u\n", ri->ucoderev);
-    brcm_log("bus: %u\n", ri->bus);
-    brcm_log("phytype: %u\n", ri->phytype);
-    brcm_log("phyrev: %u\n", ri->phyrev);
-    brcm_log("anarev: %u\n", ri->anarev);
-    brcm_log("nvramrev: %08x\n", ri->nvramrev);
-
-
-    return 0;
-}
-
 int brcmf_c_preinit_dcmds(void)
 {
     uint8_t buf[BRCMF_DCMD_SMLEN];
@@ -604,8 +614,6 @@ int brcmf_c_preinit_dcmds(void)
         brcmf_chip_name(chip, chiprev,
                 ri.chipname, sizeof(ri.chipname));
 
-    brcmf_dump_revinfo(&ri);
-
     /* Do any CLM downloading */
     err = brcmf_c_process_clm_blob(0);
     if (err < 0) {
@@ -626,15 +634,6 @@ int brcmf_c_preinit_dcmds(void)
     /* Print fw version info */
     brcm_log("Firmware: %s %s\n", ri.chipname, buf);
 
-    /* Query for 'clmver' to get CLM version info from firmware */
-    memset(buf, 0, sizeof(buf));
-    err = brcmf_fil_iovar_data_get(0, "clmver", buf, sizeof(buf));
-    if (err) {
-        brcm_log("retrieving clmver failed, %d\n", err);
-    } else {
-        brcm_log("CLM version = %s\n", buf);
-    }
-
     /* set mpc */
     err = brcmf_fil_iovar_int_set(0, "mpc", 1);
     if (err) {
@@ -642,17 +641,16 @@ int brcmf_c_preinit_dcmds(void)
         goto done;
     }
 
-    /* Setup event_msgs explicitly so scan/connect events are guaranteed on. */
-    int8_t eventmask[BRCMF_EVENTING_MASK_LEN] = {0};
-    brcmf_eventmask_set(eventmask, BRCMF_E_SET_SSID);
+    /* Restore the broader legacy event mask that previously delivered scan
+     * progress on this firmware, then force on the events the current state
+     * machine still consumes explicitly.
+     */
+    int8_t eventmask[BRCMF_EVENTING_MASK_LEN];
+    memcpy(eventmask, brcmf_eventmask_legacy, sizeof(eventmask));
     brcmf_eventmask_set(eventmask, BRCMF_E_AUTH);
-    brcmf_eventmask_set(eventmask, BRCMF_E_DEAUTH);
     brcmf_eventmask_set(eventmask, BRCMF_E_ASSOC);
     brcmf_eventmask_set(eventmask, BRCMF_E_DISASSOC);
-    brcmf_eventmask_set(eventmask, BRCMF_E_LINK);
     brcmf_eventmask_set(eventmask, BRCMF_E_SCAN_COMPLETE);
-    brcmf_eventmask_set(eventmask, BRCMF_E_IF);
-    brcmf_eventmask_set(eventmask, BRCMF_E_PSK_SUP);
     brcmf_eventmask_set(eventmask, BRCMF_E_ESCAN_RESULT);
     err = brcmf_fil_iovar_data_set(0, "event_msgs", eventmask, BRCMF_EVENTING_MASK_LEN);
     if (err) {
@@ -714,10 +712,14 @@ int brcmf_c_preinit_dcmds(void)
         goto done;
     }
 
-    /* Bring device back up*/
+    /* Bring device up and keep this step visible in logs; this is a required
+     * real bring-up step and must not be silently skipped during debugging.
+     */
     err = brcmf_fil_cmd_int_set(0, BRCMF_C_UP, 1);
-    if (err < 0)
+    if (err < 0) {
         brcm_log("BRCMF_C_UP error %d\n", err);
+        goto done;
+    }
 
 done:
     return err;
@@ -725,9 +727,6 @@ done:
 
 static void brcmf_escan_prep(struct brcmf_scan_params_le *params_le)
 {
-    uint32_t n_ssids;
-    uint32_t n_channels;
-
     memset(params_le->bssid, 0xff, 6);
     params_le->bss_type = DOT11_BSSTYPE_ANY;
     params_le->scan_type = BRCMF_SCANTYPE_ACTIVE;
@@ -736,54 +735,41 @@ static void brcmf_escan_prep(struct brcmf_scan_params_le *params_le)
     params_le->passive_time = cpu_to_le32(-1);
     params_le->home_time = cpu_to_le32(-1);
     memset(&params_le->ssid_le, 0, sizeof(params_le->ssid_le));
-
-    n_ssids = 1;
-    n_channels = ARRAY_SIZE(brcmf_escan_ch_list) / sizeof(__le16);
-    memcpy(params_le->channel_list, brcmf_escan_ch_list,
-           sizeof(brcmf_escan_ch_list));
-
-    /* Keep the request layout aligned with the earlier working escan path:
-     * explicit channel list plus one wildcard SSID entry appended after it.
-     */
-    params_le->scan_type = BRCMF_SCANTYPE_PASSIVE;
-    params_le->channel_num =
-        cpu_to_le32((n_ssids << BRCMF_SCAN_PARAMS_NSSID_SHIFT) |
-                    (n_channels & BRCMF_SCAN_PARAMS_COUNT_MASK));
+    params_le->channel_num = cpu_to_le32(0);
 }
 
+struct brcmf_escan_req_fixed {
+    __le32 version;
+    __le16 action;
+    __le16 sync_id;
+    uint8_t params_buf[BRCMF_SCAN_PARAMS_FIXED_SIZE];
+};
 
 void scan(void)
 {
-    int32_t params_size = BRCMF_SCAN_PARAMS_FIXED_SIZE +
-              offsetof(struct brcmf_escan_params_le, params_le) +
-              sizeof(brcmf_escan_ch_list) +
-              sizeof(struct brcmf_ssid_le);
-    struct brcmf_escan_params_le *params;
+    int32_t params_size = sizeof(struct brcmf_escan_req_fixed);
+    struct brcmf_escan_req_fixed req;
+    struct brcmf_scan_params_le params_tmp;
     int32_t err;
 
     brcm_log("SCAN START\n");
+    memset(&req, 0, sizeof(req));
+    memset(&params_tmp, 0, sizeof(params_tmp));
+    brcmf_escan_prep(&params_tmp);
+    memcpy(req.params_buf, &params_tmp, BRCMF_SCAN_PARAMS_FIXED_SIZE);
+    req.version = cpu_to_le32(BRCMF_ESCAN_REQ_VERSION);
+    req.action = cpu_to_le16(WL_ESCAN_ACTION_START);
+    req.sync_id = cpu_to_le16(BRCMF_ESCAN_SYNC_ID);
 
-    params = calloc(1, params_size);
-    if (!params) {
-        err = -ENOMEM;
-        goto exit;
-    }
-    brcmf_escan_prep(&params->params_le);
-    params->version = cpu_to_le32(BRCMF_ESCAN_REQ_VERSION);
-    params->action = cpu_to_le16(WL_ESCAN_ACTION_START);
-    params->sync_id = cpu_to_le16(BRCMF_ESCAN_SYNC_ID);
-
-    err = brcmf_fil_iovar_data_set(0, "escan", params, params_size);
+    err = brcmf_fil_iovar_data_set(0, "escan", &req, params_size);
     if (err) {
         if (err == -EBUSY)
             brcm_log("system busy : escan canceled\n");
         else
             brcm_log("error (%d)\n", err);
+    } else {
+        brcm_log("SCAN REQUEST submitted\n");
     }
-
-out:
-    free(params);
-exit:
     return;
 }
 
@@ -800,8 +786,6 @@ int connect(const char*ssid, const char* pmk)
         brcm_log("Wrong PMK lens\n");
         return -1;
     }
-    brcm_log("Connect to %s...\n", ssid);
-
     /* A normal (non P2P) connection request setup. */
     const char ie[22] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 
                          0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x01, 0x00, 
@@ -821,6 +805,12 @@ int connect(const char*ssid, const char* pmk)
         return err;
     }
 
+    err = brcmf_fil_cmd_int_set(0, BRCMF_C_SET_INFRA, 1);
+    if (err) {
+        brcm_log("set infra failed (%d)\n", err);
+        return err;
+    }
+
     err = brcmf_fil_iovar_int_set(0, "wsec", AES_ENABLED|TKIP_ENABLED);
     if (err) {
         brcm_log("error (%d)\n", err);
@@ -833,7 +823,7 @@ int connect(const char*ssid, const char* pmk)
         return err;
     }
 
-    brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_CAPABLE);
+    err = brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_CAPABLE);
     if (err) {
         brcm_log("set mfp failed (%d)\n", err);
         return err;
@@ -872,6 +862,7 @@ int connect(const char*ssid, const char* pmk)
         brcm_log("failed to join SSID:%s\n", ssid);
         goto done;
     }
+    brcm_log("CONNECT REQUEST submitted ssid=%s\n", ssid);
 
 done:
     return err;

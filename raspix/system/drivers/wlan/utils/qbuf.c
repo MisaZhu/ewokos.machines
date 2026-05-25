@@ -27,7 +27,6 @@ queue_buffer_t *queue_buffer_alloc(int qsize, int bsize){
 				break;
 		}
 		qbuf->qsize = i;
-		klog("malloc queue buffer %d size %d\n", i,  bsize);
 	}
 	return qbuf;
 }

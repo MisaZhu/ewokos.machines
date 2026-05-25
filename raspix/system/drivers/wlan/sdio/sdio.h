@@ -138,6 +138,8 @@ uint8_t sdio_readb(int func, unsigned int addr, int *err_ret);
 void sdio_writeb(int func, uint8_t b, unsigned int addr, int *err_ret);
 int sdio_readsb(int func, void *dst, unsigned int addr,int count);
 int sdio_writesb(int func, unsigned int addr, void *src,int count);
+int sdio_writesb_block(int func, unsigned int addr, void *src,
+               unsigned int blocks, unsigned int blksz);
 uint16_t sdio_readw(int func, unsigned int addr, int *err_ret);
 void sdio_writew(int func, uint16_t b, unsigned int addr, int *err_ret);
 uint32_t sdio_readl(int func, unsigned int addr, int *err_ret);

@@ -360,6 +360,7 @@ struct brcmf_dev{
 
 
     bool scan_results_ready;
+    bool scan_mpc_off;
     int priority;
     char ssid[32];
     enum WL_STATE  state;
@@ -369,6 +370,27 @@ struct brcmf_dev *bus =  NULL;
 extern vdevice_t* _wland_dev;
 #define dev _wland_dev
 static void brcmf_sdio_dpc(void);
+
+static void brcmf_scan_set_mpc(bool enable)
+{
+    int err;
+    bool want_off;
+
+    if (!bus)
+        return;
+
+    want_off = !enable;
+    if (bus->scan_mpc_off == want_off)
+        return;
+
+    err = brcmf_fil_iovar_int_set(0, "mpc", enable ? 1 : 0);
+    if (err) {
+        brcm_log("set mpc %d failed (%d)\n", enable ? 1 : 0, err);
+        return;
+    }
+
+    bus->scan_mpc_off = want_off;
+}
 
 static inline void brcm_wakeup_dev(int evt)
 {
@@ -449,12 +471,20 @@ static int brcmf_sdiod_skbuff_write(
 {
     unsigned int req_sz;
     int err;
+    static uint8_t f2_block_buf[512];
 
     /* Single skb use the standard mmc interface */
     req_sz = skb->len + 3;
     req_sz &= (uint)~3;
 
-    err = sdio_memcpy_toio(func, addr, ((uint8_t *)(skb->data)), req_sz);
+    if (func == 2 && bus->blocksize &&
+        req_sz > 64 && req_sz <= (unsigned int)bus->blocksize) {
+        memset(f2_block_buf, 0, bus->blocksize);
+        memcpy(f2_block_buf, skb->data, req_sz);
+        err = sdio_writesb_block(func, addr, f2_block_buf, 1, bus->blocksize);
+    } else {
+        err = sdio_memcpy_toio(func, addr, ((uint8_t *)(skb->data)), req_sz);
+    }
     return err;
 }
 
@@ -700,8 +730,6 @@ brcmf_sdio_drivestrengthinit(uint32_t drivestrength)
         str_shift = 11;
         break;
     default:
-        brcm_log("No SDIO driver strength init needed for chip %s rev %d pmurev %d\n",
-              bus->ci->name, bus->ci->chiprev, bus->ci->pmurev);
         break;
     }
 
@@ -722,8 +750,6 @@ brcmf_sdio_drivestrengthinit(uint32_t drivestrength)
         cc_data_temp |= drivestrength_sel;
         brcmf_sdiod_writel(addr, cc_data_temp, NULL);
 
-        brcm_log("SDIO: %d mA (req=%d mA) drive strength selected, set to 0x%08x\n",
-              str_tab[i].strength, drivestrength, cc_data_temp);
     }
 }
 
@@ -820,7 +846,6 @@ static int brcmf_sdio_htclk(bool on, bool pendok)
             devctl |= SBSDIO_DEVCTL_CA_INT_ONLY;
             brcmf_sdiod_writeb(SBSDIO_DEVICE_CTL,
                        devctl, &err);
-            brcm_log("CLKCTL: set PENDING\n");
             bus->clkstate = CLK_PENDING;
 
             return 0;
@@ -857,7 +882,6 @@ static int brcmf_sdio_htclk(bool on, bool pendok)
 
         /* Mark clock available */
         bus->clkstate = CLK_AVAIL;
-        brcm_log("CLKCTL: turned ON\n");
 
         if (!bus->alp_only) {
             if (SBSDIO_ALPONLY(clkctl))
@@ -879,7 +903,6 @@ static int brcmf_sdio_htclk(bool on, bool pendok)
         bus->clkstate = CLK_SDONLY;
         brcmf_sdiod_writeb(SBSDIO_FUNC1_CHIPCLKCSR,
                    clkreq, &err);
-        brcm_log("CLKCTL: turned OFF\n");
         if (err) {
             brcm_log("Failed access turning clock off: %d\n",
                   err);
@@ -940,9 +963,6 @@ brcmf_sdio_verifymemory(uint32_t ram_addr,
     unsigned int offset;
     unsigned int len;
 
-    /* read back and verify */
-    brcm_log("Compare RAM dl & ul at 0x%08x; size=%d\n", ram_addr,
-          ram_sz);
     ram_cmp = (uint8_t *)malloc(2048);
     /* do not proceed while no memory but  */
     if (!ram_cmp)
@@ -969,7 +989,6 @@ brcmf_sdio_verifymemory(uint32_t ram_addr,
         address += len;
     }
     if(offset == ram_sz){
-        brcm_log("Verify success!\n");
         ret = true;
     }
     free(ram_cmp);
@@ -981,8 +1000,6 @@ static int brcmf_sdio_download_code_file(const uint8_t *fw, int len)
 {
     int err;
 
-    brcm_log("download code len=%d to 0x%08x (ram base)\n",
-          len, bus->ci->rambase);
     err = brcmf_sdiod_ramrw(true, bus->ci->rambase,
                 (uint8_t *)fw, len);
     if (err)
@@ -1020,10 +1037,7 @@ static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvr
     uint32_t nvram_addr;
 
     brcmf_sdio_clkctl(CLK_AVAIL, false);
-    brcm_log("download firmware to 0x%x rstvec: %x\n", bus->ci->rambase, rstvec); 
     nvram_addr = bus->ci->ramsize - nvlen + bus->ci->rambase;
-    brcm_log("firmware layout fw_len=%u nvram_len=%u rambase=0x%08x ramsize=0x%08x nvram_addr=0x%08x\n",
-          len, nvlen, bus->ci->rambase, bus->ci->ramsize, nvram_addr);
     if ((bus->ci->rambase + len) > nvram_addr) {
         brcm_log("firmware layout overlap: fw_end=0x%08x nvram_addr=0x%08x\n",
               bus->ci->rambase + len, nvram_addr);
@@ -1036,7 +1050,6 @@ static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvr
         goto err;
     }
 
-    brcm_log("download nvram\n"); 
     bcmerror = brcmf_sdio_download_nvram(nvram, nvlen);
     if (bcmerror) {
         brcm_log("dongle nvram file download failed\n");
@@ -1136,8 +1149,6 @@ static int brcmf_sdio_readshared(struct sdpcm_shared *sh)
         goto fail;
     }
 
-    brcm_log("sdpcm_shared address 0x%08X\n", addr);
-
     /* Read hndrte_shared structure */
     rv = brcmf_sdiod_ramrw(false, addr, (uint8_t *)&sh_le, sizeof(struct sdpcm_shared_le));
     if (rv < 0)
@@ -1209,16 +1220,6 @@ static int brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh)
         hmb_data = brcmf_sdiod_readl(core->base + SD_REG(tohostmailboxdata), &err);
         if (!err && (hmb_data & (HMB_DATA_DEVREADY | HMB_DATA_FWREADY))) {
             brcmf_sdiod_writel(core->base + SD_REG(tosbmailbox), SMB_INT_ACK, &err);
-            if (hmb_data & HMB_DATA_DEVREADY) {
-                uint32_t sdpcm_ver;
-
-                sdpcm_ver = (hmb_data & HMB_DATA_VERSION_MASK) >>
-                            HMB_DATA_VERSION_SHIFT;
-                brcm_log("firmware mailbox ready: hmb=0x%08x ver=%u\n",
-                      hmb_data, sdpcm_ver);
-            } else {
-                brcm_log("firmware mailbox fwready: hmb=0x%08x\n", hmb_data);
-            }
         }
 
         err = brcmf_sdiod_ramrw(false, shaddr, (uint8_t *)&addr_le, 4);
@@ -1636,9 +1637,6 @@ static void scan_result(struct brcmf_bss_info_le *info){
     memcpy(ssid, info->SSID, ssid_len);
     ssid[ssid_len] = '\0';
 
-    if (ssid_len > 0)
-        brcm_log("scan ssid:%s\n", ssid);
-
     int idx = config_match_ssid(ssid);
         
     if(idx >= 0){
@@ -1647,7 +1645,6 @@ static void scan_result(struct brcmf_bss_info_le *info){
             if(config_get_priority(idx) >= config_get_priority(old))
                 return;
         }
-        brcm_log("match ssid:%s\n", ssid);
         strncpy(bus->ssid, ssid, sizeof(bus->ssid) - 1);
     } 
 }
@@ -1739,9 +1736,6 @@ void brcmf_rx_event( struct sk_buff *skb)
 
         result = (struct brcmf_escan_result_le *)data;
         count = le16_to_cpu(result->bss_count);
-        brcm_log("Event: ESCAN_RESULT status=%u reason=%u count=%u\n",
-              event_status, emsg.reason, count);
-
         pos = (uint8_t *)&result->bss_info_le;
         end = data + datalen;
         for (uint32_t i = 0; i < count; i++) {
@@ -1758,22 +1752,16 @@ void brcmf_rx_event( struct sk_buff *skb)
             pos += length;
         }
     }else if(event_type == 26){
-        brcm_log("Event: SCAN_COMPLETE status=%u reason=%u\n",
-              event_status, emsg.reason);
         bus->scan_results_ready = true;
     }else if(event_type == 54){
         if (datalen < sizeof(struct brcmf_if_event))
             goto done;
         ifevent = (struct brcmf_if_event *)data;
-        brcm_log("Event: IF status=%u reason=%u ifidx=%u action=%u role=%u flags=0x%x bsscfg=%u\n",
-              event_status, emsg.reason, ifevent->ifidx, ifevent->action,
-              ifevent->role, ifevent->flags, ifevent->bsscfgidx);
     }else if(event_type == 0 && event_status == 0){
         brcm_log("Event: link up\n"); 
+        brcmf_scan_set_mpc(true);
         bus->state = CONNECTED;
         brcm_wakeup_dev(1);
-    }else{
-        brcm_log("Event: %d\n", event_type);
     }
 done:
     skb_free(skb);
@@ -1924,9 +1912,6 @@ static uint brcmf_sdio_readframes(uint maxframes)
     }
 
     rxcount = maxframes - rxleft;
-    /* Message if we hit the limit */
-    if (!rxleft)
-        brcm_log("hit rx limit of %d frames\n", maxframes);
     // else
     //     brcm_log("processed %d frames\n", rxcount);
     /* Back off rxseq if awaiting rtx, update rx_seq */
@@ -1972,8 +1957,6 @@ static uint32_t brcmf_sdio_hostmail(void)
      * DEVREADY does not occur with gSPI.
      */
     if (hmb_data & (HMB_DATA_DEVREADY)) {
-        uint32_t sdpcm_ver = (hmb_data & HMB_DATA_VERSION_MASK) >> HMB_DATA_VERSION_SHIFT;
-        brcm_log("Dongle ready, protocol version %d\n", sdpcm_ver);
         struct sdpcm_shared sh;
         if (brcmf_sdio_readshared(&sh) == 0){
             brcm_console_init(sh.console_addr);
@@ -2296,6 +2279,7 @@ int brcmf_sdio_bus_rxctl(unsigned char *msg, uint msglen)
 {
     int timeleft = 1000;
     uint rxlen = 0;
+
     /* Wait until control frame is available */
     //timeleft = brcmf_sdio_dcmd_resp_wait(bus, &bus->rxlen, &pending);
     while(!bus->rxlen && timeleft--){
@@ -2385,10 +2369,6 @@ int brcmf_sdiod_probe(void){
 
     uint32_t enum_base = 0x18000000;
     uint32_t clkctl = 0;
-    brcm_log("F1 signature read @0x%08x=0x%4x\n", enum_base,
-         brcmf_sdiod_readl(enum_base, NULL));
-
-
     /*
      * Force PLL off until brcmf_chip_attach()
      * programs PLL control regs
@@ -2540,7 +2520,6 @@ int brcmf_sdiod_probe(void){
         brcmf_sdiod_writel(bus->sdio_core->base + SD_REG(hostintmask),
                    bus->hostintmask, NULL); 
 
-        brcm_log("set F2 watermark to 0x%x*4 bytes\n",DEFAULT_F2_WATERMARK);
         brcmf_sdiod_writeb(SBSDIO_WATERMARK, DEFAULT_F2_WATERMARK, &err);
 
         brcmf_chip_sr_capable();
@@ -2599,6 +2578,10 @@ void* brcm_thread(void* p) {
             if (bus->state == SCANNING && strlen(bus->ssid) == 0 && bus->scan_results_ready) {
                 bus->scan_results_ready = false;
                 scan_poll_results();
+                if (strlen(bus->ssid) == 0) {
+                    brcmf_scan_set_mpc(true);
+                    bus->state = DISCONNECTED;
+                }
             }
 
             if(bus->state == SCANNING && strlen(bus->ssid) > 0){
@@ -2612,14 +2595,14 @@ void* brcm_thread(void* p) {
                         unsigned char pmk[32];
                         PKCS5_PBKDF2_HMAC((const unsigned char*)passwd, strlen(passwd), (const unsigned char*)bus->ssid, strlen(bus->ssid), 4096, 32, pmk);
                         to_str(pmkstr, pmk, 32);
-                        brcm_log("connect ssid:%s\n", bus->ssid);
+                        brcmf_scan_set_mpc(true);
                         bus->state = CONNECTING;
                         connect(bus->ssid, pmkstr);
                     }else{
                         brcm_log("no passwd fond for ssid: %s\n", config_get_ssid(idx));
                     }
                 }else{
-                    brcm_log("connect ssid:%s\n", bus->ssid);
+                    brcmf_scan_set_mpc(true);
                     bus->state = CONNECTING;
                     connect(bus->ssid, pmk);
                 }

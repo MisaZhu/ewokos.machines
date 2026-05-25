@@ -107,6 +107,12 @@ int sdio_writesb(int func, unsigned int addr, void *src,
 	return sdio_io_rw_ext_helper(func, 1, addr, 0, src, count);
 }
 
+int sdio_writesb_block(int func, unsigned int addr, void *src,
+	unsigned int blocks, unsigned int blksz)
+{
+	return mmc_io_rw_extended(1, func, addr, 0, src, blocks, blksz);
+}
+
 uint16_t sdio_readw(int func, unsigned int addr, int *err_ret)
 {
 	int ret;

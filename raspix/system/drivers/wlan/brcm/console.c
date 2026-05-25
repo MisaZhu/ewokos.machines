@@ -83,7 +83,6 @@ int brcmf_sdio_readconsole(void)
             if (line[n - 1] == '\r')
                 n--;
             line[n] = 0;
-            brcm_log("CONSOLE: %s\n", line);
         }
     }
 break2:
