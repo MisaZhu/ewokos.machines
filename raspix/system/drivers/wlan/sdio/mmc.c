@@ -202,10 +202,16 @@ static int brcm_init(void)
 
 static int mmc_init_card(void)
 {
-	mmc_go_idle();
+	int err;
+
+	err = mmc_go_idle();
+	if (err)
+		return err;
 	usleep(200000);
 
-	brcm_init();
+	err = brcm_init();
+	if (err)
+		return err;
 	return 0;
 }
 

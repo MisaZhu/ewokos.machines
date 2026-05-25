@@ -303,13 +303,14 @@ int main(int argc, char** argv) {
 	_wland_dev = &dev;
 	brcm_log("wlan platform: assert wl_reg_on\n");
 	bcm283x_mbox_pin_ctrl(1, 1, 0);
-	bcm283x_mbox_pin_ctrl(2, 1, 0);
        usleep(100000);
 	brcm_log("wlan platform: deassert wl_reg_on\n");
 	bcm283x_mbox_pin_ctrl(1, 1, 1);
-	bcm283x_mbox_pin_ctrl(2, 1, 1);
        usleep(100000);
-	brcm_init();
+	if (brcm_init() != 0) {
+		brcm_log("wlan platform: brcm_init failed\n");
+		return -1;
+	}
 
 
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/eth0";

@@ -943,6 +943,8 @@ void sdhci_init(void)
 {
 	int pi4_family = bcm283x_is_pi4_family();
 	uint32_t hostsel = readl(_mmio_base + 0x2000d0) & 0x2;
+	uint32_t legacy_present = readl(_mmio_base + 0x300000 + SDHCI_PRESENT_STATE);
+	uint32_t emmc2_present = readl(_mmio_base + 0x340000 + SDHCI_PRESENT_STATE);
 
 	bcm283x_sdhci_gpio_init();
 
@@ -950,19 +952,22 @@ void sdhci_init(void)
 	_host.max_clk = 50000000;
 	_host.clock = 400000;
 	_host.name = "sdhci";
-	if (pi4_family && hostsel == 0)
-		_host.ioaddr = (void*)(_mmio_base + 0x340000);
-	else
-		_host.ioaddr = (void*)(_mmio_base + 0x300000);
+	/*
+	 * Onboard WLAN uses SD1 pins GPIO34-39 driven by the legacy SDHCI block.
+	 * Pi4/CM4 move the removable SD card to EMMC2, but Wi-Fi stays on SDHCI.
+	 */
+	_host.ioaddr = (void*)(_mmio_base + 0x300000);
 	_host.twoticks_delay = ((2 * 1000000) / 400000) + 1;
 	_host.last_write = 0;
 	_host.quirks = SDHCI_QUIRK_BROKEN_VOLTAGE | SDHCI_QUIRK_BROKEN_R1B |
 		SDHCI_QUIRK_WAIT_SEND_CMD | SDHCI_QUIRK_NO_HISPD_BIT;
 	_host.voltages = MMC_VDD_32_33 | MMC_VDD_33_34 | MMC_VDD_165_195;
 
-	brcm_log("sdhci init: machine=%s hostsel=0x%x ioaddr=%x\n",
+	brcm_log("sdhci init: machine=%s hostsel=0x%x legacy_present=0x%x emmc2_present=0x%x ioaddr=%x\n",
 		pi4_family ? "pi4/cm4" : "legacy",
 		hostsel,
+		legacy_present,
+		emmc2_present,
 		(uint32_t)_host.ioaddr);
 
 	sdhci_reset(SDHCI_RESET_ALL);

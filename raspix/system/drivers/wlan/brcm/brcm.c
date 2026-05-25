@@ -2309,7 +2309,10 @@ int brcmf_sdio_bus_rxctl(unsigned char *msg, uint msglen)
 int brcmf_sdiod_probe(void){
     int ret = 0, err = 0;
     bus = malloc(sizeof(struct brcmf_dev));
+    if (!bus)
+        return -ENOMEM;
     memset(bus, 0, sizeof(struct brcmf_dev));
+    brcm_log("pi4-wlan: probe begin\n");
 
 #if 0
     brcm_dummy_read(0x0, 1);
@@ -2332,6 +2335,7 @@ int brcmf_sdiod_probe(void){
     if (ret) {
         brcm_log("Failed %d\n", ret);
     }
+    (void)val;
 
     sdio_writeb(0, 0x42, 0x7, &ret);
     if (ret) {
@@ -2367,7 +2371,6 @@ int brcmf_sdiod_probe(void){
         brcm_log("Failed to enable F1: err=%d\n", ret);
     }
 
-    uint32_t enum_base = 0x18000000;
     uint32_t clkctl = 0;
     /*
      * Force PLL off until brcmf_chip_attach()
@@ -2386,10 +2389,21 @@ int brcmf_sdiod_probe(void){
         return err;
     }
 
+    brcm_log("pi4-wlan: buscore prep\n");
     brcmf_sdio_buscoreprep();
+    brcm_log("pi4-wlan: chip attach begin\n");
     bus->ci = brcmf_chip_attach();
     bus->sdio_core   = brcmf_chip_get_core(BCMA_CORE_SDIO_DEV);
     bus->cc_core = brcmf_chip_get_core(BCMA_CORE_CHIPCOMMON);
+    if (!bus->ci || !bus->sdio_core || !bus->cc_core) {
+        brcm_log("pi4-wlan: chip attach incomplete ci=%p sdio=%p cc=%p\n",
+              bus->ci, bus->sdio_core, bus->cc_core);
+        return -ENODEV;
+    }
+    brcm_log("pi4-wlan: chip attach done chip=%s sdio_rev=%u cc_caps=0x%x\n",
+          bus->ci ? bus->ci->name : "null",
+          bus->sdio_core ? bus->sdio_core->rev : 0,
+          bus->ci ? bus->ci->cc_caps : 0);
 
     if (brcmf_sdio_kso_init()) {
         brcm_log("error enabling KSO\n");
@@ -2439,6 +2453,11 @@ int brcmf_sdiod_probe(void){
 
     bus->rx_queue = queue_buffer_alloc(32, MAX_FRAME_SIZE);
     bus->tx_queue = queue_buffer_alloc(32, MAX_FRAME_SIZE);
+    if (!bus->rxhdr || !bus->rxctl || !bus->rx_queue || !bus->tx_queue) {
+        brcm_log("pi4-wlan: buffer alloc failed rxhdr=%p rxctl=%p rxq=%p txq=%p\n",
+              bus->rxhdr, bus->rxctl, bus->rx_queue, bus->tx_queue);
+        return -ENOMEM;
+    }
     /* Disable F2 to clear any intermediate frame state on the dongle */
     sdio_disable_func(2);
 
@@ -2464,11 +2483,14 @@ int brcmf_sdiod_probe(void){
     }
 
     bus->alp_only = true;
+    brcm_log("pi4-wlan: fw download begin fw=%u nvram=%u\n", fw_len, nvram_len);
     ret = brcmf_sdio_download_firmware(fw, fw_len, nvram, nvram_len);
     bus->alp_only = false;
     if (ret) {
+        brcm_log("pi4-wlan: fw download failed %d\n", ret);
         return ret;
     }
+    brcm_log("pi4-wlan: fw download done\n");
 
     /* Make sure backplane clock is on, needed to generate F2 interrupt. */
     if (bus->clkstate != CLK_AVAIL)
@@ -2509,6 +2531,7 @@ int brcmf_sdiod_probe(void){
     }
 
     /* Enable function 2 (frame transfers) */
+    brcm_log("pi4-wlan: enable func2 begin\n");
     brcmf_sdiod_writel(bus->sdio_core->base + SD_REG(tosbmailboxdata),
                SDPCM_PROT_VERSION << SMB_DATA_VERSION_SHIFT, NULL);
 
@@ -2532,6 +2555,8 @@ int brcmf_sdiod_probe(void){
     uint8_t devpend = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, NULL);
     bus->intstatus = devpend & (INTR_STATUS_FUNC1 |
                                INTR_STATUS_FUNC2);
+    brcm_log("pi4-wlan: probe done intstatus=0x%x clkstate=%d\n",
+          bus->intstatus, bus->clkstate);
 
     return 0;
 }
@@ -2540,8 +2565,13 @@ int brcmf_sdiod_probe(void){
 void* brcm_thread(void* p) {
     (void)p;
     static int tick = 0;
+    int err;
     sleep(10);
-    brcmf_sdiod_probe();
+    err = brcmf_sdiod_probe();
+    if (err) {
+        brcm_log("pi4-wlan: probe failed %d\n", err);
+        return NULL;
+    }
 
     for(int i = 0; i < 500; i++){
         brcmf_sdio_dpc();
@@ -2549,17 +2579,21 @@ void* brcm_thread(void* p) {
     }
 
     uint32_t value = 0; 
-    int err  = brcmf_fil_iovar_data_set(0, "bus:txglom", &value, sizeof(uint32_t));
+    err = brcmf_fil_iovar_data_set(0, "bus:txglom", &value, sizeof(uint32_t));
     if(err){
         brcm_log("disable glom failed %d\n", err);
     }
 
-    err  = brcmf_fil_iovar_data_set(0, "bus:rxglom", &value, sizeof(uint32_t));
+    err = brcmf_fil_iovar_data_set(0, "bus:rxglom", &value, sizeof(uint32_t));
     if(err){
         brcm_log("disable glom failed %d\n", err);
     }
 
-    brcmf_c_preinit_dcmds();
+    err = brcmf_c_preinit_dcmds();
+    if (err) {
+        brcm_log("pi4-wlan: preinit failed %d\n", err);
+        return NULL;
+    }
 
     while(1){
         brcmf_sdio_dpc();
@@ -2619,11 +2653,24 @@ int brcm_state(void){
     return bus->state;
 }
 
-void brcm_init(void){
-    mmc_hw_reset();
+int brcm_init(void){
+    int ret;
+    brcm_log("pi4-wlan: brcm_init begin\n");
+    ret = mmc_hw_reset();
+    if (ret) {
+        brcm_log("pi4-wlan: mmc_hw_reset failed %d\n", ret);
+        return ret;
+    }
+    brcm_log("pi4-wlan: mmc_hw_reset done\n");
     config_init(NULL);
     pthread_t tid;
-	pthread_create(&tid, NULL, brcm_thread, NULL);
+	ret = pthread_create(&tid, NULL, brcm_thread, NULL);
+    if (ret != 0) {
+        brcm_log("pi4-wlan: pthread_create failed %d\n", ret);
+        return ret;
+    }
+    brcm_log("pi4-wlan: worker thread started\n");
+    return 0;
 }
 
 int brcm_recv(uint8_t *buf, int len){

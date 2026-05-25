@@ -384,7 +384,7 @@ struct sdpcm_shared_le {
 };
 
 
-void brcm_init(void);
+int brcm_init(void);
 int brcm_recv(uint8_t *buf, int len);
 int brcm_send(uint8_t *buf, int len);
 int brcm_check_data(void);
@@ -398,4 +398,3 @@ uint32_t brcmf_sdiod_readl(uint32_t addr, int *ret);
 int brcmf_sdiod_ramrw(bool write, uint32_t address, uint8_t *data, uint size);
 int brcm_state(void);
 #endif
-
