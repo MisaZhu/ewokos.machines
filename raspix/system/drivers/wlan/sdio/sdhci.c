@@ -1,6 +1,8 @@
 
 #include <stdint.h>
 #include <arch/bcm283x/gpio.h>
+#include <ewoksys/syscall.h>
+#include <sysinfo.h>
 
 #include <types.h>
 #include <string.h>
@@ -285,6 +287,16 @@ struct sdhci_host {
 };
 
 static struct sdhci_host _host;
+
+static int bcm283x_is_pi4_family(void)
+{
+	sys_info_t sysinfo;
+
+	memset(&sysinfo, 0, sizeof(sysinfo));
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+	return strstr(sysinfo.machine, "pi4") != NULL ||
+		strstr(sysinfo.machine, "cm4") != NULL;
+}
 
 static void bcm283x_sdhci_gpio_init(void){
     bcm283x_gpio_init();
@@ -929,18 +941,29 @@ int sdhci_set_ios(struct mmc *mmc)
 
 void sdhci_init(void)
 {
+	int pi4_family = bcm283x_is_pi4_family();
+	uint32_t hostsel = readl(_mmio_base + 0x2000d0) & 0x2;
+
 	bcm283x_sdhci_gpio_init();
 
 	_host.bus_width  = 1;
 	_host.max_clk = 50000000;
 	_host.clock = 400000;
 	_host.name = "sdhci";
-	_host.ioaddr = (void*)(_mmio_base + 0x300000);
+	if (pi4_family && hostsel == 0)
+		_host.ioaddr = (void*)(_mmio_base + 0x340000);
+	else
+		_host.ioaddr = (void*)(_mmio_base + 0x300000);
 	_host.twoticks_delay = ((2 * 1000000) / 400000) + 1;
 	_host.last_write = 0;
 	_host.quirks = SDHCI_QUIRK_BROKEN_VOLTAGE | SDHCI_QUIRK_BROKEN_R1B |
 		SDHCI_QUIRK_WAIT_SEND_CMD | SDHCI_QUIRK_NO_HISPD_BIT;
 	_host.voltages = MMC_VDD_32_33 | MMC_VDD_33_34 | MMC_VDD_165_195;
+
+	brcm_log("sdhci init: machine=%s hostsel=0x%x ioaddr=%x\n",
+		pi4_family ? "pi4/cm4" : "legacy",
+		hostsel,
+		(uint32_t)_host.ioaddr);
 
 	sdhci_reset(SDHCI_RESET_ALL);
 	sdhci_set_power(&_host,MMC_VDD_33_34);

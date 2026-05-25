@@ -1,10 +1,12 @@
 #include <ewoksys/vdevice.h>
+#include <ewoksys/syscall.h>
 #include <string.h>
 #include <ewoksys/mmio.h>
 #include <arch/bcm283x/mailbox.h>
 #include <arch/bcm283x/gpio.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/mstr.h>
+#include <sysinfo.h>
 #include <sdio/sdhci.h>
 #include <utils/log.h>
 #include <types.h>
@@ -121,6 +123,21 @@ struct msg_get_clock_rate {
 #define BCM2835_MBOX_SET_POWER_STATE_REQ_ON	(1 << 0)
 #define BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT	(1 << 1)
 #define BCM2835_MBOX_PROP_CHAN		8
+
+static void wlan_log_platform(void)
+{
+	sys_info_t sysinfo;
+
+	memset(&sysinfo, 0, sizeof(sysinfo));
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+	brcm_log("wlan platform: machine=%s mmio_base=0x%x\n",
+		sysinfo.machine, _mmio_base);
+	if (strstr(sysinfo.machine, "pi4") != NULL ||
+	    strstr(sysinfo.machine, "cm4") != NULL) {
+		brcm_log("wlan platform: hostsel=0x%x\n",
+			readl(_mmio_base + 0x2000d0) & 0x2);
+	}
+}
 
 static int bcm2835_power_on_module(uint32_t module)
 {
@@ -274,16 +291,21 @@ char* net_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) 
 int main(int argc, char** argv) {
 	_mmio_base = mmio_map();
 	log_init();	
+	wlan_log_platform();
+	brcm_log("wlan platform: power on sdhci\n");
 	bcm2835_power_on_module(BCM2835_MBOX_POWER_DEVID_SDHCI);
+	brcm_log("wlan platform: enable gpclk2 32k\n");
 	clock_init();
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "wlan");
 	_wland_dev = &dev;
+	brcm_log("wlan platform: assert wl_reg_on\n");
 	bcm283x_mbox_pin_ctrl(1, 1, 0);
 	bcm283x_mbox_pin_ctrl(2, 1, 0);
        usleep(100000);
+	brcm_log("wlan platform: deassert wl_reg_on\n");
 	bcm283x_mbox_pin_ctrl(1, 1, 1);
 	bcm283x_mbox_pin_ctrl(2, 1, 1);
        usleep(100000);

@@ -16,6 +16,7 @@ uint32_t _uart_type = UART_MINI;
 uint32_t _pi4 = 0;
 	
 #define FB_SIZE 64*MB
+#define PI4_FB_LOW_BASE 0x3c100000u
 
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
@@ -179,6 +180,8 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
+	if(_pi4 && phy_base >= PI4_FB_LOW_BASE && (phy_base + size) <= (1u*GB))
+		return 0;
 	if(phy_base >= _sys_info.total_phy_mem_size - FB_SIZE) //Framebuffer mem block
 		return 0;
 	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)

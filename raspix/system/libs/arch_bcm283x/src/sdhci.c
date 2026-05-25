@@ -288,14 +288,48 @@ struct sdhci_host {
 
 static struct sdhci_host _host;
 
-static void bcm283x_sdhci_gpio_init(void){
+static uint8_t *bcm2711_sdhci_pick_ioaddr(uint32_t hostsel)
+{
+	uint8_t *legacy_ioaddr = (uint8_t *)(_mmio_base + 0x300000);
+	uint8_t *emmc2_ioaddr = (uint8_t *)(_mmio_base + 0x340000);
+	uint32_t legacy_present = readl(legacy_ioaddr + SDHCI_PRESENT_STATE);
+	uint32_t emmc2_present = readl(emmc2_ioaddr + SDHCI_PRESENT_STATE);
+	int legacy_has_card = !!(legacy_present & SDHCI_CARD_PRESENT);
+	int emmc2_has_card = !!(emmc2_present & SDHCI_CARD_PRESENT);
+
+	if (emmc2_has_card && !legacy_has_card)
+		return emmc2_ioaddr;
+	if (legacy_has_card && !emmc2_has_card)
+		return legacy_ioaddr;
+
+	return hostsel == 0 ? emmc2_ioaddr : legacy_ioaddr;
+}
+
+static void bcm283x_sdhci_gpio_init(bool use_pi4_sd_pins){
     bcm283x_gpio_init();
 
 
 	bcm283x_gpio_config(43, GPIO_ALTF0);  //32k clock
 	proc_usleep(20000);
 
-	//init sdio interface
+	if (use_pi4_sd_pins) {
+		/* Pi4 SD card slot / EMMC2 uses GPIO48-53 ALT3. */
+		bcm283x_gpio_config(48, GPIO_ALTF3);
+		bcm283x_gpio_config(49, GPIO_ALTF3);
+		bcm283x_gpio_config(50, GPIO_ALTF3);
+		bcm283x_gpio_config(51, GPIO_ALTF3);
+		bcm283x_gpio_config(52, GPIO_ALTF3);
+		bcm283x_gpio_config(53, GPIO_ALTF3);
+		bcm283x_gpio_pull(48, GPIO_PULL_NONE);
+		bcm283x_gpio_pull(49, GPIO_PULL_UP);
+		bcm283x_gpio_pull(50, GPIO_PULL_UP);
+		bcm283x_gpio_pull(51, GPIO_PULL_UP);
+		bcm283x_gpio_pull(52, GPIO_PULL_UP);
+		bcm283x_gpio_pull(53, GPIO_PULL_UP);
+		return;
+	}
+
+	/* Legacy/WLAN-style SDIO wiring on GPIO34-39. */
     bcm283x_gpio_config(34, GPIO_ALTF3);  //clock
     bcm283x_gpio_config(35, GPIO_ALTF3);  //cmd
     bcm283x_gpio_config(36, GPIO_ALTF3);
@@ -309,13 +343,6 @@ static void bcm283x_sdhci_gpio_init(void){
     bcm283x_gpio_pull(37, GPIO_PULL_UP);
     bcm283x_gpio_pull(38, GPIO_PULL_UP);
     bcm283x_gpio_pull(39, GPIO_PULL_UP);
-
-	// bcm283x_gpio_config(48, GPIO_ALTF3);
-    // bcm283x_gpio_config(49, GPIO_ALTF3);
-    // bcm283x_gpio_config(50, GPIO_ALTF3);
-    // bcm283x_gpio_config(51, GPIO_ALTF3);
-    // bcm283x_gpio_config(52, GPIO_ALTF3);
-    // bcm283x_gpio_config(53, GPIO_ALTF3);
 }
 
 static void dump(struct sdhci_host *host)
@@ -937,17 +964,15 @@ static struct bus_ops _ops = {
 
 struct bus_ops* bcm2711_sdhci_init(void)
 {
-	bcm283x_sdhci_gpio_init();
+	uint32_t hostsel = readl(_mmio_base + 0x2000d0) & 0x2;
+
+	bcm283x_sdhci_gpio_init(true);
 
 	_host.bus_width  = 1;
 	_host.max_clk = 50000000;
 	_host.clock = 400000;
 	_host.name = "sdhci";
-	if((readl(_mmio_base + 0x2000d0) & 0x2) == 0){
-		_host.ioaddr = (uint8_t*)(_mmio_base + 0x340000);
-    }else{
-		_host.ioaddr = (uint8_t*)(_mmio_base + 0x300000);
-    }
+	_host.ioaddr = bcm2711_sdhci_pick_ioaddr(hostsel);
 	_host.twoticks_delay = ((2 * 1000000) / 400000) + 1;
 	_host.last_write = 0;
 	_host.quirks = SDHCI_QUIRK_BROKEN_VOLTAGE | SDHCI_QUIRK_BROKEN_R1B |
