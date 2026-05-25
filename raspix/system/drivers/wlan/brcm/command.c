@@ -522,6 +522,8 @@ static int brcmf_c_process_clm_blob(int ifidx)
     int32_t err;
 
     clm = brcmf_fw_get_clm(&datalen);
+    if (!clm || datalen == 0)
+        return 0;
 
     chunk_buf = malloc(sizeof(*chunk_buf) + MAX_CHUNK_LEN - 1);
     if (!chunk_buf) {

@@ -75,4 +75,5 @@ bool brcmf_chip_set_active(uint32_t rstvec);
 char *brcmf_chip_name(uint32_t id, uint32_t rev, char *buf, uint32_t len);
 struct brcmf_chip *brcmf_chip_attach(void);
 struct brcmf_core *brcmf_chip_get_core(u16 coreid);
+uint32_t brcmf_chip_get_chipid(void);
 #endif /* BRCMF_AXIDMP_H */

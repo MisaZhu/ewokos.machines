@@ -247,6 +247,15 @@ static int net_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	(void)offset;
 	(void)p;
 	(void)node;
+
+	/*
+	 * Upper layers may probe or queue data before wlan is associated.
+	 * Report the bytes as consumed to avoid endless retry spam while
+	 * scan/connect is still in progress.
+	 */
+	if (!brcm_connected())
+		return size;
+
 	int len = brcm_send((uint8_t*)(buf + offset), size);
 	return (len > 0)?len:VFS_ERR_RETRY; 
 }

@@ -23,6 +23,7 @@ BRCMFMACD_OBJS = sdio/sdhci.o \
 				 brcm/brcm.o \
 				 brcm/chip.o \
 				 brcm/firmware.o \
+				 brcm/firmware_43430.o \
 				 brcm/command.o \
 				 brcm/console.o \
 				 main.o

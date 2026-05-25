@@ -2475,6 +2475,11 @@ int brcmf_sdiod_probe(void){
     uint32_t nvram_len;
     uint8_t *fw = brcmf_fw_get_firmware(&fw_len);
     uint8_t* nvram = brcmf_fw_get_nvram(&nvram_len);
+    if (!fw || fw_len == 0) {
+        brcm_log("pi4-wlan: no firmware mapping for chip %s\n",
+              bus->ci ? bus->ci->name : "unknown");
+        return -ENODEV;
+    }
     if (nvram_len == 0) {
         nvram = brcmf_fw_get_nvram_fallback_only(&nvram_len);
     }
@@ -2687,6 +2692,11 @@ int brcm_send(uint8_t *buf, int len){
         return 0;
     int ret = queue_buffer_push(bus->tx_queue, buf, len);
     return ret;
+}
+
+int brcm_connected(void)
+{
+    return bus != NULL && bus->state == CONNECTED;
 }
 
 int brcm_check_data(void){

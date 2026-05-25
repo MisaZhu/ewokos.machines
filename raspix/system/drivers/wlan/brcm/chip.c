@@ -1127,3 +1127,8 @@ fail:
     //brcmf_chip_detach(&chip->pub);
     return NULL;
 }
+
+uint32_t brcmf_chip_get_chipid(void)
+{
+    return pub.chip;
+}

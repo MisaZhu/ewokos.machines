@@ -10,7 +10,9 @@
 #include <netinet/if_ether.h>
 
 #include "firmware_bin.h"
+#include "firmware_43430.h"
 #include "chip.h"
+#include "brcm_hw_ids.h"
 
 
 #define BRCMF_FW_MAX_NVRAM_SIZE			64000
@@ -29,6 +31,63 @@ enum nvram_parser_state {
 };
 
 char saved_ccode[2] = {};
+
+struct brcmf_fw_resources {
+    const uint8_t *fw;
+    uint32_t fw_len;
+    const uint8_t *nvram;
+    uint32_t nvram_len;
+    const uint8_t *clm;
+    uint32_t clm_len;
+    const char *name;
+};
+
+static bool brcmf_fw_select_resources(uint32_t chip,
+                      struct brcmf_fw_resources *res)
+{
+    memset(res, 0, sizeof(*res));
+
+    switch (chip) {
+    case BRCM_CC_43430_CHIP_ID:
+    case CY_CC_43439_CHIP_ID:
+        /*
+         * Raspberry Pi 3B / Zero W / Zero 2 W use the 43430 family with
+         * the same board parameters in current upstream firmware bundles.
+         */
+        res->fw = cyfmac43430_sdio_bin;
+        res->fw_len = cyfmac43430_sdio_bin_len;
+        res->nvram = brcmfmac43430_sdio_txt;
+        res->nvram_len = brcmfmac43430_sdio_txt_len;
+        res->clm = cyfmac43430_sdio_clm_blob;
+        res->clm_len = cyfmac43430_sdio_clm_blob_len;
+        res->name = "43430";
+        return true;
+    case BRCM_CC_4345_CHIP_ID:
+    case BRCM_CC_43454_CHIP_ID:
+        res->fw = cyfmac43455_sdio_bin;
+        res->fw_len = cyfmac43455_sdio_bin_len;
+        res->nvram = (const uint8_t *)brcmfmac43455_sdio_txt;
+        res->nvram_len = brcmfmac43455_sdio_txt_len;
+        res->clm = cyfmac43455_sdio_clm_blob;
+        res->clm_len = cyfmac43455_sdio_clm_blob_len;
+        res->name = "43455";
+        return true;
+    default:
+        return false;
+    }
+}
+
+static bool brcmf_fw_get_resources(struct brcmf_fw_resources *res)
+{
+    uint32_t chip = brcmf_chip_get_chipid();
+
+    if (!brcmf_fw_select_resources(chip, res)) {
+        brcm_log("unsupported firmware mapping for chip BCM%x\n", chip);
+        return false;
+    }
+
+    return true;
+}
 
 /**
  * struct nvram_parser - internal info for parser.
@@ -446,11 +505,20 @@ static void *brcmf_fw_nvram_strip(const char *data, size_t data_len,
 }
 
 uint8_t* brcmf_fw_get_firmware(uint32_t* len){
-    *len = cyfmac43455_sdio_bin_len;
-    return cyfmac43455_sdio_bin;
+    struct brcmf_fw_resources res;
+
+    if (!brcmf_fw_get_resources(&res)) {
+        *len = 0;
+        return NULL;
+    }
+
+    *len = res.fw_len;
+    return (uint8_t *)res.fw;
 }
 
-static uint8_t *brcmf_fw_get_nvram_fallback(uint32_t *len)
+static uint8_t *brcmf_fw_get_nvram_fallback(const uint8_t *nvram_txt,
+                        uint32_t nvram_txt_len,
+                        uint32_t *len)
 {
     static uint8_t nvram_buf[BRCMF_FW_MAX_NVRAM_SIZE + 4 + sizeof(uint32_t)];
     uint32_t i;
@@ -463,8 +531,8 @@ static uint8_t *brcmf_fw_get_nvram_fallback(uint32_t *len)
 
     memset(nvram_buf, 0, sizeof(nvram_buf));
 
-    for (i = 0; i < brcmfmac43455_sdio_txt_len; i++) {
-        char c = brcmfmac43455_sdio_txt[i];
+    for (i = 0; i < nvram_txt_len; i++) {
+        char c = nvram_txt[i];
 
         if (c == '\r')
             continue;
@@ -530,34 +598,54 @@ static uint8_t *brcmf_fw_get_nvram_fallback(uint32_t *len)
 
 uint8_t* brcmf_fw_get_nvram_fallback_only(uint32_t* len)
 {
-    return brcmf_fw_get_nvram_fallback(len);
+    struct brcmf_fw_resources res;
+
+    if (!brcmf_fw_get_resources(&res) || !res.nvram || !res.nvram_len) {
+        *len = 0;
+        return NULL;
+    }
+
+    return brcmf_fw_get_nvram_fallback(res.nvram, res.nvram_len, len);
 }
 
 uint8_t* brcmf_fw_get_nvram(uint32_t* len){
+    struct brcmf_fw_resources res;
     char *data;
     uint8_t *nvram;
 
-    data = malloc(brcmfmac43455_sdio_txt_len + 1);
+    if (!brcmf_fw_get_resources(&res) || !res.nvram || !res.nvram_len) {
+        *len = 0;
+        return NULL;
+    }
+
+    data = malloc(res.nvram_len + 1);
     if (!data) {
         *len = 0;
         return NULL;
     }
 
-    memcpy(data, brcmfmac43455_sdio_txt, brcmfmac43455_sdio_txt_len);
-    data[brcmfmac43455_sdio_txt_len] = '\0';
+    memcpy(data, res.nvram, res.nvram_len);
+    data[res.nvram_len] = '\0';
 
-    nvram = brcmf_fw_nvram_strip(data, brcmfmac43455_sdio_txt_len + 1, len);
+    nvram = brcmf_fw_nvram_strip(data, res.nvram_len + 1, len);
     free(data);
 
     if (!nvram || *len == 0) {
         brcm_log("nvram strip failed, using fallback parser\n");
-        return brcmf_fw_get_nvram_fallback(len);
+        return brcmf_fw_get_nvram_fallback(res.nvram, res.nvram_len, len);
     }
 
     return nvram;
 }
 
 uint8_t* brcmf_fw_get_clm(uint32_t* len){
-	*len = cyfmac43455_sdio_clm_blob_len;
-	return cyfmac43455_sdio_clm_blob;
+    struct brcmf_fw_resources res;
+
+    if (!brcmf_fw_get_resources(&res)) {
+        *len = 0;
+        return NULL;
+    }
+
+	*len = res.clm_len;
+	return (uint8_t *)res.clm;
 }
