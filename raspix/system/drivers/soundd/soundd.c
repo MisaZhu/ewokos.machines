@@ -1426,8 +1426,9 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 static void audio_hw_init(void) {
 	volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
 
-	bcm283x_gpio_config(40, GPIO_ALTF0);
-	bcm283x_gpio_config(41, GPIO_ALTF0);
+	// 树莓派4的PWM音频使用GPIO18 (PWM0)和GPIO19 (PWM1)，配置为ALTF5模式
+	bcm283x_gpio_config(18, GPIO_ALTF5);
+	bcm283x_gpio_config(19, GPIO_ALTF5);
 
 	proc_usleep(2000);
 
