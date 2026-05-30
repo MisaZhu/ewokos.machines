@@ -144,6 +144,8 @@ typedef struct {
 	uint32_t dma_expected_usec;
 	uint32_t last_push_usec;
 	uint32_t diag_last_log_usec;
+	uint32_t dma_watchdog_count;
+	uint32_t rebuffer_restart_count;
 	bool need_rebuffer;
 	bool configured;
 	bool prepared;
@@ -367,7 +369,7 @@ static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bu
 		return;
 	}
 	_snd.diag_last_log_usec = now_usec;
-	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u running=%d need_rebuffer=%d\n",
+	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u running=%d need_rebuffer=%d watchdog=%u rebuffer=%u\n",
 			reason,
 			cb_bus,
 			_snd.active_count,
@@ -376,7 +378,9 @@ static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bu
 			audio_queue_pending_words(),
 			audio_queue_avail_bytes(),
 			_snd.dma_running ? 1 : 0,
-			_snd.need_rebuffer ? 1 : 0);
+			_snd.need_rebuffer ? 1 : 0,
+			_snd.dma_watchdog_count,
+			_snd.rebuffer_restart_count);
 }
 
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec) {
@@ -900,7 +904,10 @@ static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_reb
 	_snd.dma_started_usec = audio_now_usec();
 	_snd.dma_expected_usec = audio_dma_watchdog_usec(samples);
 	_snd.dma_running = true;
-	UNUSED(is_rebuffer_start);
+	if (is_rebuffer_start) {
+		_snd.rebuffer_restart_count++;
+		audio_log_diag("rebuffer start", _snd.dma_started_usec, cb_bus);
+	}
 	return 0;
 }
 
@@ -970,6 +977,7 @@ static void audio_service_locked(uint32_t now_usec, bool* wake_writer,
 	else if (_snd.dma_running &&
 			_snd.dma_started_usec != 0 &&
 			audio_elapsed_usec(_snd.dma_started_usec, now_usec) > _snd.dma_expected_usec) {
+		_snd.dma_watchdog_count++;
 		audio_log_diag("dma watchdog", now_usec, audio_dma_current_cb_bus());
 		_snd.dma_running = false;
 		_snd.dma_started_usec = 0;

@@ -4,6 +4,7 @@
 #include <ewoksys/klog.h>
 #include <pthread.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include <types.h>
 #include <utils/skb.h>
@@ -54,6 +55,8 @@
 #define BRCMF_RAMRW_SCRATCH (BRCMF_RAMRW_CHUNK + 4)
 #define BRCMF_FIRSTREAD (1 << 6)
 #define BRCMF_CONSOLE   10  /* watchdog interval to poll console */
+#define BRCMF_DPC_SLOW_USEC 2000U
+#define BRCMF_DPC_LOG_WINDOW_USEC 2000000U
 
 /* watermark expressed in number of words */
 #define DEFAULT_F2_WATERMARK    0x8
@@ -370,6 +373,79 @@ struct brcmf_dev *bus =  NULL;
 extern vdevice_t* _wland_dev;
 #define dev _wland_dev
 static void brcmf_sdio_dpc(void);
+
+typedef struct {
+    uint32_t window_start_usec;
+    uint32_t dpc_count;
+    uint32_t slow_dpc_count;
+    uint32_t max_dpc_usec;
+} brcmf_diag_t;
+
+static brcmf_diag_t _diag = {0};
+
+static uint32_t brcmf_now_usec(void)
+{
+    struct timeval tv;
+
+    if (gettimeofday(&tv, NULL) != 0)
+        return 0;
+
+    return (uint32_t)(((uint64_t)(uint32_t)tv.tv_sec * 1000000ULL) +
+            (uint64_t)(uint32_t)tv.tv_usec);
+}
+
+static uint32_t brcmf_elapsed_usec(uint32_t start_usec, uint32_t now_usec)
+{
+    return now_usec - start_usec;
+}
+
+static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
+{
+    uint32_t now_usec;
+    int rxq = 0;
+    int txq = 0;
+
+    if (!bus)
+        return;
+
+    now_usec = brcmf_now_usec();
+    if (_diag.window_start_usec == 0)
+        _diag.window_start_usec = now_usec;
+
+    _diag.dpc_count++;
+    if (elapsed_usec >= BRCMF_DPC_SLOW_USEC)
+        _diag.slow_dpc_count++;
+    if (elapsed_usec > _diag.max_dpc_usec)
+        _diag.max_dpc_usec = elapsed_usec;
+
+    if (now_usec == 0 ||
+            brcmf_elapsed_usec(_diag.window_start_usec, now_usec) < BRCMF_DPC_LOG_WINDOW_USEC)
+        return;
+
+    if (bus->rx_queue)
+        rxq = queue_buffer_check(bus->rx_queue);
+    if (bus->tx_queue)
+        txq = queue_buffer_check(bus->tx_queue);
+
+    if (_diag.slow_dpc_count > 0 || _diag.max_dpc_usec >= BRCMF_DPC_SLOW_USEC) {
+        brcm_log("dpc diag cnt=%u slow=%u max=%uus state=%d clk=%d rxq=%d txq=%d rxlen=%d ctrl=%d pending=%d\n",
+                _diag.dpc_count,
+                _diag.slow_dpc_count,
+                _diag.max_dpc_usec,
+                bus->state,
+                bus->clkstate,
+                rxq,
+                txq,
+                bus->rxlen,
+                bus->ctrl_frame_stat ? 1 : 0,
+                bus->rxpending ? 1 : 0);
+    }
+
+    _diag.window_start_usec = now_usec;
+    _diag.dpc_count = 0;
+    _diag.slow_dpc_count = 0;
+    _diag.max_dpc_usec = 0;
+}
 
 static void brcmf_scan_set_mpc(bool enable)
 {
@@ -2167,6 +2243,7 @@ int brcmf_sdiod_send_pkt(struct sk_buff* pkt)
 
 static void brcmf_sdio_dpc(void)
 {
+    uint32_t start_usec = brcmf_now_usec();
     uint32_t newstatus = 0;
     uint32_t intstat_addr = bus->sdio_core->base + SD_REG(intstatus);
     uint32_t intstatus;
@@ -2248,6 +2325,9 @@ static void brcmf_sdio_dpc(void)
         bus->tx_seq++;
         skb_free(pkt);
     }
+
+    if (start_usec != 0)
+        brcmf_diag_note_dpc(brcmf_elapsed_usec(start_usec, brcmf_now_usec()));
 }
 
 int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)

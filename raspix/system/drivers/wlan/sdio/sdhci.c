@@ -13,6 +13,7 @@
 #define SDHCI_CMD_MAX_TIMEOUT			3200
 #define SDHCI_CMD_DEFAULT_TIMEOUT		10000
 #define SDHCI_READ_STATUS_TIMEOUT		1000
+#define SDHCI_SLOW_OP_MS                5
 
 #define SDHCI_DMA_ADDRESS	0x00
 #define SDHCI_BLOCK_SIZE	0x04
@@ -727,6 +728,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 {
 	unsigned int stat, rdy, mask, timeout, block = 0;
 	bool transfer_done = false;
+	uint64_t start = get_timer(0);
 
 	timeout = 100000;
 	rdy = SDHCI_INT_SPACE_AVAIL | SDHCI_INT_DATA_AVAIL;
@@ -734,6 +736,11 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 	do {
 		stat = sdhci_readl(host, SDHCI_INT_STATUS);
 		if (stat & SDHCI_INT_ERROR) {
+			uint32_t elapsed_ms = (uint32_t)get_timer(start);
+			if (elapsed_ms >= SDHCI_SLOW_OP_MS) {
+				brcm_log("sdhci slow data blocks=%u blksz=%u ms=%u stat=0x%x err=1\n",
+					data->blocks, data->blocksize, elapsed_ms, stat);
+			}
 			brcm_log("%s: Error detected in status(0x%X)! %d\n",
 				 __func__, stat, timeout);
 			return -EIO;
@@ -754,10 +761,20 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 			}
 		}
 		if (timeout-- == 0){
+			uint32_t elapsed_ms = (uint32_t)get_timer(start);
+			if (elapsed_ms >= SDHCI_SLOW_OP_MS) {
+				brcm_log("sdhci slow data blocks=%u blksz=%u ms=%u stat=0x%x timeout=1\n",
+					data->blocks, data->blocksize, elapsed_ms, stat);
+			}
 			brcm_log("%s: Transfer data timeout\n", __func__);
 			return -ETIMEDOUT;
 		}
 	} while (!(stat & SDHCI_INT_DATA_END));
+
+	if ((uint32_t)get_timer(start) >= SDHCI_SLOW_OP_MS) {
+		brcm_log("sdhci slow data blocks=%u blksz=%u ms=%u stat=0x%x\n",
+			data->blocks, data->blocksize, (uint32_t)get_timer(start), stat);
+	}
 
 	return 0;
 }
@@ -787,6 +804,7 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	int trans_bytes = 0, is_aligned = 1;
 	u32 mask, flags, mode = 0;
 	unsigned int time = 0;
+	uint64_t total_start = get_timer(0);
 	uint64_t start = get_timer(0);
 
 	host->start_addr = 0;
@@ -804,6 +822,13 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 
 	while (sdhci_readl(host, SDHCI_PRESENT_STATE) & mask) {
 		if (time >= cmd_timeout) {
+			uint32_t elapsed_ms = (uint32_t)get_timer(total_start);
+			if (elapsed_ms >= SDHCI_SLOW_OP_MS) {
+				brcm_log("sdhci slow cmd=%u data=%d blocks=%u blksz=%u ms=%u phase=busy stat=0x%x\n",
+					cmd->cmdidx, data ? 1 : 0, data ? data->blocks : 0,
+					data ? data->blocksize : 0, elapsed_ms,
+					sdhci_readl(host, SDHCI_PRESENT_STATE));
+			}
 			brcm_log("%s: busy ", __func__);
 			if (2 * cmd_timeout <= SDHCI_CMD_MAX_TIMEOUT) {
 				cmd_timeout += cmd_timeout;
@@ -881,6 +906,12 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		}
 
 		if (get_timer(start) >= SDHCI_READ_STATUS_TIMEOUT) {
+			uint32_t elapsed_ms = (uint32_t)get_timer(total_start);
+			if (elapsed_ms >= SDHCI_SLOW_OP_MS) {
+				brcm_log("sdhci slow cmd=%u data=%d blocks=%u blksz=%u ms=%u phase=resp stat=0x%x mask=0x%x\n",
+					cmd->cmdidx, data ? 1 : 0, data ? data->blocks : 0,
+					data ? data->blocksize : 0, elapsed_ms, stat, mask);
+			}
 			brcm_log("%s: Timeout for status update: %08x %08x\n",
 			       __func__, stat, mask);
 			dump(host);
@@ -908,6 +939,12 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
     // 	brcm_log("ret:%d resp: %x %x %x %x\n", ret, cmd->response[0], cmd->response[1],cmd->response[2],cmd->response[3]);
 
 	if (!ret) {
+		uint32_t elapsed_ms = (uint32_t)get_timer(total_start);
+		if (elapsed_ms >= SDHCI_SLOW_OP_MS) {
+			brcm_log("sdhci slow cmd=%u data=%d blocks=%u blksz=%u ms=%u stat=0x%x\n",
+				cmd->cmdidx, data ? 1 : 0, data ? data->blocks : 0,
+				data ? data->blocksize : 0, elapsed_ms, stat);
+		}
 		if ((host->quirks & SDHCI_QUIRK_32BIT_DMA_ADDR) &&
 				!is_aligned && (data->flags == MMC_DATA_READ))
 			memcpy(data->dest, host->align_buffer, trans_bytes);
