@@ -18,6 +18,7 @@
 
 #include <ewoksys/ipc.h>
 #include <ewoksys/vdevice.h>
+#include <ewoksys/vfsc.h>
 
 #include "brcm.h"
 #include "chip.h"
@@ -57,6 +58,10 @@
 #define BRCMF_CONSOLE   10  /* watchdog interval to poll console */
 #define BRCMF_DPC_SLOW_USEC 2000U
 #define BRCMF_DPC_LOG_WINDOW_USEC 2000000U
+#define BRCMF_WORKER_BUSY_SLEEP_US 1000U
+#define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 8000U
+#define BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US 20000U
+#define BRCMF_WORKER_IDLE_STEP_US 1000U
 
 /* watermark expressed in number of words */
 #define DEFAULT_F2_WATERMARK    0x8
@@ -445,6 +450,42 @@ static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
     _diag.dpc_count = 0;
     _diag.slow_dpc_count = 0;
     _diag.max_dpc_usec = 0;
+}
+
+static bool brcmf_worker_has_work(void)
+{
+    if (!bus)
+        return false;
+
+    if (bus->ctrl_frame_stat || bus->rxpending)
+        return true;
+
+    if (bus->tx_queue && queue_buffer_check(bus->tx_queue) > 0)
+        return true;
+
+    return bus->state == SCANNING || bus->state == CONNECTING;
+}
+
+static bool brcmf_worker_irq_pending(void)
+{
+    uint8_t devpend;
+
+    if (!bus)
+        return false;
+
+    devpend = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, NULL);
+    return (devpend & (INTR_STATUS_FUNC1 | INTR_STATUS_FUNC2)) != 0;
+}
+
+static uint32_t brcmf_worker_idle_cap_usec(void)
+{
+    if (!bus)
+        return BRCMF_WORKER_BUSY_SLEEP_US;
+
+    if (bus->state == CONNECTED)
+        return BRCMF_WORKER_CONNECTED_IDLE_MAX_US;
+
+    return BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US;
 }
 
 static void brcmf_scan_set_mpc(bool enable)
@@ -1837,7 +1878,7 @@ void brcmf_rx_event( struct sk_buff *skb)
         brcm_log("Event: link up\n"); 
         brcmf_scan_set_mpc(true);
         bus->state = CONNECTED;
-        brcm_wakeup_dev(1);
+        brcm_wakeup_dev(VFS_EVT_WR);
     }
 done:
     skb_free(skb);
@@ -1850,7 +1891,7 @@ void brcmf_rx_frame(struct sk_buff *skb)
     ipc_disable();
     queue_buffer_push(bus->rx_queue, skb->data, skb->len);
     ipc_enable();
-    brcm_wakeup_dev(1);
+    brcm_wakeup_dev(VFS_EVT_RD);
     skb_free(skb);
 }
 
@@ -2316,7 +2357,7 @@ static void brcmf_sdio_dpc(void)
         ipc_disable();
         int len = queue_buffer_pop(bus->tx_queue, pkt->data, MAX_FRAME_SIZE);
         ipc_enable();
-        brcm_wakeup_dev(1);
+        brcm_wakeup_dev(VFS_EVT_WR);
         skb_put(pkt, len);
         brcmf_sdio_txpkt_prep(pkt, 2);
         int ret = brcmf_sdiod_send_pkt(pkt);
@@ -2649,7 +2690,10 @@ int brcmf_sdiod_probe(void){
 
 void* brcm_thread(void* p) {
     (void)p;
-    static int tick = 0;
+    static uint32_t tick = 0;
+    uint32_t next_housekeeping_tick = 0;
+    uint32_t next_scan_tick = 0;
+    uint32_t sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
     int err;
     sleep(10);
     err = brcmf_sdiod_probe();
@@ -2681,18 +2725,24 @@ void* brcm_thread(void* p) {
     }
 
     while(1){
-        brcmf_sdio_dpc();
+        bool busy = brcmf_worker_has_work();
+        bool run_dpc = busy || brcmf_worker_irq_pending();
 
-        if(tick%1000 == 0){
+        if (run_dpc)
+            brcmf_sdio_dpc();
+
+        if (tick >= next_housekeeping_tick) {
+            next_housekeeping_tick = tick + 1000;
             if (bus->state != SCANNING && bus->state != CONNECTING)
                 brcmf_sdio_readconsole();
 
-            if(tick % 100000 == 0 && bus->state != CONNECTED){
+            if (tick >= next_scan_tick && bus->state != CONNECTED) {
+                next_scan_tick = tick + 100000;
                 memset(bus->ssid, 0, sizeof(bus->ssid));
                 bus->scan_results_ready = false;
                 bus->state = SCANNING;
                 scan();
-            } 
+            }
 
             if (bus->state == SCANNING && strlen(bus->ssid) == 0 && bus->scan_results_ready) {
                 bus->scan_results_ready = false;
@@ -2727,8 +2777,17 @@ void* brcm_thread(void* p) {
                 }
             }
         }
-        usleep(1000);
-        tick++;
+
+        if (run_dpc || brcmf_worker_has_work()) {
+            sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
+        } else {
+            uint32_t idle_cap = brcmf_worker_idle_cap_usec();
+
+            sleep_us = min(sleep_us + BRCMF_WORKER_IDLE_STEP_US, idle_cap);
+        }
+
+        usleep(sleep_us);
+        tick += sleep_us / 1000;
     }
 }
 

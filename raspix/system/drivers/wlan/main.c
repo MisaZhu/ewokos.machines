@@ -1,4 +1,5 @@
 #include <ewoksys/vdevice.h>
+#include <ewoksys/vfsc.h>
 #include <ewoksys/syscall.h>
 #include <string.h>
 #include <ewoksys/mmio.h>
@@ -289,6 +290,24 @@ static int net_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t
 	return 0;
 }
 
+static uint32_t net_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	uint32_t events = 0;
+
+	if (brcm_check_data() > 0) {
+		events |= VFS_EVT_RD;
+	}
+	if (brcm_connected()) {
+		events |= VFS_EVT_WR;
+	}
+	return events;
+}
+
 char* net_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) {
 	(void)dev;
 	if(strcmp(argv[0], "log") == 0) {
@@ -327,6 +346,7 @@ int main(int argc, char** argv) {
 	dev.read = net_read;
 	dev.write = net_write;
 	dev.dev_cntl = net_dcntl;
+	dev.check_poll_events = net_check_poll_events;
 	dev.cmd = net_dev_cmd;
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
 
