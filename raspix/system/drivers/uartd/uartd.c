@@ -13,9 +13,20 @@
 #include <arch/bcm283x/mini_uart.h>
 #include <arch/bcm283x/pl011_uart.h>
 
+#define MINI_UART_BASE_OFF 0x00215040
+#define MINI_UART_IO_REG (_mmio_base + MINI_UART_BASE_OFF + 0x00)
+#define MINI_UART_LSR_REG (_mmio_base + MINI_UART_BASE_OFF + 0x14)
+#define MINI_UART_RXFIFO_AVAIL 0x01
+
+#define PL011_UART0_BASE_OFF 0x00201000
+#define PL011_UART0_DR (_mmio_base + PL011_UART0_BASE_OFF + 0x00)
+#define PL011_UART0_FR (_mmio_base + PL011_UART0_BASE_OFF + 0x18)
+#define PL011_UART_RXFIFO_EMPTY (1 << 4)
+
 static charbuf_t *_RxBuf;
 static bool _mini_uart;
 static bool _no_return;
+static uint32_t _idle_sleep_us;
 
 static int uart_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
 		void* buf, int size, int offset, void* p) {
@@ -66,29 +77,58 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		return bcm283x_pl011_uart_write(buf, size);
 }
 
+static inline bool uart_can_recv(void) {
+	if(_mini_uart)
+		return (get32(MINI_UART_LSR_REG) & MINI_UART_RXFIFO_AVAIL) != 0;
+	return (get32(PL011_UART0_FR) & PL011_UART_RXFIFO_EMPTY) == 0;
+}
+
+static inline char uart_recv_byte(void) {
+	if(_mini_uart)
+		return (char)(get32(MINI_UART_IO_REG) & 0xFF);
+	return (char)(get32(PL011_UART0_DR) & 0xFF);
+}
+
+static uint32_t uart_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	if(!charbuf_is_empty(_RxBuf))
+		return VFS_EVT_RD;
+	return 0;
+}
+
 static int loop(vdevice_t* dev, void* p) {
 	(void)dev;
 	(void)p;
-	char c;
-	if(_mini_uart) {
-		c = bcm283x_mini_uart_recv();
-		if(c != '\r' || !_no_return) {
-			ipc_disable();
-			charbuf_push(_RxBuf, c, true);
-			ipc_enable();
-			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
-		}
+	int rx = 0;
+
+	if(!uart_can_recv()) {
+		proc_usleep(_idle_sleep_us);
+		if(_idle_sleep_us < 50000)
+			_idle_sleep_us <<= 1;
+		return 0;
 	}
-	else {
-		c = bcm283x_pl011_uart_recv(100);
-		if(c != '\r' || !_no_return) {
-			ipc_disable();
-			charbuf_push(_RxBuf, c, true);
-			ipc_enable();
-			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
-		}
+
+	ipc_disable();
+	while(uart_can_recv()) {
+		char c = uart_recv_byte();
+		if(c == '\r' && _no_return)
+			continue;
+
+		charbuf_push(_RxBuf, c, true);
+		rx++;
 	}
-	proc_usleep(10000);
+	ipc_enable();
+
+	if(rx > 0) {
+		_idle_sleep_us = 1000;
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	}
+
 	return 0;
 }
 
@@ -97,6 +137,7 @@ int main(int argc, char** argv) {
 	_mmio_base = mmio_map();
 	_mini_uart = true;
 	_no_return = false;
+	_idle_sleep_us = 1000;
 
 	if(argc > 2 && strcmp(argv[2], "nr") == 0)
 		_no_return = true;
@@ -110,15 +151,19 @@ int main(int argc, char** argv) {
 			strcmp(sysinfo.machine, "raspberry-pi2b") == 0)  {
 		strcpy(dev.name, "pl011_uart");
 		_mini_uart = false;
+		bcm283x_pl011_uart_init();
 	}
-	else
+	else {
 		strcpy(dev.name, "mini_uart");
+		bcm283x_mini_uart_init();
+	}
 
 	_RxBuf = charbuf_new(0);
 
 	dev.read = uart_read;
 	dev.write = uart_write;
 	dev.loop_step = loop;
+	dev.check_poll_events = uart_check_poll_events;
 
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
 
