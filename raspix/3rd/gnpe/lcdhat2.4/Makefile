@@ -1,4 +1,5 @@
-export HW=gnpe
+export HW=raspix
+export MF=gnpe
 
 all: 
 	mkdir -p build

@@ -1,3 +1,4 @@
+@export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log
 
 #@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
@@ -7,7 +8,6 @@
 @/bin/ipcserv /drivers/gnpe/lcdhatd  /dev/fb0 
 @/bin/ipcserv /drivers/fontd              
 
-@export UX_ID=0
 @/bin/ipcserv /drivers/consoled       
 @set_stdio /dev/console0
 
