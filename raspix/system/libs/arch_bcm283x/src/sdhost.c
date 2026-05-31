@@ -854,7 +854,7 @@ int bcm2835_get_mmc_clock(uint32_t clock_id)
 		// 	klog("bcm2835: Could not query max eMMC clock rate\n");
 		// 	return -EIO;
 		// }
-        msg.data = ((uint32_t)msg_clk + 0x40000000) >> 4;	
+        msg.data = ((uint32_t)dma_phy_addr(0, msg_clk) + 0x40000000) >> 4;	
 		msg.channel = PROPERTY_CHANNEL;
         bcm283x_mailbox_call(&msg);
 
