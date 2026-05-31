@@ -62,6 +62,8 @@
 #define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 8000U
 #define BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US 20000U
 #define BRCMF_WORKER_IDLE_STEP_US 1000U
+#define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
+#define BRCMF_TX_BATCH_LIMIT 8
 
 /* watermark expressed in number of words */
 #define DEFAULT_F2_WATERMARK    0x8
@@ -384,6 +386,7 @@ typedef struct {
     uint32_t dpc_count;
     uint32_t slow_dpc_count;
     uint32_t max_dpc_usec;
+    uint32_t last_dpc_usec;
 } brcmf_diag_t;
 
 static brcmf_diag_t _diag = {0};
@@ -418,6 +421,7 @@ static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
         _diag.window_start_usec = now_usec;
 
     _diag.dpc_count++;
+    _diag.last_dpc_usec = elapsed_usec;
     if (elapsed_usec >= BRCMF_DPC_SLOW_USEC)
         _diag.slow_dpc_count++;
     if (elapsed_usec > _diag.max_dpc_usec)
@@ -450,6 +454,11 @@ static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
     _diag.dpc_count = 0;
     _diag.slow_dpc_count = 0;
     _diag.max_dpc_usec = 0;
+}
+
+static uint32_t brcmf_diag_last_dpc_usec(void)
+{
+    return _diag.last_dpc_usec;
 }
 
 static bool brcmf_worker_has_work(void)
@@ -2351,7 +2360,7 @@ static void brcmf_sdio_dpc(void)
         }
     }
     /* Send queued frames */
-    int max_frames = 20;
+    int max_frames = BRCMF_TX_BATCH_LIMIT;
     while(bus->state == CONNECTED && queue_buffer_check(bus->tx_queue) && max_frames--){
         struct sk_buff *pkt = skb_alloc(MAX_FRAME_SIZE);
         ipc_disable();
@@ -2730,6 +2739,11 @@ void* brcm_thread(void* p) {
 
         if (run_dpc)
             brcmf_sdio_dpc();
+
+        if (run_dpc && brcmf_diag_last_dpc_usec() >= BRCMF_DPC_SLOW_USEC) {
+            usleep(BRCMF_WORKER_POST_SLOW_DPC_YIELD_US);
+            tick += BRCMF_WORKER_POST_SLOW_DPC_YIELD_US / 1000;
+        }
 
         if (tick >= next_housekeeping_tick) {
             next_housekeeping_tick = tick + 1000;

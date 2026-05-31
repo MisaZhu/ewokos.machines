@@ -13,6 +13,7 @@
 #include <ewoksys/dma.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <pthread.h>
 
 #define UNUSED(v) ((void)(v))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -77,16 +78,20 @@
 #define DMA_BUFFER_SLOTS 32U
 #define DMA_TOTAL_BUF_SIZE (DMA_BUF_SIZE * DMA_BUFFER_SLOTS)
 #define DMA_SLOT_INVALID DMA_BUFFER_SLOTS
-#define DMA_CHAIN_START_SLOTS 4U
-#define DMA_CHAIN_REBUFFER_START_SLOTS 6U
+#define DMA_CHAIN_START_SLOTS 6U
+#define DMA_CHAIN_REBUFFER_START_SLOTS 10U
 #define PWM_OUTPUT_CHANNELS 2U
 #define PWM_BASE_CLOCK_HZ 100000000U
 #define PWM_CLOCK_SOURCE_SELECT 6U
 #define PWM_CLOCK_DIV_INT 5U
 #define PWM_CLOCK_DIV_FRAC 0U
-#define SOUND_ACTIVE_SLEEP_US 100
-#define SOUND_IDLE_SLEEP_US 1000
-#define SOUND_DEEP_IDLE_SLEEP_US 20000
+#define SOUND_FEED_KICK_SLEEP_US 500U
+#define SOUND_FEED_IDLE_SLEEP_US 4000U
+#define SOUND_FEED_DEEP_IDLE_SLEEP_US 20000U
+#define SOUND_FEED_GUARD_US 2000U
+#define SOUND_PCM_RING_MIN_BYTES (128U * 1024U)
+#define SOUND_PCM_RING_MAX_BYTES (512U * 1024U)
+#define SOUND_PCM_RING_BUFFER_MULTIPLIER 8U
 #define DMA_START_IDLE_FLUSH_US 40000U
 #define DMA_WATCHDOG_MARGIN_US 200000U
 #define SOUND_DEFAULT_BIT_DEPTH 16
@@ -128,6 +133,11 @@ typedef struct {
 	uint32_t period_bytes;
 	uint32_t buffer_bytes;
 	uint32_t write_chunk_bytes;
+	uint8_t* pcm_ring;
+	uint32_t pcm_ring_bytes;
+	uint32_t pcm_ring_rd;
+	uint32_t pcm_ring_wr;
+	uint32_t pcm_ring_used;
 	uint32_t* dma_slots[DMA_BUFFER_SLOTS];
 	ewokos_addr_t dma_slot_phys[DMA_BUFFER_SLOTS];
 	uint32_t slot_words[DMA_BUFFER_SLOTS];
@@ -151,15 +161,21 @@ typedef struct {
 	bool prepared;
 	bool started;
 	bool dma_running;
+	bool feeder_exit;
 	int open_count;
 	int occupied_pid;
 } snd_dev_t;
 
 static snd_dev_t _snd = {0};
+static pthread_mutex_t _snd_lock;
+static pthread_t _snd_feeder_tid;
+static bool _snd_feeder_started = false;
+static vdevice_t* _snd_dev = NULL;
 
-static void sound_pump(vdevice_t* dev);
 static int audio_stop(void);
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec);
+static uint32_t audio_active_remaining_usec(uint32_t now_usec);
+static void* sound_feeder_thread(void* arg);
 
 #define DMA_SLOT_EMPTY   0U
 #define DMA_SLOT_FILLING 1U
@@ -209,6 +225,84 @@ static void audio_queue_reset(void) {
 	}
 }
 
+static void audio_pcm_ring_reset(void) {
+	_snd.pcm_ring_rd = 0;
+	_snd.pcm_ring_wr = 0;
+	_snd.pcm_ring_used = 0;
+}
+
+static uint32_t audio_pcm_ring_pending_bytes(void) {
+	return _snd.pcm_ring_used;
+}
+
+static uint32_t audio_pcm_ring_avail_bytes(void) {
+	if (_snd.pcm_ring_bytes <= _snd.pcm_ring_used) {
+		return 0;
+	}
+	return _snd.pcm_ring_bytes - _snd.pcm_ring_used;
+}
+
+static uint32_t audio_pcm_ring_contig_read_bytes(void) {
+	if (_snd.pcm_ring == NULL || _snd.pcm_ring_used == 0) {
+		return 0;
+	}
+	if (_snd.pcm_ring_rd < _snd.pcm_ring_wr) {
+		return _snd.pcm_ring_wr - _snd.pcm_ring_rd;
+	}
+	return _snd.pcm_ring_bytes - _snd.pcm_ring_rd;
+}
+
+static uint32_t audio_pcm_ring_write_bytes(const uint8_t* src, uint32_t size) {
+	uint32_t first;
+	uint32_t second;
+
+	if (_snd.pcm_ring == NULL || size == 0) {
+		return 0;
+	}
+	if (size > audio_pcm_ring_avail_bytes()) {
+		size = audio_pcm_ring_avail_bytes();
+	}
+	first = MIN(size, _snd.pcm_ring_bytes - _snd.pcm_ring_wr);
+	memcpy(_snd.pcm_ring + _snd.pcm_ring_wr, src, first);
+	second = size - first;
+	if (second != 0) {
+		memcpy(_snd.pcm_ring, src + first, second);
+	}
+	_snd.pcm_ring_wr = (_snd.pcm_ring_wr + size) % _snd.pcm_ring_bytes;
+	_snd.pcm_ring_used += size;
+	return size;
+}
+
+static void audio_pcm_ring_consume_bytes(uint32_t size) {
+	if (size == 0 || _snd.pcm_ring == NULL) {
+		return;
+	}
+	if (size > _snd.pcm_ring_used) {
+		size = _snd.pcm_ring_used;
+	}
+	_snd.pcm_ring_rd = (_snd.pcm_ring_rd + size) % _snd.pcm_ring_bytes;
+	_snd.pcm_ring_used -= size;
+}
+
+static uint32_t audio_pcm_ring_capacity_bytes(uint32_t frame_bytes) {
+	uint32_t ring_bytes;
+
+	ring_bytes = _snd.buffer_bytes * SOUND_PCM_RING_BUFFER_MULTIPLIER;
+	if (ring_bytes < SOUND_PCM_RING_MIN_BYTES) {
+		ring_bytes = SOUND_PCM_RING_MIN_BYTES;
+	}
+	if (ring_bytes > SOUND_PCM_RING_MAX_BYTES) {
+		ring_bytes = SOUND_PCM_RING_MAX_BYTES;
+	}
+	if (frame_bytes != 0) {
+		ring_bytes = (ring_bytes / frame_bytes) * frame_bytes;
+	}
+	if (ring_bytes < frame_bytes) {
+		ring_bytes = frame_bytes;
+	}
+	return ring_bytes;
+}
+
 static uint32_t audio_queue_pending_words(void) {
 	uint32_t words = 0;
 
@@ -239,21 +333,53 @@ static uint32_t audio_queue_avail_bytes(void) {
 }
 
 static bool sound_has_pending_work(void) {
-	return _snd.dma_running || audio_queue_pending_words() > 0;
+	return _snd.dma_running ||
+			audio_queue_pending_words() > 0 ||
+			audio_pcm_ring_pending_bytes() > 0;
 }
 
-static uint32_t sound_poll_sleep_usec(void) {
+static uint32_t sound_feeder_sleep_usec(uint32_t now_usec) {
+	uint32_t remaining_usec;
+
 	if (_snd.open_count <= 0 &&
 			!_snd.configured &&
 			!_snd.prepared &&
 			!_snd.started &&
 			!sound_has_pending_work()) {
-		return SOUND_DEEP_IDLE_SLEEP_US;
+		return SOUND_FEED_DEEP_IDLE_SLEEP_US;
 	}
+
+	if (audio_pcm_ring_pending_bytes() > 0) {
+		if (!_snd.started || !_snd.dma_running) {
+			return SOUND_FEED_KICK_SLEEP_US;
+		}
+	}
+
+	if (_snd.dma_running) {
+		remaining_usec = audio_active_remaining_usec(now_usec);
+		if (remaining_usec > (SOUND_FEED_GUARD_US * 2U)) {
+			uint32_t wait_usec = remaining_usec - SOUND_FEED_GUARD_US;
+			if (wait_usec > SOUND_FEED_IDLE_SLEEP_US) {
+				wait_usec = SOUND_FEED_IDLE_SLEEP_US;
+			}
+			return wait_usec;
+		}
+		return SOUND_FEED_KICK_SLEEP_US;
+	}
+
 	if (sound_has_pending_work()) {
-		return SOUND_ACTIVE_SLEEP_US;
+		return SOUND_FEED_KICK_SLEEP_US;
 	}
-	return SOUND_IDLE_SLEEP_US;
+	return SOUND_FEED_IDLE_SLEEP_US;
+}
+
+static uint32_t sound_writer_sleep_usec(uint32_t now_usec) {
+	uint32_t sleep_usec = sound_feeder_sleep_usec(now_usec);
+
+	if (sleep_usec > SOUND_FEED_IDLE_SLEEP_US) {
+		sleep_usec = SOUND_FEED_IDLE_SLEEP_US;
+	}
+	return sleep_usec;
 }
 
 static uint32_t audio_queue_start_words_threshold(void) {
@@ -818,19 +944,6 @@ static uint32_t audio_queue_append_ready_chain(uint32_t now_usec) {
 	return appended_samples;
 }
 
-static void audio_try_append_running_chain(uint32_t now_usec) {
-	uint32_t appended_samples;
-
-	if (!_snd.dma_running) {
-		return;
-	}
-	audio_queue_release_scheduled_active(now_usec);
-	appended_samples = audio_queue_append_ready_chain(now_usec);
-	if (appended_samples != 0) {
-		_snd.dma_expected_usec += audio_dma_samples_usec(appended_samples);
-	}
-}
-
 static bool audio_queue_prepare_dma_chain(uint32_t now_usec, uint32_t* head_slot,
 		uint32_t* samples) {
 	uint32_t tail_slot = DMA_SLOT_INVALID;
@@ -1038,8 +1151,14 @@ static void audio_deinit(void) {
 		dma_free(0, _snd.dma_data_base_addr);
 		_snd.dma_data_base_addr = 0;
 	}
+	if (_snd.pcm_ring != NULL) {
+		free(_snd.pcm_ring);
+		_snd.pcm_ring = NULL;
+	}
 	_snd.dma_cbs_phy = 0;
 	_snd.dma_data_base_phy = 0;
+	_snd.pcm_ring_bytes = 0;
+	audio_pcm_ring_reset();
 	memset(_snd.dma_slots, 0, sizeof(_snd.dma_slots));
 	memset(_snd.dma_slot_phys, 0, sizeof(_snd.dma_slot_phys));
 	_snd.pwm_range = 0;
@@ -1061,6 +1180,7 @@ static void audio_deinit(void) {
 static int audio_init_pcm(const struct pcm_config *cfg) {
 	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
 	uint8_t* dma_base;
+	uint32_t ring_bytes;
 
 	*(pwm + BCM283x_PWM_CONTROL) = 0;
 	proc_usleep(2000);
@@ -1084,6 +1204,14 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 		_snd.dma_slots[i] = (uint32_t*)(void*)(dma_base + (i * DMA_BUF_SIZE));
 		_snd.dma_slot_phys[i] = _snd.dma_data_base_phy + (i * DMA_BUF_SIZE);
 	}
+	ring_bytes = audio_pcm_ring_capacity_bytes(_snd.frame_bytes);
+	_snd.pcm_ring = (uint8_t*)malloc(ring_bytes);
+	if (_snd.pcm_ring == NULL) {
+		audio_deinit();
+		return -1;
+	}
+	_snd.pcm_ring_bytes = ring_bytes;
+	audio_pcm_ring_reset();
 	audio_queue_reset();
 
 	_snd.dma_cbs_phy = dma_phy_addr(0, _snd.dma_cbs_addr);
@@ -1199,6 +1327,7 @@ static int audio_stop(void) {
 		*(pwm + BCM283x_PWM_DMAC) = 0;
 		*(pwm + BCM283x_PWM_CONTROL) = 0;
 		audio_queue_reset();
+		audio_pcm_ring_reset();
 		_snd.dma_started_usec = 0;
 		_snd.dma_expected_usec = 0;
 		_snd.dma_running = false;
@@ -1216,13 +1345,16 @@ static int sound_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t *info, int 
 	UNUSED(p);
 
 	from_pid = proc_getpid(from_pid);
+	pthread_mutex_lock(&_snd_lock);
 	if (_snd.open_count > 0 && _snd.occupied_pid != from_pid) {
+		pthread_mutex_unlock(&_snd_lock);
 		return -1;
 	}
 	audio_stop();
 	audio_deinit();
 	_snd.occupied_pid = from_pid;
 	_snd.open_count++;
+	pthread_mutex_unlock(&_snd_lock);
 	return 0;
 }
 
@@ -1234,18 +1366,22 @@ static int sound_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsin
 	UNUSED(p);
 
 	from_pid = proc_getpid(from_pid);
+	pthread_mutex_lock(&_snd_lock);
 	if (_snd.occupied_pid != from_pid || _snd.open_count <= 0) {
+		pthread_mutex_unlock(&_snd_lock);
 		return -1;
 	}
 
 	_snd.open_count--;
 	if (_snd.open_count > 0) {
+		pthread_mutex_unlock(&_snd_lock);
 		return 0;
 	}
 
 	audio_stop();
 	audio_deinit();
 	_snd.occupied_pid = 0;
+	pthread_mutex_unlock(&_snd_lock);
 	return 0;
 }
 
@@ -1258,37 +1394,45 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 
 	const uint8_t *src;
 	int total = 0;
-	int consumed;
-	uint32_t avail_bytes;
-	uint32_t pushed_frames;
+	uint32_t consumed;
 	uint32_t wait_start_usec = 0;
 
 	from_pid = proc_getpid(from_pid);
-	if (size <= 0 || _snd.occupied_pid != from_pid) {
+	if (size <= 0) {
 		return -1;
 	}
 	if (offset < 0 || offset >= size) {
 		return 0;
 	}
+	pthread_mutex_lock(&_snd_lock);
+	if (_snd.occupied_pid != from_pid) {
+		pthread_mutex_unlock(&_snd_lock);
+		return -1;
+	}
 	if (!_snd.configured && audio_ensure_default_config() != 0) {
+		pthread_mutex_unlock(&_snd_lock);
 		return -1;
 	}
 
 	if (!_snd.prepared) {
 		if (audio_prepare() != 0) {
+			pthread_mutex_unlock(&_snd_lock);
 			return -1;
 		}
 	}
 	if (!_snd.started) {
 		if (audio_start() != 0) {
+			pthread_mutex_unlock(&_snd_lock);
 			return -1;
 		}
 	}
 
 	size -= offset;
 	if (_snd.frame_bytes == 0) {
+		pthread_mutex_unlock(&_snd_lock);
 		return -1;
 	}
+	pthread_mutex_unlock(&_snd_lock);
 
 	size = (size / (int)_snd.frame_bytes) * (int)_snd.frame_bytes;
 	if (size == 0) {
@@ -1297,51 +1441,39 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 
 	src = (const uint8_t *)buf + offset;
 	while (total < size) {
-		consumed = size - total;
-		avail_bytes = audio_queue_avail_bytes();
-		if (avail_bytes < (uint32_t)consumed) {
-			consumed = (int)avail_bytes;
-		}
-		consumed = (consumed / (int)_snd.frame_bytes) * (int)_snd.frame_bytes;
+		uint32_t sleep_usec;
+		uint32_t now_usec;
 
-		if (consumed > 0) {
-			pushed_frames = audio_queue_push_pcm(src + total, consumed);
-			if (pushed_frames > 0) {
-				wait_start_usec = 0;
-				total += (int)(pushed_frames * _snd.frame_bytes);
-				audio_try_append_running_chain(audio_now_usec());
-				sound_pump(dev);
-				continue;
-			}
+		pthread_mutex_lock(&_snd_lock);
+		consumed = (uint32_t)(size - total);
+		if (audio_pcm_ring_avail_bytes() < consumed) {
+			consumed = audio_pcm_ring_avail_bytes();
+		}
+		consumed = (consumed / _snd.frame_bytes) * _snd.frame_bytes;
+		if (consumed != 0) {
+			consumed = audio_pcm_ring_write_bytes(src + total, consumed);
+			total += (int)consumed;
+			wait_start_usec = 0;
+			pthread_mutex_unlock(&_snd_lock);
+			continue;
 		}
 
-		sound_pump(dev);
+		now_usec = audio_now_usec();
+		if (wait_start_usec != 0 &&
+				audio_elapsed_usec(wait_start_usec, now_usec) >= 500000U) {
+			audio_force_recover_stall(now_usec);
+			wait_start_usec = now_usec;
+		}
+		sleep_usec = sound_writer_sleep_usec(now_usec);
+		pthread_mutex_unlock(&_snd_lock);
+
 		if (wait_start_usec == 0) {
-			wait_start_usec = audio_now_usec();
+			wait_start_usec = now_usec;
 		}
-		else {
-			uint32_t now_usec = audio_now_usec();
-			if (audio_elapsed_usec(wait_start_usec, now_usec) >= 500000U) {
-				if (audio_force_recover_stall(now_usec)) {
-					sound_pump(dev);
-				}
-				audio_log_diag("write wait", now_usec, audio_dma_current_cb_bus());
-				wait_start_usec = now_usec;
-			}
-		}
-		proc_usleep(sound_poll_sleep_usec());
+		proc_usleep(sleep_usec);
 	}
 
 	return total;
-}
-
-static void sound_refresh_status(vdevice_t* dev) {
-	if (dev == NULL) {
-		return;
-	}
-	if (sound_has_pending_work()) {
-		sound_pump(dev);
-	}
 }
 
 static uint32_t sound_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* p) {
@@ -1350,38 +1482,20 @@ static uint32_t sound_check_poll_events(vdevice_t* dev, int fd, int from_pid, fs
 	UNUSED(info);
 	UNUSED(p);
 
-	sound_refresh_status(dev);
-	if (_snd.configured && audio_queue_avail_frames() > 0) {
+	pthread_mutex_lock(&_snd_lock);
+	UNUSED(dev);
+	if (_snd.configured && audio_pcm_ring_avail_bytes() >= _snd.frame_bytes) {
+		pthread_mutex_unlock(&_snd_lock);
 		return VFS_EVT_WR;
 	}
+	pthread_mutex_unlock(&_snd_lock);
 	return 0;
 }
 
-static void sound_pump(vdevice_t* dev) {
-	bool wake_writer = false;
-	bool start_dma = false;
-	bool rebuffer_start = false;
-	uint32_t slot = DMA_SLOT_INVALID;
-	uint32_t samples = 0;
-	uint32_t now_usec = audio_now_usec();
-
-	audio_service_locked(now_usec, &wake_writer, &start_dma, &rebuffer_start,
-			&slot, &samples);
-
-	if (start_dma) {
-		audio_start_dma_transfer(slot, samples, rebuffer_start);
-	}
-	if (wake_writer) {
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
-	}
-}
-
 static int sound_loop(vdevice_t* dev, void* p) {
+	UNUSED(dev);
 	UNUSED(p);
-	if (sound_has_pending_work()) {
-		sound_pump(dev);
-	}
-	proc_usleep(sound_poll_sleep_usec());
+	proc_usleep(SOUND_FEED_DEEP_IDLE_SLEEP_US);
 	return 0;
 }
 
@@ -1391,7 +1505,9 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 	int result = 0;
 	struct pcm_config cfg;
 
+	pthread_mutex_lock(&_snd_lock);
 	if (_snd.occupied_pid != proc_getpid(from_pid)) {
+		pthread_mutex_unlock(&_snd_lock);
 		return -1;
 	}
 
@@ -1417,9 +1533,8 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 			result = -1;
 		}
 		else {
-			sound_refresh_status(dev);
 			result = (int)MIN(MIN(_snd.buffer_bytes, _snd.write_chunk_bytes),
-					audio_queue_avail_bytes());
+					audio_pcm_ring_avail_bytes());
 		}
 		break;
 	default:
@@ -1427,8 +1542,77 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 		break;
 	}
 
+	pthread_mutex_unlock(&_snd_lock);
 	PF->addi(ret, result);
 	return 0;
+}
+
+static bool audio_feed_pcm_ring_locked(void) {
+	bool consumed = false;
+
+	while (_snd.started &&
+			_snd.pcm_ring != NULL &&
+			_snd.frame_bytes != 0 &&
+			audio_pcm_ring_pending_bytes() >= _snd.frame_bytes &&
+			audio_queue_avail_bytes() >= _snd.frame_bytes) {
+		uint32_t chunk_bytes = audio_pcm_ring_contig_read_bytes();
+		uint32_t pushed_frames;
+
+		chunk_bytes = (chunk_bytes / _snd.frame_bytes) * _snd.frame_bytes;
+		if (chunk_bytes == 0) {
+			break;
+		}
+		if (chunk_bytes > audio_queue_avail_bytes()) {
+			chunk_bytes = (audio_queue_avail_bytes() / _snd.frame_bytes) * _snd.frame_bytes;
+		}
+		if (chunk_bytes == 0) {
+			break;
+		}
+
+		pushed_frames = audio_queue_push_pcm(_snd.pcm_ring + _snd.pcm_ring_rd, (int)chunk_bytes);
+		if (pushed_frames == 0) {
+			break;
+		}
+		audio_pcm_ring_consume_bytes(pushed_frames * _snd.frame_bytes);
+		consumed = true;
+	}
+	return consumed;
+}
+
+static void* sound_feeder_thread(void* arg) {
+	UNUSED(arg);
+
+	while (true) {
+		bool wake_writer = false;
+		bool start_dma = false;
+		bool rebuffer_start = false;
+		uint32_t slot = DMA_SLOT_INVALID;
+		uint32_t samples = 0;
+		uint32_t now_usec;
+		uint32_t sleep_usec;
+
+		pthread_mutex_lock(&_snd_lock);
+		if (_snd.feeder_exit) {
+			pthread_mutex_unlock(&_snd_lock);
+			break;
+		}
+
+		now_usec = audio_now_usec();
+		wake_writer = audio_feed_pcm_ring_locked();
+		audio_service_locked(now_usec, &wake_writer, &start_dma, &rebuffer_start,
+				&slot, &samples);
+		if (start_dma) {
+			audio_start_dma_transfer(slot, samples, rebuffer_start);
+		}
+		sleep_usec = sound_feeder_sleep_usec(now_usec);
+		pthread_mutex_unlock(&_snd_lock);
+
+		if (wake_writer && _snd_dev != NULL) {
+			vfs_wakeup(_snd_dev->mnt_info.node, VFS_EVT_WR);
+		}
+		proc_usleep(sleep_usec);
+	}
+	return NULL;
 }
 
 static void audio_hw_init(void) {
@@ -1454,6 +1638,7 @@ int main(int argc, char** argv) {
 	_mmio_base = mmio_map();
 	bcm283x_gpio_init();
 	audio_hw_init();
+	pthread_mutex_init(&_snd_lock, NULL);
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
@@ -1464,6 +1649,15 @@ int main(int argc, char** argv) {
 	dev.dev_cntl = sound_dev_cntl;
 	dev.loop_step = sound_loop;
 	dev.check_poll_events = sound_check_poll_events;
+	_snd_dev = &dev;
+	if (!_snd_feeder_started) {
+		int err = pthread_create(&_snd_feeder_tid, NULL, sound_feeder_thread, NULL);
+		if (err != 0) {
+			slog("sound: pthread_create failed %d\n", err);
+			return 1;
+		}
+		_snd_feeder_started = true;
+	}
 
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
 	return 0;
