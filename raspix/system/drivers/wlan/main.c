@@ -124,6 +124,17 @@ struct msg_get_clock_rate {
 #define BCM2835_MBOX_SET_POWER_STATE_REQ_ON	(1 << 0)
 #define BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT	(1 << 1)
 #define BCM2835_MBOX_PROP_CHAN		8
+#define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
+
+static uint32_t mailbox_data_from_dma_buf(void* buf)
+{
+	uint32_t phy = dma_phy_addr(0, (ewokos_addr_t)buf);
+	if (phy == 0) {
+		brcm_log("wlan mailbox: dma_phy_addr failed for %p\n", buf);
+		return 0;
+	}
+	return (phy + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+}
 
 static void wlan_log_platform(void)
 {
@@ -143,8 +154,11 @@ static void wlan_log_platform(void)
 static int bcm2835_power_on_module(uint32_t module)
 {
     mail_message_t msg;
-    //struct msg_set_power_state* msg_pwr = (struct msg_set_power_state*)dma_phy_addr(0, dma_alloc(sizeof(struct msg_set_power_state)));
     struct msg_set_power_state* msg_pwr = (struct msg_set_power_state*)(dma_alloc(0, sizeof(struct msg_set_power_state)));
+	uint32_t mailbox_data;
+
+	if (msg_pwr == NULL)
+		return -1;
 
 	BCM2835_MBOX_INIT_HDR(msg_pwr);
 	BCM2835_MBOX_INIT_TAG(&msg_pwr->set_power_state,
@@ -154,9 +168,15 @@ static int bcm2835_power_on_module(uint32_t module)
 		BCM2835_MBOX_SET_POWER_STATE_REQ_ON |
 		BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT;
 
-    msg.data = ((uint32_t)msg_pwr + 0x40000000) >> 4;	
+	mailbox_data = mailbox_data_from_dma_buf(msg_pwr);
+	if (mailbox_data == 0) {
+		dma_free(0, (ewokos_addr_t)msg_pwr);
+		return -1;
+	}
+	msg.data = mailbox_data;
 	msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
+	dma_free(0, (ewokos_addr_t)msg_pwr);
 
 	return 0;
 }
@@ -165,8 +185,11 @@ void bcm283x_mbox_pin_ctrl(int idx, int dir, int on) {
 	mail_message_t msg;
 	/*message head + tag head + property*/
 	uint32_t size = 12 + 12 + 24;
-	//uint32_t* buf = (uint32_t*)dma_phy_addr(dma_alloc(size));
 	uint32_t* buf = (uint32_t*)dma_alloc(0, size);
+	uint32_t mailbox_data;
+
+	if (buf == NULL)
+		return;
 
 	/*message head*/
 	buf[0] = size;
@@ -185,9 +208,15 @@ void bcm283x_mbox_pin_ctrl(int idx, int dir, int on) {
 	/*message end*/
 	buf[11] = 0;
 	
-	msg.data = ((uint32_t)buf + 0x40000000) >> 4;	
+	mailbox_data = mailbox_data_from_dma_buf(buf);
+	if (mailbox_data == 0) {
+		dma_free(0, (ewokos_addr_t)buf);
+		return;
+	}
+	msg.data = mailbox_data;
 	msg.channel = PROPERTY_CHANNEL;
 	bcm283x_mailbox_call(&msg);
+	dma_free(0, (ewokos_addr_t)buf);
 }
 
 #define CM_GP2DIV	(_mmio_base + 0x101084) 

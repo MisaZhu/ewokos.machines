@@ -101,10 +101,12 @@ void timer_set_interval_pi4(uint32_t id, uint32_t times_per_sec) {
     timer_clear_interrupt(id);
 }
 
-static __inline uint64_t fast_div64_54(uint64_t x){
-       return (x*151)>>13;
-}
-
 uint64_t timer_read_sys_usec_pi4(void) { //read microsec
-	return fast_div64_54(read_cntvct());
+	if(_cntv_us_div == 0) {
+		uint32_t cntfrq = read_cntfrq();
+		_cntv_us_div = cntfrq / 1000000U;
+		if(_cntv_us_div == 0)
+			_cntv_us_div = 1;
+	}
+	return read_cntvct() / _cntv_us_div;
 }
