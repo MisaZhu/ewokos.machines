@@ -74,7 +74,7 @@ static inline void __attribute__((optimize("O0"))) delay(uint32_t count) {
 // Reg Static Init Setting
 //-----------------------------------------------------------------------------------------------------------
 #define V_MIE_PATH_INIT		0
-#define V_MMA_PRI_INIT      (R_MIU_R_PRIORITY|R_MIU_W_PRIORITY)
+#define V_MMA_PRI_INIT      (R_MIU_R_PRIORITY|R_MIU_W_PRIORITY|R_MIU_BUS_BURST8)
 #define V_MIE_INT_EN_INIT   (R_DATA_END_IEN|R_CMD_END_IEN|R_SDIO_INT_IEN)
 #define V_RSP_SIZE_INIT		0
 #define V_CMD_SIZE_INIT		(5<<8)
@@ -633,6 +633,24 @@ void Hal_SDMMC_SetSDIOIntDet(IPEmType eIP, bool bEnable)
 
 /*----------------------------------------------------------------------------------------------------------
 *
+* Function: Hal_SDMMC_GetDataWidth
+* Desc: Read back the active bus width from SD_MODE.
+*
+* @param eIP : FCIE1/FCIE2/...
+----------------------------------------------------------------------------------------------------------*/
+SDMMCBusWidthEmType Hal_SDMMC_GetDataWidth(IPEmType eIP)
+{
+	uint16_t mode = CARD_REG(A_SD_MODE_REG(eIP));
+
+	if(mode & R_BUS_WIDTH_8)
+		return EV_BUS_8BITS;
+	if(mode & R_BUS_WIDTH_4)
+		return EV_BUS_4BITS;
+	return EV_BUS_1BIT;
+}
+
+/*----------------------------------------------------------------------------------------------------------
+*
 * Function: Hal_SDMMC_SetDataWidth
 *     @author jeremy.wang (2015/7/9)
 * Desc: According as Data Bus Width to Set IP DataWidth
@@ -869,10 +887,19 @@ RspErrEmType Hal_SDMMC_SendCmdAndWaitProcess(IPEmType eIP, TransEmType eTransTyp
 {
 	uint32_t u32WaitMS	= WT_EVENT_RSP;
 	uint16_t u16WaitMIEEvent = R_CMD_END;
+	uint16_t u16SDMode = V_SD_MODE_INIT | (eTransType>>8) | gu16_SD_MODE_DatLine[eIP];
+
+	/*
+	 * EV_DMA carries R_DMA_RD_CLK_STOP in its low bits. Respect bCloseClk
+	 * here so callers that want to keep the clock running across adjacent
+	 * reads do not implicitly re-enable per-transfer clock stop.
+	 */
+	if(bCloseClk)
+		u16SDMode |= (uint8_t)(eTransType & R_DMA_RD_CLK_STOP);
 
 	CARD_REG(A_CMD_RSP_SIZE_REG(eIP)) = V_CMD_SIZE_INIT | ((uint8_t)eRspType);
 	CARD_REG(A_MIE_FUNC_CTL_REG(eIP)) = V_MIE_PATH_INIT | _REG_GetMIEFunCtlSetting(eIP);
-	CARD_REG(A_SD_MODE_REG(eIP)) = V_SD_MODE_INIT | (eTransType>>8) | gu16_SD_MODE_DatLine[eIP] | ((uint8_t)(eTransType & R_DMA_RD_CLK_STOP));
+	CARD_REG(A_SD_MODE_REG(eIP)) = u16SDMode;
 	CARD_REG(A_SD_CTL_REG(eIP))  = V_SD_CTL_INIT | (eRspType>>12) | (eCmdType>>4) | ((uint8_t)(eTransType & R_ADMA_EN));
 	CARD_REG(A_MMA_PRI_REG_REG(eIP)) = V_MMA_PRI_INIT;
 	CARD_REG(A_DDR_MOD_REG(eIP)) = V_DDR_MODE_INIT | (eTransType==EV_CIF ? gu16_DDR_MODE_REG_ForR2N[eIP] : gu16_DDR_MODE_REG[eIP]);
