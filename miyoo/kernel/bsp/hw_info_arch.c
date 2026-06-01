@@ -84,9 +84,16 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= 0x27c00000 && size <= FB_SIZE)
+	ewokos_addr_t end = phy_base + size;
+	ewokos_addr_t fb_base = 0x27c00000;
+	ewokos_addr_t fb_end = fb_base + FB_SIZE;
+	ewokos_addr_t mmio_end = _sys_info.mmio.phy_base + _sys_info.mmio.size;
+
+	if(size == 0)
+		return -1;
+	if(phy_base >= fb_base && end > phy_base && end <= fb_end)
 		return 0;
-	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
+	if(phy_base >= _sys_info.mmio.phy_base && end > phy_base && end <= mmio_end)
 		return 0;
 	return -1;
 }
