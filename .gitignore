@@ -3,6 +3,7 @@
 *_data.c
 .DS_*
 bootsect.bin
+kernel.hdd
 kernel*.boot
 kernel*.img
 kernel*.elf
