@@ -220,6 +220,7 @@ typedef enum
 void Hal_SDMMC_SetSDIODevice(IPEmType eIP, bool bEnable);
 void Hal_SDMMC_SetSDIOIntDet(IPEmType eIP, bool bEnable);
 
+SDMMCBusWidthEmType Hal_SDMMC_GetDataWidth(IPEmType eIP);
 void Hal_SDMMC_SetDataWidth(IPEmType eIP, SDMMCBusWidthEmType eBusWidth);
 void Hal_SDMMC_SetBusTiming(IPEmType eIP, BusTimingEmType eBusTiming);
 void Hal_SDMMC_SetNrcDelay(IPEmType eIP, uint32_t u32RealClk);
@@ -246,7 +247,6 @@ uint16_t Hal_SDMMC_GetMIEEvent(IPEmType eIP);
 uint32_t Hal_CARD_TransMIUAddr(uint32_t u32Addr);
 
 #endif //End of __HAL_SDMMC_V5_H
-
 
 
 

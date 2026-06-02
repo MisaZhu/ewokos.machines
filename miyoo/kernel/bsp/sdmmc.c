@@ -622,6 +622,17 @@ void Hal_SDMMC_SetSDIOIntDet(IPEmType eIP, bool bEnable)
 * @param eIP : FCIE1/FCIE2/...
 * @param eBusWidth : 1BIT/4BITs/8BITs
 ----------------------------------------------------------------------------------------------------------*/
+SDMMCBusWidthEmType Hal_SDMMC_GetDataWidth(IPEmType eIP)
+{
+	uint16_t mode = CARD_REG(A_SD_MODE_REG(eIP));
+
+	if(mode & R_BUS_WIDTH_8)
+		return EV_BUS_8BITS;
+	if(mode & R_BUS_WIDTH_4)
+		return EV_BUS_4BITS;
+	return EV_BUS_1BIT;
+}
+
 void Hal_SDMMC_SetDataWidth(IPEmType eIP, SDMMCBusWidthEmType eBusWidth)
 {
 	gu16_SD_MODE_DatLine[eIP] = (uint16_t)eBusWidth;
@@ -851,10 +862,14 @@ RspErrEmType Hal_SDMMC_SendCmdAndWaitProcess(IPEmType eIP, TransEmType eTransTyp
 {
 	uint32_t u32WaitMS	= WT_EVENT_RSP;
 	uint16_t u16WaitMIEEvent = R_CMD_END;
+	uint16_t u16SDMode = V_SD_MODE_INIT | (eTransType>>8) | gu16_SD_MODE_DatLine[eIP];
+
+	if(bCloseClk)
+		u16SDMode |= (uint8_t)(eTransType & R_DMA_RD_CLK_STOP);
 
 	CARD_REG(A_CMD_RSP_SIZE_REG(eIP)) = V_CMD_SIZE_INIT | ((uint8_t)eRspType);
 	CARD_REG(A_MIE_FUNC_CTL_REG(eIP)) = V_MIE_PATH_INIT | _REG_GetMIEFunCtlSetting(eIP);
-	CARD_REG(A_SD_MODE_REG(eIP)) = V_SD_MODE_INIT | (eTransType>>8) | gu16_SD_MODE_DatLine[eIP] | ((uint8_t)(eTransType & R_DMA_RD_CLK_STOP));
+	CARD_REG(A_SD_MODE_REG(eIP)) = u16SDMode;
 	CARD_REG(A_SD_CTL_REG(eIP))  = V_SD_CTL_INIT | (eRspType>>12) | (eCmdType>>4) | ((uint8_t)(eTransType & R_ADMA_EN));
 	CARD_REG(A_MMA_PRI_REG_REG(eIP)) = V_MMA_PRI_INIT;
 	CARD_REG(A_DDR_MOD_REG(eIP)) = V_DDR_MODE_INIT | (eTransType==EV_CIF ? gu16_DDR_MODE_REG_ForR2N[eIP] : gu16_DDR_MODE_REG[eIP]);

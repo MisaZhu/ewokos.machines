@@ -13,6 +13,7 @@ uint16_t SDMMC_Init(uint8_t u8Slot)
 {
 	IPEmType eIP  = EV_IP_FCIE1;
 	RspStruct * eRspSt;
+	SDMMCBusWidthEmType bus_width;
 
 	//_SDMMC_InfoInit(u8Slot);
 
@@ -26,6 +27,11 @@ uint16_t SDMMC_Init(uint8_t u8Slot)
 
 	// Hal_SDMMC_SetDataWidth(eIP, EV_BUS_1BIT);
 	//Hal_SDMMC_SetSDIOClk(eIP, TRUE); //For Measure Clock, Don't Stop Clock
+
+	bus_width = Hal_SDMMC_GetDataWidth(eIP);
+	Hal_SDMMC_SetDataWidth(eIP, bus_width);
+	Hal_SDMMC_SetBusTiming(eIP, EV_BUS_DEF);
+	Hal_SDMMC_SetNrcDelay(eIP, 8000000);
 
     // //--------------------------------------------------------------------------------------------------------
     // eRspSt = _SDMMC_Identification(u8Slot);
@@ -73,18 +79,12 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
 	//RspErrEmType eErr  = EV_STS_OK;
 	CmdEmType eCmdType = EV_CMDREAD;
 	RspStruct * eRspSt;
-
 	bool bCloseClock = FALSE;
 
 	//printf("_[sdmmc_%u] CMD_%u (0x%08X)__(TB: %u)(BSz: %u)", u8Slot, u8Cmd, u32Arg, u16BlkCnt, u16BlkSize);
 
 	if( (u8Cmd == 24) || (u8Cmd==25))
 		eCmdType = EV_CMDWRITE;
-
-	if(u16BlkCnt>1)
-		bCloseClock = FALSE;
-	else
-		bCloseClock = TRUE;
 
 	Hal_SDMMC_SetCmdToken(eIP, u8Cmd, u32Arg);
 	Hal_SDMMC_TransCmdSetting(eIP, eTransType, u16BlkCnt, u16BlkSize, Hal_CARD_TransMIUAddr(V2P(pu8Buf)), pu8Buf);
