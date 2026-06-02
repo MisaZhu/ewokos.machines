@@ -19,6 +19,9 @@ QEMU_FLAGS += -smp $(QEMU_SMP_CORES)
 endif
 QEMU_ARGS += -boot c
 QEMU_ARGS += -drive file=$(OS_HDD),format=raw,if=ide,index=0,media=disk
+QEMU_ARGS += -usb
+QEMU_ARGS += -device usb-kbd,port=1,usb_version=1
+QEMU_ARGS += -device usb-mouse,port=2,usb_version=1
 
 MACHINE = x86
 

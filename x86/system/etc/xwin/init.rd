@@ -10,8 +10,12 @@
 @/bin/ipcserv /drivers/nulld /dev/null
 @/bin/ipcserv /drivers/ramfsd /tmp
 
-@/bin/ipcserv /drivers/x86/ps2keybd /dev/keyb0
-@/bin/ipcserv /drivers/x86/ps2moused /dev/mouse0
+#@/bin/ipcserv /drivers/x86/ps2keybd /dev/keyb0
+#@/bin/ipcserv /drivers/x86/ps2moused /dev/mouse0
+
+@/bin/ipcserv /drivers/x86/usbd        /dev/hid0
+@/bin/ipcserv /drivers/x86/usbkeybd    /dev/keyb0 /dev/hid0
+@/bin/ipcserv /drivers/x86/usbmoused   /dev/mouse0 /dev/hid0
 
 @/bin/load_font
 
