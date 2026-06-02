@@ -13,6 +13,7 @@ gui:
 
 network:
 	cd wlan; make
+	cd btd; make
 
 clean:	
 	cd uartd; make clean
@@ -25,3 +26,4 @@ clean:
 	cd hid_joystickd; make clean
 	cd spi2uart; make clean
 	cd wlan; make clean
+	cd btd; make clean

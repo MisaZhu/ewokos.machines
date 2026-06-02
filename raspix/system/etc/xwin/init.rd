@@ -41,6 +41,9 @@
 @/bin/splash -m "start /dev/time" -p 80
 @/bin/ipcserv /drivers/timed    /dev/time
 
+@/bin/splash -m "start /dev/bt0" -p 85
+@/bin/ipcserv /drivers/raspix/btd    /dev/bt0
+
 #@/bin/splash -m "load fonts" -p 95
 #@/bin/load_font
 
