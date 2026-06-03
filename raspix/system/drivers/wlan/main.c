@@ -181,44 +181,6 @@ static int bcm2835_power_on_module(uint32_t module)
 	return 0;
 }
 
-void bcm283x_mbox_pin_ctrl(int idx, int dir, int on) {
-	mail_message_t msg;
-	/*message head + tag head + property*/
-	uint32_t size = 12 + 12 + 24;
-	uint32_t* buf = (uint32_t*)dma_alloc(0, size);
-	uint32_t mailbox_data;
-
-	if (buf == NULL)
-		return;
-
-	/*message head*/
-	buf[0] = size;
-	buf[1] = 0;	//RPI_FIRMWARE_STATUS_REQUEST;
-	/*tag head*/
-	buf[2] = 0x00038043;								/*set gpio config*/
-	buf[3] = 24;									/*buffer size*/
-	buf[4] = 0;										/*respons size*/
-	/*property package*/
-	buf[5] =  128 + idx;								/*wifi power pin*/
-	buf[6] =  dir ? 1 : 0;								/*direction*/
-	buf[7] =  0;										/*polarity*/
-	buf[8] = 0;										/*term_en*/	
-	buf[9] = 0;										/*term_pull_up*/
-	buf[10] = on ? 1 : 0;		
-	/*message end*/
-	buf[11] = 0;
-	
-	mailbox_data = mailbox_data_from_dma_buf(buf);
-	if (mailbox_data == 0) {
-		dma_free(0, (ewokos_addr_t)buf);
-		return;
-	}
-	msg.data = mailbox_data;
-	msg.channel = PROPERTY_CHANNEL;
-	bcm283x_mailbox_call(&msg);
-	dma_free(0, (ewokos_addr_t)buf);
-}
-
 #define CM_GP2DIV	(_mmio_base + 0x101084) 
 #define CM_GP2CTL	(_mmio_base + 0x101080) 
 #define CM_PASSWORD (0x5a000000)
@@ -359,10 +321,10 @@ int main(int argc, char** argv) {
 	strcpy(dev.name, "wlan");
 	_wland_dev = &dev;
 	brcm_log("wlan platform: assert wl_reg_on\n");
-	bcm283x_mbox_pin_ctrl(1, 1, 0);
+	bcm283x_mailbox_gpio_config(1, true, false);
        usleep(100000);
 	brcm_log("wlan platform: deassert wl_reg_on\n");
-	bcm283x_mbox_pin_ctrl(1, 1, 1);
+	bcm283x_mailbox_gpio_config(1, true, true);
        usleep(100000);
 	if (brcm_init() != 0) {
 		brcm_log("wlan platform: brcm_init failed\n");

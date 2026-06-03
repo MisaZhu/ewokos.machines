@@ -19,11 +19,13 @@
 #include <arch/bcm283x/pl011_uart.h>
 #include <arch/bcm283x/mailbox.h>
 
-#include "../../bin/bt/firmware_3.h"
+#include "firmware_4345c0.h"
 
 #define MAX_BT_DEVICES 32
 #define MAX_HCI_PAYLOAD 260
 #define MAX_EVT_LINE 256
+#define BT_CMD_RET_SZ 2048
+#define BT_UART_PKT_FOLLOW_TIMEOUT_MS 120
 
 #define HCI_PKT_COMMAND 0x01
 #define HCI_PKT_ACL 0x02
@@ -94,6 +96,9 @@
 #define CM_BUSY (1u << 7)
 #define CM_ENABLE (1u << 4)
 
+#define UART0_BASE_OFF 0x00201000u
+#define UART0_FR_REG ((uintptr_t)_mmio_base + UART0_BASE_OFF + 0x18u)
+
 typedef struct {
 	uint32_t buf_size;
 	uint32_t code;
@@ -159,6 +164,18 @@ typedef struct {
 	int status;
 } bt_wait_cmd_t;
 
+typedef struct {
+	uint32_t packets_seen;
+	uint32_t event_packets;
+	uint32_t acl_packets;
+	uint32_t other_packets;
+	uint8_t last_pkt_type;
+	uint8_t last_event_code;
+	uint8_t last_event_len;
+	uint16_t last_opcode;
+	int last_status;
+} bt_wait_debug_t;
+
 static vdevice_t* _bt_dev = NULL;
 static charbuf_t* _evt_buf = NULL;
 static uint32_t _idle_sleep_us = 1000;
@@ -167,6 +184,7 @@ static bool _scanning = false;
 static bt_device_t _devices[MAX_BT_DEVICES];
 static bt_pending_t _pending;
 static bt_wait_cmd_t _wait_cmd;
+static bt_wait_debug_t _wait_debug;
 
 static uint8_t hci_opcode_lo(uint16_t opcode) {
 	return (uint8_t)(opcode & 0xff);
@@ -341,6 +359,33 @@ static void bt_emit(const char* fmt, ...) {
 	bt_wakeup_readers();
 }
 
+static size_t bt_ret_len(const char* ret, size_t ret_sz) {
+	size_t n = 0;
+
+	while (n < ret_sz && ret[n] != 0) {
+		++n;
+	}
+	return n;
+}
+
+static void bt_ret_append(char* ret, size_t ret_sz, const char* fmt, ...) {
+	size_t used;
+	va_list ap;
+
+	if (ret == NULL || ret_sz == 0) {
+		return;
+	}
+
+	used = bt_ret_len(ret, ret_sz);
+	if (used >= (ret_sz - 1)) {
+		return;
+	}
+
+	va_start(ap, fmt);
+	vsnprintf(ret + used, ret_sz - used, fmt, ap);
+	va_end(ap);
+}
+
 static uint32_t mailbox_data_from_dma_buf(void* buf) {
 	uint32_t phy = dma_phy_addr(0, (ewokos_addr_t)buf);
 	if (phy == 0) {
@@ -412,13 +457,39 @@ static void bt_enable_gpclk2_32k(void) {
 	}
 }
 
+static void bt_prepare_combo_chip_power(void) {
+	if (access("/dev/wl0", F_OK) == 0) {
+		slog("bluetooth init wl0_present keep_wl_on\n");
+		return;
+	}
+
+	/* expgpio 1 is WL_ON; keep it enabled when BT is started standalone. */
+	slog("bluetooth init standalone enable_wl_on\n");
+	bcm283x_mailbox_gpio_config(1, true, true);
+	usleep(100000);
+}
+
+static void bt_release_bt_shutdown(void) {
+	/* expgpio 0 is BT_ON/shutdown-gpios on Raspberry Pi wifi/bt boards. */
+	slog("bluetooth init assert_bt_on\n");
+	bcm283x_mailbox_gpio_config(0, true, false);
+	usleep(100000);
+	slog("bluetooth init deassert_bt_on\n");
+	bcm283x_mailbox_gpio_config(0, true, true);
+	usleep(100000);
+}
+
 static int bt_uart_recv_timeout(uint32_t timeout_ms) {
 	return bcm283x_pl011_uart_recv(timeout_ms);
 }
 
-static void bt_uart_flush(void) {
+static int bt_uart_flush(void) {
+	int n = 0;
+
 	while (bt_uart_recv_timeout(1) >= 0) {
+		++n;
 	}
+	return n;
 }
 
 static void bt_hci_send_packet(uint8_t pkt_type, const uint8_t* data, size_t len) {
@@ -461,7 +532,24 @@ static void bt_emit_device_line(const char* prefix, const bt_device_t* dev) {
 	char addr[24];
 
 	bt_addr_to_str(dev->addr, addr, sizeof(addr));
-	bt_emit("%s %s class=0x%06X rssi=%d connected=%d paired=%d name=%s",
+	bt_emit("%s %s class=0x%06X rssi=%d connected=%d paired=%d name=%s\n",
+		prefix,
+		addr,
+		dev->class_of_device & 0xffffffu,
+		(int)dev->rssi,
+		dev->connected ? 1 : 0,
+		dev->has_link_key ? 1 : 0,
+		dev->name[0] ? dev->name : "-");
+}
+
+static void bt_ret_append_device_line(int dev_id, char* ret, size_t ret_sz,
+		const char* prefix, const bt_device_t* dev) {
+	char addr[24];
+
+	bt_addr_to_str(dev->addr, addr, sizeof(addr));
+	bt_ret_append(ret, ret_sz,
+		"%d: %s %s class=0x%06X rssi=%d connected=%d paired=%d name=%s\n",
+		dev_id,
 		prefix,
 		addr,
 		dev->class_of_device & 0xffffffu,
@@ -566,6 +654,8 @@ static void bt_handle_command_complete(const uint8_t* payload, size_t len) {
 	if (len >= 4) {
 		status = payload[3];
 	}
+	_wait_debug.last_opcode = opcode;
+	_wait_debug.last_status = status;
 	bt_update_wait_cmd_complete(opcode, status);
 }
 
@@ -579,6 +669,8 @@ static void bt_handle_command_status(const uint8_t* payload, size_t len) {
 
 	status = payload[0];
 	opcode = (uint16_t)payload[2] | ((uint16_t)payload[3] << 8);
+	_wait_debug.last_opcode = opcode;
+	_wait_debug.last_status = status;
 	bt_update_wait_cmd_complete(opcode, status);
 }
 
@@ -696,7 +788,7 @@ static void bt_handle_remote_name_complete(const uint8_t* payload, size_t len) {
 	}
 	bt_trim_name(dev->name);
 	bt_addr_to_str(dev->addr, addr, sizeof(addr));
-	bt_emit("name %s status=%u value=%s", addr, payload[0], dev->name[0] ? dev->name : "-");
+	bt_emit("name %s status=%u value=%s\n", addr, payload[0], dev->name[0] ? dev->name : "-");
 }
 
 static void bt_handle_connection_complete(const uint8_t* payload, size_t len) {
@@ -720,18 +812,18 @@ static void bt_handle_connection_complete(const uint8_t* payload, size_t len) {
 	if (status == 0) {
 		dev->connected = true;
 		dev->handle = handle;
-		bt_emit("connect_ok %s handle=0x%04X", addr, handle);
+		bt_emit("connect_ok %s handle=0x%04X\n", addr, handle);
 		if (_pending.type == BT_PENDING_PAIR && bt_addr_equal(_pending.addr, dev->addr)) {
 			_pending.handle = handle;
 			bt_hci_auth_request(handle);
-			bt_emit("pair_wait_auth %s", addr);
+			bt_emit("pair_wait_auth %s\n", addr);
 		}
 		else if (_pending.type == BT_PENDING_CONNECT && bt_addr_equal(_pending.addr, dev->addr)) {
 			bt_clear_pending();
 		}
 	}
 	else {
-		bt_emit("connect_fail %s status=%u", addr, status);
+		bt_emit("connect_fail %s status=%u\n", addr, status);
 		if (bt_pending_matches_addr(dev->addr)) {
 			bt_clear_pending();
 		}
@@ -750,7 +842,7 @@ static void bt_handle_disconnection_complete(const uint8_t* payload, size_t len)
 	handle = (uint16_t)payload[1] | ((uint16_t)payload[2] << 8);
 	dev = bt_find_device_by_handle(handle);
 	if (dev == NULL) {
-		bt_emit("disconnect handle=0x%04X status=%u reason=%u",
+		bt_emit("disconnect handle=0x%04X status=%u reason=%u\n",
 			handle, payload[0], payload[3]);
 		return;
 	}
@@ -758,7 +850,7 @@ static void bt_handle_disconnection_complete(const uint8_t* payload, size_t len)
 	dev->connected = false;
 	dev->handle = 0;
 	bt_addr_to_str(dev->addr, addr, sizeof(addr));
-	bt_emit("disconnect %s status=%u reason=%u", addr, payload[0], payload[3]);
+	bt_emit("disconnect %s status=%u reason=%u\n", addr, payload[0], payload[3]);
 	if (_pending.handle == handle) {
 		bt_clear_pending();
 	}
@@ -781,10 +873,10 @@ static void bt_handle_auth_complete(const uint8_t* payload, size_t len) {
 
 	bt_addr_to_str(dev->addr, addr, sizeof(addr));
 	if (payload[0] == 0) {
-		bt_emit("pair_ok %s handle=0x%04X", addr, handle);
+		bt_emit("pair_ok %s handle=0x%04X\n", addr, handle);
 	}
 	else {
-		bt_emit("pair_fail %s status=%u", addr, payload[0]);
+		bt_emit("pair_fail %s status=%u\n", addr, payload[0]);
 	}
 	if (_pending.type == BT_PENDING_PAIR && _pending.handle == handle) {
 		bt_clear_pending();
@@ -802,7 +894,7 @@ static void bt_handle_pin_code_request(const uint8_t* payload, size_t len) {
 	bt_addr_to_str(payload, addr, sizeof(addr));
 	if (_pending.type != BT_PENDING_PAIR || !bt_pending_matches_addr(payload)) {
 		bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_PIN_CODE_REQ_NEG_REPLY, payload, 6);
-		bt_emit("pair_reject %s reason=no_pin", addr);
+		bt_emit("pair_reject %s reason=no_pin\n", addr);
 		return;
 	}
 
@@ -811,7 +903,7 @@ static void bt_handle_pin_code_request(const uint8_t* payload, size_t len) {
 	params[6] = (uint8_t)strlen(_pending.pin);
 	memcpy(params + 7, _pending.pin, params[6]);
 	bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_PIN_CODE_REQ_REPLY, params, sizeof(params));
-	bt_emit("pair_pin %s len=%u", addr, params[6]);
+	bt_emit("pair_pin %s len=%u\n", addr, params[6]);
 }
 
 static void bt_handle_link_key_request(const uint8_t* payload, size_t len) {
@@ -827,14 +919,14 @@ static void bt_handle_link_key_request(const uint8_t* payload, size_t len) {
 	bt_addr_to_str(payload, addr, sizeof(addr));
 	if (dev == NULL || !dev->has_link_key) {
 		bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_LINK_KEY_REQ_NEG_REPLY, payload, 6);
-		bt_emit("link_key_miss %s", addr);
+		bt_emit("link_key_miss %s\n", addr);
 		return;
 	}
 
 	memcpy(params, payload, 6);
 	memcpy(params + 6, dev->link_key, 16);
 	bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_LINK_KEY_REQ_REPLY, params, sizeof(params));
-	bt_emit("link_key_use %s", addr);
+	bt_emit("link_key_use %s\n", addr);
 }
 
 static void bt_handle_link_key_notify(const uint8_t* payload, size_t len) {
@@ -853,7 +945,7 @@ static void bt_handle_link_key_notify(const uint8_t* payload, size_t len) {
 	memcpy(dev->link_key, payload + 6, 16);
 	dev->has_link_key = true;
 	bt_addr_to_str(dev->addr, addr, sizeof(addr));
-	bt_emit("link_key_saved %s type=%u", addr, payload[22]);
+	bt_emit("link_key_saved %s type=%u\n", addr, payload[22]);
 }
 
 static void bt_handle_conn_request(const uint8_t* payload, size_t len) {
@@ -864,7 +956,7 @@ static void bt_handle_conn_request(const uint8_t* payload, size_t len) {
 	}
 
 	bt_addr_to_str(payload, addr, sizeof(addr));
-	bt_emit("incoming_connect %s class=0x%02X%02X%02X link=%u",
+	bt_emit("incoming_connect %s class=0x%02X%02X%02X link=%u\n",
 		addr, payload[8], payload[7], payload[6], payload[9]);
 	bt_hci_reject_connection(payload);
 }
@@ -884,7 +976,7 @@ static void bt_handle_io_capability_request(const uint8_t* payload, size_t len) 
 	params[8] = 0x01;
 	bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_IO_CAPABILITY_REQ_REPLY, params, sizeof(params));
 	bt_addr_to_str(payload, addr, sizeof(addr));
-	bt_emit("pair_io_cap %s capability=noinput", addr);
+	bt_emit("pair_io_cap %s capability=noinput\n", addr);
 }
 
 static void bt_handle_user_confirmation_request(const uint8_t* payload, size_t len) {
@@ -897,11 +989,11 @@ static void bt_handle_user_confirmation_request(const uint8_t* payload, size_t l
 	bt_addr_to_str(payload, addr, sizeof(addr));
 	if (_pending.type == BT_PENDING_PAIR && bt_pending_matches_addr(payload)) {
 		bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_USER_CONFIRM_REQ_REPLY, payload, 6);
-		bt_emit("pair_confirm %s auto=yes", addr);
+		bt_emit("pair_confirm %s auto=yes\n", addr);
 	}
 	else {
 		bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_USER_CONFIRM_REQ_NEG_REPLY, payload, 6);
-		bt_emit("pair_confirm %s auto=no", addr);
+		bt_emit("pair_confirm %s auto=no\n", addr);
 	}
 }
 
@@ -918,14 +1010,14 @@ static void bt_handle_user_passkey_request(const uint8_t* payload, size_t len) {
 	bt_addr_to_str(payload, addr, sizeof(addr));
 	if (_pending.type != BT_PENDING_PAIR || !bt_pending_matches_addr(payload)) {
 		bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_USER_PASSKEY_REQ_NEG_REPLY, payload, 6);
-		bt_emit("pair_passkey %s auto=no", addr);
+		bt_emit("pair_passkey %s auto=no\n", addr);
 		return;
 	}
 
 	passkey = strtoul(_pending.pin, &endptr, 10);
 	if (*_pending.pin == 0 || *endptr != 0 || passkey > 999999UL) {
 		bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_USER_PASSKEY_REQ_NEG_REPLY, payload, 6);
-		bt_emit("pair_passkey %s auto=no", addr);
+		bt_emit("pair_passkey %s auto=no\n", addr);
 		return;
 	}
 
@@ -951,6 +1043,8 @@ static void bt_handle_simple_pairing_complete(const uint8_t* payload, size_t len
 }
 
 static void bt_handle_event(uint8_t event_code, const uint8_t* payload, size_t len) {
+	_wait_debug.last_event_code = event_code;
+	_wait_debug.last_event_len = (uint8_t)len;
 	switch (event_code) {
 	case EVT_CMD_COMPLETE:
 		bt_handle_command_complete(payload, len);
@@ -1048,11 +1142,18 @@ static int bt_poll_once(uint32_t first_timeout_ms) {
 		return 0;
 	}
 
+	++_wait_debug.packets_seen;
+	_wait_debug.last_pkt_type = (uint8_t)pkt_type;
+
 	if (pkt_type == HCI_PKT_EVENT) {
-		if (bt_recv_exact(hdr, 2, 20) != 0) {
+		++_wait_debug.event_packets;
+		if (bt_recv_exact(hdr, 2, BT_UART_PKT_FOLLOW_TIMEOUT_MS) != 0) {
+			slog("bluetooth poll event_header_timeout fr=0x%08x\n", get32(UART0_FR_REG));
 			return -1;
 		}
-		if (bt_recv_exact(payload, hdr[1], 20) != 0) {
+		if (bt_recv_exact(payload, hdr[1], BT_UART_PKT_FOLLOW_TIMEOUT_MS) != 0) {
+			slog("bluetooth poll event_payload_timeout evt=0x%02x len=%u fr=0x%08x\n",
+				hdr[0], hdr[1], get32(UART0_FR_REG));
 			return -1;
 		}
 		bt_handle_event(hdr[0], payload, hdr[1]);
@@ -1060,13 +1161,17 @@ static int bt_poll_once(uint32_t first_timeout_ms) {
 	}
 
 	if (pkt_type == HCI_PKT_ACL) {
-		if (bt_recv_exact(hdr, 4, 20) != 0) {
+		++_wait_debug.acl_packets;
+		if (bt_recv_exact(hdr, 4, BT_UART_PKT_FOLLOW_TIMEOUT_MS) != 0) {
+			slog("bluetooth poll acl_header_timeout fr=0x%08x\n", get32(UART0_FR_REG));
 			return -1;
 		}
 		acl_len = (uint16_t)hdr[2] | ((uint16_t)hdr[3] << 8);
 		bt_drop_bytes(acl_len);
 		return 1;
 	}
+
+	++_wait_debug.other_packets;
 
 	return 1;
 }
@@ -1078,6 +1183,12 @@ static int bt_wait_for_opcode(uint16_t opcode, uint32_t timeout_ms) {
 	_wait_cmd.active = true;
 	_wait_cmd.opcode = opcode;
 	_wait_cmd.status = -1;
+	memset(&_wait_debug, 0, sizeof(_wait_debug));
+	_wait_debug.last_pkt_type = 0xff;
+	_wait_debug.last_event_code = 0xff;
+	_wait_debug.last_event_len = 0xff;
+	_wait_debug.last_opcode = 0xffff;
+	_wait_debug.last_status = -1;
 
 	while (!_wait_cmd.done && waited < timeout_ms) {
 		if (bt_poll_once(1) <= 0) {
@@ -1086,6 +1197,14 @@ static int bt_wait_for_opcode(uint16_t opcode, uint32_t timeout_ms) {
 	}
 
 	_wait_cmd.active = false;
+	if (!_wait_cmd.done) {
+		slog("bluetooth wait timeout opcode=0x%04x waited=%u seen=%u evt=%u acl=%u other=%u last_pkt=0x%02x last_evt=0x%02x len=%u last_opcode=0x%04x last_status=%d fr=0x%08x\n",
+			opcode, waited, _wait_debug.packets_seen, _wait_debug.event_packets,
+			_wait_debug.acl_packets, _wait_debug.other_packets,
+			_wait_debug.last_pkt_type, _wait_debug.last_event_code,
+			_wait_debug.last_event_len, _wait_debug.last_opcode,
+			_wait_debug.last_status, get32(UART0_FR_REG));
+	}
 	return _wait_cmd.done ? _wait_cmd.status : -1;
 }
 
@@ -1099,14 +1218,27 @@ static int bt_hci_command_sync(uint16_t ogf, uint16_t ocf,
 
 static int bt_load_firmware(void) {
 	uint32_t offset = 0;
+	uint32_t chunk_idx = 0;
 	uint8_t opcodebytes[2];
 	uint8_t length;
-	uint8_t* data = brcmfmac43430_sdio_bin;
-	uint32_t size = brcmfmac43430_sdio_bin_len;
+	const uint8_t* data = bcm4345c0_hcd;
+	uint32_t size = bcm4345c0_hcd_len;
 	int ret;
+
+	slog("bluetooth fw blob size=%u head=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+		size,
+		size > 0 ? data[0] : 0,
+		size > 1 ? data[1] : 0,
+		size > 2 ? data[2] : 0,
+		size > 3 ? data[3] : 0,
+		size > 4 ? data[4] : 0,
+		size > 5 ? data[5] : 0,
+		size > 6 ? data[6] : 0,
+		size > 7 ? data[7] : 0);
 
 	ret = bt_hci_command_sync(HCI_OGF_VENDOR, HCI_OCF_VENDOR_LOAD_FIRMWARE, NULL, 0, 1000);
 	if (ret != 0) {
+		slog("bluetooth fw enter_download_failed ret=%d\n", ret);
 		return ret;
 	}
 
@@ -1117,18 +1249,26 @@ static int bt_load_firmware(void) {
 		opcodebytes[1] = *data++;
 		length = *data++;
 		opcode = (uint16_t)opcodebytes[0] | ((uint16_t)opcodebytes[1] << 8);
+		if (chunk_idx == 0) {
+			slog("bluetooth fw first_chunk opcode=0x%04x len=%u\n", opcode, length);
+		}
 
 		ret = bt_hci_send_command_raw(opcode, data, length);
 		if (ret != 0) {
+			slog("bluetooth fw send_chunk_failed idx=%u offset=%u opcode=0x%04x len=%u ret=%d\n",
+				chunk_idx, offset, opcode, length, ret);
 			return ret;
 		}
 		ret = bt_wait_for_opcode(opcode, 1000);
 		if (ret != 0) {
+			slog("bluetooth fw wait_chunk_failed idx=%u offset=%u opcode=0x%04x len=%u ret=%d\n",
+				chunk_idx, offset, opcode, length, ret);
 			return ret;
 		}
 
 		data += length;
 		offset += (uint32_t)length + 3;
+		++chunk_idx;
 	}
 
 	return 0;
@@ -1154,6 +1294,7 @@ static int bt_configure_controller(void) {
 
 static int bt_driver_init(void) {
 	int ret;
+	int flushed;
 
 	_mmio_base = mmio_map();
 	if (_mmio_base == 0) {
@@ -1168,9 +1309,14 @@ static int bt_driver_init(void) {
 	}
 
 	bt_enable_gpclk2_32k();
+	bt_prepare_combo_chip_power();
+	bt_release_bt_shutdown();
 
-	bcm283x_pl011_uart_init();
-	bt_uart_flush();
+	bcm283x_pl011_uart_init_bt();
+	flushed = bt_uart_flush();
+	slog("bluetooth init pl011 clock=%u ibrd=%u fbrd=%u flushed=%d fr=0x%08x\n",
+		bcm283x_pl011_uart_clock_hz(), bcm283x_pl011_uart_ibrd(),
+		bcm283x_pl011_uart_fbrd(), flushed, get32(UART0_FR_REG));
 	usleep(1000000);
 
 	ret = bt_hci_command_sync(HCI_OGF_HOST_CTRL, HCI_OCF_RESET, NULL, 0, 3000);
@@ -1203,7 +1349,6 @@ static int bt_start_scan(int seconds) {
 	int ret;
 
 	if (!_ready) {
-		bt_emit("error not_ready");
 		return -1;
 	}
 
@@ -1228,27 +1373,30 @@ static int bt_start_scan(int seconds) {
 	ret = bt_hci_command_sync(HCI_OGF_LINK_CTRL, HCI_OCF_INQUIRY, params, sizeof(params), 1500);
 	if (ret != 0) {
 		_scanning = false;
-		bt_emit("scan_fail status=%d", ret);
-		return -1;
+		return ret;
 	}
-
-	bt_emit("scan_begin seconds=%d", seconds);
 	return 0;
 }
 
-static void bt_stop_scan(void) {
+static int bt_stop_scan(void) {
 	int ret = bt_hci_command_sync(HCI_OGF_LINK_CTRL, HCI_OCF_INQUIRY_CANCEL, NULL, 0, 1000);
 
 	_scanning = false;
-	bt_emit("scan_stop status=%d", ret);
+	return ret;
 }
 
-static int bt_start_connection(const uint8_t* addr, bool pair, const char* pin) {
+static int bt_start_connection(const uint8_t* addr, bool pair, const char* pin,
+		char* ret_text, size_t ret_text_sz) {
 	bt_device_t* dev = bt_find_device(addr, true);
 	char addr_str[24];
 	int ret;
+	const char* action = pair ? "pair" : "connect";
 
 	if (dev == NULL) {
+		bt_addr_to_str(addr, addr_str, sizeof(addr_str));
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "%s_fail %s reason=unknown_device\n", action, addr_str);
+		}
 		return -1;
 	}
 
@@ -1261,10 +1409,14 @@ static int bt_start_connection(const uint8_t* addr, bool pair, const char* pin) 
 			_pending.handle = dev->handle;
 			strncpy(_pending.pin, (pin != NULL && pin[0] != 0) ? pin : "0000", sizeof(_pending.pin) - 1);
 			bt_hci_auth_request(dev->handle);
-			bt_emit("pair_wait_auth %s", addr_str);
+			if (ret_text != NULL && ret_text_sz != 0) {
+				snprintf(ret_text, ret_text_sz, "pair_wait_auth %s\n", addr_str);
+			}
 			return 0;
 		}
-		bt_emit("connect_ok %s handle=0x%04X", addr_str, dev->handle);
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "connect_ok %s handle=0x%04X\n", addr_str, dev->handle);
+		}
 		return 0;
 	}
 
@@ -1276,22 +1428,28 @@ static int bt_start_connection(const uint8_t* addr, bool pair, const char* pin) 
 	ret = bt_hci_create_connection(dev);
 	if (ret != 0) {
 		bt_clear_pending();
-		bt_emit("%s_fail %s status=%d", pair ? "pair" : "connect", addr_str, ret);
-		return -1;
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "%s_fail %s status=%d\n", action, addr_str, ret);
+		}
+		return ret;
 	}
 
 	ret = bt_wait_for_opcode(HCI_OPCODE(HCI_OGF_LINK_CTRL, HCI_OCF_CREATE_CONN), 1500);
 	if (ret != 0) {
 		bt_clear_pending();
-		bt_emit("%s_fail %s status=%d", pair ? "pair" : "connect", addr_str, ret);
-		return -1;
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "%s_fail %s status=%d\n", action, addr_str, ret);
+		}
+		return ret;
 	}
 
-	bt_emit("%s_begin %s", pair ? "pair" : "connect", addr_str);
+	if (ret_text != NULL && ret_text_sz != 0) {
+		snprintf(ret_text, ret_text_sz, "%s_begin %s", action, addr_str);
+	}
 	return 0;
 }
 
-static void bt_list_devices(void) {
+static void bt_list_devices_ret(char* ret, size_t ret_sz) {
 	int i;
 	int count = 0;
 
@@ -1299,13 +1457,13 @@ static void bt_list_devices(void) {
 		if (!_devices[i].used) {
 			continue;
 		}
-		bt_emit_device_line("device", &_devices[i]);
+		bt_ret_append_device_line(i, ret, ret_sz, "device", &_devices[i]);
 		++count;
 	}
-	bt_emit("devices_done count=%d", count);
+	bt_ret_append(ret, ret_sz, "devices_done count=%d\n", count);
 }
 
-static void bt_dump_state(void) {
+static void bt_dump_state_ret(char* ret, size_t ret_sz) {
 	int i;
 	int count = 0;
 
@@ -1314,49 +1472,69 @@ static void bt_dump_state(void) {
 			++count;
 		}
 	}
-	bt_emit("state ready=%d scanning=%d devices=%d pending=%d",
+	bt_ret_append(ret, ret_sz, "state ready=%d scanning=%d devices=%d pending=%d\n",
 		_ready ? 1 : 0,
 		_scanning ? 1 : 0,
 		count,
 		(int)_pending.type);
 }
 
-static void bt_help(void) {
-	slog("help scan [seconds]\n");
-	slog("help stop\n");
-	slog("help devices\n");
-	slog("help state\n");
-	slog("help name <bdaddr>\n");
-	slog("help connect <bdaddr>\n");
-	slog("help pair <bdaddr> [pin]\n");
-	slog("help disconnect <bdaddr|handle>\n");
+static void bt_help_emit(void) {
+	bt_emit("scan [seconds]\n");
+	bt_emit("stop\n");
+	bt_emit("devices\n");
+	bt_emit("state\n");
+	bt_emit("name <bdaddr>\n");
+	bt_emit("connect <bdaddr>\n");
+	bt_emit("pair <bdaddr> [pin]\n");
+	bt_emit("disconnect <bdaddr|handle>\n");
 }
 
-static void bt_name_request(const uint8_t* addr) {
+static void bt_help_ret(char* ret, size_t ret_sz) {
+	bt_ret_append(ret, ret_sz, "scan [seconds]\n");
+	bt_ret_append(ret, ret_sz, "stop\n");
+	bt_ret_append(ret, ret_sz, "devices\n");
+	bt_ret_append(ret, ret_sz, "state\n");
+	bt_ret_append(ret, ret_sz, "name <bdaddr>\n");
+	bt_ret_append(ret, ret_sz, "connect <bdaddr>\n");
+	bt_ret_append(ret, ret_sz, "pair <bdaddr> [pin]\n");
+	bt_ret_append(ret, ret_sz, "disconnect <bdaddr|handle>\n");
+}
+
+static int bt_name_request(const uint8_t* addr, char* ret_text, size_t ret_text_sz) {
 	bt_device_t* dev = bt_find_device(addr, false);
 	char addr_str[24];
 	int ret;
 
 	bt_addr_to_str(addr, addr_str, sizeof(addr_str));
 	if (dev == NULL) {
-		bt_emit("name_fail %s reason=unknown_device", addr_str);
-		return;
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "name_fail %s reason=unknown_device\n", addr_str);
+		}
+		return -1;
 	}
 
 	ret = bt_hci_request_remote_name(dev);
 	if (ret != 0) {
-		bt_emit("name_fail %s status=%d", addr_str, ret);
-		return;
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "name_fail %s status=%d\n", addr_str, ret);
+		}
+		return ret;
 	}
 	ret = bt_wait_for_opcode(HCI_OPCODE(HCI_OGF_LINK_CTRL, HCI_OCF_REMOTE_NAME_REQ), 1500);
 	if (ret != 0) {
-		bt_emit("name_fail %s status=%d", addr_str, ret);
-		return;
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "name_fail %s status=%d\n", addr_str, ret);
+		}
+		return ret;
 	}
-	bt_emit("name_begin %s", addr_str);
+	if (ret_text != NULL && ret_text_sz != 0) {
+		snprintf(ret_text, ret_text_sz, "name_begin %s\n", addr_str);
+	}
+	return 0;
 }
 
-static void bt_disconnect_target(const char* arg) {
+static int bt_disconnect_target(const char* arg, char* ret_text, size_t ret_text_sz) {
 	uint8_t addr[6];
 	bt_device_t* dev = NULL;
 	uint16_t handle;
@@ -1366,24 +1544,35 @@ static void bt_disconnect_target(const char* arg) {
 	if (bt_parse_addr(arg, addr)) {
 		dev = bt_find_device(addr, false);
 		if (dev == NULL || !dev->connected) {
-			bt_emit("disconnect_fail %s reason=not_connected", arg);
-			return;
+			if (ret_text != NULL && ret_text_sz != 0) {
+				snprintf(ret_text, ret_text_sz, "disconnect_fail %s reason=not_connected\n", arg);
+			}
+			return -1;
 		}
 		handle = dev->handle;
 	}
 	else {
 		value = strtoul(arg, &endptr, 0);
 		if (*arg == 0 || *endptr != 0 || value > 0xffffUL) {
-			bt_emit("disconnect_fail %s reason=bad_arg", arg);
-			return;
+			if (ret_text != NULL && ret_text_sz != 0) {
+				snprintf(ret_text, ret_text_sz, "disconnect_fail %s reason=bad_arg\n", arg);
+			}
+			return -1;
 		}
 		handle = (uint16_t)value;
 	}
 
 	bt_hci_disconnect(handle);
 	if (bt_wait_for_opcode(HCI_OPCODE(HCI_OGF_LINK_CTRL, HCI_OCF_DISCONNECT), 1500) != 0) {
-		bt_emit("disconnect_fail handle=0x%04X reason=cmd_status", handle);
+		if (ret_text != NULL && ret_text_sz != 0) {
+			snprintf(ret_text, ret_text_sz, "disconnect_fail handle=0x%04X reason=cmd_status\n", handle);
+		}
+		return -1;
 	}
+	if (ret_text != NULL && ret_text_sz != 0) {
+		snprintf(ret_text, ret_text_sz, "disconnect_begin handle=0x%04X\n", handle);
+	}
+	return 0;
 }
 
 static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
@@ -1398,7 +1587,7 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
 	ret[0] = 0;
 
 	if (argc <= 0 || argv == NULL || argv[0] == NULL) {
-		snprintf(ret, ret_sz, "missing command");
+		snprintf(ret, ret_sz, "missing command\n");
 		return -1;
 	}
 
@@ -1407,75 +1596,66 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
 	arg2 = argc > 2 ? argv[2] : NULL;
 
 	if (strcmp(cmd, "help") == 0) {
-		bt_help();
-		snprintf(ret, ret_sz, "ok");
+		bt_help_ret(ret, ret_sz);
 	}
 	else if (strcmp(cmd, "state") == 0) {
-		bt_dump_state();
-		snprintf(ret, ret_sz, "ok");
+		bt_dump_state_ret(ret, ret_sz);
 	}
 	else if (strcmp(cmd, "devices") == 0) {
-		bt_list_devices();
-		snprintf(ret, ret_sz, "ok");
+		bt_list_devices_ret(ret, ret_sz);
 	}
 	else if (strcmp(cmd, "scan") == 0) {
 		int seconds = arg1 != NULL ? atoi(arg1) : 10;
-		if (bt_start_scan(seconds) != 0) {
-			snprintf(ret, ret_sz, "scan failed");
-			return -1;
+		if (!_ready) {
+			snprintf(ret, ret_sz, "scan_fail reason=not_ready\n");
+			return 0;
 		}
-		snprintf(ret, ret_sz, "ok");
+		if (_scanning) {
+			snprintf(ret, ret_sz, "scan_busy\n");
+			return 0;
+		}
+		int scan_ret = bt_start_scan(seconds);
+		if (scan_ret != 0) {
+			snprintf(ret, ret_sz, "scan_fail status=%d\n", scan_ret);
+			return 0;
+		}
+		snprintf(ret, ret_sz, "scan_begin seconds=%d\n", seconds > 0 ? seconds : 10);
 	}
 	else if (strcmp(cmd, "stop") == 0) {
-		bt_stop_scan();
-		snprintf(ret, ret_sz, "ok");
+		int stop_ret = bt_stop_scan();
+		snprintf(ret, ret_sz, "scan_stop status=%d\n", stop_ret);
 	}
 	else if (strcmp(cmd, "name") == 0) {
 		if (arg1 == NULL || !bt_parse_addr(arg1, addr)) {
-			bt_emit("name_fail reason=bad_addr");
-			snprintf(ret, ret_sz, "bad address");
-			return -1;
+			snprintf(ret, ret_sz, "name_fail reason=bad_addr\n");
+			return 0;
 		}
-		bt_name_request(addr);
-		snprintf(ret, ret_sz, "ok");
+		bt_name_request(addr, ret, ret_sz);
 	}
 	else if (strcmp(cmd, "connect") == 0) {
 		if (arg1 == NULL || !bt_parse_addr(arg1, addr)) {
-			bt_emit("connect_fail reason=bad_addr");
-			snprintf(ret, ret_sz, "bad address");
-			return -1;
+			snprintf(ret, ret_sz, "connect_fail reason=bad_addr\n");
+			return 0;
 		}
-		if (bt_start_connection(addr, false, NULL) != 0) {
-			snprintf(ret, ret_sz, "connect failed");
-			return -1;
-		}
-		snprintf(ret, ret_sz, "ok");
+		bt_start_connection(addr, false, NULL, ret, ret_sz);
 	}
 	else if (strcmp(cmd, "pair") == 0) {
 		if (arg1 == NULL || !bt_parse_addr(arg1, addr)) {
-			bt_emit("pair_fail reason=bad_addr");
-			snprintf(ret, ret_sz, "bad address");
-			return -1;
+			snprintf(ret, ret_sz, "pair_fail reason=bad_addr\n");
+			return 0;
 		}
-		if (bt_start_connection(addr, true, arg2) != 0) {
-			snprintf(ret, ret_sz, "pair failed");
-			return -1;
-		}
-		snprintf(ret, ret_sz, "ok");
+		bt_start_connection(addr, true, arg2, ret, ret_sz);
 	}
 	else if (strcmp(cmd, "disconnect") == 0) {
 		if (arg1 == NULL) {
-			bt_emit("disconnect_fail reason=missing_target");
-			snprintf(ret, ret_sz, "missing target");
-			return -1;
+			snprintf(ret, ret_sz, "disconnect_fail reason=missing_target\n");
+			return 0;
 		}
-		bt_disconnect_target(arg1);
-		snprintf(ret, ret_sz, "ok");
+		bt_disconnect_target(arg1, ret, ret_sz);
 	}
 	else {
-		bt_emit("error unknown_cmd=%s", cmd);
-		snprintf(ret, ret_sz, "unknown command");
-		return -1;
+		snprintf(ret, ret_sz, "unknown command\n");
+		return 0;
 	}
 	return 0;
 }
@@ -1504,16 +1684,23 @@ static int bt_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 }
 
 static char* bt_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) {
-	static char ret[64];
+	char* ret = (char*)malloc(BT_CMD_RET_SZ);
+	if (ret == NULL) {
+		return NULL;
+	}
+	memset(ret, 0, BT_CMD_RET_SZ);
 
 	(void)dev;
 	(void)from_pid;
 	(void)p;
 
-	if (bt_handle_cmd_args(argc, argv, ret, sizeof(ret)) != 0) {
+	if (bt_handle_cmd_args(argc, argv, ret, BT_CMD_RET_SZ) != 0) {
 		return ret;
 	}
-	return ret[0] != 0 ? ret : "ok";
+	if (ret[0] == 0) {
+		snprintf(ret, BT_CMD_RET_SZ, "ok");
+	}
+	return ret;
 }
 
 static uint32_t bt_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
@@ -1573,7 +1760,7 @@ int main(int argc, char** argv) {
 	}
 	else {
 		slog("bluetooth ready classic_hci=1 scan=1 pair=1 connect=1\n");
-		bt_help();
+		bt_help_emit();
 	}
 
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);

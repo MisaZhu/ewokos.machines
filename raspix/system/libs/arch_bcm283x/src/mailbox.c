@@ -1,4 +1,5 @@
 #include <ewoksys/syscall.h>
+#include <ewoksys/dma.h>
 #include <arch/bcm283x/mailbox.h>
 
 #include <string.h>
@@ -6,6 +7,8 @@
 #define MAILBOX_TIMEOUT_LOOPS 0x2000000u
 #define MAILBOX_STATUS_EMPTY (1u << 30)
 #define MAILBOX_STATUS_FULL  (1u << 31)
+#define BCM2835_MBOX_TAG_SET_GPIO_CONFIG 0x00038043u
+#define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
 
 #define readl(addr) (*((volatile uint32_t *)(addr)))
 #define writel(val, addr) (*((volatile uint32_t *)(addr)) = (uint32_t)(val))
@@ -108,4 +111,43 @@ int bcm283x_mailbox_call_timeout(mail_message_t* msg, uint32_t timeout_loops) {
 		}
 	}
 	return -1;
+}
+
+int bcm283x_mailbox_gpio_config(uint32_t idx, bool output, bool on) {
+	ewokos_addr_t buf_vaddr;
+	uint32_t* buf;
+	uint32_t mailbox_data;
+	mail_message_t msg;
+
+	buf_vaddr = dma_alloc(0, 12u * sizeof(uint32_t));
+	if (buf_vaddr == 0) {
+		return -1;
+	}
+
+	buf = (uint32_t*)(uintptr_t)buf_vaddr;
+	memset(buf, 0, 12u * sizeof(uint32_t));
+	buf[0] = 12u * sizeof(uint32_t);
+	buf[1] = 0;
+	buf[2] = BCM2835_MBOX_TAG_SET_GPIO_CONFIG;
+	buf[3] = 24;
+	buf[4] = 0;
+	buf[5] = 128u + idx;
+	buf[6] = output ? 1u : 0u;
+	buf[7] = 0;
+	buf[8] = 0;
+	buf[9] = 0;
+	buf[10] = on ? 1u : 0u;
+	buf[11] = 0;
+
+	mailbox_data = ((uint32_t)dma_phy_addr(0, buf_vaddr) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+	if (mailbox_data == 0) {
+		dma_free(0, buf_vaddr);
+		return -1;
+	}
+
+	msg.data = mailbox_data;
+	msg.channel = PROPERTY_CHANNEL;
+	bcm283x_mailbox_call(&msg);
+	dma_free(0, buf_vaddr);
+	return 0;
 }

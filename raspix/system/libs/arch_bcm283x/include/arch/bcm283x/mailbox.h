@@ -2,6 +2,7 @@
 #define MAILBOX_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <ewoksys/mmio.h>
 
 #define MAILBOX_BASE (_mmio_base+0xB880)
@@ -27,5 +28,6 @@ void     bcm283x_mailbox_read(mail_message_t* msg);
 void     bcm283x_mailbox_send(mail_message_t* msg);
 void     bcm283x_mailbox_call(mail_message_t* msg);
 int      bcm283x_mailbox_call_timeout(mail_message_t* msg, uint32_t timeout_loops);
+int      bcm283x_mailbox_gpio_config(uint32_t idx, bool output, bool on);
 
 #endif

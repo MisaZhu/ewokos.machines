@@ -6,7 +6,7 @@
 #include <ewoksys/syscall.h>
 #include <ewoksys/mmio.h>
 #include <arch/bcm283x/pl011_uart.h>
-#include "firmware_3.h"
+#include "../../drivers/btd/firmware_4345c0.h"
 
 uint8_t lo(uint16_t val) { return (uint8_t)(val & 0xff); }
 uint8_t hi(uint16_t val) { return (uint8_t)((val & 0xff00) >> 8); }
@@ -102,10 +102,10 @@ void bt_load_firmware(void) {
 	}
 
 	uint32_t offset = 0;
-	uint32_t size = brcmfmac43430_sdio_bin_len;
+	uint32_t size = bcm4345c0_hcd_len;
 	uint8_t opcodebytes[2];
 	uint8_t length;
-	uint8_t *data = brcmfmac43430_sdio_bin;
+	uint8_t *data = (uint8_t *)bcm4345c0_hcd;
 
 	while (offset < size) {
 		opcodebytes[0] = *data;
@@ -134,7 +134,7 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 	slog("bt: init pl011_uart\n");
-	bcm283x_pl011_uart_init();
+	bcm283x_pl011_uart_init_bt();
 	bcm283x_pl011_uart_recv(100); // 清空接收缓冲区
 	sleep(1);
 
