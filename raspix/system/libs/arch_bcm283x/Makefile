@@ -10,6 +10,7 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
 
 LIB_ARCH_BCM283X_OBJS = src/framebuffer.o \
+	src/dsi.o \
 	src/gpio_actled.o \
 	src/gpio.o \
 	src/mailbox.o \
@@ -34,5 +35,4 @@ $(ARCH_BCM283X): $(LIB_ARCH_BCM283X_OBJS)
 clean:
 	rm -f $(LIB_ARCH_BCM283X_OBJS)
 	rm -f $(ARCH_BCM283X)ewoksys
-
 

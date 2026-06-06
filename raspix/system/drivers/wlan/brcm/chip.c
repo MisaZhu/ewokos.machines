@@ -431,7 +431,6 @@ static int brcmf_chip_dmp_erom_scan()
 
     do{
         eromaddr = brcmf_sdio_buscore_read32(CORE_CC_REG(0x18000000, eromptr));
-        brcm_log("eromaddr: 0x%08x\n", eromaddr);
     }while(eromaddr < 0x18000000);
 
     while (desc_type != DMP_DESC_EOT) {
@@ -492,9 +491,7 @@ static int brcmf_chip_cores_check()
         if(!core)
             continue;
             
-        brcm_log(" [%-2d] core 0x%x:%-3d base 0x%08x wrap 0x%08x\n",
-              idx++, core->pub.id, core->pub.rev, core->pub.base,
-              core->wrapbase);
+        idx++;
 
         switch (core->pub.id) {
         case BCMA_CORE_ARM_CM3:
@@ -955,8 +952,6 @@ static uint32_t brcmf_chip_tcm_ramsize(struct brcmf_core_priv *cr4)
 static int brcmf_chip_get_raminfo(void){
     struct brcmf_core_priv *mem_core;
     struct brcmf_core *mem;
-    brcm_log("brcmf_chip_get_raminfo\n");
-
     mem = brcmf_chip_get_core(BCMA_CORE_ARM_CR4);
     if (mem) {
         mem_core = container_of(mem, struct brcmf_core_priv, pub);
@@ -990,10 +985,6 @@ static int brcmf_chip_get_raminfo(void){
         }
     }
     
-    brcm_log("RAM: base=0x%x size=%d (0x%x) sr=%d (0x%x)\n",
-          pub.rambase, pub.ramsize, pub.ramsize,
-          pub.srsize,  pub.srsize);
-
     if (!pub.ramsize) {
         brcm_log("RAM size is undetermined\n");
         return -ENOMEM;
@@ -1025,9 +1016,6 @@ int brcmf_chip_recognition(void)
 
     brcmf_chip_name(pub.chip, pub.chiprev,
             pub.name, sizeof(pub.name));
-    brcm_log("found %s chip: %s\n",
-          socitype == SOCI_SB ? "SB" : "AXI", pub.name);
-
 
     brcmf_chip_dmp_erom_scan();
 
@@ -1102,9 +1090,6 @@ int brcmf_chip_setup(void)
         pub.pmurev = val & PCAP_REV_MASK;
         pub.pmucaps = val;
     }
-
-    brcm_log("ccrev=%d, pmurev=%d, pmucaps=0x%x\n",
-          cc->pub.rev, pub.pmurev, pub.pmucaps);
 
     return ret;
 }

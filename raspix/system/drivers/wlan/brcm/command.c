@@ -555,8 +555,6 @@ static int brcmf_c_process_clm_blob(int ifidx)
         err = brcmf_fil_iovar_int_get(ifidx, "clmload_status", &status);
         if (err)
             brcm_log("get clmload_status failed (%d)\n", err);
-        else
-            brcm_log("clmload_status=%d\n", status);
         err = -EIO;
     }
 
@@ -632,9 +630,6 @@ int brcmf_c_preinit_dcmds(void)
     }
     char* ptr = (char *)buf;
     strsep(&ptr, "\n");
-
-    /* Print fw version info */
-    brcm_log("Firmware: %s %s\n", ri.chipname, buf);
 
     /* set mpc */
     err = brcmf_fil_iovar_int_set(0, "mpc", 1);
@@ -754,7 +749,6 @@ void scan(void)
     struct brcmf_scan_params_le params_tmp;
     int32_t err;
 
-    brcm_log("SCAN START\n");
     memset(&req, 0, sizeof(req));
     memset(&params_tmp, 0, sizeof(params_tmp));
     brcmf_escan_prep(&params_tmp);
@@ -769,8 +763,6 @@ void scan(void)
             brcm_log("system busy : escan canceled\n");
         else
             brcm_log("error (%d)\n", err);
-    } else {
-        brcm_log("SCAN REQUEST submitted\n");
     }
     return;
 }
@@ -864,8 +856,6 @@ int connect(const char*ssid, const char* pmk)
         brcm_log("failed to join SSID:%s\n", ssid);
         goto done;
     }
-    brcm_log("CONNECT REQUEST submitted ssid=%s\n", ssid);
-
 done:
     return err;
 }

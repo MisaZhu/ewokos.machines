@@ -9,6 +9,7 @@ basic:
 
 gui:
 	cd fbd; make
+	cd dsi_fbd; make
 	cd hid_moused; make
 
 network:
@@ -18,6 +19,7 @@ network:
 clean:	
 	cd uartd; make clean
 	cd fbd; make clean
+	cd dsi_fbd; make clean
 	cd soundd; make clean
 	cd usbd; make clean
 	cd usbd.touch; make clean

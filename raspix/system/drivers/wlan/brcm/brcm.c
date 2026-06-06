@@ -436,7 +436,7 @@ static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
     if (bus->tx_queue)
         txq = queue_buffer_check(bus->tx_queue);
 
-    if (_diag.slow_dpc_count > 0 || _diag.max_dpc_usec >= BRCMF_DPC_SLOW_USEC) {
+    /*if (_diag.slow_dpc_count > 0 || _diag.max_dpc_usec >= BRCMF_DPC_SLOW_USEC) {
         brcm_log("dpc diag cnt=%u slow=%u max=%uus state=%d clk=%d rxq=%d txq=%d rxlen=%d ctrl=%d pending=%d\n",
                 _diag.dpc_count,
                 _diag.slow_dpc_count,
@@ -449,6 +449,7 @@ static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
                 bus->ctrl_frame_stat ? 1 : 0,
                 bus->rxpending ? 1 : 0);
     }
+    */
 
     _diag.window_start_usec = now_usec;
     _diag.dpc_count = 0;
@@ -1401,10 +1402,6 @@ static void brcmf_sdio_rxfail(bool abort, bool rtx)
     uint8_t hi, lo;
     int err;
 
-    brcm_log("%sterminate frame%s\n",
-          abort ? "abort command, " : "",
-          rtx ? ", send NAK" : "");
-
     if (abort)
         brcmf_sdiod_func0_wb(SDIO_CCCR_ABORT, 2, NULL);
 
@@ -1427,8 +1424,6 @@ static void brcmf_sdio_rxfail(bool abort, bool rtx)
 
     if (!retries)
         brcm_log("count never zeroed: last 0x%04x\n", lastrbc);
-    else
-        brcm_log("flush took %d iterations\n", 0xffff - retries);
 
     if (rtx) {
         brcmf_sdiod_writel(core->base + SD_REG(tosbmailbox),
@@ -1884,7 +1879,6 @@ void brcmf_rx_event( struct sk_buff *skb)
             goto done;
         ifevent = (struct brcmf_if_event *)data;
     }else if(event_type == 0 && event_status == 0){
-        brcm_log("Event: link up\n"); 
         brcmf_scan_set_mpc(true);
         bus->state = CONNECTED;
         brcm_wakeup_dev(VFS_EVT_WR);
@@ -2071,7 +2065,6 @@ static uint32_t brcmf_sdio_hostmail(void)
 
     /* Dongle recomposed rx frames, accept them again */
     if (hmb_data & HMB_DATA_NAKHANDLED) {
-        brcm_log("Dongle reports NAK handled, expect rtx of %d\n", bus->rx_seq);
         if (!bus->rxskip)
             brcm_log("unexpected NAKHANDLED!\n");
 
@@ -2328,15 +2321,11 @@ static void brcmf_sdio_dpc(void)
         brcm_log("Dongle reports RD_OOSYNC\n");
         intstatus &= ~I_RD_OOSYNC;
     }
-    if (intstatus & I_SBINT) {
-        brcm_log("Dongle reports SBINT\n");
+    if (intstatus & I_SBINT)
         intstatus &= ~I_SBINT;
-    }
     /* Would be active due to wake-wlan in gSPI */
-    if (intstatus & I_CHIPACTIVE) {
-        brcm_log("Dongle reports CHIPACTIVE\n");
+    if (intstatus & I_CHIPACTIVE)
         intstatus &= ~I_CHIPACTIVE;
-    }
     /* Ignore frame indications if rxskip is set */
     if (bus->rxskip)
         intstatus &= ~I_HMB_FRAME_IND;
@@ -2442,7 +2431,6 @@ int brcmf_sdiod_probe(void){
     if (!bus)
         return -ENOMEM;
     memset(bus, 0, sizeof(struct brcmf_dev));
-    brcm_log("pi4-wlan: probe begin\n");
 
 #if 0
     brcm_dummy_read(0x0, 1);
@@ -2519,9 +2507,7 @@ int brcmf_sdiod_probe(void){
         return err;
     }
 
-    brcm_log("pi4-wlan: buscore prep\n");
     brcmf_sdio_buscoreprep();
-    brcm_log("pi4-wlan: chip attach begin\n");
     bus->ci = brcmf_chip_attach();
     bus->sdio_core   = brcmf_chip_get_core(BCMA_CORE_SDIO_DEV);
     bus->cc_core = brcmf_chip_get_core(BCMA_CORE_CHIPCOMMON);
@@ -2530,11 +2516,6 @@ int brcmf_sdiod_probe(void){
               bus->ci, bus->sdio_core, bus->cc_core);
         return -ENODEV;
     }
-    brcm_log("pi4-wlan: chip attach done chip=%s sdio_rev=%u cc_caps=0x%x\n",
-          bus->ci ? bus->ci->name : "null",
-          bus->sdio_core ? bus->sdio_core->rev : 0,
-          bus->ci ? bus->ci->cc_caps : 0);
-
     if (brcmf_sdio_kso_init()) {
         brcm_log("error enabling KSO\n");
         return -1;
@@ -2618,20 +2599,18 @@ int brcmf_sdiod_probe(void){
     }
 
     bus->alp_only = true;
-    brcm_log("pi4-wlan: fw download begin fw=%u nvram=%u\n", fw_len, nvram_len);
     ret = brcmf_sdio_download_firmware(fw, fw_len, nvram, nvram_len);
     bus->alp_only = false;
     if (ret) {
         brcm_log("pi4-wlan: fw download failed %d\n", ret);
         return ret;
     }
-    brcm_log("pi4-wlan: fw download done\n");
 
     /* Make sure backplane clock is on, needed to generate F2 interrupt. */
     if (bus->clkstate != CLK_AVAIL)
         brcmf_sdio_clkctl(CLK_AVAIL, false);
     if (bus->clkstate != CLK_AVAIL){
-        brcm_log("failed\n");
+        brcm_log("clock not available after firmware download\n");
         return -1;
     }
 
@@ -2666,7 +2645,6 @@ int brcmf_sdiod_probe(void){
     }
 
     /* Enable function 2 (frame transfers) */
-    brcm_log("pi4-wlan: enable func2 begin\n");
     brcmf_sdiod_writel(bus->sdio_core->base + SD_REG(tosbmailboxdata),
                SDPCM_PROT_VERSION << SMB_DATA_VERSION_SHIFT, NULL);
 
@@ -2690,8 +2668,6 @@ int brcmf_sdiod_probe(void){
     uint8_t devpend = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, NULL);
     bus->intstatus = devpend & (INTR_STATUS_FUNC1 |
                                INTR_STATUS_FUNC2);
-    brcm_log("pi4-wlan: probe done intstatus=0x%x clkstate=%d\n",
-          bus->intstatus, bus->clkstate);
 
     return 0;
 }
@@ -2813,13 +2789,11 @@ int brcm_state(void){
 
 int brcm_init(void){
     int ret;
-    brcm_log("pi4-wlan: brcm_init begin\n");
     ret = mmc_hw_reset();
     if (ret) {
         brcm_log("pi4-wlan: mmc_hw_reset failed %d\n", ret);
         return ret;
     }
-    brcm_log("pi4-wlan: mmc_hw_reset done\n");
     config_init(NULL);
     pthread_t tid;
 	ret = pthread_create(&tid, NULL, brcm_thread, NULL);
@@ -2827,7 +2801,6 @@ int brcm_init(void){
         brcm_log("pi4-wlan: pthread_create failed %d\n", ret);
         return ret;
     }
-    brcm_log("pi4-wlan: worker thread started\n");
     return 0;
 }
 
