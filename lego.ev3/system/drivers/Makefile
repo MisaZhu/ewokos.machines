@@ -1,11 +1,11 @@
 all: 
-	cd fbd; make
-	cd uartd; make
-	cd gpio_joystickd; make
-	cd adcd; make
+	cd fbd; $(MAKE)
+	cd uartd; $(MAKE)
+	cd gpio_joystickd; $(MAKE)
+	cd adcd; $(MAKE)
 
 clean:	
-	cd fbd; make clean
-	cd uartd; make clean
-	cd gpio_joystickd; make clean
-	cd adcd; make clean
+	cd fbd; $(MAKE) clean
+	cd uartd; $(MAKE) clean
+	cd gpio_joystickd; $(MAKE) clean
+	cd adcd; $(MAKE) clean

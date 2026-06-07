@@ -1,7 +1,7 @@
 all: 
-	cd bt;make
-	cd aplay;make
+	cd bt;$(MAKE)
+	cd aplay;$(MAKE)
 
 clean:
-	cd aplay;make clean
-	cd bt;make clean
+	cd aplay;$(MAKE) clean
+	cd bt;$(MAKE) clean

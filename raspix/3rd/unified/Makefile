@@ -1,9 +1,9 @@
 all: 
 	mkdir -p build
-	cd drivers/xpt2046d; make
-	cd drivers/gt911_touchd; make
+	cd drivers/xpt2046d; $(MAKE)
+	cd drivers/gt911_touchd; $(MAKE)
 
 clean:	
-	cd drivers/xpt2046d; make clean
-	cd drivers/gt911_touchd; make clean
+	cd drivers/xpt2046d; $(MAKE) clean
+	cd drivers/gt911_touchd; $(MAKE) clean
 	rm -fr build

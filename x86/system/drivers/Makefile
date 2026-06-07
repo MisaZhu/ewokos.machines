@@ -1,23 +1,23 @@
 basic:
-	cd ttyd; make
-	cd powerd; make
+	cd ttyd; $(MAKE)
+	cd powerd; $(MAKE)
 
 gui:
-	cd fbd; make
-	cd usbd; make
-	cd usbkeybd; make
-	cd usbmoused; make
-	cd ps2keybd; make
-	cd ps2moused; make
+	cd fbd; $(MAKE)
+	cd usbd; $(MAKE)
+	cd usbkeybd; $(MAKE)
+	cd usbmoused; $(MAKE)
+	cd ps2keybd; $(MAKE)
+	cd ps2moused; $(MAKE)
 
 network:
 
 clean:
-	cd ttyd; make clean
-	cd powerd; make clean
-	cd fbd; make clean
-	cd usbd; make clean
-	cd usbkeybd; make clean
-	cd usbmoused; make clean
-	cd ps2keybd; make clean
-	cd ps2moused; make clean
+	cd ttyd; $(MAKE) clean
+	cd powerd; $(MAKE) clean
+	cd fbd; $(MAKE) clean
+	cd usbd; $(MAKE) clean
+	cd usbkeybd; $(MAKE) clean
+	cd usbmoused; $(MAKE) clean
+	cd ps2keybd; $(MAKE) clean
+	cd ps2moused; $(MAKE) clean

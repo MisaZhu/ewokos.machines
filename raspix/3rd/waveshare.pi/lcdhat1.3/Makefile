@@ -2,13 +2,13 @@ export MF=waveshare
 
 all: 
 	mkdir -p build
-	cd drivers/joykeybd; make
-	cd drivers/gamekbd; make
-	cd drivers/lcdhatd; make
+	cd drivers/joykeybd; $(MAKE)
+	cd drivers/gamekbd; $(MAKE)
+	cd drivers/lcdhatd; $(MAKE)
 	cp -r etc build
 
 clean:	
-	cd drivers/joykeybd; make clean
-	cd drivers/gamekbd; make clean
-	cd drivers/lcdhatd; make clean
+	cd drivers/joykeybd; $(MAKE) clean
+	cd drivers/gamekbd; $(MAKE) clean
+	cd drivers/lcdhatd; $(MAKE) clean
 	rm -fr build
