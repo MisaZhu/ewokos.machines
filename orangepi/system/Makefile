@@ -23,19 +23,19 @@ x_sys: kernel_heads
 	rm -f $(BUILD_DIR)/lib/libbsp.a
 
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
-	cd libs;make
-	cd $(SYS_ROOT_DIR)/basic;make
-	cd $(SYS_ROOT_DIR)/gui;make
-	cd drivers;make
-	cd $(SYS_ROOT_DIR)/xwin;make
+	cd libs;$(MAKE)
+	cd $(SYS_ROOT_DIR)/basic;$(MAKE)
+	cd $(SYS_ROOT_DIR)/gui;$(MAKE)
+	cd drivers;$(MAKE)
+	cd $(SYS_ROOT_DIR)/xwin;$(MAKE)
 	cp -r etc $(TARGET_DIR)/
 
 clean:
-	cd libs;make clean
-	cd drivers;make clean
-	cd $(SYS_ROOT_DIR)/xwin;make clean
-	cd $(SYS_ROOT_DIR)/gui;make clean
-	cd $(SYS_ROOT_DIR)/basic;make clean
-	cd $(EWOKOS_ROOT_DIR)/sw.extra/; make HW=$(HW) clean
+	cd libs;$(MAKE) clean
+	cd drivers;$(MAKE) clean
+	cd $(SYS_ROOT_DIR)/xwin;$(MAKE) clean
+	cd $(SYS_ROOT_DIR)/gui;$(MAKE) clean
+	cd $(SYS_ROOT_DIR)/basic;$(MAKE) clean
+	cd $(EWOKOS_ROOT_DIR)/sw.extra/; $(MAKE) HW=$(HW) clean
 	rm -fr $(BUILD_DIR)
 	rm -fr $(MACHINE_BUILD_DIR)

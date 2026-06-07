@@ -1,5 +1,5 @@
 all: 
-	cd uartd; make
+	cd uartd; $(MAKE)
 
 clean:	
-	cd uartd; make clean
+	cd uartd; $(MAKE) clean
