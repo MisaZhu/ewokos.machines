@@ -17,17 +17,19 @@ all: x
 include $(SYS_ROOT_DIR)/platform/make.inc
 
 final:
-	mkdir -p $(MACHINE_BUILD_DIR)
-	cp -r $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
-
-basic: basic_sys final
 	@echo "all done."
 
-network: network_sys final
-	@echo "all done."
+basic: basic_sys
+	@$(MAKE) final
 
-gui: gui_sys final
-	@echo "all done."
+network: network_sys
+	@$(MAKE) final
+
+gui: gui_sys
+	@$(MAKE) final
+
+x: x_sys
+	@$(MAKE) final
 
 basic_sys: kernel_heads
 	rm -f $(BUILD_DIR)/lib/libbsp.a
@@ -51,28 +53,27 @@ x_sys: gui_sys
 	cd $(SYS_ROOT_DIR)/xwin;make
 	@cp -r etc/xwin/* ${TARGET_DIR}/etc
 
-x: x_sys final
-	@echo "all done."
-
 clean:
-	cd libs;make clean
-	cd drivers;make clean
-	cd $(SYS_ROOT_DIR)/xwin;make clean
-	cd $(SYS_ROOT_DIR)/gui;make clean
-	cd $(SYS_ROOT_DIR)/network;make clean
-	cd $(SYS_ROOT_DIR)/basic;make clean
-	cd $(EWOKOS_ROOT_DIR)/sw.extra/; make HW=$(HW) clean
+	cd libs;$(MAKE) clean
+	cd drivers;$(MAKE) clean
+	cd $(SYS_ROOT_DIR)/xwin;$(MAKE) clean
+	cd $(SYS_ROOT_DIR)/gui;$(MAKE) clean
+	cd $(SYS_ROOT_DIR)/network;$(MAKE) clean
+	cd $(SYS_ROOT_DIR)/basic;$(MAKE) clean
+	cd $(EWOKOS_ROOT_DIR)/sw.extra/; $(MAKE) HW=$(HW) clean
 	rm -fr $(BUILD_DIR)
-	rm -fr $(MACHINE_BUILD_DIR)
 
 SD = root_$(ARCH).ext2
 sd:
-	mkdir -p $(MACHINE_BUILD_DIR)
-	cp -r $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
 	@echo "\n====building ext2 format sdcard image===="
-	mkdir -p build
+#256M ext2 sd
+	cd $(BUILD_DIR); \
 	dd if=/dev/zero of=${SD} bs=1k count=512k
+#make ext2 fs with: block_size=1024 inode_size=128
+	cd $(BUILD_DIR); \
 	mke2fs -b 1024 -I 128 ${SD}
-	cd $(MACHINE_BUILD_DIR); \
+
+	cd $(TARGET_DIR); \
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
+
 	@echo "==== ext2 format sdcard image created  ====\n"
