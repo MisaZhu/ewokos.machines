@@ -89,9 +89,11 @@
 #define PWM_CLOCK_DIV_INT 5U
 #define PWM_CLOCK_DIV_FRAC 0U
 #define SOUND_FEED_KICK_SLEEP_US 500U
-#define SOUND_FEED_IDLE_SLEEP_US 4000U
+#define SOUND_FEED_IDLE_SLEEP_US 1000U
 #define SOUND_FEED_DEEP_IDLE_SLEEP_US 20000U
 #define SOUND_FEED_GUARD_US 2000U
+#define SOUND_DMA_START_TARGET_US 160000U
+#define SOUND_DMA_REBUFFER_TARGET_US 224000U
 #define SOUND_PCM_RING_MIN_BYTES (128U * 1024U)
 #define SOUND_PCM_RING_MAX_BYTES (512U * 1024U)
 #define SOUND_PCM_RING_BUFFER_MULTIPLIER 8U
@@ -159,6 +161,10 @@ typedef struct {
 	uint32_t diag_last_log_usec;
 	uint32_t dma_watchdog_count;
 	uint32_t rebuffer_restart_count;
+	uint32_t feeder_last_loop_usec;
+	uint32_t feeder_delay_count;
+	uint32_t feeder_delay_max_usec;
+	uint32_t ring_starve_count;
 	bool need_rebuffer;
 	bool configured;
 	bool prepared;
@@ -391,6 +397,18 @@ static uint32_t audio_queue_avail_bytes(void) {
 	return audio_queue_avail_frames() * _snd.frame_bytes;
 }
 
+static uint32_t audio_words_to_usec(uint32_t words) {
+	if (_snd.pcm_cfg.rate <= 0 || words == 0) {
+		return 0;
+	}
+	return (uint32_t)(((uint64_t)words * 1000000ULL) /
+			((uint64_t)_snd.pcm_cfg.rate * (uint64_t)audio_output_words_per_frame()));
+}
+
+static uint32_t audio_slot_duration_usec(void) {
+	return audio_words_to_usec(DMA_SAMPLE_CAPACITY);
+}
+
 static bool sound_has_pending_work(void) {
 	return _snd.dma_running ||
 			audio_queue_pending_words() > 0 ||
@@ -500,27 +518,39 @@ static uint32_t audio_queue_streaming_words_threshold(void) {
 }
 
 static uint32_t audio_queue_start_slot_limit(void) {
-	uint32_t start_limit;
+	uint32_t min_slots;
+	uint32_t target_usec;
+	uint32_t slot_usec;
+	uint32_t target_slots;
 
 	if (_snd.need_rebuffer) {
-		if (DMA_CHAIN_REBUFFER_START_SLOTS == 0 ||
-				DMA_CHAIN_REBUFFER_START_SLOTS > DMA_BUFFER_SLOTS) {
-			return DMA_BUFFER_SLOTS;
-		}
-		return DMA_CHAIN_REBUFFER_START_SLOTS;
-	}
-	if (DMA_CHAIN_START_SLOTS == 0 || DMA_CHAIN_START_SLOTS > DMA_BUFFER_SLOTS) {
-		start_limit = DMA_BUFFER_SLOTS;
+		min_slots = DMA_CHAIN_REBUFFER_START_SLOTS;
+		target_usec = SOUND_DMA_REBUFFER_TARGET_US;
 	}
 	else {
-		start_limit = DMA_CHAIN_START_SLOTS;
+		min_slots = DMA_CHAIN_START_SLOTS;
+		target_usec = SOUND_DMA_START_TARGET_US;
 	}
-	if (_snd.ready_count >= start_limit &&
-			DMA_CHAIN_REBUFFER_START_SLOTS > start_limit &&
-			DMA_CHAIN_REBUFFER_START_SLOTS <= DMA_BUFFER_SLOTS) {
-		return DMA_CHAIN_REBUFFER_START_SLOTS;
+
+	if (min_slots == 0) {
+		min_slots = 1U;
 	}
-	return start_limit;
+	if (min_slots > DMA_BUFFER_SLOTS) {
+		min_slots = DMA_BUFFER_SLOTS;
+	}
+
+	slot_usec = audio_slot_duration_usec();
+	target_slots = min_slots;
+	if (slot_usec != 0 && target_usec > 0) {
+		uint32_t computed_slots = (target_usec + slot_usec - 1U) / slot_usec;
+		if (computed_slots > target_slots) {
+			target_slots = computed_slots;
+		}
+	}
+	if (target_slots > DMA_BUFFER_SLOTS) {
+		target_slots = DMA_BUFFER_SLOTS;
+	}
+	return target_slots;
 }
 
 static uint32_t audio_dma_samples_usec(uint32_t samples) {
@@ -554,7 +584,7 @@ static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bu
 		return;
 	}
 	_snd.diag_last_log_usec = now_usec;
-	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u running=%d need_rebuffer=%d watchdog=%u rebuffer=%u\n",
+	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u ring=%u running=%d need_rebuffer=%d watchdog=%u rebuffer=%u feeder_delay=%u feeder_delay_max=%u ring_starve=%u\n",
 			reason,
 			cb_bus,
 			_snd.active_count,
@@ -562,10 +592,14 @@ static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bu
 			_snd.fill_slot,
 			audio_queue_pending_words(),
 			audio_queue_avail_bytes(),
+			audio_pcm_ring_pending_bytes(),
 			_snd.dma_running ? 1 : 0,
 			_snd.need_rebuffer ? 1 : 0,
 			_snd.dma_watchdog_count,
-			_snd.rebuffer_restart_count);
+			_snd.rebuffer_restart_count,
+			_snd.feeder_delay_count,
+			_snd.feeder_delay_max_usec,
+			_snd.ring_starve_count);
 }
 
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec) {
@@ -660,6 +694,10 @@ static uint32_t audio_sample_to_pwm_word(int32_t sample) {
 static uint32_t audio_s16_to_pwm_word(int16_t sample) {
 	uint32_t shifted = (uint32_t)((int32_t)sample + 32768);
 	return (shifted * _snd.pwm_scale) >> 16;
+}
+
+static uint32_t audio_silence_pwm_word(void) {
+	return audio_s16_to_pwm_word(0);
 }
 
 static void audio_convert_s16_stereo_frames(const uint8_t* src, uint32_t* dst, uint32_t frames) {
@@ -758,11 +796,28 @@ static bool audio_queue_finalize_fill_slot(void) {
 
 static bool audio_queue_force_finalize_fill_slot(void) {
 	uint32_t slot = _snd.fill_slot;
+	uint32_t silence;
+	uint32_t* dst;
+	uint32_t remain;
 
 	if (slot >= DMA_BUFFER_SLOTS ||
 			_snd.slot_state[slot] != DMA_SLOT_FILLING ||
 			_snd.slot_words[slot] == 0) {
 		return false;
+	}
+
+	/*
+	 * On starvation recovery, restarting DMA with a tiny residual fragment causes
+	 * much harsher audible pops than padding the tail with silence.
+	 */
+	if (_snd.slot_words[slot] < DMA_SAMPLE_CAPACITY) {
+		silence = audio_silence_pwm_word();
+		dst = _snd.dma_slots[slot] + _snd.slot_words[slot];
+		remain = DMA_SAMPLE_CAPACITY - _snd.slot_words[slot];
+		for (uint32_t i = 0; i < remain; ++i) {
+			dst[i] = silence;
+		}
+		_snd.slot_words[slot] = DMA_SAMPLE_CAPACITY;
 	}
 	return audio_queue_finalize_fill_slot();
 }
@@ -1090,6 +1145,9 @@ static bool audio_force_recover_stall(uint32_t now_usec) {
 	uint32_t slot = DMA_SLOT_INVALID;
 	uint32_t samples = 0;
 	bool rebuffer_start;
+	uint32_t pending_words;
+	uint32_t ring_words = 0;
+	uint32_t total_pending_words;
 
 	if (_snd.dma_running) {
 		if (!audio_dma_active() ||
@@ -1110,6 +1168,20 @@ static bool audio_force_recover_stall(uint32_t now_usec) {
 		return false;
 	}
 
+	pending_words = audio_queue_pending_words();
+	if (_snd.frame_bytes != 0) {
+		ring_words = (audio_pcm_ring_pending_bytes() / _snd.frame_bytes) *
+				audio_output_words_per_frame();
+	}
+	total_pending_words = pending_words + ring_words;
+	if (ring_words != 0 &&
+			total_pending_words < audio_queue_rebuffer_words_threshold()) {
+		_snd.need_rebuffer = true;
+		audio_log_diag("defer restart low total fill", now_usec,
+				audio_dma_current_cb_bus());
+		return false;
+	}
+
 	if (audio_queue_force_finalize_fill_slot()) {
 		audio_log_diag("force finalize fill", now_usec, audio_dma_current_cb_bus());
 	}
@@ -1120,6 +1192,13 @@ static bool audio_force_recover_stall(uint32_t now_usec) {
 
 	rebuffer_start = _snd.need_rebuffer;
 	_snd.need_rebuffer = false;
+	pending_words = audio_queue_pending_words();
+	if (audio_pcm_ring_pending_bytes() == 0 &&
+			pending_words < audio_queue_rebuffer_words_threshold()) {
+		_snd.need_rebuffer = true;
+		audio_log_diag("defer restart low fill", now_usec, audio_dma_current_cb_bus());
+		return false;
+	}
 	if (!audio_queue_prepare_dma_chain(now_usec, &slot, &samples) || samples == 0) {
 		_snd.need_rebuffer = rebuffer_start;
 		return false;
@@ -1642,6 +1721,18 @@ static bool audio_feed_pcm_ring_locked(void) {
 		audio_pcm_ring_consume_bytes(pushed_frames * _snd.frame_bytes);
 		consumed = true;
 	}
+
+	/* debug-point raspix-audio-noise-ring-starve: begin */
+	if (_snd.started &&
+			_snd.dma_running &&
+			!consumed &&
+			_snd.frame_bytes != 0 &&
+			audio_pcm_ring_pending_bytes() < _snd.frame_bytes &&
+			audio_queue_pending_words() <= DMA_SAMPLE_CAPACITY) {
+		_snd.ring_starve_count++;
+		audio_log_diag("ring starved", audio_now_usec(), audio_dma_current_cb_bus());
+	}
+	/* debug-point raspix-audio-noise-ring-starve: end */
 	return consumed;
 }
 
@@ -1664,6 +1755,20 @@ static void* sound_feeder_thread(void* arg) {
 		}
 
 		now_usec = audio_now_usec();
+		/* debug-point raspix-audio-noise-feeder-jitter: begin */
+		if (_snd.feeder_last_loop_usec != 0 &&
+				sound_has_pending_work()) {
+			uint32_t loop_gap_usec = audio_elapsed_usec(_snd.feeder_last_loop_usec, now_usec);
+			if (loop_gap_usec > (SOUND_FEED_IDLE_SLEEP_US + SOUND_FEED_GUARD_US)) {
+				_snd.feeder_delay_count++;
+				if (loop_gap_usec > _snd.feeder_delay_max_usec) {
+					_snd.feeder_delay_max_usec = loop_gap_usec;
+				}
+				audio_log_diag("feeder delayed", now_usec, audio_dma_current_cb_bus());
+			}
+		}
+		_snd.feeder_last_loop_usec = now_usec;
+		/* debug-point raspix-audio-noise-feeder-jitter: end */
 		wake_writer = audio_feed_pcm_ring_locked();
 		audio_service_locked(now_usec, &wake_writer, &start_dma, &rebuffer_start,
 				&slot, &samples);
