@@ -6,6 +6,7 @@
 #include <ewoksys/proc.h>
 #include <ewoksys/proto.h>
 #include <ewoksys/vfs.h>
+#include <sysinfo.h>
 #include <sys/time.h>
 #include <string.h>
 #include <stdlib.h>
@@ -23,10 +24,11 @@
 #define CTRL_PCM_DEV_PRPARE 0xF2
 #define CTRL_PCM_BUF_AVAIL 0xF3
 
-#define PWM_BASE        (_mmio_base + 0x20C000)
 #define CLOCK_BASE      (_mmio_base + 0x101000)
-#define PWM_BUS_BASE    0x7E20C000u
-#define PWM_FIFO_BUS_ADDR (PWM_BUS_BASE + 0x18u)
+#define PWM_BASE_OFF_BCM283X 0x20C000u
+#define PWM_BASE_OFF_BCM2711 0x20C800u
+#define PWM_FIFO_BUS_ADDR_BCM283X (0x7E20C000u + 0x18u)
+#define PWM_FIFO_BUS_ADDR_BCM2711 (0x7E20C800u + 0x18u)
 #define DMA_VC_ALIAS_UNCACHED 0xC0000000u
 #define DMA_BUS_ADDR_MASK 0x3FFFFFFFu
 
@@ -71,7 +73,8 @@
 #define DMA_DEST_DREQ 0x40
 #define DMA_SRC_INC   0x100
 
-#define DMA_PERMAP_PWM  (DMA_CHANNEL << 16)
+#define DMA_PERMAP_PWM_BCM283X  (5U << 16)
+#define DMA_PERMAP_PWM_BCM2711  (1U << 16)
 
 #define DMA_BUF_SIZE  (1024*4)
 #define DMA_SAMPLE_CAPACITY (DMA_BUF_SIZE / sizeof(uint32_t))
@@ -171,6 +174,11 @@ static pthread_mutex_t _snd_lock;
 static pthread_t _snd_feeder_tid;
 static bool _snd_feeder_started = false;
 static vdevice_t* _snd_dev = NULL;
+static sys_info_t _sys_info;
+static uintptr_t _snd_pwm_base = 0;
+static uint32_t _snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
+static uint32_t _snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
+static bool _snd_pi4_pwm = false;
 
 static int audio_stop(void);
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec);
@@ -184,6 +192,57 @@ static void* sound_feeder_thread(void* arg);
 
 static uint32_t audio_output_words_per_frame(void) {
 	return PWM_OUTPUT_CHANNELS;
+}
+
+static volatile uint32_t* audio_pwm_regs(void) {
+	return (volatile uint32_t*)(uintptr_t)_snd_pwm_base;
+}
+
+static uint32_t audio_pwm_fifo_bus_addr(void) {
+	return _snd_pwm_fifo_bus_addr;
+}
+
+static uint32_t audio_dma_permap(void) {
+	return _snd_dma_permap;
+}
+
+/* debug-point pi4-no-sound-reg-dump: begin */
+static void audio_log_hw_regs(const char* tag) {
+	volatile uint32_t* pwm = audio_pwm_regs();
+	volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
+	volatile uint32_t* dma = (uint32_t*)(uintptr_t)DMA_BASE;
+	volatile uint32_t* dmae = (uint32_t*)(uintptr_t)DMA_ENABLE;
+
+	slog("sound: %s pwm_ctl=%x pwm_sta=%x pwm_dmac=%x rng1=%x rng2=%x clk_ctl=%x clk_div=%x dma_cs=%x dma_cb=%x dmae=%x\n",
+			tag,
+			*(pwm + BCM283x_PWM_CONTROL),
+			*(pwm + BCM283x_PWM_STATUS),
+			*(pwm + BCM283x_PWM_DMAC),
+			*(pwm + BCM283x_PWM_RANGE1),
+			*(pwm + BCM283x_PWM_RANGE2),
+			*(clk + BCM283x_PWMCLK_CNTL),
+			*(clk + BCM283x_PWMCLK_DIV),
+			*(dma + DMA_CS),
+			*(dma + DMA_CONBLK_AD),
+			*dmae);
+}
+/* debug-point pi4-no-sound-reg-dump: end */
+
+static void audio_detect_hw_config(void) {
+	_snd_pi4_pwm = _sys_info.mmio.phy_base == 0xfe000000u;
+	if (_snd_pi4_pwm) {
+		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM2711;
+		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM2711;
+		_snd_dma_permap = DMA_PERMAP_PWM_BCM2711;
+	}
+	else {
+		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM283X;
+		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
+		_snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
+	}
+	slog("sound: machine=%s mmio=%x pwm=%x fifo=%x permap=%x pi4=%d\n",
+			_sys_info.machine, _sys_info.mmio.phy_base, (uint32_t)_snd_pwm_base,
+			_snd_pwm_fifo_bus_addr, _snd_dma_permap, _snd_pi4_pwm ? 1 : 0);
 }
 
 static uint32_t audio_pwm_control_flags(void) {
@@ -763,7 +822,7 @@ static uint32_t audio_queue_push_pcm(const uint8_t* buf, int size) {
 }
 
 static void audio_set_pwm_range(uint32_t range) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 
 	*(pwm + BCM283x_PWM_RANGE1) = range;
 	*(pwm + BCM283x_PWM_RANGE2) = range;
@@ -925,7 +984,7 @@ static uint32_t audio_queue_append_ready_chain(uint32_t now_usec) {
 			continue;
 		}
 		cb->source_ad = (uint32_t)_snd.dma_slot_phys[slot] | DMA_VC_ALIAS_UNCACHED;
-		cb->dest_ad = PWM_FIFO_BUS_ADDR;
+		cb->dest_ad = audio_pwm_fifo_bus_addr();
 		cb->txfr_len = _snd.slot_words[slot] * sizeof(uint32_t);
 		cb->stride = 0x00;
 		cb->nextconbk = 0x00;
@@ -969,7 +1028,7 @@ static bool audio_queue_prepare_dma_chain(uint32_t now_usec, uint32_t* head_slot
 			continue;
 		}
 		cb->source_ad = (uint32_t)_snd.dma_slot_phys[slot] | DMA_VC_ALIAS_UNCACHED;
-		cb->dest_ad = PWM_FIFO_BUS_ADDR;
+		cb->dest_ad = audio_pwm_fifo_bus_addr();
 		cb->txfr_len = _snd.slot_words[slot] * sizeof(uint32_t);
 		cb->stride = 0x00;
 		cb->nextconbk = 0x00;
@@ -996,7 +1055,7 @@ static bool audio_queue_prepare_dma_chain(uint32_t now_usec, uint32_t* head_slot
 }
 
 static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_rebuffer_start) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
 	volatile uint32_t *dmae = (uint32_t *)(uintptr_t)DMA_ENABLE;
 	uint32_t dma_enable_bits;
@@ -1017,6 +1076,9 @@ static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_reb
 	_snd.dma_started_usec = audio_now_usec();
 	_snd.dma_expected_usec = audio_dma_watchdog_usec(samples);
 	_snd.dma_running = true;
+	slog("sound: dma start slot=%u samples=%u cb=%x pwm_fifo=%x\n",
+			slot, samples, cb_bus, audio_pwm_fifo_bus_addr());
+	audio_log_hw_regs("after-dma-start");
 	if (is_rebuffer_start) {
 		_snd.rebuffer_restart_count++;
 		audio_log_diag("rebuffer start", _snd.dma_started_usec, cb_bus);
@@ -1178,7 +1240,7 @@ static void audio_deinit(void) {
 }
 
 static int audio_init_pcm(const struct pcm_config *cfg) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 	uint8_t* dma_base;
 	uint32_t ring_bytes;
 
@@ -1188,6 +1250,10 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 	_snd.pwm_scale = (_snd.pwm_range > 0) ? (_snd.pwm_range - 1U) : 0;
 	audio_set_pwm_range(_snd.pwm_range);
 	*(pwm + BCM283x_PWM_CONTROL) = audio_pwm_control_flags();
+	slog("sound: hw_params rate=%d channels=%d bits=%d range=%u scale=%u frame=%u period=%u buffer=%u fifo=%x\n",
+			cfg->rate, cfg->channels, cfg->bit_depth, _snd.pwm_range, _snd.pwm_scale,
+			_snd.frame_bytes, _snd.period_bytes, _snd.buffer_bytes, audio_pwm_fifo_bus_addr());
+	audio_log_hw_regs("after-hw-params");
 
 	_snd.dma_cbs_addr = dma_alloc(0, sizeof(dma_cb_t) * DMA_BUFFER_SLOTS);
 	_snd.dma_cbs = (dma_cb_t*)(uintptr_t)_snd.dma_cbs_addr;
@@ -1216,9 +1282,9 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 
 	_snd.dma_cbs_phy = dma_phy_addr(0, _snd.dma_cbs_addr);
 	for (uint32_t i = 0; i < DMA_BUFFER_SLOTS; i++) {
-		_snd.dma_cbs[i].ti = DMA_DEST_DREQ + DMA_PERMAP_PWM + DMA_SRC_INC;
+		_snd.dma_cbs[i].ti = DMA_DEST_DREQ + audio_dma_permap() + DMA_SRC_INC;
 		_snd.dma_cbs[i].source_ad = (uint32_t)_snd.dma_slot_phys[i] | DMA_VC_ALIAS_UNCACHED;
-		_snd.dma_cbs[i].dest_ad = PWM_FIFO_BUS_ADDR;
+		_snd.dma_cbs[i].dest_ad = audio_pwm_fifo_bus_addr();
 		_snd.dma_cbs[i].txfr_len = 0x00;
 		_snd.dma_cbs[i].stride = 0x00;
 		_snd.dma_cbs[i].nextconbk = 0x00;
@@ -1298,7 +1364,7 @@ static int audio_prepare(void) {
 }
 
 static int audio_start(void) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 
 	if (!_snd.prepared) {
 		return -1;
@@ -1317,7 +1383,7 @@ static int audio_start(void) {
 
 static int audio_stop(void) {
 	if (_snd.started) {
-		volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+		volatile uint32_t *pwm = audio_pwm_regs();
 		volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
 		volatile uint32_t *dmae = (uint32_t *)(uintptr_t)DMA_ENABLE;
 		uint32_t dma_enable_bits;
@@ -1630,12 +1696,16 @@ static void audio_hw_init(void) {
 			(PWM_CLOCK_DIV_INT << 12) | PWM_CLOCK_DIV_FRAC;
 	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | PWM_CLOCK_SOURCE_SELECT;
 	proc_usleep(2000);
+	audio_log_hw_regs("after-hw-init");
 }
 
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1] : "/dev/sound0";
 
 	_mmio_base = mmio_map();
+	memset(&_sys_info, 0, sizeof(_sys_info));
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sys_info);
+	audio_detect_hw_config();
 	bcm283x_gpio_init();
 	audio_hw_init();
 	pthread_mutex_init(&_snd_lock, NULL);
