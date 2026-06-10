@@ -84,10 +84,14 @@
 #define DMA_CHAIN_START_SLOTS 6U
 #define DMA_CHAIN_REBUFFER_START_SLOTS 10U
 #define PWM_OUTPUT_CHANNELS 2U
-#define PWM_BASE_CLOCK_HZ 100000000U
-#define PWM_CLOCK_SOURCE_SELECT 6U
-#define PWM_CLOCK_DIV_INT 5U
-#define PWM_CLOCK_DIV_FRAC 0U
+#define PWM_CLOCK_SOURCE_OSC 1U
+#define PWM_CLOCK_SOURCE_PLLD 6U
+#define PWM_CLOCK_HZ_BCM283X 100000000U
+#define PWM_CLOCK_HZ_BCM2711 27000000U
+#define PWM_CLOCK_DIV_INT_BCM283X 5U
+#define PWM_CLOCK_DIV_FRAC_BCM283X 0U
+#define PWM_CLOCK_DIV_INT_BCM2711 2U
+#define PWM_CLOCK_DIV_FRAC_BCM2711 0U
 #define SOUND_FEED_KICK_SLEEP_US 500U
 #define SOUND_FEED_IDLE_SLEEP_US 1000U
 #define SOUND_FEED_DEEP_IDLE_SLEEP_US 20000U
@@ -184,6 +188,10 @@ static sys_info_t _sys_info;
 static uintptr_t _snd_pwm_base = 0;
 static uint32_t _snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
 static uint32_t _snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
+static uint32_t _snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM283X;
+static uint32_t _snd_pwm_clock_source = PWM_CLOCK_SOURCE_PLLD;
+static uint32_t _snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
+static uint32_t _snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM283X;
 static bool _snd_pi4_pwm = false;
 
 static int audio_stop(void);
@@ -240,15 +248,30 @@ static void audio_detect_hw_config(void) {
 		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM2711;
 		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM2711;
 		_snd_dma_permap = DMA_PERMAP_PWM_BCM2711;
+		/*
+		 * BCM2711 analog PWM audio uses PWM1/DREQ1, and using the Pi3-style
+		 * PLLD/5 assumptions makes playback run noticeably fast on Pi4.
+		 * Keep Pi4 on the working OSC/2 path and compute range from 27MHz.
+		 */
+		_snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM2711;
+		_snd_pwm_clock_source = PWM_CLOCK_SOURCE_OSC;
+		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM2711;
+		_snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM2711;
 	}
 	else {
 		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM283X;
 		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
 		_snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
+		_snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM283X;
+		_snd_pwm_clock_source = PWM_CLOCK_SOURCE_PLLD;
+		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
+		_snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM283X;
 	}
-	slog("sound: machine=%s mmio=%x pwm=%x fifo=%x permap=%x pi4=%d\n",
+	slog("sound: machine=%s mmio=%x pwm=%x fifo=%x permap=%x clk=%u src=%u div=%u.%u pi4=%d\n",
 			_sys_info.machine, _sys_info.mmio.phy_base, (uint32_t)_snd_pwm_base,
-			_snd_pwm_fifo_bus_addr, _snd_dma_permap, _snd_pi4_pwm ? 1 : 0);
+			_snd_pwm_fifo_bus_addr, _snd_dma_permap, _snd_pwm_clock_hz,
+			_snd_pwm_clock_source, _snd_pwm_clock_div_int, _snd_pwm_clock_div_frac,
+			_snd_pi4_pwm ? 1 : 0);
 }
 
 static uint32_t audio_pwm_control_flags(void) {
@@ -643,7 +666,7 @@ static uint32_t audio_rate_to_pwm_range(int rate) {
 		return 0;
 	}
 
-	range = ((uint64_t)PWM_BASE_CLOCK_HZ + ((uint64_t)rate / 2ULL)) / (uint64_t)rate;
+	range = ((uint64_t)_snd_pwm_clock_hz + ((uint64_t)rate / 2ULL)) / (uint64_t)rate;
 	if (range < 2ULL) {
 		range = 2ULL;
 	}
@@ -1798,8 +1821,8 @@ static void audio_hw_init(void) {
 	proc_usleep(2000);
 
 	*(clk + BCM283x_PWMCLK_DIV)  = PM_PASSWORD |
-			(PWM_CLOCK_DIV_INT << 12) | PWM_CLOCK_DIV_FRAC;
-	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | PWM_CLOCK_SOURCE_SELECT;
+			(_snd_pwm_clock_div_int << 12) | _snd_pwm_clock_div_frac;
+	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | _snd_pwm_clock_source;
 	proc_usleep(2000);
 	audio_log_hw_regs("after-hw-init");
 }
