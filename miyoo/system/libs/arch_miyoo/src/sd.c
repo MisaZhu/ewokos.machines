@@ -9,6 +9,11 @@
 #include "sdmmc.h"
 static uint8_t *_sector_buf;
 static AdmaDescStruct *_adma_desc;
+static SDMMCBusWidthEmType _fast_bus_width = EV_BUS_4BITS;
+static SDMMCBusWidthEmType _active_bus_width = EV_BUS_4BITS;
+static uint32_t _stable_successes = 0;
+static uint32_t _fast_chunk_sectors = 0;
+static uint32_t _active_chunk_sectors = 0;
 
 #define MIYOO_SD_BOUNCE_SECTORS 128U
 #define MIYOO_SD_BOUNCE_SIZE (MIYOO_SD_BOUNCE_SECTORS * 512U)
@@ -19,10 +24,89 @@ static AdmaDescStruct *_adma_desc;
 #define MIYOO_SD_ADMA_DESC_SIZE ((uint32_t)sizeof(AdmaDescStruct))
 #define MIYOO_SD_ADMA_MAX_SECTORS (MIYOO_SD_BOUNCE_SECTORS - 1U)
 #define MIYOO_SD_ADMA_DESC_OFFSET (MIYOO_SD_ADMA_MAX_SECTORS * 512U)
+#define MIYOO_SD_RETRY_COUNT 5U
+#define MIYOO_SD_RETRY_DELAY_US 2000U
+#define MIYOO_SD_RECOVER_SUCCESS_STREAK 32U
+#define MIYOO_SD_SYSTEM_SAFE_CHUNK 1U
+
+static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
+		uint16_t u16BlkCnt, uint16_t u16BlkSize, TransEmType eTransType,
+		volatile uint8_t *pu8Buf);
 
 static inline uint32_t miyoo_sd_dma_addr(volatile uint8_t *buf) {
 	ewokos_addr_t phy = (ewokos_addr_t)buf - (ewokos_addr_t)MIYOO_SD_DMA_VIRT_OFFSET;
 	return Hal_CARD_TransMIUAddr((uint32_t)phy);
+}
+
+static void miyoo_sd_apply_bus_width(SDMMCBusWidthEmType bus_width) {
+	_active_bus_width = bus_width;
+	Hal_SDMMC_SetDataWidth(EV_IP_FCIE1, _active_bus_width);
+	Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, EV_BUS_DEF);
+	Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
+}
+
+static void miyoo_sd_note_success(void) {
+	if(_active_bus_width == _fast_bus_width &&
+			_active_chunk_sectors == _fast_chunk_sectors) {
+		_stable_successes = 0;
+		return;
+	}
+
+	if(++_stable_successes >= MIYOO_SD_RECOVER_SUCCESS_STREAK) {
+		_stable_successes = 0;
+		if(_active_chunk_sectors < _fast_chunk_sectors) {
+			_active_chunk_sectors <<= 1;
+			if(_active_chunk_sectors > _fast_chunk_sectors)
+				_active_chunk_sectors = _fast_chunk_sectors;
+		}
+		else {
+			miyoo_sd_apply_bus_width(_fast_bus_width);
+		}
+	}
+}
+
+static void miyoo_sd_note_retryable_error(void) {
+	_stable_successes = 0;
+	_active_chunk_sectors = MIYOO_SD_SYSTEM_SAFE_CHUNK;
+	if(_active_bus_width != EV_BUS_1BIT)
+		miyoo_sd_apply_bus_width(EV_BUS_1BIT);
+}
+
+static void miyoo_sd_recover(void) {
+	Hal_SDMMC_Reset(EV_IP_FCIE1);
+	sdmmc_init();
+	miyoo_sd_apply_bus_width(_active_bus_width);
+}
+
+static int miyoo_sd_should_retry(RspErrEmType err) {
+	ErrGrpEmType group;
+
+	if(err == EV_STS_OK)
+		return 0;
+	group = Hal_SDMMC_ErrGroup(err);
+	return (group == EV_EGRP_TOUT) || (group == EV_EGRP_COMM);
+}
+
+static RspErrEmType miyoo_sd_run_request(uint8_t cmd, uint32_t sector,
+		uint16_t blk_cnt, uint16_t blk_size, TransEmType trans_type,
+		volatile uint8_t *buf) {
+	RspStruct *rsp;
+	uint32_t attempt;
+
+	for(attempt = 0; attempt < MIYOO_SD_RETRY_COUNT; attempt++) {
+		rsp = _SDMMC_DATAReq(0, cmd, sector, blk_cnt, blk_size, trans_type, buf);
+		if(rsp->eErrCode == EV_STS_OK) {
+			miyoo_sd_note_success();
+			return EV_STS_OK;
+		}
+		if(!miyoo_sd_should_retry(rsp->eErrCode))
+			return rsp->eErrCode;
+		miyoo_sd_note_retryable_error();
+		miyoo_sd_recover();
+		usleep(MIYOO_SD_RETRY_DELAY_US);
+	}
+
+	return rsp->eErrCode;
 }
 
 static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg, uint16_t u16BlkCnt, uint16_t u16BlkSize, TransEmType eTransType, volatile uint8_t *pu8Buf)
@@ -74,82 +158,81 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
  * initialize EMMC to read SDHC card
  */
 int32_t miyoo_sd_init(void) {
-	SDMMCBusWidthEmType bus_width;
-
 	_mmio_base = mmio_map();
-	if(_mmio_base == NULL)
+	if(_mmio_base == 0)
 		return -1;
 	_sector_buf = (uint8_t*)MIYOO_SD_BOUNCE_VIRT;
 	_adma_desc = (AdmaDescStruct*)(MIYOO_SD_BOUNCE_VIRT + MIYOO_SD_ADMA_DESC_OFFSET);
 	if(syscall3(SYS_MEM_MAP, (ewokos_addr_t)_sector_buf, MIYOO_SD_BOUNCE_PHY, MIYOO_SD_BOUNCE_SIZE) == 0)
 		return -1;
-	bus_width = Hal_SDMMC_GetDataWidth(EV_IP_FCIE1);
+	_fast_bus_width = EV_BUS_1BIT;
+	_fast_chunk_sectors = MIYOO_SD_SYSTEM_SAFE_CHUNK;
+	_active_chunk_sectors = _fast_chunk_sectors;
 	sdmmc_init();
-	Hal_SDMMC_SetDataWidth(EV_IP_FCIE1, bus_width);
-	Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, EV_BUS_DEF);
-	Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
+	_stable_successes = 0;
+	miyoo_sd_apply_bus_width(_fast_bus_width);
 	return 0;
 }
 
 
 int32_t miyoo_sd_read_sector(int32_t sector, void* buf) {
-	return miyoo_sd_read_blocks(sector, buf, 1);
+	RspErrEmType err;
+
+	if(buf == NULL)
+		return -1;
+	err = miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, _sector_buf);
+	if(err != EV_STS_OK)
+		return err;
+	memcpy(buf, _sector_buf, 512U);
+	return 0;
 }
 
 int32_t miyoo_sd_write_sector(int32_t sector, const void* buf) {
-	return miyoo_sd_write_blocks(sector, buf, 1);
+	RspErrEmType err;
+
+	if(buf == NULL)
+		return -1;
+	memcpy(_sector_buf, buf, 512U);
+	err = miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, _sector_buf);
+	if(err != EV_STS_OK)
+		return err;
+	return 0;
 }
 
 int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
-	static RspStruct * pstRsp;
 	uint8_t* dst = (uint8_t*)buf;
 
 	if(buf == NULL)
 		return -1;
 
 	while(count > 0) {
-		uint32_t chunk = count;
-		uint8_t cmd;
-
-		if(chunk > MIYOO_SD_ADMA_MAX_SECTORS)
-			chunk = MIYOO_SD_ADMA_MAX_SECTORS;
-
-		cmd = (chunk > 1U) ? 18 : 17;
-		pstRsp = _SDMMC_DATAReq(0, cmd, sector, (uint16_t)chunk, 512, EV_ADMA, _sector_buf);
-		if(pstRsp->eErrCode != 0)
-			return pstRsp->eErrCode;
-
-		memcpy(dst, _sector_buf, chunk * 512U);
-		dst += chunk * 512U;
-		sector += (int32_t)chunk;
-		count -= chunk;
+		RspErrEmType err = miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, _sector_buf);
+		if(err != EV_STS_OK)
+			return err;
+		memcpy(dst, _sector_buf, 512U);
+		dst += 512U;
+		sector++;
+		count--;
 	}
 	return 0;
 }
 
 int32_t miyoo_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
-	static RspStruct * pstRsp;
 	const uint8_t* src = (const uint8_t*)buf;
 
 	if(buf == NULL)
 		return -1;
 
 	while(count > 0) {
-		uint32_t chunk = count;
-		uint8_t cmd;
+		RspErrEmType err;
 
-		if(chunk > MIYOO_SD_BOUNCE_SECTORS)
-			chunk = MIYOO_SD_BOUNCE_SECTORS;
-
-		memcpy(_sector_buf, src, chunk * 512U);
-		cmd = (chunk > 1) ? 25 : 24;
-		pstRsp = _SDMMC_DATAReq(0, cmd, sector, (uint16_t)chunk, 512, EV_DMA, _sector_buf);
-		if(pstRsp->eErrCode != 0)
-			return pstRsp->eErrCode;
-
-		src += chunk * 512U;
-		sector += (int32_t)chunk;
-		count -= chunk;
+		memcpy(_sector_buf, src, 512U);
+		err = miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, _sector_buf);
+		if(err != EV_STS_OK)
+			return err;
+		src += 512U;
+		sector++;
+		count--;
 	}
 	return 0;
 }

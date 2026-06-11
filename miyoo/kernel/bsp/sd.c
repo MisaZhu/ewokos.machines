@@ -4,16 +4,61 @@
 #include <mm/mmu.h>
 
 uint8_t *_sector_buf = 0x87E00000;
+static SDMMCBusWidthEmType _fast_bus_width = EV_BUS_4BITS;
+static SDMMCBusWidthEmType _active_bus_width = EV_BUS_4BITS;
+static uint32_t _stable_successes = 0;
 // static IPEmType ge_IPSlot[3]     = {D_SDMMC1_IP, D_SDMMC2_IP, D_SDMMC3_IP};
 // static PortEmType ge_PORTSlot[3] = {D_SDMMC1_PORT, D_SDMMC2_PORT, D_SDMMC3_PORT};
 // static PADEmType  ge_PADSlot[3]  = {D_SDMMC1_PAD, D_SDMMC2_PAD, D_SDMMC3_PAD};
 // static U32_T  gu32_MaxClkSlot[3] = {V_SDMMC1_MAX_CLK, V_SDMMC2_MAX_CLK, V_SDMMC3_MAX_CLK};
 
+#define MIYOO_SD_REAL_CLK_HZ 8000000U
+#define MIYOO_SD_RETRY_COUNT 5U
+#define MIYOO_SD_RECOVER_SUCCESS_STREAK 32U
+
+static void miyoo_sd_apply_bus_width(SDMMCBusWidthEmType bus_width) {
+	_active_bus_width = bus_width;
+	Hal_SDMMC_SetDataWidth(EV_IP_FCIE1, _active_bus_width);
+	Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, EV_BUS_DEF);
+	Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
+}
+
+static void miyoo_sd_note_success(void) {
+	if(_active_bus_width == _fast_bus_width) {
+		_stable_successes = 0;
+		return;
+	}
+
+	if(++_stable_successes >= MIYOO_SD_RECOVER_SUCCESS_STREAK) {
+		_stable_successes = 0;
+		miyoo_sd_apply_bus_width(_fast_bus_width);
+	}
+}
+
+static void miyoo_sd_note_retryable_error(void) {
+	_stable_successes = 0;
+	if(_active_bus_width != EV_BUS_1BIT)
+		miyoo_sd_apply_bus_width(EV_BUS_1BIT);
+}
+
+static void miyoo_sd_recover(void) {
+	Hal_SDMMC_Reset(EV_IP_FCIE1);
+	miyoo_sd_apply_bus_width(_active_bus_width);
+}
+
+static int miyoo_sd_should_retry(RspErrEmType err) {
+	ErrGrpEmType group;
+
+	if(err == EV_STS_OK)
+		return 0;
+	group = Hal_SDMMC_ErrGroup(err);
+	return (group == EV_EGRP_TOUT) || (group == EV_EGRP_COMM);
+}
+
 uint16_t SDMMC_Init(uint8_t u8Slot)
 {
 	IPEmType eIP  = EV_IP_FCIE1;
 	RspStruct * eRspSt;
-	SDMMCBusWidthEmType bus_width;
 
 	//_SDMMC_InfoInit(u8Slot);
 
@@ -28,10 +73,11 @@ uint16_t SDMMC_Init(uint8_t u8Slot)
 	// Hal_SDMMC_SetDataWidth(eIP, EV_BUS_1BIT);
 	//Hal_SDMMC_SetSDIOClk(eIP, TRUE); //For Measure Clock, Don't Stop Clock
 
-	bus_width = Hal_SDMMC_GetDataWidth(eIP);
-	Hal_SDMMC_SetDataWidth(eIP, bus_width);
-	Hal_SDMMC_SetBusTiming(eIP, EV_BUS_DEF);
-	Hal_SDMMC_SetNrcDelay(eIP, 8000000);
+	_fast_bus_width = Hal_SDMMC_GetDataWidth(eIP);
+	if(_fast_bus_width == EV_BUS_1BIT)
+		_fast_bus_width = EV_BUS_4BITS;
+	_stable_successes = 0;
+	miyoo_sd_apply_bus_width(_fast_bus_width);
 
     // //--------------------------------------------------------------------------------------------------------
     // eRspSt = _SDMMC_Identification(u8Slot);
@@ -98,11 +144,22 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
 }
 
 int32_t sd_dev_read(int32_t sector) {
-	static RspStruct * _pstRsp;
-	//------------------------------------------------------------------------------------------------------------
-	_pstRsp = _SDMMC_DATAReq(0, 17, sector, 1, 512, EV_DMA, _sector_buf);  //CMD17
-	//------------------------------------------------------------------------------------------------------------
-	return _pstRsp->eErrCode;
+	RspStruct *rsp = 0;
+	int retry;
+
+	for(retry = 0; retry < MIYOO_SD_RETRY_COUNT; retry++) {
+		rsp = _SDMMC_DATAReq(0, 17, sector, 1, 512, EV_DMA, _sector_buf);  //CMD17
+		if(rsp->eErrCode == EV_STS_OK) {
+			miyoo_sd_note_success();
+			return 0;
+		}
+		if(!miyoo_sd_should_retry(rsp->eErrCode))
+			return rsp->eErrCode;
+		miyoo_sd_note_retryable_error();
+		miyoo_sd_recover();
+	}
+
+	return rsp == 0 ? -1 : rsp->eErrCode;
 }
 
 int32_t sd_dev_read_done(void* buf) {
