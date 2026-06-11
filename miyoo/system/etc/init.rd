@@ -14,7 +14,7 @@
 @/bin/ipcserv /drivers/miyoo/gpio_joystickd     /dev/joystick
 @/bin/ipcserv /drivers/vkeybd                   /dev/vkeyb /dev/joystick -t j
 @/bin/ipcserv /drivers/vjoystickd               /dev/vjoystick /dev/vkeyb -m
-#@/bin/ipcserv /drivers/miyoo/audctrl            /dev/sound
+@/bin/ipcserv /drivers/miyoo/audctrl             /dev/sound0
 
 @/bin/splash -m "loading timer" -p 20
 @/bin/ipcserv /drivers/timerd         

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/types.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/vfs.h>
 #include <sys/errno.h>
 
 #include "pcm_lib.h"
@@ -23,6 +24,11 @@
 #define READ_LONG(a)		(*(volatile int32_t *)(a))
 
 #define TIME_USEC_TO_FRAMES(usec, rate) (uint32_t)((uint64_t)((usec) * (rate)) / (uint64_t)1000000)
+#define SOUND_DEFAULT_BIT_DEPTH		16
+#define SOUND_DEFAULT_RATE		48000
+#define SOUND_DEFAULT_CHANNELS		2
+#define SOUND_DEFAULT_PERIOD_SIZE	1024
+#define SOUND_DEFAULT_PERIOD_COUNT	4
 
 int snd_card_new(struct snd_card **snd_card, const char *name)
 {
@@ -126,6 +132,7 @@ static int snd_pcm_substream_new(struct snd_pcm *pcm)
 
 	pthread_mutex_init(&substream->lock, NULL);
 	memset(runtime, 0, sizeof(*runtime));
+	substream->runtime = runtime;
 	return 0;
 }
 
@@ -361,9 +368,7 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int32_t avail = 0;
-	int try_count = 0;
 	int err = 0;
-	const int max_try_count = 3;
 
 	while (1) {
 		avail = play_avail(runtime);
@@ -371,12 +376,7 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 			break;
 		}
 
-		if (try_count++ >= max_try_count) {
-			err  = -EAGAIN;
-			break;
-		}
-
-		delay(100);
+		usleep(1000);
 
 		//check pcm state again
 		switch (runtime->status.state) {
@@ -764,6 +764,18 @@ static void dump_pcm_runtime(struct snd_pcm_runtime *runtime)
 	}
 }
 
+static void snd_pcm_default_config(struct pcm_config *config)
+{
+	memset(config, 0, sizeof(*config));
+	config->bit_depth = SOUND_DEFAULT_BIT_DEPTH;
+	config->rate = SOUND_DEFAULT_RATE;
+	config->channels = SOUND_DEFAULT_CHANNELS;
+	config->period_size = SOUND_DEFAULT_PERIOD_SIZE;
+	config->period_count = SOUND_DEFAULT_PERIOD_COUNT;
+	config->start_threshold = 1;
+	config->stop_threshold = config->period_size * config->period_count;
+}
+
 static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_config *config)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -884,6 +896,32 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 	return err;
 }
 
+static int snd_pcm_ensure_ready(struct snd_pcm_substream *substream)
+{
+	struct pcm_config config;
+	int state = get_pcm_state(substream);
+	int err;
+
+	switch (state) {
+	case PCM_STATE_PREPARE:
+	case PCM_STATE_RUNNING:
+		return 0;
+	case PCM_STATE_OPEN:
+		snd_pcm_default_config(&config);
+		err = snd_pcm_hw_sw_parms(substream, &config);
+		if (err != 0) {
+			return err;
+		}
+		/* fall through */
+	case PCM_STATE_SETUP:
+	case PCM_STATE_STOPED:
+	case PCM_STATE_XRUN:
+		return snd_pcm_prepare(substream);
+	default:
+		return -EBADF;
+	}
+}
+
 static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 {
 	int state;
@@ -976,15 +1014,13 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 	UNUSED(info);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
-	int ret = snd_pcm_write1(pcm, buf, size, offset);
-	if (ret < 0) {
-		//KLOG("%s() wait_avail() break! err:%d bytes:%d\n", __func__, ret, size);
-		return ret;
-	} else if (ret != size) { /* written < size || written = 0 */
-		KLOG("%s() WARNING written:%d != bytes:%d\n", __func__, ret, size);
-		ret = size;
+	struct snd_pcm_substream *substream = pcm->substream;
+	int err = snd_pcm_ensure_ready(substream);
+	if (err != 0) {
+		return err;
 	}
 
+	int ret = snd_pcm_write1(pcm, buf, size, offset);
 	return ret;
 }
 
@@ -1052,6 +1088,10 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		result = snd_pcm_prepare(substream);
 		break;
 	case CTRL_PCM_BUF_AVAIL:
+		result = snd_pcm_ensure_ready(substream);
+		if (result != 0) {
+			break;
+		}
 		result = snd_pcm_buf_avail(substream);
 		break;
 	default:
@@ -1060,6 +1100,33 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 	}
 
 	PF->addi(ret, result);
+	return 0;
+}
+
+static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* p)
+{
+	UNUSED(dev);
+	UNUSED(fd);
+	UNUSED(from_pid);
+	UNUSED(info);
+
+	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	struct snd_pcm_substream *substream = pcm->substream;
+	if (snd_pcm_ensure_ready(substream) != 0) {
+		return 0;
+	}
+	if (snd_pcm_buf_avail(substream) > 0) {
+		return VFS_EVT_WR;
+	}
+	return 0;
+}
+
+static int fdev_loop_step(vdevice_t* dev, void* p)
+{
+	if (fdev_check_poll_events(dev, 0, 0, NULL, p) != 0) {
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+	}
+	usleep(1000);
 	return 0;
 }
 
@@ -1088,6 +1155,8 @@ static int snd_pcm_device_create(struct snd_device *device)
 	vdev->dev_cntl = fops->dev_cntl;
 	vdev->read = fops->read;
 	vdev->write = fops->write;
+	vdev->check_poll_events = fdev_check_poll_events;
+	vdev->loop_step = fdev_loop_step;
 
 	vdev->extra_data = pcm;
 	pcm->private_data = vdev;

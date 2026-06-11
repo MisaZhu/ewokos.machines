@@ -1,6 +1,7 @@
 
 #include <stdio.h>
 #include <sys/types.h>
+#include <string.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/vdevice.h>
 
@@ -27,7 +28,7 @@ static void enter_pcm_device_loop(struct snd_pcm *pcm, const char* dev_name)
 
 int main(int argc, char *argv[])
 {
-	const char* dev_name = argc < 2 ? "/dev/sound":argv[1];
+	const char* dev_name = argc < 2 ? "/dev/sound0":argv[1];
 	int ret = 0;
 	ret = snd_card_new(&sound_card, "ewokos sound card");
 	if (ret != 0 || !sound_card) {
