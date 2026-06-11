@@ -167,12 +167,12 @@ int32_t miyoo_sd_init(void) {
 	_adma_desc = (AdmaDescStruct*)(MIYOO_SD_BOUNCE_VIRT + MIYOO_SD_ADMA_DESC_OFFSET);
 	if(syscall3(SYS_MEM_MAP, (ewokos_addr_t)_sector_buf, MIYOO_SD_BOUNCE_PHY, MIYOO_SD_BOUNCE_SIZE) == 0)
 		return -1;
-	_fast_bus_width = EV_BUS_4BITS;
+	_fast_bus_width = EV_BUS_1BIT;
 	_fast_chunk_sectors = MIYOO_SD_SYSTEM_FAST_CHUNK;
 	_active_chunk_sectors = _fast_chunk_sectors;
 	sdmmc_init();
 	_stable_successes = 0;
-	miyoo_sd_apply_bus_width(EV_BUS_1BIT); /* 启动初期先用 1-bit，稳定后自动升级到 4-bit */
+	miyoo_sd_apply_bus_width(_fast_bus_width);
 	return 0;
 }
 
