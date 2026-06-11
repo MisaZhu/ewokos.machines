@@ -288,6 +288,9 @@ static void bach_irq_handle(uint32_t interrupt, uint32_t data)
 	if (!tSubstream || tStart != 1) {
 		goto TIMER_INT_END;
 	}
+	if (tBach == NULL) {
+		goto TIMER_INT_END;
+	}
 
 	runtime = tSubstream->runtime;
 
@@ -592,6 +595,12 @@ int mi_cpu_dai_prepare(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 
 	KLOG("%s() bach_runtime: period_size:%d period_bytes:%d strid:%d max_inflight:%d max_level:%d\n", __func__,
 		runtime->period_size, bach_runtime->period_bytes, stride, bach_runtime->max_inflight, bach_runtime->max_level);
+	// #region debug-point C:dai-prepare
+	KLOG("[DEBUG] miyoo dai prepare bits:%d rate:%d ch:%d period:%d periods:%d dma:%x dma_bytes:%d mono:%u\n",
+		runtime->bit_depth, runtime->rate, runtime->channels,
+		runtime->period_size, runtime->periods,
+		runtime->dma_addr, runtime->dma_bytes, mono);
+	// #endregion
 	return ret;
 }
 
@@ -637,6 +646,15 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 
 		/* start polling dma status */
 		tStart = 1;
+		// #region debug-point C:trigger-start
+		KLOG("[DEBUG] miyoo trigger start en:%d pending:%d total:%d processed:%d appl:%d hw:%d\n",
+			bach_runtime->running ? 1 : 0,
+			(int)bach_runtime->pending_bytes,
+			(int)bach_runtime->total_bytes,
+			(int)bach_runtime->processed_bytes,
+			runtime->status.appl_ptr,
+			runtime->status.hw_ptr);
+		// #endregion
 		break;
 	case PCM_TRIGER_STOP:
 		regmap_field_write(sub_channel->en, 0);
@@ -649,6 +667,14 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 
 		/* stop polling dma status */
 		tStart = 0;
+		// #region debug-point C:trigger-stop
+		KLOG("[DEBUG] miyoo trigger stop pending:%d total:%d processed:%d appl:%d hw:%d\n",
+			(int)bach_runtime->pending_bytes,
+			(int)bach_runtime->total_bytes,
+			(int)bach_runtime->processed_bytes,
+			runtime->status.appl_ptr,
+			runtime->status.hw_ptr);
+		// #endregion
 		break;
 	default:
 		KLOG("%s() Unkown cmd:%d\n", __func__, cmd);
@@ -701,6 +727,15 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 	new_bytes = frame_to_bytes(runtime, runtime->status.appl_ptr - bach_runtime->last_appl_ptr);
 	bach_runtime->last_appl_ptr = runtime->status.appl_ptr;
 	bach_runtime->pending_bytes += new_bytes;
+	// #region debug-point C:pcm-ack
+	KLOG("[DEBUG] miyoo pcm ack new:%d pending:%d total:%d processed:%d appl:%d hw:%d\n",
+		new_bytes,
+		(int)bach_runtime->pending_bytes,
+		(int)bach_runtime->total_bytes,
+		(int)bach_runtime->processed_bytes,
+		runtime->status.appl_ptr,
+		runtime->status.hw_ptr);
+	// #endregion
 
 	if (bach_runtime->pending_bytes >= frame_to_bytes(runtime, runtime->period_size)) {
 		runtime->ack_count = 1;
@@ -732,6 +767,19 @@ static int msc313_bach_irq(int irq, void *data, int push_pending)
 		runtime = substream->runtime;
 		bach_runtime = runtime->private_data;
 		bach_runtime->irqs++;
+		// #region debug-point D:irq
+		KLOG("[DEBUG] miyoo irq push:%d level:%d irqs:%u empty:%u underrun:%u pending:%d total:%d processed:%d appl:%d hw:%d\n",
+			push_pending,
+			level,
+			bach_runtime->irqs,
+			bach_runtime->empties,
+			bach_runtime->underruns,
+			(int)bach_runtime->pending_bytes,
+			(int)bach_runtime->total_bytes,
+			(int)bach_runtime->processed_bytes,
+			runtime->status.appl_ptr,
+			runtime->status.hw_ptr);
+		// #endregion
 
 		if (!bach_runtime->running) {
 			KLOG("%s() WARNING! bach is not RUNING!\n", __func__);
@@ -1300,7 +1348,7 @@ static int register_irq_handle(struct msc313_bach *bach)
 	tStart = 0;
 
 	static interrupt_handler_t handler;
-	handler.data = 0;
+	handler.data = bach;
 	handler.handler = bach_irq_handle;
 	sys_interrupt_setup(IRQ_TIMER0, &handler);
 	/* Enable audio dma irq */

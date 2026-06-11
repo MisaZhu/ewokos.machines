@@ -986,6 +986,10 @@ int fdev_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, v
 	UNUSED(oflag);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	// #region debug-point A:open-device
+	KLOG("[DEBUG] sound0 open fd:%d from:%d pcm:%s state:%s\n",
+		fd, from_pid, pcm->name, pcm_state_str(pcm->substream->runtime->status.state));
+	// #endregion
 	int err = snd_pcm_open(pcm);
 	return err;
 }
@@ -1015,12 +1019,30 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	struct snd_pcm_substream *substream = pcm->substream;
+	// #region debug-point A:write-entry
+	KLOG("[DEBUG] sound0 write entry size:%d offset:%d state:%s frame:%d appl:%d hw:%d\n",
+		size, offset, pcm_state_str(substream->runtime->status.state),
+		substream->runtime->frame_size,
+		substream->runtime->status.appl_ptr,
+		substream->runtime->status.hw_ptr);
+	// #endregion
 	int err = snd_pcm_ensure_ready(substream);
 	if (err != 0) {
+		// #region debug-point B:ensure-ready-fail
+		KLOG("[DEBUG] sound0 ensure_ready fail err:%d state:%s\n",
+			err, pcm_state_str(substream->runtime->status.state));
+		// #endregion
 		return err;
 	}
 
 	int ret = snd_pcm_write1(pcm, buf, size, offset);
+	// #region debug-point A:write-exit
+	KLOG("[DEBUG] sound0 write exit ret:%d state:%s appl:%d hw:%d avail_bytes:%d\n",
+		ret, pcm_state_str(substream->runtime->status.state),
+		substream->runtime->status.appl_ptr,
+		substream->runtime->status.hw_ptr,
+		snd_pcm_buf_avail(substream));
+	// #endregion
 	return ret;
 }
 
@@ -1078,13 +1100,28 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		struct pcm_config config;
 		memset(&config, 0, sizeof(struct pcm_config));
 		proto_read_to(in, &config, sizeof(struct pcm_config));
+		// #region debug-point B:ctrl-hw
+		KLOG("[DEBUG] sound0 ctrl hw bits:%d rate:%d ch:%d period:%d count:%d start:%d stop:%d state:%s\n",
+			config.bit_depth, config.rate, config.channels,
+			config.period_size, config.period_count,
+			config.start_threshold, config.stop_threshold,
+			pcm_state_str(substream->runtime->status.state));
+		// #endregion
 		result = snd_pcm_hw_sw_parms(substream, &config);
 		break;
 	}
 	case CTRL_PCM_DEV_HW_FREE:
+		// #region debug-point B:ctrl-hw-free
+		KLOG("[DEBUG] sound0 ctrl hw_free state:%s\n",
+			pcm_state_str(substream->runtime->status.state));
+		// #endregion
 		result = snd_pcm_hw_free(substream);
 		break;
 	case CTRL_PCM_DEV_PRPARE:
+		// #region debug-point C:ctrl-prepare
+		KLOG("[DEBUG] sound0 ctrl prepare state:%s\n",
+			pcm_state_str(substream->runtime->status.state));
+		// #endregion
 		result = snd_pcm_prepare(substream);
 		break;
 	case CTRL_PCM_BUF_AVAIL:
@@ -1093,6 +1130,12 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 			break;
 		}
 		result = snd_pcm_buf_avail(substream);
+		// #region debug-point A:ctrl-buf-avail
+		KLOG("[DEBUG] sound0 ctrl buf_avail ret:%d state:%s appl:%d hw:%d\n",
+			result, pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
+		// #endregion
 		break;
 	default:
 		KLOG("fdev_ctrl() error! unkown cmd:%d\n", cmd);
