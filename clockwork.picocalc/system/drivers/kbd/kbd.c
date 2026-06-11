@@ -79,11 +79,13 @@ static int kbd_loop(vdevice_t* dev, void* p) {
 	(void)dev;
 	(void)p;
 	uint8_t key[2] = {0};
+	bool wakeup = false;
 	int ret = rk_i2c_read(0x1f, 0x9,  key, 2, 0);
 	if(ret == 0){
 		uint8_t c = key[1];
 		bool macthed = false;
 		c = key_remap(c);
+		wakeup = (key[0] == KEY_PRESS || key[0] == KEY_RELEASE);
 		for(int i = 0; i < sizeof(kb_states)/sizeof(struct kb_state); i++){
 			if(kb_states[i].key == c){
 				macthed = true;
@@ -122,7 +124,10 @@ static int kbd_loop(vdevice_t* dev, void* p) {
 				break;
 		}
 	}
-	usleep(30000);
+	if(wakeup){
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	}
+	usleep(10000);
 	return 0;
 }
 
