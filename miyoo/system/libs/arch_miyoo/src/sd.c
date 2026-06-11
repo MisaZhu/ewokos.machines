@@ -28,6 +28,8 @@ static uint32_t _active_chunk_sectors = 0;
 #define MIYOO_SD_RETRY_DELAY_US 2000U
 #define MIYOO_SD_RECOVER_SUCCESS_STREAK 32U
 #define MIYOO_SD_SYSTEM_SAFE_CHUNK 1U
+#define MIYOO_SD_SYSTEM_FAST_CHUNK  8U
+
 
 static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
 		uint16_t u16BlkCnt, uint16_t u16BlkSize, TransEmType eTransType,
@@ -165,12 +167,12 @@ int32_t miyoo_sd_init(void) {
 	_adma_desc = (AdmaDescStruct*)(MIYOO_SD_BOUNCE_VIRT + MIYOO_SD_ADMA_DESC_OFFSET);
 	if(syscall3(SYS_MEM_MAP, (ewokos_addr_t)_sector_buf, MIYOO_SD_BOUNCE_PHY, MIYOO_SD_BOUNCE_SIZE) == 0)
 		return -1;
-	_fast_bus_width = EV_BUS_1BIT;
-	_fast_chunk_sectors = MIYOO_SD_SYSTEM_SAFE_CHUNK;
+	_fast_bus_width = EV_BUS_4BITS;
+	_fast_chunk_sectors = MIYOO_SD_SYSTEM_FAST_CHUNK;
 	_active_chunk_sectors = _fast_chunk_sectors;
 	sdmmc_init();
 	_stable_successes = 0;
-	miyoo_sd_apply_bus_width(_fast_bus_width);
+	miyoo_sd_apply_bus_width(EV_BUS_1BIT); /* 启动初期先用 1-bit，稳定后自动升级到 4-bit */
 	return 0;
 }
 
@@ -199,6 +201,18 @@ int32_t miyoo_sd_write_sector(int32_t sector, const void* buf) {
 	return 0;
 }
 
+static RspErrEmType miyoo_sd_try_read_multi(uint32_t sector, uint32_t count, volatile uint8_t* buf) {
+	if(count == 1)
+		return miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, buf);
+	return miyoo_sd_run_request(18, sector, count, 512, EV_DMA, buf);
+}
+
+static RspErrEmType miyoo_sd_try_write_multi(uint32_t sector, uint32_t count, const volatile uint8_t* buf) {
+	if(count == 1)
+		return miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, (volatile uint8_t*)buf);
+	return miyoo_sd_run_request(25, sector, count, 512, EV_DMA, (volatile uint8_t*)buf);
+}
+
 int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
 	uint8_t* dst = (uint8_t*)buf;
 
@@ -206,7 +220,25 @@ int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
 		return -1;
 
 	while(count > 0) {
-		RspErrEmType err = miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, _sector_buf);
+		uint32_t chunk = (_active_chunk_sectors > count) ? count : _active_chunk_sectors;
+		RspErrEmType err;
+
+		if(chunk > 1 && (chunk * 512U) <= MIYOO_SD_BOUNCE_SIZE) {
+			err = miyoo_sd_try_read_multi(sector, chunk, _sector_buf);
+			if(err == EV_STS_OK) {
+				memcpy(dst, _sector_buf, chunk * 512U);
+				dst += chunk * 512U;
+				sector += chunk;
+				count -= chunk;
+				continue;
+			}
+			/* 多块失败，退单块重试 */
+			miyoo_sd_note_retryable_error();
+			miyoo_sd_recover();
+		}
+
+		/* 单块保底 */
+		err = miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, _sector_buf);
 		if(err != EV_STS_OK)
 			return err;
 		memcpy(dst, _sector_buf, 512U);
@@ -224,8 +256,24 @@ int32_t miyoo_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
 		return -1;
 
 	while(count > 0) {
+		uint32_t chunk = (_active_chunk_sectors > count) ? count : _active_chunk_sectors;
 		RspErrEmType err;
 
+		if(chunk > 1 && (chunk * 512U) <= MIYOO_SD_BOUNCE_SIZE) {
+			memcpy(_sector_buf, src, chunk * 512U);
+			err = miyoo_sd_try_write_multi(sector, chunk, _sector_buf);
+			if(err == EV_STS_OK) {
+				src += chunk * 512U;
+				sector += chunk;
+				count -= chunk;
+				continue;
+			}
+			/* 多块失败，退单块重试 */
+			miyoo_sd_note_retryable_error();
+			miyoo_sd_recover();
+		}
+
+		/* 单块保底 */
 		memcpy(_sector_buf, src, 512U);
 		err = miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, _sector_buf);
 		if(err != EV_STS_OK)
