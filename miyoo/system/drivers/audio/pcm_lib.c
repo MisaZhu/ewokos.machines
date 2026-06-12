@@ -4,13 +4,11 @@
 #include <stddef.h>
 #include <string.h>
 #include <sys/types.h>
-#include <ewoksys/klog.h>
 #include <ewoksys/vfs.h>
 #include <sys/errno.h>
 
 #include "pcm_lib.h"
 
-#define KLOG 		klog
 #define UNUSED(v)	((void)v)
 //define EAGAIN		1 /* defined in errno.h */
 #define ENOMEM		12
@@ -29,7 +27,6 @@
 #define SOUND_DEFAULT_CHANNELS		2
 #define SOUND_DEFAULT_PERIOD_SIZE	1024
 #define SOUND_DEFAULT_PERIOD_COUNT	4
-#define ALOG(...) slog("aud: " __VA_ARGS__)
 
 int snd_card_new(struct snd_card **snd_card, const char *name)
 {
@@ -54,31 +51,50 @@ int snd_card_free(struct snd_card *card)
 		return -EBADF;
 	}
 
+	snd_card_unregister(card);
+
 	struct listnode *node;
 	struct listnode *node_next;
 	list_for_each_safe(node, node_next, &card->pcm_list) {
 		struct snd_pcm *pcm = node_to_item(node, struct snd_pcm, list);
 		snd_pcm_free(pcm);
 	}
+	free(card);
 	return 0;
 }
 
 int snd_card_register(struct snd_card *card)
 {
+	if (card == NULL) {
+		return -EBADF;
+	}
+
 	struct listnode *node;
 	list_for_each(node, &card->dev_list) {
 		struct snd_device *cur_dev = node_to_item(node, struct snd_device, list);
-		cur_dev->dev_new(cur_dev);
+		if (cur_dev->dev_new == NULL) {
+			return -EINVAL;
+		}
+		int ret = cur_dev->dev_new(cur_dev);
+		if (ret != 0) {
+			return ret;
+		}
 	}
 	return 0;
 }
 
 int snd_card_unregister(struct snd_card *card)
 {
+	if (card == NULL) {
+		return -EBADF;
+	}
+
 	struct listnode *node;
 	list_for_each(node, &card->dev_list) {
 		struct snd_device *cur_dev = node_to_item(node, struct snd_device, list);
-		cur_dev->dev_free(cur_dev);
+		if (cur_dev->dev_free != NULL) {
+			cur_dev->dev_free(cur_dev);
+		}
 	}
 	return 0;
 }
@@ -88,12 +104,12 @@ int snd_card_info_print(struct snd_card *card)
 	if (card == NULL) {
 		return 0;
 	}
-	KLOG("-Card Info:\n%s\n", card->name);
-	KLOG("\tName:%s\n", card->name);
-	KLOG("\tPcm Num:%d\n", card->num_pcm);
-	KLOG("\t-PCM Info:\n");
+	
+	
+	
+	
 	if (card->num_pcm == 0) {
-		KLOG("\t\tNo PCM!");
+		
 	} else {
 		struct listnode *node;
 		int index = 0;
@@ -101,11 +117,10 @@ int snd_card_info_print(struct snd_card *card)
 			struct snd_pcm_substream *substream = NULL;
 			struct snd_pcm *pcm = node_to_item(node, struct snd_pcm, list);
 			substream = pcm->substream;
-			KLOG("\t\tid:%d\n", index);
-			KLOG("\t\tname:%s\n", pcm->name);
+			
+			
 			if (substream != NULL) {
-				KLOG("\t\tsubstream:%s, status:%s\n", substream->name,
-							pcm_state_str(substream->runtime->status.state));
+				
 			}
 		}
 	}
@@ -115,24 +130,30 @@ int snd_card_info_print(struct snd_card *card)
 static int snd_pcm_substream_new(struct snd_pcm *pcm)
 {
 	struct snd_pcm_substream *substream;
+	struct snd_pcm_runtime *runtime;
+
 	substream = malloc(sizeof(*substream));
 	if (substream == NULL) {
 		return -ENOMEM;
 	}
-
 	memset(substream, 0, sizeof(*substream));
 	pcm->substream = substream;
 	substream->pcm = pcm;
-	strncpy(substream->name, "substream-0", 32);
+	snprintf(substream->name, sizeof(substream->name), "substream-0");
 
-	struct snd_pcm_runtime *runtime;
 	runtime = malloc(sizeof(*runtime));
 	if (runtime == NULL) {
 		free(substream);
+		pcm->substream = NULL;
 		return -ENOMEM;
 	}
 
-	pthread_mutex_init(&substream->lock, NULL);
+	if (pthread_mutex_init(&substream->lock, NULL) != 0) {
+		free(runtime);
+		free(substream);
+		pcm->substream = NULL;
+		return -ENOMEM;
+	}
 	memset(runtime, 0, sizeof(*runtime));
 	substream->runtime = runtime;
 	return 0;
@@ -144,6 +165,7 @@ static int snd_pcm_substream_free(struct snd_pcm *pcm)
 		return 0;
 	}
 
+	pthread_mutex_destroy(&pcm->substream->lock);
 	free(pcm->substream->runtime);
 	pcm->substream->runtime = NULL;
 	free(pcm->substream);
@@ -153,12 +175,18 @@ static int snd_pcm_substream_free(struct snd_pcm *pcm)
 
 int snd_pcm_lock(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL) {
+		return -EBADF;
+	}
 	pthread_mutex_lock(&substream->lock);
 	return 0;
 }
 
 int snd_pcm_unlock(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL) {
+		return -EBADF;
+	}
 	pthread_mutex_unlock(&substream->lock);
 	return 0;
 }
@@ -198,6 +226,7 @@ int snd_pcm_new(struct snd_card *card, int type, int id, struct snd_pcm **rpcm)
 
 	pcm->type = type;
 	pcm->id = id;
+	pcm->dev = device;
 	snprintf(pcm->name, 32, "%s%c%d", "pcm", PCM_TYPE_TO_TAG(pcm->type), pcm->id);
 	pcm->card = card;
 	card->num_pcm++;
@@ -216,6 +245,11 @@ int snd_pcm_free(struct snd_pcm *pcm)
 	}
 
 	snd_pcm_substream_free(pcm);
+	if (pcm->dev != NULL) {
+		list_remove(&pcm->dev->list);
+		free(pcm->dev);
+		pcm->dev = NULL;
+	}
 	list_remove(&pcm->list);
 	pcm->card->num_pcm--;
 	free(pcm);
@@ -333,7 +367,7 @@ static int snd_dai_pcm_pointer(struct snd_pcm_substream *substream)
 		pos = dai->ops->pointer(dai, substream);
 	} else {
 		pos = 0;
-		KLOG("%s() Error! The DAI hasn't pointer() ops!\n", __func__);
+		
 	}
 	return pos;
 }
@@ -388,6 +422,9 @@ static inline void delay(int32_t count)
 
 int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 {
+	if (substream == NULL || substream->runtime == NULL || ravail == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int32_t avail = 0;
 	int err = 0;
@@ -426,18 +463,19 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 
 void snd_dump_substream(struct snd_pcm_substream *substream, int is_interrupt)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	KLOG("-%s() %s appl:%d hw_ptr:%d avail:%d hw_base:%d\n", __func__,
-		(is_interrupt? "[IRQ]" : "[NM]"),
-       	runtime->status.appl_ptr,
-       	runtime->status.hw_ptr,
-       	play_avail(runtime),
-       	runtime->hw_ptr_base);
+	
 }
 
 
 int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return 0;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int pos = 0;
 	int old_hw_ptr, new_hw_ptr, hw_base;
@@ -457,11 +495,10 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 	}
 
 	if (pos >= runtime->buffer_size) {
-		KLOG("[DBG] Invalid position: pos=%d\n", pos);
+		
 		pos = 0;
 	}
 
-	//KLOG("[DBG] Invalid position: pos=%d delay_frames:%u\n", pos, d_Frames);
 
 	hw_base = runtime->hw_ptr_base;
 	new_hw_ptr = hw_base + pos;
@@ -492,9 +529,20 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 		delta += runtime->boundary;
 	}
 
+	/*
+	 * new_hw_ptr must always stay inside [hw_base, hw_base + buffer_size).
+	 * If the pointer callback returns a stale pos that pushes us past
+	 * boundary we wrap rather than write an out-of-range hw_ptr, which
+	 * would otherwise feed a giant pos into the ring and smash dma_area.
+	 */
+	if (new_hw_ptr >= runtime->boundary) {
+		new_hw_ptr -= runtime->boundary;
+		hw_base = 0;
+		cross_boundary++;
+	}
+
 	if (delta >= runtime->buffer_size) {
-		KLOG("%s() [IRQ Delay] Interrupt:%d delta:%d > bufsize:%d new_hw_ptr=%d, old_hw_ptr=%d\n",
-			__func__, is_interrupt, delta, runtime->buffer_size, new_hw_ptr, old_hw_ptr);
+		
 	}
 
 	WRITE_LONG(&runtime->hw_ptr_base, hw_base);
@@ -503,9 +551,7 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 	runtime->irq_count++;
 
 #if 0
-	KLOG("%s() irq_count:%d avail:%d appl:%d hw_ptr:%d hw_base:%d old_hw:%d pos:%d\n",
-		__func__,runtime->irq_count, avail,
-		 runtime->status.appl_ptr, runtime->status.hw_ptr, runtime->hw_ptr_base, old_hw_ptr, pos);
+	
 #endif
 
 	/*
@@ -519,9 +565,7 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 		substream->ops->trigger(substream, PCM_TRIGER_STOP);
 		runtime->status.state = PCM_STATE_XRUN;
 
-		KLOG("%s() [Warning] XRun happen! appl:%d hw_ptr:%d avail:%d ready:%d stop:%d\n",
-			__func__, runtime->status.appl_ptr, runtime->status.hw_ptr,
-			play_avail(runtime), frames_ready(runtime), runtime->stop_threshold);
+		
 	}
 
 	return 0;
@@ -533,12 +577,59 @@ static int do_transfer(struct snd_pcm_runtime *runtime,
 						int off,
 						int frames)
 {
-	volatile uint8_t *hw_app_ptr =
-		(volatile uint8_t *)runtime->dma_area + frame_to_bytes(runtime, appl_off);
-	const uint8_t *user_ptr =
-		(const uint8_t *)src_base + frame_to_bytes(runtime, off);
-	int bytes = frame_to_bytes(runtime, frames);
+	volatile uint8_t *hw_app_ptr;
+	const uint8_t *user_ptr;
+	int bytes = 0;
+	int dma_off = 0;
 	int i;
+
+	if (runtime == NULL) {
+		return -EBADF;
+	}
+	if (runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
+		return -EBADF;
+	}
+	if (src_base == NULL) {
+		return -EBADF;
+	}
+	if (frames <= 0 || appl_off < 0 || appl_off >= runtime->buffer_size) {
+		return -EINVAL;
+	}
+	if (appl_off + frames > runtime->buffer_size) {
+		return -EINVAL;
+	}
+	if (off < 0) {
+		return -EINVAL;
+	}
+	if (runtime->frame_size <= 0) {
+		return -EBADF;
+	}
+
+	bytes = frame_to_bytes(runtime, frames);
+	if (bytes <= 0) {
+		return -EINVAL;
+	}
+
+	/*
+	 * The DMA ring only has dma_bytes available. appl_off is in frames
+	 * within buffer_size, but buffer_size can be larger than dma_bytes
+	 * when HW only reserved a smaller region. Convert to a byte offset
+	 * and clip the copy so a malformed config or a stale pointer cannot
+	 * walk past the DMA ring.
+	 */
+	dma_off = frame_to_bytes(runtime, appl_off);
+	if (dma_off < 0 || dma_off >= runtime->dma_bytes) {
+		return -EINVAL;
+	}
+	if (bytes > runtime->dma_bytes - dma_off) {
+		bytes = runtime->dma_bytes - dma_off;
+	}
+	if (bytes <= 0) {
+		return -EINVAL;
+	}
+
+	hw_app_ptr = (volatile uint8_t *)runtime->dma_area + dma_off;
+	user_ptr = (const uint8_t *)src_base + frame_to_bytes(runtime, off);
 
 	for (i = 0; i < bytes; i++) {
 		hw_app_ptr[i] = user_ptr[i];
@@ -553,6 +644,19 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 	int avail = 0;
 	int written = 0;
 	int err = 0;
+
+	if (substream == NULL || runtime == NULL) {
+		return -EBADF;
+	}
+	if (source == NULL && size != 0) {
+		return -EBADF;
+	}
+	if (runtime->buffer_size <= 0 || runtime->frame_size <= 0) {
+		return -EBADF;
+	}
+	if (runtime->status.appl_ptr < 0) {
+		WRITE_LONG(&(runtime->status.appl_ptr), 0);
+	}
 
 	snd_pcm_lock(substream);
 	switch (runtime->status.state) {
@@ -569,7 +673,6 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 
 #if 0
 	if (runtime->status.state == PCM_STATE_RUNNING) {
-		//KLOG(">>>>%s()\n",__func__);
 		update_hw_ptr(substream, 0);
 	}
 #endif
@@ -586,32 +689,57 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 		if (avail == 0) {
 			err = wait_avail(substream, &avail);
 			if (err < 0) {
-				ALOG("pcm_write wait_avail fail err=%d appl=%d hw=%d state=%s\n",
-					err, runtime->status.appl_ptr, runtime->status.hw_ptr,
-					pcm_state_str(runtime->status.state));
-				KLOG("%s() No avail timeout, ret=%d\n", __func__, err);
+				
+				
 				break;
 			}
 		}
 
 		copy_frames = size > avail ? avail : size;
-		to_end = runtime->buffer_size - runtime->status.appl_ptr % runtime->buffer_size;
+		if (copy_frames <= 0) {
+			break;
+		}
+		/*
+		 * appl_ptr is the user-visible write cursor. If it ever went
+		 * negative (e.g. an out-of-range write earlier in a previous
+		 * session, or a future flag day that reuses this runtime) we
+		 * re-seat it before computing the ring offset. Otherwise the
+		 * modulo by buffer_size would yield a negative to_end and the
+		 * very next access to appl_ptr/appl_off would crash.
+		 */
+		if (runtime->status.appl_ptr < 0) {
+			WRITE_LONG(&(runtime->status.appl_ptr), 0);
+		}
+		app_offset = runtime->status.appl_ptr % runtime->buffer_size;
+		to_end = runtime->buffer_size - app_offset;
+		if (to_end <= 0) {
+			appl_ptr = 0;
+			WRITE_LONG(&(runtime->status.appl_ptr), 0);
+			continue;
+		}
 		if (copy_frames > to_end) {
 			copy_frames = to_end;
 		}
 
-		app_offset = runtime->status.appl_ptr % runtime->buffer_size;
 		//old_appl = runtime->status.appl_ptr;
 
-		do_transfer(runtime, app_offset, source, offset, copy_frames);
+		err = do_transfer(runtime, app_offset, source, offset, copy_frames);
+		if (err < 0) {
+			
+			break;
+		}
 		appl_ptr = runtime->status.appl_ptr + copy_frames;
-		if (appl_ptr >= runtime->boundary) {
+		if (runtime->boundary > 0 && appl_ptr >= runtime->boundary) {
 			appl_ptr -= runtime->boundary;
 		}
 		offset += copy_frames;
 		size -= copy_frames;
 		written += copy_frames;
-		avail -= copy_frames;
+		if (avail > copy_frames) {
+			avail -= copy_frames;
+		} else {
+			avail = 0;
+		}
 
 		//Acquire lock
 		snd_pcm_lock(substream);
@@ -646,7 +774,19 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 
 int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int frames)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	if (dest == NULL || frames <= 0) {
+		return -EINVAL;
+	}
+	if (runtime->buffer_size <= 0 || runtime->frame_size <= 0) {
+		return -EBADF;
+	}
+	if (runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
+		return -EBADF;
+	}
 	int offset = 0;
 	int avail = 0;
 	int read = 0;
@@ -681,18 +821,48 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 
 		copy_frames = frames > avail ? avail : frames;
 		to_end = runtime->buffer_size - runtime->status.hw_ptr % runtime->buffer_size;
+		if (to_end <= 0) {
+			WRITE_LONG(&(runtime->status.hw_ptr), 0);
+			continue;
+		}
 		if (copy_frames > to_end) {
 			copy_frames = to_end;
+		}
+		if (copy_frames <= 0) {
+			break;
 		}
 
 		hw_offset = runtime->status.hw_ptr % runtime->buffer_size;
 
-		char *hw_ptr_pos = runtime->dma_area + frame_to_bytes(runtime, hw_offset);
-		char *user_ptr = (char *)dest + frame_to_bytes(runtime, offset);
-		memcpy(user_ptr, hw_ptr_pos, frame_to_bytes(runtime, copy_frames));
+		/*
+		 * Mirror the do_transfer() guard: copy to the user buffer must
+		 * stay inside the DMA ring and inside the user buffer that
+		 * remains. Otherwise a malformed buffer_size or a stale hw_ptr
+		 * walks memcpy() past the dma ring or past the user pointer.
+		 */
+		int copy_bytes = frame_to_bytes(runtime, copy_frames);
+		if (copy_bytes <= 0) {
+			break;
+		}
+		int hw_off_bytes = frame_to_bytes(runtime, hw_offset);
+		if (hw_off_bytes < 0 || hw_off_bytes >= runtime->dma_bytes) {
+			break;
+		}
+		if (copy_bytes > runtime->dma_bytes - hw_off_bytes) {
+			copy_bytes = runtime->dma_bytes - hw_off_bytes;
+		}
+		int off_bytes = frame_to_bytes(runtime, offset);
+		if (off_bytes < 0) {
+			break;
+		}
+		char *hw_ptr_pos = runtime->dma_area + hw_off_bytes;
+		char *user_ptr = (char *)dest + off_bytes;
+		memcpy(user_ptr, hw_ptr_pos, copy_bytes);
 
 		hw_ptr = runtime->status.hw_ptr + copy_frames;
-		if (hw_ptr >= runtime->boundary) {
+		if (hw_ptr == runtime->boundary) {
+			hw_ptr = 0;
+		} else if (hw_ptr > runtime->boundary) {
 			hw_ptr -= runtime->boundary;
 		}
 
@@ -711,6 +881,9 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 
 int snd_pcm_buf_avail(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return 0;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int avail_bytes = 0;
 
@@ -749,15 +922,37 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
 	if (substream->open_count != 0) {
-		KLOG("%s() device is busy! open_count=%d\n",
-			__func__, substream->open_count);
+		
 		return -EBUSY;
 	}
 
 	substream->open_count = 1;
 
-	/* TODO: attach substream to PCM dynamicly */
-	memset(runtime, 0, sizeof(struct snd_pcm_runtime));
+	/*
+	 * Reset only the SW bookkeeping fields we own. Do NOT memset the
+	 * whole struct: a late async callback (timer/IRQ) could still walk
+	 * dma_area/dma_bytes/dma_addr while the device is being re-opened,
+	 * and zeroing those would turn a normal close->open window into a
+	 * NULL-deref or 0-length DMA on the next pointer poll.
+	 */
+	runtime->status.appl_ptr = 0;
+	runtime->status.hw_ptr = 0;
+	runtime->hw_ptr_base = 0;
+	runtime->ack_count = 0;
+	runtime->irq_count = 0;
+	runtime->time_pre = 0;
+	runtime->time_after = 0;
+	runtime->start_threshold = 0;
+	runtime->stop_threshold = 0;
+	runtime->boundary = 0;
+	runtime->frame_bits = 0;
+	runtime->frame_size = 0;
+	runtime->bit_depth = 0;
+	runtime->channels = 0;
+	runtime->rate = 0;
+	runtime->period_size = 0;
+	runtime->periods = 0;
+	runtime->buffer_size = 0;
 
 	runtime->status.state = PCM_STATE_OPEN;
 	substream->private_data = substream->pcm->private_data;
@@ -766,9 +961,11 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	}
 
 	if (err != 0) {
+		substream->open_count = 0;
 		set_pcm_state(substream, PCM_STATE_UNKOWN);
+		return err;
 	}
-	return 0;
+	return err;
 }
 
 static int snd_pcm_write1(struct snd_pcm *pcm,
@@ -776,15 +973,23 @@ static int snd_pcm_write1(struct snd_pcm *pcm,
 		int size,/* in bytes */
 		int offset)
 {
+	if (pcm == NULL || pcm->substream == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_substream *substream  = pcm->substream;
+	if (substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret = 0;
 
 	if (!runtime->dma_area || runtime->dma_bytes <= 0) {
-		ALOG("write1 invalid dma area=%x addr=%x bytes=%d\n",
-			runtime->dma_area, runtime->dma_addr, runtime->dma_bytes);
-		KLOG("%s() ERROR, invalid dma buffer area:%x addr:%x bytes:%d\n",
-			__func__, runtime->dma_area, runtime->dma_addr, runtime->dma_bytes);
+		
+		
+		return -EBADF;
+	}
+	if (runtime->frame_size <= 0) {
+		
 		return -EBADF;
 	}
 
@@ -805,14 +1010,7 @@ static int snd_pcm_write1(struct snd_pcm *pcm,
 static void dump_pcm_runtime(struct snd_pcm_runtime *runtime)
 {
 	if (runtime != NULL) {
-		KLOG("runtime bit:%d rate:%d channels:%d period_size:%d period_cnt:%d start_thres:%d stop_thres:%d\n",
-			runtime->bit_depth,
-			runtime->rate,
-			runtime->channels,
-			runtime->period_size,
-			runtime->periods,
-			runtime->start_threshold,
-			runtime->stop_threshold);
+		
 	}
 }
 
@@ -833,6 +1031,9 @@ static void snd_pcm_default_config(struct pcm_config *config)
 
 static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_config *config)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
 
@@ -842,8 +1043,7 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	case PCM_STATE_PREPARE:
 		break;
 	default:
-		KLOG("%s() ERROR return! beacuse of state=%s\n",
-			__func__, pcm_state_str(runtime->status.state));
+		
 		return -EBADF;
 	}
 
@@ -859,10 +1059,22 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	if (runtime->stop_threshold == 0) {
 		runtime->stop_threshold = runtime->buffer_size;
 	}
+	/*
+	 * Guard against malformed configs (channels=0, bit_depth=0, bit_depth
+	 * not a multiple of 8) silently producing frame_size=0, which would
+	 * then divide-by-zero in snd_pcm_write1() / bytes_to_frames() and
+	 * corrupt every offset calculation downstream.
+	 */
+	if (runtime->channels == 0 || runtime->bit_depth < 8 ||
+		(runtime->bit_depth % 8) != 0) {
+		
+		set_pcm_state(substream, PCM_STATE_OPEN);
+		return -EINVAL;
+	}
 	runtime->frame_size = runtime->channels * runtime->bit_depth / 8;
 	runtime->boundary = runtime->buffer_size;
 	if (runtime->boundary == 0) {
-		KLOG("%s() ERROR! Invalid config!\n", __func__);
+		
 		return -EINVAL;
 	}
 	if (runtime->periods > 1) {
@@ -901,18 +1113,15 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	}
 
 	dump_pcm_runtime(runtime);
-	KLOG("[DEBUG] sound0 hw_sw_parms ret:%d state:%s rate:%d ch:%d period:%d periods:%d start:%d stop:%d frame:%d dma_bytes:%d\n",
-		err, pcm_state_str(runtime->status.state), runtime->rate,
-		runtime->channels, runtime->period_size, runtime->periods,
-		runtime->start_threshold, runtime->stop_threshold,
-		runtime->frame_size, runtime->dma_bytes);
-
-	KLOG("%s() ret:%d state:%s\n", __func__, err, pcm_state_str(runtime->status.state));
+	
 	return err;
 }
 
 static int snd_pcm_hw_free(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
 
@@ -935,6 +1144,9 @@ static int snd_pcm_hw_free(struct snd_pcm_substream *substream)
 
 static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
 
@@ -953,16 +1165,10 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 	}
 
 	if (!substream->ops->prepare) {
-		KLOG("%s() ERROR! Driver hasn't prepare()\n", __func__);
+		
 		return -EBADF;
 	}
 
-	KLOG("[DEBUG] sound0 pcm_prepare entry state:%s rate:%d ch:%d period:%d periods:%d start:%d stop:%d frame:%d dma_bytes:%d appl:%d hw:%d\n",
-		pcm_state_str(runtime->status.state), runtime->rate,
-		runtime->channels, runtime->period_size, runtime->periods,
-		runtime->start_threshold, runtime->stop_threshold,
-		runtime->frame_size, runtime->dma_bytes,
-		runtime->status.appl_ptr, runtime->status.hw_ptr);
 	err = substream->ops->prepare(substream);
 	if (err == 0) {
 		/*
@@ -991,15 +1197,14 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 		runtime->status.appl_ptr = runtime->status.hw_ptr = 0;
 		set_pcm_state(substream, PCM_STATE_SETUP);
 	}
-	KLOG("[DEBUG] sound0 pcm_prepare exit err:%d state:%s dma_bytes:%d appl:%d hw:%d ack:%d irq:%d\n",
-		err, pcm_state_str(runtime->status.state), runtime->dma_bytes,
-		runtime->status.appl_ptr, runtime->status.hw_ptr,
-		runtime->ack_count, runtime->irq_count);
 	return err;
 }
 
 static int snd_pcm_ensure_default_hw(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct pcm_config config;
 	int state = get_pcm_state(substream);
 
@@ -1013,6 +1218,9 @@ static int snd_pcm_ensure_default_hw(struct snd_pcm_substream *substream)
 
 static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	int err;
 	int state = get_pcm_state(substream);
 
@@ -1038,15 +1246,15 @@ static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 
 static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	int err;
 	int state = get_pcm_state(substream);
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
 	err = snd_pcm_ensure_default_hw(substream);
 	if (err != 0) {
-		KLOG("[DEBUG] sound0 ensure_query_ready default_hw err:%d state:%s appl:%d hw:%d\n",
-			err, pcm_state_str(runtime->status.state),
-			runtime->status.appl_ptr, runtime->status.hw_ptr);
 		return err;
 	}
 
@@ -1057,13 +1265,8 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 	case PCM_STATE_RUNNING:
 		return 0;
 	case PCM_STATE_XRUN:
-		KLOG("[DEBUG] sound0 ensure_query_ready XRUN appl:%d hw:%d\n",
-			runtime->status.appl_ptr, runtime->status.hw_ptr);
 		return -EPIPE;
 	default:
-		KLOG("[DEBUG] sound0 ensure_query_ready bad-state:%s appl:%d hw:%d\n",
-			pcm_state_str(state), runtime->status.appl_ptr,
-			runtime->status.hw_ptr);
 		return -EBADF;
 	}
 }
@@ -1071,6 +1274,11 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 {
 	int state;
+
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
+	struct snd_pcm_runtime *runtime = substream->runtime;
 
 	state = get_pcm_state(substream);
 	if (state == PCM_STATE_RUNNING ||
@@ -1084,9 +1292,27 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 	}
 
 	if (state == PCM_STATE_XRUN) {
+		/*
+		 * The IRQ handler may have already set processed_bytes = total_bytes
+		 * and forced the trigger to STOP, but the engine bookkeeping in
+		 * bach_runtime is still in a "running" state from the BACH side.
+		 * Re-asserting STOP here, and clearing hw_ptr/appl_ptr, makes sure
+		 * the next open()/wait_avail() doesn't see stale 'just-drained'
+		 * values that were never re-initialized. Keep the resetting tight:
+		 * only the fields that drive play_avail() and the XRUN judgement
+		 * are touched, DMA geometry stays intact for hw_free().
+		 */
+		if (substream->ops->trigger) {
+			substream->ops->trigger(substream, PCM_TRIGER_STOP);
+		}
 		set_pcm_state(substream, PCM_STATE_STOPED);
 		state = get_pcm_state(substream);
-		KLOG("%s() change state:XRUN to STOPED!\n", __func__);
+		WRITE_LONG(&(runtime->status.hw_ptr), 0);
+		WRITE_LONG(&(runtime->hw_ptr_base), 0);
+		runtime->status.appl_ptr = 0;
+		runtime->ack_count = 0;
+		runtime->irq_count = 0;
+		
 	}
 
 	if (state == PCM_STATE_SETUP ||
@@ -1112,11 +1338,14 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 
 static int snd_pcm_release(struct snd_pcm *pcm)
 {
+	if (pcm == NULL || pcm->substream == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_substream *substream = pcm->substream;
 
 	snd_pcm_release_substream(substream);
 	substream->open_count = 0;
-	KLOG("%s()\n", __func__);
+	
 	return 0;
 }
 
@@ -1124,7 +1353,7 @@ static int snd_pcm_release(struct snd_pcm *pcm)
 /***** File operations: Make vdevice conectted with PCM ***/
 int fdev_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, void* p)
 {
-	KLOG("fdev_open() fd:%d from:%d\n", fd, from_pid);
+	
 	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(from_pid);
@@ -1132,14 +1361,11 @@ int fdev_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, v
 	UNUSED(oflag);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
-	ALOG("open fd=%d from=%d pcm=%s state=%s\n",
-		fd, from_pid, pcm->name, pcm_state_str(pcm->substream->runtime->status.state));
-	// #region debug-point A:open-device
-	KLOG("[DEBUG] sound0 open fd:%d from:%d pcm:%s state:%s\n",
-		fd, from_pid, pcm->name, pcm_state_str(pcm->substream->runtime->status.state));
-	// #endregion
-	int err = snd_pcm_open(pcm);
-	return err;
+	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
+		return -EBADF;
+	}
+	
+	return snd_pcm_open(pcm);
 }
 
 
@@ -1152,13 +1378,13 @@ int fdev_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t* in
 	UNUSED(info);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
+		return -EBADF;
+	}
 	int err = 0;
-	ALOG("close fd=%d from=%d state=%s appl=%d hw=%d\n",
-		fd, from_pid, pcm_state_str(pcm->substream->runtime->status.state),
-		pcm->substream->runtime->status.appl_ptr,
-		pcm->substream->runtime->status.hw_ptr);
+	
 	err = snd_pcm_release(pcm);
-	KLOG("fdev_close() fd:%d from:%d\n", fd, from_pid);
+	
 	return err;
 }
 
@@ -1171,15 +1397,13 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 	UNUSED(info);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_substream *substream = pcm->substream;
 	int err = snd_pcm_ensure_write_ready(substream);
 	if (err != 0) {
-		ALOG("write ensure_ready fail err=%d state=%s\n",
-			err, pcm_state_str(substream->runtime->status.state));
-		// #region debug-point B:ensure-ready-fail
-		KLOG("[DEBUG] sound0 ensure_ready fail err:%d state:%s\n",
-			err, pcm_state_str(substream->runtime->status.state));
-		// #endregion
+		
 		return err;
 	}
 
@@ -1195,6 +1419,9 @@ int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, i
 	UNUSED(offset);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_substream *substream = pcm->substream;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret = 0;
@@ -1221,7 +1448,9 @@ int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, i
 	int copy_frames = size > avail ? avail : size;
 	ret = snd_pcm_substream_read(substream, buf, copy_frames);
 	if (ret > 0) {
-		ret = ret * runtime->frame_size;
+		if (runtime->frame_size > 0) {
+			ret = ret * runtime->frame_size;
+		}
 	}
 
 	return ret;
@@ -1232,6 +1461,9 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 	UNUSED(dev);
 	UNUSED(from_pid);
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_substream *substream = pcm->substream;
 	int result = 0;
 
@@ -1240,54 +1472,22 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		struct pcm_config config;
 		memset(&config, 0, sizeof(struct pcm_config));
 		proto_read_to(in, &config, sizeof(struct pcm_config));
-		ALOG("ctrl hw bits=%d rate=%d ch=%d period=%d count=%d start=%d stop=%d state=%s\n",
-			config.bit_depth, config.rate, config.channels,
-			config.period_size, config.period_count,
-			config.start_threshold, config.stop_threshold,
-			pcm_state_str(substream->runtime->status.state));
-		// #region debug-point B:ctrl-hw
-		KLOG("[DEBUG] sound0 ctrl hw bits:%d rate:%d ch:%d period:%d count:%d start:%d stop:%d state:%s\n",
-			config.bit_depth, config.rate, config.channels,
-			config.period_size, config.period_count,
-			config.start_threshold, config.stop_threshold,
-			pcm_state_str(substream->runtime->status.state));
-		// #endregion
+		
 		result = snd_pcm_hw_sw_parms(substream, &config);
 		break;
 	}
 	case CTRL_PCM_DEV_HW_FREE:
-		ALOG("ctrl hw_free state=%s appl=%d hw=%d\n",
-			pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
-		// #region debug-point B:ctrl-hw-free
-		KLOG("[DEBUG] sound0 ctrl hw_free state:%s\n",
-			pcm_state_str(substream->runtime->status.state));
-		// #endregion
+		
 		result = snd_pcm_hw_free(substream);
 		break;
 	case CTRL_PCM_DEV_PRPARE:
-		ALOG("ctrl prepare state=%s appl=%d hw=%d\n",
-			pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
-		// #region debug-point C:ctrl-prepare
-		KLOG("[DEBUG] sound0 ctrl prepare state:%s\n",
-			pcm_state_str(substream->runtime->status.state));
-		// #endregion
+		
 		result = snd_pcm_prepare(substream);
 		break;
 	case CTRL_PCM_BUF_AVAIL:
 		result = snd_pcm_ensure_query_ready(substream);
 		if (result != 0) {
-			ALOG("ctrl buf_avail query_fail ret=%d state=%s appl=%d hw=%d\n",
-				result, pcm_state_str(substream->runtime->status.state),
-				substream->runtime->status.appl_ptr,
-				substream->runtime->status.hw_ptr);
-			KLOG("[DEBUG] sound0 ctrl buf_avail query_fail ret:%d state:%s appl:%d hw:%d\n",
-				result, pcm_state_str(substream->runtime->status.state),
-				substream->runtime->status.appl_ptr,
-				substream->runtime->status.hw_ptr);
+			
 			break;
 		}
 		/*
@@ -1299,11 +1499,23 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		 *
 		 * Expose the full DMA buffer as the writable window here and let
 		 * fdev_write()/snd_pcm_substeam_write() handle the actual pacing.
+		 * Guard against hw_free() having reset dma_bytes back to 0; in
+		 * that case fall back to buffer_size, which is at least sane.
 		 */
-		result = substream->runtime->dma_bytes;
+		if (substream->runtime->dma_bytes > 0) {
+			result = substream->runtime->dma_bytes;
+		} else if (substream->runtime->buffer_size > 0) {
+			result = frame_to_bytes(substream->runtime,
+				substream->runtime->buffer_size);
+			if (result <= 0) {
+				result = 0;
+			}
+		} else {
+			result = 0;
+		}
 		break;
 	default:
-		KLOG("fdev_ctrl() error! unkown cmd:%d\n", cmd);
+		
 		return -EINVAL;
 	}
 
@@ -1319,6 +1531,9 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	UNUSED(info);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
+		return 0;
+	}
 	struct snd_pcm_substream *substream = pcm->substream;
 	int state = get_pcm_state(substream);
 
@@ -1330,14 +1545,9 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	}
 	int query_ret = snd_pcm_ensure_query_ready(substream);
 	if (query_ret != 0) {
-		ALOG("poll query_fail ret=%d state=%s appl=%d hw=%d\n",
-			query_ret, pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
-		KLOG("[DEBUG] sound0 poll query_fail ret:%d state:%s appl:%d hw:%d\n",
-			query_ret, pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
+		if (substream->runtime != NULL) {
+			
+		}
 		return 0;
 	}
 	int avail = snd_pcm_buf_avail(substream);
@@ -1345,21 +1555,21 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 		return VFS_EVT_WR;
 	}
 	if (avail < 0) {
-		ALOG("poll avail_fail ret=%d state=%s appl=%d hw=%d\n",
-			avail, pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
-		KLOG("[DEBUG] sound0 poll avail_fail ret:%d state:%s appl:%d hw:%d\n",
-			avail, pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
+		if (substream->runtime != NULL) {
+			
+		}
+		return 0;
 	}
 	return 0;
 }
 
 static int fdev_loop_step(vdevice_t* dev, void* p)
 {
-	if (fdev_check_poll_events(dev, 0, 0, NULL, p) != 0) {
+	if (dev == NULL || dev->mnt_info.node == 0) {
+		return 0;
+	}
+	uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
+	if (events != 0) {
 		vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
 	}
 	usleep(1000);
@@ -1385,7 +1595,7 @@ static int snd_pcm_device_create(struct snd_device *device)
 
 	memset(vdev, 0, sizeof(vdevice_t));
 
-	strcpy(vdev->name, "sound");
+	snprintf(vdev->name, sizeof(vdev->name), "sound");
 	vdev->open = fops->open;
 	vdev->close = fops->close;
 	vdev->dev_cntl = fops->dev_cntl;
@@ -1396,7 +1606,7 @@ static int snd_pcm_device_create(struct snd_device *device)
 
 	vdev->extra_data = pcm;
 	pcm->private_data = vdev;
-	KLOG(">>>>>>%s() pcm-device register done!\n", __func__);
+	
 	return 0;
 }
 
@@ -1410,6 +1620,7 @@ static int snd_pcm_device_free(struct snd_device *device)
 	vdevice_t *vdev = pcm->private_data;
 	if (vdev) {
 		free(vdev);
+		pcm->private_data = NULL;
 	}
 	return 0;
 }

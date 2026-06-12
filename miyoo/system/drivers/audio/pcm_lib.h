@@ -270,25 +270,49 @@ static inline char *pcm_state_str(int state) {
 
 static inline void set_pcm_state(struct snd_pcm_substream *substream, int state)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return;
+	}
 	substream->runtime->status.state = state;
 }
 
 static inline int get_pcm_state(struct snd_pcm_substream *substream) {
+	if (substream == NULL || substream->runtime == NULL) {
+		return PCM_STATE_UNKOWN;
+	}
 	return substream->runtime->status.state;
 }
 
 static inline int32_t play_avail(struct snd_pcm_runtime *runtime) {
-	int32_t avail = runtime->status.hw_ptr + runtime->buffer_size - runtime->status.appl_ptr;
+	int32_t avail = 0;
+	if (runtime == NULL) {
+		return 0;
+	}
+	if (runtime->buffer_size <= 0) {
+		return 0;
+	}
+	avail = runtime->status.hw_ptr + runtime->buffer_size - runtime->status.appl_ptr;
 	if (avail < 0) {
 		avail += runtime->boundary;
-	} else if (avail >= runtime->boundary) {
-		avail -= runtime->boundary;
+	}
+	/*
+	 * Cap at buffer_size so a regression on hw_ptr/appl_ptr (e.g. an
+	 * accidentally-swapped pair after open() or a mis-reported pointer)
+	 * cannot leak into the rest of the data path as a huge avail that
+	 * later gets misinterpreted as a drained stream.
+	 */
+	if (avail < 0 || avail > runtime->buffer_size) {
+		avail = runtime->buffer_size;
 	}
 	return avail;
 }
 
 static inline int32_t capture_avail(struct snd_pcm_runtime *runtime) {
-	int32_t avail = runtime->status.appl_ptr - runtime->status.hw_ptr;
+	int32_t avail = 0;
+	if (runtime == NULL) {
+		return 0;
+	}
+	avail = runtime->status.appl_ptr - runtime->status.hw_ptr;
 	if (avail < 0) {
 		avail += runtime->boundary;
 	}
@@ -296,7 +320,11 @@ static inline int32_t capture_avail(struct snd_pcm_runtime *runtime) {
 }
 
 static inline int32_t frames_ready(struct snd_pcm_runtime *runtime) {
-	int frames = runtime->buffer_size - play_avail(runtime);
+	int frames = 0;
+	if (runtime == NULL) {
+		return 0;
+	}
+	frames = runtime->buffer_size - play_avail(runtime);
 	if (frames >= 0) {
 		return frames;
 	} else {
@@ -304,13 +332,51 @@ static inline int32_t frames_ready(struct snd_pcm_runtime *runtime) {
 	}
 }
 
+/*
+ * These helpers centralize the (channels * bit_depth / 8) derivation. When
+ * userspace pushes an invalid pcm_config (channels=0, bit_depth=0, bit_depth
+ * not a multiple of 8, ...) the naive expression would either divide by zero
+ * here or propagate a 0 frame_size into the rest of the data path, where it
+ * later turns into a 0-byte DMA copy or a divide-by-zero in write()/ack().
+ * Always prefer runtime->frame_size when it is sane, and fall back to a
+ * minimal 1-byte frame otherwise so we never return 0 or crash.
+ */
+static inline int pcm_runtime_frame_bytes(const struct snd_pcm_runtime *runtime)
+{
+	int frame_bytes = 0;
+
+	if (runtime == NULL) {
+		return 1;
+	}
+	if (runtime->frame_size > 0) {
+		return runtime->frame_size;
+	}
+	if (runtime->channels > 0 && runtime->bit_depth >= 8 &&
+		(runtime->bit_depth % 8) == 0) {
+		frame_bytes = (int)runtime->channels * ((int)runtime->bit_depth / 8);
+	}
+	if (frame_bytes > 0) {
+		return frame_bytes;
+	}
+	/*
+	 * Last-resort fallback: 1 byte per frame. Keeps the math well-defined
+	 * (avoids divide-by-zero and zero-length DMA transfers) even when the
+	 * driver was handed a malformed config.
+	 */
+	return 1;
+}
+
 static inline int frame_to_bytes(struct snd_pcm_runtime *runtime, int frames)
 {
-	return (frames * runtime->channels * (runtime->bit_depth / 8));
+	return frames * pcm_runtime_frame_bytes(runtime);
 }
 
 static inline int bytes_to_frames(struct snd_pcm_runtime *runtime, int bytes) {
-	return (bytes / (runtime->channels * (runtime->bit_depth / 8)));
+	int frame_bytes = pcm_runtime_frame_bytes(runtime);
+	if (bytes < 0) {
+		bytes = -bytes;
+	}
+	return bytes / frame_bytes;
 }
 
 #endif
