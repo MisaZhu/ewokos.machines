@@ -509,20 +509,19 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 #endif
 
 	/*
-	 * Stop/XRUN condition: hardware has caught up with the application
-	 * pointer, i.e. nothing is left in the ring buffer. This MUST be
-	 * computed from frames_ready (the "consumed" count) not play_avail
-	 * (the "free space" count), otherwise a healthy playback with
-	 * appl_ptr just past hw_ptr+stop_threshold will be misclassified
-	 * as XRUN every single update_hw_ptr tick.
+	 * Playback XRUN means the hardware has drained all queued frames, so the
+	 * writable space has grown to the stop threshold. Using frames_ready() here
+	 * is backwards: a healthy running stream with data queued can have a large
+	 * ready count and would be spuriously stopped after a few good writes.
 	 */
 	if (runtime->status.state == PCM_STATE_RUNNING &&
-		frames_ready(runtime) >= runtime->stop_threshold) {
+		play_avail(runtime) >= runtime->stop_threshold) {
 		substream->ops->trigger(substream, PCM_TRIGER_STOP);
 		runtime->status.state = PCM_STATE_XRUN;
 
-        	KLOG("%s() [Warning] XRun happen! appl:%d hw_ptr:%d\n",
-             		__func__, runtime->status.appl_ptr, runtime->status.hw_ptr);
+		KLOG("%s() [Warning] XRun happen! appl:%d hw_ptr:%d avail:%d ready:%d stop:%d\n",
+			__func__, runtime->status.appl_ptr, runtime->status.hw_ptr,
+			play_avail(runtime), frames_ready(runtime), runtime->stop_threshold);
 	}
 
 	return 0;
@@ -928,6 +927,11 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	}
 
 	dump_pcm_runtime(runtime);
+	KLOG("[DEBUG] sound0 hw_sw_parms ret:%d state:%s rate:%d ch:%d period:%d periods:%d start:%d stop:%d frame:%d dma_bytes:%d\n",
+		err, pcm_state_str(runtime->status.state), runtime->rate,
+		runtime->channels, runtime->period_size, runtime->periods,
+		runtime->start_threshold, runtime->stop_threshold,
+		runtime->frame_size, runtime->dma_bytes);
 
 	KLOG("%s() ret:%d state:%s\n", __func__, err, pcm_state_str(runtime->status.state));
 	return err;
@@ -979,6 +983,12 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 		return -EBADF;
 	}
 
+	KLOG("[DEBUG] sound0 pcm_prepare entry state:%s rate:%d ch:%d period:%d periods:%d start:%d stop:%d frame:%d dma_bytes:%d appl:%d hw:%d\n",
+		pcm_state_str(runtime->status.state), runtime->rate,
+		runtime->channels, runtime->period_size, runtime->periods,
+		runtime->start_threshold, runtime->stop_threshold,
+		runtime->frame_size, runtime->dma_bytes,
+		runtime->status.appl_ptr, runtime->status.hw_ptr);
 	err = substream->ops->prepare(substream);
 	if (err == 0) {
 		/*
@@ -1007,7 +1017,10 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 		runtime->status.appl_ptr = runtime->status.hw_ptr = 0;
 		set_pcm_state(substream, PCM_STATE_SETUP);
 	}
-	//KLOG("%s() ret:%d state:%s\n", __func__, err, pcm_state_str(runtime->status.state));
+	KLOG("[DEBUG] sound0 pcm_prepare exit err:%d state:%s dma_bytes:%d appl:%d hw:%d ack:%d irq:%d\n",
+		err, pcm_state_str(runtime->status.state), runtime->dma_bytes,
+		runtime->status.appl_ptr, runtime->status.hw_ptr,
+		runtime->ack_count, runtime->irq_count);
 	return err;
 }
 
@@ -1053,9 +1066,13 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 {
 	int err;
 	int state = get_pcm_state(substream);
+	struct snd_pcm_runtime *runtime = substream->runtime;
 
 	err = snd_pcm_ensure_default_hw(substream);
 	if (err != 0) {
+		KLOG("[DEBUG] sound0 ensure_query_ready default_hw err:%d state:%s appl:%d hw:%d\n",
+			err, pcm_state_str(runtime->status.state),
+			runtime->status.appl_ptr, runtime->status.hw_ptr);
 		return err;
 	}
 
@@ -1066,8 +1083,13 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 	case PCM_STATE_RUNNING:
 		return 0;
 	case PCM_STATE_XRUN:
+		KLOG("[DEBUG] sound0 ensure_query_ready XRUN appl:%d hw:%d\n",
+			runtime->status.appl_ptr, runtime->status.hw_ptr);
 		return -EPIPE;
 	default:
+		KLOG("[DEBUG] sound0 ensure_query_ready bad-state:%s appl:%d hw:%d\n",
+			pcm_state_str(state), runtime->status.appl_ptr,
+			runtime->status.hw_ptr);
 		return -EBADF;
 	}
 }
@@ -1157,6 +1179,10 @@ int fdev_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t* in
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	int err = 0;
+	ALOG("close fd=%d from=%d state=%s appl=%d hw=%d\n",
+		fd, from_pid, pcm_state_str(pcm->substream->runtime->status.state),
+		pcm->substream->runtime->status.appl_ptr,
+		pcm->substream->runtime->status.hw_ptr);
 	err = snd_pcm_release(pcm);
 	KLOG("fdev_close() fd:%d from:%d\n", fd, from_pid);
 	return err;
@@ -1265,6 +1291,11 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		struct pcm_config config;
 		memset(&config, 0, sizeof(struct pcm_config));
 		proto_read_to(in, &config, sizeof(struct pcm_config));
+		ALOG("ctrl hw bits=%d rate=%d ch=%d period=%d count=%d start=%d stop=%d state=%s\n",
+			config.bit_depth, config.rate, config.channels,
+			config.period_size, config.period_count,
+			config.start_threshold, config.stop_threshold,
+			pcm_state_str(substream->runtime->status.state));
 		// #region debug-point B:ctrl-hw
 		KLOG("[DEBUG] sound0 ctrl hw bits:%d rate:%d ch:%d period:%d count:%d start:%d stop:%d state:%s\n",
 			config.bit_depth, config.rate, config.channels,
@@ -1276,6 +1307,10 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		break;
 	}
 	case CTRL_PCM_DEV_HW_FREE:
+		ALOG("ctrl hw_free state=%s appl=%d hw=%d\n",
+			pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
 		// #region debug-point B:ctrl-hw-free
 		KLOG("[DEBUG] sound0 ctrl hw_free state:%s\n",
 			pcm_state_str(substream->runtime->status.state));
@@ -1283,6 +1318,10 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		result = snd_pcm_hw_free(substream);
 		break;
 	case CTRL_PCM_DEV_PRPARE:
+		ALOG("ctrl prepare state=%s appl=%d hw=%d\n",
+			pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
 		// #region debug-point C:ctrl-prepare
 		KLOG("[DEBUG] sound0 ctrl prepare state:%s\n",
 			pcm_state_str(substream->runtime->status.state));
@@ -1292,9 +1331,31 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 	case CTRL_PCM_BUF_AVAIL:
 		result = snd_pcm_ensure_query_ready(substream);
 		if (result != 0) {
+			ALOG("ctrl buf_avail query_fail ret=%d state=%s appl=%d hw=%d\n",
+				result, pcm_state_str(substream->runtime->status.state),
+				substream->runtime->status.appl_ptr,
+				substream->runtime->status.hw_ptr);
+			KLOG("[DEBUG] sound0 ctrl buf_avail query_fail ret:%d state:%s appl:%d hw:%d\n",
+				result, pcm_state_str(substream->runtime->status.state),
+				substream->runtime->status.appl_ptr,
+				substream->runtime->status.hw_ptr);
 			break;
 		}
-		result = snd_pcm_buf_avail(substream);
+		/*
+		 * User-space clients on miyoo treat CTRL_PCM_BUF_AVAIL as a
+		 * "can I keep feeding pcm_write()?" gate. Returning the tiny
+		 * instantaneous free space while playback is running makes those
+		 * clients abort early even though the blocking write path can
+		 * wait and complete the full transfer safely.
+		 *
+		 * Expose the full DMA buffer as the writable window here and let
+		 * fdev_write()/snd_pcm_substeam_write() handle the actual pacing.
+		 */
+		result = substream->runtime->dma_bytes;
+		ALOG("ctrl buf_avail ret=%d state=%s appl=%d hw=%d\n",
+			result, pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
 		// #region debug-point A:ctrl-buf-avail
 		KLOG("[DEBUG] sound0 ctrl buf_avail ret:%d state:%s appl:%d hw:%d\n",
 			result, pcm_state_str(substream->runtime->status.state),
@@ -1320,11 +1381,39 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	struct snd_pcm_substream *substream = pcm->substream;
-	if (snd_pcm_ensure_query_ready(substream) != 0) {
+	int state = get_pcm_state(substream);
+
+	if (substream->open_count == 0) {
 		return 0;
 	}
-	if (snd_pcm_buf_avail(substream) > 0) {
+	if (state == PCM_STATE_UNKOWN || state == PCM_STATE_OPEN) {
+		return 0;
+	}
+	int query_ret = snd_pcm_ensure_query_ready(substream);
+	if (query_ret != 0) {
+		ALOG("poll query_fail ret=%d state=%s appl=%d hw=%d\n",
+			query_ret, pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
+		KLOG("[DEBUG] sound0 poll query_fail ret:%d state:%s appl:%d hw:%d\n",
+			query_ret, pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
+		return 0;
+	}
+	int avail = snd_pcm_buf_avail(substream);
+	if (avail > 0) {
 		return VFS_EVT_WR;
+	}
+	if (avail < 0) {
+		ALOG("poll avail_fail ret=%d state=%s appl=%d hw=%d\n",
+			avail, pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
+		KLOG("[DEBUG] sound0 poll avail_fail ret:%d state:%s appl:%d hw:%d\n",
+			avail, pcm_state_str(substream->runtime->status.state),
+			substream->runtime->status.appl_ptr,
+			substream->runtime->status.hw_ptr);
 	}
 	return 0;
 }
