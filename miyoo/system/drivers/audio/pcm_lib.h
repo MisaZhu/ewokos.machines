@@ -61,7 +61,7 @@ struct file_operation {
 	int (*dev_cntl)(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p);
 	int (*open)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, void* p);
 	int (*create)(vdevice_t* dev, fsinfo_t* info_to, fsinfo_t* info, void* p);
-	int (*close)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* p);
+	int (*close)(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t* info, void* p);
 	int (*read)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p);
 	int (*write)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void* buf, int size, int offset, void* p);
 	int (*read_block)(vdevice_t* dev, int from_pid, void* buf, int size, int index, void* p);
@@ -163,6 +163,13 @@ struct snd_pcm_ops {
 	int (*prepare)(struct snd_pcm_substream *substream);
 	int (*trigger)(struct snd_pcm_substream *substream, int cmd);
 	int (*ack)(struct snd_pcm_substream *substream);
+	/*
+	 * Optional: called from the writer side right after ack() to give
+	 * the platform driver a chance to push newly-acked bytes into the
+	 * DMA engine synchronously. Without this the DMA level can drop
+	 * to 0 between consecutive writes and the next write reports XRUN.
+	 */
+	int (*kick)(struct snd_pcm_substream *substream);
 };
 
 /* If your driver define DAI then use pre-defined snd_pcm_ops */
@@ -203,6 +210,13 @@ struct snd_soc_dai_ops {
 	int (*trigger)(struct snd_soc_dai *dai, struct snd_pcm_substream *substream, int cmd);
 	int (*pointer)(struct snd_soc_dai *dai, struct snd_pcm_substream *substream);
 	int (*ack)(struct snd_soc_dai *dai, struct snd_pcm_substream *substream);
+	/*
+	 * Optional writer-side kick. Called by pcm_lib.c right after
+	 * snd_dai_pcm_ack() on every copy chunk to give the platform
+	 * driver a chance to push newly-acked bytes into the DMA engine
+	 * synchronously.
+	 */
+	int (*kick)(struct snd_soc_dai *dai, struct snd_pcm_substream *substream);
 };
 
 struct snd_soc_dai {

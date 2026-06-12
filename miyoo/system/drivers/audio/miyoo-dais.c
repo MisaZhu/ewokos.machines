@@ -16,7 +16,12 @@
 #include "reg_ctrl.h"
 #include "infinity_reg.h"
 
-#define POLLING_DMA_WITH_SYS_TIMER0	1
+/*
+ * Use an explicit software timer to poll BACH progress.
+ * On miyoo the bare IRQ_TIMER0 hook alone is not enough to guarantee
+ * periodic callbacks during audio playback.
+ */
+/* #define POLLING_DMA_WITH_SYS_TIMER0	1 */
 
 typedef unsigned char   U8;
 typedef signed char     S8;
@@ -24,6 +29,7 @@ typedef unsigned short  U16;
 typedef short           S16;
 
 #define KLOG		klog
+#define ALOG(...)	slog("aud: " __VA_ARGS__)
 #define UNUSED(v)	((void)v)
 #define ENOMEM		(12)
 #define	EINVAL		(22)
@@ -73,7 +79,8 @@ typedef short           S16;
 #define REG_ATOP_ANALOG_CTRL3	(REG_ATOP_OFFSET + 0xc)
 
 #define PERIOD_BYTES_MIN 0x100
-#define PRE_ALLOCATED_PCM_BUF_MAX_SIZE (16 * 1024)
+#define PRE_ALLOCATED_PCM_BUF_MAX_SIZE (64 * 1024)
+#define MIYOO_MIU_PHY_BASE 0x20000000U
 
 #define MSC313_BACH		0x002a0400
 #define MSC313_BACH_TOP		0x00206800
@@ -192,6 +199,17 @@ struct msc313_bach_substream_runtime {
 static inline void delay(int32_t count)
 {
 	while (count > 0) count--;
+}
+
+static inline unsigned int msc313_bach_dma_miu_addr(ewokos_addr_t vaddr)
+{
+	ewokos_addr_t phy = dma_phy_addr(0, vaddr);
+	if (phy < MIYOO_MIU_PHY_BASE) {
+		KLOG("%s() WARNING invalid dma phy:%x from vaddr:%x\n",
+			__func__, (unsigned int)phy, (unsigned int)vaddr);
+		return (unsigned int)phy;
+	}
+	return (unsigned int)(phy - MIYOO_MIU_PHY_BASE);
 }
 
 
@@ -365,24 +383,63 @@ int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream
 	return 0;
 }
 
+/*
+ * Writer-side kick: called by pcm_lib.c right after ack() on every copy
+ * chunk.  This guarantees that the bytes the user just produced are
+ * handed off to BACH synchronously, so the next IRQ empty tail won't
+ * observe pending_bytes == 0 and leave the DMA engine stranded.
+ */
+static void msc313_bach_queue_pending(struct msc313_bach *bach,
+				     struct snd_pcm_substream *substream,
+				     struct msc313_bach_substream_runtime *bach_runtime);
+
+static int mi_cpu_dai_kick(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
+{
+	UNUSED(dai);
+	if (substream == NULL || substream->runtime == NULL) {
+		return 0;
+	}
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
+	if (bach_runtime == NULL) {
+		return 0;
+	}
+	msc313_bach_queue_pending((struct msc313_bach *)dai->private_data, substream, bach_runtime);
+	return 0;
+}
+
 
 int mi_cpu_dai_hw_params(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
 	struct msc313_bach *bach = dai->private_data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	unsigned int dma_phy_addr_hw;
 
-	if (runtime->dma_area != NULL) {
-		return 0;
+	/*
+	 * Keep the preallocated DMA area, but always refresh dma_bytes/dma_addr
+	 * from the latest PCM params. Userspace may call hw_params more than once
+	 * and returning early here leaves size registers stale.
+	 */
+	if (runtime->dma_area == NULL) {
+		runtime->dma_area = (char *)bach->dma_areas;
 	}
-
-	runtime->dma_area = (char *)bach->dma_areas;
-	runtime->dma_addr = (unsigned int)syscall1(SYS_V2P, (ewokos_addr_t)runtime->dma_area);
+	dma_phy_addr_hw = msc313_bach_dma_miu_addr((ewokos_addr_t)runtime->dma_area);
+	runtime->dma_addr = dma_phy_addr_hw;
 	runtime->dma_bytes = frame_to_bytes(runtime, runtime->buffer_size); //TODO
+	if ((uint32_t)runtime->dma_bytes > PRE_ALLOCATED_PCM_BUF_MAX_SIZE) {
+		ALOG("hw_params dma_bytes too large=%d max=%d buffer=%d period=%d frame=%d\n",
+			runtime->dma_bytes, PRE_ALLOCATED_PCM_BUF_MAX_SIZE,
+			runtime->buffer_size, runtime->period_size, runtime->frame_size);
+		return -EINVAL;
+	}
 	/* clear allocated buffer */
 	memset(runtime->dma_area, 0, runtime->dma_bytes);
 
-	KLOG("%s() dma_addr:0x%x dma_area:0x%x dma_bytes:%d\n",__func__,
+	KLOG("%s() dma_miu_addr:0x%x dma_area:0x%x dma_bytes:%d\n",__func__,
 		runtime->dma_addr, runtime->dma_area, runtime->dma_bytes);
+	ALOG("hw_params dma_miu=%x dma_area=%x dma_bytes=%d buffer=%d period=%d frame=%d\n",
+		runtime->dma_addr, runtime->dma_area, runtime->dma_bytes,
+		runtime->buffer_size, runtime->period_size, runtime->frame_size);
 	return 0;
 }
 
@@ -432,7 +489,7 @@ static int msc313_bach_queue_bytes(/*struct msc313_bach *bach,*/
 	struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
 	unsigned trigbit;
 	unsigned miu_trigger_level = TO_MIUSIZE(new_bytes);
-	int target_level, old_level, new_level; // delay_level;
+	int target_level, old_level;
 
 	old_level = msc313_bach_get_level(sub_channel);
 
@@ -447,9 +504,20 @@ static int msc313_bach_queue_bytes(/*struct msc313_bach *bach,*/
 	regmap_field_write(sub_channel->trigger, ~trigbit);
 
 	bach_runtime->total_bytes += new_bytes;
-	bach_runtime->pending_bytes -= new_bytes;
+	/*
+	 * pending_bytes tracks "the user-ack'd amount that hasn't been pushed
+	 * into BACH yet". msc313_bach_queue_pending() may have promoted a
+	 * fallback value from play_avail() even when the real pending was 0,
+	 * so clamp the subtraction at 0 here; otherwise a target_level cap
+	 * (or a smaller-than-expected queue) would leave pending_bytes
+	 * negative and corrupt the next iteration's accounting.
+	 */
+	if ((ssize_t)bach_runtime->pending_bytes > (ssize_t)new_bytes) {
+		bach_runtime->pending_bytes -= new_bytes;
+	} else {
+		bach_runtime->pending_bytes = 0;
+	}
 
-	new_level = msc313_bach_get_level(sub_channel);
 	/* frequently CPU cost may make underrun */
 	//delay(10 * 1000);
 	//delay_level = msc313_bach_get_level(sub_channel);
@@ -480,9 +548,11 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 				     struct snd_pcm_substream *substream,
 				     struct msc313_bach_substream_runtime *bach_runtime) {
 	UNUSED(bach);
+	UNUSED(substream);
 	ssize_t new_queue_bytes = 0;
 	ssize_t hw_cache_bytes = 0;
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	ssize_t pending_bytes = 0;
+	ssize_t period_bytes = bach_runtime->period_bytes;
 	/*
 	 * Trying to queue before the channel is running results in either
 	 * the data not being queued or the dma locking up, so don't do that.
@@ -491,47 +561,58 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 		return;
 	}
 
-	/* Need at least a full period buffered */
-	if (bach_runtime->pending_bytes <= 0) {
-#if 0
-		KLOG("%s() [WARN] who:%s pending_bytes:%d avail:%d\n",
-			__func__,
-			(runtime->ack_count == 1 ? "APP" : "IRQ"),
-			bach_runtime->pending_bytes,
-			play_avail(runtime));
-#endif
-		runtime->ack_count = 0;
-		return;
-	}
-
-	if (bach_runtime->pending_bytes < bach_runtime->period_bytes) {
+	/*
+	 * pending_bytes is the single source of truth for "bytes userspace
+	 * has produced but BACH has not yet been told about".  The IRQ tail
+	 * path used to fall back to play_avail() when pending was 0, but
+	 * that promoted too much, made the target_level check fail, and
+	 * corrupted the next iteration's accounting.  If pending_bytes is
+	 * empty here, the call will simply not refill.
+	 */
+	pending_bytes = bach_runtime->pending_bytes;
+	if (pending_bytes <= 0) {
 		return;
 	}
 
 	hw_cache_bytes = bach_runtime->total_bytes - bach_runtime->processed_bytes;
+	/*
+	 * If the hardware is already at or past the watermark, don't push
+	 * more data; BACH will fire another empty/underrun IRQ when it has
+	 * actually drained.
+	 */
+	if (hw_cache_bytes >= (ssize_t)bach_runtime->max_inflight) {
+		return;
+	}
+
+	if (pending_bytes < period_bytes) {
+		return;
+	}
 
 	if (hw_cache_bytes < 0) {
 		KLOG("%s() [WARNING] Underrun! hw consumed bytes:%d > user queued bytes:%d\n", __func__,
 			bach_runtime->processed_bytes, bach_runtime->total_bytes);
 	}
-	/* First queue, want two periods really */
-	else if (hw_cache_bytes == 0) {
-		new_queue_bytes = bach_runtime->period_bytes;
-		/* Don't actually have enough */
-		if (bach_runtime->pending_bytes < new_queue_bytes) {
-			new_queue_bytes = bach_runtime->period_bytes;
+	else if (hw_cache_bytes < (int)bach_runtime->max_inflight) {
+		/*
+		 * Keep BACH close to a stable inflight watermark instead of only
+		 * topping up one period at a time. The 2-period cap was leaving too
+		 * little runway on miyoo: userspace still had buffered audio, but the
+		 * hardware queue could drain to XRUN before the next refill landed.
+		 */
+		new_queue_bytes = bach_runtime->max_inflight - hw_cache_bytes;
+		if (pending_bytes < new_queue_bytes) {
+			new_queue_bytes = pending_bytes;
 		}
-	}
-	/* One period in the tank, queue one more */
-	else if (hw_cache_bytes <= (int)bach_runtime->period_bytes) {
-		new_queue_bytes = bach_runtime->period_bytes;
+		if (new_queue_bytes > (int)period_bytes) {
+			new_queue_bytes =
+				(new_queue_bytes / period_bytes) *
+				period_bytes;
+		}
 	} else {
-		KLOG("%s() Not queue hw_cache_bytes:%d > period_bytes:%d\n", __func__,
-			hw_cache_bytes, bach_runtime->period_bytes);
 		new_queue_bytes = 0;
 	}
 
-	if (new_queue_bytes) {
+	if (new_queue_bytes >= (int)period_bytes) {
 		msc313_bach_queue_bytes(substream, new_queue_bytes);
 	}
 }
@@ -550,6 +631,7 @@ int mi_cpu_dai_prepare(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	int ret;
 
 	bach_runtime->last_appl_ptr = 0;
+	bach_runtime->running = false;
 	bach_runtime->irqs = 0;
 	bach_runtime->empties = 0;
 	bach_runtime->underruns = 0;
@@ -557,12 +639,18 @@ int mi_cpu_dai_prepare(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	bach_runtime->processed_bytes = 0;
 	bach_runtime->total_bytes = 0;
 	bach_runtime->period_bytes = frame_to_bytes(runtime, runtime->period_size);
-	bach_runtime->max_inflight = bach_runtime->period_bytes * 2;
+	bach_runtime->max_inflight = runtime->dma_bytes - bach_runtime->period_bytes;
+	if (bach_runtime->max_inflight < bach_runtime->period_bytes * 2) {
+		bach_runtime->max_inflight = bach_runtime->period_bytes * 2;
+	}
+	if (bach_runtime->max_inflight > runtime->dma_bytes) {
+		bach_runtime->max_inflight = runtime->dma_bytes;
+	}
 
 	miu_underrun_size = TO_MIUSIZE((bach_runtime->period_bytes + stride));
 	miu_buffer_size = TO_MIUSIZE(runtime->dma_bytes);
 	miu_addr = TO_MIUSIZE(runtime->dma_addr); //TODO
-	bach_runtime->max_level = TO_MIUSIZE(bach_runtime->period_bytes * 2);
+	bach_runtime->max_level = TO_MIUSIZE(bach_runtime->max_inflight);
 
 	/* This is needed to reset the buffer level */
 	regmap_field_write(sub_channel->trigger, 0);
@@ -595,6 +683,10 @@ int mi_cpu_dai_prepare(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 
 	KLOG("%s() bach_runtime: period_size:%d period_bytes:%d strid:%d max_inflight:%d max_level:%d\n", __func__,
 		runtime->period_size, bach_runtime->period_bytes, stride, bach_runtime->max_inflight, bach_runtime->max_level);
+	ALOG("prepare dma=%x miu_addr=%x dma_bytes=%d period_bytes=%d inflight=%d level_max=%d rate=%d ch=%d bits=%d\n",
+		runtime->dma_addr, miu_addr, runtime->dma_bytes,
+		(int)bach_runtime->period_bytes, (int)bach_runtime->max_inflight,
+		(int)bach_runtime->max_level, runtime->rate, runtime->channels, runtime->bit_depth);
 	// #region debug-point C:dai-prepare
 	KLOG("[DEBUG] miyoo dai prepare bits:%d rate:%d ch:%d period:%d periods:%d dma:%x dma_bytes:%d mono:%u\n",
 		runtime->bit_depth, runtime->rate, runtime->channels,
@@ -611,6 +703,7 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
 	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
 	struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
+	unsigned int addr_hi = 0, addr_lo = 0, size = 0, underrun = 0;
 
 	KLOG(">>>>>>>%s():%d cmd:%s\n", __func__, __LINE__,
 		(cmd == PCM_TRIGER_START ? "START" : "STOP"));
@@ -637,10 +730,31 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		 */
 		regmap_field_write(dma_channel->en, 1);
 		delay(1000);
+		ALOG("trigger dma_en level=%d pending=%d total=%d processed=%d\n",
+			msc313_bach_get_level(sub_channel),
+			(int)bach_runtime->pending_bytes,
+			(int)bach_runtime->total_bytes,
+			(int)bach_runtime->processed_bytes);
+		KLOG("[TRACE] trigger after dma_en level:%d pending:%d total:%d processed:%d\n",
+			msc313_bach_get_level(sub_channel),
+			(int)bach_runtime->pending_bytes,
+			(int)bach_runtime->total_bytes,
+			(int)bach_runtime->processed_bytes);
 
 		/* Start playback */
 		regmap_field_write(sub_channel->en, 1);
 		delay(1000);
+		regmap_field_read(sub_channel->addr_hi, &addr_hi);
+		regmap_field_read(sub_channel->addr_lo, &addr_lo);
+		regmap_field_read(sub_channel->size, &size);
+		regmap_field_read(sub_channel->underrunthreshold, &underrun);
+		ALOG("trigger sub_en level=%d addr_hi=%x addr_lo=%x size=%x underrun=%x appl=%d hw=%d\n",
+			msc313_bach_get_level(sub_channel),
+			addr_hi, addr_lo, size, underrun,
+			runtime->status.appl_ptr, runtime->status.hw_ptr);
+		KLOG("[TRACE] trigger after sub_en level:%d addr_hi:%x addr_lo:%x size:%x underrun:%x\n",
+			msc313_bach_get_level(sub_channel),
+			addr_hi, addr_lo, size, underrun);
 		bach_runtime->running = true;
 		//msc313_bach_queue_pending(bach, substream, bach_runtime);
 
@@ -689,10 +803,11 @@ int mi_cpu_dai_pointer(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
 	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
-	//struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
-	//ssize_t inflight, done;
 	int pos;
 	int level;
+	ssize_t bytes_in_hw;
+	ssize_t old_processed;
+	ssize_t new_processed;
 
 	/*
 	 * The amount of bytes the channel is currently munching through is the difference
@@ -706,12 +821,30 @@ int mi_cpu_dai_pointer(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	 * minus current number of bytes the hardware says it still hasn't processed.
 	 */
 	level = msc313_bach_get_level(sub_channel);
-	//done = inflight - FROM_MIUSIZE(level);
+	bytes_in_hw = FROM_MIUSIZE(level);
+	if (bytes_in_hw < 0) {
+		bytes_in_hw = 0;
+	}
+	if (bytes_in_hw > bach_runtime->total_bytes) {
+		bytes_in_hw = bach_runtime->total_bytes;
+	}
 
-	bach_runtime->processed_bytes = bach_runtime->total_bytes - FROM_MIUSIZE(level);
+	old_processed = bach_runtime->processed_bytes;
+	new_processed = bach_runtime->total_bytes - bytes_in_hw;
+	if (new_processed < 0) {
+		new_processed = 0;
+	}
+	/*
+	 * Keep pointer accounting monotonic across timer polls. The hardware level
+	 * can briefly jump when userspace queues more data; letting processed_bytes
+	 * move backwards here makes hw_ptr regress and can stall wait_avail/write.
+	 */
+	if (new_processed < old_processed) {
+		new_processed = old_processed;
+	}
 
-	//TODO
-	pos = bytes_to_frames(runtime, (bach_runtime->processed_bytes) % runtime->dma_bytes);
+	bach_runtime->processed_bytes = new_processed;
+	pos = bytes_to_frames(runtime, (int)(bach_runtime->processed_bytes % runtime->dma_bytes));
 
 	return pos;
 }
@@ -725,6 +858,9 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 	int new_bytes = 0;
 
 	new_bytes = frame_to_bytes(runtime, runtime->status.appl_ptr - bach_runtime->last_appl_ptr);
+	if (new_bytes < 0) {
+		new_bytes += runtime->boundary * runtime->frame_size;
+	}
 	bach_runtime->last_appl_ptr = runtime->status.appl_ptr;
 	bach_runtime->pending_bytes += new_bytes;
 	// #region debug-point C:pcm-ack
@@ -739,6 +875,19 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 
 	if (bach_runtime->pending_bytes >= frame_to_bytes(runtime, runtime->period_size)) {
 		runtime->ack_count = 1;
+		ALOG("ack queue new=%d pending=%d period=%d total=%d processed=%d running=%d\n",
+			new_bytes,
+			(int)bach_runtime->pending_bytes,
+			(int)bach_runtime->period_bytes,
+			(int)bach_runtime->total_bytes,
+			(int)bach_runtime->processed_bytes,
+			bach_runtime->running ? 1 : 0);
+		KLOG("[TRACE] pcm_ack queue pending_bytes:%d period_bytes:%d total:%d processed:%d running:%d\n",
+			(int)bach_runtime->pending_bytes,
+			(int)bach_runtime->period_bytes,
+			(int)bach_runtime->total_bytes,
+			(int)bach_runtime->processed_bytes,
+			bach_runtime->running ? 1 : 0);
 		msc313_bach_queue_pending(bach, substream, bach_runtime);
 	}
 
@@ -748,7 +897,6 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 static int msc313_bach_irq(int irq, void *data, int push_pending)
 {
 	UNUSED(irq);
-	UNUSED(push_pending);
 	struct msc313_bach *bach = data;
 	unsigned int i;
 
@@ -767,6 +915,15 @@ static int msc313_bach_irq(int irq, void *data, int push_pending)
 		runtime = substream->runtime;
 		bach_runtime = runtime->private_data;
 		bach_runtime->irqs++;
+		if (bach_runtime->irqs <= 4) {
+			ALOG("irq #%u level=%d pending=%d total=%d processed=%d appl=%d hw=%d\n",
+				bach_runtime->irqs, level,
+				(int)bach_runtime->pending_bytes,
+				(int)bach_runtime->total_bytes,
+				(int)bach_runtime->processed_bytes,
+				runtime->status.appl_ptr,
+				runtime->status.hw_ptr);
+		}
 		// #region debug-point D:irq
 		KLOG("[DEBUG] miyoo irq push:%d level:%d irqs:%u empty:%u underrun:%u pending:%d total:%d processed:%d appl:%d hw:%d\n",
 			push_pending,
@@ -786,17 +943,20 @@ static int msc313_bach_irq(int irq, void *data, int push_pending)
 			return 0;
 		}
 
-		if (level > runtime->period_size / 2) {
-			break;
+		/*
+		 * Polling mode must keep hw_ptr in sync even while the hardware still
+		 * has more than one period buffered; otherwise userspace can sit on a
+		 * stale avail snapshot until the queue is almost drained.
+		 */
+		update_hw_ptr(substream, 1);
+		if (push_pending || level <= (int)TO_MIUSIZE(bach_runtime->max_inflight)) {
+			msc313_bach_queue_pending(bach, substream, bach_runtime);
 		}
 
 		regmap_field_read(bach->dma_channels[i].rd_empty_flag, &empty);
 		regmap_field_read(bach->dma_channels[i].rd_underrun_flag, &underrun);
 
-		if (!underrun || empty) {
-			update_hw_ptr(substream, 1);
-			msc313_bach_queue_pending(bach, substream, bach_runtime);
-			//msc313_bach_pcm_dumpruntime(bach_runtime, 0);
+		if (!underrun && !empty) {
 			return 0;
 		}
 
@@ -809,26 +969,65 @@ static int msc313_bach_irq(int irq, void *data, int push_pending)
 
 		/*
 		 * Sometimes interrupts happen at odd times before expected.
-		 * Just ignore them.
+		 * Just ignore them. The tail of a clean playback is NOT an
+		 * empty/underrun: when application data is still in flight
+		 * (pending_bytes > 0 or appl_ptr > hw_ptr) the hardware
+		 * hitting 0 just means we need to queue the next chunk
+		 * immediately. Forcing the state to XRUN here is what was
+		 * causing the "first pcm_write ok, second fails" regression.
 		 */
 		if (empty && (level == 0)) {
+			int in_flight_frames = play_avail(runtime);
+			bool has_pending =
+				(bach_runtime->pending_bytes > 0) ||
+				(in_flight_frames > 0) ||
+				(bach_runtime->running && runtime->status.state == PCM_STATE_RUNNING);
+
+			if (!has_pending) {
+				bach_runtime->empties++;
+				ALOG("irq empty level=%d total=%d processed=%d pending=%d\n",
+					level,
+					(int)bach_runtime->total_bytes,
+					(int)bach_runtime->processed_bytes,
+					(int)bach_runtime->pending_bytes);
+				regmap_field_write(dma_channel->rd_empty_int_en, 0);
+				bach_runtime->processed_bytes = bach_runtime->total_bytes;
+				msc313_bach_pcm_dumpruntime(bach_runtime, 1);
+				substream->ops->trigger(substream, PCM_TRIGER_STOP);
+				runtime->status.state = PCM_STATE_XRUN;
+				KLOG("%s() WARNING X-Run happen level:%d\n", __func__, level);
+				break;
+			}
+
+			/*
+			 * Tail of a clean playback with more data already queued
+			 * by userspace. Keep the engine running and let the
+			 * refill path below bring level back up.
+			 */
 			bach_runtime->empties++;
-			regmap_field_write(dma_channel->rd_empty_int_en, 0);
-			bach_runtime->processed_bytes = bach_runtime->total_bytes;
-			msc313_bach_pcm_dumpruntime(bach_runtime, 1);
-			//snd_pcm_stop_xrun(substream); TODO
-			KLOG("%s() WARNING X-Run happen level:%d\n", __func__, level);
-			break;
+			ALOG("irq empty tail level=%d total=%d processed=%d pending=%d\n",
+				level,
+				(int)bach_runtime->total_bytes,
+				(int)bach_runtime->processed_bytes,
+				(int)bach_runtime->pending_bytes);
+			msc313_bach_queue_pending(bach, substream, bach_runtime);
 		}
 
 		if (underrun && empty == 0) {
 			bach_runtime->underruns++;
-			regmap_field_write(dma_channel->rd_underrun_int_en, 0);
-
-			update_hw_ptr(substream, 1);
-			//hw have consumed half buffer (but alsa not know)
+			ALOG("irq underrun level=%d total=%d processed=%d pending=%d\n",
+				level,
+				(int)bach_runtime->total_bytes,
+				(int)bach_runtime->processed_bytes,
+				(int)bach_runtime->pending_bytes);
+			/*
+			 * DO NOT disable rd_underrun_int_en here. The previous
+			 * implementation masked the very interrupt that would
+			 * have refilled the buffer, which left the engine
+			 * stranded and forced the next pcm_write to observe
+			 * XRUN. Just refill and let the interrupt fire again.
+			 */
 			msc313_bach_queue_pending(bach, substream, bach_runtime);
-			//msc313_bach_pcm_dumpruntime(bach_runtime, 1);
 		}
 	}
 
@@ -844,6 +1043,7 @@ static struct snd_soc_dai_ops msc313_cpu_dai_ops = {
 	.trigger = mi_cpu_dai_trigger,
 	.pointer = mi_cpu_dai_pointer,
 	.ack =  msc313_bach_pcm_ack,
+	.kick = mi_cpu_dai_kick,
 };
 
 static void msc313_bach_the_horror(struct msc313_bach *bach)
@@ -1332,8 +1532,7 @@ static int enable_clk(unsigned int clk_base)
 
 static int pre_allocate_dma_buffer(struct msc313_bach *bach)
 {
-	//unsigned int vaddr = dma_phy_addr(0, dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE));
-	unsigned int vaddr = (dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE));
+	unsigned int vaddr = dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE);
 	if (vaddr != 0) {
 		bach->dma_areas = vaddr;
 	} else {
