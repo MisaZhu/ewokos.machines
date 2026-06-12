@@ -576,11 +576,6 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 	snd_pcm_unlock(substream);
 
 	avail = play_avail(runtime);
-	ALOG("pcm_write enter frames=%d avail=%d appl=%d hw=%d state=%s start=%d stop=%d buf=%d boundary=%d\n",
-		size, avail, runtime->status.appl_ptr, runtime->status.hw_ptr,
-		pcm_state_str(runtime->status.state),
-		runtime->start_threshold, runtime->stop_threshold,
-		runtime->buffer_size, runtime->boundary);
 	while(size > 0) {
 		int copy_frames = 0;
 		int to_end = 0;
@@ -609,9 +604,6 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 		//old_appl = runtime->status.appl_ptr;
 
 		do_transfer(runtime, app_offset, source, offset, copy_frames);
-		ALOG("pcm_write copied frames=%d app_offset=%d avail=%d appl=%d hw=%d\n",
-			copy_frames, app_offset, avail,
-			runtime->status.appl_ptr, runtime->status.hw_ptr);
 		appl_ptr = runtime->status.appl_ptr + copy_frames;
 		if (appl_ptr >= runtime->boundary) {
 			appl_ptr -= runtime->boundary;
@@ -628,10 +620,6 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 
 		if ((runtime->status.state == PCM_STATE_PREPARE) && (frames_ready(runtime) >= runtime->start_threshold)) {
 			int temp = substream->ops->trigger(substream, PCM_TRIGER_START);
-			ALOG("pcm_write trigger ret=%d ready=%d appl=%d hw=%d state=%s\n",
-				temp, frames_ready(runtime),
-				runtime->status.appl_ptr, runtime->status.hw_ptr,
-				pcm_state_str(runtime->status.state));
 			if (temp == 0) {
 				set_pcm_state(substream, PCM_STATE_RUNNING);
 			}
@@ -653,11 +641,6 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 		//Release lock
 		snd_pcm_unlock(substream);
 	}
-	//update pcm state TODO
-	ALOG("pcm_write exit err=%d written=%d appl=%d hw=%d state=%s avail=%d\n",
-		err, written, runtime->status.appl_ptr, runtime->status.hw_ptr,
-		pcm_state_str(runtime->status.state), play_avail(runtime));
-
 	return (err < 0 ? err : written);
 }
 
@@ -808,15 +791,6 @@ static int snd_pcm_write1(struct snd_pcm *pcm,
 	if (size == 0 || offset != 0) {
 		return 0;
 	}
-	ALOG("write1 bytes=%d frames=%d frame_size=%d dma_area=%x dma_addr=%x dma_bytes=%d state=%s\n",
-		size, size / runtime->frame_size, runtime->frame_size,
-		runtime->dma_area, runtime->dma_addr, runtime->dma_bytes,
-		pcm_state_str(runtime->status.state));
-	KLOG("[TRACE] snd_pcm_write1 bytes:%d frames:%d frame_size:%d dma_area:%x dma_addr:%x dma_bytes:%d state:%s\n",
-		size, size / runtime->frame_size, runtime->frame_size,
-		runtime->dma_area, runtime->dma_addr, runtime->dma_bytes,
-		pcm_state_str(runtime->status.state));
-
 	if (runtime->status.state == PCM_STATE_PREPARE ||
 		runtime->status.state == PCM_STATE_RUNNING) {
 		ret = snd_pcm_substeam_write(substream, data, size / runtime->frame_size);
@@ -1198,18 +1172,6 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	struct snd_pcm_substream *substream = pcm->substream;
-	ALOG("write enter fd=%d size=%d offset=%d state=%s frame=%d appl=%d hw=%d\n",
-		fd, size, offset, pcm_state_str(substream->runtime->status.state),
-		substream->runtime->frame_size,
-		substream->runtime->status.appl_ptr,
-		substream->runtime->status.hw_ptr);
-	// #region debug-point A:write-entry
-	KLOG("[DEBUG] sound0 write entry size:%d offset:%d state:%s frame:%d appl:%d hw:%d\n",
-		size, offset, pcm_state_str(substream->runtime->status.state),
-		substream->runtime->frame_size,
-		substream->runtime->status.appl_ptr,
-		substream->runtime->status.hw_ptr);
-	// #endregion
 	int err = snd_pcm_ensure_write_ready(substream);
 	if (err != 0) {
 		ALOG("write ensure_ready fail err=%d state=%s\n",
@@ -1221,20 +1183,7 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 		return err;
 	}
 
-	int ret = snd_pcm_write1(pcm, buf, size, offset);
-	ALOG("write exit ret=%d state=%s appl=%d hw=%d avail_bytes=%d\n",
-		ret, pcm_state_str(substream->runtime->status.state),
-		substream->runtime->status.appl_ptr,
-		substream->runtime->status.hw_ptr,
-		snd_pcm_buf_avail(substream));
-	// #region debug-point A:write-exit
-	KLOG("[DEBUG] sound0 write exit ret:%d state:%s appl:%d hw:%d avail_bytes:%d\n",
-		ret, pcm_state_str(substream->runtime->status.state),
-		substream->runtime->status.appl_ptr,
-		substream->runtime->status.hw_ptr,
-		snd_pcm_buf_avail(substream));
-	// #endregion
-	return ret;
+	return snd_pcm_write1(pcm, buf, size, offset);
 }
 
 int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p)
@@ -1352,16 +1301,6 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		 * fdev_write()/snd_pcm_substeam_write() handle the actual pacing.
 		 */
 		result = substream->runtime->dma_bytes;
-		ALOG("ctrl buf_avail ret=%d state=%s appl=%d hw=%d\n",
-			result, pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
-		// #region debug-point A:ctrl-buf-avail
-		KLOG("[DEBUG] sound0 ctrl buf_avail ret:%d state:%s appl:%d hw:%d\n",
-			result, pcm_state_str(substream->runtime->status.state),
-			substream->runtime->status.appl_ptr,
-			substream->runtime->status.hw_ptr);
-		// #endregion
 		break;
 	default:
 		KLOG("fdev_ctrl() error! unkown cmd:%d\n", cmd);

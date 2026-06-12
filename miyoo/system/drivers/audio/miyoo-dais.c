@@ -863,31 +863,9 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 	}
 	bach_runtime->last_appl_ptr = runtime->status.appl_ptr;
 	bach_runtime->pending_bytes += new_bytes;
-	// #region debug-point C:pcm-ack
-	KLOG("[DEBUG] miyoo pcm ack new:%d pending:%d total:%d processed:%d appl:%d hw:%d\n",
-		new_bytes,
-		(int)bach_runtime->pending_bytes,
-		(int)bach_runtime->total_bytes,
-		(int)bach_runtime->processed_bytes,
-		runtime->status.appl_ptr,
-		runtime->status.hw_ptr);
-	// #endregion
 
 	if (bach_runtime->pending_bytes >= frame_to_bytes(runtime, runtime->period_size)) {
 		runtime->ack_count = 1;
-		ALOG("ack queue new=%d pending=%d period=%d total=%d processed=%d running=%d\n",
-			new_bytes,
-			(int)bach_runtime->pending_bytes,
-			(int)bach_runtime->period_bytes,
-			(int)bach_runtime->total_bytes,
-			(int)bach_runtime->processed_bytes,
-			bach_runtime->running ? 1 : 0);
-		KLOG("[TRACE] pcm_ack queue pending_bytes:%d period_bytes:%d total:%d processed:%d running:%d\n",
-			(int)bach_runtime->pending_bytes,
-			(int)bach_runtime->period_bytes,
-			(int)bach_runtime->total_bytes,
-			(int)bach_runtime->processed_bytes,
-			bach_runtime->running ? 1 : 0);
 		msc313_bach_queue_pending(bach, substream, bach_runtime);
 	}
 
@@ -915,28 +893,6 @@ static int msc313_bach_irq(int irq, void *data, int push_pending)
 		runtime = substream->runtime;
 		bach_runtime = runtime->private_data;
 		bach_runtime->irqs++;
-		if (bach_runtime->irqs <= 4) {
-			ALOG("irq #%u level=%d pending=%d total=%d processed=%d appl=%d hw=%d\n",
-				bach_runtime->irqs, level,
-				(int)bach_runtime->pending_bytes,
-				(int)bach_runtime->total_bytes,
-				(int)bach_runtime->processed_bytes,
-				runtime->status.appl_ptr,
-				runtime->status.hw_ptr);
-		}
-		// #region debug-point D:irq
-		KLOG("[DEBUG] miyoo irq push:%d level:%d irqs:%u empty:%u underrun:%u pending:%d total:%d processed:%d appl:%d hw:%d\n",
-			push_pending,
-			level,
-			bach_runtime->irqs,
-			bach_runtime->empties,
-			bach_runtime->underruns,
-			(int)bach_runtime->pending_bytes,
-			(int)bach_runtime->total_bytes,
-			(int)bach_runtime->processed_bytes,
-			runtime->status.appl_ptr,
-			runtime->status.hw_ptr);
-		// #endregion
 
 		if (!bach_runtime->running) {
 			KLOG("%s() WARNING! bach is not RUNING!\n", __func__);
