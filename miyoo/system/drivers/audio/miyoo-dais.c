@@ -291,10 +291,30 @@ int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream
 		memset(bach_runtime, 0, sizeof(*bach_runtime));
 	}
 
+	/*
+	 * The previous session's close() left sub_channel = NULL and
+	 * running = false, but every caller of this DAI (kick/ack/pointer/
+	 * trigger/prepare) dereferences bach_runtime->sub_channel
+	 * unconditionally. Re-attach it here so a second open() reaches a
+	 * fully wired DAI, and keep the substream link published
+	 * independently so a parallel close() from a stale task cannot
+	 * take the channel away mid-open.
+	 */
 	bach_runtime->sub_channel = &bach->dma_channels[0].reader_writer[0];
+	bach_runtime->sub_channel->substream = substream;
 	bach->dma_channels[0].reader_writer[0].substream = substream;
 
+	/*
+	 * Force the BACH channel into a known-quiescent state BEFORE the
+	 * caller starts writing. The reset pulse alone is not enough: the
+	 * sub_channel still carries the live count latch and the previous
+	 * session's running flag, both of which would let queue_pending()
+	 * promote stale pending_bytes on the first kick().
+	 */
 	regmap_field_write(dma_channel->rst, 1);
+	regmap_field_write(dma_channel->en, 0);
+	regmap_field_write(dma_channel->rd_empty_int_en, 0);
+	regmap_field_write(dma_channel->rd_underrun_int_en, 0);
 	delay(1000);
 	regmap_field_write(dma_channel->rst, 0);
 	delay(1000);
@@ -437,12 +457,28 @@ int mi_cpu_dai_close(struct snd_soc_dai *dai, struct snd_pcm_substream *substrea
 		bach_runtime->total_bytes = 0;
 		bach_runtime->processed_bytes = 0;
 		bach_runtime->last_appl_ptr = 0;
+		bach_runtime->irqs = 0;
+		bach_runtime->empties = 0;
+		bach_runtime->underruns = 0;
+		bach_runtime->period_bytes = 0;
+		bach_runtime->max_inflight = 0;
+		bach_runtime->max_level = 0;
 	}
 	snd_pcm_unlock(substream);
 
+	/*
+	 * Disable the BACH side under the same lock-then-reset discipline
+	 * so the next open() doesn't observe a still-running engine. The
+	 * substream is already unpublished above, but the DMA channel
+	 * enable bits and underrun/empty IRQs would otherwise stay armed
+	 * across the close->open window.
+	 */
+	regmap_field_write(dma_channel->en, 0);
+	regmap_field_write(dma_channel->rd_empty_int_en, 0);
+	regmap_field_write(dma_channel->rd_underrun_int_en, 0);
 	regmap_field_write(dma_channel->rst, 1);
 
-	
+
 	return 0;
 }
 

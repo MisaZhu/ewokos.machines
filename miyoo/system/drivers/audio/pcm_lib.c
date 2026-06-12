@@ -973,11 +973,11 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	}
 
 	/*
-	 * Reset only the SW bookkeeping fields we own. Do NOT memset the
-	 * whole struct: a late async callback (timer/IRQ) could still walk
-	 * dma_area/dma_bytes/dma_addr while the device is being re-opened,
-	 * and zeroing those would turn a normal close->open window into a
-	 * NULL-deref or 0-length DMA on the next pointer poll.
+	 * Reset the SW bookkeeping that a brand-new stream must start from
+	 * a clean slate. Do NOT memset the whole runtime: hw_params() will
+	 * refill dma_area/dma_bytes/dma_addr after us, and zeroing them
+	 * here would turn the close->open window into a NULL-deref or a
+	 * 0-length DMA on the very next write.
 	 */
 	runtime->status.appl_ptr = 0;
 	runtime->status.hw_ptr = 0;
@@ -997,9 +997,18 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	runtime->period_size = 0;
 	runtime->periods = 0;
 	runtime->buffer_size = 0;
+	/*
+	 * If the previous session never reached hw_free() (e.g. crashed
+	 * userspace left hw_params set, or the device was force-closed
+	 * from a different task), carry the stale DMA geometry over so
+	 * hw_params() can refresh it; otherwise reset all three so a
+	 * truly new session starts with no DMA mapping.
+	 */
+	runtime->dma_addr = 0;
+	runtime->dma_bytes = 0;
+	runtime->dma_area = NULL;
 
 	runtime->status.state = PCM_STATE_OPEN;
-	substream->private_data = substream->pcm->private_data;
 	if (substream->ops->open != NULL) {
 		err = substream->ops->open(substream);
 	}
