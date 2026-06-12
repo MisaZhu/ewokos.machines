@@ -27,6 +27,9 @@
 #define SOUND_DEFAULT_CHANNELS		2
 #define SOUND_DEFAULT_PERIOD_SIZE	1024
 #define SOUND_DEFAULT_PERIOD_COUNT	4
+#define PCM_WAIT_AVAIL_SLEEP_US		3000
+#define PCM_LOOP_IDLE_SLEEP_US		10000
+#define PCM_LOOP_ACTIVE_SLEEP_US	10000
 
 int snd_card_new(struct snd_card **snd_card, const char *name)
 {
@@ -430,31 +433,38 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 	int err = 0;
 
 	while (1) {
+		snd_pcm_lock(substream);
 		if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->pointer) {
 			update_hw_ptr(substream, 0);
 		}
 		avail = play_avail(runtime);
 		if (avail >= runtime->period_size) {
+			snd_pcm_unlock(substream);
 			break;
 		}
-
-		usleep(1000);
 
 		//check pcm state again
 		switch (runtime->status.state) {
 		case PCM_STATE_XRUN: {
 			err = -EPIPE;
+			snd_pcm_unlock(substream);
 			} return err;
 		case PCM_STATE_OPEN:
 		case PCM_STATE_SETUP: {
 			err = -EBADF;
+			snd_pcm_unlock(substream);
 			} return err;
 		case PCM_STATE_STOPED:{
+			snd_pcm_unlock(substream);
+			usleep(PCM_WAIT_AVAIL_SLEEP_US);
 			continue;
 			}
 		default:
+			snd_pcm_unlock(substream);
 			break;
 		}
+
+		usleep(PCM_WAIT_AVAIL_SLEEP_US);
 	}
 
 	*ravail = avail;
@@ -581,7 +591,6 @@ static int do_transfer(struct snd_pcm_runtime *runtime,
 	const uint8_t *user_ptr;
 	int bytes = 0;
 	int dma_off = 0;
-	int i;
 
 	if (runtime == NULL) {
 		return -EBADF;
@@ -631,9 +640,7 @@ static int do_transfer(struct snd_pcm_runtime *runtime,
 	hw_app_ptr = (volatile uint8_t *)runtime->dma_area + dma_off;
 	user_ptr = (const uint8_t *)src_base + frame_to_bytes(runtime, off);
 
-	for (i = 0; i < bytes; i++) {
-		hw_app_ptr[i] = user_ptr[i];
-	}
+	memcpy((void *)hw_app_ptr, user_ptr, bytes);
 	return 0;
 }
 
@@ -887,16 +894,19 @@ int snd_pcm_buf_avail(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int avail_bytes = 0;
 
+	snd_pcm_lock(substream);
+
 	/*
 	 * miyoo currently relies on a Timer0-driven polling path to advance hw_ptr.
 	 * If that IRQ path stalls, userspace writes can block forever even when the
-	 * hardware level register is still readable. Poll once here as a fallback.
+	 * hardware level register is still readable. Keep the state check and the
+	 * fallback pointer poll under the same substream lock so close() cannot flip
+	 * the stream to STOPED/OPEN and tear down the DAI bookkeeping in between.
 	 */
 	if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->pointer) {
 		update_hw_ptr(substream, 0);
 	}
 
-	snd_pcm_lock(substream);
 	switch (runtime->status.state) {
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_RUNNING:
@@ -921,12 +931,12 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	struct snd_pcm_substream *substream = pcm->substream;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
+
+	snd_pcm_lock(substream);
 	if (substream->open_count != 0) {
-		
+		snd_pcm_unlock(substream);
 		return -EBUSY;
 	}
-
-	substream->open_count = 1;
 
 	/*
 	 * Reset only the SW bookkeeping fields we own. Do NOT memset the
@@ -961,10 +971,12 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	}
 
 	if (err != 0) {
-		substream->open_count = 0;
 		set_pcm_state(substream, PCM_STATE_UNKOWN);
+		snd_pcm_unlock(substream);
 		return err;
 	}
+	substream->open_count = 1;
+	snd_pcm_unlock(substream);
 	return err;
 }
 
@@ -982,25 +994,29 @@ static int snd_pcm_write1(struct snd_pcm *pcm,
 	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret = 0;
-
-	if (!runtime->dma_area || runtime->dma_bytes <= 0) {
-		
-		
-		return -EBADF;
-	}
-	if (runtime->frame_size <= 0) {
-		
-		return -EBADF;
-	}
+	int frame_size = 0;
+	int state = PCM_STATE_UNKOWN;
 
 	if (size == 0 || offset != 0) {
 		return 0;
 	}
-	if (runtime->status.state == PCM_STATE_PREPARE ||
-		runtime->status.state == PCM_STATE_RUNNING) {
-		ret = snd_pcm_substeam_write(substream, data, size / runtime->frame_size);
+
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0 ||
+		!runtime->dma_area || runtime->dma_bytes <= 0 ||
+		runtime->frame_size <= 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
+	frame_size = runtime->frame_size;
+	state = runtime->status.state;
+	snd_pcm_unlock(substream);
+
+	if (state == PCM_STATE_PREPARE ||
+		state == PCM_STATE_RUNNING) {
+		ret = snd_pcm_substeam_write(substream, data, size / frame_size);
 		if (ret > 0) {
-			ret = ret * runtime->frame_size;
+			ret = ret * frame_size;
 		}
 	}
 	return ret;
@@ -1037,13 +1053,18 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
 
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
 	switch(runtime->status.state) {
 	case PCM_STATE_OPEN:
 	case PCM_STATE_SETUP:
 	case PCM_STATE_PREPARE:
 		break;
 	default:
-		
+		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
 
@@ -1069,12 +1090,14 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 		(runtime->bit_depth % 8) != 0) {
 		
 		set_pcm_state(substream, PCM_STATE_OPEN);
+		snd_pcm_unlock(substream);
 		return -EINVAL;
 	}
 	runtime->frame_size = runtime->channels * runtime->bit_depth / 8;
 	runtime->boundary = runtime->buffer_size;
 	if (runtime->boundary == 0) {
 		
+		snd_pcm_unlock(substream);
 		return -EINVAL;
 	}
 	if (runtime->periods > 1) {
@@ -1113,6 +1136,7 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	}
 
 	dump_pcm_runtime(runtime);
+	snd_pcm_unlock(substream);
 	
 	return err;
 }
@@ -1125,12 +1149,18 @@ static int snd_pcm_hw_free(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
 
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
 	switch(runtime->status.state) {
 	case PCM_STATE_SETUP:
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_STOPED:
 		break;
 	default:
+		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
 
@@ -1139,6 +1169,7 @@ static int snd_pcm_hw_free(struct snd_pcm_substream *substream)
 	}
 
 	set_pcm_state(substream, PCM_STATE_OPEN);
+	snd_pcm_unlock(substream);
 	return err;
 }
 
@@ -1150,6 +1181,11 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int err = 0;
 
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
 	switch(runtime->status.state) {
 	case PCM_STATE_SETUP:
 	case PCM_STATE_PREPARE:
@@ -1157,15 +1193,18 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 	case PCM_STATE_XRUN:
 		break;
 	case PCM_STATE_OPEN:
+		snd_pcm_unlock(substream);
 		return -EBADF;
 	case PCM_STATE_RUNNING:
+		snd_pcm_unlock(substream);
 		return -EBUSY;
 	default:
+		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
 
 	if (!substream->ops->prepare) {
-		
+		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
 
@@ -1197,6 +1236,7 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 		runtime->status.appl_ptr = runtime->status.hw_ptr = 0;
 		set_pcm_state(substream, PCM_STATE_SETUP);
 	}
+	snd_pcm_unlock(substream);
 	return err;
 }
 
@@ -1206,7 +1246,15 @@ static int snd_pcm_ensure_default_hw(struct snd_pcm_substream *substream)
 		return -EBADF;
 	}
 	struct pcm_config config;
-	int state = get_pcm_state(substream);
+	int state;
+
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
+	state = get_pcm_state(substream);
+	snd_pcm_unlock(substream);
 
 	if (state != PCM_STATE_OPEN) {
 		return 0;
@@ -1222,14 +1270,28 @@ static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 		return -EBADF;
 	}
 	int err;
-	int state = get_pcm_state(substream);
+	int state;
+
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
+	state = get_pcm_state(substream);
+	snd_pcm_unlock(substream);
 
 	err = snd_pcm_ensure_default_hw(substream);
 	if (err != 0) {
 		return err;
 	}
 
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
 	state = get_pcm_state(substream);
+	snd_pcm_unlock(substream);
 	switch (state) {
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_RUNNING:
@@ -1250,15 +1312,28 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 		return -EBADF;
 	}
 	int err;
-	int state = get_pcm_state(substream);
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	int state;
+
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
+	state = get_pcm_state(substream);
+	snd_pcm_unlock(substream);
 
 	err = snd_pcm_ensure_default_hw(substream);
 	if (err != 0) {
 		return err;
 	}
 
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		return -EBADF;
+	}
 	state = get_pcm_state(substream);
+	snd_pcm_unlock(substream);
 	switch (state) {
 	case PCM_STATE_SETUP:
 	case PCM_STATE_PREPARE:
@@ -1280,15 +1355,19 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 
+	snd_pcm_lock(substream);
 	state = get_pcm_state(substream);
+	snd_pcm_unlock(substream);
 	if (state == PCM_STATE_RUNNING ||
 		state == PCM_STATE_PREPARE) {
 		if (substream->ops->trigger) {
 			substream->ops->trigger(substream, PCM_TRIGER_STOP);
 		}
 
+		snd_pcm_lock(substream);
 		set_pcm_state(substream, PCM_STATE_STOPED);
 		state = get_pcm_state(substream);
+		snd_pcm_unlock(substream);
 	}
 
 	if (state == PCM_STATE_XRUN) {
@@ -1305,6 +1384,7 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 		if (substream->ops->trigger) {
 			substream->ops->trigger(substream, PCM_TRIGER_STOP);
 		}
+		snd_pcm_lock(substream);
 		set_pcm_state(substream, PCM_STATE_STOPED);
 		state = get_pcm_state(substream);
 		WRITE_LONG(&(runtime->status.hw_ptr), 0);
@@ -1312,6 +1392,7 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 		runtime->status.appl_ptr = 0;
 		runtime->ack_count = 0;
 		runtime->irq_count = 0;
+		snd_pcm_unlock(substream);
 		
 	}
 
@@ -1322,15 +1403,19 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 			substream->ops->hw_free(substream);
 		}
 
+		snd_pcm_lock(substream);
 		set_pcm_state(substream, PCM_STATE_OPEN);
 		state = get_pcm_state(substream);
+		snd_pcm_unlock(substream);
 	}
 
 	if (state == PCM_STATE_OPEN) {
 		if (substream->ops->close) {
 			substream->ops->close(substream);
 		}
+		snd_pcm_lock(substream);
 		set_pcm_state(substream, PCM_STATE_UNKOWN);
+		snd_pcm_unlock(substream);
 	}
 
 	return 0;
@@ -1343,8 +1428,16 @@ static int snd_pcm_release(struct snd_pcm *pcm)
 	}
 	struct snd_pcm_substream *substream = pcm->substream;
 
-	snd_pcm_release_substream(substream);
+	/*
+	 * Publish "closed" before teardown so loop_step/query paths stop
+	 * entering the PCM while hw_free()/close() are dismantling the
+	 * runtime and the BACH side bookkeeping.
+	 */
+	snd_pcm_lock(substream);
 	substream->open_count = 0;
+	snd_pcm_unlock(substream);
+
+	snd_pcm_release_substream(substream);
 	
 	return 0;
 }
@@ -1440,7 +1533,9 @@ int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, i
 	}
 	snd_pcm_unlock(substream);
 
+	snd_pcm_lock(substream);
 	int avail = capture_avail(runtime);
+	snd_pcm_unlock(substream);
 	if (avail == 0) {
 		return -EAGAIN;
 	}
@@ -1502,7 +1597,10 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		 * Guard against hw_free() having reset dma_bytes back to 0; in
 		 * that case fall back to buffer_size, which is at least sane.
 		 */
-		if (substream->runtime->dma_bytes > 0) {
+		snd_pcm_lock(substream);
+		if (substream->open_count == 0) {
+			result = -EBADF;
+		} else if (substream->runtime->dma_bytes > 0) {
 			result = substream->runtime->dma_bytes;
 		} else if (substream->runtime->buffer_size > 0) {
 			result = frame_to_bytes(substream->runtime,
@@ -1513,6 +1611,7 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		} else {
 			result = 0;
 		}
+		snd_pcm_unlock(substream);
 		break;
 	default:
 		
@@ -1589,6 +1688,7 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	}
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	struct snd_pcm_substream *substream = (pcm != NULL) ? pcm->substream : NULL;
+	int is_open = 0;
 	/*
 	 * Fast path: when nobody has the PCM open there is no writer
 	 * blocked on a wakeup, and running fdev_check_poll_events would
@@ -1596,9 +1696,15 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	 * mutex. Skip straight to a longer sleep in that case so the
 	 * driver doesn't burn CPU while the device is idle.
 	 */
-	if (substream == NULL || substream->open_count == 0 ||
-		substream->runtime == NULL) {
-		usleep(10000);
+	if (substream == NULL || substream->runtime == NULL) {
+		usleep(PCM_LOOP_IDLE_SLEEP_US);
+		return 0;
+	}
+	snd_pcm_lock(substream);
+	is_open = (substream->open_count != 0);
+	snd_pcm_unlock(substream);
+	if (!is_open) {
+		usleep(PCM_LOOP_IDLE_SLEEP_US);
 		return 0;
 	}
 	uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
@@ -1612,7 +1718,7 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	 * use 3ms; the previous 1ms cadence was burning a measurable
 	 * share of CPU on miyoo for no audible benefit.
 	 */
-	usleep(5000);
+	usleep(PCM_LOOP_ACTIVE_SLEEP_US);
 	return 0;
 }
 

@@ -343,17 +343,28 @@ int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream
 	if (bach == NULL) {
 		return -EINVAL;
 	}
-	int state = substream->runtime->status.state;
-	struct msc313_bach_substream_runtime *bach_runtime;
+	struct msc313_bach_substream_runtime *bach_runtime =
+		runtime->private_data;
 	struct msc313_bach_dma_channel *dma_channel = &bach->dma_channels[0];
 
-	bach_runtime = calloc(1, sizeof(*bach_runtime));
-	if (!bach_runtime) {
-		
-		return -ENOMEM;
+	/*
+	 * Keep bach_runtime alive across close()->loop_step races. The
+	 * polling path can still reach pointer()/queue bookkeeping after
+	 * userspace starts tearing the stream down, and freeing the object
+	 * in close() turns that into a UAF. Reuse the existing runtime on
+	 * the next open and only allocate once on the first open.
+	 */
+	if (bach_runtime == NULL) {
+		bach_runtime = calloc(1, sizeof(*bach_runtime));
+		if (!bach_runtime) {
+			return -ENOMEM;
+		}
+		runtime->private_data = bach_runtime;
+	}
+	else {
+		memset(bach_runtime, 0, sizeof(*bach_runtime));
 	}
 
-	runtime->private_data = bach_runtime;
 	bach_runtime->sub_channel = &bach->dma_channels[0].reader_writer[0];
 	bach->dma_channels[0].reader_writer[0].substream = substream;
 
@@ -483,44 +494,38 @@ int mi_cpu_dai_close(struct snd_soc_dai *dai, struct snd_pcm_substream *substrea
 	}
 	struct msc313_bach_dma_channel *dma_channel = &bach->dma_channels[0];
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	int state = runtime->status.state;
 
 	/*
 	 * Stop asynchronous readers (timer/IRQ) FIRST and clear the global
 	 * pointers under the substream lock, so any in-flight callback observes
-	 * a consistent "nothing to do" state and never re-enters with the
-	 * runtime/private_data we are about to free.
+	 * a consistent "nothing to do" state.
 	 */
 	snd_pcm_lock(substream);
 	tStart = 0;
 	bach->dma_channels[0].reader_writer[0].substream = NULL;
+	if (runtime->private_data != NULL) {
+		struct msc313_bach_substream_runtime *bach_runtime =
+			runtime->private_data;
+		/*
+		 * Do NOT free here: fdev_loop_step -> snd_pcm_buf_avail ->
+		 * update_hw_ptr -> pointer() may still be in flight without
+		 * holding substream->lock. Clearing the fields makes any late
+		 * poll observe an inert runtime, and the object is reused or
+		 * reinitialized in the next open().
+		 */
+		bach_runtime->running = false;
+		bach_runtime->sub_channel = NULL;
+		bach_runtime->pending_bytes = 0;
+		bach_runtime->total_bytes = 0;
+		bach_runtime->processed_bytes = 0;
+		bach_runtime->last_appl_ptr = 0;
+	}
 	snd_pcm_unlock(substream);
 
 	tSubstream = NULL;
 	tBach = NULL;
 
 	regmap_field_write(dma_channel->rst, 1);
-
-	/*
-	 * No-timer cleanup: there is nothing to cancel here anymore. The
-	 * BACH pending queue is no longer driven by a periodic poll, so
-	 * closing the substream only needs to clear the globals and reset
-	 * the BACH engine. The free() of runtime->private_data is guarded
-	 * by the substream lock below so a late kick() cannot race with
-	 * the actual deallocation.
-	 */
-
-	/*
-	 * Lock again before freeing runtime->private_data: a late callback
-	 * that already grabbed the lock will block here, and once it returns
-	 * the freed pointer is no longer referenced.
-	 */
-	snd_pcm_lock(substream);
-	if (runtime->private_data != NULL) {
-		free(runtime->private_data);
-		runtime->private_data = NULL;
-	}
-	snd_pcm_unlock(substream);
 
 	
 	return 0;
