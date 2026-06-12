@@ -244,32 +244,6 @@ static void msc313_bach_dump_dmactrl(struct msc313_bach *bach)
 }
 #endif
 
-static void msc313_bach_pcm_dumpruntime(struct msc313_bach_substream_runtime *bach_runtime, int tag)
-{
-	if (bach_runtime == NULL || bach_runtime->sub_channel == NULL ||
-		bach_runtime->sub_channel->substream == NULL ||
-		bach_runtime->sub_channel->substream->runtime == NULL) {
-		return;
-	}
-	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
-	struct snd_pcm_runtime *runtime = sub_channel->substream->runtime;
-	int level;
-	uint64_t now_usec;
-
-	kernel_tic(NULL, &now_usec);
-	level = msc313_bach_get_level(sub_channel);
-
-	
-
-	
-}
-
-
-static struct snd_pcm_substream *tSubstream;
-struct msc313_bach *tBach;
-static int tStart;
-
-static int msc313_bach_irq(int irq, void *data, int push_pending);
 static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 			       struct snd_pcm_substream *substream);
 
@@ -283,54 +257,6 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
  * soft-timer poll used to do. mi_cpu_dai_close() no longer needs to
  * cancel any timer.
  */
-
-static void bach_irq_handle(uint32_t interrupt, uint32_t data)
-{
-	(void)interrupt;
-	struct msc313_bach *tBach = (struct msc313_bach *)data;
-	struct snd_pcm_runtime *runtime;
-	uint64_t now_usec;
-	uint64_t diff_1 = 0;
-	uint64_t diff_2 = 0;
-	uint64_t diff_3 = 0;
-
-	kernel_tic(NULL, &now_usec);
-
-	if (!tSubstream || tStart != 1) {
-		goto TIMER_INT_END;
-	}
-	if (tBach == NULL) {
-		goto TIMER_INT_END;
-	}
-
-	runtime = tSubstream->runtime;
-
-	//now - last_call_end == interval between two calls
-	diff_1 = now_usec - runtime->time_after;
-	//now - last_call_start
-	diff_2 = now_usec - runtime->time_pre;
-	runtime->time_pre = now_usec;
-
-	if (diff_1 > DELAY_INTERVAL_MS || diff_2 > 2 * DELAY_INTERVAL_MS) {
-		if (tStart == 1) {
-			snd_pcm_lock(tSubstream);
-			msc313_bach_irq(0, tBach, 0);
-			snd_pcm_unlock(tSubstream);
-		}
-	}
-
-	kernel_tic(NULL, &now_usec);
-	//irq_handle process cost time
-	diff_3 = now_usec - runtime->time_pre;
-	runtime->time_after = now_usec;
-
-	if (US_TO_MS(diff_3) > 20) {
-		
-	}
-
-TIMER_INT_END:
-	return;
-}
 
 
 int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
@@ -375,11 +301,6 @@ int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream
 
 	/* Setup default register config */
 	regmap_field_write(dma_channel->live_count_en, 1);
-
-	tBach = NULL;
-	tStart = 0;
-	tSubstream = substream;
-	tBach = bach;
 
 	return 0;
 }
@@ -457,14 +378,12 @@ int mi_cpu_dai_hw_params(struct snd_soc_dai *dai, struct snd_pcm_substream *subs
 int mi_cpu_dai_hw_free(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
 	UNUSED(dai);
-	int state;
 	struct snd_pcm_runtime *runtime;
 
 	if (substream == NULL || substream->runtime == NULL) {
 		return 0;
 	}
 	runtime = substream->runtime;
-	state = runtime->status.state;
 	if (runtime->dma_area == NULL) {
 		return 0;
 	}
@@ -501,7 +420,6 @@ int mi_cpu_dai_close(struct snd_soc_dai *dai, struct snd_pcm_substream *substrea
 	 * a consistent "nothing to do" state.
 	 */
 	snd_pcm_lock(substream);
-	tStart = 0;
 	bach->dma_channels[0].reader_writer[0].substream = NULL;
 	if (runtime->private_data != NULL) {
 		struct msc313_bach_substream_runtime *bach_runtime =
@@ -521,9 +439,6 @@ int mi_cpu_dai_close(struct snd_soc_dai *dai, struct snd_pcm_substream *substrea
 		bach_runtime->last_appl_ptr = 0;
 	}
 	snd_pcm_unlock(substream);
-
-	tSubstream = NULL;
-	tBach = NULL;
 
 	regmap_field_write(dma_channel->rst, 1);
 
@@ -834,8 +749,6 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		bach_runtime->running = true;
 		//msc313_bach_queue_pending(bach, substream, bach_runtime);
 
-		/* start polling dma status */
-		tStart = 1;
 		break;
 	case PCM_TRIGER_STOP:
 		regmap_field_write(sub_channel->en, 0);
@@ -845,9 +758,6 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		regmap_field_write(dma_channel->rd_underrun_int_en, 0);
 		regmap_field_write(dma_channel->rd_empty_int_en, 0);
 		bach_runtime->running = false;
-
-		/* stop polling dma status */
-		tStart = 0;
 		break;
 	default:
 		
@@ -960,129 +870,6 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 	if (bach_runtime->pending_bytes >= frame_to_bytes(runtime, runtime->period_size)) {
 		runtime->ack_count = 1;
 		msc313_bach_queue_pending(bach, substream, bach_runtime);
-	}
-
-	return 0;
-}
-
-static int msc313_bach_irq(int irq, void *data, int push_pending)
-{
-	UNUSED(irq);
-	struct msc313_bach *bach = data;
-	if (bach == NULL) {
-		return 0;
-	}
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(bach->dma_channels); i++) {
-		struct msc313_bach_dma_channel *dma_channel = &bach->dma_channels[i];
-		struct msc313_bach_substream_runtime *bach_runtime;
-		struct snd_pcm_substream *substream;
-		struct snd_pcm_runtime *runtime;
-		unsigned empty, underrun; //overrun, irqflags;
-		int level;
-
-		level = msc313_bach_get_level(&bach->dma_channels[i].reader_writer[0]);
-		/* Handle reader flags */
-		substream = dma_channel->reader_writer[0].substream;
-		if (substream == NULL || substream->runtime == NULL) {
-			continue;
-		}
-
-		runtime = substream->runtime;
-		bach_runtime = runtime->private_data;
-		if (bach_runtime == NULL) {
-			continue;
-		}
-		bach_runtime->irqs++;
-
-		if (!bach_runtime->running) {
-			
-			continue;
-		}
-
-		/*
-		 * Polling mode must keep hw_ptr in sync even while the hardware still
-		 * has more than one period buffered; otherwise userspace can sit on a
-		 * stale avail snapshot until the queue is almost drained.
-		 */
-		update_hw_ptr(substream, 1);
-		if (push_pending || level <= (int)TO_MIUSIZE(bach_runtime->max_inflight)) {
-			msc313_bach_queue_pending(bach, substream, bach_runtime);
-		}
-
-		regmap_field_read(bach->dma_channels[i].rd_empty_flag, &empty);
-		regmap_field_read(bach->dma_channels[i].rd_underrun_flag, &underrun);
-
-		if (!underrun && !empty) {
-			return 0;
-		}
-
-		/*
-		 * It looks like the interrupt has to be ack'd by setting clear high
-		 * it then needs to cleared to get it to trigger again.
-		 */
-		regmap_field_write(bach->dma_channels[i].rd_int_clear, 1);
-		regmap_field_write(bach->dma_channels[i].rd_int_clear, 0);
-
-		/*
-		 * Sometimes interrupts happen at odd times before expected.
-		 * Just ignore them. The tail of a clean playback is NOT an
-		 * empty/underrun: when application data is still in flight
-		 * (pending_bytes > 0 or appl_ptr > hw_ptr) the hardware
-		 * hitting 0 just means we need to queue the next chunk
-		 * immediately. Forcing the state to XRUN here is what was
-		 * causing the "first pcm_write ok, second fails" regression.
-		 */
-		if (empty && (level == 0)) {
-			int in_flight_frames = play_avail(runtime);
-			bool has_pending =
-				(bach_runtime->pending_bytes > 0) ||
-				(in_flight_frames > 0) ||
-				(bach_runtime->running && runtime->status.state == PCM_STATE_RUNNING);
-
-			if (!has_pending) {
-				bach_runtime->empties++;
-				
-				regmap_field_write(dma_channel->rd_empty_int_en, 0);
-				bach_runtime->processed_bytes = bach_runtime->total_bytes;
-				/*
-				 * Drop the BACH-side running flag here so the polling
-				 * path can no longer promote stale pending_bytes or
-				 * call back into queue_pending() once we transition
-				 * the state to XRUN. release_substream() also relies
-				 * on this being false when it walks the engine.
-				 */
-				bach_runtime->running = false;
-				msc313_bach_pcm_dumpruntime(bach_runtime, 1);
-				substream->ops->trigger(substream, PCM_TRIGER_STOP);
-				runtime->status.state = PCM_STATE_XRUN;
-				
-				break;
-			}
-
-			/*
-			 * Tail of a clean playback with more data already queued
-			 * by userspace. Keep the engine running and let the
-			 * refill path below bring level back up.
-			 */
-			bach_runtime->empties++;
-			
-			msc313_bach_queue_pending(bach, substream, bach_runtime);
-		}
-
-		if (underrun && empty == 0) {
-			bach_runtime->underruns++;
-			
-			/*
-			 * DO NOT disable rd_underrun_int_en here. The previous
-			 * implementation masked the very interrupt that would
-			 * have refilled the buffer, which left the engine
-			 * stranded and forced the next pcm_write to observe
-			 * XRUN. Just refill and let the interrupt fire again.
-			 */
-			msc313_bach_queue_pending(bach, substream, bach_runtime);
-		}
 	}
 
 	return 0;
@@ -1592,29 +1379,6 @@ static int pre_allocate_dma_buffer(struct msc313_bach *bach)
 		return -ENOMEM;
 	}
 	bach->dma_areas = vaddr;
-	return 0;
-}
-
-static int register_irq_handle(struct msc313_bach *bach)
-{
-	(void)bach;
-	/*
-	 * No-op. The previous IRQ_TIMER0 based implementation was removed
-	 * because audctrl must not register itself as a hard-interrupt
-	 * handler. The BACH engine is now driven by mi_cpu_dai_kick()
-	 * through the data path.
-	 */
-	return 0;
-}
-
-static int unregister_irq_handle(struct msc313_bach *bach)
-{
-	(void)bach;
-	/*
-	 * No-op, kept only for source compatibility with the dai ops
-	 * table. There is nothing to unregister: no IRQ_TIMER0 hook, no
-	 * user-space timer, no IRQ handler.
-	 */
 	return 0;
 }
 

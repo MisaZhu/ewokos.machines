@@ -706,50 +706,52 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 		if (copy_frames <= 0) {
 			break;
 		}
-		/*
-		 * appl_ptr is the user-visible write cursor. If it ever went
-		 * negative (e.g. an out-of-range write earlier in a previous
-		 * session, or a future flag day that reuses this runtime) we
-		 * re-seat it before computing the ring offset. Otherwise the
-		 * modulo by buffer_size would yield a negative to_end and the
-		 * very next access to appl_ptr/appl_off would crash.
-		 */
+		snd_pcm_lock(substream);
+		if (substream->open_count == 0 ||
+			runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
+			err = -EBADF;
+			snd_pcm_unlock(substream);
+			break;
+		}
+		switch (runtime->status.state) {
+		case PCM_STATE_PREPARE:
+		case PCM_STATE_RUNNING:
+			break;
+		case PCM_STATE_XRUN:
+			err = -EPIPE;
+			snd_pcm_unlock(substream);
+			break;
+		default:
+			err = -EBADF;
+			snd_pcm_unlock(substream);
+			break;
+		}
+		if (err < 0) {
+			break;
+		}
 		if (runtime->status.appl_ptr < 0) {
 			WRITE_LONG(&(runtime->status.appl_ptr), 0);
 		}
 		app_offset = runtime->status.appl_ptr % runtime->buffer_size;
 		to_end = runtime->buffer_size - app_offset;
 		if (to_end <= 0) {
-			appl_ptr = 0;
 			WRITE_LONG(&(runtime->status.appl_ptr), 0);
+			snd_pcm_unlock(substream);
 			continue;
 		}
 		if (copy_frames > to_end) {
 			copy_frames = to_end;
 		}
 
-		//old_appl = runtime->status.appl_ptr;
-
 		err = do_transfer(runtime, app_offset, source, offset, copy_frames);
 		if (err < 0) {
-			
+			snd_pcm_unlock(substream);
 			break;
 		}
 		appl_ptr = runtime->status.appl_ptr + copy_frames;
 		if (runtime->boundary > 0 && appl_ptr >= runtime->boundary) {
 			appl_ptr -= runtime->boundary;
 		}
-		offset += copy_frames;
-		size -= copy_frames;
-		written += copy_frames;
-		if (avail > copy_frames) {
-			avail -= copy_frames;
-		} else {
-			avail = 0;
-		}
-
-		//Acquire lock
-		snd_pcm_lock(substream);
 
 		WRITE_LONG(&(runtime->status.appl_ptr), appl_ptr);
 
@@ -773,8 +775,16 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 		if (substream->ops && substream->ops->kick) {
 			substream->ops->kick(substream);
 		}
-		//Release lock
 		snd_pcm_unlock(substream);
+
+		offset += copy_frames;
+		size -= copy_frames;
+		written += copy_frames;
+		if (avail > copy_frames) {
+			avail -= copy_frames;
+		} else {
+			avail = 0;
+		}
 	}
 	return (err < 0 ? err : written);
 }
@@ -820,6 +830,11 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		int to_end = 0;
 		int hw_ptr = 0;
 		int hw_offset = 0;
+		int copy_bytes = 0;
+		int hw_off_bytes = 0;
+		int off_bytes = 0;
+		char *hw_ptr_pos;
+		char *user_ptr;
 
 		if (avail == 0) {
 			err = -EAGAIN;
@@ -827,43 +842,63 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		}
 
 		copy_frames = frames > avail ? avail : frames;
-		to_end = runtime->buffer_size - runtime->status.hw_ptr % runtime->buffer_size;
+		if (copy_frames <= 0) {
+			break;
+		}
+
+		snd_pcm_lock(substream);
+		if (substream->open_count == 0 ||
+			runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
+			err = -EBADF;
+			snd_pcm_unlock(substream);
+			break;
+		}
+		switch (runtime->status.state) {
+		case PCM_STATE_PREPARE:
+		case PCM_STATE_RUNNING:
+			break;
+		case PCM_STATE_XRUN:
+			err = -EPIPE;
+			snd_pcm_unlock(substream);
+			break;
+		default:
+			err = -EBADF;
+			snd_pcm_unlock(substream);
+			break;
+		}
+		if (err < 0) {
+			break;
+		}
+		hw_offset = runtime->status.hw_ptr % runtime->buffer_size;
+		to_end = runtime->buffer_size - hw_offset;
 		if (to_end <= 0) {
 			WRITE_LONG(&(runtime->status.hw_ptr), 0);
+			snd_pcm_unlock(substream);
 			continue;
 		}
 		if (copy_frames > to_end) {
 			copy_frames = to_end;
 		}
-		if (copy_frames <= 0) {
-			break;
-		}
-
-		hw_offset = runtime->status.hw_ptr % runtime->buffer_size;
-
-		/*
-		 * Mirror the do_transfer() guard: copy to the user buffer must
-		 * stay inside the DMA ring and inside the user buffer that
-		 * remains. Otherwise a malformed buffer_size or a stale hw_ptr
-		 * walks memcpy() past the dma ring or past the user pointer.
-		 */
-		int copy_bytes = frame_to_bytes(runtime, copy_frames);
+		copy_bytes = frame_to_bytes(runtime, copy_frames);
 		if (copy_bytes <= 0) {
+			snd_pcm_unlock(substream);
 			break;
 		}
-		int hw_off_bytes = frame_to_bytes(runtime, hw_offset);
+		hw_off_bytes = frame_to_bytes(runtime, hw_offset);
 		if (hw_off_bytes < 0 || hw_off_bytes >= runtime->dma_bytes) {
+			snd_pcm_unlock(substream);
 			break;
 		}
 		if (copy_bytes > runtime->dma_bytes - hw_off_bytes) {
 			copy_bytes = runtime->dma_bytes - hw_off_bytes;
 		}
-		int off_bytes = frame_to_bytes(runtime, offset);
+		off_bytes = frame_to_bytes(runtime, offset);
 		if (off_bytes < 0) {
+			snd_pcm_unlock(substream);
 			break;
 		}
-		char *hw_ptr_pos = runtime->dma_area + hw_off_bytes;
-		char *user_ptr = (char *)dest + off_bytes;
+		hw_ptr_pos = runtime->dma_area + hw_off_bytes;
+		user_ptr = (char *)dest + off_bytes;
 		memcpy(user_ptr, hw_ptr_pos, copy_bytes);
 
 		hw_ptr = runtime->status.hw_ptr + copy_frames;
@@ -878,7 +913,6 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		read += copy_frames;
 		avail -= copy_frames;
 
-		snd_pcm_lock(substream);
 		WRITE_LONG(&(runtime->status.hw_ptr), hw_ptr);
 		snd_pcm_unlock(substream);
 	}
