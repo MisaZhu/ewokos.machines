@@ -213,9 +213,19 @@ static int msc313_bach_get_level(struct msc313_bach_dma_sub_channel *sub_channel
 {
 	unsigned level;
 	regmap_field_write(sub_channel->count, 1);
-	delay(100);
+	/*
+	 * The count pulse latches a fresh level into the read register
+	 * asynchronously, then we discard the first read and use the
+	 * second. The original code used delay(100) twice, which burned
+	 * a few hundred ns of pure CPU spin per call; with the pointer
+	 * being polled from fdev_loop_step and the user write path this
+	 * added up to a measurable share of CPU on miyoo. A few cycles
+	 * of spin is enough to flush the MMIO write, and the second read
+	 * already takes care of the hardware-side settle time.
+	 */
+	delay(8);
 	regmap_field_read(sub_channel->level, &level);
-	delay(100);
+	delay(8);
 	regmap_field_read(sub_channel->level, &level);
 	regmap_field_write(sub_channel->count, 0);
 	return level;

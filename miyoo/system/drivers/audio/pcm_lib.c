@@ -1535,18 +1535,37 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 		return 0;
 	}
 	struct snd_pcm_substream *substream = pcm->substream;
-	int state = get_pcm_state(substream);
+	int state = PCM_STATE_UNKOWN;
 
+	/*
+	 * Take the substream lock while we read open_count/state/runtime
+	 * pointers. fdev_close() walks the same fields and tears down
+	 * runtime->private_data / dma_area; without this lock the polling
+	 * thread can race with close() and dereference a freed bach_runtime
+	 * or a NULL dma_area, which is what was crashing audctrl under
+	 * load.
+	 */
+	snd_pcm_lock(substream);
 	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
 		return 0;
 	}
+	state = get_pcm_state(substream);
 	if (state == PCM_STATE_UNKOWN || state == PCM_STATE_OPEN) {
+		snd_pcm_unlock(substream);
 		return 0;
 	}
+	/*
+	 * Release the lock before calling ensure_query_ready / buf_avail:
+	 * those take the lock themselves, and holding it across the call
+	 * would deadlock if the same thread path re-entered.
+	 */
+	snd_pcm_unlock(substream);
+
 	int query_ret = snd_pcm_ensure_query_ready(substream);
 	if (query_ret != 0) {
 		if (substream->runtime != NULL) {
-			
+
 		}
 		return 0;
 	}
@@ -1556,7 +1575,7 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	}
 	if (avail < 0) {
 		if (substream->runtime != NULL) {
-			
+
 		}
 		return 0;
 	}
@@ -1568,11 +1587,32 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	if (dev == NULL || dev->mnt_info.node == 0) {
 		return 0;
 	}
+	struct snd_pcm *pcm = (struct snd_pcm *)p;
+	struct snd_pcm_substream *substream = (pcm != NULL) ? pcm->substream : NULL;
+	/*
+	 * Fast path: when nobody has the PCM open there is no writer
+	 * blocked on a wakeup, and running fdev_check_poll_events would
+	 * still touch the BACH level register and grab the substream
+	 * mutex. Skip straight to a longer sleep in that case so the
+	 * driver doesn't burn CPU while the device is idle.
+	 */
+	if (substream == NULL || substream->open_count == 0 ||
+		substream->runtime == NULL) {
+		usleep(10000);
+		return 0;
+	}
 	uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
 	if (events != 0) {
 		vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
 	}
-	usleep(1000);
+	/*
+	 * The audio buffer is at least one period deep (typically
+	 * 10-20ms at 48kHz), so polling every 5ms is plenty for waking
+	 * up write()-blocked clients. Other drivers (uartd/ttyd/kbd)
+	 * use 3ms; the previous 1ms cadence was burning a measurable
+	 * share of CPU on miyoo for no audible benefit.
+	 */
+	usleep(5000);
 	return 0;
 }
 
