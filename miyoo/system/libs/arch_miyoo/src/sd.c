@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/mmio.h>
+#include <ewoksys/klog.h>
 
 #include <arch/miyoo/sd.h>
 #include "sdmmc.h"
@@ -11,6 +12,7 @@ static uint8_t *_sector_buf;
 static AdmaDescStruct *_adma_desc;
 static SDMMCBusWidthEmType _fast_bus_width = EV_BUS_4BITS;
 static SDMMCBusWidthEmType _active_bus_width = EV_BUS_4BITS;
+static BusTimingEmType _active_bus_timing = EV_BUS_DEF;
 static uint32_t _stable_successes = 0;
 static uint32_t _fast_chunk_sectors = 0;
 static uint32_t _active_chunk_sectors = 0;
@@ -40,11 +42,17 @@ static inline uint32_t miyoo_sd_dma_addr(volatile uint8_t *buf) {
 	return Hal_CARD_TransMIUAddr((uint32_t)phy);
 }
 
+static uint32_t miyoo_sd_bus_timing_clk_hz(BusTimingEmType t) {
+	if(t == EV_BUS_HS)
+		return 50000000U;	/* 50MHz SDR */
+	return MIYOO_SD_REAL_CLK_HZ;
+}
+
 static void miyoo_sd_apply_bus_width(SDMMCBusWidthEmType bus_width) {
 	_active_bus_width = bus_width;
 	Hal_SDMMC_SetDataWidth(EV_IP_FCIE1, _active_bus_width);
-	Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, EV_BUS_DEF);
-	Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
+	Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, _active_bus_timing);
+	Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, miyoo_sd_bus_timing_clk_hz(_active_bus_timing));
 }
 
 static void miyoo_sd_note_success(void) {
@@ -70,6 +78,14 @@ static void miyoo_sd_note_success(void) {
 static void miyoo_sd_note_retryable_error(void) {
 	_stable_successes = 0;
 	_active_chunk_sectors = MIYOO_SD_SYSTEM_SAFE_CHUNK;
+	/* If the high-speed path is misbehaving, drop it once and stay
+	 * at default speed for the rest of the session. Re-enabling
+	 * requires a full reinit. */
+	if(_active_bus_timing != EV_BUS_DEF) {
+		_active_bus_timing = EV_BUS_DEF;
+		Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, EV_BUS_DEF);
+		Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
+	}
 	if(_active_bus_width != EV_BUS_1BIT)
 		miyoo_sd_apply_bus_width(EV_BUS_1BIT);
 }
@@ -159,6 +175,53 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
 /**
  * initialize EMMC to read SDHC card
  */
+/*
+ * Try to upgrade the SD bus to High Speed mode (50MHz SDR). The
+ * bootloader typically leaves the FCIE5 clock at 50MHz for SD; if
+ * the card also supports HS, the bus can run roughly 2x faster than
+ * the default 25MHz/8MHz rate.
+ *
+ * Flow:
+ *   1. CMD6 with arg 0x011FFFFF tells the card to switch function
+ *      group 1 to "high speed" (1) and leave the others unchanged.
+ *   2. Switch the host controller pad/drive to EV_BUS_HS.
+ *   3. Probe a single-sector read of sector 0 (the MBR); a passing
+ *      CRC means the card accepted the switch and the link is stable.
+ *
+ * On any failure (CMD6 rejected, transfer error, corrupted payload)
+ * we revert to EV_BUS_DEF and report 0, leaving the caller to keep
+ * the default state.
+ */
+static int miyoo_sd_try_high_speed(void) {
+	IPEmType eIP = EV_IP_FCIE1;
+	RspErrEmType err;
+	RspStruct *rsp;
+
+	Hal_SDMMC_SetCmdToken(eIP, 6, 0x011FFFFFU);
+	Hal_SDMMC_TransCmdSetting(eIP, EV_EMP, 0, 0, 0, NULL);
+	err = Hal_SDMMC_SendCmdAndWaitProcess(eIP, EV_EMP, EV_CMDRSP, EV_R1, FALSE);
+	if(err != EV_STS_OK)
+		return 0;
+
+	Hal_SDMMC_SetBusTiming(eIP, EV_BUS_HS);
+
+	rsp = _SDMMC_DATAReq(0, 17, 0, 1, 512, EV_DMA, _sector_buf);
+	if(rsp->eErrCode != EV_STS_OK) {
+		Hal_SDMMC_SetBusTiming(eIP, EV_BUS_DEF);
+		return 0;
+	}
+
+	/* MBR signature: 0x55AA at offset 0x1FE. If the high-speed
+	 * link is unstable we'll see random data here, and falling
+	 * back to default is the safe call. */
+	if(_sector_buf[510] != 0x55U || _sector_buf[511] != 0xAAU) {
+		Hal_SDMMC_SetBusTiming(eIP, EV_BUS_DEF);
+		return 0;
+	}
+
+	return 1;
+}
+
 int32_t miyoo_sd_init(void) {
 	SDMMCBusWidthEmType boot_bus_width;
 
@@ -192,6 +255,16 @@ int32_t miyoo_sd_init(void) {
 	 */
 	Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, EV_BUS_DEF);
 	Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
+
+	/*
+	 * Attempt to upgrade to High Speed (50MHz). The probe runs at
+	 * current clock rate; if the bootloader didn't set the FCIE5
+	 * clock to 50MHz, the test read will fail and we stay at DEF.
+	 */
+	if(miyoo_sd_try_high_speed()) {
+		_active_bus_timing = EV_BUS_HS;
+		klog("miyoo_sd: 50MHz high speed mode enabled\n");
+	}
 	return 0;
 }
 
