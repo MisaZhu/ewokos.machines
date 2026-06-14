@@ -700,6 +700,7 @@ int mmc_read_blocks(void *dst, lbaint_t start,
 {
 	struct mmc_cmd cmd;
 	struct mmc_data data;
+	int timeout_ms = 1000;
 
 	if (blkcnt > 1)
 		cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
@@ -719,11 +720,15 @@ int mmc_read_blocks(void *dst, lbaint_t start,
 	if (mmc_send_cmd(&_mmc, &cmd, &data))
 		return 0;
 
-	if (blkcnt > 1) {
+	if (!mmc_host_is_spi(&_mmc) && blkcnt > 1 && !_mmc.ops->auto_stop) {
 		if (mmc_send_stop_transmission(&_mmc, false)) {
 			return 0;
 		}
 	}
+
+	if (!mmc_host_is_spi(&_mmc) && blkcnt > 1 &&
+			mmc_poll_for_busy(&_mmc, timeout_ms))
+		return 0;
 
 	return blkcnt;
 }
@@ -813,7 +818,7 @@ uint32_t mmc_write_blocks(uint32_t start,
 	/* SPI multiblock writes terminate using a special
 	 * token, not a STOP_TRANSMISSION request.
 	 */
-	if (!mmc_host_is_spi(&_mmc) && blkcnt > 1) {
+	if (!mmc_host_is_spi(&_mmc) && blkcnt > 1 && !_mmc.ops->auto_stop) {
 		cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
 		cmd.cmdarg = 0;
 		cmd.resp_type = MMC_RSP_R1b;

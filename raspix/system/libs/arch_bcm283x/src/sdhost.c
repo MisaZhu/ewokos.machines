@@ -959,6 +959,7 @@ static int bcm2835_set_ios(struct mmc *mmc)
 static struct bus_ops _ops = {
 	.set_ios = bcm2835_set_ios,
 	.send_command = bcm2835_send_cmd,
+	.auto_stop = false,
 };
 
 struct bus_ops* bcm283x_sdhost_init(void){
