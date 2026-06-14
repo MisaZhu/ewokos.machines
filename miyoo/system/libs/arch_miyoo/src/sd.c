@@ -160,6 +160,8 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
  * initialize EMMC to read SDHC card
  */
 int32_t miyoo_sd_init(void) {
+	SDMMCBusWidthEmType boot_bus_width;
+
 	_mmio_base = mmio_map();
 	if(_mmio_base == 0)
 		return -1;
@@ -167,12 +169,29 @@ int32_t miyoo_sd_init(void) {
 	_adma_desc = (AdmaDescStruct*)(MIYOO_SD_BOUNCE_VIRT + MIYOO_SD_ADMA_DESC_OFFSET);
 	if(syscall3(SYS_MEM_MAP, (ewokos_addr_t)_sector_buf, MIYOO_SD_BOUNCE_PHY, MIYOO_SD_BOUNCE_SIZE) == 0)
 		return -1;
-	_fast_bus_width = EV_BUS_1BIT;
+
+	/*
+	 * Preserve whatever bus width the bootloader/kernel left the FCIE5 in.
+	 * Forcing 1BIT here flips the host from 4BIT to 1BIT without telling
+	 * the card (no ACMD6), and the resulting timing mismatch corrupts
+	 * multi-block transfers on cards that were negotiated to 4BIT.
+	 */
+	boot_bus_width = Hal_SDMMC_GetDataWidth(EV_IP_FCIE1);
+	sdmmc_init();
+	_fast_bus_width = boot_bus_width;
 	_fast_chunk_sectors = MIYOO_SD_SYSTEM_FAST_CHUNK;
 	_active_chunk_sectors = _fast_chunk_sectors;
-	sdmmc_init();
 	_stable_successes = 0;
 	miyoo_sd_apply_bus_width(_fast_bus_width);
+
+	/*
+	 * These two set gu16_DDR_MODE_REG (pad/drive strength) and
+	 * gu16_WT_NRC (command/response window); they MUST be re-issued
+	 * because sdmmc_init() just zeroed them, and the multi-block path
+	 * reads them on every command.
+	 */
+	Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, EV_BUS_DEF);
+	Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
 	return 0;
 }
 
@@ -182,6 +201,12 @@ int32_t miyoo_sd_read_sector(int32_t sector, void* buf) {
 
 	if(buf == NULL)
 		return -1;
+	/*
+	 * Keep single-sector reads on the kernel-tested EV_DMA path; only the
+	 * multi-sector path in miyoo_sd_try_read_multi() needs EV_ADMA, and
+	 * mixing the two paths in the same function risks regressing what the
+	 * kernel has been using to load the system image in the first place.
+	 */
 	err = miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, _sector_buf);
 	if(err != EV_STS_OK)
 		return err;
@@ -201,16 +226,58 @@ int32_t miyoo_sd_write_sector(int32_t sector, const void* buf) {
 	return 0;
 }
 
+static RspErrEmType miyoo_sd_cmd12(IPEmType eIP) {
+	bool bCloseClock = FALSE;
+	/*
+	 * CMD12 is a command-only (R1b) transfer: no data phase, but DAT0 stays
+	 * busy until the card finishes its internal state transition, so we must
+	 * use the R1b response path which waits for DAT0 high.
+	 */
+	Hal_SDMMC_SetCmdToken(eIP, 12, 0);
+	Hal_SDMMC_TransCmdSetting(eIP, EV_EMP, 0, 0, 0, NULL);
+	return Hal_SDMMC_SendCmdAndWaitProcess(eIP, EV_EMP, EV_CMDRSP, EV_R1B, bCloseClock);
+}
+
 static RspErrEmType miyoo_sd_try_read_multi(uint32_t sector, uint32_t count, volatile uint8_t* buf) {
+	RspStruct *rsp;
+	RspErrEmType err;
+	/*
+	 * FCIE5 多块读必须走 ADMA：DMA 模式下 JOB_BLK_CNT 直接等于块数，
+	 * 但 Hal_SDMMC_SendCmdAndWaitProcess 的 R_DATA_END 是按 JOB_BLK_CNT
+	 * 触发的，控制器硬件不会按 CMD18 的块数自动拆 8 个 block；
+	 * ADMA descriptor 里的 u32_JobCnt=chunks 才会驱动多块续传。
+	 *
+	 * 重试在多块读这里是反效果：rdata 状态下重复发同一条 CMD18 必然超时，
+	 * miyoo_sd_run_request 的 5×2s 耗时会直接打穿上层文件系统的读超时。
+	 * 失败就让外层 miyoo_sd_read_blocks 走单块保底路径。
+	 */
 	if(count == 1)
-		return miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, buf);
-	return miyoo_sd_run_request(18, sector, count, 512, EV_DMA, buf);
+		return miyoo_sd_run_request(17, sector, 1, 512, EV_ADMA, buf);
+
+	rsp = _SDMMC_DATAReq(0, 18, sector, (uint16_t)count, 512, EV_ADMA, buf);
+	err = rsp->eErrCode;
+
+	/*
+	 * CMD18 leaves the card in rdata state with DAT0 busy; the FCIE5 HAL
+	 * does not auto-issue CMD12, so we must stop the transfer explicitly
+	 * before the next command (or the very next read will time out).
+	 * 失败也照发：把卡从 rdata 拉回 tran，否则后面的单块保底也会卡死。
+	 */
+	(void)miyoo_sd_cmd12(EV_IP_FCIE1);
+
+	if(err == EV_STS_OK)
+		miyoo_sd_note_success();
+	return err;
 }
 
 static RspErrEmType miyoo_sd_try_write_multi(uint32_t sector, uint32_t count, const volatile uint8_t* buf) {
+	RspErrEmType err;
 	if(count == 1)
 		return miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, (volatile uint8_t*)buf);
-	return miyoo_sd_run_request(25, sector, count, 512, EV_DMA, (volatile uint8_t*)buf);
+	err = miyoo_sd_run_request(25, sector, count, 512, EV_DMA, (volatile uint8_t*)buf);
+	/* Same reasoning as the read path: release the card from rdata. */
+	(void)miyoo_sd_cmd12(EV_IP_FCIE1);
+	return err;
 }
 
 int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
