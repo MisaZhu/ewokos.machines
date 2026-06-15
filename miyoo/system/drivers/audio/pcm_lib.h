@@ -180,6 +180,7 @@ struct snd_pcm_substream {
 	struct snd_pcm *pcm;
 	void *private_data;
 	int open_count;
+	int closing;
 	const struct snd_pcm_ops *ops;
 	struct snd_pcm_runtime *runtime;
 
@@ -368,7 +369,10 @@ static inline int pcm_runtime_frame_bytes(const struct snd_pcm_runtime *runtime)
 
 static inline int frame_to_bytes(struct snd_pcm_runtime *runtime, int frames)
 {
-	return frames * pcm_runtime_frame_bytes(runtime);
+	int fb = pcm_runtime_frame_bytes(runtime);
+	if (fb <= 0) return 0;
+	if (frames > 0x7FFFFFFF / fb) return 0x7FFFFFFF;
+	return frames * fb;
 }
 
 static inline int bytes_to_frames(struct snd_pcm_runtime *runtime, int bytes) {
