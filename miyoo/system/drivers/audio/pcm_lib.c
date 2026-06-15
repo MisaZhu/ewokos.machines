@@ -29,14 +29,7 @@
 #define SOUND_DEFAULT_PERIOD_COUNT	4
 #define PCM_WAIT_AVAIL_SLEEP_US		5000
 #define PCM_LOOP_IDLE_SLEEP_US		10000
-#define PCM_LOOP_IDLE_SLEEP_MAX_US	40000
-#define PCM_LOOP_CLOSED_SLEEP_US	160000
-#define PCM_LOOP_PREROLL_SLEEP_US	2000
 #define PCM_LOOP_ACTIVE_SLEEP_US	10000
-
-static inline void pcm_loop_idle_backoff(int reset);
-static inline void pcm_loop_closed_sleep(void);
-static int snd_pcm_prepare(struct snd_pcm_substream *substream);
 
 int snd_card_new(struct snd_card **snd_card, const char *name)
 {
@@ -122,6 +115,7 @@ int snd_card_info_print(struct snd_card *card)
 		
 	} else {
 		struct listnode *node;
+		int index = 0;
 		list_for_each(node, &card->pcm_list) {
 			struct snd_pcm_substream *substream = NULL;
 			struct snd_pcm *pcm = node_to_item(node, struct snd_pcm, list);
@@ -260,27 +254,19 @@ int snd_pcm_free(struct snd_pcm *pcm)
 		pcm->dev = NULL;
 	}
 	list_remove(&pcm->list);
-	if (pcm->card != NULL) {
-		pcm->card->num_pcm--;
-	}
+	pcm->card->num_pcm--;
 	free(pcm);
 	return 0;
 }
 
 int snd_set_pcm_ops(struct snd_pcm *pcm, struct snd_pcm_ops *ops)
 {
-	if (pcm == NULL || pcm->substream == NULL || ops == NULL) {
-		return -EBADF;
-	}
 	pcm->substream->ops = ops;
 	return 0;
 }
 
 int snd_add_dai(struct snd_pcm *pcm, struct snd_soc_dai *dai, int dai_type)
 {
-	if (pcm == NULL || dai == NULL) {
-		return -EBADF;
-	}
 	if (dai_type == DAI_TYPE_MEMIF) {
 		list_add_head(&pcm->dai_list, &dai->list);
 		pcm->mem_dai = dai;
@@ -296,14 +282,10 @@ static int snd_dai_pcm_open(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai;
 	struct listnode *node;
-	int ret = 0;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
-		if (dai->ops != NULL && dai->ops->open != NULL) {
-			ret = dai->ops->open(dai, substream);
-			if (ret != 0) {
-				return ret;
-			}
+		if (dai->ops->open != NULL) {
+			dai->ops->open(dai, substream);
 		}
 	}
 	return 0;
@@ -314,18 +296,13 @@ static int snd_dai_pcm_close(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai;
 	struct listnode *node;
-	int ret = 0;
-	int first_err = 0;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
-		if (dai->ops != NULL && dai->ops->close != NULL) {
-			ret = dai->ops->close(dai, substream);
-			if (ret != 0 && first_err == 0) {
-				first_err = ret;
-			}
+		if (dai->ops->close != NULL) {
+			dai->ops->close(dai, substream);
 		}
 	}
-	return first_err;
+	return 0;
 }
 
 static int snd_dai_pcm_hw_params(struct snd_pcm_substream *substream)
@@ -333,14 +310,10 @@ static int snd_dai_pcm_hw_params(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai;
 	struct listnode *node;
-	int ret = 0;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
-		if (dai->ops != NULL && dai->ops->hw_params != NULL) {
-			ret = dai->ops->hw_params(dai, substream);
-			if (ret != 0) {
-				return ret;
-			}
+		if (dai->ops->hw_params != NULL) {
+			dai->ops->hw_params(dai, substream);
 		}
 	}
 	return 0;
@@ -351,18 +324,13 @@ static int snd_dai_pcm_hw_free(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai;
 	struct listnode *node;
-	int ret = 0;
-	int first_err = 0;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
-		if (dai->ops != NULL && dai->ops->hw_free != NULL) {
-			ret = dai->ops->hw_free(dai, substream);
-			if (ret != 0 && first_err == 0) {
-				first_err = ret;
-			}
+		if (dai->ops->hw_free != NULL) {
+			dai->ops->hw_free(dai, substream);
 		}
 	}
-	return first_err;
+	return 0;
 }
 
 static int snd_dai_pcm_prepare(struct snd_pcm_substream *substream)
@@ -370,14 +338,10 @@ static int snd_dai_pcm_prepare(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai;
 	struct listnode *node;
-	int ret = 0;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
-		if (dai->ops != NULL && dai->ops->prepare != NULL) {
-			ret = dai->ops->prepare(dai, substream);
-			if (ret != 0) {
-				return ret;
-			}
+		if (dai->ops->prepare != NULL) {
+			dai->ops->prepare(dai, substream);
 		}
 	}
 	return 0;
@@ -388,14 +352,10 @@ static int snd_dai_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai;
 	struct listnode *node;
-	int ret = 0;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
-		if (dai->ops != NULL && dai->ops->trigger != NULL) {
-			ret = dai->ops->trigger(dai, substream, cmd);
-			if (ret != 0) {
-				return ret;
-			}
+		if (dai->ops->trigger != NULL) {
+			dai->ops->trigger(dai, substream, cmd);
 		}
 	}
 	return 0;
@@ -406,7 +366,7 @@ static int snd_dai_pcm_pointer(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai = pcm->mem_dai;
 	int pos;
-	if (dai != NULL && dai->ops != NULL && dai->ops->pointer != NULL) {
+	if (dai->ops->pointer) {
 		pos = dai->ops->pointer(dai, substream);
 	} else {
 		pos = 0;
@@ -420,7 +380,7 @@ static int snd_dai_pcm_ack(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai = pcm->mem_dai;
 	int ret = 0;
-	if (dai != NULL && dai->ops != NULL && dai->ops->ack != NULL) {
+	if (dai->ops->ack) {
 		ret = dai->ops->ack(dai, substream);
 	}
 	return ret;
@@ -436,18 +396,13 @@ static int snd_dai_pcm_kick(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai;
 	struct listnode *node;
-	int ret = 0;
-	int first_err = 0;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
 		if (dai->ops && dai->ops->kick) {
-			ret = dai->ops->kick(dai, substream);
-			if (ret != 0 && first_err == 0) {
-				first_err = ret;
-			}
+			dai->ops->kick(dai, substream);
 		}
 	}
-	return first_err;
+	return 0;
 }
 
 struct snd_pcm_ops soc_dai_pcm_ops = {
@@ -479,13 +434,7 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 
 	while (1) {
 		snd_pcm_lock(substream);
-		if (substream->open_count == 0 || substream->closing) {
-			snd_pcm_unlock(substream);
-			return -EBADF;
-		}
-		if (runtime->status.state == PCM_STATE_RUNNING &&
-			substream->ops != NULL &&
-			substream->ops->pointer != NULL) {
+		if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->pointer) {
 			update_hw_ptr(substream, 0);
 		}
 		avail = play_avail(runtime);
@@ -497,14 +446,9 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 		//check pcm state again
 		switch (runtime->status.state) {
 		case PCM_STATE_XRUN: {
-					int ret;
-					snd_pcm_unlock(substream);
-					ret = snd_pcm_prepare(substream);
-					if (ret != 0) {
-						return ret;
-					}
-					continue;
-					}
+			err = -EPIPE;
+			snd_pcm_unlock(substream);
+			} return err;
 		case PCM_STATE_OPEN:
 		case PCM_STATE_SETUP: {
 			err = -EBADF;
@@ -532,6 +476,7 @@ void snd_dump_substream(struct snd_pcm_substream *substream, int is_interrupt)
 	if (substream == NULL || substream->runtime == NULL) {
 		return;
 	}
+	struct snd_pcm_runtime *runtime = substream->runtime;
 	
 }
 
@@ -555,13 +500,10 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 #endif
 
 	old_hw_ptr = runtime->status.hw_ptr;
-	if (substream->ops != NULL && substream->ops->pointer != NULL) {
+	if (substream->ops->pointer) {
 		pos = substream->ops->pointer(substream);
 	}
 
-	if (pos < 0) {
-		pos = 0;
-	}
 	if (pos >= runtime->buffer_size) {
 		
 		pos = 0;
@@ -623,25 +565,17 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 #endif
 
 	/*
-	 * Playback XRUN detection:
-	 * An XRUN occurs when the hardware has drained all queued frames faster
-	 * than they were refilled. This is detected by checking if the available
-	 * space (writable frames) exceeds the stop_threshold, which indicates
-	 * the hardware has consumed everything in the buffer.
-	 *
-	 * Important: Only trigger XRUN when we have a valid stop_threshold
-	 * and we're in RUNNING state. The stop_threshold is typically set to
-	 * buffer_size, so play_avail >= buffer_size means buffer is empty.
+	 * Playback XRUN means the hardware has drained all queued frames, so the
+	 * writable space has grown to the stop threshold. Using frames_ready() here
+	 * is backwards: a healthy running stream with data queued can have a large
+	 * ready count and would be spuriously stopped after a few good writes.
 	 */
 	if (runtime->status.state == PCM_STATE_RUNNING &&
-	    runtime->stop_threshold > 0 &&
-	    play_avail(runtime) >= runtime->stop_threshold) {
-		/*
-		 * Transition to XRUN state. The trigger(STOP) is optional here
-		 * since the hardware has already drained; we mark XRUN so that
-		 * the next write/prepare will trigger auto-recovery.
-		 */
-		set_pcm_state(substream, PCM_STATE_XRUN);
+		play_avail(runtime) >= runtime->stop_threshold) {
+		substream->ops->trigger(substream, PCM_TRIGER_STOP);
+		runtime->status.state = PCM_STATE_XRUN;
+
+		
 	}
 
 	return 0;
@@ -713,7 +647,6 @@ static int do_transfer(struct snd_pcm_runtime *runtime,
 int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *source, int size)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	const struct snd_pcm_ops *ops = NULL;
 	int offset = 0;
 	int avail = 0;
 	int written = 0;
@@ -733,23 +666,13 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 	}
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 || substream->closing || substream->ops == NULL) {
-		snd_pcm_unlock(substream);
-		return -EBADF;
-	}
-	ops = substream->ops;
 	switch (runtime->status.state) {
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_RUNNING:
 		break;
-	case PCM_STATE_XRUN: {
-		int prep_ret;
+	case PCM_STATE_XRUN:
 		snd_pcm_unlock(substream);
-		prep_ret = snd_pcm_prepare(substream);
-		if (prep_ret != 0)
-			return prep_ret;
-		return -EAGAIN;
-	}
+		return -EPIPE;
 	default:
 		snd_pcm_unlock(substream);
 		return -EBADF;
@@ -784,26 +707,20 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 			break;
 		}
 		snd_pcm_lock(substream);
-		if (substream->open_count == 0 || substream->closing ||
-			substream->ops == NULL ||
+		if (substream->open_count == 0 ||
 			runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
 			err = -EBADF;
 			snd_pcm_unlock(substream);
 			break;
 		}
-		ops = substream->ops;
 		switch (runtime->status.state) {
 		case PCM_STATE_PREPARE:
 		case PCM_STATE_RUNNING:
 			break;
-		case PCM_STATE_XRUN: {
-			int prep_ret;
+		case PCM_STATE_XRUN:
+			err = -EPIPE;
 			snd_pcm_unlock(substream);
-			prep_ret = snd_pcm_prepare(substream);
-			if (prep_ret != 0)
-				return (written > 0) ? written : prep_ret;
-			return (written > 0) ? written : -EAGAIN;
-		}
+			break;
 		default:
 			err = -EBADF;
 			snd_pcm_unlock(substream);
@@ -838,34 +755,25 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 
 		WRITE_LONG(&(runtime->status.appl_ptr), appl_ptr);
 
-		if ((runtime->status.state == PCM_STATE_PREPARE) &&
-			(frames_ready(runtime) >= runtime->start_threshold) &&
-			ops->trigger != NULL) {
-			int temp = ops->trigger(substream, PCM_TRIGER_START);
+		if ((runtime->status.state == PCM_STATE_PREPARE) && (frames_ready(runtime) >= runtime->start_threshold)) {
+			int temp = substream->ops->trigger(substream, PCM_TRIGER_START);
 			if (temp == 0) {
 				set_pcm_state(substream, PCM_STATE_RUNNING);
-				if (ops->ack != NULL) {
-					ops->ack(substream);
-				}
-				if (ops->kick != NULL) {
-					ops->kick(substream);
-				}
 			}
-		} else {
-			if ((get_pcm_state(substream) == PCM_STATE_RUNNING) &&
-				ops->ack != NULL) {
-				ops->ack(substream);
-			}
-			/*
-			 * After acking the new bytes we must hand them off to BACH
-			 * synchronously. Otherwise the next IRQ empty tail call will
-			 * see pending_bytes=0 and the BACH inflight level stays at 0,
-			 * which turns the next write into XRUN. The optional kick()
-			 * hook is the platform driver's chance to do that push.
-			 */
-			if (ops->kick != NULL) {
-				ops->kick(substream);
-			}
+		}
+
+		if ((get_pcm_state(substream) == PCM_STATE_RUNNING) && substream->ops->ack) {
+			substream->ops->ack(substream);
+		}
+		/*
+		 * After acking the new bytes we must hand them off to BACH
+		 * synchronously. Otherwise the next IRQ empty tail call will
+		 * see pending_bytes=0 and the BACH inflight level stays at 0,
+		 * which turns the next write into XRUN. The optional kick()
+		 * hook is the platform driver's chance to do that push.
+		 */
+		if (substream->ops && substream->ops->kick) {
+			substream->ops->kick(substream);
 		}
 		snd_pcm_unlock(substream);
 
@@ -902,22 +810,13 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 || substream->closing) {
-		snd_pcm_unlock(substream);
-		return -EBADF;
-	}
 	switch (runtime->status.state) {
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_RUNNING:
 		break;
-	case PCM_STATE_XRUN: {
-		int prep_ret;
+	case PCM_STATE_XRUN:
 		snd_pcm_unlock(substream);
-		prep_ret = snd_pcm_prepare(substream);
-		if (prep_ret != 0)
-			return prep_ret;
-		return -EAGAIN;
-	}
+		return -EPIPE;
 	default:
 		snd_pcm_unlock(substream);
 		return -EBADF;
@@ -948,7 +847,7 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		}
 
 		snd_pcm_lock(substream);
-		if (substream->open_count == 0 || substream->closing ||
+		if (substream->open_count == 0 ||
 			runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
 			err = -EBADF;
 			snd_pcm_unlock(substream);
@@ -958,14 +857,10 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		case PCM_STATE_PREPARE:
 		case PCM_STATE_RUNNING:
 			break;
-		case PCM_STATE_XRUN: {
-			int prep_ret;
+		case PCM_STATE_XRUN:
+			err = -EPIPE;
 			snd_pcm_unlock(substream);
-			prep_ret = snd_pcm_prepare(substream);
-			if (prep_ret != 0)
-				return (read > 0) ? read : prep_ret;
-			return (read > 0) ? read : -EAGAIN;
-		}
+			break;
 		default:
 			err = -EBADF;
 			snd_pcm_unlock(substream);
@@ -1042,13 +937,7 @@ int snd_pcm_buf_avail(struct snd_pcm_substream *substream)
 	 * fallback pointer poll under the same substream lock so close() cannot flip
 	 * the stream to STOPED/OPEN and tear down the DAI bookkeeping in between.
 	 */
-	if (substream->closing) {
-		snd_pcm_unlock(substream);
-		return -EBADF;
-	}
-	if (runtime->status.state == PCM_STATE_RUNNING &&
-		substream->ops != NULL &&
-		substream->ops->pointer != NULL) {
+	if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->pointer) {
 		update_hw_ptr(substream, 0);
 	}
 
@@ -1057,14 +946,9 @@ int snd_pcm_buf_avail(struct snd_pcm_substream *substream)
 	case PCM_STATE_RUNNING:
 	case PCM_STATE_SETUP:
 		break;
-	case PCM_STATE_XRUN: {
-		int prep_ret;
+	case PCM_STATE_XRUN:
 		snd_pcm_unlock(substream);
-		prep_ret = snd_pcm_prepare(substream);
-		if (prep_ret != 0)
-			return prep_ret;
-		return -EAGAIN;
-	}
+		return -EPIPE;
 	default:
 		snd_pcm_unlock(substream);
 		return -EBADF;
@@ -1083,11 +967,10 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count != 0 || substream->closing) {
+	if (substream->open_count != 0) {
 		snd_pcm_unlock(substream);
 		return -EBUSY;
 	}
-	substream->closing = 0;
 
 	/*
 	 * Reset the SW bookkeeping that a brand-new stream must start from
@@ -1126,11 +1009,6 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	runtime->dma_area = NULL;
 
 	runtime->status.state = PCM_STATE_OPEN;
-	if (substream->ops == NULL) {
-		set_pcm_state(substream, PCM_STATE_UNKOWN);
-		snd_pcm_unlock(substream);
-		return -EBADF;
-	}
 	if (substream->ops->open != NULL) {
 		err = substream->ops->open(substream);
 	}
@@ -1219,7 +1097,7 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 || substream->closing) {
+	if (substream->open_count == 0) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1265,17 +1143,15 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 		snd_pcm_unlock(substream);
 		return -EINVAL;
 	}
-	/*
-	 * Start threshold determines when playback begins after prepare().
-	 * If too large, users hear a noticeable delay (front-padding silence).
-	 * If too small, the DMA buffer may underrun before the next refill.
-	 *
-	 * Use a single period as the start threshold. This balances low-latency
-	 * startup (minimal front-padding) with enough runway to survive the first
-	 * few timer polls before the write loop refills. A single period is also
-	 * safe for both single- and multi-period buffer configurations.
-	 */
-	if (runtime->start_threshold <= 0) {
+	if (runtime->periods > 1) {
+		int safe_start = runtime->period_size * 2;
+		if (safe_start > runtime->buffer_size) {
+			safe_start = runtime->buffer_size;
+		}
+		if (runtime->start_threshold <= 0 || runtime->start_threshold < safe_start) {
+			runtime->start_threshold = safe_start;
+		}
+	} else if (runtime->start_threshold <= 0) {
 		runtime->start_threshold = runtime->period_size;
 	}
 	if (runtime->start_threshold > runtime->buffer_size) {
@@ -1283,12 +1159,12 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	}
 
 	uint32_t temp = (uint32_t)runtime->buffer_size;
-	while (temp <= 0x3FFFFFFF && temp * 2 <= (uint32_t)(0x7FFFFFFF - runtime->buffer_size)) {
+	while (temp * 2 <= (uint32_t)(0x7FFFFFFF - runtime->buffer_size)) {
 		temp *= 2;
 	}
 	runtime->boundary = (int32_t)temp;
 
-	if (substream->ops != NULL && substream->ops->hw_params != NULL) {
+	if (substream->ops->hw_params) {
 		err = substream->ops->hw_params(substream);
 		if (err == 0) {
 			set_pcm_state(substream, PCM_STATE_SETUP);
@@ -1296,7 +1172,7 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	}
 
 	if (err != 0) {
-		if (substream->ops != NULL && substream->ops->hw_free != NULL) {
+		if (substream->ops->hw_free) {
 			substream->ops->hw_free(substream);
 		}
 		set_pcm_state(substream, PCM_STATE_OPEN);
@@ -1317,7 +1193,7 @@ static int snd_pcm_hw_free(struct snd_pcm_substream *substream)
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 || substream->closing) {
+	if (substream->open_count == 0) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1331,7 +1207,7 @@ static int snd_pcm_hw_free(struct snd_pcm_substream *substream)
 		return -EBADF;
 	}
 
-	if (substream->ops != NULL && substream->ops->hw_free != NULL) {
+	if (substream->ops->hw_free) {
 		err = substream->ops->hw_free(substream);
 	}
 
@@ -1349,7 +1225,7 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 || substream->closing) {
+	if (substream->open_count == 0) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1370,7 +1246,7 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 		return -EBADF;
 	}
 
-	if (substream->ops == NULL || substream->ops->prepare == NULL) {
+	if (!substream->ops->prepare) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1416,7 +1292,7 @@ static int snd_pcm_ensure_default_hw(struct snd_pcm_substream *substream)
 	int state;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 || substream->closing) {
+	if (substream->open_count == 0) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1440,7 +1316,7 @@ static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 	int state;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 || substream->closing) {
+	if (substream->open_count == 0) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1465,14 +1341,9 @@ static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 		return 0;
 	case PCM_STATE_SETUP:
 	case PCM_STATE_STOPED:
-	case PCM_STATE_XRUN:
-		/*
-		 * Auto-recover from XRUN instead of returning -EPIPE.
-		 * The raspix driver silently handles underruns and resumes,
-		 * so user-space apps in ewokos do not expect or handle
-		 * -EPIPE correctly and will crash/abort if we return it.
-		 */
 		return snd_pcm_prepare(substream);
+	case PCM_STATE_XRUN:
+		return -EPIPE;
 	default:
 		return -EBADF;
 	}
@@ -1512,7 +1383,7 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 	case PCM_STATE_RUNNING:
 		return 0;
 	case PCM_STATE_XRUN:
-		return snd_pcm_prepare(substream);
+		return -EPIPE;
 	default:
 		return -EBADF;
 	}
@@ -1529,26 +1400,49 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 
 	snd_pcm_lock(substream);
 	state = get_pcm_state(substream);
+	snd_pcm_unlock(substream);
 	if (state == PCM_STATE_RUNNING ||
-		state == PCM_STATE_PREPARE ||
-		state == PCM_STATE_XRUN) {
-		if (substream->ops != NULL && substream->ops->trigger != NULL) {
+		state == PCM_STATE_PREPARE) {
+		if (substream->ops->trigger) {
 			substream->ops->trigger(substream, PCM_TRIGER_STOP);
 		}
+
+		snd_pcm_lock(substream);
+		set_pcm_state(substream, PCM_STATE_STOPED);
+		state = get_pcm_state(substream);
+		snd_pcm_unlock(substream);
+	}
+
+	if (state == PCM_STATE_XRUN) {
+		/*
+		 * The IRQ handler may have already set processed_bytes = total_bytes
+		 * and forced the trigger to STOP, but the engine bookkeeping in
+		 * bach_runtime is still in a "running" state from the BACH side.
+		 * Re-asserting STOP here, and clearing hw_ptr/appl_ptr, makes sure
+		 * the next open()/wait_avail() doesn't see stale 'just-drained'
+		 * values that were never re-initialized. Keep the resetting tight:
+		 * only the fields that drive play_avail() and the XRUN judgement
+		 * are touched, DMA geometry stays intact for hw_free().
+		 */
+		if (substream->ops->trigger) {
+			substream->ops->trigger(substream, PCM_TRIGER_STOP);
+		}
+		snd_pcm_lock(substream);
 		set_pcm_state(substream, PCM_STATE_STOPED);
 		state = get_pcm_state(substream);
 		WRITE_LONG(&(runtime->status.hw_ptr), 0);
 		WRITE_LONG(&(runtime->hw_ptr_base), 0);
-		WRITE_LONG(&(runtime->status.appl_ptr), 0);
+		runtime->status.appl_ptr = 0;
 		runtime->ack_count = 0;
 		runtime->irq_count = 0;
+		snd_pcm_unlock(substream);
+		
 	}
-	snd_pcm_unlock(substream);
 
 	if (state == PCM_STATE_SETUP ||
 		state == PCM_STATE_XRUN ||
 		state ==  PCM_STATE_STOPED) {
-		if (substream->ops != NULL && substream->ops->hw_free != NULL) {
+		if (substream->ops->hw_free) {
 			substream->ops->hw_free(substream);
 		}
 
@@ -1559,7 +1453,7 @@ static int snd_pcm_release_substream(struct snd_pcm_substream *substream)
 	}
 
 	if (state == PCM_STATE_OPEN) {
-		if (substream->ops != NULL && substream->ops->close != NULL) {
+		if (substream->ops->close) {
 			substream->ops->close(substream);
 		}
 		snd_pcm_lock(substream);
@@ -1578,22 +1472,15 @@ static int snd_pcm_release(struct snd_pcm *pcm)
 	struct snd_pcm_substream *substream = pcm->substream;
 
 	/*
-	 * Publish "closing" before teardown so loop_step/query paths stop
+	 * Publish "closed" before teardown so loop_step/query paths stop
 	 * entering the PCM while hw_free()/close() are dismantling the
-	 * runtime and the BACH side bookkeeping. Keep open_count non-zero
-	 * until release_substream() finishes so the DAI stop/close hooks
-	 * can still run on the normal teardown path.
+	 * runtime and the BACH side bookkeeping.
 	 */
 	snd_pcm_lock(substream);
-	substream->closing = 1;
+	substream->open_count = 0;
 	snd_pcm_unlock(substream);
 
 	snd_pcm_release_substream(substream);
-	snd_pcm_lock(substream);
-	substream->open_count = 0;
-	substream->closing = 0;
-	snd_pcm_unlock(substream);
-	pcm_loop_closed_sleep();
 	
 	return 0;
 }
@@ -1613,7 +1500,7 @@ int fdev_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, v
 	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
 		return -EBADF;
 	}
-	pcm_loop_idle_backoff(1);
+	
 	return snd_pcm_open(pcm);
 }
 
@@ -1650,22 +1537,13 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 		return -EBADF;
 	}
 	struct snd_pcm_substream *substream = pcm->substream;
-	pcm_loop_idle_backoff(1);
 	int err = snd_pcm_ensure_write_ready(substream);
 	if (err != 0) {
 		
 		return err;
 	}
 
-	int ret;
-	int retries = 3;
-	do {
-		ret = snd_pcm_write1(pcm, buf, size, offset);
-		if (ret != -EAGAIN)
-			break;
-		retries--;
-	} while (retries > 0);
-	return ret;
+	return snd_pcm_write1(pcm, buf, size, offset);
 }
 
 int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p)
@@ -1683,32 +1561,15 @@ int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, i
 	struct snd_pcm_substream *substream = pcm->substream;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int ret = 0;
-	int frame_size = 0;
-	int avail = 0;
-	int copy_frames = 0;
-
-	if (buf == NULL || size <= 0) {
-		return -EINVAL;
-	}
 
 	snd_pcm_lock(substream);
-	if (runtime->frame_size <= 0) {
-		snd_pcm_unlock(substream);
-		return -EBADF;
-	}
-	frame_size = runtime->frame_size;
 	switch (runtime->status.state) {
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_RUNNING:
 		break;
-	case PCM_STATE_XRUN: {
-		int prep_ret;
+	case PCM_STATE_XRUN:
 		snd_pcm_unlock(substream);
-		prep_ret = snd_pcm_prepare(substream);
-		if (prep_ret != 0)
-			return prep_ret;
-		return -EAGAIN;
-	}
+		return -EPIPE;
 	default:
 		snd_pcm_unlock(substream);
 		return -EBADF;
@@ -1716,22 +1577,18 @@ int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, i
 	snd_pcm_unlock(substream);
 
 	snd_pcm_lock(substream);
-	avail = capture_avail(runtime);
+	int avail = capture_avail(runtime);
 	snd_pcm_unlock(substream);
 	if (avail == 0) {
 		return -EAGAIN;
 	}
 
-	copy_frames = size / frame_size;
-	if (copy_frames <= 0) {
-		return 0;
-	}
-	if (copy_frames > avail) {
-		copy_frames = avail;
-	}
+	int copy_frames = size > avail ? avail : size;
 	ret = snd_pcm_substream_read(substream, buf, copy_frames);
 	if (ret > 0) {
-		ret = ret * frame_size;
+		if (runtime->frame_size > 0) {
+			ret = ret * runtime->frame_size;
+		}
 	}
 
 	return ret;
@@ -1753,7 +1610,7 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		struct pcm_config config;
 		memset(&config, 0, sizeof(struct pcm_config));
 		proto_read_to(in, &config, sizeof(struct pcm_config));
-		pcm_loop_idle_backoff(1);
+		
 		result = snd_pcm_hw_sw_parms(substream, &config);
 		break;
 	}
@@ -1762,7 +1619,7 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		result = snd_pcm_hw_free(substream);
 		break;
 	case CTRL_PCM_DEV_PRPARE:
-		pcm_loop_idle_backoff(1);
+		
 		result = snd_pcm_prepare(substream);
 		break;
 	case CTRL_PCM_BUF_AVAIL:
@@ -1835,10 +1692,6 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 		snd_pcm_unlock(substream);
 		return 0;
 	}
-	if (substream->closing) {
-		snd_pcm_unlock(substream);
-		return 0;
-	}
 	state = get_pcm_state(substream);
 	if (state == PCM_STATE_UNKOWN || state == PCM_STATE_OPEN) {
 		snd_pcm_unlock(substream);
@@ -1871,39 +1724,14 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	return 0;
 }
 
-static uint32_t _pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_US;
-
-static inline void pcm_loop_idle_backoff(int reset)
-{
-	if (reset) {
-		_pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_US;
-		return;
-	}
-	usleep(_pcm_loop_idle_sleep_us);
-	if (_pcm_loop_idle_sleep_us < PCM_LOOP_IDLE_SLEEP_MAX_US) {
-		_pcm_loop_idle_sleep_us <<= 1;
-		if (_pcm_loop_idle_sleep_us > PCM_LOOP_IDLE_SLEEP_MAX_US) {
-			_pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_MAX_US;
-		}
-	}
-}
-
-static inline void pcm_loop_closed_sleep(void)
-{
-	_pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_MAX_US;
-	usleep(PCM_LOOP_CLOSED_SLEEP_US);
-}
-
 static int fdev_loop_step(vdevice_t* dev, void* p)
 {
 	if (dev == NULL || dev->mnt_info.node == 0) {
-		pcm_loop_closed_sleep();
 		return 0;
 	}
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	struct snd_pcm_substream *substream = (pcm != NULL) ? pcm->substream : NULL;
 	int is_open = 0;
-	int state = PCM_STATE_UNKOWN;
 	/*
 	 * Fast path: when nobody has the PCM open there is no writer
 	 * blocked on a wakeup, and running fdev_check_poll_events would
@@ -1912,63 +1740,28 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	 * driver doesn't burn CPU while the device is idle.
 	 */
 	if (substream == NULL || substream->runtime == NULL) {
-		pcm_loop_closed_sleep();
+		usleep(PCM_LOOP_IDLE_SLEEP_US);
 		return 0;
 	}
 	snd_pcm_lock(substream);
 	is_open = (substream->open_count != 0);
-	if (substream->closing) {
-		snd_pcm_unlock(substream);
-		pcm_loop_closed_sleep();
-		return 0;
-	}
-	state = get_pcm_state(substream);
 	snd_pcm_unlock(substream);
-	/*
-	 * Enter long sleep if the PCM is not open OR the stream is in a
-	 * post-stop terminal state. Once a stream has been stopped or has
-	 * suffered an XRUN and not recovered, the driver should idle rather
-	 * than poll-waiting for a state transition that can only come from
-	 * an explicit prepare() or close() call.
-	 */
-	if (!is_open || state == PCM_STATE_STOPED) {
-		pcm_loop_closed_sleep();
+	if (!is_open) {
+		usleep(PCM_LOOP_IDLE_SLEEP_US);
 		return 0;
 	}
-
-	if (state == PCM_STATE_XRUN) {
-		pcm_loop_idle_backoff(0);
-		return 0;
-	}
-	/*
-	 * Writers may still be waiting for writable events before the stream
-	 * reaches RUNNING, so keep the poll loop alive for SETUP/PREPARE too.
-	 * Once playback has stopped or torn down, fall back to idle backoff.
-	 */
-	if (state != PCM_STATE_SETUP &&
-		state != PCM_STATE_PREPARE &&
-		state != PCM_STATE_RUNNING) {
-		pcm_loop_closed_sleep();
-		return 0;
-	}
-
 	uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
 	if (events != 0) {
 		vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
 	}
 	/*
 	 * The audio buffer is at least one period deep (typically
-	 * 10-20ms at 48kHz), so polling every 10ms is plenty for waking
-	 * up write()-blocked clients. During RUNNING we use a fixed active
-	 * sleep without resetting the backoff counter, so that when the
-	 * state transitions out of RUNNING the backoff is already at a
-	 * reasonable level and doesn't spin at minimum sleep.
+	 * 10-20ms at 48kHz), so polling every 5ms is plenty for waking
+	 * up write()-blocked clients. Other drivers (uartd/ttyd/kbd)
+	 * use 3ms; the previous 1ms cadence was burning a measurable
+	 * share of CPU on miyoo for no audible benefit.
 	 */
-	if (state == PCM_STATE_RUNNING) {
-		usleep(PCM_LOOP_ACTIVE_SLEEP_US);
-	} else {
-		pcm_loop_idle_backoff(0);
-	}
+	usleep(PCM_LOOP_ACTIVE_SLEEP_US);
 	return 0;
 }
 
