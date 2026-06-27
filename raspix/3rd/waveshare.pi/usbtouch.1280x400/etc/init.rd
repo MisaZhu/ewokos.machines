@@ -13,7 +13,8 @@
 @/bin/ipcserv /drivers/consoled             
 set_stdio /dev/console0
 
-@/bin/ipcserv /drivers/raspix/usbd.touch     /dev/touch0
+@/bin/ipcserv /drivers/raspix/usbhostd       /dev/hid0
+@/bin/ipcserv /drivers/raspix/hid_touchd     /dev/touch0 /dev/hid0
 @/bin/ipcserv /drivers/timerd               
 @/bin/ipcserv /drivers/nulld                /dev/null
 @/bin/ipcserv /drivers/ramfsd               /tmp
