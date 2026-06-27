@@ -411,13 +411,13 @@ int mi_cpu_dai_hw_free(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	runtime->dma_addr = 0;
 	/*
 	 * The DMA area is owned by bach->dma_areas (pre-allocated once at
-	 * driver init time). Reset dma_bytes/dma_area here so any later
-	 * stale write through pcm_lib goes into the "no dma area" branch
-	 * and is rejected with -EBADF instead of touching the freed/cached
-	 * region.
+	 * driver init time). Invalidate dma_area FIRST so any concurrent
+	 * do_transfer() bails out with -EBADF before we clear dma_bytes;
+	 * this ordering prevents a stale write from touching the region
+	 * while we are dismantling the geometry.
 	 */
-	runtime->dma_bytes = 0;
 	runtime->dma_area = NULL;
+	runtime->dma_bytes = 0;
 	
 	return 0;
 }
@@ -806,12 +806,21 @@ int mi_cpu_dai_pointer(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	if (substream == NULL || substream->runtime == NULL) {
 		return 0;
 	}
+	if (substream->closing) {
+		return 0;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	if (runtime == NULL) {
+		return 0;
+	}
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
-	if (bach_runtime == NULL || bach_runtime->sub_channel == NULL) {
+	if (bach_runtime == NULL) {
 		return 0;
 	}
 	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
+	if (sub_channel == NULL) {
+		return 0;
+	}
 	int pos;
 	int level;
 	ssize_t bytes_in_hw;
@@ -872,11 +881,20 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 	if (dai == NULL || substream == NULL || substream->runtime == NULL) {
 		return -EBADF;
 	}
+	if (substream->closing) {
+		return 0;
+	}
 	struct msc313_bach *bach = dai->private_data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	if (runtime == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
 	if (bach == NULL || bach_runtime == NULL) {
 		return -EBADF;
+	}
+	if (!bach_runtime->running && bach_runtime->sub_channel == NULL) {
+		return 0;
 	}
 	int new_bytes = 0;
 	int delta_frames = runtime->status.appl_ptr - bach_runtime->last_appl_ptr;

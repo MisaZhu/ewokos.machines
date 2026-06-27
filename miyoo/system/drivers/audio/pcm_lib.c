@@ -505,6 +505,9 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 	if (substream == NULL || substream->runtime == NULL) {
 		return 0;
 	}
+	if (substream->closing || substream->open_count == 0) {
+		return 0;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int pos = 0;
 	int old_hw_ptr, new_hw_ptr, hw_base;
@@ -519,6 +522,9 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 #endif
 
 	old_hw_ptr = runtime->status.hw_ptr;
+	if (substream->closing || substream->ops == NULL || substream->ops->pointer == NULL) {
+		return 0;
+	}
 	if (substream->ops->pointer) {
 		pos = substream->ops->pointer(substream);
 	}
@@ -706,7 +712,10 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 	}
 #endif
 	snd_pcm_unlock(substream);
-
+	runtime = substream->runtime;
+	if (runtime == NULL) {
+		return written > 0 ? written : -EBADF;
+	}
 	avail = play_avail(runtime);
 	while(size > 0) {
 		int copy_frames = 0;
@@ -729,7 +738,7 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 			break;
 		}
 		snd_pcm_lock(substream);
-		if (substream->open_count == 0 || substream->runtime == NULL ||
+		if (substream->open_count == 0 || substream->closing || substream->runtime == NULL ||
 			substream->runtime->dma_area == NULL || substream->runtime->dma_bytes <= 0 ||
 			substream->runtime->frame_size <= 0) {
 			err = -EBADF;
@@ -871,7 +880,7 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		}
 
 		snd_pcm_lock(substream);
-		if (substream->open_count == 0 ||
+		if (substream->open_count == 0 || substream->closing ||
 			runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
 			err = -EBADF;
 			snd_pcm_unlock(substream);
@@ -1031,7 +1040,7 @@ static int snd_pcm_open(struct snd_pcm *pcm)
 	runtime->dma_area = NULL;
 
 	runtime->status.state = PCM_STATE_OPEN;
-	if (substream->ops->open != NULL) {
+	if (substream->ops != NULL && substream->ops->open != NULL) {
 		err = substream->ops->open(substream);
 	}
 
@@ -1498,16 +1507,23 @@ static int snd_pcm_release(struct snd_pcm *pcm)
 	struct snd_pcm_substream *substream = pcm->substream;
 
 	/*
-	 * Publish "closed" before teardown so loop_step/query paths stop
-	 * entering the PCM while hw_free()/close() are dismantling the
-	 * runtime and the BACH side bookkeeping.
+	 * Signal all concurrent paths (write loop, pointer poll, ack) to
+	 * bail out immediately.  closing=1 acts as a barrier: new operations
+	 * check it and return early, so by the time we reach hw_free()/close()
+	 * no thread is touching the DMA state.
 	 */
 	snd_pcm_lock(substream);
-	substream->open_count = 0;
+	substream->closing = 1;
 	snd_pcm_unlock(substream);
 
+	/* Stop DMA and tear down while closing=1 prevents new accesses */
 	snd_pcm_release_substream(substream);
-	
+
+	snd_pcm_lock(substream);
+	substream->open_count = 0;
+	substream->closing = 0;
+	snd_pcm_unlock(substream);
+
 	return 0;
 }
 
@@ -1730,27 +1746,28 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	 */
 	snd_pcm_unlock(substream);
 
-	if (substream->runtime == NULL || substream->open_count == 0) {
+	snd_pcm_lock(substream);
+	if (substream->runtime == NULL || substream->open_count == 0 || substream->closing) {
+		snd_pcm_unlock(substream);
 		return 0;
 	}
+	snd_pcm_unlock(substream);
 
 	int query_ret = snd_pcm_ensure_query_ready(substream);
 	if (query_ret != 0) {
 		return 0;
 	}
 
-	if (substream->open_count == 0) {
+	snd_pcm_lock(substream);
+	if (substream->open_count == 0 || substream->closing || substream->runtime == NULL) {
+		snd_pcm_unlock(substream);
 		return 0;
 	}
+	snd_pcm_unlock(substream);
+
 	int avail = snd_pcm_buf_avail(substream);
 	if (avail > 0) {
 		return VFS_EVT_WR;
-	}
-	if (avail < 0) {
-		if (substream->runtime != NULL) {
-
-		}
-		return 0;
 	}
 	return 0;
 }
