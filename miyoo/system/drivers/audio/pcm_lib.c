@@ -286,6 +286,8 @@ static int snd_dai_pcm_open(struct snd_pcm_substream *substream)
 	struct listnode *node;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
+		if (dai == NULL || dai->ops == NULL)
+			continue;
 		if (dai->ops->open != NULL) {
 			dai->ops->open(dai, substream);
 		}
@@ -300,6 +302,8 @@ static int snd_dai_pcm_close(struct snd_pcm_substream *substream)
 	struct listnode *node;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
+		if (dai == NULL || dai->ops == NULL)
+			continue;
 		if (dai->ops->close != NULL) {
 			dai->ops->close(dai, substream);
 		}
@@ -314,6 +318,8 @@ static int snd_dai_pcm_hw_params(struct snd_pcm_substream *substream)
 	struct listnode *node;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
+		if (dai == NULL || dai->ops == NULL)
+			continue;
 		if (dai->ops->hw_params != NULL) {
 			dai->ops->hw_params(dai, substream);
 		}
@@ -328,6 +334,8 @@ static int snd_dai_pcm_hw_free(struct snd_pcm_substream *substream)
 	struct listnode *node;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
+		if (dai == NULL || dai->ops == NULL)
+			continue;
 		if (dai->ops->hw_free != NULL) {
 			dai->ops->hw_free(dai, substream);
 		}
@@ -342,6 +350,8 @@ static int snd_dai_pcm_prepare(struct snd_pcm_substream *substream)
 	struct listnode *node;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
+		if (dai == NULL || dai->ops == NULL)
+			continue;
 		if (dai->ops->prepare != NULL) {
 			dai->ops->prepare(dai, substream);
 		}
@@ -356,6 +366,8 @@ static int snd_dai_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 	struct listnode *node;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
+		if (dai == NULL || dai->ops == NULL)
+			continue;
 		if (dai->ops->trigger != NULL) {
 			dai->ops->trigger(dai, substream, cmd);
 		}
@@ -368,11 +380,12 @@ static int snd_dai_pcm_pointer(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai = pcm->mem_dai;
 	int pos;
+	if (dai == NULL || dai->ops == NULL)
+		return 0;
 	if (dai->ops->pointer) {
 		pos = dai->ops->pointer(dai, substream);
 	} else {
 		pos = 0;
-		
 	}
 	return pos;
 }
@@ -382,6 +395,8 @@ static int snd_dai_pcm_ack(struct snd_pcm_substream *substream)
 	struct snd_pcm *pcm = substream->pcm;
 	struct snd_soc_dai *dai = pcm->mem_dai;
 	int ret = 0;
+	if (dai == NULL || dai->ops == NULL)
+		return 0;
 	if (dai->ops->ack) {
 		ret = dai->ops->ack(dai, substream);
 	}
@@ -400,7 +415,9 @@ static int snd_dai_pcm_kick(struct snd_pcm_substream *substream)
 	struct listnode *node;
 	list_for_each(node, &pcm->dai_list) {
 		dai = node_to_item(node, struct snd_soc_dai, list);
-		if (dai->ops && dai->ops->kick) {
+		if (dai == NULL || dai->ops == NULL)
+			continue;
+		if (dai->ops->kick) {
 			dai->ops->kick(dai, substream);
 		}
 	}
@@ -712,12 +729,14 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 			break;
 		}
 		snd_pcm_lock(substream);
-		if (substream->open_count == 0 ||
-			runtime->dma_area == NULL || runtime->dma_bytes <= 0) {
+		if (substream->open_count == 0 || substream->runtime == NULL ||
+			substream->runtime->dma_area == NULL || substream->runtime->dma_bytes <= 0 ||
+			substream->runtime->frame_size <= 0) {
 			err = -EBADF;
 			snd_pcm_unlock(substream);
 			break;
 		}
+		runtime = substream->runtime;
 		switch (runtime->status.state) {
 		case PCM_STATE_PREPARE:
 		case PCM_STATE_RUNNING:
@@ -1711,11 +1730,16 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	 */
 	snd_pcm_unlock(substream);
 
+	if (substream->runtime == NULL || substream->open_count == 0) {
+		return 0;
+	}
+
 	int query_ret = snd_pcm_ensure_query_ready(substream);
 	if (query_ret != 0) {
-		if (substream->runtime != NULL) {
+		return 0;
+	}
 
-		}
+	if (substream->open_count == 0) {
 		return 0;
 	}
 	int avail = snd_pcm_buf_avail(substream);
@@ -1769,19 +1793,18 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	struct snd_pcm_runtime *runtime;
 	int state;
 
-	if (substream == NULL || substream->runtime == NULL) {
+	if (substream == NULL) {
 		pcm_loop_closed_sleep();
 		return 0;
 	}
 
-	runtime = substream->runtime;
-
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->runtime == NULL) {
 		snd_pcm_unlock(substream);
 		pcm_loop_closed_sleep();
 		return 0;
 	}
+	runtime = substream->runtime;
 	state = runtime->status.state;
 	snd_pcm_unlock(substream);
 
