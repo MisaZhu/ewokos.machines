@@ -30,6 +30,8 @@
 #define PCM_WAIT_AVAIL_SLEEP_US		5000
 #define PCM_LOOP_IDLE_SLEEP_US		10000
 #define PCM_LOOP_ACTIVE_SLEEP_US	10000
+#define PCM_LOOP_CLOSED_SLEEP_US	160000
+#define PCM_LOOP_IDLE_MAX_SLEEP_US	40000
 
 int snd_card_new(struct snd_card **snd_card, const char *name)
 {
@@ -535,8 +537,11 @@ int update_hw_ptr(struct snd_pcm_substream *substream, int is_interrupt)
 	}
 
 	delta = new_hw_ptr - old_hw_ptr;
-	if (delta < 0) {
+	if (delta < 0 && runtime->boundary > 0) {
 		delta += runtime->boundary;
+	}
+	if (delta < 0) {
+		delta = 0;
 	}
 
 	/*
@@ -902,9 +907,7 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		memcpy(user_ptr, hw_ptr_pos, copy_bytes);
 
 		hw_ptr = runtime->status.hw_ptr + copy_frames;
-		if (hw_ptr == runtime->boundary) {
-			hw_ptr = 0;
-		} else if (hw_ptr > runtime->boundary) {
+		if (runtime->boundary > 0 && hw_ptr >= runtime->boundary) {
 			hw_ptr -= runtime->boundary;
 		}
 
@@ -1159,10 +1162,14 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	}
 
 	uint32_t temp = (uint32_t)runtime->buffer_size;
-	while (temp * 2 <= (uint32_t)(0x7FFFFFFF - runtime->buffer_size)) {
-		temp *= 2;
+	if (runtime->buffer_size <= 0) {
+		runtime->boundary = 1;
+	} else {
+		while (temp <= 0x3FFFFFFF && temp * 2 <= (uint32_t)(0x7FFFFFFF - runtime->buffer_size)) {
+			temp *= 2;
+		}
+		runtime->boundary = (int32_t)temp;
 	}
-	runtime->boundary = (int32_t)temp;
 
 	if (substream->ops->hw_params) {
 		err = substream->ops->hw_params(substream);
@@ -1724,6 +1731,34 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	return 0;
 }
 
+/*
+ * State-aware sleep helpers for the polling loop.
+ * pcm_loop_closed_sleep: long sleep for terminal/closed states (160ms).
+ * pcm_loop_idle_backoff: exponential backoff for idle-but-open states
+ *   (10ms -> 20ms -> 40ms). Pass reset=1 to reset to minimum.
+ */
+static uint32_t _pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_US;
+
+static void pcm_loop_closed_sleep(void)
+{
+	usleep(PCM_LOOP_CLOSED_SLEEP_US);
+}
+
+static void pcm_loop_idle_backoff(int reset)
+{
+	if (reset) {
+		_pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_US;
+		return;
+	}
+	usleep(_pcm_loop_idle_sleep_us);
+	if (_pcm_loop_idle_sleep_us < PCM_LOOP_IDLE_MAX_SLEEP_US) {
+		_pcm_loop_idle_sleep_us *= 2;
+		if (_pcm_loop_idle_sleep_us > PCM_LOOP_IDLE_MAX_SLEEP_US) {
+			_pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_MAX_SLEEP_US;
+		}
+	}
+}
+
 static int fdev_loop_step(vdevice_t* dev, void* p)
 {
 	if (dev == NULL || dev->mnt_info.node == 0) {
@@ -1731,37 +1766,46 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	}
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	struct snd_pcm_substream *substream = (pcm != NULL) ? pcm->substream : NULL;
-	int is_open = 0;
-	/*
-	 * Fast path: when nobody has the PCM open there is no writer
-	 * blocked on a wakeup, and running fdev_check_poll_events would
-	 * still touch the BACH level register and grab the substream
-	 * mutex. Skip straight to a longer sleep in that case so the
-	 * driver doesn't burn CPU while the device is idle.
-	 */
+	struct snd_pcm_runtime *runtime;
+	int state;
+
 	if (substream == NULL || substream->runtime == NULL) {
-		usleep(PCM_LOOP_IDLE_SLEEP_US);
+		pcm_loop_closed_sleep();
 		return 0;
 	}
+
+	runtime = substream->runtime;
+
 	snd_pcm_lock(substream);
-	is_open = (substream->open_count != 0);
-	snd_pcm_unlock(substream);
-	if (!is_open) {
-		usleep(PCM_LOOP_IDLE_SLEEP_US);
+	if (substream->open_count == 0) {
+		snd_pcm_unlock(substream);
+		pcm_loop_closed_sleep();
 		return 0;
 	}
-	uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
-	if (events != 0) {
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+	state = runtime->status.state;
+	snd_pcm_unlock(substream);
+
+	switch (state) {
+	case PCM_STATE_RUNNING:
+		{
+			uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
+			if (events != 0) {
+				vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+			}
+		}
+		pcm_loop_idle_backoff(1);
+		usleep(PCM_LOOP_ACTIVE_SLEEP_US);
+		break;
+	case PCM_STATE_PREPARE:
+	case PCM_STATE_SETUP:
+		pcm_loop_idle_backoff(0);
+		break;
+	case PCM_STATE_XRUN:
+	case PCM_STATE_STOPED:
+	default:
+		pcm_loop_closed_sleep();
+		break;
 	}
-	/*
-	 * The audio buffer is at least one period deep (typically
-	 * 10-20ms at 48kHz), so polling every 5ms is plenty for waking
-	 * up write()-blocked clients. Other drivers (uartd/ttyd/kbd)
-	 * use 3ms; the previous 1ms cadence was burning a measurable
-	 * share of CPU on miyoo for no audible benefit.
-	 */
-	usleep(PCM_LOOP_ACTIVE_SLEEP_US);
 	return 0;
 }
 

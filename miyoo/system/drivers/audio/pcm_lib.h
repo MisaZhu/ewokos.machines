@@ -301,7 +301,10 @@ static inline int32_t play_avail(struct snd_pcm_runtime *runtime) {
 	 * cannot leak into the rest of the data path as a huge avail that
 	 * later gets misinterpreted as a drained stream.
 	 */
-	if (avail < 0 || avail > runtime->buffer_size) {
+	if (avail < 0) {
+		avail = 0;
+	}
+	if (avail > runtime->buffer_size) {
 		avail = runtime->buffer_size;
 	}
 	return avail;
@@ -316,20 +319,28 @@ static inline int32_t capture_avail(struct snd_pcm_runtime *runtime) {
 	if (avail < 0) {
 		avail += runtime->boundary;
 	}
+	if (avail < 0) {
+		avail = 0;
+	}
+	if (avail > runtime->buffer_size) {
+		avail = runtime->buffer_size;
+	}
 	return avail;
 }
 
 static inline int32_t frames_ready(struct snd_pcm_runtime *runtime) {
-	int frames = 0;
 	if (runtime == NULL) {
 		return 0;
 	}
-	frames = runtime->buffer_size - play_avail(runtime);
-	if (frames >= 0) {
-		return frames;
-	} else {
-		return 0;
+	int avail = play_avail(runtime);
+	if (avail > runtime->buffer_size) {
+		avail = runtime->buffer_size;
 	}
+	int frames = runtime->buffer_size - avail;
+	if (frames < 0) {
+		frames = 0;
+	}
+	return frames;
 }
 
 /*

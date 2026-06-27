@@ -16,6 +16,7 @@ static BusTimingEmType _active_bus_timing = EV_BUS_DEF;
 static uint32_t _stable_successes = 0;
 static uint32_t _fast_chunk_sectors = 0;
 static uint32_t _active_chunk_sectors = 0;
+static bool _hs_recovery_pending = false;
 
 #define MIYOO_SD_BOUNCE_SECTORS 128U
 #define MIYOO_SD_BOUNCE_SIZE (MIYOO_SD_BOUNCE_SECTORS * 512U)
@@ -30,7 +31,7 @@ static uint32_t _active_chunk_sectors = 0;
 #define MIYOO_SD_RETRY_DELAY_US 2000U
 #define MIYOO_SD_RECOVER_SUCCESS_STREAK 32U
 #define MIYOO_SD_SYSTEM_SAFE_CHUNK 1U
-#define MIYOO_SD_SYSTEM_FAST_CHUNK  8U
+#define MIYOO_SD_SYSTEM_FAST_CHUNK  32U
 
 
 static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
@@ -57,7 +58,8 @@ static void miyoo_sd_apply_bus_width(SDMMCBusWidthEmType bus_width) {
 
 static void miyoo_sd_note_success(void) {
 	if(_active_bus_width == _fast_bus_width &&
-			_active_chunk_sectors == _fast_chunk_sectors) {
+			_active_chunk_sectors == _fast_chunk_sectors &&
+			_active_bus_timing == EV_BUS_HS) {
 		_stable_successes = 0;
 		return;
 	}
@@ -69,8 +71,14 @@ static void miyoo_sd_note_success(void) {
 			if(_active_chunk_sectors > _fast_chunk_sectors)
 				_active_chunk_sectors = _fast_chunk_sectors;
 		}
-		else {
+		else if(_active_bus_width != _fast_bus_width) {
 			miyoo_sd_apply_bus_width(_fast_bus_width);
+		}
+		else if(_active_bus_timing != EV_BUS_HS) {
+			/* HS re-probe requires CMD6+CMD17 into _sector_buf,
+			 * which would clobber unread data if done here.
+			 * Defer to the next public read/write entry point. */
+			_hs_recovery_pending = true;
 		}
 	}
 }
@@ -88,6 +96,18 @@ static void miyoo_sd_note_retryable_error(void) {
 	}
 	if(_active_bus_width != EV_BUS_1BIT)
 		miyoo_sd_apply_bus_width(EV_BUS_1BIT);
+}
+
+/*
+ * Multi-block transfer failures are usually caused by DMA/ADMA
+ * controller quirks or CMD18 timing, NOT by signal integrity.
+ * Only reduce the chunk size and leave bus width and HS timing
+ * untouched, avoiding a permanent speed downgrade from a single
+ * transient multi-block error.
+ */
+static void miyoo_sd_note_chunk_error(void) {
+	_stable_successes = 0;
+	_active_chunk_sectors = MIYOO_SD_SYSTEM_SAFE_CHUNK;
 }
 
 static void miyoo_sd_recover(void) {
@@ -222,6 +242,16 @@ static int miyoo_sd_try_high_speed(void) {
 	return 1;
 }
 
+static void miyoo_sd_check_hs_recovery(void) {
+	if(_hs_recovery_pending) {
+		_hs_recovery_pending = false;
+		if(miyoo_sd_try_high_speed()) {
+			_active_bus_timing = EV_BUS_HS;
+			klog("miyoo_sd: 50MHz HS recovered\n");
+		}
+	}
+}
+
 int32_t miyoo_sd_init(void) {
 	SDMMCBusWidthEmType boot_bus_width;
 
@@ -274,6 +304,7 @@ int32_t miyoo_sd_read_sector(int32_t sector, void* buf) {
 
 	if(buf == NULL)
 		return -1;
+	miyoo_sd_check_hs_recovery();
 	/*
 	 * Keep single-sector reads on the kernel-tested EV_DMA path; only the
 	 * multi-sector path in miyoo_sd_try_read_multi() needs EV_ADMA, and
@@ -292,6 +323,7 @@ int32_t miyoo_sd_write_sector(int32_t sector, const void* buf) {
 
 	if(buf == NULL)
 		return -1;
+	miyoo_sd_check_hs_recovery();
 	memcpy(_sector_buf, buf, 512U);
 	err = miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, _sector_buf);
 	if(err != EV_STS_OK)
@@ -358,6 +390,7 @@ int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
 
 	if(buf == NULL)
 		return -1;
+	miyoo_sd_check_hs_recovery();
 
 	while(count > 0) {
 		uint32_t chunk = (_active_chunk_sectors > count) ? count : _active_chunk_sectors;
@@ -373,7 +406,7 @@ int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
 				continue;
 			}
 			/* 多块失败，退单块重试 */
-			miyoo_sd_note_retryable_error();
+			miyoo_sd_note_chunk_error();
 			miyoo_sd_recover();
 		}
 
@@ -394,6 +427,7 @@ int32_t miyoo_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
 
 	if(buf == NULL)
 		return -1;
+	miyoo_sd_check_hs_recovery();
 
 	while(count > 0) {
 		uint32_t chunk = (_active_chunk_sectors > count) ? count : _active_chunk_sectors;
@@ -409,7 +443,7 @@ int32_t miyoo_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
 				continue;
 			}
 			/* 多块失败，退单块重试 */
-			miyoo_sd_note_retryable_error();
+			miyoo_sd_note_chunk_error();
 			miyoo_sd_recover();
 		}
 

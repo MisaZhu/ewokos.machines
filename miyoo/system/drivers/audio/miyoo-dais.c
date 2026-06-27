@@ -501,12 +501,14 @@ static int msc313_bach_queue_bytes(/*struct msc313_bach *bach,*/
 	struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
 	unsigned trigbit;
 	unsigned miu_trigger_level = TO_MIUSIZE(new_bytes);
+	unsigned miu_period = TO_MIUSIZE(bach_runtime->period_bytes);
 	int target_level, old_level;
 
 	old_level = msc313_bach_get_level(sub_channel);
 
 	target_level = old_level + miu_trigger_level;
-	if (target_level > (int)bach_runtime->max_level) {
+	if (bach_runtime->max_level != 0 &&
+	    target_level > (int)bach_runtime->max_level + miu_period * 2) {
 		
 		return -EINVAL;
 	}
@@ -593,6 +595,9 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 	}
 
 	hw_cache_bytes = bach_runtime->total_bytes - bach_runtime->processed_bytes;
+	if (hw_cache_bytes < 0) {
+		hw_cache_bytes = 0;
+	}
 	/*
 	 * If the hardware is already at or past the watermark, don't push
 	 * more data; BACH will fire another empty/underrun IRQ when it has
@@ -606,27 +611,20 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 		return;
 	}
 
-	if (hw_cache_bytes < 0) {
-		
+	/*
+	 * Keep BACH close to a stable inflight watermark instead of only
+	 * topping up one period at a time. The 2-period cap was leaving too
+	 * little runway on miyoo: userspace still had buffered audio, but the
+	 * hardware queue could drain to XRUN before the next refill landed.
+	 */
+	new_queue_bytes = bach_runtime->max_inflight - hw_cache_bytes;
+	if (pending_bytes < new_queue_bytes) {
+		new_queue_bytes = pending_bytes;
 	}
-	else if (hw_cache_bytes < (int)bach_runtime->max_inflight) {
-		/*
-		 * Keep BACH close to a stable inflight watermark instead of only
-		 * topping up one period at a time. The 2-period cap was leaving too
-		 * little runway on miyoo: userspace still had buffered audio, but the
-		 * hardware queue could drain to XRUN before the next refill landed.
-		 */
-		new_queue_bytes = bach_runtime->max_inflight - hw_cache_bytes;
-		if (pending_bytes < new_queue_bytes) {
-			new_queue_bytes = pending_bytes;
-		}
-		if (new_queue_bytes > (int)period_bytes) {
-			new_queue_bytes =
-				(new_queue_bytes / period_bytes) *
-				period_bytes;
-		}
-	} else {
-		new_queue_bytes = 0;
+	if (new_queue_bytes > (int)period_bytes) {
+		new_queue_bytes =
+			(new_queue_bytes / period_bytes) *
+			period_bytes;
 	}
 
 	if (new_queue_bytes >= (int)period_bytes) {
@@ -881,25 +879,13 @@ static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 		return -EBADF;
 	}
 	int new_bytes = 0;
+	int delta_frames = runtime->status.appl_ptr - bach_runtime->last_appl_ptr;
 
-	new_bytes = frame_to_bytes(runtime, runtime->status.appl_ptr - bach_runtime->last_appl_ptr);
-	if (new_bytes < 0) {
-		/*
-		 * pending_bytes advances monotonically. appl_ptr must only
-		 * move forward, but update_hw_ptr()/pointer() could in theory
-		 * regress; in that case treat the delta as one full period of
-		 * refill rather than a full buffer of data, otherwise a single
-		 * regression can over-credit pending_bytes by dma_bytes and
-		 * make the next queue step see a wildly inflated target level.
-		 */
-		int period_frames = (runtime->period_size > 0) ? runtime->period_size : 0;
-		int period_byte = frame_to_bytes(runtime, period_frames);
-		if (period_byte > 0) {
-			new_bytes += period_byte;
-		} else {
-			new_bytes = 0;
-		}
+	if (delta_frames <= 0) {
+		bach_runtime->last_appl_ptr = runtime->status.appl_ptr;
+		return 0;
 	}
+	new_bytes = frame_to_bytes(runtime, delta_frames);
 	bach_runtime->last_appl_ptr = runtime->status.appl_ptr;
 	bach_runtime->pending_bytes += new_bytes;
 
