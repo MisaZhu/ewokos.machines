@@ -267,21 +267,46 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
     return ret;
 }
 
-int mmc_read_blocks(struct dwmci_host *host, void *dst, uint32_t sector)
+static int mmc_send_stop(struct dwmci_host *host)
+{
+    struct mmc_cmd cmd;
+
+    cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+    cmd.cmdarg = 0;
+    cmd.resp_type = MMC_RSP_R1b;
+    return dwmci_send_cmd(host, &cmd, 0);
+}
+
+int mmc_read_sectors(struct dwmci_host *host, void *dst, uint32_t sector,
+        uint32_t count)
 {
     struct mmc_cmd cmd;
     struct mmc_data data;
-    TRACE();
+    int ret;
 
-    cmd.cmdidx = MMC_CMD_READ_SINGLE_BLOCK;
+    if (count == 0)
+        return 0;
+
+    cmd.cmdidx = (count > 1) ? MMC_CMD_READ_MULTIPLE_BLOCK :
+            MMC_CMD_READ_SINGLE_BLOCK;
     cmd.cmdarg = sector;
-
     cmd.resp_type = MMC_RSP_R1;
 
     data.dest = dst;
-    data.blocks = 1;
+    data.blocks = count;
     data.blocksize = 512;
     data.flags = MMC_DATA_READ;
 
-    return dwmci_send_cmd(host, &cmd, &data);
+    ret = dwmci_send_cmd(host, &cmd, &data);
+    if (count > 1) {
+        int stop_ret = mmc_send_stop(host);
+        if (ret == 0 && stop_ret != 0)
+            ret = stop_ret;
+    }
+    return ret;
+}
+
+int mmc_read_blocks(struct dwmci_host *host, void *dst, uint32_t sector)
+{
+    return mmc_read_sectors(host, dst, sector, 1);
 }

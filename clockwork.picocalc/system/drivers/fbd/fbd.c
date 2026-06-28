@@ -11,7 +11,15 @@
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 	uint32_t sz = 4 * g->w * g->h;
-	ili9488_draw(0, 0, 320, 320, (uint32_t*)g->buffer);
+	uint32_t w = g->w;
+	uint32_t h = g->h;
+
+	if (fbinfo != NULL) {
+		w = fbinfo->width;
+		h = fbinfo->height;
+	}
+
+	ili9488_draw(0, 0, (int)w, (int)h, (uint32_t*)g->buffer);
 	return sz;
 }
 
@@ -35,5 +43,5 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 
-	return fbd_run(&fbd, mnt_point, 640, 480, "");
+	return fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
 }

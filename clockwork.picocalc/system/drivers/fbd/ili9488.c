@@ -10,6 +10,7 @@
 #define LCD_DC	3
 
 static uint8_t *_fb;
+static uint32_t *_shadow_argb;
 static int _rectangle[4];
 
 static inline void sleep_ms(int ms){
@@ -65,7 +66,7 @@ static inline void define_region_spi(int xstart, int ystart, int xend, int yend,
 }
 
 void ili9488_clear(uint32_t color) {
-    int i, t;
+    int i;
     uint8_t rgb[3];
 
     rgb[0] = color >> 24;  
@@ -79,24 +80,61 @@ void ili9488_clear(uint32_t color) {
 
 }
 
+static int region_unchanged(int x, int y, int w, int h, const uint32_t *argb) {
+	int row;
+
+	if (_shadow_argb == NULL) {
+		return 0;
+	}
+
+	for (row = 0; row < h; row++) {
+		const uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
+		const uint32_t *src_row = argb + row * w;
+		if (memcmp(shadow_row, src_row, (size_t)w * sizeof(uint32_t)) != 0) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static void update_shadow(int x, int y, int w, int h, const uint32_t *argb) {
+	int row;
+
+	if (_shadow_argb == NULL) {
+		return;
+	}
+
+	for (row = 0; row < h; row++) {
+		uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
+		const uint32_t *src_row = argb + row * w;
+		memcpy(shadow_row, src_row, (size_t)w * sizeof(uint32_t));
+	}
+}
+
 void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
-    int i, t;
-    int cnt = (w * h);
-    uint8_t rgb[3];
+    int i;
+    uint8_t *p = _fb;
+    const uint32_t *src = argb;
+
+	if (argb == NULL || w <= 0 || h <= 0) {
+		return;
+	}
+
+	if (region_unchanged(x, y, w, h, src)) {
+		return;
+	}
 
 	define_region_spi(x, y, x + w - 1, y + h - 1, 1);
     rk_gpio_write(LCD_DC, 1);
-	uint8_t *p = _fb;
-    for (i = 0; i < h; i++) {
-		for(int j = 0; j < w; j++){
-			*p++ = ((uint8_t*)argb)[2]; 
-			*p++ = ((uint8_t*)argb)[1]; 
-			*p++ = ((uint8_t*)argb)[0]; 
-			argb++;
-		}
+    for (i = 0; i < w * h; i++) {
+		uint32_t pixel = *src++;
+		*p++ = (pixel >> 16) & 0xff;
+		*p++ = (pixel >> 8) & 0xff;
+		*p++ = pixel & 0xff;
     }
 
     rk_spi_write(_fb, w * h * 3);
+	update_shadow(x, y, w, h, argb);
 }
 
 void ili9488_init(void){
@@ -110,7 +148,11 @@ void ili9488_init(void){
 	rk_gpio_write(LCD_RST, 1);
 	proc_usleep(10000);
 
-	_fb = dma_alloc(0, 320*320*3);
+	_fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * 3);
+	_shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+	if (_shadow_argb != NULL) {
+		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+	}
 
 	spi_write_command(0xE0); // Positive Gamma Control
     spi_write_data(0x00);
