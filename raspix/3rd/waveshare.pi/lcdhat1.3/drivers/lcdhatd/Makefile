@@ -1,9 +1,15 @@
-TASK_OBJS = fbd.o lcdhatd.o
+EXTRA_LIBS_DIR = ../../../../libs
+
+TASK_OBJS = \
+		$(EXTRA_LIBS_DIR)/st77xx/src/st77xx.o \
+		fbd.o lcdhatd.o
 TASK = lcdhatd 
 
 MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/../../make.inc
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
+
+CFLAGS += -I $(EXTRA_LIBS_DIR)/st77xx/include
 
 all: $(TASK)
 
