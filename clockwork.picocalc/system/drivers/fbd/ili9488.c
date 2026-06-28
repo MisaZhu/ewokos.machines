@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <arch/rk3506/spi.h>
@@ -9,12 +10,20 @@
 #define LCD_RST 2
 #define LCD_DC	3
 
-static uint8_t *_fb;
+static uint16_t *_fb;
 static uint32_t *_shadow_argb;
 static int _rectangle[4];
 
 static inline void sleep_ms(int ms){
     proc_usleep(ms * 1000);
+}
+
+static inline void spi_set_byte_mode(void) {
+	rk_spi_set_bits_per_word(8);
+}
+
+static inline void spi_set_pixel_mode(void) {
+	rk_spi_set_bits_per_word(16);
 }
 
 static inline void spi_write_data(uint8_t data){
@@ -45,7 +54,8 @@ static inline void spi_write_cd(uint8_t command, int len, ...) {
 }
 
 static inline void define_region_spi(int xstart, int ystart, int xend, int yend, int rw) {
-    unsigned char coord[4];
+	(void)rw;
+	spi_set_byte_mode();
 	if(xstart != _rectangle[0] || ystart != _rectangle[1] || xend != _rectangle[2] || yend != _rectangle[3]){
 		_rectangle[0] = xstart;
 		_rectangle[1] = ystart;
@@ -65,18 +75,26 @@ static inline void define_region_spi(int xstart, int ystart, int xend, int yend,
 	spi_write_command(0x2C);
 }
 
+static inline uint16_t argb_to_rgb565(uint32_t pixel) {
+	uint16_t r = (pixel >> 19) & 0x1f;
+	uint16_t g = (pixel >> 10) & 0x3f;
+	uint16_t b = (pixel >> 3) & 0x1f;
+	uint16_t rgb565 = (r << 11) | (g << 5) | b;
+	return (rgb565 >> 8) | (rgb565 << 8);
+}
+
 void ili9488_clear(uint32_t color) {
     int i;
-    uint8_t rgb[3];
+	uint16_t rgb565 = argb_to_rgb565(color);
 
-    rgb[0] = color >> 24;  
-    rgb[1] = color >> 16;
-    rgb[2] = color >> 8;
     define_region_spi(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, 1);
     rk_gpio_write(LCD_DC, 1);
+	spi_set_pixel_mode();
     for (i = 0; i < LCD_WIDTH * LCD_HEIGHT; i++) {
-           rk_spi_write(rgb, 3);
+		_fb[i] = rgb565;
     }
+	rk_spi_write((uint8_t*)_fb, LCD_WIDTH * LCD_HEIGHT * (int)sizeof(uint16_t));
+	spi_set_byte_mode();
 
 }
 
@@ -113,7 +131,7 @@ static void update_shadow(int x, int y, int w, int h, const uint32_t *argb) {
 
 void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
     int i;
-    uint8_t *p = _fb;
+    uint16_t *p = _fb;
     const uint32_t *src = argb;
 
 	if (argb == NULL || w <= 0 || h <= 0) {
@@ -126,14 +144,13 @@ void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
 
 	define_region_spi(x, y, x + w - 1, y + h - 1, 1);
     rk_gpio_write(LCD_DC, 1);
+	spi_set_pixel_mode();
     for (i = 0; i < w * h; i++) {
-		uint32_t pixel = *src++;
-		*p++ = (pixel >> 16) & 0xff;
-		*p++ = (pixel >> 8) & 0xff;
-		*p++ = pixel & 0xff;
+		*p++ = argb_to_rgb565(*src++);
     }
 
-    rk_spi_write(_fb, w * h * 3);
+    rk_spi_write((uint8_t*)_fb, w * h * (int)sizeof(uint16_t));
+	spi_set_byte_mode();
 	update_shadow(x, y, w, h, argb);
 }
 
@@ -148,7 +165,7 @@ void ili9488_init(void){
 	rk_gpio_write(LCD_RST, 1);
 	proc_usleep(10000);
 
-	_fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * 3);
+	_fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
 	_shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
 	if (_shadow_argb != NULL) {
 		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
@@ -204,7 +221,7 @@ void ili9488_init(void){
     spi_write_data(0x48); // MX, BGR
 
     spi_write_command(0x3A); // Pixel Interface Format
-    spi_write_data(0x66); // 18/24-bit colour for SPI (RGB666/RGB888)
+    spi_write_data(0x55); // 16-bit RGB565 for SPI
 
     spi_write_command(0xB0); // Interface Mode Control
     spi_write_data(0x00);

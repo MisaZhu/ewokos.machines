@@ -6,5 +6,6 @@
 int rk_spi_xfer(uint8_t *tx, uint8_t *rx, int len);
 int rk_spi_write(uint8_t *buf, int len);
 int rk_spi_init(void);
+int rk_spi_set_bits_per_word(uint8_t bits);
 
 #endif
