@@ -2,8 +2,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <graph/graph.h>
-#include <ewoksys/vdevice.h>
 #include <bsp/bsp_gpio.h>
 #include <bsp/bsp_spi.h>
 #include <st77xx/st77xx.h>
@@ -25,6 +23,7 @@ static int SPI_DIV = 8;
 #define SCREEN_HORIZONTAL_2		3
 
 static uint16_t* _lcd_buffer = NULL;
+static uint32_t* _shadow_argb = NULL;
 uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 uint16_t LCD_MODE = LCD_MODE_0;
@@ -111,7 +110,19 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	lcd_write_command(0x36); //MX, MY, RGB mode
     lcd_write_data(mod);
 	delay(100);
-	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
+	LCD_WIDTH = w;
+	LCD_HEIGHT = h;
+	if(_lcd_buffer != NULL) {
+		free(_lcd_buffer);
+	}
+	if(_shadow_argb != NULL) {
+		free(_shadow_argb);
+	}
+	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
+	_shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+	if(_shadow_argb != NULL) {
+		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+	}
 }
 
 static inline void lcd_brightness(uint8_t brightness) {
@@ -139,29 +150,24 @@ static inline void lcd_set_size(uint16_t w, uint16_t h) {
 }
 
 static inline void lcd_show(void) {
-	int i, j, m = 0;
 	lcd_set_size(LCD_WIDTH, LCD_HEIGHT);
+	bsp_spi_send_recv((const uint8_t*)_lcd_buffer, NULL,
+			(uint32_t)LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
+}
 
-#define SPI_FIFO_SIZE  64
-	uint8_t c8[SPI_FIFO_SIZE];
-
-	for ( i = 0 ; i < (LCD_WIDTH*4/64) ; i ++ ) {
-		uint16_t *tx_data = (uint16_t*)&_lcd_buffer[16*LCD_HEIGHT*i];
-		int32_t data_sz = 16*LCD_HEIGHT;
-		for( j=0; j<data_sz; j++)  {
-			uint16_t color = tx_data[j];
-			c8[m++] = (color >> 8) & 0xff;
-			c8[m++] = (color) & 0xff;
-			if(m >= SPI_FIFO_SIZE) {
-				m = 0;
-				bsp_spi_send_recv(c8, NULL, SPI_FIFO_SIZE);
-			}
-		}
-	}
+static inline uint16_t argb_to_rgb565_be(uint32_t pixel) {
+	uint16_t r = (pixel >> 19) & 0x1f;
+	uint16_t g = (pixel >> 10) & 0x3f;
+	uint16_t b = (pixel >> 3) & 0x1f;
+	uint16_t rgb565 = (r << 11) | (g << 5) | b;
+	return (rgb565 >> 8) | (rgb565 << 8);
 }
 
 void st77xx_flush(const void* buf, uint32_t size) {
-	if(size < LCD_WIDTH * LCD_HEIGHT* 4)
+	if(size < LCD_WIDTH * LCD_HEIGHT * 4 || _lcd_buffer == NULL)
+		return;
+	if(_shadow_argb != NULL &&
+			memcmp(_shadow_argb, buf, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t)) == 0)
 		return;
 
 	uint32_t *src = (uint32_t*)buf;
@@ -169,11 +175,10 @@ void st77xx_flush(const void* buf, uint32_t size) {
 	uint32_t i;
 
 	for (i = 0; i < sz; i++) {
-		register uint32_t s = src[i];
-		register uint8_t r = (s >> 16) & 0xff;
-		register uint8_t g = (s >> 8)  & 0xff;
-		register uint8_t b = s & 0xff;
-		_lcd_buffer[i] = ((r >> 3) <<11) | ((g >> 2) << 5) | (b >> 3);
+		_lcd_buffer[i] = argb_to_rgb565_be(src[i]);
+	}
+	if(_shadow_argb != NULL) {
+		memcpy(_shadow_argb, buf, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
 	}
 
 	bsp_spi_set_div(SPI_DIV);

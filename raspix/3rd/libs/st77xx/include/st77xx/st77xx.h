@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 
+#define G_ROTATE_0 0
+#define G_ROTATE_90 1
+#define G_ROTATE_180 2
+#define G_ROTATE_270 3
+
 extern uint16_t LCD_HEIGHT;
 extern uint16_t LCD_WIDTH;
 extern uint16_t LCD_MODE;
