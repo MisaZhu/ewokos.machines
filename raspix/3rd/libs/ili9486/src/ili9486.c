@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <ewoksys/kernel_tic.h>
 #include <bsp/bsp_gpio.h>
 #include <bsp/bsp_spi.h>
 #include <ili9486/ili9486.h>
@@ -21,10 +22,15 @@ static int SPI_DIV = 2;
 #define SCREEN_HORIZONTAL_1		1
 #define SCREEN_VERTICAL_2		2
 #define SCREEN_HORIZONTAL_2		3
+#define ROTATED_FLUSH_MIN_INTERVAL_MS 20
+#define ROTATED_SMALL_DIRTY_ROWS 64
 
 static uint16_t* _lcd_buffer = NULL;
 static uint32_t* _shadow_argb = NULL;
 static uint8_t _shadow_ready = 0;
+static uint16_t LCD_ROT = G_ROTATE_0;
+static uint8_t _pending_flush = 0;
+static uint64_t _last_flush_ms = 0;
 uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 
@@ -71,6 +77,7 @@ static inline void lcd_end(void) {
 
 /*Ser rotation of the screen - changes x0 and y0*/
 static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
+	LCD_ROT = rot;
 	lcd_write_command(0x36);
 	switch(rot) {
         case G_ROTATE_0: // 0度
@@ -100,6 +107,8 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
 	_shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
 	_shadow_ready = 0;
+	_pending_flush = 0;
+	_last_flush_ms = 0;
 	if(_shadow_argb != NULL) {
 		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
 	}
@@ -135,28 +144,18 @@ static inline void lcd_show(void) {
 			(uint32_t)LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
 }
 
-static inline void lcd_show_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-	uint32_t row_bytes;
-	uint32_t row;
+static inline void lcd_show_rows(uint16_t y, uint16_t h) {
 	uint16_t* row_ptr;
+	uint32_t row_bytes;
 
-	if(w == 0 || h == 0) {
+	if(h == 0) {
 		return;
 	}
 
-	lcd_set_window(x, y, w, h);
-	row_bytes = (uint32_t)w * sizeof(uint16_t);
-
-	if(x == 0 && w == LCD_WIDTH) {
-		row_ptr = _lcd_buffer + ((uint32_t)y * LCD_WIDTH);
-		bsp_spi_send_recv((const uint8_t*)row_ptr, NULL, row_bytes * h);
-		return;
-	}
-
-	for(row = 0; row < h; row++) {
-		row_ptr = _lcd_buffer + ((uint32_t)(y + row) * LCD_WIDTH) + x;
-		bsp_spi_send_recv((const uint8_t*)row_ptr, NULL, row_bytes);
-	}
+	lcd_set_window(0, y, LCD_WIDTH, h);
+	row_ptr = _lcd_buffer + ((uint32_t)y * LCD_WIDTH);
+	row_bytes = (uint32_t)LCD_WIDTH * h * sizeof(uint16_t);
+	bsp_spi_send_recv((const uint8_t*)row_ptr, NULL, row_bytes);
 }
 
 static inline uint16_t argb_to_rgb565_be(uint32_t pixel) {
@@ -168,23 +167,23 @@ static inline uint16_t argb_to_rgb565_be(uint32_t pixel) {
 }
 
 void ili9486_flush(const void* buf, uint32_t size) {
-	uint32_t *src = (uint32_t*)buf;
-	uint32_t x;
-	uint32_t y;
-	uint32_t idx;
-	uint32_t min_x;
-	uint32_t min_y;
-	uint32_t max_x;
-	uint32_t max_y;
-	uint8_t dirty;
-
 	if(size < LCD_WIDTH * LCD_HEIGHT* 4)
 		return;
 	if(_lcd_buffer == NULL)
 		return;
 
+	uint32_t *src = (uint32_t*)buf;
+	uint32_t sz = LCD_HEIGHT * LCD_WIDTH;
+	uint32_t x;
+	uint32_t y;
+	uint32_t idx;
+	uint32_t min_y;
+	uint32_t max_y;
+	uint32_t dirty_rows;
+	uint8_t dirty;
+	uint64_t now_ms;
+
 	if(_shadow_argb == NULL || !_shadow_ready) {
-		uint32_t sz = LCD_HEIGHT * LCD_WIDTH;
 		uint32_t i;
 		for(i = 0; i < sz; i++) {
 			_lcd_buffer[i] = argb_to_rgb565_be(src[i]);
@@ -198,12 +197,12 @@ void ili9486_flush(const void* buf, uint32_t size) {
 		lcd_start();
 		lcd_show();
 		lcd_end();
+		_pending_flush = 0;
+		_last_flush_ms = kernel_tic_ms(0);
 		return;
 	}
 
-	min_x = LCD_WIDTH;
 	min_y = LCD_HEIGHT;
-	max_x = 0;
 	max_y = 0;
 	dirty = 0;
 
@@ -216,31 +215,62 @@ void ili9486_flush(const void* buf, uint32_t size) {
 			_shadow_argb[idx] = src[idx];
 			_lcd_buffer[idx] = argb_to_rgb565_be(src[idx]);
 			if(!dirty) {
-				min_x = max_x = x;
 				min_y = max_y = y;
 				dirty = 1;
 			}
 			else {
-				if(x < min_x)
-					min_x = x;
-				if(x > max_x)
-					max_x = x;
-				if(y < min_y)
+				if(y < min_y) {
 					min_y = y;
-				if(y > max_y)
+				}
+				if(y > max_y) {
 					max_y = y;
+				}
 			}
 		}
 	}
 
 	if(!dirty) {
+		if((LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) && _pending_flush) {
+			now_ms = kernel_tic_ms(0);
+			if(_last_flush_ms == 0 ||
+					(now_ms - _last_flush_ms) >= ROTATED_FLUSH_MIN_INTERVAL_MS) {
+				bsp_spi_set_div(SPI_DIV);
+				lcd_start();
+				lcd_show();
+				lcd_end();
+				_pending_flush = 0;
+				_last_flush_ms = now_ms;
+			}
+		}
 		return;
 	}
 
+	dirty_rows = max_y - min_y + 1;
+	now_ms = kernel_tic_ms(0);
 	bsp_spi_set_div(SPI_DIV);
-	lcd_start();
-	lcd_show_rect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
-	lcd_end();
+	if(LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) {
+		if(_last_flush_ms != 0 &&
+				(now_ms - _last_flush_ms) < ROTATED_FLUSH_MIN_INTERVAL_MS &&
+				dirty_rows <= ROTATED_SMALL_DIRTY_ROWS) {
+			_pending_flush = 1;
+			return;
+		}
+		lcd_start();
+		lcd_show();
+		lcd_end();
+		_pending_flush = 0;
+		_last_flush_ms = now_ms;
+	}
+	else if((min_y == 0 && max_y + 1 == LCD_HEIGHT)) {
+		lcd_start();
+		lcd_show();
+		lcd_end();
+	}
+	else {
+		lcd_start();
+		lcd_show_rows(min_y, dirty_rows);
+		lcd_end();
+	}
 }
 
 void ili9486_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,

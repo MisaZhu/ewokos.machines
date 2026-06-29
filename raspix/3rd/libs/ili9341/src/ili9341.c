@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <graph/graph.h>
+#include <ewoksys/kernel_tic.h>
 #include <ewoksys/vdevice.h>
 #include <bsp/bsp_gpio.h>
 #include <bsp/bsp_spi.h>
@@ -17,10 +18,17 @@ static int SPI_DIV = 16;
 #define DEF_SCREEN_WIDTH  320
 #define DEF_SCREEN_HEIGHT 240
 #define LCD_MAX_PIXELS (DEF_SCREEN_WIDTH * DEF_SCREEN_HEIGHT)
+#define ROTATED_FLUSH_MIN_INTERVAL_MS 20
+#define ROTATED_SMALL_DIRTY_ROWS 64
 
 static uint16_t _lcd_buffer[LCD_MAX_PIXELS];
+static uint32_t _shadow_argb[LCD_MAX_PIXELS];
 uint16_t LCD_WIDTH = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
+static uint16_t LCD_ROT = G_ROTATE_0;
+static uint8_t _shadow_ready = 0;
+static uint8_t _pending_flush = 0;
+static uint64_t _last_flush_ms = 0;
 static uint16_t _dbg_rot = 0;
 static uint16_t _dbg_inversion = 0;
 
@@ -65,6 +73,7 @@ static inline void lcd_end(void) {
 
 static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	uint8_t mod = 0x48;
+	LCD_ROT = rot;
 
 	switch(rot) {
 	case G_ROTATE_90:
@@ -90,6 +99,9 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 
 	LCD_WIDTH = w;
 	LCD_HEIGHT = h;
+	_shadow_ready = 0;
+	_pending_flush = 0;
+	_last_flush_ms = 0;
 }
 
 static inline void lcd_set_size(uint16_t w, uint16_t h) {
@@ -111,17 +123,15 @@ static inline void lcd_set_size(uint16_t w, uint16_t h) {
 	lcd_write_command(0x2C);
 }
 
-static inline void lcd_show(void) {
+static inline void lcd_send_pixels(uint32_t start, uint32_t count) {
 	uint32_t i;
-	uint32_t sz = LCD_WIDTH * LCD_HEIGHT;
 	uint32_t m = 0;
-	lcd_set_size(LCD_WIDTH, LCD_HEIGHT);
 
 #define SPI_FIFO_SIZE 64
 	uint8_t c8[SPI_FIFO_SIZE];
 
-	for(i = 0; i < sz; i++) {
-		uint16_t color = _lcd_buffer[i];
+	for(i = 0; i < count; i++) {
+		uint16_t color = _lcd_buffer[start + i];
 		c8[m++] = (color >> 8) & 0xff;
 		c8[m++] = color & 0xff;
 		if(m >= SPI_FIFO_SIZE) {
@@ -135,7 +145,43 @@ static inline void lcd_show(void) {
 	}
 }
 
+static inline void lcd_show(void) {
+	lcd_set_size(LCD_WIDTH, LCD_HEIGHT);
+	lcd_send_pixels(0, (uint32_t)LCD_WIDTH * LCD_HEIGHT);
+}
+
+static inline void lcd_show_rows(uint16_t y, uint16_t h) {
+	if(h == 0) {
+		return;
+	}
+	lcd_write_command(0x2A);
+	lcd_write_data(0x00);
+	lcd_write_data(0x00);
+	lcd_write_data(((LCD_WIDTH - 1) >> 8) & 0xff);
+	lcd_write_data((LCD_WIDTH - 1) & 0xff);
+
+	lcd_write_command(0x2B);
+	lcd_write_data((y >> 8) & 0xff);
+	lcd_write_data(y & 0xff);
+	lcd_write_data(((y + h - 1) >> 8) & 0xff);
+	lcd_write_data((y + h - 1) & 0xff);
+
+	lcd_write_command(0x2C);
+	lcd_send_pixels((uint32_t)y * LCD_WIDTH, (uint32_t)LCD_WIDTH * h);
+}
+
 void ili9341_flush(const void* buf, uint32_t size) {
+	uint32_t *src = (uint32_t*)buf;
+	uint32_t sz = LCD_HEIGHT * LCD_WIDTH;
+	uint32_t x;
+	uint32_t y;
+	uint32_t idx;
+	uint32_t min_y = LCD_HEIGHT;
+	uint32_t max_y = 0;
+	uint32_t dirty_rows;
+	uint8_t dirty = 0;
+	uint64_t now_ms;
+
 	if(size < LCD_WIDTH * LCD_HEIGHT * 4) {
 		/* #region debug-point gnpe-ili9341-madctl-probe */
 		klog("ili9341: flush skipped size=%u expect=%u has_buf=%d\n",
@@ -146,17 +192,71 @@ void ili9341_flush(const void* buf, uint32_t size) {
 		return;
 	}
 
-	uint32_t* src = (uint32_t*)buf;
-	uint32_t sz = LCD_HEIGHT * LCD_WIDTH;
-	uint32_t i;
-
-	for(i = 0; i < sz; i++) {
-		register uint32_t s = src[i];
-		register uint8_t r = (s >> 16) & 0xff;
-		register uint8_t g = (s >> 8) & 0xff;
-		register uint8_t b = s & 0xff;
-		_lcd_buffer[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+	if(!_shadow_ready) {
+		for(idx = 0; idx < sz; idx++) {
+			register uint32_t s = src[idx];
+			register uint8_t r = (s >> 16) & 0xff;
+			register uint8_t g = (s >> 8) & 0xff;
+			register uint8_t b = s & 0xff;
+			_shadow_argb[idx] = s;
+			_lcd_buffer[idx] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+		}
+		_shadow_ready = 1;
+		bsp_spi_set_div(SPI_DIV);
+		lcd_start();
+		lcd_show();
+		lcd_end();
+		_pending_flush = 0;
+		_last_flush_ms = kernel_tic_ms(0);
+		return;
 	}
+
+	for(y = 0; y < LCD_HEIGHT; y++) {
+		for(x = 0; x < LCD_WIDTH; x++) {
+			idx = y * LCD_WIDTH + x;
+			if(_shadow_argb[idx] == src[idx]) {
+				continue;
+			}
+			_shadow_argb[idx] = src[idx];
+			{
+				register uint32_t s = src[idx];
+				register uint8_t r = (s >> 16) & 0xff;
+				register uint8_t g = (s >> 8) & 0xff;
+				register uint8_t b = s & 0xff;
+				_lcd_buffer[idx] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+			}
+			if(!dirty) {
+				min_y = max_y = y;
+				dirty = 1;
+			}
+			else {
+				if(y < min_y) {
+					min_y = y;
+				}
+				if(y > max_y) {
+					max_y = y;
+				}
+			}
+		}
+	}
+
+	if(!dirty) {
+		if((LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) && _pending_flush) {
+			now_ms = kernel_tic_ms(0);
+			if(_last_flush_ms == 0 ||
+					(now_ms - _last_flush_ms) >= ROTATED_FLUSH_MIN_INTERVAL_MS) {
+				bsp_spi_set_div(SPI_DIV);
+				lcd_start();
+				lcd_show();
+				lcd_end();
+				_pending_flush = 0;
+				_last_flush_ms = now_ms;
+			}
+		}
+		return;
+	}
+
+	dirty_rows = max_y - min_y + 1;
 	/* #region debug-point gnpe-ili9341-madctl-probe */
 	if (sz > 0) {
 		klog("ili9341: flush ok size=%u first_argb=%08x first_rgb565=%04x rot=%u inv=%u\n",
@@ -168,10 +268,31 @@ void ili9341_flush(const void* buf, uint32_t size) {
 	}
 	/* #endregion debug-point gnpe-ili9341-madctl-probe */
 
+	now_ms = kernel_tic_ms(0);
 	bsp_spi_set_div(SPI_DIV);
-	lcd_start();
-	lcd_show();
-	lcd_end();
+	if(LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) {
+		if(_last_flush_ms != 0 &&
+				(now_ms - _last_flush_ms) < ROTATED_FLUSH_MIN_INTERVAL_MS &&
+				dirty_rows <= ROTATED_SMALL_DIRTY_ROWS) {
+			_pending_flush = 1;
+			return;
+		}
+		lcd_start();
+		lcd_show();
+		lcd_end();
+		_pending_flush = 0;
+		_last_flush_ms = now_ms;
+	}
+	else if(min_y == 0 && (max_y + 1) == LCD_HEIGHT) {
+		lcd_start();
+		lcd_show();
+		lcd_end();
+	}
+	else {
+		lcd_start();
+		lcd_show_rows(min_y, dirty_rows);
+		lcd_end();
+	}
 }
 
 void ili9341_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,

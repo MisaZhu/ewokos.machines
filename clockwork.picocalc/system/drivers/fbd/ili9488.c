@@ -15,6 +15,8 @@ static uint32_t *_shadow_argb;
 static int _rectangle[4];
 static uint8_t _shadow_ready;
 
+#define MAX_DIRTY_BANDS 4
+
 static inline void sleep_ms(int ms){
     proc_usleep(ms * 1000);
 }
@@ -99,116 +101,133 @@ void ili9488_clear(uint32_t color) {
 
 }
 
-static int region_unchanged(int x, int y, int w, int h, const uint32_t *argb) {
-	int row;
-
-	if (_shadow_argb == NULL) {
-		return 0;
-	}
-
-	for (row = 0; row < h; row++) {
-		const uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-		const uint32_t *src_row = argb + row * w;
-		if (memcmp(shadow_row, src_row, (size_t)w * sizeof(uint32_t)) != 0) {
-			return 0;
-		}
-	}
-	return 1;
+static inline void show_full(void) {
+	define_region_spi(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, 1);
+	rk_gpio_write(LCD_DC, 1);
+	spi_set_pixel_mode();
+	rk_spi_write((uint8_t*)_fb, LCD_WIDTH * LCD_HEIGHT * (int)sizeof(uint16_t));
+	spi_set_byte_mode();
 }
 
-static void update_shadow(int x, int y, int w, int h, const uint32_t *argb, int stride) {
-	int row;
-
-	if (_shadow_argb == NULL) {
+static inline void show_rows(int y, int h) {
+	if (h <= 0) {
 		return;
 	}
-
-	for (row = 0; row < h; row++) {
-		uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-		const uint32_t *src_row = argb + row * stride;
-		memcpy(shadow_row, src_row, (size_t)w * sizeof(uint32_t));
-	}
-}
-
-static int find_dirty_rect(int x, int y, int w, int h, const uint32_t *argb,
-		int *out_x, int *out_y, int *out_w, int *out_h) {
-	int row;
-	int col;
-	int min_x = w;
-	int min_y = h;
-	int max_x = -1;
-	int max_y = -1;
-
-	if (_shadow_argb == NULL || !_shadow_ready) {
-		*out_x = x;
-		*out_y = y;
-		*out_w = w;
-		*out_h = h;
-		return 1;
-	}
-
-	for (row = 0; row < h; row++) {
-		const uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-		const uint32_t *src_row = argb + row * w;
-		for (col = 0; col < w; col++) {
-			if (shadow_row[col] == src_row[col]) {
-				continue;
-			}
-			if (col < min_x)
-				min_x = col;
-			if (col > max_x)
-				max_x = col;
-			if (row < min_y)
-				min_y = row;
-			if (row > max_y)
-				max_y = row;
-		}
-	}
-
-	if (max_x < min_x || max_y < min_y) {
-		return 0;
-	}
-
-	*out_x = x + min_x;
-	*out_y = y + min_y;
-	*out_w = max_x - min_x + 1;
-	*out_h = max_y - min_y + 1;
-	return 1;
+	define_region_spi(0, y, LCD_WIDTH - 1, y + h - 1, 1);
+	rk_gpio_write(LCD_DC, 1);
+	spi_set_pixel_mode();
+	rk_spi_write((uint8_t*)(_fb + y * LCD_WIDTH),
+			LCD_WIDTH * h * (int)sizeof(uint16_t));
+	spi_set_byte_mode();
 }
 
 void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
     int row;
     int col;
-    int dirty_x;
-    int dirty_y;
-    int dirty_w;
-    int dirty_h;
-    uint16_t *p = _fb;
-    const uint32_t *src;
+    int start_y;
+    int band_count;
+    int dirty_rows;
+    int band_start[MAX_DIRTY_BANDS];
+    int band_height[MAX_DIRTY_BANDS];
+    uint8_t row_dirty[LCD_HEIGHT];
+    int full_refresh;
 
 	if (argb == NULL || w <= 0 || h <= 0) {
 		return;
 	}
 
-	if (!find_dirty_rect(x, y, w, h, argb, &dirty_x, &dirty_y, &dirty_w, &dirty_h)) {
+	if (_shadow_argb == NULL) {
+		for (row = 0; row < h; row++) {
+			const uint32_t *src_row = argb + row * w;
+			uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
+			for (col = 0; col < w; col++) {
+				fb_row[col] = argb_to_rgb565(src_row[col]);
+			}
+		}
+		show_full();
 		return;
 	}
 
-	src = argb + (dirty_y - y) * w + (dirty_x - x);
+	if (!_shadow_ready) {
+		for (row = 0; row < h; row++) {
+			uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
+			const uint32_t *src_row = argb + row * w;
+			uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
+			for (col = 0; col < w; col++) {
+				shadow_row[col] = src_row[col];
+				fb_row[col] = argb_to_rgb565(src_row[col]);
+			}
+		}
+		show_full();
+		_shadow_ready = 1;
+		return;
+	}
 
-	define_region_spi(dirty_x, dirty_y, dirty_x + dirty_w - 1, dirty_y + dirty_h - 1, 1);
-    rk_gpio_write(LCD_DC, 1);
-	spi_set_pixel_mode();
-	for (row = 0; row < dirty_h; row++) {
-		const uint32_t *src_row = src + row * w;
-		for (col = 0; col < dirty_w; col++) {
-			*p++ = argb_to_rgb565(src_row[col]);
+	memset(row_dirty, 0, sizeof(row_dirty));
+	dirty_rows = 0;
+	for (row = 0; row < h; row++) {
+		uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
+		const uint32_t *src_row = argb + row * w;
+		uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
+		for (col = 0; col < w; col++) {
+			if (shadow_row[col] == src_row[col]) {
+				continue;
+			}
+			shadow_row[col] = src_row[col];
+			fb_row[col] = argb_to_rgb565(src_row[col]);
+			if (!row_dirty[y + row]) {
+				row_dirty[y + row] = 1;
+				dirty_rows++;
+			}
 		}
 	}
 
-    rk_spi_write((uint8_t*)_fb, dirty_w * dirty_h * (int)sizeof(uint16_t));
-	spi_set_byte_mode();
-	update_shadow(dirty_x, dirty_y, dirty_w, dirty_h, src, w);
+	if (dirty_rows == 0) {
+		return;
+	}
+
+	full_refresh = (dirty_rows >= ((LCD_HEIGHT * 3) / 4));
+	band_count = 0;
+	start_y = -1;
+	if (!full_refresh) {
+		for (row = 0; row < LCD_HEIGHT; row++) {
+			if (row_dirty[row]) {
+				if (start_y < 0) {
+					start_y = row;
+				}
+				continue;
+			}
+			if (start_y >= 0) {
+				if (band_count >= MAX_DIRTY_BANDS) {
+					full_refresh = 1;
+					break;
+				}
+				band_start[band_count] = start_y;
+				band_height[band_count] = row - start_y;
+				band_count++;
+				start_y = -1;
+			}
+		}
+		if (!full_refresh && start_y >= 0) {
+			if (band_count >= MAX_DIRTY_BANDS) {
+				full_refresh = 1;
+			}
+			else {
+				band_start[band_count] = start_y;
+				band_height[band_count] = LCD_HEIGHT - start_y;
+				band_count++;
+			}
+		}
+	}
+
+	if (full_refresh) {
+		show_full();
+	}
+	else {
+		for (row = 0; row < band_count; row++) {
+			show_rows(band_start[row], band_height[row]);
+		}
+	}
 	_shadow_ready = 1;
 }
 
