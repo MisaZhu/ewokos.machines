@@ -10,4 +10,7 @@
 @/bin/ipcserv /sbin/x/xwm_opencde
 
 #@/bin/x/statusbar &
-@/bin/x/xlauncher &
+#@/bin/x/xlauncher &
+@/apps/xapps/xapps -l --item_size=80 --font_size=16 &
+
+@/bin/mp3player /usr/system/sounds/start.mp3 &

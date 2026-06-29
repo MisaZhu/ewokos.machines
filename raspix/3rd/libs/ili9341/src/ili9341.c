@@ -16,10 +16,13 @@ static int SPI_DIV = 16;
 
 #define DEF_SCREEN_WIDTH  320
 #define DEF_SCREEN_HEIGHT 240
+#define LCD_MAX_PIXELS (DEF_SCREEN_WIDTH * DEF_SCREEN_HEIGHT)
 
-static uint16_t* _lcd_buffer = NULL;
+static uint16_t _lcd_buffer[LCD_MAX_PIXELS];
 uint16_t LCD_WIDTH = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
+static uint16_t _dbg_rot = 0;
+static uint16_t _dbg_inversion = 0;
 
 static inline void delay(int32_t count) {
 	proc_usleep(count);
@@ -61,32 +64,32 @@ static inline void lcd_end(void) {
 }
 
 static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
-	uint8_t mod = 0x40;
+	uint8_t mod = 0x48;
 
 	switch(rot) {
 	case G_ROTATE_90:
-		mod = 0xE0;
+		mod = 0xE8;
 		break;
 	case G_ROTATE_180:
-		mod = 0x80;
+		mod = 0x88;
 		break;
 	case G_ROTATE_270:
-		mod = 0x20;
+		mod = 0x28;
 		break;
 	default:
-		mod = 0x40;
+		mod = 0x48;
 		break;
 	}
 
 	lcd_write_command(0x36);
 	lcd_write_data(mod);
+	/* #region debug-point gnpe-ili9341-madctl-probe */
+	klog("ili9341: set_buffer w=%u h=%u rot=%u madctl=%02x\n",
+			(unsigned int)w, (unsigned int)h, (unsigned int)rot, mod);
+	/* #endregion debug-point gnpe-ili9341-madctl-probe */
 
 	LCD_WIDTH = w;
 	LCD_HEIGHT = h;
-	if(_lcd_buffer != NULL) {
-		free(_lcd_buffer);
-	}
-	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
 }
 
 static inline void lcd_set_size(uint16_t w, uint16_t h) {
@@ -133,7 +136,13 @@ static inline void lcd_show(void) {
 }
 
 void ili9341_flush(const void* buf, uint32_t size) {
-	if(size < LCD_WIDTH * LCD_HEIGHT * 4 || _lcd_buffer == NULL) {
+	if(size < LCD_WIDTH * LCD_HEIGHT * 4) {
+		/* #region debug-point gnpe-ili9341-madctl-probe */
+		klog("ili9341: flush skipped size=%u expect=%u has_buf=%d\n",
+				(unsigned int)size,
+				(unsigned int)(LCD_WIDTH * LCD_HEIGHT * 4),
+				1);
+		/* #endregion debug-point gnpe-ili9341-madctl-probe */
 		return;
 	}
 
@@ -148,6 +157,16 @@ void ili9341_flush(const void* buf, uint32_t size) {
 		register uint8_t b = s & 0xff;
 		_lcd_buffer[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 	}
+	/* #region debug-point gnpe-ili9341-madctl-probe */
+	if (sz > 0) {
+		klog("ili9341: flush ok size=%u first_argb=%08x first_rgb565=%04x rot=%u inv=%u\n",
+				(unsigned int)size,
+				src[0],
+				_lcd_buffer[0],
+				(unsigned int)_dbg_rot,
+				(unsigned int)_dbg_inversion);
+	}
+	/* #endregion debug-point gnpe-ili9341-madctl-probe */
 
 	bsp_spi_set_div(SPI_DIV);
 	lcd_start();
@@ -161,6 +180,13 @@ void ili9341_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 	LCD_CS = pin_cs;
 	LCD_RST = pin_rst;
 	LCD_BL = pin_bl;
+	_dbg_rot = rot;
+	_dbg_inversion = inversion;
+	/* #region debug-point gnpe-ili9341-madctl-probe */
+	klog("ili9341: init w=%u h=%u rot=%u inv=%u dc=%d cs=%d rst=%d bl=%d div=%d\n",
+			(unsigned int)w, (unsigned int)h, (unsigned int)rot, (unsigned int)inversion,
+			pin_dc, pin_cs, pin_rst, pin_bl, cdiv);
+	/* #endregion debug-point gnpe-ili9341-madctl-probe */
 
 	bsp_gpio_init();
 	bsp_gpio_config(LCD_DC, GPIO_OUTPUT);
@@ -296,6 +322,11 @@ void ili9341_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 	else {
 		lcd_write_command(0x21);
 	}
+	/* #region debug-point gnpe-ili9341-madctl-probe */
+	klog("ili9341: display on rot=%u inv=%u width=%u height=%u\n",
+			(unsigned int)rot, (unsigned int)inversion,
+			(unsigned int)LCD_WIDTH, (unsigned int)LCD_HEIGHT);
+	/* #endregion debug-point gnpe-ili9341-madctl-probe */
 
 	lcd_write_command(0x29);
 	delay(150000);

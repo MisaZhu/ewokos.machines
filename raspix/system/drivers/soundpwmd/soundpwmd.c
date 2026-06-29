@@ -108,6 +108,8 @@
 #define SOUND_DEFAULT_CHANNELS 2
 #define SOUND_DEFAULT_PERIOD_SIZE 1024
 #define SOUND_DEFAULT_PERIOD_COUNT 4
+#define SOUNDPWM_SOFT_GAIN_NUM 2
+#define SOUNDPWM_SOFT_GAIN_DEN 1
 #define SOUNDPWM_GPIO_LEFT 18
 #define SOUNDPWM_GPIO_RIGHT 19
 #define SOUNDPWM_GPIO_ALT GPIO_ALTF5
@@ -720,9 +722,40 @@ static int32_t audio_pcm_sample_to_s32(const uint8_t* data, uint32_t sample_byte
 	}
 }
 
+static int32_t audio_clip_s32(int64_t sample) {
+	if (sample > INT32_MAX) {
+		return INT32_MAX;
+	}
+	if (sample < INT32_MIN) {
+		return INT32_MIN;
+	}
+	return (int32_t)sample;
+}
+
+static int16_t audio_clip_s16(int32_t sample) {
+	if (sample > INT16_MAX) {
+		return INT16_MAX;
+	}
+	if (sample < INT16_MIN) {
+		return INT16_MIN;
+	}
+	return (int16_t)sample;
+}
+
+static int32_t audio_apply_gain_s32(int32_t sample) {
+	int64_t scaled = (int64_t)sample * (int64_t)SOUNDPWM_SOFT_GAIN_NUM;
+	return audio_clip_s32(scaled / (int64_t)SOUNDPWM_SOFT_GAIN_DEN);
+}
+
+static int16_t audio_apply_gain_s16(int16_t sample) {
+	int32_t scaled = (int32_t)sample * (int32_t)SOUNDPWM_SOFT_GAIN_NUM;
+	return audio_clip_s16(scaled / (int32_t)SOUNDPWM_SOFT_GAIN_DEN);
+}
+
 static uint32_t audio_sample_to_pwm_word(int32_t sample) {
 	uint64_t scaled;
 
+	sample = audio_apply_gain_s32(sample);
 	scaled = (((uint64_t)((int64_t)sample + 2147483648LL)) *
 			(uint64_t)_snd.pwm_scale) >> 32;
 	if (scaled >= _snd.pwm_range) {
@@ -732,6 +765,7 @@ static uint32_t audio_sample_to_pwm_word(int32_t sample) {
 }
 
 static uint32_t audio_s16_to_pwm_word(int16_t sample) {
+	sample = audio_apply_gain_s16(sample);
 	uint32_t shifted = (uint32_t)((int32_t)sample + 32768);
 	return (shifted * _snd.pwm_scale) >> 16;
 }
