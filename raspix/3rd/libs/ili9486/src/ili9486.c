@@ -24,6 +24,7 @@ static int SPI_DIV = 2;
 
 static uint16_t* _lcd_buffer = NULL;
 static uint32_t* _shadow_argb = NULL;
+static uint8_t _shadow_ready = 0;
 uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 
@@ -90,8 +91,15 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	delay(100);
 	LCD_WIDTH = w;
 	LCD_HEIGHT = h;
+	if(_lcd_buffer != NULL) {
+		free(_lcd_buffer);
+	}
+	if(_shadow_argb != NULL) {
+		free(_shadow_argb);
+	}
 	_lcd_buffer = malloc(LCD_WIDTH * LCD_HEIGHT * 2);
 	_shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+	_shadow_ready = 0;
 	if(_shadow_argb != NULL) {
 		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
 	}
@@ -103,28 +111,52 @@ static inline void lcd_brightness(uint8_t brightness) {
 	lcd_write_data(brightness); // byc moze 2 bajty
 }
 
-static inline void lcd_set_size(uint16_t w, uint16_t h) {
-	w--;
-	h--;
+static inline void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+	uint16_t x1 = x + w - 1;
+	uint16_t y1 = y + h - 1;
 	lcd_write_command(0x2A);
-	lcd_write_data(0x00);
-	lcd_write_data(0x00);
-	lcd_write_data((w >> 8) & 0xff);
-	lcd_write_data(w & 0xff);
+	lcd_write_data((x >> 8) & 0xff);
+	lcd_write_data(x & 0xff);
+	lcd_write_data((x1 >> 8) & 0xff);
+	lcd_write_data(x1 & 0xff);
 
 	lcd_write_command(0x2B);
-	lcd_write_data(0x00);
-	lcd_write_data(0x00);
-	lcd_write_data((h >> 8) & 0xff);
-	lcd_write_data(h & 0xff);
+	lcd_write_data((y >> 8) & 0xff);
+	lcd_write_data(y & 0xff);
+	lcd_write_data((y1 >> 8) & 0xff);
+	lcd_write_data(y1 & 0xff);
 
 	lcd_write_command(0x2C); // Memory write?
 }
 
 static inline void lcd_show(void) {
-	lcd_set_size(LCD_WIDTH, LCD_HEIGHT);
+	lcd_set_window(0, 0, LCD_WIDTH, LCD_HEIGHT);
 	bsp_spi_send_recv((const uint8_t*)_lcd_buffer, NULL,
 			(uint32_t)LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
+}
+
+static inline void lcd_show_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+	uint32_t row_bytes;
+	uint32_t row;
+	uint16_t* row_ptr;
+
+	if(w == 0 || h == 0) {
+		return;
+	}
+
+	lcd_set_window(x, y, w, h);
+	row_bytes = (uint32_t)w * sizeof(uint16_t);
+
+	if(x == 0 && w == LCD_WIDTH) {
+		row_ptr = _lcd_buffer + ((uint32_t)y * LCD_WIDTH);
+		bsp_spi_send_recv((const uint8_t*)row_ptr, NULL, row_bytes * h);
+		return;
+	}
+
+	for(row = 0; row < h; row++) {
+		row_ptr = _lcd_buffer + ((uint32_t)(y + row) * LCD_WIDTH) + x;
+		bsp_spi_send_recv((const uint8_t*)row_ptr, NULL, row_bytes);
+	}
 }
 
 static inline uint16_t argb_to_rgb565_be(uint32_t pixel) {
@@ -136,27 +168,78 @@ static inline uint16_t argb_to_rgb565_be(uint32_t pixel) {
 }
 
 void ili9486_flush(const void* buf, uint32_t size) {
+	uint32_t *src = (uint32_t*)buf;
+	uint32_t x;
+	uint32_t y;
+	uint32_t idx;
+	uint32_t min_x;
+	uint32_t min_y;
+	uint32_t max_x;
+	uint32_t max_y;
+	uint8_t dirty;
+
 	if(size < LCD_WIDTH * LCD_HEIGHT* 4)
 		return;
 	if(_lcd_buffer == NULL)
 		return;
-	if(_shadow_argb != NULL &&
-			memcmp(_shadow_argb, buf, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t)) == 0)
+
+	if(_shadow_argb == NULL || !_shadow_ready) {
+		uint32_t sz = LCD_HEIGHT * LCD_WIDTH;
+		uint32_t i;
+		for(i = 0; i < sz; i++) {
+			_lcd_buffer[i] = argb_to_rgb565_be(src[i]);
+		}
+		if(_shadow_argb != NULL) {
+			memcpy(_shadow_argb, buf, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+			_shadow_ready = 1;
+		}
+
+		bsp_spi_set_div(SPI_DIV);
+		lcd_start();
+		lcd_show();
+		lcd_end();
 		return;
-
-	uint32_t *src = (uint32_t*)buf;
-	uint32_t sz = LCD_HEIGHT*LCD_WIDTH;
-	uint32_t i;
-
-	for (i = 0; i < sz; i++) {
-		_lcd_buffer[i] = argb_to_rgb565_be(src[i]);
 	}
-	if(_shadow_argb != NULL)
-		memcpy(_shadow_argb, buf, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+
+	min_x = LCD_WIDTH;
+	min_y = LCD_HEIGHT;
+	max_x = 0;
+	max_y = 0;
+	dirty = 0;
+
+	for(y = 0; y < LCD_HEIGHT; y++) {
+		for(x = 0; x < LCD_WIDTH; x++) {
+			idx = y * LCD_WIDTH + x;
+			if(_shadow_argb[idx] == src[idx]) {
+				continue;
+			}
+			_shadow_argb[idx] = src[idx];
+			_lcd_buffer[idx] = argb_to_rgb565_be(src[idx]);
+			if(!dirty) {
+				min_x = max_x = x;
+				min_y = max_y = y;
+				dirty = 1;
+			}
+			else {
+				if(x < min_x)
+					min_x = x;
+				if(x > max_x)
+					max_x = x;
+				if(y < min_y)
+					min_y = y;
+				if(y > max_y)
+					max_y = y;
+			}
+		}
+	}
+
+	if(!dirty) {
+		return;
+	}
 
 	bsp_spi_set_div(SPI_DIV);
 	lcd_start();
-	lcd_show();
+	lcd_show_rect(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1);
 	lcd_end();
 }
 

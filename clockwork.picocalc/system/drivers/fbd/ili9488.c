@@ -13,6 +13,7 @@
 static uint16_t *_fb;
 static uint32_t *_shadow_argb;
 static int _rectangle[4];
+static uint8_t _shadow_ready;
 
 static inline void sleep_ms(int ms){
     proc_usleep(ms * 1000);
@@ -115,7 +116,7 @@ static int region_unchanged(int x, int y, int w, int h, const uint32_t *argb) {
 	return 1;
 }
 
-static void update_shadow(int x, int y, int w, int h, const uint32_t *argb) {
+static void update_shadow(int x, int y, int w, int h, const uint32_t *argb, int stride) {
 	int row;
 
 	if (_shadow_argb == NULL) {
@@ -124,34 +125,91 @@ static void update_shadow(int x, int y, int w, int h, const uint32_t *argb) {
 
 	for (row = 0; row < h; row++) {
 		uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-		const uint32_t *src_row = argb + row * w;
+		const uint32_t *src_row = argb + row * stride;
 		memcpy(shadow_row, src_row, (size_t)w * sizeof(uint32_t));
 	}
 }
 
+static int find_dirty_rect(int x, int y, int w, int h, const uint32_t *argb,
+		int *out_x, int *out_y, int *out_w, int *out_h) {
+	int row;
+	int col;
+	int min_x = w;
+	int min_y = h;
+	int max_x = -1;
+	int max_y = -1;
+
+	if (_shadow_argb == NULL || !_shadow_ready) {
+		*out_x = x;
+		*out_y = y;
+		*out_w = w;
+		*out_h = h;
+		return 1;
+	}
+
+	for (row = 0; row < h; row++) {
+		const uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
+		const uint32_t *src_row = argb + row * w;
+		for (col = 0; col < w; col++) {
+			if (shadow_row[col] == src_row[col]) {
+				continue;
+			}
+			if (col < min_x)
+				min_x = col;
+			if (col > max_x)
+				max_x = col;
+			if (row < min_y)
+				min_y = row;
+			if (row > max_y)
+				max_y = row;
+		}
+	}
+
+	if (max_x < min_x || max_y < min_y) {
+		return 0;
+	}
+
+	*out_x = x + min_x;
+	*out_y = y + min_y;
+	*out_w = max_x - min_x + 1;
+	*out_h = max_y - min_y + 1;
+	return 1;
+}
+
 void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
-    int i;
+    int row;
+    int col;
+    int dirty_x;
+    int dirty_y;
+    int dirty_w;
+    int dirty_h;
     uint16_t *p = _fb;
-    const uint32_t *src = argb;
+    const uint32_t *src;
 
 	if (argb == NULL || w <= 0 || h <= 0) {
 		return;
 	}
 
-	if (region_unchanged(x, y, w, h, src)) {
+	if (!find_dirty_rect(x, y, w, h, argb, &dirty_x, &dirty_y, &dirty_w, &dirty_h)) {
 		return;
 	}
 
-	define_region_spi(x, y, x + w - 1, y + h - 1, 1);
+	src = argb + (dirty_y - y) * w + (dirty_x - x);
+
+	define_region_spi(dirty_x, dirty_y, dirty_x + dirty_w - 1, dirty_y + dirty_h - 1, 1);
     rk_gpio_write(LCD_DC, 1);
 	spi_set_pixel_mode();
-    for (i = 0; i < w * h; i++) {
-		*p++ = argb_to_rgb565(*src++);
-    }
+	for (row = 0; row < dirty_h; row++) {
+		const uint32_t *src_row = src + row * w;
+		for (col = 0; col < dirty_w; col++) {
+			*p++ = argb_to_rgb565(src_row[col]);
+		}
+	}
 
-    rk_spi_write((uint8_t*)_fb, w * h * (int)sizeof(uint16_t));
+    rk_spi_write((uint8_t*)_fb, dirty_w * dirty_h * (int)sizeof(uint16_t));
 	spi_set_byte_mode();
-	update_shadow(x, y, w, h, argb);
+	update_shadow(dirty_x, dirty_y, dirty_w, dirty_h, src, w);
+	_shadow_ready = 1;
 }
 
 void ili9488_init(void){
@@ -167,6 +225,7 @@ void ili9488_init(void){
 
 	_fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
 	_shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+	_shadow_ready = 0;
 	if (_shadow_argb != NULL) {
 		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
 	}
