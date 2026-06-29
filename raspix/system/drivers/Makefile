@@ -1,6 +1,7 @@
 basic:
 	cd uartd; make
 	cd soundd; make
+	cd soundpwmd; make
 	cd usbhostd; make
 	cd hid_keybd; make
 	cd hid_joystickd; make
@@ -21,6 +22,7 @@ clean:
 	cd fbd; make clean
 	cd dsi_fbd; make clean
 	cd soundd; make clean
+	cd soundpwmd; make clean
 	cd usbhostd; make clean
 	cd hid_keybd; make clean
 	cd hid_moused; make clean
