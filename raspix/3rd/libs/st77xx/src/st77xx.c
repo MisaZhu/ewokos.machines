@@ -34,6 +34,7 @@ static uint64_t _last_flush_ms = 0;
 uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 uint16_t LCD_MODE = LCD_MODE_0;
+uint16_t LCD_FLUSH_MODE = LCD_FLUSH_AUTO;
 
 static inline void delay(int32_t count) {
 	proc_usleep(count);
@@ -58,7 +59,9 @@ static inline void lcd_write_data(uint8_t Data) {
 
 /* Reset LCD */
 static inline void lcd_reset( void ) {
-	bsp_gpio_write(LCD_BL,1);
+	if(LCD_BL >= 0) {
+		bsp_gpio_write(LCD_BL, 1);
+	}
 
 	bsp_gpio_write(LCD_RST, 0);
 	delay(200);
@@ -110,7 +113,7 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 				mod |= 0xf0;
 				break;
 			default: //G_ROTATE_0
-				mod |= 0x40;
+				mod |= 0x00;
 				break;
 		}
 	}
@@ -131,6 +134,7 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
 	_shadow_ready = 0;
 	_pending_flush = 0;
 	_last_flush_ms = 0;
+	LCD_FLUSH_MODE = LCD_FLUSH_AUTO;
 	if(_shadow_argb != NULL) {
 		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
 	}
@@ -160,32 +164,46 @@ static inline void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h
 	lcd_write_command(0x2C); // Memory write?
 }
 
+static inline void lcd_send_pixels(uint32_t start, uint32_t count) {
+	uint32_t i;
+	uint32_t m = 0;
+#define SPI_FIFO_SIZE 64
+	uint8_t c8[SPI_FIFO_SIZE];
+
+	for(i = 0; i < count; i++) {
+		uint16_t color = _lcd_buffer[start + i];
+		c8[m++] = (color >> 8) & 0xff;
+		c8[m++] = color & 0xff;
+		if(m >= SPI_FIFO_SIZE) {
+			m = 0;
+			bsp_spi_send_recv(c8, NULL, SPI_FIFO_SIZE);
+		}
+	}
+
+	if(m > 0) {
+		bsp_spi_send_recv(c8, NULL, m);
+	}
+}
+
 static inline void lcd_show(void) {
 	lcd_set_window(0, 0, LCD_WIDTH, LCD_HEIGHT);
-	bsp_spi_send_recv((const uint8_t*)_lcd_buffer, NULL,
-			(uint32_t)LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
+	lcd_send_pixels(0, (uint32_t)LCD_WIDTH * LCD_HEIGHT);
 }
 
 static inline void lcd_show_rows(uint16_t y, uint16_t h) {
-	uint16_t* row_ptr;
-	uint32_t row_bytes;
-
 	if(h == 0) {
 		return;
 	}
 
 	lcd_set_window(0, y, LCD_WIDTH, h);
-	row_ptr = _lcd_buffer + ((uint32_t)y * LCD_WIDTH);
-	row_bytes = (uint32_t)LCD_WIDTH * h * sizeof(uint16_t);
-	bsp_spi_send_recv((const uint8_t*)row_ptr, NULL, row_bytes);
+	lcd_send_pixels((uint32_t)y * LCD_WIDTH, (uint32_t)LCD_WIDTH * h);
 }
 
-static inline uint16_t argb_to_rgb565_be(uint32_t pixel) {
+static inline uint16_t argb_to_rgb565(uint32_t pixel) {
 	uint16_t r = (pixel >> 19) & 0x1f;
 	uint16_t g = (pixel >> 10) & 0x3f;
 	uint16_t b = (pixel >> 3) & 0x1f;
-	uint16_t rgb565 = (r << 11) | (g << 5) | b;
-	return (rgb565 >> 8) | (rgb565 << 8);
+	return (r << 11) | (g << 5) | b;
 }
 
 void st77xx_flush(const void* buf, uint32_t size) {
@@ -206,7 +224,7 @@ void st77xx_flush(const void* buf, uint32_t size) {
 	if(_shadow_argb == NULL || !_shadow_ready) {
 		uint32_t i;
 		for(i = 0; i < sz; i++) {
-			_lcd_buffer[i] = argb_to_rgb565_be(src[i]);
+			_lcd_buffer[i] = argb_to_rgb565(src[i]);
 		}
 		if(_shadow_argb != NULL) {
 			memcpy(_shadow_argb, buf, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
@@ -233,7 +251,7 @@ void st77xx_flush(const void* buf, uint32_t size) {
 				continue;
 			}
 			_shadow_argb[idx] = src[idx];
-			_lcd_buffer[idx] = argb_to_rgb565_be(src[idx]);
+			_lcd_buffer[idx] = argb_to_rgb565(src[idx]);
 			if(!dirty) {
 				min_y = max_y = y;
 				dirty = 1;
@@ -268,7 +286,14 @@ void st77xx_flush(const void* buf, uint32_t size) {
 	dirty_rows = max_y - min_y + 1;
 	now_ms = kernel_tic_ms(0);
 	bsp_spi_set_div(SPI_DIV);
-	if(LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) {
+	if(LCD_FLUSH_MODE == LCD_FLUSH_FULL) {
+		lcd_start();
+		lcd_show();
+		lcd_end();
+		_pending_flush = 0;
+		_last_flush_ms = now_ms;
+	}
+	else if(LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) {
 		if(_last_flush_ms != 0 &&
 				(now_ms - _last_flush_ms) < ROTATED_FLUSH_MIN_INTERVAL_MS &&
 				dirty_rows <= ROTATED_SMALL_DIRTY_ROWS) {
@@ -293,6 +318,19 @@ void st77xx_flush(const void* buf, uint32_t size) {
 	}
 }
 
+void st77xx_set_view(uint16_t w, uint16_t h, uint16_t rot, uint16_t mode) {
+	LCD_MODE = mode;
+	bsp_spi_set_div(SPI_DIV);
+	lcd_start();
+	lcd_set_buffer(w, h, rot);
+	lcd_end();
+}
+
+void st77xx_set_flush_mode(uint16_t mode) {
+	LCD_FLUSH_MODE = mode;
+	_pending_flush = 0;
+}
+
 void st77xx_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 		int pin_dc, int pin_cs, int pin_rst, int pin_bl, int cdiv) {
 	LCD_DC = pin_dc;
@@ -303,7 +341,9 @@ void st77xx_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 	bsp_gpio_config(LCD_DC, GPIO_OUTPUT);
 	bsp_gpio_config(LCD_CS, GPIO_OUTPUT);
 	bsp_gpio_config(LCD_RST, GPIO_OUTPUT);
-	bsp_gpio_config(LCD_BL, GPIO_OUTPUT);
+	if(LCD_BL >= 0) {
+		bsp_gpio_config(LCD_BL, GPIO_OUTPUT);
+	}
 
 	lcd_reset();
 	if(cdiv > 0)
@@ -315,75 +355,148 @@ void st77xx_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 	lcd_start();
 	lcd_write_command(0x11); 
 	delay(120000);
-	// lcd_write_command(0x36);
-	// lcd_write_data(0x00);
+	if(LCD_MODE == LCD_MODE_2) {
+		lcd_write_command(0x36);
+		lcd_write_data(0x00);
 
-	lcd_write_command(0x3A); 
-	lcd_write_data(0x05);
+		lcd_write_command(0x3A);
+		lcd_write_data(0x05);
 
-	lcd_write_command(0xB2);
-	lcd_write_data(0x0C);
-	lcd_write_data(0x0C);
-	lcd_write_data(0x00);
-	lcd_write_data(0x33);
-	lcd_write_data(0x33); 
+		lcd_write_command(0xB2);
+		lcd_write_data(0x0C);
+		lcd_write_data(0x0C);
+		lcd_write_data(0x00);
+		lcd_write_data(0x33);
+		lcd_write_data(0x33);
 
-	lcd_write_command(0xB7); 
-	lcd_write_data(0x35);  
+		lcd_write_command(0xB7);
+		lcd_write_data(0x35);
 
-	lcd_write_command(0xBB);
-	lcd_write_data(0x37);
+		lcd_write_command(0xBB);
+		lcd_write_data(0x35);
 
-	lcd_write_command(0xC0);
-	lcd_write_data(0x2C);
+		lcd_write_command(0xC0);
+		lcd_write_data(0x2C);
 
-	lcd_write_command(0xC2);
-	lcd_write_data(0x01);
+		lcd_write_command(0xC2);
+		lcd_write_data(0x01);
 
-	lcd_write_command(0xC3);
-	lcd_write_data(0x12);   
+		lcd_write_command(0xC3);
+		lcd_write_data(0x13);
 
-	lcd_write_command(0xC4);
-	lcd_write_data(0x20);  
+		lcd_write_command(0xC4);
+		lcd_write_data(0x20);
 
-	lcd_write_command(0xC6); 
-	lcd_write_data(0x0F);    
+		lcd_write_command(0xC6);
+		lcd_write_data(0x0F);
 
-	lcd_write_command(0xD0); 
-	lcd_write_data(0xA4);
-	lcd_write_data(0xA1);
+		lcd_write_command(0xD0);
+		lcd_write_data(0xA4);
+		lcd_write_data(0xA1);
 
-	lcd_write_command(0xE0);
-	lcd_write_data(0xD0);
-	lcd_write_data(0x04);
-	lcd_write_data(0x0D);
-	lcd_write_data(0x11);
-	lcd_write_data(0x13);
-	lcd_write_data(0x2B);
-	lcd_write_data(0x3F);
-	lcd_write_data(0x54);
-	lcd_write_data(0x4C);
-	lcd_write_data(0x18);
-	lcd_write_data(0x0D);
-	lcd_write_data(0x0B);
-	lcd_write_data(0x1F);
-	lcd_write_data(0x23);
+		lcd_write_command(0xD6);
+		lcd_write_data(0xA1);
 
-	lcd_write_command(0xE1);
-	lcd_write_data(0xD0);
-	lcd_write_data(0x04);
-	lcd_write_data(0x0C);
-	lcd_write_data(0x11);
-	lcd_write_data(0x13);
-	lcd_write_data(0x2C);
-	lcd_write_data(0x3F);
-	lcd_write_data(0x44);
-	lcd_write_data(0x51);
-	lcd_write_data(0x2F);
-	lcd_write_data(0x1F);
-	lcd_write_data(0x1F);
-	lcd_write_data(0x20);
-	lcd_write_data(0x23);
+		lcd_write_command(0xE0);
+		lcd_write_data(0xF0);
+		lcd_write_data(0x00);
+		lcd_write_data(0x04);
+		lcd_write_data(0x04);
+		lcd_write_data(0x04);
+		lcd_write_data(0x05);
+		lcd_write_data(0x29);
+		lcd_write_data(0x33);
+		lcd_write_data(0x3E);
+		lcd_write_data(0x38);
+		lcd_write_data(0x12);
+		lcd_write_data(0x12);
+		lcd_write_data(0x28);
+		lcd_write_data(0x30);
+
+		lcd_write_command(0xE1);
+		lcd_write_data(0xF0);
+		lcd_write_data(0x07);
+		lcd_write_data(0x0A);
+		lcd_write_data(0x0D);
+		lcd_write_data(0x0B);
+		lcd_write_data(0x07);
+		lcd_write_data(0x28);
+		lcd_write_data(0x33);
+		lcd_write_data(0x3E);
+		lcd_write_data(0x36);
+		lcd_write_data(0x14);
+		lcd_write_data(0x14);
+		lcd_write_data(0x29);
+		lcd_write_data(0x32);
+	}
+	else {
+		lcd_write_command(0x3A); 
+		lcd_write_data(0x05);
+
+		lcd_write_command(0xB2);
+		lcd_write_data(0x0C);
+		lcd_write_data(0x0C);
+		lcd_write_data(0x00);
+		lcd_write_data(0x33);
+		lcd_write_data(0x33); 
+
+		lcd_write_command(0xB7); 
+		lcd_write_data(0x35);  
+
+		lcd_write_command(0xBB);
+		lcd_write_data(0x37);
+
+		lcd_write_command(0xC0);
+		lcd_write_data(0x2C);
+
+		lcd_write_command(0xC2);
+		lcd_write_data(0x01);
+
+		lcd_write_command(0xC3);
+		lcd_write_data(0x12);   
+
+		lcd_write_command(0xC4);
+		lcd_write_data(0x20);  
+
+		lcd_write_command(0xC6); 
+		lcd_write_data(0x0F);    
+
+		lcd_write_command(0xD0); 
+		lcd_write_data(0xA4);
+		lcd_write_data(0xA1);
+
+		lcd_write_command(0xE0);
+		lcd_write_data(0xD0);
+		lcd_write_data(0x04);
+		lcd_write_data(0x0D);
+		lcd_write_data(0x11);
+		lcd_write_data(0x13);
+		lcd_write_data(0x2B);
+		lcd_write_data(0x3F);
+		lcd_write_data(0x54);
+		lcd_write_data(0x4C);
+		lcd_write_data(0x18);
+		lcd_write_data(0x0D);
+		lcd_write_data(0x0B);
+		lcd_write_data(0x1F);
+		lcd_write_data(0x23);
+
+		lcd_write_command(0xE1);
+		lcd_write_data(0xD0);
+		lcd_write_data(0x04);
+		lcd_write_data(0x0C);
+		lcd_write_data(0x11);
+		lcd_write_data(0x13);
+		lcd_write_data(0x2C);
+		lcd_write_data(0x3F);
+		lcd_write_data(0x44);
+		lcd_write_data(0x51);
+		lcd_write_data(0x2F);
+		lcd_write_data(0x1F);
+		lcd_write_data(0x1F);
+		lcd_write_data(0x20);
+		lcd_write_data(0x23);
+	}
 
 	if(inversion == 0)
 		lcd_write_command(0x20); // Display Inversion OFF   RPi LCD (A)

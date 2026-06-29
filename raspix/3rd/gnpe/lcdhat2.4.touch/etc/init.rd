@@ -19,9 +19,12 @@
 #@/bin/ipcserv /drivers/nulld              /dev/null
 @/bin/ipcserv /drivers/ramfsd             /tmp
 
+@/bin/ipcserv /drivers/raspix/soundpwmd          /dev/sound0
+
 @/bin/ipcserv /sbin/sessiond
 
 #@/bin/bgrun /sbin/x/xim_none   /dev/vjoystick 
+@/bin/bgrun /sbin/x/xtouch     /dev/fb0
 @/bin/bgrun /sbin/x/xim_vkey 
 
 @/bin/load_font

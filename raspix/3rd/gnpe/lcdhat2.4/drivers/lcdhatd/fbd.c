@@ -5,13 +5,8 @@
 #include <string.h>
 #include <fbd/fbd.h>
 #include <ili9341/ili9341.h>
-#include <xpt2046/xpt2046.h>
 
 int  do_flush(const void* buf, uint32_t size) {
-	/* #region debug-point gnpe-lcdhat24-flush-probe */
-	klog("lcdhat24: flush size=%u width=%u height=%u\n",
-			size, (unsigned int)LCD_WIDTH, (unsigned int)LCD_HEIGHT);
-	/* #endregion debug-point gnpe-lcdhat24-flush-probe */
 	ili9341_flush(buf, size);
 	return 0;
 }
@@ -40,10 +35,6 @@ static void show_test_pattern(uint32_t w, uint32_t h) {
 	}
 
 	do_flush(buf, w * h * 4);
-	/* #region debug-point gnpe-lcdhat24-init-probe */
-	klog("lcdhat24: test_pattern flushed w=%u h=%u\n",
-			(unsigned int)w, (unsigned int)h);
-	/* #endregion debug-point gnpe-lcdhat24-init-probe */
 }
 
 void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
@@ -51,11 +42,6 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
 	const int lcd_cs = 8;
 	const int lcd_rst = 24;
 	const int lcd_bl = 18;
-	/* #region debug-point gnpe-lcdhat24-init-probe */
-	klog("lcdhat24: init w=%u h=%u div=%u dc=%d cs=%d rst=%d bl=%d rot=%d inv=%d\n",
-			(unsigned int)w, (unsigned int)h, (unsigned int)div,
-			lcd_dc, lcd_cs, lcd_rst, lcd_bl, G_ROTATE_270, 0);
-	/* #endregion debug-point gnpe-lcdhat24-init-probe */
 	ili9341_init(w, h, G_ROTATE_270, 0, lcd_dc, lcd_cs, lcd_rst, lcd_bl, div);
 }
 
@@ -105,15 +91,6 @@ static int doargs(int argc, char* argv[]) {
 	return optind;
 }
 
-static int tp_read(uint8_t* buf, uint32_t size) {
-	memset(buf, 0, size);
-	if(size >= 6) {
-		uint16_t* d = (uint16_t*)buf;
-		xpt2046_read(&d[0], &d[1], &d[2]);
-	}
-	return 6;	
-}
-
 int main(int argc, char** argv) {
 	_spi_div = 8;
 	LCD_HEIGHT = 240;
@@ -121,24 +98,14 @@ int main(int argc, char** argv) {
 
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
-	/* #region debug-point gnpe-lcdhat24-init-probe */
-	klog("lcdhat24: main mnt=%s spi_div=%d\n", mnt_point, _spi_div);
-	/* #endregion debug-point gnpe-lcdhat24-init-probe */
 
 	lcd_init(LCD_WIDTH, LCD_HEIGHT, _spi_div);
-	show_test_pattern(LCD_WIDTH, LCD_HEIGHT);
-	proc_usleep(300000);
-
-	const int tp_cs = 17;
-	const int tp_irq = 27;
-	//xpt2046_init(tp_cs, tp_irq, 64);
 
 	fbd_t fbd;
 	fbd.splash = NULL;
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	//fbd.read = tp_read;
 	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file);
 	return ret;
 }

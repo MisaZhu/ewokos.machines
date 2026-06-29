@@ -1,7 +1,6 @@
 EXTRA_LIBS_DIR = ../../../../libs
 
 TASK_OBJS = \
-		$(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.o \
 		$(EXTRA_LIBS_DIR)/ili9341/src/ili9341.o \
 		fbd.o
 
@@ -9,8 +8,7 @@ TASK = lcdhatd
 
 include ../../../../make.inc
 
-CFLAGS += -I $(EXTRA_LIBS_DIR)/xpt2046/include \
-	-I $(EXTRA_LIBS_DIR)/ili9341/include
+CFLAGS += -I $(EXTRA_LIBS_DIR)/ili9341/include
 
 MF_ROOT_DIR=../..
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
