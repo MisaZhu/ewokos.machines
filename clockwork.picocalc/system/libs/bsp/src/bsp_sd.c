@@ -9,7 +9,9 @@
 int bsp_sd_init(void) {
   sys_info_t sysinfo;
   syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-  int res = sd_init(rk3506_sd_init, rk3506_sd_read_sector, rk3506_sd_write_sector);
+  int res = sd_init_ex(rk3506_sd_init,
+		  rk3506_sd_read_sector,
+		  rk3506_sd_read_blocks,
+		  rk3506_sd_write_sector);
 	return res;
 }
-

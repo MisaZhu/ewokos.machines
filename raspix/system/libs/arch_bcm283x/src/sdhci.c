@@ -866,7 +866,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		mode = SDHCI_TRNS_BLK_CNT_EN;
 		trans_bytes = data->blocks * data->blocksize;
 		if (data->blocks > 1)
-			mode |= SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN;
+			mode |= SDHCI_TRNS_MULTI | SDHCI_TRNS_ACMD12 | SDHCI_TRNS_BLK_CNT_EN;
 
 		if (data->flags == MMC_DATA_READ)
 			mode |= SDHCI_TRNS_READ;
@@ -960,6 +960,7 @@ static int sdhci_set_ios(struct mmc *mmc)
 static struct bus_ops _ops = {
 	.set_ios = sdhci_set_ios,
 	.send_command = sdhci_send_command,
+	.auto_stop = true,
 };
 
 struct bus_ops* bcm2711_sdhci_init(void)

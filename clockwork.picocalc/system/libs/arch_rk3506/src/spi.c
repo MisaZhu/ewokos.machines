@@ -324,12 +324,26 @@ static inline int rockchip_spi_xfer(int cs, unsigned int bitlen,
             u32 status = readl(&regs->sr);
 
             if (towrite && !(status & SR_TF_FULL)) {
-                writel(*out++, &regs->txdr);
-                towrite--;
+                if (priv->n_bytes == 2) {
+                    u16 value = out[0] | (out[1] << 8);
+                    writel(value, &regs->txdr);
+                    out += 2;
+                    towrite -= 2;
+                } else {
+                    writel(*out++, &regs->txdr);
+                    towrite--;
+                }
             }
             if (toread && !(status & SR_RF_EMPT)) {
-                *in++ = readl(&regs->rxdr);
-                toread--;
+                if (priv->n_bytes == 2) {
+                    u16 value = readl(&regs->rxdr);
+                    *in++ = value & 0xff;
+                    *in++ = (value >> 8) & 0xff;
+                    toread -= 2;
+                } else {
+                    *in++ = readl(&regs->rxdr);
+                    toread--;
+                }
             }
         }
         ret = rkspi_wait_till_not_busy(regs);
@@ -427,6 +441,17 @@ int rk_spi_read(uint8_t *buf, int len){
 
 int rk_spi_write(uint8_t *buf, int len){
 	return rockchip_spi_xfer(0 ,len*8, buf, 0, SPI_XFER_BEGIN|SPI_XFER_END);
+}
+
+int rk_spi_set_bits_per_word(uint8_t bits) {
+	if (bits != 8 && bits != 16) {
+		return -1;
+	}
+	if (_spi.bits_per_word == bits) {
+		return 0;
+	}
+	_spi.bits_per_word = bits;
+	return rockchip_spi_claim_bus(0);
 }
 
 int rk_spi_init(void){

@@ -306,9 +306,14 @@ static RetEmType _REG_WaitEvent(IPEmType eIP, IPEventEmType eEvent, uint16_t u16
 				return EV_OK;
 		}
 
-		Hal_Timer_mDelay(1);
+		/* Poll every ~130us instead of ~670us (mDelay(1)). Five
+		 * uDelay(200) iterations approximate one mDelay(1), so
+		 * multiply the timeout by 5 to preserve the same wall-clock
+		 * budget. This cuts per-transfer latency by up to 5x for
+		 * sub-millisecond completions (typical at 50MHz HS). */
+		Hal_Timer_uDelay(200);
 		u32DiffTime++;
-	}while(u32DiffTime <= u32WaitMs);
+	}while(u32DiffTime <= (u32WaitMs * 5U));
 
 	return EV_FAIL;
 }

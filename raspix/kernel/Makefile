@@ -22,8 +22,8 @@ ifeq ($(ewokos),)
 ewokos=~/work/ewokos
 endif
 EWOKOS_ROOT_DIR = $(ewokos)
-SYS_DIR=../system
-MACHINE=raspix
+MACHINE = raspix
+SYS_DIR = $(EWOKOS_ROOT_DIR)/system/build/$(MACHINE)
 
 ifeq ($(QEMU_DISPLAY_OPTS),cocoa)
 QEMU_FLAGS += -display cocoa

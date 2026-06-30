@@ -7,7 +7,6 @@
 #include <ewoksys/mmio.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/syscall.h>
-#include <ewoksys/klog.h>
 #include <ewoksys/interrupt.h>
 #include <ewoksys/kernel_tic.h>
 
@@ -16,14 +15,18 @@
 #include "reg_ctrl.h"
 #include "infinity_reg.h"
 
-#define POLLING_DMA_WITH_SYS_TIMER0	1
+/*
+ * Use an explicit software timer to poll BACH progress.
+ * On miyoo the bare IRQ_TIMER0 hook alone is not enough to guarantee
+ * periodic callbacks during audio playback.
+ */
+/* #define POLLING_DMA_WITH_SYS_TIMER0	1 */
 
 typedef unsigned char   U8;
 typedef signed char     S8;
 typedef unsigned short  U16;
 typedef short           S16;
 
-#define KLOG		klog
 #define UNUSED(v)	((void)v)
 #define ENOMEM		(12)
 #define	EINVAL		(22)
@@ -73,7 +76,8 @@ typedef short           S16;
 #define REG_ATOP_ANALOG_CTRL3	(REG_ATOP_OFFSET + 0xc)
 
 #define PERIOD_BYTES_MIN 0x100
-#define PRE_ALLOCATED_PCM_BUF_MAX_SIZE (16 * 1024)
+#define PRE_ALLOCATED_PCM_BUF_MAX_SIZE (64 * 1024)
+#define MIYOO_MIU_PHY_BASE 0x20000000U
 
 #define MSC313_BACH		0x002a0400
 #define MSC313_BACH_TOP		0x00206800
@@ -194,14 +198,34 @@ static inline void delay(int32_t count)
 	while (count > 0) count--;
 }
 
+static inline unsigned int msc313_bach_dma_miu_addr(ewokos_addr_t vaddr)
+{
+	ewokos_addr_t phy = dma_phy_addr(0, vaddr);
+	if (phy < MIYOO_MIU_PHY_BASE) {
+		
+		return (unsigned int)phy;
+	}
+	return (unsigned int)(phy - MIYOO_MIU_PHY_BASE);
+}
+
 
 static int msc313_bach_get_level(struct msc313_bach_dma_sub_channel *sub_channel)
 {
 	unsigned level;
 	regmap_field_write(sub_channel->count, 1);
-	delay(100);
+	/*
+	 * The count pulse latches a fresh level into the read register
+	 * asynchronously, then we discard the first read and use the
+	 * second. The original code used delay(100) twice, which burned
+	 * a few hundred ns of pure CPU spin per call; with the pointer
+	 * being polled from fdev_loop_step and the user write path this
+	 * added up to a measurable share of CPU on miyoo. A few cycles
+	 * of spin is enough to flush the MMIO write, and the second read
+	 * already takes care of the hardware-side settle time.
+	 */
+	delay(8);
 	regmap_field_read(sub_channel->level, &level);
-	delay(100);
+	delay(8);
 	regmap_field_read(sub_channel->level, &level);
 	regmap_field_write(sub_channel->count, 0);
 	return level;
@@ -215,130 +239,82 @@ static void msc313_bach_dump_dmactrl(struct msc313_bach *bach)
 
 	for(i = 0; i < 0x9; i++){
 		regmap_read(bach->bach, 0x100 + (i * 4), &ctrl0);
-		KLOG("ctrl%d: %04x\n", i, ctrl0);
+		
 	}
 }
 #endif
 
-static void msc313_bach_pcm_dumpruntime(struct msc313_bach_substream_runtime *bach_runtime, int tag)
-{
-	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
-	struct snd_pcm_runtime *runtime = sub_channel->substream->runtime;
-	int level;
-	uint64_t now_usec;
-
-	kernel_tic(NULL, &now_usec);
-	level = msc313_bach_get_level(sub_channel);
-
-	klog("-->>bach_runtime_dump() IRQ:%d, irqs %d, empties %d, underruns %d, pending: %u, processed: %u, total: %u level:%d usec: %u\n",
-		tag,
-		bach_runtime->irqs,
-		bach_runtime->empties,
-		bach_runtime->underruns,
-		(unsigned) bach_runtime->pending_bytes/4,
-		(unsigned) bach_runtime->processed_bytes/4,
-		(unsigned) bach_runtime->total_bytes/4,
-		level,
-		now_usec);
-
-	klog("\t appl %d hw_ptr%d avai %d ready %d hw_base %d\n",
-			runtime->status.appl_ptr,
-			runtime->status.hw_ptr,
-			play_avail(runtime),
-			frames_ready(runtime),
-			runtime->hw_ptr_base);
-}
-
-
-static struct snd_pcm_substream *tSubstream;
-struct msc313_bach *tBach;
-static int tStart;
-
-static int msc313_bach_irq(int irq, void *data, int push_pending);
 static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 			       struct snd_pcm_substream *substream);
-static int register_irq_handle(struct msc313_bach *bach);
-static int unregister_irq_handle(struct msc313_bach *bach);
 
-#ifndef POLLING_DMA_WITH_SYS_TIMER0
-static uint32_t uTimerId;
-
-static void timer_handle(void)
-{
-	if (tStart == 1) {
-		snd_pcm_lock(tSubstream);
-		msc313_bach_irq(0, tBach, 1);
-		snd_pcm_unlock(tSubstream);
-	}
-}
-#endif
-
-static void bach_irq_handle(uint32_t interrupt, uint32_t data)
-{
-	(void)interrupt;
-	struct msc313_bach *tBach = (struct msc313_bach *)data;
-	struct snd_pcm_runtime *runtime;
-	uint64_t now_usec;
-	uint64_t diff_1 = 0;
-	uint64_t diff_2 = 0;
-	uint64_t diff_3 = 0;
-
-	kernel_tic(NULL, &now_usec);
-
-	if (!tSubstream || tStart != 1) {
-		goto TIMER_INT_END;
-	}
-
-	runtime = tSubstream->runtime;
-
-	//now - last_call_end == interval between two calls
-	diff_1 = now_usec - runtime->time_after;
-	//now - last_call_start
-	diff_2 = now_usec - runtime->time_pre;
-	runtime->time_pre = now_usec;
-
-	if (diff_1 > DELAY_INTERVAL_MS || diff_2 > 2 * DELAY_INTERVAL_MS) {
-		if (tStart == 1) {
-			snd_pcm_lock(tSubstream);
-			msc313_bach_irq(0, tBach, 0);
-			snd_pcm_unlock(tSubstream);
-		}
-	}
-
-	kernel_tic(NULL, &now_usec);
-	//irq_handle process cost time
-	diff_3 = now_usec - runtime->time_pre;
-	runtime->time_after = now_usec;
-
-	if (US_TO_MS(diff_3) > 20) {
-		KLOG("%s() [WARNING] tStart:%d diff_1:%u diff_2:%u diff_3:%u\n", __func__,
-			tStart, US_TO_MS(diff_1), US_TO_MS(diff_2),  US_TO_MS(diff_3));
-	}
-
-TIMER_INT_END:
-	return;
-}
+/*
+ * No-timer path. We previously drove the BACH DMA poll cadence from
+ * timer_set/timer_remove, which forced audctrl to depend on the user
+ * space timerd and the order in which it came up. That dependency is
+ * gone now: the BACH engine is fed by the data path itself. Every
+ * pcm_lib.c write/read that lands new bytes through mi_cpu_dai_kick
+ * also pushes the BACH pending queue, which is exactly what the
+ * soft-timer poll used to do. mi_cpu_dai_close() no longer needs to
+ * cancel any timer.
+ */
 
 
 int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
+	if (dai == NULL || substream == NULL || substream->runtime == NULL) {
+		return -EINVAL;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msc313_bach *bach = dai->private_data;
-	int state = substream->runtime->status.state;
-	struct msc313_bach_substream_runtime *bach_runtime;
+	if (bach == NULL) {
+		return -EINVAL;
+	}
+	struct msc313_bach_substream_runtime *bach_runtime =
+		runtime->private_data;
 	struct msc313_bach_dma_channel *dma_channel = &bach->dma_channels[0];
 
-	bach_runtime = calloc(1, sizeof(*bach_runtime));
-	if (!bach_runtime) {
-		KLOG("%s() ERROR! No memory!\n", __func__);
-		return -1;
+	/*
+	 * Keep bach_runtime alive across close()->loop_step races. The
+	 * polling path can still reach pointer()/queue bookkeeping after
+	 * userspace starts tearing the stream down, and freeing the object
+	 * in close() turns that into a UAF. Reuse the existing runtime on
+	 * the next open and only allocate once on the first open.
+	 */
+	if (bach_runtime == NULL) {
+		bach_runtime = calloc(1, sizeof(*bach_runtime));
+		if (!bach_runtime) {
+			return -ENOMEM;
+		}
+		runtime->private_data = bach_runtime;
+	}
+	else {
+		memset(bach_runtime, 0, sizeof(*bach_runtime));
 	}
 
-	runtime->private_data = bach_runtime;
+	/*
+	 * The previous session's close() left sub_channel = NULL and
+	 * running = false, but every caller of this DAI (kick/ack/pointer/
+	 * trigger/prepare) dereferences bach_runtime->sub_channel
+	 * unconditionally. Re-attach it here so a second open() reaches a
+	 * fully wired DAI, and keep the substream link published
+	 * independently so a parallel close() from a stale task cannot
+	 * take the channel away mid-open.
+	 */
 	bach_runtime->sub_channel = &bach->dma_channels[0].reader_writer[0];
+	bach_runtime->sub_channel->substream = substream;
 	bach->dma_channels[0].reader_writer[0].substream = substream;
 
+	/*
+	 * Force the BACH channel into a known-quiescent state BEFORE the
+	 * caller starts writing. The reset pulse alone is not enough: the
+	 * sub_channel still carries the live count latch and the previous
+	 * session's running flag, both of which would let queue_pending()
+	 * promote stale pending_bytes on the first kick().
+	 */
 	regmap_field_write(dma_channel->rst, 1);
+	regmap_field_write(dma_channel->en, 0);
+	regmap_field_write(dma_channel->rd_empty_int_en, 0);
+	regmap_field_write(dma_channel->rd_underrun_int_en, 0);
 	delay(1000);
 	regmap_field_write(dma_channel->rst, 0);
 	delay(1000);
@@ -346,19 +322,31 @@ int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream
 	/* Setup default register config */
 	regmap_field_write(dma_channel->live_count_en, 1);
 
-	tBach = NULL;
-	tStart = 0;
-	tSubstream = substream;
-	tBach = bach;
+	return 0;
+}
 
-#ifdef POLLING_DMA_WITH_SYS_TIMER0
-	/* register Timer0 IRQ handler for polling audio dma status */
-	register_irq_handle(bach);
-#else
-	uTimerId = timer_set(10*1000, timer_handle);
-	delay(100);
-#endif
-	KLOG("%s() state:%s\n", __func__, pcm_state_str(state));
+/*
+ * Writer-side kick: called by pcm_lib.c right after ack() on every copy
+ * chunk.  This guarantees that the bytes the user just produced are
+ * handed off to BACH synchronously, so the next IRQ empty tail won't
+ * observe pending_bytes == 0 and leave the DMA engine stranded.
+ */
+static void msc313_bach_queue_pending(struct msc313_bach *bach,
+				     struct snd_pcm_substream *substream,
+				     struct msc313_bach_substream_runtime *bach_runtime);
+
+static int mi_cpu_dai_kick(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
+{
+	UNUSED(dai);
+	if (substream == NULL || substream->runtime == NULL) {
+		return 0;
+	}
+	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
+	if (bach_runtime == NULL) {
+		return 0;
+	}
+	msc313_bach_queue_pending((struct msc313_bach *)dai->private_data, substream, bach_runtime);
 	return 0;
 }
 
@@ -367,55 +355,130 @@ int mi_cpu_dai_hw_params(struct snd_soc_dai *dai, struct snd_pcm_substream *subs
 {
 	struct msc313_bach *bach = dai->private_data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	unsigned int dma_phy_addr_hw;
 
-	if (runtime->dma_area != NULL) {
-		return 0;
+	/*
+	 * Keep the preallocated DMA area, but always refresh dma_bytes/dma_addr
+	 * from the latest PCM params. Userspace may call hw_params more than once
+	 * and returning early here leaves size registers stale.
+	 */
+	if (bach == NULL || runtime == NULL) {
+		return -EINVAL;
 	}
-
-	runtime->dma_area = (char *)bach->dma_areas;
-	runtime->dma_addr = (unsigned int)syscall1(SYS_V2P, (ewokos_addr_t)runtime->dma_area);
+	if (runtime->buffer_size <= 0 || runtime->frame_size <= 0) {
+		
+		return -EINVAL;
+	}
+	if (runtime->dma_area == NULL) {
+		if (bach->dma_areas == 0) {
+			
+			return -EINVAL;
+		}
+		runtime->dma_area = (char *)bach->dma_areas;
+	}
+	dma_phy_addr_hw = msc313_bach_dma_miu_addr((ewokos_addr_t)runtime->dma_area);
+	runtime->dma_addr = dma_phy_addr_hw;
 	runtime->dma_bytes = frame_to_bytes(runtime, runtime->buffer_size); //TODO
+	if (runtime->dma_bytes <= 0) {
+		
+		return -EINVAL;
+	}
+	if ((uint32_t)runtime->dma_bytes > PRE_ALLOCATED_PCM_BUF_MAX_SIZE) {
+		
+		return -EINVAL;
+	}
 	/* clear allocated buffer */
 	memset(runtime->dma_area, 0, runtime->dma_bytes);
 
-	KLOG("%s() dma_addr:0x%x dma_area:0x%x dma_bytes:%d\n",__func__,
-		runtime->dma_addr, runtime->dma_area, runtime->dma_bytes);
+	
+	
 	return 0;
 }
 
 int mi_cpu_dai_hw_free(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
 	UNUSED(dai);
-	int state = substream->runtime->status.state;
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_pcm_runtime *runtime;
+
+	if (substream == NULL || substream->runtime == NULL) {
+		return 0;
+	}
+	runtime = substream->runtime;
 	if (runtime->dma_area == NULL) {
 		return 0;
 	}
 
 	runtime->dma_addr = 0;
+	/*
+	 * The DMA area is owned by bach->dma_areas (pre-allocated once at
+	 * driver init time). Invalidate dma_area FIRST so any concurrent
+	 * do_transfer() bails out with -EBADF before we clear dma_bytes;
+	 * this ordering prevents a stale write from touching the region
+	 * while we are dismantling the geometry.
+	 */
 	runtime->dma_area = NULL;
 	runtime->dma_bytes = 0;
-	KLOG("%s() state:%s\n", __func__, pcm_state_str(state));
+	
 	return 0;
 }
 
 int mi_cpu_dai_close(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
+	if (dai == NULL || substream == NULL || substream->runtime == NULL) {
+		return 0;
+	}
 	struct msc313_bach *bach = dai->private_data;
+	if (bach == NULL) {
+		return 0;
+	}
 	struct msc313_bach_dma_channel *dma_channel = &bach->dma_channels[0];
-	int state = substream->runtime->status.state;
+	struct snd_pcm_runtime *runtime = substream->runtime;
 
+	/*
+	 * Stop asynchronous readers (timer/IRQ) FIRST and clear the global
+	 * pointers under the substream lock, so any in-flight callback observes
+	 * a consistent "nothing to do" state.
+	 */
+	snd_pcm_lock(substream);
 	bach->dma_channels[0].reader_writer[0].substream = NULL;
+	if (runtime->private_data != NULL) {
+		struct msc313_bach_substream_runtime *bach_runtime =
+			runtime->private_data;
+		/*
+		 * Do NOT free here: fdev_loop_step -> snd_pcm_buf_avail ->
+		 * update_hw_ptr -> pointer() may still be in flight without
+		 * holding substream->lock. Clearing the fields makes any late
+		 * poll observe an inert runtime, and the object is reused or
+		 * reinitialized in the next open().
+		 */
+		bach_runtime->running = false;
+		bach_runtime->sub_channel = NULL;
+		bach_runtime->pending_bytes = 0;
+		bach_runtime->total_bytes = 0;
+		bach_runtime->processed_bytes = 0;
+		bach_runtime->last_appl_ptr = 0;
+		bach_runtime->irqs = 0;
+		bach_runtime->empties = 0;
+		bach_runtime->underruns = 0;
+		bach_runtime->period_bytes = 0;
+		bach_runtime->max_inflight = 0;
+		bach_runtime->max_level = 0;
+	}
+	snd_pcm_unlock(substream);
+
+	/*
+	 * Disable the BACH side under the same lock-then-reset discipline
+	 * so the next open() doesn't observe a still-running engine. The
+	 * substream is already unpublished above, but the DMA channel
+	 * enable bits and underrun/empty IRQs would otherwise stay armed
+	 * across the close->open window.
+	 */
+	regmap_field_write(dma_channel->en, 0);
+	regmap_field_write(dma_channel->rd_empty_int_en, 0);
+	regmap_field_write(dma_channel->rd_underrun_int_en, 0);
 	regmap_field_write(dma_channel->rst, 1);
 
-#ifdef POLLING_DMA_WITH_SYS_TIMER0
-	/* detach Timer0 handle from the process */
-	unregister_irq_handle(bach);
-#else
-	timer_remove(uTimerId);
-#endif
 
-	KLOG("%s() state:%s\n",__func__, pcm_state_str(state));
 	return 0;
 }
 
@@ -423,19 +486,30 @@ static int msc313_bach_queue_bytes(/*struct msc313_bach *bach,*/
 				   struct snd_pcm_substream *substream,
 				   ssize_t new_bytes)
 {
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
+	if (bach_runtime == NULL || bach_runtime->sub_channel == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
+	if (sub_channel->dma_channel == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
 	unsigned trigbit;
 	unsigned miu_trigger_level = TO_MIUSIZE(new_bytes);
-	int target_level, old_level, new_level; // delay_level;
+	unsigned miu_period = TO_MIUSIZE(bach_runtime->period_bytes);
+	int target_level, old_level;
 
 	old_level = msc313_bach_get_level(sub_channel);
 
 	target_level = old_level + miu_trigger_level;
-	if (target_level > (int)bach_runtime->max_level) {
-		KLOG("%s() WARNING! target level, %d, is max %d\n", target_level, bach_runtime->max_level);
+	if (bach_runtime->max_level != 0 &&
+	    target_level > (int)bach_runtime->max_level + miu_period * 2) {
+		
 		return -EINVAL;
 	}
 
@@ -444,16 +518,27 @@ static int msc313_bach_queue_bytes(/*struct msc313_bach *bach,*/
 	regmap_field_write(sub_channel->trigger, ~trigbit);
 
 	bach_runtime->total_bytes += new_bytes;
-	bach_runtime->pending_bytes -= new_bytes;
+	/*
+	 * pending_bytes tracks "the user-ack'd amount that hasn't been pushed
+	 * into BACH yet". msc313_bach_queue_pending() may have promoted a
+	 * fallback value from play_avail() even when the real pending was 0,
+	 * so clamp the subtraction at 0 here; otherwise a target_level cap
+	 * (or a smaller-than-expected queue) would leave pending_bytes
+	 * negative and corrupt the next iteration's accounting.
+	 */
+	if ((ssize_t)bach_runtime->pending_bytes > (ssize_t)new_bytes) {
+		bach_runtime->pending_bytes -= new_bytes;
+	} else {
+		bach_runtime->pending_bytes = 0;
+	}
 
-	new_level = msc313_bach_get_level(sub_channel);
 	/* frequently CPU cost may make underrun */
 	//delay(10 * 1000);
 	//delay_level = msc313_bach_get_level(sub_channel);
 
 #if 0
 	if (delay_level == new_level)
-		KLOG("level didn't change after waiting, dma is probably stuck\n");
+		
 #endif
 
 	/* should be safe to turn the underrun and empty irq back on */
@@ -462,12 +547,7 @@ static int msc313_bach_queue_bytes(/*struct msc313_bach *bach,*/
 
 #if 0
 	//msc313_bach_pcm_dumpruntime(bach_runtime);
-	KLOG("++>>%s() who=%s total %d processed %d pending %d level %d\n", __func__,
-		runtime->ack_count == 1 ? "APP" : "IRQ",
-		bach_runtime->total_bytes/4,
-		bach_runtime->processed_bytes/4,
-		bach_runtime->pending_bytes/4,
-		new_level);
+	
 #endif
 	runtime->ack_count = 0;
 	return 0;
@@ -477,9 +557,22 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 				     struct snd_pcm_substream *substream,
 				     struct msc313_bach_substream_runtime *bach_runtime) {
 	UNUSED(bach);
+	if (bach_runtime == NULL || substream == NULL) {
+		return;
+	}
 	ssize_t new_queue_bytes = 0;
 	ssize_t hw_cache_bytes = 0;
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	ssize_t pending_bytes = 0;
+	ssize_t period_bytes = bach_runtime->period_bytes;
+	if (period_bytes <= 0) {
+		/*
+		 * queue_bytes() floors its target on a whole period, so a
+		 * zero/negative period would divide-by-zero in the
+		 * (new_queue_bytes / period_bytes) alignment step below.
+		 * Bail out instead of taking the SIGFPE path.
+		 */
+		return;
+	}
 	/*
 	 * Trying to queue before the channel is running results in either
 	 * the data not being queued or the dma locking up, so don't do that.
@@ -488,65 +581,87 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 		return;
 	}
 
-	/* Need at least a full period buffered */
-	if (bach_runtime->pending_bytes <= 0) {
-#if 0
-		KLOG("%s() [WARN] who:%s pending_bytes:%d avail:%d\n",
-			__func__,
-			(runtime->ack_count == 1 ? "APP" : "IRQ"),
-			bach_runtime->pending_bytes,
-			play_avail(runtime));
-#endif
-		runtime->ack_count = 0;
-		return;
-	}
-
-	if (bach_runtime->pending_bytes < bach_runtime->period_bytes) {
+	/*
+	 * pending_bytes is the single source of truth for "bytes userspace
+	 * has produced but BACH has not yet been told about".  The IRQ tail
+	 * path used to fall back to play_avail() when pending was 0, but
+	 * that promoted too much, made the target_level check fail, and
+	 * corrupted the next iteration's accounting.  If pending_bytes is
+	 * empty here, the call will simply not refill.
+	 */
+	pending_bytes = bach_runtime->pending_bytes;
+	if (pending_bytes <= 0) {
 		return;
 	}
 
 	hw_cache_bytes = bach_runtime->total_bytes - bach_runtime->processed_bytes;
-
 	if (hw_cache_bytes < 0) {
-		KLOG("%s() [WARNING] Underrun! hw consumed bytes:%d > user queued bytes:%d\n", __func__,
-			bach_runtime->processed_bytes, bach_runtime->total_bytes);
+		hw_cache_bytes = 0;
 	}
-	/* First queue, want two periods really */
-	else if (hw_cache_bytes == 0) {
-		new_queue_bytes = bach_runtime->period_bytes;
-		/* Don't actually have enough */
-		if (bach_runtime->pending_bytes < new_queue_bytes) {
-			new_queue_bytes = bach_runtime->period_bytes;
-		}
-	}
-	/* One period in the tank, queue one more */
-	else if (hw_cache_bytes <= (int)bach_runtime->period_bytes) {
-		new_queue_bytes = bach_runtime->period_bytes;
-	} else {
-		KLOG("%s() Not queue hw_cache_bytes:%d > period_bytes:%d\n", __func__,
-			hw_cache_bytes, bach_runtime->period_bytes);
-		new_queue_bytes = 0;
+	/*
+	 * If the hardware is already at or past the watermark, don't push
+	 * more data; BACH will fire another empty/underrun IRQ when it has
+	 * actually drained.
+	 */
+	if (hw_cache_bytes >= (ssize_t)bach_runtime->max_inflight) {
+		return;
 	}
 
-	if (new_queue_bytes) {
+	if (pending_bytes < period_bytes) {
+		return;
+	}
+
+	/*
+	 * Keep BACH close to a stable inflight watermark instead of only
+	 * topping up one period at a time. The 2-period cap was leaving too
+	 * little runway on miyoo: userspace still had buffered audio, but the
+	 * hardware queue could drain to XRUN before the next refill landed.
+	 */
+	new_queue_bytes = bach_runtime->max_inflight - hw_cache_bytes;
+	if (pending_bytes < new_queue_bytes) {
+		new_queue_bytes = pending_bytes;
+	}
+	if (new_queue_bytes > (int)period_bytes) {
+		new_queue_bytes =
+			(new_queue_bytes / period_bytes) *
+			period_bytes;
+	}
+
+	if (new_queue_bytes >= (int)period_bytes) {
 		msc313_bach_queue_bytes(substream, new_queue_bytes);
 	}
 }
 
 int mi_cpu_dai_prepare(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
+	if (dai == NULL || substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach *bach = dai->private_data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
+	if (bach == NULL || bach_runtime == NULL || bach_runtime->sub_channel == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
+	if (sub_channel->dma_channel == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
-	unsigned stride = runtime->frame_bits / 8;
+	unsigned stride;
 	unsigned miu_underrun_size, miu_buffer_size, miu_addr;
 	unsigned mono = runtime->channels == 1 ? 1 : 0;
 	unsigned int i;
 	int ret;
 
+	if (runtime->frame_bits < 8) {
+		
+		return -EINVAL;
+	}
+	stride = runtime->frame_bits / 8;
+
 	bach_runtime->last_appl_ptr = 0;
+	bach_runtime->running = false;
 	bach_runtime->irqs = 0;
 	bach_runtime->empties = 0;
 	bach_runtime->underruns = 0;
@@ -554,19 +669,35 @@ int mi_cpu_dai_prepare(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	bach_runtime->processed_bytes = 0;
 	bach_runtime->total_bytes = 0;
 	bach_runtime->period_bytes = frame_to_bytes(runtime, runtime->period_size);
-	bach_runtime->max_inflight = bach_runtime->period_bytes * 2;
+	if (bach_runtime->period_bytes <= 0) {
+		bach_runtime->period_bytes = runtime->dma_bytes > 0 ? runtime->dma_bytes : 0;
+	}
+	if (runtime->dma_bytes > 0 && runtime->dma_bytes >= bach_runtime->period_bytes) {
+		bach_runtime->max_inflight = runtime->dma_bytes - bach_runtime->period_bytes;
+	} else {
+		bach_runtime->max_inflight = bach_runtime->period_bytes;
+	}
+	if (bach_runtime->max_inflight < bach_runtime->period_bytes * 2) {
+		bach_runtime->max_inflight = bach_runtime->period_bytes * 2;
+	}
+	if (bach_runtime->max_inflight > runtime->dma_bytes) {
+		bach_runtime->max_inflight = runtime->dma_bytes;
+	}
+	if (bach_runtime->max_inflight <= 0) {
+		bach_runtime->max_inflight = bach_runtime->period_bytes;
+	}
 
 	miu_underrun_size = TO_MIUSIZE((bach_runtime->period_bytes + stride));
 	miu_buffer_size = TO_MIUSIZE(runtime->dma_bytes);
 	miu_addr = TO_MIUSIZE(runtime->dma_addr); //TODO
-	bach_runtime->max_level = TO_MIUSIZE(bach_runtime->period_bytes * 2);
+	bach_runtime->max_level = TO_MIUSIZE(bach_runtime->max_inflight);
 
 	/* This is needed to reset the buffer level */
 	regmap_field_write(sub_channel->trigger, 0);
 	regmap_field_write(sub_channel->init, 1);
 	regmap_field_write(sub_channel->init, 0);
 
-	KLOG("%s() dma addr %08x\n", __func__, (unsigned) runtime->dma_addr);
+	
 
 	regmap_field_write(sub_channel->addr_hi, miu_addr >> 12);
 	regmap_field_write(sub_channel->addr_lo, miu_addr);
@@ -590,21 +721,30 @@ int mi_cpu_dai_prepare(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		}
 	}
 
-	KLOG("%s() bach_runtime: period_size:%d period_bytes:%d strid:%d max_inflight:%d max_level:%d\n", __func__,
-		runtime->period_size, bach_runtime->period_bytes, stride, bach_runtime->max_inflight, bach_runtime->max_level);
+	
+	
 	return ret;
 }
 
 int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substream, int cmd)
 {
 	UNUSED(dai);
+	if (substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
+	if (bach_runtime == NULL || bach_runtime->sub_channel == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
+	if (sub_channel->dma_channel == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
+	unsigned int addr_hi = 0, addr_lo = 0, size = 0, underrun = 0;
 
-	KLOG(">>>>>>>%s():%d cmd:%s\n", __func__, __LINE__,
-		(cmd == PCM_TRIGER_START ? "START" : "STOP"));
+	
 
 	switch (cmd) {
 	case PCM_TRIGER_START:
@@ -628,15 +768,21 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		 */
 		regmap_field_write(dma_channel->en, 1);
 		delay(1000);
+		
+		
 
 		/* Start playback */
 		regmap_field_write(sub_channel->en, 1);
 		delay(1000);
+		regmap_field_read(sub_channel->addr_hi, &addr_hi);
+		regmap_field_read(sub_channel->addr_lo, &addr_lo);
+		regmap_field_read(sub_channel->size, &size);
+		regmap_field_read(sub_channel->underrunthreshold, &underrun);
+		
+		
 		bach_runtime->running = true;
 		//msc313_bach_queue_pending(bach, substream, bach_runtime);
 
-		/* start polling dma status */
-		tStart = 1;
 		break;
 	case PCM_TRIGER_STOP:
 		regmap_field_write(sub_channel->en, 0);
@@ -646,12 +792,9 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		regmap_field_write(dma_channel->rd_underrun_int_en, 0);
 		regmap_field_write(dma_channel->rd_empty_int_en, 0);
 		bach_runtime->running = false;
-
-		/* stop polling dma status */
-		tStart = 0;
 		break;
 	default:
-		KLOG("%s() Unkown cmd:%d\n", __func__, cmd);
+		
 	}
 
 	return 0;
@@ -660,13 +803,29 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 int mi_cpu_dai_pointer(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
 	UNUSED(dai);
+	if (substream == NULL || substream->runtime == NULL) {
+		return 0;
+	}
+	if (substream->closing) {
+		return 0;
+	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	if (runtime == NULL) {
+		return 0;
+	}
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
+	if (bach_runtime == NULL) {
+		return 0;
+	}
 	struct msc313_bach_dma_sub_channel *sub_channel = bach_runtime->sub_channel;
-	//struct msc313_bach_dma_channel *dma_channel = sub_channel->dma_channel;
-	//ssize_t inflight, done;
+	if (sub_channel == NULL) {
+		return 0;
+	}
 	int pos;
 	int level;
+	ssize_t bytes_in_hw;
+	ssize_t old_processed;
+	ssize_t new_processed;
 
 	/*
 	 * The amount of bytes the channel is currently munching through is the difference
@@ -680,12 +839,38 @@ int mi_cpu_dai_pointer(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 	 * minus current number of bytes the hardware says it still hasn't processed.
 	 */
 	level = msc313_bach_get_level(sub_channel);
-	//done = inflight - FROM_MIUSIZE(level);
+	bytes_in_hw = FROM_MIUSIZE(level);
+	if (bytes_in_hw < 0) {
+		bytes_in_hw = 0;
+	}
+	if (bytes_in_hw > bach_runtime->total_bytes) {
+		bytes_in_hw = bach_runtime->total_bytes;
+	}
 
-	bach_runtime->processed_bytes = bach_runtime->total_bytes - FROM_MIUSIZE(level);
+	old_processed = bach_runtime->processed_bytes;
+	new_processed = bach_runtime->total_bytes - bytes_in_hw;
+	if (new_processed < 0) {
+		new_processed = 0;
+	}
+	/*
+	 * Keep pointer accounting monotonic across timer polls. The hardware level
+	 * can briefly jump when userspace queues more data; letting processed_bytes
+	 * move backwards here makes hw_ptr regress and can stall wait_avail/write.
+	 */
+	if (new_processed < old_processed) {
+		new_processed = old_processed;
+	}
 
-	//TODO
-	pos = bytes_to_frames(runtime, (bach_runtime->processed_bytes) % runtime->dma_bytes);
+	bach_runtime->processed_bytes = new_processed;
+	if (runtime->dma_bytes > 0 && runtime->frame_size > 0) {
+		ssize_t mod = new_processed % (ssize_t)runtime->dma_bytes;
+		if (mod < 0) {
+			mod += (ssize_t)runtime->dma_bytes;
+		}
+		pos = bytes_to_frames(runtime, (int)mod);
+	} else {
+		pos = 0;
+	}
 
 	return pos;
 }
@@ -693,95 +878,38 @@ int mi_cpu_dai_pointer(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 static int msc313_bach_pcm_ack(struct snd_soc_dai *dai,
 			       struct snd_pcm_substream *substream)
 {
+	if (dai == NULL || substream == NULL || substream->runtime == NULL) {
+		return -EBADF;
+	}
+	if (substream->closing) {
+		return 0;
+	}
 	struct msc313_bach *bach = dai->private_data;
 	struct snd_pcm_runtime *runtime = substream->runtime;
+	if (runtime == NULL) {
+		return -EBADF;
+	}
 	struct msc313_bach_substream_runtime *bach_runtime = runtime->private_data;
+	if (bach == NULL || bach_runtime == NULL) {
+		return -EBADF;
+	}
+	if (!bach_runtime->running && bach_runtime->sub_channel == NULL) {
+		return 0;
+	}
 	int new_bytes = 0;
+	int delta_frames = runtime->status.appl_ptr - bach_runtime->last_appl_ptr;
 
-	new_bytes = frame_to_bytes(runtime, runtime->status.appl_ptr - bach_runtime->last_appl_ptr);
+	if (delta_frames <= 0) {
+		bach_runtime->last_appl_ptr = runtime->status.appl_ptr;
+		return 0;
+	}
+	new_bytes = frame_to_bytes(runtime, delta_frames);
 	bach_runtime->last_appl_ptr = runtime->status.appl_ptr;
 	bach_runtime->pending_bytes += new_bytes;
 
 	if (bach_runtime->pending_bytes >= frame_to_bytes(runtime, runtime->period_size)) {
 		runtime->ack_count = 1;
 		msc313_bach_queue_pending(bach, substream, bach_runtime);
-	}
-
-	return 0;
-}
-
-static int msc313_bach_irq(int irq, void *data, int push_pending)
-{
-	UNUSED(irq);
-	UNUSED(push_pending);
-	struct msc313_bach *bach = data;
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(bach->dma_channels); i++) {
-		struct msc313_bach_dma_channel *dma_channel = &bach->dma_channels[i];
-		struct msc313_bach_substream_runtime *bach_runtime;
-		struct snd_pcm_substream *substream;
-		struct snd_pcm_runtime *runtime;
-		unsigned empty, underrun; //overrun, irqflags;
-		int level;
-
-		level = msc313_bach_get_level(&bach->dma_channels[i].reader_writer[0]);
-		/* Handle reader flags */
-		substream = dma_channel->reader_writer[0].substream;
-
-		runtime = substream->runtime;
-		bach_runtime = runtime->private_data;
-		bach_runtime->irqs++;
-
-		if (!bach_runtime->running) {
-			KLOG("%s() WARNING! bach is not RUNING!\n", __func__);
-			return 0;
-		}
-
-		if (level > runtime->period_size / 2) {
-			break;
-		}
-
-		regmap_field_read(bach->dma_channels[i].rd_empty_flag, &empty);
-		regmap_field_read(bach->dma_channels[i].rd_underrun_flag, &underrun);
-
-		if (!underrun || empty) {
-			update_hw_ptr(substream, 1);
-			msc313_bach_queue_pending(bach, substream, bach_runtime);
-			//msc313_bach_pcm_dumpruntime(bach_runtime, 0);
-			return 0;
-		}
-
-		/*
-		 * It looks like the interrupt has to be ack'd by setting clear high
-		 * it then needs to cleared to get it to trigger again.
-		 */
-		regmap_field_write(bach->dma_channels[i].rd_int_clear, 1);
-		regmap_field_write(bach->dma_channels[i].rd_int_clear, 0);
-
-		/*
-		 * Sometimes interrupts happen at odd times before expected.
-		 * Just ignore them.
-		 */
-		if (empty && (level == 0)) {
-			bach_runtime->empties++;
-			regmap_field_write(dma_channel->rd_empty_int_en, 0);
-			bach_runtime->processed_bytes = bach_runtime->total_bytes;
-			msc313_bach_pcm_dumpruntime(bach_runtime, 1);
-			//snd_pcm_stop_xrun(substream); TODO
-			KLOG("%s() WARNING X-Run happen level:%d\n", __func__, level);
-			break;
-		}
-
-		if (underrun && empty == 0) {
-			bach_runtime->underruns++;
-			regmap_field_write(dma_channel->rd_underrun_int_en, 0);
-
-			update_hw_ptr(substream, 1);
-			//hw have consumed half buffer (but alsa not know)
-			msc313_bach_queue_pending(bach, substream, bach_runtime);
-			//msc313_bach_pcm_dumpruntime(bach_runtime, 1);
-		}
 	}
 
 	return 0;
@@ -796,6 +924,7 @@ static struct snd_soc_dai_ops msc313_cpu_dai_ops = {
 	.trigger = mi_cpu_dai_trigger,
 	.pointer = mi_cpu_dai_pointer,
 	.ack =  msc313_bach_pcm_ack,
+	.kick = mi_cpu_dai_kick,
 };
 
 static void msc313_bach_the_horror(struct msc313_bach *bach)
@@ -1242,18 +1371,18 @@ static void msc313_bach_the_horror(struct msc313_bach *bach)
 	regmap_write(bach->bach, 0x5C8, 0x00000000);
 	regmap_write(bach->bach, 0x5CC, 0x00004A4A);
 	regmap_read(bach->bach, 0x5CC, &ret_val);
-	KLOG("%s() bach_off:0x5CC val:%x\n",__func__, ret_val);
+	
 	regmap_read(bach->bach, 0x5CC, &ret_val);
-	KLOG("%s() bach_off:0x5CC val:%x\n",__func__, ret_val);
+	
 	regmap_write(bach->bach, 0x5D0, 0x00004A4A);
 	regmap_write(bach->bach, 0x5D4, 0x00000000);
 	regmap_write(bach->bach, 0x5D8, 0x00000000);
 	regmap_write(bach->bach, 0x5DC, 0x00004949);
 	regmap_read(bach->bach, 0x5DC, &ret_val);
-	KLOG("%s() bach_off:0x5DC val:%x\n",__func__, ret_val);
+	
 	regmap_write(bach->bach, 0x5E0, 0x00004949);
 	regmap_read(bach->bach, 0x5E0, &ret_val);
-	KLOG("%s() bach_off:0x5E0 val:%x\n",__func__, ret_val);
+	
 	regmap_write(bach->bach, 0x5E4, 0x00000000);
 	regmap_write(bach->bach, 0x5E8, 0x00000000);
 	regmap_write(bach->bach, 0x5EC, 0x00000000);
@@ -1270,8 +1399,7 @@ static int io_mmap(struct msc313_bach *bach)
 	bach->clk = _mmio_base + MSC313_BACH_CLK;
 	bach->bach = _mmio_base + MSC313_BACH;
 	bach->audiotop = _mmio_base + MSC313_BACH_TOP;
-	KLOG("%s() _mmio_base:%x bach:%x audiotop:%x clk:%x\n", __func__,
-		_mmio_base, bach->bach, bach->audiotop, bach->clk);
+	
 	return 0;
 }
 
@@ -1284,43 +1412,19 @@ static int enable_clk(unsigned int clk_base)
 
 static int pre_allocate_dma_buffer(struct msc313_bach *bach)
 {
-	//unsigned int vaddr = dma_phy_addr(0, dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE));
-	unsigned int vaddr = (dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE));
-	if (vaddr != 0) {
-		bach->dma_areas = vaddr;
-	} else {
-		KLOG("%s() Error! pre_allocate_dma()\n", __func__);
-		return -1;
+	unsigned int vaddr = dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE);
+	if (vaddr == 0) {
+		
+		bach->dma_areas = 0;
+		return -ENOMEM;
 	}
-	return 0;
-}
-
-static int register_irq_handle(struct msc313_bach *bach)
-{
-	tStart = 0;
-
-	static interrupt_handler_t handler;
-	handler.data = 0;
-	handler.handler = bach_irq_handle;
-	sys_interrupt_setup(IRQ_TIMER0, &handler);
-	/* Enable audio dma irq */
-	//msc313_unmask_irq(42);
-	//msc313_unmask_irq_polarity(42);
-	KLOG("%s() irq_id:%d\n", __func__, IRQ_TIMER0);
-	return 0;
-}
-
-static int unregister_irq_handle(struct msc313_bach *bach)
-{
-	tStart = 0;
-	sys_interrupt_setup(IRQ_TIMER0, NULL);
-	KLOG("%s() irq_id:%d\n", __func__, IRQ_TIMER0);
+	bach->dma_areas = vaddr;
 	return 0;
 }
 
 static int msc313_mem_dai_init(struct snd_soc_dai *dai)
 {
-	KLOG("+%s()\n", __func__);
+	
 	struct msc313_bach *bach;
 	unsigned int i, j;
 	struct reg_field src2_sel_field = REG_FIELD(MSC313_BACH_SR0_SEL, 0, 3);
@@ -1332,14 +1436,23 @@ static int msc313_mem_dai_init(struct snd_soc_dai *dai)
 
 	bach = calloc(1, sizeof(*bach));
 	if(bach == NULL) {
-		KLOG("%s() ERROR, No memory!\n", __func__);
+		
 		return -ENOMEM;
 	}
 
 	io_mmap(bach);
 	enable_clk(bach->clk);
 	/* pre allocated dma memory */
-	pre_allocate_dma_buffer(bach);
+	if (pre_allocate_dma_buffer(bach) != 0) {
+		/*
+		 * Without a usable DMA area, allocating regmap_fields is
+		 * pointless: every later hw_params would feed an address
+		 * of 0 into the DMA engine. Bail out so audctrl can fail
+		 * fast instead of going through a half-initialised bach.
+		 */
+		free(bach);
+		return -ENOMEM;
+	}
 
 	bach->src1_sel = regmap_field_alloc(bach->bach, src1_sel_field);
 	bach->src2_sel = regmap_field_alloc(bach->bach, src2_sel_field);
@@ -1460,7 +1573,7 @@ static int msc313_mem_dai_init(struct snd_soc_dai *dai)
 
 	msc313_bach_the_horror(bach);
 
-	KLOG("-%s() line:%d\n", __func__, __LINE__);
+	
 	return 0;
 }
 

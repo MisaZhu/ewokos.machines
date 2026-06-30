@@ -32,6 +32,9 @@
 @/bin/splash -m "start /dev/null" -p 50
 @/bin/ipcserv /drivers/nulld           /dev/null
 
+@/bin/splash -m "start /dev/sound0" -p 55
+@/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
+
 @/bin/splash -m "start /dev/wl0" -p 60
 @/bin/ipcserv /drivers/raspix/wland          /dev/wl0
 
@@ -40,6 +43,9 @@
 
 @/bin/splash -m "start /dev/time" -p 80
 @/bin/ipcserv /drivers/timed    /dev/time
+
+@/bin/splash -m "start telnetd" -p 83
+@/bin/bgrun /sbin/telnetd
 
 @/bin/splash -m "start /dev/bt0" -p 85
 @/bin/ipcserv /drivers/raspix/btd    /dev/bt0

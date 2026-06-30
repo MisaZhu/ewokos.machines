@@ -4,9 +4,10 @@
 #include <fcntl.h>
 #include <string.h>
 #include <fbd/fbd.h>
+#include <st77xx/st77xx.h>
 
-static uint32_t LCD_HEIGHT = 240;
-static uint32_t LCD_WIDTH = 240;
+static uint32_t SCREEN_HEIGHT = 240;
+static uint32_t SCREEN_WIDTH = 240;
 
 
 int  do_flush(const void* buf, uint32_t size);
@@ -22,8 +23,8 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 static fbinfo_t* get_info(void) {
 	static fbinfo_t fbinfo;
 	memset(&fbinfo, 0, sizeof(fbinfo_t));
-	fbinfo.width = LCD_WIDTH;
-	fbinfo.height = LCD_HEIGHT;
+	fbinfo.width = SCREEN_WIDTH;
+	fbinfo.height = SCREEN_HEIGHT;
 	fbinfo.depth = 32;
 	return &fbinfo;
 }
@@ -62,8 +63,8 @@ static int doargs(int argc, char* argv[]) {
 int main(int argc, char** argv) {
 	_spi_div = 8;
 	uint32_t w=240, h=240;
-	LCD_HEIGHT = h;
-	LCD_WIDTH = w;
+	SCREEN_HEIGHT = h;
+	SCREEN_WIDTH = w;
 
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
@@ -76,6 +77,6 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file);
+	int ret = fbd_run(&fbd, mnt_point, SCREEN_WIDTH, SCREEN_HEIGHT, _conf_file);
 	return ret;
 }

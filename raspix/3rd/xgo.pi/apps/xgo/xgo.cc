@@ -59,7 +59,7 @@ protected:
 		if(bt < 0)
 			return;
 
-		graph_fill(g, r.x, r.y, r.w, r.h, 0xff000000);
+		graph_fill_rect(g, r.x, r.y, r.w, r.h, 0xff000000);
 		graph_t* img = NULL;
 
 		if(expressLoaded) {

@@ -6,6 +6,7 @@
 #include <ewoksys/proc.h>
 #include <ewoksys/proto.h>
 #include <ewoksys/vfs.h>
+#include <sysinfo.h>
 #include <sys/time.h>
 #include <string.h>
 #include <stdlib.h>
@@ -23,10 +24,11 @@
 #define CTRL_PCM_DEV_PRPARE 0xF2
 #define CTRL_PCM_BUF_AVAIL 0xF3
 
-#define PWM_BASE        (_mmio_base + 0x20C000)
 #define CLOCK_BASE      (_mmio_base + 0x101000)
-#define PWM_BUS_BASE    0x7E20C000u
-#define PWM_FIFO_BUS_ADDR (PWM_BUS_BASE + 0x18u)
+#define PWM_BASE_OFF_BCM283X 0x20C000u
+#define PWM_BASE_OFF_BCM2711 0x20C800u
+#define PWM_FIFO_BUS_ADDR_BCM283X (0x7E20C000u + 0x18u)
+#define PWM_FIFO_BUS_ADDR_BCM2711 (0x7E20C800u + 0x18u)
 #define DMA_VC_ALIAS_UNCACHED 0xC0000000u
 #define DMA_BUS_ADDR_MASK 0x3FFFFFFFu
 
@@ -71,7 +73,8 @@
 #define DMA_DEST_DREQ 0x40
 #define DMA_SRC_INC   0x100
 
-#define DMA_PERMAP_PWM  (DMA_CHANNEL << 16)
+#define DMA_PERMAP_PWM_BCM283X  (5U << 16)
+#define DMA_PERMAP_PWM_BCM2711  (1U << 16)
 
 #define DMA_BUF_SIZE  (1024*4)
 #define DMA_SAMPLE_CAPACITY (DMA_BUF_SIZE / sizeof(uint32_t))
@@ -81,14 +84,20 @@
 #define DMA_CHAIN_START_SLOTS 6U
 #define DMA_CHAIN_REBUFFER_START_SLOTS 10U
 #define PWM_OUTPUT_CHANNELS 2U
-#define PWM_BASE_CLOCK_HZ 100000000U
-#define PWM_CLOCK_SOURCE_SELECT 6U
-#define PWM_CLOCK_DIV_INT 5U
-#define PWM_CLOCK_DIV_FRAC 0U
+#define PWM_CLOCK_SOURCE_OSC 1U
+#define PWM_CLOCK_SOURCE_PLLD 6U
+#define PWM_CLOCK_HZ_BCM283X 100000000U
+#define PWM_CLOCK_HZ_BCM2711 27000000U
+#define PWM_CLOCK_DIV_INT_BCM283X 5U
+#define PWM_CLOCK_DIV_FRAC_BCM283X 0U
+#define PWM_CLOCK_DIV_INT_BCM2711 2U
+#define PWM_CLOCK_DIV_FRAC_BCM2711 0U
 #define SOUND_FEED_KICK_SLEEP_US 500U
-#define SOUND_FEED_IDLE_SLEEP_US 4000U
+#define SOUND_FEED_IDLE_SLEEP_US 1000U
 #define SOUND_FEED_DEEP_IDLE_SLEEP_US 20000U
 #define SOUND_FEED_GUARD_US 2000U
+#define SOUND_DMA_START_TARGET_US 160000U
+#define SOUND_DMA_REBUFFER_TARGET_US 224000U
 #define SOUND_PCM_RING_MIN_BYTES (128U * 1024U)
 #define SOUND_PCM_RING_MAX_BYTES (512U * 1024U)
 #define SOUND_PCM_RING_BUFFER_MULTIPLIER 8U
@@ -156,6 +165,10 @@ typedef struct {
 	uint32_t diag_last_log_usec;
 	uint32_t dma_watchdog_count;
 	uint32_t rebuffer_restart_count;
+	uint32_t feeder_last_loop_usec;
+	uint32_t feeder_delay_count;
+	uint32_t feeder_delay_max_usec;
+	uint32_t ring_starve_count;
 	bool need_rebuffer;
 	bool configured;
 	bool prepared;
@@ -171,6 +184,15 @@ static pthread_mutex_t _snd_lock;
 static pthread_t _snd_feeder_tid;
 static bool _snd_feeder_started = false;
 static vdevice_t* _snd_dev = NULL;
+static sys_info_t _sys_info;
+static uintptr_t _snd_pwm_base = 0;
+static uint32_t _snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
+static uint32_t _snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
+static uint32_t _snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM283X;
+static uint32_t _snd_pwm_clock_source = PWM_CLOCK_SOURCE_PLLD;
+static uint32_t _snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
+static uint32_t _snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM283X;
+static bool _snd_pi4_pwm = false;
 
 static int audio_stop(void);
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec);
@@ -184,6 +206,72 @@ static void* sound_feeder_thread(void* arg);
 
 static uint32_t audio_output_words_per_frame(void) {
 	return PWM_OUTPUT_CHANNELS;
+}
+
+static volatile uint32_t* audio_pwm_regs(void) {
+	return (volatile uint32_t*)(uintptr_t)_snd_pwm_base;
+}
+
+static uint32_t audio_pwm_fifo_bus_addr(void) {
+	return _snd_pwm_fifo_bus_addr;
+}
+
+static uint32_t audio_dma_permap(void) {
+	return _snd_dma_permap;
+}
+
+/* debug-point pi4-no-sound-reg-dump: begin */
+static void audio_log_hw_regs(const char* tag) {
+	volatile uint32_t* pwm = audio_pwm_regs();
+	volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
+	volatile uint32_t* dma = (uint32_t*)(uintptr_t)DMA_BASE;
+	volatile uint32_t* dmae = (uint32_t*)(uintptr_t)DMA_ENABLE;
+
+	slog("sound: %s pwm_ctl=%x pwm_sta=%x pwm_dmac=%x rng1=%x rng2=%x clk_ctl=%x clk_div=%x dma_cs=%x dma_cb=%x dmae=%x\n",
+			tag,
+			*(pwm + BCM283x_PWM_CONTROL),
+			*(pwm + BCM283x_PWM_STATUS),
+			*(pwm + BCM283x_PWM_DMAC),
+			*(pwm + BCM283x_PWM_RANGE1),
+			*(pwm + BCM283x_PWM_RANGE2),
+			*(clk + BCM283x_PWMCLK_CNTL),
+			*(clk + BCM283x_PWMCLK_DIV),
+			*(dma + DMA_CS),
+			*(dma + DMA_CONBLK_AD),
+			*dmae);
+}
+/* debug-point pi4-no-sound-reg-dump: end */
+
+static void audio_detect_hw_config(void) {
+	_snd_pi4_pwm = _sys_info.mmio.phy_base == 0xfe000000u;
+	if (_snd_pi4_pwm) {
+		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM2711;
+		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM2711;
+		_snd_dma_permap = DMA_PERMAP_PWM_BCM2711;
+		/*
+		 * BCM2711 analog PWM audio uses PWM1/DREQ1, and using the Pi3-style
+		 * PLLD/5 assumptions makes playback run noticeably fast on Pi4.
+		 * Keep Pi4 on the working OSC/2 path and compute range from 27MHz.
+		 */
+		_snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM2711;
+		_snd_pwm_clock_source = PWM_CLOCK_SOURCE_OSC;
+		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM2711;
+		_snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM2711;
+	}
+	else {
+		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM283X;
+		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
+		_snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
+		_snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM283X;
+		_snd_pwm_clock_source = PWM_CLOCK_SOURCE_PLLD;
+		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
+		_snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM283X;
+	}
+	slog("sound: machine=%s mmio=%x pwm=%x fifo=%x permap=%x clk=%u src=%u div=%u.%u pi4=%d\n",
+			_sys_info.machine, _sys_info.mmio.phy_base, (uint32_t)_snd_pwm_base,
+			_snd_pwm_fifo_bus_addr, _snd_dma_permap, _snd_pwm_clock_hz,
+			_snd_pwm_clock_source, _snd_pwm_clock_div_int, _snd_pwm_clock_div_frac,
+			_snd_pi4_pwm ? 1 : 0);
 }
 
 static uint32_t audio_pwm_control_flags(void) {
@@ -332,6 +420,18 @@ static uint32_t audio_queue_avail_bytes(void) {
 	return audio_queue_avail_frames() * _snd.frame_bytes;
 }
 
+static uint32_t audio_words_to_usec(uint32_t words) {
+	if (_snd.pcm_cfg.rate <= 0 || words == 0) {
+		return 0;
+	}
+	return (uint32_t)(((uint64_t)words * 1000000ULL) /
+			((uint64_t)_snd.pcm_cfg.rate * (uint64_t)audio_output_words_per_frame()));
+}
+
+static uint32_t audio_slot_duration_usec(void) {
+	return audio_words_to_usec(DMA_SAMPLE_CAPACITY);
+}
+
 static bool sound_has_pending_work(void) {
 	return _snd.dma_running ||
 			audio_queue_pending_words() > 0 ||
@@ -441,27 +541,39 @@ static uint32_t audio_queue_streaming_words_threshold(void) {
 }
 
 static uint32_t audio_queue_start_slot_limit(void) {
-	uint32_t start_limit;
+	uint32_t min_slots;
+	uint32_t target_usec;
+	uint32_t slot_usec;
+	uint32_t target_slots;
 
 	if (_snd.need_rebuffer) {
-		if (DMA_CHAIN_REBUFFER_START_SLOTS == 0 ||
-				DMA_CHAIN_REBUFFER_START_SLOTS > DMA_BUFFER_SLOTS) {
-			return DMA_BUFFER_SLOTS;
-		}
-		return DMA_CHAIN_REBUFFER_START_SLOTS;
-	}
-	if (DMA_CHAIN_START_SLOTS == 0 || DMA_CHAIN_START_SLOTS > DMA_BUFFER_SLOTS) {
-		start_limit = DMA_BUFFER_SLOTS;
+		min_slots = DMA_CHAIN_REBUFFER_START_SLOTS;
+		target_usec = SOUND_DMA_REBUFFER_TARGET_US;
 	}
 	else {
-		start_limit = DMA_CHAIN_START_SLOTS;
+		min_slots = DMA_CHAIN_START_SLOTS;
+		target_usec = SOUND_DMA_START_TARGET_US;
 	}
-	if (_snd.ready_count >= start_limit &&
-			DMA_CHAIN_REBUFFER_START_SLOTS > start_limit &&
-			DMA_CHAIN_REBUFFER_START_SLOTS <= DMA_BUFFER_SLOTS) {
-		return DMA_CHAIN_REBUFFER_START_SLOTS;
+
+	if (min_slots == 0) {
+		min_slots = 1U;
 	}
-	return start_limit;
+	if (min_slots > DMA_BUFFER_SLOTS) {
+		min_slots = DMA_BUFFER_SLOTS;
+	}
+
+	slot_usec = audio_slot_duration_usec();
+	target_slots = min_slots;
+	if (slot_usec != 0 && target_usec > 0) {
+		uint32_t computed_slots = (target_usec + slot_usec - 1U) / slot_usec;
+		if (computed_slots > target_slots) {
+			target_slots = computed_slots;
+		}
+	}
+	if (target_slots > DMA_BUFFER_SLOTS) {
+		target_slots = DMA_BUFFER_SLOTS;
+	}
+	return target_slots;
 }
 
 static uint32_t audio_dma_samples_usec(uint32_t samples) {
@@ -495,7 +607,7 @@ static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bu
 		return;
 	}
 	_snd.diag_last_log_usec = now_usec;
-	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u running=%d need_rebuffer=%d watchdog=%u rebuffer=%u\n",
+	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u ring=%u running=%d need_rebuffer=%d watchdog=%u rebuffer=%u feeder_delay=%u feeder_delay_max=%u ring_starve=%u\n",
 			reason,
 			cb_bus,
 			_snd.active_count,
@@ -503,10 +615,14 @@ static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bu
 			_snd.fill_slot,
 			audio_queue_pending_words(),
 			audio_queue_avail_bytes(),
+			audio_pcm_ring_pending_bytes(),
 			_snd.dma_running ? 1 : 0,
 			_snd.need_rebuffer ? 1 : 0,
 			_snd.dma_watchdog_count,
-			_snd.rebuffer_restart_count);
+			_snd.rebuffer_restart_count,
+			_snd.feeder_delay_count,
+			_snd.feeder_delay_max_usec,
+			_snd.ring_starve_count);
 }
 
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec) {
@@ -550,7 +666,7 @@ static uint32_t audio_rate_to_pwm_range(int rate) {
 		return 0;
 	}
 
-	range = ((uint64_t)PWM_BASE_CLOCK_HZ + ((uint64_t)rate / 2ULL)) / (uint64_t)rate;
+	range = ((uint64_t)_snd_pwm_clock_hz + ((uint64_t)rate / 2ULL)) / (uint64_t)rate;
 	if (range < 2ULL) {
 		range = 2ULL;
 	}
@@ -601,6 +717,10 @@ static uint32_t audio_sample_to_pwm_word(int32_t sample) {
 static uint32_t audio_s16_to_pwm_word(int16_t sample) {
 	uint32_t shifted = (uint32_t)((int32_t)sample + 32768);
 	return (shifted * _snd.pwm_scale) >> 16;
+}
+
+static uint32_t audio_silence_pwm_word(void) {
+	return audio_s16_to_pwm_word(0);
 }
 
 static void audio_convert_s16_stereo_frames(const uint8_t* src, uint32_t* dst, uint32_t frames) {
@@ -699,11 +819,28 @@ static bool audio_queue_finalize_fill_slot(void) {
 
 static bool audio_queue_force_finalize_fill_slot(void) {
 	uint32_t slot = _snd.fill_slot;
+	uint32_t silence;
+	uint32_t* dst;
+	uint32_t remain;
 
 	if (slot >= DMA_BUFFER_SLOTS ||
 			_snd.slot_state[slot] != DMA_SLOT_FILLING ||
 			_snd.slot_words[slot] == 0) {
 		return false;
+	}
+
+	/*
+	 * On starvation recovery, restarting DMA with a tiny residual fragment causes
+	 * much harsher audible pops than padding the tail with silence.
+	 */
+	if (_snd.slot_words[slot] < DMA_SAMPLE_CAPACITY) {
+		silence = audio_silence_pwm_word();
+		dst = _snd.dma_slots[slot] + _snd.slot_words[slot];
+		remain = DMA_SAMPLE_CAPACITY - _snd.slot_words[slot];
+		for (uint32_t i = 0; i < remain; ++i) {
+			dst[i] = silence;
+		}
+		_snd.slot_words[slot] = DMA_SAMPLE_CAPACITY;
 	}
 	return audio_queue_finalize_fill_slot();
 }
@@ -763,7 +900,7 @@ static uint32_t audio_queue_push_pcm(const uint8_t* buf, int size) {
 }
 
 static void audio_set_pwm_range(uint32_t range) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 
 	*(pwm + BCM283x_PWM_RANGE1) = range;
 	*(pwm + BCM283x_PWM_RANGE2) = range;
@@ -925,7 +1062,7 @@ static uint32_t audio_queue_append_ready_chain(uint32_t now_usec) {
 			continue;
 		}
 		cb->source_ad = (uint32_t)_snd.dma_slot_phys[slot] | DMA_VC_ALIAS_UNCACHED;
-		cb->dest_ad = PWM_FIFO_BUS_ADDR;
+		cb->dest_ad = audio_pwm_fifo_bus_addr();
 		cb->txfr_len = _snd.slot_words[slot] * sizeof(uint32_t);
 		cb->stride = 0x00;
 		cb->nextconbk = 0x00;
@@ -969,7 +1106,7 @@ static bool audio_queue_prepare_dma_chain(uint32_t now_usec, uint32_t* head_slot
 			continue;
 		}
 		cb->source_ad = (uint32_t)_snd.dma_slot_phys[slot] | DMA_VC_ALIAS_UNCACHED;
-		cb->dest_ad = PWM_FIFO_BUS_ADDR;
+		cb->dest_ad = audio_pwm_fifo_bus_addr();
 		cb->txfr_len = _snd.slot_words[slot] * sizeof(uint32_t);
 		cb->stride = 0x00;
 		cb->nextconbk = 0x00;
@@ -996,7 +1133,7 @@ static bool audio_queue_prepare_dma_chain(uint32_t now_usec, uint32_t* head_slot
 }
 
 static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_rebuffer_start) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
 	volatile uint32_t *dmae = (uint32_t *)(uintptr_t)DMA_ENABLE;
 	uint32_t dma_enable_bits;
@@ -1017,6 +1154,9 @@ static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_reb
 	_snd.dma_started_usec = audio_now_usec();
 	_snd.dma_expected_usec = audio_dma_watchdog_usec(samples);
 	_snd.dma_running = true;
+	slog("sound: dma start slot=%u samples=%u cb=%x pwm_fifo=%x\n",
+			slot, samples, cb_bus, audio_pwm_fifo_bus_addr());
+	audio_log_hw_regs("after-dma-start");
 	if (is_rebuffer_start) {
 		_snd.rebuffer_restart_count++;
 		audio_log_diag("rebuffer start", _snd.dma_started_usec, cb_bus);
@@ -1028,6 +1168,9 @@ static bool audio_force_recover_stall(uint32_t now_usec) {
 	uint32_t slot = DMA_SLOT_INVALID;
 	uint32_t samples = 0;
 	bool rebuffer_start;
+	uint32_t pending_words;
+	uint32_t ring_words = 0;
+	uint32_t total_pending_words;
 
 	if (_snd.dma_running) {
 		if (!audio_dma_active() ||
@@ -1048,6 +1191,20 @@ static bool audio_force_recover_stall(uint32_t now_usec) {
 		return false;
 	}
 
+	pending_words = audio_queue_pending_words();
+	if (_snd.frame_bytes != 0) {
+		ring_words = (audio_pcm_ring_pending_bytes() / _snd.frame_bytes) *
+				audio_output_words_per_frame();
+	}
+	total_pending_words = pending_words + ring_words;
+	if (ring_words != 0 &&
+			total_pending_words < audio_queue_rebuffer_words_threshold()) {
+		_snd.need_rebuffer = true;
+		audio_log_diag("defer restart low total fill", now_usec,
+				audio_dma_current_cb_bus());
+		return false;
+	}
+
 	if (audio_queue_force_finalize_fill_slot()) {
 		audio_log_diag("force finalize fill", now_usec, audio_dma_current_cb_bus());
 	}
@@ -1058,6 +1215,13 @@ static bool audio_force_recover_stall(uint32_t now_usec) {
 
 	rebuffer_start = _snd.need_rebuffer;
 	_snd.need_rebuffer = false;
+	pending_words = audio_queue_pending_words();
+	if (audio_pcm_ring_pending_bytes() == 0 &&
+			pending_words < audio_queue_rebuffer_words_threshold()) {
+		_snd.need_rebuffer = true;
+		audio_log_diag("defer restart low fill", now_usec, audio_dma_current_cb_bus());
+		return false;
+	}
 	if (!audio_queue_prepare_dma_chain(now_usec, &slot, &samples) || samples == 0) {
 		_snd.need_rebuffer = rebuffer_start;
 		return false;
@@ -1178,7 +1342,7 @@ static void audio_deinit(void) {
 }
 
 static int audio_init_pcm(const struct pcm_config *cfg) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 	uint8_t* dma_base;
 	uint32_t ring_bytes;
 
@@ -1188,6 +1352,10 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 	_snd.pwm_scale = (_snd.pwm_range > 0) ? (_snd.pwm_range - 1U) : 0;
 	audio_set_pwm_range(_snd.pwm_range);
 	*(pwm + BCM283x_PWM_CONTROL) = audio_pwm_control_flags();
+	slog("sound: hw_params rate=%d channels=%d bits=%d range=%u scale=%u frame=%u period=%u buffer=%u fifo=%x\n",
+			cfg->rate, cfg->channels, cfg->bit_depth, _snd.pwm_range, _snd.pwm_scale,
+			_snd.frame_bytes, _snd.period_bytes, _snd.buffer_bytes, audio_pwm_fifo_bus_addr());
+	audio_log_hw_regs("after-hw-params");
 
 	_snd.dma_cbs_addr = dma_alloc(0, sizeof(dma_cb_t) * DMA_BUFFER_SLOTS);
 	_snd.dma_cbs = (dma_cb_t*)(uintptr_t)_snd.dma_cbs_addr;
@@ -1216,9 +1384,9 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 
 	_snd.dma_cbs_phy = dma_phy_addr(0, _snd.dma_cbs_addr);
 	for (uint32_t i = 0; i < DMA_BUFFER_SLOTS; i++) {
-		_snd.dma_cbs[i].ti = DMA_DEST_DREQ + DMA_PERMAP_PWM + DMA_SRC_INC;
+		_snd.dma_cbs[i].ti = DMA_DEST_DREQ + audio_dma_permap() + DMA_SRC_INC;
 		_snd.dma_cbs[i].source_ad = (uint32_t)_snd.dma_slot_phys[i] | DMA_VC_ALIAS_UNCACHED;
-		_snd.dma_cbs[i].dest_ad = PWM_FIFO_BUS_ADDR;
+		_snd.dma_cbs[i].dest_ad = audio_pwm_fifo_bus_addr();
 		_snd.dma_cbs[i].txfr_len = 0x00;
 		_snd.dma_cbs[i].stride = 0x00;
 		_snd.dma_cbs[i].nextconbk = 0x00;
@@ -1298,7 +1466,7 @@ static int audio_prepare(void) {
 }
 
 static int audio_start(void) {
-	volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+	volatile uint32_t *pwm = audio_pwm_regs();
 
 	if (!_snd.prepared) {
 		return -1;
@@ -1317,7 +1485,7 @@ static int audio_start(void) {
 
 static int audio_stop(void) {
 	if (_snd.started) {
-		volatile uint32_t *pwm = (uint32_t *)(uintptr_t)PWM_BASE;
+		volatile uint32_t *pwm = audio_pwm_regs();
 		volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
 		volatile uint32_t *dmae = (uint32_t *)(uintptr_t)DMA_ENABLE;
 		uint32_t dma_enable_bits;
@@ -1576,6 +1744,18 @@ static bool audio_feed_pcm_ring_locked(void) {
 		audio_pcm_ring_consume_bytes(pushed_frames * _snd.frame_bytes);
 		consumed = true;
 	}
+
+	/* debug-point raspix-audio-noise-ring-starve: begin */
+	if (_snd.started &&
+			_snd.dma_running &&
+			!consumed &&
+			_snd.frame_bytes != 0 &&
+			audio_pcm_ring_pending_bytes() < _snd.frame_bytes &&
+			audio_queue_pending_words() <= DMA_SAMPLE_CAPACITY) {
+		_snd.ring_starve_count++;
+		audio_log_diag("ring starved", audio_now_usec(), audio_dma_current_cb_bus());
+	}
+	/* debug-point raspix-audio-noise-ring-starve: end */
 	return consumed;
 }
 
@@ -1598,6 +1778,20 @@ static void* sound_feeder_thread(void* arg) {
 		}
 
 		now_usec = audio_now_usec();
+		/* debug-point raspix-audio-noise-feeder-jitter: begin */
+		if (_snd.feeder_last_loop_usec != 0 &&
+				sound_has_pending_work()) {
+			uint32_t loop_gap_usec = audio_elapsed_usec(_snd.feeder_last_loop_usec, now_usec);
+			if (loop_gap_usec > (SOUND_FEED_IDLE_SLEEP_US + SOUND_FEED_GUARD_US)) {
+				_snd.feeder_delay_count++;
+				if (loop_gap_usec > _snd.feeder_delay_max_usec) {
+					_snd.feeder_delay_max_usec = loop_gap_usec;
+				}
+				audio_log_diag("feeder delayed", now_usec, audio_dma_current_cb_bus());
+			}
+		}
+		_snd.feeder_last_loop_usec = now_usec;
+		/* debug-point raspix-audio-noise-feeder-jitter: end */
 		wake_writer = audio_feed_pcm_ring_locked();
 		audio_service_locked(now_usec, &wake_writer, &start_dma, &rebuffer_start,
 				&slot, &samples);
@@ -1627,15 +1821,19 @@ static void audio_hw_init(void) {
 	proc_usleep(2000);
 
 	*(clk + BCM283x_PWMCLK_DIV)  = PM_PASSWORD |
-			(PWM_CLOCK_DIV_INT << 12) | PWM_CLOCK_DIV_FRAC;
-	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | PWM_CLOCK_SOURCE_SELECT;
+			(_snd_pwm_clock_div_int << 12) | _snd_pwm_clock_div_frac;
+	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | _snd_pwm_clock_source;
 	proc_usleep(2000);
+	audio_log_hw_regs("after-hw-init");
 }
 
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1] : "/dev/sound0";
 
 	_mmio_base = mmio_map();
+	memset(&_sys_info, 0, sizeof(_sys_info));
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&_sys_info);
+	audio_detect_hw_config();
 	bcm283x_gpio_init();
 	audio_hw_init();
 	pthread_mutex_init(&_snd_lock, NULL);

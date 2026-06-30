@@ -4,14 +4,10 @@ EWOKOS_ROOT_DIR = $(ewokos)
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
 INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
-MACHINE_BUILD_DIR = build
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
 all: x_sys
 	@echo "all done."
-#	rm -fr $(MACHINE_BUILD_DIR)
-	mkdir -p $(MACHINE_BUILD_DIR)
-	cp -r $(TARGET_DIR)/* $(MACHINE_BUILD_DIR)
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
@@ -36,4 +32,3 @@ clean:
 	cd $(SYS_ROOT_DIR)/basic;$(MAKE) clean
 	cd $(EWOKOS_ROOT_DIR)/sw.extra/; $(MAKE) HW=$(HW) clean
 	rm -fr $(BUILD_DIR)
-	rm -fr $(MACHINE_BUILD_DIR)

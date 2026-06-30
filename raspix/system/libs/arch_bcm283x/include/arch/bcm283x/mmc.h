@@ -803,7 +803,8 @@ struct mmc_config {
 
 struct bus_ops{
 	int (*set_ios)(struct mmc *mmc);
-	int (*send_command)(struct mmc_cmd *cmd, struct mmc_data *data)
+	int (*send_command)(struct mmc_cmd *cmd, struct mmc_data *data);
+	bool auto_stop;
 };
 
 struct mmc{

@@ -14,10 +14,12 @@
 @/bin/ipcserv /drivers/miyoo/gpio_joystickd     /dev/joystick
 @/bin/ipcserv /drivers/vkeybd                   /dev/vkeyb /dev/joystick -t j
 @/bin/ipcserv /drivers/vjoystickd               /dev/vjoystick /dev/vkeyb -m
-#@/bin/ipcserv /drivers/miyoo/audctrl            /dev/sound
 
 @/bin/splash -m "loading timer" -p 20
 @/bin/ipcserv /drivers/timerd         
+
+@/bin/splash -m "start /dev/sound0" -p 25
+@/bin/ipcserv /drivers/miyoo/audctrl             /dev/sound0
 
 @/bin/splash -m "loading null" -p 30
 @/bin/ipcserv /drivers/nulld          /dev/null
@@ -35,9 +37,9 @@
 @/bin/splash -m "loading X input" -p 80
 @/bin/bgrun /sbin/x/xim_none   /dev/vjoystick 
 @/bin/bgrun /sbin/x/xmouse    /dev/vjoystick 
+@/bin/bgrun /sbin/x/xim_vkey -h 120
 
 @/bin/splash -m "starting X" -p 100
 @/bin/ipcserv /drivers/xserverd       /dev/x
-@/bin/bgrun /sbin/x/xim_vkey -h 120
 
 @/bin/bgrun /bin/x/xsession misa 

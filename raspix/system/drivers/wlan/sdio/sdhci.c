@@ -295,7 +295,8 @@ static int bcm283x_is_pi4_family(void)
 	memset(&sysinfo, 0, sizeof(sysinfo));
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 	return strstr(sysinfo.machine, "pi4") != NULL ||
-		strstr(sysinfo.machine, "cm4") != NULL;
+		strstr(sysinfo.machine, "cm4") != NULL ||
+		strstr(sysinfo.machine, "pi5") != NULL;
 }
 
 static void bcm283x_sdhci_gpio_init(void){

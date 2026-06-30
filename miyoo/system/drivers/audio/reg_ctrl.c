@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <ewoksys/klog.h>
+#include <errno.h>
 #include "reg_ctrl.h"
 
 #define READ_REGI(a)		(*(volatile unsigned int *)(a))
@@ -15,7 +15,7 @@ struct reg_field *regmap_field_alloc(unsigned int base, struct reg_field reg_fie
 {
 	struct reg_field * filed = calloc(1, sizeof(struct reg_field));
 	if (filed == NULL) {
-		klog("%s() Error! no memory!\n", __func__);
+		
 		return NULL;
 	}
 
@@ -35,7 +35,12 @@ void regmap_field_free(struct reg_field *field)
 
 int regmap_field_read(struct reg_field *field, unsigned int *val)
 {
-	unsigned int reg_val = READ_REGI(field->reg);
+	unsigned int reg_val;
+
+	if (field == NULL || val == NULL) {
+		return -EINVAL;
+	}
+	reg_val = READ_REGI(field->reg);
 	reg_val &= field->mask;
 	reg_val >>=field->shift;
 	*val = reg_val;
@@ -44,8 +49,14 @@ int regmap_field_read(struct reg_field *field, unsigned int *val)
 
 int regmap_field_write(struct reg_field *field, unsigned int val)
 {
-	unsigned reg_val = READ_REGI(field->reg);
-	unsigned int set_val = ((reg_val & ~(field->mask)) | ((val << field->shift) & field->mask));
+	unsigned reg_val;
+	unsigned int set_val;
+
+	if (field == NULL) {
+		return -EINVAL;
+	}
+	reg_val = READ_REGI(field->reg);
+	set_val = ((reg_val & ~(field->mask)) | ((val << field->shift) & field->mask));
 	WRITE_REGI(field->reg, set_val);
 	return 0;
 }
