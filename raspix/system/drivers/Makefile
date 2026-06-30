@@ -1,33 +1,33 @@
 basic:
-	cd uartd; make
-	cd soundd; make
-	cd soundpwmd; make
-	cd usbhostd; make
-	cd hid_keybd; make
-	cd hid_joystickd; make
-	cd spi2uart; make
+	cd uartd; $(MAKE)
+	cd soundd; $(MAKE)
+	cd soundpwmd; $(MAKE)
+	cd usbhostd; $(MAKE)
+	cd hid_keybd; $(MAKE)
+	cd hid_joystickd; $(MAKE)
+	cd spi2uart; $(MAKE)
 
 gui:
-	cd fbd; make
-	cd dsi_fbd; make
-	cd hid_moused; make
-	cd hid_touchd; make
+	cd fbd; $(MAKE)
+	cd dsi_fbd; $(MAKE)
+	cd hid_moused; $(MAKE)
+	cd hid_touchd; $(MAKE)
 
 network:
-	cd wlan; make
-	cd btd; make
+	cd wlan; $(MAKE)
+	cd btd; $(MAKE)
 
 clean:	
-	cd uartd; make clean
-	cd fbd; make clean
-	cd dsi_fbd; make clean
-	cd soundd; make clean
-	cd soundpwmd; make clean
-	cd usbhostd; make clean
-	cd hid_keybd; make clean
-	cd hid_moused; make clean
-	cd hid_touchd; make clean
-	cd hid_joystickd; make clean
-	cd spi2uart; make clean
-	cd wlan; make clean
-	cd btd; make clean
+	cd uartd; $(MAKE) clean
+	cd fbd; $(MAKE) clean
+	cd dsi_fbd; $(MAKE) clean
+	cd soundd; $(MAKE) clean
+	cd soundpwmd; $(MAKE) clean
+	cd usbhostd; $(MAKE) clean
+	cd hid_keybd; $(MAKE) clean
+	cd hid_moused; $(MAKE) clean
+	cd hid_touchd; $(MAKE) clean
+	cd hid_joystickd; $(MAKE) clean
+	cd spi2uart; $(MAKE) clean
+	cd wlan; $(MAKE) clean
+	cd btd; $(MAKE) clean

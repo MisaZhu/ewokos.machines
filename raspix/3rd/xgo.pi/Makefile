@@ -2,16 +2,16 @@ export MF=xgo
 
 all: 
 	mkdir -p build 
-	cd lib; make
-	cd drivers/spilcdd; make
-	cd drivers/buttond; make
-	cd drivers/soundd; make
-	cd apps/xgo; make
+	cd lib; $(MAKE)
+	cd drivers/spilcdd; $(MAKE)
+	cd drivers/buttond; $(MAKE)
+	cd drivers/soundd; $(MAKE)
+	cd apps/xgo; $(MAKE)
 	cp -r etc build 
 
 clean:	
-	cd drivers/spilcdd; make clean
-	cd drivers/buttond; make clean
-	cd drivers/soundd; make clean
-	cd lib; make clean
-	cd apps/xgo; make clean
+	cd drivers/spilcdd; $(MAKE) clean
+	cd drivers/buttond; $(MAKE) clean
+	cd drivers/soundd; $(MAKE) clean
+	cd lib; $(MAKE) clean
+	cd apps/xgo; $(MAKE) clean
