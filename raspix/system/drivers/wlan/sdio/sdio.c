@@ -8,6 +8,20 @@
 
 static unsigned int MMC_BLOCK_SIZE[8] = {0};
 
+static unsigned int sdio_max_blocks_per_cmd(int fn)
+{
+	/*
+	 * Function 1 backplane RAM accesses are the most timing-sensitive path
+	 * in this driver. Keep CMD53 bursts short there to avoid long PIO
+	 * transfers timing out during firmware download on CM4/CYW43455.
+	 */
+	if (fn == 1)
+		return 8;
+	if (fn == 2)
+		return 32;
+	return 511;
+}
+
 /* Split an arbitrarily sized data transfer into several
  * IO_RW_EXTENDED commands. */
 static int sdio_io_rw_ext_helper(int fn, int write,
@@ -21,7 +35,7 @@ static int sdio_io_rw_ext_helper(int fn, int write,
 	if (size > MMC_BLOCK_SIZE[fn]) {
 		/* Blocks per command is limited by host count, host transfer
 		 * size and the maximum for IO_RW_EXTENDED of 511 blocks. */
-		max_blocks = 511;
+		max_blocks = sdio_max_blocks_per_cmd(fn);
 
 		while (remainder >= MMC_BLOCK_SIZE[fn]) {
 			unsigned blocks;

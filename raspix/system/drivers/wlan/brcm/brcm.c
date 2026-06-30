@@ -52,7 +52,7 @@
                  of dongle image */
 #define MAX_DATA_BUF    (32 * 1024) /* Must be large enough to hold
                  biggest possible glom */
-#define BRCMF_RAMRW_CHUNK   4096
+#define BRCMF_RAMRW_CHUNK   512
 #define BRCMF_RAMRW_SCRATCH (BRCMF_RAMRW_CHUNK + 4)
 #define BRCMF_FIRSTREAD (1 << 6)
 #define BRCMF_CONSOLE   10  /* watchdog interval to poll console */
@@ -64,6 +64,8 @@
 #define BRCMF_WORKER_IDLE_STEP_US 1000U
 #define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
 #define BRCMF_TX_BATCH_LIMIT 8
+#define BRCMF_DOWNLOAD_CLOCK 4000000U
+#define BRCMF_DOWNLOAD_F1_BLOCKSIZE 16U
 
 /* watermark expressed in number of words */
 #define DEFAULT_F2_WATERMARK    0x8
@@ -377,6 +379,12 @@ struct brcmf_dev{
 };
 
 struct brcmf_dev *bus =  NULL;
+
+static bool brcmf_needs_cm4_download_workaround(void)
+{
+    return bus && bus->ci &&
+           bus->ci->chip == BRCM_CC_4345_ALT_CHIP_ID;
+}
 extern vdevice_t* _wland_dev;
 #define dev _wland_dev
 static void brcmf_sdio_dpc(void);
@@ -537,15 +545,42 @@ static inline uint8_t brcmf_sdio_getdatoffset(uint8_t *swheader)
 static int brcmf_sdiod_set_backplane_window(uint32_t addr)
 {
     uint32_t v, bar0 = addr & SBSDIO_SBWINDOW_MASK;
-    int err = 0, i;
-    v = bar0 >> 8;
+    int err = 0, i, retry;
 
     if (bar0 == bus->sbwad)
         return 0;
 
-    for (i = 0 ; i < 3 && !err ; i++, v >>= 8)
-        brcmf_sdiod_writeb(SBSDIO_FUNC1_SBADDRLOW + i,
-                   v & 0xff, &err);
+    for (retry = 0; retry < 3; retry++) {
+        int verify_err = 0;
+
+        err = 0;
+        v = bar0 >> 8;
+        for (i = 0 ; i < 3 && !err ; i++, v >>= 8)
+            brcmf_sdiod_writeb(SBSDIO_FUNC1_SBADDRLOW + i,
+                       v & 0xff, &err);
+
+        if (!err) {
+            v = bar0 >> 8;
+            for (i = 0; i < 3; i++, v >>= 8) {
+                uint8_t reg;
+                uint8_t want = v & 0xff;
+
+                reg = brcmf_sdiod_readb(SBSDIO_FUNC1_SBADDRLOW + i,
+                            &verify_err);
+                if (verify_err || reg != want) {
+                    err = verify_err ? verify_err : -EIO;
+                    break;
+                }
+            }
+        }
+
+        if (!err) {
+            bus->sbwad = bar0;
+            return 0;
+        }
+
+        usleep(1000);
+    }
 
     if (err) {
         int ferr = 0;
@@ -559,8 +594,6 @@ static int brcmf_sdiod_set_backplane_window(uint32_t addr)
               addr, bar0, i, err, ioe, ior, clk, sleep, wake);
     }
 
-    if (!err)
-        bus->sbwad = bar0;
     return err;
 }
 
@@ -623,6 +656,7 @@ brcmf_sdiod_ramrw(bool write, uint32_t address,
     uint32_t sdaddr;
     uint dsize;
     uint req_sz;
+    uint pos;
     static uint8_t ramrw_buf[BRCMF_RAMRW_SCRATCH];
 
     /* Do the transfer(s) */
@@ -647,12 +681,59 @@ brcmf_sdiod_ramrw(bool write, uint32_t address,
         sdaddr |= SBSDIO_SB_ACCESS_2_4B_FLAG;
         req_sz = (dsize + 3) & (uint)~3;
 
+        // #region debug-point A:ramrw-first-chunk
+        if (bus && bus->ci && address >= bus->ci->rambase &&
+            address < (bus->ci->rambase + 2048)) {
+            brcm_log("[DEBUG] ramrw %s addr=0x%08x win=0x%08x sdaddr=0x%08x dsize=%u req=%u sbwad=0x%08x\n",
+                  write ? "write" : "read", address,
+                  address & SBSDIO_SBWINDOW_MASK, sdaddr, dsize, req_sz,
+                  bus->sbwad);
+        }
+        // #endregion
+
         if (write) {
             memset(ramrw_buf, 0, req_sz);
             memcpy(ramrw_buf, data, dsize);
-            err = sdio_memcpy_toio(1, sdaddr, ramrw_buf, req_sz);
+            // #region debug-point B:ramrw-write-preview
+            if (bus && bus->ci && address >= bus->ci->rambase &&
+                address < (bus->ci->rambase + 512)) {
+                uint32_t w0 = 0, w1 = 0;
+                memcpy(&w0, ramrw_buf, min_t(uint, sizeof(w0), req_sz));
+                if (req_sz > sizeof(w0))
+                    memcpy(&w1, ramrw_buf + sizeof(w0),
+                           min_t(uint, sizeof(w1), req_sz - sizeof(w0)));
+                brcm_log("[DEBUG] ramrw-write head addr=0x%08x w0=0x%08x w1=0x%08x\n",
+                      address, w0, w1);
+            }
+            // #endregion
+            if (brcmf_needs_cm4_download_workaround() &&
+                bus && bus->ci &&
+                address < (bus->ci->rambase + MEMBLOCK)) {
+                for (pos = 0; pos < req_sz; pos += 4) {
+                    uint32_t word = 0;
+
+                    memcpy(&word, ramrw_buf + pos, 4);
+                    sdio_writel(1, word, sdaddr + pos, &err);
+                    if (err)
+                        break;
+                }
+            } else {
+                err = sdio_memcpy_toio(1, sdaddr, ramrw_buf, req_sz);
+            }
         } else {
             err = sdio_memcpy_fromio(1, ramrw_buf, sdaddr, req_sz);
+            // #region debug-point C:ramrw-read-preview
+            if (!err && bus && bus->ci && address >= bus->ci->rambase &&
+                address < (bus->ci->rambase + 512)) {
+                uint32_t r0 = 0, r1 = 0;
+                memcpy(&r0, ramrw_buf, min_t(uint, sizeof(r0), req_sz));
+                if (req_sz > sizeof(r0))
+                    memcpy(&r1, ramrw_buf + sizeof(r0),
+                           min_t(uint, sizeof(r1), req_sz - sizeof(r0)));
+                brcm_log("[DEBUG] ramrw-read head addr=0x%08x r0=0x%08x r1=0x%08x\n",
+                      address, r0, r1);
+            }
+            // #endregion
         }
 
         if (err) {
@@ -871,6 +952,7 @@ brcmf_sdio_drivestrengthinit(uint32_t drivestrength)
         }
         addr = CORE_CC_REG(pmu->base, chipcontrol_addr);
         brcmf_sdiod_writel(addr, 1, NULL);
+        addr = CORE_CC_REG(pmu->base, chipcontrol_data);
         cc_data_temp = brcmf_sdiod_readl(addr, NULL);
         cc_data_temp &= ~str_mask;
         drivestrength_sel <<= str_shift;
@@ -1089,6 +1171,7 @@ brcmf_sdio_verifymemory(uint32_t ram_addr,
     int address;
     unsigned int offset;
     unsigned int len;
+    unsigned int i;
 
     ram_cmp = (uint8_t *)malloc(2048);
     /* do not proceed while no memory but  */
@@ -1107,6 +1190,15 @@ brcmf_sdio_verifymemory(uint32_t ram_addr,
             ret = false;
             break;
         } else if (memcmp(ram_cmp, &ram_data[offset], len)) {
+            // #region debug-point D:verify-first-mismatch
+            for (i = 0; i < len; i++) {
+                if (ram_cmp[i] != ram_data[offset + i]) {
+                    brcm_log("[DEBUG] verify mismatch addr=0x%08x off=%u idx=%u exp=0x%02x got=0x%02x\n",
+                          address, offset, i, ram_data[offset + i], ram_cmp[i]);
+                    break;
+                }
+            }
+            // #endregion
             brcm_log("Downloaded RAM image is corrupted, block offset is %d, len is %d\n",
                   offset, len);
             ret = false;
@@ -1138,6 +1230,30 @@ static int brcmf_sdio_download_code_file(const uint8_t *fw, int len)
     return err;
 }
 
+static int brcmf_sdio_set_download_mode(bool enable)
+{
+    int err;
+
+    if (enable) {
+        if (brcmf_needs_cm4_download_workaround()) {
+            err = mmc_configure_sdio_bus(1, BRCMF_DOWNLOAD_CLOCK);
+            if (err)
+                return err;
+            return sdio_set_block_size(1, BRCMF_DOWNLOAD_F1_BLOCKSIZE);
+        }
+
+        err = mmc_configure_sdio_bus(4, 25000000);
+        if (err)
+            return err;
+        return sdio_set_block_size(1, 32);
+    }
+
+    err = mmc_configure_sdio_bus(4, 25000000);
+    if (err)
+        return err;
+    return sdio_set_block_size(1, 32);
+}
+
 static int brcmf_sdio_download_nvram(const uint8_t  *vars, int varsz)
 {
     int address;
@@ -1162,13 +1278,20 @@ static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvr
     int bcmerror;
     uint32_t rstvec = *((uint32_t*)fw);
     uint32_t nvram_addr;
+    bool restore_bus = false;
 
     brcmf_sdio_clkctl(CLK_AVAIL, false);
+    bcmerror = brcmf_sdio_set_download_mode(true);
+    if (bcmerror)
+        goto err;
+    restore_bus = true;
+
     nvram_addr = bus->ci->ramsize - nvlen + bus->ci->rambase;
     if ((bus->ci->rambase + len) > nvram_addr) {
         brcm_log("firmware layout overlap: fw_end=0x%08x nvram_addr=0x%08x\n",
               bus->ci->rambase + len, nvram_addr);
-        return -EOVERFLOW;
+        bcmerror = -EOVERFLOW;
+        goto err;
     }
 
     bcmerror = brcmf_sdio_download_code_file(fw, len);
@@ -1191,6 +1314,11 @@ static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvr
     }
 
 err:
+    if (restore_bus) {
+        int restore_err = brcmf_sdio_set_download_mode(false);
+        if (!bcmerror && restore_err)
+            bcmerror = restore_err;
+    }
     brcmf_sdio_clkctl(CLK_SDONLY, false);
     return bcmerror;
 }
@@ -2472,7 +2600,7 @@ int brcmf_sdiod_probe(void){
         brcm_dummy_read(0x309, 3);
         brcm_dummy_read(0x1070, 0x3c);
 #endif
-    ret = sdio_set_block_size(1, 64);
+    ret = sdio_set_block_size(1, 32);
     if (ret) {
         brcm_log("Failed to set F1 blocksize\n");
         return ret;

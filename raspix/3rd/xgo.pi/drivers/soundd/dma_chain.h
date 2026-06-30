@@ -44,6 +44,7 @@ typedef struct dma_buf{
 void dma_chain_init(void);
 int dma_chain_push(const uint8_t *buf, int size);
 void dma_chain_flush(void);
+void dma_chain_reset(void);
+uint32_t dma_chain_avail_bytes(void);
 #endif
-
 

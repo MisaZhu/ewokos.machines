@@ -49,6 +49,27 @@ static int dma_chain_size(dma_buf_t *chain){
 	return ret;
 }
 
+static void dma_buf_reset(dma_buf_t* buf) {
+	if (buf == NULL) {
+		return;
+	}
+
+	buf->cb.flag = 0;
+	buf->cb.next = NULL;
+	buf->cb.txfr_len = 0;
+	buf->cb.nextconbk = 0;
+}
+
+static int dma_chain_has_pending(dma_buf_t* chain) {
+	while (chain != NULL) {
+		if (chain->cb.txfr_len != 0) {
+			return 1;
+		}
+		chain = chain->cb.next;
+	}
+	return 0;
+}
+
 static sys_info_t _sysinfo;
 #define DMA_V_BASE      _sysinfo.sys_dma.v_base
 
@@ -72,6 +93,16 @@ void dma_chain_init(void){
 		dma_buf[i]->cb.flag = 0;
 		dma_buf[i]->cb.next = 0;
     }
+
+	_chain = dma_buf_alloc(DMA_DATA_SIZE);
+}
+
+void dma_chain_reset(void) {
+	write32(DMA_V_BASE + DMA_CS, 0x1 << 31);
+
+	for (int i = 0; i < DMA_BUF_CNT; i++) {
+		dma_buf_reset(dma_buf[i]);
+	}
 
 	_chain = dma_buf_alloc(DMA_DATA_SIZE);
 }
@@ -106,7 +137,7 @@ int dma_chain_push(const uint8_t *buf, int size){
 
 void dma_chain_flush(void){
 	if((read32(DMA_V_BASE + DMA_CS) & 0x1) == 0){
-		if(dma_chain_size(_chain) > DMA_BUF_TH){
+		if(dma_chain_has_pending(_chain) && dma_chain_size(_chain) > 0){
 			write32(DMA_V_BASE + DMA_CONBLK_AD, _chain->cb.cb_ad);
 			write32(DMA_V_BASE + DMA_CS,  0x1|(0x8<<20)|(0x8<<16));
 		}
@@ -123,4 +154,20 @@ void dma_chain_flush(void){
 	if(_chain == NULL){
 		_chain = dma_buf_alloc(DMA_DATA_SIZE);
 	}
+}
+
+uint32_t dma_chain_avail_bytes(void) {
+	uint32_t used = 0;
+	uint32_t capacity = DMA_DATA_SIZE * DMA_BUF_CNT;
+
+	for (int i = 0; i < DMA_BUF_CNT; i++) {
+		if (dma_buf[i]->cb.flag != 0) {
+			used += dma_buf[i]->cb.txfr_len;
+		}
+	}
+
+	if (used >= capacity) {
+		return 0;
+	}
+	return capacity - used;
 }

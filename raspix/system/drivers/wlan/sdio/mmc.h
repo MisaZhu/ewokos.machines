@@ -194,6 +194,7 @@ int mmc_io_rw_direct( int write, unsigned fn,
 	unsigned addr, u8 in, u8 *out);
 int mmc_io_rw_extended(int write, int fn,
 	unsigned addr, int incr_addr, u8 *buf, unsigned blocks, unsigned blksz);
+int mmc_configure_sdio_bus(uint8_t width, uint32_t clock);
 int mmc_hw_reset(void);
 
 #endif /* __MVEBU_MMC_H__ */

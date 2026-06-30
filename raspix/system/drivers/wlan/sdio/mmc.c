@@ -154,16 +154,49 @@ static int mmc_go_idle(void)
 /*
 * dump form linux kernel
 */
+static int mmc_sdio_set_bus_width(uint8_t width)
+{
+	uint8_t if_ctrl;
+	int err;
+
+	err = mmc_io_rw_direct(0, 0, SDIO_CCCR_IF, 0, &if_ctrl);
+	if (err)
+		return err;
+
+	if_ctrl &= ~SDIO_BUS_WIDTH_MASK;
+	if_ctrl |= (width == 4) ? SDIO_BUS_WIDTH_4BIT : SDIO_BUS_WIDTH_1BIT;
+
+	err = mmc_io_rw_direct(1, 0, SDIO_CCCR_IF, if_ctrl, NULL);
+	if (err)
+		return err;
+
+	_mmc.bus_width = width;
+	return sdhci_set_ios(&_mmc);
+}
+
+int mmc_configure_sdio_bus(uint8_t width, uint32_t clock)
+{
+	int err;
+
+	err = mmc_sdio_set_bus_width(width);
+	if (err)
+		return err;
+
+	_mmc.clock = clock;
+	_mmc.selected_mode = MMC_LEGACY;
+	return sdhci_set_ios(&_mmc);
+}
+
 static int brcm_init(void)
 {
-	struct mmc_cmd cmd;
+	struct mmc_cmd cmd = {};
 	int err;
 
 	usleep(1000); 
 
 	cmd.cmdidx = 5;
 	cmd.cmdarg = 0x0;
-	cmd.resp_type = 0x2e1;
+	cmd.resp_type = MMC_RSP_SPI_R4 | MMC_RSP_R4 | MMC_CMD_BCR;
 
 	err = sdhci_send_command(&cmd, NULL);
 
@@ -172,7 +205,7 @@ static int brcm_init(void)
 
 	cmd.cmdidx = 5;
 	cmd.cmdarg = 0x300000;
-	cmd.resp_type = 0x2e1;
+	cmd.resp_type = MMC_RSP_SPI_R4 | MMC_RSP_R4 | MMC_CMD_BCR;
 
 	err = sdhci_send_command(&cmd, NULL);
 
@@ -181,21 +214,40 @@ static int brcm_init(void)
 
 	cmd.cmdidx = 3;
 	cmd.cmdarg = 0x0;
-	cmd.resp_type = 0x75;
+	cmd.resp_type = MMC_RSP_R6 | MMC_CMD_BCR;
 
 	err = sdhci_send_command(&cmd, NULL);
 
 	if (err)
 		return err;
+
+	_mmc.rca = (cmd.response[0] >> 16) & 0xffff;
+	if (_mmc.rca == 0)
+		_mmc.rca = 1;
 
 	cmd.cmdidx = 7;
-	cmd.cmdarg = 0x10000;
-	cmd.resp_type = 0x15;
+	cmd.cmdarg = ((uint32_t)_mmc.rca) << 16;
+	cmd.resp_type = MMC_RSP_R1 | MMC_CMD_AC;
 
 	err = sdhci_send_command(&cmd, NULL);
 
 	if (err)
 		return err;
+
+	/*
+	 * Enumerate the card in the safest timing first, then move both the
+	 * card and the host to 4-bit / 25MHz once it is selected.
+	 */
+	err = mmc_sdio_set_bus_width(4);
+	if (err)
+		return err;
+
+	_mmc.clock = 25000000;
+	_mmc.selected_mode = MMC_LEGACY;
+	err = sdhci_set_ios(&_mmc);
+	if (err)
+		return err;
+
 	return 0;
 }
 
@@ -222,6 +274,10 @@ int mmc_hw_reset(void)
     _mmc.clock = 400000;
     _mmc.ocr = 1;
 	_mmc.voltages =  MMC_VDD_32_33 | MMC_VDD_33_34|MMC_VDD_165_195;
+	_mmc.selected_mode = MMC_LEGACY;
+
+	if (sdhci_set_ios(&_mmc))
+		return -EIO;
 
 	return mmc_init_card();
 }

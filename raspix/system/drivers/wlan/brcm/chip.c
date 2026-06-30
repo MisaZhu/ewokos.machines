@@ -88,6 +88,8 @@
 
 /* Max possibly supported memory size (limited by IO mapped memory) */
 #define BRCMF_CHIP_MAX_MEMSIZE		(4 * 1024 * 1024)
+#define BRCMF_4345_FALLBACK_RAMSIZE	(1024 * 1024)
+#define BRCMF_4345_MIN_RAMSIZE		(512 * 1024)
 
 #define CORE_SB(base, field) \
 		(base + SBCONFIGOFF + offsetof(struct sbconfig, field))
@@ -219,6 +221,41 @@ struct brcmf_core_priv {
 static struct brcmf_core_priv* core_list[16] = {0}; 
 static struct brcmf_chip pub;
 
+static struct brcmf_core *brcmf_chip_add_core(u16 coreid,
+	uint32_t base, uint32_t wrapbase);
+struct brcmf_core *brcmf_chip_get_core(u16 coreid);
+
+static bool brcmf_chip_is_4345_family(void)
+{
+	return pub.chip == BRCM_CC_4345_CHIP_ID ||
+	       pub.chip == BRCM_CC_43454_CHIP_ID ||
+	       pub.chip == BRCM_CC_4345_ALT_CHIP_ID;
+}
+
+static void brcmf_chip_apply_4345_fallback_cores(void)
+{
+	if (!brcmf_chip_is_4345_family())
+		return;
+
+	/*
+	 * Some CYW43455/CM4 variants expose an incomplete EROM view over SDIO.
+	 * Recover the minimum topology needed for chip attach using the legacy
+	 * fixed backplane windows Broadcom uses for SDIO FullMAC chips.
+	 */
+	if (!brcmf_chip_get_core(BCMA_CORE_SDIO_DEV))
+		brcmf_chip_add_core(BCMA_CORE_SDIO_DEV, BCM4329_CORE_BUS_BASE,
+				   BCM4329_CORE_BUS_BASE + BCMA_CORE_SIZE);
+
+	if (!brcmf_chip_get_core(BCMA_CORE_ARM_CR4))
+		brcmf_chip_add_core(BCMA_CORE_ARM_CR4, BCM4329_CORE_ARM_BASE,
+				   BCM4329_CORE_ARM_BASE + BCMA_CORE_SIZE);
+
+	if (!brcmf_chip_get_core(BCMA_CORE_INTERNAL_MEM))
+		brcmf_chip_add_core(BCMA_CORE_INTERNAL_MEM,
+				   BCM4329_CORE_SOCRAM_BASE,
+				   BCM4329_CORE_SOCRAM_BASE + BCMA_CORE_SIZE);
+}
+
 
 static struct brcmf_core *brcmf_chip_add_core(u16 coreid, 
     uint32_t base,uint32_t wrapbase)
@@ -273,8 +310,10 @@ struct brcmf_core *brcmf_chip_get_chipcommon(void)
     struct brcmf_core_priv *cc;
 
     cc = core_list[0];
+    if (!cc)
+        return NULL;
     if (cc->pub.id != BCMA_CORE_CHIPCOMMON)
-    return brcmf_chip_get_core(BCMA_CORE_CHIPCOMMON);
+        return brcmf_chip_get_core(BCMA_CORE_CHIPCOMMON);
     return &cc->pub;
 }
 
@@ -401,9 +440,10 @@ static int brcmf_chip_dmp_get_regaddr(uint32_t *eromaddr,
                 brcmf_chip_dmp_get_desc(eromaddr, NULL);
         }
 
-        /* look for 4K or 8K register regions */
+        /* Newer chips may describe 16K register windows as well. */
         if (sztype != DMP_SLAVE_SIZE_4K &&
-            sztype != DMP_SLAVE_SIZE_8K)
+            sztype != DMP_SLAVE_SIZE_8K &&
+            sztype != DMP_SLAVE_SIZE_16K)
             continue;
 
         stype = (val & DMP_SLAVE_TYPE) >> DMP_SLAVE_TYPE_S;
@@ -421,6 +461,7 @@ static int brcmf_chip_dmp_get_regaddr(uint32_t *eromaddr,
 static int brcmf_chip_dmp_erom_scan()
 {
     struct brcmf_core *core;
+    struct brcmf_core *cc;
     uint32_t eromaddr;
     u8 desc_type = 0;
     uint32_t val;
@@ -429,9 +470,16 @@ static int brcmf_chip_dmp_erom_scan()
     uint32_t base, wrap;
     int err;
 
+    cc = brcmf_chip_get_chipcommon();
+    if (!cc)
+        cc = brcmf_chip_add_core(BCMA_CORE_CHIPCOMMON,
+                SI_ENUM_BASE_DEFAULT, SI_ENUM_BASE_DEFAULT);
+    if (!cc)
+        return -ENOMEM;
+
     do{
-        eromaddr = brcmf_sdio_buscore_read32(CORE_CC_REG(0x18000000, eromptr));
-    }while(eromaddr < 0x18000000);
+        eromaddr = brcmf_sdio_buscore_read32(CORE_CC_REG(cc->base, eromptr));
+    }while(eromaddr < SI_ENUM_BASE_DEFAULT);
 
     while (desc_type != DMP_DESC_EOT) {
         val = brcmf_chip_dmp_get_desc(&eromaddr, &desc_type);
@@ -659,6 +707,7 @@ static inline void
 brcmf_chip_cr4_set_passive(void)
 {
     struct brcmf_core *core;
+    struct brcmf_core *mem;
 
     brcmf_chip_disable_arm(BCMA_CORE_ARM_CR4);
 
@@ -667,6 +716,15 @@ brcmf_chip_cr4_set_passive(void)
                    D11_BCMA_IOCTL_PHYCLOCKEN,
                  D11_BCMA_IOCTL_PHYCLOCKEN,
                  D11_BCMA_IOCTL_PHYCLOCKEN);
+
+    /*
+     * CR4-based chips still rely on a writable SOCRAM/TCM view during
+     * firmware download. Bring the memory core out of any stale reset state
+     * before the host starts pushing the image.
+     */
+    mem = brcmf_chip_get_core(BCMA_CORE_INTERNAL_MEM);
+    if (mem)
+        brcmf_chip_resetcore(mem, 0, 0, 0);
 }
 
 static inline void
@@ -789,6 +847,7 @@ static uint32_t brcmf_chip_tcm_rambase(void)
     switch (pub.chip) {
     case BRCM_CC_4345_CHIP_ID:
     case BRCM_CC_43454_CHIP_ID:
+    case BRCM_CC_4345_ALT_CHIP_ID:
         return 0x198000;
     case BRCM_CC_4335_CHIP_ID:
     case BRCM_CC_4339_CHIP_ID:
@@ -975,16 +1034,47 @@ static int brcmf_chip_get_raminfo(void){
         } else {
             mem = brcmf_chip_get_core(BCMA_CORE_INTERNAL_MEM);
             if (!mem) {
+                if (brcmf_chip_is_4345_family()) {
+                    pub.rambase = brcmf_chip_tcm_rambase();
+                    if (pub.rambase == INVALID_RAMBASE)
+                        pub.rambase = 0x198000;
+                    pub.ramsize = BRCMF_4345_FALLBACK_RAMSIZE;
+                    pub.srsize = 0;
+                    return 0;
+                }
                 brcm_log("No memory cores found\n");
                 return -ENOMEM;
             }
             mem_core = container_of(mem, struct brcmf_core_priv,
                         pub);
+            /*
+             * CM3/Internal-MEM chips (for example BCM43430/CYW43439 used on
+             * Raspberry Pi 3A/Zero-class boards) download firmware to RAM
+             * starting at address 0. The CR4/CA7 rambase tables do not apply
+             * to this path, so initialize it explicitly instead of inheriting
+             * stale state from a previous probe.
+             */
+            pub.rambase = 0;
             brcmf_chip_socram_ramsize(mem_core, &pub.ramsize,
                             &pub.srsize);
         }
     }
     
+    if (!pub.ramsize && brcmf_chip_is_4345_family()) {
+        if (pub.rambase == INVALID_RAMBASE)
+            pub.rambase = 0x198000;
+        pub.ramsize = BRCMF_4345_FALLBACK_RAMSIZE;
+        pub.srsize = 0;
+    }
+
+    if (brcmf_chip_is_4345_family() &&
+        pub.ramsize < BRCMF_4345_MIN_RAMSIZE) {
+        if (pub.rambase == INVALID_RAMBASE)
+            pub.rambase = 0x198000;
+        pub.ramsize = BRCMF_4345_FALLBACK_RAMSIZE;
+        pub.srsize = 0;
+    }
+
     if (!pub.ramsize) {
         brcm_log("RAM size is undetermined\n");
         return -ENOMEM;
@@ -1003,6 +1093,8 @@ int brcmf_chip_recognition(void)
     uint32_t socitype;
     int ret;
 
+    memset(&pub, 0, sizeof(pub));
+    pub.rambase = INVALID_RAMBASE;
     memset(core_list, 0, sizeof(core_list));
     /* Get CC core rev
      * Chipid is assume to be at offset 0 from SI_ENUM_BASE
@@ -1017,8 +1109,12 @@ int brcmf_chip_recognition(void)
     brcmf_chip_name(pub.chip, pub.chiprev,
             pub.name, sizeof(pub.name));
 
-    brcmf_chip_dmp_erom_scan();
+    ret = brcmf_chip_dmp_erom_scan();
+    if (ret && !brcmf_chip_is_4345_family())
+        return ret;
 
+
+    brcmf_chip_apply_4345_fallback_cores();
 
     ret = brcmf_chip_cores_check();
     if (ret)
@@ -1069,12 +1165,16 @@ bool brcmf_chip_set_active(uint32_t rstvec)
 int brcmf_chip_setup(void)
 {
     struct brcmf_core_priv *cc;
+    struct brcmf_core *cc_pub;
     struct brcmf_core *pmu;
     uint32_t base;
     uint32_t val;
     int ret = 0;
 
-    cc = core_list[0];
+    cc_pub = brcmf_chip_get_chipcommon();
+    if (!cc_pub)
+        return -ENODEV;
+    cc = container_of(cc_pub, struct brcmf_core_priv, pub);
     base = cc->pub.base;
 
     /* get chipcommon capabilites */

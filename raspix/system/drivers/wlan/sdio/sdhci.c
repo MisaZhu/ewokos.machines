@@ -670,11 +670,25 @@ static void sdhci_transfer_pio(struct sdhci_host *host, struct mmc_data *data)
 	uint32_t i;
 	uint8_t *offs;
 	for (i = 0; i < data->blocksize; i += 4) {
-		offs = data->dest + i;
-		if (data->flags == MMC_DATA_READ)
-			*(u32 *)offs = sdhci_readl(host, SDHCI_BUFFER);
-		else
-			sdhci_writel(host, *(u32 *)offs, SDHCI_BUFFER);
+		uint32_t val;
+		uint32_t remain = data->blocksize - i;
+
+		offs = (data->flags == MMC_DATA_READ) ?
+			(data->dest + i) : (data->src + i);
+		if (data->flags == MMC_DATA_READ) {
+			val = sdhci_readl(host, SDHCI_BUFFER);
+			if (remain >= 4)
+				memcpy(offs, &val, 4);
+			else
+				memcpy(offs, &val, remain);
+		} else {
+			val = 0;
+			if (remain >= 4)
+				memcpy(&val, offs, 4);
+			else
+				memcpy(&val, offs, remain);
+			sdhci_writel(host, val, SDHCI_BUFFER);
+		}
 	}
 }
 
@@ -684,8 +698,13 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 	bool transfer_done = false;
 
 	timeout = 100000;
-	rdy = SDHCI_INT_SPACE_AVAIL | SDHCI_INT_DATA_AVAIL;
-	mask = SDHCI_DATA_AVAILABLE | SDHCI_SPACE_AVAILABLE;
+	if (data->flags == MMC_DATA_READ) {
+		rdy = SDHCI_INT_DATA_AVAIL;
+		mask = SDHCI_DATA_AVAILABLE;
+	} else {
+		rdy = SDHCI_INT_SPACE_AVAIL;
+		mask = SDHCI_SPACE_AVAILABLE;
+	}
 	do {
 		stat = sdhci_readl(host, SDHCI_INT_STATUS);
 		if (stat & SDHCI_INT_ERROR) {
@@ -696,9 +715,12 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 		if (!transfer_done && (stat & rdy)) {
 			if (!(sdhci_readl(host, SDHCI_PRESENT_STATE) & mask))
 				continue;
-			sdhci_writel(host, rdy, SDHCI_INT_STATUS);
+			sdhci_writel(host, stat & rdy, SDHCI_INT_STATUS);
 			sdhci_transfer_pio(host, data);
-			data->dest += data->blocksize;
+			if (data->flags == MMC_DATA_READ)
+				data->dest += data->blocksize;
+			else
+				data->src += data->blocksize;
 			if (++block >= data->blocks) {
 				/* Keep looping until the SDHCI_INT_DATA_END is
 				 * cleared, even if we finished sending all the
@@ -913,8 +935,12 @@ void sdhci_init(void)
 
 	sdhci_get_info(&_host);
 
-	sdhci_set_clock(&_host, 25000000);
-	sdhci_set_bus_width(&_host, 4);
+	/*
+	 * Keep the bus in identification mode here. The card-side bus width
+	 * switch happens later through CCCR_IF after CMD7 succeeds.
+	 */
+	sdhci_set_clock(&_host, 400000);
+	sdhci_set_bus_width(&_host, 1);
 	sdhci_set_uhs_timing(&_host, 0);
 	/* Enable only interrupts served by the SD controller */
 	sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,

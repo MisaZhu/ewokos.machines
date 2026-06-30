@@ -64,6 +64,7 @@ static bool brcmf_fw_select_resources(uint32_t chip,
         return true;
     case BRCM_CC_4345_CHIP_ID:
     case BRCM_CC_43454_CHIP_ID:
+    case BRCM_CC_4345_ALT_CHIP_ID:
         res->fw = cyfmac43455_sdio_bin;
         res->fw_len = cyfmac43455_sdio_bin_len;
         res->nvram = (const uint8_t *)brcmfmac43455_sdio_txt;
