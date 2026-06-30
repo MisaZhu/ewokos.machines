@@ -11,7 +11,9 @@ int32_t bcm283x_sd_init(void) {
    sys_info_t sysinfo;
     _mmio_base = mmio_map();
    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-   if(strstr(sysinfo.machine, "pi4") || strstr(sysinfo.machine, "cm4"))
+   if(strstr(sysinfo.machine, "pi4") ||
+			strstr(sysinfo.machine, "cm4") ||
+			strstr(sysinfo.machine, "pi5"))
 		return mmc_init(1);
    else
 		return mmc_init(0);
@@ -38,4 +40,3 @@ int32_t bcm283x_sd_write_sector(int32_t sector, const void* buf, int cnt) {
 	}
 	return 0;
 }
-

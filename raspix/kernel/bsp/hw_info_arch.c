@@ -105,8 +105,26 @@ void sys_info_init_arch(void) {
 		_sys_info.mmio.phy_base = 0x3f000000;
 	}
 	else if(pix_revision == PI_5_2G) {
-		strcpy(_sys_info.machine, "raspberry-pi5");
-		_sys_info.total_phy_mem_size = 1u*GB;
+		strcpy(_sys_info.machine, "raspberry-pi5-2g");
+		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.mmio.phy_base = 0x7c000000;
+		_uart_type = UART_PL011;
+	}
+	else if(pix_revision == PI_5_4G) {
+		strcpy(_sys_info.machine, "raspberry-pi5-4g");
+		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.mmio.phy_base = 0x7c000000;
+		_uart_type = UART_PL011;
+	}
+	else if(pix_revision == PI_5_8G) {
+		strcpy(_sys_info.machine, "raspberry-pi5-8g");
+		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.mmio.phy_base = 0x7c000000;
+		_uart_type = UART_PL011;
+	}
+	else if(pix_revision == PI_5_16G) {
+		strcpy(_sys_info.machine, "raspberry-pi5-16g");
+		_sys_info.total_phy_mem_size = 2u*GB;
 		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}

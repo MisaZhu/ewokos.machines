@@ -151,7 +151,9 @@ int32_t bsp_sd_init_by_info(void) {
    sys_info_t sysinfo;
     _mmio_base = mmio_map();
    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-   if(strstr(sysinfo.machine, "pi4") || strstr(sysinfo.machine, "cm4"))
+   if(strstr(sysinfo.machine, "pi4") ||
+			strstr(sysinfo.machine, "cm4") ||
+			strstr(sysinfo.machine, "pi5"))
         return mmc_init(1);
    else
         return mmc_init(0);
