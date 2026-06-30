@@ -468,9 +468,16 @@ static int brcmf_c_download(int ifidx, uint16_t flag,
 static int brcmf_set_join_pref(int ifidx)
 {
     struct brcmf_join_pref_params join_pref_params[2];
+    int err;
 
-    //brcmf_fil_cmd_int_set(ifidx, BRCMF_C_SET_ASSOC_PREFER, WLC_BAND_AUTO);
-    brcmf_fil_cmd_int_set(ifidx, BRCMF_C_SET_ASSOC_PREFER, WLC_BAND_ALL);
+    /*
+     * Some firmware variants reject WLC_BAND_ALL for assoc prefer even though
+     * they accept the join preference iovar. Fall back to AUTO instead of
+     * leaving the firmware in an unsupported preference state.
+     */
+    err = brcmf_fil_cmd_int_set(ifidx, BRCMF_C_SET_ASSOC_PREFER, WLC_BAND_ALL);
+    if (err)
+        err = brcmf_fil_cmd_int_set(ifidx, BRCMF_C_SET_ASSOC_PREFER, WLC_BAND_AUTO);
 
     join_pref_params[0].type = BRCMF_JOIN_PREF_RSSI_DELTA;
     join_pref_params[0].len = 2;
@@ -480,8 +487,12 @@ static int brcmf_set_join_pref(int ifidx)
     join_pref_params[1].len = 2;
     join_pref_params[1].rssi_gain = 0;
     join_pref_params[1].band = 0;
-    int err = brcmf_fil_iovar_data_set(0, "join_pref", &join_pref_params,
-                       sizeof(join_pref_params));
+    {
+        int join_err = brcmf_fil_iovar_data_set(0, "join_pref", &join_pref_params,
+                           sizeof(join_pref_params));
+        if (join_err)
+            return join_err;
+    }
     return err;
 }
 

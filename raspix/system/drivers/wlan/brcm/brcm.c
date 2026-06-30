@@ -2287,15 +2287,13 @@ static uint32_t brcmf_sdio_hostmail(void)
 /* To check if there's window offered */
 static bool txctl_ok(void)
 {
-    return true;
-    // static int cnt = 0;
-    // cnt++;
-    // if(cnt % 20 == 0)
-    //     return true;
-    // else
-    //     return false;
-    // return (bus->tx_max - bus->tx_seq) != 0 &&
-    //        ((bus->tx_max - bus->tx_seq) & 0x80) == 0;
+    uint8_t tx_credit;
+
+    if (!bus)
+        return false;
+
+    tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
+    return tx_credit != 0 && ((tx_credit & 0x80) == 0);
 }
 
 static inline void brcmf_sdio_update_hwhdr(uint8_t *header, uint16_t frm_length)
@@ -2540,6 +2538,8 @@ static void brcmf_sdio_dpc(void)
     /* Send queued frames */
     int max_frames = BRCMF_TX_BATCH_LIMIT;
     while(bus->state == CONNECTED && queue_buffer_check(bus->tx_queue) && max_frames--){
+        if (!txctl_ok())
+            break;
         struct sk_buff *pkt = skb_alloc(MAX_FRAME_SIZE);
         ipc_disable();
         int len = queue_buffer_pop(bus->tx_queue, pkt->data, MAX_FRAME_SIZE);
