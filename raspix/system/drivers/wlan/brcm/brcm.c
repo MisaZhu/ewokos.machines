@@ -5,6 +5,7 @@
 #include <pthread.h>
 #include <string.h>
 #include <sys/time.h>
+#include <stdio.h>
 
 #include <types.h>
 #include <utils/skb.h>
@@ -399,6 +400,61 @@ typedef struct {
 
 static brcmf_diag_t _diag = {0};
 
+// #region debug-point cm4-runtime-snapshot
+static void brcmf_debug_runtime_snapshot(const char *tag)
+{
+    int err = 0;
+    int rxq = 0;
+    int txq = 0;
+    uint8_t clkctl = 0;
+    uint8_t sleepcsr = 0;
+    uint8_t wakectrl = 0;
+    uint8_t intx = 0;
+
+    if (!bus)
+        return;
+
+    if (bus->rx_queue)
+        rxq = queue_buffer_check(bus->rx_queue);
+    if (bus->tx_queue)
+        txq = queue_buffer_check(bus->tx_queue);
+
+    clkctl = brcmf_sdiod_readb(SBSDIO_FUNC1_CHIPCLKCSR, &err);
+    if (err)
+        clkctl = 0xff;
+
+    sleepcsr = brcmf_sdiod_readb(SBSDIO_FUNC1_SLEEPCSR, &err);
+    if (err)
+        sleepcsr = 0xff;
+
+    wakectrl = brcmf_sdiod_readb(SBSDIO_FUNC1_WAKEUPCTRL, &err);
+    if (err)
+        wakectrl = 0xff;
+
+    intx = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, &err);
+    if (err)
+        intx = 0xff;
+
+    brcm_log("[DEBUG] runtime %s state=%d clk=%d clkcsr=0x%02x sleep=0x%02x wake=0x%02x intx=0x%02x flow=0x%02x tx_seq=%u tx_max=%u rxpending=%d ctrl=%d rxq=%d txq=%d dpc=%u/%uus\n",
+            tag ? tag : "-",
+            bus->state,
+            bus->clkstate,
+            clkctl,
+            sleepcsr,
+            wakectrl,
+            intx,
+            bus->flowcontrol,
+            bus->tx_seq,
+            bus->tx_max,
+            bus->rxpending ? 1 : 0,
+            bus->ctrl_frame_stat ? 1 : 0,
+            rxq,
+            txq,
+            _diag.dpc_count,
+            _diag.last_dpc_usec);
+}
+// #endregion
+
 static uint32_t brcmf_now_usec(void)
 {
     struct timeval tv;
@@ -418,8 +474,6 @@ static uint32_t brcmf_elapsed_usec(uint32_t start_usec, uint32_t now_usec)
 static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
 {
     uint32_t now_usec;
-    int rxq = 0;
-    int txq = 0;
 
     if (!bus)
         return;
@@ -438,11 +492,6 @@ static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
     if (now_usec == 0 ||
             brcmf_elapsed_usec(_diag.window_start_usec, now_usec) < BRCMF_DPC_LOG_WINDOW_USEC)
         return;
-
-    if (bus->rx_queue)
-        rxq = queue_buffer_check(bus->rx_queue);
-    if (bus->tx_queue)
-        txq = queue_buffer_check(bus->tx_queue);
 
     /*if (_diag.slow_dpc_count > 0 || _diag.max_dpc_usec >= BRCMF_DPC_SLOW_USEC) {
         brcm_log("dpc diag cnt=%u slow=%u max=%uus state=%d clk=%d rxq=%d txq=%d rxlen=%d ctrl=%d pending=%d\n",
@@ -1125,9 +1174,13 @@ static int brcmf_sdio_htclk(bool on, bool pendok)
 /* Transition SD and backplane clock readiness */
 static int brcmf_sdio_clkctl(int target, bool pendok)
 {
+    int old_state;
+
     /* Early exit if we're already there */
     if (bus->clkstate == target)
         return 0;
+
+    old_state = bus->clkstate;
 
     switch (target) {
     case CLK_AVAIL:
@@ -1157,6 +1210,14 @@ static int brcmf_sdio_clkctl(int target, bool pendok)
         brcmf_sdio_sdclk(false);
         break;
     }
+// #region debug-point clkctl-transition
+    if (bus->state == CONNECTED || old_state != bus->clkstate) {
+        char tag[24];
+        snprintf(tag, sizeof(tag), "clk %d->%d/%d", old_state, target,
+                 bus->clkstate);
+        brcmf_debug_runtime_snapshot(tag);
+    }
+// #endregion
     return 0;
 }
 
