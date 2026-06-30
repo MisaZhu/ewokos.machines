@@ -22,8 +22,8 @@ static int SPI_DIV = 8;
 #define SCREEN_HORIZONTAL_1		1
 #define SCREEN_VERTICAL_2		2
 #define SCREEN_HORIZONTAL_2		3
-#define ROTATED_FLUSH_MIN_INTERVAL_MS 20
-#define ROTATED_SMALL_DIRTY_ROWS 64
+#define FLUSH_MIN_INTERVAL_MS 16
+#define DIRTY_AREA_FULL_THRESHOLD 3  /* dirty_area > total/THRESHOLD => full refresh */
 
 static uint16_t* _lcd_buffer = NULL;
 static uint32_t* _shadow_argb = NULL;
@@ -31,6 +31,12 @@ static uint8_t _shadow_ready = 0;
 static uint16_t LCD_ROT = G_ROTATE_0;
 static uint8_t _pending_flush = 0;
 static uint64_t _last_flush_ms = 0;
+
+/* accumulated dirty rect for deferred flushes */
+static uint32_t _pend_min_x = 0;
+static uint32_t _pend_max_x = 0;
+static uint32_t _pend_min_y = 0;
+static uint32_t _pend_max_y = 0;
 uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 uint16_t LCD_MODE = LCD_MODE_0;
@@ -199,6 +205,24 @@ static inline void lcd_show_rows(uint16_t y, uint16_t h) {
 	lcd_send_pixels((uint32_t)y * LCD_WIDTH, (uint32_t)LCD_WIDTH * h);
 }
 
+static inline void lcd_show_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+	uint16_t row;
+	if(w == 0 || h == 0)
+		return;
+
+	if(w == LCD_WIDTH) {
+		/* full-width dirty: use contiguous transfer */
+		lcd_set_window(0, y, LCD_WIDTH, h);
+		lcd_send_pixels((uint32_t)y * LCD_WIDTH, (uint32_t)LCD_WIDTH * h);
+		return;
+	}
+
+	lcd_set_window(x, y, w, h);
+	for(row = y; row < y + h; row++) {
+		lcd_send_pixels((uint32_t)row * LCD_WIDTH + x, w);
+	}
+}
+
 static inline uint16_t argb_to_rgb565(uint32_t pixel) {
 	uint16_t r = (pixel >> 19) & 0x1f;
 	uint16_t g = (pixel >> 10) & 0x3f;
@@ -215,9 +239,8 @@ void st77xx_flush(const void* buf, uint32_t size) {
 	uint32_t x;
 	uint32_t y;
 	uint32_t idx;
-	uint32_t min_y;
-	uint32_t max_y;
-	uint32_t dirty_rows;
+	uint32_t min_x, max_x, min_y, max_y;
+	uint32_t dirty_w, dirty_h, dirty_area, total_area;
 	uint8_t dirty;
 	uint64_t now_ms;
 
@@ -240,6 +263,8 @@ void st77xx_flush(const void* buf, uint32_t size) {
 		return;
 	}
 
+	min_x = LCD_WIDTH;
+	max_x = 0;
 	min_y = LCD_HEIGHT;
 	max_y = 0;
 	dirty = 0;
@@ -253,28 +278,30 @@ void st77xx_flush(const void* buf, uint32_t size) {
 			_shadow_argb[idx] = src[idx];
 			_lcd_buffer[idx] = argb_to_rgb565(src[idx]);
 			if(!dirty) {
+				min_x = max_x = x;
 				min_y = max_y = y;
 				dirty = 1;
 			}
 			else {
-				if(y < min_y) {
-					min_y = y;
-				}
-				if(y > max_y) {
-					max_y = y;
-				}
+				if(x < min_x) min_x = x;
+				if(x > max_x) max_x = x;
+				if(y < min_y) min_y = y;
+				if(y > max_y) max_y = y;
 			}
 		}
 	}
 
 	if(!dirty) {
-		if((LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) && _pending_flush) {
+		/* no change this frame, but may have deferred dirty rect pending */
+		if(_pending_flush) {
 			now_ms = kernel_tic_ms(0);
 			if(_last_flush_ms == 0 ||
-					(now_ms - _last_flush_ms) >= ROTATED_FLUSH_MIN_INTERVAL_MS) {
+					(now_ms - _last_flush_ms) >= FLUSH_MIN_INTERVAL_MS) {
 				bsp_spi_set_div(SPI_DIV);
 				lcd_start();
-				lcd_show();
+				lcd_show_rect(_pend_min_x, _pend_min_y,
+						_pend_max_x - _pend_min_x + 1,
+						_pend_max_y - _pend_min_y + 1);
 				lcd_end();
 				_pending_flush = 0;
 				_last_flush_ms = now_ms;
@@ -283,8 +310,12 @@ void st77xx_flush(const void* buf, uint32_t size) {
 		return;
 	}
 
-	dirty_rows = max_y - min_y + 1;
+	dirty_w = max_x - min_x + 1;
+	dirty_h = max_y - min_y + 1;
+	dirty_area = dirty_w * dirty_h;
+	total_area = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
 	now_ms = kernel_tic_ms(0);
+
 	bsp_spi_set_div(SPI_DIV);
 	if(LCD_FLUSH_MODE == LCD_FLUSH_FULL) {
 		lcd_start();
@@ -293,28 +324,47 @@ void st77xx_flush(const void* buf, uint32_t size) {
 		_pending_flush = 0;
 		_last_flush_ms = now_ms;
 	}
-	else if(LCD_ROT == G_ROTATE_90 || LCD_ROT == G_ROTATE_270) {
-		if(_last_flush_ms != 0 &&
-				(now_ms - _last_flush_ms) < ROTATED_FLUSH_MIN_INTERVAL_MS &&
-				dirty_rows <= ROTATED_SMALL_DIRTY_ROWS) {
-			_pending_flush = 1;
-			return;
+	else if(_last_flush_ms != 0 &&
+			(now_ms - _last_flush_ms) < FLUSH_MIN_INTERVAL_MS &&
+			dirty_area <= total_area / 8) {
+		/* small rapid change: defer and accumulate dirty rect */
+		if(!_pending_flush) {
+			_pend_min_x = min_x;
+			_pend_max_x = max_x;
+			_pend_min_y = min_y;
+			_pend_max_y = max_y;
+		} else {
+			if(min_x < _pend_min_x) _pend_min_x = min_x;
+			if(max_x > _pend_max_x) _pend_max_x = max_x;
+			if(min_y < _pend_min_y) _pend_min_y = min_y;
+			if(max_y > _pend_max_y) _pend_max_y = max_y;
 		}
+		_pending_flush = 1;
+	}
+	else if(dirty_area > total_area / DIRTY_AREA_FULL_THRESHOLD) {
+		/* large dirty area: full refresh is more efficient */
 		lcd_start();
 		lcd_show();
 		lcd_end();
 		_pending_flush = 0;
 		_last_flush_ms = now_ms;
 	}
-	else if((min_y == 0 && max_y + 1 == LCD_HEIGHT)) {
-		lcd_start();
-		lcd_show();
-		lcd_end();
-	}
 	else {
+		/* partial refresh: send only dirty rect */
+		if(_pending_flush) {
+			/* merge accumulated pending rect */
+			if(_pend_min_x < min_x) min_x = _pend_min_x;
+			if(_pend_max_x > max_x) max_x = _pend_max_x;
+			if(_pend_min_y < min_y) min_y = _pend_min_y;
+			if(_pend_max_y > max_y) max_y = _pend_max_y;
+			dirty_w = max_x - min_x + 1;
+			dirty_h = max_y - min_y + 1;
+		}
 		lcd_start();
-		lcd_show_rows(min_y, dirty_rows);
+		lcd_show_rect(min_x, min_y, dirty_w, dirty_h);
 		lcd_end();
+		_pending_flush = 0;
+		_last_flush_ms = now_ms;
 	}
 }
 
