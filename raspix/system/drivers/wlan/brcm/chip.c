@@ -807,12 +807,6 @@ static bool brcmf_chip_cm3_set_active(uint32_t rstvec)
         return false;
     }
 
-    /*
-     * CM3-based chips still need the firmware reset vector written to
-     * address 0 before releasing the ARM core. If we skip this, the
-     * NVRAM token remains at the end of RAM and firmware never publishes
-     * its sdpcm_shared pointer.
-     */
     brcmf_sdio_buscore_activate(rstvec);
 
     core = brcmf_chip_get_core(BCMA_CORE_ARM_CM3);

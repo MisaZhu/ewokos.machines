@@ -1226,7 +1226,7 @@ static int brcmf_sdio_sdclk(bool on)
     return 0;
 }
 
-static int brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh);
+static int __attribute__((unused)) brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh);
 static bool brcmf_chip_sr_capable();
 static void brcmf_dbg_dump_ready_state(const char *tag);
 
@@ -1509,40 +1509,11 @@ static void brcmf_dbg_dump_ready_state(const char *tag)
 }
 /* #endregion */
 
-/* #region debug-point wlan-ht-timeout-rstvec-select */
-static uint32_t brcmf_sdio_select_rstvec(const uint8_t *fw)
-{
-    const uint32_t *fw_words = (const uint32_t *)fw;
-    uint32_t word0 = fw_words[0];
-    uint32_t word1 = fw_words[1];
-    bool is_cm3 = brcmf_chip_get_core(BCMA_CORE_ARM_CM3) != NULL;
-    uint32_t chip = (bus && bus->ci) ? bus->ci->chip : 0;
-    uint32_t rstvec = word0;
-
-    /*
-     * BCM43430/CYW43439 CM3 firmware blobs reserve word 0 and place the
-     * actual Thumb entry point in word 1. If we treat word 0 as the reset
-     * vector, the core never reaches firmware init and the RAM tail keeps
-     * the NVRAM token instead of sdpcm_shared.
-     */
-    if (is_cm3 &&
-        (chip == BRCM_CC_43430_CHIP_ID || chip == CY_CC_43439_CHIP_ID) &&
-        word0 == 0 && word1 != 0)
-        rstvec = word1;
-
-    brcm_log("dbg[rstvec-select]: chip=0x%x cm3=%d word0=0x%08x word1=0x%08x rstvec=0x%08x\n",
-          chip, is_cm3, word0, word1, rstvec);
-    return rstvec;
-}
-/* #endregion */
-
-
 static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvram, uint32_t nvlen)
 {
     int bcmerror;
-    uint32_t rstvec = brcmf_sdio_select_rstvec(fw);
+    uint32_t rstvec = *((uint32_t*)fw);
     uint32_t nvram_addr;
-    struct sdpcm_shared sh;
 
     /* #region debug-point wlan-ht-timeout-download-enter */
     brcm_log("dbg[fw-enter]: fw_len=%u nvram_len=%u rstvec=0x%08x rambase=0x%08x ramsize=0x%08x\n",
@@ -1591,20 +1562,6 @@ static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvr
     /* #region debug-point wlan-ht-timeout-arm-active */
     brcm_log("dbg[fw-arm-active]: status=ok\n");
     brcmf_dbg_dump_ready_state("fw-arm-active");
-    /* #endregion */
-
-    bcmerror = brcmf_sdio_wait_fw_ready(&sh);
-    if (bcmerror) {
-        brcm_log("wlan: fw ready wait failed %d\n", bcmerror);
-        goto err;
-    }
-
-    brcm_console_init(sh.console_addr);
-
-    /* #region debug-point wlan-ht-timeout-fw-ready */
-    brcm_log("dbg[fw-ready]: console=0x%08x flags=0x%08x trap_addr=0x%08x\n",
-          sh.console_addr, sh.flags, sh.trap_addr);
-    brcmf_dbg_dump_ready_state("fw-ready");
     /* #endregion */
 
 err:
@@ -1748,7 +1705,7 @@ static int brcmf_sdio_checkdied(void)
     return 0;
 }
 
-static int brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh)
+static int __attribute__((unused)) brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh)
 {
     struct brcmf_core *core = bus->sdio_core;
     uint32_t shaddr;

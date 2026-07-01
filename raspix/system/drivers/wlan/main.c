@@ -170,6 +170,8 @@ static int bcm2835_power_on_module(uint32_t module)
 #define CM_PASSWORD (0x5a000000)
 #define CM_BUSY 	(0x1<<7)
 #define CM_ENABLE 	(0x1<<4)
+#define WLAN_REG_ON_LOW_DELAY_US   10000
+#define WLAN_REG_ON_HIGH_DELAY_US  250000
 #define writel(val, addr) (*((volatile uint32_t *)(addr)) = (uint32_t)(val))
 
 void clock_init(void){
@@ -301,10 +303,15 @@ int main(int argc, char** argv) {
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "wlan");
 	_wland_dev = &dev;
+	/*
+	 * BCM43430/CYW43439 boards are sensitive to WL_REG_ON timing.
+	 * Match the known-good 10 ms low / 250 ms high pulse used by
+	 * upstream Zero 2 W bring-up.
+	 */
 	bcm283x_mailbox_gpio_config(1, true, false);
-       usleep(100000);
+	usleep(WLAN_REG_ON_LOW_DELAY_US);
 	bcm283x_mailbox_gpio_config(1, true, true);
-       usleep(100000);
+	usleep(WLAN_REG_ON_HIGH_DELAY_US);
 	if (brcm_init() != 0) {
 		brcm_log("wlan platform: brcm_init failed\n");
 		return -1;
