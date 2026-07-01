@@ -652,9 +652,16 @@ int brcmf_c_preinit_dcmds(void)
      */
     int8_t eventmask[BRCMF_EVENTING_MASK_LEN];
     memcpy(eventmask, brcmf_eventmask_legacy, sizeof(eventmask));
+    brcmf_eventmask_set(eventmask, BRCMF_E_SET_SSID);
     brcmf_eventmask_set(eventmask, BRCMF_E_AUTH);
     brcmf_eventmask_set(eventmask, BRCMF_E_ASSOC);
+    brcmf_eventmask_set(eventmask, BRCMF_E_DEAUTH);
+    brcmf_eventmask_set(eventmask, BRCMF_E_DEAUTH_IND);
     brcmf_eventmask_set(eventmask, BRCMF_E_DISASSOC);
+    brcmf_eventmask_set(eventmask, BRCMF_E_DISASSOC_IND);
+    brcmf_eventmask_set(eventmask, BRCMF_E_LINK);
+    brcmf_eventmask_set(eventmask, BRCMF_E_ROAM);
+    brcmf_eventmask_set(eventmask, BRCMF_E_TXFAIL);
     brcmf_eventmask_set(eventmask, BRCMF_E_SCAN_COMPLETE);
     brcmf_eventmask_set(eventmask, BRCMF_E_ESCAN_RESULT);
     err = brcmf_fil_iovar_data_set(0, "event_msgs", eventmask, BRCMF_EVENTING_MASK_LEN);
@@ -827,8 +834,7 @@ int connect(const char*ssid, const char* pmk)
 
     err = brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_CAPABLE);
     if (err) {
-        brcm_log("set mfp failed (%d)\n", err);
-        return err;
+        brcm_log("set mfp failed (%d), continue without mfp\n", err);
     }
 
     err = brcmf_fil_iovar_int_set(0, "wpa_auth", WPA2_AUTH_PSK);

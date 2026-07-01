@@ -656,6 +656,27 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, pr
 	return 0;
 }
 
+static int sound_fcntl(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
+		int cmd, proto_t* in, proto_t* out, void* p) {
+	UNUSED(dev);
+	UNUSED(info);
+	UNUSED(in);
+	UNUSED(out);
+	UNUSED(p);
+
+	from_pid = proc_getpid(from_pid);
+	pthread_mutex_lock(&_sound_lock);
+	/* #region debug-point xgo-pcm-open-fcntl */
+	slog("xgo-soundd: fcntl pid=%d fd=%d cmd=%d occupied=%d open_count=%d configured=%d prepared=%d started=%d\n",
+			from_pid, fd, cmd, _sound.occupied_pid, _sound.open_count,
+			_sound.configured ? 1 : 0,
+			_sound.prepared ? 1 : 0,
+			_sound.started ? 1 : 0);
+	/* #endregion debug-point xgo-pcm-open-fcntl */
+	pthread_mutex_unlock(&_sound_lock);
+	return -1;
+}
+
 static int sound_loop(vdevice_t* dev, void* p) {
 	bool wake_write = false;
 	uint8_t converted[SOUND_CONVERT_BUF_BYTES];
@@ -715,6 +736,7 @@ int main(int argc, char** argv) {
 	dev.close = sound_close;
 	dev.read = audio_read;
 	dev.write = sound_write;
+	dev.fcntl = sound_fcntl;
 	dev.dev_cntl = sound_dev_cntl;
 	dev.check_poll_events = sound_check_poll_events;
 	dev.loop_step = sound_loop;

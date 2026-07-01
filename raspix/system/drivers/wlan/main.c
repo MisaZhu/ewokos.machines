@@ -14,6 +14,9 @@
 #include <brcm/command.h>
 
 vdevice_t* _wland_dev = NULL;
+/* #region debug-point wlan-net-read-retry */
+static uint32_t _net_read_retry_with_pending = 0;
+/* #endregion */
 
 uint8_t buf[512];
 
@@ -212,6 +215,19 @@ static int net_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	(void)node;
 
 	int len = brcm_recv(buf + offset, size);
+	/* #region debug-point wlan-net-read-retry */
+	if (len <= 0) {
+		int pending = brcm_check_data();
+		if (pending > 0) {
+			_net_read_retry_with_pending++;
+			if (_net_read_retry_with_pending == 1 ||
+					(_net_read_retry_with_pending % 32) == 0) {
+				brcm_log("net_read retry-with-pending count=%u pending=%d size=%d\n",
+						_net_read_retry_with_pending, pending, size);
+			}
+		}
+	}
+	/* #endregion */
 	return (len > 0)?len:VFS_ERR_RETRY; 
 }
 

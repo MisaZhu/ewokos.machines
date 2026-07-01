@@ -59,11 +59,39 @@
 #define BRCMF_DPC_SLOW_USEC 2000U
 #define BRCMF_DPC_LOG_WINDOW_USEC 2000000U
 #define BRCMF_WORKER_BUSY_SLEEP_US 1000U
-#define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 8000U
+#define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 2000U
 #define BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US 20000U
 #define BRCMF_WORKER_IDLE_STEP_US 1000U
 #define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
-#define BRCMF_TX_BATCH_LIMIT 8
+#define BRCMF_TX_BATCH_LIMIT 16
+#define BRCMF_RX_QUEUE_SLOTS 128
+#define BRCMF_TX_QUEUE_SLOTS 128
+#define BRCMF_QUEUE_DROP_LOG_STEP 64U
+#define BRCMF_RX_FAIL_RECOVER_THRESHOLD 8U
+#define BRCMF_TX_FAIL_RECOVER_THRESHOLD 6U
+#define BRCMF_SCAN_RETRY_TICK 5000U
+#define BRCMF_RX_DROP_PRESSURE_DEPTH 64
+#define BRCMF_RX_DROP_STALL_MS 500U
+#define BRCMF_RX_READER_KICK_STALL_MS 200U
+#define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
+#define ETH_P_IPV6 0x86DDU
+#define BRCMF_E_SET_SSID 0U
+#define BRCMF_E_AUTH 3U
+#define BRCMF_E_DEAUTH 5U
+#define BRCMF_E_DEAUTH_IND 6U
+#define BRCMF_E_ASSOC 7U
+#define BRCMF_E_DISASSOC 11U
+#define BRCMF_E_DISASSOC_IND 12U
+#define BRCMF_E_LINK 16U
+#define BRCMF_E_ROAM 19U
+#define BRCMF_E_TXFAIL 20U
+#define BRCMF_E_SCAN_COMPLETE 26U
+#define BRCMF_E_RESET_COMPLETE 35U
+#define BRCMF_E_IF 54U
+#define BRCMF_E_ESCAN_RESULT 69U
+#define BRCMF_EVENT_MSG_LINK 0x01U
+#define BRCMF_E_STATUS_SUCCESS 0U
+#define BRCMF_E_STATUS_ERROR 16U
 
 /* watermark expressed in number of words */
 #define DEFAULT_F2_WATERMARK    0x8
@@ -376,6 +404,22 @@ struct brcmf_dev{
     bool scan_mpc_off;
     int priority;
     char ssid[32];
+    uint32_t rx_queue_drops;
+    uint32_t tx_queue_drops;
+    uint32_t rx_fail_count;
+    uint32_t tx_fail_count;
+    uint32_t recovery_count;
+    /* #region debug-point wlan-rx-overflow-counters */
+    uint32_t dbg_rx_enqueue_count;
+    uint32_t dbg_rx_dequeue_count;
+    uint32_t dbg_rx_high_watermark;
+    uint32_t dbg_rx_last_enqueue_ms;
+    uint32_t dbg_rx_last_dequeue_ms;
+    uint32_t dbg_rx_last_proto;
+    uint32_t dbg_rx_filtered_count;
+    uint32_t dbg_rx_reader_kick_count;
+    uint32_t dbg_rx_last_reader_kick_ms;
+    /* #endregion */
     enum WL_STATE  state;
 };
 
@@ -389,6 +433,8 @@ static pthread_t brcm_dpc_owner;
 static int brcm_dpc_depth;
 static bool brcm_dpc_owner_valid;
 static void brcmf_sdio_dpc(void);
+static void brcmf_scan_set_mpc(bool enable);
+static inline void brcm_wakeup_dev(int evt);
 
 static void brcmf_sync_init(void)
 {
@@ -506,6 +552,241 @@ static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
     _diag.dpc_count = 0;
     _diag.slow_dpc_count = 0;
     _diag.max_dpc_usec = 0;
+}
+
+static void brcmf_queue_reset(queue_buffer_t *queue)
+{
+    if (!queue)
+        return;
+    queue->pop_idx = queue->push_idx;
+}
+
+static void brcmf_flush_data_queues(void)
+{
+    if (!bus)
+        return;
+    brcmf_queue_reset(bus->rx_queue);
+    brcmf_queue_reset(bus->tx_queue);
+}
+
+static void brcmf_note_queue_drop(const char *name, uint32_t drops, int depth)
+{
+    int state = bus ? (int)bus->state : -1;
+
+    if (drops == 1 || (drops % BRCMF_QUEUE_DROP_LOG_STEP) == 0)
+        brcm_log("%s overflow: drops=%u depth=%d state=%d\n",
+                name, drops, depth, state);
+}
+
+/* #region debug-point wlan-rx-overflow-helpers */
+static bool brcmf_eth_is_broadcast(const uint8_t *addr)
+{
+    int i;
+
+    for (i = 0; i < 6; i++) {
+        if (addr[i] != 0xff)
+            return false;
+    }
+    return true;
+}
+
+static void brcmf_debug_note_rx_enqueue(const uint8_t *data, int len, int depth)
+{
+    uint32_t now_ms;
+    uint32_t proto = 0;
+    int is_bc = 0;
+    int is_mc = 0;
+
+    if (!bus)
+        return;
+
+    now_ms = kernel_tic_ms(0);
+    bus->dbg_rx_enqueue_count++;
+    bus->dbg_rx_last_enqueue_ms = now_ms;
+
+    if (depth > (int)bus->dbg_rx_high_watermark) {
+        bus->dbg_rx_high_watermark = (uint32_t)depth;
+        brcm_log("rxq high-water=%d enq=%u deq=%u state=%d\n",
+                depth, bus->dbg_rx_enqueue_count,
+                bus->dbg_rx_dequeue_count, (int)bus->state);
+    }
+
+    if (len >= 14) {
+        proto = (uint32_t)(((uint32_t)data[12] << 8) | (uint32_t)data[13]);
+        is_bc = brcmf_eth_is_broadcast(data) ? 1 : 0;
+        is_mc = (!is_bc && (data[0] & 0x01)) ? 1 : 0;
+        bus->dbg_rx_last_proto = proto;
+    }
+
+    if (depth >= 96 &&
+            (bus->dbg_rx_enqueue_count == 1 ||
+             (bus->dbg_rx_enqueue_count % 64) == 0)) {
+        brcm_log("rxq enq=%u deq=%u depth=%d len=%d proto=0x%04x bc=%d mc=%d dt=%u\n",
+                bus->dbg_rx_enqueue_count,
+                bus->dbg_rx_dequeue_count,
+                depth,
+                len,
+                proto,
+                is_bc,
+                is_mc,
+                now_ms - bus->dbg_rx_last_dequeue_ms);
+    }
+}
+
+static void brcmf_debug_note_rx_dequeue(int len, int depth)
+{
+    uint32_t now_ms;
+
+    if (!bus)
+        return;
+
+    now_ms = kernel_tic_ms(0);
+    bus->dbg_rx_dequeue_count++;
+    bus->dbg_rx_last_dequeue_ms = now_ms;
+
+    if (depth >= 64 &&
+            (bus->dbg_rx_dequeue_count == 1 ||
+             (bus->dbg_rx_dequeue_count % 32) == 0)) {
+        brcm_log("rxq deq=%u enq=%u depth=%d len=%d proto=0x%04x\n",
+                bus->dbg_rx_dequeue_count,
+                bus->dbg_rx_enqueue_count,
+                depth,
+                len,
+                bus->dbg_rx_last_proto);
+    }
+}
+
+static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
+{
+    uint32_t now_ms;
+    uint32_t stalled_ms;
+    uint32_t proto = 0;
+    bool is_bc;
+    bool is_mc;
+
+    if (!bus || !data || len < 14)
+        return false;
+
+    if (depth < BRCMF_RX_DROP_PRESSURE_DEPTH)
+        return false;
+
+    now_ms = kernel_tic_ms(0);
+    stalled_ms = now_ms - bus->dbg_rx_last_dequeue_ms;
+    if (stalled_ms < BRCMF_RX_DROP_STALL_MS)
+        return false;
+
+    proto = (uint32_t)(((uint32_t)data[12] << 8) | (uint32_t)data[13]);
+    is_bc = brcmf_eth_is_broadcast(data);
+    is_mc = (!is_bc && (data[0] & 0x01)) != 0;
+
+    if (!is_mc && proto != ETH_P_IPV6)
+        return false;
+
+    bus->dbg_rx_filtered_count++;
+    if (bus->dbg_rx_filtered_count == 1 ||
+            (bus->dbg_rx_filtered_count % 64) == 0) {
+        brcm_log("rxq filter drops=%u depth=%d proto=0x%04x mc=%d bc=%d stalled=%u\n",
+                bus->dbg_rx_filtered_count,
+                depth,
+                proto,
+                is_mc ? 1 : 0,
+                is_bc ? 1 : 0,
+                stalled_ms);
+    }
+    return true;
+}
+
+static void brcmf_debug_maybe_kick_reader(void)
+{
+    uint32_t now_ms;
+    uint32_t stalled_ms;
+    int depth;
+
+    if (!bus || bus->state != CONNECTED)
+        return;
+
+    depth = queue_buffer_check(bus->rx_queue);
+    if (depth <= 0)
+        return;
+
+    now_ms = kernel_tic_ms(0);
+    stalled_ms = now_ms - bus->dbg_rx_last_dequeue_ms;
+    if (stalled_ms < BRCMF_RX_READER_KICK_STALL_MS)
+        return;
+
+    if ((now_ms - bus->dbg_rx_last_reader_kick_ms) <
+            BRCMF_RX_READER_KICK_INTERVAL_MS)
+        return;
+
+    bus->dbg_rx_last_reader_kick_ms = now_ms;
+    bus->dbg_rx_reader_kick_count++;
+    if (bus->dbg_rx_reader_kick_count == 1 ||
+            (bus->dbg_rx_reader_kick_count % 16) == 0) {
+        brcm_log("rxq reader-kick count=%u depth=%d stalled=%u enq=%u deq=%u\n",
+                bus->dbg_rx_reader_kick_count,
+                depth,
+                stalled_ms,
+                bus->dbg_rx_enqueue_count,
+                bus->dbg_rx_dequeue_count);
+    }
+    brcm_wakeup_dev(VFS_EVT_RD);
+}
+/* #endregion */
+
+static void brcmf_reset_runtime_state(bool flush_queues)
+{
+    if (!bus)
+        return;
+
+    bus->scan_results_ready = false;
+    bus->scan_mpc_off = false;
+    bus->rxpending = false;
+    bus->rxskip = false;
+    bus->cur_read.len = 0;
+    bus->ctrl_frame_stat = false;
+    bus->ctrl_frame_err = 0;
+    bus->fcstate = 0;
+    bus->intstatus = 0;
+    bus->tx_starving = false;
+    bus->tx_starve_usec = 0;
+    memset(bus->ssid, 0, sizeof(bus->ssid));
+    if (flush_queues)
+        brcmf_flush_data_queues();
+}
+
+static void brcmf_mark_connected(void)
+{
+    if (!bus)
+        return;
+
+    bus->state = CONNECTED;
+    bus->rx_fail_count = 0;
+    bus->tx_fail_count = 0;
+    brcmf_scan_set_mpc(true);
+    brcm_wakeup_dev(VFS_EVT_WR);
+}
+
+static void brcmf_mark_disconnected(const char *reason,
+        uint32_t event_type, uint32_t event_status, uint32_t event_reason)
+{
+    bool was_connected;
+
+    if (!bus)
+        return;
+
+    was_connected = (bus->state == CONNECTED || bus->state == CONNECTING);
+    bus->recovery_count++;
+    bus->state = DISCONNECTED;
+    brcmf_reset_runtime_state(true);
+    brcmf_scan_set_mpc(true);
+    if (was_connected || reason != NULL) {
+        brcm_log("link reset: reason=%s event=%u status=%u fw_reason=%u recoveries=%u\n",
+                reason ? reason : "unknown",
+                event_type,
+                event_status,
+                event_reason,
+                bus->recovery_count);
+    }
 }
 
 static uint32_t brcmf_diag_last_dpc_usec(void)
@@ -1527,6 +1808,12 @@ static void brcmf_sdio_rxfail(bool abort, bool rtx)
 
     /* Clear partial in any case */
     bus->cur_read.len = 0;
+    bus->rx_fail_count++;
+    if (bus->state == CONNECTED &&
+            bus->rx_fail_count >= BRCMF_RX_FAIL_RECOVER_THRESHOLD) {
+        brcmf_mark_disconnected("rxfail threshold", 0, bus->rx_fail_count, 0);
+        bus->rx_fail_count = 0;
+    }
 }
 
 extern void
@@ -1908,6 +2195,7 @@ void brcmf_rx_event( struct sk_buff *skb)
     uint8_t *data_end;
     uint32_t event_type;
     uint32_t event_status;
+    uint32_t event_reason;
     uint32_t datalen;
 
     if (skb->len < (4 + sizeof(struct brcmf_event))) {
@@ -1931,13 +2219,14 @@ void brcmf_rx_event( struct sk_buff *skb)
 
     event_type = emsg.event_code;
     event_status = emsg.status;
+    event_reason = emsg.reason;
     data = (uint8_t *)(event + 1);
     datalen = emsg.datalen;
     data_end = skb->data + skb->len;
     if (data + datalen > data_end)
         datalen = data_end > data ? (uint32_t)(data_end - data) : 0;
 
-    if(event_type == 69){
+    if(event_type == BRCMF_E_ESCAN_RESULT){
         struct brcmf_escan_result_le *result;
         uint8_t *pos;
         uint8_t *end;
@@ -1963,16 +2252,34 @@ void brcmf_rx_event( struct sk_buff *skb)
             scan_result(info);
             pos += length;
         }
-    }else if(event_type == 26){
+    }else if(event_type == BRCMF_E_SCAN_COMPLETE){
         bus->scan_results_ready = true;
-    }else if(event_type == 54){
+    }else if(event_type == BRCMF_E_IF){
         if (datalen < sizeof(struct brcmf_if_event))
             goto done;
         ifevent = (struct brcmf_if_event *)data;
-    }else if(event_type == 0 && event_status == 0){
-        brcmf_scan_set_mpc(true);
-        bus->state = CONNECTED;
-        brcm_wakeup_dev(VFS_EVT_WR);
+    }else if((event_type == BRCMF_E_SET_SSID ||
+              event_type == BRCMF_E_LINK ||
+              event_type == BRCMF_E_ASSOC ||
+              event_type == BRCMF_E_ROAM) &&
+             event_status == BRCMF_E_STATUS_SUCCESS &&
+             (emsg.flags & BRCMF_EVENT_MSG_LINK)){
+        brcmf_mark_connected();
+    }else if(event_type == BRCMF_E_DEAUTH ||
+             event_type == BRCMF_E_DEAUTH_IND ||
+             event_type == BRCMF_E_DISASSOC ||
+             event_type == BRCMF_E_DISASSOC_IND){
+        brcmf_mark_disconnected("deauth/disassoc", event_type, event_status, event_reason);
+    }else if((event_type == BRCMF_E_SET_SSID ||
+              event_type == BRCMF_E_ASSOC ||
+              event_type == BRCMF_E_AUTH ||
+              event_type == BRCMF_E_ROAM) &&
+             event_status != BRCMF_E_STATUS_SUCCESS){
+        brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
+    }else if(event_type == BRCMF_E_LINK &&
+             (event_status != BRCMF_E_STATUS_SUCCESS ||
+              !(emsg.flags & BRCMF_EVENT_MSG_LINK))){
+        brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
     }
 done:
     skb_free(skb);
@@ -1982,9 +2289,27 @@ void brcmf_rx_frame(struct sk_buff *skb)
 {
     //remove 4byte head
     skb_pull(skb, 4);
+    /* #region debug-point wlan-rx-overflow-filter */
+    if (brcmf_should_drop_rx_packet(skb->data, skb->len,
+            queue_buffer_check(bus->rx_queue))) {
+        skb_free(skb);
+        return;
+    }
+    /* #endregion */
     ipc_disable();
-    queue_buffer_push(bus->rx_queue, skb->data, skb->len);
+    int pushed = queue_buffer_push(bus->rx_queue, skb->data, skb->len);
+    int depth = queue_buffer_check(bus->rx_queue);
     ipc_enable();
+    if (pushed == 0) {
+        bus->rx_queue_drops++;
+        brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops,
+                depth);
+    } else {
+        bus->rx_fail_count = 0;
+        /* #region debug-point wlan-rx-overflow-enqueue */
+        brcmf_debug_note_rx_enqueue(skb->data, skb->len, depth);
+        /* #endregion */
+    }
     brcm_wakeup_dev(VFS_EVT_RD);
     skb_free(skb);
 }
@@ -2182,6 +2507,8 @@ static uint32_t brcmf_sdio_hostmail(void)
     /* dongle indicates the firmware has halted/crashed */
     if (hmb_data & HMB_DATA_FWHALT) {
         brcm_log("mailbox indicates firmware halted\n");
+        brcmf_mark_disconnected("firmware halted", BRCMF_E_RESET_COMPLETE,
+                BRCMF_E_STATUS_ERROR, HMB_DATA_FWHALT);
     }
 
     /* Dongle recomposed rx frames, accept them again */
@@ -2304,6 +2631,13 @@ static void brcmf_sdio_txfail(void)
         lo = brcmf_sdiod_readb(SBSDIO_FUNC1_WFRAMEBCLO, NULL);
         if ((hi == 0) && (lo == 0))
             break;
+    }
+    bus->tx_fail_count++;
+    if (bus->state == CONNECTED &&
+            bus->tx_fail_count >= BRCMF_TX_FAIL_RECOVER_THRESHOLD) {
+        brcmf_mark_disconnected("txfail threshold", BRCMF_E_TXFAIL,
+                bus->tx_fail_count, 0);
+        bus->tx_fail_count = 0;
     }
 }
 
@@ -2486,7 +2820,7 @@ static void brcmf_sdio_dpc(void)
         intstatus &= ~I_HMB_FRAME_IND;
     /* On frame indication, read available frames */
     if ((intstatus & I_HMB_FRAME_IND) && (bus->clkstate == CLK_AVAIL)) {
-        brcmf_sdio_readframes(20);
+        brcmf_sdio_readframes(bus->rxbound);
         if (!bus->rxpending)
             intstatus &= ~I_HMB_FRAME_IND;
     }
@@ -2540,6 +2874,7 @@ static void brcmf_sdio_dpc(void)
             skb_free(pkt);
             break;
         }
+        bus->tx_fail_count = 0;
         bus->tx_seq++;
         skb_free(pkt);
     }
@@ -2756,8 +3091,8 @@ int brcmf_sdiod_probe(void){
     bus->rxhdr = malloc(64);
     bus->rxctl = malloc(8192);
 
-    bus->rx_queue = queue_buffer_alloc(32, MAX_FRAME_SIZE);
-    bus->tx_queue = queue_buffer_alloc(32, MAX_FRAME_SIZE);
+    bus->rx_queue = queue_buffer_alloc(BRCMF_RX_QUEUE_SLOTS, MAX_FRAME_SIZE);
+    bus->tx_queue = queue_buffer_alloc(BRCMF_TX_QUEUE_SLOTS, MAX_FRAME_SIZE);
     if (!bus->rxhdr || !bus->rxctl || !bus->rx_queue || !bus->tx_queue) {
         brcm_log("pi4-wlan: buffer alloc failed rxhdr=%p rxctl=%p rxq=%p txq=%p\n",
               bus->rxhdr, bus->rxctl, bus->rx_queue, bus->tx_queue);
@@ -2929,7 +3264,7 @@ void* brcm_thread(void* p) {
                 brcmf_sdio_readconsole();
 
             if (tick >= next_scan_tick && bus->state != CONNECTED) {
-                next_scan_tick = tick + 100000;
+                next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
                 memset(bus->ssid, 0, sizeof(bus->ssid));
                 bus->scan_results_ready = false;
                 bus->state = SCANNING;
@@ -2969,6 +3304,10 @@ void* brcm_thread(void* p) {
                 }
             }
         }
+
+        /* #region debug-point wlan-rx-reader-kick */
+        brcmf_debug_maybe_kick_reader();
+        /* #endregion */
 
         if (run_dpc || brcmf_worker_has_work()) {
             sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
@@ -3011,6 +3350,10 @@ int brcm_recv(uint8_t *buf, int len){
     if (bus == NULL || bus->rx_queue == NULL)
         return 0;
     int ret = queue_buffer_pop(bus->rx_queue, buf, len);
+    /* #region debug-point wlan-rx-overflow-dequeue */
+    if (ret > 0)
+        brcmf_debug_note_rx_dequeue(ret, queue_buffer_check(bus->rx_queue));
+    /* #endregion */
     return ret;
 }
 
@@ -3020,6 +3363,11 @@ int brcm_send(uint8_t *buf, int len){
     if(bus->state != CONNECTED)
         return 0;
     int ret = queue_buffer_push(bus->tx_queue, buf, len);
+    if (ret == 0) {
+        bus->tx_queue_drops++;
+        brcmf_note_queue_drop("tx_queue", bus->tx_queue_drops,
+                queue_buffer_check(bus->tx_queue));
+    }
     return ret;
 }
 
