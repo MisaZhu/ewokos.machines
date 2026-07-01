@@ -330,6 +330,8 @@ static void brcmf_sdio_buscore_activate(uint32_t rstvec)
 {
     struct brcmf_core *core = brcmf_chip_get_core(BCMA_CORE_SDIO_DEV);
     uint32_t reg_addr;
+    uint32_t readback = 0;
+    int err = 0;
 
     /* clear all interrupts */
     reg_addr = core->base + SD_REG(intstatus);
@@ -337,8 +339,14 @@ static void brcmf_sdio_buscore_activate(uint32_t rstvec)
 
     if (rstvec)
         /* Write reset vector to address 0 */
-        brcmf_sdiod_ramrw(true, 0, (void *)&rstvec,
+        err = brcmf_sdiod_ramrw(true, 0, (void *)&rstvec,
                   sizeof(rstvec));
+
+    if (rstvec)
+        err = brcmf_sdiod_ramrw(false, 0, (void *)&readback, sizeof(readback));
+
+    brcm_log("dbg[buscore-activate]: rstvec=0x%08x readback=0x%08x err=%d\n",
+          rstvec, readback, err);
 }
 
 static uint32_t brcmf_sdio_buscore_read32(uint32_t addr)
@@ -789,7 +797,7 @@ static bool brcmf_chip_ca7_set_active(uint32_t rstvec)
     return true;
 }
 
-static bool brcmf_chip_cm3_set_active(void)
+static bool brcmf_chip_cm3_set_active(uint32_t rstvec)
 {
     struct brcmf_core *core;
 
@@ -799,7 +807,13 @@ static bool brcmf_chip_cm3_set_active(void)
         return false;
     }
 
-    brcmf_sdio_buscore_activate(0);
+    /*
+     * CM3-based chips still need the firmware reset vector written to
+     * address 0 before releasing the ARM core. If we skip this, the
+     * NVRAM token remains at the end of RAM and firmware never publishes
+     * its sdpcm_shared pointer.
+     */
+    brcmf_sdio_buscore_activate(rstvec);
 
     core = brcmf_chip_get_core(BCMA_CORE_ARM_CM3);
     brcmf_chip_resetcore(core, 0, 0, 0);
@@ -1155,7 +1169,7 @@ bool brcmf_chip_set_active(uint32_t rstvec)
         return brcmf_chip_ca7_set_active(rstvec);
     arm = brcmf_chip_get_core(BCMA_CORE_ARM_CM3);
     if (arm)
-        return brcmf_chip_cm3_set_active();
+        return brcmf_chip_cm3_set_active(rstvec);
 
     return false;
 }

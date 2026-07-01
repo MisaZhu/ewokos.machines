@@ -1,8 +1,6 @@
 
 #include <stdint.h>
 #include <arch/bcm283x/gpio.h>
-#include <ewoksys/syscall.h>
-#include <sysinfo.h>
 
 #include <types.h>
 #include <string.h>
@@ -287,17 +285,6 @@ struct sdhci_host {
 };
 
 static struct sdhci_host _host;
-
-static int bcm283x_is_pi4_family(void)
-{
-	sys_info_t sysinfo;
-
-	memset(&sysinfo, 0, sizeof(sysinfo));
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-	return strstr(sysinfo.machine, "pi4") != NULL ||
-		strstr(sysinfo.machine, "cm4") != NULL ||
-		strstr(sysinfo.machine, "pi5") != NULL;
-}
 
 static void bcm283x_sdhci_gpio_init(void){
     bcm283x_gpio_init();
