@@ -347,9 +347,7 @@ static uint32_t brcmf_sdio_buscore_read32(uint32_t addr)
     int err;
 
     val = brcmf_sdiod_readl(addr, &err);
-    if(err){
-        brcm_log("%s 0x%08x error:%d\n", __func__, addr, err);
-    }
+    (void)err;
 
     return val;
 }

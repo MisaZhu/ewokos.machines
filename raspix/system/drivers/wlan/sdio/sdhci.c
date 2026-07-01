@@ -729,6 +729,11 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 				transfer_done = true;
 				continue;
 			}
+		} else {
+			/* Yield while waiting for data or DATA_END to
+			 * prevent monopolising the CPU under heavy traffic.
+			 */
+			sleep(0);
 		}
 		if (timeout-- == 0){
 			brcm_log("%s: Transfer data timeout\n", __func__);
@@ -789,6 +794,7 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 			}
 		}
 		time++;
+		sleep(0);
 	}
 
 	sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
@@ -886,7 +892,7 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 			memcpy(data->dest, host->align_buffer, trans_bytes);
 		return 0;
 	}
-	brcm_log("sdhci cmd: %d ret: %d error: %x\n", cmd->cmdidx, ret, stat);
+
 	sdhci_reset(SDHCI_RESET_CMD);
 	sdhci_reset(SDHCI_RESET_DATA);
 	

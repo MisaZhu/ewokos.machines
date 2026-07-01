@@ -71,6 +71,15 @@ static const char *brcmf_cmd_name(uint32_t cmd)
     }
 }
 
+static bool brcmf_fwerr_is_ignorable(uint32_t cmd, bool set, int32_t fwerr)
+{
+    /*
+     * Some 4345/43455 firmwares reject SET_ASSOC_PREFER even though normal
+     * join flow works with join_pref alone. Treat this as an optional hint.
+     */
+    return set && cmd == BRCMF_C_SET_ASSOC_PREFER && fwerr == -13;
+}
+
 /* IOCTL from host to device are limited in length. A device can only handle
  * ethernet frame size. This limitation is to be applied by protocol layer.
  */
@@ -325,6 +334,8 @@ brcmf_fil_cmd_data(int ifidx, uint32_t cmd, void *data, uint32_t len, bool set)
         brcm_log("cmd %s(%u) failed: error=%d set=%d len=%u\n",
               brcmf_cmd_name(cmd), cmd, err, set ? 1 : 0, len);
     } else if (fwerr < 0) {
+        if (brcmf_fwerr_is_ignorable(cmd, set, fwerr))
+            return 0;
         brcm_log("cmd %s(%u) firmware error: %d set=%d len=%u\n",
               brcmf_cmd_name(cmd), cmd, fwerr, set ? 1 : 0, len);
         err = -EBADE;
@@ -468,16 +479,6 @@ static int brcmf_c_download(int ifidx, uint16_t flag,
 static int brcmf_set_join_pref(int ifidx)
 {
     struct brcmf_join_pref_params join_pref_params[2];
-    int err;
-
-    /*
-     * Some firmware variants reject WLC_BAND_ALL for assoc prefer even though
-     * they accept the join preference iovar. Fall back to AUTO instead of
-     * leaving the firmware in an unsupported preference state.
-     */
-    err = brcmf_fil_cmd_int_set(ifidx, BRCMF_C_SET_ASSOC_PREFER, WLC_BAND_ALL);
-    if (err)
-        err = brcmf_fil_cmd_int_set(ifidx, BRCMF_C_SET_ASSOC_PREFER, WLC_BAND_AUTO);
 
     join_pref_params[0].type = BRCMF_JOIN_PREF_RSSI_DELTA;
     join_pref_params[0].len = 2;
@@ -487,12 +488,8 @@ static int brcmf_set_join_pref(int ifidx)
     join_pref_params[1].len = 2;
     join_pref_params[1].rssi_gain = 0;
     join_pref_params[1].band = 0;
-    {
-        int join_err = brcmf_fil_iovar_data_set(0, "join_pref", &join_pref_params,
-                           sizeof(join_pref_params));
-        if (join_err)
-            return join_err;
-    }
+    int err = brcmf_fil_iovar_data_set(0, "join_pref", &join_pref_params,
+                       sizeof(join_pref_params));
     return err;
 }
 
