@@ -74,6 +74,8 @@
 #define BRCMF_RX_DROP_STALL_MS 500U
 #define BRCMF_RX_READER_KICK_STALL_MS 200U
 #define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
+#define ETH_P_IP 0x0800U
+#define ETH_P_ARP 0x0806U
 #define ETH_P_IPV6 0x86DDU
 #define BRCMF_E_SET_SSID 0U
 #define BRCMF_E_AUTH 3U
@@ -580,6 +582,15 @@ static bool brcmf_eth_is_broadcast(const uint8_t *addr)
     return true;
 }
 
+static bool brcmf_eth_is_local(const uint8_t *addr)
+{
+    uint8_t mac[6];
+
+    memset(mac, 0, sizeof(mac));
+    get_ethaddr((char *)mac);
+    return memcmp(addr, mac, sizeof(mac)) == 0;
+}
+
 static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
 {
     uint32_t now_ms;
@@ -591,6 +602,19 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     if (!bus || !data || len < 14)
         return false;
 
+    proto = (uint32_t)(((uint32_t)data[12] << 8) | (uint32_t)data[13]);
+    is_bc = brcmf_eth_is_broadcast(data);
+    is_mc = (!is_bc && (data[0] & 0x01)) != 0;
+
+    if (bus->state == CONNECTED) {
+        if (!is_bc && !is_mc && !brcmf_eth_is_local(data)) {
+            return true;
+        }
+        if (proto == ETH_P_IPV6 || is_mc) {
+            return true;
+        }
+    }
+
     if (depth < BRCMF_RX_DROP_PRESSURE_DEPTH)
         return false;
 
@@ -599,11 +623,10 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     if (stalled_ms < BRCMF_RX_DROP_STALL_MS)
         return false;
 
-    proto = (uint32_t)(((uint32_t)data[12] << 8) | (uint32_t)data[13]);
-    is_bc = brcmf_eth_is_broadcast(data);
-    is_mc = (!is_bc && (data[0] & 0x01)) != 0;
-
     if (!is_mc && proto != ETH_P_IPV6)
+        return false;
+
+    if (proto != ETH_P_IP && proto != ETH_P_ARP && proto != ETH_P_IPV6)
         return false;
     return true;
 }
