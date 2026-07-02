@@ -6,11 +6,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <sysinfo.h>
+#include <ewoksys/syscall.h>
 #include <utils/log.h>
 #include <netinet/if_ether.h>
 
 #include "firmware_bin.h"
 #include "firmware_43430.h"
+#include "firmware_43436.h"
 #include "chip.h"
 #include "brcm_hw_ids.h"
 
@@ -42,18 +45,59 @@ struct brcmf_fw_resources {
     const char *name;
 };
 
+static bool brcmf_fw_is_pi_zero_2w(void)
+{
+    static int cached = -1;
+    sys_info_t sysinfo;
+
+    if (cached >= 0)
+        return cached != 0;
+
+    memset(&sysinfo, 0, sizeof(sysinfo));
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+
+    cached = strstr(sysinfo.machine, "pi2w") != NULL;
+    brcm_log("wlan: sysinfo machine='%s' pi2w=%d\n", sysinfo.machine, cached);
+    return cached != 0;
+}
+
 static bool brcmf_fw_select_resources(uint32_t chip,
                       struct brcmf_fw_resources *res)
 {
+    uint32_t chiprev = brcmf_chip_get_chiprev();
+
     memset(res, 0, sizeof(*res));
 
     switch (chip) {
     case BRCM_CC_43430_CHIP_ID:
     case CY_CC_43439_CHIP_ID:
-        /*
-         * Raspberry Pi 3B / Zero W / Zero 2 W use the 43430 family with
-         * the same board parameters in current upstream firmware bundles.
-         */
+        if (brcmf_fw_is_pi_zero_2w()) {
+            if (chiprev == 1) {
+                res->fw = brcmfmac43436s_sdio_bin;
+                res->fw_len = brcmfmac43436s_sdio_bin_len;
+                res->nvram = brcmfmac43436s_sdio_txt;
+                res->nvram_len = brcmfmac43436s_sdio_txt_len;
+                res->clm = NULL;
+                res->clm_len = 0;
+                res->name = "43436s";
+                return true;
+            }
+
+            if (chiprev == 2) {
+                res->fw = brcmfmac43436_sdio_bin;
+                res->fw_len = brcmfmac43436_sdio_bin_len;
+                res->nvram = brcmfmac43436_sdio_txt;
+                res->nvram_len = brcmfmac43436_sdio_txt_len;
+                res->clm = brcmfmac43436_sdio_clm_blob;
+                res->clm_len = brcmfmac43436_sdio_clm_blob_len;
+                res->name = "43436";
+                return true;
+            }
+
+            brcm_log("wlan: pi2w chip BCM%x rev %u unknown, fallback to 43430\n",
+                  chip, chiprev);
+        }
+
         res->fw = cyfmac43430_sdio_bin;
         res->fw_len = cyfmac43430_sdio_bin_len;
         res->nvram = brcmfmac43430_sdio_txt;
@@ -81,11 +125,16 @@ static bool brcmf_fw_select_resources(uint32_t chip,
 static bool brcmf_fw_get_resources(struct brcmf_fw_resources *res)
 {
     uint32_t chip = brcmf_chip_get_chipid();
+    uint32_t chiprev = brcmf_chip_get_chiprev();
 
     if (!brcmf_fw_select_resources(chip, res)) {
         brcm_log("unsupported firmware mapping for chip BCM%x\n", chip);
         return false;
     }
+
+    brcm_log("wlan: selected fw=%s chip=BCM%x/%u pi2w=%d\n",
+          res->name ? res->name : "unknown", chip, chiprev,
+          brcmf_fw_is_pi_zero_2w());
 
     return true;
 }

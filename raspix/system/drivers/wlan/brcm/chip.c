@@ -1223,3 +1223,8 @@ uint32_t brcmf_chip_get_chipid(void)
 {
     return pub.chip;
 }
+
+uint32_t brcmf_chip_get_chiprev(void)
+{
+    return pub.chiprev;
+}
