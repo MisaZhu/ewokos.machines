@@ -345,8 +345,6 @@ static void brcmf_sdio_buscore_activate(uint32_t rstvec)
     if (rstvec)
         err = brcmf_sdiod_ramrw(false, 0, (void *)&readback, sizeof(readback));
 
-    brcm_log("dbg[buscore-activate]: rstvec=0x%08x readback=0x%08x err=%d\n",
-          rstvec, readback, err);
 }
 
 static uint32_t brcmf_sdio_buscore_read32(uint32_t addr)

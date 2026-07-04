@@ -56,13 +56,18 @@
 #define BRCMF_RAMRW_SCRATCH (BRCMF_RAMRW_CHUNK + 4)
 #define BRCMF_FIRSTREAD (1 << 6)
 #define BRCMF_CONSOLE   10  /* watchdog interval to poll console */
-#define BRCMF_DPC_SLOW_USEC 2000U
-#define BRCMF_DPC_LOG_WINDOW_USEC 2000000U
 #define BRCMF_WORKER_BUSY_SLEEP_US 1000U
 #define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 2000U
 #define BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US 20000U
 #define BRCMF_WORKER_IDLE_STEP_US 1000U
 #define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
+#define BRCMF_CTL_FAST_POLL_LOOPS 8U
+#define BRCMF_CTL_MEDIUM_POLL_LOOPS 32U
+#define BRCMF_CTL_FAST_SLEEP_US 250U
+#define BRCMF_CTL_MEDIUM_SLEEP_US 1000U
+#define BRCMF_CTL_SLOW_SLEEP_US 4000U
+#define BRCMF_CTL_TX_TIMEOUT_US 50000U
+#define BRCMF_CTL_RX_TIMEOUT_US 1000000U
 #define BRCMF_TX_BATCH_LIMIT 16
 #define BRCMF_RX_QUEUE_SLOTS 128
 #define BRCMF_TX_QUEUE_SLOTS 128
@@ -471,16 +476,6 @@ static void brcmf_dpc_leave(void)
     pthread_mutex_unlock(&brcm_dpc_mutex);
 }
 
-typedef struct {
-    uint32_t window_start_usec;
-    uint32_t dpc_count;
-    uint32_t slow_dpc_count;
-    uint32_t max_dpc_usec;
-    uint32_t last_dpc_usec;
-} brcmf_diag_t;
-
-static brcmf_diag_t _diag = {0};
-
 static uint32_t brcmf_now_usec(void)
 {
     struct timeval tv;
@@ -495,56 +490,6 @@ static uint32_t brcmf_now_usec(void)
 static uint32_t brcmf_elapsed_usec(uint32_t start_usec, uint32_t now_usec)
 {
     return now_usec - start_usec;
-}
-
-static void brcmf_diag_note_dpc(uint32_t elapsed_usec)
-{
-    uint32_t now_usec;
-    int rxq = 0;
-    int txq = 0;
-
-    if (!bus)
-        return;
-
-    now_usec = brcmf_now_usec();
-    if (_diag.window_start_usec == 0)
-        _diag.window_start_usec = now_usec;
-
-    _diag.dpc_count++;
-    _diag.last_dpc_usec = elapsed_usec;
-    if (elapsed_usec >= BRCMF_DPC_SLOW_USEC)
-        _diag.slow_dpc_count++;
-    if (elapsed_usec > _diag.max_dpc_usec)
-        _diag.max_dpc_usec = elapsed_usec;
-
-    if (now_usec == 0 ||
-            brcmf_elapsed_usec(_diag.window_start_usec, now_usec) < BRCMF_DPC_LOG_WINDOW_USEC)
-        return;
-
-    if (bus->rx_queue)
-        rxq = queue_buffer_check(bus->rx_queue);
-    if (bus->tx_queue)
-        txq = queue_buffer_check(bus->tx_queue);
-
-    /*if (_diag.slow_dpc_count > 0 || _diag.max_dpc_usec >= BRCMF_DPC_SLOW_USEC) {
-        brcm_log("dpc diag cnt=%u slow=%u max=%uus state=%d clk=%d rxq=%d txq=%d rxlen=%d ctrl=%d pending=%d\n",
-                _diag.dpc_count,
-                _diag.slow_dpc_count,
-                _diag.max_dpc_usec,
-                bus->state,
-                bus->clkstate,
-                rxq,
-                txq,
-                bus->rxlen,
-                bus->ctrl_frame_stat ? 1 : 0,
-                bus->rxpending ? 1 : 0);
-    }
-    */
-
-    _diag.window_start_usec = now_usec;
-    _diag.dpc_count = 0;
-    _diag.slow_dpc_count = 0;
-    _diag.max_dpc_usec = 0;
 }
 
 static void brcmf_queue_reset(queue_buffer_t *queue)
@@ -713,11 +658,6 @@ static void brcmf_mark_disconnected(const char *reason,
     }
 }
 
-static uint32_t brcmf_diag_last_dpc_usec(void)
-{
-    return _diag.last_dpc_usec;
-}
-
 static bool brcmf_worker_has_work(void)
 {
     if (!bus)
@@ -752,6 +692,34 @@ static uint32_t brcmf_worker_idle_cap_usec(void)
         return BRCMF_WORKER_CONNECTED_IDLE_MAX_US;
 
     return BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US;
+}
+
+static bool brcmf_ctl_poll_should_run_dpc(uint32_t attempt)
+{
+    if (attempt < BRCMF_CTL_FAST_POLL_LOOPS)
+        return true;
+
+    if (brcmf_worker_irq_pending())
+        return true;
+
+    if (!brcmf_worker_has_work())
+        return false;
+
+    if (attempt < BRCMF_CTL_MEDIUM_POLL_LOOPS)
+        return (attempt & 1U) == 0;
+
+    return (attempt & 3U) == 0;
+}
+
+static uint32_t brcmf_ctl_poll_sleep_usec(uint32_t attempt)
+{
+    if (attempt < BRCMF_CTL_FAST_POLL_LOOPS)
+        return BRCMF_CTL_FAST_SLEEP_US;
+
+    if (attempt < BRCMF_CTL_MEDIUM_POLL_LOOPS)
+        return BRCMF_CTL_MEDIUM_SLEEP_US;
+
+    return BRCMF_CTL_SLOW_SLEEP_US;
 }
 
 static void brcmf_scan_set_mpc(bool enable)
@@ -1228,7 +1196,6 @@ static int brcmf_sdio_sdclk(bool on)
 
 static int __attribute__((unused)) brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh);
 static bool brcmf_chip_sr_capable();
-static void brcmf_dbg_dump_ready_state(const char *tag);
 
 
 /* Turn backplane clock on or off */
@@ -1237,12 +1204,6 @@ static int brcmf_sdio_htclk(bool on, bool pendok)
     int err;
     uint8_t clkctl, clkreq, devctl;
     unsigned long timeout;
-
-    /* #region debug-point wlan-ht-timeout-htclk-enter */
-    brcm_log("dbg[htclk-enter]: on=%d pendok=%d clkstate=%d alp_only=%d\n",
-          on, pendok, bus ? bus->clkstate : -1, bus ? bus->alp_only : -1);
-    brcmf_dbg_dump_ready_state("htclk-enter");
-    /* #endregion */
 
     clkctl = 0;
 
@@ -1307,9 +1268,6 @@ static int brcmf_sdio_htclk(bool on, bool pendok)
             return -EBADE;
         }
         if (!SBSDIO_CLKAV(clkctl, bus->alp_only)) {
-            /* #region debug-point wlan-ht-timeout-htclk-timeout */
-            brcmf_dbg_dump_ready_state("htclk-timeout");
-            /* #endregion */
             brcm_log("HT Avail timeout (%d): clkctl 0x%02x\n",
                   PMU_MAX_TRANSITION_DLY, clkctl);
             return -EBADE;
@@ -1462,65 +1420,11 @@ static int brcmf_sdio_download_nvram(const uint8_t  *vars, int varsz)
     return err;
 }
 
-/* #region debug-point wlan-ht-timeout-state-snapshot */
-static void brcmf_dbg_dump_ready_state(const char *tag)
-{
-    struct brcmf_core *core;
-    uint32_t hmb_data = 0;
-    uint32_t shaddr = 0;
-    uint32_t addr_le = 0;
-    uint32_t shared_addr = 0;
-    uint8_t clkcsr = 0;
-    uint8_t devctl = 0;
-    int clk_err = 0;
-    int dev_err = 0;
-    int hmb_err = 0;
-    int sh_err = 0;
-
-    if (!bus) {
-        brcm_log("dbg[%s]: bus=null\n", tag);
-        return;
-    }
-
-    clkcsr = brcmf_sdiod_readb(SBSDIO_FUNC1_CHIPCLKCSR, &clk_err);
-    devctl = brcmf_sdiod_readb(SBSDIO_DEVICE_CTL, &dev_err);
-
-    core = bus->sdio_core;
-    if (core) {
-        hmb_data = brcmf_sdiod_readl(core->base + SD_REG(tohostmailboxdata), &hmb_err);
-    } else {
-        hmb_err = -ENODEV;
-    }
-
-    if (bus->ci) {
-        shaddr = bus->ci->rambase + bus->ci->ramsize - 4;
-        if (!bus->ci->rambase && brcmf_chip_sr_capable())
-            shaddr -= bus->ci->srsize;
-        sh_err = brcmf_sdiod_ramrw(false, shaddr, (uint8_t *)&addr_le, 4);
-        if (!sh_err)
-            shared_addr = le32_to_cpu(addr_le);
-    } else {
-        sh_err = -ENODEV;
-    }
-
-    brcm_log("dbg[%s]: clkstate=%d alp_only=%d clkcsr=0x%02x clk_err=%d devctl=0x%02x dev_err=%d hmb=0x%08x hmb_err=%d shptr=0x%08x sh_err=%d\n",
-          tag, bus->clkstate, bus->alp_only, clkcsr, clk_err,
-          devctl, dev_err, hmb_data, hmb_err, shared_addr, sh_err);
-}
-/* #endregion */
-
 static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvram, uint32_t nvlen)
 {
     int bcmerror;
     uint32_t rstvec = *((uint32_t*)fw);
     uint32_t nvram_addr;
-
-    /* #region debug-point wlan-ht-timeout-download-enter */
-    brcm_log("dbg[fw-enter]: fw_len=%u nvram_len=%u rstvec=0x%08x rambase=0x%08x ramsize=0x%08x\n",
-          len, nvlen, rstvec, bus->ci ? bus->ci->rambase : 0,
-          bus->ci ? bus->ci->ramsize : 0);
-    brcmf_dbg_dump_ready_state("fw-enter");
-    /* #endregion */
 
     brcmf_sdio_clkctl(CLK_AVAIL, false);
     nvram_addr = bus->ci->ramsize - nvlen + bus->ci->rambase;
@@ -1536,21 +1440,11 @@ static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvr
         goto err;
     }
 
-    /* #region debug-point wlan-ht-timeout-download-code-done */
-    brcm_log("dbg[fw-code-done]: status=ok\n");
-    brcmf_dbg_dump_ready_state("fw-code-done");
-    /* #endregion */
-
     bcmerror = brcmf_sdio_download_nvram(nvram, nvlen);
     if (bcmerror) {
         brcm_log("dongle nvram file download failed\n");
         goto err;
     }
-
-    /* #region debug-point wlan-ht-timeout-download-nvram-done */
-    brcm_log("dbg[fw-nvram-done]: status=ok nvram_addr=0x%08x\n", nvram_addr);
-    brcmf_dbg_dump_ready_state("fw-nvram-done");
-    /* #endregion */
 
     /* Take arm out of reset */
     if (!brcmf_chip_set_active(rstvec)) {
@@ -1559,16 +1453,7 @@ static int brcmf_sdio_download_firmware(uint8_t *fw, uint32_t len,  uint8_t *nvr
         goto err;
     }
 
-    /* #region debug-point wlan-ht-timeout-arm-active */
-    brcm_log("dbg[fw-arm-active]: status=ok\n");
-    brcmf_dbg_dump_ready_state("fw-arm-active");
-    /* #endregion */
-
 err:
-    /* #region debug-point wlan-ht-timeout-download-exit */
-    brcm_log("dbg[fw-exit]: bcmerror=%d\n", bcmerror);
-    brcmf_dbg_dump_ready_state("fw-exit");
-    /* #endregion */
     brcmf_sdio_clkctl(CLK_SDONLY, false);
     return bcmerror;
 }
@@ -2738,7 +2623,6 @@ int brcmf_sdiod_send_pkt(struct sk_buff* pkt)
 
 static void brcmf_sdio_dpc(void)
 {
-    uint32_t start_usec = brcmf_now_usec();
     uint32_t newstatus = 0;
     uint32_t intstat_addr = bus->sdio_core->base + SD_REG(intstatus);
     uint32_t intstatus;
@@ -2860,14 +2744,14 @@ static void brcmf_sdio_dpc(void)
         skb_free(pkt);
     }
 
-    if (start_usec != 0)
-        brcmf_diag_note_dpc(brcmf_elapsed_usec(start_usec, brcmf_now_usec()));
     brcmf_dpc_leave();
 }
 
 int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)
 {
 	int ret = 0;
+    uint32_t start_usec;
+    uint32_t attempt = 0;
 
 	/* Send from dpc */
     pthread_mutex_lock(&brcm_ctrl_mutex);
@@ -2877,8 +2761,8 @@ int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)
     bus->rxlen = 0;
     pthread_mutex_unlock(&brcm_ctrl_mutex);
 
-	int timeout = 50;
-	while (timeout--){
+    start_usec = brcmf_now_usec();
+	while (brcmf_elapsed_usec(start_usec, brcmf_now_usec()) < BRCMF_CTL_TX_TIMEOUT_US) {
         bool pending;
 
         pthread_mutex_lock(&brcm_ctrl_mutex);
@@ -2886,13 +2770,15 @@ int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)
         pthread_mutex_unlock(&brcm_ctrl_mutex);
         if (!pending)
             break;
-        brcmf_sdio_dpc();
-        usleep(1000);
-    } 
+        if (brcmf_ctl_poll_should_run_dpc(attempt))
+            brcmf_sdio_dpc();
+        usleep(brcmf_ctl_poll_sleep_usec(attempt));
+        attempt++;
+    }
 
     pthread_mutex_lock(&brcm_ctrl_mutex);
     if(bus->ctrl_frame_stat){
-		brcm_log("ctrl_frame timeout\n");
+		brcm_log("ctrl_frame timeout len=%u\n", msglen);
 		bus->ctrl_frame_stat = false;
 	}else{
 		ret = bus->ctrl_frame_err;
@@ -2903,14 +2789,18 @@ int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)
 
 int brcmf_sdio_bus_rxctl(unsigned char *msg, uint msglen)
 {
-    int timeleft = 1000;
     uint rxlen = 0;
+    uint32_t start_usec;
+    uint32_t attempt = 0;
+    bool got_frame = false;
 
     /* Wait until control frame is available */
     //timeleft = brcmf_sdio_dcmd_resp_wait(bus, &bus->rxlen, &pending);
-    while(timeleft--){
+    start_usec = brcmf_now_usec();
+    while (brcmf_elapsed_usec(start_usec, brcmf_now_usec()) < BRCMF_CTL_RX_TIMEOUT_US) {
         pthread_mutex_lock(&brcm_ctrl_mutex);
         if (bus->rxlen) {
+            got_frame = true;
             rxlen = bus->rxlen - bus->rxdoff;
             memcpy(msg, bus->rxctl + bus->rxdoff, min(msglen, rxlen));
             bus->rxlen = 0;
@@ -2918,14 +2808,16 @@ int brcmf_sdio_bus_rxctl(unsigned char *msg, uint msglen)
             break;
         }
         pthread_mutex_unlock(&brcm_ctrl_mutex);
-        usleep(1000);
-        brcmf_sdio_dpc();
+        if (brcmf_ctl_poll_should_run_dpc(attempt))
+            brcmf_sdio_dpc();
+        usleep(brcmf_ctl_poll_sleep_usec(attempt));
+        attempt++;
     }
 
-    if (timeleft == 0) {
+    if (!got_frame) {
         brcm_log("resumed on timeout\n");
         brcmf_sdio_checkdied();
-    } else if(!rxlen) {
+    } else if (!rxlen) {
         brcm_log("resumed for unknown reason?\n");
         brcmf_sdio_checkdied();
     }
@@ -3116,18 +3008,10 @@ int brcmf_sdiod_probe(void){
         return ret;
     }
 
-    /* #region debug-point wlan-ht-timeout-post-download */
-    brcm_log("dbg[post-download]: fw download returned ok\n");
-    brcmf_dbg_dump_ready_state("post-download");
-    /* #endregion */
-
     /* Make sure backplane clock is on, needed to generate F2 interrupt. */
     if (bus->clkstate != CLK_AVAIL)
         brcmf_sdio_clkctl(CLK_AVAIL, false);
     if (bus->clkstate != CLK_AVAIL){
-        /* #region debug-point wlan-ht-timeout-post-download-clk-fail */
-        brcmf_dbg_dump_ready_state("post-download-clk-fail");
-        /* #endregion */
         brcm_log("clock not available after firmware download\n");
         return -1;
     }

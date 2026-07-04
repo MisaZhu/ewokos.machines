@@ -706,6 +706,13 @@ int brcmf_c_preinit_dcmds(void)
         brcm_log("set roam error (%d)\n", err);
     }
 
+    /*
+     * Interactive traffic is very sensitive to firmware STA power save
+     * latency on BCM43430/43439-class parts. Keep PM disabled here so SSH
+     * stalls correlate with the SDIO path rather than sleep/wake behavior.
+     */
+    brcmf_fil_cmd_int_set(0, BRCMF_C_SET_PM, 0);
+
     err = brcmf_fil_iovar_int_set(0, "pm2_sleep_ret", 2000);
     if (err){
         brcm_log("Unable to set pm timeout, (%d)\n", err);
