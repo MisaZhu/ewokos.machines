@@ -13,18 +13,10 @@ typedef struct st_gpio_key {
 } gpio_key_t;
 
 static gpio_key_t _gpio_keys[] = {
-	{5,  KEY_UP},
-	{6,  KEY_DOWN},
-	{16, KEY_LEFT},
-	{13, KEY_RIGHT},
-	{21, JOYSTICK_A},
-	{20, JOYSTICK_B},
-	{12, JOYSTICK_Y},
-	{15, JOYSTICK_X},
-	{26, JOYSTICK_START},
-	{19, JOYSTICK_SELECT},
-	{14, JOYSTICK_R1},
-	{23, KEY_HOME},
+	{4,  KEY_LEFT},
+	{5,  KEY_RIGHT},
+	{23, KEY_ENTER},
+	{24, KEY_HOME},
 	{0,  0}
 };
 
@@ -71,7 +63,7 @@ int main(int argc, char** argv) {
 	bsp_gpio_init();
 	init_gpio();
 
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/gamekb";
+	const char* mnt_point = argc > 1 ? argv[1]: "/dev/keyb";
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
