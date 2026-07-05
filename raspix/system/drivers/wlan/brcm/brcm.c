@@ -60,6 +60,7 @@
 #define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 2000U
 #define BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US 20000U
 #define BRCMF_WORKER_IDLE_STEP_US 1000U
+#define BRCMF_DPC_SLOW_USEC 5000U
 #define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
 #define BRCMF_CTL_FAST_POLL_LOOPS 8U
 #define BRCMF_CTL_MEDIUM_POLL_LOOPS 32U
@@ -430,6 +431,7 @@ static bool brcm_sync_inited;
 static pthread_t brcm_dpc_owner;
 static int brcm_dpc_depth;
 static bool brcm_dpc_owner_valid;
+static uint32_t brcm_dpc_last_usec;
 static void brcmf_sdio_dpc(void);
 static void brcmf_scan_set_mpc(bool enable);
 static inline void brcm_wakeup_dev(int evt);
@@ -485,6 +487,11 @@ static uint32_t brcmf_now_usec(void)
 
     return (uint32_t)(((uint64_t)(uint32_t)tv.tv_sec * 1000000ULL) +
             (uint64_t)(uint32_t)tv.tv_usec);
+}
+
+static uint32_t brcmf_diag_last_dpc_usec(void)
+{
+    return brcm_dpc_last_usec;
 }
 
 static uint32_t brcmf_elapsed_usec(uint32_t start_usec, uint32_t now_usec)
@@ -869,7 +876,7 @@ static int brcmf_sdiod_skbuff_write(
     if (err < 0) {
         brcm_log("sdio write failed func=%d addr=0x%x len=%u req=%u err=%d state=%d clk=%d tx_seq=%u tx_max=%u flow=0x%02x\n",
               func, addr, skb->len, req_sz, err,
-              bus ? bus->state : -1,
+              bus ? (int)bus->state : -1,
               bus ? bus->clkstate : -1,
               bus ? bus->tx_seq : 0,
               bus ? bus->tx_max : 0,
@@ -1397,7 +1404,7 @@ static int brcmf_sdio_download_code_file(const uint8_t *fw, int len)
                 (uint8_t *)fw, len);
     if (err)
         brcm_log("error %d on writing %d membytes at 0x%08x\n",
-              err, (int)fw, bus->ci->rambase);
+              err, len, bus->ci->rambase);
     else if (!brcmf_sdio_verifymemory(bus->ci->rambase, fw, len))
         err = -EIO;
 
@@ -2081,7 +2088,6 @@ void brcmf_rx_event( struct sk_buff *skb)
 {
     struct brcmf_event *event;
     struct brcmf_event_msg emsg;
-    struct brcmf_if_event *ifevent;
     struct brcmf_event_msg_be *emsg_be;
     uint8_t *data;
     uint8_t *data_end;
@@ -2149,7 +2155,6 @@ void brcmf_rx_event( struct sk_buff *skb)
     }else if(event_type == BRCMF_E_IF){
         if (datalen < sizeof(struct brcmf_if_event))
             goto done;
-        ifevent = (struct brcmf_if_event *)data;
     }else if((event_type == BRCMF_E_SET_SSID ||
               event_type == BRCMF_E_LINK ||
               event_type == BRCMF_E_ASSOC ||
@@ -2626,8 +2631,10 @@ static void brcmf_sdio_dpc(void)
     uint32_t newstatus = 0;
     uint32_t intstat_addr = bus->sdio_core->base + SD_REG(intstatus);
     uint32_t intstatus;
+    uint32_t start_usec;
     int err = 0;
 
+    start_usec = brcmf_now_usec();
     brcmf_dpc_enter();
     err = brcmf_sdio_intr_rstatus();
     intstatus = bus->intstatus;
@@ -2744,6 +2751,7 @@ static void brcmf_sdio_dpc(void)
         skb_free(pkt);
     }
 
+    brcm_dpc_last_usec = brcmf_elapsed_usec(start_usec, brcmf_now_usec());
     brcmf_dpc_leave();
 }
 
