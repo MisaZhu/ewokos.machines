@@ -12,6 +12,7 @@
 #include "brcm.h"
 #include "core.h"
 #include "chip.h"
+#include "brcm_hw_ids.h"
 #include "brcmu_wifi.h"
 #include "fweh.h"
 #include "nl80211.h"
@@ -678,12 +679,23 @@ int brcmf_c_preinit_dcmds(void)
         goto done;
     }
 
-    struct brcmf_fil_bwcap_le band_bwcap;
-    band_bwcap.band = 2;
-    band_bwcap.bw_cap = 3;
-    err = brcmf_fil_iovar_data_set(0, "bw_cap", &band_bwcap, sizeof(band_bwcap));
-    if (err < 0)
-        brcm_log("set bw_cap error %d\n", err);
+    /*
+     * BCM43430/CYW43439-class firmwares used on Pi Zero-class boards reject
+     * bw_cap during early bring-up on both 43436s and 43436 image paths.
+     * Keep the link setup on the firmware defaults and avoid the noisy
+     * SET_VAR(-29) / bw_cap(-97) sequence.
+     */
+    if (chip == BRCM_CC_43430_CHIP_ID || chip == CY_CC_43439_CHIP_ID) {
+        brcm_log("skip bw_cap for BCM%x/%d firmware family\n", chip, chiprev);
+    } else {
+        struct brcmf_fil_bwcap_le band_bwcap;
+
+        band_bwcap.band = WLC_BAND_2G;
+        band_bwcap.bw_cap = WLC_BW_CAP_40MHZ;
+        err = brcmf_fil_iovar_data_set(0, "bw_cap", &band_bwcap, sizeof(band_bwcap));
+        if (err < 0)
+            brcm_log("set bw_cap error %d\n", err);
+    }
 
     /* Keep bring-up on the minimal STA feature set first. Optional
      * txbf/tdls knobs can be added back after scan/connect is stable.

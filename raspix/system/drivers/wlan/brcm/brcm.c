@@ -1201,7 +1201,7 @@ static int brcmf_sdio_sdclk(bool on)
     return 0;
 }
 
-static int __attribute__((unused)) brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh);
+static int brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh);
 static bool brcmf_chip_sr_capable();
 
 
@@ -1516,6 +1516,27 @@ static bool brcmf_chip_sr_capable(){
     return (reg & pmu_cc3_mask) != 0;
 }
 
+static bool brcmf_sdio_shared_addr_ready(uint32_t *addr)
+{
+    uint32_t shaddr;
+    uint32_t addr_le = 0;
+    int rv;
+
+    if (!bus || !bus->ci || !addr)
+        return false;
+
+    shaddr = bus->ci->rambase + bus->ci->ramsize - 4;
+    if (!bus->ci->rambase && brcmf_chip_sr_capable())
+        shaddr -= bus->ci->srsize;
+
+    rv = brcmf_sdiod_ramrw(false, shaddr, (uint8_t *)&addr_le, 4);
+    if (rv < 0)
+        return false;
+
+    *addr = le32_to_cpu(addr_le);
+    return brcmf_sdio_valid_shared_address(*addr);
+}
+
 static int brcmf_sdio_readshared(struct sdpcm_shared *sh)
 {
     uint32_t addr = 0;
@@ -1597,7 +1618,7 @@ static int brcmf_sdio_checkdied(void)
     return 0;
 }
 
-static int __attribute__((unused)) brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh)
+static int brcmf_sdio_wait_fw_ready(struct sdpcm_shared *sh)
 {
     struct brcmf_core *core = bus->sdio_core;
     uint32_t shaddr;
@@ -2395,8 +2416,10 @@ static uint32_t brcmf_sdio_hostmail(void)
      * DEVREADY does not occur with gSPI.
      */
     if (hmb_data & (HMB_DATA_DEVREADY)) {
+        uint32_t shared_addr;
         struct sdpcm_shared sh;
-        if (brcmf_sdio_readshared(&sh) == 0){
+        if (brcmf_sdio_shared_addr_ready(&shared_addr) &&
+            brcmf_sdio_readshared(&sh) == 0) {
             brcm_console_init(sh.console_addr);
         }
     }
@@ -3052,6 +3075,15 @@ int brcmf_sdiod_probe(void){
     if (err) {
         brcm_log("Failed to force clock for F2: err %d\n", err);
         return err;
+    }
+
+    struct sdpcm_shared sh;
+
+    err = brcmf_sdio_wait_fw_ready(&sh);
+    if (err) {
+        brcm_log("firmware shared info not ready after download: %d\n", err);
+    } else if (sh.console_addr) {
+        brcm_console_init(sh.console_addr);
     }
 
     /* Enable function 2 (frame transfers) */
