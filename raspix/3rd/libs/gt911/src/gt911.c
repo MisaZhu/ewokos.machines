@@ -9,6 +9,14 @@
 static GT911_Status_t CommunicationResult;
 static uint8_t TxBuffer[200];
 static uint8_t RxBuffer[200];
+static uint8_t gt911_addr = GOODIX_ADDRESS_5D;
+static int32_t gt911_sda = 2;
+static int32_t gt911_scl = 3;
+
+typedef struct {
+	int32_t sda;
+	int32_t scl;
+} gt911_bus_t;
 
 
 GT911_Status_t GT911_I2C_Write(uint8_t Addr, uint8_t *write_data, uint16_t write_length) {
@@ -54,7 +62,7 @@ static GT911_Status_t GT911_SendConfig(void){
 	TxBuffer[0] = (GOODIX_REG_CONFIG_DATA & 0xFF00) >> 8;
 	TxBuffer[1] = GOODIX_REG_CONFIG_DATA & 0xFF;
 	memcpy(&TxBuffer[2], GT911_Config, sizeof(GT911_Config));
-	return GT911_I2C_Write(GOODIX_ADDRESS, TxBuffer, sizeof(GT911_Config) + 2);
+	return GT911_I2C_Write(gt911_addr, TxBuffer, sizeof(GT911_Config) + 2);
 }
 
 static GT911_Status_t GT911_ReadConfig(void){
@@ -62,9 +70,9 @@ static GT911_Status_t GT911_ReadConfig(void){
 	TxBuffer[0] = (GOODIX_REG_CONFIG_DATA & 0xFF00) >> 8;
 	TxBuffer[1] = GOODIX_REG_CONFIG_DATA & 0xFF;
 	GT911_Status_t Result = GT911_NotResponse;
-	Result = GT911_I2C_Write(GOODIX_ADDRESS, TxBuffer, 2);
+	Result = GT911_I2C_Write(gt911_addr, TxBuffer, 2);
 	if(Result == GT911_OK){
-		Result = GT911_I2C_Read(GOODIX_ADDRESS, RxBuffer, sizeof(RxBuffer));
+		Result = GT911_I2C_Read(gt911_addr, RxBuffer, sizeof(RxBuffer));
 		if( Result == GT911_OK){
 			for(int i = 0; i < sizeof(RxBuffer); i++){
 				if(i % 16 == 0)
@@ -76,28 +84,20 @@ static GT911_Status_t GT911_ReadConfig(void){
 }
 #endif
 
-static void GT911_Reset(void){
-		bcm283x_gpio_config(4,GPIO_OUTPUT);
-		bcm283x_gpio_clr(4);
-		proc_usleep(100000);
-		bcm283x_gpio_set(4);
-		proc_usleep(100000);
-}
-
 static GT911_Status_t GT911_SetCommandRegister(uint8_t command){
 	TxBuffer[0] = (GOODIX_REG_COMMAND & 0xFF00) >> 8;
 	TxBuffer[1] = GOODIX_REG_COMMAND & 0xFF;
 	TxBuffer[2] = command;
-	return GT911_I2C_Write(GOODIX_ADDRESS, TxBuffer, 3);
+	return GT911_I2C_Write(gt911_addr, TxBuffer, 3);
 }
 
 static GT911_Status_t GT911_GetProductID(uint32_t* id){
 	TxBuffer[0] = (GOODIX_REG_ID & 0xFF00) >> 8;
 	TxBuffer[1] = GOODIX_REG_ID & 0xFF;
 	GT911_Status_t Result = GT911_NotResponse;
-	Result = GT911_I2C_Write(GOODIX_ADDRESS, TxBuffer, 2);
+	Result = GT911_I2C_Write(gt911_addr, TxBuffer, 2);
 	if(Result == GT911_OK){
-		Result = GT911_I2C_Read(GOODIX_ADDRESS, RxBuffer, 4);
+		Result = GT911_I2C_Read(gt911_addr, RxBuffer, 4);
 		if( Result == GT911_OK){
 			memcpy(id, RxBuffer, 4);
 		}
@@ -109,9 +109,9 @@ static GT911_Status_t GT911_GetStatus(uint8_t* status){
 	TxBuffer[0] = (GOODIX_READ_COORD_ADDR & 0xFF00) >> 8;
 	TxBuffer[1] = GOODIX_READ_COORD_ADDR & 0xFF;
 	GT911_Status_t Result = GT911_NotResponse;
-	Result = GT911_I2C_Write(GOODIX_ADDRESS, TxBuffer, 2);
+	Result = GT911_I2C_Write(gt911_addr, TxBuffer, 2);
 	if(Result == GT911_OK){
-		Result = GT911_I2C_Read(GOODIX_ADDRESS, RxBuffer, 1);
+		Result = GT911_I2C_Read(gt911_addr, RxBuffer, 1);
 		if( Result == GT911_OK){
 			*status = RxBuffer[0];
 		}
@@ -123,26 +123,43 @@ static GT911_Status_t GT911_SetStatus(uint8_t status){
 	TxBuffer[0] = (GOODIX_READ_COORD_ADDR & 0xFF00) >> 8;
 	TxBuffer[1] = GOODIX_READ_COORD_ADDR & 0xFF;
 	TxBuffer[2] = status;
-	return GT911_I2C_Write(GOODIX_ADDRESS, TxBuffer, 3);
+	return GT911_I2C_Write(gt911_addr, TxBuffer, 3);
+}
+
+static GT911_Status_t GT911_Probe(uint8_t addr, int32_t sda, int32_t scl, uint32_t* productID) {
+	gt911_addr = addr;
+	gt911_sda = sda;
+	gt911_scl = scl;
+	i2c_init(gt911_sda, gt911_scl);
+	proc_usleep(2000);
+	return GT911_GetProductID(productID);
 }
 
 GT911_Status_t GT911_Init(void){
-	//Reset chip
-	i2c_init(2,3);
-	GT911_Reset();
-
-	//Get product ID
+	static const gt911_bus_t buses[] = {
+		{10, 11},
+		{2, 3},
+	};
+	static const uint8_t addresses[] = {
+		GOODIX_ADDRESS_5D,
+		GOODIX_ADDRESS_14,
+	};
 	uint32_t productID = 0;
-	CommunicationResult = GT911_GetProductID(&productID);
-	if(CommunicationResult != GT911_OK){
-		printf("GT911: i2c error\n");
-		return CommunicationResult;
+	for(uint32_t bus = 0; bus < sizeof(buses) / sizeof(buses[0]); bus++){
+		for(uint32_t i = 0; i < sizeof(addresses) / sizeof(addresses[0]); i++){
+			productID = 0;
+			CommunicationResult = GT911_Probe(addresses[i], buses[bus].sda, buses[bus].scl, &productID);
+			if(CommunicationResult == GT911_OK && productID != 0){
+				printf("GT911 ID: %08x (addr=0x%02x, sda=%d, scl=%d)\n",
+						productID, gt911_addr, gt911_sda, gt911_scl);
+				goto gt911_ready;
+			}
+		}
 	}
-	if(productID == 0){
-		printf("GT911: wrong product id\n");
-		return GT911_NotResponse;
-	}
-	printf("GT911 ID: %08x\n", productID);
+	printf("GT911: i2c error\n");
+	return GT911_NotResponse;
+
+gt911_ready:
 
 #ifdef DOWNLOAD_CONFIG
 	// GT911_Reset();
@@ -170,8 +187,8 @@ GT911_Status_t GT911_ReadTouch(TouchCordinate_t *cordinate, uint8_t *number_of_c
 			for (uint8_t i = 0; i < *number_of_cordinate; i++) {
 				TxBuffer[0] = ((GOODIX_POINT1_X_ADDR + (i* 8)) & 0xFF00) >> 8;
 				TxBuffer[1] = (GOODIX_POINT1_X_ADDR + (i* 8)) & 0xFF;
-				GT911_I2C_Write(GOODIX_ADDRESS, TxBuffer, 2);
-				GT911_I2C_Read(GOODIX_ADDRESS, RxBuffer, 6);
+				GT911_I2C_Write(gt911_addr, TxBuffer, 2);
+				GT911_I2C_Read(gt911_addr, RxBuffer, 6);
 				cordinate[i].x = RxBuffer[0];
 				cordinate[i].x = (RxBuffer[1] << 8) + cordinate[i].x;
 				cordinate[i].y = RxBuffer[2];
@@ -184,6 +201,5 @@ GT911_Status_t GT911_ReadTouch(TouchCordinate_t *cordinate, uint8_t *number_of_c
 }
 
 //Private functions Implementation ---------------------------------------------------------*/
-
 
 

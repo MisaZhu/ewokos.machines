@@ -8,7 +8,8 @@
 /* Exported macro ------------------------------------------------------------*/
 //GOODIX REGISTER ADDRESSES
 //
-#define GOODIX_ADDRESS	  		0x5D
+#define GOODIX_ADDRESS_5D		0x5D
+#define GOODIX_ADDRESS_14		0x14
 
 // Write only registers
 #define GOODIX_REG_COMMAND        0x8040
