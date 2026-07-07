@@ -29,6 +29,9 @@ extern uint32_t _mmio_base;
 #define USB_MAX_CANDIDATES 8
 #define USB_MAX_USAGE_LIST 32
 #define USB_EVENT_LOG_INTERVAL_MS 500u
+#define USB_SCAN_INTERVAL_MS 1000u
+#define USB_IDLE_SLEEP_MIN_US 1000u
+#define USB_IDLE_SLEEP_MAX_US 50000u
 #define USB_LOG_TRANSFER_VERBOSE 0
 #define DWC_RX_FIFO_SIZE 20480u
 #define DWC_NP_TX_FIFO_SIZE 20480u
@@ -352,7 +355,7 @@ static uint32_t _usb_base = 0;
 static bool _device_ready = false;
 static bool _port_connected = false;
 static uint8_t _next_address = 2;
-static uint32_t _scan_ticks = 0;
+static uint64_t _next_scan_ms = 0;
 
 static const char* usb_input_type_name(usb_input_type_t type) {
 	switch (type) {
@@ -448,6 +451,10 @@ static void queue_clear(usb_queue_t* queue) {
 	queue->wr = 0;
 }
 
+static bool queue_has_data(const usb_queue_t* queue) {
+	return queue->rd != queue->wr;
+}
+
 static void queue_push(usb_queue_t* queue, const uint8_t* data, uint8_t len) {
 	if (len > USB_EVENT_SIZE) {
 		len = USB_EVENT_SIZE;
@@ -465,7 +472,7 @@ static void queue_push(usb_queue_t* queue, const uint8_t* data, uint8_t len) {
 
 static int queue_pop(usb_queue_t* queue, void* buf, int size) {
 	int len;
-	if (queue->rd == queue->wr) {
+	if (!queue_has_data(queue)) {
 		return VFS_ERR_RETRY;
 	}
 	len = queue->len[queue->rd];
@@ -1844,15 +1851,51 @@ static void usb_poll_inputs(vdevice_t* dev) {
 	}
 }
 
+static uint32_t usb_step_sleep_us(void) {
+	uint64_t now = kernel_tic_ms(0);
+	uint64_t next_ms = now + (USB_IDLE_SLEEP_MAX_US / 1000u);
+
+	if (_next_scan_ms <= now) {
+		return USB_IDLE_SLEEP_MIN_US;
+	}
+	if (_next_scan_ms < next_ms) {
+		next_ms = _next_scan_ms;
+	}
+
+	if (_device_ready) {
+		for (int i = 0; i < USB_MAX_INPUTS; ++i) {
+			usb_input_dev_t* in = &_inputs[i];
+
+			if (!in->present) {
+				continue;
+			}
+			if (in->next_poll_ms <= now) {
+				return USB_IDLE_SLEEP_MIN_US;
+			}
+			if (in->next_poll_ms < next_ms) {
+				next_ms = in->next_poll_ms;
+			}
+		}
+	}
+
+	if (next_ms <= now) {
+		return USB_IDLE_SLEEP_MIN_US;
+	}
+
+	return (uint32_t)((next_ms - now) * 1000u);
+}
+
 static int usb_step(vdevice_t* dev, void* p) {
+	uint64_t now = kernel_tic_ms(0);
 	(void)p;
-	if ((_scan_ticks++ % 500u) == 0u) {
+	if (now >= _next_scan_ms) {
 		usb_scan_root();
+		_next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
 	}
 	if (_device_ready) {
 		usb_poll_inputs(dev);
 	}
-	proc_usleep(2000);
+	proc_usleep(usb_step_sleep_us());
 	return 0;
 }
 
@@ -1926,6 +1969,19 @@ static int usb_fcntl(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
 	return -1;
 }
 
+static uint32_t usb_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	fd_info_t* info;
+	(void)dev;
+	(void)node;
+	(void)p;
+
+	info = fd_find(fd, from_pid);
+	if (info != NULL && queue_has_data(&info->queue)) {
+		return VFS_EVT_RD;
+	}
+	return 0;
+}
+
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1] : "/dev/hid0";
 	vdevice_t dev;
@@ -1945,6 +2001,7 @@ int main(int argc, char** argv) {
 		return -1;
 	}
 	usb_scan_root();
+	_next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
 
 	memset(&dev, 0, sizeof(dev));
 	strcpy(dev.name, "usb-hid");
@@ -1953,6 +2010,7 @@ int main(int argc, char** argv) {
 	dev.close = usb_close;
 	dev.read = usb_read;
 	dev.fcntl = usb_fcntl;
+	dev.check_poll_events = usb_check_poll_events;
 	slog("usbhostd: device_run name=%s mnt=%s\n", dev.name, mnt_point);
 	return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 }

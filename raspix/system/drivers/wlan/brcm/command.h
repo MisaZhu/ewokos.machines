@@ -79,4 +79,5 @@ int brcmf_c_preinit_dcmds(void);
 void scan(void);
 int connect(const char*ssid, const char* pmk);
 void get_ethaddr(char* mac);
+int brcm_mac_ready(void);
 #endif

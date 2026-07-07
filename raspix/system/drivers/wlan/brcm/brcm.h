@@ -389,6 +389,7 @@ int brcm_recv(uint8_t *buf, int len);
 int brcm_send(uint8_t *buf, int len);
 int brcm_check_data(void);
 int brcm_connected(void);
+int brcm_mac_ready(void);
 void brcm_console_init(uint32_t addr);
 int brcmf_sdio_readconsole(void);
 void brcm_console_free(void);

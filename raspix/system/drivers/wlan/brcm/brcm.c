@@ -419,6 +419,8 @@ struct brcmf_dev{
     uint32_t recovery_count;
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
+    int init_error;
+    bool init_failed;
     enum WL_STATE  state;
 };
 
@@ -435,6 +437,7 @@ static uint32_t brcm_dpc_last_usec;
 static void brcmf_sdio_dpc(void);
 static void brcmf_scan_set_mpc(bool enable);
 static inline void brcm_wakeup_dev(int evt);
+static void brcmf_set_init_failed(int err);
 
 static void brcmf_sync_init(void)
 {
@@ -755,6 +758,18 @@ static inline void brcm_wakeup_dev(int evt)
     if (dev == NULL || dev->mnt_info.node <= 0)
         return;
     vfs_wakeup(dev->mnt_info.node, evt);
+}
+
+static void brcmf_set_init_failed(int err)
+{
+    if (!bus)
+        return;
+
+    if (err == 0)
+        err = -1;
+    bus->init_error = err;
+    bus->init_failed = true;
+    brcm_wakeup_dev(VFS_EVT_RD | VFS_EVT_WR);
 }
 
 static inline uint8_t brcmf_sdio_getdatoffset(uint8_t *swheader)
@@ -3122,9 +3137,9 @@ void* brcm_thread(void* p) {
     uint32_t next_scan_tick = 0;
     uint32_t sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
     int err;
-    sleep(10);
     err = brcmf_sdiod_probe();
     if (err) {
+        brcmf_set_init_failed(err);
         brcm_log("wlan: probe failed %d\n", err);
         return NULL;
     }
@@ -3147,6 +3162,7 @@ void* brcm_thread(void* p) {
 
     err = brcmf_c_preinit_dcmds();
     if (err) {
+        brcmf_set_init_failed(err);
         brcm_log("wlan: preinit failed %d\n", err);
         return NULL;
     }
@@ -3236,6 +3252,8 @@ void* brcm_thread(void* p) {
 int brcm_state(void){
     if (bus == NULL)
         return 0;
+    if (bus->init_failed)
+        return bus->init_error;
     return bus->state;
 }
 

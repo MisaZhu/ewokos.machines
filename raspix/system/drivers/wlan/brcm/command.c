@@ -805,6 +805,12 @@ void get_ethaddr(char* mac){
     memcpy(mac, mac_addr, 6);
 }
 
+int brcm_mac_ready(void)
+{
+    static const uint8_t zero_mac[6] = {0};
+    return memcmp(mac_addr, zero_mac, sizeof(zero_mac)) != 0;
+}
+
 
 int connect(const char*ssid, const char* pmk)
 {

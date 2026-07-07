@@ -226,11 +226,10 @@ static int net_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	(void)p;
 	(void)node;
 
-	/*
-	 * Upper layers may probe or queue data before wlan is associated.
-	 * Report the bytes as consumed to avoid endless retry spam while
-	 * scan/connect is still in progress.
-	 */
+	int state = brcm_state();
+	if (state < 0)
+		return state;
+
 	if (!brcm_connected())
 		return size;
 
@@ -243,7 +242,7 @@ static int net_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t
 	char mac[6];
 	switch(cmd){
 		case 0:	{//get mac
-			if(brcm_state() > 0){
+			if(brcm_mac_ready()){
 				get_ethaddr(mac);
 				PF->add(ret, mac, 6);
 			}else{

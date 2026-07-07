@@ -10,10 +10,13 @@
 #include <ewoksys/ipc.h>
 
 #define HID_TOUCH_REPORT_ID 3
+#define HID_IDLE_SLEEP_MIN_US 1000u
+#define HID_IDLE_SLEEP_MAX_US 50000u
 
 static int hid = -1;
 static uint16_t touch_data[3];
 static bool has_data = false;
+static uint32_t idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
 
 static int touch_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
@@ -44,8 +47,19 @@ static int set_report_id(int fd, int id) {
 	return ret;
 }
 
+static uint32_t touch_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	return has_data ? VFS_EVT_RD : 0;
+}
+
 static int touch_loop(vdevice_t* dev, void* p) {
 	uint8_t buf[8] = {0};
+	bool wakeup = false;
 	(void)p;
 
 	ipc_disable();
@@ -58,13 +72,22 @@ static int touch_loop(vdevice_t* dev, void* p) {
 		touch_data[1] = (uint16_t)buf[1] | ((uint16_t)buf[2] << 8);
 		touch_data[2] = (uint16_t)buf[3] | ((uint16_t)buf[4] << 8);
 		has_data = true;
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-		usleep(0);
+		wakeup = true;
 	}
 	ipc_enable();
 
-	if (!has_data) {
-		usleep(3000);
+	if (wakeup) {
+		idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	}
+	else {
+		usleep(idle_sleep_us);
+		if (idle_sleep_us < HID_IDLE_SLEEP_MAX_US) {
+			idle_sleep_us <<= 1;
+			if (idle_sleep_us > HID_IDLE_SLEEP_MAX_US) {
+				idle_sleep_us = HID_IDLE_SLEEP_MAX_US;
+			}
+		}
 	}
 	return 0;
 }
@@ -86,5 +109,6 @@ int main(int argc, char** argv) {
 	strcpy(dev.name, "touch");
 	dev.loop_step = touch_loop;
 	dev.read = touch_read;
+	dev.check_poll_events = touch_check_poll_events;
 	return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 }
