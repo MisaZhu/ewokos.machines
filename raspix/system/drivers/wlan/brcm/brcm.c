@@ -682,6 +682,34 @@ static bool brcmf_worker_has_work(void)
     return bus->state == SCANNING || bus->state == CONNECTING;
 }
 
+/*
+ * Work that can be drained back-to-back without waiting. Unlike
+ * brcmf_worker_has_work(), this excludes states that cannot make
+ * immediate progress (rxskip stall, hardware flow control) and the
+ * scan/connect states, so the worker only spins when real RX/TX
+ * data is genuinely ready to move.
+ */
+static bool brcmf_worker_has_pending_io(void)
+{
+    if (!bus)
+        return false;
+
+    /* RX draining is independent of flow control; only skip while
+     * rxskip is blocking progress (recovered via 200ms watchdog). */
+    if (bus->rxpending && !bus->rxskip)
+        return true;
+
+    /* TX/ctrl only make progress when hardware flow control is off. */
+    if (!bus->fcstate) {
+        if (bus->ctrl_frame_stat)
+            return true;
+        if (bus->tx_queue && queue_buffer_check(bus->tx_queue) > 0)
+            return true;
+    }
+
+    return false;
+}
+
 static bool brcmf_worker_irq_pending(void)
 {
     uint8_t devpend;
@@ -3236,7 +3264,15 @@ void* brcm_thread(void* p) {
 
         brcmf_maybe_kick_reader();
 
-        if (run_dpc || brcmf_worker_has_work()) {
+        if (brcmf_worker_has_pending_io()) {
+            /* More RX/TX ready right now: loop immediately instead of
+             * sleeping a full busy interval. Sleeping between drain
+             * batches injects per-batch latency and bufferbloat that
+             * shows up as network stutter under bursty traffic. Each
+             * iteration still performs real SDIO work, so this is not a
+             * busy-spin. */
+            sleep_us = 0;
+        } else if (run_dpc || brcmf_worker_has_work()) {
             sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
         } else {
             uint32_t idle_cap = brcmf_worker_idle_cap_usec();
