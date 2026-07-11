@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <tinyjson/tinyjson.h>
 #include <ewoksys/klog.h>
 #include <pthread.h>
 #include <string.h>
@@ -80,6 +82,8 @@
 #define BRCMF_RX_DROP_STALL_MS 500U
 #define BRCMF_RX_READER_KICK_STALL_MS 200U
 #define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
+#define BRCMF_SCAN_CACHE_MAX 64
+#define BRCMF_MANUAL_CONNECT_GUARD_MS 15000U
 #define ETH_P_IP 0x0800U
 #define ETH_P_ARP 0x0806U
 #define ETH_P_IPV6 0x86DDU
@@ -410,8 +414,18 @@ struct brcmf_dev{
 
     bool scan_results_ready;
     bool scan_mpc_off;
+    uint32_t scan_count;
     int priority;
     char ssid[32];
+    struct {
+        char ssid[33];
+        uint8_t bssid[6];
+        int16_t rssi;
+        uint8_t channel;
+        char type[16];
+        char auth[32];
+        char cipher[24];
+    } scan_cache[BRCMF_SCAN_CACHE_MAX];
     uint32_t rx_queue_drops;
     uint32_t tx_queue_drops;
     uint32_t rx_fail_count;
@@ -419,8 +433,14 @@ struct brcmf_dev{
     uint32_t recovery_count;
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
+    uint32_t manual_connect_until_ms;
     int init_error;
     bool init_failed;
+    int last_error;
+    uint32_t last_event_type;
+    uint32_t last_event_status;
+    uint32_t last_event_reason;
+    char last_reason[64];
     enum WL_STATE  state;
 };
 
@@ -438,6 +458,12 @@ static void brcmf_sdio_dpc(void);
 static void brcmf_scan_set_mpc(bool enable);
 static inline void brcm_wakeup_dev(int evt);
 static void brcmf_set_init_failed(int err);
+static void brcmf_scan_cache_clear(void);
+static bool brcmf_is_hex_string(const char *s, size_t len);
+static const char *brcmf_state_name(enum WL_STATE state);
+static void brcmf_format_hwaddr(const uint8_t *addr, char *out, size_t out_len);
+static bool brcmf_find_best_scan_cache_locked(const char *ssid, uint32_t *match_idx);
+static bool brcmf_manual_connect_guard_active(uint32_t now_ms);
 
 static void brcmf_sync_init(void)
 {
@@ -617,6 +643,10 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     if (!bus)
         return;
 
+    // #region debug-point reset-runtime-state
+    brcm_log("[DEBUG] reset_runtime_state flush=%d state=%d ssid=%s\n",
+            flush_queues ? 1 : 0, (int)bus->state, bus->ssid);
+    // #endregion
     bus->scan_results_ready = false;
     bus->scan_mpc_off = false;
     bus->rxpending = false;
@@ -628,7 +658,6 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->intstatus = 0;
     bus->tx_starving = false;
     bus->tx_starve_usec = 0;
-    memset(bus->ssid, 0, sizeof(bus->ssid));
     if (flush_queues)
         brcmf_flush_data_queues();
 }
@@ -638,7 +667,17 @@ static void brcmf_mark_connected(void)
     if (!bus)
         return;
 
+    // #region debug-point mark-connected
+    brcm_log("[DEBUG] mark_connected prev_state=%d ssid=%s\n",
+            (int)bus->state, bus->ssid);
+    // #endregion
     bus->state = CONNECTED;
+    bus->last_error = 0;
+    bus->last_event_type = 0;
+    bus->last_event_status = 0;
+    bus->last_event_reason = 0;
+    bus->manual_connect_until_ms = 0;
+    snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
     brcmf_scan_set_mpc(true);
@@ -653,9 +692,20 @@ static void brcmf_mark_disconnected(const char *reason,
     if (!bus)
         return;
 
+    // #region debug-point mark-disconnected
+    brcm_log("[DEBUG] mark_disconnected prev_state=%d ssid=%s reason=%s event=%u status=%u fw_reason=%u\n",
+            (int)bus->state, bus->ssid, reason ? reason : "unknown",
+            event_type, event_status, event_reason);
+    // #endregion
     was_connected = (bus->state == CONNECTED || bus->state == CONNECTING);
     bus->recovery_count++;
     bus->state = DISCONNECTED;
+    bus->last_error = -(int)event_status;
+    bus->last_event_type = event_type;
+    bus->last_event_status = event_status;
+    bus->last_event_reason = event_reason;
+    snprintf(bus->last_reason, sizeof(bus->last_reason), "%s",
+            reason ? reason : "disconnected");
     brcmf_reset_runtime_state(true);
     brcmf_scan_set_mpc(true);
     if (was_connected || reason != NULL) {
@@ -797,6 +847,11 @@ static void brcmf_set_init_failed(int err)
         err = -1;
     bus->init_error = err;
     bus->init_failed = true;
+    bus->last_error = err;
+    bus->last_event_type = 0;
+    bus->last_event_status = 0;
+    bus->last_event_reason = 0;
+    snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "init failed");
     brcm_wakeup_dev(VFS_EVT_RD | VFS_EVT_WR);
 }
 
@@ -2091,6 +2146,467 @@ struct brcmf_escan_result_le {
     struct brcmf_bss_info_le bss_info_le;
 };
 
+#define DOT11_CAP_ESS        0x0001
+#define DOT11_CAP_IBSS       0x0002
+#define DOT11_CAP_PRIVACY    0x0010
+#define WLAN_EID_RSN         48
+#define WLAN_EID_VENDOR_SPECIFIC 221
+
+struct brcmf_scan_security {
+    bool privacy;
+    bool has_wpa;
+    bool has_wpa2;
+    bool has_wpa3;
+    bool has_psk;
+    bool has_eap;
+    bool has_sae;
+    bool has_owe;
+    bool has_ccmp;
+    bool has_tkip;
+    bool has_wep;
+};
+
+static const char *brcmf_scan_network_type(const struct brcmf_bss_info_le *info)
+{
+    uint16_t capability = le16_to_cpu(info->capability);
+
+    if (capability & DOT11_CAP_ESS)
+        return "infra";
+    if (capability & DOT11_CAP_IBSS)
+        return "adhoc";
+    return "unknown";
+}
+
+static void brcmf_scan_note_cipher(struct brcmf_scan_security *sec,
+        const uint8_t *suite, bool is_rsn)
+{
+    uint8_t type;
+
+    if (!sec || !suite)
+        return;
+    if (is_rsn) {
+        if (suite[0] != 0x00 || suite[1] != 0x0f || suite[2] != 0xac)
+            return;
+    } else {
+        if (suite[0] != 0x00 || suite[1] != 0x50 || suite[2] != 0xf2)
+            return;
+    }
+
+    type = suite[3];
+    if (type == 2)
+        sec->has_tkip = true;
+    else if (type == 4)
+        sec->has_ccmp = true;
+    else if (type == 1 || type == 5)
+        sec->has_wep = true;
+    else if (type == 8 || type == 9)
+        sec->has_ccmp = true;
+}
+
+static void brcmf_scan_note_akm(struct brcmf_scan_security *sec,
+        const uint8_t *suite, bool is_rsn)
+{
+    uint8_t type;
+
+    if (!sec || !suite)
+        return;
+    if (is_rsn) {
+        if (suite[0] != 0x00 || suite[1] != 0x0f || suite[2] != 0xac)
+            return;
+    } else {
+        if (suite[0] != 0x00 || suite[1] != 0x50 || suite[2] != 0xf2)
+            return;
+    }
+
+    type = suite[3];
+    if (type == 1)
+        sec->has_eap = true;
+    else if (type == 2)
+        sec->has_psk = true;
+    else if (type == 8)
+        sec->has_sae = true;
+    else if (type == 18)
+        sec->has_owe = true;
+}
+
+static void brcmf_scan_parse_rsn_ie(const uint8_t *data, uint8_t len,
+        struct brcmf_scan_security *sec)
+{
+    uint16_t count;
+    const uint8_t *pos;
+    const uint8_t *end;
+
+    if (!sec || !data || len < 8)
+        return;
+
+    sec->has_wpa2 = true;
+    pos = data + 2;
+    end = data + len;
+
+    if ((pos + 4) > end)
+        return;
+    brcmf_scan_note_cipher(sec, pos, true);
+    pos += 4;
+
+    if ((pos + 2) > end)
+        return;
+    count = (uint16_t)(pos[0] | (pos[1] << 8));
+    pos += 2;
+    while (count-- > 0 && (pos + 4) <= end) {
+        brcmf_scan_note_cipher(sec, pos, true);
+        pos += 4;
+    }
+
+    if ((pos + 2) > end)
+        return;
+    count = (uint16_t)(pos[0] | (pos[1] << 8));
+    pos += 2;
+    while (count-- > 0 && (pos + 4) <= end) {
+        brcmf_scan_note_akm(sec, pos, true);
+        pos += 4;
+    }
+
+    if (sec->has_sae || sec->has_owe)
+        sec->has_wpa3 = true;
+}
+
+static void brcmf_scan_parse_wpa_ie(const uint8_t *data, uint8_t len,
+        struct brcmf_scan_security *sec)
+{
+    uint16_t count;
+    const uint8_t *pos;
+    const uint8_t *end;
+
+    if (!sec || !data || len < 12)
+        return;
+    if (data[0] != 0x00 || data[1] != 0x50 || data[2] != 0xf2 || data[3] != 0x01)
+        return;
+
+    sec->has_wpa = true;
+    pos = data + 6;
+    end = data + len;
+
+    if ((pos + 4) > end)
+        return;
+    brcmf_scan_note_cipher(sec, pos, false);
+    pos += 4;
+
+    if ((pos + 2) > end)
+        return;
+    count = (uint16_t)(pos[0] | (pos[1] << 8));
+    pos += 2;
+    while (count-- > 0 && (pos + 4) <= end) {
+        brcmf_scan_note_cipher(sec, pos, false);
+        pos += 4;
+    }
+
+    if ((pos + 2) > end)
+        return;
+    count = (uint16_t)(pos[0] | (pos[1] << 8));
+    pos += 2;
+    while (count-- > 0 && (pos + 4) <= end) {
+        brcmf_scan_note_akm(sec, pos, false);
+        pos += 4;
+    }
+}
+
+static void brcmf_scan_describe_security(const struct brcmf_bss_info_le *info,
+        char *auth, size_t auth_len, char *cipher, size_t cipher_len)
+{
+    struct brcmf_scan_security sec = {0};
+    uint16_t capability;
+    uint16_t ie_offset;
+    uint32_t ie_length;
+    uint32_t info_length;
+    const uint8_t *pos;
+    const uint8_t *end;
+
+    if (!auth || auth_len == 0 || !cipher || cipher_len == 0) {
+        return;
+    }
+    auth[0] = '\0';
+    cipher[0] = '\0';
+    if (!info)
+        return;
+
+    capability = le16_to_cpu(info->capability);
+    sec.privacy = (capability & DOT11_CAP_PRIVACY) != 0;
+    ie_offset = le16_to_cpu(info->ie_offset);
+    ie_length = le32_to_cpu(info->ie_length);
+    info_length = le32_to_cpu(info->length);
+
+    if (ie_length > 0 && ie_offset < info_length && (uint32_t)ie_offset + ie_length <= info_length) {
+        pos = ((const uint8_t *)info) + ie_offset;
+        end = pos + ie_length;
+        while ((pos + 2) <= end) {
+            uint8_t id = pos[0];
+            uint8_t len = pos[1];
+
+            pos += 2;
+            if ((pos + len) > end)
+                break;
+            if (id == WLAN_EID_RSN)
+                brcmf_scan_parse_rsn_ie(pos, len, &sec);
+            else if (id == WLAN_EID_VENDOR_SPECIFIC)
+                brcmf_scan_parse_wpa_ie(pos, len, &sec);
+            pos += len;
+        }
+    }
+
+    if (!sec.privacy && !sec.has_wpa && !sec.has_wpa2 && !sec.has_wpa3) {
+        snprintf(auth, auth_len, "open");
+    } else if (sec.has_wpa3) {
+        if (sec.has_sae)
+            snprintf(auth, auth_len, "wpa3-sae");
+        else if (sec.has_owe)
+            snprintf(auth, auth_len, "wpa3-owe");
+        else
+            snprintf(auth, auth_len, "wpa3");
+    } else if (sec.has_wpa2 && sec.has_wpa) {
+        if (sec.has_psk)
+            snprintf(auth, auth_len, "wpa/wpa2-psk");
+        else if (sec.has_eap)
+            snprintf(auth, auth_len, "wpa/wpa2-eap");
+        else
+            snprintf(auth, auth_len, "wpa/wpa2");
+    } else if (sec.has_wpa2) {
+        if (sec.has_psk)
+            snprintf(auth, auth_len, "wpa2-psk");
+        else if (sec.has_eap)
+            snprintf(auth, auth_len, "wpa2-eap");
+        else
+            snprintf(auth, auth_len, "wpa2");
+    } else if (sec.has_wpa) {
+        if (sec.has_psk)
+            snprintf(auth, auth_len, "wpa-psk");
+        else if (sec.has_eap)
+            snprintf(auth, auth_len, "wpa-eap");
+        else
+            snprintf(auth, auth_len, "wpa");
+    } else if (sec.privacy) {
+        snprintf(auth, auth_len, "wep");
+    } else {
+        snprintf(auth, auth_len, "unknown");
+    }
+
+    if (sec.has_ccmp && sec.has_tkip)
+        snprintf(cipher, cipher_len, "ccmp/tkip");
+    else if (sec.has_ccmp)
+        snprintf(cipher, cipher_len, "ccmp");
+    else if (sec.has_tkip)
+        snprintf(cipher, cipher_len, "tkip");
+    else if (sec.has_wep || (sec.privacy && !sec.has_wpa && !sec.has_wpa2 && !sec.has_wpa3))
+        snprintf(cipher, cipher_len, "wep");
+    else if (!sec.privacy)
+        snprintf(cipher, cipher_len, "none");
+    else
+        snprintf(cipher, cipher_len, "unknown");
+}
+
+static void brcmf_scan_cache_clear(void)
+{
+    if (!bus)
+        return;
+
+    pthread_mutex_lock(&brcm_ctrl_mutex);
+    bus->scan_count = 0;
+    memset(bus->scan_cache, 0, sizeof(bus->scan_cache));
+    pthread_mutex_unlock(&brcm_ctrl_mutex);
+}
+
+static bool brcmf_is_hex_string(const char *s, size_t len)
+{
+    size_t i;
+
+    if (!s)
+        return false;
+
+    for (i = 0; i < len; i++) {
+        char c = s[i];
+
+        if (!((c >= '0' && c <= '9') ||
+                (c >= 'a' && c <= 'f') ||
+                (c >= 'A' && c <= 'F')))
+            return false;
+    }
+    return true;
+}
+
+static const char *brcmf_state_name(enum WL_STATE state)
+{
+    switch (state) {
+    case IDLE:
+        return "idle";
+    case SCANNING:
+        return "scanning";
+    case CONNECTING:
+        return "connecting";
+    case CONNECTED:
+        return "connected";
+    case DISCONNECTED:
+        return "disconnected";
+    default:
+        return "unknown";
+    }
+}
+
+static void brcmf_format_hwaddr(const uint8_t *addr, char *out, size_t out_len)
+{
+    static const uint8_t zero_addr[6] = {0};
+
+    if (!out || out_len == 0)
+        return;
+
+    out[0] = '\0';
+    if (!addr || out_len < 18)
+        return;
+    if (memcmp(addr, zero_addr, sizeof(zero_addr)) == 0)
+        return;
+
+    snprintf(out, out_len, "%02x:%02x:%02x:%02x:%02x:%02x",
+            addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+}
+
+static bool brcmf_find_best_scan_cache_locked(const char *ssid, uint32_t *match_idx)
+{
+    bool found = false;
+    int best_rssi = -32768;
+
+    if (!bus || !ssid || ssid[0] == '\0' || !match_idx)
+        return false;
+
+    for (uint32_t i = 0; i < bus->scan_count; i++) {
+        if (strcmp(bus->scan_cache[i].ssid, ssid) != 0)
+            continue;
+        if (!found || bus->scan_cache[i].rssi > best_rssi) {
+            *match_idx = i;
+            best_rssi = bus->scan_cache[i].rssi;
+            found = true;
+        }
+    }
+    return found;
+}
+
+static bool brcmf_manual_connect_guard_active(uint32_t now_ms)
+{
+    if (!bus)
+        return false;
+    if (bus->ssid[0] == '\0')
+        return false;
+    return bus->manual_connect_until_ms != 0 &&
+        ((int32_t)(bus->manual_connect_until_ms - now_ms) > 0);
+}
+
+static void brcmf_scan_cache_store(struct brcmf_bss_info_le *info)
+{
+    char ssid[sizeof(info->SSID) + 1];
+    char auth[32];
+    char cipher[24];
+    const char *type;
+    uint8_t ssid_len;
+    uint8_t channel;
+    int rssi;
+    uint32_t slot = BRCMF_SCAN_CACHE_MAX;
+
+    if (!bus || !info)
+        return;
+
+    ssid_len = min_t(uint8_t, info->SSID_len, sizeof(info->SSID));
+    memcpy(ssid, info->SSID, ssid_len);
+    ssid[ssid_len] = '\0';
+    if (ssid[0] == '\0')
+        strcpy(ssid, "<hidden>");
+
+    brcmf_scan_describe_security(info, auth, sizeof(auth), cipher, sizeof(cipher));
+    type = brcmf_scan_network_type(info);
+    channel = info->ctl_ch;
+    if (channel == 0)
+        channel = (uint8_t)(le16_to_cpu(info->chanspec) & 0xff);
+    rssi = (int16_t)le16_to_cpu(info->RSSI);
+
+    pthread_mutex_lock(&brcm_ctrl_mutex);
+    for (uint32_t i = 0; i < bus->scan_count; i++) {
+        if (memcmp(bus->scan_cache[i].bssid, info->BSSID, sizeof(info->BSSID)) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == BRCMF_SCAN_CACHE_MAX) {
+        if (bus->scan_count >= BRCMF_SCAN_CACHE_MAX) {
+            pthread_mutex_unlock(&brcm_ctrl_mutex);
+            return;
+        }
+        slot = bus->scan_count++;
+    }
+
+    memset(&bus->scan_cache[slot], 0, sizeof(bus->scan_cache[slot]));
+    snprintf(bus->scan_cache[slot].ssid, sizeof(bus->scan_cache[slot].ssid), "%s", ssid);
+    memcpy(bus->scan_cache[slot].bssid, info->BSSID, sizeof(info->BSSID));
+    bus->scan_cache[slot].rssi = (int16_t)rssi;
+    bus->scan_cache[slot].channel = channel;
+    snprintf(bus->scan_cache[slot].type, sizeof(bus->scan_cache[slot].type), "%s", type);
+    snprintf(bus->scan_cache[slot].auth, sizeof(bus->scan_cache[slot].auth), "%s", auth);
+    snprintf(bus->scan_cache[slot].cipher, sizeof(bus->scan_cache[slot].cipher), "%s", cipher);
+    pthread_mutex_unlock(&brcm_ctrl_mutex);
+}
+
+static void brcmf_append_scan_entry(json_var_t *json_var, uint32_t id)
+{
+    char bssid[18];
+    json_var_t *item;
+
+    if (!json_var || !bus || id >= bus->scan_count)
+        return;
+
+    snprintf(bssid, sizeof(bssid), "%02x:%02x:%02x:%02x:%02x:%02x",
+            bus->scan_cache[id].bssid[0], bus->scan_cache[id].bssid[1],
+            bus->scan_cache[id].bssid[2], bus->scan_cache[id].bssid[3],
+            bus->scan_cache[id].bssid[4], bus->scan_cache[id].bssid[5]);
+    item = json_var_new_obj(NULL, NULL);
+    json_var_add(item, "id", json_var_new_int((int)id));
+    json_var_add(item, "ssid", json_var_new_str(bus->scan_cache[id].ssid));
+    json_var_add(item, "selected", json_var_new_bool(bus->ssid[0] != '\0' &&
+                strcmp(bus->scan_cache[id].ssid, bus->ssid) == 0));
+    json_var_add(item, "bssid", json_var_new_str(bssid));
+    json_var_add(item, "rssi", json_var_new_int((int)bus->scan_cache[id].rssi));
+    json_var_add(item, "channel", json_var_new_int((int)bus->scan_cache[id].channel));
+    json_var_add(item, "type", json_var_new_str(bus->scan_cache[id].type));
+    json_var_add(item, "auth", json_var_new_str(bus->scan_cache[id].auth));
+    json_var_add(item, "cipher", json_var_new_str(bus->scan_cache[id].cipher));
+    json_var_array_add(json_var, item);
+}
+
+static char *brcmf_format_scan_results(void)
+{
+    json_var_t *json_var;
+    char *ret;
+    uint32_t count;
+    json_var = json_var_new_array();
+    if (!json_var)
+        return NULL;
+
+    if (!bus) {
+        ret = json_var_to_cstr(json_var);
+        json_var_unref(json_var);
+        return ret;
+    }
+    if (bus->init_failed) {
+        ret = json_var_to_cstr(json_var);
+        json_var_unref(json_var);
+        return ret;
+    }
+
+    pthread_mutex_lock(&brcm_ctrl_mutex);
+    count = bus->scan_count;
+    for (uint32_t i = 0; i < count; i++) {
+        brcmf_append_scan_entry(json_var, i);
+    }
+    pthread_mutex_unlock(&brcm_ctrl_mutex);
+    ret = json_var_to_cstr(json_var);
+    json_var_unref(json_var);
+    return ret;
+}
+
 static void scan_result(struct brcmf_bss_info_le *info){
     char ssid[sizeof(info->SSID) + 1];
     uint8_t ssid_len;
@@ -2098,6 +2614,8 @@ static void scan_result(struct brcmf_bss_info_le *info){
     ssid_len = min_t(uint8_t, info->SSID_len, sizeof(info->SSID));
     memcpy(ssid, info->SSID, ssid_len);
     ssid[ssid_len] = '\0';
+
+    brcmf_scan_cache_store(info);
 
     int idx = config_match_ssid(ssid);
         
@@ -2107,44 +2625,14 @@ static void scan_result(struct brcmf_bss_info_le *info){
             if(config_get_priority(idx) >= config_get_priority(old))
                 return;
         }
-        strncpy(bus->ssid, ssid, sizeof(bus->ssid) - 1);
+        memset(bus->ssid, 0, sizeof(bus->ssid));
+        memcpy(bus->ssid, ssid, min_t(size_t, strlen(ssid), sizeof(bus->ssid) - 1));
     } 
 }
 
 static void scan_poll_results(void)
 {
-    static uint8_t scan_buf[1400];
-    struct brcmf_scan_results *results = (struct brcmf_scan_results *)scan_buf;
-    struct brcmf_bss_info_le *info;
-    uint8_t *pos;
-    uint8_t *end = scan_buf + sizeof(scan_buf);
-    uint32_t count;
-    uint32_t length;
-    int err;
-
-    memset(scan_buf, 0, sizeof(scan_buf));
-    results->buflen = cpu_to_le32(sizeof(scan_buf));
-    results->version = cpu_to_le32(BRCMF_BSS_INFO_VERSION);
-
-    err = brcmf_fil_cmd_data_get(0, BRCMF_C_SCAN_RESULTS, results, sizeof(scan_buf));
-    if (err)
-        return;
-
-    count = le32_to_cpu(results->count);
-    if (count == 0)
-        return;
-
-    pos = (uint8_t *)results->bss_info_le;
-    for (uint32_t i = 0; i < count; i++) {
-        if ((pos + sizeof(struct brcmf_bss_info_le)) > end)
-            break;
-        info = (struct brcmf_bss_info_le *)pos;
-        length = le32_to_cpu(info->length);
-        if (length < sizeof(struct brcmf_bss_info_le) || (pos + length) > end)
-            break;
-        scan_result(info);
-        pos += length;
-    }
+    return;
 }
 
 
@@ -2216,6 +2704,8 @@ void brcmf_rx_event( struct sk_buff *skb)
         }
     }else if(event_type == BRCMF_E_SCAN_COMPLETE){
         bus->scan_results_ready = true;
+        if (bus->state != SCANNING)
+            brcmf_scan_set_mpc(true);
     }else if(event_type == BRCMF_E_IF){
         if (datalen < sizeof(struct brcmf_if_event))
             goto done;
@@ -3221,7 +3711,17 @@ void* brcm_thread(void* p) {
                 brcmf_sdio_readconsole();
 
             if (tick >= next_scan_tick && bus->state != CONNECTED) {
+                if (brcmf_manual_connect_guard_active(tick)) {
+                    next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
+                    // #region debug-point manual-connect-guard
+                    brcm_log("[DEBUG] skip auto scan during manual connect guard state=%d ssid=%s until=%u now=%u\n",
+                            (int)bus->state, bus->ssid,
+                            bus->manual_connect_until_ms, tick);
+                    // #endregion
+                    goto worker_done;
+                }
                 next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
+                brcmf_scan_cache_clear();
                 memset(bus->ssid, 0, sizeof(bus->ssid));
                 bus->scan_results_ready = false;
                 bus->state = SCANNING;
@@ -3262,6 +3762,7 @@ void* brcm_thread(void* p) {
             }
         }
 
+worker_done:
         brcmf_maybe_kick_reader();
 
         if (brcmf_worker_has_pending_io()) {
@@ -3291,6 +3792,230 @@ int brcm_state(void){
     if (bus->init_failed)
         return bus->init_error;
     return bus->state;
+}
+
+int brcm_scan_trigger(void)
+{
+    int err;
+    if (!bus)
+        return -ENODEV;
+    if (bus->init_failed)
+        return bus->init_error;
+
+    brcmf_scan_cache_clear();
+    bus->scan_results_ready = false;
+    brcmf_scan_set_mpc(false);
+    err = scan();
+    if (err)
+        brcmf_scan_set_mpc(true);
+    return err;
+}
+
+int brcm_connect_ap(const char *ssid, const char *passwd)
+{
+    char pmkstr[65];
+    unsigned char pmk[32];
+    const char *pmk_hex;
+    size_t ssid_len;
+    size_t passwd_len;
+    int state;
+    int err;
+
+    if (!bus)
+        return -ENODEV;
+    if (bus->init_failed)
+        return bus->init_error;
+    if (!ssid || !passwd)
+        return -EINVAL;
+
+    ssid_len = strlen(ssid);
+    passwd_len = strlen(passwd);
+    if (ssid_len == 0 || ssid_len >= sizeof(bus->ssid))
+        return -EINVAL;
+    if (passwd_len == 0)
+        return -EINVAL;
+
+    state = brcm_state();
+    if (state == SCANNING || state == CONNECTING)
+        return -EBUSY;
+
+    // #region debug-point connect-ap-enter
+    brcm_log("[DEBUG] connect_ap enter state=%d ssid=%s passwd_len=%u\n",
+            state, ssid, (unsigned)passwd_len);
+    // #endregion
+
+    if (passwd_len == 64 && brcmf_is_hex_string(passwd, passwd_len)) {
+        pmk_hex = passwd;
+    } else {
+        if (passwd_len < 8 || passwd_len > 63)
+            return -EINVAL;
+        PKCS5_PBKDF2_HMAC((const unsigned char *)passwd, passwd_len,
+                (const unsigned char *)ssid, ssid_len, 4096, 32, pmk);
+        to_str(pmkstr, pmk, 32);
+        pmk_hex = pmkstr;
+    }
+
+    brcmf_scan_set_mpc(true);
+    brcmf_scan_cache_clear();
+    bus->scan_results_ready = false;
+    bus->manual_connect_until_ms = kernel_tic_ms(0) + BRCMF_MANUAL_CONNECT_GUARD_MS;
+    memset(bus->ssid, 0, sizeof(bus->ssid));
+    memcpy(bus->ssid, ssid, min_t(size_t, ssid_len, sizeof(bus->ssid) - 1));
+    bus->state = CONNECTING;
+    bus->last_error = 0;
+    bus->last_event_type = 0;
+    bus->last_event_status = 0;
+    bus->last_event_reason = 0;
+    snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connecting");
+    err = connect(bus->ssid, pmk_hex);
+    // #region debug-point connect-ap-after-connect
+    brcm_log("[DEBUG] connect_ap after connect err=%d state=%d ssid=%s\n",
+            err, (int)bus->state, bus->ssid);
+    // #endregion
+    if (err) {
+        bus->state = DISCONNECTED;
+        bus->last_error = err;
+        snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connect command failed");
+    }
+    return err;
+}
+
+char* brcm_state_info(void)
+{
+    json_var_t *json_var;
+    char *ret;
+    int init_error = 0;
+    int last_error = 0;
+    int rssi = 0;
+    uint32_t last_event_type = 0;
+    uint32_t last_event_status = 0;
+    uint32_t last_event_reason = 0;
+    uint32_t recovery_count = 0;
+    bool init_failed = false;
+    bool ip_ready = false;
+    bool mac_ready = false;
+    bool bssid_ready = false;
+    bool rssi_ready = false;
+    bool scan_results_ready = false;
+    enum WL_STATE state = IDLE;
+    uint8_t mac[6] = {0};
+    char ssid[sizeof(bus->ssid)];
+    char last_reason[sizeof(bus->last_reason)];
+    char mac_str[18];
+    char bssid[18];
+    char ip[16];
+    char type[16];
+    char auth[32];
+    char cipher[24];
+    uint8_t channel = 0;
+    uint32_t scan_idx = 0;
+
+    json_var = json_var_new_obj(NULL, NULL);
+    if (!json_var)
+        return NULL;
+
+    memset(ssid, 0, sizeof(ssid));
+    memset(last_reason, 0, sizeof(last_reason));
+    memset(mac_str, 0, sizeof(mac_str));
+    memset(bssid, 0, sizeof(bssid));
+    memset(ip, 0, sizeof(ip));
+    memset(type, 0, sizeof(type));
+    memset(auth, 0, sizeof(auth));
+    memset(cipher, 0, sizeof(cipher));
+    if (!bus) {
+        json_var_add(json_var, "state", json_var_new_str("not_ready"));
+        json_var_add(json_var, "ok", json_var_new_bool(false));
+        json_var_add(json_var, "error", json_var_new_int(-ENODEV));
+        json_var_add(json_var, "reason", json_var_new_str("device not ready"));
+        json_var_add(json_var, "ssid", json_var_new_str(""));
+        json_var_add(json_var, "mac", json_var_new_str(""));
+        json_var_add(json_var, "bssid", json_var_new_str(""));
+        json_var_add(json_var, "rssi", json_var_new_int(0));
+        json_var_add(json_var, "rssi_ready", json_var_new_bool(false));
+        json_var_add(json_var, "ip", json_var_new_str(""));
+        json_var_add(json_var, "ip_ready", json_var_new_bool(false));
+        ret = json_var_to_cstr(json_var);
+        json_var_unref(json_var);
+        return ret;
+    }
+
+    // #region debug-point state-info-enter
+    brcm_log("[DEBUG] state_info enter\n");
+    // #endregion
+    pthread_mutex_lock(&brcm_ctrl_mutex);
+    state = bus->state;
+    init_failed = bus->init_failed;
+    init_error = bus->init_error;
+    last_error = bus->last_error;
+    last_event_type = bus->last_event_type;
+    last_event_status = bus->last_event_status;
+    last_event_reason = bus->last_event_reason;
+    recovery_count = bus->recovery_count;
+    scan_results_ready = bus->scan_results_ready;
+    memcpy(ssid, bus->ssid, sizeof(ssid));
+    memcpy(last_reason, bus->last_reason, sizeof(last_reason));
+    if (brcmf_find_best_scan_cache_locked(ssid, &scan_idx)) {
+        brcmf_format_hwaddr(bus->scan_cache[scan_idx].bssid, bssid, sizeof(bssid));
+        rssi = (int)bus->scan_cache[scan_idx].rssi;
+        rssi_ready = true;
+        bssid_ready = (bssid[0] != '\0');
+        channel = bus->scan_cache[scan_idx].channel;
+        snprintf(type, sizeof(type), "%s", bus->scan_cache[scan_idx].type);
+        snprintf(auth, sizeof(auth), "%s", bus->scan_cache[scan_idx].auth);
+        snprintf(cipher, sizeof(cipher), "%s", bus->scan_cache[scan_idx].cipher);
+    }
+    pthread_mutex_unlock(&brcm_ctrl_mutex);
+
+    // #region debug-point state-info-after-snapshot
+    brcm_log("[DEBUG] state_info snapshot state=%d init_failed=%d last_error=%d ssid=%s reason=%s\n",
+            (int)state, init_failed ? 1 : 0, last_error, ssid, last_reason);
+    // #endregion
+
+    if (brcm_mac_ready()) {
+        get_ethaddr((char *)mac);
+        brcmf_format_hwaddr(mac, mac_str, sizeof(mac_str));
+        mac_ready = (mac_str[0] != '\0');
+    }
+
+    json_var_add(json_var, "state", json_var_new_str(brcmf_state_name(state)));
+    json_var_add(json_var, "ok", json_var_new_bool(!init_failed && last_error == 0));
+    json_var_add(json_var, "init_failed", json_var_new_bool(init_failed));
+    json_var_add(json_var, "init_error", json_var_new_int(init_error));
+    json_var_add(json_var, "error", json_var_new_int(last_error));
+    json_var_add(json_var, "scan_ready", json_var_new_bool(scan_results_ready));
+    json_var_add(json_var, "recovery_count", json_var_new_int((int)recovery_count));
+    json_var_add(json_var, "ssid", json_var_new_str(ssid));
+    json_var_add(json_var, "mac", json_var_new_str(mac_str));
+    json_var_add(json_var, "mac_ready", json_var_new_bool(mac_ready));
+    json_var_add(json_var, "bssid", json_var_new_str(bssid));
+    json_var_add(json_var, "bssid_ready", json_var_new_bool(bssid_ready));
+    json_var_add(json_var, "rssi", json_var_new_int(rssi));
+    json_var_add(json_var, "rssi_ready", json_var_new_bool(rssi_ready));
+    json_var_add(json_var, "channel", json_var_new_int((int)channel));
+    json_var_add(json_var, "type", json_var_new_str(type));
+    json_var_add(json_var, "auth", json_var_new_str(auth));
+    json_var_add(json_var, "cipher", json_var_new_str(cipher));
+    json_var_add(json_var, "ip", json_var_new_str(ip));
+    json_var_add(json_var, "ip_ready", json_var_new_bool(ip_ready));
+    json_var_add(json_var, "reason", json_var_new_str(last_reason[0] ? last_reason : "none"));
+    json_var_add(json_var, "event_type", json_var_new_int((int)last_event_type));
+    json_var_add(json_var, "event_status", json_var_new_int((int)last_event_status));
+    json_var_add(json_var, "event_reason", json_var_new_int((int)last_event_reason));
+    // #region debug-point state-info-exit
+    brcm_log("[DEBUG] state_info exit state=%s ssid=%s bssid=%s rssi=%d\n",
+            brcmf_state_name(state), ssid, bssid, rssi);
+    // #endregion
+    ret = json_var_to_cstr(json_var);
+    json_var_unref(json_var);
+    return ret;
+}
+
+char* brcm_scan_list(void)
+{
+    char *ret = brcmf_format_scan_results();
+    if (bus && bus->scan_results_ready && bus->state != SCANNING)
+        brcmf_scan_set_mpc(true);
+    return ret;
 }
 
 int brcm_init(void){

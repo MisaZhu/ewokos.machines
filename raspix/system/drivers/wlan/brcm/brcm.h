@@ -399,4 +399,8 @@ void brcmf_sdiod_writel(uint32_t addr,uint32_t data, int *ret);
 uint32_t brcmf_sdiod_readl(uint32_t addr, int *ret);
 int brcmf_sdiod_ramrw(bool write, uint32_t address, uint8_t *data, uint size);
 int brcm_state(void);
+int brcm_scan_trigger(void);
+char* brcm_scan_list(void);
+int brcm_connect_ap(const char *ssid, const char *passwd);
+char* brcm_state_info(void);
 #endif

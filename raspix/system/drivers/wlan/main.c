@@ -1,6 +1,8 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfsc.h>
 #include <ewoksys/syscall.h>
+#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <ewoksys/mmio.h>
 #include <arch/bcm283x/mailbox.h>
@@ -286,10 +288,82 @@ static uint32_t net_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsin
 
 char* net_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) {
 	(void)dev;
+	(void)from_pid;
+	(void)p;
+
+	if (argc <= 0 || argv == NULL || argv[0] == NULL) {
+		return NULL;
+	}
+	if (strcmp(argv[0], "help") == 0) {
+		char* ret = (char*)malloc(384);
+
+		if (ret == NULL) {
+			return NULL;
+		}
+		snprintf(ret, 384,
+				"help: show commands\n"
+				"log: show driver log\n"
+				"state: show current wlan state in json\n"
+				"scan: trigger wifi scan\n"
+				"list: show cached scan results in json\n"
+				"connect <ssid> <passwd>: connect wifi with password\n");
+		return ret;
+	}
 	if(strcmp(argv[0], "log") == 0) {
 		return brcm_get_log();
 	}
-	return NULL;
+	if (strcmp(argv[0], "state") == 0) {
+		// #region debug-point state-cmd-enter
+		brcm_log("[DEBUG] net_dev_cmd state enter\n");
+		// #endregion
+		return brcm_state_info();
+	}
+	if (strcmp(argv[0], "scan") == 0) {
+		char* ret = (char*)malloc(64);
+		int err;
+
+		if (ret == NULL) {
+			return NULL;
+		}
+		err = brcm_scan_trigger();
+		if (err == 0) {
+			snprintf(ret, 64, "scan started");
+		} else {
+			snprintf(ret, 64, "scan failed: %d", err);
+		}
+		return ret;
+	}
+	if (strcmp(argv[0], "list") == 0) {
+		return brcm_scan_list();
+	}
+	if (strcmp(argv[0], "connect") == 0) {
+		char* ret = (char*)malloc(128);
+		int err;
+
+		if (ret == NULL) {
+			return NULL;
+		}
+		if (argc < 3 || argv[1] == NULL || argv[2] == NULL) {
+			snprintf(ret, 128, "usage: connect <ssid> <passwd>");
+			return ret;
+		}
+
+		err = brcm_connect_ap(argv[1], argv[2]);
+		if (err == 0) {
+			snprintf(ret, 128, "connect started: %s", argv[1]);
+		} else {
+			snprintf(ret, 128, "connect failed: %d", err);
+		}
+		return ret;
+	}
+	{
+		char* ret = (char*)malloc(96);
+		if (ret == NULL) {
+			return NULL;
+		}
+		snprintf(ret, 96, "unknown command: %s\ntry: help", argv[0]);
+		return ret;
+	}
 }
 
 int main(int argc, char** argv) {

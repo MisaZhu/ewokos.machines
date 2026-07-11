@@ -776,13 +776,12 @@ struct brcmf_escan_req_fixed {
     uint8_t params_buf[BRCMF_SCAN_PARAMS_FIXED_SIZE];
 };
 
-void scan(void)
+int scan(void)
 {
     int32_t params_size = sizeof(struct brcmf_escan_req_fixed);
     struct brcmf_escan_req_fixed req;
     struct brcmf_scan_params_le params_tmp;
     int32_t err;
-
     memset(&req, 0, sizeof(req));
     memset(&params_tmp, 0, sizeof(params_tmp));
     brcmf_escan_prep(&params_tmp);
@@ -798,7 +797,7 @@ void scan(void)
         else
             brcm_log("error (%d)\n", err);
     }
-    return;
+    return err;
 }
 
 void get_ethaddr(char* mac){
