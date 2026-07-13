@@ -8,8 +8,8 @@
 #include <fbd/fbd.h>
 #include <graph/graph.h>
 
-#define UCONSOLE_NATIVE_WIDTH   720U
-#define UCONSOLE_NATIVE_HEIGHT  1280U
+#define UCONSOLE_DEFAULT_WIDTH   720U
+#define UCONSOLE_DEFAULT_HEIGHT  1280U
 static const char* _conf_file = "";
 static bcm283x_dsi_panel_t _panel;
 
@@ -29,8 +29,8 @@ static void uconsole_panel_init(void) {
 	_panel.backlight_active_high = 1;
 	_panel.backlight_delay_ms = 0;
 
-	_panel.preferred_width = UCONSOLE_NATIVE_WIDTH;
-	_panel.preferred_height = UCONSOLE_NATIVE_HEIGHT;
+	_panel.preferred_width = UCONSOLE_DEFAULT_WIDTH;
+	_panel.preferred_height = UCONSOLE_DEFAULT_HEIGHT;
 	_panel.preferred_depth = 32;
 }
 
@@ -100,15 +100,22 @@ static fbinfo_t* get_info(void) {
 }
 
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
-	(void)w;
-	(void)h;
+	if (w == 0) {
+		w = _panel.preferred_width;
+	}
+	if (h == 0) {
+		h = _panel.preferred_height;
+	}
 
 	if (dep == 0) {
 		dep = _panel.preferred_depth;
 	}
 
-	int32_t ret = bcm283x_dsi_fb_init(&_panel,
-			UCONSOLE_NATIVE_WIDTH, UCONSOLE_NATIVE_HEIGHT, dep);
+	_panel.preferred_width = w;
+	_panel.preferred_height = h;
+	_panel.preferred_depth = dep;
+
+	int32_t ret = bcm283x_dsi_fb_init(&_panel, w, h, dep);
 	return ret;
 }
 
@@ -146,5 +153,5 @@ int main(int argc, char** argv) {
 	fbd.get_info = get_info;
 
 	return fbd_run(&fbd, mnt_point,
-			UCONSOLE_NATIVE_WIDTH, UCONSOLE_NATIVE_HEIGHT, _conf_file);
+			UCONSOLE_DEFAULT_WIDTH, UCONSOLE_DEFAULT_HEIGHT, _conf_file);
 }
