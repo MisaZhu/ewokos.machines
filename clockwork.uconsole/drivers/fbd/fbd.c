@@ -92,6 +92,11 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 	if (phy->depth == 16) {
 		return blt16_pitch(phy, g);
 	}
+
+	/* Zero-copy fast path: rendering already targets the framebuffer. */
+	if ((uintptr_t)phy->pointer == (uintptr_t)g->buffer) {
+		return (uint32_t)g->w * (uint32_t)g->h * 4U;
+	}
 	return blt32_pitch(phy, g);
 }
 
