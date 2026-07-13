@@ -1,5 +1,6 @@
 ifeq ($(ARCH),)
-export ARCH=arm
+#export ARCH=arm
+export ARCH=aarch64
 endif
 
 ifeq ($(ARCH),arm)
