@@ -235,15 +235,18 @@ static int brcm_init(void)
 		return err;
 
 	/*
-	 * Enumerate the card in the safest timing first, then move both the
-	 * card and the host to 4-bit / 25MHz once it is selected.
+	 * The card-side high-speed bit is enabled later through CCCR_SPEED in
+	 * the WLAN probe path. Keep enumeration conservative, but once the SDIO
+	 * function is selected move the host to the fastest standard high-speed
+	 * timing this controller advertises. Falling back to 25 MHz here leaves
+	 * BCM43xx SDIO throughput far below expected link rates.
 	 */
 	err = mmc_sdio_set_bus_width(4);
 	if (err)
 		return err;
 
-	_mmc.clock = 25000000;
-	_mmc.selected_mode = MMC_LEGACY;
+	_mmc.clock = 50000000;
+	_mmc.selected_mode = SD_HS;
 	err = sdhci_set_ios(&_mmc);
 	if (err)
 		return err;
