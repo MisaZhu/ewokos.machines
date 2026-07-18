@@ -4,6 +4,8 @@
 #include <arch/bcm283x/mmc.h>
 
 #include <string.h>
+#include <stdbool.h>
+#include <ewoksys/dma.h>
 
 
 #define SDHCI_CMD_MAX_TIMEOUT			3200
@@ -287,6 +289,42 @@ struct sdhci_host {
 };
 
 static struct sdhci_host _host;
+
+/* SDMA bounce buffer, allocated from the DMA region (mapped uncached,
+   so no explicit cache maintenance is needed). Only used on the
+   bcm2711 eMMC2 controller, whose DMA engine takes legacy bus
+   addresses (0xC0000000 alias, uncached). */
+#define SDHCI_SDMA_BOUNCE_SIZE	(64 * 1024)
+#define SDHCI_SDMA_TIMEOUT_MS	1000
+#define SDHCI_BUS_ADDR_UNCACHED	0xC0000000u
+#define SDHCI_BUS_ADDR_MASK	0x3FFFFFFFu
+
+static uint8_t *_sdma_bounce = NULL;
+static uint32_t _sdma_bounce_bus = 0;
+static bool _sdma_unavailable = false;
+
+static int sdhci_sdma_init(void)
+{
+	if (_sdma_bounce != NULL)
+		return 0;
+	if (_sdma_unavailable)
+		return -1;
+
+	ewokos_addr_t v = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
+	if (v == 0) {
+		_sdma_unavailable = true;
+		return -1;
+	}
+	uint32_t phys = dma_phy_addr(0, v);
+	if (phys == 0) {
+		dma_free(0, v);
+		_sdma_unavailable = true;
+		return -1;
+	}
+	_sdma_bounce = (uint8_t *)(uintptr_t)v;
+	_sdma_bounce_bus = (phys & SDHCI_BUS_ADDR_MASK) | SDHCI_BUS_ADDR_UNCACHED;
+	return 0;
+}
 
 static uint8_t *bcm2711_sdhci_pick_ioaddr(uint32_t hostsel)
 {
@@ -779,6 +817,38 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 	return 0;
 }
 
+static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *data)
+{
+	unsigned int stat;
+	uint64_t start = get_timer(0);
+
+	while (1) {
+		stat = sdhci_readl(host, SDHCI_INT_STATUS);
+		if (stat & SDHCI_INT_ERROR) {
+			printf("%s: SDMA error, status 0x%x\n", __func__, stat);
+			return -EIO;
+		}
+		if (stat & SDHCI_INT_DMA_END) {
+			/* SDMA halted at a buffer boundary: restart from the
+			   address already latched in the system address register. */
+			sdhci_writel(host, sdhci_readl(host, SDHCI_DMA_ADDRESS),
+					SDHCI_DMA_ADDRESS);
+			sdhci_writel(host, SDHCI_INT_DMA_END, SDHCI_INT_STATUS);
+		}
+		if (stat & SDHCI_INT_DATA_END)
+			break;
+		if (get_timer(start) > SDHCI_SDMA_TIMEOUT_MS) {
+			printf("%s: SDMA timeout, status 0x%x\n", __func__, stat);
+			return -ETIMEDOUT;
+		}
+	}
+
+	if (data->flags == MMC_DATA_READ)
+		memcpy(data->dest, _sdma_bounce,
+				data->blocks * data->blocksize);
+	return 0;
+}
+
 static void sdhci_cmd_done(struct sdhci_host *host, struct mmc_cmd *cmd)
 {
 	int i;
@@ -805,6 +875,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	uint32_t mask, flags, mode = 0;
 	unsigned int time = 0;
 	uint64_t start = get_timer(0);
+	bool use_sdma = false;
 
 	host->start_addr = 0;
 	/* Timeout unit - ms */
@@ -871,6 +942,16 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		if (data->flags == MMC_DATA_READ)
 			mode |= SDHCI_TRNS_READ;
 
+		if ((host->flags & USE_SDMA) &&
+				trans_bytes <= SDHCI_SDMA_BOUNCE_SIZE &&
+				sdhci_sdma_init() == 0) {
+			use_sdma = true;
+			mode |= SDHCI_TRNS_DMA;
+			if (data->flags != MMC_DATA_READ)
+				memcpy(_sdma_bounce, data->src, trans_bytes);
+			sdhci_writel(host, _sdma_bounce_bus, SDHCI_DMA_ADDRESS);
+		}
+
 		sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,
 				data->blocksize),
 				SDHCI_BLOCK_SIZE);
@@ -911,8 +992,12 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	} else
 		ret = -1;
 
-	if (!ret && data)
-		ret = sdhci_transfer_data(host, data);
+	if (!ret && data) {
+		if (use_sdma)
+			ret = sdhci_transfer_data_sdma(host, data);
+		else
+			ret = sdhci_transfer_data(host, data);
+	}
 
 	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD)
 		proc_usleep(10);
@@ -982,6 +1067,13 @@ struct bus_ops* bcm2711_sdhci_init(void)
 
 	sdhci_reset(SDHCI_RESET_ALL);
 	sdhci_set_power(&_host,MMC_VDD_33_34);
+
+	/* SDMA is only trusted on the bcm2711 eMMC2 controller (its DMA
+	   engine addresses the legacy bus through the 0xC0000000 alias).
+	   The legacy controller keeps PIO. */
+	if (_host.ioaddr == (uint8_t *)(_mmio_base + 0x340000) &&
+			sdhci_sdma_init() == 0)
+		_host.flags |= USE_SDMA;
 
 	sdhci_get_info(&_host);
 

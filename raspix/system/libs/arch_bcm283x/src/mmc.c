@@ -438,17 +438,17 @@ static int mmc_switch(struct mmc *mmc, int mode)
 	switch(mode){
 		case UHS_SDR104:
 			mode = 0x03;
-			mode_bit = 0x4;
+			mode_bit = 0x8;
 			clock = 208000000;
 			break;
 		case UHS_SDR50:
 			mode = 0x02;
-			mode_bit = 0x2;
+			mode_bit = 0x4;
 			clock = 100000000;
 			break;
 		case UHS_SDR25:
 			mode = 0x01;
-			mode_bit = 0x1;
+			mode_bit = 0x2;
 		clock = 50000000;
 			break;
 		default:

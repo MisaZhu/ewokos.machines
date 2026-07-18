@@ -367,18 +367,18 @@ static int mmc_switch(struct mmc *mmc, int mode)
 	switch(mode){
 		case UHS_SDR104:
 			mode = 0x03;
-			mode_bit = 0x4;
+			mode_bit = 0x8;
 			clock = 208000000;
 			break;
 		case UHS_SDR50:
 			mode = 0x02;
-			mode_bit = 0x2;
+			mode_bit = 0x4;
 			clock = 100000000;
 			break;
 		case UHS_SDR25:
 			mode = 0x01;
-			mode_bit = 0x1;
-			clock = 100000000;
+			mode_bit = 0x2;
+			clock = 50000000;
 			break;
 		default:
 			return -EINVAL;
@@ -394,13 +394,15 @@ static int mmc_switch(struct mmc *mmc, int mode)
     cmd.cmdarg = 0x0;
 
     int ret = mmc_send_cmd(mmc, &cmd, &data);
+	if(ret)
+		return ret;
 
 	if(!(buf[13] & mode_bit)){
 		printf("mmc_switch: mode %d failed\n", mode);
 		return -EINVAL;
 	}
 
-	if(buf[16] & 0xf == mode){
+	if((buf[16] & 0xf) == mode){
 		printf("mmc_switch: mode %d success\n", mode);
 		return 0;
 	}
