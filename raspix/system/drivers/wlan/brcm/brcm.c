@@ -103,6 +103,8 @@
 #define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
 #define BRCMF_SCAN_CACHE_MAX 64
 #define BRCMF_MANUAL_CONNECT_GUARD_MS 15000U
+#define BRCMF_RXPENDING_STUCK_MS 2000U   /* rxpending without frame reads timeout */
+#define BRCMF_FW_LIVENESS_MS 30000U      /* firmware liveness watchdog (CONNECTED) */
 #define ETH_P_IP 0x0800U
 #define ETH_P_ARP 0x0806U
 #define ETH_P_IPV6 0x86DDU
@@ -453,6 +455,8 @@ struct brcmf_dev{
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
     uint32_t manual_connect_until_ms;
+    uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
+    uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
     int init_error;
     bool init_failed;
     int last_error;
@@ -679,6 +683,8 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->intstatus = 0;
     bus->tx_starving = false;
     bus->tx_starve_usec = 0;
+    bus->rxpending_since_ms = 0;
+    bus->last_rx_success_ms = kernel_tic_ms(0);
     if (flush_queues)
         brcmf_flush_data_queues();
 }
@@ -1874,6 +1880,7 @@ static int brcmf_sdio_hdparse(uint8_t *header,
     /* All zero means no more to read */
     if (!(len | checksum)) {
         bus->rxpending = false;
+        bus->rxpending_since_ms = 0;
         return -ENODATA;
     }
     if ((uint16_t)(~(len ^ checksum))) {
@@ -2795,6 +2802,8 @@ static uint brcmf_sdio_readframes(uint maxframes)
 
     /* Not finished unless we encounter no more frames indication */
     bus->rxpending = true;
+    if (bus->rxpending_since_ms == 0)
+        bus->rxpending_since_ms = kernel_tic_ms(0);
 
     for (rd->seq_num = bus->rx_seq, rxleft = maxframes;
          !bus->rxskip && rxleft;
@@ -2909,6 +2918,8 @@ static uint brcmf_sdio_readframes(uint maxframes)
 
         skb_trim(pkt, rd->len);
         skb_pull(pkt, rd->dat_offset);
+        bus->last_rx_success_ms = kernel_tic_ms(0);
+        bus->rxpending_since_ms = 0;
         if (pkt->len == 0)
             skb_free(pkt);
         else if (rd->channel == SDPCM_EVENT_CHANNEL)
@@ -3267,6 +3278,17 @@ static void brcmf_sdio_dpc(void)
     /* Ignore frame indications if rxskip is set */
     if (bus->rxskip)
         intstatus &= ~I_HMB_FRAME_IND;
+    /* Recover from stuck rxpending — no frame indication arrived for too
+     * long after rxskip recovery. Force a readframes attempt so the
+     * all-zero header clears rxpending, or escalate to disconnect. */
+    if (bus->rxpending && !bus->rxskip && bus->rxpending_since_ms) {
+        uint32_t pend_ms = kernel_tic_ms(0) - bus->rxpending_since_ms;
+        if (pend_ms > BRCMF_RXPENDING_STUCK_MS) {
+            brcm_log("rxpending stuck %u ms, forcing readframes\n", pend_ms);
+            intstatus |= I_HMB_FRAME_IND;
+            bus->rxpending_since_ms = 0;
+        }
+    }
     /* On frame indication, read available frames */
     if ((intstatus & I_HMB_FRAME_IND) && (bus->clkstate == CLK_AVAIL)) {
         brcmf_sdio_readframes(bus->rxbound);
