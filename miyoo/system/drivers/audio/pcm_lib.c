@@ -453,6 +453,13 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 
 	while (1) {
 		snd_pcm_lock(substream);
+
+		/* Bail out immediately if the stream is being torn down. */
+		if (substream->closing || substream->open_count == 0) {
+			snd_pcm_unlock(substream);
+			return -EBADF;
+		}
+
 		if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->pointer) {
 			update_hw_ptr(substream, 0);
 		}
@@ -473,11 +480,17 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 			err = -EBADF;
 			snd_pcm_unlock(substream);
 			} return err;
-		case PCM_STATE_STOPED:{
+		case PCM_STATE_STOPED:
+		case PCM_STATE_UNKOWN: {
+			/*
+			 * STOPED means the stream was explicitly halted (close or
+			 * user trigger-stop). There is no producer that will advance
+			 * hw_ptr, so waiting here would loop forever. Return an
+			 * error and let the caller decide whether to re-prepare.
+			 */
+			err = -EBADF;
 			snd_pcm_unlock(substream);
-			usleep(PCM_WAIT_AVAIL_SLEEP_US);
-			continue;
-			}
+			} return err;
 		default:
 			snd_pcm_unlock(substream);
 			break;
@@ -1375,10 +1388,17 @@ static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 	case PCM_STATE_RUNNING:
 		return 0;
 	case PCM_STATE_SETUP:
-	case PCM_STATE_STOPED:
 		return snd_pcm_prepare(substream);
 	case PCM_STATE_XRUN:
 		return -EPIPE;
+	case PCM_STATE_STOPED:
+		/*
+		 * STOPED means the stream was explicitly halted. Auto-preparing
+		 * here would reset hw_ptr/appl_ptr and restart DMA behind the
+		 * back of any concurrent reader/poller, corrupting the session.
+		 * Require an explicit user prepare (CTRL_PCM_DEV_PRPARE).
+		 */
+		return -EBADF;
 	default:
 		return -EBADF;
 	}
