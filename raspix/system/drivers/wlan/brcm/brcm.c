@@ -90,7 +90,7 @@
 #define BRCMF_CTL_SLOW_SLEEP_US 4000U
 #define BRCMF_CTL_TX_TIMEOUT_US 50000U
 #define BRCMF_CTL_RX_TIMEOUT_US 1000000U
-#define BRCMF_TX_BATCH_LIMIT 16
+#define BRCMF_TX_BATCH_LIMIT 32
 #define BRCMF_RX_QUEUE_SLOTS 128
 #define BRCMF_TX_QUEUE_SLOTS 128
 #define BRCMF_QUEUE_DROP_LOG_STEP 64U
@@ -3328,27 +3328,30 @@ static void brcmf_sdio_dpc(void)
     }
     /* Send queued frames (respect hardware flow control) */
     int max_frames = BRCMF_TX_BATCH_LIMIT;
+    int tx_sent = 0;
+    static uint8_t tx_buf[MAX_FRAME_SIZE];
     while(bus->state == CONNECTED && !bus->fcstate &&
           queue_buffer_check(bus->tx_queue) && max_frames--){
         if (!txctl_ok())
             break;
-        struct sk_buff *pkt = skb_alloc(MAX_FRAME_SIZE);
+        struct sk_buff pkt = {0};
+        pkt.data = tx_buf;
         ipc_disable();
-        int len = queue_buffer_pop(bus->tx_queue, pkt->data, MAX_FRAME_SIZE);
+        int len = queue_buffer_pop(bus->tx_queue, pkt.data, MAX_FRAME_SIZE);
         ipc_enable();
-        brcm_wakeup_dev(VFS_EVT_WR);
-        skb_put(pkt, len);
-        brcmf_sdio_txpkt_prep(pkt, 2);
-        int ret = brcmf_sdiod_send_pkt(pkt);
+        skb_put(&pkt, len);
+        brcmf_sdio_txpkt_prep(&pkt, 2);
+        int ret = brcmf_sdiod_send_pkt(&pkt);
         if (ret < 0) {
             brcmf_sdio_txfail();
-            skb_free(pkt);
             break;
         }
         bus->tx_fail_count = 0;
         bus->tx_seq++;
-        skb_free(pkt);
+        tx_sent++;
     }
+    if (tx_sent > 0)
+        brcm_wakeup_dev(VFS_EVT_WR);
 
     brcm_dpc_last_usec = brcmf_elapsed_usec(start_usec, brcmf_now_usec());
     brcmf_dpc_leave();
