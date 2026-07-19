@@ -59,9 +59,28 @@
 #define BRCMF_FIRSTREAD (1 << 6)
 #define BRCMF_CONSOLE   10  /* watchdog interval to poll console */
 #define BRCMF_WORKER_BUSY_SLEEP_US 1000U
-#define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 2000U
+/*
+ * CONNECTED idle cap raised 2ms -> 10ms: the worker polls the SDIO
+ * interrupt flag once per sleep cycle, so a 2ms cap woke it 500x/s
+ * even with zero traffic, which was a major contributor to wland's
+ * idle CPU burn on raspix. 10ms (100Hz) keeps first-packet latency
+ * acceptable while cutting the idle poll rate ~5x. RX frames arriving
+ * during a sleep window are still picked up on the next cycle via
+ * brcmf_worker_irq_pending(), so nothing is lost.
+ */
+#define BRCMF_WORKER_CONNECTED_IDLE_MAX_US 10000U
 #define BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US 20000U
 #define BRCMF_WORKER_IDLE_STEP_US 1000U
+/*
+ * Backstop for the sleep_us=0 fast loop: after this many consecutive
+ * zero-sleep iterations, force a short yield. Real bursts keep making
+ * progress (each iteration does SDIO work), but if a pending-io
+ * condition ever wedges true (e.g. TX queue stuck non-empty behind a
+ * failing SDIO path) the worker would otherwise pin the CPU at 100%.
+ * Cost to genuine throughput: one 200us yield per 64 working loops.
+ */
+#define BRCMF_WORKER_SPIN_FALLBACK_LOOPS 64U
+#define BRCMF_WORKER_SPIN_FALLBACK_SLEEP_US 200U
 #define BRCMF_DPC_SLOW_USEC 5000U
 #define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
 #define BRCMF_CTL_FAST_POLL_LOOPS 8U
@@ -532,7 +551,9 @@ static void brcmf_queue_reset(queue_buffer_t *queue)
 {
     if (!queue)
         return;
-    queue->pop_idx = queue->push_idx;
+    /* Goes through the locked API: producers/consumers on other
+     * threads may be mid-push/pop when a disconnect flushes queues. */
+    queue_buffer_reset(queue);
 }
 
 static void brcmf_flush_data_queues(void)
@@ -3654,6 +3675,7 @@ void* brcm_thread(void* p) {
     uint32_t next_housekeeping_tick = 0;
     uint32_t next_scan_tick = 0;
     uint32_t sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
+    uint32_t spin_loops = 0;
     int err;
     err = brcmf_sdiod_probe();
     if (err) {
@@ -3771,14 +3793,23 @@ worker_done:
              * batches injects per-batch latency and bufferbloat that
              * shows up as network stutter under bursty traffic. Each
              * iteration still performs real SDIO work, so this is not a
-             * busy-spin. */
+             * busy-spin — but bound it anyway: if the pending-io
+             * condition wedges true, fall back to a short yield instead
+             * of spinning forever. */
             sleep_us = 0;
+            spin_loops++;
+            if (spin_loops >= BRCMF_WORKER_SPIN_FALLBACK_LOOPS) {
+                sleep_us = BRCMF_WORKER_SPIN_FALLBACK_SLEEP_US;
+                spin_loops = 0;
+            }
         } else if (run_dpc || brcmf_worker_has_work()) {
             sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
+            spin_loops = 0;
         } else {
             uint32_t idle_cap = brcmf_worker_idle_cap_usec();
 
             sleep_us = min(sleep_us + BRCMF_WORKER_IDLE_STEP_US, idle_cap);
+            spin_loops = 0;
         }
 
         usleep(sleep_us);

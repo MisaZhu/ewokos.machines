@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <types.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "qbuf.h"
 #include "log.h"
@@ -27,12 +28,16 @@ queue_buffer_t *queue_buffer_alloc(int qsize, int bsize){
 				break;
 		}
 		qbuf->qsize = i;
+		pthread_mutex_init(&qbuf->lock, NULL);
 	}
 	return qbuf;
 }
 
 int queue_buffer_push(queue_buffer_t *qbuf, uint8_t* buf, int size){
 	buf_t *dst = NULL;
+	int ret = 0;
+
+	pthread_mutex_lock(&qbuf->lock);
 	if(qbuf->push_idx - qbuf->pop_idx < qbuf->qsize){
 		int idx = qbuf->push_idx % qbuf->qsize;
 		dst = &qbuf->bufs[idx];
@@ -43,13 +48,17 @@ int queue_buffer_push(queue_buffer_t *qbuf, uint8_t* buf, int size){
 		memcpy(dst->data, buf, size);
 		dst->size = size;
 		qbuf->push_idx++;
-		return size;
+		ret = size;
 	}
-	return 0;
+	pthread_mutex_unlock(&qbuf->lock);
+	return ret;
 }
 
 int queue_buffer_pop(queue_buffer_t *qbuf, uint8_t* buf, int size){
 	buf_t *src = NULL;
+	int ret = 0;
+
+	pthread_mutex_lock(&qbuf->lock);
 	if(qbuf->push_idx > qbuf->pop_idx){
 		int idx = qbuf->pop_idx % qbuf->qsize;
  		src = &qbuf->bufs[idx];
@@ -63,11 +72,23 @@ int queue_buffer_pop(queue_buffer_t *qbuf, uint8_t* buf, int size){
 			qbuf->push_idx -= qbuf->qsize;
 			qbuf->pop_idx -= qbuf->qsize;
 		}
-		return size;
+		ret = size;
 	}
-	return 0;
+	pthread_mutex_unlock(&qbuf->lock);
+	return ret;
 }
 
 int queue_buffer_check(queue_buffer_t *qbuf){
-	return (qbuf->push_idx - qbuf->pop_idx);
+	int depth;
+
+	pthread_mutex_lock(&qbuf->lock);
+	depth = qbuf->push_idx - qbuf->pop_idx;
+	pthread_mutex_unlock(&qbuf->lock);
+	return depth;
+}
+
+void queue_buffer_reset(queue_buffer_t *qbuf){
+	pthread_mutex_lock(&qbuf->lock);
+	qbuf->pop_idx = qbuf->push_idx;
+	pthread_mutex_unlock(&qbuf->lock);
 }
