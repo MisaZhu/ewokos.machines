@@ -3667,6 +3667,17 @@ void* brcm_thread(void* p) {
         usleep(1000);
     }
 
+    uint32_t value = 0; 
+    err = brcmf_fil_iovar_data_set(0, "bus:txglom", &value, sizeof(uint32_t));
+    if(err){
+        brcm_log("disable glom failed %d\n", err);
+    }
+
+    err = brcmf_fil_iovar_data_set(0, "bus:rxglom", &value, sizeof(uint32_t));
+    if(err){
+        brcm_log("disable glom failed %d\n", err);
+    }
+
     err = brcmf_c_preinit_dcmds();
     if (err) {
         brcmf_set_init_failed(err);
@@ -3880,13 +3891,6 @@ char* brcm_state_info(void)
     uint32_t last_event_status = 0;
     uint32_t last_event_reason = 0;
     uint32_t recovery_count = 0;
-    uint32_t rx_queue_drops = 0;
-    uint32_t tx_queue_drops = 0;
-    uint32_t rx_fail_count = 0;
-    uint32_t tx_fail_count = 0;
-    uint32_t rx_queue_depth = 0;
-    uint32_t tx_queue_depth = 0;
-    uint32_t dpc_last_usec = 0;
     bool init_failed = false;
     bool ip_ready = false;
     bool mac_ready = false;
@@ -3930,13 +3934,6 @@ char* brcm_state_info(void)
         json_var_add(json_var, "rssi_ready", json_var_new_bool(false));
         json_var_add(json_var, "ip", json_var_new_str(""));
         json_var_add(json_var, "ip_ready", json_var_new_bool(false));
-    json_var_add(json_var, "rx_queue_drops", json_var_new_int(0));
-    json_var_add(json_var, "tx_queue_drops", json_var_new_int(0));
-    json_var_add(json_var, "rx_fail_count", json_var_new_int(0));
-    json_var_add(json_var, "tx_fail_count", json_var_new_int(0));
-    json_var_add(json_var, "rx_queue_depth", json_var_new_int(0));
-    json_var_add(json_var, "tx_queue_depth", json_var_new_int(0));
-    json_var_add(json_var, "dpc_last_usec", json_var_new_int(0));
         ret = json_var_to_cstr(json_var);
         json_var_unref(json_var);
         return ret;
@@ -3954,17 +3951,9 @@ char* brcm_state_info(void)
     last_event_status = bus->last_event_status;
     last_event_reason = bus->last_event_reason;
     recovery_count = bus->recovery_count;
-    rx_queue_drops = bus->rx_queue_drops;
-    tx_queue_drops = bus->tx_queue_drops;
-    rx_fail_count = bus->rx_fail_count;
-    tx_fail_count = bus->tx_fail_count;
     scan_results_ready = bus->scan_results_ready;
     memcpy(ssid, bus->ssid, sizeof(ssid));
     memcpy(last_reason, bus->last_reason, sizeof(last_reason));
-    if (bus->rx_queue)
-        rx_queue_depth = (uint32_t)queue_buffer_check(bus->rx_queue);
-    if (bus->tx_queue)
-        tx_queue_depth = (uint32_t)queue_buffer_check(bus->tx_queue);
     if (brcmf_find_best_scan_cache_locked(ssid, &scan_idx)) {
         brcmf_format_hwaddr(bus->scan_cache[scan_idx].bssid, bssid, sizeof(bssid));
         rssi = (int)bus->scan_cache[scan_idx].rssi;
@@ -3987,7 +3976,6 @@ char* brcm_state_info(void)
         brcmf_format_hwaddr(mac, mac_str, sizeof(mac_str));
         mac_ready = (mac_str[0] != '\0');
     }
-    dpc_last_usec = brcmf_diag_last_dpc_usec();
 
     json_var_add(json_var, "state", json_var_new_str(brcmf_state_name(state)));
     json_var_add(json_var, "ok", json_var_new_bool(!init_failed && last_error == 0));
@@ -4009,13 +3997,6 @@ char* brcm_state_info(void)
     json_var_add(json_var, "cipher", json_var_new_str(cipher));
     json_var_add(json_var, "ip", json_var_new_str(ip));
     json_var_add(json_var, "ip_ready", json_var_new_bool(ip_ready));
-    json_var_add(json_var, "rx_queue_drops", json_var_new_int((int)rx_queue_drops));
-    json_var_add(json_var, "tx_queue_drops", json_var_new_int((int)tx_queue_drops));
-    json_var_add(json_var, "rx_fail_count", json_var_new_int((int)rx_fail_count));
-    json_var_add(json_var, "tx_fail_count", json_var_new_int((int)tx_fail_count));
-    json_var_add(json_var, "rx_queue_depth", json_var_new_int((int)rx_queue_depth));
-    json_var_add(json_var, "tx_queue_depth", json_var_new_int((int)tx_queue_depth));
-    json_var_add(json_var, "dpc_last_usec", json_var_new_int((int)dpc_last_usec));
     json_var_add(json_var, "reason", json_var_new_str(last_reason[0] ? last_reason : "none"));
     json_var_add(json_var, "event_type", json_var_new_int((int)last_event_type));
     json_var_add(json_var, "event_status", json_var_new_int((int)last_event_status));
