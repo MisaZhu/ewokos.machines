@@ -28,8 +28,9 @@
 #define SOUND_DEFAULT_PERIOD_SIZE	1024
 #define SOUND_DEFAULT_PERIOD_COUNT	4
 #define PCM_WAIT_AVAIL_SLEEP_US		5000
+#define PCM_WAIT_AVAIL_MAX_SLEEP_US	40000
 #define PCM_LOOP_IDLE_SLEEP_US		10000
-#define PCM_LOOP_ACTIVE_SLEEP_US	10000
+#define PCM_LOOP_ACTIVE_SLEEP_US	20000
 #define PCM_LOOP_CLOSED_SLEEP_US	160000
 #define PCM_LOOP_IDLE_MAX_SLEEP_US	40000
 
@@ -496,7 +497,28 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 			break;
 		}
 
-		usleep(PCM_WAIT_AVAIL_SLEEP_US);
+		/*
+		 * Adaptive sleep: estimate how long the hardware needs to
+		 * consume (period_size - avail) frames at the current rate.
+		 * This avoids waking every 5ms when a full period takes 21ms+
+		 * (48kHz/1024), cutting write-thread wakeups by ~3-4x.
+		 */
+		{
+			uint32_t sleep_us = PCM_WAIT_AVAIL_SLEEP_US;
+			if (runtime->rate > 0) {
+				int32_t need = runtime->period_size - avail;
+				if (need > 0) {
+					sleep_us = (uint32_t)(
+						(uint64_t)need * 1000000ULL / runtime->rate);
+					sleep_us += sleep_us >> 2; /* +25% margin */
+				}
+			}
+			if (sleep_us < PCM_WAIT_AVAIL_SLEEP_US)
+				sleep_us = PCM_WAIT_AVAIL_SLEEP_US;
+			if (sleep_us > PCM_WAIT_AVAIL_MAX_SLEEP_US)
+				sleep_us = PCM_WAIT_AVAIL_MAX_SLEEP_US;
+			usleep(sleep_us);
+		}
 	}
 
 	*ravail = avail;
