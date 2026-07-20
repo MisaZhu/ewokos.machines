@@ -360,6 +360,7 @@ static int mmc_switch(struct mmc *mmc, int mode)
     struct mmc_cmd cmd;
 	struct mmc_data data;
 	uint8_t buf[64];
+	int target_mode = mode;
 	uint8_t mode_bit = 0;
 	int clock = 0;
 	int retry = 3;
@@ -403,6 +404,7 @@ static int mmc_switch(struct mmc *mmc, int mode)
 	}
 
 	if((buf[16] & 0xf) == mode){
+		mmc->selected_mode = target_mode;
 		printf("mmc_switch: mode %d success\n", mode);
 		return 0;
 	}
@@ -424,6 +426,7 @@ do_retry:
 
 	if((buf[16] & 0xf) == mode){
 		mmc->clock = clock;
+		mmc->selected_mode = target_mode;
 		mmc->ops->set_ios(mmc);
 		return 0;
 	}

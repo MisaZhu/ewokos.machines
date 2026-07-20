@@ -663,6 +663,7 @@ static int sdhci_get_info(struct sdhci_host *host)
 {
 	uint32_t caps, caps_1 = 0;
 	caps = sdhci_readl(host, SDHCI_CAPABILITIES);
+	host->host_caps = caps;
 	host->version = sdhci_readw(host, SDHCI_HOST_VERSION);
 	printf("%s, version: %x caps: 0x%x\n", __func__, host->version, caps);
 
@@ -826,6 +827,7 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *da
 		stat = sdhci_readl(host, SDHCI_INT_STATUS);
 		if (stat & SDHCI_INT_ERROR) {
 			printf("%s: SDMA error, status 0x%x\n", __func__, stat);
+                       host->flags &= ~USE_SDMA;
 			return -EIO;
 		}
 		if (stat & SDHCI_INT_DMA_END) {
@@ -839,6 +841,7 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *da
 			break;
 		if (get_timer(start) > SDHCI_SDMA_TIMEOUT_MS) {
 			printf("%s: SDMA timeout, status 0x%x\n", __func__, stat);
+                       host->flags &= ~USE_SDMA;
 			return -ETIMEDOUT;
 		}
 	}
@@ -1068,14 +1071,10 @@ struct bus_ops* bcm2711_sdhci_init(void)
 	sdhci_reset(SDHCI_RESET_ALL);
 	sdhci_set_power(&_host,MMC_VDD_33_34);
 
-	/* SDMA is only trusted on the bcm2711 eMMC2 controller (its DMA
-	   engine addresses the legacy bus through the 0xC0000000 alias).
-	   The legacy controller keeps PIO. */
-	if (_host.ioaddr == (uint8_t *)(_mmio_base + 0x340000) &&
-			sdhci_sdma_init() == 0)
-		_host.flags |= USE_SDMA;
-
 	sdhci_get_info(&_host);
+
+	/* Keep the pre-b34826f PIO path on real Pi4 until SDMA is proven stable. */
+	_host.flags &= ~USE_SDMA;
 
 	sdhci_set_clock(&_host, 25000000);
 	sdhci_set_bus_width(&_host, 4);

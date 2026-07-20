@@ -7,21 +7,15 @@
 #include <sd/sd.h>
 #include <ewoksys/mmio.h>
 #include <arch/bcm283x/sd.h>
-#include <arch/bcm283x/mmc.h>
 
 static void* cache_entry[4096] = {0};
 static uint8_t* prefetch_buf = 0;
 static uint32_t prefetch_buf_sectors = 0;
+static int _sd_aggressive_read_opt = 1;
 
 #define SD_CACHE_PAGE_SECTORS 8U
 #define SD_CACHE_PAGE_SIZE (SD_CACHE_PAGE_SECTORS * 512U)
-#define SD_CACHE_MAX_BATCH_PAGES 8U
-
-/* Requests at or above this size bypass the page cache entirely and
-   are read straight from the card in SD_DIRECT_CHUNK_SECTORS-sized
-   chunks, avoiding the cache-fill copy and cache pollution. */
-#define SD_DIRECT_READ_THRESHOLD 32U
-#define SD_DIRECT_CHUNK_SECTORS 128U
+#define SD_CACHE_MAX_BATCH_PAGES 1U
 
 static void** bsp_sd_get_l3(uint32_t sector, int create) {
 	uint32_t l1 = (sector >> 21) & 0x1FF;
@@ -78,31 +72,10 @@ static int32_t bsp_sd_fill_page_cache(uint32_t start_page, uint32_t page_count) 
 	return 0;
 }
 
-static int32_t bsp_sd_read_direct(int32_t sector, void *buf, uint32_t count) {
-	uint8_t *out = (uint8_t*)buf;
-	uint32_t current_sector = (uint32_t)sector;
-	uint32_t remaining = count;
-
-	while(remaining > 0) {
-		uint32_t chunk = remaining;
-		if(chunk > SD_DIRECT_CHUNK_SECTORS)
-			chunk = SD_DIRECT_CHUNK_SECTORS;
-		if(mmc_read_blocks(out, current_sector, chunk) != (int32_t)chunk)
-			return -1;
-		out += chunk * 512U;
-		current_sector += chunk;
-		remaining -= chunk;
-	}
-	return 0;
-}
-
 static int32_t bsp_sd_read_cache_sectors(int32_t sector, void *buf, uint32_t count) {
 	uint8_t *out = (uint8_t*)buf;
 	uint32_t current_sector = (uint32_t)sector;
 	uint32_t remaining = count;
-
-	if(count >= SD_DIRECT_READ_THRESHOLD)
-		return bsp_sd_read_direct(sector, buf, count);
 
 	while(remaining > 0) {
 		uint32_t page = current_sector >> 3;
@@ -114,13 +87,11 @@ static int32_t bsp_sd_read_cache_sectors(int32_t sector, void *buf, uint32_t cou
 
 		if(l3_entry[l3] == 0) {
 			uint32_t needed_pages = (sector_offset + remaining + SD_CACHE_PAGE_SECTORS - 1) / SD_CACHE_PAGE_SECTORS;
-			/* Readahead: always fill a full batch window so sequential
-			   small reads amortize command overhead. */
-			if(needed_pages < SD_CACHE_MAX_BATCH_PAGES)
-				needed_pages = SD_CACHE_MAX_BATCH_PAGES;
 			uint32_t max_pages = 0x200 - l3;
 			if(needed_pages > max_pages)
 				needed_pages = max_pages;
+			if(needed_pages > SD_CACHE_MAX_BATCH_PAGES)
+				needed_pages = SD_CACHE_MAX_BATCH_PAGES;
 			if(bsp_sd_fill_page_cache(page, needed_pages) != 0)
 				return -1;
 			if(l3_entry[l3] == 0)
@@ -183,10 +154,12 @@ int32_t bsp_sd_init_by_info(void) {
    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
    if(strstr(sysinfo.machine, "pi4") ||
 			strstr(sysinfo.machine, "cm4") ||
-			strstr(sysinfo.machine, "pi5"))
+			strstr(sysinfo.machine, "pi5")) {
+		_sd_aggressive_read_opt = 0;
         return mmc_init(1);
-   else
-        return mmc_init(0);
+	}
+	_sd_aggressive_read_opt = 1;
+	return mmc_init(0);
 }
 
 int bsp_sd_init(void) {
