@@ -315,9 +315,10 @@ int mi_cpu_dai_open(struct snd_soc_dai *dai, struct snd_pcm_substream *substream
 	regmap_field_write(dma_channel->en, 0);
 	regmap_field_write(dma_channel->rd_empty_int_en, 0);
 	regmap_field_write(dma_channel->rd_underrun_int_en, 0);
-	delay(1000);
+	/* usleep yields the CPU; delay() would busy-spin for the settle time */
+	usleep(1000);
 	regmap_field_write(dma_channel->rst, 0);
-	delay(1000);
+	usleep(1000);
 
 	/* Setup default register config */
 	regmap_field_write(dma_channel->live_count_en, 1);
@@ -337,8 +338,7 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 
 static int mi_cpu_dai_kick(struct snd_soc_dai *dai, struct snd_pcm_substream *substream)
 {
-	UNUSED(dai);
-	if (substream == NULL || substream->runtime == NULL) {
+	if (dai == NULL || substream == NULL || substream->runtime == NULL) {
 		return 0;
 	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
@@ -604,7 +604,21 @@ static void msc313_bach_queue_pending(struct msc313_bach *bach,
 	 * actually drained.
 	 */
 	if (hw_cache_bytes >= (ssize_t)bach_runtime->max_inflight) {
-		return;
+		/*
+		 * The bookkeeping can go stale: a glitchy level read keeps
+		 * processed_bytes frozen by the monotonic clamp in pointer(),
+		 * and then hw_cache_bytes never falls below the watermark even
+		 * after BACH has drained dry. Trust the live level register
+		 * here: if the engine is actually empty while data is still
+		 * pending, resync the accounting and refill instead of starving
+		 * the DMA until a hard stall.
+		 */
+		if (bach_runtime->sub_channel == NULL ||
+			msc313_bach_get_level(bach_runtime->sub_channel) != 0) {
+			return;
+		}
+		bach_runtime->processed_bytes = bach_runtime->total_bytes;
+		hw_cache_bytes = 0;
 	}
 
 	if (pending_bytes < period_bytes) {
@@ -767,13 +781,13 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		 * before enabling the reader or the reader locks up.
 		 */
 		regmap_field_write(dma_channel->en, 1);
-		delay(1000);
+		usleep(1000);
 		
 		
 
 		/* Start playback */
 		regmap_field_write(sub_channel->en, 1);
-		delay(1000);
+		usleep(1000);
 		regmap_field_read(sub_channel->addr_hi, &addr_hi);
 		regmap_field_read(sub_channel->addr_lo, &addr_lo);
 		regmap_field_read(sub_channel->size, &size);
@@ -786,7 +800,7 @@ int mi_cpu_dai_trigger(struct snd_soc_dai *dai, struct snd_pcm_substream *substr
 		break;
 	case PCM_TRIGER_STOP:
 		regmap_field_write(sub_channel->en, 0);
-		delay(1000);
+		usleep(1000);
 		regmap_field_write(dma_channel->en, 0);
 		/* Mask interrupts */
 		regmap_field_write(dma_channel->rd_underrun_int_en, 0);

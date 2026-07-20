@@ -29,6 +29,7 @@
 #define SOUND_DEFAULT_PERIOD_COUNT	4
 #define PCM_WAIT_AVAIL_SLEEP_US		5000
 #define PCM_WAIT_AVAIL_MAX_SLEEP_US	40000
+#define PCM_WAIT_AVAIL_TIMEOUT_US	1000000
 #define PCM_LOOP_IDLE_SLEEP_US		10000
 #define PCM_LOOP_ACTIVE_SLEEP_US	20000
 #define PCM_LOOP_CLOSED_SLEEP_US	160000
@@ -450,7 +451,26 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 	}
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	int32_t avail = 0;
+	int32_t last_avail = -1;
 	int err = 0;
+	uint64_t waited_us = 0;
+	uint64_t timeout_us = PCM_WAIT_AVAIL_TIMEOUT_US;
+
+	/*
+	 * Bound the total wait on the time the hardware needs to drain the
+	 * whole ring a few times over. If avail has not moved at all in that
+	 * window the BACH engine has stalled and no amount of waiting will
+	 * help; turning the stall into an XRUN lets the client recover with
+	 * a regular prepare instead of hanging this IPC handler forever
+	 * (which also blocks every other IPC to audctrl).
+	 */
+	if (runtime->rate > 0 && runtime->buffer_size > 0) {
+		timeout_us = (uint64_t)runtime->buffer_size * 1000000ULL / runtime->rate;
+		timeout_us *= 4;
+		if (timeout_us < PCM_WAIT_AVAIL_TIMEOUT_US) {
+			timeout_us = PCM_WAIT_AVAIL_TIMEOUT_US;
+		}
+	}
 
 	while (1) {
 		snd_pcm_lock(substream);
@@ -463,6 +483,19 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 
 		if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->pointer) {
 			update_hw_ptr(substream, 0);
+		}
+		/*
+		 * Re-kick the platform driver while we wait. If everything the
+		 * writer produced is still parked in pending_bytes (e.g. a
+		 * queue attempt was rejected while BACH was near its
+		 * watermark), the engine can drain to silence with nobody left
+		 * to refill it: kick() normally only runs from the write path,
+		 * and the write path is blocked right here. Kicking from the
+		 * wait loop breaks that circular wait.
+		 */
+		if (runtime->status.state == PCM_STATE_RUNNING &&
+			substream->ops->kick) {
+			substream->ops->kick(substream);
 		}
 		avail = play_avail(runtime);
 		if (avail >= runtime->period_size) {
@@ -497,6 +530,12 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 			break;
 		}
 
+		/* Any hw progress resets the stall timeout. */
+		if (avail != last_avail) {
+			last_avail = avail;
+			waited_us = 0;
+		}
+
 		/*
 		 * Adaptive sleep: estimate how long the hardware needs to
 		 * consume (period_size - avail) frames at the current rate.
@@ -518,6 +557,24 @@ int wait_avail(struct snd_pcm_substream *substream, int *ravail)
 			if (sleep_us > PCM_WAIT_AVAIL_MAX_SLEEP_US)
 				sleep_us = PCM_WAIT_AVAIL_MAX_SLEEP_US;
 			usleep(sleep_us);
+			waited_us += sleep_us;
+		}
+
+		if (waited_us >= timeout_us) {
+			/*
+			 * Hardware stalled with no forward progress: force XRUN
+			 * so the client sees -EPIPE and can recover via prepare.
+			 */
+			snd_pcm_lock(substream);
+			if (!substream->closing && substream->open_count != 0 &&
+				runtime->status.state == PCM_STATE_RUNNING) {
+				if (substream->ops->trigger) {
+					substream->ops->trigger(substream, PCM_TRIGER_STOP);
+				}
+				set_pcm_state(substream, PCM_STATE_XRUN);
+			}
+			snd_pcm_unlock(substream);
+			return -EPIPE;
 		}
 	}
 
@@ -709,15 +766,16 @@ static int do_transfer(struct snd_pcm_runtime *runtime,
 
 int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *source, int size)
 {
-	struct snd_pcm_runtime *runtime = substream->runtime;
+	struct snd_pcm_runtime *runtime;
 	int offset = 0;
 	int avail = 0;
 	int written = 0;
 	int err = 0;
 
-	if (substream == NULL || runtime == NULL) {
+	if (substream == NULL || substream->runtime == NULL) {
 		return -EBADF;
 	}
+	runtime = substream->runtime;
 	if (source == NULL && size != 0) {
 		return -EBADF;
 	}
@@ -854,7 +912,14 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 			avail = 0;
 		}
 	}
-	return (err < 0 ? err : written);
+	/*
+	 * Partial-write semantics: frames already copied into the ring have
+	 * been consumed (possibly played). Reporting the error instead of the
+	 * partial count would make the client resend those frames after XRUN
+	 * recovery (audible repeat) or abort the whole stream. Return the
+	 * count; the error will surface on the next call.
+	 */
+	return (written > 0 ? written : err);
 }
 
 int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int frames)
@@ -983,7 +1048,8 @@ int snd_pcm_substream_read(struct snd_pcm_substream *substream, void *dest, int 
 		snd_pcm_unlock(substream);
 	}
 
-	return (err < 0 ? err : read);
+	/* Same partial-transfer semantics as the write path. */
+	return (read > 0 ? read : err);
 }
 
 int snd_pcm_buf_avail(struct snd_pcm_substream *substream)
@@ -1005,6 +1071,16 @@ int snd_pcm_buf_avail(struct snd_pcm_substream *substream)
 	 */
 	if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->pointer) {
 		update_hw_ptr(substream, 0);
+	}
+	/*
+	 * This path is polled from fdev_loop_step() every 20ms while RUNNING,
+	 * which makes it the natural background refill point: push any bytes
+	 * still parked in pending_bytes into BACH even when the writer is
+	 * blocked in wait_avail(). Without this the engine can drain dry
+	 * while userspace data sits unqueued, stalling playback for good.
+	 */
+	if (runtime->status.state == PCM_STATE_RUNNING && substream->ops->kick) {
+		substream->ops->kick(substream);
 	}
 
 	switch (runtime->status.state) {
@@ -1111,7 +1187,7 @@ static int snd_pcm_write1(struct snd_pcm *pcm,
 	}
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0 ||
+	if (substream->open_count == 0 || substream->closing ||
 		!runtime->dma_area || runtime->dma_bytes <= 0 ||
 		runtime->frame_size <= 0) {
 		snd_pcm_unlock(substream);
@@ -1163,7 +1239,7 @@ static int snd_pcm_hw_sw_parms(struct snd_pcm_substream* substream, struct pcm_c
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1263,7 +1339,7 @@ static int snd_pcm_hw_free(struct snd_pcm_substream *substream)
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1295,7 +1371,7 @@ static int snd_pcm_prepare(struct snd_pcm_substream *substream)
 	int err = 0;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1362,7 +1438,7 @@ static int snd_pcm_ensure_default_hw(struct snd_pcm_substream *substream)
 	int state;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1386,7 +1462,7 @@ static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 	int state;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1399,7 +1475,7 @@ static int snd_pcm_ensure_write_ready(struct snd_pcm_substream *substream)
 	}
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1435,7 +1511,7 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 	int state;
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1448,7 +1524,7 @@ static int snd_pcm_ensure_query_ready(struct snd_pcm_substream *substream)
 	}
 
 	snd_pcm_lock(substream);
-	if (substream->open_count == 0) {
+	if (substream->open_count == 0 || substream->closing) {
 		snd_pcm_unlock(substream);
 		return -EBADF;
 	}
@@ -1725,7 +1801,7 @@ int fdev_ctrl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, 
 		 * that case fall back to buffer_size, which is at least sane.
 		 */
 		snd_pcm_lock(substream);
-		if (substream->open_count == 0) {
+		if (substream->open_count == 0 || substream->closing) {
 			result = -EBADF;
 		} else if (substream->runtime->dma_bytes > 0) {
 			result = substream->runtime->dma_bytes;
@@ -1845,6 +1921,13 @@ static void pcm_loop_idle_backoff(int reset)
 static int fdev_loop_step(vdevice_t* dev, void* p)
 {
 	if (dev == NULL || dev->mnt_info.node == 0) {
+		/*
+		 * device_run() calls loop_step in a tight while-loop and relies
+		 * on us to sleep. Returning without sleeping here (e.g. before
+		 * the mount node is published) turns the main loop into a pure
+		 * busy-spin that pegs the CPU.
+		 */
+		pcm_loop_closed_sleep();
 		return 0;
 	}
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
