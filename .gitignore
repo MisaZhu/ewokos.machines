@@ -15,6 +15,7 @@ system/tmp
 .vscode/configurationCache.log
 .vscode/dryrun.log
 .vscode/targets.log
+.qoder
 system/make.rule
 build
 .xmake
