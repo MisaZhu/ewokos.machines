@@ -33,6 +33,13 @@ extern uint32_t _mmio_base;
 #define USB_SCAN_INTERVAL_MS 1000u
 #define USB_IDLE_SLEEP_MIN_US 1000u
 #define USB_IDLE_SLEEP_MAX_US 50000u
+/* interrupt-IN poll pacing: clamp aggressive bInterval values (gaming mice
+   advertise 1-4ms) to a sane floor, and stretch the cadence for endpoints
+   that keep NAKing -- an idle HID device NAKs every poll and each poll is
+   a full channel setup/halt cycle, so backing off cuts idle CPU load */
+#define USB_POLL_INTERVAL_MIN_MS 8u
+#define USB_POLL_INTERVAL_MAX_MS 40u
+#define USB_POLL_IDLE_THRESHOLD 64u
 #define USB_LOG_TRANSFER_VERBOSE 0
 /* per-transfer errors, poll fail/recover, stats and idle-port traces:
    only wanted when debugging the controller itself */
@@ -400,6 +407,7 @@ typedef struct {
 	uint64_t last_log_ms;
 	uint32_t poll_fail_streak;
 	uint32_t poll_fail_total;
+	uint32_t idle_polls; /* consecutive polls with no data (NAK/fail) */
 } usb_input_dev_t;
 
 static dma_pool_t _dma_pool;
@@ -1964,7 +1972,15 @@ static int usb_parse_candidates(const uint8_t* cfg, int cfg_len, hid_candidate_t
 				candidates[count].subclass = current_iface->bInterfaceSubClass;
 				candidates[count].protocol = current_iface->bInterfaceProtocol;
 				candidates[count].ep_addr = ep->bEndpointAddress;
-				candidates[count].interval = ep->bInterval == 0 ? 10 : ep->bInterval;
+				{
+					/* clamp aggressive bInterval (1-4ms on gaming mice) to the
+					   poll floor: every poll is a costly channel round-trip */
+					uint8_t iv = ep->bInterval == 0 ? 10 : ep->bInterval;
+					if (iv < USB_POLL_INTERVAL_MIN_MS) {
+						iv = USB_POLL_INTERVAL_MIN_MS;
+					}
+					candidates[count].interval = iv;
+				}
 				candidates[count].max_packet = (uint16_t)(ep->wMaxPacketSize & 0x07FFu);
 				candidates[count].report_desc_len = current_report_desc_len;
 				count++;
@@ -2540,6 +2556,24 @@ static void usb_scan_root(void) {
 	dwc_ack_port_change();
 }
 
+/* effective poll cadence for an input endpoint: base bInterval while data
+   flows, stretched up to 4x (capped) once the endpoint keeps NAKing, and
+   snapped back to base by the first report that carries data */
+static uint32_t usb_input_poll_interval(const usb_input_dev_t* in) {
+	uint32_t iv = in->interval == 0 ? 10u : in->interval;
+
+	if (in->idle_polls >= USB_POLL_IDLE_THRESHOLD * 4u) {
+		iv *= 4u;
+	}
+	else if (in->idle_polls >= USB_POLL_IDLE_THRESHOLD) {
+		iv *= 2u;
+	}
+	if (iv > USB_POLL_INTERVAL_MAX_MS) {
+		iv = USB_POLL_INTERVAL_MAX_MS;
+	}
+	return iv;
+}
+
 static void usb_poll_inputs(vdevice_t* dev) {
 	uint64_t now = kernel_tic_ms(0);
 	uint8_t report[USB_MAX_REPORT];
@@ -2556,13 +2590,14 @@ static void usb_poll_inputs(vdevice_t* dev) {
 		if (now < in->next_poll_ms) {
 			continue;
 		}
-		in->next_poll_ms = now + (in->interval == 0 ? 10u : in->interval);
+		in->next_poll_ms = now + usb_input_poll_interval(in);
 
 		memset(report, 0, sizeof(report));
 		ret = usb_interrupt_in(in, report, in->report_len == 0 ? in->max_packet : in->report_len);
 		if (ret < 0) {
 			in->poll_fail_total++;
 			in->poll_fail_streak++;
+			in->idle_polls++;
 			/* log the 1st failure and then every 100th to track flaky endpoints
 			   without flooding the log */
 			if (USB_LOG_RUNTIME_VERBOSE &&
@@ -2583,8 +2618,14 @@ static void usb_poll_inputs(vdevice_t* dev) {
 			in->poll_fail_streak = 0;
 		}
 		if (ret == 0) {
+			in->idle_polls++;
 			continue;
 		}
+		/* real data arrived: restore the base poll cadence immediately so
+		   an active mouse/keyboard is sampled at full rate again (the slot
+		   above was armed with the stretched idle interval) */
+		in->idle_polls = 0;
+		in->next_poll_ms = now + usb_input_poll_interval(in);
 
 		if (in->type == USB_INPUT_KEYBOARD) {
 			if ((uint8_t)ret == in->last_len && memcmp(in->last_report, report, ret) == 0) {

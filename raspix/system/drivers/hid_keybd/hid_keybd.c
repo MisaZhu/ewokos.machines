@@ -26,7 +26,13 @@
 
 #define MAX_KEY (5) /* payload carries 5 keycodes: mod, reserved, key[5] */
 
+/* exponential idle backoff: poll the hid device fast while reports flow,
+   back off to a slow cadence when it stays silent to stop burning CPU */
+#define HID_IDLE_SLEEP_MIN_US 3000u
+#define HID_IDLE_SLEEP_MAX_US 50000u
+
 static int hid;
+static uint32_t _idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
 
 /* current held-key state, refreshed by each HID report snapshot */
 static uint8_t _mod = 0;
@@ -112,11 +118,13 @@ static int loop(vdevice_t* dev, void* p) {
 
 	ipc_disable();
 
+	bool got = false;
 	bool changed = false;
 	while(true) {
 		uint8_t buf[8] = {0};
 		int res = read(hid, buf, 7);
 		if(res == 7) {
+			got = true;
 			/* each report is a full snapshot: mod, reserved, keycodes */
 			uint8_t keys[MAX_KEY];
 			int count = 0;
@@ -139,10 +147,20 @@ static int loop(vdevice_t* dev, void* p) {
 	}
 
 	ipc_enable();
-	if(changed)
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-	else
-		proc_usleep(3000);
+	if(got) {
+		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
+		if(changed)
+			vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	}
+	else {
+		proc_usleep(_idle_sleep_us);
+		if (_idle_sleep_us < HID_IDLE_SLEEP_MAX_US) {
+			_idle_sleep_us <<= 1;
+			if (_idle_sleep_us > HID_IDLE_SLEEP_MAX_US) {
+				_idle_sleep_us = HID_IDLE_SLEEP_MAX_US;
+			}
+		}
+	}
 	return 0;
 }
 

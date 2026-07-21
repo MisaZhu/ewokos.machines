@@ -39,6 +39,8 @@
 
 #define ALIGNMENT   4
 #define MAX_FRAME_SIZE  2048
+/* headroom for the 16-byte SDPCM header pushed by brcmf_sdio_txpkt_prep */
+#define SDPCM_TX_HEADROOM 16
 
 #define TXQLEN      2048    /* bulk tx queue length */
 #define TXHI        (TXQLEN - 256)  /* turn on flow control above TXHI */
@@ -3329,16 +3331,22 @@ static void brcmf_sdio_dpc(void)
     /* Send queued frames (respect hardware flow control) */
     int max_frames = BRCMF_TX_BATCH_LIMIT;
     int tx_sent = 0;
-    static uint8_t tx_buf[MAX_FRAME_SIZE];
+    /* headroom for skb_push(16) in txpkt_prep, tail pad for the
+     * 4-byte round-up in brcmf_sdiod_skbuff_write */
+    static uint8_t tx_buf[SDPCM_TX_HEADROOM + MAX_FRAME_SIZE + ALIGNMENT];
     while(bus->state == CONNECTED && !bus->fcstate &&
           queue_buffer_check(bus->tx_queue) && max_frames--){
         if (!txctl_ok())
             break;
         struct sk_buff pkt = {0};
-        pkt.data = tx_buf;
+        pkt.mem = tx_buf;
+        pkt.total = sizeof(tx_buf);
+        pkt.data = tx_buf + SDPCM_TX_HEADROOM;
         ipc_disable();
         int len = queue_buffer_pop(bus->tx_queue, pkt.data, MAX_FRAME_SIZE);
         ipc_enable();
+        if (len <= 0)
+            break;
         skb_put(&pkt, len);
         brcmf_sdio_txpkt_prep(&pkt, 2);
         int ret = brcmf_sdiod_send_pkt(&pkt);

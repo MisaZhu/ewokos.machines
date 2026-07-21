@@ -11,7 +11,13 @@
 
 #define CACHE_SIZE (32)
 
+/* exponential idle backoff: poll the hid device fast while reports flow,
+   back off to a slow cadence when it stays silent to stop burning CPU */
+#define HID_IDLE_SLEEP_MIN_US 3000u
+#define HID_IDLE_SLEEP_MAX_US 50000u
+
 static int hid;
+static uint32_t _idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
 static mouse_evt_t mouse_data[CACHE_SIZE];
 static uint32_t mouse_data_read = 0;
 static uint32_t mouse_data_write = 0;
@@ -118,10 +124,20 @@ static int _loop(vdevice_t* dev, void* p) {
 	}
 
 	ipc_enable();
-	if(wakeup && mouse_data_write - mouse_data_read > 0)
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-	else
-		usleep(3000);
+	if(wakeup) {
+		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
+		if(mouse_data_write - mouse_data_read > 0)
+			vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	}
+	else {
+		usleep(_idle_sleep_us);
+		if (_idle_sleep_us < HID_IDLE_SLEEP_MAX_US) {
+			_idle_sleep_us <<= 1;
+			if (_idle_sleep_us > HID_IDLE_SLEEP_MAX_US) {
+				_idle_sleep_us = HID_IDLE_SLEEP_MAX_US;
+			}
+		}
+	}
 	return 0;
 }
 
