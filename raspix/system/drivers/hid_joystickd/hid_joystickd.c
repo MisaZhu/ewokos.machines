@@ -47,6 +47,16 @@ typedef struct {
 	axis_t axis;
 }joystick_t;
 
+static uint32_t joystick_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	return _idle ? 0 : VFS_EVT_RD;
+}
+
 static int loop(vdevice_t* dev, void* p) {
 	(void)dev;
 	(void)p;
@@ -123,13 +133,19 @@ int main(int argc, char** argv) {
 	const char* dev_point = argc > 2 ? argv[2]: "/dev/hid0";
 
 	hid = open(dev_point, O_RDONLY | O_NONBLOCK);
-	set_report_id(hid, 0x14);
+	if (hid < 0) {
+		return -1;
+	}
+	if (set_report_id(hid, 0x14) != 0) {
+		return -1;
+	}
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "joystick");
 	dev.loop_step = loop;
 	dev.read = joystick_read;
+	dev.check_poll_events = joystick_check_poll_events;
 
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 	return 0;

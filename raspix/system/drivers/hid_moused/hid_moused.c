@@ -9,13 +9,60 @@
 #include <mouse/mouse.h>
 #include <fcntl.h>
 
-static int hid;
+#define CACHE_SIZE (32)
 
-static uint8_t btn;
-static uint8_t last_btn;
-static uint8_t x;
-static uint8_t y;
-static uint8_t has_data = 0;
+static int hid;
+static mouse_evt_t mouse_data[CACHE_SIZE];
+static uint32_t mouse_data_read = 0;
+static uint32_t mouse_data_write = 0;
+static uint8_t last_btn = 0;
+
+static void mouse_push_evt(uint8_t state, uint8_t button, int16_t x, int16_t y) {
+	if (mouse_data_write - mouse_data_read >= CACHE_SIZE) {
+		mouse_data_read++;
+	}
+	mouse_evt_t* evt = &mouse_data[mouse_data_write % CACHE_SIZE];
+	memset(evt, 0, sizeof(mouse_evt_t));
+	evt->type = MOUSE_TYPE_REL;
+	evt->state = state;
+	evt->button = button;
+	evt->x = x;
+	evt->y = y;
+	mouse_data_write++;
+}
+
+static uint8_t hid_btn_to_mouse(uint8_t mask) {
+	if (mask & 0x01)
+		return MOUSE_BUTTON_LEFT;
+	if (mask & 0x02)
+		return MOUSE_BUTTON_RIGHT;
+	if (mask & 0x04)
+		return MOUSE_BUTTON_MID;
+	return MOUSE_BUTTON_NONE;
+}
+
+static void mouse_handle_report(uint8_t btn, int8_t dx, int8_t dy, int8_t wheel) {
+	uint8_t pressed = btn & (uint8_t)~last_btn;
+	uint8_t released = last_btn & (uint8_t)~btn;
+	last_btn = btn;
+
+	if (pressed) {
+		mouse_push_evt(MOUSE_STATE_DOWN, hid_btn_to_mouse(pressed), dx, dy);
+	}
+	else if (released) {
+		mouse_push_evt(MOUSE_STATE_UP, hid_btn_to_mouse(released), dx, dy);
+	}
+	else if (dx != 0 || dy != 0) {
+		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_NONE, dx, dy);
+	}
+
+	if (wheel > 0) {
+		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_SCROLL_DOWN, 0, 0);
+	}
+	else if (wheel < 0) {
+		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_SCROLL_UP, 0, 0);
+	}
+}
 
 static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		void* buf, int size, int offset, void* p) {
@@ -26,50 +73,44 @@ static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	(void)p;
 	(void)node;
 
-	if(size < 4)
+	if (size < (int)sizeof(mouse_evt_t))
 		return -1;
-	
-	uint8_t* d = (uint8_t*)buf;
-	if(!has_data){
-		return VFS_ERR_RETRY;
-	}
 
-	mouse_evt_t *evt = (mouse_evt_t *)buf;
-	evt->type = MOUSE_TYPE_REL;
-	if(btn){
-		evt->state = MOUSE_STATE_DOWN;
-		evt->button = btn;
-	}else if(last_btn){
-		evt->state = MOUSE_STATE_UP;
-		evt->button = last_btn;
-	}else{
-		evt->button = MOUSE_BUTTON_NONE;
-		evt->state = MOUSE_STATE_MOVE;
+	if (mouse_data_write - mouse_data_read > 0) {
+		memcpy(buf, &mouse_data[mouse_data_read % CACHE_SIZE], sizeof(mouse_evt_t));
+		memset(&mouse_data[mouse_data_read % CACHE_SIZE], 0, sizeof(mouse_evt_t));
+		mouse_data_read++;
+		return sizeof(mouse_evt_t);
 	}
+	return VFS_ERR_RETRY;
+}
 
-	evt->x = x;
-	evt->y = y;
-	has_data = 0;
-	return sizeof(mouse_evt_t);
+static uint32_t mouse_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	if (mouse_data_write - mouse_data_read > 0) {
+		return VFS_EVT_RD;
+	}
+	return 0;
 }
 
 static int _loop(vdevice_t* dev, void* p) {
-	(void)dev;
 	(void)p;
 
 	ipc_disable();
 
 	bool wakeup = false;
 	while(true) {
-		int8_t buf[8] = {0};
+		uint8_t buf[8] = {0};
 		int res = read(hid, buf, 7);
 		if(res == 7) {
-			btn = buf[0];
-			x = buf[1];
-			y = buf[2];
-			has_data = 1;
+			/* payload: buttons, dx, dy, wheel (deltas are signed) */
+			mouse_handle_report(buf[0], (int8_t)buf[1], (int8_t)buf[2], (int8_t)buf[3]);
 			wakeup = true;
-			usleep(0);
 		}
 		else {
 			break;
@@ -77,8 +118,8 @@ static int _loop(vdevice_t* dev, void* p) {
 	}
 
 	ipc_enable();
-	if(wakeup)
-		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
+	if(wakeup && mouse_data_write - mouse_data_read > 0)
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	else
 		usleep(3000);
 	return 0;
@@ -97,13 +138,19 @@ int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/mouse0";
 	const char* dev_point = argc > 2 ? argv[2]: "/dev/hid0";
 	hid = open(dev_point, O_RDONLY | O_NONBLOCK);
-	set_report_id(hid, 1);
+	if (hid < 0) {
+		return -1;
+	}
+	if (set_report_id(hid, 1) != 0) {
+		return -1;
+	}
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "mouse");
 	dev.loop_step = _loop;
 	dev.read = _read;
+	dev.check_poll_events = mouse_check_poll_events;
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 	return 0;
 }

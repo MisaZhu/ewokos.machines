@@ -24,31 +24,14 @@
 #define KEY_MOD_RALT   0x40
 #define KEY_MOD_RMETA  0x80
 
-static uint8_t _held[128] = {0};
-static bool _idle = true;
-static bool _down = false;
+#define MAX_KEY (5) /* payload carries 5 keycodes: mod, reserved, key[5] */
 
-static int  hid;
-static char keys[3];
+static int hid;
 
-static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)offset;
-	(void)p;
-	(void)node;
-
-	if(_idle)
-		return VFS_ERR_RETRY;
-
-	_idle = true;
-	if(size > 3)
-		size = 3;
-	memcpy(buf, keys, size);
-	return size;
-}
+/* current held-key state, refreshed by each HID report snapshot */
+static uint8_t _mod = 0;
+static uint8_t _keys[MAX_KEY];
+static int _key_count = 0;
 
 const char downMap[] = {  
         ' ',' ',' ',' ','a','b','c','d',    'e','f','g','h','i','j','k','l',
@@ -60,7 +43,7 @@ const char downMap[] = {
 const char upMap[] = {
         ' ',' ',' ',' ','A','B','C','D',    'E','F','G','H','I','J','K','L',
         'M','N','O','P','Q','R','S','T',    'U','V','W','X','Y','Z','!','@',
-        '#','$','%','^','&','*','(',')',    '\r','\0x1b','\b','\t','\x20', '_', '+', '{', 
+        '#','$','%','^','&','*','(',')',    '\r','\x1b','\b','\t','\x20', '_', '+', '{', 
         '}', '|', '$', ':', '\"', '~','<','>',      '?',
 };
 
@@ -90,32 +73,76 @@ uint8_t getKeyChar(uint8_t alt, uint8_t keycode){
     return 0;
 }
 
-static int loop(vdevice_t* dev, void* p) {
-	(void)dev;
-	(void)p;
-	int8_t buf[8];
-	ipc_disable();
-	int res = read(hid, buf, 7);
-
-	if(res == 7){
-		//klog("kb: %02x %02x %02x %02x %02x %02x %02x %02x\n", 
-		//buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
-		keys[0] = getKeyChar(buf[0], buf[2]);
-		keys[1] = getKeyChar(buf[1], buf[3]);
-		keys[2] = getKeyChar(buf[2], buf[4]);
-		_idle = false;
-		_down = true;
-		vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
+static int get_key_code(char *buf, int size) {
+	int num = 0;
+	for (int i = 0; i < _key_count && num < size; i++) {
+		uint8_t c = getKeyChar(_mod, _keys[i]);
+		if (c != 0) {
+			buf[num++] = c;
+		}
 	}
-	else {
-		memset(keys, 0, 3);
-		if(_down)
-			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
-		_down = false;
+	return num;
+}
+
+static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
+		void* buf, int size, int offset, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)offset;
+	(void)p;
+	(void)node;
+
+	int num = get_key_code(buf, size);
+	return num ? num : VFS_ERR_RETRY;
+}
+
+static uint32_t keyb_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	return _key_count > 0 ? VFS_EVT_RD : 0;
+}
+
+static int loop(vdevice_t* dev, void* p) {
+	(void)p;
+
+	ipc_disable();
+
+	bool changed = false;
+	while(true) {
+		uint8_t buf[8] = {0};
+		int res = read(hid, buf, 7);
+		if(res == 7) {
+			/* each report is a full snapshot: mod, reserved, keycodes */
+			uint8_t keys[MAX_KEY];
+			int count = 0;
+			for (int i = 2; i < 7; i++) {
+				if (buf[i] != 0) {
+					keys[count++] = buf[i];
+				}
+			}
+			if (buf[0] != _mod || count != _key_count ||
+					memcmp(keys, _keys, count) != 0) {
+				changed = true;
+			}
+			_mod = buf[0];
+			_key_count = count;
+			memcpy(_keys, keys, sizeof(keys));
+		}
+		else {
+			break;
+		}
 	}
 
 	ipc_enable();
-	proc_usleep(10000);
+	if(changed)
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	else
+		proc_usleep(3000);
 	return 0;
 }
 
@@ -130,18 +157,22 @@ static int set_report_id(int fd, int id) {
 }
 
 int main(int argc, char** argv) {
-	_idle = true;
-	_down = false;
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/keyb0";
 	const char* dev_point = argc > 2 ? argv[2]: "/dev/hid0";
 	hid = open(dev_point, O_RDONLY | O_NONBLOCK);
-	set_report_id(hid, 2);
+	if (hid < 0) {
+		return -1;
+	}
+	if (set_report_id(hid, 2) != 0) {
+		return -1;
+	}
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "keyb");
 	dev.read = keyb_read;
 	dev.loop_step = loop;
+	dev.check_poll_events = keyb_check_poll_events;
 
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 	return 0;

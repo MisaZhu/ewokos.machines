@@ -29,10 +29,20 @@ extern uint32_t _mmio_base;
 #define USB_MAX_CANDIDATES 8
 #define USB_MAX_USAGE_LIST 32
 #define USB_EVENT_LOG_INTERVAL_MS 500u
+#define USB_STATS_LOG_INTERVAL_MS 5000u
 #define USB_SCAN_INTERVAL_MS 1000u
 #define USB_IDLE_SLEEP_MIN_US 1000u
 #define USB_IDLE_SLEEP_MAX_US 50000u
 #define USB_LOG_TRANSFER_VERBOSE 0
+/* per-transfer errors, poll fail/recover, stats and idle-port traces:
+   only wanted when debugging the controller itself */
+#define USB_LOG_RUNTIME_VERBOSE 0
+/* master switch: bring-up is done, silence all usbhostd logging */
+#define USB_LOG_ENABLE 0
+#if !USB_LOG_ENABLE
+static inline void usb_log_none(const char* fmt, ...) { (void)fmt; }
+#define slog(...) usb_log_none(__VA_ARGS__)
+#endif
 #define DWC_RX_FIFO_SIZE 20480u
 #define DWC_NP_TX_FIFO_SIZE 20480u
 #define DWC_P_TX_FIFO_SIZE 20480u
@@ -42,11 +52,17 @@ extern uint32_t _mmio_base;
 #define USB_REQ_SET_CONFIGURATION 0x09
 #define USB_REQ_SET_IDLE 0x0A
 #define USB_REQ_SET_PROTOCOL 0x0B
+#define USB_REQ_GET_STATUS 0x00
+#define USB_REQ_CLEAR_FEATURE 0x01
+#define USB_REQ_SET_FEATURE 0x03
 
 #define USB_REQTYPE_STD_IN 0x80
 #define USB_REQTYPE_STD_OUT 0x00
 #define USB_REQTYPE_STD_IFACE_IN 0x81
 #define USB_REQTYPE_CLASS_IFACE_OUT 0x21
+#define USB_REQTYPE_CLASS_DEV_IN 0xA0
+#define USB_REQTYPE_CLASS_PORT_OUT 0x23
+#define USB_REQTYPE_CLASS_PORT_IN 0xA3
 
 #define USB_DESC_DEVICE 0x01
 #define USB_DESC_CONFIG 0x02
@@ -54,6 +70,23 @@ extern uint32_t _mmio_base;
 #define USB_DESC_ENDPOINT 0x05
 #define USB_DESC_HID 0x21
 #define USB_DESC_HID_REPORT 0x22
+#define USB_DESC_HUB 0x29
+
+#define USB_CLASS_HUB 0x09
+
+/* hub port features (USB 2.0 spec table 11-17) */
+#define USB_HUB_FEAT_PORT_RESET 4
+#define USB_HUB_FEAT_PORT_POWER 8
+#define USB_HUB_FEAT_C_PORT_CONNECTION 16
+#define USB_HUB_FEAT_C_PORT_ENABLE 17
+#define USB_HUB_FEAT_C_PORT_RESET 20
+
+/* hub wPortStatus bits */
+#define USB_HUB_PS_CONNECTION (1u << 0)
+#define USB_HUB_PS_ENABLE (1u << 1)
+#define USB_HUB_PS_RESET (1u << 4)
+#define USB_HUB_PS_POWER (1u << 8)
+#define USB_HUB_PS_LOW_SPEED (1u << 9)
 
 #define USB_CLASS_HID 0x03
 #define USB_SUBCLASS_BOOT 0x01
@@ -65,6 +98,11 @@ extern uint32_t _mmio_base;
 
 #define HID_USAGE_PAGE_GENERIC_DESKTOP 0x01
 #define HID_USAGE_PAGE_DIGITIZER 0x0D
+#define HID_USAGE_POINTER 0x01
+#define HID_USAGE_MOUSE 0x02
+#define HID_USAGE_JOYSTICK 0x04
+#define HID_USAGE_GAMEPAD 0x05
+#define HID_USAGE_KEYBOARD 0x06
 #define HID_USAGE_TOUCH_SCREEN 0x04
 #define HID_USAGE_TOUCH_PAD 0x05
 #define HID_USAGE_FINGER 0x22
@@ -80,9 +118,15 @@ extern uint32_t _mmio_base;
 #define DWC_REG_GINTMSK 0x018
 #define DWC_REG_GRXFSIZ 0x024
 #define DWC_REG_GNPTXFSIZ 0x028
+#define DWC_REG_GSNPSID 0x040
+#define DWC_REG_GHWCFG1 0x044
+#define DWC_REG_GHWCFG2 0x048
+#define DWC_REG_GHWCFG3 0x04C
+#define DWC_REG_GHWCFG4 0x050
 #define DWC_REG_HPTXFSIZ 0x100
 #define DWC_REG_HCFG 0x400
 #define DWC_REG_HFIR 0x404
+#define DWC_REG_HFNUM 0x408
 #define DWC_REG_HAINT 0x414
 #define DWC_REG_HAINTMSK 0x418
 #define DWC_REG_HPRT 0x440
@@ -101,6 +145,11 @@ extern uint32_t _mmio_base;
 #define DWC_GAHBCFG_DMA_EN (1u << 5)
 
 #define DWC_GOTGCTL_HSTSETHNPEN (1u << 10)
+#define DWC_GOTGCTL_CONID_B (1u << 16)
+#define DWC_GOTGCTL_ASESVLD (1u << 18)
+#define DWC_GOTGCTL_BSESVLD (1u << 19)
+
+#define DWC_GINTSTS_CURMODE_HOST (1u << 0)
 
 #define DWC_GUSBCFG_PHYIF (1u << 3)
 #define DWC_GUSBCFG_ULPI_UTMI_SEL (1u << 4)
@@ -139,7 +188,7 @@ extern uint32_t _mmio_base;
 #define DWC_HCCHAR_EPDIR_IN (1u << 15)
 #define DWC_HCCHAR_LSPDDEV (1u << 17)
 #define DWC_HCCHAR_EPTYPE_SHIFT 18
-#define DWC_HCCHAR_PKTCNT_SHIFT 20
+#define DWC_HCCHAR_MC_SHIFT 20
 #define DWC_HCCHAR_DEVADDR_SHIFT 22
 #define DWC_HCCHAR_ODDFRM (1u << 29)
 #define DWC_HCCHAR_CHDIS (1u << 30)
@@ -327,6 +376,7 @@ typedef enum {
 	USB_INPUT_KEYBOARD,
 	USB_INPUT_MOUSE,
 	USB_INPUT_TOUCH,
+	USB_INPUT_COMPOSITE, /* one interrupt EP carrying kbd+mouse via report IDs */
 } usb_input_type_t;
 
 typedef struct {
@@ -341,11 +391,15 @@ typedef struct {
 	bool low_speed;
 	uint8_t toggle;
 	uint8_t report_len;
+	uint8_t kbd_report_id;   /* composite only */
+	uint8_t mouse_report_id; /* composite only */
 	touch_parser_t touch;
 	uint8_t last_report[USB_MAX_REPORT];
 	uint8_t last_len;
 	uint64_t next_poll_ms;
 	uint64_t last_log_ms;
+	uint32_t poll_fail_streak;
+	uint32_t poll_fail_total;
 } usb_input_dev_t;
 
 static dma_pool_t _dma_pool;
@@ -356,6 +410,31 @@ static bool _device_ready = false;
 static bool _port_connected = false;
 static uint8_t _next_address = 2;
 static uint64_t _next_scan_ms = 0;
+static uint32_t _last_hcint = 0;
+static uint32_t _num_host_channels = 8;
+static uint64_t _next_idle_log_ms = 0;
+static uint32_t _enum_fail_streak = 0;
+
+/* cumulative transfer statistics for periodic analysis logging */
+typedef struct {
+	uint32_t xfer_ok;
+	uint32_t xfer_nak;
+	uint32_t xfer_err;
+	uint32_t xfer_timeout;
+	uint32_t xfer_stall;
+	uint32_t xfer_txerr;
+	uint32_t xfer_bblerr;
+	uint32_t xfer_dterr;
+	uint32_t xfer_ahberr;
+	uint32_t xfer_frmovrun;
+	uint32_t halt_timeout;
+	uint32_t enum_ok;
+	uint32_t enum_fail;
+	uint32_t port_disconnect;
+} usb_stats_t;
+
+static usb_stats_t _stats;
+static uint64_t _next_stats_ms = 0;
 
 static const char* usb_input_type_name(usb_input_type_t type) {
 	switch (type) {
@@ -365,6 +444,8 @@ static const char* usb_input_type_name(usb_input_type_t type) {
 		return "mouse";
 	case USB_INPUT_TOUCH:
 		return "touch";
+	case USB_INPUT_COMPOSITE:
+		return "composite";
 	default:
 		return "unknown";
 	}
@@ -374,15 +455,69 @@ static const char* usb_speed_name(bool low_speed) {
 	return low_speed ? "low" : "full";
 }
 
+/* decode hcint bits into a readable flag string for error analysis */
+static const char* dwc_hcint_str(uint32_t hcint) {
+	static char buf[96];
+	buf[0] = 0;
+	if (hcint & DWC_HCINT_XFRC) strcat(buf, "XFRC|");
+	if (hcint & DWC_HCINT_CHH) strcat(buf, "CHH|");
+	if (hcint & DWC_HCINT_AHBERR) strcat(buf, "AHBERR|");
+	if (hcint & DWC_HCINT_STALL) strcat(buf, "STALL|");
+	if (hcint & DWC_HCINT_NAK) strcat(buf, "NAK|");
+	if (hcint & DWC_HCINT_ACK) strcat(buf, "ACK|");
+	if (hcint & DWC_HCINT_NYET) strcat(buf, "NYET|");
+	if (hcint & DWC_HCINT_TXERR) strcat(buf, "TXERR|");
+	if (hcint & DWC_HCINT_BBLERR) strcat(buf, "BBLERR|");
+	if (hcint & DWC_HCINT_FRMOVRUN) strcat(buf, "FRMOVRUN|");
+	if (hcint & DWC_HCINT_DTERR) strcat(buf, "DTERR|");
+	if (buf[0] == 0) {
+		strcpy(buf, "NONE");
+	}
+	else {
+		buf[strlen(buf) - 1] = 0;
+	}
+	return buf;
+}
+
+/* format up to 16 bytes as hex string for raw report analysis */
+static const char* usb_hex_str(const uint8_t* data, int len) {
+	static char buf[3 * 16 + 4];
+	int n = len > 16 ? 16 : len;
+	int pos = 0;
+	for (int i = 0; i < n; ++i) {
+		pos += snprintf(buf + pos, sizeof(buf) - pos, "%02x ", data[i]);
+	}
+	if (len > 16 && pos < (int)sizeof(buf) - 3) {
+		strcpy(buf + pos, "..");
+	}
+	else if (pos > 0) {
+		buf[pos - 1] = 0;
+	}
+	else {
+		buf[0] = 0;
+	}
+	return buf;
+}
+
+static void usb_stats_update_from_hcint(uint32_t hcint) {
+	if (hcint & DWC_HCINT_STALL) _stats.xfer_stall++;
+	if (hcint & DWC_HCINT_TXERR) _stats.xfer_txerr++;
+	if (hcint & DWC_HCINT_BBLERR) _stats.xfer_bblerr++;
+	if (hcint & DWC_HCINT_DTERR) _stats.xfer_dterr++;
+	if (hcint & DWC_HCINT_AHBERR) _stats.xfer_ahberr++;
+	if (hcint & DWC_HCINT_FRMOVRUN) _stats.xfer_frmovrun++;
+}
+
 static void usb_log_keyboard_event(const usb_input_dev_t* in, const uint8_t* report, int len) {
 	if (len < 8) {
-		slog("usbhostd: keybd addr=%u iface=%u short_report len=%d\n",
-				in->addr, in->iface_num, len);
+		slog("usbhostd: keybd addr=%u iface=%u short_report len=%d raw=[%s]\n",
+				in->addr, in->iface_num, len, usb_hex_str(report, len));
 		return;
 	}
-	slog("usbhostd: keybd addr=%u iface=%u mod=%02x keys=%02x %02x %02x %02x %02x %02x\n",
+	slog("usbhostd: keybd addr=%u iface=%u mod=%02x keys=%02x %02x %02x %02x %02x %02x raw=[%s]\n",
 			in->addr, in->iface_num, report[0],
-			report[2], report[3], report[4], report[5], report[6], report[7]);
+			report[2], report[3], report[4], report[5], report[6], report[7],
+			usb_hex_str(report, len));
 }
 
 static void usb_log_mouse_event(const usb_input_dev_t* in, const uint8_t* report, int len) {
@@ -399,18 +534,22 @@ static void usb_log_mouse_event(const usb_input_dev_t* in, const uint8_t* report
 	if (len > 3) {
 		wheel = (int8_t)report[3];
 	}
-	slog("usbhostd: mouse addr=%u iface=%u btn=%02x dx=%d dy=%d wheel=%d len=%d\n",
-			in->addr, in->iface_num, report[0], dx, dy, wheel, len);
+	slog("usbhostd: mouse addr=%u iface=%u btn=%02x dx=%d dy=%d wheel=%d len=%d raw=[%s]\n",
+			in->addr, in->iface_num, report[0], dx, dy, wheel, len,
+			usb_hex_str(report, len));
 }
 
-static void usb_log_touch_event(const usb_input_dev_t* in, const uint8_t* payload) {
+static void usb_log_touch_event(const usb_input_dev_t* in, const uint8_t* payload, const uint8_t* report, int len) {
 	uint16_t x = (uint16_t)payload[1] | ((uint16_t)payload[2] << 8);
 	uint16_t y = (uint16_t)payload[3] | ((uint16_t)payload[4] << 8);
-	slog("usbhostd: touch addr=%u iface=%u pressed=%u x=%u y=%u\n",
-			in->addr, in->iface_num, payload[0], x, y);
+	slog("usbhostd: touch addr=%u iface=%u pressed=%u x=%u y=%u raw=[%s]\n",
+			in->addr, in->iface_num, payload[0], x, y, usb_hex_str(report, len));
 }
 
 static void usb_log_input_event(usb_input_dev_t* in, const uint8_t* report, int len, const uint8_t* payload) {
+	if (!USB_LOG_ENABLE) {
+		return;
+	}
 	uint64_t now = kernel_tic_ms(0);
 
 	if ((now - in->last_log_ms) < USB_EVENT_LOG_INTERVAL_MS) {
@@ -425,7 +564,16 @@ static void usb_log_input_event(usb_input_dev_t* in, const uint8_t* report, int 
 		usb_log_mouse_event(in, report, len);
 	}
 	else if (in->type == USB_INPUT_TOUCH) {
-		usb_log_touch_event(in, payload);
+		usb_log_touch_event(in, payload, report, len);
+	}
+	else if (in->type == USB_INPUT_COMPOSITE && len > 1) {
+		/* payload already has the report ID stripped */
+		if (report[0] == in->mouse_report_id) {
+			usb_log_mouse_event(in, payload, len - 1 > USB_EVENT_SIZE ? USB_EVENT_SIZE : len - 1);
+		}
+		else {
+			usb_log_keyboard_event(in, payload, len - 1 > USB_EVENT_SIZE ? USB_EVENT_SIZE : len - 1);
+		}
 	}
 }
 
@@ -528,7 +676,9 @@ static void dispatch_data(uint8_t report_id, const uint8_t* data, uint8_t len) {
 		cur = cur->next;
 	}
 	if (delivered == 0) {
-		slog("usbhostd: drop report report_id=%u len=%u no_listener\n", report_id, len);
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: drop report report_id=%u len=%u no_listener\n", report_id, len);
+		}
 	}
 }
 
@@ -617,6 +767,33 @@ static inline void dwc_writel_sync(uint32_t reg, uint32_t value) {
 	(void)usb_readl(reg);
 }
 
+static void usb_stats_log(void) {
+	uint64_t now = kernel_tic_ms(0);
+	uint32_t total_err;
+
+	if (!USB_LOG_RUNTIME_VERBOSE) {
+		return;
+	}
+	if (now < _next_stats_ms) {
+		return;
+	}
+	_next_stats_ms = now + USB_STATS_LOG_INTERVAL_MS;
+
+	total_err = _stats.xfer_err + _stats.xfer_timeout;
+	/* only log when something noteworthy happened since it is periodic */
+	if (total_err == 0 && _stats.halt_timeout == 0 &&
+			_stats.enum_fail == 0 && _stats.port_disconnect == 0) {
+		return;
+	}
+	slog("usbhostd: stats ok=%u nak=%u err=%u timeout=%u stall=%u txerr=%u bbl=%u dterr=%u ahberr=%u frmovr=%u halt_to=%u enum_ok=%u enum_fail=%u disc=%u hprt=%08x hfnum=%04x gintsts=%08x\n",
+			_stats.xfer_ok, _stats.xfer_nak, _stats.xfer_err, _stats.xfer_timeout,
+			_stats.xfer_stall, _stats.xfer_txerr, _stats.xfer_bblerr,
+			_stats.xfer_dterr, _stats.xfer_ahberr, _stats.xfer_frmovrun,
+			_stats.halt_timeout, _stats.enum_ok, _stats.enum_fail,
+			_stats.port_disconnect, usb_readl(DWC_REG_HPRT),
+			usb_readl(DWC_REG_HFNUM) & 0xFFFFu, usb_readl(DWC_REG_GINTSTS));
+}
+
 static int dwc_wait_grstctl_clear(uint32_t mask, uint32_t timeout_ms) {
 	uint32_t waited = 0;
 	while (waited < timeout_ms) {
@@ -686,8 +863,11 @@ static int dwc_channel_halt(int ch, uint32_t timeout_ms) {
 	}
 	usb_writel(DWC_HCCHAR(ch), hcchar | DWC_HCCHAR_CHDIS | DWC_HCCHAR_CHENA);
 	if (dwc_wait_channel_stopped(ch, timeout_ms) != 0) {
-		slog("usbhostd: ch%d halt timeout hcchar=%08x hcint=%08x\n",
-				ch, usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCINT(ch)));
+		_stats.halt_timeout++;
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: ch%d halt timeout hcchar=%08x hcint=%08x\n",
+					ch, usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCINT(ch)));
+		}
 		return -1;
 	}
 	usb_writel(DWC_HCINT(ch), 0xFFFFFFFFu);
@@ -709,24 +889,36 @@ static void dwc_channel_reset_regs(int ch) {
 }
 
 static int dwc_host_halt_all_channels(void) {
-	int ch;
+	uint32_t ch;
+	bool port_enabled = (usb_readl(DWC_REG_HPRT) & DWC_HPRT_ENA) != 0;
 
-	for (ch = 0; ch < 16; ch++) {
+	for (ch = 0; ch < _num_host_channels; ch++) {
 		uint32_t hcchar = DWC_HCCHAR_CHDIS | DWC_HCCHAR_EPDIR_IN;
 		usb_writel(DWC_HCINT(ch), 0xFFFFFFFFu);
 		usb_writel(DWC_HCINTMSK(ch), 0);
 		usb_writel(DWC_HCCHAR(ch), hcchar);
 	}
 
-	for (ch = 0; ch < 16; ch++) {
+	for (ch = 0; ch < _num_host_channels; ch++) {
 		uint32_t waited = 0;
-		uint32_t hcchar = usb_readl(DWC_HCCHAR(ch));
+		uint32_t hcchar;
+
+		/* without an enabled port there is no PHY clock, so the
+		   enable+halt handshake can never complete: just clear regs */
+		if (!port_enabled) {
+			dwc_channel_reset_regs(ch);
+			continue;
+		}
+		hcchar = usb_readl(DWC_HCCHAR(ch));
 		hcchar |= DWC_HCCHAR_CHDIS | DWC_HCCHAR_CHENA | DWC_HCCHAR_EPDIR_IN;
 		usb_writel(DWC_HCCHAR(ch), hcchar);
 		while ((usb_readl(DWC_HCCHAR(ch)) & DWC_HCCHAR_CHENA) != 0) {
 			if (waited++ > 100) {
-				slog("usbhostd: host halt channel_timeout ch=%d hcchar=%08x hcint=%08x\n",
-						ch, usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCINT(ch)));
+				_stats.halt_timeout++;
+				if (USB_LOG_RUNTIME_VERBOSE) {
+					slog("usbhostd: host halt channel_timeout ch=%u hcchar=%08x hcint=%08x\n",
+							ch, usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCINT(ch)));
+				}
 				break;
 			}
 			proc_usleep(1000);
@@ -776,11 +968,15 @@ static int dwc_reset_port(bool* low_speed) {
 	uint32_t reg;
 	uint32_t waited_ms = 0;
 
-	slog("usbhostd: port reset begin\n");
+	if (USB_LOG_RUNTIME_VERBOSE) {
+		slog("usbhostd: port reset begin\n");
+	}
 	dwc_port_write(DWC_HPRT_PWR, 0);
 	proc_usleep(50000);
 	if (!dwc_port_connected()) {
-		slog("usbhostd: port reset abort no_device\n");
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: port reset abort no_device\n");
+		}
 		return -1;
 	}
 
@@ -791,23 +987,32 @@ static int dwc_reset_port(bool* low_speed) {
 	for (;;) {
 		reg = usb_readl(DWC_REG_HPRT);
 		if ((reg & 0x1u) == 0) {
-			slog("usbhostd: port reset failed disconnected\n");
+			if (USB_LOG_RUNTIME_VERBOSE) {
+				slog("usbhostd: port reset failed disconnected\n");
+			}
 			return -1;
 		}
 		if ((reg & DWC_HPRT_ENA) != 0) {
 			break;
 		}
 		if (waited_ms++ >= 100u) {
-			slog("usbhostd: port reset failed not_enabled hprt=%08x\n", reg);
+			if (USB_LOG_RUNTIME_VERBOSE) {
+				slog("usbhostd: port reset failed not_enabled hprt=%08x\n", reg);
+			}
+			dwc_ack_port_change();
 			return -1;
 		}
 		proc_usleep(1000);
 	}
 	dwc_ack_port_change();
+	/* USB spec reset recovery: device may ignore traffic for 10ms after reset */
+	proc_usleep(20000);
 
 	reg = usb_readl(DWC_REG_HPRT);
 	if (!dwc_port_connected()) {
-		slog("usbhostd: port reset failed disconnected\n");
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: port reset failed disconnected\n");
+		}
 		return -1;
 	}
 	if (low_speed != NULL) {
@@ -830,13 +1035,27 @@ static int dwc_host_init(void) {
 
 	_usb_base = _mmio_base + USB_CORE_OFFSET;
 
+	/* dump core identity/config once: helps confirm the core is powered,
+	   clocked and matches expected dwc2 synopsys version */
+	slog("usbhostd: core gsnpsid=%08x ghwcfg1=%08x ghwcfg2=%08x ghwcfg3=%08x ghwcfg4=%08x\n",
+			usb_readl(DWC_REG_GSNPSID), usb_readl(DWC_REG_GHWCFG1),
+			usb_readl(DWC_REG_GHWCFG2), usb_readl(DWC_REG_GHWCFG3),
+			usb_readl(DWC_REG_GHWCFG4));
+	/* GHWCFG2[17:14] = number of host channels - 1 */
+	_num_host_channels = ((usb_readl(DWC_REG_GHWCFG2) >> 14) & 0xFu) + 1u;
+	slog("usbhostd: core host_channels=%u\n", _num_host_channels);
+
 	usb_writel(DWC_REG_PCGCR, 0);
 	reg = usb_readl(DWC_REG_GUSBCFG);
-	reg &= ~(DWC_GUSBCFG_PHYIF | DWC_GUSBCFG_SRPCAP | DWC_GUSBCFG_HNPCAP |
+	/* Internal PHY on BCM283x/BCM2711 is UTMI+ 8-bit: clear ULPI_UTMI_SEL
+	   and PHYIF (Linux dwc2 params_bcm2835 does the same). Selecting ULPI
+	   here leaves the PHY unclocked on BCM2711 (no connect detect). */
+	reg &= ~(DWC_GUSBCFG_PHYIF | DWC_GUSBCFG_ULPI_UTMI_SEL |
+			DWC_GUSBCFG_SRPCAP | DWC_GUSBCFG_HNPCAP |
 			DWC_GUSBCFG_ULPI_FSLS | DWC_GUSBCFG_ULPI_CLK_SUSP_M |
 			DWC_GUSBCFG_ULPI_DRV_EXT_VBUS | DWC_GUSBCFG_TSDLINEPULSE |
 			DWC_GUSBCFG_FORCE_DEV_MODE);
-	reg |= DWC_GUSBCFG_FORCE_HOST_MODE | DWC_GUSBCFG_ULPI_UTMI_SEL;
+	reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
 	usb_writel(DWC_REG_GUSBCFG, reg);
 	slog("usbhostd: host base=%08x gusbcfg=%08x\n", _usb_base, reg);
 	proc_usleep(50000);
@@ -849,11 +1068,12 @@ static int dwc_host_init(void) {
 	/* Re-assert GUSBCFG after soft reset: ModeSelect (UTMI) survives per spec,
 	   but force_host_mode does not. Re-apply to be safe. */
 	reg = usb_readl(DWC_REG_GUSBCFG);
-	reg &= ~(DWC_GUSBCFG_PHYIF | DWC_GUSBCFG_SRPCAP | DWC_GUSBCFG_HNPCAP |
+	reg &= ~(DWC_GUSBCFG_PHYIF | DWC_GUSBCFG_ULPI_UTMI_SEL |
+			DWC_GUSBCFG_SRPCAP | DWC_GUSBCFG_HNPCAP |
 			DWC_GUSBCFG_ULPI_FSLS | DWC_GUSBCFG_ULPI_CLK_SUSP_M |
 			DWC_GUSBCFG_ULPI_DRV_EXT_VBUS | DWC_GUSBCFG_TSDLINEPULSE |
 			DWC_GUSBCFG_FORCE_DEV_MODE);
-	reg |= DWC_GUSBCFG_FORCE_HOST_MODE | DWC_GUSBCFG_ULPI_UTMI_SEL;
+	reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
 	usb_writel(DWC_REG_GUSBCFG, reg);
 	proc_usleep(25000);
 
@@ -883,9 +1103,12 @@ static int dwc_host_init(void) {
 	dwc_port_write(DWC_HPRT_PWR, 0);
 	proc_usleep(100000);
 	dwc_ack_port_change();
-	slog("usbhostd: host init ready gahbcfg=%08x gintmsk=%08x hcfg=%08x hfir=%08x hprt=%08x\n",
+	reg = usb_readl(DWC_REG_GINTSTS);
+	slog("usbhostd: host init ready gahbcfg=%08x gintmsk=%08x hcfg=%08x hfir=%08x hprt=%08x curmod=%s conid=%s\n",
 			usb_readl(DWC_REG_GAHBCFG), usb_readl(DWC_REG_GINTMSK),
-			usb_readl(DWC_REG_HCFG), usb_readl(DWC_REG_HFIR), usb_readl(DWC_REG_HPRT));
+			usb_readl(DWC_REG_HCFG), usb_readl(DWC_REG_HFIR), usb_readl(DWC_REG_HPRT),
+			(reg & DWC_GINTSTS_CURMODE_HOST) ? "host" : "device",
+			(usb_readl(DWC_REG_GOTGCTL) & DWC_GOTGCTL_CONID_B) ? "B" : "A");
 	return 0;
 }
 
@@ -946,6 +1169,7 @@ static int dwc_channel_transfer(int ch, uint8_t dev_addr, uint8_t ep_num, bool d
 	hcchar = (uint32_t)(max_packet & 0x7FFu) |
 			((uint32_t)(ep_num & 0x0Fu) << DWC_HCCHAR_EPNUM_SHIFT) |
 			((uint32_t)ep_type << DWC_HCCHAR_EPTYPE_SHIFT) |
+			(1u << DWC_HCCHAR_MC_SHIFT) |
 			((uint32_t)(dev_addr & 0x7Fu) << DWC_HCCHAR_DEVADDR_SHIFT);
 	if (dir_in) {
 		hcchar |= DWC_HCCHAR_EPDIR_IN;
@@ -953,11 +1177,19 @@ static int dwc_channel_transfer(int ch, uint8_t dev_addr, uint8_t ep_num, bool d
 	if (low_speed) {
 		hcchar |= DWC_HCCHAR_LSPDDEV;
 	}
+	/* Periodic transfers execute in the frame whose parity matches ODDFRM:
+	   schedule for the next frame relative to the current frame number. */
+	if (ep_type == 1 || ep_type == 3) {
+		uint32_t frnum = (usb_readl(DWC_REG_HFNUM) >> 0) & 0xFFFFu;
+		if ((frnum & 1u) == 0) {
+			hcchar |= DWC_HCCHAR_ODDFRM;
+		}
+	}
 	dwc_writel_sync(DWC_HCCHAR(ch), hcchar);
 
 	hcchar_start = usb_readl(DWC_HCCHAR(ch));
 	hcchar_start &= ~DWC_HCCHAR_CHDIS;
-	hcchar_start |= (1u << DWC_HCCHAR_PKTCNT_SHIFT) | DWC_HCCHAR_CHENA;
+	hcchar_start |= DWC_HCCHAR_CHENA;
 	if (USB_LOG_TRANSFER_VERBOSE && ep_num == 0) {
 		slog("usbhostd: ch%d start addr=%u ep=%u dir=%s type=%u pid=%u mps=%u len=%u dma_phys=%08x dma_bus=%08x hcchar=%08x hctsiz=%08x hcsplt=%08x hprt=%08x\n",
 				ch, dev_addr, ep_num, dir_in ? "in" : "out", ep_type, pid,
@@ -967,34 +1199,50 @@ static int dwc_channel_transfer(int ch, uint8_t dev_addr, uint8_t ep_num, bool d
 	dwc_writel_sync(DWC_HCCHAR(ch), hcchar_start);
 
 	if (dwc_channel_wait(ch, timeout_ms, &hcint, &remaining) != 0) {
-		slog("usbhostd: ch%d timeout addr=%u ep=%u dir=%s len=%u pid=%u hcchar=%08x hcint=%08x hctsiz=%08x hprt=%08x\n",
-				ch, dev_addr, ep_num, dir_in ? "in" : "out", length, pid,
-				usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCINT(ch)),
-				usb_readl(DWC_HCTSIZ(ch)), usb_readl(DWC_REG_HPRT));
+		_stats.xfer_timeout++;
+		_last_hcint = usb_readl(DWC_HCINT(ch));
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: ch%d timeout addr=%u ep=%u dir=%s len=%u pid=%u hcchar=%08x hcint=%08x hctsiz=%08x hprt=%08x hfnum=%04x\n",
+					ch, dev_addr, ep_num, dir_in ? "in" : "out", length, pid,
+					usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCINT(ch)),
+					usb_readl(DWC_HCTSIZ(ch)), usb_readl(DWC_REG_HPRT),
+					usb_readl(DWC_REG_HFNUM) & 0xFFFFu);
+		}
 		(void)dwc_channel_halt(ch, 20);
 		return -1;
 	}
 
 	usb_writel(DWC_HCINT(ch), hcint);
+	_last_hcint = hcint;
 	if (hcint & (DWC_HCINT_AHBERR | DWC_HCINT_STALL | DWC_HCINT_TXERR |
 			DWC_HCINT_BBLERR | DWC_HCINT_DTERR)) {
-		slog("usbhostd: ch%d error addr=%u ep=%u dir=%s hcint=%08x hcchar=%08x hctsiz=%08x len=%u\n",
-				ch, dev_addr, ep_num, dir_in ? "in" : "out", hcint,
-				usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCTSIZ(ch)), length);
+		_stats.xfer_err++;
+		usb_stats_update_from_hcint(hcint);
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: ch%d error addr=%u ep=%u dir=%s hcint=%08x(%s) hcchar=%08x hctsiz=%08x len=%u\n",
+					ch, dev_addr, ep_num, dir_in ? "in" : "out", hcint, dwc_hcint_str(hcint),
+					usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCTSIZ(ch)), length);
+		}
 		(void)dwc_channel_halt(ch, 20);
 		return -1;
 	}
 	if (hcint & (DWC_HCINT_NAK | DWC_HCINT_NYET | DWC_HCINT_FRMOVRUN)) {
+		_stats.xfer_nak++;
+		usb_stats_update_from_hcint(hcint);
 		(void)dwc_channel_halt(ch, 20);
 		return USB_XFER_RETRY;
 	}
 	if ((hcint & DWC_HCINT_XFRC) == 0 && (hcint & DWC_HCINT_CHH) != 0 && length != 0) {
-		slog("usbhostd: ch%d halted addr=%u ep=%u dir=%s hcint=%08x hcchar=%08x hctsiz=%08x len=%u\n",
-				ch, dev_addr, ep_num, dir_in ? "in" : "out", hcint,
-				usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCTSIZ(ch)), length);
+		_stats.xfer_err++;
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: ch%d halted addr=%u ep=%u dir=%s hcint=%08x(%s) hcchar=%08x hctsiz=%08x len=%u\n",
+					ch, dev_addr, ep_num, dir_in ? "in" : "out", hcint, dwc_hcint_str(hcint),
+					usb_readl(DWC_HCCHAR(ch)), usb_readl(DWC_HCTSIZ(ch)), length);
+		}
 		(void)dwc_channel_halt(ch, 20);
 		return -1;
 	}
+	_stats.xfer_ok++;
 	if (USB_LOG_TRANSFER_VERBOSE && ep_num == 0) {
 		slog("usbhostd: ch%d done addr=%u ep=%u dir=%s pid=%u hcint=%08x remain=%u actual=%d hprt=%08x\n",
 				ch, dev_addr, ep_num, dir_in ? "in" : "out", pid, hcint,
@@ -1081,7 +1329,9 @@ static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
 			ep_mps, DWC_PID_SETUP, setup_phys, sizeof(*setup_dma), 200,
 			setup->bRequest);
 	if (ret < 0) {
-		slog("usbhostd: ctrl setup_stage_failed addr=%u req=%02x\n", addr, setup->bRequest);
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: ctrl setup_stage_failed addr=%u req=%02x\n", addr, setup->bRequest);
+		}
 		dma_pool_rewind(mark);
 		return -1;
 	}
@@ -1094,8 +1344,10 @@ static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
 				ep_mps, DWC_PID_DATA1, payload_phys, setup->wLength, 500,
 				setup->bRequest);
 		if (ret < 0) {
-			slog("usbhostd: ctrl data_stage_failed addr=%u req=%02x dir=%s len=%u\n",
-					addr, setup->bRequest, data_in ? "in" : "out", setup->wLength);
+			if (USB_LOG_RUNTIME_VERBOSE) {
+				slog("usbhostd: ctrl data_stage_failed addr=%u req=%02x dir=%s len=%u\n",
+						addr, setup->bRequest, data_in ? "in" : "out", setup->wLength);
+			}
 			dma_pool_rewind(mark);
 			return -1;
 		}
@@ -1113,8 +1365,10 @@ static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
 			ep_mps, DWC_PID_DATA1, status_zlp_phys, 0, 200, setup->bRequest);
 	dma_pool_rewind(mark);
 	if (ret < 0) {
-		slog("usbhostd: ctrl status_stage_failed addr=%u req=%02x dir=%s\n",
-				addr, setup->bRequest, data_in ? "out" : "in");
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: ctrl status_stage_failed addr=%u req=%02x dir=%s\n",
+					addr, setup->bRequest, data_in ? "out" : "in");
+		}
 		return -1;
 	}
 	if (USB_LOG_TRANSFER_VERBOSE) {
@@ -1141,9 +1395,23 @@ static int usb_interrupt_in(usb_input_dev_t* dev, void* data, uint16_t size) {
 		dma_pool_rewind(mark);
 		return 0;
 	}
-	if (ret > 0) {
-		memcpy(data, payload, ret);
+	if (ret >= 0) {
+		if (ret > 0) {
+			memcpy(data, payload, ret);
+		}
+		/* resync toggle from the core: HCTSIZ.PID holds the pid for the
+		   next transaction and advances on every accepted packet, ZLPs
+		   included (a blind xor skips ZLPs and desyncs -> DTERR storms) */
+		uint32_t hwpid = (usb_readl(DWC_HCTSIZ(1)) >> DWC_HCTSIZ_PID_SHIFT) & 0x3u;
+		dev->toggle = (hwpid == DWC_PID_DATA1) ? 1u : 0u;
+	}
+	else if (_last_hcint & DWC_HCINT_DTERR) {
+		/* device toggle is authoritative: it only advances on our ACK, so a
+		   toggle error means our expectation is stale -- flip and retry the
+		   next poll instead of surfacing a hard failure */
 		dev->toggle ^= 1u;
+		dma_pool_rewind(mark);
+		return 0;
 	}
 	dma_pool_rewind(mark);
 	return ret;
@@ -1232,6 +1500,184 @@ static int32_t hid_sign_extend(uint32_t value, int bits) {
 		value |= ~((1u << bits) - 1u);
 	}
 	return (int32_t)value;
+}
+
+typedef enum {
+	HID_DEV_TYPE_UNKNOWN = 0,
+	HID_DEV_TYPE_KEYBOARD,
+	HID_DEV_TYPE_MOUSE,
+	HID_DEV_TYPE_TOUCH,
+} hid_dev_type_t;
+
+static hid_dev_type_t hid_detect_device_type(const uint8_t* desc, int len) {
+	uint32_t usage_page = 0;
+	uint32_t usages[USB_MAX_USAGE_LIST];
+	int usage_count = 0;
+	uint32_t usage_min = 0;
+	uint32_t usage_max = 0;
+	bool usage_range_valid = false;
+
+	for (int off = 0; off < len; ) {
+		uint8_t prefix = desc[off++];
+		uint32_t value = 0;
+		int size_code, size, type, tag;
+
+		if (prefix == 0xFE) {
+			if (off + 2 > len) break;
+			size = desc[off];
+			off += 2 + size;
+			continue;
+		}
+
+		size_code = prefix & 0x3;
+		size = (size_code == 3) ? 4 : size_code;
+		type = (prefix >> 2) & 0x3;
+		tag = (prefix >> 4) & 0xF;
+		if (off + size > len) break;
+		for (int i = 0; i < size; ++i) {
+			value |= (uint32_t)desc[off + i] << (i * 8);
+		}
+		off += size;
+
+		if (type == 1) {
+			if (tag == 0) {
+				usage_page = value;
+			}
+		}
+		else if (type == 2) {
+			switch (tag) {
+			case 0:
+				if (usage_count < USB_MAX_USAGE_LIST) {
+					usages[usage_count++] = value;
+				}
+				break;
+			case 1:
+				usage_min = value;
+				usage_range_valid = true;
+				break;
+			case 2:
+				usage_max = value;
+				usage_range_valid = true;
+				break;
+			}
+		}
+		else if (type == 0) {
+			if (tag == 10) {
+				uint8_t collection_type = (uint8_t)value;
+				if (collection_type == 1 && usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP) {
+					uint32_t usage = hid_usage_for_index(usages, usage_count,
+							usage_range_valid, usage_min, usage_max, 0);
+					if (usage == HID_USAGE_KEYBOARD) {
+						return HID_DEV_TYPE_KEYBOARD;
+					}
+					else if (usage == HID_USAGE_MOUSE || usage == HID_USAGE_POINTER) {
+						return HID_DEV_TYPE_MOUSE;
+					}
+				}
+				else if (collection_type == 1 && usage_page == HID_USAGE_PAGE_DIGITIZER) {
+					uint32_t usage = hid_usage_for_index(usages, usage_count,
+							usage_range_valid, usage_min, usage_max, 0);
+					if (usage == HID_USAGE_TOUCH_SCREEN || usage == HID_USAGE_TOUCH_PAD ||
+							usage == HID_USAGE_FINGER) {
+						return HID_DEV_TYPE_TOUCH;
+					}
+				}
+			}
+			usage_count = 0;
+			usage_range_valid = false;
+		}
+	}
+	return HID_DEV_TYPE_UNKNOWN;
+}
+
+/* Detect a composite interface (uConsole keyboard: kbd+mouse collections
+   share one interrupt endpoint, distinguished by report IDs). Returns 0
+   with both IDs filled when the descriptor holds a keyboard AND a
+   mouse/pointer application collection each with its own report ID. */
+static int hid_parse_report_ids(const uint8_t* desc, int len,
+		uint8_t* kbd_id, uint8_t* mouse_id) {
+	uint32_t usage_page = 0;
+	uint32_t usages[USB_MAX_USAGE_LIST];
+	int usage_count = 0;
+	int depth = 0;
+	hid_dev_type_t cur_app = HID_DEV_TYPE_UNKNOWN;
+	bool kbd_found = false, mouse_found = false;
+
+	for (int off = 0; off < len; ) {
+		uint8_t prefix = desc[off++];
+		uint32_t value = 0;
+		int size_code, size, type, tag;
+
+		if (prefix == 0xFE) {
+			if (off + 2 > len) break;
+			size = desc[off];
+			off += 2 + size;
+			continue;
+		}
+		size_code = prefix & 0x3;
+		size = (size_code == 3) ? 4 : size_code;
+		type = (prefix >> 2) & 0x3;
+		tag = (prefix >> 4) & 0xF;
+		if (off + size > len) break;
+		for (int i = 0; i < size; ++i) {
+			value |= (uint32_t)desc[off + i] << (i * 8);
+		}
+		off += size;
+
+		if (type == 1) { /* global */
+			if (tag == 0) {
+				usage_page = value;
+			}
+			else if (tag == 8) { /* Report ID */
+				/* only IDs declared inside the collection count: a global
+				   Report ID from a preceding collection (consumer/joystick)
+				   must not leak into the next one */
+				if (cur_app == HID_DEV_TYPE_KEYBOARD && !kbd_found) {
+					*kbd_id = (uint8_t)value;
+					kbd_found = true;
+				}
+				else if (cur_app == HID_DEV_TYPE_MOUSE && !mouse_found) {
+					*mouse_id = (uint8_t)value;
+					mouse_found = true;
+				}
+			}
+		}
+		else if (type == 2) { /* local */
+			if (tag == 0 && usage_count < USB_MAX_USAGE_LIST) {
+				usages[usage_count++] = value;
+			}
+		}
+		else if (type == 0) { /* main */
+			if (tag == 10) { /* Collection */
+				if (depth == 0 && (uint8_t)value == 1 &&
+						usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP && usage_count > 0) {
+					if (usages[0] == HID_USAGE_KEYBOARD) {
+						cur_app = HID_DEV_TYPE_KEYBOARD;
+					}
+					else if (usages[0] == HID_USAGE_MOUSE || usages[0] == HID_USAGE_POINTER) {
+						cur_app = HID_DEV_TYPE_MOUSE;
+					}
+					else {
+						cur_app = HID_DEV_TYPE_UNKNOWN;
+					}
+				}
+				depth++;
+			}
+			else if (tag == 12) { /* End Collection */
+				if (depth > 0) {
+					depth--;
+				}
+				if (depth == 0) {
+					cur_app = HID_DEV_TYPE_UNKNOWN;
+				}
+			}
+			usage_count = 0;
+		}
+	}
+	if (kbd_found && mouse_found && *kbd_id != *mouse_id) {
+		return 0;
+	}
+	return -1;
 }
 
 static int hid_parse_touch_report(const uint8_t* desc, int len, touch_parser_t* out) {
@@ -1536,7 +1982,11 @@ static int usb_register_keyboard(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
 		slog("usbhostd: register keyboard failed no_slot addr=%u iface=%u\n", addr, cand->iface_num);
 		return -1;
 	}
-	(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 0);
+	/* Set_Protocol is only defined for boot-subclass interfaces; non-boot
+	   interfaces default to Report protocol and must not receive it. */
+	if (cand->subclass == USB_SUBCLASS_BOOT) {
+		(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 0);
+	}
 	(void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
 	memset(&_inputs[slot], 0, sizeof(_inputs[slot]));
 	_inputs[slot].present = true;
@@ -1549,9 +1999,9 @@ static int usb_register_keyboard(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
 	_inputs[slot].ctrl_mps = ctrl_mps;
 	_inputs[slot].low_speed = low_speed;
 	_inputs[slot].report_len = 8;
-	slog("usbhostd: register keyboard slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u speed=%s\n",
+	slog("usbhostd: register keyboard slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u speed=%s subclass=%u\n",
 			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
-			cand->max_packet, usb_speed_name(low_speed));
+			cand->max_packet, usb_speed_name(low_speed), cand->subclass);
 	return 0;
 }
 
@@ -1561,7 +2011,11 @@ static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 		slog("usbhostd: register mouse failed no_slot addr=%u iface=%u\n", addr, cand->iface_num);
 		return -1;
 	}
-	(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 0);
+	/* Set_Protocol is only defined for boot-subclass interfaces; non-boot
+	   interfaces default to Report protocol and must not receive it. */
+	if (cand->subclass == USB_SUBCLASS_BOOT) {
+		(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 0);
+	}
 	(void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
 	memset(&_inputs[slot], 0, sizeof(_inputs[slot]));
 	_inputs[slot].present = true;
@@ -1574,9 +2028,43 @@ static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 	_inputs[slot].ctrl_mps = ctrl_mps;
 	_inputs[slot].low_speed = low_speed;
 	_inputs[slot].report_len = cand->max_packet > 0 ? cand->max_packet : 4;
-	slog("usbhostd: register mouse slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u speed=%s\n",
+	slog("usbhostd: register mouse slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u speed=%s subclass=%u\n",
 			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
-			cand->max_packet, usb_speed_name(low_speed));
+			cand->max_packet, usb_speed_name(low_speed), cand->subclass);
+	return 0;
+}
+
+static int usb_register_composite(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
+		const hid_candidate_t* cand, uint8_t kbd_id, uint8_t mouse_id) {
+	int slot = usb_input_alloc();
+	if (slot < 0) {
+		slog("usbhostd: register composite failed no_slot addr=%u iface=%u\n", addr, cand->iface_num);
+		return -1;
+	}
+	/* report IDs only exist in Report protocol; boot protocol would strip
+	   the mouse collection entirely */
+	if (cand->subclass == USB_SUBCLASS_BOOT) {
+		(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 1);
+	}
+	(void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
+	memset(&_inputs[slot], 0, sizeof(_inputs[slot]));
+	_inputs[slot].present = true;
+	_inputs[slot].type = USB_INPUT_COMPOSITE;
+	_inputs[slot].addr = addr;
+	_inputs[slot].iface_num = cand->iface_num;
+	_inputs[slot].ep_addr = cand->ep_addr;
+	_inputs[slot].interval = cand->interval;
+	_inputs[slot].max_packet = cand->max_packet == 0 ? 8 : cand->max_packet;
+	_inputs[slot].ctrl_mps = ctrl_mps;
+	_inputs[slot].low_speed = low_speed;
+	/* variable-size reports: always request a full packet */
+	_inputs[slot].report_len = _inputs[slot].max_packet > USB_MAX_REPORT ?
+			USB_MAX_REPORT : (uint8_t)_inputs[slot].max_packet;
+	_inputs[slot].kbd_report_id = kbd_id;
+	_inputs[slot].mouse_report_id = mouse_id;
+	slog("usbhostd: register composite slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u kbd_id=%u mouse_id=%u speed=%s subclass=%u\n",
+			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
+			cand->max_packet, kbd_id, mouse_id, usb_speed_name(low_speed), cand->subclass);
 	return 0;
 }
 
@@ -1638,8 +2126,144 @@ static int usb_register_touch(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 	return 0;
 }
 
-static int usb_enumerate_root(void) {
-	bool low_speed = false;
+static int usb_enumerate_device(bool low_speed, int depth);
+
+/* ---- hub class support: the uConsole keyboard sits behind a GL850G hub ---- */
+
+static int usb_hub_port_status(uint8_t addr, bool low_speed, uint8_t ep_mps,
+		uint8_t port, uint16_t* status, uint16_t* change) {
+	usb_setup_pkt_t setup;
+	uint8_t buf[4];
+	memset(&setup, 0, sizeof(setup));
+	setup.bmRequestType = USB_REQTYPE_CLASS_PORT_IN;
+	setup.bRequest = USB_REQ_GET_STATUS;
+	setup.wIndex = port;
+	setup.wLength = 4;
+	if (usb_control_msg(addr, low_speed, ep_mps, &setup, buf, true) < 4) {
+		return -1;
+	}
+	if (status != NULL) {
+		*status = le16(buf);
+	}
+	if (change != NULL) {
+		*change = le16(buf + 2);
+	}
+	return 0;
+}
+
+static int usb_hub_port_feature(uint8_t addr, bool low_speed, uint8_t ep_mps,
+		uint8_t port, uint16_t feature, bool set) {
+	usb_setup_pkt_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.bmRequestType = USB_REQTYPE_CLASS_PORT_OUT;
+	setup.bRequest = set ? USB_REQ_SET_FEATURE : USB_REQ_CLEAR_FEATURE;
+	setup.wValue = feature;
+	setup.wIndex = port;
+	return usb_control_msg(addr, low_speed, ep_mps, &setup, NULL, false);
+}
+
+static int usb_enumerate_hub(uint8_t addr, bool low_speed, uint8_t ep_mps, int depth) {
+	usb_setup_pkt_t setup;
+	uint8_t hub_desc[9];
+	uint8_t num_ports;
+	uint32_t pwr_ms;
+	int registered = 0;
+
+	memset(&setup, 0, sizeof(setup));
+	setup.bmRequestType = USB_REQTYPE_CLASS_DEV_IN;
+	setup.bRequest = USB_REQ_GET_DESCRIPTOR;
+	setup.wValue = (uint16_t)(USB_DESC_HUB << 8);
+	setup.wLength = sizeof(hub_desc);
+	if (usb_control_msg(addr, low_speed, ep_mps, &setup, hub_desc, true) < (int)sizeof(hub_desc)) {
+		slog("usbhostd: hub addr=%u get_hub_desc_failed\n", addr);
+		return -1;
+	}
+	num_ports = hub_desc[2];
+	/* bPwrOn2PwrGood is in 2ms units; add margin for slow rails */
+	pwr_ms = (uint32_t)hub_desc[5] * 2u + 100u;
+	slog("usbhostd: hub addr=%u ports=%u pwr2good=%ums depth=%d\n",
+			addr, num_ports, pwr_ms, depth);
+	if (num_ports > 8) {
+		num_ports = 8;
+	}
+
+	for (uint8_t port = 1; port <= num_ports; ++port) {
+		usb_hub_port_feature(addr, low_speed, ep_mps, port, USB_HUB_FEAT_PORT_POWER, true);
+	}
+	proc_usleep(pwr_ms * 1000u);
+
+	for (uint8_t port = 1; port <= num_ports; ++port) {
+		uint16_t status = 0;
+		uint16_t change = 0;
+		int attempt;
+		int ret = -1;
+
+		if (usb_hub_port_status(addr, low_speed, ep_mps, port, &status, &change) != 0) {
+			slog("usbhostd: hub addr=%u port=%u status_failed\n", addr, port);
+			continue;
+		}
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: hub addr=%u port=%u status=%04x change=%04x\n",
+					addr, port, status, change);
+		}
+		if ((status & USB_HUB_PS_CONNECTION) == 0) {
+			continue;
+		}
+		usb_hub_port_feature(addr, low_speed, ep_mps, port,
+				USB_HUB_FEAT_C_PORT_CONNECTION, false);
+
+		/* freshly reset devices (uConsole keyboard MCU) may answer the first
+		   SETUPs with transaction errors: re-reset the port and retry */
+		for (attempt = 1; attempt <= 3 && ret <= 0; ++attempt) {
+			bool enabled = false;
+			int waited;
+
+			if (usb_hub_port_feature(addr, low_speed, ep_mps, port,
+					USB_HUB_FEAT_PORT_RESET, true) < 0) {
+				slog("usbhostd: hub addr=%u port=%u reset_req_failed attempt=%d\n",
+						addr, port, attempt);
+				continue;
+			}
+			for (waited = 0; waited < 25; ++waited) {
+				proc_usleep(20000);
+				if (usb_hub_port_status(addr, low_speed, ep_mps, port, &status, &change) != 0) {
+					break;
+				}
+				if ((status & USB_HUB_PS_RESET) == 0 && (status & USB_HUB_PS_ENABLE) != 0) {
+					enabled = true;
+					break;
+				}
+			}
+			usb_hub_port_feature(addr, low_speed, ep_mps, port,
+					USB_HUB_FEAT_C_PORT_RESET, false);
+			if (!enabled) {
+				slog("usbhostd: hub addr=%u port=%u reset_failed status=%04x attempt=%d\n",
+						addr, port, status, attempt);
+				proc_usleep(100000);
+				continue;
+			}
+			/* reset recovery: give the device MCU time to come alive */
+			proc_usleep(60000);
+			slog("usbhostd: hub addr=%u port=%u connected speed=%s attempt=%d\n", addr, port,
+					usb_speed_name((status & USB_HUB_PS_LOW_SPEED) != 0), attempt);
+			ret = usb_enumerate_device((status & USB_HUB_PS_LOW_SPEED) != 0, depth + 1);
+			if (ret <= 0 && attempt < 3) {
+				if (USB_LOG_RUNTIME_VERBOSE) {
+					slog("usbhostd: hub addr=%u port=%u enum_retry attempt=%d\n",
+							addr, port, attempt + 1);
+				}
+				proc_usleep(100000);
+			}
+		}
+		if (ret > 0) {
+			registered += ret;
+		}
+	}
+	return registered;
+}
+
+/* enumerate the device currently at default address 0 (fresh after port reset) */
+static int usb_enumerate_device(bool low_speed, int depth) {
 	uint8_t desc8[8];
 	usb_device_desc_t dev_desc;
 	uint8_t cfg_head[9];
@@ -1651,25 +2275,21 @@ static int usb_enumerate_root(void) {
 	hid_candidate_t candidates[USB_MAX_CANDIDATES];
 	int registered = 0;
 
-	slog("usbhostd: enumerate root begin\n");
-	usb_inputs_clear();
-	if (dwc_reset_port(&low_speed) != 0) {
-		slog("usbhostd: enumerate root reset_failed\n");
-		return -1;
-	}
-
 	if (usb_get_descriptor(0, low_speed, 8, USB_REQTYPE_STD_IN,
 			USB_DESC_DEVICE, 0, 0, desc8, sizeof(desc8)) < 8) {
-		slog("usbhostd: enumerate root get_device_desc8_failed\n");
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: enumerate dev get_device_desc8_failed depth=%d\n", depth);
+		}
 		return -1;
 	}
 
 	addr = _next_address++;
-	if (addr == 0) {
+	if (addr == 0 || addr > 126) {
+		_next_address = 2;
 		addr = _next_address++;
 	}
 	if (usb_set_address(low_speed, addr) < 0) {
-		slog("usbhostd: enumerate root set_address_failed addr=%u\n", addr);
+		slog("usbhostd: enumerate dev set_address_failed addr=%u\n", addr);
 		return -1;
 	}
 	proc_usleep(10000);
@@ -1678,50 +2298,59 @@ static int usb_enumerate_root(void) {
 	memset(&dev_desc, 0, sizeof(dev_desc));
 	if (usb_get_descriptor(addr, low_speed, ctrl_mps, USB_REQTYPE_STD_IN,
 			USB_DESC_DEVICE, 0, 0, &dev_desc, sizeof(dev_desc)) < (int)sizeof(dev_desc)) {
-		slog("usbhostd: enumerate root get_device_desc_failed addr=%u\n", addr);
+		slog("usbhostd: enumerate dev get_device_desc_failed addr=%u\n", addr);
 		return -1;
 	}
 	ctrl_mps = dev_desc.bMaxPacketSize0;
-	slog("usbhostd: enumerate root device addr=%u vid=%04x pid=%04x class=%02x subclass=%02x proto=%02x mps0=%u speed=%s\n",
+	slog("usbhostd: enumerate dev addr=%u vid=%04x pid=%04x class=%02x subclass=%02x proto=%02x mps0=%u speed=%s depth=%d\n",
 			addr, dev_desc.idVendor, dev_desc.idProduct, dev_desc.bDeviceClass,
 			dev_desc.bDeviceSubClass, dev_desc.bDeviceProtocol, ctrl_mps,
-			usb_speed_name(low_speed));
+			usb_speed_name(low_speed), depth);
 
 	if (usb_get_descriptor(addr, low_speed, ctrl_mps, USB_REQTYPE_STD_IN,
 			USB_DESC_CONFIG, 0, 0, cfg_head, sizeof(cfg_head)) < (int)sizeof(cfg_head)) {
-		slog("usbhostd: enumerate root get_config_head_failed addr=%u\n", addr);
+		slog("usbhostd: enumerate dev get_config_head_failed addr=%u\n", addr);
 		return -1;
 	}
 
 	total_len = le16(cfg_head + 2);
 	if (total_len < sizeof(usb_config_desc_t) || total_len > 1024) {
-		slog("usbhostd: enumerate root invalid_config_len addr=%u total=%u\n", addr, total_len);
+		slog("usbhostd: enumerate dev invalid_config_len addr=%u total=%u\n", addr, total_len);
 		return -1;
 	}
 
 	cfg_buf = (uint8_t*)malloc(total_len);
 	if (cfg_buf == NULL) {
-		slog("usbhostd: enumerate root alloc_config_failed addr=%u total=%u\n", addr, total_len);
+		slog("usbhostd: enumerate dev alloc_config_failed addr=%u total=%u\n", addr, total_len);
 		return -1;
 	}
 	if (usb_get_descriptor(addr, low_speed, ctrl_mps, USB_REQTYPE_STD_IN,
 			USB_DESC_CONFIG, 0, 0, cfg_buf, total_len) < total_len) {
-		slog("usbhostd: enumerate root get_config_failed addr=%u total=%u\n", addr, total_len);
+		slog("usbhostd: enumerate dev get_config_failed addr=%u total=%u\n", addr, total_len);
 		free(cfg_buf);
 		return -1;
 	}
 
 	if (usb_set_configuration(addr, low_speed, ctrl_mps, ((usb_config_desc_t*)cfg_buf)->bConfigurationValue) < 0) {
-		slog("usbhostd: enumerate root set_config_failed addr=%u cfg=%u\n",
+		slog("usbhostd: enumerate dev set_config_failed addr=%u cfg=%u\n",
 				addr, ((usb_config_desc_t*)cfg_buf)->bConfigurationValue);
 		free(cfg_buf);
 		return -1;
 	}
 	proc_usleep(10000);
 
+	if (dev_desc.bDeviceClass == USB_CLASS_HUB) {
+		free(cfg_buf);
+		if (depth >= 2) {
+			slog("usbhostd: enumerate dev hub_too_deep addr=%u depth=%d\n", addr, depth);
+			return 0;
+		}
+		return usb_enumerate_hub(addr, low_speed, ctrl_mps, depth);
+	}
+
 	memset(candidates, 0, sizeof(candidates));
 	cand_count = usb_parse_candidates(cfg_buf, total_len, candidates, USB_MAX_CANDIDATES);
-	slog("usbhostd: enumerate root candidates=%d config_len=%u\n", cand_count, total_len);
+	slog("usbhostd: enumerate dev candidates=%d config_len=%u addr=%u\n", cand_count, total_len, addr);
 	free(cfg_buf);
 
 	for (int i = 0; i < cand_count; ++i) {
@@ -1732,24 +2361,108 @@ static int usb_enumerate_root(void) {
 				i, candidates[i].iface_num, candidates[i].subclass, candidates[i].protocol,
 				candidates[i].ep_addr, candidates[i].interval, candidates[i].max_packet,
 				candidates[i].report_desc_len);
-		if (candidates[i].subclass == USB_SUBCLASS_BOOT && candidates[i].protocol == USB_PROTOCOL_KEYBOARD) {
-			if (usb_register_keyboard(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
-				registered++;
+		{
+			uint8_t* report_desc = NULL;
+			bool desc_ok = false;
+			uint8_t kbd_id = 0, mouse_id = 0;
+
+			if (candidates[i].report_desc_len > 0 && candidates[i].report_desc_len <= 1024) {
+				report_desc = (uint8_t*)malloc(candidates[i].report_desc_len);
+				if (report_desc != NULL &&
+						usb_get_descriptor(addr, low_speed, ctrl_mps, USB_REQTYPE_STD_IFACE_IN,
+							USB_DESC_HID_REPORT, 0, candidates[i].iface_num, report_desc,
+							candidates[i].report_desc_len) >= candidates[i].report_desc_len) {
+					desc_ok = true;
+				}
 			}
-		}
-		else if (candidates[i].subclass == USB_SUBCLASS_BOOT && candidates[i].protocol == USB_PROTOCOL_MOUSE) {
-			if (usb_register_mouse(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
-				registered++;
+
+			/* uConsole keyboard: boot-keyboard interface whose report
+			   descriptor actually multiplexes kbd+mouse via report IDs */
+			if (desc_ok && hid_parse_report_ids(report_desc,
+					candidates[i].report_desc_len, &kbd_id, &mouse_id) == 0) {
+				if (usb_register_composite(addr, low_speed, ctrl_mps, &candidates[i],
+						kbd_id, mouse_id) == 0) {
+					registered++;
+				}
 			}
-		}
-		else {
-			if (usb_register_touch(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
-				registered++;
+			else if (candidates[i].subclass == USB_SUBCLASS_BOOT &&
+					candidates[i].protocol == USB_PROTOCOL_KEYBOARD) {
+				if (usb_register_keyboard(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+					registered++;
+				}
+			}
+			else if (candidates[i].subclass == USB_SUBCLASS_BOOT &&
+					candidates[i].protocol == USB_PROTOCOL_MOUSE) {
+				if (usb_register_mouse(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+					registered++;
+				}
+			}
+			else {
+				hid_dev_type_t dev_type = HID_DEV_TYPE_UNKNOWN;
+
+				if (desc_ok) {
+					dev_type = hid_detect_device_type(report_desc, candidates[i].report_desc_len);
+					slog("usbhostd: candidate idx=%d report_desc_type=%d\n", i, dev_type);
+				}
+
+				if (dev_type == HID_DEV_TYPE_KEYBOARD) {
+					if (usb_register_keyboard(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+						registered++;
+					}
+				}
+				else if (dev_type == HID_DEV_TYPE_MOUSE) {
+					if (usb_register_mouse(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+						registered++;
+					}
+				}
+				else if (dev_type == HID_DEV_TYPE_TOUCH) {
+					if (usb_register_touch(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+						registered++;
+					}
+				}
+				else {
+					slog("usbhostd: candidate idx=%d unknown_type skip\n", i);
+				}
+			}
+
+			if (report_desc != NULL) {
+				free(report_desc);
 			}
 		}
 	}
 
-	slog("usbhostd: enumerate root done addr=%u registered=%d\n", addr, registered);
+	slog("usbhostd: enumerate dev done addr=%u registered=%d depth=%d\n",
+			addr, registered, depth);
+	return registered;
+}
+
+static int usb_enumerate_root(void) {
+	bool low_speed = false;
+	int registered;
+	uint64_t enum_start_ms = kernel_tic_ms(0);
+
+	if (USB_LOG_RUNTIME_VERBOSE) {
+		slog("usbhostd: enumerate root begin\n");
+	}
+	usb_inputs_clear();
+	_next_address = 2;
+	if (dwc_reset_port(&low_speed) != 0) {
+		if (USB_LOG_RUNTIME_VERBOSE) {
+			slog("usbhostd: enumerate root reset_failed\n");
+		}
+		return -1;
+	}
+
+	registered = usb_enumerate_device(low_speed, 0);
+
+	slog("usbhostd: enumerate root done registered=%d cost=%ums\n",
+			registered, (uint32_t)(kernel_tic_ms(0) - enum_start_ms));
+	if (registered > 0) {
+		_stats.enum_ok++;
+	}
+	else {
+		_stats.enum_fail++;
+	}
 	return registered > 0 ? registered : -1;
 }
 
@@ -1758,12 +2471,35 @@ static void usb_scan_root(void) {
 
 	if (!connected) {
 		if (_device_ready) {
-			slog("usbhostd: port disconnected, clear active inputs\n");
+			_stats.port_disconnect++;
+			slog("usbhostd: port disconnected, clear active inputs hprt=%08x gintsts=%08x\n",
+					usb_readl(DWC_REG_HPRT), usb_readl(DWC_REG_GINTSTS));
 			usb_inputs_clear();
 			_device_ready = false;
 		}
 		else if (_port_connected) {
-			slog("usbhostd: port disconnected before ready\n");
+			_stats.port_disconnect++;
+			slog("usbhostd: port disconnected before ready hprt=%08x\n",
+					usb_readl(DWC_REG_HPRT));
+		}
+		else {
+			/* nothing attached: periodically dump port/OTG state so the
+			   electrical situation is visible (conid=B means the ID pin
+			   claims device role: the HID device is likely on another
+			   controller or VBUS is not reaching it) */
+			uint64_t now = kernel_tic_ms(0);
+			if (USB_LOG_RUNTIME_VERBOSE && now >= _next_idle_log_ms) {
+				uint32_t gotg = usb_readl(DWC_REG_GOTGCTL);
+				uint32_t gint = usb_readl(DWC_REG_GINTSTS);
+				_next_idle_log_ms = now + 5000u;
+				slog("usbhostd: port idle no_connect hprt=%08x gotgctl=%08x conid=%s asesvld=%u bsesvld=%u curmod=%s gintsts=%08x hfnum=%04x\n",
+						usb_readl(DWC_REG_HPRT), gotg,
+						(gotg & DWC_GOTGCTL_CONID_B) ? "B" : "A",
+						(gotg & DWC_GOTGCTL_ASESVLD) ? 1u : 0u,
+						(gotg & DWC_GOTGCTL_BSESVLD) ? 1u : 0u,
+						(gint & DWC_GINTSTS_CURMODE_HOST) ? "host" : "device",
+						gint, usb_readl(DWC_REG_HFNUM) & 0xFFFFu);
+			}
 		}
 		_port_connected = false;
 		return;
@@ -1777,10 +2513,28 @@ static void usb_scan_root(void) {
 		int found = usb_enumerate_root();
 		if (found > 0) {
 			_device_ready = true;
+			_enum_fail_streak = 0;
 			slog("usbhostd: device ready inputs=%d\n", found);
 		}
 		else {
-			slog("usbhostd: enumerate root pending\n");
+			if (USB_LOG_RUNTIME_VERBOSE) {
+				slog("usbhostd: enumerate root pending\n");
+			}
+			_enum_fail_streak++;
+			/* back off before re-resetting the port: hammering resets
+			   destabilizes hubs (GL850G shows not_enabled/setup errors) */
+			_next_scan_ms = kernel_tic_ms(0) + 2000u;
+			/* the dwc2 port can latch a dead not_enabled/EnaChng state that
+			   only a full core re-init clears */
+			if (_enum_fail_streak >= 3) {
+				slog("usbhostd: core reinit after %u failed enumerations\n",
+						_enum_fail_streak);
+				_enum_fail_streak = 0;
+				if (dwc_host_init() != 0) {
+					slog("usbhostd: core reinit failed\n");
+				}
+				_next_scan_ms = kernel_tic_ms(0) + 1000u;
+			}
 		}
 	}
 	dwc_ack_port_change();
@@ -1807,7 +2561,26 @@ static void usb_poll_inputs(vdevice_t* dev) {
 		memset(report, 0, sizeof(report));
 		ret = usb_interrupt_in(in, report, in->report_len == 0 ? in->max_packet : in->report_len);
 		if (ret < 0) {
+			in->poll_fail_total++;
+			in->poll_fail_streak++;
+			/* log the 1st failure and then every 100th to track flaky endpoints
+			   without flooding the log */
+			if (USB_LOG_RUNTIME_VERBOSE &&
+					(in->poll_fail_streak == 1 || (in->poll_fail_streak % 100u) == 0)) {
+				slog("usbhostd: poll fail type=%s addr=%u ep=%02x streak=%u total=%u toggle=%u hprt=%08x\n",
+						usb_input_type_name(in->type), in->addr, in->ep_addr,
+						in->poll_fail_streak, in->poll_fail_total, in->toggle,
+						usb_readl(DWC_REG_HPRT));
+			}
 			continue;
+		}
+		if (in->poll_fail_streak > 0) {
+			if (USB_LOG_RUNTIME_VERBOSE) {
+				slog("usbhostd: poll recovered type=%s addr=%u ep=%02x after=%u fails\n",
+						usb_input_type_name(in->type), in->addr, in->ep_addr,
+						in->poll_fail_streak);
+			}
+			in->poll_fail_streak = 0;
 		}
 		if (ret == 0) {
 			continue;
@@ -1843,6 +2616,33 @@ static void usb_poll_inputs(vdevice_t* dev) {
 				usb_log_input_event(in, report, ret, payload);
 				wakeup = true;
 			}
+		}
+		else if (in->type == USB_INPUT_COMPOSITE) {
+			/* first byte is the HID report ID; strip it and route */
+			uint8_t rid = report[0];
+			if (ret < 2) {
+				continue;
+			}
+			if (rid == in->kbd_report_id) {
+				if ((uint8_t)ret == in->last_len && memcmp(in->last_report, report, ret) == 0) {
+					continue;
+				}
+				memcpy(in->last_report, report, ret);
+				in->last_len = (uint8_t)ret;
+				memset(payload, 0, sizeof(payload));
+				memcpy(payload, report + 1, (ret - 1) > USB_EVENT_SIZE ? USB_EVENT_SIZE : (ret - 1));
+				dispatch_data(USB_REPORT_ID_KEYBOARD, payload, USB_EVENT_SIZE);
+				usb_log_input_event(in, report, ret, payload);
+				wakeup = true;
+			}
+			else if (rid == in->mouse_report_id) {
+				memset(payload, 0, sizeof(payload));
+				memcpy(payload, report + 1, (ret - 1) > USB_EVENT_SIZE ? USB_EVENT_SIZE : (ret - 1));
+				dispatch_data(USB_REPORT_ID_MOUSE, payload, USB_EVENT_SIZE);
+				usb_log_input_event(in, report, ret, payload);
+				wakeup = true;
+			}
+			/* other report IDs (gamepad etc.): no consumer yet, drop silently */
 		}
 	}
 
@@ -1889,12 +2689,17 @@ static int usb_step(vdevice_t* dev, void* p) {
 	uint64_t now = kernel_tic_ms(0);
 	(void)p;
 	if (now >= _next_scan_ms) {
+		_next_scan_ms = 0;
 		usb_scan_root();
-		_next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
+		/* usb_scan_root may set a longer backoff after a failed enumeration */
+		if (_next_scan_ms < kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS) {
+			_next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
+		}
 	}
 	if (_device_ready) {
 		usb_poll_inputs(dev);
 	}
+	usb_stats_log();
 	proc_usleep(usb_step_sleep_us());
 	return 0;
 }
