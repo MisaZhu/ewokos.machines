@@ -6,9 +6,6 @@
 #include <arch/bcm283x/gpio.h>
 #include <arch/bcm283x/i2c.h>
 
-#include "uc_log.h"
-#define slog uc_log
-
 /*
  * AXP223 register map, from Linux axp20x-regulator.c (AXP22X descs):
  *   ALDO1  vol 0x28 [4:0], en 0x10 bit6   ("audio-vdd")
@@ -80,11 +77,9 @@ int uc_pmu_display_power(void) {
 		if (_try_once() == 0) {
 			/* Let the panel rails rise + panel logic settle. */
 			uc_mdelay(20);
-			slog("[uc_pmu] display rails up (attempt %d)\n", attempt);
 			return 0;
 		}
 		uc_mdelay(5);
 	}
-	slog("[uc_pmu] display rail enable FAILED\n");
 	return -1;
 }

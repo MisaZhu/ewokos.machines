@@ -16,29 +16,27 @@
 
 @/bin/ipcserv /drivers/raspix/usbhostd       /dev/hid0
 @/bin/ipcserv /drivers/raspix/hid_keybd      /dev/keyb0
+@/bin/ipcserv /drivers/vkeybd                /dev/vkeyb /dev/keyb0
+
 @/bin/ipcserv /drivers/raspix/hid_moused     /dev/mouse0
-@/bin/ipcserv /drivers/raspix/hid_joystickd  /dev/joystick0
+#@/bin/ipcserv /drivers/raspix/hid_joystickd  /dev/joystick0
 
 @/bin/ipcserv /drivers/ramfsd                /tmp
 @/bin/ipcserv /drivers/nulld                 /dev/null
 
-#@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
-#@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
-#@/bin/bgrun /sbin/telnetd
+@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
+@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
 
 @/bin/ipcserv /sbin/sessiond
 
-@export UX_ID=1
-@/bin/ipcserv /drivers/consoled              /dev/console1 -i /dev/keyb0
-@/bin/bgrun /bin/session -r -t /dev/console1 
+@/bin/bgrun /sbin/telnetd
+@/bin/bgrun /sbin/sshd
 
-#@export UX_ID=2
-#@/bin/ipcserv /drivers/consoled              /dev/console2 -i /dev/keyb0
-#@/bin/bgrun /bin/session -r -t /dev/console2 
+@/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
 
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0 
-@/bin/bgrun /sbin/x/xim_none /dev/keyb0
-@/bin/bgrun /sbin/x/xim_none /dev/joystick0
+@/bin/bgrun /sbin/x/xim_none /dev/vkeyb
+#@/bin/bgrun /sbin/x/xim_none /dev/joystick0
 
 @/bin/ipcserv /drivers/xserverd              /dev/x
 

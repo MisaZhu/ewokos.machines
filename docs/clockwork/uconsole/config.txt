@@ -1,17 +1,18 @@
+[all]
+
 disable_overscan=1
 dtparam=audio=on
 [pi4]
-max_framebuffers=2
+
+#dtoverlay=vc4-fkms-v3d
+#max_framebuffers=2
 
 [all]
-# Stop the VC firmware from probing/claiming any DSI LCD itself; the
-# EwokOS fbd driver owns the whole DSI1/HVS/PV pipeline. The official
-# uConsole config.txt sets this too. Note: NO vc4-fkms-v3d here — fkms
-# keeps the firmware display stack alive and it would fight fbd for
-# HVS/PV/PLLD.
-ignore_lcd=1
+
+#ignore_lcd=1
+
 dtoverlay=dwc2,dr_mode=host
-dtoverlay=vc4-kms-v3d-pi4,cma-384
+#dtoverlay=vc4-kms-v3d-pi4,cma-384
 dtoverlay=devterm-pmu
 dtoverlay=devterm-panel
 dtoverlay=devterm-misc
@@ -32,5 +33,7 @@ uart_2ndstage=1
 # free for scan-out.
 gpu_mem=16
 
-#initramfs kernel7.img 0x2000000
-#kernel=stage3.bin
+gpio=0-9=a2
+dtoverlay=dpi18
+dpi_output_format=0x6f006
+gamma_g=0.88

@@ -23,7 +23,6 @@
 #include "uc_pv.h"
 #include "uc_power.h"
 #include "uc_pmu.h"
-#include "uc_log.h"
 
 /*
  * uConsole (ClockworkPi CM4) framebuffer daemon.
@@ -130,10 +129,8 @@ static fbinfo_t* get_info(void) {
  * blinks.
  */
 static int32_t fail_stage(int stage) {
-	uc_log("[fbd] FATAL: stage %d failed\n", stage);
 	uc_clock_dump();
 	uc_dsi_dump();
-	uc_log_save();
 	uc_backlight_panic((uint32_t)stage);
 	return -1;
 }
@@ -234,9 +231,7 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * On failure the rails may still be on from PMIC defaults, so
 	 * just log it and continue.
 	 */
-	if (uc_pmu_display_power() != 0) {
-		uc_log("[fbd] WARN: AXP223 display rails unverified over I2C\n");
-	}
+	uc_pmu_display_power();
 
 	/*
 	 * Bare-metal DSI/HVS/PV path only. We intentionally do NOT fall
@@ -259,7 +254,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 */
 	{
 		int st = uc_power_domain_get(UC_PWR_DOMAIN_DSI1);
-		uc_log("[fbd] DSI1 domain state=%d\n", st);
 		if (st == 0) {
 			if (uc_power_domain_set(UC_PWR_DOMAIN_DSI1, 1) != 0) {
 				return fail_stage(1);
@@ -267,7 +261,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 			uc_mdelay(20);
 		}
 		st = uc_power_domain_get(UC_PWR_DOMAIN_VIDEO_SCALER);
-		uc_log("[fbd] VIDEO_SCALER domain state=%d\n", st);
 		if (st == 0) {
 			uc_power_domain_set(UC_PWR_DOMAIN_VIDEO_SCALER, 1);
 			uc_mdelay(20);
@@ -277,21 +270,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	if (uc_clock_bringup_dsi1(UC_DSI_HS_CLOCK_HZ) != 0) {
 		return fail_stage(2);
 	}
-	if (uc_clock_dsi1e_fallback) {
-		uc_log("[fbd] WARN: DSI1E refused PLLD_PER, running from XOSC\n");
-	}
-	/*
-	 * TCNT counts REAL edges of the selected clock inside CPRMAN
-	 * (same counter clk-bcm2835 uses), so this is ground truth for
-	 * "is the escape clock actually ticking", independent of what
-	 * the mux registers claim.
-	 */
-	{
-		uint32_t hz = uc_clock_measure_hz(UC_TCNT_MUX_DSI1E);
-		uc_log("[fbd] measured DSI1E = %u Hz (want ~%u)\n",
-				hz, UC_DSI_ESC_CLOCK_HZ);
-	}
-
 	if (uc_dsi_alive() != 0) {
 		/* ID register wrong: register bus/power issue, not timing. */
 		return fail_stage(3);
@@ -301,18 +279,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 		/* PHY refused to drive LP-11 on the data lanes. */
 		return fail_stage(4);
 	}
-	/*
-	 * DSI1P sources dsi1_byte, which only exists if the DSI PHY's
-	 * ANALOG PLL is really running. A sane measurement here is the
-	 * first direct proof of analog-side life (expected byte clock
-	 * = HS/8).
-	 */
-	{
-		uint32_t hz = uc_clock_measure_hz(UC_TCNT_MUX_DSI1P);
-		uc_log("[fbd] measured DSI1P/byte = %u Hz (want ~%u)\n",
-				hz, UC_DSI_HS_CLOCK_HZ / 8U);
-	}
-
 	if (map_scanout_buffer(w, h, dep) != 0) {
 		return fail_stage(5);
 	}
@@ -337,16 +303,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 		 * fired: the panel cannot have been initialised.
 		 */
 		return fail_stage(6);
-	}
-
-	/*
-	 * Panel-side sanity check, logged only: DCS 0x0A (Get Power Mode)
-	 * readback over the same link.  0x14 = sleep-out + display-on.
-	 */
-	{
-		uint8_t pm = 0;
-		int got = uc_dsi_dcs_read(0x0A, &pm, 1, 0);
-		uc_log("[fbd] DCS 0x0A read: ret=%d pm=0x%x\n", got, pm);
 	}
 
 	/* Prime the scan-out buffer BEFORE the pipeline starts fetching. */
@@ -388,7 +344,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	if (uc_hvs_frames_advancing(300) != 0) {
 		return fail_stage(8);
 	}
-	uc_log("[fbd] video pipeline live: HVS running, frames advancing\n");
 	return 0;
 }
 

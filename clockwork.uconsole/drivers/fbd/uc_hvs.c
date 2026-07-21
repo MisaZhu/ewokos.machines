@@ -5,9 +5,6 @@
 
 #include <ewoksys/mmio.h>
 
-#include "uc_log.h"
-#define slog uc_log
-
 /* ---------- HVS register offsets (from Linux drivers/gpu/drm/vc4). --- */
 
 #define SCALER_DISPCTRL           0x00000000U
@@ -236,8 +233,6 @@ int uc_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h, uint32_t dep) {
 	_hvs_init();
 	if (_hvs == 0) return -1;
 
-	slog("[uc_hvs] bringup fb=0x%08x %ux%u@%ubpp\n", phy_fb, w, h, dep);
-
 	/*
 	 * Global enable + route HVS channel 1 to PV1 (DSI1).
 	 *
@@ -299,10 +294,6 @@ int uc_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h, uint32_t dep) {
 			0x00ffffffU);
 
 	uc_udelay(100);
-	slog("[uc_hvs] STAT1=0x%08x CTRL1=0x%08x LIST1=0x%08x\n",
-			_hvs_read(SCALER_DISPSTAT1),
-			_hvs_read(SCALER_DISPCTRL1),
-			_hvs_read(SCALER_DISPLIST1));
 	return 0;
 }
 
@@ -367,10 +358,6 @@ int uc_hvs_plane_probe(void) {
 	}
 
 	stat = _hvs_read(SCALER_DISPSTAT);
-	slog("[uc_hvs] probe DISPSTAT=0x%08x ctx=0x%08x ptrctx=0x%08x\n",
-			stat,
-			_hvs_read(_dl_base + UC_DL_CTX_IDX * 4U),
-			_hvs_read(_dl_base + UC_DL_PTRCTX_IDX * 4U));
 	if ((stat & SCALER_DISPSTAT_RESP_MASK) != 0 ||
 	    (stat & SCALER_DISPSTAT_DMA_ERROR) != 0) {
 		return 2;

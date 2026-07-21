@@ -5,9 +5,6 @@
 
 #include <ewoksys/mmio.h>
 
-#include "uc_log.h"
-#define slog uc_log
-
 static volatile uint32_t* _dsi1 = 0;
 
 void uc_dsi_init(void) {
@@ -33,30 +30,6 @@ void uc_dsi1_write(uint32_t off, uint32_t val) {
 }
 
 void uc_dsi_dump(void) {
-	uc_dsi_init();
-	if (_dsi1 == 0) {
-		slog("[uc_dsi] DSI1 not mapped\n");
-		return;
-	}
-
-	slog("[uc_dsi] ID          = 0x%08x\n", uc_dsi1_read(UC_DSI1_ID));
-	slog("[uc_dsi] CTRL        = 0x%08x\n", uc_dsi1_read(UC_DSI1_CTRL));
-	slog("[uc_dsi] STAT        = 0x%08x\n", uc_dsi1_read(UC_DSI1_STAT));
-	slog("[uc_dsi] INT_STAT    = 0x%08x\n", uc_dsi1_read(UC_DSI1_INT_STAT));
-	slog("[uc_dsi] INT_EN      = 0x%08x\n", uc_dsi1_read(UC_DSI1_INT_EN));
-	slog("[uc_dsi] PHYC        = 0x%08x\n", uc_dsi1_read(UC_DSI1_PHYC));
-	slog("[uc_dsi] PHY_AFEC0   = 0x%08x\n", uc_dsi1_read(UC_DSI1_PHY_AFEC0));
-	slog("[uc_dsi] PHY_AFEC1   = 0x%08x\n", uc_dsi1_read(UC_DSI1_PHY_AFEC1));
-	slog("[uc_dsi] DISP0_CTRL  = 0x%08x\n", uc_dsi1_read(UC_DSI1_DISP0_CTRL));
-	slog("[uc_dsi] DISP1_CTRL  = 0x%08x\n", uc_dsi1_read(UC_DSI1_DISP1_CTRL));
-	slog("[uc_dsi] HS_CLT0     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_CLT0));
-	slog("[uc_dsi] HS_CLT1     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_CLT1));
-	slog("[uc_dsi] HS_CLT2     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_CLT2));
-	slog("[uc_dsi] HS_DLT3     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_DLT3));
-	slog("[uc_dsi] HS_DLT4     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_DLT4));
-	slog("[uc_dsi] HS_DLT5     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_DLT5));
-	slog("[uc_dsi] HS_DLT6     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_DLT6));
-	slog("[uc_dsi] HS_DLT7     = 0x%08x\n", uc_dsi1_read(UC_DSI1_HS_DLT7));
 }
 
 /* --------- Additional DSI1 register bits used only inside this file. --- */
@@ -222,8 +195,6 @@ void uc_dsi_ulps(int enter) {
 		}
 		uc_udelay(1);
 	}
-	slog("[uc_dsi] ULPS %s timeout: STAT=0x%08x\n",
-			enter ? "enter" : "exit", uc_dsi1_read(UC_DSI1_STAT));
 }
 
 /*
@@ -268,9 +239,6 @@ int uc_dsi_bringup(void) {
 	if (_dsi1 == 0) {
 		return -1;
 	}
-
-	slog("[uc_dsi] bringup: DSI1 ID=0x%08x lanes=%u hs=%uHz\n",
-			uc_dsi1_read(UC_DSI1_ID), UC_DSI_LANES, UC_DSI_HS_CLOCK_HZ);
 
 	ui_ns = _ui_ns();
 	lpx = _est(60);   /* Minimum LP state = 60ns => 6 escape ticks. */
@@ -386,9 +354,6 @@ int uc_dsi_bringup(void) {
 	 * nothing must touch DISP0_CTRL here.
 	 */
 
-	slog("[uc_dsi] bringup done: CTRL=0x%08x STAT=0x%08x PHYC=0x%08x AFEC0=0x%08x\n",
-			uc_dsi1_read(UC_DSI1_CTRL), uc_dsi1_read(UC_DSI1_STAT),
-			uc_dsi1_read(UC_DSI1_PHYC), uc_dsi1_read(UC_DSI1_PHY_AFEC0));
 	return 0;
 }
 
@@ -511,10 +476,6 @@ int uc_dsi_dcs_write(uint8_t data_type, const uint8_t* payload, uint32_t len) {
 		}
 		uc_udelay(1);
 	}
-
-	slog("[uc_dsi] dcs_write dt=0x%02x len=%u TIMEOUT INT_STAT=0x%08x STAT=0x%08x\n",
-			data_type, len,
-			uc_dsi1_read(UC_DSI1_INT_STAT), uc_dsi1_read(UC_DSI1_STAT));
 
 	/* Reset the transmit FIFO the same way vc4 does on error. */
 	uc_dsi1_write(UC_DSI1_TXPKT1C, uc_dsi1_read(UC_DSI1_TXPKT1C) & ~TXPKT1C_CMD_EN);
@@ -645,8 +606,4 @@ void uc_dsi_video_mode(void) {
 	    (1U << 4) |           /* ST_END */
 	    DISP0_ENABLE;
 	uc_dsi1_write(UC_DSI1_DISP0_CTRL, v);
-
-	slog("[uc_dsi] video_mode: DISP0=0x%08x STAT=0x%08x\n",
-			uc_dsi1_read(UC_DSI1_DISP0_CTRL),
-			uc_dsi1_read(UC_DSI1_STAT));
 }

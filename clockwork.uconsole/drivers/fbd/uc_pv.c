@@ -6,9 +6,6 @@
 
 #include <ewoksys/mmio.h>
 
-#include "uc_log.h"
-#define slog uc_log
-
 /* ---------- PV register offsets (from Linux drivers/gpu/drm/vc4). --- */
 
 #define PV_CONTROL             0x00U

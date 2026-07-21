@@ -5,9 +5,6 @@
 #include <arch/bcm283x/mailbox.h>
 #include <ewoksys/dma.h>
 
-#include "uc_log.h"
-#define slog uc_log
-
 /*
  * VC property mailbox tags (raspberrypi-firmware.h).
  * SET_DOMAIN_STATE is the "new" power interface that covers DSI1;
@@ -77,7 +74,6 @@ int uc_power_domain_set(uint32_t domain, int on) {
 	d = domain;
 	state = on ? 1U : 0U;
 	if (_property_call(TAG_SET_DOMAIN_STATE, &d, &state) != 0) {
-		slog("[uc_power] SET_DOMAIN_STATE %u failed\n", domain);
 		return -1;
 	}
 
@@ -92,10 +88,8 @@ int uc_power_domain_set(uint32_t domain, int on) {
 		return -1;
 	}
 	if (on && (state & 1U) == 0U) {
-		slog("[uc_power] domain %u still off after enable\n", domain);
 		return -1;
 	}
-	slog("[uc_power] domain %u -> %s\n", domain, on ? "on" : "off");
 	return 0;
 }
 
