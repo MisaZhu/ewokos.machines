@@ -355,6 +355,12 @@ int main(int argc, char** argv) {
 	memset(&fbd, 0, sizeof(fbd));
 	fbd.splash = NULL;   /* default logo splash from libfbd */
 	fbd.flush = flush;
+	/* flush is a plain blit into the scan-out buffer, so the libfbd
+	 * generic direct-to-fb rotation applies: it rotates the client
+	 * frame straight into fb memory (destination row-sequential for
+	 * NC write-combining), skipping the intermediate rotate buffer
+	 * and the extra full-frame copy. */
+	fbd.flush_rotate = fbd_rotate_to;
 	fbd.init = init;
 	fbd.get_info = get_info;
 
