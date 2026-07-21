@@ -46,6 +46,12 @@
  */
 #define UC_CM_DIV_FRAC_DSI1E    8U
 
+/*
+ * Escape clock target — vc4_dsi.c does clk_set_rate(escape, 100 MHz)
+ * and every escape-domain timing constant assumes 10 ns per tick.
+ */
+#define UC_DSI_ESC_CLOCK_HZ     100000000U
+
 /* Selected CPRMAN CM_* offsets (from clk-bcm2835.c). */
 #define UC_CM_OSCCOUNT          0x100U
 #define UC_CM_PLLD              0x10cU
@@ -54,6 +60,18 @@
 #define UC_CM_DSI1EDIV          0x15cU
 #define UC_CM_DSI1PCTL          0x160U   /* DSI1 pixel-clock control  */
 #define UC_CM_DSI1PDIV          0x164U
+
+/*
+ * TCNT hardware frequency counter (bcm2835_measure_tcnt_mux in
+ * clk-bcm2835.c): counts edges of a selected clock for the duration of
+ * CM_OSCCOUNT XOSC cycles. mux values from the bcm2835_clock_init_data
+ * .tcnt_mux fields.
+ */
+#define UC_CM_TCNTCTL           0x0c0U
+#define UC_CM_TCNTCNT           0x0c4U
+#define UC_CM_TCNT_SRC1_SHIFT   12U
+#define UC_TCNT_MUX_DSI1E       19U
+#define UC_TCNT_MUX_DSI1P       13U
 
 /* CM_PLLD load/hold flags. */
 #define UC_CM_PLLD_HOLDDSI1     (1U << 3)
@@ -103,5 +121,21 @@ void     uc_clock_dump(void);
  * on success.
  */
 int      uc_clock_bringup_dsi1(uint32_t target_hs_hz);
+
+/*
+ * Measure a clock's real frequency (Hz) with the CPRMAN TCNT counter,
+ * mirroring bcm2835_measure_tcnt_mux(). Gate window is 1ms of XOSC
+ * (54 MHz on BCM2711), result granularity 1 kHz. Returns 0 on timeout
+ * or if the measured clock is not ticking at all.
+ */
+uint32_t uc_clock_measure_hz(uint32_t tcnt_mux);
+
+/*
+ * Set to 1 by uc_clock_bringup_dsi1() when the DSI1E escape clock
+ * generator refused to run from PLLD_PER (BUSY never set) and had to
+ * be re-sourced from XOSC. Escape timings stretch ~1.85x but stay
+ * above every spec minimum.
+ */
+extern int uc_clock_dsi1e_fallback;
 
 #endif

@@ -6,8 +6,8 @@
 
 #include <ewoksys/mmio.h>
 
-/* Silent operation. */
-#define slog(...) ((void)0)
+#include "uc_log.h"
+#define slog uc_log
 
 /* ---------- PV register offsets (from Linux drivers/gpu/drm/vc4). --- */
 

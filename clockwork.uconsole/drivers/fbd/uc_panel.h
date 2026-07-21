@@ -18,6 +18,8 @@
  * Phase 1 API — reset only. Phase 4 will add uc_panel_send_init() to
  * run the ~180-entry cwu50 DCS sequence once DSI is up.
  */
+void uc_panel_probe(void);
 void uc_panel_reset(void);
+void uc_panel_reset_inverted(void);
 
 #endif

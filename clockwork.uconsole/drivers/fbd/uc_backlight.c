@@ -131,3 +131,49 @@ void uc_backlight_set(uint8_t level) {
 		_write_byte(raw);
 	}
 }
+
+/*
+ * Backlight off = hold the line low past SHUTDOWN_TIME; on = run the
+ * regular set path which re-enters 1-wire mode from shutdown.
+ */
+static void _bl_off(void) {
+	_gpio_set(0);
+	uc_mdelay(OCP_SHUTDOWN_MS + 2U);
+}
+
+static void _bl_on(void) {
+	uc_backlight_set(UC_BACKLIGHT_DEFAULT);
+}
+
+void uc_backlight_blink(uint32_t n) {
+	uint32_t i;
+
+	if (!_ready) {
+		uc_backlight_init();
+	}
+	for (i = 0; i < n; ++i) {
+		_bl_off();
+		uc_mdelay(250);
+		_bl_on();
+		uc_mdelay(250);
+	}
+	/* Gap so consecutive blink groups can be told apart. */
+	uc_mdelay(1000);
+}
+
+void uc_backlight_panic(uint32_t n) {
+	uint32_t i;
+
+	if (!_ready) {
+		uc_backlight_init();
+	}
+	for (;;) {
+		for (i = 0; i < n; ++i) {
+			_bl_off();
+			uc_mdelay(120);
+			_bl_on();
+			uc_mdelay(120);
+		}
+		uc_mdelay(1500);
+	}
+}

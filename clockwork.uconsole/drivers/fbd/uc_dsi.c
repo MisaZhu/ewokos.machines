@@ -5,8 +5,8 @@
 
 #include <ewoksys/mmio.h>
 
-/* Silent operation -- slog is stubbed to a no-op. */
-#define slog(...) ((void)0)
+#include "uc_log.h"
+#define slog uc_log
 
 static volatile uint32_t* _dsi1 = 0;
 
@@ -131,8 +131,16 @@ void uc_dsi_dump(void) {
 #define TXPKT1C_CMD_TYPE_LONG            (1U << 2)
 #define TXPKT1C_CMD_MODE_LP              (1U << 3)
 #define TXPKT1C_CMD_CTRL_TX              (0U << 4)
+#define TXPKT1C_CMD_CTRL_RX              (1U << 4)
 #define TXPKT1C_CMD_REPEAT_SHIFT         10
 #define TXPKT1C_DISPLAY_NO_SHORT         (0U << 8)
+
+/* RXPKT1H fields (vc4_dsi.c DSI_RXPKT1H_*). */
+#define RXPKT1H_PKT_TYPE_LONG            (1U << 24)
+#define RXPKT1H_BC_PARAM_SHIFT           8
+#define RXPKT1H_BC_PARAM_MASK            0xffffU
+#define RXPKT1H_SHORT_0_SHIFT            8
+#define RXPKT1H_SHORT_1_SHIFT            16
 
 /* TXPKT1H fields. */
 #define TXPKT1H_BC_DT_SHIFT              0
@@ -168,9 +176,23 @@ void uc_dsi_ulps(int enter) {
 	uint32_t stat_stop;
 	uint32_t phyc;
 	int spin;
+	int ulps_now;
 
 	uc_dsi_init();
 	if (_dsi1 == 0) {
+		return;
+	}
+
+	/*
+	 * vc4_dsi_ulps(): "if (ulps == ulps_currently_enabled) return;"
+	 * where the current state is the AFEC0 LATCH_ULPS latch.  At cold
+	 * boot the latch is clear, so the ulps(false) call at the end of
+	 * bringup is a NO-OP upstream — it must be one here too instead
+	 * of rewriting PHYC and busy-waiting on lane STOP.
+	 */
+	ulps_now = (uc_dsi1_read(UC_DSI1_PHY_AFEC0) &
+			UC_DSI1_PHY_AFEC0_LATCH_ULPS) != 0;
+	if ((enter != 0) == ulps_now) {
 		return;
 	}
 
@@ -204,6 +226,39 @@ void uc_dsi_ulps(int enter) {
 			enter ? "enter" : "exit", uc_dsi1_read(UC_DSI1_STAT));
 }
 
+/*
+ * Same liveness check vc4_dsi's probe does: the ID register must read
+ * 0x00647369 ("dsi").  If the firmware power domain for DSI1 is off,
+ * the register bus reads back garbage (usually 0) and nothing else in
+ * this driver can possibly work.
+ */
+int uc_dsi_alive(void) {
+	uc_dsi_init();
+	if (_dsi1 == 0) {
+		return -1;
+	}
+	return (uc_dsi1_read(UC_DSI1_ID) == 0x00647369U) ? 0 : -1;
+}
+
+/*
+ * After bringup all enabled data lanes must sit in LP-11 STOP; that is
+ * the analog PHY actually driving the lines.  Mirrors the STAT check
+ * uc_dsi_ulps() polls for.
+ */
+int uc_dsi_lanes_stopped(void) {
+	uint32_t stat_stop;
+
+	uc_dsi_init();
+	if (_dsi1 == 0) {
+		return -1;
+	}
+	stat_stop = UC_DSI1_STAT_PHY_D0_STOP |
+		    (UC_DSI_LANES > 1 ? UC_DSI1_STAT_PHY_D1_STOP : 0) |
+		    (UC_DSI_LANES > 2 ? UC_DSI1_STAT_PHY_D2_STOP : 0) |
+		    (UC_DSI_LANES > 3 ? UC_DSI1_STAT_PHY_D3_STOP : 0);
+	return ((uc_dsi1_read(UC_DSI1_STAT) & stat_stop) == stat_stop) ? 0 : -1;
+}
+
 int uc_dsi_bringup(void) {
 	uint32_t ui_ns;
 	uint32_t lpx;
@@ -226,6 +281,15 @@ int uc_dsi_bringup(void) {
 
 	/* Clear all STAT bits (W1C). */
 	uc_dsi1_write(UC_DSI1_STAT, uc_dsi1_read(UC_DSI1_STAT));
+
+	/*
+	 * Mirror vc4_dsi bind: keep the error/timeout interrupts enabled
+	 * from the start and flush any latched interrupt state.  Some of
+	 * the INT_STAT reporting is gated by INT_EN, so leaving INT_EN
+	 * at 0 hides transfer completion from the DCS polling loop.
+	 */
+	uc_dsi1_write(UC_DSI1_INT_EN, UC_DSI1_INT_ALWAYS_ENABLED);
+	uc_dsi1_write(UC_DSI1_INT_STAT, uc_dsi1_read(UC_DSI1_INT_STAT));
 
 	/*
 	 * Bring the analog PHY out of powerdown, but keep AFEC0 RESET set
@@ -310,22 +374,17 @@ int uc_dsi_bringup(void) {
 	uc_dsi1_write(UC_DSI1_PHY_AFEC0,
 			uc_dsi1_read(UC_DSI1_PHY_AFEC0) & ~DSI1_PHY_AFEC0_RESET);
 
-	/* Leave ULPS so the panel sees line activity. */
+	/* Leave ULPS so the panel sees line activity.  (No-op at cold
+	 * boot, exactly like upstream: LATCH_ULPS is already clear.) */
 	uc_dsi_ulps(0);
 
 	/*
-	 * Match vc4_dsi_bridge_pre_enable() for MIPI_DSI_MODE_VIDEO panels:
-	 * program the video-mode DISP0_CTRL fields (PIX_CLK_DIV, PFORMAT,
-	 * LP_STOP_PERFRAME, ST_END) but *without* setting DISP0_ENABLE.
-	 * DCS transfers do not require DISP0 to be enabled; the ENABLE bit
-	 * is OR'd in by uc_dsi_video_mode() after the panel DCS init has
-	 * completed, matching upstream vc4_dsi_bridge_enable().
+	 * Upstream vc4_dsi_encoder_enable() leaves DISP0_CTRL at 0 all
+	 * the way through the panel's DCS init (bridge pre_enable); the
+	 * complete video-mode value INCLUDING the ENABLE bit is written
+	 * in one shot afterwards.  uc_dsi_video_mode() does that write;
+	 * nothing must touch DISP0_CTRL here.
 	 */
-	uc_dsi1_write(UC_DSI1_DISP0_CTRL,
-			((uint32_t)UC_DSI_PIXEL_DIVIDER << 13) |
-			((uint32_t)UC_DSI_FORMAT_RGB888 << 2) |
-			((uint32_t)2 << 11) |
-			(1U << 4));
 
 	slog("[uc_dsi] bringup done: CTRL=0x%08x STAT=0x%08x PHYC=0x%08x AFEC0=0x%08x\n",
 			uc_dsi1_read(UC_DSI1_CTRL), uc_dsi1_read(UC_DSI1_STAT),
@@ -352,6 +411,19 @@ static int _mipi_is_long(uint8_t dt) {
 	default:
 		return 0;
 	}
+}
+
+/*
+ * Command transmission mode.  Default is HS (panel-cwu50.c does not set
+ * MIPI_DSI_MODE_LPM so upstream sends init commands in HS) -- but that
+ * inference has never been proven on this hardware.  The LP switch lets
+ * fbd retry the whole init table in low-power escape mode when the
+ * panel demonstrably ignores the HS waveform (no BTA response).
+ */
+static int _cmd_lp = 0;
+
+void uc_dsi_set_cmd_lp(int on) {
+	_cmd_lp = on;
 }
 
 int uc_dsi_dcs_write(uint8_t data_type, const uint8_t* payload, uint32_t len) {
@@ -389,22 +461,52 @@ int uc_dsi_dcs_write(uint8_t data_type, const uint8_t* payload, uint32_t len) {
 		       ((p0 | (p1 << 8)) << TXPKT1H_BC_PARAM_SHIFT);
 	}
 
-	pktc |= TXPKT1C_CMD_MODE_LP;
+	/*
+	 * HS command mode, NOT LP.  panel-cwu50.c does not set
+	 * MIPI_DSI_MODE_LPM, so mipi_dsi_dcs_write_buffer() never passes
+	 * MIPI_DSI_MSG_USE_LPM and vc4_dsi_host_transfer() leaves
+	 * TXPKT1C_CMD_MODE_LP clear: every cwu50 init command goes out
+	 * over the high-speed lanes.  Forcing LP here puts a completely
+	 * different waveform on the wire and the panel never latches a
+	 * single command (black panel, backlight on).
+	 */
 	pktc |= TXPKT1C_CMD_CTRL_TX;
 	pktc |= (1U << TXPKT1C_CMD_REPEAT_SHIFT);
 	pktc |= TXPKT1C_CMD_EN;
 	pktc |= TXPKT1C_DISPLAY_NO_SHORT;
+	if (_cmd_lp) {
+		/* LP retry path: matches MIPI_DSI_MSG_USE_LPM upstream. */
+		pktc |= TXPKT1C_CMD_MODE_LP;
+	}
 
-	/* Clear TXPKT1_DONE before kicking. */
+	/*
+	 * vc4_dsi_host_transfer() enables the TXPKT1_DONE interrupt in
+	 * INT_EN before every transfer (on top of the always-enabled
+	 * error set written at bind time).  INT_STAT reporting can be
+	 * gated by INT_EN on this block, so without this write a
+	 * successfully transmitted packet may never show DONE in
+	 * INT_STAT.  We poll rather than take IRQs, but the enable is
+	 * still required.
+	 */
+	uc_dsi1_write(UC_DSI1_INT_EN,
+			UC_DSI1_INT_ALWAYS_ENABLED | UC_DSI1_INT_TXPKT1_DONE);
+	/* Clear stale completion state in both status registers. */
 	uc_dsi1_write(UC_DSI1_INT_STAT, UC_DSI1_INT_TXPKT1_DONE);
+	uc_dsi1_write(UC_DSI1_STAT, UC_DSI1_STAT_TXPKT1_DONE);
 
 	uc_dsi1_write(UC_DSI1_TXPKT1H, pkth);
 	uc_dsi1_write(UC_DSI1_TXPKT1C, pktc);
 
-	/* Poll ~200 ms. */
+	/*
+	 * Poll ~200 ms.  Accept completion from either INT_STAT or the
+	 * raw (non-gated) STAT copy of TXPKT1_DONE.
+	 */
 	for (spin = 0; spin < 200000; spin++) {
-		if (uc_dsi1_read(UC_DSI1_INT_STAT) & UC_DSI1_INT_TXPKT1_DONE) {
+		if ((uc_dsi1_read(UC_DSI1_INT_STAT) & UC_DSI1_INT_TXPKT1_DONE) ||
+		    (uc_dsi1_read(UC_DSI1_STAT) & UC_DSI1_STAT_TXPKT1_DONE)) {
 			uc_dsi1_write(UC_DSI1_INT_STAT, UC_DSI1_INT_TXPKT1_DONE);
+			uc_dsi1_write(UC_DSI1_STAT, UC_DSI1_STAT_TXPKT1_DONE);
+			uc_dsi1_write(UC_DSI1_INT_EN, UC_DSI1_INT_ALWAYS_ENABLED);
 			return 0;
 		}
 		uc_udelay(1);
@@ -420,7 +522,107 @@ int uc_dsi_dcs_write(uint8_t data_type, const uint8_t* payload, uint32_t len) {
 	uc_dsi1_write(UC_DSI1_CTRL,
 			uc_dsi1_read(UC_DSI1_CTRL) | DSI1_CTRL_RESET_FIFOS);
 	uc_dsi1_write(UC_DSI1_TXPKT1C, 0);
+	uc_dsi1_write(UC_DSI1_INT_EN, UC_DSI1_INT_ALWAYS_ENABLED);
 	return -1;
+}
+
+/*
+ * DCS read, mirroring vc4_dsi_host_transfer()'s rx path: send the DCS
+ * read header with CMD_CTRL_RX (BTA follows the command), wait for
+ * PHY_DIR_RTF (bus returned to forward direction after the panel's
+ * response), then parse RXPKT1H.  A short response carries up to two
+ * bytes inside the header itself; a long response is drained from
+ * RXPKT_FIFO.  Returns the number of bytes read, or -1.
+ *
+ * This is the only probe that proves the PANEL side of the link: a
+ * TXPKT1_DONE only shows our controller finished serialising.
+ */
+int uc_dsi_dcs_read(uint8_t cmd, uint8_t* rx, uint32_t rx_len, int lp) {
+	uint32_t pkth, pktc, rxpkt1h;
+	uint32_t i;
+	int spin;
+
+	uc_dsi_init();
+	if (_dsi1 == 0 || rx == 0 || rx_len == 0) {
+		return -1;
+	}
+
+	/* DCS read, no parameters: DT 0x06, param = cmd. */
+	pkth = (0x06U << TXPKT1H_BC_DT_SHIFT) |
+	       ((uint32_t)cmd << TXPKT1H_BC_PARAM_SHIFT);
+	pktc = TXPKT1C_CMD_CTRL_RX |
+	       (1U << TXPKT1C_CMD_REPEAT_SHIFT) |
+	       TXPKT1C_DISPLAY_NO_SHORT |
+	       TXPKT1C_CMD_EN;
+	if (lp) {
+		/* Send the read request in LP escape mode (LPDT). */
+		pktc |= TXPKT1C_CMD_MODE_LP;
+	}
+
+	/* Drain any stale rx state. */
+	uc_dsi1_write(UC_DSI1_CTRL,
+			uc_dsi1_read(UC_DSI1_CTRL) | DSI1_CTRL_CLR_RXF);
+
+	/*
+	 * rx transfers complete on PHY_DIR_RTF, not TXPKT1_DONE.  Also
+	 * watch PHY_DIR_FTR (forward->reverse turnaround) so a timeout
+	 * can be classified: FTR never set = the controller never even
+	 * granted the bus (command/BTA not serialised); FTR set but RTF
+	 * missing = the bus was handed to the panel and the panel stayed
+	 * silent (link-level / analog problem).
+	 */
+	uc_dsi1_write(UC_DSI1_INT_STAT,
+			UC_DSI1_INT_TXPKT1_DONE | UC_DSI1_INT_PHY_DIR_RTF |
+			UC_DSI1_INT_PHY_DIR_FTR);
+	uc_dsi1_write(UC_DSI1_INT_EN,
+			UC_DSI1_INT_ALWAYS_ENABLED | UC_DSI1_INT_PHY_DIR_RTF |
+			UC_DSI1_INT_PHY_DIR_FTR);
+
+	uc_dsi1_write(UC_DSI1_TXPKT1H, pkth);
+	uc_dsi1_write(UC_DSI1_TXPKT1C, pktc);
+
+	for (spin = 0; spin < 200000; spin++) {
+		if (uc_dsi1_read(UC_DSI1_INT_STAT) & UC_DSI1_INT_PHY_DIR_RTF) {
+			break;
+		}
+		uc_udelay(1);
+	}
+	uc_dsi1_write(UC_DSI1_INT_EN, UC_DSI1_INT_ALWAYS_ENABLED);
+	if (spin >= 200000) {
+		int ftr = (uc_dsi1_read(UC_DSI1_INT_STAT) &
+				UC_DSI1_INT_PHY_DIR_FTR) != 0;
+		/* No response: reset the FIFOs the same way vc4 does. */
+		uc_dsi1_write(UC_DSI1_TXPKT1C,
+				uc_dsi1_read(UC_DSI1_TXPKT1C) & ~TXPKT1C_CMD_EN);
+		uc_udelay(1);
+		uc_dsi1_write(UC_DSI1_CTRL,
+				uc_dsi1_read(UC_DSI1_CTRL) | DSI1_CTRL_RESET_FIFOS);
+		uc_dsi1_write(UC_DSI1_TXPKT1C, 0);
+		/*
+		 * -1: the BTA was never granted (controller-side issue or
+		 *     the panel jammed the LP lines).
+		 * -2: turnaround happened, panel just never drove a reply
+		 *     (or does not implement BTA reads at all).
+		 */
+		return ftr ? -2 : -1;
+	}
+
+	rxpkt1h = uc_dsi1_read(UC_DSI1_RXPKT1H);
+	if (rxpkt1h & RXPKT1H_PKT_TYPE_LONG) {
+		uint32_t n = (rxpkt1h >> RXPKT1H_BC_PARAM_SHIFT) &
+			     RXPKT1H_BC_PARAM_MASK;
+		if (n > rx_len) n = rx_len;
+		for (i = 0; i < n; i++) {
+			rx[i] = (uint8_t)uc_dsi1_read(UC_DSI1_RXPKT_FIFO);
+		}
+		return (int)n;
+	}
+	rx[0] = (uint8_t)(rxpkt1h >> RXPKT1H_SHORT_0_SHIFT);
+	if (rx_len > 1) {
+		rx[1] = (uint8_t)(rxpkt1h >> RXPKT1H_SHORT_1_SHIFT);
+		return 2;
+	}
+	return 1;
 }
 
 void uc_dsi_video_mode(void) {
@@ -432,13 +634,16 @@ void uc_dsi_video_mode(void) {
 	}
 
 	/*
-	 * Matches vc4_dsi_bridge_enable(): OR DISP0_ENABLE into the
-	 * already-programmed video-mode DISP0_CTRL. uc_dsi_bringup() left
-	 * PIX_CLK_DIV / PFORMAT / LP_STOP_PERFRAME / ST_END set with ENABLE
-	 * clear; enabling here starts the controller consuming pixels from
-	 * the HVS/PV path.
+	 * vc4_dsi_encoder_enable() for MIPI_DSI_MODE_VIDEO, verbatim: the
+	 * whole video-mode DISP0_CTRL — PIX_CLK_DIV, PFORMAT,
+	 * LP_STOP_PERFRAME, ST_END and ENABLE — is one single write, done
+	 * only after the panel DCS init.  DISP0_CTRL was 0 until now.
 	 */
-	v = uc_dsi1_read(UC_DSI1_DISP0_CTRL) | DISP0_ENABLE;
+	v = ((uint32_t)UC_DSI_PIXEL_DIVIDER << 13) |
+	    ((uint32_t)UC_DSI_FORMAT_RGB888 << 2) |
+	    (2U << 11) |          /* LP_STOP_CTRL = LP_STOP_PERFRAME */
+	    (1U << 4) |           /* ST_END */
+	    DISP0_ENABLE;
 	uc_dsi1_write(UC_DSI1_DISP0_CTRL, v);
 
 	slog("[uc_dsi] video_mode: DISP0=0x%08x STAT=0x%08x\n",

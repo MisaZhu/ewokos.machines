@@ -64,13 +64,46 @@
 /* STAT / INT bits used by Phase 3 polling. */
 #define UC_DSI1_INT_TXPKT1_DONE         (1U << 1)
 #define UC_DSI1_INT_TXPKT1_END          (1U << 0)
-#define UC_DSI1_STAT_PHY_CLOCK_STOP     (1U << 14)
-#define UC_DSI1_STAT_PHY_CLOCK_HS       (1U << 15)
-#define UC_DSI1_STAT_PHY_CLOCK_ULPS     (1U << 16)
-#define UC_DSI1_STAT_PHY_D0_STOP        (1U << 23)
-#define UC_DSI1_STAT_PHY_D1_STOP        (1U << 25)
-#define UC_DSI1_STAT_PHY_D2_STOP        (1U << 27)
-#define UC_DSI1_STAT_PHY_D3_STOP        (1U << 29)
+/*
+ * vc4 keeps the error/timeout interrupts enabled at all times and adds
+ * TXPKT1_DONE around each transfer.  INT_STAT reporting may be gated by
+ * INT_EN, so we must mirror that even though we poll instead of taking
+ * interrupts.  (DSI1_INTERRUPTS_ALWAYS_ENABLED in vc4_dsi.c.)
+ */
+#define UC_DSI1_INT_ERR_SYNC_ESC        (1U << 6)
+#define UC_DSI1_INT_ERR_CONTROL         (1U << 7)
+#define UC_DSI1_INT_ERR_CONT_LP0        (1U << 8)
+#define UC_DSI1_INT_ERR_CONT_LP1        (1U << 9)
+#define UC_DSI1_INT_HSTX_TO             (1U << 10)
+#define UC_DSI1_INT_LPRX_TO             (1U << 11)
+#define UC_DSI1_INT_TA_TO               (1U << 12)
+#define UC_DSI1_INT_PR_TO               (1U << 13)
+/* Set when the bus returns to the forward direction after a BTA read. */
+#define UC_DSI1_INT_PHY_DIR_RTF         (1U << 21)
+/* Set when the bus turns around forward->reverse (BTA actually granted). */
+#define UC_DSI1_INT_PHY_DIR_FTR         (1U << 17)
+#define UC_DSI1_INT_ALWAYS_ENABLED      (UC_DSI1_INT_ERR_SYNC_ESC | \
+                                         UC_DSI1_INT_ERR_CONTROL |  \
+                                         UC_DSI1_INT_ERR_CONT_LP0 | \
+                                         UC_DSI1_INT_ERR_CONT_LP1 | \
+                                         UC_DSI1_INT_HSTX_TO |      \
+                                         UC_DSI1_INT_LPRX_TO |      \
+                                         UC_DSI1_INT_TA_TO |        \
+                                         UC_DSI1_INT_PR_TO)
+/*
+ * STAT (0x38) carries its own raw TXPKT1 completion bits which are NOT
+ * gated by INT_EN ("state reporting bits ... behave like INT_STAT,
+ * writing a 1 clears the bit").
+ */
+#define UC_DSI1_STAT_TXPKT1_DONE        (1U << 1)
+#define UC_DSI1_STAT_TXPKT1_BUSY        (1U << 2)
+#define UC_DSI1_STAT_PHY_CLOCK_STOP     (1U << 16)
+#define UC_DSI1_STAT_PHY_CLOCK_HS       (1U << 17)
+#define UC_DSI1_STAT_PHY_CLOCK_ULPS     (1U << 18)
+#define UC_DSI1_STAT_PHY_D0_STOP        (1U << 24)
+#define UC_DSI1_STAT_PHY_D1_STOP        (1U << 26)
+#define UC_DSI1_STAT_PHY_D2_STOP        (1U << 28)
+#define UC_DSI1_STAT_PHY_D3_STOP        (1U << 30)
 
 /* PHY_AFEC0 bits (bring-up will only OR/AND against these). */
 #define UC_DSI1_PHY_AFEC0_LATCH_ULPS    (1U << 14)
@@ -110,7 +143,41 @@ int      uc_dsi_bringup(void);
 void     uc_dsi_ulps(int enter);
 
 /*
- * Send one DCS/MIPI command over DSI1 in LP mode.  data_type is the
+ * Liveness probes for blink-code diagnosis:
+ *  uc_dsi_alive()          0 iff the ID register reads 0x00647369
+ *                          ("dsi", same check vc4_dsi probe does).
+ *                          Anything else = register bus dead, i.e.
+ *                          the firmware power domain never came up.
+ *  uc_dsi_lanes_stopped()  0 iff all enabled data lanes report the
+ *                          LP-11 STOP state in STAT — the analog PHY
+ *                          is actually driving the lines.
+ */
+int      uc_dsi_alive(void);
+int      uc_dsi_lanes_stopped(void);
+
+/*
+ * DCS read (DT 0x06 + BTA), mirroring vc4_dsi_host_transfer()'s rx
+ * path.  Returns bytes read (short responses give 1-2 bytes straight
+ * from RXPKT1H); on timeout returns -1 if the bus turnaround was never
+ * granted (PHY_DIR_FTR unseen) or -2 if the bus was handed to the
+ * panel but no reply came back (FTR seen, RTF missing).
+ * lp != 0 sends the read request in LP escape mode (LPDT) instead of
+ * HS.  Reading DCS 0x0A (Get Power Mode) is the definitive panel-side
+ * probe: bit4 = sleep-out, bit2 = display-on.
+ */
+int      uc_dsi_dcs_read(uint8_t cmd, uint8_t* rx, uint32_t rx_len, int lp);
+
+/*
+ * Switch subsequent uc_dsi_dcs_write() calls between HS (default, 0)
+ * and LP escape mode (1).  Used by fbd to retry the panel init table
+ * in LP when the panel ignores the HS command waveform.
+ */
+void     uc_dsi_set_cmd_lp(int on);
+
+/*
+ * Send one DCS/MIPI command over DSI1 in HS mode (cwu50 does not use
+ * MIPI_DSI_MODE_LPM, so like upstream all commands go out over the
+ * high-speed lanes).  data_type is the
  * MIPI data type byte (e.g. 0x05 for DCS short write, 0x39 for DCS long
  * write).  For short packets payload/len encode param0..param1; for
  * long packets len is the byte count and payload the raw bytes.

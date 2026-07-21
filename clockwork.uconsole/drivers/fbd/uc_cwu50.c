@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-/* Silent operation -- slog is stubbed to a no-op. */
-#define slog(...) ((void)0)
+#include "uc_log.h"
+#define slog uc_log
 
 /*
  * MIPI DSI data types.  For panel init the driver only uses:
@@ -256,6 +256,7 @@ static int _send_one(const cwu50_cmd_t* c) {
 
 int uc_cwu50_init(void) {
 	int failures = 0;
+	int consec = 0;
 	uint32_t i;
 
 	slog("[uc_cwu50] init: %u DCS commands\n", (uint32_t)_CWU50_SEQ_LEN);
@@ -271,6 +272,7 @@ int uc_cwu50_init(void) {
 		uint8_t tear[2] = { 0x35, 0x00 };
 		if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2) != 0) {
 			failures++;
+			consec++;
 			slog("[uc_cwu50] tear-on prologue failed\n");
 		}
 	}
@@ -278,8 +280,23 @@ int uc_cwu50_init(void) {
 	for (i = 0; i < _CWU50_SEQ_LEN; i++) {
 		if (_send_one(&_cwu50_seq[i]) != 0) {
 			failures++;
+			consec++;
 			slog("[uc_cwu50] entry %u (cmd=0x%02x) failed\n",
 					i, _cwu50_seq[i].data[0]);
+			/*
+			 * TXPKT1_DONE is a controller-side completion bit; it
+			 * never needs a panel ACK. Three consecutive timeouts
+			 * mean the DSI host itself cannot serialise packets
+			 * (PHY/byte clock dead) — every later entry would eat
+			 * its full 200ms timeout too, so bail out instead of
+			 * burning ~45s on the rest of the table.
+			 */
+			if (consec >= 3) {
+				slog("[uc_cwu50] aborting: host not transmitting\n");
+				return failures;
+			}
+		} else {
+			consec = 0;
 		}
 	}
 

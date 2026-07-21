@@ -17,4 +17,17 @@
 void uc_backlight_init(void);
 void uc_backlight_set(uint8_t level); /* 0..UC_BACKLIGHT_MAX_LEVEL */
 
+/*
+ * Blink-code debugging: the OCP8178 shuts down when its line is held
+ * low for >=3ms and re-arms through the normal 1-wire entry sequence,
+ * so the backlight can be toggled freely as a progress indicator.
+ *
+ * uc_backlight_blink(n):  n visible off/on pulses, then a 1s gap.
+ * uc_backlight_panic(n):  never returns; repeats "n fast pulses +
+ *                         long pause" forever so the failing stage
+ *                         can be read off the panel.
+ */
+void uc_backlight_blink(uint32_t n);
+void uc_backlight_panic(uint32_t n);
+
 #endif
