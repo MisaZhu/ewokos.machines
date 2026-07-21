@@ -54,6 +54,13 @@ const char upMap[] = {
 };
 
 static uint8_t do_ctrl(char c) {
+	/* Standard ASCII control-code mapping for letters:
+	   Ctrl+a..Ctrl+z -> 0x01..0x1A (so Ctrl+c -> 0x03 = SIGINT,
+	   Ctrl+d -> 0x04 = EOF, etc.). Non-letters pass through unchanged. */
+	if (c >= 'a' && c <= 'z')
+		return (uint8_t)(c - 'a' + 1);
+	if (c >= 'A' && c <= 'Z')
+		return (uint8_t)(c - 'A' + 1);
 	return c;
 }
 
@@ -79,12 +86,29 @@ uint8_t getKeyChar(uint8_t alt, uint8_t keycode){
     return 0;
 }
 
+/* Produce the byte stream for the currently-held snapshot.
+ *
+ * IMPORTANT: this must return >0 bytes whenever keyb_check_poll_events()
+ * reports VFS_EVT_RD, otherwise a blocking reader of /dev/keyb0 enters a
+ * vfsd sticky-event busy-spin (vfs_block returns immediately because the
+ * RD bit is sticky, but read returns VFS_ERR_RETRY -> EAGAIN -> loop).
+ *
+ * Aligned with machine.virt keybd: when getKeyChar() cannot map a held
+ * HID keycode (e.g. CapsLock, F-keys, Del, Home/End/PgUp/PgDn, media
+ * keys, or any keycode >= sizeof(downMap)), fall back to emitting the
+ * raw HID keycode so the consumer sees *something* and the read/poll
+ * contract stays consistent.
+ */
 static int get_key_code(char *buf, int size) {
 	int num = 0;
 	for (int i = 0; i < _key_count && num < size; i++) {
 		uint8_t c = getKeyChar(_mod, _keys[i]);
 		if (c != 0) {
-			buf[num++] = c;
+			buf[num++] = (char)c;
+		} else {
+			/* unmapped keycode: pass through raw so poll/read stay
+			   consistent (matches machine.virt keybd behavior) */
+			buf[num++] = (char)_keys[i];
 		}
 	}
 	return num;
@@ -147,10 +171,21 @@ static int loop(vdevice_t* dev, void* p) {
 	}
 
 	ipc_enable();
-	if(got) {
+	/*
+	 * Level-triggered wakeup: re-assert VFS_EVT_RD whenever keys are
+	 * still held, not only on the edge when a new report arrives.
+	 * The libgloss _read() loop clears the sticky RD bit
+	 * (vfs_clear_poll_events) before vfs_block(), and vfs_block() only
+	 * prechecks sticky bits — so if the edge was consumed while keys
+	 * remain held, a blocked reader would sleep forever until the next
+	 * physical key event.
+	 */
+	if(_key_count > 0) {
 		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
-		if(changed)
-			vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	}
+	else if(got) {
+		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
 	}
 	else {
 		proc_usleep(_idle_sleep_us);

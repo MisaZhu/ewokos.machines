@@ -2537,19 +2537,25 @@ static void usb_scan_root(void) {
 				slog("usbhostd: enumerate root pending\n");
 			}
 			_enum_fail_streak++;
-			/* back off before re-resetting the port: hammering resets
-			   destabilizes hubs (GL850G shows not_enabled/setup errors) */
-			_next_scan_ms = kernel_tic_ms(0) + 2000u;
+			/*
+			 * uConsole: CH552 is an internal USB device on the PCB,
+			 * not an external port — no hub stability concerns.
+			 * Retry quickly so the input subsystem comes up fast:
+			 * 500ms between attempts instead of 2000ms.
+			 */
+			_next_scan_ms = kernel_tic_ms(0) + 500u;
 			/* the dwc2 port can latch a dead not_enabled/EnaChng state that
-			   only a full core re-init clears */
-			if (_enum_fail_streak >= 3) {
+			   only a full core re-init clears.  For the internal CH552 the
+			   failures are usually just "firmware still booting", so give it
+			   more attempts before the expensive reinit. */
+			if (_enum_fail_streak >= 6) {
 				slog("usbhostd: core reinit after %u failed enumerations\n",
 						_enum_fail_streak);
 				_enum_fail_streak = 0;
 				if (dwc_host_init() != 0) {
 					slog("usbhostd: core reinit failed\n");
 				}
-				_next_scan_ms = kernel_tic_ms(0) + 1000u;
+				_next_scan_ms = kernel_tic_ms(0) + 500u;
 			}
 		}
 	}

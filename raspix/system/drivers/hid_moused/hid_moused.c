@@ -124,10 +124,21 @@ static int _loop(vdevice_t* dev, void* p) {
 	}
 
 	ipc_enable();
-	if(wakeup) {
+	/*
+	 * Level-triggered wakeup: re-assert VFS_EVT_RD whenever the ring
+	 * still has unread events, not only on the edge when a new report
+	 * arrives.  The libgloss _read() loop clears the sticky RD bit
+	 * (vfs_clear_poll_events) before vfs_block(), and vfs_block() only
+	 * prechecks sticky bits — so if the edge was consumed while events
+	 * remain queued, a blocked reader (xmouse) would sleep forever
+	 * until the next physical mouse movement.
+	 */
+	if(mouse_data_write - mouse_data_read > 0) {
 		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
-		if(mouse_data_write - mouse_data_read > 0)
-			vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	}
+	else if(wakeup) {
+		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
 	}
 	else {
 		usleep(_idle_sleep_us);
