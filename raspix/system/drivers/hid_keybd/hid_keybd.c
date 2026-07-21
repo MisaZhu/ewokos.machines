@@ -212,12 +212,23 @@ static int set_report_id(int fd, int id) {
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/keyb0";
 	const char* dev_point = argc > 2 ? argv[2]: "/dev/hid0";
-	hid = open(dev_point, O_RDONLY | O_NONBLOCK);
-	if (hid < 0) {
-		return -1;
-	}
-	if (set_report_id(hid, 2) != 0) {
-		return -1;
+
+	/*
+	 * The CH552 is an internal USB device that boots alongside the CM4.
+	 * usbhostd may not have enumerated it yet when we start, so the
+	 * initial open() or set_report_id() can fail.  Retry in a loop
+	 * instead of exiting — otherwise /dev/keyb0 is never registered
+	 * and vkeybd reads from a non-existent device.
+	 */
+	while (1) {
+		hid = open(dev_point, O_RDONLY | O_NONBLOCK);
+		if (hid >= 0 && set_report_id(hid, 2) == 0)
+			break;
+		if (hid >= 0) {
+			close(hid);
+			hid = -1;
+		}
+		proc_usleep(200000);
 	}
 
 	vdevice_t dev;

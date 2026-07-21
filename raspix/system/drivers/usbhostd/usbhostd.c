@@ -980,7 +980,7 @@ static int dwc_reset_port(bool* low_speed) {
 		slog("usbhostd: port reset begin\n");
 	}
 	dwc_port_write(DWC_HPRT_PWR, 0);
-	proc_usleep(50000);
+	proc_usleep(10000);
 	if (!dwc_port_connected()) {
 		if (USB_LOG_RUNTIME_VERBOSE) {
 			slog("usbhostd: port reset abort no_device\n");
@@ -989,9 +989,9 @@ static int dwc_reset_port(bool* low_speed) {
 	}
 
 	dwc_port_write(DWC_HPRT_PWR | DWC_HPRT_RST, 0);
-	proc_usleep(60000);
+	proc_usleep(30000);
 	dwc_port_write(DWC_HPRT_PWR, DWC_HPRT_RST);
-	proc_usleep(10000);
+	proc_usleep(5000);
 	for (;;) {
 		reg = usb_readl(DWC_REG_HPRT);
 		if ((reg & 0x1u) == 0) {
@@ -1003,7 +1003,7 @@ static int dwc_reset_port(bool* low_speed) {
 		if ((reg & DWC_HPRT_ENA) != 0) {
 			break;
 		}
-		if (waited_ms++ >= 100u) {
+		if (waited_ms++ >= 50u) {
 			if (USB_LOG_RUNTIME_VERBOSE) {
 				slog("usbhostd: port reset failed not_enabled hprt=%08x\n", reg);
 			}
@@ -1013,8 +1013,9 @@ static int dwc_reset_port(bool* low_speed) {
 		proc_usleep(1000);
 	}
 	dwc_ack_port_change();
-	/* USB spec reset recovery: device may ignore traffic for 10ms after reset */
-	proc_usleep(20000);
+	/* USB spec reset recovery: device may ignore traffic briefly after reset;
+	   10ms is the spec minimum, sufficient for the CH552 internal MCU */
+	proc_usleep(10000);
 
 	reg = usb_readl(DWC_REG_HPRT);
 	if (!dwc_port_connected()) {
@@ -2206,7 +2207,10 @@ static int usb_enumerate_hub(uint8_t addr, bool low_speed, uint8_t ep_mps, int d
 	for (uint8_t port = 1; port <= num_ports; ++port) {
 		usb_hub_port_feature(addr, low_speed, ep_mps, port, USB_HUB_FEAT_PORT_POWER, true);
 	}
-	proc_usleep(pwr_ms * 1000u);
+	/* small settle time — the scan-retry loop (200ms cadence) gives the
+	   hub's downstream ports plenty of time to power up across cycles
+	   without blocking the entire event loop here */
+	proc_usleep(10000);
 
 	for (uint8_t port = 1; port <= num_ports; ++port) {
 		uint16_t status = 0;
@@ -2240,8 +2244,8 @@ static int usb_enumerate_hub(uint8_t addr, bool low_speed, uint8_t ep_mps, int d
 						addr, port, attempt);
 				continue;
 			}
-			for (waited = 0; waited < 25; ++waited) {
-				proc_usleep(20000);
+			for (waited = 0; waited < 10; ++waited) {
+				proc_usleep(10000);
 				if (usb_hub_port_status(addr, low_speed, ep_mps, port, &status, &change) != 0) {
 					break;
 				}
@@ -2255,11 +2259,13 @@ static int usb_enumerate_hub(uint8_t addr, bool low_speed, uint8_t ep_mps, int d
 			if (!enabled) {
 				slog("usbhostd: hub addr=%u port=%u reset_failed status=%04x attempt=%d\n",
 						addr, port, status, attempt);
-				proc_usleep(100000);
+				proc_usleep(50000);
 				continue;
 			}
-			/* reset recovery: give the device MCU time to come alive */
-			proc_usleep(60000);
+			/* reset recovery: give the device MCU a moment to come alive;
+			   the scan-retry loop handles the rest without blocking the
+			   event loop for the full USB spec recovery time */
+			proc_usleep(10000);
 			slog("usbhostd: hub addr=%u port=%u connected speed=%s attempt=%d\n", addr, port,
 					usb_speed_name((status & USB_HUB_PS_LOW_SPEED) != 0), attempt);
 			ret = usb_enumerate_device((status & USB_HUB_PS_LOW_SPEED) != 0, depth + 1);
@@ -2268,7 +2274,7 @@ static int usb_enumerate_hub(uint8_t addr, bool low_speed, uint8_t ep_mps, int d
 					slog("usbhostd: hub addr=%u port=%u enum_retry attempt=%d\n",
 							addr, port, attempt + 1);
 				}
-				proc_usleep(100000);
+				proc_usleep(50000);
 			}
 		}
 		if (ret > 0) {
@@ -2541,9 +2547,9 @@ static void usb_scan_root(void) {
 			 * uConsole: CH552 is an internal USB device on the PCB,
 			 * not an external port — no hub stability concerns.
 			 * Retry quickly so the input subsystem comes up fast:
-			 * 500ms between attempts instead of 2000ms.
+			 * 200ms between attempts instead of the full scan interval.
 			 */
-			_next_scan_ms = kernel_tic_ms(0) + 500u;
+			_next_scan_ms = kernel_tic_ms(0) + 200u;
 			/* the dwc2 port can latch a dead not_enabled/EnaChng state that
 			   only a full core re-init clears.  For the internal CH552 the
 			   failures are usually just "firmware still booting", so give it
@@ -2555,7 +2561,7 @@ static void usb_scan_root(void) {
 				if (dwc_host_init() != 0) {
 					slog("usbhostd: core reinit failed\n");
 				}
-				_next_scan_ms = kernel_tic_ms(0) + 500u;
+				_next_scan_ms = kernel_tic_ms(0) + 200u;
 			}
 		}
 	}
@@ -2738,9 +2744,12 @@ static int usb_step(vdevice_t* dev, void* p) {
 	if (now >= _next_scan_ms) {
 		_next_scan_ms = 0;
 		usb_scan_root();
-		/* usb_scan_root may set a longer backoff after a failed enumeration */
-		if (_next_scan_ms < kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS) {
-			_next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
+		/* usb_scan_root may set a shorter retry interval after a failed
+		   enumeration (200ms); only apply the default idle scan interval
+		   (1000ms) when no shorter interval was already scheduled */
+		uint64_t default_next = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
+		if (_next_scan_ms == 0 || _next_scan_ms > default_next) {
+			_next_scan_ms = default_next;
 		}
 	}
 	if (_device_ready) {
