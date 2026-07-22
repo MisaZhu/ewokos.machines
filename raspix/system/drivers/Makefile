@@ -6,6 +6,7 @@ basic:
 	cd hid_keybd; $(MAKE)
 	cd hid_joystickd; $(MAKE)
 	cd spi2uart; $(MAKE)
+	cd camd; $(MAKE)
 
 gui:
 	cd fbd; $(MAKE)
@@ -31,3 +32,4 @@ clean:
 	cd spi2uart; $(MAKE) clean
 	cd wlan; $(MAKE) clean
 	cd btd; $(MAKE) clean
+	cd camd; $(MAKE) clean

@@ -7,6 +7,7 @@ all:
 	cd drivers/buttond; $(MAKE)
 	cd drivers/soundd; $(MAKE)
 	cd apps/xgo; $(MAKE)
+	cd apps/cam; $(MAKE)
 	cp -r etc build 
 
 clean:	
@@ -15,3 +16,4 @@ clean:
 	cd drivers/soundd; $(MAKE) clean
 	cd lib; $(MAKE) clean
 	cd apps/xgo; $(MAKE) clean
+	cd apps/cam; $(MAKE) clean
