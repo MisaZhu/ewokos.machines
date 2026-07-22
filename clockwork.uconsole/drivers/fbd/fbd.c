@@ -18,19 +18,19 @@
 #include "uc_dsi.h"
 #include "uc_clock.h"
 #include "uc_fb.h"
-#include "uc_cwu50.h"
 #include "uc_hvs.h"
 #include "uc_pv.h"
 #include "uc_power.h"
 #include "uc_pmu.h"
 
 /*
- * uConsole (ClockworkPi CM4) framebuffer daemon.
+ * ClockworkPi CM4 framebuffer daemon (uConsole 5" cwu50 and DevTerm
+ * 6.86" cwd686 — same binary, panel picked at runtime from the
+ * configured width, see uc_panel.h).
  *
- * Panel is a MIPI DSI "cw,cwu50" module.  This daemon drives the
- * whole path from cold: PLLD_DSI1 clocks -> DSI1 PHY + controller ->
- * panel reset -> OCP8178 backlight -> cwu50 DCS init table ->
- * DSI video mode.
+ * This daemon drives the whole MIPI DSI path from cold: PLLD_DSI1
+ * clocks -> DSI1 PHY + controller -> panel reset -> OCP8178 backlight
+ * -> panel DCS init table -> DSI video mode.
  *
  * Scan-out targets a physical address in the Pi4 reserved FB window
  * (0x3c000000..0x40000000 on a 1GB CM4). The kernel's
@@ -187,12 +187,19 @@ static void fill_black(const fbinfo_t* fbi) {
 }
 
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
-	if (w == 0) {
-		w = UC_PANEL_WIDTH;
-	}
-	if (h == 0) {
-		h = UC_PANEL_HEIGHT;
-	}
+	const uc_panel_mode_t* mode;
+
+	/*
+	 * Panel selection: /etc/framebuffer.json's width (already parsed
+	 * by libfbd) is the switch — 480 means the DevTerm cwd686, any
+	 * other value (or 0) the uConsole cwu50.  The scan-out geometry
+	 * must match the physical panel, so w/h are then forced to the
+	 * selected mode regardless of what the json said.
+	 */
+	uc_panel_select(w);
+	mode = uc_panel_mode();
+	w = mode->width;
+	h = mode->height;
 	if (dep != 16 && dep != 32) {
 		dep = 32;
 	}
@@ -267,7 +274,7 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 		}
 	}
 
-	if (uc_clock_bringup_dsi1(UC_DSI_HS_CLOCK_HZ) != 0) {
+	if (uc_clock_bringup_dsi1(mode->hs_clock_hz) != 0) {
 		return fail_stage(2);
 	}
 	if (uc_dsi_alive() != 0) {
@@ -275,6 +282,8 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 		return fail_stage(3);
 	}
 
+	/* PHY timing computation must use the same HS clock target. */
+	uc_dsi_set_hs_clock(mode->hs_clock_hz);
 	if (uc_dsi_bringup() != 0 || uc_dsi_lanes_stopped() != 0) {
 		/* PHY refused to drive LP-11 on the data lanes. */
 		return fail_stage(4);
@@ -297,7 +306,7 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * >=5ms → reset → init.)
 	 */
 	uc_panel_reset();
-	if (uc_cwu50_init() != 0) {
+	if (mode->init_table() != 0) {
 		/*
 		 * Non-zero = number of DCS commands whose TXPKT1_DONE never
 		 * fired: the panel cannot have been initialised.

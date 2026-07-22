@@ -1,5 +1,5 @@
 #include "uc_pv.h"
-#include "uc_cwu50.h"
+#include "uc_panel.h"
 #include "uc_time.h"
 
 #include <stdint.h>
@@ -81,15 +81,17 @@ static void _pv_write(uint32_t off, uint32_t v) {
 #define UC_PV1_FIFO_FULL_LEVEL   (UC_PV1_FIFO_DEPTH - 3U * UC_PV1_FIFO_LATENCY_PIX)
 
 /*
- * Program PV1 registers for cwu50 timing.  Mirrors vc4_crtc_config_pv():
- * writes every PV register EXCEPT the PV_CONTROL_EN and
- * PV_VCONTROL_VIDEN kick bits, which upstream splits out to
- * vc4_crtc_atomic_enable so they can be ordered around DSI
+ * Program PV1 registers for the selected panel's timing.  Mirrors
+ * vc4_crtc_config_pv(): writes every PV register EXCEPT the
+ * PV_CONTROL_EN and PV_VCONTROL_VIDEN kick bits, which upstream splits
+ * out to vc4_crtc_atomic_enable so they can be ordered around DSI
  * DISP0_ENABLE.
  *
- * cwu50: 720x1280, hfp=43/hsw=20/hbp=20, vfp=8/vsw=2/vbp=16.
+ * cwu50:  720x1280, hfp=43/hsw=20/hbp=20,  vfp=8/vsw=2/vbp=16.
+ * cwd686: 480x1280, hfp=150/hsw=24/hbp=40, vfp=12/vsw=6/vbp=10.
  */
 int uc_pv_configure(void) {
+	const uc_panel_mode_t* mode = uc_panel_mode();
 	uint32_t control;
 
 	_pv_init();
@@ -101,22 +103,22 @@ int uc_pv_configure(void) {
 
 	/* Horizontal: HBP | HSYNC in HORZA, HFP | HACTIVE in HORZB. */
 	_pv_write(PV_HORZA,
-			(UC_CWU50_H_BP << PV_HORZA_HBP_SHIFT) |
-			(UC_CWU50_H_SW << PV_HORZA_HSYNC_SHIFT));
+			(mode->hbp << PV_HORZA_HBP_SHIFT) |
+			(mode->hsw << PV_HORZA_HSYNC_SHIFT));
 	_pv_write(PV_HORZB,
-			(UC_CWU50_H_FP     << PV_HORZB_HFP_SHIFT) |
-			(UC_CWU50_H_ACTIVE << PV_HORZB_HACTIVE_SHIFT));
+			(mode->hfp   << PV_HORZB_HFP_SHIFT) |
+			(mode->width << PV_HORZB_HACTIVE_SHIFT));
 
 	/* Vertical. */
 	_pv_write(PV_VERTA,
-			(UC_CWU50_V_BP << PV_VERTA_VBP_SHIFT) |
-			(UC_CWU50_V_SW << PV_VERTA_VSYNC_SHIFT));
+			(mode->vbp << PV_VERTA_VBP_SHIFT) |
+			(mode->vsw << PV_VERTA_VSYNC_SHIFT));
 	_pv_write(PV_VERTB,
-			(UC_CWU50_V_FP     << PV_VERTB_VFP_SHIFT) |
-			(UC_CWU50_V_ACTIVE << PV_VERTB_VACTIVE_SHIFT));
+			(mode->vfp    << PV_VERTB_VFP_SHIFT) |
+			(mode->height << PV_VERTB_VACTIVE_SHIFT));
 
 	/* DSI needs an HACT_ACT hint (pixel_rep=1 -> hdisplay). */
-	_pv_write(PV_HACT_ACT, UC_CWU50_H_ACTIVE);
+	_pv_write(PV_HACT_ACT, mode->width);
 
 	/* HVS5: no RGB pixel swap. */
 	_pv_write(PV_MUX_CFG,

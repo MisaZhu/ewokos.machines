@@ -1,4 +1,4 @@
-TASK_OBJS = fbd.o uc_time.o uc_backlight.o uc_panel.o uc_dsi.o uc_clock.o uc_fb.o uc_cwu50.o uc_hvs.o uc_pv.o uc_power.o uc_pmu.o
+TASK_OBJS = fbd.o uc_time.o uc_backlight.o uc_panel.o uc_dsi.o uc_clock.o uc_fb.o uc_cwu50.o uc_cwd686.o uc_hvs.o uc_pv.o uc_power.o uc_pmu.o
 TASK = fbd 
 
 MF_ROOT_DIR=../..

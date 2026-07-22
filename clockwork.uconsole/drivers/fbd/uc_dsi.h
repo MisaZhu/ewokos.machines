@@ -120,12 +120,21 @@ void     uc_dsi_dump(void);
  * cwu50 panel:  4 lanes, RGB888 (24bpp), 62.5 MHz pixel clock.
  * vc4_dsi computes phy_clock = pixel_clock * (bpp/lanes) = 375 MHz.
  * We ask the CPRMAN bring-up code for that target and it derives the
- * PLLD_DSI1 divider from the actual VCO.
+ * PLLD_DSI1 divider from the actual VCO.  Both supported panels are
+ * 4-lane RGB888; only the HS clock differs (see uc_panel_mode_t).
  */
 #define UC_DSI_LANES            4U
 #define UC_DSI_FORMAT_RGB888    3U      /* DSI_PFORMAT_RGB888 */
 #define UC_DSI_PIXEL_DIVIDER    6U      /* 24bpp / 4 lanes */
 #define UC_DSI_HS_CLOCK_HZ      375000000U
+
+/*
+ * Override the HS bit clock used for the PHY timing computation in
+ * uc_dsi_bringup().  Must be called before uc_dsi_bringup(), with the
+ * same value handed to uc_clock_bringup_dsi1().  Defaults to the
+ * cwu50 375 MHz above.
+ */
+void     uc_dsi_set_hs_clock(uint32_t hz);
 
 /*
  * Full DSI1 controller + PHY bring-up matching vc4_dsi_encoder_enable().

@@ -107,6 +107,7 @@ void uc_dsi_dump(void) {
 #define TXPKT1C_CMD_CTRL_RX              (1U << 4)
 #define TXPKT1C_CMD_REPEAT_SHIFT         10
 #define TXPKT1C_DISPLAY_NO_SHORT         (0U << 8)
+#define TXPKT1C_DISPLAY_NO_SECONDARY     (2U << 8)
 
 /* RXPKT1H fields (vc4_dsi.c DSI_RXPKT1H_*). */
 #define RXPKT1H_PKT_TYPE_LONG            (1U << 24)
@@ -121,11 +122,24 @@ void uc_dsi_dump(void) {
 #define TXPKT1H_BC_CMDFIFO_SHIFT         24
 
 /*
+ * HS bit clock actually programmed into PLLD_DSI1.  Defaults to the
+ * cwu50 value; fbd overrides it from the selected panel mode before
+ * uc_dsi_bringup() computes the PHY timings.
+ */
+static uint32_t _hs_clock_hz = UC_DSI_HS_CLOCK_HZ;
+
+void uc_dsi_set_hs_clock(uint32_t hz) {
+	if (hz != 0) {
+		_hs_clock_hz = hz;
+	}
+}
+
+/*
  * Little helper: unit-interval-in-ns for our target HS bit clock.
  * Note: PHY clock is DDR, so 1 UI = 2 clock periods, hence 500e6/hz.
  */
 static uint32_t _ui_ns(void) {
-	return (500000000U + UC_DSI_HS_CLOCK_HZ - 1U) / UC_DSI_HS_CLOCK_HZ;
+	return (500000000U + _hs_clock_hz - 1U) / _hs_clock_hz;
 }
 
 /* From vc4_dsi.c::dsi_hs_timing().  Round up to a multiple of 8 (byte clock). */
@@ -405,19 +419,40 @@ int uc_dsi_dcs_write(uint8_t data_type, const uint8_t* payload, uint32_t len) {
 	}
 
 	if (is_long) {
+		uint32_t pix_fifo_len = 0;
+
 		/*
-		 * Panel init commands are all small (≤~16 bytes), so route
-		 * everything through the byte-oriented command FIFO. That
-		 * avoids having to marshal 4-byte-aligned words into the
-		 * pixel FIFO for this phase.
+		 * vc4_dsi_host_transfer(): payloads up to 16 bytes fit the
+		 * byte-oriented command FIFO alone.  Longer payloads (the
+		 * cwd686 table runs to 39 bytes) keep the len%4 residue —
+		 * from the START of the payload — in the command FIFO and
+		 * stream the rest through the pixel FIFO as little-endian
+		 * 32-bit words, with the packet routed to the "secondary
+		 * display" datapath instead of the short one.
 		 */
-		cmd_fifo_len = len;
+		if (len <= 16) {
+			cmd_fifo_len = len;
+		} else {
+			cmd_fifo_len = len % 4U;
+			pix_fifo_len = (len - cmd_fifo_len) / 4U;
+		}
 		pkth = ((uint32_t)data_type << TXPKT1H_BC_DT_SHIFT) |
 		       (((uint32_t)len & 0xffffU) << TXPKT1H_BC_PARAM_SHIFT) |
 		       ((cmd_fifo_len & 0xffU) << TXPKT1H_BC_CMDFIFO_SHIFT);
 		pktc |= TXPKT1C_CMD_TYPE_LONG;
+		if (pix_fifo_len != 0) {
+			pktc |= TXPKT1C_DISPLAY_NO_SECONDARY;
+		}
 		for (i = 0; i < cmd_fifo_len; i++) {
 			uc_dsi1_write(UC_DSI1_TXPKT_CMD_FIFO, payload[i]);
+		}
+		for (i = 0; i < pix_fifo_len; i++) {
+			const uint8_t* pix = payload + cmd_fifo_len + i * 4U;
+			uc_dsi1_write(UC_DSI1_TXPKT_PIX_FIFO,
+					(uint32_t)pix[0] |
+					((uint32_t)pix[1] << 8) |
+					((uint32_t)pix[2] << 16) |
+					((uint32_t)pix[3] << 24));
 		}
 	} else {
 		uint32_t p0 = (len > 0 && payload) ? payload[0] : 0;
