@@ -73,17 +73,17 @@ int wm8960_init(void){
     else
         return res;
 
-    // Configure HP_L and HP_R OUTPUTS
-    res = wm8960_write(LOUT1_VOLUME, 0x0079 | 0x0100);  //LOUT1 Volume Set
-    res += wm8960_write(ROUT1_VOLUME, 0x0079 | 0x0100); //ROUT1 Volume Set
+    // Configure HP_L and HP_R OUTPUTS (0x7F = +6dB, max)
+    res = wm8960_write(LOUT1_VOLUME, 0x007F | 0x0100);  //LOUT1 Volume Set
+    res += wm8960_write(ROUT1_VOLUME, 0x007F | 0x0100); //ROUT1 Volume Set
     if (res == 0)
         DBG("wm8960 Configure HP_L and HP_R OUTPUTS\n");
     else
         return res;
 
-    // Configure SPK_RP and SPK_RN
-    res = wm8960_write(LOUT2_VOLUME, 0x0079 | 0x0100); //Left Speaker Volume
-    res += wm8960_write(ROUT2_VOLUME, 0x0079 | 0x0100); //Right Speaker Volume
+    // Configure SPK_RP and SPK_RN (0x7F = +6dB, max)
+    res = wm8960_write(LOUT2_VOLUME, 0x007F | 0x0100); //Left Speaker Volume
+    res += wm8960_write(ROUT2_VOLUME, 0x007F | 0x0100); //Right Speaker Volume
     if (res == 0)
         DBG("wm8960 Configure SPK_RP and SPK_RN\n");
     else
@@ -96,9 +96,9 @@ int wm8960_init(void){
     else
         return res;
 
-    // Configure DAC volume
-    res = wm8960_write(LEFT_DAC_VOLUME, 0x00EF | 0x0100);
-    res += wm8960_write(RIGHT_DAC_VOLUME, 0x00EF | 0x0100);
+    // Configure DAC volume (0xFF = 0dB, max; was 0xEF = -8dB)
+    res = wm8960_write(LEFT_DAC_VOLUME, 0x00FF | 0x0100);
+    res += wm8960_write(RIGHT_DAC_VOLUME, 0x00FF | 0x0100);
     if (res == 0)
         DBG("wm8960 Configure DAC volume\n");
     else
