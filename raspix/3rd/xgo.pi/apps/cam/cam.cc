@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include <graph/graph.h>
 #include <ewoksys/keydef.h>
 #include <ewoksys/vfs.h>
@@ -32,27 +33,147 @@ class CamWidget: public Widget {
 	graph_t* _camGraph;
 	bool _running;
 	int _retryTick;
+	int _wb_r_q8;
+	int _wb_b_q8;
+	static bool _gammaReady;
+	static uint8_t _gammaLut[256];
 
-	/* RAW8 Bayer -> ARGB, simple 2x2 demosaic. Phase measured on-device
-	 * via camd's bayer-mean diagnostic: the two similar means are the G
-	 * sites (s01/s10) and the brighter site under warm light is s11,
-	 * so the buffer layout is BGGR: each block [B G / G R] yields one
-	 * color for its 4 pixels */
-	void bayer_to_argb(const uint8_t* raw, uint32_t* argb, int w, int h) {
-		for (int y = 0; y < h; y += 2) {
+	static inline int clamp_u8(int v) {
+		if (v < 0)
+			return 0;
+		if (v > 255)
+			return 255;
+		return v;
+	}
+
+	static inline int clamp_coord(int v, int hi) {
+		if (v < 0)
+			return 0;
+		if (v > hi)
+			return hi;
+		return v;
+	}
+
+	static void init_gamma_lut(void) {
+		if (_gammaReady)
+			return;
+		for (int i = 0; i < 256; i++) {
+			float f = (float)i / 255.0f;
+			_gammaLut[i] = (uint8_t)(powf(f, 1.0f / 2.2f) * 255.0f + 0.5f);
+		}
+		_gammaReady = true;
+	}
+
+	inline int raw_at(const uint8_t* raw, int w, int h, int x, int y) const {
+		x = clamp_coord(x, w - 1);
+		y = clamp_coord(y, h - 1);
+		return raw[y * w + x];
+	}
+
+	void update_white_balance(const uint8_t* raw, int w, int h) {
+		uint64_t sum_r = 0;
+		uint64_t sum_g = 0;
+		uint64_t sum_b = 0;
+		uint32_t count = 0;
+
+		for (int y = 0; y + 1 < h; y += 8) {
 			const uint8_t* row0 = raw + y * w;
 			const uint8_t* row1 = row0 + w;
-			uint32_t* out0 = argb + y * w;
-			uint32_t* out1 = out0 + w;
-			for (int x = 0; x < w; x += 2) {
-				int b = row0[x];
-				int g = (row0[x + 1] + row1[x]) >> 1;
-				int r = row1[x + 1];
-				uint32_t c = 0xff000000 | (r << 16) | (g << 8) | b;
-				out0[x] = c;
-				out0[x + 1] = c;
-				out1[x] = c;
-				out1[x + 1] = c;
+			for (int x = 0; x + 1 < w; x += 8) {
+				sum_b += row0[x];
+				sum_g += row0[x + 1];
+				sum_g += row1[x];
+				sum_r += row1[x + 1];
+				count++;
+			}
+		}
+
+		if (count == 0)
+			return;
+
+		int avg_r = (int)(sum_r / count);
+		int avg_g = (int)(sum_g / (count * 2));
+		int avg_b = (int)(sum_b / count);
+		if (avg_r < 1)
+			avg_r = 1;
+		if (avg_b < 1)
+			avg_b = 1;
+
+		int target = avg_g;
+		int next_r = (target << 8) / avg_r;
+		int next_b = (target << 8) / avg_b;
+		if (next_r < 128)
+			next_r = 128;
+		if (next_r > 768)
+			next_r = 768;
+		if (next_b < 128)
+			next_b = 128;
+		if (next_b > 768)
+			next_b = 768;
+
+		/* Smooth frame-to-frame changes to avoid WB pumping/flicker. */
+		_wb_r_q8 = (_wb_r_q8 * 7 + next_r) >> 3;
+		_wb_b_q8 = (_wb_b_q8 * 7 + next_b) >> 3;
+	}
+
+	inline uint32_t pack_rgb(int r, int g, int b) const {
+		r = _gammaLut[clamp_u8((r * _wb_r_q8) >> 8)];
+		g = _gammaLut[clamp_u8(g)];
+		b = _gammaLut[clamp_u8((b * _wb_b_q8) >> 8)];
+		return 0xff000000 | (r << 16) | (g << 8) | b;
+	}
+
+	/* RAW8 BGGR -> ARGB, bilinear demosaic + gray-world WB + display gamma. */
+	void bayer_to_argb(const uint8_t* raw, uint32_t* argb, int w, int h) {
+		update_white_balance(raw, w, h);
+
+		for (int y = 0; y < h; y++) {
+			uint32_t* out = argb + y * w;
+			for (int x = 0; x < w; x++) {
+				int r, g, b;
+				int c = raw_at(raw, w, h, x, y);
+				bool ye = ((y & 1) == 0);
+				bool xe = ((x & 1) == 0);
+
+				if (ye && xe) {
+					/* B site */
+					b = c;
+					g = (raw_at(raw, w, h, x - 1, y) +
+						raw_at(raw, w, h, x + 1, y) +
+						raw_at(raw, w, h, x, y - 1) +
+						raw_at(raw, w, h, x, y + 1)) >> 2;
+					r = (raw_at(raw, w, h, x - 1, y - 1) +
+						raw_at(raw, w, h, x + 1, y - 1) +
+						raw_at(raw, w, h, x - 1, y + 1) +
+						raw_at(raw, w, h, x + 1, y + 1)) >> 2;
+				} else if (ye) {
+					/* G site on blue row */
+					g = c;
+					b = (raw_at(raw, w, h, x - 1, y) +
+						raw_at(raw, w, h, x + 1, y)) >> 1;
+					r = (raw_at(raw, w, h, x, y - 1) +
+						raw_at(raw, w, h, x, y + 1)) >> 1;
+				} else if (xe) {
+					/* G site on red row */
+					g = c;
+					r = (raw_at(raw, w, h, x - 1, y) +
+						raw_at(raw, w, h, x + 1, y)) >> 1;
+					b = (raw_at(raw, w, h, x, y - 1) +
+						raw_at(raw, w, h, x, y + 1)) >> 1;
+				} else {
+					/* R site */
+					r = c;
+					g = (raw_at(raw, w, h, x - 1, y) +
+						raw_at(raw, w, h, x + 1, y) +
+						raw_at(raw, w, h, x, y - 1) +
+						raw_at(raw, w, h, x, y + 1)) >> 2;
+					b = (raw_at(raw, w, h, x - 1, y - 1) +
+						raw_at(raw, w, h, x + 1, y - 1) +
+						raw_at(raw, w, h, x - 1, y + 1) +
+						raw_at(raw, w, h, x + 1, y + 1)) >> 2;
+				}
+
+				out[x] = pack_rgb(r, g, b);
 			}
 		}
 	}
@@ -148,6 +269,9 @@ public:
 		_camGraph = NULL;
 		_running = true;
 		_retryTick = 0;
+		_wb_r_q8 = 256;
+		_wb_b_q8 = 256;
+		init_gamma_lut();
 
 		/* open is retried lazily in grabFrame; never block app startup */
 		_fd = open(CAM_DEV, O_RDONLY);
@@ -160,6 +284,9 @@ public:
 
 	bool ready() { return _camGraph != NULL; }
 };
+
+bool CamWidget::_gammaReady = false;
+uint8_t CamWidget::_gammaLut[256];
 
 int main(int argc, char** argv) {
 	X x;
