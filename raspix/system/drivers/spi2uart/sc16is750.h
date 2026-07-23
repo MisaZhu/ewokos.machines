@@ -117,7 +117,7 @@ typedef struct {
   void    SC16IS750_init(SC16IS750_t * dev, uint8_t protocol, uint8_t address, int channels);
   void    SC16IS750_begin(SC16IS750_t * dev, uint32_t baud_A, uint32_t baud_B, long crystal_freq);     
   int     SC16IS750_read(SC16IS750_t * dev, uint8_t channel);
-  void    SC16IS750_write(SC16IS750_t * dev, uint8_t channel, uint8_t val);
+  int     SC16IS750_write(SC16IS750_t * dev, uint8_t channel, uint8_t val);
   int     SC16IS750_available(SC16IS750_t * dev, uint8_t channel);
   void    SC16IS750_pinMode(SC16IS750_t * dev, uint8_t pin, uint8_t io);
   void    SC16IS750_digitalWrite(SC16IS750_t * dev, uint8_t pin, uint8_t value);
@@ -127,7 +127,7 @@ typedef struct {
   size_t  SC16IS750_readBytes(SC16IS750_t * dev, uint8_t channel, char *buffer, size_t length);
   int16_t SC16IS750_readwithtimeout(SC16IS750_t * dev, uint8_t * channel);
   int     SC16IS750_peek(SC16IS750_t * dev, uint8_t channel);
-  void    SC16IS750_flush(SC16IS750_t * dev, uint8_t channel);
+  int     SC16IS750_flush(SC16IS750_t * dev, uint8_t channel);
   uint8_t SC16IS750_GPIOGetPortState(SC16IS750_t * dev);
   uint8_t SC16IS750_InterruptPendingTest(SC16IS750_t * dev, uint8_t channel);
 	int16_t SC16IS750_InterruptEventTest(SC16IS750_t * dev, uint8_t channel);
@@ -153,7 +153,7 @@ typedef struct {
   void    SC16IS750_FIFOSetTriggerLevel(SC16IS750_t * dev, uint8_t channel, uint8_t rx_fifo, uint8_t length);
   uint8_t SC16IS750_FIFOAvailableData(SC16IS750_t * dev, uint8_t channel);
   uint8_t SC16IS750_FIFOAvailableSpace(SC16IS750_t * dev, uint8_t channel);
-  void    SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val);
+  int     SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val);
   int     SC16IS750_ReadByte(SC16IS750_t * dev, uint8_t channel);
   void    SC16IS750_EnableTransmit(SC16IS750_t * dev, uint8_t channel, uint8_t tx_enable);
 

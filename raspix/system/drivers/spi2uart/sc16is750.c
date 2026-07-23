@@ -13,8 +13,13 @@ SC16IS750/752 Driver for RaspberryPi
 #include <arch/bcm283x/auxspi.h>
 #include <arch/bcm283x/i2c.h>
 #include <arch/bcm283x/gpio.h>
+#include <ewoksys/proc.h>
 
 #include "sc16is750.h"
+
+/*Max wait loops for TX FIFO/THR empty: 2000 x 100us = ~200ms.
+  (a full 64-byte TX FIFO drain takes ~33ms at 19200 baud)*/
+#define SC16IS750_TX_WAIT_TIMEOUT 2000
 
 int wiringPiSPISetup(int channel, int clk){
 	bcm283x_gpio_init();
@@ -24,7 +29,6 @@ int wiringPiSPISetup(int channel, int clk){
 }	
 
 int wiringPiSPIDataRW(int channel, uint8_t *data, int size){
-	int i;
 	bcm283x_auxspi_transfer(data, data, size);
 	return size;
 }
@@ -55,7 +59,7 @@ void SC16IS750_init(SC16IS750_t * dev, uint8_t protocol, uint8_t address, int ch
 	}
 	dev->peek_flag = 0;
 	dev->channels = channels;
-	//dev->timeout = 1000;
+	dev->timeout = 1000;
 }
 
 void SC16IS750_begin(SC16IS750_t * dev, uint32_t baud_A, uint32_t baud_B, long crystal_freq)
@@ -96,9 +100,9 @@ int SC16IS750_read(SC16IS750_t * dev, uint8_t channel)
 	}
 }
 
-void SC16IS750_write(SC16IS750_t * dev, uint8_t channel, uint8_t val)
+int SC16IS750_write(SC16IS750_t * dev, uint8_t channel, uint8_t val)
 {
-	SC16IS750_WriteByte(dev, channel, val);
+	return SC16IS750_WriteByte(dev, channel, val);
 }
 
 void SC16IS750_pinMode(SC16IS750_t * dev, uint8_t pin, uint8_t i_o)
@@ -119,7 +123,7 @@ uint8_t SC16IS750_digitalRead(SC16IS750_t * dev, uint8_t pin)
 
 uint8_t SC16IS750_ReadRegister(SC16IS750_t * dev, uint8_t channel, uint8_t reg_addr)
 {
-	uint8_t result;
+	uint8_t result = 0xFF; //default: bus floating, avoids blocking waits on a dead chip
 	//printf("ReadRegister channel=%d reg_addr=%x\n",channel, (reg_addr<<3 | channel<<1));
 	if ( dev->protocol == SC16IS750_PROTOCOL_I2C ) {	// register read operation via I2C
 		result = wiringPiI2CReadReg8(dev->i2c_fd, (reg_addr<<3 | channel<<1));
@@ -495,26 +499,24 @@ uint8_t SC16IS750_FIFOAvailableSpace(SC16IS750_t * dev, uint8_t channel)
 	return SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_TXLVL);
 }
 
-void SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val)
+int SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val)
 {
 	uint8_t tmp_lsr;
-/*
-	while ( SC16IS750_FIFOAvailableSpace(dev, channel) == 0 ){
-#ifdef	SC16IS750_DEBUG_PRINT
-		printf("No available space\n");
-#endif
+	uint32_t retry = SC16IS750_TX_WAIT_TIMEOUT;
 
-	};
-#ifdef	SC16IS750_DEBUG_PRINT
-	printf("++++++++++++Data sent\n");
-#endif
-	SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
-*/
+	/*Wait for THR/TX-FIFO empty with a timeout: a missing or dead chip
+	  must never block the daemon forever.*/
 	do {
 		tmp_lsr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR);
-	} while ((tmp_lsr&0x20) ==0);
+		if ((tmp_lsr & 0x20) != 0) {
+			SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
+			return 0;
+		}
+		proc_usleep(100);
+	} while (--retry > 0);
 
-	SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
+	klog("sc16is750: write byte timeout, chip not responding?\n");
+	return -1;
 }
 
 int SC16IS750_ReadByte(SC16IS750_t * dev, uint8_t channel)
@@ -606,20 +608,26 @@ int16_t SC16IS750_readwithtimeout(SC16IS750_t * dev, uint8_t * channel)
 			tmp = SC16IS750_read(dev, SC16IS750_CHANNEL_B);
 			if (tmp >= 0) return tmp;
 		}
-		sleep(0);
+		proc_usleep(0);
+		retry_count++;
 	} while(retry_count < dev->timeout);
 	return -1;	 // -1 indicates timeout
 }
 
-void SC16IS750_flush(SC16IS750_t * dev, uint8_t channel)
+int SC16IS750_flush(SC16IS750_t * dev, uint8_t channel)
 {
 	uint8_t tmp_lsr;
+	uint32_t retry = SC16IS750_TX_WAIT_TIMEOUT;
 
+	/*Wait for TX FIFO/THR empty with a timeout (see SC16IS750_WriteByte).*/
 	do {
 		tmp_lsr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR);
-	} while ((tmp_lsr&0x20) ==0);
+		if ((tmp_lsr & 0x20) != 0)
+			return 0;
+		proc_usleep(100);
+	} while (--retry > 0);
 
-
+	return -1;
 }
 
 int SC16IS750_peek(SC16IS750_t * dev, uint8_t channel)

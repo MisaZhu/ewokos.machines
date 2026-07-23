@@ -49,7 +49,8 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	(void)p;
 	for(int i = 0; i < size; i++){
 		uint8_t c = ((uint8_t*)(buf+offset))[i];
-		SC16IS750_write(&spiuart, SC16IS750_CHANNEL_B, c);	
+		if(SC16IS750_write(&spiuart, SC16IS750_CHANNEL_B, c) != 0)
+			return (i == 0) ? -1 : i; //chip not responding, report written bytes
 	}
 	return size;
 }
@@ -61,7 +62,10 @@ static int loop(vdevice_t* dev, void* p) {
 	ipc_disable();
 	int len = SC16IS750_available(&spiuart, SC16IS750_CHANNEL_B);
 	for(int i = 0; i < len; i++){
-		c = SC16IS750_read(&spiuart, SC16IS750_CHANNEL_B);
+		int r = SC16IS750_read(&spiuart, SC16IS750_CHANNEL_B);
+		if(r < 0) //FIFO raced or chip not responding, never push garbage
+			break;
+		c = (char)r;
 		if(c != '\r' || !_no_return) {
 			charbuf_push(_RxBuf, c, true);
 			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);

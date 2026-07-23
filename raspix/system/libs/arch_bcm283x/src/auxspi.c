@@ -89,6 +89,10 @@ struct bcm2835aux_spi{
 #define READ32(addr) (*((volatile uint32_t *)(addr)))
 #define WRITE32(addr, val) (*((volatile uint32_t *)(addr)) = (uint32_t)(val))
 
+/*Max stalled MMIO poll iterations (~tens of ms) before aborting a transfer,
+  so a dead/misconfigured SPI controller can never hang the caller.*/
+#define AUXSPI_STALL_TIMEOUT 100000
+
 #define DIV_ROUND_UP(n,d)	(((n) + (d) - 1) / (d))
 
 uint16_t bcm283x_aux_spi_CalcClockDivider(int speed_hz)
@@ -150,21 +154,25 @@ void bcm283x_auxspi_write16(uint16_t data)
     WRITE32(BCM2835_AUX_SPI_CNTL0, reg);
     WRITE32(BCM2835_AUX_SPI_CNTL1, BCM2835_AUX_SPI_CNTL1_MSBF_IN);
 
-    while (READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_TX_FULL);
+	uint32_t retry = AUXSPI_STALL_TIMEOUT;
+    while ((READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_TX_FULL) && --retry > 0);
+	if (retry == 0) {
+		klog("bcm283x_auxspi_write16: TX FIFO stuck, aborting\n");
+		return;
+	}
 
     WRITE32(BCM2835_AUX_SPI_IO, (uint32_t) data << 16);
 }
 
 
-void bcm283x_auxspi_transfer(const char *tbuf, char *rbuf, uint32_t len) {
+void bcm283x_auxspi_transfer(uint8_t *tx, uint8_t *rx, uint32_t len) {
 
-	char *tx = (char *)tbuf;
-	char *rx = (char *)rbuf;
 	uint32_t tx_len = len;
 	uint32_t rx_len = len;
 	uint32_t count;
 	uint32_t data;
 	uint32_t i;
+	uint32_t stall = 0;
 	uint8_t byte;
 
 	uint32_t reg = (_spi_clock_div << BCM2835_AUX_SPI_CNTL0_SPEED_SHIFT);
@@ -176,6 +184,9 @@ void bcm283x_auxspi_transfer(const char *tbuf, char *rbuf, uint32_t len) {
 	WRITE32(BCM2835_AUX_SPI_CNTL1, BCM2835_AUX_SPI_CNTL1_MSBF_IN);
 
 	while ((tx_len > 0) || (rx_len > 0)) {
+
+		uint32_t prev_tx = tx_len;
+		uint32_t prev_rx = rx_len;
 
 		while (!(READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_TX_FULL) && (tx_len > 0)) {
 			count = MIN(tx_len, 3);
@@ -201,18 +212,18 @@ void bcm283x_auxspi_transfer(const char *tbuf, char *rbuf, uint32_t len) {
 			count = MIN(rx_len, 3);
 			data = READ32(BCM2835_AUX_SPI_IO);
 
-			if (rbuf != NULL) {
+			if (rx != NULL) {
 				switch (count) {
 				case 3:
-					*rx++ = (char)((data >> 16) & 0xFF);
+					*rx++ = (uint8_t)((data >> 16) & 0xFF);
 					/*@fallthrough@*/
 					/* no break */
 				case 2:
-					*rx++ = (char)((data >> 8) & 0xFF);
+					*rx++ = (uint8_t)((data >> 8) & 0xFF);
 					/*@fallthrough@*/
 					/* no break */
 				case 1:
-					*rx++ = (char)((data >> 0) & 0xFF);
+					*rx++ = (uint8_t)((data >> 0) & 0xFF);
 				}
 			}
 
@@ -223,22 +234,33 @@ void bcm283x_auxspi_transfer(const char *tbuf, char *rbuf, uint32_t len) {
 			count = MIN(rx_len, 3);
 			data = READ32(BCM2835_AUX_SPI_IO);
 
-			if (rbuf != NULL) {
+			if (rx != NULL) {
 				switch (count) {
 				case 3:
-					*rx++ = (char)((data >> 16) & 0xFF);
+					*rx++ = (uint8_t)((data >> 16) & 0xFF);
 					/*@fallthrough@*/
 					/* no break */
 				case 2:
-					*rx++ = (char)((data >> 8) & 0xFF);
+					*rx++ = (uint8_t)((data >> 8) & 0xFF);
 					/*@fallthrough@*/
 					/* no break */
 				case 1:
-					*rx++ = (char)((data >> 0) & 0xFF);
+					*rx++ = (uint8_t)((data >> 0) & 0xFF);
 				}
 			}
 
 			rx_len -= count;
+		}
+
+		/*watchdog: bail out if the controller makes no progress at all
+		  (dead clock, peripheral not enabled...), never hang the caller*/
+		if (tx_len == prev_tx && rx_len == prev_rx) {
+			if (++stall >= AUXSPI_STALL_TIMEOUT) {
+				klog("bcm283x_auxspi_transfer: stall timeout, aborting\n");
+				return;
+			}
+		} else {
+			stall = 0;
 		}
 	}
 }

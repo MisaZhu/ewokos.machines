@@ -3,8 +3,8 @@
 
 #include <stdint.h>
 
-void bcm283x_auxspi_init(int channel);
+int  bcm283x_auxspi_init(int channel);
 void bcm283x_auxspi_set_clock(int clock);
-int  bcm283x_auxspi_transfer(uint8_t *tx, uint8_t *rx, int len);
+void bcm283x_auxspi_transfer(uint8_t *tx, uint8_t *rx, uint32_t len);
 
 #endif

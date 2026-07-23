@@ -21,6 +21,7 @@
 #include <ewoksys/ipc.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfsc.h>
+#include <ewoksys/kernel_tic.h>
 
 #include "brcm.h"
 #include "chip.h"
@@ -101,6 +102,17 @@
 #define BRCMF_SCAN_RETRY_TICK 5000U
 #define BRCMF_RX_DROP_PRESSURE_DEPTH 64
 #define BRCMF_RX_DROP_STALL_MS 500U
+/*
+ * Broadcast storm protection: broadcast frames (ARP/IP) are never
+ * dropped by the normal CONNECTED filter, so without a rate limit a
+ * broadcast storm fills the whole 128-slot RX queue and starves the
+ * unicast traffic that actually matters (TCP data/ACKs, ARP replies
+ * to us). Normal background broadcast chatter is well below 10 pps;
+ * allow bursts up to BRCMF_BC_LIMIT_MAX_PKTS per window and drop the
+ * rest before they can occupy queue slots.
+ */
+#define BRCMF_BC_LIMIT_WINDOW_MS 100U
+#define BRCMF_BC_LIMIT_MAX_PKTS 8U
 #define BRCMF_RX_READER_KICK_STALL_MS 200U
 #define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
 #define BRCMF_SCAN_CACHE_MAX 64
@@ -451,6 +463,9 @@ struct brcmf_dev{
     } scan_cache[BRCMF_SCAN_CACHE_MAX];
     uint32_t rx_queue_drops;
     uint32_t tx_queue_drops;
+    uint32_t bc_drops;           /* broadcast storm drops */
+    uint32_t bc_window_start_ms; /* broadcast rate-limit window start */
+    uint32_t bc_window_count;    /* broadcast frames admitted in window */
     uint32_t rx_fail_count;
     uint32_t tx_fail_count;
     uint32_t recovery_count;
@@ -621,6 +636,29 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
         if (proto == ETH_P_IPV6 || is_mc) {
             return true;
         }
+        /*
+         * Broadcast frames are admitted unconditionally by the checks
+         * above, so rate-limit them here. Without this cap a broadcast
+         * storm monopolises the RX queue and starves unicast traffic
+         * (TCP data/ACKs, ARP replies addressed to us), which wedges
+         * the link even though the driver stays "connected".
+         */
+        if (is_bc) {
+            now_ms = kernel_tic_ms(0);
+            if ((now_ms - bus->bc_window_start_ms) >= BRCMF_BC_LIMIT_WINDOW_MS) {
+                bus->bc_window_start_ms = now_ms;
+                bus->bc_window_count = 0;
+            }
+            if (bus->bc_window_count >= BRCMF_BC_LIMIT_MAX_PKTS) {
+                bus->bc_drops++;
+                if (bus->bc_drops == 1 ||
+                    (bus->bc_drops % BRCMF_QUEUE_DROP_LOG_STEP) == 0)
+                    brcm_log("broadcast storm drop: total=%u depth=%d\n",
+                            bus->bc_drops, depth);
+                return true;
+            }
+            bus->bc_window_count++;
+        }
     }
 
     if (depth < BRCMF_RX_DROP_PRESSURE_DEPTH)
@@ -631,12 +669,18 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     if (stalled_ms < BRCMF_RX_DROP_STALL_MS)
         return false;
 
-    if (!is_mc && proto != ETH_P_IPV6)
-        return false;
+    /*
+     * Consumer stalled with a backed-up queue: drop the dispensable
+     * traffic first. Previously broadcast IP/ARP frames were exempt
+     * here, so a storm kept the queue permanently full of broadcasts
+     * and unicast frames for us were dropped on push instead.
+     */
+    if (is_bc || is_mc || proto == ETH_P_IPV6)
+        return true;
 
-    if (proto != ETH_P_IP && proto != ETH_P_ARP && proto != ETH_P_IPV6)
-        return false;
-    return true;
+    /* Keep unicast IP/ARP (and anything else addressed to us): give the
+     * consumer a chance to recover with the traffic that matters. */
+    return false;
 }
 
 static void brcmf_maybe_kick_reader(void)
@@ -2783,10 +2827,16 @@ void brcmf_rx_frame(struct sk_buff *skb)
         bus->rx_queue_drops++;
         brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops,
                 depth);
+        /*
+         * Frame dropped: don't wake the reader. Under a broadcast
+         * storm the queue stays full for long stretches, and waking
+         * the consumer per dropped frame just burns CPU in both
+         * processes without making any progress.
+         */
     } else {
         bus->rx_fail_count = 0;
+        brcm_wakeup_dev(VFS_EVT_RD);
     }
-    brcm_wakeup_dev(VFS_EVT_RD);
     skb_free(skb);
 }
 
@@ -3764,6 +3814,30 @@ void* brcm_thread(void* p) {
                 bus->state != SCANNING &&
                 bus->state != CONNECTING)
                 brcmf_sdio_readconsole();
+
+            /*
+             * Firmware liveness watchdog (CONNECTED). BRCMF_FW_LIVENESS_MS
+             * was defined for this but never wired up: if the dongle dies
+             * silently (e.g. firmware crash under broadcast-storm load
+             * without delivering HMB_DATA_FWHALT), the driver would sit in
+             * a dead "connected" state forever. Healthy links keep
+             * last_rx_success_ms fresh via background traffic, so require
+             * both a full liveness window without any successful frame
+             * read AND accumulated SDIO rx errors before declaring the
+             * firmware dead and resetting the link.
+             */
+            if (bus->state == CONNECTED) {
+                uint32_t now_ms = kernel_tic_ms(0);
+                if ((now_ms - bus->last_rx_success_ms) > BRCMF_FW_LIVENESS_MS &&
+                    bus->rx_fail_count > 0) {
+                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u), resetting link\n",
+                            now_ms - bus->last_rx_success_ms,
+                            bus->rx_fail_count);
+                    brcmf_sdio_checkdied();
+                    brcmf_mark_disconnected("fw liveness timeout",
+                            0, bus->rx_fail_count, 0);
+                }
+            }
 
             if (tick >= next_scan_tick && bus->state != CONNECTED) {
                 if (brcmf_manual_connect_guard_active(tick)) {
