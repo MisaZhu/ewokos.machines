@@ -15,6 +15,7 @@ LIB_ARCH_BCM283X_OBJS = src/framebuffer.o \
 	src/gpio.o \
 	src/mailbox.o \
 	src/mbox_actled.o \
+	src/i2s.o \
 	src/mini_uart.o \
 	src/pl011_uart.o \
 	src/sd.o \
@@ -35,4 +36,3 @@ $(ARCH_BCM283X): $(LIB_ARCH_BCM283X_OBJS)
 clean:
 	rm -f $(LIB_ARCH_BCM283X_OBJS)
 	rm -f $(ARCH_BCM283X)ewoksys
-

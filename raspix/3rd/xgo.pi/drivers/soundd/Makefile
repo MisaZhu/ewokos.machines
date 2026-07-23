@@ -1,4 +1,4 @@
-TASK_OBJS = soundd.o i2s.o wm8960.o dma_chain.o 
+TASK_OBJS = soundd.o wm8960.o dma_chain.o 
 TASK = soundd
 
 include ../../../make.inc

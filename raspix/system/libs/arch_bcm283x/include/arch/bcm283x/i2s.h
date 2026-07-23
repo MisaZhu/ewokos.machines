@@ -5,7 +5,6 @@
 
 #define ARM_PCM_BASE		(_mmio_base + 0x203000)
 
-
 #define ARM_PCM_CS_A		(ARM_PCM_BASE + 0x00)
 #define ARM_PCM_FIFO_A		(ARM_PCM_BASE + 0x04)
 #define ARM_PCM_MODE_A		(ARM_PCM_BASE + 0x08)
@@ -16,13 +15,9 @@
 #define ARM_PCM_INTSTC_A	(ARM_PCM_BASE + 0x1C)
 #define ARM_PCM_GRAY		(ARM_PCM_BASE + 0x20)
 
+#define CHANS			2
+#define CHANLEN			16
 
-#define CHANS			2			// 2 I2S stereo channels
-#define CHANLEN			16			// width of a channel slot in bits
-
-//
-// PCM / I2S registers
-//
 #define CS_A_STBY		(1 << 25)
 #define CS_A_SYNC		(1 << 24)
 #define CS_A_RXSEX		(1 << 23)
@@ -69,16 +64,15 @@
 #define DREQ_A_RX__SHIFT	0
 #define DREQ_A_RX__MASK		(0x7F << 0)
 
-#define CM_BASE   (_mmio_base + 0x101000) // Clock manager base address
-#define CM_PASSWORD 0x5A000000  // Clock Control: Password "5A"
-#define CM_SRC_OSCILLATOR 0x01   // Clock Control: Clock Source = Oscillator
-#define CM_ENABLE 0x10
-#define CM_I2SCTL 0x98  // Clock Manager I2S Clock Control 
-#define CM_I2SDIV 0x9c  // Clock Manager 12SClock Divisor 
-						//
+#define CM_BASE			(_mmio_base + 0x101000)
+#define CM_PASSWORD		0x5A000000
+#define CM_SRC_OSCILLATOR	0x01
+#define CM_ENABLE		0x10
+#define CM_I2SCTL		0x98
+#define CM_I2SDIV		0x9c
+
 void pcm_init(void);
-int pcm_write(uint8_t *buf, int size);
-int pcm_read(uint8_t *buf, int size);
-//void pcm_test(void);
+int pcm_write(uint8_t* buf, int size);
+int pcm_read(uint8_t* buf, int size);
 
 #endif

@@ -16,8 +16,9 @@
 #include <ewoksys/vfs.h>
 #include <sysinfo.h>
 
+#include <arch/bcm283x/i2s.h>
+
 #include "dma_chain.h"
-#include "i2s.h"
 #include "wm8960.h"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
