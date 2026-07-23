@@ -16,6 +16,15 @@ using namespace Ewok;
 #define CAM_H 480
 #define CAM_BPP 1 /* RAW8 Bayer (SBGGR8) */
 #define CAM_FRAME_SIZE (CAM_W * CAM_H * CAM_BPP)
+/* The OV5647 raw stream can expose a noisy Bayer edge column on the far
+ * right. Crop one 2-pixel Bayer cell from the preview so it doesn't show
+ * up as a persistent colored line after demosaic. */
+#define CAM_CROP_LEFT 0
+#define CAM_CROP_TOP 0
+#define CAM_CROP_RIGHT 2
+#define CAM_CROP_BOTTOM 0
+#define CAM_VIEW_W (CAM_W - CAM_CROP_LEFT - CAM_CROP_RIGHT)
+#define CAM_VIEW_H (CAM_H - CAM_CROP_TOP - CAM_CROP_BOTTOM)
 
 class CamWidget: public Widget {
 	int _fd;
@@ -101,8 +110,9 @@ protected:
 		}
         */
 
-		/* scale (bilinear) the camera frame to the dst rect */
-		graph_blt_fit(_camGraph, 0, 0, CAM_W, CAM_H, g, dx, dy, dw, dh);
+		/* Hide the unstable raw border columns/rows from preview. */
+		graph_blt_fit(_camGraph, CAM_CROP_LEFT, CAM_CROP_TOP,
+				CAM_VIEW_W, CAM_VIEW_H, g, dx, dy, dw, dh);
 	}
 
 	void onTimer(uint32_t timerFPS, uint32_t timerStep) {

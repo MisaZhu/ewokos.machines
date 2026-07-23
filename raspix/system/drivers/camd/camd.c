@@ -23,6 +23,7 @@
 #include <ewoksys/proto.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/kernel_tic.h>
 #include <arch/bcm283x/gpio.h>
 #include <arch/bcm283x/mailbox.h>
 #include <sysinfo.h>
@@ -34,6 +35,21 @@
 #define CAM_DEFAULT_WIDTH  640
 #define CAM_DEFAULT_HEIGHT 480
 #define CAM_FRAME_TIMEOUT_MS 500
+
+/* frame-start -> frame-end duration sanity window. The RAW8 VGA mode runs
+ * VTS=504 HTS=1852 at 55-68.75Mpx/s (8/10-bit sysclk scaling): ~13.6-17ms
+ * frame period, ~13-16ms of active lines. A squashed short frame (sensor
+ * sending the FOV in fewer lines) ends far earlier; a composite (frame-end
+ * packet lost, the FE caught belongs to a LATER frame packed into the same
+ * window) ends a full frame period later (>=27ms). Both must never reach
+ * the client. The bounds leave several ms for poll/scheduler jitter. */
+#define CAM_FRAME_MS_MIN 9
+#define CAM_FRAME_MS_MAX 22
+/* FE can lead the final AXI writes by a few lines, but allowing dozens of
+ * lines through leaks stale tail data from the previous use of this half and
+ * shows up as a jittering strip at the bottom of the preview. */
+#define CAM_FRAME_TAIL_SLACK_LINES 8
+#define CAM_FRAME_DRAIN_MARGIN_MS  2
 
 /* VC bus address alias for DMA (coherent/uncached) */
 #define DMA_VC_ALIAS 0xC0000000u
@@ -406,8 +422,9 @@ static void unicam_stop_rx(void) {
  * Returns the completed buffer index (0/1) or -1 on timeout/bad frame. */
 static int unicam_capture_frame(void) {
 	uint32_t frame_size = _width * _height * _bpp;
-	uint32_t bus_addr, base, wrote, sta;
+	uint32_t bus_addr, base, wrote, sta, ista;
 	uint32_t timeout;
+	uint64_t t_start, dur;
 	int done, next;
 
 	if (_dma_phys == 0 || _dma_virt == NULL)
@@ -428,6 +445,7 @@ static int unicam_capture_frame(void) {
 	}
 	if (timeout == 0)
 		return -1;
+	t_start = kernel_tic_ms(0);
 
 	/* next frame goes to the other half (latched at its frame start) */
 	next = _cap_idx ^ 1;
@@ -444,17 +462,40 @@ static int unicam_capture_frame(void) {
 
 	/* wait for this frame's end. The FEI interrupt can be missed by
 	 * hardware, so (like the upstream ISR) also accept the CMP0
-	 * frame-end packet match (STA PI0). */
+	 * frame-end packet match (STA PI0).
+	 * Overlap gate: FSI alone (a NEW frame started while this frame's
+	 * end was never seen) means the FE packet was lost on the wire; the
+	 * output engine then packs the following frame(s) back-to-back into
+	 * this window - the "N stacked squashed copies" picture. Both bits
+	 * are sampled together, so in healthy operation (FE always precedes
+	 * the next FS) this can not false-trigger, no matter how late the
+	 * poll runs. */
 	timeout = CAM_FRAME_TIMEOUT_MS;
 	while (timeout > 0) {
-		if ((unicam_readl(UNICAM_ISTA) & UNICAM_ISTA_FEI) ||
-		    (unicam_readl(UNICAM_STA) & UNICAM_STA_PI0))
+		ista = unicam_readl(UNICAM_ISTA);
+		sta = unicam_readl(UNICAM_STA);
+		if ((ista & UNICAM_ISTA_FEI) || (sta & UNICAM_STA_PI0))
 			break;
+		if (ista & UNICAM_ISTA_FSI) {
+			printf("camd: frame end lost, dropped (ista=%08x)\n", ista);
+			goto fail_rearm;
+		}
 		proc_usleep(1000);
 		timeout--;
 	}
 	if (timeout == 0)
 		goto fail_rearm;
+
+	/* duration gate: a legit frame spans ~13-16ms of active lines. Much
+	 * shorter = the sensor squashed the FOV into fewer lines (stale or
+	 * mis-applied geometry); much longer = a composite of several frames
+	 * (missed FE) - the polls above can only catch packing that crosses
+	 * one of the ~1ms samples, this catches it by construction. */
+	dur = kernel_tic_ms(0) - t_start;
+	if (dur < CAM_FRAME_MS_MIN || dur > CAM_FRAME_MS_MAX) {
+		printf("camd: bad frame duration %dms, dropped\n", (int)dur);
+		goto fail_rearm;
+	}
 
 	/* short-frame gate (hardware ground truth): until the next frame
 	 * start re-arms it, IBWP still points inside this half, so sampled
@@ -463,13 +504,14 @@ static int unicam_capture_frame(void) {
 	 * with no STA error bits; UNICAM then packs them back-to-back into
 	 * the window (N stacked, vertically squashed copies) - such frames
 	 * must never reach the client. DMA can lag FE by a few lines, so
-	 * allow generous slack: a real short frame is hundreds of lines
-	 * short and unambiguous. If the following frame start already
+	 * keep only a small tail slack. A wider allowance leaks stale data
+	 * from the previous use of this half into the bottom lines and looks
+	 * like a jittering repeated strip. If the following frame start already
 	 * re-armed IBWP the subtraction wraps huge and the gate passes -
 	 * correct, since the window was closed at that frame start. */
 	base = (_dma_phys + (uint32_t)_cap_idx * frame_size) | DMA_VC_ALIAS;
 	wrote = unicam_readl(UNICAM_IBWP) - base;
-	if (wrote + 64u * _width * _bpp < frame_size) {
+	if (wrote + CAM_FRAME_TAIL_SLACK_LINES * _width * _bpp < frame_size) {
 		printf("camd: short frame dropped (wrote=%u)\n", wrote);
 		goto fail_rearm;
 	}
@@ -494,7 +536,7 @@ static int unicam_capture_frame(void) {
 	}
 	if (timeout == 0)
 		goto fail_rearm;
-	proc_usleep(1000); /* margin for the last lines still in flight */
+	proc_usleep(CAM_FRAME_DRAIN_MARGIN_MS * 1000); /* let final AXI writes drain */
 
 	done = _cap_idx;
 	_cap_idx = next;

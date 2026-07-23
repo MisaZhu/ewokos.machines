@@ -138,8 +138,11 @@ static const reg_entry_t ov5647_640x480_raw8[] = {
 	{0x3805, 0x2F},
 	{0x3806, 0x07}, /* y end = 1951 */
 	{0x3807, 0x9F},
-	{0x3811, 0x04}, /* x offset: center 640 in 648 */
-	{0x3813, 0x04}, /* y offset: center 480 in 488 */
+	/* Do not keep the VGA window centered inside a larger 648x488 envelope.
+	 * camd/UNICAM allocates an exact 640x480 RAW8 buffer; the residual sensor
+	 * offsets can leave wrapped edge lines in the captured frame. */
+	{0x3811, 0x00}, /* x offset: exact 640-pixel output window */
+	{0x3813, 0x00}, /* y offset: exact 480-line output window */
 	{0x3630, 0x2E}, /* analog control */
 	{0x3632, 0xE2},
 	{0x3633, 0x23},
@@ -273,9 +276,11 @@ static int verify_mode_regs(void) {
 		{0x3808, 0x02}, {0x3809, 0x80}, /* x output size = 640 */
 		{0x380A, 0x01}, {0x380B, 0xE0}, /* y output size = 480 */
 		{0x380C, 0x07}, {0x380D, 0x3C}, /* HTS = 1852 */
+		{0x380E, 0x01}, {0x380F, 0xF8}, /* VTS = 504 */
 		{0x3814, 0x35}, {0x3815, 0x35}, /* 2x2 binned + subsampled (/4) */
 		{0x3801, 0x10},               /* x start = 16 */
-		{0x3811, 0x04}, {0x3813, 0x04}, /* centered output window */
+		{0x3806, 0x07}, {0x3807, 0x9F}, /* y end = 1951 */
+		{0x3811, 0x00}, {0x3813, 0x00}, /* exact output window, no pad */
 		{0x3820, 0x41}, {0x3821, 0x07}, /* vflip/vbin + mirror/hbin */
 		{0x3018, 0x44},               /* MIPI 2-lane */
 		{0x3034, 0x08},               /* 8-bit mode */
