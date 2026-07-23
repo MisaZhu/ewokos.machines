@@ -1,12 +1,11 @@
+@export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log 
 
 @/bin/ipcserv /drivers/displayd       
 @/bin/ipcserv /drivers/xgo/spilcdd    /dev/fb0
 @/bin/ipcserv /drivers/fontd          
 
-@export UX_ID=0
 @/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 14
-
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
 
 @/bin/splash -m "start timer" -p 10
@@ -16,29 +15,44 @@
 @/bin/ipcserv /drivers/xgo/xgo_buttond    /dev/keyb0
 @/bin/ipcserv /drivers/vkeybd             /dev/vkeyb /dev/keyb0 -t k
 
-@/bin/splash -m "driver soundd" -p 30
-@/bin/ipcserv /drivers/xgo/soundd    /dev/sound0
-
-@/bin/splash -m "driver uart" -p 35
+@/bin/splash -m "driver uart" -p 30
 @/bin/ipcserv /drivers/raspix/uartd   /dev/tty0
 
-@/bin/splash -m "mount /tmp" -p 37
+@/bin/splash -m "mount /tmp" -p 35
 @/bin/ipcserv /drivers/ramfsd          /tmp
 
-@/bin/splash -m "driver camera" -p 38
+@/bin/splash -m "start /dev/wl0" -p 40
+@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
+
+@/bin/splash -m "start /dev/net0" -p 45
+@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
+
+@/bin/splash -m "start /dev/time" -p 50
+@/bin/ipcserv /drivers/timed    /dev/time
+
+@/bin/splash -m "start sessiond" -p 52
+@/bin/ipcserv /sbin/sessiond
+
+#@/bin/splash -m "start telnetd" -p 53
+#@/bin/bgrun /sbin/telnetd
+
+@/bin/splash -m "start sshd" -p 55
+@/bin/bgrun /sbin/sshd
+
+@/bin/splash -m "driver soundd" -p 60
+@/bin/ipcserv /drivers/xgo/soundd    /dev/sound0
+
+@/bin/splash -m "driver camera" -p 65
 @/bin/ipcserv /drivers/raspix/camd   /dev/cam0
 
-@/bin/splash -m "start xserver" -p 40
-@/bin/ipcserv /drivers/xserverd       /dev/x
-
-@/bin/splash -m "start xim_none" -p 50
+@/bin/splash -m "start xim_none" -p 70
 @/bin/bgrun /sbin/x/xim_none   /dev/vkeyb
 
-@/bin/splash -m "start xim_vkey" -p 60
-@/bin/bgrun /sbin/x/xim_vkey -h 120
+#@/bin/splash -m "start xim_vkey" -p 80
+#@/bin/bgrun /sbin/x/xim_vkey -h 120
 
-@/bin/splash -m "start sessiond" -p 70
-@/bin/ipcserv /sbin/sessiond
+@/bin/splash -m "start xserver" -p 90
+@/bin/ipcserv /drivers/xserverd       /dev/x
 
 @/bin/splash -m "start x" -p 100
 @/bin/bgrun /bin/x/xsession misa
