@@ -77,8 +77,9 @@ protected:
 			i = 9;
 
 		img = battIcons[i];
-		graph_blt_alpha(img, 0, 0, img->w, img->h,
-				g, r.x+r.w-img->w-4, r.y+4, img->w, img->h, 0xff);
+		if(img != NULL)
+			graph_blt_alpha(img, 0, 0, img->w, img->h,
+					g, r.x+r.w-img->w-4, r.y+4, img->w, img->h, 0xff);
 	}
 
 	void onTimer(uint32_t timerFPS, uint32_t timerStep) {

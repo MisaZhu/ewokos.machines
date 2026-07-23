@@ -19,8 +19,11 @@
 @/bin/splash -m "driver soundd" -p 30
 @/bin/ipcserv /drivers/xgo/soundd    /dev/sound0
 
-#@/bin/splash -m "driver uart" -p 35
-#@/bin/ipcserv /drivers/raspix/uartd   /dev/tty0
+@/bin/splash -m "driver uart" -p 35
+@/bin/ipcserv /drivers/raspix/uartd   /dev/tty0
+
+@/bin/splash -m "mount /tmp" -p 37
+@/bin/ipcserv /drivers/ramfsd          /tmp
 
 @/bin/splash -m "driver camera" -p 38
 @/bin/ipcserv /drivers/raspix/camd   /dev/cam0
