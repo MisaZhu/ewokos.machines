@@ -3,7 +3,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <ewoksys/syscall.h>
+#include <ewoksys/sys.h>
 #include <ewoksys/vfs.h>
+#include <sysinfo.h>
 #include "arch/bcm283x/gpio.h"
 #include "i2s.h"
 
@@ -33,9 +35,28 @@ void gpio_init(void) {
 }
 
 void clock_init(void){
+	/*
+	 * BCLK = PCM_CLK (no extra divider in the PCM block).
+	 * Target: 48000Hz * 2ch * 16bit = 1.536MHz.
+	 * Pi4/CM4 (mmio @0xfe000000): XOSC=54MHz   -> div = 35.15625 = 0x23.280
+	 * Pi3/Zero (mmio @0x3f000000): XOSC=19.2MHz -> div = 12.5     = 0x0C.800
+	 */
+	sys_info_t sysinfo;
+	uint32_t divi = 0x0C, divf = 0x800;
+
+	sys_get_sys_info(&sysinfo);
+	if (sysinfo.mmio.phy_base == 0xfe000000u) {
+		divi = 0x23;
+		divf = 0x280;
+	}
+
+	/* stop the I2S clock and wait for the generator to go idle */
 	write32(CM_BASE + CM_I2SCTL, CM_PASSWORD | CM_SRC_OSCILLATOR);
-	write32(CM_BASE + CM_I2SDIV, CM_PASSWORD |  (0x23<<12) | 0xA0);
+	proc_usleep(10);
+	write32(CM_BASE + CM_I2SDIV, CM_PASSWORD | (divi << 12) | divf);
+	proc_usleep(10);
 	write32(CM_BASE + CM_I2SCTL, CM_PASSWORD | CM_SRC_OSCILLATOR | CM_ENABLE);
+	proc_usleep(10);
 }
 
 
@@ -83,6 +104,9 @@ void pcm_init(void){
 	// set fifo
 	write32(ARM_PCM_CS_A, read32(ARM_PCM_CS_A) | (0x2 << CS_A_TXTHR__SHIFT));
 
+	// DMA request levels: assert TX DREQ when TX FIFO holds < 16 words
+	write32(ARM_PCM_DREQ_A, (0x10 << DREQ_A_TX__SHIFT) | 0x10);
+
 	// disable standby
 	write32 (ARM_PCM_CS_A, read32 (ARM_PCM_CS_A) | CS_A_STBY);
 	proc_usleep(50);
@@ -93,7 +117,6 @@ void pcm_init(void){
 
 	write32 (ARM_PCM_CS_A, read32 (ARM_PCM_CS_A) | CS_A_DMAEN);
 	write32 (ARM_PCM_CS_A, read32 (ARM_PCM_CS_A) | CS_A_TXON | CS_A_RXON | CS_A_RXSEX);
-	
 }
 
 int pcm_write(uint8_t* buf, int size){

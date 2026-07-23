@@ -23,6 +23,7 @@
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define UNUSED(v) ((void)(v))
 
+/* Same command/data protocol as raspix/system/drivers/soundd. */
 #define CTRL_PCM_DEV_HW 0xF0
 #define CTRL_PCM_DEV_HW_FREE 0xF1
 #define CTRL_PCM_DEV_PRPARE 0xF2
@@ -48,6 +49,7 @@
 #define SOUND_PCM_RING_MIN_BYTES (32U * 1024U)
 #define SOUND_PCM_RING_MAX_BYTES (256U * 1024U)
 
+/* Same layout as raspix/system/drivers/soundd struct pcm_config. */
 struct pcm_config {
 	int bit_depth;
 	int rate;
@@ -344,9 +346,8 @@ static void audio_force_recover_stall_locked(void) {
 	if (audio_pcm_ring_pending_bytes_locked() == 0 && !_sound.hold_valid) {
 		return;
 	}
-	ipc_disable();
+	/* NOTE: no ipc_disable here - all DMA chain access is serialized by _sound_lock. */
 	dma_chain_reset();
-	ipc_enable();
 	audio_reset_convert_state_locked();
 	_sound.need_rebuffer = true;
 }
@@ -413,9 +414,7 @@ static int audio_hw_params_locked(const struct pcm_config* cfg) {
 	struct pcm_config normalized;
 	uint32_t sample_bytes;
 
-	/* #region debug-point xgo-pcm-open-hw-params */
 	if (cfg == NULL) {
-		slog("xgo-soundd: hw_params cfg=null\n");
 		return -1;
 	}
 
@@ -445,36 +444,27 @@ static int audio_hw_params_locked(const struct pcm_config* cfg) {
 		normalized.start_threshold = normalized.stop_threshold;
 	}
 
-	slog("xgo-soundd: hw_params raw bits=%d rate=%d ch=%d period=%d count=%d start=%d stop=%d normalized bits=%d rate=%d ch=%d period=%d count=%d start=%d stop=%d\n",
-			cfg->bit_depth, cfg->rate, cfg->channels, cfg->period_size, cfg->period_count,
-			cfg->start_threshold, cfg->stop_threshold,
-			normalized.bit_depth, normalized.rate, normalized.channels,
-			normalized.period_size, normalized.period_count,
-			normalized.start_threshold, normalized.stop_threshold);
-
 	if (normalized.bit_depth != 8 && normalized.bit_depth != 16 &&
 			normalized.bit_depth != 24 && normalized.bit_depth != 32) {
-		slog("xgo-soundd: hw_params reject unsupported bit_depth=%d\n", normalized.bit_depth);
+		printf("sound: unsupported bit depth: %d\n", normalized.bit_depth);
 		return -1;
 	}
 	if (normalized.rate < 8000 || normalized.rate > 96000) {
-		slog("xgo-soundd: hw_params reject unsupported rate=%d\n", normalized.rate);
+		printf("sound: unsupported rate: %d\n", normalized.rate);
 		return -1;
 	}
 	if (normalized.channels < 1 || normalized.channels > 2) {
-		slog("xgo-soundd: hw_params reject unsupported channels=%d\n", normalized.channels);
+		printf("sound: unsupported channels: %d\n", normalized.channels);
 		return -1;
 	}
 	if (normalized.period_size <= 0 || normalized.period_count <= 0) {
-		slog("xgo-soundd: hw_params reject invalid period=%d count=%d\n",
+		printf("sound: invalid period config: %d x %d\n",
 				normalized.period_size, normalized.period_count);
 		return -1;
 	}
 
 	sample_bytes = audio_sample_bytes(normalized.bit_depth);
 	if (sample_bytes == 0) {
-		slog("xgo-soundd: hw_params reject sample_bytes=0 for bit_depth=%d\n",
-				normalized.bit_depth);
 		return -1;
 	}
 
@@ -486,16 +476,15 @@ static int audio_hw_params_locked(const struct pcm_config* cfg) {
 	_sound.buffer_bytes = _sound.period_bytes * (uint32_t)normalized.period_count;
 	_sound.write_chunk_bytes = _sound.buffer_bytes;
 	if (audio_pcm_ring_alloc_locked(_sound.frame_bytes) != 0) {
-		slog("xgo-soundd: hw_params reject ring alloc failed frame=%u buffer=%u\n",
+		printf("sound: hw_params ring alloc failed frame=%u buffer=%u\n",
 				_sound.frame_bytes, _sound.buffer_bytes);
 		audio_hw_free_locked();
 		return -1;
 	}
 	_sound.configured = true;
-	slog("xgo-soundd: hw_params ok frame=%u period_bytes=%u buffer_bytes=%u ring_bytes=%u\n",
-			_sound.frame_bytes, _sound.period_bytes, _sound.buffer_bytes,
-			_sound.pcm_ring_bytes);
-	/* #endregion debug-point xgo-pcm-open-hw-params */
+	printf("sound: hw_params rate=%d channels=%d bits=%d frame=%u period=%u buffer=%u\n",
+			normalized.rate, normalized.channels, normalized.bit_depth,
+			_sound.frame_bytes, _sound.period_bytes, _sound.buffer_bytes);
 	return 0;
 }
 
@@ -503,11 +492,6 @@ static int audio_ensure_default_config_locked(void) {
 	struct pcm_config cfg;
 
 	if (_sound.configured) {
-		/* #region debug-point xgo-pcm-open-default-config */
-		slog("xgo-soundd: default_config skip existing rate=%d ch=%d bits=%d period=%d count=%d\n",
-				_sound.pcm_cfg.rate, _sound.pcm_cfg.channels, _sound.pcm_cfg.bit_depth,
-				_sound.pcm_cfg.period_size, _sound.pcm_cfg.period_count);
-		/* #endregion debug-point xgo-pcm-open-default-config */
 		return 0;
 	}
 
@@ -519,19 +503,11 @@ static int audio_ensure_default_config_locked(void) {
 	cfg.period_count = SOUND_DEFAULT_PERIOD_COUNT;
 	cfg.start_threshold = 1;
 	cfg.stop_threshold = cfg.period_size * cfg.period_count;
-	/* #region debug-point xgo-pcm-open-default-config */
-	slog("xgo-soundd: default_config apply bits=%d rate=%d ch=%d period=%d count=%d start=%d stop=%d\n",
-			cfg.bit_depth, cfg.rate, cfg.channels, cfg.period_size, cfg.period_count,
-			cfg.start_threshold, cfg.stop_threshold);
-	/* #endregion debug-point xgo-pcm-open-default-config */
 	return audio_hw_params_locked(&cfg);
 }
 
 static int audio_prepare_locked(void) {
 	if (!_sound.configured) {
-		/* #region debug-point xgo-pcm-open-prepare */
-		slog("xgo-soundd: prepare reject configured=0\n");
-		/* #endregion debug-point xgo-pcm-open-prepare */
 		return -1;
 	}
 
@@ -541,44 +517,16 @@ static int audio_prepare_locked(void) {
 	_sound.need_rebuffer = true;
 	_sound.prepared = true;
 	_sound.started = false;
-	/* #region debug-point xgo-pcm-open-prepare */
-	slog("xgo-soundd: prepare ok pid=%d frame=%u rate=%d ch=%d bits=%d\n",
-			_sound.occupied_pid, _sound.frame_bytes, _sound.pcm_cfg.rate,
-			_sound.pcm_cfg.channels, _sound.pcm_cfg.bit_depth);
-	/* #endregion debug-point xgo-pcm-open-prepare */
 	return 0;
 }
 
 static int audio_start_locked(void) {
 	if (!_sound.prepared) {
-		/* #region debug-point xgo-pcm-open-start */
-		slog("xgo-soundd: start reject prepared=0 configured=%d\n",
-				_sound.configured ? 1 : 0);
-		/* #endregion debug-point xgo-pcm-open-start */
 		return -1;
 	}
 
 	_sound.started = true;
-	/* #region debug-point xgo-pcm-open-start */
-	slog("xgo-soundd: start ok pid=%d rate=%d ch=%d frame=%u period=%u buffer=%u\n",
-			_sound.occupied_pid, _sound.pcm_cfg.rate, _sound.pcm_cfg.channels,
-			_sound.frame_bytes, _sound.period_bytes, _sound.buffer_bytes);
-	/* #endregion debug-point xgo-pcm-open-start */
 	return 0;
-}
-
-static int audio_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		void* buf, int size, int offset, void* p) {
-	UNUSED(dev);
-	UNUSED(fd);
-	UNUSED(from_pid);
-	UNUSED(node);
-	UNUSED(buf);
-	UNUSED(size);
-	UNUSED(offset);
-	UNUSED(p);
-
-	return VFS_ERR_RETRY;
 }
 
 static int sound_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, void* p) {
@@ -590,28 +538,14 @@ static int sound_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int 
 
 	from_pid = proc_getpid(from_pid);
 	pthread_mutex_lock(&_sound_lock);
-	/* #region debug-point xgo-pcm-open-open */
-	slog("xgo-soundd: open request pid=%d open_count=%d occupied=%d oflag=%d\n",
-			from_pid, _sound.open_count, _sound.occupied_pid, oflag);
-	/* #endregion debug-point xgo-pcm-open-open */
 	if (_sound.open_count > 0 && _sound.occupied_pid != from_pid) {
-		/* #region debug-point xgo-pcm-open-open */
-		slog("xgo-soundd: open reject pid=%d occupied=%d open_count=%d\n",
-				from_pid, _sound.occupied_pid, _sound.open_count);
-		/* #endregion debug-point xgo-pcm-open-open */
 		pthread_mutex_unlock(&_sound_lock);
 		return -1;
 	}
-	if (_sound.open_count == 0) {
-		audio_hw_free_locked();
-	}
+	/* Same semantics as raspix soundd: every open resets the hardware state. */
+	audio_hw_free_locked();
 	_sound.occupied_pid = from_pid;
 	_sound.open_count++;
-	/* #region debug-point xgo-pcm-open-open */
-	slog("xgo-soundd: open ok pid=%d open_count=%d configured=%d prepared=%d started=%d\n",
-			from_pid, _sound.open_count, _sound.configured ? 1 : 0,
-			_sound.prepared ? 1 : 0, _sound.started ? 1 : 0);
-	/* #endregion debug-point xgo-pcm-open-open */
 	pthread_mutex_unlock(&_sound_lock);
 	return 0;
 }
@@ -625,15 +559,7 @@ static int sound_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsin
 
 	from_pid = proc_getpid(from_pid);
 	pthread_mutex_lock(&_sound_lock);
-	/* #region debug-point xgo-pcm-open-close */
-	slog("xgo-soundd: close request pid=%d open_count=%d occupied=%d\n",
-			from_pid, _sound.open_count, _sound.occupied_pid);
-	/* #endregion debug-point xgo-pcm-open-close */
 	if (_sound.occupied_pid != from_pid || _sound.open_count <= 0) {
-		/* #region debug-point xgo-pcm-open-close */
-		slog("xgo-soundd: close reject pid=%d open_count=%d occupied=%d\n",
-				from_pid, _sound.open_count, _sound.occupied_pid);
-		/* #endregion debug-point xgo-pcm-open-close */
 		pthread_mutex_unlock(&_sound_lock);
 		return -1;
 	}
@@ -643,10 +569,6 @@ static int sound_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsin
 		audio_hw_free_locked();
 		_sound.occupied_pid = 0;
 	}
-	/* #region debug-point xgo-pcm-open-close */
-	slog("xgo-soundd: close ok pid=%d open_count=%d occupied=%d\n",
-			from_pid, _sound.open_count, _sound.occupied_pid);
-	/* #endregion debug-point xgo-pcm-open-close */
 	pthread_mutex_unlock(&_sound_lock);
 	return 0;
 }
@@ -672,10 +594,6 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 
 	pthread_mutex_lock(&_sound_lock);
 	if (_sound.occupied_pid != from_pid) {
-		/* #region debug-point xgo-pcm-open-write */
-		slog("xgo-soundd: write reject pid=%d occupied=%d size=%d offset=%d\n",
-				from_pid, _sound.occupied_pid, size, offset);
-		/* #endregion debug-point xgo-pcm-open-write */
 		pthread_mutex_unlock(&_sound_lock);
 		return -1;
 	}
@@ -692,16 +610,9 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		return -1;
 	}
 	if (_sound.frame_bytes == 0) {
-		slog("xgo-soundd: write reject frame_bytes=0 pid=%d configured=%d prepared=%d started=%d\n",
-				from_pid, _sound.configured ? 1 : 0,
-				_sound.prepared ? 1 : 0, _sound.started ? 1 : 0);
 		pthread_mutex_unlock(&_sound_lock);
 		return -1;
 	}
-	slog("xgo-soundd: write enter pid=%d size=%d offset=%d frame=%u ring_avail=%u ring_pending=%u started=%d\n",
-			from_pid, size, offset, _sound.frame_bytes,
-			audio_input_avail_bytes_locked(), audio_pcm_ring_pending_bytes_locked(),
-			_sound.started ? 1 : 0);
 	pthread_mutex_unlock(&_sound_lock);
 
 	size -= offset;
@@ -716,8 +627,6 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 
 		pthread_mutex_lock(&_sound_lock);
 		if (_sound.occupied_pid != from_pid || !_sound.started) {
-			slog("xgo-soundd: write abort pid=%d occupied=%d started=%d total=%d size=%d\n",
-					from_pid, _sound.occupied_pid, _sound.started ? 1 : 0, total, size);
 			pthread_mutex_unlock(&_sound_lock);
 			return total > 0 ? total : -1;
 		}
@@ -762,29 +671,24 @@ static uint32_t sound_check_poll_events(vdevice_t* dev, int fd, int from_pid, fs
 	pthread_mutex_lock(&_sound_lock);
 	if (_sound.configured &&
 			_sound.frame_bytes != 0 &&
-			audio_input_avail_bytes_locked() >= _sound.frame_bytes) {
+			audio_pcm_ring_avail_bytes_locked() >= _sound.frame_bytes) {
 		events = VFS_EVT_WR;
 	}
 	pthread_mutex_unlock(&_sound_lock);
 	return events;
 }
 
-static int sound_pcm_cmd_locked(int from_pid, int cmd, proto_t* in, proto_t* ret, const char* source) {
+static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
 	int result = 0;
 	struct pcm_config cfg;
 
-	/* #region debug-point xgo-pcm-open-dev-cntl */
-	slog("xgo-soundd: %s enter pid=%d cmd=%d occupied=%d configured=%d prepared=%d started=%d\n",
-			source, from_pid, cmd, _sound.occupied_pid,
-			_sound.configured ? 1 : 0,
-			_sound.prepared ? 1 : 0,
-			_sound.started ? 1 : 0);
-	/* #endregion debug-point xgo-pcm-open-dev-cntl */
+	UNUSED(dev);
+	UNUSED(p);
+
+	from_pid = proc_getpid(from_pid);
+	pthread_mutex_lock(&_sound_lock);
 	if (_sound.occupied_pid != from_pid) {
-		/* #region debug-point xgo-pcm-open-dev-cntl */
-		slog("xgo-soundd: %s reject pid=%d occupied=%d cmd=%d\n",
-				source, from_pid, _sound.occupied_pid, cmd);
-		/* #endregion debug-point xgo-pcm-open-dev-cntl */
+		pthread_mutex_unlock(&_sound_lock);
 		return -1;
 	}
 
@@ -805,20 +709,13 @@ static int sound_pcm_cmd_locked(int from_pid, int cmd, proto_t* in, proto_t* ret
 		if (!_sound.configured && audio_ensure_default_config_locked() != 0) {
 			result = -1;
 		}
-		else if (_sound.open_count == 0) {
-			result = -1;
-		}
 		else if (_sound.buffer_bytes == 0 || _sound.write_chunk_bytes == 0) {
 			result = -1;
 		}
 		else {
-			/*
-			 * Userspace players use BUF_AVAIL as a "should I even call write()"
-			 * gate and may abort if it briefly reports 0. Keep exposing the
-			 * full writable window here; the ring-backed blocking write path
-			 * handles pacing and waits for feeder progress internally.
-			 */
-			result = (int)MIN(_sound.buffer_bytes, _sound.write_chunk_bytes);
+			/* Same semantics as raspix soundd: report real writable space. */
+			result = (int)MIN(MIN(_sound.buffer_bytes, _sound.write_chunk_bytes),
+					audio_pcm_ring_avail_bytes_locked());
 		}
 		break;
 	default:
@@ -826,46 +723,9 @@ static int sound_pcm_cmd_locked(int from_pid, int cmd, proto_t* in, proto_t* ret
 		break;
 	}
 
-	/* #region debug-point xgo-pcm-open-dev-cntl */
-	slog("xgo-soundd: %s exit pid=%d cmd=%d result=%d configured=%d prepared=%d started=%d\n",
-			source, from_pid, cmd, result,
-			_sound.configured ? 1 : 0,
-			_sound.prepared ? 1 : 0,
-			_sound.started ? 1 : 0);
-	/* #endregion debug-point xgo-pcm-open-dev-cntl */
+	pthread_mutex_unlock(&_sound_lock);
 	PF->addi(ret, result);
 	return 0;
-}
-
-static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
-	UNUSED(dev);
-	UNUSED(p);
-
-	from_pid = proc_getpid(from_pid);
-	pthread_mutex_lock(&_sound_lock);
-	int rc = sound_pcm_cmd_locked(from_pid, cmd, in, ret, "dev_cntl");
-	pthread_mutex_unlock(&_sound_lock);
-	return rc;
-}
-
-static int sound_fcntl(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
-		int cmd, proto_t* in, proto_t* out, void* p) {
-	UNUSED(dev);
-	UNUSED(info);
-	UNUSED(p);
-
-	from_pid = proc_getpid(from_pid);
-	pthread_mutex_lock(&_sound_lock);
-	/* #region debug-point xgo-pcm-open-fcntl */
-	slog("xgo-soundd: fcntl pid=%d fd=%d cmd=%d occupied=%d open_count=%d configured=%d prepared=%d started=%d\n",
-			from_pid, fd, cmd, _sound.occupied_pid, _sound.open_count,
-			_sound.configured ? 1 : 0,
-			_sound.prepared ? 1 : 0,
-			_sound.started ? 1 : 0);
-	/* #endregion debug-point xgo-pcm-open-fcntl */
-	int rc = sound_pcm_cmd_locked(from_pid, cmd, in, out, "fcntl");
-	pthread_mutex_unlock(&_sound_lock);
-	return rc;
 }
 
 static bool audio_feed_pcm_ring_locked(void) {
@@ -899,10 +759,6 @@ static bool audio_feed_pcm_ring_locked(void) {
 			output_avail_frames = SOUND_CONVERT_BUF_FRAMES;
 		}
 		if (output_avail_frames == 0) {
-			if (audio_pcm_ring_pending_bytes_locked() > 0 || _sound.hold_valid) {
-				slog("xgo-soundd: feeder wait dma_full ring_pending=%u hold=%d\n",
-						audio_pcm_ring_pending_bytes_locked(), _sound.hold_valid ? 1 : 0);
-			}
 			break;
 		}
 
@@ -914,15 +770,9 @@ static bool audio_feed_pcm_ring_locked(void) {
 			}
 			pushed = dma_chain_push(converted, (int)produced_bytes);
 			if (pushed != (int)produced_bytes) {
-				slog("xgo-soundd: feeder hold push mismatch produced=%u pushed=%d dma_avail=%u\n",
-						produced_bytes, pushed, dma_chain_avail_bytes());
 				break;
 			}
-			ipc_disable();
 			dma_chain_flush();
-			ipc_enable();
-			slog("xgo-soundd: feeder hold push produced=%u ring_pending=%u dma_avail=%u\n",
-					produced_bytes, audio_pcm_ring_pending_bytes_locked(), dma_chain_avail_bytes());
 			progressed = true;
 			continue;
 		}
@@ -940,27 +790,16 @@ static bool audio_feed_pcm_ring_locked(void) {
 		produced_bytes = audio_convert_to_hw_locked(_sound.pcm_ring + _sound.pcm_ring_rd,
 				chunk_bytes, converted, output_avail_frames, &consumed_bytes);
 		if (consumed_bytes == 0) {
-			slog("xgo-soundd: feeder convert stall chunk=%u out_frames=%u ring_pending=%u hold=%d\n",
-					chunk_bytes, output_avail_frames,
-					audio_pcm_ring_pending_bytes_locked(), _sound.hold_valid ? 1 : 0);
 			break;
 		}
 		if (produced_bytes != 0) {
 			pushed = dma_chain_push(converted, (int)produced_bytes);
 			if (pushed != (int)produced_bytes) {
-				slog("xgo-soundd: feeder push mismatch chunk=%u consumed=%u produced=%u pushed=%d dma_avail=%u\n",
-						chunk_bytes, consumed_bytes, produced_bytes, pushed, dma_chain_avail_bytes());
 				break;
 			}
-			ipc_disable();
 			dma_chain_flush();
-			ipc_enable();
 		}
 		audio_pcm_ring_consume_bytes_locked(consumed_bytes);
-		slog("xgo-soundd: feeder consume chunk=%u consumed=%u produced=%u ring_pending=%u dma_avail=%u hold=%d\n",
-				chunk_bytes, consumed_bytes, produced_bytes,
-				audio_pcm_ring_pending_bytes_locked(), dma_chain_avail_bytes(),
-				_sound.hold_valid ? 1 : 0);
 		progressed = true;
 	}
 
@@ -975,9 +814,7 @@ static void* sound_feeder_thread(void* arg) {
 		uint32_t sleep_usec;
 
 		pthread_mutex_lock(&_sound_lock);
-		ipc_disable();
 		dma_chain_flush();
-		ipc_enable();
 		audio_feed_pcm_ring_locked();
 		if (dma_chain_avail_bytes() == (uint32_t)(DMA_DATA_SIZE * DMA_BUF_CNT) &&
 				audio_total_pending_input_bytes_locked() == 0) {
@@ -985,7 +822,7 @@ static void* sound_feeder_thread(void* arg) {
 		}
 		if (_sound.configured &&
 				_sound.frame_bytes != 0 &&
-				audio_input_avail_bytes_locked() >= _sound.frame_bytes) {
+				audio_pcm_ring_avail_bytes_locked() >= _sound.frame_bytes) {
 			wake_write = true;
 		}
 		if (_sound.started ||
@@ -1030,16 +867,16 @@ int main(int argc, char** argv) {
 	strcpy(dev.name, "audio");
 	dev.open = sound_open;
 	dev.close = sound_close;
-	dev.read = audio_read;
 	dev.write = sound_write;
-	dev.fcntl = sound_fcntl;
 	dev.dev_cntl = sound_dev_cntl;
 	dev.check_poll_events = sound_check_poll_events;
 	dev.loop_step = sound_loop;
 	_sound_dev = &dev;
 	if (!_sound_feeder_started) {
-		if (pthread_create(&_sound_feeder_tid, NULL, sound_feeder_thread, NULL) != 0) {
-			return -1;
+		int err = pthread_create(&_sound_feeder_tid, NULL, sound_feeder_thread, NULL);
+		if (err != 0) {
+			printf("sound: pthread_create failed %d\n", err);
+			return 1;
 		}
 		_sound_feeder_started = true;
 	}
