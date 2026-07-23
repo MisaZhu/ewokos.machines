@@ -289,8 +289,6 @@ static void cam_clock_enable(void) {
 		else
 			printf("camd: warning: cam lp clock stuck off\n");
 	}
-	printf("camd: cam clk ctl=%08x div=%08x\n",
-			cm_readl(_cm_cam_ctl), cm_readl(_cm_cam_div));
 }
 
 /* ---- UNICAM receiver bring-up (upstream bcm2835-unicam unicam_start_rx) ----
@@ -477,7 +475,6 @@ static int unicam_capture_frame(void) {
 		if ((ista & UNICAM_ISTA_FEI) || (sta & UNICAM_STA_PI0))
 			break;
 		if (ista & UNICAM_ISTA_FSI) {
-			printf("camd: frame end lost, dropped (ista=%08x)\n", ista);
 			goto fail_rearm;
 		}
 		proc_usleep(1000);
@@ -493,7 +490,6 @@ static int unicam_capture_frame(void) {
 	 * one of the ~1ms samples, this catches it by construction. */
 	dur = kernel_tic_ms(0) - t_start;
 	if (dur < CAM_FRAME_MS_MIN || dur > CAM_FRAME_MS_MAX) {
-		printf("camd: bad frame duration %dms, dropped\n", (int)dur);
 		goto fail_rearm;
 	}
 
@@ -512,7 +508,6 @@ static int unicam_capture_frame(void) {
 	base = (_dma_phys + (uint32_t)_cap_idx * frame_size) | DMA_VC_ALIAS;
 	wrote = unicam_readl(UNICAM_IBWP) - base;
 	if (wrote + CAM_FRAME_TAIL_SLACK_LINES * _width * _bpp < frame_size) {
-		printf("camd: short frame dropped (wrote=%u)\n", wrote);
 		goto fail_rearm;
 	}
 
@@ -521,7 +516,6 @@ static int unicam_capture_frame(void) {
 	if (sta & (UNICAM_STA_CRCE | UNICAM_STA_SBE | UNICAM_STA_PBE |
 			UNICAM_STA_HOE | UNICAM_STA_PLE | UNICAM_STA_IFO |
 			UNICAM_STA_OFO | UNICAM_STA_BFO)) {
-		printf("camd: frame dropped, rx errors sta=%08x\n", sta);
 		goto fail_rearm;
 	}
 
@@ -569,7 +563,6 @@ static int unicam_probe_instance(uint32_t pd) {
 			/* the sensor may stream with a stale/partial config
 			 * (marginal bit-bang I2C); reprogram the full mode
 			 * table before every retry */
-			printf("camd: reprogramming sensor mode\n");
 			ov5647_set_mode(_mode);
 		}
 		ov5647_stream_off();  /* clock lane -> LP-11 */
@@ -580,9 +573,6 @@ static int unicam_probe_instance(uint32_t pd) {
 		if (unicam_capture_frame() >= 0)
 			return 0;
 
-		printf("camd: unicam @%08x: no frame try=%d (pd=%d ctrl=%08x sta=%08x)\n",
-				_unicam_off, try, pds,
-				unicam_readl(UNICAM_CTRL), unicam_readl(UNICAM_STA));
 		ov5647_stream_off();
 		unicam_stop_rx();
 		proc_usleep(10000);
@@ -607,9 +597,7 @@ static int unicam_probe_all(void) {
 		_unicam_cmi_off = inst[i].cmi;
 		_cm_cam_ctl = inst[i].ctl;
 		_cm_cam_div = inst[i].div;
-		printf("camd: probing unicam @%08x\n", _unicam_off);
 		if (unicam_probe_instance(inst[i].pd) == 0) {
-			printf("camd: unicam @%08x active\n", _unicam_off);
 			return 0;
 		}
 	}
@@ -774,8 +762,6 @@ int main(int argc, char** argv) {
 	if (argc > 2) i2c_sda = atoi(argv[2]);
 	if (argc > 3) i2c_scl = atoi(argv[3]);
 
-	printf("camd: start mnt=%s i2c_sda=%d i2c_scl=%d\n", mnt_point, i2c_sda, i2c_scl);
-
 	_mmio_base = mmio_map();
 
 	/* init mailbox (needed for camera power & DMA alloc) */
@@ -793,7 +779,6 @@ int main(int argc, char** argv) {
 		for (uint32_t i = 0; i < sizeof(pairs)/sizeof(pairs[0]); i++) {
 			if (pairs[i][0] == i2c_sda && pairs[i][1] == i2c_scl)
 				continue;
-			printf("camd: probing i2c sda=%d scl=%d\n", pairs[i][0], pairs[i][1]);
 			if (ov5647_init(pairs[i][0], pairs[i][1]) == 0) {
 				i2c_sda = pairs[i][0];
 				i2c_scl = pairs[i][1];
@@ -806,12 +791,10 @@ int main(int argc, char** argv) {
 			return -1;
 		}
 	}
-	printf("camd: ov5647 detected (sda=%d scl=%d)\n", i2c_sda, i2c_scl);
 	_i2c_sda = i2c_sda; /* keep for runtime hard-reset re-init */
 	_i2c_scl = i2c_scl;
 
 	/* configure sensor: RAW8 640x480, leaves sensor in stream-off (LP-11) */
-	printf("camd: configure default mode\n");
 	if (ov5647_set_mode(_mode) != 0) {
 		printf("camd: ov5647 set_mode failed\n");
 		return -1;
@@ -824,7 +807,6 @@ int main(int argc, char** argv) {
 		printf("camd: dma alloc failed (%u bytes)\n", frame_size * 2);
 		return -1;
 	}
-	printf("camd: dma buf phys=%08x size=%u\n", _dma_phys, _dma_size);
 
 	/* snapshot buffer served to clients by cam_read */
 	_snap_buf = (uint8_t*)malloc(frame_size);
@@ -834,7 +816,6 @@ int main(int argc, char** argv) {
 	}
 
 	/* bring up UNICAM (loop_step re-probes at runtime if this fails) */
-	printf("camd: setup unicam\n");
 	cam_bringup();
 
 	/* prime the snapshot with the first frame */
@@ -844,7 +825,6 @@ int main(int argc, char** argv) {
 			memcpy(_snap_buf, (uint8_t*)_dma_virt + (uint32_t)idx * frame_size,
 					frame_size);
 			_snap_ready = true;
-			printf("camd: first frame captured\n");
 		}
 	}
 
@@ -857,6 +837,5 @@ int main(int argc, char** argv) {
 	dev.fcntl = cam_fcntl;
 	dev.loop_step = cam_loop_step;
 
-	printf("camd: running %ux%u bpp=%u\n", _width, _height, _bpp);
 	return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
 }
