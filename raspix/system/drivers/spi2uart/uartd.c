@@ -55,24 +55,48 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	return size;
 }
 
+static uint32_t uart_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	if(!charbuf_is_empty(_RxBuf))
+		return VFS_EVT_RD;
+	return 0;
+}
+
 static int loop(vdevice_t* dev, void* p) {
 	(void)dev;
 	(void)p;
-	char c;
-	ipc_disable();
+
 	int len = SC16IS750_available(&spiuart, SC16IS750_CHANNEL_B);
+	if(len <= 0) {
+		proc_usleep(10000);
+		return 0;
+	}
+
+	int rx = 0;
+	ipc_disable();
 	for(int i = 0; i < len; i++){
 		int r = SC16IS750_read(&spiuart, SC16IS750_CHANNEL_B);
 		if(r < 0) //FIFO raced or chip not responding, never push garbage
 			break;
-		c = (char)r;
-		if(c != '\r' || !_no_return) {
-			charbuf_push(_RxBuf, c, true);
-			vfs_wakeup(dev->mnt_info.node,  VFS_EVT_RD);
-		}
+		char c = (char)r;
+		if(c == '\r' && _no_return)
+			continue;
+		charbuf_push(_RxBuf, c, true);
+		rx++;
 	}
 	ipc_enable();
-	proc_usleep(10000);
+
+	/*Level-triggered readiness is reported via uart_check_poll_events; the
+	  wakeup edge must be sent once, outside the ipc_disable() window (a
+	  per-byte wakeup inside it can be lost, leaving a blocked reader asleep
+	  forever even though data sits in the buffer).*/
+	if(rx > 0)
+		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	return 0;
 }
 
@@ -98,6 +122,7 @@ int main(int argc, char** argv) {
 	dev.read = uart_read;
 	dev.write = uart_write;
 	dev.loop_step = loop;
+	dev.check_poll_events = uart_check_poll_events;
 
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
 
