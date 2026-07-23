@@ -21,6 +21,7 @@
 #define CS_A_STBY		(1 << 25)
 #define CS_A_SYNC		(1 << 24)
 #define CS_A_RXSEX		(1 << 23)
+#define CS_A_RXD		(1 << 20)
 #define CS_A_TXE		(1 << 21)
 #define CS_A_TXD		(1 << 19)
 #define CS_A_TXW		(1 << 17)
@@ -72,6 +73,7 @@
 #define CM_I2SDIV		0x9c
 
 void pcm_init(void);
+void pcm_init_inmp441(void);
 int pcm_write(uint8_t* buf, int size);
 int pcm_read(uint8_t* buf, int size);
 

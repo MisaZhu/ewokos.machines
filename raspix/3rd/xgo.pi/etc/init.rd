@@ -42,6 +42,9 @@
 @/bin/splash -m "driver soundd" -p 60
 @/bin/ipcserv /drivers/xgo/soundd    /dev/sound0
 
+@/bin/splash -m "driver micd" -p 62
+@/bin/ipcserv /drivers/xgo/micd      /dev/mic0
+
 @/bin/splash -m "driver camera" -p 65
 @/bin/ipcserv /drivers/raspix/camd   /dev/cam0
 

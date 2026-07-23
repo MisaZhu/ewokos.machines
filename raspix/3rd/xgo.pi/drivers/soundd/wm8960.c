@@ -153,5 +153,3 @@ int wm8960_set_volume(float left,float right)
   ret |= wm8960_write(RIGHT_DAC_VOLUME, (uint8_t)right | 0x0100);
   return ret;
 }
-
-
