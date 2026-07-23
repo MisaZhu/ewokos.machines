@@ -65,10 +65,6 @@ static void* _dma_virt = NULL;   /* CPU-accessible virtual address */
 static uint32_t _dma_size = 0;
 static int _cap_idx = 0;         /* double-buffer half the hardware owns */
 static int _cap_fails = 0;       /* consecutive capture timeouts */
-static uint32_t _last_sta = 0;   /* STA latched at frame end (error bits) */
-static uint32_t _last_wrote = 0; /* bytes DMA'd for the last frame */
-static uint32_t _last_ihsta = 0; /* received line-width status */
-static uint32_t _last_ivsta = 0; /* received line-count status */
 
 static bool _in_use = false;
 
@@ -103,7 +99,7 @@ static int mbox_call(uint32_t* buf) {
 }
 
 /* drive firmware expander virtual GPIO (128+) - powers the camera module */
-static int cam_power_on(void) {
+static int cam_power_set(int on) {
 	uint32_t* buf;
 	int res;
 
@@ -115,7 +111,7 @@ static int cam_power_on(void) {
 	buf[3] = 8;
 	buf[4] = 8;
 	buf[5] = VGPIO_CAM_GPIO; /* CAM_GPIO: camera enable line */
-	buf[6] = 1;              /* high = power on */
+	buf[6] = on ? 1 : 0;
 	buf[7] = 0;
 	res = mbox_call(buf);
 	dma_free(0, (ewokos_addr_t)buf);
@@ -251,6 +247,7 @@ static int cm_cam_start(uint32_t src, uint32_t div) {
 static void cam_clock_enable(void) {
 	sys_info_t sysinfo;
 	uint32_t plld, div;
+	int i;
 
 	/* PLLD_PER: 750MHz on BCM2711 (pi4/cm4), 500MHz on earlier chips */
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
@@ -259,9 +256,15 @@ static void cam_clock_enable(void) {
 	else
 		plld = 500000000u;
 
-	/* divider in 12.12 fixed point: target 100MHz */
+	/* divider in 12.12 fixed point: target 100MHz. PLLD start is flaky
+	 * on some boots (BUSY never sets); retry so the lp clock source -
+	 * and with it the D-PHY LP timing - is the same on every boot. */
 	div = (uint32_t)(((uint64_t)plld << 12) / 100000000u);
-	if (cm_cam_start(CM_SRC_PLLD, div) != 0) {
+	for (i = 0; i < 3; i++) {
+		if (cm_cam_start(CM_SRC_PLLD, div) == 0)
+			break;
+	}
+	if (i >= 3) {
 		/* PLLD_PER refused to feed this generator; fall back to the
 		 * 54MHz crystal. The LP receiver logic only samples LP-state
 		 * transitions, so a slower lp clock still works. */
@@ -392,12 +395,18 @@ static void unicam_stop_rx(void) {
 /* wait for the next complete frame.
  * UNICAM is free-running and FL0 latches IBSA0 at every frame start, so:
  * wait for frame start (hardware begins filling _cap_idx), re-point IBSA0
- * at the other half for the following frame, then wait for frame end.
- * The returned buffer is not touched by hardware until the next call.
- * Returns the completed buffer index (0/1) or -1 on timeout. */
+ * at the other half for the following frame, wait for frame end, then wait
+ * for the NEXT frame start: once hardware has begun the following frame in
+ * the other half, the completed half is idle and fully drained.
+ * (Never poll IBWP for drain: at 60fps the inter-frame blanking is shorter
+ * than one scheduler tick, so IBWP is re-armed to the other half before we
+ * can observe it reaching the window end.)
+ * Entry invariant: IBSA0/IBEA0 point at half[_cap_idx]; every failure path
+ * restores it so buffer tracking never desyncs from hardware.
+ * Returns the completed buffer index (0/1) or -1 on timeout/bad frame. */
 static int unicam_capture_frame(void) {
 	uint32_t frame_size = _width * _height * _bpp;
-	uint32_t bus_addr;
+	uint32_t bus_addr, base, wrote, sta;
 	uint32_t timeout;
 	int done, next;
 
@@ -445,97 +454,59 @@ static int unicam_capture_frame(void) {
 		timeout--;
 	}
 	if (timeout == 0)
-		return -1;
+		goto fail_rearm;
 
-	/* wait for the DMA engine to drain before the buffer is touched:
-	 * PI0 fires the moment the frame-end packet is parsed, while the
-	 * last lines are still in flight to memory (measured: up to ~49
-	 * lines short). IBWP vs the window end is the ground truth; if the
-	 * sensor really sent fewer lines this times out and wrote < size. */
-	{
-		uint32_t base = (_dma_phys + (uint32_t)_cap_idx * frame_size) | DMA_VC_ALIAS;
-		uint32_t end = base + frame_size;
-		timeout = 50;
-		while (timeout > 0) {
-			if (unicam_readl(UNICAM_IBWP) >= end)
-				break;
-			proc_usleep(1000);
-			timeout--;
-		}
-		_last_sta = unicam_readl(UNICAM_STA);
-		_last_wrote = unicam_readl(UNICAM_IBWP) - base;
-		_last_ihsta = unicam_readl(UNICAM_IHSTA);
-		_last_ivsta = unicam_readl(UNICAM_IVSTA);
-		done = _cap_idx;
-		_cap_idx = next;
-		return done;
+	/* short-frame gate (hardware ground truth): until the next frame
+	 * start re-arms it, IBWP still points inside this half, so sampled
+	 * right at FE it gives the bytes actually written for this frame.
+	 * A marginal link/sensor can deliver frames SHORTER than the window
+	 * with no STA error bits; UNICAM then packs them back-to-back into
+	 * the window (N stacked, vertically squashed copies) - such frames
+	 * must never reach the client. DMA can lag FE by a few lines, so
+	 * allow generous slack: a real short frame is hundreds of lines
+	 * short and unambiguous. If the following frame start already
+	 * re-armed IBWP the subtraction wraps huge and the gate passes -
+	 * correct, since the window was closed at that frame start. */
+	base = (_dma_phys + (uint32_t)_cap_idx * frame_size) | DMA_VC_ALIAS;
+	wrote = unicam_readl(UNICAM_IBWP) - base;
+	if (wrote + 64u * _width * _bpp < frame_size) {
+		printf("camd: short frame dropped (wrote=%u)\n", wrote);
+		goto fail_rearm;
 	}
-}
 
-/* one-shot data integrity report: hardware counters + content analysis
- * of the frame in buf. Answers: is the data complete, error-free, and
- * where does any visual duplication come from? */
-static void cam_diag_frame(const uint8_t* buf) {
-	uint32_t sums[4];
-	static const uint32_t rows[4] = {0, 120, 240, 360};
-	uint32_t i, x, y, dup240 = 0, dup160 = 0, dup120 = 0;
-	uint32_t pr = 0, pg1 = 0, pg2 = 0, pb = 0;
-
-	printf("camd: diag wrote=%u expect=%u ihsta=%u ivsta=%u sta=%08x\n",
-			_last_wrote, _width * _height * _bpp,
-			_last_ihsta, _last_ivsta, _last_sta);
-	if (_last_sta & (UNICAM_STA_CRCE | UNICAM_STA_SBE | UNICAM_STA_PBE |
+	/* integrity gate: never serve a frame received with rx errors */
+	sta = unicam_readl(UNICAM_STA);
+	if (sta & (UNICAM_STA_CRCE | UNICAM_STA_SBE | UNICAM_STA_PBE |
 			UNICAM_STA_HOE | UNICAM_STA_PLE | UNICAM_STA_IFO |
-			UNICAM_STA_OFO | UNICAM_STA_BFO))
-		printf("camd: diag DATA ERRORS: crc=%d sbe=%d pbe=%d hoe=%d ple=%d ifo=%d ofo=%d bfo=%d\n",
-				!!(_last_sta & UNICAM_STA_CRCE), !!(_last_sta & UNICAM_STA_SBE),
-				!!(_last_sta & UNICAM_STA_PBE), !!(_last_sta & UNICAM_STA_HOE),
-				!!(_last_sta & UNICAM_STA_PLE), !!(_last_sta & UNICAM_STA_IFO),
-				!!(_last_sta & UNICAM_STA_OFO), !!(_last_sta & UNICAM_STA_BFO));
+			UNICAM_STA_OFO | UNICAM_STA_BFO)) {
+		printf("camd: frame dropped, rx errors sta=%08x\n", sta);
+		goto fail_rearm;
+	}
 
-	/* row checksums at 4 sample heights */
-	for (i = 0; i < 4; i++) {
-		const uint8_t* row = buf + rows[i] * _width;
-		sums[i] = 0;
-		for (x = 0; x < _width; x++)
-			sums[i] += row[x];
+	/* wait for the next frame start: hardware latches IBSA0 (other
+	 * half) and the completed half becomes idle and fully drained */
+	timeout = 100;
+	while (timeout > 0) {
+		if (unicam_readl(UNICAM_ISTA) & UNICAM_ISTA_FSI)
+			break;
+		proc_usleep(1000);
+		timeout--;
 	}
-	printf("camd: diag rowsum y0=%u y120=%u y240=%u y360=%u\n",
-			sums[0], sums[1], sums[2], sums[3]);
+	if (timeout == 0)
+		goto fail_rearm;
+	proc_usleep(1000); /* margin for the last lines still in flight */
 
-	/* duplication detection: frames smaller than the buffer window get
-	 * packed back-to-back, leaving repeated rows at the small frame's
-	 * line period: 240 -> 2 copies, 160 -> 3 copies, 120 -> 4 copies */
-	for (y = 0; y < 240; y++) {
-		if (memcmp(buf + y * _width, buf + (y + 240) * _width, _width) == 0)
-			dup240++;
-	}
-	for (y = 0; y < 320; y++) {
-		if (memcmp(buf + y * _width, buf + (y + 160) * _width, _width) == 0)
-			dup160++;
-	}
-	for (y = 0; y < 360; y++) {
-		if (memcmp(buf + y * _width, buf + (y + 120) * _width, _width) == 0)
-			dup120++;
-	}
-	printf("camd: diag dup240=%u/240 dup160=%u/320 dup120=%u/360\n",
-			dup240, dup160, dup120);
+	done = _cap_idx;
+	_cap_idx = next;
+	return done;
 
-	/* Bayer phase probe: mean of each 2x2 site over the whole frame.
-	 * The two G sites read alike; under warm light R > B. */
-	for (y = 0; y < _height; y += 2) {
-		const uint8_t* r0 = buf + y * _width;
-		const uint8_t* r1 = r0 + _width;
-		for (x = 0; x < _width; x += 2) {
-			pr  += r0[x];
-			pg1 += r0[x + 1];
-			pg2 += r1[x];
-			pb  += r1[x + 1];
-		}
-	}
-	i = (_width / 2) * (_height / 2);
-	printf("camd: diag bayer mean s00=%u s01=%u s10=%u s11=%u\n",
-			pr / i, pg1 / i, pg2 / i, pb / i);
+fail_rearm:
+	/* restore the entry invariant: hardware keeps (re)filling the half
+	 * we still consider its own, never the one a client may hold */
+	bus_addr = (_dma_phys + (uint32_t)_cap_idx * frame_size) | DMA_VC_ALIAS;
+	unicam_writel(UNICAM_IBSA0, bus_addr);
+	unicam_writel(UNICAM_IBEA0, bus_addr + frame_size);
+	return -1;
 }
 
 /* bring up one UNICAM instance and check for a real frame.
@@ -552,9 +523,10 @@ static int unicam_probe_instance(uint32_t pd) {
 	cam_clock_enable();
 
 	for (try = 0; try < 3; try++) {
-		if (try == 2) {
-			/* last resort: sensor may stream with a stale/partial
-			 * config; reprogram the full mode table */
+		if (try > 0) {
+			/* the sensor may stream with a stale/partial config
+			 * (marginal bit-bang I2C); reprogram the full mode
+			 * table before every retry */
 			printf("camd: reprogramming sensor mode\n");
 			ov5647_set_mode(_mode);
 		}
@@ -601,6 +573,37 @@ static int unicam_probe_all(void) {
 	}
 	printf("camd: warning: no unicam instance delivered a frame\n");
 	return -1;
+}
+
+/* camera I2C pins, kept for runtime sensor re-init (set in main) */
+static int32_t _i2c_sda = 0;
+static int32_t _i2c_scl = 1;
+
+/* big hammer: some boots come up with the D-PHY completely dead (not even
+ * clock-lane sync, sta=0) and no rx re-init or sensor reprogramming heals
+ * it - only a real power cycle of the sensor module does. */
+static void cam_hard_reset(void) {
+	printf("camd: hard reset: power-cycling camera module\n");
+	ov5647_stream_off();
+	cam_power_set(0);
+	proc_usleep(200000);
+	cam_power_set(1);
+	proc_usleep(300000); /* sensor power-up settle */
+	if (ov5647_init(_i2c_sda, _i2c_scl) != 0) {
+		printf("camd: hard reset: sensor re-init failed\n");
+		return;
+	}
+	ov5647_set_mode(_mode); /* leaves sensor in stream-off (LP-11) */
+}
+
+/* full bring-up with escalation: rx probe first; if a full probe (3 tries
+ * on both instances) delivered nothing, the link is dead - power-cycle the
+ * camera and probe once more. Used at boot and for runtime recovery. */
+static int cam_bringup(void) {
+	if (unicam_probe_all() == 0)
+		return 0;
+	cam_hard_reset();
+	return unicam_probe_all();
 }
 
 /*----------------------------------------------------------------------------*/
@@ -703,10 +706,12 @@ static int cam_loop_step(vdevice_t* dev, void* p) {
 			_snap_ready = true;
 			_cap_fails = 0;
 		} else if (++_cap_fails >= 3) {
-			/* stream wedged (or boot probe never succeeded): rerun the
-			 * full bring-up. Safe here: loop_step is normal context. */
+			/* stream wedged (or boot probe never succeeded): rerun
+			 * the full bring-up, escalating to a camera power-cycle
+			 * if the rx probe alone cannot recover the link. Safe
+			 * here: loop_step is normal context. */
 			printf("camd: stream stalled, re-probing\n");
-			unicam_probe_all();
+			cam_bringup();
 			_cap_fails = 0;
 		}
 	}
@@ -735,7 +740,7 @@ int main(int argc, char** argv) {
 	bcm283x_mailbox_init();
 
 	/* raise CAM_GPIO (firmware expander) to power the camera module */
-	if (cam_power_on() != 0)
+	if (cam_power_set(1) != 0)
 		printf("camd: warning: cam power-on mailbox call failed\n");
 	proc_usleep(300000); /* sensor power-up settle */
 
@@ -760,6 +765,8 @@ int main(int argc, char** argv) {
 		}
 	}
 	printf("camd: ov5647 detected (sda=%d scl=%d)\n", i2c_sda, i2c_scl);
+	_i2c_sda = i2c_sda; /* keep for runtime hard-reset re-init */
+	_i2c_scl = i2c_scl;
 
 	/* configure sensor: RAW8 640x480, leaves sensor in stream-off (LP-11) */
 	printf("camd: configure default mode\n");
@@ -786,7 +793,7 @@ int main(int argc, char** argv) {
 
 	/* bring up UNICAM (loop_step re-probes at runtime if this fails) */
 	printf("camd: setup unicam\n");
-	unicam_probe_all();
+	cam_bringup();
 
 	/* prime the snapshot with the first frame */
 	{
@@ -795,8 +802,7 @@ int main(int argc, char** argv) {
 			memcpy(_snap_buf, (uint8_t*)_dma_virt + (uint32_t)idx * frame_size,
 					frame_size);
 			_snap_ready = true;
-			printf("camd: first frame captured, sta=%08x\n", unicam_readl(UNICAM_STA));
-			cam_diag_frame(_snap_buf);
+			printf("camd: first frame captured\n");
 		}
 	}
 
