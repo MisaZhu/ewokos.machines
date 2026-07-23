@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
 	root->focus(camW);
 
 	win.open(&x, -1, -1, -1, CAM_W, CAM_H, "cam", XWIN_STYLE_NORMAL);
-	win.setTimer(10); /* ~30fps */
+	win.setTimer(24); /* ~30fps */
 	//win.max();
 	widgetXRun(&x, &win);
 	return 0;
