@@ -9,8 +9,10 @@
 @export XTHEME=opencde
 @/bin/ipcserv /sbin/x/xwm_opencde
 
-@/bin/mp3player /usr/system/sounds/start.mp3 &
+#@/bin/mp3player /usr/system/sounds/start.mp3 &
 
 #@/bin/x/statusbar &
 #@/bin/x/xlauncher &
-@/apps/xapps/xapps -l &
+#@/apps/xapps/xapps -l &
+
+@/apps/xgoAI/xgoAI &
