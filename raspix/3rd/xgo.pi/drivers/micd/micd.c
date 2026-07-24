@@ -20,6 +20,8 @@
 #define MIC_FRAME_OUT_BYTES 4
 
 static charbuf_t* _mic_buf;
+static int _mic_clients = 0;
+static uint64_t _last_wake_ms = 0;
 
 /* diagnostics: dumped once per second by mic_dbg_tick() */
 static uint32_t _dbg_loops;
@@ -140,32 +142,72 @@ static uint32_t mic_check_poll_events(vdevice_t* dev, int fd, int from_pid,
 	return 0;
 }
 
+static int mic_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, int oflag, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)oflag;
+	(void)p;
+
+	if (_mic_clients == 0) {
+		charbuf_clear(_mic_buf); /* drop stale audio from before */
+	}
+	_mic_clients++;
+	return 0;
+}
+
+static int mic_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t* fsinfo, void* p) {
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)fsinfo;
+	(void)p;
+
+	if (_mic_clients > 0) {
+		_mic_clients--;
+	}
+	return 0;
+}
+
 static int mic_loop(vdevice_t* dev, void* p) {
 	uint8_t raw[MIC_READ_RAW_BYTES];
 	uint8_t chunk[MIC_READ_RAW_BYTES / 2];
 	int rd;
 	int pcm_bytes;
+	uint64_t now;
 
 	(void)p;
+
+	/* nobody listening: keep quiet and stay away from vfsd */
+	if (_mic_clients <= 0) {
+		pcm_read(raw, sizeof(raw)); /* drain FIFO so it doesn't sit in overrun */
+		proc_usleep(20000);
+		return 0;
+	}
+
 	rd = pcm_read(raw, sizeof(raw));
 	mic_dbg_tick(rd, raw);
-	if (rd <= 0) {
-		proc_usleep(2000);
-		return 0;
-	}
-	pcm_bytes = mic_convert_frames(raw, rd, chunk, sizeof(chunk));
-	if (pcm_bytes <= 0) {
-		proc_usleep(2000);
-		return 0;
-	}
+	if (rd > 0) {
+		pcm_bytes = mic_convert_frames(raw, rd, chunk, sizeof(chunk));
+		if (pcm_bytes > 0) {
+			ipc_disable();
+			for (int i = 0; i < pcm_bytes; i++) {
+				charbuf_push(_mic_buf, chunk[i], true);
+			}
+			ipc_enable();
 
-	ipc_disable();
-	for (int i = 0; i < pcm_bytes; i++) {
-		charbuf_push(_mic_buf, chunk[i], true);
+			/* throttle wakeups: one IPC per ~10ms is plenty for readers */
+			now = kernel_tic_ms(0);
+			if (now - _last_wake_ms >= 10) {
+				_last_wake_ms = now;
+				vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+			}
+		}
 	}
-	ipc_enable();
-
-	vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	/* pace to the data rate instead of spinning on a hot FIFO */
+	proc_usleep(1000);
 	return 0;
 }
 
@@ -190,6 +232,8 @@ int main(int argc, char** argv) {
 	_mic_buf = charbuf_new(0);
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "xgo-mic");
+	dev.open = mic_open;
+	dev.close = mic_close;
 	dev.read = mic_read;
 	dev.dev_cntl = mic_dev_cntl;
 	dev.check_poll_events = mic_check_poll_events;
