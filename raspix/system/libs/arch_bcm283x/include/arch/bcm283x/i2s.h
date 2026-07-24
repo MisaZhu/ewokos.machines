@@ -74,6 +74,7 @@
 
 void pcm_init(void);
 void pcm_init_rx16(void);
+int pcm_rx_active(void);
 int pcm_write(uint8_t* buf, int size);
 int pcm_read(uint8_t* buf, int size);
 

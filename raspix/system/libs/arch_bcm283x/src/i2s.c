@@ -134,6 +134,12 @@ void pcm_init_rx16(void) {
 	pcm_init_cfg(16u, 16u, false);
 }
 
+/* nonzero if the PCM block is already enabled with RX on (e.g. by soundd) */
+int pcm_rx_active(void) {
+	uint32_t cs = read32(ARM_PCM_CS_A);
+	return (cs & (CS_A_EN | CS_A_RXON)) == (CS_A_EN | CS_A_RXON);
+}
+
 int pcm_write(uint8_t* buf, int size) {
 	int idx = 0;
 	uint32_t* p = (uint32_t*)buf;

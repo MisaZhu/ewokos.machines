@@ -174,10 +174,18 @@ int main(int argc, char** argv) {
 	vdevice_t dev;
 
 	_mmio_base = mmio_map();
-	if (wm8960_init() != 0) {
-		return -1;
+	/*
+	 * soundd owns the codec and the PCM block when it runs first
+	 * (its pcm_init enables both TX and RX with the same 16-bit
+	 * frame). Only init hardware here when nobody did it yet, so
+	 * both daemons can coexist without clobbering each other.
+	 */
+	if (!pcm_rx_active()) {
+		if (wm8960_init() != 0) {
+			return -1;
+		}
+		pcm_init_rx16();
 	}
-	pcm_init_rx16();
 
 	_mic_buf = charbuf_new(0);
 	memset(&dev, 0, sizeof(vdevice_t));
