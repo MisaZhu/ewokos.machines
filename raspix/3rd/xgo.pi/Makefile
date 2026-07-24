@@ -10,6 +10,7 @@ all:
 	cd apps/xgo; $(MAKE)
 	cd apps/cam; $(MAKE)
 	cd apps/mic; $(MAKE)
+	cd apps/xgoAI; $(MAKE)
 	cp -r etc build 
 
 clean:	
@@ -21,3 +22,4 @@ clean:
 	cd apps/xgo; $(MAKE) clean
 	cd apps/cam; $(MAKE) clean
 	cd apps/mic; $(MAKE) clean
+	cd apps/xgoAI; $(MAKE) clean
