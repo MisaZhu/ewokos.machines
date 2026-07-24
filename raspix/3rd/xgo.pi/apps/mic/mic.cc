@@ -9,8 +9,9 @@
 #include <graph/graph.h>
 #include <font/font.h>
 #include <ewoksys/keydef.h>
-#include <ewoksys/proto.h>
-#include <ewoksys/vdevice.h>
+#include <ewoksys/thread.h>
+#include <ewoksys/kernel_tic.h>
+#include <sherpa-onnx/sherpa.h>
 
 using namespace Ewok;
 
@@ -18,7 +19,12 @@ using namespace Ewok;
 #define MIC_WIN_W 240
 #define MIC_WIN_H 240
 #define MIC_SAMPLE_HISTORY 208
-#define MIC_READ_BYTES 2048
+/*
+ * Per-read chunk; 4 turns x 4096B = 16KB per timer tick, above the
+ * ~9.6KB a 50ms tick accumulates at 48kHz stereo (192KB/s), so the
+ * driver ring never fills up and no audio is lost for the recognizer.
+ */
+#define MIC_READ_BYTES 4096
 #define MIC_HEADER_H 28
 #define MIC_MARGIN 10
 #define MIC_DC_TRACK_DIV 64
@@ -26,7 +32,28 @@ using namespace Ewok;
 #define MIC_DRAW_SMOOTH_DIV 4
 #define MIC_DRAW_GAIN 8
 #define MIC_DBG_H 34
-#define MIC_DBG_TICKS 50
+
+#define ASR_MODEL_PATH "/data/model/encn/model.int8.onnx"
+#define ASR_TOKENS_PATH "/data/model/encn/tokens.txt"
+//#define ASR_MODEL_PATH "/data/model/en/model.int8.onnx"
+//#define ASR_TOKENS_PATH "/data/model/en/tokens.txt"
+
+#define ASR_INPUT_RATE 48000
+/* energy VAD over DC-removed mono, tuned against MIC_NOISE_FLOOR */
+#define ASR_VAD_START 900
+#define ASR_VAD_KEEP 500
+#define ASR_SILENCE_TICKS 15   /* ~0.75s of trailing silence ends a segment */
+#define ASR_MIN_SPEECH_TICKS 5 /* segments shorter than this are dropped */
+#define ASR_MAX_SAMPLES (ASR_INPUT_RATE * 12)
+#define ASR_PREROLL 9600       /* 0.2s kept before speech onset */
+
+enum {
+	ASR_LOADING = 0,
+	ASR_FAILED,
+	ASR_LISTENING,
+	ASR_RECORDING,
+	ASR_DECODING
+};
 
 class MicWidget: public Widget {
 	int _fd;
@@ -37,14 +64,27 @@ class MicWidget: public Widget {
 	int _writePos;
 	bool _filled;
 	int _lastReadBytes;
+	int _rateAccum;   /* bytes since last rate stamp */
+	int _rateKBs;     /* measured input data rate, KB/s */
+	uint64_t _rateStamp;
 	int _peakLeft;
 	int _peakRight;
 	int32_t _dcLeft;
 	int32_t _dcRight;
 	int16_t _drawLeft;
 	int16_t _drawRight;
-	char _dbgLine[128];
-	int _dbgTick;
+
+	SherpaRecognizer* _asr;
+	SherpaStream* _asrStream;
+	volatile int _asrState;
+	char _asrText[256];
+	int32_t _asrDc;
+	int _silenceTicks;
+	int _speechTicks;
+	int _fedSamples;
+	int16_t _preroll[ASR_PREROLL];
+	int _prePos;
+	bool _preFull;
 
 	static int16_t clamp16(int v) {
 		if (v < -32768)
@@ -124,9 +164,12 @@ class MicWidget: public Widget {
 
 	void readMic(void) {
 		uint8_t raw[MIC_READ_BYTES];
+		int16_t mono[MIC_READ_BYTES]; /* up to 4 turns x 1024 frames */
+		int monoCnt = 0;
 		int total = 0;
 		int peakLeft = 0;
 		int peakRight = 0;
+		int64_t vadSum = 0;
 		bool gotData = false;
 
 		if (!openMic())
@@ -143,8 +186,10 @@ class MicWidget: public Widget {
 			int frames = ret / 4;
 			const int16_t* pcm = (const int16_t*)raw;
 			for (int i = 0; i < frames; i++) {
-				int left = prepareSample(pcm[i * 2], &_dcLeft, &_drawLeft);
-				int right = prepareSample(pcm[i * 2 + 1], &_dcRight, &_drawRight);
+				int16_t rawL = pcm[i * 2];
+				int16_t rawR = pcm[i * 2 + 1];
+				int left = prepareSample(rawL, &_dcLeft, &_drawLeft);
+				int right = prepareSample(rawR, &_dcRight, &_drawRight);
 				int leftAmp = abs_i32(left);
 				int rightAmp = abs_i32(right);
 				if (leftAmp > peakLeft)
@@ -152,6 +197,14 @@ class MicWidget: public Widget {
 				if (rightAmp > peakRight)
 					peakRight = rightAmp;
 				pushSample(clamp16(left), clamp16(right));
+
+				/* raw mono (unfiltered) for the recognizer */
+				int m = ((int)rawL + (int)rawR) / 2;
+				_asrDc += ((int32_t)m - _asrDc) / MIC_DC_TRACK_DIV;
+				int centered = m - _asrDc;
+				vadSum += abs_i32(centered);
+				if (monoCnt < (int)(sizeof(mono) / sizeof(mono[0])))
+					mono[monoCnt++] = clamp16(centered);
 			}
 		}
 
@@ -160,49 +213,160 @@ class MicWidget: public Widget {
 			_peakLeft = peakLeft;
 			_peakRight = peakRight;
 		}
+
+		/* measured incoming byte rate; 48kHz stereo s16 should read ~187KB/s */
+		_rateAccum += total;
+		uint64_t now = kernel_tic_ms(0);
+		if (_rateStamp == 0)
+			_rateStamp = now;
+		else if (now - _rateStamp >= 1000) {
+			_rateKBs = (int)(((uint64_t)_rateAccum * 1000) / (now - _rateStamp) / 1024);
+			_rateAccum = 0;
+			_rateStamp = now;
+		}
+
+		if (monoCnt > 0)
+			asrProcess(mono, monoCnt, (int)(vadSum / monoCnt));
 	}
 
-	void fetchDbg(void) {
-		proto_t out;
-
-		if (_dbgTick > 0) {
-			_dbgTick--;
-			return;
+	static void* asrLoadThread(void* p) {
+		MicWidget* w = (MicWidget*)p;
+		w->_asr = SherpaCreateRecognizer(ASR_MODEL_PATH, ASR_TOKENS_PATH);
+		if (w->_asr == NULL) {
+			snprintf(w->_asrText, sizeof(w->_asrText),
+					"model not found:\n" ASR_MODEL_PATH);
+			w->_asrState = ASR_FAILED;
+			return NULL;
 		}
-		_dbgTick = MIC_DBG_TICKS;
+		w->_asrStream = SherpaCreateStream(w->_asr, ASR_INPUT_RATE);
+		if (w->_asrStream == NULL) {
+			SherpaDestroyRecognizer(w->_asr);
+			w->_asr = NULL;
+			strcpy(w->_asrText, "stream create failed");
+			w->_asrState = ASR_FAILED;
+			return NULL;
+		}
+		strcpy(w->_asrText, "say something...");
+		w->_asrState = ASR_LISTENING;
+		return NULL;
+	}
 
-		PF->init(&out);
-		if (dev_cntl(MIC_DEV, 0, NULL, &out) == 0) {
-			const char* s = proto_read_str(&out);
-			if (s != NULL) {
-				strncpy(_dbgLine, s, sizeof(_dbgLine) - 1);
-				_dbgLine[sizeof(_dbgLine) - 1] = '\0';
-			}
+	static void* asrDecodeThread(void* p) {
+		MicWidget* w = (MicWidget*)p;
+		const char* text = SherpaDecode(w->_asr, w->_asrStream);
+		if (text != NULL && text[0] != '\0') {
+			strncpy(w->_asrText, text, sizeof(w->_asrText) - 1);
+			w->_asrText[sizeof(w->_asrText) - 1] = '\0';
 		}
 		else {
-			strncpy(_dbgLine, "dev_cntl failed", sizeof(_dbgLine) - 1);
+			strcpy(w->_asrText, "(no speech)");
 		}
-		PF->clear(&out);
+		w->_asrState = ASR_LISTENING;
+		return NULL;
+	}
+
+	void prerollPush(const int16_t* s, int n) {
+		for (int i = 0; i < n; i++) {
+			_preroll[_prePos++] = s[i];
+			if (_prePos >= ASR_PREROLL) {
+				_prePos = 0;
+				_preFull = true;
+			}
+		}
+	}
+
+	void prerollFeed(void) {
+		if (_preFull) {
+			SherpaAcceptWaveform(_asr, _asrStream,
+					_preroll + _prePos, ASR_PREROLL - _prePos);
+			SherpaAcceptWaveform(_asr, _asrStream, _preroll, _prePos);
+			_fedSamples += ASR_PREROLL;
+		}
+		else if (_prePos > 0) {
+			SherpaAcceptWaveform(_asr, _asrStream, _preroll, _prePos);
+			_fedSamples += _prePos;
+		}
+		_prePos = 0;
+		_preFull = false;
+	}
+
+	void asrProcess(const int16_t* mono, int n, int level) {
+		if (_asrState == ASR_LISTENING) {
+			prerollPush(mono, n);
+			if (level >= ASR_VAD_START) {
+				_fedSamples = 0;
+				_speechTicks = 1;
+				_silenceTicks = 0;
+				prerollFeed(); /* mono already inside the ring */
+				_asrState = ASR_RECORDING;
+			}
+		}
+		else if (_asrState == ASR_RECORDING) {
+			SherpaAcceptWaveform(_asr, _asrStream, mono, n);
+			_fedSamples += n;
+			if (level >= ASR_VAD_KEEP) {
+				_speechTicks++;
+				_silenceTicks = 0;
+			}
+			else {
+				_silenceTicks++;
+			}
+
+			if (_silenceTicks >= ASR_SILENCE_TICKS || _fedSamples >= ASR_MAX_SAMPLES) {
+				if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
+					strcpy(_asrText, "recognizing...");
+					_asrState = ASR_DECODING;
+					if (thread_create(asrDecodeThread, this) < 0)
+						asrDecodeThread(this); /* fall back to blocking */
+				}
+				else {
+					SherpaReset(_asr, _asrStream);
+					_asrState = ASR_LISTENING;
+				}
+			}
+		}
+		/* ASR_DECODING: stream is owned by the worker; keep pre-roll warm */
+		else if (_asrState == ASR_DECODING) {
+			prerollPush(mono, n);
+		}
+	}
+
+	const char* asrStatus(void) const {
+		switch (_asrState) {
+		case ASR_FAILED: return "[asr disabled]";
+		case ASR_RECORDING: return "[recording]";
+		case ASR_DECODING: return "[recognizing...]";
+		default: return "[listening]";
+		}
 	}
 
 	void drawDbg(graph_t* g, XTheme* theme, const grect_t& r) {
-		char line[128];
+		char status[40];
+		char line[300];
 		char* second;
 
+		if (_asrState == ASR_LOADING)
+			snprintf(status, sizeof(status), "[loading model %d%%]",
+					(int)SherpaLoadProgress());
+		else
+			strcpy(status, asrStatus());
+
 		graph_fill_rect(g, r.x, r.y, r.w, r.h, 0xff1c1408);
-		strncpy(line, _dbgLine, sizeof(line) - 1);
-		line[sizeof(line) - 1] = '\0';
+		snprintf(line, sizeof(line), "%s\n%s", status, _asrText);
 
 		second = strchr(line, '\n');
 		if (second != NULL) {
 			*second = '\0';
 			second++;
+			char* third = strchr(second, '\n');
+			if (third != NULL)
+				*third = '\0';
 		}
 		graph_draw_text_font(g, r.x + 4, r.y + 2,
-				line, theme->getFont(), 10, 0xffffd080);
+				line, theme->getFont(), 14, 0xffffd080);
 		if (second != NULL) {
 			graph_draw_text_font(g, r.x + 4, r.y + 2 + MIC_DBG_H / 2,
-					second, theme->getFont(), 10, 0xffffd080);
+					second, theme->getFont(), 14, 0xffffd080);
 		}
 	}
 
@@ -230,8 +394,8 @@ class MicWidget: public Widget {
 		int peakLPct = (_peakLeft * 100) / 32767;
 		int peakRPct = (_peakRight * 100) / 32767;
 
-		snprintf(line, sizeof(line), "L %d%%  R %d%%  %s  %dB",
-				peakLPct, peakRPct, state, _lastReadBytes);
+		snprintf(line, sizeof(line), "L %d%%  R %d%%  %s  %dKB/s",
+				peakLPct, peakRPct, state, _rateKBs);
 		graph_draw_text_font(g, r.x + MIC_MARGIN, r.y + 6,
 				line, theme->getFont(), theme->basic.fontSize, theme->basic.fgColor);
 	}
@@ -305,7 +469,6 @@ protected:
 		(void)timerFPS;
 		(void)timerStep;
 		readMic();
-		fetchDbg();
 		update();
 	}
 
@@ -328,21 +491,40 @@ public:
 		_writePos = 0;
 		_filled = false;
 		_lastReadBytes = 0;
+		_rateAccum = 0;
+		_rateKBs = 0;
+		_rateStamp = 0;
 		_peakLeft = 0;
 		_peakRight = 0;
 		_dcLeft = 0;
 		_dcRight = 0;
 		_drawLeft = 0;
 		_drawRight = 0;
-		_dbgTick = 0;
-		strcpy(_dbgLine, "fetching...");
 		memset(_leftSamples, 0, sizeof(_leftSamples));
 		memset(_rightSamples, 0, sizeof(_rightSamples));
+
+		_asr = NULL;
+		_asrStream = NULL;
+		_asrState = ASR_LOADING;
+		strcpy(_asrText, "loading " ASR_MODEL_PATH);
+		_asrDc = 0;
+		_silenceTicks = 0;
+		_speechTicks = 0;
+		_fedSamples = 0;
+		_prePos = 0;
+		_preFull = false;
+		if (thread_create(asrLoadThread, this) < 0)
+			asrLoadThread(this); /* fall back to blocking load */
 	}
 
 	~MicWidget() {
 		if (_fd >= 0)
 			close(_fd);
+		if (_asr != NULL) {
+			if (_asrStream != NULL)
+				SherpaDestroyStream(_asr, _asrStream);
+			SherpaDestroyRecognizer(_asr);
+		}
 	}
 };
 
@@ -352,6 +534,8 @@ int main(int argc, char** argv) {
 
 	X x;
 	WidgetWin win;
+	XTheme* theme = win.getTheme();
+	theme->setFont("system-cn", 14);
 
 	RootWidget* root = new RootWidget();
 	win.setRoot(root);

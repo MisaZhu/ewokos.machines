@@ -43,7 +43,15 @@ int wm8960_init(void){
     else
         return res;
 
-    res = wm8960_write(CLOCKING_1, 0x00DD); // Select 011011101
+    /*
+     * SYSCLK = PLL(24.576MHz) / 2 = 12.288MHz (CLKSEL=1, SYSCLKDIV=/2).
+     * ADCDIV = DACDIV = 000 -> SYSCLK/256 = 48kHz, matching the 48kHz
+     * LRCLK driven by the BCM283x PCM master. The old value 0x00DD ran
+     * the ADC/DAC digital filters at 16kHz (DIV=/3) against a 48kHz
+     * frame clock, so captured samples were repeated/garbled 3:1 and
+     * speech reached the recognizer as distorted, unintelligible audio.
+     */
+    res = wm8960_write(CLOCKING_1, 0x0005);
     res = wm8960_write(CLOCKING_2, 0x0080); // Select 011011101
     if (res == 0)
         DBG("wm8960 Configure clock\n");
@@ -123,9 +131,9 @@ int wm8960_init(void){
 
     //Myset
 
-    // set Input PGA Volume
-    wm8960_write(LEFT_INPUT_VOLUME, 0X0027 | 0X0100);
-    wm8960_write(RIGHT_INPUT_VOLUME, 0X0027 | 0X0100);
+    // set Input PGA Volume (+6dB starting point; ALC adjusts from here)
+    wm8960_write(LEFT_INPUT_VOLUME, 0X001F | 0X0100);
+    wm8960_write(RIGHT_INPUT_VOLUME, 0X001F | 0X0100);
 
     // set ADC Volume
     wm8960_write(LEFT_ADC_VOLUME, 0X00c3 | 0X0100);
@@ -138,6 +146,17 @@ int wm8960_init(void){
     // connect LINPUT1 to PGA and set PGA Boost Gain.
     wm8960_write(ADCL_SIGNAL_PATH, 0X0020 | 1 << 8 | 1 << 3);
     wm8960_write(ADCR_SIGNAL_PATH, 0X0020 | 1 << 8 | 1 << 3);
+
+    /*
+     * ALC on the input PGA. Stereo ALC, max PGA gain +18dB, target
+     * ~-18dBFS, with a -54dBFS noise gate so ambience is not pumped up
+     * during silence. (The first cut at -12dBFS/+30dB ran too hot and
+     * clipped speech peaks.)
+     */
+    wm8960_write(ALC1, 0x01D7);       // ALCSEL=stereo, MAXGAIN=+18dB, target -18dBFS
+    wm8960_write(ALC2, 0x0000);       // no hold
+    wm8960_write(ALC3, 0x0032);       // decay ~192ms, attack ~24ms
+    wm8960_write(NOISE_GATE, 0x0079); // gate below -54dBFS
 
 	DBG("init done\n");
 
