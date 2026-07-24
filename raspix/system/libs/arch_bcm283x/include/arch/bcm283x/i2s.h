@@ -73,7 +73,7 @@
 #define CM_I2SDIV		0x9c
 
 void pcm_init(void);
-void pcm_init_inmp441(void);
+void pcm_init_rx16(void);
 int pcm_write(uint8_t* buf, int size);
 int pcm_read(uint8_t* buf, int size);
 

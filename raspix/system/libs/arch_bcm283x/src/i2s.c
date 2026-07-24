@@ -79,14 +79,26 @@ static void pcm_init_cfg(uint32_t slot_bits, uint32_t sample_bits, bool tx_enabl
 			((slot_bits + 1) << TXC_A_CH2POS__SHIFT) |
 			(width_bits << TXC_A_CH2WID__SHIFT));
 
-	write32(ARM_PCM_RXC_A, RXC_A_CH1WEX |
-			RXC_A_CH1EN |
-			(1 << RXC_A_CH1POS__SHIFT) |
-			(width_bits << RXC_A_CH1WID__SHIFT) |
-			RXC_A_CH2WEX |
-			RXC_A_CH2EN |
-			((slot_bits + 1) << RXC_A_CH2POS__SHIFT) |
-			(width_bits << RXC_A_CH2WID__SHIFT));
+	if (slot_bits <= 16u) {
+		/* exact slot-wide channels: width = WID + 8, no WEX */
+		uint32_t rx_wid = slot_bits - 8u;
+		write32(ARM_PCM_RXC_A, RXC_A_CH1EN |
+				(1 << RXC_A_CH1POS__SHIFT) |
+				(rx_wid << RXC_A_CH1WID__SHIFT) |
+				RXC_A_CH2EN |
+				((slot_bits + 1) << RXC_A_CH2POS__SHIFT) |
+				(rx_wid << RXC_A_CH2WID__SHIFT));
+	}
+	else {
+		write32(ARM_PCM_RXC_A, RXC_A_CH1WEX |
+				RXC_A_CH1EN |
+				(1 << RXC_A_CH1POS__SHIFT) |
+				(width_bits << RXC_A_CH1WID__SHIFT) |
+				RXC_A_CH2WEX |
+				RXC_A_CH2EN |
+				((slot_bits + 1) << RXC_A_CH2POS__SHIFT) |
+				(width_bits << RXC_A_CH2WID__SHIFT));
+	}
 
 	nModeA = MODE_A_CLKI |
 			(1 << 24) |
@@ -117,8 +129,9 @@ void pcm_init(void) {
 	pcm_init_cfg(16u, 16u, true);
 }
 
-void pcm_init_inmp441(void) {
-	pcm_init_cfg(32u, 24u, false);
+/* RX-only, 16-bit slots: matches WM8960 codec ADC output (I2S 16-bit). */
+void pcm_init_rx16(void) {
+	pcm_init_cfg(16u, 16u, false);
 }
 
 int pcm_write(uint8_t* buf, int size) {

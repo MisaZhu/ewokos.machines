@@ -9,6 +9,8 @@
 #include <graph/graph.h>
 #include <font/font.h>
 #include <ewoksys/keydef.h>
+#include <ewoksys/proto.h>
+#include <ewoksys/vdevice.h>
 
 using namespace Ewok;
 
@@ -22,6 +24,9 @@ using namespace Ewok;
 #define MIC_DC_TRACK_DIV 64
 #define MIC_NOISE_FLOOR 320
 #define MIC_DRAW_SMOOTH_DIV 4
+#define MIC_DRAW_GAIN 8
+#define MIC_DBG_H 34
+#define MIC_DBG_TICKS 50
 
 class MicWidget: public Widget {
 	int _fd;
@@ -38,6 +43,8 @@ class MicWidget: public Widget {
 	int32_t _dcRight;
 	int16_t _drawLeft;
 	int16_t _drawRight;
+	char _dbgLine[128];
+	int _dbgTick;
 
 	static int16_t clamp16(int v) {
 		if (v < -32768)
@@ -66,6 +73,7 @@ class MicWidget: public Widget {
 		*dcState += ((int32_t)raw - *dcState) / MIC_DC_TRACK_DIV;
 		centered = (int32_t)raw - *dcState;
 		centered = applyNoiseGate(centered);
+		centered *= MIC_DRAW_GAIN;
 
 		filtered = (*drawState * (MIC_DRAW_SMOOTH_DIV - 1) + centered) / MIC_DRAW_SMOOTH_DIV;
 		if (abs_i32(filtered) < 4)
@@ -154,6 +162,50 @@ class MicWidget: public Widget {
 		}
 	}
 
+	void fetchDbg(void) {
+		proto_t out;
+
+		if (_dbgTick > 0) {
+			_dbgTick--;
+			return;
+		}
+		_dbgTick = MIC_DBG_TICKS;
+
+		PF->init(&out);
+		if (dev_cntl(MIC_DEV, 0, NULL, &out) == 0) {
+			const char* s = proto_read_str(&out);
+			if (s != NULL) {
+				strncpy(_dbgLine, s, sizeof(_dbgLine) - 1);
+				_dbgLine[sizeof(_dbgLine) - 1] = '\0';
+			}
+		}
+		else {
+			strncpy(_dbgLine, "dev_cntl failed", sizeof(_dbgLine) - 1);
+		}
+		PF->clear(&out);
+	}
+
+	void drawDbg(graph_t* g, XTheme* theme, const grect_t& r) {
+		char line[128];
+		char* second;
+
+		graph_fill_rect(g, r.x, r.y, r.w, r.h, 0xff1c1408);
+		strncpy(line, _dbgLine, sizeof(line) - 1);
+		line[sizeof(line) - 1] = '\0';
+
+		second = strchr(line, '\n');
+		if (second != NULL) {
+			*second = '\0';
+			second++;
+		}
+		graph_draw_text_font(g, r.x + 4, r.y + 2,
+				line, theme->getFont(), 10, 0xffffd080);
+		if (second != NULL) {
+			graph_draw_text_font(g, r.x + 4, r.y + 2 + MIC_DBG_H / 2,
+					second, theme->getFont(), 10, 0xffffd080);
+		}
+	}
+
 	void drawGrid(graph_t* g, const grect_t& r) {
 		uint32_t gridColor = 0xff2a2f36;
 		int midY = r.y + r.h / 2;
@@ -220,6 +272,7 @@ protected:
 		grect_t waveRect;
 		grect_t leftRect;
 		grect_t rightRect;
+		grect_t dbgRect;
 		int gap = 6;
 		int halfH;
 
@@ -229,7 +282,7 @@ protected:
 		waveRect.x = r.x + MIC_MARGIN;
 		waveRect.y = r.y + MIC_HEADER_H;
 		waveRect.w = r.w - MIC_MARGIN * 2;
-		waveRect.h = r.h - MIC_HEADER_H - MIC_MARGIN;
+		waveRect.h = r.h - MIC_HEADER_H - MIC_MARGIN - MIC_DBG_H;
 
 		halfH = (waveRect.h - gap) / 2;
 		leftRect = waveRect;
@@ -240,12 +293,19 @@ protected:
 
 		drawChannel(g, theme, leftRect, "left", _leftSamples, 0xff45e0a8);
 		drawChannel(g, theme, rightRect, "right", _rightSamples, 0xfff6c560);
+
+		dbgRect.x = r.x + MIC_MARGIN;
+		dbgRect.y = waveRect.y + waveRect.h + 2;
+		dbgRect.w = r.w - MIC_MARGIN * 2;
+		dbgRect.h = MIC_DBG_H - 4;
+		drawDbg(g, theme, dbgRect);
 	}
 
 	void onTimer(uint32_t timerFPS, uint32_t timerStep) {
 		(void)timerFPS;
 		(void)timerStep;
 		readMic();
+		fetchDbg();
 		update();
 	}
 
@@ -274,6 +334,8 @@ public:
 		_dcRight = 0;
 		_drawLeft = 0;
 		_drawRight = 0;
+		_dbgTick = 0;
+		strcpy(_dbgLine, "fetching...");
 		memset(_leftSamples, 0, sizeof(_leftSamples));
 		memset(_rightSamples, 0, sizeof(_rightSamples));
 	}

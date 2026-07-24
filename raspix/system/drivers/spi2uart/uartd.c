@@ -67,8 +67,11 @@ static uint32_t uart_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 	return 0;
 }
 
+/*SC16IS750/752 RX/TX FIFO depth. RXLVL legitimately reports 0..64; anything
+  larger means the MISO line is floating (dead/unselected chip reads 0xFF).*/
+#define SC16IS750_FIFO_SIZE 64
+
 static int loop(vdevice_t* dev, void* p) {
-	(void)dev;
 	(void)p;
 
 	int len = SC16IS750_available(&spiuart, SC16IS750_CHANNEL_B);
@@ -77,8 +80,22 @@ static int loop(vdevice_t* dev, void* p) {
 		return 0;
 	}
 
+	/*Phantom level: a dead/misconfigured chip floats MISO high so RXLVL reads
+	  back 0xFF. Without this guard the daemon spins forever in a tight
+	  garbage-read loop holding ipc_disable(), which starves vfsd's synchronous
+	  FS_CMD_DUP delivered during fork(). core waits for VFS_PROC_CLONE (and
+	  thus for that DUP) before waking the child, so the forked login is never
+	  scheduled and /bin/session appears to hang. Back off instead.*/
+	if(len > SC16IS750_FIFO_SIZE) {
+		proc_usleep(10000);
+		return 0;
+	}
+
+	/*Read the bytes over SPI with IPC left ENABLED: the SPI transaction touches
+	  no shared state, and staying responsive lets vfsd deliver FS_CMD_DUP /
+	  FS_CMD_READ during the (slow) bus transfers instead of stalling the fork.*/
+	char tmp[SC16IS750_FIFO_SIZE];
 	int rx = 0;
-	ipc_disable();
 	for(int i = 0; i < len; i++){
 		int r = SC16IS750_read(&spiuart, SC16IS750_CHANNEL_B);
 		if(r < 0) //FIFO raced or chip not responding, never push garbage
@@ -86,17 +103,25 @@ static int loop(vdevice_t* dev, void* p) {
 		char c = (char)r;
 		if(c == '\r' && _no_return)
 			continue;
-		charbuf_push(_RxBuf, c, true);
-		rx++;
+		tmp[rx++] = c;
 	}
+
+	if(rx == 0) {
+		/*available() reported data but nothing was really there (phantom level).
+		  Yield so a dead chip neither spins nor pins the IPC server disabled.*/
+		proc_usleep(10000);
+		return 0;
+	}
+
+	/*Only the fast shared-buffer push needs IPC disabled; keep the window tiny.*/
+	ipc_disable();
+	for(int i = 0; i < rx; i++)
+		charbuf_push(_RxBuf, tmp[i], true);
 	ipc_enable();
 
-	/*Level-triggered readiness is reported via uart_check_poll_events; the
-	  wakeup edge must be sent once, outside the ipc_disable() window (a
-	  per-byte wakeup inside it can be lost, leaving a blocked reader asleep
-	  forever even though data sits in the buffer).*/
-	if(rx > 0)
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+	/*Level-triggered readiness is reported via uart_check_poll_events; send the
+	  wakeup edge once, outside the ipc_disable() window.*/
+	vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	return 0;
 }
 

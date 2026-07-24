@@ -5,31 +5,76 @@
 
 #include <ewoksys/charbuf.h>
 #include <ewoksys/ipc.h>
+#include <ewoksys/klog.h>
+#include <ewoksys/kernel_tic.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 
 #include <arch/bcm283x/i2s.h>
+#include "../soundd/wm8960.h"
 
 #define MIC_READ_RAW_BYTES 256
 #define MIC_FRAME_IN_BYTES 8
 #define MIC_FRAME_OUT_BYTES 4
 
 static charbuf_t* _mic_buf;
-static int _mic_shift = -1;
+
+/* diagnostics: dumped once per second by mic_dbg_tick() */
+static uint32_t _dbg_loops;
+static uint32_t _dbg_reads;
+static uint32_t _dbg_bytes;
+static uint32_t _dbg_nonzero;
+static uint64_t _dbg_last_ms;
+static char _dbg_line[128] = "no stats yet";
+
+static void mic_dbg_tick(int rd, const uint8_t* raw) {
+	uint64_t now;
+
+	_dbg_loops++;
+	if (rd > 0) {
+		const uint32_t* w = (const uint32_t*)raw;
+		_dbg_reads++;
+		_dbg_bytes += (uint32_t)rd;
+		for (int i = 0; i < rd / 4; i++) {
+			if (w[i] != 0 && w[i] != 0xffffffffu) {
+				_dbg_nonzero++;
+			}
+		}
+	}
+
+	now = kernel_tic_ms(0);
+	if (now - _dbg_last_ms < 1000) {
+		return;
+	}
+	_dbg_last_ms = now;
+	snprintf(_dbg_line, sizeof(_dbg_line),
+			"cs=%08x cm=%08x\nlp=%u rd=%u by=%u nz=%u",
+			*((volatile uint32_t*)(uintptr_t)ARM_PCM_CS_A),
+			*((volatile uint32_t*)(uintptr_t)(CM_BASE + CM_I2SCTL)),
+			_dbg_loops, _dbg_reads, _dbg_bytes, _dbg_nonzero);
+	klog("micd: %s\n", _dbg_line);
+	_dbg_loops = 0;
+	_dbg_reads = 0;
+	_dbg_bytes = 0;
+	_dbg_nonzero = 0;
+}
+
+static int mic_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
+	(void)dev;
+	(void)from_pid;
+	(void)cmd;
+	(void)in;
+	(void)p;
+
+	PF->adds(ret, _dbg_line);
+	return 0;
+}
 
 static int16_t mic_to_s16(int32_t sample) {
-	int shift = _mic_shift;
-
-	if (shift < 0 && sample != 0) {
-		shift = ((sample & 0xFF) == 0) ? 16 : 8;
-		_mic_shift = shift;
-	}
-	if (shift < 0) {
-		shift = 8;
-	}
-	return (int16_t)(sample >> shift);
+	/* 16-bit slots: each FIFO word holds one sign-extended s16 sample */
+	return (int16_t)sample;
 }
 
 static int mic_convert_frames(const uint8_t* raw, int raw_bytes, uint8_t* out, int out_cap) {
@@ -103,6 +148,7 @@ static int mic_loop(vdevice_t* dev, void* p) {
 
 	(void)p;
 	rd = pcm_read(raw, sizeof(raw));
+	mic_dbg_tick(rd, raw);
 	if (rd <= 0) {
 		proc_usleep(2000);
 		return 0;
@@ -128,12 +174,16 @@ int main(int argc, char** argv) {
 	vdevice_t dev;
 
 	_mmio_base = mmio_map();
-	pcm_init_inmp441();
+	if (wm8960_init() != 0) {
+		return -1;
+	}
+	pcm_init_rx16();
 
 	_mic_buf = charbuf_new(0);
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "xgo-mic");
 	dev.read = mic_read;
+	dev.dev_cntl = mic_dev_cntl;
 	dev.check_poll_events = mic_check_poll_events;
 	dev.loop_step = mic_loop;
 
