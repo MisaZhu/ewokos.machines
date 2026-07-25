@@ -3,6 +3,7 @@
 #include <x++/X.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -54,7 +55,8 @@ enum {
 	ASR_LOADING = 0,
 	ASR_FAILED,
 	ASR_LISTENING,
-        ASR_RECORDING
+        ASR_RECORDING,
+        ASR_DECODING
 };
 
 class MicWidget: public Widget {
@@ -80,6 +82,12 @@ class MicWidget: public Widget {
 	SherpaStream* _asrStream;
         const char* _asrModelPath;
         const char* _asrTokensPath;
+        pthread_mutex_t _asrLock;
+        pthread_t _asrDecodeTid;
+        volatile bool _asrDecodeThreadStarted;
+        volatile bool _asrDecodeStop;
+        volatile bool _asrPartialPending;
+        volatile bool _asrFinalPending;
 	volatile int _asrState;
 	char _asrText[256];
 	int32_t _asrDc;
@@ -102,10 +110,6 @@ class MicWidget: public Widget {
 	static int abs_i32(int v) {
 		return v < 0 ? -v : v;
 	}
-
-        static bool isTransducerModelPath(const char* path) {
-                return path != NULL && strcmp(path, ASR_ONLINE_TRANSDUCER_ENCODER_PATH) == 0;
-        }
 
         static const char* chooseModelPath(void) {
                 if (access(ASR_ONLINE_TRANSDUCER_ENCODER_PATH, R_OK) == 0 &&
@@ -269,10 +273,53 @@ class MicWidget: public Widget {
 			w->_asrState = ASR_FAILED;
 			return NULL;
 		}
+                if (pthread_create(&w->_asrDecodeTid, NULL, asrDecodeThread, w) == 0)
+                        w->_asrDecodeThreadStarted = true;
 		strcpy(w->_asrText, "say something...");
 		w->_asrState = ASR_LISTENING;
 		return NULL;
 	}
+
+        static void* asrDecodeThread(void* p) {
+                MicWidget* w = (MicWidget*)p;
+
+                while (!w->_asrDecodeStop) {
+                        bool didWork = false;
+
+                        pthread_mutex_lock(&w->_asrLock);
+                        if (w->_asr != NULL && w->_asrStream != NULL) {
+                                if (w->_asrFinalPending && w->_asrState == ASR_DECODING) {
+                                        w->_asrFinalPending = false;
+                                        SherpaInputFinished(w->_asr, w->_asrStream);
+                                        w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
+                                                        "(no speech)");
+                                        SherpaReset(w->_asr, w->_asrStream);
+                                        w->_asrState = ASR_LISTENING;
+                                        w->_silenceTicks = 0;
+                                        w->_speechTicks = 0;
+                                        w->_partialTicks = 0;
+                                        w->_fedSamples = 0;
+                                        didWork = true;
+                                }
+                                else if (w->_asrPartialPending &&
+                                                w->_asrState == ASR_RECORDING &&
+                                                SherpaIsStreamReady(w->_asr, w->_asrStream)) {
+                                        w->_asrPartialPending = false;
+                                        w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
+                                                        "recognizing...");
+                                        didWork = true;
+                                }
+                                else if (w->_asrPartialPending) {
+                                        w->_asrPartialPending = false;
+                                }
+                        }
+                        pthread_mutex_unlock(&w->_asrLock);
+
+                        if (!didWork)
+                                usleep(10000);
+                }
+                return NULL;
+        }
 
 	void prerollPush(const int16_t* s, int n) {
 		for (int i = 0; i < n; i++) {
@@ -285,6 +332,7 @@ class MicWidget: public Widget {
 	}
 
 	void prerollFeed(void) {
+                pthread_mutex_lock(&_asrLock);
 		if (_preFull) {
 			SherpaAcceptWaveform(_asr, _asrStream,
 					_preroll + _prePos, ASR_PREROLL - _prePos);
@@ -297,6 +345,7 @@ class MicWidget: public Widget {
 		}
 		_prePos = 0;
 		_preFull = false;
+                pthread_mutex_unlock(&_asrLock);
 	}
 
         void setAsrText(const char* text, const char* fallback = NULL) {
@@ -318,12 +367,15 @@ class MicWidget: public Widget {
 				_speechTicks = 1;
 				_silenceTicks = 0;
                                 _partialTicks = 0;
+                                setAsrText("recognizing...");
 				prerollFeed(); /* mono already inside the ring */
 				_asrState = ASR_RECORDING;
 			}
 		}
 		else if (_asrState == ASR_RECORDING) {
+                        pthread_mutex_lock(&_asrLock);
 			SherpaAcceptWaveform(_asr, _asrStream, mono, n);
+                        pthread_mutex_unlock(&_asrLock);
 			_fedSamples += n;
 			if (level >= ASR_VAD_KEEP) {
 				_speechTicks++;
@@ -335,39 +387,65 @@ class MicWidget: public Widget {
 
                         if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
                                 _partialTicks++;
-                                if (_partialTicks >= ASR_PARTIAL_TICKS &&
-                                                !isTransducerModelPath(_asrModelPath) &&
-                                                SherpaIsStreamReady(_asr, _asrStream)) {
-                                        setAsrText(SherpaDecodeStream(_asr, _asrStream),
-                                                        "listening...");
+                                if (_partialTicks >= ASR_PARTIAL_TICKS) {
+                                        if (_asrDecodeThreadStarted) {
+                                                _asrPartialPending = true;
+                                        }
+                                        else {
+                                                pthread_mutex_lock(&_asrLock);
+                                                if (SherpaIsStreamReady(_asr, _asrStream))
+                                                        setAsrText(SherpaDecodeStream(_asr, _asrStream),
+                                                                        "recognizing...");
+                                                pthread_mutex_unlock(&_asrLock);
+                                        }
                                         _partialTicks = 0;
                                 }
                         }
 
 			if (_silenceTicks >= ASR_SILENCE_TICKS || _fedSamples >= ASR_MAX_SAMPLES) {
 				if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
-                                        SherpaInputFinished(_asr, _asrStream);
-                                        setAsrText(SherpaDecodeStream(_asr, _asrStream),
-                                                        "(no speech)");
-                                        SherpaReset(_asr, _asrStream);
-                                        _asrState = ASR_LISTENING;
+                                        if (_asrDecodeThreadStarted) {
+                                                _asrPartialPending = false;
+                                                _asrFinalPending = true;
+                                                _asrState = ASR_DECODING;
+                                                setAsrText("recognizing...");
+                                        }
+                                        else {
+                                                pthread_mutex_lock(&_asrLock);
+                                                SherpaInputFinished(_asr, _asrStream);
+                                                setAsrText(SherpaDecodeStream(_asr, _asrStream),
+                                                                "(no speech)");
+                                                SherpaReset(_asr, _asrStream);
+                                                pthread_mutex_unlock(&_asrLock);
+                                                _asrState = ASR_LISTENING;
+                                                _silenceTicks = 0;
+                                                _speechTicks = 0;
+                                                _partialTicks = 0;
+                                                _fedSamples = 0;
+                                        }
 				}
 				else {
+                                        pthread_mutex_lock(&_asrLock);
 					SherpaReset(_asr, _asrStream);
+                                        pthread_mutex_unlock(&_asrLock);
 					_asrState = ASR_LISTENING;
+                                        _silenceTicks = 0;
+                                        _speechTicks = 0;
+                                        _partialTicks = 0;
+                                        _fedSamples = 0;
 				}
-                                _silenceTicks = 0;
-                                _speechTicks = 0;
-                                _partialTicks = 0;
-                                _fedSamples = 0;
 			}
 		}
+                else if (_asrState == ASR_DECODING) {
+                        prerollPush(mono, n);
+                }
 	}
 
 	const char* asrStatus(void) const {
 		switch (_asrState) {
 		case ASR_FAILED: return "[asr disabled]";
 		case ASR_RECORDING: return "[recording]";
+                case ASR_DECODING: return "[recognizing...]";
 		default: return "[listening]";
 		}
 	}
@@ -539,6 +617,11 @@ public:
 		_asrStream = NULL;
                 _asrModelPath = chooseModelPath();
                 _asrTokensPath = chooseTokensPath();
+                pthread_mutex_init(&_asrLock, NULL);
+                _asrDecodeThreadStarted = false;
+                _asrDecodeStop = false;
+                _asrPartialPending = false;
+                _asrFinalPending = false;
 		_asrState = ASR_LOADING;
                 snprintf(_asrText, sizeof(_asrText), "loading %s", _asrModelPath);
 		_asrDc = 0;
@@ -555,11 +638,15 @@ public:
 	~MicWidget() {
 		if (_fd >= 0)
 			close(_fd);
+                _asrDecodeStop = true;
+                if (_asrDecodeThreadStarted)
+                        pthread_join(_asrDecodeTid, NULL);
 		if (_asr != NULL) {
 			if (_asrStream != NULL)
 				SherpaDestroyStream(_asr, _asrStream);
 			SherpaDestroyRecognizer(_asr);
 		}
+                pthread_mutex_destroy(&_asrLock);
 	}
 };
 
