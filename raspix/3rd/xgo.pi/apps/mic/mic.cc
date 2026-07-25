@@ -50,6 +50,8 @@ using namespace Ewok;
 #define ASR_PARTIAL_TICKS 4    /* ~0.2s between partial refreshes */
 #define ASR_MAX_SAMPLES (ASR_INPUT_RATE * 12)
 #define ASR_PREROLL 9600       /* 0.2s kept before speech onset */
+#define ASR_QUEUE_SAMPLES (ASR_INPUT_RATE * 8) /* keep UI smooth under decode load */
+#define ASR_QUEUE_BATCH 4096
 
 enum {
 	ASR_LOADING = 0,
@@ -86,6 +88,7 @@ class MicWidget: public Widget {
         pthread_t _asrDecodeTid;
         volatile bool _asrDecodeThreadStarted;
         volatile bool _asrDecodeStop;
+        volatile bool _asrResetPending;
         volatile bool _asrPartialPending;
         volatile bool _asrFinalPending;
 	volatile int _asrState;
@@ -98,6 +101,10 @@ class MicWidget: public Widget {
 	int16_t _preroll[ASR_PREROLL];
 	int _prePos;
 	bool _preFull;
+        int16_t _asrQueue[ASR_QUEUE_SAMPLES];
+        int _asrQRead;
+        int _asrQWrite;
+        int _asrQCount;
 
 	static int16_t clamp16(int v) {
 		if (v < -32768)
@@ -273,8 +280,12 @@ class MicWidget: public Widget {
 			w->_asrState = ASR_FAILED;
 			return NULL;
 		}
-                if (pthread_create(&w->_asrDecodeTid, NULL, asrDecodeThread, w) == 0)
-                        w->_asrDecodeThreadStarted = true;
+                if (pthread_create(&w->_asrDecodeTid, NULL, asrDecodeThread, w) != 0) {
+                        strcpy(w->_asrText, "decode thread failed");
+                        w->_asrState = ASR_FAILED;
+                        return NULL;
+                }
+                w->_asrDecodeThreadStarted = true;
 		strcpy(w->_asrText, "say something...");
 		w->_asrState = ASR_LISTENING;
 		return NULL;
@@ -282,41 +293,86 @@ class MicWidget: public Widget {
 
         static void* asrDecodeThread(void* p) {
                 MicWidget* w = (MicWidget*)p;
+                int16_t batch[ASR_QUEUE_BATCH];
 
                 while (!w->_asrDecodeStop) {
                         bool didWork = false;
+                        bool doReset = false;
+                        bool doPartial = false;
+                        bool doFinal = false;
+                        int n = 0;
 
                         pthread_mutex_lock(&w->_asrLock);
                         if (w->_asr != NULL && w->_asrStream != NULL) {
-                                if (w->_asrFinalPending && w->_asrState == ASR_DECODING) {
+                                if (w->_asrResetPending) {
+                                        w->_asrResetPending = false;
+                                        w->_asrPartialPending = false;
                                         w->_asrFinalPending = false;
-                                        SherpaInputFinished(w->_asr, w->_asrStream);
-                                        w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
-                                                        "(no speech)");
-                                        SherpaReset(w->_asr, w->_asrStream);
-                                        w->_asrState = ASR_LISTENING;
-                                        w->_silenceTicks = 0;
-                                        w->_speechTicks = 0;
-                                        w->_partialTicks = 0;
-                                        w->_fedSamples = 0;
-                                        didWork = true;
+                                        w->asrQueueClearLocked();
+                                        doReset = true;
                                 }
-                                else if (w->_asrPartialPending &&
-                                                w->_asrState == ASR_RECORDING &&
-                                                SherpaIsStreamReady(w->_asr, w->_asrStream)) {
-                                        w->_asrPartialPending = false;
-                                        w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
-                                                        "recognizing...");
-                                        didWork = true;
-                                }
-                                else if (w->_asrPartialPending) {
-                                        w->_asrPartialPending = false;
+                                else {
+                                        if (w->_asrQCount > 0) {
+                                                n = w->_asrQCount;
+                                                if (n > ASR_QUEUE_BATCH)
+                                                        n = ASR_QUEUE_BATCH;
+                                                for (int i = 0; i < n; ++i) {
+                                                        batch[i] = w->_asrQueue[w->_asrQRead];
+                                                        w->_asrQRead++;
+                                                        if (w->_asrQRead >= ASR_QUEUE_SAMPLES)
+                                                                w->_asrQRead = 0;
+                                                }
+                                                w->_asrQCount -= n;
+                                        }
+
+                                        if (w->_asrFinalPending &&
+                                                        w->_asrState == ASR_DECODING &&
+                                                        n == 0 && w->_asrQCount == 0) {
+                                                w->_asrFinalPending = false;
+                                                doFinal = true;
+                                        }
+                                        else if (w->_asrPartialPending &&
+                                                        w->_asrState == ASR_RECORDING &&
+                                                        n == 0 && w->_asrQCount == 0) {
+                                                w->_asrPartialPending = false;
+                                                doPartial = true;
+                                        }
                                 }
                         }
                         pthread_mutex_unlock(&w->_asrLock);
 
+                        if (doReset) {
+                                SherpaReset(w->_asr, w->_asrStream);
+                                didWork = true;
+                        }
+
+                        if (n > 0) {
+                                SherpaAcceptWaveform(w->_asr, w->_asrStream, batch, n);
+                                didWork = true;
+                        }
+
+                        if (doFinal) {
+                                SherpaInputFinished(w->_asr, w->_asrStream);
+                                w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
+                                                "(no speech)");
+                                SherpaReset(w->_asr, w->_asrStream);
+                                pthread_mutex_lock(&w->_asrLock);
+                                w->_asrState = ASR_LISTENING;
+                                w->_silenceTicks = 0;
+                                w->_speechTicks = 0;
+                                w->_partialTicks = 0;
+                                w->_fedSamples = 0;
+                                pthread_mutex_unlock(&w->_asrLock);
+                                didWork = true;
+                        }
+                        else if (doPartial && SherpaIsStreamReady(w->_asr, w->_asrStream)) {
+                                w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
+                                                "recognizing...");
+                                didWork = true;
+                        }
+
                         if (!didWork)
-                                usleep(10000);
+                                usleep(5000);
                 }
                 return NULL;
         }
@@ -331,21 +387,58 @@ class MicWidget: public Widget {
 		}
 	}
 
-	void prerollFeed(void) {
+        void asrQueueClearLocked(void) {
+                _asrQRead = 0;
+                _asrQWrite = 0;
+                _asrQCount = 0;
+        }
+
+        void asrQueuePushLocked(const int16_t* s, int n) {
+                if (s == NULL || n <= 0)
+                        return;
+
+                if (n >= ASR_QUEUE_SAMPLES) {
+                        s += n - ASR_QUEUE_SAMPLES;
+                        n = ASR_QUEUE_SAMPLES;
+                        asrQueueClearLocked();
+                }
+
+                while ((_asrQCount + n) > ASR_QUEUE_SAMPLES && _asrQCount > 0) {
+                        int drop = (_asrQCount + n) - ASR_QUEUE_SAMPLES;
+                        if (drop > _asrQCount)
+                                drop = _asrQCount;
+                        _asrQRead = (_asrQRead + drop) % ASR_QUEUE_SAMPLES;
+                        _asrQCount -= drop;
+                        _asrPartialPending = false;
+                }
+
+                for (int i = 0; i < n; ++i) {
+                        _asrQueue[_asrQWrite] = s[i];
+                        _asrQWrite++;
+                        if (_asrQWrite >= ASR_QUEUE_SAMPLES)
+                                _asrQWrite = 0;
+                }
+                _asrQCount += n;
+        }
+
+        void asrQueuePush(const int16_t* s, int n) {
                 pthread_mutex_lock(&_asrLock);
+                asrQueuePushLocked(s, n);
+                pthread_mutex_unlock(&_asrLock);
+        }
+
+	void prerollFeed(void) {
 		if (_preFull) {
-			SherpaAcceptWaveform(_asr, _asrStream,
-					_preroll + _prePos, ASR_PREROLL - _prePos);
-			SherpaAcceptWaveform(_asr, _asrStream, _preroll, _prePos);
+                        asrQueuePush(_preroll + _prePos, ASR_PREROLL - _prePos);
+                        asrQueuePush(_preroll, _prePos);
 			_fedSamples += ASR_PREROLL;
 		}
 		else if (_prePos > 0) {
-			SherpaAcceptWaveform(_asr, _asrStream, _preroll, _prePos);
+                        asrQueuePush(_preroll, _prePos);
 			_fedSamples += _prePos;
 		}
 		_prePos = 0;
 		_preFull = false;
-                pthread_mutex_unlock(&_asrLock);
 	}
 
         void setAsrText(const char* text, const char* fallback = NULL) {
@@ -373,9 +466,7 @@ class MicWidget: public Widget {
 			}
 		}
 		else if (_asrState == ASR_RECORDING) {
-                        pthread_mutex_lock(&_asrLock);
-			SherpaAcceptWaveform(_asr, _asrStream, mono, n);
-                        pthread_mutex_unlock(&_asrLock);
+                        asrQueuePush(mono, n);
 			_fedSamples += n;
 			if (level >= ASR_VAD_KEEP) {
 				_speechTicks++;
@@ -388,45 +479,24 @@ class MicWidget: public Widget {
                         if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
                                 _partialTicks++;
                                 if (_partialTicks >= ASR_PARTIAL_TICKS) {
-                                        if (_asrDecodeThreadStarted) {
-                                                _asrPartialPending = true;
-                                        }
-                                        else {
-                                                pthread_mutex_lock(&_asrLock);
-                                                if (SherpaIsStreamReady(_asr, _asrStream))
-                                                        setAsrText(SherpaDecodeStream(_asr, _asrStream),
-                                                                        "recognizing...");
-                                                pthread_mutex_unlock(&_asrLock);
-                                        }
+                                        _asrPartialPending = true;
                                         _partialTicks = 0;
                                 }
                         }
 
 			if (_silenceTicks >= ASR_SILENCE_TICKS || _fedSamples >= ASR_MAX_SAMPLES) {
 				if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
-                                        if (_asrDecodeThreadStarted) {
-                                                _asrPartialPending = false;
-                                                _asrFinalPending = true;
-                                                _asrState = ASR_DECODING;
-                                                setAsrText("recognizing...");
-                                        }
-                                        else {
-                                                pthread_mutex_lock(&_asrLock);
-                                                SherpaInputFinished(_asr, _asrStream);
-                                                setAsrText(SherpaDecodeStream(_asr, _asrStream),
-                                                                "(no speech)");
-                                                SherpaReset(_asr, _asrStream);
-                                                pthread_mutex_unlock(&_asrLock);
-                                                _asrState = ASR_LISTENING;
-                                                _silenceTicks = 0;
-                                                _speechTicks = 0;
-                                                _partialTicks = 0;
-                                                _fedSamples = 0;
-                                        }
+                                        _asrPartialPending = false;
+                                        _asrFinalPending = true;
+                                        _asrState = ASR_DECODING;
+                                        setAsrText("recognizing...");
 				}
 				else {
                                         pthread_mutex_lock(&_asrLock);
-					SherpaReset(_asr, _asrStream);
+                                        _asrResetPending = true;
+                                        _asrPartialPending = false;
+                                        _asrFinalPending = false;
+                                        asrQueueClearLocked();
                                         pthread_mutex_unlock(&_asrLock);
 					_asrState = ASR_LISTENING;
                                         _silenceTicks = 0;
@@ -620,6 +690,7 @@ public:
                 pthread_mutex_init(&_asrLock, NULL);
                 _asrDecodeThreadStarted = false;
                 _asrDecodeStop = false;
+                _asrResetPending = false;
                 _asrPartialPending = false;
                 _asrFinalPending = false;
 		_asrState = ASR_LOADING;
@@ -631,6 +702,9 @@ public:
 		_fedSamples = 0;
 		_prePos = 0;
 		_preFull = false;
+                _asrQRead = 0;
+                _asrQWrite = 0;
+                _asrQCount = 0;
 		if (thread_create(asrLoadThread, this) < 0)
 			asrLoadThread(this); /* fall back to blocking load */
 	}
