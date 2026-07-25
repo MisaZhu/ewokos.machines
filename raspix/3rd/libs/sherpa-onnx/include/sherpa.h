@@ -95,10 +95,60 @@ int32_t SherpaIsStreamReady(SherpaRecognizer *r, SherpaStream *s);
  * This provides incremental text for UI updates while keeping the stream
  * open for more audio until SherpaInputFinished() + SherpaReset().
  *
+ * For online transducer recognizers the decode consumes only the pending
+ * encoder chunks (bounded to one chunk per call, also after
+ * SherpaInputFinished()), so it is cheap enough to call whenever
+ * SherpaIsStreamReady() reports data; keep calling until the stream is no
+ * longer ready to drain the tail after SherpaInputFinished().
+ * For offline recognizers it re-decodes the whole utterance buffered so far.
+ *
  * @return recognized text so far; the pointer is valid until the next decode
  *         or reset on this recognizer.
  */
 const char *SherpaDecodeStream(SherpaRecognizer *r, SherpaStream *s);
+
+/**
+ * Returns non-zero once a decode step failed on this stream. The error is
+ * sticky (SherpaIsStreamReady() then always returns 0) until SherpaReset(),
+ * so callers should report it instead of waiting for more results.
+ */
+int32_t SherpaStreamHasError(SherpaRecognizer *r, SherpaStream *s);
+
+/**
+ * Decode progress over the audio buffered so far, in percent (0..100):
+ * how much of the currently decodable feature range SherpaDecodeStream()
+ * has consumed. Grows toward 100 while the decode backlog drains, e.g.
+ * during the tail flush after SherpaInputFinished(); safe to poll from
+ * another thread for UI progress display.
+ */
+int32_t SherpaStreamProgress(SherpaRecognizer *r, SherpaStream *s);
+
+/**
+ * Detailed decode activity snapshot for UI display. All fields describe
+ * the utterance buffered so far; safe to poll from another thread while
+ * a decode runs elsewhere (values are telemetry, not synchronized).
+ */
+typedef struct SherpaStreamInfo {
+  int32_t progress;     /* overall, same as SherpaStreamProgress() */
+  int32_t decoded_ms;   /* audio the decoder has consumed so far */
+  int32_t total_ms;     /* decodable audio buffered so far */
+  int32_t chunks_done;  /* encoder chunks finished (online transducer) */
+  int32_t chunks_total; /* encoder chunks currently decodable */
+  int32_t tokens;       /* tokens emitted so far in this utterance */
+  int32_t phase_pct;    /* progress inside the current phase, 0..100 */
+  const char *phase;    /* "idle", "encoder", "search" or "model" */
+} SherpaStreamInfo;
+
+void SherpaStreamGetInfo(SherpaRecognizer *r, SherpaStream *s,
+                         SherpaStreamInfo *info);
+
+/**
+ * Returns non-zero when this recognizer decodes incrementally (online
+ * transducer): partial decodes consume new chunks only and can be called
+ * continuously while recording. Returns 0 for offline recognizers where a
+ * partial decode re-processes the whole buffered utterance.
+ */
+int32_t SherpaIsOnline(SherpaRecognizer *r);
 
 /** Return the most recent streaming/offline result for this recognizer. */
 const char *SherpaGetResult(SherpaRecognizer *r);

@@ -383,6 +383,22 @@ static int32_t sdhci_readl(struct sdhci_host *host, uint32_t reg){
 	return val;
 }
 
+/*
+ * Inter-command gap for SDHCI_QUIRK_WAIT_SEND_CMD.
+ * usleep(10) would sleep a whole EwokOS timer tick (~3.9ms at 256Hz),
+ * costing ~4ms per CMD52/CMD53 and capping WLAN throughput at ~60KB/s.
+ * On-device validation: a ~50us gap (10000 iters) breaks DHCP - the
+ * card/host genuinely needs a sub-ms but larger inter-command gap.
+ * 100000 iters (~500us class) keeps DHCP/association working while
+ * still ~8x faster than the tick sleep.
+ */
+static void sdhci_post_cmd_delay(void)
+{
+	volatile int i;
+	for (i = 0; i < 30000; i++)
+		;
+}
+
 
 static void sdhci_set_power(struct sdhci_host *host, uint32_t power)
 {
@@ -426,7 +442,7 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
 		}
 
 		timeout--;
-		usleep(100);
+		usleep(1000);
 	}
 
 	sdhci_writew(host, 0, SDHCI_CLOCK_CONTROL);
@@ -865,7 +881,7 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		ret = sdhci_transfer_data(host, data);
 
 	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD)
-		usleep(10);
+		sdhci_post_cmd_delay();
 
 	stat = sdhci_readl(host, SDHCI_INT_STATUS);
 	sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);

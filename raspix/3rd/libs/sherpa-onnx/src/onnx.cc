@@ -8,9 +8,18 @@
 
 #include <algorithm>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#if defined(__has_include)
+#if __has_include(<ewoksys/sys.h>)
+#include <ewoksys/sys.h>  /* sys_get_sys_info: size worker pool to cores */
+#define SONNX_EWOKOS 1
+#endif
+#endif
 
 #ifdef SONNX_PROF
 #include <chrono>
@@ -94,6 +103,9 @@ static bool Fail(const char *msg, const std::string &op) {
 /* Model::Load progress (0..100), polled from another thread by the UI. */
 volatile int g_load_progress = 0;
 
+/* Model::Run progress of the top-level graph (0..100), same usage. */
+volatile int g_run_progress = 0;
+
 /* optional host-side profiling (per-op and load-phase timings) */
 #ifdef SONNX_PROF
 struct SonnxProfEnt { double ms = 0; long count = 0; long bytes = 0; };
@@ -116,6 +128,157 @@ struct SonnxProfT {
 #define SONNX_PROF_ADD(key)
 #define SONNX_PROF_ADDB(key, b)
 #endif
+
+/* ================== multi-core parallel-for worker pool ================== */
+/*
+ * The heavy ops (MatMulInteger/MatMul/Conv) split their independent output
+ * rows over one worker thread per spare core; the calling thread works too.
+ * EwokOS user-space sync primitives (semaphores, cond vars) are yield-spin
+ * wrappers around syscalls, so dispatch uses plain GCC atomics: workers spin
+ * hot briefly after the last job (a decode issues thousands of node-level
+ * jobs back to back), then drop to 1 kHz usleep polling so an idle app does
+ * not burn the remaining cores.
+ */
+
+typedef void (*PfBody)(int64_t begin, int64_t end, int wid, void *ctx);
+
+struct PfJob {
+  PfBody body;
+  void *ctx;
+  int64_t total;
+  int64_t chunk;
+};
+
+/*
+ * Generation-tagged dispatch: g_pf_combo packs the job generation (high 32
+ * bits) with the next unclaimed index (low 32).  Ranges are claimed by CAS,
+ * so a straggler still holding an old generation can never claim indices of
+ * (or run a body for) a newer job: its CAS carries the stale generation and
+ * fails.  Job parameters are double-buffered by generation parity; a slot is
+ * rewritten only two generations later, and the dispatcher returns only when
+ * pending hits zero, so parameters of a claimable job are always stable.
+ */
+static PfJob g_pf_jobs[2];
+static volatile uint64_t g_pf_combo = 0;  /* [generation:32 | next index:32] */
+static volatile int64_t g_pf_pending = 0; /* items not yet completed */
+static int g_pf_workers = 0;              /* 0: run everything inline */
+
+#define PF_GEN(c) ((uint32_t)((c) >> 32))
+#define PF_IDX(c) ((int64_t)(uint32_t)(c))
+
+/* claim and run ranges of the generation carried by c0; returns when that
+   generation is exhausted or superseded.  Parameter reads may race with a
+   rewrite two generations later, but such stale values are discarded: the
+   guarding CAS fails on the generation tag before any body runs on them. */
+static void PfRunRanges(uint64_t c0, int wid) {
+  const uint32_t gen = PF_GEN(c0);
+  const PfJob *job = &g_pf_jobs[gen & 1];
+  const PfBody body = job->body;
+  void *ctx = job->ctx;
+  const int64_t total = job->total, chunk = job->chunk;
+  uint64_t c = c0;
+  while (PF_GEN(c) == gen) {
+    int64_t b = PF_IDX(c);
+    if (b >= total) break;
+    uint64_t nc = ((uint64_t)gen << 32) | (uint32_t)(b + chunk);
+    if (!__atomic_compare_exchange_n(&g_pf_combo, &c, nc, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+      continue;  /* c reloaded; generation recheck at loop top */
+    int64_t e = b + chunk < total ? b + chunk : total;
+    body(b, e, wid, ctx);
+    __atomic_fetch_sub(&g_pf_pending, e - b, __ATOMIC_ACQ_REL);
+    c = nc;
+  }
+}
+
+static void *PfWorker(void *arg) {
+  const int wid = (int)(intptr_t)arg;
+  uint32_t seen = 0;
+  int64_t idle = 0;
+  for (;;) {
+    uint64_t c = __atomic_load_n(&g_pf_combo, __ATOMIC_ACQUIRE);
+    if (PF_GEN(c) == seen) {
+      /* hot spin bridges the serial ops between two parallel nodes: a
+         decode issues thousands of sub-millisecond jobs back to back and
+         a worker that dozes off (usleep is >=1 kernel tick) misses whole
+         batches of them, halving the measured GEMM scaling.  The budget
+         is tens of ms of spinning after the last job; an idle app still
+         drops to cheap 1 kHz sleep polling */
+      if (++idle > 10000000) usleep(1000);
+      continue;
+    }
+    seen = PF_GEN(c);
+    idle = 0;
+    PfRunRanges(c, wid);
+  }
+  return NULL;
+}
+
+static int PfCores(void) {
+#ifdef SONNX_EWOKOS
+  sys_info_t info;
+  if (sys_get_sys_info(&info) == 0 && info.cores > 0)
+    return (int)info.cores;
+  return 1;
+#else
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  return n > 0 ? (int)n : 1;
+#endif
+}
+
+static void PfInit(void) {
+  static bool inited = false;
+  if (inited) return;
+  inited = true;
+  int n = PfCores() - 1;  /* the dispatching thread participates */
+#ifndef SONNX_EWOKOS
+  /* host-side profiling override (SONNX_THREADS=n caps the pool) */
+  const char *env = getenv("SONNX_THREADS");
+  if (env && atoi(env) > 0) n = atoi(env) - 1;
+#endif
+  if (n > 7) n = 7;
+  for (int i = 0; i < n; ++i) {
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, PfWorker,
+                       (void *)(intptr_t)(g_pf_workers + 1)) != 0)
+      break;
+    ++g_pf_workers;
+  }
+}
+
+/* worker count + 1 (the calling thread, wid 0); ops size their per-thread
+   scratch buffers with this before dispatching */
+static int PfThreads(void) {
+  PfInit();
+  return g_pf_workers + 1;
+}
+
+/* Run body(begin,end,wid,ctx) over [0,total): parallel when workers exist
+   and the job is big enough (cost ~ total scalar MACs), inline otherwise.
+   Bodies must write disjoint output ranges and only read shared inputs;
+   wid indexes any per-thread scratch (0 .. g_pf_workers). */
+static void ParallelFor(int64_t total, int64_t cost, PfBody body, void *ctx) {
+  if (total <= 0) return;
+  PfInit();
+  if (g_pf_workers == 0 || total < 2 || total > 0x3fffffff ||
+      cost < (1 << 17)) {
+    body(0, total, 0, ctx);
+    return;
+  }
+  uint64_t c = __atomic_load_n(&g_pf_combo, __ATOMIC_RELAXED);
+  uint32_t gen = PF_GEN(c) + 1;
+  PfJob *job = &g_pf_jobs[gen & 1];
+  job->body = body;
+  job->ctx = ctx;
+  job->total = total;
+  int64_t chunk = total / (int64_t)((g_pf_workers + 1) * 4);
+  job->chunk = chunk < 1 ? 1 : chunk;
+  __atomic_store_n(&g_pf_pending, total, __ATOMIC_RELEASE);
+  uint64_t nc = (uint64_t)gen << 32;  /* publish: new generation, cursor 0 */
+  __atomic_store_n(&g_pf_combo, nc, __ATOMIC_RELEASE);
+  PfRunRanges(nc, 0);  /* caller works too */
+  while (__atomic_load_n(&g_pf_pending, __ATOMIC_ACQUIRE) != 0) {}
+}
 
 /* ======================== SIMD micro-kernels ======================== */
 /*
@@ -233,6 +396,55 @@ static inline void AxpyQ(int32_t av, const uint8_t *b, bool bsgn, int32_t bzp,
 #else
   for (int64_t j = 0; j < n; ++j)
     acc[j] += av * ((bsgn ? (int32_t)(int8_t)b[j] : (int32_t)b[j]) - bzp);
+#endif
+}
+
+/* acc[0..n) += Σ_r av[r] * (Q(b[r*ldb + j]) - bzp) over four consecutive
+   B rows: the plain per-row AXPY is bound on the int32 accumulator
+   round-trip (8 bytes moved per 1 multiply-add), batching four rows
+   loads/stores it once per four k steps */
+static inline void AxpyQ4(const int32_t *av, const uint8_t *b, int64_t ldb,
+                          bool bsgn, int32_t bzp, int32_t *acc, int64_t n) {
+#ifdef SONNX_NEON
+  const int16_t a0 = (int16_t)av[0], a1 = (int16_t)av[1];
+  const int16_t a2 = (int16_t)av[2], a3 = (int16_t)av[3];
+  int16x8_t vz = vdupq_n_s16((int16_t)bzp);
+  int64_t j = 0;
+  for (; j + 8 <= n; j += 8) {
+    int16x8_t r0 = vsubq_s16(WidenQ8(b + j, bsgn), vz);
+    int16x8_t r1 = vsubq_s16(WidenQ8(b + ldb + j, bsgn), vz);
+    int16x8_t r2 = vsubq_s16(WidenQ8(b + 2 * ldb + j, bsgn), vz);
+    int16x8_t r3 = vsubq_s16(WidenQ8(b + 3 * ldb + j, bsgn), vz);
+    int32x4_t lo = vld1q_s32(acc + j);
+    int32x4_t hi = vld1q_s32(acc + j + 4);
+    lo = vmlal_n_s16(lo, vget_low_s16(r0), a0);
+    hi = vmlal_n_s16(hi, vget_high_s16(r0), a0);
+    lo = vmlal_n_s16(lo, vget_low_s16(r1), a1);
+    hi = vmlal_n_s16(hi, vget_high_s16(r1), a1);
+    lo = vmlal_n_s16(lo, vget_low_s16(r2), a2);
+    hi = vmlal_n_s16(hi, vget_high_s16(r2), a2);
+    lo = vmlal_n_s16(lo, vget_low_s16(r3), a3);
+    hi = vmlal_n_s16(hi, vget_high_s16(r3), a3);
+    vst1q_s32(acc + j, lo);
+    vst1q_s32(acc + j + 4, hi);
+  }
+  for (; j < n; ++j) {
+    int32_t s = acc[j];
+    for (int r = 0; r < 4; ++r) {
+      const uint8_t q = b[r * ldb + j];
+      s += av[r] * ((bsgn ? (int32_t)(int8_t)q : (int32_t)q) - bzp);
+    }
+    acc[j] = s;
+  }
+#else
+  for (int64_t j = 0; j < n; ++j) {
+    int32_t s = acc[j];
+    for (int r = 0; r < 4; ++r) {
+      const uint8_t q = b[r * ldb + j];
+      s += av[r] * ((bsgn ? (int32_t)(int8_t)q : (int32_t)q) - bzp);
+    }
+    acc[j] = s;
+  }
 #endif
 }
 
@@ -913,6 +1125,151 @@ static void SoftmaxLike(const Tensor &a, int64_t axis, Tensor *out,
 
 /* ============================ matmul / gemm ============================ */
 
+/* per-(batch,row) work item shared by the MatMul dispatcher and pool */
+struct MmCtx {
+  const Tensor *a, *b;
+  Tensor *out;
+  int64_t m, k, n, nb;
+  const std::vector<int64_t> *batch, *ba, *bb, *sa, *sb;
+};
+
+/* decode flat batch index bi into base offsets of a and b (broadcast) */
+static void MmBatchOffsets(const std::vector<int64_t> &batch,
+                           const std::vector<int64_t> &ba,
+                           const std::vector<int64_t> &bb,
+                           const std::vector<int64_t> &sa,
+                           const std::vector<int64_t> &sb, int64_t bi,
+                           int64_t *ao, int64_t *bo) {
+  size_t rba = ba.size(), rbb = bb.size(), rbz = batch.size();
+  int64_t rem = bi, aoff = 0, boff = 0;
+  for (int d = static_cast<int>(rbz) - 1; d >= 0; --d) {
+    int64_t cc = rem % batch[d];
+    rem /= batch[d];
+    int da = d - static_cast<int>(rbz - rba);
+    if (da >= 0 && ba[da] > 1) aoff += cc * sa[da];
+    int db = d - static_cast<int>(rbz - rbb);
+    if (db >= 0 && bb[db] > 1) boff += cc * sb[db];
+  }
+  *ao = aoff;
+  *bo = boff;
+}
+
+static void MmBody(int64_t begin, int64_t end, int wid, void *vctx) {
+  (void)wid;
+  const MmCtx &c = *static_cast<const MmCtx *>(vctx);
+  int64_t cur_bi = -1;
+  const float *pa = NULL, *pb = NULL;
+  float *po = NULL;
+  for (int64_t row = begin; row < end; ++row) {
+    int64_t bi = row / c.m, i = row % c.m;
+    if (bi != cur_bi) {
+      cur_bi = bi;
+      int64_t ao, bo;
+      MmBatchOffsets(*c.batch, *c.ba, *c.bb, *c.sa, *c.sb, bi, &ao, &bo);
+      pa = c.a->pf() + ao * c.m * c.k;
+      pb = c.b->pf() + bo * c.k * c.n;
+      po = c.out->pf() + bi * c.m * c.n;
+    }
+    float *orow = po + i * c.n;
+    memset(orow, 0, static_cast<size_t>(c.n) * sizeof(float));
+    const float *arow = pa + i * c.k;
+    for (int64_t kk = 0; kk < c.k; ++kk)
+      AxpyF32(arow[kk], pb + kk * c.n, orow, c.n);  // NEON row update
+  }
+}
+
+/* MatMulInteger rows (int8/uint8 x int8/uint8 -> int32); work items are
+   (row, column block): row-splitting alone starves the pool because the
+   transformer GEMMs here are skinny (nb*m of 3..6, huge k*n) */
+struct MmiCtx {
+  const uint8_t *pa, *pbq;
+  int64_t *poi;
+  const Tensor *azpt;
+  const int32_t *pzpcol;
+  int32_t *acc;  /* per-thread int32 row accumulators, n each */
+  int64_t m, k, n;
+  int64_t nsplit, nblk;  /* column blocks per row, columns per block */
+  int32_t azp0, bzp0;
+  bool azp_row, bzp_col, asgn, bsgn;
+  const std::vector<int64_t> *batch, *ba, *bb, *sa, *sb;
+};
+
+static void MmiBody(int64_t begin, int64_t end, int wid, void *vctx) {
+  const MmiCtx &c = *static_cast<const MmiCtx *>(vctx);
+  /* int32 row accumulator: the NEON kernel needs a dense int32 target
+     (the Tensor int payload is int64 lanes), widened once per row;
+     preallocated by the dispatcher (no malloc from worker threads) */
+  int32_t *pacc = c.acc + wid * c.n;
+  int64_t cur_bi = -1, abase = 0, bbase = 0, obase = 0;
+  for (int64_t item = begin; item < end; ++item) {
+    int64_t row = item / c.nsplit, blk = item % c.nsplit;
+    int64_t c0 = blk * c.nblk;
+    int64_t nc = c.nblk < c.n - c0 ? c.nblk : c.n - c0;
+    if (nc <= 0) continue;
+    int64_t bi = row / c.m, i = row % c.m;
+    if (bi != cur_bi) {
+      cur_bi = bi;
+      int64_t ao, bo;
+      MmBatchOffsets(*c.batch, *c.ba, *c.bb, *c.sa, *c.sb, bi, &ao, &bo);
+      abase = ao * c.m * c.k;
+      bbase = bo * c.k * c.n;
+      obase = bi * c.m * c.n;
+    }
+    int32_t azp = c.azp_row ? static_cast<int32_t>(c.azpt->AtInt(i)) : c.azp0;
+    memset(pacc, 0, static_cast<size_t>(nc) * sizeof(int32_t));
+    const uint8_t *arow = c.pa + abase + i * c.k;
+    const uint8_t *bcol = c.pbq + bbase + c0;
+    int32_t av4[4];
+    if (!c.bzp_col) {
+      int64_t kk = 0;
+      for (; kk + 4 <= c.k; kk += 4) {  /* 4-row batches cut the int32
+                                           accumulator traffic 4x */
+        bool any = false;
+        for (int r = 0; r < 4; ++r) {
+          const uint8_t q = arow[kk + r];
+          av4[r] = (c.asgn ? (int32_t)(int8_t)q : (int32_t)q) - azp;
+          if (av4[r]) any = true;
+        }
+        if (any)
+          AxpyQ4(av4, bcol + kk * c.n, c.n, c.bsgn, c.bzp0, pacc, nc);
+      }
+      for (; kk < c.k; ++kk) {
+        int32_t av =
+            (c.asgn ? (int32_t)(int8_t)arow[kk] : (int32_t)arow[kk]) - azp;
+        if (av)  // zero rows are common when azp matches; skip them
+          AxpyQ(av, bcol + kk * c.n, c.bsgn, c.bzp0, pacc, nc);
+      }
+    } else {  /* per-column zero point: raw NEON AXPY in the k-loop
+                 plus one int32 AXPY for the zp_j * rowsum correction */
+      int32_t rowsum = 0;
+      int64_t kk = 0;
+      for (; kk + 4 <= c.k; kk += 4) {
+        bool any = false;
+        for (int r = 0; r < 4; ++r) {
+          const uint8_t q = arow[kk + r];
+          av4[r] = (c.asgn ? (int32_t)(int8_t)q : (int32_t)q) - azp;
+          if (av4[r]) any = true;
+        }
+        if (any) {
+          AxpyQ4(av4, bcol + kk * c.n, c.n, c.bsgn, 0, pacc, nc);
+          rowsum += av4[0] + av4[1] + av4[2] + av4[3];
+        }
+      }
+      for (; kk < c.k; ++kk) {
+        int32_t av =
+            (c.asgn ? (int32_t)(int8_t)arow[kk] : (int32_t)arow[kk]) - azp;
+        if (av) {
+          AxpyQ(av, bcol + kk * c.n, c.bsgn, 0, pacc, nc);
+          rowsum += av;
+        }
+      }
+      if (rowsum) AxpyS32(-rowsum, c.pzpcol + c0, pacc, nc);
+    }
+    int64_t orow = obase + i * c.n + c0;
+    for (int64_t j = 0; j < nc; ++j) c.poi[orow + j] = pacc[j];
+  }
+}
+
 static bool MatMulOp(const Tensor &a, const Tensor &b, Tensor *out) {
   size_t ra = a.shape.size(), rb = b.shape.size();
   if (ra < 2 || rb < 2) return false;
@@ -934,33 +1291,127 @@ static bool MatMulOp(const Tensor &a, const Tensor &b, Tensor *out) {
   int64_t nb = NumelOf(batch);
   std::vector<int64_t> sa = StridesOf(ba);
   std::vector<int64_t> sb = StridesOf(bb);
-  size_t rba = ba.size(), rbb = bb.size(), rbz = batch.size();
 
-  for (int64_t bi = 0; bi < nb; ++bi) {
-    int64_t rem = bi, ao = 0, bo = 0;
-    for (int d = static_cast<int>(rbz) - 1; d >= 0; --d) {
-      int64_t c = rem % batch[d];
-      rem /= batch[d];
-      int da = d - static_cast<int>(rbz - rba);
-      if (da >= 0 && ba[da] > 1) ao += c * sa[da];
-      int db = d - static_cast<int>(rbz - rbb);
-      if (db >= 0 && bb[db] > 1) bo += c * sb[db];
-    }
-    const float *pa = a.pf() + ao * m * k;
-    const float *pb = b.pf() + bo * k * n;
-    float *po = out->pf() + bi * m * n;
-    for (int64_t i = 0; i < m; ++i) {
-      float *orow = po + i * n;
-      memset(orow, 0, static_cast<size_t>(n) * sizeof(float));
-      const float *arow = pa + i * k;
-      for (int64_t kk = 0; kk < k; ++kk)
-        AxpyF32(arow[kk], pb + kk * n, orow, n);  // NEON row update
-    }
-  }
+  MmCtx ctx;
+  ctx.a = &a;
+  ctx.b = &b;
+  ctx.out = out;
+  ctx.m = m;
+  ctx.k = k;
+  ctx.n = n;
+  ctx.nb = nb;
+  ctx.batch = &batch;
+  ctx.ba = &ba;
+  ctx.bb = &bb;
+  ctx.sa = &sa;
+  ctx.sb = &sb;
+  ParallelFor(nb * m, nb * m * k * n, MmBody, &ctx);
   return true;
 }
 
 /* ============================ conv / pool ============================ */
+
+/* per-(batch,out-channel) conv work shared by dispatcher and pool */
+struct ConvCtx {
+  const float *px, *pw;
+  const Tensor *bias;
+  float *pout;
+  int64_t c, m, mpg, cpg, cpw;
+  int64_t oh, ow, xh, xw, kh, kw;
+  int64_t st0, st1, pd0, pd1, dl0, dl1;
+  bool pw1x1, fast1d, fast2d;
+};
+
+static void ConvBody(int64_t begin, int64_t end, int wid, void *vctx) {
+  (void)wid;
+  const ConvCtx &t = *static_cast<const ConvCtx *>(vctx);
+  for (int64_t idx = begin; idx < end; ++idx) {
+    int64_t ni = idx / t.m, mo = idx % t.m;
+    int64_t g = mo / t.mpg;
+    if (t.pw1x1) {
+      /* pointwise 1x1 conv == GEMM row: out plane accumulates one
+         whole-plane NEON AXPY per input channel instead of a length-1
+         dot per pixel (zipformer feed-forward projections live here) */
+      const int64_t hw = t.oh * t.ow;
+      float *po = t.pout + (ni * t.m + mo) * hw;
+      float bv = t.bias ? t.bias->f[mo] : 0.0f;
+      for (int64_t p = 0; p < hw; ++p) po[p] = bv;
+      const float *wr = t.pw + mo * t.cpw;
+      const float *xg = t.px + (ni * t.c + g * t.cpg) * hw;
+      for (int64_t ci = 0; ci < t.cpg; ++ci)
+        AxpyF32(wr[ci], xg + ci * hw, po, hw);
+      continue;
+    }
+    if (t.fast2d) {
+      /* output-row sweep: each (ci,ky,kx) tap accumulates across a whole
+         output row (NEON AXPY when stride 1, tight scalar loop otherwise)
+         instead of a per-pixel length-kw dot whose call overhead dwarfs
+         the 3-tap kernels of the zipformer conv frontend */
+      for (int64_t oy = 0; oy < t.oh; ++oy) {
+        float *orow = t.pout + ((ni * t.m + mo) * t.oh + oy) * t.ow;
+        float bv = t.bias ? t.bias->f[mo] : 0.0f;
+        for (int64_t ox = 0; ox < t.ow; ++ox) orow[ox] = bv;
+        for (int64_t ci = 0; ci < t.cpg; ++ci) {
+          const float *xc =
+              t.px + (ni * t.c + g * t.cpg + ci) * t.xh * t.xw;
+          const float *wc = t.pw + (mo * t.cpw + ci) * t.kh * t.kw;
+          for (int64_t ky = 0; ky < t.kh; ++ky) {
+            int64_t iy = oy * t.st0 + ky * t.dl0 - t.pd0;
+            if (iy < 0 || iy >= t.xh) continue;
+            const float *xrow = xc + iy * t.xw - t.pd1;
+            const float *wrow = wc + ky * t.kw;
+            for (int64_t kx = 0; kx < t.kw; ++kx) {
+              /* ox range keeping ox*st1 + kx - pd1 inside [0, xw) */
+              int64_t lo = t.pd1 - kx;
+              lo = lo <= 0 ? 0 : (lo + t.st1 - 1) / t.st1;
+              int64_t num = t.xw - 1 - kx + t.pd1;
+              if (num < 0) continue;  /* trunc-div would round wrong way */
+              int64_t hi = num / t.st1;
+              if (hi >= t.ow) hi = t.ow - 1;
+              if (hi < lo) continue;
+              const float wv = wrow[kx];
+              const float *xp = xrow + kx;
+              if (t.st1 == 1) {
+                AxpyF32(wv, xp + lo, orow + lo, hi - lo + 1);
+              } else {
+                for (int64_t ox = lo; ox <= hi; ++ox)
+                  orow[ox] += wv * xp[ox * t.st1];
+              }
+            }
+          }
+        }
+      }
+      continue;
+    }
+    for (int64_t oy = 0; oy < t.oh; ++oy) {
+      for (int64_t ox = 0; ox < t.ow; ++ox) {
+        float sum = t.bias ? t.bias->f[mo] : 0.0f;
+        for (int64_t ci = 0; ci < t.cpg; ++ci) {
+          int64_t ch = g * t.cpg + ci;
+          const float *xc = t.px + (ni * t.c + ch) * t.xh * t.xw;
+          const float *wc = t.pw + (mo * t.cpw + ci) * t.kh * t.kw;
+          if (t.fast1d) {
+            int64_t iy0 = oy * t.st0 - t.pd0;
+            int64_t k0 = iy0 < 0 ? -iy0 : 0;
+            int64_t k1 = t.kh < t.xh - iy0 ? t.kh : t.xh - iy0;
+            if (k1 > k0) sum += DotF32(xc + iy0 + k0, wc + k0, k1 - k0);
+          } else {  // dilated: original scalar taps
+            for (int64_t ky = 0; ky < t.kh; ++ky) {
+              int64_t iy = oy * t.st0 + ky * t.dl0 - t.pd0;
+              if (iy < 0 || iy >= t.xh) continue;
+              for (int64_t kx = 0; kx < t.kw; ++kx) {
+                int64_t ix = ox * t.st1 + kx * t.dl1 - t.pd1;
+                if (ix < 0 || ix >= t.xw) continue;
+                sum += xc[iy * t.xw + ix] * wc[ky * t.kw + kx];
+              }
+            }
+          }
+        }
+        t.pout[((ni * t.m + mo) * t.oh + oy) * t.ow + ox] = sum;
+      }
+    }
+  }
+}
 
 static bool ConvOp(const Tensor &x, const Tensor &w, const Tensor *bias,
                    const std::vector<int64_t> &strides,
@@ -998,64 +1449,149 @@ static bool ConvOp(const Tensor &x, const Tensor &w, const Tensor *bias,
   int64_t xw = xs[1], xh = xs[0];
   int64_t kw = ks[1], kh = ks[0];
 
-  const float *px = x.pf();
-  const float *pw = w.pf();
   /* contiguous-reduction fast paths (NEON dot): 1-D conv reduces over
      ky (x and w both contiguous when dilation is 1); 2-D reduces over
      kx per kernel row. Boundary clipping shrinks the dot range. */
-  bool fast1d = (xw == 1 && kw == 1 && dl[0] == 1);
-  bool fast2d = (!fast1d && dl[1] == 1);
-
-  for (int64_t ni = 0; ni < n; ++ni) {
-    for (int64_t g = 0; g < group; ++g) {
-      for (int64_t mi = 0; mi < mpg; ++mi) {
-        int64_t mo = g * mpg + mi;
-        for (int64_t oy = 0; oy < oh; ++oy) {
-          for (int64_t ox = 0; ox < ow; ++ox) {
-            float sum = bias ? bias->f[mo] : 0.0f;
-            for (int64_t ci = 0; ci < cpg; ++ci) {
-              int64_t ch = g * cpg + ci;
-              const float *xc = px + (ni * c + ch) * xh * xw;
-              const float *wc = pw + (mo * cpw + ci) * kh * kw;
-              if (fast1d) {
-                int64_t iy0 = oy * st[0] - pd[0];
-                int64_t k0 = iy0 < 0 ? -iy0 : 0;
-                int64_t k1 = kh < xh - iy0 ? kh : xh - iy0;
-                if (k1 > k0) sum += DotF32(xc + iy0 + k0, wc + k0, k1 - k0);
-              } else if (fast2d) {
-                int64_t ix0 = ox * st[1] - pd[1];
-                int64_t k0 = ix0 < 0 ? -ix0 : 0;
-                int64_t k1 = kw < xw - ix0 ? kw : xw - ix0;
-                if (k1 <= k0) continue;
-                for (int64_t ky = 0; ky < kh; ++ky) {
-                  int64_t iy = oy * st[0] + ky * dl[0] - pd[0];
-                  if (iy < 0 || iy >= xh) continue;
-                  sum += DotF32(xc + iy * xw + ix0 + k0, wc + ky * kw + k0,
-                                k1 - k0);
-                }
-              } else {  // dilated: original scalar taps
-                for (int64_t ky = 0; ky < kh; ++ky) {
-                  int64_t iy = oy * st[0] + ky * dl[0] - pd[0];
-                  if (iy < 0 || iy >= xh) continue;
-                  for (int64_t kx = 0; kx < kw; ++kx) {
-                    int64_t ix = ox * st[1] + kx * dl[1] - pd[1];
-                    if (ix < 0 || ix >= xw) continue;
-                    sum += xc[iy * xw + ix] * wc[ky * kw + kx];
-                  }
-                }
-              }
-            }
-            out->f[((ni * m + mo) * oh + oy) * ow + ox] = sum;
-          }
-        }
-      }
-    }
-  }
+  ConvCtx ctx;
+  ctx.px = x.pf();
+  ctx.pw = w.pf();
+  ctx.bias = bias;
+  ctx.pout = out->pf();
+  ctx.c = c;
+  ctx.m = m;
+  ctx.mpg = mpg;
+  ctx.cpg = cpg;
+  ctx.cpw = cpw;
+  ctx.oh = oh;
+  ctx.ow = ow;
+  ctx.xh = xh;
+  ctx.xw = xw;
+  ctx.kh = kh;
+  ctx.kw = kw;
+  ctx.st0 = st[0];
+  ctx.st1 = st[1];
+  ctx.pd0 = pd[0];
+  ctx.pd1 = pd[1];
+  ctx.dl0 = dl[0];
+  ctx.dl1 = dl[1];
+  ctx.pw1x1 = (kh == 1 && kw == 1 && st[0] == 1 && st[1] == 1 &&
+               pd[0] == 0 && pd[1] == 0 && pe[0] == 0 && pe[1] == 0);
+  ctx.fast1d = (!ctx.pw1x1 && xw == 1 && kw == 1 && dl[0] == 1);
+  ctx.fast2d = (!ctx.pw1x1 && !ctx.fast1d && dl[1] == 1);
+#ifdef SONNX_PROF
+  SONNX_PROF_T();
+  char pk[96];
+  snprintf(pk, sizeof(pk), "Conv c%lld m%lld g%lld k%lldx%lld o%lldx%lld x%lldx%lld",
+           (long long)c, (long long)m, (long long)group, (long long)kh,
+           (long long)kw, (long long)oh, (long long)ow, (long long)xh,
+           (long long)xw);
+#endif
+  ParallelFor(n * m, n * m * oh * ow * cpg * kh * kw, ConvBody, &ctx);
+  SONNX_PROF_ADD(pk);
   return true;
 }
 
 // ConvInteger: quantized conv (x uint8/int8, w int8/uint8), int32 accumulate.
 // Mirrors ConvOp; zero points are scalar for x and scalar/per-channel for w.
+struct ConvQCtx {
+  const Tensor *x, *w, *wzp;
+  const uint8_t *px, *pw;
+  int64_t *pout;
+  int32_t *wsum;      /* per-thread raw weight-sum scratch (may be NULL) */
+  int64_t wsstride;   /* scratch entries per thread */
+  int64_t c, m, mpg, cpg, cpw;
+  int64_t oh, ow, xh, xw, kh, kw;
+  int64_t st0, st1, pd0, pd1, dl0, dl1;
+  int32_t xz, wz0;
+  bool wz_per_ch, xsgn, wsgn;
+  bool fast1d, fast2d;
+};
+
+static void ConvQBody(int64_t begin, int64_t end, int wid, void *vctx) {
+  const ConvQCtx &t = *static_cast<const ConvQCtx *>(vctx);
+  /* per-(ci,row) raw weight sums for the current mo (see the zero-point
+     expansion note in ConvIntegerOp); rebuilt per work item into the
+     dispatcher-preallocated per-thread scratch (no malloc from workers) */
+  int32_t *pws = t.wsum ? t.wsum + wid * t.wsstride : NULL;
+
+  for (int64_t idx = begin; idx < end; ++idx) {
+    int64_t ni = idx / t.m, mo = idx % t.m;
+    int64_t g = mo / t.mpg;
+    int32_t wz = t.wz_per_ch ? static_cast<int32_t>(t.wzp->AtInt(mo)) : t.wz0;
+    if (t.fast1d) {
+      for (int64_t ci = 0; ci < t.cpg; ++ci)
+        pws[ci] = SumQ(t.pw + (mo * t.cpw + ci) * t.kh, t.wsgn, t.kh);
+    } else if (t.fast2d) {
+      for (int64_t ci = 0; ci < t.cpg; ++ci)
+        for (int64_t ky = 0; ky < t.kh; ++ky)
+          pws[ci * t.kh + ky] =
+              SumQ(t.pw + ((mo * t.cpw + ci) * t.kh + ky) * t.kw, t.wsgn,
+                   t.kw);
+    }
+    for (int64_t oy = 0; oy < t.oh; ++oy) {
+      for (int64_t ox = 0; ox < t.ow; ++ox) {
+        int32_t sum = 0;
+        for (int64_t ci = 0; ci < t.cpg; ++ci) {
+          int64_t ch = g * t.cpg + ci;
+          const uint8_t *xc = t.px + (ni * t.c + ch) * t.xh * t.xw;
+          const uint8_t *wc = t.pw + (mo * t.cpw + ci) * t.kh * t.kw;
+          if (t.fast1d) {
+            int64_t iy0 = oy * t.st0 - t.pd0;
+            int64_t k0 = iy0 < 0 ? -iy0 : 0;
+            int64_t k1 = t.kh < t.xh - iy0 ? t.kh : t.xh - iy0;
+            int32_t dot = 0, sx = 0;
+            if (k1 > k0)
+              DotSumQ(xc + iy0 + k0, t.xsgn, wc + k0, t.wsgn, k1 - k0, &dot,
+                      &sx);
+            sum += dot - wz * sx - t.xz * pws[ci] +
+                   static_cast<int32_t>(t.kh) * t.xz * wz;
+          } else if (t.fast2d) {
+            int64_t ix0 = ox * t.st1 - t.pd1;
+            int64_t k0 = ix0 < 0 ? -ix0 : 0;
+            int64_t k1 = t.kw < t.xw - ix0 ? t.kw : t.xw - ix0;
+            for (int64_t ky = 0; ky < t.kh; ++ky) {
+              int64_t iy = oy * t.st0 + ky * t.dl0 - t.pd0;
+              int32_t dot = 0, sx = 0;
+              if (iy >= 0 && iy < t.xh && k1 > k0)
+                DotSumQ(xc + iy * t.xw + ix0 + k0, t.xsgn,
+                        wc + ky * t.kw + k0, t.wsgn, k1 - k0, &dot, &sx);
+              sum += dot - wz * sx - t.xz * pws[ci * t.kh + ky] +
+                     static_cast<int32_t>(t.kw) * t.xz * wz;
+            }
+          } else {  // dilated: original scalar taps
+            for (int64_t ky = 0; ky < t.kh; ++ky) {
+              int64_t iy = oy * t.st0 + ky * t.dl0 - t.pd0;
+              if (iy < 0 || iy >= t.xh) {
+                // zero-padded input still contributes (-xz) * w
+                for (int64_t kx = 0; kx < t.kw; ++kx) {
+                  int32_t wv =
+                      t.w->QAt(((mo * t.cpw + ci) * t.kh + ky) * t.kw + kx) -
+                      wz;
+                  sum += (0 - t.xz) * wv;
+                }
+                continue;
+              }
+              for (int64_t kx = 0; kx < t.kw; ++kx) {
+                int64_t ix = ox * t.st1 + kx * t.dl1 - t.pd1;
+                int32_t wv =
+                    t.w->QAt(((mo * t.cpw + ci) * t.kh + ky) * t.kw + kx) - wz;
+                if (ix < 0 || ix >= t.xw) {
+                  sum += (0 - t.xz) * wv;
+                  continue;
+                }
+                int32_t xv =
+                    t.x->QAt(((ni * t.c + ch) * t.xh + iy) * t.xw + ix) - t.xz;
+                sum += xv * wv;
+              }
+            }
+          }
+        }
+        t.pout[((ni * t.m + mo) * t.oh + oy) * t.ow + ox] = sum;
+      }
+    }
+  }
+}
+
 static bool ConvIntegerOp(const Tensor &x, const Tensor &w, const Tensor *xzp,
                           const Tensor *wzp,
                           const std::vector<int64_t> &strides,
@@ -1099,8 +1635,6 @@ static bool ConvIntegerOp(const Tensor &x, const Tensor &w, const Tensor *xzp,
 
   const uint8_t *px = x.pb();
   const uint8_t *pw = w.pb();
-  bool xsgn = x.dtype == kInt8;
-  bool wsgn = w.dtype == kInt8;
   /*
    * Vector fast paths (NEON widening dot) via the expansion
    *   Σ_taps (x-xz)(w-wz) = dot(x,w) - wz·Σx - xz·Σw + n_taps·xz·wz
@@ -1108,92 +1642,46 @@ static bool ConvIntegerOp(const Tensor &x, const Tensor &w, const Tensor *xzp,
    * taken over the WHOLE kernel row and dot/Σx over the clipped range,
    * the padding contribution (-xz)(w-wz) falls out exactly.
    */
-  bool fast1d = (xw == 1 && kw == 1 && dl[0] == 1);
-  bool fast2d = (!fast1d && dl[1] == 1);
-  std::vector<int32_t> wsum;  // per-(ci,row) raw weight sums for current mo
-  if (fast1d)
-    ResizeExact(wsum, static_cast<size_t>(cpg));
-  else if (fast2d)
-    ResizeExact(wsum, static_cast<size_t>(cpg * kh));
-  int32_t *pws = vdata(wsum);
-
-  for (int64_t ni = 0; ni < n; ++ni) {
-    for (int64_t g = 0; g < group; ++g) {
-      for (int64_t mi = 0; mi < mpg; ++mi) {
-        int64_t mo = g * mpg + mi;
-        int32_t wz = wz_per_ch ? static_cast<int32_t>(wzp->AtInt(mo)) : wz0;
-        if (fast1d) {
-          for (int64_t ci = 0; ci < cpg; ++ci)
-            pws[ci] = SumQ(pw + (mo * cpw + ci) * kh, wsgn, kh);
-        } else if (fast2d) {
-          for (int64_t ci = 0; ci < cpg; ++ci)
-            for (int64_t ky = 0; ky < kh; ++ky)
-              pws[ci * kh + ky] =
-                  SumQ(pw + ((mo * cpw + ci) * kh + ky) * kw, wsgn, kw);
-        }
-        for (int64_t oy = 0; oy < oh; ++oy) {
-          for (int64_t ox = 0; ox < ow; ++ox) {
-            int32_t sum = 0;
-            for (int64_t ci = 0; ci < cpg; ++ci) {
-              int64_t ch = g * cpg + ci;
-              const uint8_t *xc = px + (ni * c + ch) * xh * xw;
-              const uint8_t *wc = pw + (mo * cpw + ci) * kh * kw;
-              if (fast1d) {
-                int64_t iy0 = oy * st[0] - pd[0];
-                int64_t k0 = iy0 < 0 ? -iy0 : 0;
-                int64_t k1 = kh < xh - iy0 ? kh : xh - iy0;
-                int32_t dot = 0, sx = 0;
-                if (k1 > k0)
-                  DotSumQ(xc + iy0 + k0, xsgn, wc + k0, wsgn, k1 - k0, &dot,
-                          &sx);
-                sum += dot - wz * sx - xz * pws[ci] +
-                       static_cast<int32_t>(kh) * xz * wz;
-              } else if (fast2d) {
-                int64_t ix0 = ox * st[1] - pd[1];
-                int64_t k0 = ix0 < 0 ? -ix0 : 0;
-                int64_t k1 = kw < xw - ix0 ? kw : xw - ix0;
-                for (int64_t ky = 0; ky < kh; ++ky) {
-                  int64_t iy = oy * st[0] + ky * dl[0] - pd[0];
-                  int32_t dot = 0, sx = 0;
-                  if (iy >= 0 && iy < xh && k1 > k0)
-                    DotSumQ(xc + iy * xw + ix0 + k0, xsgn, wc + ky * kw + k0,
-                            wsgn, k1 - k0, &dot, &sx);
-                  sum += dot - wz * sx - xz * pws[ci * kh + ky] +
-                         static_cast<int32_t>(kw) * xz * wz;
-                }
-              } else {  // dilated: original scalar taps
-                for (int64_t ky = 0; ky < kh; ++ky) {
-                  int64_t iy = oy * st[0] + ky * dl[0] - pd[0];
-                  if (iy < 0 || iy >= xh) {
-                    // zero-padded input still contributes (-xz) * w
-                    for (int64_t kx = 0; kx < kw; ++kx) {
-                      int32_t wv =
-                          w.QAt(((mo * cpw + ci) * kh + ky) * kw + kx) - wz;
-                      sum += (0 - xz) * wv;
-                    }
-                    continue;
-                  }
-                  for (int64_t kx = 0; kx < kw; ++kx) {
-                    int64_t ix = ox * st[1] + kx * dl[1] - pd[1];
-                    int32_t wv =
-                        w.QAt(((mo * cpw + ci) * kh + ky) * kw + kx) - wz;
-                    if (ix < 0 || ix >= xw) {
-                      sum += (0 - xz) * wv;
-                      continue;
-                    }
-                    int32_t xv =
-                        x.QAt(((ni * c + ch) * xh + iy) * xw + ix) - xz;
-                    sum += xv * wv;
-                  }
-                }
-              }
-            }
-            out->i[((ni * m + mo) * oh + oy) * ow + ox] = sum;
-          }
-        }
-      }
-    }
+  ConvQCtx ctx;
+  ctx.x = &x;
+  ctx.w = &w;
+  ctx.wzp = wzp;
+  ctx.px = px;
+  ctx.pw = pw;
+  ctx.pout = out->pi();
+  ctx.c = c;
+  ctx.m = m;
+  ctx.mpg = mpg;
+  ctx.cpg = cpg;
+  ctx.cpw = cpw;
+  ctx.oh = oh;
+  ctx.ow = ow;
+  ctx.xh = xh;
+  ctx.xw = xw;
+  ctx.kh = kh;
+  ctx.kw = kw;
+  ctx.st0 = st[0];
+  ctx.st1 = st[1];
+  ctx.pd0 = pd[0];
+  ctx.pd1 = pd[1];
+  ctx.dl0 = dl[0];
+  ctx.dl1 = dl[1];
+  ctx.xz = xz;
+  ctx.wz0 = wz0;
+  ctx.wz_per_ch = wz_per_ch;
+  ctx.xsgn = x.dtype == kInt8;
+  ctx.wsgn = w.dtype == kInt8;
+  ctx.fast1d = (xw == 1 && kw == 1 && dl[0] == 1);
+  ctx.fast2d = (!ctx.fast1d && dl[1] == 1);
+  /* per-thread weight-sum scratch for the NEON fast paths */
+  ctx.wsstride = ctx.fast1d ? cpg : (ctx.fast2d ? cpg * kh : 0);
+  std::vector<int32_t> wsbuf;
+  ctx.wsum = nullptr;
+  if (ctx.wsstride > 0) {
+    ResizeExact(wsbuf, static_cast<size_t>(ctx.wsstride * PfThreads()));
+    ctx.wsum = vdata(wsbuf);
   }
+  ParallelFor(n * m, n * m * oh * ow * cpg * kh * kw, ConvQBody, &ctx);
   return true;
 }
 
@@ -1381,6 +1869,33 @@ static bool ExecNode(const Model::Node &node,
     return true;
   }
 
+  /* ---------- elementwise min/max (variadic, folded pairwise) ---------- */
+  if (op == "Max" || op == "Min") {
+    if (in.empty() || !in[0]) return Fail("missing input", op);
+    const bool want_max = op == "Max";
+    Tensor acc = *in[0];
+    for (size_t k = 1; k < in.size(); ++k) {
+      if (!in[k]) return Fail("missing input", op);
+      bool ints = acc.IsInt() && !acc.IsByte() && in[k]->IsInt() &&
+                  !in[k]->IsByte();
+      Tensor o;
+      if (ints) {
+        if (want_max)
+          BinOpInt(acc, *in[k], &o, [](int64_t a, int64_t b) { return a > b ? a : b; });
+        else
+          BinOpInt(acc, *in[k], &o, [](int64_t a, int64_t b) { return a < b ? a : b; });
+      } else {
+        if (want_max)
+          BinOp(acc, *in[k], &o, [](float a, float b) { return a > b ? a : b; }, kBinNone);
+        else
+          BinOp(acc, *in[k], &o, [](float a, float b) { return a < b ? a : b; }, kBinNone);
+      }
+      acc = std::move(o);
+    }
+    outs->push_back(std::move(acc));
+    return true;
+  }
+
   /* ---------- elementwise unary ---------- */
   if (op == "Relu" || op == "Sigmoid" || op == "Tanh" || op == "Erf" ||
       op == "Exp" || op == "Log" || op == "Sqrt" || op == "Abs" ||
@@ -1455,8 +1970,19 @@ static bool ExecNode(const Model::Node &node,
     int64_t ta = AttrInt(node, "transA", 0);
     int64_t tb = AttrInt(node, "transB", 0);
     Tensor a = *in[0], b = *in[1];
-    if (ta) TransposeOp(a, {}, &a);
-    if (tb) TransposeOp(b, {}, &b);
+    /* never transpose in place: TransposeOp(x, {}, &x) aliases input and
+       output, so it would read the freshly allocated (zero) output
+       buffer and silently produce an all-zero matrix */
+    if (ta) {
+      Tensor t;
+      TransposeOp(a, {}, &t);
+      a = std::move(t);
+    }
+    if (tb) {
+      Tensor t;
+      TransposeOp(b, {}, &t);
+      b = std::move(t);
+    }
     Tensor o;
     if (!MatMulOp(a, b, &o)) return Fail("gemm matmul failed", op);
     if (alpha != 1.0f)
@@ -1985,6 +2511,33 @@ static bool ExecNode(const Model::Node &node,
     return true;
   }
 
+  if (op == "GatherElements") {
+    if (in.size() < 2 || !in[0] || !in[1]) return Fail("missing input", op);
+    const Tensor &x = *in[0];
+    const Tensor &idx = *in[1];
+    int64_t axis = FixAxis(AttrInt(node, "axis", 0), x.shape.size());
+    /* out has idx's shape (same rank as data); out[t] = data[t] with the
+       axis coordinate replaced by indices[t] */
+    Tensor o = MakeLike(x, idx.shape);
+    std::vector<int64_t> xs = StridesOf(x.shape);
+    std::vector<int64_t> os = StridesOf(idx.shape);
+    int64_t n = idx.Numel();
+    size_t r = idx.shape.size();
+    for (int64_t t = 0; t < n; ++t) {
+      int64_t ax = idx.AtInt(t);
+      if (ax < 0) ax += x.shape[axis];
+      int64_t rem = t, src = 0;
+      for (size_t d = 0; d < r; ++d) {
+        int64_t c = os[d] > 0 ? rem / os[d] : 0;
+        rem -= c * os[d];
+        src += (static_cast<int64_t>(d) == axis ? ax : c) * xs[d];
+      }
+      CopyElem(x, src, &o, t);
+    }
+    outs->push_back(std::move(o));
+    return true;
+  }
+
   /* ---------- misc ---------- */
   if (op == "Shape") {
     const Tensor &x = *in[0];
@@ -2193,19 +2746,8 @@ static bool ExecNode(const Model::Node &node,
     Tensor o = Tensor::Int(oshape, kInt32);
     int64_t nb = NumelOf(batch);
     std::vector<int64_t> sa = StridesOf(ba), sb = StridesOf(bb);
-    size_t rba = ba.size(), rbb = bb.size(), rbz = batch.size();
-    const uint8_t *pa = a.pb();
-    const uint8_t *pbq = b.pb();
-    bool asgn = a.dtype == kInt8;
-    bool bsgn = b.dtype == kInt8;
-    /* int32 row accumulator: the NEON kernel needs a dense int32 target
-       (the Tensor int payload is int64 lanes), widened once per row */
-    std::vector<int32_t> acc;
-    ResizeExact(acc, static_cast<size_t>(n));
-    int32_t *pacc = vdata(acc);
-    int64_t *poi = o.pi();
     /* per-column B zero points, converted once per node execution: the
-       k-loop below then runs on raw B bytes and applies the correction
+       row bodies then run on raw B bytes and apply the correction
          out[i][j] = sum_k(av_k * b_raw[k][j]) - zp_j * sum_k(av_k)
        as a single int32 AXPY per row (exact integer math, same result) */
     std::vector<int32_t> zpcol;
@@ -2216,46 +2758,47 @@ static bool ExecNode(const Model::Node &node,
         zpcol[j] = static_cast<int32_t>(bzpt->AtInt(j));
       pzpcol = vdata(zpcol);
     }
-    for (int64_t bi = 0; bi < nb; ++bi) {
-      int64_t rem = bi, ao = 0, bo = 0;
-      for (int d = static_cast<int>(rbz) - 1; d >= 0; --d) {
-        int64_t c = rem % batch[d];
-        rem /= batch[d];
-        int da = d - static_cast<int>(rbz - rba);
-        if (da >= 0 && ba[da] > 1) ao += c * sa[da];
-        int db = d - static_cast<int>(rbz - rbb);
-        if (db >= 0 && bb[db] > 1) bo += c * sb[db];
-      }
-      int64_t abase = ao * m * k, bbase = bo * k * n, obase = bi * m * n;
-      for (int64_t i = 0; i < m; ++i) {
-        int32_t azp = azp_row ? static_cast<int32_t>(azpt->AtInt(i)) : azp0;
-        memset(pacc, 0, static_cast<size_t>(n) * sizeof(int32_t));
-        if (!bzp_col) {
-          const uint8_t *arow = pa + abase + i * k;
-          for (int64_t kk = 0; kk < k; ++kk) {
-            int32_t av =
-                (asgn ? (int32_t)(int8_t)arow[kk] : (int32_t)arow[kk]) - azp;
-            if (av)  // zero rows are common when azp matches; skip them
-              AxpyQ(av, pbq + bbase + kk * n, bsgn, bzp0, pacc, n);
-          }
-        } else {  /* per-column zero point: raw NEON AXPY in the k-loop
-                     plus one int32 AXPY for the zp_j * rowsum correction */
-          const uint8_t *arow = pa + abase + i * k;
-          int32_t rowsum = 0;
-          for (int64_t kk = 0; kk < k; ++kk) {
-            int32_t av =
-                (asgn ? (int32_t)(int8_t)arow[kk] : (int32_t)arow[kk]) - azp;
-            if (av) {
-              AxpyQ(av, pbq + bbase + kk * n, bsgn, 0, pacc, n);
-              rowsum += av;
-            }
-          }
-          if (rowsum) AxpyS32(-rowsum, pzpcol, pacc, n);
-        }
-        int64_t orow = obase + i * n;
-        for (int64_t j = 0; j < n; ++j) poi[orow + j] = pacc[j];
-      }
-    }
+    MmiCtx ctx;
+    ctx.pa = a.pb();
+    ctx.pbq = b.pb();
+    ctx.poi = o.pi();
+    ctx.azpt = azpt;
+    ctx.pzpcol = pzpcol;
+    /* per-thread int32 row accumulators for the NEON kernel */
+    std::vector<int32_t> accbuf;
+    ResizeExact(accbuf, static_cast<size_t>(n * PfThreads()));
+    ctx.acc = vdata(accbuf);
+    ctx.m = m;
+    ctx.k = k;
+    ctx.n = n;
+    ctx.azp0 = azp0;
+    ctx.bzp0 = bzp0;
+    ctx.azp_row = azp_row;
+    ctx.bzp_col = bzp_col;
+    ctx.asgn = a.dtype == kInt8;
+    ctx.bsgn = b.dtype == kInt8;
+    ctx.batch = &batch;
+    ctx.ba = &ba;
+    ctx.bb = &bb;
+    ctx.sa = &sa;
+    ctx.sb = &sb;
+    /* skinny GEMMs (few rows) split each row into column blocks so all
+       threads get work; blocks stay NEON-friendly (>=64, multiple of 16) */
+    int64_t rows = nb * m, want = (int64_t)PfThreads() * 4;
+    int64_t nsplit = rows < want ? (want + rows - 1) / rows : 1;
+    int64_t maxsplit = n / 64 > 0 ? n / 64 : 1;
+    if (nsplit > maxsplit) nsplit = maxsplit;
+    int64_t nblk = ((n + nsplit - 1) / nsplit + 15) & ~(int64_t)15;
+    ctx.nsplit = (n + nblk - 1) / nblk;
+    ctx.nblk = nblk;
+#ifdef SONNX_PROF
+    SONNX_PROF_T();
+    char pk[64];
+    snprintf(pk, sizeof(pk), "Mmi b%lld m%lld k%lld n%lld", (long long)nb,
+             (long long)m, (long long)k, (long long)n);
+#endif
+    ParallelFor(rows * ctx.nsplit, nb * m * k * n, MmiBody, &ctx);
+    SONNX_PROF_ADD(pk);
     outs->push_back(std::move(o));
     return true;
   }
@@ -2296,8 +2839,19 @@ static bool ExecNode(const Model::Node &node,
     const Tensor &c = *in[0], &x = *in[1], &y = *in[2];
     std::vector<int64_t> s1, oshape;
     if (!BroadcastShape(c.shape, x.shape, &s1) ||
-        !BroadcastShape(s1, y.shape, &oshape))
+        !BroadcastShape(s1, y.shape, &oshape)) {
+      fprintf(stderr, "sonnx: Where c=");
+      for (size_t i = 0; i < c.shape.size(); ++i)
+        fprintf(stderr, "%s%lld", i ? "x" : "", (long long)c.shape[i]);
+      fprintf(stderr, " x=");
+      for (size_t i = 0; i < x.shape.size(); ++i)
+        fprintf(stderr, "%s%lld", i ? "x" : "", (long long)x.shape[i]);
+      fprintf(stderr, " y=");
+      for (size_t i = 0; i < y.shape.size(); ++i)
+        fprintf(stderr, "%s%lld", i ? "x" : "", (long long)y.shape[i]);
+      fprintf(stderr, "\n");
       return Fail("bad broadcast", op);
+    }
     bool isfloat = x.dtype == kFloat || y.dtype == kFloat;
     std::vector<int64_t> sc = StridesOf(c.shape), sx = StridesOf(x.shape),
                          sy = StridesOf(y.shape);
@@ -2750,6 +3304,9 @@ static bool RunGraph(const std::vector<Model::Node> &nodes,
 
   for (size_t ni = 0; ni < nodes.size(); ++ni) {
     const Model::Node &node = nodes[ni];
+    /* top-level graph position, polled by the UI for fine progress */
+    if (parent == nullptr && !nodes.empty())
+      g_run_progress = static_cast<int>((ni * 100) / nodes.size());
     std::vector<const Tensor *> ins(node.input.size(), nullptr);
     for (size_t k = 0; k < node.input.size(); ++k) {
       const std::string &name = node.input[k];
@@ -2772,6 +3329,28 @@ static bool RunGraph(const std::vector<Model::Node> &nodes,
     }
     SONNX_PROF_ADD(node.op);
 
+    static int trace_on = -1;
+    if (trace_on < 0) trace_on = getenv("SONNX_TRACE") ? 1 : 0;
+    if (trace_on) {
+      for (size_t k = 0; k < result.size(); ++k) {
+        const Tensor &t = result[k];
+        double mn = 1e30, mx = -1e30, sum = 0;
+        for (int64_t e = 0; e < t.Numel(); ++e) {
+          double v = t.AtFloat(e);
+          if (v < mn) mn = v;
+          if (v > mx) mx = v;
+          sum += v;
+        }
+        fprintf(stderr, "sonnx trace [%d] %s out%d dtype=%d shape=",
+                static_cast<int>(ni), node.op.c_str(), static_cast<int>(k),
+                t.dtype);
+        for (size_t d = 0; d < t.shape.size(); ++d)
+          fprintf(stderr, "%s%lld", d ? "x" : "", (long long)t.shape[d]);
+        fprintf(stderr, " min=%.6f max=%.6f mean=%.6f\n", mn, mx,
+                sum / (t.Numel() > 0 ? t.Numel() : 1));
+      }
+    }
+
     for (size_t k = 0; k < node.output.size(); ++k) {
       if (node.output[k].empty()) continue;
       if (k < result.size()) {
@@ -2789,6 +3368,8 @@ static bool RunGraph(const std::vector<Model::Node> &nodes,
       if (lu != last_use.end() && lu->second == ni) env->erase(name);
     }
   }
+
+  if (parent == nullptr) g_run_progress = 100;
 
   outputs->clear();
   for (size_t i = 0; i < output_names.size(); ++i) {

@@ -12,6 +12,8 @@ include ../../make.inc
 
 BUILD_DIR = $(SYS_BUILD_DIR)/$(HW)
 
+# EwokOS libc has no fputc: stop gcc from folding fprintf/fputs into it.
+CXXFLAGS += -fno-builtin-fprintf -fno-builtin-fputs -fno-builtin-fwrite
 CXXFLAGS += -I include -I $(BUILD_DIR)/include
 
 LIB_OBJS = src/fbank.o src/onnx.o src/sherpa.o

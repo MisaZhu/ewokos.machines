@@ -278,6 +278,10 @@ class Model {
 // reading dominates, parsing is memcpy-bound and nearly instant.
 extern volatile int g_load_progress;
 
+// Model::Run progress of the top-level graph in percent (0..100, node
+// index based); safe to poll from another thread while Run executes.
+extern volatile int g_run_progress;
+
 }  // namespace sonnx
 
 #endif  // SHERPA_ONNX_PORT_ONNX_H_

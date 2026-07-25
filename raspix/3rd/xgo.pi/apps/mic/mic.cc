@@ -32,7 +32,10 @@ using namespace Ewok;
 #define MIC_NOISE_FLOOR 320
 #define MIC_DRAW_SMOOTH_DIV 4
 #define MIC_DRAW_GAIN 8
-#define MIC_DBG_H 34
+/* debug panel: status line + wrapped text lines + progress bar */
+#define MIC_DBG_LINE_H 17
+#define MIC_DBG_LINES 4
+#define MIC_DBG_H (4 + (1 + MIC_DBG_LINES) * MIC_DBG_LINE_H + 6)
 
 #define ASR_ONLINE_TRANSDUCER_ENCODER_PATH "/data/model/encn-online/encoder.int8.onnx"
 #define ASR_ONLINE_TOKENS_PATH "/data/model/encn-online/tokens.txt"
@@ -84,6 +87,7 @@ class MicWidget: public Widget {
 	SherpaStream* _asrStream;
         const char* _asrModelPath;
         const char* _asrTokensPath;
+        bool _asrFellBack;
         pthread_mutex_t _asrLock;
         pthread_t _asrDecodeTid;
         volatile bool _asrDecodeThreadStarted;
@@ -92,6 +96,8 @@ class MicWidget: public Widget {
         volatile bool _asrPartialPending;
         volatile bool _asrFinalPending;
 	volatile int _asrState;
+	volatile int _asrProgress; /* decode progress %, drawn while recognizing */
+	volatile int _vadLevel;    /* last VAD energy, drawn while listening */
 	char _asrText[256];
 	int32_t _asrDc;
 	int _silenceTicks;
@@ -118,16 +124,43 @@ class MicWidget: public Widget {
 		return v < 0 ? -v : v;
 	}
 
+        static bool modelFileUsable(const char* path) {
+                /* reject tiny files: a checked-out git-lfs pointer is only a
+                   few hundred bytes while real models are megabytes */
+                FILE* fp = fopen(path, "rb");
+                if (fp == NULL)
+                        return false;
+                fseek(fp, 0, SEEK_END);
+                long sz = ftell(fp);
+                fclose(fp);
+                return sz >= (1 << 20);
+        }
+
+        static bool tokensFileUsable(const char* path) {
+                /* real vocabs are tens of KB; a checked-out git-lfs pointer
+                   is ~130 bytes and would silently decode to empty text */
+                FILE* fp = fopen(path, "rb");
+                if (fp == NULL)
+                        return false;
+                fseek(fp, 0, SEEK_END);
+                long sz = ftell(fp);
+                fclose(fp);
+                return sz >= 4096;
+        }
+
+        static bool onlineModelUsable(void) {
+                return modelFileUsable(ASR_ONLINE_TRANSDUCER_ENCODER_PATH) &&
+                                tokensFileUsable(ASR_ONLINE_TOKENS_PATH);
+        }
+
         static const char* chooseModelPath(void) {
-                if (access(ASR_ONLINE_TRANSDUCER_ENCODER_PATH, R_OK) == 0 &&
-                                access(ASR_ONLINE_TOKENS_PATH, R_OK) == 0)
+                if (onlineModelUsable())
                         return ASR_ONLINE_TRANSDUCER_ENCODER_PATH;
                 return ASR_OFFLINE_MODEL_PATH;
         }
 
         static const char* chooseTokensPath(void) {
-                if (access(ASR_ONLINE_TRANSDUCER_ENCODER_PATH, R_OK) == 0 &&
-                                access(ASR_ONLINE_TOKENS_PATH, R_OK) == 0)
+                if (onlineModelUsable())
                         return ASR_ONLINE_TOKENS_PATH;
                 return ASR_OFFLINE_TOKENS_PATH;
         }
@@ -266,9 +299,36 @@ class MicWidget: public Widget {
 	static void* asrLoadThread(void* p) {
 		MicWidget* w = (MicWidget*)p;
                 w->_asr = SherpaCreateRecognizer(w->_asrModelPath, w->_asrTokensPath);
+                if (w->_asr == NULL &&
+                                strcmp(w->_asrModelPath,
+                                        ASR_ONLINE_TRANSDUCER_ENCODER_PATH) == 0) {
+                        /* incomplete online triple (lfs pointer, missing
+                           decoder/joiner, bad metadata): fall back to the
+                           offline model instead of giving up */
+                        w->_asrModelPath = ASR_OFFLINE_MODEL_PATH;
+                        w->_asrTokensPath = ASR_OFFLINE_TOKENS_PATH;
+                        w->_asrFellBack = true;
+                        w->_asr = SherpaCreateRecognizer(w->_asrModelPath,
+                                        w->_asrTokensPath);
+                }
 		if (w->_asr == NULL) {
-			snprintf(w->_asrText, sizeof(w->_asrText),
-                                        "model not found:\n%s", w->_asrModelPath);
+                        /* name the actual culprit: a model file may exist while
+                           its tokens file is a git-lfs pointer or truncated
+                           copy, which used to fail silently as "(no speech)" */
+                        if (modelFileUsable(ASR_ONLINE_TRANSDUCER_ENCODER_PATH) &&
+                                        !tokensFileUsable(ASR_ONLINE_TOKENS_PATH))
+                                snprintf(w->_asrText, sizeof(w->_asrText),
+                                                "bad tokens file:\n%s",
+                                                ASR_ONLINE_TOKENS_PATH);
+                        else if (modelFileUsable(ASR_OFFLINE_MODEL_PATH) &&
+                                        !tokensFileUsable(ASR_OFFLINE_TOKENS_PATH))
+                                snprintf(w->_asrText, sizeof(w->_asrText),
+                                                "bad tokens file:\n%s",
+                                                ASR_OFFLINE_TOKENS_PATH);
+                        else
+                                snprintf(w->_asrText, sizeof(w->_asrText),
+                                                "model not found:\n%s",
+                                                w->_asrModelPath);
 			w->_asrState = ASR_FAILED;
 			return NULL;
 		}
@@ -286,7 +346,10 @@ class MicWidget: public Widget {
                         return NULL;
                 }
                 w->_asrDecodeThreadStarted = true;
-		strcpy(w->_asrText, "say something...");
+		if (w->_asrFellBack)
+                        strcpy(w->_asrText, "say something... (offline)");
+                else
+                        strcpy(w->_asrText, "say something...");
 		w->_asrState = ASR_LISTENING;
 		return NULL;
 	}
@@ -294,16 +357,24 @@ class MicWidget: public Widget {
         static void* asrDecodeThread(void* p) {
                 MicWidget* w = (MicWidget*)p;
                 int16_t batch[ASR_QUEUE_BATCH];
+                const bool online = SherpaIsOnline(w->_asr) != 0;
 
                 while (!w->_asrDecodeStop) {
                         bool didWork = false;
                         bool doReset = false;
-                        bool doPartial = false;
                         bool doFinal = false;
-                        int n = 0;
+                        bool doPartial = false;
 
-                        pthread_mutex_lock(&w->_asrLock);
-                        if (w->_asr != NULL && w->_asrStream != NULL) {
+                        /*
+                         * Phase A: feed everything queued so far into the
+                         * recognizer. Resampling + fbank is cheap compared to
+                         * the neural decode, so the queue stays near empty and
+                         * no audio is ever dropped, no matter how far decoding
+                         * falls behind; any backlog lives in the fbank frames.
+                         */
+                        while (true) {
+                                int n = 0;
+                                pthread_mutex_lock(&w->_asrLock);
                                 if (w->_asrResetPending) {
                                         w->_asrResetPending = false;
                                         w->_asrPartialPending = false;
@@ -311,50 +382,72 @@ class MicWidget: public Widget {
                                         w->asrQueueClearLocked();
                                         doReset = true;
                                 }
-                                else {
-                                        if (w->_asrQCount > 0) {
-                                                n = w->_asrQCount;
-                                                if (n > ASR_QUEUE_BATCH)
-                                                        n = ASR_QUEUE_BATCH;
-                                                for (int i = 0; i < n; ++i) {
-                                                        batch[i] = w->_asrQueue[w->_asrQRead];
-                                                        w->_asrQRead++;
-                                                        if (w->_asrQRead >= ASR_QUEUE_SAMPLES)
-                                                                w->_asrQRead = 0;
-                                                }
-                                                w->_asrQCount -= n;
+                                else if (w->_asrQCount > 0) {
+                                        n = w->_asrQCount;
+                                        if (n > ASR_QUEUE_BATCH)
+                                                n = ASR_QUEUE_BATCH;
+                                        for (int i = 0; i < n; ++i) {
+                                                batch[i] = w->_asrQueue[w->_asrQRead];
+                                                w->_asrQRead++;
+                                                if (w->_asrQRead >= ASR_QUEUE_SAMPLES)
+                                                        w->_asrQRead = 0;
                                         }
-
-                                        if (w->_asrFinalPending &&
-                                                        w->_asrState == ASR_DECODING &&
-                                                        n == 0 && w->_asrQCount == 0) {
-                                                w->_asrFinalPending = false;
-                                                doFinal = true;
-                                        }
-                                        else if (w->_asrPartialPending &&
-                                                        w->_asrState == ASR_RECORDING &&
-                                                        n == 0 && w->_asrQCount == 0) {
-                                                w->_asrPartialPending = false;
-                                                doPartial = true;
-                                        }
+                                        w->_asrQCount -= n;
                                 }
-                        }
-                        pthread_mutex_unlock(&w->_asrLock);
+                                pthread_mutex_unlock(&w->_asrLock);
 
-                        if (doReset) {
-                                SherpaReset(w->_asr, w->_asrStream);
-                                didWork = true;
-                        }
-
-                        if (n > 0) {
+                                if (doReset) {
+                                        SherpaReset(w->_asr, w->_asrStream);
+                                        didWork = true;
+                                        doReset = false;
+                                        continue;
+                                }
+                                if (n <= 0)
+                                        break;
                                 SherpaAcceptWaveform(w->_asr, w->_asrStream, batch, n);
                                 didWork = true;
                         }
 
+                        /*
+                         * Phase B: a single decode action per iteration, so
+                         * audio feeding (phase A) is never blocked for long.
+                         */
+                        pthread_mutex_lock(&w->_asrLock);
+                        if (w->_asrFinalPending &&
+                                        w->_asrState == ASR_DECODING) {
+                                w->_asrFinalPending = false;
+                                doFinal = true;
+                        }
+                        else if (!online && w->_asrPartialPending &&
+                                        w->_asrState == ASR_RECORDING) {
+                                w->_asrPartialPending = false;
+                                doPartial = true;
+                        }
+                        pthread_mutex_unlock(&w->_asrLock);
+
                         if (doFinal) {
                                 SherpaInputFinished(w->_asr, w->_asrStream);
-                                w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
-                                                "(no speech)");
+                                /* drain the remaining chunks one bounded
+                                   decode at a time, publishing the growing
+                                   text and the drain progress after every
+                                   step: on slow hardware the backlog can
+                                   hold seconds of audio and a single
+                                   unbounded flush would freeze the UI on
+                                   "recognizing..." the whole time */
+                                w->_asrProgress =
+                                                SherpaStreamProgress(w->_asr, w->_asrStream);
+                                while (!w->_asrDecodeStop &&
+                                                SherpaIsStreamReady(w->_asr, w->_asrStream)) {
+                                        w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
+                                                        NULL);
+                                        w->_asrProgress =
+                                                        SherpaStreamProgress(w->_asr, w->_asrStream);
+                                }
+                                if (SherpaStreamHasError(w->_asr, w->_asrStream))
+                                        w->setAsrText(NULL, "decode failed, retry");
+                                else
+                                        w->setAsrText(SherpaGetResult(w->_asr),
+                                                        "(no speech)");
                                 SherpaReset(w->_asr, w->_asrStream);
                                 pthread_mutex_lock(&w->_asrLock);
                                 w->_asrState = ASR_LISTENING;
@@ -364,6 +457,33 @@ class MicWidget: public Widget {
                                 w->_fedSamples = 0;
                                 pthread_mutex_unlock(&w->_asrLock);
                                 didWork = true;
+                        }
+                        else if (online) {
+                                /* streaming: decode each pending encoder chunk as
+                                   soon as it is ready; every call is bounded to a
+                                   single chunk so partial text refreshes
+                                   continuously while speaking */
+                                if (w->_asrState == ASR_RECORDING) {
+                                        if (SherpaStreamHasError(w->_asr, w->_asrStream)) {
+                                                /* sticky error: the stream will never
+                                                   become ready again, so finish the
+                                                   utterance now instead of recording
+                                                   into a dead recognizer */
+                                                pthread_mutex_lock(&w->_asrLock);
+                                                w->_asrFinalPending = true;
+                                                w->_asrPartialPending = false;
+                                                w->_asrState = ASR_DECODING;
+                                                pthread_mutex_unlock(&w->_asrLock);
+                                                didWork = true;
+                                        }
+                                        else if (SherpaIsStreamReady(w->_asr, w->_asrStream)) {
+                                                w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
+                                                                NULL);
+                                                w->_asrProgress =
+                                                                SherpaStreamProgress(w->_asr, w->_asrStream);
+                                                didWork = true;
+                                        }
+                                }
                         }
                         else if (doPartial && SherpaIsStreamReady(w->_asr, w->_asrStream)) {
                                 w->setAsrText(SherpaDecodeStream(w->_asr, w->_asrStream),
@@ -442,6 +562,7 @@ class MicWidget: public Widget {
 	}
 
         void setAsrText(const char* text, const char* fallback = NULL) {
+                pthread_mutex_lock(&_asrLock);
                 if (text != NULL && text[0] != '\0') {
                         strncpy(_asrText, text, sizeof(_asrText) - 1);
                         _asrText[sizeof(_asrText) - 1] = '\0';
@@ -450,9 +571,11 @@ class MicWidget: public Widget {
                         strncpy(_asrText, fallback, sizeof(_asrText) - 1);
                         _asrText[sizeof(_asrText) - 1] = '\0';
                 }
+                pthread_mutex_unlock(&_asrLock);
         }
 
 	void asrProcess(const int16_t* mono, int n, int level) {
+		_vadLevel = level;
 		if (_asrState == ASR_LISTENING) {
 			prerollPush(mono, n);
 			if (level >= ASR_VAD_START) {
@@ -460,6 +583,7 @@ class MicWidget: public Widget {
 				_speechTicks = 1;
 				_silenceTicks = 0;
                                 _partialTicks = 0;
+                                _asrProgress = 0;
                                 setAsrText("recognizing...");
 				prerollFeed(); /* mono already inside the ring */
 				_asrState = ASR_RECORDING;
@@ -514,39 +638,108 @@ class MicWidget: public Widget {
 	const char* asrStatus(void) const {
 		switch (_asrState) {
 		case ASR_FAILED: return "[asr disabled]";
-		case ASR_RECORDING: return "[recording]";
-                case ASR_DECODING: return "[recognizing...]";
 		default: return "[listening]";
 		}
 	}
 
 	void drawDbg(graph_t* g, XTheme* theme, const grect_t& r) {
-		char status[40];
-		char line[300];
-		char* second;
+		char status[48];
+		char detail[112];
+		char text[256];
+		char lbuf[128];
+		SherpaStreamInfo si;
+		bool hasInfo = false;
+
+		/* live pipeline snapshot; the getters only read telemetry counters
+		   so polling from the UI thread while the decode thread runs is ok */
+		if ((_asrState == ASR_RECORDING || _asrState == ASR_DECODING) &&
+				_asr != NULL && _asrStream != NULL) {
+			SherpaStreamGetInfo(_asr, _asrStream, &si);
+			hasInfo = true;
+		}
+		int pct = hasInfo ? (int)si.progress : (int)_asrProgress;
 
 		if (_asrState == ASR_LOADING)
 			snprintf(status, sizeof(status), "[loading model %d%%]",
 					(int)SherpaLoadProgress());
+		else if (_asrState == ASR_DECODING)
+			/* drain progress: how much of the buffered audio the
+			   decoder has consumed, so the tail flush is visible
+			   instead of a frozen "recognizing..." */
+			snprintf(status, sizeof(status), "[recognizing %d%%]", pct);
+		else if (_asrState == ASR_RECORDING)
+			/* how far the decoder keeps up while still speaking */
+			snprintf(status, sizeof(status), "[recording %d%%]", pct);
 		else
 			strcpy(status, asrStatus());
 
-		graph_fill_rect(g, r.x, r.y, r.w, r.h, 0xff1c1408);
-		snprintf(line, sizeof(line), "%s\n%s", status, _asrText);
+		/* activity detail: what the pipeline is concretely doing now */
+		detail[0] = '\0';
+		if (hasInfo)
+			snprintf(detail, sizeof(detail),
+					"chunk %d/%d %d.%ds/%d.%ds tok%d %s %d%%",
+					(int)si.chunks_done, (int)si.chunks_total,
+					(int)(si.decoded_ms / 1000),
+					(int)((si.decoded_ms % 1000) / 100),
+					(int)(si.total_ms / 1000),
+					(int)((si.total_ms % 1000) / 100),
+					(int)si.tokens, si.phase, (int)si.phase_pct);
+		else if (_asrState == ASR_LISTENING)
+			snprintf(detail, sizeof(detail), "vad %d / start %d",
+					(int)_vadLevel, ASR_VAD_START);
 
-		second = strchr(line, '\n');
-		if (second != NULL) {
-			*second = '\0';
-			second++;
-			char* third = strchr(second, '\n');
-			if (third != NULL)
-				*third = '\0';
-		}
+		graph_fill_rect(g, r.x, r.y, r.w, r.h, 0xff1c1408);
 		graph_draw_text_font(g, r.x + 4, r.y + 2,
-				line, theme->getFont(), 14, 0xffffd080);
-		if (second != NULL) {
-			graph_draw_text_font(g, r.x + 4, r.y + 2 + MIC_DBG_H / 2,
-					second, theme->getFont(), 14, 0xffffd080);
+				status, theme->getFont(), 14, 0xff8fd6ff);
+		if (detail[0] != '\0')
+			graph_draw_text_font(g, r.x + 4, r.y + 2 + MIC_DBG_LINE_H,
+					detail, theme->getFont(), 14, 0xff9aa8b8);
+
+		/* wrap the recognized text over the remaining lines; width is
+		   estimated per UTF-8 char (CJK ~ fontSize, ASCII ~ half) */
+		pthread_mutex_lock(&_asrLock);
+		strncpy(text, (const char*)_asrText, sizeof(text) - 1);
+		text[sizeof(text) - 1] = '\0';
+		pthread_mutex_unlock(&_asrLock);
+
+		const char* p = text;
+		int y = r.y + 2 + 2 * MIC_DBG_LINE_H;
+		for (int ln = 0; ln < MIC_DBG_LINES - 1 && *p != '\0'; ln++) {
+			int li = 0;
+			int w = 0;
+			while (*p != '\0') {
+				if (*p == '\n') {
+					p++;
+					break;
+				}
+				uint8_t c = (uint8_t)*p;
+				int bytes = c < 0x80 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+				int cw = bytes == 1 ? 7 : 14;
+				if (w + cw > r.w - 8 || li + bytes >= (int)sizeof(lbuf))
+					break;
+				for (int k = 0; k < bytes && *p != '\0'; k++)
+					lbuf[li++] = *p++;
+				w += cw;
+			}
+			lbuf[li] = '\0';
+			if (li > 0)
+				graph_draw_text_font(g, r.x + 4, y,
+						lbuf, theme->getFont(), 14, 0xffffd080);
+			y += MIC_DBG_LINE_H;
+		}
+
+		/* thin progress bar while loading or draining the decode backlog */
+		if (_asrState == ASR_LOADING || _asrState == ASR_DECODING ||
+				_asrState == ASR_RECORDING) {
+			if (_asrState == ASR_LOADING)
+				pct = (int)SherpaLoadProgress();
+			if (pct < 0)
+				pct = 0;
+			if (pct > 100)
+				pct = 100;
+			graph_fill_rect(g, r.x + 2, r.y + r.h - 4, r.w - 4, 3, 0xff3a3020);
+			graph_fill_rect(g, r.x + 2, r.y + r.h - 4,
+					((r.w - 4) * pct) / 100, 3, 0xffffd080);
 		}
 	}
 
@@ -687,6 +880,8 @@ public:
 		_asrStream = NULL;
                 _asrModelPath = chooseModelPath();
                 _asrTokensPath = chooseTokensPath();
+                _asrFellBack = strcmp(_asrModelPath,
+                                ASR_ONLINE_TRANSDUCER_ENCODER_PATH) != 0;
                 pthread_mutex_init(&_asrLock, NULL);
                 _asrDecodeThreadStarted = false;
                 _asrDecodeStop = false;
@@ -694,6 +889,8 @@ public:
                 _asrPartialPending = false;
                 _asrFinalPending = false;
 		_asrState = ASR_LOADING;
+		_asrProgress = 0;
+		_vadLevel = 0;
                 snprintf(_asrText, sizeof(_asrText), "loading %s", _asrModelPath);
 		_asrDc = 0;
 		_silenceTicks = 0;
