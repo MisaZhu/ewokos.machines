@@ -2687,7 +2687,8 @@ static bool ExecNode(const Model::Node &node,
       it.i[0] = iter;
       env[body.input_names[0]] = std::move(it);
       Tensor c = Tensor::Byte(std::vector<int64_t>(), kBool);
-      c.b[0] = 1;
+      /* Loop body input #1 is the current loop condition, not a constant. */
+      c.b[0] = cond ? 1 : 0;
       env[body.input_names[1]] = std::move(c);
       for (size_t i = 0; i < ncar; ++i)
         env[body.input_names[2 + i]] = carried[i];
