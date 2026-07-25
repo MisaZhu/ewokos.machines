@@ -94,11 +94,14 @@ struct Tensor {
 inline Tensor::Tensor(const Tensor &o)
     : dtype(o.dtype), shape(o.shape), f(o.f), i(o.i), b(o.b),
       seq(o.seq ? new std::vector<Tensor>(*o.seq) : nullptr) {}
-inline Tensor::Tensor(Tensor &&o)
-    : dtype(o.dtype), shape(static_cast<std::vector<int64_t> &&>(o.shape)),
-      f(static_cast<std::vector<float> &&>(o.f)),
-      i(static_cast<std::vector<int64_t> &&>(o.i)),
-      b(static_cast<std::vector<uint8_t> &&>(o.b)), seq(o.seq) {
+/* Move operations swap the vector payloads (O(1) pointer exchange on
+   both host libstdc++ and the EwokOS STL) instead of deep-copying — every
+   op output passes through one of these on its way into the env map. */
+inline Tensor::Tensor(Tensor &&o) : dtype(o.dtype), seq(o.seq) {
+  shape.swap(o.shape);
+  f.swap(o.f);
+  i.swap(o.i);
+  b.swap(o.b);
   o.seq = nullptr;
 }
 inline Tensor &Tensor::operator=(const Tensor &o) {
@@ -112,10 +115,10 @@ inline Tensor &Tensor::operator=(const Tensor &o) {
 inline Tensor &Tensor::operator=(Tensor &&o) {
   if (this != &o) {
     dtype = o.dtype;
-    shape = static_cast<std::vector<int64_t> &&>(o.shape);
-    f = static_cast<std::vector<float> &&>(o.f);
-    i = static_cast<std::vector<int64_t> &&>(o.i);
-    b = static_cast<std::vector<uint8_t> &&>(o.b);
+    shape.swap(o.shape);
+    f.swap(o.f);
+    i.swap(o.i);
+    b.swap(o.b);
     delete seq;
     seq = o.seq;
     o.seq = nullptr;
@@ -151,6 +154,35 @@ struct Node {
   std::vector<std::string> input;
   std::vector<std::string> output;
   std::map<std::string, Attr> attr;
+
+  Node() {}
+  Node(const Node &o)
+      : op(o.op), input(o.input), output(o.output), attr(o.attr) {}
+  /* swap-based move: the attr map (with its Constant weight tensors) is
+     exchanged by pointer, so graph re-sort and vector growth stay cheap
+     on STLs without move semantics */
+  Node(Node &&o) { Steal(&o); }
+  Node &operator=(const Node &o) {
+    if (this != &o) {
+      op = o.op;
+      input = o.input;
+      output = o.output;
+      attr = o.attr;
+    }
+    return *this;
+  }
+  Node &operator=(Node &&o) {
+    if (this != &o) Steal(&o);
+    return *this;
+  }
+
+ private:
+  void Steal(Node *o) {
+    op.swap(o->op);
+    input.swap(o->input);
+    output.swap(o->output);
+    attr.swap(o->attr);
+  }
 };
 
 // GraphProto payload; used for the top-level graph and Loop/If bodies.
@@ -165,10 +197,11 @@ inline Attr::Attr(const Attr &o)
     : type(o.type), i(o.i), f(o.f), s(o.s), t(o.t), ints(o.ints),
       floats(o.floats), g(o.g ? new Graph(*o.g) : nullptr) {}
 inline Attr::Attr(Attr &&o)
-    : type(o.type), i(o.i), f(o.f), s(static_cast<std::string &&>(o.s)),
-      t(static_cast<Tensor &&>(o.t)),
-      ints(static_cast<std::vector<int64_t> &&>(o.ints)),
-      floats(static_cast<std::vector<float> &&>(o.floats)), g(o.g) {
+    : type(o.type), i(o.i), f(o.f), g(o.g) {
+  s.swap(o.s);
+  t = std::move(o.t);  // swap-based Tensor move
+  ints.swap(o.ints);
+  floats.swap(o.floats);
   o.g = nullptr;
 }
 inline Attr &Attr::operator=(const Attr &o) {
@@ -183,10 +216,10 @@ inline Attr &Attr::operator=(const Attr &o) {
 inline Attr &Attr::operator=(Attr &&o) {
   if (this != &o) {
     type = o.type; i = o.i; f = o.f;
-    s = static_cast<std::string &&>(o.s);
-    t = static_cast<Tensor &&>(o.t);
-    ints = static_cast<std::vector<int64_t> &&>(o.ints);
-    floats = static_cast<std::vector<float> &&>(o.floats);
+    s.swap(o.s);
+    t = std::move(o.t);  // swap-based Tensor move
+    ints.swap(o.ints);
+    floats.swap(o.floats);
     delete g;
     g = o.g;
     o.g = nullptr;

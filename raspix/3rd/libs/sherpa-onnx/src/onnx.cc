@@ -12,6 +12,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef SONNX_PROF
+#include <chrono>
+#endif
+
 namespace sonnx {
 
 /* ============================ tensor basics ============================ */
@@ -89,6 +93,29 @@ static bool Fail(const char *msg, const std::string &op) {
 
 /* Model::Load progress (0..100), polled from another thread by the UI. */
 volatile int g_load_progress = 0;
+
+/* optional host-side profiling (per-op and load-phase timings) */
+#ifdef SONNX_PROF
+struct SonnxProfEnt { double ms = 0; long count = 0; long bytes = 0; };
+extern std::map<std::string, SonnxProfEnt> g_sonnx_prof;
+struct SonnxProfT {
+  std::chrono::steady_clock::time_point t0;
+  SonnxProfT() : t0(std::chrono::steady_clock::now()) {}
+  double Ms() const {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0).count();
+  }
+};
+#define SONNX_PROF_T() SonnxProfT _pt
+#define SONNX_PROF_ADD(key) g_sonnx_prof[key].ms += _pt.Ms(); \
+  g_sonnx_prof[key].count++
+#define SONNX_PROF_ADDB(key, b) SONNX_PROF_ADD(key); \
+  g_sonnx_prof[key].bytes += (b)
+#else
+#define SONNX_PROF_T()
+#define SONNX_PROF_ADD(key)
+#define SONNX_PROF_ADDB(key, b)
+#endif
 
 /* ======================== SIMD micro-kernels ======================== */
 /*
@@ -206,6 +233,44 @@ static inline void AxpyQ(int32_t av, const uint8_t *b, bool bsgn, int32_t bzp,
 #else
   for (int64_t j = 0; j < n; ++j)
     acc[j] += av * ((bsgn ? (int32_t)(int8_t)b[j] : (int32_t)b[j]) - bzp);
+#endif
+}
+
+/* acc[0..n) += av * x[0..n)  (int32 lanes; used for the per-column
+   zero-point correction in MatMulInteger) */
+static inline void AxpyS32(int32_t av, const int32_t *x, int32_t *acc,
+                           int64_t n) {
+#ifdef SONNX_NEON
+  int32x4_t va = vdupq_n_s32(av);
+  int64_t j = 0;
+  for (; j + 8 <= n; j += 8) {
+    int32x4_t a0 = vld1q_s32(acc + j);
+    int32x4_t a1 = vld1q_s32(acc + j + 4);
+    a0 = vmlaq_s32(a0, va, vld1q_s32(x + j));
+    a1 = vmlaq_s32(a1, va, vld1q_s32(x + j + 4));
+    vst1q_s32(acc + j, a0);
+    vst1q_s32(acc + j + 4, a1);
+  }
+  for (; j < n; ++j) acc[j] += av * x[j];
+#else
+  for (int64_t j = 0; j < n; ++j) acc[j] += av * x[j];
+#endif
+}
+
+/* int64-lane payload of a kInt32 tensor -> float: values are int32-range
+   by dtype, so taking the low 32 bits of each lane is lossless */
+static inline void CastI32LanesToF32(const int64_t *pi, float *po,
+                                     int64_t n) {
+#if defined(SONNX_NEON) && defined(__aarch64__)
+  int64_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    int32x4_t lo = vuzp1q_s32(vreinterpretq_s32_s64(vld1q_s64(pi + i)),
+                              vreinterpretq_s32_s64(vld1q_s64(pi + i + 2)));
+    vst1q_f32(po + i, vcvtq_f32_s32(lo));
+  }
+  for (; i < n; ++i) po[i] = (float)pi[i];
+#else
+  for (int64_t i = 0; i < n; ++i) po[i] = (float)pi[i];
 #endif
 }
 
@@ -369,8 +434,186 @@ static bool BroadcastShape(const std::vector<int64_t> &a,
   return true;
 }
 
+/* elementwise float binary op tags: the NEON fast paths below dispatch
+   on these (the scalar fallbacks keep the lambda form). kBinNone marks
+   custom lambdas (Gemm beta scaling) that must skip every fast path. */
+enum BinOpF32Tag { kBinAdd, kBinSub, kBinMul, kBinDiv, kBinPow, kBinNone };
+
+static inline float F32BinScalar(BinOpF32Tag tag, float x, float y) {
+  switch (tag) {
+    case kBinAdd: return x + y;
+    case kBinSub: return x - y;
+    case kBinMul: return x * y;
+    case kBinDiv: return x / y;
+    default: return powf(x, y);
+  }
+}
+
+#ifdef SONNX_NEON
+static inline float32x4_t F32BinX4(BinOpF32Tag tag, float32x4_t x,
+                                   float32x4_t y) {
+  switch (tag) {
+    case kBinAdd: return vaddq_f32(x, y);
+    case kBinSub: return vsubq_f32(x, y);
+    case kBinMul: return vmulq_f32(x, y);
+#ifdef __aarch64__
+    case kBinDiv: return vdivq_f32(x, y);  /* IEEE-exact on aarch64 */
+#endif
+    default: return vdupq_n_f32(0.0f);  /* pow / armv7-div: unused */
+  }
+}
+
+/* Contiguous elementwise fast paths, all IEEE-exact lane ops:
+     bmode 0: out[o*inner+j] = pa[o*inner+j] op pb[o*inner+j] (same shape)
+     bmode 1: out[o*inner+j] = pa[o*inner+j] op pb[j]   (b repeats on rows)
+     bmode 2: out[o*inner+j] = pa[o*inner+j] op pb[o]   (one scalar per row)
+   swapped computes (pb op pa) instead (a is the broadcasting operand).
+   Returns false when the op has no NEON form (pow, armv7 div). */
+static bool BinOpF32Neon(BinOpF32Tag tag, const float *pa, const float *pb,
+                         float *po, int64_t outer, int64_t inner, int bmode,
+                         bool swapped) {
+  if (tag == kBinPow || tag == kBinNone) return false;
+#ifndef __aarch64__
+  if (tag == kBinDiv) return false;
+#endif
+  for (int64_t o = 0; o < outer; ++o) {
+    const float *prow = pa + o * inner;
+    float *porow = po + o * inner;
+    int64_t j = 0;
+    if (bmode == 2) {
+      float32x4_t vb = vdupq_n_f32(pb[o]);
+      for (; j + 8 <= inner; j += 8) {
+        float32x4_t x0 = vld1q_f32(prow + j);
+        float32x4_t x1 = vld1q_f32(prow + j + 4);
+        vst1q_f32(porow + j,
+                  swapped ? F32BinX4(tag, vb, x0) : F32BinX4(tag, x0, vb));
+        vst1q_f32(porow + j + 4,
+                  swapped ? F32BinX4(tag, vb, x1) : F32BinX4(tag, x1, vb));
+      }
+      for (; j < inner; ++j)
+        porow[j] = swapped ? F32BinScalar(tag, pb[o], prow[j])
+                           : F32BinScalar(tag, prow[j], pb[o]);
+    } else {
+      const float *brow = (bmode == 0) ? pb + o * inner : pb;
+      for (; j + 8 <= inner; j += 8) {
+        float32x4_t x0 = vld1q_f32(prow + j);
+        float32x4_t x1 = vld1q_f32(prow + j + 4);
+        float32x4_t y0 = vld1q_f32(brow + j);
+        float32x4_t y1 = vld1q_f32(brow + j + 4);
+        vst1q_f32(porow + j,
+                  swapped ? F32BinX4(tag, y0, x0) : F32BinX4(tag, x0, y0));
+        vst1q_f32(porow + j + 4,
+                  swapped ? F32BinX4(tag, y1, x1) : F32BinX4(tag, x1, y1));
+      }
+      for (; j < inner; ++j)
+        porow[j] = swapped ? F32BinScalar(tag, brow[j], prow[j])
+                           : F32BinScalar(tag, prow[j], brow[j]);
+    }
+  }
+  return true;
+}
+#endif  /* SONNX_NEON */
+
+/* b (right-aligned into oshape) is [1..1, matching suffix]: b repeats
+   across the outer dims and the inner contiguous run covers b exactly
+   ([T,C] op [C], [B,T,C] op [1,1,C], ...). */
+static bool BcastInnerRepeat(const std::vector<int64_t> &bs,
+                             const std::vector<int64_t> &os) {
+  size_t ro = os.size(), rb = bs.size();
+  if (rb > ro || rb == 0) return false;
+  size_t off = ro - rb;
+  bool suffix = false;
+  for (size_t d = 0; d < rb; ++d) {
+    int64_t bd = bs[d], od = os[off + d];
+    if (bd == od) {
+      suffix = true;
+    } else if (bd == 1 && !suffix) {
+      continue;
+    } else {
+      return false;
+    }
+  }
+  return suffix;
+}
+
+/* b (right-aligned into oshape) is [matching prefix, 1..1]: one scalar
+   per outer row ([T,C] op [T,1], ...). *outer = matched rows, *inner =
+   trailing run; the [outer x inner] block repeats n/(outer*inner) times
+   over leading dims b does not cover. */
+static bool BcastPerRow(const std::vector<int64_t> &bs,
+                        const std::vector<int64_t> &os, int64_t *outer,
+                        int64_t *inner) {
+  size_t ro = os.size(), rb = bs.size();
+  if (rb > ro || rb == 0) return false;
+  size_t off = ro - rb;
+  int state = 0;  /* 0 = leading broadcast, 1 = matched, 2 = trailing 1s */
+  int64_t out_prod = 1, in_prod = 1;
+  for (size_t d = 0; d < ro; ++d) {
+    int64_t bd = (d >= off) ? bs[d - off] : 1;
+    int64_t od = os[d];
+    if (state == 0) {
+      if (bd == od && od != 1) {
+        state = 1;
+        out_prod *= od;
+      } else if (bd != 1) {
+        return false;
+      }
+    } else if (state == 1) {
+      if (bd == od) {
+        out_prod *= od;
+      } else if (bd == 1) {
+        state = 2;
+        in_prod *= od;
+      } else {
+        return false;
+      }
+    } else {
+      if (bd == 1) {
+        in_prod *= od;
+      } else {
+        return false;
+      }
+    }
+  }
+  if (state < 2) return false;  /* no trailing run (same-shape case) */
+  *outer = out_prod;
+  *inner = in_prod;
+  return true;
+}
+
+/* x^e over contiguous lanes for a constant exponent; e==2 and e==0.5 use
+   the cheap exact forms (x*x and sqrtf are what powf computes for those
+   exponents), anything else calls powf without index decomposition */
+static void PowConstF32(const float *pa, float e, float *po, int64_t n) {
+  int64_t i = 0;
+  if (e == 2.0f) {
+#ifdef SONNX_NEON
+    for (; i + 8 <= n; i += 8) {
+      float32x4_t x0 = vld1q_f32(pa + i);
+      float32x4_t x1 = vld1q_f32(pa + i + 4);
+      vst1q_f32(po + i, vmulq_f32(x0, x0));
+      vst1q_f32(po + i + 4, vmulq_f32(x1, x1));
+    }
+#endif
+    for (; i < n; ++i) po[i] = pa[i] * pa[i];
+    return;
+  }
+  if (e == 0.5f) {
+#if defined(SONNX_NEON) && defined(__aarch64__)
+    for (; i + 8 <= n; i += 8) {
+      vst1q_f32(po + i, vsqrtq_f32(vld1q_f32(pa + i)));
+      vst1q_f32(po + i + 4, vsqrtq_f32(vld1q_f32(pa + i + 4)));
+    }
+#endif
+    for (; i < n; ++i) po[i] = sqrtf(pa[i]);
+    return;
+  }
+  for (; i < n; ++i) po[i] = powf(pa[i], e);
+}
+
 template <typename F>
-static void BinOp(const Tensor &a, const Tensor &b, Tensor *out, F fn) {
+static void BinOp(const Tensor &a, const Tensor &b, Tensor *out, F fn,
+                  BinOpF32Tag tag) {
   std::vector<int64_t> oshape;
   if (!BroadcastShape(a.shape, b.shape, &oshape)) {
     *out = Tensor::Float(Sh(0));
@@ -378,13 +621,75 @@ static void BinOp(const Tensor &a, const Tensor &b, Tensor *out, F fn) {
   }
   *out = Tensor::Float(oshape);
   int64_t n = out->Numel();
-  /* contiguous fast path (residual adds etc.): same shape, both float —
-     skips the per-element index decomposition entirely */
-  if (a.dtype == kFloat && b.dtype == kFloat && ShapeEq(a.shape, b.shape)) {
+  if (a.dtype == kFloat && b.dtype == kFloat && n > 0) {
     const float *pa = a.pf(), *pb = b.pf();
     float *po = out->pf();
-    for (int64_t i = 0; i < n; ++i) po[i] = fn(pa[i], pb[i]);
-    return;
+#ifdef SONNX_NEON
+    /* contiguous fast paths (residual adds, scales, CMVN shifts, ...) */
+    if (ShapeEq(a.shape, b.shape)) {
+      if (BinOpF32Neon(tag, pa, pb, po, 1, n, 0, false)) return;
+    }
+    if (b.Numel() == 1) {  /* scalar b: scale/shift/constant exponent */
+      if (tag == kBinPow) {
+        PowConstF32(pa, pb[0], po, n);
+        return;
+      }
+      if (BinOpF32Neon(tag, pa, pb, po, 1, n, 2, false)) return;
+    }
+    if (a.Numel() == 1 && tag != kBinPow && tag != kBinNone) {
+      if (BinOpF32Neon(tag, pb, pa, po, 1, n, 2, true)) return;
+    }
+    if (tag != kBinPow && tag != kBinNone) {
+      int64_t outer, inner;
+      if (ShapeEq(a.shape, oshape)) {  /* a fills the output; b broadcasts */
+        if (BcastInnerRepeat(b.shape, oshape)) {
+          inner = b.Numel();
+          if (inner > 0 &&
+              BinOpF32Neon(tag, pa, pb, po, n / inner, inner, 1, false))
+            return;
+        }
+        if (BcastPerRow(b.shape, oshape, &outer, &inner)) {
+          int64_t reps = (outer * inner > 0) ? n / (outer * inner) : 0;
+          bool ok = reps > 0;
+          for (int64_t rep = 0; rep < reps && ok; ++rep)
+            ok = BinOpF32Neon(tag, pa + rep * outer * inner, pb,
+                              po + rep * outer * inner, outer, inner, 2,
+                              false);
+          if (ok) return;
+        }
+      } else if (ShapeEq(b.shape, oshape)) {  /* mirrored: b is the base */
+        if (BcastInnerRepeat(a.shape, oshape)) {
+          inner = a.Numel();
+          if (inner > 0 &&
+              BinOpF32Neon(tag, pb, pa, po, n / inner, inner, 1, true))
+            return;
+        }
+        if (BcastPerRow(a.shape, oshape, &outer, &inner)) {
+          int64_t reps = (outer * inner > 0) ? n / (outer * inner) : 0;
+          bool ok = reps > 0;
+          for (int64_t rep = 0; rep < reps && ok; ++rep)
+            ok = BinOpF32Neon(tag, pb + rep * outer * inner, pa,
+                              po + rep * outer * inner, outer, inner, 2,
+                              true);
+          if (ok) return;
+        }
+      }
+    }
+#endif  /* SONNX_NEON */
+    /* contiguous fallbacks (all builds): scalar exponent / same shape */
+    if (b.Numel() == 1) {
+      float e = pb[0];
+      if (tag == kBinPow) {
+        PowConstF32(pa, e, po, n);
+      } else {
+        for (int64_t i = 0; i < n; ++i) po[i] = fn(pa[i], e);
+      }
+      return;
+    }
+    if (ShapeEq(a.shape, b.shape)) {
+      for (int64_t i = 0; i < n; ++i) po[i] = fn(pa[i], pb[i]);
+      return;
+    }
   }
   std::vector<int64_t> sa = StridesOf(a.shape);
   std::vector<int64_t> sb = StridesOf(b.shape);
@@ -441,6 +746,26 @@ static void UnOp(const Tensor &a, Tensor *out, F fn) {
     return;
   }
   for (int64_t i = 0; i < n; ++i) out->f[i] = fn(a.AtFloat(i));
+}
+
+/* sqrt has a native NEON form on aarch64 (IEEE-exact, matches sqrtf) */
+static void SqrtOpF32(const Tensor &a, Tensor *out) {
+  *out = Tensor::Float(a.shape);
+  int64_t n = a.Numel();
+  if (a.dtype == kFloat) {
+    const float *pa = a.pf();
+    float *po = out->pf();
+    int64_t i = 0;
+#if defined(SONNX_NEON) && defined(__aarch64__)
+    for (; i + 8 <= n; i += 8) {
+      vst1q_f32(po + i, vsqrtq_f32(vld1q_f32(pa + i)));
+      vst1q_f32(po + i + 4, vsqrtq_f32(vld1q_f32(pa + i + 4)));
+    }
+#endif
+    for (; i < n; ++i) po[i] = sqrtf(pa[i]);
+    return;
+  }
+  for (int64_t i = 0; i < n; ++i) out->f[i] = sqrtf(a.AtFloat(i));
 }
 
 static float ErfApprox(float x) {
@@ -1046,11 +1371,11 @@ static bool ExecNode(const Model::Node &node,
       if (op == "Mul") BinOpInt(*in[0], *in[1], &o, [](int64_t a, int64_t b) { return a * b; });
       if (op == "Div") BinOpInt(*in[0], *in[1], &o, [](int64_t a, int64_t b) { return b ? a / b : 0; });
     } else {
-      if (op == "Add") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a + b; });
-      if (op == "Sub") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a - b; });
-      if (op == "Mul") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a * b; });
-      if (op == "Div") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a / b; });
-      if (op == "Pow") BinOp(*in[0], *in[1], &o, [](float a, float b) { return powf(a, b); });
+      if (op == "Add") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a + b; }, kBinAdd);
+      if (op == "Sub") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a - b; }, kBinSub);
+      if (op == "Mul") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a * b; }, kBinMul);
+      if (op == "Div") BinOp(*in[0], *in[1], &o, [](float a, float b) { return a / b; }, kBinDiv);
+      if (op == "Pow") BinOp(*in[0], *in[1], &o, [](float a, float b) { return powf(a, b); }, kBinPow);
     }
     outs->push_back(std::move(o));
     return true;
@@ -1069,7 +1394,7 @@ static bool ExecNode(const Model::Node &node,
     if (op == "Erf") UnOp(*in[0], &o, [](float a) { return ErfApprox(a); });
     if (op == "Exp") UnOp(*in[0], &o, [](float a) { return expf(a); });
     if (op == "Log") UnOp(*in[0], &o, [](float a) { return logf(a); });
-    if (op == "Sqrt") UnOp(*in[0], &o, [](float a) { return sqrtf(a); });
+    if (op == "Sqrt") SqrtOpF32(*in[0], &o);
     if (op == "Abs") UnOp(*in[0], &o, [](float a) { return fabsf(a); });
     if (op == "Neg") UnOp(*in[0], &o, [](float a) { return -a; });
     if (op == "Floor") UnOp(*in[0], &o, [](float a) { return floorf(a); });
@@ -1139,7 +1464,10 @@ static bool ExecNode(const Model::Node &node,
     if (in.size() > 2 && in[2]) {
       Tensor c = *in[2];
       Tensor oc;
-      BinOp(o, c, &oc, [beta](float x, float y) { return x + beta * y; });
+      if (beta == 1.0f)  /* plain add: NEON fast paths apply */
+        BinOp(o, c, &oc, [](float x, float y) { return x + y; }, kBinAdd);
+      else  /* custom lambda: scalar/contiguous paths only */
+        BinOp(o, c, &oc, [beta](float x, float y) { return x + beta * y; }, kBinNone);
       o = std::move(oc);
     }
     outs->push_back(std::move(o));
@@ -1279,6 +1607,60 @@ static bool ExecNode(const Model::Node &node,
       }
     }
     Tensor o = Tensor::Float(oshape.empty() ? std::vector<int64_t>{1} : oshape);
+    /* Fast path: the reduced axes form one contiguous dim block, so each
+       output is a sum over a strided run with a contiguous inner axis
+       ([1,T,C] over axis 1 etc.). The per-output accumulation order is
+       unchanged (d ascending), so results stay bit-exact. */
+    if (x.dtype == kFloat && r > 0) {
+      std::vector<char> red(r, 0);
+      for (size_t i = 0; i < axes.size(); ++i) red[axes[i]] = 1;
+      size_t lo = r, hi = 0;
+      bool any = false;
+      for (size_t i = 0; i < r; ++i)
+        if (red[i]) {
+          if (i < lo) lo = i;
+          if (i > hi) hi = i;
+          any = true;
+        }
+      bool contig = any;
+      for (size_t i = lo; any && i <= hi; ++i)
+        if (!red[i]) contig = false;
+      if (contig) {
+        int64_t outer = 1, mid = 1, inner = 1;
+        for (size_t i = 0; i < lo; ++i) outer *= x.shape[i];
+        for (size_t i = lo; i <= hi; ++i) mid *= x.shape[i];
+        for (size_t i = hi + 1; i < r; ++i) inner *= x.shape[i];
+        const float *px = x.pf();
+        float *po = o.pf();
+        float cnt_f = static_cast<float>(mid);
+        for (int64_t ob = 0; ob < outer; ++ob) {
+          const float *xbase = px + ob * mid * inner;
+          float *obase = po + ob * inner;
+          int64_t j = 0;
+#ifdef SONNX_NEON
+          for (; j + 4 <= inner; j += 4) {
+            float32x4_t acc = vdupq_n_f32(0.0f);
+            for (int64_t d = 0; d < mid; ++d)
+              acc = vaddq_f32(acc, vld1q_f32(xbase + d * inner + j));
+#ifdef __aarch64__
+            vst1q_f32(obase + j, vdivq_f32(acc, vdupq_n_f32(cnt_f)));
+#else
+            float t4[4];
+            vst1q_f32(t4, acc);
+            for (int q = 0; q < 4; ++q) obase[j + q] = t4[q] / cnt_f;
+#endif
+          }
+#endif
+          for (; j < inner; ++j) {
+            float acc = 0.0f;
+            for (int64_t d = 0; d < mid; ++d) acc += xbase[d * inner + j];
+            obase[j] = acc / cnt_f;
+          }
+        }
+        outs->push_back(std::move(o));
+        return true;
+      }
+    }
     std::vector<int64_t> cnt(o.Numel(), 0);
     std::vector<int64_t> so = StridesOf(o.shape);
     // iterate over x, accumulate
@@ -1624,7 +2006,18 @@ static bool ExecNode(const Model::Node &node,
     const Tensor &x = *in[0];
     if (to == kFloat) {
       Tensor o = Tensor::Float(x.shape);
-      for (int64_t i = 0; i < x.Numel(); ++i) o.f[i] = x.AtFloat(i);
+      int64_t n = x.Numel();
+      float *po = o.pf();
+      if (x.dtype == kFloat) {  // no-op cast: bulk copy
+        if (n > 0) memcpy(po, x.pf(), static_cast<size_t>(n) * sizeof(float));
+      } else if (x.IsByte()) {  // (q - 0) * 1.0f: the dequant kernel
+        DequantBytes(x.pb(), x.dtype == kInt8, 0, 1.0f, po, n);
+      } else if (x.dtype == kInt32) {  // MatMulInteger results etc.
+        CastI32LanesToF32(x.pi(), po, n);
+      } else {
+        const int64_t *pi = x.pi();
+        for (int64_t i = 0; i < n; ++i) po[i] = static_cast<float>(pi[i]);
+      }
       outs->push_back(std::move(o));
     } else if (to == kBool || to == kUint8 || to == kInt8) {
       Tensor o = Tensor::Byte(x.shape, static_cast<int>(to));
@@ -1811,6 +2204,18 @@ static bool ExecNode(const Model::Node &node,
     ResizeExact(acc, static_cast<size_t>(n));
     int32_t *pacc = vdata(acc);
     int64_t *poi = o.pi();
+    /* per-column B zero points, converted once per node execution: the
+       k-loop below then runs on raw B bytes and applies the correction
+         out[i][j] = sum_k(av_k * b_raw[k][j]) - zp_j * sum_k(av_k)
+       as a single int32 AXPY per row (exact integer math, same result) */
+    std::vector<int32_t> zpcol;
+    const int32_t *pzpcol = nullptr;
+    if (bzp_col) {
+      ResizeExact(zpcol, static_cast<size_t>(n));
+      for (int64_t j = 0; j < n; ++j)
+        zpcol[j] = static_cast<int32_t>(bzpt->AtInt(j));
+      pzpcol = vdata(zpcol);
+    }
     for (int64_t bi = 0; bi < nb; ++bi) {
       int64_t rem = bi, ao = 0, bo = 0;
       for (int d = static_cast<int>(rbz) - 1; d >= 0; --d) {
@@ -1833,14 +2238,19 @@ static bool ExecNode(const Model::Node &node,
             if (av)  // zero rows are common when azp matches; skip them
               AxpyQ(av, pbq + bbase + kk * n, bsgn, bzp0, pacc, n);
           }
-        } else {  // rare per-column zero point: scalar path
+        } else {  /* per-column zero point: raw NEON AXPY in the k-loop
+                     plus one int32 AXPY for the zp_j * rowsum correction */
+          const uint8_t *arow = pa + abase + i * k;
+          int32_t rowsum = 0;
           for (int64_t kk = 0; kk < k; ++kk) {
-            int32_t av = a.QAt(abase + i * k + kk) - azp;
-            int64_t brow = bbase + kk * n;
-            for (int64_t j = 0; j < n; ++j)
-              pacc[j] += av * (b.QAt(brow + j) -
-                               static_cast<int32_t>(bzpt->AtInt(j)));
+            int32_t av =
+                (asgn ? (int32_t)(int8_t)arow[kk] : (int32_t)arow[kk]) - azp;
+            if (av) {
+              AxpyQ(av, pbq + bbase + kk * n, bsgn, 0, pacc, n);
+              rowsum += av;
+            }
           }
+          if (rowsum) AxpyS32(-rowsum, pzpcol, pacc, n);
         }
         int64_t orow = obase + i * n;
         for (int64_t j = 0; j < n; ++j) poi[orow + j] = pacc[j];
@@ -2353,11 +2763,13 @@ static bool RunGraph(const std::vector<Model::Node> &nodes,
     }
 
     std::vector<Tensor> result;
+    SONNX_PROF_T();
     if (!ExecNode(node, ins, &result, &scope)) {
       fprintf(stderr, "sonnx: failed to execute node %d: %s\n",
               static_cast<int>(ni), node.op.c_str());
       return false;
     }
+    SONNX_PROF_ADD(node.op);
 
     for (size_t k = 0; k < node.output.size(); ++k) {
       if (node.output[k].empty()) continue;
@@ -2865,19 +3277,35 @@ static void ParseGraphMsg(Reader *r, Graph *graph,
                           bool top_level) {
   std::vector<std::pair<std::string, std::vector<int64_t>>> graph_inputs;
   int field, wire;
+  /* Pre-count node fields and reserve once: thousands of nodes otherwise
+     grow the vector by doubling, and even with swap-based Node moves the
+     relocations are a measurable slice of the parse (95%) tail on target. */
+  if (top_level) {
+    Reader scan = *r;
+    size_t ncount = 0;
+    int f, w;
+    while (scan.next(&f, &w)) {
+      if (f == 1) ++ncount;
+      scan.skip(w);
+    }
+    graph->nodes.reserve(ncount);
+  }
   while (r->next(&field, &wire)) {
     /* parse phase covers 95..100% of the load progress */
     if (top_level && r->len > 0)
       g_load_progress = 95 + static_cast<int>((r->pos * 5) / r->len);
     switch (field) {
       case 1: {
+        SONNX_PROF_T();
         Reader s = r->sub();
         Node node;
         ParseNodeMsg(&s, &node);
         graph->nodes.push_back(std::move(node));
+        SONNX_PROF_ADD("load.parse_nodes");
         break;
       }
       case 5: {
+        SONNX_PROF_T();
         Reader s = r->sub();
         /* Pre-scan the tensor name (field 8) so the payload can be parsed
            straight into its map slot. Going through a local Tensor and
@@ -2896,6 +3324,7 @@ static void ParseGraphMsg(Reader *r, Graph *graph,
         if (!name.empty()) {
           std::string dummy;
           ParseTensorMsg(&s, &graph->initializers[name], &dummy);
+          SONNX_PROF_ADDB("load.parse_inits", s.len);
         }
         break;
       }
@@ -2932,7 +3361,11 @@ static void ParseGraphMsg(Reader *r, Graph *graph,
     }
   }
 
-  TopoSortGraph(graph);
+  {
+    SONNX_PROF_T();
+    TopoSortGraph(graph);
+    SONNX_PROF_ADD("load.toposort");
+  }
 }
 
 // StringStringEntryProto: key=1, value=2.
