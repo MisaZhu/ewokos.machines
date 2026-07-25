@@ -103,6 +103,10 @@ class MicWidget: public Widget {
 		return v < 0 ? -v : v;
 	}
 
+        static bool isTransducerModelPath(const char* path) {
+                return path != NULL && strcmp(path, ASR_ONLINE_TRANSDUCER_ENCODER_PATH) == 0;
+        }
+
         static const char* chooseModelPath(void) {
                 if (access(ASR_ONLINE_TRANSDUCER_ENCODER_PATH, R_OK) == 0 &&
                                 access(ASR_ONLINE_TOKENS_PATH, R_OK) == 0)
@@ -332,6 +336,7 @@ class MicWidget: public Widget {
                         if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
                                 _partialTicks++;
                                 if (_partialTicks >= ASR_PARTIAL_TICKS &&
+                                                !isTransducerModelPath(_asrModelPath) &&
                                                 SherpaIsStreamReady(_asr, _asrStream)) {
                                         setAsrText(SherpaDecodeStream(_asr, _asrStream),
                                                         "listening...");
