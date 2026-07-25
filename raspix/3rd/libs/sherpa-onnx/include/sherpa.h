@@ -1,7 +1,9 @@
 /**
  * sherpa.h - minimal sherpa-onnx style offline recognizer for EwokOS.
  *
- * Targets SenseVoiceSmall CTC models exported for sherpa-onnx
+ * Targets several sherpa-onnx model families, auto-detected from metadata:
+ *   - SenseVoice / offline paraformer / NeMo CTC
+ *   - streaming Zipformer2 CTC / WeNet CTC single-model exports
  * (e.g. sherpa-onnx-sense-voice-zh-en-ja-ko-yue, float32 or int8):
  *
  *   PCM (any rate, resampled to 16 kHz) -> kaldi fbank (80 bins, hamming,
@@ -14,6 +16,17 @@
  *   SherpaStream *s = SherpaCreateStream(r, 48000);
  *   ... SherpaAcceptWaveform(r, s, samples, n);  // one speech segment
  *   const char *text = SherpaDecode(r, s);       // also resets the stream
+ *
+ * Streaming-style usage with an offline model:
+ *   SherpaRecognizer *r = SherpaCreateRecognizer(model, tokens);
+ *   SherpaStream *s = SherpaCreateStream(r, 48000);
+ *   ... SherpaAcceptWaveform(r, s, samples, n);
+ *   if (SherpaIsStreamReady(r, s))
+ *     printf("%s\n", SherpaDecodeStream(r, s));
+ *   ...
+ *   SherpaInputFinished(r, s);
+ *   printf("%s\n", SherpaDecodeStream(r, s));
+ *   SherpaReset(r, s);
  */
 #ifndef SHERPA_ONNX_PORT_SHERPA_H_
 #define SHERPA_ONNX_PORT_SHERPA_H_
@@ -64,6 +77,31 @@ void SherpaReset(SherpaRecognizer *r, SherpaStream *s);
 /** Feed 16-bit mono PCM at the stream's input rate. */
 void SherpaAcceptWaveform(SherpaRecognizer *r, SherpaStream *s,
                           const int16_t *samples, int32_t n);
+
+/**
+ * Mark the current utterance finished so the frontend can flush tail frames.
+ * Call SherpaReset() before feeding the next utterance.
+ */
+void SherpaInputFinished(SherpaRecognizer *r, SherpaStream *s);
+
+/**
+ * Returns non-zero when enough new audio has arrived to make another
+ * streaming-style decode worthwhile.
+ */
+int32_t SherpaIsStreamReady(SherpaRecognizer *r, SherpaStream *s);
+
+/**
+ * Re-decode the current stream contents without resetting it.
+ * This provides incremental text for UI updates while keeping the stream
+ * open for more audio until SherpaInputFinished() + SherpaReset().
+ *
+ * @return recognized text so far; the pointer is valid until the next decode
+ *         or reset on this recognizer.
+ */
+const char *SherpaDecodeStream(SherpaRecognizer *r, SherpaStream *s);
+
+/** Return the most recent streaming/offline result for this recognizer. */
+const char *SherpaGetResult(SherpaRecognizer *r);
 
 /**
  * Decode all buffered audio, then reset the stream for the next segment.

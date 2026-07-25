@@ -237,6 +237,11 @@ class Model {
   int NumInputs() const { return static_cast<int>(input_names_.size()); }
   const char *InputName(int index) const { return input_names_[index].c_str(); }
   std::vector<int64_t> InputShape(int index) const;  // -1 marks dynamic dims
+  int InputType(int index) const {
+    return index < 0 || index >= static_cast<int>(input_types_.size())
+               ? kFloat
+               : input_types_[index];
+  }
 
   int NumOutputs() const { return static_cast<int>(output_names_.size()); }
   const char *OutputName(int index) const { return output_names_[index].c_str(); }
@@ -253,6 +258,7 @@ class Model {
   std::map<std::string, Tensor> initializers_;
   std::vector<std::string> input_names_;
   std::vector<std::vector<int64_t>> input_shapes_;
+  std::vector<int> input_types_;
   std::vector<std::string> output_names_;
   std::map<std::string, std::string> metadata_;  // ModelProto.metadata_props
 

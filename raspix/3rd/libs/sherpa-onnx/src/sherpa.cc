@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "fbank.h"
@@ -112,9 +113,46 @@ knf::FbankOptions MakeNemoFbankOpts() {
   return opts;
 }
 
+knf::FbankOptions MakeOnlineCtcFbankOpts() {
+  knf::FbankOptions opts;
+  opts.frame_opts.samp_freq = 16000.0f;
+  opts.frame_opts.dither = 0.0f;
+  opts.frame_opts.preemph_coeff = 0.97f;
+  opts.frame_opts.remove_dc_offset = true;
+  opts.frame_opts.window_type = "povey";
+  opts.frame_opts.snip_edges = false;
+  opts.mel_opts.num_bins = 80;
+  opts.mel_opts.low_freq = 20.0f;
+  opts.mel_opts.high_freq = -400.0f;
+  return opts;
+}
+
 int32_t MetaInt(const sonnx::Model &m, const char *key, int32_t dflt) {
   std::string v = m.Metadata(key);
   return v.empty() ? dflt : atoi(v.c_str());
+}
+
+bool HasSuffix(const std::string &s, const char *suffix) {
+  size_t n = strlen(suffix);
+  return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+}
+
+std::string DirName(const char *path) {
+  const char *slash = strrchr(path, '/');
+  return slash ? std::string(path, static_cast<size_t>(slash - path))
+               : std::string(".");
+}
+
+std::string JoinPath(const std::string &dir, const char *name) {
+  if (dir.empty() || dir == ".") return std::string(name);
+  return dir + "/" + name;
+}
+
+bool FindSiblingModel(const char *path, const char *name, std::string *out) {
+  std::string p = JoinPath(DirName(path), name);
+  if (access(p.c_str(), R_OK) != 0) return false;
+  *out = p;
+  return true;
 }
 
 void ParseFloatList(const std::string &s, std::vector<float> *out) {
@@ -152,9 +190,13 @@ void ReplaceWordMarkers(std::string *text) {
 }  // namespace
 
 struct SherpaRecognizer {
-  enum Kind { kSenseVoice = 0, kParaformer = 1, kNemoCtc = 2 };
+  enum Kind { kSenseVoice = 0, kParaformer = 1, kNemoCtc = 2,
+              kOnlineZipformer2Ctc = 3, kOnlineWenetCtc = 4,
+              kOnlineZipformerTransducer = 5 };
 
   sonnx::Model model;
+  sonnx::Model decoder;
+  sonnx::Model joiner;
   std::vector<std::string> tokens;
   knf::FbankOptions fbank_opts;
   int32_t kind = kSenseVoice;
@@ -168,6 +210,11 @@ struct SherpaRecognizer {
   int32_t with_itn = 14;
   int32_t without_itn = 15;
   int32_t use_itn = 1;
+  int32_t normalize_samples = 0;
+  int32_t transducer_decode_chunk_len = 0;
+  int32_t transducer_T = 0;
+  int32_t transducer_context_size = 0;
+  int32_t decoder_input_dtype = sonnx::kInt64;
   std::string result;
 };
 
@@ -175,6 +222,12 @@ struct SherpaStream {
   knf::OnlineFbank *fbank = NULL;
   LinearResampler *resampler = NULL;  // NULL when input is already 16 kHz
   int32_t in_rate = 16000;
+  int32_t last_decode_frames = 0;
+  int32_t chunk_cursor = 0;
+  bool input_finished = false;
+  std::vector<int64_t> hyp;
+  sonnx::Tensor decoder_out;
+  std::vector<sonnx::Tensor> encoder_states;
 };
 
 static bool LoadTokens(const char *path, std::vector<std::string> *tokens) {
@@ -215,6 +268,42 @@ static bool LoadTokens(const char *path, std::vector<std::string> *tokens) {
   return !tokens->empty();
 }
 
+static bool TryLoadTransducerModels(SherpaRecognizer *r, const char *model_path) {
+  if (!r || !HasSuffix(model_path, "encoder.int8.onnx") &&
+                !HasSuffix(model_path, "encoder.onnx"))
+    return false;
+
+  std::string decoder_path, joiner_path;
+  if (!FindSiblingModel(model_path, "decoder.onnx", &decoder_path))
+    return false;
+  if (!FindSiblingModel(model_path, "joiner.int8.onnx", &joiner_path) &&
+      !FindSiblingModel(model_path, "joiner.onnx", &joiner_path))
+    return false;
+
+  if (!r->decoder.Load(decoder_path.c_str()) ||
+      !r->joiner.Load(joiner_path.c_str()))
+    return false;
+
+  r->kind = SherpaRecognizer::kOnlineZipformerTransducer;
+  r->fbank_opts = MakeOnlineCtcFbankOpts();
+  r->blank_id = 0;
+  r->normalize_samples = 1;
+  r->transducer_decode_chunk_len =
+      MetaInt(r->model, "decode_chunk_len", 0);
+  r->transducer_T = MetaInt(r->model, "T", 0);
+  r->transducer_context_size =
+      MetaInt(r->decoder, "context_size", 2);
+  r->decoder_input_dtype = r->decoder.InputType(0);
+
+  if (r->transducer_decode_chunk_len <= 0 || r->transducer_T <= 0 ||
+      r->transducer_context_size <= 0) {
+    fprintf(stderr, "sherpa: bad transducer metadata\n");
+    return false;
+  }
+
+  return true;
+}
+
 SherpaRecognizer *SherpaCreateRecognizer(const char *model_path,
                                          const char *tokens_path) {
   sonnx::g_load_progress = 0;
@@ -228,10 +317,16 @@ SherpaRecognizer *SherpaCreateRecognizer(const char *model_path,
     return NULL;
   }
 
+  if (TryLoadTransducerModels(r, model_path)) return r;
+
   // pipeline is picked from the model_type metadata
   std::string mt = r->model.Metadata("model_type");
   if (mt == "paraformer")
     r->kind = SherpaRecognizer::kParaformer;
+  else if (mt == "zipformer2")
+    r->kind = SherpaRecognizer::kOnlineZipformer2Ctc;
+  else if (mt == "wenet_ctc")
+    r->kind = SherpaRecognizer::kOnlineWenetCtc;
   else if (mt == "EncDecCTCModelBPE")
     r->kind = SherpaRecognizer::kNemoCtc;
   else
@@ -239,6 +334,15 @@ SherpaRecognizer *SherpaCreateRecognizer(const char *model_path,
 
   if (r->kind == SherpaRecognizer::kNemoCtc) {
     r->fbank_opts = MakeNemoFbankOpts();
+    r->normalize_samples = 1;
+    return r;
+  }
+
+  if (r->kind == SherpaRecognizer::kOnlineZipformer2Ctc ||
+      r->kind == SherpaRecognizer::kOnlineWenetCtc) {
+    r->fbank_opts = MakeOnlineCtcFbankOpts();
+    r->blank_id = MetaInt(r->model, "blank_id", 0);
+    r->normalize_samples = 1;
     return r;
   }
 
@@ -271,6 +375,7 @@ SherpaRecognizer *SherpaCreateRecognizer(const char *model_path,
   }
 
   r->fbank_opts = MakeSenseVoiceFbankOpts();
+  r->normalize_samples = 0;
   return r;
 }
 
@@ -286,6 +391,74 @@ void SherpaSetUseItn(SherpaRecognizer *r, int32_t use_itn) {
   if (r) r->use_itn = use_itn ? 1 : 0;
 }
 
+static sonnx::Tensor MakeTypedTensor(const std::vector<int64_t> &shape,
+                                     int dtype) {
+  if (dtype == sonnx::kFloat) return sonnx::Tensor::Float(shape);
+  if (dtype == sonnx::kUint8 || dtype == sonnx::kInt8 || dtype == sonnx::kBool)
+    return sonnx::Tensor::Byte(shape, dtype);
+  return sonnx::Tensor::Int(shape, dtype);
+}
+
+static bool RunTransducerDecoder(SherpaRecognizer *r,
+                                 const std::vector<int64_t> &hyp,
+                                 sonnx::Tensor *decoder_out) {
+  if (!r || !decoder_out) return false;
+
+  std::vector<int64_t> shape;
+  shape.push_back(1);
+  shape.push_back(r->transducer_context_size);
+  sonnx::Tensor y = MakeTypedTensor(shape, r->decoder_input_dtype);
+  for (int32_t i = 0; i < r->transducer_context_size; ++i) {
+    int64_t v = hyp[hyp.size() - r->transducer_context_size + i];
+    if (y.IsByte())
+      y.b[static_cast<size_t>(i)] = static_cast<uint8_t>(v);
+    else
+      y.i[static_cast<size_t>(i)] = v;
+  }
+
+  std::vector<const sonnx::Tensor *> inputs;
+  inputs.push_back(&y);
+  std::vector<sonnx::Tensor> outputs;
+  if (!r->decoder.Run(inputs, &outputs) || outputs.empty()) {
+    fprintf(stderr, "sherpa: transducer decoder run failed\n");
+    return false;
+  }
+  *decoder_out = std::move(outputs[0]);
+  return true;
+}
+
+static void BuildTransducerText(SherpaRecognizer *r, SherpaStream *s) {
+  std::string text;
+  if (!r || !s) return;
+  for (size_t i = static_cast<size_t>(r->transducer_context_size);
+       i < s->hyp.size(); ++i) {
+    int64_t id = s->hyp[i];
+    if (id >= 0 && id < static_cast<int64_t>(r->tokens.size()))
+      text += r->tokens[static_cast<size_t>(id)];
+  }
+  ReplaceWordMarkers(&text);
+  r->result = text;
+}
+
+static bool InitTransducerStream(SherpaRecognizer *r, SherpaStream *s) {
+  if (!r || !s) return false;
+
+  s->hyp.clear();
+  for (int32_t i = 0; i < r->transducer_context_size; ++i)
+    s->hyp.push_back(r->blank_id);
+
+  s->encoder_states.clear();
+  for (int i = 1; i < r->model.NumInputs(); ++i) {
+    std::vector<int64_t> shape = r->model.InputShape(i);
+    for (size_t j = 0; j < shape.size(); ++j)
+      if (shape[j] <= 0) shape[j] = 1;
+    s->encoder_states.push_back(
+        MakeTypedTensor(shape, r->model.InputType(i)));
+  }
+
+  return RunTransducerDecoder(r, s->hyp, &s->decoder_out);
+}
+
 SherpaStream *SherpaCreateStream(SherpaRecognizer *r, int32_t input_rate) {
   if (!r) return NULL;
   SherpaStream *s = new SherpaStream();
@@ -293,6 +466,11 @@ SherpaStream *SherpaCreateStream(SherpaRecognizer *r, int32_t input_rate) {
   if (input_rate > 0 && input_rate != 16000) {
     s->resampler = new LinearResampler(input_rate, 16000);
     s->in_rate = input_rate;
+  }
+  if (r->kind == SherpaRecognizer::kOnlineZipformerTransducer &&
+      !InitTransducerStream(r, s)) {
+    SherpaDestroyStream(r, s);
+    return NULL;
   }
   return s;
 }
@@ -310,16 +488,25 @@ void SherpaReset(SherpaRecognizer *r, SherpaStream *s) {
   delete s->fbank;
   s->fbank = new knf::OnlineFbank(r->fbank_opts);
   if (s->resampler) s->resampler->Reset();
+  s->last_decode_frames = 0;
+  s->chunk_cursor = 0;
+  s->input_finished = false;
+  if (r->kind == SherpaRecognizer::kOnlineZipformerTransducer) {
+    InitTransducerStream(r, s);
+  } else {
+    s->hyp.clear();
+    s->encoder_states.clear();
+    s->decoder_out = sonnx::Tensor();
+  }
 }
 
 void SherpaAcceptWaveform(SherpaRecognizer *r, SherpaStream *s,
                           const int16_t *samples, int32_t n) {
-  if (!r || !s || !samples || n <= 0) return;
+  if (!r || !s || !samples || n <= 0 || s->input_finished) return;
 
   // SenseVoice/paraformer keep the raw int16 scale (normalize_samples=0);
-  // NeMo expects samples in [-1, 1]
-  float scale =
-      r->kind == SherpaRecognizer::kNemoCtc ? 1.0f / 32768.0f : 1.0f;
+  // NeMo and online CTC models expect samples in [-1, 1]
+  float scale = r->normalize_samples ? 1.0f / 32768.0f : 1.0f;
   std::vector<float> f(static_cast<size_t>(n));
   for (int32_t i = 0; i < n; ++i) f[i] = samples[i] * scale;
 
@@ -333,6 +520,41 @@ void SherpaAcceptWaveform(SherpaRecognizer *r, SherpaStream *s,
     s->fbank->AcceptWaveform(16000.0f, vdata(out),
                              static_cast<int32_t>(out.size()));
   }
+}
+
+void SherpaInputFinished(SherpaRecognizer *r, SherpaStream *s) {
+  (void)r;
+  if (!s || s->input_finished) return;
+  s->fbank->InputFinished();
+  s->input_finished = true;
+}
+
+static int32_t MinDecodeFrames(const SherpaRecognizer *r) {
+  if (!r) return 1;
+  if (r->kind == SherpaRecognizer::kOnlineZipformerTransducer)
+    return r->transducer_decode_chunk_len > 0 ? r->transducer_decode_chunk_len
+                                              : 1;
+  if (r->kind == SherpaRecognizer::kNemoCtc) return 4;
+  if (r->kind == SherpaRecognizer::kOnlineZipformer2Ctc ||
+      r->kind == SherpaRecognizer::kOnlineWenetCtc)
+    return 8;
+  return r->lfr_shift > 0 ? r->lfr_shift : 1;
+}
+
+int32_t SherpaIsStreamReady(SherpaRecognizer *r, SherpaStream *s) {
+  if (!r || !s) return 0;
+
+  int32_t ready = s->fbank->NumFramesReady();
+  if (ready <= 0) return 0;
+
+  if (r->kind == SherpaRecognizer::kOnlineZipformerTransducer) {
+    if (!s->input_finished)
+      return (s->chunk_cursor + r->transducer_T) <= ready;
+    return s->chunk_cursor < ready + 100 - r->transducer_T;
+  }
+
+  if (s->input_finished && ready != s->last_decode_frames) return 1;
+  return (ready - s->last_decode_frames) >= MinDecodeFrames(r);
 }
 
 /* LFR + CMVN -> x [1, outT, 80*lfr_window]; returns outT (<=0: too short) */
@@ -608,15 +830,188 @@ static void DecodeNemo(SherpaRecognizer *r, std::vector<float> *feats,
   r->result = text;
 }
 
-const char *SherpaDecode(SherpaRecognizer *r, SherpaStream *s) {
+static void DecodeOnlineCtc(SherpaRecognizer *r,
+                            const std::vector<float> &feats, int32_t T) {
+  std::vector<int64_t> xshape;
+  xshape.push_back(1);
+  xshape.push_back(T);
+  xshape.push_back(80);
+  sonnx::Tensor x = sonnx::Tensor::Float(xshape);
+  memcpy(x.pf(), vdata(feats), static_cast<size_t>(T) * 80 * sizeof(float));
+
+  std::vector<int64_t> one;
+  one.push_back(1);
+  sonnx::Tensor xlen = sonnx::Tensor::Int(one, sonnx::kInt32);
+  xlen.i[0] = T;
+
+  std::vector<const sonnx::Tensor *> inputs;
+  for (int i = 0; i < r->model.NumInputs(); ++i) {
+    const char *name = r->model.InputName(i);
+    if (strcmp(name, "x_length") == 0 || strcmp(name, "speech_lengths") == 0 ||
+        strcmp(name, "feats_length") == 0 || strcmp(name, "length") == 0)
+      inputs.push_back(&xlen);
+    else
+      inputs.push_back(&x);
+  }
+
+  std::vector<sonnx::Tensor> outputs;
+  if (!r->model.Run(inputs, &outputs) || outputs.empty()) {
+    fprintf(stderr, "sherpa: online ctc model run failed\n");
+    return;
+  }
+
+  const sonnx::Tensor &logits = outputs[0];
+  if (logits.dtype != sonnx::kFloat || logits.shape.size() < 2) {
+    fprintf(stderr, "sherpa: unexpected online ctc output\n");
+    return;
+  }
+
+  size_t rk = logits.shape.size();
+  int64_t t_out = logits.shape[rk - 2];
+  int64_t vocab = logits.shape[rk - 1];
+
+  std::string text;
+  int64_t prev = -1;
+  for (int64_t t = 0; t < t_out; ++t) {
+    const float *row = logits.pf() + t * vocab;
+    int64_t best = 0;
+    float bv = row[0];
+    for (int64_t c = 1; c < vocab; ++c) {
+      if (row[c] > bv) {
+        bv = row[c];
+        best = c;
+      }
+    }
+    if (best != r->blank_id && best != prev &&
+        best < static_cast<int64_t>(r->tokens.size())) {
+      text += r->tokens[best];
+    }
+    prev = best;
+  }
+
+  ReplaceWordMarkers(&text);
+  r->result = text;
+}
+
+static bool RunTransducerChunk(SherpaRecognizer *r, SherpaStream *s,
+                               const float *chunk) {
+  std::vector<int64_t> xshape;
+  xshape.push_back(1);
+  xshape.push_back(r->transducer_T);
+  xshape.push_back(80);
+  sonnx::Tensor x = sonnx::Tensor::Float(xshape);
+  memcpy(x.pf(), chunk,
+         static_cast<size_t>(r->transducer_T) * 80 * sizeof(float));
+
+  std::vector<const sonnx::Tensor *> inputs;
+  inputs.push_back(&x);
+  for (size_t i = 0; i < s->encoder_states.size(); ++i)
+    inputs.push_back(&s->encoder_states[i]);
+
+  std::vector<sonnx::Tensor> outputs;
+  if (!r->model.Run(inputs, &outputs) || outputs.size() < 1 + s->encoder_states.size()) {
+    fprintf(stderr, "sherpa: transducer encoder run failed\n");
+    return false;
+  }
+
+  const sonnx::Tensor &encoder_out = outputs[0];
+  if (encoder_out.dtype != sonnx::kFloat || encoder_out.shape.size() < 2) {
+    fprintf(stderr, "sherpa: unexpected transducer encoder output\n");
+    return false;
+  }
+
+  int64_t num_frames = encoder_out.shape[encoder_out.shape.size() - 2];
+  int64_t dim = encoder_out.shape[encoder_out.shape.size() - 1];
+  for (int64_t k = 0; k < num_frames; ++k) {
+    std::vector<int64_t> eshape;
+    eshape.push_back(1);
+    eshape.push_back(1);
+    eshape.push_back(dim);
+    sonnx::Tensor cur = sonnx::Tensor::Float(eshape);
+    memcpy(cur.pf(), encoder_out.pf() + k * dim,
+           static_cast<size_t>(dim) * sizeof(float));
+
+    std::vector<const sonnx::Tensor *> jin;
+    jin.push_back(&cur);
+    jin.push_back(&s->decoder_out);
+    std::vector<sonnx::Tensor> jout;
+    if (!r->joiner.Run(jin, &jout) || jout.empty()) {
+      fprintf(stderr, "sherpa: transducer joiner run failed\n");
+      return false;
+    }
+
+    const sonnx::Tensor &logit = jout[0];
+    if (logit.dtype != sonnx::kFloat || logit.shape.empty()) {
+      fprintf(stderr, "sherpa: unexpected transducer joiner output\n");
+      return false;
+    }
+
+    int64_t vocab = logit.shape[logit.shape.size() - 1];
+    const float *row = logit.pf() + (logit.Numel() - vocab);
+    int64_t best = 0;
+    float bv = row[0];
+    for (int64_t i = 1; i < vocab; ++i) {
+      if (row[i] > bv) {
+        bv = row[i];
+        best = i;
+      }
+    }
+
+    if (best != r->blank_id) {
+      s->hyp.push_back(best);
+      if (!RunTransducerDecoder(r, s->hyp, &s->decoder_out))
+        return false;
+    }
+  }
+
+  for (size_t i = 0; i < s->encoder_states.size(); ++i)
+    s->encoder_states[i] = std::move(outputs[i + 1]);
+  return true;
+}
+
+static void DecodeOnlineTransducer(SherpaRecognizer *r, SherpaStream *s,
+                                   const std::vector<float> &feats,
+                                   int32_t T) {
+  const int32_t dim = 80;
+  const int32_t pad = 100;
+  while (1) {
+    if (!s->input_finished) {
+      if (s->chunk_cursor + r->transducer_T > T) break;
+    } else {
+      if (s->chunk_cursor >= T + pad - r->transducer_T) break;
+    }
+
+    std::vector<float> chunk(static_cast<size_t>(r->transducer_T) * dim, 0.0f);
+    for (int32_t t = 0; t < r->transducer_T; ++t) {
+      int32_t src = s->chunk_cursor + t;
+      if (src >= T) break;
+      memcpy(&chunk[static_cast<size_t>(t) * dim],
+             &feats[static_cast<size_t>(src) * dim],
+             static_cast<size_t>(dim) * sizeof(float));
+    }
+
+    if (!RunTransducerChunk(r, s, vdata(chunk))) break;
+    s->chunk_cursor += r->transducer_decode_chunk_len;
+  }
+
+  BuildTransducerText(r, s);
+}
+
+static const char *DecodeCurrentStream(SherpaRecognizer *r, SherpaStream *s,
+                                       bool finalize_input,
+                                       bool reset_after) {
   if (!r || !s) return "";
   r->result.clear();
 
-  s->fbank->InputFinished();
+  if (finalize_input && !s->input_finished) {
+    s->fbank->InputFinished();
+    s->input_finished = true;
+  }
   int32_t T = s->fbank->NumFramesReady();
   const int32_t dim = 80;
   if (T <= 0) {
-    SherpaReset(r, s);
+    s->last_decode_frames = T;
+    if (reset_after) SherpaReset(r, s);
     return r->result.c_str();
   }
 
@@ -626,13 +1021,32 @@ const char *SherpaDecode(SherpaRecognizer *r, SherpaStream *s) {
     memcpy(&feats[static_cast<size_t>(t) * dim], s->fbank->GetFrame(t),
            static_cast<size_t>(dim) * sizeof(float));
   }
-  SherpaReset(r, s);
+  s->last_decode_frames = T;
 
-  if (r->kind == SherpaRecognizer::kNemoCtc)
+  if (r->kind == SherpaRecognizer::kOnlineZipformerTransducer)
+    DecodeOnlineTransducer(r, s, feats, T);
+  else if (r->kind == SherpaRecognizer::kNemoCtc)
     DecodeNemo(r, &feats, T);
+  else if (r->kind == SherpaRecognizer::kOnlineZipformer2Ctc ||
+           r->kind == SherpaRecognizer::kOnlineWenetCtc)
+    DecodeOnlineCtc(r, feats, T);
   else if (r->kind == SherpaRecognizer::kParaformer)
     DecodeParaformer(r, feats, T);
   else
     DecodeSenseVoice(r, feats, T);
+
+  if (reset_after) SherpaReset(r, s);
   return r->result.c_str();
+}
+
+const char *SherpaDecodeStream(SherpaRecognizer *r, SherpaStream *s) {
+  return DecodeCurrentStream(r, s, false, false);
+}
+
+const char *SherpaGetResult(SherpaRecognizer *r) {
+  return r ? r->result.c_str() : "";
+}
+
+const char *SherpaDecode(SherpaRecognizer *r, SherpaStream *s) {
+  return DecodeCurrentStream(r, s, true, true);
 }

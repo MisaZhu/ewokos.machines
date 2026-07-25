@@ -33,10 +33,12 @@ using namespace Ewok;
 #define MIC_DRAW_GAIN 8
 #define MIC_DBG_H 34
 
-#define ASR_MODEL_PATH "/data/model/encn/model.int8.onnx"
-#define ASR_TOKENS_PATH "/data/model/encn/tokens.txt"
-//#define ASR_MODEL_PATH "/data/model/en/model.int8.onnx"
-//#define ASR_TOKENS_PATH "/data/model/en/tokens.txt"
+#define ASR_ONLINE_TRANSDUCER_ENCODER_PATH "/data/model/encn-online/encoder.int8.onnx"
+#define ASR_ONLINE_TOKENS_PATH "/data/model/encn-online/tokens.txt"
+#define ASR_OFFLINE_MODEL_PATH "/data/model/encn/model.int8.onnx"
+#define ASR_OFFLINE_TOKENS_PATH "/data/model/encn/tokens.txt"
+//#define ASR_OFFLINE_MODEL_PATH "/data/model/en/model.int8.onnx"
+//#define ASR_OFFLINE_TOKENS_PATH "/data/model/en/tokens.txt"
 
 #define ASR_INPUT_RATE 48000
 /* energy VAD over DC-removed mono, tuned against MIC_NOISE_FLOOR */
@@ -44,6 +46,7 @@ using namespace Ewok;
 #define ASR_VAD_KEEP 500
 #define ASR_SILENCE_TICKS 15   /* ~0.75s of trailing silence ends a segment */
 #define ASR_MIN_SPEECH_TICKS 5 /* segments shorter than this are dropped */
+#define ASR_PARTIAL_TICKS 4    /* ~0.2s between partial refreshes */
 #define ASR_MAX_SAMPLES (ASR_INPUT_RATE * 12)
 #define ASR_PREROLL 9600       /* 0.2s kept before speech onset */
 
@@ -51,8 +54,7 @@ enum {
 	ASR_LOADING = 0,
 	ASR_FAILED,
 	ASR_LISTENING,
-	ASR_RECORDING,
-	ASR_DECODING
+        ASR_RECORDING
 };
 
 class MicWidget: public Widget {
@@ -76,11 +78,14 @@ class MicWidget: public Widget {
 
 	SherpaRecognizer* _asr;
 	SherpaStream* _asrStream;
+        const char* _asrModelPath;
+        const char* _asrTokensPath;
 	volatile int _asrState;
 	char _asrText[256];
 	int32_t _asrDc;
 	int _silenceTicks;
 	int _speechTicks;
+        int _partialTicks;
 	int _fedSamples;
 	int16_t _preroll[ASR_PREROLL];
 	int _prePos;
@@ -97,6 +102,20 @@ class MicWidget: public Widget {
 	static int abs_i32(int v) {
 		return v < 0 ? -v : v;
 	}
+
+        static const char* chooseModelPath(void) {
+                if (access(ASR_ONLINE_TRANSDUCER_ENCODER_PATH, R_OK) == 0 &&
+                                access(ASR_ONLINE_TOKENS_PATH, R_OK) == 0)
+                        return ASR_ONLINE_TRANSDUCER_ENCODER_PATH;
+                return ASR_OFFLINE_MODEL_PATH;
+        }
+
+        static const char* chooseTokensPath(void) {
+                if (access(ASR_ONLINE_TRANSDUCER_ENCODER_PATH, R_OK) == 0 &&
+                                access(ASR_ONLINE_TOKENS_PATH, R_OK) == 0)
+                        return ASR_ONLINE_TOKENS_PATH;
+                return ASR_OFFLINE_TOKENS_PATH;
+        }
 
 	static int applyNoiseGate(int sample) {
 		int amp = abs_i32(sample);
@@ -231,10 +250,10 @@ class MicWidget: public Widget {
 
 	static void* asrLoadThread(void* p) {
 		MicWidget* w = (MicWidget*)p;
-		w->_asr = SherpaCreateRecognizer(ASR_MODEL_PATH, ASR_TOKENS_PATH);
+                w->_asr = SherpaCreateRecognizer(w->_asrModelPath, w->_asrTokensPath);
 		if (w->_asr == NULL) {
 			snprintf(w->_asrText, sizeof(w->_asrText),
-					"model not found:\n" ASR_MODEL_PATH);
+                                        "model not found:\n%s", w->_asrModelPath);
 			w->_asrState = ASR_FAILED;
 			return NULL;
 		}
@@ -247,20 +266,6 @@ class MicWidget: public Widget {
 			return NULL;
 		}
 		strcpy(w->_asrText, "say something...");
-		w->_asrState = ASR_LISTENING;
-		return NULL;
-	}
-
-	static void* asrDecodeThread(void* p) {
-		MicWidget* w = (MicWidget*)p;
-		const char* text = SherpaDecode(w->_asr, w->_asrStream);
-		if (text != NULL && text[0] != '\0') {
-			strncpy(w->_asrText, text, sizeof(w->_asrText) - 1);
-			w->_asrText[sizeof(w->_asrText) - 1] = '\0';
-		}
-		else {
-			strcpy(w->_asrText, "(no speech)");
-		}
 		w->_asrState = ASR_LISTENING;
 		return NULL;
 	}
@@ -290,6 +295,17 @@ class MicWidget: public Widget {
 		_preFull = false;
 	}
 
+        void setAsrText(const char* text, const char* fallback = NULL) {
+                if (text != NULL && text[0] != '\0') {
+                        strncpy(_asrText, text, sizeof(_asrText) - 1);
+                        _asrText[sizeof(_asrText) - 1] = '\0';
+                }
+                else if (fallback != NULL) {
+                        strncpy(_asrText, fallback, sizeof(_asrText) - 1);
+                        _asrText[sizeof(_asrText) - 1] = '\0';
+                }
+        }
+
 	void asrProcess(const int16_t* mono, int n, int level) {
 		if (_asrState == ASR_LISTENING) {
 			prerollPush(mono, n);
@@ -297,6 +313,7 @@ class MicWidget: public Widget {
 				_fedSamples = 0;
 				_speechTicks = 1;
 				_silenceTicks = 0;
+                                _partialTicks = 0;
 				prerollFeed(); /* mono already inside the ring */
 				_asrState = ASR_RECORDING;
 			}
@@ -312,22 +329,33 @@ class MicWidget: public Widget {
 				_silenceTicks++;
 			}
 
+                        if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
+                                _partialTicks++;
+                                if (_partialTicks >= ASR_PARTIAL_TICKS &&
+                                                SherpaIsStreamReady(_asr, _asrStream)) {
+                                        setAsrText(SherpaDecodeStream(_asr, _asrStream),
+                                                        "listening...");
+                                        _partialTicks = 0;
+                                }
+                        }
+
 			if (_silenceTicks >= ASR_SILENCE_TICKS || _fedSamples >= ASR_MAX_SAMPLES) {
 				if (_speechTicks >= ASR_MIN_SPEECH_TICKS) {
-					strcpy(_asrText, "recognizing...");
-					_asrState = ASR_DECODING;
-					if (thread_create(asrDecodeThread, this) < 0)
-						asrDecodeThread(this); /* fall back to blocking */
+                                        SherpaInputFinished(_asr, _asrStream);
+                                        setAsrText(SherpaDecodeStream(_asr, _asrStream),
+                                                        "(no speech)");
+                                        SherpaReset(_asr, _asrStream);
+                                        _asrState = ASR_LISTENING;
 				}
 				else {
 					SherpaReset(_asr, _asrStream);
 					_asrState = ASR_LISTENING;
 				}
+                                _silenceTicks = 0;
+                                _speechTicks = 0;
+                                _partialTicks = 0;
+                                _fedSamples = 0;
 			}
-		}
-		/* ASR_DECODING: stream is owned by the worker; keep pre-roll warm */
-		else if (_asrState == ASR_DECODING) {
-			prerollPush(mono, n);
 		}
 	}
 
@@ -335,7 +363,6 @@ class MicWidget: public Widget {
 		switch (_asrState) {
 		case ASR_FAILED: return "[asr disabled]";
 		case ASR_RECORDING: return "[recording]";
-		case ASR_DECODING: return "[recognizing...]";
 		default: return "[listening]";
 		}
 	}
@@ -505,11 +532,14 @@ public:
 
 		_asr = NULL;
 		_asrStream = NULL;
+                _asrModelPath = chooseModelPath();
+                _asrTokensPath = chooseTokensPath();
 		_asrState = ASR_LOADING;
-		strcpy(_asrText, "loading " ASR_MODEL_PATH);
+                snprintf(_asrText, sizeof(_asrText), "loading %s", _asrModelPath);
 		_asrDc = 0;
 		_silenceTicks = 0;
 		_speechTicks = 0;
+                _partialTicks = 0;
 		_fedSamples = 0;
 		_prePos = 0;
 		_preFull = false;

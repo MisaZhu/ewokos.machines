@@ -3064,6 +3064,7 @@ static void ParseTensorMsg(Reader *r, Tensor *t, std::string *name) {
 // AttributeProto: name=1, f=2, i=3, s=4, t=5, g=6, floats=7, ints=8.
 static void ParseGraphMsg(Reader *r, Graph *graph,
                           std::vector<std::vector<int64_t>> *shapes,
+                          std::vector<int> *types,
                           bool top_level);  // fwd (subgraph attrs recurse)
 static void ParseAttrMsg(Reader *r, Model::Attr *a, std::string *name) {
   int field, wire;
@@ -3096,7 +3097,7 @@ static void ParseAttrMsg(Reader *r, Model::Attr *a, std::string *name) {
       case 6: {
         Reader s = r->sub();
         a->g = new Graph();
-        ParseGraphMsg(&s, a->g, nullptr, false);
+        ParseGraphMsg(&s, a->g, nullptr, nullptr, false);
         a->type = 7;
         break;
       }
@@ -3148,7 +3149,7 @@ static void ParseNodeMsg(Reader *r, Model::Node *node) {
 //   TypeProto.Tensor: elem_type=1, shape=2 -> TensorShapeProto: dim=1 ->
 //     Dimension: dim_value=1, dim_param=2.
 static void ParseValueInfoMsg(Reader *r, std::string *name,
-                              std::vector<int64_t> *shape) {
+                              std::vector<int64_t> *shape, int *dtype) {
   int field, wire;
   while (r->next(&field, &wire)) {
     if (field == 1) {
@@ -3164,28 +3165,30 @@ static void ParseValueInfoMsg(Reader *r, std::string *name,
         Reader tt = tp.sub();
         int f3, w3;
         while (tt.next(&f3, &w3)) {
-          if (f3 != 2) {
-            tt.skip(w3);
-            continue;
-          }
-          Reader sh = tt.sub();
-          int f4, w4;
-          while (sh.next(&f4, &w4)) {
-            if (f4 != 1) {
-              sh.skip(w4);
-              continue;
-            }
-            Reader dim = sh.sub();
-            int f5, w5;
-            int64_t dv = -1;
-            while (dim.next(&f5, &w5)) {
-              if (f5 == 1) {
-                dv = static_cast<int64_t>(dim.varint());
-              } else {
-                dim.skip(w5);
+          if (f3 == 1) {
+            *dtype = static_cast<int>(tt.varint());
+          } else if (f3 == 2) {
+            Reader sh = tt.sub();
+            int f4, w4;
+            while (sh.next(&f4, &w4)) {
+              if (f4 != 1) {
+                sh.skip(w4);
+                continue;
               }
+              Reader dim = sh.sub();
+              int f5, w5;
+              int64_t dv = -1;
+              while (dim.next(&f5, &w5)) {
+                if (f5 == 1) {
+                  dv = static_cast<int64_t>(dim.varint());
+                } else {
+                  dim.skip(w5);
+                }
+              }
+              shape->push_back(dv);
             }
-            shape->push_back(dv);
+          } else {
+            tt.skip(w3);
           }
         }
       }
@@ -3275,8 +3278,14 @@ static void TopoSortGraph(Graph *graph) {
 
 static void ParseGraphMsg(Reader *r, Graph *graph,
                           std::vector<std::vector<int64_t>> *shapes,
+                          std::vector<int> *types,
                           bool top_level) {
-  std::vector<std::pair<std::string, std::vector<int64_t>>> graph_inputs;
+  struct GraphInputInfo {
+    std::string name;
+    std::vector<int64_t> shape;
+    int dtype = kFloat;
+  };
+  std::vector<GraphInputInfo> graph_inputs;
   int field, wire;
   /* Pre-count node fields and reserve once: thousands of nodes otherwise
      grow the vector by doubling, and even with swap-based Node moves the
@@ -3333,9 +3342,14 @@ static void ParseGraphMsg(Reader *r, Graph *graph,
         Reader s = r->sub();
         std::string name;
         std::vector<int64_t> shape;
-        ParseValueInfoMsg(&s, &name, &shape);
+        int dtype = kFloat;
+        ParseValueInfoMsg(&s, &name, &shape, &dtype);
         if (!name.empty()) {
-          graph_inputs.push_back(std::make_pair(name, std::move(shape)));
+          GraphInputInfo gi;
+          gi.name.swap(name);
+          gi.shape.swap(shape);
+          gi.dtype = dtype;
+          graph_inputs.push_back(std::move(gi));
         }
         break;
       }
@@ -3343,7 +3357,8 @@ static void ParseGraphMsg(Reader *r, Graph *graph,
         Reader s = r->sub();
         std::string name;
         std::vector<int64_t> shape;
-        ParseValueInfoMsg(&s, &name, &shape);
+        int dtype = kFloat;
+        ParseValueInfoMsg(&s, &name, &shape, &dtype);
         if (!name.empty()) graph->output_names.push_back(name);
         break;
       }
@@ -3355,10 +3370,11 @@ static void ParseGraphMsg(Reader *r, Graph *graph,
 
   // external inputs = graph inputs that are not initializers
   for (size_t i = 0; i < graph_inputs.size(); ++i) {
-    if (graph->initializers.find(graph_inputs[i].first) ==
+    if (graph->initializers.find(graph_inputs[i].name) ==
         graph->initializers.end()) {
-      graph->input_names.push_back(graph_inputs[i].first);
-      if (shapes) shapes->push_back(graph_inputs[i].second);
+      graph->input_names.push_back(graph_inputs[i].name);
+      if (shapes) shapes->push_back(graph_inputs[i].shape);
+      if (types) types->push_back(graph_inputs[i].dtype);
     }
   }
 
@@ -3394,7 +3410,7 @@ bool Model::Parse(const uint8_t *data, size_t len) {
     if (field == 7 && wire == 2) {
       Reader g = r.sub();
       Graph graph;
-      ParseGraphMsg(&g, &graph, &input_shapes_, true);
+      ParseGraphMsg(&g, &graph, &input_shapes_, &input_types_, true);
       nodes_ = std::move(graph.nodes);
       /* swap, not move: ewokstl containers deep-copy on "move", and the
          initializer map holds the entire model weights */
