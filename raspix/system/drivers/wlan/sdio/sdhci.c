@@ -384,18 +384,37 @@ static int32_t sdhci_readl(struct sdhci_host *host, uint32_t reg){
 }
 
 /*
- * Inter-command gap for SDHCI_QUIRK_WAIT_SEND_CMD.
- * usleep(10) would sleep a whole EwokOS timer tick (~3.9ms at 256Hz),
- * costing ~4ms per CMD52/CMD53 and capping WLAN throughput at ~60KB/s.
- * On-device validation: a ~50us gap (10000 iters) breaks DHCP - the
- * card/host genuinely needs a sub-ms but larger inter-command gap.
- * 100000 iters (~500us class) keeps DHCP/association working while
- * still ~8x faster than the tick sleep.
+ * SDHCI_QUIRK_WAIT_SEND_CMD: the card/host needs a minimum wall-clock
+ * gap between consecutive commands - the FullMAC firmware must update
+ * its SDIO function registers/FIFO state between host transactions.
+ * Empirical floor on raspix boards: ~50us breaks the control path
+ * (DHCP dies first), 250us class is stable on Zero 2 W / CM4.
+ *
+ * Implemented as issue-side minimum spacing on the BCM283x 1MHz system
+ * timer (SYSTMR_CLO) instead of a fixed post-command busy loop:
+ *  - wall-clock: identical gap on every board (busy-loop iteration
+ *    time varies ~1.5x between Zero 2 W and CM4 CPUs);
+ *  - cheaper: only back-to-back commands pay the gap, the trailing
+ *    wait after each command burst disappears (~1 gap saved per frame).
  */
-static void sdhci_post_cmd_delay(void)
+#define SDHCI_MIN_CMD_GAP_US	60
+#define SDHCI_SYSTMR_CLO		0x3004 /* 1MHz free-running counter, low word */
+
+static uint32_t sdhci_last_cmd_us;
+static int sdhci_last_cmd_valid;
+
+static inline uint32_t sdhci_now_us(void)
 {
-	volatile int i;
-	for (i = 0; i < 30000; i++)
+	return readl(_mmio_base + SDHCI_SYSTMR_CLO);
+}
+
+/* Call right before committing SDHCI_COMMAND; spins only the shortfall. */
+static void sdhci_pre_cmd_gap(void)
+{
+	if (!sdhci_last_cmd_valid)
+		return;
+	while ((uint32_t)(sdhci_now_us() - sdhci_last_cmd_us) <
+	       SDHCI_MIN_CMD_GAP_US)
 		;
 }
 
@@ -847,6 +866,8 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	}
 
 	sdhci_writel(host, cmd->cmdarg, SDHCI_ARGUMENT);
+	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD)
+		sdhci_pre_cmd_gap();
 	sdhci_writew(host, SDHCI_MAKE_CMD(cmd->cmdidx, flags), SDHCI_COMMAND);
 	start = get_timer(0);
 	do {
@@ -880,8 +901,10 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	if (!ret && data)
 		ret = sdhci_transfer_data(host, data);
 
-	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD)
-		sdhci_post_cmd_delay();
+	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD) {
+		sdhci_last_cmd_us = sdhci_now_us();
+		sdhci_last_cmd_valid = 1;
+	}
 
 	stat = sdhci_readl(host, SDHCI_INT_STATUS);
 	sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
