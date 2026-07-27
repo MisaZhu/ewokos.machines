@@ -397,7 +397,7 @@ static int32_t sdhci_readl(struct sdhci_host *host, uint32_t reg){
  *  - cheaper: only back-to-back commands pay the gap, the trailing
  *    wait after each command burst disappears (~1 gap saved per frame).
  */
-#define SDHCI_MIN_CMD_GAP_US	120
+#define SDHCI_MIN_CMD_GAP_US    250
 #define SDHCI_SYSTMR_CLO		0x3004 /* 1MHz free-running counter, low word */
 
 static uint32_t sdhci_last_cmd_us;
