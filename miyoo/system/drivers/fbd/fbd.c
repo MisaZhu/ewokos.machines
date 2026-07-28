@@ -24,6 +24,7 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 
 int main(int argc, char** argv) {
 	fbd_t fbd;
+  	memset(&fbd, 0, sizeof(fbd));
 	const char* mnt_point = argc > 1 ? argv[1]: "/dev/fb0";
 
 	fbd.splash = NULL;

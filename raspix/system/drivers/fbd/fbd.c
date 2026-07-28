@@ -9,7 +9,7 @@
 #include <bsp/bsp_fb.h>
 
 static graph_t* _g = NULL;
-const char* _conf_file = "";
+static const char* _conf_file = "/etc/framebuffer.json";
 
 static void blt16(uint32_t* src, uint16_t* dst, uint32_t w, uint32_t h) {
 	uint32_t sz = w * h;
@@ -104,6 +104,7 @@ static int doargs(int argc, char* argv[]) {
 int main(int argc, char** argv) {
 	fbd_t fbd;
 	_g = NULL;
+  memset(&fbd, 0, sizeof(fbd));
 
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
@@ -113,7 +114,7 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	int res = fbd_run(&fbd, mnt_point, 640, 480, _conf_file);
+  int res = fbd_run(&fbd, mnt_point, 1024, 768, _conf_file);
 	if(_g != NULL)
 		graph_free(_g);
 	return res;
