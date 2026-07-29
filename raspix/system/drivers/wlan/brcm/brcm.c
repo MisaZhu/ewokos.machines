@@ -4202,6 +4202,21 @@ int brcm_connected(void)
     return bus != NULL && bus->state == CONNECTED;
 }
 
+int brcm_tx_writable(void)
+{
+    if (bus == NULL || bus->tx_queue == NULL)
+        return 0;
+    if (bus->state != CONNECTED)
+        return 0;
+
+    /*
+     * vdevice write() only enqueues into tx_queue. Report WR readiness only
+     * while that software queue still has room, otherwise pollers (telnetd,
+     * netd, sshd) spin on VFS_ERR_RETRY even though the WLAN path is stalled.
+     */
+    return queue_buffer_check(bus->tx_queue) < bus->tx_queue->qsize;
+}
+
 int brcm_check_data(void){
     if (bus == NULL || bus->rx_queue == NULL)
         return 0;

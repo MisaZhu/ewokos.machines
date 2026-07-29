@@ -104,7 +104,8 @@ static uint32_t uart_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 static int loop(vdevice_t* dev, void* p) {
 	(void)dev;
 	(void)p;
-	int rx = 0;
+        int rx = 0;
+        char tmp[256];
 
 	if(!uart_can_recv()) {
 		proc_usleep(_idle_sleep_us);
@@ -113,18 +114,25 @@ static int loop(vdevice_t* dev, void* p) {
 		return 0;
 	}
 
-	ipc_disable();
 	while(uart_can_recv()) {
 		char c = uart_recv_byte();
 		if(c == '\r' && _no_return)
 			continue;
 
-		charbuf_push(_RxBuf, c, true);
-		rx++;
+                if(rx < (int)sizeof(tmp))
+                        tmp[rx++] = c;
+                else
+                        break;
 	}
-	ipc_enable();
 
 	if(rx > 0) {
+                /* Keep IPC enabled while draining the UART FIFO so vfsd can
+                 * deliver synchronous DUP/READ requests during fork/exec. */
+                ipc_disable();
+                for(int i = 0; i < rx; i++)
+                        charbuf_push(_RxBuf, tmp[i], true);
+                ipc_enable();
+
 		_idle_sleep_us = 1000;
 		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	}

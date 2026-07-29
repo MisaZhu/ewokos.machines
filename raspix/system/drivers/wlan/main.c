@@ -280,7 +280,12 @@ static uint32_t net_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsin
 	if (brcm_check_data() > 0) {
 		events |= VFS_EVT_RD;
 	}
-	if (brcm_connected()) {
+        /*
+         * "Associated" does not imply writable. write() succeeds only while the
+         * driver's software TX queue still has space; otherwise returning WR here
+         * makes poll() wake immediately forever and higher layers spin on retry.
+         */
+        if (brcm_tx_writable()) {
 		events |= VFS_EVT_WR;
 	}
 	return events;
