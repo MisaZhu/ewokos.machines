@@ -686,10 +686,17 @@ int mmc_init(int pi4){
 	ret = mmc_startup(&_mmc);
 	if(ret)
 		return ret;
-	ret = mmc_switch(&_mmc, UHS_SDR25);
-	if(ret) {
-		klog("mmc_init: keep legacy timing, switch to SDR25 failed: %d\n", ret);
-		ret = 0;
+	/* Only the pi4/cm4/pi5 SDHCI (eMMC2) controller is qualified for
+	 * 50MHz high-speed timing here. The legacy SDHOST controller is
+	 * driven by userspace PIO: at 50MHz its write FSM has been observed
+	 * to wedge after a few blocks on real boards (FIFO never drains,
+	 * FSM idles), so keep it at the always-safe 25MHz default speed. */
+	if (pi4) {
+		ret = mmc_switch(&_mmc, UHS_SDR25);
+		if(ret) {
+			klog("mmc_init: keep legacy timing, switch to SDR25 failed: %d\n", ret);
+			ret = 0;
+		}
 	}
 	_mmc.has_init = true;
 	return ret;
@@ -701,7 +708,9 @@ int mmc_read_blocks(void *dst, lbaint_t start,
 	struct mmc_cmd cmd;
 	struct mmc_data data;
 	int timeout_ms = 1000;
+	int retries = 3;
 
+retry_read:
 	if (blkcnt > 1)
 		cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
 	else
@@ -717,8 +726,25 @@ int mmc_read_blocks(void *dst, lbaint_t start,
 	data.blocksize = _mmc.read_bl_len;
 	data.flags = MMC_DATA_READ;
 
-	if (mmc_send_cmd(&_mmc, &cmd, &data))
+	if (mmc_send_cmd(&_mmc, &cmd, &data)) {
+		/* After a burst of writes the card may stall reads for seconds
+		 * while it does internal housekeeping (observed as REW_TIME_OUT
+		 * on the first CMD18 after mkdir). Per the SD spec recovery
+		 * sequence: CMD12, wait for ready, then retry the read. */
+		struct mmc_cmd stop;
+		stop.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+		stop.cmdarg = 0;
+		stop.resp_type = MMC_RSP_R1b;
+		mmc_send_cmd(&_mmc, &stop, NULL);
+		mmc_poll_for_busy(&_mmc, 5000);
+		if (--retries > 0) {
+			klog("mmc_read: sec %u cnt %u failed, retrying (%d left)\n",
+			     start, blkcnt, retries);
+			goto retry_read;
+		}
+		klog("mmc_read: FAILED for good (sec %u cnt %u)\n", start, blkcnt);
 		return 0;
+	}
 
 	if (!mmc_host_is_spi(&_mmc) && blkcnt > 1 && !_mmc.ops->auto_stop) {
 		if (mmc_send_stop_transmission(&_mmc, false)) {
@@ -790,10 +816,14 @@ uint32_t mmc_write_blocks(uint32_t start,
 	struct mmc_cmd cmd;
 	struct mmc_data data;
 	int timeout_ms = 1000;
+	int downgraded = 0;
+	int verify_retried = 0;
 
 	if (blkcnt == 0)
 		return 0;
-	else if (blkcnt == 1)
+
+retry_write:
+	if (blkcnt == 1)
 		cmd.cmdidx = MMC_CMD_WRITE_SINGLE_BLOCK;
 	else
 		cmd.cmdidx = MMC_CMD_WRITE_MULTIPLE_BLOCK;
@@ -811,7 +841,34 @@ uint32_t mmc_write_blocks(uint32_t start,
 	data.flags = MMC_DATA_WRITE;
 
 	if (mmc_send_cmd(&_mmc, &cmd, &data)) {
-		klog("mmc write failed\n");
+		klog("mmc_write: data phase FAILED (sec %u, resp0 0x%x)\n",
+				start, cmd.response[0]);
+		/* Per the SD spec error recovery sequence: a failed write data
+		 * phase can leave the card in the rcv/data state, where it will
+		 * reject any further data command. Send CMD12 to force it back
+		 * to tran and wait for ready before any retry. */
+		struct mmc_cmd stop;
+		stop.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+		stop.cmdarg = 0;
+		stop.resp_type = MMC_RSP_R1b;
+		mmc_send_cmd(&_mmc, &stop, NULL);
+		mmc_poll_for_busy(&_mmc, timeout_ms);
+
+		/* Writes are the direction most sensitive to marginal
+		 * high-speed output timing on real boards. If the first
+		 * write at 50MHz HS fails, permanently drop back to 25MHz
+		 * default-speed (always-safe) timing and retry once. */
+		if (!downgraded && _mmc.selected_mode == UHS_SDR25) {
+			downgraded = 1;
+			klog("mmc_write: HS failed, falling back to 25MHz\n");
+			_mmc.clock = 25000000;
+			_mmc.selected_mode = MMC_LEGACY;
+			if (_mmc.ops->set_ios(&_mmc) == 0) {
+				mmc_poll_for_busy(&_mmc, timeout_ms);
+				goto retry_write;
+			}
+		}
+		klog("mmc_write: FAILED for good (sec %u)\n", start);
 		return 0;
 	}
 
@@ -822,18 +879,37 @@ uint32_t mmc_write_blocks(uint32_t start,
 		cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
 		cmd.cmdarg = 0;
 		cmd.resp_type = MMC_RSP_R1b;
-		klog("mmc write blocks: send stop cmd\n");
 		if (mmc_send_cmd(&_mmc, &cmd, NULL)) {
 			klog("mmc fail to send stop cmd\n");
 			return 0;
 		}
-		klog("mmc write blocks: send stop cmd\n");
 	}
 
 	/* Waiting for the ready status */
 	int res = mmc_poll_for_busy(&_mmc, timeout_ms);
 
-	if(res)
+	if(res) {
+		klog("mmc_write: poll busy after write FAILED (sec %u, ret %d)\n", start, res);
 		return 0;
+	}
+
+	/* Read-back verification, bypassing every RAM cache layer: a write
+	 * data phase can "complete" while the card silently discards the
+	 * block (lost data only shows up after reboot). Compare what the
+	 * card actually stored and retry the whole write once on mismatch. */
+	static uint8_t verify_buf[512];
+	for (uint32_t vi = 0; vi < blkcnt; vi++) {
+		if (mmc_read_blocks(verify_buf, start + vi, 1) != 1 ||
+		    memcmp(verify_buf, (const uint8_t*)src + vi * 512, 512) != 0) {
+			klog("mmc_write: VERIFY MISMATCH sec %u\n", start + vi);
+			if (!verify_retried) {
+				verify_retried = 1;
+				mmc_poll_for_busy(&_mmc, timeout_ms);
+				goto retry_write;
+			}
+			klog("mmc_write: VERIFY FAILED for good (sec %u)\n", start + vi);
+			return 0;
+		}
+	}
 	return blkcnt;
 }

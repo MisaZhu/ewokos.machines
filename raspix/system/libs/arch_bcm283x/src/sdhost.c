@@ -227,11 +227,17 @@ static void bcm2835_reset_internal(struct bcm2835_host *host)
 	temp |= (FIFO_READ_THRESHOLD << SDEDM_READ_THRESHOLD_SHIFT) |
 		(FIFO_WRITE_THRESHOLD << SDEDM_WRITE_THRESHOLD_SHIFT);
 	writel(temp, host->ioaddr + SDEDM);
-	/* Wait for FIFO threshold to populate */
-	proc_usleep(20000);
+	/* Wait for FIFO threshold to populate (wall-clock 20ms: proc_usleep
+	 * can return early under IPC preemption, and a short power-on wait
+	 * leaves the controller half-initialized). */
+	uint64_t t = kernel_tic_ms(0);
+	while (kernel_tic_ms(0) - t < 20)
+		proc_usleep(1000);
 	writel(SDVDD_POWER_ON, host->ioaddr + SDVDD);
 	/* Wait for all components to go through power on cycle */
-	proc_usleep(20000);
+	t = kernel_tic_ms(0);
+	while (kernel_tic_ms(0) - t < 20)
+		proc_usleep(1000);
 	host->clock = 0;
 	writel(host->hcfg, host->ioaddr + SDHCFG);
 	writel(SDCDIV_MAX_CDIV, host->ioaddr + SDCDIV);
@@ -281,8 +287,15 @@ static int bcm2835_check_data_error(struct bcm2835_host *host, uint32_t intmask)
 
 static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 {
-	uint64_t tstart_ms = 0;
-	//uint32_t retry_count = 0;
+	uint64_t tstart_ms = kernel_tic_ms(0);
+	/* Reads: after the final block of a CMD18 the card keeps streaming
+	 * until CMD12, so the FSM parks in READWAIT or READDATA (FIFO full);
+	 * forcing data mode there is safe -- our data is already copied out.
+	 * Writes: ONLY the true inter-block idle state WRITESTART1 may be
+	 * forced (as in the Linux driver): forcing from WRITEDATA/WRITECRC
+	 * aborts the block mid-transfer and the card never stores it. */
+	bool is_read = (host->data->flags & MMC_DATA_READ) != 0;
+
 	while (1) {
 		uint32_t edm, fsm;
 
@@ -293,42 +306,22 @@ static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 		    (fsm == SDEDM_FSM_DATAMODE))
 			break;
 
-		if ((fsm == SDEDM_FSM_READWAIT) ||
-		    (fsm == SDEDM_FSM_WRITESTART1) ||
-		    (fsm == SDEDM_FSM_READDATA) ||
-		    (fsm == SDEDM_FSM_WRITEDATA) ||
-		    (fsm == SDEDM_FSM_WRITEWAIT1) ||
-		    (fsm == SDEDM_FSM_WRITEWAIT2) ||
-		    (fsm == SDEDM_FSM_WRITECRC) ||
-		    (fsm == SDEDM_FSM_WRITESTART2)) {
+		if ((is_read &&
+		     (fsm == SDEDM_FSM_READWAIT ||
+		      fsm == SDEDM_FSM_READDATA)) ||
+		    (!is_read && fsm == SDEDM_FSM_WRITESTART1)) {
 			writel(edm | SDEDM_FORCE_DATA_MODE,
 			       host->ioaddr + SDEDM);
 			break;
 		}
 
-		/* Error out after ~1s */
-		if(tstart_ms > 0) {
-			uint64_t tlapse_ms = kernel_tic_ms(0) - tstart_ms;
-			if ( tlapse_ms > 1000 ) {
-
-				klog("wait_transfer_complete - still waiting after %lld ms\n",
-					tlapse_ms);
-				bcm2835_dumpregs(host);
-				return -ETIMEDOUT;
-			}
-		}
-		tstart_ms = kernel_tic_ms(0);
-
-		/*
-		sleep(0);
-		retry_count++;
-		if(retry_count > 10000) {
-			klog("wait_transfer_complete - still waiting after %d times\n",
-				retry_count);
+		/* Error out after ~3s with no completion */
+		if (kernel_tic_ms(0) - tstart_ms > 3000) {
+			klog("wait_transfer_complete - still waiting after %d ms (EDM %08x)\n",
+			     (int)(kernel_tic_ms(0) - tstart_ms), edm);
 			bcm2835_dumpregs(host);
 			return -ETIMEDOUT;
 		}
-		*/
 	}
 
 	return 0;
@@ -367,6 +360,7 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 
 	buf = is_read ? (uint32_t *)data->dest : (uint32_t *)data->src;
 	copy_words = blksize / sizeof(uint32_t);
+	uint64_t fifo_tstart_ms = 0;
 	/*
 	 * Copy all contents from/to the FIFO as far as it reaches,
 	 * then wait for it to fill/empty again and rewind.
@@ -400,10 +394,21 @@ static int bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 					return -EILSEQ;
 				}
 			}
+			/* Bounded wait: if the FIFO makes no progress for 3s
+			 * the controller has wedged; error out instead of
+			 * spinning here forever. */
+			if (fifo_tstart_ms == 0)
+				fifo_tstart_ms = kernel_tic_ms(0);
+			else if (kernel_tic_ms(0) - fifo_tstart_ms > 3000) {
+				klog("%s FIFO wait timeout (FSM %x, %d words left)\n",
+				     is_read ? "read" : "write", fsm_state, copy_words);
+				return -ETIMEDOUT;
+			}
 			continue;
 		} else if (words > copy_words) {
 			words = copy_words;
 		}
+		fifo_tstart_ms = 0;
 
 		copy_words -= words;
 		/* Copy current chunk to/from the FIFO */
@@ -541,6 +546,16 @@ static int bcm2835_transmit(struct bcm2835_host *host)
 			ret = bcm2835_wait_transfer_complete(host);
 			if (ret)
 				return ret;
+			/* The card's CRC status / busy handling only settles
+			 * after the FSM idles: re-check HSTS here or a write
+			 * block rejected by the card is silently reported OK. */
+			uint32_t hsts = readl(host->ioaddr + SDHSTS);
+			if (hsts & SDHSTS_TRANSFER_ERROR_MASK) {
+				klog("sdhost: %s finished with HSTS 0x%x\n",
+				     (host->data->flags & MMC_DATA_WRITE) ? "write" : "read", hsts);
+				writel(SDHSTS_ERROR_MASK, host->ioaddr + SDHSTS);
+				return (hsts & SDHSTS_REW_TIME_OUT) ? -ETIMEDOUT : -EILSEQ;
+			}
 			/* Transfer complete */
 			host->data = NULL;
 			host->use_busy = false;
@@ -608,6 +623,9 @@ static int bcm2835_send_command(struct bcm2835_host *host, struct mmc_cmd *cmd,
 }
 
 
+static int bcm2835_transmit(struct bcm2835_host *host);
+static void bcm2835_set_clock(struct bcm2835_host *host, unsigned int clock);
+
 static int bcm2835_send_cmd(struct mmc_cmd *cmd,
 			    struct mmc_data *data)
 {
@@ -638,6 +656,18 @@ static int bcm2835_send_cmd(struct mmc_cmd *cmd,
 		return 0;
 	}
 
+	/* A previous failed transfer can leave stale words in the FIFO even
+	 * though the FSM shows idle; they would silently corrupt the next
+	 * data transfer. Detect it and recover with a full host reset. */
+	if (data && edm_fifo_fill(edm) != 0) {
+		uint32_t clock = host->clock;
+		klog("sdhost: stale FIFO (%d words), resetting host\n",
+		     edm_fifo_fill(edm));
+		bcm2835_reset_internal(host);
+		bcm2835_set_clock(host, clock);
+		host->clock = clock;
+	}
+
 	if (cmd) {
 		ret = bcm2835_send_command(host, cmd, data);
 		if (!ret && !host->use_busy)
@@ -645,10 +675,32 @@ static int bcm2835_send_cmd(struct mmc_cmd *cmd,
 	}
 
 	/* Wait for completion of busy signal or data transfer */
+	uint64_t tstart_ms = kernel_tic_ms(0);
 	while (host->use_busy || host->data) {
 		ret = bcm2835_transmit(host);
 		if (ret)
 			break;
+		if (kernel_tic_ms(0) - tstart_ms > 3000) {
+			klog("sdhost: cmd%d completion timeout (busy %d, data %p)\n",
+			     cmd ? cmd->cmdidx : -1, host->use_busy, host->data);
+			ret = -ETIMEDOUT;
+			break;
+		}
+	}
+
+	/* On any error leave the controller in a clean state for the next
+	 * command: reset it and restore the current clock, otherwise stale
+	 * FIFO words / a wedged FSM poison every following transfer. */
+	if (ret) {
+		uint32_t clock = host->clock;
+		klog("sdhost: error %d on cmd%d, resetting host\n",
+		     ret, cmd ? cmd->cmdidx : -1);
+		host->cmd = NULL;
+		host->data = NULL;
+		host->use_busy = false;
+		bcm2835_reset_internal(host);
+		bcm2835_set_clock(host, clock);
+		host->clock = clock;
 	}
 
 	return ret;
@@ -949,6 +1001,11 @@ static int bcm2835_set_ios(struct mmc *mmc)
 
 	/* Disable clever clock switching, to cope with fast core clocks */
 	host->hcfg |= SDHCFG_SLOW_CARD;
+
+	/* Latch the busy-end interrupt status: without it R1b commands
+	 * (CMD12/CMD38...) never report busy completion and get treated
+	 * as finished while the card is still programming. */
+	host->hcfg |= SDHCFG_BUSY_IRPT_EN;
 
 	writel(host->hcfg, host->ioaddr + SDHCFG);
 
