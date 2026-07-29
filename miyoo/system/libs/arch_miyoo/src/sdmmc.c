@@ -972,6 +972,15 @@ RspErrEmType Hal_SDMMC_SendCmdAndWaitProcess(IPEmType eIP, TransEmType eTransTyp
 		if(_REG_WaitEvent(eIP, EV_MIE, R_DATA_END, WT_EVENT_WRITE))
 			return _SDMMC_EndProcess(eIP, eCmdType, EV_STS_MIE_TOUT, bCloseClk, __LINE__);
 
+		/* The card holds DAT0 low while it programs the block(s) into
+		 * flash; DATA_END only means the bus transfer (plus CRC status)
+		 * finished. Returning here reports success while programming can
+		 * still fail internally, and the next data command would hit a
+		 * busy card. Wait for DAT0 high so a "write OK" really means the
+		 * card accepted and stored the data. */
+		if(_REG_WaitDat0HI(eIP, WT_DAT0HI_END))
+			return _SDMMC_EndProcess(eIP, eCmdType, EV_STS_DAT0_BUSY, bCloseClk, __LINE__);
+
 	}
 
 	return _SDMMC_EndProcess(eIP, eCmdType, (RspErrEmType)M_REG_STSERR(eIP), bCloseClk, __LINE__);
