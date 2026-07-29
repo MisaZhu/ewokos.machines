@@ -781,17 +781,17 @@ static void sdhci_transfer_pio(struct sdhci_host *host, struct mmc_data *data)
 
 static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 {
-	unsigned int stat, rdy, mask, timeout, block = 0;
+	unsigned int stat, rdy, mask, block = 0;
 	bool transfer_done = false;
+	uint64_t start = get_timer(0);
 
-	timeout = 100000;
 	rdy = SDHCI_INT_SPACE_AVAIL | SDHCI_INT_DATA_AVAIL;
 	mask = SDHCI_DATA_AVAILABLE | SDHCI_SPACE_AVAILABLE;
 	do {
 		stat = sdhci_readl(host, SDHCI_INT_STATUS);
 		if (stat & SDHCI_INT_ERROR) {
-			printf("%s: Error detected in status(0x%X)! %d\n",
-				 __func__, stat, timeout);
+			printf("%s: Error detected in status(0x%X)!\n",
+				 __func__, stat);
 			return -EIO;
 		}
 		if (!transfer_done && (stat & rdy)) {
@@ -809,8 +809,12 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 				continue;
 			}
 		}
-		if (timeout-- == 0){
-			printf("%s: Transfer data timeout\n", __func__);
+		/* Wall-clock bound: for writes DATA_END only fires once the
+		 * card releases busy after the last block, which can take far
+		 * longer than a fixed iteration budget on slow cards. */
+		if (get_timer(start) > 3000) {
+			printf("%s: Transfer data timeout (stat 0x%x)\n",
+			       __func__, stat);
 			return -ETIMEDOUT;
 		}
 	} while (!(stat & SDHCI_INT_DATA_END));
@@ -876,13 +880,10 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	int ret = 0;
 	int trans_bytes = 0, is_aligned = 1;
 	uint32_t mask, flags, mode = 0;
-	unsigned int time = 0;
 	uint64_t start = get_timer(0);
 	bool use_sdma = false;
 
 	host->start_addr = 0;
-	/* Timeout unit - ms */
-	static unsigned int cmd_timeout = SDHCI_CMD_DEFAULT_TIMEOUT;
 
 	mask = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT;
 
@@ -893,19 +894,19 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	      cmd->cmdidx == MMC_CMD_SEND_TUNING_BLOCK_HS200) && !data))
 		mask &= ~SDHCI_DATA_INHIBIT;
 
+	/* DATA inhibit stays set while the card holds DAT0 low after a
+	 * write burst (flash programming). Wait on wall-clock time: a
+	 * counter-based spin with no delay burns its whole budget in a
+	 * few ms, so the CMD13 poll right after a multi-block write
+	 * failed while the card was still programming. */
+	start = get_timer(0);
 	while (sdhci_readl(host, SDHCI_PRESENT_STATE) & mask) {
-		if (time >= cmd_timeout) {
-			printf("%s: busy ", __func__);
-			if (2 * cmd_timeout <= SDHCI_CMD_MAX_TIMEOUT) {
-				cmd_timeout += cmd_timeout;
-				printf("timeout increasing to: %u ms.\n",
-				       cmd_timeout);
-			} else {
-				printf("timeout.\n");
-				return -ECOMM;
-			}
+		if (get_timer(start) >= SDHCI_CMD_DEFAULT_TIMEOUT) {
+			printf("%s: inhibit timeout, state 0x%x\n", __func__,
+			       sdhci_readl(host, SDHCI_PRESENT_STATE));
+			return -ECOMM;
 		}
-		time++;
+		proc_usleep(1000);
 	}
 
 	sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
@@ -972,15 +973,6 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		if (stat & SDHCI_INT_ERROR)
 			break;
 
-		if (host->quirks & SDHCI_QUIRK_BROKEN_R1B &&
-		    cmd->resp_type & MMC_RSP_BUSY && !data) {
-			unsigned int state =
-				sdhci_readl(host, SDHCI_PRESENT_STATE);
-
-			if (!(state & SDHCI_DAT_ACTIVE))
-				return 0;
-		}
-
 		if (get_timer(start) >= SDHCI_READ_STATUS_TIMEOUT) {
 			printf("%s: Timeout for status update: %08x %08x\n",
 			       __func__, stat, mask);
@@ -994,6 +986,24 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		sdhci_writel(host, mask, SDHCI_INT_STATUS);
 	} else
 		ret = -1;
+
+	/* R1b without data (CMD12/CMD6/...): this controller's
+	 * transfer-complete signalling for busy-only commands is broken
+	 * (SDHCI_QUIRK_BROKEN_R1B), so poll DAT0 directly. Returning
+	 * while the card still holds DAT0 low made a "successful" stop
+	 * command race the card's internal programming. */
+	if (!ret && (cmd->resp_type & MMC_RSP_BUSY) && !data) {
+		uint64_t bstart = get_timer(0);
+		while (!(sdhci_readl(host, SDHCI_PRESENT_STATE) &
+				SDHCI_DATA_0_LVL_MASK)) {
+			if (get_timer(bstart) > 3000) {
+				printf("%s: R1b busy timeout\n", __func__);
+				ret = -ETIMEDOUT;
+				break;
+			}
+			proc_usleep(100);
+		}
+	}
 
 	if (!ret && data) {
 		if (use_sdma)
