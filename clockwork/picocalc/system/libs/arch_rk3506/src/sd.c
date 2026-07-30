@@ -28,8 +28,10 @@ static struct dwmci_host dwc_host = {
 static uint32_t _fast_chunk_sectors = RK3506_SD_MULTI_CHUNK_SECTORS;
 static uint32_t _active_chunk_sectors = RK3506_SD_MULTI_CHUNK_SECTORS;
 static uint32_t _stable_successes = 0;
+static uint32_t _fifo_depth = 0;
 
 static void rk3506_sd_setup_host(void);
+static void rk3506_sd_update_clock(void);
 
 static void rk3506_sd_note_success(void) {
 	if(_active_chunk_sectors == _fast_chunk_sectors) {
@@ -63,8 +65,15 @@ static int rk3506_sd_wait_reset(struct dwmci_host *host, uint32_t value) {
 
 static void rk3506_sd_recover(void) {
 	(void)rk3506_sd_wait_reset(&dwc_host, DWMCI_RESET_ALL);
-	dwmci_writel(&dwc_host, DWMCI_RINTSTS, DWMCI_INTMSK_ALL);
 	rk3506_sd_setup_host();
+	/*
+	 * A controller reset stops/desyncs the CIU clock domain. Like Linux
+	 * dw_mci_reset, an update-clocks command must follow the reset to
+	 * reload CLKDIV/CLKENA into the CIU, otherwise every subsequent
+	 * command times out and the whole driver looks wedged.
+	 */
+	rk3506_sd_update_clock();
+	dwmci_writel(&dwc_host, DWMCI_RINTSTS, DWMCI_INTMSK_ALL);
 }
 
 static int rk3506_sd_read_sector_once(int32_t sector, void* buf) {
@@ -92,13 +101,37 @@ static int rk3506_sd_verify_sector(int32_t sector, const uint8_t* src) {
         return ret;
 }
 
+static void rk3506_sd_update_clock(void) {
+	uint32_t timeout = 100000U;
+
+	dwmci_writel(&dwc_host, DWMCI_CMD, DWMCI_CMD_PRV_DAT_WAIT |
+			DWMCI_CMD_UPD_CLK | DWMCI_CMD_START);
+	while(timeout-- > 0U) {
+		if((dwmci_readl(&dwc_host, DWMCI_CMD) & DWMCI_CMD_START) == 0U)
+			return;
+	}
+	klog("rk3506_sd: update clock timeout\n");
+}
+
 static void rk3506_sd_setup_host(void) {
 	uint32_t fifo_size;
 
-	fifo_size = dwmci_readl(&dwc_host, DWMCI_FIFOTH);
-	fifo_size = ((fifo_size & RX_WMARK_MASK) >> RX_WMARK_SHIFT) + 1;
+	/*
+	 * Probe the FIFO depth only once from the power-on/u-boot FIFOTH
+	 * value: after we program the register below, re-reading it during
+	 * recover would halve the derived depth every time.
+	 */
+	if(_fifo_depth == 0) {
+		fifo_size = dwmci_readl(&dwc_host, DWMCI_FIFOTH);
+		_fifo_depth = ((fifo_size & RX_WMARK_MASK) >> RX_WMARK_SHIFT) + 1;
+	}
+	fifo_size = _fifo_depth;
 	dwc_host.fifoth_val = MSIZE(0x2) | RX_WMARK(fifo_size / 2 - 1) |
 		TX_WMARK(fifo_size / 2);
+	/* actually program the watermarks so TXDR/RXDR match fifoth_val */
+	dwmci_writel(&dwc_host, DWMCI_FIFOTH, dwc_host.fifoth_val);
+	/* max out the data/busy timeout counter, writes hold busy for long */
+	dwmci_writel(&dwc_host, DWMCI_TMOUT, 0xFFFFFFFFU);
 }
 
 /**
@@ -109,7 +142,9 @@ int32_t rk3506_sd_init(void) {
 	if(_mmio_base == 0)
 		return -1;
 	dwc_host.ioaddr = (void*)(_mmio_base + 0x480000);
+	_fifo_depth = 0;
 	rk3506_sd_setup_host();
+	dwmci_writel(&dwc_host, DWMCI_RINTSTS, DWMCI_INTMSK_ALL);
 	_fast_chunk_sectors = RK3506_SD_MULTI_CHUNK_SECTORS;
 	_active_chunk_sectors = _fast_chunk_sectors;
 	_stable_successes = 0;

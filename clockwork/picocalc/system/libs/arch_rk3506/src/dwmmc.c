@@ -1,5 +1,7 @@
 #include <ewoksys/mmio.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/kernel_tic.h>
+#include <unistd.h>
 #include "dwmmc.h"
 #include "mmc.h"
 #define PAGE_SIZE 4096
@@ -31,12 +33,31 @@ static int dwmci_wait_reset(struct dwmci_host *host, uint32_t value)
     return 0;
 }
 
-static int dwmci_wait_while_busy(struct dwmci_host *host, uint32_t timeout)
+static int dwmci_wait_while_busy(struct dwmci_host *host, uint32_t timeout_us)
 {
-    while (timeout--) {
+    uint32_t spins = 2000;
+    uint64_t deadline;
+
+    /* fast path: most commands see the busy line drop quickly */
+    while (spins--) {
         if (!(dwmci_readl(host, DWMCI_STATUS) & DWMCI_BUSY))
             return 0;
-        DWMMC_DELAY(10);
+    }
+
+    /*
+     * Slow path: card programming after a write can hold DAT0 low for
+     * hundreds of milliseconds. IMPORTANT: usleep() degrades to a bare
+     * yield inside an IPC handler (sdfsd runs all of this in one), so
+     * the timeout MUST be measured against the real kernel clock, never
+     * derived from "number of usleep(1000) calls".
+     */
+    deadline = kernel_tic_ms(0) + timeout_us / 1000U;
+    for (;;) {
+        if (!(dwmci_readl(host, DWMCI_STATUS) & DWMCI_BUSY))
+            return 0;
+        if (kernel_tic_ms(0) >= deadline)
+            break;
+        usleep(1000);
     }
 
     klog("%s: Timeout on data busy\n", __func__);
@@ -76,7 +97,8 @@ static int dwmci_set_transfer_mode(struct dwmci_host *host,
 static int dwmci_data_transfer(struct dwmci_host *host, struct mmc_data *data)
 {
     int ret = 0;
-    uint32_t timeout, mask, size, i, len = 0;
+    uint32_t mask, size, i, len = 0;
+    uint64_t deadline;
     uint32_t *buf = 0;
     uint32_t fifo_depth = (((host->fifoth_val & RX_WMARK_MASK) >>
                 RX_WMARK_SHIFT) + 1) * 2;
@@ -87,7 +109,8 @@ static int dwmci_data_transfer(struct dwmci_host *host, struct mmc_data *data)
     else
         buf = (uint32_t *)data->src;
 
-    timeout = 50000;
+    /* real-time budget for the whole data phase (see busy-wait note) */
+    deadline = kernel_tic_ms(0) + 1000U;
 
     size /= 4;
 
@@ -150,14 +173,22 @@ static int dwmci_data_transfer(struct dwmci_host *host, struct mmc_data *data)
             break;
         }
 
-        /* Check for timeout. */
-        if (!timeout--) {
+        /* Check for timeout against the real kernel clock. */
+        if (kernel_tic_ms(0) >= deadline) {
             //klog("%s: Timeout waiting for data!\n",
             //      __func__);
             ret = -ETIMEDOUT;
             break;
         }
-        DWMMC_DELAY(10);
+        /*
+         * Once the FIFO work is done we are only waiting for the card
+         * to ack the block (DTO), which can take a while on writes;
+         * sleep instead of spinning so the timeout covers real time.
+         */
+        if (size == 0)
+            usleep(100);
+        else
+            DWMMC_DELAY(10);
     }
 
     dwmci_writel(host, DWMCI_RINTSTS, mask);
@@ -170,14 +201,22 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
 
     TRACE();
     int ret = 0, flags = 0, i;
-    int timeout = 50000;
     int retry = 1000;
     uint32_t mask;
+    uint64_t deadline;
 
     TRACE();
-    ret = dwmci_wait_while_busy(host, timeout);
-    if (ret != 0)
-        return ret;
+    /*
+     * The previous write may keep the card in programming state, wait
+     * it out before a normal command. But NEVER busy-wait before an
+     * abort (CMD12): breaking a stuck data state (card driving busy
+     * forever) is exactly what the abort is for.
+     */
+    if (cmd->cmdidx != MMC_CMD_STOP_TRANSMISSION) {
+        ret = dwmci_wait_while_busy(host, 500000);
+        if (ret != 0)
+            return ret;
+    }
 
     TRACE();
     dwmci_writel(host, DWMCI_RINTSTS, DWMCI_INTMSK_ALL);
@@ -226,6 +265,20 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
             if (!data)
                 dwmci_writel(host, DWMCI_RINTSTS, mask);
             break;
+        }
+    }
+    /* fast polls missed it: wait up to 500ms of real time for CDONE */
+    if (i == retry) {
+        deadline = kernel_tic_ms(0) + 500U;
+        while (kernel_tic_ms(0) < deadline) {
+            mask = dwmci_readl(host, DWMCI_RINTSTS);
+            if (mask & DWMCI_INTMSK_CDONE) {
+                if (!data)
+                    dwmci_writel(host, DWMCI_RINTSTS, mask);
+                i = 0;
+                break;
+            }
+            usleep(100);
         }
     }
 
@@ -305,7 +358,11 @@ int mmc_read_sectors(struct dwmci_host *host, void *dst, uint32_t sector,
     data.flags = MMC_DATA_READ;
 
     ret = dwmci_send_cmd(host, &cmd, &data);
-    if (count > 1) {
+    /*
+     * Also abort on a failed single-block transfer: the card may still
+     * sit in the data state and a controller-only reset won't fix that.
+     */
+    if (count > 1 || ret != 0) {
         int stop_ret = mmc_send_stop(host);
         if (ret == 0 && stop_ret != 0)
             ret = stop_ret;
@@ -339,7 +396,13 @@ int mmc_write_sectors(struct dwmci_host *host, const void *src, uint32_t sector,
     data.flags = MMC_DATA_WRITE;
 
     ret = dwmci_send_cmd(host, &cmd, &data);
-    if (count > 1) {
+    /*
+     * On a failed data phase the card may still be in rcv state driving
+     * busy; CMD12 aborts it back to tran. A controller reset alone does
+     * not reset the card, so without this every following command times
+     * out on data busy and the whole rootfs daemon appears stuck.
+     */
+    if (count > 1 || ret != 0) {
         int stop_ret = mmc_send_stop(host);
 
         if (ret == 0 && stop_ret != 0)
@@ -353,7 +416,7 @@ int mmc_write_sectors(struct dwmci_host *host, const void *src, uint32_t sector,
      * a still-busy card.
      */
     {
-        int busy_ret = dwmci_wait_while_busy(host, 50000);
+        int busy_ret = dwmci_wait_while_busy(host, 500000);
         if (ret == 0 && busy_ret != 0)
             ret = busy_ret;
     }
