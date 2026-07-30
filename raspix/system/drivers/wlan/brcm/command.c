@@ -819,6 +819,16 @@ int connect(const char*ssid, const char* pmk)
         brcm_log("Wrong PMK lens\n");
         return -1;
     }
+
+    /*
+     * Reconnect path: the firmware may still hold the previous association
+     * (link drop is reported via event, not torn down locally). Joining on
+     * top of that stale state makes the STA emit class 2/3 frames the AP
+     * no longer accepts, which answers with deauth reason 6 in a loop.
+     * Always drop the old association before reprogramming the join.
+     */
+    brcmf_fil_cmd_data_set(0, BRCMF_C_DISASSOC, NULL, 0);
+
     /* A normal (non P2P) connection request setup. */
     const char ie[22] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 
                          0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x01, 0x00, 
@@ -858,7 +868,20 @@ int connect(const char*ssid, const char* pmk)
 
     err = brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_CAPABLE);
     if (err) {
-        brcm_log("set mfp failed (%d), continue without mfp\n", err);
+        /*
+         * "mfp" only latches while the interface is down (fw BCME_NOTDOWN,
+         * -5). The first connect after init runs before BRCMF_C_UP took
+         * effect so it succeeds, but every reconnect hits NOTDOWN; bounce
+         * the interface around the retry instead of silently dropping PMF.
+         */
+        int32_t down_err = brcmf_fil_cmd_int_set(0, BRCMF_C_DOWN, 1);
+        if (!down_err) {
+            err = brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_CAPABLE);
+            brcmf_fil_cmd_int_set(0, BRCMF_C_UP, 1);
+        }
+        if (err) {
+            brcm_log("set mfp failed (%d), continue without mfp\n", err);
+        }
     }
 
     err = brcmf_fil_iovar_int_set(0, "wpa_auth", WPA2_AUTH_PSK);
