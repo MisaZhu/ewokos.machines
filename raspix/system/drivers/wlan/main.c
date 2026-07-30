@@ -109,6 +109,8 @@ struct msg_get_clock_rate {
 #define BCM2835_MBOX_TAG_GET_MAX_CLOCK_RATE	0x00030004
 #define BCM2835_MBOX_TAG_GET_MIN_CLOCK_RATE	0x00030007
 
+#define BCM2835_MBOX_CLOCK_ID_EMMC	1
+
 
 #define BCM2835_MBOX_POWER_DEVID_SDHCI		0
 #define BCM2835_MBOX_POWER_DEVID_UART0		1
@@ -165,6 +167,39 @@ static int bcm2835_power_on_module(uint32_t module)
 	dma_free(0, (ewokos_addr_t)msg_pwr);
 
 	return 0;
+}
+
+/*
+ * The legacy Arasan SDHCI (WLAN SDIO) is fed by the firmware-managed EMMC
+ * clock. Its rate depends on the boot firmware / EEPROM config and differs
+ * between boards (Pi3/Pi4B vs some CM4 setups); ask the firmware instead of
+ * letting sdhci assume 50MHz, otherwise the divider math overclocks the bus
+ * and every CMD52 times out.
+ */
+static uint32_t bcm2835_get_emmc_clock(void)
+{
+	mail_message_t msg;
+	struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(0, sizeof(struct msg_get_clock_rate)));
+	uint32_t mailbox_data;
+	uint32_t rate = 0;
+
+	if (msg_clk == NULL)
+		return 0;
+
+	BCM2835_MBOX_INIT_HDR(msg_clk);
+	BCM2835_MBOX_INIT_TAG(&msg_clk->get_clock_rate, GET_CLOCK_RATE);
+	msg_clk->get_clock_rate.body.req.clock_id = BCM2835_MBOX_CLOCK_ID_EMMC;
+
+	mailbox_data = mailbox_data_from_dma_buf(msg_clk);
+	if (mailbox_data != 0) {
+		msg.data = mailbox_data;
+		msg.channel = PROPERTY_CHANNEL;
+		bcm283x_mailbox_call(&msg);
+		rate = msg_clk->get_clock_rate.body.resp.rate_hz;
+	}
+	dma_free(0, (ewokos_addr_t)msg_clk);
+
+	return rate;
 }
 
 #define CM_GP2DIV	(_mmio_base + 0x101084) 
@@ -372,6 +407,11 @@ int main(int argc, char** argv) {
 	_mmio_base = mmio_map();
 	log_init();	
 	bcm2835_power_on_module(BCM2835_MBOX_POWER_DEVID_SDHCI);
+	{
+		uint32_t emmc_clk = bcm2835_get_emmc_clock();
+		brcm_log("wlan: emmc base clock %u Hz\n", emmc_clk);
+		sdhci_set_base_clock(emmc_clk);
+	}
 	clock_init();
 
 	vdevice_t dev;

@@ -276,11 +276,41 @@ static int brcm_init(void)
                 brcm_log("sdio high-speed enable failed %d, keep current timing\n", err);
         }
 
-        _mmc.clock = 50000000;
-        _mmc.selected_mode = high_speed ? MMC_HS : MMC_LEGACY;
-	err = sdhci_set_ios(&_mmc);
-	if (err)
-		return err;
+        /*
+         * Verify the bus actually works at the chosen rate before handing it
+         * to the probe path. Some boards (CM4 with differing boot-firmware
+         * clock setup, marginal routing) enumerate fine at 400kHz but lose
+         * every CMD52 at full speed; step the clock down until CCCR reads
+         * back reliably instead of failing the whole probe.
+         */
+        {
+                static const uint32_t try_clks[] =
+                        { 50000000, 25000000, 10000000 };
+                unsigned int i;
+                uint8_t cccr_rev;
+
+                err = -EIO;
+                for (i = 0; i < sizeof(try_clks)/sizeof(try_clks[0]); i++) {
+                        _mmc.clock = try_clks[i];
+                        _mmc.selected_mode = high_speed ? MMC_HS : MMC_LEGACY;
+                        err = sdhci_set_ios(&_mmc);
+                        if (err)
+                                continue;
+
+                        err = mmc_io_rw_direct(0, 0, SDIO_CCCR_CCCR, 0, &cccr_rev);
+                        if (!err)
+                                break;
+
+                        brcm_log("sdio bus dead at %uHz, stepping down\n",
+                                 try_clks[i]);
+                        /* HS timing is suspect too once we start degrading. */
+                        high_speed = false;
+                }
+                if (err) {
+                        brcm_log("sdio bus unusable at any clock, err=%d\n", err);
+                        return err;
+                }
+        }
 
 	return 0;
 }

@@ -286,6 +286,22 @@ struct sdhci_host {
 
 static struct sdhci_host _host;
 
+/*
+ * Base clock feeding the legacy Arasan SDHCI. The divider math in
+ * sdhci_set_clock() is only correct when this matches the rate the
+ * VideoCore boot firmware actually programmed (mailbox EMMC clock);
+ * boards whose firmware runs the block faster than the assumed 50MHz
+ * end up overclocking the SDIO bus and every CMD52 times out.
+ */
+static uint32_t _sdhci_base_clk = 0;
+
+void sdhci_set_base_clock(uint32_t hz)
+{
+	/* Sanity window for the Arasan core; ignore mailbox garbage. */
+	if (hz >= 25000000 && hz <= 500000000)
+		_sdhci_base_clk = hz;
+}
+
 static void bcm283x_sdhci_gpio_init(void){
     bcm283x_gpio_init();
 
@@ -992,7 +1008,8 @@ void sdhci_init(void)
 	bcm283x_sdhci_gpio_init();
 
 	_host.bus_width  = 1;
-	_host.max_clk = 50000000;
+	/* Prefer the firmware-reported EMMC clock; 50MHz is the legacy guess. */
+	_host.max_clk = _sdhci_base_clk ? _sdhci_base_clk : 50000000;
 	_host.clock = 400000;
 	_host.name = "sdhci";
 	/*
