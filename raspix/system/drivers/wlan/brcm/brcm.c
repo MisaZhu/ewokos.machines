@@ -621,6 +621,7 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     uint32_t proto = 0;
     bool is_bc;
     bool is_mc;
+    bool is_arp;
 
     if (!bus || !data || len < 14)
         return false;
@@ -628,6 +629,7 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     proto = (uint32_t)(((uint32_t)data[12] << 8) | (uint32_t)data[13]);
     is_bc = brcmf_eth_is_broadcast(data);
     is_mc = (!is_bc && (data[0] & 0x01)) != 0;
+    is_arp = (proto == ETH_P_ARP);
 
     if (bus->state == CONNECTED) {
         if (!is_bc && !is_mc && !brcmf_eth_is_local(data)) {
@@ -643,7 +645,7 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
          * (TCP data/ACKs, ARP replies addressed to us), which wedges
          * the link even though the driver stays "connected".
          */
-        if (is_bc) {
+        if (is_bc && !is_arp) {
             now_ms = kernel_tic_ms(0);
             if ((now_ms - bus->bc_window_start_ms) >= BRCMF_BC_LIMIT_WINDOW_MS) {
                 bus->bc_window_start_ms = now_ms;
@@ -675,6 +677,16 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
      * here, so a storm kept the queue permanently full of broadcasts
      * and unicast frames for us were dropped on push instead.
      */
+    /*
+     * Keep ARP even under queue pressure: new inbound ping/tcp connections
+     * depend on broadcast ARP resolution first, while outbound traffic can
+     * continue using peers that already learned our MAC from recent egress.
+     * Dropping ARP here makes the link look half-alive on raspix: ping out
+     * still works, but fresh inbound reachability and accept() appear dead.
+     */
+    if (is_arp)
+        return false;
+
     if (is_bc || is_mc || proto == ETH_P_IPV6)
         return true;
 
