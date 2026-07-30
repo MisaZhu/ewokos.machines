@@ -1024,6 +1024,9 @@ static int brcmf_sdiod_skbuff_write(
     unsigned int req_sz;
     int err;
     static uint8_t f2_block_buf[512];
+    /* bounce buffer for multi-block writes: worst case is a
+     * MAX_FRAME_SIZE payload + SDPCM headers rounded up to blocksize */
+    static uint8_t f2_multi_buf[MAX_FRAME_SIZE + 1024];
 
     /* Single skb use the standard mmc interface */
     req_sz = skb->len + 3;
@@ -1036,6 +1039,18 @@ static int brcmf_sdiod_skbuff_write(
             memset(f2_block_buf, 0, bus->blocksize);
             memcpy(f2_block_buf, skb->data, req_sz);
             err = sdio_writesb_block(func, addr, f2_block_buf, 1, bus->blocksize);
+        } else if (bus->blocksize && req_sz > (unsigned int)bus->blocksize &&
+                   ((req_sz + bus->blocksize - 1) / bus->blocksize) *
+                       (unsigned int)bus->blocksize <= sizeof(f2_multi_buf)) {
+            /* Pad to a whole number of blocks so the frame goes out as a
+             * single block-mode CMD53 instead of block + byte-mode pair;
+             * the dongle takes the real length from the SDPCM hw header,
+             * tail padding is ignored (same contract as the ctrl path). */
+            unsigned int nblocks = (req_sz + bus->blocksize - 1) / bus->blocksize;
+            unsigned int padded = nblocks * bus->blocksize;
+            memcpy(f2_multi_buf, skb->data, req_sz);
+            memset(f2_multi_buf + req_sz, 0, padded - req_sz);
+            err = sdio_writesb_block(func, addr, f2_multi_buf, nblocks, bus->blocksize);
         } else {
             err = sdio_writesb(func, addr, ((uint8_t *)(skb->data)), req_sz);
         }

@@ -398,6 +398,14 @@ static int32_t sdhci_readl(struct sdhci_host *host, uint32_t reg){
  *    wait after each command burst disappears (~1 gap saved per frame).
  */
 #define SDHCI_MIN_CMD_GAP_US    250
+/*
+ * The empirical 50us breakage was measured with a single global gap, i.e.
+ * with CMD52/F1 register pokes also running that hot; the control-plane
+ * accesses are what the firmware is slow to settle after. F2 CMD53 data
+ * transfers already burn tens of us of bus time each, so they get a
+ * shorter floor while every other command keeps the proven 250us.
+ */
+#define SDHCI_MIN_CMD_GAP_F2_US 100
 #define SDHCI_SYSTMR_CLO		0x3004 /* 1MHz free-running counter, low word */
 
 static uint32_t sdhci_last_cmd_us;
@@ -409,12 +417,11 @@ static inline uint32_t sdhci_now_us(void)
 }
 
 /* Call right before committing SDHCI_COMMAND; spins only the shortfall. */
-static void sdhci_pre_cmd_gap(void)
+static void sdhci_pre_cmd_gap(uint32_t gap_us)
 {
 	if (!sdhci_last_cmd_valid)
 		return;
-	while ((uint32_t)(sdhci_now_us() - sdhci_last_cmd_us) <
-	       SDHCI_MIN_CMD_GAP_US)
+	while ((uint32_t)(sdhci_now_us() - sdhci_last_cmd_us) < gap_us)
 		;
 }
 
@@ -891,8 +898,14 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	}
 
 	sdhci_writel(host, cmd->cmdarg, SDHCI_ARGUMENT);
-	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD)
-		sdhci_pre_cmd_gap();
+	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD) {
+		/* CMD53 to F2 (data FIFO) tolerates a shorter gap than the
+		 * control-plane CMD52/F1 accesses; see gap constants above. */
+		uint32_t gap_us = SDHCI_MIN_CMD_GAP_US;
+		if (cmd->cmdidx == 53 && ((cmd->cmdarg >> 28) & 0x7) == 2)
+			gap_us = SDHCI_MIN_CMD_GAP_F2_US;
+		sdhci_pre_cmd_gap(gap_us);
+	}
 	sdhci_writew(host, SDHCI_MAKE_CMD(cmd->cmdidx, flags), SDHCI_COMMAND);
 	start = get_timer(0);
 	{
