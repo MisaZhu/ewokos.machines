@@ -418,6 +418,29 @@ static void sdhci_pre_cmd_gap(void)
 		;
 }
 
+/*
+ * Completion-wait policy for command/data polling loops.
+ *
+ * The waits in sdhci_send_command()/sdhci_transfer_data() are microsecond
+ * scale: a command response arrives within ~64 SD clocks (~2us at 50MHz)
+ * and a 512-byte block moves in ~20-90us. Yielding with sleep(0) on every
+ * poll iteration hands the CPU to the scheduler for a full multi-ms round
+ * trip (netd, sshd and the pump thread are all runnable during transfers),
+ * so each CMD53 paid several milliseconds of pure scheduling latency --
+ * ~5-8ms per WLAN data frame, capping TCP throughput near 200KB/s no
+ * matter what the protocol stack did. Busy-spin for the expected-normal
+ * window on the 1MHz system timer and only start yielding once the wait
+ * is anomalously long (card stall / error paths), which preserves the
+ * original don't-monopolise-the-CPU intent where it actually matters.
+ */
+#define SDHCI_POLL_SPIN_US 500
+
+static inline void sdhci_poll_relax(uint32_t spin_start_us)
+{
+	if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US)
+		sleep(0);
+}
+
 
 static void sdhci_set_power(struct sdhci_host *host, uint32_t power)
 {
@@ -718,6 +741,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 {
 	unsigned int stat, rdy, mask, timeout, block = 0;
 	bool transfer_done = false;
+	uint32_t spin_start_us = sdhci_now_us();
 
 	timeout = 100000;
 	if (data->flags == MMC_DATA_READ) {
@@ -752,10 +776,11 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 				continue;
 			}
 		} else {
-			/* Yield while waiting for data or DATA_END to
-			 * prevent monopolising the CPU under heavy traffic.
+			/* FIFO ready is ~20-90us away in the normal case; spin
+			 * first, yield only on anomalously long waits (see
+			 * sdhci_poll_relax).
 			 */
-			sleep(0);
+			sdhci_poll_relax(spin_start_us);
 		}
 		if (timeout-- == 0){
 			brcm_log("%s: Transfer data timeout\n", __func__);
@@ -870,27 +895,32 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		sdhci_pre_cmd_gap();
 	sdhci_writew(host, SDHCI_MAKE_CMD(cmd->cmdidx, flags), SDHCI_COMMAND);
 	start = get_timer(0);
-	do {
-		stat = sdhci_readl(host, SDHCI_INT_STATUS);
-		if (stat & SDHCI_INT_ERROR)
-			break;
+	{
+		uint32_t cmd_spin_start_us = sdhci_now_us();
+		do {
+			stat = sdhci_readl(host, SDHCI_INT_STATUS);
+			if (stat & SDHCI_INT_ERROR)
+				break;
 
-		if (host->quirks & SDHCI_QUIRK_BROKEN_R1B &&
-		    cmd->resp_type & MMC_RSP_BUSY && !data) {
-			unsigned int state =
-				sdhci_readl(host, SDHCI_PRESENT_STATE);
+			if (host->quirks & SDHCI_QUIRK_BROKEN_R1B &&
+			    cmd->resp_type & MMC_RSP_BUSY && !data) {
+				unsigned int state =
+					sdhci_readl(host, SDHCI_PRESENT_STATE);
 
-			if (!(state & SDHCI_DAT_ACTIVE))
-				return 0;
-		}
+				if (!(state & SDHCI_DAT_ACTIVE))
+					return 0;
+			}
 
-		if (get_timer(start) >= SDHCI_READ_STATUS_TIMEOUT) {
-			brcm_log("%s: Timeout for status update: %08x %08x\n",
-			       __func__, stat, mask);
-			return -ETIMEDOUT;
-		}
-		sleep(0);
-	} while ((stat & mask) != mask);
+			if (get_timer(start) >= SDHCI_READ_STATUS_TIMEOUT) {
+				brcm_log("%s: Timeout for status update: %08x %08x\n",
+				       __func__, stat, mask);
+				return -ETIMEDOUT;
+			}
+			/* Response lands within ~64 SD clocks; spin first,
+			 * yield only if the wait turns anomalous. */
+			sdhci_poll_relax(cmd_spin_start_us);
+		} while ((stat & mask) != mask);
+	}
 
 	if ((stat & (SDHCI_INT_ERROR | mask)) == mask) {
 		sdhci_cmd_done(host, cmd);
