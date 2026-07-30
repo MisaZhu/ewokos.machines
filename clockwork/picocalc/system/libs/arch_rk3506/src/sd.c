@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <ewoksys/syscall.h>
+#include <ewoksys/klog.h>
 #include <ewoksys/mmio.h>
 #include <sysinfo.h>
 #include <ewoksys/mmio.h>
@@ -12,6 +13,7 @@
 extern int mmc_read_blocks(struct dwmci_host *host, void *dst, uint32_t sector);
 extern int mmc_read_sectors(struct dwmci_host *host, void *dst, uint32_t sector,
 		uint32_t count);
+extern int mmc_write_blocks(struct dwmci_host *host, const void *src, uint32_t sector);
 
 static struct dwmci_host dwc_host = {
     .fifoth_val = 0,
@@ -67,6 +69,27 @@ static void rk3506_sd_recover(void) {
 
 static int rk3506_sd_read_sector_once(int32_t sector, void* buf) {
 	return mmc_read_blocks(&dwc_host, buf, sector);
+}
+
+static int rk3506_sd_write_sector_once(int32_t sector, const void* buf) {
+        return mmc_write_blocks(&dwc_host, buf, sector);
+}
+
+static int rk3506_sd_verify_sector(int32_t sector, const uint8_t* src) {
+        uint8_t verify[512];
+        int ret;
+        uint32_t attempt;
+
+        for(attempt = 0; attempt < RK3506_SD_RETRY_COUNT; attempt++) {
+                ret = rk3506_sd_read_sector_once(sector, verify);
+                if(ret == 0)
+                        return memcmp(verify, src, sizeof(verify)) == 0 ? 0 : -EIO;
+                rk3506_sd_note_chunk_error();
+                rk3506_sd_recover();
+                usleep(RK3506_SD_RETRY_DELAY_US);
+        }
+
+        return ret;
 }
 
 static void rk3506_sd_setup_host(void) {
@@ -155,7 +178,26 @@ int32_t rk3506_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
 }
 
 int32_t rk3506_sd_write_sector(int32_t sector, const void* buf) {
-	(void)sector;
-	(void)buf;
-	return 0;
+        int ret = -1;
+        uint32_t attempt;
+
+        if(buf == NULL)
+                return -1;
+
+        for(attempt = 0; attempt < RK3506_SD_RETRY_COUNT; attempt++) {
+                ret = rk3506_sd_write_sector_once(sector, buf);
+                if(ret == 0) {
+                        ret = rk3506_sd_verify_sector(sector, (const uint8_t*)buf);
+                        if(ret == 0) {
+                                rk3506_sd_note_success();
+                                return 0;
+                        }
+                        klog("rk3506_sd: write verify mismatch sec %d\n", sector);
+                }
+                rk3506_sd_note_chunk_error();
+                rk3506_sd_recover();
+                usleep(RK3506_SD_RETRY_DELAY_US);
+        }
+
+        return ret;
 }

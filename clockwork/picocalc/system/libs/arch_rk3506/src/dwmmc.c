@@ -31,6 +31,18 @@ static int dwmci_wait_reset(struct dwmci_host *host, uint32_t value)
     return 0;
 }
 
+static int dwmci_wait_while_busy(struct dwmci_host *host, uint32_t timeout)
+{
+    while (timeout--) {
+        if (!(dwmci_readl(host, DWMCI_STATUS) & DWMCI_BUSY))
+            return 0;
+        DWMMC_DELAY(10);
+    }
+
+    klog("%s: Timeout on data busy\n", __func__);
+    return -ETIMEDOUT;
+}
+
 static int dwmci_fifo_ready(struct dwmci_host *host, uint32_t bit, uint32_t *len)
 {
     uint32_t timeout = 2000000;
@@ -163,14 +175,9 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
     uint32_t mask;
 
     TRACE();
-    while (dwmci_readl(host, DWMCI_STATUS) & DWMCI_BUSY) {
-        if (!timeout--) {
-            klog("%s: Timeout on data busy\n", __func__);
-            return -ETIMEDOUT;
-        }
-        TRACE();
-        DWMMC_DELAY(10);
-    }
+    ret = dwmci_wait_while_busy(host, timeout);
+    if (ret != 0)
+        return ret;
 
     TRACE();
     dwmci_writel(host, DWMCI_RINTSTS, DWMCI_INTMSK_ALL);
@@ -309,4 +316,52 @@ int mmc_read_sectors(struct dwmci_host *host, void *dst, uint32_t sector,
 int mmc_read_blocks(struct dwmci_host *host, void *dst, uint32_t sector)
 {
     return mmc_read_sectors(host, dst, sector, 1);
+}
+
+int mmc_write_sectors(struct dwmci_host *host, const void *src, uint32_t sector,
+        uint32_t count)
+{
+    struct mmc_cmd cmd;
+    struct mmc_data data;
+    int ret;
+
+    if (count == 0)
+        return 0;
+
+    cmd.cmdidx = (count > 1) ? MMC_CMD_WRITE_MULTIPLE_BLOCK :
+            MMC_CMD_WRITE_SINGLE_BLOCK;
+    cmd.cmdarg = sector;
+    cmd.resp_type = MMC_RSP_R1;
+
+    data.src = src;
+    data.blocks = count;
+    data.blocksize = 512;
+    data.flags = MMC_DATA_WRITE;
+
+    ret = dwmci_send_cmd(host, &cmd, &data);
+    if (count > 1) {
+        int stop_ret = mmc_send_stop(host);
+
+        if (ret == 0 && stop_ret != 0)
+            ret = stop_ret;
+    }
+
+    /*
+     * DATA transfer completion only means the controller drained the FIFO.
+     * Keep waiting until the card leaves PRG/busy so a successful return
+     * means the block is actually committed and the next command won't hit
+     * a still-busy card.
+     */
+    {
+        int busy_ret = dwmci_wait_while_busy(host, 50000);
+        if (ret == 0 && busy_ret != 0)
+            ret = busy_ret;
+    }
+
+    return ret;
+}
+
+int mmc_write_blocks(struct dwmci_host *host, const void *src, uint32_t sector)
+{
+    return mmc_write_sectors(host, src, sector, 1);
 }
