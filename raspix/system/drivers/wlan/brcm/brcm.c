@@ -726,10 +726,6 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     if (!bus)
         return;
 
-    // #region debug-point reset-runtime-state
-    brcm_log("[DEBUG] reset_runtime_state flush=%d state=%d ssid=%s\n",
-            flush_queues ? 1 : 0, (int)bus->state, bus->ssid);
-    // #endregion
     bus->scan_results_ready = false;
     bus->scan_mpc_off = false;
     bus->rxpending = false;
@@ -752,10 +748,6 @@ static void brcmf_mark_connected(void)
     if (!bus)
         return;
 
-    // #region debug-point mark-connected
-    brcm_log("[DEBUG] mark_connected prev_state=%d ssid=%s\n",
-            (int)bus->state, bus->ssid);
-    // #endregion
     bus->state = CONNECTED;
     bus->last_error = 0;
     bus->last_event_type = 0;
@@ -777,11 +769,6 @@ static void brcmf_mark_disconnected(const char *reason,
     if (!bus)
         return;
 
-    // #region debug-point mark-disconnected
-    brcm_log("[DEBUG] mark_disconnected prev_state=%d ssid=%s reason=%s event=%u status=%u fw_reason=%u\n",
-            (int)bus->state, bus->ssid, reason ? reason : "unknown",
-            event_type, event_status, event_reason);
-    // #endregion
     was_connected = (bus->state == CONNECTED || bus->state == CONNECTING);
     bus->recovery_count++;
     bus->state = DISCONNECTED;
@@ -3784,7 +3771,7 @@ void* brcm_thread(void* p) {
         usleep(1000);
     }
 
-    uint32_t value = 0; 
+    uint32_t value = 0;
     err = brcmf_fil_iovar_data_set(0, "bus:txglom", &value, sizeof(uint32_t));
     if(err){
         brcm_log("disable glom failed %d\n", err);
@@ -3854,11 +3841,6 @@ void* brcm_thread(void* p) {
             if (tick >= next_scan_tick && bus->state != CONNECTED) {
                 if (brcmf_manual_connect_guard_active(tick)) {
                     next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
-                    // #region debug-point manual-connect-guard
-                    brcm_log("[DEBUG] skip auto scan during manual connect guard state=%d ssid=%s until=%u now=%u\n",
-                            (int)bus->state, bus->ssid,
-                            bus->manual_connect_until_ms, tick);
-                    // #endregion
                     goto worker_done;
                 }
                 next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
@@ -3989,11 +3971,6 @@ int brcm_connect_ap(const char *ssid, const char *passwd)
     if (state == SCANNING || state == CONNECTING)
         return -EBUSY;
 
-    // #region debug-point connect-ap-enter
-    brcm_log("[DEBUG] connect_ap enter state=%d ssid=%s passwd_len=%u\n",
-            state, ssid, (unsigned)passwd_len);
-    // #endregion
-
     if (passwd_len == 64 && brcmf_is_hex_string(passwd, passwd_len)) {
         pmk_hex = passwd;
     } else {
@@ -4018,10 +3995,6 @@ int brcm_connect_ap(const char *ssid, const char *passwd)
     bus->last_event_reason = 0;
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connecting");
     err = connect(bus->ssid, pmk_hex);
-    // #region debug-point connect-ap-after-connect
-    brcm_log("[DEBUG] connect_ap after connect err=%d state=%d ssid=%s\n",
-            err, (int)bus->state, bus->ssid);
-    // #endregion
     if (err) {
         bus->state = DISCONNECTED;
         bus->last_error = err;
@@ -4089,9 +4062,6 @@ char* brcm_state_info(void)
         return ret;
     }
 
-    // #region debug-point state-info-enter
-    brcm_log("[DEBUG] state_info enter\n");
-    // #endregion
     pthread_mutex_lock(&brcm_ctrl_mutex);
     state = bus->state;
     init_failed = bus->init_failed;
@@ -4115,11 +4085,6 @@ char* brcm_state_info(void)
         snprintf(cipher, sizeof(cipher), "%s", bus->scan_cache[scan_idx].cipher);
     }
     pthread_mutex_unlock(&brcm_ctrl_mutex);
-
-    // #region debug-point state-info-after-snapshot
-    brcm_log("[DEBUG] state_info snapshot state=%d init_failed=%d last_error=%d ssid=%s reason=%s\n",
-            (int)state, init_failed ? 1 : 0, last_error, ssid, last_reason);
-    // #endregion
 
     if (brcm_mac_ready()) {
         get_ethaddr((char *)mac);
@@ -4151,10 +4116,6 @@ char* brcm_state_info(void)
     json_var_add(json_var, "event_type", json_var_new_int((int)last_event_type));
     json_var_add(json_var, "event_status", json_var_new_int((int)last_event_status));
     json_var_add(json_var, "event_reason", json_var_new_int((int)last_event_reason));
-    // #region debug-point state-info-exit
-    brcm_log("[DEBUG] state_info exit state=%s ssid=%s bssid=%s rssi=%d\n",
-            brcmf_state_name(state), ssid, bssid, rssi);
-    // #endregion
     ret = json_var_to_cstr(json_var);
     json_var_unref(json_var);
     return ret;

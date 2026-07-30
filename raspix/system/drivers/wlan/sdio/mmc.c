@@ -11,6 +11,30 @@
 
 static struct mmc _mmc;
 
+static int mmc_sdio_try_enable_high_speed(bool *enabled)
+{
+        uint8_t speed = 0;
+        int err;
+
+        *enabled = false;
+
+        err = mmc_io_rw_direct(0, 0, SDIO_CCCR_SPEED, 0, &speed);
+        if (err)
+                return err;
+
+        if ((speed & SDIO_SPEED_SHS) == 0)
+                return 0;
+
+        speed &= ~SDIO_SPEED_BSS_MASK;
+        speed |= SDIO_SPEED_EHS;
+        err = mmc_io_rw_direct(1, 0, SDIO_CCCR_SPEED, speed, NULL);
+        if (err)
+                return err;
+
+        *enabled = true;
+        return 0;
+}
+
 int mmc_io_rw_direct_host(int write, unsigned fn,
 	unsigned addr, uint8_t in, uint8_t *out)
 {
@@ -234,16 +258,26 @@ static int brcm_init(void)
 	if (err)
 		return err;
 
-	/*
-	 * Enumerate the card in the safest timing first, then move both the
-	 * card and the host to 4-bit / 25MHz once it is selected.
-	 */
+        bool high_speed = false;
+
+        /*
+         * Enumerate the card in the safest timing first, then move to the
+         * fastest timing both ends confirm they support. CYW4343x SDIO
+         * functions normally advertise SHS/EHS; enabling it lets the host
+         * use its 50MHz path with SDR25 timing instead of remaining in the
+         * default SDR12/legacy mode.
+         */
 	err = mmc_sdio_set_bus_width(4);
 	if (err)
 		return err;
 
-	_mmc.clock = 25000000;
-	_mmc.selected_mode = MMC_LEGACY;
+        err = mmc_sdio_try_enable_high_speed(&high_speed);
+        if (err) {
+                brcm_log("sdio high-speed enable failed %d, keep current timing\n", err);
+        }
+
+        _mmc.clock = 50000000;
+        _mmc.selected_mode = high_speed ? MMC_HS : MMC_LEGACY;
 	err = sdhci_set_ios(&_mmc);
 	if (err)
 		return err;

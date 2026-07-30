@@ -940,6 +940,7 @@ int sdhci_set_ios(struct mmc *mmc)
 
 	sdhci_set_bus_width(host, mmc->bus_width);
 	sdhci_set_select_mode(host, mmc->selected_mode);
+        sdhci_set_uhs_timing(host, mmc->selected_mode);
 	return 0;
 }
 

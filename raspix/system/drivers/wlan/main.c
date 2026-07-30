@@ -318,9 +318,6 @@ char* net_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) 
 		return brcm_get_log();
 	}
 	if (strcmp(argv[0], "state") == 0) {
-		// #region debug-point state-cmd-enter
-		brcm_log("[DEBUG] net_dev_cmd state enter\n");
-		// #endregion
 		return brcm_state_info();
 	}
 	if (strcmp(argv[0], "scan") == 0) {
