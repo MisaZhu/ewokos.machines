@@ -598,7 +598,6 @@ int mmc_read_blocks(void *dst, lbaint_t start,
 {
 	struct mmc_cmd cmd;
 	struct mmc_data data;
-
 	if (blkcnt > 1)
 		cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
 	else
@@ -615,7 +614,7 @@ int mmc_read_blocks(void *dst, lbaint_t start,
 	data.blocksize = _mmc.read_bl_len;
 	data.flags = MMC_DATA_READ;
 
-	if (mmc_send_cmd(&_mmc, &cmd, &data))
+        if (mmc_send_cmd(&_mmc, &cmd, &data))
 		return 0;
 
 	if (blkcnt > 1) {

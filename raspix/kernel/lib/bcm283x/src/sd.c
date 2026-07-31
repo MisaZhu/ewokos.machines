@@ -6,17 +6,23 @@
 
 
 int32_t bcm283x_sd_init(void) {
-	mmc_init();
-	return 0;
+        return mmc_init();
 }
 
 int32_t bcm283x_sd_read(int32_t sector, void* buf, int count) {
-	//printf("read sector %d, count %d\n", sector, count);
-	mmc_read_blocks(buf, sector, count);
+        uint32_t result;
+
+        if (buf == NULL || count <= 0) {
+                return -1;
+        }
+
+        result = mmc_read_blocks(buf, sector, (uint32_t)count);
+        if (result != (uint32_t)count) {
+                return -1;
+        }
 	return 0;
 }
 
 int32_t bcm283x_sd_write(int32_t sector, const void* buf, int count) {
 	return -1;
 }
-

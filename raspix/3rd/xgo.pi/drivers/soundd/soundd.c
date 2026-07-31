@@ -90,6 +90,9 @@ static pthread_mutex_t _sound_lock;
 static vdevice_t* _sound_dev = NULL;
 static pthread_t _sound_feeder_tid;
 static bool _sound_feeder_started = false;
+/* Set by sound_write when it returns VFS_ERR_RETRY (ring full) so the
+ * feeder must issue vfs_wakeup once the ring drains (or stream stops). */
+static bool _sound_writer_parked = false;
 
 static uint32_t audio_now_usec(void) {
 	struct timeval tv;
@@ -578,7 +581,6 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		const void* buf, int size, int offset, void* p) {
 	const uint8_t* src;
 	int total = 0;
-	uint32_t wait_start_usec = 0;
 
 	UNUSED(dev);
 	UNUSED(fd);
@@ -639,23 +641,24 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		if (consumed != 0) {
 			consumed = audio_pcm_ring_write_bytes_locked(src + total, consumed);
 			total += (int)consumed;
-			wait_start_usec = 0;
 			pthread_mutex_unlock(&_sound_lock);
 			continue;
 		}
-		if (wait_start_usec != 0) {
-			uint32_t now_usec = audio_now_usec();
-			if (now_usec != 0 &&
-					audio_elapsed_usec(wait_start_usec, now_usec) >= SOUND_STALL_RECOVER_US) {
-				audio_force_recover_stall_locked();
-				wait_start_usec = now_usec;
-			}
-		}
 		pthread_mutex_unlock(&_sound_lock);
-		if (wait_start_usec == 0) {
-			wait_start_usec = audio_now_usec();
-		}
-		proc_usleep(SOUND_WRITE_SLEEP_US);
+		break;
+	}
+
+	/*
+	 * Never sleep here: this runs in IPC handler context where
+	 * proc_usleep() degenerates to a yield-spin (the kernel skips the
+	 * real sleep for tasks with an in-flight IPC), which burns CPU and
+	 * blocks every other IPC to soundd. When the ring is full, hand the
+	 * waiting over to vfsd: return VFS_ERR_RETRY so the client libc
+	 * blocks on VFS_EVT_WR and the feeder thread wakes it after drain.
+	 */
+	if (total == 0) {
+		_sound_writer_parked = true;
+		return VFS_ERR_RETRY;
 	}
 	return total;
 }
@@ -808,23 +811,55 @@ static bool audio_feed_pcm_ring_locked(void) {
 }
 
 static void* sound_feeder_thread(void* arg) {
+	uint32_t stall_start_usec = 0;
+
 	UNUSED(arg);
 
 	while (true) {
 		bool wake_write = false;
+		bool progressed;
 		uint32_t sleep_usec;
 
 		pthread_mutex_lock(&_sound_lock);
 		dma_chain_flush();
-		audio_feed_pcm_ring_locked();
+		progressed = audio_feed_pcm_ring_locked();
 		if (dma_chain_avail_bytes() == (uint32_t)(DMA_DATA_SIZE * DMA_BUF_CNT) &&
 				audio_total_pending_input_bytes_locked() == 0) {
 			_sound.need_rebuffer = true;
 		}
-		if (_sound.configured &&
+		/*
+		 * Stall watchdog (moved out of sound_write, which no longer
+		 * waits): input backed up but the DMA chain drains nothing for
+		 * SOUND_STALL_RECOVER_US - reset the chain so playback resumes.
+		 */
+		if (_sound.started && !progressed &&
 				_sound.frame_bytes != 0 &&
-				audio_pcm_ring_avail_bytes_locked() >= _sound.frame_bytes) {
+				audio_pcm_ring_pending_bytes_locked() >= _sound.frame_bytes) {
+			uint32_t now_usec = audio_now_usec();
+			if (stall_start_usec == 0) {
+				stall_start_usec = now_usec;
+			}
+			else if (audio_elapsed_usec(stall_start_usec, now_usec) >= SOUND_STALL_RECOVER_US) {
+				audio_force_recover_stall_locked();
+				stall_start_usec = now_usec;
+			}
+		}
+		else {
+			stall_start_usec = 0;
+		}
+		/*
+		 * A parked writer (sound_write returned VFS_ERR_RETRY) sleeps in
+		 * vfsd and depends on us for the wakeup. Only wake when it can
+		 * actually make progress again, or when the stream stopped (so
+		 * the retry fails fast instead of hanging forever).
+		 */
+		if (_sound_writer_parked &&
+				(!_sound.started ||
+				 (_sound.configured &&
+				  _sound.frame_bytes != 0 &&
+				  audio_pcm_ring_avail_bytes_locked() >= _sound.frame_bytes))) {
 			wake_write = true;
+			_sound_writer_parked = false;
 		}
 		if (_sound.started ||
 				audio_pcm_ring_pending_bytes_locked() > 0 ||
