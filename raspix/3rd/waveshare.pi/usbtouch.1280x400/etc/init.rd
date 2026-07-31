@@ -1,6 +1,6 @@
 @/bin/ipcserv /drivers/logd /dev/log
 
-#@/bin/ipcserv /drivers/raspix/spi2uartd     /dev/tty0 nr
+#@/bin/ipcserv /drivers/waveshare/spi2uartd  /dev/tty0 nr
 @/bin/ipcserv /drivers/raspix/uartd     /dev/tty0 nr
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0 

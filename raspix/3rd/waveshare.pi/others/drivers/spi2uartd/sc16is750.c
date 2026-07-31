@@ -501,21 +501,41 @@ uint8_t SC16IS750_FIFOAvailableSpace(SC16IS750_t * dev, uint8_t channel)
 
 int SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val)
 {
-	uint8_t tmp_lsr;
+        uint8_t tmp_lsr;
+        uint8_t txlvl;
 	uint32_t retry = SC16IS750_TX_WAIT_TIMEOUT;
+        static uint32_t tx_timeout_logs = 0;
 
-	/*Wait for THR/TX-FIFO empty with a timeout: a missing or dead chip
-	  must never block the daemon forever.*/
+        /*Wait for at least one free slot in the TX FIFO instead of waiting for
+          the whole FIFO to become empty. Waiting on LSR.THRE serialized every
+          byte and made the console feel stuck under sustained output.*/
 	do {
-		tmp_lsr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR);
-		if ((tmp_lsr & 0x20) != 0) {
+                txlvl = SC16IS750_FIFOAvailableSpace(dev, channel);
+                if (txlvl > 0 && txlvl <= 64) {
 			SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
 			return 0;
 		}
+
+                tmp_lsr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR);
+                if ((tmp_lsr & 0x20) != 0) {
+                        SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
+                        return 0;
+                }
 		proc_usleep(100);
 	} while (--retry > 0);
 
-	klog("sc16is750: write byte timeout, chip not responding?\n");
+        // #region debug-point E:tx-timeout
+        if (tx_timeout_logs < 8) {
+                tx_timeout_logs++;
+                slog("spi2uartd: tx timeout ch=%c lsr=%02x iir=%02x txlvl=%u rxlvl=%u efcr=%02x\n",
+                                (channel == SC16IS750_CHANNEL_B) ? 'B' : 'A',
+                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR),
+                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_IIR),
+                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_TXLVL),
+                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_RXLVL),
+                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_EFCR));
+        }
+        // #endregion
 	return -1;
 }
 
