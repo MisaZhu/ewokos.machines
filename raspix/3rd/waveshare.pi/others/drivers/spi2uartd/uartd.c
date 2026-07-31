@@ -102,11 +102,13 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
         (void)from_pid;
         (void)p;
 
-        size -= offset;
+        /*size -= offset;
         if(size <= 0)
                 return 0;
-
         const uint8_t* data = (const uint8_t*)buf + offset;
+        */
+
+        const uint8_t* data = (const uint8_t*)buf;
         for(int i = 0; i < size; i++) {
                 if(SC16IS750_write(&spiuart, _uart_channel, data[i]) != 0)
                         return (i == 0) ? -1 : i;
