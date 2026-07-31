@@ -5,7 +5,6 @@ basic:
 	cd usbhostd; $(MAKE)
 	cd hid_keybd; $(MAKE)
 	cd hid_joystickd; $(MAKE)
-	cd spi2uart; $(MAKE)
 	cd camd; $(MAKE)
 
 gui:
@@ -29,7 +28,6 @@ clean:
 	cd hid_moused; $(MAKE) clean
 	cd hid_touchd; $(MAKE) clean
 	cd hid_joystickd; $(MAKE) clean
-	cd spi2uart; $(MAKE) clean
 	cd wlan; $(MAKE) clean
 	cd btd; $(MAKE) clean
 	cd camd; $(MAKE) clean
