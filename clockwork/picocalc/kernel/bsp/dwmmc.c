@@ -318,6 +318,42 @@ int mmc_read_blocks(void *dst, uint32_t sector)
     return dwmci_send_cmd(&cmd, &data);
 }
 
+/*
+ * CMD18 多块读：一次命令连读 count 个扇区（FIFO PIO 模式）。
+ * 读完（无论成败）必须 CMD12 停止传输，否则卡停在 send-data 状态
+ * 占住数据线；后续命令由 DWMCI_CMD_PRV_DAT_WAIT 等 busy 释放。
+ */
+int mmc_read_multi_blocks(void *dst, uint32_t sector, uint32_t count)
+{
+    struct mmc_cmd cmd;
+    struct mmc_data data;
+    int ret;
+
+    if (count == 0)
+        return -EINVAL;
+    if (count == 1)
+        return mmc_read_blocks(dst, sector);
+
+    cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
+    cmd.cmdarg = sector;
+    cmd.resp_type = MMC_RSP_R1;
+
+    data.un.dest = dst;
+    data.blocks = count;
+    data.blocksize = 512;
+    data.flags = MMC_DATA_READ;
+
+    ret = dwmci_send_cmd(&cmd, &data);
+
+    cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+    cmd.cmdarg = 0;
+    cmd.resp_type = MMC_RSP_R1b;
+    if (dwmci_send_cmd(&cmd, 0) != 0 && ret == 0)
+        ret = -EIO;
+
+    return ret;
+}
+
 static int dwmci_setup_bus(struct dwmci_host *host)
 {
     uint32_t status;
