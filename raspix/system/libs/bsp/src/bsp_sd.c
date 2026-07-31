@@ -15,7 +15,12 @@ static int _sd_aggressive_read_opt = 1;
 
 #define SD_CACHE_PAGE_SECTORS 8U
 #define SD_CACHE_PAGE_SIZE (SD_CACHE_PAGE_SECTORS * 512U)
-#define SD_CACHE_MAX_BATCH_PAGES 1U
+/* Upper bound for one cache-miss fill (32 pages = 128KB). The fill is
+   strictly request-driven (no speculative readahead beyond the caller's
+   request, which is what broke pi4 before a3efd99), so large explicit
+   reads like sdfsd's inode-table prefetch become a single CMD18 burst
+   instead of one 4KB command per page. */
+#define SD_CACHE_MAX_BATCH_PAGES 32U
 
 static void** bsp_sd_get_l3(uint32_t sector, int create) {
 	uint32_t l1 = (sector >> 21) & 0x1FF;

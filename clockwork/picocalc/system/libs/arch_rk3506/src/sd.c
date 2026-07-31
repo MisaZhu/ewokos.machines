@@ -21,7 +21,14 @@ static struct dwmci_host dwc_host = {
 };
 
 #define RK3506_SD_RETRY_COUNT 5U
-#define RK3506_SD_MULTI_CHUNK_SECTORS 32U
+/*
+ * Sectors per CMD18 (64KB). The dwmmc data path is FIFO/PIO with the
+ * watermark drained inside dwmci_data_transfer, so there is no DMA
+ * boundary to respect; larger bursts only amortize the fixed
+ * CMD18+CMD12 transaction overhead. On a chunk error the size still
+ * collapses to 1 and ramps back via rk3506_sd_note_success.
+ */
+#define RK3506_SD_MULTI_CHUNK_SECTORS 128U
 #define RK3506_SD_RECOVER_SUCCESS_STREAK 32U
 #define RK3506_SD_RETRY_DELAY_US 2000U
 

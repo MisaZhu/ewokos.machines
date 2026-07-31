@@ -31,7 +31,13 @@ static bool _hs_recovery_pending = false;
 #define MIYOO_SD_RETRY_DELAY_US 2000U
 #define MIYOO_SD_RECOVER_SUCCESS_STREAK 32U
 #define MIYOO_SD_SYSTEM_SAFE_CHUNK 1U
-#define MIYOO_SD_SYSTEM_FAST_CHUNK  32U
+/*
+ * 单条 CMD18 的扇区数(32KB)。bounce buffer 可用上限是 127 扇区
+ * (第 128 扇区放 ADMA descriptor)，取 64 保持 2 的幂，与
+ * miyoo_sd_note_success 的倍增爬升逻辑吻合；出错仍会回落到
+ * SAFE_CHUNK 再逐步恢复，不改变任何容错时序。
+ */
+#define MIYOO_SD_SYSTEM_FAST_CHUNK  64U
 
 
 static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
