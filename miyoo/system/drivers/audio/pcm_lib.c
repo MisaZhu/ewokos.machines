@@ -7,6 +7,7 @@
 #include <ewoksys/vfs.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/ipc.h>
+#include <ewoksys/vdevice.h>
 #include <sys/errno.h>
 
 #include "pcm_lib.h"
@@ -38,6 +39,20 @@
 #define PCM_LOOP_CLOSED_SLEEP_US	160000
 #define PCM_LOOP_IDLE_MAX_SLEEP_US	160000
 #define PCM_LOOP_REAP_INTERVAL		4
+#define PCM_LOOP_STALL_TIMEOUT_US	1000000
+
+/*
+ * Writable-edge tracking shared between the write path and the polling
+ * loop. _pcm_loop_was_writable: edge detector so the loop only notifies
+ * vfsd on not-writable -> writable transitions. _pcm_writer_parked: a
+ * writer got VFS_ERR_RETRY and is parked in vfs_block(VFS_EVT_WR); the
+ * loop must guarantee it a wakeup (writable, XRUN or teardown alike).
+ * _pcm_loop_full_us: how long the ring has stayed full while RUNNING,
+ * used to detect a stalled engine (replaces the old wait_avail timeout).
+ */
+static int _pcm_loop_was_writable = 0;
+static int _pcm_writer_parked = 0;
+static uint32_t _pcm_loop_full_us = 0;
 
 int snd_card_new(struct snd_card **snd_card, const char *name)
 {
@@ -822,10 +837,40 @@ int snd_pcm_substeam_write(struct snd_pcm_substream *substream, const void *sour
 		//int old_appl = 0;
 
 		if (avail == 0) {
-			err = wait_avail(substream, &avail);
+			/*
+			 * Never sleep here: this runs in IPC handler context where
+			 * sys_usleep() degenerates to schedule() (yield-spin), so
+			 * the old wait_avail() loop burned a full core while merely
+			 * throttling the writer. Refresh the hardware view once; if
+			 * the ring is still full, return the partial count (or 0 ->
+			 * VFS_ERR_RETRY upstairs) and let the VFS layer park the
+			 * client on VFS_EVT_WR until the polling loop reports the
+			 * ring writable again.
+			 */
+			snd_pcm_lock(substream);
+			if (substream->open_count == 0 || substream->closing ||
+				substream->runtime == NULL) {
+				snd_pcm_unlock(substream);
+				err = -EBADF;
+				break;
+			}
+			if (runtime->status.state == PCM_STATE_RUNNING) {
+				if (substream->ops->pointer) {
+					update_hw_ptr(substream, 0);
+				}
+				if (substream->ops->kick) {
+					substream->ops->kick(substream);
+				}
+			}
+			if (runtime->status.state == PCM_STATE_XRUN) {
+				err = -EPIPE;
+			}
+			avail = play_avail(runtime);
+			snd_pcm_unlock(substream);
 			if (err < 0) {
-				
-				
+				break;
+			}
+			if (avail == 0) {
 				break;
 			}
 		}
@@ -1719,7 +1764,20 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 		return err;
 	}
 
-	return snd_pcm_write1(pcm, buf, size, offset);
+	int res = snd_pcm_write1(pcm, buf, size, offset);
+	if (res == 0 && size > 0) {
+		/*
+		 * Ring full and nothing consumed: hand the pacing to the VFS
+		 * layer. VFS_ERR_RETRY makes the client's libc write() park in
+		 * vfs_block(VFS_EVT_WR) (a real sleep inside vfsd) instead of
+		 * this handler blocking audctrl; the polling loop wakes it when
+		 * the ring drains or the stream dies.
+		 */
+		_pcm_writer_parked = 1;
+		_pcm_loop_was_writable = 0;
+		return VFS_ERR_RETRY;
+	}
+	return res;
 }
 
 int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p)
@@ -1915,15 +1973,6 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
  */
 static uint32_t _pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_US;
 
-/*
- * Edge detector for the RUNNING-state wakeup below: none of the current
- * clients poll() the sound node, they pace themselves with blocking
- * write(). Re-sending VFS_EVT_WR every 20ms turns into a permanent
- * audctrl->vfsd IPC stream during playback for nobody; only notify on
- * the not-writable -> writable transition.
- */
-static int _pcm_loop_was_writable = 0;
-
 static uint32_t pcm_loop_idle_backoff(int reset)
 {
 	uint32_t us = _pcm_loop_idle_sleep_us;
@@ -2021,12 +2070,43 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 		{
 			uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
 			if (events != 0) {
-				if (!_pcm_loop_was_writable) {
+				_pcm_loop_full_us = 0;
+				/*
+				 * Edge-triggered notify, except a parked writer
+				 * (VFS_ERR_RETRY from fdev_write) must always get
+				 * its wakeup or it sleeps in vfs_block forever.
+				 */
+				if (!_pcm_loop_was_writable || _pcm_writer_parked) {
 					vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+					_pcm_writer_parked = 0;
 				}
 				_pcm_loop_was_writable = 1;
 			} else {
 				_pcm_loop_was_writable = 0;
+				/*
+				 * Ring full while RUNNING means the hardware must be
+				 * draining it. If it stays full past the timeout the
+				 * engine has stalled: force XRUN (the old wait_avail
+				 * timeout used to do this) so parked/future writers
+				 * get -EPIPE and recover via prepare instead of
+				 * sleeping forever.
+				 */
+				if (_pcm_loop_full_us >= PCM_LOOP_STALL_TIMEOUT_US) {
+					_pcm_loop_full_us = 0;
+					snd_pcm_lock(substream);
+					if (!substream->closing && substream->open_count != 0 &&
+						runtime->status.state == PCM_STATE_RUNNING) {
+						if (substream->ops->trigger) {
+							substream->ops->trigger(substream, PCM_TRIGER_STOP);
+						}
+						set_pcm_state(substream, PCM_STATE_XRUN);
+					}
+					snd_pcm_unlock(substream);
+					if (_pcm_writer_parked) {
+						vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+						_pcm_writer_parked = 0;
+					}
+				}
 			}
 		}
 		pcm_loop_idle_backoff(1);
@@ -2038,11 +2118,14 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 			 * floor keeps the background refill kick timely. Sleep for
 			 * half the queued playtime, clamped to [20ms, 80ms]; the
 			 * hw_ptr was refreshed just above by check_poll_events so
-			 * frames_ready() is current.
+			 * frames_ready() is current. A parked writer pins the
+			 * cadence to the floor so its wakeup lands within ~20ms of
+			 * the ring draining.
 			 */
 			sleep_us = PCM_LOOP_ACTIVE_SLEEP_US;
 			snd_pcm_lock(substream);
-			if (substream->runtime != NULL && substream->runtime->rate > 0) {
+			if (!_pcm_writer_parked &&
+				substream->runtime != NULL && substream->runtime->rate > 0) {
 				int queued = frames_ready(substream->runtime);
 				if (queued > 0) {
 					uint64_t us = (uint64_t)queued * 1000000ULL /
@@ -2056,17 +2139,35 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 				}
 			}
 			snd_pcm_unlock(substream);
+			if (!_pcm_loop_was_writable) {
+				_pcm_loop_full_us += sleep_us;
+			}
 		}
 		break;
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_SETUP:
 		_pcm_loop_was_writable = 0;
+		_pcm_loop_full_us = 0;
+		if (_pcm_writer_parked) {
+			vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+			_pcm_writer_parked = 0;
+		}
 		sleep_us = pcm_loop_idle_backoff(0);
 		break;
 	case PCM_STATE_XRUN:
 	case PCM_STATE_STOPED:
 	default:
 		_pcm_loop_was_writable = 0;
+		_pcm_loop_full_us = 0;
+		/*
+		 * A writer parked before the stream died must still be woken:
+		 * its retried write will return -EPIPE/-EBADF and the client
+		 * runs its normal recovery path.
+		 */
+		if (_pcm_writer_parked) {
+			vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+			_pcm_writer_parked = 0;
+		}
 		sleep_us = PCM_LOOP_CLOSED_SLEEP_US;
 		break;
 	}
