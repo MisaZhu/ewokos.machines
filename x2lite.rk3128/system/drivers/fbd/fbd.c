@@ -19,32 +19,6 @@ int argv2rgb(uint8_t  *out,  uint32_t *in , int w, int h)
 	return 0;
 }
 
-/*static void splash(graph_t* g) {
-	int y, h, l;
-	uint32_t c, bc;
-
-	l = g->h/8;
-	h = (g->h / l);
-	h = (h==0 ? 1:h); 
-
-	bc = 0xff / l;
-	bc = (bc==0 ? 1:bc); 
-	for(y=0; y<l; y++) {
-		c = (l-1-y) * bc;
-		graph_fill(g, 0, y*h, g->w, h, (c | c<<8 | c<<16 | 0xff000000));
-	}
-
-#ifdef BSP_BOOST
-	graph_t* logo = png_image_new("/data/images/vadar.png");
-#else
-	graph_t* logo = png_image_new("/data/images/ewok.png");
-#endif
-	graph_blt_alpha(logo, 0, 0, logo->w, logo->h,
-			g, (g->w-logo->w)/2, (g->h-logo->h)/2, logo->w, logo->h, 0xff);
-	graph_free(logo);
-}
-*/
-
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 	uint32_t sz = 4 * g->w * g->h;
