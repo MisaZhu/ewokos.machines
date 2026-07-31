@@ -12,3 +12,5 @@
 @/bin/x/statusbar &
 @/bin/x/xlauncher &
 #@/apps/xapps/xapps -l --item_size=120 --font_size=16 &
+
+@/bin/mp3player /usr/system/sounds/start.mp3 &

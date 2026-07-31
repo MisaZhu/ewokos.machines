@@ -7,13 +7,21 @@
 @/bin/ipcserv /sbin/splashd -w 480 -h 320
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
 
+#@/bin/ipcserv /drivers/consoled     /dev/console0 
+#@set_stdio /dev/console0
 
+#@/bin/splash -m "start /dev/tty0" -p 5
 #@/bin/ipcserv /drivers/miyoo/ms_uartd /dev/tty0
 
 @/bin/splash -m "loading joystick" -p 10
 @/bin/ipcserv /drivers/miyoo/gpio_joystickd     /dev/joystick
-@/bin/ipcserv /drivers/vkeybd                   /dev/vkeyb /dev/joystick -t j
-@/bin/ipcserv /drivers/vjoystickd               /dev/vjoystick /dev/vkeyb -m
+
+
+@/bin/splash -m "start vkeyb" -p 12
+@/bin/ipcserv /drivers/vkeybd              -t j  /dev/vkeyb /dev/joystick
+
+@/bin/splash -m "start vjoystick" -p 15
+@/bin/ipcserv /drivers/vjoystickd          -m   /dev/vjoystick /dev/vkeyb 
 
 @/bin/splash -m "loading timer" -p 20
 @/bin/ipcserv /drivers/timerd         
@@ -31,8 +39,8 @@
 @/bin/ipcserv /sbin/sessiond
 #@/bin/bgrun /bin/session -r -t /dev/tty0 
 
-@/bin/splash -m "loading fonts" -p 60
-@/bin/load_font
+#@/bin/splash -m "loading fonts" -p 60
+#@/bin/load_font
 
 @/bin/splash -m "loading X input" -p 80
 @/bin/bgrun /sbin/x/xim_none   /dev/vjoystick 
