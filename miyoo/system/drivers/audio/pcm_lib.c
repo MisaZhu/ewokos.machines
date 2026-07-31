@@ -5,6 +5,8 @@
 #include <string.h>
 #include <sys/types.h>
 #include <ewoksys/vfs.h>
+#include <ewoksys/proc.h>
+#include <ewoksys/ipc.h>
 #include <sys/errno.h>
 
 #include "pcm_lib.h"
@@ -32,8 +34,10 @@
 #define PCM_WAIT_AVAIL_TIMEOUT_US	1000000
 #define PCM_LOOP_IDLE_SLEEP_US		10000
 #define PCM_LOOP_ACTIVE_SLEEP_US	20000
+#define PCM_LOOP_ACTIVE_MAX_SLEEP_US	80000
 #define PCM_LOOP_CLOSED_SLEEP_US	160000
-#define PCM_LOOP_IDLE_MAX_SLEEP_US	40000
+#define PCM_LOOP_IDLE_MAX_SLEEP_US	160000
+#define PCM_LOOP_REAP_INTERVAL		4
 
 int snd_card_new(struct snd_card **snd_card, const char *name)
 {
@@ -1631,6 +1635,12 @@ static int snd_pcm_release(struct snd_pcm *pcm)
 	 * no thread is touching the DMA state.
 	 */
 	snd_pcm_lock(substream);
+	if (substream->open_count == 0) {
+		/* Already released (e.g. reaped after owner death); a late
+		 * close() from vfsd must not tear the DAI down twice. */
+		snd_pcm_unlock(substream);
+		return 0;
+	}
 	substream->closing = 1;
 	snd_pcm_unlock(substream);
 
@@ -1639,6 +1649,7 @@ static int snd_pcm_release(struct snd_pcm *pcm)
 
 	snd_pcm_lock(substream);
 	substream->open_count = 0;
+	substream->owner_pid = 0;
 	substream->closing = 0;
 	snd_pcm_unlock(substream);
 
@@ -1652,7 +1663,6 @@ int fdev_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, v
 	
 	UNUSED(dev);
 	UNUSED(fd);
-	UNUSED(from_pid);
 	UNUSED(info);
 	UNUSED(oflag);
 
@@ -1660,8 +1670,14 @@ int fdev_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, v
 	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
 		return -EBADF;
 	}
-	
-	return snd_pcm_open(pcm);
+
+	int err = snd_pcm_open(pcm);
+	if (err == 0) {
+		snd_pcm_lock(pcm->substream);
+		pcm->substream->owner_pid = from_pid;
+		snd_pcm_unlock(pcm->substream);
+	}
+	return err;
 }
 
 
@@ -1892,34 +1908,42 @@ static uint32_t fdev_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
 
 /*
  * State-aware sleep helpers for the polling loop.
- * pcm_loop_closed_sleep: long sleep for terminal/closed states (160ms).
  * pcm_loop_idle_backoff: exponential backoff for idle-but-open states
- *   (10ms -> 20ms -> 40ms). Pass reset=1 to reset to minimum.
+ *   (10ms -> 20ms -> ... -> max). Pass reset=1 to reset to minimum and
+ *   return 0; otherwise returns the sleep length to use and advances
+ *   the backoff. The caller sleeps OUTSIDE the ipc_disable() fence.
  */
 static uint32_t _pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_US;
 
-static void pcm_loop_closed_sleep(void)
-{
-	usleep(PCM_LOOP_CLOSED_SLEEP_US);
-}
+/*
+ * Edge detector for the RUNNING-state wakeup below: none of the current
+ * clients poll() the sound node, they pace themselves with blocking
+ * write(). Re-sending VFS_EVT_WR every 20ms turns into a permanent
+ * audctrl->vfsd IPC stream during playback for nobody; only notify on
+ * the not-writable -> writable transition.
+ */
+static int _pcm_loop_was_writable = 0;
 
-static void pcm_loop_idle_backoff(int reset)
+static uint32_t pcm_loop_idle_backoff(int reset)
 {
+	uint32_t us = _pcm_loop_idle_sleep_us;
 	if (reset) {
 		_pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_SLEEP_US;
-		return;
+		return 0;
 	}
-	usleep(_pcm_loop_idle_sleep_us);
 	if (_pcm_loop_idle_sleep_us < PCM_LOOP_IDLE_MAX_SLEEP_US) {
 		_pcm_loop_idle_sleep_us *= 2;
 		if (_pcm_loop_idle_sleep_us > PCM_LOOP_IDLE_MAX_SLEEP_US) {
 			_pcm_loop_idle_sleep_us = PCM_LOOP_IDLE_MAX_SLEEP_US;
 		}
 	}
+	return us;
 }
 
 static int fdev_loop_step(vdevice_t* dev, void* p)
 {
+	uint32_t sleep_us = PCM_LOOP_CLOSED_SLEEP_US;
+
 	if (dev == NULL || dev->mnt_info.node == 0) {
 		/*
 		 * device_run() calls loop_step in a tight while-loop and relies
@@ -1927,7 +1951,7 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 		 * the mount node is published) turns the main loop into a pure
 		 * busy-spin that pegs the CPU.
 		 */
-		pcm_loop_closed_sleep();
+		usleep(sleep_us);
 		return 0;
 	}
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
@@ -1936,41 +1960,119 @@ static int fdev_loop_step(vdevice_t* dev, void* p)
 	int state;
 
 	if (substream == NULL) {
-		pcm_loop_closed_sleep();
+		usleep(sleep_us);
 		return 0;
 	}
+
+	/*
+	 * CRITICAL: IPC handlers (fdev_write/close/ctrl) interrupt this
+	 * process like a soft interrupt at any instruction, and
+	 * pthread_mutex_lock here is a yield-spin (the kernel semaphore
+	 * never blocks the waiter). If a write IPC lands while this loop
+	 * holds substream->lock, fdev_write spins forever against an owner
+	 * frozen underneath the IPC context -> 100% CPU + permanent wedge.
+	 * The same applies to the lock-free malloc heap this single-threaded
+	 * process uses (vfs_wakeup's proto buffers vs handler allocations).
+	 * Follow the xserverd/consoled convention: fence the whole shared
+	 * state section with ipc_disable()/ipc_enable() so IPC callers are
+	 * parked by the kernel instead of interrupting us, and do all
+	 * sleeping outside the fence.
+	 */
+	ipc_disable();
 
 	snd_pcm_lock(substream);
 	if (substream->open_count == 0 || substream->runtime == NULL) {
 		snd_pcm_unlock(substream);
-		pcm_loop_closed_sleep();
+		_pcm_loop_was_writable = 0;
+		ipc_enable();
+		usleep(PCM_LOOP_CLOSED_SLEEP_US);
 		return 0;
 	}
 	runtime = substream->runtime;
 	state = runtime->status.state;
+	int owner_pid = substream->owner_pid;
 	snd_pcm_unlock(substream);
+
+	/*
+	 * Reap sessions whose owner died without close(): abnormal process
+	 * exit can leak the fd reference so the close never reaches us,
+	 * leaving the stream parked in RUNNING/PREPARE and this loop
+	 * polling the hardware at full cadence forever. The reaper only
+	 * needs sub-second latency, so probe every few ticks instead of
+	 * paying one syscall per iteration at RUNNING cadence.
+	 */
+	if (owner_pid > 0) {
+		static int reap_tick = 0;
+		if (++reap_tick >= PCM_LOOP_REAP_INTERVAL) {
+			reap_tick = 0;
+			procinfo_t pinfo;
+			if (proc_info(owner_pid, &pinfo) != 0) {
+				snd_pcm_release(pcm);
+				_pcm_loop_was_writable = 0;
+				ipc_enable();
+				usleep(PCM_LOOP_CLOSED_SLEEP_US);
+				return 0;
+			}
+		}
+	}
 
 	switch (state) {
 	case PCM_STATE_RUNNING:
 		{
 			uint32_t events = fdev_check_poll_events(dev, 0, 0, NULL, p);
 			if (events != 0) {
-				vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+				if (!_pcm_loop_was_writable) {
+					vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+				}
+				_pcm_loop_was_writable = 1;
+			} else {
+				_pcm_loop_was_writable = 0;
 			}
 		}
 		pcm_loop_idle_backoff(1);
-		usleep(PCM_LOOP_ACTIVE_SLEEP_US);
+		{
+			/*
+			 * Scale the poll cadence with the amount of queued audio:
+			 * with a near-full ring (~186ms at 44.1kHz) waking every
+			 * 20ms burns CPU for nothing, while near underrun the 20ms
+			 * floor keeps the background refill kick timely. Sleep for
+			 * half the queued playtime, clamped to [20ms, 80ms]; the
+			 * hw_ptr was refreshed just above by check_poll_events so
+			 * frames_ready() is current.
+			 */
+			sleep_us = PCM_LOOP_ACTIVE_SLEEP_US;
+			snd_pcm_lock(substream);
+			if (substream->runtime != NULL && substream->runtime->rate > 0) {
+				int queued = frames_ready(substream->runtime);
+				if (queued > 0) {
+					uint64_t us = (uint64_t)queued * 1000000ULL /
+						(uint64_t)substream->runtime->rate / 2;
+					if (us > PCM_LOOP_ACTIVE_MAX_SLEEP_US) {
+						us = PCM_LOOP_ACTIVE_MAX_SLEEP_US;
+					}
+					if (us > sleep_us) {
+						sleep_us = (uint32_t)us;
+					}
+				}
+			}
+			snd_pcm_unlock(substream);
+		}
 		break;
 	case PCM_STATE_PREPARE:
 	case PCM_STATE_SETUP:
-		pcm_loop_idle_backoff(0);
+		_pcm_loop_was_writable = 0;
+		sleep_us = pcm_loop_idle_backoff(0);
 		break;
 	case PCM_STATE_XRUN:
 	case PCM_STATE_STOPED:
 	default:
-		pcm_loop_closed_sleep();
+		_pcm_loop_was_writable = 0;
+		sleep_us = PCM_LOOP_CLOSED_SLEEP_US;
 		break;
 	}
+
+	ipc_enable();
+	usleep(sleep_us);
 	return 0;
 }
 

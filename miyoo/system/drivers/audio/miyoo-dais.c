@@ -211,22 +211,32 @@ static inline unsigned int msc313_bach_dma_miu_addr(ewokos_addr_t vaddr)
 
 static int msc313_bach_get_level(struct msc313_bach_dma_sub_channel *sub_channel)
 {
-	unsigned level;
+	unsigned level, last;
+	int tries;
+
 	regmap_field_write(sub_channel->count, 1);
 	/*
 	 * The count pulse latches a fresh level into the read register
-	 * asynchronously, then we discard the first read and use the
-	 * second. The original code used delay(100) twice, which burned
-	 * a few hundred ns of pure CPU spin per call; with the pointer
-	 * being polled from fdev_loop_step and the user write path this
-	 * added up to a measurable share of CPU on miyoo. A few cycles
-	 * of spin is enough to flush the MMIO write, and the second read
-	 * already takes care of the hardware-side settle time.
+	 * asynchronously. The original code burned delay(100) twice per
+	 * call waiting for the latch to settle; trimming that to delay(8)
+	 * saved CPU but let glitchy/partially-latched values through, and
+	 * a single bad (too small or zero) read makes pointer() jump
+	 * processed_bytes forward, which update_hw_ptr() then misreads as
+	 * a buffer-empty XRUN mid-playback. Instead of a long blind spin,
+	 * re-read until two consecutive reads agree (bounded), so only
+	 * stable values are trusted while the common case still finishes
+	 * in two cheap MMIO reads.
 	 */
 	delay(8);
-	regmap_field_read(sub_channel->level, &level);
-	delay(8);
-	regmap_field_read(sub_channel->level, &level);
+	regmap_field_read(sub_channel->level, &last);
+	level = last;
+	for (tries = 0; tries < 8; tries++) {
+		delay(8);
+		regmap_field_read(sub_channel->level, &level);
+		if (level == last)
+			break;
+		last = level;
+	}
 	regmap_field_write(sub_channel->count, 0);
 	return level;
 }

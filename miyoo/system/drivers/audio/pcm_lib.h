@@ -180,6 +180,12 @@ struct snd_pcm_substream {
 	struct snd_pcm *pcm;
 	void *private_data;
 	int open_count;
+	/*
+	 * Pid of the process that opened the stream. Used by the polling
+	 * loop to reap sessions whose owner died without a close() (abnormal
+	 * exit can leak the fd reference and the close never arrives).
+	 */
+	int owner_pid;
 	volatile int closing;
 	const struct snd_pcm_ops *ops;
 	struct snd_pcm_runtime *runtime;
