@@ -21,6 +21,15 @@ SC16IS750/752 Driver for RaspberryPi
   (a full 64-byte TX FIFO drain takes ~33ms at 19200 baud)*/
 #define SC16IS750_TX_WAIT_TIMEOUT 2000
 
+/*Concurrency note: EwokOS delivers IPC by suspending the driver's main
+  context and running the handler on top of it (proc_ipc_do_task), so an IPC
+  TX transaction can preempt a half-done RX transaction and splice the SPI
+  byte stream (garbled output, clobbered registers). A userspace mutex here
+  self-deadlocks: the preempted main context can never release it while the
+  handler spins. Serialization is done in uartd.c by wrapping the loop-side
+  SPI accesses in ipc_disable()/ipc_enable(); handlers need no lock because
+  the main context is suspended while they run.*/
+
 int wiringPiSPISetup(int channel, int clk){
 	bcm283x_gpio_init();
 	bcm283x_auxspi_init(channel);

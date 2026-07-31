@@ -67,6 +67,7 @@ int main(int argc, char** argv) {
 	lcd_init(w, h, G_ROTATE_0, _spi_div);
 
 	fbd_t fbd;
+	memset(&fbd, 0, sizeof(fbd_t));
 	fbd.splash = NULL;
 	fbd.flush = flush;
 	fbd.init = init;

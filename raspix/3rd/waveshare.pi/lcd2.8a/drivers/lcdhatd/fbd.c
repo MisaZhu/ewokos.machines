@@ -94,6 +94,7 @@ int main(int argc, char** argv) {
 	xpt2046_init(tp_cs, tp_irq, 64);
 
 	fbd_t fbd;
+	memset(&fbd, 0, sizeof(fbd_t));
 	fbd.splash = NULL;
 	fbd.flush = flush;
 	fbd.init = init;

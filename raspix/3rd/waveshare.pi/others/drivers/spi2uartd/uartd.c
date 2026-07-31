@@ -21,11 +21,13 @@ static SC16IS750_t spiuart;
 static uint8_t _uart_channel = SC16IS750_CHANNEL_B;
 static uint8_t _rx_channel = SC16IS750_CHANNEL_NONE;
 static bool _no_return;
-static uint32_t _dbg_rx_idle_loops;
-static uint32_t _dbg_rx_err_logs;
 static uint32_t _dbg_rx_switch_logs;
 
 // #region debug-point A:dump-channel-registers
+/*Only safe before device_run(): slog() issues a synchronous IPC (write to
+  /dev/log) and the register reads are unserialized SPI transactions, so
+  calling this while serving IPC would either splice the bus byte stream or
+  cross-deadlock with logd once IPC is disabled.*/
 static void spi2uart_dump_regs(const char* tag, uint8_t channel) {
         slog("spi2uartd[%s]: ch=%c lsr=%02x iir=%02x rxlvl=%u txlvl=%u efcr=%02x mcr=%02x msr=%02x\n",
                         tag,
@@ -138,25 +140,22 @@ static int loop(vdevice_t* dev, void* p) {
         int rx = 0;
         uint8_t active_channel = channels[0];
 
+        /*The kernel delivers IPC by suspending this main context and running
+          the handler on top of it, so uart_write()'s SPI TX transaction can
+          preempt a half-done RX transaction here and splice the bus byte
+          stream (garbled output, clobbered registers). Keep IPC disabled
+          across every loop-side SPI access; a mutex cannot be used since the
+          preempted context could never release it. No slog()/blocking IPC is
+          allowed inside the disabled region (cross-deadlock with logd), and
+          IPC is re-enabled before sleeping so writers are not starved.*/
+        ipc_disable();
+
         for(int ci = 0; ci < 2 && rx == 0; ci++) {
                 int len = SC16IS750_available(&spiuart, channels[ci]);
-                uint8_t lsr = SC16IS750_ReadRegister(&spiuart, channels[ci], SC16IS750_REG_LSR);
-
-                // #region debug-point B:rx-anomaly
-                if(((lsr & 0x1E) != 0 || len > SC16IS750_FIFO_SIZE) && _dbg_rx_err_logs < 8) {
-                        _dbg_rx_err_logs++;
-                        slog("spi2uartd: rx anomaly ch=%c len=%d lsr=%02x iir=%02x rxlvl=%u\n",
-                                        (channels[ci] == SC16IS750_CHANNEL_B) ? 'B' : 'A',
-                                        len,
-                                        lsr,
-                                        SC16IS750_ReadRegister(&spiuart, channels[ci], SC16IS750_REG_IIR),
-                                        SC16IS750_ReadRegister(&spiuart, channels[ci], SC16IS750_REG_RXLVL));
-                }
-                // #endregion
 
                 if(len <= 0)
                         continue;
-                if(len > SC16IS750_FIFO_SIZE)
+                if(len > SC16IS750_FIFO_SIZE) /*floating MISO reads 0xFF*/
                         continue;
 
                 active_channel = channels[ci];
@@ -172,32 +171,27 @@ static int loop(vdevice_t* dev, void* p) {
         }
 
         if(rx == 0) {
-                // #region debug-point C:rx-idle
-                _dbg_rx_idle_loops++;
-                if((_dbg_rx_idle_loops % 500) == 0) {
-                        spi2uart_dump_regs("idle", channels[0]);
-                }
-                // #endregion
+                ipc_enable();
                 proc_usleep(10000);
                 return 0;
         }
 
-        _dbg_rx_idle_loops = 0;
-
+        bool switched = false;
         if(_rx_channel != active_channel) {
                 _rx_channel = active_channel;
                 if(_dbg_rx_switch_logs < 4) {
                         _dbg_rx_switch_logs++;
-                        slog("spi2uartd: rx using sc16is750 channel %c\n",
-                                        (_rx_channel == SC16IS750_CHANNEL_B) ? 'B' : 'A');
-                        spi2uart_dump_regs("switch", _rx_channel);
+                        switched = true;
                 }
         }
 
-        ipc_disable();
         for(int i = 0; i < rx; i++)
                 charbuf_push(_RxBuf, tmp[i], true);
         ipc_enable();
+
+        if(switched)
+                slog("spi2uartd: rx using sc16is750 channel %c\n",
+                                (_rx_channel == SC16IS750_CHANNEL_B) ? 'B' : 'A');
 
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
         return 0;

@@ -73,6 +73,7 @@ int main(int argc, char** argv) {
 
 
 	fbd_t fbd;
+	memset(&fbd, 0, sizeof(fbd_t));
 	fbd.splash = NULL;
 	fbd.flush = flush;
 	fbd.init = init;
