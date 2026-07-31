@@ -25,10 +25,14 @@ uint32_t uc_hvs_read_raw(uint32_t off);
  * Post-pipeline-start liveness probes (blink-code stages):
  *  uc_hvs_channel_running()   0 iff channel 1 left INIT (PV delivered
  *                             at least one vstart, video engine RUN/EOF).
+ *  uc_hvs_wait_channel_running(t) same check, polled every 1ms with
+ *                             early exit; t ms is only the failure budget.
  *  uc_hvs_frames_advancing(t) 0 iff channel 1's frame counter changed
- *                             within t ms (PV keeps consuming frames).
+ *                             within t ms (PV keeps consuming frames);
+ *                             polls and returns on the first advance.
  */
 int uc_hvs_channel_running(void);
+int uc_hvs_wait_channel_running(uint32_t timeout_ms);
 int uc_hvs_frames_advancing(uint32_t wait_ms);
 
 /*

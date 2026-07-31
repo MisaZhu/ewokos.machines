@@ -345,9 +345,13 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * If 7 fails: PV never started (PV/DSI video-mode handshake).
 	 * If 8 fails: one frame went out then stalled (DSI throughput /
 	 * timing mismatch).
+	 *
+	 * Both probes poll with early exit (uc_hvs.c): a healthy pipeline
+	 * clears them within a frame or two (~17-35ms), so the 100/300ms
+	 * figures are only the FAILURE budget — the old fixed uc_mdelay
+	 * pair burned the full 400ms on every boot for nothing.
 	 */
-	uc_mdelay(100);
-	if (uc_hvs_channel_running() != 0) {
+	if (uc_hvs_wait_channel_running(100) != 0) {
 		return fail_stage(7);
 	}
 	if (uc_hvs_frames_advancing(300) != 0) {

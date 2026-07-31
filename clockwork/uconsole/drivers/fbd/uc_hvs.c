@@ -313,18 +313,56 @@ int uc_hvs_channel_running(void) {
 		mode == SCALER_DISPSTATX_MODE_EOF) ? 0 : -1;
 }
 
+/*
+ * Early-exit poll instead of one fixed uc_mdelay(timeout_ms) sleep:
+ * bring-up only needs the FIRST positive observation, and at ~60Hz
+ * that lands within one or two frames (~17-35ms), not the full
+ * timeout budget. Elapsed time comes from the 1MHz system timer
+ * (already mapped by bring-up); the iteration cap is a backstop for
+ * usleep() granularity coarser than 1ms, so a broken pipeline still
+ * fails in bounded time.
+ */
+int uc_hvs_wait_channel_running(uint32_t timeout_ms) {
+	uint32_t start = uc_micros();
+	uint32_t i;
+
+	_hvs_init();
+	if (_hvs == 0) return -1;
+	for (i = 0; i <= timeout_ms; ++i) {
+		if (uc_hvs_channel_running() == 0) {
+			return 0;
+		}
+		if ((uint32_t)(uc_micros() - start) >= timeout_ms * 1000U) {
+			break;
+		}
+		uc_mdelay(1);
+	}
+	return uc_hvs_channel_running();
+}
+
 int uc_hvs_frames_advancing(uint32_t wait_ms) {
 	uint32_t c0;
 	uint32_t c1;
+	uint32_t start;
+	uint32_t i;
 
 	_hvs_init();
 	if (_hvs == 0) return -1;
 	c0 = (_hvs_read(SCALER_DISPSTAT1) & SCALER_DISPSTATX_FRAME_COUNT_MASK)
 			>> SCALER_DISPSTATX_FRAME_COUNT_SHIFT;
-	uc_mdelay(wait_ms);
-	c1 = (_hvs_read(SCALER_DISPSTAT1) & SCALER_DISPSTATX_FRAME_COUNT_MASK)
-			>> SCALER_DISPSTATX_FRAME_COUNT_SHIFT;
-	return (c1 != c0) ? 0 : -1;
+	start = uc_micros();
+	for (i = 0; i <= wait_ms; ++i) {
+		c1 = (_hvs_read(SCALER_DISPSTAT1) & SCALER_DISPSTATX_FRAME_COUNT_MASK)
+				>> SCALER_DISPSTATX_FRAME_COUNT_SHIFT;
+		if (c1 != c0) {
+			return 0;
+		}
+		if ((uint32_t)(uc_micros() - start) >= wait_ms * 1000U) {
+			break;
+		}
+		uc_mdelay(1);
+	}
+	return -1;
 }
 
 /*
