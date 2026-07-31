@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-EV3_UARTD_OBJS = fifo.o uartd.o
+EV3_UARTD_OBJS = $(ARCH)/fifo.o $(ARCH)/uartd.o
 
 EV3_UARTD = $(TARGET_DIR)/drivers/ev3/uartd
 

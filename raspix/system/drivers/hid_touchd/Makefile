@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-HID_TOUCHD_OBJS = hid_touchd.o
+HID_TOUCHD_OBJS = $(ARCH)/hid_touchd.o
 
 HID_TOUCHD = $(TARGET_DIR)/drivers/raspix/hid_touchd
 

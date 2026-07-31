@@ -9,12 +9,12 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
 
-LIB_ARCH_EV3_OBJS = src/framebuffer.o \
-	src/gpio.o \
-	src/gpio.o \
-	src/spi.o \
-	src/uart.o \
-	src/sd.o 
+LIB_ARCH_EV3_OBJS = $(ARCH)/src/framebuffer.o \
+	$(ARCH)/src/gpio.o \
+	$(ARCH)/src/gpio.o \
+	$(ARCH)/src/spi.o \
+	$(ARCH)/src/uart.o \
+	$(ARCH)/src/sd.o 
 
 ARCH_EV3 = $(TARGET_DIR)/lib/libarch_ev3.a
 

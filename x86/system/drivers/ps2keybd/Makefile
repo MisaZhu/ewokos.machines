@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-KEYBD_OBJS = keybd.o
+KEYBD_OBJS = $(ARCH)/keybd.o
 
 KEYBD = $(TARGET_DIR)/drivers/x86/ps2keybd
 

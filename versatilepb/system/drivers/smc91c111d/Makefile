@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-SMC91C111D_OBJS = smc91c111d.o
+SMC91C111D_OBJS = $(ARCH)/smc91c111d.o
 
 SMC91C111D = $(TARGET_DIR)/drivers/versatilepb/smc91c111d
 

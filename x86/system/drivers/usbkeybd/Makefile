@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-USBKEYBD_OBJS = usbkeybd.o
+USBKEYBD_OBJS = $(ARCH)/usbkeybd.o
 
 USBKEYBD = $(TARGET_DIR)/drivers/x86/usbkeybd
 

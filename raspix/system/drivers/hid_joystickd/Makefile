@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-HID_JOYSTICKD_OBJS = hid_joystickd.o
+HID_JOYSTICKD_OBJS = $(ARCH)/hid_joystickd.o
 
 HID_JOYSTICKD = $(TARGET_DIR)/drivers/raspix/hid_joystickd
 

@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-USBMOUSED_OBJS = usbmoused.o
+USBMOUSED_OBJS = $(ARCH)/usbmoused.o
 
 USBMOUSED = $(TARGET_DIR)/drivers/x86/usbmoused
 

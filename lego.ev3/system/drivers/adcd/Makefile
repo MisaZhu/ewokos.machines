@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-ADCD_OBJS = main.o
+ADCD_OBJS = $(ARCH)/main.o
 
 ADCD = $(TARGET_DIR)/drivers/ev3/adcd
 

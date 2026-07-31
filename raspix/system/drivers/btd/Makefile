@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-BTD_OBJS = btd.o
+BTD_OBJS = $(ARCH)/btd.o
 
 BTD = $(TARGET_DIR)/drivers/raspix/btd
 

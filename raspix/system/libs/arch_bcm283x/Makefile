@@ -9,23 +9,23 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
 
-LIB_ARCH_BCM283X_OBJS = src/framebuffer.o \
-	src/dsi.o \
-	src/gpio_actled.o \
-	src/gpio.o \
-	src/mailbox.o \
-	src/mbox_actled.o \
-	src/i2s.o \
-	src/mini_uart.o \
-	src/pl011_uart.o \
-	src/sd.o \
-	src/i2c.o \
-	src/spi.o \
-	src/mmc.o \
-	src/emmc.o \
-	src/sdhost.o \
-	src/sdhci.o \
-	src/auxspi.o 
+LIB_ARCH_BCM283X_OBJS = $(ARCH)/src/framebuffer.o \
+	$(ARCH)/src/dsi.o \
+	$(ARCH)/src/gpio_actled.o \
+	$(ARCH)/src/gpio.o \
+	$(ARCH)/src/mailbox.o \
+	$(ARCH)/src/mbox_actled.o \
+	$(ARCH)/src/i2s.o \
+	$(ARCH)/src/mini_uart.o \
+	$(ARCH)/src/pl011_uart.o \
+	$(ARCH)/src/sd.o \
+	$(ARCH)/src/i2c.o \
+	$(ARCH)/src/spi.o \
+	$(ARCH)/src/mmc.o \
+	$(ARCH)/src/emmc.o \
+	$(ARCH)/src/sdhost.o \
+	$(ARCH)/src/sdhci.o \
+	$(ARCH)/src/auxspi.o 
 
 ARCH_BCM283X = $(TARGET_DIR)/lib/libarch_bcm283x.a
 

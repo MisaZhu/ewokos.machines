@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-SOUNDD_OBJS = soundd.o
+SOUNDD_OBJS = $(ARCH)/soundd.o
 
 SOUNDD = $(TARGET_DIR)/drivers/raspix/soundd
 

@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-DSI_FBD_OBJS = dsi_fbd.o
+DSI_FBD_OBJS = $(ARCH)/dsi_fbd.o
 
 DSI_FBD = $(TARGET_DIR)/drivers/raspix/dsi_fbd
 

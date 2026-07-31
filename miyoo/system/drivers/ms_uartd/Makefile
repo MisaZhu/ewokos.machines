@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-MS_UARTD_OBJS = ms_uartd.o
+MS_UARTD_OBJS = $(ARCH)/ms_uartd.o
 
 MS_UARTD = $(TARGET_DIR)/drivers/miyoo/ms_uartd
 

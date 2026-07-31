@@ -9,9 +9,9 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
 
-LIB_ARCH_MIYOO_OBJS = src/framebuffer.o \
-	src/sdmmc.o \
-	src/sd.o 
+LIB_ARCH_MIYOO_OBJS = $(ARCH)/src/framebuffer.o \
+	$(ARCH)/src/sdmmc.o \
+	$(ARCH)/src/sd.o 
 
 ARCH_BCM283X = $(TARGET_DIR)/lib/libarch_miyoo.a
 

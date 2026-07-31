@@ -9,7 +9,7 @@ LDFLAGS += -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-KBD_OBJS = kbd.o
+KBD_OBJS = $(ARCH)/kbd.o
 
 KBD = $(TARGET_DIR)/drivers/rk3506/kbd
 

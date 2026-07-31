@@ -9,7 +9,7 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
 
-LIB_ARCH_ORANGEPI_OBJS = src/sd.o 
+LIB_ARCH_ORANGEPI_OBJS = $(ARCH)/src/sd.o 
 
 ARCH_ORANGEPI = $(TARGET_DIR)/lib/libarch_orangepi.a
 

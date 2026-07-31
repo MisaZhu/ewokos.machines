@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-MS_UARTD_OBJS = uartd.o
+MS_UARTD_OBJS = $(ARCH)/uartd.o
 
 MS_UARTD = $(TARGET_DIR)/drivers/orangepi/uartd
 

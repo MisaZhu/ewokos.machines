@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-CAMD_OBJS = camd.o ov5647.o
+CAMD_OBJS = $(ARCH)/camd.o $(ARCH)/ov5647.o
 
 CAMD = $(TARGET_DIR)/drivers/raspix/camd
 

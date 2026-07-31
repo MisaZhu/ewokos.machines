@@ -9,7 +9,7 @@ OS_HDD = kernel.hdd
 BOOT_DIR = boot
 BOOT_SRC = $(BOOT_DIR)/bios_boot.S
 BOOT_CFG = $(BOOT_DIR)/bootcfg.inc
-BOOT_OBJ = $(BOOT_DIR)/bootsect.o
+BOOT_OBJ = $(ARCH)/$(BOOT_DIR)/bootsect.o
 BOOT_BIN = $(BOOT_DIR)/bootsect.bin
 QEMU_CMD = qemu-system-x86_64
 QEMU_FLAGS = -M $(QEMU_MACHINE) -m 512 -serial mon:stdio -no-reboot -no-shutdown
@@ -47,6 +47,7 @@ $(BOOT_CFG): $(OS_IMG) $(OS_ELF) | $(BOOT_DIR)
 	@python3 $(BOOT_DIR)/mkboot.py cfg $(LOAD_ADDRESS) $(CROSS_COMPILE)readelf $(OS_ELF) $(OS_IMG) > $(BOOT_CFG)
 
 $(BOOT_OBJ): $(BOOT_SRC) $(BOOT_CFG)
+	@mkdir -p $(dir $(BOOT_OBJ))
 	$(AS) --32 -I $(BOOT_DIR) -o $(BOOT_OBJ) $(BOOT_SRC)
 
 $(BOOT_BIN): $(BOOT_OBJ)
@@ -73,3 +74,8 @@ debug: $(OS_HDD)
 gdb:
 	echo "target remote :26000" > /tmp/gdbinit
 	x86_64-elf-gdb $(BUILD_DIR)/$(OS_ELF) -x /tmp/gdbinit
+
+clean: clean_boot
+
+clean_boot:
+	rm -f $(BOOT_OBJ) $(BOOT_BIN) $(BOOT_CFG) $(OS_BOOT) $(OS_HDD)

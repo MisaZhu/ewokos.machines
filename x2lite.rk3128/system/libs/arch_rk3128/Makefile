@@ -9,9 +9,9 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
 
-LIB_ARCH_RK3128_OBJS = src/framebuffer.o \
-	src/dwmmc.o \
-	src/sd.o 
+LIB_ARCH_RK3128_OBJS = $(ARCH)/src/framebuffer.o \
+	$(ARCH)/src/dwmmc.o \
+	$(ARCH)/src/sd.o 
 
 ARCH_RK3128 = $(TARGET_DIR)/lib/libarch_rk3128.a
 

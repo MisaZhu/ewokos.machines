@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-PS2MOUSED_OBJS = ps2moused.o
+PS2MOUSED_OBJS = $(ARCH)/ps2moused.o
 
 PS2MOUSED = $(TARGET_DIR)/drivers/versatilepb/ps2moused
 

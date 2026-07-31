@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-PS2KEYBD_OBJS = ps2keybd.o
+PS2KEYBD_OBJS = $(ARCH)/ps2keybd.o
 
 PS2KEYBD = $(TARGET_DIR)/drivers/versatilepb/ps2keybd
 

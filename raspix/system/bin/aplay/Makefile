@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-TASK_OBJS = aplay.o
+TASK_OBJS = $(ARCH)/aplay.o
 
 TASK = $(TARGET_DIR)/bin/aplay
 

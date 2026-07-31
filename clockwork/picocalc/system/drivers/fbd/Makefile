@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-FBD_OBJS = fbd.o ili9488.o
+FBD_OBJS = $(ARCH)/fbd.o $(ARCH)/ili9488.o
 
 FBD = $(TARGET_DIR)/drivers/rk3506/fbd
 

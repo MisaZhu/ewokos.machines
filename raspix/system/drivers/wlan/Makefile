@@ -9,25 +9,25 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I. -I $(BUILD_DIR)/include
 
-BRCMFMACD_OBJS = sdio/sdhci.o \
-				 sdio/mmc.o \
-				 sdio/sdio.o \
+BRCMFMACD_OBJS = $(ARCH)/sdio/sdhci.o \
+				 $(ARCH)/sdio/mmc.o \
+				 $(ARCH)/sdio/sdio.o \
 				 \
-				 utils/qbuf.o \
-				 utils/utils.o \
-				 utils/log.o \
-				 utils/skb.o \
-				 utils/config.o \
-				 utils/pbkdf2.o \
+				 $(ARCH)/utils/qbuf.o \
+				 $(ARCH)/utils/utils.o \
+				 $(ARCH)/utils/log.o \
+				 $(ARCH)/utils/skb.o \
+				 $(ARCH)/utils/config.o \
+				 $(ARCH)/utils/pbkdf2.o \
 				 \
-				 brcm/brcm.o \
-				 brcm/chip.o \
-				 brcm/firmware.o \
-				 brcm/firmware_43430.o \
-				 brcm/firmware_43436.o \
-				 brcm/command.o \
-				 brcm/console.o \
-				 main.o
+				 $(ARCH)/brcm/brcm.o \
+				 $(ARCH)/brcm/chip.o \
+				 $(ARCH)/brcm/firmware.o \
+				 $(ARCH)/brcm/firmware_43430.o \
+				 $(ARCH)/brcm/firmware_43436.o \
+				 $(ARCH)/brcm/command.o \
+				 $(ARCH)/brcm/console.o \
+				 $(ARCH)/main.o
 
  
 BRCMFMACD = $(TARGET_DIR)/drivers/raspix/wland

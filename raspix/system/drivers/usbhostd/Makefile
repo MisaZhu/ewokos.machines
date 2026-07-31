@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-USBHOSTD_OBJS = usbhostd.o
+USBHOSTD_OBJS = $(ARCH)/usbhostd.o
 
 USBHOSTD = $(TARGET_DIR)/drivers/raspix/usbhostd
 

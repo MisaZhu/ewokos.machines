@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-HID_KEYBD_OBJS = hid_keybd.o
+HID_KEYBD_OBJS = $(ARCH)/hid_keybd.o
 
 HID_KEYBD = $(TARGET_DIR)/drivers/raspix/hid_keybd
 

@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-RK_UARTD_OBJS = rk_uartd.o
+RK_UARTD_OBJS = $(ARCH)/rk_uartd.o
 
 RK_UARTD = $(TARGET_DIR)/drivers/rk3128/rk_uartd
 

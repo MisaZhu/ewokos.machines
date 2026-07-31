@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-SOUNDPWMD_OBJS = soundpwmd.o
+SOUNDPWMD_OBJS = $(ARCH)/soundpwmd.o
 
 SOUNDPWMD = $(TARGET_DIR)/drivers/raspix/soundpwmd
 

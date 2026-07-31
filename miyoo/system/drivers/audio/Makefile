@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-MS_AUD_OBJS = audctrl.o pcm_lib.o miyoo-dais.o reg_ctrl.o
+MS_AUD_OBJS = $(ARCH)/audctrl.o $(ARCH)/pcm_lib.o $(ARCH)/miyoo-dais.o $(ARCH)/reg_ctrl.o
 
 MS_AUD = $(TARGET_DIR)/drivers/miyoo/audctrl
 

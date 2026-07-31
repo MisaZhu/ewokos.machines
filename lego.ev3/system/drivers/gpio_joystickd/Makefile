@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib -Llib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-KBD_OBJS = joystickd.o
+KBD_OBJS = $(ARCH)/joystickd.o
 
 KBD = $(TARGET_DIR)/drivers/ev3/gpio_joystickd
 

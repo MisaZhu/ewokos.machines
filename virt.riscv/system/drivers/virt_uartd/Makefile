@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-VIRT_UARTD_OBJS = virt_uartd.o
+VIRT_UARTD_OBJS = $(ARCH)/virt_uartd.o
 
 VIRT_UARTD = $(TARGET_DIR)/drivers/virt/virt_uartd
 

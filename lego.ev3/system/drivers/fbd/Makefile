@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-FBD_OBJS = fbd.o st7586.o
+FBD_OBJS = $(ARCH)/fbd.o $(ARCH)/st7586.o
 
 FBD = $(TARGET_DIR)/drivers/ev3/fbd
 

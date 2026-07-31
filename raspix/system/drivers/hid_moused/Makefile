@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-HID_MOUSED_OBJS = hid_moused.o
+HID_MOUSED_OBJS = $(ARCH)/hid_moused.o
 
 HID_MOUSED = $(TARGET_DIR)/drivers/raspix/hid_moused
 

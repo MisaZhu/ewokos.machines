@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-TASK_OBJS = bt.o
+TASK_OBJS = $(ARCH)/bt.o
 
 TASK = $(TARGET_DIR)/bin/bt
 

@@ -1,4 +1,4 @@
-TASK_OBJS = powerd.o
+TASK_OBJS = $(ARCH)/powerd.o
 TASK = powerd 
 
 MF_ROOT_DIR=../..

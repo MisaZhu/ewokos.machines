@@ -1,3 +1,4 @@
+ARCH=arm
 CPU = arm926ej-s
 QEMU_FLAGS = -cpu arm926 -M versatilepb -m 256M -serial mon:stdio 
 ARCH_CFLAGS = -fno-strict-aliasing -mcpu=$(CPU)  -DARM_V6

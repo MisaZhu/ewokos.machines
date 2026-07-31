@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-JOYSTICKD_OBJS = joystickd.o
+JOYSTICKD_OBJS = $(ARCH)/joystickd.o
 
 JOYSTICKD = $(TARGET_DIR)/drivers/rk3128/gpio_joystickd
 
