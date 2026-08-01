@@ -50,8 +50,6 @@ const uc_panel_mode_t* uc_panel_mode(void) {
  *
  * Getting this backwards holds the panel in reset for ever: backlight
  * (GPIO 9) still lights, but no DCS command is ever accepted.
- * panel-cwd686.c uses the exact same pulse (10ms assert, 120ms
- * settle), so this reset path is shared by both panels.
  */
 
 /* probe-time state: pin claimed as output, driven physical LOW. */

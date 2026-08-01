@@ -423,12 +423,12 @@ int uc_dsi_dcs_write(uint8_t data_type, const uint8_t* payload, uint32_t len) {
 
 		/*
 		 * vc4_dsi_host_transfer(): payloads up to 16 bytes fit the
-		 * byte-oriented command FIFO alone.  Longer payloads (the
-		 * cwd686 table runs to 39 bytes) keep the len%4 residue —
-		 * from the START of the payload — in the command FIFO and
-		 * stream the rest through the pixel FIFO as little-endian
-		 * 32-bit words, with the packet routed to the "secondary
-		 * display" datapath instead of the short one.
+		 * byte-oriented command FIFO alone.  Longer payloads keep
+		 * the len%4 residue — from the START of the payload — in
+		 * the command FIFO and stream the rest through the pixel
+		 * FIFO as little-endian 32-bit words, with the packet
+		 * routed to the "secondary display" datapath instead of
+		 * the short one.
 		 */
 		if (len <= 16) {
 			cmd_fifo_len = len;
