@@ -68,7 +68,7 @@ static int power_step(vdevice_t* dev, void* p) {
 	(void)p;	
     int irq = bcm283x_gpio_read(2);
 	if(!irq){
-		power_off();
+		//power_off();
 	}
 	uint8_t state = i2c_getb(0x34, 0x01);	
 	_hasBattery = !!(state & (0x1 << 5));
