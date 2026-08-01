@@ -56,9 +56,13 @@ typedef struct {
 	uint32_t shader_rec_offset;
 	uint32_t uniforms_offset;
 	uint32_t vertex_data_offset;
-	uint32_t fullscreen_quad_offset;
-	uint32_t fullscreen_quad_bus_addr;
-	uint32_t fullscreen_quad_stride;
+	/* NV-shader-state resources backing the solid fill path. */
+	uint32_t fill_shader_rec_offset;
+	uint32_t fill_shader_rec_bus_addr;
+	uint32_t fill_uniforms_offset;
+	uint32_t fill_uniforms_bus_addr;
+	uint32_t fill_vertex_offset;
+	uint32_t fill_vertex_bus_addr;
 } vc4_kms_v3d_t;
 
 int32_t vc4_kms_v3d_init(vc4_kms_v3d_t* ctx, uint32_t width, uint32_t height, uint32_t depth);

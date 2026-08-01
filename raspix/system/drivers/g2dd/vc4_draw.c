@@ -59,6 +59,11 @@ int32_t vc4_emit_gl_shader_state(vc4_cl_t* cl, uint8_t number_of_attribute_array
 			vc4_cl_emit_u32(cl, shader_record_bus_addr) ? -1 : 0;
 }
 
+int32_t vc4_emit_nv_shader_state(vc4_cl_t* cl, uint32_t shader_record_bus_addr) {
+	return vc4_cl_emit_u8(cl, VC4_PACKET_NV_SHADER_STATE) ||
+			vc4_cl_emit_u32(cl, shader_record_bus_addr) ? -1 : 0;
+}
+
 int32_t vc4_emit_gl_array_primitive(vc4_cl_t* cl, uint8_t primitive_mode, uint32_t length, uint32_t index_of_first_vertex) {
 	return vc4_cl_emit_u8(cl, VC4_PACKET_GL_ARRAY_PRIMITIVE) ||
 			vc4_cl_emit_u8(cl, primitive_mode) ||
@@ -66,6 +71,18 @@ int32_t vc4_emit_gl_array_primitive(vc4_cl_t* cl, uint8_t primitive_mode, uint32
 			vc4_cl_emit_u32(cl, index_of_first_vertex) ? -1 : 0;
 }
 
+/*
+ * GL shader state record layout, per the hardware docs and cross-checked
+ * against the relocation offsets the Linux vc4 command validator enforces
+ * (vc4_validate.c: shader_reloc_offsets[] = { 4, 16, 28 }, i.e. FS/VS/CS code):
+ *
+ *   0..1  flags                 12..13 VS num uniforms   24..25 CS num uniforms
+ *   2     FS num uniforms        14     VS attr select    26     CS attr select
+ *   3     FS num varyings        15     VS total attr sz  27     CS total attr sz
+ *   4..7  FS code addr           16..19 VS code addr      28..31 CS code addr
+ *   8..11 FS uniforms addr       20..23 VS uniforms addr  32..35 CS uniforms addr
+ *   36 + i*8: attribute records
+ */
 int32_t vc4_write_shader_record(vc4_bo_t* bo, uint32_t offset,
 		const vc4_shader_record_info_t* info,
 		const vc4_attribute_record_info_t* attrs, uint32_t attr_count,
@@ -84,14 +101,18 @@ int32_t vc4_write_shader_record(vc4_bo_t* bo, uint32_t offset,
 	dst = (uint8_t*)(uintptr_t)bo->vaddr + offset;
 	memset(dst, 0, size);
 	dst[0] = info->flags;
-	dst[1] = info->fs_num_varyings;
+	dst[2] = info->fs_num_uniforms;
+	dst[3] = info->fs_num_varyings;
 	memcpy(dst + 4, &info->fs_code_addr, sizeof(info->fs_code_addr));
-	dst[8] = info->cs_attr_select_bits;
-	dst[12] = info->cs_total_attr_size;
-	memcpy(dst + 16, &info->cs_code_addr, sizeof(info->cs_code_addr));
-	dst[20] = info->vs_attr_select_bits;
-	dst[24] = info->vs_total_attr_size;
-	memcpy(dst + 28, &info->vs_code_addr, sizeof(info->vs_code_addr));
+	memcpy(dst + 8, &info->fs_uniforms_addr, sizeof(info->fs_uniforms_addr));
+	dst[14] = info->vs_attr_select_bits;
+	dst[15] = info->vs_total_attr_size;
+	memcpy(dst + 16, &info->vs_code_addr, sizeof(info->vs_code_addr));
+	memcpy(dst + 20, &info->vs_uniforms_addr, sizeof(info->vs_uniforms_addr));
+	dst[26] = info->cs_attr_select_bits;
+	dst[27] = info->cs_total_attr_size;
+	memcpy(dst + 28, &info->cs_code_addr, sizeof(info->cs_code_addr));
+	memcpy(dst + 32, &info->cs_uniforms_addr, sizeof(info->cs_uniforms_addr));
 
 	dst += 36;
 	for (i = 0; i < attr_count; i++) {
@@ -105,4 +126,61 @@ int32_t vc4_write_shader_record(vc4_bo_t* bo, uint32_t offset,
 
 	*next_offset = (offset + size + 15U) & ~15U;
 	return 0;
+}
+
+/*
+ * NV shader state record layout (16 bytes):
+ *   0      flags
+ *   1      shaded vertex data stride
+ *   2      FS num uniforms
+ *   3      FS num varyings
+ *   4..7   FS code addr
+ *   8..11  FS uniforms addr
+ *   12..15 shaded vertex data addr
+ */
+int32_t vc4_write_nv_shader_record(vc4_bo_t* bo, uint32_t offset,
+		const vc4_nv_shader_record_info_t* info,
+		uint32_t* next_offset) {
+	uint8_t* dst;
+
+	if (bo == NULL || info == NULL || next_offset == NULL)
+		return -1;
+	/* The shader state address is handed to the hardware as-is, so the
+	 * record itself has to sit on a 16-byte boundary. */
+	if ((offset & 15U) != 0 || offset + 16U > bo->size)
+		return -1;
+
+	dst = (uint8_t*)(uintptr_t)bo->vaddr + offset;
+	memset(dst, 0, 16);
+	dst[0] = info->flags;
+	dst[1] = info->shaded_vertex_stride;
+	dst[2] = info->fs_num_uniforms;
+	dst[3] = info->fs_num_varyings;
+	memcpy(dst + 4, &info->fs_code_addr, sizeof(info->fs_code_addr));
+	memcpy(dst + 8, &info->fs_uniforms_addr, sizeof(info->fs_uniforms_addr));
+	memcpy(dst + 12, &info->shaded_vertex_addr, sizeof(info->shaded_vertex_addr));
+
+	*next_offset = offset + 16U;
+	return 0;
+}
+
+void vc4_write_shaded_vertex(uint8_t* dst, int32_t x, int32_t y) {
+	int16_t xs;
+	int16_t ys;
+	uint32_t zs;
+	uint32_t rcp_w;
+
+	if (dst == NULL)
+		return;
+
+	/* Screen coordinates are 12.4 fixed point. */
+	xs = (int16_t)(x * 16);
+	ys = (int16_t)(y * 16);
+	zs = vc4_draw_float_bits(0.0f);
+	rcp_w = vc4_draw_float_bits(1.0f);
+
+	memcpy(dst + 0, &xs, sizeof(xs));
+	memcpy(dst + 2, &ys, sizeof(ys));
+	memcpy(dst + 4, &zs, sizeof(zs));
+	memcpy(dst + 8, &rcp_w, sizeof(rcp_w));
 }

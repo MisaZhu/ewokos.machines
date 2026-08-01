@@ -26,6 +26,7 @@ enum vc4_packet {
 	VC4_PACKET_CLIPPED_COMPRESSED_PRIMITIVE = 49,
 	VC4_PACKET_PRIMITIVE_LIST_FORMAT = 56,
 	VC4_PACKET_GL_SHADER_STATE = 64,
+	VC4_PACKET_NV_SHADER_STATE = 65,
 	VC4_PACKET_CONFIGURATION_BITS = 96,
 	VC4_PACKET_FLAT_SHADE_FLAGS = 97,
 	VC4_PACKET_POINT_SIZE = 98,
@@ -62,6 +63,7 @@ enum vc4_packet {
 #define VC4_PACKET_CLIPPED_COMPRESSED_PRIMITIVE_SIZE     1
 #define VC4_PACKET_PRIMITIVE_LIST_FORMAT_SIZE            2
 #define VC4_PACKET_GL_SHADER_STATE_SIZE                  5
+#define VC4_PACKET_NV_SHADER_STATE_SIZE                  5
 #define VC4_PACKET_CONFIGURATION_BITS_SIZE               4
 #define VC4_PACKET_CLIP_WINDOW_SIZE                      9
 #define VC4_PACKET_VIEWPORT_OFFSET_SIZE                  5
@@ -75,6 +77,15 @@ enum vc4_packet {
 #define VC4_TILING_FORMAT_LINEAR                         0
 #define VC4_TILING_FORMAT_T                              1
 #define VC4_TILING_FORMAT_LT                             2
+
+/* Primitive mode for VC4_PACKET_GL_ARRAY_PRIMITIVE. */
+#define VC4_PRIMITIVE_MODE_POINTS                        0
+#define VC4_PRIMITIVE_MODE_LINES                         1
+#define VC4_PRIMITIVE_MODE_LINE_LOOP                     2
+#define VC4_PRIMITIVE_MODE_LINE_STRIP                    3
+#define VC4_PRIMITIVE_MODE_TRIANGLES                     4
+#define VC4_PRIMITIVE_MODE_TRIANGLE_STRIP                5
+#define VC4_PRIMITIVE_MODE_TRIANGLE_FAN                  6
 
 #define VC4_BIN_CONFIG_DB_NON_MS                         (1U << 7)
 #define VC4_BIN_CONFIG_ALLOC_BLOCK_SIZE_32               (0U << 5)
@@ -117,13 +128,35 @@ enum vc4_packet {
 #define VC4_LOADSTORE_TILE_BUFFER_VG_MASK                4
 #define VC4_LOADSTORE_TILE_BUFFER_FULL                   5
 
+/* Only meaningful in an NV shader state record. */
+#define VC4_SHADER_FLAG_SHADED_CLIP_COORDS               (1U << 3)
 #define VC4_SHADER_FLAG_ENABLE_CLIPPING                  (1U << 2)
 #define VC4_SHADER_FLAG_VS_POINT_SIZE                    (1U << 1)
 #define VC4_SHADER_FLAG_FS_SINGLE_THREAD                 (1U << 0)
 
+/* byte 2 of the configuration bits. */
 #define VC4_CONFIG_BITS_EARLY_Z_UPDATE                   (1U << 1)
 #define VC4_CONFIG_BITS_EARLY_Z                          (1U << 0)
+
+/* byte 1 of the configuration bits. */
 #define VC4_CONFIG_BITS_Z_UPDATE                         (1U << 7)
+/*
+ * Depth test comparison function. There is no separate "depth test enable"
+ * bit: the function is always applied, so leaving this field zero selects
+ * NEVER and silently discards every fragment. Rendering without a depth
+ * buffer therefore has to select ALWAYS explicitly.
+ */
+#define VC4_CONFIG_BITS_DEPTH_FUNC_SHIFT                 4
+#define VC4_CONFIG_BITS_DEPTH_FUNC_NEVER                 0U
+#define VC4_CONFIG_BITS_DEPTH_FUNC_LESS                  1U
+#define VC4_CONFIG_BITS_DEPTH_FUNC_EQUAL                 2U
+#define VC4_CONFIG_BITS_DEPTH_FUNC_LEQUAL                3U
+#define VC4_CONFIG_BITS_DEPTH_FUNC_GREATER               4U
+#define VC4_CONFIG_BITS_DEPTH_FUNC_NOTEQUAL              5U
+#define VC4_CONFIG_BITS_DEPTH_FUNC_GEQUAL                6U
+#define VC4_CONFIG_BITS_DEPTH_FUNC_ALWAYS                7U
+
+/* byte 0 of the configuration bits. */
 #define VC4_CONFIG_BITS_RASTERIZER_OVERSAMPLE_NONE       (0U << 6)
 #define VC4_CONFIG_BITS_RASTERIZER_OVERSAMPLE_4X         (1U << 6)
 #define VC4_CONFIG_BITS_RASTERIZER_OVERSAMPLE_16X        (2U << 6)

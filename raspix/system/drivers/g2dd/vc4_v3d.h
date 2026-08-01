@@ -3,6 +3,21 @@
 
 #include <stdint.h>
 
+/*
+ * Submission failure codes.
+ *
+ * These are returned all the way up to the g2d client instead of a flat -1 so
+ * that a failing operation identifies the stage that failed on its own. The
+ * register dumps the driver prints on failure only reach the kernel UART, which
+ * is not visible to a client running over ssh.
+ */
+#define VC4_V3D_ERR_ARG		(-1)
+#define VC4_V3D_ERR_BIN_OOM	(-2)	/* binner ran out of tile list memory */
+#define VC4_V3D_ERR_CT0_ERR	(-3)	/* binner thread raised CTERR */
+#define VC4_V3D_ERR_CT0_TIMEOUT	(-4)	/* binner never bumped BFC */
+#define VC4_V3D_ERR_CT1_ERR	(-5)	/* render thread raised CTERR */
+#define VC4_V3D_ERR_CT1_TIMEOUT	(-6)	/* renderer never bumped RFC */
+
 typedef struct {
 	volatile uint32_t* regs;
 	uint32_t ident0;

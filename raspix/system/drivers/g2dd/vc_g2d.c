@@ -7,7 +7,21 @@
 /*
  * Hardware blt/scale through the VideoCore mailbox property interface.
  *
- * Works on both Raspberry Pi 3 (BCM2837) and 4 (BCM2711):
+ * DO NOT USE. This code cannot work and is kept only so the reason is on
+ * record.
+ *
+ * TAG_BLIT_IMAGE below is 0x0004000a, which in the documented mailbox property
+ * interface is FB_GET_OVERSCAN: a pure query that returns four u32 overscan
+ * values and touches no pixels. The property interface has no blit or fill tag
+ * at all -- the VideoCore firmware exposes no 2D blitter this way. Because the
+ * tag *is* recognised, the firmware sets the success bit in the response, so
+ * vc_mbox_call() below reports success while nothing has been drawn. That false
+ * success is worse than a clean failure.
+ *
+ * gpu_blt_with_alpha() and fill_screen() in arch_bcm283x/framebuffer.c are built
+ * on the same mistaken tag and are likewise dead (nothing references them).
+ *
+ * Original notes, for both Raspberry Pi 3 (BCM2837) and 4 (BCM2711):
  *  - the mailbox register base is derived from _mmio_base, which comes from
  *    the kernel sysinfo (0x3F000000 on Pi3, 0xFE000000 on Pi4);
  *  - ARM<->VC address translation uses the legacy non-cached alias

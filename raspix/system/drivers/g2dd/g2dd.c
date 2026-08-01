@@ -204,13 +204,16 @@ static int32_t g2d_handle_clear(proto_t* in, g2d_state_t* state) {
 
 static int32_t g2d_handle_fill_rect(proto_t* in, g2d_state_t* state) {
 	g2d_fill_req_t req;
+	int32_t ret;
 
 	if (in == NULL || state == NULL)
 		return -1;
 	if (proto_read_to(in, &req, sizeof(req)) != sizeof(req))
 		return -1;
-	if (vc4_kms_v3d_fill_rect(&state->vc4, &req) != 0)
-		return -1;
+	/* Pass the backend's failure code through: it identifies the stage. */
+	ret = vc4_kms_v3d_fill_rect(&state->vc4, &req);
+	if (ret != 0)
+		return ret;
 	state->stats.vc_fill_ops++;
 	return 0;
 }

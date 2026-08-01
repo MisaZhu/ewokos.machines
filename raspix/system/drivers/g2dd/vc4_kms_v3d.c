@@ -1,6 +1,8 @@
 #include "vc4_kms_v3d.h"
 #include "vc4_packet.h"
 #include "vc4_regs.h"
+#include "vc4_draw.h"
+#include "vc4_shaders.h"
 
 #include <arch/bcm283x/mailbox.h>
 #include <ewoksys/dma.h>
@@ -38,6 +40,44 @@
 #define VC4_BIN_OVERFLOW_CHUNK        (256U * 1024U)
 #define VC4_BIN_OVERFLOW_CHUNKS       4U
 #define VC4_BIN_BO_ALLOC_RETRIES      4U
+
+/* Two triangles, six already-shaded vertices. */
+#define VC4_FILL_VERTEX_COUNT         6U
+/* VC4 renders in 64x64 tiles. */
+#define VC4_TILE_SIZE                 64U
+/*
+ * Per-tile control list stride in the tile allocation array. Must match
+ * VC4_BIN_CONFIG_ALLOC_INIT_BLOCK_SIZE_32 in the binning mode config.
+ */
+#define VC4_TILE_ALLOC_BLOCK_SIZE     32U
+#define VC4_DRAW_TIMEOUT_US           200000U
+
+/*
+ * Control list construction failures, continuing the numbering of the
+ * VC4_V3D_ERR_* submission codes so that a single return value identifies the
+ * stage that failed.
+ */
+#define VC4_ERR_SHADER_REC            (-7)
+#define VC4_ERR_BUILD_BCL             (-8)
+#define VC4_ERR_BUILD_RCL             (-9)
+
+/*
+ * Binning mode configuration flags, shared by every job so the two control list
+ * builders cannot drift apart.
+ *
+ * These are exactly the flags upstream forces: auto-initialise the tile state
+ * data array, 32-byte initial tile allocation blocks (matching
+ * VC4_TILE_ALLOC_BLOCK_SIZE above) and 128-byte growth blocks.
+ *
+ * VC4_BIN_CONFIG_DB_NON_MS is deliberately not set. Upstream's control list
+ * validator rejects that bit outright as an unsupported binning flag, so no
+ * combination of it with a real binning workload is exercised by the reference
+ * stack. It is inert for a clear, which bins no geometry at all, but it is the
+ * binner configuration that matters once actual primitives are being binned.
+ */
+#define VC4_BIN_FLAGS (VC4_BIN_CONFIG_AUTO_INIT_TSDA | \
+		VC4_BIN_CONFIG_ALLOC_INIT_BLOCK_SIZE_32 | \
+		VC4_BIN_CONFIG_ALLOC_BLOCK_SIZE_128)
 
 static int32_t vc4_kms_v3d_fw_mbox_call(uint32_t* buf, uint32_t alias) {
 	mail_message_t msg;
@@ -165,29 +205,44 @@ static inline void vc4_kms_v3d_mem_barrier(void) {
 	__sync_synchronize();
 }
 
-static int32_t vc4_kms_v3d_upload_static_vertex_data(vc4_kms_v3d_t* ctx) {
-	static const float quad_vertices[] = {
-		-1.0f, -1.0f, 1.0f, 1.0f,
-		 1.0f, -1.0f, 1.0f, 1.0f,
-		 1.0f,  1.0f, 1.0f, 1.0f,
-		-1.0f,  1.0f, 1.0f, 1.0f
-	};
-	uint32_t offset;
-	uint32_t size;
+/*
+ * Reserve the buffer slots used by the solid fill path.
+ *
+ * The fill draws through NV shader state, so no coordinate/vertex shader runs
+ * and vertices are supplied already in 12.4 screen space. That needs three
+ * slots: a 16-byte shader record, one uniform word for the fill colour, and
+ * six shaded vertices for the two triangles of the quad.
+ */
+static int32_t vc4_kms_v3d_setup_fill_resources(vc4_kms_v3d_t* ctx) {
+	uint32_t rec_offset;
+	uint32_t unif_offset;
+	uint32_t vtx_offset;
 
-	if (ctx == NULL || ctx->vertex_data.vaddr == 0)
+	if (ctx == NULL || ctx->shader_rec.vaddr == 0 ||
+			ctx->uniforms.vaddr == 0 || ctx->vertex_data.vaddr == 0)
 		return -1;
 
-	offset = vc4_align_up(ctx->vertex_data_offset, 16);
-	size = sizeof(quad_vertices);
-	if (offset + size > ctx->vertex_data.size)
+	rec_offset = vc4_align_up(ctx->shader_rec_offset, 16);
+	unif_offset = vc4_align_up(ctx->uniforms_offset, 16);
+	vtx_offset = vc4_align_up(ctx->vertex_data_offset, 16);
+
+	if (rec_offset + 16 > ctx->shader_rec.size ||
+			unif_offset + sizeof(uint32_t) > ctx->uniforms.size ||
+			vtx_offset + (VC4_FILL_VERTEX_COUNT * VC4_SHADED_VERTEX_STRIDE) > ctx->vertex_data.size)
 		return -1;
 
-	memcpy((void*)((uintptr_t)ctx->vertex_data.vaddr + offset), quad_vertices, size);
-	ctx->fullscreen_quad_offset = offset;
-	ctx->fullscreen_quad_bus_addr = ctx->vertex_data.bus_addr + offset;
-	ctx->fullscreen_quad_stride = 16;
-	ctx->vertex_data_offset = offset + size;
+	ctx->fill_shader_rec_offset = rec_offset;
+	ctx->fill_shader_rec_bus_addr = ctx->shader_rec.bus_addr + rec_offset;
+	ctx->shader_rec_offset = rec_offset + 16;
+
+	ctx->fill_uniforms_offset = unif_offset;
+	ctx->fill_uniforms_bus_addr = ctx->uniforms.bus_addr + unif_offset;
+	ctx->uniforms_offset = unif_offset + sizeof(uint32_t);
+
+	ctx->fill_vertex_offset = vtx_offset;
+	ctx->fill_vertex_bus_addr = ctx->vertex_data.bus_addr + vtx_offset;
+	ctx->vertex_data_offset = vtx_offset +
+			(VC4_FILL_VERTEX_COUNT * VC4_SHADED_VERTEX_STRIDE);
 	return 0;
 }
 
@@ -230,27 +285,44 @@ static int32_t vc4_kms_v3d_alloc_bin_bo(vc4_bo_t* bo, uint32_t size) {
 	return ret;
 }
 
+/*
+ * Reset the per-job binner state.
+ *
+ * The tile state data array has to be zeroed before every job, not just once at
+ * allocation time: the primitive tile binner will otherwise pick up a stale
+ * tile state left behind by the previous job and walk a tile list that no
+ * longer belongs to it. Clearing the tile allocation pool as well keeps a
+ * partially written list from a failed job out of the way.
+ */
+static void vc4_kms_v3d_reset_bin_state(vc4_kms_v3d_t* ctx) {
+	if (ctx == NULL || ctx->binner_pool.vaddr == 0)
+		return;
+	memset((void*)(uintptr_t)ctx->binner_pool.vaddr, 0, ctx->binner_pool.size);
+}
+
 static int32_t vc4_kms_v3d_submit_rcl(vc4_kms_v3d_t* ctx, uint32_t timeout_us) {
 	uint32_t bcl_start;
 	uint32_t bcl_end;
 	uint32_t start;
 	uint32_t end;
+	int32_t ret;
 
 	if (ctx == NULL)
-		return -1;
+		return VC4_V3D_ERR_ARG;
 
 	start = vc4_cl_start_bus_addr(&ctx->rcl);
 	end = vc4_cl_end_bus_addr(&ctx->rcl);
 	if (start == 0 || end <= start)
-		return -1;
+		return VC4_V3D_ERR_ARG;
 
 	vc4_kms_v3d_mem_barrier();
 	bcl_start = vc4_cl_start_bus_addr(&ctx->bcl);
 	bcl_end = vc4_cl_end_bus_addr(&ctx->bcl);
 	if (bcl_start == 0 || bcl_end <= bcl_start)
-		return -1;
-	if (vc4_v3d_submit_ct0(&ctx->v3d, bcl_start, bcl_end, timeout_us) != 0)
-		return -1;
+		return VC4_V3D_ERR_ARG;
+	ret = vc4_v3d_submit_ct0(&ctx->v3d, bcl_start, bcl_end, timeout_us);
+	if (ret != 0)
+		return ret;
 	return vc4_v3d_submit_ct1(&ctx->v3d, start, end, timeout_us);
 }
 
@@ -270,10 +342,7 @@ static int32_t vc4_kms_v3d_build_clear_bcl(vc4_kms_v3d_t* ctx) {
 	if (tile_state_addr == 0 || tile_alloc_addr == 0 || tile_alloc_size == 0)
 		return -1;
 
-	bin_flags = VC4_BIN_CONFIG_DB_NON_MS |
-			VC4_BIN_CONFIG_AUTO_INIT_TSDA |
-			VC4_BIN_CONFIG_ALLOC_INIT_BLOCK_SIZE_32 |
-			VC4_BIN_CONFIG_ALLOC_BLOCK_SIZE_128;
+	bin_flags = VC4_BIN_FLAGS;
 
 	if (vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_TILE_BINNING_MODE_CONFIG) != 0 ||
 			vc4_cl_emit_u32(&ctx->bcl, tile_alloc_addr) != 0 ||
@@ -305,6 +374,7 @@ static int32_t vc4_kms_v3d_build_clear_job(vc4_kms_v3d_t* ctx, uint32_t clear_ar
 	vc4_cl_reset(&ctx->rcl);
 	memset((void*)(uintptr_t)ctx->bin_cl.vaddr, 0, ctx->bin_cl.size);
 	memset((void*)(uintptr_t)ctx->render_cl.vaddr, 0, ctx->render_cl.size);
+	vc4_kms_v3d_reset_bin_state(ctx);
 	if (vc4_kms_v3d_build_clear_bcl(ctx) != 0)
 		return -1;
 
@@ -401,7 +471,7 @@ static int32_t vc4_kms_v3d_alloc_bos(vc4_kms_v3d_t* ctx) {
 	ctx->shader_rec_offset = 0;
 	ctx->uniforms_offset = 0;
 	ctx->vertex_data_offset = 0;
-	if (vc4_kms_v3d_upload_static_vertex_data(ctx) != 0)
+	if (vc4_kms_v3d_setup_fill_resources(ctx) != 0)
 		return VC4_KMS_V3D_ERR_BO_ALLOC;
 	return 0;
 }
@@ -527,18 +597,269 @@ int32_t vc4_kms_v3d_clear(vc4_kms_v3d_t* ctx, uint32_t color) {
 	return 0;
 }
 
-int32_t vc4_kms_v3d_fill_rect(vc4_kms_v3d_t* ctx, const g2d_fill_req_t* req) {
-	if (ctx == NULL || ctx->initialized == 0 || req == NULL)
+/*
+ * Clip a requested rectangle against the render target. Returns 0 and an
+ * empty rectangle when nothing is left to draw.
+ */
+static void vc4_kms_v3d_clip_rect(const vc4_kms_v3d_t* ctx, const g2d_rect_t* in, g2d_rect_t* out) {
+	int32_t x0 = in->x;
+	int32_t y0 = in->y;
+	int32_t x1;
+	int32_t y1;
+
+	out->x = 0;
+	out->y = 0;
+	out->w = 0;
+	out->h = 0;
+	if (in->w <= 0 || in->h <= 0)
+		return;
+
+	x1 = in->x + in->w;
+	y1 = in->y + in->h;
+	if (x0 < 0)
+		x0 = 0;
+	if (y0 < 0)
+		y0 = 0;
+	if (x1 > (int32_t)ctx->width)
+		x1 = (int32_t)ctx->width;
+	if (y1 > (int32_t)ctx->height)
+		y1 = (int32_t)ctx->height;
+	if (x1 <= x0 || y1 <= y0)
+		return;
+
+	out->x = x0;
+	out->y = y0;
+	out->w = x1 - x0;
+	out->h = y1 - y0;
+}
+
+/*
+ * Bin control list for a solid fill.
+ *
+ * Unlike the clear path this actually has to bin geometry, so the primitive
+ * format, clip window, configuration bits and shader state all have to be
+ * programmed before the primitive is emitted.
+ */
+static int32_t vc4_kms_v3d_build_fill_bcl(vc4_kms_v3d_t* ctx) {
+	uint32_t tile_alloc_addr;
+	uint32_t tile_alloc_size;
+	uint32_t tile_state_addr;
+	uint8_t bin_flags;
+
+	tile_state_addr = ctx->binner_pool.bus_addr;
+	tile_alloc_addr = ctx->binner_pool.bus_addr + ctx->tile_alloc_offset;
+	tile_alloc_size = ctx->binner_pool.size > ctx->tile_alloc_offset ?
+			(ctx->binner_pool.size - ctx->tile_alloc_offset) : 0;
+	if (tile_state_addr == 0 || tile_alloc_addr == 0 || tile_alloc_size == 0)
 		return -1;
-	/* Draw path not implemented yet; callers fall back on their own. */
-	return -1;
+
+	bin_flags = VC4_BIN_FLAGS;
+
+	if (vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_TILE_BINNING_MODE_CONFIG) != 0 ||
+			vc4_cl_emit_u32(&ctx->bcl, tile_alloc_addr) != 0 ||
+			vc4_cl_emit_u32(&ctx->bcl, tile_alloc_size) != 0 ||
+			vc4_cl_emit_u32(&ctx->bcl, tile_state_addr) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, (uint8_t)ctx->tiles_x) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, (uint8_t)ctx->tiles_y) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, bin_flags) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_START_TILE_BINNING) != 0)
+		return -1;
+
+	/*
+	 * The clip window is left at the full surface: the quad itself bounds the
+	 * fill, and CLIP_WINDOW's Y origin convention is not worth depending on.
+	 */
+	if (vc4_emit_primitive_list_format(&ctx->bcl,
+				VC4_PRIMITIVE_LIST_FORMAT_16_INDEX |
+				VC4_PRIMITIVE_LIST_FORMAT_TYPE_TRIANGLES) != 0 ||
+			vc4_emit_clip_window(&ctx->bcl, 0, 0,
+				(uint16_t)ctx->width, (uint16_t)ctx->height) != 0 ||
+			/*
+			 * byte0: rasterise front and back facing primitives, so the
+			 *        winding of the two triangles does not matter.
+			 * byte1: the depth comparison function is always applied,
+			 *        so it has to be ALWAYS. A zero here means NEVER
+			 *        and every fragment is discarded.
+			 * byte2: no early depth test, and in particular no early
+			 *        depth write: there is no depth buffer bound in
+			 *        the rendering mode config for it to write to.
+			 */
+			vc4_emit_configuration_bits(&ctx->bcl,
+				VC4_CONFIG_BITS_ENABLE_PRIM_FRONT |
+					VC4_CONFIG_BITS_ENABLE_PRIM_BACK,
+				(uint8_t)(VC4_CONFIG_BITS_DEPTH_FUNC_ALWAYS <<
+					VC4_CONFIG_BITS_DEPTH_FUNC_SHIFT),
+				0) != 0 ||
+			vc4_emit_viewport_offset(&ctx->bcl, 0.0f, 0.0f) != 0 ||
+			vc4_emit_nv_shader_state(&ctx->bcl, ctx->fill_shader_rec_bus_addr) != 0 ||
+			vc4_emit_gl_array_primitive(&ctx->bcl,
+				VC4_PRIMITIVE_MODE_TRIANGLES, VC4_FILL_VERTEX_COUNT, 0) != 0)
+		return -1;
+
+	if (vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_INCREMENT_SEMAPHORE) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_FLUSH) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_HALT) != 0)
+		return -1;
+
+	return ctx->bcl.overflow == 0 ? 0 : -1;
+}
+
+/*
+ * Render control list for a solid fill.
+ *
+ * Only the tiles the rectangle actually touches are walked, and each one is
+ * pre-loaded from the render target before the tile's binned primitives are
+ * replayed. That keeps everything already on screen -- both whole untouched
+ * tiles and the pixels around the rectangle inside a partially covered tile.
+ */
+static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* r) {
+	uint32_t render_flags;
+	uint32_t load_bits;
+	uint32_t tile_alloc_addr;
+	uint32_t tx0;
+	uint32_t tx1;
+	uint32_t ty0;
+	uint32_t ty1;
+	uint32_t x;
+	uint32_t y;
+
+	render_flags = VC4_RENDER_CONFIG_MEMORY_FORMAT_LINEAR |
+			VC4_RENDER_CONFIG_DECIMATE_MODE_1X |
+			VC4_RENDER_CONFIG_FORMAT_RGBA8888;
+	if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_TILE_RENDERING_MODE_CONFIG) != 0 ||
+			vc4_cl_emit_u32(&ctx->rcl, ctx->render_target.bus_addr) != 0 ||
+			vc4_cl_emit_u16(&ctx->rcl, (uint16_t)ctx->width) != 0 ||
+			vc4_cl_emit_u16(&ctx->rcl, (uint16_t)ctx->height) != 0 ||
+			vc4_cl_emit_u16(&ctx->rcl, (uint16_t)render_flags) != 0)
+		return -1;
+
+	load_bits = VC4_LOADSTORE_TILE_BUFFER_COLOR |
+			(VC4_TILING_FORMAT_LINEAR << VC4_LOADSTORE_TILE_BUFFER_TILING_SHIFT) |
+			(VC4_LOADSTORE_TILE_BUFFER_RGBA8888 << VC4_LOADSTORE_TILE_BUFFER_FORMAT_SHIFT);
+	tile_alloc_addr = ctx->binner_pool.bus_addr + ctx->tile_alloc_offset;
+
+	tx0 = (uint32_t)r->x / VC4_TILE_SIZE;
+	tx1 = (uint32_t)(r->x + r->w - 1) / VC4_TILE_SIZE;
+	ty0 = (uint32_t)r->y / VC4_TILE_SIZE;
+	ty1 = (uint32_t)(r->y + r->h - 1) / VC4_TILE_SIZE;
+
+	for (y = ty0; y <= ty1; y++) {
+		for (x = tx0; x <= tx1; x++) {
+			uint32_t sub_list = tile_alloc_addr +
+					((y * ctx->tiles_x) + x) * VC4_TILE_ALLOC_BLOCK_SIZE;
+
+			/*
+			 * The load is only actioned once the following tile
+			 * coordinates packet is processed, so this ordering matters.
+			 */
+			if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_LOAD_TILE_BUFFER_GENERAL) != 0 ||
+					vc4_cl_emit_u16(&ctx->rcl, (uint16_t)load_bits) != 0 ||
+					vc4_cl_emit_u32(&ctx->rcl, ctx->render_target.bus_addr) != 0 ||
+					vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_TILE_COORDINATES) != 0 ||
+					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)x) != 0 ||
+					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)y) != 0)
+				return -1;
+			if (x == tx0 && y == ty0 &&
+					vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_WAIT_ON_SEMAPHORE) != 0)
+				return -1;
+			if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_BRANCH_TO_SUB_LIST) != 0 ||
+					vc4_cl_emit_u32(&ctx->rcl, sub_list) != 0)
+				return -1;
+			if (vc4_cl_emit_u8(&ctx->rcl, (x == tx1 && y == ty1) ?
+					VC4_PACKET_STORE_MS_TILE_BUFFER_AND_EOF :
+					VC4_PACKET_STORE_MS_TILE_BUFFER) != 0)
+				return -1;
+		}
+	}
+
+	return ctx->rcl.overflow == 0 ? 0 : -1;
+}
+
+static int32_t vc4_kms_v3d_build_fill_job(vc4_kms_v3d_t* ctx, const g2d_rect_t* r, uint32_t color) {
+	vc4_nv_shader_record_info_t rec;
+	uint32_t next_offset;
+	uint8_t* vertices;
+	int32_t x0 = r->x;
+	int32_t y0 = r->y;
+	int32_t x1 = r->x + r->w;
+	int32_t y1 = r->y + r->h;
+
+	/*
+	 * The solid fragment shader moves this word straight to the tile buffer,
+	 * so it is the raw 0xAARRGGBB value with no colour conversion.
+	 */
+	*(uint32_t*)(uintptr_t)(ctx->uniforms.vaddr + ctx->fill_uniforms_offset) = color;
+
+	/*
+	 * Screen Y maps directly onto the render target row: rasterisation places
+	 * the primitive in tile row y/64 and the store writes that tile back to
+	 * memory row y. There is no vertical flip to compensate for because no
+	 * clip-space viewport transform is involved in NV mode.
+	 */
+	vertices = (uint8_t*)(uintptr_t)(ctx->vertex_data.vaddr + ctx->fill_vertex_offset);
+	vc4_write_shaded_vertex(vertices + 0 * VC4_SHADED_VERTEX_STRIDE, x0, y0);
+	vc4_write_shaded_vertex(vertices + 1 * VC4_SHADED_VERTEX_STRIDE, x1, y0);
+	vc4_write_shaded_vertex(vertices + 2 * VC4_SHADED_VERTEX_STRIDE, x1, y1);
+	vc4_write_shaded_vertex(vertices + 3 * VC4_SHADED_VERTEX_STRIDE, x0, y0);
+	vc4_write_shaded_vertex(vertices + 4 * VC4_SHADED_VERTEX_STRIDE, x1, y1);
+	vc4_write_shaded_vertex(vertices + 5 * VC4_SHADED_VERTEX_STRIDE, x0, y1);
+
+	memset(&rec, 0, sizeof(rec));
+	/* The shader carries no thread switch, so it must be flagged single threaded. */
+	rec.flags = VC4_SHADER_FLAG_FS_SINGLE_THREAD;
+	rec.shaded_vertex_stride = VC4_SHADED_VERTEX_STRIDE;
+	rec.fs_num_uniforms = 1;
+	rec.fs_num_varyings = 0;
+	rec.fs_code_addr = ctx->shaders.solid_fs_bus_addr;
+	rec.fs_uniforms_addr = ctx->fill_uniforms_bus_addr;
+	rec.shaded_vertex_addr = ctx->fill_vertex_bus_addr;
+	if (vc4_write_nv_shader_record(&ctx->shader_rec, ctx->fill_shader_rec_offset,
+			&rec, &next_offset) != 0)
+		return VC4_ERR_SHADER_REC;
+
+	vc4_cl_init(&ctx->bcl, &ctx->bin_cl);
+	vc4_cl_init(&ctx->rcl, &ctx->render_cl);
+	vc4_cl_reset(&ctx->bcl);
+	vc4_cl_reset(&ctx->rcl);
+	memset((void*)(uintptr_t)ctx->bin_cl.vaddr, 0, ctx->bin_cl.size);
+	memset((void*)(uintptr_t)ctx->render_cl.vaddr, 0, ctx->render_cl.size);
+	vc4_kms_v3d_reset_bin_state(ctx);
+
+	if (vc4_kms_v3d_build_fill_bcl(ctx) != 0)
+		return VC4_ERR_BUILD_BCL;
+	return vc4_kms_v3d_build_fill_rcl(ctx, r) == 0 ? 0 : VC4_ERR_BUILD_RCL;
+}
+
+/*
+ * Solid fill.
+ *
+ * This has to bin real geometry -- a quad covering the rectangle -- and shade it
+ * with the solid fragment shader, because the tile buffer clear the g2d_clear
+ * path uses has no way to be restricted to part of a tile.
+ */
+int32_t vc4_kms_v3d_fill_rect(vc4_kms_v3d_t* ctx, const g2d_fill_req_t* req) {
+	g2d_rect_t rect;
+	int32_t ret;
+
+	if (ctx == NULL || ctx->initialized == 0 || req == NULL)
+		return VC4_V3D_ERR_ARG;
+
+	vc4_kms_v3d_clip_rect(ctx, &req->rect, &rect);
+	if (rect.w <= 0 || rect.h <= 0)
+		return 0;
+
+	ret = vc4_kms_v3d_build_fill_job(ctx, &rect, req->color);
+	if (ret != 0)
+		return ret;
+	vc4_kms_v3d_mem_barrier();
+	return vc4_kms_v3d_submit_rcl(ctx, VC4_DRAW_TIMEOUT_US);
 }
 
 int32_t vc4_kms_v3d_blit(vc4_kms_v3d_t* ctx, const g2d_blit_req_t* req, const uint32_t* data, uint8_t use_alpha) {
 	if (ctx == NULL || ctx->initialized == 0 || req == NULL || data == NULL)
 		return -1;
 	(void)use_alpha;
-	/* Draw path not implemented yet; callers fall back on their own. */
+	/* Textured draw path not implemented yet. */
 	return -1;
 }
 

@@ -171,7 +171,7 @@ static int32_t vc4_v3d_wait_thread_done(vc4_v3d_t* v3d, uint32_t thread, uint32_
 	uint32_t pcs;
 
 	if (v3d == NULL || v3d->regs == NULL || thread > 1)
-		return -1;
+		return VC4_V3D_ERR_ARG;
 
 	while (waited < timeout_us) {
 		ctncs = vc4_v3d_reg_read(v3d, V3D_CTNCS(thread));
@@ -186,7 +186,7 @@ static int32_t vc4_v3d_wait_thread_done(vc4_v3d_t* v3d, uint32_t thread, uint32_
 					klog("vc4_v3d: binner out of memory with no overflow block left used=%u size=%u pcs=%x\n",
 							v3d->bin_overflow_used, v3d->bin_overflow_size,
 							v3d->last_pcs);
-					return -1;
+					return VC4_V3D_ERR_BIN_OOM;
 				}
 			}
 			if (vc4_v3d_reg_read(v3d, V3D_BFC) != 0) {
@@ -203,7 +203,7 @@ static int32_t vc4_v3d_wait_thread_done(vc4_v3d_t* v3d, uint32_t thread, uint32_
 			vc4_v3d_snapshot(v3d);
 			klog("vc4_v3d: ct%u error ctncs=%x pcs=%x err=%x\n",
 					thread, ctncs, v3d->last_pcs, v3d->last_errstat);
-			return -1;
+			return thread == 0 ? VC4_V3D_ERR_CT0_ERR : VC4_V3D_ERR_CT1_ERR;
 		}
 
 		usleep(50);
@@ -217,7 +217,7 @@ static int32_t vc4_v3d_wait_thread_done(vc4_v3d_t* v3d, uint32_t thread, uint32_
 			v3d->last_pcs, v3d->last_bfc, v3d->last_rfc,
 			v3d->last_bpca, v3d->last_bpcs, v3d->last_bpoa, v3d->last_bpos,
 			v3d->last_errstat);
-	return -1;
+	return thread == 0 ? VC4_V3D_ERR_CT0_TIMEOUT : VC4_V3D_ERR_CT1_TIMEOUT;
 }
 
 int32_t vc4_v3d_wait_idle(vc4_v3d_t* v3d, uint32_t timeout_us) {
@@ -234,8 +234,10 @@ int32_t vc4_v3d_submit_ct0(vc4_v3d_t* v3d, uint32_t start_bus_addr, uint32_t end
 }
 
 int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us) {
+	int32_t ret;
+
 	if (v3d == NULL || v3d->regs == NULL || thread > 1 || start_bus_addr == 0 || end_bus_addr <= start_bus_addr)
-		return -1;
+		return VC4_V3D_ERR_ARG;
 
 	if (thread == 0)
 		vc4_v3d_reset(v3d);
@@ -264,7 +266,8 @@ int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, uint32_t start_bus_ad
 	vc4_v3d_reg_write(v3d, V3D_CTNEA(thread), end_bus_addr);
 	vc4_v3d_mem_barrier();
 
-	if (vc4_v3d_wait_thread_done(v3d, thread, timeout_us) != 0) {
+	ret = vc4_v3d_wait_thread_done(v3d, thread, timeout_us);
+	if (ret != 0) {
 		klog("vc4_v3d: submit_ct%u timeout start=%x end=%x ct0cs=%x ct1cs=%x ct0ca=%x ct0ea=%x ct1ca=%x ct1ea=%x pcs=%x bfc=%x rfc=%x bpca=%x bpcs=%x bpoa=%x bpos=%x err=%x\n",
 				thread, start_bus_addr, end_bus_addr,
 				v3d->last_ct0cs, v3d->last_ct1cs,
@@ -273,7 +276,7 @@ int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, uint32_t start_bus_ad
 				v3d->last_pcs, v3d->last_bfc, v3d->last_rfc,
 				v3d->last_bpca, v3d->last_bpcs,
 				v3d->last_bpoa, v3d->last_bpos, v3d->last_errstat);
-		return -1;
+		return ret;
 	}
 
 	return 0;

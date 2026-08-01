@@ -4,18 +4,42 @@
 
 /*
  * Minimal captured VC4 shader binaries:
- * - solid_fs: `uniform vec4 c1; gl_FragColor = c1;`
+ * - solid_fs: `gl_FragColor = <uniform>;` see below for the encoding.
  * - textured_fs: `gl_FragColor = texture2D(texture, texCoord);`
  * - shared_vs/shared_cs: compact pass-through pair observed alongside the
  *   above fragment shaders in intercepted VC4 shader dumps.
  */
 
+/*
+ * Solid colour fragment shader, used by the NV-shader-state fill path.
+ *
+ * The tile buffer is configured as plain RGBA8888 and the render target is
+ * linear, so the clear path already proves TLB->memory is a straight 32-bit
+ * copy. That means the fill colour can be handed to the QPU as one raw
+ * 0xAARRGGBB uniform and moved to the TLB unmodified, which avoids depending
+ * on the MUL-pipeline pack modes (float->unorm8 rounding) entirely.
+ *
+ *   nop                              ; sig = wait for scoreboard
+ *   or  tlb_color_all, unif, unif
+ *   nop                              ; sig = program end
+ *   nop
+ *   nop                              ; sig = unlock scoreboard
+ *
+ * The program end signal takes effect two instructions later, so it sits on a
+ * nop after the tile buffer write rather than on the write itself. That is the
+ * ordering Mesa emits, and it keeps the TLB access clear of the instruction
+ * that retires the thread.
+ *
+ * 0x15827d80: op_add=21(OR) raddr_a=32(UNIFORM) add_a=add_b=6(regfile A)
+ * 0x10020ba7: sig=1(none) cond_add=1(always) waddr_add=46(TLB_COLOR_ALL)
+ *             waddr_mul=39(nop)
+ * 0x?00009e7: nop with the signal in the top nibble -- 1=none, 3=program end,
+ *             4=wait for scoreboard, 5=unlock scoreboard.
+ */
 static const uint32_t g_vc4_solid_fs_code[] = {
-	0x80827036, 0x114059e0,
-	0x80827036, 0x415059e0,
-	0x80827036, 0x116059e0,
-	0x80827036, 0x117059e0,
-	0x159e7000, 0x30020ba7,
+	0x009e7000, 0x400009e7,
+	0x15827d80, 0x10020ba7,
+	0x009e7000, 0x300009e7,
 	0x009e7000, 0x100009e7,
 	0x009e7000, 0x500009e7
 };

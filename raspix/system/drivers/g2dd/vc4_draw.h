@@ -7,15 +7,34 @@
 
 typedef struct {
 	uint8_t flags;
+	uint8_t fs_num_uniforms;
 	uint8_t fs_num_varyings;
 	uint8_t cs_attr_select_bits;
 	uint8_t vs_attr_select_bits;
 	uint8_t cs_total_attr_size;
 	uint8_t vs_total_attr_size;
 	uint32_t fs_code_addr;
+	uint32_t fs_uniforms_addr;
 	uint32_t cs_code_addr;
+	uint32_t cs_uniforms_addr;
 	uint32_t vs_code_addr;
+	uint32_t vs_uniforms_addr;
 } vc4_shader_record_info_t;
+
+/*
+ * NV ("no vertex shader") shader state record: the control list supplies
+ * already-shaded screen-space vertices, so only a fragment shader runs.
+ * The record is a fixed 16 bytes.
+ */
+typedef struct {
+	uint8_t flags;
+	uint8_t shaded_vertex_stride;
+	uint8_t fs_num_uniforms;
+	uint8_t fs_num_varyings;
+	uint32_t fs_code_addr;
+	uint32_t fs_uniforms_addr;
+	uint32_t shaded_vertex_addr;
+} vc4_nv_shader_record_info_t;
 
 typedef struct {
 	uint32_t address;
@@ -33,10 +52,18 @@ int32_t vc4_emit_clipper_z_scaling(vc4_cl_t* cl, float z_scale, float z_offset);
 int32_t vc4_emit_configuration_bits(vc4_cl_t* cl, uint8_t byte0, uint8_t byte1, uint8_t byte2);
 int32_t vc4_emit_primitive_list_format(vc4_cl_t* cl, uint8_t format);
 int32_t vc4_emit_gl_shader_state(vc4_cl_t* cl, uint8_t number_of_attribute_arrays, uint32_t shader_record_bus_addr);
+int32_t vc4_emit_nv_shader_state(vc4_cl_t* cl, uint32_t shader_record_bus_addr);
 int32_t vc4_emit_gl_array_primitive(vc4_cl_t* cl, uint8_t primitive_mode, uint32_t length, uint32_t index_of_first_vertex);
 int32_t vc4_write_shader_record(vc4_bo_t* bo, uint32_t offset,
 		const vc4_shader_record_info_t* info,
 		const vc4_attribute_record_info_t* attrs, uint32_t attr_count,
 		uint32_t* next_offset);
+int32_t vc4_write_nv_shader_record(vc4_bo_t* bo, uint32_t offset,
+		const vc4_nv_shader_record_info_t* info,
+		uint32_t* next_offset);
+/* Emits one 12-byte NV shaded vertex: Xs/Ys in 12.4 screen coords, Zs, 1/Wc. */
+void vc4_write_shaded_vertex(uint8_t* dst, int32_t x, int32_t y);
+
+#define VC4_SHADED_VERTEX_STRIDE 12
 
 #endif
