@@ -241,20 +241,25 @@ static void audio_detect_hw_config(void) {
 		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM2711;
 		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM2711;
 		_snd_dma_permap = DMA_PERMAP_PWM_BCM2711;
-		/*
-		 * BCM2711 analog PWM audio uses PWM1/DREQ1, and using the Pi3-style
-		 * PLLD/5 assumptions makes playback run noticeably fast on Pi4.
-		 * Keep Pi4 on the working OSC/2 path and compute range from 27MHz.
-		 */
+	}
+	else {
+		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM283X;
+		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
+		_snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
+	}
+
+	/*
+	 * BCM2711 needs its own PWM clock assumptions even when audio is
+	 * routed through the header PWM0 path on GPIO12/13. Keeping the
+	 * Pi3-style PLLD/5 setup here makes playback run noticeably fast.
+	 */
+	if (_snd_pi4_pwm) {
 		_snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM2711;
 		_snd_pwm_clock_source = PWM_CLOCK_SOURCE_OSC;
 		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM2711;
 		_snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM2711;
 	}
 	else {
-		_snd_pwm_base = _mmio_base + PWM_BASE_OFF_BCM283X;
-		_snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
-		_snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
 		_snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM283X;
 		_snd_pwm_clock_source = PWM_CLOCK_SOURCE_PLLD;
 		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
