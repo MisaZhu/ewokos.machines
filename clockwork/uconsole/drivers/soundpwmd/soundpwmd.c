@@ -8,6 +8,7 @@
 #include <ewoksys/vfs.h>
 #include <sysinfo.h>
 #include <sys/time.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -94,7 +95,7 @@
 #define PWM_CLOCK_DIV_FRAC_BCM2711 0U
 #define SOUND_FEED_KICK_SLEEP_US 500U
 #define SOUND_FEED_IDLE_SLEEP_US 1000U
-#define SOUND_FEED_DEEP_IDLE_SLEEP_US 20000U
+#define SOUND_FEED_DEEP_IDLE_SLEEP_US 200000U
 #define SOUND_FEED_GUARD_US 2000U
 #define SOUND_DMA_START_TARGET_US 160000U
 #define SOUND_DMA_REBUFFER_TARGET_US 224000U
@@ -108,8 +109,8 @@
 #define SOUND_DEFAULT_CHANNELS 2
 #define SOUND_DEFAULT_PERIOD_SIZE 1024
 #define SOUND_DEFAULT_PERIOD_COUNT 4
-#define SOUNDPWM_SOFT_GAIN_NUM 2
-#define SOUNDPWM_SOFT_GAIN_DEN 1
+#define SOUND_DEFAULT_VOLUME_PCT 70U
+#define SOUND_VOLUME_STEP_PCT 5U
 /*
  * uConsole firmware config uses:
  *   dtparam=audio=on
@@ -120,6 +121,8 @@
 #define SOUNDPWM_GPIO_LEFT 12
 #define SOUNDPWM_GPIO_RIGHT 13
 #define SOUNDPWM_GPIO_ALT GPIO_ALTF0
+#define SOUNDPWM_GPIO_HP_DETECT 10
+#define SOUNDPWM_GPIO_AMP_ENABLE 11
 
 typedef struct dma_cb {
    unsigned int ti;
@@ -202,6 +205,8 @@ static uint32_t _snd_pwm_clock_source = PWM_CLOCK_SOURCE_PLLD;
 static uint32_t _snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
 static uint32_t _snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM283X;
 static bool _snd_pi4_pwm = false;
+static bool _snd_amp_enabled = false;
+static uint32_t _snd_volume_pct = SOUND_DEFAULT_VOLUME_PCT;
 
 static int audio_stop(void);
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec);
@@ -265,6 +270,14 @@ static void audio_detect_hw_config(void) {
 		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
 		_snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM283X;
 	}
+}
+
+static void audio_update_amp_state(void) {
+	bool hp_inserted = bcm283x_gpio_read(SOUNDPWM_GPIO_HP_DETECT) != 0;
+	bool amp_enabled = !hp_inserted;
+
+	bcm283x_gpio_write(SOUNDPWM_GPIO_AMP_ENABLE, amp_enabled ? 1 : 0);
+	_snd_amp_enabled = amp_enabled;
 }
 
 static uint32_t audio_pwm_control_flags(void) {
@@ -678,14 +691,24 @@ static int16_t audio_clip_s16(int32_t sample) {
 	return (int16_t)sample;
 }
 
+static uint32_t audio_clamp_volume_pct(int value) {
+	if (value < 0) {
+		return 0;
+	}
+	if (value > 100) {
+		return 100;
+	}
+	return (uint32_t)value;
+}
+
 static int32_t audio_apply_gain_s32(int32_t sample) {
-	int64_t scaled = (int64_t)sample * (int64_t)SOUNDPWM_SOFT_GAIN_NUM;
-	return audio_clip_s32(scaled / (int64_t)SOUNDPWM_SOFT_GAIN_DEN);
+	int64_t scaled = (int64_t)sample * (int64_t)_snd_volume_pct;
+	return audio_clip_s32(scaled / 100LL);
 }
 
 static int16_t audio_apply_gain_s16(int16_t sample) {
-	int32_t scaled = (int32_t)sample * (int32_t)SOUNDPWM_SOFT_GAIN_NUM;
-	return audio_clip_s16(scaled / (int32_t)SOUNDPWM_SOFT_GAIN_DEN);
+	int32_t scaled = (int32_t)sample * (int32_t)_snd_volume_pct;
+	return audio_clip_s16(scaled / 100);
 }
 
 static uint32_t audio_sample_to_pwm_word(int32_t sample) {
@@ -1626,6 +1649,7 @@ static uint32_t sound_check_poll_events(vdevice_t* dev, int fd, int from_pid, fs
 static int sound_loop(vdevice_t* dev, void* p) {
 	UNUSED(dev);
 	UNUSED(p);
+	audio_update_amp_state();
 	proc_usleep(SOUND_FEED_DEEP_IDLE_SLEEP_US);
 	return 0;
 }
@@ -1676,6 +1700,69 @@ static int sound_dev_cntl(vdevice_t* dev, int from_pid, int cmd, proto_t *in, pr
 	pthread_mutex_unlock(&_snd_lock);
 	PF->addi(ret, result);
 	return 0;
+}
+
+static char* sound_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) {
+	char* ret = (char*)malloc(128);
+	char* end = NULL;
+	long requested = 0;
+
+	UNUSED(dev);
+	UNUSED(from_pid);
+	UNUSED(p);
+	if (ret == NULL) {
+		return NULL;
+	}
+	if (argc <= 0 || argv == NULL || argv[0] == NULL) {
+		free(ret);
+		return NULL;
+	}
+
+	if (strcmp(argv[0], "help") == 0) {
+		snprintf(ret, 128,
+				"help: show commands\n"
+				"vol: show current volume\n"
+				"vol up|down: adjust volume by %u%%\n"
+				"vol <0-100>: set volume percent\n",
+				(unsigned)SOUND_VOLUME_STEP_PCT);
+		return ret;
+	}
+
+	if (strcmp(argv[0], "vol") == 0) {
+		pthread_mutex_lock(&_snd_lock);
+		if (argc < 2 || argv[1] == NULL) {
+			snprintf(ret, 128, "volume=%u%%\n", (unsigned)_snd_volume_pct);
+			pthread_mutex_unlock(&_snd_lock);
+			return ret;
+		}
+
+		if (strcmp(argv[1], "up") == 0) {
+			_snd_volume_pct = audio_clamp_volume_pct((int)_snd_volume_pct + (int)SOUND_VOLUME_STEP_PCT);
+			snprintf(ret, 128, "volume=%u%%\n", (unsigned)_snd_volume_pct);
+			pthread_mutex_unlock(&_snd_lock);
+			return ret;
+		}
+		if (strcmp(argv[1], "down") == 0) {
+			_snd_volume_pct = audio_clamp_volume_pct((int)_snd_volume_pct - (int)SOUND_VOLUME_STEP_PCT);
+			snprintf(ret, 128, "volume=%u%%\n", (unsigned)_snd_volume_pct);
+			pthread_mutex_unlock(&_snd_lock);
+			return ret;
+		}
+
+		requested = strtol(argv[1], &end, 10);
+		if (argv[1][0] == 0 || end == NULL || *end != 0) {
+			snprintf(ret, 128, "usage: vol [up|down|0-100]\n");
+			pthread_mutex_unlock(&_snd_lock);
+			return ret;
+		}
+		_snd_volume_pct = audio_clamp_volume_pct((int)requested);
+		snprintf(ret, 128, "volume=%u%%\n", (unsigned)_snd_volume_pct);
+		pthread_mutex_unlock(&_snd_lock);
+		return ret;
+	}
+
+	snprintf(ret, 128, "unknown command: %s\ntry: help\n", argv[0]);
+	return ret;
 }
 
 static bool audio_feed_pcm_ring_locked(void) {
@@ -1765,6 +1852,10 @@ static void* sound_feeder_thread(void* arg) {
 static void audio_hw_init(void) {
 	volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
 
+	bcm283x_gpio_config(SOUNDPWM_GPIO_HP_DETECT, GPIO_INPUT);
+	bcm283x_gpio_config(SOUNDPWM_GPIO_AMP_ENABLE, GPIO_OUTPUT);
+	bcm283x_gpio_write(SOUNDPWM_GPIO_AMP_ENABLE, 0);
+	_snd_amp_enabled = false;
 	bcm283x_gpio_config(SOUNDPWM_GPIO_LEFT, SOUNDPWM_GPIO_ALT);
 	bcm283x_gpio_config(SOUNDPWM_GPIO_RIGHT, SOUNDPWM_GPIO_ALT);
 
@@ -1777,6 +1868,7 @@ static void audio_hw_init(void) {
 			(_snd_pwm_clock_div_int << 12) | _snd_pwm_clock_div_frac;
 	*(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | _snd_pwm_clock_source;
 	proc_usleep(2000);
+	audio_update_amp_state();
 }
 
 int main(int argc, char** argv) {
@@ -1797,6 +1889,7 @@ int main(int argc, char** argv) {
 	dev.close = sound_close;
 	dev.write = sound_write;
 	dev.dev_cntl = sound_dev_cntl;
+	dev.cmd = sound_dev_cmd;
 	dev.loop_step = sound_loop;
 	dev.check_poll_events = sound_check_poll_events;
 	_snd_dev = &dev;
