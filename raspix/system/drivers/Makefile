@@ -10,6 +10,7 @@ basic:
 gui:
 	cd fbd; $(MAKE)
 	cd dsi_fbd; $(MAKE)
+	cd g2dd; $(MAKE)
 	cd hid_moused; $(MAKE)
 	cd hid_touchd; $(MAKE)
 
@@ -21,6 +22,7 @@ clean:
 	cd uartd; $(MAKE) clean
 	cd fbd; $(MAKE) clean
 	cd dsi_fbd; $(MAKE) clean
+	cd g2dd; $(MAKE) clean
 	cd soundd; $(MAKE) clean
 	cd soundpwmd; $(MAKE) clean
 	cd usbhostd; $(MAKE) clean
