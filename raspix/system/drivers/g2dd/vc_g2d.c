@@ -22,18 +22,19 @@
 #define TAG_BLIT_IMAGE     0x0004000Au
 
 /*
- * Blit message layout (32-bit words, after the mailbox header):
+ * Blit message layout follows the framebuffer helper already present in
+ * `arch_bcm283x/framebuffer.c`:
  *   [5..8]   src rect: x0, y0, x1, y1
- *   [9..12]  dst rect: x, y, w, h      (w/h allow scaled blits)
- *   [13]     src colorspace (0 = RGB)
- *   [14]     dst colorspace (0 = RGB)
- *   [15]     flags (VC_G2D_BLIT_*)
- *   [16..19] src buffer: bus addr, width, height, pitch
- *   [20..23] dst buffer: bus addr, width, height, pitch
- *   [24]     end tag
+ *   [9..10]  dst pos: x, y
+ *   [11]     src colorspace (0 = RGB)
+ *   [12]     dst colorspace (0 = RGB)
+ *   [13]     flags (VC_G2D_BLIT_*)
+ *   [14..17] src buffer: bus addr, width, height, pitch
+ *   [18..21] dst buffer: bus addr, width, height, pitch
+ *   [22]     end tag
  */
-#define VC_BLIT_WORDS      25
-#define VC_BLIT_VALUE_LEN  ((VC_BLIT_WORDS - 6) * 4)
+#define VC_BLIT_WORDS      24
+#define VC_BLIT_VALUE_LEN  64u
 
 static int vc_mbox_call_alias(uint32_t* buffer, uint32_t alias) {
 	mail_message_t msg;
@@ -101,12 +102,12 @@ void vc_g2d_buf_free(vc_g2d_buf_t* buf) {
 	memset(buf, 0, sizeof(*buf));
 }
 
-void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, uint32_t vaddr, uint32_t phy_base) {
+void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, uint32_t vaddr, uint32_t phy_base, uint32_t bus_base) {
 	if (buf == NULL)
 		return;
 	memset(buf, 0, sizeof(*buf));
 	buf->vaddr = vaddr;
-	buf->bus = phy_base + VC_ALIAS_NONCACHED;
+	buf->bus = bus_base != 0 ? bus_base : (phy_base + VC_ALIAS_NONCACHED);
 }
 
 int vc_g2d_blit(const vc_g2d_buf_t* src,
@@ -122,6 +123,8 @@ int vc_g2d_blit(const vc_g2d_buf_t* src,
 	if (src == NULL || dst == NULL || dst->bus == 0)
 		return -1;
 	if (sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0)
+		return -1;
+	if (sw != dw || sh != dh)
 		return -1;
 
 	m = (uint32_t*)dma_alloc(0, VC_BLIT_WORDS * sizeof(uint32_t));
@@ -142,24 +145,21 @@ int vc_g2d_blit(const vc_g2d_buf_t* src,
 
 	m[9] = (uint32_t)dx;
 	m[10] = (uint32_t)dy;
-	m[11] = (uint32_t)dw;
-	m[12] = (uint32_t)dh;
+	m[11] = 0; /* src colorspace: RGB */
+	m[12] = 0; /* dst colorspace: RGB */
+	m[13] = flags;
 
-	m[13] = 0; /* src colorspace: RGB */
-	m[14] = 0; /* dst colorspace: RGB */
-	m[15] = flags;
+	m[14] = src->bus;
+	m[15] = src_w;
+	m[16] = src_h;
+	m[17] = src_pitch;
 
-	m[16] = src->bus;
-	m[17] = src_w;
-	m[18] = src_h;
-	m[19] = src_pitch;
+	m[18] = dst->bus;
+	m[19] = dst_w;
+	m[20] = dst_h;
+	m[21] = dst_pitch;
 
-	m[20] = dst->bus;
-	m[21] = dst_w;
-	m[22] = dst_h;
-	m[23] = dst_pitch;
-
-	m[24] = 0; /* end tag */
+	m[22] = 0; /* end tag */
 
 	ret = vc_mbox_call(m, VC_BLIT_WORDS);
 	dma_free(0, (ewokos_addr_t)m);

@@ -26,7 +26,7 @@ int  vc_g2d_init(void);
 int  vc_g2d_buf_alloc(vc_g2d_buf_t* buf, uint32_t size);
 void vc_g2d_buf_free(vc_g2d_buf_t* buf);
 /* wrap an existing framebuffer mapping (no ownership) */
-void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, uint32_t vaddr, uint32_t phy_base);
+void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, uint32_t vaddr, uint32_t phy_base, uint32_t bus_base);
 
 /* scaled blit: src rect (sx,sy,sw,sh) -> dst rect (dx,dy,dw,dh),
  * dw/dh may differ from sw/sh (hardware scale) */

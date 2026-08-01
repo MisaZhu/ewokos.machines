@@ -43,6 +43,9 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
+	/*linear 32bpp scan-out: the generic per-rect copy pushes only the
+	  compositor's dirty rects instead of the whole frame*/
+	fbd_set_flush_rect(fbd_flush_rect_to);
 
 	return fbd_run(&fbd, mnt_point, 640, 480, "");
 }

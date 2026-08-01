@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-G2DD_OBJS = $(ARCH)/g2dd.o $(ARCH)/vc_g2d.o
+G2DD_OBJS = $(ARCH)/g2dd.o $(ARCH)/vc_g2d.o $(ARCH)/vc4_bo.o $(ARCH)/vc4_cl.o $(ARCH)/vc4_draw.o $(ARCH)/vc4_shaders.o $(ARCH)/vc4_v3d.o $(ARCH)/vc4_kms_v3d.o
 
 G2DD = $(TARGET_DIR)/drivers/raspix/g2dd
 

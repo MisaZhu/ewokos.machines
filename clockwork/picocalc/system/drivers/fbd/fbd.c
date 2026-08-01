@@ -23,6 +23,31 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 	return sz;
 }
 
+/*only convert/scan the rects the compositor declared dirty. g is the full
+  frame (stride g->w); ili9488_draw_stride pulls the sub-rect straight out of
+  it, then the panel driver's own shadow-diff pushes just the changed pixels
+  over SPI. Returns 0 to fall back to a full frame if geometry is unexpected.*/
+static uint32_t flush_rect(const fbinfo_t* fbinfo, const graph_t* g, const grect_t* r) {
+	(void)fbinfo;
+	if (g == NULL || g->buffer == NULL || r == NULL)
+		return 0;
+	if (g->w != LCD_WIDTH) //panel dest stride is hard-wired to LCD_WIDTH
+		return 0;
+
+	int x0 = r->x < 0 ? 0 : r->x;
+	int y0 = r->y < 0 ? 0 : r->y;
+	int x1 = r->x + r->w; if (x1 > (int)g->w) x1 = g->w;
+	int y1 = r->y + r->h; if (y1 > (int)g->h) y1 = g->h;
+	if (x0 >= x1 || y0 >= y1)
+		return 0;
+
+	int w = x1 - x0;
+	int h = y1 - y0;
+	uint32_t* buf = (uint32_t*)g->buffer + (uint32_t)y0 * g->w + (uint32_t)x0;
+	ili9488_draw_stride(x0, y0, w, h, buf, (int)g->w);
+	return (uint32_t)w * (uint32_t)h * 2;
+}
+
 static fbinfo_t* get_info(void) {
 	return bsp_get_fbinfo();
 }
@@ -43,6 +68,7 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
+	fbd_set_flush_rect(flush_rect);
 
 	return fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
 }

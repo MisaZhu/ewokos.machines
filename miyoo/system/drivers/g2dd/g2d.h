@@ -9,7 +9,9 @@ enum {
 	G2D_DEV_CNTL_FILL_RECT,
 	G2D_DEV_CNTL_BLIT,
 	G2D_DEV_CNTL_BLIT_ALPHA,
-	G2D_DEV_CNTL_PRESENT
+	G2D_DEV_CNTL_PRESENT,
+	G2D_DEV_CNTL_GET_PIXEL,
+	G2D_DEV_CNTL_GET_STATS
 };
 
 enum {
@@ -43,6 +45,11 @@ typedef struct {
 } g2d_fill_req_t;
 
 typedef struct {
+	int32_t x;
+	int32_t y;
+} g2d_pixel_req_t;
+
+typedef struct {
 	uint32_t src_w;
 	uint32_t src_h;
 	uint32_t src_stride;
@@ -60,5 +67,21 @@ typedef struct {
 	uint8_t alpha;
 	uint8_t reserved[7];
 } g2d_blit_req_t;
+
+typedef struct {
+	uint32_t backend;
+	uint32_t vc_ready;
+	uint32_t vc_clear_ops;
+	uint32_t vc_fill_ops;
+	uint32_t vc_blit_ops;
+	uint32_t vc_alpha_blit_ops;
+	uint32_t vc_present_ops;
+	uint32_t soft_clear_ops;
+	uint32_t soft_fill_ops;
+	uint32_t soft_blit_ops;
+	uint32_t soft_alpha_blit_ops;
+	uint32_t soft_present_ops;
+	uint32_t soft_fallback_ops;
+} g2d_stats_t;
 
 #endif

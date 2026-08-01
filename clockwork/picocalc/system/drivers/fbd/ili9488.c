@@ -142,7 +142,7 @@ static inline void show_rect(int x, int y, int w, int h) {
 	spi_set_byte_mode();
 }
 
-void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
+void ili9488_draw_stride(int x, int y, int w, int h, uint32_t *argb, int src_stride){
 	int row;
 	int col;
 	int min_x, max_x, min_y, max_y;
@@ -156,7 +156,7 @@ void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
 
 	if (_shadow_argb == NULL) {
 		for (row = 0; row < h; row++) {
-			const uint32_t *src_row = argb + row * w;
+			const uint32_t *src_row = argb + row * src_stride;
 			uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
 			for (col = 0; col < w; col++) {
 				fb_row[col] = argb_to_rgb565(src_row[col]);
@@ -169,7 +169,7 @@ void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
 	if (!_shadow_ready) {
 		for (row = 0; row < h; row++) {
 			uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-			const uint32_t *src_row = argb + row * w;
+			const uint32_t *src_row = argb + row * src_stride;
 			uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
 			for (col = 0; col < w; col++) {
 				shadow_row[col] = src_row[col];
@@ -189,7 +189,7 @@ void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
 
 	for (row = 0; row < h; row++) {
 		uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-		const uint32_t *src_row = argb + row * w;
+		const uint32_t *src_row = argb + row * src_stride;
 		uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
 		for (col = 0; col < w; col++) {
 			if (shadow_row[col] == src_row[col]) {
@@ -232,6 +232,10 @@ void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
 		/* partial refresh: send only dirty rect */
 		show_rect(min_x, min_y, dirty_w, dirty_h);
 	}
+}
+
+void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
+	ili9488_draw_stride(x, y, w, h, argb, w);
 }
 
 void ili9488_init(void){

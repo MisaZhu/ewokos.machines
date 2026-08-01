@@ -84,5 +84,6 @@
 void ili9488_init(void);
 void ili9488_clear(uint32_t argb);
 void ili9488_draw(int x, int y, int w, int h, uint32_t *argb);
+void ili9488_draw_stride(int x, int y, int w, int h, uint32_t *argb, int src_stride);
 
 #endif
