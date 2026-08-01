@@ -69,8 +69,8 @@
 #@/bin/splash -m "start xim" -p 96
 #@/bin/bgrun /sbin/x/xim_none /dev/joystick0
 
-#@/bin/splash -m "start /dev/sound0" -p 96
-#@/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
+@/bin/splash -m "start /dev/sound0" -p 96
+@/bin/ipcserv /drivers/clockwork/soundpwmd           /dev/sound0
 
 @/bin/splash -m "start x" -p 100
 @/bin/ipcserv /drivers/xserverd              /dev/x

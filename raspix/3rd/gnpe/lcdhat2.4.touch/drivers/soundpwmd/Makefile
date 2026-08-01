@@ -1,4 +1,4 @@
-include ../../make.inc
+include ../../../../make.inc
 SYS_DIR=$(ewokos)/system
 include $(SYS_DIR)/platform/$(ARCH)/make.rule
 

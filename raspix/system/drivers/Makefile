@@ -1,7 +1,7 @@
 basic:
 	cd uartd; $(MAKE)
 	cd soundd; $(MAKE)
-	cd soundpwmd; $(MAKE)
+	cd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd; $(MAKE)
 	cd usbhostd; $(MAKE)
 	cd hid_keybd; $(MAKE)
 	cd hid_joystickd; $(MAKE)
@@ -24,7 +24,7 @@ clean:
 	cd dsi_fbd; $(MAKE) clean
 	cd g2dd; $(MAKE) clean
 	cd soundd; $(MAKE) clean
-	cd soundpwmd; $(MAKE) clean
+	cd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd; $(MAKE) clean
 	cd usbhostd; $(MAKE) clean
 	cd hid_keybd; $(MAKE) clean
 	cd hid_moused; $(MAKE) clean
