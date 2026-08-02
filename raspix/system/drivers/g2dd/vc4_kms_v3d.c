@@ -205,6 +205,8 @@ static inline void vc4_kms_v3d_mem_barrier(void) {
 	__sync_synchronize();
 }
 
+/* Kept for failure triage even when no call site is currently wired up. */
+static void vc4_kms_v3d_dump_cl(vc4_cl_t* cl, const char* tag, uint32_t limit) __attribute__((unused));
 static void vc4_kms_v3d_dump_cl(vc4_cl_t* cl, const char* tag, uint32_t limit) {
 	uint32_t i;
 	uint8_t* data;
@@ -284,6 +286,8 @@ static void vc4_kms_v3d_dump_cl_window(vc4_cl_t* cl, uint32_t bus_addr, uint32_t
 			window_end - window_start, tag);
 }
 
+/* Kept for failure triage even when no call site is currently wired up. */
+static void vc4_kms_v3d_dump_fill_vertices(vc4_kms_v3d_t* ctx, const char* tag) __attribute__((unused));
 static void vc4_kms_v3d_dump_fill_vertices(vc4_kms_v3d_t* ctx, const char* tag) {
 	uint32_t i;
 	uint8_t* vertices;
@@ -848,12 +852,18 @@ static int32_t vc4_kms_v3d_build_fill_bcl(vc4_kms_v3d_t* ctx) {
 		return -1;
 
 	/*
-	 * FLUSH_ALL rather than FLUSH, and no semaphore increment: the renderer is
-	 * only started once the binner has run to completion, so the semaphore
-	 * pair adds nothing but a stale-count hazard across submissions.
+	 * INCREMENT_SEMAPHORE + FLUSH, exactly like the working clear path and
+	 * the reference stacks (mesa always ends a bin list with this pair and
+	 * the kernel validator enforces it). The FLUSH_ALL ending tried before
+	 * did bump BFC, but left the per-tile lists in a state the renderer ran
+	 * straight through: CT1 raised CTERR with CT1CA far outside the render
+	 * list right after branching into the tile (0,0) sub-list. FLUSH is the
+	 * only binner ending the reference stacks exercise, so it is the only
+	 * one known to terminate every tile sub-list for BRANCH_TO_SUB_LIST
+	 * replay.
 	 */
-	if (vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_FLUSH_ALL) != 0 ||
-			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_NOP) != 0 ||
+	if (vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_INCREMENT_SEMAPHORE) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_FLUSH) != 0 ||
 			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_HALT) != 0)
 		return -1;
 
@@ -931,7 +941,14 @@ static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)x) != 0 ||
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)y) != 0)
 				return -1;
-			/* No WAIT_ON_SEMAPHORE: the bin list no longer signals one. */
+			/*
+			 * The bin list ends with INCREMENT_SEMAPHORE + FLUSH again, so
+			 * pair it with a wait before the first sub-list is replayed,
+			 * mirroring the clear path.
+			 */
+			if (x == 0 && y == 0 &&
+					vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_WAIT_ON_SEMAPHORE) != 0)
+				return -1;
 			if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_BRANCH_TO_SUB_LIST) != 0 ||
 					vc4_cl_emit_u32(&ctx->rcl, sub_list) != 0)
 				return -1;
@@ -1073,17 +1090,23 @@ int32_t vc4_kms_v3d_fill_rect(vc4_kms_v3d_t* ctx, const g2d_fill_req_t* req) {
 		ty0 = (uint32_t)rect.y / VC4_TILE_SIZE;
 		sub_list = ctx->binner_pool.bus_addr + ctx->tile_alloc_offset +
 				((ty0 * ctx->tiles_x) + tx0) * VC4_TILE_ALLOC_BLOCK_SIZE;
-		slog("vc4_kms_v3d: fill submit failed ret=%d rect=(%d,%d %dx%d) color=%x first_tile=(%u,%u) sublist=%x ct1ca=%x ct1ea=%x\n",
+		/*
+		 * Keep the decisive data in the first few lines: the xlog window is
+		 * small and the BCL/RCL byte dumps have already been verified
+		 * byte-exact against the builders, so they add nothing here.
+		 */
+		slog("vc4_kms_v3d: fill submit failed ret=%d rect=(%d,%d %dx%d) color=%x first_tile=(%u,%u) sublist=%x ovfl=%x\n",
 				ret, rect.x, rect.y, rect.w, rect.h, req->color,
-				tx0, ty0, sub_list, ctx->v3d.last_ct1ca, ctx->v3d.last_ct1ea);
-		vc4_kms_v3d_dump_cl(&ctx->bcl, "fill-bcl", 96);
-		vc4_kms_v3d_dump_cl(&ctx->rcl, "fill-rcl", 96);
+				tx0, ty0, sub_list, ctx->binner_overflow.bus_addr);
+		slog("vc4_kms_v3d: fill regs ct1cs=%x ct1ca=%x ct1ea=%x ct0cs=%x pcs=%x bfc=%x rfc=%x err=%x bpca=%x bpcs=%x bpoa=%x bpos=%x\n",
+				ctx->v3d.last_ct1cs, ctx->v3d.last_ct1ca, ctx->v3d.last_ct1ea,
+				ctx->v3d.last_ct0cs, ctx->v3d.last_pcs,
+				ctx->v3d.last_bfc, ctx->v3d.last_rfc, ctx->v3d.last_errstat,
+				ctx->v3d.last_bpca, ctx->v3d.last_bpcs,
+				ctx->v3d.last_bpoa, ctx->v3d.last_bpos);
+		vc4_kms_v3d_dump_bus_bytes(&ctx->binner_pool, sub_list, 64, "fill-sublist");
 		vc4_kms_v3d_dump_cl_window(&ctx->rcl, ctx->v3d.last_ct1ca, 24, 40,
 				"fill-rcl-at-ct1ca");
-		vc4_kms_v3d_dump_bus_bytes(&ctx->shader_rec, ctx->fill_shader_rec_bus_addr, 16, "fill-shader-rec");
-		vc4_kms_v3d_dump_bus_bytes(&ctx->uniforms, ctx->fill_uniforms_bus_addr, 16, "fill-uniforms");
-		vc4_kms_v3d_dump_fill_vertices(ctx, "fill-verts");
-		vc4_kms_v3d_dump_bus_bytes(&ctx->binner_pool, sub_list, 32, "fill-sublist");
 	}
 	else {
 		mid_x = rect.x + rect.w / 2;

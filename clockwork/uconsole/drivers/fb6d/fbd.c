@@ -376,6 +376,9 @@ int main(int argc, char** argv) {
 	 * NC write-combining), skipping the intermediate rotate buffer
 	 * and the extra full-frame copy. */
 	fbd.flush_rotate = fbd_rotate_to;
+	/* Non-rotated scan-out is also a plain memory blit, so libfbd can
+	 * push just the dirty rects instead of falling back to a full frame. */
+	fbd_set_flush_rect(fbd_flush_rect_to);
 	fbd.init = init;
 	fbd.get_info = get_info;
 
