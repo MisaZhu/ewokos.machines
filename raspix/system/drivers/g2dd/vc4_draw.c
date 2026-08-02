@@ -23,10 +23,10 @@ int32_t vc4_emit_clip_window(vc4_cl_t* cl, uint16_t left, uint16_t bottom, uint1
 			vc4_cl_emit_u16(cl, height) ? -1 : 0;
 }
 
-int32_t vc4_emit_viewport_offset(vc4_cl_t* cl, float center_x, float center_y) {
+int32_t vc4_emit_viewport_offset(vc4_cl_t* cl, int16_t center_x_12_4, int16_t center_y_12_4) {
 	return vc4_cl_emit_u8(cl, VC4_PACKET_VIEWPORT_OFFSET) ||
-			vc4_cl_emit_u16(cl, (uint16_t)center_x) ||
-			vc4_cl_emit_u16(cl, (uint16_t)center_y) ? -1 : 0;
+			vc4_cl_emit_u16(cl, (uint16_t)center_x_12_4) ||
+			vc4_cl_emit_u16(cl, (uint16_t)center_y_12_4) ? -1 : 0;
 }
 
 int32_t vc4_emit_clipper_xy_scaling(vc4_cl_t* cl, float half_width, float half_height) {
@@ -35,10 +35,14 @@ int32_t vc4_emit_clipper_xy_scaling(vc4_cl_t* cl, float half_width, float half_h
 			vc4_cl_emit_u32(cl, vc4_draw_float_bits(half_height * 16.0f)) ? -1 : 0;
 }
 
+/*
+ * Clipper Z Scale and Offset carries the scale first and the offset second, so
+ * the arguments must not be emitted in declaration-name order by accident.
+ */
 int32_t vc4_emit_clipper_z_scaling(vc4_cl_t* cl, float z_scale, float z_offset) {
 	return vc4_cl_emit_u8(cl, VC4_PACKET_CLIPPER_Z_SCALING) ||
-			vc4_cl_emit_u32(cl, vc4_draw_float_bits(z_offset)) ||
-			vc4_cl_emit_u32(cl, vc4_draw_float_bits(z_scale)) ? -1 : 0;
+			vc4_cl_emit_u32(cl, vc4_draw_float_bits(z_scale)) ||
+			vc4_cl_emit_u32(cl, vc4_draw_float_bits(z_offset)) ? -1 : 0;
 }
 
 int32_t vc4_emit_configuration_bits(vc4_cl_t* cl, uint8_t byte0, uint8_t byte1, uint8_t byte2) {
@@ -164,11 +168,43 @@ int32_t vc4_write_nv_shader_record(vc4_bo_t* bo, uint32_t offset,
 	return 0;
 }
 
+void vc4_write_shaded_vertex_raw(uint8_t* dst, int16_t xs_12_4, int16_t ys_12_4,
+		float zs_value, float reciprocal_w) {
+	uint32_t zs;
+	uint32_t rcp_w;
+	if (dst == NULL)
+		return;
+
+	zs = vc4_draw_float_bits(zs_value);
+	rcp_w = vc4_draw_float_bits(reciprocal_w);
+
+	memcpy(dst + 0, &xs_12_4, sizeof(xs_12_4));
+	memcpy(dst + 2, &ys_12_4, sizeof(ys_12_4));
+	memcpy(dst + 4, &zs, sizeof(zs));
+	memcpy(dst + 8, &rcp_w, sizeof(rcp_w));
+}
+
+void vc4_write_shaded_color_vertex_raw(uint8_t* dst, int16_t xs_12_4, int16_t ys_12_4,
+		float zs_value, float reciprocal_w, float red, float green, float blue) {
+	uint32_t r_bits;
+	uint32_t g_bits;
+	uint32_t b_bits;
+
+	if (dst == NULL)
+		return;
+
+	vc4_write_shaded_vertex_raw(dst, xs_12_4, ys_12_4, zs_value, reciprocal_w);
+	r_bits = vc4_draw_float_bits(red);
+	g_bits = vc4_draw_float_bits(green);
+	b_bits = vc4_draw_float_bits(blue);
+	memcpy(dst + 12, &r_bits, sizeof(r_bits));
+	memcpy(dst + 16, &g_bits, sizeof(g_bits));
+	memcpy(dst + 20, &b_bits, sizeof(b_bits));
+}
+
 void vc4_write_shaded_vertex(uint8_t* dst, int32_t x, int32_t y) {
 	int16_t xs;
 	int16_t ys;
-	uint32_t zs;
-	uint32_t rcp_w;
 
 	if (dst == NULL)
 		return;
@@ -176,11 +212,5 @@ void vc4_write_shaded_vertex(uint8_t* dst, int32_t x, int32_t y) {
 	/* Screen coordinates are 12.4 fixed point. */
 	xs = (int16_t)(x * 16);
 	ys = (int16_t)(y * 16);
-	zs = vc4_draw_float_bits(0.0f);
-	rcp_w = vc4_draw_float_bits(1.0f);
-
-	memcpy(dst + 0, &xs, sizeof(xs));
-	memcpy(dst + 2, &ys, sizeof(ys));
-	memcpy(dst + 4, &zs, sizeof(zs));
-	memcpy(dst + 8, &rcp_w, sizeof(rcp_w));
+	vc4_write_shaded_vertex_raw(dst, xs, ys, 0.0f, 1.0f);
 }

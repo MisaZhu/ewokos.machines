@@ -46,7 +46,7 @@ typedef struct {
 
 uint32_t vc4_draw_float_bits(float value);
 int32_t vc4_emit_clip_window(vc4_cl_t* cl, uint16_t left, uint16_t bottom, uint16_t width, uint16_t height);
-int32_t vc4_emit_viewport_offset(vc4_cl_t* cl, float center_x, float center_y);
+int32_t vc4_emit_viewport_offset(vc4_cl_t* cl, int16_t center_x_12_4, int16_t center_y_12_4);
 int32_t vc4_emit_clipper_xy_scaling(vc4_cl_t* cl, float half_width, float half_height);
 int32_t vc4_emit_clipper_z_scaling(vc4_cl_t* cl, float z_scale, float z_offset);
 int32_t vc4_emit_configuration_bits(vc4_cl_t* cl, uint8_t byte0, uint8_t byte1, uint8_t byte2);
@@ -63,7 +63,12 @@ int32_t vc4_write_nv_shader_record(vc4_bo_t* bo, uint32_t offset,
 		uint32_t* next_offset);
 /* Emits one 12-byte NV shaded vertex: Xs/Ys in 12.4 screen coords, Zs, 1/Wc. */
 void vc4_write_shaded_vertex(uint8_t* dst, int32_t x, int32_t y);
+void vc4_write_shaded_vertex_raw(uint8_t* dst, int16_t xs_12_4, int16_t ys_12_4,
+		float zs_value, float reciprocal_w);
+void vc4_write_shaded_color_vertex_raw(uint8_t* dst, int16_t xs_12_4, int16_t ys_12_4,
+		float zs_value, float reciprocal_w, float red, float green, float blue);
 
 #define VC4_SHADED_VERTEX_STRIDE 12
+#define VC4_SHADED_COLOR_VERTEX_STRIDE 24
 
 #endif

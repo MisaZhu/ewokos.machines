@@ -11,37 +11,35 @@
  */
 
 /*
- * Solid colour fragment shader, used by the NV-shader-state fill path.
+ * Solid-colour fragment shader for the NV fill path.
  *
- * The tile buffer is configured as plain RGBA8888 and the render target is
- * linear, so the clear path already proves TLB->memory is a straight 32-bit
- * copy. That means the fill colour can be handed to the QPU as one raw
- * 0xAARRGGBB uniform and moved to the TLB unmodified, which avoids depending
- * on the MUL-pipeline pack modes (float->unorm8 rounding) entirely.
+ * This is the fragment shader from the known-good public NV triangle demo,
+ * trimmed only by how we feed it: instead of interpolating different vertex
+ * colours, every vertex of the rectangle carries the same RGB varyings, so
+ * the interpolated result is still a flat colour across the quad. Using this
+ * shader avoids fragment-shader uniforms entirely, which lets us test the
+ * real draw path without depending on the uniform fetch path yet.
  *
- *   nop                              ; sig = wait for scoreboard
- *   or  tlb_color_all, unif, unif
- *   nop                              ; sig = program end
- *   nop
- *   nop                              ; sig = unlock scoreboard
- *
- * The program end signal takes effect two instructions later, so it sits on a
- * nop after the tile buffer write rather than on the write itself. That is the
- * ordering Mesa emits, and it keeps the TLB access clear of the instruction
- * that retires the thread.
- *
- * 0x15827d80: op_add=21(OR) raddr_a=32(UNIFORM) add_a=add_b=6(regfile A)
- * 0x10020ba7: sig=1(none) cond_add=1(always) waddr_add=46(TLB_COLOR_ALL)
- *             waddr_mul=39(nop)
- * 0x?00009e7: nop with the signal in the top nibble -- 1=none, 3=program end,
- *             4=wait for scoreboard, 5=unlock scoreboard.
+ * The varying values are floats in the 0..1 range. The shader multiplies
+ * them by 1/W, biases them, packs them to unorm8 with the PM pipeline and
+ * writes the final ARGB pixel to `tlb_clr_all`.
  */
 static const uint32_t g_vc4_solid_fs_code[] = {
-	0x009e7000, 0x400009e7,
-	0x15827d80, 0x10020ba7,
+	0x203e303e, 0x100049e0,
+	0x019e7140, 0x10020827,
+	0x203e303e, 0x100049e1,
+	0x019e7340, 0x10020867,
+	0x203e303e, 0x100049e2,
+	0x019e7540, 0x100208a7,
+	0xff000000, 0xe00208e7,
+	0x209e0007, 0xd16049e3,
+	0x209e000f, 0xd15049e3,
+	0x209e0017, 0xd14049e3,
+	0x159e76c0, 0x50020ba7,
+	0x009e7000, 0x100009e7,
 	0x009e7000, 0x300009e7,
 	0x009e7000, 0x100009e7,
-	0x009e7000, 0x500009e7
+	0x009e7000, 0x100009e7
 };
 
 static const uint32_t g_vc4_textured_fs_code[] = {
