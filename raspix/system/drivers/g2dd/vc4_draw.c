@@ -76,6 +76,19 @@ int32_t vc4_emit_gl_array_primitive(vc4_cl_t* cl, uint8_t primitive_mode, uint32
 }
 
 /*
+ * The mode byte carries the index size in its upper nibble and the primitive
+ * type in its lower one, so the caller ORs VC4_INDEX_TYPE_* into the mode.
+ */
+int32_t vc4_emit_gl_indexed_primitive(vc4_cl_t* cl, uint8_t primitive_mode, uint32_t length,
+		uint32_t index_bus_addr, uint32_t maximum_index) {
+	return vc4_cl_emit_u8(cl, VC4_PACKET_GL_INDEXED_PRIMITIVE) ||
+			vc4_cl_emit_u8(cl, primitive_mode) ||
+			vc4_cl_emit_u32(cl, length) ||
+			vc4_cl_emit_u32(cl, index_bus_addr) ||
+			vc4_cl_emit_u32(cl, maximum_index) ? -1 : 0;
+}
+
+/*
  * GL shader state record layout, per the hardware docs and cross-checked
  * against the relocation offsets the Linux vc4 command validator enforces
  * (vc4_validate.c: shader_reloc_offsets[] = { 4, 16, 28 }, i.e. FS/VS/CS code):

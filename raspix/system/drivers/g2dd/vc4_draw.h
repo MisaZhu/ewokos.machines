@@ -54,6 +54,8 @@ int32_t vc4_emit_primitive_list_format(vc4_cl_t* cl, uint8_t format);
 int32_t vc4_emit_gl_shader_state(vc4_cl_t* cl, uint8_t number_of_attribute_arrays, uint32_t shader_record_bus_addr);
 int32_t vc4_emit_nv_shader_state(vc4_cl_t* cl, uint32_t shader_record_bus_addr);
 int32_t vc4_emit_gl_array_primitive(vc4_cl_t* cl, uint8_t primitive_mode, uint32_t length, uint32_t index_of_first_vertex);
+int32_t vc4_emit_gl_indexed_primitive(vc4_cl_t* cl, uint8_t primitive_mode, uint32_t length,
+		uint32_t index_bus_addr, uint32_t maximum_index);
 int32_t vc4_write_shader_record(vc4_bo_t* bo, uint32_t offset,
 		const vc4_shader_record_info_t* info,
 		const vc4_attribute_record_info_t* attrs, uint32_t attr_count,

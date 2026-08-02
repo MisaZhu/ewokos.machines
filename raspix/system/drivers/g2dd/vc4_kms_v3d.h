@@ -63,6 +63,8 @@ typedef struct {
 	uint32_t fill_uniforms_bus_addr;
 	uint32_t fill_vertex_offset;
 	uint32_t fill_vertex_bus_addr;
+	uint32_t fill_index_offset;
+	uint32_t fill_index_bus_addr;
 } vc4_kms_v3d_t;
 
 int32_t vc4_kms_v3d_init(vc4_kms_v3d_t* ctx, uint32_t width, uint32_t height, uint32_t depth);

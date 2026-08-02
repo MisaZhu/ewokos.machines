@@ -14,32 +14,36 @@
  * Solid-colour fragment shader for the NV fill path.
  *
  * This is the fragment shader from the known-good public NV triangle demo,
- * trimmed only by how we feed it: instead of interpolating different vertex
- * colours, every vertex of the rectangle carries the same RGB varyings, so
- * the interpolated result is still a flat colour across the quad. Using this
- * shader avoids fragment-shader uniforms entirely, which lets us test the
- * real draw path without depending on the uniform fetch path yet.
+ * used verbatim. It is trimmed only by how we feed it: instead of
+ * interpolating different vertex colours, every vertex of the rectangle
+ * carries the same varyings, so the interpolated result is a flat colour
+ * across the quad. Using it avoids fragment-shader uniforms entirely.
  *
- * The varying values are floats in the 0..1 range. The shader multiplies
- * them by 1/W, biases them, packs them to unorm8 with the PM pipeline and
- * writes the final ARGB pixel to `tlb_clr_all`.
+ * Each varying is completed with the usual `vary + r5` idiom, then packed to
+ * unorm8 through the MUL pipeline. The three varyings land in bytes 0, 1 and 2
+ * of the tile buffer colour in order, and byte 3 is forced to 1.0, so the
+ * caller has to supply them as (blue, green, red) for an ARGB target.
+ *
+ *   mov r0, vary            ; mov r3.8d, 1.0
+ *   fadd r0, r0, r5         ; mov r1, vary      ; sbwait
+ *   fadd r1, r1, r5         ; mov r2, vary
+ *   fadd r2, r2, r5         ; mov r3.8a, r0
+ *   nop                     ; mov r3.8b, r1
+ *   nop                     ; mov r3.8c, r2
+ *   mov tlb_color_all, r3   ; nop               ; thrend
+ *   nop
+ *   nop                     ; nop               ; sbdone
  */
 static const uint32_t g_vc4_solid_fs_code[] = {
-	0x203e303e, 0x100049e0,
-	0x019e7140, 0x10020827,
-	0x203e303e, 0x100049e1,
-	0x019e7340, 0x10020867,
-	0x203e303e, 0x100049e2,
-	0x019e7540, 0x100208a7,
-	0xff000000, 0xe00208e7,
-	0x209e0007, 0xd16049e3,
-	0x209e000f, 0xd15049e3,
-	0x209e0017, 0xd14049e3,
-	0x159e76c0, 0x50020ba7,
+	0x958e0dbf, 0xd1724823,
+	0x818e7176, 0x40024821,
+	0x818e7376, 0x10024862,
+	0x819e7540, 0x114248a3,
+	0x809e7009, 0x115049e3,
+	0x809e7012, 0x116049e3,
+	0x159e76c0, 0x30020ba7,
 	0x009e7000, 0x100009e7,
-	0x009e7000, 0x300009e7,
-	0x009e7000, 0x100009e7,
-	0x009e7000, 0x100009e7
+	0x009e7000, 0x500009e7
 };
 
 static const uint32_t g_vc4_textured_fs_code[] = {

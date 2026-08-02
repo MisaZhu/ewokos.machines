@@ -59,6 +59,19 @@
 #define V3D_L2CACTL_L2CDIS      (1U << 1)
 #define V3D_L2CACTL_L2CENA      (1U << 0)
 
+/*
+ * Slice cache control: four bits per cache, one per slice. Writing ones clears
+ * the corresponding slice's texture (T0/T1), uniforms and instruction caches.
+ */
+#define V3D_SLCACTL_T1CC_SHIFT  24
+#define V3D_SLCACTL_T0CC_SHIFT  16
+#define V3D_SLCACTL_UCC_SHIFT   8
+#define V3D_SLCACTL_ICC_SHIFT   0
+#define V3D_SLCACTL_CLEAR_ALL   ((0xfU << V3D_SLCACTL_T1CC_SHIFT) | \
+				 (0xfU << V3D_SLCACTL_T0CC_SHIFT) | \
+				 (0xfU << V3D_SLCACTL_UCC_SHIFT) | \
+				 (0xfU << V3D_SLCACTL_ICC_SHIFT))
+
 #define V3D_INT_SPILLUSE        (1U << 3)
 #define V3D_INT_OUTOMEM         (1U << 2)
 #define V3D_INT_FLDONE          (1U << 1)

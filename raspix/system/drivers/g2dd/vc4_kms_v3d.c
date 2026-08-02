@@ -326,6 +326,9 @@ static void vc4_kms_v3d_dump_fill_vertices(vc4_kms_v3d_t* ctx, const char* tag) 
 static int32_t vc4_kms_v3d_setup_fill_resources(vc4_kms_v3d_t* ctx) {
 	uint32_t rec_offset;
 	uint32_t vtx_offset;
+	uint32_t idx_offset;
+	uint8_t* indices;
+	uint32_t i;
 
 	if (ctx == NULL || ctx->shader_rec.vaddr == 0 ||
 			ctx->uniforms.vaddr == 0 || ctx->vertex_data.vaddr == 0)
@@ -333,22 +336,40 @@ static int32_t vc4_kms_v3d_setup_fill_resources(vc4_kms_v3d_t* ctx) {
 
 	rec_offset = vc4_align_up(ctx->shader_rec_offset, 16);
 	vtx_offset = vc4_align_up(ctx->vertex_data_offset, 16);
+	idx_offset = vc4_align_up(vtx_offset +
+			(VC4_FILL_VERTEX_COUNT * VC4_SHADED_COLOR_VERTEX_STRIDE), 16);
 
 	if (rec_offset + 16 > ctx->shader_rec.size ||
-			vtx_offset + (VC4_FILL_VERTEX_COUNT * VC4_SHADED_COLOR_VERTEX_STRIDE) > ctx->vertex_data.size)
+			idx_offset + VC4_FILL_VERTEX_COUNT > ctx->vertex_data.size)
 		return -1;
 
 	ctx->fill_shader_rec_offset = rec_offset;
 	ctx->fill_shader_rec_bus_addr = ctx->shader_rec.bus_addr + rec_offset;
 	ctx->shader_rec_offset = rec_offset + 16;
 
+	/*
+	 * The solid fragment shader reads no uniforms, but the shader record still
+	 * carries a uniforms address, so point it at real zeroed memory rather
+	 * than at bus address 0.
+	 */
 	ctx->fill_uniforms_offset = 0;
-	ctx->fill_uniforms_bus_addr = 0;
+	ctx->fill_uniforms_bus_addr = ctx->uniforms.bus_addr;
 
 	ctx->fill_vertex_offset = vtx_offset;
 	ctx->fill_vertex_bus_addr = ctx->vertex_data.bus_addr + vtx_offset;
-	ctx->vertex_data_offset = vtx_offset +
-			(VC4_FILL_VERTEX_COUNT * VC4_SHADED_COLOR_VERTEX_STRIDE);
+
+	/*
+	 * The draw is an indexed primitive, which is the form the known-good NV
+	 * path uses. The index list never changes, so write it once here: the six
+	 * shaded vertices are consumed in order as two triangles.
+	 */
+	ctx->fill_index_offset = idx_offset;
+	ctx->fill_index_bus_addr = ctx->vertex_data.bus_addr + idx_offset;
+	indices = (uint8_t*)(uintptr_t)ctx->vertex_data.vaddr + idx_offset;
+	for (i = 0; i < VC4_FILL_VERTEX_COUNT; i++)
+		indices[i] = (uint8_t)i;
+
+	ctx->vertex_data_offset = idx_offset + VC4_FILL_VERTEX_COUNT;
 	return 0;
 }
 
@@ -775,7 +796,15 @@ static int32_t vc4_kms_v3d_build_fill_bcl(vc4_kms_v3d_t* ctx) {
 	 * The clip window is left at the full surface: the quad itself bounds the
 	 * fill, and CLIP_WINDOW's Y origin convention is not worth depending on.
 	 */
-	if (vc4_emit_clip_window(&ctx->bcl, 0, 0,
+	if (/*
+	     * 32_XY, not 16_INDEX. The list format describes how the binner
+	     * records primitives in the tile lists, not how this control list
+	     * indexes its vertices, and NV mode feeds it absolute screen XY.
+	     */
+			vc4_emit_primitive_list_format(&ctx->bcl,
+				VC4_PRIMITIVE_LIST_FORMAT_32_XY |
+				VC4_PRIMITIVE_LIST_FORMAT_TYPE_TRIANGLES) != 0 ||
+			vc4_emit_clip_window(&ctx->bcl, 0, 0,
 				(uint16_t)ctx->width, (uint16_t)ctx->height) != 0 ||
 			/*
 			 * byte0: rasterise both front and back facing primitives.
@@ -786,44 +815,45 @@ static int32_t vc4_kms_v3d_build_fill_bcl(vc4_kms_v3d_t* ctx) {
 			 *        every primitive is culled, which still lets the binner
 			 *        flush and still leaves valid but empty tile lists, so
 			 *        both threads report success and nothing is drawn.
-			 * byte1: the depth comparison function is always applied, so it
-			 *        has to be ALWAYS. A zero here means NEVER and every
-			 *        fragment is discarded.
-			 * byte2: no early depth test, and in particular no early depth
-			 *        write: there is no depth buffer bound in the rendering
-			 *        mode config for it to write to.
+			 * byte1: depth testing disabled outright. With no depth buffer
+			 *        bound there is nothing for a comparison function to
+			 *        read, so leave the whole byte clear.
+			 * byte2: early depth write, which is what the known-good NV
+			 *        path uses.
 			 */
 			vc4_emit_configuration_bits(&ctx->bcl,
 				VC4_CONFIG_BITS_ENABLE_PRIM_FRONT |
 					VC4_CONFIG_BITS_ENABLE_PRIM_BACK,
-				(uint8_t)(VC4_CONFIG_BITS_DEPTH_FUNC_ALWAYS <<
-					VC4_CONFIG_BITS_DEPTH_FUNC_SHIFT),
-				0) != 0 ||
+				0,
+				VC4_CONFIG_BITS_EARLY_Z_UPDATE) != 0 ||
 			/*
-			 * Even in NV shaded-vertex mode the binner still needs the
-			 * clipper scales programmed so it can derive tile coverage
-			 * from screen-space coordinates. Leaving them at reset
-			 * values tends to produce an empty per-tile list, after
-			 * which CT1 branches into a zero/garbage sublist and never
-			 * reaches STORE_MS_TILE_BUFFER_AND_EOF.
+			 * Zero viewport offset, with the shaded vertices carrying
+			 * absolute screen coordinates. NV mode supplies vertices that
+			 * are already past the viewport transform, so it is unclear
+			 * whether this offset is added at all. Absolute coordinates
+			 * with a zero offset are correct either way, whereas
+			 * centre-relative coordinates are only correct if the offset
+			 * really is applied.
+			 *
+			 * No clipper XY or Z scaling follows: those feed the viewport
+			 * transform that NV mode bypasses, and programming them makes
+			 * the already-transformed vertices get scaled a second time.
 			 */
-			vc4_emit_viewport_offset(&ctx->bcl,
-				(int16_t)((ctx->width / 2U) << 4),
-				(int16_t)((ctx->height / 2U) << 4)) != 0 ||
-			/*
-			 * Half the viewport in pixels: vc4_emit_clipper_xy_scaling
-			 * converts to the 1/16th-pixel units the packet wants itself.
-			 */
-			vc4_emit_clipper_xy_scaling(&ctx->bcl,
-				(float)ctx->width / 2.0f, (float)ctx->height / 2.0f) != 0 ||
-			vc4_emit_clipper_z_scaling(&ctx->bcl, 1.0f, 0.0f) != 0 ||
+			vc4_emit_viewport_offset(&ctx->bcl, 0, 0) != 0 ||
 			vc4_emit_nv_shader_state(&ctx->bcl, ctx->fill_shader_rec_bus_addr) != 0 ||
-			vc4_emit_gl_array_primitive(&ctx->bcl,
-				VC4_PRIMITIVE_MODE_TRIANGLES, VC4_FILL_VERTEX_COUNT, 0) != 0)
+			vc4_emit_gl_indexed_primitive(&ctx->bcl,
+				VC4_INDEX_BUFFER_U8 | VC4_PRIMITIVE_MODE_TRIANGLES,
+				VC4_FILL_VERTEX_COUNT, ctx->fill_index_bus_addr,
+				VC4_FILL_VERTEX_COUNT - 1) != 0)
 		return -1;
 
-	if (vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_INCREMENT_SEMAPHORE) != 0 ||
-			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_FLUSH) != 0 ||
+	/*
+	 * FLUSH_ALL rather than FLUSH, and no semaphore increment: the renderer is
+	 * only started once the binner has run to completion, so the semaphore
+	 * pair adds nothing but a stale-count hazard across submissions.
+	 */
+	if (vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_FLUSH_ALL) != 0 ||
+			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_NOP) != 0 ||
 			vc4_cl_emit_u8(&ctx->bcl, VC4_PACKET_HALT) != 0)
 		return -1;
 
@@ -901,9 +931,7 @@ static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)x) != 0 ||
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)y) != 0)
 				return -1;
-			if (x == 0 && y == 0 &&
-					vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_WAIT_ON_SEMAPHORE) != 0)
-				return -1;
+			/* No WAIT_ON_SEMAPHORE: the bin list no longer signals one. */
 			if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_BRANCH_TO_SUB_LIST) != 0 ||
 					vc4_cl_emit_u32(&ctx->rcl, sub_list) != 0)
 				return -1;
@@ -929,17 +957,15 @@ static int32_t vc4_kms_v3d_build_fill_job(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 	int16_t ys0;
 	int16_t xs1;
 	int16_t ys1;
-	int16_t viewport_center_x;
-	int16_t viewport_center_y;
 	float red;
 	float green;
 	float blue;
 
 	/*
-	 * NV mode expects Xs/Ys in signed 12.4 units relative to the viewport
-	 * centre, so subtract the same centre that build_fill_bcl programmes in
-	 * VIEWPORT_OFFSET. The two cancel and the quad lands on the requested
-	 * pixels.
+	 * Absolute screen coordinates in signed 12.4, paired with the zero
+	 * VIEWPORT_OFFSET that build_fill_bcl programmes. See the comment there:
+	 * this pairing is correct whether or not NV mode applies the viewport
+	 * offset, which centre-relative coordinates were not.
 	 *
 	 * Y is deliberately not flipped. The renderer stores tile (tx,ty) to
 	 * render target row ty*64 and the binner files a primitive under tile
@@ -947,34 +973,36 @@ static int32_t vc4_kms_v3d_build_fill_job(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 	 * same index. The bottom-left origin only applies to the clip-space
 	 * viewport transform, which NV mode bypasses entirely.
 	 */
-	viewport_center_x = (int16_t)(ctx->width / 2U);
-	viewport_center_y = (int16_t)(ctx->height / 2U);
-	xs0 = (int16_t)((x0 - viewport_center_x) * 16);
-	xs1 = (int16_t)((x1 - viewport_center_x) * 16);
-	ys0 = (int16_t)((y0 - viewport_center_y) * 16);
-	ys1 = (int16_t)((y1 - viewport_center_y) * 16);
+	xs0 = (int16_t)(x0 * 16);
+	xs1 = (int16_t)(x1 * 16);
+	ys0 = (int16_t)(y0 * 16);
+	ys1 = (int16_t)(y1 * 16);
 	red = (float)((color >> 16) & 0xffU) / 255.0f;
 	green = (float)((color >> 8) & 0xffU) / 255.0f;
 	blue = (float)(color & 0xffU) / 255.0f;
 
 	vertices = (uint8_t*)(uintptr_t)(ctx->vertex_data.vaddr + ctx->fill_vertex_offset);
 	/*
-	 * For NV mode with already screen-space vertices, keep Zs and 1/W in the
-	 * simplest known-good form used by direct screen-coordinate samples:
-	 * no perspective scaling, no bias from a borrowed clip-space demo.
+	 * Zs and 1/Wc are both 1.0: with early depth write enabled and no depth
+	 * buffer bound, a Z of 1.0 is what the known-good NV path uses, and 1/Wc of
+	 * 1.0 makes varying interpolation a plain screen-space lerp.
+	 *
+	 * The varyings are handed over as (blue, green, red) because the fragment
+	 * shader packs them into bytes 0, 1 and 2 of the tile buffer colour in
+	 * order, and the render target is ARGB.
 	 */
 	vc4_write_shaded_color_vertex_raw(vertices + 0 * VC4_SHADED_COLOR_VERTEX_STRIDE,
-			xs0, ys0, 0.0f, 1.0f, red, green, blue);
+			xs0, ys0, 1.0f, 1.0f, blue, green, red);
 	vc4_write_shaded_color_vertex_raw(vertices + 1 * VC4_SHADED_COLOR_VERTEX_STRIDE,
-			xs1, ys0, 0.0f, 1.0f, red, green, blue);
+			xs1, ys0, 1.0f, 1.0f, blue, green, red);
 	vc4_write_shaded_color_vertex_raw(vertices + 2 * VC4_SHADED_COLOR_VERTEX_STRIDE,
-			xs1, ys1, 0.0f, 1.0f, red, green, blue);
+			xs1, ys1, 1.0f, 1.0f, blue, green, red);
 	vc4_write_shaded_color_vertex_raw(vertices + 3 * VC4_SHADED_COLOR_VERTEX_STRIDE,
-			xs0, ys0, 0.0f, 1.0f, red, green, blue);
+			xs0, ys0, 1.0f, 1.0f, blue, green, red);
 	vc4_write_shaded_color_vertex_raw(vertices + 4 * VC4_SHADED_COLOR_VERTEX_STRIDE,
-			xs1, ys1, 0.0f, 1.0f, red, green, blue);
+			xs1, ys1, 1.0f, 1.0f, blue, green, red);
 	vc4_write_shaded_color_vertex_raw(vertices + 5 * VC4_SHADED_COLOR_VERTEX_STRIDE,
-			xs0, ys1, 0.0f, 1.0f, red, green, blue);
+			xs0, ys1, 1.0f, 1.0f, blue, green, red);
 
 	memset(&rec, 0, sizeof(rec));
 	/* The shader carries no thread switch, so it must be flagged single threaded. */
@@ -983,7 +1011,7 @@ static int32_t vc4_kms_v3d_build_fill_job(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 	rec.fs_num_uniforms = 0;
 	rec.fs_num_varyings = 3;
 	rec.fs_code_addr = ctx->shaders.solid_fs_bus_addr;
-	rec.fs_uniforms_addr = 0;
+	rec.fs_uniforms_addr = ctx->fill_uniforms_bus_addr;
 	rec.shaded_vertex_addr = ctx->fill_vertex_bus_addr;
 	if (vc4_write_nv_shader_record(&ctx->shader_rec, ctx->fill_shader_rec_offset,
 			&rec, &next_offset) != 0)

@@ -179,4 +179,7 @@ enum vc4_packet {
 #define VC4_PRIMITIVE_LIST_FORMAT_TYPE_TRIANGLES         (2U << 0)
 #define VC4_PRIMITIVE_LIST_FORMAT_TYPE_RHT               (3U << 0)
 
+#define VC4_INDEX_BUFFER_U8                              (0U << 4)
+#define VC4_INDEX_BUFFER_U16                             (1U << 4)
+
 #endif

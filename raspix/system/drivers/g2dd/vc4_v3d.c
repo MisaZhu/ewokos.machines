@@ -229,7 +229,26 @@ int32_t vc4_v3d_wait_idle(vc4_v3d_t* v3d, uint32_t timeout_us) {
 			0 : -1;
 }
 
+/*
+ * Invalidate every GPU-side cache that can hold job data, exactly as the
+ * Raspberry Pi vc4 kernel driver does before each submission.
+ *
+ * The L2 sits in front of system memory, and each slice caches instructions,
+ * uniforms and texture data separately. None of them snoop CPU writes, so a
+ * job that reads freshly written shader code, uniforms or vertex data can
+ * otherwise be served stale lines from a previous frame. The clear path never
+ * noticed because it runs no shader and reads no vertices.
+ */
+void vc4_v3d_flush_caches(vc4_v3d_t* v3d) {
+	if (v3d == NULL || v3d->regs == NULL)
+		return;
+	vc4_v3d_reg_write(v3d, V3D_L2CACTL, V3D_L2CACTL_L2CCLR | V3D_L2CACTL_L2CENA);
+	vc4_v3d_reg_write(v3d, V3D_SLCACTL, V3D_SLCACTL_CLEAR_ALL);
+	vc4_v3d_mem_barrier();
+}
+
 int32_t vc4_v3d_submit_ct0(vc4_v3d_t* v3d, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us) {
+	vc4_v3d_flush_caches(v3d);
 	return vc4_v3d_submit_ct(v3d, 0, start_bus_addr, end_bus_addr, timeout_us);
 }
 
