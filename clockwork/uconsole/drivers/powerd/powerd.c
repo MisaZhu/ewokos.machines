@@ -13,6 +13,7 @@
 static uint8_t  _hasBattery = 0;
 static uint8_t  _charging = 0;
 static uint8_t 	_capacity = 0;
+static uint8_t  _gpio_pwr = 26; //uconsole power gpio = 26, devterm gpio = 2
 
 // 　　100%----4.20V
 // 　　90%-----4.06V
@@ -66,7 +67,7 @@ static void power_off(){
 static int power_step(vdevice_t* dev, void* p) {
 	(void)dev;
 	(void)p;	
-    int irq = bcm283x_gpio_read(2);
+    int irq = bcm283x_gpio_read(_gpio_pwr);
 	if(!irq){
 		//power_off();
 	}
@@ -96,20 +97,46 @@ static int power_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
     return 3;
  }
 
+static int doargs(int argc, char* argv[]) {
+	int c = 0;
+	while (c != -1) {
+		c = getopt (argc, argv, "d");
+		if(c == -1)
+			break;
+
+		switch (c) {
+		case 'd':
+			_gpio_pwr = 2;
+			break;
+		default:
+			c = -1;
+			break;
+		}
+	}
+	return optind;
+}
+
 
 int main(int argc, char** argv) {
+	_gpio_pwr = 26;
+	int32_t argind =  doargs(argc, argv);
 
 	uint32_t _mmio_base = mmio_map();
 	if(_mmio_base == 0)
 		return -1;
 
     bcm283x_gpio_init();
-    bcm283x_gpio_config(2, GPIO_INPUT);
+    bcm283x_gpio_config(_gpio_pwr, GPIO_INPUT);
+	bcm283x_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
 
 	i2c_init(0,1);
 	i2c_putb(0x34, 0x42, 0x3);
 	i2c_putb(0x34, 0x82, 0x80);
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/power0";
+	const char* mnt_point = "/dev/power0";
+	if(argind < argc) {
+		mnt_point = argv[argind];
+		argind++;
+	}
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
