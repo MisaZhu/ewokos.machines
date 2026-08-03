@@ -572,7 +572,7 @@ static int32_t g2d_blit_attach(const g2d_blit_req_t* req, graph_t* src, graph_t*
 		return -1;
 
 	shm = shmat(req->src_shm_id, 0, 0);
-	if(shm == NULL)
+	if(shm == (void*)-1)
 		return -1;
 
 	*owned_graph = NULL;
