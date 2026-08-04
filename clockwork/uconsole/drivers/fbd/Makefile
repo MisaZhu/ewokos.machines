@@ -7,8 +7,8 @@ MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/make.inc
 BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
 
-CFLAGS += -I$(DSI_COMMON_DIR)
-CXXFLAGS += -I$(DSI_COMMON_DIR)
+CFLAGS += -I $(DSI_COMMON_DIR)
+CXXFLAGS += -I $(DSI_COMMON_DIR)
 
 all: $(TASK)
 
