@@ -457,6 +457,22 @@ static int32_t vc4_kms_v3d_submit_rcl(vc4_kms_v3d_t* ctx, uint32_t timeout_us) {
 	return vc4_v3d_submit_ct1(&ctx->v3d, start, end, timeout_us);
 }
 
+static int32_t vc4_kms_v3d_submit_render_cl(vc4_kms_v3d_t* ctx, uint32_t timeout_us) {
+        uint32_t start;
+        uint32_t end;
+
+        if (ctx == NULL)
+                return VC4_V3D_ERR_ARG;
+
+        start = vc4_cl_start_bus_addr(&ctx->rcl);
+        end = vc4_cl_end_bus_addr(&ctx->rcl);
+        if (start == 0 || end <= start)
+                return VC4_V3D_ERR_ARG;
+
+        vc4_kms_v3d_mem_barrier();
+        return vc4_v3d_submit_ct1(&ctx->v3d, start, end, timeout_us);
+}
+
 static int32_t vc4_kms_v3d_build_clear_bcl(vc4_kms_v3d_t* ctx) {
 	uint32_t tile_alloc_addr;
 	uint32_t tile_alloc_size;
@@ -709,6 +725,8 @@ void vc4_kms_v3d_teardown(vc4_kms_v3d_t* ctx) {
 
 int32_t vc4_kms_v3d_clear(vc4_kms_v3d_t* ctx, uint32_t color) {
 	uint32_t pixel;
+        uint32_t pixel_br = 0;
+        uint32_t pixel_center = 0;
         uint32_t bcl_start;
         uint32_t bcl_end;
         uint32_t rcl_start;
@@ -732,6 +750,8 @@ int32_t vc4_kms_v3d_clear(vc4_kms_v3d_t* ctx, uint32_t color) {
 		return -1;
 	if (vc4_kms_v3d_read_pixel(ctx, 0, 0, &pixel) != 0)
 		return -1;
+        (void)vc4_kms_v3d_read_pixel(ctx, (int32_t)ctx->width - 1, (int32_t)ctx->height - 1, &pixel_br);
+        (void)vc4_kms_v3d_read_pixel(ctx, (int32_t)ctx->width / 2, (int32_t)ctx->height / 2, &pixel_center);
 	if (pixel != color) {
                 slog("vc4_kms_v3d: clear readback mismatch actual=%x expected=%x regs ct0cs=%x ct1cs=%x err=%x bfc=%x rfc=%x ct1ca=%x ct1ea=%x\n",
                                 pixel, color,
@@ -740,8 +760,8 @@ int32_t vc4_kms_v3d_clear(vc4_kms_v3d_t* ctx, uint32_t color) {
                                 ctx->v3d.last_rfc, ctx->v3d.last_ct1ca, ctx->v3d.last_ct1ea);
 		return -1;
 	}
-        slog("vc4_kms_v3d: clear ok pixel=%x regs ct0cs=%x ct1cs=%x err=%x bfc=%x rfc=%x\n",
-                        pixel, ctx->v3d.last_ct0cs, ctx->v3d.last_ct1cs,
+        slog("vc4_kms_v3d: clear ok pixel=%x center=%x br=%x regs ct0cs=%x ct1cs=%x err=%x bfc=%x rfc=%x\n",
+                        pixel, pixel_center, pixel_br, ctx->v3d.last_ct0cs, ctx->v3d.last_ct1cs,
                         ctx->v3d.last_errstat, ctx->v3d.last_bfc, ctx->v3d.last_rfc);
 	return 0;
 }
@@ -902,16 +922,17 @@ static int32_t vc4_kms_v3d_build_fill_bcl(vc4_kms_v3d_t* ctx) {
  * the real last tile of the framebuffer, matching the already-working clear
  * path instead of ending the frame on an arbitrary interior tile.
  */
-static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* r) {
+static int32_t vc4_kms_v3d_build_fill_rcl_ex(vc4_kms_v3d_t* ctx, const g2d_rect_t* r,
+                uint8_t use_actual_lists, uint8_t wait_for_bin) {
 	uint32_t render_flags;
 	uint32_t load_bits;
-	uint32_t tile_alloc_addr;
+        uint32_t tile_alloc_addr;
         uint32_t tile_x0;
         uint32_t tile_y0;
         uint32_t tile_x1;
         uint32_t tile_y1;
-	uint32_t x;
-	uint32_t y;
+        uint32_t x;
+        uint32_t y;
         uint8_t waited_for_bin = 0;
 
 	render_flags = VC4_RENDER_CONFIG_MEMORY_FORMAT_LINEAR |
@@ -922,26 +943,17 @@ static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 			vc4_cl_emit_u32(&ctx->rcl, 0) != 0 ||
 			vc4_cl_emit_u32(&ctx->rcl, 0) != 0 ||
 			vc4_cl_emit_u8(&ctx->rcl, 0) != 0 ||
+                        vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_TILE_COORDINATES) != 0 ||
+                        vc4_cl_emit_u8(&ctx->rcl, 0) != 0 ||
+                        vc4_cl_emit_u8(&ctx->rcl, 0) != 0 ||
+                        vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_STORE_TILE_BUFFER_GENERAL) != 0 ||
+                        vc4_cl_emit_u16(&ctx->rcl, (uint16_t)VC4_LOADSTORE_TILE_BUFFER_NONE) != 0 ||
+                        vc4_cl_emit_u32(&ctx->rcl, 0) != 0 ||
 			vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_TILE_RENDERING_MODE_CONFIG) != 0 ||
 			vc4_cl_emit_u32(&ctx->rcl, ctx->render_target.bus_addr) != 0 ||
 			vc4_cl_emit_u16(&ctx->rcl, (uint16_t)ctx->width) != 0 ||
 			vc4_cl_emit_u16(&ctx->rcl, (uint16_t)ctx->height) != 0 ||
 			vc4_cl_emit_u16(&ctx->rcl, (uint16_t)render_flags) != 0)
-		return -1;
-
-	/*
-	 * Match upstream VC4 RCL rules before the first tile load: once tile
-	 * coordinates have been emitted, another load must not be triggered until
-	 * some store packet has followed. Seed the render list with the same
-	 * no-op STORE_TILE_BUFFER_GENERAL(NONE) preamble used by the known-good
-	 * clear path so the first real LOAD_TILE_BUFFER_GENERAL is legal.
-	 */
-	if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_TILE_COORDINATES) != 0 ||
-			vc4_cl_emit_u8(&ctx->rcl, 0) != 0 ||
-			vc4_cl_emit_u8(&ctx->rcl, 0) != 0 ||
-			vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_STORE_TILE_BUFFER_GENERAL) != 0 ||
-			vc4_cl_emit_u16(&ctx->rcl, (uint16_t)VC4_LOADSTORE_TILE_BUFFER_NONE) != 0 ||
-			vc4_cl_emit_u32(&ctx->rcl, 0) != 0)
 		return -1;
 
 	load_bits = VC4_LOADSTORE_TILE_BUFFER_COLOR |
@@ -953,49 +965,74 @@ static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
         tile_x1 = (uint32_t)(r->x + r->w - 1) / VC4_TILE_SIZE;
         tile_y1 = (uint32_t)(r->y + r->h - 1) / VC4_TILE_SIZE;
 
-	for (y = 0; y < ctx->tiles_y; y++) {
-		for (x = 0; x < ctx->tiles_x; x++) {
+        for (y = tile_y0; y <= tile_y1; y++) {
+                for (x = 0; x < ctx->tiles_x; x++) {
 			uint32_t sub_list = tile_alloc_addr +
 					((y * ctx->tiles_x) + x) * VC4_TILE_ALLOC_BLOCK_SIZE;
-                        uint8_t needs_branch = (x >= tile_x0 && x <= tile_x1 &&
-                                        y >= tile_y0 && y <= tile_y1) ? 1 : 0;
+                        uint8_t needs_branch = 0;
+                        uint8_t is_last_tile = (x == (ctx->tiles_x - 1) && y == tile_y1) ? 1 : 0;
+                        uint8_t* sub_list_ptr;
+                        uint32_t i;
 
-			/*
-			 * The load is only actioned once the following tile
-			 * coordinates packet is processed, so this ordering matters.
-			 */
-			if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_LOAD_TILE_BUFFER_GENERAL) != 0 ||
-					vc4_cl_emit_u16(&ctx->rcl, (uint16_t)load_bits) != 0 ||
-					vc4_cl_emit_u32(&ctx->rcl, ctx->render_target.bus_addr) != 0 ||
+                        if (x >= tile_x0 && x <= tile_x1) {
+                                if (use_actual_lists == 0) {
+                                        needs_branch = 1;
+                                }
+                                else {
+                                        sub_list_ptr = (uint8_t*)(uintptr_t)(ctx->binner_pool.vaddr +
+                                                        ctx->tile_alloc_offset +
+                                                        ((y * ctx->tiles_x) + x) * VC4_TILE_ALLOC_BLOCK_SIZE);
+                                        for (i = 4; i < 28; i++) {
+                                                if (sub_list_ptr[i] != 0) {
+                                                        needs_branch = 1;
+                                                        break;
+                                                }
+                                        }
+                                }
+                        }
+
+                        if ((needs_branch != 0 || is_last_tile != 0) &&
+                                        (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_LOAD_TILE_BUFFER_GENERAL) != 0 ||
+                                        vc4_cl_emit_u16(&ctx->rcl, (uint16_t)load_bits) != 0 ||
+                                        vc4_cl_emit_u32(&ctx->rcl, ctx->render_target.bus_addr) != 0)) {
+                                return -1;
+                        }
+                        if (
 					vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_TILE_COORDINATES) != 0 ||
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)x) != 0 ||
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)y) != 0)
 				return -1;
+
+                        if (needs_branch != 0 && wait_for_bin != 0 && waited_for_bin == 0) {
+                                if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_WAIT_ON_SEMAPHORE) != 0)
+                                        return -1;
+                                waited_for_bin = 1;
+                        }
                         if (needs_branch != 0) {
-                                /*
-                                 * Only replay sub-lists for tiles the rectangle actually
-                                 * covers. Untouched tiles keep their existing contents via
-                                 * LOAD + STORE alone; branching into a tile that never got
-                                 * binned hands CT1 an empty block, which is what made
-                                 * draws away from tile (0,0) fail with CT1_ERR.
-                                 */
-                                if (waited_for_bin == 0) {
-                                        if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_WAIT_ON_SEMAPHORE) != 0)
-                                                return -1;
-                                        waited_for_bin = 1;
-                                }
                                 if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_BRANCH_TO_SUB_LIST) != 0 ||
                                                 vc4_cl_emit_u32(&ctx->rcl, sub_list) != 0)
                                         return -1;
+                                if (vc4_cl_emit_u8(&ctx->rcl, is_last_tile ?
+                                                VC4_PACKET_STORE_MS_TILE_BUFFER_AND_EOF :
+                                                VC4_PACKET_STORE_MS_TILE_BUFFER) != 0)
+                                        return -1;
                         }
-			if (vc4_cl_emit_u8(&ctx->rcl, (x == (ctx->tiles_x - 1) && y == (ctx->tiles_y - 1)) ?
-					VC4_PACKET_STORE_MS_TILE_BUFFER_AND_EOF :
-					VC4_PACKET_STORE_MS_TILE_BUFFER) != 0)
-				return -1;
+                        else if (is_last_tile != 0) {
+                                if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_STORE_MS_TILE_BUFFER_AND_EOF) != 0)
+                                        return -1;
+                        }
+                        else if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_STORE_TILE_BUFFER_GENERAL) != 0 ||
+                                        vc4_cl_emit_u16(&ctx->rcl, (uint16_t)VC4_LOADSTORE_TILE_BUFFER_NONE) != 0 ||
+                                        vc4_cl_emit_u32(&ctx->rcl, 0) != 0)
+                                return -1;
 		}
 	}
 
 	return ctx->rcl.overflow == 0 ? 0 : -1;
+}
+
+static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* r) {
+        return vc4_kms_v3d_build_fill_rcl_ex(ctx, r, 0, 1);
 }
 
 static int32_t vc4_kms_v3d_build_fill_job(vc4_kms_v3d_t* ctx, const g2d_rect_t* r, uint32_t color) {
@@ -1078,9 +1115,9 @@ static int32_t vc4_kms_v3d_build_fill_job(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 	memset((void*)(uintptr_t)ctx->render_cl.vaddr, 0, ctx->render_cl.size);
 	vc4_kms_v3d_reset_bin_state(ctx);
 
-	if (vc4_kms_v3d_build_fill_bcl(ctx) != 0)
-		return VC4_ERR_BUILD_BCL;
-	return vc4_kms_v3d_build_fill_rcl(ctx, r) == 0 ? 0 : VC4_ERR_BUILD_RCL;
+        if (vc4_kms_v3d_build_fill_bcl(ctx) != 0)
+                return VC4_ERR_BUILD_BCL;
+        return vc4_kms_v3d_build_fill_rcl(ctx, r) == 0 ? 0 : VC4_ERR_BUILD_RCL;
 }
 
 /*
@@ -1113,14 +1150,41 @@ int32_t vc4_kms_v3d_fill_rect(vc4_kms_v3d_t* ctx, const g2d_fill_req_t* req) {
 	if (rect.w <= 0 || rect.h <= 0)
 		return 0;
 
-	ret = vc4_kms_v3d_build_fill_job(ctx, &rect, req->color);
+        if (req->color == 0xff000000U || rect.y + rect.h >= (int32_t)ctx->height - 1) {
+                slog("vc4_kms_v3d: fill entry rect=(%d,%d %dx%d) color=%x tiles=(%u,%u)\n",
+                                rect.x, rect.y, rect.w, rect.h, req->color, ctx->tiles_x, ctx->tiles_y);
+        }
+
+        ret = vc4_kms_v3d_build_fill_job(ctx, &rect, req->color);
 	if (ret != 0) {
 		slog("vc4_kms_v3d: fill build failed ret=%d rect=(%d,%d %dx%d) color=%x\n",
 				ret, rect.x, rect.y, rect.w, rect.h, req->color);
 		return ret;
 	}
 	vc4_kms_v3d_mem_barrier();
-	ret = vc4_kms_v3d_submit_rcl(ctx, VC4_DRAW_TIMEOUT_US);
+        ret = vc4_kms_v3d_submit_rcl(ctx, VC4_DRAW_TIMEOUT_US);
+        if (ret == VC4_V3D_ERR_CT1_ERR) {
+                /*
+                 * Some partial-tile cases leave geometrically covered tiles with
+                 * no actual binner payload. Retry CT1 once using the sub-lists CT0
+                 * really produced, and skip WAIT_ON_SEMAPHORE because the bin pass
+                 * has already completed.
+                 */
+                vc4_cl_reset(&ctx->rcl);
+                memset((void*)(uintptr_t)ctx->render_cl.vaddr, 0, ctx->render_cl.size);
+                if (vc4_kms_v3d_build_fill_rcl_ex(ctx, &rect, 1, 0) == 0) {
+                        int32_t retry = vc4_kms_v3d_submit_render_cl(ctx, VC4_DRAW_TIMEOUT_US);
+                        if (retry == 0) {
+                                slog("vc4_kms_v3d: fill retry succeeded rect=(%d,%d %dx%d) color=%x\n",
+                                                rect.x, rect.y, rect.w, rect.h, req->color);
+                                ret = 0;
+                        }
+                        else {
+                                slog("vc4_kms_v3d: fill retry failed ret=%d rect=(%d,%d %dx%d) color=%x\n",
+                                                retry, rect.x, rect.y, rect.w, rect.h, req->color);
+                        }
+                }
+        }
 	if (ret != 0) {
 		tx0 = (uint32_t)rect.x / VC4_TILE_SIZE;
 		ty0 = (uint32_t)rect.y / VC4_TILE_SIZE;
