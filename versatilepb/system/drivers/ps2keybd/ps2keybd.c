@@ -156,8 +156,8 @@ static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 }
 
 static bool _wakeup = false;
-static void interrupt_handle(uint32_t interrupt, uint32_t p) {
-	vdevice_t* dev = (vdevice_t*)p;
+static void interrupt_handle(uint32_t interrupt, ewokos_addr_t p) {
+        vdevice_t* dev = (vdevice_t*)p;
 	uint8_t key_scode = get_scode();
 	if(keyb_handle(key_scode) == 0) {
 		_wakeup = true;

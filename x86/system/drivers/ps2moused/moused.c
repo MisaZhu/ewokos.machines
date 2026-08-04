@@ -337,7 +337,7 @@ static int mouse_init(void) {
 	return 0;
 }
 
-static void mouse_interrupt_handle(uint32_t interrupt, uint32_t data) {
+static void mouse_interrupt_handle(uint32_t interrupt, ewokos_addr_t data) {
 	(void)interrupt;
 	(void)data;
 

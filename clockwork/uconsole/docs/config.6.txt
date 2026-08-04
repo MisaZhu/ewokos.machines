@@ -13,6 +13,11 @@ dtparam=pciex1
 dtparam=pciex1_gen=3
 
 [all]                                                                                                                                                   
+enable_uart=1
+force_turbo=1
+core_freq=250
+uart_2ndstage=1
+
 ignore_lcd=1 
 max_framebuffers=2
 disable_overscan=1

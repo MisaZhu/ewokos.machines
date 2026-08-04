@@ -17,28 +17,25 @@
  * Raspberry Pi 5 (BCM2712) hardware info.
  */
 
-uint32_t _core_base_offset = 0;
+uint64_t _core_base_offset = 0;
 
 void pi5_dbg_puts(const char* s);
 void pi5_dbg_putc(char c);
 
 /*
- * Set a 2MB block descriptor that maps a virtual address to a 64-bit
- * physical address.  map_page() accepts only uint32_t physical, so the
- * MMIO/EMMC/RP1 windows (all above 4GB on BCM2712) need this helper.
+ * Map a single 4KB page for device MMIO, walking L1→L2→L3 with 64-bit
+ * physical addresses (needed for BCM2712 peripherals above 4GB).
+ * Replaces the previous set_block_2mb() which used 2MB block descriptors.
  */
-static void set_block_2mb(page_dir_entry_t* vm, uint32_t vaddr, uint64_t phy) {
+static void set_page_dev(page_dir_entry_t* vm, uint32_t vaddr, uint64_t phy) {
 	uint32_t l1 = PAGE_L1_INDEX(vaddr);
 	uint32_t l2 = PAGE_L2_INDEX(vaddr);
+	uint32_t l3 = PAGE_L3_INDEX(vaddr);
 
-	/*
-	 * The main MMIO window (64 MB) may not cover the EMMC / RP1 windows
-	 * which sit right above it, so the L1 entry may not exist yet.
-	 * Allocate an L2 table if needed (the same way map_page does).
-	 */
-	if(vm[l1].EntryType == 0) {
+	/* walk or allocate L2 table */
+	if (vm[l1].EntryType == 0) {
 		page_table_entry_t* l2_table = (page_table_entry_t*)kalloc4k();
-		if(l2_table == NULL)
+		if (l2_table == NULL)
 			return;
 		memset(l2_table, 0, PAGE_TABLE_SIZE);
 		vm[l1] = (page_dir_entry_t){
@@ -48,17 +45,34 @@ static void set_block_2mb(page_dir_entry_t* vm, uint32_t vaddr, uint64_t phy) {
 			.AF = 1,
 		};
 	}
-
 	page_table_entry_t* l2_table = (page_table_entry_t*)P2V(vm[l1].Address << 12);
-	phy >>= 21;
-	l2_table[l2] = (page_table_entry_t){
+
+	/* walk or allocate L3 table */
+	if (l2_table[l2].EntryType == 0) {
+		page_table_entry_t* l3_table = (page_table_entry_t*)kalloc4k();
+		if (l3_table == NULL)
+			return;
+		memset(l3_table, 0, PAGE_TABLE_SIZE);
+		l2_table[l2] = (page_table_entry_t){
+			.NSTable = 1,
+			.EntryType = TYPE_TABLE,
+			.Address = (uint64_t)V2P(l3_table) >> 12,
+			.AF = 1,
+		};
+	}
+	page_table_entry_t* l3_table = (page_table_entry_t*)P2V(l2_table[l2].Address << 12);
+
+	/* populate L3 page descriptor with device memory attributes */
+	l3_table[l3] = (page_table_entry_t){
 		.NSTable = 1,
-		.EntryType = TYPE_BLOCK,
-		.Address = phy << 9,
+		.EntryType = TYPE_PAGE,
+		.Address = phy >> 12,
 		.AF = 1,
 		.SH = STAGE2_SH_OUTER_SHAREABLE,
 		.S2AP = 0,
 		.MemAttr = MT_DEVICE_NGNRNE,
+		.PXN = 1,
+		.UXN = 1,
 	};
 }
 
@@ -116,7 +130,7 @@ void sys_info_init_arch(void) {
 			_sys_info.total_usable_mem_size - PI5_FB_SIZE;
 
 #ifdef KERNEL_SMP
-	_sys_info.cores = get_cpu_cores();
+	_sys_info.cores = 1;//get_cpu_cores();
 #else
 	_sys_info.cores = 1;
 #endif
@@ -126,23 +140,28 @@ void sys_info_init_arch(void) {
 
 void arch_vm(page_dir_entry_t* vm) {
 	/*
-	 * The generic kernel code maps the MMIO window via map_pages_size()
-	 * which takes ewokos_addr_t (uint32_t), truncating PI5_MMIO_PHY
-	 * from 0x10_7C000000 to 0x7C000000.  Replace those mappings here
-	 * with 2 MB block descriptors carrying the full 64-bit physical
-	 * addresses.
+	 * Map MMIO windows using 4KB pages (TYPE_PAGE at L3), replacing the
+	 * previous 2MB block mappings (TYPE_BLOCK at L2).  set_page_dev()
+	 * carries full 64-bit physical addresses for peripheral windows
+	 * above 4GB (EMMC, RP1).
 	 */
-	for(uint32_t i = 0; i < PI5_MMIO_SIZE/(2*MB); i++) {
-		set_block_2mb(vm, MMIO_BASE + i*(2*MB), PI5_MMIO_PHY + i*(2*MB));
+
+	/* Main MMIO window: 64 MB at 0x10_7C000000 */
+	for (uint32_t i = 0; i < PI5_MMIO_SIZE / PAGE_SIZE; i++) {
+		set_page_dev(vm, MMIO_BASE + i * PAGE_SIZE,
+			     PI5_MMIO_PHY + i * PAGE_SIZE);
 	}
 
-	/* SD host controller 2 MB window (0x10_00E00000) */
-	set_block_2mb(vm, MMIO_BASE + PI5_EMMC_WIN_OFF, PI5_EMMC_PHY_WIN);
+	/* SD host controller window: 2 MB at 0x10_00E00000 */
+	for (uint32_t i = 0; i < (2 * MB) / PAGE_SIZE; i++) {
+		set_page_dev(vm, MMIO_BASE + PI5_EMMC_WIN_OFF + i * PAGE_SIZE,
+			     PI5_EMMC_PHY_WIN + i * PAGE_SIZE);
+	}
 
-	/* RP1 southbridge 32 MB window (0x1F_00000000) */
-	for(uint32_t i = 0; i < PI5_RP1_SIZE/(2*MB); i++) {
-		set_block_2mb(vm, MMIO_BASE + PI5_RP1_WIN_OFF + i*(2*MB),
-		              PI5_RP1_PHY + i*(2*MB));
+	/* RP1 southbridge window: 32 MB at 0x1F_00000000 */
+	for (uint32_t i = 0; i < PI5_RP1_SIZE / PAGE_SIZE; i++) {
+		set_page_dev(vm, MMIO_BASE + PI5_RP1_WIN_OFF + i * PAGE_SIZE,
+			     PI5_RP1_PHY + i * PAGE_SIZE);
 	}
 }
 
@@ -164,9 +183,24 @@ void kalloc_arch(void) {
 }
 
 int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.total_phy_mem_size - PI5_FB_SIZE) /* framebuffer block */
+	/* framebuffer at top of RAM */
+	if (phy_base >= _sys_info.total_phy_mem_size - PI5_FB_SIZE)
 		return 0;
-	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
+
+	/* main MMIO window: 64 MB at 0x10_7C000000 */
+	if (phy_base >= PI5_MMIO_PHY &&
+	    phy_base + size <= PI5_MMIO_PHY + PI5_MMIO_SIZE)
 		return 0;
+
+	/* SD host controller (EMMC) window: 2 MB at 0x10_00E00000 */
+	if (phy_base >= PI5_EMMC_PHY_WIN &&
+	    phy_base + size <= PI5_EMMC_PHY_WIN + 2 * MB)
+		return 0;
+
+	/* RP1 southbridge window: 32 MB at 0x1F_00000000 */
+	if (phy_base >= PI5_RP1_PHY &&
+	    phy_base + size <= PI5_RP1_PHY + PI5_RP1_SIZE)
+		return 0;
+
 	return -1;
 }

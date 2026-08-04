@@ -191,31 +191,71 @@ static int32_t g2d_handle_get_stats(proto_t* ret, g2d_state_t* state) {
 
 static int32_t g2d_handle_clear(proto_t* in, g2d_state_t* state) {
 	uint32_t color;
+        uint32_t pixel = 0;
 
 	if (in == NULL || state == NULL)
 		return -1;
 	if (proto_read_to(in, &color, sizeof(color)) != sizeof(color))
 		return -1;
-	if (vc4_kms_v3d_clear(&state->vc4, color) != 0)
-		return -1;
-	state->stats.vc_clear_ops++;
-	return 0;
+        if (vc4_kms_v3d_clear(&state->vc4, color) == 0 &&
+                        vc4_kms_v3d_read_pixel(&state->vc4, 0, 0, &pixel) == 0 &&
+                        pixel == color) {
+                state->stats.vc_clear_ops++;
+                return 0;
+        }
+
+        klog("g2dd: hardware clear failed got=%x want=%x\n", pixel, color);
+        return -1;
 }
 
 static int32_t g2d_handle_fill_rect(proto_t* in, g2d_state_t* state) {
 	g2d_fill_req_t req;
+        g2d_rect_t clipped;
+        uint32_t verify_x;
+        uint32_t verify_y;
+        uint32_t pixel = 0;
 	int32_t ret;
 
 	if (in == NULL || state == NULL)
 		return -1;
 	if (proto_read_to(in, &req, sizeof(req)) != sizeof(req))
 		return -1;
-	/* Pass the backend's failure code through: it identifies the stage. */
 	ret = vc4_kms_v3d_fill_rect(&state->vc4, &req);
-	if (ret != 0)
-		return ret;
-	state->stats.vc_fill_ops++;
-	return 0;
+        if (ret == 0) {
+                clipped = req.rect;
+                if (clipped.x < 0) {
+                        clipped.w += clipped.x;
+                        clipped.x = 0;
+                }
+                if (clipped.y < 0) {
+                        clipped.h += clipped.y;
+                        clipped.y = 0;
+                }
+                if (clipped.x + clipped.w > (int32_t)state->surface.width)
+                        clipped.w = (int32_t)state->surface.width - clipped.x;
+                if (clipped.y + clipped.h > (int32_t)state->surface.height)
+                        clipped.h = (int32_t)state->surface.height - clipped.y;
+                if (clipped.w > 0 && clipped.h > 0) {
+                        verify_x = (uint32_t)clipped.x;
+                        verify_y = (uint32_t)clipped.y;
+                        if (vc4_kms_v3d_read_pixel(&state->vc4,
+                                        (int32_t)verify_x, (int32_t)verify_y, &pixel) == 0 &&
+                                        pixel == req.color) {
+                                state->stats.vc_fill_ops++;
+                                return 0;
+                        }
+                        klog("g2dd: hardware fill verify failed rect=(%d,%d %dx%d) got=%x want=%x\n",
+                                        clipped.x, clipped.y, clipped.w, clipped.h, pixel, req.color);
+                }
+                else {
+                        state->stats.vc_fill_ops++;
+                        return 0;
+                }
+        }
+
+        klog("g2dd: hardware fill failed ret=%d rect=(%d,%d %dx%d) color=%x\n",
+                        ret, req.rect.x, req.rect.y, req.rect.w, req.rect.h, req.color);
+        return ret != 0 ? ret : -1;
 }
 
 static int32_t g2d_handle_blit(proto_t* in, g2d_state_t* state, uint8_t use_alpha) {
@@ -233,14 +273,18 @@ static int32_t g2d_handle_blit(proto_t* in, g2d_state_t* state, uint8_t use_alph
 		return -1;
 
 	ret = vc4_kms_v3d_blit(&state->vc4, &req, src.pixels, use_alpha);
-	g2d_blit_source_release(&src);
-	if (ret != 0)
-		return ret;
-	if (use_alpha != 0)
-		state->stats.vc_alpha_blit_ops++;
-	else
-		state->stats.vc_blit_ops++;
-	return 0;
+        g2d_blit_source_release(&src);
+        if (ret != 0) {
+                klog("g2dd: hardware blit failed ret=%d alpha=%u src=%ux%u dst=(%d,%d %dx%d) rot=%u\n",
+                        ret, use_alpha, req.src_w, req.src_h,
+                        req.dx, req.dy, req.dw, req.dh, req.rotate);
+                return ret;
+        }
+        if (use_alpha != 0)
+                state->stats.vc_alpha_blit_ops++;
+        else
+                state->stats.vc_blit_ops++;
+        return 0;
 }
 
 static char* g2d_strdup(const char* s) {

@@ -121,12 +121,12 @@ int main(int argc, char** argv) {
 	_gpio_pwr = 26;
 	int32_t argind =  doargs(argc, argv);
 
-	uint32_t _mmio_base = mmio_map();
+	ewokos_addr_t _mmio_base = mmio_map();
 	if(_mmio_base == 0)
 		return -1;
 
-    bcm283x_gpio_init();
-    bcm283x_gpio_config(_gpio_pwr, GPIO_INPUT);
+	bcm283x_gpio_init();
+	bcm283x_gpio_config(_gpio_pwr, GPIO_INPUT);
 	bcm283x_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
 
 	i2c_init(0,1);

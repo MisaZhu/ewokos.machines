@@ -193,7 +193,7 @@ static void key_release(uint8_t key_code) {
 	}
 }
 
-static void keybd_interrupt_handle(uint32_t interrupt, uint32_t data) {
+static void keybd_interrupt_handle(uint32_t interrupt, ewokos_addr_t data) {
 	(void)interrupt;
 	(void)data;
 
