@@ -2,6 +2,7 @@
 #include <kernel/kernel.h>
 #include <kernel/hw_info.h>
 #include <kernel/system.h>
+#include <kernel/core.h>
 #include "../timer_arch.h"
 
 #define CORE0_IRQ_CNTL_OFFSET    0x40
@@ -20,12 +21,13 @@
 #define DISABLE_BASIC_IRQS  (MMIO_BASE + L1_INTC_BASE + 0x24)  // 禁用基本中断寄存器
 
 static void routing_core0_irq(void) {
-  uint32_t vbase = _sys_info.mmio.v_base + _core_base_offset + CORE0_IRQ_CNTL_OFFSET;
+  ewokos_addr_t vbase = _sys_info.mmio.v_base + _core_base_offset + CORE0_IRQ_CNTL_OFFSET;
   put32(vbase, 0x08);
 }
 
-static uint32_t read_core0_pending(void) {
-  uint32_t vbase = _sys_info.mmio.v_base + _core_base_offset + CORE0_IRQ_SOURCE_OFFSET;
+static uint32_t read_core_pending(void) {
+  ewokos_addr_t vbase = _sys_info.mmio.v_base + _core_base_offset +
+      CORE0_IRQ_SOURCE_OFFSET + get_core_id() * 4;
   return get32(vbase);
 }
 
@@ -36,9 +38,12 @@ void irq_arch_init_pix(void) {
 
 uint32_t irq_get_pix(void) {
 	uint32_t ret = 0;
-	uint32_t pending = read_core0_pending();
+	uint32_t pending = read_core_pending();
 	if (pending & 0x08 ) {
 		ret = IRQ_TIMER0;
+	}
+	else if (pending & 0x10) {
+		ret = IRQ_IPI;
 	}
 	return ret;
 }

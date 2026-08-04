@@ -923,8 +923,8 @@ static dma_cb_t* audio_slot_dma_cb(uint32_t slot) {
 	return &_snd.dma_cbs[slot];
 }
 
-static uint32_t audio_slot_dma_cb_bus(uint32_t slot) {
-	return (uint32_t)(_snd.dma_cbs_phy +
+static ewokos_addr_t audio_slot_dma_cb_bus(uint32_t slot) {
+	return (_snd.dma_cbs_phy +
 			(ewokos_addr_t)(slot * sizeof(dma_cb_t))) | DMA_VC_ALIAS_UNCACHED;
 }
 
@@ -1003,7 +1003,7 @@ static uint32_t audio_dma_current_active_slot(void) {
 		if (slot >= DMA_BUFFER_SLOTS) {
 			continue;
 		}
-		if (audio_dma_cb_bus_normalize(audio_slot_dma_cb_bus(slot)) == cb_bus_norm) {
+		if (audio_dma_cb_bus_normalize((uint32_t)audio_slot_dma_cb_bus(slot)) == cb_bus_norm) {
 			return i;
 		}
 	}
@@ -1077,7 +1077,7 @@ static uint32_t audio_queue_append_ready_chain(uint32_t now_usec) {
 		cb->nextconbk = 0x00;
 		cb->null1 = 0x00;
 		cb->null2 = 0x00;
-		tail_cb->nextconbk = audio_slot_dma_cb_bus(slot);
+		tail_cb->nextconbk = (uint32_t)audio_slot_dma_cb_bus(slot);
 		_snd.slot_state[slot] = DMA_SLOT_ACTIVE;
 		_snd.active_tail_end_usec += audio_dma_samples_usec(_snd.slot_words[slot]);
 		_snd.active_slots[_snd.active_count] = slot;
@@ -1133,7 +1133,7 @@ static bool audio_queue_prepare_dma_chain(uint32_t now_usec, uint32_t* head_slot
 		if (tail_slot != DMA_SLOT_INVALID) {
 			dma_cb_t* tail_cb = audio_slot_dma_cb(tail_slot);
 			if (tail_cb != NULL) {
-				tail_cb->nextconbk = audio_slot_dma_cb_bus(slot);
+				tail_cb->nextconbk = (uint32_t)audio_slot_dma_cb_bus(slot);
 			}
 		}
 		tail_slot = slot;
@@ -1146,7 +1146,7 @@ static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_reb
 	volatile uint32_t *dma = (uint32_t *)(uintptr_t)DMA_BASE;
 	volatile uint32_t *dmae = (uint32_t *)(uintptr_t)DMA_ENABLE;
 	uint32_t dma_enable_bits;
-	uint32_t cb_bus;
+	ewokos_addr_t cb_bus;
 
 	if (samples == 0 || slot >= DMA_BUFFER_SLOTS) {
 		return 0;
@@ -1158,7 +1158,7 @@ static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_reb
 	(void)*(dma + DMA_CS);
 	dma_enable_bits = *dmae;
 	*dmae = dma_enable_bits | DMA_ENABLE_BIT;
-	*(dma + DMA_CONBLK_AD) = cb_bus;
+	*(dma + DMA_CONBLK_AD) = (uint32_t)cb_bus;
 	*(dma + DMA_CS) = DMA_ACTIVE | DMA_PRIORITY_DEFAULT | DMA_PANIC_PRIORITY_DEFAULT;
 	_snd.dma_started_usec = audio_now_usec();
 	_snd.dma_expected_usec = audio_dma_watchdog_usec(samples);

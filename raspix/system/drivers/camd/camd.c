@@ -76,7 +76,7 @@ static uint32_t _bpp = 1; /* bytes per pixel (RAW8 Bayer) */
 static int _mode = OV5647_MODE_640x480;
 
 /* DMA capture buffer */
-static uint32_t _dma_phys = 0;   /* physical/bus address for UNICAM */
+static ewokos_addr_t _dma_phys = 0;   /* physical/bus address for UNICAM */
 static void* _dma_virt = NULL;   /* CPU-accessible virtual address */
 static uint32_t _dma_size = 0;
 static int _cap_idx = 0;         /* double-buffer half the hardware owns */
@@ -188,8 +188,8 @@ static int cam_dma_alloc(uint32_t size) {
 	_dma_virt = (void*)vaddr;
 	_dma_phys = dma_phy_addr(0, vaddr);
 	if (_dma_phys == 0 || (_dma_phys + size) > 0x3C000000u) {
-		printf("camd: dma buf out of UNICAM bus window (phys=%08x)\n",
-				_dma_phys);
+		printf("camd: dma buf out of UNICAM bus window (phys=%llx)\n",
+				(unsigned long long)_dma_phys);
 		dma_free(0, vaddr);
 		_dma_virt = NULL;
 		_dma_phys = 0;
@@ -296,7 +296,7 @@ static void cam_clock_enable(void) {
  * single buffer 0 which is re-armed automatically (MISC FL0|FL1). */
 static void unicam_start_rx(void) {
 	uint32_t val;
-	uint32_t bus_addr = _dma_phys | DMA_VC_ALIAS;
+	ewokos_addr_t bus_addr = _dma_phys | DMA_VC_ALIAS;
 	uint32_t frame_size = _width * _height * _bpp;
 	uint32_t line_int_freq = _height >> 2;
 
@@ -420,7 +420,8 @@ static void unicam_stop_rx(void) {
  * Returns the completed buffer index (0/1) or -1 on timeout/bad frame. */
 static int unicam_capture_frame(void) {
 	uint32_t frame_size = _width * _height * _bpp;
-	uint32_t bus_addr, base, wrote, sta, ista;
+	ewokos_addr_t bus_addr, base, wrote;
+	uint32_t sta, ista;
 	uint32_t timeout;
 	uint64_t t_start, dur;
 	int done, next;

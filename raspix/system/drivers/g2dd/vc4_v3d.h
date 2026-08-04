@@ -2,6 +2,7 @@
 #define RASPIX_VC4_V3D_H
 
 #include <stdint.h>
+#include <ewoksys/ewokdef.h>
 
 /*
  * Submission failure codes.
@@ -43,19 +44,19 @@ typedef struct {
 	uint32_t last_bpos;
 	uint32_t last_errstat;
 	/* Binner overflow (overspill) memory handed to the PTB via BPOA/BPOS. */
-	uint32_t bin_overflow_addr;
+	ewokos_addr_t bin_overflow_addr;
 	uint32_t bin_overflow_size;
 	uint32_t bin_overflow_chunk;
 	uint32_t bin_overflow_used;
 } vc4_v3d_t;
 
 int32_t vc4_v3d_init(vc4_v3d_t* v3d, volatile uint32_t* regs, uint32_t ident0, uint32_t ident1);
-void vc4_v3d_set_bin_overflow(vc4_v3d_t* v3d, uint32_t bus_addr, uint32_t size, uint32_t chunk_size);
+void vc4_v3d_set_bin_overflow(vc4_v3d_t* v3d, ewokos_addr_t bus_addr, uint32_t size, uint32_t chunk_size);
 void vc4_v3d_reset(vc4_v3d_t* v3d);
 void vc4_v3d_flush_caches(vc4_v3d_t* v3d);
 int32_t vc4_v3d_wait_idle(vc4_v3d_t* v3d, uint32_t timeout_us);
-int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us);
-int32_t vc4_v3d_submit_ct0(vc4_v3d_t* v3d, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us);
-int32_t vc4_v3d_submit_ct1(vc4_v3d_t* v3d, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us);
+int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, ewokos_addr_t start_bus_addr, ewokos_addr_t end_bus_addr, uint32_t timeout_us);
+int32_t vc4_v3d_submit_ct0(vc4_v3d_t* v3d, ewokos_addr_t start_bus_addr, ewokos_addr_t end_bus_addr, uint32_t timeout_us);
+int32_t vc4_v3d_submit_ct1(vc4_v3d_t* v3d, ewokos_addr_t start_bus_addr, ewokos_addr_t end_bus_addr, uint32_t timeout_us);
 
 #endif

@@ -5,15 +5,15 @@
 
 #define debug printf
 
-static int regmap_write(uint32_t base, uint32_t offset, uint32_t val){
-	uint32_t befor =  *(volatile uint32_t*)((uint32_t)base + offset);
-	*(volatile uint32_t*)((uint32_t)base + offset) = val;
-	uint32_t after =  *(volatile uint32_t*)((uint32_t)base + offset);
+static int regmap_write(ewokos_addr_t base, uint32_t offset, uint32_t val){
+	uint32_t befor =  *(volatile uint32_t*)(base + offset);
+	*(volatile uint32_t*)(base + offset) = val;
+	uint32_t after =  *(volatile uint32_t*)(base + offset);
 	debug("write %08x:->%08x %08x->%008x\n", base + offset - MMIO_BASE + 0xFF000000, val, befor, after);
 	return 0;
 }
 
-static int get_bit(uint32_t addr, int mask){
+static int get_bit(ewokos_addr_t addr, int mask){
 	debug("getbit %08x %d %08x\n", addr - MMIO_BASE + 0xFF000000, mask, *(volatile uint32_t*)(addr));
 	return (*(volatile uint32_t*)(addr) & (0x1 << mask))?1:0;
 }

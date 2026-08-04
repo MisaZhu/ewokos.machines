@@ -2,6 +2,7 @@
 #define UC_HVS_H
 
 #include <stdint.h>
+#include <ewoksys/ewokdef.h>
 
 /*
  * HVS (Hardware Video Scaler) — BCM2711 (HVS5) is at 0xfe400000, that
@@ -42,6 +43,6 @@ int uc_hvs_frames_advancing(uint32_t wait_ms);
  */
 int uc_hvs_plane_probe(void);
 /* Hot-swap the live dlist's PTR0 (framebuffer bus address). */
-void uc_hvs_set_ptr0(uint32_t bus_addr);
+void uc_hvs_set_ptr0(ewokos_addr_t bus_addr);
 
 #endif

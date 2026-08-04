@@ -79,7 +79,7 @@ int32_t vc4_v3d_init(vc4_v3d_t* v3d, volatile uint32_t* regs, uint32_t ident0, u
 	return 0;
 }
 
-void vc4_v3d_set_bin_overflow(vc4_v3d_t* v3d, uint32_t bus_addr, uint32_t size, uint32_t chunk_size) {
+void vc4_v3d_set_bin_overflow(vc4_v3d_t* v3d, ewokos_addr_t bus_addr, uint32_t size, uint32_t chunk_size) {
 	if (v3d == NULL)
 		return;
 	if (chunk_size == 0 || chunk_size > size)
@@ -247,12 +247,12 @@ void vc4_v3d_flush_caches(vc4_v3d_t* v3d) {
 	vc4_v3d_mem_barrier();
 }
 
-int32_t vc4_v3d_submit_ct0(vc4_v3d_t* v3d, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us) {
+int32_t vc4_v3d_submit_ct0(vc4_v3d_t* v3d, ewokos_addr_t start_bus_addr, ewokos_addr_t end_bus_addr, uint32_t timeout_us) {
 	vc4_v3d_flush_caches(v3d);
 	return vc4_v3d_submit_ct(v3d, 0, start_bus_addr, end_bus_addr, timeout_us);
 }
 
-int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us) {
+int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, ewokos_addr_t start_bus_addr, ewokos_addr_t end_bus_addr, uint32_t timeout_us) {
 	int32_t ret;
 
 	if (v3d == NULL || v3d->regs == NULL || thread > 1 || start_bus_addr == 0 || end_bus_addr <= start_bus_addr)
@@ -301,6 +301,6 @@ int32_t vc4_v3d_submit_ct(vc4_v3d_t* v3d, uint32_t thread, uint32_t start_bus_ad
 	return 0;
 }
 
-int32_t vc4_v3d_submit_ct1(vc4_v3d_t* v3d, uint32_t start_bus_addr, uint32_t end_bus_addr, uint32_t timeout_us) {
+int32_t vc4_v3d_submit_ct1(vc4_v3d_t* v3d, ewokos_addr_t start_bus_addr, ewokos_addr_t end_bus_addr, uint32_t timeout_us) {
 	return vc4_v3d_submit_ct(v3d, 1, start_bus_addr, end_bus_addr, timeout_us);
 }

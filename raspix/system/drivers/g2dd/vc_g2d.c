@@ -95,7 +95,7 @@ int vc_g2d_buf_alloc(vc_g2d_buf_t* buf, uint32_t size) {
 		return -1;
 
 	memset(buf, 0, sizeof(*buf));
-	buf->vaddr = (uint32_t)dma_alloc(0, size);
+	buf->vaddr = dma_alloc(0, size);
 	if (buf->vaddr == 0)
 		return -1;
 	buf->bus = dma_phy_addr(0, (ewokos_addr_t)buf->vaddr) + VC_ALIAS_NONCACHED;
@@ -116,7 +116,7 @@ void vc_g2d_buf_free(vc_g2d_buf_t* buf) {
 	memset(buf, 0, sizeof(*buf));
 }
 
-void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, uint32_t vaddr, uint32_t phy_base, uint32_t bus_base) {
+void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, ewokos_addr_t vaddr, ewokos_addr_t phy_base, ewokos_addr_t bus_base) {
 	if (buf == NULL)
 		return;
 	memset(buf, 0, sizeof(*buf));

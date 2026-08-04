@@ -230,7 +230,7 @@ static void vc4_kms_v3d_dump_cl(vc4_cl_t* cl, const char* tag, uint32_t limit) {
 	}
 }
 
-static void vc4_kms_v3d_dump_bus_bytes(vc4_bo_t* bo, uint32_t bus_addr, uint32_t count, const char* tag) {
+static void vc4_kms_v3d_dump_bus_bytes(vc4_bo_t* bo, ewokos_addr_t bus_addr, uint32_t count, const char* tag) {
 	uint32_t offset;
 	uint32_t i;
 
@@ -241,7 +241,8 @@ static void vc4_kms_v3d_dump_bus_bytes(vc4_bo_t* bo, uint32_t bus_addr, uint32_t
 		return;
 	if (count > (bo->size - offset))
 		count = bo->size - offset;
-	slog("vc4_kms_v3d: %s bus=%x offset=%x count=%u\n", tag, bus_addr, offset, count);
+	slog("vc4_kms_v3d: %s bus=%llx offset=%x count=%u\n",
+			tag, (unsigned long long)bus_addr, offset, count);
 	for (i = 0; i < count; i += 16) {
 		uint32_t j;
 		char line[96];
@@ -255,13 +256,13 @@ static void vc4_kms_v3d_dump_bus_bytes(vc4_bo_t* bo, uint32_t bus_addr, uint32_t
 	}
 }
 
-static void vc4_kms_v3d_dump_cl_window(vc4_cl_t* cl, uint32_t bus_addr, uint32_t before,
+static void vc4_kms_v3d_dump_cl_window(vc4_cl_t* cl, ewokos_addr_t bus_addr, uint32_t before,
 		uint32_t after, const char* tag) {
-	uint32_t start;
-	uint32_t end;
-	uint32_t window_start;
-	uint32_t window_end;
-	uint32_t offset;
+	ewokos_addr_t start;
+	ewokos_addr_t end;
+	ewokos_addr_t window_start;
+	ewokos_addr_t window_end;
+	ewokos_addr_t offset;
 
 	if (cl == NULL || cl->bo == NULL || cl->bo->vaddr == 0 || tag == NULL) {
 		return;
@@ -624,7 +625,7 @@ static int32_t vc4_kms_v3d_alloc_bos(vc4_kms_v3d_t* ctx) {
 }
 
 int32_t vc4_kms_v3d_init(vc4_kms_v3d_t* ctx, uint32_t width, uint32_t height, uint32_t depth) {
-	uint32_t mmio_base;
+	ewokos_addr_t mmio_base;
 	int32_t ret;
 
 	if (ctx == NULL || width == 0 || height == 0 || depth != 32)

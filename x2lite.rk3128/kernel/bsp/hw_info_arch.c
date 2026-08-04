@@ -99,7 +99,7 @@ void __attribute__((optimize("O0"))) prepare_cores(void) {
 }
 
 inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { //TODO
-	uint32_t entry = V2P((uint32_t)(__entry) + _sys_info.kernel_base);
+	ewokos_addr_t entry = V2P((ewokos_addr_t)(__entry) + _sys_info.kernel_base);
     if(core_id == 1)
        prepare_cores(); 
 

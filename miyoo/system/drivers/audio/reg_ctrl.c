@@ -11,7 +11,7 @@
 #define READ_REGI(a)		(*(volatile unsigned int *)(a))
 #define WRITE_REGI(a, v)	(*(volatile unsigned int *)(a) = (v))
 
-struct reg_field *regmap_field_alloc(unsigned int base, struct reg_field reg_field)
+struct reg_field *regmap_field_alloc(ewokos_addr_t base, struct reg_field reg_field)
 {
 	struct reg_field * filed = calloc(1, sizeof(struct reg_field));
 	if (filed == NULL) {
@@ -20,7 +20,7 @@ struct reg_field *regmap_field_alloc(unsigned int base, struct reg_field reg_fie
 	}
 
 	memcpy(filed, &reg_field, sizeof(struct reg_field));
-	filed->reg += (unsigned int)base;
+	filed->reg += base;
 	filed->shift = reg_field.lsb;
 	filed->mask = GENMASK(reg_field.msb, reg_field.lsb);
 	return filed;
@@ -61,13 +61,13 @@ int regmap_field_write(struct reg_field *field, unsigned int val)
 	return 0;
 }
 
-int regmap_read(unsigned int base, unsigned int reg_off, unsigned int *val)
+int regmap_read(ewokos_addr_t base, unsigned int reg_off, unsigned int *val)
 {
 	*val = READ_REGI((base + reg_off));
 	return 0;
 }
 
-int regmap_write(unsigned int base, unsigned int reg_off, unsigned int val)
+int regmap_write(ewokos_addr_t base, unsigned int reg_off, unsigned int val)
 {
 	WRITE_REGI(base + reg_off, val);
 	return 0;

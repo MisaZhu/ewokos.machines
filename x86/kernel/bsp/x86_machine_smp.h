@@ -81,13 +81,13 @@ static inline void x86_wrmsr(uint32_t msr, uint64_t value) {
 	__asm__ volatile("wrmsr" : : "c"(msr), "a"(lo), "d"(hi));
 }
 
-static inline uint32_t x86_lapic_phys_base(void) {
+static inline ewokos_addr_t x86_lapic_phys_base(void) {
 	uint64_t base = x86_rdmsr(IA32_APIC_BASE_MSR);
-	return (uint32_t)(base & 0xfffff000u);
+	return (ewokos_addr_t)(base & 0xfffff000u);
 }
 
 static inline uintptr_t x86_lapic_vaddr(void) {
-	uint32_t phys = x86_lapic_phys_base();
+	ewokos_addr_t phys = x86_lapic_phys_base();
 	return _sys_info.mmio.v_base + (phys - _sys_info.mmio.phy_base);
 }
 

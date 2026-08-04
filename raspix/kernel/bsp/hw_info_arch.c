@@ -43,14 +43,14 @@ void sys_info_init_arch(void) {
 	}
 	else if(pix_revision == PI_4B_4G) {
 		strcpy(_sys_info.machine, "raspberry-pi4b-4G");
-		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.total_phy_mem_size = 4u*GB;
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_4B_8G) {
 		strcpy(_sys_info.machine, "raspberry-pi4b-8G");
-		_sys_info.total_phy_mem_size = 2u*GB; //max for 32bits os
+		_sys_info.total_phy_mem_size = 8u*GB; //max for 32bits os
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
@@ -71,7 +71,7 @@ void sys_info_init_arch(void) {
 	}
 	else if(pix_revision == PI_CM4_4G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-4G");
-		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.total_phy_mem_size = 4u*GB;
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
@@ -79,9 +79,7 @@ void sys_info_init_arch(void) {
 	else if(pix_revision == PI_CM3_1G) {
 		strcpy(_sys_info.machine, "raspberry-cm3-1G");
 		_sys_info.total_phy_mem_size = 1u*GB;
-		_sys_info.mmio.phy_base = 0xfe000000;
-		_core_base_offset =  0x01800000;
-		_pi4 = 1;
+		_sys_info.mmio.phy_base = 0x3f000000;
 	}
 	else if(pix_revision == PI_2B) {
 		strcpy(_sys_info.machine, "raspberry-pi2b");
@@ -112,25 +110,25 @@ void sys_info_init_arch(void) {
 	}
 	else if(pix_revision == PI_5_4G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-4g");
-		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.total_phy_mem_size = 4u*GB;
 		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_5_8G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-8g");
-		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.total_phy_mem_size = 8u*GB;
 		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_5_16G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-16g");
-		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.total_phy_mem_size = 16u*GB;
 		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 
 	_sys_info.total_usable_mem_size = _sys_info.total_phy_mem_size;
-	if(_sys_info.total_usable_mem_size > (uint32_t)MAX_USABLE_MEM_SIZE)
+	if(_sys_info.total_usable_mem_size > (ewokos_addr_t)MAX_USABLE_MEM_SIZE)
 		_sys_info.total_usable_mem_size = MAX_USABLE_MEM_SIZE;
 
 #if __aarch64__
@@ -160,8 +158,8 @@ void sys_info_init_arch(void) {
 }
 
 void arch_vm(page_dir_entry_t* vm) {
-	uint32_t vbase = _sys_info.mmio.v_base + _core_base_offset;
-	uint32_t pbase = _sys_info.mmio.phy_base + _core_base_offset;
+	ewokos_addr_t vbase = _sys_info.mmio.v_base + _core_base_offset;
+	ewokos_addr_t pbase = _sys_info.mmio.phy_base + _core_base_offset;
 	map_page(vm, vbase, pbase, AP_RW_RW, PTE_ATTR_DEV);
 	//map_page(vm, pbase, pbase, AP_RW_D, PTE_ATTR_DEV);
 }
@@ -173,14 +171,14 @@ void start_core(uint32_t core_id) {
     if(core_id >= _sys_info.cores)
         return;
 #if __arm__
-    uint32_t core_start_addr = (core_id * 0x10 + 0x8c) + 
+    ewokos_addr_t core_start_addr = (core_id * 0x10 + 0x8c) + 
        _sys_info.mmio.v_base + 
        _core_base_offset;
 
-    put32(core_start_addr, __entry);
+    put32(core_start_addr, (ewokos_addr_t)__entry);
 #elif __aarch64__
-	uint64_t core_start_addr = 0x800000E0 + (core_id - 1) * 8;
-	*(volatile uint32_t*)core_start_addr = (uint32_t)__entry;
+	ewokos_addr_t core_start_addr = P2V(0xE0) + (core_id - 1) * 8;
+	*(volatile uint32_t*)core_start_addr = (ewokos_addr_t)__entry;
 	flush_dcache();
 #endif
     __asm__("sev");

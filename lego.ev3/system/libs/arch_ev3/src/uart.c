@@ -25,11 +25,11 @@
 
 #define REG32(x) (*(volatile uint32_t*)(_mmio_base + base + (x)))
 
-uint32_t ev3_uart_get_irq(uint32_t base){
+uint32_t ev3_uart_get_irq(ewokos_addr_t base){
 	return REG32(UART_IIR);
 }
 
-void ev3_uart_enable_irq(uint32_t base, int dir, int en){
+void ev3_uart_enable_irq(ewokos_addr_t base, int dir, int en){
 	uint32_t mask;
 
 	if(dir)
@@ -43,7 +43,7 @@ void ev3_uart_enable_irq(uint32_t base, int dir, int en){
 		REG32(UART_IER) &= ~mask;
 }
 
-void ev3_uart_init(uint32_t base, int baudrate){
+void ev3_uart_init(ewokos_addr_t base, int baudrate){
 	uint16_t div = (int)(9375000.0f/baudrate + 0.5f);
 
 	REG32(UART_PWREMU) = 0x1 | 0x1 << 13 | 0x1 << 14;
@@ -55,18 +55,18 @@ void ev3_uart_init(uint32_t base, int baudrate){
 	REG32(UART_FCR) = 0x1;
 }
 
-int ev3_uart_can_write(uint32_t base){
+int ev3_uart_can_write(ewokos_addr_t base){
 	return ((REG32(UART_LSR)) & UART_LSR_THRE);
 }
 
-int ev3_uart_can_read(uint32_t base){
+int ev3_uart_can_read(ewokos_addr_t base){
 	return REG32(UART_LSR) & UART_LSR_DR;
 }
 
-void ev3_uart_putc(uint32_t base, char ch){
+void ev3_uart_putc(ewokos_addr_t base, char ch){
     REG32(UART_TX) = ch;
 }
 
-char ev3_uart_getc(uint32_t base){
+char ev3_uart_getc(ewokos_addr_t base){
 	return  REG32(UART_TX);
 }

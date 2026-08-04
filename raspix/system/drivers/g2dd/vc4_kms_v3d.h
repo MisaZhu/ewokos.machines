@@ -2,6 +2,7 @@
 #define RASPIX_VC4_KMS_V3D_H
 
 #include <stdint.h>
+#include <ewoksys/ewokdef.h>
 #include "g2d.h"
 #include "vc4_bo.h"
 #include "vc4_cl.h"
@@ -21,7 +22,7 @@ enum {
 typedef struct {
 	int32_t initialized;
 	int32_t last_error;
-	uint32_t mmio_base;
+	ewokos_addr_t mmio_base;
 	volatile uint32_t* v3d_regs;
 	volatile uint32_t* hvs_regs;
 	volatile uint32_t* pv1_regs;
@@ -58,13 +59,13 @@ typedef struct {
 	uint32_t vertex_data_offset;
 	/* NV-shader-state resources backing the solid fill path. */
 	uint32_t fill_shader_rec_offset;
-	uint32_t fill_shader_rec_bus_addr;
+	ewokos_addr_t fill_shader_rec_bus_addr;
 	uint32_t fill_uniforms_offset;
-	uint32_t fill_uniforms_bus_addr;
+	ewokos_addr_t fill_uniforms_bus_addr;
 	uint32_t fill_vertex_offset;
-	uint32_t fill_vertex_bus_addr;
+	ewokos_addr_t fill_vertex_bus_addr;
 	uint32_t fill_index_offset;
-	uint32_t fill_index_bus_addr;
+	ewokos_addr_t fill_index_bus_addr;
 } vc4_kms_v3d_t;
 
 int32_t vc4_kms_v3d_init(vc4_kms_v3d_t* ctx, uint32_t width, uint32_t height, uint32_t depth);

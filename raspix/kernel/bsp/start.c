@@ -118,7 +118,7 @@ typedef struct {
     uint8_t full:1;
 } _mail_status_t;
 
-extern void load_boot_pgt(uint32_t page_table);
+extern void load_boot_pgt(ewokos_addr_t page_table);
 
 static inline uint32_t cpu_get_id(void) {
     uint32_t midr;
@@ -181,5 +181,5 @@ void _boot_start(void) {
 			break;
 	}
 
-	load_boot_pgt(startup_page_dir);
+	load_boot_pgt((ewokos_addr_t)startup_page_dir);
 }

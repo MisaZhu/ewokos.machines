@@ -151,9 +151,9 @@ struct msc313_bach_dma_channel {
 };
 
 struct msc313_bach {
-	unsigned int clk;
-	unsigned int  audiotop;
-	unsigned int bach;
+	ewokos_addr_t clk;
+	ewokos_addr_t audiotop;
+	ewokos_addr_t bach;
 
 	/* Digital controls */
 	struct reg_field *src2_sel;
@@ -167,7 +167,7 @@ struct msc313_bach {
 	struct reg_field *codec_sel;
 
 	/* Pre-allocated DMA memory when probe */
-	unsigned int dma_areas;
+	ewokos_addr_t dma_areas;
 };
 
 struct msc313_bach_substream_runtime {
@@ -1427,7 +1427,7 @@ static int io_mmap(struct msc313_bach *bach)
 	return 0;
 }
 
-static int enable_clk(unsigned int clk_base)
+static int enable_clk(ewokos_addr_t clk_base)
 {
 	WRITE_WORD(clk_base + 0x0, 0x00c0);
 	WRITE_BYTE(clk_base + 0x1c, 0x01);
@@ -1436,7 +1436,7 @@ static int enable_clk(unsigned int clk_base)
 
 static int pre_allocate_dma_buffer(struct msc313_bach *bach)
 {
-	unsigned int vaddr = dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE);
+	ewokos_addr_t vaddr = dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE);
 	if (vaddr == 0) {
 		
 		bach->dma_areas = 0;
