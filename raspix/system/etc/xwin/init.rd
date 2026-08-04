@@ -44,8 +44,8 @@
 @/bin/splash -m "start /dev/time" -p 80
 @/bin/ipcserv /drivers/timed    /dev/time
 
-@/bin/splash -m "start telnetd" -p 83
-@/bin/bgrun /sbin/telnetd
+#@/bin/splash -m "start telnetd" -p 83
+#@/bin/bgrun /sbin/telnetd
 
 @/bin/splash -m "start sshd" -p 84
 @/bin/bgrun /sbin/sshd
