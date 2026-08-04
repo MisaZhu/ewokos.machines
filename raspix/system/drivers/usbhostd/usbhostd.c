@@ -1525,6 +1525,9 @@ static hid_dev_type_t hid_detect_device_type(const uint8_t* desc, int len) {
 	uint32_t usage_min = 0;
 	uint32_t usage_max = 0;
 	bool usage_range_valid = false;
+        bool found_keyboard = false;
+        bool found_mouse = false;
+        bool found_touch = false;
 
 	for (int off = 0; off < len; ) {
 		uint8_t prefix = desc[off++];
@@ -1577,10 +1580,10 @@ static hid_dev_type_t hid_detect_device_type(const uint8_t* desc, int len) {
 					uint32_t usage = hid_usage_for_index(usages, usage_count,
 							usage_range_valid, usage_min, usage_max, 0);
 					if (usage == HID_USAGE_KEYBOARD) {
-						return HID_DEV_TYPE_KEYBOARD;
+                                                found_keyboard = true;
 					}
 					else if (usage == HID_USAGE_MOUSE || usage == HID_USAGE_POINTER) {
-						return HID_DEV_TYPE_MOUSE;
+                                                found_mouse = true;
 					}
 				}
 				else if (collection_type == 1 && usage_page == HID_USAGE_PAGE_DIGITIZER) {
@@ -1588,7 +1591,7 @@ static hid_dev_type_t hid_detect_device_type(const uint8_t* desc, int len) {
 							usage_range_valid, usage_min, usage_max, 0);
 					if (usage == HID_USAGE_TOUCH_SCREEN || usage == HID_USAGE_TOUCH_PAD ||
 							usage == HID_USAGE_FINGER) {
-						return HID_DEV_TYPE_TOUCH;
+                                                found_touch = true;
 					}
 				}
 			}
@@ -1596,6 +1599,21 @@ static hid_dev_type_t hid_detect_device_type(const uint8_t* desc, int len) {
 			usage_range_valid = false;
 		}
 	}
+        /*
+         * Some USB touch panels expose both Generic Desktop mouse/pointer and
+         * Digitizer touch collections in one report descriptor. For the
+         * touch pipeline we want to prefer the explicit digitizer collection
+         * when it exists, otherwise hid_touchd never receives data.
+         */
+        if (found_touch) {
+                return HID_DEV_TYPE_TOUCH;
+        }
+        if (found_keyboard) {
+                return HID_DEV_TYPE_KEYBOARD;
+        }
+        if (found_mouse) {
+                return HID_DEV_TYPE_MOUSE;
+        }
 	return HID_DEV_TYPE_UNKNOWN;
 }
 
@@ -1834,10 +1852,7 @@ static int hid_parse_touch_report(const uint8_t* desc, int len, touch_parser_t* 
 			case 10: {
 				uint32_t usage = hid_usage_for_index(usages, usage_count,
 						usage_range_valid, usage_min, usage_max, 0);
-				uint8_t collection_type = (uint8_t)value;
-
-				if (collection_type == 1 &&
-						usage_page == HID_USAGE_PAGE_DIGITIZER &&
+                                if (usage_page == HID_USAGE_PAGE_DIGITIZER &&
 						(usage == HID_USAGE_TOUCH_SCREEN ||
 						 usage == HID_USAGE_TOUCH_PAD ||
 						 usage == HID_USAGE_FINGER)) {
@@ -1875,6 +1890,18 @@ static int hid_parse_touch_report(const uint8_t* desc, int len, touch_parser_t* 
 		return -1;
 	}
 	return 0;
+}
+
+static bool hid_probe_touch_report(const uint8_t* desc, int len, touch_parser_t* out) {
+        touch_parser_t parser;
+
+        if (hid_parse_touch_report(desc, len, &parser) != 0) {
+                return false;
+        }
+        if (out != NULL) {
+                *out = parser;
+        }
+        return true;
 }
 
 static uint32_t bit_extract_le(const uint8_t* buf, int bit, int bits) {
@@ -2124,6 +2151,16 @@ static int usb_register_touch(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 		return -1;
 	}
 
+        /*
+         * Some USB touch panels advertise boot-mouse compatibility on the
+         * interface descriptor, but their real touch data is only available in
+         * Report protocol. Keep them out of Boot protocol here.
+         */
+        if (cand->subclass == USB_SUBCLASS_BOOT) {
+                (void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 1);
+        }
+        (void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
+
 	memset(&_inputs[slot], 0, sizeof(_inputs[slot]));
 	_inputs[slot].present = true;
 	_inputs[slot].type = USB_INPUT_TOUCH;
@@ -2136,10 +2173,11 @@ static int usb_register_touch(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 	_inputs[slot].low_speed = low_speed;
 	_inputs[slot].report_len = parser.report_bytes;
 	_inputs[slot].touch = parser;
-	slog("usbhostd: register touch slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u report_id=%u report_len=%u tip=%d x=%d y=%d\n",
+        slog("usbhostd: register touch slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u report_id=%u report_len=%u tip=%d x=%d y=%d xmax=%u ymax=%u subclass=%u\n",
 			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
 			cand->max_packet, parser.report_id, parser.report_bytes,
-			parser.tip_bit, parser.x_bit, parser.y_bit);
+                        parser.tip_bit, parser.x_bit, parser.y_bit,
+                        parser.x_max, parser.y_max, cand->subclass);
 	return 0;
 }
 
@@ -2386,7 +2424,10 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 		{
 			uint8_t* report_desc = NULL;
 			bool desc_ok = false;
+                        bool touch_desc_ok = false;
 			uint8_t kbd_id = 0, mouse_id = 0;
+                        hid_dev_type_t dev_type = HID_DEV_TYPE_UNKNOWN;
+                        touch_parser_t touch_probe;
 
 			if (candidates[i].report_desc_len > 0 && candidates[i].report_desc_len <= 1024) {
 				report_desc = (uint8_t*)malloc(candidates[i].report_desc_len);
@@ -2397,6 +2438,15 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 					desc_ok = true;
 				}
 			}
+                        if (desc_ok) {
+                                touch_desc_ok = hid_probe_touch_report(report_desc,
+                                                candidates[i].report_desc_len, &touch_probe);
+                                dev_type = hid_detect_device_type(report_desc, candidates[i].report_desc_len);
+                                if (touch_desc_ok) {
+                                        dev_type = HID_DEV_TYPE_TOUCH;
+                                }
+                                slog("usbhostd: candidate idx=%d report_desc_type=%d\n", i, dev_type);
+                        }
 
 			/* uConsole keyboard: boot-keyboard interface whose report
 			   descriptor actually multiplexes kbd+mouse via report IDs */
@@ -2407,6 +2457,11 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 					registered++;
 				}
 			}
+                        else if (dev_type == HID_DEV_TYPE_TOUCH) {
+                                if (usb_register_touch(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+                                        registered++;
+                                }
+                        }
 			else if (candidates[i].subclass == USB_SUBCLASS_BOOT &&
 					candidates[i].protocol == USB_PROTOCOL_KEYBOARD) {
 				if (usb_register_keyboard(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
@@ -2420,13 +2475,6 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 				}
 			}
 			else {
-				hid_dev_type_t dev_type = HID_DEV_TYPE_UNKNOWN;
-
-				if (desc_ok) {
-					dev_type = hid_detect_device_type(report_desc, candidates[i].report_desc_len);
-					slog("usbhostd: candidate idx=%d report_desc_type=%d\n", i, dev_type);
-				}
-
 				if (dev_type == HID_DEV_TYPE_KEYBOARD) {
 					if (usb_register_keyboard(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
 						registered++;
