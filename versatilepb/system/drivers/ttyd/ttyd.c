@@ -76,9 +76,9 @@ static int tty_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 }
 
 static bool _wakeup = false;
-static void interrupt_handle(uint32_t interrupt, uint32_t p) {
+static void interrupt_handle(uint32_t interrupt, ewokos_addr_t p) {
 	(void)interrupt;
-	vdevice_t* dev = (vdevice_t*)p;
+        vdevice_t* dev = (vdevice_t*)p;
 	uint32_t data = get32(UART0 + UART_DATA);
 	charbuf_push(_buffer, data, true);
 	_wakeup = true;

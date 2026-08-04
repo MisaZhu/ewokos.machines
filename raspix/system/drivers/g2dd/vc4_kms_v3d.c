@@ -709,11 +709,22 @@ void vc4_kms_v3d_teardown(vc4_kms_v3d_t* ctx) {
 
 int32_t vc4_kms_v3d_clear(vc4_kms_v3d_t* ctx, uint32_t color) {
 	uint32_t pixel;
+        uint32_t bcl_start;
+        uint32_t bcl_end;
+        uint32_t rcl_start;
+        uint32_t rcl_end;
 
 	if (ctx == NULL || ctx->initialized == 0)
 		return -1;
 	if (vc4_kms_v3d_build_clear_job(ctx, color) != 0)
 		return -1;
+        bcl_start = vc4_cl_start_bus_addr(&ctx->bcl);
+        bcl_end = vc4_cl_end_bus_addr(&ctx->bcl);
+        rcl_start = vc4_cl_start_bus_addr(&ctx->rcl);
+        rcl_end = vc4_cl_end_bus_addr(&ctx->rcl);
+        slog("vc4_kms_v3d: clear job color=%x target=%x stride=%u bcl=[%x,%x) rcl=[%x,%x)\n",
+                        color, ctx->render_target.bus_addr, ctx->render_target_stride_bytes,
+                        bcl_start, bcl_end, rcl_start, rcl_end);
 	/* Scrub the target so the readback below really proves the GPU wrote it. */
 	memset((void*)(uintptr_t)ctx->render_target.vaddr, 0xa5, ctx->render_target.size);
 	vc4_kms_v3d_mem_barrier();
@@ -722,9 +733,16 @@ int32_t vc4_kms_v3d_clear(vc4_kms_v3d_t* ctx, uint32_t color) {
 	if (vc4_kms_v3d_read_pixel(ctx, 0, 0, &pixel) != 0)
 		return -1;
 	if (pixel != color) {
-		slog("vc4_kms_v3d: clear readback mismatch actual=%x expected=%x\n", pixel, color);
+                slog("vc4_kms_v3d: clear readback mismatch actual=%x expected=%x regs ct0cs=%x ct1cs=%x err=%x bfc=%x rfc=%x ct1ca=%x ct1ea=%x\n",
+                                pixel, color,
+                                ctx->v3d.last_ct0cs, ctx->v3d.last_ct1cs,
+                                ctx->v3d.last_errstat, ctx->v3d.last_bfc,
+                                ctx->v3d.last_rfc, ctx->v3d.last_ct1ca, ctx->v3d.last_ct1ea);
 		return -1;
 	}
+        slog("vc4_kms_v3d: clear ok pixel=%x regs ct0cs=%x ct1cs=%x err=%x bfc=%x rfc=%x\n",
+                        pixel, ctx->v3d.last_ct0cs, ctx->v3d.last_ct1cs,
+                        ctx->v3d.last_errstat, ctx->v3d.last_bfc, ctx->v3d.last_rfc);
 	return 0;
 }
 
@@ -1159,6 +1177,9 @@ int32_t vc4_kms_v3d_fill_rect(vc4_kms_v3d_t* ctx, const g2d_fill_req_t* req) {
 int32_t vc4_kms_v3d_blit(vc4_kms_v3d_t* ctx, const g2d_blit_req_t* req, const uint32_t* data, uint8_t use_alpha) {
 	if (ctx == NULL || ctx->initialized == 0 || req == NULL || data == NULL)
 		return -1;
+        slog("vc4_kms_v3d: blit unimplemented alpha=%u src=(%d,%d %dx%d of %ux%u) dst=(%d,%d %dx%d) rotate=%u\n",
+                        use_alpha, req->sx, req->sy, req->sw, req->sh,
+                        req->src_w, req->src_h, req->dx, req->dy, req->dw, req->dh, req->rotate);
 	(void)use_alpha;
 	/* Textured draw path not implemented yet. */
 	return -1;

@@ -13,7 +13,7 @@
 #include <ewoksys/syscall.h>
 #include <arch/bcm283x/mailbox.h>
 
-extern uint32_t _mmio_base;
+extern ewokos_addr_t _mmio_base;
 
 #define USB_CORE_OFFSET 0x0980000u
 
