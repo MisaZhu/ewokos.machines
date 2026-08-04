@@ -7,7 +7,7 @@
 #include <kernel/core.h>
 #endif
 
-uint32_t _core_base_offset = 0;
+ewokos_addr_t _core_base_offset = 0;
 
 
 void sys_info_init_arch(void) {

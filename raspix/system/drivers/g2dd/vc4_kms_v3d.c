@@ -810,25 +810,27 @@ static int32_t vc4_kms_v3d_build_fill_bcl(vc4_kms_v3d_t* ctx) {
 				VC4_PRIMITIVE_LIST_FORMAT_TYPE_TRIANGLES) != 0 ||
 			vc4_emit_clip_window(&ctx->bcl, 0, 0,
 				(uint16_t)ctx->width, (uint16_t)ctx->height) != 0 ||
-			/*
-			 * byte0: rasterise both front and back facing primitives.
-			 *        Facing is meaningless for a screen-aligned quad, and
-			 *        leaving only one of them enabled makes the fill depend
-			 *        on the winding of the two triangles agreeing with the
-			 *        Y direction of the shaded vertices. When they disagree
-			 *        every primitive is culled, which still lets the binner
-			 *        flush and still leaves valid but empty tile lists, so
-			 *        both threads report success and nothing is drawn.
-			 * byte1: depth testing disabled outright. With no depth buffer
-			 *        bound there is nothing for a comparison function to
-			 *        read, so leave the whole byte clear.
-			 * byte2: early depth write, which is what the known-good NV
-			 *        path uses.
-			 */
+                        /*
+                         * byte0: rasterise both front and back facing primitives.
+                         *        Facing is meaningless for a screen-aligned quad, and
+                         *        leaving only one of them enabled makes the fill depend
+                         *        on the winding of the two triangles agreeing with the
+                         *        Y direction of the shaded vertices. When they disagree
+                         *        every primitive is culled, which still lets the binner
+                         *        flush and still leaves valid but empty tile lists, so
+                         *        both threads report success and nothing is drawn.
+                         * byte1: there is no "depth test disable" bit on VC4. Leaving
+                         *        the function field at zero selects NEVER and silently
+                         *        drops every fragment, so a depthless draw must program
+                         *        DEPTH_FUNC_ALWAYS explicitly.
+                         * byte2: early depth write, which is what the known-good NV
+                         *        path uses.
+                         */
 			vc4_emit_configuration_bits(&ctx->bcl,
 				VC4_CONFIG_BITS_ENABLE_PRIM_FRONT |
 					VC4_CONFIG_BITS_ENABLE_PRIM_BACK,
-				0,
+                                (VC4_CONFIG_BITS_DEPTH_FUNC_ALWAYS <<
+                                        VC4_CONFIG_BITS_DEPTH_FUNC_SHIFT),
 				VC4_CONFIG_BITS_EARLY_Z_UPDATE) != 0 ||
 			/*
 			 * Zero viewport offset, with the shaded vertices carrying
@@ -886,8 +888,13 @@ static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 	uint32_t render_flags;
 	uint32_t load_bits;
 	uint32_t tile_alloc_addr;
+        uint32_t tile_x0;
+        uint32_t tile_y0;
+        uint32_t tile_x1;
+        uint32_t tile_y1;
 	uint32_t x;
 	uint32_t y;
+        uint8_t waited_for_bin = 0;
 
 	render_flags = VC4_RENDER_CONFIG_MEMORY_FORMAT_LINEAR |
 			VC4_RENDER_CONFIG_DECIMATE_MODE_1X |
@@ -923,12 +930,17 @@ static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 			(VC4_TILING_FORMAT_LINEAR << VC4_LOADSTORE_TILE_BUFFER_TILING_SHIFT) |
 			(VC4_LOADSTORE_TILE_BUFFER_RGBA8888 << VC4_LOADSTORE_TILE_BUFFER_FORMAT_SHIFT);
 	tile_alloc_addr = ctx->binner_pool.bus_addr + ctx->tile_alloc_offset;
-	(void)r;
+        tile_x0 = (uint32_t)r->x / VC4_TILE_SIZE;
+        tile_y0 = (uint32_t)r->y / VC4_TILE_SIZE;
+        tile_x1 = (uint32_t)(r->x + r->w - 1) / VC4_TILE_SIZE;
+        tile_y1 = (uint32_t)(r->y + r->h - 1) / VC4_TILE_SIZE;
 
 	for (y = 0; y < ctx->tiles_y; y++) {
 		for (x = 0; x < ctx->tiles_x; x++) {
 			uint32_t sub_list = tile_alloc_addr +
 					((y * ctx->tiles_x) + x) * VC4_TILE_ALLOC_BLOCK_SIZE;
+                        uint8_t needs_branch = (x >= tile_x0 && x <= tile_x1 &&
+                                        y >= tile_y0 && y <= tile_y1) ? 1 : 0;
 
 			/*
 			 * The load is only actioned once the following tile
@@ -941,17 +953,23 @@ static int32_t vc4_kms_v3d_build_fill_rcl(vc4_kms_v3d_t* ctx, const g2d_rect_t* 
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)x) != 0 ||
 					vc4_cl_emit_u8(&ctx->rcl, (uint8_t)y) != 0)
 				return -1;
-			/*
-			 * The bin list ends with INCREMENT_SEMAPHORE + FLUSH again, so
-			 * pair it with a wait before the first sub-list is replayed,
-			 * mirroring the clear path.
-			 */
-			if (x == 0 && y == 0 &&
-					vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_WAIT_ON_SEMAPHORE) != 0)
-				return -1;
-			if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_BRANCH_TO_SUB_LIST) != 0 ||
-					vc4_cl_emit_u32(&ctx->rcl, sub_list) != 0)
-				return -1;
+                        if (needs_branch != 0) {
+                                /*
+                                 * Only replay sub-lists for tiles the rectangle actually
+                                 * covers. Untouched tiles keep their existing contents via
+                                 * LOAD + STORE alone; branching into a tile that never got
+                                 * binned hands CT1 an empty block, which is what made
+                                 * draws away from tile (0,0) fail with CT1_ERR.
+                                 */
+                                if (waited_for_bin == 0) {
+                                        if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_WAIT_ON_SEMAPHORE) != 0)
+                                                return -1;
+                                        waited_for_bin = 1;
+                                }
+                                if (vc4_cl_emit_u8(&ctx->rcl, VC4_PACKET_BRANCH_TO_SUB_LIST) != 0 ||
+                                                vc4_cl_emit_u32(&ctx->rcl, sub_list) != 0)
+                                        return -1;
+                        }
 			if (vc4_cl_emit_u8(&ctx->rcl, (x == (ctx->tiles_x - 1) && y == (ctx->tiles_y - 1)) ?
 					VC4_PACKET_STORE_MS_TILE_BUFFER_AND_EOF :
 					VC4_PACKET_STORE_MS_TILE_BUFFER) != 0)
