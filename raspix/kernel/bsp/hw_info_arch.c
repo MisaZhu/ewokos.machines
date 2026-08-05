@@ -187,8 +187,8 @@ void kalloc_arch(void) {
 	 * holes in both the low memory window and the upper memory range.
 	 */
 	// Skip the low framebuffer reserved block.
-	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(FB_LOW_BASE));
 	if(_sys_info.allocable_phy_mem_top > 1*GB) {
+		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(FB_LOW_BASE));
 		if(_sys_info.allocable_phy_mem_top > FB_HIGH_BASE) {
 			// Add RAM below the high framebuffer reserved block.
 			kalloc_append(P2V(1*GB), P2V(FB_HIGH_BASE));
@@ -199,6 +199,8 @@ void kalloc_arch(void) {
 		else
 			kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
 	}
+	else
+		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
