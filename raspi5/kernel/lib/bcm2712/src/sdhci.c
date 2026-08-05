@@ -872,7 +872,6 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 			memcpy(data->dest, host->align_buffer, trans_bytes);
 		return 0;
 	}
-	printf("sdhci cmd: %d ret: %d error: %x\n", cmd->cmdidx, ret, stat);
 	sdhci_reset(SDHCI_RESET_CMD);
 	sdhci_reset(SDHCI_RESET_DATA);
 	

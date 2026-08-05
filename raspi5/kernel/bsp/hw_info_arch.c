@@ -19,15 +19,13 @@
 
 uint64_t _core_base_offset = 0;
 
-void pi5_dbg_puts(const char* s);
-void pi5_dbg_putc(char c);
 
 /*
  * Map a single 4KB page for device MMIO, walking L1→L2→L3 with 64-bit
  * physical addresses (needed for BCM2712 peripherals above 4GB).
  * Replaces the previous set_block_2mb() which used 2MB block descriptors.
  */
-static void set_page_dev(page_dir_entry_t* vm, uint32_t vaddr, uint64_t phy) {
+static void set_page_dev(page_dir_entry_t* vm, ewokos_addr_t vaddr, uint64_t phy) {
 	uint32_t l1 = PAGE_L1_INDEX(vaddr);
 	uint32_t l2 = PAGE_L2_INDEX(vaddr);
 	uint32_t l3 = PAGE_L3_INDEX(vaddr);
@@ -74,6 +72,7 @@ static void set_page_dev(page_dir_entry_t* vm, uint32_t vaddr, uint64_t phy) {
 		.PXN = 1,
 		.UXN = 1,
 	};
+
 }
 
 void sys_info_init_arch(void) {
@@ -105,18 +104,15 @@ void sys_info_init_arch(void) {
 	_sys_info.mmio.phy_base = PI5_MMIO_PHY;
 	_sys_info.mmio.size = PI5_MMIO_SIZE;
 	/*
-	 * PI5_MMIO_PHY may exceed 32 bits (0x10_7C000000 > 4GB).
-	 * ewokos_addr_t is uint32_t, so mmio.phy_base truncates to 0x7C000000.
-	 * The boot page tables use the full uint64_t address, so early UART
-	 * debug output works. The final kernel VM also uses mmio.phy_base,
-	 * so after the kernel VM switch peripherals are only reachable if
-	 * the BCM2712 hardware enables the 32-bit alias at 0x7C000000.
+	 * PI5_MMIO_PHY is a full 64-bit address (0x10_7C000000).
+	 * ewokos_addr_t is uint64_t on aarch64, so mmio.phy_base
+	 * holds the complete physical address.
 	 */
 	if(_sys_info.mmio.size > MMIO_MAX_SIZE)
 		_sys_info.mmio.size = MMIO_MAX_SIZE;
 
 	_sys_info.total_usable_mem_size = _sys_info.total_phy_mem_size;
-	if(_sys_info.total_usable_mem_size > (uint32_t)MAX_USABLE_MEM_SIZE)
+	if(_sys_info.total_usable_mem_size > MAX_USABLE_MEM_SIZE)
 		_sys_info.total_usable_mem_size = MAX_USABLE_MEM_SIZE;
 
 	strcpy(_sys_info.arch, "aarch64");
@@ -141,6 +137,7 @@ void arch_vm(page_dir_entry_t* vm) {
 	 * carries full 64-bit physical addresses for peripheral windows
 	 * above 4GB (EMMC, RP1).
 	 */
+
 
 	/* Main MMIO window: 64 MB at 0x10_7C000000 */
 	for (uint32_t i = 0; i < PI5_MMIO_SIZE / PAGE_SIZE; i++) {

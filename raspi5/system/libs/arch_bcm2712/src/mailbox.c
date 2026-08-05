@@ -7,10 +7,13 @@
 #define MAILBOX_TIMEOUT_LOOPS 0x2000000u
 #define MAILBOX_STATUS_EMPTY (1u << 30)
 #define MAILBOX_STATUS_FULL  (1u << 31)
-#define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
 
 #define readl(addr)  (*((volatile uint32_t *)(addr)))
 #define writel(val, addr) (*((volatile uint32_t *)(addr)) = (uint32_t)(val))
+
+ewokos_addr_t bcm2712_mailbox_init(void) {
+	return mmio_map();
+}
 
 static inline uint32_t mailbox_read_data_raw(void) {
 	return readl(MAILBOX_BASE + 0x00);

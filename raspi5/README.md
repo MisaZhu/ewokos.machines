@@ -37,7 +37,13 @@ make ewokos=<ewokos 内核源码根目录>    # 默认 ~/work/ewokos
 arm_64bit=1
 enable_uart=1
 uart_2ndstage=0
+dtoverlay=vc4-kms-v3d
+disable_fw_kms_setup=0
 ```
+
+`disable_fw_kms_setup=1` must not be used. BCM2712 firmware no longer
+implements the legacy mailbox framebuffer allocator; EwokOS adopts the boot
+scanout buffer published by the firmware in the `simple-framebuffer` DT node.
 
 （若 EEPROM 配置已允许 `kernel=kernel8.img` 则无需额外指定。）
 

@@ -14,23 +14,22 @@
 #define PI5_MAILBOX_OFF    0x00013880
 
 #define MAILBOX_BASE       (_mmio_base + PI5_MAILBOX_OFF)
-#define MAIL0_READ         (((volatile mail_message_t *)(0x00 + MAILBOX_BASE)))
-#define MAIL0_STATUS       (((volatile mail_status_t *)(0x18 + MAILBOX_BASE)))
-#define MAIL0_WRITE        (((volatile mail_message_t *)(0x20 + MAILBOX_BASE)))
 #define PROPERTY_CHANNEL   8
 #define FRAMEBUFFER_CHANNEL 1
+
+/* VC bus address aliases OR'd into mailbox buffer addresses. */
+#define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
+#define MAILBOX_VC_ALIAS_COHERENT  0xC0000000u
+
+/* Set in the property buffer response word on success. */
+#define MAILBOX_RESPONSE_SUCCESS 0x80000000u
 
 typedef struct {
 	uint8_t channel: 4;
 	uint32_t data: 28;
 } mail_message_t;
 
-typedef struct {
-	uint32_t reserved: 30;
-	uint8_t empty: 1;
-	uint8_t full:1;
-} mail_status_t;
-
+ewokos_addr_t bcm2712_mailbox_init(void);
 void     bcm2712_mailbox_read(mail_message_t* msg);
 void     bcm2712_mailbox_send(mail_message_t* msg);
 void     bcm2712_mailbox_call(mail_message_t* msg);

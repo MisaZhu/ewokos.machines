@@ -4,8 +4,7 @@
 #include <arch/bcm2712/framebuffer.h>
 
 fbinfo_t* bsp_get_fbinfo(void) {
-	/* Stub: VPU mailbox framebuffer not yet implemented */
-	return 0;
+	return bcm2712_get_fbinfo();
 }
 
 int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
