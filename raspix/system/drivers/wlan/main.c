@@ -268,7 +268,7 @@ static int net_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 		return state;
 
 	if (!brcm_connected())
-		return size;
+		return VFS_ERR_RETRY;
 
 	int len = brcm_send((uint8_t*)(buf + offset), size);
 	return (len > 0)?len:VFS_ERR_RETRY; 
