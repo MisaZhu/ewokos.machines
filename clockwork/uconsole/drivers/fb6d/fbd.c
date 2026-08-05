@@ -46,8 +46,53 @@
  */
 #define UCONSOLE_FB_PHYS_BASE    0x3c100000U
 
+/* dev.cmd backlight step, in uc_backlight level units (0..9). */
+#define UC_BACKLIGHT_STEP        1
+
+/*
+ * Contrast is a software knob: the JD9365DA-H3 has no contrast register
+ * (its gamma/VCOM tables are the only analog handle, and rewriting those
+ * live is not something the panel datasheet sanctions), so we scale the
+ * pixels around mid-grey while blitting into the scan-out buffer.
+ * Percent, 100 = pass-through.
+ */
+#define UC_CONTRAST_MIN_PCT      20
+#define UC_CONTRAST_MAX_PCT      300
+#define UC_CONTRAST_DEFAULT_PCT  100
+#define UC_CONTRAST_STEP_PCT     10
+
 static const char* _conf_file = "";
 static fbinfo_t _fb_info;
+static fbd_t _fbd_cfg;
+static uint8_t _bl_level = UC_BACKLIGHT_DEFAULT;
+static uint32_t _contrast_pct = UC_CONTRAST_DEFAULT_PCT;
+static uint8_t _contrast_lut[256];
+
+static int contrast_active(void) {
+	return _contrast_pct != UC_CONTRAST_DEFAULT_PCT;
+}
+
+static void contrast_build_lut(void) {
+	for (int32_t i = 0; i < 256; ++i) {
+		int32_t v = (((i - 128) * (int32_t)_contrast_pct) / 100) + 128;
+
+		if (v < 0) {
+			v = 0;
+		}
+		else if (v > 255) {
+			v = 255;
+		}
+		_contrast_lut[i] = (uint8_t)v;
+	}
+}
+
+/* Alpha is scan-out padding here, so it is carried through untouched. */
+static inline uint32_t contrast_pixel(uint32_t s) {
+	return (s & 0xff000000U) |
+			((uint32_t)_contrast_lut[(s >> 16) & 0xff] << 16) |
+			((uint32_t)_contrast_lut[(s >> 8) & 0xff] << 8) |
+			(uint32_t)_contrast_lut[s & 0xff];
+}
 
 static uint16_t rgb565_from_u32(uint32_t s) {
 	uint8_t r = (uint8_t)((s >> 16) & 0xff);
@@ -64,6 +109,18 @@ static uint32_t blt32_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
 	const uint32_t* src = g->buffer;
 	uint32_t row_bytes = (uint32_t)g->w * bytes_per_pixel;
 	uint32_t total_bytes = (uint32_t)g->h * row_bytes;
+
+	if (contrast_active()) {
+		for (int32_t y = 0; y < g->h; ++y) {
+			uint32_t* dst_row = (uint32_t*)(void*)(dst + y * fbinfo->pitch);
+			const uint32_t* src_row = src + y * g->w;
+
+			for (int32_t x = 0; x < g->w; ++x) {
+				dst_row[x] = contrast_pixel(src_row[x]);
+			}
+		}
+		return total_bytes;
+	}
 
 	if (fbinfo->pitch == row_bytes) {
 		memcpy(dst, src, total_bytes);
@@ -82,13 +139,15 @@ static uint32_t blt16_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
 	uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
 			fbinfo->yoffset * fbinfo->pitch +
 			fbinfo->xoffset * 2;
+	int ct = contrast_active();
 
 	for (int32_t y = 0; y < g->h; ++y) {
 		uint16_t* dst_row = (uint16_t*)(dst_base + y * fbinfo->pitch);
 		const uint32_t* src_row = g->buffer + y * g->w;
 
 		for (int32_t x = 0; x < g->w; ++x) {
-			dst_row[x] = rgb565_from_u32(src_row[x]);
+			uint32_t s = src_row[x];
+			dst_row[x] = rgb565_from_u32(ct ? contrast_pixel(s) : s);
 		}
 	}
 	return (uint32_t)g->w * (uint32_t)g->h * 2U;
@@ -109,7 +168,12 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 		return blt16_pitch(phy, g);
 	}
 
-	/* Zero-copy fast path: rendering already targets the framebuffer. */
+	/*
+	 * Zero-copy fast path: rendering already targets the framebuffer.
+	 * Contrast cannot be honoured here even when active — source and
+	 * destination are the same pixels, so a LUT pass would re-apply
+	 * itself on every frame and progressively destroy the image.
+	 */
 	if ((uintptr_t)phy->pointer == (uintptr_t)g->buffer) {
 		return (uint32_t)g->w * (uint32_t)g->h * 4U;
 	}
@@ -118,6 +182,144 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 
 static fbinfo_t* get_info(void) {
 	return &_fb_info;
+}
+
+static uint8_t clamp_bl_level(int level) {
+	if (level < 0) {
+		return 0;
+	}
+	if (level > UC_BACKLIGHT_MAX_LEVEL) {
+		return (uint8_t)UC_BACKLIGHT_MAX_LEVEL;
+	}
+	return (uint8_t)level;
+}
+
+static void apply_bl_level(int level) {
+	_bl_level = clamp_bl_level(level);
+	uc_backlight_set(_bl_level);
+}
+
+static uint32_t clamp_contrast_pct(int pct) {
+	if (pct < UC_CONTRAST_MIN_PCT) {
+		return UC_CONTRAST_MIN_PCT;
+	}
+	if (pct > UC_CONTRAST_MAX_PCT) {
+		return UC_CONTRAST_MAX_PCT;
+	}
+	return (uint32_t)pct;
+}
+
+/*
+ * Contrast only exists inside our own blit, so while it is active the two
+ * generic libfbd fast paths must go: fbd_rotate_to() rotates straight into
+ * scan-out and never calls flush() at all, and fbd_flush_rect_to() would
+ * push raw dirty rects, leaving untransformed patches on an otherwise
+ * transformed screen. Without them libfbd rotates through its own buffer
+ * and always full-flushes, i.e. everything funnels through flush().
+ */
+static void contrast_sync_fast_paths(void) {
+	if (contrast_active()) {
+		_fbd_cfg.flush_rotate = NULL;
+		fbd_set_flush_rect(NULL);
+	}
+	else {
+		_fbd_cfg.flush_rotate = fbd_rotate_to;
+		fbd_set_flush_rect(fbd_flush_rect_to);
+	}
+}
+
+static void apply_contrast_pct(int pct) {
+	_contrast_pct = clamp_contrast_pct(pct);
+	contrast_build_lut();
+	contrast_sync_fast_paths();
+	/* Re-push the last frame so the change shows up right away. */
+	fbd_refresh();
+}
+
+/*
+ * `devcmd /dev/fb0` knobs for the things that belong to the panel rather
+ * than to the framebuffer geometry: the OCP8178 backlight (this daemon is
+ * the only owner of its 1-wire GPIO) and the software contrast LUT.
+ */
+static char* fb6d_dev_cmd(int from_pid, int argc, char** argv) {
+	char* ret = (char*)malloc(128);
+	char* end = NULL;
+	long requested = 0;
+
+	(void)from_pid;
+	if (ret == NULL) {
+		return NULL;
+	}
+	if (argc <= 0 || argv == NULL || argv[0] == NULL) {
+		free(ret);
+		return NULL;
+	}
+
+	if (strcmp(argv[0], "help") == 0) {
+		snprintf(ret, 128,
+				"help: show commands\n"
+				"bl [up|down|0-%d]: backlight level\n"
+				"ct [up|down|%d-%d]: contrast percent (%d = off)\n",
+				UC_BACKLIGHT_MAX_LEVEL,
+				UC_CONTRAST_MIN_PCT, UC_CONTRAST_MAX_PCT,
+				UC_CONTRAST_DEFAULT_PCT);
+		return ret;
+	}
+
+	if (strcmp(argv[0], "bl") == 0) {
+		if (argc < 2 || argv[1] == NULL) {
+			snprintf(ret, 128, "backlight=%u/%d\n",
+					(unsigned)_bl_level, UC_BACKLIGHT_MAX_LEVEL);
+			return ret;
+		}
+
+		if (strcmp(argv[1], "up") == 0) {
+			apply_bl_level((int)_bl_level + UC_BACKLIGHT_STEP);
+		}
+		else if (strcmp(argv[1], "down") == 0) {
+			apply_bl_level((int)_bl_level - UC_BACKLIGHT_STEP);
+		}
+		else {
+			requested = strtol(argv[1], &end, 10);
+			if (argv[1][0] == 0 || end == NULL || *end != 0) {
+				snprintf(ret, 128, "usage: bl [up|down|0-%d]\n",
+						UC_BACKLIGHT_MAX_LEVEL);
+				return ret;
+			}
+			apply_bl_level((int)requested);
+		}
+		snprintf(ret, 128, "backlight=%u/%d\n",
+				(unsigned)_bl_level, UC_BACKLIGHT_MAX_LEVEL);
+		return ret;
+	}
+
+	if (strcmp(argv[0], "ct") == 0) {
+		if (argc < 2 || argv[1] == NULL) {
+			snprintf(ret, 128, "contrast=%u%%\n", (unsigned)_contrast_pct);
+			return ret;
+		}
+
+		if (strcmp(argv[1], "up") == 0) {
+			apply_contrast_pct((int)_contrast_pct + UC_CONTRAST_STEP_PCT);
+		}
+		else if (strcmp(argv[1], "down") == 0) {
+			apply_contrast_pct((int)_contrast_pct - UC_CONTRAST_STEP_PCT);
+		}
+		else {
+			requested = strtol(argv[1], &end, 10);
+			if (argv[1][0] == 0 || end == NULL || *end != 0) {
+				snprintf(ret, 128, "usage: ct [up|down|%d-%d]\n",
+						UC_CONTRAST_MIN_PCT, UC_CONTRAST_MAX_PCT);
+				return ret;
+			}
+			apply_contrast_pct((int)requested);
+		}
+		snprintf(ret, 128, "contrast=%u%%\n", (unsigned)_contrast_pct);
+		return ret;
+	}
+
+	snprintf(ret, 128, "unknown command: %s\ntry: help\n", argv[0]);
+	return ret;
 }
 
 /*
@@ -216,7 +418,7 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	uc_time_init();
 	uc_panel_probe();
 	uc_backlight_init();
-	uc_backlight_set(UC_BACKLIGHT_DEFAULT);
+	apply_bl_level(_bl_level);
 
 	/*
 	 * PANEL RAILS FIRST — before ANY DSI PHY activity.
@@ -363,25 +565,29 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 }
 
 int main(int argc, char** argv) {
-	fbd_t fbd;
 	const char* mnt_point = (argc > 1) ? argv[1] : "/dev/fb0";
 	(void)_conf_file;
 
-	memset(&fbd, 0, sizeof(fbd));
-	fbd.splash = NULL;   /* default logo splash from libfbd */
-	fbd.flush = flush;
-	/* flush is a plain blit into the scan-out buffer, so the libfbd
-	 * generic direct-to-fb rotation applies: it rotates the client
-	 * frame straight into fb memory (destination row-sequential for
-	 * NC write-combining), skipping the intermediate rotate buffer
-	 * and the extra full-frame copy. */
-	fbd.flush_rotate = fbd_rotate_to;
-	/* Non-rotated scan-out is also a plain memory blit, so libfbd can
-	 * push just the dirty rects instead of falling back to a full frame. */
-	fbd_set_flush_rect(fbd_flush_rect_to);
-	fbd.init = init;
-	fbd.get_info = get_info;
+	memset(&_fbd_cfg, 0, sizeof(_fbd_cfg));
+	_fbd_cfg.splash = NULL;   /* default logo splash from libfbd */
+	_fbd_cfg.flush = flush;
+	_fbd_cfg.init = init;
+	_fbd_cfg.get_info = get_info;
+	/*
+	 * flush is a plain blit into the scan-out buffer, so the libfbd
+	 * generic direct-to-fb rotation applies: it rotates the client frame
+	 * straight into fb memory (destination row-sequential for NC
+	 * write-combining), skipping the intermediate rotate buffer and the
+	 * extra full-frame copy. Non-rotated scan-out is a plain blit too, so
+	 * libfbd can push just the dirty rects instead of a full frame.
+	 * Both hooks are installed (and dropped again) by
+	 * contrast_sync_fast_paths(), since neither can carry the contrast LUT.
+	 */
+	contrast_build_lut();
+	contrast_sync_fast_paths();
+	/* Panel-only knobs (backlight, contrast) via `devcmd /dev/fb0`. */
+	fbd_set_dev_cmd(fb6d_dev_cmd);
 
-	return fbd_run(&fbd, mnt_point,
+	return fbd_run(&_fbd_cfg, mnt_point,
 			UC_PANEL_WIDTH, UC_PANEL_HEIGHT, _conf_file);
 }
