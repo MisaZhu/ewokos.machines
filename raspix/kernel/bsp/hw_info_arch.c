@@ -15,121 +15,116 @@ ewokos_addr_t _core_base_offset = 0;
 uint32_t _uart_type = UART_MINI;
 uint32_t _pi4 = 0;
 	
-#define MMIO_LOW_BASE       0x3f000000u
-#define MMIO_LOW_RESV_BASE  0x3C000000u
-
-#define MMIO_HIGH_BASE      0xfe000000ull
-#define MMIO_HIGH_RESV_BASE 0xfc000000ull
-#define MMIO_PI5_BASE       0x7c000000ull
-
 #define MMIO_RESV_SIZE (64*MB)
+#define MMIO_LOW_RESV_BASE  0x3c000000
+#define MMIO_HIGH_RESV_BASE 0xfc000000ull
 
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
 	uint32_t pix_revision = bcm283x_board();
 	_sys_info.total_phy_mem_size = 512*MB;
 	_core_base_offset =  0x01000000;
-	_sys_info.mmio.phy_base = MMIO_LOW_BASE;
+	_sys_info.mmio.phy_base = 0x3f000000;
 	_pi4 = 0;
 	_uart_type = UART_MINI;
 
 	if(pix_revision == PI_4B_1G) {
 		strcpy(_sys_info.machine, "raspberry-pi4b-1g");
 		_sys_info.total_phy_mem_size = 1u*GB;
-		_sys_info.mmio.phy_base = MMIO_HIGH_BASE;
+		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_4B_2G) {
 		strcpy(_sys_info.machine, "raspberry-pi4b-2G");
 		_sys_info.total_phy_mem_size = 2u*GB;
-		_sys_info.mmio.phy_base = MMIO_HIGH_BASE;
+		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_4B_4G) {
 		strcpy(_sys_info.machine, "raspberry-pi4b-4G");
 		_sys_info.total_phy_mem_size = 4u*GB;
-		_sys_info.mmio.phy_base = MMIO_HIGH_BASE;
+		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_4B_8G) {
 		strcpy(_sys_info.machine, "raspberry-pi4b-8G");
 		_sys_info.total_phy_mem_size = 8u*GB; //max for 32bits os
-		_sys_info.mmio.phy_base = MMIO_HIGH_BASE;
+		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_CM4_1G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-1g");
 		_sys_info.total_phy_mem_size = 1u*GB;
-		_sys_info.mmio.phy_base = MMIO_HIGH_BASE;
+		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_CM4_2G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-2G");
 		_sys_info.total_phy_mem_size = 1u*GB;
-		_sys_info.mmio.phy_base = MMIO_HIGH_BASE;
+		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_CM4_4G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-4G");
 		_sys_info.total_phy_mem_size = 4ull*GB;
-		_sys_info.mmio.phy_base = MMIO_HIGH_BASE;
+		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_CM3_1G) {
 		strcpy(_sys_info.machine, "raspberry-cm3-1G");
 		_sys_info.total_phy_mem_size = 1u*GB;
-		_sys_info.mmio.phy_base = MMIO_LOW_BASE;
+		_sys_info.mmio.phy_base = 0x3f000000;
 	}
 	else if(pix_revision == PI_2B) {
 		strcpy(_sys_info.machine, "raspberry-pi2b");
 		_sys_info.total_phy_mem_size = 1u*GB;
-		_sys_info.mmio.phy_base = MMIO_LOW_BASE;
+		_sys_info.mmio.phy_base = 0x3f000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_3A) {
 		strcpy(_sys_info.machine, "raspberry-pi3a");
 		_sys_info.total_phy_mem_size = 512*MB;
-		_sys_info.mmio.phy_base = MMIO_LOW_BASE;
+		_sys_info.mmio.phy_base = 0x3f000000;
 	}
 	else if(pix_revision == PI_0_2W) {
 		strcpy(_sys_info.machine, "raspberry-pi2w");
 		_sys_info.total_phy_mem_size = 512*MB;
-		_sys_info.mmio.phy_base = MMIO_LOW_BASE;
+		_sys_info.mmio.phy_base = 0x3f000000;
 	}
 	else if(pix_revision == PI_3B) {
 		strcpy(_sys_info.machine, "raspberry-pi3b");
 		_sys_info.total_phy_mem_size = 1u*GB;
-		_sys_info.mmio.phy_base = MMIO_LOW_BASE;
+		_sys_info.mmio.phy_base = 0x3f000000;
 	}
 	else if(pix_revision == PI_5_2G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-2g");
 		_sys_info.total_phy_mem_size = 2u*GB;
-		_sys_info.mmio.phy_base = MMIO_PI5_BASE;
+		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_5_4G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-4g");
 		_sys_info.total_phy_mem_size = 4ull*GB;
-		_sys_info.mmio.phy_base = MMIO_PI5_BASE;
+		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_5_8G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-8g");
 		_sys_info.total_phy_mem_size = 8ull*GB;
-		_sys_info.mmio.phy_base = MMIO_PI5_BASE;
+		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_5_16G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-16g");
 		_sys_info.total_phy_mem_size = 16ull*GB;
-		_sys_info.mmio.phy_base = MMIO_PI5_BASE;
+		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 
@@ -143,7 +138,7 @@ void sys_info_init_arch(void) {
 	strcpy(_sys_info.arch, "armv7");
 #endif
 
-	_sys_info.mmio.size = 24*MB;
+	_sys_info.mmio.size = 31*MB;
 
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
 		_sys_info.total_usable_mem_size - MMIO_RESV_SIZE;
@@ -188,11 +183,15 @@ void start_core(uint32_t core_id) {
 #endif
 
 void kalloc_arch(void) {
+	/*
+	 * Add allocatable RAM to kalloc while skipping mmio reserved
+	 * holes in both the low memory window and the upper memory range.
+	 */
 	if(_sys_info.allocable_phy_mem_top > 1*GB) {
 		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(MMIO_LOW_RESV_BASE));
 		if(_sys_info.allocable_phy_mem_top > MMIO_HIGH_RESV_BASE) {
 			kalloc_append(P2V(1*GB), P2V(MMIO_HIGH_RESV_BASE));
-			if(_sys_info.allocable_phy_mem_top > (MMIO_LOW_RESV_BASE+MMIO_RESV_SIZE))
+			if(_sys_info.allocable_phy_mem_top > (MMIO_HIGH_RESV_BASE+MMIO_RESV_SIZE))
 				kalloc_append(P2V(MMIO_HIGH_RESV_BASE+MMIO_RESV_SIZE), P2V(_sys_info.allocable_phy_mem_top));
 		}
 		else
@@ -203,11 +202,13 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.total_phy_mem_size - MMIO_RESV_SIZE)
-		return 0;
-	if(phy_base >= MMIO_LOW_RESV_BASE && size <= MMIO_RESV_SIZE)
+	if(_pi4 && phy_base >= MMIO_LOW_RESV_BASE && size <= MMIO_RESV_SIZE)
 		return 0;
 	if(_pi4 && phy_base >= MMIO_HIGH_RESV_BASE && size <= MMIO_RESV_SIZE)
+		return 0;
+	if(phy_base >= _sys_info.total_phy_mem_size - MMIO_RESV_SIZE)
+		return 0;
+	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
 		return 0;
 	return -1;
 }
