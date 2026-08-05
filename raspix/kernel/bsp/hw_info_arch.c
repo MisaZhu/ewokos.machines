@@ -15,8 +15,9 @@ ewokos_addr_t _core_base_offset = 0;
 uint32_t _uart_type = UART_MINI;
 uint32_t _pi4 = 0;
 	
-#define FB_SIZE 64*MB
-#define PI4_FB_LOW_BASE 0x3c100000u
+#define FB_SIZE (64*MB)
+#define FB_LOW_BASE  0x3c100000u
+#define FB_HIGH_BASE 0xfc000000ull
 
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
@@ -64,14 +65,14 @@ void sys_info_init_arch(void) {
 	}
 	else if(pix_revision == PI_CM4_2G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-2G");
-		_sys_info.total_phy_mem_size = 2u*GB;
+		_sys_info.total_phy_mem_size = 1u*GB;
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
 	}
 	else if(pix_revision == PI_CM4_4G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-4G");
-		_sys_info.total_phy_mem_size = 4u*GB;
+		_sys_info.total_phy_mem_size = 4ull*GB;
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
@@ -110,19 +111,19 @@ void sys_info_init_arch(void) {
 	}
 	else if(pix_revision == PI_5_4G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-4g");
-		_sys_info.total_phy_mem_size = 4u*GB;
+		_sys_info.total_phy_mem_size = 4ull*GB;
 		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_5_8G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-8g");
-		_sys_info.total_phy_mem_size = 8u*GB;
+		_sys_info.total_phy_mem_size = 8ull*GB;
 		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
 	else if(pix_revision == PI_5_16G) {
 		strcpy(_sys_info.machine, "raspberry-pi5-16g");
-		_sys_info.total_phy_mem_size = 16u*GB;
+		_sys_info.total_phy_mem_size = 16ull*GB;
 		_sys_info.mmio.phy_base = 0x7c000000;
 		_uart_type = UART_PL011;
 	}
@@ -138,13 +139,8 @@ void sys_info_init_arch(void) {
 #endif
 	_sys_info.mmio.size = 31*MB;
 
-	if(_sys_info.total_usable_mem_size <= 1*GB) {
-		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-				_sys_info.total_usable_mem_size - FB_SIZE;
-	}
-	else {
-		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
-	}
+	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
+		_sys_info.total_usable_mem_size - FB_SIZE;
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
@@ -186,17 +182,23 @@ void start_core(uint32_t core_id) {
 #endif
 
 void kalloc_arch(void) {
-	if(_sys_info.total_usable_mem_size > 1*GB) {
-		//skip framebuffer mem block
-		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(0x3c100000));
-		kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
+	//skip framebuffer mem block
+	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(FB_LOW_BASE));
+	if(_sys_info.allocable_phy_mem_top > 1*GB) {
+		if(_sys_info.allocable_phy_mem_top > FB_HIGH_BASE) {
+			kalloc_append(P2V(1*GB), P2V(FB_HIGH_BASE));
+			if(_sys_info.allocable_phy_mem_top > (FB_HIGH_BASE+FB_SIZE))
+				kalloc_append(P2V(FB_HIGH_BASE), P2V(_sys_info.allocable_phy_mem_top));
+		}
+		else
+			kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
 	}
-	else
-		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(_pi4 && phy_base >= PI4_FB_LOW_BASE && (phy_base + size) <= (1u*GB))
+	if(_pi4 && phy_base >= FB_LOW_BASE && size <= FB_SIZE)
+		return 0;
+	if(_pi4 && phy_base >= FB_HIGH_BASE && size <= FB_SIZE)
 		return 0;
 	if(phy_base >= _sys_info.total_phy_mem_size - FB_SIZE) //Framebuffer mem block
 		return 0;
