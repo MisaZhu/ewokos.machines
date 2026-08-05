@@ -195,7 +195,7 @@ static vdevice_t* _snd_dev = NULL;
  * feeder must re-issue vfs_wakeup even without new drain progress. */
 static bool _snd_writer_parked = false;
 static sys_info_t _sys_info;
-static uintptr_t _snd_pwm_base = 0;
+static ewokos_addr_t _snd_pwm_base = 0;
 static uint32_t _snd_pwm_fifo_bus_addr = PWM_FIFO_BUS_ADDR_BCM283X;
 static uint32_t _snd_dma_permap = DMA_PERMAP_PWM_BCM283X;
 static uint32_t _snd_pwm_clock_hz = PWM_CLOCK_HZ_BCM283X;
