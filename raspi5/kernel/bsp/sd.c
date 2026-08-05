@@ -103,7 +103,6 @@ static int32_t sd_read_cached_sector(int32_t sector, void* buf) {
 }
 
 int32_t sd_init(void) {
-	pi5_dbg_puts("[pi5] sd: init EMMC host ...\n");
 	timer_init();
 	_cache_valid = 0;
 	_cache_sector_count = 0;
@@ -111,7 +110,7 @@ int32_t sd_init(void) {
 	_seq_read_count = 0;
 	int32_t ret = mmc_init();
 	if(ret != 0)
-		pi5_dbg_puts("[pi5] sd: EMMC init FAILED\n");
+		return ret;
 	return ret;
 }
 

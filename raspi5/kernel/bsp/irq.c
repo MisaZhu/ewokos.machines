@@ -30,7 +30,6 @@ void irq_init_arch(void) {
 		gic_irq_disable(0, i);
 	}
 	set_vector_table(&interrupt_table_start);
-	pi5_dbg_puts("[pi5] irq: GIC-400 initialized\n");
 }
 
 inline uint32_t irq_get_arch(void) {

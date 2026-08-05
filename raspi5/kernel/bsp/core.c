@@ -16,7 +16,6 @@ void cpu_core_ready(uint32_t core_id) {
 	set_vector_table(&interrupt_table_start);
 	ipi_enable(core_id);
 	__irq_enable();
-	pi5_dbg_puts("[pi5] smp: core ready\n");
 }
 
 inline uint32_t get_cpu_cores(void) {

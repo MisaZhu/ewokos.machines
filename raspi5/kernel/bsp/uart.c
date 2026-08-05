@@ -96,12 +96,6 @@ int32_t uart_dev_init(uint32_t baud) {
 	/* Enable UART0, receive & transmit */
 	put32(UART_CR, (1 << 0) | (1 << 8) | (1 << 9));
 #endif
-
-	uart_dbg("[pi5] uart: PL011 using firmware setup, clk=");
-	uart_dbg_num(_uart_clk);
-	uart_dbg(" baud=");
-	uart_dbg_num(baud);
-	uart_dbg("\n");
 	return 0;
 }
 

@@ -47,7 +47,6 @@ void timer_init(void){
 	if(_cntv_us_div == 0)
 		_cntv_us_div = 1;
 	enable_cntv();
-	pi5_dbg_puts("[pi5] timer: ARM generic timer, cntfrq ok\n");
 }
 
 void timer_clear_interrupt(uint32_t id) {

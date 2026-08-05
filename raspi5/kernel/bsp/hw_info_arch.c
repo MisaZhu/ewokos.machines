@@ -92,12 +92,8 @@ void sys_info_init_arch(void) {
 		default:       strcpy(_sys_info.machine, "raspberry-pi5");     break;
 	}
 
-	pi5_dbg_puts("[pi5] sys_info: board=");
-	pi5_dbg_puts(_sys_info.machine);
-	pi5_dbg_puts("\n");
-
 	if(board == PI5_UNKNOWN)
-		pi5_dbg_puts("[pi5] WARN: unknown board revision, assuming Pi5\n");
+		; /* unknown board revision, assuming Pi5 */
 
 	/* RAM size by board model (the mailbox size field is 32bit and
 	 * overflows on 4GB+ boards). This OS is 32bit-addressed, so the

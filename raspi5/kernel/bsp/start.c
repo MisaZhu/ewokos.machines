@@ -96,6 +96,5 @@ void _boot_start(void) {
 
 	load_boot_pgt(startup_page_dir);
 
-	/* MMU is on now, serial debug is available */
-	pi5_dbg_puts("[pi5] _boot_start: page tables ready, MMU enabled\n");
+	/* MMU is on now */
 }
