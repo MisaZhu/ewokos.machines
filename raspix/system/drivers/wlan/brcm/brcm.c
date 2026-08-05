@@ -881,6 +881,9 @@ static void brcmf_mark_disconnected(const char *reason,
     bus->last_event_type = event_type;
     bus->last_event_status = event_status;
     bus->last_event_reason = event_reason;
+    /* A failed manual attempt must not keep blocking the automatic
+     * scan/connect recovery path with a stale guard deadline. */
+    bus->manual_connect_until_ms = 0;
 	bus->state_since_ms = kernel_tic_ms(0);
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s",
             reason ? reason : "disconnected");
@@ -3896,9 +3899,8 @@ int brcmf_sdiod_probe(void){
 
 void* brcm_thread(void* p) {
     (void)p;
-    static uint32_t tick = 0;
-    uint32_t next_housekeeping_tick = 0;
-    uint32_t next_scan_tick = 0;
+    uint32_t next_housekeeping_ms = 0;
+    uint32_t next_scan_ms = 0;
     uint32_t sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
     uint32_t spin_loops = 0;
     int err;
@@ -3939,13 +3941,23 @@ void* brcm_thread(void* p) {
         if (run_dpc)
             brcmf_sdio_dpc();
 
-        if (run_dpc && brcmf_diag_last_dpc_usec() >= BRCMF_DPC_SLOW_USEC) {
+        if (run_dpc && brcmf_diag_last_dpc_usec() >= BRCMF_DPC_SLOW_USEC)
             usleep(BRCMF_WORKER_POST_SLOW_DPC_YIELD_US);
-            tick += BRCMF_WORKER_POST_SLOW_DPC_YIELD_US / 1000;
-        }
 
-        if (tick >= next_housekeeping_tick) {
-            next_housekeeping_tick = tick + 1000;
+        /*
+         * Housekeeping runs on the kernel wall clock, not on accumulated
+         * usleep requests. usleep() is quantised to scheduler ticks and the
+         * sleep_us=0/short-yield fast path can run thousands of iterations
+         * per millisecond, so a locally accumulated tick stalls far behind
+         * real time (and stops entirely on the zero-sleep path). That wedged
+         * the scan/connect state machine: timeouts and scan retries gated on
+         * it never fired, leaving the worker spinning in DPC forever while
+         * DHCP never came up. kernel_tic_ms() also shares the clock domain
+         * with manual_connect_until_ms set by brcm_connect_ap().
+         */
+        uint32_t now_ms = kernel_tic_ms(0);
+        if (now_ms >= next_housekeeping_ms) {
+            next_housekeeping_ms = now_ms + 1000;
             /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
@@ -3982,19 +3994,19 @@ void* brcm_thread(void* p) {
             }
 
 			if (bus->state == SCANNING &&
-					(kernel_tic_ms(0) - bus->state_since_ms) > BRCMF_SCAN_TIMEOUT_MS) {
+					(now_ms - bus->state_since_ms) > BRCMF_SCAN_TIMEOUT_MS) {
 				brcmf_mark_disconnected("scan timeout", BRCMF_E_SCAN_COMPLETE, 0, 0);
 			} else if (bus->state == CONNECTING &&
-					(kernel_tic_ms(0) - bus->state_since_ms) > BRCMF_CONNECT_TIMEOUT_MS) {
+					(now_ms - bus->state_since_ms) > BRCMF_CONNECT_TIMEOUT_MS) {
 				brcmf_mark_disconnected("connect timeout", BRCMF_E_SET_SSID, 0, 0);
 			}
 
-            if (tick >= next_scan_tick && bus->state != CONNECTED) {
-                if (brcmf_manual_connect_guard_active(tick)) {
-                    next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
+            if (now_ms >= next_scan_ms && bus->state != CONNECTED) {
+                if (brcmf_manual_connect_guard_active(now_ms)) {
+                    next_scan_ms = now_ms + BRCMF_SCAN_RETRY_TICK;
                     goto worker_done;
                 }
-                next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
+                next_scan_ms = now_ms + BRCMF_SCAN_RETRY_TICK;
                 brcmf_scan_cache_clear();
                 memset(bus->ssid, 0, sizeof(bus->ssid));
                 bus->scan_results_ready = false;
@@ -4069,7 +4081,6 @@ worker_done:
         }
 
         usleep(sleep_us);
-        tick += sleep_us / 1000;
     }
 }
 
