@@ -182,13 +182,19 @@ void start_core(uint32_t core_id) {
 #endif
 
 void kalloc_arch(void) {
-	//skip framebuffer mem block
+	/*
+	 * Add allocatable RAM to kalloc while skipping framebuffer reserved
+	 * holes in both the low memory window and the upper memory range.
+	 */
+	// Skip the low framebuffer reserved block.
 	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(FB_LOW_BASE));
 	if(_sys_info.allocable_phy_mem_top > 1*GB) {
 		if(_sys_info.allocable_phy_mem_top > FB_HIGH_BASE) {
+			// Add RAM below the high framebuffer reserved block.
 			kalloc_append(P2V(1*GB), P2V(FB_HIGH_BASE));
+			// If RAM extends past the reserved hole, append the tail range.
 			if(_sys_info.allocable_phy_mem_top > (FB_HIGH_BASE+FB_SIZE))
-				kalloc_append(P2V(FB_HIGH_BASE), P2V(_sys_info.allocable_phy_mem_top));
+				kalloc_append(P2V(FB_HIGH_BASE+FB_SIZE), P2V(_sys_info.allocable_phy_mem_top));
 		}
 		else
 			kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
