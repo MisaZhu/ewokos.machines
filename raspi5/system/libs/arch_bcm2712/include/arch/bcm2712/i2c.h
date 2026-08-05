@@ -6,8 +6,9 @@
 /*
  * RP1 I2C driver stub for BCM2712.
  *
- * RP1 provides 4 I2C controllers (I2C0-3) at RP1-internal base 0x40044000+.
- * Host offset from _mmio_base: 0x08044000+
+ * rp1.dtsi has seven controllers, i2c@70000 .. i2c@88000 at a 0x4000 stride
+ * (i2c0-i2c6); the 40 pin header i2c1 is i2c@74000. Offsets from _mmio_base
+ * are PI5_RP1_WIN_OFF + 0x70000 + bus * 0x4000.
  *
  * Not yet implemented.
  */

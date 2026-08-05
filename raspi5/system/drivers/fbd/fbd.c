@@ -78,8 +78,16 @@ static fbinfo_t* get_info(void) {
 	return bsp_get_fbinfo();
 }
 
+/*
+ * On Pi 5 the display mode comes from config.txt (hdmi0_group / hdmi0_mode /
+ * hdmi0_cvt), so the framebuffer is sized to match the display instead of to
+ * whatever framebuffer.json happens to say. Passing 0 makes the arch layer ask
+ * the firmware for the current display dimensions.
+ */
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
-	return bsp_fb_init(w, h, dep);
+	(void)w;
+	(void)h;
+	return bsp_fb_init(0, 0, dep);
 }
 
 static int doargs(int argc, char* argv[]) {

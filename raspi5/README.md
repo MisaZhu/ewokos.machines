@@ -37,13 +37,48 @@ make ewokos=<ewokos 内核源码根目录>    # 默认 ~/work/ewokos
 arm_64bit=1
 enable_uart=1
 uart_2ndstage=0
-dtoverlay=vc4-kms-v3d
 disable_fw_kms_setup=0
+hdmi_force_hotplug=1
+dtoverlay=vc4-kms-v3d
 ```
 
-`disable_fw_kms_setup=1` must not be used. BCM2712 firmware no longer
-implements the legacy mailbox framebuffer allocator; EwokOS adopts the boot
-scanout buffer published by the firmware in the `simple-framebuffer` DT node.
+关于 framebuffer：
+
+- `disable_fw_kms_setup=1` 不能使用。BCM2712 固件不再实现 mailbox 传统
+  framebuffer 分配器（`ALLOCATE_BUFFER` 只会把固件启动时已经在扫描输出的那块
+  buffer 交回来），所以 EwokOS 只能沿用固件建立的 boot scanout buffer。
+- `dtoverlay=vc4-kms-v3d` 需要保留。虽然 EwokOS 没有 DRM/KMS 驱动，但 Pi 5 的
+  HDMI 时钟树是由该 overlay 描述的；实测去掉之后固件不点亮 HDMI，`fbd` 拿到的
+  buffer 无处输出，屏幕全黑。
+- 分辨率由 config.txt 决定。要指定模式请用带端口下标的形式（Pi 5 有两个 HDMI 口），
+  例如 480x800@60：
+
+```ini
+hdmi0_group=2
+hdmi0_mode=87
+hdmi0_cvt=480 800 60 6 0 0 0
+```
+
+  不带下标的 `hdmi_group` / `hdmi_mode` 是 VC4（Pi 4 及更早）的遗留写法，在 Pi 5
+  上不生效。不写任何 `hdmi*` 时，固件自带的 HDMI 初始化只输出 VGA / 720p / 1080p。
+- `etc/gui/framebuffer.json` 里的宽高在 Pi 5 上被忽略。`fbd` 改为用 mailbox 的
+  `GET_DISPLAY_DIMENSIONS` 问固件当前显示尺寸，把 framebuffer 建成和屏幕一样大，
+  避开了“config.txt 写 480x800、json 写 800x600”两头不一致的坑。
+- 像素格式：`SET_DEPTH`=32 本身就意味着 ARGB8888，不需要再发 `SET_PIXEL_ORDER` 或
+  `SET_ALPHA_MODE`（Circle 在所有 Pi 上都不发这两个 tag），因此刷屏就是纯 `memcpy`。
+- 驱动初始化顺序参照 [rsta2/circle](https://github.com/rsta2/circle)
+  `lib/bcmframebuffer.cpp`：
+
+  1. `GET_NUM_DISPLAYS` (0x00040013)
+  2. **`SET_DISPLAY_NUM` (0x00048013) 选定显示器 0**——Pi 4/5 有两个 HDMI 口，
+     不先选定的话后面所有 framebuffer tag 作用在哪个口上是不确定的
+  3. 单条消息里依次 `SET_PHYS_WIDTH_HEIGHT` / `SET_VIRT_WIDTH_HEIGHT` / `SET_DEPTH` /
+     `SET_VIRTUAL_OFFSET`（0,0，否则可能沿用启动时的旧偏移）/ `ALLOCATE_BUFFER` /
+     `GET_PITCH`
+  4. 上面任一项返回 0 则整次失败，此时回退到“只采纳固件已有 buffer”
+
+  串口上的 `fb_init:` 一行会打印最终的分辨率、`pitch`、`phy=`、`order=` 和
+  `displays=`。
 
 （若 EEPROM 配置已允许 `kernel=kernel8.img` 则无需额外指定。）
 
@@ -68,12 +103,17 @@ scanout buffer published by the firmware in the `simple-framebuffer` DT node.
 
 | 外设 | 物理地址 | 内核虚拟映射 |
 |------|----------|--------------|
-| 外设窗口 | 0x7C000000 (64MB) | MMIO_BASE |
-| UART0 (PL011) | +0x201000 | MMIO_BASE+0x201000 |
+| 外设窗口 | 0x10_7C000000 (64MB) | MMIO_BASE |
+| UART0 (PL011) | +0x1001000 | MMIO_BASE+0x1001000 |
 | VPU mailbox | +0x13880 | MMIO_BASE+0x13880 |
 | GIC-400 GICD/GICC | +0x3FF9000 / +0x3FFA000 | MMIO_BASE+... |
 | EMMC (SDHCI) | 0x1000FFF000 | MMIO_BASE+0x4000000 窗口 |
 | RP1 南桥 | 0x1F00000000 (32MB 窗口) | MMIO_BASE+0x8000000 |
+| 固件 framebuffer 保留区 | 0x3C000000 (64MB) | 由 fbd 按需 mem_map |
+
+VPU 只能通过 `0xC0000000` 这一个 RAM 别名看到 ARM 物理 0..1GB
+（官方 `bcm2712.dtsi`：`dma-ranges = <0xc0000000 0x00 0x00000000 0x40000000>`），
+所以 mailbox 请求缓冲区和固件 framebuffer 都必须落在低 1GB 内。
 
 ## 移植现状 / TODO
 
