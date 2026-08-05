@@ -36,16 +36,16 @@
 @/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
 
 @/bin/splash -m "start /dev/wl0" -p 60
-@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
+#@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
 
 @/bin/splash -m "start /dev/net0" -p 70
-@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
+#@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
 
 @/bin/splash -m "start /dev/time" -p 80
 @/bin/ipcserv /drivers/timed    /dev/time
 
-@/bin/splash -m "start telnetd" -p 83
-@/bin/bgrun /sbin/telnetd
+#@/bin/splash -m "start telnetd" -p 83
+#@/bin/bgrun /sbin/telnetd
 
 @/bin/splash -m "start sshd" -p 84
 @/bin/bgrun /sbin/sshd

@@ -87,7 +87,7 @@ static void pci_cfg_write16(uint8_t bus, uint8_t dev, uint8_t func, uint8_t offs
 	x86_outl(PCI_CFG_DATA_PORT, reg);
 }
 
-static int find_display_bar0(uint32_t* phy_base) {
+static int find_display_bar0(ewokos_addr_t* phy_base) {
 	for (uint8_t dev = 0; dev < 32; ++dev) {
 		for (uint8_t func = 0; func < 8; ++func) {
 			uint16_t vendor = pci_cfg_read16(0, dev, func, 0x00);
@@ -125,7 +125,7 @@ fbinfo_t* bsp_get_fbinfo(void) {
 
 int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	sys_info_t sysinfo;
-	uint32_t phy_base = X86_FB_FALLBACK_PHY_BASE;
+	ewokos_addr_t phy_base = X86_FB_FALLBACK_PHY_BASE;
 	uint16_t bochs_id;
 	uint16_t video_mem_64k;
 	uint32_t vwidth;

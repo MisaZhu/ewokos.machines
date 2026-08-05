@@ -32,10 +32,10 @@ typedef struct {
 
 typedef struct {
 	ewokos_addr_t canvas_vaddr;
-	uint32_t canvas_phy;
+	ewokos_addr_t canvas_phy;
 	uint32_t canvas_size;
 	ewokos_addr_t src_vaddr;
-	uint32_t src_phy;
+	ewokos_addr_t src_phy;
 	uint32_t src_size;
 } g2d_ge_ctx_t;
 
@@ -215,13 +215,13 @@ static void g2d_teardown(g2d_state_t* state) {
 #define GE_CMD_RECTFILL          (3U << 4)
 #define GE_CMD_BITBLT            (4U << 4)
 
-static inline uint32_t g2d_ge_miu_addr(uint32_t phy_addr) {
+static inline uint32_t g2d_ge_miu_addr(ewokos_addr_t phy_addr) {
 	if(phy_addr >= MIYOO_MIU_PHY_BASE)
-		return phy_addr - MIYOO_MIU_PHY_BASE;
-	return phy_addr;
+		return (uint32_t)(phy_addr - MIYOO_MIU_PHY_BASE);
+	return (uint32_t)phy_addr;
 }
 
-static inline uint32_t g2d_ge_addr(uint32_t reg) {
+static inline ewokos_addr_t g2d_ge_addr(uint32_t reg) {
 	return _mmio_base + (SSD20XD_GE_PHY_BASE - MIYOO_MMIO_PHY_BASE) + reg;
 }
 

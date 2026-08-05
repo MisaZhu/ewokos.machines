@@ -413,7 +413,7 @@ typedef struct {
 static dma_pool_t _dma_pool;
 static fd_info_t* _fds = NULL;
 static usb_input_dev_t _inputs[USB_MAX_INPUTS];
-static uint32_t _usb_base = 0;
+static ewokos_addr_t _usb_base = 0;
 static bool _device_ready = false;
 static bool _port_connected = false;
 static uint8_t _next_address = 2;
@@ -1066,7 +1066,8 @@ static int dwc_host_init(void) {
 			DWC_GUSBCFG_FORCE_DEV_MODE);
 	reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
 	usb_writel(DWC_REG_GUSBCFG, reg);
-	slog("usbhostd: host base=%08x gusbcfg=%08x\n", _usb_base, reg);
+	slog("usbhostd: host base=%llx gusbcfg=%08x\n",
+			(unsigned long long)_usb_base, reg);
 	proc_usleep(50000);
 
 	if (dwc_core_soft_reset() != 0) {

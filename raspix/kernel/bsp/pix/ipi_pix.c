@@ -2,7 +2,7 @@
 #include <kernel/hw_info.h>
 
 void ipi_enable_pix(uint32_t core_id) {
-	uint32_t reg = 0;
+	ewokos_addr_t reg = 0;
 	switch(core_id) {
 	case 0:
 		reg = 0x50;
@@ -26,7 +26,7 @@ void ipi_enable_pix(uint32_t core_id) {
 }
 
 void ipi_send_pix(uint32_t core_id) {
-	uint32_t reg = 0;
+	ewokos_addr_t reg = 0;
 	switch(core_id) {
 	case 0:
 		reg = 0x80;
@@ -50,7 +50,7 @@ void ipi_send_pix(uint32_t core_id) {
 }
 
 void ipi_clear_pix(uint32_t core_id) {
-	uint32_t reg = 0;
+	ewokos_addr_t reg = 0;
 	switch(core_id) {
 	case 0:
 		reg = 0xc0;

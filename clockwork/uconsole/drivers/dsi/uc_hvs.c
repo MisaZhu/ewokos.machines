@@ -411,7 +411,7 @@ int uc_hvs_plane_probe(void) {
  * bus-alias A/B trial.  Also refresh the context words so a later
  * probe reflects the NEW address.
  */
-void uc_hvs_set_ptr0(uint32_t bus_addr) {
+void uc_hvs_set_ptr0(ewokos_addr_t bus_addr) {
 	_hvs_init();
 	if (_hvs == 0 || _dl_base == 0) return;
 	_hvs_write(_dl_base + UC_DL_PTR0_IDX * 4U, bus_addr);

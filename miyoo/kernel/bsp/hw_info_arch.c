@@ -44,7 +44,7 @@ extern char __entry[];
 inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { //TODO
     if(core_id >= _sys_info.cores)
         return;
-	uint32_t entry = V2P((uint32_t)(__entry) + _sys_info.kernel_base);
+	ewokos_addr_t entry = V2P((ewokos_addr_t)(__entry) + _sys_info.kernel_base);
 
 	do {
  	   put32(SECOND_START_ADDR_HI, (entry >> 16));
@@ -66,12 +66,12 @@ void arch_vm(page_dir_entry_t* vm) {
 	map_pages_size(vm, 0x87c00000, 0x27c00000, FB_SIZE, AP_RW_D, PTE_ATTR_DEV);
 
 	//map gic controller
-	uint32_t pgic = 0x16000000;
-	uint32_t vgic = 0x16000000;
+	ewokos_addr_t pgic = 0x16000000;
+	ewokos_addr_t vgic = 0x16000000;
 	map_pages_size(vm, vgic, pgic, 4*MB, AP_RW_D, PTE_ATTR_DEV);
 
-	uint32_t vbase = _sys_info.mmio.v_base + _core_base_offset;
-	uint32_t pbase = _sys_info.mmio.phy_base + _core_base_offset;
+	ewokos_addr_t vbase = _sys_info.mmio.v_base + _core_base_offset;
+	ewokos_addr_t pbase = _sys_info.mmio.phy_base + _core_base_offset;
 	map_page(vm, vbase, pbase, AP_RW_D, PTE_ATTR_DEV);
 	map_page(vm, pbase, pbase, AP_RW_D, PTE_ATTR_DEV);
 #ifdef KERNEL_SMP

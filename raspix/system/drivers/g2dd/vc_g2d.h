@@ -2,6 +2,7 @@
 #define RASPIX_VC_G2D_H
 
 #include <stdint.h>
+#include <ewoksys/ewokdef.h>
 
 /*
  * VideoCore-accessible buffer: physically contiguous, mapped non-cached on
@@ -9,8 +10,8 @@
  * "bus" is the VC bus address (ARM physical + non-cached alias).
  */
 typedef struct {
-	uint32_t vaddr; /* CPU virtual address (non-cached mapping), 0 if none */
-	uint32_t bus;   /* VideoCore bus address */
+	ewokos_addr_t vaddr; /* CPU virtual address (non-cached mapping), 0 if none */
+	ewokos_addr_t bus;   /* VideoCore bus address */
 	uint32_t size;  /* allocation size in bytes, 0 for foreign buffers */
 } vc_g2d_buf_t;
 
@@ -26,7 +27,7 @@ int  vc_g2d_init(void);
 int  vc_g2d_buf_alloc(vc_g2d_buf_t* buf, uint32_t size);
 void vc_g2d_buf_free(vc_g2d_buf_t* buf);
 /* wrap an existing framebuffer mapping (no ownership) */
-void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, uint32_t vaddr, uint32_t phy_base, uint32_t bus_base);
+void vc_g2d_buf_wrap(vc_g2d_buf_t* buf, ewokos_addr_t vaddr, ewokos_addr_t phy_base, ewokos_addr_t bus_base);
 
 /* scaled blit: src rect (sx,sy,sw,sh) -> dst rect (dx,dy,dw,dh),
  * dw/dh may differ from sw/sh (hardware scale) */

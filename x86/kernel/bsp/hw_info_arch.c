@@ -191,8 +191,8 @@ void sys_info_init_arch(void) {
 	_sys_info.vector_base = (ewokos_addr_t)&interrupt_table_start;
 	_sys_info.total_phy_mem_size = 512 * MB;
 	_sys_info.total_usable_mem_size = _sys_info.total_phy_mem_size - _sys_info.phy_offset;
-	if (_sys_info.total_usable_mem_size > (uint32_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset)) {
-		_sys_info.total_usable_mem_size = (uint32_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset);
+	if (_sys_info.total_usable_mem_size > (ewokos_addr_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset)) {
+		_sys_info.total_usable_mem_size = (ewokos_addr_t)(MAX_USABLE_MEM_SIZE - _sys_info.phy_offset);
 	}
 	_sys_info.mmio.phy_base = 0xFD000000;
 	_sys_info.mmio.size = 0x02000000;
