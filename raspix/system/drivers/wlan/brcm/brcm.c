@@ -22,6 +22,7 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfsc.h>
 #include <ewoksys/kernel_tic.h>
+#include <arch/bcm283x/mailbox.h>
 
 #include "brcm.h"
 #include "chip.h"
@@ -121,6 +122,17 @@
 #define BRCMF_CONNECT_TIMEOUT_MS 15000U
 #define BRCMF_RXPENDING_STUCK_MS 2000U   /* rxpending without frame reads timeout */
 #define BRCMF_FW_LIVENESS_MS 30000U      /* firmware liveness watchdog (CONNECTED) */
+/*
+ * Full-chip recovery: the BCM43455 firmware intermittently fails to come
+ * up (no DEVREADY after download, dead command path). Instead of dying
+ * permanently the driver power-cycles WL_REG_ON, re-enumerates the SDIO
+ * card and re-downloads the firmware.
+ */
+#define BRCMF_MAX_INIT_ATTEMPTS 3
+#define BRCMF_MAX_RESTART_ROUNDS 10
+#define BRCMF_FW_DEAD_SCAN_STREAK 3
+#define BRCMF_INIT_PROBE_TIMEOUT_MS 60000U
+#define BRCMF_INIT_PREINIT_TIMEOUT_MS 30000U
 #define ETH_P_IP 0x0800U
 #define ETH_P_ARP 0x0806U
 #define ETH_P_IPV6 0x86DDU
@@ -477,6 +489,7 @@ struct brcmf_dev{
 	uint32_t state_since_ms;
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
+    uint32_t scan_cmd_fail_streak; /* consecutive scan cmd errors (dead fw) */
     int init_error;
     bool init_failed;
     int last_error;
@@ -502,6 +515,8 @@ static void brcmf_scan_set_mpc(bool enable);
 static inline void brcm_wakeup_dev(int evt);
 static void brcmf_set_init_failed(int err);
 static void brcmf_scan_cache_clear(void);
+static void brcmf_probe_cleanup(void);
+static void *brcm_worker_main(void *p);
 static bool brcmf_is_hex_string(const char *s, size_t len);
 static const char *brcmf_state_name(enum WL_STATE state);
 static void brcmf_format_hwaddr(const uint8_t *addr, char *out, size_t out_len);
@@ -1046,6 +1061,65 @@ static void brcmf_set_init_failed(int err)
     bus->last_event_reason = 0;
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "init failed");
     brcm_wakeup_dev(VFS_EVT_RD | VFS_EVT_WR);
+}
+
+static volatile int brcm_init_phase;      /* 0=running, 1=probe, 2=preinit */
+static volatile uint32_t brcm_init_phase_ms;
+static volatile bool brcm_worker_exited;
+static pthread_t brcm_worker_tid;
+
+static void brcm_init_phase_mark(int phase)
+{
+    brcm_init_phase_ms = kernel_tic_ms(0);
+    brcm_init_phase = phase;
+}
+
+static void brcmf_wlan_reg_on(bool on)
+{
+    /* WL_REG_ON is a firmware-owned GPIO; the same line main.c pulses
+     * for the first boot. */
+    bcm283x_mailbox_gpio_config(1, true, on);
+}
+
+/*
+ * Full WLAN platform reset: power-cycle the module and re-enumerate the
+ * SDIO card. Used between firmware re-download attempts when the chip
+ * came up wedged (firmware never leaves reset / dead command path).
+ */
+static void brcm_platform_reset(void)
+{
+    brcmf_wlan_reg_on(false);
+    usleep(20000);
+    brcmf_wlan_reg_on(true);
+    usleep(300000);
+    (void)mmc_hw_reset();
+}
+
+/*
+ * Release everything brcmf_sdiod_probe() allocated. The bus pointer is
+ * cleared first so IPC handlers that hit the driver across the restart
+ * gap see NULL and fail gracefully instead of touching freed memory.
+ */
+static void brcmf_probe_cleanup(void)
+{
+    struct brcmf_dev *b = bus;
+
+    bus = NULL;
+    if (!b)
+        return;
+    free(b->rxhdr);
+    free(b->rxctl);
+    if (b->rx_queue)
+        queue_buffer_free(b->rx_queue);
+    if (b->tx_queue)
+        queue_buffer_free(b->tx_queue);
+    free(b);
+}
+
+static void brcmf_teardown_for_restart(void)
+{
+    brcmf_set_init_failed(-EBUSY);
+    brcmf_probe_cleanup();
 }
 
 static inline uint8_t brcmf_sdio_getdatoffset(uint8_t *swheader)
@@ -3863,10 +3937,16 @@ int brcmf_sdiod_probe(void){
 
     err = brcmf_sdio_wait_fw_ready(&sh);
     if (err) {
+        /*
+         * Firmware that never publishes its shared area cannot answer
+         * any ioctl. Fail the probe instead of limping on: the recovery
+         * path power-cycles the chip and retries the download.
+         */
         brcm_log("firmware shared info not ready after download: %d\n", err);
-    } else if (sh.console_addr) {
-        brcm_console_init(sh.console_addr);
+        return err;
     }
+    if (sh.console_addr)
+        brcm_console_init(sh.console_addr);
 
     /* Enable function 2 (frame transfers) */
     brcmf_sdiod_writel(bus->sdio_core->base + SD_REG(tosbmailboxdata),
@@ -3897,17 +3977,35 @@ int brcmf_sdiod_probe(void){
 }
 
 
-void* brcm_thread(void* p) {
+static void* brcm_worker_main(void* p) {
     (void)p;
     uint32_t next_housekeeping_ms = 0;
     uint32_t next_scan_ms = 0;
     uint32_t sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
     uint32_t spin_loops = 0;
-    int err;
-    err = brcmf_sdiod_probe();
+    int err = -1;
+    int attempt;
+
+    /*
+     * Bring-up retry loop: the BCM43455 firmware occasionally does not
+     * come out of reset after download (no DEVREADY / dead command
+     * path). Instead of dying permanently, retry the full probe (which
+     * re-downloads the firmware) after a complete platform reset.
+     */
+    for (attempt = 1; attempt <= BRCMF_MAX_INIT_ATTEMPTS; attempt++) {
+        brcm_init_phase_mark(1); /* probe */
+        err = brcmf_sdiod_probe();
+        if (!err)
+            break;
+        brcm_log("wlan: probe failed %d (attempt %d/%d)\n",
+                err, attempt, BRCMF_MAX_INIT_ATTEMPTS);
+        brcmf_probe_cleanup();
+        if (attempt < BRCMF_MAX_INIT_ATTEMPTS)
+            brcm_platform_reset();
+    }
     if (err) {
         brcmf_set_init_failed(err);
-        brcm_log("wlan: probe failed %d\n", err);
+        brcm_worker_exited = true;
         return NULL;
     }
 
@@ -3916,6 +4014,7 @@ void* brcm_thread(void* p) {
         usleep(1000);
     }
 
+    brcm_init_phase_mark(2); /* preinit */
     uint32_t value = 0;
     err = brcmf_fil_iovar_data_set(0, "bus:txglom", &value, sizeof(uint32_t));
     if(err){
@@ -3929,11 +4028,13 @@ void* brcm_thread(void* p) {
 
     err = brcmf_c_preinit_dcmds();
     if (err) {
-        brcmf_set_init_failed(err);
         brcm_log("wlan: preinit failed %d\n", err);
+        brcmf_teardown_for_restart();
+        brcm_worker_exited = true;
         return NULL;
     }
 
+    brcm_init_phase_mark(0); /* running */
     while(1){
         bool busy = brcmf_worker_has_work();
         bool run_dpc = busy || brcmf_worker_irq_pending();
@@ -4012,7 +4113,26 @@ void* brcm_thread(void* p) {
                 bus->scan_results_ready = false;
                 bus->state = SCANNING;
 				bus->state_since_ms = kernel_tic_ms(0);
-                scan();
+                int scan_err = scan();
+                if (scan_err) {
+                    /*
+                     * Consecutive scan-command failures mean the firmware
+                     * command path is dead (firmware crash / card fell off
+                     * the bus). Normal link trouble surfaces as events,
+                     * not command errors. Tear everything down and let the
+                     * lifecycle thread restart the whole stack.
+                     */
+                    bus->scan_cmd_fail_streak++;
+                    if (bus->scan_cmd_fail_streak >= BRCMF_FW_DEAD_SCAN_STREAK) {
+                        brcm_log("wlan: %u consecutive scan cmd failures, restarting chip\n",
+                                (unsigned)bus->scan_cmd_fail_streak);
+                        brcmf_teardown_for_restart();
+                        brcm_worker_exited = true;
+                        return NULL;
+                    }
+                } else {
+                    bus->scan_cmd_fail_streak = 0;
+                }
             }
 
             if (bus->state == SCANNING && strlen(bus->ssid) == 0 && bus->scan_results_ready) {
@@ -4296,6 +4416,65 @@ char* brcm_scan_list(void)
     return ret;
 }
 
+/*
+ * Lifecycle watchdog: the worker thread can exit on its own (bring-up
+ * failed after retries, firmware died at runtime) or wedge inside init
+ * (firmware never leaves reset while the worker sits in a probe/preinit
+ * wait loop). In either case power-cycle the chip and restart the worker
+ * instead of leaving the wlan device dead forever.
+ */
+static void *brcm_lifecycle_thread(void *p)
+{
+    (void)p;
+    uint32_t restart_rounds = 0;
+
+    while (1) {
+        usleep(1000000);
+
+        uint32_t now = kernel_tic_ms(0);
+        int phase = brcm_init_phase;
+        if (phase != 0) {
+            uint32_t limit = (phase == 1) ? BRCMF_INIT_PROBE_TIMEOUT_MS
+                                          : BRCMF_INIT_PREINIT_TIMEOUT_MS;
+            if ((now - brcm_init_phase_ms) > limit) {
+                /* Worker stuck inside init: yank the chip out from under
+                 * it so the in-flight SDIO ops fail and the probe aborts. */
+                brcm_log("wlan: init phase %d stuck >%ums, power-cycling chip\n",
+                        phase, (unsigned)limit);
+                brcm_init_phase_ms = now;
+                brcmf_wlan_reg_on(false);
+                usleep(20000);
+                brcmf_wlan_reg_on(true);
+                usleep(300000);
+            }
+            continue;
+        }
+
+        if (!brcm_worker_exited)
+            continue;
+        brcm_worker_exited = false;
+
+        if (restart_rounds >= BRCMF_MAX_RESTART_ROUNDS) {
+            brcm_log("wlan: giving up after %u restart rounds\n",
+                    (unsigned)restart_rounds);
+            while (1)
+                usleep(1000000);
+        }
+        restart_rounds++;
+
+        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 : 30000;
+        brcm_log("wlan: worker exited, full restart #%u in %ums\n",
+                (unsigned)restart_rounds, (unsigned)delay_ms);
+        usleep(delay_ms * 1000);
+
+        brcm_platform_reset();
+        int ret = pthread_create(&brcm_worker_tid, NULL, brcm_worker_main, NULL);
+        if (ret != 0)
+            brcm_log("wlan: worker restart failed %d\n", ret);
+    }
+    return NULL;
+}
+
 int brcm_init(void){
     int ret;
     ret = mmc_hw_reset();
@@ -4305,10 +4484,15 @@ int brcm_init(void){
     }
     brcmf_sync_init();
     config_init(NULL);
-    pthread_t tid;
-	ret = pthread_create(&tid, NULL, brcm_thread, NULL);
+    ret = pthread_create(&brcm_worker_tid, NULL, brcm_worker_main, NULL);
     if (ret != 0) {
         brcm_log("wlan: pthread_create failed %d\n", ret);
+        return ret;
+    }
+    pthread_t tid;
+    ret = pthread_create(&tid, NULL, brcm_lifecycle_thread, NULL);
+    if (ret != 0) {
+        brcm_log("wlan: lifecycle thread create failed %d\n", ret);
         return ret;
     }
     return 0;

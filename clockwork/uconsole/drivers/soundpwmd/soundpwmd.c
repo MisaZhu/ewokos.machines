@@ -19,6 +19,7 @@
 
 #define UNUSED(v) ((void)(v))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define SOUND_LOG(...) ((void)0)
 
 #define CTRL_PCM_DEV_HW 0xF0
 #define CTRL_PCM_DEV_HW_FREE 0xF1
@@ -1396,19 +1397,19 @@ static int audio_hw_params(const struct pcm_config *cfg) {
 
 	if (cfg->bit_depth != 8 && cfg->bit_depth != 16 &&
 			cfg->bit_depth != 24 && cfg->bit_depth != 32) {
-		slog("soundpwm: unsupported bit depth: %d\n", cfg->bit_depth);
+		SOUND_LOG("soundpwm: unsupported bit depth: %d\n", cfg->bit_depth);
 		return -1;
 	}
 	if (cfg->rate < 8000 || cfg->rate > 96000) {
-		slog("soundpwm: unsupported rate: %d\n", cfg->rate);
+		SOUND_LOG("soundpwm: unsupported rate: %d\n", cfg->rate);
 		return -1;
 	}
 	if (cfg->channels < 1 || cfg->channels > 2) {
-		slog("soundpwm: unsupported channels: %d\n", cfg->channels);
+		SOUND_LOG("soundpwm: unsupported channels: %d\n", cfg->channels);
 		return -1;
 	}
 	if (cfg->period_size <= 0 || cfg->period_count <= 0) {
-		slog("soundpwm: invalid period config: %d x %d\n",
+		SOUND_LOG("soundpwm: invalid period config: %d x %d\n",
 				cfg->period_size, cfg->period_count);
 		return -1;
 	}
@@ -1896,7 +1897,7 @@ int main(int argc, char** argv) {
 	if (!_snd_feeder_started) {
 		int err = pthread_create(&_snd_feeder_tid, NULL, sound_feeder_thread, NULL);
 		if (err != 0) {
-			slog("soundpwm: pthread_create failed %d\n", err);
+			SOUND_LOG("soundpwm: pthread_create failed %d\n", err);
 			return 1;
 		}
 		_snd_feeder_started = true;

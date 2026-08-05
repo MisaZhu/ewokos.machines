@@ -26,6 +26,7 @@ typedef struct _queue_buffer{
 }queue_buffer_t;
 
 queue_buffer_t *queue_buffer_alloc(int qsize, int bsize);
+void queue_buffer_free(queue_buffer_t *qbuf);
 int queue_buffer_push(queue_buffer_t *qbuf, uint8_t* buf, int size);
 int queue_buffer_pop(queue_buffer_t *qbuf, uint8_t* buf, int size);
 int queue_buffer_check(queue_buffer_t *qbuf);

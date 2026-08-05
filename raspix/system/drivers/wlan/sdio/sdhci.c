@@ -432,13 +432,20 @@ static inline uint32_t sdhci_now_us(void)
 	return readl(_mmio_base + SDHCI_SYSTMR_CLO);
 }
 
-/* Call right before committing SDHCI_COMMAND; spins only the shortfall. */
+/* Call right before committing SDHCI_COMMAND; spins only the shortfall.
+ * Bounded by iteration count so a stuck/unmapped 1MHz system timer cannot
+ * wedge the entire SDIO stack in an infinite spin (silent hang + CPU burn).
+ * 1M iterations is far more than enough for any real 250us-class gap. */
 static void sdhci_pre_cmd_gap(uint32_t gap_us)
 {
+	uint32_t spins = 0;
+
 	if (!sdhci_last_cmd_valid)
 		return;
-	while ((uint32_t)(sdhci_now_us() - sdhci_last_cmd_us) < gap_us)
-		;
+	while ((uint32_t)(sdhci_now_us() - sdhci_last_cmd_us) < gap_us) {
+		if (++spins > 1000000)
+			break;
+	}
 }
 
 /*
