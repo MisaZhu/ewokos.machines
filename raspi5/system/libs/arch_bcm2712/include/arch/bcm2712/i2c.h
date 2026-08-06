@@ -28,6 +28,12 @@
 
 #define BCM2712_I2C_BUS_HEADER  1    /* GPIO2/3 on the 40-pin header */
 
+#define BCM2712_I2C_ERR_INVALID   -1
+#define BCM2712_I2C_ERR_MAIN_MAP  -2
+#define BCM2712_I2C_ERR_RP1_MAP   -3
+#define BCM2712_I2C_ERR_DISABLE   -4
+#define BCM2712_I2C_ERR_COMP_TYPE -5
+
 int bcm2712_i2c_init(int bus);
 /* hz <= 100000 selects standard mode, anything above selects fast mode (400k) */
 int bcm2712_i2c_set_speed(int bus, uint32_t hz);
