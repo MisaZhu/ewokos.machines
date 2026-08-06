@@ -31,6 +31,7 @@
 #include <ewoksys/proc.h>
 #include <sysinfo.h>
 #include <arch/bcm2712/mmio.h>
+#include <arch/bcm2712/rp1.h>
 #include "xhci.h"
 
 /* rp1.dtsi: usb@200000 and usb@300000, xHCI caps at the window base */
@@ -1809,8 +1810,21 @@ int main(int argc, char** argv) {
 	 * xhci path is already gated on hc->present, so with no controller the
 	 * loop only sleeps and /dev/hid0 stays readable (empty).
 	 */
+	int rp1_ret = 0;
 	if (!rp1_mapped) {
 		klog("usbhostd: rp1 window map failed, running without usb\n");
+	}
+	/*
+	 * The RP1 window only decodes once the PCIe2 link is trained and the RP1
+	 * BARs are enabled. Nothing else in the xwin boot does that before us
+	 * (only the i2c path calls it, and gt911_touchd is not in this profile),
+	 * so without this the very first CAPLENGTH read comes back as the
+	 * AXI_READ_ERROR_DATA pattern. bcm2712_rp1_init() is idempotent and
+	 * skips training when the link is already up.
+	 */
+	else if ((rp1_ret = bcm2712_rp1_init()) != 0) {
+		klog("usbhostd: rp1 pcie init failed (%d), running without usb\n",
+				rp1_ret);
 	}
 	else if (xhci_dma_init() != 0) {
 		klog("usbhostd: dma_init_failed, running without usb\n");
