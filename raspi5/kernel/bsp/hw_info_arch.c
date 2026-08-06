@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <bcm2712/board.h>
+#include <bcm2712/mailbox.h>
 #include "hw_arch.h"
 
 #ifdef KERNEL_SMP
@@ -18,6 +19,15 @@
  */
 
 uint64_t _core_base_offset = 0;
+
+/*
+ * Actual framebuffer base and size reported by the firmware.
+ * Updated during sys_info_init_arch() after probing the mailbox.
+ * Falls back to the old top-of-RAM assumption if the probe fails.
+ */
+static ewokos_addr_t _fb_actual_phy = 0;
+static ewokos_addr_t _fb_actual_end = 0;  /* (base + size) rounded up to page */
+static bool _fb_splits_allocable = false;
 
 
 /*
@@ -117,6 +127,36 @@ void sys_info_init_arch(void) {
 
 	strcpy(_sys_info.arch, "aarch64");
 
+	/*
+	 * Query the firmware for the actual boot framebuffer location.
+	 * On Pi 5 the FB can land anywhere in RAM (often mid-RAM, not
+	 * at the very top).  Reserve the exact region so the allocator
+	 * doesn't hand it out.
+	 */
+	{
+		uint32_t fb_size = 0;
+		ewokos_addr_t fb_base = (ewokos_addr_t)bcm2712_fb_query(&fb_size);
+
+		if (fb_base != 0 && fb_size != 0
+				&& fb_base < _sys_info.total_usable_mem_size
+				&& fb_base + fb_size <= _sys_info.total_usable_mem_size) {
+			_fb_actual_phy = fb_base;
+			_fb_actual_end = fb_base
+					+ ALIGN_UP((ewokos_addr_t)fb_size, PAGE_SIZE);
+			/*
+			 * Determine if the FB sits inside the range that
+			 * would otherwise be allocable and therefore needs
+			 * a "hole" punched out.
+			 */
+			ewokos_addr_t fb_area_end = fb_base
+					+ ALIGN_UP((ewokos_addr_t)fb_size, PAGE_SIZE);
+			if (fb_base < (_sys_info.total_phy_mem_size - PI5_FB_SIZE)
+					&& fb_area_end > _sys_info.allocable_phy_mem_base) {
+				_fb_splits_allocable = true;
+			}
+		}
+	}
+
 	/* reserve the top of RAM for the firmware framebuffer */
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
 			_sys_info.total_usable_mem_size - PI5_FB_SIZE;
@@ -172,12 +212,34 @@ void start_core(uint32_t core_id) {
 #endif
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
+	ewokos_addr_t start = P2V(_sys_info.allocable_phy_mem_base);
+
+	if (_fb_splits_allocable) {
+		/*
+		 * The firmware's framebuffer sits inside the otherwise-
+		 * allocable range.  Punch a hole: one region below the FB,
+		 * another above it (up to the standard top-of-RAM reserve).
+		 */
+		kalloc_append(start, P2V(_fb_actual_phy));
+		if (_fb_actual_end < _sys_info.allocable_phy_mem_top)
+			kalloc_append(P2V(_fb_actual_end),
+				      P2V(_sys_info.allocable_phy_mem_top));
+	} else {
+		kalloc_append(start, P2V(_sys_info.allocable_phy_mem_top));
+	}
 }
 
 int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	/* framebuffer at top of RAM */
+	/*
+	 * Framebuffer: accept the top-of-RAM recall window (always
+	 * reserved) plus the firmware's actual boot FB region when it
+	 * lands elsewhere in RAM.
+	 */
 	if (phy_base >= _sys_info.total_phy_mem_size - PI5_FB_SIZE)
+		return 0;
+	if (_fb_actual_phy != 0
+			&& phy_base >= _fb_actual_phy
+			&& phy_base + size <= _fb_actual_end)
 		return 0;
 
 	/* main MMIO window: 64 MB at 0x10_7C000000 */
