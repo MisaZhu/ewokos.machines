@@ -2,8 +2,8 @@ include config.mk
 
 LDS = mkos.lds.S
 
-OS_IMG = kernel8.img
-OS_ELF = kernel8.elf
+OS_IMG = kernel_2712.img
+OS_ELF = kernel_2712.elf
 QEMU_CMD = qemu-system-aarch64
 ARCH_CFLAGS = -Wa,-march=armv8-a
 QEMU_FLAGS = -M $(QEMU_MACHINE) -serial null -serial mon:stdio
