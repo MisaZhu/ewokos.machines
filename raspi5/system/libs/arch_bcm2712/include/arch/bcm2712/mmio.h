@@ -35,6 +35,16 @@
  * has to stay <= PI5_RP1_SIZE, or check_mem_map_arch() refuses the mapping.
  */
 #define PI5_RP1_PHY         0x1F00000000ULL
+#define PI5_PCIE2_PHY       0x1000120000ULL
+#define PI5_PCIE2_WIN_OFF   0x04400000
+#define PI5_PCIE2_WIN_SIZE  (64 * 1024)
+#define PI5_RESET_PAGE_PHY  0x1001504000ULL
+#define PI5_RESET_WIN_OFF   0x04500000
+#define PI5_RESCAL_PAGE_PHY 0x1000119000ULL
+#define PI5_RESCAL_WIN_OFF  0x04501000
+#define PI5_RESET_PAGE_SIZE 4096
+
+/* Must match PI5_RP1_WIN_OFF/PI5_RP1_SIZE in kernel/bsp/hw_arch.h. */
 #define PI5_RP1_WIN_OFF     0x06000000
 #define PI5_RP1_WIN_SIZE    (6 * 1024 * 1024)
 

@@ -2,6 +2,7 @@
 #include <arch/bcm2712/i2c.h>
 #include <ewoksys/ipc.h>
 #include <ewoksys/kernel_tic.h>
+#include <ewoksys/klog.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
@@ -24,6 +25,7 @@
 #define POLL_ACTIVE_US         8000
 #define POLL_IDLE_US           50000
 #define RELEASE_DELAY_MS       20
+#define I2C_REINIT_THRESHOLD   20
 
 typedef struct {
 	uint16_t x;
@@ -36,6 +38,7 @@ static touch_point_t last_point;
 static bool pressed;
 static bool has_event;
 static uint64_t last_touch_ms;
+static uint32_t i2c_failures;
 
 static int gt911_write_reg(uint16_t reg, const uint8_t *data, int len) {
 	uint8_t buf[16];
@@ -72,8 +75,11 @@ static int gt911_init(void) {
 	static const struct { uint8_t addr; bool int_high; } probes[] = {
 		{GT911_ADDR_5D, false}, {GT911_ADDR_14, true}
 	};
-	if (bcm2712_i2c_init(GT911_BUS) < 0)
+	int ret = bcm2712_i2c_init(GT911_BUS);
+	if (ret < 0) {
+		klog("gt911: I2C controller initialization failed: %d\n", ret);
 		return -1;
+	}
 
 	for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
 		uint8_t id[4] = {0};
@@ -82,9 +88,13 @@ static int gt911_init(void) {
 		if (!gt911_read_reg(GT911_REG_PRODUCT_ID, id, sizeof(id)) &&
 			(id[0] || id[1] || id[2] || id[3])) {
 			uint8_t command = 0;
-			return gt911_write_reg(GT911_REG_COMMAND, &command, 1);
+			ret = gt911_write_reg(GT911_REG_COMMAND, &command, 1);
+			if (ret)
+				klog("gt911: command register write failed\n");
+			return ret;
 		}
 	}
+	klog("gt911: controller not found\n");
 	return -1;
 }
 
@@ -144,16 +154,29 @@ static int touch_loop(vdevice_t *dev, void *p) {
 	uint8_t count;
 	int ret = gt911_read_touch(&point, &count);
 	if (!ret && count) {
+		i2c_failures = 0;
 		last_point = point;
 		last_touch_ms = kernel_tic_ms(0);
 		pressed = true;
 		queue_event(dev, true, &point);
-	} else if (pressed && kernel_tic_ms(0) - last_touch_ms > RELEASE_DELAY_MS) {
+	} else if (!ret) {
+		i2c_failures = 0;
+	}
+	if ((ret < 0 || !count) && pressed &&
+		kernel_tic_ms(0) - last_touch_ms > RELEASE_DELAY_MS) {
 		pressed = false;
 		queue_event(dev, false, &last_point);
 	}
-	if (ret < 0)
-		gt911_init();
+	if (ret < 0) {
+		i2c_failures++;
+		if (i2c_failures == 1)
+			klog("gt911: I2C communication failed\n");
+		if (i2c_failures >= I2C_REINIT_THRESHOLD) {
+			klog("gt911: %u consecutive failures, reinitializing\n", i2c_failures);
+			i2c_failures = 0;
+			gt911_init();
+		}
+	}
 	usleep(pressed ? POLL_ACTIVE_US : POLL_IDLE_US);
 	return 0;
 }
@@ -161,7 +184,8 @@ static int touch_loop(vdevice_t *dev, void *p) {
 int main(int argc, char **argv) {
 	const char *mount_point = argc > 1 ? argv[1] : "/dev/touch0";
 	_mmio_base = mmio_map();
-	gt911_init();
+	if (gt911_init() < 0)
+		klog("gt911: initial probe failed; background retry remains enabled\n");
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(dev));
