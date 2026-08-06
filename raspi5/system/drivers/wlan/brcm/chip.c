@@ -554,6 +554,7 @@ static int brcmf_chip_cores_check()
     bool need_socram = false;
     bool has_socram = false;
     bool cpu_found = false;
+    bool has_d11 = false;
     int idx = 1;
 
     for(int i = 0; i < 16; i++) {
@@ -564,6 +565,9 @@ static int brcmf_chip_cores_check()
         idx++;
 
         switch (core->pub.id) {
+        case BCMA_CORE_80211:
+            has_d11 = true;
+            break;
         case BCMA_CORE_ARM_CM3:
             cpu_found = true;
             need_socram = true;
@@ -585,6 +589,10 @@ static int brcmf_chip_cores_check()
     if (!cpu_found) {
         brcm_log("CPU core not detected\n");
         return -ENXIO;
+    }
+    if (!has_d11) {
+        brcm_log("802.11 core not detected\n");
+        return -ENODEV;
     }
     /* check RAM core presence for ARM CM3 core */
     if (need_socram && !has_socram) {
@@ -745,7 +753,12 @@ brcmf_chip_cr4_set_passive(void)
      * before the host starts pushing the image.
      */
     mem = brcmf_chip_get_core(BCMA_CORE_INTERNAL_MEM);
-    if (mem)
+    /*
+     * BCM4345/43455 can continue with the fixed RAM fallback geometry
+     * later in attach. Avoid resetting a guessed SOCRAM window here,
+     * which can wedge bring-up on incomplete 43455 topologies.
+     */
+    if (mem && !brcmf_chip_is_4345_family())
         brcmf_chip_resetcore(mem, 0, 0, 0);
 }
 

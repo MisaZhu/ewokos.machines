@@ -3771,7 +3771,7 @@ int brcmf_sdiod_probe(void){
     if (ret) {
         brcm_log("Failed to set blocksize\n");
         return ret;
-    } 
+    }
 
     ret = sdio_enable_func(1);
     if (ret) {
