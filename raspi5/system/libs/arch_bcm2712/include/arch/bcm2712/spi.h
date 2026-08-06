@@ -6,8 +6,9 @@
 /*
  * RP1 SPI driver stub for BCM2712.
  *
- * RP1 provides 8 SPI controllers (SPI0-7) at RP1-internal base 0x40050000+.
- * Host offset from _mmio_base: 0x08050000+
+ * rp1.dtsi has spi@50000 .. spi@6c000 at a 0x4000 stride (spi0-spi7, plus
+ * spi8 at 0x4c000). Offsets from _mmio_base are
+ * PI5_RP1_WIN_OFF + 0x50000 + bus * 0x4000.
  *
  * Not yet implemented.
  */

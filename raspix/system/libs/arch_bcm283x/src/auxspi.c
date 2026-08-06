@@ -13,9 +13,9 @@
 #define AUX_OFFSET  0x00215000
 #define SPI1_OFFSET 0x00215080
 #define SPI2_OFFSET 0x002150C0
-#define AUX_BASE    (_mmio_base | AUX_OFFSET)
+#define AUX_BASE    (_mmio_base + AUX_OFFSET)
 
-static uint32_t  SPI_BASE =  0;
+static ewokos_addr_t SPI_BASE = 0;
 
 /*AUX register offset*/
 #define BCM2835_AUX_IRQ			(AUX_BASE + 0x0000)  /*!< xxx */

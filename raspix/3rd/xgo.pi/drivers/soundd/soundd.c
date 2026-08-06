@@ -23,6 +23,7 @@
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define UNUSED(v) ((void)(v))
+#define SOUND_LOG(...) ((void)0)
 
 /* Same command/data protocol as raspix/system/drivers/soundd. */
 #define CTRL_PCM_DEV_HW 0xF0
@@ -450,19 +451,19 @@ static int audio_hw_params_locked(const struct pcm_config* cfg) {
 
 	if (normalized.bit_depth != 8 && normalized.bit_depth != 16 &&
 			normalized.bit_depth != 24 && normalized.bit_depth != 32) {
-		printf("sound: unsupported bit depth: %d\n", normalized.bit_depth);
+		SOUND_LOG("sound: unsupported bit depth: %d\n", normalized.bit_depth);
 		return -1;
 	}
 	if (normalized.rate < 8000 || normalized.rate > 96000) {
-		printf("sound: unsupported rate: %d\n", normalized.rate);
+		SOUND_LOG("sound: unsupported rate: %d\n", normalized.rate);
 		return -1;
 	}
 	if (normalized.channels < 1 || normalized.channels > 2) {
-		printf("sound: unsupported channels: %d\n", normalized.channels);
+		SOUND_LOG("sound: unsupported channels: %d\n", normalized.channels);
 		return -1;
 	}
 	if (normalized.period_size <= 0 || normalized.period_count <= 0) {
-		printf("sound: invalid period config: %d x %d\n",
+		SOUND_LOG("sound: invalid period config: %d x %d\n",
 				normalized.period_size, normalized.period_count);
 		return -1;
 	}
@@ -480,13 +481,13 @@ static int audio_hw_params_locked(const struct pcm_config* cfg) {
 	_sound.buffer_bytes = _sound.period_bytes * (uint32_t)normalized.period_count;
 	_sound.write_chunk_bytes = _sound.buffer_bytes;
 	if (audio_pcm_ring_alloc_locked(_sound.frame_bytes) != 0) {
-		printf("sound: hw_params ring alloc failed frame=%u buffer=%u\n",
+		SOUND_LOG("sound: hw_params ring alloc failed frame=%u buffer=%u\n",
 				_sound.frame_bytes, _sound.buffer_bytes);
 		audio_hw_free_locked();
 		return -1;
 	}
 	_sound.configured = true;
-	printf("sound: hw_params rate=%d channels=%d bits=%d frame=%u period=%u buffer=%u\n",
+	SOUND_LOG("sound: hw_params rate=%d channels=%d bits=%d frame=%u period=%u buffer=%u\n",
 			normalized.rate, normalized.channels, normalized.bit_depth,
 			_sound.frame_bytes, _sound.period_bytes, _sound.buffer_bytes);
 	return 0;
@@ -911,7 +912,7 @@ int main(int argc, char** argv) {
 	if (!_sound_feeder_started) {
 		int err = pthread_create(&_sound_feeder_tid, NULL, sound_feeder_thread, NULL);
 		if (err != 0) {
-			printf("sound: pthread_create failed %d\n", err);
+			SOUND_LOG("sound: pthread_create failed %d\n", err);
 			return 1;
 		}
 		_sound_feeder_started = true;

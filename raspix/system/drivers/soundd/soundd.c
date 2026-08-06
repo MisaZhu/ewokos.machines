@@ -18,6 +18,7 @@
 
 #define UNUSED(v) ((void)(v))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define SOUND_LOG(...) ((void)0)
 
 #define CTRL_PCM_DEV_HW 0xF0
 #define CTRL_PCM_DEV_HW_FREE 0xF1
@@ -225,23 +226,7 @@ static uint32_t audio_dma_permap(void) {
 
 /* debug-point pi4-no-sound-reg-dump: begin */
 static void audio_log_hw_regs(const char* tag) {
-	volatile uint32_t* pwm = audio_pwm_regs();
-	volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
-	volatile uint32_t* dma = (uint32_t*)(uintptr_t)DMA_BASE;
-	volatile uint32_t* dmae = (uint32_t*)(uintptr_t)DMA_ENABLE;
-
-	slog("sound: %s pwm_ctl=%x pwm_sta=%x pwm_dmac=%x rng1=%x rng2=%x clk_ctl=%x clk_div=%x dma_cs=%x dma_cb=%x dmae=%x\n",
-			tag,
-			*(pwm + BCM283x_PWM_CONTROL),
-			*(pwm + BCM283x_PWM_STATUS),
-			*(pwm + BCM283x_PWM_DMAC),
-			*(pwm + BCM283x_PWM_RANGE1),
-			*(pwm + BCM283x_PWM_RANGE2),
-			*(clk + BCM283x_PWMCLK_CNTL),
-			*(clk + BCM283x_PWMCLK_DIV),
-			*(dma + DMA_CS),
-			*(dma + DMA_CONBLK_AD),
-			*dmae);
+	UNUSED(tag);
 }
 /* debug-point pi4-no-sound-reg-dump: end */
 
@@ -270,7 +255,7 @@ static void audio_detect_hw_config(void) {
 		_snd_pwm_clock_div_int = PWM_CLOCK_DIV_INT_BCM283X;
 		_snd_pwm_clock_div_frac = PWM_CLOCK_DIV_FRAC_BCM283X;
 	}
-	slog("sound: machine=%s mmio=%x pwm=%llx fifo=%x permap=%x clk=%u src=%u div=%u.%u pi4=%d\n",
+	SOUND_LOG("sound: machine=%s mmio=%x pwm=%llx fifo=%x permap=%x clk=%u src=%u div=%u.%u pi4=%d\n",
 			_sys_info.machine, _sys_info.mmio.phy_base, (unsigned long long)_snd_pwm_base,
 			_snd_pwm_fifo_bus_addr, _snd_dma_permap, _snd_pwm_clock_hz,
 			_snd_pwm_clock_source, _snd_pwm_clock_div_int, _snd_pwm_clock_div_frac,
@@ -596,27 +581,9 @@ static uint32_t audio_dma_current_cb_bus(void) {
 }
 
 static void audio_log_diag(const char* reason, uint32_t now_usec, uint32_t cb_bus) {
-	if (now_usec != 0 && _snd.diag_last_log_usec != 0 &&
-			audio_elapsed_usec(_snd.diag_last_log_usec, now_usec) < 500000U) {
-		return;
-	}
-	_snd.diag_last_log_usec = now_usec;
-	slog("sound: %s cb=%x active=%u ready=%u fill=%u pending=%u avail=%u ring=%u running=%d need_rebuffer=%d watchdog=%u rebuffer=%u feeder_delay=%u feeder_delay_max=%u ring_starve=%u\n",
-			reason,
-			cb_bus,
-			_snd.active_count,
-			_snd.ready_count,
-			_snd.fill_slot,
-			audio_queue_pending_words(),
-			audio_queue_avail_bytes(),
-			audio_pcm_ring_pending_bytes(),
-			_snd.dma_running ? 1 : 0,
-			_snd.need_rebuffer ? 1 : 0,
-			_snd.dma_watchdog_count,
-			_snd.rebuffer_restart_count,
-			_snd.feeder_delay_count,
-			_snd.feeder_delay_max_usec,
-			_snd.ring_starve_count);
+	UNUSED(reason);
+	UNUSED(now_usec);
+	UNUSED(cb_bus);
 }
 
 static uint32_t audio_elapsed_usec(uint32_t start_usec, uint32_t now_usec) {
@@ -1148,7 +1115,7 @@ static int audio_start_dma_transfer(uint32_t slot, uint32_t samples, bool is_reb
 	_snd.dma_started_usec = audio_now_usec();
 	_snd.dma_expected_usec = audio_dma_watchdog_usec(samples);
 	_snd.dma_running = true;
-	slog("sound: dma start slot=%u samples=%u cb=%llx pwm_fifo=%x\n",
+	SOUND_LOG("sound: dma start slot=%u samples=%u cb=%llx pwm_fifo=%x\n",
 			slot, samples, (unsigned long long)cb_bus, audio_pwm_fifo_bus_addr());
 	audio_log_hw_regs("after-dma-start");
 	if (is_rebuffer_start) {
@@ -1346,7 +1313,7 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
 	_snd.pwm_scale = (_snd.pwm_range > 0) ? (_snd.pwm_range - 1U) : 0;
 	audio_set_pwm_range(_snd.pwm_range);
 	*(pwm + BCM283x_PWM_CONTROL) = audio_pwm_control_flags();
-	slog("sound: hw_params rate=%d channels=%d bits=%d range=%u scale=%u frame=%u period=%u buffer=%u fifo=%x\n",
+	SOUND_LOG("sound: hw_params rate=%d channels=%d bits=%d range=%u scale=%u frame=%u period=%u buffer=%u fifo=%x\n",
 			cfg->rate, cfg->channels, cfg->bit_depth, _snd.pwm_range, _snd.pwm_scale,
 			_snd.frame_bytes, _snd.period_bytes, _snd.buffer_bytes, audio_pwm_fifo_bus_addr());
 	audio_log_hw_regs("after-hw-params");
@@ -1399,19 +1366,19 @@ static int audio_hw_params(const struct pcm_config *cfg) {
 
 	if (cfg->bit_depth != 8 && cfg->bit_depth != 16 &&
 			cfg->bit_depth != 24 && cfg->bit_depth != 32) {
-		slog("sound: unsupported bit depth: %d\n", cfg->bit_depth);
+		SOUND_LOG("sound: unsupported bit depth: %d\n", cfg->bit_depth);
 		return -1;
 	}
 	if (cfg->rate < 8000 || cfg->rate > 96000) {
-		slog("sound: unsupported rate: %d\n", cfg->rate);
+		SOUND_LOG("sound: unsupported rate: %d\n", cfg->rate);
 		return -1;
 	}
 	if (cfg->channels < 1 || cfg->channels > 2) {
-		slog("sound: unsupported channels: %d\n", cfg->channels);
+		SOUND_LOG("sound: unsupported channels: %d\n", cfg->channels);
 		return -1;
 	}
 	if (cfg->period_size <= 0 || cfg->period_count <= 0) {
-		slog("sound: invalid period config: %d x %d\n",
+		SOUND_LOG("sound: invalid period config: %d x %d\n",
 				cfg->period_size, cfg->period_count);
 		return -1;
 	}
@@ -1855,7 +1822,7 @@ int main(int argc, char** argv) {
 	if (!_snd_feeder_started) {
 		int err = pthread_create(&_snd_feeder_tid, NULL, sound_feeder_thread, NULL);
 		if (err != 0) {
-			slog("sound: pthread_create failed %d\n", err);
+			SOUND_LOG("sound: pthread_create failed %d\n", err);
 			return 1;
 		}
 		_snd_feeder_started = true;

@@ -3,61 +3,101 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <arch/bcm2712/mmio.h>
 
 /*
- * RP1 GPIO driver for BCM2712 (Raspberry Pi 5).
+ * RP1 GPIO for BCM2712 (Raspberry Pi 5).
  *
- * The RP1 south bridge provides 54 GPIO pins:
- *   Bank 0: GPIO 0-27
- *   Bank 1: GPIO 28-41
- *   Bank 2: GPIO 42-53
+ * The register layout below comes from the official device tree
+ * (arch/arm64/boot/dts/broadcom/rp1.dtsi) and from the linux driver
+ * drivers/pinctrl/pinctrl-rp1.c. It has nothing in common with the BCM283x
+ * GPIO block: there is no FSEL/SET/CLR/LEV register file, but three separate
+ * regions, and the pins are described one struct per pin instead of one bit
+ * per pin.
  *
- * Each bank is at a 0x4000 stride within the RP1 GPIO region.
- * RP1 GPIO base (RP1-internal): 0x400d0000
- * Host offset from _mmio_base: 0x080d0000
+ *   rp1_gpio: gpio@d0000 {
+ *       reg = <0xc0 0x400d0000  0x0 0xc000>,   // IO_BANK: per pin status+ctrl
+ *             <0xc0 0x400e0000  0x0 0xc000>,   // SYS_RIO: out/oe/in bitmaps
+ *             <0xc0 0x400f0000  0x0 0xc000>;   // PADS_BANK: pull, drive, ...
+ *       compatible = "raspberrypi,rp1-gpio";
+ *
+ * Each region holds three banks at a 0x4000 stride. The 54 pins are split
+ * 28 / 6 / 20 over those banks (rp1_iobanks[] in pinctrl-rp1.c), *not*
+ * 28 / 14 / 12.
  */
 
-/* RP1 GPIO offset from _mmio_base */
-#define RP1_GPIO_BASE_OFF  0x080d0000
-#define RP1_GPIO_BANK_STRIDE 0x4000
+#define RP1_IO_BANK_OFF     (PI5_RP1_WIN_OFF + 0x000d0000)
+#define RP1_SYS_RIO_OFF     (PI5_RP1_WIN_OFF + 0x000e0000)
+#define RP1_PADS_BANK_OFF   (PI5_RP1_WIN_OFF + 0x000f0000)
+
+#define RP1_BANK_STRIDE     0x4000
+#define RP1_NUM_BANKS       3
 #define RP1_NUM_GPIOS       54
 
-/* Per-bank register offsets */
-#define GPIO_OUT_SET     0x18
-#define GPIO_OUT_CLR     0x1c
-#define GPIO_OUT         0x20
-#define GPIO_IN          0x24
-#define GPIO_OE_SET      0x28
-#define GPIO_OE_CLR      0x2c
-#define GPIO_OE          0x30
+/*
+ * Every register of every region is aliased four times: the plain read/write
+ * view plus three atomic read-modify-write views. Using SET/CLR avoids the
+ * read-modify-write races the BCM283x driver had to live with.
+ */
+#define RP1_RW_OFFSET       0x0000
+#define RP1_XOR_OFFSET      0x1000
+#define RP1_SET_OFFSET      0x2000
+#define RP1_CLR_OFFSET      0x3000
 
-/* Function select registers (0x00-0x14, 5 bits per pin, 6 pins per reg) */
-#define GPIO_FSEL0       0x00
-#define GPIO_FSEL1       0x04
-#define GPIO_FSEL2       0x08
-#define GPIO_FSEL3       0x0c
-#define GPIO_FSEL4       0x10
+/* IO_BANK: two words per pin */
+#define RP1_GPIO_STATUS     0x00
+#define RP1_GPIO_CTRL       0x04
+#define RP1_GPIO_PIN_STRIDE 0x08
 
-/* Pull control (per-bank, offset 0x100) */
-#define GPIO_PULLUP      0x100
-#define GPIO_PULLDOWN    0x104
+#define RP1_GPIO_CTRL_FUNCSEL_LSB   0
+#define RP1_GPIO_CTRL_FUNCSEL_MASK  0x0000001f
+#define RP1_GPIO_CTRL_OUTOVER_LSB   12
+#define RP1_GPIO_CTRL_OUTOVER_MASK  0x00003000
+#define RP1_GPIO_CTRL_OEOVER_LSB    14
+#define RP1_GPIO_CTRL_OEOVER_MASK   0x0000c000
 
-/* Function select values */
+#define RP1_OUTOVER_PERI    0
+#define RP1_OEOVER_PERI     0
+#define RP1_OEOVER_DISABLE  2
+
+/* SYS_RIO: one bit per pin within the bank */
+#define RP1_RIO_OUT         0x00
+#define RP1_RIO_OE          0x04
+#define RP1_RIO_IN          0x08
+
+/* PADS_BANK: one word per pin, the first word is VOLTAGE_SELECT */
+#define RP1_PADS_PIN0       0x04
+#define RP1_PAD_PIN_STRIDE  0x04
+#define RP1_PAD_PULL_LSB    2
+#define RP1_PAD_PULL_MASK   0x0000000c
+#define RP1_PAD_IN_ENABLE_MASK   0x00000040
+#define RP1_PAD_OUT_DISABLE_MASK 0x00000080
+
+/*
+ * Function select values are raw RP1 funcsel codes. funcsel 5 is the
+ * software controlled function (SYS_RIO), so it is what both directions of a
+ * plain GPIO use; the direction itself lives in RIO_OE, not in funcsel.
+ * GPIO_FUNC_INPUT / GPIO_FUNC_OUTPUT are funcsel 5 plus the matching OE.
+ */
 #define GPIO_FUNC_ALTF0  0
 #define GPIO_FUNC_ALTF1  1
 #define GPIO_FUNC_ALTF2  2
 #define GPIO_FUNC_ALTF3  3
 #define GPIO_FUNC_ALTF4  4
-#define GPIO_FUNC_OUTPUT 5
+#define GPIO_FUNC_RIO    5
 #define GPIO_FUNC_ALTF6  6
 #define GPIO_FUNC_ALTF7  7
 #define GPIO_FUNC_ALTF8  8
-#define GPIO_FUNC_ALTF9  9
+#define GPIO_FUNC_NONE   9
 
-/* Pull resistor values */
+#define GPIO_FUNC_DIR_FLAG 0x10
+#define GPIO_FUNC_INPUT  (GPIO_FUNC_DIR_FLAG | GPIO_FUNC_RIO)
+#define GPIO_FUNC_OUTPUT (GPIO_FUNC_DIR_FLAG | GPIO_FUNC_RIO | 0x20)
+
+/* Pull resistor values, same encoding as PADS_BANK bits 3:2 */
 #define GPIO_PULL_NONE   0
-#define GPIO_PULL_UP     1
-#define GPIO_PULL_DOWN   2
+#define GPIO_PULL_DOWN   1
+#define GPIO_PULL_UP     2
 
 void bcm2712_gpio_init(void);
 void bcm2712_gpio_config(uint32_t pin, uint32_t func);

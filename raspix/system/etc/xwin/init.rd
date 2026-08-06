@@ -50,8 +50,8 @@
 @/bin/splash -m "start sshd" -p 84
 @/bin/bgrun /sbin/sshd
 
-@/bin/splash -m "start /dev/bt0" -p 85
-@/bin/ipcserv /drivers/raspix/btd    /dev/bt0
+#@/bin/splash -m "start /dev/bt0" -p 85
+#@/bin/ipcserv /drivers/raspix/btd    /dev/bt0
 
 #@/bin/splash -m "load fonts" -p 95
 #@/bin/load_font

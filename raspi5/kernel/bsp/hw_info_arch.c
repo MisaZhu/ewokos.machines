@@ -127,54 +127,8 @@ void sys_info_init_arch(void) {
 
 	strcpy(_sys_info.arch, "aarch64");
 
-	/*
-	 * Query the firmware for the actual boot framebuffer location.
-	 * On Pi 5 the FB can land anywhere in RAM (often mid-RAM, not
-	 * at the very top).  Reserve the exact region so the allocator
-	 * doesn't hand it out.
-	 */
-	{
-		uint32_t fb_size = 0;
-		ewokos_addr_t fb_base = (ewokos_addr_t)bcm2712_fb_query(&fb_size);
-
-		if (fb_base != 0 && fb_size != 0
-				&& fb_base < _sys_info.total_usable_mem_size
-				&& fb_base + fb_size <= _sys_info.total_usable_mem_size) {
-			_fb_actual_phy = fb_base;
-			_fb_actual_end = fb_base
-					+ ALIGN_UP((ewokos_addr_t)fb_size, PAGE_SIZE);
-			/*
-			 * Determine if the FB sits inside the range that
-			 * would otherwise be allocable and therefore needs
-			 * a "hole" punched out.
-			 */
-			ewokos_addr_t fb_area_end = fb_base
-					+ ALIGN_UP((ewokos_addr_t)fb_size, PAGE_SIZE);
-			if (fb_base < (_sys_info.total_phy_mem_size - PI5_FB_SIZE)
-					&& fb_area_end > _sys_info.allocable_phy_mem_base) {
-				_fb_splits_allocable = true;
-			}
-		} else {
-			/*
-			 * Mailbox query failed.  Reserve a fallback 8 MB
-			 * at the top of allocable RAM so that kalloc never
-			 * hands out pages that might overlap the display
-			 * framebuffer.  The top PI5_FB_SIZE is already
-			 * excluded via allocable_phy_mem_top below, but
-			 * we also need _fb_actual_phy non-zero so that
-			 * check_mem_map_arch() continues to guard SYS_MEM_MAP
-			 * requests.
-			 */
-			_fb_actual_phy = _sys_info.total_phy_mem_size
-					- PI5_FB_SIZE;
-			_fb_actual_end = _sys_info.total_phy_mem_size;
-			_fb_splits_allocable = true;
-		}
-	}
-
-	/* reserve the top of RAM for the firmware framebuffer */
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-			_sys_info.total_usable_mem_size - PI5_FB_SIZE;
+			_sys_info.total_usable_mem_size;
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = 1;//get_cpu_cores();
@@ -234,30 +188,34 @@ void start_core(uint32_t core_id) {
 #endif
 
 void kalloc_arch(void) {
-	ewokos_addr_t start = P2V(_sys_info.allocable_phy_mem_base);
+	ewokos_addr_t base = _sys_info.allocable_phy_mem_base;
+	ewokos_addr_t top = _sys_info.allocable_phy_mem_top;
 
-	if (_fb_splits_allocable) {
-		/*
-		 * The firmware's framebuffer sits inside the otherwise-
-		 * allocable range.  Punch a hole: one region below the FB,
-		 * another above it (up to the standard top-of-RAM reserve).
-		 */
-		kalloc_append(start, P2V(_fb_actual_phy));
-		if (_fb_actual_end < _sys_info.allocable_phy_mem_top)
-			kalloc_append(P2V(_fb_actual_end),
-				      P2V(_sys_info.allocable_phy_mem_top));
-	} else {
-		kalloc_append(start, P2V(_sys_info.allocable_phy_mem_top));
+	/*
+	 * Punch the firmware framebuffer out of the heap. The VPU only reaches
+	 * ARM physical 0..1GB (bcm2712.dtsi dma-ranges), so the scan-out buffer
+	 * sits at the end of that window, not at the end of RAM.
+	 */
+	if(base < PI5_FB_LOW_BASE && top > PI5_FB_LOW_BASE) {
+		kalloc_append(P2V(base), P2V(PI5_FB_LOW_BASE));
+		if(top > PI5_FB_LOW_TOP)
+			kalloc_append(P2V(PI5_FB_LOW_TOP), P2V(top));
+	}
+	else {
+		kalloc_append(P2V(base), P2V(top));
 	}
 }
 
 int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 	/*
-	 * Framebuffer: accept the top-of-RAM recall window (always
-	 * reserved) plus the firmware's actual boot FB region when it
-	 * lands elsewhere in RAM.
+	 * Firmware framebuffer reserve, the only RAM a driver may map by physical
+	 * address. kalloc_arch() keeps this window out of the heap, so a scan-out
+	 * mapped from here cannot alias pages the allocator hands to somebody
+	 * else. A firmware buffer outside it is refused on purpose: the driver's
+	 * primary path owns its scan-out out of the sys_dma pool and does not need
+	 * this mapping at all.
 	 */
-	if (phy_base >= _sys_info.total_phy_mem_size - PI5_FB_SIZE)
+	if (phy_base >= PI5_FB_LOW_BASE && phy_base + size <= PI5_FB_LOW_TOP)
 		return 0;
 	if (_fb_actual_phy != 0
 			&& phy_base >= _fb_actual_phy

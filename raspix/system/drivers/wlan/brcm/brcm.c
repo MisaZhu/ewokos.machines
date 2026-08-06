@@ -22,6 +22,7 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfsc.h>
 #include <ewoksys/kernel_tic.h>
+#include <arch/bcm283x/mailbox.h>
 
 #include "brcm.h"
 #include "chip.h"
@@ -117,8 +118,21 @@
 #define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
 #define BRCMF_SCAN_CACHE_MAX 64
 #define BRCMF_MANUAL_CONNECT_GUARD_MS 15000U
+#define BRCMF_SCAN_TIMEOUT_MS 15000U
+#define BRCMF_CONNECT_TIMEOUT_MS 15000U
 #define BRCMF_RXPENDING_STUCK_MS 2000U   /* rxpending without frame reads timeout */
 #define BRCMF_FW_LIVENESS_MS 30000U      /* firmware liveness watchdog (CONNECTED) */
+/*
+ * Full-chip recovery: the BCM43455 firmware intermittently fails to come
+ * up (no DEVREADY after download, dead command path). Instead of dying
+ * permanently the driver power-cycles WL_REG_ON, re-enumerates the SDIO
+ * card and re-downloads the firmware.
+ */
+#define BRCMF_MAX_INIT_ATTEMPTS 3
+#define BRCMF_MAX_RESTART_ROUNDS 10
+#define BRCMF_FW_DEAD_SCAN_STREAK 3
+#define BRCMF_INIT_PROBE_TIMEOUT_MS 60000U
+#define BRCMF_INIT_PREINIT_TIMEOUT_MS 30000U
 #define ETH_P_IP 0x0800U
 #define ETH_P_ARP 0x0806U
 #define ETH_P_IPV6 0x86DDU
@@ -472,8 +486,10 @@ struct brcmf_dev{
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
     uint32_t manual_connect_until_ms;
+	uint32_t state_since_ms;
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
+    uint32_t scan_cmd_fail_streak; /* consecutive scan cmd errors (dead fw) */
     int init_error;
     bool init_failed;
     int last_error;
@@ -499,6 +515,8 @@ static void brcmf_scan_set_mpc(bool enable);
 static inline void brcm_wakeup_dev(int evt);
 static void brcmf_set_init_failed(int err);
 static void brcmf_scan_cache_clear(void);
+static void brcmf_probe_cleanup(void);
+static void *brcm_worker_main(void *p);
 static bool brcmf_is_hex_string(const char *s, size_t len);
 static const char *brcmf_state_name(enum WL_STATE state);
 static void brcmf_format_hwaddr(const uint8_t *addr, char *out, size_t out_len);
@@ -614,6 +632,50 @@ static bool brcmf_eth_is_local(const uint8_t *addr)
     return memcmp(addr, mac, sizeof(mac)) == 0;
 }
 
+static bool brcmf_eth_is_dhcp(const uint8_t *data, int len);
+
+static bool brcmf_eth_is_critical(const uint8_t *data, int len)
+{
+    uint32_t proto;
+
+    if (!data || len < 14)
+        return false;
+
+    proto = (uint32_t)(((uint32_t)data[12] << 8) | (uint32_t)data[13]);
+    return proto == ETH_P_ARP || brcmf_eth_is_dhcp(data, len);
+}
+
+static bool brcmf_eth_is_dhcp(const uint8_t *data, int len)
+{
+    uint32_t ihl;
+    uint16_t frag;
+    uint16_t src_port;
+    uint16_t dst_port;
+
+    if (!data || len < 14 + 20 + 8)
+        return false;
+    if (data[12] != 0x08 || data[13] != 0x00)
+        return false;
+    if ((data[14] >> 4) != 4)
+        return false;
+
+    ihl = (uint32_t)(data[14] & 0x0f) * 4U;
+    if (ihl < 20 || len < (int)(14 + ihl + 8))
+        return false;
+    if (data[23] != 17)
+        return false;
+
+    frag = (uint16_t)(((uint16_t)data[20] << 8) | data[21]);
+    if ((frag & 0x3fffU) != 0)
+        return false;
+
+    src_port = (uint16_t)(((uint16_t)data[14 + ihl] << 8) |
+            data[14 + ihl + 1]);
+    dst_port = (uint16_t)(((uint16_t)data[14 + ihl + 2] << 8) |
+            data[14 + ihl + 3]);
+    return src_port == 67 && dst_port == 68;
+}
+
 static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
 {
     uint32_t now_ms;
@@ -622,6 +684,7 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     bool is_bc;
     bool is_mc;
     bool is_arp;
+    bool is_dhcp;
 
     if (!bus || !data || len < 14)
         return false;
@@ -630,6 +693,7 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     is_bc = brcmf_eth_is_broadcast(data);
     is_mc = (!is_bc && (data[0] & 0x01)) != 0;
     is_arp = (proto == ETH_P_ARP);
+    is_dhcp = brcmf_eth_is_dhcp(data, len);
 
     if (bus->state == CONNECTED) {
         if (!is_bc && !is_mc && !brcmf_eth_is_local(data)) {
@@ -645,7 +709,7 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
          * (TCP data/ACKs, ARP replies addressed to us), which wedges
          * the link even though the driver stays "connected".
          */
-        if (is_bc && !is_arp) {
+        if (is_bc && !is_arp && !is_dhcp) {
             now_ms = kernel_tic_ms(0);
             if ((now_ms - bus->bc_window_start_ms) >= BRCMF_BC_LIMIT_WINDOW_MS) {
                 bus->bc_window_start_ms = now_ms;
@@ -683,8 +747,12 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
      * continue using peers that already learned our MAC from recent egress.
      * Dropping ARP here makes the link look half-alive on raspix: ping out
      * still works, but fresh inbound reachability and accept() appear dead.
+     * DHCP is equally important during association: broadcast OFFER/ACK
+     * packets are sparse but time critical, and losing them strands the
+     * interface in CONNECTED-without-IP while broadcast traffic keeps
+     * hammering the driver.
      */
-    if (is_arp)
+    if (is_arp || is_dhcp)
         return false;
 
     if (is_bc || is_mc || proto == ETH_P_IPV6)
@@ -693,6 +761,56 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
     /* Keep unicast IP/ARP (and anything else addressed to us): give the
      * consumer a chance to recover with the traffic that matters. */
     return false;
+}
+
+static int brcmf_rx_queue_push_critical(queue_buffer_t *qbuf, uint8_t *buf,
+        int size, bool *evicted)
+{
+    buf_t *dst = NULL;
+    int ret = 0;
+
+    if (evicted)
+        *evicted = false;
+    if (!qbuf || !buf)
+        return 0;
+
+    pthread_mutex_lock(&qbuf->lock);
+    if (qbuf->push_idx - qbuf->pop_idx >= qbuf->qsize) {
+        int idx = qbuf->pop_idx % qbuf->qsize;
+        buf_t *oldest = &qbuf->bufs[idx];
+
+        /*
+         * Keep already-queued ARP/DHCP frames ahead of the newcomer. The
+         * reserve only exists so a storm of low-value traffic cannot starve
+         * the control packets that bring the interface up.
+         */
+        if (oldest->size > 0 && brcmf_eth_is_critical(oldest->data, oldest->size)) {
+            pthread_mutex_unlock(&qbuf->lock);
+            return 0;
+        }
+        qbuf->pop_idx++;
+        if (qbuf->push_idx >= qbuf->qsize && qbuf->pop_idx >= qbuf->qsize) {
+            qbuf->push_idx -= qbuf->qsize;
+            qbuf->pop_idx -= qbuf->qsize;
+        }
+        if (evicted)
+            *evicted = true;
+    }
+
+    if (qbuf->push_idx - qbuf->pop_idx < qbuf->qsize) {
+        int idx = qbuf->push_idx % qbuf->qsize;
+        dst = &qbuf->bufs[idx];
+    }
+
+    if (dst) {
+        size = min(qbuf->bsize, size);
+        memcpy(dst->data, buf, size);
+        dst->size = size;
+        qbuf->push_idx++;
+        ret = size;
+    }
+    pthread_mutex_unlock(&qbuf->lock);
+    return ret;
 }
 
 static void brcmf_maybe_kick_reader(void)
@@ -737,6 +855,7 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->intstatus = 0;
     bus->tx_starving = false;
     bus->tx_starve_usec = 0;
+	bus->state_since_ms = kernel_tic_ms(0);
     bus->rxpending_since_ms = 0;
     bus->last_rx_success_ms = kernel_tic_ms(0);
     if (flush_queues)
@@ -754,6 +873,7 @@ static void brcmf_mark_connected(void)
     bus->last_event_status = 0;
     bus->last_event_reason = 0;
     bus->manual_connect_until_ms = 0;
+	bus->state_since_ms = kernel_tic_ms(0);
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
@@ -776,6 +896,10 @@ static void brcmf_mark_disconnected(const char *reason,
     bus->last_event_type = event_type;
     bus->last_event_status = event_status;
     bus->last_event_reason = event_reason;
+    /* A failed manual attempt must not keep blocking the automatic
+     * scan/connect recovery path with a stale guard deadline. */
+    bus->manual_connect_until_ms = 0;
+	bus->state_since_ms = kernel_tic_ms(0);
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s",
             reason ? reason : "disconnected");
     brcmf_reset_runtime_state(true);
@@ -792,16 +916,17 @@ static void brcmf_mark_disconnected(const char *reason,
 
 static bool brcmf_worker_has_work(void)
 {
-    if (!bus)
+	if (!bus) {
         return false;
-
-    if (bus->ctrl_frame_stat || bus->rxpending)
+	}
+	if (bus->ctrl_frame_stat || bus->rxpending) {
         return true;
-
-    if (bus->tx_queue && queue_buffer_check(bus->tx_queue) > 0)
+	}
+	if (bus->tx_queue && !bus->fcstate &&
+			queue_buffer_check(bus->tx_queue) > 0) {
         return true;
-
-    return bus->state == SCANNING || bus->state == CONNECTING;
+	}
+	return false;
 }
 
 /*
@@ -813,21 +938,32 @@ static bool brcmf_worker_has_work(void)
  */
 static bool brcmf_worker_has_pending_io(void)
 {
-    if (!bus)
-        return false;
+	uint8_t tx_credit;
 
+	if (!bus) {
+        return false;
+	}
     /* RX draining is independent of flow control; only skip while
      * rxskip is blocking progress (recovered via 200ms watchdog). */
-    if (bus->rxpending && !bus->rxskip)
+	if (bus->rxpending && !bus->rxskip) {
         return true;
-
-    /* TX/ctrl only make progress when hardware flow control is off. */
-    if (!bus->fcstate) {
-        if (bus->ctrl_frame_stat)
+	}
+	/* TX/ctrl only make progress when the firmware currently offers TX
+	 * window credits. Without this, a queued DHCP/control frame behind an
+	 * exhausted window keeps the worker on the sleep_us=0 fast path and
+	 * burns CPU even though DPC cannot move a single byte yet. */
+	if (!bus->fcstate) {
+		tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
+		if (tx_credit == 0 || (tx_credit & 0x80) != 0) {
+			return false;
+		}
+		if (bus->ctrl_frame_stat) {
             return true;
-        if (bus->tx_queue && queue_buffer_check(bus->tx_queue) > 0)
+		}
+		if (bus->tx_queue && queue_buffer_check(bus->tx_queue) > 0) {
             return true;
-    }
+		}
+	}
 
     return false;
 }
@@ -925,6 +1061,65 @@ static void brcmf_set_init_failed(int err)
     bus->last_event_reason = 0;
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "init failed");
     brcm_wakeup_dev(VFS_EVT_RD | VFS_EVT_WR);
+}
+
+static volatile int brcm_init_phase;      /* 0=running, 1=probe, 2=preinit */
+static volatile uint32_t brcm_init_phase_ms;
+static volatile bool brcm_worker_exited;
+static pthread_t brcm_worker_tid;
+
+static void brcm_init_phase_mark(int phase)
+{
+    brcm_init_phase_ms = kernel_tic_ms(0);
+    brcm_init_phase = phase;
+}
+
+static void brcmf_wlan_reg_on(bool on)
+{
+    /* WL_REG_ON is a firmware-owned GPIO; the same line main.c pulses
+     * for the first boot. */
+    bcm283x_mailbox_gpio_config(1, true, on);
+}
+
+/*
+ * Full WLAN platform reset: power-cycle the module and re-enumerate the
+ * SDIO card. Used between firmware re-download attempts when the chip
+ * came up wedged (firmware never leaves reset / dead command path).
+ */
+static void brcm_platform_reset(void)
+{
+    brcmf_wlan_reg_on(false);
+    usleep(20000);
+    brcmf_wlan_reg_on(true);
+    usleep(300000);
+    (void)mmc_hw_reset();
+}
+
+/*
+ * Release everything brcmf_sdiod_probe() allocated. The bus pointer is
+ * cleared first so IPC handlers that hit the driver across the restart
+ * gap see NULL and fail gracefully instead of touching freed memory.
+ */
+static void brcmf_probe_cleanup(void)
+{
+    struct brcmf_dev *b = bus;
+
+    bus = NULL;
+    if (!b)
+        return;
+    free(b->rxhdr);
+    free(b->rxctl);
+    if (b->rx_queue)
+        queue_buffer_free(b->rx_queue);
+    if (b->tx_queue)
+        queue_buffer_free(b->tx_queue);
+    free(b);
+}
+
+static void brcmf_teardown_for_restart(void)
+{
+    brcmf_set_init_failed(-EBUSY);
+    brcmf_probe_cleanup();
 }
 
 static inline uint8_t brcmf_sdio_getdatoffset(uint8_t *swheader)
@@ -2826,15 +3021,21 @@ done:
 
 void brcmf_rx_frame(struct sk_buff *skb)
 {
+    bool critical;
+    bool evicted = false;
+
     //remove 4byte head
     skb_pull(skb, 4);
+    critical = brcmf_eth_is_critical(skb->data, skb->len);
     if (brcmf_should_drop_rx_packet(skb->data, skb->len,
             queue_buffer_check(bus->rx_queue))) {
         skb_free(skb);
         return;
     }
     ipc_disable();
-    int pushed = queue_buffer_push(bus->rx_queue, skb->data, skb->len);
+    int pushed = critical ?
+            brcmf_rx_queue_push_critical(bus->rx_queue, skb->data, skb->len, &evicted) :
+            queue_buffer_push(bus->rx_queue, skb->data, skb->len);
     int depth = queue_buffer_check(bus->rx_queue);
     ipc_enable();
     if (pushed == 0) {
@@ -2848,6 +3049,10 @@ void brcmf_rx_frame(struct sk_buff *skb)
          * processes without making any progress.
          */
     } else {
+        if (evicted) {
+            bus->rx_queue_drops++;
+            brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops, depth);
+        }
         bus->rx_fail_count = 0;
         brcm_wakeup_dev(VFS_EVT_RD);
     }
@@ -3732,10 +3937,16 @@ int brcmf_sdiod_probe(void){
 
     err = brcmf_sdio_wait_fw_ready(&sh);
     if (err) {
+        /*
+         * Firmware that never publishes its shared area cannot answer
+         * any ioctl. Fail the probe instead of limping on: the recovery
+         * path power-cycles the chip and retries the download.
+         */
         brcm_log("firmware shared info not ready after download: %d\n", err);
-    } else if (sh.console_addr) {
-        brcm_console_init(sh.console_addr);
+        return err;
     }
+    if (sh.console_addr)
+        brcm_console_init(sh.console_addr);
 
     /* Enable function 2 (frame transfers) */
     brcmf_sdiod_writel(bus->sdio_core->base + SD_REG(tosbmailboxdata),
@@ -3766,18 +3977,35 @@ int brcmf_sdiod_probe(void){
 }
 
 
-void* brcm_thread(void* p) {
+static void* brcm_worker_main(void* p) {
     (void)p;
-    static uint32_t tick = 0;
-    uint32_t next_housekeeping_tick = 0;
-    uint32_t next_scan_tick = 0;
+    uint32_t next_housekeeping_ms = 0;
+    uint32_t next_scan_ms = 0;
     uint32_t sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
     uint32_t spin_loops = 0;
-    int err;
-    err = brcmf_sdiod_probe();
+    int err = -1;
+    int attempt;
+
+    /*
+     * Bring-up retry loop: the BCM43455 firmware occasionally does not
+     * come out of reset after download (no DEVREADY / dead command
+     * path). Instead of dying permanently, retry the full probe (which
+     * re-downloads the firmware) after a complete platform reset.
+     */
+    for (attempt = 1; attempt <= BRCMF_MAX_INIT_ATTEMPTS; attempt++) {
+        brcm_init_phase_mark(1); /* probe */
+        err = brcmf_sdiod_probe();
+        if (!err)
+            break;
+        brcm_log("wlan: probe failed %d (attempt %d/%d)\n",
+                err, attempt, BRCMF_MAX_INIT_ATTEMPTS);
+        brcmf_probe_cleanup();
+        if (attempt < BRCMF_MAX_INIT_ATTEMPTS)
+            brcm_platform_reset();
+    }
     if (err) {
         brcmf_set_init_failed(err);
-        brcm_log("wlan: probe failed %d\n", err);
+        brcm_worker_exited = true;
         return NULL;
     }
 
@@ -3786,6 +4014,7 @@ void* brcm_thread(void* p) {
         usleep(1000);
     }
 
+    brcm_init_phase_mark(2); /* preinit */
     uint32_t value = 0;
     err = brcmf_fil_iovar_data_set(0, "bus:txglom", &value, sizeof(uint32_t));
     if(err){
@@ -3799,11 +4028,13 @@ void* brcm_thread(void* p) {
 
     err = brcmf_c_preinit_dcmds();
     if (err) {
-        brcmf_set_init_failed(err);
         brcm_log("wlan: preinit failed %d\n", err);
+        brcmf_teardown_for_restart();
+        brcm_worker_exited = true;
         return NULL;
     }
 
+    brcm_init_phase_mark(0); /* running */
     while(1){
         bool busy = brcmf_worker_has_work();
         bool run_dpc = busy || brcmf_worker_irq_pending();
@@ -3811,13 +4042,23 @@ void* brcm_thread(void* p) {
         if (run_dpc)
             brcmf_sdio_dpc();
 
-        if (run_dpc && brcmf_diag_last_dpc_usec() >= BRCMF_DPC_SLOW_USEC) {
+        if (run_dpc && brcmf_diag_last_dpc_usec() >= BRCMF_DPC_SLOW_USEC)
             usleep(BRCMF_WORKER_POST_SLOW_DPC_YIELD_US);
-            tick += BRCMF_WORKER_POST_SLOW_DPC_YIELD_US / 1000;
-        }
 
-        if (tick >= next_housekeeping_tick) {
-            next_housekeeping_tick = tick + 1000;
+        /*
+         * Housekeeping runs on the kernel wall clock, not on accumulated
+         * usleep requests. usleep() is quantised to scheduler ticks and the
+         * sleep_us=0/short-yield fast path can run thousands of iterations
+         * per millisecond, so a locally accumulated tick stalls far behind
+         * real time (and stops entirely on the zero-sleep path). That wedged
+         * the scan/connect state machine: timeouts and scan retries gated on
+         * it never fired, leaving the worker spinning in DPC forever while
+         * DHCP never came up. kernel_tic_ms() also shares the clock domain
+         * with manual_connect_until_ms set by brcm_connect_ap().
+         */
+        uint32_t now_ms = kernel_tic_ms(0);
+        if (now_ms >= next_housekeeping_ms) {
+            next_housekeeping_ms = now_ms + 1000;
             /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
@@ -3853,17 +4094,45 @@ void* brcm_thread(void* p) {
                 }
             }
 
-            if (tick >= next_scan_tick && bus->state != CONNECTED) {
-                if (brcmf_manual_connect_guard_active(tick)) {
-                    next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
+			if (bus->state == SCANNING &&
+					(now_ms - bus->state_since_ms) > BRCMF_SCAN_TIMEOUT_MS) {
+				brcmf_mark_disconnected("scan timeout", BRCMF_E_SCAN_COMPLETE, 0, 0);
+			} else if (bus->state == CONNECTING &&
+					(now_ms - bus->state_since_ms) > BRCMF_CONNECT_TIMEOUT_MS) {
+				brcmf_mark_disconnected("connect timeout", BRCMF_E_SET_SSID, 0, 0);
+			}
+
+            if (now_ms >= next_scan_ms && bus->state != CONNECTED) {
+                if (brcmf_manual_connect_guard_active(now_ms)) {
+                    next_scan_ms = now_ms + BRCMF_SCAN_RETRY_TICK;
                     goto worker_done;
                 }
-                next_scan_tick = tick + BRCMF_SCAN_RETRY_TICK;
+                next_scan_ms = now_ms + BRCMF_SCAN_RETRY_TICK;
                 brcmf_scan_cache_clear();
                 memset(bus->ssid, 0, sizeof(bus->ssid));
                 bus->scan_results_ready = false;
                 bus->state = SCANNING;
-                scan();
+				bus->state_since_ms = kernel_tic_ms(0);
+                int scan_err = scan();
+                if (scan_err) {
+                    /*
+                     * Consecutive scan-command failures mean the firmware
+                     * command path is dead (firmware crash / card fell off
+                     * the bus). Normal link trouble surfaces as events,
+                     * not command errors. Tear everything down and let the
+                     * lifecycle thread restart the whole stack.
+                     */
+                    bus->scan_cmd_fail_streak++;
+                    if (bus->scan_cmd_fail_streak >= BRCMF_FW_DEAD_SCAN_STREAK) {
+                        brcm_log("wlan: %u consecutive scan cmd failures, restarting chip\n",
+                                (unsigned)bus->scan_cmd_fail_streak);
+                        brcmf_teardown_for_restart();
+                        brcm_worker_exited = true;
+                        return NULL;
+                    }
+                } else {
+                    bus->scan_cmd_fail_streak = 0;
+                }
             }
 
             if (bus->state == SCANNING && strlen(bus->ssid) == 0 && bus->scan_results_ready) {
@@ -3872,6 +4141,7 @@ void* brcm_thread(void* p) {
                 if (strlen(bus->ssid) == 0) {
                     brcmf_scan_set_mpc(true);
                     bus->state = DISCONNECTED;
+					bus->state_since_ms = kernel_tic_ms(0);
                 }
             }
 
@@ -3888,6 +4158,7 @@ void* brcm_thread(void* p) {
                         to_str(pmkstr, pmk, 32);
                         brcmf_scan_set_mpc(true);
                         bus->state = CONNECTING;
+						bus->state_since_ms = kernel_tic_ms(0);
                         connect(bus->ssid, pmkstr);
                     }else{
                         brcm_log("no passwd fond for ssid: %s\n", config_get_ssid(idx));
@@ -3895,6 +4166,7 @@ void* brcm_thread(void* p) {
                 }else{
                     brcmf_scan_set_mpc(true);
                     bus->state = CONNECTING;
+					bus->state_since_ms = kernel_tic_ms(0);
                     connect(bus->ssid, pmk);
                 }
             }
@@ -3929,7 +4201,6 @@ worker_done:
         }
 
         usleep(sleep_us);
-        tick += sleep_us / 1000;
     }
 }
 
@@ -4004,6 +4275,7 @@ int brcm_connect_ap(const char *ssid, const char *passwd)
     memset(bus->ssid, 0, sizeof(bus->ssid));
     memcpy(bus->ssid, ssid, min_t(size_t, ssid_len, sizeof(bus->ssid) - 1));
     bus->state = CONNECTING;
+	bus->state_since_ms = kernel_tic_ms(0);
     bus->last_error = 0;
     bus->last_event_type = 0;
     bus->last_event_status = 0;
@@ -4144,6 +4416,65 @@ char* brcm_scan_list(void)
     return ret;
 }
 
+/*
+ * Lifecycle watchdog: the worker thread can exit on its own (bring-up
+ * failed after retries, firmware died at runtime) or wedge inside init
+ * (firmware never leaves reset while the worker sits in a probe/preinit
+ * wait loop). In either case power-cycle the chip and restart the worker
+ * instead of leaving the wlan device dead forever.
+ */
+static void *brcm_lifecycle_thread(void *p)
+{
+    (void)p;
+    uint32_t restart_rounds = 0;
+
+    while (1) {
+        usleep(1000000);
+
+        uint32_t now = kernel_tic_ms(0);
+        int phase = brcm_init_phase;
+        if (phase != 0) {
+            uint32_t limit = (phase == 1) ? BRCMF_INIT_PROBE_TIMEOUT_MS
+                                          : BRCMF_INIT_PREINIT_TIMEOUT_MS;
+            if ((now - brcm_init_phase_ms) > limit) {
+                /* Worker stuck inside init: yank the chip out from under
+                 * it so the in-flight SDIO ops fail and the probe aborts. */
+                brcm_log("wlan: init phase %d stuck >%ums, power-cycling chip\n",
+                        phase, (unsigned)limit);
+                brcm_init_phase_ms = now;
+                brcmf_wlan_reg_on(false);
+                usleep(20000);
+                brcmf_wlan_reg_on(true);
+                usleep(300000);
+            }
+            continue;
+        }
+
+        if (!brcm_worker_exited)
+            continue;
+        brcm_worker_exited = false;
+
+        if (restart_rounds >= BRCMF_MAX_RESTART_ROUNDS) {
+            brcm_log("wlan: giving up after %u restart rounds\n",
+                    (unsigned)restart_rounds);
+            while (1)
+                usleep(1000000);
+        }
+        restart_rounds++;
+
+        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 : 30000;
+        brcm_log("wlan: worker exited, full restart #%u in %ums\n",
+                (unsigned)restart_rounds, (unsigned)delay_ms);
+        usleep(delay_ms * 1000);
+
+        brcm_platform_reset();
+        int ret = pthread_create(&brcm_worker_tid, NULL, brcm_worker_main, NULL);
+        if (ret != 0)
+            brcm_log("wlan: worker restart failed %d\n", ret);
+    }
+    return NULL;
+}
+
 int brcm_init(void){
     int ret;
     ret = mmc_hw_reset();
@@ -4153,10 +4484,15 @@ int brcm_init(void){
     }
     brcmf_sync_init();
     config_init(NULL);
-    pthread_t tid;
-	ret = pthread_create(&tid, NULL, brcm_thread, NULL);
+    ret = pthread_create(&brcm_worker_tid, NULL, brcm_worker_main, NULL);
     if (ret != 0) {
         brcm_log("wlan: pthread_create failed %d\n", ret);
+        return ret;
+    }
+    pthread_t tid;
+    ret = pthread_create(&tid, NULL, brcm_lifecycle_thread, NULL);
+    if (ret != 0) {
+        brcm_log("wlan: lifecycle thread create failed %d\n", ret);
         return ret;
     }
     return 0;
@@ -4192,15 +4528,20 @@ int brcm_connected(void)
 
 int brcm_tx_writable(void)
 {
-    if (bus == NULL || bus->tx_queue == NULL)
+	if (bus == NULL || bus->tx_queue == NULL) {
         return 0;
-    if (bus->state != CONNECTED)
+	}
+	if (bus->state != CONNECTED) {
         return 0;
+	}
+	if (bus->fcstate) {
+		return 0;
+	}
 
     /*
-     * vdevice write() only enqueues into tx_queue. Report WR readiness only
-     * while that software queue still has room, otherwise pollers (telnetd,
-     * netd, sshd) spin on VFS_ERR_RETRY even though the WLAN path is stalled.
+	 * Only report WR when the software queue has room and the firmware is not
+	 * currently flow-blocking TX; otherwise pollers wake immediately forever
+	 * while frames cannot actually move.
      */
     return queue_buffer_check(bus->tx_queue) < bus->tx_queue->qsize;
 }

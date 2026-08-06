@@ -33,6 +33,21 @@ queue_buffer_t *queue_buffer_alloc(int qsize, int bsize){
 	return qbuf;
 }
 
+void queue_buffer_free(queue_buffer_t *qbuf){
+	int i;
+
+	if(!qbuf)
+		return;
+	if(qbuf->bufs){
+		for(i = 0; i < qbuf->qsize; i++){
+			free(qbuf->bufs[i].data);
+		}
+		free(qbuf->bufs);
+	}
+	pthread_mutex_destroy(&qbuf->lock);
+	free(qbuf);
+}
+
 int queue_buffer_push(queue_buffer_t *qbuf, uint8_t* buf, int size){
 	buf_t *dst = NULL;
 	int ret = 0;
