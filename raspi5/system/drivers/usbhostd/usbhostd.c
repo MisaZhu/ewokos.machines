@@ -242,6 +242,7 @@ typedef enum {
 typedef struct {
 	bool present;
 	bool is_hub;
+	bool unsupported;    /* enumerated, but no interface we can drive */
 	uint8_t hub_ports;
 	int8_t parent;       /* _devs index of parent hub, -1 = root port */
 	uint8_t parent_port; /* hub port (1-based) when parent >= 0 */
@@ -928,11 +929,43 @@ static int usb_hub_port_feature(xhci_dev_t* xdev, uint8_t port,
 	return xhci_control_xfer(xdev, &setup, NULL, false);
 }
 
+/*
+ * A STALL leaves the halt latched on both sides: xhci_int_in_poll() already
+ * did Reset Endpoint + Set TR Dequeue on the controller side, but the device
+ * keeps returning STALL until its own halt feature is cleared (USB 2.0
+ * 9.4.5). Without this the endpoint stalls forever after one protocol error
+ * and the input goes dead until replug.
+ */
+static int usb_clear_ep_halt(xhci_dev_t* xdev, uint8_t ep_addr) {
+	usb_setup_pkt_t setup;
+	memset(&setup, 0, sizeof(setup));
+	setup.bmRequestType = USB_REQTYPE_STD_EP_OUT;
+	setup.bRequest = USB_REQ_CLEAR_FEATURE;
+	setup.wValue = USB_FEAT_ENDPOINT_HALT;
+	setup.wIndex = ep_addr;
+	return xhci_control_xfer(xdev, &setup, NULL, false);
+}
+
 /* ---------------- device table ---------------- */
+
+static void usb_dev_remove(int idx);
 
 static int usb_dev_alloc(void) {
 	for (int i = 0; i < USB_MAX_DEVS; ++i) {
 		if (!_devs[i].present) {
+			return i;
+		}
+	}
+	/*
+	 * Parked unsupported devices (see usb_enumerate_device) hold their slot
+	 * on purpose, so reclaim one before giving up: a device we can actually
+	 * drive is always worth more than a stick we only keep to avoid
+	 * re-enumerating it.
+	 */
+	for (int i = 0; i < USB_MAX_DEVS; ++i) {
+		if (_devs[i].unsupported) {
+			slog("usbhostd: evict parked dev=%d to free a slot\n", i);
+			usb_dev_remove(i);
 			return i;
 		}
 	}
@@ -1334,9 +1367,16 @@ static int usb_enumerate_device(xhci_hc_t* hc, int root_port, int speed,
 	}
 
 	if (registered == 0) {
-		/* nothing usable on it: free the slot, but keep the device
-		   addressed so it stays quiet on the bus */
-		usb_dev_remove(dev_idx);
+		/*
+		 * Nothing we can drive on it. Keep the slot: it stays addressed
+		 * and configured, so it is quiet on the bus and — more
+		 * importantly — usb_scan_hc()/usb_hub_scan() see have_dev and
+		 * stop re-running the whole descriptor walk once a second for
+		 * every mass-storage stick or printer plugged in. The slot is
+		 * released for real when the port reports a disconnect.
+		 */
+		dev->unsupported = true;
+		slog("usbhostd: dev=%d no supported interface, slot parked\n", dev_idx);
 		return 0;
 	}
 	return registered;
@@ -1536,6 +1576,14 @@ static bool usb_poll_inputs(vdevice_t* dev) {
 		memset(report, 0, sizeof(report));
 		ret = xhci_int_in_poll(&_devs[in->dev_idx].xdev, in->ep_addr,
 				report, sizeof(report));
+		if (ret == -2) {
+			/* STALL: the controller-side ring is already recovered, now
+			   clear the device-side halt or it stalls again forever */
+			slog("usbhostd: input slot=%d ep=%02x stalled, clearing halt\n",
+					i, in->ep_addr);
+			(void)usb_clear_ep_halt(&_devs[in->dev_idx].xdev, in->ep_addr);
+			continue;
+		}
 		if (ret <= 0) {
 			/* 0: hardware still polling the device; <0: transient error,
 			   the ring was recovered and the next call re-arms it */
@@ -1743,24 +1791,40 @@ int main(int argc, char** argv) {
 			(ewokos_addr_t)sysinfo.mmio.v_base,
 			(ewokos_addr_t)sysinfo.mmio.phy_base,
 			(ewokos_addr_t)sysinfo.mmio.size);
-	syscall3(SYS_MEM_MAP,
+	/*
+	 * sys_mem_map() returns 0 and installs *nothing* when the request misses
+	 * check_mem_map_arch()'s whitelist, so an unchecked failure here would
+	 * turn the first CAPLENGTH read into a data abort that kills the daemon —
+	 * and a dead child leaves ipcserv spinning in ipc_ping() forever.
+	 */
+	bool rp1_mapped = syscall3(SYS_MEM_MAP,
 			_mmio_base + PI5_RP1_WIN_OFF,
 			PI5_RP1_PHY,
-			PI5_RP1_WIN_SIZE);
+			PI5_RP1_WIN_SIZE) != 0;
 
-	if (xhci_dma_init() != 0) {
-		klog("usbhostd: dma_init_failed\n");
-		return -1;
+	/*
+	 * Never bail out before device_run(): ipcserv blocks in ipc_wait_ready()
+	 * until the child registers its mount point, so exiting here would hang
+	 * init.rd forever instead of just losing USB. Degrade instead — every
+	 * xhci path is already gated on hc->present, so with no controller the
+	 * loop only sleeps and /dev/hid0 stays readable (empty).
+	 */
+	if (!rp1_mapped) {
+		klog("usbhostd: rp1 window map failed, running without usb\n");
 	}
-	if (xhci_init(&_hcs[0], 0, _mmio_base + RP1_XHCI0_OFF) == 0) {
-		found++;
+	else if (xhci_dma_init() != 0) {
+		klog("usbhostd: dma_init_failed, running without usb\n");
 	}
-	if (xhci_init(&_hcs[1], 1, _mmio_base + RP1_XHCI1_OFF) == 0) {
-		found++;
+	else {
+		if (xhci_init(&_hcs[0], 0, _mmio_base + RP1_XHCI0_OFF) == 0) {
+			found++;
+		}
+		if (xhci_init(&_hcs[1], 1, _mmio_base + RP1_XHCI1_OFF) == 0) {
+			found++;
+		}
 	}
 	if (found == 0) {
-		klog("usbhostd: no xhci controller found\n");
-		return -1;
+		klog("usbhostd: no xhci controller found, running without usb\n");
 	}
 
 	memset(_devs, 0, sizeof(_devs));

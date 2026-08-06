@@ -71,7 +71,7 @@ typedef struct xhci_dev {
 	uint8_t  root_port;     /* 1-based root hub port */
 	uint32_t route;         /* xHCI route string */
 	uint8_t  depth;         /* 0 = attached to root port */
-	uint8_t  mps0;          /* current EP0 max packet size */
+	uint16_t mps0;          /* current EP0 max packet size, in bytes */
 	/* TT info for LS/FS devices behind a HS hub */
 	uint8_t  tt_slot;
 	uint8_t  tt_port;
@@ -86,6 +86,12 @@ typedef struct xhci_dev {
 
 struct xhci_hc {
 	bool     present;
+	/*
+	 * Sticky: USBSTS reported HSE/HCE, the controller is dead until the
+	 * whole daemon restarts. Every entry point turns into a no-op so the
+	 * poll loop stops burning time on a controller that will never answer.
+	 */
+	bool     failed;
 	int      id;            /* 0 or 1 */
 	ewokos_addr_t base;     /* capability register base (virtual) */
 	ewokos_addr_t op;       /* operational registers */

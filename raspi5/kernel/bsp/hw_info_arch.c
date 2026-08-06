@@ -160,7 +160,7 @@ void arch_vm(page_dir_entry_t* vm) {
 			     PI5_EMMC_PHY_WIN + i * PAGE_SIZE);
 	}
 
-	/* RP1 southbridge window: 32 MB at 0x1F_00000000 */
+	/* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */
 	for (uint32_t i = 0; i < PI5_RP1_SIZE / PAGE_SIZE; i++) {
 		set_page_dev(vm, MMIO_BASE + PI5_RP1_WIN_OFF + i * PAGE_SIZE,
 			     PI5_RP1_PHY + i * PAGE_SIZE);
@@ -255,7 +255,7 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 	    phy_base + size <= PI5_EMMC_PHY_WIN + 2 * MB)
 		return 0;
 
-	/* RP1 southbridge window: 32 MB at 0x1F_00000000 */
+	/* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */
 	if (phy_base >= PI5_RP1_PHY &&
 	    phy_base + size <= PI5_RP1_PHY + PI5_RP1_SIZE)
 		return 0;

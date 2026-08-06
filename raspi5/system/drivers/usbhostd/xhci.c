@@ -49,7 +49,14 @@
 #define USBCMD_HCRST     (1u << 1)
 
 #define USBSTS_HCH       (1u << 0)
+#define USBSTS_HSE       (1u << 2)  /* RW1C: host system error (bus fault) */
 #define USBSTS_CNR       (1u << 11)
+#define USBSTS_HCE       (1u << 12) /* RO: internal controller error */
+
+/* CRCR: command ring control */
+#define CRCR_CS          (1u << 1)  /* command stop */
+#define CRCR_CA          (1u << 2)  /* command abort */
+#define CRCR_CRR         (1u << 3)  /* RO: command ring running */
 
 /* PORTSC bits */
 #define PORTSC_CCS       (1u << 0)
@@ -114,6 +121,8 @@
 #define CC_TX_ERR        4
 #define CC_STALL         6
 #define CC_SHORT_PKT     13
+#define CC_CMD_RING_STOP 24
+#define CC_CMD_ABORTED   25
 
 /* ring geometry: 64 TRBs, last one reserved for the link TRB */
 #define RING_TRBS        64
@@ -123,6 +132,7 @@
 
 /* timeouts */
 #define XHCI_CMD_TIMEOUT_MS   1000
+#define XHCI_CMD_ABORT_TIMEOUT_MS 100
 #define XHCI_CTRL_TIMEOUT_MS  1000
 #define XHCI_RESET_TIMEOUT_MS 500
 
@@ -130,11 +140,18 @@
  * DMA pool: one big uncached sys_dma allocation carved into
  *  - a bump region for per-controller globals (never freed)
  *  - fixed 16KB per-device arenas (freed on detach)
- * A 16KB-aligned 16KB arena never crosses a 64KB boundary, satisfying
- * the TRB ring segment rule, and the 4K-aligned context slots inside
- * never cross a page, satisfying the context rules.
+ *
+ * xHCI 1.2 4.11.5.1 requires that a TRB ring segment never cross a 64KB
+ * boundary, and 6.1/6.2 that a device/input context never cross a page.
+ * dma_alloc() only guarantees PAGE_SIZE alignment (the kernel rounds the
+ * *size* up to a page and splits its free list), so the pool base is
+ * realigned to 64KB here. With a 64KB-aligned base every block handed out
+ * at its own natural (power-of-two) alignment is automatically inside a
+ * single 64KB window, which is why the ring allocations below ask for
+ * align == size rather than 64.
  */
 #define XHCI_DMA_POOL_SIZE  (1024 * 1024)
+#define XHCI_RING_BOUNDARY  0x10000u
 #define XHCI_ARENA_SIZE     0x4000
 #define XHCI_ARENA_COUNT    16
 
@@ -171,13 +188,24 @@ static inline void w64(ewokos_addr_t addr, uint64_t val) {
 }
 
 int xhci_dma_init(void) {
-	ewokos_addr_t virt = dma_alloc(0, XHCI_DMA_POOL_SIZE);
-	if (virt == 0) {
-		klog("xhci: dma pool alloc failed (%u bytes)\n", XHCI_DMA_POOL_SIZE);
+	/* over-allocate one boundary so the pool can start on a 64KB line */
+	ewokos_addr_t raw = dma_alloc(0, XHCI_DMA_POOL_SIZE + XHCI_RING_BOUNDARY);
+	if (raw == 0) {
+		klog("xhci: dma pool alloc failed (%u bytes)\n",
+				XHCI_DMA_POOL_SIZE + XHCI_RING_BOUNDARY);
 		return -1;
 	}
-	_pool.virt = (uint8_t*)virt;
-	_pool.bus = (uint64_t)dma_phy_addr(0, virt) + RP1_PCIE_DMA_OFFSET;
+	ewokos_addr_t phy = dma_phy_addr(0, raw);
+	if (phy == 0) {
+		klog("xhci: dma pool phy addr failed\n");
+		return -1;
+	}
+	/* the DMA window is mapped linearly, so the same pad aligns both views;
+	   RP1_PCIE_DMA_OFFSET is 64KB-aligned and does not disturb it */
+	uint32_t pad = (uint32_t)((XHCI_RING_BOUNDARY - (phy & (XHCI_RING_BOUNDARY - 1u)))
+			& (XHCI_RING_BOUNDARY - 1u));
+	_pool.virt = (uint8_t*)(raw + pad);
+	_pool.bus = (uint64_t)(phy + pad) + RP1_PCIE_DMA_OFFSET;
 	_pool.used = 0;
 	memset(_pool.virt, 0, XHCI_DMA_POOL_SIZE);
 	memset(_arenas, 0, sizeof(_arenas));
@@ -323,8 +351,41 @@ static void handle_xfer_event(xhci_hc_t* hc, uint32_t d0, uint32_t d1,
 	ep->short_left = 0;
 }
 
+/*
+ * HSE (a bus fault while the controller was mastering DMA) and HCE (an
+ * internal controller error) both stop the controller dead: xHCI 1.2 4.10.2.6
+ * and 5.4.2 say the only way out is a full HCRST + re-init. Re-init is not
+ * possible here because the DMA pool is a bump allocator with no free path, so
+ * latch the failure and stop poking the hardware. Without this check every
+ * later command sits out its full timeout and the event ring reads back
+ * garbage that would be mistaken for real completions.
+ */
+static bool hc_check_fatal(xhci_hc_t* hc) {
+	uint32_t sts;
+
+	if (hc->failed) {
+		return true;
+	}
+	sts = get32(hc->op + XHCI_USBSTS);
+	if ((sts & (USBSTS_HSE | USBSTS_HCE)) == 0) {
+		return false;
+	}
+	if ((sts & USBSTS_HSE) != 0) {
+		put32(hc->op + XHCI_USBSTS, USBSTS_HSE); /* RW1C, ack it once */
+	}
+	klog("xhci%d: fatal controller error usbsts=%08x, disabling\n",
+			hc->id, sts);
+	hc->failed = true;
+	hc->present = false;
+	return true;
+}
+
 void xhci_process_events(xhci_hc_t* hc) {
 	int handled = 0;
+
+	if (hc_check_fatal(hc)) {
+		return;
+	}
 
 	while (handled < EVT_TRBS) {
 		uint32_t* e = &hc->evt[hc->evt_deq * 4];
@@ -373,9 +434,44 @@ void xhci_process_events(xhci_hc_t* hc) {
 
 /* ---------------- commands ---------------- */
 
+/*
+ * A timed-out command is still queued on the controller's command ring, so
+ * simply returning would leave the ring and our enqueue pointer out of step
+ * and every later command would be matched against a stale TRB address.
+ * xHCI 1.2 4.6.1.2: write CRCR.CA, wait for CRR to drop, then restart the
+ * ring from a known-good state.
+ */
+static void cmd_abort(xhci_hc_t* hc) {
+	uint64_t deadline;
+
+	w64(hc->op + XHCI_CRCR, CRCR_CA);
+	deadline = now_ms() + XHCI_CMD_ABORT_TIMEOUT_MS;
+	while ((get32(hc->op + XHCI_CRCR) & CRCR_CRR) != 0) {
+		if (now_ms() > deadline) {
+			klog("xhci%d: command abort timeout, controller wedged\n", hc->id);
+			hc->failed = true;
+			hc->present = false;
+			return;
+		}
+		xhci_process_events(hc);
+		usleep(100);
+	}
+	/* drain the Command Ring Stopped/Aborted events the abort generated */
+	xhci_process_events(hc);
+	memset(hc->cmd, 0, RING_BYTES);
+	hc->cmd_enq = 0;
+	hc->cmd_cycle = 1;
+	hc->cmd_done = false;
+	hc->cmd_trb_phys = 0;
+	w64(hc->op + XHCI_CRCR, hc->cmd_phys | 1u); /* RCS = 1 */
+}
+
 /* submit one command TRB and poll for its completion event */
 static int xhci_cmd(xhci_hc_t* hc, uint32_t d0, uint32_t d1, uint32_t d2,
 		uint32_t d3, uint8_t* slot_out) {
+	if (hc->failed) {
+		return -1;
+	}
 	hc->cmd_done = false;
 	hc->cmd_trb_phys = ring_push(hc->cmd, hc->cmd_phys,
 			&hc->cmd_enq, &hc->cmd_cycle, false, d0, d1, d2, d3);
@@ -387,8 +483,12 @@ static int xhci_cmd(xhci_hc_t* hc, uint32_t d0, uint32_t d1, uint32_t d2,
 		if (hc->cmd_done) {
 			break;
 		}
+		if (hc->failed) {
+			return -1;
+		}
 		if (now_ms() > deadline) {
 			klog("xhci%d: cmd type=%u timeout\n", hc->id, TRB_GET_TYPE(d3));
+			cmd_abort(hc);
 			return -1;
 		}
 		usleep(100);
@@ -471,10 +571,10 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
 		hc->dcbaa[0] = arr_bus;
 	}
 
-	/* command ring */
-	hc->cmd = xhci_dma_alloc(RING_BYTES, 64, &hc->cmd_phys);
-	/* event ring + single-entry ERST */
-	hc->evt = xhci_dma_alloc(EVT_BYTES, 64, &hc->evt_phys);
+	/* command ring: aligned to its own size so it stays in one 64KB window */
+	hc->cmd = xhci_dma_alloc(RING_BYTES, RING_BYTES, &hc->cmd_phys);
+	/* event ring + single-entry ERST, same 64KB rule */
+	hc->evt = xhci_dma_alloc(EVT_BYTES, EVT_BYTES, &hc->evt_phys);
 	uint64_t* erst = xhci_dma_alloc(16, 64, &hc->erst_phys);
 	if (hc->cmd == NULL || hc->evt == NULL || erst == NULL) {
 		return -1;
@@ -713,7 +813,7 @@ int xhci_device_attach(xhci_hc_t* hc, int root_port, int speed,
 		xhci_device_detach(dev);
 		return -1;
 	}
-	dev->mps0 = (uint8_t)(ep0->mps > 255 ? 0 : ep0->mps);
+	dev->mps0 = ep0->mps;
 	return 0;
 }
 
@@ -730,9 +830,22 @@ void xhci_device_detach(xhci_dev_t* dev) {
 	memset(dev, 0, sizeof(*dev));
 }
 
+/*
+ * USB 2.0 9.6.1 / USB 3.x 9.6.1: for full/high speed bMaxPacketSize0 is the
+ * size in bytes (8/16/32/64), but for SuperSpeed it is an exponent and the
+ * only legal value is 9, meaning 512. Taking it literally would program a
+ * 9-byte EP0 and every control transfer on an SS device would fail.
+ */
+static uint16_t decode_mps0(int speed, uint8_t mps0) {
+	if (speed >= XHCI_SPEED_SUPER) {
+		return mps0 == 0 ? 512 : (uint16_t)(1u << (mps0 > 9 ? 9 : mps0));
+	}
+	return mps0 == 0 ? 8 : (uint16_t)mps0;
+}
+
 int xhci_update_mps0(xhci_dev_t* dev, uint8_t mps0) {
 	xhci_ep_t* ep0 = &dev->eps[1];
-	uint16_t mps = mps0 == 0 ? 8 : mps0;
+	uint16_t mps = decode_mps0(dev->speed, mps0);
 	if (ep0->mps == mps) {
 		return 0;
 	}
@@ -752,7 +865,7 @@ int xhci_update_mps0(xhci_dev_t* dev, uint8_t mps0) {
 	if (code != CC_SUCCESS) {
 		return -1;
 	}
-	dev->mps0 = mps0;
+	dev->mps0 = mps;
 	return 0;
 }
 
@@ -791,22 +904,32 @@ static int ep_wait(xhci_dev_t* dev, xhci_ep_t* ep, uint32_t timeout_ms) {
 
 /*
  * After a STALL or transaction error the endpoint is halted: recover with
- * Reset Endpoint + Set TR Dequeue so the ring can be reused. The caller
- * still has to clear the device-side halt (CLEAR_FEATURE) for non-EP0.
+ * Reset Endpoint + Set TR Dequeue so the ring can be reused. For non-EP0 the
+ * device still has its own halt latched; xhci_int_in_poll() reports STALL as
+ * -2 so usbhostd can follow up with CLEAR_FEATURE(ENDPOINT_HALT).
  */
 static void ep_recover(xhci_dev_t* dev, uint32_t dci) {
 	xhci_ep_t* ep = &dev->eps[dci];
 	xhci_hc_t* hc = dev->hc;
 
+	ep->in_flight = false;
+	ep->done = false;
+	ep->short_left = 0;
+	/*
+	 * The usual reason a transfer fails is that the device was unplugged.
+	 * Both commands below would then sit out their full timeout, so the
+	 * poll loop would freeze for seconds on every yank. Check the root port
+	 * first and let the periodic scan tear the slot down instead.
+	 */
+	if (hc->failed || !xhci_port_connected(hc, dev->root_port)) {
+		return;
+	}
 	xhci_cmd(hc, 0, 0, 0, TRB_TYPE(TRB_RESET_EP) |
 			(dci << 16) | ((uint32_t)dev->slot_id << 24), NULL);
 	uint64_t deq = (ep->ring_phys + (uint64_t)ep->enq * 16u) | ep->cycle;
 	xhci_cmd(hc, (uint32_t)deq, (uint32_t)(deq >> 32), 0,
 			TRB_TYPE(TRB_SET_TR_DEQ) |
 			(dci << 16) | ((uint32_t)dev->slot_id << 24), NULL);
-	ep->in_flight = false;
-	ep->done = false;
-	ep->short_left = 0;
 }
 
 int xhci_control_xfer(xhci_dev_t* dev, const usb_setup_pkt_t* setup,
@@ -880,15 +1003,23 @@ int xhci_control_xfer(xhci_dev_t* dev, const usb_setup_pkt_t* setup,
 /* interrupt interval -> xHCI EP context interval exponent (125us * 2^n) */
 static uint32_t int_interval(int speed, uint8_t bInterval) {
 	uint32_t exp;
-	if (speed == XHCI_SPEED_HIGH || speed == XHCI_SPEED_SUPER) {
+	if (speed == XHCI_SPEED_HIGH || speed >= XHCI_SPEED_SUPER) {
 		/* bInterval is 1-16, period = 2^(bInterval-1) microframes */
-		exp = bInterval == 0 ? 0 : (uint32_t)bInterval - 1u;
+		uint32_t bi = bInterval == 0 ? 1u : (bInterval > 16u ? 16u : bInterval);
+		exp = bi - 1u;
 	}
 	else {
-		/* LS/FS: bInterval in ms, pick 2^exp * 125us >= bInterval ms */
+		/*
+		 * LS/FS: bInterval is in ms and xHCI 1.2 table 6-12 wants it
+		 * rounded *down* to the nearest base-2 multiple, i.e. the largest
+		 * 2^exp * 125us that still fits in bInterval ms. Rounding up
+		 * would poll slower than the device asked for (a 10ms mouse
+		 * would land on 16ms) and, worse, can exceed the 255ms cap the
+		 * spec puts on the FS/LS interval field.
+		 */
 		uint32_t ms = bInterval == 0 ? 1 : bInterval;
 		exp = 3; /* 1ms */
-		while (exp < 10 && (1u << exp) < ms * 8u) {
+		while (exp < 10 && (1u << (exp + 1u)) <= ms * 8u) {
 			exp++;
 		}
 	}
@@ -906,7 +1037,7 @@ int xhci_int_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
 	xhci_ep_t* ep = &dev->eps[dci];
 
 	memset(ep, 0, sizeof(*ep));
-	ep->ring = arena_alloc(arena, RING_BYTES, 64, &ep->ring_phys);
+	ep->ring = arena_alloc(arena, RING_BYTES, RING_BYTES, &ep->ring_phys);
 	uint32_t buf_size = (mps + 63u) & ~63u;
 	ep->data = arena_alloc(arena, buf_size, 64, &ep->data_phys);
 	if (ep->ring == NULL || ep->data == NULL) {
@@ -936,7 +1067,14 @@ int xhci_int_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
 	epc[1] = (3u << 1) | (7u << 3) | ((uint32_t)mps << 16);
 	epc[2] = (uint32_t)(ep->ring_phys | 1u);
 	epc[3] = (uint32_t)(ep->ring_phys >> 32);
-	epc[4] = mps; /* average TRB length */
+	/*
+	 * Low 16 bits: Average TRB Length. High 16 bits: Max ESIT Payload Lo
+	 * (xHCI 1.2 6.2.3.6) = mps * (MaxBurst+1) * (Mult+1); both are 0 here,
+	 * so it is just mps. Leaving it at zero makes the controller reserve no
+	 * periodic bandwidth for the endpoint, and Configure Endpoint is
+	 * rejected with a bandwidth error on the stricter DWC3 cores.
+	 */
+	epc[4] = (uint32_t)mps | ((uint32_t)mps << 16);
 
 	int code = xhci_cmd(dev->hc, (uint32_t)dev->in_ctx_phys,
 			(uint32_t)(dev->in_ctx_phys >> 32), 0,
