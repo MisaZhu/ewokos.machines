@@ -32,6 +32,14 @@
 #define PI5_EMMC_OFF        0x001FF000      /* SD host @ 0x1000FFF000    */
 #define PI5_EMMC_BASE       (MMIO_BASE + PI5_EMMC_WIN_OFF + PI5_EMMC_OFF)
 
+/* BCM2712 PCIe2 root complex used by the onboard RP1 southbridge. */
+#define PI5_PCIE2_WIN_OFF   0x04400000
+#define PI5_PCIE2_PHY       0x1000120000UL
+#define PI5_PCIE2_SIZE      (64*KB)
+#define PI5_RESET_PAGE_PHY  0x1001504000UL
+#define PI5_RESCAL_PAGE_PHY 0x1000119000UL
+#define PI5_RESET_PAGE_SIZE PAGE_SIZE
+
 /*
  * RP1 has to stay strictly inside MMIO_MAX_SIZE. At offset 0x08000000 it sat
  * at exactly MMIO_BASE + MMIO_MAX_SIZE, which is DMA_V_BASE: its 32MB device

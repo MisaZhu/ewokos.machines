@@ -255,6 +255,17 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 	    phy_base + size <= PI5_EMMC_PHY_WIN + 2 * MB)
 		return 0;
 
+	/* PCIe2 host bridge for the onboard RP1 southbridge. */
+	if (phy_base >= PI5_PCIE2_PHY &&
+	    phy_base + size <= PI5_PCIE2_PHY + PI5_PCIE2_SIZE)
+		return 0;
+	if (phy_base >= PI5_RESET_PAGE_PHY &&
+	    phy_base + size <= PI5_RESET_PAGE_PHY + PI5_RESET_PAGE_SIZE)
+		return 0;
+	if (phy_base >= PI5_RESCAL_PAGE_PHY &&
+	    phy_base + size <= PI5_RESCAL_PAGE_PHY + PI5_RESET_PAGE_SIZE)
+		return 0;
+
 	/* RP1 southbridge window: 32 MB at 0x1F_00000000 */
 	if (phy_base >= PI5_RP1_PHY &&
 	    phy_base + size <= PI5_RP1_PHY + PI5_RP1_SIZE)

@@ -12,6 +12,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TAR
 LIB_ARCH_BCM2712_OBJS = $(ARCH)/src/mailbox.o \
 	$(ARCH)/src/pl011_uart.o \
 	$(ARCH)/src/gpio.o \
+	$(ARCH)/src/rp1.o \
 	$(ARCH)/src/mmc.o \
 	$(ARCH)/src/sdhci.o \
 	$(ARCH)/src/framebuffer.o \

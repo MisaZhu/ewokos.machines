@@ -15,9 +15,12 @@
 #include <arch/bcm2712/i2c.h>
 #include <arch/bcm2712/gpio.h>
 #include <arch/bcm2712/mmio.h>
+#include <arch/bcm2712/rp1.h>
 #include <ewoksys/mmio.h>
+#include <ewoksys/klog.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
+#include <unistd.h>
 
 #define RP1_I2C_NUM         7
 #define RP1_I2C_OFF(bus)    (PI5_RP1_WIN_OFF + 0x70000 + (bus) * 0x4000)
@@ -42,6 +45,8 @@
 #define IC_TX_ABRT_SOURCE   0x80
 #define IC_ENABLE_STATUS    0x9c
 #define IC_COMP_PARAM_1     0xf4
+#define IC_COMP_TYPE        0xfc
+#define IC_COMP_TYPE_VALUE  0x44570140
 
 #define IC_CON_MASTER           (1 << 0)
 #define IC_CON_SPEED_STD        (1 << 1)
@@ -97,7 +102,7 @@
  */
 #define I2C_POLL_MAX        100000
 /* IC_ENABLE_STATUS follows IC_ENABLE within a few clk_sys cycles */
-#define I2C_ENABLE_POLL_MAX 10000
+#define I2C_ENABLE_POLL_MAX 100
 
 static uint8_t  _i2c_ready[RP1_I2C_NUM];
 /* IC_CON template per bus, holds the selected speed bits */
@@ -124,6 +129,7 @@ static int i2c_set_enable(ewokos_addr_t base, uint32_t en) {
 	for (uint32_t n = 0; n < I2C_ENABLE_POLL_MAX; n++) {
 		if ((get32(base + IC_ENABLE_STATUS) & IC_ENABLE_STATUS_EN) == en)
 			return 0;
+		usleep(25);
 	}
 	return -1;
 }
@@ -153,20 +159,34 @@ static void i2c_recover(ewokos_addr_t base) {
 
 int bcm2712_i2c_init(int bus) {
 	if (bus < 0 || bus >= RP1_I2C_NUM)
-		return -1;
+		return BCM2712_I2C_ERR_INVALID;
 
 	/* same window setup as the other RP1 users (uartd, bsp_sd, spi) */
 	sys_info_t sysinfo;
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 	_mmio_base = sysinfo.mmio.v_base;
-	syscall3(SYS_MEM_MAP,
+	ewokos_addr_t main_mapped = syscall3(SYS_MEM_MAP,
 			(ewokos_addr_t)sysinfo.mmio.v_base,
 			(ewokos_addr_t)sysinfo.mmio.phy_base,
 			(ewokos_addr_t)sysinfo.mmio.size);
-	syscall3(SYS_MEM_MAP,
+	if (main_mapped != sysinfo.mmio.v_base) {
+		klog("i2c-rp1: main map failed got=%p expected=%p\n",
+			(void *)main_mapped, (void *)sysinfo.mmio.v_base);
+		return BCM2712_I2C_ERR_MAIN_MAP;
+	}
+	ewokos_addr_t rp1_vbase = _mmio_base + PI5_RP1_WIN_OFF;
+	ewokos_addr_t rp1_mapped = syscall3(SYS_MEM_MAP,
 			_mmio_base + PI5_RP1_WIN_OFF,
 			PI5_RP1_PHY,
 			PI5_RP1_WIN_SIZE);
+	if (rp1_mapped != rp1_vbase) {
+		klog("i2c-rp1: RP1 map failed got=%p expected=%p\n",
+			(void *)rp1_mapped, (void *)rp1_vbase);
+		return BCM2712_I2C_ERR_RP1_MAP;
+	}
+	int rp1_ret = bcm2712_rp1_init();
+	if (rp1_ret != 0)
+		return rp1_ret - 10;
 
 	if (bus < 4) {
 		bcm2712_gpio_init();
@@ -178,8 +198,18 @@ int bcm2712_i2c_init(int bus) {
 	}
 
 	ewokos_addr_t base = i2c_base(bus);
-	if (i2c_set_enable(base, 0) != 0)
-		return -1;
+	uint32_t comp_type = get32(base + IC_COMP_TYPE);
+	if (comp_type != IC_COMP_TYPE_VALUE) {
+		klog("i2c-rp1: bus=%d base=%p bad COMP_TYPE=%08x expected=%08x\n",
+			bus, (void *)base, comp_type, IC_COMP_TYPE_VALUE);
+		return BCM2712_I2C_ERR_COMP_TYPE;
+	}
+	if (i2c_set_enable(base, 0) != 0) {
+		klog("i2c-rp1: bus=%d disable timeout enable=%08x enable_status=%08x status=%08x\n",
+			bus, get32(base + IC_ENABLE), get32(base + IC_ENABLE_STATUS),
+			get32(base + IC_STATUS));
+		return BCM2712_I2C_ERR_DISABLE;
+	}
 
 	put32(base + IC_INTR_MASK, 0);
 	put32(base + IC_SS_SCL_HCNT, SCL_HCNT(4000));

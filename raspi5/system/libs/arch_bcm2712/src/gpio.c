@@ -1,6 +1,10 @@
 #include <arch/bcm2712/gpio.h>
 #include <ewoksys/mmio.h>
 
+#if PI5_RP1_WIN_OFF != 0x06000000
+#error "RP1 GPIO window must match the raspi5 kernel mapping"
+#endif
+
 /*
  * RP1 pin banks, from rp1_iobanks[] in linux drivers/pinctrl/pinctrl-rp1.c:
  *   Bank 0 (+0x0000): GPIO 0-27  (28 pins, the 40 pin header)
