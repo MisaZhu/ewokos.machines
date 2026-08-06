@@ -11,7 +11,7 @@ CFLAGS += -I $(BUILD_DIR)/include
 
 HID_KEYBD_OBJS = $(ARCH)/hid_keybd.o
 
-HID_KEYBD = $(TARGET_DIR)/drivers/raspix/hid_keybd
+HID_KEYBD = $(TARGET_DIR)/drivers/raspi5/hid_keybd
 
 $(HID_KEYBD): $(HID_KEYBD_OBJS) \
 		$(EWOK_LIBC_A)  

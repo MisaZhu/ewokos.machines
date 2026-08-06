@@ -166,9 +166,9 @@ int main(int argc, char** argv) {
 	const char* dev_point = argc > 2 ? argv[2]: "/dev/hid0";
 
 	/*
-	 * The CH552 is an internal USB device that boots alongside the CM4.
-	 * usbhostd may not have enumerated it yet when we start, so the
-	 * initial open() or set_report_id() can fail.  Retry in a loop
+	 * usbhostd only creates /dev/hid0 after it has mapped the RP1 xHCI
+	 * controllers, and a USB mouse may be plugged in (or enumerated)
+	 * well after boot.  Retry the open()/set_report_id() in a loop
 	 * instead of exiting — otherwise /dev/mouse0 is never registered
 	 * and xmouse blocks forever on a non-existent device.
 	 */

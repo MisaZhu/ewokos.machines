@@ -11,7 +11,7 @@ CFLAGS += -I $(BUILD_DIR)/include
 
 HID_MOUSED_OBJS = $(ARCH)/hid_moused.o
 
-HID_MOUSED = $(TARGET_DIR)/drivers/raspix/hid_moused
+HID_MOUSED = $(TARGET_DIR)/drivers/raspi5/hid_moused
 
 $(HID_MOUSED): $(HID_MOUSED_OBJS) \
 		$(EWOK_LIBC_A)  

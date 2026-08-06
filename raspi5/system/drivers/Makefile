@@ -6,8 +6,16 @@ network:
 
 gui:
 	cd fbd; $(MAKE)
-	# TODO: g2dd, hid_moused, hid_touchd drivers
+	cd usbhostd; $(MAKE)
+	cd hid_keybd; $(MAKE)
+	cd hid_moused; $(MAKE)
+	cd hid_touchd; $(MAKE)
+	# TODO: g2dd driver
 
 clean:
 	cd uartd; $(MAKE) clean
 	cd fbd; $(MAKE) clean
+	cd usbhostd; $(MAKE) clean
+	cd hid_keybd; $(MAKE) clean
+	cd hid_moused; $(MAKE) clean
+	cd hid_touchd; $(MAKE) clean

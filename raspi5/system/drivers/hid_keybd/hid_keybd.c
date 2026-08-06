@@ -143,7 +143,6 @@ static int loop(vdevice_t* dev, void* p) {
 	ipc_disable();
 
 	bool got = false;
-	bool changed = false;
 	while(true) {
 		uint8_t buf[8] = {0};
 		int res = read(hid, buf, 7);
@@ -156,10 +155,6 @@ static int loop(vdevice_t* dev, void* p) {
 				if (buf[i] != 0) {
 					keys[count++] = buf[i];
 				}
-			}
-			if (buf[0] != _mod || count != _key_count ||
-					memcmp(keys, _keys, count) != 0) {
-				changed = true;
 			}
 			_mod = buf[0];
 			_key_count = count;
@@ -214,9 +209,9 @@ int main(int argc, char** argv) {
 	const char* dev_point = argc > 2 ? argv[2]: "/dev/hid0";
 
 	/*
-	 * The CH552 is an internal USB device that boots alongside the CM4.
-	 * usbhostd may not have enumerated it yet when we start, so the
-	 * initial open() or set_report_id() can fail.  Retry in a loop
+	 * usbhostd only creates /dev/hid0 after it has mapped the RP1 xHCI
+	 * controllers, and a USB keyboard may be plugged in (or enumerated)
+	 * well after boot.  Retry the open()/set_report_id() in a loop
 	 * instead of exiting — otherwise /dev/keyb0 is never registered
 	 * and vkeybd reads from a non-existent device.
 	 */

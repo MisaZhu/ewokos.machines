@@ -11,7 +11,7 @@ CFLAGS += -I $(BUILD_DIR)/include
 
 HID_TOUCHD_OBJS = $(ARCH)/hid_touchd.o
 
-HID_TOUCHD = $(TARGET_DIR)/drivers/raspix/hid_touchd
+HID_TOUCHD = $(TARGET_DIR)/drivers/raspi5/hid_touchd
 
 $(HID_TOUCHD): $(HID_TOUCHD_OBJS) \
 		$(EWOK_LIBC_A)
