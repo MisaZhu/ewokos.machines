@@ -37,6 +37,6 @@
 #define PI5_RP1_SIZE        (32*MB)
 
 /* framebuffer reserve at top of physical RAM (mailbox fb alloc) */
-#define PI5_FB_SIZE         (64*MB)
+#define PI5_FB_SIZE         (8*MB)
 
 #endif

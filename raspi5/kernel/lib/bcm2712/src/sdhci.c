@@ -240,8 +240,8 @@ static uint64_t get_timer(uint64_t start){
 
 static inline uint16_t readw(uint32_t *reg)
 {
-    uint32_t val = readl(((uint32_t)reg & ~3));
-    uint32_t word_num = ((uint32_t)reg >> 1) & 1;
+    uint32_t val = readl(((uintptr_t)reg & ~3));
+    uint32_t word_num = ((uintptr_t)reg >> 1) & 1;
     uint32_t word_shift = word_num * 16;
     uint32_t word = (val >> word_shift) & 0xffff;
 
@@ -250,8 +250,8 @@ static inline uint16_t readw(uint32_t *reg)
 
 static inline uint8_t readb(uint32_t *reg)
 {
-    uint32_t val = readl(((uint32_t)reg & ~3));
-    uint32_t byte_num = (uint32_t)reg & 3;
+    uint32_t val = readl(((uintptr_t)reg & ~3));
+    uint32_t byte_num = (uintptr_t)reg & 3;
     uint32_t byte_shift = byte_num * 8;
     uint32_t byte = (val >> byte_shift) & 0xff;
 

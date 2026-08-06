@@ -154,6 +154,21 @@ void sys_info_init_arch(void) {
 					&& fb_area_end > _sys_info.allocable_phy_mem_base) {
 				_fb_splits_allocable = true;
 			}
+		} else {
+			/*
+			 * Mailbox query failed.  Reserve a fallback 8 MB
+			 * at the top of allocable RAM so that kalloc never
+			 * hands out pages that might overlap the display
+			 * framebuffer.  The top PI5_FB_SIZE is already
+			 * excluded via allocable_phy_mem_top below, but
+			 * we also need _fb_actual_phy non-zero so that
+			 * check_mem_map_arch() continues to guard SYS_MEM_MAP
+			 * requests.
+			 */
+			_fb_actual_phy = _sys_info.total_phy_mem_size
+					- PI5_FB_SIZE;
+			_fb_actual_end = _sys_info.total_phy_mem_size;
+			_fb_splits_allocable = true;
 		}
 	}
 
@@ -201,13 +216,20 @@ void arch_vm(page_dir_entry_t* vm) {
 #ifdef KERNEL_SMP
 extern char __entry[];
 void start_core(uint32_t core_id) {
-	if(core_id >= _sys_info.cores)
-		return;
-	/* firmware spin table: secondary cores poll these slots */
-	uint64_t core_start_addr = 0x800000E0 + (core_id - 1) * 8;
-	*(volatile uint32_t*)core_start_addr = (uint32_t)__entry;
-	flush_dcache();
-	__asm__("sev");
+    if(core_id >= _sys_info.cores)
+        return;
+#if __arm__
+    ewokos_addr_t core_start_addr = (core_id * 0x10 + 0x8c) +
+       _sys_info.mmio.v_base +
+       _core_base_offset;
+
+    put32(core_start_addr, (ewokos_addr_t)__entry);
+#elif __aarch64__
+    ewokos_addr_t core_start_addr = P2V(0xE0) + (core_id - 1) * 8;
+    *(volatile uint32_t*)core_start_addr = (ewokos_addr_t)__entry;
+    flush_dcache();
+#endif
+    __asm__("sev");
 }
 #endif
 
