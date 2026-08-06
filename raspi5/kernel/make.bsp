@@ -11,7 +11,8 @@ ARCH_OBJS += $(BSP_DIR)/hw_info_arch.o \
 
 ifeq ($(SMP),yes)
 ARCH_OBJS += $(BSP_DIR)/ipi.o \
-	$(BSP_DIR)/core.o
+	$(BSP_DIR)/core.o \
+	$(BSP_DIR)/smccc-call.o
 endif
 
 ARCH_OBJS += ./lib/bcm2712/src/mailbox.o \

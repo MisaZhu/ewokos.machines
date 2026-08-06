@@ -131,7 +131,7 @@ void sys_info_init_arch(void) {
 			_sys_info.total_usable_mem_size;
 
 #ifdef KERNEL_SMP
-	_sys_info.cores = 1;//get_cpu_cores();
+	_sys_info.cores = get_cpu_cores();
 #else
 	_sys_info.cores = 1;
 #endif
@@ -168,22 +168,45 @@ void arch_vm(page_dir_entry_t* vm) {
 }
 
 #ifdef KERNEL_SMP
+/*
+ * Secondary core bring-up via PSCI CPU_ON (SMCCC, bsp/smccc-call.S).
+ *
+ * BCM2712 firmware parks cores 1-3 in the EL3 monitor (armstub8-2712),
+ * enable-method is "psci" in the official device tree. The Pi3/4 style
+ * spin-table at 0xE0 does not exist on Pi5, so poking a release address
+ * and issuing sev can never wake a core here.
+ */
+#define PSCI_CPU_ON_AARCH64	0xC4000003UL
+
+typedef struct {
+	uint64_t a0;
+	uint64_t a1;
+	uint64_t a2;
+	uint64_t a3;
+} arm_smccc_res_t;
+
+extern void arm_smccc_smc(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
+		uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7,
+		arm_smccc_res_t* res);
+
 extern char __entry[];
 void start_core(uint32_t core_id) {
-    if(core_id >= _sys_info.cores)
-        return;
-#if __arm__
-    ewokos_addr_t core_start_addr = (core_id * 0x10 + 0x8c) +
-       _sys_info.mmio.v_base +
-       _core_base_offset;
+	if(core_id >= _sys_info.cores)
+		return;
 
-    put32(core_start_addr, (ewokos_addr_t)__entry);
-#elif __aarch64__
-    ewokos_addr_t core_start_addr = P2V(0xE0) + (core_id - 1) * 8;
-    *(volatile uint32_t*)core_start_addr = (ewokos_addr_t)__entry;
-    flush_dcache();
-#endif
-    __asm__("sev");
+	/* Cortex-A76 in DynamIQ: the core number lives in MPIDR Aff1 */
+	uint64_t target_mpidr = (uint64_t)core_id << 8;
+	arm_smccc_res_t res;
+
+	/* the released core starts with MMU/caches off; make sure everything
+	 * written so far (kernel vm, _cpu_cores) is visible in RAM */
+	flush_dcache();
+
+	/* .init is linked at its load address, so __entry is the physical
+	 * entry point PSCI expects */
+	arm_smccc_smc(PSCI_CPU_ON_AARCH64, target_mpidr,
+			(uint64_t)__entry, 0, 0, 0, 0, 0, &res);
+	/* res.a0 == 0 on success; the caller polls _cpu_cores[].actived */
 }
 #endif
 
