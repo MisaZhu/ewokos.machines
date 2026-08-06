@@ -194,7 +194,7 @@ static int fb_set_display(uint32_t num) {
 	uint32_t* req = (uint32_t*)dma_alloc(0, SIMPLE_REQ_WORDS * sizeof(uint32_t));
 	int ret;
 
-	if (mailbox_get_tags(&t, sizeof(t)) != 0) {
+        if (req == NULL) {
 		return -1;
 	}
 
@@ -262,43 +262,9 @@ static int fb_display_dimensions(uint32_t* w, uint32_t* h) {
 static int fb_query_buffer(uint32_t* bus, uint32_t* size) {
 	uint32_t* req = (uint32_t*)dma_alloc(0, ALLOC_REQ_WORDS * sizeof(uint32_t));
 
-	if (mailbox_get_tags(&t, sizeof(t)) != 0) {
-		klog("fb: prop call failed %ux%ux%u\n",
-				mode->width, mode->height, mode->depth);
+        if (req == NULL) {
 		return -1;
 	}
-
-	uint32_t w    = t.set_phys.width;
-	uint32_t h    = t.set_phys.height;
-	uint32_t vw   = t.set_virt.width;
-	uint32_t vh   = t.set_virt.height;
-	uint32_t dep  = t.set_depth.value;
-	/* Mask off VC bus alias bits to get ARM physical address. */
-	uint32_t phy  = t.allocate.alignment_or_base & 0x3fffffff;
-	uint32_t size = t.allocate.size;
-	uint32_t pitch = t.get_pitch.value;
-
-	/*
-	 * The Pi 5 firmware often refuses to change the boot FB depth but
-	 * echoes the requested value in SET_DEPTH.  Detect the real bpp
-	 * from the pitch the firmware DID set on the buffer.
-	 */
-	uint32_t actual_bpp = fb_depth_from_pitch(w, pitch);
-	if (actual_bpp != 0 && actual_bpp != dep) {
-		klog("fb: prop depth %u overridden by pitch %u -> %u bpp\n",
-				dep, pitch, actual_bpp);
-		dep = actual_bpp;
-	}
-
-	if (fb_adopt(sysinfo, w, h, vw, vh, dep, phy, size, pitch, info) != 0) {
-		klog("fb: alloc rejected %ux%ux%u "
-				"w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
-				mode->width, mode->height, mode->depth,
-				w, h, dep, phy, size, pitch);
-		return -1;
-	}
-	return 0;
-}
 
 	memset(req, 0, ALLOC_REQ_WORDS * sizeof(uint32_t));
 	req[0] = ALLOC_REQ_WORDS * sizeof(uint32_t);
@@ -411,6 +377,18 @@ static int fb_adopt_firmware(const sys_info_t* sysinfo, fbinfo_t* info) {
 typedef struct {
 	uint32_t w, h, vw, vh, dep, bus, size, pitch;
 } fb_mode_reply_t;
+
+typedef struct {
+        uint32_t width;
+        uint32_t height;
+        uint32_t depth;
+} fb_mode_t;
+
+static int fb_mode_equal(const fb_mode_t* a, const fb_mode_t* b) {
+        return a->width == b->width &&
+                        a->height == b->height &&
+                        a->depth == b->depth;
+}
 
 /*
  * One property message carrying the whole mode, laid out exactly like
