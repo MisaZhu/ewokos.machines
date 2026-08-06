@@ -139,7 +139,7 @@ void sys_info_init_arch(void) {
 	strcpy(_sys_info.arch, "armv7");
 #endif
 
-	_sys_info.mmio.size = 16*MB;
+	_sys_info.mmio.size = 32*MB;
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
 		_sys_info.total_usable_mem_size - PHY_RESV_SIZE;
 
