@@ -15,9 +15,10 @@ ewokos_addr_t _core_base_offset = 0;
 uint32_t _uart_type = UART_MINI;
 uint32_t _pi4 = 0;
 	
-#define MMIO_RESV_SIZE (64*MB)
-#define MMIO_LOW_RESV_BASE  0x3c000000
-#define MMIO_HIGH_RESV_BASE 0xfc000000ull
+/* phy memory reservation for framebuffer and mmio*/
+#define PHY_LOW_RESV_BASE  0x3c000000
+#define PHY_HIGH_RESV_BASE 0xfc000000ull
+#define PHY_RESV_SIZE (64*MB)
 
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
@@ -138,10 +139,9 @@ void sys_info_init_arch(void) {
 	strcpy(_sys_info.arch, "armv7");
 #endif
 
-	_sys_info.mmio.size = 31*MB;
-
+	_sys_info.mmio.size = _sys_info.total_phy_mem_size - _sys_info.mmio.phy_base;
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-		_sys_info.total_usable_mem_size - MMIO_RESV_SIZE;
+		_sys_info.total_usable_mem_size - PHY_RESV_SIZE;
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
@@ -188,11 +188,11 @@ void kalloc_arch(void) {
 	 * holes in both the low memory window and the upper memory range.
 	 */
 	if(_sys_info.allocable_phy_mem_top > 1*GB) {
-		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(MMIO_LOW_RESV_BASE));
-		if(_sys_info.allocable_phy_mem_top > MMIO_HIGH_RESV_BASE) {
-			kalloc_append(P2V(1*GB), P2V(MMIO_HIGH_RESV_BASE));
-			if(_sys_info.allocable_phy_mem_top > (MMIO_HIGH_RESV_BASE+MMIO_RESV_SIZE))
-				kalloc_append(P2V(MMIO_HIGH_RESV_BASE+MMIO_RESV_SIZE), P2V(_sys_info.allocable_phy_mem_top));
+		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(PHY_LOW_RESV_BASE));
+		if(_sys_info.allocable_phy_mem_top > PHY_HIGH_RESV_BASE) {
+			kalloc_append(P2V(1*GB), P2V(PHY_HIGH_RESV_BASE));
+			if(_sys_info.allocable_phy_mem_top > (PHY_HIGH_RESV_BASE+PHY_RESV_SIZE))
+				kalloc_append(P2V(PHY_HIGH_RESV_BASE+PHY_RESV_SIZE), P2V(_sys_info.allocable_phy_mem_top));
 		}
 		else
 			kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
@@ -202,11 +202,11 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(_pi4 && phy_base >= MMIO_LOW_RESV_BASE && size <= MMIO_RESV_SIZE)
+	if(_pi4 && phy_base >= PHY_LOW_RESV_BASE && size <= PHY_RESV_SIZE)
 		return 0;
-	if(_pi4 && phy_base >= MMIO_HIGH_RESV_BASE && size <= MMIO_RESV_SIZE)
+	if(_pi4 && phy_base >= PHY_HIGH_RESV_BASE && size <= PHY_RESV_SIZE)
 		return 0;
-	if(phy_base >= _sys_info.total_phy_mem_size - MMIO_RESV_SIZE)
+	if(phy_base >= _sys_info.total_phy_mem_size - PHY_RESV_SIZE)
 		return 0;
 	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
 		return 0;
