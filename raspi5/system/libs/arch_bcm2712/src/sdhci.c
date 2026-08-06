@@ -235,8 +235,8 @@
 
 static inline uint16_t readw(uint32_t *reg)
 {
-	uint32_t val = readl(((uint32_t)reg & ~3));
-	uint32_t word_num = ((uint32_t)reg >> 1) & 1;
+	uint32_t val = readl(((uintptr_t)reg & ~3));
+	uint32_t word_num = ((uintptr_t)reg >> 1) & 1;
 	uint32_t word_shift = word_num * 16;
 	uint32_t word = (val >> word_shift) & 0xffff;
 
@@ -245,8 +245,8 @@ static inline uint16_t readw(uint32_t *reg)
 
 static inline uint8_t readb(uint32_t *reg)
 {
-	uint32_t val = readl(((uint32_t)reg & ~3));
-	uint32_t byte_num = (uint32_t)reg & 3;
+	uint32_t val = readl(((uintptr_t)reg & ~3));
+	uint32_t byte_num = (uintptr_t)reg & 3;
 	uint32_t byte_shift = byte_num * 8;
 	uint32_t byte = (val >> byte_shift) & 0xff;
 
@@ -852,6 +852,9 @@ struct bus_ops* bcm2712_sdhci_init(void)
 	_host.quirks = SDHCI_QUIRK_BROKEN_VOLTAGE | SDHCI_QUIRK_BROKEN_R1B |
 		SDHCI_QUIRK_WAIT_SEND_CMD | SDHCI_QUIRK_NO_HISPD_BIT;
 	_host.voltages = MMC_VDD_32_33 | MMC_VDD_33_34 | MMC_VDD_165_195;
+
+	klog("sdhci: _mmio_base=0x%lx EMMC_BASE=0x%lx ioaddr=0x%lx\n",
+		_mmio_base, (ewokos_addr_t)EMMC_BASE, (ewokos_addr_t)_host.ioaddr);
 
 	sdhci_reset(SDHCI_RESET_ALL);
 	sdhci_set_power(&_host, MMC_VDD_33_34);

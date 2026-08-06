@@ -95,6 +95,8 @@ static int tag_answered(const uint32_t* req, uint32_t code_idx) {
 	return (req[code_idx] & TAG_RESPONSE_BIT) != 0;
 }
 
+/* ─── framebuffer validation & adoption ─── */
+
 /*
  * Validate a firmware-reported mode and publish it.
  *
@@ -114,6 +116,7 @@ static int fb_adopt(const sys_info_t* sysinfo, uint32_t w, uint32_t h,
 		return -1;
 	}
 	if (dep != 16 && dep != 32) {
+		klog("fb: adopt bad depth %u\n", dep);
 		return -1;
 	}
 
@@ -191,7 +194,7 @@ static int fb_set_display(uint32_t num) {
 	uint32_t* req = (uint32_t*)dma_alloc(0, SIMPLE_REQ_WORDS * sizeof(uint32_t));
 	int ret;
 
-	if (req == NULL) {
+	if (mailbox_get_tags(&t, sizeof(t)) != 0) {
 		return -1;
 	}
 
@@ -259,9 +262,43 @@ static int fb_display_dimensions(uint32_t* w, uint32_t* h) {
 static int fb_query_buffer(uint32_t* bus, uint32_t* size) {
 	uint32_t* req = (uint32_t*)dma_alloc(0, ALLOC_REQ_WORDS * sizeof(uint32_t));
 
-	if (req == NULL) {
+	if (mailbox_get_tags(&t, sizeof(t)) != 0) {
+		klog("fb: prop call failed %ux%ux%u\n",
+				mode->width, mode->height, mode->depth);
 		return -1;
 	}
+
+	uint32_t w    = t.set_phys.width;
+	uint32_t h    = t.set_phys.height;
+	uint32_t vw   = t.set_virt.width;
+	uint32_t vh   = t.set_virt.height;
+	uint32_t dep  = t.set_depth.value;
+	/* Mask off VC bus alias bits to get ARM physical address. */
+	uint32_t phy  = t.allocate.alignment_or_base & 0x3fffffff;
+	uint32_t size = t.allocate.size;
+	uint32_t pitch = t.get_pitch.value;
+
+	/*
+	 * The Pi 5 firmware often refuses to change the boot FB depth but
+	 * echoes the requested value in SET_DEPTH.  Detect the real bpp
+	 * from the pitch the firmware DID set on the buffer.
+	 */
+	uint32_t actual_bpp = fb_depth_from_pitch(w, pitch);
+	if (actual_bpp != 0 && actual_bpp != dep) {
+		klog("fb: prop depth %u overridden by pitch %u -> %u bpp\n",
+				dep, pitch, actual_bpp);
+		dep = actual_bpp;
+	}
+
+	if (fb_adopt(sysinfo, w, h, vw, vh, dep, phy, size, pitch, info) != 0) {
+		klog("fb: alloc rejected %ux%ux%u "
+				"w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
+				mode->width, mode->height, mode->depth,
+				w, h, dep, phy, size, pitch);
+		return -1;
+	}
+	return 0;
+}
 
 	memset(req, 0, ALLOC_REQ_WORDS * sizeof(uint32_t));
 	req[0] = ALLOC_REQ_WORDS * sizeof(uint32_t);
@@ -532,6 +569,35 @@ static int fb_alloc_mode(const sys_info_t* sysinfo, uint32_t w, uint32_t h,
 	return 0;
 }
 
+/*
+ * fb_try_mode_list — try a requested mode followed by a fallback list
+ * using a given strategy function. Returns 0 on first success.
+ */
+typedef int (*fb_init_fn_t)(const sys_info_t *, const fb_mode_t *, fbinfo_t *);
+
+static int fb_try_mode_list(const sys_info_t *sysinfo,
+		const fb_mode_t *requested,
+		const fb_mode_t *fallbacks, uint32_t n_fallbacks,
+		fb_init_fn_t init_fn, const char *strat_name,
+		fbinfo_t *info) {
+	if (init_fn(sysinfo, requested, info) == 0) {
+		return 0;
+	}
+
+	for (uint32_t i = 0; i < n_fallbacks; ++i) {
+		if (fb_mode_equal(requested, &fallbacks[i])) {
+			continue;
+		}
+		if (init_fn(sysinfo, &fallbacks[i], info) == 0) {
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
+/* ─── public API ─── */
+
 int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	sys_info_t sysinfo;
 	uint32_t displays;
@@ -589,7 +655,7 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	return 0;
 }
 
-fbinfo_t* bcm2712_get_fbinfo(void) {
+fbinfo_t *bcm2712_get_fbinfo(void) {
 	return &_fb_info;
 }
 

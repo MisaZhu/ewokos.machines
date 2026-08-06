@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <bcm2712/board.h>
+#include <bcm2712/mailbox.h>
 #include "hw_arch.h"
 
 #ifdef KERNEL_SMP
@@ -18,6 +19,15 @@
  */
 
 uint64_t _core_base_offset = 0;
+
+/*
+ * Actual framebuffer base and size reported by the firmware.
+ * Updated during sys_info_init_arch() after probing the mailbox.
+ * Falls back to the old top-of-RAM assumption if the probe fails.
+ */
+static ewokos_addr_t _fb_actual_phy = 0;
+static ewokos_addr_t _fb_actual_end = 0;  /* (base + size) rounded up to page */
+static bool _fb_splits_allocable = false;
 
 
 /*
@@ -160,13 +170,20 @@ void arch_vm(page_dir_entry_t* vm) {
 #ifdef KERNEL_SMP
 extern char __entry[];
 void start_core(uint32_t core_id) {
-	if(core_id >= _sys_info.cores)
-		return;
-	/* firmware spin table: secondary cores poll these slots */
-	uint64_t core_start_addr = 0x800000E0 + (core_id - 1) * 8;
-	*(volatile uint32_t*)core_start_addr = (uint32_t)__entry;
-	flush_dcache();
-	__asm__("sev");
+    if(core_id >= _sys_info.cores)
+        return;
+#if __arm__
+    ewokos_addr_t core_start_addr = (core_id * 0x10 + 0x8c) +
+       _sys_info.mmio.v_base +
+       _core_base_offset;
+
+    put32(core_start_addr, (ewokos_addr_t)__entry);
+#elif __aarch64__
+    ewokos_addr_t core_start_addr = P2V(0xE0) + (core_id - 1) * 8;
+    *(volatile uint32_t*)core_start_addr = (ewokos_addr_t)__entry;
+    flush_dcache();
+#endif
+    __asm__("sev");
 }
 #endif
 
@@ -199,6 +216,10 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 	 * this mapping at all.
 	 */
 	if (phy_base >= PI5_FB_LOW_BASE && phy_base + size <= PI5_FB_LOW_TOP)
+		return 0;
+	if (_fb_actual_phy != 0
+			&& phy_base >= _fb_actual_phy
+			&& phy_base + size <= _fb_actual_end)
 		return 0;
 
 	/* main MMIO window: 64 MB at 0x10_7C000000 */
