@@ -88,8 +88,8 @@ void _boot_start(void) {
 	/* BCM2712 peripherals (alias window), covers UART/mailbox/GIC */
 	set_boot_pgt(MMIO_BASE, PI5_MMIO_PHY, PI5_MMIO_SIZE, 1);
 
-	/* SD card host controller @ 0x1000FFF000 (one 2MB window) */
-	set_boot_pgt(MMIO_BASE + PI5_EMMC_WIN_OFF, PI5_EMMC_PHY_WIN, 2*MB, 1);
+	/* SDHCI hosts: SD card @ 0x1000FFF000, WiFi SDIO @ 0x1001100000 */
+	set_boot_pgt(MMIO_BASE + PI5_EMMC_WIN_OFF, PI5_EMMC_PHY_WIN, PI5_EMMC_WIN_SIZE, 1);
 
 	/* RP1 southbridge window for userland device drivers */
 	set_boot_pgt(MMIO_BASE + PI5_RP1_WIN_OFF, PI5_RP1_PHY, PI5_RP1_SIZE, 1);

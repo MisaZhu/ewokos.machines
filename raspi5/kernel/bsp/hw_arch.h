@@ -28,9 +28,19 @@
  * (bsp/start.c) and by arch_vm() for the final kernel VM.
  */
 #define PI5_EMMC_WIN_OFF    0x04000000
-#define PI5_EMMC_PHY_WIN    0x1000E00000UL   /* 2MB aligned window        */
+#define PI5_EMMC_PHY_WIN    0x1000E00000UL   /* 4MB aligned window        */
+/*
+ * One window carries both SDHCI hosts of bcm2712.dtsi:
+ *   sdio1 (SD card):  mmc@fff000        -> 0x1000FFF000
+ *   sdio2 (WLAN):     mmc@1100000       -> 0x1001100000, +0x400 cfg regs
+ * 4MB covers 0x1000E00000 .. 0x1001200000, still clear of the PCIe2
+ * window at 0x04400000.
+ */
+#define PI5_EMMC_WIN_SIZE   (4*MB)
 #define PI5_EMMC_OFF        0x001FF000      /* SD host @ 0x1000FFF000    */
 #define PI5_EMMC_BASE       (MMIO_BASE + PI5_EMMC_WIN_OFF + PI5_EMMC_OFF)
+#define PI5_WLAN_SDIO_OFF   0x00300000      /* WiFi host @ 0x1001100000  */
+#define PI5_WLAN_SDIO_CFG_OFF 0x00300400    /* WiFi host cfg regs        */
 
 /* BCM2712 PCIe2 root complex used by the onboard RP1 southbridge. */
 #define PI5_PCIE2_WIN_OFF   0x04400000

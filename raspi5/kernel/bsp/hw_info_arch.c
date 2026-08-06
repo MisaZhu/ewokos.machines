@@ -154,8 +154,8 @@ void arch_vm(page_dir_entry_t* vm) {
 			     PI5_MMIO_PHY + i * PAGE_SIZE);
 	}
 
-	/* SD host controller window: 2 MB at 0x10_00E00000 */
-	for (uint32_t i = 0; i < (2 * MB) / PAGE_SIZE; i++) {
+	/* SDHCI hosts window: PI5_EMMC_WIN_SIZE at 0x10_00E00000 */
+	for (uint32_t i = 0; i < PI5_EMMC_WIN_SIZE / PAGE_SIZE; i++) {
 		set_page_dev(vm, MMIO_BASE + PI5_EMMC_WIN_OFF + i * PAGE_SIZE,
 			     PI5_EMMC_PHY_WIN + i * PAGE_SIZE);
 	}
@@ -250,9 +250,11 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 	    phy_base + size <= PI5_MMIO_PHY + PI5_MMIO_SIZE)
 		return 0;
 
-	/* SD host controller (EMMC) window: 2 MB at 0x10_00E00000 */
+	/* SDHCI hosts (EMMC) window: PI5_EMMC_WIN_SIZE at 0x10_00E00000,
+	 * carries the SD card host (0x1000FFF000) and the WiFi SDIO host
+	 * (0x1001100000) in one mapping. */
 	if (phy_base >= PI5_EMMC_PHY_WIN &&
-	    phy_base + size <= PI5_EMMC_PHY_WIN + 2 * MB)
+	    phy_base + size <= PI5_EMMC_PHY_WIN + PI5_EMMC_WIN_SIZE)
 		return 0;
 
 	/* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */

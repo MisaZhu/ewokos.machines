@@ -6,7 +6,7 @@
  *
  * The Pi 5 has three distinct peripheral windows:
  *   1. Main window: 64 MB at 0x10_7C000000  (UART, Mailbox, GIC)
- *   2. EMMC window:  2 MB at 0x10_00E00000  (SDHCI host controller)
+ *   2. EMMC window:  4 MB at 0x10_00E00000  (SDHCI hosts: SD card + WiFi SDIO)
  *   3. RP1 window:   6 MB at 0x1F_00000000  (GPIO, SPI, I2C, etc.)
  *
  * ewokos_addr_t is uint64_t on aarch64, so full 64-bit physical
@@ -21,7 +21,21 @@
 
 #define PI5_EMMC_PHY_WIN    0x1000E00000ULL
 #define PI5_EMMC_WIN_OFF    0x04000000
-#define PI5_EMMC_WIN_SIZE   (2 * 1024 * 1024)
+/*
+ * 4MB: carries both SDHCI hosts of bcm2712.dtsi, sdio1 (SD card) at
+ * 0x1000FFF000 and sdio2 (WLAN) at 0x1001100000. Must match
+ * PI5_EMMC_WIN_SIZE in machines/raspi5/kernel/bsp/hw_arch.h.
+ */
+#define PI5_EMMC_WIN_SIZE   (4 * 1024 * 1024)
+#define PI5_EMMC_OFF        0x001FF000      /* SD card host @ 0x1000FFF000 */
+#define PI5_WLAN_SDIO_OFF   0x00300000      /* WiFi SDIO host @ 0x1001100000 */
+#define PI5_WLAN_SDIO_CFG_OFF 0x00300400    /* WiFi host cfg regs (+0x400) */
+
+/* Offsets inside the main window (relative to _mmio_base) used by the
+ * WiFi bring-up: BCM2712 SoC pinctrl and the "gio" brcmstb-gpio bank
+ * that drives WL_REG_ON (bcm2712.dtsi). */
+#define PI5_PINCTRL_OFF     0x01504100      /* pinctrl@7d504100 */
+#define PI5_GIO_OFF         0x01508500      /* gio: gpio@7d508500 */
 
 /*
  * Must match PI5_RP1_WIN_OFF/PI5_RP1_SIZE in machines/raspi5/kernel/bsp/hw_arch.h:

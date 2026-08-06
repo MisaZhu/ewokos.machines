@@ -41,7 +41,19 @@ static inline uint64_t read_cntvct(void) {
 	return val;
 }
 
+/*
+ * Allow EL0 to read the generic timer counter/frequency (CNTVCT/CNTPCT/
+ * CNTFRQ). CNTKCTL_EL1 resets UNKNOWN, so without this userland drivers
+ * (e.g. wland SDIO command-gap timing) trap on the mrs. Per-core register;
+ * secondary cores get the same setup in cpu_core_ready().
+ */
+void timer_enable_el0_cnt_access(void) {
+	uint64_t val = 0x3; /* EL0PCTEN | EL0VCTEN */
+	__asm__ volatile("msr CNTKCTL_EL1, %0":: "r"(val): "memory");
+}
+
 void timer_init(void){
+	timer_enable_el0_cnt_access();
 	disable_cntv();
 	_cntv_us_div = read_cntfrq()/1000000;
 	if(_cntv_us_div == 0)
