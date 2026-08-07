@@ -1812,7 +1812,7 @@ int main(int argc, char** argv) {
 	 */
 	int rp1_ret = 0;
 	if (!rp1_mapped) {
-		klog("usbhostd: rp1 window map failed, running without usb\n");
+		slog("usbhostd: rp1 window map failed, running without usb\n");
 	}
 	/*
 	 * The RP1 window only decodes once the PCIe2 link is trained and the RP1
@@ -1823,11 +1823,11 @@ int main(int argc, char** argv) {
 	 * skips training when the link is already up.
 	 */
 	else if ((rp1_ret = bcm2712_rp1_init()) != 0) {
-		klog("usbhostd: rp1 pcie init failed (%d), running without usb\n",
+		slog("usbhostd: rp1 pcie init failed (%d), running without usb\n",
 				rp1_ret);
 	}
 	else if (xhci_dma_init() != 0) {
-		klog("usbhostd: dma_init_failed, running without usb\n");
+		slog("usbhostd: dma_init_failed, running without usb\n");
 	}
 	else {
 		if (xhci_init(&_hcs[0], 0, _mmio_base + RP1_XHCI0_OFF) == 0) {
@@ -1838,7 +1838,7 @@ int main(int argc, char** argv) {
 		}
 	}
 	if (found == 0) {
-		klog("usbhostd: no xhci controller found, running without usb\n");
+		slog("usbhostd: no xhci controller found, running without usb\n");
 	}
 
 	memset(_devs, 0, sizeof(_devs));
