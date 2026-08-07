@@ -2,7 +2,7 @@ basic:
 	cd uartd; $(MAKE)
 
 network:
-	# TODO: wlan, btd drivers
+	cd wlan; $(MAKE)
 
 gui:
 	cd fbd; $(MAKE)
@@ -20,3 +20,4 @@ clean:
 	cd hid_moused; $(MAKE) clean
 	cd hid_touchd; $(MAKE) clean
 	cd gt911_touchd; $(MAKE) clean
+	cd wlan; $(MAKE) clean
