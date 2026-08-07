@@ -249,7 +249,13 @@ static int mmc_send_op_cond(struct mmc *mmc)
 
 int mmc_get_op_cond(struct mmc *mmc)
 {
-	bool uhs_en = true;
+        /*
+         * Raspi5 currently does not implement the full SD UHS 1.8V switch
+         * sequence (CMD11 + host/card voltage transition). Advertising S18R
+         * and then forcing SDR25 leaves some cards in an unstable state.
+         * Stay on the proven 3.3V path until the full switch flow exists.
+         */
+        bool uhs_en = false;
 	int err;
 
 	if (mmc->has_init)
@@ -583,8 +589,7 @@ int mmc_init(void){
 	_mmc.bus_width = 4;
     _mmc.clock = 25000000;
 	_mmc.ops->set_ios(&_mmc);
-	mmc_startup(&_mmc);
-	mmc_switch(&_mmc, UHS_SDR25);
+        mmc_startup(&_mmc);
 	_mmc.has_init = true;
 	return 0;
 }

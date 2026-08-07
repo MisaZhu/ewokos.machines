@@ -232,7 +232,13 @@ static int mmc_send_op_cond(struct mmc *mmc)
 
 int mmc_get_op_cond(struct mmc *mmc)
 {
-	bool uhs_en = true;
+        /*
+         * Raspi5 currently does not implement the full SD UHS 1.8V switch
+         * sequence (CMD11 + host/card voltage transition). Advertising S18R
+         * and then forcing SDR25 leaves some cards in an unstable state.
+         * Stay on the proven 3.3V path until the full switch flow exists.
+         */
+        bool uhs_en = false;
 	int err;
 
 	if (mmc->has_init)
@@ -520,7 +526,6 @@ int mmc_init(int host_index) {
 	_mmc.ops->set_ios(&_mmc);
 	mmc_startup(&_mmc);
 	_mmc.capacity = _mmc.capacity_user / _mmc.read_bl_len;
-	mmc_switch(&_mmc, UHS_SDR25);
 	_mmc.has_init = true;
 	return 0;
 }
@@ -587,12 +592,14 @@ uint32_t mmc_write_blocks(uint32_t start, uint32_t blkcnt, const void *src)
 		return 0;
 	}
 
-	cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
-	cmd.cmdarg = 0;
-	cmd.resp_type = MMC_RSP_R1b;
-	if (mmc_send_cmd(&_mmc, &cmd, NULL)) {
-		printf("mmc fail to send stop cmd\n");
-		return 0;
+	if (blkcnt > 1) {
+		cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+		cmd.cmdarg = 0;
+		cmd.resp_type = MMC_RSP_R1b;
+		if (mmc_send_cmd(&_mmc, &cmd, NULL)) {
+			printf("mmc fail to send stop cmd\n");
+			return 0;
+		}
 	}
 
 	if (mmc_poll_for_busy(&_mmc, timeout_ms))

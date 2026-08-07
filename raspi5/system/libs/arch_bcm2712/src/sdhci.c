@@ -69,7 +69,6 @@
 #define  SDHCI_CARD_STATE_STABLE BIT(17)
 #define  SDHCI_CARD_DETECT_PIN_LEVEL BIT(18)
 #define  SDHCI_WRITE_PROTECT    BIT(19)
-
 #define SDHCI_HOST_CONTROL      0x28
 #define  SDHCI_CTRL_LED         BIT(0)
 #define  SDHCI_CTRL_4BITBUS     BIT(1)
@@ -232,7 +231,6 @@
 
 #define readl(addr)  (*((volatile uint32_t *)(addr)))
 #define writel(val, addr) (*((volatile uint32_t *)(addr)) = (uint32_t)(val))
-
 static inline uint16_t readw(uint32_t *reg)
 {
 	uint32_t val = readl(((uintptr_t)reg & ~3));
@@ -619,11 +617,14 @@ static void sdhci_transfer_pio(struct sdhci_host *host, struct mmc_data *data)
 	uint32_t i;
 	uint8_t *offs;
 	for (i = 0; i < data->blocksize; i += 4) {
-		offs = data->dest + i;
-		if (data->flags == MMC_DATA_READ)
+                if (data->flags == MMC_DATA_READ) {
+                        offs = (uint8_t*)data->dest + i;
 			*(uint32_t *)offs = sdhci_readl(host, SDHCI_BUFFER);
-		else
-			sdhci_writel(host, *(uint32_t *)offs, SDHCI_BUFFER);
+                }
+                else {
+                        offs = (uint8_t*)data->src + i;
+                        sdhci_writel(host, *(uint32_t *)offs, SDHCI_BUFFER);
+                }
 	}
 }
 
@@ -638,8 +639,8 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 	do {
 		stat = sdhci_readl(host, SDHCI_INT_STATUS);
 		if (stat & SDHCI_INT_ERROR) {
-			printf("%s: Error detected in status(0x%X)! %d\n",
-				 __func__, stat, timeout);
+			printf("%s: Error detected in status(0x%X)!\n",
+				 __func__, stat);
 			return -EIO;
 		}
 		if (!transfer_done && (stat & rdy)) {
@@ -647,7 +648,10 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 				continue;
 			sdhci_writel(host, rdy, SDHCI_INT_STATUS);
 			sdhci_transfer_pio(host, data);
-			data->dest += data->blocksize;
+			if (data->flags == MMC_DATA_READ)
+				data->dest += data->blocksize;
+			else
+				data->src += data->blocksize;
 			if (++block >= data->blocks) {
 				transfer_done = true;
 				continue;

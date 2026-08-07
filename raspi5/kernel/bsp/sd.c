@@ -140,6 +140,8 @@ int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
 }
 
 int32_t sd_dev_write(int32_t sector, const void* buf) {
+	(void)sector;
+	(void)buf;
 	return 0;
 }
 
