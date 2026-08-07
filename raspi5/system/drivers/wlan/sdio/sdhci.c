@@ -301,14 +301,21 @@ static void bcm2712_sdhci_gpio_init(void){
 }
 
 /*
- * Raw register access. The Pi4 Arasan driver padded every write with a
- * busy loop; the bcm2712 sdio2 core is driven with plain accessors by
- * linux (sdhci-brcmstb), so no write delay is needed here.
+ * Raw register access. The proven bcm2712 SDHCI path in
+ * system/libs/arch_bcm2712 still keeps a short post-write delay and
+ * documents it as necessary for the BCM2835/BCM2712 host controller.
+ * Mirror that behavior here: runtime evidence shows Pi5 WLAN gets through
+ * enumeration/function-enable but the very first func1 control CMD52 fails,
+ * which matches posted writes not fully settling before the command path is
+ * exercised.
  */
 static inline void bcm2712_sdhci_raw_writel(struct sdhci_host *host, uint32_t val,
 					    int reg)
 {
+        volatile int delay = 20;
 	writel(val, host->ioaddr + reg);
+        while (delay--)
+                ;
 }
 
 static inline uint32_t bcm2712_sdhci_raw_readl(struct sdhci_host *host, int reg)
@@ -764,8 +771,11 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 	uint32_t spin_start_us = sdhci_now_us();
 	/* Wall-clock deadline, not an iteration count: a stuck FIFO used to
 	 * cost 100000 sleep(0) round trips (tens of seconds under load) and
-	 * wedged the whole firmware download. */
-	uint32_t deadline = get_timer(0) + SDHCI_DATA_TIMEOUT_MS;
+	 * wedged the whole firmware download. Measured as elapsed-since-start:
+	 * get_timer() is an unsigned kernel_tic_ms delta, so the old
+	 * "now + timeout" deadline underflowed and fired on the very first
+	 * poll (every chip-attach CMD53 "timed out" within microseconds). */
+	uint64_t xfer_start = get_timer(0);
 	if (data->flags == MMC_DATA_READ) {
 		rdy = SDHCI_INT_DATA_AVAIL;
 		mask = SDHCI_DATA_AVAILABLE;
@@ -804,7 +814,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 			 */
 			sdhci_poll_relax(spin_start_us);
 		}
-		if (get_timer(deadline) > 0){
+		if (get_timer(xfer_start) >= SDHCI_DATA_TIMEOUT_MS){
 			brcm_log("%s: Transfer data timeout\n", __func__);
 			return -ETIMEDOUT;
 		}
@@ -854,11 +864,13 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		/* Wall-clock busy cap: the old iteration-count loop (each
 		 * iteration one sleep(0) round trip, doubling up to 32000)
 		 * turned one stuck inhibit bit into tens of seconds of
-		 * scheduler spinning before anyone noticed. */
-		uint32_t busy_deadline = get_timer(0) + SDHCI_CMD_MAX_TIMEOUT;
+		 * scheduler spinning before anyone noticed. Elapsed-since-
+		 * start form: get_timer() deltas are unsigned, a "now +
+		 * timeout" deadline underflows and fires immediately. */
+		uint64_t busy_start = get_timer(0);
 
 		while (sdhci_readl(host, SDHCI_PRESENT_STATE) & mask) {
-			if (get_timer(busy_deadline) > 0) {
+			if (get_timer(busy_start) >= SDHCI_CMD_MAX_TIMEOUT) {
 				brcm_log("%s: busy timeout\n", __func__);
 				return -ECOMM;
 			}
@@ -967,6 +979,19 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	stat = sdhci_readl(host, SDHCI_INT_STATUS);
 	sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
 
+        // #region debug-point A/B/C/D:sdhci-error-snapshot
+        if (ret && (cmd->cmdidx == SD_IO_RW_DIRECT || cmd->cmdidx == SD_IO_RW_EXTENDED)) {
+                brcm_log("debug sdhci err cmd=%u arg=0x%08x ret=%d stat=0x%08x ps=0x%08x clkctl=0x%04x hostctl=0x%02x hostctl2=0x%04x clock=%u width=%d mode=%u\n",
+                        cmd->cmdidx, cmd->cmdarg, ret, stat,
+                        sdhci_readl(host, SDHCI_PRESENT_STATE),
+                        sdhci_readw(host, SDHCI_CLOCK_CONTROL),
+                        sdhci_readb(host, SDHCI_HOST_CONTROL),
+                        sdhci_readw(host, SDHCI_HOST_CONTROL2),
+                        host->clock, host->bus_width,
+                        host->mmc ? host->mmc->selected_mode : 0);
+        }
+        // #endregion
+
 	// if(cmd->cmdidx != 52 && cmd->cmdidx != 53)
     // 	brcm_log("ret:%d resp: %x %x %x %x\n", ret, cmd->response[0], cmd->response[1],cmd->response[2],cmd->response[3]);
 
@@ -990,13 +1015,17 @@ int sdhci_set_ios(struct mmc *mmc)
 {
     struct sdhci_host *host = &_host;
 
+        host->mmc = mmc;
+
 	if (mmc->clock != host->clock)
 		sdhci_set_clock(host, mmc->clock);
+        host->clock = mmc->clock;
 
 	if (mmc->clk_disable)
 		sdhci_set_clock(host, 0);
 
 	sdhci_set_bus_width(host, mmc->bus_width);
+        host->bus_width = mmc->bus_width;
 	sdhci_set_select_mode(host, mmc->selected_mode);
         sdhci_set_uhs_timing(host, mmc->selected_mode);
 	return 0;
@@ -1019,12 +1048,17 @@ void sdhci_init(void)
 	_host.ioaddr = (void*)(_mmio_base + PI5_EMMC_WIN_OFF + PI5_WLAN_SDIO_OFF);
 	_host.twoticks_delay = ((2 * 1000000) / 400000) + 1;
 	_host.last_write = 0;
-	/*
-	 * WAIT_SEND_CMD keeps the tested CYW43455 inter-command gap; the
-	 * Pi4-era BROKEN_VOLTAGE / BROKEN_R1B / NO_HISPD_BIT quirks were
-	 * Arasan workarounds and are not needed on the bcm2712 core.
-	 */
-	_host.quirks = SDHCI_QUIRK_WAIT_SEND_CMD;
+        /*
+         * Keep the same proven quirk set as the bcm2712 arch SDHCI path.
+         * The Pi5 WLAN userspace host still does 8/16-bit split register
+         * accesses and PIO command pacing through this wrapper; dropping the
+         * legacy BROKEN_* / NO_HISPD_BIT flags made fn1/backplane accesses
+         * fail even after identification succeeded.
+         */
+        _host.quirks = SDHCI_QUIRK_BROKEN_VOLTAGE |
+                       SDHCI_QUIRK_BROKEN_R1B |
+                       SDHCI_QUIRK_WAIT_SEND_CMD |
+                       SDHCI_QUIRK_NO_HISPD_BIT;
 	_host.voltages = MMC_VDD_32_33 | MMC_VDD_33_34 | MMC_VDD_165_195;
 
 	/* non-removable chip: force card presence in the vendor cfg regs */

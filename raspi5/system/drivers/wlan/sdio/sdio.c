@@ -215,9 +215,18 @@ int sdio_enable_func(int func)
     unsigned char reg;
     unsigned long timeout;
 
+    // #region debug-point C:sdio-enable-func-entry
+    brcm_log("debug sdio_enable_func enter func=%d\n", func);
+    // #endregion
+
     ret = mmc_io_rw_direct(0, 0, SDIO_CCCR_IOEx, 0, &reg);
     if (ret)
         goto err;
+
+    // #region debug-point C:sdio-enable-func-ioex-before
+    brcm_log("debug sdio_enable_func ioex-before func=%d reg=0x%02x\n",
+             func, reg);
+    // #endregion
 
     reg |= 1 << func;
 
@@ -231,6 +240,10 @@ int sdio_enable_func(int func)
         ret = mmc_io_rw_direct(0, 0, SDIO_CCCR_IORx, 0, &reg);
         if (ret)
             goto err;
+        // #region debug-point C:sdio-enable-func-iorx-poll
+        brcm_log("debug sdio_enable_func iorx-poll func=%d reg=0x%02x\n",
+                 func, reg);
+        // #endregion
         if (reg & (1 << func))
             break;
         usleep(1000);

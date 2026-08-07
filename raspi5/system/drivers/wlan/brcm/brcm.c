@@ -1405,9 +1405,11 @@ static int brcmf_sdio_buscoreprep(void)
      * CPU for seconds when every CMD52 read came back erroring), but
      * keep the budget wide enough that a cold chip still makes it. */
     {
-        uint32_t alp_deadline = get_timer(0) + 200;
+        uint64_t alp_start = get_timer(0);
         while (!SBSDIO_ALPAV(clkval)) {
-            if (get_timer(alp_deadline) > 0)
+            /* elapsed-since-start: get_timer() deltas are unsigned, a
+             * "now + budget" deadline underflows and breaks instantly */
+            if (get_timer(alp_start) >= 200)
                 break;
             usleep(100);
             clkval = brcmf_sdiod_readb(SBSDIO_FUNC1_CHIPCLKCSR, NULL);
@@ -3786,13 +3788,36 @@ int brcmf_sdiod_probe(void){
     ret = sdio_enable_func(1);
     if (ret) {
         brcm_log("Failed to enable F1: err=%d\n", ret);
+    } else {
+        /*
+         * On Pi5 the CCCR ready bits flip before the first func1 command
+         * path is reliably usable: runtime logs show the very first
+         * CHIPCLKCSR CMD52 write can still fail immediately after func1
+         * enable in both HS and legacy timing. Give the dongle a short
+         * settle window before touching func1 core registers.
+         */
+        usleep(20000);
     }
+
+    // #region debug-point C/E:probe-f1-ready
+    {
+        int dbg_err = 0;
+        uint8_t dbg_ioe = brcmf_sdiod_func0_rb(SDIO_CCCR_IOEx, &dbg_err);
+        uint8_t dbg_ior = brcmf_sdiod_func0_rb(SDIO_CCCR_IORx, &dbg_err);
+        brcm_log("debug probe f1-state ret=%d ioe=0x%02x ior=0x%02x err=%d\n",
+                 ret, dbg_ioe, dbg_ior, dbg_err);
+    }
+    // #endregion
 
     uint32_t clkctl = 0;
     /*
      * Force PLL off until brcmf_chip_attach()
      * programs PLL control regs
      */
+
+    // #region debug-point D/E:probe-chipclkcsr-before
+    brcm_log("debug probe chipclkcsr-write val=0x%02x\n", BRCMF_INIT_CLKCTL1);
+    // #endregion
 
     brcmf_sdiod_writeb(SBSDIO_FUNC1_CHIPCLKCSR, BRCMF_INIT_CLKCTL1,
                &err);

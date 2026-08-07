@@ -27,10 +27,16 @@
  *   gpio30: fsel reg 0x08 shift 24   gpio31: fsel reg 0x08 shift 28
  *   gpio32: fsel reg 0x0c shift  0   gpio33: fsel reg 0x0c shift  4
  *   gpio34: fsel reg 0x0c shift  8   gpio35: fsel reg 0x0c shift 12
- * Pull config is a 2-bit field per pin (0 none, 1 down, 2 up):
- *   gpio30: pull reg 0x14 shift 10   gpio31: pull reg 0x14 shift 12
- *   gpio32: pull reg 0x14 shift 14   gpio33: pull reg 0x18 shift  0
+ * Pull config is a 2-bit field per pin (0 none, 1 down, 2 up), decoded
+ * from the same tables: pad_bit = pr*32 + pb*2, reg = (bit>>5)*4,
+ * shift = bit&31. D0 GPIO_REGS(30,2,6,5,12)..(35,3,3,6,2) gives:
+ *   gpio30: pull reg 0x14 shift 24   gpio31: pull reg 0x14 shift 26
+ *   gpio32: pull reg 0x14 shift 28   gpio33: pull reg 0x18 shift  0
  *   gpio34: pull reg 0x18 shift  2   gpio35: pull reg 0x18 shift  4
+ * (The old shifts 10/12/14 landed on gpio23/24/25, leaving CMD/DAT0
+ * without host pulls; the bus then died the moment the dongle's
+ * internal pulls were dropped via SBSDIO_FUNC1_SDIOPULLUP=0 - exactly
+ * the runtime signature: CMD+DAT0 low in PRESENT_STATE, all-zero R5.)
  */
 #define PI5_PINCTRL_BASE    (_mmio_base + PI5_PINCTRL_OFF)
 #define PI5_FSEL_MASK       0xf
@@ -54,8 +60,8 @@ static const struct { uint32_t reg; uint32_t shift; } _sd2_fsel[] = {
 };
 
 static const struct { uint32_t reg; uint32_t shift; } _sd2_pull[] = {
-	{ 0x14, 10 },                 /* clk: bias-disable */
-	{ 0x14, 12 }, { 0x14, 14 },   /* cmd, dat0: bias-pull-up */
+	{ 0x14, 24 },                 /* clk: bias-disable */
+	{ 0x14, 26 }, { 0x14, 28 },   /* cmd, dat0: bias-pull-up */
 	{ 0x18, 0 }, { 0x18, 2 }, { 0x18, 4 },
 };
 

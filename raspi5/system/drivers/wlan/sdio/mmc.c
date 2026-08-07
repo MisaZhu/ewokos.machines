@@ -11,30 +11,6 @@
 
 static struct mmc _mmc;
 
-static int mmc_sdio_try_enable_high_speed(bool *enabled)
-{
-        uint8_t speed = 0;
-        int err;
-
-        *enabled = false;
-
-        err = mmc_io_rw_direct(0, 0, SDIO_CCCR_SPEED, 0, &speed);
-        if (err)
-                return err;
-
-        if ((speed & SDIO_SPEED_SHS) == 0)
-                return 0;
-
-        speed &= ~SDIO_SPEED_BSS_MASK;
-        speed |= SDIO_SPEED_EHS;
-        err = mmc_io_rw_direct(1, 0, SDIO_CCCR_SPEED, speed, NULL);
-        if (err)
-                return err;
-
-        *enabled = true;
-        return 0;
-}
-
 /*
  * DDR50 is deliberately NOT attempted here even though both sdio2 and the
  * CYW43455 advertise it: UHS DDR50 requires a 1.8V signalling switch plus
@@ -76,6 +52,11 @@ int mmc_io_rw_direct_host(int write, unsigned fn,
 	if (err){
 		brcm_log("cmd52 transport fail w=%d fn=%u addr=0x%x in=0x%x err=%d stat_resp=0x%x\n",
 			write, fn, addr, in, err, cmd.response[0]);
+                // #region debug-point A/D:mmc-cmd52-fail
+                brcm_log("debug cmd52 fail fn=%u addr=0x%x write=%d clock=%u width=%u mode=%u cmdarg=0x%08x\n",
+                        fn, addr, write, _mmc.clock, _mmc.bus_width,
+                        _mmc.selected_mode, cmd.cmdarg);
+                // #endregion
 		return err;
 	}
 
@@ -269,40 +250,34 @@ static int brcm_init(void)
 	if (err)
 		return err;
 
-        bool high_speed = false;
-
         /*
-         * Enumerate the card in the safest timing first, then move to the
-         * fastest timing both ends confirm they support. CYW4343x SDIO
-         * functions normally advertise SHS/EHS; enabling it lets the host
-         * use its 50MHz path with SDR25 timing instead of remaining in the
-         * default SDR12/legacy mode.
+         * Keep the Pi5 WLAN path in legacy timing for now. Runtime evidence
+         * shows fn0 CCCR traffic and func1 enable succeed, but the very first
+         * func1 CHIPCLKCSR CMD52 immediately times out once the bus has moved
+         * into the HS/SDR25 path. Hold the host/card at the proven 25MHz
+         * legacy timing point until func1/backplane traffic is stable.
          */
 	err = mmc_sdio_set_bus_width(4);
 	if (err)
 		return err;
 
-        err = mmc_sdio_try_enable_high_speed(&high_speed);
-        if (err) {
-                brcm_log("sdio high-speed enable failed %d, keep current timing\n", err);
-        }
-
         /*
-         * Verify the bus actually works at the chosen rate before handing it
-         * to the probe path. Some boards enumerate fine at 400kHz but lose
-         * every CMD52 at full speed; step the clock down until CCCR reads
-         * back reliably instead of failing the whole probe.
+         * Verify the Pi5 SDIO2 bus at a conservative rate before handing it
+         * to the probe path. A single fn0 CCCR read can pass at 50MHz while
+         * later fn1/backplane accesses still time out during chip attach, so
+         * prefer the proven 25MHz point here instead of optimistically
+         * starting at 50MHz and failing deep in the probe.
          */
         {
                 static const uint32_t try_clks[] =
-                        { 50000000, 25000000, 10000000 };
+                        { 25000000, 10000000 };
                 unsigned int i;
                 uint8_t cccr_rev;
 
                 err = -EIO;
                 for (i = 0; i < sizeof(try_clks)/sizeof(try_clks[0]); i++) {
                         _mmc.clock = try_clks[i];
-                        _mmc.selected_mode = high_speed ? MMC_HS : MMC_LEGACY;
+                        _mmc.selected_mode = MMC_LEGACY;
                         err = sdhci_set_ios(&_mmc);
                         if (err)
                                 continue;
@@ -313,15 +288,13 @@ static int brcm_init(void)
 
                         brcm_log("sdio bus dead at %uHz, stepping down\n",
                                  try_clks[i]);
-                        /* HS timing is suspect too once we start degrading. */
-                        high_speed = false;
                 }
                 if (err) {
                         brcm_log("sdio bus unusable at any clock, err=%d\n", err);
                         return err;
                 }
                 brcm_log("sdio bus running at %uHz, mode %s\n", _mmc.clock,
-                         high_speed ? "HS SDR" : "legacy");
+                         "legacy");
         }
 
 	return 0;
