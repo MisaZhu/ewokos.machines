@@ -124,6 +124,10 @@ static inline ewokos_addr_t i2c_base(int bus) {
 	return _mmio_base + RP1_I2C_OFF(bus);
 }
 
+static inline int i2c_comp_type_ok(ewokos_addr_t base) {
+	return get32(base + IC_COMP_TYPE) == IC_COMP_TYPE_VALUE;
+}
+
 static int i2c_set_enable(ewokos_addr_t base, uint32_t en) {
 	put32(base + IC_ENABLE, en);
 	for (uint32_t n = 0; n < I2C_ENABLE_POLL_MAX; n++) {
@@ -184,9 +188,13 @@ int bcm2712_i2c_init(int bus) {
 			(void *)rp1_mapped, (void *)rp1_vbase);
 		return BCM2712_I2C_ERR_RP1_MAP;
 	}
-	int rp1_ret = bcm2712_rp1_init();
-	if (rp1_ret != 0)
-		return rp1_ret - 10;
+
+	ewokos_addr_t base = i2c_base(bus);
+	if (!i2c_comp_type_ok(base)) {
+		int rp1_ret = bcm2712_rp1_init();
+		if (rp1_ret != 0)
+			return rp1_ret - 10;
+	}
 
 	if (bus < 4) {
 		bcm2712_gpio_init();
@@ -197,7 +205,6 @@ int bcm2712_i2c_init(int bus) {
 		}
 	}
 
-	ewokos_addr_t base = i2c_base(bus);
 	uint32_t comp_type = get32(base + IC_COMP_TYPE);
 	if (comp_type != IC_COMP_TYPE_VALUE) {
 		klog("i2c-rp1: bus=%d base=%p bad COMP_TYPE=%08x expected=%08x\n",

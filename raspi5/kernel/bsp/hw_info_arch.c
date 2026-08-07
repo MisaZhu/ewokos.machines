@@ -31,9 +31,8 @@ static bool _fb_splits_allocable = false;
 
 
 /*
- * Map a single 4KB page for device MMIO, walking L1→L2→L3 with 64-bit
+ * Map a single PAGE_SIZE page for device MMIO, walking L1→L2→L3 with 64-bit
  * physical addresses (needed for BCM2712 peripherals above 4GB).
- * Replaces the previous set_block_2mb() which used 2MB block descriptors.
  */
 static void set_page_dev(page_dir_entry_t* vm, ewokos_addr_t vaddr, uint64_t phy) {
 	uint32_t l1 = PAGE_L1_INDEX(vaddr);
@@ -42,39 +41,39 @@ static void set_page_dev(page_dir_entry_t* vm, ewokos_addr_t vaddr, uint64_t phy
 
 	/* walk or allocate L2 table */
 	if (vm[l1].EntryType == 0) {
-		page_table_entry_t* l2_table = (page_table_entry_t*)kalloc4k();
+		page_table_entry_t* l2_table = (page_table_entry_t*)kalloc_page();
 		if (l2_table == NULL)
 			return;
 		memset(l2_table, 0, PAGE_TABLE_SIZE);
 		vm[l1] = (page_dir_entry_t){
 			.NSTable = 1,
 			.EntryType = TYPE_TABLE,
-			.Address = (uint64_t)V2P(l2_table) >> 12,
+			.Address = (uint64_t)V2P(l2_table) >> PAGE_SHIFT,
 			.AF = 1,
 		};
 	}
-	page_table_entry_t* l2_table = (page_table_entry_t*)P2V(vm[l1].Address << 12);
+	page_table_entry_t* l2_table = (page_table_entry_t*)P2V((uint64_t)vm[l1].Address << PAGE_SHIFT);
 
 	/* walk or allocate L3 table */
 	if (l2_table[l2].EntryType == 0) {
-		page_table_entry_t* l3_table = (page_table_entry_t*)kalloc4k();
+		page_table_entry_t* l3_table = (page_table_entry_t*)kalloc_page();
 		if (l3_table == NULL)
 			return;
 		memset(l3_table, 0, PAGE_TABLE_SIZE);
 		l2_table[l2] = (page_table_entry_t){
 			.NSTable = 1,
 			.EntryType = TYPE_TABLE,
-			.Address = (uint64_t)V2P(l3_table) >> 12,
+			.Address = (uint64_t)V2P(l3_table) >> PAGE_SHIFT,
 			.AF = 1,
 		};
 	}
-	page_table_entry_t* l3_table = (page_table_entry_t*)P2V(l2_table[l2].Address << 12);
+	page_table_entry_t* l3_table = (page_table_entry_t*)P2V((uint64_t)l2_table[l2].Address << PAGE_SHIFT);
 
 	/* populate L3 page descriptor with device memory attributes */
 	l3_table[l3] = (page_table_entry_t){
 		.NSTable = 1,
 		.EntryType = TYPE_PAGE,
-		.Address = phy >> 12,
+		.Address = phy >> PAGE_SHIFT,
 		.AF = 1,
 		.SH = STAGE2_SH_OUTER_SHAREABLE,
 		.S2AP = 0,
@@ -230,6 +229,9 @@ void kalloc_arch(void) {
 }
 
 int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
+	ewokos_addr_t reset_page_base = ALIGN_DOWN(PI5_RESET_PAGE_PHY, PAGE_SIZE);
+	ewokos_addr_t rescal_page_base = ALIGN_DOWN(PI5_RESCAL_PAGE_PHY, PAGE_SIZE);
+
 	/*
 	 * Firmware framebuffer reserve, the only RAM a driver may map by physical
 	 * address. kalloc_arch() keeps this window out of the heap, so a scan-out
@@ -262,11 +264,11 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 	if (phy_base >= PI5_PCIE2_PHY &&
 	    phy_base + size <= PI5_PCIE2_PHY + PI5_PCIE2_SIZE)
 		return 0;
-	if (phy_base >= PI5_RESET_PAGE_PHY &&
-	    phy_base + size <= PI5_RESET_PAGE_PHY + PI5_RESET_PAGE_SIZE)
+	if (phy_base >= reset_page_base &&
+	    phy_base + size <= reset_page_base + PI5_RESET_PAGE_SIZE)
 		return 0;
-	if (phy_base >= PI5_RESCAL_PAGE_PHY &&
-	    phy_base + size <= PI5_RESCAL_PAGE_PHY + PI5_RESET_PAGE_SIZE)
+	if (phy_base >= rescal_page_base &&
+	    phy_base + size <= rescal_page_base + PI5_RESCAL_PAGE_SIZE)
 		return 0;
 
 	/* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */

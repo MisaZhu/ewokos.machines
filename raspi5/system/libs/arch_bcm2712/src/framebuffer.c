@@ -225,7 +225,7 @@ static int fb_adopt(const sys_info_t *sysinfo,
 	info->size = size;
 	info->xoffset = 0;
 	info->yoffset = 0;
-	info->size_max = align_up(size, 4096);
+	info->size_max = align_up(size, sysinfo->page_size == 0 ? 4096 : sysinfo->page_size);
 	info->dma_id = -1;
 
 	if (syscall3(SYS_MEM_MAP,

@@ -40,6 +40,12 @@ static bool has_event;
 static uint64_t last_touch_ms;
 static uint32_t i2c_failures;
 
+static bool gt911_valid_product_id(const uint8_t id[4]) {
+	return (id[0] || id[1] || id[2] || id[3]) &&
+			!(id[0] == 0xff && id[1] == 0xff &&
+			id[2] == 0xff && id[3] == 0xff);
+}
+
 static int gt911_write_reg(uint16_t reg, const uint8_t *data, int len) {
 	uint8_t buf[16];
 	if (len < 0 || len > (int)sizeof(buf) - 2)
@@ -77,7 +83,12 @@ static int gt911_init(void) {
 	};
 	int ret = bcm2712_i2c_init(GT911_BUS);
 	if (ret < 0) {
-		klog("gt911: I2C controller initialization failed: %d\n", ret);
+		slog("gt911: I2C controller initialization failed: %d\n", ret);
+		return -1;
+	}
+	bcm2712_gpio_init();
+	if (bcm2712_i2c_set_speed(GT911_BUS, 400000) < 0) {
+		slog("gt911: failed to switch I2C bus %d to 400kHz\n", GT911_BUS);
 		return -1;
 	}
 
@@ -86,15 +97,16 @@ static int gt911_init(void) {
 		gt911_reset(probes[i].int_high);
 		gt911_addr = probes[i].addr;
 		if (!gt911_read_reg(GT911_REG_PRODUCT_ID, id, sizeof(id)) &&
-			(id[0] || id[1] || id[2] || id[3])) {
+			gt911_valid_product_id(id)) {
 			uint8_t command = 0;
 			ret = gt911_write_reg(GT911_REG_COMMAND, &command, 1);
 			if (ret)
-				klog("gt911: command register write failed\n");
+				slog("gt911: command register write failed\n");
+			i2c_failures = 0;
 			return ret;
 		}
 	}
-	klog("gt911: controller not found\n");
+	slog("gt911: controller not found\n");
 	return -1;
 }
 
@@ -170,9 +182,9 @@ static int touch_loop(vdevice_t *dev, void *p) {
 	if (ret < 0) {
 		i2c_failures++;
 		if (i2c_failures == 1)
-			klog("gt911: I2C communication failed\n");
+			slog("gt911: I2C communication failed\n");
 		if (i2c_failures >= I2C_REINIT_THRESHOLD) {
-			klog("gt911: %u consecutive failures, reinitializing\n", i2c_failures);
+			slog("gt911: %u consecutive failures, reinitializing\n", i2c_failures);
 			i2c_failures = 0;
 			gt911_init();
 		}
@@ -185,7 +197,7 @@ int main(int argc, char **argv) {
 	const char *mount_point = argc > 1 ? argv[1] : "/dev/touch0";
 	_mmio_base = mmio_map();
 	if (gt911_init() < 0)
-		klog("gt911: initial probe failed; background retry remains enabled\n");
+		slog("gt911: initial probe failed; background retry remains enabled\n");
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(dev));

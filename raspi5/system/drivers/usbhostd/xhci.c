@@ -21,6 +21,7 @@
 #include <ewoksys/dma.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/sys.h>
 #include "xhci.h"
 
 #define xhci_dmb() __asm__ volatile("dmb sy" ::: "memory")
@@ -185,6 +186,28 @@ static inline uint64_t now_ms(void) {
 static inline void w64(ewokos_addr_t addr, uint64_t val) {
 	put32(addr, (uint32_t)val);
 	put32(addr + 4, (uint32_t)(val >> 32));
+}
+
+static uint32_t xhci_pick_page_size(ewokos_addr_t op_base) {
+	sys_info_t sysinfo;
+	uint32_t page_bits = get32(op_base + XHCI_PAGESIZE);
+	uint32_t preferred = 4096;
+
+	if(sys_get_sys_info(&sysinfo) == 0 &&
+			sysinfo.page_size >= 4096 &&
+			(sysinfo.page_size & (sysinfo.page_size - 1u)) == 0) {
+		preferred = sysinfo.page_size;
+	}
+
+	if((page_bits & (preferred >> 12)) != 0)
+		return preferred;
+
+	for(uint32_t shift = 12; shift < 32; shift++) {
+		if((page_bits & (1u << (shift - 12))) != 0)
+			return 1u << shift;
+	}
+
+	return 4096;
 }
 
 int xhci_dma_init(void) {
@@ -555,6 +578,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
 	}
 	uint32_t hcs2 = get32(cap_base + XHCI_HCSPARAMS2);
 	uint32_t n_scratch = (((hcs2 >> 21) & 0x1fu) << 5) | ((hcs2 >> 27) & 0x1fu);
+	uint32_t scratch_page_size = xhci_pick_page_size(hc->op);
 	if (n_scratch > 0) {
 		uint64_t arr_bus;
 		uint64_t* arr = xhci_dma_alloc(n_scratch * 8, 64, &arr_bus);
@@ -563,7 +587,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
 		}
 		for (uint32_t i = 0; i < n_scratch; ++i) {
 			uint64_t page_bus;
-			if (xhci_dma_alloc(4096, 4096, &page_bus) == NULL) {
+			if (xhci_dma_alloc(scratch_page_size, scratch_page_size, &page_bus) == NULL) {
 				return -1;
 			}
 			arr[i] = page_bus;
@@ -614,9 +638,9 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
 	}
 
 	hc->present = true;
-	klog("xhci%d: v%x.%02x ports=%u slots=%u csz=%u scratch=%u\n",
+	klog("xhci%d: v%x.%02x ports=%u slots=%u csz=%u scratch=%u page=%u\n",
 			id, version >> 8, version & 0xff,
-			hc->num_ports, hc->max_slots, hc->csz, n_scratch);
+			hc->num_ports, hc->max_slots, hc->csz, n_scratch, scratch_page_size);
 	return 0;
 }
 

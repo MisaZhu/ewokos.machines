@@ -1788,10 +1788,10 @@ int main(int argc, char** argv) {
 	sys_info_t sysinfo;
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 	_mmio_base = sysinfo.mmio.v_base;
-	syscall3(SYS_MEM_MAP,
+	bool main_mapped = syscall3(SYS_MEM_MAP,
 			(ewokos_addr_t)sysinfo.mmio.v_base,
 			(ewokos_addr_t)sysinfo.mmio.phy_base,
-			(ewokos_addr_t)sysinfo.mmio.size);
+			(ewokos_addr_t)sysinfo.mmio.size) == sysinfo.mmio.v_base;
 	/*
 	 * sys_mem_map() returns 0 and installs *nothing* when the request misses
 	 * check_mem_map_arch()'s whitelist, so an unchecked failure here would
@@ -1811,7 +1811,10 @@ int main(int argc, char** argv) {
 	 * loop only sleeps and /dev/hid0 stays readable (empty).
 	 */
 	int rp1_ret = 0;
-	if (!rp1_mapped) {
+	if (!main_mapped) {
+		slog("usbhostd: main mmio map failed, running without usb\n");
+	}
+	else if (!rp1_mapped) {
 		slog("usbhostd: rp1 window map failed, running without usb\n");
 	}
 	/*

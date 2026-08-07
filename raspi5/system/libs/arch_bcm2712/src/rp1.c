@@ -2,6 +2,7 @@
 #include <arch/bcm2712/rp1.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/mmio.h>
+#include <ewoksys/sys.h>
 #include <ewoksys/syscall.h>
 #include <unistd.h>
 
@@ -79,8 +80,44 @@ static void update32(ewokos_addr_t addr, uint32_t clear, uint32_t set) {
 	put32(addr, (get32(addr) & ~clear) | set);
 }
 
+static inline ewokos_addr_t align_down_addr(ewokos_addr_t value, uint32_t align) {
+	return value & ~((ewokos_addr_t)align - 1u);
+}
+
+static int get_runtime_page_size(uint32_t* page_size) {
+	sys_info_t sysinfo;
+
+	if (page_size == NULL)
+		return -1;
+	if (sys_get_sys_info(&sysinfo) != 0)
+		return -1;
+	if (sysinfo.page_size < 4096 ||
+			(sysinfo.page_size & (sysinfo.page_size - 1u)) != 0)
+		return -1;
+
+	*page_size = sysinfo.page_size;
+	return 0;
+}
+
 static int map_page_window(ewokos_addr_t virt, ewokos_addr_t phys, uint32_t size) {
 	return syscall3(SYS_MEM_MAP, virt, phys, size) == virt ? 0 : -1;
+}
+
+static int map_subpage_window(ewokos_addr_t virt_addr, uint64_t phys,
+		uint32_t page_size, ewokos_addr_t* mapped) {
+	ewokos_addr_t phys_base = align_down_addr((ewokos_addr_t)phys, page_size);
+	ewokos_addr_t virt_base = align_down_addr(virt_addr, page_size);
+	ewokos_addr_t phys_off = (ewokos_addr_t)phys - phys_base;
+	ewokos_addr_t virt_off = virt_addr - virt_base;
+
+	if(virt_off != phys_off)
+		return -1;
+
+	if(map_page_window(virt_base, phys_base, page_size) != 0)
+		return -1;
+
+	*mapped = virt_addr;
+	return 0;
 }
 
 static int ilog2_u64(uint64_t value) {
@@ -190,15 +227,24 @@ static int train_link(ewokos_addr_t host, ewokos_addr_t reset, ewokos_addr_t res
 }
 
 int bcm2712_rp1_init(void) {
+	uint32_t page_size = 4096;
+
 	if (rp1_ready)
 		return 0;
 
+	if (get_runtime_page_size(&page_size) != 0) {
+		klog("rp1-pcie: failed to get runtime page size\n");
+		return -1;
+	}
+
 	ewokos_addr_t host = _mmio_base + PI5_PCIE2_WIN_OFF;
-	ewokos_addr_t reset = _mmio_base + PI5_RESET_WIN_OFF;
-	ewokos_addr_t rescal = _mmio_base + PI5_RESCAL_WIN_OFF;
-	if (map_page_window(host, PI5_PCIE2_PHY, PI5_PCIE2_WIN_SIZE) ||
-		map_page_window(reset, PI5_RESET_PAGE_PHY, PI5_RESET_PAGE_SIZE) ||
-		map_page_window(rescal, PI5_RESCAL_PAGE_PHY, PI5_RESET_PAGE_SIZE)) {
+	ewokos_addr_t ctrl_base = _mmio_base + PI5_RP1_CTRL_WIN_OFF;
+	ewokos_addr_t reset = ctrl_base + (PI5_RESET_PAGE_PHY & (page_size - 1u));
+	ewokos_addr_t rescal = ctrl_base + page_size +
+			(PI5_RESCAL_PAGE_PHY & (page_size - 1u));
+	if (map_page_window(host, PI5_PCIE2_PHY, PI5_PCIE2_WIN_SIZE) != 0 ||
+		map_subpage_window(reset, PI5_RESET_PAGE_PHY, page_size, &reset) != 0 ||
+		map_subpage_window(rescal, PI5_RESCAL_PAGE_PHY, page_size, &rescal) != 0) {
 		klog("rp1-pcie: control window mapping failed\n");
 		return -1;
 	}
