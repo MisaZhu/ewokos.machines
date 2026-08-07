@@ -531,6 +531,7 @@ static void brcmf_sync_init(void)
 
     pthread_mutex_init(&brcm_dpc_mutex, NULL);
     pthread_mutex_init(&brcm_ctrl_mutex, NULL);
+    brcmf_cmd_init();
     brcm_sync_inited = true;
 }
 
@@ -2914,7 +2915,8 @@ static void scan_result(struct brcmf_bss_info_le *info){
     if(idx >= 0){
         if(strlen(bus->ssid) > 0){
             int old = config_match_ssid(bus->ssid);
-            if(config_get_priority(idx) >= config_get_priority(old))
+            /* current ssid not in config: prefer the configured candidate */
+            if(old >= 0 && config_get_priority(idx) >= config_get_priority(old))
                 return;
         }
         memset(bus->ssid, 0, sizeof(bus->ssid));
@@ -3490,7 +3492,6 @@ int brcmf_sdiod_send_pkt(struct sk_buff* pkt)
 
 
     return brcmf_sdiod_skbuff_write(2, addr, pkt);
-    return err;
 }
 
 

@@ -76,6 +76,7 @@ int32_t brcmf_fil_iovar_data_set(int ifidx, char *name, const void *data, uint32
 int32_t brcmf_fil_iovar_int_set(int ifidx, char *name, uint32_t data);
 int32_t brcmf_fil_cmd_data_get(int ifidx, uint32_t cmd, void *data, uint32_t len);
 int32_t brcmf_fil_cmd_int_get(int ifidx, uint32_t cmd, uint32_t *data);
+void brcmf_cmd_init(void);
 int brcmf_c_preinit_dcmds(void);
 int scan(void);
 int connect(const char*ssid, const char* pmk);

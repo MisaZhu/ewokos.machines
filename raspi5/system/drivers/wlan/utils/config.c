@@ -55,6 +55,10 @@ int config_match_ssid(const char* ssid){
 int config_get_priority(int idx){
 	if(network_config)
 	{
+		/* guard against out-of-range index: json_var_array_get() would
+		   silently pad empty nodes into the array */
+		if(idx < 0 || idx >= (int)json_var_array_size(network_config->var))
+			return 0;
 		json_node_t *n = json_var_array_get(network_config->var, idx);
 		if(n){
 			json_node_t* p = json_var_find(n->var, "priority");
@@ -69,6 +73,8 @@ int config_get_priority(int idx){
 const char* config_get_pmk(int idx){
 	if(network_config)
 	{
+		if(idx < 0 || idx >= (int)json_var_array_size(network_config->var))
+			return NULL;
 		json_node_t *n = json_var_array_get(network_config->var, idx);
 		if(n){
 			json_node_t* p = json_var_find(n->var, "pmk");
@@ -83,6 +89,8 @@ const char* config_get_pmk(int idx){
 const char* config_get_passwd(int idx){
 	if(network_config)
 	{
+		if(idx < 0 || idx >= (int)json_var_array_size(network_config->var))
+			return NULL;
 		json_node_t *n = json_var_array_get(network_config->var, idx);
 		if(n){
 			json_node_t* p = json_var_find(n->var, "passwd");
@@ -98,6 +106,8 @@ const char* config_get_passwd(int idx){
 const char* config_get_ssid(int idx){
 	if(network_config)
 	{
+		if(idx < 0 || idx >= (int)json_var_array_size(network_config->var))
+			return NULL;
 		json_node_t *n = json_var_array_get(network_config->var, idx);
 		if(n){
 			json_node_t* p = json_var_find(n->var, "ssid");

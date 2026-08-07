@@ -91,5 +91,9 @@ break2:
 }
 
 void brcm_console_free(void){
-    free(_console);
+    if(_console){
+        free(_console->buf);
+        free(_console);
+        _console = NULL;
+    }
 }

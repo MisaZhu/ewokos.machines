@@ -2905,7 +2905,8 @@ static void scan_result(struct brcmf_bss_info_le *info){
     if(idx >= 0){
         if(strlen(bus->ssid) > 0){
             int old = config_match_ssid(bus->ssid);
-            if(config_get_priority(idx) >= config_get_priority(old))
+            /* current ssid not in config: prefer the configured candidate */
+            if(old >= 0 && config_get_priority(idx) >= config_get_priority(old))
                 return;
         }
         memset(bus->ssid, 0, sizeof(bus->ssid));

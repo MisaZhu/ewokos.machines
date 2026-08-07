@@ -47,20 +47,24 @@ void brcm_log(const char *format, ...) {
         charbuf_push(LogBuf, temp_buf[i], true);
         i++;
     }
+    /* sout must stay inside the critical section: temp_buf is shared and a
+       concurrent brcm_log() would overwrite it right after unlock */
+    sout(temp_buf, (uint32_t)i);
     pthread_mutex_unlock(&mutex);
-    sout(temp_buf, (ewokos_addr_t)strlen(temp_buf));
 }
 
 char* brcm_get_log(void){
     char* buf = malloc(RING_BUF_SIZE);
    int ret, i = 0;
 
+    pthread_mutex_lock(&mutex);
     while(true){
         ret =  charbuf_pop(LogBuf, &buf[i]);
         if(ret != 0)
             break;
         i++;
     };
+    pthread_mutex_unlock(&mutex);
     buf[i] = '\0';
     return buf;
 }

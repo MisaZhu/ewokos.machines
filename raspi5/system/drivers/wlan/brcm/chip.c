@@ -1113,10 +1113,10 @@ static int brcmf_chip_get_raminfo(void){
     if (!pub.ramsize) {
         brcm_log("RAM size is undetermined\n");
         return -ENOMEM;
-        if (pub.ramsize > BRCMF_CHIP_MAX_MEMSIZE) {
-            brcm_log("RAM size is incorrect\n");
-            return -ENOMEM;
-        }
+    }
+    if (pub.ramsize > BRCMF_CHIP_MAX_MEMSIZE) {
+        brcm_log("RAM size is incorrect\n");
+        return -ENOMEM;
     }
 
     return 0;
