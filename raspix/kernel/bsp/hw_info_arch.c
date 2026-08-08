@@ -16,7 +16,7 @@ uint32_t _uart_type = UART_MINI;
 uint32_t _pi4 = 0;
 	
 /* phy memory reservation for framebuffer and mmio*/
-#define PHY_LOW_RESV_SIZE (76*MB)
+#define PHY_LOW_RESV_SIZE (64*MB)
 #define PHY_LOW_RESV_BASE (1u*GB - PHY_LOW_RESV_SIZE)
 
 #define PHY_HIGH_RESV_SIZE (64*MB)
