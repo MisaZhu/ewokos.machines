@@ -152,10 +152,12 @@ void sys_info_init_arch(void) {
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
 		_sys_info.total_usable_mem_size;
 
-	if(_sys_info.total_usable_mem_size > 1*GB)
-		 _sys_info.allocable_phy_mem_top -= PHY_HIGH_RESV_SIZE;
-	else
-		 _sys_info.allocable_phy_mem_top -= PHY_LOW_RESV_SIZE;
+	if(_sys_info.total_phy_mem_size <= 4ull*GB) {
+		if(_sys_info.total_phy_mem_size > 1u*GB)
+			_sys_info.allocable_phy_mem_top -= PHY_HIGH_RESV_SIZE;
+		else if(_sys_info.total_phy_mem_size == 4ull*GB)
+			_sys_info.allocable_phy_mem_top -= PHY_HIGH_RESV_SIZE;
+	}
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
