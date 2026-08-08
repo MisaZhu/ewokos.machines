@@ -64,9 +64,9 @@ sd:
 #256M ext2 sd
 	cd $(BUILD_DIR); \
 	dd if=/dev/zero of=${SD} bs=1k count=512k
-#make ext2 fs with: block_size=1024 inode_size=128
+#make ext2 fs with: block_size=4096 inode_size=128
 	cd $(BUILD_DIR); \
-	mke2fs -b 1024 -I 128 ${SD}
+	mke2fs -b 4096 -I 128 ${SD}
 
 	cd $(TARGET_DIR); \
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
