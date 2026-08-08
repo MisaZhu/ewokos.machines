@@ -66,7 +66,7 @@ void sys_info_init_arch(void) {
 	}
 	else if(pix_revision == PI_CM4_2G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-2G");
-		_sys_info.total_phy_mem_size = 1u*GB;
+		_sys_info.total_phy_mem_size = 2u*GB;
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
@@ -74,6 +74,13 @@ void sys_info_init_arch(void) {
 	else if(pix_revision == PI_CM4_4G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-4G");
 		_sys_info.total_phy_mem_size = 4ull*GB;
+		_sys_info.mmio.phy_base = 0xfe000000;
+		_core_base_offset =  0x01800000;
+		_pi4 = 1;
+	}
+	else if(pix_revision == PI_CM4_8G) {
+		strcpy(_sys_info.machine, "raspberry-cm4-8G");
+		_sys_info.total_phy_mem_size = 8ull*GB;
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
