@@ -16,9 +16,11 @@ uint32_t _uart_type = UART_MINI;
 uint32_t _pi4 = 0;
 	
 /* phy memory reservation for framebuffer and mmio*/
-#define PHY_LOW_RESV_BASE  0x3c000000
-#define PHY_HIGH_RESV_BASE 0xfc000000ull
-#define PHY_RESV_SIZE (64*MB)
+#define PHY_LOW_RESV_SIZE (76*MB)
+#define PHY_LOW_RESV_BASE (1u*GB - PHY_LOW_RESV_SIZE)
+
+#define PHY_HIGH_RESV_SIZE (64*MB)
+#define PHY_HIGH_RESV_BASE (4ull*GB - PHY_HIGH_RESV_SIZE)
 
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
@@ -74,13 +76,6 @@ void sys_info_init_arch(void) {
 	else if(pix_revision == PI_CM4_4G) {
 		strcpy(_sys_info.machine, "raspberry-cm4-4G");
 		_sys_info.total_phy_mem_size = 4ull*GB;
-		_sys_info.mmio.phy_base = 0xfe000000;
-		_core_base_offset =  0x01800000;
-		_pi4 = 1;
-	}
-	else if(pix_revision == PI_CM4_8G) {
-		strcpy(_sys_info.machine, "raspberry-cm4-8G");
-		_sys_info.total_phy_mem_size = 8ull*GB;
 		_sys_info.mmio.phy_base = 0xfe000000;
 		_core_base_offset =  0x01800000;
 		_pi4 = 1;
@@ -148,7 +143,12 @@ void sys_info_init_arch(void) {
 
 	_sys_info.mmio.size = 32*MB;
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-		_sys_info.total_usable_mem_size - PHY_RESV_SIZE;
+		_sys_info.total_usable_mem_size;
+
+	if(_sys_info.total_usable_mem_size > 1*GB)
+		 _sys_info.allocable_phy_mem_top -= PHY_HIGH_RESV_SIZE;
+	else
+		 _sys_info.allocable_phy_mem_top -= PHY_LOW_RESV_SIZE;
 
 #ifdef KERNEL_SMP
 	_sys_info.cores = get_cpu_cores();
@@ -198,8 +198,8 @@ void kalloc_arch(void) {
 		kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(PHY_LOW_RESV_BASE));
 		if(_sys_info.allocable_phy_mem_top > PHY_HIGH_RESV_BASE) {
 			kalloc_append(P2V(1*GB), P2V(PHY_HIGH_RESV_BASE));
-			if(_sys_info.allocable_phy_mem_top > (PHY_HIGH_RESV_BASE+PHY_RESV_SIZE))
-				kalloc_append(P2V(PHY_HIGH_RESV_BASE+PHY_RESV_SIZE), P2V(_sys_info.allocable_phy_mem_top));
+			if(_sys_info.allocable_phy_mem_top > (PHY_HIGH_RESV_BASE+PHY_HIGH_RESV_SIZE))
+				kalloc_append(P2V(PHY_HIGH_RESV_BASE+PHY_HIGH_RESV_SIZE), P2V(_sys_info.allocable_phy_mem_top));
 		}
 		else
 			kalloc_append(P2V(1*GB), P2V(_sys_info.allocable_phy_mem_top));
@@ -209,13 +209,13 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(_pi4 && phy_base >= PHY_LOW_RESV_BASE && size <= PHY_RESV_SIZE)
+	if(phy_base >= PHY_LOW_RESV_BASE && size <= PHY_LOW_RESV_SIZE)
 		return 0;
-	if(_pi4 && phy_base >= PHY_HIGH_RESV_BASE && size <= PHY_RESV_SIZE)
+	if(phy_base >= PHY_HIGH_RESV_BASE && size <= PHY_HIGH_RESV_SIZE)
 		return 0;
-	if(phy_base >= _sys_info.total_phy_mem_size - PHY_RESV_SIZE)
-		return 0;
-	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
+
+	if(_sys_info.total_phy_mem_size < 1*GB && 
+			phy_base >= _sys_info.total_phy_mem_size - PHY_LOW_RESV_SIZE)
 		return 0;
 	return -1;
 }
