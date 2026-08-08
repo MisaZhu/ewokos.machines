@@ -226,3 +226,67 @@ int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 		return 0;
 	return -1;
 }
+
+static inline int32_t range_in_ram_window(ewokos_addr_t phy_base,
+		ewokos_addr_t map_end,
+		ewokos_addr_t ram_base,
+		ewokos_addr_t ram_end) {
+	if(phy_base < ram_base)
+		return 0;
+	if(map_end < phy_base)
+		return 0;
+	if(map_end > ram_end)
+		return 0;
+	return 1;
+}
+
+typedef struct mem_window {
+	ewokos_addr_t base;
+	ewokos_addr_t end;
+} mem_window_t;
+
+int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
+	ewokos_addr_t map_end = phy_base + size;
+	mem_window_t windows[3];
+	uint32_t window_num = 0;
+	uint32_t i;
+
+	if(map_end < phy_base)
+		return 0;
+
+	if(_sys_info.total_usable_mem_size <= 1*GB) {
+		windows[window_num].base = _sys_info.allocable_phy_mem_base;
+		windows[window_num].end = _sys_info.allocable_phy_mem_top;
+		window_num++;
+	}
+	else {
+		windows[window_num].base = _sys_info.allocable_phy_mem_base;
+		windows[window_num].end = PHY_LOW_RESV_BASE;
+		window_num++;
+
+		if(_sys_info.total_usable_mem_size <= 4ull*GB) {
+			windows[window_num].base = 1*GB;
+			windows[window_num].end = _sys_info.allocable_phy_mem_top;
+			window_num++;
+		}
+		else {
+			windows[window_num].base = 1*GB;
+			windows[window_num].end = PHY_HIGH_RESV_BASE;
+			window_num++;
+
+			windows[window_num].base = PHY_HIGH_RESV_BASE + PHY_HIGH_RESV_SIZE;
+			windows[window_num].end = _sys_info.allocable_phy_mem_top;
+			window_num++;
+		}
+	}
+
+	for(i = 0; i < window_num; i++) {
+		if(range_in_ram_window(phy_base, map_end,
+					windows[i].base,
+					windows[i].end)) {
+			return 1;
+		}
+	}
+
+	return 0;
+}
