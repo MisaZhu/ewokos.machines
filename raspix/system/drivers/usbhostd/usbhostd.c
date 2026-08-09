@@ -104,6 +104,7 @@ static inline void usb_log_none(const char* fmt, ...) { (void)fmt; }
 #define USB_ENDPOINT_XFER_INTERRUPT 0x03
 
 #define HID_USAGE_PAGE_GENERIC_DESKTOP 0x01
+#define HID_USAGE_PAGE_BUTTON 0x09
 #define HID_USAGE_PAGE_DIGITIZER 0x0D
 #define HID_USAGE_POINTER 0x01
 #define HID_USAGE_MOUSE 0x02
@@ -116,6 +117,7 @@ static inline void usb_log_none(const char* fmt, ...) { (void)fmt; }
 #define HID_USAGE_TIP_SWITCH 0x42
 #define HID_USAGE_X 0x30
 #define HID_USAGE_Y 0x31
+#define HID_USAGE_WHEEL 0x38
 
 #define DWC_REG_GOTGCTL 0x000
 #define DWC_REG_GAHBCFG 0x008
@@ -369,6 +371,21 @@ typedef struct {
 
 typedef struct {
 	bool valid;
+	bool has_report_id;
+	uint8_t report_id;
+	uint8_t report_bytes;
+	int button_bit[3];
+	int button_size[3];
+	int x_bit;
+	int x_size;
+	int y_bit;
+	int y_size;
+	int wheel_bit;
+	int wheel_size;
+} mouse_parser_t;
+
+typedef struct {
+	bool valid;
 	uint8_t iface_num;
 	uint8_t subclass;
 	uint8_t protocol;
@@ -400,6 +417,7 @@ typedef struct {
 	uint8_t report_len;
 	uint8_t kbd_report_id;   /* composite only */
 	uint8_t mouse_report_id; /* composite only */
+	mouse_parser_t mouse;
 	touch_parser_t touch;
 	uint8_t last_report[USB_MAX_REPORT];
 	uint8_t last_len;
@@ -569,7 +587,12 @@ static void usb_log_input_event(usb_input_dev_t* in, const uint8_t* report, int 
 		usb_log_keyboard_event(in, report, len);
 	}
 	else if (in->type == USB_INPUT_MOUSE) {
-		usb_log_mouse_event(in, report, len);
+		if (in->mouse.valid) {
+			usb_log_mouse_event(in, payload, USB_EVENT_SIZE);
+		}
+		else {
+			usb_log_mouse_event(in, report, len);
+		}
 	}
 	else if (in->type == USB_INPUT_TOUCH) {
 		usb_log_touch_event(in, payload, report, len);
@@ -1894,15 +1917,232 @@ static int hid_parse_touch_report(const uint8_t* desc, int len, touch_parser_t* 
 }
 
 static bool hid_probe_touch_report(const uint8_t* desc, int len, touch_parser_t* out) {
-        touch_parser_t parser;
+	touch_parser_t parser;
 
-        if (hid_parse_touch_report(desc, len, &parser) != 0) {
-                return false;
-        }
-        if (out != NULL) {
-                *out = parser;
-        }
-        return true;
+	if (hid_parse_touch_report(desc, len, &parser) != 0) {
+		return false;
+	}
+	if (out != NULL) {
+		*out = parser;
+	}
+	return true;
+}
+
+static int hid_parse_mouse_report(const uint8_t* desc, int len, mouse_parser_t* out) {
+	uint32_t usages[USB_MAX_USAGE_LIST];
+	int usage_count = 0;
+	uint32_t usage_page = 0;
+	uint32_t usage_min = 0;
+	uint32_t usage_max = 0;
+	bool usage_range_valid = false;
+	uint32_t report_size = 0;
+	uint32_t report_count = 0;
+	uint8_t current_report_id = 0;
+	uint32_t report_bits[256];
+	int collection_depth = 0;
+	int mouse_collection_depth = -1;
+	bool mouse_active = false;
+	int selected_report_id = -1;
+
+	memset(report_bits, 0, sizeof(report_bits));
+	memset(out, 0, sizeof(*out));
+	for (int i = 0; i < 3; ++i) {
+		out->button_bit[i] = -1;
+	}
+	out->x_bit = -1;
+	out->y_bit = -1;
+	out->wheel_bit = -1;
+
+	for (int off = 0; off < len; ) {
+		uint8_t prefix = desc[off++];
+		uint32_t value = 0;
+		int size_code;
+		int size;
+		int type;
+		int tag;
+
+		if (prefix == 0xFE) {
+			if (off + 2 > len) {
+				break;
+			}
+			size = desc[off];
+			off += 2 + size;
+			continue;
+		}
+
+		size_code = prefix & 0x3;
+		size = (size_code == 3) ? 4 : size_code;
+		type = (prefix >> 2) & 0x3;
+		tag = (prefix >> 4) & 0xF;
+		if (off + size > len) {
+			break;
+		}
+		for (int i = 0; i < size; ++i) {
+			value |= (uint32_t)desc[off + i] << (i * 8);
+		}
+		off += size;
+
+		if (type == 1) {
+			switch (tag) {
+			case 0:
+				usage_page = value;
+				break;
+			case 7:
+				report_size = value;
+				break;
+			case 8:
+				current_report_id = (uint8_t)value;
+				if (report_bits[current_report_id] == 0) {
+					report_bits[current_report_id] = 8;
+				}
+				break;
+			case 9:
+				report_count = value;
+				break;
+			default:
+				break;
+			}
+		}
+		else if (type == 2) {
+			switch (tag) {
+			case 0:
+				if (usage_count < USB_MAX_USAGE_LIST) {
+					usages[usage_count++] = value;
+				}
+				break;
+			case 1:
+				usage_min = value;
+				usage_range_valid = true;
+				break;
+			case 2:
+				usage_max = value;
+				usage_range_valid = true;
+				break;
+			default:
+				break;
+			}
+		}
+		else if (type == 0) {
+			switch (tag) {
+			case 8: {
+				bool constant = (value & 0x1u) != 0;
+				bool variable = (value & 0x2u) != 0;
+
+				if (mouse_active && !constant && variable) {
+					bool report_match = (selected_report_id < 0) ||
+						(selected_report_id == (int)current_report_id);
+
+					for (uint32_t idx = 0; idx < report_count; ++idx) {
+						uint32_t usage = hid_usage_for_index(usages, usage_count,
+								usage_range_valid, usage_min, usage_max, (int)idx);
+						int bit = (int)report_bits[current_report_id] + (int)(idx * report_size);
+
+						if (!report_match) {
+							continue;
+						}
+						if (usage_page == HID_USAGE_PAGE_BUTTON &&
+								usage >= 1u && usage <= 3u) {
+							int btn_idx = (int)usage - 1;
+							if (out->button_bit[btn_idx] < 0) {
+								if (selected_report_id < 0) {
+									selected_report_id = (int)current_report_id;
+								}
+								out->button_bit[btn_idx] = bit;
+								out->button_size[btn_idx] = (int)report_size;
+								out->has_report_id = current_report_id != 0;
+								out->report_id = current_report_id;
+							}
+						}
+						else if (usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
+								usage == HID_USAGE_X && out->x_bit < 0) {
+							if (selected_report_id < 0) {
+								selected_report_id = (int)current_report_id;
+							}
+							out->x_bit = bit;
+							out->x_size = (int)report_size;
+							out->has_report_id = current_report_id != 0;
+							out->report_id = current_report_id;
+						}
+						else if (usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
+								usage == HID_USAGE_Y && out->y_bit < 0) {
+							if (selected_report_id < 0) {
+								selected_report_id = (int)current_report_id;
+							}
+							out->y_bit = bit;
+							out->y_size = (int)report_size;
+							out->has_report_id = current_report_id != 0;
+							out->report_id = current_report_id;
+						}
+						else if (usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
+								usage == HID_USAGE_WHEEL && out->wheel_bit < 0) {
+							if (selected_report_id < 0) {
+								selected_report_id = (int)current_report_id;
+							}
+							out->wheel_bit = bit;
+							out->wheel_size = (int)report_size;
+							out->has_report_id = current_report_id != 0;
+							out->report_id = current_report_id;
+						}
+					}
+				}
+				report_bits[current_report_id] += report_size * report_count;
+				clear_local_usages(usages, &usage_count, &usage_range_valid);
+				break;
+			}
+			case 10: {
+				uint32_t usage = hid_usage_for_index(usages, usage_count,
+						usage_range_valid, usage_min, usage_max, 0);
+				uint8_t collection_type = (uint8_t)value;
+
+				if (!mouse_active && collection_type == 1 &&
+						usage_page == HID_USAGE_PAGE_GENERIC_DESKTOP &&
+						(usage == HID_USAGE_MOUSE || usage == HID_USAGE_POINTER)) {
+					mouse_collection_depth = collection_depth + 1;
+					mouse_active = true;
+				}
+				collection_depth++;
+				clear_local_usages(usages, &usage_count, &usage_range_valid);
+				break;
+			}
+			case 12:
+				if (collection_depth == mouse_collection_depth) {
+					mouse_active = false;
+					mouse_collection_depth = -1;
+				}
+				if (collection_depth > 0) {
+					collection_depth--;
+				}
+				clear_local_usages(usages, &usage_count, &usage_range_valid);
+				break;
+			default:
+				clear_local_usages(usages, &usage_count, &usage_range_valid);
+				break;
+			}
+		}
+	}
+
+	if (selected_report_id < 0 || out->x_bit < 0 || out->y_bit < 0) {
+		return -1;
+	}
+
+	out->valid = true;
+	out->report_bytes = (uint8_t)((report_bits[out->report_id] + 7u) / 8u);
+	if (out->report_bytes == 0 || out->report_bytes > USB_MAX_REPORT) {
+		return -1;
+	}
+	return 0;
+}
+
+static bool hid_probe_mouse_report(const uint8_t* desc, int len, mouse_parser_t* out) {
+	mouse_parser_t parser;
+
+	if (hid_parse_mouse_report(desc, len, &parser) != 0) {
+		return false;
+	}
+	if (out != NULL) {
+		*out = parser;
+	}
+	return true;
 }
 
 static uint32_t bit_extract_le(const uint8_t* buf, int bit, int bits) {
@@ -1914,6 +2154,56 @@ static uint32_t bit_extract_le(const uint8_t* buf, int bit, int bits) {
 		}
 	}
 	return value;
+}
+
+static int8_t hid_clamp_s8(int32_t value) {
+	if (value > 127) {
+		return 127;
+	}
+	if (value < -128) {
+		return -128;
+	}
+	return (int8_t)value;
+}
+
+static int mouse_normalize_report(const usb_input_dev_t* in, const uint8_t* report, int len, uint8_t* out) {
+	uint8_t buttons = 0;
+	int32_t x;
+	int32_t y;
+	int32_t wheel = 0;
+
+	if (!in->mouse.valid) {
+		return -1;
+	}
+	if (in->mouse.has_report_id) {
+		if (len <= 0 || report[0] != in->mouse.report_id) {
+			return -1;
+		}
+	}
+	if (len < in->mouse.report_bytes) {
+		return -1;
+	}
+
+	for (int i = 0; i < 3; ++i) {
+		if (in->mouse.button_bit[i] >= 0 &&
+				bit_extract_le(report, in->mouse.button_bit[i], in->mouse.button_size[i]) != 0) {
+			buttons |= (uint8_t)(1u << i);
+		}
+	}
+
+	x = hid_sign_extend(bit_extract_le(report, in->mouse.x_bit, in->mouse.x_size), in->mouse.x_size);
+	y = hid_sign_extend(bit_extract_le(report, in->mouse.y_bit, in->mouse.y_size), in->mouse.y_size);
+	if (in->mouse.wheel_bit >= 0) {
+		wheel = hid_sign_extend(bit_extract_le(report, in->mouse.wheel_bit, in->mouse.wheel_size),
+				in->mouse.wheel_size);
+	}
+
+	memset(out, 0, USB_EVENT_SIZE);
+	out[0] = buttons;
+	out[1] = (uint8_t)hid_clamp_s8(x);
+	out[2] = (uint8_t)hid_clamp_s8(y);
+	out[3] = (uint8_t)hid_clamp_s8(wheel);
+	return USB_EVENT_SIZE;
 }
 
 static int touch_normalize_report(const usb_input_dev_t* in, const uint8_t* report, int len, uint8_t* out) {
@@ -2050,7 +2340,8 @@ static int usb_register_keyboard(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
 	return 0;
 }
 
-static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps, const hid_candidate_t* cand) {
+static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
+		const hid_candidate_t* cand, const mouse_parser_t* parser) {
 	int slot = usb_input_alloc();
 	if (slot < 0) {
 		slog("usbhostd: register mouse failed no_slot addr=%u iface=%u\n", addr, cand->iface_num);
@@ -2059,7 +2350,8 @@ static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 	/* Set_Protocol is only defined for boot-subclass interfaces; non-boot
 	   interfaces default to Report protocol and must not receive it. */
 	if (cand->subclass == USB_SUBCLASS_BOOT) {
-		(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 0);
+		(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num,
+				(parser != NULL && parser->valid) ? 1 : 0);
 	}
 	(void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
 	memset(&_inputs[slot], 0, sizeof(_inputs[slot]));
@@ -2072,15 +2364,25 @@ static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 	_inputs[slot].max_packet = cand->max_packet == 0 ? 8 : cand->max_packet;
 	_inputs[slot].ctrl_mps = ctrl_mps;
 	_inputs[slot].low_speed = low_speed;
-	_inputs[slot].report_len = cand->max_packet > 0 ? cand->max_packet : 4;
-	slog("usbhostd: register mouse slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u speed=%s subclass=%u\n",
-			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
-			cand->max_packet, usb_speed_name(low_speed), cand->subclass);
+	if (parser != NULL && parser->valid) {
+		_inputs[slot].mouse = *parser;
+		_inputs[slot].report_len = parser->report_bytes;
+		slog("usbhostd: register mouse slot=%d addr=%u iface=%u ep=%02x report_id=%u report_len=%u maxpkt=%u speed=%s subclass=%u\n",
+				slot, addr, cand->iface_num, cand->ep_addr, parser->report_id,
+				parser->report_bytes, cand->max_packet, usb_speed_name(low_speed), cand->subclass);
+	}
+	else {
+		_inputs[slot].report_len = cand->max_packet > 0 ? cand->max_packet : 4;
+		slog("usbhostd: register mouse slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u speed=%s subclass=%u raw\n",
+				slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
+				cand->max_packet, usb_speed_name(low_speed), cand->subclass);
+	}
 	return 0;
 }
 
 static int usb_register_composite(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
-		const hid_candidate_t* cand, uint8_t kbd_id, uint8_t mouse_id) {
+		const hid_candidate_t* cand, uint8_t kbd_id, uint8_t mouse_id,
+		const mouse_parser_t* parser) {
 	int slot = usb_input_alloc();
 	if (slot < 0) {
 		slog("usbhostd: register composite failed no_slot addr=%u iface=%u\n", addr, cand->iface_num);
@@ -2107,9 +2409,14 @@ static int usb_register_composite(uint8_t addr, bool low_speed, uint8_t ctrl_mps
 			USB_MAX_REPORT : (uint8_t)_inputs[slot].max_packet;
 	_inputs[slot].kbd_report_id = kbd_id;
 	_inputs[slot].mouse_report_id = mouse_id;
-	slog("usbhostd: register composite slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u kbd_id=%u mouse_id=%u speed=%s subclass=%u\n",
+	if (parser != NULL && parser->valid) {
+		_inputs[slot].mouse = *parser;
+	}
+	slog("usbhostd: register composite slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u kbd_id=%u mouse_id=%u mouse_len=%u speed=%s subclass=%u\n",
 			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
-			cand->max_packet, kbd_id, mouse_id, usb_speed_name(low_speed), cand->subclass);
+			cand->max_packet, kbd_id, mouse_id,
+			(parser != NULL && parser->valid) ? parser->report_bytes : 0,
+			usb_speed_name(low_speed), cand->subclass);
 	return 0;
 }
 
@@ -2152,15 +2459,15 @@ static int usb_register_touch(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 		return -1;
 	}
 
-        /*
-         * Some USB touch panels advertise boot-mouse compatibility on the
-         * interface descriptor, but their real touch data is only available in
-         * Report protocol. Keep them out of Boot protocol here.
-         */
-        if (cand->subclass == USB_SUBCLASS_BOOT) {
-                (void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 1);
-        }
-        (void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
+	/*
+	 * Some USB touch panels advertise boot-mouse compatibility on the
+	 * interface descriptor, but their real touch data is only available in
+	 * Report protocol. Keep them out of Boot protocol here.
+	 */
+	if (cand->subclass == USB_SUBCLASS_BOOT) {
+		(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num, 1);
+	}
+	(void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
 
 	memset(&_inputs[slot], 0, sizeof(_inputs[slot]));
 	_inputs[slot].present = true;
@@ -2174,11 +2481,11 @@ static int usb_register_touch(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 	_inputs[slot].low_speed = low_speed;
 	_inputs[slot].report_len = parser.report_bytes;
 	_inputs[slot].touch = parser;
-        slog("usbhostd: register touch slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u report_id=%u report_len=%u tip=%d x=%d y=%d xmax=%u ymax=%u subclass=%u\n",
+	slog("usbhostd: register touch slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u report_id=%u report_len=%u tip=%d x=%d y=%d xmax=%u ymax=%u subclass=%u\n",
 			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
 			cand->max_packet, parser.report_id, parser.report_bytes,
-                        parser.tip_bit, parser.x_bit, parser.y_bit,
-                        parser.x_max, parser.y_max, cand->subclass);
+			parser.tip_bit, parser.x_bit, parser.y_bit,
+			parser.x_max, parser.y_max, cand->subclass);
 	return 0;
 }
 
@@ -2425,10 +2732,12 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 		{
 			uint8_t* report_desc = NULL;
 			bool desc_ok = false;
-                        bool touch_desc_ok = false;
+			bool mouse_desc_ok = false;
+			bool touch_desc_ok = false;
 			uint8_t kbd_id = 0, mouse_id = 0;
-                        hid_dev_type_t dev_type = HID_DEV_TYPE_UNKNOWN;
-                        touch_parser_t touch_probe;
+			hid_dev_type_t dev_type = HID_DEV_TYPE_UNKNOWN;
+			mouse_parser_t mouse_probe;
+			touch_parser_t touch_probe;
 
 			if (candidates[i].report_desc_len > 0 && candidates[i].report_desc_len <= 1024) {
 				report_desc = (uint8_t*)malloc(candidates[i].report_desc_len);
@@ -2439,30 +2748,35 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 					desc_ok = true;
 				}
 			}
-                        if (desc_ok) {
-                                touch_desc_ok = hid_probe_touch_report(report_desc,
-                                                candidates[i].report_desc_len, &touch_probe);
-                                dev_type = hid_detect_device_type(report_desc, candidates[i].report_desc_len);
-                                if (touch_desc_ok) {
-                                        dev_type = HID_DEV_TYPE_TOUCH;
-                                }
-                                slog("usbhostd: candidate idx=%d report_desc_type=%d\n", i, dev_type);
-                        }
+			if (desc_ok) {
+				mouse_desc_ok = hid_probe_mouse_report(report_desc,
+						candidates[i].report_desc_len, &mouse_probe);
+				touch_desc_ok = hid_probe_touch_report(report_desc,
+						candidates[i].report_desc_len, &touch_probe);
+				dev_type = hid_detect_device_type(report_desc, candidates[i].report_desc_len);
+				if (mouse_desc_ok && dev_type == HID_DEV_TYPE_UNKNOWN) {
+					dev_type = HID_DEV_TYPE_MOUSE;
+				}
+				if (touch_desc_ok) {
+					dev_type = HID_DEV_TYPE_TOUCH;
+				}
+				slog("usbhostd: candidate idx=%d report_desc_type=%d\n", i, dev_type);
+			}
 
 			/* uConsole keyboard: boot-keyboard interface whose report
 			   descriptor actually multiplexes kbd+mouse via report IDs */
 			if (desc_ok && hid_parse_report_ids(report_desc,
 					candidates[i].report_desc_len, &kbd_id, &mouse_id) == 0) {
 				if (usb_register_composite(addr, low_speed, ctrl_mps, &candidates[i],
-						kbd_id, mouse_id) == 0) {
+						kbd_id, mouse_id, mouse_desc_ok ? &mouse_probe : NULL) == 0) {
 					registered++;
 				}
 			}
-                        else if (dev_type == HID_DEV_TYPE_TOUCH) {
-                                if (usb_register_touch(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
-                                        registered++;
-                                }
-                        }
+			else if (dev_type == HID_DEV_TYPE_TOUCH) {
+				if (usb_register_touch(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+					registered++;
+				}
+			}
 			else if (candidates[i].subclass == USB_SUBCLASS_BOOT &&
 					candidates[i].protocol == USB_PROTOCOL_KEYBOARD) {
 				if (usb_register_keyboard(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
@@ -2471,7 +2785,8 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 			}
 			else if (candidates[i].subclass == USB_SUBCLASS_BOOT &&
 					candidates[i].protocol == USB_PROTOCOL_MOUSE) {
-				if (usb_register_mouse(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+				if (usb_register_mouse(addr, low_speed, ctrl_mps, &candidates[i],
+						mouse_desc_ok ? &mouse_probe : NULL) == 0) {
 					registered++;
 				}
 			}
@@ -2482,7 +2797,8 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 					}
 				}
 				else if (dev_type == HID_DEV_TYPE_MOUSE) {
-					if (usb_register_mouse(addr, low_speed, ctrl_mps, &candidates[i]) == 0) {
+					if (usb_register_mouse(addr, low_speed, ctrl_mps, &candidates[i],
+							mouse_desc_ok ? &mouse_probe : NULL) == 0) {
 						registered++;
 					}
 				}
@@ -2702,7 +3018,9 @@ static void usb_poll_inputs(vdevice_t* dev) {
 		}
 		else if (in->type == USB_INPUT_MOUSE) {
 			memset(payload, 0, sizeof(payload));
-			memcpy(payload, report, ret > USB_EVENT_SIZE ? USB_EVENT_SIZE : ret);
+			if (mouse_normalize_report(in, report, ret, payload) != USB_EVENT_SIZE) {
+				memcpy(payload, report, ret > USB_EVENT_SIZE ? USB_EVENT_SIZE : ret);
+			}
 			dispatch_data(USB_REPORT_ID_MOUSE, payload, USB_EVENT_SIZE);
 			usb_log_input_event(in, report, ret, payload);
 			wakeup = true;
@@ -2739,7 +3057,9 @@ static void usb_poll_inputs(vdevice_t* dev) {
 			}
 			else if (rid == in->mouse_report_id) {
 				memset(payload, 0, sizeof(payload));
-				memcpy(payload, report + 1, (ret - 1) > USB_EVENT_SIZE ? USB_EVENT_SIZE : (ret - 1));
+				if (mouse_normalize_report(in, report, ret, payload) != USB_EVENT_SIZE) {
+					memcpy(payload, report + 1, (ret - 1) > USB_EVENT_SIZE ? USB_EVENT_SIZE : (ret - 1));
+				}
 				dispatch_data(USB_REPORT_ID_MOUSE, payload, USB_EVENT_SIZE);
 				usb_log_input_event(in, report, ret, payload);
 				wakeup = true;
