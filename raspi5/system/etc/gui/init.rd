@@ -1,6 +1,9 @@
 @/bin/ipcserv /drivers/logd /dev/log
 
 @/bin/ipcserv /drivers/raspi5/uartd         /dev/tty0
+# take the cooling fan over from the EEPROM bootloader as early as possible
+@/bin/ipcserv /drivers/raspi5/fand          /dev/fan
+@/bin/ipcserv /drivers/raspi5/cpud          /dev/cpu
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
 

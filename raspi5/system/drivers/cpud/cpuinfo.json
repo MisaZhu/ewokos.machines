@@ -1,0 +1,314 @@
+{
+    "mailbox_snapshot_cached": false,
+    "mailbox_ready": true,
+    "probe_ok": true,
+    "probe_generation": 3,
+    "success_count": 60,
+    "error_count": 1,
+    "warning": "Pi5 mailbox data is queried when dev.cmd /dev/cpu info runs.",
+    "firmware": {
+        "available": true,
+        "revision": 1778498402,
+        "revision_hex": "0x6a01bb62"
+    },
+    "board": {
+        "model_available": false,
+        "revision_available": true,
+        "revision": 11551088,
+        "revision_hex": "0x00b04170",
+        "serial_available": true,
+        "serial": "0x8cb384a7fb2f9eca",
+        "mac_available": true,
+        "mac": "2c:cf:67:7d:28:43"
+    },
+    "memory": {
+        "arm": {
+            "available": true,
+            "base": 0,
+            "base_hex": "0x00000000",
+            "size": 1068498944
+        },
+        "gpu": {
+            "available": true,
+            "base": 4256169984,
+            "base_hex": "0xfdb00000",
+            "size": 34603008
+        }
+    },
+    "temperature": {
+        "current_available": true,
+        "current_millic": 34532,
+        "max_available": true,
+        "max_millic": 85000
+    },
+    "voltages": [
+        {
+            "id": 1,
+            "name": "core",
+            "current_available": true,
+            "current_uv": 852700,
+            "max_available": true,
+            "max_uv": 842700
+        },
+        {
+            "id": 2,
+            "name": "sdram_c",
+            "current_available": true,
+            "current_uv": 600000,
+            "max_available": true,
+            "max_uv": 760000
+        },
+        {
+            "id": 3,
+            "name": "sdram_p",
+            "current_available": true,
+            "current_uv": 1100000,
+            "max_available": true,
+            "max_uv": 1100000
+        },
+        {
+            "id": 4,
+            "name": "sdram_i",
+            "current_available": true,
+            "current_uv": 600000,
+            "max_available": true,
+            "max_uv": 760000
+        }
+    ],
+    "clocks": [
+        {
+            "id": 1,
+            "name": "emmc",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 200000000,
+            "max_available": true,
+            "max_hz": 200000000
+        },
+        {
+            "id": 2,
+            "name": "uart",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 44000000,
+            "max_available": true,
+            "max_hz": 1000000000
+        },
+        {
+            "id": 3,
+            "name": "arm",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 1500000000,
+            "max_available": true,
+            "max_hz": 2400000000
+        },
+        {
+            "id": 4,
+            "name": "core",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 500000000,
+            "max_available": true,
+            "max_hz": 910000000
+        },
+        {
+            "id": 5,
+            "name": "v3d",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 500000000,
+            "max_available": true,
+            "max_hz": 1150000000
+        },
+        {
+            "id": 6,
+            "name": "h264",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 0,
+            "max_available": true,
+            "max_hz": 500000000
+        },
+        {
+            "id": 7,
+            "name": "isp",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 500000000,
+            "max_available": true,
+            "max_hz": 910000000
+        },
+        {
+            "id": 8,
+            "name": "sdram",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 0,
+            "max_available": true,
+            "max_hz": 400000000
+        },
+        {
+            "id": 9,
+            "name": "pixel",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 0,
+            "max_available": true,
+            "max_hz": 2400000000
+        },
+        {
+            "id": 10,
+            "name": "pwm",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 0,
+            "max_available": true,
+            "max_hz": 500000000
+        },
+        {
+            "id": 11,
+            "name": "hevc",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 500000000,
+            "max_available": true,
+            "max_hz": 910000000
+        },
+        {
+            "id": 12,
+            "name": "emmc2",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 0,
+            "max_available": true,
+            "max_hz": 500000000
+        },
+        {
+            "id": 13,
+            "name": "id_13",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 648000000,
+            "max_available": true,
+            "max_hz": 648000000
+        },
+        {
+            "id": 14,
+            "name": "id_14",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 324000000,
+            "max_available": true,
+            "max_hz": 324000000
+        },
+        {
+            "id": 15,
+            "name": "id_15",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 0,
+            "max_available": true,
+            "max_hz": 108000000
+        },
+        {
+            "id": 16,
+            "name": "id_16",
+            "parent_id": 0,
+            "current_available": true,
+            "current_hz": 648000000,
+            "max_available": true,
+            "max_hz": 648000000
+        }
+    ],
+    "power": [
+        {
+            "id": 0,
+            "name": "sdcard",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 1,
+            "name": "uart0",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 2,
+            "name": "uart1",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 3,
+            "name": "usb_hcd",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 4,
+            "name": "i2c0",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 5,
+            "name": "i2c1",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 6,
+            "name": "i2c2",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 7,
+            "name": "spi",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 8,
+            "name": "ccp2tx",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 9,
+            "name": "id_9",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        },
+        {
+            "id": 10,
+            "name": "id_10",
+            "available": true,
+            "state": 0,
+            "on": false,
+            "exists": true
+        }
+    ]
+}

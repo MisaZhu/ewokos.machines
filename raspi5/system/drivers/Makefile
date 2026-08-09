@@ -1,5 +1,7 @@
 basic:
 	cd uartd; $(MAKE)
+	cd fand; $(MAKE)
+	cd cpud; $(MAKE)
 
 network:
 	cd wlan; $(MAKE)
@@ -14,6 +16,8 @@ gui:
 
 clean:
 	cd uartd; $(MAKE) clean
+	cd fand; $(MAKE) clean
+	cd cpud; $(MAKE) clean
 	cd fbd; $(MAKE) clean
 	cd usbhostd; $(MAKE) clean
 	cd hid_keybd; $(MAKE) clean

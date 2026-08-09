@@ -181,10 +181,7 @@ static int touch_loop(vdevice_t *dev, void *p) {
 	}
 	if (ret < 0) {
 		i2c_failures++;
-		if (i2c_failures == 1)
-			slog("gt911: I2C communication failed\n");
 		if (i2c_failures >= I2C_REINIT_THRESHOLD) {
-			slog("gt911: %u consecutive failures, reinitializing\n", i2c_failures);
 			i2c_failures = 0;
 			gt911_init();
 		}
