@@ -337,15 +337,22 @@ static int fan_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
 		void* buf, int size, int offset, void* p) {
 	(void)dev; (void)fd; (void)from_pid; (void)info; (void)p;
 
-	char tmp[64];
-	int len = fan_status_str(tmp, sizeof(tmp));
-	if (offset >= len)
+	if (size <= 0 || offset != 0)
 		return 0;
-	int n = len - offset;
-	if (n > size)
-		n = size;
-	memcpy(buf, tmp + offset, n);
-	return n;
+
+	((uint8_t*)buf)[0] = (uint8_t)_fan_level;
+	return 1;
+}
+
+static int fan_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
+		const void* buf, int size, int offset, void* p) {
+	(void)dev; (void)fd; (void)from_pid; (void)info; (void)offset; (void)p;
+
+	if (size <= 0)
+		return 0;
+
+	fan_set_level((int)((const uint8_t*)buf)[0]);
+	return 1;
 }
 
 static int fan_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in,
@@ -401,6 +408,7 @@ int main(int argc, char** argv) {
 	memset(&dev, 0, sizeof(dev));
 	strcpy(dev.name, "fan");
 	dev.read = fan_read;
+	dev.write = fan_write;
 	dev.cmd = fan_cmd;
 	dev.dev_cntl = fan_dcntl;
 	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);

@@ -7,6 +7,7 @@
 #include <sysinfo.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/dma.h>
+#include <arch/bcm2712/native_hdmi.h>
 
 static fbinfo_t _fb_info;
 
@@ -15,6 +16,7 @@ static fbinfo_t _fb_info;
 #define PROPTAG_END                    0x00000000u
 
 /* GET tags (request_size=0, firmware returns current value) */
+#define PROPTAG_GET_NUM_DISPLAYS       0x00040013u
 #define PROPTAG_GET_PHYS_WIDTH_HEIGHT  0x00040003u
 #define PROPTAG_GET_VIRT_WIDTH_HEIGHT  0x00040004u
 #define PROPTAG_GET_DEPTH              0x00040005u
@@ -23,10 +25,12 @@ static fbinfo_t _fb_info;
 #define PROPTAG_GET_DISPLAY_DIMENSIONS 0x00040003u  /* same ID as PHYS, different semantic */
 
 /* SET tags */
+#define PROPTAG_SET_DISPLAY_NUM        0x00048013u
 #define PROPTAG_SET_PHYS_WIDTH_HEIGHT  0x00048003u
 #define PROPTAG_SET_VIRT_WIDTH_HEIGHT  0x00048004u
 #define PROPTAG_SET_DEPTH              0x00048005u
 #define PROPTAG_SET_PIXEL_ORDER        0x00048006u
+#define PROPTAG_SET_VIRTUAL_OFFSET     0x00048009u
 #define PROPTAG_ALLOCATE_BUFFER        0x00040001u
 
 #define PIXEL_ORDER_BGR                0u
@@ -67,10 +71,12 @@ typedef struct {
  * Mirrors Circle's TBcmFrameBufferInitTags.
  */
 typedef struct {
+	prop_tag_simple_t set_display_num;
 	prop_tag_dims_t   set_phys;
 	prop_tag_dims_t   set_virt;
 	prop_tag_simple_t set_depth;
 	prop_tag_simple_t set_pixel_order;
+	prop_tag_dims_t   set_offset;
 	prop_tag_alloc_t  allocate;
 	prop_tag_simple_t get_pitch;
 } __attribute__((packed)) fb_init_tags_t;
@@ -80,6 +86,7 @@ typedef struct {
  * (GET tags + ALLOCATE with 0 request bytes).
  */
 typedef struct {
+	prop_tag_simple_t set_display_num;
 	prop_tag_dims_t   get_phys;
 	prop_tag_dims_t   get_virt;
 	prop_tag_simple_t get_depth;
@@ -90,7 +97,12 @@ typedef struct {
 
 /* Simple tags block for single-tag queries like GET_DISPLAY_DIMENSIONS */
 typedef struct {
-	prop_tag_dims_t dims;
+	prop_tag_simple_t get_num_displays;
+} __attribute__((packed)) fb_num_displays_tags_t;
+
+typedef struct {
+	prop_tag_simple_t set_display_num;
+	prop_tag_dims_t   dims;
 } __attribute__((packed)) fb_dims_tags_t;
 
 /* ─── mailbox property-tag buffer layout ─── */
@@ -128,17 +140,17 @@ static int mailbox_get_tags(void *tags, uint32_t tags_size) {
 		return -1;
 	}
 
-	/* Prepare shadow for alias fallback */
-	shadow = (uint32_t *)dma_alloc(0, buf_size);
-	if (shadow != NULL) {
-		memcpy(shadow, buf, buf_size);
-	}
-
 	/* Build request */
 	buf->size = buf_size;
 	buf->code = PROP_CODE_REQUEST;
 	memcpy((uint8_t *)buf + sizeof(struct prop_buffer), tags, tags_size);
 	*(uint32_t *)((uint8_t *)buf + sizeof(struct prop_buffer) + tags_size) = PROPTAG_END;
+
+	/* Prepare shadow for alias fallback from the fully built request. */
+	shadow = (uint32_t *)dma_alloc(0, buf_size);
+	if (shadow != NULL) {
+		memcpy(shadow, buf, buf_size);
+	}
 
 	mail_message_t msg;
 	memset(&msg, 0, sizeof(msg));
@@ -246,6 +258,12 @@ static void fb_init_tags_init(fb_init_tags_t *t,
 		uint32_t w, uint32_t h, uint32_t dep) {
 	memset(t, 0, sizeof(*t));
 
+	/* SET_DISPLAY_NUM */
+	t->set_display_num.tag.tag_id        = PROPTAG_SET_DISPLAY_NUM;
+	t->set_display_num.tag.value_buf_size = 4;
+	t->set_display_num.tag.value_length  = 4;
+	t->set_display_num.value             = 0;
+
 	/* SET_PHYS_WIDTH_HEIGHT */
 	t->set_phys.tag.tag_id        = PROPTAG_SET_PHYS_WIDTH_HEIGHT;
 	t->set_phys.tag.value_buf_size = 8;
@@ -272,6 +290,13 @@ static void fb_init_tags_init(fb_init_tags_t *t,
 	t->set_pixel_order.tag.value_length  = 4;
 	t->set_pixel_order.value             = PIXEL_ORDER_BGR;
 
+	/* SET_VIRTUAL_OFFSET */
+	t->set_offset.tag.tag_id        = PROPTAG_SET_VIRTUAL_OFFSET;
+	t->set_offset.tag.value_buf_size = 8;
+	t->set_offset.tag.value_length  = 8;
+	t->set_offset.width             = 0;
+	t->set_offset.height            = 0;
+
 	/* ALLOCATE_BUFFER */
 	t->allocate.tag.tag_id        = PROPTAG_ALLOCATE_BUFFER;
 	t->allocate.tag.value_buf_size = 8;
@@ -287,6 +312,12 @@ static void fb_init_tags_init(fb_init_tags_t *t,
 
 static void fb_query_tags_init(fb_query_tags_t *t) {
 	memset(t, 0, sizeof(*t));
+
+	/* SET_DISPLAY_NUM */
+	t->set_display_num.tag.tag_id        = PROPTAG_SET_DISPLAY_NUM;
+	t->set_display_num.tag.value_buf_size = 4;
+	t->set_display_num.tag.value_length  = 4;
+	t->set_display_num.value             = 0;
 
 	/* GET_PHYS_WIDTH_HEIGHT */
 	t->get_phys.tag.tag_id        = PROPTAG_GET_PHYS_WIDTH_HEIGHT;
@@ -321,6 +352,43 @@ static void fb_query_tags_init(fb_query_tags_t *t) {
 	t->get_pitch.tag.value_length  = 0;
 }
 
+static int fb_get_num_displays(uint32_t *count) {
+	fb_num_displays_tags_t t;
+
+	memset(&t, 0, sizeof(t));
+	t.get_num_displays.tag.tag_id        = PROPTAG_GET_NUM_DISPLAYS;
+	t.get_num_displays.tag.value_buf_size = 4;
+	t.get_num_displays.tag.value_length  = 0;
+
+	if (mailbox_get_tags(&t, sizeof(t)) != 0) {
+		return -1;
+	}
+	if (!(t.get_num_displays.tag.value_length & VALUE_LENGTH_RESPONSE)) {
+		return -1;
+	}
+
+	*count = t.get_num_displays.value;
+	return 0;
+}
+
+static int fb_select_display(uint32_t display_num) {
+	prop_tag_simple_t t;
+
+	memset(&t, 0, sizeof(t));
+	t.tag.tag_id = PROPTAG_SET_DISPLAY_NUM;
+	t.tag.value_buf_size = 4;
+	t.tag.value_length = 4;
+	t.value = display_num;
+
+	if (mailbox_get_tags(&t, sizeof(t)) != 0) {
+		return -1;
+	}
+	if (!(t.tag.value_length & VALUE_LENGTH_RESPONSE)) {
+		return -1;
+	}
+	return 0;
+}
+
 /*
  * fb_get_display_dimensions — query the display's preferred/current
  * resolution. Mirrors Circle's PROPTAG_GET_DISPLAY_DIMENSIONS usage in
@@ -330,6 +398,10 @@ static int fb_get_display_dimensions(uint32_t *width, uint32_t *height) {
 	fb_dims_tags_t t;
 
 	memset(&t, 0, sizeof(t));
+	t.set_display_num.tag.tag_id        = PROPTAG_SET_DISPLAY_NUM;
+	t.set_display_num.tag.value_buf_size = 4;
+	t.set_display_num.tag.value_length  = 4;
+	t.set_display_num.value             = 0;
 	t.dims.tag.tag_id        = PROPTAG_GET_DISPLAY_DIMENSIONS;
 	t.dims.tag.value_buf_size = 8;
 	t.dims.tag.value_length  = 0;
@@ -365,6 +437,14 @@ static int fb_mode_equal(const fb_mode_t *a, const fb_mode_t *b) {
 	return a->width == b->width &&
 			a->height == b->height &&
 			a->depth == b->depth;
+}
+
+static int fb_mode_matches_info(const fb_mode_t *mode, const fbinfo_t *info) {
+        if (mode == NULL || info == NULL) {
+                return 0;
+        }
+        return info->width == mode->width &&
+                        info->height == mode->height;
 }
 
 /*
@@ -567,6 +647,8 @@ static int fb_try_mode_list(const sys_info_t *sysinfo,
 int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	sys_info_t sysinfo;
 	fb_mode_t requested;
+	uint32_t displays = 0;
+        int strict_mode = (w != 0 && h != 0);
 	fb_mode_t fallbacks[] = {
 		{1024, 768, 32},
 		{800,  600, 32},
@@ -581,6 +663,13 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	if (bcm2712_mailbox_init() == 0) {
 		klog("fb_init: mmio map failed\n");
 		return -1;
+	}
+
+	if (fb_get_num_displays(&displays) == 0) {
+		klog("fb_init: displays=%u\n", displays);
+	}
+	if (fb_select_display(0) != 0) {
+		klog("fb_init: select display0 failed\n");
 	}
 
 	/* Validate / auto-detect resolution */
@@ -606,8 +695,18 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 
 	klog("fb_init: requesting %ux%ux%u\n", w, h, dep);
 
+	if (strict_mode && bcm2712_native_hdmi_supported(w, h, dep)) {
+		klog("fb_init: trying native hdmi0 path\n");
+		if (bcm2712_native_hdmi_init(&sysinfo, w, h, dep, &_fb_info) == 0) {
+			goto done;
+		}
+		klog("fb_init: native hdmi0 path failed\n");
+	}
+
 	/* Strategy 1: property tags — allocate new framebuffer */
-	if (fb_try_mode_list(&sysinfo, &requested, fallbacks, n_fallbacks,
+        if (fb_try_mode_list(&sysinfo, &requested,
+                        strict_mode ? NULL : fallbacks,
+                        strict_mode ? 0 : n_fallbacks,
 			fb_try_mode, "prop", &_fb_info) == 0) {
 		goto done;
 	}
@@ -615,26 +714,40 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	/* Strategy 2: adopt the firmware's existing boot framebuffer */
 	klog("fb_init: trying boot fb query\n");
 	if (fb_query_existing(&sysinfo, &_fb_info) == 0) {
-		goto done;
-	}
+                if (!strict_mode || fb_mode_matches_info(&requested, &_fb_info)) {
+                        goto done;
+                }
+                klog("fb_init: reject boot fb %ux%u for strict request %ux%u\n",
+                                _fb_info.width, _fb_info.height,
+                                requested.width, requested.height);
+                memset(&_fb_info, 0, sizeof(_fb_info));
+        }
 
-	/* Strategy 3: legacy channel-1 framebuffer message */
-	klog("fb_init: trying channel 1\n");
-	if (fb_try_mode_list(&sysinfo, &requested, fallbacks, n_fallbacks,
-			fb_channel1_init, "ch1", &_fb_info) == 0) {
-		goto done;
-	}
+        /* Strategy 3: legacy channel-1 framebuffer message */
+        klog("fb_init: trying channel 1\n");
+        if (fb_try_mode_list(&sysinfo, &requested,
+                        strict_mode ? NULL : fallbacks,
+                        strict_mode ? 0 : n_fallbacks,
+                        fb_channel1_init, "ch1", &_fb_info) == 0) {
+                if (!strict_mode || fb_mode_matches_info(&requested, &_fb_info)) {
+                        goto done;
+                }
+                klog("fb_init: reject ch1 fb %ux%u for strict request %ux%u\n",
+                                _fb_info.width, _fb_info.height,
+                                requested.width, requested.height);
+                memset(&_fb_info, 0, sizeof(_fb_info));
+        }
 
-	klog("fb_init: all modes failed\n");
-	return -1;
+        klog("fb_init: all modes failed\n");
+        return -1;
 
 done:
-	klog("fb_init: %ux%u@%u pitch=%u phy=%x size=%u\n",
-			_fb_info.width, _fb_info.height, _fb_info.depth,
-			_fb_info.pitch, _fb_info.phy_base, _fb_info.size);
-	return 0;
+        klog("fb_init: %ux%u@%u pitch=%u phy=%x size=%u\n",
+                        _fb_info.width, _fb_info.height, _fb_info.depth,
+                        _fb_info.pitch, _fb_info.phy_base, _fb_info.size);
+        return 0;
 }
 
 fbinfo_t *bcm2712_get_fbinfo(void) {
-	return &_fb_info;
+        return &_fb_info;
 }

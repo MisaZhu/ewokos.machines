@@ -169,6 +169,8 @@ typedef struct {
 } __attribute__((packed)) prop_clock_rate_batch_t;
 
 static cpu_snapshot_t _snapshot;
+static char* _read_cache;
+static int _read_cache_len;
 static bool _mmio_ready;
 
 static const uint32_t _voltage_ids[MAX_VOLTAGES] = { 1u, 2u, 3u, 4u };
@@ -760,6 +762,51 @@ static char* cpud_help(void) {
 	return ret;
 }
 
+static char* cpud_collect_json(void) {
+	cpud_probe_snapshot(&_snapshot);
+	return cpud_snapshot_json(&_snapshot);
+}
+
+static int cpud_refresh_read_cache(void) {
+	char* json = cpud_collect_json();
+	if(json == NULL)
+		return -1;
+
+	if(_read_cache != NULL)
+		free(_read_cache);
+	_read_cache = json;
+	_read_cache_len = (int)strlen(json);
+	return 0;
+}
+
+static int cpud_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
+		void* buf, int size, int offset, void* p) {
+	int remain;
+	int len;
+
+	(void)dev;
+	(void)fd;
+	(void)from_pid;
+	(void)node;
+	(void)p;
+
+	if(buf == NULL || size <= 0)
+		return 0;
+	if(offset < 0)
+		return -1;
+	if(offset == 0 || _read_cache == NULL) {
+		if(cpud_refresh_read_cache() != 0)
+			return -1;
+	}
+	if(offset >= _read_cache_len)
+		return 0;
+
+	remain = _read_cache_len - offset;
+	len = size < remain ? size : remain;
+	memcpy(buf, _read_cache + offset, len);
+	return len;
+}
+
 static char* cpud_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) {
 	(void)dev;
 	(void)from_pid;
@@ -769,9 +816,7 @@ static char* cpud_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void*
 	if(strcmp(argv[0], "help") == 0)
 		return cpud_help();
 
-	cpud_probe_snapshot(&_snapshot);
-
-	return cpud_snapshot_json(&_snapshot);
+	return cpud_collect_json();
 }
 
 int main(int argc, char** argv) {
@@ -785,7 +830,11 @@ int main(int argc, char** argv) {
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
 	strcpy(dev.name, "bcm283x_cpud");
+	dev.read = cpud_read;
 	dev.cmd = cpud_cmd;
 
-	return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+	int ret = device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+	if(_read_cache != NULL)
+		free(_read_cache);
+	return ret;
 }

@@ -125,10 +125,11 @@ static int net_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	(void)dev;
 	(void)fd;
 	(void)from_pid;
+	(void)offset;
 	(void)p;
 	(void)node;
 
-	int len = brcm_recv(buf + offset, size);
+	int len = brcm_recv(buf, size);
 	return (len > 0)?len:VFS_ERR_RETRY; 
 }
 
@@ -148,7 +149,7 @@ static int net_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	if (!brcm_connected())
 		return VFS_ERR_RETRY;
 
-	int len = brcm_send((uint8_t*)(buf + offset), size);
+	int len = brcm_send((uint8_t*)buf, size);
 	return (len > 0)?len:VFS_ERR_RETRY; 
 }
 

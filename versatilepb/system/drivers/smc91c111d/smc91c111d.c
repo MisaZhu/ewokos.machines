@@ -287,19 +287,20 @@ static int eth_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	(void)dev;
 	(void)fd;
 	(void)from_pid;
+	(void)offset;
 	(void)p;
 	(void)node;
 
 	eth_msg_t *msg = eth_dequeue(&rx_queue);
 	if(msg){
 		int len = MIN(msg->len, size);
-		memcpy(buf + offset, msg->data, len);
+		memcpy(buf, msg->data, len);
 		free(msg->data);
 		free(msg);
 		rx_queue_size--;
 		return len;
 	}
-	return VFS_ERR_RETRY; 
+	return VFS_ERR_RETRY;
 }
 
 static int eth_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
@@ -314,8 +315,8 @@ static int eth_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 	if(tx_queue_size > 16)
 		return VFS_ERR_RETRY;
 
-	int len = MIN(1500, size);	
-	eth_queue_put(&tx_queue, buf+offset, len);
+	int len = MIN(1500, size);
+	eth_queue_put(&tx_queue, buf, len);
 	tx_queue_size++ ;
 
 	return len;

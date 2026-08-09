@@ -1752,6 +1752,7 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 	UNUSED(fd);
 	UNUSED(from_pid);
 	UNUSED(info);
+        UNUSED(offset);
 
 	struct snd_pcm *pcm = (struct snd_pcm *)p;
 	if (pcm == NULL || pcm->substream == NULL || pcm->substream->runtime == NULL) {
@@ -1764,7 +1765,7 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
 		return err;
 	}
 
-	int res = snd_pcm_write1(pcm, buf, size, offset);
+	int res = snd_pcm_write1(pcm, buf, size, 0);
 	if (res == 0 && size > 0) {
 		/*
 		 * Ring full and nothing consumed: hand the pacing to the VFS

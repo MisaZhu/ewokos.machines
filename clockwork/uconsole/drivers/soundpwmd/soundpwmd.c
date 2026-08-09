@@ -1550,6 +1550,7 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 	UNUSED(dev);
 	UNUSED(fd);
 	UNUSED(node);
+	UNUSED(offset);
 	UNUSED(p);
 
 	const uint8_t *src;
@@ -1559,9 +1560,6 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 	from_pid = proc_getpid(from_pid);
 	if (size <= 0) {
 		return -1;
-	}
-	if (offset < 0 || offset >= size) {
-		return 0;
 	}
 	pthread_mutex_lock(&_snd_lock);
 	if (_snd.occupied_pid != from_pid) {
@@ -1586,7 +1584,6 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 		}
 	}
 
-	size -= offset;
 	if (_snd.frame_bytes == 0) {
 		pthread_mutex_unlock(&_snd_lock);
 		return -1;
@@ -1598,7 +1595,7 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 		return 0;
 	}
 
-	src = (const uint8_t *)buf + offset;
+	src = (const uint8_t *)buf;
 	while (total < size) {
 		pthread_mutex_lock(&_snd_lock);
 		consumed = (uint32_t)(size - total);
