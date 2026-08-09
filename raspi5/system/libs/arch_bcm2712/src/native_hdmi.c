@@ -252,21 +252,6 @@
 #define VC6_VCO_MAX_FREQ			(12ULL * 1000ULL * 1000ULL * 1000ULL)
 
 typedef struct {
-	uint32_t width;
-	uint32_t height;
-	uint32_t depth;
-	uint32_t pixel_clock_hz;
-	uint32_t hfp;
-	uint32_t hsync;
-	uint32_t hbp;
-	uint32_t vfp;
-	uint32_t vsync;
-	uint32_t vbp;
-	uint8_t hsync_pos;
-	uint8_t vsync_pos;
-} native_mode_t;
-
-typedef struct {
 	uint32_t buf_size;
 	uint32_t code;
 	struct {
@@ -306,7 +291,7 @@ typedef struct {
 	uint32_t end_tag;
 } __attribute__((packed)) fw_set_display_power_req_t;
 
-static const native_mode_t _native_modes[] = {
+static const bcm2712_hdmi_mode_t _native_modes[] = {
 	{
 		.width = 1600,
 		.height = 600,
@@ -339,7 +324,7 @@ static const native_mode_t _native_modes[] = {
 
 static int _hvs_step_d0 = -1;
 
-static const native_mode_t *find_mode(uint32_t w, uint32_t h, uint32_t dep) {
+static const bcm2712_hdmi_mode_t *find_mode(uint32_t w, uint32_t h, uint32_t dep) {
 	for (uint32_t i = 0; i < sizeof(_native_modes) / sizeof(_native_modes[0]); ++i) {
 		if (_native_modes[i].width == w &&
 				_native_modes[i].height == h &&
@@ -554,7 +539,7 @@ static int firmware_set_display_power(uint32_t display, uint32_t state) {
 	return 0;
 }
 
-static void program_required_clocks(const native_mode_t *mode) {
+static void program_required_clocks(const bcm2712_hdmi_mode_t *mode) {
 	uint32_t bvb_rate = (mode->pixel_clock_hz > 148500000U) ? 150000000U : 75000000U;
 	uint32_t hsm_rate = (mode->pixel_clock_hz / 100U) * 101U;
 
@@ -614,7 +599,7 @@ static unsigned long long vc6_phy_get_vco_freq(unsigned long long tmds_rate,
 	return tmds_rate * div * 10ULL;
 }
 
-static void hdmi0_phy_init(const native_mode_t *mode) {
+static void hdmi0_phy_init(const bcm2712_hdmi_mode_t *mode) {
 	unsigned int vco_div = 0;
 	unsigned long long vco_freq = vc6_phy_get_vco_freq(mode->pixel_clock_hz, &vco_div);
 	uint32_t phy_ctrl = build_low_rate_phy_ctrl_word();
@@ -670,7 +655,7 @@ static void hdmi0_phy_init(const native_mode_t *mode) {
 			phy_read(HDMI_TX_PHY_PLL_RESET_CTL) | VC6_HDMI_TX_PHY_PLL_RESET_CTL_PLL_RESETB);
 }
 
-static void hdmi0_set_timings(const native_mode_t *mode) {
+static void hdmi0_set_timings(const bcm2712_hdmi_mode_t *mode) {
 	uint32_t hdisplay = mode->width;
 	uint32_t hsync_start = mode->width + mode->hfp;
 	uint32_t hsync_end = hsync_start + mode->hsync;
@@ -717,7 +702,7 @@ static void hdmi0_reset(void) {
 	dvp_write(HDMI_CLOCK_STOP, dvp_read(HDMI_CLOCK_STOP) | VC4_DVP_HT_CLOCK_STOP_PIXEL);
 }
 
-static void pv0_configure(const native_mode_t *mode) {
+static void pv0_configure(const bcm2712_hdmi_mode_t *mode) {
 	uint32_t fifo_level = 46U;
 	uint32_t control;
 
@@ -758,7 +743,7 @@ static void pv0_configure(const native_mode_t *mode) {
 	pv_write(PV_CONTROL, control);
 }
 
-static void hvs0_init(const native_mode_t *mode, uint32_t fb_addr, uint32_t pitch) {
+static void hvs0_init(const bcm2712_hdmi_mode_t *mode, uint32_t fb_addr, uint32_t pitch) {
 	uint32_t ctl0;
 	uint32_t ctl2;
 	uint32_t word_base = HVS_BOOTLOADER_DLIST_END;
@@ -820,7 +805,7 @@ static void hvs0_init(const native_mode_t *mode, uint32_t fb_addr, uint32_t pitc
 			VC4_SET_FIELD(mode->height - 1U, SCALER6_DISPX_CTRL0_LINES_MASK));
 }
 
-static void hdmi0_enable_output(const native_mode_t *mode) {
+static void hdmi0_enable_output(const bcm2712_hdmi_mode_t *mode) {
 	pv_write(PV_CONTROL, pv_read(PV_CONTROL) | PV_CONTROL_EN);
 	hd_write(HDMI_VID_CTL,
 			(hd_read(HDMI_VID_CTL) &
@@ -842,10 +827,9 @@ int bcm2712_native_hdmi_supported(uint32_t w, uint32_t h, uint32_t dep) {
 	return find_mode(w, h, dep) != NULL;
 }
 
-int bcm2712_native_hdmi_init(const sys_info_t *sysinfo,
-		uint32_t w, uint32_t h, uint32_t dep,
+int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
+		const bcm2712_hdmi_mode_t *mode,
 		fbinfo_t *info) {
-	const native_mode_t *mode;
 	uint32_t bytes_per_pixel;
 	uint32_t pitch;
 	uint32_t size;
@@ -858,8 +842,14 @@ int bcm2712_native_hdmi_init(const sys_info_t *sysinfo,
 		return -1;
 	}
 
-	mode = find_mode(w, h, dep);
 	if (mode == NULL) {
+		return -1;
+	}
+	if ((mode->depth != 16U && mode->depth != 32U) ||
+			mode->width < 64U || mode->height < 64U ||
+			mode->pixel_clock_hz == 0U ||
+			mode->hfp == 0U || mode->hsync == 0U || mode->hbp == 0U ||
+			mode->vfp == 0U || mode->vsync == 0U || mode->vbp == 0U) {
 		return -1;
 	}
 
@@ -917,4 +907,16 @@ int bcm2712_native_hdmi_init(const sys_info_t *sysinfo,
 			info->width, info->height, info->depth, mode->pixel_clock_hz,
 			info->pitch, (unsigned long long)info->phy_base, (uint32_t)info->bus_base);
 	return 0;
+}
+
+int bcm2712_native_hdmi_init(const sys_info_t *sysinfo,
+		uint32_t w, uint32_t h, uint32_t dep,
+		fbinfo_t *info) {
+	const bcm2712_hdmi_mode_t *mode = find_mode(w, h, dep);
+
+	if (mode == NULL) {
+		return -1;
+	}
+
+	return bcm2712_native_hdmi_init_mode(sysinfo, mode, info);
 }

@@ -22,6 +22,7 @@ static fbinfo_t _fb_info;
 #define PROPTAG_GET_DEPTH              0x00040005u
 #define PROPTAG_GET_PIXEL_ORDER        0x00040006u
 #define PROPTAG_GET_PITCH              0x00040008u
+#define PROPTAG_GET_EDID_BLOCK         0x00030020u
 #define PROPTAG_GET_DISPLAY_DIMENSIONS 0x00040003u  /* same ID as PHYS, different semantic */
 
 /* SET tags */
@@ -104,6 +105,18 @@ typedef struct {
 	prop_tag_simple_t set_display_num;
 	prop_tag_dims_t   dims;
 } __attribute__((packed)) fb_dims_tags_t;
+
+typedef struct {
+	prop_tag_t tag;
+	uint32_t   block_number;
+	uint32_t   status;
+	uint8_t    block[128];
+} __attribute__((packed)) prop_tag_edid_t;
+
+typedef struct {
+	prop_tag_simple_t set_display_num;
+	prop_tag_edid_t   edid;
+} __attribute__((packed)) fb_edid_tags_t;
 
 /* ─── mailbox property-tag buffer layout ─── */
 
@@ -425,6 +438,138 @@ static int fb_get_display_dimensions(uint32_t *width, uint32_t *height) {
 	return 0;
 }
 
+static int fb_get_edid_block(uint32_t block_num, uint8_t block[128]) {
+	fb_edid_tags_t t;
+
+	memset(&t, 0, sizeof(t));
+	t.set_display_num.tag.tag_id        = PROPTAG_SET_DISPLAY_NUM;
+	t.set_display_num.tag.value_buf_size = 4;
+	t.set_display_num.tag.value_length  = 4;
+	t.set_display_num.value             = 0;
+	t.edid.tag.tag_id                   = PROPTAG_GET_EDID_BLOCK;
+	t.edid.tag.value_buf_size           = 136;
+	t.edid.tag.value_length             = 4;
+	t.edid.block_number                 = block_num;
+	t.edid.status                       = 0;
+
+	if (mailbox_get_tags(&t, sizeof(t)) != 0) {
+		return -1;
+	}
+	if (!(t.edid.tag.value_length & VALUE_LENGTH_RESPONSE)) {
+		return -1;
+	}
+	if (t.edid.status != 0) {
+		return -1;
+	}
+
+	memcpy(block, t.edid.block, 128);
+	return 0;
+}
+
+static int edid_checksum_valid(const uint8_t block[128]) {
+	uint32_t sum = 0;
+	uint32_t i;
+
+	for (i = 0; i < 128; ++i) {
+		sum += block[i];
+	}
+	return (sum & 0xffU) == 0U;
+}
+
+static int edid_parse_preferred_timing(const uint8_t block[128],
+		uint32_t dep, bcm2712_hdmi_mode_t *mode) {
+	static const uint8_t edid_header[8] = {
+		0x00U, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0x00U
+	};
+	const uint8_t *dtd;
+	uint32_t pixel_clock_hz;
+	uint32_t hactive;
+	uint32_t hblank;
+	uint32_t vactive;
+	uint32_t vblank;
+	uint32_t hfp;
+	uint32_t hsync;
+	uint32_t vfp;
+	uint32_t vsync;
+	uint8_t misc;
+	uint32_t i;
+
+	if (mode == NULL) {
+		return -1;
+	}
+	if (memcmp(block, edid_header, sizeof(edid_header)) != 0) {
+		return -1;
+	}
+	if (!edid_checksum_valid(block)) {
+		return -1;
+	}
+
+	for (i = 0; i < 4; ++i) {
+		dtd = &block[54 + i * 18];
+		if (dtd[0] != 0U || dtd[1] != 0U) {
+			break;
+		}
+	}
+	if (i == 4) {
+		return -1;
+	}
+
+	pixel_clock_hz = (((uint32_t)dtd[1] << 8) | dtd[0]) * 10000U;
+	if (pixel_clock_hz == 0U) {
+		return -1;
+	}
+
+	hactive = (uint32_t)dtd[2] | (((uint32_t)dtd[4] & 0xf0U) << 4);
+	hblank = (uint32_t)dtd[3] | (((uint32_t)dtd[4] & 0x0fU) << 8);
+	vactive = (uint32_t)dtd[5] | (((uint32_t)dtd[7] & 0xf0U) << 4);
+	vblank = (uint32_t)dtd[6] | (((uint32_t)dtd[7] & 0x0fU) << 8);
+	hfp = (uint32_t)dtd[8] | (((uint32_t)dtd[11] & 0xc0U) << 2);
+	hsync = (uint32_t)dtd[9] | (((uint32_t)dtd[11] & 0x30U) << 4);
+	vfp = (uint32_t)((dtd[10] >> 4) & 0x0fU) | (((uint32_t)dtd[11] & 0x0cU) << 2);
+	vsync = (uint32_t)(dtd[10] & 0x0fU) | (((uint32_t)dtd[11] & 0x03U) << 4);
+	misc = dtd[17];
+
+	if ((misc & 0x80U) != 0U) {
+		return -1;
+	}
+	if (hactive < 64U || vactive < 64U || hblank == 0U || vblank == 0U ||
+			hfp == 0U || hsync == 0U || vfp == 0U || vsync == 0U) {
+		return -1;
+	}
+	if (hfp + hsync > hblank || vfp + vsync > vblank) {
+		return -1;
+	}
+
+	memset(mode, 0, sizeof(*mode));
+	mode->width = hactive;
+	mode->height = vactive;
+	mode->depth = dep;
+	mode->pixel_clock_hz = pixel_clock_hz;
+	mode->hfp = hfp;
+	mode->hsync = hsync;
+	mode->hbp = hblank - hfp - hsync;
+	mode->vfp = vfp;
+	mode->vsync = vsync;
+	mode->vbp = vblank - vfp - vsync;
+	if ((misc & 0x18U) == 0x18U) {
+		mode->hsync_pos = (misc & 0x02U) ? 1U : 0U;
+		mode->vsync_pos = (misc & 0x04U) ? 1U : 0U;
+	} else {
+		mode->hsync_pos = 1U;
+		mode->vsync_pos = 1U;
+	}
+	return 0;
+}
+
+static int fb_get_preferred_hdmi_mode(uint32_t dep, bcm2712_hdmi_mode_t *mode) {
+	uint8_t edid[128];
+
+	if (fb_get_edid_block(0, edid) != 0) {
+		return -1;
+	}
+	return edid_parse_preferred_timing(edid, dep, mode);
+}
+
 /* ─── init strategies ─── */
 
 typedef struct {
@@ -647,8 +792,10 @@ static int fb_try_mode_list(const sys_info_t *sysinfo,
 int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	sys_info_t sysinfo;
 	fb_mode_t requested;
+	bcm2712_hdmi_mode_t preferred_mode;
 	uint32_t displays = 0;
         int strict_mode = (w != 0 && h != 0);
+	int preferred_mode_valid = 0;
 	fb_mode_t fallbacks[] = {
 		{1024, 768, 32},
 		{800,  600, 32},
@@ -677,15 +824,28 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 		dep = 32;
 	}
 
+	if (fb_get_preferred_hdmi_mode(dep, &preferred_mode) == 0) {
+		preferred_mode_valid = 1;
+		klog("fb_init: edid preferred %ux%u@%u pclk=%u\n",
+				preferred_mode.width, preferred_mode.height,
+				preferred_mode.depth, preferred_mode.pixel_clock_hz);
+	}
+
 	if (w == 0 || h == 0) {
-		uint32_t det_w = 0, det_h = 0;
-		if (fb_get_display_dimensions(&det_w, &det_h) == 0) {
-			w = det_w;
-			h = det_h;
-			klog("fb_init: detected display %ux%u\n", w, h);
+		if (preferred_mode_valid) {
+			w = preferred_mode.width;
+			h = preferred_mode.height;
+			klog("fb_init: using edid preferred %ux%u\n", w, h);
 		} else {
-			w = (w == 0) ? 1024 : w;
-			h = (h == 0) ? 768  : h;
+			uint32_t det_w = 0, det_h = 0;
+			if (fb_get_display_dimensions(&det_w, &det_h) == 0) {
+				w = det_w;
+				h = det_h;
+				klog("fb_init: detected display %ux%u\n", w, h);
+			} else {
+				w = (w == 0) ? 1024 : w;
+				h = (h == 0) ? 768  : h;
+			}
 		}
 	}
 
@@ -694,6 +854,16 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	requested.depth  = dep;
 
 	klog("fb_init: requesting %ux%ux%u\n", w, h, dep);
+
+	if (strict_mode && preferred_mode_valid &&
+			preferred_mode.width == w && preferred_mode.height == h &&
+			preferred_mode.depth == dep) {
+		klog("fb_init: trying native hdmi0 edid path\n");
+		if (bcm2712_native_hdmi_init_mode(&sysinfo, &preferred_mode, &_fb_info) == 0) {
+			goto done;
+		}
+		klog("fb_init: native hdmi0 edid path failed\n");
+	}
 
 	if (strict_mode && bcm2712_native_hdmi_supported(w, h, dep)) {
 		klog("fb_init: trying native hdmi0 path\n");
