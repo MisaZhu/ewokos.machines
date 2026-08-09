@@ -1,4 +1,5 @@
 @/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
+@/bin/ipcserv /drivers/raspix/cpud          /dev/cpu
 @set_stdio /dev/tty0
 
 @/bin/ipcserv /drivers/timerd          

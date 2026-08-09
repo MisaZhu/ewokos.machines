@@ -8,37 +8,37 @@
 #include <ewoksys/vfs.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/mstr.h>
-#include <ewoksys/syscall.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/dma.h>
-#include <sysinfo.h>
-#include <arch/bcm2712/mmio.h>
-#include <arch/bcm2712/mailbox.h>
+#include <arch/bcm283x/mailbox.h>
 
-#define PROP_TAG_END                   0x00000000u
-#define PROP_CODE_REQUEST              0x00000000u
-#define PROP_CODE_RESPONSE_SUCCESS     0x80000000u
-#define PROP_RESPONSE_BIT              0x80000000u
+#define MAILBOX_VC_ALIAS_NONCACHED    0x40000000u
+#define MAILBOX_VC_ALIAS_COHERENT     0xC0000000u
 
-#define PROP_TAG_GET_FIRMWARE_REV      0x00000001u
-#define PROP_TAG_GET_BOARD_MODEL       0x00010001u
-#define PROP_TAG_GET_BOARD_REV         0x00010002u
-#define PROP_TAG_GET_BOARD_MAC         0x00010003u
-#define PROP_TAG_GET_BOARD_SERIAL      0x00010004u
-#define PROP_TAG_GET_ARM_MEMORY        0x00010005u
-#define PROP_TAG_GET_GPU_MEMORY        0x00010006u
-#define PROP_TAG_GET_CLOCKS            0x00010007u
-#define PROP_TAG_GET_POWER_STATE       0x00020001u
-#define PROP_TAG_GET_CLOCK_RATE        0x00030002u
-#define PROP_TAG_GET_VOLTAGE           0x00030003u
-#define PROP_TAG_GET_MAX_CLOCK_RATE    0x00030004u
-#define PROP_TAG_GET_MAX_VOLTAGE       0x00030005u
-#define PROP_TAG_GET_TEMPERATURE       0x00030006u
-#define PROP_TAG_GET_MAX_TEMPERATURE   0x0003000au
+#define PROP_TAG_END                  0x00000000u
+#define PROP_CODE_REQUEST             0x00000000u
+#define PROP_CODE_RESPONSE_SUCCESS    0x80000000u
+#define PROP_RESPONSE_BIT             0x80000000u
 
-#define MAX_CLOCKS                     32
-#define MAX_POWER_DOMAINS              11
-#define MAX_VOLTAGES                   4
+#define PROP_TAG_GET_FIRMWARE_REV     0x00000001u
+#define PROP_TAG_GET_BOARD_MODEL      0x00010001u
+#define PROP_TAG_GET_BOARD_REV        0x00010002u
+#define PROP_TAG_GET_BOARD_MAC        0x00010003u
+#define PROP_TAG_GET_BOARD_SERIAL     0x00010004u
+#define PROP_TAG_GET_ARM_MEMORY       0x00010005u
+#define PROP_TAG_GET_GPU_MEMORY       0x00010006u
+#define PROP_TAG_GET_CLOCKS           0x00010007u
+#define PROP_TAG_GET_POWER_STATE      0x00020001u
+#define PROP_TAG_GET_CLOCK_RATE       0x00030002u
+#define PROP_TAG_GET_VOLTAGE          0x00030003u
+#define PROP_TAG_GET_MAX_CLOCK_RATE   0x00030004u
+#define PROP_TAG_GET_MAX_VOLTAGE      0x00030005u
+#define PROP_TAG_GET_TEMPERATURE      0x00030006u
+#define PROP_TAG_GET_MAX_TEMPERATURE  0x0003000au
+
+#define MAX_CLOCKS                    32
+#define MAX_POWER_DOMAINS             11
+#define MAX_VOLTAGES                  4
 
 typedef struct {
 	uint32_t tag_id;
@@ -109,6 +109,11 @@ typedef struct {
 } power_info_t;
 
 typedef struct {
+	bool probe_ok;
+	bool mailbox_ready;
+	uint32_t probe_generation;
+	uint32_t success_count;
+	uint32_t error_count;
 	bool have_firmware_rev;
 	uint32_t firmware_rev;
 	bool have_board_model;
@@ -143,13 +148,37 @@ typedef struct {
 	int power_count;
 } cpu_snapshot_t;
 
+typedef struct {
+	prop_tag_u32_t firmware_rev;
+	prop_tag_u32_t board_model;
+	prop_tag_u32_t board_rev;
+	prop_tag_u64_t board_serial;
+	prop_tag_mac_t board_mac;
+	prop_tag_mem_t arm_mem;
+	prop_tag_mem_t gpu_mem;
+	prop_tag_id_value_t temperature;
+	prop_tag_id_value_t temperature_max;
+	prop_tag_id_value_t voltages[MAX_VOLTAGES];
+	prop_tag_id_value_t voltages_max[MAX_VOLTAGES];
+	prop_tag_id_value_t power[MAX_POWER_DOMAINS];
+} __attribute__((packed)) prop_fixed_batch_t;
+
+typedef struct {
+	prop_tag_id_value_t current[MAX_CLOCKS];
+	prop_tag_id_value_t max[MAX_CLOCKS];
+} __attribute__((packed)) prop_clock_rate_batch_t;
+
 static cpu_snapshot_t _snapshot;
+static bool _mmio_ready;
 
 static const uint32_t _voltage_ids[MAX_VOLTAGES] = { 1u, 2u, 3u, 4u };
-static const uint32_t _fallback_clock_ids[] = { 1u, 2u, 3u, 4u, 12u };
+static const uint32_t _fallback_clock_ids[] = { 1u, 2u, 3u, 4u };
 static const uint32_t _power_ids[MAX_POWER_DOMAINS] = {
 	0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u
 };
+
+static void snapshot_note_success(cpu_snapshot_t* snap);
+static void snapshot_note_error(cpu_snapshot_t* snap);
 
 static int str_addf(str_t* s, const char* fmt, ...) {
 	char buf[256];
@@ -232,7 +261,7 @@ static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
 		MAILBOX_VC_ALIAS_COHERENT
 	};
 
-	if(buf == NULL)
+	if(!_mmio_ready || _mmio_base == 0 || buf == NULL)
 		return -1;
 
 	for(size_t i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
@@ -254,7 +283,7 @@ static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
 		memset(&msg, 0, sizeof(msg));
 		msg.data = (phy + aliases[i]) >> 4;
 		msg.channel = PROPERTY_CHANNEL;
-		if(bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
+		if(bcm283x_mailbox_call_timeout(&msg, 0) == 0 &&
 				(hdr->code & PROP_CODE_RESPONSE_SUCCESS) != 0) {
 			memcpy(tags, buf + sizeof(prop_msg_hdr_t), tags_size);
 			dma_free(0, (ewokos_addr_t)buf);
@@ -266,82 +295,77 @@ static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
 	return -1;
 }
 
-static int prop_query_u32(uint32_t tag_id, uint32_t* value) {
-	prop_tag_u32_t req;
+static void prop_init_u32(prop_tag_u32_t* req, uint32_t tag_id) {
+	memset(req, 0, sizeof(*req));
+	req->tag.tag_id = tag_id;
+	req->tag.value_buf_size = sizeof(req->value);
+	req->tag.value_len = sizeof(req->value);
+}
 
-	memset(&req, 0, sizeof(req));
-	req.tag.tag_id = tag_id;
-	req.tag.value_buf_size = sizeof(req.value);
-	req.tag.value_len = sizeof(req.value);
-	if(mailbox_property_xfer(&req, sizeof(req)) != 0)
+static void prop_init_u64(prop_tag_u64_t* req, uint32_t tag_id) {
+	memset(req, 0, sizeof(*req));
+	req->tag.tag_id = tag_id;
+	req->tag.value_buf_size = sizeof(req->value);
+	req->tag.value_len = sizeof(req->value);
+}
+
+static void prop_init_mem(prop_tag_mem_t* req, uint32_t tag_id) {
+	memset(req, 0, sizeof(*req));
+	req->tag.tag_id = tag_id;
+	req->tag.value_buf_size = sizeof(req->base) + sizeof(req->size);
+	req->tag.value_len = sizeof(req->base) + sizeof(req->size);
+}
+
+static void prop_init_mac(prop_tag_mac_t* req, uint32_t tag_id) {
+	memset(req, 0, sizeof(*req));
+	req->tag.tag_id = tag_id;
+	req->tag.value_buf_size = sizeof(req->words);
+	req->tag.value_len = sizeof(req->words);
+}
+
+static void prop_init_id_value(prop_tag_id_value_t* req, uint32_t tag_id, uint32_t id) {
+	memset(req, 0, sizeof(*req));
+	req->tag.tag_id = tag_id;
+	req->tag.value_buf_size = sizeof(req->body);
+	req->tag.value_len = sizeof(req->body.req);
+	req->body.req.id = id;
+}
+
+static int prop_read_u32(const prop_tag_u32_t* req, uint32_t* value) {
+	if(prop_tag_ok(&req->tag, sizeof(req->value)) != 0)
 		return -1;
-	if(prop_tag_ok(&req.tag, sizeof(req.value)) != 0)
-		return -1;
-	*value = req.value;
+	*value = req->value;
 	return 0;
 }
 
-static int prop_query_u64(uint32_t tag_id, uint64_t* value) {
-	prop_tag_u64_t req;
-
-	memset(&req, 0, sizeof(req));
-	req.tag.tag_id = tag_id;
-	req.tag.value_buf_size = sizeof(req.value);
-	req.tag.value_len = sizeof(req.value);
-	if(mailbox_property_xfer(&req, sizeof(req)) != 0)
+static int prop_read_u64(const prop_tag_u64_t* req, uint64_t* value) {
+	if(prop_tag_ok(&req->tag, sizeof(req->value)) != 0)
 		return -1;
-	if(prop_tag_ok(&req.tag, sizeof(req.value)) != 0)
-		return -1;
-	*value = req.value;
+	*value = req->value;
 	return 0;
 }
 
-static int prop_query_mem(uint32_t tag_id, uint32_t* base, uint32_t* size) {
-	prop_tag_mem_t req;
-
-	memset(&req, 0, sizeof(req));
-	req.tag.tag_id = tag_id;
-	req.tag.value_buf_size = sizeof(req.base) + sizeof(req.size);
-	req.tag.value_len = sizeof(req.base) + sizeof(req.size);
-	if(mailbox_property_xfer(&req, sizeof(req)) != 0)
+static int prop_read_mem(const prop_tag_mem_t* req, uint32_t* base, uint32_t* size) {
+	if(prop_tag_ok(&req->tag, sizeof(req->base) + sizeof(req->size)) != 0)
 		return -1;
-	if(prop_tag_ok(&req.tag, sizeof(req.base) + sizeof(req.size)) != 0)
-		return -1;
-	*base = req.base;
-	*size = req.size;
+	*base = req->base;
+	*size = req->size;
 	return 0;
 }
 
-static int prop_query_mac(uint8_t mac[6]) {
-	prop_tag_mac_t req;
-
-	memset(&req, 0, sizeof(req));
-	req.tag.tag_id = PROP_TAG_GET_BOARD_MAC;
-	req.tag.value_buf_size = sizeof(req.words);
-	req.tag.value_len = sizeof(req.words);
-	if(mailbox_property_xfer(&req, sizeof(req)) != 0)
+static int prop_read_mac(const prop_tag_mac_t* req, uint8_t mac[6]) {
+	if(prop_tag_ok(&req->tag, 6) != 0)
 		return -1;
-	if(prop_tag_ok(&req.tag, 6) != 0)
-		return -1;
-	memcpy(mac, req.words, 6);
+	memcpy(mac, req->words, 6);
 	return 0;
 }
 
-static int prop_query_id_value(uint32_t tag_id, uint32_t id, uint32_t* value) {
-	prop_tag_id_value_t req;
-
-	memset(&req, 0, sizeof(req));
-	req.tag.tag_id = tag_id;
-	req.tag.value_buf_size = sizeof(req.body);
-	req.tag.value_len = sizeof(req.body.req);
-	req.body.req.id = id;
-	if(mailbox_property_xfer(&req, sizeof(req)) != 0)
+static int prop_read_id_value(const prop_tag_id_value_t* req, uint32_t id, uint32_t* value) {
+	if(prop_tag_ok(&req->tag, sizeof(req->body.resp)) != 0)
 		return -1;
-	if(prop_tag_ok(&req.tag, sizeof(req.body.resp)) != 0)
+	if(req->body.resp.id != id)
 		return -1;
-	if(req.body.resp.id != id)
-		return -1;
-	*value = req.body.resp.value;
+	*value = req->body.resp.value;
 	return 0;
 }
 
@@ -372,6 +396,166 @@ static int prop_query_clock_ids(clock_info_t clocks[], int max_clocks) {
 	return count;
 }
 
+static void cpud_probe_fixed(cpu_snapshot_t* snap) {
+	prop_fixed_batch_t req;
+	uint32_t u32v;
+	uint64_t u64v;
+
+	memset(&req, 0, sizeof(req));
+	prop_init_u32(&req.firmware_rev, PROP_TAG_GET_FIRMWARE_REV);
+	prop_init_u32(&req.board_model, PROP_TAG_GET_BOARD_MODEL);
+	prop_init_u32(&req.board_rev, PROP_TAG_GET_BOARD_REV);
+	prop_init_u64(&req.board_serial, PROP_TAG_GET_BOARD_SERIAL);
+	prop_init_mac(&req.board_mac, PROP_TAG_GET_BOARD_MAC);
+	prop_init_mem(&req.arm_mem, PROP_TAG_GET_ARM_MEMORY);
+	prop_init_mem(&req.gpu_mem, PROP_TAG_GET_GPU_MEMORY);
+	prop_init_id_value(&req.temperature, PROP_TAG_GET_TEMPERATURE, 0);
+	prop_init_id_value(&req.temperature_max, PROP_TAG_GET_MAX_TEMPERATURE, 0);
+	for(int i = 0; i < MAX_VOLTAGES; i++) {
+		prop_init_id_value(&req.voltages[i], PROP_TAG_GET_VOLTAGE, _voltage_ids[i]);
+		prop_init_id_value(&req.voltages_max[i], PROP_TAG_GET_MAX_VOLTAGE, _voltage_ids[i]);
+	}
+	for(int i = 0; i < MAX_POWER_DOMAINS; i++)
+		prop_init_id_value(&req.power[i], PROP_TAG_GET_POWER_STATE, _power_ids[i]);
+
+	mailbox_property_xfer(&req, sizeof(req));
+
+	if(prop_read_u32(&req.firmware_rev, &u32v) == 0) {
+		snap->have_firmware_rev = true;
+		snap->firmware_rev = u32v;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_u32(&req.board_model, &u32v) == 0) {
+		snap->have_board_model = true;
+		snap->board_model = u32v;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_u32(&req.board_rev, &u32v) == 0) {
+		snap->have_board_rev = true;
+		snap->board_rev = u32v;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_u64(&req.board_serial, &u64v) == 0) {
+		snap->have_board_serial = true;
+		snap->board_serial = u64v;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_mac(&req.board_mac, snap->mac) == 0) {
+		snap->have_mac = true;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_mem(&req.arm_mem, &snap->arm_mem.base, &snap->arm_mem.size) == 0) {
+		snap->arm_mem.valid = true;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_mem(&req.gpu_mem, &snap->gpu_mem.base, &snap->gpu_mem.size) == 0) {
+		snap->gpu_mem.valid = true;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_id_value(&req.temperature, 0, &u32v) == 0) {
+		snap->temperature.have_current = true;
+		snap->temperature.current_mc = u32v;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	if(prop_read_id_value(&req.temperature_max, 0, &u32v) == 0) {
+		snap->temperature.have_max = true;
+		snap->temperature.max_mc = u32v;
+		snapshot_note_success(snap);
+	} else {
+		snapshot_note_error(snap);
+	}
+
+	for(int i = 0; i < MAX_VOLTAGES; i++) {
+		voltage_info_t* v = &snap->voltages[i];
+		if(prop_read_id_value(&req.voltages[i], v->id, &u32v) == 0) {
+			v->have_current = true;
+			v->current_uv = u32v;
+			snapshot_note_success(snap);
+		} else {
+			snapshot_note_error(snap);
+		}
+
+		if(prop_read_id_value(&req.voltages_max[i], v->id, &u32v) == 0) {
+			v->have_max = true;
+			v->max_uv = u32v;
+			snapshot_note_success(snap);
+		} else {
+			snapshot_note_error(snap);
+		}
+	}
+
+	for(int i = 0; i < MAX_POWER_DOMAINS; i++) {
+		power_info_t* p = &snap->power[i];
+		if(prop_read_id_value(&req.power[i], p->id, &u32v) == 0) {
+			p->valid = true;
+			p->state = u32v;
+			snapshot_note_success(snap);
+		} else {
+			snapshot_note_error(snap);
+		}
+	}
+}
+
+static void cpud_probe_clock_rates(cpu_snapshot_t* snap) {
+	prop_clock_rate_batch_t req;
+	uint32_t u32v;
+	int count = snap->clock_count;
+
+	if(count <= 0)
+		return;
+
+	memset(&req, 0, sizeof(req));
+	for(int i = 0; i < count; i++) {
+		prop_init_id_value(&req.current[i], PROP_TAG_GET_CLOCK_RATE, snap->clocks[i].id);
+		prop_init_id_value(&req.max[i], PROP_TAG_GET_MAX_CLOCK_RATE, snap->clocks[i].id);
+	}
+
+	mailbox_property_xfer(&req, (uint32_t)(count * sizeof(req.current[0]) + count * sizeof(req.max[0])));
+
+	for(int i = 0; i < count; i++) {
+		clock_info_t* c = &snap->clocks[i];
+		if(prop_read_id_value(&req.current[i], c->id, &u32v) == 0) {
+			c->have_current = true;
+			c->current_hz = u32v;
+			snapshot_note_success(snap);
+		} else {
+			snapshot_note_error(snap);
+		}
+
+		if(prop_read_id_value(&req.max[i], c->id, &u32v) == 0) {
+			c->have_max = true;
+			c->max_hz = u32v;
+			snapshot_note_success(snap);
+		} else {
+			snapshot_note_error(snap);
+		}
+	}
+}
+
 static int snapshot_find_clock(cpu_snapshot_t* snap, uint32_t id) {
 	for(int i = 0; i < snap->clock_count; i++) {
 		if(snap->clocks[i].id == id)
@@ -400,14 +584,22 @@ static int snapshot_ensure_clock(cpu_snapshot_t* snap, uint32_t id, uint32_t par
 	return index;
 }
 
+static void snapshot_note_success(cpu_snapshot_t* snap) {
+	snap->success_count++;
+}
+
+static void snapshot_note_error(cpu_snapshot_t* snap) {
+	snap->error_count++;
+}
+
 static void cpud_probe_snapshot(cpu_snapshot_t* snap) {
 	cpu_snapshot_t next;
 	clock_info_t listed[MAX_CLOCKS];
-	uint32_t u32v;
-	uint64_t u64v;
 	int listed_count;
 
 	memset(&next, 0, sizeof(next));
+	next.mailbox_ready = _mmio_ready && (_mmio_base != 0);
+	next.probe_generation = snap->probe_generation + 1;
 	next.voltage_count = MAX_VOLTAGES;
 	next.power_count = MAX_POWER_DOMAINS;
 	for(int i = 0; i < MAX_VOLTAGES; i++)
@@ -415,91 +607,24 @@ static void cpud_probe_snapshot(cpu_snapshot_t* snap) {
 	for(int i = 0; i < MAX_POWER_DOMAINS; i++)
 		next.power[i].id = _power_ids[i];
 
-	if(prop_query_u32(PROP_TAG_GET_FIRMWARE_REV, &u32v) == 0) {
-		next.have_firmware_rev = true;
-		next.firmware_rev = u32v;
-	}
-
-	if(prop_query_u32(PROP_TAG_GET_BOARD_MODEL, &u32v) == 0) {
-		next.have_board_model = true;
-		next.board_model = u32v;
-	}
-
-	if(prop_query_u32(PROP_TAG_GET_BOARD_REV, &u32v) == 0) {
-		next.have_board_rev = true;
-		next.board_rev = u32v;
-	}
-
-	if(prop_query_u64(PROP_TAG_GET_BOARD_SERIAL, &u64v) == 0) {
-		next.have_board_serial = true;
-		next.board_serial = u64v;
-	}
-
-	if(prop_query_mac(next.mac) == 0) {
-		next.have_mac = true;
-	}
-
-	if(prop_query_mem(PROP_TAG_GET_ARM_MEMORY, &next.arm_mem.base, &next.arm_mem.size) == 0) {
-		next.arm_mem.valid = true;
-	}
-
-	if(prop_query_mem(PROP_TAG_GET_GPU_MEMORY, &next.gpu_mem.base, &next.gpu_mem.size) == 0) {
-		next.gpu_mem.valid = true;
-	}
-
-	if(prop_query_id_value(PROP_TAG_GET_TEMPERATURE, 0, &u32v) == 0) {
-		next.temperature.have_current = true;
-		next.temperature.current_mc = u32v;
-	}
-
-	if(prop_query_id_value(PROP_TAG_GET_MAX_TEMPERATURE, 0, &u32v) == 0) {
-		next.temperature.have_max = true;
-		next.temperature.max_mc = u32v;
-	}
-
-	for(int i = 0; i < MAX_VOLTAGES; i++) {
-		voltage_info_t* v = &next.voltages[i];
-		if(prop_query_id_value(PROP_TAG_GET_VOLTAGE, v->id, &u32v) == 0) {
-			v->have_current = true;
-			v->current_uv = u32v;
-		}
-
-		if(prop_query_id_value(PROP_TAG_GET_MAX_VOLTAGE, v->id, &u32v) == 0) {
-			v->have_max = true;
-			v->max_uv = u32v;
-		}
-	}
+	cpud_probe_fixed(&next);
 
 	memset(listed, 0, sizeof(listed));
 	listed_count = prop_query_clock_ids(listed, MAX_CLOCKS);
 	if(listed_count > 0) {
 		for(int i = 0; i < listed_count; i++)
 			snapshot_ensure_clock(&next, listed[i].id, listed[i].parent_id);
+		snapshot_note_success(&next);
+	} else {
+		snapshot_note_error(&next);
 	}
 
 	for(size_t i = 0; i < sizeof(_fallback_clock_ids) / sizeof(_fallback_clock_ids[0]); i++)
 		snapshot_ensure_clock(&next, _fallback_clock_ids[i], 0);
 
-	for(int i = 0; i < next.clock_count; i++) {
-		clock_info_t* c = &next.clocks[i];
-		if(prop_query_id_value(PROP_TAG_GET_CLOCK_RATE, c->id, &u32v) == 0) {
-			c->have_current = true;
-			c->current_hz = u32v;
-		}
+	cpud_probe_clock_rates(&next);
 
-		if(prop_query_id_value(PROP_TAG_GET_MAX_CLOCK_RATE, c->id, &u32v) == 0) {
-			c->have_max = true;
-			c->max_hz = u32v;
-		}
-	}
-
-	for(int i = 0; i < MAX_POWER_DOMAINS; i++) {
-		power_info_t* p = &next.power[i];
-		if(prop_query_id_value(PROP_TAG_GET_POWER_STATE, p->id, &u32v) == 0) {
-			p->valid = true;
-			p->state = u32v;
-		}
-	}
+	next.probe_ok = next.success_count > 0;
 	*snap = next;
 }
 
@@ -651,29 +776,15 @@ static char* cpud_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void*
 
 int main(int argc, char** argv) {
 	const char* mnt_point = argc > 1 ? argv[1] : "/dev/cpu";
-	sys_info_t sysinfo;
 
+	_mmio_base = bcm283x_mailbox_init();
+	_mmio_ready = (_mmio_base != 0);
 	memset(&_snapshot, 0, sizeof(_snapshot));
-	sys_get_sys_info(&sysinfo);
-	_mmio_base = sysinfo.mmio.v_base;
-	syscall3(SYS_MEM_MAP,
-			(ewokos_addr_t)sysinfo.mmio.v_base,
-			(ewokos_addr_t)sysinfo.mmio.phy_base,
-			(ewokos_addr_t)sysinfo.mmio.size);
-	syscall3(SYS_MEM_MAP,
-			_mmio_base + PI5_EMMC_WIN_OFF,
-			PI5_EMMC_PHY_WIN,
-			PI5_EMMC_WIN_SIZE);
-	syscall3(SYS_MEM_MAP,
-			_mmio_base + PI5_RP1_WIN_OFF,
-			PI5_RP1_PHY,
-			PI5_RP1_WIN_SIZE);
-
 	cpud_probe_snapshot(&_snapshot);
 
 	vdevice_t dev;
 	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "pi5_cpud");
+	strcpy(dev.name, "bcm283x_cpud");
 	dev.cmd = cpud_cmd;
 
 	return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);

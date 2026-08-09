@@ -35,7 +35,7 @@ static inline void mailbox_unpack_message(mail_message_t* msg, uint32_t raw) {
 	msg->data = raw >> 4;
 }
 
-uint32_t bcm283x_mailbox_init(void) {
+ewokos_addr_t bcm283x_mailbox_init(void) {
 	return mmio_map();
 }
 

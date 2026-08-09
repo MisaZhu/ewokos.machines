@@ -23,7 +23,7 @@ typedef struct {
     uint8_t full:1;
 } mail_status_t;
 
-uint32_t bcm283x_mailbox_init(void);
+ewokos_addr_t bcm283x_mailbox_init(void);
 void     bcm283x_mailbox_read(mail_message_t* msg);
 void     bcm283x_mailbox_send(mail_message_t* msg);
 void     bcm283x_mailbox_call(mail_message_t* msg);

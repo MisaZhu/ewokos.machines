@@ -1,0 +1,156 @@
+{
+	"firmware": {
+		"available": true,
+		"revision": 346337,
+		"revision_hex": "0x000548e1"
+	},
+	"board": {
+		"model_available": true,
+		"model": 0,
+		"model_hex": "0x00000000",
+		"revision_available": true,
+		"revision": 10494082,
+		"revision_hex": "0x00a02082",
+		"serial_available": true,
+		"serial": "0x0000000000000000",
+		"mac_available": true,
+		"mac": "52:54:00:12:34:57"
+	},
+	"memory": {
+		"arm": {
+			"available": true,
+			"base": 0,
+			"base_hex": "0x00000000",
+			"size": 1006632960
+		},
+		"gpu": {
+			"available": true,
+			"base": 1006632960,
+			"base_hex": "0x3c000000",
+			"size": 67108864
+		}
+	},
+	"temperature": {
+		"current_available": true,
+		"current_millic": 25000,
+		"max_available": true,
+		"max_millic": 99000
+	},
+	"voltages": [
+		{
+			"id": 1,
+			"name": "core",
+			"current_available": false,
+			"max_available": false
+		},
+		{
+			"id": 2,
+			"name": "sdram_c",
+			"current_available": false,
+			"max_available": false
+		},
+		{
+			"id": 3,
+			"name": "sdram_p",
+			"current_available": false,
+			"max_available": false
+		},
+		{
+			"id": 4,
+			"name": "sdram_i",
+			"current_available": false,
+			"max_available": false
+		}
+	],
+	"clocks": [
+		{
+			"id": 3,
+			"name": "arm",
+			"parent_id": 0,
+			"current_available": true,
+			"current_hz": 700000000,
+			"max_available": false
+		},
+		{
+			"id": 1,
+			"name": "emmc",
+			"parent_id": 0,
+			"current_available": true,
+			"current_hz": 50000000,
+			"max_available": false
+		},
+		{
+			"id": 2,
+			"name": "uart",
+			"parent_id": 0,
+			"current_available": true,
+			"current_hz": 3000000,
+			"max_available": false
+		},
+		{
+			"id": 4,
+			"name": "core",
+			"parent_id": 0,
+			"current_available": true,
+			"current_hz": 350000000,
+			"max_available": false
+		}
+	],
+	"power": [
+		{
+			"id": 0,
+			"name": "sdcard",
+			"available": false
+		},
+		{
+			"id": 1,
+			"name": "uart0",
+			"available": false
+		},
+		{
+			"id": 2,
+			"name": "uart1",
+			"available": false
+		},
+		{
+			"id": 3,
+			"name": "usb_hcd",
+			"available": false
+		},
+		{
+			"id": 4,
+			"name": "i2c0",
+			"available": false
+		},
+		{
+			"id": 5,
+			"name": "i2c1",
+			"available": false
+		},
+		{
+			"id": 6,
+			"name": "i2c2",
+			"available": false
+		},
+		{
+			"id": 7,
+			"name": "spi",
+			"available": false
+		},
+		{
+			"id": 8,
+			"name": "ccp2tx",
+			"available": false
+		},
+		{
+			"id": 9,
+			"name": "id_9",
+			"available": false
+		},
+		{
+			"id": 10,
+			"name": "id_10",
+			"available": false
+		}
+	]
+}

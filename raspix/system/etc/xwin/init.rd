@@ -11,6 +11,7 @@
 
 @/bin/splash -m "start /dev/tty0" -p 10
 @/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
+@/bin/ipcserv /drivers/raspix/cpud          /dev/cpu
 
 
 @/bin/splash -m "run sessiond" -p 12

@@ -1,5 +1,6 @@
 basic:
 	cd uartd; $(MAKE)
+	cd cpud; $(MAKE)
 	cd soundd; $(MAKE)
 	cd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd; $(MAKE)
 	cd usbhostd; $(MAKE)
@@ -20,6 +21,7 @@ network:
 
 clean:	
 	cd uartd; $(MAKE) clean
+	cd cpud; $(MAKE) clean
 	cd fbd; $(MAKE) clean
 	cd dsi_fbd; $(MAKE) clean
 	cd g2dd; $(MAKE) clean
