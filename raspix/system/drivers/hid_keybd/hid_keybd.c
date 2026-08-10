@@ -24,7 +24,9 @@
 #define KEY_MOD_RALT   0x40
 #define KEY_MOD_RMETA  0x80
 
-#define MAX_KEY (5) /* payload carries 5 keycodes: mod, reserved, key[5] */
+#define HID_KEYBOARD_REPORT_SIZE 8
+#define HID_KEYBOARD_FIRST_KEY_IDX 2
+#define MAX_KEY 6 /* standard boot keyboard snapshot: mod, reserved, key[6] */
 
 /* exponential idle backoff: poll the hid device fast while reports flow,
    back off to a slow cadence when it stays silent to stop burning CPU */
@@ -146,19 +148,19 @@ static int loop(vdevice_t* dev, void* p) {
 	bool changed = false;
 	static uint32_t log_cnt = 0;
 	while(true) {
-		uint8_t buf[8] = {0};
-		int res = read(hid, buf, 7);
-		if(res == 7) {
+		uint8_t buf[HID_KEYBOARD_REPORT_SIZE] = {0};
+		int res = read(hid, buf, HID_KEYBOARD_REPORT_SIZE);
+		if(res == HID_KEYBOARD_REPORT_SIZE) {
 			got = true;
-			/* rate-limited diagnostic: payload is mod,res,key[5] */
+			/* rate-limited diagnostic: payload is mod,res,key[6] */
 			if ((log_cnt++ % 64) == 0) {
-				slog("hid_keybd: report mod=%02x keys=%02x %02x %02x %02x %02x\n",
-						buf[0], buf[2], buf[3], buf[4], buf[5], buf[6]);
+				slog("hid_keybd: report mod=%02x keys=%02x %02x %02x %02x %02x %02x\n",
+						buf[0], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
 			}
 			/* each report is a full snapshot: mod, reserved, keycodes */
 			uint8_t keys[MAX_KEY];
 			int count = 0;
-			for (int i = 2; i < 7; i++) {
+			for (int i = HID_KEYBOARD_FIRST_KEY_IDX; i < HID_KEYBOARD_REPORT_SIZE; i++) {
 				if (buf[i] != 0) {
 					keys[count++] = buf[i];
 				}

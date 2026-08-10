@@ -44,7 +44,9 @@
 #define USB_REPORT_ID_TOUCH 3u
 
 #define USB_QUEUE_DEPTH 32
-#define USB_EVENT_SIZE 7
+#define USB_MAX_EVENT_SIZE 8
+#define USB_POINTER_EVENT_SIZE 7
+#define USB_KEYBOARD_EVENT_SIZE 8
 #define USB_MAX_INPUTS 8
 #define USB_MAX_DEVS 8
 #define USB_MAX_REPORT 64
@@ -193,7 +195,7 @@ typedef struct __attribute__((packed)) {
 /* ---------------- /dev/hid0 subscriber fan-out ---------------- */
 
 typedef struct {
-	uint8_t data[USB_QUEUE_DEPTH][USB_EVENT_SIZE];
+	uint8_t data[USB_QUEUE_DEPTH][USB_MAX_EVENT_SIZE];
 	uint8_t len[USB_QUEUE_DEPTH];
 	uint8_t rd;
 	uint8_t wr;
@@ -325,12 +327,12 @@ static bool queue_has_data(const usb_queue_t* queue) {
 }
 
 static void queue_push(usb_queue_t* queue, const uint8_t* data, uint8_t len) {
-	if (len > USB_EVENT_SIZE) {
-		len = USB_EVENT_SIZE;
+	if (len > USB_MAX_EVENT_SIZE) {
+		len = USB_MAX_EVENT_SIZE;
 	}
 	memcpy(queue->data[queue->wr], data, len);
-	if (len < USB_EVENT_SIZE) {
-		memset(queue->data[queue->wr] + len, 0, USB_EVENT_SIZE - len);
+	if (len < USB_MAX_EVENT_SIZE) {
+		memset(queue->data[queue->wr] + len, 0, USB_MAX_EVENT_SIZE - len);
 	}
 	queue->len[queue->wr] = len;
 	queue->wr = (uint8_t)((queue->wr + 1u) % USB_QUEUE_DEPTH);
@@ -1094,12 +1096,12 @@ static int mouse_normalize_report(const usb_input_dev_t* in, const uint8_t* repo
 				in->mouse.wheel_size);
 	}
 
-	memset(out, 0, USB_EVENT_SIZE);
+	memset(out, 0, USB_POINTER_EVENT_SIZE);
 	out[0] = buttons;
 	out[1] = (uint8_t)hid_clamp_s8(x);
 	out[2] = (uint8_t)hid_clamp_s8(y);
 	out[3] = (uint8_t)hid_clamp_s8(wheel);
-	return USB_EVENT_SIZE;
+	return USB_POINTER_EVENT_SIZE;
 }
 
 static int touch_normalize_report(const usb_input_dev_t* in, const uint8_t* report, int len, uint8_t* out) {
@@ -1136,7 +1138,7 @@ static int touch_normalize_report(const usb_input_dev_t* in, const uint8_t* repo
 	out[4] = (uint8_t)((y >> 8) & 0xFFu);
 	out[5] = 0;
 	out[6] = 0;
-	return USB_EVENT_SIZE;
+	return USB_POINTER_EVENT_SIZE;
 }
 
 /* ---------------- control request helpers on top of xhci ---------------- */
@@ -1954,7 +1956,7 @@ static void usb_scan_hc(xhci_hc_t* hc) {
 
 static bool usb_poll_inputs(vdevice_t* dev) {
 	uint8_t report[USB_MAX_REPORT];
-	uint8_t payload[USB_EVENT_SIZE];
+	uint8_t payload[USB_MAX_EVENT_SIZE];
 	bool wakeup = false;
 
 	for (int i = 0; i < USB_MAX_INPUTS; ++i) {
@@ -1988,16 +1990,17 @@ static bool usb_poll_inputs(vdevice_t* dev) {
 			memcpy(in->last_report, report, ret);
 			in->last_len = (uint8_t)ret;
 			memset(payload, 0, sizeof(payload));
-			memcpy(payload, report, ret > USB_EVENT_SIZE ? USB_EVENT_SIZE : ret);
-			dispatch_data(USB_REPORT_ID_KEYBOARD, payload, USB_EVENT_SIZE);
+			memcpy(payload, report,
+					ret > USB_KEYBOARD_EVENT_SIZE ? USB_KEYBOARD_EVENT_SIZE : ret);
+			dispatch_data(USB_REPORT_ID_KEYBOARD, payload, USB_KEYBOARD_EVENT_SIZE);
 			wakeup = true;
 		}
 		else if (in->type == USB_INPUT_MOUSE) {
 			memset(payload, 0, sizeof(payload));
-			if (mouse_normalize_report(in, report, ret, payload) != USB_EVENT_SIZE) {
-				memcpy(payload, report, ret > USB_EVENT_SIZE ? USB_EVENT_SIZE : ret);
+			if (mouse_normalize_report(in, report, ret, payload) != USB_POINTER_EVENT_SIZE) {
+				memcpy(payload, report, ret > USB_POINTER_EVENT_SIZE ? USB_POINTER_EVENT_SIZE : ret);
 			}
-			dispatch_data(USB_REPORT_ID_MOUSE, payload, USB_EVENT_SIZE);
+			dispatch_data(USB_REPORT_ID_MOUSE, payload, USB_POINTER_EVENT_SIZE);
 			wakeup = true;
 		}
 		else if (in->type == USB_INPUT_TOUCH) {
@@ -2006,8 +2009,8 @@ static bool usb_poll_inputs(vdevice_t* dev) {
 			}
 			memcpy(in->last_report, report, ret);
 			in->last_len = (uint8_t)ret;
-			if (touch_normalize_report(in, report, ret, payload) == USB_EVENT_SIZE) {
-				dispatch_data(USB_REPORT_ID_TOUCH, payload, USB_EVENT_SIZE);
+			if (touch_normalize_report(in, report, ret, payload) == USB_POINTER_EVENT_SIZE) {
+				dispatch_data(USB_REPORT_ID_TOUCH, payload, USB_POINTER_EVENT_SIZE);
 				wakeup = true;
 			}
 		}
@@ -2024,16 +2027,18 @@ static bool usb_poll_inputs(vdevice_t* dev) {
 				memcpy(in->last_report, report, ret);
 				in->last_len = (uint8_t)ret;
 				memset(payload, 0, sizeof(payload));
-				memcpy(payload, report + 1, (ret - 1) > USB_EVENT_SIZE ? USB_EVENT_SIZE : (ret - 1));
-				dispatch_data(USB_REPORT_ID_KEYBOARD, payload, USB_EVENT_SIZE);
+				memcpy(payload, report + 1,
+						(ret - 1) > USB_KEYBOARD_EVENT_SIZE ? USB_KEYBOARD_EVENT_SIZE : (ret - 1));
+				dispatch_data(USB_REPORT_ID_KEYBOARD, payload, USB_KEYBOARD_EVENT_SIZE);
 				wakeup = true;
 			}
 			else if (rid == in->mouse_report_id) {
 				memset(payload, 0, sizeof(payload));
-				if (mouse_normalize_report(in, report, ret, payload) != USB_EVENT_SIZE) {
-					memcpy(payload, report + 1, (ret - 1) > USB_EVENT_SIZE ? USB_EVENT_SIZE : (ret - 1));
+				if (mouse_normalize_report(in, report, ret, payload) != USB_POINTER_EVENT_SIZE) {
+					memcpy(payload, report + 1,
+							(ret - 1) > USB_POINTER_EVENT_SIZE ? USB_POINTER_EVENT_SIZE : (ret - 1));
 				}
-				dispatch_data(USB_REPORT_ID_MOUSE, payload, USB_EVENT_SIZE);
+				dispatch_data(USB_REPORT_ID_MOUSE, payload, USB_POINTER_EVENT_SIZE);
 				wakeup = true;
 			}
 			/* other report IDs (gamepad etc.): no consumer yet, drop */
