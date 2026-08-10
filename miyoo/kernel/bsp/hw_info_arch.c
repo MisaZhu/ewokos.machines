@@ -109,8 +109,6 @@ static int32_t clone_proc_l1_entry(page_dir_entry_t* vm, page_dir_entry_t* kerne
 int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
 	if(clone_proc_l1_entry(vm, kernel_vm, 0x16000000) != 0)
 		return -1;
-	if(clone_proc_l1_entry(vm, kernel_vm, _sys_info.mmio.phy_base + _core_base_offset) != 0)
-		return -1;
 #ifdef KERNEL_SMP
 	if(clone_proc_l1_entry(vm, kernel_vm, SECOND_START_ADDR_HI) != 0)
 		return -1;

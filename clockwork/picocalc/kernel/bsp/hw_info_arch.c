@@ -68,6 +68,12 @@ void arch_vm(page_dir_entry_t* vm) {
 
 }
 
+int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
+	(void)vm;
+	(void)kernel_vm;
+	return 0;
+}
+
 void kalloc_arch(void) {
 	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
