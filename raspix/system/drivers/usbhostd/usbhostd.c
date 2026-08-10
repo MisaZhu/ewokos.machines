@@ -1497,10 +1497,17 @@ static int usb_interrupt_in(usb_input_dev_t* dev, void* data, uint16_t size) {
 		dev->toggle = (hwpid == DWC_PID_DATA1) ? 1u : 0u;
 	}
 	else if (_last_hcint & DWC_HCINT_DTERR) {
-		/* device toggle is authoritative: it only advances on our ACK, so a
-		   toggle error means our expectation is stale -- flip and retry the
-		   next poll instead of surfacing a hard failure */
-		dev->toggle ^= 1u;
+		/* Blindly xor-ing the toggle after DTERR can lock us into a
+		   persistent DATA0/DATA1 ping-pong on flaky HID endpoints. Prefer
+		   the core's next-PID view when available, and only fall back to an
+		   xor when HCTSIZ does not expose a DATA0/DATA1 state. */
+		uint32_t hwpid = (usb_readl(DWC_HCTSIZ(1)) >> DWC_HCTSIZ_PID_SHIFT) & 0x3u;
+		if (hwpid == DWC_PID_DATA0 || hwpid == DWC_PID_DATA1) {
+			dev->toggle = (hwpid == DWC_PID_DATA1) ? 1u : 0u;
+		}
+		else {
+			dev->toggle ^= 1u;
+		}
 		dma_pool_rewind(mark);
 		return 0;
 	}
