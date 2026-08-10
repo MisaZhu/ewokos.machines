@@ -2340,18 +2340,76 @@ static int usb_register_keyboard(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
 	return 0;
 }
 
+/* A wrong parser result (garbled descriptor read, unusual descriptor) makes
+   normalize decode X/Y from the wrong bits -- typically X still looks fine
+   while Y reads a padding/wheel field and stays 0 or barely moves.  Only
+   trust the parser when the layout is plausible.  strict is used for boot
+   interfaces where we can fall back to the guaranteed [btn,dx,dy,wheel]
+   boot layout instead. */
+static bool mouse_parser_sane(const mouse_parser_t* p, uint16_t max_packet, bool strict) {
+	uint32_t total = (uint32_t)p->report_bytes * 8u;
+
+	if (p->x_bit < 0 || p->y_bit < 0 || p->x_size <= 0 || p->y_size <= 0) {
+		return false;
+	}
+	if (p->x_size > 32 || p->y_size > 32) {
+		return false;
+	}
+	if ((uint32_t)p->x_bit + (uint32_t)p->x_size > total ||
+			(uint32_t)p->y_bit + (uint32_t)p->y_size > total) {
+		return false;
+	}
+	if (p->x_bit == p->y_bit) {
+		return false;
+	}
+	if (p->has_report_id && p->report_bytes < 2) {
+		return false;
+	}
+	/* the whole report must arrive in one interrupt IN packet, otherwise
+	   the bit count was miscomputed while parsing */
+	if (max_packet > 0 && p->report_bytes > max_packet) {
+		return false;
+	}
+	if (strict) {
+		if ((p->x_bit % 8) != 0 || (p->y_bit % 8) != 0) {
+			return false;
+		}
+		if (p->x_size != 8 && p->x_size != 16) {
+			return false;
+		}
+		if (p->y_size != 8 && p->y_size != 16) {
+			return false;
+		}
+	}
+	return true;
+}
+
 static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
 		const hid_candidate_t* cand, const mouse_parser_t* parser) {
 	int slot = usb_input_alloc();
+	bool boot = cand->subclass == USB_SUBCLASS_BOOT;
+	bool use_parser;
+
 	if (slot < 0) {
 		slog("usbhostd: register mouse failed no_slot addr=%u iface=%u\n", addr, cand->iface_num);
 		return -1;
 	}
+	use_parser = parser != NULL && parser->valid &&
+			mouse_parser_sane(parser, cand->max_packet, boot);
+	if (parser != NULL && parser->valid && !use_parser) {
+		slog("usbhostd: mouse parser rejected addr=%u iface=%u rid=%u bytes=%u x=%d/%d y=%d/%d wheel=%d/%d maxpkt=%u fallback=%s\n",
+				addr, cand->iface_num, parser->report_id, parser->report_bytes,
+				parser->x_bit, parser->x_size, parser->y_bit, parser->y_size,
+				parser->wheel_bit, parser->wheel_size, cand->max_packet,
+				boot ? "boot" : "raw");
+	}
 	/* Set_Protocol is only defined for boot-subclass interfaces; non-boot
-	   interfaces default to Report protocol and must not receive it. */
-	if (cand->subclass == USB_SUBCLASS_BOOT) {
+	   interfaces default to Report protocol and must not receive it.
+	   When the parser is not trusted a boot mouse is kept in boot protocol
+	   so the raw [btn,dx,dy,wheel] layout stays valid. */
+	if (boot) {
 		(void)usb_hid_set_protocol(addr, low_speed, ctrl_mps, cand->iface_num,
-				(parser != NULL && parser->valid) ? 1 : 0);
+				use_parser ? 1 : 0);
 	}
 	(void)usb_hid_set_idle(addr, low_speed, ctrl_mps, cand->iface_num);
 	memset(&_inputs[slot], 0, sizeof(_inputs[slot]));
@@ -2364,12 +2422,14 @@ static int usb_register_mouse(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
 	_inputs[slot].max_packet = cand->max_packet == 0 ? 8 : cand->max_packet;
 	_inputs[slot].ctrl_mps = ctrl_mps;
 	_inputs[slot].low_speed = low_speed;
-	if (parser != NULL && parser->valid) {
+	if (use_parser) {
 		_inputs[slot].mouse = *parser;
 		_inputs[slot].report_len = parser->report_bytes;
-		slog("usbhostd: register mouse slot=%d addr=%u iface=%u ep=%02x report_id=%u report_len=%u maxpkt=%u speed=%s subclass=%u\n",
+		slog("usbhostd: register mouse slot=%d addr=%u iface=%u ep=%02x report_id=%u report_len=%u maxpkt=%u speed=%s subclass=%u x=%d/%d y=%d/%d wheel=%d/%d\n",
 				slot, addr, cand->iface_num, cand->ep_addr, parser->report_id,
-				parser->report_bytes, cand->max_packet, usb_speed_name(low_speed), cand->subclass);
+				parser->report_bytes, cand->max_packet, usb_speed_name(low_speed), cand->subclass,
+				parser->x_bit, parser->x_size, parser->y_bit, parser->y_size,
+				parser->wheel_bit, parser->wheel_size);
 	}
 	else {
 		_inputs[slot].report_len = cand->max_packet > 0 ? cand->max_packet : 4;
@@ -2410,12 +2470,20 @@ static int usb_register_composite(uint8_t addr, bool low_speed, uint8_t ctrl_mps
 	_inputs[slot].kbd_report_id = kbd_id;
 	_inputs[slot].mouse_report_id = mouse_id;
 	if (parser != NULL && parser->valid) {
-		_inputs[slot].mouse = *parser;
+		if (mouse_parser_sane(parser, cand->max_packet, false)) {
+			_inputs[slot].mouse = *parser;
+		}
+		else {
+			slog("usbhostd: composite mouse parser rejected addr=%u iface=%u rid=%u bytes=%u x=%d/%d y=%d/%d maxpkt=%u\n",
+					addr, cand->iface_num, parser->report_id, parser->report_bytes,
+					parser->x_bit, parser->x_size, parser->y_bit, parser->y_size,
+					cand->max_packet);
+		}
 	}
 	slog("usbhostd: register composite slot=%d addr=%u iface=%u ep=%02x interval=%u maxpkt=%u kbd_id=%u mouse_id=%u mouse_len=%u speed=%s subclass=%u\n",
 			slot, addr, cand->iface_num, cand->ep_addr, cand->interval,
 			cand->max_packet, kbd_id, mouse_id,
-			(parser != NULL && parser->valid) ? parser->report_bytes : 0,
+			_inputs[slot].mouse.valid ? _inputs[slot].mouse.report_bytes : 0,
 			usb_speed_name(low_speed), cand->subclass);
 	return 0;
 }
@@ -2754,6 +2822,19 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 				touch_desc_ok = hid_probe_touch_report(report_desc,
 						candidates[i].report_desc_len, &touch_probe);
 				dev_type = hid_detect_device_type(report_desc, candidates[i].report_desc_len);
+				if (!mouse_desc_ok && !touch_desc_ok && dev_type == HID_DEV_TYPE_UNKNOWN) {
+					/* nothing recognized: the control read may have returned
+					   garbled data of the right length -- refetch once */
+					if (usb_get_descriptor(addr, low_speed, ctrl_mps, USB_REQTYPE_STD_IFACE_IN,
+							USB_DESC_HID_REPORT, 0, candidates[i].iface_num, report_desc,
+							candidates[i].report_desc_len) >= candidates[i].report_desc_len) {
+						mouse_desc_ok = hid_probe_mouse_report(report_desc,
+								candidates[i].report_desc_len, &mouse_probe);
+						touch_desc_ok = hid_probe_touch_report(report_desc,
+								candidates[i].report_desc_len, &touch_probe);
+						dev_type = hid_detect_device_type(report_desc, candidates[i].report_desc_len);
+					}
+				}
 				if (mouse_desc_ok && dev_type == HID_DEV_TYPE_UNKNOWN) {
 					dev_type = HID_DEV_TYPE_MOUSE;
 				}

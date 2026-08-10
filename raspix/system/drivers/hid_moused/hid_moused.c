@@ -50,7 +50,14 @@ static uint8_t hid_btn_to_mouse(uint8_t mask) {
 static void mouse_handle_report(uint8_t btn, int8_t dx, int8_t dy, int8_t wheel) {
 	uint8_t pressed = btn & (uint8_t)~last_btn;
 	uint8_t released = last_btn & (uint8_t)~btn;
+	static uint32_t log_cnt = 0;
 	last_btn = btn;
+
+	/* rate-limited diagnostic: compare good/bad enumeration runs */
+	if ((log_cnt++ % 128) == 0) {
+		fprintf(stderr, "hid_moused: report btn=%02x dx=%d dy=%d wheel=%d\n",
+				btn, dx, dy, wheel);
+	}
 
 	if (pressed) {
 		mouse_push_evt(MOUSE_STATE_DOWN, hid_btn_to_mouse(pressed), dx, dy);
