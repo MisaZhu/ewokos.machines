@@ -57,7 +57,7 @@
 #define USB_MAX_HUB_DEPTH 2
 
 /* enumeration / bring-up logging; per-report traffic stays silent */
-#define USB_LOG_ENABLE 1
+#define USB_LOG_ENABLE 0
 #if USB_LOG_ENABLE
 #define slog(...) klog(__VA_ARGS__)
 #else
@@ -1806,7 +1806,7 @@ static int usb_hub_attach_port(int dev_idx, uint8_t port) {
 				dev_idx, port, status);
 		return -1;
 	}
-	proc_usleep(20000); /* post-reset recovery */
+	proc_usleep(50000);
 
 	if (status & USB_HUB_PS_LOW_SPEED) {
 		speed = XHCI_SPEED_LOW;

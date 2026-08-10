@@ -144,11 +144,17 @@ static int loop(vdevice_t* dev, void* p) {
 
 	bool got = false;
 	bool changed = false;
+	static uint32_t log_cnt = 0;
 	while(true) {
 		uint8_t buf[8] = {0};
 		int res = read(hid, buf, 7);
 		if(res == 7) {
 			got = true;
+			/* rate-limited diagnostic: payload is mod,res,key[5] */
+			if ((log_cnt++ % 64) == 0) {
+				slog("hid_keybd: report mod=%02x keys=%02x %02x %02x %02x %02x\n",
+						buf[0], buf[2], buf[3], buf[4], buf[5], buf[6]);
+			}
 			/* each report is a full snapshot: mod, reserved, keycodes */
 			uint8_t keys[MAX_KEY];
 			int count = 0;

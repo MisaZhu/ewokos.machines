@@ -698,7 +698,7 @@ int xhci_port_reset(xhci_hc_t* hc, int port) {
 	if ((sc & PORTSC_PED) == 0 || (sc & PORTSC_CCS) == 0) {
 		return -1;
 	}
-	usleep(20000); /* TDRSTR: give the device its post-reset recovery time */
+	usleep(50000);
 	return (int)PORTSC_SPEED(sc);
 }
 
