@@ -177,6 +177,12 @@ void arch_vm(page_dir_entry_t* vm) {
 	//map_page(vm, pbase, pbase, AP_RW_D, PTE_ATTR_DEV);
 }
 
+int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
+	(void)vm;
+	(void)kernel_vm;
+	return 0;
+}
+
 
 #ifdef KERNEL_SMP
 extern char __entry[];

@@ -57,7 +57,6 @@ static void load_boot_pgt(void) {
 #define MMIO_OFFSET     0x1F000000
 #define REGW16(a,v) 	(*(volatile unsigned short *)(a) = (v))
 #define REGR16(a) 		(*(volatile unsigned short *)(a))
-
 void init_cpu_clock(void) {
 	REGW16(MMIO_OFFSET + (0x1032A4 << 1), 0x78D4); //set target freq to LPF high
 	REGW16(MMIO_OFFSET + (0x1032A6 << 1), 0x0029);

@@ -166,6 +166,12 @@ void arch_vm(page_dir_entry_t* vm) {
 	}
 }
 
+int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
+	(void)vm;
+	(void)kernel_vm;
+	return 0;
+}
+
 #ifdef KERNEL_SMP
 /*
  * Secondary core bring-up via PSCI CPU_ON (SMCCC, bsp/smccc-call.S).

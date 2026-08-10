@@ -1,7 +1,9 @@
 #include <kernel/hw_info.h>
 #include <kernel/kernel.h>
 #include <mm/mmu.h>
+#include <mm/kalloc.h>
 #include <kstring.h>
+#include <stddef.h>
 
 #ifdef KERNEL_SMP
 #include <kernel/core.h>
@@ -77,6 +79,43 @@ void arch_vm(page_dir_entry_t* vm) {
 #ifdef KERNEL_SMP
 	map_page(vm, SECOND_START_ADDR_HI , SECOND_START_ADDR_HI, AP_RW_D, PTE_ATTR_DEV);
 #endif
+}
+
+static int32_t clone_proc_l1_entry(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm, ewokos_addr_t vaddr) {
+	uint32_t index = PAGE_DIR_INDEX(vaddr);
+	page_dir_entry_t kernel_entry = kernel_vm[index];
+
+	if(kernel_entry.type == 0)
+		return 0;
+	if(vm[index].type != 0)
+		return 0;
+
+	if(kernel_entry.type != PAGE_DIR_2LEVEL_TYPE) {
+		vm[index] = kernel_entry;
+		return 0;
+	}
+
+	page_table_entry_t* kernel_table = (page_table_entry_t*)P2V(BASE_TO_PAGE_TABLE(kernel_entry.base));
+	page_table_entry_t* proc_table = (page_table_entry_t*)kalloc1k();
+	if(proc_table == NULL)
+		return -1;
+
+	memcpy(proc_table, kernel_table, PAGE_TABLE_SIZE);
+	vm[index] = kernel_entry;
+	vm[index].base = PAGE_TABLE_TO_BASE(V2P(proc_table));
+	return 0;
+}
+
+int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
+	if(clone_proc_l1_entry(vm, kernel_vm, 0x16000000) != 0)
+		return -1;
+	if(clone_proc_l1_entry(vm, kernel_vm, _sys_info.mmio.phy_base + _core_base_offset) != 0)
+		return -1;
+#ifdef KERNEL_SMP
+	if(clone_proc_l1_entry(vm, kernel_vm, SECOND_START_ADDR_HI) != 0)
+		return -1;
+#endif
+	return 0;
 }
 
 void kalloc_arch(void) {
