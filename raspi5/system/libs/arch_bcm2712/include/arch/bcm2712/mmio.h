@@ -49,11 +49,54 @@
  * has to stay <= PI5_RP1_SIZE, or check_mem_map_arch() refuses the mapping.
  */
 #define PI5_RP1_PHY         0x1F00000000ULL
+
+/*
+ * BCM2712 PCIe1 root complex — the EXTERNAL PCIe connector where an NVMe HAT
+ * is attached (bcm2712.dtsi: pcie1@110000, reg 0x10_00110000).
+ *
+ * DISTINCT from PCIe2 (0x10_00120000), which is the onboard RP1 southbridge.
+ * The two are independent controllers with their own DBI register blocks and
+ * their own PERST/bridge reset lines; an NVMe on the external connector
+ * appears on pcie1's bus, never on pcie2's.
+ *
+ * Outbound memory window (dtsi ranges):
+ *   <0x02000000 0x00 0x80000000  0x1b 0x80000000  0x00 0x80000000>
+ * i.e. CPU physical 0x1b_80000000 .. 0x1b_ffffffff maps to PCIe addr 0x0.
+ * An NVMe BAR0 lands somewhere in this 2 GB window; nvme.c maps it via
+ * SYS_MEM_MAP, so check_mem_map_arch() must whitelist the whole window.
+ *
+ * Virtual offset 0x04600000 is chosen inside MMIO_MAX_SIZE and clear of the
+ * EMMC window (0x04000000), pcie2 host window (0x04400000), the RP1 ctrl
+ * window (0x04500000) and the RP1 register window (0x06000000).
+ */
+#define PI5_PCIE1_PHY          0x1000110000ULL
+#define PI5_PCIE1_WIN_OFF      0x04600000
+#define PI5_PCIE1_WIN_SIZE     (64 * 1024)
+#define PI5_PCIE1_BAR0_WIN_OFF (PI5_PCIE1_WIN_OFF + 0x00010000) /* 64KB past host */
+
+/* CPU-physical outbound memory window for pcie1 (dtsi ranges). */
+#define PI5_PCIE1_MEM_WIN_PHY  0x1b80000000ULL
+#define PI5_PCIE1_MEM_WIN_SIZE 0x80000000ULL           /* 2 GB */
+
+/*
+ * BCM2712 reset controller (brcmstb-reset) at 0x10_01504318, 0x30 bytes.
+ * Per-bank stride 0x18; each bank = 3 regs (set/clear/status) + padding.
+ * Bank = id/32, bit = id%32.  pcie1 DT resets = <&bcm_reset 7 swinit>,
+ * <&bcm_reset 43 bridge>, <&pcie_rescal>.  pcie2 uses ids 32/44 — this is
+ * why rp1.c's "bank 1 bit 12" (id 44) brings up RP1, not the NVMe.
+ */
+#define PI5_RESET_CTRL_PHY     0x10001504318ULL
+#define PI5_RESET_CTRL_WIN_OFF 0x04620000
+#define PI5_RESET_CTRL_WIN_SIZE (4 * 1024)
+#define PI5_RESCAL_PAGE_PHY     0x1000119000ULL
+#define PI5_RESCAL_WIN_OFF     0x04630000
+#define PI5_RESCAL_WIN_SIZE    (4 * 1024)
+
 #define PI5_PCIE2_PHY       0x1000120000ULL
 #define PI5_PCIE2_WIN_OFF   0x04400000
 #define PI5_PCIE2_WIN_SIZE  (64 * 1024)
 #define PI5_RESET_PAGE_PHY  0x1001504000ULL
-#define PI5_RESCAL_PAGE_PHY 0x1000119000ULL
+
 /*
  * RP1 control windows are sub-page MMIO regions. Userspace must map them
  * according to sys_info.page_size, so only reserve the first slot here and let

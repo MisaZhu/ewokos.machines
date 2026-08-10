@@ -18,7 +18,8 @@ LIB_ARCH_BCM2712_OBJS = $(ARCH)/src/mailbox.o \
 	$(ARCH)/src/framebuffer.o \
 	$(ARCH)/src/native_hdmi.o \
 	$(ARCH)/src/i2c.o \
-	$(ARCH)/src/spi.o
+	$(ARCH)/src/spi.o \
+	$(ARCH)/src/nvme.o
 
 ARCH_BCM2712 = $(TARGET_DIR)/lib/libarch_bcm2712.a
 

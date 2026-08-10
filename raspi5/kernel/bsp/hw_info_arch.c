@@ -261,6 +261,22 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 
 	/* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */
 	/* PCIe2 host bridge for the onboard RP1 southbridge. */
+	/* pcie1 host bridge — external connector where an NVMe HAT is
+	 * attached (separate controller from pcie2/RP1).  nvme.c maps
+	 * a 64 KB window for the DBI + extended-config + misc registers. */
+	if (phy_base >= PI5_PCIE1_PHY &&
+	    phy_base + size <= PI5_PCIE1_PHY + PI5_PCIE1_SIZE)
+		return 0;
+
+	/* pcie1 outbound memory window — 2 GB at 0x1b_80000000.
+	 * The NVMe device's BAR0 register file lives somewhere inside
+	 * this range; the driver maps a 64 KB sub-page through
+	 * SYS_MEM_MAP.  The whole window is whitelisted here because
+	 * BAR0 placement depends on the firmware/RC BAR allocation. */
+	if (phy_base >= PI5_PCIE1_MEM_WIN_PHY &&
+	    phy_base + size <= PI5_PCIE1_MEM_WIN_PHY + PI5_PCIE1_MEM_WIN_SIZE)
+		return 0;
+
 	if (phy_base >= PI5_PCIE2_PHY &&
 	    phy_base + size <= PI5_PCIE2_PHY + PI5_PCIE2_SIZE)
 		return 0;

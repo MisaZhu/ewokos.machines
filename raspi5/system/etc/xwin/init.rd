@@ -16,6 +16,8 @@
 @/bin/ipcserv /drivers/raspi5/fand          /dev/fan
 @/bin/ipcserv /drivers/raspi5/cpud          /dev/cpu
 
+@/bin/splash -m "mount NVMe at /mnt" -p 16
+@/bin/ipcserv /drivers/raspi5/nvmefsd       /mnt
 
 @/bin/splash -m "run sessiond" -p 12
 @/bin/ipcserv /sbin/sessiond

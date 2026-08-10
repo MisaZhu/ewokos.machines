@@ -42,6 +42,30 @@
 #define PI5_WLAN_SDIO_OFF   0x00300000      /* WiFi host @ 0x1001100000  */
 #define PI5_WLAN_SDIO_CFG_OFF 0x00300400    /* WiFi host cfg regs        */
 
+/*
+ * BCM2712 PCIe1 root complex — the EXTERNAL PCIe connector where an NVMe
+ * HAT is attached (bcm2712.dtsi: pcie1@110000, reg 0x10_00110000).
+ *
+ * DISTINCT from PCIe2 below: pcie2 is the onboard RP1 southbridge and has
+ * no external downstream port.  An NVMe on the external connector appears
+ * on pcie1's bus, never on pcie2's — the userspace driver must target
+ * pcie1 (the previous code only touched pcie2 and never found the NVMe).
+ *
+ * Outbound memory window (dtsi ranges):
+ *   <0x02000000 0x00 0x80000000  0x1b 0x80000000  0x00 0x80000000>
+ * CPU physical 0x1b_80000000 .. 0x1b_ffffffff maps to PCIe addr 0x0.
+ * An NVMe BAR0 lands here; check_mem_map_arch() must whitelist the 2 GB
+ * window or the driver's SYS_MEM_MAP of BAR0 is refused and reads abort.
+ *
+ * Virtual offset 0x04600000 is inside MMIO_MAX_SIZE and clear of EMMC
+ * (0x04000000), pcie2 host window (0x04400000) and RP1 (0x06000000).
+ */
+#define PI5_PCIE1_WIN_OFF      0x04600000
+#define PI5_PCIE1_PHY          0x1000110000UL
+#define PI5_PCIE1_SIZE         (64*KB)
+#define PI5_PCIE1_MEM_WIN_PHY  0x1b80000000UL
+#define PI5_PCIE1_MEM_WIN_SIZE 0x80000000UL    /* 2 GB */
+
 /* BCM2712 PCIe2 root complex used by the onboard RP1 southbridge. */
 #define PI5_PCIE2_WIN_OFF   0x04400000
 #define PI5_PCIE2_PHY       0x1000120000UL
