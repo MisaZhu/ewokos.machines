@@ -42,6 +42,7 @@
 
 #include <arch/bcm2712/gpio.h>
 #include <arch/bcm2712/mmio.h>
+#include <arch/bcm2712/rp1.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/proto.h>
@@ -397,6 +398,18 @@ int main(int argc, char** argv) {
 		klog("fand: map RP1 window failed\n");
 		return -1;
 	}
+
+	/*
+	 * The fan PWM/TACH live in the RP1 southbridge, whose register file at
+	 * PI5_RP1_PHY only decodes after the PCIe2 link is trained and RP1's
+	 * configuration/outbound window is enabled (see hw_arch.h). fand starts
+	 * very early in init.rd, before the drivers that normally bring RP1 up
+	 * (i2c/usbhostd) have run, so train/enable it here too. bcm2712_rp1_init()
+	 * is idempotent: if the bootloader or an earlier driver already left the
+	 * link up it only (re)confirms the BARs.
+	 */
+	if (bcm2712_rp1_init() != 0)
+		klog("fand: RP1 link not ready, fan may not respond\n");
 
 	fan_hw_init();
 	fan_set_level(FAN_LEVEL_DEFAULT);
