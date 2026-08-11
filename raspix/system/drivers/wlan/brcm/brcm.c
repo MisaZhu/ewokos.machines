@@ -539,6 +539,7 @@ struct brcmf_dev *bus =  NULL;
  * manual connect. */
 static char brcm_manual_ssid[32];
 static char brcm_manual_pmk[65];
+static char brcm_manual_passwd[65]; /* raw user input: passphrase or 64-hex pmk */
 extern vdevice_t* _wland_dev;
 #define dev _wland_dev
 static pthread_mutex_t brcm_dpc_mutex;
@@ -928,6 +929,14 @@ static void brcmf_mark_connected(void)
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
     brcmf_scan_set_mpc(true);
+    /* persist the successfully joined network into /etc/wlan/network.json
+       (existing entries only get their password updated, no duplicates);
+       only for a manual connect -- auto-connects already come from the
+       config file */
+    if (brcm_manual_passwd[0] != '\0' && bus->ssid[0] != '\0' &&
+            brcm_manual_ssid[0] != '\0' &&
+            strcmp(bus->ssid, brcm_manual_ssid) == 0)
+        config_save_network(bus->ssid, brcm_manual_passwd);
     brcm_wakeup_dev(VFS_EVT_WR);
 }
 
@@ -4208,6 +4217,7 @@ static void brcmf_run_pending_cmd(void)
          * of reverting to the configured default. */
         snprintf(brcm_manual_ssid, sizeof(brcm_manual_ssid), "%s", ssid);
         snprintf(brcm_manual_pmk, sizeof(brcm_manual_pmk), "%s", pmk_hex);
+        snprintf(brcm_manual_passwd, sizeof(brcm_manual_passwd), "%s", passwd);
 
         /* Preempt whatever the worker was doing (background scan or a
          * stale join); the in-flight firmware escan completes
