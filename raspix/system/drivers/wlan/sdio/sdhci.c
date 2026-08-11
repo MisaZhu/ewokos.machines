@@ -8,9 +8,16 @@
 
 #include "mmc.h"
 
-#define SDHCI_CMD_MAX_TIMEOUT			3200
-#define SDHCI_CMD_DEFAULT_TIMEOUT		10000
 #define SDHCI_READ_STATUS_TIMEOUT		1000
+/*
+ * Wall-clock cap for the command/data inhibit wait in
+ * sdhci_send_command(). A hung controller never clears the inhibit
+ * bits; the old iteration-count loop (10000 x sleep(0)) spun ~20s per
+ * command with no log output, serially starving the wlan worker so
+ * housekeeping and every recovery watchdog crawled. Healthy transfers
+ * clear inhibit in micro-to-milliseconds, even at low init clocks.
+ */
+#define SDHCI_INHIBIT_WAIT_BUDGET_US		100000
 
 #define SDHCI_DMA_ADDRESS	0x00
 #define SDHCI_BLOCK_SIZE	0x04
@@ -845,12 +852,9 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	int ret = 0;
 	int trans_bytes = 0, is_aligned = 1;
 	u32 mask, flags, mode = 0;
-	unsigned int time = 0;
 	uint64_t start = get_timer(0);
 
 	host->start_addr = 0;
-	/* Timeout unit - ms */
-	static unsigned int cmd_timeout = SDHCI_CMD_DEFAULT_TIMEOUT;
 
 	mask = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT;
 
@@ -861,17 +865,22 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	      cmd->cmdidx == MMC_CMD_SEND_TUNING_BLOCK_HS200) && !data))
 		mask &= ~SDHCI_DATA_INHIBIT;
 
-	while (sdhci_readl(host, SDHCI_PRESENT_STATE) & mask) {
-		if (time >= cmd_timeout) {
-			if (2 * cmd_timeout <= SDHCI_CMD_MAX_TIMEOUT) {
-				cmd_timeout += cmd_timeout;
-			} else {
+	{
+		uint32_t inhibit_start_us = sdhci_now_us();
+
+		while (sdhci_readl(host, SDHCI_PRESENT_STATE) & mask) {
+			if (sdhci_now_us() - inhibit_start_us >
+			    SDHCI_INHIBIT_WAIT_BUDGET_US) {
 				brcm_log("%s: busy timeout\n", __func__);
+				/* try to shake the controller loose instead
+				 * of leaving inhibit set for every following
+				 * command (each reset is 100ms-bounded) */
+				sdhci_reset(SDHCI_RESET_CMD);
+				sdhci_reset(SDHCI_RESET_DATA);
 				return -ECOMM;
 			}
+			sleep(0);
 		}
-		time++;
-		sleep(0);
 	}
 
 	sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);

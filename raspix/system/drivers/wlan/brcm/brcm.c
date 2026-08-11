@@ -121,6 +121,8 @@
 #define BRCMF_SCAN_TIMEOUT_MS 15000U
 #define BRCMF_CONNECT_TIMEOUT_MS 15000U
 #define BRCMF_RXPENDING_STUCK_MS 2000U   /* rxpending without frame reads timeout */
+#define BRCMF_RXFAIL_FLUSH_BUDGET_MS 100U /* rxfail FIFO-flush wait wall-clock cap */
+#define BRCMF_READFRAMES_BUDGET_MS 250U   /* one DPC readframes pass wall-clock cap */
 #define BRCMF_FW_LIVENESS_MS 30000U      /* firmware liveness watchdog (CONNECTED) */
 /*
  * Full-chip recovery: the BCM43455 firmware intermittently fails to come
@@ -482,6 +484,7 @@ struct brcmf_dev{
     uint32_t bc_window_count;    /* broadcast frames admitted in window */
     uint32_t rx_fail_count;
     uint32_t tx_fail_count;
+    uint32_t sdio_cmd_fail_count;  /* consecutive func0/cmd transport errors */
     uint32_t recovery_count;
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
@@ -858,6 +861,7 @@ static void brcmf_reset_runtime_state(bool flush_queues)
 	bus->state_since_ms = kernel_tic_ms(0);
     bus->rxpending_since_ms = 0;
     bus->last_rx_success_ms = kernel_tic_ms(0);
+    bus->sdio_cmd_fail_count = 0;
     if (flush_queues)
         brcmf_flush_data_queues();
 }
@@ -971,11 +975,22 @@ static bool brcmf_worker_has_pending_io(void)
 static bool brcmf_worker_irq_pending(void)
 {
     uint8_t devpend;
+    int err = 0;
 
     if (!bus)
         return false;
 
-    devpend = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, NULL);
+    devpend = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, &err);
+    /*
+     * A dead card shows up here first: every func0 INTx read fails while
+     * the CONNECTED liveness watchdog would see neither rx failures nor
+     * events (readframes never runs on a dead bus). Feed command errors
+     * into the liveness condition so a wedged card still gets reset.
+     */
+    if (err)
+        bus->sdio_cmd_fail_count++;
+    else
+        bus->sdio_cmd_fail_count = 0;
     return (devpend & (INTR_STATUS_FUNC1 | INTR_STATUS_FUNC2)) != 0;
 }
 
@@ -2072,19 +2087,31 @@ static void brcmf_sdio_rxfail(bool abort, bool rtx)
     uint16_t lastrbc;
     uint8_t hi, lo;
     int err;
+    uint32_t flush_start_ms;
 
     if (abort)
         brcmf_sdiod_func0_wb(SDIO_CCCR_ABORT, 2, NULL);
 
     brcmf_sdiod_writeb(SBSDIO_FUNC1_FRAMECTRL, 1, &err);
 
-    /* Wait until the packet has been flushed (device/FIFO stable) */
+    /* Wait until the packet has been flushed (device/FIFO stable).
+     * Wall-clock bounded: on a dead bus every readb times out (~1s),
+     * so the plain retry-count loop wedged the worker for hours and
+     * starved every recovery watchdog. Healthy buses zero the frame
+     * count in microseconds, far inside the budget. */
+    flush_start_ms = kernel_tic_ms(0);
     for (lastrbc = retries = 0xffff; retries > 0; retries--) {
         hi = brcmf_sdiod_readb(SBSDIO_FUNC1_RFRAMEBCHI, &err);
         lo = brcmf_sdiod_readb(SBSDIO_FUNC1_RFRAMEBCLO, &err);
 
         if ((hi == 0) && (lo == 0))
             break;
+
+        if (kernel_tic_ms(0) - flush_start_ms > BRCMF_RXFAIL_FLUSH_BUDGET_MS) {
+            brcm_log("rxfail flush wait budget %u ms exceeded, giving up\n",
+                     BRCMF_RXFAIL_FLUSH_BUDGET_MS);
+            break;
+        }
 
         if ((hi > (lastrbc >> 8)) && (lo > (lastrbc & 0x00ff))) {
             brcm_log("count growing: last 0x%04x now 0x%04x\n",
@@ -2900,6 +2927,15 @@ static void scan_result(struct brcmf_bss_info_le *info){
 
     brcmf_scan_cache_store(info);
 
+    /*Never let auto network selection override a manual connect target:
+      while the guard window is active, or while CONNECTING/CONNECTED to
+      the user-chosen ssid, scan events must not rewrite bus->ssid back
+      to a configured network, or the worker joins the old AP again.*/
+    if (brcmf_manual_connect_guard_active(kernel_tic_ms(0)))
+        return;
+    if (bus->state == CONNECTING || bus->state == CONNECTED)
+        return;
+
     int idx = config_match_ssid(ssid);
         
     if(idx >= 0){
@@ -3077,9 +3113,22 @@ static uint brcmf_sdio_readframes(uint maxframes)
     if (bus->rxpending_since_ms == 0)
         bus->rxpending_since_ms = kernel_tic_ms(0);
 
+    /*
+     * Wall-clock budget for the whole pass. On a healthy bus a 50-frame
+     * batch completes in a few ms; when the bus is dead every SDIO read
+     * times out (~1s each, plus header retries), which turned one DPC
+     * call into a minutes-long wedge that starved housekeeping and all
+     * recovery watchdogs. Bailing out keeps rxpending true, so the next
+     * worker iteration retries after housekeeping had its chance.
+     */
+    uint32_t rf_start_ms = kernel_tic_ms(0);
+
     for (rd->seq_num = bus->rx_seq, rxleft = maxframes;
          !bus->rxskip && rxleft;
          rd->seq_num++, rxleft--) {
+
+        if (kernel_tic_ms(0) - rf_start_ms > BRCMF_READFRAMES_BUDGET_MS)
+            break;
 
         rd->len_left = rd->len;
         /* read header first for unknow frame length */
@@ -4072,23 +4121,25 @@ static void* brcm_worker_main(void* p) {
                 brcmf_sdio_readconsole();
 
             /*
-             * Firmware liveness watchdog (CONNECTED). BRCMF_FW_LIVENESS_MS
-             * was defined for this but never wired up: if the dongle dies
+             * Firmware liveness watchdog (CONNECTED). If the dongle dies
              * silently (e.g. firmware crash under broadcast-storm load
              * without delivering HMB_DATA_FWHALT), the driver would sit in
-             * a dead "connected" state forever. Healthy links keep
-             * last_rx_success_ms fresh via background traffic, so require
-             * both a full liveness window without any successful frame
-             * read AND accumulated SDIO rx errors before declaring the
-             * firmware dead and resetting the link.
+             * a dead "connected" state forever: no events arrive, readframes
+             * never runs so rx_fail_count stays 0, and the scan path is
+             * gated on !CONNECTED. Healthy links keep last_rx_success_ms
+             * fresh via traffic, so require a full liveness window without
+             * any successful frame read PLUS an error signal — either rx
+             * failures or failing func0/command reads (a dead card fails
+             * every INTx poll) — before declaring the firmware dead.
              */
             if (bus->state == CONNECTED) {
                 uint32_t now_ms = kernel_tic_ms(0);
                 if ((now_ms - bus->last_rx_success_ms) > BRCMF_FW_LIVENESS_MS &&
-                    bus->rx_fail_count > 0) {
-                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u), resetting link\n",
+                    (bus->rx_fail_count > 0 || bus->sdio_cmd_fail_count > 0)) {
+                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u cmd_fails=%u), resetting link\n",
                             now_ms - bus->last_rx_success_ms,
-                            bus->rx_fail_count);
+                            bus->rx_fail_count,
+                            bus->sdio_cmd_fail_count);
                     brcmf_sdio_checkdied();
                     brcmf_mark_disconnected("fw liveness timeout",
                             0, bus->rx_fail_count, 0);
@@ -4103,7 +4154,8 @@ static void* brcm_worker_main(void* p) {
 				brcmf_mark_disconnected("connect timeout", BRCMF_E_SET_SSID, 0, 0);
 			}
 
-            if (now_ms >= next_scan_ms && bus->state != CONNECTED) {
+            if (now_ms >= next_scan_ms && bus->state != CONNECTED &&
+                bus->state != CONNECTING) {
                 if (brcmf_manual_connect_guard_active(now_ms)) {
                     next_scan_ms = now_ms + BRCMF_SCAN_RETRY_TICK;
                     goto worker_done;
@@ -4216,17 +4268,45 @@ int brcm_state(void){
 int brcm_scan_trigger(void)
 {
     int err;
+    int prev_state;
     if (!bus)
         return -ENODEV;
     if (bus->init_failed)
         return bus->init_error;
 
+    /*
+     * Serialise manual scans: a scan triggered while one is already in
+     * flight just re-issues the firmware escan command and clears the
+     * in-flight result cache. Apps that poll "scan" periodically (xwifi)
+     * kept the firmware scanning continuously with mpc toggling off/on,
+     * which pinned the worker on the SDIO fast path and burned CPU.
+     */
+    if (bus->state == SCANNING || bus->state == CONNECTING)
+        return -EBUSY;
+
     brcmf_scan_cache_clear();
     bus->scan_results_ready = false;
+    prev_state = bus->state;
+    /*
+     * Only a non-connected session moves through the SCANNING state. While
+     * CONNECTED the manual scan is informational (refresh the result list
+     * for the UI): flipping state to SCANNING there stalled TX
+     * (brcm_connected() gates writes) and the scan-complete housekeeping
+     * then demoted the live session to DISCONNECTED, which let the worker
+     * auto-connect back to the configured network. The SCAN_COMPLETE event
+     * restores mpc via the state != SCANNING path.
+     */
+    if (prev_state != CONNECTED) {
+        memset(bus->ssid, 0, sizeof(bus->ssid));
+        bus->state = SCANNING;
+        bus->state_since_ms = kernel_tic_ms(0);
+    }
     brcmf_scan_set_mpc(false);
     err = scan();
-    if (err)
+    if (err) {
         brcmf_scan_set_mpc(true);
+        bus->state = prev_state;
+    }
     return err;
 }
 
@@ -4237,7 +4317,6 @@ int brcm_connect_ap(const char *ssid, const char *passwd)
     const char *pmk_hex;
     size_t ssid_len;
     size_t passwd_len;
-    int state;
     int err;
 
     if (!bus)
@@ -4254,9 +4333,14 @@ int brcm_connect_ap(const char *ssid, const char *passwd)
     if (passwd_len == 0)
         return -EINVAL;
 
-    state = brcm_state();
-    if (state == SCANNING || state == CONNECTING)
-        return -EBUSY;
+    /*
+     * A manual connect always preempts whatever the worker is doing
+     * (background scan or a stale join): returning -EBUSY here made the
+     * UI's one-shot connect tap fail whenever a periodic scan was in
+     * flight, which is a large fraction of the time. The in-flight
+     * firmware escan completes asynchronously; its SCAN_COMPLETE event
+     * takes the state != SCANNING path and just restores mpc.
+     */
 
     if (passwd_len == 64 && brcmf_is_hex_string(passwd, passwd_len)) {
         pmk_hex = passwd;
