@@ -17,6 +17,7 @@
 #include "sc16is750.h"
 
 static charbuf_t *_RxBuf = NULL;
+static charbuf_t *_TxBuf = NULL;
 static SC16IS750_t spiuart;
 static uint8_t _uart_channel = SC16IS750_CHANNEL_B;
 static uint8_t _rx_channel = SC16IS750_CHANNEL_NONE;
@@ -43,6 +44,7 @@ static void spi2uart_dump_regs(const char* tag, uint8_t channel) {
 // #endregion
 
 #define SPIUART_RX_BUF_SIZE 4096
+#define SPIUART_TX_BUF_SIZE 4096
 
 static bool sc16is750_ping_channel(SC16IS750_t* dev, uint8_t channel) {
         SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_SPR, 0x55);
@@ -100,18 +102,35 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
         (void)fd;
         (void)node;
         (void)from_pid;
+        (void)offset;
         (void)p;
 
-        /*size -= offset;
-        if(size <= 0)
-                return 0;
-        const uint8_t* data = (const uint8_t*)buf + offset;
-        */
-
         const uint8_t* data = (const uint8_t*)buf;
-        for(int i = 0; i < size; i++) {
-                if(SC16IS750_write(&spiuart, _uart_channel, data[i]) != 0)
-                        return (i == 0) ? -1 : i;
+        int i;
+
+        /*tty writers (stdio, console relays) treat a short write as full
+          success, so returning a partial count silently drops the tail:
+          every burst larger than the 4096-byte queue lost its remainder and
+          left the terminal mid escape-sequence (spliced lines plus stray
+          bytes like 0xA7). All other uartd write handlers consume the whole
+          buffer before returning; keep that contract here.
+
+          When the queue is full, drain the oldest queued bytes straight to
+          the chip FIFO from this handler. That cannot splice an SPI
+          transaction: loop() performs all of its SPI access inside
+          ipc_disable(), so while this handler runs the main context is
+          suspended outside any transaction. Draining oldest-first keeps the
+          byte order. SC16IS750_WriteByte waits for FIFO space with a
+          bounded timeout, so a dead chip cannot wedge IPC forever.*/
+        for(i = 0; i < size; i++) {
+                while(charbuf_push(_TxBuf, (char)data[i], false) != 0) {
+                        char c;
+                        if(charbuf_pop(_TxBuf, &c) != 0)
+                                break;
+                        if(SC16IS750_WriteByte(&spiuart, _uart_channel,
+                                        (uint8_t)c) != 0)
+                                return (i == 0) ? VFS_ERR_RETRY : i;
+                }
         }
         return size;
 }
@@ -123,9 +142,12 @@ static uint32_t uart_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsi
         (void)node;
         (void)p;
 
+        uint32_t events = 0;
         if(!charbuf_is_empty(_RxBuf))
-                return VFS_EVT_RD;
-        return 0;
+                events |= VFS_EVT_RD;
+        if(_TxBuf != NULL && _TxBuf->size < _TxBuf->buf_size)
+                events |= VFS_EVT_WR;
+        return events;
 }
 
 /*SC16IS750/752 RX/TX FIFO depth. RXLVL legitimately reports 0..64; anything
@@ -140,16 +162,15 @@ static int loop(vdevice_t* dev, void* p) {
 
         char tmp[SC16IS750_FIFO_SIZE];
         int rx = 0;
+        int tx = 0;
         uint8_t active_channel = channels[0];
+        bool wake_wr = false;
 
         /*The kernel delivers IPC by suspending this main context and running
-          the handler on top of it, so uart_write()'s SPI TX transaction can
-          preempt a half-done RX transaction here and splice the bus byte
-          stream (garbled output, clobbered registers). Keep IPC disabled
-          across every loop-side SPI access; a mutex cannot be used since the
-          preempted context could never release it. No slog()/blocking IPC is
-          allowed inside the disabled region (cross-deadlock with logd), and
-          IPC is re-enabled before sleeping so writers are not starved.*/
+          the handler on top of it, so all chip accesses stay in loop() and
+          are fenced with ipc_disable()/ipc_enable() to prevent the handler
+          from splicing an SPI transaction. No slog()/blocking IPC is allowed
+          inside the disabled region, and sleeping happens after ipc_enable().*/
         ipc_disable();
 
         for(int ci = 0; ci < 2 && rx == 0; ci++) {
@@ -172,12 +193,6 @@ static int loop(vdevice_t* dev, void* p) {
                 }
         }
 
-        if(rx == 0) {
-                ipc_enable();
-                proc_usleep(10000);
-                return 0;
-        }
-
         bool switched = false;
         if(_rx_channel != active_channel) {
                 _rx_channel = active_channel;
@@ -189,13 +204,36 @@ static int loop(vdevice_t* dev, void* p) {
 
         for(int i = 0; i < rx; i++)
                 charbuf_push(_RxBuf, tmp[i], true);
+
+        if(_TxBuf != NULL && _TxBuf->size > 0) {
+                bool tx_was_full = (_TxBuf->size == _TxBuf->buf_size);
+                int space = SC16IS750_FIFOAvailableSpace(&spiuart, _uart_channel);
+                if(space > 0 && space <= SC16IS750_FIFO_SIZE) {
+                        for(int i = 0; i < space; i++) {
+                                char c;
+                                if(charbuf_pop(_TxBuf, &c) != 0)
+                                        break;
+                                SC16IS750_WriteRegister(&spiuart, _uart_channel,
+                                                SC16IS750_REG_THR, (uint8_t)c);
+                                tx++;
+                        }
+                }
+                if(tx_was_full && _TxBuf->size < _TxBuf->buf_size)
+                        wake_wr = true;
+        }
+
         ipc_enable();
 
         if(switched)
                 slog("spi2uartd: rx using sc16is750 channel %c\n",
                                 (_rx_channel == SC16IS750_CHANNEL_B) ? 'B' : 'A');
 
-        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+        if(rx > 0)
+                vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+        if(wake_wr)
+                vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
+        if(rx == 0 && tx == 0)
+                proc_usleep(10000);
         return 0;
 }
 
@@ -220,12 +258,28 @@ int main(int argc, char** argv) {
         }
         slog("spi2uartd: using sc16is750 channel %c\n",
                         (_uart_channel == SC16IS750_CHANNEL_B) ? 'B' : 'A');
+
+        /*Real terminals (CRT/serial consoles) pause long output with XOFF
+          when their input buffer or scroll speed cannot keep up, and resume
+          with XON. Without honoring it, sustained output overruns the
+          terminal: whole chunks vanish and escape sequences tear (spliced
+          lines, stray bytes). Short output always fit the terminal buffer,
+          which is why only long output ever corrupted. Enable the chip's
+          auto software flow control: it compares XON1/XOFF1 in hardware,
+          halts/resumes the transmitter itself and filters the characters
+          out of the RX FIFO, so no driver-side handling is needed.*/
+        SC16IS750_SetSoftFlowControl(&spiuart, _uart_channel, 1);
         spi2uart_dump_regs("boot", _uart_channel);
         spi2uart_dump_regs("boot-other", sc16is750_other_channel(_uart_channel));
 
         _RxBuf = charbuf_new(SPIUART_RX_BUF_SIZE);
-        if(_RxBuf == NULL) {
+        _TxBuf = charbuf_new(SPIUART_TX_BUF_SIZE);
+        if(_RxBuf == NULL || _TxBuf == NULL) {
                 slog("spi2uartd: charbuf allocation failed\n");
+                if(_RxBuf != NULL)
+                        charbuf_free(_RxBuf);
+                if(_TxBuf != NULL)
+                        charbuf_free(_TxBuf);
                 return -1;
         }
 
@@ -237,5 +291,6 @@ int main(int argc, char** argv) {
         device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
 
         charbuf_free(_RxBuf);
+        charbuf_free(_TxBuf);
         return 0;
 }

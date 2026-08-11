@@ -508,44 +508,54 @@ uint8_t SC16IS750_FIFOAvailableSpace(SC16IS750_t * dev, uint8_t channel)
 	return SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_TXLVL);
 }
 
+void SC16IS750_SetSoftFlowControl(SC16IS750_t * dev, uint8_t channel, uint8_t enable)
+{
+	uint8_t lcr, efr;
+
+	/*Enhanced register set (EFR/XON1/XOFF1) is only visible while
+	  LCR == 0xBF; restore the real line settings afterwards.*/
+	lcr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LCR);
+	SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_LCR, 0xBF);
+
+	SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_XON1, 0x11);  //DC1
+	SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_XOFF1, 0x13); //DC3
+
+	efr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_EFR);
+	efr &= ~0x03;   //clear receiver flow control bits EFR[1:0]
+	efr |= 0x10;    //EFR[4]: enable enhanced functions
+	if (enable)
+		efr |= 0x02; //EFR[1:0]=10: receiver compares XON1/XOFF1,
+		             //halts TX on XOFF1, resumes on XON1
+	SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_EFR, efr);
+
+	SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_LCR, lcr);
+}
+
 int SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val)
 {
         uint8_t tmp_lsr;
         uint8_t txlvl;
-	uint32_t retry = SC16IS750_TX_WAIT_TIMEOUT;
-        static uint32_t tx_timeout_logs = 0;
+        uint32_t retry = SC16IS750_TX_WAIT_TIMEOUT;
 
         /*Wait for at least one free slot in the TX FIFO instead of waiting for
           the whole FIFO to become empty. Waiting on LSR.THRE serialized every
           byte and made the console feel stuck under sustained output.*/
-	do {
+        do {
                 txlvl = SC16IS750_FIFOAvailableSpace(dev, channel);
                 if (txlvl > 0 && txlvl <= 64) {
-			SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
-			return 0;
-		}
+                        SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
+                        return 0;
+                }
 
                 tmp_lsr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR);
                 if ((tmp_lsr & 0x20) != 0) {
                         SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
                         return 0;
                 }
-		proc_usleep(100);
-	} while (--retry > 0);
+                proc_usleep(100);
+        } while (--retry > 0);
 
-        // #region debug-point E:tx-timeout
-        if (tx_timeout_logs < 8) {
-                tx_timeout_logs++;
-                slog("spi2uartd: tx timeout ch=%c lsr=%02x iir=%02x txlvl=%u rxlvl=%u efcr=%02x\n",
-                                (channel == SC16IS750_CHANNEL_B) ? 'B' : 'A',
-                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR),
-                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_IIR),
-                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_TXLVL),
-                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_RXLVL),
-                                SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_EFCR));
-        }
-        // #endregion
-	return -1;
+        return -1;
 }
 
 int SC16IS750_ReadByte(SC16IS750_t * dev, uint8_t channel)

@@ -153,6 +153,7 @@ typedef struct {
   void    SC16IS750_FIFOSetTriggerLevel(SC16IS750_t * dev, uint8_t channel, uint8_t rx_fifo, uint8_t length);
   uint8_t SC16IS750_FIFOAvailableData(SC16IS750_t * dev, uint8_t channel);
   uint8_t SC16IS750_FIFOAvailableSpace(SC16IS750_t * dev, uint8_t channel);
+  void    SC16IS750_SetSoftFlowControl(SC16IS750_t * dev, uint8_t channel, uint8_t enable);
   int     SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val);
   int     SC16IS750_ReadByte(SC16IS750_t * dev, uint8_t channel);
   void    SC16IS750_EnableTransmit(SC16IS750_t * dev, uint8_t channel, uint8_t tx_enable);
