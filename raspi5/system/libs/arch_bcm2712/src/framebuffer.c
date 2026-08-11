@@ -853,12 +853,9 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	requested.height = h;
 	requested.depth  = dep;
 
-	klog("fb_init: requesting %ux%ux%u\n", w, h, dep);
-
 	if (strict_mode && preferred_mode_valid &&
 			preferred_mode.width == w && preferred_mode.height == h &&
 			preferred_mode.depth == dep) {
-		klog("fb_init: trying native hdmi0 edid path\n");
 		if (bcm2712_native_hdmi_init_mode(&sysinfo, &preferred_mode, &_fb_info) == 0) {
 			goto done;
 		}
@@ -866,7 +863,6 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	}
 
 	if (strict_mode && bcm2712_native_hdmi_supported(w, h, dep)) {
-		klog("fb_init: trying native hdmi0 path\n");
 		if (bcm2712_native_hdmi_init(&sysinfo, w, h, dep, &_fb_info) == 0) {
 			goto done;
 		}
@@ -882,19 +878,14 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	}
 
 	/* Strategy 2: adopt the firmware's existing boot framebuffer */
-	klog("fb_init: trying boot fb query\n");
 	if (fb_query_existing(&sysinfo, &_fb_info) == 0) {
                 if (!strict_mode || fb_mode_matches_info(&requested, &_fb_info)) {
                         goto done;
                 }
-                klog("fb_init: reject boot fb %ux%u for strict request %ux%u\n",
-                                _fb_info.width, _fb_info.height,
-                                requested.width, requested.height);
                 memset(&_fb_info, 0, sizeof(_fb_info));
         }
 
         /* Strategy 3: legacy channel-1 framebuffer message */
-        klog("fb_init: trying channel 1\n");
         if (fb_try_mode_list(&sysinfo, &requested,
                         strict_mode ? NULL : fallbacks,
                         strict_mode ? 0 : n_fallbacks,
@@ -902,9 +893,6 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
                 if (!strict_mode || fb_mode_matches_info(&requested, &_fb_info)) {
                         goto done;
                 }
-                klog("fb_init: reject ch1 fb %ux%u for strict request %ux%u\n",
-                                _fb_info.width, _fb_info.height,
-                                requested.width, requested.height);
                 memset(&_fb_info, 0, sizeof(_fb_info));
         }
 
