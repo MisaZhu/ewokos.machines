@@ -31,6 +31,7 @@
 #define BRCMF_DCMD_MEDLEN   1536
 #define BRCMF_DCMD_MAXLEN   8192
 #define WL_ESCAN_ACTION_START 1
+#define WL_ESCAN_ACTION_ABORT 3
 #define BRCMF_ESCAN_SYNC_ID 0x1234
 /* Max stale-response skips while waiting for a dcmd completion; keeps
  * every dcmd bounded so a connect can never hang on the response path. */
@@ -799,10 +800,16 @@ static void brcmf_escan_prep(struct brcmf_scan_params_le *params_le)
     memset(params_le->bssid, 0xff, 6);
     params_le->bss_type = DOT11_BSSTYPE_ANY;
     params_le->scan_type = BRCMF_SCANTYPE_ACTIVE;
-    params_le->nprobes = cpu_to_le32(-1);
-    params_le->active_time = cpu_to_le32(-1);
-    params_le->passive_time = cpu_to_le32(-1);
-    params_le->home_time = cpu_to_le32(-1);
+    /*
+     * Bounded dwell times: -1 leaves firmware defaults (~100ms+ per
+     * channel), which makes a full-band scan run for many seconds and
+     * stalls both the UI list and any join started while the scan is
+     * in flight. 60ms per channel keeps every AP visible in practice.
+     */
+    params_le->nprobes = cpu_to_le32(1);
+    params_le->active_time = cpu_to_le32(60);
+    params_le->passive_time = cpu_to_le32(60);
+    params_le->home_time = cpu_to_le32(60);
     memset(&params_le->ssid_le, 0, sizeof(params_le->ssid_le));
     params_le->channel_num = cpu_to_le32(0);
 }
@@ -838,6 +845,24 @@ int scan(void)
     return err;
 }
 
+/*
+ * Abort an in-flight escan. The firmware defers a join started while a
+ * scan is running until the (multi-second) channel sweep finishes, so a
+ * connect issued on top of the periodic background scan sat in
+ * "connecting" for the scan's remaining duration. Abort first; the error
+ * is ignored because "no scan running" also reports one.
+ */
+static void brcmf_escan_abort(void)
+{
+    struct brcmf_escan_req_fixed req;
+
+    memset(&req, 0, sizeof(req));
+    req.version = cpu_to_le32(BRCMF_ESCAN_REQ_VERSION);
+    req.action = cpu_to_le16(WL_ESCAN_ACTION_ABORT);
+    req.sync_id = cpu_to_le16(BRCMF_ESCAN_SYNC_ID);
+    brcmf_fil_iovar_data_set(0, "escan", &req, sizeof(req));
+}
+
 void get_ethaddr(char* mac){
     memcpy(mac, mac_addr, 6);
 }
@@ -857,6 +882,10 @@ int connect(const char*ssid, const char* pmk)
         brcm_log("Wrong PMK lens\n");
         return -1;
     }
+
+    /* A background escan in flight would make the firmware queue the join
+     * until the channel sweep ends; abort it so the join starts now. */
+    brcmf_escan_abort();
 
     /*
      * Reconnect path: the firmware may still hold the previous association
