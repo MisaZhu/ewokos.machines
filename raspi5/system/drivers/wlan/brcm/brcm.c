@@ -517,6 +517,7 @@ struct brcmf_dev{
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
     uint32_t scan_cmd_fail_streak; /* consecutive scan cmd errors (dead fw) */
     uint32_t recovery_streak;      /* link resets since last successful join */
+    uint32_t self_disassoc_ms;     /* when we tore down our own link (AP switch) */
     int init_error;
     bool init_failed;
     int last_error;
@@ -919,6 +920,7 @@ static void brcmf_mark_connected(void)
     bus->last_event_reason = 0;
     bus->manual_connect_until_ms = 0;
     bus->recovery_streak = 0;
+    bus->self_disassoc_ms = 0;
 	bus->state_since_ms = kernel_tic_ms(0);
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
@@ -2988,6 +2990,31 @@ static void scan_poll_results(void)
     return;
 }
 
+/*
+ * While switching APs the driver issues BRCMF_C_DISASSOC on a live link;
+ * the firmware answers with deauth/disassoc and link-down events that are
+ * indistinguishable from a real link loss. Without a guard those events
+ * drag the state machine out of CONNECTING (and clear the manual-connect
+ * guard), so the join-success event of the new AP is dropped by the
+ * state gate in mark_connected() and the switch only completes on a
+ * later background auto-connect cycle -- the "second connect is slow"
+ * symptom. Stamp the teardown and ignore link-loss events inside a short
+ * window after it.
+ */
+#define BRCMF_SELF_DISASSOC_WINDOW_MS 3000U
+
+void brcmf_note_self_disassoc(void)
+{
+    if (bus)
+        bus->self_disassoc_ms = kernel_tic_ms(0);
+}
+
+static bool brcmf_self_disassoc_active(void)
+{
+    return bus != NULL && bus->self_disassoc_ms != 0 &&
+        (kernel_tic_ms(0) - bus->self_disassoc_ms) < BRCMF_SELF_DISASSOC_WINDOW_MS;
+}
+
 
 void brcmf_rx_event( struct sk_buff *skb)
 {
@@ -3081,7 +3108,9 @@ void brcmf_rx_event( struct sk_buff *skb)
              event_type == BRCMF_E_DEAUTH_IND ||
              event_type == BRCMF_E_DISASSOC ||
              event_type == BRCMF_E_DISASSOC_IND){
-        brcmf_mark_disconnected("deauth/disassoc", event_type, event_status, event_reason);
+        /* our own teardown during an AP switch, not a link loss */
+        if (!brcmf_self_disassoc_active())
+            brcmf_mark_disconnected("deauth/disassoc", event_type, event_status, event_reason);
     }else if((event_type == BRCMF_E_SET_SSID ||
               event_type == BRCMF_E_ASSOC ||
               event_type == BRCMF_E_AUTH ||
@@ -3091,7 +3120,8 @@ void brcmf_rx_event( struct sk_buff *skb)
     }else if(event_type == BRCMF_E_LINK &&
              (event_status != BRCMF_E_STATUS_SUCCESS ||
               !(emsg.flags & BRCMF_EVENT_MSG_LINK))){
-        brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
+        if (!brcmf_self_disassoc_active())
+            brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
     }
 done:
     skb_free(skb);
@@ -4181,6 +4211,12 @@ static void brcmf_run_pending_cmd(void)
         bus->manual_connect_until_ms = kernel_tic_ms(0) + BRCMF_MANUAL_CONNECT_GUARD_MS;
         memset(bus->ssid, 0, sizeof(bus->ssid));
         memcpy(bus->ssid, ssid, min_t(size_t, ssid_len, sizeof(bus->ssid) - 1));
+        /* switching from a live link: connect() issues DISASSOC and the
+           firmware answers with deauth/link-down events for our own
+           teardown; suppress them so the join of the new AP is not
+           mistaken for a link loss (see brcmf_note_self_disassoc) */
+        if (bus->state == CONNECTED)
+            brcmf_note_self_disassoc();
         bus->state = CONNECTING;
         bus->state_since_ms = kernel_tic_ms(0);
         bus->last_error = 0;
