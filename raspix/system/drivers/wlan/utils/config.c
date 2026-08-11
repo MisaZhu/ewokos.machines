@@ -136,13 +136,34 @@ static int config_write_file(const char* path, const char* data)
 	return (wr == len) ? 0 : -1;
 }
 
+static void config_var_remove_member(json_var_t* var, const char* name)
+{
+	for(uint32_t i = 0; i < var->children.size; i++) {
+		json_node_t* n = (json_node_t*)json_array_get(&var->children, i);
+		if(n && n->name && strcmp(n->name, name) == 0) {
+			json_array_del(&var->children, i, json_node_free);
+			return;
+		}
+	}
+}
+
+static bool config_entry_is_ssid(json_node_t* n, const char* ssid)
+{
+	if(n == NULL)
+		return false;
+	json_node_t* s = json_var_find(n->var, "ssid");
+	return s && s->var->type == JSON_V_STRING &&
+		strcmp(ssid, json_var_get_str(s->var)) == 0;
+}
+
 /*
- * Persist a successfully joined network. An existing entry keeps its
- * position and only gets its credential refreshed; a new network is
- * appended -- so the file never holds duplicate ssids. A 64-char hex
- * credential is stored as "pmk", everything else as plaintext "passwd",
- * matching what the auto-connect path consumes. Returns 0 on success or
- * when nothing changed (no rewrite in that case).
+ * Persist a successfully joined network. Entries are unique by ssid:
+ * if the ssid already exists only its password is refreshed, never a
+ * second entry added; pre-existing duplicates of the same ssid are
+ * dropped. A 64-char hex credential is stored as "pmk", everything
+ * else as plaintext "passwd", matching what the auto-connect path
+ * consumes. Returns 0 on success or when nothing changed (no rewrite
+ * in that case).
  */
 int config_save_network(const char* ssid, const char* credential)
 {
@@ -173,25 +194,48 @@ int config_save_network(const char* ssid, const char* credential)
 			return -1;
 	}
 
+	const char* field = is_pmk ? "pmk" : "passwd";
+	const char* other = is_pmk ? "passwd" : "pmk";
+	bool changed = false;
 	int idx = config_match_ssid(ssid);
+
 	if(idx >= 0) {
-		const char* field = is_pmk ? "pmk" : "passwd";
 		json_node_t* n = json_var_array_get(network_config->var, idx);
 		json_node_t* f = n ? json_var_find(n->var, field) : NULL;
-		if(f && f->var->type == JSON_V_STRING &&
-				strcmp(json_var_get_str(f->var), credential) == 0)
-			return 0; /*unchanged, no rewrite*/
-		if(f)
-			json_var_set_str(f->var, credential);
-		else if(n)
-			json_var_add(n->var, field, json_var_new_str(credential));
+
+		if(!(f && f->var->type == JSON_V_STRING &&
+				strcmp(json_var_get_str(f->var), credential) == 0)) {
+			/*password differs: update it in place*/
+			if(f)
+				json_var_set_str(f->var, credential);
+			else if(n)
+				json_var_add(n->var, field, json_var_new_str(credential));
+			/*a stale credential of the other kind must not survive
+			  alongside the new one (auto-connect prefers pmk)*/
+			if(n)
+				config_var_remove_member(n->var, other);
+			changed = true;
+		}
+
+		/*drop any duplicate entries of the same ssid, keep idx*/
+		int cnt = (int)json_var_array_size(network_config->var);
+		for(int i = cnt - 1; i >= 0; i--) {
+			if(i == idx)
+				continue;
+			if(config_entry_is_ssid(json_var_array_get(network_config->var, i), ssid)) {
+				json_var_array_del(network_config->var, i);
+				changed = true;
+			}
+		}
+
+		if(!changed)
+			return 0; /*nothing to rewrite*/
 	} else {
 		json_var_t* entry = json_var_new_obj(NULL, NULL);
 		if(entry == NULL)
 			return -1;
 		json_var_add(entry, "ssid", json_var_new_str(ssid));
-		json_var_add(entry, is_pmk ? "pmk" : "passwd",
-				json_var_new_str(credential));
+		json_var_add(entry, field, json_var_new_str(credential));
 		json_var_array_add(network_config->var, entry);
 	}
 
