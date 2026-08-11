@@ -32,6 +32,9 @@
 #define BRCMF_DCMD_MAXLEN   8192
 #define WL_ESCAN_ACTION_START 1
 #define BRCMF_ESCAN_SYNC_ID 0x1234
+/* Max stale-response skips while waiting for a dcmd completion; keeps
+ * every dcmd bounded so a connect can never hang on the response path. */
+#define BRCMF_BCDC_CMPLT_MAX_TRIES 4
 
 static void brcmf_eventmask_set(int8_t *mask, uint32_t event)
 {
@@ -235,7 +238,23 @@ static int brcmf_proto_bcdc_cmplt(uint32_t id, uint32_t len)
         ret = brcmf_sdio_bus_rxctl((unsigned char*)msg, len);
         if (ret < 0)
             break;
-    } while (BCDC_DCMD_ID(le32_to_cpu(msg->flags)) != id);
+        if (BCDC_DCMD_ID(le32_to_cpu(msg->flags)) == id)
+            break;
+        /*
+         * Stale/mismatched response (leftover from an earlier timed-out
+         * dcmd). Skip it, but bound the retries: with an unbounded loop a
+         * firmware that keeps answering with foreign ids would hang the
+         * worker forever inside a single dcmd and a connect would never
+         * produce a result.
+         */
+        if (tries >= BRCMF_BCDC_CMPLT_MAX_TRIES) {
+            brcm_log("dcmd resp id mismatch (want %u got %u), giving up\n",
+                    (unsigned)id,
+                    (unsigned)BCDC_DCMD_ID(le32_to_cpu(msg->flags)));
+            ret = -ETIMEDOUT;
+            break;
+        }
+    } while (1);
 
     //hexdump(__func__, msg, ret);
 
