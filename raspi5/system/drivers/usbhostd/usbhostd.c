@@ -1250,7 +1250,6 @@ static int usb_dev_alloc(void) {
 	 */
 	for (int i = 0; i < USB_MAX_DEVS; ++i) {
 		if (_devs[i].unsupported) {
-			slog("usbhostd: evict parked dev=%d to free a slot\n", i);
 			usb_dev_remove(i);
 			return i;
 		}
@@ -1274,8 +1273,6 @@ static void usb_dev_remove(int idx) {
 	}
 	for (int i = 0; i < USB_MAX_INPUTS; ++i) {
 		if (_inputs[i].present && _inputs[i].dev_idx == idx) {
-			slog("usbhostd: remove %s input slot=%d\n",
-					usb_input_type_name(_inputs[i].type), i);
 			memset(&_inputs[i], 0, sizeof(_inputs[i]));
 		}
 	}
@@ -1599,7 +1596,6 @@ static int usb_enumerate_device(xhci_hc_t* hc, int root_port, int speed,
 	memset(candidates, 0, sizeof(candidates));
 	cand_count = usb_parse_candidates(cfg_buf, total_len, candidates, USB_MAX_CANDIDATES);
 	free(cfg_buf);
-	slog("usbhostd: dev=%d hid_candidates=%d\n", dev_idx, cand_count);
 
 	for (int i = 0; i < cand_count; ++i) {
 		uint8_t* report_desc = NULL;
@@ -1667,7 +1663,7 @@ static int usb_enumerate_device(xhci_hc_t* hc, int root_port, int speed,
 			}
 		}
 		else {
-			slog("usbhostd: candidate idx=%d unknown_type skip\n", i);
+			/* unknown HID type, skip */
 		}
 
 		if (report_desc != NULL) {
@@ -1685,7 +1681,6 @@ static int usb_enumerate_device(xhci_hc_t* hc, int root_port, int speed,
 		 * released for real when the port reports a disconnect.
 		 */
 		dev->unsupported = true;
-		slog("usbhostd: dev=%d no supported interface, slot parked\n", dev_idx);
 		return 0;
 	}
 	return registered;

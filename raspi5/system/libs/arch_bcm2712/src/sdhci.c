@@ -806,7 +806,6 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 			memcpy(data->dest, host->align_buffer, trans_bytes);
 		return 0;
 	}
-	printf("sdhci cmd: %d ret: %d error: %x\n", cmd->cmdidx, ret, stat);
 	sdhci_reset(SDHCI_RESET_CMD);
 	sdhci_reset(SDHCI_RESET_DATA);
 
@@ -856,9 +855,6 @@ struct bus_ops* bcm2712_sdhci_init(void)
 	_host.quirks = SDHCI_QUIRK_BROKEN_VOLTAGE | SDHCI_QUIRK_BROKEN_R1B |
 		SDHCI_QUIRK_WAIT_SEND_CMD | SDHCI_QUIRK_NO_HISPD_BIT;
 	_host.voltages = MMC_VDD_32_33 | MMC_VDD_33_34 | MMC_VDD_165_195;
-
-	klog("sdhci: _mmio_base=0x%lx EMMC_BASE=0x%lx ioaddr=0x%lx\n",
-		_mmio_base, (ewokos_addr_t)EMMC_BASE, (ewokos_addr_t)_host.ioaddr);
 
 	sdhci_reset(SDHCI_RESET_ALL);
 	sdhci_set_power(&_host, MMC_VDD_33_34);

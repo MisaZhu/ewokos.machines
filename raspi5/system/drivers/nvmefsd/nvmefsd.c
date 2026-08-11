@@ -394,7 +394,6 @@ int main(int argc, char **argv) {
 	dev.unlink = nvmeext2_unlink;
 	dev.extra_data = &ext2;
 
-	klog("nvmefsd: mounting ext2 at %s\n", mount_point);
 	ret = device_run(&dev, mount_point, FS_TYPE_DIR, 0777);
 	if(ret != 0)
 		klog("nvmefsd: mount at %s failed (err=%d)\n", mount_point, ret);
