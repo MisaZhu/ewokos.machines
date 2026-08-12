@@ -97,6 +97,14 @@
 #define BRCMF_TX_BATCH_LIMIT 32
 #define BRCMF_RX_QUEUE_SLOTS 128
 #define BRCMF_TX_QUEUE_SLOTS 128
+/*
+ * Leave enough software-RX queue headroom for one in-flight SDIO
+ * readframes burst. The actual reserve is derived from bus->rxbound at
+ * runtime so the pause threshold follows the active read budget instead
+ * of relying on a nearly-full fixed watermark.
+ */
+#define BRCMF_RX_QUEUE_INFLIGHT_RESERVE_MIN 1
+#define BRCMF_RX_QUEUE_LOW_WATERMARK (BRCMF_RX_QUEUE_SLOTS / 2)
 #define BRCMF_QUEUE_DROP_LOG_STEP 64U
 #define BRCMF_RX_FAIL_RECOVER_THRESHOLD 8U
 #define BRCMF_TX_FAIL_RECOVER_THRESHOLD 6U
@@ -526,6 +534,7 @@ struct brcmf_dev{
     uint32_t recovery_count;
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
+	bool rx_queue_blocked;
     uint32_t manual_connect_until_ms;
 	uint32_t state_since_ms;
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
@@ -883,6 +892,87 @@ static int brcmf_rx_queue_push_critical(queue_buffer_t *qbuf, uint8_t *buf,
     return ret;
 }
 
+static void brcmf_rx_queue_pause_reads(void)
+{
+    if (!bus || !bus->rx_queue || bus->rx_queue_blocked)
+        return;
+
+    bus->rx_queue_blocked = true;
+    bus->rxpending_since_ms = 0;
+    brcm_wakeup_dev(VFS_EVT_RD);
+}
+
+static int brcmf_rx_queue_pause_depth(void)
+{
+    int reserve;
+
+    if (!bus || !bus->rx_queue)
+        return 0;
+
+    reserve = bus->rxbound;
+    if (reserve < BRCMF_RX_QUEUE_INFLIGHT_RESERVE_MIN)
+        reserve = BRCMF_RX_QUEUE_INFLIGHT_RESERVE_MIN;
+    if (reserve >= bus->rx_queue->qsize)
+        reserve = bus->rx_queue->qsize - 1;
+
+    return bus->rx_queue->qsize - reserve;
+}
+
+static uint brcmf_rx_queue_read_budget(uint maxframes)
+{
+    int depth;
+    int free_slots;
+
+    if (!bus || !bus->rx_queue || maxframes == 0)
+        return 0;
+
+    depth = queue_buffer_check(bus->rx_queue);
+    free_slots = bus->rx_queue->qsize - depth;
+    if (free_slots <= 0) {
+        brcmf_rx_queue_pause_reads();
+        return 0;
+    }
+
+    if ((int)maxframes > free_slots)
+        return (uint)free_slots;
+    return maxframes;
+}
+
+static bool brcmf_rx_queue_resume_reads_if_room(void)
+{
+    int depth;
+
+    if (!bus || !bus->rx_queue || !bus->rx_queue_blocked)
+        return false;
+
+    depth = queue_buffer_check(bus->rx_queue);
+    if (depth > BRCMF_RX_QUEUE_LOW_WATERMARK)
+        return false;
+
+    bus->rx_queue_blocked = false;
+    return true;
+}
+
+static bool brcmf_rx_queue_should_pause(void)
+{
+    int depth;
+    int pause_depth;
+
+    if (!bus || !bus->rx_queue)
+        return false;
+
+    if (bus->rx_queue_blocked)
+        return !brcmf_rx_queue_resume_reads_if_room();
+
+    pause_depth = brcmf_rx_queue_pause_depth();
+    depth = queue_buffer_check(bus->rx_queue);
+    if (depth < pause_depth)
+        return false;
+
+    brcmf_rx_queue_pause_reads();
+    return true;
+}
+
 static void brcmf_maybe_kick_reader(void)
 {
     uint32_t now_ms;
@@ -926,6 +1016,7 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->tx_starving = false;
     bus->tx_starve_usec = 0;
 	bus->state_since_ms = kernel_tic_ms(0);
+	bus->rx_queue_blocked = false;
     bus->rxpending_since_ms = 0;
     bus->last_rx_success_ms = kernel_tic_ms(0);
     bus->sdio_cmd_fail_count = 0;
@@ -1036,9 +1127,10 @@ static bool brcmf_worker_has_pending_io(void)
 	}
     /* RX draining is independent of flow control; only skip while
      * rxskip is blocking progress (recovered via 200ms watchdog). */
-	if (bus->rxpending && !bus->rxskip) {
+    if (bus->rxpending && !bus->rxskip &&
+            !brcmf_rx_queue_should_pause()) {
         return true;
-	}
+    }
 	/* TX/ctrl only make progress when the firmware currently offers TX
 	 * window credits. Without this, a queued DHCP/control frame behind an
 	 * exhausted window keeps the worker on the sleep_us=0 fast path and
@@ -3209,6 +3301,8 @@ void brcmf_rx_frame(struct sk_buff *skb)
             queue_buffer_push(bus->rx_queue, skb->data, skb->len);
     int depth = queue_buffer_check(bus->rx_queue);
     ipc_enable();
+    if (depth >= brcmf_rx_queue_pause_depth())
+        brcmf_rx_queue_pause_reads();
     if (pushed == 0) {
         bus->rx_queue_drops++;
         brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops,
@@ -3260,6 +3354,9 @@ static uint brcmf_sdio_readframes(uint maxframes)
     for (rd->seq_num = bus->rx_seq, rxleft = maxframes;
          !bus->rxskip && rxleft;
          rd->seq_num++, rxleft--) {
+
+		if (brcmf_rx_queue_should_pause())
+			break;
 
         if (kernel_tic_ms(0) - rf_start_ms > BRCMF_READFRAMES_BUDGET_MS)
             break;
@@ -3737,16 +3834,24 @@ static void brcmf_sdio_dpc(void)
      * long after rxskip recovery. Force a readframes attempt so the
      * all-zero header clears rxpending, or escalate to disconnect. */
     if (bus->rxpending && !bus->rxskip && bus->rxpending_since_ms) {
-        uint32_t pend_ms = kernel_tic_ms(0) - bus->rxpending_since_ms;
-        if (pend_ms > BRCMF_RXPENDING_STUCK_MS) {
-            brcm_log("rxpending stuck %u ms, forcing readframes\n", pend_ms);
-            intstatus |= I_HMB_FRAME_IND;
-            bus->rxpending_since_ms = 0;
+        if (!bus->rx_queue_blocked) {
+            uint32_t pend_ms = kernel_tic_ms(0) - bus->rxpending_since_ms;
+
+            if (pend_ms > BRCMF_RXPENDING_STUCK_MS) {
+                brcm_log("rxpending stuck %u ms, forcing readframes\n", pend_ms);
+                intstatus |= I_HMB_FRAME_IND;
+                bus->rxpending_since_ms = 0;
+            }
         }
     }
     /* On frame indication, read available frames */
     if ((intstatus & I_HMB_FRAME_IND) && (bus->clkstate == CLK_AVAIL)) {
-        brcmf_sdio_readframes(bus->rxbound);
+        if (!brcmf_rx_queue_should_pause()) {
+            uint rx_budget = brcmf_rx_queue_read_budget(bus->rxbound);
+
+            if (rx_budget > 0)
+                brcmf_sdio_readframes(rx_budget);
+        }
         if (!bus->rxpending)
             intstatus &= ~I_HMB_FRAME_IND;
     }
@@ -4839,8 +4944,10 @@ int brcm_recv(uint8_t *buf, int len){
     if (bus == NULL || bus->rx_queue == NULL)
         return 0;
     int ret = queue_buffer_pop(bus->rx_queue, buf, len);
-    if (ret > 0)
+    if (ret > 0) {
         bus->rx_last_dequeue_ms = kernel_tic_ms(0);
+        brcmf_rx_queue_resume_reads_if_room();
+    }
     return ret;
 }
 
