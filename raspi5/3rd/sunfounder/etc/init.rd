@@ -7,6 +7,9 @@
 @/bin/ipcserv /drivers/fontd
 
 @/bin/ipcserv /drivers/sunfounder/i2cfbd /dev/fb1
+@/bin/ipcserv /drivers/consoled  -d 1 /dev/console0
+@set_stdio /dev/console0
+
 
 @/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 12 -d
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
