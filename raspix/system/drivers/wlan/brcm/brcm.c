@@ -114,6 +114,16 @@
  */
 #define BRCMF_BC_LIMIT_WINDOW_MS 100U
 #define BRCMF_BC_LIMIT_MAX_PKTS 8U
+/*
+ * ARP-specific ceiling: ARP who-has broadcasts used to be fully exempt
+ * from the broadcast limiter, so an ARP flood on the LAN still filled
+ * all 128 RX queue slots — and every request targeting our IP made the
+ * stack fire an unconditional reply, amplifying the flood onto the TX
+ * path. Legitimate ARP resolution chatter is a few pps even on busy
+ * networks, so a ceiling well above the generic broadcast one keeps
+ * resolution working while still bounding the flood.
+ */
+#define BRCMF_ARP_LIMIT_MAX_PKTS 24U
 #define BRCMF_RX_READER_KICK_STALL_MS 200U
 #define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
 #define BRCMF_SCAN_CACHE_MAX 64
@@ -507,6 +517,9 @@ struct brcmf_dev{
     uint32_t bc_drops;           /* broadcast storm drops */
     uint32_t bc_window_start_ms; /* broadcast rate-limit window start */
     uint32_t bc_window_count;    /* broadcast frames admitted in window */
+    uint32_t arp_drops;           /* ARP flood drops */
+    uint32_t arp_window_start_ms; /* ARP rate-limit window start */
+    uint32_t arp_window_count;    /* ARP broadcasts admitted in window */
     uint32_t rx_fail_count;
     uint32_t tx_fail_count;
     uint32_t sdio_cmd_fail_count;  /* consecutive func0/cmd transport errors */
@@ -747,8 +760,26 @@ static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
          * storm monopolises the RX queue and starves unicast traffic
          * (TCP data/ACKs, ARP replies addressed to us), which wedges
          * the link even though the driver stays "connected".
+         * ARP gets its own (higher) ceiling instead of a full exemption:
+         * an ARP flood would otherwise sail through and starve the queue
+         * exactly like plain broadcast noise.
          */
-        if (is_bc && !is_arp && !is_dhcp) {
+        if (is_bc && is_arp) {
+            now_ms = kernel_tic_ms(0);
+            if ((now_ms - bus->arp_window_start_ms) >= BRCMF_BC_LIMIT_WINDOW_MS) {
+                bus->arp_window_start_ms = now_ms;
+                bus->arp_window_count = 0;
+            }
+            if (bus->arp_window_count >= BRCMF_ARP_LIMIT_MAX_PKTS) {
+                bus->arp_drops++;
+                if (bus->arp_drops == 1 ||
+                    (bus->arp_drops % BRCMF_QUEUE_DROP_LOG_STEP) == 0)
+                    brcm_log("arp flood drop: total=%u depth=%d\n",
+                            bus->arp_drops, depth);
+                return true;
+            }
+            bus->arp_window_count++;
+        } else if (is_bc && !is_dhcp) {
             now_ms = kernel_tic_ms(0);
             if ((now_ms - bus->bc_window_start_ms) >= BRCMF_BC_LIMIT_WINDOW_MS) {
                 bus->bc_window_start_ms = now_ms;
