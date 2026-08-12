@@ -65,7 +65,7 @@
 @/bin/bgrun /bin/i2cdisp
 
 @/bin/splash -m "start x" -p 100
-@/bin/ipcserv /drivers/xserverd        /dev/x
+@/bin/ipcserv /drivers/xserverd     -d 0   /dev/x
 
 #@/bin/bgrun /sbin/x/xtouch
 @/bin/bgrun /sbin/x/xmouse
