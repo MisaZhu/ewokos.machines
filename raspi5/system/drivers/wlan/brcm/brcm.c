@@ -4322,16 +4322,6 @@ static void* brcm_worker_main(void* p) {
     }
 
     brcm_init_phase_mark(2); /* preinit */
-    uint32_t value = 0;
-    err = brcmf_fil_iovar_data_set(0, "bus:txglom", &value, sizeof(uint32_t));
-    if(err){
-        brcm_log("disable glom failed %d\n", err);
-    }
-
-    err = brcmf_fil_iovar_data_set(0, "bus:rxglom", &value, sizeof(uint32_t));
-    if(err){
-        brcm_log("disable glom failed %d\n", err);
-    }
 
     err = brcmf_c_preinit_dcmds();
     if (err) {
