@@ -594,42 +594,42 @@ static int brcmf_c_process_clm_blob(int ifidx)
 
 int brcmf_c_preinit_dcmds(void)
 {
-    uint8_t buf[BRCMF_DCMD_SMLEN];
-    uint8_t desired_mac[6];
-    struct brcmf_rev_info_le revinfo;
-    struct brcmf_rev_info ri;
-    int32_t err = 0;
-    int chip = 0;
-    int chiprev = 0;
+	uint8_t buf[BRCMF_DCMD_SMLEN];
+	uint8_t desired_mac[6];
+	struct brcmf_rev_info_le revinfo;
+	struct brcmf_rev_info ri;
+	int32_t err = 0;
+	int chip = 0;
+	int chiprev = 0;
 
-    if (brcmf_fw_get_macaddr(desired_mac)) {
-        err = brcmf_fil_iovar_data_set(0, "cur_etheraddr", desired_mac,
-                           sizeof(desired_mac));
-        if (err < 0) {
-            brcm_log("Setting cur_etheraddr failed, %d\n", err);
-        } else {
-            memcpy(mac_addr, desired_mac, sizeof(mac_addr));
-            brcm_log("Applied cur_etheraddr override %pM\n", desired_mac);
-        }
-    }
+	if (brcmf_fw_get_macaddr(desired_mac)) {
+		err = brcmf_fil_iovar_data_set(0, "cur_etheraddr", desired_mac,
+					       sizeof(desired_mac));
+		if (err < 0) {
+			brcm_log("Setting cur_etheraddr failed, %d\n", err);
+		} else {
+			memcpy(mac_addr, desired_mac, sizeof(mac_addr));
+			brcm_log("Applied cur_etheraddr override %pM\n", desired_mac);
+		}
+	}
 
-    /* retreive mac address */
-    err = brcmf_fil_iovar_data_get(0, "cur_etheraddr", mac_addr,
-                       sizeof(mac_addr));
-    if (err < 0) {
-        brcm_log("Retrieving cur_etheraddr failed, %d\n", err);
-        goto done;
-    }
-    if (brcmf_fw_get_macaddr(desired_mac) &&
-        memcmp(mac_addr, desired_mac, sizeof(mac_addr)) != 0) {
-        brcm_log("cur_etheraddr mismatch: want %pM got %pM\n",
-                desired_mac, mac_addr);
-    } else {
-        brcm_log("cur_etheraddr active %pM\n", mac_addr);
-    }
+	/* retreive mac address */
+	err = brcmf_fil_iovar_data_get(0, "cur_etheraddr", mac_addr,
+				       sizeof(mac_addr));
+	if (err < 0) {
+		brcm_log("Retrieving cur_etheraddr failed, %d\n", err);
+		goto done;
+	}
+	if (brcmf_fw_get_macaddr(desired_mac) &&
+	    memcmp(mac_addr, desired_mac, sizeof(mac_addr)) != 0) {
+		brcm_log("cur_etheraddr mismatch: want %pM got %pM\n",
+				desired_mac, mac_addr);
+	} else {
+		brcm_log("cur_etheraddr active %pM\n", mac_addr);
+	}
 
-    err = brcmf_fil_cmd_data_get(0, BRCMF_C_GET_REVINFO,
-                     &revinfo, sizeof(revinfo));
+	err = brcmf_fil_cmd_data_get(0, BRCMF_C_GET_REVINFO,
+				     &revinfo, sizeof(revinfo));
     if (err < 0) {
         brcm_log("retrieving revision info failed, %d\n", err);
         strlcpy(ri.chipname, "UNKNOWN", sizeof(ri.chipname));
