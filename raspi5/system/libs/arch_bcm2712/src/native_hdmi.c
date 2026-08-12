@@ -19,6 +19,7 @@
 #define PI5_HDMI0_RM_OFF			0x00702000U
 #define PI5_HDMI0_HD_OFF			0x00720000U
 
+#define RPI_FIRMWARE_GET_CLOCK_RATE		0x00030002u
 #define RPI_FIRMWARE_SET_CLOCK_STATE		0x00038001u
 #define RPI_FIRMWARE_SET_CLOCK_RATE		0x00038002u
 #define RPI_FIRMWARE_SET_DISPLAY_POWER		0x00048019u
@@ -264,6 +265,19 @@ typedef struct {
 	} tag;
 	uint32_t end_tag;
 } __attribute__((packed)) fw_set_clock_req_t;
+
+typedef struct {
+	uint32_t buf_size;
+	uint32_t code;
+	struct {
+		uint32_t tag;
+		uint32_t val_buf_size;
+		uint32_t val_len;
+		uint32_t clock_id;
+		uint32_t rate_hz;
+	} tag;
+	uint32_t end_tag;
+} __attribute__((packed)) fw_get_clock_req_t;
 
 typedef struct {
 	uint32_t buf_size;
@@ -539,6 +553,55 @@ static int firmware_set_display_power(uint32_t display, uint32_t state) {
 	return 0;
 }
 
+static uint32_t firmware_get_clock(uint32_t clock_id) {
+	fw_get_clock_req_t *req;
+	ewokos_addr_t vaddr;
+	mail_message_t msg;
+	uint32_t rate = 0;
+
+	vaddr = dma_alloc(0, sizeof(*req));
+	if (vaddr == 0) {
+		return 0;
+	}
+
+	req = (fw_get_clock_req_t *)(uintptr_t)vaddr;
+	memset(req, 0, sizeof(*req));
+	req->buf_size = sizeof(*req);
+	req->tag.tag = RPI_FIRMWARE_GET_CLOCK_RATE;
+	req->tag.val_buf_size = 8;
+	req->tag.val_len = 4;
+	req->tag.clock_id = clock_id;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.data = (((uint32_t)dma_phy_addr(0, vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+	msg.channel = PROPERTY_CHANNEL;
+
+	if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
+			(req->code & 0x80000000u) != 0 &&
+			(req->tag.val_len & 0x80000000u) != 0) {
+		rate = req->tag.rate_hz;
+	}
+
+	dma_free(0, vaddr);
+	return rate;
+}
+
+/*
+ * Linux vc4 only places a *minimum* rate request on the HVS core/disp
+ * clocks (clk_set_min_rate); the firmware keeps them at their default
+ * (910MHz on Pi5). Hard-setting 500MHz here instead *downclocked* the
+ * firmware CORE/VPU clock tree, which starved unrelated peripherals
+ * (SDIO WiFi host, RP1 xHCI) into timeouts. Only raise, never lower.
+ */
+static void firmware_raise_clock(uint32_t clock_id, uint32_t min_rate_hz) {
+	uint32_t cur = firmware_get_clock(clock_id);
+
+	if (cur >= min_rate_hz) {
+		return;
+	}
+	(void)firmware_set_clock(clock_id, min_rate_hz);
+}
+
 static void program_required_clocks(const bcm2712_hdmi_mode_t *mode) {
 	uint32_t bvb_rate = (mode->pixel_clock_hz > 148500000U) ? 150000000U : 75000000U;
 	uint32_t hsm_rate = (mode->pixel_clock_hz / 100U) * 101U;
@@ -557,8 +620,8 @@ static void program_required_clocks(const bcm2712_hdmi_mode_t *mode) {
 	(void)firmware_set_clock(PI5_FW_CLK_HDMI0_HSM, hsm_rate);
 	(void)firmware_set_clock(PI5_FW_CLK_HDMI0_PIXEL, mode->pixel_clock_hz);
 	(void)firmware_set_clock(PI5_FW_CLK_HDMI0_BVB, bvb_rate);
-	(void)firmware_set_clock(PI5_FW_CLK_HVS_CORE, 500000000U);
-	(void)firmware_set_clock(PI5_FW_CLK_HVS_DISP, 500000000U);
+	firmware_raise_clock(PI5_FW_CLK_HVS_CORE, 500000000U);
+	firmware_raise_clock(PI5_FW_CLK_HVS_DISP, 500000000U);
 }
 
 static uint32_t build_low_rate_phy_ctrl_word(void) {
