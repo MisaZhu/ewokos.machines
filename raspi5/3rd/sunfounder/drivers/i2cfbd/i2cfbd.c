@@ -18,7 +18,7 @@ static uint8_t _oled_buf[OLED_BUF_SIZE];
 static uint8_t _i2c_addr = 0x3c;
 static int _i2c_bus = BCM2712_I2C_BUS_HEADER;
 static uint32_t _i2c_speed = 400000;
-static const char* _conf_file = "/etc/framebuffer.json";
+static const char* _conf_file = "/etc/framebuffer.i2c.json";
 
 static int ssd1306_write(uint8_t control, const uint8_t* buf, int len) {
 	uint8_t tmp[33];
