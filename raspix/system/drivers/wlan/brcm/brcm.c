@@ -43,13 +43,14 @@
 #define MAX_FRAME_SIZE  2048
 /* headroom for the 16-byte SDPCM header pushed by brcmf_sdio_txpkt_prep */
 #define SDPCM_TX_HEADROOM 16
+#define BRCMF_F2_BLOCKSIZE 512
 
 #define TXQLEN      2048    /* bulk tx queue length */
 #define TXHI        (TXQLEN - 256)  /* turn on flow control above TXHI */
 #define TXLOW       (TXHI - 256)    /* turn off flow control below TXLOW */
 #define PRIOMASK    7
 #define TXRETRIES   2   /* # of retries for tx frames */
-#define BRCMF_RXBOUND   50  /* Default for max rx frames in
+#define BRCMF_RXBOUND   128  /* Default for max rx frames in
                  one scheduling */
 #define BRCMF_TXBOUND   20  /* Default for max tx frames in
                  one scheduling */
@@ -94,8 +95,22 @@
 #define BRCMF_CTL_SLOW_SLEEP_US 4000U
 #define BRCMF_CTL_TX_TIMEOUT_US 50000U
 #define BRCMF_CTL_RX_TIMEOUT_US 1000000U
-#define BRCMF_TX_BATCH_LIMIT 32
-#define BRCMF_RX_QUEUE_SLOTS 128
+/*
+ * Drain a larger TX batch per worker wakeup so bulk transfers spend less
+ * time bouncing between the scheduler and the SDIO path. The queue itself
+ * is still bounded to 128 frames, so 64 keeps latency reasonable while
+ * halving the number of wakeups needed for large writes.
+ */
+#define BRCMF_TX_BATCH_LIMIT 64
+/*
+ * Download throughput on raspix is ACK-limited once the SDIO bus is stable:
+ * the board sends ~400-500KB/s steadily, but the inbound TCP ACK stream can
+ * arrive in short bursts and overflow the old 128-slot software RX queue.
+ * Those dropped ACKs collapse the sender's effective window and cap scp in
+ * the few-hundred-KB/s range despite a healthy SDIO path. Keep a much deeper
+ * queue so transient ACK bursts are absorbed instead of discarded.
+ */
+#define BRCMF_RX_QUEUE_SLOTS 1024
 #define BRCMF_TX_QUEUE_SLOTS 128
 /*
  * Leave enough software-RX queue headroom for one in-flight SDIO
@@ -109,7 +124,7 @@
 #define BRCMF_RX_FAIL_RECOVER_THRESHOLD 8U
 #define BRCMF_TX_FAIL_RECOVER_THRESHOLD 6U
 #define BRCMF_SCAN_RETRY_TICK 5000U
-#define BRCMF_RX_DROP_PRESSURE_DEPTH 64
+#define BRCMF_RX_DROP_PRESSURE_DEPTH (BRCMF_RX_QUEUE_SLOTS / 2)
 #define BRCMF_RX_DROP_STALL_MS 500U
 /*
  * Broadcast storm protection: broadcast frames (ARP/IP) are never
@@ -579,6 +594,7 @@ static void brcmf_scan_cache_clear(void);
 static void brcmf_probe_cleanup(void);
 static void *brcm_worker_main(void *p);
 static bool brcmf_is_hex_string(const char *s, size_t len);
+
 static const char *brcmf_state_name(enum WL_STATE state);
 static void brcmf_format_hwaddr(const uint8_t *addr, char *out, size_t out_len);
 static bool brcmf_find_best_scan_cache_locked(const char *ssid, uint32_t *match_idx);
@@ -694,6 +710,7 @@ static bool brcmf_eth_is_local(const uint8_t *addr)
 }
 
 static bool brcmf_eth_is_dhcp(const uint8_t *data, int len);
+static bool brcmf_eth_is_tcp_ack(const uint8_t *data, int len);
 
 static bool brcmf_eth_is_critical(const uint8_t *data, int len)
 {
@@ -703,7 +720,8 @@ static bool brcmf_eth_is_critical(const uint8_t *data, int len)
         return false;
 
     proto = (uint32_t)(((uint32_t)data[12] << 8) | (uint32_t)data[13]);
-    return proto == ETH_P_ARP || brcmf_eth_is_dhcp(data, len);
+    return proto == ETH_P_ARP || brcmf_eth_is_dhcp(data, len) ||
+        brcmf_eth_is_tcp_ack(data, len);
 }
 
 static bool brcmf_eth_is_dhcp(const uint8_t *data, int len)
@@ -735,6 +753,48 @@ static bool brcmf_eth_is_dhcp(const uint8_t *data, int len)
     dst_port = (uint16_t)(((uint16_t)data[14 + ihl + 2] << 8) |
             data[14 + ihl + 3]);
     return src_port == 67 && dst_port == 68;
+}
+
+static bool brcmf_eth_is_tcp_ack(const uint8_t *data, int len)
+{
+    uint32_t ihl;
+    uint32_t thl;
+    uint16_t frag;
+    uint16_t total_len;
+    uint8_t flags;
+    int tcp_payload;
+
+    if (!data || len < 14 + 20 + 20)
+        return false;
+    if (data[12] != 0x08 || data[13] != 0x00)
+        return false;
+    if ((data[14] >> 4) != 4)
+        return false;
+
+    ihl = (uint32_t)(data[14] & 0x0f) * 4U;
+    if (ihl < 20 || len < (int)(14 + ihl + 20))
+        return false;
+    if (data[23] != 6)
+        return false;
+
+    frag = (uint16_t)(((uint16_t)data[20] << 8) | data[21]);
+    if ((frag & 0x3fffU) != 0)
+        return false;
+
+    total_len = (uint16_t)(((uint16_t)data[16] << 8) | data[17]);
+    if (total_len < (uint16_t)(ihl + 20))
+        return false;
+
+    thl = (uint32_t)(data[14 + ihl + 12] >> 4) * 4U;
+    if (thl < 20 || total_len < (uint16_t)(ihl + thl))
+        return false;
+
+    flags = data[14 + ihl + 13];
+    if (flags != 0x10)
+        return false;
+
+    tcp_payload = (int)total_len - (int)ihl - (int)thl;
+    return tcp_payload == 0;
 }
 
 static bool brcmf_should_drop_rx_packet(const uint8_t *data, int len, int depth)
@@ -3422,8 +3482,8 @@ static uint brcmf_sdio_readframes(uint maxframes)
         ret = brcmf_sdiod_recv_pkt(pkt);
 
         if (ret < 0) {
-            brcm_log("read %d bytes from channel %d failed: %d\n",
-                  rd->len, rd->channel, ret);
+            brcm_log("read %u bytes from channel %d failed: %d\n",
+                    (unsigned)rd->len, rd->channel, ret);
             skb_free(pkt);
             brcmf_sdio_rxfail(true,
                         RETRYCHAN(rd->channel));
@@ -3562,12 +3622,15 @@ static bool txctl_ok(void)
     if (!bus)
         return false;
 
+    if (bus->fcstate) {
+        return false;
+    }
+
     tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
     if (tx_credit != 0 && ((tx_credit & 0x80) == 0)) {
         bus->tx_starving = false;
         return true;
     }
-
     /* Credits exhausted — track starvation duration */
     if (!bus->tx_starving) {
         bus->tx_starving = true;
@@ -4056,7 +4119,7 @@ int brcmf_sdiod_probe(void){
         return ret;
     }
 
-    ret = sdio_set_block_size(2, 512);
+    ret = sdio_set_block_size(2, BRCMF_F2_BLOCKSIZE);
     if (ret) {
         brcm_log("Failed to set blocksize\n");
         return ret;
@@ -4131,9 +4194,9 @@ int brcmf_sdiod_probe(void){
     }
     bus->tx_max = 0;
     bus->tx_seq = 255;
-    bus->rxbound = 50;
+    bus->rxbound = BRCMF_RXBOUND;
     bus->txbound = 20;
-    bus->blocksize = bus->roundup = 512;
+    bus->blocksize = bus->roundup = BRCMF_F2_BLOCKSIZE;
     bus->head_align = ALIGNMENT;
     bus->sgentry_align = ALIGNMENT;
 

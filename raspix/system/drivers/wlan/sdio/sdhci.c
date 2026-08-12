@@ -18,7 +18,6 @@
  * clear inhibit in micro-to-milliseconds, even at low init clocks.
  */
 #define SDHCI_INHIBIT_WAIT_BUDGET_US		100000
-
 #define SDHCI_DMA_ADDRESS	0x00
 #define SDHCI_BLOCK_SIZE	0x04
 #define  SDHCI_MAKE_BLKSZ(dma, blksz) (((dma & 0x7) << 12) | (blksz & 0xFFF))
@@ -304,9 +303,19 @@ static uint32_t _sdhci_base_clk = 0;
 
 void sdhci_set_base_clock(uint32_t hz)
 {
-	/* Sanity window for the Arasan core; ignore mailbox garbage. */
-	if (hz >= 25000000 && hz <= 500000000)
+	/*
+	 * Some firmware/board combinations really run the legacy SDHCI block at
+	 * 20MHz on SD1. Rejecting everything below 25MHz makes the driver fall
+	 * back to the baked-in 50MHz guess, so every divisor programmed later is
+	 * computed against the wrong source clock.
+	 */
+	if (hz >= 10000000 && hz <= 500000000)
 		_sdhci_base_clk = hz;
+}
+
+uint32_t sdhci_get_max_clock(void)
+{
+	return _host.max_clk;
 }
 
 static void bcm283x_sdhci_gpio_init(void){
@@ -428,7 +437,7 @@ static int32_t sdhci_readl(struct sdhci_host *host, uint32_t reg){
  * transfers already burn tens of us of bus time each, so they get a
  * shorter floor while every other command keeps the proven 250us.
  */
-#define SDHCI_MIN_CMD_GAP_F2_US 100
+#define SDHCI_MIN_CMD_GAP_F2_US 25
 #define SDHCI_SYSTMR_CLO		0x3004 /* 1MHz free-running counter, low word */
 
 static uint32_t sdhci_last_cmd_us;
@@ -644,6 +653,12 @@ static void sdhci_set_select_mode(struct sdhci_host *host, int mode){
 	sdhci_writeb(host, ctrl, SDHCI_HOST_CONTROL);
 }
 
+bool sdhci_host_allows_high_speed(void)
+{
+	return (_host.quirks & (SDHCI_QUIRK_NO_HISPD_BIT |
+				SDHCI_QUIRK_BROKEN_HISPD_MODE)) == 0;
+}
+
 static int sdhci_get_info(struct sdhci_host *host)
 {
 	u32 caps, caps_1 = 0;
@@ -791,8 +806,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 	do {
 		stat = sdhci_readl(host, SDHCI_INT_STATUS);
 		if (stat & SDHCI_INT_ERROR) {
-			brcm_log("%s: Error detected in status(0x%X)! %d\n",
-				 __func__, stat, timeout);
+			brcm_log("sdio dataerr status=0x%X timeout=%u\n", stat, timeout);
 			return -EIO;
 		}
 		if (!transfer_done && (stat & rdy)) {
@@ -800,6 +814,18 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 				continue;
 			sdhci_writel(host, stat & rdy, SDHCI_INT_STATUS);
 			sdhci_transfer_pio(host, data);
+			/*
+			 * The spin/yield budget is for one FIFO-ready wait, not the
+			 * whole multi-block CMD53. On raspix's 20MHz SDIO source a
+			 * normal 3-block WLAN frame already exceeds 500us end-to-end;
+			 * if we keep the original transfer-start timestamp here, the
+			 * second/third block fall straight into sleep(0) despite the
+			 * controller making steady progress, injecting millisecond
+			 * scheduler gaps into every packet and capping throughput in
+			 * the few-hundred-KB/s range. Progress just happened, so start
+			 * a fresh spin window for the next FIFO-ready phase.
+			 */
+			spin_start_us = sdhci_now_us();
 			if (data->flags == MMC_DATA_READ)
 				data->dest += data->blocksize;
 			else
