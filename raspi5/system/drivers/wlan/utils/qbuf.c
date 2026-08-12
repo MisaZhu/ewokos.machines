@@ -24,10 +24,23 @@ queue_buffer_t *queue_buffer_alloc(int qsize, int bsize){
 		for(i = 0; i < qsize; i++){
 			qbuf->bufs[i].size = 0;
 			qbuf->bufs[i].data = malloc(bsize);
-			if(qbuf->bufs[i].data == NULL)
-				break;
+			if(qbuf->bufs[i].data == NULL){
+				/*
+				 * Fail loudly instead of silently truncating qsize:
+				 * a partially-allocated queue looks healthy but
+				 * overflows constantly under load, which is far
+				 * harder to diagnose than an init-time ENOMEM.
+				 */
+				brcm_log("qbuf alloc failed at %d/%d (bsize=%d)\n",
+						i, qsize, bsize);
+				while(i > 0)
+					free(qbuf->bufs[--i].data);
+				free(qbuf->bufs);
+				free(qbuf);
+				return NULL;
+			}
 		}
-		qbuf->qsize = i;
+		qbuf->qsize = qsize;
 		pthread_mutex_init(&qbuf->lock, NULL);
 	}
 	return qbuf;
@@ -52,6 +65,15 @@ int queue_buffer_push(queue_buffer_t *qbuf, uint8_t* buf, int size){
 	buf_t *dst = NULL;
 	int ret = 0;
 
+	/*
+	 * Reject empty and oversize payloads outright. A size<=0 push used
+	 * to enqueue a zero-length entry while returning 0 (mistaken for
+	 * queue-full by callers); size>bsize used to silently truncate the
+	 * frame, delivering corrupt data to the consumer.
+	 */
+	if(!qbuf || !buf || size <= 0 || size > qbuf->bsize)
+		return 0;
+
 	pthread_mutex_lock(&qbuf->lock);
 	if(qbuf->push_idx - qbuf->pop_idx < qbuf->qsize){
 		int idx = qbuf->push_idx % qbuf->qsize;
@@ -59,7 +81,6 @@ int queue_buffer_push(queue_buffer_t *qbuf, uint8_t* buf, int size){
 	}
 	
 	if(dst){
-		size = min(qbuf->bsize, size);
 		memcpy(dst->data, buf, size);
 		dst->size = size;
 		qbuf->push_idx++;

@@ -698,6 +698,20 @@ int brcmf_c_preinit_dcmds(void)
     char* ptr = (char *)buf;
     strsep(&ptr, "\n");
 
+    /*
+     * "bus:txglom" is named from the device's perspective: it controls
+     * glomming of device->host SDPCM transfers, i.e. our RX path. This
+     * driver has no superframe/glom-descriptor RX support, so a glommed
+     * transfer either shows up as a valid header with len > MAX_RX_DATASZ
+     * ("HW header length too long" + NAK/rtx churn) or, when small
+     * enough, as an unparseable frame that is silently dropped. Force
+     * the firmware to send frames one at a time. Not every firmware
+     * implements the iovar; treat rejection as non-fatal.
+     */
+    err = brcmf_fil_iovar_int_set(0, "bus:txglom", 0);
+    if (err)
+        brcm_log("disable bus:txglom failed (%d)\n", err);
+
     /* set mpc */
     err = brcmf_fil_iovar_int_set(0, "mpc", 1);
     if (err) {
