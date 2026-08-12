@@ -7,9 +7,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define FB_DEV "/dev/fb1"
-#define UPDATE_US 3000000
+#define DRAW_UPDATE_US 1000000
+#define IP_UPDATE_SEC 3
 #define MAX_IPS 8
 #define MAX_IP_LEN 16
 
@@ -103,17 +105,23 @@ static int fetch_ip_list(char ips[][MAX_IP_LEN]) {
 	return count;
 }
 
-static void draw_screen(fb_t* fb, font_t* font) {
+static void draw_screen(fb_t* fb, font_t* font, char ips[][MAX_IP_LEN], int count) {
 	graph_t* g;
-	char ips[MAX_IPS][MAX_IP_LEN];
-	int count;
+	char time_buf[16];
 	int x = 4;
 	int y = 4;
 	int i;
 	int line_h = 12;
+	time_t now;
+	struct tm* tm;
 
-	memset(ips, 0, sizeof(ips));
-	count = fetch_ip_list(ips);
+	now = time(NULL);
+	tm = localtime(&now);
+	if(tm != NULL)
+		snprintf(time_buf, sizeof(time_buf), "%02d:%02d:%02d",
+				tm->tm_hour, tm->tm_min, tm->tm_sec);
+	else
+		strcpy(time_buf, "--:--:--");
 
 	g = fb_fetch_graph(fb);
 	if(g == NULL)
@@ -121,7 +129,7 @@ static void draw_screen(fb_t* fb, font_t* font) {
 
 	graph_clear(g, 0xff000000);
 	graph_rect(g, 0, 0, g->w, g->h, 0xffffffff);
-	graph_draw_text_font(g, x, y, "IP INFO", font, 12, 0xffffffff);
+	graph_draw_text_font(g, x, y, time_buf, font, 12, 0xffffffff);
 	y += 16;
 
 	for(i = 0; i < count; i++) {
@@ -137,6 +145,9 @@ static void draw_screen(fb_t* fb, font_t* font) {
 int main(int argc, char** argv) {
 	fb_t fb;
 	font_t* font;
+        char ips[MAX_IPS][MAX_IP_LEN];
+        int count;
+        time_t last_ip_update;
 
 	(void)argc;
 	(void)argv;
@@ -153,9 +164,21 @@ int main(int argc, char** argv) {
 		return -1;
 	}
 
+        memset(ips, 0, sizeof(ips));
+        count = fetch_ip_list(ips);
+        last_ip_update = time(NULL);
+
 	while(true) {
-		draw_screen(&fb, font);
-		proc_usleep(UPDATE_US);
+                time_t now = time(NULL);
+
+                if(now < last_ip_update || (now - last_ip_update) >= IP_UPDATE_SEC) {
+                        memset(ips, 0, sizeof(ips));
+                        count = fetch_ip_list(ips);
+                        last_ip_update = now;
+                }
+
+                draw_screen(&fb, font, ips, count);
+                proc_usleep(DRAW_UPDATE_US);
 	}
 
 	font_free(font);
