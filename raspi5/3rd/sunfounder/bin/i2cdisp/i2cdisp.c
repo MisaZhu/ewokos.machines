@@ -111,7 +111,7 @@ static void draw_screen(fb_t* fb, font_t* font, char ips[][MAX_IP_LEN], int coun
 	int x = 4;
 	int y = 4;
 	int i;
-	int line_h = 12;
+	int line_h = 16;
 	time_t now;
 	struct tm* tm;
 
@@ -130,12 +130,14 @@ static void draw_screen(fb_t* fb, font_t* font, char ips[][MAX_IP_LEN], int coun
 	graph_clear(g, 0xff000000);
 	graph_rect(g, 0, 0, g->w, g->h, 0xffffffff);
 	graph_draw_text_font(g, x, y, time_buf, font, 12, 0xffffffff);
-	y += 16;
+	y += 15;
+	graph_line(g, x, y, g->w - x - 1, y, 0xffffffff);
+	y += 5;
 
 	for(i = 0; i < count; i++) {
 		if((y + line_h) > (g->h - 2))
 			break;
-		graph_draw_text_font(g, x, y, ips[i], font, 10, 0xffffffff);
+		graph_draw_text_font(g, x, y, ips[i], font, 12, 0xffffffff);
 		y += line_h;
 	}
 
