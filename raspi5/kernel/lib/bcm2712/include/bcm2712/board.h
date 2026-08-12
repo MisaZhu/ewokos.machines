@@ -9,7 +9,10 @@ enum {
 	PI5_4G,
 	PI5_8G,
 	PI5_16G,
-	PI5_CM5,
+	PI5_CM5_2G,
+	PI5_CM5_4G,
+	PI5_CM5_8G,
+	PI5_CM5_16G,
 	PI5_PI500
 };
 

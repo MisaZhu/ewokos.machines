@@ -55,9 +55,14 @@ uint32_t bcm2712_board(void) {
 		return PI5_8G;
 	else if(revision == 0xe04171)
 		return PI5_16G;
-	else if(revision == 0xa03170 || revision == 0xb03170 ||
-			revision == 0xc03170 || revision == 0xd03170)
-		return PI5_CM5;
+	else if(revision == 0xa03170)
+		return PI5_CM5_16G;
+	else if(revision == 0xb03170)
+		return PI5_CM5_2G;
+	else if(revision == 0xc03170)
+		return PI5_CM5_4G;
+	else if(revision == 0xd03170)
+		return PI5_CM5_8G;
 	else if(revision == 0xc04181)
 		return PI5_PI500;
 	return PI5_UNKNOWN;

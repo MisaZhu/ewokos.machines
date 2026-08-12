@@ -89,24 +89,52 @@ void sys_info_init_arch(void) {
 
 	uint32_t board = bcm2712_board();
 	uint32_t mem_size = bcm2712_mem_size();
+	_sys_info.total_phy_mem_size = 2u*GB;
 
 	switch(board) {
-		case PI5_2G:   strcpy(_sys_info.machine, "raspberry-pi5-2g");  break;
-		case PI5_4G:   strcpy(_sys_info.machine, "raspberry-pi5-4g");  break;
-		case PI5_8G:   strcpy(_sys_info.machine, "raspberry-pi5-8g");  break;
-		case PI5_16G:  strcpy(_sys_info.machine, "raspberry-pi5-16g"); break;
-		case PI5_CM5:  strcpy(_sys_info.machine, "raspberry-cm5");     break;
-		case PI5_PI500:strcpy(_sys_info.machine, "raspberry-pi500");   break;
-		default:       strcpy(_sys_info.machine, "raspberry-pi5");     break;
+		case PI5_2G:   
+			strcpy(_sys_info.machine, "raspberry-pi5-2g");
+			_sys_info.total_phy_mem_size = 2u*GB;
+			break;
+		case PI5_4G:
+			strcpy(_sys_info.machine, "raspberry-pi5-4g");
+			_sys_info.total_phy_mem_size = 4ull*GB;
+			break;
+		case PI5_8G:   
+			strcpy(_sys_info.machine, "raspberry-pi5-8g");
+			_sys_info.total_phy_mem_size = 8ull*GB;
+			break;
+		case PI5_16G:   
+			strcpy(_sys_info.machine, "raspberry-pi5-16g");
+			_sys_info.total_phy_mem_size = 16ull*GB;
+			break;
+		case PI5_CM5_2G:   
+			strcpy(_sys_info.machine, "raspberry-cm5-2g");
+			_sys_info.total_phy_mem_size = 2u*GB;
+			break;
+		case PI5_CM5_4G:   
+			strcpy(_sys_info.machine, "raspberry-cm5-4g");
+			_sys_info.total_phy_mem_size = 4ull*GB;
+			break;
+		case PI5_CM5_8G:   
+			strcpy(_sys_info.machine, "raspberry-cm5-8g");
+			_sys_info.total_phy_mem_size = 8ull*GB;
+			break;
+		case PI5_CM5_16G:   
+			strcpy(_sys_info.machine, "raspberry-cm5-16g");
+			_sys_info.total_phy_mem_size = 16ull*GB;
+			break;
+		case PI5_PI500:
+			strcpy(_sys_info.machine, "raspberry-pi500");
+			break;
+		default:   
+			strcpy(_sys_info.machine, "raspberry-pi5");
+			break;
 	}
 
 	if(board == PI5_UNKNOWN)
 		; /* unknown board revision, assuming Pi5 */
 
-	/* RAM size by board model (the mailbox size field is 32bit and
-	 * overflows on 4GB+ boards). This OS is 32bit-addressed, so the
-	 * usable memory is capped at 2GB anyway. */
-	_sys_info.total_phy_mem_size = 2u*GB;
 	if(board == PI5_UNKNOWN && mem_size > 64*MB && mem_size <= 2u*GB)
 		_sys_info.total_phy_mem_size = mem_size;
 

@@ -1,0 +1,18 @@
+
+[all]
+arm_64bit=1
+enable_uart=1
+uart_2ndstage=0
+disable_fw_kms_setup=1
+disable_overscan=1
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+
+hdmi_force_hotplug:0=1
+
+hdmi0_group=2
+hdmi0_mode=87
+hdmi0_cvt=1600 600 60
+
+dtparam=pciex1
+
