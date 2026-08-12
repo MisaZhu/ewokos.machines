@@ -8,8 +8,10 @@
 #include <stdio.h>
 #include <sysinfo.h>
 #include <ewoksys/syscall.h>
+#include <ewoksys/dma.h>
 #include <utils/log.h>
 #include <netinet/if_ether.h>
+#include <arch/bcm283x/mailbox.h>
 
 #include "firmware_bin.h"
 #include "firmware_43430.h"
@@ -17,6 +19,8 @@
 #include "chip.h"
 #include "brcm_hw_ids.h"
 
+#define MAILBOX_VC_ALIAS_NONCACHED		0x40000000u
+#define MAILBOX_VC_ALIAS_COHERENT		0xC0000000u
 
 #define BRCMF_FW_MAX_NVRAM_SIZE			64000
 #define BRCMF_FW_NVRAM_DEVPATH_LEN		19	/* devpath0=pcie/1/4/ */
@@ -24,6 +28,35 @@
 #define BRCMF_FW_DEFAULT_BOARDREV		"boardrev=0xff"
 #define BRCMF_FW_MACADDR_FMT			"macaddr=%pM"
 #define BRCMF_FW_MACADDR_LEN			(7 + ETH_ALEN * 3)
+#define BRCMF_FW_IL0MACADDR_FMT			"il0macaddr=%pM"
+#define BRCMF_FW_IL0MACADDR_LEN			(10 + ETH_ALEN * 3)
+#define PROP_TAG_END				0x00000000u
+#define PROP_CODE_REQUEST			0x00000000u
+#define PROP_CODE_RESPONSE_SUCCESS		0x80000000u
+#define PROP_RESPONSE_BIT			0x80000000u
+#define PROP_TAG_GET_BOARD_MAC			0x00010003u
+#define PROP_TAG_GET_BOARD_SERIAL		0x00010004u
+
+typedef struct {
+	uint32_t tag_id;
+	uint32_t value_buf_size;
+	uint32_t value_len;
+} __attribute__((packed)) brcmf_prop_tag_hdr_t;
+
+typedef struct {
+	uint32_t size;
+	uint32_t code;
+} __attribute__((packed)) brcmf_prop_msg_hdr_t;
+
+typedef struct {
+	brcmf_prop_tag_hdr_t tag;
+	uint32_t words[2];
+} __attribute__((packed)) brcmf_prop_tag_mac_t;
+
+typedef struct {
+	brcmf_prop_tag_hdr_t tag;
+	uint64_t value;
+} __attribute__((packed)) brcmf_prop_tag_u64_t;
 
 enum nvram_parser_state {
 	IDLE,
@@ -59,6 +92,121 @@ static bool brcmf_fw_is_pi_zero_2w(void)
     cached = strstr(sysinfo.machine, "pi2w") != NULL;
     brcm_log("wlan: sysinfo machine='%s' pi2w=%d\n", sysinfo.machine, cached);
     return cached != 0;
+}
+
+static int brcmf_fw_prop_tag_ok(const brcmf_prop_tag_hdr_t *tag, uint32_t min_len)
+{
+	uint32_t value_len = tag->value_len & ~PROP_RESPONSE_BIT;
+
+	if ((tag->value_len & PROP_RESPONSE_BIT) == 0)
+		return -1;
+	if (value_len < min_len)
+		return -1;
+	return 0;
+}
+
+static int brcmf_fw_mailbox_property_xfer(void *tags, uint32_t tags_size)
+{
+	uint32_t buf_size;
+	uint8_t *buf;
+	static const uint32_t aliases[] = {
+		MAILBOX_VC_ALIAS_NONCACHED,
+		MAILBOX_VC_ALIAS_COHERENT
+	};
+	size_t i;
+
+	bcm283x_mailbox_init();
+	buf_size = (uint32_t)(((sizeof(brcmf_prop_msg_hdr_t) + tags_size +
+				sizeof(uint32_t)) + 15u) & ~15u);
+	buf = (uint8_t *)dma_alloc(0, buf_size);
+	if (buf == NULL)
+		return -1;
+
+	for (i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+		brcmf_prop_msg_hdr_t *hdr;
+		mail_message_t msg;
+		uint32_t phy;
+
+		memset(buf, 0, buf_size);
+		hdr = (brcmf_prop_msg_hdr_t *)buf;
+		hdr->size = buf_size;
+		hdr->code = PROP_CODE_REQUEST;
+		memcpy(buf + sizeof(brcmf_prop_msg_hdr_t), tags, tags_size);
+		*((uint32_t *)(buf + sizeof(brcmf_prop_msg_hdr_t) + tags_size)) = PROP_TAG_END;
+
+		phy = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf);
+		if (phy == 0)
+			continue;
+
+		memset(&msg, 0, sizeof(msg));
+		msg.data = (phy + aliases[i]) >> 4;
+		msg.channel = PROPERTY_CHANNEL;
+		if (bcm283x_mailbox_call_timeout(&msg, 0) == 0 &&
+				(hdr->code & PROP_CODE_RESPONSE_SUCCESS) != 0) {
+			memcpy(tags, buf + sizeof(brcmf_prop_msg_hdr_t), tags_size);
+			dma_free(0, (ewokos_addr_t)buf);
+			return 0;
+		}
+	}
+
+	dma_free(0, (ewokos_addr_t)buf);
+	return -1;
+}
+
+static bool brcmf_fw_get_board_mac(uint8_t mac[ETH_ALEN])
+{
+	brcmf_prop_tag_mac_t req;
+	brcmf_prop_tag_u64_t req_u64;
+	uint64_t serial;
+	uint64_t mixed;
+	static const uint8_t zero_mac[ETH_ALEN] = {0};
+	static const uint8_t ff_mac[ETH_ALEN] = {
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+	};
+
+	memset(&req, 0, sizeof(req));
+	req.tag.tag_id = PROP_TAG_GET_BOARD_MAC;
+	req.tag.value_buf_size = sizeof(req.words);
+	req.tag.value_len = sizeof(req.words);
+	if (brcmf_fw_mailbox_property_xfer(&req, sizeof(req)) == 0 &&
+			brcmf_fw_prop_tag_ok(&req.tag, ETH_ALEN) == 0) {
+		memcpy(mac, req.words, ETH_ALEN);
+		if ((mac[0] & 0x01) == 0 &&
+				memcmp(mac, zero_mac, ETH_ALEN) != 0 &&
+				memcmp(mac, ff_mac, ETH_ALEN) != 0 &&
+				(memcmp(&mac[1], &zero_mac[1], ETH_ALEN - 1) != 0)) {
+			return true;
+		}
+		brcm_log("wlan: ignore invalid board mac %pM\n", mac);
+	}
+
+	memset(&req_u64, 0, sizeof(req_u64));
+	req_u64.tag.tag_id = PROP_TAG_GET_BOARD_SERIAL;
+	req_u64.tag.value_buf_size = sizeof(serial);
+	req_u64.tag.value_len = sizeof(serial);
+	if (brcmf_fw_mailbox_property_xfer(&req_u64, sizeof(req_u64)) != 0)
+		return false;
+	if (brcmf_fw_prop_tag_ok(&req_u64.tag, sizeof(serial)) != 0)
+		return false;
+
+	serial = req_u64.value;
+	mixed = serial ^ (serial >> 17) ^ (serial >> 37);
+	mac[0] = 0x02;
+	mac[1] = (uint8_t)(mixed >> 32);
+	mac[2] = (uint8_t)(mixed >> 24);
+	mac[3] = (uint8_t)(mixed >> 16);
+	mac[4] = (uint8_t)(mixed >> 8);
+	mac[5] = (uint8_t)mixed;
+	if (memcmp(&mac[1], &zero_mac[1], ETH_ALEN - 1) == 0)
+		mac[5] = 0x01;
+	brcm_log("wlan: fallback mac from board serial 0x%llx -> %pM\n",
+			(unsigned long long)serial, mac);
+	return true;
+}
+
+bool brcmf_fw_get_macaddr(uint8_t mac[6])
+{
+	return brcmf_fw_get_board_mac(mac);
 }
 
 static bool brcmf_fw_select_resources(uint32_t chip,
@@ -234,7 +382,8 @@ static enum nvram_parser_state brcmf_nvram_handle_key(struct nvram_parser *nvp)
 			nvp->boardrev_found = true;
 		/* strip macaddr if platform MAC overrides */
 		if (nvp->strip_mac &&
-		    strncmp(&nvp->data[nvp->entry], "macaddr", 7) == 0)
+		    (strncmp(&nvp->data[nvp->entry], "macaddr", 7) == 0 ||
+		     strncmp(&nvp->data[nvp->entry], "il0macaddr", 10) == 0))
 			st = COMMENT;
 	} else if (!is_nvram_char(c) || c == ' ') {
 		brcm_log("warning: ln=%d:col=%d: '=' expected, skip invalid key entry\n",
@@ -326,6 +475,7 @@ static int brcmf_init_nvram_parser(struct nvram_parser *nvp,
 	/* Add space for properties we may add */
 	size += strlen(BRCMF_FW_DEFAULT_BOARDREV) + 1;
 	size += BRCMF_FW_MACADDR_LEN + 1;
+	size += BRCMF_FW_IL0MACADDR_LEN + 1;
 	/* Alloc for extra 0 byte + roundup by 4 + length field */
 	size += 1 + 3 + sizeof(uint32_t);
 	nvp->nvram = malloc(size);
@@ -495,6 +645,16 @@ static void brcmf_fw_add_macaddr(struct nvram_parser *nvp, uint8_t *mac)
 	nvp->nvram_len += len + 1;
 }
 
+static void brcmf_fw_add_il0macaddr(struct nvram_parser *nvp, uint8_t *mac)
+{
+	int len;
+
+	len = snprintf((char *)&nvp->nvram[nvp->nvram_len], BRCMF_FW_IL0MACADDR_LEN + 1,
+			BRCMF_FW_IL0MACADDR_FMT, mac);
+	WARN_ON(len != BRCMF_FW_IL0MACADDR_LEN);
+	nvp->nvram_len += len + 1;
+}
+
 /* brcmf_nvram_strip :Takes a buffer of "<var>=<value>\n" lines read from a fil
  * and ending in a NUL. Removes carriage returns, empty lines, comment lines,
  * and converts newlines to NULs. Shortens buffer as needed and pads with NULs.
@@ -512,7 +672,7 @@ static void *brcmf_fw_nvram_strip(const char *data, size_t data_len,
 	if (brcmf_init_nvram_parser(&nvp, data, data_len) < 0)
 		return NULL;
 
-	nvp.strip_mac = false;
+	nvp.strip_mac = brcmf_fw_get_macaddr(mac);
 
 	while (nvp.pos < data_len) {
 		nvp.state = nv_parser_states[nvp.state](&nvp);
@@ -534,8 +694,10 @@ static void *brcmf_fw_nvram_strip(const char *data, size_t data_len,
 
 	brcmf_fw_add_defaults(&nvp);
 
-	if (nvp.strip_mac)
+	if (nvp.strip_mac) {
 		brcmf_fw_add_macaddr(&nvp, mac);
+		brcmf_fw_add_il0macaddr(&nvp, mac);
+	}
 
 	pad = nvp.nvram_len;
 	*new_length = roundup(nvp.nvram_len + 1, 4);
