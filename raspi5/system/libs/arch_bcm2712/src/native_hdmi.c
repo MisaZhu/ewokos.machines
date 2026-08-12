@@ -334,6 +334,35 @@ static const bcm2712_hdmi_mode_t _native_modes[] = {
 		.hsync_pos = 1,
 		.vsync_pos = 1,
 	},
+	/* VESA DMT 1280x800@60 CVT-RB: same 71MHz pixel clock as 1600x600. */
+	{
+		.width = 1280,
+		.height = 800,
+		.depth = 32,
+		.pixel_clock_hz = 71000000,
+		.hfp = 48,
+		.hsync = 32,
+		.hbp = 80,
+		.vfp = 3,
+		.vsync = 6,
+		.vbp = 14,
+		.hsync_pos = 1,
+		.vsync_pos = 0,
+	},
+	{
+		.width = 1280,
+		.height = 800,
+		.depth = 16,
+		.pixel_clock_hz = 71000000,
+		.hfp = 48,
+		.hsync = 32,
+		.hbp = 80,
+		.vfp = 3,
+		.vsync = 6,
+		.vbp = 14,
+		.hsync_pos = 1,
+		.vsync_pos = 0,
+	},
 };
 
 static int _hvs_step_d0 = -1;
