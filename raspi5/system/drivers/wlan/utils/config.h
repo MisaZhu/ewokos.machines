@@ -5,6 +5,7 @@
 
 void config_init(const char* path);
 int config_match_ssid(const char* ssid);
+int config_save_network(const char* ssid, const char* credential);
 int config_get_priority(int idx);
 const char* config_get_pmk(int idx);
 const char* config_get_ssid(int idx);

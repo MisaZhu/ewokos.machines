@@ -118,6 +118,17 @@
 #define BRCMF_RX_READER_KICK_STALL_MS 200U
 #define BRCMF_RX_READER_KICK_INTERVAL_MS 100U
 #define BRCMF_SCAN_CACHE_MAX 64
+/*
+ * Async dev-cmd slot: "scan"/"connect" from net_dev_cmd are queued here
+ * and executed by the worker thread (BRCMF_CMD_*). Firmware dcmd round
+ * trips busy-poll the SDIO bus up to a second per command; running them
+ * in the vdevice IPC handler froze every other client behind the
+ * kernel's single IPC task slot and raced the worker's own DPC for the
+ * bus, pinning the CPU and corrupting connect sequences.
+ */
+#define BRCMF_CMD_NONE 0U
+#define BRCMF_CMD_SCAN 1U
+#define BRCMF_CMD_CONNECT 2U
 #define BRCMF_MANUAL_CONNECT_GUARD_MS 15000U
 #define BRCMF_SCAN_TIMEOUT_MS 15000U
 #define BRCMF_CONNECT_TIMEOUT_MS 15000U
@@ -132,6 +143,15 @@
 #define BRCMF_MAX_INIT_ATTEMPTS 3
 #define BRCMF_MAX_RESTART_ROUNDS 10
 #define BRCMF_FW_DEAD_SCAN_STREAK 3
+/*
+ * Repeated link resets with no successful join in between mean the
+ * firmware is wedged in a failing recovery loop (mpc/escan dcmds keep
+ * erroring, deauth/link events repeat every scan cycle). The dead-scan
+ * streak only catches consecutive scan command failures; this watchdog
+ * catches the intermittent-failure variant and forces the same full
+ * chip restart instead of spinning forever.
+ */
+#define BRCMF_RECOVERY_RESTART_STREAK 8
 #define BRCMF_INIT_PROBE_TIMEOUT_MS 60000U
 #define BRCMF_INIT_PREINIT_TIMEOUT_MS 30000U
 #define ETH_P_IP 0x0800U
@@ -465,6 +485,11 @@ struct brcmf_dev{
     bool scan_results_ready;
     bool scan_mpc_off;
     uint32_t scan_count;
+    uint32_t scan_cache_ms;   /* kernel_tic_ms of last SCAN_COMPLETE (cache freshness) */
+    volatile uint32_t pending_cmd; /* BRCMF_CMD_* queued by net_dev_cmd, run by worker */
+    char cmd_ssid[32];
+    char cmd_passwd[65];
+    int pending_cmd_err;      /* firmware result of the last executed queued cmd */
     int priority;
     char ssid[32];
     struct {
@@ -491,6 +516,8 @@ struct brcmf_dev{
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
     uint32_t scan_cmd_fail_streak; /* consecutive scan cmd errors (dead fw) */
+    uint32_t recovery_streak;      /* link resets since last successful join */
+    uint32_t self_disassoc_ms;     /* when we tore down our own link (AP switch) */
     int init_error;
     bool init_failed;
     int last_error;
@@ -502,6 +529,15 @@ struct brcmf_dev{
 };
 
 struct brcmf_dev *bus =  NULL;
+
+/* Last network manually selected by the user (dev-cmd connect). Persists
+ * across chip restarts (process lifetime) so auto network selection keeps
+ * preferring it instead of silently falling back to the configured default
+ * after a failed attempt or a watchdog restart. Replaced only by a newer
+ * manual connect. */
+static char brcm_manual_ssid[32];
+static char brcm_manual_pmk[65];
+static char brcm_manual_passwd[65]; /* raw user input: passphrase or 64-hex pmk */
 extern vdevice_t* _wland_dev;
 #define dev _wland_dev
 static pthread_mutex_t brcm_dpc_mutex;
@@ -869,17 +905,36 @@ static void brcmf_mark_connected(void)
     if (!bus)
         return;
 
+    /* A stray LINK UP after a link reset (firmware flapping while the
+     * worker already fell back to scan) must not resurrect a bogus
+     * "connected" state with no ssid: that state gates off the periodic
+     * scan/auto-connect recovery and leaves the driver dead forever.
+     * Only a real join (CONNECTING) or a live session (roam re-assert)
+     * may take this path. */
+    if (bus->state != CONNECTING && bus->state != CONNECTED)
+        return;
+
     bus->state = CONNECTED;
     bus->last_error = 0;
     bus->last_event_type = 0;
     bus->last_event_status = 0;
     bus->last_event_reason = 0;
     bus->manual_connect_until_ms = 0;
+    bus->recovery_streak = 0;
+    bus->self_disassoc_ms = 0;
 	bus->state_since_ms = kernel_tic_ms(0);
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
     brcmf_scan_set_mpc(true);
+    /* persist the successfully joined network into /etc/wlan/network.json
+       (existing entries only get their password updated, no duplicates);
+       only for a manual connect -- auto-connects already come from the
+       config file */
+    if (brcm_manual_passwd[0] != '\0' && bus->ssid[0] != '\0' &&
+            brcm_manual_ssid[0] != '\0' &&
+            strcmp(bus->ssid, brcm_manual_ssid) == 0)
+        config_save_network(bus->ssid, brcm_manual_passwd);
     brcm_wakeup_dev(VFS_EVT_WR);
 }
 
@@ -893,6 +948,7 @@ static void brcmf_mark_disconnected(const char *reason,
 
     was_connected = (bus->state == CONNECTED || bus->state == CONNECTING);
     bus->recovery_count++;
+    bus->recovery_streak++;
     bus->state = DISCONNECTED;
     bus->last_error = -(int)event_status;
     bus->last_event_type = event_type;
@@ -2912,6 +2968,18 @@ static void scan_result(struct brcmf_bss_info_le *info){
 
     brcmf_scan_cache_store(info);
 
+    /* A manually chosen network outranks configured ones: once the user
+     * picks an AP, auto selection sticks to it (while visible in scan
+     * results) until another manual connect replaces it, instead of
+     * reverting to the configured default behind the user's back. */
+    if (brcm_manual_ssid[0] != '\0') {
+        if (strcmp(ssid, brcm_manual_ssid) == 0) {
+            memset(bus->ssid, 0, sizeof(bus->ssid));
+            memcpy(bus->ssid, ssid, min_t(size_t, strlen(ssid), sizeof(bus->ssid) - 1));
+        }
+        return;
+    }
+
     int idx = config_match_ssid(ssid);
         
     if(idx >= 0){
@@ -2929,6 +2997,31 @@ static void scan_result(struct brcmf_bss_info_le *info){
 static void scan_poll_results(void)
 {
     return;
+}
+
+/*
+ * While switching APs the driver issues BRCMF_C_DISASSOC on a live link;
+ * the firmware answers with deauth/disassoc and link-down events that are
+ * indistinguishable from a real link loss. Without a guard those events
+ * drag the state machine out of CONNECTING (and clear the manual-connect
+ * guard), so the join-success event of the new AP is dropped by the
+ * state gate in mark_connected() and the switch only completes on a
+ * later background auto-connect cycle -- the "second connect is slow"
+ * symptom. Stamp the teardown and ignore link-loss events inside a short
+ * window after it.
+ */
+#define BRCMF_SELF_DISASSOC_WINDOW_MS 3000U
+
+void brcmf_note_self_disassoc(void)
+{
+    if (bus)
+        bus->self_disassoc_ms = kernel_tic_ms(0);
+}
+
+static bool brcmf_self_disassoc_active(void)
+{
+    return bus != NULL && bus->self_disassoc_ms != 0 &&
+        (kernel_tic_ms(0) - bus->self_disassoc_ms) < BRCMF_SELF_DISASSOC_WINDOW_MS;
 }
 
 
@@ -3000,14 +3093,22 @@ void brcmf_rx_event( struct sk_buff *skb)
         }
     }else if(event_type == BRCMF_E_SCAN_COMPLETE){
         bus->scan_results_ready = true;
+        bus->scan_cache_ms = kernel_tic_ms(0);
         if (bus->state != SCANNING)
             brcmf_scan_set_mpc(true);
     }else if(event_type == BRCMF_E_IF){
         if (datalen < sizeof(struct brcmf_if_event))
             goto done;
     }else if((event_type == BRCMF_E_SET_SSID ||
-              event_type == BRCMF_E_LINK ||
-              event_type == BRCMF_E_ASSOC ||
+              event_type == BRCMF_E_ASSOC) &&
+             event_status == BRCMF_E_STATUS_SUCCESS){
+        /* Join/assoc success must not require the LINK flag: some
+         * firmwares report SET_SSID success without it, and dropping
+         * that event left a manual connect stuck in CONNECTING until
+         * the 15s timeout with no visible result. mark_connected() is
+         * state-gated, so stray successes outside a join are ignored. */
+        brcmf_mark_connected();
+    }else if((event_type == BRCMF_E_LINK ||
               event_type == BRCMF_E_ROAM) &&
              event_status == BRCMF_E_STATUS_SUCCESS &&
              (emsg.flags & BRCMF_EVENT_MSG_LINK)){
@@ -3016,7 +3117,9 @@ void brcmf_rx_event( struct sk_buff *skb)
              event_type == BRCMF_E_DEAUTH_IND ||
              event_type == BRCMF_E_DISASSOC ||
              event_type == BRCMF_E_DISASSOC_IND){
-        brcmf_mark_disconnected("deauth/disassoc", event_type, event_status, event_reason);
+        /* our own teardown during an AP switch, not a link loss */
+        if (!brcmf_self_disassoc_active())
+            brcmf_mark_disconnected("deauth/disassoc", event_type, event_status, event_reason);
     }else if((event_type == BRCMF_E_SET_SSID ||
               event_type == BRCMF_E_ASSOC ||
               event_type == BRCMF_E_AUTH ||
@@ -3026,7 +3129,8 @@ void brcmf_rx_event( struct sk_buff *skb)
     }else if(event_type == BRCMF_E_LINK &&
              (event_status != BRCMF_E_STATUS_SUCCESS ||
               !(emsg.flags & BRCMF_EVENT_MSG_LINK))){
-        brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
+        if (!brcmf_self_disassoc_active())
+            brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
     }
 done:
     skb_free(skb);
@@ -4018,6 +4122,136 @@ int brcmf_sdiod_probe(void){
     return 0;
 }
 
+/*
+ * Execute a dev-cmd request queued by net_dev_cmd. Runs on the worker
+ * thread so firmware dcmd round trips (txctl/rxctl busy-poll waits) are
+ * serialised with the DPC/data path instead of racing it from the IPC
+ * handler thread. The IPC handler itself returns immediately.
+ */
+static void brcmf_run_pending_cmd(void)
+{
+    uint32_t cmd;
+    char ssid[sizeof(bus->cmd_ssid)];
+    char passwd[sizeof(bus->cmd_passwd)];
+    int err;
+
+    if (!bus)
+        return;
+    if (bus->pending_cmd == BRCMF_CMD_NONE)
+        return;
+
+    pthread_mutex_lock(&brcm_ctrl_mutex);
+    cmd = bus->pending_cmd;
+    bus->pending_cmd = BRCMF_CMD_NONE;
+    memcpy(ssid, bus->cmd_ssid, sizeof(ssid));
+    memcpy(passwd, bus->cmd_passwd, sizeof(passwd));
+    pthread_mutex_unlock(&brcm_ctrl_mutex);
+
+    if (cmd == BRCMF_CMD_SCAN) {
+        int prev_state;
+
+        /* State may have moved between enqueue and execution: a
+         * housekeeping scan or auto-connect in flight wins, and a still
+         * fresh result cache needs no firmware rescan. */
+        if (bus->state == SCANNING || bus->state == CONNECTING)
+            return;
+        if (bus->scan_count > 0 &&
+                (kernel_tic_ms(0) - bus->scan_cache_ms) < BRCMF_SCAN_RETRY_TICK)
+            return;
+
+        bus->scan_results_ready = false;
+        prev_state = bus->state;
+        /* Only a non-connected session moves through SCANNING; while
+         * CONNECTED the scan is informational and SCAN_COMPLETE restores
+         * mpc via the state != SCANNING path. */
+        if (prev_state != CONNECTED) {
+            memset(bus->ssid, 0, sizeof(bus->ssid));
+            bus->state = SCANNING;
+            bus->state_since_ms = kernel_tic_ms(0);
+        }
+        brcmf_scan_set_mpc(false);
+        err = scan();
+        bus->pending_cmd_err = err;
+        if (err) {
+            brcmf_scan_set_mpc(true);
+            bus->state = prev_state;
+        }
+        return;
+    }
+
+    if (cmd == BRCMF_CMD_CONNECT) {
+        char pmkstr[65];
+        unsigned char pmk[32];
+        const char *pmk_hex;
+        size_t ssid_len = strlen(ssid);
+        size_t passwd_len = strlen(passwd);
+
+        if (ssid_len == 0 || ssid_len >= sizeof(bus->ssid))
+            return;
+
+        if (passwd_len == 64 && brcmf_is_hex_string(passwd, passwd_len)) {
+            pmk_hex = passwd;
+        } else {
+            if (passwd_len < 8 || passwd_len > 63)
+                return;
+            /* PBKDF2 is CPU-heavy but bounded; acceptable here because a
+             * connect is user-initiated and the worker keeps draining RX
+             * via the dpc calls inside each dcmd wait. */
+            PKCS5_PBKDF2_HMAC((const unsigned char *)passwd, passwd_len,
+                    (const unsigned char *)ssid, ssid_len, 4096, 32, pmk);
+            to_str(pmkstr, pmk, 32);
+            pmk_hex = pmkstr;
+        }
+
+        /* Remember the manual choice as the preferred network: scan_result()
+         * and the auto-connect path use this when the ssid is not present in
+         * the config file, so a failed attempt retries the user's AP instead
+         * of reverting to the configured default. */
+        snprintf(brcm_manual_ssid, sizeof(brcm_manual_ssid), "%s", ssid);
+        snprintf(brcm_manual_pmk, sizeof(brcm_manual_pmk), "%s", pmk_hex);
+        snprintf(brcm_manual_passwd, sizeof(brcm_manual_passwd), "%s", passwd);
+
+        /* Preempt whatever the worker was doing (background scan or a
+         * stale join); the in-flight firmware escan completes
+         * asynchronously and its SCAN_COMPLETE takes the
+         * state != SCANNING path. */
+        brcmf_scan_set_mpc(true);
+        brcmf_scan_cache_clear();
+        bus->scan_results_ready = false;
+        bus->manual_connect_until_ms = kernel_tic_ms(0) + BRCMF_MANUAL_CONNECT_GUARD_MS;
+        memset(bus->ssid, 0, sizeof(bus->ssid));
+        memcpy(bus->ssid, ssid, min_t(size_t, ssid_len, sizeof(bus->ssid) - 1));
+        /* switching from a live link: connect() issues DISASSOC and the
+           firmware answers with deauth/link-down events for our own
+           teardown; suppress them so the join of the new AP is not
+           mistaken for a link loss (see brcmf_note_self_disassoc) */
+        if (bus->state == CONNECTED)
+            brcmf_note_self_disassoc();
+        bus->state = CONNECTING;
+        bus->state_since_ms = kernel_tic_ms(0);
+        bus->last_error = 0;
+        bus->last_event_type = 0;
+        bus->last_event_status = 0;
+        bus->last_event_reason = 0;
+        snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connecting");
+        err = connect(bus->ssid, pmk_hex);
+        bus->pending_cmd_err = err;
+        if (err) {
+            bus->state = DISCONNECTED;
+            bus->state_since_ms = kernel_tic_ms(0);
+            bus->last_error = err;
+            snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connect command failed");
+            /* Release the manual-connect guard and the target ssid right
+             * away: a failed attempt must not leave the background
+             * scan/auto-connect suppressed for the full guard window,
+             * which reads as "connect gave no result and nothing moves". */
+            bus->manual_connect_until_ms = 0;
+            memset(bus->ssid, 0, sizeof(bus->ssid));
+        }
+        return;
+    }
+}
+
 
 static void* brcm_worker_main(void* p) {
     (void)p;
@@ -4087,6 +4321,10 @@ static void* brcm_worker_main(void* p) {
         if (run_dpc && brcmf_diag_last_dpc_usec() >= BRCMF_DPC_SLOW_USEC)
             usleep(BRCMF_WORKER_POST_SLOW_DPC_YIELD_US);
 
+        /* Drain queued dev-cmd requests (scan/connect) here, never in the
+         * IPC handler — see brcmf_run_pending_cmd(). */
+        brcmf_run_pending_cmd();
+
         /*
          * Housekeeping runs on the kernel wall clock, not on accumulated
          * usleep requests. usleep() is quantised to scheduler ticks and the
@@ -4144,6 +4382,22 @@ static void* brcm_worker_main(void* p) {
 				brcmf_mark_disconnected("connect timeout", BRCMF_E_SET_SSID, 0, 0);
 			}
 
+            /*
+             * Wedged-firmware watchdog: a firmware stuck in a failing
+             * recovery loop (mpc/escan dcmds erroring, deauth/link resets
+             * every scan cycle) never trips the consecutive scan-failure
+             * streak because its command errors are intermittent. Count
+             * link resets without a successful join instead, and force
+             * the same full chip restart once the streak grows.
+             */
+            if (bus->recovery_streak >= BRCMF_RECOVERY_RESTART_STREAK) {
+                brcm_log("wlan: %u link resets without a successful join, restarting chip\n",
+                        (unsigned)bus->recovery_streak);
+                brcmf_teardown_for_restart();
+                brcm_worker_exited = true;
+                return NULL;
+            }
+
             if (now_ms >= next_scan_ms && bus->state != CONNECTED) {
                 if (brcmf_manual_connect_guard_active(now_ms)) {
                     next_scan_ms = now_ms + BRCMF_SCAN_RETRY_TICK;
@@ -4190,6 +4444,9 @@ static void* brcm_worker_main(void* p) {
             if(bus->state == SCANNING && strlen(bus->ssid) > 0){
                 int idx = config_match_ssid(bus->ssid);
                 char*  pmk = (char*)config_get_pmk(idx);
+                if(!pmk && idx < 0 && brcm_manual_ssid[0] != '\0' &&
+                        strcmp(bus->ssid, brcm_manual_ssid) == 0)
+                    pmk = brcm_manual_pmk;
                 if(!pmk){
 
                     const char* passwd = config_get_passwd(idx);
@@ -4256,35 +4513,54 @@ int brcm_state(void){
 
 int brcm_scan_trigger(void)
 {
-    int err;
     if (!bus)
         return -ENODEV;
     if (bus->init_failed)
         return bus->init_error;
+    if (brcm_init_phase != 0)
+        return -EBUSY;
 
-    brcmf_scan_cache_clear();
-    bus->scan_results_ready = false;
-    brcmf_scan_set_mpc(false);
-    err = scan();
-    if (err)
-        brcmf_scan_set_mpc(true);
-    return err;
+    /*
+     * Non-blocking by contract: this runs in the vdevice IPC handler,
+     * which shares a single kernel IPC task slot across all clients.
+     * The firmware escan dcmd is queued for the worker thread
+     * (brcmf_run_pending_cmd) instead of being issued here.
+     *
+     * Rate-limit by cache freshness: while a recent scan result cache
+     * exists the caller only wants the list, and returning success
+     * without touching the firmware keeps mpc on and the worker idle.
+     * The cache is never cleared for UI-triggered scans — entries get
+     * replaced naturally by new scan events.
+     */
+    if (bus->state == SCANNING || bus->state == CONNECTING)
+        return -EBUSY;
+
+    if (bus->scan_count > 0 &&
+            (kernel_tic_ms(0) - bus->scan_cache_ms) < BRCMF_SCAN_RETRY_TICK)
+        return 0;
+
+    pthread_mutex_lock(&brcm_ctrl_mutex);
+    /* A queued connect takes precedence over a scan request. */
+    if (bus->pending_cmd != BRCMF_CMD_CONNECT) {
+        bus->pending_cmd = BRCMF_CMD_SCAN;
+        memset(bus->cmd_ssid, 0, sizeof(bus->cmd_ssid));
+        memset(bus->cmd_passwd, 0, sizeof(bus->cmd_passwd));
+    }
+    pthread_mutex_unlock(&brcm_ctrl_mutex);
+    return 0;
 }
 
 int brcm_connect_ap(const char *ssid, const char *passwd)
 {
-    char pmkstr[65];
-    unsigned char pmk[32];
-    const char *pmk_hex;
     size_t ssid_len;
     size_t passwd_len;
-    int state;
-    int err;
 
     if (!bus)
         return -ENODEV;
     if (bus->init_failed)
         return bus->init_error;
+    if (brcm_init_phase != 0)
+        return -EBUSY;
     if (!ssid || !passwd)
         return -EINVAL;
 
@@ -4292,44 +4568,32 @@ int brcm_connect_ap(const char *ssid, const char *passwd)
     passwd_len = strlen(passwd);
     if (ssid_len == 0 || ssid_len >= sizeof(bus->ssid))
         return -EINVAL;
-    if (passwd_len == 0)
+    if (passwd_len == 0 || passwd_len >= sizeof(bus->cmd_passwd))
         return -EINVAL;
-
-    state = brcm_state();
-    if (state == SCANNING || state == CONNECTING)
-        return -EBUSY;
-
-    if (passwd_len == 64 && brcmf_is_hex_string(passwd, passwd_len)) {
-        pmk_hex = passwd;
-    } else {
-        if (passwd_len < 8 || passwd_len > 63)
+    if (passwd_len == 64) {
+        if (!brcmf_is_hex_string(passwd, passwd_len))
             return -EINVAL;
-        PKCS5_PBKDF2_HMAC((const unsigned char *)passwd, passwd_len,
-                (const unsigned char *)ssid, ssid_len, 4096, 32, pmk);
-        to_str(pmkstr, pmk, 32);
-        pmk_hex = pmkstr;
+    } else if (passwd_len < 8 || passwd_len > 63) {
+        return -EINVAL;
     }
 
-    brcmf_scan_set_mpc(true);
-    brcmf_scan_cache_clear();
-    bus->scan_results_ready = false;
-    bus->manual_connect_until_ms = kernel_tic_ms(0) + BRCMF_MANUAL_CONNECT_GUARD_MS;
-    memset(bus->ssid, 0, sizeof(bus->ssid));
-    memcpy(bus->ssid, ssid, min_t(size_t, ssid_len, sizeof(bus->ssid) - 1));
-    bus->state = CONNECTING;
-	bus->state_since_ms = kernel_tic_ms(0);
-    bus->last_error = 0;
-    bus->last_event_type = 0;
-    bus->last_event_status = 0;
-    bus->last_event_reason = 0;
-    snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connecting");
-    err = connect(bus->ssid, pmk_hex);
-    if (err) {
-        bus->state = DISCONNECTED;
-        bus->last_error = err;
-        snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connect command failed");
-    }
-    return err;
+    /*
+     * Non-blocking by contract: the join sequence is ~10 firmware dcmd
+     * round trips, each a busy-poll SDIO wait of up to a second. Running
+     * that here (vdevice IPC handler, single shared kernel IPC slot)
+     * froze every other client of wland and raced the worker's DPC for
+     * the SDIO bus — CPU pinned at 100% and the connect itself corrupted.
+     * Queue the request; the worker executes it via brcmf_run_pending_cmd
+     * and the caller polls "state" for progress.
+     */
+    pthread_mutex_lock(&brcm_ctrl_mutex);
+    bus->pending_cmd = BRCMF_CMD_CONNECT;
+    memset(bus->cmd_ssid, 0, sizeof(bus->cmd_ssid));
+    memcpy(bus->cmd_ssid, ssid, min_t(size_t, ssid_len, sizeof(bus->cmd_ssid) - 1));
+    memset(bus->cmd_passwd, 0, sizeof(bus->cmd_passwd));
+    memcpy(bus->cmd_passwd, passwd, min_t(size_t, passwd_len, sizeof(bus->cmd_passwd) - 1));
+    pthread_mutex_unlock(&brcm_ctrl_mutex);
+    return 0;
 }
 
 char* brcm_state_info(void)
