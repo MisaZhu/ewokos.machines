@@ -21,6 +21,8 @@ typedef struct {
 } bcm2712_hdmi_mode_t;
 
 int bcm2712_native_hdmi_supported(uint32_t w, uint32_t h, uint32_t dep);
+int bcm2712_native_hdmi_cvt_mode(uint32_t w, uint32_t h, uint32_t dep,
+		uint32_t refresh_hz, bcm2712_hdmi_mode_t *mode);
 int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
 		const bcm2712_hdmi_mode_t *mode,
 		fbinfo_t *info);

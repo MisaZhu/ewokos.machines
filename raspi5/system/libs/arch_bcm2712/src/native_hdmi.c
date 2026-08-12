@@ -305,77 +305,107 @@ typedef struct {
 	uint32_t end_tag;
 } __attribute__((packed)) fw_set_display_power_req_t;
 
-static const bcm2712_hdmi_mode_t _native_modes[] = {
-	{
-		.width = 1600,
-		.height = 600,
-		.depth = 32,
-		.pixel_clock_hz = 71000000,
-		.hfp = 130,
-		.hsync = 32,
-		.hbp = 98,
-		.vfp = 10,
-		.vsync = 10,
-		.vbp = 16,
-		.hsync_pos = 1,
-		.vsync_pos = 1,
-	},
-	{
-		.width = 1600,
-		.height = 600,
-		.depth = 16,
-		.pixel_clock_hz = 71000000,
-		.hfp = 130,
-		.hsync = 32,
-		.hbp = 98,
-		.vfp = 10,
-		.vsync = 10,
-		.vbp = 16,
-		.hsync_pos = 1,
-		.vsync_pos = 1,
-	},
-	/* VESA DMT 1280x800@60 CVT-RB: same 71MHz pixel clock as 1600x600. */
-	{
-		.width = 1280,
-		.height = 800,
-		.depth = 32,
-		.pixel_clock_hz = 71000000,
-		.hfp = 48,
-		.hsync = 32,
-		.hbp = 80,
-		.vfp = 3,
-		.vsync = 6,
-		.vbp = 14,
-		.hsync_pos = 1,
-		.vsync_pos = 0,
-	},
-	{
-		.width = 1280,
-		.height = 800,
-		.depth = 16,
-		.pixel_clock_hz = 71000000,
-		.hfp = 48,
-		.hsync = 32,
-		.hbp = 80,
-		.vfp = 3,
-		.vsync = 6,
-		.vbp = 14,
-		.hsync_pos = 1,
-		.vsync_pos = 0,
-	},
-};
+/* ─── CVT reduced-blanking (v1) mode generation ─── */
+
+#define CVT_RB_H_BLANK			160U
+#define CVT_RB_H_SYNC			32U
+#define CVT_RB_H_BP			80U
+#define CVT_RB_H_FP			(CVT_RB_H_BLANK - CVT_RB_H_SYNC - CVT_RB_H_BP)
+#define CVT_RB_MIN_VBLANK_US		460U
+#define CVT_RB_V_FP			3U
+#define CVT_RB_MIN_V_BP			6U
+#define CVT_CLOCK_STEP_HZ		250000U
+#define CVT_MIN_PIXEL_CLOCK_HZ		25000000U
+#define CVT_MAX_PIXEL_CLOCK_HZ		600000000U
 
 static int _hvs_step_d0 = -1;
 
-static const bcm2712_hdmi_mode_t *find_mode(uint32_t w, uint32_t h, uint32_t dep) {
-	for (uint32_t i = 0; i < sizeof(_native_modes) / sizeof(_native_modes[0]); ++i) {
-		if (_native_modes[i].width == w &&
-				_native_modes[i].height == h &&
-				_native_modes[i].depth == dep) {
-			return &_native_modes[i];
-		}
+static uint32_t cvt_vsync_lines(uint32_t w, uint32_t h) {
+	if (w * 3U == h * 4U) {
+		return 4U;
 	}
-	return NULL;
+	if (w * 9U == h * 16U) {
+		return 5U;
+	}
+	if (w * 10U == h * 16U) {
+		return 6U;
+	}
+	if (w * 4U == h * 5U || w * 9U == h * 15U) {
+		return 7U;
+	}
+	/* Non-standard aspect ratio. */
+	return 10U;
+}
+
+/*
+ * Build CVT-RB timings for an arbitrary resolution instead of relying
+ * on a fixed mode table.  Modern HDMI sinks accept CVT-RB for any mode
+ * they can display; the reduced blanking also keeps the pixel clock low.
+ */
+int bcm2712_native_hdmi_cvt_mode(uint32_t w, uint32_t h, uint32_t dep,
+		uint32_t refresh_hz, bcm2712_hdmi_mode_t *mode) {
+	uint64_t frame_ns;
+	uint64_t h_period_est_ns;
+	uint32_t vbi_lines;
+	uint32_t vsync;
+	uint32_t min_vbi;
+	uint32_t htotal;
+	uint32_t vtotal;
+	uint64_t pclk;
+
+	if (mode == NULL) {
+		return -1;
+	}
+	if (dep != 16U && dep != 32U) {
+		return -1;
+	}
+	if (w < 64U || h < 64U || w > 4096U || h > 2160U) {
+		return -1;
+	}
+	if (refresh_hz == 0U) {
+		refresh_hz = 60U;
+	}
+
+	frame_ns = 1000000000ULL / refresh_hz;
+	if (frame_ns <= (uint64_t)CVT_RB_MIN_VBLANK_US * 1000ULL) {
+		return -1;
+	}
+	h_period_est_ns = (frame_ns - (uint64_t)CVT_RB_MIN_VBLANK_US * 1000ULL) / h;
+	if (h_period_est_ns == 0ULL) {
+		return -1;
+	}
+
+	vbi_lines = (uint32_t)(((uint64_t)CVT_RB_MIN_VBLANK_US * 1000ULL) /
+			h_period_est_ns) + 1U;
+	vsync = cvt_vsync_lines(w, h);
+	min_vbi = CVT_RB_V_FP + vsync + CVT_RB_MIN_V_BP;
+	if (vbi_lines < min_vbi) {
+		vbi_lines = min_vbi;
+	}
+
+	htotal = w + CVT_RB_H_BLANK;
+	vtotal = h + vbi_lines;
+	pclk = (uint64_t)htotal * vtotal * refresh_hz;
+	pclk -= pclk % CVT_CLOCK_STEP_HZ;
+	if (pclk < CVT_MIN_PIXEL_CLOCK_HZ || pclk > CVT_MAX_PIXEL_CLOCK_HZ) {
+		return -1;
+	}
+
+	memset(mode, 0, sizeof(*mode));
+	mode->width = w;
+	mode->height = h;
+	mode->depth = dep;
+	mode->pixel_clock_hz = (uint32_t)pclk;
+	mode->hfp = CVT_RB_H_FP;
+	mode->hsync = CVT_RB_H_SYNC;
+	mode->hbp = CVT_RB_H_BP;
+	mode->vfp = CVT_RB_V_FP;
+	mode->vsync = vsync;
+	mode->vbp = vbi_lines - CVT_RB_V_FP - vsync;
+	/* CVT-RB: hsync positive, vsync negative. */
+	mode->hsync_pos = 1U;
+	mode->vsync_pos = 0U;
+	return 0;
 }
 
 static inline void hvs_write(uint32_t off, uint32_t val) {
@@ -916,7 +946,8 @@ static void hdmi0_enable_output(const bcm2712_hdmi_mode_t *mode) {
 }
 
 int bcm2712_native_hdmi_supported(uint32_t w, uint32_t h, uint32_t dep) {
-	return find_mode(w, h, dep) != NULL;
+	bcm2712_hdmi_mode_t mode;
+	return bcm2712_native_hdmi_cvt_mode(w, h, dep, 60, &mode) == 0;
 }
 
 int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
@@ -1004,11 +1035,11 @@ int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
 int bcm2712_native_hdmi_init(const sys_info_t *sysinfo,
 		uint32_t w, uint32_t h, uint32_t dep,
 		fbinfo_t *info) {
-	const bcm2712_hdmi_mode_t *mode = find_mode(w, h, dep);
+	bcm2712_hdmi_mode_t mode;
 
-	if (mode == NULL) {
+	if (bcm2712_native_hdmi_cvt_mode(w, h, dep, 60, &mode) != 0) {
 		return -1;
 	}
 
-	return bcm2712_native_hdmi_init_mode(sysinfo, mode, info);
+	return bcm2712_native_hdmi_init_mode(sysinfo, &mode, info);
 }

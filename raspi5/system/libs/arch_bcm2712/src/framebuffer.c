@@ -853,7 +853,13 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	requested.height = h;
 	requested.depth  = dep;
 
-	if (strict_mode && preferred_mode_valid &&
+	/*
+	 * Native HDMI path: prefer the display's exact EDID timings when the
+	 * resolution matches (including the auto 0x0 case, where w/h were
+	 * just taken from the EDID); otherwise generate CVT-RB timings for
+	 * the requested resolution.
+	 */
+	if (preferred_mode_valid &&
 			preferred_mode.width == w && preferred_mode.height == h &&
 			preferred_mode.depth == dep) {
 		if (bcm2712_native_hdmi_init_mode(&sysinfo, &preferred_mode, &_fb_info) == 0) {
@@ -862,11 +868,17 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 		klog("fb_init: native hdmi0 edid path failed\n");
 	}
 
-	if (strict_mode && bcm2712_native_hdmi_supported(w, h, dep)) {
-		if (bcm2712_native_hdmi_init(&sysinfo, w, h, dep, &_fb_info) == 0) {
-			goto done;
+	{
+		bcm2712_hdmi_mode_t cvt_mode;
+		if (bcm2712_native_hdmi_cvt_mode(w, h, dep, 60, &cvt_mode) == 0) {
+			klog("fb_init: cvt %ux%u@%u pclk=%u\n",
+					cvt_mode.width, cvt_mode.height,
+					cvt_mode.depth, cvt_mode.pixel_clock_hz);
+			if (bcm2712_native_hdmi_init_mode(&sysinfo, &cvt_mode, &_fb_info) == 0) {
+				goto done;
+			}
+			klog("fb_init: native hdmi0 cvt path failed\n");
 		}
-		klog("fb_init: native hdmi0 path failed\n");
 	}
 
 	/* Strategy 1: property tags — allocate new framebuffer */
