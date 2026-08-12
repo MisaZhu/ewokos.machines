@@ -2293,7 +2293,6 @@ static int brcmf_sdio_hdparse(uint8_t *header,
         return -ENXIO;
     }
     if (rd->seq_num != rx_seq) {
-        brcm_log("seq %d, expected %d\n", rx_seq, rd->seq_num);
         rd->seq_num = rx_seq;
     }
     /* no need to check the reset for subframe */
