@@ -910,7 +910,9 @@ static int brcmf_rx_queue_push_critical(queue_buffer_t *qbuf, uint8_t *buf,
 
     if (evicted)
         *evicted = false;
-    if (!qbuf || !buf)
+    /* Same admission rules as queue_buffer_push: no empty entries, no
+     * silent truncation of oversize frames. */
+    if (!qbuf || !buf || size <= 0 || size > qbuf->bsize)
         return 0;
 
     pthread_mutex_lock(&qbuf->lock);
@@ -942,7 +944,6 @@ static int brcmf_rx_queue_push_critical(queue_buffer_t *qbuf, uint8_t *buf,
     }
 
     if (dst) {
-        size = min(qbuf->bsize, size);
         memcpy(dst->data, buf, size);
         dst->size = size;
         qbuf->push_idx++;
@@ -2434,10 +2435,27 @@ static int brcmf_sdio_hdparse(uint8_t *header,
     }
     rx_seq = (uint8_t)(swheader & SDPCM_SEQ_MASK);
     rd->channel = (swheader & SDPCM_CHANNEL_MASK) >> SDPCM_CHANNEL_SHIFT;
+    /*
+     * Glommed transfers (glom descriptor or superframe on the glom
+     * channel) are not supported by this host: preinit disables them
+     * via "bus:txglom"=0, but a firmware that ignores/rejects the
+     * iovar could still emit one. NAK it so the dongle recomposes and
+     * resends the contained frames individually. Previously only
+     * gloms larger than MAX_RX_DATASZ were caught ("HW header length
+     * too long") and no retransmission was requested, so the data was
+     * lost silently; smaller gloms were delivered as garbage frames.
+     */
+    if (type == BRCMF_SDIO_FT_NORMAL && rd->channel == SDPCM_GLOM_CHANNEL) {
+        brcm_log("glommed frame rejected (len=%d), NAK for rtx\n", len);
+        brcmf_sdio_rxfail(true, true);
+        rd->len = 0;
+        return -EPROTO;
+    }
     if (len > MAX_RX_DATASZ && rd->channel != SDPCM_CONTROL_CHANNEL &&
         type != BRCMF_SDIO_FT_SUPER) {
-        brcm_log("HW header length too long\n");
-        brcmf_sdio_rxfail(false, false);
+        brcm_log("HW header length too long (len=%d ch=%d), NAK for rtx\n",
+                len, rd->channel);
+        brcmf_sdio_rxfail(true, true);
         rd->len = 0;
         return -EPROTO;
     }
@@ -3346,9 +3364,31 @@ void brcmf_rx_frame(struct sk_buff *skb)
 {
     bool critical;
     bool evicted = false;
+    uint32_t doff;
 
-    //remove 4byte head
-    skb_pull(skb, 4);
+    /*
+     * BDC header: flags(1) priority(1) flags2(1) data_offset(1, in
+     * 4-byte words). The firmware regularly emits header-only frames
+     * that carry nothing but the SDPCM credit/flow-control update
+     * already consumed by hdparse. Pulling a fixed 4 bytes used to
+     * enqueue those as zero-length frames: queue_buffer_push()
+     * returned 0, which was miscounted as "rx_queue overflow" (drops
+     * logged with a near-empty 1024-slot queue), and the empty entry
+     * made netd's drain loop stop early, stalling real frames behind
+     * it. A short frame with skb->len < 4 would even underflow the
+     * unsigned length in skb_pull(). Parse the header properly and
+     * hand the stack only frames that hold at least an ether header.
+     */
+    if (skb->len < 4) {
+        skb_free(skb);
+        return;
+    }
+    doff = 4 + ((uint32_t)skb->data[3] << 2);
+    if (skb->len < doff || skb->len - doff < 14) {
+        skb_free(skb);
+        return;
+    }
+    skb_pull(skb, doff);
     critical = brcmf_eth_is_critical(skb->data, skb->len);
     if (brcmf_should_drop_rx_packet(skb->data, skb->len,
             queue_buffer_check(bus->rx_queue))) {
