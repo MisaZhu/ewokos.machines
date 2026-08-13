@@ -796,6 +796,7 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 	uint32_t displays = 0;
         int strict_mode = (w != 0 && h != 0);
 	int preferred_mode_valid = 0;
+	int auto_mode = !strict_mode;
 	fb_mode_t fallbacks[] = {
 		{1024, 768, 32},
 		{800,  600, 32},
@@ -829,6 +830,18 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 		klog("fb_init: edid preferred %ux%u@%u pclk=%u\n",
 				preferred_mode.width, preferred_mode.height,
 				preferred_mode.depth, preferred_mode.pixel_clock_hz);
+	}
+
+	/*
+	 * For auto mode, first try to adopt the firmware's existing boot
+	 * framebuffer. This keeps non-HDMI panels that the firmware already
+	 * lit up (or displays without usable EDID) working without forcing
+	 * them through the native HDMI path.
+	 */
+	if (auto_mode && fb_query_existing(&sysinfo, &_fb_info) == 0) {
+		klog("fb_init: using firmware boot framebuffer %ux%u@%u\n",
+				_fb_info.width, _fb_info.height, _fb_info.depth);
+		goto done;
 	}
 
 	if (w == 0 || h == 0) {

@@ -483,8 +483,8 @@ static void sdhci_pre_cmd_gap(uint32_t gap_us)
 
 static inline void sdhci_poll_relax(uint32_t spin_start_us)
 {
-	if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US)
-		sleep(0);
+	if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US);
+		//sleep(0);
 }
 
 

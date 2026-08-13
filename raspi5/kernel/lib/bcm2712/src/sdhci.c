@@ -482,7 +482,16 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
 						break;
 				}
 			}
-			div <<= 1;
+			/*
+			 * SDHCI v3.00 divided-clock encoding: the register
+			 * field is (div/2) and the controller divides by 2x
+			 * that value. U-Boot/Linux use "div >>= 1" here; the
+			 * previous "div <<= 1" wrote 2*div, running the SD bus
+			 * at 1/4 of the intended clock (e.g. 6.25MHz instead of
+			 * 25MHz) and capping all file I/O throughput. Same fix
+			 * already applied to the wland SDIO sdhci copy.
+			 */
+			div >>= 1;
 		}
 	} else {
 		/* Version 2.00 divisors must be a power of 2. */
@@ -498,6 +507,10 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
 	clk |= ((div & SDHCI_DIV_HI_MASK) >> SDHCI_DIV_MASK_LEN)
 		<< SDHCI_DIVIDER_HI_SHIFT;
 	clk |= SDHCI_CLOCK_INT_EN;
+	/* Ground-truth log: verify the SD bus actually reaches the target clock. */
+	printf("sdhci: set_clock target=%u max_clk=%u clk_mul=%u div=%u actual=%u\n",
+	       clock, host->max_clk, host->clk_mul, div,
+	       div ? (host->max_clk / (2u * div)) : host->max_clk);
 	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
 
 	/* Wait max 20 ms */

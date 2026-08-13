@@ -296,6 +296,18 @@ static struct sdhci_host _host;
 static uint8_t *_sdma_bounce;
 static uint32_t _sdma_bounce_phys;
 static bool _sdma_unavailable;
+/*
+ * SDMA is forced on for this controller (see sdhci_get_info): BCM2712 SDIO2
+ * does not reliably advertise SDHCI_CAN_DO_SDMA, and leaving the data path on
+ * PIO copies the FIFO 4 bytes per MMIO read, pinning WLAN throughput in the
+ * few-hundred-KB/s range no matter the bus clock. A single transient
+ * controller error must not permanently drop back to that slow PIO copy, so
+ * only disable SDMA after this many consecutive failures; any success resets
+ * the streak.
+ */
+#define SDHCI_SDMA_FAIL_LIMIT	4
+static uint32_t _sdma_fail_streak;
+static bool _xfer_path_logged;
 
 static int sdhci_sdma_init(void)
 {
@@ -449,8 +461,13 @@ static int32_t sdhci_readl(struct sdhci_host *host, uint32_t reg){
  * accesses are what the firmware is slow to settle after. F2 CMD53 data
  * transfers already burn tens of us of bus time each, so they get a
  * shorter floor while every other command keeps the proven 250us.
+ *
+ * 25us is the raspix-proven floor for the F2 data path. At the corrected
+ * bus clock a whole 1536-byte RX frame moves in ~120us, so a 100us floor
+ * per CMD53 was spending nearly half the data-path budget idling on the
+ * gap timer alone (2-3 CMD53 per frame).
  */
-#define SDHCI_MIN_CMD_GAP_F2_US 100
+#define SDHCI_MIN_CMD_GAP_F2_US 25
 
 static uint32_t sdhci_last_cmd_us;
 static int sdhci_last_cmd_valid;
@@ -598,7 +615,18 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
 						break;
 				}
 			}
-			div <<= 1;
+			/*
+			 * The 10-bit SDCLKFS field encodes N with
+			 * SDCLK = base / (2 * N) (N == 0 means base clock),
+			 * so the loop's real divisor has to be halved before
+			 * it is programmed - same as u-boot/Linux
+			 * sdhci_calc_clk(). Shifting the other way wrote 2*div
+			 * instead of div/2, i.e. every requested rate came out
+			 * 4x too slow (25MHz target -> 6.25MHz on the bus,
+			 * 400kHz identification -> 100kHz), which capped WLAN
+			 * throughput at a fraction of the bus capability.
+			 */
+			div >>= 1;
 		}
 	} else {
 		/* Version 2.00 divisors must be a power of 2. */
@@ -631,6 +659,16 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
 
 	clk |= SDHCI_CLOCK_CARD_EN;
 	sdhci_writew(host, clk, SDHCI_CLOCK_CONTROL);
+
+	/*
+	 * Log what the divisor really produced, not what was asked for: a
+	 * mis-encoded SDCLKFS field is invisible from the outside and shows up
+	 * only as unexplained low throughput.
+	 */
+	brcm_log("sdhci: clock req %uHz base %uHz div %u -> %uHz\n",
+			clock, host->max_clk, div,
+			host->clk_mul ? (host->max_clk / (div + 1)) :
+			(div ? (host->max_clk / (2 * div)) : host->max_clk));
 	return 0;
 }
 
@@ -690,8 +728,20 @@ static int sdhci_get_info(struct sdhci_host *host)
 	caps = sdhci_readl(host, SDHCI_CAPABILITIES);
 	host->version = sdhci_readw(host, SDHCI_HOST_VERSION);
 
-	if (caps & SDHCI_CAN_DO_SDMA)
-		host->flags |= USE_SDMA;
+	/*
+	 * Force SDMA regardless of the advertised capability bit. BCM2712
+	 * SDIO2 streams CMD53 payloads correctly through the 32-bit
+	 * system-address SDMA path (the bounce pool is <4GB and mapped
+	 * uncached, so no cache flush is required), but it does not reliably
+	 * set SDHCI_CAN_DO_SDMA, which would otherwise leave the hot path on
+	 * the slow PIO FIFO copy. If the controller ever rejects a DMA
+	 * transfer, sdhci_transfer_data_sdma() degrades back to PIO after
+	 * SDHCI_SDMA_FAIL_LIMIT consecutive failures, so the link stays
+	 * functional either way.
+	 */
+	host->flags |= USE_SDMA;
+	brcm_log("sdhci: caps=0x%08x can_do_sdma=%d, USE_SDMA forced on\n",
+			caps, (caps & SDHCI_CAN_DO_SDMA) ? 1 : 0);
 
 	/* Check whether the clock multiplier is supported or not */
 	if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
@@ -850,6 +900,19 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 				continue;
 			sdhci_writel(host, stat & rdy, SDHCI_INT_STATUS);
 			sdhci_transfer_pio(host, data);
+			/*
+			 * The spin/yield budget is for one FIFO-ready wait, not
+			 * the whole multi-block CMD53. A normal 3-block WLAN
+			 * frame can exceed SDHCI_POLL_SPIN_US end-to-end, so
+			 * keeping the transfer-start timestamp here drops the
+			 * second/third block straight into sleep(0) even though
+			 * the controller is making steady progress - that
+			 * injects a millisecond-class scheduler gap into every
+			 * packet and caps throughput in the few-hundred-KB/s
+			 * range. Progress just happened, so start a fresh spin
+			 * window for the next FIFO-ready phase.
+			 */
+			spin_start_us = sdhci_now_us();
 			if (data->flags == MMC_DATA_READ)
 				data->dest += data->blocksize;
 			else
@@ -887,8 +950,14 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host,
 	while (1) {
 		stat = sdhci_readl(host, SDHCI_INT_STATUS);
 		if (stat & SDHCI_INT_ERROR) {
-			brcm_log("%s: SDMA error status=0x%x\n", __func__, stat);
-			host->flags &= ~USE_SDMA;
+			if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
+				host->flags &= ~USE_SDMA;
+				brcm_log("%s: SDMA error status=0x%x, %u consecutive fails -> PIO fallback\n",
+						__func__, stat, _sdma_fail_streak);
+			} else {
+				brcm_log("%s: SDMA error status=0x%x (streak %u), retrying\n",
+						__func__, stat, _sdma_fail_streak);
+			}
 			return -EIO;
 		}
 		if (stat & SDHCI_INT_DMA_END) {
@@ -899,12 +968,20 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host,
 		if (stat & SDHCI_INT_DATA_END)
 			break;
 		if (get_timer(start) >= SDHCI_SDMA_TIMEOUT_MS) {
-			brcm_log("%s: SDMA timeout status=0x%x\n", __func__, stat);
-			host->flags &= ~USE_SDMA;
+			if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
+				host->flags &= ~USE_SDMA;
+				brcm_log("%s: SDMA timeout status=0x%x, %u consecutive fails -> PIO fallback\n",
+						__func__, stat, _sdma_fail_streak);
+			} else {
+				brcm_log("%s: SDMA timeout status=0x%x (streak %u), retrying\n",
+						__func__, stat, _sdma_fail_streak);
+			}
 			return -ETIMEDOUT;
 		}
 	}
 
+	/* Full DMA burst completed cleanly: clear any transient-failure streak. */
+	_sdma_fail_streak = 0;
 	if (data->flags == MMC_DATA_READ) {
 		memcpy(data->dest, _sdma_bounce,
 				data->blocks * data->blocksize);
@@ -1013,6 +1090,13 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 			if (data->flags != MMC_DATA_READ)
 				memcpy(_sdma_bounce, data->src, trans_bytes);
 			sdhci_writel(host, _sdma_bounce_phys, SDHCI_DMA_ADDRESS);
+		}
+
+		if (!_xfer_path_logged) {
+			_xfer_path_logged = true;
+			brcm_log("sdhci: first data xfer path=%s (flags=0x%x trans_bytes=%d)\n",
+					use_sdma ? "SDMA" : "PIO",
+					host->flags, trans_bytes);
 		}
 
 		sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,

@@ -9,6 +9,12 @@
 #define MMC_DEBUG	0
 #define mmc_host_is_spi(mmc)	(0)
 
+/*
+ * Consecutive fn0 CCCR reads a candidate bus clock has to survive before the
+ * ladder in brcm_init() accepts it (see the comment at the ladder).
+ */
+#define SDIO_CLOCK_VERIFY_READS	8
+
 static struct mmc _mmc;
 
 /*
@@ -254,8 +260,9 @@ static int brcm_init(void)
          * Keep the Pi5 WLAN path in legacy timing for now. Runtime evidence
          * shows fn0 CCCR traffic and func1 enable succeed, but the very first
          * func1 CHIPCLKCSR CMD52 immediately times out once the bus has moved
-         * into the HS/SDR25 path. Hold the host/card at the proven 25MHz
-         * legacy timing point until func1/backplane traffic is stable.
+         * into the HS/SDR25 path. Hold the host/card in legacy timing (the
+         * ladder below picks the fastest rate that survives verification)
+         * until func1/backplane traffic is stable there.
          */
 	err = mmc_sdio_set_bus_width(4);
 	if (err)
@@ -263,15 +270,14 @@ static int brcm_init(void)
 
         /*
          * Verify the Pi5 SDIO2 bus at a conservative rate before handing it
-         * to the probe path. A single fn0 CCCR read can pass at 50MHz while
-         * later fn1/backplane accesses still time out during chip attach, so
-         * prefer the proven 25MHz point here instead of optimistically
-         * starting at 50MHz and failing deep in the probe.
+         * to the probe path. Legacy (default-speed) timing tops out at 25MHz
+         * per the SD spec, so that is the ceiling of the ladder while the
+         * host keeps SDHCI_QUIRK_NO_HISPD_BIT.
          */
         {
                 static const uint32_t try_clks[] =
-                        { 25000000, 10000000 };
-                unsigned int i;
+                        { 25000000, 12500000, 10000000 };
+                unsigned int i, n;
                 uint8_t cccr_rev;
 
                 err = -EIO;
@@ -282,12 +288,27 @@ static int brcm_init(void)
                         if (err)
                                 continue;
 
-                        err = mmc_io_rw_direct(0, 0, SDIO_CCCR_CCCR, 0, &cccr_rev);
+                        /*
+                         * One successful read proves nothing. Right after a
+                         * clock change a marginal rate lets the first fn0
+                         * CCCR read through and then times out on every
+                         * following CMD52 (stat TIMEOUT|CRC), so a
+                         * single-read ladder happily accepts a rate the bus
+                         * cannot sustain and the probe dies later in a
+                         * retry loop. Require a burst of consecutive reads.
+                         */
+                        for (n = 0; n < SDIO_CLOCK_VERIFY_READS; n++) {
+                                err = mmc_io_rw_direct(0, 0, SDIO_CCCR_CCCR,
+                                                       0, &cccr_rev);
+                                if (err)
+                                        break;
+                        }
                         if (!err)
                                 break;
 
-                        brcm_log("sdio bus dead at %uHz, stepping down\n",
-                                 try_clks[i]);
+                        brcm_log("sdio bus unstable at %uHz (read %u/%u failed, err=%d), stepping down\n",
+                                 try_clks[i], n + 1,
+                                 (unsigned int)SDIO_CLOCK_VERIFY_READS, err);
                 }
                 if (err) {
                         brcm_log("sdio bus unusable at any clock, err=%d\n", err);
