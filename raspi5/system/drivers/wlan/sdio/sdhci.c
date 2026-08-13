@@ -5,6 +5,7 @@
 #include <string.h>
 #include <utils/log.h>
 #include <ewoksys/mmio.h>
+#include <ewoksys/dma.h>
 #include <arch/bcm2712/mmio.h>
 
 #include "../platform.h"
@@ -276,6 +277,57 @@ struct sdhci_host {
 };
 
 static struct sdhci_host _host;
+
+/*
+ * Pi5 wlan still uses the userspace SDHCI wrapper, and the data path was
+ * left on programmed I/O. Under display/memory pressure that burns too much
+ * CPU in the CMD53 hot path and RX backlog eventually reaches the software
+ * queue high watermark. Move CMD53 payloads through a dedicated SDMA bounce
+ * buffer so the controller streams data while the worker stays available to
+ * drain the protocol stack.
+ *
+ * BCM2712 SDIO2 sees normal ARM physical addresses in its 32-bit system
+ * address register, so unlike the legacy bcm2711 eMMC2 path no bus alias is
+ * required here.
+ */
+#define SDHCI_SDMA_BOUNCE_SIZE			(64 * 1024)
+#define SDHCI_SDMA_TIMEOUT_MS			1000
+
+static uint8_t *_sdma_bounce;
+static uint32_t _sdma_bounce_phys;
+static bool _sdma_unavailable;
+
+static int sdhci_sdma_init(void)
+{
+	ewokos_addr_t vaddr;
+	ewokos_addr_t phys;
+
+	if (_sdma_bounce != NULL)
+		return 0;
+	if (_sdma_unavailable)
+		return -1;
+
+	vaddr = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
+	if (vaddr == 0) {
+		_sdma_unavailable = true;
+		brcm_log("sdhci: dma_alloc failed for %u-byte SDMA bounce buffer\n",
+				(unsigned)SDHCI_SDMA_BOUNCE_SIZE);
+		return -1;
+	}
+
+	phys = dma_phy_addr(0, vaddr);
+	if (phys == 0 || phys > 0xffffffffUL) {
+		dma_free(0, vaddr);
+		_sdma_unavailable = true;
+		brcm_log("sdhci: invalid SDMA phys addr v=%p phys=0x%lx\n",
+				(void *)(uintptr_t)vaddr, (unsigned long)phys);
+		return -1;
+	}
+
+	_sdma_bounce = (uint8_t *)(uintptr_t)vaddr;
+	_sdma_bounce_phys = (uint32_t)phys;
+	return 0;
+}
 
 /*
  * Base clock feeding the sdio2 SDHCI (clk_emmc2, fixed 200 MHz in
@@ -638,6 +690,9 @@ static int sdhci_get_info(struct sdhci_host *host)
 	caps = sdhci_readl(host, SDHCI_CAPABILITIES);
 	host->version = sdhci_readw(host, SDHCI_HOST_VERSION);
 
+	if (caps & SDHCI_CAN_DO_SDMA)
+		host->flags |= USE_SDMA;
+
 	/* Check whether the clock multiplier is supported or not */
 	if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
 		caps_1 = sdhci_readl(host, SDHCI_CAPABILITIES_1);
@@ -823,6 +878,40 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 	return 0;
 }
 
+static int sdhci_transfer_data_sdma(struct sdhci_host *host,
+		struct mmc_data *data)
+{
+	unsigned int stat;
+	uint64_t start = get_timer(0);
+
+	while (1) {
+		stat = sdhci_readl(host, SDHCI_INT_STATUS);
+		if (stat & SDHCI_INT_ERROR) {
+			brcm_log("%s: SDMA error status=0x%x\n", __func__, stat);
+			host->flags &= ~USE_SDMA;
+			return -EIO;
+		}
+		if (stat & SDHCI_INT_DMA_END) {
+			sdhci_writel(host, sdhci_readl(host, SDHCI_DMA_ADDRESS),
+					SDHCI_DMA_ADDRESS);
+			sdhci_writel(host, SDHCI_INT_DMA_END, SDHCI_INT_STATUS);
+		}
+		if (stat & SDHCI_INT_DATA_END)
+			break;
+		if (get_timer(start) >= SDHCI_SDMA_TIMEOUT_MS) {
+			brcm_log("%s: SDMA timeout status=0x%x\n", __func__, stat);
+			host->flags &= ~USE_SDMA;
+			return -ETIMEDOUT;
+		}
+	}
+
+	if (data->flags == MMC_DATA_READ) {
+		memcpy(data->dest, _sdma_bounce,
+				data->blocks * data->blocksize);
+	}
+	return 0;
+}
+
 static void sdhci_cmd_done(struct sdhci_host *host, struct mmc_cmd *cmd)
 {
 	int i;
@@ -848,6 +937,7 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	int trans_bytes = 0, is_aligned = 1;
 	u32 mask, flags, mode = 0;
 	uint64_t start = get_timer(0);
+	bool use_sdma = false;
 
 	host->start_addr = 0;
 
@@ -915,6 +1005,16 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 		if (data->flags == MMC_DATA_READ)
 			mode |= SDHCI_TRNS_READ;
 
+		if ((host->flags & USE_SDMA) &&
+				trans_bytes <= SDHCI_SDMA_BOUNCE_SIZE &&
+				sdhci_sdma_init() == 0) {
+			use_sdma = true;
+			mode |= SDHCI_TRNS_DMA;
+			if (data->flags != MMC_DATA_READ)
+				memcpy(_sdma_bounce, data->src, trans_bytes);
+			sdhci_writel(host, _sdma_bounce_phys, SDHCI_DMA_ADDRESS);
+		}
+
 		sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,
 				data->blocksize),
 				SDHCI_BLOCK_SIZE);
@@ -968,8 +1068,12 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 	} else
 		ret = -1;
 
-	if (!ret && data)
-		ret = sdhci_transfer_data(host, data);
+	if (!ret && data) {
+		if (use_sdma)
+			ret = sdhci_transfer_data_sdma(host, data);
+		else
+			ret = sdhci_transfer_data(host, data);
+	}
 
 	if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD) {
 		sdhci_last_cmd_us = sdhci_now_us();
@@ -1068,6 +1172,13 @@ void sdhci_init(void)
 	sdhci_set_power(&_host,MMC_VDD_33_34);
 
 	sdhci_get_info(&_host);
+	if (_host.flags & USE_SDMA) {
+		uint8_t ctrl = sdhci_readb(&_host, SDHCI_HOST_CONTROL);
+
+		ctrl &= ~SDHCI_CTRL_DMA_MASK;
+		ctrl |= SDHCI_CTRL_SDMA;
+		sdhci_writeb(&_host, ctrl, SDHCI_HOST_CONTROL);
+	}
 
 	/*
 	 * Keep the bus in identification mode here. The card-side bus width
