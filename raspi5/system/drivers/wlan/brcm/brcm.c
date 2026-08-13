@@ -4618,30 +4618,15 @@ static void* brcm_worker_main(void* p) {
         if (now_ms >= next_housekeeping_ms) {
             next_housekeeping_ms = now_ms + 1000;
             /*
-             * TX throughput diagnostic (once/sec, only when TX was active):
-             * sent   = frames pushed to the chip this second (x1460B ~= B/s)
-             * qblk   = brcm_send() write-blocks (each is a netd EAGAIN and,
-             *          if it lasts >50ms, a "device transmit failure")
-             * cstall = credit-exhaustion episodes (tx_max-tx_seq hit 0)
-             * brk    = 500ms starvation breakthroughs (severe credit stall)
-             * cred   = current credit window (tx_max - tx_seq)
-             * qd     = current tx_queue depth
-             * If sent is low while cstall/brk are high => TX-credit starvation
-             * is the throughput limiter, not SDIO bandwidth.
+             * TX throughput diagnostic counters (frames/qblocks/credit-stalls/
+             * breakthroughs) are still maintained in the TX paths for on-demand
+             * debugging, but the once/sec "wtx:" console line is intentionally
+             * not printed. Reset the counters each second so they stay bounded.
              */
-            if (bus->diag_tx_frames || bus->diag_tx_qblocks ||
-                bus->diag_tx_credit_stalls || bus->diag_tx_breakthroughs) {
-                brcm_log("wtx: sent=%u qblk=%u cstall=%u brk=%u cred=%d qd=%d fc=%u tx_max=%u tx_seq=%u\n",
-                        bus->diag_tx_frames, bus->diag_tx_qblocks,
-                        bus->diag_tx_credit_stalls, bus->diag_tx_breakthroughs,
-                        (int)(int8_t)(bus->tx_max - bus->tx_seq),
-                        queue_buffer_check(bus->tx_queue), bus->fcstate,
-                        bus->tx_max, bus->tx_seq);
-                bus->diag_tx_frames = 0;
-                bus->diag_tx_qblocks = 0;
-                bus->diag_tx_credit_stalls = 0;
-                bus->diag_tx_breakthroughs = 0;
-            }
+            bus->diag_tx_frames = 0;
+            bus->diag_tx_qblocks = 0;
+            bus->diag_tx_credit_stalls = 0;
+            bus->diag_tx_breakthroughs = 0;
             /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
