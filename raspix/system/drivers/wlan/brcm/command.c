@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <pthread.h>
 
 #include <utils/log.h>
 #include <utils/utils.h>
@@ -141,6 +142,12 @@ static uint8_t proto_buf[8192];
 static uint8_t temp[8192];
 static uint8_t mac_addr[6];
 static uint32_t reqid = 0;
+static pthread_mutex_t brcmf_cmd_mutex;
+
+void brcmf_cmd_init(void)
+{
+	pthread_mutex_init(&brcmf_cmd_mutex, NULL);
+}
 
 
 void
@@ -342,14 +349,18 @@ brcmf_fil_cmd_data(int ifidx, uint32_t cmd, void *data, uint32_t len, bool set)
     if (cmd == BRCMF_C_SET_VAR && data)
         iovar_name = (const char *)data;
 
-    if (data != NULL)
-        len = min_t(uint, len, BRCMF_DCMD_MAXLEN);
-    if (set)
+	if (data != NULL) {
+		len = min_t(uint, len, BRCMF_DCMD_MAXLEN);
+	}
+	pthread_mutex_lock(&brcmf_cmd_mutex);
+	if (set) {
         err = brcmf_proto_bcdc_set_dcmd(ifidx, cmd,
                        data, len, &fwerr);
-    else
+	} else {
         err = brcmf_proto_bcdc_query_dcmd(ifidx, cmd,
                          data, len, &fwerr);
+	}
+	pthread_mutex_unlock(&brcmf_cmd_mutex);
 
     if (err) {
         brcm_log("cmd %s(%u) failed: error=%d set=%d len=%u\n",

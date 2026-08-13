@@ -112,6 +112,10 @@
  */
 #define BRCMF_RX_QUEUE_SLOTS 1024
 #define BRCMF_TX_QUEUE_SLOTS 128
+#define BRCMF_TX_QUEUE_HIGH_WATERMARK \
+	(BRCMF_TX_QUEUE_SLOTS - (BRCMF_TX_BATCH_LIMIT / 2))
+#define BRCMF_TX_QUEUE_LOW_WATERMARK \
+	(BRCMF_TX_QUEUE_SLOTS - BRCMF_TX_BATCH_LIMIT)
 /*
  * Leave enough software-RX queue headroom for one in-flight SDIO
  * readframes burst. The actual reserve is derived from bus->rxbound at
@@ -485,6 +489,10 @@ struct brcmf_dev{
     uint32_t rxskip_usec;   /* timestamp when rxskip was set */
     uint32_t tx_starve_usec; /* timestamp when TX credits first exhausted */
     bool tx_starving;        /* true when credits exhausted with queued data */
+	uint32_t diag_tx_frames;        /* frames actually pushed to the chip */
+	uint32_t diag_tx_credit_stalls; /* credit-exhaustion episodes */
+	uint32_t diag_tx_breakthroughs; /* 500ms starvation breakthroughs */
+	uint32_t diag_tx_qblocks;       /* writer-side backpressure hits */
 
     uint32_t hostintmask;
     uint32_t intstatus;
@@ -550,6 +558,7 @@ struct brcmf_dev{
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
 	bool rx_queue_blocked;
+	bool tx_queue_blocked;
     uint32_t manual_connect_until_ms;
 	uint32_t state_since_ms;
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
@@ -607,6 +616,7 @@ static void brcmf_sync_init(void)
 
     pthread_mutex_init(&brcm_dpc_mutex, NULL);
     pthread_mutex_init(&brcm_ctrl_mutex, NULL);
+	brcmf_cmd_init();
     brcm_sync_inited = true;
 }
 
@@ -1001,7 +1011,7 @@ static uint brcmf_rx_queue_read_budget(uint maxframes)
 
 static bool brcmf_rx_queue_resume_reads_if_room(void)
 {
-    int depth;
+	int depth;
 
     if (!bus || !bus->rx_queue || !bus->rx_queue_blocked)
         return false;
@@ -1012,6 +1022,42 @@ static bool brcmf_rx_queue_resume_reads_if_room(void)
 
     bus->rx_queue_blocked = false;
     return true;
+}
+
+static bool brcmf_tx_queue_resume_writes_if_room(void)
+{
+	int depth;
+
+	if (!bus || !bus->tx_queue || !bus->tx_queue_blocked)
+		return false;
+	if (bus->fcstate)
+		return false;
+
+	depth = queue_buffer_check(bus->tx_queue);
+	if (depth > BRCMF_TX_QUEUE_LOW_WATERMARK)
+		return false;
+
+	bus->tx_queue_blocked = false;
+	return true;
+}
+
+static bool brcmf_tx_queue_should_block_writes(void)
+{
+	int depth;
+
+	if (!bus || !bus->tx_queue)
+		return true;
+	if (bus->fcstate)
+		return true;
+	if (bus->tx_queue_blocked)
+		return !brcmf_tx_queue_resume_writes_if_room();
+
+	depth = queue_buffer_check(bus->tx_queue);
+	if (depth < BRCMF_TX_QUEUE_HIGH_WATERMARK)
+		return false;
+
+	bus->tx_queue_blocked = true;
+	return true;
 }
 
 static bool brcmf_rx_queue_should_pause(void)
@@ -1076,8 +1122,13 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->intstatus = 0;
     bus->tx_starving = false;
     bus->tx_starve_usec = 0;
+	bus->diag_tx_frames = 0;
+	bus->diag_tx_credit_stalls = 0;
+	bus->diag_tx_breakthroughs = 0;
+	bus->diag_tx_qblocks = 0;
 	bus->state_since_ms = kernel_tic_ms(0);
 	bus->rx_queue_blocked = false;
+	bus->tx_queue_blocked = false;
     bus->rxpending_since_ms = 0;
     bus->last_rx_success_ms = kernel_tic_ms(0);
     bus->sdio_cmd_fail_count = 0;
@@ -3675,12 +3726,14 @@ static bool txctl_ok(void)
     if (!bus->tx_starving) {
         bus->tx_starving = true;
         bus->tx_starve_usec = brcmf_now_usec();
+		bus->diag_tx_credit_stalls++;
         return false;
     }
 
     /* Allow TX after 500ms starvation to break deadlock */
     if (brcmf_elapsed_usec(bus->tx_starve_usec, brcmf_now_usec()) > 500000) {
         bus->tx_starving = false;
+		bus->diag_tx_breakthroughs++;
         return true;
     }
 
@@ -3992,6 +4045,7 @@ static void brcmf_sdio_dpc(void)
     /* Send queued frames (respect hardware flow control) */
     int max_frames = BRCMF_TX_BATCH_LIMIT;
     int tx_sent = 0;
+	bool tx_writable = false;
     /* headroom for skb_push(16) in txpkt_prep, tail pad for the
      * 4-byte round-up in brcmf_sdiod_skbuff_write */
     static uint8_t tx_buf[SDPCM_TX_HEADROOM + MAX_FRAME_SIZE + ALIGNMENT];
@@ -4018,8 +4072,11 @@ static void brcmf_sdio_dpc(void)
         bus->tx_fail_count = 0;
         bus->tx_seq++;
         tx_sent++;
+		bus->diag_tx_frames++;
+		if (brcmf_tx_queue_resume_writes_if_room())
+			tx_writable = true;
     }
-    if (tx_sent > 0)
+	if (tx_sent > 0 && (tx_writable || !brcmf_tx_queue_should_block_writes()))
         brcm_wakeup_dev(VFS_EVT_WR);
 
     brcm_dpc_last_usec = brcmf_elapsed_usec(start_usec, brcmf_now_usec());
@@ -4573,8 +4630,21 @@ static void* brcm_worker_main(void* p) {
          * with manual_connect_until_ms set by brcm_connect_ap().
          */
         uint32_t now_ms = kernel_tic_ms(0);
-        if (now_ms >= next_housekeeping_ms) {
-            next_housekeeping_ms = now_ms + 1000;
+		if (now_ms >= next_housekeeping_ms) {
+			next_housekeeping_ms = now_ms + 1000;
+			if (bus->diag_tx_frames || bus->diag_tx_qblocks ||
+					bus->diag_tx_credit_stalls || bus->diag_tx_breakthroughs) {
+				brcm_log("wtx: sent=%u qblk=%u cstall=%u brk=%u cred=%d qd=%d fc=%u tx_max=%u tx_seq=%u\n",
+						bus->diag_tx_frames, bus->diag_tx_qblocks,
+						bus->diag_tx_credit_stalls, bus->diag_tx_breakthroughs,
+						(int)(int8_t)(bus->tx_max - bus->tx_seq),
+						queue_buffer_check(bus->tx_queue), bus->fcstate,
+						bus->tx_max, bus->tx_seq);
+				bus->diag_tx_frames = 0;
+				bus->diag_tx_qblocks = 0;
+				bus->diag_tx_credit_stalls = 0;
+				bus->diag_tx_breakthroughs = 0;
+			}
             /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
@@ -5055,13 +5125,20 @@ int brcm_recv(uint8_t *buf, int len){
 }
 
 int brcm_send(uint8_t *buf, int len){
-    if (bus == NULL || bus->tx_queue == NULL)
+	if (bus == NULL || bus->tx_queue == NULL) {
         return 0;
-    if(bus->state != CONNECTED)
+	}
+	if(bus->state != CONNECTED) {
         return 0;
+	}
+	if (brcmf_tx_queue_should_block_writes()) {
+		bus->diag_tx_qblocks++;
+		return 0;
+	}
     int ret = queue_buffer_push(bus->tx_queue, buf, len);
     if (ret == 0) {
         bus->tx_queue_drops++;
+		bus->diag_tx_qblocks++;
         brcmf_note_queue_drop("tx_queue", bus->tx_queue_drops,
                 queue_buffer_check(bus->tx_queue));
     }
@@ -5081,16 +5158,10 @@ int brcm_tx_writable(void)
 	if (bus->state != CONNECTED) {
         return 0;
 	}
-	if (bus->fcstate) {
+	if (brcmf_tx_queue_should_block_writes())
 		return 0;
-	}
 
-    /*
-	 * Only report WR when the software queue has room and the firmware is not
-	 * currently flow-blocking TX; otherwise pollers wake immediately forever
-	 * while frames cannot actually move.
-     */
-    return queue_buffer_check(bus->tx_queue) < bus->tx_queue->qsize;
+	return 1;
 }
 
 int brcm_check_data(void){
