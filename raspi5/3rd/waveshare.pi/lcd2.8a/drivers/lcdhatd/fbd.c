@@ -12,7 +12,7 @@ static int _lcd_dc_pin = 22;
 static int _lcd_cs_pin = 8;
 static int _lcd_rst_pin = 27;
 static int _lcd_bl_pin = 18;
-static int _lcd_spi_div = 16;
+static int _lcd_spi_div = 4;
 static int _lcd_spi_select = SPI_SELECT_0;
 static const int _lcd_inversion = 0;
 
@@ -103,8 +103,8 @@ int main(int argc, char** argv) {
 	ILI9486_REG_WIDTH_16 = 0;
 	ILI9486_INIT_PROFILE = ILI9486_INIT_PROFILE_GENERIC;
 	lcd_init(w, h);
-	xpt2046_set_config(_tp_cs_pin, _tp_irq_pin, _tp_spi_div, _tp_spi_select);
-	xpt2046_init(_tp_cs_pin, _tp_irq_pin, _tp_spi_div);
+	//xpt2046_set_config(_tp_cs_pin, _tp_irq_pin, _tp_spi_div, _tp_spi_select);
+	//xpt2046_init(_tp_cs_pin, _tp_irq_pin, _tp_spi_div);
 
 	fbd_t fbd;
 	memset(&fbd, 0, sizeof(fbd_t));
