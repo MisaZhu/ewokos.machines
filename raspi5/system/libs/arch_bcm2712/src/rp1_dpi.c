@@ -581,43 +581,41 @@ int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
  * Periodic health check for callers that keep running after init. With
  * AUTO_REPEAT armed the engine scans out forever by itself; if STATUS shows
  * it idle anyway, something stopped it — log the block state and re-arm.
+ * Also decodes the underflow flag and the PANICS counters (bit 1 of the
+ * flags latches a DMA underflow; PANICS counts how often the FIFO hit the
+ * panic levels), which is what to look at when the picture rolls.
  * Returns 0 while healthy, 1 after restarting a stopped engine, -1 if DPI
  * was never brought up.
  */
 int bcm2712_rp1_dpi_check(void) {
-	uint32_t status, flags, ctrl;
-	uint32_t gpio18_ctrl = 0, gpio18_pad = 0, rio_out = 0, rio_oe = 0;
+	uint32_t status, flags, ctrl, panics;
+	static uint32_t last_underflows;
+	static uint32_t underflow_total;
 
 	if (!_dpi_ready || _dpi_bus_addr == 0)
 		return -1;
 
-	/* capture GPIO18 (panel backlight on DPI666 boards) state */
-	if (_mmio_base != 0) {
-		ewokos_addr_t io = _mmio_base + RP1_IO_BANK_OFF;
-		ewokos_addr_t rio = _mmio_base + RP1_SYS_RIO_OFF;
-		ewokos_addr_t pads = _mmio_base + RP1_PADS_BANK_OFF;
-		uint32_t pin = 18;
-
-		gpio18_ctrl = get32(io +
-				(pin / 28) * RP1_BANK_STRIDE +
-				(pin % 28) * RP1_GPIO_PIN_STRIDE + RP1_GPIO_CTRL);
-		gpio18_pad = get32(pads +
-				(pin / 28) * RP1_BANK_STRIDE + RP1_PADS_PIN0 +
-				(pin % 28) * RP1_PAD_PIN_STRIDE);
-		rio_out = get32(rio + RP1_RIO_OUT);
-		rio_oe = get32(rio + RP1_RIO_OE);
-	}
-
 	status = get32(_dpi_base + DPI_DMA_STATUS);
-	slog("rp1-dpi: chk status=%08x flags=%08x ctrl=%08x gpio18 ctrl=%08x pad=%08x out=%08x oe=%08x\n",
-			status, get32(_dpi_base + DPI_DMA_IRQ_FLAGS),
-			get32(_dpi_base + DPI_DMA_CONTROL),
-			gpio18_ctrl, gpio18_pad, rio_out, rio_oe);
+	flags = get32(_dpi_base + DPI_DMA_IRQ_FLAGS);
+	ctrl = get32(_dpi_base + DPI_DMA_CONTROL);
+	panics = get32(_dpi_base + DPI_DMA_PANICS);
+
+	if (flags & (1U << 1)) {	/* UNDERFLOW latches; write 1 to clear */
+		underflow_total++;
+		put32(_dpi_base + DPI_DMA_IRQ_FLAGS, (1U << 1));
+	}
+	slog("rp1-dpi: chk status=%08x flags=%08x ctrl=%08x panics=%08x undflw=%u\n",
+			status, flags, ctrl, panics, underflow_total);
+
+	if (underflow_total != last_underflows) {
+		last_underflows = underflow_total;
+		slog("rp1-dpi: UNDERFLOW detected (total=%u panics=%08x)\n",
+				underflow_total, panics);
+	}
 
 	if ((status & DPI_DMA_STATUS_BUSY_MASK) != 0)
 		return 0;
 
-	ctrl = get32(_dpi_base + DPI_DMA_CONTROL);
 	flags = get32(_dpi_base + DPI_DMA_IRQ_FLAGS);
 	slog("rp1-dpi: engine stopped status=%08x ctrl=%08x flags=%08x pll_cs=%08x\n",
 			status, ctrl, flags, get32(_clk_base + PLL_VIDEO_CS));
