@@ -3,16 +3,19 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdint.h>
+#include <pthread.h>
 #include <fbd/fbd.h>
 #include <graph/graph.h>
 #include <graph/graph_png.h>
 #include <bsp/bsp_fb.h>
 #include <arch/bcm2712/rp1_dpi.h>
 #include <tinyjson/tinyjson.h>
+#include <ewoksys/klog.h>
 
 static graph_t* _g = NULL;
 static const char* _conf_file = "/etc/framebuffer.json";
 static int _dpi_output = 0;
+static volatile int _dpi_ok = 0;
 static bcm2712_dpi_timing_t _dpi_timing;
 
 static void blt16(uint32_t* src, uint16_t* dst, uint32_t w, uint32_t h) {
@@ -85,11 +88,29 @@ static fbinfo_t* get_info(void) {
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	if (_dpi_output) {
 		/* explicit opt-in via "output":"dpi"; fall back to HDMI on failure */
-		if (bsp_fb_init_dpi(w, h, dep, &_dpi_timing) == 0)
+		if (bsp_fb_init_dpi(w, h, dep, &_dpi_timing) == 0) {
+			_dpi_ok = 1;
 			return 0;
-		printf("fbd: dpi init failed, falling back to hdmi\n");
+		}
+		slog("fbd: dpi init failed, falling back to hdmi\n");
 	}
 	return bsp_fb_init(w, h, dep);
+}
+
+/*
+ * Watchdog thread: independent of any GUI redraws, polls the DPI scanout
+ * engine once per second. bcm2712_rp1_dpi_check() logs a status snapshot
+ * and restarts the engine if it ever stops.
+ */
+static void* dpi_watchdog(void* arg) {
+	(void)arg;
+	while (!_dpi_ok)
+		usleep(100000);
+	while (1) {
+		sleep(1);
+		bcm2712_rp1_dpi_check();
+	}
+	return NULL;
 }
 
 /*
@@ -97,7 +118,8 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
  *   "output":"dpi", "pclk":33000000,
  *   "hfp":16, "hsync":30, "hbp":80,
  *   "vfp":4,  "vsync":4,  "vbp":14,
- *   "hsync_pol":1, "vsync_pol":1
+ *   "hsync_pol":1, "vsync_pol":1,
+ *   "mode":7          (7 = 24-bit DPI888, 6 = DPI666 panels)
  * Without pclk (or with pclk 0) CVT-RB 60Hz timings are derived.
  */
 static void load_dpi_conf(const char* conf_file) {
@@ -121,8 +143,12 @@ static void load_dpi_conf(const char* conf_file) {
 	_dpi_timing.vbp    = (uint32_t)json_get_int_def(conf_var, "vbp", 0);
 	_dpi_timing.hsync_pos = (uint8_t)json_get_int_def(conf_var, "hsync_pol", 1);
 	_dpi_timing.vsync_pos = (uint8_t)json_get_int_def(conf_var, "vsync_pol", 1);
+	_dpi_timing.mode = (uint8_t)json_get_int_def(conf_var, "mode", 7);
+	_dpi_timing.bl_pin = (int8_t)json_get_int_def(conf_var, "bl_pin", -1);
 	json_var_unref(conf_var);
 	_dpi_output = 1;
+	slog("fbd: dpi output selected mode=%u pclk=%u bl_pin=%d\n",
+			_dpi_timing.mode, _dpi_timing.pixel_clock_hz, _dpi_timing.bl_pin);
 }
 
 static int doargs(int argc, char* argv[]) {
@@ -153,6 +179,10 @@ int main(int argc, char** argv) {
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 
 	load_dpi_conf(_conf_file);
+	if (_dpi_output) {
+		pthread_t th;
+		pthread_create(&th, NULL, dpi_watchdog, NULL);
+	}
 
 	fbd.splash = NULL;
 	fbd.flush = flush;

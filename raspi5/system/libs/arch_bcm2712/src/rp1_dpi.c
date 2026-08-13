@@ -117,6 +117,8 @@ static ewokos_addr_t _clk_base;
 static ewokos_addr_t _cfg_base;
 static ewokos_addr_t _dpi_base;
 static int _dpi_ready;
+static uint64_t _dpi_bus_addr;
+static uint32_t _dpi_stride;
 
 static inline uint32_t dpi_min(uint32_t a, uint32_t b) {
 	return a < b ? a : b;
@@ -144,14 +146,14 @@ static int rp1_dpi_map_windows(void) {
 			(ewokos_addr_t)sysinfo.mmio.v_base,
 			(ewokos_addr_t)sysinfo.mmio.phy_base,
 			(ewokos_addr_t)sysinfo.mmio.size) != sysinfo.mmio.v_base) {
-		klog("rp1-dpi: main mmio map failed\n");
+		slog("rp1-dpi: main mmio map failed\n");
 		return -1;
 	}
 	if (syscall3(SYS_MEM_MAP,
 			_mmio_base + PI5_RP1_WIN_OFF,
 			(ewokos_addr_t)PI5_RP1_PHY,
 			(ewokos_addr_t)PI5_RP1_WIN_SIZE) != _mmio_base + PI5_RP1_WIN_OFF) {
-		klog("rp1-dpi: RP1 window map failed\n");
+		slog("rp1-dpi: RP1 window map failed\n");
 		return -1;
 	}
 
@@ -197,7 +199,7 @@ static int rp1_dpi_wait_pll_lock(void) {
 			return 0;
 		usleep(PLL_LOCK_POLL_US);
 	}
-	klog("rp1-dpi: PLL_VIDEO failed to lock cs=%08x\n",
+	slog("rp1-dpi: PLL_VIDEO failed to lock cs=%08x\n",
 			get32(_clk_base + PLL_VIDEO_CS));
 	return -1;
 }
@@ -285,7 +287,7 @@ static int rp1_dpi_clocks_setup(uint32_t fpix, uint32_t *actual_fpix) {
 			(CLK_CTRL_SRC_AUX << CLK_CTRL_SRC_LSB));
 
 	*actual_fpix = (uint32_t)(pll_out_actual / dpi_div);
-	klog("rp1-dpi: pll vco=%llu fbdiv=%u.%02u prim=%ux%u dpi_div=%u\n",
+	slog("rp1-dpi: pll vco=%llu fbdiv=%u.%02u prim=%ux%u dpi_div=%u\n",
 			(unsigned long long)vco_actual, fbdiv_int,
 			(fbdiv_frac * 100U) >> 24, best_div1, best_div2, dpi_div);
 	return 0;
@@ -307,12 +309,52 @@ static void rp1_dpi_vidout_setup(void) {
 	put32(_cfg_base + VIDOUT_CFG_INTE, 0);	/* polled driver, no IRQs */
 }
 
-/* GPIO0..27 on funcsel 1 (ALTF1): PCLK,HSYNC,VSYNC,DE + D0..D23 */
-static void rp1_dpi_pins_setup(void) {
+/*
+ * GPIO0..27 on funcsel 1 (ALTF1), per rp1.dtsi dpi pinctrl groups:
+ *   mode 7 (24-bit): GPIO0-3 controls + D0..D23 on GPIO4..27
+ *   mode 6 (DPI666): GPIO0-3 controls + B0..B5 on GPIO4..9,
+ *     G0..G5 on GPIO12..17, R0..R5 on GPIO20..25; GPIO10/11/18/19 stay
+ *     untouched (they carry e.g. the panel's touch I2C)
+ */
+static void rp1_dpi_pins_setup(uint32_t mode, int32_t bl_pin) {
+	static const uint32_t pins_mode6[] = {
+		0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+		12, 13, 14, 15, 16, 17,
+		20, 21, 22, 23, 24, 25,
+	};
+
 	bcm2712_gpio_init();
-	for (uint32_t pin = 0; pin < 28; pin++) {
-		bcm2712_gpio_pull(pin, GPIO_PULL_NONE);
-		bcm2712_gpio_config(pin, GPIO_FUNC_ALTF1);
+	if (mode == 6) {
+		for (uint32_t i = 0; i < sizeof(pins_mode6) / sizeof(pins_mode6[0]); i++) {
+			bcm2712_gpio_pull(pins_mode6[i], GPIO_PULL_NONE);
+			bcm2712_gpio_config(pins_mode6[i], GPIO_FUNC_ALTF1);
+		}
+	} else {
+		for (uint32_t pin = 0; pin < 28; pin++) {
+			bcm2712_gpio_pull(pin, GPIO_PULL_NONE);
+			bcm2712_gpio_config(pin, GPIO_FUNC_ALTF1);
+		}
+	}
+
+	/*
+	 * Optional panel backlight pin (e.g. GPIO18 on the Waveshare 3.5inch
+	 * DPI LCD, header pin 12). Only touch it when explicitly configured
+	 * and never on a pin that carries DPI signals.
+	 */
+	if (bl_pin >= 0 && bl_pin < RP1_NUM_GPIOS) {
+		bool is_dpi_pin = (mode == 6) ?
+			(bl_pin <= 9 || (bl_pin >= 12 && bl_pin <= 17) ||
+			 (bl_pin >= 20 && bl_pin <= 25)) :
+			(bl_pin <= 27);
+		if (!is_dpi_pin) {
+			bcm2712_gpio_pull((uint32_t)bl_pin, GPIO_PULL_NONE);
+			bcm2712_gpio_config((uint32_t)bl_pin, GPIO_FUNC_OUTPUT);
+			bcm2712_gpio_write((uint32_t)bl_pin, true);
+			slog("rp1-dpi: backlight pin %d driven high\n", bl_pin);
+		} else {
+			slog("rp1-dpi: bl_pin %d collides with DPI signals, ignored\n",
+					bl_pin);
+		}
 	}
 }
 
@@ -325,7 +367,7 @@ static int rp1_dpi_dma_wait_idle(void) {
 			return 0;
 		usleep(100);
 	}
-	klog("rp1-dpi: DMA won't idle status=%08x\n",
+	slog("rp1-dpi: DMA won't idle status=%08x\n",
 			get32(_dpi_base + DPI_DMA_STATUS));
 	return -1;
 }
@@ -338,8 +380,10 @@ static int rp1_dpi_dma_wait_idle(void) {
  */
 static void rp1_dpi_dma_setup(const bcm2712_dpi_timing_t *t,
 		uint32_t dep, uint32_t w, uint32_t h) {
-	uint32_t rgbsz, shift, imask, ctrl;
-	const uint32_t omask = (0x3fcU << 0) | (0x3fcU << 10) | (0x3fcU << 20);
+	uint32_t rgbsz, shift, imask, omask, ctrl;
+
+	/* 24-bit pad output by default: R at 29:22, G at 19:12, B at 9:2 */
+	omask = (0x3fcU << 0) | (0x3fcU << 10) | (0x3fcU << 20);
 
 	if (dep == 16) {
 		/* RGB565: R[15:11], G[10:5], B[4:0], scaled back up */
@@ -352,8 +396,17 @@ static void rp1_dpi_dma_setup(const bcm2712_dpi_timing_t *t,
 		shift = (23U << 0) | (15U << 5) | (7U << 10);
 		imask = (0x3fcU << 0) | (0x3fcU << 10) | (0x3fcU << 20);
 	}
-	/* 24-bit pad output: R at 29:22, G at 19:12, B at 9:2 */
-	shift |= (29U << 15) | (19U << 20) | (9U << 25);
+
+	if (t->mode == 6) {
+		/*
+		 * DPI666 pads (legacy "mode 6"): 6 bits per component packed
+		 * onto 18 data lines. rp1_dpi_hw.c's RGB666_1X24_CPADHI case.
+		 */
+		shift |= (27U << 15) | (17U << 20) | (7U << 25);
+		omask = (0x3f0U << 0) | (0x3f0U << 10) | (0x3f0U << 20);
+	} else {
+		shift |= (29U << 15) | (19U << 20) | (9U << 25);
+	}
 
 	/* stop a previously armed engine before reprogramming */
 	put32(_dpi_base + DPI_DMA_CONTROL,
@@ -412,7 +465,7 @@ static int rp1_dpi_make_timing(uint32_t w, uint32_t h, uint32_t dep,
 	if (timing != NULL && timing->pixel_clock_hz != 0) {
 		if (timing->hfp == 0 || timing->hsync == 0 || timing->hbp == 0 ||
 				timing->vfp == 0 || timing->vsync == 0 || timing->vbp == 0) {
-			klog("rp1-dpi: incomplete explicit timing\n");
+			slog("rp1-dpi: incomplete explicit timing\n");
 			return -1;
 		}
 		*t = *timing;
@@ -422,10 +475,11 @@ static int rp1_dpi_make_timing(uint32_t w, uint32_t h, uint32_t dep,
 	/* DPI panels have no EDID; CVT-RB gives sane 60Hz defaults */
 	bcm2712_hdmi_mode_t cvt;
 	if (bcm2712_native_hdmi_cvt_mode(w, h, dep, 60, &cvt) != 0) {
-		klog("rp1-dpi: cvt timing gen failed %ux%ux%u\n", w, h, dep);
+		slog("rp1-dpi: cvt timing gen failed %ux%ux%u\n", w, h, dep);
 		return -1;
 	}
 	memset(t, 0, sizeof(*t));
+	t->bl_pin = -1;
 	t->pixel_clock_hz = cvt.pixel_clock_hz;
 	t->hfp = cvt.hfp;
 	t->hsync = cvt.hsync;
@@ -462,14 +516,16 @@ int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
 
 	/* the DPI block is only reachable once the PCIe link to RP1 is up */
 	if (bcm2712_rp1_init() != 0) {
-		klog("rp1-dpi: RP1 not available\n");
+		slog("rp1-dpi: RP1 not available\n");
 		return -1;
 	}
 
 	if (rp1_dpi_clocks_setup(t.pixel_clock_hz, &actual_fpix) != 0)
 		return -1;
 	rp1_dpi_vidout_setup();
-	rp1_dpi_pins_setup();
+	if (t.mode != 6)
+		t.mode = 7;	/* only mode 6 and 7 are wired up */
+	rp1_dpi_pins_setup(t.mode, t.bl_pin);
 	rp1_dpi_clocks_enable();
 
 	bytes_per_pixel = dep / 8U;
@@ -480,12 +536,12 @@ int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
 
 	fb_vaddr = dma_alloc(0, alloc_size);
 	if (fb_vaddr == 0) {
-		klog("rp1-dpi: dma alloc failed size=%u\n", alloc_size);
+		slog("rp1-dpi: dma alloc failed size=%u\n", alloc_size);
 		return -1;
 	}
 	fb_phy = dma_phy_addr(0, fb_vaddr);
 	if (fb_phy == 0) {
-		klog("rp1-dpi: bad dma phy\n");
+		slog("rp1-dpi: bad dma phy\n");
 		dma_free(0, fb_vaddr);
 		return -1;
 	}
@@ -495,6 +551,8 @@ int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
 	bus_addr = fb_phy + 0x1000000000ULL;
 
 	rp1_dpi_dma_setup(&t, dep, w, h);
+	_dpi_bus_addr = bus_addr;
+	_dpi_stride = pitch;
 	rp1_dpi_dma_start(bus_addr, pitch);
 
 	memset(info, 0, sizeof(*info));
@@ -513,8 +571,58 @@ int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
 	info->yoffset = 0;
 	info->dma_id = -1;
 
-	klog("rp1-dpi: %ux%u@%u pclk req=%u got=%u pitch=%u phy=%llx bus=%llx\n",
-			w, h, dep, t.pixel_clock_hz, actual_fpix, pitch,
+	slog("rp1-dpi: %ux%u@%u mode=%u pclk req=%u got=%u pitch=%u phy=%llx bus=%llx\n",
+			w, h, dep, t.mode, t.pixel_clock_hz, actual_fpix, pitch,
 			(unsigned long long)fb_phy, (unsigned long long)bus_addr);
 	return 0;
+}
+
+/*
+ * Periodic health check for callers that keep running after init. With
+ * AUTO_REPEAT armed the engine scans out forever by itself; if STATUS shows
+ * it idle anyway, something stopped it — log the block state and re-arm.
+ * Returns 0 while healthy, 1 after restarting a stopped engine, -1 if DPI
+ * was never brought up.
+ */
+int bcm2712_rp1_dpi_check(void) {
+	uint32_t status, flags, ctrl;
+	uint32_t gpio18_ctrl = 0, gpio18_pad = 0, rio_out = 0, rio_oe = 0;
+
+	if (!_dpi_ready || _dpi_bus_addr == 0)
+		return -1;
+
+	/* capture GPIO18 (panel backlight on DPI666 boards) state */
+	if (_mmio_base != 0) {
+		ewokos_addr_t io = _mmio_base + RP1_IO_BANK_OFF;
+		ewokos_addr_t rio = _mmio_base + RP1_SYS_RIO_OFF;
+		ewokos_addr_t pads = _mmio_base + RP1_PADS_BANK_OFF;
+		uint32_t pin = 18;
+
+		gpio18_ctrl = get32(io +
+				(pin / 28) * RP1_BANK_STRIDE +
+				(pin % 28) * RP1_GPIO_PIN_STRIDE + RP1_GPIO_CTRL);
+		gpio18_pad = get32(pads +
+				(pin / 28) * RP1_BANK_STRIDE + RP1_PADS_PIN0 +
+				(pin % 28) * RP1_PAD_PIN_STRIDE);
+		rio_out = get32(rio + RP1_RIO_OUT);
+		rio_oe = get32(rio + RP1_RIO_OE);
+	}
+
+	status = get32(_dpi_base + DPI_DMA_STATUS);
+	slog("rp1-dpi: chk status=%08x flags=%08x ctrl=%08x gpio18 ctrl=%08x pad=%08x out=%08x oe=%08x\n",
+			status, get32(_dpi_base + DPI_DMA_IRQ_FLAGS),
+			get32(_dpi_base + DPI_DMA_CONTROL),
+			gpio18_ctrl, gpio18_pad, rio_out, rio_oe);
+
+	if ((status & DPI_DMA_STATUS_BUSY_MASK) != 0)
+		return 0;
+
+	ctrl = get32(_dpi_base + DPI_DMA_CONTROL);
+	flags = get32(_dpi_base + DPI_DMA_IRQ_FLAGS);
+	slog("rp1-dpi: engine stopped status=%08x ctrl=%08x flags=%08x pll_cs=%08x\n",
+			status, ctrl, flags, get32(_clk_base + PLL_VIDEO_CS));
+	put32(_dpi_base + DPI_DMA_IRQ_FLAGS, flags);
+
+	rp1_dpi_dma_start(_dpi_bus_addr, _dpi_stride);
+	return 1;
 }

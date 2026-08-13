@@ -25,6 +25,14 @@ typedef struct {
 	uint32_t vbp;
 	uint8_t  hsync_pos;      /* 1 = active high (default) */
 	uint8_t  vsync_pos;      /* 1 = active high (default) */
+	/*
+	 * Pad wiring variant (rp1.dtsi "dpi mode"):
+	 *   7 = 24-bit: D0..D23 on GPIO4..27 (default)
+	 *   6 = DPI666 18-bit: B0..B5 on GPIO4..9, G0..G5 on GPIO12..17,
+	 *       R0..R5 on GPIO20..25 (GPIO10/11/18/19 left alone)
+	 */
+	uint8_t  mode;
+	int8_t   bl_pin;         /* backlight GPIO driven high; -1 = leave alone */
 } bcm2712_dpi_timing_t;
 
 /*
@@ -36,5 +44,11 @@ typedef struct {
 int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
 		uint32_t w, uint32_t h, uint32_t dep,
 		const bcm2712_dpi_timing_t *timing, fbinfo_t *info);
+
+/*
+ * Health check for a running DPI pipe: 0 = scanning out, 1 = engine had
+ * stopped and was restarted (state was logged), -1 = DPI not initialized.
+ */
+int bcm2712_rp1_dpi_check(void);
 
 #endif
