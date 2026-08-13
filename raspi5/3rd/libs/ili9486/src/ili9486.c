@@ -42,6 +42,7 @@ static uint32_t _pend_max_y = 0;
 uint16_t LCD_WIDTH  = DEF_SCREEN_WIDTH;
 uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 int ILI9486_REG_WIDTH_16 = 1;
+int ILI9486_INIT_PROFILE = ILI9486_INIT_PROFILE_WS35C;
 
 static inline uint8_t lcd_get_rotation_madctl(uint16_t rot) {
 	switch(rot) {
@@ -455,98 +456,138 @@ void ili9486_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
 	}
 
 	lcd_start();
-	/* Follow the Waveshare overlay/vendor init sequence as closely as possible. */
-	lcd_write_command(0xF1);
-	lcd_write_data(0x36);
-	lcd_write_data(0x04);
-	lcd_write_data(0x00);
-	lcd_write_data(0x3C);
-	lcd_write_data(0x0F);
-	lcd_write_data(0x8F);
+	if(ILI9486_INIT_PROFILE == ILI9486_INIT_PROFILE_WS35C) {
+		/* Follow the Waveshare 3.5C overlay/vendor init sequence. */
+		lcd_write_command(0xF1);
+		lcd_write_data(0x36);
+		lcd_write_data(0x04);
+		lcd_write_data(0x00);
+		lcd_write_data(0x3C);
+		lcd_write_data(0x0F);
+		lcd_write_data(0x8F);
 
-	lcd_write_command(0xF2);
-	lcd_write_data(0x18);
-	lcd_write_data(0xA3);
-	lcd_write_data(0x12);
-	lcd_write_data(0x02);
-	lcd_write_data(0xB2);
-	lcd_write_data(0x12);
-	lcd_write_data(0xFF);
-	lcd_write_data(0x10);
-	lcd_write_data(0x00);
+		lcd_write_command(0xF2);
+		lcd_write_data(0x18);
+		lcd_write_data(0xA3);
+		lcd_write_data(0x12);
+		lcd_write_data(0x02);
+		lcd_write_data(0xB2);
+		lcd_write_data(0x12);
+		lcd_write_data(0xFF);
+		lcd_write_data(0x10);
+		lcd_write_data(0x00);
 
-	lcd_write_command(0xF8);
-	lcd_write_data(0x21);
-	lcd_write_data(0x04);
+		lcd_write_command(0xF8);
+		lcd_write_data(0x21);
+		lcd_write_data(0x04);
 
-	lcd_write_command(0xF9);
-	lcd_write_data(0x00);
-	lcd_write_data(0x08);
+		lcd_write_command(0xF9);
+		lcd_write_data(0x00);
+		lcd_write_data(0x08);
 
-	lcd_write_command(0x36);
-	lcd_write_data(0x08);
+		lcd_write_command(0x36);
+		lcd_write_data(0x08);
 
-	lcd_write_command(0xB4);
-	lcd_write_data(0x00);
+		lcd_write_command(0xB4);
+		lcd_write_data(0x00);
 
-	lcd_write_command(0xC1);
-	lcd_write_data(0x41);
+		lcd_write_command(0xC1);
+		lcd_write_data(0x41);
 
-	lcd_write_command(0xC5);
-	lcd_write_data(0x00);
-	lcd_write_data(0x91);
-	lcd_write_data(0x80);
-	lcd_write_data(0x00);
+		lcd_write_command(0xC5);
+		lcd_write_data(0x00);
+		lcd_write_data(0x91);
+		lcd_write_data(0x80);
+		lcd_write_data(0x00);
 
-	lcd_write_command(0xE0); // Positive Gamma Control
-	lcd_write_data(0x1F);
-	lcd_write_data(0x25);
-	lcd_write_data(0x22);
-	lcd_write_data(0x0B);
-	lcd_write_data(0x06);
-	lcd_write_data(0x0A);
-	lcd_write_data(0x4E);
-	lcd_write_data(0xC6);
-	lcd_write_data(0x39);
-	lcd_write_data(0x00);
-	lcd_write_data(0x00);
-	lcd_write_data(0x00);
-	lcd_write_data(0x00);
-	lcd_write_data(0x00);
-	lcd_write_data(0x00);
+		lcd_write_command(0xE0); // Positive Gamma Control
+		lcd_write_data(0x1F);
+		lcd_write_data(0x25);
+		lcd_write_data(0x22);
+		lcd_write_data(0x0B);
+		lcd_write_data(0x06);
+		lcd_write_data(0x0A);
+		lcd_write_data(0x4E);
+		lcd_write_data(0xC6);
+		lcd_write_data(0x39);
+		lcd_write_data(0x00);
+		lcd_write_data(0x00);
+		lcd_write_data(0x00);
+		lcd_write_data(0x00);
+		lcd_write_data(0x00);
+		lcd_write_data(0x00);
 
-	lcd_write_command(0xE1); // Negative Gamma Control
-	lcd_write_data(0x1F);
-	lcd_write_data(0x3F);
-	lcd_write_data(0x3F);
-	lcd_write_data(0x0F);
-	lcd_write_data(0x1F);
-	lcd_write_data(0x0F);
-	lcd_write_data(0x46);
-	lcd_write_data(0x49);
-	lcd_write_data(0x31);
-	lcd_write_data(0x05);
-	lcd_write_data(0x09);
-	lcd_write_data(0x03);
-	lcd_write_data(0x1C);
-	lcd_write_data(0x1A);
-	lcd_write_data(0x00);
+		lcd_write_command(0xE1); // Negative Gamma Control
+		lcd_write_data(0x1F);
+		lcd_write_data(0x3F);
+		lcd_write_data(0x3F);
+		lcd_write_data(0x0F);
+		lcd_write_data(0x1F);
+		lcd_write_data(0x0F);
+		lcd_write_data(0x46);
+		lcd_write_data(0x49);
+		lcd_write_data(0x31);
+		lcd_write_data(0x05);
+		lcd_write_data(0x09);
+		lcd_write_data(0x03);
+		lcd_write_data(0x1C);
+		lcd_write_data(0x1A);
+		lcd_write_data(0x00);
 
-	lcd_write_command(0x3A); // Interface Pixel Format
-	lcd_write_data(0x55);	// 16 bit/pixel
+		lcd_write_command(0x3A); // Interface Pixel Format
+		lcd_write_data(0x55);	// 16 bit/pixel
 
-	lcd_set_buffer(w, h, rot);
+		lcd_set_buffer(w, h, rot);
 
-	if(inversion != 0)
-		lcd_write_command(0x21);
-	else
-		lcd_write_command(0x20);
+		if(inversion != 0)
+			lcd_write_command(0x21);
+		else
+			lcd_write_command(0x20);
 
-	lcd_write_command(0x11); // Sleep OUT
-	delay(120000);
+		lcd_write_command(0x11); // Sleep OUT
+		delay(120000);
 
-	lcd_write_command(0x36);
-	lcd_write_data(lcd_get_rotation_madctl(rot));
+		lcd_write_command(0x36);
+		lcd_write_data(lcd_get_rotation_madctl(rot));
+	}
+	else {
+		/* Legacy init used by older Waveshare boards such as 2.8A. */
+		lcd_write_command(0x01);
+		delay(150000);
+
+		lcd_write_command(0x28);
+		lcd_write_command(0x3A);
+		lcd_write_data(0x55);
+
+		lcd_write_command(0xC2);
+		lcd_write_data(0x44);
+
+		lcd_write_command(0xC5);
+		lcd_write_data(0x3E);
+		lcd_write_data(0x30);
+		lcd_write_data(0x0B);
+		lcd_write_data(0x0B);
+
+		lcd_write_command(0x51);
+		lcd_write_data(0xF0);
+
+		lcd_write_command(0xB7);
+		lcd_write_data(0x06);
+
+		lcd_write_command(0x11);
+		delay(150000);
+
+		if(inversion != 0)
+			lcd_write_command(0x21);
+		else
+			lcd_write_command(0x20);
+
+		lcd_write_command(0x36);
+		lcd_write_data(lcd_get_rotation_madctl(rot));
+		delay(100);
+
+		lcd_set_buffer(w, h, rot);
+	}
 
 	lcd_write_command(0x29); // Display ON
 	delay(150000);

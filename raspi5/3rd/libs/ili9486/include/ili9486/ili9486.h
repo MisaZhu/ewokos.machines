@@ -11,9 +11,13 @@
 #define LCD_FLUSH_PARTIAL 0
 #define LCD_FLUSH_FULL 1
 
+#define ILI9486_INIT_PROFILE_GENERIC 0
+#define ILI9486_INIT_PROFILE_WS35C 1
+
 extern uint16_t LCD_HEIGHT;
 extern uint16_t LCD_WIDTH;
 extern int ILI9486_REG_WIDTH_16;
+extern int ILI9486_INIT_PROFILE;
 
 /*LCD_DC	Instruction/Data Register selection
   LCD_CS    LCD chip selection, low active

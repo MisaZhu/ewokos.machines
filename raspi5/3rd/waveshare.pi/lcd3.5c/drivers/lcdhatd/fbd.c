@@ -127,8 +127,11 @@ int main(int argc, char** argv) {
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 	lcd_init(w, h);
+	ILI9486_REG_WIDTH_16 = 1;
+	ILI9486_INIT_PROFILE = ILI9486_INIT_PROFILE_WS35C;
 	xpt2046_set_config(_tp_cs_pin, _tp_irq_pin, _tp_spi_div, _tp_spi_select);
 	xpt2046_init(_tp_cs_pin, _tp_irq_pin, _tp_spi_div);
+
 
 
 	fbd_t fbd;
