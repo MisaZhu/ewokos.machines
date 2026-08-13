@@ -19,9 +19,11 @@
 #include <arch/bcm2712/spi.h>
 #include <arch/bcm2712/gpio.h>
 #include <arch/bcm2712/mmio.h>
+#include <arch/bcm2712/rp1.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
+
 
 #define RP1_SPI_NUM         9
 
@@ -121,6 +123,16 @@ int bcm2712_spi_init(int bus) {
 			_mmio_base + PI5_RP1_WIN_OFF,
 			PI5_RP1_PHY,
 			PI5_RP1_WIN_SIZE);
+
+	/*
+	 * The RP1 register window only reliably decodes after the PCIe2 link is
+	 * trained and the RP1 BARs are enabled. gpio.c can touch IO_BANK after the
+	 * firmware leaves RP1 up, but SPI/I2C/USB have all seen boards/boot flows
+	 * where peripheral blocks still return a bus fault or the AXI error pattern
+	 * until bcm2712_rp1_init() confirms the link/BAR state. It is idempotent.
+	 */
+	if (bcm2712_rp1_init() != 0)
+		return -1;
 
 	if (bus == 0) {
 		bcm2712_gpio_init();

@@ -1,5 +1,8 @@
 #include <arch/bcm2712/gpio.h>
 #include <ewoksys/mmio.h>
+#include <arch/bcm2712/rp1.h>
+#include <ewoksys/syscall.h>
+#include <sysinfo.h>
 
 #if PI5_RP1_WIN_OFF != 0x06000000
 #error "RP1 GPIO window must match the raspi5 kernel mapping"
@@ -19,6 +22,7 @@
 static ewokos_addr_t _io_bank_base;
 static ewokos_addr_t _sys_rio_base;
 static ewokos_addr_t _pads_bank_base;
+static uint8_t _gpio_ready;
 
 static inline uint32_t gpio_bank(uint32_t pin) {
 	if (pin < 28) return 0;
@@ -58,9 +62,33 @@ static inline void gpio_pad_update(uint32_t pin, uint32_t clr, uint32_t set) {
 }
 
 void bcm2712_gpio_init(void) {
+	if(_gpio_ready)
+		return;
+
+	sys_info_t sysinfo;
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+	_mmio_base = sysinfo.mmio.v_base;
+	syscall3(SYS_MEM_MAP,
+			(ewokos_addr_t)sysinfo.mmio.v_base,
+			(ewokos_addr_t)sysinfo.mmio.phy_base,
+			(ewokos_addr_t)sysinfo.mmio.size);
+	syscall3(SYS_MEM_MAP,
+			_mmio_base + PI5_RP1_WIN_OFF,
+			PI5_RP1_PHY,
+			PI5_RP1_WIN_SIZE);
+
 	_io_bank_base   = _mmio_base + RP1_IO_BANK_OFF;
 	_sys_rio_base   = _mmio_base + RP1_SYS_RIO_OFF;
 	_pads_bank_base = _mmio_base + RP1_PADS_BANK_OFF;
+
+	/*
+	 * GPIO can appear mapped while the RP1 BARs are still not fully usable.
+	 * Match SPI/I2C and make the RP1 bring-up explicit before touching IO_BANK.
+	 */
+	if (bcm2712_rp1_init() != 0)
+		return;
+
+	_gpio_ready = 1;
 }
 
 void bcm2712_gpio_config(uint32_t pin, uint32_t func) {
