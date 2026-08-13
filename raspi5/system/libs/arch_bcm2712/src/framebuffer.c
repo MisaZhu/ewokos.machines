@@ -934,3 +934,26 @@ done:
 fbinfo_t *bcm2712_get_fbinfo(void) {
         return &_fb_info;
 }
+
+/*
+ * DPI (parallel display via RP1) entry point. Completely separate from the
+ * HDMI path above: it never touches the mailbox/HDMI code and shares only
+ * the fbinfo slot that bcm2712_get_fbinfo() returns.
+ */
+int32_t bcm2712_fb_init_dpi(uint32_t w, uint32_t h, uint32_t dep,
+		const bcm2712_dpi_timing_t *timing) {
+	sys_info_t sysinfo;
+
+	memset(&_fb_info, 0, sizeof(fbinfo_t));
+	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+
+	if (bcm2712_rp1_dpi_init(&sysinfo, w, h, dep, timing, &_fb_info) != 0) {
+		memset(&_fb_info, 0, sizeof(fbinfo_t));
+		klog("fb_init_dpi: rp1 dpi failed %ux%u@%u\n", w, h, dep);
+		return -1;
+	}
+	klog("fb_init_dpi: %ux%u@%u pitch=%u phy=%x size=%u\n",
+			_fb_info.width, _fb_info.height, _fb_info.depth,
+			_fb_info.pitch, _fb_info.phy_base, _fb_info.size);
+	return 0;
+}

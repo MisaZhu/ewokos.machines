@@ -7,9 +7,13 @@
 #include <graph/graph.h>
 #include <graph/graph_png.h>
 #include <bsp/bsp_fb.h>
+#include <arch/bcm2712/rp1_dpi.h>
+#include <tinyjson/tinyjson.h>
 
 static graph_t* _g = NULL;
 static const char* _conf_file = "/etc/framebuffer.json";
+static int _dpi_output = 0;
+static bcm2712_dpi_timing_t _dpi_timing;
 
 static void blt16(uint32_t* src, uint16_t* dst, uint32_t w, uint32_t h) {
 	uint32_t sz = w * h;
@@ -79,7 +83,46 @@ static fbinfo_t* get_info(void) {
 }
 
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
+	if (_dpi_output) {
+		/* explicit opt-in via "output":"dpi"; fall back to HDMI on failure */
+		if (bsp_fb_init_dpi(w, h, dep, &_dpi_timing) == 0)
+			return 0;
+		printf("fbd: dpi init failed, falling back to hdmi\n");
+	}
 	return bsp_fb_init(w, h, dep);
+}
+
+/*
+ * DPI specific keys in the framebuffer config, e.g.:
+ *   "output":"dpi", "pclk":33000000,
+ *   "hfp":16, "hsync":30, "hbp":80,
+ *   "vfp":4,  "vsync":4,  "vbp":14,
+ *   "hsync_pol":1, "vsync_pol":1
+ * Without pclk (or with pclk 0) CVT-RB 60Hz timings are derived.
+ */
+static void load_dpi_conf(const char* conf_file) {
+	json_var_t *conf_var = json_parse_file(conf_file);
+	if (conf_var == NULL)
+		return;
+
+	const char* output = json_get_str_def(conf_var, "output", "");
+	if (strcmp(output, "dpi") != 0) {
+		json_var_unref(conf_var);
+		return;
+	}
+
+	memset(&_dpi_timing, 0, sizeof(_dpi_timing));
+	_dpi_timing.pixel_clock_hz = (uint32_t)json_get_int_def(conf_var, "pclk", 0);
+	_dpi_timing.hfp    = (uint32_t)json_get_int_def(conf_var, "hfp", 0);
+	_dpi_timing.hsync  = (uint32_t)json_get_int_def(conf_var, "hsync", 0);
+	_dpi_timing.hbp    = (uint32_t)json_get_int_def(conf_var, "hbp", 0);
+	_dpi_timing.vfp    = (uint32_t)json_get_int_def(conf_var, "vfp", 0);
+	_dpi_timing.vsync  = (uint32_t)json_get_int_def(conf_var, "vsync", 0);
+	_dpi_timing.vbp    = (uint32_t)json_get_int_def(conf_var, "vbp", 0);
+	_dpi_timing.hsync_pos = (uint8_t)json_get_int_def(conf_var, "hsync_pol", 1);
+	_dpi_timing.vsync_pos = (uint8_t)json_get_int_def(conf_var, "vsync_pol", 1);
+	json_var_unref(conf_var);
+	_dpi_output = 1;
 }
 
 static int doargs(int argc, char* argv[]) {
@@ -108,6 +151,8 @@ int main(int argc, char** argv) {
 
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
+
+	load_dpi_conf(_conf_file);
 
 	fbd.splash = NULL;
 	fbd.flush = flush;
