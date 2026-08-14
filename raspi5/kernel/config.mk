@@ -12,6 +12,6 @@ QEMU_MACHINE = raspi5b
 #----multi core(SMP)------
 SMP=yes
 
-#PAGE_SIZE=4k
+PAGE_SIZE=4k
+#PAGE_SIZE=16k
 #PAGE_SIZE=64k
-PAGE_SIZE=16k
