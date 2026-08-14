@@ -24,6 +24,7 @@ static int _tp_cs_pin = 7;
 static int _tp_irq_pin = 17;
 static int _tp_spi_div = 64;
 static int _tp_spi_select = SPI_SELECT_1;
+static const char* _conf_file = "";
 static int _display_index = 0;
 
 int  do_flush(const void* buf, uint32_t size) {
@@ -36,7 +37,6 @@ void lcd_init(uint32_t w, uint32_t h) {
 			_lcd_spi_div, _lcd_spi_select);
 	ili9486_init(w, h, G_ROTATE_90, _lcd_inversion,
 			_lcd_dc_pin, _lcd_cs_pin, _lcd_rst_pin, _lcd_bl_pin, _lcd_spi_div);
-	ili9486_set_flush_mode(LCD_FLUSH_FULL);
 }
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
@@ -64,11 +64,14 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "d:D:C:R:B:S:p:q:t:T:i:");
+		c = getopt (argc, argv, "c:d:D:C:R:B:S:p:q:t:T:i:");
 		if(c == -1)
 			break;
 
 		switch (c) {
+		case 'c':
+			_conf_file = optarg;
+			break;
 		case 'd':
 			_lcd_spi_div = atoi(optarg);
 			break;
@@ -145,6 +148,6 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 	fbd.read = tp_read;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
+	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file, _display_index);
 	return ret;
 }

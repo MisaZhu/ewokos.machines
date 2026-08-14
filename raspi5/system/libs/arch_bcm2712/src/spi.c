@@ -39,11 +39,13 @@
 #define SSI_ICR             0x48
 #define SSI_DR              0x60
 
-/* CTRLR0: 8-bit frames, motorola SPI, mode 0, transmit & receive */
+/* CTRLR0: classic DW_apb_ssi DFS stores nbits - 1 in bits 3:0 */
 #define SSI_CTRLR0_DFS_8        0x7
+#define SSI_CTRLR0_DFS_16       0xf
 #define SSI_CTRLR0_SCPH         (1 << 6)
 #define SSI_CTRLR0_SCPOL        (1 << 7)
 #define SSI_CTRLR0_TMOD_TR      (0 << 8)
+#define SSI_CTRLR0_TMOD_TO      (1 << 8)
 
 #define SSI_SR_BUSY             (1 << 0)
 #define SSI_SR_TFNF             (1 << 1)
@@ -73,6 +75,7 @@
 static uint8_t  _spi_ready[RP1_SPI_NUM];
 /* probed FIFO depth, also the cap on frames in flight */
 static uint16_t _spi_fifo_len[RP1_SPI_NUM];
+static uint32_t _spi_ctrlr0[RP1_SPI_NUM];
 static uint32_t _spi0_cs_pin = SPI0_CE0_PIN;
 
 static inline ewokos_addr_t spi_base(int bus) {
@@ -105,6 +108,17 @@ static void spi_reset(ewokos_addr_t base) {
 	put32(base + SSI_SSIENR, 0);
 	(void)get32(base + SSI_ICR);
 	put32(base + SSI_SSIENR, 1);
+}
+
+static void spi_set_ctrlr0(int bus, ewokos_addr_t base, uint32_t ctrlr0) {
+	if (_spi_ctrlr0[bus] == ctrlr0)
+		return;
+
+	put32(base + SSI_SSIENR, 0);
+	put32(base + SSI_CTRLR0, ctrlr0);
+	(void)get32(base + SSI_ICR);
+	put32(base + SSI_SSIENR, 1);
+	_spi_ctrlr0[bus] = ctrlr0;
 }
 
 int bcm2712_spi_init(int bus) {
@@ -151,9 +165,10 @@ int bcm2712_spi_init(int bus) {
 	}
 
 	ewokos_addr_t base = spi_base(bus);
+	_spi_ctrlr0[bus] = SSI_CTRLR0_DFS_8 | SSI_CTRLR0_TMOD_TR;
 	put32(base + SSI_SSIENR, 0);
 	put32(base + SSI_IMR, 0);
-	put32(base + SSI_CTRLR0, SSI_CTRLR0_DFS_8 | SSI_CTRLR0_TMOD_TR);
+	put32(base + SSI_CTRLR0, _spi_ctrlr0[bus]);
 	put32(base + SSI_BAUDR, SPI_DIV_DEFAULT);
 	_spi_fifo_len[bus] = spi_probe_fifo_len(base);
 	put32(base + SSI_RXFTLR, 0);
@@ -227,34 +242,109 @@ int bcm2712_spi_transfer(int bus, const void *tx, void *rx, uint32_t len) {
 	const uint8_t *txp = (const uint8_t*)tx;
 	uint8_t *rxp = (uint8_t*)rx;
 	uint32_t tx_n = 0, rx_n = 0, idle = 0;
-
-	/*
-	 * TMOD is transmit-and-receive, so every frame pushed produces one
-	 * received frame. Capping the frames in flight at the FIFO depth
-	 * keeps the RX FIFO from overflowing at worst exactly full.
-	 */
+	uint32_t ctrlr0 = SSI_CTRLR0_DFS_8 | SSI_CTRLR0_TMOD_TR;
 	uint32_t inflight_max = _spi_fifo_len[bus];
+
+	if (rxp == (uint8_t*)0)
+		ctrlr0 = SSI_CTRLR0_DFS_8 | SSI_CTRLR0_TMOD_TO;
+	spi_set_ctrlr0(bus, base, ctrlr0);
 
 	/* start from a known state: no stale RX frames, no stale error bits */
 	while ((get32(base + SSI_SR) & SSI_SR_RFNE) != 0)
 		(void)get32(base + SSI_DR);
 	(void)get32(base + SSI_ICR);
 
-	while (rx_n < len) {
+	if (rxp == (uint8_t*)0) {
+		while (tx_n < len) {
+			int progress = 0;
+
+			while (tx_n < len &&
+					(get32(base + SSI_SR) & SSI_SR_TFNF) != 0) {
+				put32(base + SSI_DR, txp ? txp[tx_n] : 0);
+				tx_n++;
+				progress = 1;
+			}
+
+			if (progress)
+				idle = 0;
+			else if (++idle > SPI_POLL_MAX) {
+				spi_reset(base);
+				return -1;
+			}
+		}
+	} else {
+		/*
+		 * TMOD_TR produces one RX frame for every byte clocked out. Capping
+		 * the frames in flight at the FIFO depth keeps the RX FIFO from
+		 * overflowing at worst exactly full.
+		 */
+		while (rx_n < len) {
+			int progress = 0;
+
+			while (tx_n < len && (tx_n - rx_n) < inflight_max &&
+					(get32(base + SSI_SR) & SSI_SR_TFNF) != 0) {
+				put32(base + SSI_DR, txp ? txp[tx_n] : 0);
+				tx_n++;
+				progress = 1;
+			}
+			while (rx_n < len &&
+					(get32(base + SSI_SR) & SSI_SR_RFNE) != 0) {
+				rxp[rx_n] = get32(base + SSI_DR) & 0xff;
+				rx_n++;
+				progress = 1;
+			}
+
+			if (progress)
+				idle = 0;
+			else if (++idle > SPI_POLL_MAX) {
+				spi_reset(base);
+				return -1;
+			}
+		}
+	}
+
+	/*
+	 * Wait for the last frame to leave the shift register, so a caller
+	 * dropping CS right after cannot cut it off.
+	 */
+	for (idle = 0; ; idle++) {
+		uint32_t sr = get32(base + SSI_SR);
+		if ((sr & SSI_SR_TFE) != 0 && (sr & SSI_SR_BUSY) == 0)
+			break;
+		if (idle > SPI_POLL_MAX) {
+			spi_reset(base);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+int bcm2712_spi_write16(int bus, const uint16_t *tx, uint32_t count) {
+	if (bus < 0 || bus >= RP1_SPI_NUM)
+		return -1;
+	if (!_spi_ready[bus] && bcm2712_spi_init(bus) != 0)
+		return -1;
+	if (count == 0)
+		return 0;
+
+	ewokos_addr_t base = spi_base(bus);
+	uint32_t tx_n = 0;
+	uint32_t idle = 0;
+	uint32_t ctrlr0 = SSI_CTRLR0_DFS_16 | SSI_CTRLR0_TMOD_TO;
+
+	spi_set_ctrlr0(bus, base, ctrlr0);
+
+	while ((get32(base + SSI_SR) & SSI_SR_RFNE) != 0)
+		(void)get32(base + SSI_DR);
+	(void)get32(base + SSI_ICR);
+
+	while (tx_n < count) {
 		int progress = 0;
 
-		while (tx_n < len && (tx_n - rx_n) < inflight_max &&
+		while (tx_n < count &&
 				(get32(base + SSI_SR) & SSI_SR_TFNF) != 0) {
-			put32(base + SSI_DR, txp ? txp[tx_n] : 0);
+			put32(base + SSI_DR, tx[tx_n]);
 			tx_n++;
-			progress = 1;
-		}
-		while (rx_n < len &&
-				(get32(base + SSI_SR) & SSI_SR_RFNE) != 0) {
-			uint32_t data = get32(base + SSI_DR);
-			if (rxp != (uint8_t*)0)
-				rxp[rx_n] = data & 0xff;
-			rx_n++;
 			progress = 1;
 		}
 
@@ -266,10 +356,6 @@ int bcm2712_spi_transfer(int bus, const void *tx, void *rx, uint32_t len) {
 		}
 	}
 
-	/*
-	 * Wait for the last frame to leave the shift register, so a caller
-	 * dropping CS right after cannot cut it off.
-	 */
 	for (idle = 0; ; idle++) {
 		uint32_t sr = get32(base + SSI_SR);
 		if ((sr & SSI_SR_TFE) != 0 && (sr & SSI_SR_BUSY) == 0)

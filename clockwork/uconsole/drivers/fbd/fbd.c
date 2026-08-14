@@ -52,23 +52,26 @@ static int _display_index = 0;
 static fbinfo_t _fb_info;
 
 static int doargs(int argc, char* argv[]) {
-        int c = 0;
+	int c = 0;
 
-        while(c != -1) {
-                c = getopt(argc, argv, "i:");
-                if(c == -1)
-                        break;
+	while(c != -1) {
+		c = getopt(argc, argv, "c:i:");
+		if(c == -1)
+			break;
 
-                switch(c) {
-                case 'i':
-                        _display_index = atoi(optarg);
-                        break;
-                default:
-                        c = -1;
-                        break;
-                }
-        }
-        return optind;
+		switch(c) {
+		case 'c':
+			_conf_file = optarg;
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
+			break;
+		default:
+			c = -1;
+			break;
+		}
+	}
+	return optind;
 }
 
 static uint16_t rgb565_from_u32(uint32_t s) {

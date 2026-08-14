@@ -186,24 +186,7 @@ static inline void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h
 }
 
 static inline void lcd_send_pixels(uint32_t start, uint32_t count) {
-	uint32_t i;
-	uint32_t m = 0;
-#define SPI_FIFO_SIZE 64
-	uint8_t c8[SPI_FIFO_SIZE];
-
-	for(i = 0; i < count; i++) {
-		uint16_t color = _lcd_buffer[start + i];
-		c8[m++] = (color >> 8) & 0xff;
-		c8[m++] = color & 0xff;
-		if(m >= SPI_FIFO_SIZE) {
-			m = 0;
-			bsp_spi_send_recv(c8, NULL, SPI_FIFO_SIZE);
-		}
-	}
-
-	if(m > 0) {
-		bsp_spi_send_recv(c8, NULL, m);
-	}
+	bsp_spi_send16(_lcd_buffer + start, count);
 }
 
 static inline void lcd_show(void) {

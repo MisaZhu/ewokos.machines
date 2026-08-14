@@ -31,7 +31,6 @@ void lcd_init(uint32_t w, uint32_t h) {
 			_lcd_spi_div, _lcd_spi_select);
 	ili9486_init(w, h, G_ROTATE_90, _lcd_inversion,
 			_lcd_dc_pin, _lcd_cs_pin, _lcd_rst_pin, _lcd_bl_pin, _lcd_spi_div);
-	ili9486_set_flush_mode(LCD_FLUSH_FULL);
 }
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {

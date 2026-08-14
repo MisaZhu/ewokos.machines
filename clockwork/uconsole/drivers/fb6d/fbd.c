@@ -70,23 +70,26 @@ static uint32_t _contrast_pct = UC_CONTRAST_DEFAULT_PCT;
 static uint8_t _contrast_lut[256];
 
 static int doargs(int argc, char* argv[]) {
-        int c = 0;
+	int c = 0;
 
-        while(c != -1) {
-                c = getopt(argc, argv, "i:");
-                if(c == -1)
-                        break;
+	while(c != -1) {
+		c = getopt(argc, argv, "c:i:");
+		if(c == -1)
+			break;
 
-                switch(c) {
-                case 'i':
-                        _display_index = atoi(optarg);
-                        break;
-                default:
-                        c = -1;
-                        break;
-                }
-        }
-        return optind;
+		switch(c) {
+		case 'c':
+			_conf_file = optarg;
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
+			break;
+		default:
+			c = -1;
+			break;
+		}
+	}
+	return optind;
 }
 
 static int contrast_active(void) {

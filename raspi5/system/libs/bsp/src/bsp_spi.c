@@ -22,6 +22,10 @@ void bsp_spi_send_recv(const uint8_t* send, uint8_t* recv, uint32_t size) {
 	bcm2712_spi_transfer(0, send, recv, size);
 }
 
+void bsp_spi_send16(const uint16_t* send, uint32_t count) {
+	bcm2712_spi_write16(0, send, count);
+}
+
 uint8_t bsp_spi_transfer(uint8_t data) {
 	uint8_t tx = data, rx = 0;
 	bcm2712_spi_transfer(0, &tx, &rx, 1);

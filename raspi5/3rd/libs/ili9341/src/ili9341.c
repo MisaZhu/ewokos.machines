@@ -216,6 +216,47 @@ static inline void lcd_show_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 	}
 }
 
+uint32_t ili9341_flush_rect(const fbinfo_t* fbinfo, const graph_t* g, const grect_t* r) {
+        uint32_t row;
+        uint32_t col;
+        uint32_t idx;
+        uint32_t now_ms;
+
+        (void)fbinfo;
+        if(g == NULL || g->buffer == NULL || r == NULL)
+                return 0;
+        if((uint32_t)g->w != LCD_WIDTH || (uint32_t)g->h != LCD_HEIGHT)
+                return 0;
+        if(r->x < 0 || r->y < 0 || r->w <= 0 || r->h <= 0)
+                return 0;
+        if((uint32_t)(r->x + r->w) > LCD_WIDTH || (uint32_t)(r->y + r->h) > LCD_HEIGHT)
+                return 0;
+        if(!_shadow_ready)
+                return 0;
+
+        for(row = 0; row < (uint32_t)r->h; row++) {
+                uint32_t base = (uint32_t)(r->y + (int32_t)row) * LCD_WIDTH + (uint32_t)r->x;
+                for(col = 0; col < (uint32_t)r->w; col++) {
+                        uint32_t s = g->buffer[base + col];
+                        uint8_t rr = (s >> 16) & 0xff;
+                        uint8_t gg = (s >> 8) & 0xff;
+                        uint8_t bb = s & 0xff;
+                        idx = base + col;
+                        _shadow_argb[idx] = s;
+                        _lcd_buffer[idx] = ((rr >> 3) << 11) | ((gg >> 2) << 5) | (bb >> 3);
+                }
+        }
+
+        bsp_spi_set_div(SPI_DIV);
+        lcd_start();
+        lcd_show_rect((uint16_t)r->x, (uint16_t)r->y, (uint16_t)r->w, (uint16_t)r->h);
+        lcd_end();
+        _pending_flush = 0;
+        now_ms = kernel_tic_ms(0);
+        _last_flush_ms = now_ms;
+        return (uint32_t)r->w * (uint32_t)r->h * 2U;
+}
+
 void ili9341_flush(const void* buf, uint32_t size) {
 	uint32_t *src = (uint32_t*)buf;
 	uint32_t sz = LCD_HEIGHT * LCD_WIDTH;

@@ -22,25 +22,29 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	return bsp_fb_init(w, h, dep);
 }
 
+static const char* _conf_file = "";
 static int _display_index = 0;
 static int doargs(int argc, char* argv[]) {
-        int c = 0;
+	int c = 0;
 
-        while(c != -1) {
-                c = getopt(argc, argv, "i:");
-                if(c == -1)
-                        break;
+	while(c != -1) {
+		c = getopt(argc, argv, "c:i:");
+		if(c == -1)
+			break;
 
-                switch(c) {
-                case 'i':
-                        _display_index = atoi(optarg);
-                        break;
-                default:
-                        c = -1;
-                        break;
-                }
-        }
-        return optind;
+		switch(c) {
+		case 'c':
+			_conf_file = optarg;
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
+			break;
+		default:
+			c = -1;
+			break;
+		}
+	}
+	return optind;
 }
 
 int main(int argc, char** argv) {
@@ -53,6 +57,6 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 
-        int res = fbd_run(&fbd, mnt_point, 640, 480, "", _display_index);
+	int res = fbd_run(&fbd, mnt_point, 640, 480, _conf_file, _display_index);
 	return res;
 }

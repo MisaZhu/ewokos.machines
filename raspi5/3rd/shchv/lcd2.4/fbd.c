@@ -118,7 +118,7 @@ static int doargs(int argc, char* argv[]) {
 }
 
 int main(int argc, char** argv) {
-	_spi_div = 8;
+	_spi_div = 4;
 	LCD_HEIGHT = 240;
 	LCD_WIDTH = 320;
 
@@ -136,6 +136,7 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.read = tp_read;
 	fbd.get_info = get_info;
+    fbd_set_flush_rect(ili9341_flush_rect);
 	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file, _display_index);
 	return ret;
 }

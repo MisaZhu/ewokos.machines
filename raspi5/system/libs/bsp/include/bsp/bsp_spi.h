@@ -10,5 +10,6 @@ uint8_t  bsp_spi_transfer(uint8_t data);
 void     bsp_spi_activate(uint8_t enable);
 void     bsp_spi_select(uint32_t which);
 void     bsp_spi_send_recv(const uint8_t* send, uint8_t* recv, uint32_t size);
+void     bsp_spi_send16(const uint16_t* send, uint32_t count);
 
 #endif
