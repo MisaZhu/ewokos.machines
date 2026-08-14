@@ -62,11 +62,32 @@
 #define UC_CONTRAST_STEP_PCT     10
 
 static const char* _conf_file = "";
+static int _display_index = 0;
 static fbinfo_t _fb_info;
 static fbd_t _fbd_cfg;
 static uint8_t _bl_level = UC_BACKLIGHT_DEFAULT;
 static uint32_t _contrast_pct = UC_CONTRAST_DEFAULT_PCT;
 static uint8_t _contrast_lut[256];
+
+static int doargs(int argc, char* argv[]) {
+        int c = 0;
+
+        while(c != -1) {
+                c = getopt(argc, argv, "i:");
+                if(c == -1)
+                        break;
+
+                switch(c) {
+                case 'i':
+                        _display_index = atoi(optarg);
+                        break;
+                default:
+                        c = -1;
+                        break;
+                }
+        }
+        return optind;
+}
 
 static int contrast_active(void) {
 	return _contrast_pct != UC_CONTRAST_DEFAULT_PCT;
@@ -565,7 +586,8 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 }
 
 int main(int argc, char** argv) {
-	const char* mnt_point = (argc > 1) ? argv[1] : "/dev/fb0";
+        int opti = doargs(argc, argv);
+        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/fb0";
 	(void)_conf_file;
 
 	memset(&_fbd_cfg, 0, sizeof(_fbd_cfg));
@@ -589,5 +611,5 @@ int main(int argc, char** argv) {
 	fbd_set_dev_cmd(fb6d_dev_cmd);
 
 	return fbd_run(&_fbd_cfg, mnt_point,
-			UC_PANEL_WIDTH, UC_PANEL_HEIGHT, _conf_file);
+                        UC_PANEL_WIDTH, UC_PANEL_HEIGHT, _conf_file, _display_index);
 }

@@ -19,6 +19,7 @@ static uint8_t _i2c_addr = 0x3c;
 static int _i2c_bus = BCM2712_I2C_BUS_HEADER;
 static uint32_t _i2c_speed = 400000;
 static const char* _conf_file = "/etc/framebuffer.i2c.json";
+static int _display_index = 0;
 
 static int ssd1306_write(uint8_t control, const uint8_t* buf, int len) {
 	uint8_t tmp[33];
@@ -168,7 +169,7 @@ static int doargs(int argc, char* argv[]) {
 	int c = 0;
 
 	while(c != -1) {
-		c = getopt(argc, argv, "a:b:c:s:");
+		c = getopt(argc, argv, "a:b:c:s:i:");
 		if(c == -1)
 			break;
 
@@ -184,6 +185,9 @@ static int doargs(int argc, char* argv[]) {
 			break;
 		case 's':
 			_i2c_speed = (uint32_t)strtoul(optarg, NULL, 0);
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
 			break;
 		default:
 			c = -1;
@@ -209,5 +213,5 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	return fbd_run(&fbd, mnt_point, OLED_WIDTH, OLED_HEIGHT, _conf_file);
+	return fbd_run(&fbd, mnt_point, OLED_WIDTH, OLED_HEIGHT, _conf_file, _display_index);
 }

@@ -151,10 +151,12 @@ static void load_dpi_conf(const char* conf_file) {
 			_dpi_timing.mode, _dpi_timing.pixel_clock_hz, _dpi_timing.bl_pin);
 }
 
+static int _display_index = 0;
+
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "c:");
+                c = getopt (argc, argv, "c:i:");
 		if(c == -1)
 			break;
 
@@ -162,6 +164,9 @@ static int doargs(int argc, char* argv[]) {
 		case 'c':
 			_conf_file = optarg;
 			break;
+                case 'i':
+                        _display_index = atoi(optarg);
+                        break;
 		default:
 			c = -1;
 			break;
@@ -189,7 +194,7 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 	fbd_set_flush_rect(fbd_flush_rect_to);
-        int res = fbd_run(&fbd, mnt_point, 0, 0, _conf_file);
+        int res = fbd_run(&fbd, mnt_point, 0, 0, _conf_file, _display_index);
 	if(_g != NULL)
 		graph_free(_g);
 	return res;

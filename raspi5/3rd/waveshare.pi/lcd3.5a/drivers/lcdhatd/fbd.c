@@ -24,6 +24,7 @@ static int _tp_cs_pin = 7;
 static int _tp_irq_pin = 17;
 static int _tp_spi_div = 64;
 static int _tp_spi_select = SPI_SELECT_1;
+static int _display_index = 0;
 static uint16_t _lcd_rot = G_ROTATE_90;
 static uint16_t* _lcd35a_flush_buf = NULL;
 static uint32_t _lcd35a_flush_pixels = 0;
@@ -202,7 +203,7 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "d:D:C:R:B:S:p:i:t:T:");
+		c = getopt (argc, argv, "d:D:C:R:B:S:p:q:t:T:i:");
 		if(c == -1)
 			break;
 
@@ -228,7 +229,7 @@ static int doargs(int argc, char* argv[]) {
 		case 'p':
 			_tp_cs_pin = atoi(optarg);
 			break;
-		case 'i':
+		case 'q':
 			_tp_irq_pin = atoi(optarg);
 			break;
 		case 't':
@@ -236,6 +237,9 @@ static int doargs(int argc, char* argv[]) {
 			break;
 		case 'T':
 			_tp_spi_select = atoi(optarg);
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
 			break;
 		default:
 			c = -1;
@@ -276,6 +280,6 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 	fbd.read = tp_read;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
+	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
 	return ret;
 }

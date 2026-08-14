@@ -30,6 +30,27 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	return 0;
 }
 
+static int _display_index = 0;
+static int doargs(int argc, char* argv[]) {
+        int c = 0;
+
+        while(c != -1) {
+                c = getopt(argc, argv, "i:");
+                if(c == -1)
+                        break;
+
+                switch(c) {
+                case 'i':
+                        _display_index = atoi(optarg);
+                        break;
+                default:
+                        c = -1;
+                        break;
+                }
+        }
+        return optind;
+}
+
 /*LCD_DC	Instruction/Data Register selection
   LCD_CS    LCD chip selection, low active
   LCD_RST   LCD reset
@@ -39,13 +60,14 @@ int main(int argc, char** argv) {
 	int lcd_dc = 25;
 	int lcd_cs = 8;
 	int lcd_bl = 0;
+        int opti = doargs(argc, argv);
 
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/fb0";
+        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 
-	if(argc > 4) {
-		lcd_rst = atoi(argv[2]);
-		lcd_dc = atoi(argv[3]);
-		lcd_bl = atoi(argv[4]);
+        if((argc - opti) > 3) {
+                lcd_rst = atoi(argv[opti + 1]);
+                lcd_dc = atoi(argv[opti + 2]);
+                lcd_bl = atoi(argv[opti + 3]);
 	}
 
 	/*
@@ -61,5 +83,5 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	return fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
+        return fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
 }

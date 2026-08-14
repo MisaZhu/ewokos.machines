@@ -82,16 +82,21 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	return bsp_fb_init(w, h, dep);
 }
 
+static int _display_index = 0;
+
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "c:");
+		c = getopt (argc, argv, "c:i:");
 		if(c == -1)
 			break;
 
 		switch (c) {
 		case 'c':
 			_conf_file = optarg;
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
 			break;
 		default:
 			c = -1;
@@ -104,7 +109,7 @@ static int doargs(int argc, char* argv[]) {
 int main(int argc, char** argv) {
 	fbd_t fbd;
 	_g = NULL;
-  memset(&fbd, 0, sizeof(fbd));
+	memset(&fbd, 0, sizeof(fbd));
 
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
@@ -115,7 +120,7 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 	fbd_set_flush_rect(fbd_flush_rect_to);
-  int res = fbd_run(&fbd, mnt_point, 1024, 768, _conf_file);
+	int res = fbd_run(&fbd, mnt_point, 1024, 768, _conf_file, _display_index);
 	if(_g != NULL)
 		graph_free(_g);
 	return res;

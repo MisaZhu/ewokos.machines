@@ -59,10 +59,32 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	return 0;
 }
 
+static int _display_index = 0;
+static int doargs(int argc, char* argv[]) {
+        int c = 0;
+
+        while(c != -1) {
+                c = getopt(argc, argv, "i:");
+                if(c == -1)
+                        break;
+
+                switch(c) {
+                case 'i':
+                        _display_index = atoi(optarg);
+                        break;
+                default:
+                        c = -1;
+                        break;
+                }
+        }
+        return optind;
+}
+
 int main(int argc, char** argv) {
 	fbd_t fbd;
  	memset(&fbd, 0, sizeof(fbd));
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/fb0";
+        int opti = doargs(argc, argv);
+        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
 
 	fbd.splash = NULL;
 	fbd.flush = flush;
@@ -70,5 +92,5 @@ int main(int argc, char** argv) {
 	fbd.get_info = get_info;
 	fbd_set_flush_rect(flush_rect);
 
-	return fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
+        return fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
 }

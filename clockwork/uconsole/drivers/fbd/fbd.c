@@ -48,7 +48,28 @@
 #define UCONSOLE_FB_PHYS_BASE    0x3c100000U
 
 static const char* _conf_file = "";
+static int _display_index = 0;
 static fbinfo_t _fb_info;
+
+static int doargs(int argc, char* argv[]) {
+        int c = 0;
+
+        while(c != -1) {
+                c = getopt(argc, argv, "i:");
+                if(c == -1)
+                        break;
+
+                switch(c) {
+                case 'i':
+                        _display_index = atoi(optarg);
+                        break;
+                default:
+                        c = -1;
+                        break;
+                }
+        }
+        return optind;
+}
 
 static uint16_t rgb565_from_u32(uint32_t s) {
 	uint8_t r = (uint8_t)((s >> 16) & 0xff);
@@ -362,7 +383,8 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 
 int main(int argc, char** argv) {
 	fbd_t fbd;
-	const char* mnt_point = (argc > 1) ? argv[1] : "/dev/fb0";
+        int opti = doargs(argc, argv);
+        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/fb0";
 	(void)_conf_file;
 
 	memset(&fbd, 0, sizeof(fbd));
@@ -381,5 +403,6 @@ int main(int argc, char** argv) {
 	fbd.get_info = get_info;
 
 	return fbd_run(&fbd, mnt_point,
-			UC_PANEL_WIDTH, UC_PANEL_HEIGHT, _conf_file);
+                        UC_PANEL_WIDTH, UC_PANEL_HEIGHT, _conf_file, _display_index);
+
 }

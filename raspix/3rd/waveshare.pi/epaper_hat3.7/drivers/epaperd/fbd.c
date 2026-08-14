@@ -36,10 +36,11 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 }
 
 static int _spi_div = 8;
+static int _display_index = 0;
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "d:");
+                c = getopt (argc, argv, "d:i:");
 		if(c == -1)
 			break;
 
@@ -47,6 +48,9 @@ static int doargs(int argc, char* argv[]) {
 		case 'd':
 			_spi_div = atoi(optarg);
 			break;
+                case 'i':
+                        _display_index = atoi(optarg);
+                        break;
 		default:
 			c = -1;
 			break;
@@ -72,6 +76,6 @@ int main(int argc, char** argv) {
 	fbd.flush = flush;
 	fbd.init = init;
 	fbd.get_info = get_info;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "");
+        int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
 	return ret;
 }

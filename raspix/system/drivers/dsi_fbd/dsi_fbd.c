@@ -87,11 +87,13 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	return bcm283x_dsi_fb_init(&_panel, w, h, dep);
 }
 
+static int _display_index = 0;
+
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 
 	while (c != -1) {
-		c = getopt(argc, argv, "c:");
+		c = getopt(argc, argv, "c:i:");
 		if (c == -1) {
 			break;
 		}
@@ -99,6 +101,9 @@ static int doargs(int argc, char* argv[]) {
 		switch (c) {
 		case 'c':
 			_conf_file = optarg;
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
 			break;
 		default:
 			c = -1;
@@ -121,7 +126,7 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.get_info = get_info;
 	int res = fbd_run(&fbd, mnt_point, _panel.preferred_width,
-			_panel.preferred_height, _conf_file);
+			_panel.preferred_height, _conf_file, _display_index);
 	if (_g != NULL) {
 		graph_free(_g);
 	}

@@ -91,16 +91,20 @@ static int tp_read(uint8_t* buf, uint32_t size) {
 
 static int _spi_div = 64;
 const char* _conf_file = "";
+int _display_index = 0;
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
 	while (c != -1) {
-		c = getopt (argc, argv, "c:d:");
+		c = getopt (argc, argv, "c:d:i:");
 		if(c == -1)
 			break;
 
 		switch (c) {
 		case 'd':
 			_spi_div = atoi(optarg);
+			break;
+		case 'i':
+			_display_index = atoi(optarg);
 			break;
 		case 'c':
 			_conf_file = optarg;
@@ -132,6 +136,6 @@ int main(int argc, char** argv) {
 	fbd.init = init;
 	fbd.read = tp_read;
 	fbd.get_info = get_info;
-	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file);
+	int ret = fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file, _display_index);
 	return ret;
 }
