@@ -22,6 +22,8 @@ endif
 ARCH_LD_FLAGS = --defsym=start_address=$(LOAD_ADDRESS)
 ifeq ($(PAGE_SIZE),16k)
 ARCH_LD_FLAGS += --defsym=page_align_size=0x4000
+else ifeq ($(PAGE_SIZE),64k)
+ARCH_LD_FLAGS += --defsym=page_align_size=0x10000
 else
 ARCH_LD_FLAGS += --defsym=page_align_size=0x1000
 endif

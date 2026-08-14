@@ -21,4 +21,5 @@ endif
 SMP=yes
 
 #raspix 1~4 don't support PAGE_SIZE=16k
+#PAGE_SIZE=64k
 PAGE_SIZE=4k

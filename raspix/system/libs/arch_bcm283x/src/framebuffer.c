@@ -70,6 +70,7 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias
 #define TAG_SET_VIRT_SIZE   0x00048004
 #define TAG_SET_DEPTH       0x00048005
 #define TAG_SET_PIXEL_ORDER 0x00048006
+#define TAG_SET_VIRTUAL_OFFSET 0x00048009
 #define TAG_ALLOCATE_FB     0x00040001
 #define TAG_GET_PITCH       0x00040008
 #define TAG_ALLOCATE_MEM    0x0003000C
@@ -347,8 +348,8 @@ static int fb_mode_equal(const fb_mode_t* a, const fb_mode_t* b) {
 }
 
 static void fb_build_request(uint32_t* req, uint32_t w, uint32_t h, uint32_t dep) {
-	memset(req, 0, 30 * sizeof(uint32_t));
-	req[0] = 30 * sizeof(uint32_t);
+	memset(req, 0, 35 * sizeof(uint32_t));
+	req[0] = 35 * sizeof(uint32_t);
 	req[1] = 0;
 	req[2] = TAG_SET_PHYS_SIZE;
 	req[3] = 8;
@@ -368,27 +369,37 @@ static void fb_build_request(uint32_t* req, uint32_t w, uint32_t h, uint32_t dep
 	req[17] = 4;
 	req[18] = 4;
 	req[19] = PIXEL_ORDER_BGR;
-	req[20] = TAG_ALLOCATE_FB;
+	req[20] = TAG_SET_VIRTUAL_OFFSET;
 	req[21] = 8;
-	req[22] = 4;
-	req[23] = 16;
+	req[22] = 8;
+	req[23] = 0;
 	req[24] = 0;
-	req[25] = TAG_GET_PITCH;
-	req[26] = 4;
-	req[27] = 0;
-	req[28] = 0;
+	req[25] = TAG_ALLOCATE_FB;
+	req[26] = 8;
+	req[27] = 4;
+	req[28] = 16;
 	req[29] = 0;
+	req[30] = TAG_GET_PITCH;
+	req[31] = 4;
+	req[32] = 0;
+	req[33] = 0;
+	req[34] = 0;
 }
 
 static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_t* info) {
-	uint32_t* req = (uint32_t*)dma_alloc(0, 30 * sizeof(uint32_t));
+	uint32_t* req = (uint32_t*)dma_alloc(0, 35 * sizeof(uint32_t));
 	uint32_t alias_used = 0;
+	uint32_t page_size;
 	uint32_t resp_w;
 	uint32_t resp_h;
 	uint32_t resp_vw;
 	uint32_t resp_vh;
 	uint32_t resp_dep;
+	uint32_t resp_xoff;
+	uint32_t resp_yoff;
 	uint32_t resp_phy;
+	uint32_t resp_phy_page;
+	uint32_t resp_phy_page_off;
 	uint32_t resp_size;
 	uint32_t resp_pitch;
 
@@ -409,9 +420,11 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_
 	resp_vw = req[10];
 	resp_vh = req[11];
 	resp_dep = req[15];
-	resp_phy = req[23] & 0x3fffffff; // GPU addr to ARM addr
-	resp_size = req[24];
-	resp_pitch = req[28];
+	resp_xoff = req[23];
+	resp_yoff = req[24];
+	resp_phy = req[28] & 0x3fffffff; // GPU addr to ARM addr
+	resp_size = req[29];
+	resp_pitch = req[33];
 	dma_free(0, (ewokos_addr_t)req);
 
 	if ((resp_w == 0) || (resp_h == 0) || (resp_phy == 0) || (resp_size == 0)) {
@@ -427,6 +440,10 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_
 		return -1;
 	}
 
+	page_size = sysinfo->page_size != 0 ? (uint32_t)sysinfo->page_size : 4096u;
+	resp_phy_page_off = resp_phy & (page_size - 1);
+	resp_phy_page = resp_phy - resp_phy_page_off;
+
 	memset(info, 0, sizeof(fbinfo_t));
 	info->width = resp_w;
 	info->height = resp_h;
@@ -435,20 +452,20 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_
 	info->depth = resp_dep;
 	info->pitch = resp_pitch != 0 ? resp_pitch : (info->vwidth * (info->depth / 8));
 	info->phy_base = resp_phy;
-	info->pointer = sysinfo->sys_dma.v_base + sysinfo->sys_dma.size;
+	info->pointer = sysinfo->sys_dma.v_base + sysinfo->sys_dma.size + resp_phy_page_off;
 	info->size = resp_size;
-	info->xoffset = 0;
-	info->yoffset = 0;
-	info->size_max = align_up(resp_size, 4096);
+	info->xoffset = resp_xoff;
+	info->yoffset = resp_yoff;
+	info->size_max = align_up(resp_size + resp_phy_page_off, page_size);
 	info->dma_id = -1;
 
 	if (syscall3(SYS_MEM_MAP,
-			(ewokos_addr_t)info->pointer,
-			(ewokos_addr_t)info->phy_base,
+			(ewokos_addr_t)(info->pointer - resp_phy_page_off),
+			(ewokos_addr_t)resp_phy_page,
 			(ewokos_addr_t)info->size_max) == 0) {
 		klog("fb_init: mem_map failed %ux%ux%u alias=%x v=%x phy=%x size=%u\n",
 				mode->width, mode->height, mode->depth, alias_used,
-				info->pointer, info->phy_base, info->size_max);
+				(uint32_t)(info->pointer - resp_phy_page_off), resp_phy_page, info->size_max);
 		memset(info, 0, sizeof(fbinfo_t));
 		return -1;
 	}

@@ -22,6 +22,7 @@ static fbinfo_t _fb_info;
 #define PROPTAG_GET_DEPTH              0x00040005u
 #define PROPTAG_GET_PIXEL_ORDER        0x00040006u
 #define PROPTAG_GET_PITCH              0x00040008u
+#define PROPTAG_GET_VIRTUAL_OFFSET     0x00040009u
 #define PROPTAG_GET_EDID_BLOCK         0x00030020u
 #define PROPTAG_GET_DISPLAY_DIMENSIONS 0x00040003u  /* same ID as PHYS, different semantic */
 
@@ -92,6 +93,7 @@ typedef struct {
 	prop_tag_dims_t   get_virt;
 	prop_tag_simple_t get_depth;
 	prop_tag_simple_t get_pixel_order;
+	prop_tag_dims_t   get_offset;
 	prop_tag_alloc_t  allocate;
 	prop_tag_simple_t get_pitch;
 } __attribute__((packed)) fb_query_tags_t;
@@ -227,8 +229,13 @@ static uint32_t fb_depth_from_pitch(uint32_t width, uint32_t pitch) {
 static int fb_adopt(const sys_info_t *sysinfo,
 		uint32_t w,  uint32_t h,
 		uint32_t vw, uint32_t vh, uint32_t dep,
+		uint32_t xoff, uint32_t yoff,
 		ewokos_addr_t phy, uint32_t size, uint32_t pitch,
 		fbinfo_t *info) {
+	uint32_t page_size;
+	uint32_t phy_page_off;
+	ewokos_addr_t phy_page;
+
 	if ((w == 0) || (h == 0) || (phy == 0) || (size == 0)) {
 		klog("fb: adopt bad base w=%u h=%u phy=%x size=%u\n", w, h, phy, size);
 		return -1;
@@ -238,6 +245,10 @@ static int fb_adopt(const sys_info_t *sysinfo,
 		return -1;
 	}
 
+	page_size = sysinfo->page_size == 0 ? 4096u : (uint32_t)sysinfo->page_size;
+	phy_page_off = (uint32_t)(phy & (page_size - 1));
+	phy_page = phy - phy_page_off;
+
 	memset(info, 0, sizeof(fbinfo_t));
 	info->width = w;
 	info->height = h;
@@ -246,19 +257,19 @@ static int fb_adopt(const sys_info_t *sysinfo,
 	info->depth = dep;
 	info->pitch = pitch != 0 ? pitch : (info->vwidth * (info->depth / 8));
 	info->phy_base = phy;
-	info->pointer = sysinfo->sys_dma.v_base + sysinfo->sys_dma.size;
+	info->pointer = sysinfo->sys_dma.v_base + sysinfo->sys_dma.size + phy_page_off;
 	info->size = size;
-	info->xoffset = 0;
-	info->yoffset = 0;
-	info->size_max = align_up(size, sysinfo->page_size == 0 ? 4096 : sysinfo->page_size);
+	info->xoffset = xoff;
+	info->yoffset = yoff;
+	info->size_max = align_up(size + phy_page_off, page_size);
 	info->dma_id = -1;
 
 	if (syscall3(SYS_MEM_MAP,
-			(ewokos_addr_t)info->pointer,
-			(ewokos_addr_t)info->phy_base,
+			(ewokos_addr_t)(info->pointer - phy_page_off),
+			(ewokos_addr_t)phy_page,
 			(ewokos_addr_t)info->size_max) == 0) {
 		klog("fb: mem_map fail v=%x phy=%x size=%u\n",
-				info->pointer, info->phy_base, info->size_max);
+				(uint32_t)(info->pointer - phy_page_off), (uint32_t)phy_page, info->size_max);
 		memset(info, 0, sizeof(fbinfo_t));
 		return -1;
 	}
@@ -351,6 +362,11 @@ static void fb_query_tags_init(fb_query_tags_t *t) {
 	t->get_pixel_order.tag.tag_id        = PROPTAG_GET_PIXEL_ORDER;
 	t->get_pixel_order.tag.value_buf_size = 4;
 	t->get_pixel_order.tag.value_length  = 0;
+
+	/* GET_VIRTUAL_OFFSET */
+	t->get_offset.tag.tag_id        = PROPTAG_GET_VIRTUAL_OFFSET;
+	t->get_offset.tag.value_buf_size = 8;
+	t->get_offset.tag.value_length  = 0;
 
 	/* ALLOCATE_BUFFER (0 request bytes = query existing) */
 	t->allocate.tag.tag_id        = PROPTAG_ALLOCATE_BUFFER;
@@ -613,6 +629,8 @@ static int fb_try_mode(const sys_info_t *sysinfo,
 	uint32_t vw   = t.set_virt.width;
 	uint32_t vh   = t.set_virt.height;
 	uint32_t dep  = t.set_depth.value;
+	uint32_t xoff = t.set_offset.width;
+	uint32_t yoff = t.set_offset.height;
 	/* Mask off VC bus alias bits to get ARM physical address. */
 	uint32_t phy  = t.allocate.alignment_or_base & 0x3fffffff;
 	uint32_t size = t.allocate.size;
@@ -630,7 +648,7 @@ static int fb_try_mode(const sys_info_t *sysinfo,
 		dep = actual_bpp;
 	}
 
-	if (fb_adopt(sysinfo, w, h, vw, vh, dep, phy, size, pitch, info) != 0) {
+	if (fb_adopt(sysinfo, w, h, vw, vh, dep, xoff, yoff, phy, size, pitch, info) != 0) {
 		klog("fb: alloc rejected %ux%ux%u "
 				"w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
 				mode->width, mode->height, mode->depth,
@@ -659,6 +677,8 @@ static int fb_query_existing(const sys_info_t *sysinfo, fbinfo_t *info) {
 	uint32_t vw    = t.get_virt.width;
 	uint32_t vh    = t.get_virt.height;
 	uint32_t dep   = t.get_depth.value;
+	uint32_t xoff  = t.get_offset.width;
+	uint32_t yoff  = t.get_offset.height;
 	uint32_t phy   = t.allocate.alignment_or_base & 0x3fffffff;
 	uint32_t size  = t.allocate.size;
 	uint32_t pitch = t.get_pitch.value;
@@ -674,7 +694,7 @@ static int fb_query_existing(const sys_info_t *sysinfo, fbinfo_t *info) {
 		dep = actual_bpp;
 	}
 
-	if (fb_adopt(sysinfo, w, h, vw, vh, dep, phy, size, pitch, info) != 0) {
+	if (fb_adopt(sysinfo, w, h, vw, vh, dep, xoff, yoff, phy, size, pitch, info) != 0) {
 		klog("fb: no boot fb w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
 				w, h, dep, phy, size, pitch);
 		return -1;
@@ -751,7 +771,7 @@ static int fb_channel1_init(const sys_info_t *sysinfo,
 
 	dma_free(0, (ewokos_addr_t)msg);
 
-	if (fb_adopt(sysinfo, w, h, vw, vh, dep, phy, size, pitch, info) != 0) {
+	if (fb_adopt(sysinfo, w, h, vw, vh, dep, 0, 0, phy, size, pitch, info) != 0) {
 		klog("fb: ch1 rejected %ux%ux%u w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
 				mode->width, mode->height, mode->depth,
 				w, h, dep, phy, size, pitch);

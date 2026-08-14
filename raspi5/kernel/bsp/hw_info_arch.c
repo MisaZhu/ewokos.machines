@@ -30,60 +30,6 @@ static ewokos_addr_t _fb_actual_end = 0;  /* (base + size) rounded up to page */
 static bool _fb_splits_allocable = false;
 
 
-/*
- * Map a single PAGE_SIZE page for device MMIO, walking L1→L2→L3 with 64-bit
- * physical addresses (needed for BCM2712 peripherals above 4GB).
- */
-static void set_page_dev(page_dir_entry_t* vm, ewokos_addr_t vaddr, uint64_t phy) {
-	uint32_t l1 = PAGE_L1_INDEX(vaddr);
-	uint32_t l2 = PAGE_L2_INDEX(vaddr);
-	uint32_t l3 = PAGE_L3_INDEX(vaddr);
-
-	/* walk or allocate L2 table */
-	if (vm[l1].EntryType == 0) {
-		page_table_entry_t* l2_table = (page_table_entry_t*)kalloc_page();
-		if (l2_table == NULL)
-			return;
-		memset(l2_table, 0, PAGE_TABLE_SIZE);
-		vm[l1] = (page_dir_entry_t){
-			.NSTable = 1,
-			.EntryType = TYPE_TABLE,
-			.Address = (uint64_t)V2P(l2_table) >> PAGE_SHIFT,
-			.AF = 1,
-		};
-	}
-	page_table_entry_t* l2_table = (page_table_entry_t*)P2V((uint64_t)vm[l1].Address << PAGE_SHIFT);
-
-	/* walk or allocate L3 table */
-	if (l2_table[l2].EntryType == 0) {
-		page_table_entry_t* l3_table = (page_table_entry_t*)kalloc_page();
-		if (l3_table == NULL)
-			return;
-		memset(l3_table, 0, PAGE_TABLE_SIZE);
-		l2_table[l2] = (page_table_entry_t){
-			.NSTable = 1,
-			.EntryType = TYPE_TABLE,
-			.Address = (uint64_t)V2P(l3_table) >> PAGE_SHIFT,
-			.AF = 1,
-		};
-	}
-	page_table_entry_t* l3_table = (page_table_entry_t*)P2V((uint64_t)l2_table[l2].Address << PAGE_SHIFT);
-
-	/* populate L3 page descriptor with device memory attributes */
-	l3_table[l3] = (page_table_entry_t){
-		.NSTable = 1,
-		.EntryType = TYPE_PAGE,
-		.Address = phy >> PAGE_SHIFT,
-		.AF = 1,
-		.SH = STAGE2_SH_OUTER_SHAREABLE,
-		.S2AP = 0,
-		.MemAttr = MT_DEVICE_NGNRNE,
-		.PXN = 1,
-		.UXN = 1,
-	};
-
-}
-
 void sys_info_init_arch(void) {
 	memset(&_sys_info, 0, sizeof(sys_info_t));
 
@@ -152,6 +98,16 @@ void sys_info_init_arch(void) {
 	if(_sys_info.total_usable_mem_size > MAX_USABLE_MEM_SIZE)
 		_sys_info.total_usable_mem_size = MAX_USABLE_MEM_SIZE;
 
+#ifdef PAGE_SIZE_64K
+	/*
+	 * Pi 5 native HDMI allocates the scanout buffer from sys_dma. With 64KB
+	 * granules the allocation is rounded up more aggressively, and large
+	 * displays can leave too little headroom in the generic 32MB pool on 2GB
+	 * boards. Reserve a larger DMA window up front for display bring-up.
+	 */
+	_sys_info.sys_dma.size = 64*MB;
+#endif
+
 	strcpy(_sys_info.arch, "aarch64");
 
 	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
@@ -169,28 +125,27 @@ void sys_info_init_arch(void) {
 void arch_vm(page_dir_entry_t* vm) {
 	/*
 	 * Map MMIO windows using 4KB pages (TYPE_PAGE at L3), replacing the
-	 * previous 2MB block mappings (TYPE_BLOCK at L2).  set_page_dev()
-	 * carries full 64-bit physical addresses for peripheral windows
-	 * above 4GB (EMMC, RP1).
+	 * previous 2MB block mappings (TYPE_BLOCK at L2). Use the common page-table
+	 * builder so all page sizes share the same walk and descriptor encoding.
 	 */
 
 
 	/* Main MMIO window: 64 MB at 0x10_7C000000 */
 	for (uint32_t i = 0; i < PI5_MMIO_SIZE / PAGE_SIZE; i++) {
-		set_page_dev(vm, MMIO_BASE + i * PAGE_SIZE,
-			     PI5_MMIO_PHY + i * PAGE_SIZE);
+		(void)map_page(vm, MMIO_BASE + i * PAGE_SIZE,
+				PI5_MMIO_PHY + i * PAGE_SIZE, AP_RW_D, PTE_ATTR_DEV);
 	}
 
 	/* SDHCI hosts window: PI5_EMMC_WIN_SIZE at 0x10_00E00000 */
 	for (uint32_t i = 0; i < PI5_EMMC_WIN_SIZE / PAGE_SIZE; i++) {
-		set_page_dev(vm, MMIO_BASE + PI5_EMMC_WIN_OFF + i * PAGE_SIZE,
-			     PI5_EMMC_PHY_WIN + i * PAGE_SIZE);
+		(void)map_page(vm, MMIO_BASE + PI5_EMMC_WIN_OFF + i * PAGE_SIZE,
+				PI5_EMMC_PHY_WIN + i * PAGE_SIZE, AP_RW_D, PTE_ATTR_DEV);
 	}
 
 	/* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */
 	for (uint32_t i = 0; i < PI5_RP1_SIZE / PAGE_SIZE; i++) {
-		set_page_dev(vm, MMIO_BASE + PI5_RP1_WIN_OFF + i * PAGE_SIZE,
-			     PI5_RP1_PHY + i * PAGE_SIZE);
+		(void)map_page(vm, MMIO_BASE + PI5_RP1_WIN_OFF + i * PAGE_SIZE,
+				PI5_RP1_PHY + i * PAGE_SIZE, AP_RW_D, PTE_ATTR_DEV);
 	}
 }
 
