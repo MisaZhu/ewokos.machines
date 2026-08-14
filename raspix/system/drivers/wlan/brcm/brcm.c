@@ -4634,12 +4634,12 @@ static void* brcm_worker_main(void* p) {
 			next_housekeeping_ms = now_ms + 1000;
 			if (bus->diag_tx_frames || bus->diag_tx_qblocks ||
 					bus->diag_tx_credit_stalls || bus->diag_tx_breakthroughs) {
-				brcm_log("wtx: sent=%u qblk=%u cstall=%u brk=%u cred=%d qd=%d fc=%u tx_max=%u tx_seq=%u\n",
+				/*brcm_log("wtx: sent=%u qblk=%u cstall=%u brk=%u cred=%d qd=%d fc=%u tx_max=%u tx_seq=%u\n",
 						bus->diag_tx_frames, bus->diag_tx_qblocks,
 						bus->diag_tx_credit_stalls, bus->diag_tx_breakthroughs,
 						(int)(int8_t)(bus->tx_max - bus->tx_seq),
 						queue_buffer_check(bus->tx_queue), bus->fcstate,
-						bus->tx_max, bus->tx_seq);
+						bus->tx_max, bus->tx_seq);*/
 				bus->diag_tx_frames = 0;
 				bus->diag_tx_qblocks = 0;
 				bus->diag_tx_credit_stalls = 0;

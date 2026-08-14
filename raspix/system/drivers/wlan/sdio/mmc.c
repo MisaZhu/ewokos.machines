@@ -258,36 +258,31 @@ static int brcm_init(void)
 	if (err)
 		return err;
 
-        bool host_allows_high_speed = sdhci_host_allows_high_speed();
         bool high_speed = false;
-        uint32_t host_max_clk = sdhci_get_max_clock();
 
         /*
          * Enumerate the card in the safest timing first, then move to the
-         * fastest timing both ends confirm they support.
+         * fastest timing both ends confirm they support. CYW4343x/43455 SDIO
+         * functions normally advertise SHS/EHS; enable it unconditionally,
+         * exactly like the pi3/pi4-proven bring-up sequence.
          *
-         * Some raspix boards keep SDHCI_QUIRK_NO_HISPD_BIT set on the host,
-         * which means the controller must stay out of the HISPD/SDR25 path.
-         * In that case do NOT switch the card-side CCCR speed bit either:
-         * host legacy timing + card EHS + 50MHz probing is an unstable mixed
-         * mode that can attach yet crawl, or fail later on func1/backplane
-         * traffic. Runtime evidence on raspix also shows some boards only get
-         * a 20MHz SD1 source clock from firmware; trying a synthetic 25MHz
-         * target on those systems only exercises wrong divider math. Keep both
-         * ends in legacy timing and derive the probe ladder from the actual
-         * host source clock.
+         * Do NOT derive the probe ladder from the firmware-reported source
+         * clock: that logic was tuned for 20MHz-source boards (Zero 2 W /
+         * pi5-era bring-up) but on Pi4/CM4 the mailbox reports 250MHz, which
+         * degenerated the ladder into {250MHz(dead), 10MHz} - skipping the
+         * proven 25MHz step and leaving the 43455 firmware download failing
+         * with CMD53 data CRC errors. The fixed 50/25/10 ladder below is
+         * self-verifying (CMD52 check + step-down), and the divider math in
+         * sdhci_set_clock() already clamps targets above the real source
+         * clock, so low-source boards keep working unchanged.
          */
 	err = mmc_sdio_set_bus_width(4);
 	if (err)
 		return err;
 
-        if (host_allows_high_speed) {
-                err = mmc_sdio_try_enable_high_speed(&high_speed);
-                if (err) {
-                        brcm_log("sdio high-speed enable failed %d, keep current timing\n", err);
-                }
-        } else {
-                brcm_log("sdio host keeps legacy timing (NO_HISPD/BROKEN_HISPD)\n");
+        err = mmc_sdio_try_enable_high_speed(&high_speed);
+        if (err) {
+                brcm_log("sdio high-speed enable failed %d, keep current timing\n", err);
         }
 
         /*
@@ -298,33 +293,13 @@ static int brcm_init(void)
          * back reliably instead of failing the whole probe.
          */
         {
-                static const uint32_t try_clks_hs[] =
+                static const uint32_t try_clks[] =
                         { 50000000, 25000000, 10000000 };
-                uint32_t try_clks_legacy[2];
-                const uint32_t *try_clks = host_allows_high_speed ?
-                        try_clks_hs : try_clks_legacy;
-                unsigned int legacy_count = 0;
-                unsigned int try_clks_count = host_allows_high_speed ?
-                        (unsigned int)(sizeof(try_clks_hs) / sizeof(try_clks_hs[0])) :
-                        0;
                 unsigned int i;
                 uint8_t cccr_rev;
 
-                if (host_max_clk == 0)
-                        host_max_clk = 50000000;
-                if (!host_allows_high_speed) {
-                        try_clks_legacy[legacy_count++] = host_max_clk;
-                        if (host_max_clk > 10000000)
-                                try_clks_legacy[legacy_count++] = 10000000;
-                        try_clks_count = legacy_count;
-                        if (host_max_clk < 25000000) {
-                                brcm_log("sdio host source clock is %uHz; 25MHz legacy is impossible on this board\n",
-                                         host_max_clk);
-                        }
-                }
-
                 err = -EIO;
-                for (i = 0; i < try_clks_count; i++) {
+                for (i = 0; i < sizeof(try_clks)/sizeof(try_clks[0]); i++) {
                         _mmc.clock = try_clks[i];
                         _mmc.selected_mode = high_speed ? MMC_HS : MMC_LEGACY;
                         err = sdhci_set_ios(&_mmc);
