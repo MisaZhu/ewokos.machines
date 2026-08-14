@@ -47,10 +47,20 @@ static uint8_t hid_btn_to_mouse(uint8_t mask) {
 	return MOUSE_BUTTON_NONE;
 }
 
+static void mouse_emit_wheel(int8_t wheel) {
+	while (wheel > 0) {
+		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_SCROLL_UP, 0, 0);
+		wheel--;
+	}
+	while (wheel < 0) {
+		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_SCROLL_DOWN, 0, 0);
+		wheel++;
+	}
+}
+
 static void mouse_handle_report(uint8_t btn, int8_t dx, int8_t dy, int8_t wheel) {
 	uint8_t pressed = btn & (uint8_t)~last_btn;
 	uint8_t released = last_btn & (uint8_t)~btn;
-	static uint32_t log_cnt = 0;
 	last_btn = btn;
 
 	if (pressed) {
@@ -63,12 +73,7 @@ static void mouse_handle_report(uint8_t btn, int8_t dx, int8_t dy, int8_t wheel)
 		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_NONE, dx, dy);
 	}
 
-	if (wheel > 0) {
-		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_SCROLL_DOWN, 0, 0);
-	}
-	else if (wheel < 0) {
-		mouse_push_evt(MOUSE_STATE_MOVE, MOUSE_BUTTON_SCROLL_UP, 0, 0);
-	}
+	mouse_emit_wheel(wheel);
 }
 
 static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
