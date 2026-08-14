@@ -3,9 +3,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-#include <fb/fb.h>
+#include <display/display.h>
 #include <ewoksys/vdevice.h>
-#include <fbd/fbd.h>
+#include <displayd/displayd.h>
 #include <st77xx/st77xx.h>
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
 	int lcd_bl = 0;
         int opti = doargs(argc, argv);
 
-        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
+        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
 
         if((argc - opti) > 3) {
                 lcd_rst = atoi(argv[opti + 1]);
@@ -78,10 +78,10 @@ int main(int argc, char** argv) {
 	st77xx_init(LCD_WIDTH, LCD_HEIGHT, G_ROTATE_90, 1,
 			lcd_dc, lcd_cs, lcd_rst, lcd_bl > 0 ? lcd_bl : -1, 4);
 
-	fbd_t fbd;
-	fbd.splash = NULL;
-	fbd.flush = flush;
-	fbd.init = init;
-	fbd.get_info = get_info;
-        return fbd_run(&fbd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
+	fbdisplayd_t fbdisplayd;
+	fbdisplayd.splash = NULL;
+	fbdisplayd.flush = flush;
+	fbdisplayd.init = init;
+	fbdisplayd.get_info = get_info;
+        return fbdisplayd_run(&fbdisplayd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
 }

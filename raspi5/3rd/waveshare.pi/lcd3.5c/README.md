@@ -17,7 +17,7 @@ The driver assumes the standard Waveshare 3.5C 40-pin header wiring:
 
 ### Runtime
 
-- framebuffer mount: `/dev/fb0`
+- framebuffer mount: `/dev/disp0`
 - driver binary: `/drivers/waveshare/lcdhatd`
 - console UART: `/drivers/raspi5/uartd`
 

@@ -2,8 +2,8 @@
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
 
-@/bin/ipcserv /drivers/displayd
-@/bin/ipcserv /drivers/x86/fbd /dev/fb0
+@/bin/ipcserv /drivers/displaymand
+@/bin/ipcserv /drivers/x86/fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/fontd
 
 @/bin/ipcserv /drivers/timerd

@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-#include <fbd/fbd.h>
+#include <displayd/displayd.h>
 #include <xpt2046/xpt2046.h>
 #include <ewoksys/vdevice.h>
 

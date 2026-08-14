@@ -5,8 +5,8 @@
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0 
 
-@/bin/ipcserv /drivers/displayd             
-@/bin/ipcserv /drivers/raspix/fbd           /dev/fb0
+@/bin/ipcserv /drivers/displaymand             
+@/bin/ipcserv /drivers/raspix/fbdisplayd           /dev/disp0
 @/bin/ipcserv /drivers/fontd                
 
 @export UX_ID=0

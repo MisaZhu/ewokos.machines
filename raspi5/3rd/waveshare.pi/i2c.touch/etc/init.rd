@@ -2,8 +2,8 @@
 
 #@/bin/ipcserv /drivers/raspi5/uartd         /dev/tty0
 
-@/bin/ipcserv /drivers/displayd        
-@/bin/ipcserv /drivers/raspi5/fbd      /dev/fb0
+@/bin/ipcserv /drivers/displaymand        
+@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
 @/bin/ipcserv /drivers/fontd           
 
 @export UX_ID=0

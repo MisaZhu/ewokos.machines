@@ -3,7 +3,7 @@ basic:
 	cd powerd; $(MAKE)
 
 gui:
-	cd fbd; $(MAKE)
+	cd fbdisplayd; $(MAKE)
 	cd usbd; $(MAKE)
 	cd usbkeybd; $(MAKE)
 	cd usbmoused; $(MAKE)
@@ -15,7 +15,7 @@ network:
 clean:
 	cd ttyd; $(MAKE) clean
 	cd powerd; $(MAKE) clean
-	cd fbd; $(MAKE) clean
+	cd fbdisplayd; $(MAKE) clean
 	cd usbd; $(MAKE) clean
 	cd usbkeybd; $(MAKE) clean
 	cd usbmoused; $(MAKE) clean

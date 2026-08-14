@@ -1,7 +1,7 @@
 @/bin/ipcserv /drivers/logd /dev/log
 
-@/bin/ipcserv /drivers/displayd       
-@/bin/ipcserv /drivers/miyoo/fbd      /dev/fb0
+@/bin/ipcserv /drivers/displaymand       
+@/bin/ipcserv /drivers/miyoo/fbdisplayd      /dev/disp0
 @/bin/ipcserv /drivers/fontd          
 
 @/bin/ipcserv /sbin/splashd -w 480 -h 320

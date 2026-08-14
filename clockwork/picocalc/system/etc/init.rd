@@ -1,7 +1,7 @@
 @/bin/ipcserv /drivers/logd /dev/log
 
-@/bin/ipcserv /drivers/displayd             
-@/bin/ipcserv /drivers/rk3506/fbd            /dev/fb0
+@/bin/ipcserv /drivers/displaymand             
+@/bin/ipcserv /drivers/rk3506/fbdisplayd            /dev/disp0
 @/bin/ipcserv /drivers/fontd                
 
 @export UX_ID=0

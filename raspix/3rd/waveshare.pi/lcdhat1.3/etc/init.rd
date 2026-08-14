@@ -3,8 +3,8 @@
 #@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
 #@set_stdio /dev/tty0
 
-@/bin/ipcserv /drivers/displayd           
-@/bin/ipcserv /drivers/waveshare/lcdhatd  /dev/fb0 
+@/bin/ipcserv /drivers/displaymand           
+@/bin/ipcserv /drivers/waveshare/lcdhatd  /dev/disp0 
 @/bin/ipcserv /drivers/fontd              
 
 @/bin/ipcserv /drivers/consoled       

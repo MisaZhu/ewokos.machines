@@ -6,7 +6,7 @@
 
 /*
  * Fallback framebuffer path: ask the VideoCore mailbox to allocate/
- * configure a framebuffer, exactly the same way the vanilla raspix fbd
+ * configure a framebuffer, exactly the same way the vanilla raspix fbdisplayd
  * does. On the uConsole this drives whatever HDMI/DPI output is enabled
  * on the CM4 baseboard (or nothing at all if the panel is the only
  * display), which is useful for early bring-up before the native DSI

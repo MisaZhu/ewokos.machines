@@ -1,8 +1,8 @@
 @export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log 
 
-@/bin/ipcserv /drivers/displayd       
-@/bin/ipcserv /drivers/xgo/spilcdd    /dev/fb0
+@/bin/ipcserv /drivers/displaymand       
+@/bin/ipcserv /drivers/xgo/spilcdd    /dev/disp0
 @/bin/ipcserv /drivers/fontd          
 
 @/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 14

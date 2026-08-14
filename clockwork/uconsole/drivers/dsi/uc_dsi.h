@@ -178,7 +178,7 @@ int      uc_dsi_dcs_read(uint8_t cmd, uint8_t* rx, uint32_t rx_len, int lp);
 
 /*
  * Switch subsequent uc_dsi_dcs_write() calls between HS (default, 0)
- * and LP escape mode (1).  Used by fbd to retry the panel init table
+ * and LP escape mode (1).  Used by fbdisplayd to retry the panel init table
  * in LP when the panel ignores the HS command waveform.
  */
 void     uc_dsi_set_cmd_lp(int on);

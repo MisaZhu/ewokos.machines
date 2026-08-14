@@ -1,9 +1,9 @@
 @export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log
 
-@/bin/ipcserv /drivers/displayd              
-@/bin/ipcserv /drivers/clockwork/fbd         /dev/fb0
-#@/bin/ipcserv /drivers/clockwork/fb6d         /dev/fb0
+@/bin/ipcserv /drivers/displaymand              
+@/bin/ipcserv /drivers/clockwork/fbdisplayd         /dev/disp0
+#@/bin/ipcserv /drivers/clockwork/fbdisplay6d         /dev/disp0
 @/bin/ipcserv /drivers/fontd                 
 
 @/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 12 -d

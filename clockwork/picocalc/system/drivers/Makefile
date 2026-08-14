@@ -1,9 +1,9 @@
 all: 
-	cd fbd; $(MAKE)
+	cd fbdisplayd; $(MAKE)
 	cd kbd; $(MAKE)
 	cd uartd; $(MAKE)
 
 clean:	
-	cd fbd; $(MAKE) clean
+	cd fbdisplayd; $(MAKE) clean
 	cd kbd; $(MAKE) clean
 	cd uartd; $(MAKE) clean

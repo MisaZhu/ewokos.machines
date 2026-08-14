@@ -1,4 +1,4 @@
-#include <fb/fb.h>
+#include <display/display.h>
 #include <font/font.h>
 #include <graph/graph.h>
 #include <ewoksys/proc.h>
@@ -105,7 +105,7 @@ static int fetch_ip_list(char ips[][MAX_IP_LEN]) {
 	return count;
 }
 
-static void draw_screen(fb_t* fb, font_t* font, char ips[][MAX_IP_LEN], int count) {
+static void draw_screen(display_t* display, font_t* font, char ips[][MAX_IP_LEN], int count) {
 	graph_t* g;
 	char time_buf[16];
 	int x = 4;
@@ -123,7 +123,7 @@ static void draw_screen(fb_t* fb, font_t* font, char ips[][MAX_IP_LEN], int coun
 	else
 		strcpy(time_buf, "--:--:--");
 
-	g = fb_fetch_graph(fb);
+	g = display_fetch_graph(display);
 	if(g == NULL)
 		return;
 
@@ -141,11 +141,11 @@ static void draw_screen(fb_t* fb, font_t* font, char ips[][MAX_IP_LEN], int coun
 		y += line_h;
 	}
 
-	fb_flush(fb, true);
+	display_flush(display, true);
 }
 
 int main(int argc, char** argv) {
-	fb_t fb;
+	display_t display;
 	font_t* font;
         char ips[MAX_IPS][MAX_IP_LEN];
         int count;
@@ -154,7 +154,7 @@ int main(int argc, char** argv) {
 	(void)argc;
 	(void)argv;
 
-	if(fb_open(FB_DEV, 0, &fb) != 0) {
+	if(display_open(FB_DEV, 0, &display) != 0) {
 		printf("open %s failed\n", FB_DEV);
 		return -1;
 	}
@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
 	font = font_new(DEFAULT_SYSTEM_FONT, true);
 	if(font == NULL) {
 		printf("load font failed\n");
-		fb_close(&fb);
+		display_close(&display);
 		return -1;
 	}
 
@@ -179,11 +179,11 @@ int main(int argc, char** argv) {
                         last_ip_update = now;
                 }
 
-                draw_screen(&fb, font, ips, count);
+                draw_screen(&display, font, ips, count);
                 proc_usleep(DRAW_UPDATE_US);
 	}
 
 	font_free(font);
-	fb_close(&fb);
+	display_close(&display);
 	return 0;
 }

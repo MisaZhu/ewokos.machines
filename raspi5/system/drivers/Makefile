@@ -8,7 +8,7 @@ network:
 	cd wlan; $(MAKE)
 
 gui:
-	cd fbd; $(MAKE)
+	cd fbdisplayd; $(MAKE)
 	cd usbhostd; $(MAKE)
 	cd hid_keybd; $(MAKE)
 	cd hid_moused; $(MAKE)
@@ -20,7 +20,7 @@ clean:
 	cd fand; $(MAKE) clean
 	cd cpud; $(MAKE) clean
 	cd nvmefsd; $(MAKE) clean
-	cd fbd; $(MAKE) clean
+	cd fbdisplayd; $(MAKE) clean
 	cd usbhostd; $(MAKE) clean
 	cd hid_keybd; $(MAKE) clean
 	cd hid_moused; $(MAKE) clean

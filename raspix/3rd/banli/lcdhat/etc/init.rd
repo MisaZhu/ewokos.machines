@@ -3,8 +3,8 @@
 #@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
 #@set_stdio /dev/tty0
 
-@/bin/ipcserv /drivers/displayd           
-@/bin/ipcserv /drivers/banli/lcdhatd  /dev/fb0 
+@/bin/ipcserv /drivers/displaymand           
+@/bin/ipcserv /drivers/banli/lcdhatd  /dev/disp0 
 @/bin/ipcserv /drivers/fontd              
 
 @/bin/ipcserv /sbin/splashd -d
@@ -40,7 +40,7 @@
 @/bin/bgrun /sbin/x/xmouse     /dev/vjoystick
 
 @/bin/splash -m "loading touch" -p 65
-@/bin/bgrun /sbin/x/xtouch  /dev/fb0
+@/bin/bgrun /sbin/x/xtouch  /dev/disp0
 
 @/bin/splash -m "loading xim_vkey" -p 70
 @/bin/bgrun /sbin/x/xim_vkey 

@@ -2,8 +2,8 @@
 
 @/bin/ipcserv /drivers/rk3128/rk_uartd       /dev/tty0
 
-@/bin/ipcserv /drivers/displayd             
-@/bin/ipcserv /drivers/rk3128/fbd            /dev/fb0
+@/bin/ipcserv /drivers/displaymand             
+@/bin/ipcserv /drivers/rk3128/fbdisplayd            /dev/disp0
 @/bin/ipcserv /drivers/fontd                
 @/bin/load_font
 

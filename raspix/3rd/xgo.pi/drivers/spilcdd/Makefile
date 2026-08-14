@@ -19,7 +19,7 @@ $(EXTRA_LIBS_DIR)/st77xx/src/st77xx.o: $(EXTRA_LIBS_DIR)/st77xx/src/st77xx.c $(E
 
 $(TASK): $(TASK_OBJS)
 	mkdir -p $(BUILD_DIR)
-	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  -lfbd $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  -ldisplayd $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
 
 clean:
 	rm -f $(TASK_OBJS)

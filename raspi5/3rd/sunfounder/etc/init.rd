@@ -2,11 +2,11 @@
 @/bin/ipcserv /drivers/logd /dev/log
 
 
-@/bin/ipcserv /drivers/displayd
-@/bin/ipcserv /drivers/raspi5/fbd      /dev/fb0
+@/bin/ipcserv /drivers/displaymand
+@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
 @/bin/ipcserv /drivers/fontd
 
-@/bin/ipcserv /drivers/sunfounder/i2cfbd /dev/fb1
+@/bin/ipcserv /drivers/sunfounder/i2cdisplayd /dev/fb1
 @/bin/ipcserv /drivers/consoled  -d 1 /dev/console0
 @set_stdio /dev/console0
 

@@ -2,8 +2,8 @@
 
 @/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
 
-@/bin/ipcserv /drivers/displayd             
-@/bin/ipcserv /drivers/waveshare/lcdhatd   /dev/fb0
+@/bin/ipcserv /drivers/displaymand             
+@/bin/ipcserv /drivers/waveshare/lcdhatd   /dev/disp0
 @/bin/ipcserv /drivers/fontd                
 
 @/bin/ipcserv /drivers/consoled       
@@ -14,7 +14,7 @@
 @/bin/ipcserv /drivers/nulld                /dev/null
 @/bin/ipcserv /drivers/ramfsd               /tmp
 
-@/bin/bgrun /sbin/x/xtouch /dev/fb0 
+@/bin/bgrun /sbin/x/xtouch /dev/disp0 
 @/bin/bgrun /sbin/x/xim_vkey 
 
 

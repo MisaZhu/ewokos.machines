@@ -3,10 +3,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-#include <fb/fb.h>
+#include <display/display.h>
 #include <ewoksys/vdevice.h>
 #include <ili9486/ili9486.h>
-#include <fbd/fbd.h>
+#include <displayd/displayd.h>
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 	uint32_t sz = 4 * g->w * g->h;
@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
 	int lcd_bl = 25;
         int opti = doargs(argc, argv);
 
-        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/fb0";
+        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
 
         if((argc - opti) > 3) {
                 lcd_dc = atoi(argv[opti + 1]);
@@ -73,10 +73,10 @@ int main(int argc, char** argv) {
 	bcm283x_spi_init();
 	ili9486_init(320, 240, G_ROTATE_270, 0, lcd_dc, lcd_cs, lcd_rst, lcd_bl, 16);
 
-	fbd_t fbd;
-	fbd.splash = NULL;
-	fbd.flush = flush;
-	fbd.init = init;
-	fbd.get_info = get_info;
-        return fbd_run(&fbd, mnt_point, LCD_HEIGHT, LCD_WIDTH, "", _display_index);
+	fbdisplayd_t fbdisplayd;
+	fbdisplayd.splash = NULL;
+	fbdisplayd.flush = flush;
+	fbdisplayd.init = init;
+	fbdisplayd.get_info = get_info;
+        return fbdisplayd_run(&fbdisplayd, mnt_point, LCD_HEIGHT, LCD_WIDTH, "", _display_index);
 }

@@ -9,8 +9,8 @@ basic:
 	cd camd; $(MAKE)
 
 gui:
-	cd fbd; $(MAKE)
-	cd dsi_fbd; $(MAKE)
+	cd fbdisplayd; $(MAKE)
+	cd dsi_fbdisplayd; $(MAKE)
 	cd g2dd; $(MAKE)
 	cd hid_moused; $(MAKE)
 	cd hid_touchd; $(MAKE)
@@ -22,8 +22,8 @@ network:
 clean:	
 	cd uartd; $(MAKE) clean
 	cd cpud; $(MAKE) clean
-	cd fbd; $(MAKE) clean
-	cd dsi_fbd; $(MAKE) clean
+	cd fbdisplayd; $(MAKE) clean
+	cd dsi_fbdisplayd; $(MAKE) clean
 	cd g2dd; $(MAKE) clean
 	cd soundd; $(MAKE) clean
 	cd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd; $(MAKE) clean

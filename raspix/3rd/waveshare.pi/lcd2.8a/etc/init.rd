@@ -2,8 +2,8 @@
 
 @/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
 
-@/bin/ipcserv /drivers/displayd             
-@/bin/ipcserv /drivers/waveshare/lcdhatd   /dev/fb0
+@/bin/ipcserv /drivers/displaymand             
+@/bin/ipcserv /drivers/waveshare/lcdhatd   /dev/disp0
 @/bin/ipcserv /drivers/fontd                
 
 @export UX_ID=0
@@ -23,7 +23,7 @@
 @/bin/ipcserv /drivers/xserverd             /dev/x
 
 @/bin/bgrun /sbin/x/xim_none   /dev/keyb0 
-@/bin/bgrun /sbin/x/xtouch /dev/fb0 
+@/bin/bgrun /sbin/x/xtouch /dev/disp0 
 @/bin/bgrun /sbin/x/xim_vkey 
 
 @/bin/bgrun /bin/x/xsession misa 
