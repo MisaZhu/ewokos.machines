@@ -8,12 +8,35 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
-#define FB_DEV "/dev/fb1"
+#define DISP_MAN_DEV "/dev/displayman"
 #define DRAW_UPDATE_US 1000000
 #define IP_UPDATE_SEC 3
 #define MAX_IPS 8
 #define MAX_IP_LEN 16
+
+static int _display_index = 0;
+
+static int doargs(int argc, char* argv[]) {
+	int c = 0;
+
+	while(c != -1) {
+		c = getopt(argc, argv, "i:");
+		if(c == -1)
+			break;
+
+		switch(c) {
+		case 'i':
+			_display_index = atoi(optarg);
+			break;
+		default:
+			printf("usage: %s [-i display_index]\n", argv[0]);
+			return -1;
+		}
+	}
+	return optind;
+}
 
 static bool is_valid_ip(const char* ip) {
 	if(ip == NULL || ip[0] == 0)
@@ -147,15 +170,16 @@ static void draw_screen(display_t* display, font_t* font, char ips[][MAX_IP_LEN]
 int main(int argc, char** argv) {
 	display_t display;
 	font_t* font;
-        char ips[MAX_IPS][MAX_IP_LEN];
-        int count;
-        time_t last_ip_update;
+	char ips[MAX_IPS][MAX_IP_LEN];
+	int count;
+	time_t last_ip_update;
+	int opti = doargs(argc, argv);
 
-	(void)argc;
-	(void)argv;
+	if(opti < 0)
+		return -1;
 
-	if(display_open(FB_DEV, 0, &display) != 0) {
-		printf("open %s failed\n", FB_DEV);
+	if(displayman_open(DISP_MAN_DEV, _display_index, &display) != 0) {
+		printf("open %s:%d failed\n", DISP_MAN_DEV, _display_index);
 		return -1;
 	}
 
@@ -166,21 +190,21 @@ int main(int argc, char** argv) {
 		return -1;
 	}
 
-        memset(ips, 0, sizeof(ips));
-        count = fetch_ip_list(ips);
-        last_ip_update = time(NULL);
+	memset(ips, 0, sizeof(ips));
+	count = fetch_ip_list(ips);
+	last_ip_update = time(NULL);
 
 	while(true) {
-                time_t now = time(NULL);
+		time_t now = time(NULL);
 
-                if(now < last_ip_update || (now - last_ip_update) >= IP_UPDATE_SEC) {
-                        memset(ips, 0, sizeof(ips));
-                        count = fetch_ip_list(ips);
-                        last_ip_update = now;
-                }
+		if(now < last_ip_update || (now - last_ip_update) >= IP_UPDATE_SEC) {
+			memset(ips, 0, sizeof(ips));
+			count = fetch_ip_list(ips);
+			last_ip_update = now;
+		}
 
-                draw_screen(&display, font, ips, count);
-                proc_usleep(DRAW_UPDATE_US);
+		draw_screen(&display, font, ips, count);
+		proc_usleep(DRAW_UPDATE_US);
 	}
 
 	font_free(font);
