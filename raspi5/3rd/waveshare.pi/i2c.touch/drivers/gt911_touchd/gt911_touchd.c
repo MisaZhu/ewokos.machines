@@ -99,19 +99,12 @@ static int tp_loop(vdevice_t* dev, void* p) {
 	 * On the DPI panel the controller exposes IRQ on GPIO27. When the line is
 	 * inactive there is no pending touch data, so skip the expensive bit-bang
 	 * I2C transaction and only keep a cheap GPIO poll while idle.
+	 *
+	 * Do not treat an inactive IRQ as a release while a finger is already down:
+	 * GT911 only pulses/asserts IRQ when fresh data is available, so a steady
+	 * long-press can leave IRQ inactive until the next state change.
 	 */
 	if (!irq_asserted) {
-		if (press && (now_ms - last_ts) > TP_RELEASE_DELAY_MS) {
-			press = false;
-			touch_data[0] = press;
-			touch_data[1] = cordinate[0].x;
-			touch_data[2] = cordinate[0].y;
-			if (!has_data) {
-				has_data = true;
-				need_wakeup = true;
-			}
-		}
-
 		if (need_wakeup) {
 			poll_sleep_us = TP_POLL_MIN_US;
 			vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
