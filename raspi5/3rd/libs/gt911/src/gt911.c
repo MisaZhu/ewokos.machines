@@ -1,12 +1,10 @@
 /*
  * GT911 touch controller glue for Raspberry Pi 5.
  *
- * Unlike the raspix version, which bit-banged i2c over two GPIOs with the
- * arch_bcm283x primitives, the Pi 5 routes i2c through the RP1 southbridge
- * DW_apb_i2c controllers, so all bus traffic goes through the
- * bcm2712_i2c_* API and a probe entry names a controller, not a pin pair.
- * The panel sits on the 40-pin header bus (i2c1, GPIO2/3); rst/int stay
- * plain GPIOs driven through the RP1 gpio API for address selection.
+ * The official Waveshare 3.5" DPI overlays wire Goodix through software I2C
+ * on GPIO10/11 and use GPIO27 as IRQ, leaving the DPI666 data pins intact.
+ * Keep the transport configurable so the driver can use either GPIO bit-bang
+ * I2C or one of the RP1 hardware controllers when a different panel needs it.
  */
 #include <string.h>
 #include <stdint.h>
@@ -20,21 +18,145 @@
 static GT911_Status_t CommunicationResult;
 static uint8_t RxBuffer[200];
 static uint8_t gt911_addr = GOODIX_ADDRESS_5D;
-static int32_t gt911_bus = BCM2712_I2C_BUS_HEADER;
+static GT911_Platform_t gt911_platform = {
+	.bus = -1,
+	.sda = 10,
+	.scl = 11,
+	.rst = -1,
+	.irq = 27,
+	.addr = 0,
+};
 
-typedef struct {
-	int32_t bus;    /* RP1 DW_apb_i2c controller index */
-	int32_t rst;
-	int32_t intr;
-} gt911_bus_t;
+#define GT911_GPIO_I2C_DELAY_LOOPS 32u
+#define GT911_MAX_TOUCH_POINTS    5u
+#define GT911_FIRST_POINT_READ_LEN 6u
+
+static inline bool gt911_use_gpio_i2c(void) {
+	return gt911_platform.bus < 0;
+}
+
+static inline void gt911_i2c_delay(void) {
+	for (volatile uint32_t i = 0; i < GT911_GPIO_I2C_DELAY_LOOPS; ++i)
+		__asm__ volatile("" ::: "memory");
+}
+
+static inline void gt911_gpio_release(uint32_t pin) {
+	bcm2712_gpio_pull(pin, GPIO_PULL_UP);
+	bcm2712_gpio_config(pin, GPIO_FUNC_INPUT);
+}
+
+static inline void gt911_gpio_drive_low(uint32_t pin) {
+	bcm2712_gpio_config(pin, GPIO_FUNC_OUTPUT);
+	bcm2712_gpio_write(pin, false);
+}
+
+static void gt911_gpio_i2c_init(void) {
+	bcm2712_gpio_init();
+	bcm2712_gpio_pull(gt911_platform.sda, GPIO_PULL_UP);
+	bcm2712_gpio_pull(gt911_platform.scl, GPIO_PULL_UP);
+	gt911_gpio_release(gt911_platform.sda);
+	gt911_gpio_release(gt911_platform.scl);
+}
+
+static void gt911_i2c_start(void) {
+	gt911_gpio_release(gt911_platform.sda);
+	gt911_gpio_release(gt911_platform.scl);
+	gt911_i2c_delay();
+	gt911_gpio_drive_low(gt911_platform.sda);
+	gt911_i2c_delay();
+	gt911_gpio_drive_low(gt911_platform.scl);
+}
+
+static void gt911_i2c_stop(void) {
+	gt911_gpio_drive_low(gt911_platform.sda);
+	gt911_i2c_delay();
+	gt911_gpio_release(gt911_platform.scl);
+	gt911_i2c_delay();
+	gt911_gpio_release(gt911_platform.sda);
+	gt911_i2c_delay();
+}
+
+static void gt911_i2c_write_bit(uint8_t data) {
+	if (data)
+		gt911_gpio_release(gt911_platform.sda);
+	else
+		gt911_gpio_drive_low(gt911_platform.sda);
+	gt911_i2c_delay();
+	gt911_gpio_release(gt911_platform.scl);
+	gt911_i2c_delay();
+	gt911_gpio_drive_low(gt911_platform.scl);
+}
+
+static uint8_t gt911_i2c_read_bit(void) {
+	uint8_t data;
+
+	gt911_gpio_release(gt911_platform.sda);
+	gt911_i2c_delay();
+	gt911_gpio_release(gt911_platform.scl);
+	gt911_i2c_delay();
+	data = bcm2712_gpio_read(gt911_platform.sda) ? 1 : 0;
+	gt911_gpio_drive_low(gt911_platform.scl);
+	return data;
+}
+
+static uint32_t gt911_i2c_write_byte(uint8_t data) {
+	uint8_t mask = 0x80;
+
+	for (uint32_t i = 0; i < 8; i++) {
+		gt911_i2c_write_bit((data & mask) != 0);
+		mask >>= 1;
+	}
+	return gt911_i2c_read_bit();
+}
+
+static uint8_t gt911_i2c_read_byte(int32_t ack) {
+	uint8_t mask = 0x80;
+	uint8_t data = 0;
+
+	for (uint32_t i = 0; i < 8; i++) {
+		if (gt911_i2c_read_bit())
+			data |= mask;
+		mask >>= 1;
+	}
+	gt911_i2c_write_bit(ack ? 0 : 1);
+	return data;
+}
+
+static GT911_Status_t gt911_gpio_write_raw(uint8_t addr, const uint8_t* data, uint16_t len) {
+	uint8_t addr8 = (uint8_t)(addr << 1);
+	uint32_t test = 0;
+
+	gt911_i2c_start();
+	test |= gt911_i2c_write_byte(addr8);
+	for (uint16_t i = 0; i < len; i++)
+		test |= gt911_i2c_write_byte(data[i]);
+	gt911_i2c_stop();
+	return test == 0 ? GT911_OK : GT911_NotResponse;
+}
+
+static GT911_Status_t gt911_gpio_read_raw(uint8_t addr, uint8_t* data, uint16_t len) {
+	uint8_t addr8 = (uint8_t)((addr << 1) | 0x01);
+	uint32_t test = 0;
+
+	gt911_i2c_start();
+	test |= gt911_i2c_write_byte(addr8);
+	for (uint16_t i = 0; i < len; i++)
+		data[i] = gt911_i2c_read_byte(i + 1 < len);
+	gt911_i2c_stop();
+	return test == 0 ? GT911_OK : GT911_NotResponse;
+}
 
 GT911_Status_t GT911_I2C_Write(uint8_t Addr, uint8_t *write_data, uint16_t write_length) {
-	return bcm2712_i2c_write(gt911_bus, Addr, write_data, write_length) == 0 ?
+	if (gt911_use_gpio_i2c())
+		return gt911_gpio_write_raw(Addr, write_data, write_length);
+	return bcm2712_i2c_write(gt911_platform.bus, Addr, write_data, write_length) == 0 ?
 			GT911_OK : GT911_NotResponse;
 }
 
 GT911_Status_t GT911_I2C_Read(uint8_t Addr, uint8_t* read_data, uint16_t read_length){
-	return bcm2712_i2c_read(gt911_bus, Addr, read_data, read_length) == 0 ?
+	if (gt911_use_gpio_i2c())
+		return gt911_gpio_read_raw(Addr, read_data, read_length);
+	return bcm2712_i2c_read(gt911_platform.bus, Addr, read_data, read_length) == 0 ?
 			GT911_OK : GT911_NotResponse;
 }
 
@@ -47,7 +169,9 @@ static GT911_Status_t GT911_I2C_WriteReg(uint8_t addr, uint16_t reg, const uint8
 	buf[1] = (uint8_t)(reg & 0xff);
 	memcpy(buf + 2, data, len);
 
-	return bcm2712_i2c_write(gt911_bus, addr, buf, 2 + len) == 0 ?
+	if (gt911_use_gpio_i2c())
+		return gt911_gpio_write_raw(addr, buf, 2 + len);
+	return bcm2712_i2c_write(gt911_platform.bus, addr, buf, 2 + len) == 0 ?
 			GT911_OK : GT911_NotResponse;
 }
 
@@ -57,8 +181,24 @@ static GT911_Status_t GT911_I2C_ReadReg(uint8_t addr, uint16_t reg, uint8_t* dat
 	rbuf[0] = (uint8_t)(reg >> 8);
 	rbuf[1] = (uint8_t)(reg & 0xff);
 
+	if (gt911_use_gpio_i2c()) {
+		uint8_t addr8 = (uint8_t)(addr << 1);
+		uint32_t test = 0;
+
+		gt911_i2c_start();
+		test |= gt911_i2c_write_byte(addr8);
+		test |= gt911_i2c_write_byte(rbuf[0]);
+		test |= gt911_i2c_write_byte(rbuf[1]);
+		gt911_i2c_start();
+		test |= gt911_i2c_write_byte(addr8 | 0x01);
+		for (uint16_t i = 0; i < len; i++)
+			data[i] = gt911_i2c_read_byte(i + 1 < len);
+		gt911_i2c_stop();
+		return test == 0 ? GT911_OK : GT911_NotResponse;
+	}
+
 	/* repeated-start register read, handled by the controller */
-	return bcm2712_i2c_write_read(gt911_bus, addr, rbuf, 2, data, len) == 0 ?
+	return bcm2712_i2c_write_read(gt911_platform.bus, addr, rbuf, 2, data, len) == 0 ?
 			GT911_OK : GT911_NotResponse;
 }
 
@@ -126,83 +266,86 @@ static GT911_Status_t GT911_GetProductID(uint32_t* id){
 	return Result;
 }
 
-static GT911_Status_t GT911_GetStatus(uint8_t* status){
-	GT911_Status_t Result = GT911_NotResponse;
-	Result = GT911_I2C_ReadReg(gt911_addr, GOODIX_READ_COORD_ADDR, RxBuffer, 1);
-	if( Result == GT911_OK){
-		*status = RxBuffer[0];
-	}
-	return Result;
-}
-
 static GT911_Status_t GT911_SetStatus(uint8_t status){
 	return GT911_I2C_WriteReg(gt911_addr, GOODIX_READ_COORD_ADDR, &status, 1);
 }
 
 /*
  * The INT level sampled during reset selects the slave address
- * (low -> 0x5d, high -> 0x14), same sequence as on raspix but through
- * the RP1 gpio block. Only run after bcm2712_i2c_init() mapped RP1.
+ * (low -> 0x5d, high -> 0x14). Only used on boards that expose both reset
+ * and irq pins as plain GPIOs.
  */
-static void GT911_ResetSelect(int32_t rst, int32_t intr, int32_t int_level) {
-	if (rst < 0 || intr < 0)
+static void GT911_ResetSelect(int32_t rst, int32_t irq, int32_t int_level) {
+	if (rst < 0 || irq < 0)
 		return;
 
+	bcm2712_gpio_init();
 	bcm2712_gpio_config(rst, GPIO_FUNC_OUTPUT);
-	bcm2712_gpio_config(intr, GPIO_FUNC_OUTPUT);
-	bcm2712_gpio_pull(intr, GPIO_PULL_NONE);
+	bcm2712_gpio_config(irq, GPIO_FUNC_OUTPUT);
+	bcm2712_gpio_pull(irq, GPIO_PULL_NONE);
 
-	bcm2712_gpio_write(intr, int_level != 0);
+	bcm2712_gpio_write(irq, int_level != 0);
 
 	bcm2712_gpio_write(rst, false);
 	proc_usleep(20000);
 	bcm2712_gpio_write(rst, true);
 	proc_usleep(60000);
 
-	bcm2712_gpio_config(intr, GPIO_FUNC_INPUT);
-	bcm2712_gpio_pull(intr, GPIO_PULL_UP);
+	bcm2712_gpio_config(irq, GPIO_FUNC_INPUT);
+	bcm2712_gpio_pull(irq, GPIO_PULL_UP);
 	proc_usleep(20000);
 }
 
-static GT911_Status_t GT911_Probe(uint8_t addr, int32_t bus, uint32_t* productID) {
+static GT911_Status_t GT911_Probe(uint8_t addr, uint32_t* productID) {
 	gt911_addr = addr;
-	gt911_bus = bus;
 	proc_usleep(2000);
 	return GT911_GetProductID(productID);
 }
 
-GT911_Status_t GT911_Init(void){
-	/* header bus i2c1 (GPIO2/3) with the waveshare rst/int wiring first,
-	 * then i2c0 (GPIO0/1) as a plain fallback; bus 2/3 are skipped so
-	 * their header pins (GPIO4-7, including intr 4) stay unmuxed */
-	static const gt911_bus_t buses[] = {
-		{BCM2712_I2C_BUS_HEADER, 17, 4},
-		{0, -1, -1},
-	};
-	static const uint8_t addresses[] = {
+GT911_Status_t GT911_Init(const GT911_Platform_t* platform){
+	static const uint8_t probe_addresses[] = {
 		GOODIX_ADDRESS_5D,
 		GOODIX_ADDRESS_14,
 	};
 	uint32_t productID = 0;
-	for(uint32_t bus = 0; bus < sizeof(buses) / sizeof(buses[0]); bus++){
-		if (bcm2712_i2c_init(buses[bus].bus) != 0)
-			continue;
-		bcm2712_i2c_set_speed(buses[bus].bus, 400000);
+	uint8_t addresses[2];
+	uint32_t address_count;
 
-		int32_t reset_try_max = (buses[bus].rst >= 0 && buses[bus].intr >= 0) ? 2 : 1;
+	if (platform != NULL)
+		gt911_platform = *platform;
 
-		for(int32_t reset_try = 0; reset_try < reset_try_max; reset_try++) {
-			if (reset_try_max > 1)
-				GT911_ResetSelect(buses[bus].rst, buses[bus].intr, reset_try);
+	if (gt911_use_gpio_i2c()) {
+		if (gt911_platform.sda < 0 || gt911_platform.scl < 0)
+			return GT911_Error;
+		gt911_gpio_i2c_init();
+	} else {
+		if (bcm2712_i2c_init(gt911_platform.bus) != 0)
+			return GT911_NotResponse;
+		bcm2712_i2c_set_speed(gt911_platform.bus, 400000);
+	}
 
-			for(uint32_t i = 0; i < sizeof(addresses) / sizeof(addresses[0]); i++){
-				productID = 0;
-				CommunicationResult = GT911_Probe(addresses[i], buses[bus].bus, &productID);
-				if(CommunicationResult == GT911_OK &&
-						productID != 0 &&
-						productID != 0xffffffffu){
-					goto gt911_ready;
-				}
+	if (gt911_platform.addr == 0) {
+		addresses[0] = probe_addresses[0];
+		addresses[1] = probe_addresses[1];
+		address_count = 2;
+	} else {
+		addresses[0] = gt911_platform.addr;
+		address_count = 1;
+	}
+
+	int32_t reset_try_max = (gt911_platform.rst >= 0 && gt911_platform.irq >= 0) ? 2 : 1;
+
+	for(int32_t reset_try = 0; reset_try < reset_try_max; reset_try++) {
+		if (reset_try_max > 1)
+			GT911_ResetSelect(gt911_platform.rst, gt911_platform.irq, reset_try);
+
+		for(uint32_t i = 0; i < address_count; i++){
+			productID = 0;
+			CommunicationResult = GT911_Probe(addresses[i], &productID);
+			if(CommunicationResult == GT911_OK &&
+					productID != 0 &&
+					productID != 0xffffffffu){
+				goto gt911_ready;
 			}
 		}
 	}
@@ -226,24 +369,25 @@ gt911_ready:
 GT911_Status_t GT911_ReadTouch(TouchCordinate_t *cordinate, uint8_t *number_of_cordinate) {
 	uint8_t StatusRegister;
 	GT911_Status_t Result = GT911_NotResponse;
-	Result = GT911_GetStatus(&StatusRegister);
+
+	Result = GT911_I2C_ReadReg(gt911_addr, GOODIX_READ_COORD_ADDR,
+			RxBuffer, GT911_FIRST_POINT_READ_LEN);
 	if (Result != GT911_OK) {
 		return Result;
 	}
+
+	StatusRegister = RxBuffer[0];
 	if ((StatusRegister & 0x80) != 0) {
-		*number_of_cordinate = StatusRegister & 0x0F;
+		uint8_t point_count = StatusRegister & 0x0F;
+		*number_of_cordinate = point_count;
+		if (point_count > GT911_MAX_TOUCH_POINTS) {
+			GT911_SetStatus(0);
+			return GT911_Error;
+		}
+
 		if (*number_of_cordinate != 0) {
-			for (uint8_t i = 0; i < *number_of_cordinate; i++) {
-				Result = GT911_I2C_ReadReg(gt911_addr,
-						GOODIX_POINT1_X_ADDR + (i * 8),
-						RxBuffer, 6);
-				if (Result != GT911_OK)
-					return Result;
-				cordinate[i].x = RxBuffer[0];
-				cordinate[i].x = (RxBuffer[1] << 8) + cordinate[i].x;
-				cordinate[i].y = RxBuffer[2];
-				cordinate[i].y = (RxBuffer[3] << 8) + cordinate[i].y;
-			}
+			cordinate[0].x = (RxBuffer[3] << 8) + RxBuffer[2];
+			cordinate[0].y = (RxBuffer[5] << 8) + RxBuffer[4];
 		}
 		GT911_SetStatus(0);
 	}

@@ -99,11 +99,20 @@ typedef struct{
 	uint16_t y;
 }TouchCordinate_t;
 
+typedef struct {
+	int32_t bus;   /* RP1 hw i2c bus, -1 to use gpio bit-bang */
+	int32_t sda;
+	int32_t scl;
+	int32_t rst;
+	int32_t irq;
+	uint8_t addr;  /* 0 to probe both 0x5d/0x14 */
+} GT911_Platform_t;
+
 /* Exported constants --------------------------------------------------------*/
 
 /* Exported functions ------------------------------------------------------- */
 
-GT911_Status_t GT911_Init(void);
+GT911_Status_t GT911_Init(const GT911_Platform_t* platform);
 GT911_Status_t GT911_ReadTouch(TouchCordinate_t* cordinate, uint8_t* number_of_cordinate);
 
 #endif /* __GT911_H_ */

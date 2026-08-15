@@ -13,7 +13,6 @@ gui:
 	cd hid_keybd; $(MAKE)
 	cd hid_moused; $(MAKE)
 	cd hid_touchd; $(MAKE)
-	cd gt911_touchd; $(MAKE)
 
 clean:
 	cd uartd; $(MAKE) clean
@@ -25,5 +24,4 @@ clean:
 	cd hid_keybd; $(MAKE) clean
 	cd hid_moused; $(MAKE) clean
 	cd hid_touchd; $(MAKE) clean
-	cd gt911_touchd; $(MAKE) clean
 	cd wlan; $(MAKE) clean

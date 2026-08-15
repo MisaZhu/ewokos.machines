@@ -287,11 +287,9 @@ static int rp1_dpi_clocks_setup(uint32_t fpix, uint32_t *actual_fpix) {
 			(CLK_CTRL_SRC_AUX << CLK_CTRL_SRC_LSB));
 
 	*actual_fpix = (uint32_t)(pll_out_actual / dpi_div);
-	slog("rp1-dpi: pll vco=%llu fbdiv=%u.%02u prim=%ux%u dpi_div=%u\n",
-			(unsigned long long)vco_actual, fbdiv_int,
-			(fbdiv_frac * 100U) >> 24, best_div1, best_div2, dpi_div);
 	return 0;
 }
+
 
 static void rp1_dpi_clocks_enable(void) {
 	put32(_clk_base + CLK_DPI_CTRL,
@@ -350,7 +348,6 @@ static void rp1_dpi_pins_setup(uint32_t mode, int32_t bl_pin) {
 			bcm2712_gpio_pull((uint32_t)bl_pin, GPIO_PULL_NONE);
 			bcm2712_gpio_config((uint32_t)bl_pin, GPIO_FUNC_OUTPUT);
 			bcm2712_gpio_write((uint32_t)bl_pin, true);
-			slog("rp1-dpi: backlight pin %d driven high\n", bl_pin);
 		} else {
 			slog("rp1-dpi: bl_pin %d collides with DPI signals, ignored\n",
 					bl_pin);
@@ -571,9 +568,6 @@ int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
 	info->yoffset = 0;
 	info->dma_id = -1;
 
-	slog("rp1-dpi: %ux%u@%u mode=%u pclk req=%u got=%u pitch=%u phy=%llx bus=%llx\n",
-			w, h, dep, t.mode, t.pixel_clock_hz, actual_fpix, pitch,
-			(unsigned long long)fb_phy, (unsigned long long)bus_addr);
 	return 0;
 }
 
@@ -604,9 +598,6 @@ int bcm2712_rp1_dpi_check(void) {
 		underflow_total++;
 		put32(_dpi_base + DPI_DMA_IRQ_FLAGS, (1U << 1));
 	}
-	slog("rp1-dpi: chk status=%08x flags=%08x ctrl=%08x panics=%08x undflw=%u\n",
-			status, flags, ctrl, panics, underflow_total);
-
 	if (underflow_total != last_underflows) {
 		last_underflows = underflow_total;
 		slog("rp1-dpi: UNDERFLOW detected (total=%u panics=%08x)\n",
