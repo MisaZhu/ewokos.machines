@@ -80,7 +80,8 @@
 typedef enum{
 	GT911_OK = 0,
 	GT911_Error = 1,
-	GT911_NotResponse = 2
+	GT911_NotResponse = 2,
+	GT911_NoData = 3
 }GT911_Status_t;
 
 typedef struct{

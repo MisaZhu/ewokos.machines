@@ -59,17 +59,17 @@ static int tp_loop(vdevice_t* dev, void* p) {
 	number_of_cordinate = 0;
 	GT911_Status_t ret = GT911_ReadTouch(cordinate, &number_of_cordinate);
 
-	if (ret != GT911_OK) {
+	if (ret == GT911_NotResponse) {
 		i2c_fail_count++;
 		if (i2c_fail_count >= TP_I2C_FAIL_MAX) {
 			i2c_fail_count = 0;
 			GT911_Init();
 		}
-	} else {
+	} else if (ret == GT911_OK || ret == GT911_NoData) {
 		i2c_fail_count = 0;
 	}
 
-	if (ret != GT911_OK || !number_of_cordinate) {
+	if (ret == GT911_OK && !number_of_cordinate) {
 		if (press && (kernel_tic_ms(0) - last_ts) > TP_RELEASE_DELAY_MS) {
 			press = false;
 			touch_data[0] = press;
@@ -80,7 +80,7 @@ static int tp_loop(vdevice_t* dev, void* p) {
 				need_wakeup = true;
 			}
 		}
-	} else {
+	} else if (ret == GT911_OK && number_of_cordinate) {
 		last_ts = kernel_tic_ms(0);
 		press = true;
 		touch_data[0] = press;
