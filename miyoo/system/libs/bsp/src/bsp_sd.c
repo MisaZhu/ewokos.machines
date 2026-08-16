@@ -26,44 +26,44 @@ static int32_t _ra_start = -1;
 static uint32_t _ra_count = 0;
 
 static inline bool sd_ra_hit(int32_t sector, uint32_t count) {
-	return _ra_start >= 0 &&
-		sector >= _ra_start &&
-		(uint32_t)(sector - _ra_start) + count <= _ra_count;
+    return _ra_start >= 0 &&
+        sector >= _ra_start &&
+        (uint32_t)(sector - _ra_start) + count <= _ra_count;
 }
 
 static inline void sd_ra_invalidate(void) {
-	_ra_start = -1;
-	_ra_count = 0;
+    _ra_start = -1;
+    _ra_count = 0;
 }
 
 static int32_t bsp_sd_read_sectors(int32_t sector, void* buf, uint32_t count) {
-	/* 大读旁路窗口，避免冲刷顺序流 */
-	if(count >= SD_RA_WINDOW_SECTORS)
-		return miyoo_sd_read_blocks(sector, buf, count);
+    /* 大读旁路窗口，避免冲刷顺序流 */
+    if(count >= SD_RA_WINDOW_SECTORS)
+        return miyoo_sd_read_blocks(sector, buf, count);
 
-	if(sd_ra_hit(sector, count)) {
-		memcpy(buf, _ra_buf + (uint32_t)(sector - _ra_start) * 512U, count * 512U);
-		return 0;
-	}
+    if(sd_ra_hit(sector, count)) {
+        memcpy(buf, _ra_buf + (uint32_t)(sector - _ra_start) * 512U, count * 512U);
+        return 0;
+    }
 
-	/* 未命中：整窗预读；失败(如卡尾越界)退回精确读 */
-	if(miyoo_sd_read_blocks(sector, _ra_buf, SD_RA_WINDOW_SECTORS) == 0) {
-		_ra_start = sector;
-		_ra_count = SD_RA_WINDOW_SECTORS;
-		memcpy(buf, _ra_buf, count * 512U);
-		return 0;
-	}
-	sd_ra_invalidate();
-	return miyoo_sd_read_blocks(sector, buf, count);
+    /* 未命中：整窗预读；失败(如卡尾越界)退回精确读 */
+    if(miyoo_sd_read_blocks(sector, _ra_buf, SD_RA_WINDOW_SECTORS) == 0) {
+        _ra_start = sector;
+        _ra_count = SD_RA_WINDOW_SECTORS;
+        memcpy(buf, _ra_buf, count * 512U);
+        return 0;
+    }
+    sd_ra_invalidate();
+    return miyoo_sd_read_blocks(sector, buf, count);
 }
 
 static int32_t bsp_sd_read_sector(int32_t sector, void* buf) {
-	return bsp_sd_read_sectors(sector, buf, 1);
+    return bsp_sd_read_sectors(sector, buf, 1);
 }
 
 static int32_t bsp_sd_write_sector(int32_t sector, const void* buf) {
         sd_ra_invalidate();
-	return miyoo_sd_write_sector(sector, buf);
+    return miyoo_sd_write_sector(sector, buf);
 }
 
 static int32_t bsp_sd_write_sectors(int32_t sector, const void* buf, uint32_t count) {
@@ -72,12 +72,12 @@ static int32_t bsp_sd_write_sectors(int32_t sector, const void* buf, uint32_t co
 }
 
 int bsp_sd_init(void) {
-	sys_info_t sysinfo;
+    sys_info_t sysinfo;
 
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
         return sd_init_ex2(miyoo_sd_init,
-			bsp_sd_read_sector,
-			bsp_sd_read_sectors,
+            bsp_sd_read_sector,
+            bsp_sd_read_sectors,
                         bsp_sd_write_sector,
                         bsp_sd_write_sectors);
 }

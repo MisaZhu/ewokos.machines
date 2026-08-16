@@ -26,7 +26,7 @@ void log_init(void){
 }
 
 void brcm_log(const char *format, ...) {
-	va_list ap;
+    va_list ap;
     pthread_mutex_lock(&mutex);
     uint64_t ts = kernel_tic_ms(0);
     int len = snprintf(temp_buf, TEMP_BUF_SIZE, "%u:", (uint32_t)ts);
@@ -38,9 +38,9 @@ void brcm_log(const char *format, ...) {
         len = TEMP_BUF_SIZE - 1;
     remain = TEMP_BUF_SIZE - (size_t)len;
 
-	va_start(ap, format);
-	vsnprintf(temp_buf + len, remain, format, ap);
-	va_end(ap);
+    va_start(ap, format);
+    vsnprintf(temp_buf + len, remain, format, ap);
+    va_end(ap);
 
     int i = 0;
     while(temp_buf[i]!= '\0'){

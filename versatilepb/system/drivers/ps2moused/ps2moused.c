@@ -35,26 +35,26 @@
 #define MOUSE_BASE (_mmio_base+0x7000)
 
 static inline int32_t kmi_write(uint8_t data) {
-	int32_t timeout = 1000;
+    int32_t timeout = 1000;
 
-	while((get8(MOUSE_BASE+MOUSE_STAT) & MOUSE_STAT_TXEMPTY) == 0 && timeout--);
-	if(timeout) {
-		put8(MOUSE_BASE+MOUSE_DATA, data);
-		while((get8(MOUSE_BASE+MOUSE_STAT) & MOUSE_STAT_RXFULL) == 0);
-		if(get8(MOUSE_BASE+MOUSE_DATA) == 0xfa)
-			return 1;
-		else
-			return 0;
-	}
-	return 0;
+    while((get8(MOUSE_BASE+MOUSE_STAT) & MOUSE_STAT_TXEMPTY) == 0 && timeout--);
+    if(timeout) {
+        put8(MOUSE_BASE+MOUSE_DATA, data);
+        while((get8(MOUSE_BASE+MOUSE_STAT) & MOUSE_STAT_RXFULL) == 0);
+        if(get8(MOUSE_BASE+MOUSE_DATA) == 0xfa)
+            return 1;
+        else
+            return 0;
+    }
+    return 0;
 }
 
 static inline int32_t kmi_read(uint8_t * data) {
-	if( (get8(MOUSE_BASE+MOUSE_STAT) & MOUSE_STAT_RXFULL)) {
-		*data = get8(MOUSE_BASE+MOUSE_DATA);
-		return 1;
-	}
-	return 0;
+    if( (get8(MOUSE_BASE+MOUSE_STAT) & MOUSE_STAT_RXFULL)) {
+        *data = get8(MOUSE_BASE+MOUSE_DATA);
+        return 1;
+    }
+    return 0;
 }
 
 static uint8_t _packet_inex = 0;
@@ -62,108 +62,108 @@ static uint8_t _btn_old = 0;
 static uint8_t _packet[4];
 
 int32_t mouse_init(void) {
-	_packet_inex = 0;
-	_btn_old = 0;
+    _packet_inex = 0;
+    _btn_old = 0;
 
-	_mmio_base = mmio_map();
-	uint8_t data;
-	uint32_t divisor = 1000;
-	put8(MOUSE_BASE+MOUSE_CLKDIV, divisor);
-	put8(MOUSE_BASE+MOUSE_CR, MOUSE_CR_EN);
-	//reset mouse, and wait ack and pass/fail code
-	if(! kmi_write(0xff) )
-		return -1;
-	if(! kmi_read(&data))
-		return -1;
-	if(data != 0xaa)
-		return -1;
+    _mmio_base = mmio_map();
+    uint8_t data;
+    uint32_t divisor = 1000;
+    put8(MOUSE_BASE+MOUSE_CLKDIV, divisor);
+    put8(MOUSE_BASE+MOUSE_CR, MOUSE_CR_EN);
+    //reset mouse, and wait ack and pass/fail code
+    if(! kmi_write(0xff) )
+        return -1;
+    if(! kmi_read(&data))
+        return -1;
+    if(data != 0xaa)
+        return -1;
 
-	// enable scroll wheel
-	kmi_write(0xf3);
-	kmi_write(200);
+    // enable scroll wheel
+    kmi_write(0xf3);
+    kmi_write(200);
 
-	kmi_write(0xf3);
-	kmi_write(100);
+    kmi_write(0xf3);
+    kmi_write(100);
 
-	kmi_write(0xf3);
-	kmi_write(80);
+    kmi_write(0xf3);
+    kmi_write(80);
 
-	kmi_write(0xf2);
-	kmi_read(&data);
-	kmi_read(&data);
+    kmi_write(0xf2);
+    kmi_read(&data);
+    kmi_read(&data);
 
-	// set sample rate, 100 samples/sec 
-	kmi_write(0xf3);
-	kmi_write(100);
+    // set sample rate, 100 samples/sec 
+    kmi_write(0xf3);
+    kmi_write(100);
 
-	// set resolution, 4 counts per mm, 1:1 scaling
-	kmi_write(0xe8);
-	kmi_write(0x02);
-	kmi_write(0xe6);
-	//enable data reporting
-	kmi_write(0xf4);
-	// clear a receive buffer
-	kmi_read(&data);
-	kmi_read(&data);
-	kmi_read(&data);
-	kmi_read(&data);
+    // set resolution, 4 counts per mm, 1:1 scaling
+    kmi_write(0xe8);
+    kmi_write(0x02);
+    kmi_write(0xe6);
+    //enable data reporting
+    kmi_write(0xf4);
+    // clear a receive buffer
+    kmi_read(&data);
+    kmi_read(&data);
+    kmi_read(&data);
+    kmi_read(&data);
 
-	/* re-enables mouse */
+    /* re-enables mouse */
   put8(MOUSE_BASE+MOUSE_CR, MOUSE_CR_EN|MOUSE_CR_RXINTREN); 
-	return 0;
+    return 0;
 }
 
 typedef struct {
-	int8_t btn;
-	int8_t rx;
-	int8_t ry;
-	int8_t rz;
+    int8_t btn;
+    int8_t rx;
+    int8_t ry;
+    int8_t rz;
 } mouse_info_t;
 
 int32_t mouse_handler(mouse_info_t *info) {
-	uint8_t btndown, btnup, btn;
-	uint8_t status;
-	int32_t rx, ry, rz;
+    uint8_t btndown, btnup, btn;
+    uint8_t status;
+    int32_t rx, ry, rz;
 
-	status = get8(MOUSE_BASE + MOUSE_IIR);
-	if(status & MOUSE_IIR_RXINTR) {
-		_packet[_packet_inex] = get8(MOUSE_BASE + MOUSE_DATA);
-		_packet_inex = (_packet_inex + 1) & 0x3;
-		if(_packet_inex == 0) {
-			btn = _packet[0] & 0x7;
+    status = get8(MOUSE_BASE + MOUSE_IIR);
+    if(status & MOUSE_IIR_RXINTR) {
+        _packet[_packet_inex] = get8(MOUSE_BASE + MOUSE_DATA);
+        _packet_inex = (_packet_inex + 1) & 0x3;
+        if(_packet_inex == 0) {
+            btn = _packet[0] & 0x7;
 
-			btndown = (btn ^ _btn_old) & btn;
-			btnup = (btn ^ _btn_old) & _btn_old;
-			_btn_old = btn;
+            btndown = (btn ^ _btn_old) & btn;
+            btnup = (btn ^ _btn_old) & _btn_old;
+            _btn_old = btn;
 
-			if(_packet[0] & 0x10)
-				rx = (int8_t)(0xffffff00 | _packet[1]); //nagtive
-			else
-				rx = (int8_t)_packet[1];
+            if(_packet[0] & 0x10)
+                rx = (int8_t)(0xffffff00 | _packet[1]); //nagtive
+            else
+                rx = (int8_t)_packet[1];
 
-			if(_packet[0] & 0x20)
-				ry = -(int8_t)(0xffffff00 | _packet[2]); //nagtive
-			else
-				ry = -(int8_t)_packet[2];
+            if(_packet[0] & 0x20)
+                ry = -(int8_t)(0xffffff00 | _packet[2]); //nagtive
+            else
+                ry = -(int8_t)_packet[2];
 
-			rz = (int8_t)(_packet[3] & 0xf);
-			if(rz == 0xf)
-				rz = -1;
-			
-			btndown = (btndown << 1 | btnup);
+            rz = (int8_t)(_packet[3] & 0xf);
+            if(rz == 0xf)
+                rz = -1;
+            
+            btndown = (btndown << 1 | btnup);
 
-			if(btndown == 0 && rz != 0) {
-				btndown = 8;//scroll wheel
-				rx = rz;
-			}
+            if(btndown == 0 && rz != 0) {
+                btndown = 8;//scroll wheel
+                rx = rz;
+            }
 
-			info->btn = btndown;
-			info->rx = rx;
-			info->ry = ry;
-			return 0;
-		}
-	}
-	return -1;
+            info->btn = btndown;
+            info->rx = rx;
+            info->ry = ry;
+            return 0;
+        }
+    }
+    return -1;
 }
 
 #define MAX_MEVT 64
@@ -172,93 +172,93 @@ static uint32_t _minfo_num = 0;
 static uint32_t _minfo_index = 0;
 
 static int _read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)offset;
-	(void)p;
-	(void)node;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)offset;
+    (void)p;
+    (void)node;
 
-	static uint8_t last_btn = 0;
-	if(_minfo_num > 0) {
-		mouse_evt_t *evt = (mouse_evt_t *)buf;
-		evt->type = MOUSE_TYPE_REL;
-		if(_minfo[_minfo_index].btn != 0){
-			evt->button = _minfo[_minfo_index].btn;
-			evt->state = MOUSE_STATE_DOWN;
-			last_btn = evt->button;
-		}else if(last_btn){
-			evt->state = MOUSE_STATE_UP;
-			evt->button = last_btn;
-			last_btn = 0;
-		}else{	
-			evt->button = MOUSE_BUTTON_NONE;
-			evt->state = MOUSE_STATE_MOVE;
-		}
-		evt->x = _minfo[_minfo_index].rx;
-		evt->y = _minfo[_minfo_index].ry;
-		_minfo_index++;
-		if(_minfo_index >= _minfo_num) {
-			_minfo_num = _minfo_index = 0;
-		}
-		return sizeof(mouse_evt_t);
-	}
-	return VFS_ERR_RETRY;
+    static uint8_t last_btn = 0;
+    if(_minfo_num > 0) {
+        mouse_evt_t *evt = (mouse_evt_t *)buf;
+        evt->type = MOUSE_TYPE_REL;
+        if(_minfo[_minfo_index].btn != 0){
+            evt->button = _minfo[_minfo_index].btn;
+            evt->state = MOUSE_STATE_DOWN;
+            last_btn = evt->button;
+        }else if(last_btn){
+            evt->state = MOUSE_STATE_UP;
+            evt->button = last_btn;
+            last_btn = 0;
+        }else{	
+            evt->button = MOUSE_BUTTON_NONE;
+            evt->state = MOUSE_STATE_MOVE;
+        }
+        evt->x = _minfo[_minfo_index].rx;
+        evt->y = _minfo[_minfo_index].ry;
+        _minfo_index++;
+        if(_minfo_index >= _minfo_num) {
+            _minfo_num = _minfo_index = 0;
+        }
+        return sizeof(mouse_evt_t);
+    }
+    return VFS_ERR_RETRY;
 }
 
 static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, ewokos_addr_t p) {
         vdevice_t* dev = (vdevice_t*)p;
-	//ipc_disable();
+    //ipc_disable();
 
-	mouse_info_t info;
-	if(mouse_handler(&info) == 0) {
-		if((_minfo_num+1) >= MAX_MEVT) {
-			if(info.btn != 0)
-				memcpy(&_minfo[MAX_MEVT-1], &info, sizeof(mouse_info_t));
-		}
-		else {
-			memcpy(&_minfo[_minfo_num], &info, sizeof(mouse_info_t));
-			_minfo_num++;
-		}
-		_wakeup = true;
-	}
+    mouse_info_t info;
+    if(mouse_handler(&info) == 0) {
+        if((_minfo_num+1) >= MAX_MEVT) {
+            if(info.btn != 0)
+                memcpy(&_minfo[MAX_MEVT-1], &info, sizeof(mouse_info_t));
+        }
+        else {
+            memcpy(&_minfo[_minfo_num], &info, sizeof(mouse_info_t));
+            _minfo_num++;
+        }
+        _wakeup = true;
+    }
 
-	//ipc_enable();
-	return;
+    //ipc_enable();
+    return;
 }
 
 int loop_step(vdevice_t* dev, void* p) {
-	(void)p;
-	if(_wakeup) {
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-		_wakeup = false;
-	}
-	usleep(3000);
-	return 0;
+    (void)p;
+    if(_wakeup) {
+        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+        _wakeup = false;
+    }
+    usleep(3000);
+    return 0;
 }
 
 #define IRQ_RAW_MOUSE (32+4) //VPB mouse interrupt at SIC bit4
 
 int main(int argc, char** argv) {
-	_minfo_num = 0;
-	_minfo_index = 0;
+    _minfo_num = 0;
+    _minfo_index = 0;
 
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/mouse0";
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/mouse0";
 
-	mouse_init();
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "mouse");
-	dev.read = _read;
-	dev.loop_step = loop_step;
+    mouse_init();
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "mouse");
+    dev.read = _read;
+    dev.loop_step = loop_step;
 
-	static interrupt_handler_t handler;
-	handler.data = &dev;
-	handler.handler = interrupt_handle;
-	sys_interrupt_setup(IRQ_RAW_MOUSE, &handler);
+    static interrupt_handler_t handler;
+    handler.data = &dev;
+    handler.handler = interrupt_handle;
+    sys_interrupt_setup(IRQ_RAW_MOUSE, &handler);
 
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
-	return 0;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    return 0;
 }

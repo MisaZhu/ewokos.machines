@@ -13,15 +13,15 @@ static int  hres = 320;
 static int    vres = 320;
 
 static void sleep_ms(int ms){
-	while(ms--)_delay(10000);
+    while(ms--)_delay(10000);
 }
 
 static void GPIO_SET(int pin, int val){
-	//if(pin == LCD_CS && val == 1)
-	//_delay(100);
-	rk_gpio_write(pin, val);
-	//if(pin == LCD_CS && val == 0)
-	//_delay(100);
+    //if(pin == LCD_CS && val == 1)
+    //_delay(100);
+    rk_gpio_write(pin, val);
+    //if(pin == LCD_CS && val == 0)
+    //_delay(100);
 }
 
 static void spi_write_data(uint8_t data){
@@ -32,13 +32,13 @@ static void spi_write_data(uint8_t data){
 }
 
 static uint8_t  spi_read_data(uint8_t reg){
-	uint8_t ret;
-	GPIO_SET(LCD_DC, 0);
+    uint8_t ret;
+    GPIO_SET(LCD_DC, 0);
     GPIO_SET(LCD_CS, 0);
-	rk_spi_write(&reg, 1);
-	rk_spi_read(&ret, 1);
+    rk_spi_write(&reg, 1);
+    rk_spi_read(&ret, 1);
     GPIO_SET(LCD_CS, 1);
-	return ret;
+    return ret;
 }
 
 static void spi_write_data24(uint32_t data){
@@ -63,19 +63,19 @@ static void spi_write_cd(uint8_t command, int len, ...) {
 
 void define_region_spi(int xstart, int ystart, int xend, int yend, int rw) {
     unsigned char coord[4];
-	spi_write_command(0x2A); // Column addr set
-	spi_write_data(xstart >> 8);
-	spi_write_data(xstart & 0xFF);     // XSTART
-	spi_write_data(xend >> 8);
-	spi_write_data(xend & 0xFF);     // XEND
+    spi_write_command(0x2A); // Column addr set
+    spi_write_data(xstart >> 8);
+    spi_write_data(xstart & 0xFF);     // XSTART
+    spi_write_data(xend >> 8);
+    spi_write_data(xend & 0xFF);     // XEND
 
-	spi_write_command(0x2B); // Row addr set
-	spi_write_data(ystart>>8);
-	spi_write_data(ystart &0xff);     // YSTART
-	spi_write_data(yend>>8);
-	spi_write_data(yend &0xff);     // YEND
-	spi_write_command(0x2C);
-						   // G
+    spi_write_command(0x2B); // Row addr set
+    spi_write_data(ystart>>8);
+    spi_write_data(ystart &0xff);     // YSTART
+    spi_write_data(yend>>8);
+    spi_write_data(yend &0xff);     // YEND
+    spi_write_command(0x2C);
+                           // G
 }
 
 void draw_buffer_spi(int x1, int y1, int x2, int y2, unsigned char *p) {
@@ -110,7 +110,7 @@ void draw_buffer_spi(int x1, int y1, int x2, int y2, unsigned char *p) {
         rk_spi_write(rgb, 3);
     }
 
-	GPIO_SET(LCD_CS, 1);
+    GPIO_SET(LCD_CS, 1);
 }
 
 void lcd_clean(int x1, int y1, int x2, int y2, uint32_t color) {
@@ -123,23 +123,23 @@ void lcd_clean(int x1, int y1, int x2, int y2, uint32_t color) {
            rk_spi_write((uint8_t*)color, 3);
     }
 
-	GPIO_SET(LCD_CS, 1);
+    GPIO_SET(LCD_CS, 1);
 }
 
 void lcd_init(void){
-	rk_gpio_init();
-	rk_spi_init();
-	rk_gpio_config(LCD_RST , 1);
-	rk_gpio_config(LCD_DC,	1);
-	rk_gpio_config(LCD_CS, 1);
+    rk_gpio_init();
+    rk_spi_init();
+    rk_gpio_config(LCD_RST , 1);
+    rk_gpio_config(LCD_DC,	1);
+    rk_gpio_config(LCD_CS, 1);
 
-	GPIO_SET(LCD_CS, 1);
-	GPIO_SET(LCD_RST, 0);
-	_delay(100000000);
-	GPIO_SET(LCD_RST, 1);
-	_delay(100000000);
+    GPIO_SET(LCD_CS, 1);
+    GPIO_SET(LCD_RST, 0);
+    _delay(100000000);
+    GPIO_SET(LCD_RST, 1);
+    _delay(100000000);
 
-	spi_write_command(0xE0); // Positive Gamma Control
+    spi_write_command(0xE0); // Positive Gamma Control
     spi_write_data(0x00);
     spi_write_data(0x03);
     spi_write_data(0x09);
@@ -227,5 +227,5 @@ void lcd_init(void){
     spi_write_command(TFT_MADCTL);
     spi_write_cd(ILI9341_MEMCONTROL, 1, ILI9341_Portrait);
 
-	lcd_clean(0, 0, 319, 319, 0xFFFF0000);
+    lcd_clean(0, 0, 319, 319, 0xFFFF0000);
 }

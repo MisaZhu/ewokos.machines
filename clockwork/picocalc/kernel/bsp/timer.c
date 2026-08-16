@@ -25,49 +25,49 @@ static inline uint32_t read_cntpct(void) {
 }
 
 inline void write_cntv_tval(uint32_t tval) {
-	__asm__ volatile ("mcr p15, 0, %0, c14, c3, 0" :: "r"(tval));
+    __asm__ volatile ("mcr p15, 0, %0, c14, c3, 0" :: "r"(tval));
 }
 
 static inline uint32_t read_cntv_tval(void) {
-	uint32_t val;
-	__asm__ volatile ("mrc p15, 0, %0, c14, c3, 0" :: "r"(val));
-	return val;
+    uint32_t val;
+    __asm__ volatile ("mrc p15, 0, %0, c14, c3, 0" :: "r"(val));
+    return val;
 }
 
 
 static inline void enable_cntv(void) {
-	__asm__ volatile ("mcr p15, 0, %0, c14, c3, 1" :: "r"(1));
+    __asm__ volatile ("mcr p15, 0, %0, c14, c3, 1" :: "r"(1));
 }
 
 static inline uint32_t disable_cntv(void) {
-	__asm__ volatile("mcr p15, 0, %0, c14, C3, 1" :: "r" (0));
+    __asm__ volatile("mcr p15, 0, %0, c14, C3, 1" :: "r" (0));
 }
 
 static inline uint64_t  read_cntvct(void) {
-	uint64_t val;
-	__asm__ volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r" (val));
-	return val;
+    uint64_t val;
+    __asm__ volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r" (val));
+    return val;
 }
 
 static inline uint32_t read_cntctl(void) {
-	uint32_t val;
-	__asm__ volatile("mrc p15, 0, %0, c14, C3, 1" : "=r" (val));
-	return val;
+    uint32_t val;
+    __asm__ volatile("mrc p15, 0, %0, c14, C3, 1" : "=r" (val));
+    return val;
 }
 
 void timer_set_interval(uint32_t id, uint32_t times_per_sec) {
-	(void)id;
-	_cntfrq = read_cntfrq(); 
-	if(_cntfrq < 1000000 || _cntfrq > 50000000)
-		_cntfrq = GIC_DEFAULT_FREQ;
-	_timer_tval = _cntfrq/times_per_sec;
-	write_cntv_tval(_timer_tval);
-	enable_cntv();
+    (void)id;
+    _cntfrq = read_cntfrq(); 
+    if(_cntfrq < 1000000 || _cntfrq > 50000000)
+        _cntfrq = GIC_DEFAULT_FREQ;
+    _timer_tval = _cntfrq/times_per_sec;
+    write_cntv_tval(_timer_tval);
+    enable_cntv();
 }
 
 inline void timer_clear_interrupt(uint32_t id) {
-	id = _timer_tval;
-	write_cntv_tval(id);
+    id = _timer_tval;
+    write_cntv_tval(id);
 }
 
 /*do fast 64bit div constant
@@ -77,9 +77,9 @@ inline void timer_clear_interrupt(uint32_t id) {
 *   it will save hundreds of cpu cycle
 */
 static __inline uint64_t fast_div64_24(uint64_t x){
-	return (x*171)>>12;
+    return (x*171)>>12;
 }
 
 inline uint64_t timer_read_sys_usec(void) { //read microsec
-	return fast_div64_24(read_cntvct());
+    return fast_div64_24(read_cntvct());
 }

@@ -232,7 +232,7 @@ static int rk3506_i2c_write(uint8_t chip, uint reg, uint r_len,
         }
         writel(I2C_MBTFIEN | I2C_NAKRCVIEN, &regs->ien);
         writel(bytes_xferred, &regs->mtxcnt);
-		
+        
         start = I2C_TIMEOUT_MS;
         while (1) {
             if (readl(&regs->ipd) & I2C_NAKRCVIPD) {
@@ -475,32 +475,32 @@ static int rk_i2c_adapter_clk(unsigned int scl_rate)
 }
 
 int rk_i2c_read(uint16_t addr, uint32_t reg, uint8_t* buf, int size, int flag){
-	int ret;
-	i2c_cfg |= I2C_CON_ACTACK;
-	ret = rk3506_i2c_read(addr, reg, 1, buf, size, false);
-	rk_i2c_send_stop_bit();
-	rk_i2c_disable();
-	return ret;
+    int ret;
+    i2c_cfg |= I2C_CON_ACTACK;
+    ret = rk3506_i2c_read(addr, reg, 1, buf, size, false);
+    rk_i2c_send_stop_bit();
+    rk_i2c_disable();
+    return ret;
 }
 
 int rk_i2c_write(uint16_t addr, uint32_t reg, uint8_t* buf, int size, int flag){
-	int ret;
-	i2c_cfg |= I2C_CON_ACTACK;
-	ret = rk3506_i2c_write(addr, reg, 1, buf, size);
-	rk_i2c_send_stop_bit();
-	rk_i2c_disable();
-	return ret;
+    int ret;
+    i2c_cfg |= I2C_CON_ACTACK;
+    ret = rk3506_i2c_write(addr, reg, 1, buf, size);
+    rk_i2c_send_stop_bit();
+    rk_i2c_disable();
+    return ret;
 }
 
 void rk_i2c_init(int bus){
-	_mmio_base = mmio_map();
-	rk_gpio_init();
+    _mmio_base = mmio_map();
+    rk_gpio_init();
 
-	rk_gpio_config(10, 30);
-	rk_gpio_config(11, 31);
+    rk_gpio_config(10, 30);
+    rk_gpio_config(11, 31);
 
-	i2c_cfg = 0;
-	I2C_BASE = _mmio_base + 0x040000;
-	rk_i2c_adapter_clk(10000);
+    i2c_cfg = 0;
+    I2C_BASE = _mmio_base + 0x040000;
+    rk_i2c_adapter_clk(10000);
 }
 

@@ -7,9 +7,9 @@
 
 inline void write_cntv_tval(uint32_t tval) {
 #if __arm__
-	__asm__ volatile ("mcr p15, 0, %0, c14, c3, 0" :: "r"(tval));
+    __asm__ volatile ("mcr p15, 0, %0, c14, c3, 0" :: "r"(tval));
 #elif __aarch64__
-	__asm__ volatile("msr CNTV_TVAL_EL0, %0" : : "r" (tval) : "memory");
+    __asm__ volatile("msr CNTV_TVAL_EL0, %0" : : "r" (tval) : "memory");
 #endif
 }
 

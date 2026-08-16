@@ -6,23 +6,23 @@
 #define debug printf
 
 static int regmap_write(ewokos_addr_t base, uint32_t offset, uint32_t val){
-	uint32_t befor =  *(volatile uint32_t*)(base + offset);
-	*(volatile uint32_t*)(base + offset) = val;
-	uint32_t after =  *(volatile uint32_t*)(base + offset);
-	debug("write %08x:->%08x %08x->%008x\n", base + offset - MMIO_BASE + 0xFF000000, val, befor, after);
-	return 0;
+    uint32_t befor =  *(volatile uint32_t*)(base + offset);
+    *(volatile uint32_t*)(base + offset) = val;
+    uint32_t after =  *(volatile uint32_t*)(base + offset);
+    debug("write %08x:->%08x %08x->%008x\n", base + offset - MMIO_BASE + 0xFF000000, val, befor, after);
+    return 0;
 }
 
 static int get_bit(ewokos_addr_t addr, int mask){
-	debug("getbit %08x %d %08x\n", addr - MMIO_BASE + 0xFF000000, mask, *(volatile uint32_t*)(addr));
-	return (*(volatile uint32_t*)(addr) & (0x1 << mask))?1:0;
+    debug("getbit %08x %d %08x\n", addr - MMIO_BASE + 0xFF000000, mask, *(volatile uint32_t*)(addr));
+    return (*(volatile uint32_t*)(addr) & (0x1 << mask))?1:0;
 }
 
 static struct rk_pin_config{
-	int bank;
-	int pin;
-	int mux;
-	int pull;
+    int bank;
+    int pin;
+    int mux;
+    int pull;
 };
 
 //GPIO0_A7	SPI_CLK		<0 RK_PA7 82 &pcfg_pull_none>;
@@ -35,14 +35,14 @@ static struct rk_pin_config{
 //GPIO0_B2	KBD_SCL		<0 RK_PB2 30>
 
 struct rk_pin_config default_cfg[] = {
-	{0, RK_PA7, 82, 0},	
-	{0, RK_PA6, 83, 0},	
-	{0, RK_PA5, 84, 0},	
-	{0, RK_PA4, 0, 0},	
-	{0, RK_PA3, 0, 0},	
-	{0, RK_PA2, 0, 0},	
-	{0, RK_PB2, 30, 0},	
-	{0, RK_PB3, 31, 0},	
+    {0, RK_PA7, 82, 0},	
+    {0, RK_PA6, 83, 0},	
+    {0, RK_PA5, 84, 0},	
+    {0, RK_PA4, 0, 0},	
+    {0, RK_PA3, 0, 0},	
+    {0, RK_PA2, 0, 0},	
+    {0, RK_PB2, 30, 0},	
+    {0, RK_PB3, 31, 0},	
 };
 
 static struct rockchip_pin_bank rk3506_pin_banks[] = {
@@ -680,11 +680,11 @@ static int rockchip_gpio_direction_input(struct rockchip_gpio_group *priv, unsig
 {
     struct rockchip_gpio_regs *regs = priv->regs;
 
-	if(offset < 16){
-		regs->swport_ddr_l = regs->swport_ddr_l & ~(0x1 << offset) | 0xFFFF0000; 
-	}else{
-		regs->swport_ddr_h = regs->swport_ddr_h & ~(0x1 << (offset - 16)) | 0xFFFF0000; 
-	}
+    if(offset < 16){
+        regs->swport_ddr_l = regs->swport_ddr_l & ~(0x1 << offset) | 0xFFFF0000; 
+    }else{
+        regs->swport_ddr_h = regs->swport_ddr_h & ~(0x1 << (offset - 16)) | 0xFFFF0000; 
+    }
 
     return 0;
 }
@@ -693,11 +693,11 @@ static int rockchip_gpio_direction_output(struct rockchip_gpio_group *priv, unsi
 {
     struct rockchip_gpio_regs *regs = priv->regs;
 
-	if(offset < 16){
-		regs->swport_ddr_l = regs->swport_ddr_l | (0x1 << offset) | 0xFFFF0000; 
-	}else{
-		regs->swport_ddr_h |= regs->swport_ddr_h | (0x1 << (offset - 16)) | 0xFFFF0000; 
-	}
+    if(offset < 16){
+        regs->swport_ddr_l = regs->swport_ddr_l | (0x1 << offset) | 0xFFFF0000; 
+    }else{
+        regs->swport_ddr_h |= regs->swport_ddr_h | (0x1 << (offset - 16)) | 0xFFFF0000; 
+    }
     return 0;
 }
 
@@ -713,82 +713,82 @@ static int rockchip_gpio_set_value(struct rockchip_gpio_group *priv, unsigned of
 {
     struct rockchip_gpio_regs *regs = priv->regs;
 
-	if(val){
-		if(offset < 16){
-			regs->swport_dr_l = regs->swport_dr_l | (0x1 << offset) | 0xFFFF0000;
-		}else{
-			regs->swport_dr_h = regs->swport_dr_h | (0x1 << (offset - 16)) | 0xFFFF0000;
-		}
+    if(val){
+        if(offset < 16){
+            regs->swport_dr_l = regs->swport_dr_l | (0x1 << offset) | 0xFFFF0000;
+        }else{
+            regs->swport_dr_h = regs->swport_dr_h | (0x1 << (offset - 16)) | 0xFFFF0000;
+        }
     }else{
-		if(offset < 16){
-			regs->swport_dr_l = regs->swport_dr_l & ~(0x1 << offset) | 0xFFFF0000;
-		}else{
-			regs->swport_dr_h = regs->swport_dr_h & ~(0x1 << (offset - 16)) | 0xFFFF0000;
-		}
+        if(offset < 16){
+            regs->swport_dr_l = regs->swport_dr_l & ~(0x1 << offset) | 0xFFFF0000;
+        }else{
+            regs->swport_dr_h = regs->swport_dr_h & ~(0x1 << (offset - 16)) | 0xFFFF0000;
+        }
     }
 
     return 0;
 }
 
 struct rockchip_gpio_group rk3506_gpio_groups[] = {
-	{
-		.regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x940000)
-	},
-	{
-		.regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x870000)
-	},
-	{
-		.regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x1c0000)
-	},
-	{
-		.regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x1d0000)
-	},
+    {
+        .regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x940000)
+    },
+    {
+        .regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x870000)
+    },
+    {
+        .regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x1c0000)
+    },
+    {
+        .regs = (struct rockchip_gpio_regs*)(MMIO_BASE + 0x1d0000)
+    },
 };
 
 void rk_gpio_init(void){
 
-	rk3506_pinctrl_priv.regmap_base = (uint32_t*)(MMIO_BASE + 0x4d8000);
-	rk3506_pinctrl_priv.regmap_pmu = (uint32_t*)(MMIO_BASE + 0x950000);
-	rk3506_pinctrl_priv.regmap_ioc1 = (uint32_t*)(MMIO_BASE + 0x660000);
-	rk3506_pinctrl_priv.regmap_rmio = (uint32_t*)(MMIO_BASE + 0x910000);
+    rk3506_pinctrl_priv.regmap_base = (uint32_t*)(MMIO_BASE + 0x4d8000);
+    rk3506_pinctrl_priv.regmap_pmu = (uint32_t*)(MMIO_BASE + 0x950000);
+    rk3506_pinctrl_priv.regmap_ioc1 = (uint32_t*)(MMIO_BASE + 0x660000);
+    rk3506_pinctrl_priv.regmap_rmio = (uint32_t*)(MMIO_BASE + 0x910000);
 
-	rockchip_pinctrl_get_soc_data();
-	for(int i = 0; i < sizeof(default_cfg)/sizeof(struct rk_pin_config); i++){
-		int bank = default_cfg[i].bank;
-		int pin = default_cfg[i].pin;
-		int mux = default_cfg[i].mux;
-		rk3506_set_mux(&rk3506_pin_banks[bank], pin, mux);
-	}
+    rockchip_pinctrl_get_soc_data();
+    for(int i = 0; i < sizeof(default_cfg)/sizeof(struct rk_pin_config); i++){
+        int bank = default_cfg[i].bank;
+        int pin = default_cfg[i].pin;
+        int mux = default_cfg[i].mux;
+        rk3506_set_mux(&rk3506_pin_banks[bank], pin, mux);
+    }
 }
 
 void rk_gpio_config(int32_t pin, int32_t mode){
-	struct rockchip_gpio_group *group = &rk3506_gpio_groups[(int)(pin/32)];
-	struct rockchip_pin_bank *bank =  &rk3506_pin_banks[(int)(pin/32)];
-	int offset = pin % 32;
-	if(mode == GPIO_INPUT){
-		rk3506_set_mux(bank, offset, 0);
-		rockchip_gpio_direction_input(group, offset);
-	}else if(mode == GPIO_OUTPUT){
-		rk3506_set_mux(bank, offset, 0);
-		rockchip_gpio_direction_output(group, offset);
-	}else{
-		rk3506_set_mux(bank, offset, mode);
-	}
+    struct rockchip_gpio_group *group = &rk3506_gpio_groups[(int)(pin/32)];
+    struct rockchip_pin_bank *bank =  &rk3506_pin_banks[(int)(pin/32)];
+    int offset = pin % 32;
+    if(mode == GPIO_INPUT){
+        rk3506_set_mux(bank, offset, 0);
+        rockchip_gpio_direction_input(group, offset);
+    }else if(mode == GPIO_OUTPUT){
+        rk3506_set_mux(bank, offset, 0);
+        rockchip_gpio_direction_output(group, offset);
+    }else{
+        rk3506_set_mux(bank, offset, mode);
+    }
 }
 
 
 void rk_gpio_pull(int32_t pin,int32_t updown){
-	
+    
 }
 
 void rk_gpio_write(int32_t pin, int32_t  value){
-	struct rockchip_gpio_group *bank = &rk3506_gpio_groups[(int)(pin/32)];
-	int offset = pin % 32;
-	rockchip_gpio_set_value(bank, offset, value);
+    struct rockchip_gpio_group *bank = &rk3506_gpio_groups[(int)(pin/32)];
+    int offset = pin % 32;
+    rockchip_gpio_set_value(bank, offset, value);
 }
 
 uint8_t  rk_gpio_read(int32_t pin){
-	struct rockchip_gpio_group *bank = &rk3506_gpio_groups[(int)(pin/32)];
-	int offset = pin % 32;
-	return rockchip_gpio_get_value(bank, offset);
+    struct rockchip_gpio_group *bank = &rk3506_gpio_groups[(int)(pin/32)];
+    int offset = pin % 32;
+    return rockchip_gpio_get_value(bank, offset);
 }

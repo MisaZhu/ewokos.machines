@@ -32,19 +32,19 @@ static inline uint32_t read_cntpct(void) {
 }
 
 static inline uint32_t read_cntv_tval(void) {
-	uint32_t val;
+    uint32_t val;
 #if __arm__
-	__asm__ volatile ("mrc p15, 0, %0, c14, c3, 0" :: "r"(val));
+    __asm__ volatile ("mrc p15, 0, %0, c14, c3, 0" :: "r"(val));
 #elif __aarch64__
    __asm__ volatile("mrs %0, CNTV_TVAL_EL0" : "=r" (val) : : "memory");
 #endif
 
-	return val;
+    return val;
 }
 
 static inline void enable_cntv(void) {
 #if __arm__
-	__asm__ volatile ("mcr p15, 0, %0, c14, c3, 1" :: "r"(1));
+    __asm__ volatile ("mcr p15, 0, %0, c14, c3, 1" :: "r"(1));
 #elif __aarch64__
      __asm__ volatile("msr CNTV_CTL_EL0, %0":: "r"(1):  "memory");
 #endif
@@ -53,7 +53,7 @@ static inline void enable_cntv(void) {
 
 static inline uint32_t disable_cntv(void) {
 #if __arm__
-	__asm__ volatile("mcr p15, 0, %0, c14, C3, 1" :: "r" (0));
+    __asm__ volatile("mcr p15, 0, %0, c14, C3, 1" :: "r" (0));
 #elif __aarch64__
      __asm__ volatile("msr CNTV_CTL_EL0, %0":: "r"(0):  "memory");
 #endif
@@ -61,23 +61,23 @@ static inline uint32_t disable_cntv(void) {
 }
 
 static inline uint64_t  read_cntvct(void) {
-	uint64_t val;
+    uint64_t val;
 #if __arm__
-	__asm__ volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r" (val));
+    __asm__ volatile("mrrc p15, 1, %Q0, %R0, c14" : "=r" (val));
 #elif __aarch64__
    __asm__ volatile("mrs %0, CNTVCT_EL0" : "=r" (val) : : "memory");
 #endif
-	return val;
+    return val;
 }
 
 static inline uint32_t read_cntctl(void) {
-	uint32_t val;
+    uint32_t val;
 #if __arm__
-	__asm__ volatile("mrc p15, 0, %0, c14, C3, 1" : "=r" (val));
+    __asm__ volatile("mrc p15, 0, %0, c14, C3, 1" : "=r" (val));
 #elif __aarch64__
    __asm__ volatile("mrs %0, CNTCTL_EL0" : "=r" (val) : : "memory");
 #endif
-	return val;
+    return val;
 }
 
 static uint32_t _cntv_step;
@@ -90,23 +90,23 @@ void timer_init_pi4(void){
 }
 
 void timer_clear_interrupt_pi4(uint32_t id) {
-	(void)id;
-	write_cntv_tval(_cntv_step);
+    (void)id;
+    write_cntv_tval(_cntv_step);
 }
 
 void timer_set_interval_pi4(uint32_t id, uint32_t times_per_sec) {
-	(void)id;
+    (void)id;
     timer_init();
     _cntv_step = read_cntfrq() / times_per_sec;
     timer_clear_interrupt(id);
 }
 
 uint64_t timer_read_sys_usec_pi4(void) { //read microsec
-	if(_cntv_us_div == 0) {
-		uint32_t cntfrq = read_cntfrq();
-		_cntv_us_div = cntfrq / 1000000U;
-		if(_cntv_us_div == 0)
-			_cntv_us_div = 1;
-	}
-	return read_cntvct() / _cntv_us_div;
+    if(_cntv_us_div == 0) {
+        uint32_t cntfrq = read_cntfrq();
+        _cntv_us_div = cntfrq / 1000000U;
+        if(_cntv_us_div == 0)
+            _cntv_us_div = 1;
+    }
+    return read_cntvct() / _cntv_us_div;
 }

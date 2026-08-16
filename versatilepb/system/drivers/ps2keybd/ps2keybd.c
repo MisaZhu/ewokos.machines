@@ -26,12 +26,12 @@ static uint8_t _held[128] = {0};
 static bool _read = false;
 
 int32_t keyb_init(void) {
-	_mmio_base = mmio_map();
+    _mmio_base = mmio_map();
   put8(KEYBOARD_BASE + KCNTL, 0x10); // bit4=Enable bit0=INT on
   put8(KEYBOARD_BASE + KCLK, 8);
-	memset(_held, 0, 128);
-	_read = true;
-	return 0;
+    memset(_held, 0, 128);
+    _read = true;
+    return 0;
 }
 
 //0    1    2    3    4    5    6    7     8    9    A    B    C    D    E    F
@@ -58,11 +58,11 @@ const char _utab[] = {
 };
 
 static inline uint8_t get_scode(void) {
-	return  get8(KEYBOARD_BASE+KDATA);
+    return  get8(KEYBOARD_BASE+KDATA);
 }
 
 static inline void empty(void) {
-	put8(KEYBOARD_BASE+KDATA, 0);
+    put8(KEYBOARD_BASE+KDATA, 0);
 }
 
 #define LSHIFT 0x12
@@ -73,126 +73,126 @@ static inline void empty(void) {
 static uint8_t _scodes[MAX_KEYS] = {0};
 
 static int32_t keyb_handle(uint8_t scode) {
-	if(scode == 0)
-		return -1;
+    if(scode == 0)
+        return -1;
 
-	//handle release event and key value
-	if(scode == 0xF0) { //release event
-		scode = get_scode(); // scan released code
-		empty(); //set empty data
-		if(scode <= 127 && _held[scode] == 1 && scode)  
-			_held[scode] = 0;
-		for(int i=0; i<MAX_KEYS; i++) {
-			if(_scodes[i] == scode) {
-				_scodes[i] = 0;
-			}
-		}
-		return 0;
-	}
-	else if(scode == 0xFA) //empty data
-		return -1;
-	if(scode > 127)
-		return -1;
+    //handle release event and key value
+    if(scode == 0xF0) { //release event
+        scode = get_scode(); // scan released code
+        empty(); //set empty data
+        if(scode <= 127 && _held[scode] == 1 && scode)  
+            _held[scode] = 0;
+        for(int i=0; i<MAX_KEYS; i++) {
+            if(_scodes[i] == scode) {
+                _scodes[i] = 0;
+            }
+        }
+        return 0;
+    }
+    else if(scode == 0xFA) //empty data
+        return -1;
+    if(scode > 127)
+        return -1;
 
-	_held[scode] = 1;
+    _held[scode] = 1;
 
-	for(int i=0; i<MAX_KEYS; i++) {
-		if(_scodes[i] == scode) {
-			return 0;
-		}
-	}
+    for(int i=0; i<MAX_KEYS; i++) {
+        if(_scodes[i] == scode) {
+            return 0;
+        }
+    }
 
-	for(int i=0; i<MAX_KEYS; i++) {
-		if(_scodes[i] == 0) {
-			_scodes[i] = scode;
-			break;
-		}
-	}
-	return 0;
+    for(int i=0; i<MAX_KEYS; i++) {
+        if(_scodes[i] == 0) {
+            _scodes[i] = scode;
+            break;
+        }
+    }
+    return 0;
 }
 
 static uint8_t to_key(uint8_t scode) {
-	char c = 0;
-	if(scode == 0)
-		return 0;
+    char c = 0;
+    if(scode == 0)
+        return 0;
 
-	if(scode == CTRL) 
-		c = KEY_CTRL;
-	else if(scode == LSHIFT) 
-		c = KEY_LSHIFT;
-	else if(scode == RSHIFT) 
-		c = KEY_RSHIFT;
-	else if(_held[LSHIFT] == 1 || _held[RSHIFT] == 1) // If shift key held
-		c = _utab[scode];
-	else 
-		c = _ltab[scode];
-	return c;
+    if(scode == CTRL) 
+        c = KEY_CTRL;
+    else if(scode == LSHIFT) 
+        c = KEY_LSHIFT;
+    else if(scode == RSHIFT) 
+        c = KEY_RSHIFT;
+    else if(_held[LSHIFT] == 1 || _held[RSHIFT] == 1) // If shift key held
+        c = _utab[scode];
+    else 
+        c = _ltab[scode];
+    return c;
 }
 
 static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)offset;
-	(void)p;
-	(void)node;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)offset;
+    (void)p;
+    (void)node;
 
-	uint8_t* res = (uint8_t*)buf;
-	int num = 0;
-	for(int i=0; i<MAX_KEYS && i<size; i++) {
-		if(_scodes[i] != 0) {
-			uint8_t c = to_key(_scodes[i]);
-			if(c > 0) {
-				res[num] = c;
-				num++;
-			}
-		}
-	}
+    uint8_t* res = (uint8_t*)buf;
+    int num = 0;
+    for(int i=0; i<MAX_KEYS && i<size; i++) {
+        if(_scodes[i] != 0) {
+            uint8_t c = to_key(_scodes[i]);
+            if(c > 0) {
+                res[num] = c;
+                num++;
+            }
+        }
+    }
 
-	if(num == 0)
-		return VFS_ERR_RETRY;
-	return num;
+    if(num == 0)
+        return VFS_ERR_RETRY;
+    return num;
 }
 
 static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, ewokos_addr_t p) {
         vdevice_t* dev = (vdevice_t*)p;
-	uint8_t key_scode = get_scode();
-	if(keyb_handle(key_scode) == 0) {
-		_wakeup = true;
-	}
-	return;
+    uint8_t key_scode = get_scode();
+    if(keyb_handle(key_scode) == 0) {
+        _wakeup = true;
+    }
+    return;
 }
 
 int loop_step(vdevice_t* dev, void* p) {
-	(void)p;
-	if(_wakeup) {
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-		_wakeup = false;
-	}
-	usleep(3000);
-	return 0;
+    (void)p;
+    if(_wakeup) {
+        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+        _wakeup = false;
+    }
+    usleep(3000);
+    return 0;
 }
 
 #define IRQ_RAW_KEYB (32+3) //VPB keyb interrupt at SIC bit3
 
 int main(int argc, char** argv) {
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/keyb0";
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/keyb0";
 
-	keyb_init();
+    keyb_init();
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "keyb");
-	dev.read = keyb_read;
-	dev.loop_step = loop_step;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "keyb");
+    dev.read = keyb_read;
+    dev.loop_step = loop_step;
 
-	static interrupt_handler_t handler;
-	handler.data = &dev;
-	handler.handler = interrupt_handle;
-	sys_interrupt_setup(IRQ_RAW_KEYB, &handler);
+    static interrupt_handler_t handler;
+    handler.data = &dev;
+    handler.handler = interrupt_handle;
+    sys_interrupt_setup(IRQ_RAW_KEYB, &handler);
 
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
-	return 0;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    return 0;
 }

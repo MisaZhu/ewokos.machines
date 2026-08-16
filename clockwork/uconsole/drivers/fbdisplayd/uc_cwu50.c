@@ -14,9 +14,9 @@
 #define DT_DCS_SHORT_WRITE_1P    0x15U
 
 typedef struct {
-	uint8_t  len;         /* number of payload bytes (1 or 2) */
-	uint8_t  data[3];     /* command byte, then optional param */
-	uint16_t delay_ms;    /* post-write delay */
+    uint8_t  len;         /* number of payload bytes (1 or 2) */
+    uint8_t  data[3];     /* command byte, then optional param */
+    uint16_t delay_ms;    /* post-write delay */
 } cwu50_cmd_t;
 
 /*
@@ -243,68 +243,68 @@ static const cwu50_cmd_t _cwu50_seq[] = {
 #define _CWU50_SEQ_LEN  (sizeof(_cwu50_seq) / sizeof(_cwu50_seq[0]))
 
 static int _send_one(const cwu50_cmd_t* c) {
-	uint8_t dt = (c->len == 1) ? DT_DCS_SHORT_WRITE_0P : DT_DCS_SHORT_WRITE_1P;
-	int rc = uc_dsi_dcs_write(dt, c->data, c->len);
-	if (c->delay_ms > 0) {
-		uc_mdelay(c->delay_ms);
-	}
-	return rc;
+    uint8_t dt = (c->len == 1) ? DT_DCS_SHORT_WRITE_0P : DT_DCS_SHORT_WRITE_1P;
+    int rc = uc_dsi_dcs_write(dt, c->data, c->len);
+    if (c->delay_ms > 0) {
+        uc_mdelay(c->delay_ms);
+    }
+    return rc;
 }
 
 int uc_cwu50_init(void) {
-	int failures = 0;
-	int consec = 0;
-	uint32_t i;
+    int failures = 0;
+    int consec = 0;
+    uint32_t i;
 
-	/*
-	 * panel-cwu50.c :: cwu50_prepare() first calls
-	 * mipi_dsi_dcs_set_tear_on(dsi, TEAR_MODE_VBLANK) which is DCS
-	 * short-write 0x35, param 0x00.  The vendor table itself also
-	 * repeats this at the end, but we mirror the reference flow so a
-	 * side-by-side capture matches bit-for-bit.
-	 */
-	{
-		uint8_t tear[2] = { 0x35, 0x00 };
-		if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2) != 0) {
-			failures++;
-			consec++;
-		}
-	}
+    /*
+     * panel-cwu50.c :: cwu50_prepare() first calls
+     * mipi_dsi_dcs_set_tear_on(dsi, TEAR_MODE_VBLANK) which is DCS
+     * short-write 0x35, param 0x00.  The vendor table itself also
+     * repeats this at the end, but we mirror the reference flow so a
+     * side-by-side capture matches bit-for-bit.
+     */
+    {
+        uint8_t tear[2] = { 0x35, 0x00 };
+        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2) != 0) {
+            failures++;
+            consec++;
+        }
+    }
 
-	for (i = 0; i < _CWU50_SEQ_LEN; i++) {
-		if (_send_one(&_cwu50_seq[i]) != 0) {
-			failures++;
-			consec++;
-			/*
-			 * TXPKT1_DONE is a controller-side completion bit; it
-			 * never needs a panel ACK. Three consecutive timeouts
-			 * mean the DSI host itself cannot serialise packets
-			 * (PHY/byte clock dead) — every later entry would eat
-			 * its full 200ms timeout too, so bail out instead of
-			 * burning ~45s on the rest of the table.
-			 */
-			if (consec >= 3) {
-				return failures;
-			}
-		} else {
-			consec = 0;
-		}
-	}
+    for (i = 0; i < _CWU50_SEQ_LEN; i++) {
+        if (_send_one(&_cwu50_seq[i]) != 0) {
+            failures++;
+            consec++;
+            /*
+             * TXPKT1_DONE is a controller-side completion bit; it
+             * never needs a panel ACK. Three consecutive timeouts
+             * mean the DSI host itself cannot serialise packets
+             * (PHY/byte clock dead) — every later entry would eat
+             * its full 200ms timeout too, so bail out instead of
+             * burning ~45s on the rest of the table.
+             */
+            if (consec >= 3) {
+                return failures;
+            }
+        } else {
+            consec = 0;
+        }
+    }
 
-	/*
-	 * After the table, cwu50_prepare() also invokes the standard
-	 * DCS helpers exit_sleep_mode + set_display_on with their own
-	 * 120 / 20 ms sleeps.  Repeat here — some panels tolerate the
-	 * duplication, and skipping breaks display readiness on cwu50.
-	 */
-	{
-		uint8_t slpout[1] = { 0x11 };
-		uint8_t dspon[1]  = { 0x29 };
-		if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, slpout, 1) != 0) failures++;
-		uc_mdelay(120);
-		if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, dspon,  1) != 0) failures++;
-		uc_mdelay(20);
-	}
+    /*
+     * After the table, cwu50_prepare() also invokes the standard
+     * DCS helpers exit_sleep_mode + set_display_on with their own
+     * 120 / 20 ms sleeps.  Repeat here — some panels tolerate the
+     * duplication, and skipping breaks display readiness on cwu50.
+     */
+    {
+        uint8_t slpout[1] = { 0x11 };
+        uint8_t dspon[1]  = { 0x29 };
+        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, slpout, 1) != 0) failures++;
+        uc_mdelay(120);
+        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, dspon,  1) != 0) failures++;
+        uc_mdelay(20);
+    }
 
-	return failures;
+    return failures;
 }

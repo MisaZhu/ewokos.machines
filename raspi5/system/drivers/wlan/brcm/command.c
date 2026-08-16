@@ -168,7 +168,7 @@ hexdump(const char* lable, const void *data, size_t size)
     brcm_log("%s %d:\n", lable, size);
     brcm_log("+------+-------------------------------------------------+------------------+\n");
     for(offset = 0; offset < (int)size; offset += 16) {
-		brcm_log("| %04x | ", offset);
+        brcm_log("| %04x | ", offset);
         for(index = 0; index < 16; index++) {
             if(offset + index < (int)size) {
                 brcm_log("%02x ", 0xff & src[offset + index]);

@@ -86,8 +86,8 @@ static inline uint16_t lcd35a_argb_to_rgb565(uint32_t pixel) {
         uint16_t r = (pixel >> 19) & 0x1f;
         uint16_t g = (pixel >> 10) & 0x3f;
         uint16_t b = (pixel >> 3) & 0x1f;
-	uint16_t rgb565 = (r << 11) | (g << 5) | b;
-	return (rgb565 >> 8) | (rgb565 << 8);
+    uint16_t rgb565 = (r << 11) | (g << 5) | b;
+    return (rgb565 >> 8) | (rgb565 << 8);
 }
 
 static void lcd35a_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
@@ -210,7 +210,7 @@ int  do_flush(const void* buf, uint32_t size) {
 
                 lcd35a_start();
                 lcd35a_set_window(0, 0, LCD_WIDTH, LCD_HEIGHT);
-		bsp_spi_send_recv((const uint8_t*)_lcd35a_flush_buf, NULL, pixels * sizeof(uint16_t));
+        bsp_spi_send_recv((const uint8_t*)_lcd35a_flush_buf, NULL, pixels * sizeof(uint16_t));
                 lcd35a_end();
                 _lcd35a_shadow_ready = 1;
                 return 0;
@@ -257,7 +257,7 @@ int  do_flush(const void* buf, uint32_t size) {
 
                 lcd35a_start();
                 lcd35a_set_window(0, 0, LCD_WIDTH, LCD_HEIGHT);
-		bsp_spi_send_recv((const uint8_t*)_lcd35a_flush_buf, NULL, pixels * sizeof(uint16_t));
+        bsp_spi_send_recv((const uint8_t*)_lcd35a_flush_buf, NULL, pixels * sizeof(uint16_t));
                 lcd35a_end();
                 return 0;
         }
@@ -269,7 +269,7 @@ int  do_flush(const void* buf, uint32_t size) {
 
         lcd35a_start();
         lcd35a_set_window(min_x, min_y, dirty_w, dirty_h);
-	bsp_spi_send_recv((const uint8_t*)_lcd35a_flush_buf, NULL, pixels * sizeof(uint16_t));
+    bsp_spi_send_recv((const uint8_t*)_lcd35a_flush_buf, NULL, pixels * sizeof(uint16_t));
         lcd35a_end();
         return 0;
 }
@@ -282,121 +282,121 @@ static void lcd35a_apply_madctl(void) {
 }
 
 void lcd_init(uint32_t w, uint32_t h) {
-	ILI9486_REG_WIDTH_16 = 1;
-	ILI9486_INIT_PROFILE = ILI9486_INIT_PROFILE_GENERIC;
-	ili9486_set_config(_lcd_dc_pin, _lcd_cs_pin, _lcd_rst_pin, _lcd_bl_pin,
-			_lcd_spi_div, _lcd_spi_select);
+    ILI9486_REG_WIDTH_16 = 1;
+    ILI9486_INIT_PROFILE = ILI9486_INIT_PROFILE_GENERIC;
+    ili9486_set_config(_lcd_dc_pin, _lcd_cs_pin, _lcd_rst_pin, _lcd_bl_pin,
+            _lcd_spi_div, _lcd_spi_select);
         ili9486_init(w, h, _lcd_rot, _lcd_inversion,
-			_lcd_dc_pin, _lcd_cs_pin, _lcd_rst_pin, _lcd_bl_pin, _lcd_spi_div);
+            _lcd_dc_pin, _lcd_cs_pin, _lcd_rst_pin, _lcd_bl_pin, _lcd_spi_div);
         lcd35a_apply_madctl();
         _lcd35a_shadow_ready = 0;
 }
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
-	uint32_t sz = 4 * g->w * g->h;
-	do_flush(g->buffer, sz);
-	return sz;
+    uint32_t sz = 4 * g->w * g->h;
+    do_flush(g->buffer, sz);
+    return sz;
 }
 
 static fbinfo_t* get_info(void) {
-	static fbinfo_t fbinfo;
-	memset(&fbinfo, 0, sizeof(fbinfo_t));
-	fbinfo.width = LCD_WIDTH;
-	fbinfo.height = LCD_HEIGHT;
-	fbinfo.depth = 32;
-	return &fbinfo;
+    static fbinfo_t fbinfo;
+    memset(&fbinfo, 0, sizeof(fbinfo_t));
+    fbinfo.width = LCD_WIDTH;
+    fbinfo.height = LCD_HEIGHT;
+    fbinfo.depth = 32;
+    return &fbinfo;
 }
 
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
-	(void)w;
-	(void)h;
-	(void)dep;
-	return 0;
+    (void)w;
+    (void)h;
+    (void)dep;
+    return 0;
 }
 
 static int doargs(int argc, char* argv[]) {
-	int c = 0;
-	while (c != -1) {
-		c = getopt (argc, argv, "c:d:D:C:R:B:S:p:q:t:T:i:");
-		if(c == -1)
-			break;
+    int c = 0;
+    while (c != -1) {
+        c = getopt (argc, argv, "c:d:D:C:R:B:S:p:q:t:T:i:");
+        if(c == -1)
+            break;
 
-		switch (c) {
-		case 'c':
-			_conf_file = optarg;
-			break;
-		case 'd':
-			_lcd_spi_div = atoi(optarg);
-			break;
-		case 'D':
-			_lcd_dc_pin = atoi(optarg);
-			break;
-		case 'C':
-			_lcd_cs_pin = atoi(optarg);
-			break;
-		case 'R':
-			_lcd_rst_pin = atoi(optarg);
-			break;
-		case 'B':
-			_lcd_bl_pin = atoi(optarg);
-			break;
-		case 'S':
-			_lcd_spi_select = atoi(optarg);
-			break;
-		case 'p':
-			_tp_cs_pin = atoi(optarg);
-			break;
-		case 'q':
-			_tp_irq_pin = atoi(optarg);
-			break;
-		case 't':
-			_tp_spi_div = atoi(optarg);
-			break;
-		case 'T':
-			_tp_spi_select = atoi(optarg);
-			break;
-		case 'i':
-			_display_index = atoi(optarg);
-			break;
-		default:
-			c = -1;
-			break;
-		}
-	}
-	return optind;
+        switch (c) {
+        case 'c':
+            _conf_file = optarg;
+            break;
+        case 'd':
+            _lcd_spi_div = atoi(optarg);
+            break;
+        case 'D':
+            _lcd_dc_pin = atoi(optarg);
+            break;
+        case 'C':
+            _lcd_cs_pin = atoi(optarg);
+            break;
+        case 'R':
+            _lcd_rst_pin = atoi(optarg);
+            break;
+        case 'B':
+            _lcd_bl_pin = atoi(optarg);
+            break;
+        case 'S':
+            _lcd_spi_select = atoi(optarg);
+            break;
+        case 'p':
+            _tp_cs_pin = atoi(optarg);
+            break;
+        case 'q':
+            _tp_irq_pin = atoi(optarg);
+            break;
+        case 't':
+            _tp_spi_div = atoi(optarg);
+            break;
+        case 'T':
+            _tp_spi_select = atoi(optarg);
+            break;
+        case 'i':
+            _display_index = atoi(optarg);
+            break;
+        default:
+            c = -1;
+            break;
+        }
+    }
+    return optind;
 }
 
 static int tp_read(uint8_t* buf, uint32_t size) {
-	memset(buf, 0, size);
-	if(size >= 6) {
-		uint16_t* d = (uint16_t*)buf;
-		if(_lcd_cs_pin >= 0)
-			bsp_gpio_write(_lcd_cs_pin, 1);
-		xpt2046_read(&d[0], &d[1], &d[2]);
-		if(_lcd_cs_pin >= 0)
-			bsp_gpio_write(_lcd_cs_pin, 0);
-	}
-	return 6;
+    memset(buf, 0, size);
+    if(size >= 6) {
+        uint16_t* d = (uint16_t*)buf;
+        if(_lcd_cs_pin >= 0)
+            bsp_gpio_write(_lcd_cs_pin, 1);
+        xpt2046_read(&d[0], &d[1], &d[2]);
+        if(_lcd_cs_pin >= 0)
+            bsp_gpio_write(_lcd_cs_pin, 0);
+    }
+    return 6;
 }
 
 int main(int argc, char** argv) {
-	uint32_t w=480, h=320;
-	LCD_HEIGHT = h;
-	LCD_WIDTH = w;
+    uint32_t w=480, h=320;
+    LCD_HEIGHT = h;
+    LCD_WIDTH = w;
 
-	int opti = doargs(argc, argv);
-	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
-	lcd_init(w, h);
-	xpt2046_set_config(_tp_cs_pin, _tp_irq_pin, _tp_spi_div, _tp_spi_select);
-	xpt2046_init(_tp_cs_pin, _tp_irq_pin, _tp_spi_div);
+    int opti = doargs(argc, argv);
+    const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
+    lcd_init(w, h);
+    xpt2046_set_config(_tp_cs_pin, _tp_irq_pin, _tp_spi_div, _tp_spi_select);
+    xpt2046_init(_tp_cs_pin, _tp_irq_pin, _tp_spi_div);
 
-	fbdisplayd_t display;
-	memset(&display, 0, sizeof(fbdisplayd_t));
-	display.splash = NULL;
-	display.flush = flush;
-	display.init = init;
-	display.get_info = get_info;
-	display.read = tp_read;
-	int ret = fbdisplayd_run(&display, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file, _display_index);
-	return ret;
+    fbdisplayd_t display;
+    memset(&display, 0, sizeof(fbdisplayd_t));
+    display.splash = NULL;
+    display.flush = flush;
+    display.init = init;
+    display.get_info = get_info;
+    display.read = tp_read;
+    int ret = fbdisplayd_run(&display, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file, _display_index);
+    return ret;
 }

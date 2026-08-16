@@ -22,11 +22,11 @@ static inline void sleep_ms(int ms){
 }
 
 static inline void spi_set_byte_mode(void) {
-	rk_spi_set_bits_per_word(8);
+    rk_spi_set_bits_per_word(8);
 }
 
 static inline void spi_set_pixel_mode(void) {
-	rk_spi_set_bits_per_word(16);
+    rk_spi_set_bits_per_word(16);
 }
 
 static inline void spi_write_data(uint8_t data){
@@ -35,11 +35,11 @@ static inline void spi_write_data(uint8_t data){
 }
 
 static inline uint8_t  spi_read_data(uint8_t reg){
-	uint8_t ret;
-	rk_gpio_write(LCD_DC, 0);
-	rk_spi_write(&reg, 1);
-	rk_spi_read(&ret, 1);
-	return ret;
+    uint8_t ret;
+    rk_gpio_write(LCD_DC, 0);
+    rk_spi_write(&reg, 1);
+    rk_spi_read(&ret, 1);
+    return ret;
 }
 
 static inline void spi_write_command(uint8_t data){
@@ -57,206 +57,206 @@ static inline void spi_write_cd(uint8_t command, int len, ...) {
 }
 
 static inline void define_region_spi(int xstart, int ystart, int xend, int yend, int rw) {
-	(void)rw;
-	spi_set_byte_mode();
-	if(xstart != _rectangle[0] || ystart != _rectangle[1] || xend != _rectangle[2] || yend != _rectangle[3]){
-		_rectangle[0] = xstart;
-		_rectangle[1] = ystart;
-		_rectangle[2] = xend;
-		_rectangle[3] = yend;
-		spi_write_command(0x2A);
-		spi_write_data(xstart >> 8);
-		spi_write_data(xstart & 0xFF); 
-		spi_write_data(xend >> 8);
-		spi_write_data(xend & 0xFF);
-		spi_write_command(0x2B); 
-		spi_write_data(ystart>>8);
-		spi_write_data(ystart &0xff);     
-		spi_write_data(yend>>8);
-		spi_write_data(yend &0xff);
-	}
-	spi_write_command(0x2C);
+    (void)rw;
+    spi_set_byte_mode();
+    if(xstart != _rectangle[0] || ystart != _rectangle[1] || xend != _rectangle[2] || yend != _rectangle[3]){
+        _rectangle[0] = xstart;
+        _rectangle[1] = ystart;
+        _rectangle[2] = xend;
+        _rectangle[3] = yend;
+        spi_write_command(0x2A);
+        spi_write_data(xstart >> 8);
+        spi_write_data(xstart & 0xFF); 
+        spi_write_data(xend >> 8);
+        spi_write_data(xend & 0xFF);
+        spi_write_command(0x2B); 
+        spi_write_data(ystart>>8);
+        spi_write_data(ystart &0xff);     
+        spi_write_data(yend>>8);
+        spi_write_data(yend &0xff);
+    }
+    spi_write_command(0x2C);
 }
 
 static inline uint16_t argb_to_rgb565(uint32_t pixel) {
-	uint16_t r = (pixel >> 19) & 0x1f;
-	uint16_t g = (pixel >> 10) & 0x3f;
-	uint16_t b = (pixel >> 3) & 0x1f;
-	uint16_t rgb565 = (r << 11) | (g << 5) | b;
-	return (rgb565 >> 8) | (rgb565 << 8);
+    uint16_t r = (pixel >> 19) & 0x1f;
+    uint16_t g = (pixel >> 10) & 0x3f;
+    uint16_t b = (pixel >> 3) & 0x1f;
+    uint16_t rgb565 = (r << 11) | (g << 5) | b;
+    return (rgb565 >> 8) | (rgb565 << 8);
 }
 
 void ili9488_clear(uint32_t color) {
     int i;
-	uint16_t rgb565 = argb_to_rgb565(color);
+    uint16_t rgb565 = argb_to_rgb565(color);
 
     define_region_spi(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, 1);
     rk_gpio_write(LCD_DC, 1);
-	spi_set_pixel_mode();
+    spi_set_pixel_mode();
     for (i = 0; i < LCD_WIDTH * LCD_HEIGHT; i++) {
-		_fb[i] = rgb565;
+        _fb[i] = rgb565;
     }
-	rk_spi_write((uint8_t*)_fb, LCD_WIDTH * LCD_HEIGHT * (int)sizeof(uint16_t));
-	spi_set_byte_mode();
+    rk_spi_write((uint8_t*)_fb, LCD_WIDTH * LCD_HEIGHT * (int)sizeof(uint16_t));
+    spi_set_byte_mode();
 
 }
 
 static inline void show_full(void) {
-	define_region_spi(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, 1);
-	rk_gpio_write(LCD_DC, 1);
-	spi_set_pixel_mode();
-	rk_spi_write((uint8_t*)_fb, LCD_WIDTH * LCD_HEIGHT * (int)sizeof(uint16_t));
-	spi_set_byte_mode();
+    define_region_spi(0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1, 1);
+    rk_gpio_write(LCD_DC, 1);
+    spi_set_pixel_mode();
+    rk_spi_write((uint8_t*)_fb, LCD_WIDTH * LCD_HEIGHT * (int)sizeof(uint16_t));
+    spi_set_byte_mode();
 }
 
 static inline void show_rows(int y, int h) {
-	if (h <= 0) {
-		return;
-	}
-	define_region_spi(0, y, LCD_WIDTH - 1, y + h - 1, 1);
-	rk_gpio_write(LCD_DC, 1);
-	spi_set_pixel_mode();
-	rk_spi_write((uint8_t*)(_fb + y * LCD_WIDTH),
-			LCD_WIDTH * h * (int)sizeof(uint16_t));
-	spi_set_byte_mode();
+    if (h <= 0) {
+        return;
+    }
+    define_region_spi(0, y, LCD_WIDTH - 1, y + h - 1, 1);
+    rk_gpio_write(LCD_DC, 1);
+    spi_set_pixel_mode();
+    rk_spi_write((uint8_t*)(_fb + y * LCD_WIDTH),
+            LCD_WIDTH * h * (int)sizeof(uint16_t));
+    spi_set_byte_mode();
 }
 
 static inline void show_rect(int x, int y, int w, int h) {
-	int row;
-	if (w <= 0 || h <= 0)
-		return;
+    int row;
+    if (w <= 0 || h <= 0)
+        return;
 
-	if (w == LCD_WIDTH) {
-		/* full-width: use contiguous transfer */
-		show_rows(y, h);
-		return;
-	}
+    if (w == LCD_WIDTH) {
+        /* full-width: use contiguous transfer */
+        show_rows(y, h);
+        return;
+    }
 
-	define_region_spi(x, y, x + w - 1, y + h - 1, 1);
-	rk_gpio_write(LCD_DC, 1);
-	spi_set_pixel_mode();
-	for (row = y; row < y + h; row++) {
-		rk_spi_write((uint8_t*)(_fb + row * LCD_WIDTH + x),
-				w * (int)sizeof(uint16_t));
-	}
-	spi_set_byte_mode();
+    define_region_spi(x, y, x + w - 1, y + h - 1, 1);
+    rk_gpio_write(LCD_DC, 1);
+    spi_set_pixel_mode();
+    for (row = y; row < y + h; row++) {
+        rk_spi_write((uint8_t*)(_fb + row * LCD_WIDTH + x),
+                w * (int)sizeof(uint16_t));
+    }
+    spi_set_byte_mode();
 }
 
 void ili9488_draw_stride(int x, int y, int w, int h, uint32_t *argb, int src_stride){
-	int row;
-	int col;
-	int min_x, max_x, min_y, max_y;
-	int dirty_w, dirty_h;
-	uint32_t dirty_area, total_area;
-	uint8_t dirty;
+    int row;
+    int col;
+    int min_x, max_x, min_y, max_y;
+    int dirty_w, dirty_h;
+    uint32_t dirty_area, total_area;
+    uint8_t dirty;
 
-	if (argb == NULL || w <= 0 || h <= 0) {
-		return;
-	}
+    if (argb == NULL || w <= 0 || h <= 0) {
+        return;
+    }
 
-	if (_shadow_argb == NULL) {
-		for (row = 0; row < h; row++) {
-			const uint32_t *src_row = argb + row * src_stride;
-			uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
-			for (col = 0; col < w; col++) {
-				fb_row[col] = argb_to_rgb565(src_row[col]);
-			}
-		}
-		show_full();
-		return;
-	}
+    if (_shadow_argb == NULL) {
+        for (row = 0; row < h; row++) {
+            const uint32_t *src_row = argb + row * src_stride;
+            uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
+            for (col = 0; col < w; col++) {
+                fb_row[col] = argb_to_rgb565(src_row[col]);
+            }
+        }
+        show_full();
+        return;
+    }
 
-	if (!_shadow_ready) {
-		for (row = 0; row < h; row++) {
-			uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-			const uint32_t *src_row = argb + row * src_stride;
-			uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
-			for (col = 0; col < w; col++) {
-				shadow_row[col] = src_row[col];
-				fb_row[col] = argb_to_rgb565(src_row[col]);
-			}
-		}
-		show_full();
-		_shadow_ready = 1;
-		return;
-	}
+    if (!_shadow_ready) {
+        for (row = 0; row < h; row++) {
+            uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
+            const uint32_t *src_row = argb + row * src_stride;
+            uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
+            for (col = 0; col < w; col++) {
+                shadow_row[col] = src_row[col];
+                fb_row[col] = argb_to_rgb565(src_row[col]);
+            }
+        }
+        show_full();
+        _shadow_ready = 1;
+        return;
+    }
 
-	min_x = w;
-	max_x = 0;
-	min_y = h;
-	max_y = 0;
-	dirty = 0;
+    min_x = w;
+    max_x = 0;
+    min_y = h;
+    max_y = 0;
+    dirty = 0;
 
-	for (row = 0; row < h; row++) {
-		uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
-		const uint32_t *src_row = argb + row * src_stride;
-		uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
-		for (col = 0; col < w; col++) {
-			if (shadow_row[col] == src_row[col]) {
-				continue;
-			}
-			shadow_row[col] = src_row[col];
-			fb_row[col] = argb_to_rgb565(src_row[col]);
-			if (!dirty) {
-				min_x = max_x = col;
-				min_y = max_y = row;
-				dirty = 1;
-			} else {
-				if (col < min_x) min_x = col;
-				if (col > max_x) max_x = col;
-				if (row < min_y) min_y = row;
-				if (row > max_y) max_y = row;
-			}
-		}
-	}
+    for (row = 0; row < h; row++) {
+        uint32_t *shadow_row = _shadow_argb + (y + row) * LCD_WIDTH + x;
+        const uint32_t *src_row = argb + row * src_stride;
+        uint16_t *fb_row = _fb + (y + row) * LCD_WIDTH + x;
+        for (col = 0; col < w; col++) {
+            if (shadow_row[col] == src_row[col]) {
+                continue;
+            }
+            shadow_row[col] = src_row[col];
+            fb_row[col] = argb_to_rgb565(src_row[col]);
+            if (!dirty) {
+                min_x = max_x = col;
+                min_y = max_y = row;
+                dirty = 1;
+            } else {
+                if (col < min_x) min_x = col;
+                if (col > max_x) max_x = col;
+                if (row < min_y) min_y = row;
+                if (row > max_y) max_y = row;
+            }
+        }
+    }
 
-	if (!dirty) {
-		return;
-	}
+    if (!dirty) {
+        return;
+    }
 
-	/* convert to absolute screen coordinates */
-	min_x += x;
-	max_x += x;
-	min_y += y;
-	max_y += y;
+    /* convert to absolute screen coordinates */
+    min_x += x;
+    max_x += x;
+    min_y += y;
+    max_y += y;
 
-	dirty_w = max_x - min_x + 1;
-	dirty_h = max_y - min_y + 1;
-	dirty_area = (uint32_t)dirty_w * dirty_h;
-	total_area = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
+    dirty_w = max_x - min_x + 1;
+    dirty_h = max_y - min_y + 1;
+    dirty_area = (uint32_t)dirty_w * dirty_h;
+    total_area = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
 
-	if (dirty_area > total_area / DIRTY_AREA_FULL_THRESHOLD) {
-		/* large dirty area: full refresh more efficient */
-		show_full();
-	} else {
-		/* partial refresh: send only dirty rect */
-		show_rect(min_x, min_y, dirty_w, dirty_h);
-	}
+    if (dirty_area > total_area / DIRTY_AREA_FULL_THRESHOLD) {
+        /* large dirty area: full refresh more efficient */
+        show_full();
+    } else {
+        /* partial refresh: send only dirty rect */
+        show_rect(min_x, min_y, dirty_w, dirty_h);
+    }
 }
 
 void ili9488_draw(int x, int y, int w, int h, uint32_t *argb){
-	ili9488_draw_stride(x, y, w, h, argb, w);
+    ili9488_draw_stride(x, y, w, h, argb, w);
 }
 
 void ili9488_init(void){
-	rk_gpio_init();
-	rk_spi_init();
-	rk_gpio_config(LCD_RST , 1);
-	rk_gpio_config(LCD_DC,	1);
+    rk_gpio_init();
+    rk_spi_init();
+    rk_gpio_config(LCD_RST , 1);
+    rk_gpio_config(LCD_DC,	1);
 
-	rk_gpio_write(LCD_RST, 0);
+    rk_gpio_write(LCD_RST, 0);
     proc_usleep(100);
-	rk_gpio_write(LCD_RST, 1);
-	proc_usleep(10000);
+    rk_gpio_write(LCD_RST, 1);
+    proc_usleep(10000);
 
-	_fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
-	_shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
-	_shadow_ready = 0;
-	if (_shadow_argb != NULL) {
-		memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
-	}
+    _fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
+    _shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+    _shadow_ready = 0;
+    if (_shadow_argb != NULL) {
+        memset(_shadow_argb, 0xff, LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
+    }
 
-	spi_write_command(0xE0); // Positive Gamma Control
+    spi_write_command(0xE0); // Positive Gamma Control
     spi_write_data(0x00);
     spi_write_data(0x03);
     spi_write_data(0x09);
@@ -344,5 +344,5 @@ void ili9488_init(void){
     spi_write_command(TFT_MADCTL);
     spi_write_cd(ILI9341_MEMCONTROL, 1, ILI9341_Portrait);
 
-	ili9488_clear(0x0);
+    ili9488_clear(0x0);
 }

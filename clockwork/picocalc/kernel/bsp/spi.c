@@ -16,7 +16,7 @@
 static struct rockchip_spi_priv _spi;
 
 static void _delay_us(volatile uint64_t ms){
-	while(ms--);
+    while(ms--);
 }
 
 static void rkspi_dump_regs(struct rockchip_spi *regs)
@@ -68,15 +68,15 @@ static void rkspi_set_clk(struct rockchip_spi_priv *priv, uint speed)
    //     clk_set_rate(&priv->clk, 4 * speed);
    //     speed = clk_get_rate(&priv->clk);
    // }
-	priv->regs->baudr = priv->regs->baudr &  (~0xffff) | clk_div;
-	printf("%08x\n", priv->regs->baudr);
+    priv->regs->baudr = priv->regs->baudr &  (~0xffff) | clk_div;
+    printf("%08x\n", priv->regs->baudr);
     priv->last_speed_hz = speed;
 }
 
 static int rkspi_wait_till_not_busy(struct rockchip_spi *regs)
 {
 
-	int timeout = ROCKCHIP_SPI_TIMEOUT_MS*1000;
+    int timeout = ROCKCHIP_SPI_TIMEOUT_MS*1000;
     while (readl(&regs->sr) & SR_BUSY) {
         if (!timeout--) {
             debug("RK SPI: Status keeps busy for 1000us after a read/write!\n");
@@ -187,11 +187,11 @@ static int rockchip_spi_xfer(int cs, unsigned int bitlen,
 
     rkspi_enable_chip(regs, false);
 
-	//static int _cnt  = 0;
+    //static int _cnt  = 0;
 
-	//_cnt++;
-	//if(_cnt % 100 == 0)
-	//debug(".");
+    //_cnt++;
+    //if(_cnt % 100 == 0)
+    //debug(".");
 
     return ret;
 }
@@ -268,32 +268,32 @@ static int rockchip_spi_claim_bus(int cs)
 }
 
 int rk_spi_xfer(uint8_t *tx, uint8_t *rx, int len){
-	return rockchip_spi_xfer(0 ,len*8, tx, rx, SPI_XFER_BEGIN );
+    return rockchip_spi_xfer(0 ,len*8, tx, rx, SPI_XFER_BEGIN );
 }
 
 int rk_spi_read(uint8_t *buf, int len){
-	debug("rx:");
-	rockchip_spi_xfer(0 ,len*8, buf, buf, SPI_XFER_BEGIN );
-	for(int i = 0; i < len; i++)
-	debug("%02x ", buf[i]);
-	debug("\n");
-	return 0;
+    debug("rx:");
+    rockchip_spi_xfer(0 ,len*8, buf, buf, SPI_XFER_BEGIN );
+    for(int i = 0; i < len; i++)
+    debug("%02x ", buf[i]);
+    debug("\n");
+    return 0;
 }
 
 int rk_spi_write(uint8_t *buf, int len){
-	debug("tx:");
-	for(int i = 0; i < len; i++)
-	debug("%02x ", buf[i]);
-	debug("\n");
-	rockchip_spi_xfer(0 ,len*8, buf, 0, SPI_XFER_BEGIN );
-	return 0;
+    debug("tx:");
+    for(int i = 0; i < len; i++)
+    debug("%02x ", buf[i]);
+    debug("\n");
+    rockchip_spi_xfer(0 ,len*8, buf, 0, SPI_XFER_BEGIN );
+    return 0;
 }
 
 int rk_spi_init(void){
-	_spi.regs = (struct rockchip_spi*)(MMIO_BASE + 0x120000); 
-	_spi.max_freq = 50000000;
-	_spi.speed_hz = 50000000;
-	_spi.bits_per_word = 8;
-	rockchip_spi_claim_bus(0);
-	return 0;
+    _spi.regs = (struct rockchip_spi*)(MMIO_BASE + 0x120000); 
+    _spi.max_freq = 50000000;
+    _spi.speed_hz = 50000000;
+    _spi.bits_per_word = 8;
+    rockchip_spi_claim_bus(0);
+    return 0;
 }

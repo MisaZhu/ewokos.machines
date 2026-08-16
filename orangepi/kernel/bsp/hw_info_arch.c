@@ -9,36 +9,36 @@
 #endif
 
 uint32_t _pi4 = 0;
-	
+    
 #define FB_SIZE 64*MB
 
 void sys_info_init_arch(void) {
-	memset(&_sys_info, 0, sizeof(sys_info_t));
-	strcpy(_sys_info.machine, "orange-pi-2w");
-	_sys_info.phy_offset = 0x40000000;
+    memset(&_sys_info, 0, sizeof(sys_info_t));
+    strcpy(_sys_info.machine, "orange-pi-2w");
+    _sys_info.phy_offset = 0x40000000;
     _sys_info.vector_base = 0x40000000;
-	_sys_info.total_usable_mem_size = 128*MB;
-	_sys_info.mmio.phy_base = 0x00000000;
+    _sys_info.total_usable_mem_size = 128*MB;
+    _sys_info.mmio.phy_base = 0x00000000;
 
-	if(_sys_info.total_usable_mem_size > (ewokos_addr_t)MAX_USABLE_MEM_SIZE)
-		_sys_info.total_usable_mem_size = MAX_USABLE_MEM_SIZE;
+    if(_sys_info.total_usable_mem_size > (ewokos_addr_t)MAX_USABLE_MEM_SIZE)
+        _sys_info.total_usable_mem_size = MAX_USABLE_MEM_SIZE;
 
-	strcpy(_sys_info.arch, "armv7");
-	_sys_info.kernel_base = KERNEL_BASE;
-	_sys_info.mmio.v_base = MMIO_BASE;
-	_sys_info.mmio.size = 128*MB;
+    strcpy(_sys_info.arch, "armv7");
+    _sys_info.kernel_base = KERNEL_BASE;
+    _sys_info.mmio.v_base = MMIO_BASE;
+    _sys_info.mmio.size = 128*MB;
 
-	if(_sys_info.total_usable_mem_size <= 1*GB) {
-		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-				_sys_info.total_usable_mem_size - FB_SIZE;
-	}
-	else {
-		_sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
-	}
+    if(_sys_info.total_usable_mem_size <= 1*GB) {
+        _sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
+                _sys_info.total_usable_mem_size - FB_SIZE;
+    }
+    else {
+        _sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
+    }
 #ifdef KERNEL_SMP
-	_sys_info.cores = get_cpu_cores();
+    _sys_info.cores = get_cpu_cores();
 #else
-	_sys_info.cores = 1;
+    _sys_info.cores = 1;
 #endif
 }
 
@@ -52,15 +52,15 @@ int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
 }
 
 int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
-	ewokos_addr_t map_end = phy_base + size;
+    ewokos_addr_t map_end = phy_base + size;
 
-	if(map_end < phy_base)
-		return 0;
-	if(phy_base < _sys_info.allocable_phy_mem_base)
-		return 0;
-	if(map_end > _sys_info.allocable_phy_mem_top)
-		return 0;
-	return 1;
+    if(map_end < phy_base)
+        return 0;
+    if(phy_base < _sys_info.allocable_phy_mem_base)
+        return 0;
+    if(map_end > _sys_info.allocable_phy_mem_top)
+        return 0;
+    return 1;
 }
 
 #if KERNEL_SMP
@@ -100,7 +100,7 @@ uint32_t sunxi_smc_call_optee(uint32_t arg0, uint32_t arg1, uint32_t arg2,
         uint32_t arg3, uint32_t pResult)
 {
     struct arm_smccc_res param = { 0 };
-	uint32_t p = &param;
+    uint32_t p = &param;
     arm_smccc_smc(arg0, arg1, arg2, arg3, 0, 0, 0, 0, p);
     return param.a0;
 }
@@ -109,13 +109,13 @@ void start_core(uint32_t core_id) {
     if(core_id >= _sys_info.cores)
         return;
 
-	//uint32_t ver = sunxi_smc_call_optee(PSCI_VERSION, 0, 0, 0, 0);
-	//printf("psci version: %d.%d\n", ver>>16, ver&0xFFFF);
-	int ret  =  sunxi_smc_call_optee(PSCI_CPU_ON, core_id, V2P(__entry) , 0, 0);
-	printf("\npsci ret: %d\n", ret);
+    //uint32_t ver = sunxi_smc_call_optee(PSCI_VERSION, 0, 0, 0, 0);
+    //printf("psci version: %d.%d\n", ver>>16, ver&0xFFFF);
+    int ret  =  sunxi_smc_call_optee(PSCI_CPU_ON, core_id, V2P(__entry) , 0, 0);
+    printf("\npsci ret: %d\n", ret);
 }
 #endif
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
+    kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }

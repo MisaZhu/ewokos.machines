@@ -13,62 +13,62 @@
 
 struct reg_field *regmap_field_alloc(ewokos_addr_t base, struct reg_field reg_field)
 {
-	struct reg_field * filed = calloc(1, sizeof(struct reg_field));
-	if (filed == NULL) {
-		
-		return NULL;
-	}
+    struct reg_field * filed = calloc(1, sizeof(struct reg_field));
+    if (filed == NULL) {
+        
+        return NULL;
+    }
 
-	memcpy(filed, &reg_field, sizeof(struct reg_field));
-	filed->reg += base;
-	filed->shift = reg_field.lsb;
-	filed->mask = GENMASK(reg_field.msb, reg_field.lsb);
-	return filed;
+    memcpy(filed, &reg_field, sizeof(struct reg_field));
+    filed->reg += base;
+    filed->shift = reg_field.lsb;
+    filed->mask = GENMASK(reg_field.msb, reg_field.lsb);
+    return filed;
 }
 
 void regmap_field_free(struct reg_field *field)
 {
-	if (field) {
-		free(field);
-	}
+    if (field) {
+        free(field);
+    }
 }
 
 int regmap_field_read(struct reg_field *field, unsigned int *val)
 {
-	unsigned int reg_val;
+    unsigned int reg_val;
 
-	if (field == NULL || val == NULL) {
-		return -EINVAL;
-	}
-	reg_val = READ_REGI(field->reg);
-	reg_val &= field->mask;
-	reg_val >>=field->shift;
-	*val = reg_val;
-	return 0;
+    if (field == NULL || val == NULL) {
+        return -EINVAL;
+    }
+    reg_val = READ_REGI(field->reg);
+    reg_val &= field->mask;
+    reg_val >>=field->shift;
+    *val = reg_val;
+    return 0;
 }
 
 int regmap_field_write(struct reg_field *field, unsigned int val)
 {
-	unsigned reg_val;
-	unsigned int set_val;
+    unsigned reg_val;
+    unsigned int set_val;
 
-	if (field == NULL) {
-		return -EINVAL;
-	}
-	reg_val = READ_REGI(field->reg);
-	set_val = ((reg_val & ~(field->mask)) | ((val << field->shift) & field->mask));
-	WRITE_REGI(field->reg, set_val);
-	return 0;
+    if (field == NULL) {
+        return -EINVAL;
+    }
+    reg_val = READ_REGI(field->reg);
+    set_val = ((reg_val & ~(field->mask)) | ((val << field->shift) & field->mask));
+    WRITE_REGI(field->reg, set_val);
+    return 0;
 }
 
 int regmap_read(ewokos_addr_t base, unsigned int reg_off, unsigned int *val)
 {
-	*val = READ_REGI((base + reg_off));
-	return 0;
+    *val = READ_REGI((base + reg_off));
+    return 0;
 }
 
 int regmap_write(ewokos_addr_t base, unsigned int reg_off, unsigned int val)
 {
-	WRITE_REGI(base + reg_off, val);
-	return 0;
+    WRITE_REGI(base + reg_off, val);
+    return 0;
 }

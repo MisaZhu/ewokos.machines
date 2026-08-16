@@ -10,181 +10,181 @@ static unsigned int MMC_BLOCK_SIZE[8] = {0};
 
 static unsigned int sdio_max_blocks_per_cmd(int fn)
 {
-	/*
-	 * Function 1 backplane RAM accesses are the most timing-sensitive path
-	 * in this driver. Keep CMD53 bursts short there to avoid long PIO
-	 * transfers timing out during firmware download on CM4/CYW43455.
-	 */
-	if (fn == 1)
-		return 8;
-	if (fn == 2)
-		return 32;
-	return 511;
+    /*
+     * Function 1 backplane RAM accesses are the most timing-sensitive path
+     * in this driver. Keep CMD53 bursts short there to avoid long PIO
+     * transfers timing out during firmware download on CM4/CYW43455.
+     */
+    if (fn == 1)
+        return 8;
+    if (fn == 2)
+        return 32;
+    return 511;
 }
 
 /* Split an arbitrarily sized data transfer into several
  * IO_RW_EXTENDED commands. */
 static int sdio_io_rw_ext_helper(int fn, int write,
-	unsigned addr, int incr_addr, uint8_t *buf, unsigned size)
+    unsigned addr, int incr_addr, uint8_t *buf, unsigned size)
 {
-	unsigned remainder = size;
-	unsigned max_blocks;
-	int ret;
+    unsigned remainder = size;
+    unsigned max_blocks;
+    int ret;
 
-	/* Do the bulk of the transfer using block mode (if supported). */
-	if (size > MMC_BLOCK_SIZE[fn]) {
-		/* Blocks per command is limited by host count, host transfer
-		 * size and the maximum for IO_RW_EXTENDED of 511 blocks. */
-		max_blocks = sdio_max_blocks_per_cmd(fn);
+    /* Do the bulk of the transfer using block mode (if supported). */
+    if (size > MMC_BLOCK_SIZE[fn]) {
+        /* Blocks per command is limited by host count, host transfer
+         * size and the maximum for IO_RW_EXTENDED of 511 blocks. */
+        max_blocks = sdio_max_blocks_per_cmd(fn);
 
-		while (remainder >= MMC_BLOCK_SIZE[fn]) {
-			unsigned blocks;
+        while (remainder >= MMC_BLOCK_SIZE[fn]) {
+            unsigned blocks;
 
-			blocks = remainder / MMC_BLOCK_SIZE[fn];
-			if (blocks > max_blocks)
-				blocks = max_blocks;
-			size = blocks * MMC_BLOCK_SIZE[fn];
+            blocks = remainder / MMC_BLOCK_SIZE[fn];
+            if (blocks > max_blocks)
+                blocks = max_blocks;
+            size = blocks * MMC_BLOCK_SIZE[fn];
 
-			ret = mmc_io_rw_extended(write,
-				fn, addr, incr_addr, buf,
-				blocks, MMC_BLOCK_SIZE[fn]);
-			if (ret)
-				return ret;
+            ret = mmc_io_rw_extended(write,
+                fn, addr, incr_addr, buf,
+                blocks, MMC_BLOCK_SIZE[fn]);
+            if (ret)
+                return ret;
 
-			remainder -= size;
-			buf += size;
-			if (incr_addr)
-				addr += size;
-		}
-	}
+            remainder -= size;
+            buf += size;
+            if (incr_addr)
+                addr += size;
+        }
+    }
 
-	/* Write the remainder using byte mode. */
-	while (remainder > 0) {
-		size = min(remainder, MMC_BLOCK_SIZE[fn]);
-		/* Indicate byte mode by setting "blocks" = 0 */
-		ret = mmc_io_rw_extended(write, fn, addr,
-			 incr_addr, buf, 0, size);
-		if (ret)
-			return ret;
+    /* Write the remainder using byte mode. */
+    while (remainder > 0) {
+        size = min(remainder, MMC_BLOCK_SIZE[fn]);
+        /* Indicate byte mode by setting "blocks" = 0 */
+        ret = mmc_io_rw_extended(write, fn, addr,
+             incr_addr, buf, 0, size);
+        if (ret)
+            return ret;
 
-		remainder -= size;
-		buf += size;
-		if (incr_addr)
-			addr += size;
-	}
-	return 0;
+        remainder -= size;
+        buf += size;
+        if (incr_addr)
+            addr += size;
+    }
+    return 0;
 }
 
 int sdio_memcpy_fromio(int func, void *dst,
-	unsigned int addr, int count)
+    unsigned int addr, int count)
 {
-	return sdio_io_rw_ext_helper(func, 0, addr, 1, dst, count);
+    return sdio_io_rw_ext_helper(func, 0, addr, 1, dst, count);
 }
 
 int sdio_memcpy_toio(int func, unsigned int addr,
-	void *src, int count)
+    void *src, int count)
 {
-	return sdio_io_rw_ext_helper(func, 1, addr, 1, src, count);
+    return sdio_io_rw_ext_helper(func, 1, addr, 1, src, count);
 }
 
 uint8_t sdio_readb(int func, unsigned int addr, int *err_ret)
 {
-	int ret;
-	uint8_t val;
+    int ret;
+    uint8_t val;
 
-	ret = mmc_io_rw_direct(0, func, addr, 0, &val);
-	if (err_ret)
-		*err_ret = ret;
-	if (ret)
-		return 0xFF;
+    ret = mmc_io_rw_direct(0, func, addr, 0, &val);
+    if (err_ret)
+        *err_ret = ret;
+    if (ret)
+        return 0xFF;
 
-	return val;
+    return val;
 }
 
 void sdio_writeb(int func, uint8_t b, unsigned int addr, int *err_ret)
 {
-	int ret;
+    int ret;
 
-	ret = mmc_io_rw_direct(1, func, addr, b, NULL);
-	if (err_ret)
-		*err_ret = ret;
+    ret = mmc_io_rw_direct(1, func, addr, b, NULL);
+    if (err_ret)
+        *err_ret = ret;
 }
 int sdio_readsb(int func, void *dst, unsigned int addr,
-	int count)
+    int count)
 {
-	return sdio_io_rw_ext_helper(func, 0, addr, 0, dst, count);
+    return sdio_io_rw_ext_helper(func, 0, addr, 0, dst, count);
 }
 
 int sdio_writesb(int func, unsigned int addr, void *src,
-	int count)
+    int count)
 {
-	return sdio_io_rw_ext_helper(func, 1, addr, 0, src, count);
+    return sdio_io_rw_ext_helper(func, 1, addr, 0, src, count);
 }
 
 int sdio_writesb_block(int func, unsigned int addr, void *src,
-	unsigned int blocks, unsigned int blksz)
+    unsigned int blocks, unsigned int blksz)
 {
-	return mmc_io_rw_extended(1, func, addr, 0, src, blocks, blksz);
+    return mmc_io_rw_extended(1, func, addr, 0, src, blocks, blksz);
 }
 
 uint16_t sdio_readw(int func, unsigned int addr, int *err_ret)
 {
-	int ret;
+    int ret;
     uint16_t val;
-	ret = sdio_memcpy_fromio(func, &val, addr, 2);
-	if (err_ret)
-		*err_ret = ret;
-	if (ret)
-		return 0xFFFF;
+    ret = sdio_memcpy_fromio(func, &val, addr, 2);
+    if (err_ret)
+        *err_ret = ret;
+    if (ret)
+        return 0xFFFF;
 
-	return val;
+    return val;
 }
 
 void sdio_writew(int func, uint16_t b, unsigned int addr, int *err_ret)
 {
-	int ret;
+    int ret;
 
-	ret = sdio_memcpy_toio(func, addr, &b, 2);
-	if (err_ret)
-		*err_ret = ret;
+    ret = sdio_memcpy_toio(func, addr, &b, 2);
+    if (err_ret)
+        *err_ret = ret;
 }
 
 uint32_t sdio_readl(int func, unsigned int addr, int *err_ret)
 {
-	int ret;
+    int ret;
     uint32_t val;
-	ret = sdio_memcpy_fromio(func,&val, addr, 4);
-	if (err_ret)
-		*err_ret = ret;
-	if (ret)
-		return 0xFFFFFFFF;
+    ret = sdio_memcpy_fromio(func,&val, addr, 4);
+    if (err_ret)
+        *err_ret = ret;
+    if (ret)
+        return 0xFFFFFFFF;
 
-	return val;
+    return val;
 }
 
 void sdio_writel(int func, uint32_t b, unsigned int addr, int *err_ret)
 {
-	int ret;
+    int ret;
 
-	ret = sdio_memcpy_toio(func, addr, &b, 4);
-	if (err_ret)
-		*err_ret = ret;
+    ret = sdio_memcpy_toio(func, addr, &b, 4);
+    if (err_ret)
+        *err_ret = ret;
 }
 
 int sdio_reset(void)
 {
-	int ret;
-	uint8_t abort;
+    int ret;
+    uint8_t abort;
 
-	/* SDIO Simplified Specification V2.0, 4.4 Reset for SDIO */
+    /* SDIO Simplified Specification V2.0, 4.4 Reset for SDIO */
 
-	ret = mmc_io_rw_direct_host(0, 0, SDIO_CCCR_ABORT, 0, &abort);
-	if (ret)
-		abort = 0x08;
-	else
-		abort |= 0x08;
+    ret = mmc_io_rw_direct_host(0, 0, SDIO_CCCR_ABORT, 0, &abort);
+    if (ret)
+        abort = 0x08;
+    else
+        abort |= 0x08;
 
-	return mmc_io_rw_direct_host(1, 0, SDIO_CCCR_ABORT, abort, NULL);
+    return mmc_io_rw_direct_host(1, 0, SDIO_CCCR_ABORT, abort, NULL);
 }
 
 
@@ -195,16 +195,16 @@ int sdio_set_block_size(unsigned int func, unsigned int blksz)
     ret = mmc_io_rw_direct(1, 0, SDIO_FBR_BASE(func) + SDIO_FBR_BLKSIZE, blksz & 0xff, NULL);
     if (ret){
         return ret;
-	}
+    }
 
     ret = mmc_io_rw_direct(1, 0, SDIO_FBR_BASE(func) + SDIO_FBR_BLKSIZE + 1, (blksz >> 8) & 0xff, NULL);
     if (ret){
         return ret;
-	}
+    }
 
-	if(func < sizeof(MMC_BLOCK_SIZE)/sizeof(unsigned int)){
-		MMC_BLOCK_SIZE[func] = blksz;
-	}
+    if(func < sizeof(MMC_BLOCK_SIZE)/sizeof(unsigned int)){
+        MMC_BLOCK_SIZE[func] = blksz;
+    }
 
     return 0;
 }
@@ -247,27 +247,27 @@ err:
 
 int sdio_disable_func(int func)
 {
-	int ret;
-	unsigned char reg;
+    int ret;
+    unsigned char reg;
 
-	if (!func)
-		return -EINVAL;
+    if (!func)
+        return -EINVAL;
 
-	ret = mmc_io_rw_direct(0, 0, SDIO_CCCR_IOEx, 0, &reg);
-	if (ret)
-		goto err;
+    ret = mmc_io_rw_direct(0, 0, SDIO_CCCR_IOEx, 0, &reg);
+    if (ret)
+        goto err;
 
-	reg &= ~(1 << func);
+    reg &= ~(1 << func);
 
-	ret = mmc_io_rw_direct(1, 0, SDIO_CCCR_IOEx, reg, NULL);
-	if (ret)
-		goto err;
+    ret = mmc_io_rw_direct(1, 0, SDIO_CCCR_IOEx, reg, NULL);
+    if (ret)
+        goto err;
 
-	return 0;
+    return 0;
 
 err:
-	brcm_log("SDIO: Failed to disable device %d\n", func);
-	return ret;
+    brcm_log("SDIO: Failed to disable device %d\n", func);
+    return ret;
 }
 
 int sdio_claim_irq(int func)
@@ -278,7 +278,7 @@ int sdio_claim_irq(int func)
     ret = mmc_io_rw_direct(0, 0, SDIO_CCCR_IENx, 0, &reg);
     if (ret){
         goto err;
-	}
+    }
 
     reg |= 1 << func;
 
@@ -287,12 +287,12 @@ int sdio_claim_irq(int func)
     ret = mmc_io_rw_direct(1, 0, SDIO_CCCR_IENx, reg, NULL);
     if (ret){
         goto err;
-	}
+    }
 
-	sdhci_enable_irq(1);
-	return 0;
+    sdhci_enable_irq(1);
+    return 0;
 
 err:
-	brcm_log("SDIO: Failed to claim irq %d\n", func);
-	return ret;
+    brcm_log("SDIO: Failed to claim irq %d\n", func);
+    return ret;
 }

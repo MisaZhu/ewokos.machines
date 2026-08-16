@@ -119,7 +119,7 @@ enum {
     FBM_MSB     = 0,    /* first bit is MSB */
     FBM_LSB,        /* first bit in LSB */
 
-	HALF_WORD_TX_SHIFT = 13,    /* Byte and Halfword Transform */
+    HALF_WORD_TX_SHIFT = 13,    /* Byte and Halfword Transform */
     HALF_WORD_MASK  = 1,
     HALF_WORD_ON    = 0,    /* apb 16bit write/read, spi 8bit write/read */
     HALF_WORD_OFF,      /* apb 8bit write/read, spi 8bit write/read */
@@ -227,14 +227,14 @@ static void rkspi_set_clk(struct rockchip_spi_priv *priv, uint speed)
    //     clk_set_rate(&priv->clk, 4 * speed);
    //     speed = clk_get_rate(&priv->clk);
    // }
-	priv->regs->baudr = priv->regs->baudr &  (~0xffff) | clk_div;
+    priv->regs->baudr = priv->regs->baudr &  (~0xffff) | clk_div;
     priv->last_speed_hz = speed;
 }
 
 static inline int rkspi_wait_till_not_busy(struct rockchip_spi *regs)
 {
 
-	int timeout = ROCKCHIP_SPI_TIMEOUT_MS * 1000;
+    int timeout = ROCKCHIP_SPI_TIMEOUT_MS * 1000;
     while (readl(&regs->sr) & SR_BUSY) {
         if (!timeout--) {
             debug("RK SPI: Status keeps busy for 1000us after a read/write!\n");
@@ -276,8 +276,8 @@ static inline int rockchip_spi_config(struct rockchip_spi_priv *priv, const void
 
     if (dout && din)
         tmod = TMOD_TR;
-	else if(dout)
-		tmod = TMOD_TO; 
+    else if(dout)
+        tmod = TMOD_TO; 
     else
         tmod = TMOD_RO;
 
@@ -314,8 +314,8 @@ static inline int rockchip_spi_xfer(int cs, unsigned int bitlen,
         int todo = len;
 
         rkspi_enable_chip(regs, false);
-		if(din)
-			writel(todo - 1, &regs->ctrlr1);
+        if(din)
+            writel(todo - 1, &regs->ctrlr1);
         rkspi_enable_chip(regs, true);
 
         toread = din?todo:0;
@@ -432,42 +432,42 @@ static int rockchip_spi_claim_bus(int cs)
 }
 
 int rk_spi_read_write(uint8_t *tx, uint8_t *rx, int len){
-	return rockchip_spi_xfer(0 ,len*8, tx, rx, SPI_XFER_BEGIN|SPI_XFER_END);
+    return rockchip_spi_xfer(0 ,len*8, tx, rx, SPI_XFER_BEGIN|SPI_XFER_END);
 }
 
 int rk_spi_read(uint8_t *buf, int len){
-	return rockchip_spi_xfer(0 ,len*8, 0, buf, SPI_XFER_BEGIN|SPI_XFER_END);
+    return rockchip_spi_xfer(0 ,len*8, 0, buf, SPI_XFER_BEGIN|SPI_XFER_END);
 }
 
 int rk_spi_write(uint8_t *buf, int len){
-	return rockchip_spi_xfer(0 ,len*8, buf, 0, SPI_XFER_BEGIN|SPI_XFER_END);
+    return rockchip_spi_xfer(0 ,len*8, buf, 0, SPI_XFER_BEGIN|SPI_XFER_END);
 }
 
 int rk_spi_set_bits_per_word(uint8_t bits) {
-	if (bits != 8 && bits != 16) {
-		return -1;
-	}
-	if (_spi.bits_per_word == bits) {
-		return 0;
-	}
-	_spi.bits_per_word = bits;
-	return rockchip_spi_claim_bus(0);
+    if (bits != 8 && bits != 16) {
+        return -1;
+    }
+    if (_spi.bits_per_word == bits) {
+        return 0;
+    }
+    _spi.bits_per_word = bits;
+    return rockchip_spi_claim_bus(0);
 }
 
 int rk_spi_init(void){
     _mmio_base = mmio_map();
-	rk_gpio_init();
-	rk_gpio_config(7, 82);
-	rk_gpio_config(6, 83);
-	rk_gpio_config(5, 84);
-	rk_gpio_config(4, 85);
+    rk_gpio_init();
+    rk_gpio_config(7, 82);
+    rk_gpio_config(6, 83);
+    rk_gpio_config(5, 84);
+    rk_gpio_config(4, 85);
 
-	memset(&_spi, 0, sizeof(_spi));
-	_spi.regs = (struct rockchip_spi*)(_mmio_base + 0x120000); 
-	_spi.input_rate = 187500000;
-	_spi.max_freq = _spi.input_rate/2;
-	_spi.speed_hz = _spi.input_rate/2;
-	_spi.bits_per_word = 8;
-	rockchip_spi_claim_bus(0);
-	return 0;
+    memset(&_spi, 0, sizeof(_spi));
+    _spi.regs = (struct rockchip_spi*)(_mmio_base + 0x120000); 
+    _spi.input_rate = 187500000;
+    _spi.max_freq = _spi.input_rate/2;
+    _spi.speed_hz = _spi.input_rate/2;
+    _spi.bits_per_word = 8;
+    rockchip_spi_claim_bus(0);
+    return 0;
 }

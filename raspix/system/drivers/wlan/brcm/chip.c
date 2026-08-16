@@ -92,49 +92,49 @@
 #define BRCMF_4345_MIN_RAMSIZE		(512 * 1024)
 
 #define CORE_SB(base, field) \
-		(base + SBCONFIGOFF + offsetof(struct sbconfig, field))
+        (base + SBCONFIGOFF + offsetof(struct sbconfig, field))
 #define	SBCOREREV(sbidh) \
-	((((sbidh) & SSB_IDHIGH_RCHI) >> SSB_IDHIGH_RCHI_SHIFT) | \
-	  ((sbidh) & SSB_IDHIGH_RCLO))
+    ((((sbidh) & SSB_IDHIGH_RCHI) >> SSB_IDHIGH_RCHI_SHIFT) | \
+      ((sbidh) & SSB_IDHIGH_RCLO))
 
 struct sbconfig {
-	uint32_t PAD[2];
-	uint32_t sbipsflag;	/* initiator port ocp slave flag */
-	uint32_t PAD[3];
-	uint32_t sbtpsflag;	/* target port ocp slave flag */
-	uint32_t PAD[11];
-	uint32_t sbtmerrloga;	/* (sonics >= 2.3) */
-	uint32_t PAD;
-	uint32_t sbtmerrlog;	/* (sonics >= 2.3) */
-	uint32_t PAD[3];
-	uint32_t sbadmatch3;	/* address match3 */
-	uint32_t PAD;
-	uint32_t sbadmatch2;	/* address match2 */
-	uint32_t PAD;
-	uint32_t sbadmatch1;	/* address match1 */
-	uint32_t PAD[7];
-	uint32_t sbimstate;	/* initiator agent state */
-	uint32_t sbintvec;	/* interrupt mask */
-	uint32_t sbtmstatelow;	/* target state */
-	uint32_t sbtmstatehigh;	/* target state */
-	uint32_t sbbwa0;		/* bandwidth allocation table0 */
-	uint32_t PAD;
-	uint32_t sbimconfiglow;	/* initiator configuration */
-	uint32_t sbimconfighigh;	/* initiator configuration */
-	uint32_t sbadmatch0;	/* address match0 */
-	uint32_t PAD;
-	uint32_t sbtmconfiglow;	/* target configuration */
-	uint32_t sbtmconfighigh;	/* target configuration */
-	uint32_t sbbconfig;	/* broadcast configuration */
-	uint32_t PAD;
-	uint32_t sbbstate;	/* broadcast state */
-	uint32_t PAD[3];
-	uint32_t sbactcnfg;	/* activate configuration */
-	uint32_t PAD[3];
-	uint32_t sbflagst;	/* current sbflags */
-	uint32_t PAD[3];
-	uint32_t sbidlow;		/* identification */
-	uint32_t sbidhigh;	/* identification */
+    uint32_t PAD[2];
+    uint32_t sbipsflag;	/* initiator port ocp slave flag */
+    uint32_t PAD[3];
+    uint32_t sbtpsflag;	/* target port ocp slave flag */
+    uint32_t PAD[11];
+    uint32_t sbtmerrloga;	/* (sonics >= 2.3) */
+    uint32_t PAD;
+    uint32_t sbtmerrlog;	/* (sonics >= 2.3) */
+    uint32_t PAD[3];
+    uint32_t sbadmatch3;	/* address match3 */
+    uint32_t PAD;
+    uint32_t sbadmatch2;	/* address match2 */
+    uint32_t PAD;
+    uint32_t sbadmatch1;	/* address match1 */
+    uint32_t PAD[7];
+    uint32_t sbimstate;	/* initiator agent state */
+    uint32_t sbintvec;	/* interrupt mask */
+    uint32_t sbtmstatelow;	/* target state */
+    uint32_t sbtmstatehigh;	/* target state */
+    uint32_t sbbwa0;		/* bandwidth allocation table0 */
+    uint32_t PAD;
+    uint32_t sbimconfiglow;	/* initiator configuration */
+    uint32_t sbimconfighigh;	/* initiator configuration */
+    uint32_t sbadmatch0;	/* address match0 */
+    uint32_t PAD;
+    uint32_t sbtmconfiglow;	/* target configuration */
+    uint32_t sbtmconfighigh;	/* target configuration */
+    uint32_t sbbconfig;	/* broadcast configuration */
+    uint32_t PAD;
+    uint32_t sbbstate;	/* broadcast state */
+    uint32_t PAD[3];
+    uint32_t sbactcnfg;	/* activate configuration */
+    uint32_t PAD[3];
+    uint32_t sbflagst;	/* current sbflags */
+    uint32_t PAD[3];
+    uint32_t sbidlow;		/* identification */
+    uint32_t sbidhigh;	/* identification */
 };
 
 #define INVALID_RAMBASE			((uint32_t)(~0))
@@ -161,40 +161,40 @@ struct sbconfig {
 #define SR_BSZ_BASE		14
 
 struct sbsocramregs {
-	uint32_t coreinfo;
-	uint32_t bwalloc;
-	uint32_t extracoreinfo;
-	uint32_t biststat;
-	uint32_t bankidx;
-	uint32_t standbyctrl;
+    uint32_t coreinfo;
+    uint32_t bwalloc;
+    uint32_t extracoreinfo;
+    uint32_t biststat;
+    uint32_t bankidx;
+    uint32_t standbyctrl;
 
-	uint32_t errlogstatus;	/* rev 6 */
-	uint32_t errlogaddr;	/* rev 6 */
-	/* used for patching rev 3 & 5 */
-	uint32_t cambankidx;
-	uint32_t cambankstandbyctrl;
-	uint32_t cambankpatchctrl;
-	uint32_t cambankpatchtblbaseaddr;
-	uint32_t cambankcmdreg;
-	uint32_t cambankdatareg;
-	uint32_t cambankmaskreg;
-	uint32_t PAD[1];
-	uint32_t bankinfo;	/* corev 8 */
-	uint32_t bankpda;
-	uint32_t PAD[14];
-	uint32_t extmemconfig;
-	uint32_t extmemparitycsr;
-	uint32_t extmemparityerrdata;
-	uint32_t extmemparityerrcnt;
-	uint32_t extmemwrctrlandsize;
-	uint32_t PAD[84];
-	uint32_t workaround;
-	uint32_t pwrctl;		/* corerev >= 2 */
-	uint32_t PAD[133];
-	uint32_t sr_control;     /* corerev >= 15 */
-	uint32_t sr_status;      /* corerev >= 15 */
-	uint32_t sr_address;     /* corerev >= 15 */
-	uint32_t sr_data;        /* corerev >= 15 */
+    uint32_t errlogstatus;	/* rev 6 */
+    uint32_t errlogaddr;	/* rev 6 */
+    /* used for patching rev 3 & 5 */
+    uint32_t cambankidx;
+    uint32_t cambankstandbyctrl;
+    uint32_t cambankpatchctrl;
+    uint32_t cambankpatchtblbaseaddr;
+    uint32_t cambankcmdreg;
+    uint32_t cambankdatareg;
+    uint32_t cambankmaskreg;
+    uint32_t PAD[1];
+    uint32_t bankinfo;	/* corev 8 */
+    uint32_t bankpda;
+    uint32_t PAD[14];
+    uint32_t extmemconfig;
+    uint32_t extmemparitycsr;
+    uint32_t extmemparityerrdata;
+    uint32_t extmemparityerrcnt;
+    uint32_t extmemwrctrlandsize;
+    uint32_t PAD[84];
+    uint32_t workaround;
+    uint32_t pwrctl;		/* corerev >= 2 */
+    uint32_t PAD[133];
+    uint32_t sr_control;     /* corerev >= 15 */
+    uint32_t sr_status;      /* corerev >= 15 */
+    uint32_t sr_address;     /* corerev >= 15 */
+    uint32_t sr_data;        /* corerev >= 15 */
 };
 
 #define SOCRAMREGOFFS(_f)	offsetof(struct sbsocramregs, _f)
@@ -214,46 +214,46 @@ struct sbsocramregs {
 #define	ARMCR4_BSZ_MULT		8192
 
 struct brcmf_core_priv {
-	struct brcmf_core pub;
-	uint32_t wrapbase;
+    struct brcmf_core pub;
+    uint32_t wrapbase;
 };
 
 static struct brcmf_core_priv* core_list[16] = {0}; 
 static struct brcmf_chip pub;
 
 static struct brcmf_core *brcmf_chip_add_core(u16 coreid,
-	uint32_t base, uint32_t wrapbase);
+    uint32_t base, uint32_t wrapbase);
 struct brcmf_core *brcmf_chip_get_core(u16 coreid);
 
 static bool brcmf_chip_is_4345_family(void)
 {
-	return pub.chip == BRCM_CC_4345_CHIP_ID ||
-	       pub.chip == BRCM_CC_43454_CHIP_ID ||
-	       pub.chip == BRCM_CC_4345_ALT_CHIP_ID;
+    return pub.chip == BRCM_CC_4345_CHIP_ID ||
+           pub.chip == BRCM_CC_43454_CHIP_ID ||
+           pub.chip == BRCM_CC_4345_ALT_CHIP_ID;
 }
 
 static void brcmf_chip_apply_4345_fallback_cores(void)
 {
-	if (!brcmf_chip_is_4345_family())
-		return;
+    if (!brcmf_chip_is_4345_family())
+        return;
 
-	/*
-	 * Some CYW43455/CM4 variants expose an incomplete EROM view over SDIO.
-	 * Recover the minimum topology needed for chip attach using the legacy
-	 * fixed backplane windows Broadcom uses for SDIO FullMAC chips.
-	 */
-	if (!brcmf_chip_get_core(BCMA_CORE_SDIO_DEV))
-		brcmf_chip_add_core(BCMA_CORE_SDIO_DEV, BCM4329_CORE_BUS_BASE,
-				   BCM4329_CORE_BUS_BASE + BCMA_CORE_SIZE);
+    /*
+     * Some CYW43455/CM4 variants expose an incomplete EROM view over SDIO.
+     * Recover the minimum topology needed for chip attach using the legacy
+     * fixed backplane windows Broadcom uses for SDIO FullMAC chips.
+     */
+    if (!brcmf_chip_get_core(BCMA_CORE_SDIO_DEV))
+        brcmf_chip_add_core(BCMA_CORE_SDIO_DEV, BCM4329_CORE_BUS_BASE,
+                   BCM4329_CORE_BUS_BASE + BCMA_CORE_SIZE);
 
-	if (!brcmf_chip_get_core(BCMA_CORE_ARM_CR4))
-		brcmf_chip_add_core(BCMA_CORE_ARM_CR4, BCM4329_CORE_ARM_BASE,
-				   BCM4329_CORE_ARM_BASE + BCMA_CORE_SIZE);
+    if (!brcmf_chip_get_core(BCMA_CORE_ARM_CR4))
+        brcmf_chip_add_core(BCMA_CORE_ARM_CR4, BCM4329_CORE_ARM_BASE,
+                   BCM4329_CORE_ARM_BASE + BCMA_CORE_SIZE);
 
-	if (!brcmf_chip_get_core(BCMA_CORE_INTERNAL_MEM))
-		brcmf_chip_add_core(BCMA_CORE_INTERNAL_MEM,
-				   BCM4329_CORE_SOCRAM_BASE,
-				   BCM4329_CORE_SOCRAM_BASE + BCMA_CORE_SIZE);
+    if (!brcmf_chip_get_core(BCMA_CORE_INTERNAL_MEM))
+        brcmf_chip_add_core(BCMA_CORE_INTERNAL_MEM,
+                   BCM4329_CORE_SOCRAM_BASE,
+                   BCM4329_CORE_SOCRAM_BASE + BCMA_CORE_SIZE);
 }
 
 

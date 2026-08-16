@@ -49,37 +49,37 @@ struct rockchip_saradc_regs* saradc;
 #define DECLARE_GPIO_KEY(name, level)	{#name, name, name##_PIN, level, !level}
 
 static struct gpio_pins{
-	char* name;
-	int key;
-	int pin;
-	int active;
-	int status;
+    char* name;
+    int key;
+    int pin;
+    int active;
+    int status;
 }_pins[] = {
-	DECLARE_GPIO_KEY(KEY_POWER, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_UP, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_DOWN, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_LEFT, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_RIGHT, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_A, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_B, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_X, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_Y, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_SELECT, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_START, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_L1, GPIO_LOW),
-	// DECLARE_GPIO_KEY(JOYSTICK_L2, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_R1, GPIO_LOW),
-	// DECLARE_GPIO_KEY(JOYSTICK_R2, GPIO_LOW),
-	//DECLARE_GPIO_KEY(KEY_ENTER, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_HOME, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_POWER, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_UP, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_DOWN, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_LEFT, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_RIGHT, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_A, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_B, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_X, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_Y, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_SELECT, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_START, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_L1, GPIO_LOW),
+    // DECLARE_GPIO_KEY(JOYSTICK_L2, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_R1, GPIO_LOW),
+    // DECLARE_GPIO_KEY(JOYSTICK_R2, GPIO_LOW),
+    //DECLARE_GPIO_KEY(KEY_ENTER, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_HOME, GPIO_LOW),
 };
 
 struct adc_pins{
-	char* name;
-	int key;
-	int ch;
-	int min;
-	int max;
+    char* name;
+    int key;
+    int ch;
+    int min;
+    int max;
 };
 
 #define GPIO_NUMBER                         91
@@ -106,120 +106,120 @@ static struct rockchip_gpio_regs *gpio[4];
 
 
 static uint32_t rockchip_saradc_get_value(int chn){
-	uint32_t data;
+    uint32_t data;
 
-	saradc->dly_pu_soc = 8;
-	 
-	     /* Select the channel to be used and trigger conversion */
+    saradc->dly_pu_soc = 8;
+     
+         /* Select the channel to be used and trigger conversion */
     saradc->ctrl = (SARADC_CTRL_POWER_CTRL | (chn & SARADC_CTRL_CHN_MASK) |
            SARADC_CTRL_IRQ_ENABLE);
 
-	while((saradc->ctrl & SARADC_CTRL_IRQ_STATUS) != SARADC_CTRL_IRQ_STATUS);
+    while((saradc->ctrl & SARADC_CTRL_IRQ_STATUS) != SARADC_CTRL_IRQ_STATUS);
     
-	  /* Read value */
+      /* Read value */
     data = saradc->data;
     data &= ((0x1 << 10) - 1);
 
-	saradc->ctrl = 0;
+    saradc->ctrl = 0;
 
-	 return data;
+     return data;
 }
 
 static int rockchip_gpio_get(int pin_num){
-	int bank = pin_num >> 5;
-	uint32_t  pin_mask = 0x1 << (pin_num & 0x1f);
+    int bank = pin_num >> 5;
+    uint32_t  pin_mask = 0x1 << (pin_num & 0x1f);
 
-	if(bank > 3)
-		return -1;	
-	return !!(gpio[bank]->ext_port & pin_mask);
+    if(bank > 3)
+        return -1;	
+    return !!(gpio[bank]->ext_port & pin_mask);
 }
 
 static void rockchip_gpio_set(int pin_num, int value){
-	int bank = pin_num >> 5;
-	uint32_t  pin_mask = 0x1 << (pin_num & 0x1f);
-	if(bank > 3)
-		return;	
-	gpio[bank]->swport_ddr |= pin_mask;
-	if(value)
-		gpio[bank]->swport_dr |= pin_mask;
-	else
-		gpio[bank]->swport_dr &= ~pin_mask;
+    int bank = pin_num >> 5;
+    uint32_t  pin_mask = 0x1 << (pin_num & 0x1f);
+    if(bank > 3)
+        return;	
+    gpio[bank]->swport_ddr |= pin_mask;
+    if(value)
+        gpio[bank]->swport_dr |= pin_mask;
+    else
+        gpio[bank]->swport_dr &= ~pin_mask;
 }
 
 static int rockchip_gpio_get_value(struct gpio_pins* pins)
 {
-	int pin_num = pins->pin;
-	int value = rockchip_gpio_get(pin_num);	
+    int pin_num = pins->pin;
+    int value = rockchip_gpio_get(pin_num);	
     return (value == pins->active) ? 1 : 0;
 }
 
 static int joystick_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)node;
-	(void)offset;
-	(void)size;
-	(void)p;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)node;
+    (void)offset;
+    (void)size;
+    (void)p;
 
-	char* keys = (char*)buf;
-	int key_cnt = 0;
+    char* keys = (char*)buf;
+    int key_cnt = 0;
 
-	for(uint32_t i = 0; i < sizeof(_pins)/sizeof(struct gpio_pins);  i++){
-		if(rockchip_gpio_get_value(&_pins[i])){
-			*keys = _pins[i].key;
-			keys++;
-			key_cnt++;
-			if(key_cnt >= size)
-				break;
-		}
-	}
-	//return key_cnt > 0 ? key_cnt : VFS_ERR_RETRY;
-	return key_cnt > 0 ? key_cnt : -1;
+    for(uint32_t i = 0; i < sizeof(_pins)/sizeof(struct gpio_pins);  i++){
+        if(rockchip_gpio_get_value(&_pins[i])){
+            *keys = _pins[i].key;
+            keys++;
+            key_cnt++;
+            if(key_cnt >= size)
+                break;
+        }
+    }
+    //return key_cnt > 0 ? key_cnt : VFS_ERR_RETRY;
+    return key_cnt > 0 ? key_cnt : -1;
 }
 
 static void init_gpio(void) {
-	gpio[0] = (struct rockchip_gpio_regs *)(_mmio_base + 0x7c000);
-	gpio[1] = (struct rockchip_gpio_regs *)(_mmio_base + 0x80000);
-	gpio[2] = (struct rockchip_gpio_regs *)(_mmio_base + 0x84000);
-	gpio[3] = (struct rockchip_gpio_regs *)(_mmio_base + 0x88000);
-	saradc = (struct rockchip_saradc_regs *)(_mmio_base +0x6c000);
+    gpio[0] = (struct rockchip_gpio_regs *)(_mmio_base + 0x7c000);
+    gpio[1] = (struct rockchip_gpio_regs *)(_mmio_base + 0x80000);
+    gpio[2] = (struct rockchip_gpio_regs *)(_mmio_base + 0x84000);
+    gpio[3] = (struct rockchip_gpio_regs *)(_mmio_base + 0x88000);
+    saradc = (struct rockchip_saradc_regs *)(_mmio_base +0x6c000);
 }
 
 static int power_button(vdevice_t* dev, void* p) {
-	(void)dev;
-	(void)p;
-	static int count = 0;
-	ipc_disable();
-	if(rockchip_gpio_get(113) == 0)
-		count++;
-	else
-		count = 0;
+    (void)dev;
+    (void)p;
+    static int count = 0;
+    ipc_disable();
+    if(rockchip_gpio_get(113) == 0)
+        count++;
+    else
+        count = 0;
 
-	if(count >= 10){
-		//close screnn
-		rockchip_gpio_set(44, 1);
-		printf("power down!\n");
-		proc_usleep(1000);
-		rockchip_gpio_set(122, 0);
-	}
-	ipc_enable();
-	proc_usleep(200000);
+    if(count >= 10){
+        //close screnn
+        rockchip_gpio_set(44, 1);
+        printf("power down!\n");
+        proc_usleep(1000);
+        rockchip_gpio_set(122, 0);
+    }
+    ipc_enable();
+    proc_usleep(200000);
 }
 
 
 int main(int argc, char** argv) {
-	 _mmio_base = mmio_map_offset(0x10000000, 8*1024*1024);
+     _mmio_base = mmio_map_offset(0x10000000, 8*1024*1024);
 
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/joykeyb";
-	init_gpio();
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/joykeyb";
+    init_gpio();
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "joykeyb");
-	dev.read = joystick_read;
-	dev.loop_step = power_button;
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
-	return 0;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "joykeyb");
+    dev.read = joystick_read;
+    dev.loop_step = power_button;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    return 0;
 }

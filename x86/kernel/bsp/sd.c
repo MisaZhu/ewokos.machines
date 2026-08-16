@@ -26,113 +26,113 @@ static int32_t _pending_sector = -1;
 static uint8_t _write_buf[512];
 
 static void ata_400ns_wait(void) {
-	for (int i = 0; i < 4; ++i) {
-		(void)inb(ATA_CONTROL);
-	}
+    for (int i = 0; i < 4; ++i) {
+        (void)inb(ATA_CONTROL);
+    }
 }
 
 static int ata_wait_ready(void) {
-	for (int i = 0; i < 1000000; ++i) {
-		uint8_t status = inb(ATA_STATUS);
-		if (status == 0) {
-			continue;
-		}
-		if ((status & ATA_SR_BSY) == 0 &&
-				(status & (ATA_SR_ERR | ATA_SR_DF)) == 0) {
-			return 0;
-		}
-		if ((status & (ATA_SR_ERR | ATA_SR_DF)) != 0) {
-			return -1;
-		}
-	}
-	return -1;
+    for (int i = 0; i < 1000000; ++i) {
+        uint8_t status = inb(ATA_STATUS);
+        if (status == 0) {
+            continue;
+        }
+        if ((status & ATA_SR_BSY) == 0 &&
+                (status & (ATA_SR_ERR | ATA_SR_DF)) == 0) {
+            return 0;
+        }
+        if ((status & (ATA_SR_ERR | ATA_SR_DF)) != 0) {
+            return -1;
+        }
+    }
+    return -1;
 }
 
 static int ata_wait_drq(void) {
-	for (int i = 0; i < 1000000; ++i) {
-		uint8_t status = inb(ATA_STATUS);
-		if (status == 0) {
-			continue;
-		}
-		if ((status & ATA_SR_BSY) == 0 && (status & ATA_SR_DRQ) != 0) {
-			return 0;
-		}
-		if (status & (ATA_SR_ERR | ATA_SR_DF)) {
-			return -1;
-		}
-	}
-	return -1;
+    for (int i = 0; i < 1000000; ++i) {
+        uint8_t status = inb(ATA_STATUS);
+        if (status == 0) {
+            continue;
+        }
+        if ((status & ATA_SR_BSY) == 0 && (status & ATA_SR_DRQ) != 0) {
+            return 0;
+        }
+        if (status & (ATA_SR_ERR | ATA_SR_DF)) {
+            return -1;
+        }
+    }
+    return -1;
 }
 
 static void ata_select_lba28(uint32_t sector) {
-	outb(ATA_HDDEVSEL, 0xE0 | ((sector >> 24) & 0x0F));
-	ata_400ns_wait();
-	outb(ATA_SECCOUNT0, 1);
-	outb(ATA_LBA0, sector & 0xFF);
-	outb(ATA_LBA1, (sector >> 8) & 0xFF);
-	outb(ATA_LBA2, (sector >> 16) & 0xFF);
+    outb(ATA_HDDEVSEL, 0xE0 | ((sector >> 24) & 0x0F));
+    ata_400ns_wait();
+    outb(ATA_SECCOUNT0, 1);
+    outb(ATA_LBA0, sector & 0xFF);
+    outb(ATA_LBA1, (sector >> 8) & 0xFF);
+    outb(ATA_LBA2, (sector >> 16) & 0xFF);
 }
 
 int32_t sd_init(void) {
-	outb(ATA_CONTROL, 0x04);
-	ata_400ns_wait();
-	outb(ATA_CONTROL, 0x00);
-	ata_400ns_wait();
-	return ata_wait_ready();
+    outb(ATA_CONTROL, 0x04);
+    ata_400ns_wait();
+    outb(ATA_CONTROL, 0x00);
+    ata_400ns_wait();
+    return ata_wait_ready();
 }
 
 int32_t sd_dev_read(int32_t sector) {
-	_pending_sector = sector;
-	return 0;
+    _pending_sector = sector;
+    return 0;
 }
 
 int32_t sd_dev_read_done(void* buf) {
-	if (_pending_sector < 0) {
-		return -1;
-	}
-	ata_select_lba28((uint32_t)_pending_sector);
-	outb(ATA_COMMAND, ATA_CMD_READ_PIO);
-	ata_400ns_wait();
-	if (ata_wait_drq() != 0) {
-		return -1;
-	}
-	for (int i = 0; i < 256; ++i) {
-		((uint16_t*)buf)[i] = inw(ATA_DATA);
-	}
-	ata_400ns_wait();
-	_pending_sector = -1;
-	return 0;
+    if (_pending_sector < 0) {
+        return -1;
+    }
+    ata_select_lba28((uint32_t)_pending_sector);
+    outb(ATA_COMMAND, ATA_CMD_READ_PIO);
+    ata_400ns_wait();
+    if (ata_wait_drq() != 0) {
+        return -1;
+    }
+    for (int i = 0; i < 256; ++i) {
+        ((uint16_t*)buf)[i] = inw(ATA_DATA);
+    }
+    ata_400ns_wait();
+    _pending_sector = -1;
+    return 0;
 }
 
 int32_t sd_dev_write(int32_t sector, const void* buf) {
-	_pending_sector = sector;
-	memcpy(_write_buf, buf, sizeof(_write_buf));
-	return 0;
+    _pending_sector = sector;
+    memcpy(_write_buf, buf, sizeof(_write_buf));
+    return 0;
 }
 
 int32_t sd_dev_write_done(void) {
-	if (_pending_sector < 0) {
-		return -1;
-	}
-	if (ata_wait_ready() != 0) {
-		return -1;
-	}
-	ata_select_lba28((uint32_t)_pending_sector);
-	outb(ATA_COMMAND, ATA_CMD_WRITE_PIO);
-	ata_400ns_wait();
-	if (ata_wait_drq() != 0) {
-		return -1;
-	}
-	for (int i = 0; i < 256; ++i) {
-		outw(ATA_DATA, ((uint16_t*)_write_buf)[i]);
-	}
-	ata_400ns_wait();
-	outb(ATA_COMMAND, ATA_CMD_CACHE_FLUSH);
-	if (ata_wait_ready() != 0) {
-		return -1;
-	}
-	_pending_sector = -1;
-	return 0;
+    if (_pending_sector < 0) {
+        return -1;
+    }
+    if (ata_wait_ready() != 0) {
+        return -1;
+    }
+    ata_select_lba28((uint32_t)_pending_sector);
+    outb(ATA_COMMAND, ATA_CMD_WRITE_PIO);
+    ata_400ns_wait();
+    if (ata_wait_drq() != 0) {
+        return -1;
+    }
+    for (int i = 0; i < 256; ++i) {
+        outw(ATA_DATA, ((uint16_t*)_write_buf)[i]);
+    }
+    ata_400ns_wait();
+    outb(ATA_COMMAND, ATA_CMD_CACHE_FLUSH);
+    if (ata_wait_ready() != 0) {
+        return -1;
+    }
+    _pending_sector = -1;
+    return 0;
 }
 
 void sd_dev_handle(void) {

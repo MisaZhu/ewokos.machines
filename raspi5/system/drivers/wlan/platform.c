@@ -46,36 +46,36 @@
 #define PI5_PULL_MASK       0x3
 
 static void pinctrl_field_set(uint32_t reg, uint32_t shift, uint32_t mask,
-		uint32_t val)
+        uint32_t val)
 {
-	uint32_t v = readl(PI5_PINCTRL_BASE + reg);
-	v &= ~(mask << shift);
-	v |= val << shift;
-	writel(v, PI5_PINCTRL_BASE + reg);
+    uint32_t v = readl(PI5_PINCTRL_BASE + reg);
+    v &= ~(mask << shift);
+    v |= val << shift;
+    writel(v, PI5_PINCTRL_BASE + reg);
 }
 
 static const struct { uint32_t reg; uint32_t shift; } _sd2_fsel[] = {
-	{ 0x08, 24 }, { 0x08, 28 },
-	{ 0x0c, 0 }, { 0x0c, 4 }, { 0x0c, 8 }, { 0x0c, 12 },
+    { 0x08, 24 }, { 0x08, 28 },
+    { 0x0c, 0 }, { 0x0c, 4 }, { 0x0c, 8 }, { 0x0c, 12 },
 };
 
 static const struct { uint32_t reg; uint32_t shift; } _sd2_pull[] = {
-	{ 0x14, 24 },                 /* clk: bias-disable */
-	{ 0x14, 26 }, { 0x14, 28 },   /* cmd, dat0: bias-pull-up */
-	{ 0x18, 0 }, { 0x18, 2 }, { 0x18, 4 },
+    { 0x14, 24 },                 /* clk: bias-disable */
+    { 0x14, 26 }, { 0x14, 28 },   /* cmd, dat0: bias-pull-up */
+    { 0x18, 0 }, { 0x18, 2 }, { 0x18, 4 },
 };
 
 void pi5_platform_pins(void)
 {
-	unsigned int i;
+    unsigned int i;
 
-	for (i = 0; i < ARRAY_SIZE(_sd2_fsel); i++) {
-		pinctrl_field_set(_sd2_fsel[i].reg, _sd2_fsel[i].shift,
-				PI5_FSEL_MASK, PI5_FSEL_SD2);
-		pinctrl_field_set(_sd2_pull[i].reg, _sd2_pull[i].shift,
-				PI5_PULL_MASK,
-				(i == 0) ? PI5_PULL_NONE : PI5_PULL_UP);
-	}
+    for (i = 0; i < ARRAY_SIZE(_sd2_fsel); i++) {
+        pinctrl_field_set(_sd2_fsel[i].reg, _sd2_fsel[i].shift,
+                PI5_FSEL_MASK, PI5_FSEL_SD2);
+        pinctrl_field_set(_sd2_pull[i].reg, _sd2_pull[i].shift,
+                PI5_PULL_MASK,
+                (i == 0) ? PI5_PULL_NONE : PI5_PULL_UP);
+    }
 }
 
 /*
@@ -92,18 +92,18 @@ void pi5_platform_pins(void)
 
 void pi5_platform_reg_on(bool on)
 {
-	/* push-pull output: open-drain off, direction out */
-	writel(readl(PI5_GIO_BASE + GIO_ODEN) & ~WL_REG_ON_BIT,
-			PI5_GIO_BASE + GIO_ODEN);
-	writel(readl(PI5_GIO_BASE + GIO_IODIR) & ~WL_REG_ON_BIT,
-			PI5_GIO_BASE + GIO_IODIR);
+    /* push-pull output: open-drain off, direction out */
+    writel(readl(PI5_GIO_BASE + GIO_ODEN) & ~WL_REG_ON_BIT,
+            PI5_GIO_BASE + GIO_ODEN);
+    writel(readl(PI5_GIO_BASE + GIO_IODIR) & ~WL_REG_ON_BIT,
+            PI5_GIO_BASE + GIO_IODIR);
 
-	if (on)
-		writel(readl(PI5_GIO_BASE + GIO_DATA) | WL_REG_ON_BIT,
-				PI5_GIO_BASE + GIO_DATA);
-	else
-		writel(readl(PI5_GIO_BASE + GIO_DATA) & ~WL_REG_ON_BIT,
-				PI5_GIO_BASE + GIO_DATA);
+    if (on)
+        writel(readl(PI5_GIO_BASE + GIO_DATA) | WL_REG_ON_BIT,
+                PI5_GIO_BASE + GIO_DATA);
+    else
+        writel(readl(PI5_GIO_BASE + GIO_DATA) & ~WL_REG_ON_BIT,
+                PI5_GIO_BASE + GIO_DATA);
 }
 
 /*
@@ -113,20 +113,20 @@ void pi5_platform_reg_on(bool on)
  */
 int pi5_platform_map(void)
 {
-	sys_info_t sysinfo;
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-	_mmio_base = sysinfo.mmio.v_base;
+    sys_info_t sysinfo;
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+    _mmio_base = sysinfo.mmio.v_base;
 
-	ewokos_addr_t want = (ewokos_addr_t)_mmio_base + PI5_EMMC_WIN_OFF;
-	ewokos_addr_t mapped = syscall3(SYS_MEM_MAP, want,
-			(ewokos_addr_t)PI5_EMMC_PHY_WIN,
-			(ewokos_addr_t)PI5_EMMC_WIN_SIZE);
-	if (mapped != want) {
-		brcm_log("wlan: SDIO window map failed got=0x%lx want=0x%lx\n",
-				(unsigned long)mapped, (unsigned long)want);
-		return -1;
-	}
-	return 0;
+    ewokos_addr_t want = (ewokos_addr_t)_mmio_base + PI5_EMMC_WIN_OFF;
+    ewokos_addr_t mapped = syscall3(SYS_MEM_MAP, want,
+            (ewokos_addr_t)PI5_EMMC_PHY_WIN,
+            (ewokos_addr_t)PI5_EMMC_WIN_SIZE);
+    if (mapped != want) {
+        brcm_log("wlan: SDIO window map failed got=0x%lx want=0x%lx\n",
+                (unsigned long)mapped, (unsigned long)want);
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -142,8 +142,8 @@ int pi5_platform_map(void)
 
 void pi5_platform_force_card_present(void)
 {
-	uint32_t v = readl(PI5_SDIO_CFG_BASE + SDIO_CFG_CTRL);
-	v &= ~SDIO_CFG_CTRL_SDCD_N_TEST_LEV;
-	v |= SDIO_CFG_CTRL_SDCD_N_TEST_EN;
-	writel(v, PI5_SDIO_CFG_BASE + SDIO_CFG_CTRL);
+    uint32_t v = readl(PI5_SDIO_CFG_BASE + SDIO_CFG_CTRL);
+    v &= ~SDIO_CFG_CTRL_SDCD_N_TEST_LEV;
+    v |= SDIO_CFG_CTRL_SDCD_N_TEST_EN;
+    writel(v, PI5_SDIO_CFG_BASE + SDIO_CFG_CTRL);
 }

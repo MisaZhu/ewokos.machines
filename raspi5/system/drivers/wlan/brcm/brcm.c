@@ -112,9 +112,9 @@
 #define BRCMF_RX_QUEUE_SLOTS 1024
 #define BRCMF_TX_QUEUE_SLOTS 128
 #define BRCMF_TX_QUEUE_HIGH_WATERMARK \
-	(BRCMF_TX_QUEUE_SLOTS - (BRCMF_TX_BATCH_LIMIT / 2))
+    (BRCMF_TX_QUEUE_SLOTS - (BRCMF_TX_BATCH_LIMIT / 2))
 #define BRCMF_TX_QUEUE_LOW_WATERMARK \
-	(BRCMF_TX_QUEUE_SLOTS - BRCMF_TX_BATCH_LIMIT)
+    (BRCMF_TX_QUEUE_SLOTS - BRCMF_TX_BATCH_LIMIT)
 /*
  * Leave enough software-RX queue headroom for one in-flight SDIO
  * readframes burst. The actual reserve is derived from bus->rxbound at
@@ -453,14 +453,14 @@ enum brcmf_sdio_frmtype {
 };
 
 struct brcmf_sdio_hdrinfo {
-	uint8_t seq_num;
-	uint8_t channel;
-	uint16_t len;
-	uint16_t len_left;
-	uint16_t len_nxtfrm;
-	uint8_t dat_offset;
-	bool lastfrm;
-	uint16_t tail_pad;
+    uint8_t seq_num;
+    uint8_t channel;
+    uint16_t len;
+    uint16_t len_left;
+    uint16_t len_nxtfrm;
+    uint8_t dat_offset;
+    bool lastfrm;
+    uint16_t tail_pad;
 };
 
 enum WL_STATE{
@@ -556,10 +556,10 @@ struct brcmf_dev{
     uint32_t recovery_count;
     uint32_t rx_last_dequeue_ms;
     uint32_t rx_last_reader_kick_ms;
-	bool rx_queue_blocked;
-	bool tx_queue_blocked;
+    bool rx_queue_blocked;
+    bool tx_queue_blocked;
     uint32_t manual_connect_until_ms;
-	uint32_t state_since_ms;
+    uint32_t state_since_ms;
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
     uint32_t scan_cmd_fail_streak; /* consecutive scan cmd errors (dead fw) */
@@ -1024,39 +1024,39 @@ static bool brcmf_rx_queue_resume_reads_if_room(void)
 
 static bool brcmf_tx_queue_resume_writes_if_room(void)
 {
-	int depth;
+    int depth;
 
-	if (!bus || !bus->tx_queue || !bus->tx_queue_blocked)
-		return false;
-	if (bus->fcstate)
-		return false;
+    if (!bus || !bus->tx_queue || !bus->tx_queue_blocked)
+        return false;
+    if (bus->fcstate)
+        return false;
 
-	depth = queue_buffer_check(bus->tx_queue);
-	if (depth > BRCMF_TX_QUEUE_LOW_WATERMARK)
-		return false;
+    depth = queue_buffer_check(bus->tx_queue);
+    if (depth > BRCMF_TX_QUEUE_LOW_WATERMARK)
+        return false;
 
-	bus->tx_queue_blocked = false;
-	return true;
+    bus->tx_queue_blocked = false;
+    return true;
 }
 
 static bool brcmf_tx_queue_should_block_writes(void)
 {
-	int depth;
+    int depth;
 
-	if (!bus || !bus->tx_queue)
-		return true;
-	if (bus->fcstate)
-		return true;
+    if (!bus || !bus->tx_queue)
+        return true;
+    if (bus->fcstate)
+        return true;
 
-	if (bus->tx_queue_blocked)
-		return !brcmf_tx_queue_resume_writes_if_room();
+    if (bus->tx_queue_blocked)
+        return !brcmf_tx_queue_resume_writes_if_room();
 
-	depth = queue_buffer_check(bus->tx_queue);
-	if (depth < BRCMF_TX_QUEUE_HIGH_WATERMARK)
-		return false;
+    depth = queue_buffer_check(bus->tx_queue);
+    if (depth < BRCMF_TX_QUEUE_HIGH_WATERMARK)
+        return false;
 
-	bus->tx_queue_blocked = true;
-	return true;
+    bus->tx_queue_blocked = true;
+    return true;
 }
 
 static bool brcmf_rx_queue_should_pause(void)
@@ -1121,9 +1121,9 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->intstatus = 0;
     bus->tx_starving = false;
     bus->tx_starve_usec = 0;
-	bus->state_since_ms = kernel_tic_ms(0);
-	bus->rx_queue_blocked = false;
-	bus->tx_queue_blocked = false;
+    bus->state_since_ms = kernel_tic_ms(0);
+    bus->rx_queue_blocked = false;
+    bus->tx_queue_blocked = false;
     bus->rxpending_since_ms = 0;
     bus->last_rx_success_ms = kernel_tic_ms(0);
     if (flush_queues)
@@ -1152,7 +1152,7 @@ static void brcmf_mark_connected(void)
     bus->manual_connect_until_ms = 0;
     bus->recovery_streak = 0;
     bus->self_disassoc_ms = 0;
-	bus->state_since_ms = kernel_tic_ms(0);
+    bus->state_since_ms = kernel_tic_ms(0);
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
@@ -1187,7 +1187,7 @@ static void brcmf_mark_disconnected(const char *reason,
     /* A failed manual attempt must not keep blocking the automatic
      * scan/connect recovery path with a stale guard deadline. */
     bus->manual_connect_until_ms = 0;
-	bus->state_since_ms = kernel_tic_ms(0);
+    bus->state_since_ms = kernel_tic_ms(0);
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s",
             reason ? reason : "disconnected");
     brcmf_reset_runtime_state(true);
@@ -1204,17 +1204,17 @@ static void brcmf_mark_disconnected(const char *reason,
 
 static bool brcmf_worker_has_work(void)
 {
-	if (!bus) {
+    if (!bus) {
         return false;
-	}
-	if (bus->ctrl_frame_stat || bus->rxpending) {
+    }
+    if (bus->ctrl_frame_stat || bus->rxpending) {
         return true;
-	}
-	if (bus->tx_queue && !bus->fcstate &&
-			queue_buffer_check(bus->tx_queue) > 0) {
+    }
+    if (bus->tx_queue && !bus->fcstate &&
+            queue_buffer_check(bus->tx_queue) > 0) {
         return true;
-	}
-	return false;
+    }
+    return false;
 }
 
 /*
@@ -1226,33 +1226,33 @@ static bool brcmf_worker_has_work(void)
  */
 static bool brcmf_worker_has_pending_io(void)
 {
-	uint8_t tx_credit;
+    uint8_t tx_credit;
 
-	if (!bus) {
+    if (!bus) {
         return false;
-	}
+    }
     /* RX draining is independent of flow control; only skip while
      * rxskip is blocking progress (recovered via 200ms watchdog). */
     if (bus->rxpending && !bus->rxskip &&
             !brcmf_rx_queue_should_pause()) {
         return true;
     }
-	/* TX/ctrl only make progress when the firmware currently offers TX
-	 * window credits. Without this, a queued DHCP/control frame behind an
-	 * exhausted window keeps the worker on the sleep_us=0 fast path and
-	 * burns CPU even though DPC cannot move a single byte yet. */
-	if (!bus->fcstate) {
-		tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
-		if (tx_credit == 0 || (tx_credit & 0x80) != 0) {
-			return false;
-		}
-		if (bus->ctrl_frame_stat) {
+    /* TX/ctrl only make progress when the firmware currently offers TX
+     * window credits. Without this, a queued DHCP/control frame behind an
+     * exhausted window keeps the worker on the sleep_us=0 fast path and
+     * burns CPU even though DPC cannot move a single byte yet. */
+    if (!bus->fcstate) {
+        tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
+        if (tx_credit == 0 || (tx_credit & 0x80) != 0) {
+            return false;
+        }
+        if (bus->ctrl_frame_stat) {
             return true;
-		}
-		if (bus->tx_queue && queue_buffer_check(bus->tx_queue) > 0) {
+        }
+        if (bus->tx_queue && queue_buffer_check(bus->tx_queue) > 0) {
             return true;
-		}
-	}
+        }
+    }
 
     return false;
 }
@@ -1474,31 +1474,31 @@ static int brcmf_sdiod_set_backplane_window(uint32_t addr)
 }
 
 static int brcmf_sdiod_skbuff_read(
-				   int func, uint32_t addr,
-				   struct sk_buff *skb)
+                   int func, uint32_t addr,
+                   struct sk_buff *skb)
 {
-	unsigned int req_sz;
-	int err;
+    unsigned int req_sz;
+    int err;
 
-	/* Single skb use the standard mmc interface */
-	req_sz = skb->len + 3;
-	req_sz &= (uint)~3;
+    /* Single skb use the standard mmc interface */
+    req_sz = skb->len + 3;
+    req_sz &= (uint)~3;
 
-	switch (func) {
-	case 1:
-		err = sdio_memcpy_fromio(func, ((uint8_t *)(skb->data)), addr,
-					 req_sz);
-		break;
-	case 2:
-		err = sdio_readsb(func, ((uint8_t *)(skb->data)), addr, req_sz);
-		break;
-	default:
-		/* bail out as things are really fishy here */
-		brcm_log("invalid sdio function number: %d\n", func);
-		err = -ENOMEDIUM;
-	}
+    switch (func) {
+    case 1:
+        err = sdio_memcpy_fromio(func, ((uint8_t *)(skb->data)), addr,
+                     req_sz);
+        break;
+    case 2:
+        err = sdio_readsb(func, ((uint8_t *)(skb->data)), addr, req_sz);
+        break;
+    default:
+        /* bail out as things are really fishy here */
+        brcm_log("invalid sdio function number: %d\n", func);
+        err = -ENOMEDIUM;
+    }
 
-	return err;
+    return err;
 }
 
 static int brcmf_sdiod_skbuff_write(
@@ -1614,42 +1614,42 @@ brcmf_sdiod_ramrw(bool write, uint32_t address,
 
 uint32_t brcmf_sdiod_readl(uint32_t addr, int *ret)
 {
-	uint32_t data = 0;
-	int retval;
+    uint32_t data = 0;
+    int retval;
 
-	retval = brcmf_sdiod_set_backplane_window(addr);
-	if (retval)
-		goto out;
+    retval = brcmf_sdiod_set_backplane_window(addr);
+    if (retval)
+        goto out;
 
-	addr &= SBSDIO_SB_OFT_ADDR_MASK;
-	addr |= SBSDIO_SB_ACCESS_2_4B_FLAG;
-	data = sdio_readl(1, addr, &retval);
+    addr &= SBSDIO_SB_OFT_ADDR_MASK;
+    addr |= SBSDIO_SB_ACCESS_2_4B_FLAG;
+    data = sdio_readl(1, addr, &retval);
 
 
 
 out:
-	if (ret)
-		*ret = retval;
+    if (ret)
+        *ret = retval;
 
-	return data;
+    return data;
 }
 
 void brcmf_sdiod_writel(uint32_t addr,
-			uint32_t data, int *ret)
+            uint32_t data, int *ret)
 {
-	int retval;
+    int retval;
 
-	retval = brcmf_sdiod_set_backplane_window(addr);
-	if (retval)
-		goto out;
+    retval = brcmf_sdiod_set_backplane_window(addr);
+    if (retval)
+        goto out;
 
-	addr &= SBSDIO_SB_OFT_ADDR_MASK;
-	addr |= SBSDIO_SB_ACCESS_2_4B_FLAG;
-	sdio_writel(1, data, addr, &retval);
+    addr &= SBSDIO_SB_OFT_ADDR_MASK;
+    addr |= SBSDIO_SB_ACCESS_2_4B_FLAG;
+    sdio_writel(1, data, addr, &retval);
 
 out:
-	if (ret)
-		*ret = retval;
+    if (ret)
+        *ret = retval;
 }
 
 void brcm_dummy_read(uint32_t addr, int len){
@@ -4040,20 +4040,20 @@ static void brcmf_sdio_dpc(void)
 
 int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)
 {
-	int ret = 0;
+    int ret = 0;
     uint32_t start_usec;
     uint32_t attempt = 0;
 
-	/* Send from dpc */
+    /* Send from dpc */
     pthread_mutex_lock(&brcm_ctrl_mutex);
-	bus->ctrl_frame_buf = msg;
-	bus->ctrl_frame_len = msglen;
-	bus->ctrl_frame_stat = true;
+    bus->ctrl_frame_buf = msg;
+    bus->ctrl_frame_len = msglen;
+    bus->ctrl_frame_stat = true;
     bus->rxlen = 0;
     pthread_mutex_unlock(&brcm_ctrl_mutex);
 
     start_usec = brcmf_now_usec();
-	while (brcmf_elapsed_usec(start_usec, brcmf_now_usec()) < BRCMF_CTL_TX_TIMEOUT_US) {
+    while (brcmf_elapsed_usec(start_usec, brcmf_now_usec()) < BRCMF_CTL_TX_TIMEOUT_US) {
         bool pending;
 
         pthread_mutex_lock(&brcm_ctrl_mutex);
@@ -4069,13 +4069,13 @@ int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)
 
     pthread_mutex_lock(&brcm_ctrl_mutex);
     if(bus->ctrl_frame_stat){
-		brcm_log("ctrl_frame timeout len=%u\n", msglen);
-		bus->ctrl_frame_stat = false;
-	}else{
-		ret = bus->ctrl_frame_err;
-	}
+        brcm_log("ctrl_frame timeout len=%u\n", msglen);
+        bus->ctrl_frame_stat = false;
+    }else{
+        ret = bus->ctrl_frame_err;
+    }
     pthread_mutex_unlock(&brcm_ctrl_mutex);
-	return ret;
+    return ret;
 }
 
 int brcmf_sdio_bus_rxctl(unsigned char *msg, uint msglen)
@@ -4662,13 +4662,13 @@ static void* brcm_worker_main(void* p) {
                 }
             }
 
-			if (bus->state == SCANNING &&
-					(now_ms - bus->state_since_ms) > BRCMF_SCAN_TIMEOUT_MS) {
-				brcmf_mark_disconnected("scan timeout", BRCMF_E_SCAN_COMPLETE, 0, 0);
-			} else if (bus->state == CONNECTING &&
-					(now_ms - bus->state_since_ms) > BRCMF_CONNECT_TIMEOUT_MS) {
-				brcmf_mark_disconnected("connect timeout", BRCMF_E_SET_SSID, 0, 0);
-			}
+            if (bus->state == SCANNING &&
+                    (now_ms - bus->state_since_ms) > BRCMF_SCAN_TIMEOUT_MS) {
+                brcmf_mark_disconnected("scan timeout", BRCMF_E_SCAN_COMPLETE, 0, 0);
+            } else if (bus->state == CONNECTING &&
+                    (now_ms - bus->state_since_ms) > BRCMF_CONNECT_TIMEOUT_MS) {
+                brcmf_mark_disconnected("connect timeout", BRCMF_E_SET_SSID, 0, 0);
+            }
 
             /*
              * Wedged-firmware watchdog: a firmware stuck in a failing
@@ -4696,7 +4696,7 @@ static void* brcm_worker_main(void* p) {
                 memset(bus->ssid, 0, sizeof(bus->ssid));
                 bus->scan_results_ready = false;
                 bus->state = SCANNING;
-				bus->state_since_ms = kernel_tic_ms(0);
+                bus->state_since_ms = kernel_tic_ms(0);
                 int scan_err = scan();
                 if (scan_err) {
                     /*
@@ -4725,7 +4725,7 @@ static void* brcm_worker_main(void* p) {
                 if (strlen(bus->ssid) == 0) {
                     brcmf_scan_set_mpc(true);
                     bus->state = DISCONNECTED;
-					bus->state_since_ms = kernel_tic_ms(0);
+                    bus->state_since_ms = kernel_tic_ms(0);
                 }
             }
 
@@ -4745,7 +4745,7 @@ static void* brcm_worker_main(void* p) {
                         to_str(pmkstr, pmk, 32);
                         brcmf_scan_set_mpc(true);
                         bus->state = CONNECTING;
-						bus->state_since_ms = kernel_tic_ms(0);
+                        bus->state_since_ms = kernel_tic_ms(0);
                         connect(bus->ssid, pmkstr);
                     }else{
                         brcm_log("no passwd fond for ssid: %s\n", config_get_ssid(idx));
@@ -4753,7 +4753,7 @@ static void* brcm_worker_main(void* p) {
                 }else{
                     brcmf_scan_set_mpc(true);
                     bus->state = CONNECTING;
-					bus->state_since_ms = kernel_tic_ms(0);
+                    bus->state_since_ms = kernel_tic_ms(0);
                     connect(bus->ssid, pmk);
                 }
             }
@@ -5104,32 +5104,32 @@ int brcm_recv(uint8_t *buf, int len){
 }
 
 int brcm_send(uint8_t *buf, int len){
-	int depth;
-	int ret;
+    int depth;
+    int ret;
 
-	if (bus == NULL || bus->tx_queue == NULL)
-		return 0;
-	if (bus->state != CONNECTED)
-		return 0;
-	if (brcmf_tx_queue_should_block_writes()) {
-		bus->diag_tx_qblocks++;
-		return 0;
-	}
+    if (bus == NULL || bus->tx_queue == NULL)
+        return 0;
+    if (bus->state != CONNECTED)
+        return 0;
+    if (brcmf_tx_queue_should_block_writes()) {
+        bus->diag_tx_qblocks++;
+        return 0;
+    }
 
-	ret = queue_buffer_push(bus->tx_queue, buf, len);
-	if (ret <= 0) {
-		bus->tx_queue_blocked = true;
-		bus->tx_queue_drops++;
-		bus->diag_tx_qblocks++;
-		brcmf_note_queue_drop("tx_queue", bus->tx_queue_drops,
-				queue_buffer_check(bus->tx_queue));
-		return 0;
-	}
+    ret = queue_buffer_push(bus->tx_queue, buf, len);
+    if (ret <= 0) {
+        bus->tx_queue_blocked = true;
+        bus->tx_queue_drops++;
+        bus->diag_tx_qblocks++;
+        brcmf_note_queue_drop("tx_queue", bus->tx_queue_drops,
+                queue_buffer_check(bus->tx_queue));
+        return 0;
+    }
 
-	depth = queue_buffer_check(bus->tx_queue);
-	if (depth >= BRCMF_TX_QUEUE_HIGH_WATERMARK)
-		bus->tx_queue_blocked = true;
-	return ret;
+    depth = queue_buffer_check(bus->tx_queue);
+    if (depth >= BRCMF_TX_QUEUE_HIGH_WATERMARK)
+        bus->tx_queue_blocked = true;
+    return ret;
 }
 
 int brcm_connected(void)
@@ -5139,21 +5139,21 @@ int brcm_connected(void)
 
 int brcm_tx_writable(void)
 {
-	if (bus == NULL || bus->tx_queue == NULL)
-		return 0;
-	if (bus->state != CONNECTED)
-		return 0;
-	if (brcmf_tx_queue_should_block_writes())
-		return 0;
+    if (bus == NULL || bus->tx_queue == NULL)
+        return 0;
+    if (bus->state != CONNECTED)
+        return 0;
+    if (brcmf_tx_queue_should_block_writes())
+        return 0;
 
-	/*
-	 * Only report WR when the software queue is below the TX low/high
-	 * watermark hysteresis band and the firmware is not flow-blocking.
-	 * That stops writers before the ring is completely full, so write()
-	 * sees clean backpressure instead of probing the last slot and
-	 * triggering tx_queue overflow.
-	 */
-	return 1;
+    /*
+     * Only report WR when the software queue is below the TX low/high
+     * watermark hysteresis band and the firmware is not flow-blocking.
+     * That stops writers before the ring is completely full, so write()
+     * sees clean backpressure instead of probing the last slot and
+     * triggering tx_queue overflow.
+     */
+    return 1;
 }
 
 int brcm_check_data(void){

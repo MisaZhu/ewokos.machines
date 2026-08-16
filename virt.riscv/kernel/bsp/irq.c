@@ -22,11 +22,11 @@ void irq_disable_arch(uint32_t irq) {
 }
 
 inline uint32_t irq_get_arch(void) {
-	return IRQ_TIMER0;
+    return IRQ_TIMER0;
 }
 
 inline uint32_t irq_get_unified_arch(uint32_t irqno) {
-	return irqno;
+    return irqno;
 }
 
 inline void irq_eoi_arch(uint32_t irq_raw) {

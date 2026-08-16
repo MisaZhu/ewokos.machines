@@ -29,15 +29,15 @@ inline uint32_t irq_get_arch(void) {
 
 inline uint32_t irq_get_unified_arch(uint32_t irqno) {
     if(_pi4)
-	    return irq_get_unified_pi4(irqno);
+        return irq_get_unified_pi4(irqno);
     return irq_get_unified_pix(irqno);
 }
 
 inline void irq_eoi_arch(uint32_t irq_raw) {
     if(_pi4)
-	    irq_eoi_pi4(irq_raw);
+        irq_eoi_pi4(irq_raw);
     else
-	    irq_eoi_pix(irq_raw);
+        irq_eoi_pix(irq_raw);
 }
 
 void irq_enable_pi4(uint32_t core, uint32_t irq);

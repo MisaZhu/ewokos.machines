@@ -59,35 +59,35 @@ const char upMap[] = {
 };
 
 static uint8_t do_ctrl(char c) {
-	/* Standard ASCII control-code mapping for letters:
-	   Ctrl+a..Ctrl+z -> 0x01..0x1A (so Ctrl+c -> 0x03 = SIGINT,
-	   Ctrl+d -> 0x04 = EOF, etc.). Non-letters pass through unchanged. */
-	if (c >= 'a' && c <= 'z')
-		return (uint8_t)(c - 'a' + 1);
-	if (c >= 'A' && c <= 'Z')
-		return (uint8_t)(c - 'A' + 1);
-	return c;
+    /* Standard ASCII control-code mapping for letters:
+       Ctrl+a..Ctrl+z -> 0x01..0x1A (so Ctrl+c -> 0x03 = SIGINT,
+       Ctrl+d -> 0x04 = EOF, etc.). Non-letters pass through unchanged. */
+    if (c >= 'a' && c <= 'z')
+        return (uint8_t)(c - 'a' + 1);
+    if (c >= 'A' && c <= 'Z')
+        return (uint8_t)(c - 'A' + 1);
+    return c;
 }
 
 uint8_t getKeyChar(uint8_t alt, uint8_t keycode){
     if(keycode > 0 && keycode < sizeof(upMap)){
         if((alt & KEY_MOD_LCTRL) ||(alt & KEY_MOD_RCTRL)){
-        	return do_ctrl(downMap[keycode]);
-		}
+            return do_ctrl(downMap[keycode]);
+        }
         if((alt & KEY_MOD_LSHIFT) ||(alt & KEY_MOD_RSHIFT)){
             return upMap[keycode];
         }else{
-        	return downMap[keycode];
+            return downMap[keycode];
         }
     }else if(keycode == 0x4f){
-		return KEY_RIGHT;
-	}else if(keycode == 0x50){
-		return KEY_LEFT;
-	}else if(keycode == 0x51){
-		return KEY_DOWN;
-	}else if(keycode == 0x52){
-		return KEY_UP;
-	}
+        return KEY_RIGHT;
+    }else if(keycode == 0x50){
+        return KEY_LEFT;
+    }else if(keycode == 0x51){
+        return KEY_DOWN;
+    }else if(keycode == 0x52){
+        return KEY_UP;
+    }
     return 0;
 }
 
@@ -105,50 +105,50 @@ uint8_t getKeyChar(uint8_t alt, uint8_t keycode){
  * contract stays consistent.
  */
 static int get_key_code(char *buf, int size) {
-	int num = 0;
-	for (int i = 0; i < _key_count && num < size; i++) {
-		uint8_t c = getKeyChar(_mod, _keys[i]);
-		if (c != 0) {
-			buf[num++] = (char)c;
-		} else {
-			/* unmapped keycode: pass through raw so poll/read stay
-			   consistent (matches machine.virt keybd behavior) */
-			buf[num++] = (char)_keys[i];
-		}
-	}
-	return num;
+    int num = 0;
+    for (int i = 0; i < _key_count && num < size; i++) {
+        uint8_t c = getKeyChar(_mod, _keys[i]);
+        if (c != 0) {
+            buf[num++] = (char)c;
+        } else {
+            /* unmapped keycode: pass through raw so poll/read stay
+               consistent (matches machine.virt keybd behavior) */
+            buf[num++] = (char)_keys[i];
+        }
+    }
+    return num;
 }
 
 static int keyb_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)offset;
-	(void)p;
-	(void)node;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)offset;
+    (void)p;
+    (void)node;
 
-	int num = get_key_code(buf, size);
-	return num ? num : VFS_ERR_RETRY;
+    int num = get_key_code(buf, size);
+    return num ? num : VFS_ERR_RETRY;
 }
 
 static uint32_t keyb_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)node;
-	(void)p;
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)node;
+    (void)p;
 
-	return _key_count > 0 ? VFS_EVT_RD : 0;
+    return _key_count > 0 ? VFS_EVT_RD : 0;
 }
 
 static int set_report_id(int fd, int id) {
 
-	proto_t in;
-	PF->init(&in)->addi(&in, id);
-	int ret = vfs_fcntl(fd, 0, &in , NULL);
-	PF->clear(&in);
-	return ret;
+    proto_t in;
+    PF->init(&in)->addi(&in, id);
+    int ret = vfs_fcntl(fd, 0, &in , NULL);
+    PF->clear(&in);
+    return ret;
 }
 
 /*
@@ -160,103 +160,103 @@ static int set_report_id(int fd, int id) {
  * stall the whole boot on a machine with no keyboard attached.
  */
 static bool hid_connect(void) {
-	int fd;
+    int fd;
 
-	if (hid >= 0) {
-		return true;
-	}
-	fd = open(_dev_point, O_RDONLY | O_NONBLOCK);
-	if (fd < 0) {
-		return false;
-	}
-	if (set_report_id(fd, 2) != 0) {
-		close(fd);
-		return false;
-	}
-	hid = fd;
-	return true;
+    if (hid >= 0) {
+        return true;
+    }
+    fd = open(_dev_point, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+        return false;
+    }
+    if (set_report_id(fd, 2) != 0) {
+        close(fd);
+        return false;
+    }
+    hid = fd;
+    return true;
 }
 
 static int loop(vdevice_t* dev, void* p) {
-	(void)p;
+    (void)p;
 
-	if (!hid_connect()) {
-		proc_usleep(HID_CONNECT_SLEEP_US);
-		return 0;
-	}
+    if (!hid_connect()) {
+        proc_usleep(HID_CONNECT_SLEEP_US);
+        return 0;
+    }
 
-	ipc_disable();
+    ipc_disable();
 
-	bool got = false;
-	while(true) {
-		uint8_t buf[HID_KEYBOARD_REPORT_SIZE] = {0};
-		int res = read(hid, buf, HID_KEYBOARD_REPORT_SIZE);
-		if(res == HID_KEYBOARD_REPORT_SIZE) {
-			got = true;
-			/* each report is a full snapshot: mod, reserved, keycodes */
-			uint8_t keys[MAX_KEY];
-			int count = 0;
-			for (int i = HID_KEYBOARD_FIRST_KEY_IDX; i < HID_KEYBOARD_REPORT_SIZE; i++) {
-				if (buf[i] != 0) {
-					keys[count++] = buf[i];
-				}
-			}
-			_mod = buf[0];
-			_key_count = count;
-			memcpy(_keys, keys, sizeof(keys));
-		}
-		else {
-			break;
-		}
-	}
+    bool got = false;
+    while(true) {
+        uint8_t buf[HID_KEYBOARD_REPORT_SIZE] = {0};
+        int res = read(hid, buf, HID_KEYBOARD_REPORT_SIZE);
+        if(res == HID_KEYBOARD_REPORT_SIZE) {
+            got = true;
+            /* each report is a full snapshot: mod, reserved, keycodes */
+            uint8_t keys[MAX_KEY];
+            int count = 0;
+            for (int i = HID_KEYBOARD_FIRST_KEY_IDX; i < HID_KEYBOARD_REPORT_SIZE; i++) {
+                if (buf[i] != 0) {
+                    keys[count++] = buf[i];
+                }
+            }
+            _mod = buf[0];
+            _key_count = count;
+            memcpy(_keys, keys, sizeof(keys));
+        }
+        else {
+            break;
+        }
+    }
 
-	ipc_enable();
-	/*
-	 * Level-triggered wakeup: re-assert VFS_EVT_RD whenever keys are
-	 * still held, not only on the edge when a new report arrives.
-	 * The libgloss _read() loop clears the sticky RD bit
-	 * (vfs_clear_poll_events) before vfs_block(), and vfs_block() only
-	 * prechecks sticky bits — so if the edge was consumed while keys
-	 * remain held, a blocked reader would sleep forever until the next
-	 * physical key event.
-	 */
-	if(_key_count > 0) {
-		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-	}
-	else if(got) {
-		_idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
-	}
-	else if (_idle_sleep_us < HID_IDLE_SLEEP_MAX_US) {
-		_idle_sleep_us <<= 1;
-		if (_idle_sleep_us > HID_IDLE_SLEEP_MAX_US) {
-			_idle_sleep_us = HID_IDLE_SLEEP_MAX_US;
-		}
-	}
-	/*
-	 * device_run() does not pace loop_step, so this has to sleep on every
-	 * pass. It used to skip the sleep whenever keys were held, which meant
-	 * simply holding a key down pinned a core at 100%: _key_count stays
-	 * non-zero until the release report arrives. The floor is well under
-	 * the endpoint's own bInterval, so nothing is lost by always waiting.
-	 */
-	proc_usleep(_idle_sleep_us);
-	return 0;
+    ipc_enable();
+    /*
+     * Level-triggered wakeup: re-assert VFS_EVT_RD whenever keys are
+     * still held, not only on the edge when a new report arrives.
+     * The libgloss _read() loop clears the sticky RD bit
+     * (vfs_clear_poll_events) before vfs_block(), and vfs_block() only
+     * prechecks sticky bits — so if the edge was consumed while keys
+     * remain held, a blocked reader would sleep forever until the next
+     * physical key event.
+     */
+    if(_key_count > 0) {
+        _idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
+        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+    }
+    else if(got) {
+        _idle_sleep_us = HID_IDLE_SLEEP_MIN_US;
+    }
+    else if (_idle_sleep_us < HID_IDLE_SLEEP_MAX_US) {
+        _idle_sleep_us <<= 1;
+        if (_idle_sleep_us > HID_IDLE_SLEEP_MAX_US) {
+            _idle_sleep_us = HID_IDLE_SLEEP_MAX_US;
+        }
+    }
+    /*
+     * device_run() does not pace loop_step, so this has to sleep on every
+     * pass. It used to skip the sleep whenever keys were held, which meant
+     * simply holding a key down pinned a core at 100%: _key_count stays
+     * non-zero until the release report arrives. The floor is well under
+     * the endpoint's own bInterval, so nothing is lost by always waiting.
+     */
+    proc_usleep(_idle_sleep_us);
+    return 0;
 }
 
 int main(int argc, char** argv) {
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/keyb0";
-	if (argc > 2) {
-		_dev_point = argv[2];
-	}
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/keyb0";
+    if (argc > 2) {
+        _dev_point = argv[2];
+    }
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "keyb");
-	dev.read = keyb_read;
-	dev.loop_step = loop;
-	dev.check_poll_events = keyb_check_poll_events;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "keyb");
+    dev.read = keyb_read;
+    dev.loop_step = loop;
+    dev.check_poll_events = keyb_check_poll_events;
 
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
-	return 0;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    return 0;
 }

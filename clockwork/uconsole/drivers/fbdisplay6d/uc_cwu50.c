@@ -14,9 +14,9 @@
 #define DT_DCS_SHORT_WRITE_1P    0x15U
 
 typedef struct {
-	uint8_t  len;         /* number of payload bytes (1 or 2) */
-	uint8_t  data[3];     /* command byte, then optional param */
-	uint16_t delay_ms;    /* post-write delay */
+    uint8_t  len;         /* number of payload bytes (1 or 2) */
+    uint8_t  data[3];     /* command byte, then optional param */
+    uint16_t delay_ms;    /* post-write delay */
 } cwu50_cmd_t;
 
 /*
@@ -222,85 +222,85 @@ static const cwu50_cmd_t _cwu50_seq2[] = {
 #define _CWU50_SEQ2_LEN (sizeof(_cwu50_seq2) / sizeof(_cwu50_seq2[0]))
 
 static int _send_one(const cwu50_cmd_t* c) {
-	uint8_t dt = (c->len == 1) ? DT_DCS_SHORT_WRITE_0P : DT_DCS_SHORT_WRITE_1P;
-	int rc = uc_dsi_dcs_write(dt, c->data, c->len);
-	if (c->delay_ms > 0) {
-		uc_mdelay(c->delay_ms);
-	}
-	return rc;
+    uint8_t dt = (c->len == 1) ? DT_DCS_SHORT_WRITE_0P : DT_DCS_SHORT_WRITE_1P;
+    int rc = uc_dsi_dcs_write(dt, c->data, c->len);
+    if (c->delay_ms > 0) {
+        uc_mdelay(c->delay_ms);
+    }
+    return rc;
 }
 
 static int _send_checked(const cwu50_cmd_t* c, int* failures, int* consec) {
-	if (_send_one(c) != 0) {
-		(*failures)++;
-		(*consec)++;
-		if (*consec >= 3) {
-			return -1;
-		}
-	} else {
-		*consec = 0;
-	}
-	return 0;
+    if (_send_one(c) != 0) {
+        (*failures)++;
+        (*consec)++;
+        if (*consec >= 3) {
+            return -1;
+        }
+    } else {
+        *consec = 0;
+    }
+    return 0;
 }
 
 static int _run_seq(const cwu50_cmd_t* seq, uint32_t len, int* failures, int* consec) {
-	uint32_t i;
+    uint32_t i;
 
-	for (i = 0; i < len; i++) {
-		if (_send_checked(&seq[i], failures, consec) != 0) {
-			return -1;
-		}
-	}
-	return 0;
+    for (i = 0; i < len; i++) {
+        if (_send_checked(&seq[i], failures, consec) != 0) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int uc_cwu50_init(void) {
-	int failures = 0;
-	int consec = 0;
+    int failures = 0;
+    int consec = 0;
 
-	/*
-	 * panel-cwu50.c :: cwu50_prepare() first calls
-	 * mipi_dsi_dcs_set_tear_on(dsi, TEAR_MODE_VBLANK) which is DCS
-	 * short-write 0x35, param 0x00.  The vendor table itself also
-	 * repeats this at the end, but we mirror the reference flow so a
-	 * side-by-side capture matches bit-for-bit.
-	 */
-	{
-		uint8_t tear[2] = { 0x35, 0x00 };
-		int tear_rc = uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2);
-		if (tear_rc != 0) {
-			failures++;
-			consec++;
-		}
-	}
+    /*
+     * panel-cwu50.c :: cwu50_prepare() first calls
+     * mipi_dsi_dcs_set_tear_on(dsi, TEAR_MODE_VBLANK) which is DCS
+     * short-write 0x35, param 0x00.  The vendor table itself also
+     * repeats this at the end, but we mirror the reference flow so a
+     * side-by-side capture matches bit-for-bit.
+     */
+    {
+        uint8_t tear[2] = { 0x35, 0x00 };
+        int tear_rc = uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2);
+        if (tear_rc != 0) {
+            failures++;
+            consec++;
+        }
+    }
 
-	/*
-	 * Keep the upstream PR #7 readback probe ordering: send SLPOUT and
-	 * switch back to page 0 before running the new-panel sequence.  For
-	 * fb6d we target only the newer hardware batch, so the readback
-	 * result is intentionally ignored.
-	 */
-	{
-		static const cwu50_cmd_t predetect_slpout = { 1, { 0x11, 0x00, 0x00 }, 120 };
-		static const cwu50_cmd_t predetect_page0  = { 2, { 0xE0, 0x00, 0x00 }, 0 };
-		uint8_t readbuf[3];
+    /*
+     * Keep the upstream PR #7 readback probe ordering: send SLPOUT and
+     * switch back to page 0 before running the new-panel sequence.  For
+     * fb6d we target only the newer hardware batch, so the readback
+     * result is intentionally ignored.
+     */
+    {
+        static const cwu50_cmd_t predetect_slpout = { 1, { 0x11, 0x00, 0x00 }, 120 };
+        static const cwu50_cmd_t predetect_page0  = { 2, { 0xE0, 0x00, 0x00 }, 0 };
+        uint8_t readbuf[3];
 
-		if (_send_checked(&predetect_slpout, &failures, &consec) != 0) {
-			return failures;
-		}
-		if (_send_checked(&predetect_page0, &failures, &consec) != 0) {
-			return failures;
-		}
-		(void)uc_dsi_dcs_read(0x04, readbuf, sizeof(readbuf), 1);
-	}
+        if (_send_checked(&predetect_slpout, &failures, &consec) != 0) {
+            return failures;
+        }
+        if (_send_checked(&predetect_page0, &failures, &consec) != 0) {
+            return failures;
+        }
+        (void)uc_dsi_dcs_read(0x04, readbuf, sizeof(readbuf), 1);
+    }
 
-	if (_run_seq(_cwu50_seq2, _CWU50_SEQ2_LEN, &failures, &consec) != 0) {
-		return failures;
-	}
-	/*
-	 * sequence2 already carries its own SLPOUT/DSPON/TE tail in the
-	 * upstream new-panel driver, so stop here instead of adding yet
-	 * another duplicate pair.
-	 */
-	return failures;
+    if (_run_seq(_cwu50_seq2, _CWU50_SEQ2_LEN, &failures, &consec) != 0) {
+        return failures;
+    }
+    /*
+     * sequence2 already carries its own SLPOUT/DSPON/TE tail in the
+     * upstream new-panel driver, so stop here instead of adding yet
+     * another duplicate pair.
+     */
+    return failures;
 }

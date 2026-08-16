@@ -52,7 +52,7 @@ static uint32_t _sys_sec_tic = 0;
 
 static void davinci_timer_init(void){
 
-	/* Disabled, Internal clock source */
+    /* Disabled, Internal clock source */
     writel(0, TIM0_BASE + TCR);
 
     /* reset both timers, no pre-scaler for timer34 */
@@ -72,32 +72,32 @@ static void davinci_timer_init(void){
     writel(0, TIM0_BASE + TIM12);
     writel(0, TIM0_BASE + TIM34);
 
-	/* start TIM32 for system time counter*/
-	writel(0, TIM0_BASE + TIM34);
-	writel(TIM0_CLK, TIM0_BASE + PRD34);
+    /* start TIM32 for system time counter*/
+    writel(0, TIM0_BASE + TIM34);
+    writel(TIM0_CLK, TIM0_BASE + PRD34);
 
-	writel(TCR_ENAMODE_PERIODIC << 22, TIM0_BASE + TCR);
+    writel(TCR_ENAMODE_PERIODIC << 22, TIM0_BASE + TCR);
 }
 
 void timer_set_interval(uint32_t id, uint32_t times_per_sec) {
-	davinci_timer_init();
-	(void)id;
+    davinci_timer_init();
+    (void)id;
 
-	uint32_t tcr = readl(TIM0_BASE + TCR);
-	uint32_t period = TIM0_CLK/times_per_sec;
+    uint32_t tcr = readl(TIM0_BASE + TCR);
+    uint32_t period = TIM0_CLK/times_per_sec;
 
-	tcr &= ~(TCR_ENAMODE_MASK << 6);
+    tcr &= ~(TCR_ENAMODE_MASK << 6);
     writel(tcr, TIM0_BASE + TCR);
 
-	writel(0, TIM0_BASE + TIM12);
-	writel(period, TIM0_BASE + PRD12);
+    writel(0, TIM0_BASE + TIM12);
+    writel(period, TIM0_BASE + PRD12);
 
-	tcr |= TCR_ENAMODE_PERIODIC << 6;
-	writel(tcr, TIM0_BASE + TCR);
+    tcr |= TCR_ENAMODE_PERIODIC << 6;
+    writel(tcr, TIM0_BASE + TCR);
 }
 
 void timer_clear_interrupt(uint32_t id) {
-	(void)id;
+    (void)id;
 
 }
 
@@ -111,11 +111,11 @@ static __inline uint64_t fast_div_25(uint32_t x){
 }
 
 uint64_t timer_read_sys_usec(void) { 
-	static uint32_t last_counter = 0;
-	uint32_t counter = readl(TIM0_BASE + TIM34);
-	if(counter < last_counter){
-		_sys_sec_tic += 1;
-	}
-	last_counter = counter;
-	return _sys_sec_tic * 1000000 + fast_div_25(counter);
+    static uint32_t last_counter = 0;
+    uint32_t counter = readl(TIM0_BASE + TIM34);
+    if(counter < last_counter){
+        _sys_sec_tic += 1;
+    }
+    last_counter = counter;
+    return _sys_sec_tic * 1000000 + fast_div_25(counter);
 }

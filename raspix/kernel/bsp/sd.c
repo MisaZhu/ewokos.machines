@@ -101,21 +101,21 @@ static int32_t sd_read_cached_sector(int32_t sector, void* buf) {
 }
 
 int32_t sd_init(void) {
-	timer_init();
-	if(_pi4){
-		*(uint32_t*)(_sys_info.mmio.v_base + 0x2000d0) &= ~(0x2);
-		//*(uint32_t*)(MMIO_BASE + 0x2000d0) |= 0x2;
-	}
+    timer_init();
+    if(_pi4){
+        *(uint32_t*)(_sys_info.mmio.v_base + 0x2000d0) &= ~(0x2);
+        //*(uint32_t*)(MMIO_BASE + 0x2000d0) |= 0x2;
+    }
         _cache_valid = 0;
         _cache_sector_count = 0;
         _last_read_sector = -1;
         _seq_read_count = 0;
-	return bcm283x_sd_init();
+    return bcm283x_sd_init();
 }
 
 int32_t sd_dev_read(int32_t sector) {
-	_sector = sector;
-	return 0;
+    _sector = sector;
+    return 0;
 }
 
 int32_t sd_dev_read_done(void* buf) {
@@ -136,9 +136,9 @@ int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
 }
 
 int32_t sd_dev_write(int32_t sector, const void* buf) {
-	return 0;
+    return 0;
 }
 
 int32_t sd_dev_write_done(void) {
-	return 0;
+    return 0;
 }

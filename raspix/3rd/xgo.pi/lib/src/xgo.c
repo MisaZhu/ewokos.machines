@@ -10,7 +10,7 @@ extern "C" {
 static int tty0FD = -1;
 
 int  xgo_init(void) {
-	tty0FD = open("/dev/tty0", O_RDWR);
+    tty0FD = open("/dev/tty0", O_RDWR);
     if(tty0FD <= 0)
         return -1;
     return 0;

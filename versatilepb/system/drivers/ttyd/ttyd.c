@@ -45,76 +45,76 @@ int32_t uart_write(const void* data, uint32_t size) {
 static charbuf_t *_buffer;
 
 static int tty_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)offset;
-	(void)node;
-	(void)size;
-	(void)p;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)offset;
+    (void)node;
+    (void)size;
+    (void)p;
 
-	char c;
-	int res = charbuf_pop(_buffer, &c);
+    char c;
+    int res = charbuf_pop(_buffer, &c);
 
-	if(res != 0 || c == 0)
-		return VFS_ERR_RETRY;
+    if(res != 0 || c == 0)
+        return VFS_ERR_RETRY;
 
-	((char*)buf)[0] = c;
-	return 1;
+    ((char*)buf)[0] = c;
+    return 1;
 }
 
 static int tty_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		const void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)node;
-	(void)from_pid;
-	(void)offset;
-	(void)p;
-	return uart_write(buf, size);
+        const void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)node;
+    (void)from_pid;
+    (void)offset;
+    (void)p;
+    return uart_write(buf, size);
 }
 
 static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, ewokos_addr_t p) {
-	(void)interrupt;
+    (void)interrupt;
         vdevice_t* dev = (vdevice_t*)p;
-	uint32_t data = get32(UART0 + UART_DATA);
-	charbuf_push(_buffer, data, true);
-	_wakeup = true;
+    uint32_t data = get32(UART0 + UART_DATA);
+    charbuf_push(_buffer, data, true);
+    _wakeup = true;
 }
 
 int loop_step(vdevice_t* dev, void* p) {
-	(void)p;
-	if(_wakeup) {
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-		_wakeup = false;
-	}
-	usleep(3000);
-	return 0;
+    (void)p;
+    if(_wakeup) {
+        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+        _wakeup = false;
+    }
+    usleep(3000);
+    return 0;
 }
 
 #define IRQ_RAW_UART0 12 //VPB uart0 interrupt at PIC bit12 
 
 int main(int argc, char** argv) {
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/tty0";
-	_mmio_base = mmio_map();
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/tty0";
+    _mmio_base = mmio_map();
 
-	_buffer = charbuf_new(0);
+    _buffer = charbuf_new(0);
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "tty");
-	dev.read = tty_read;
-	dev.write = tty_write;
-	dev.loop_step = loop_step;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "tty");
+    dev.read = tty_read;
+    dev.write = tty_write;
+    dev.loop_step = loop_step;
 
-	static interrupt_handler_t handler;
-	handler.data = &dev;
-	handler.handler = interrupt_handle;
-	sys_interrupt_setup(IRQ_RAW_UART0, &handler);
+    static interrupt_handler_t handler;
+    handler.data = &dev;
+    handler.handler = interrupt_handle;
+    sys_interrupt_setup(IRQ_RAW_UART0, &handler);
 
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
-	charbuf_free(_buffer);
-	return 0;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    charbuf_free(_buffer);
+    return 0;
 }

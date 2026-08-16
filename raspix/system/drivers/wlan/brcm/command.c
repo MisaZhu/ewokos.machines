@@ -146,7 +146,7 @@ static pthread_mutex_t brcmf_cmd_mutex;
 
 void brcmf_cmd_init(void)
 {
-	pthread_mutex_init(&brcmf_cmd_mutex, NULL);
+    pthread_mutex_init(&brcmf_cmd_mutex, NULL);
 }
 
 
@@ -159,7 +159,7 @@ hexdump(const char* lable, const void *data, size_t size)
     brcm_log("%s %d:\n", lable, size);
     brcm_log("+------+-------------------------------------------------+------------------+\n");
     for(offset = 0; offset < (int)size; offset += 16) {
-		brcm_log("| %04x | ", offset);
+        brcm_log("| %04x | ", offset);
         for(index = 0; index < 16; index++) {
             if(offset + index < (int)size) {
                 brcm_log("%02x ", 0xff & src[offset + index]);
@@ -349,18 +349,18 @@ brcmf_fil_cmd_data(int ifidx, uint32_t cmd, void *data, uint32_t len, bool set)
     if (cmd == BRCMF_C_SET_VAR && data)
         iovar_name = (const char *)data;
 
-	if (data != NULL) {
-		len = min_t(uint, len, BRCMF_DCMD_MAXLEN);
-	}
-	pthread_mutex_lock(&brcmf_cmd_mutex);
-	if (set) {
+    if (data != NULL) {
+        len = min_t(uint, len, BRCMF_DCMD_MAXLEN);
+    }
+    pthread_mutex_lock(&brcmf_cmd_mutex);
+    if (set) {
         err = brcmf_proto_bcdc_set_dcmd(ifidx, cmd,
                        data, len, &fwerr);
-	} else {
+    } else {
         err = brcmf_proto_bcdc_query_dcmd(ifidx, cmd,
                          data, len, &fwerr);
-	}
-	pthread_mutex_unlock(&brcmf_cmd_mutex);
+    }
+    pthread_mutex_unlock(&brcmf_cmd_mutex);
 
     if (err) {
         brcm_log("cmd %s(%u) failed: error=%d set=%d len=%u\n",
@@ -605,42 +605,42 @@ static int brcmf_c_process_clm_blob(int ifidx)
 
 int brcmf_c_preinit_dcmds(void)
 {
-	uint8_t buf[BRCMF_DCMD_SMLEN];
-	uint8_t desired_mac[6];
-	struct brcmf_rev_info_le revinfo;
-	struct brcmf_rev_info ri;
-	int32_t err = 0;
-	int chip = 0;
-	int chiprev = 0;
+    uint8_t buf[BRCMF_DCMD_SMLEN];
+    uint8_t desired_mac[6];
+    struct brcmf_rev_info_le revinfo;
+    struct brcmf_rev_info ri;
+    int32_t err = 0;
+    int chip = 0;
+    int chiprev = 0;
 
-	if (brcmf_fw_get_macaddr(desired_mac)) {
-		err = brcmf_fil_iovar_data_set(0, "cur_etheraddr", desired_mac,
-					       sizeof(desired_mac));
-		if (err < 0) {
-			brcm_log("Setting cur_etheraddr failed, %d\n", err);
-		} else {
-			memcpy(mac_addr, desired_mac, sizeof(mac_addr));
-			brcm_log("Applied cur_etheraddr override %pM\n", desired_mac);
-		}
-	}
+    if (brcmf_fw_get_macaddr(desired_mac)) {
+        err = brcmf_fil_iovar_data_set(0, "cur_etheraddr", desired_mac,
+                           sizeof(desired_mac));
+        if (err < 0) {
+            brcm_log("Setting cur_etheraddr failed, %d\n", err);
+        } else {
+            memcpy(mac_addr, desired_mac, sizeof(mac_addr));
+            brcm_log("Applied cur_etheraddr override %pM\n", desired_mac);
+        }
+    }
 
-	/* retreive mac address */
-	err = brcmf_fil_iovar_data_get(0, "cur_etheraddr", mac_addr,
-				       sizeof(mac_addr));
-	if (err < 0) {
-		brcm_log("Retrieving cur_etheraddr failed, %d\n", err);
-		goto done;
-	}
-	if (brcmf_fw_get_macaddr(desired_mac) &&
-	    memcmp(mac_addr, desired_mac, sizeof(mac_addr)) != 0) {
-		brcm_log("cur_etheraddr mismatch: want %pM got %pM\n",
-				desired_mac, mac_addr);
-	} else {
-		brcm_log("cur_etheraddr active %pM\n", mac_addr);
-	}
+    /* retreive mac address */
+    err = brcmf_fil_iovar_data_get(0, "cur_etheraddr", mac_addr,
+                       sizeof(mac_addr));
+    if (err < 0) {
+        brcm_log("Retrieving cur_etheraddr failed, %d\n", err);
+        goto done;
+    }
+    if (brcmf_fw_get_macaddr(desired_mac) &&
+        memcmp(mac_addr, desired_mac, sizeof(mac_addr)) != 0) {
+        brcm_log("cur_etheraddr mismatch: want %pM got %pM\n",
+                desired_mac, mac_addr);
+    } else {
+        brcm_log("cur_etheraddr active %pM\n", mac_addr);
+    }
 
-	err = brcmf_fil_cmd_data_get(0, BRCMF_C_GET_REVINFO,
-				     &revinfo, sizeof(revinfo));
+    err = brcmf_fil_cmd_data_get(0, BRCMF_C_GET_REVINFO,
+                     &revinfo, sizeof(revinfo));
     if (err < 0) {
         brcm_log("retrieving revision info failed, %d\n", err);
         strlcpy(ri.chipname, "UNKNOWN", sizeof(ri.chipname));

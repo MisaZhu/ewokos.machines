@@ -84,14 +84,14 @@ void irq_init_arch(void) {
      */
     for (int i = 0; i < 26; i++){
         cp_intc_write(0x0f0f0f0f, CP_INTC_CHAN_MAP(i));
-	}
+    }
 
-	/* Enable global interrupt */
+    /* Enable global interrupt */
     cp_intc_write(1, CP_INTC_GLOBAL_ENABLE);
 }
 
 void irq_enable_arch(uint32_t irq) {
-	if(irq == IRQ_TIMER0){ 
+    if(irq == IRQ_TIMER0){ 
         irq = 21;
     }
     cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_SET); 
@@ -99,7 +99,7 @@ void irq_enable_arch(uint32_t irq) {
 
 void irq_enable_core_arch(uint32_t core, uint32_t irq) {
     (void)core;
-	if(irq == IRQ_TIMER0){ 
+    if(irq == IRQ_TIMER0){ 
         irq = 21;
     }
     cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_SET); 
@@ -114,18 +114,18 @@ inline void irq_clear_arch(uint32_t irq) {
 }
 
 void irq_disable_arch(uint32_t irq) {
-	if(irq == IRQ_TIMER0){
+    if(irq == IRQ_TIMER0){
         irq = 21;
     }
-	cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_CLR);
-   	cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_CLR);
-   	cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_SET);
+    cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_CLR);
+    cp_intc_write(irq, CP_INTC_SYS_ENABLE_IDX_CLR);
+    cp_intc_write(1, CP_INTC_HOST_ENABLE_IDX_SET);
 }
 
 inline uint32_t irq_get_arch(void) {
     uint32_t irq = cp_intc_read(CP_INTC_PRIO_IDX);
     cp_intc_write(irq, CP_INTC_SYS_STAT_IDX_CLR); 
-	return irq;
+    return irq;
 }
 
 inline void irq_eoi_arch(uint32_t irq_raw) {
@@ -135,6 +135,6 @@ inline void irq_eoi_arch(uint32_t irq_raw) {
 inline uint32_t irq_get_unified_arch(uint32_t irqno) {
     if(irqno == 21)
         return IRQ_TIMER0;
-	return irqno;
+    return irqno;
 }
 

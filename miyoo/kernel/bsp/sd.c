@@ -69,12 +69,12 @@
 static uint8_t *_sector_buf = (uint8_t*)MIYOO_SD_BOUNCE_VIRT;
 
 typedef struct {
-	int inited;    /* 完整初始化流程已成功走完 */
-	int is_v2;     /* CMD8 有响应: SD 规范 v2+ 卡 */
-	int is_sdhc;   /* OCR CCS: SDHC/SDXC，块寻址 */
-	int is_hs;     /* CMD6 高速切换已被卡接受 */
-	int bus_4bit;  /* ACMD6 4-bit 已被卡接受 */
-	uint16_t rca;
+    int inited;    /* 完整初始化流程已成功走完 */
+    int is_v2;     /* CMD8 有响应: SD 规范 v2+ 卡 */
+    int is_sdhc;   /* OCR CCS: SDHC/SDXC，块寻址 */
+    int is_hs;     /* CMD6 高速切换已被卡接受 */
+    int bus_4bit;  /* ACMD6 4-bit 已被卡接受 */
+    uint16_t rca;
 } MiyooSDCard;
 
 static MiyooSDCard _card;
@@ -89,15 +89,15 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
                 volatile uint8_t *pu8Buf);
 
 static inline void sd_msleep(uint32_t ms) {
-	_delay(ms * 1000U);
+    _delay(ms * 1000U);
 }
 
 /* R1/R3/R6/R7 的 32bit 负载: token[1..4]，MSB 在前 */
 static inline uint32_t sd_rsp32(const RspStruct *rsp) {
-	return ((uint32_t)rsp->u8ArrRspToken[1] << 24) |
-	       ((uint32_t)rsp->u8ArrRspToken[2] << 16) |
-	       ((uint32_t)rsp->u8ArrRspToken[3] << 8)  |
-	       (uint32_t)rsp->u8ArrRspToken[4];
+    return ((uint32_t)rsp->u8ArrRspToken[1] << 24) |
+           ((uint32_t)rsp->u8ArrRspToken[2] << 16) |
+           ((uint32_t)rsp->u8ArrRspToken[3] << 8)  |
+           (uint32_t)rsp->u8ArrRspToken[4];
 }
 
 /* ------------------------------------------------------------------
@@ -125,17 +125,17 @@ static inline uint32_t miyoo_sd_pick_ra_window(int32_t sector) {
  * 命令收发包装
  * ------------------------------------------------------------------ */
 static RspErrEmType miyoo_sd_cmd(uint8_t cmd, uint32_t arg, SDMMCRspEmType rsp_type) {
-	Hal_SDMMC_SetCmdToken(MIYOO_SD_IP, cmd, arg);
-	return Hal_SDMMC_SendCmdAndWaitProcess(MIYOO_SD_IP, EV_EMP, EV_CMDRSP,
-	                rsp_type, FALSE);
+    Hal_SDMMC_SetCmdToken(MIYOO_SD_IP, cmd, arg);
+    return Hal_SDMMC_SendCmdAndWaitProcess(MIYOO_SD_IP, EV_EMP, EV_CMDRSP,
+                    rsp_type, FALSE);
 }
 
 static RspErrEmType miyoo_sd_acmd(uint16_t rca, uint8_t acmd, uint32_t arg,
                 SDMMCRspEmType rsp_type) {
-	RspErrEmType err = miyoo_sd_cmd(SD_CMD_APP_CMD, (uint32_t)rca << 16, EV_R1);
-	if(err != EV_STS_OK)
-		return err;
-	return miyoo_sd_cmd(acmd, arg, rsp_type);
+    RspErrEmType err = miyoo_sd_cmd(SD_CMD_APP_CMD, (uint32_t)rca << 16, EV_R1);
+    if(err != EV_STS_OK)
+        return err;
+    return miyoo_sd_cmd(acmd, arg, rsp_type);
 }
 
 /* ------------------------------------------------------------------
@@ -144,53 +144,53 @@ static RspErrEmType miyoo_sd_acmd(uint16_t rca, uint8_t acmd, uint32_t arg,
 
 /* CMD8 探测 SD v2；无响应/CRC 错都按 v1 传统卡继续走 */
 static int miyoo_sd_probe_v2(void) {
-	RspErrEmType err = miyoo_sd_cmd(SD_CMD_SEND_IF_COND, 0x1AAU, EV_R7);
-	RspStruct *rsp = Hal_SDMMC_GetRspToken(MIYOO_SD_IP);
+    RspErrEmType err = miyoo_sd_cmd(SD_CMD_SEND_IF_COND, 0x1AAU, EV_R7);
+    RspStruct *rsp = Hal_SDMMC_GetRspToken(MIYOO_SD_IP);
 
-	if(err != EV_STS_OK)
-		return 0;
-	return (sd_rsp32(rsp) & 0xFFFU) == 0x1AAU;
+    if(err != EV_STS_OK)
+        return 0;
+    return (sd_rsp32(rsp) & 0xFFFU) == 0x1AAU;
 }
 
 /* ACMD41 轮询直到 OCR busy 位置起（卡上电完成） */
 static int miyoo_sd_init_ocr(uint32_t arg) {
-	uint32_t elapsed = 0;
+    uint32_t elapsed = 0;
 
-	while(elapsed < SD_INIT_ACMD41_TIMEOUT_MS) {
-		RspErrEmType err = miyoo_sd_acmd(0, SD_ACMD_SD_SEND_OP_COND, arg, EV_R3);
-		RspStruct *rsp = Hal_SDMMC_GetRspToken(MIYOO_SD_IP);
-		uint32_t ocr = sd_rsp32(rsp);
+    while(elapsed < SD_INIT_ACMD41_TIMEOUT_MS) {
+        RspErrEmType err = miyoo_sd_acmd(0, SD_ACMD_SD_SEND_OP_COND, arg, EV_R3);
+        RspStruct *rsp = Hal_SDMMC_GetRspToken(MIYOO_SD_IP);
+        uint32_t ocr = sd_rsp32(rsp);
 
-		if(err == EV_STS_OK && (ocr & SD_OCR_BUSY)) {
-			if(!(ocr & SD_OCR_VDD_27_36))
-				return -1; /* 电压范围不匹配 */
-			_card.is_sdhc = (ocr & SD_OCR_CCS) ? 1 : 0;
-			return 0;
-		}
-		sd_msleep(1);
-		elapsed++;
-	}
-	return -1;
+        if(err == EV_STS_OK && (ocr & SD_OCR_BUSY)) {
+            if(!(ocr & SD_OCR_VDD_27_36))
+                return -1; /* 电压范围不匹配 */
+            _card.is_sdhc = (ocr & SD_OCR_CCS) ? 1 : 0;
+            return 0;
+        }
+        sd_msleep(1);
+        elapsed++;
+    }
+    return -1;
 }
 
 /* CMD13 轮询，直到 CURRENT_STATE == 目标状态且 READY_FOR_DATA */
 static int miyoo_sd_wait_state(uint32_t want_state, uint32_t timeout_ms) {
-	uint32_t elapsed = 0;
+    uint32_t elapsed = 0;
 
-	while(elapsed <= timeout_ms) {
-		RspErrEmType err = miyoo_sd_cmd(SD_CMD_SEND_STATUS,
-		                (uint32_t)_card.rca << 16, EV_R1);
-		RspStruct *rsp = Hal_SDMMC_GetRspToken(MIYOO_SD_IP);
-		uint32_t st = sd_rsp32(rsp);
+    while(elapsed <= timeout_ms) {
+        RspErrEmType err = miyoo_sd_cmd(SD_CMD_SEND_STATUS,
+                        (uint32_t)_card.rca << 16, EV_R1);
+        RspStruct *rsp = Hal_SDMMC_GetRspToken(MIYOO_SD_IP);
+        uint32_t st = sd_rsp32(rsp);
 
-		if(err == EV_STS_OK &&
-		   SD_R1_CURRENT_STATE(st) == want_state &&
-		   SD_R1_READY_FOR_DATA(st))
-			return 0;
-		sd_msleep(1);
-		elapsed++;
-	}
-	return -1;
+        if(err == EV_STS_OK &&
+           SD_R1_CURRENT_STATE(st) == want_state &&
+           SD_R1_READY_FOR_DATA(st))
+            return 0;
+        sd_msleep(1);
+        elapsed++;
+    }
+    return -1;
 }
 
 /*
@@ -201,137 +201,137 @@ static int miyoo_sd_wait_state(uint32_t want_state, uint32_t timeout_ms) {
  *   byte[16] 3:0   -> group1 实际切换结果，==1 才算成功
  */
 static int miyoo_sd_try_switch_hs(void) {
-	volatile uint8_t *sts = _sector_buf;
-	RspErrEmType err;
-	uint32_t i;
+    volatile uint8_t *sts = _sector_buf;
+    RspErrEmType err;
+    uint32_t i;
 
-	for(i = 0; i < SD_SWITCH_STS_BYTES; i++)
-		sts[i] = 0;
+    for(i = 0; i < SD_SWITCH_STS_BYTES; i++)
+        sts[i] = 0;
 
-	Hal_SDMMC_SetCmdToken(MIYOO_SD_IP, SD_CMD_SWITCH_FUNC, SD_CMD6_ARG_HS);
-	Hal_SDMMC_TransCmdSetting(MIYOO_SD_IP, EV_DMA, 1, SD_SWITCH_STS_BYTES,
-	                Hal_CARD_TransMIUAddr(V2P(sts)), sts);
-	err = Hal_SDMMC_SendCmdAndWaitProcess(MIYOO_SD_IP, EV_DMA, EV_CMDREAD,
-	                EV_R1, FALSE);
-	if(err != EV_STS_OK)
-		return -1;
+    Hal_SDMMC_SetCmdToken(MIYOO_SD_IP, SD_CMD_SWITCH_FUNC, SD_CMD6_ARG_HS);
+    Hal_SDMMC_TransCmdSetting(MIYOO_SD_IP, EV_DMA, 1, SD_SWITCH_STS_BYTES,
+                    Hal_CARD_TransMIUAddr(V2P(sts)), sts);
+    err = Hal_SDMMC_SendCmdAndWaitProcess(MIYOO_SD_IP, EV_DMA, EV_CMDREAD,
+                    EV_R1, FALSE);
+    if(err != EV_STS_OK)
+        return -1;
 
-	if(!(sts[13] & 0x02))
-		return -1; /* 卡不支持 HS */
-	if((sts[16] & 0x0F) != 0x01)
-		return -1; /* 切换未生效 */
-	return 0;
+    if(!(sts[13] & 0x02))
+        return -1; /* 卡不支持 HS */
+    if((sts[16] & 0x0F) != 0x01)
+        return -1; /* 切换未生效 */
+    return 0;
 }
 
 /* ------------------------------------------------------------------
  * 完整卡初始化（init 与运行期错误恢复共用）
  * ------------------------------------------------------------------ */
 static int miyoo_sd_card_init(void) {
-	IPEmType ip = MIYOO_SD_IP;
-	RspErrEmType err;
-	RspStruct *rsp;
-	uint32_t retry;
+    IPEmType ip = MIYOO_SD_IP;
+    RspErrEmType err;
+    RspStruct *rsp;
+    uint32_t retry;
 
-	_card.inited = 0;
-	_card.is_v2 = 0;
-	_card.is_sdhc = 0;
-	_card.is_hs = 0;
-	_card.bus_4bit = 0;
-	_card.rca = 0;
-	miyoo_sd_ra_invalidate();
+    _card.inited = 0;
+    _card.is_v2 = 0;
+    _card.is_sdhc = 0;
+    _card.is_hs = 0;
+    _card.bus_4bit = 0;
+    _card.rca = 0;
+    miyoo_sd_ra_invalidate();
 
-	Hal_SDMMC_Reset(ip);
-	Hal_SDMMC_SetDataWidth(ip, EV_BUS_1BIT);
-	Hal_SDMMC_SetBusTiming(ip, EV_BUS_DEF);
-	Hal_SDMMC_SetNrcDelay(ip, MIYOO_SD_REAL_CLK_HZ);
+    Hal_SDMMC_Reset(ip);
+    Hal_SDMMC_SetDataWidth(ip, EV_BUS_1BIT);
+    Hal_SDMMC_SetBusTiming(ip, EV_BUS_DEF);
+    Hal_SDMMC_SetNrcDelay(ip, MIYOO_SD_REAL_CLK_HZ);
 
-	/* 时钟由 boot 阶段保持开启，这里补一段空转时钟满足 >=74 clocks 要求 */
-	Hal_SDMMC_ClkCtrl(ip, TRUE, 1);
+    /* 时钟由 boot 阶段保持开启，这里补一段空转时钟满足 >=74 clocks 要求 */
+    Hal_SDMMC_ClkCtrl(ip, TRUE, 1);
 
-	/* CMD0: 回到 idle（允许失败重试几次，覆盖热重启场景） */
-	err = EV_OTHER_ERR;
-	for(retry = 0; retry < 3; retry++) {
-		err = miyoo_sd_cmd(SD_CMD_GO_IDLE_STATE, 0, EV_NO);
-		if(err == EV_STS_OK)
-			break;
-		sd_msleep(1);
-	}
-	if(err != EV_STS_OK) {
-		printf("[SD] CMD0 fail: 0x%X\n", err);
-		return -1;
-	}
+    /* CMD0: 回到 idle（允许失败重试几次，覆盖热重启场景） */
+    err = EV_OTHER_ERR;
+    for(retry = 0; retry < 3; retry++) {
+        err = miyoo_sd_cmd(SD_CMD_GO_IDLE_STATE, 0, EV_NO);
+        if(err == EV_STS_OK)
+            break;
+        sd_msleep(1);
+    }
+    if(err != EV_STS_OK) {
+        printf("[SD] CMD0 fail: 0x%X\n", err);
+        return -1;
+    }
 
-	_card.is_v2 = miyoo_sd_probe_v2();
+    _card.is_v2 = miyoo_sd_probe_v2();
 
-	if(miyoo_sd_init_ocr(_card.is_v2 ? SD_ACMD41_ARG_V2 : SD_ACMD41_ARG_V1) != 0) {
-		printf("[SD] ACMD41 timeout/fail\n");
-		return -1;
-	}
+    if(miyoo_sd_init_ocr(_card.is_v2 ? SD_ACMD41_ARG_V2 : SD_ACMD41_ARG_V1) != 0) {
+        printf("[SD] ACMD41 timeout/fail\n");
+        return -1;
+    }
 
-	if(miyoo_sd_cmd(SD_CMD_ALL_SEND_CID, 0, EV_R2) != EV_STS_OK) {
-		printf("[SD] CMD2 fail\n");
-		return -1;
-	}
+    if(miyoo_sd_cmd(SD_CMD_ALL_SEND_CID, 0, EV_R2) != EV_STS_OK) {
+        printf("[SD] CMD2 fail\n");
+        return -1;
+    }
 
-	err = miyoo_sd_cmd(SD_CMD_SEND_RELATIVE_ADDR, 0, EV_R6);
-	if(err != EV_STS_OK) {
-		printf("[SD] CMD3 fail: 0x%X\n", err);
-		return -1;
-	}
-	rsp = Hal_SDMMC_GetRspToken(ip);
-	_card.rca = (uint16_t)(((uint16_t)rsp->u8ArrRspToken[1] << 8) |
-	                rsp->u8ArrRspToken[2]);
-	if(_card.rca == 0) {
-		printf("[SD] CMD3 bad RCA\n");
-		return -1;
-	}
+    err = miyoo_sd_cmd(SD_CMD_SEND_RELATIVE_ADDR, 0, EV_R6);
+    if(err != EV_STS_OK) {
+        printf("[SD] CMD3 fail: 0x%X\n", err);
+        return -1;
+    }
+    rsp = Hal_SDMMC_GetRspToken(ip);
+    _card.rca = (uint16_t)(((uint16_t)rsp->u8ArrRspToken[1] << 8) |
+                    rsp->u8ArrRspToken[2]);
+    if(_card.rca == 0) {
+        printf("[SD] CMD3 bad RCA\n");
+        return -1;
+    }
 
-	/* CMD7 选中卡，R1B；HAL 内部会等 DAT0 释放 */
-	err = miyoo_sd_cmd(SD_CMD_SELECT_CARD, (uint32_t)_card.rca << 16, EV_R1B);
-	if(err != EV_STS_OK) {
-		printf("[SD] CMD7 fail: 0x%X\n", err);
-		return -1;
-	}
+    /* CMD7 选中卡，R1B；HAL 内部会等 DAT0 释放 */
+    err = miyoo_sd_cmd(SD_CMD_SELECT_CARD, (uint32_t)_card.rca << 16, EV_R1B);
+    if(err != EV_STS_OK) {
+        printf("[SD] CMD7 fail: 0x%X\n", err);
+        return -1;
+    }
 
-	/* 确认进入 TRAN 且 READY_FOR_DATA，状态正确后再配置总线 */
-	if(miyoo_sd_wait_state(SD_STATE_TRAN, SD_INIT_STATE_TIMEOUT_MS) != 0) {
-		printf("[SD] wait TRAN fail\n");
-		return -1;
-	}
+    /* 确认进入 TRAN 且 READY_FOR_DATA，状态正确后再配置总线 */
+    if(miyoo_sd_wait_state(SD_STATE_TRAN, SD_INIT_STATE_TIMEOUT_MS) != 0) {
+        printf("[SD] wait TRAN fail\n");
+        return -1;
+    }
 
-	/* ACMD6 切 4-bit；失败则保持 1-bit 继续（host 侧默认已是 1-bit） */
-	if(miyoo_sd_acmd(_card.rca, SD_ACMD_SET_BUS_WIDTH, 2, EV_R1) == EV_STS_OK) {
-		_card.bus_4bit = 1;
-		Hal_SDMMC_SetDataWidth(ip, EV_BUS_4BITS);
-	}
+    /* ACMD6 切 4-bit；失败则保持 1-bit 继续（host 侧默认已是 1-bit） */
+    if(miyoo_sd_acmd(_card.rca, SD_ACMD_SET_BUS_WIDTH, 2, EV_R1) == EV_STS_OK) {
+        _card.bus_4bit = 1;
+        Hal_SDMMC_SetDataWidth(ip, EV_BUS_4BITS);
+    }
 
-	/* 块长度固定 512（SDHC 会忽略，SDSC 必须） */
-	if(miyoo_sd_cmd(SD_CMD_SET_BLOCKLEN, 512, EV_R1) != EV_STS_OK) {
-		printf("[SD] CMD16 fail\n");
-		return -1;
-	}
+    /* 块长度固定 512（SDHC 会忽略，SDSC 必须） */
+    if(miyoo_sd_cmd(SD_CMD_SET_BLOCKLEN, 512, EV_R1) != EV_STS_OK) {
+        printf("[SD] CMD16 fail\n");
+        return -1;
+    }
 
-	/* CMD6 高速切换（只对 v2 卡尝试；失败不影响默认速度可用性） */
-	if(_card.is_v2 && miyoo_sd_try_switch_hs() == 0) {
-		_card.is_hs = 1;
-		Hal_SDMMC_SetBusTiming(ip, EV_BUS_HS);
-	} else {
-		Hal_SDMMC_SetBusTiming(ip, EV_BUS_DEF);
-	}
+    /* CMD6 高速切换（只对 v2 卡尝试；失败不影响默认速度可用性） */
+    if(_card.is_v2 && miyoo_sd_try_switch_hs() == 0) {
+        _card.is_hs = 1;
+        Hal_SDMMC_SetBusTiming(ip, EV_BUS_HS);
+    } else {
+        Hal_SDMMC_SetBusTiming(ip, EV_BUS_DEF);
+    }
 
-	/* 切换后再次确认卡状态正确 */
-	if(miyoo_sd_wait_state(SD_STATE_TRAN, SD_INIT_STATE_TIMEOUT_MS) != 0) {
-		printf("[SD] wait TRAN after switch fail\n");
-		return -1;
-	}
+    /* 切换后再次确认卡状态正确 */
+    if(miyoo_sd_wait_state(SD_STATE_TRAN, SD_INIT_STATE_TIMEOUT_MS) != 0) {
+        printf("[SD] wait TRAN after switch fail\n");
+        return -1;
+    }
 
-	_card.inited = 1;
-	return 0;
+    _card.inited = 1;
+    return 0;
 }
 
 static void miyoo_sd_recover(void) {
-	miyoo_sd_ra_invalidate();
-	(void)miyoo_sd_card_init();
+    miyoo_sd_ra_invalidate();
+    (void)miyoo_sd_card_init();
 }
 
 static int miyoo_sd_should_retry(RspErrEmType err) {
@@ -460,30 +460,30 @@ int32_t sd_dev_read_done(void* buf) {
  * 走 bounce 中转是为了 DMA 一致性（bounce 在 dev-mapped 区，无 cache）。
  */
 int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
-	uint8_t* out = (uint8_t*)buf;
+    uint8_t* out = (uint8_t*)buf;
 
-	if(buf == 0 || count == 0)
-		return -1;
+    if(buf == 0 || count == 0)
+        return -1;
 
-	if(!_card.inited && miyoo_sd_card_init() != 0)
-		return -1;
+    if(!_card.inited && miyoo_sd_card_init() != 0)
+        return -1;
 
-	miyoo_sd_ra_invalidate();
+    miyoo_sd_ra_invalidate();
 
-	while(count > 0) {
-		uint32_t chunk = (count > MIYOO_SD_BOUNCE_SECTORS) ?
-		                MIYOO_SD_BOUNCE_SECTORS : count;
+    while(count > 0) {
+        uint32_t chunk = (count > MIYOO_SD_BOUNCE_SECTORS) ?
+                        MIYOO_SD_BOUNCE_SECTORS : count;
 
-		if(miyoo_sd_read_multi((uint32_t)sector, (uint16_t)chunk,
-		                _sector_buf) != EV_STS_OK)
-			return -1;
+        if(miyoo_sd_read_multi((uint32_t)sector, (uint16_t)chunk,
+                        _sector_buf) != EV_STS_OK)
+            return -1;
 
-		memcpy(out, _sector_buf, chunk * 512U);
-		sector += (int32_t)chunk;
-		out += chunk * 512U;
-		count -= chunk;
-	}
-	return 0;
+        memcpy(out, _sector_buf, chunk * 512U);
+        sector += (int32_t)chunk;
+        out += chunk * 512U;
+        count -= chunk;
+    }
+    return 0;
 }
 
 int32_t sd_dev_write(int32_t sector, const void* buf) {

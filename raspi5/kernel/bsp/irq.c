@@ -24,50 +24,50 @@ extern void gic_gen_soft_irq(int core_id, int irq);
 void pi5_dbg_puts(const char* s);
 
 void irq_init_arch(void) {
-	gic_init((void*)(MMIO_BASE + PI5_GICD_OFF),
-	         (void*)(MMIO_BASE + PI5_GICC_OFF));
-	for(int i = 0; i < 1022; i++){
-		gic_irq_disable(0, i);
-	}
-	set_vector_table(&interrupt_table_start);
+    gic_init((void*)(MMIO_BASE + PI5_GICD_OFF),
+             (void*)(MMIO_BASE + PI5_GICC_OFF));
+    for(int i = 0; i < 1022; i++){
+        gic_irq_disable(0, i);
+    }
+    set_vector_table(&interrupt_table_start);
 }
 
 inline uint32_t irq_get_arch(void) {
-	int ack = gic_get_irq();
-	int irqno = ack & 0x3FF;
-	return irqno;
+    int ack = gic_get_irq();
+    int irqno = ack & 0x3FF;
+    return irqno;
 }
 
 inline uint32_t irq_get_unified_arch(uint32_t irqno) {
-	if(irqno == PI5_GIC_TIMER_IRQ){
-		irqno = IRQ_TIMER0;
-	}else if(irqno == PI5_GIC_IPI_IRQ){
-		irqno = IRQ_IPI;
-	}
-	return irqno;
+    if(irqno == PI5_GIC_TIMER_IRQ){
+        irqno = IRQ_TIMER0;
+    }else if(irqno == PI5_GIC_IPI_IRQ){
+        irqno = IRQ_IPI;
+    }
+    return irqno;
 }
 
 inline void irq_eoi_arch(uint32_t irq_raw) {
-	gic_eoi(irq_raw);
+    gic_eoi(irq_raw);
 }
 
 static uint32_t irq_enable_flag = 0;
 
 inline void irq_enable_arch(uint32_t irq) {
-	if(irq & irq_enable_flag)
-		return;
+    if(irq & irq_enable_flag)
+        return;
 
-	if(irq == IRQ_TIMER0){
-		gic_irq_enable(0, PI5_GIC_TIMER_IRQ);
-		irq_enable_flag |= irq;
-	}
+    if(irq == IRQ_TIMER0){
+        gic_irq_enable(0, PI5_GIC_TIMER_IRQ);
+        irq_enable_flag |= irq;
+    }
 }
 
 inline void irq_enable_core_arch(uint32_t core, uint32_t irq) {
-	if(irq == IRQ_TIMER0){
-		gic_irq_enable(core, PI5_GIC_TIMER_IRQ);
-		irq_enable_flag |= irq;
-	}
+    if(irq == IRQ_TIMER0){
+        gic_irq_enable(core, PI5_GIC_TIMER_IRQ);
+        irq_enable_flag |= irq;
+    }
 }
 
 inline void irq_clear_core_arch(uint32_t core, uint32_t irq) {
@@ -77,5 +77,5 @@ inline void irq_clear_arch(uint32_t irq) {
 }
 
 void irq_disable_arch(uint32_t irq) {
-	(void)irq;
+    (void)irq;
 }

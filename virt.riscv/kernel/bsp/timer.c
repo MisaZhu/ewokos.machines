@@ -23,5 +23,5 @@ void timer_clear_interrupt(uint32_t id) {
 
 uint64_t timer_read_sys_usec(void) { //read microsec
     //printf("%d\n", csr_read(CSR_TIME));
-	return csr_read(CSR_TIME)/10;
+    return csr_read(CSR_TIME)/10;
 }

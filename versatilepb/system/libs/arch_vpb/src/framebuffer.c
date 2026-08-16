@@ -6,15 +6,15 @@
 
 static fbinfo_t _fb_info;
 int32_t vpb_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
-	memset(&_fb_info, 0, sizeof(fbinfo_t));
+    memset(&_fb_info, 0, sizeof(fbinfo_t));
 
-	if(mmio_map() == 0)
-		return -1;
-	sys_info_t sysinfo;
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+    if(mmio_map() == 0)
+        return -1;
+    sys_info_t sysinfo;
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
   memset(&_fb_info, 0, sizeof(fbinfo_t));
-	dep = 32;
+    dep = 32;
   _fb_info.width = w;
   _fb_info.height = h;
   _fb_info.vwidth = w;
@@ -52,11 +52,11 @@ int32_t vpb_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
   put32((_mmio_base | 0x00120018), 0x092b);
 
   _fb_info.size = _fb_info.width * _fb_info.height * (_fb_info.depth/8);
-	_fb_info.size_max = 4*1024*1024;
+    _fb_info.size_max = 4*1024*1024;
   syscall3(SYS_MEM_MAP, (ewokos_addr_t)_fb_info.pointer, (ewokos_addr_t)_fb_info.pointer-sysinfo.kernel_base, (ewokos_addr_t)_fb_info.size_max);
   return 0;
 }
 
 fbinfo_t* vpb_get_fbinfo(void) {
-	return &_fb_info;
+    return &_fb_info;
 }

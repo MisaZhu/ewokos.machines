@@ -11,29 +11,29 @@ ewokos_addr_t _core_base_offset = 0;
 
 
 void sys_info_init_arch(void) {
-	memset(&_sys_info, 0, sizeof(sys_info_t));
-	_core_base_offset =  0x01000000;
+    memset(&_sys_info, 0, sizeof(sys_info_t));
+    _core_base_offset =  0x01000000;
 
-	strcpy(_sys_info.machine, "virt");
-	strcpy(_sys_info.arch, "risc-v rv64");
-	_sys_info.phy_offset = 0x80000000;
-	_sys_info.vector_base = 0x81000000;
-	_sys_info.total_phy_mem_size = 128*MB;
-	_sys_info.total_usable_mem_size = _sys_info.total_phy_mem_size;
-	_sys_info.mmio.phy_base = 0x10000000;
-	
-	_sys_info.mmio.size = 32*KB;
-	_sys_info.sys_dma.size = 256*1024;
+    strcpy(_sys_info.machine, "virt");
+    strcpy(_sys_info.arch, "risc-v rv64");
+    _sys_info.phy_offset = 0x80000000;
+    _sys_info.vector_base = 0x81000000;
+    _sys_info.total_phy_mem_size = 128*MB;
+    _sys_info.total_usable_mem_size = _sys_info.total_phy_mem_size;
+    _sys_info.mmio.phy_base = 0x10000000;
+    
+    _sys_info.mmio.size = 32*KB;
+    _sys_info.sys_dma.size = 256*1024;
 
-	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-			_sys_info.total_usable_mem_size -
-			_sys_info.sys_dma.size;
-	_sys_info.sys_dma.phy_base = allocable_phy_mem_top;
+    _sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
+            _sys_info.total_usable_mem_size -
+            _sys_info.sys_dma.size;
+    _sys_info.sys_dma.phy_base = allocable_phy_mem_top;
 
 #ifdef KERNEL_SMP
-	_sys_info.cores = get_cpu_cores();
+    _sys_info.cores = get_cpu_cores();
 #else
-	_sys_info.cores = 1;
+    _sys_info.cores = 1;
 #endif
 }
 
@@ -42,27 +42,27 @@ void sys_info_init_arch(void) {
 #define INITRD_RAM_SIZE	0x4000000
 
 void arch_vm(page_dir_entry_t* vm) {
-	map_pages(vm, INITRD_RAM_VADDR, INITRD_RAM_PADDR, INITRD_RAM_PADDR + INITRD_RAM_SIZE, AP_RW_D, PTE_ATTR_WRBACK);
+    map_pages(vm, INITRD_RAM_VADDR, INITRD_RAM_PADDR, INITRD_RAM_PADDR + INITRD_RAM_SIZE, AP_RW_D, PTE_ATTR_WRBACK);
 }
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
+    kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
-		return 0;
-	return -1;
+    if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
+        return 0;
+    return -1;
 }
 
 int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
-	ewokos_addr_t map_end = phy_base + size;
+    ewokos_addr_t map_end = phy_base + size;
 
-	if(map_end < phy_base)
-		return 0;
-	if(phy_base < _sys_info.allocable_phy_mem_base)
-		return 0;
-	if(map_end > _sys_info.allocable_phy_mem_top)
-		return 0;
-	return 1;
+    if(map_end < phy_base)
+        return 0;
+    if(phy_base < _sys_info.allocable_phy_mem_base)
+        return 0;
+    if(map_end > _sys_info.allocable_phy_mem_top)
+        return 0;
+    return 1;
 }

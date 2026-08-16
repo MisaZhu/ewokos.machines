@@ -39,11 +39,11 @@
 #define PROP_TAG_GET_BOARD_SERIAL               0x00010004u
 
 enum nvram_parser_state {
-	IDLE,
-	KEY,
-	VALUE,
-	COMMENT,
-	END
+    IDLE,
+    KEY,
+    VALUE,
+    COMMENT,
+    END
 };
 
 typedef struct {
@@ -63,8 +63,8 @@ typedef struct {
 } __attribute__((packed)) brcmf_prop_tag_mac_t;
 
 typedef struct {
-	brcmf_prop_tag_hdr_t tag;
-	uint64_t value;
+    brcmf_prop_tag_hdr_t tag;
+    uint64_t value;
 } __attribute__((packed)) brcmf_prop_tag_u64_t;
 
 char saved_ccode[2] = {};
@@ -97,117 +97,117 @@ static bool brcmf_fw_is_pi_zero_2w(void)
 
 static int brcmf_fw_prop_tag_ok(const brcmf_prop_tag_hdr_t *tag, uint32_t min_len)
 {
-	uint32_t value_len = tag->value_len & ~PROP_RESPONSE_BIT;
+    uint32_t value_len = tag->value_len & ~PROP_RESPONSE_BIT;
 
-	if ((tag->value_len & PROP_RESPONSE_BIT) == 0)
-		return -1;
-	if (value_len < min_len)
-		return -1;
-	return 0;
+    if ((tag->value_len & PROP_RESPONSE_BIT) == 0)
+        return -1;
+    if (value_len < min_len)
+        return -1;
+    return 0;
 }
 
 static int brcmf_fw_mailbox_property_xfer(void *tags, uint32_t tags_size)
 {
-	uint32_t buf_size;
-	uint8_t *buf;
-	static const uint32_t aliases[] = {
-		MAILBOX_VC_ALIAS_NONCACHED,
-		MAILBOX_VC_ALIAS_COHERENT
-	};
-	size_t i;
+    uint32_t buf_size;
+    uint8_t *buf;
+    static const uint32_t aliases[] = {
+        MAILBOX_VC_ALIAS_NONCACHED,
+        MAILBOX_VC_ALIAS_COHERENT
+    };
+    size_t i;
 
-	bcm2712_mailbox_init();
-	buf_size = (uint32_t)(((sizeof(brcmf_prop_msg_hdr_t) + tags_size +
-				sizeof(uint32_t)) + 15u) & ~15u);
-	buf = (uint8_t *)dma_alloc(0, buf_size);
-	if (buf == NULL)
-		return -1;
+    bcm2712_mailbox_init();
+    buf_size = (uint32_t)(((sizeof(brcmf_prop_msg_hdr_t) + tags_size +
+                sizeof(uint32_t)) + 15u) & ~15u);
+    buf = (uint8_t *)dma_alloc(0, buf_size);
+    if (buf == NULL)
+        return -1;
 
-	for (i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
-		brcmf_prop_msg_hdr_t *hdr;
-		mail_message_t msg;
-		uint32_t phy;
+    for (i = 0; i < sizeof(aliases) / sizeof(aliases[0]); i++) {
+        brcmf_prop_msg_hdr_t *hdr;
+        mail_message_t msg;
+        uint32_t phy;
 
-		memset(buf, 0, buf_size);
-		hdr = (brcmf_prop_msg_hdr_t *)buf;
-		hdr->size = buf_size;
-		hdr->code = PROP_CODE_REQUEST;
-		memcpy(buf + sizeof(brcmf_prop_msg_hdr_t), tags, tags_size);
-		*((uint32_t *)(buf + sizeof(brcmf_prop_msg_hdr_t) + tags_size)) = PROP_TAG_END;
+        memset(buf, 0, buf_size);
+        hdr = (brcmf_prop_msg_hdr_t *)buf;
+        hdr->size = buf_size;
+        hdr->code = PROP_CODE_REQUEST;
+        memcpy(buf + sizeof(brcmf_prop_msg_hdr_t), tags, tags_size);
+        *((uint32_t *)(buf + sizeof(brcmf_prop_msg_hdr_t) + tags_size)) = PROP_TAG_END;
 
-		phy = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf);
-		if (phy == 0)
-			continue;
+        phy = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf);
+        if (phy == 0)
+            continue;
 
-		memset(&msg, 0, sizeof(msg));
-		msg.data = (phy + aliases[i]) >> 4;
-		msg.channel = PROPERTY_CHANNEL;
-		if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
-				(hdr->code & PROP_CODE_RESPONSE_SUCCESS) != 0) {
-			memcpy(tags, buf + sizeof(brcmf_prop_msg_hdr_t), tags_size);
-			dma_free(0, (ewokos_addr_t)buf);
-			return 0;
-		}
-	}
+        memset(&msg, 0, sizeof(msg));
+        msg.data = (phy + aliases[i]) >> 4;
+        msg.channel = PROPERTY_CHANNEL;
+        if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
+                (hdr->code & PROP_CODE_RESPONSE_SUCCESS) != 0) {
+            memcpy(tags, buf + sizeof(brcmf_prop_msg_hdr_t), tags_size);
+            dma_free(0, (ewokos_addr_t)buf);
+            return 0;
+        }
+    }
 
-	dma_free(0, (ewokos_addr_t)buf);
-	return -1;
+    dma_free(0, (ewokos_addr_t)buf);
+    return -1;
 }
 
 static bool brcmf_fw_get_board_mac(uint8_t mac[ETH_ALEN])
 {
-	brcmf_prop_tag_mac_t req;
-	brcmf_prop_tag_u64_t req_u64;
-	uint64_t serial;
-	uint64_t mixed;
-	static const uint8_t zero_mac[ETH_ALEN] = {0};
-	static const uint8_t ff_mac[ETH_ALEN] = {
-		0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-	};
+    brcmf_prop_tag_mac_t req;
+    brcmf_prop_tag_u64_t req_u64;
+    uint64_t serial;
+    uint64_t mixed;
+    static const uint8_t zero_mac[ETH_ALEN] = {0};
+    static const uint8_t ff_mac[ETH_ALEN] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff
+    };
 
-	memset(&req, 0, sizeof(req));
-	req.tag.tag_id = PROP_TAG_GET_BOARD_MAC;
-	req.tag.value_buf_size = sizeof(req.words);
-	req.tag.value_len = sizeof(req.words);
-	if (brcmf_fw_mailbox_property_xfer(&req, sizeof(req)) == 0 &&
-			brcmf_fw_prop_tag_ok(&req.tag, ETH_ALEN) == 0) {
-		memcpy(mac, req.words, ETH_ALEN);
-		if ((mac[0] & 0x01) == 0 &&
-				memcmp(mac, zero_mac, ETH_ALEN) != 0 &&
-				memcmp(mac, ff_mac, ETH_ALEN) != 0 &&
-				(memcmp(&mac[1], &zero_mac[1], ETH_ALEN - 1) != 0)) {
-			return true;
-		}
-		brcm_log("wlan: ignore invalid board mac %pM\n", mac);
-	}
+    memset(&req, 0, sizeof(req));
+    req.tag.tag_id = PROP_TAG_GET_BOARD_MAC;
+    req.tag.value_buf_size = sizeof(req.words);
+    req.tag.value_len = sizeof(req.words);
+    if (brcmf_fw_mailbox_property_xfer(&req, sizeof(req)) == 0 &&
+            brcmf_fw_prop_tag_ok(&req.tag, ETH_ALEN) == 0) {
+        memcpy(mac, req.words, ETH_ALEN);
+        if ((mac[0] & 0x01) == 0 &&
+                memcmp(mac, zero_mac, ETH_ALEN) != 0 &&
+                memcmp(mac, ff_mac, ETH_ALEN) != 0 &&
+                (memcmp(&mac[1], &zero_mac[1], ETH_ALEN - 1) != 0)) {
+            return true;
+        }
+        brcm_log("wlan: ignore invalid board mac %pM\n", mac);
+    }
 
-	memset(&req_u64, 0, sizeof(req_u64));
-	req_u64.tag.tag_id = PROP_TAG_GET_BOARD_SERIAL;
-	req_u64.tag.value_buf_size = sizeof(serial);
-	req_u64.tag.value_len = sizeof(serial);
-	if (brcmf_fw_mailbox_property_xfer(&req_u64, sizeof(req_u64)) != 0)
-		return false;
-	if (brcmf_fw_prop_tag_ok(&req_u64.tag, sizeof(serial)) != 0)
-		return false;
+    memset(&req_u64, 0, sizeof(req_u64));
+    req_u64.tag.tag_id = PROP_TAG_GET_BOARD_SERIAL;
+    req_u64.tag.value_buf_size = sizeof(serial);
+    req_u64.tag.value_len = sizeof(serial);
+    if (brcmf_fw_mailbox_property_xfer(&req_u64, sizeof(req_u64)) != 0)
+        return false;
+    if (brcmf_fw_prop_tag_ok(&req_u64.tag, sizeof(serial)) != 0)
+        return false;
 
-	serial = req_u64.value;
-	mixed = serial ^ (serial >> 17) ^ (serial >> 37);
-	mac[0] = 0x02;
-	mac[1] = (uint8_t)(mixed >> 32);
-	mac[2] = (uint8_t)(mixed >> 24);
-	mac[3] = (uint8_t)(mixed >> 16);
-	mac[4] = (uint8_t)(mixed >> 8);
-	mac[5] = (uint8_t)mixed;
-	if (memcmp(&mac[1], &zero_mac[1], ETH_ALEN - 1) == 0)
-		mac[5] = 0x01;
-	brcm_log("wlan: fallback mac from board serial 0x%llx -> %pM\n",
-			(unsigned long long)serial, mac);
-	return true;
+    serial = req_u64.value;
+    mixed = serial ^ (serial >> 17) ^ (serial >> 37);
+    mac[0] = 0x02;
+    mac[1] = (uint8_t)(mixed >> 32);
+    mac[2] = (uint8_t)(mixed >> 24);
+    mac[3] = (uint8_t)(mixed >> 16);
+    mac[4] = (uint8_t)(mixed >> 8);
+    mac[5] = (uint8_t)mixed;
+    if (memcmp(&mac[1], &zero_mac[1], ETH_ALEN - 1) == 0)
+        mac[5] = 0x01;
+    brcm_log("wlan: fallback mac from board serial 0x%llx -> %pM\n",
+            (unsigned long long)serial, mac);
+    return true;
 }
 
 bool brcmf_fw_get_macaddr(uint8_t mac[6])
 {
-	return brcmf_fw_get_board_mac(mac);
+    return brcmf_fw_get_board_mac(mac);
 }
 
 static bool brcmf_fw_select_resources(uint32_t chip,
@@ -305,18 +305,18 @@ static bool brcmf_fw_get_resources(struct brcmf_fw_resources *res)
  * @strip_mac: strip the MAC address.
  */
 struct nvram_parser {
-	enum nvram_parser_state state;
-	const char *data;
-	uint8_t *nvram;
-	uint32_t nvram_len;
-	uint32_t line;
-	uint32_t column;
-	uint32_t pos;
-	uint32_t entry;
-	bool multi_dev_v1;
-	bool multi_dev_v2;
-	bool boardrev_found;
-	bool strip_mac;
+    enum nvram_parser_state state;
+    const char *data;
+    uint8_t *nvram;
+    uint32_t nvram_len;
+    uint32_t line;
+    uint32_t column;
+    uint32_t pos;
+    uint32_t entry;
+    bool multi_dev_v1;
+    bool multi_dev_v2;
+    bool boardrev_found;
+    bool strip_mac;
 };
 
 /*
@@ -327,165 +327,165 @@ struct nvram_parser {
  */
 static bool is_nvram_char(char c)
 {
-	/* comment marker excluded */
-	if (c == '#')
-		return false;
+    /* comment marker excluded */
+    if (c == '#')
+        return false;
 
-	/* key and value may have any other readable character */
-	return (c >= 0x20 && c < 0x7f);
+    /* key and value may have any other readable character */
+    return (c >= 0x20 && c < 0x7f);
 }
 
 static bool is_whitespace(char c)
 {
-	return (c == ' ' || c == '\r' || c == '\n' || c == '\t');
+    return (c == ' ' || c == '\r' || c == '\n' || c == '\t');
 }
 
 static enum nvram_parser_state brcmf_nvram_handle_idle(struct nvram_parser *nvp)
 {
-	char c;
+    char c;
 
-	c = nvp->data[nvp->pos];
-	if (c == '\n')
-		return COMMENT;
-	if (is_whitespace(c) || c == '\0')
-		goto proceed;
-	if (c == '#')
-		return COMMENT;
-	if (is_nvram_char(c)) {
-		nvp->entry = nvp->pos;
-		return KEY;
-	}
-	brcm_log("warning: ln=%d:col=%d: ignoring invalid character\n",
-		  nvp->line, nvp->column);
+    c = nvp->data[nvp->pos];
+    if (c == '\n')
+        return COMMENT;
+    if (is_whitespace(c) || c == '\0')
+        goto proceed;
+    if (c == '#')
+        return COMMENT;
+    if (is_nvram_char(c)) {
+        nvp->entry = nvp->pos;
+        return KEY;
+    }
+    brcm_log("warning: ln=%d:col=%d: ignoring invalid character\n",
+          nvp->line, nvp->column);
 proceed:
-	nvp->column++;
-	nvp->pos++;
-	return IDLE;
+    nvp->column++;
+    nvp->pos++;
+    return IDLE;
 }
 
 static enum nvram_parser_state brcmf_nvram_handle_key(struct nvram_parser *nvp)
 {
-	enum nvram_parser_state st = nvp->state;
-	char c;
+    enum nvram_parser_state st = nvp->state;
+    char c;
 
-	c = nvp->data[nvp->pos];
-	if (c == '=') {
-		/* ignore RAW1 by treating as comment */
-		if (strncmp(&nvp->data[nvp->entry], "RAW1", 4) == 0)
-			st = COMMENT;
-		else
-			st = VALUE;
-		if (strncmp(&nvp->data[nvp->entry], "devpath", 7) == 0)
-			nvp->multi_dev_v1 = true;
-		if (strncmp(&nvp->data[nvp->entry], "pcie/", 5) == 0)
-			nvp->multi_dev_v2 = true;
-		if (strncmp(&nvp->data[nvp->entry], "boardrev", 8) == 0)
-			nvp->boardrev_found = true;
+    c = nvp->data[nvp->pos];
+    if (c == '=') {
+        /* ignore RAW1 by treating as comment */
+        if (strncmp(&nvp->data[nvp->entry], "RAW1", 4) == 0)
+            st = COMMENT;
+        else
+            st = VALUE;
+        if (strncmp(&nvp->data[nvp->entry], "devpath", 7) == 0)
+            nvp->multi_dev_v1 = true;
+        if (strncmp(&nvp->data[nvp->entry], "pcie/", 5) == 0)
+            nvp->multi_dev_v2 = true;
+        if (strncmp(&nvp->data[nvp->entry], "boardrev", 8) == 0)
+            nvp->boardrev_found = true;
                 /* strip bundled MAC keys if platform MAC overrides */
                 if (nvp->strip_mac &&
                     (strncmp(&nvp->data[nvp->entry], "macaddr", 7) == 0 ||
                      strncmp(&nvp->data[nvp->entry], "il0macaddr", 10) == 0))
-			st = COMMENT;
-	} else if (!is_nvram_char(c) || c == ' ') {
-		brcm_log("warning: ln=%d:col=%d: '=' expected, skip invalid key entry\n",
-			  nvp->line, nvp->column);
-		return COMMENT;
-	}
+            st = COMMENT;
+    } else if (!is_nvram_char(c) || c == ' ') {
+        brcm_log("warning: ln=%d:col=%d: '=' expected, skip invalid key entry\n",
+              nvp->line, nvp->column);
+        return COMMENT;
+    }
 
-	nvp->column++;
-	nvp->pos++;
-	return st;
+    nvp->column++;
+    nvp->pos++;
+    return st;
 }
 
 static enum nvram_parser_state
 brcmf_nvram_handle_value(struct nvram_parser *nvp)
 {
-	char c;
-	char *skv;
-	char *ekv;
-	uint32_t cplen;
+    char c;
+    char *skv;
+    char *ekv;
+    uint32_t cplen;
 
-	c = nvp->data[nvp->pos];
-	if (!is_nvram_char(c)) {
-		/* key,value pair complete */
-		ekv = (char *)&nvp->data[nvp->pos];
-		skv = (char *)&nvp->data[nvp->entry];
-		cplen = ekv - skv;
-		if (nvp->nvram_len + cplen + 1 >= BRCMF_FW_MAX_NVRAM_SIZE)
-			return END;
-		/* copy to output buffer */
-		memcpy(&nvp->nvram[nvp->nvram_len], skv, cplen);
-		nvp->nvram_len += cplen;
-		nvp->nvram[nvp->nvram_len] = '\0';
-		nvp->nvram_len++;
-		return IDLE;
-	}
-	nvp->pos++;
-	nvp->column++;
-	return VALUE;
+    c = nvp->data[nvp->pos];
+    if (!is_nvram_char(c)) {
+        /* key,value pair complete */
+        ekv = (char *)&nvp->data[nvp->pos];
+        skv = (char *)&nvp->data[nvp->entry];
+        cplen = ekv - skv;
+        if (nvp->nvram_len + cplen + 1 >= BRCMF_FW_MAX_NVRAM_SIZE)
+            return END;
+        /* copy to output buffer */
+        memcpy(&nvp->nvram[nvp->nvram_len], skv, cplen);
+        nvp->nvram_len += cplen;
+        nvp->nvram[nvp->nvram_len] = '\0';
+        nvp->nvram_len++;
+        return IDLE;
+    }
+    nvp->pos++;
+    nvp->column++;
+    return VALUE;
 }
 
 static enum nvram_parser_state
 brcmf_nvram_handle_comment(struct nvram_parser *nvp)
 {
-	char *eoc, *sol;
+    char *eoc, *sol;
 
-	sol = (char *)&nvp->data[nvp->pos];
-	eoc = strchr(sol, '\n');
-	if (!eoc) {
-		eoc = strchr(sol, '\0');
-		if (!eoc)
-			return END;
-	}
+    sol = (char *)&nvp->data[nvp->pos];
+    eoc = strchr(sol, '\n');
+    if (!eoc) {
+        eoc = strchr(sol, '\0');
+        if (!eoc)
+            return END;
+    }
 
-	/* eat all moving to next line */
-	nvp->line++;
-	nvp->column = 1;
-	nvp->pos += (eoc - sol) + 1;
-	return IDLE;
+    /* eat all moving to next line */
+    nvp->line++;
+    nvp->column = 1;
+    nvp->pos += (eoc - sol) + 1;
+    return IDLE;
 }
 
 static enum nvram_parser_state brcmf_nvram_handle_end(struct nvram_parser *nvp)
 {
-	/* final state */
-	return END;
+    /* final state */
+    return END;
 }
 
 
 static enum nvram_parser_state
 (*nv_parser_states[])(struct nvram_parser *nvp) = {
-	brcmf_nvram_handle_idle,
-	brcmf_nvram_handle_key,
-	brcmf_nvram_handle_value,
-	brcmf_nvram_handle_comment,
-	brcmf_nvram_handle_end
+    brcmf_nvram_handle_idle,
+    brcmf_nvram_handle_key,
+    brcmf_nvram_handle_value,
+    brcmf_nvram_handle_comment,
+    brcmf_nvram_handle_end
 };
 
 static int brcmf_init_nvram_parser(struct nvram_parser *nvp,
-				   const char *data, size_t data_len)
+                   const char *data, size_t data_len)
 {
-	size_t size;
+    size_t size;
 
-	memset(nvp, 0, sizeof(*nvp));
-	nvp->data = data;
-	/* Limit size to MAX_NVRAM_SIZE, some files contain lot of comment */
-	if (data_len > BRCMF_FW_MAX_NVRAM_SIZE)
-		size = BRCMF_FW_MAX_NVRAM_SIZE;
-	else
-		size = data_len;
-	/* Add space for properties we may add */
-	size += strlen(BRCMF_FW_DEFAULT_BOARDREV) + 1;
+    memset(nvp, 0, sizeof(*nvp));
+    nvp->data = data;
+    /* Limit size to MAX_NVRAM_SIZE, some files contain lot of comment */
+    if (data_len > BRCMF_FW_MAX_NVRAM_SIZE)
+        size = BRCMF_FW_MAX_NVRAM_SIZE;
+    else
+        size = data_len;
+    /* Add space for properties we may add */
+    size += strlen(BRCMF_FW_DEFAULT_BOARDREV) + 1;
         size += BRCMF_FW_MACADDR_LEN + 1;
         size += BRCMF_FW_IL0MACADDR_LEN + 1;
-	/* Alloc for extra 0 byte + roundup by 4 + length field */
-	size += 1 + 3 + sizeof(uint32_t);
-	nvp->nvram = malloc(size);
-	if (!nvp->nvram)
-		return -ENOMEM;
+    /* Alloc for extra 0 byte + roundup by 4 + length field */
+    size += 1 + 3 + sizeof(uint32_t);
+    nvp->nvram = malloc(size);
+    if (!nvp->nvram)
+        return -ENOMEM;
 
-	nvp->line = 1;
-	nvp->column = 1;
-	return 0;
+    nvp->line = 1;
+    nvp->column = 1;
+    return 0;
 }
 
 /* brcmf_fw_strip_multi_v1 :Some nvram files contain settings for multiple
@@ -494,84 +494,84 @@ static int brcmf_init_nvram_parser(struct nvram_parser *nvp,
  * compressed and "devpath" maps to index for valid entries.
  */
 static void brcmf_fw_strip_multi_v1(struct nvram_parser *nvp, uint16_t domain_nr,
-				    uint16_t bus_nr)
+                    uint16_t bus_nr)
 {
-	/* Device path with a leading '=' key-value separator */
-	char pci_path[] = "=pci/?/?";
-	size_t pci_len;
-	char pcie_path[] = "=pcie/?/?";
-	size_t pcie_len;
+    /* Device path with a leading '=' key-value separator */
+    char pci_path[] = "=pci/?/?";
+    size_t pci_len;
+    char pcie_path[] = "=pcie/?/?";
+    size_t pcie_len;
 
-	uint32_t i, j;
-	bool found;
-	uint8_t *nvram;
-	uint8_t id;
+    uint32_t i, j;
+    bool found;
+    uint8_t *nvram;
+    uint8_t id;
 
-	nvram = malloc(nvp->nvram_len + 1 + 3 + sizeof(uint32_t));
-	if (!nvram)
-		goto fail;
+    nvram = malloc(nvp->nvram_len + 1 + 3 + sizeof(uint32_t));
+    if (!nvram)
+        goto fail;
 
-	/* min length: devpath0=pcie/1/4/ + 0:x=y */
-	if (nvp->nvram_len < BRCMF_FW_NVRAM_DEVPATH_LEN + 6)
-		goto fail;
+    /* min length: devpath0=pcie/1/4/ + 0:x=y */
+    if (nvp->nvram_len < BRCMF_FW_NVRAM_DEVPATH_LEN + 6)
+        goto fail;
 
-	/* First search for the devpathX and see if it is the configuration
-	 * for domain_nr/bus_nr. Search complete nvp
-	 */
-	snprintf(pci_path, sizeof(pci_path), "=pci/%d/%d", domain_nr,
-		 bus_nr);
-	pci_len = strlen(pci_path);
-	snprintf(pcie_path, sizeof(pcie_path), "=pcie/%d/%d", domain_nr,
-		 bus_nr);
-	pcie_len = strlen(pcie_path);
-	found = false;
-	i = 0;
-	while (i < nvp->nvram_len - BRCMF_FW_NVRAM_DEVPATH_LEN) {
-		/* Format: devpathX=pcie/Y/Z/
-		 * Y = domain_nr, Z = bus_nr, X = virtual ID
-		 */
-		if (strncmp((const char*)&nvp->nvram[i], "devpath", 7) == 0 &&
-		    (!strncmp((const char*)&nvp->nvram[i + 8], pci_path, pci_len) ||
-		     !strncmp((const char*)&nvp->nvram[i + 8], pcie_path, pcie_len))) {
-			id = nvp->nvram[i + 7] - '0';
-			found = true;
-			break;
-		}
-		while (nvp->nvram[i] != 0)
-			i++;
-		i++;
-	}
-	if (!found)
-		goto fail;
+    /* First search for the devpathX and see if it is the configuration
+     * for domain_nr/bus_nr. Search complete nvp
+     */
+    snprintf(pci_path, sizeof(pci_path), "=pci/%d/%d", domain_nr,
+         bus_nr);
+    pci_len = strlen(pci_path);
+    snprintf(pcie_path, sizeof(pcie_path), "=pcie/%d/%d", domain_nr,
+         bus_nr);
+    pcie_len = strlen(pcie_path);
+    found = false;
+    i = 0;
+    while (i < nvp->nvram_len - BRCMF_FW_NVRAM_DEVPATH_LEN) {
+        /* Format: devpathX=pcie/Y/Z/
+         * Y = domain_nr, Z = bus_nr, X = virtual ID
+         */
+        if (strncmp((const char*)&nvp->nvram[i], "devpath", 7) == 0 &&
+            (!strncmp((const char*)&nvp->nvram[i + 8], pci_path, pci_len) ||
+             !strncmp((const char*)&nvp->nvram[i + 8], pcie_path, pcie_len))) {
+            id = nvp->nvram[i + 7] - '0';
+            found = true;
+            break;
+        }
+        while (nvp->nvram[i] != 0)
+            i++;
+        i++;
+    }
+    if (!found)
+        goto fail;
 
-	/* Now copy all valid entries, release old nvram and assign new one */
-	i = 0;
-	j = 0;
-	while (i < nvp->nvram_len) {
-		if ((nvp->nvram[i] - '0' == id) && (nvp->nvram[i + 1] == ':')) {
-			i += 2;
-			if (strncmp((const char*)&nvp->nvram[i], "boardrev", 8) == 0)
-				nvp->boardrev_found = true;
-			while (nvp->nvram[i] != 0) {
-				nvram[j] = nvp->nvram[i];
-				i++;
-				j++;
-			}
-			nvram[j] = 0;
-			j++;
-		}
-		while (nvp->nvram[i] != 0)
-			i++;
-		i++;
-	}
-	free(nvp->nvram);
-	nvp->nvram = nvram;
-	nvp->nvram_len = j;
-	return;
+    /* Now copy all valid entries, release old nvram and assign new one */
+    i = 0;
+    j = 0;
+    while (i < nvp->nvram_len) {
+        if ((nvp->nvram[i] - '0' == id) && (nvp->nvram[i + 1] == ':')) {
+            i += 2;
+            if (strncmp((const char*)&nvp->nvram[i], "boardrev", 8) == 0)
+                nvp->boardrev_found = true;
+            while (nvp->nvram[i] != 0) {
+                nvram[j] = nvp->nvram[i];
+                i++;
+                j++;
+            }
+            nvram[j] = 0;
+            j++;
+        }
+        while (nvp->nvram[i] != 0)
+            i++;
+        i++;
+    }
+    free(nvp->nvram);
+    nvp->nvram = nvram;
+    nvp->nvram_len = j;
+    return;
 
 fail:
-	free(nvram);
-	nvp->nvram_len = 0;
+    free(nvram);
+    nvp->nvram_len = 0;
 }
 
 /* brcmf_fw_strip_multi_v2 :Some nvram files contain settings for multiple
@@ -581,79 +581,79 @@ fail:
  * pcie/domain_nr/bus_nr:
  */
 static void brcmf_fw_strip_multi_v2(struct nvram_parser *nvp, uint16_t domain_nr,
-				    uint16_t bus_nr)
+                    uint16_t bus_nr)
 {
-	char prefix[BRCMF_FW_NVRAM_PCIEDEV_LEN];
-	size_t len;
-	uint32_t i, j;
-	uint8_t *nvram;
+    char prefix[BRCMF_FW_NVRAM_PCIEDEV_LEN];
+    size_t len;
+    uint32_t i, j;
+    uint8_t *nvram;
 
-	nvram = malloc(nvp->nvram_len + 1 + 3 + sizeof(uint32_t));
-	if (!nvram) {
-		nvp->nvram_len = 0;
-		return;
-	}
+    nvram = malloc(nvp->nvram_len + 1 + 3 + sizeof(uint32_t));
+    if (!nvram) {
+        nvp->nvram_len = 0;
+        return;
+    }
 
-	/* Copy all valid entries, release old nvram and assign new one.
-	 * Valid entries are of type pcie/X/Y/ where X = domain_nr and
-	 * Y = bus_nr.
-	 */
-	snprintf(prefix, sizeof(prefix), "pcie/%d/%d/", domain_nr, bus_nr);
-	len = strlen(prefix);
-	i = 0;
-	j = 0;
-	while (i < nvp->nvram_len - len) {
-		if (strncmp((const char*)&nvp->nvram[i], prefix, len) == 0) {
-			i += len;
-			if (strncmp((const char*)&nvp->nvram[i], "boardrev", 8) == 0)
-				nvp->boardrev_found = true;
-			while (nvp->nvram[i] != 0) {
-				nvram[j] = nvp->nvram[i];
-				i++;
-				j++;
-			}
-			nvram[j] = 0;
-			j++;
-		}
-		while (nvp->nvram[i] != 0)
-			i++;
-		i++;
-	}
-	free(nvp->nvram);
-	nvp->nvram = nvram;
-	nvp->nvram_len = j;
+    /* Copy all valid entries, release old nvram and assign new one.
+     * Valid entries are of type pcie/X/Y/ where X = domain_nr and
+     * Y = bus_nr.
+     */
+    snprintf(prefix, sizeof(prefix), "pcie/%d/%d/", domain_nr, bus_nr);
+    len = strlen(prefix);
+    i = 0;
+    j = 0;
+    while (i < nvp->nvram_len - len) {
+        if (strncmp((const char*)&nvp->nvram[i], prefix, len) == 0) {
+            i += len;
+            if (strncmp((const char*)&nvp->nvram[i], "boardrev", 8) == 0)
+                nvp->boardrev_found = true;
+            while (nvp->nvram[i] != 0) {
+                nvram[j] = nvp->nvram[i];
+                i++;
+                j++;
+            }
+            nvram[j] = 0;
+            j++;
+        }
+        while (nvp->nvram[i] != 0)
+            i++;
+        i++;
+    }
+    free(nvp->nvram);
+    nvp->nvram = nvram;
+    nvp->nvram_len = j;
 }
 
 static void brcmf_fw_add_defaults(struct nvram_parser *nvp)
 {
-	if (nvp->boardrev_found)
-		return;
+    if (nvp->boardrev_found)
+        return;
 
-	memcpy(&nvp->nvram[nvp->nvram_len], &BRCMF_FW_DEFAULT_BOARDREV,
-	       strlen(BRCMF_FW_DEFAULT_BOARDREV));
-	nvp->nvram_len += strlen(BRCMF_FW_DEFAULT_BOARDREV);
-	nvp->nvram[nvp->nvram_len] = '\0';
-	nvp->nvram_len++;
+    memcpy(&nvp->nvram[nvp->nvram_len], &BRCMF_FW_DEFAULT_BOARDREV,
+           strlen(BRCMF_FW_DEFAULT_BOARDREV));
+    nvp->nvram_len += strlen(BRCMF_FW_DEFAULT_BOARDREV);
+    nvp->nvram[nvp->nvram_len] = '\0';
+    nvp->nvram_len++;
 }
 
 static void brcmf_fw_add_macaddr(struct nvram_parser *nvp, uint8_t *mac)
 {
-	int len;
+    int len;
 
-	len = snprintf((char*)&nvp->nvram[nvp->nvram_len], BRCMF_FW_MACADDR_LEN + 1,
-			BRCMF_FW_MACADDR_FMT, mac);
-	WARN_ON(len != BRCMF_FW_MACADDR_LEN);
-	nvp->nvram_len += len + 1;
+    len = snprintf((char*)&nvp->nvram[nvp->nvram_len], BRCMF_FW_MACADDR_LEN + 1,
+            BRCMF_FW_MACADDR_FMT, mac);
+    WARN_ON(len != BRCMF_FW_MACADDR_LEN);
+    nvp->nvram_len += len + 1;
 }
 
 static void brcmf_fw_add_il0macaddr(struct nvram_parser *nvp, uint8_t *mac)
 {
-	int len;
+    int len;
 
-	len = snprintf((char*)&nvp->nvram[nvp->nvram_len], BRCMF_FW_IL0MACADDR_LEN + 1,
-			BRCMF_FW_IL0MACADDR_FMT, mac);
-	WARN_ON(len != BRCMF_FW_IL0MACADDR_LEN);
-	nvp->nvram_len += len + 1;
+    len = snprintf((char*)&nvp->nvram[nvp->nvram_len], BRCMF_FW_IL0MACADDR_LEN + 1,
+            BRCMF_FW_IL0MACADDR_FMT, mac);
+    WARN_ON(len != BRCMF_FW_IL0MACADDR_LEN);
+    nvp->nvram_len += len + 1;
 }
 
 /* brcmf_nvram_strip :Takes a buffer of "<var>=<value>\n" lines read from a fil
@@ -662,61 +662,61 @@ static void brcmf_fw_add_il0macaddr(struct nvram_parser *nvp, uint8_t *mac)
  * End of buffer is completed with token identifying length of buffer.
  */
 static void *brcmf_fw_nvram_strip(const char *data, size_t data_len,
-				  uint32_t *new_length)
+                  uint32_t *new_length)
 {
-	struct nvram_parser nvp;
-	uint32_t pad;
-	uint32_t token;
-	uint32_t token_le;
-	uint8_t mac[ETH_ALEN];
+    struct nvram_parser nvp;
+    uint32_t pad;
+    uint32_t token;
+    uint32_t token_le;
+    uint8_t mac[ETH_ALEN];
 
-	if (brcmf_init_nvram_parser(&nvp, data, data_len) < 0)
-		return NULL;
+    if (brcmf_init_nvram_parser(&nvp, data, data_len) < 0)
+        return NULL;
 
-	nvp.strip_mac = brcmf_fw_get_board_mac(mac);
-	if (nvp.strip_mac)
-		brcm_log("wlan: override nvram mac with board mac %pM\n", mac);
+    nvp.strip_mac = brcmf_fw_get_board_mac(mac);
+    if (nvp.strip_mac)
+        brcm_log("wlan: override nvram mac with board mac %pM\n", mac);
 
-	while (nvp.pos < data_len) {
-		nvp.state = nv_parser_states[nvp.state](&nvp);
-		if (nvp.state == END)
-			break;
-	}
-	if (nvp.multi_dev_v1) {
-		nvp.boardrev_found = false;
-		brcmf_fw_strip_multi_v1(&nvp, 0, 0);
-	} else if (nvp.multi_dev_v2) {
-		nvp.boardrev_found = false;
-		brcmf_fw_strip_multi_v2(&nvp, 0, 0);
-	}
+    while (nvp.pos < data_len) {
+        nvp.state = nv_parser_states[nvp.state](&nvp);
+        if (nvp.state == END)
+            break;
+    }
+    if (nvp.multi_dev_v1) {
+        nvp.boardrev_found = false;
+        brcmf_fw_strip_multi_v1(&nvp, 0, 0);
+    } else if (nvp.multi_dev_v2) {
+        nvp.boardrev_found = false;
+        brcmf_fw_strip_multi_v2(&nvp, 0, 0);
+    }
 
-	if (nvp.nvram_len == 0) {
-		free(nvp.nvram);
-		return NULL;
-	}
+    if (nvp.nvram_len == 0) {
+        free(nvp.nvram);
+        return NULL;
+    }
 
-	brcmf_fw_add_defaults(&nvp);
+    brcmf_fw_add_defaults(&nvp);
 
-	if (nvp.strip_mac) {
-		brcmf_fw_add_macaddr(&nvp, mac);
-		brcmf_fw_add_il0macaddr(&nvp, mac);
-	}
+    if (nvp.strip_mac) {
+        brcmf_fw_add_macaddr(&nvp, mac);
+        brcmf_fw_add_il0macaddr(&nvp, mac);
+    }
 
-	pad = nvp.nvram_len;
-	*new_length = roundup(nvp.nvram_len + 1, 4);
-	while (pad != *new_length) {
-		nvp.nvram[pad] = 0;
-		pad++;
-	}
+    pad = nvp.nvram_len;
+    *new_length = roundup(nvp.nvram_len + 1, 4);
+    while (pad != *new_length) {
+        nvp.nvram[pad] = 0;
+        pad++;
+    }
 
-	token = *new_length / 4;
-	token = (~token << 16) | (token & 0x0000FFFF);
-	token_le = cpu_to_le32(token);
+    token = *new_length / 4;
+    token = (~token << 16) | (token & 0x0000FFFF);
+    token_le = cpu_to_le32(token);
 
-	memcpy(&nvp.nvram[*new_length], &token_le, sizeof(token_le));
-	*new_length += sizeof(token_le);
+    memcpy(&nvp.nvram[*new_length], &token_le, sizeof(token_le));
+    *new_length += sizeof(token_le);
 
-	return nvp.nvram;
+    return nvp.nvram;
 }
 
 uint8_t* brcmf_fw_get_firmware(uint32_t* len){
@@ -861,6 +861,6 @@ uint8_t* brcmf_fw_get_clm(uint32_t* len){
         return NULL;
     }
 
-	*len = res.clm_len;
-	return (uint8_t *)res.clm;
+    *len = res.clm_len;
+    return (uint8_t *)res.clm;
 }

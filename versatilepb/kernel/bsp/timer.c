@@ -35,55 +35,55 @@ The ARM Versatile 926EJS board contains two ARM SB804 dual timer modules [ARM Ti
 /* QEMU seems to have problem with full frequency */
 
 static volatile uint32_t* timer_addr_by_id(uint32_t id) {
-	switch(id) {
-		case 0:
-			return TIMER0;
-		case 1:
-			return TIMER1;
-		case 2:
-			return TIMER2;
-		case 3:
-			return TIMER3;
-	}
-	return TIMER0;
+    switch(id) {
+        case 0:
+            return TIMER0;
+        case 1:
+            return TIMER1;
+        case 2:
+            return TIMER2;
+        case 3:
+            return TIMER3;
+    }
+    return TIMER0;
 }
 
 static uint64_t _sys_usec_tic = 0;
 static uint32_t _sys_usec_tic_tmp = 0;
 
 void timer_set_interval(uint32_t id, uint32_t times_per_sec) {
-	_sys_usec_tic = 0;
-	_sys_usec_tic_tmp = 0;
+    _sys_usec_tic = 0;
+    _sys_usec_tic_tmp = 0;
 
-	volatile uint32_t* t = timer_addr_by_id(id);
+    volatile uint32_t* t = timer_addr_by_id(id);
 
-	put32(t + TIMER_LOAD, ONE_SECOND/times_per_sec); 
-	uint8_t reg = TIMER_CTRL_32BIT |
-			TIMER_CTRL_INTREN |
-			TIMER_CTRL_PERIODIC |
-			TIMER_CTRL_DIV1 |
-			TIMER_CTRL_EN;
-	put8(t + TIMER_CTRL, reg);
+    put32(t + TIMER_LOAD, ONE_SECOND/times_per_sec); 
+    uint8_t reg = TIMER_CTRL_32BIT |
+            TIMER_CTRL_INTREN |
+            TIMER_CTRL_PERIODIC |
+            TIMER_CTRL_DIV1 |
+            TIMER_CTRL_EN;
+    put8(t + TIMER_CTRL, reg);
 
-	t = timer_addr_by_id(3);
-	put32(t + TIMER_LOAD, ONE_SECOND);
-	reg = TIMER_CTRL_32BIT |
-			TIMER_CTRL_PERIODIC |
-			TIMER_CTRL_DIV1 |
-			TIMER_CTRL_EN;
-	put8(t + TIMER_CTRL, reg);
+    t = timer_addr_by_id(3);
+    put32(t + TIMER_LOAD, ONE_SECOND);
+    reg = TIMER_CTRL_32BIT |
+            TIMER_CTRL_PERIODIC |
+            TIMER_CTRL_DIV1 |
+            TIMER_CTRL_EN;
+    put8(t + TIMER_CTRL, reg);
 }
 
 void timer_clear_interrupt(uint32_t id) {
-	volatile uint32_t* t = timer_addr_by_id(id);
-	put32(t + TIMER_INTCTRL, 0xFFFFFFFF);
+    volatile uint32_t* t = timer_addr_by_id(id);
+    put32(t + TIMER_INTCTRL, 0xFFFFFFFF);
 }
 
 uint64_t timer_read_sys_usec(void) { //read usec
-	volatile uint32_t* t = timer_addr_by_id(3);
-	uint32_t usec = ONE_SECOND - get32(t+TIMER_VALUE);
-	if(_sys_usec_tic_tmp < usec)
-		_sys_usec_tic += usec - _sys_usec_tic_tmp;
-	_sys_usec_tic_tmp = usec;
-	return _sys_usec_tic;
+    volatile uint32_t* t = timer_addr_by_id(3);
+    uint32_t usec = ONE_SECOND - get32(t+TIMER_VALUE);
+    if(_sys_usec_tic_tmp < usec)
+        _sys_usec_tic += usec - _sys_usec_tic_tmp;
+    _sys_usec_tic_tmp = usec;
+    return _sys_usec_tic;
 }

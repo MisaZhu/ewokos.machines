@@ -23,5 +23,5 @@ fbinfo_t* bsp_get_fbinfo(void) {
 }
 
 int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
-	return 0;
+    return 0;
 }

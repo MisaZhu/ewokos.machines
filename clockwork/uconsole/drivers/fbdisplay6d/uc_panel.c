@@ -7,34 +7,34 @@
 /* -------- Overlay-fixed panel selection (clockworkpi-uconsole.dtbo) --- */
 
 static const uc_panel_mode_t _mode_cwu50 = {
-	.name        = "cwu50",
-	.width       = UC_CWU50_H_ACTIVE,
-	.height      = UC_CWU50_V_ACTIVE,
-	.hfp         = UC_CWU50_H_FP,
-	.hsw         = UC_CWU50_H_SW,
-	.hbp         = UC_CWU50_H_BP,
-	.vfp         = UC_CWU50_V_FP,
-	.vsw         = UC_CWU50_V_SW,
-	.vbp         = UC_CWU50_V_BP,
-	.hs_clock_hz = 375000000U,
-	.init_table  = uc_cwu50_init,
+    .name        = "cwu50",
+    .width       = UC_CWU50_H_ACTIVE,
+    .height      = UC_CWU50_V_ACTIVE,
+    .hfp         = UC_CWU50_H_FP,
+    .hsw         = UC_CWU50_H_SW,
+    .hbp         = UC_CWU50_H_BP,
+    .vfp         = UC_CWU50_V_FP,
+    .vsw         = UC_CWU50_V_SW,
+    .vbp         = UC_CWU50_V_BP,
+    .hs_clock_hz = 375000000U,
+    .init_table  = uc_cwu50_init,
 };
 
 static const uc_panel_mode_t* _mode = &_mode_cwu50;
 
 void uc_panel_select(uint32_t width) {
-	/*
-	 * This fb6d variant follows the local `clockworkpi-uconsole.dtbo`
-	 * overlay, whose panel node is fixed to compatible = "cw,cwu50".
-	 * Keep the selector API for shared call sites, but ignore the
-	 * configured width and always drive the uConsole panel timings.
-	 */
-	(void)width;
-	_mode = &_mode_cwu50;
+    /*
+     * This fb6d variant follows the local `clockworkpi-uconsole.dtbo`
+     * overlay, whose panel node is fixed to compatible = "cw,cwu50".
+     * Keep the selector API for shared call sites, but ignore the
+     * configured width and always drive the uConsole panel timings.
+     */
+    (void)width;
+    _mode = &_mode_cwu50;
 }
 
 const uc_panel_mode_t* uc_panel_mode(void) {
-	return _mode;
+    return _mode;
 }
 
 /*
@@ -54,15 +54,15 @@ const uc_panel_mode_t* uc_panel_mode(void) {
 
 /* probe-time state: pin claimed as output, driven physical LOW. */
 void uc_panel_probe(void) {
-	bcm283x_gpio_init();
+    bcm283x_gpio_init();
 
-	/*
-	 * GPIO 8 defaults to SPI0_CE0 alt-func on CM4; force it back to a
-	 * plain output driven by us.
-	 */
-	bcm283x_gpio_pull(UC_PANEL_RESET_GPIO, GPIO_PULL_NONE);
-	bcm283x_gpio_config(UC_PANEL_RESET_GPIO, GPIO_OUTPUT);
-	bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 0);
+    /*
+     * GPIO 8 defaults to SPI0_CE0 alt-func on CM4; force it back to a
+     * plain output driven by us.
+     */
+    bcm283x_gpio_pull(UC_PANEL_RESET_GPIO, GPIO_PULL_NONE);
+    bcm283x_gpio_config(UC_PANEL_RESET_GPIO, GPIO_OUTPUT);
+    bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 0);
 }
 
 /*
@@ -72,12 +72,12 @@ void uc_panel_probe(void) {
  * panel->prepare().
  */
 void uc_panel_reset(void) {
-	uc_panel_probe();
+    uc_panel_probe();
 
-	bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 1);   /* gpiod 0 → phys HIGH */
-	uc_mdelay(10);
-	bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 0);   /* gpiod 1 → phys LOW  */
-	uc_mdelay(120);
+    bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 1);   /* gpiod 0 → phys HIGH */
+    uc_mdelay(10);
+    bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 0);   /* gpiod 1 → phys LOW  */
+    uc_mdelay(120);
 }
 
 /*
@@ -90,10 +90,10 @@ void uc_panel_reset(void) {
  * parks the pin physical HIGH while commands run.
  */
 void uc_panel_reset_inverted(void) {
-	uc_panel_probe();
+    uc_panel_probe();
 
-	bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 0);
-	uc_mdelay(10);
-	bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 1);
-	uc_mdelay(120);
+    bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 0);
+    uc_mdelay(10);
+    bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 1);
+    uc_mdelay(120);
 }

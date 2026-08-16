@@ -32,38 +32,38 @@ static uint32_t read_core_pending(void) {
 }
 
 void irq_arch_init_pix(void) {
-	routing_core0_irq();
-	set_vector_table(&interrupt_table_start);
+    routing_core0_irq();
+    set_vector_table(&interrupt_table_start);
 }
 
 uint32_t irq_get_pix(void) {
-	uint32_t ret = 0;
-	uint32_t pending = read_core_pending();
-	if (pending & 0x08 ) {
-		ret = IRQ_TIMER0;
-	}
-	else if (pending & 0x10) {
-		ret = IRQ_IPI;
-	}
-	return ret;
+    uint32_t ret = 0;
+    uint32_t pending = read_core_pending();
+    if (pending & 0x08 ) {
+        ret = IRQ_TIMER0;
+    }
+    else if (pending & 0x10) {
+        ret = IRQ_IPI;
+    }
+    return ret;
 }
 
 uint32_t irq_get_unified_pix(uint32_t irqno) {
-	return irqno;
+    return irqno;
 }
 
 void irq_eoi_pix(uint32_t irq_raw) {
-	(void)irq_raw;
+    (void)irq_raw;
 }
 
 void irq_enable_pix(uint32_t irq) {
-	if(IRQ_TIMER0 == irq){
-		*((uint32_t*)ENABLE_BASIC_IRQS) = (1 << 5);
-	}
+    if(IRQ_TIMER0 == irq){
+        *((uint32_t*)ENABLE_BASIC_IRQS) = (1 << 5);
+    }
 }
 
 void irq_disable_pix(uint32_t irq) {
-	if(IRQ_TIMER0 == irq){
-		*((uint32_t*)DISABLE_BASIC_IRQS) = (1 << 5);
-	}
+    if(IRQ_TIMER0 == irq){
+        *((uint32_t*)DISABLE_BASIC_IRQS) = (1 << 5);
+    }
 }

@@ -14,19 +14,19 @@
 #define DBG(...)	do{}while(0)
 
 int wm8960_write(uint8_t reg, uint16_t value) {
-	uint8_t data[2];
-	data[0] = (reg << 1) | ((value >> 8) & 0x1);
-	data[1] = value & 0xFF;
-	proc_usleep(3000);
-	int ret = i2c_puts_raw(WM8960_ADDR, data, 2);
-	proc_usleep(3000);
-	return ret;
+    uint8_t data[2];
+    data[0] = (reg << 1) | ((value >> 8) & 0x1);
+    data[1] = value & 0xFF;
+    proc_usleep(3000);
+    int ret = i2c_puts_raw(WM8960_ADDR, data, 2);
+    proc_usleep(3000);
+    return ret;
 }
 
 int wm8960_init(void){
-	uint8_t res;
+    uint8_t res;
 
-	i2c_init(2, 3);
+    i2c_init(2, 3);
 
     res = wm8960_write(0x0f, 0x0000);
     if (res == 0)
@@ -158,7 +158,7 @@ int wm8960_init(void){
     wm8960_write(ALC3, 0x0032);       // decay ~192ms, attack ~24ms
     wm8960_write(NOISE_GATE, 0x0079); // gate below -54dBFS
 
-	DBG("init done\n");
+    DBG("init done\n");
 
     return 0;
 }

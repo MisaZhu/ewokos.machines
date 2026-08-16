@@ -29,120 +29,120 @@ static uint8_t  _gpio_pwr = 26; //uconsole power gpio = 26, devterm gpio = 2
 // 　　0%------3.00V
 
 static uint8_t adc2level(uint8_t adc){
-	int vol = adc*72072/4095;
-	if(vol > 4200)
-		return 100;
-	if(vol > 4060)
-		return 90;
-	if(vol > 3980)
-		return 80;
-	if(vol > 3920)
-		return 70;
-	if(vol > 3870)
-		return 60;
-	if(vol > 3820)
-		return 50;
-	if(vol > 3790)
-		return 40;
-	if(vol > 3770)
-		return 30;
-	if(vol > 3740)
-		return 20;
-	if(vol > 3680)
-		return 10;
-	if(vol > 3450)
-		return 5;
-	return 0;
+    int vol = adc*72072/4095;
+    if(vol > 4200)
+        return 100;
+    if(vol > 4060)
+        return 90;
+    if(vol > 3980)
+        return 80;
+    if(vol > 3920)
+        return 70;
+    if(vol > 3870)
+        return 60;
+    if(vol > 3820)
+        return 50;
+    if(vol > 3790)
+        return 40;
+    if(vol > 3770)
+        return 30;
+    if(vol > 3740)
+        return 20;
+    if(vol > 3680)
+        return 10;
+    if(vol > 3450)
+        return 5;
+    return 0;
 }
 static void power_off(){
-		uint8_t reg = i2c_getb(0x34, 0x32);	
-		i2c_putb(0x34, 0x32, reg | 0x80);
-		for(int i = 0; i < 60 ; i++){
-			bcm283x_gpio_clr(i);
-			bcm283x_gpio_config(i, GPIO_OUTPUT);
-		}
-		while(1);
+        uint8_t reg = i2c_getb(0x34, 0x32);	
+        i2c_putb(0x34, 0x32, reg | 0x80);
+        for(int i = 0; i < 60 ; i++){
+            bcm283x_gpio_clr(i);
+            bcm283x_gpio_config(i, GPIO_OUTPUT);
+        }
+        while(1);
 }
 
 static int power_step(vdevice_t* dev, void* p) {
-	(void)dev;
-	(void)p;	
+    (void)dev;
+    (void)p;	
     int irq = bcm283x_gpio_read(_gpio_pwr);
-	if(!irq){
-		//power_off();
-	}
-	uint8_t state = i2c_getb(0x34, 0x01);	
-	_hasBattery = !!(state & (0x1 << 5));
-	_charging = !!(state & (0x1 << 6));
-	_capacity = adc2level(i2c_getb(0x34, 0x78)); 
-	//if(_capacity < 10)
-		//power_off();
+    if(!irq){
+        //power_off();
+    }
+    uint8_t state = i2c_getb(0x34, 0x01);	
+    _hasBattery = !!(state & (0x1 << 5));
+    _charging = !!(state & (0x1 << 6));
+    _capacity = adc2level(i2c_getb(0x34, 0x78)); 
+    //if(_capacity < 10)
+        //power_off();
     proc_usleep(300000); 
-	return 0;
+    return 0;
 }
 
 static int power_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)node;
-	(void)offset;
-	(void)p;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)node;
+    (void)offset;
+    (void)p;
 
-	uint8_t* data = (uint8_t *)buf;
-	data[0] = _hasBattery;
-	data[1] = _charging;
-	data[2] = _capacity;
+    uint8_t* data = (uint8_t *)buf;
+    data[0] = _hasBattery;
+    data[1] = _charging;
+    data[2] = _capacity;
     return 3;
  }
 
 static int doargs(int argc, char* argv[]) {
-	int c = 0;
-	while (c != -1) {
-		c = getopt (argc, argv, "d");
-		if(c == -1)
-			break;
+    int c = 0;
+    while (c != -1) {
+        c = getopt (argc, argv, "d");
+        if(c == -1)
+            break;
 
-		switch (c) {
-		case 'd':
-			_gpio_pwr = 2;
-			break;
-		default:
-			c = -1;
-			break;
-		}
-	}
-	return optind;
+        switch (c) {
+        case 'd':
+            _gpio_pwr = 2;
+            break;
+        default:
+            c = -1;
+            break;
+        }
+    }
+    return optind;
 }
 
 
 int main(int argc, char** argv) {
-	_gpio_pwr = 26;
-	int32_t argind =  doargs(argc, argv);
+    _gpio_pwr = 26;
+    int32_t argind =  doargs(argc, argv);
 
-	ewokos_addr_t _mmio_base = mmio_map();
-	if(_mmio_base == 0)
-		return -1;
+    ewokos_addr_t _mmio_base = mmio_map();
+    if(_mmio_base == 0)
+        return -1;
 
-	bcm283x_gpio_init();
-	bcm283x_gpio_config(_gpio_pwr, GPIO_INPUT);
-	bcm283x_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
+    bcm283x_gpio_init();
+    bcm283x_gpio_config(_gpio_pwr, GPIO_INPUT);
+    bcm283x_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
 
-	i2c_init(0,1);
-	i2c_putb(0x34, 0x42, 0x3);
-	i2c_putb(0x34, 0x82, 0x80);
-	const char* mnt_point = "/dev/power0";
-	if(argind < argc) {
-		mnt_point = argv[argind];
-		argind++;
-	}
+    i2c_init(0,1);
+    i2c_putb(0x34, 0x42, 0x3);
+    i2c_putb(0x34, 0x82, 0x80);
+    const char* mnt_point = "/dev/power0";
+    if(argind < argc) {
+        mnt_point = argv[argind];
+        argind++;
+    }
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "powerd");
-	dev.loop_step = power_step;
-	dev.read = power_read;
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
-	return 0;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "powerd");
+    dev.loop_step = power_step;
+    dev.read = power_read;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    return 0;
 }

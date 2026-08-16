@@ -11,18 +11,18 @@
 
 
 int32_t uart_dev_init(uint32_t baud) {
-	(void)baud;
-	return 0;
+    (void)baud;
+    return 0;
 }
 
 int32_t uart_write(const void* data, uint32_t size) {
-	char c;
+    char c;
 
-	for(int i = 0; i <  (int)size; i++){
-		c = ((char*)data)[i];
-    	while (!(REG32(UART_LSR) & UART_LSR_THRE));
-    	REG32(UART_TX) = c;
-	}
-	return 0;
+    for(int i = 0; i <  (int)size; i++){
+        c = ((char*)data)[i];
+        while (!(REG32(UART_LSR) & UART_LSR_THRE));
+        REG32(UART_TX) = c;
+    }
+    return 0;
 }
 

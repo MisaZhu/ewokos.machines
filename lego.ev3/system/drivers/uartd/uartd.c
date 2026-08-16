@@ -21,40 +21,40 @@ static fifo_t *_RxBuf;
 static fifo_t *_TxBuf;
 
 static int uart_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)node;
-	(void)size;
-	(void)offset;
-	(void)p;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)node;
+    (void)size;
+    (void)offset;
+    (void)p;
 
-	int i;
+    int i;
     for(i = 0; i < size; i++){
-		if(fifo_is_empty(_RxBuf))
-			break;
-		((char*)buf)[i] = fifo_pop(_RxBuf);
+        if(fifo_is_empty(_RxBuf))
+            break;
+        ((char*)buf)[i] = fifo_pop(_RxBuf);
     }
     return (i==0)?VFS_ERR_RETRY:i;
 }
 
 static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		const void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)node;
-	(void)from_pid;
-	(void)offset;
-	(void)p;
+        const void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)node;
+    (void)from_pid;
+    (void)offset;
+    (void)p;
 
-	int i;
-	char ch;
-	for(i = 0; i < size; i++){
-		fifo_push(_TxBuf,  ((char*)buf)[i]);
-	}
-	ev3_uart_enable_irq(UART_BASE, EV3_IRQ_TX, EV3_IRQ_ENABLE);
-	return i;
+    int i;
+    char ch;
+    for(i = 0; i < size; i++){
+        fifo_push(_TxBuf,  ((char*)buf)[i]);
+    }
+    ev3_uart_enable_irq(UART_BASE, EV3_IRQ_TX, EV3_IRQ_ENABLE);
+    return i;
 }
 //
 //static int loop(void* p){
@@ -77,67 +77,67 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 //
 static bool _wakeup = false;
 static void interrupt_handle(uint32_t interrupt, ewokos_addr_t p) {
-	(void)interrupt;
+    (void)interrupt;
         vdevice_t* dev = (vdevice_t*)p;
-	char ch;
-	int rx = 0;
+    char ch;
+    int rx = 0;
 
-	int irq = ev3_uart_get_irq(UART_BASE) >> 1;
-	while(ev3_uart_can_read(UART_BASE)){
-		fifo_push_unsafe(_RxBuf, ev3_uart_getc(UART_BASE));
-		rx++;
-	}
+    int irq = ev3_uart_get_irq(UART_BASE) >> 1;
+    while(ev3_uart_can_read(UART_BASE)){
+        fifo_push_unsafe(_RxBuf, ev3_uart_getc(UART_BASE));
+        rx++;
+    }
 
-	if(ev3_uart_can_write(UART_BASE)){
-		for(int i = 0 ; i < 16; i++){
-			if(fifo_is_empty(_TxBuf)){
-				ev3_uart_enable_irq(UART_BASE, EV3_IRQ_TX, EV3_IRQ_DISABLE);
-				break;
-			}
-			ev3_uart_putc(UART_BASE, fifo_pop_unsafe(_TxBuf));
-		}
-	}
+    if(ev3_uart_can_write(UART_BASE)){
+        for(int i = 0 ; i < 16; i++){
+            if(fifo_is_empty(_TxBuf)){
+                ev3_uart_enable_irq(UART_BASE, EV3_IRQ_TX, EV3_IRQ_DISABLE);
+                break;
+            }
+            ev3_uart_putc(UART_BASE, fifo_pop_unsafe(_TxBuf));
+        }
+    }
 
-	if(rx){
-		_wakeup = true;
-	}
+    if(rx){
+        _wakeup = true;
+    }
 }
 
 int loop_step(vdevice_t* dev, void* p) {
-	(void)p;
-	if(_wakeup) {
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-		_wakeup = false;
-	}
-	usleep(3000);
-	return 0;
+    (void)p;
+    if(_wakeup) {
+        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+        _wakeup = false;
+    }
+    usleep(3000);
+    return 0;
 }
 
 int main(int argc, char** argv) {
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/tty1";
-	_mmio_base = mmio_map();
-	_TxBuf = fifo_new(4096);
-	_RxBuf = fifo_new(128);
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/tty1";
+    _mmio_base = mmio_map();
+    _TxBuf = fifo_new(4096);
+    _RxBuf = fifo_new(128);
 
-	ev3_uart_init(UART_BASE, 115200);
+    ev3_uart_init(UART_BASE, 115200);
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "uart");
-	dev.read = uart_read;
-	dev.write = uart_write;
-	dev.loop_step = loop_step;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "uart");
+    dev.read = uart_read;
+    dev.write = uart_write;
+    dev.loop_step = loop_step;
 
-	static interrupt_handler_t handler;
-	handler.data = &dev;
-	handler.handler = interrupt_handle;
-	sys_interrupt_setup(53, &handler);
-	ev3_uart_enable_irq(UART_BASE, EV3_IRQ_RX, EV3_IRQ_ENABLE);
+    static interrupt_handler_t handler;
+    handler.data = &dev;
+    handler.handler = interrupt_handle;
+    sys_interrupt_setup(53, &handler);
+    ev3_uart_enable_irq(UART_BASE, EV3_IRQ_RX, EV3_IRQ_ENABLE);
 
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
 
-	fifo_free(_RxBuf);
-	fifo_free(_TxBuf);
+    fifo_free(_RxBuf);
+    fifo_free(_TxBuf);
 
-	return 0;
+    return 0;
 }

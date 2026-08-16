@@ -100,15 +100,15 @@ uint16_t bcm283x_aux_spi_CalcClockDivider(int speed_hz)
     uint16_t divider;
 
     if (speed_hz < (uint32_t) BCM2835_AUX_SPI_CLOCK_MIN) {
-	    speed_hz = (uint32_t) BCM2835_AUX_SPI_CLOCK_MIN;
+        speed_hz = (uint32_t) BCM2835_AUX_SPI_CLOCK_MIN;
     } else if (speed_hz > (uint32_t) BCM2835_AUX_SPI_CLOCK_MAX) {
-	    speed_hz = (uint32_t) BCM2835_AUX_SPI_CLOCK_MAX;
+        speed_hz = (uint32_t) BCM2835_AUX_SPI_CLOCK_MAX;
     }
 
     divider = (uint16_t) DIV_ROUND_UP(BCM2835_CORE_CLK_HZ, 2 * speed_hz) - 1;
 
     if (divider > (uint16_t) BCM2835_AUX_SPI_CNTL0_SPEED_MAX) {
-	    return (uint16_t) BCM2835_AUX_SPI_CNTL0_SPEED_MAX;
+        return (uint16_t) BCM2835_AUX_SPI_CNTL0_SPEED_MAX;
     }
 
     return divider;
@@ -127,8 +127,8 @@ int bcm283x_auxspi_init(int ch)
     if(ch == 0){
         klog("bcm283x_auxspi_init\n");
         bcm283x_gpio_config(SPI1_SCLK, GPIO_ALTF4);
-	    bcm283x_gpio_config(SPI1_MOSI, GPIO_ALTF4);
-	    bcm283x_gpio_config(SPI1_MISO, GPIO_ALTF4);
+        bcm283x_gpio_config(SPI1_MOSI, GPIO_ALTF4);
+        bcm283x_gpio_config(SPI1_MISO, GPIO_ALTF4);
         SPI_BASE = _mmio_base + SPI1_OFFSET;
         WRITE32(BCM2835_AUX_ENABLE, BCM2835_AUX_ENABLE_SPI0|READ32(BCM2835_AUX_ENABLE));
     }else{
@@ -154,12 +154,12 @@ void bcm283x_auxspi_write16(uint16_t data)
     WRITE32(BCM2835_AUX_SPI_CNTL0, reg);
     WRITE32(BCM2835_AUX_SPI_CNTL1, BCM2835_AUX_SPI_CNTL1_MSBF_IN);
 
-	uint32_t retry = AUXSPI_STALL_TIMEOUT;
+    uint32_t retry = AUXSPI_STALL_TIMEOUT;
     while ((READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_TX_FULL) && --retry > 0);
-	if (retry == 0) {
-		klog("bcm283x_auxspi_write16: TX FIFO stuck, aborting\n");
-		return;
-	}
+    if (retry == 0) {
+        klog("bcm283x_auxspi_write16: TX FIFO stuck, aborting\n");
+        return;
+    }
 
     WRITE32(BCM2835_AUX_SPI_IO, (uint32_t) data << 16);
 }
@@ -167,100 +167,100 @@ void bcm283x_auxspi_write16(uint16_t data)
 
 void bcm283x_auxspi_transfer(uint8_t *tx, uint8_t *rx, uint32_t len) {
 
-	uint32_t tx_len = len;
-	uint32_t rx_len = len;
-	uint32_t count;
-	uint32_t data;
-	uint32_t i;
-	uint32_t stall = 0;
-	uint8_t byte;
+    uint32_t tx_len = len;
+    uint32_t rx_len = len;
+    uint32_t count;
+    uint32_t data;
+    uint32_t i;
+    uint32_t stall = 0;
+    uint8_t byte;
 
-	uint32_t reg = (_spi_clock_div << BCM2835_AUX_SPI_CNTL0_SPEED_SHIFT);
-	reg |= BCM2835_AUX_SPI_CNTL0_ENABLE;
-	reg |= BCM2835_AUX_SPI_CNTL0_MSBF_OUT;
-	reg |= BCM2835_AUX_SPI_CNTL0_VAR_WIDTH;
+    uint32_t reg = (_spi_clock_div << BCM2835_AUX_SPI_CNTL0_SPEED_SHIFT);
+    reg |= BCM2835_AUX_SPI_CNTL0_ENABLE;
+    reg |= BCM2835_AUX_SPI_CNTL0_MSBF_OUT;
+    reg |= BCM2835_AUX_SPI_CNTL0_VAR_WIDTH;
 
-	WRITE32(BCM2835_AUX_SPI_CNTL0, reg);
-	WRITE32(BCM2835_AUX_SPI_CNTL1, BCM2835_AUX_SPI_CNTL1_MSBF_IN);
+    WRITE32(BCM2835_AUX_SPI_CNTL0, reg);
+    WRITE32(BCM2835_AUX_SPI_CNTL1, BCM2835_AUX_SPI_CNTL1_MSBF_IN);
 
-	while ((tx_len > 0) || (rx_len > 0)) {
+    while ((tx_len > 0) || (rx_len > 0)) {
 
-		uint32_t prev_tx = tx_len;
-		uint32_t prev_rx = rx_len;
+        uint32_t prev_tx = tx_len;
+        uint32_t prev_rx = rx_len;
 
-		while (!(READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_TX_FULL) && (tx_len > 0)) {
-			count = MIN(tx_len, 3);
-			data = 0;
+        while (!(READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_TX_FULL) && (tx_len > 0)) {
+            count = MIN(tx_len, 3);
+            data = 0;
 
-			for (i = 0; i < count; i++) {
-				byte = (tx != NULL) ? (uint8_t) *tx++ : (uint8_t) 0;
-				data |= byte << (8 * (2 - i));
-			}
+            for (i = 0; i < count; i++) {
+                byte = (tx != NULL) ? (uint8_t) *tx++ : (uint8_t) 0;
+                data |= byte << (8 * (2 - i));
+            }
 
-			data |= (count * 8) << 24;
-			tx_len -= count;
+            data |= (count * 8) << 24;
+            tx_len -= count;
 
-			if (tx_len != 0) {
-				WRITE32(BCM2835_AUX_SPI_TXHOLD, data);
-			} else {
-				WRITE32(BCM2835_AUX_SPI_IO, data);
-			}
+            if (tx_len != 0) {
+                WRITE32(BCM2835_AUX_SPI_TXHOLD, data);
+            } else {
+                WRITE32(BCM2835_AUX_SPI_IO, data);
+            }
 
-		}
+        }
 
-		while (!(READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_RX_EMPTY) && (rx_len > 0)) {
-			count = MIN(rx_len, 3);
-			data = READ32(BCM2835_AUX_SPI_IO);
+        while (!(READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_RX_EMPTY) && (rx_len > 0)) {
+            count = MIN(rx_len, 3);
+            data = READ32(BCM2835_AUX_SPI_IO);
 
-			if (rx != NULL) {
-				switch (count) {
-				case 3:
-					*rx++ = (uint8_t)((data >> 16) & 0xFF);
-					/*@fallthrough@*/
-					/* no break */
-				case 2:
-					*rx++ = (uint8_t)((data >> 8) & 0xFF);
-					/*@fallthrough@*/
-					/* no break */
-				case 1:
-					*rx++ = (uint8_t)((data >> 0) & 0xFF);
-				}
-			}
+            if (rx != NULL) {
+                switch (count) {
+                case 3:
+                    *rx++ = (uint8_t)((data >> 16) & 0xFF);
+                    /*@fallthrough@*/
+                    /* no break */
+                case 2:
+                    *rx++ = (uint8_t)((data >> 8) & 0xFF);
+                    /*@fallthrough@*/
+                    /* no break */
+                case 1:
+                    *rx++ = (uint8_t)((data >> 0) & 0xFF);
+                }
+            }
 
-			rx_len -= count;
-		}
+            rx_len -= count;
+        }
 
-		while (!(READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_BUSY) && (rx_len > 0)) {
-			count = MIN(rx_len, 3);
-			data = READ32(BCM2835_AUX_SPI_IO);
+        while (!(READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_BUSY) && (rx_len > 0)) {
+            count = MIN(rx_len, 3);
+            data = READ32(BCM2835_AUX_SPI_IO);
 
-			if (rx != NULL) {
-				switch (count) {
-				case 3:
-					*rx++ = (uint8_t)((data >> 16) & 0xFF);
-					/*@fallthrough@*/
-					/* no break */
-				case 2:
-					*rx++ = (uint8_t)((data >> 8) & 0xFF);
-					/*@fallthrough@*/
-					/* no break */
-				case 1:
-					*rx++ = (uint8_t)((data >> 0) & 0xFF);
-				}
-			}
+            if (rx != NULL) {
+                switch (count) {
+                case 3:
+                    *rx++ = (uint8_t)((data >> 16) & 0xFF);
+                    /*@fallthrough@*/
+                    /* no break */
+                case 2:
+                    *rx++ = (uint8_t)((data >> 8) & 0xFF);
+                    /*@fallthrough@*/
+                    /* no break */
+                case 1:
+                    *rx++ = (uint8_t)((data >> 0) & 0xFF);
+                }
+            }
 
-			rx_len -= count;
-		}
+            rx_len -= count;
+        }
 
-		/*watchdog: bail out if the controller makes no progress at all
-		  (dead clock, peripheral not enabled...), never hang the caller*/
-		if (tx_len == prev_tx && rx_len == prev_rx) {
-			if (++stall >= AUXSPI_STALL_TIMEOUT) {
-				klog("bcm283x_auxspi_transfer: stall timeout, aborting\n");
-				return;
-			}
-		} else {
-			stall = 0;
-		}
-	}
+        /*watchdog: bail out if the controller makes no progress at all
+          (dead clock, peripheral not enabled...), never hang the caller*/
+        if (tx_len == prev_tx && rx_len == prev_rx) {
+            if (++stall >= AUXSPI_STALL_TIMEOUT) {
+                klog("bcm283x_auxspi_transfer: stall timeout, aborting\n");
+                return;
+            }
+        } else {
+            stall = 0;
+        }
+    }
 }

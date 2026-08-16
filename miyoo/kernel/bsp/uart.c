@@ -9,18 +9,18 @@ ewokos_addr_t uart_base = MMIO_BASE;
 
 
 int32_t uart_dev_init(uint32_t baud) {
-	//return mini_uart_init(baud);
-	return 0;
+    //return mini_uart_init(baud);
+    return 0;
 }
 
 int32_t uart_write(const void* data, uint32_t size) {
-	char c;
+    char c;
 
-	for(int i = 0; i <  (int)size; i++){
-		c = ((char*)data)[i];
-    	    while (!(UART_MULTI_REG8(UART_LSR) & UART_LSR_THRE));
-    	    UART_MULTI_REG8(UART_TX) = c;
-	}
+    for(int i = 0; i <  (int)size; i++){
+        c = ((char*)data)[i];
+            while (!(UART_MULTI_REG8(UART_LSR) & UART_LSR_THRE));
+            UART_MULTI_REG8(UART_TX) = c;
+    }
     while (!(UART_MULTI_REG8(UART_LSR) & UART_LSR_THRE));
-	return 0;
+    return 0;
 }

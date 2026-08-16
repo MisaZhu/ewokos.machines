@@ -117,25 +117,25 @@ static uint16_t _i2c_rx_depth[RP1_I2C_NUM];
  * GPIO4/5, SDA3/SCL3 on GPIO6/7.
  */
 static const uint8_t _i2c_pins[4][2] = {
-	{0, 1}, {2, 3}, {4, 5}, {6, 7}
+    {0, 1}, {2, 3}, {4, 5}, {6, 7}
 };
 
 static inline ewokos_addr_t i2c_base(int bus) {
-	return _mmio_base + RP1_I2C_OFF(bus);
+    return _mmio_base + RP1_I2C_OFF(bus);
 }
 
 static inline int i2c_comp_type_ok(ewokos_addr_t base) {
-	return get32(base + IC_COMP_TYPE) == IC_COMP_TYPE_VALUE;
+    return get32(base + IC_COMP_TYPE) == IC_COMP_TYPE_VALUE;
 }
 
 static int i2c_set_enable(ewokos_addr_t base, uint32_t en) {
-	put32(base + IC_ENABLE, en);
-	for (uint32_t n = 0; n < I2C_ENABLE_POLL_MAX; n++) {
-		if ((get32(base + IC_ENABLE_STATUS) & IC_ENABLE_STATUS_EN) == en)
-			return 0;
-		usleep(25);
-	}
-	return -1;
+    put32(base + IC_ENABLE, en);
+    for (uint32_t n = 0; n < I2C_ENABLE_POLL_MAX; n++) {
+        if ((get32(base + IC_ENABLE_STATUS) & IC_ENABLE_STATUS_EN) == en)
+            return 0;
+        usleep(25);
+    }
+    return -1;
 }
 
 /*
@@ -149,117 +149,117 @@ static int i2c_set_enable(ewokos_addr_t base, uint32_t en) {
  * every later transfer.
  */
 static void i2c_recover(ewokos_addr_t base) {
-	if (get32(base + IC_RAW_INTR_STAT) & IC_RAW_MST_ON_HOLD) {
-		put32(base + IC_ENABLE, IC_ENABLE_EN | IC_ENABLE_ABORT);
-		for (uint32_t n = 0; n < I2C_POLL_MAX; n++) {
-			if ((get32(base + IC_ENABLE) & IC_ENABLE_ABORT) == 0)
-				break;
-		}
-	}
-	(void)get32(base + IC_CLR_TX_ABRT);
-	(void)get32(base + IC_CLR_INTR);
-	i2c_set_enable(base, 0);
+    if (get32(base + IC_RAW_INTR_STAT) & IC_RAW_MST_ON_HOLD) {
+        put32(base + IC_ENABLE, IC_ENABLE_EN | IC_ENABLE_ABORT);
+        for (uint32_t n = 0; n < I2C_POLL_MAX; n++) {
+            if ((get32(base + IC_ENABLE) & IC_ENABLE_ABORT) == 0)
+                break;
+        }
+    }
+    (void)get32(base + IC_CLR_TX_ABRT);
+    (void)get32(base + IC_CLR_INTR);
+    i2c_set_enable(base, 0);
 }
 
 int bcm2712_i2c_init(int bus) {
-	if (bus < 0 || bus >= RP1_I2C_NUM)
-		return BCM2712_I2C_ERR_INVALID;
+    if (bus < 0 || bus >= RP1_I2C_NUM)
+        return BCM2712_I2C_ERR_INVALID;
 
-	/* same window setup as the other RP1 users (uartd, bsp_sd, spi) */
-	sys_info_t sysinfo;
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-	_mmio_base = sysinfo.mmio.v_base;
-	ewokos_addr_t main_mapped = syscall3(SYS_MEM_MAP,
-			(ewokos_addr_t)sysinfo.mmio.v_base,
-			(ewokos_addr_t)sysinfo.mmio.phy_base,
-			(ewokos_addr_t)sysinfo.mmio.size);
-	if (main_mapped != sysinfo.mmio.v_base) {
-		klog("i2c-rp1: main map failed got=%p expected=%p\n",
-			(void *)main_mapped, (void *)sysinfo.mmio.v_base);
-		return BCM2712_I2C_ERR_MAIN_MAP;
-	}
-	ewokos_addr_t rp1_vbase = _mmio_base + PI5_RP1_WIN_OFF;
-	ewokos_addr_t rp1_mapped = syscall3(SYS_MEM_MAP,
-			_mmio_base + PI5_RP1_WIN_OFF,
-			PI5_RP1_PHY,
-			PI5_RP1_WIN_SIZE);
-	if (rp1_mapped != rp1_vbase) {
-		klog("i2c-rp1: RP1 map failed got=%p expected=%p\n",
-			(void *)rp1_mapped, (void *)rp1_vbase);
-		return BCM2712_I2C_ERR_RP1_MAP;
-	}
+    /* same window setup as the other RP1 users (uartd, bsp_sd, spi) */
+    sys_info_t sysinfo;
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+    _mmio_base = sysinfo.mmio.v_base;
+    ewokos_addr_t main_mapped = syscall3(SYS_MEM_MAP,
+            (ewokos_addr_t)sysinfo.mmio.v_base,
+            (ewokos_addr_t)sysinfo.mmio.phy_base,
+            (ewokos_addr_t)sysinfo.mmio.size);
+    if (main_mapped != sysinfo.mmio.v_base) {
+        klog("i2c-rp1: main map failed got=%p expected=%p\n",
+            (void *)main_mapped, (void *)sysinfo.mmio.v_base);
+        return BCM2712_I2C_ERR_MAIN_MAP;
+    }
+    ewokos_addr_t rp1_vbase = _mmio_base + PI5_RP1_WIN_OFF;
+    ewokos_addr_t rp1_mapped = syscall3(SYS_MEM_MAP,
+            _mmio_base + PI5_RP1_WIN_OFF,
+            PI5_RP1_PHY,
+            PI5_RP1_WIN_SIZE);
+    if (rp1_mapped != rp1_vbase) {
+        klog("i2c-rp1: RP1 map failed got=%p expected=%p\n",
+            (void *)rp1_mapped, (void *)rp1_vbase);
+        return BCM2712_I2C_ERR_RP1_MAP;
+    }
 
-	ewokos_addr_t base = i2c_base(bus);
-	if (!i2c_comp_type_ok(base)) {
-		int rp1_ret = bcm2712_rp1_init();
-		if (rp1_ret != 0)
-			return rp1_ret - 10;
-	}
+    ewokos_addr_t base = i2c_base(bus);
+    if (!i2c_comp_type_ok(base)) {
+        int rp1_ret = bcm2712_rp1_init();
+        if (rp1_ret != 0)
+            return rp1_ret - 10;
+    }
 
-	if (bus < 4) {
-		bcm2712_gpio_init();
-		for (int i = 0; i < 2; i++) {
-			uint32_t pin = _i2c_pins[bus][i];
-			bcm2712_gpio_pull(pin, GPIO_PULL_UP);
-			bcm2712_gpio_config(pin, GPIO_FUNC_ALTF3);
-		}
-	}
+    if (bus < 4) {
+        bcm2712_gpio_init();
+        for (int i = 0; i < 2; i++) {
+            uint32_t pin = _i2c_pins[bus][i];
+            bcm2712_gpio_pull(pin, GPIO_PULL_UP);
+            bcm2712_gpio_config(pin, GPIO_FUNC_ALTF3);
+        }
+    }
 
-	uint32_t comp_type = get32(base + IC_COMP_TYPE);
-	if (comp_type != IC_COMP_TYPE_VALUE) {
-		klog("i2c-rp1: bus=%d base=%p bad COMP_TYPE=%08x expected=%08x\n",
-			bus, (void *)base, comp_type, IC_COMP_TYPE_VALUE);
-		return BCM2712_I2C_ERR_COMP_TYPE;
-	}
-	if (i2c_set_enable(base, 0) != 0) {
-		klog("i2c-rp1: bus=%d disable timeout enable=%08x enable_status=%08x status=%08x\n",
-			bus, get32(base + IC_ENABLE), get32(base + IC_ENABLE_STATUS),
-			get32(base + IC_STATUS));
-		return BCM2712_I2C_ERR_DISABLE;
-	}
+    uint32_t comp_type = get32(base + IC_COMP_TYPE);
+    if (comp_type != IC_COMP_TYPE_VALUE) {
+        klog("i2c-rp1: bus=%d base=%p bad COMP_TYPE=%08x expected=%08x\n",
+            bus, (void *)base, comp_type, IC_COMP_TYPE_VALUE);
+        return BCM2712_I2C_ERR_COMP_TYPE;
+    }
+    if (i2c_set_enable(base, 0) != 0) {
+        klog("i2c-rp1: bus=%d disable timeout enable=%08x enable_status=%08x status=%08x\n",
+            bus, get32(base + IC_ENABLE), get32(base + IC_ENABLE_STATUS),
+            get32(base + IC_STATUS));
+        return BCM2712_I2C_ERR_DISABLE;
+    }
 
-	put32(base + IC_INTR_MASK, 0);
-	put32(base + IC_SS_SCL_HCNT, SCL_HCNT(4000));
-	put32(base + IC_SS_SCL_LCNT, SCL_LCNT(4700));
-	put32(base + IC_FS_SCL_HCNT, SCL_HCNT(600));
-	put32(base + IC_FS_SCL_LCNT, SCL_LCNT(1300));
-	put32(base + IC_SDA_HOLD, SDA_HOLD_CNT);
-	/* polled, so the FIFO thresholds only need to be harmless */
-	put32(base + IC_RX_TL, 0);
-	put32(base + IC_TX_TL, 0);
+    put32(base + IC_INTR_MASK, 0);
+    put32(base + IC_SS_SCL_HCNT, SCL_HCNT(4000));
+    put32(base + IC_SS_SCL_LCNT, SCL_LCNT(4700));
+    put32(base + IC_FS_SCL_HCNT, SCL_HCNT(600));
+    put32(base + IC_FS_SCL_LCNT, SCL_LCNT(1300));
+    put32(base + IC_SDA_HOLD, SDA_HOLD_CNT);
+    /* polled, so the FIFO thresholds only need to be harmless */
+    put32(base + IC_RX_TL, 0);
+    put32(base + IC_TX_TL, 0);
 
-	/*
-	 * Encoded FIFO depths, same fields linux reads. A controller
-	 * synthesized without ADD_ENCODED_PARAMS reads 0 here, which yields
-	 * depth 1 and degrades the transfer loop to one byte in flight
-	 * instead of overflowing anything.
-	 */
-	uint32_t param = get32(base + IC_COMP_PARAM_1);
-	_i2c_rx_depth[bus] = ((param >> 8) & 0xff) + 1;
+    /*
+     * Encoded FIFO depths, same fields linux reads. A controller
+     * synthesized without ADD_ENCODED_PARAMS reads 0 here, which yields
+     * depth 1 and degrades the transfer loop to one byte in flight
+     * instead of overflowing anything.
+     */
+    uint32_t param = get32(base + IC_COMP_PARAM_1);
+    _i2c_rx_depth[bus] = ((param >> 8) & 0xff) + 1;
 
-	_i2c_con[bus] = IC_CON_MASTER | IC_CON_SLAVE_DISABLE |
-			IC_CON_RESTART_EN | IC_CON_RX_FULL_HLD |
-			IC_CON_SPEED_STD;
-	put32(base + IC_CON, _i2c_con[bus]);
+    _i2c_con[bus] = IC_CON_MASTER | IC_CON_SLAVE_DISABLE |
+            IC_CON_RESTART_EN | IC_CON_RX_FULL_HLD |
+            IC_CON_SPEED_STD;
+    put32(base + IC_CON, _i2c_con[bus]);
 
-	_i2c_ready[bus] = 1;
-	return 0;
+    _i2c_ready[bus] = 1;
+    return 0;
 }
 
 int bcm2712_i2c_set_speed(int bus, uint32_t hz) {
-	if (bus < 0 || bus >= RP1_I2C_NUM)
-		return -1;
-	if (!_i2c_ready[bus] && bcm2712_i2c_init(bus) != 0)
-		return -1;
+    if (bus < 0 || bus >= RP1_I2C_NUM)
+        return -1;
+    if (!_i2c_ready[bus] && bcm2712_i2c_init(bus) != 0)
+        return -1;
 
-	ewokos_addr_t base = i2c_base(bus);
-	if (i2c_set_enable(base, 0) != 0)
-		return -1;
+    ewokos_addr_t base = i2c_base(bus);
+    if (i2c_set_enable(base, 0) != 0)
+        return -1;
 
-	_i2c_con[bus] &= ~IC_CON_SPEED_MASK;
-	_i2c_con[bus] |= (hz <= 100000) ? IC_CON_SPEED_STD : IC_CON_SPEED_FAST;
-	put32(base + IC_CON, _i2c_con[bus]);
-	return 0;
+    _i2c_con[bus] &= ~IC_CON_SPEED_MASK;
+    _i2c_con[bus] |= (hz <= 100000) ? IC_CON_SPEED_STD : IC_CON_SPEED_FAST;
+    put32(base + IC_CON, _i2c_con[bus]);
+    return 0;
 }
 
 /*
@@ -276,122 +276,122 @@ int bcm2712_i2c_set_speed(int bus, uint32_t hz) {
  * depth so the RX FIFO cannot overflow.
  */
 static int i2c_xfer(int bus, uint8_t addr, const uint8_t *wbuf, int wlen,
-		uint8_t *rbuf, int rlen) {
-	if (bus < 0 || bus >= RP1_I2C_NUM)
-		return -1;
-	if (!_i2c_ready[bus] && bcm2712_i2c_init(bus) != 0)
-		return -1;
-	if (addr > 0x7f)
-		return -1;
-	if (wlen < 0 || rlen < 0 || (wlen + rlen) == 0)
-		return -1;
-	if ((wlen > 0 && wbuf == (const uint8_t*)0) ||
-			(rlen > 0 && rbuf == (uint8_t*)0))
-		return -1;
+        uint8_t *rbuf, int rlen) {
+    if (bus < 0 || bus >= RP1_I2C_NUM)
+        return -1;
+    if (!_i2c_ready[bus] && bcm2712_i2c_init(bus) != 0)
+        return -1;
+    if (addr > 0x7f)
+        return -1;
+    if (wlen < 0 || rlen < 0 || (wlen + rlen) == 0)
+        return -1;
+    if ((wlen > 0 && wbuf == (const uint8_t*)0) ||
+            (rlen > 0 && rbuf == (uint8_t*)0))
+        return -1;
 
-	ewokos_addr_t base = i2c_base(bus);
-	/* a previous caller may have been killed mid transaction, so try to
-	 * free the bus once before giving up on it */
-	if (i2c_set_enable(base, 0) != 0) {
-		i2c_recover(base);
-		if (i2c_set_enable(base, 0) != 0)
-			return -1;
-	}
-	put32(base + IC_CON, _i2c_con[bus]);
-	put32(base + IC_TAR, addr);
-	(void)get32(base + IC_CLR_INTR);
-	if (i2c_set_enable(base, 1) != 0)
-		return -1;
+    ewokos_addr_t base = i2c_base(bus);
+    /* a previous caller may have been killed mid transaction, so try to
+     * free the bus once before giving up on it */
+    if (i2c_set_enable(base, 0) != 0) {
+        i2c_recover(base);
+        if (i2c_set_enable(base, 0) != 0)
+            return -1;
+    }
+    put32(base + IC_CON, _i2c_con[bus]);
+    put32(base + IC_TAR, addr);
+    (void)get32(base + IC_CLR_INTR);
+    if (i2c_set_enable(base, 1) != 0)
+        return -1;
 
-	int w = 0;         /* write bytes queued */
-	int rq = 0;        /* read commands queued */
-	int r = 0;         /* read bytes taken out of the RX FIFO */
-	uint32_t idle = 0;
+    int w = 0;         /* write bytes queued */
+    int rq = 0;        /* read commands queued */
+    int r = 0;         /* read bytes taken out of the RX FIFO */
+    uint32_t idle = 0;
 
-	while (w < wlen || r < rlen) {
-		int progress = 0;
+    while (w < wlen || r < rlen) {
+        int progress = 0;
 
-		while (w < wlen &&
-				(get32(base + IC_STATUS) & IC_STATUS_TFNF) != 0) {
-			uint32_t cmd = wbuf[w];
-			if (w == wlen - 1 && rlen == 0)
-				cmd |= IC_DATA_CMD_STOP;
-			put32(base + IC_DATA_CMD, cmd);
-			w++;
-			progress = 1;
-		}
+        while (w < wlen &&
+                (get32(base + IC_STATUS) & IC_STATUS_TFNF) != 0) {
+            uint32_t cmd = wbuf[w];
+            if (w == wlen - 1 && rlen == 0)
+                cmd |= IC_DATA_CMD_STOP;
+            put32(base + IC_DATA_CMD, cmd);
+            w++;
+            progress = 1;
+        }
 
-		if (w == wlen) {
-			while (rq < rlen && (rq - r) < _i2c_rx_depth[bus] &&
-					(get32(base + IC_STATUS) & IC_STATUS_TFNF) != 0) {
-				uint32_t cmd = IC_DATA_CMD_READ;
-				if (rq == rlen - 1)
-					cmd |= IC_DATA_CMD_STOP;
-				put32(base + IC_DATA_CMD, cmd);
-				rq++;
-				progress = 1;
-			}
-		}
+        if (w == wlen) {
+            while (rq < rlen && (rq - r) < _i2c_rx_depth[bus] &&
+                    (get32(base + IC_STATUS) & IC_STATUS_TFNF) != 0) {
+                uint32_t cmd = IC_DATA_CMD_READ;
+                if (rq == rlen - 1)
+                    cmd |= IC_DATA_CMD_STOP;
+                put32(base + IC_DATA_CMD, cmd);
+                rq++;
+                progress = 1;
+            }
+        }
 
-		while (r < rq &&
-				(get32(base + IC_STATUS) & IC_STATUS_RFNE) != 0) {
-			rbuf[r] = get32(base + IC_DATA_CMD) & 0xff;
-			r++;
-			progress = 1;
-		}
+        while (r < rq &&
+                (get32(base + IC_STATUS) & IC_STATUS_RFNE) != 0) {
+            rbuf[r] = get32(base + IC_DATA_CMD) & 0xff;
+            r++;
+            progress = 1;
+        }
 
-		if (get32(base + IC_RAW_INTR_STAT) & IC_RAW_TX_ABRT)
-			goto abort;
+        if (get32(base + IC_RAW_INTR_STAT) & IC_RAW_TX_ABRT)
+            goto abort;
 
-		if (progress)
-			idle = 0;
-		else if (++idle > I2C_POLL_MAX)
-			goto abort;
-	}
+        if (progress)
+            idle = 0;
+        else if (++idle > I2C_POLL_MAX)
+            goto abort;
+    }
 
-	/*
-	 * Drain the TX FIFO and wait for the stop to reach the wire; a NAK on
-	 * the last written byte only shows up as TX_ABRT here.
-	 */
-	for (idle = 0; ; idle++) {
-		if (get32(base + IC_RAW_INTR_STAT) & IC_RAW_TX_ABRT)
-			goto abort;
-		uint32_t st = get32(base + IC_STATUS);
-		if ((st & IC_STATUS_TFE) != 0 && (st & IC_STATUS_ACTIVITY) == 0)
-			break;
-		if (idle > I2C_POLL_MAX)
-			goto abort;
-	}
+    /*
+     * Drain the TX FIFO and wait for the stop to reach the wire; a NAK on
+     * the last written byte only shows up as TX_ABRT here.
+     */
+    for (idle = 0; ; idle++) {
+        if (get32(base + IC_RAW_INTR_STAT) & IC_RAW_TX_ABRT)
+            goto abort;
+        uint32_t st = get32(base + IC_STATUS);
+        if ((st & IC_STATUS_TFE) != 0 && (st & IC_STATUS_ACTIVITY) == 0)
+            break;
+        if (idle > I2C_POLL_MAX)
+            goto abort;
+    }
 
-	i2c_set_enable(base, 0);
-	return 0;
+    i2c_set_enable(base, 0);
+    return 0;
 
 abort:
-	i2c_recover(base);
-	return -1;
+    i2c_recover(base);
+    return -1;
 }
 
 int bcm2712_i2c_write(int bus, uint8_t addr, const uint8_t *buf, int len) {
-	return i2c_xfer(bus, addr, buf, len, (uint8_t*)0, 0);
+    return i2c_xfer(bus, addr, buf, len, (uint8_t*)0, 0);
 }
 
 int bcm2712_i2c_read(int bus, uint8_t addr, uint8_t *buf, int len) {
-	return i2c_xfer(bus, addr, (const uint8_t*)0, 0, buf, len);
+    return i2c_xfer(bus, addr, (const uint8_t*)0, 0, buf, len);
 }
 
 int bcm2712_i2c_write_read(int bus, uint8_t addr,
-		const uint8_t *wbuf, int wlen, uint8_t *rbuf, int rlen) {
-	return i2c_xfer(bus, addr, wbuf, wlen, rbuf, rlen);
+        const uint8_t *wbuf, int wlen, uint8_t *rbuf, int rlen) {
+    return i2c_xfer(bus, addr, wbuf, wlen, rbuf, rlen);
 }
 
 int bcm2712_i2c_putb(int bus, uint8_t addr, uint8_t reg, uint8_t data) {
-	uint8_t buf[2] = { reg, data };
-	return i2c_xfer(bus, addr, buf, 2, (uint8_t*)0, 0);
+    uint8_t buf[2] = { reg, data };
+    return i2c_xfer(bus, addr, buf, 2, (uint8_t*)0, 0);
 }
 
 int bcm2712_i2c_getb(int bus, uint8_t addr, uint8_t reg) {
-	uint8_t data = 0;
-	if (i2c_xfer(bus, addr, &reg, 1, &data, 1) != 0)
-		return -1;
-	return data;
+    uint8_t data = 0;
+    if (i2c_xfer(bus, addr, &reg, 1, &data, 1) != 0)
+        return -1;
+    return data;
 }

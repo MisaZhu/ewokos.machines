@@ -36,143 +36,143 @@ static int mmc_sdio_try_enable_high_speed(bool *enabled)
 }
 
 int mmc_io_rw_direct_host(int write, unsigned fn,
-	unsigned addr, uint8_t in, uint8_t *out)
+    unsigned addr, uint8_t in, uint8_t *out)
 {
-	struct mmc_cmd cmd = {};
-	int err;
+    struct mmc_cmd cmd = {};
+    int err;
 
-	/* sanity check */
-	if (addr & ~0x1FFFF)
-		return -EINVAL;
+    /* sanity check */
+    if (addr & ~0x1FFFF)
+        return -EINVAL;
 
-	cmd.cmdidx = SD_IO_RW_DIRECT;
-	cmd.cmdarg = write ? 0x80000000 : 0x00000000;
-	cmd.cmdarg |= fn << 28;
-	cmd.cmdarg |= (write && out) ? 0x08000000 : 0x00000000;
-	cmd.cmdarg |= addr << 9;
-	cmd.cmdarg |= in;
-	cmd.resp_type = MMC_RSP_SPI_R5 | MMC_RSP_R5 | MMC_CMD_AC;
+    cmd.cmdidx = SD_IO_RW_DIRECT;
+    cmd.cmdarg = write ? 0x80000000 : 0x00000000;
+    cmd.cmdarg |= fn << 28;
+    cmd.cmdarg |= (write && out) ? 0x08000000 : 0x00000000;
+    cmd.cmdarg |= addr << 9;
+    cmd.cmdarg |= in;
+    cmd.resp_type = MMC_RSP_SPI_R5 | MMC_RSP_R5 | MMC_CMD_AC;
 
-	err = sdhci_send_command(&cmd, 0);
+    err = sdhci_send_command(&cmd, 0);
 
 #if MMC_DEBUG
-	if(out)
+    if(out)
         brcm_log("%s w:%d f:%d a:%x in:%x out:%x\n", __func__, write, fn, addr, in, cmd.response[0] & 0xFF);
     else
         brcm_log("%s w:%d f:%d a:%x in:%x\n", __func__, write, fn, addr, in);
 #endif
 
-	if (err){
-		brcm_log("cmd52 transport fail w=%d fn=%u addr=0x%x in=0x%x err=%d stat_resp=0x%x\n",
-			write, fn, addr, in, err, cmd.response[0]);
-		return err;
-	}
+    if (err){
+        brcm_log("cmd52 transport fail w=%d fn=%u addr=0x%x in=0x%x err=%d stat_resp=0x%x\n",
+            write, fn, addr, in, err, cmd.response[0]);
+        return err;
+    }
 
-	if (cmd.response[0] & R5_ERROR){
-		brcm_log("cmd52 r5 error w=%d fn=%u addr=0x%x resp=0x%x\n",
-			write, fn, addr, cmd.response[0]);
-		return -EIO;
-	}if (cmd.response[0] & R5_FUNCTION_NUMBER){
-		brcm_log("cmd52 fn error w=%d fn=%u addr=0x%x resp=0x%x\n",
-			write, fn, addr, cmd.response[0]);
-		return -EINVAL;
-	}if (cmd.response[0] & R5_OUT_OF_RANGE){
-		brcm_log("cmd52 range error w=%d fn=%u addr=0x%x resp=0x%x\n",
-			write, fn, addr, cmd.response[0]);
-		return -ERANGE;
-	}
+    if (cmd.response[0] & R5_ERROR){
+        brcm_log("cmd52 r5 error w=%d fn=%u addr=0x%x resp=0x%x\n",
+            write, fn, addr, cmd.response[0]);
+        return -EIO;
+    }if (cmd.response[0] & R5_FUNCTION_NUMBER){
+        brcm_log("cmd52 fn error w=%d fn=%u addr=0x%x resp=0x%x\n",
+            write, fn, addr, cmd.response[0]);
+        return -EINVAL;
+    }if (cmd.response[0] & R5_OUT_OF_RANGE){
+        brcm_log("cmd52 range error w=%d fn=%u addr=0x%x resp=0x%x\n",
+            write, fn, addr, cmd.response[0]);
+        return -ERANGE;
+    }
 
-	if (out) {
-		if (mmc_host_is_spi(host))
-			*out = (cmd.response[0] >> 8) & 0xFF;
-		else
-			*out = cmd.response[0] & 0xFF;
-	}
+    if (out) {
+        if (mmc_host_is_spi(host))
+            *out = (cmd.response[0] >> 8) & 0xFF;
+        else
+            *out = cmd.response[0] & 0xFF;
+    }
 
-	return 0;
+    return 0;
 }
 
 int mmc_io_rw_direct( int write, unsigned fn,
-	unsigned addr, uint8_t in, uint8_t *out)
+    unsigned addr, uint8_t in, uint8_t *out)
 {
-	return mmc_io_rw_direct_host(write, fn, addr, in, out);
+    return mmc_io_rw_direct_host(write, fn, addr, in, out);
 }
 
 int mmc_io_rw_extended(int write, int fn,
-	unsigned addr, int incr_addr, uint8_t *buf, unsigned blocks, unsigned blksz)
+    unsigned addr, int incr_addr, uint8_t *buf, unsigned blocks, unsigned blksz)
 {
-	struct mmc_cmd cmd = {};
-	struct mmc_data data = {};
-	int err;
+    struct mmc_cmd cmd = {};
+    struct mmc_data data = {};
+    int err;
 
-	WARN_ON(blksz == 0);
+    WARN_ON(blksz == 0);
 
-	/* sanity check */
-	if (addr & ~0x1FFFF)
-		return -EINVAL;
+    /* sanity check */
+    if (addr & ~0x1FFFF)
+        return -EINVAL;
 
-	cmd.cmdidx = SD_IO_RW_EXTENDED;
-	cmd.cmdarg = write ? 0x80000000 : 0x00000000;
-	cmd.cmdarg |= fn << 28;
-	cmd.cmdarg |= incr_addr ? 0x04000000 : 0x00000000;
-	cmd.cmdarg |= addr << 9;
-	if (blocks == 0)
-		cmd.cmdarg |= (blksz == 512) ? 0 : blksz;	/* byte mode */
-	else
-		cmd.cmdarg |= 0x08000000 | blocks;		/* block mode */
-	cmd.resp_type = MMC_RSP_SPI_R5 | MMC_RSP_R5 | MMC_CMD_ADTC;
+    cmd.cmdidx = SD_IO_RW_EXTENDED;
+    cmd.cmdarg = write ? 0x80000000 : 0x00000000;
+    cmd.cmdarg |= fn << 28;
+    cmd.cmdarg |= incr_addr ? 0x04000000 : 0x00000000;
+    cmd.cmdarg |= addr << 9;
+    if (blocks == 0)
+        cmd.cmdarg |= (blksz == 512) ? 0 : blksz;	/* byte mode */
+    else
+        cmd.cmdarg |= 0x08000000 | blocks;		/* block mode */
+    cmd.resp_type = MMC_RSP_SPI_R5 | MMC_RSP_R5 | MMC_CMD_ADTC;
 
-	data.blocksize = blksz;
-	/* Code in host drivers/fwk assumes that "blocks" always is >=1 */
-	data.blocks = blocks ? blocks : 1;
-	data.flags = write ? MMC_DATA_WRITE : MMC_DATA_READ;
+    data.blocksize = blksz;
+    /* Code in host drivers/fwk assumes that "blocks" always is >=1 */
+    data.blocks = blocks ? blocks : 1;
+    data.flags = write ? MMC_DATA_WRITE : MMC_DATA_READ;
     data.src = buf;
 
     err = sdhci_send_command(&cmd, &data);
 
 #if MMC_DEBUG
-	if(fn == 2){ //dont dump interrupt and console data
-		brcm_log("%s w:%d f:%d a:%x%s b:%d s:%d r:%d ",
-			__func__, write, fn, addr, incr_addr?"+":" ", blocks, blksz, err);
-		if(blksz <= 4 || fn != 2)
-			brcm_log("[%02x %02x %02x %02x]\n", buf[0], buf[1], buf[2], buf[3]);
-		else
-			hexdump("", buf, min(blksz, 256));
-	}
+    if(fn == 2){ //dont dump interrupt and console data
+        brcm_log("%s w:%d f:%d a:%x%s b:%d s:%d r:%d ",
+            __func__, write, fn, addr, incr_addr?"+":" ", blocks, blksz, err);
+        if(blksz <= 4 || fn != 2)
+            brcm_log("[%02x %02x %02x %02x]\n", buf[0], buf[1], buf[2], buf[3]);
+        else
+            hexdump("", buf, min(blksz, 256));
+    }
 #endif
-	if (err){
-		return err;
-	}
+    if (err){
+        return err;
+    }
 
     if (cmd.response[0] & R5_ERROR)
-		err = -EIO;
-	else if (cmd.response[0] & R5_FUNCTION_NUMBER)
-		err = -EINVAL;
-	else if (cmd.response[0] & R5_OUT_OF_RANGE)
-		err = -ERANGE;
-	else
-		err = 0;
+        err = -EIO;
+    else if (cmd.response[0] & R5_FUNCTION_NUMBER)
+        err = -EINVAL;
+    else if (cmd.response[0] & R5_OUT_OF_RANGE)
+        err = -ERANGE;
+    else
+        err = 0;
 
-	return err;
+    return err;
 }
 
 static int mmc_go_idle(void)
 {
-	struct mmc_cmd cmd;
-	int err;
+    struct mmc_cmd cmd;
+    int err;
 
-	usleep(1000);
+    usleep(1000);
 
-	cmd.cmdidx = MMC_CMD_GO_IDLE_STATE;
-	cmd.cmdarg = 0;
-	cmd.resp_type = MMC_RSP_NONE;
+    cmd.cmdidx = MMC_CMD_GO_IDLE_STATE;
+    cmd.cmdarg = 0;
+    cmd.resp_type = MMC_RSP_NONE;
 
-	err = sdhci_send_command(&cmd, NULL);
+    err = sdhci_send_command(&cmd, NULL);
 
-	if (err)
-		return err;
+    if (err)
+        return err;
 
-	return 0;
+    return 0;
 }
 
 /*
@@ -180,83 +180,83 @@ static int mmc_go_idle(void)
 */
 static int mmc_sdio_set_bus_width(uint8_t width)
 {
-	uint8_t if_ctrl;
-	int err;
+    uint8_t if_ctrl;
+    int err;
 
-	err = mmc_io_rw_direct(0, 0, SDIO_CCCR_IF, 0, &if_ctrl);
-	if (err)
-		return err;
+    err = mmc_io_rw_direct(0, 0, SDIO_CCCR_IF, 0, &if_ctrl);
+    if (err)
+        return err;
 
-	if_ctrl &= ~SDIO_BUS_WIDTH_MASK;
-	if_ctrl |= (width == 4) ? SDIO_BUS_WIDTH_4BIT : SDIO_BUS_WIDTH_1BIT;
+    if_ctrl &= ~SDIO_BUS_WIDTH_MASK;
+    if_ctrl |= (width == 4) ? SDIO_BUS_WIDTH_4BIT : SDIO_BUS_WIDTH_1BIT;
 
-	err = mmc_io_rw_direct(1, 0, SDIO_CCCR_IF, if_ctrl, NULL);
-	if (err)
-		return err;
+    err = mmc_io_rw_direct(1, 0, SDIO_CCCR_IF, if_ctrl, NULL);
+    if (err)
+        return err;
 
-	_mmc.bus_width = width;
-	return sdhci_set_ios(&_mmc);
+    _mmc.bus_width = width;
+    return sdhci_set_ios(&_mmc);
 }
 
 int mmc_configure_sdio_bus(uint8_t width, uint32_t clock)
 {
-	int err;
+    int err;
 
-	err = mmc_sdio_set_bus_width(width);
-	if (err)
-		return err;
+    err = mmc_sdio_set_bus_width(width);
+    if (err)
+        return err;
 
-	_mmc.clock = clock;
-	_mmc.selected_mode = MMC_LEGACY;
-	return sdhci_set_ios(&_mmc);
+    _mmc.clock = clock;
+    _mmc.selected_mode = MMC_LEGACY;
+    return sdhci_set_ios(&_mmc);
 }
 
 static int brcm_init(void)
 {
-	struct mmc_cmd cmd = {};
-	int err;
+    struct mmc_cmd cmd = {};
+    int err;
 
-	usleep(1000); 
+    usleep(1000); 
 
-	cmd.cmdidx = 5;
-	cmd.cmdarg = 0x0;
-	cmd.resp_type = MMC_RSP_SPI_R4 | MMC_RSP_R4 | MMC_CMD_BCR;
+    cmd.cmdidx = 5;
+    cmd.cmdarg = 0x0;
+    cmd.resp_type = MMC_RSP_SPI_R4 | MMC_RSP_R4 | MMC_CMD_BCR;
 
-	err = sdhci_send_command(&cmd, NULL);
+    err = sdhci_send_command(&cmd, NULL);
 
-	if (err)
-		return err;
+    if (err)
+        return err;
 
-	cmd.cmdidx = 5;
-	cmd.cmdarg = 0x300000;
-	cmd.resp_type = MMC_RSP_SPI_R4 | MMC_RSP_R4 | MMC_CMD_BCR;
+    cmd.cmdidx = 5;
+    cmd.cmdarg = 0x300000;
+    cmd.resp_type = MMC_RSP_SPI_R4 | MMC_RSP_R4 | MMC_CMD_BCR;
 
-	err = sdhci_send_command(&cmd, NULL);
+    err = sdhci_send_command(&cmd, NULL);
 
-	if (err)
-		return err;
+    if (err)
+        return err;
 
-	cmd.cmdidx = 3;
-	cmd.cmdarg = 0x0;
-	cmd.resp_type = MMC_RSP_R6 | MMC_CMD_BCR;
+    cmd.cmdidx = 3;
+    cmd.cmdarg = 0x0;
+    cmd.resp_type = MMC_RSP_R6 | MMC_CMD_BCR;
 
-	err = sdhci_send_command(&cmd, NULL);
+    err = sdhci_send_command(&cmd, NULL);
 
-	if (err)
-		return err;
+    if (err)
+        return err;
 
-	_mmc.rca = (cmd.response[0] >> 16) & 0xffff;
-	if (_mmc.rca == 0)
-		_mmc.rca = 1;
+    _mmc.rca = (cmd.response[0] >> 16) & 0xffff;
+    if (_mmc.rca == 0)
+        _mmc.rca = 1;
 
-	cmd.cmdidx = 7;
-	cmd.cmdarg = ((uint32_t)_mmc.rca) << 16;
-	cmd.resp_type = MMC_RSP_R1 | MMC_CMD_AC;
+    cmd.cmdidx = 7;
+    cmd.cmdarg = ((uint32_t)_mmc.rca) << 16;
+    cmd.resp_type = MMC_RSP_R1 | MMC_CMD_AC;
 
-	err = sdhci_send_command(&cmd, NULL);
+    err = sdhci_send_command(&cmd, NULL);
 
-	if (err)
-		return err;
+    if (err)
+        return err;
 
         bool high_speed = false;
 
@@ -276,9 +276,9 @@ static int brcm_init(void)
          * sdhci_set_clock() already clamps targets above the real source
          * clock, so low-source boards keep working unchanged.
          */
-	err = mmc_sdio_set_bus_width(4);
-	if (err)
-		return err;
+    err = mmc_sdio_set_bus_width(4);
+    if (err)
+        return err;
 
         err = mmc_sdio_try_enable_high_speed(&high_speed);
         if (err) {
@@ -327,23 +327,23 @@ static int brcm_init(void)
                          high_speed ? "high-speed" : "legacy");
         }
 
-	return 0;
+    return 0;
 }
 
 
 static int mmc_init_card(void)
 {
-	int err;
+    int err;
 
-	err = mmc_go_idle();
-	if (err)
-		return err;
-	usleep(200000);
+    err = mmc_go_idle();
+    if (err)
+        return err;
+    usleep(200000);
 
-	err = brcm_init();
-	if (err)
-		return err;
-	return 0;
+    err = brcm_init();
+    if (err)
+        return err;
+    return 0;
 }
 
 int mmc_hw_reset(void)
@@ -352,11 +352,11 @@ int mmc_hw_reset(void)
     _mmc.bus_width = 1;
     _mmc.clock = 400000;
     _mmc.ocr = 1;
-	_mmc.voltages =  MMC_VDD_32_33 | MMC_VDD_33_34|MMC_VDD_165_195;
-	_mmc.selected_mode = MMC_LEGACY;
+    _mmc.voltages =  MMC_VDD_32_33 | MMC_VDD_33_34|MMC_VDD_165_195;
+    _mmc.selected_mode = MMC_LEGACY;
 
-	if (sdhci_set_ios(&_mmc))
-		return -EIO;
+    if (sdhci_set_ios(&_mmc))
+        return -EIO;
 
-	return mmc_init_card();
+    return mmc_init_card();
 }

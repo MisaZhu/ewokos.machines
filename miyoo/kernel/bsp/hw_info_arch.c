@@ -14,27 +14,27 @@ ewokos_addr_t _core_base_offset = 0;
 #define FB_SIZE (4*MB)
 
 void sys_info_init_arch(void) {
-	memset(&_sys_info, 0, sizeof(sys_info_t));
-	_core_base_offset =  0x01000000;
-	strcpy(_sys_info.machine, "miyoo-mini");
-	strcpy(_sys_info.arch, "armv7");
-	_sys_info.phy_offset = 0x20000000;
-	_sys_info.vector_base = 0x20000000;
-	_sys_info.total_phy_mem_size = 128*MB;
-	_sys_info.total_usable_mem_size = _sys_info.total_phy_mem_size;
-	_sys_info.mmio.phy_base = 0x1f000000;
-	_sys_info.mmio.size = 16*MB;
+    memset(&_sys_info, 0, sizeof(sys_info_t));
+    _core_base_offset =  0x01000000;
+    strcpy(_sys_info.machine, "miyoo-mini");
+    strcpy(_sys_info.arch, "armv7");
+    _sys_info.phy_offset = 0x20000000;
+    _sys_info.vector_base = 0x20000000;
+    _sys_info.total_phy_mem_size = 128*MB;
+    _sys_info.total_usable_mem_size = _sys_info.total_phy_mem_size;
+    _sys_info.mmio.phy_base = 0x1f000000;
+    _sys_info.mmio.size = 16*MB;
 
-	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-			_sys_info.total_usable_mem_size - FB_SIZE;
+    _sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
+            _sys_info.total_usable_mem_size - FB_SIZE;
 
-	_sys_info.sys_dma.size = 4*MB;
-	_sys_info.kmalloc_size = 4*MB;
+    _sys_info.sys_dma.size = 4*MB;
+    _sys_info.kmalloc_size = 4*MB;
 
 #ifdef KERNEL_SMP
-	_sys_info.cores = get_cpu_cores();
+    _sys_info.cores = get_cpu_cores();
 #else
-	_sys_info.cores = 1;
+    _sys_info.cores = 1;
 #endif
 }
 
@@ -46,103 +46,103 @@ extern char __entry[];
 inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { //TODO
     if(core_id >= _sys_info.cores)
         return;
-	ewokos_addr_t entry = V2P((ewokos_addr_t)(__entry) + _sys_info.kernel_base);
+    ewokos_addr_t entry = V2P((ewokos_addr_t)(__entry) + _sys_info.kernel_base);
 
-	do {
- 	   put32(SECOND_START_ADDR_HI, (entry >> 16));
-	} while(get32(SECOND_START_ADDR_HI) != (entry >> 16));
+    do {
+       put32(SECOND_START_ADDR_HI, (entry >> 16));
+    } while(get32(SECOND_START_ADDR_HI) != (entry >> 16));
 
-	do {
-   		put32(SECOND_START_ADDR_LO, (entry & 0xffff));
-	} while(get32(SECOND_START_ADDR_LO) != (entry & 0xffff));
+    do {
+        put32(SECOND_START_ADDR_LO, (entry & 0xffff));
+    } while(get32(SECOND_START_ADDR_LO) != (entry & 0xffff));
 
-	do {
- 	   put32(SECOND_MAGIC_NUMBER_ADDR, 0xBABE);
-	} while(get32(SECOND_MAGIC_NUMBER_ADDR) != 0XBABE);
+    do {
+       put32(SECOND_MAGIC_NUMBER_ADDR, 0xBABE);
+    } while(get32(SECOND_MAGIC_NUMBER_ADDR) != 0XBABE);
     __asm__("sev");
 }
 #endif
 
 void arch_vm(page_dir_entry_t* vm) {
-	//map frame buffer
-	map_pages_size(vm, 0x87c00000, 0x27c00000, FB_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    //map frame buffer
+    map_pages_size(vm, 0x87c00000, 0x27c00000, FB_SIZE, AP_RW_D, PTE_ATTR_DEV);
 
-	//map gic controller
-	ewokos_addr_t pgic = 0x16000000;
-	ewokos_addr_t vgic = 0x16000000;
-	map_pages_size(vm, vgic, pgic, 4*MB, AP_RW_D, PTE_ATTR_DEV);
+    //map gic controller
+    ewokos_addr_t pgic = 0x16000000;
+    ewokos_addr_t vgic = 0x16000000;
+    map_pages_size(vm, vgic, pgic, 4*MB, AP_RW_D, PTE_ATTR_DEV);
 
-	ewokos_addr_t vbase = _sys_info.mmio.v_base + _core_base_offset;
-	ewokos_addr_t pbase = _sys_info.mmio.phy_base + _core_base_offset;
-	map_page(vm, vbase, pbase, AP_RW_D, PTE_ATTR_DEV);
-	map_page(vm, pbase, pbase, AP_RW_D, PTE_ATTR_DEV);
+    ewokos_addr_t vbase = _sys_info.mmio.v_base + _core_base_offset;
+    ewokos_addr_t pbase = _sys_info.mmio.phy_base + _core_base_offset;
+    map_page(vm, vbase, pbase, AP_RW_D, PTE_ATTR_DEV);
+    map_page(vm, pbase, pbase, AP_RW_D, PTE_ATTR_DEV);
 #ifdef KERNEL_SMP
-	map_page(vm, SECOND_START_ADDR_HI , SECOND_START_ADDR_HI, AP_RW_D, PTE_ATTR_DEV);
+    map_page(vm, SECOND_START_ADDR_HI , SECOND_START_ADDR_HI, AP_RW_D, PTE_ATTR_DEV);
 #endif
 }
 
 static int32_t clone_proc_l1_entry(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm, ewokos_addr_t vaddr) {
-	uint32_t index = PAGE_DIR_INDEX(vaddr);
-	page_dir_entry_t kernel_entry = kernel_vm[index];
+    uint32_t index = PAGE_DIR_INDEX(vaddr);
+    page_dir_entry_t kernel_entry = kernel_vm[index];
 
-	if(kernel_entry.type == 0)
-		return 0;
-	if(vm[index].type != 0)
-		return 0;
+    if(kernel_entry.type == 0)
+        return 0;
+    if(vm[index].type != 0)
+        return 0;
 
-	if(kernel_entry.type != PAGE_DIR_2LEVEL_TYPE) {
-		vm[index] = kernel_entry;
-		return 0;
-	}
+    if(kernel_entry.type != PAGE_DIR_2LEVEL_TYPE) {
+        vm[index] = kernel_entry;
+        return 0;
+    }
 
-	page_table_entry_t* kernel_table = (page_table_entry_t*)P2V(BASE_TO_PAGE_TABLE(kernel_entry.base));
-	page_table_entry_t* proc_table = (page_table_entry_t*)kalloc1k();
-	if(proc_table == NULL)
-		return -1;
+    page_table_entry_t* kernel_table = (page_table_entry_t*)P2V(BASE_TO_PAGE_TABLE(kernel_entry.base));
+    page_table_entry_t* proc_table = (page_table_entry_t*)kalloc1k();
+    if(proc_table == NULL)
+        return -1;
 
-	memcpy(proc_table, kernel_table, PAGE_TABLE_SIZE);
-	vm[index] = kernel_entry;
-	vm[index].base = PAGE_TABLE_TO_BASE(V2P(proc_table));
-	return 0;
+    memcpy(proc_table, kernel_table, PAGE_TABLE_SIZE);
+    vm[index] = kernel_entry;
+    vm[index].base = PAGE_TABLE_TO_BASE(V2P(proc_table));
+    return 0;
 }
 
 int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
-	if(clone_proc_l1_entry(vm, kernel_vm, 0x16000000) != 0)
-		return -1;
+    if(clone_proc_l1_entry(vm, kernel_vm, 0x16000000) != 0)
+        return -1;
 #ifdef KERNEL_SMP
-	if(clone_proc_l1_entry(vm, kernel_vm, SECOND_START_ADDR_HI) != 0)
-		return -1;
+    if(clone_proc_l1_entry(vm, kernel_vm, SECOND_START_ADDR_HI) != 0)
+        return -1;
 #endif
-	return 0;
+    return 0;
 }
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
+    kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	ewokos_addr_t end = phy_base + size;
-	ewokos_addr_t fb_base = 0x27c00000;
-	ewokos_addr_t fb_end = fb_base + FB_SIZE;
-	ewokos_addr_t mmio_end = _sys_info.mmio.phy_base + _sys_info.mmio.size;
+    ewokos_addr_t end = phy_base + size;
+    ewokos_addr_t fb_base = 0x27c00000;
+    ewokos_addr_t fb_end = fb_base + FB_SIZE;
+    ewokos_addr_t mmio_end = _sys_info.mmio.phy_base + _sys_info.mmio.size;
 
-	if(size == 0)
-		return -1;
-	if(phy_base >= fb_base && end > phy_base && end <= fb_end)
-		return 0;
-	if(phy_base >= _sys_info.mmio.phy_base && end > phy_base && end <= mmio_end)
-		return 0;
-	return -1;
+    if(size == 0)
+        return -1;
+    if(phy_base >= fb_base && end > phy_base && end <= fb_end)
+        return 0;
+    if(phy_base >= _sys_info.mmio.phy_base && end > phy_base && end <= mmio_end)
+        return 0;
+    return -1;
 }
 
 int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
-	ewokos_addr_t map_end = phy_base + size;
+    ewokos_addr_t map_end = phy_base + size;
 
-	if(map_end < phy_base)
-		return 0;
-	if(phy_base < _sys_info.allocable_phy_mem_base)
-		return 0;
-	if(map_end > _sys_info.allocable_phy_mem_top)
-		return 0;
-	return 1;
+    if(map_end < phy_base)
+        return 0;
+    if(phy_base < _sys_info.allocable_phy_mem_base)
+        return 0;
+    if(map_end > _sys_info.allocable_phy_mem_top)
+        return 0;
+    return 1;
 }

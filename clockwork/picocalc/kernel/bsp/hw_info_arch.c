@@ -18,7 +18,7 @@ struct arm_smccc_res {
 };
 
 static struct arm_smccc_res invoke_sip_fn_smc(unsigned long function_id, 
-		unsigned long arg0,unsigned long arg1,unsigned long arg2)
+        unsigned long arg0,unsigned long arg1,unsigned long arg2)
 {
     struct arm_smccc_res res;
     arm_smccc_smc(function_id, arg0, arg1, arg2, 0, 0, 0, 0, &res);
@@ -35,7 +35,7 @@ int psci_cpu_on(unsigned long cpuid, unsigned long entry_point)
 extern char __entry[];
 
 inline void __attribute__((optimize("O0"))) start_core(uint32_t core_id) { 
-	psci_cpu_on(core_id, __entry);																		   
+    psci_cpu_on(core_id, __entry);																		   
 }
 
 #endif
@@ -55,11 +55,11 @@ void sys_info_init_arch(void) {
     _sys_info.mmio.phy_base = 0xFF000000;
     _sys_info.mmio.size = 12*MB;
 
-	_sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
-			_sys_info.total_usable_mem_size - FB_SIZE;
+    _sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
+            _sys_info.total_usable_mem_size - FB_SIZE;
 
-	_sys_info.kmalloc_size = 4*MB;
-	_sys_info.sys_dma.size = 4*MB;
+    _sys_info.kmalloc_size = 4*MB;
+    _sys_info.sys_dma.size = 4*MB;
 
     _sys_info.cores = 3;
 }
@@ -69,29 +69,29 @@ void arch_vm(page_dir_entry_t* vm) {
 }
 
 int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
-	(void)vm;
-	(void)kernel_vm;
-	return 0;
+    (void)vm;
+    (void)kernel_vm;
+    return 0;
 }
 
 void kalloc_arch(void) {
-	kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
+    kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-	if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
-		return 0;
-	return -1;
+    if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
+        return 0;
+    return -1;
 }
 
 int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
-	ewokos_addr_t map_end = phy_base + size;
+    ewokos_addr_t map_end = phy_base + size;
 
-	if(map_end < phy_base)
-		return 0;
-	if(phy_base < _sys_info.allocable_phy_mem_base)
-		return 0;
-	if(map_end > _sys_info.allocable_phy_mem_top)
-		return 0;
-	return 1;
+    if(map_end < phy_base)
+        return 0;
+    if(phy_base < _sys_info.allocable_phy_mem_base)
+        return 0;
+    if(map_end > _sys_info.allocable_phy_mem_top)
+        return 0;
+    return 1;
 }

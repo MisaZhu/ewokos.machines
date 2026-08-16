@@ -19,82 +19,82 @@ static volatile int _dpi_ok = 0;
 static bcm2712_dpi_timing_t _dpi_timing;
 
 static void blt16(uint32_t* src, uint16_t* dst, uint32_t w, uint32_t h) {
-	uint32_t sz = w * h;
-	uint32_t i;
+    uint32_t sz = w * h;
+    uint32_t i;
 
-	for (i = 0; i < sz; i++) {
-		uint32_t s = src[i];
-		uint8_t r = (s >> 16) & 0xff;
-		uint8_t g = (s >> 8)  & 0xff;
-		uint8_t b = s & 0xff;
-		dst[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-	}
+    for (i = 0; i < sz; i++) {
+        uint32_t s = src[i];
+        uint8_t r = (s >> 16) & 0xff;
+        uint8_t g = (s >> 8)  & 0xff;
+        uint8_t b = s & 0xff;
+        dst[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+    }
 }
 
 static uint32_t blt32(const fbinfo_t* fbinfo, const graph_t* g) {
-	uint32_t bytes_per_pixel = fbinfo->depth / 8;
-	uint8_t* dst = (uint8_t*)(uintptr_t)(fbinfo->pointer +
-			fbinfo->yoffset * fbinfo->pitch +
-			fbinfo->xoffset * bytes_per_pixel);
-	const uint32_t* src = g->buffer;
-	uint32_t row_bytes = (uint32_t)g->w * bytes_per_pixel;
-	uint32_t total_bytes = (uint32_t)g->h * row_bytes;
+    uint32_t bytes_per_pixel = fbinfo->depth / 8;
+    uint8_t* dst = (uint8_t*)(uintptr_t)(fbinfo->pointer +
+            fbinfo->yoffset * fbinfo->pitch +
+            fbinfo->xoffset * bytes_per_pixel);
+    const uint32_t* src = g->buffer;
+    uint32_t row_bytes = (uint32_t)g->w * bytes_per_pixel;
+    uint32_t total_bytes = (uint32_t)g->h * row_bytes;
 
-	if (fbinfo->pitch == row_bytes) {
-		memcpy(dst, src, total_bytes);
-		return total_bytes;
-	}
+    if (fbinfo->pitch == row_bytes) {
+        memcpy(dst, src, total_bytes);
+        return total_bytes;
+    }
 
-	for (int32_t y = 0; y < g->h; ++y) {
-		uint8_t* dst_row = dst + y * fbinfo->pitch;
-		const uint8_t* src_row = (const uint8_t*)(src + y * g->w);
-		memcpy(dst_row, src_row, row_bytes);
-	}
-	return total_bytes;
+    for (int32_t y = 0; y < g->h; ++y) {
+        uint8_t* dst_row = dst + y * fbinfo->pitch;
+        const uint8_t* src_row = (const uint8_t*)(src + y * g->w);
+        memcpy(dst_row, src_row, row_bytes);
+    }
+    return total_bytes;
 }
 
 static uint32_t blt16_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
-	uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
-			fbinfo->yoffset * fbinfo->pitch +
-			fbinfo->xoffset * 2;
-	const uint32_t* src = g->buffer;
+    uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
+            fbinfo->yoffset * fbinfo->pitch +
+            fbinfo->xoffset * 2;
+    const uint32_t* src = g->buffer;
 
-	for (int32_t y = 0; y < g->h; ++y) {
-		blt16((uint32_t*)(src + y * g->w),
-				(uint16_t*)(dst_base + y * fbinfo->pitch),
-				g->w, 1);
-	}
-	return g->w * g->h * 2;
+    for (int32_t y = 0; y < g->h; ++y) {
+        blt16((uint32_t*)(src + y * g->w),
+                (uint16_t*)(dst_base + y * fbinfo->pitch),
+                g->w, 1);
+    }
+    return g->w * g->h * 2;
 }
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
-	if (fbinfo->depth != 32 && fbinfo->depth != 16) {
-		return 0;
-	}
+    if (fbinfo->depth != 32 && fbinfo->depth != 16) {
+        return 0;
+    }
 
-	if (fbinfo->depth == 16) {
-		return blt16_pitch(fbinfo, g);
-	}
-	if ((uintptr_t)fbinfo->pointer != (uintptr_t)g->buffer) {
-		return blt32(fbinfo, g);
-	}
-	return g->w * g->h * 4;
+    if (fbinfo->depth == 16) {
+        return blt16_pitch(fbinfo, g);
+    }
+    if ((uintptr_t)fbinfo->pointer != (uintptr_t)g->buffer) {
+        return blt32(fbinfo, g);
+    }
+    return g->w * g->h * 4;
 }
 
 static fbinfo_t* get_info(void) {
-	return bsp_get_fbinfo();
+    return bsp_get_fbinfo();
 }
 
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
-	if (_dpi_output) {
-		/* explicit opt-in via "output":"dpi"; fall back to HDMI on failure */
-		if (bsp_fb_init_dpi(w, h, dep, &_dpi_timing) == 0) {
-			_dpi_ok = 1;
-			return 0;
-		}
-		slog("fbdisplayd: dpi init failed, falling back to hdmi\n");
-	}
-	return bsp_fb_init(w, h, dep);
+    if (_dpi_output) {
+        /* explicit opt-in via "output":"dpi"; fall back to HDMI on failure */
+        if (bsp_fb_init_dpi(w, h, dep, &_dpi_timing) == 0) {
+            _dpi_ok = 1;
+            return 0;
+        }
+        slog("fbdisplayd: dpi init failed, falling back to hdmi\n");
+    }
+    return bsp_fb_init(w, h, dep);
 }
 
 /*
@@ -103,14 +103,14 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
  * and restarts the engine if it ever stops.
  */
 static void* dpi_watchdog(void* arg) {
-	(void)arg;
-	while (!_dpi_ok)
-		usleep(100000);
-	while (1) {
-		sleep(1);
-		bcm2712_rp1_dpi_check();
-	}
-	return NULL;
+    (void)arg;
+    while (!_dpi_ok)
+        usleep(100000);
+    while (1) {
+        sleep(1);
+        bcm2712_rp1_dpi_check();
+    }
+    return NULL;
 }
 
 /*
@@ -123,79 +123,79 @@ static void* dpi_watchdog(void* arg) {
  * Without pclk (or with pclk 0) CVT-RB 60Hz timings are derived.
  */
 static void load_dpi_conf(const char* conf_file) {
-	json_var_t *conf_var = json_parse_file(conf_file);
-	if (conf_var == NULL)
-		return;
+    json_var_t *conf_var = json_parse_file(conf_file);
+    if (conf_var == NULL)
+        return;
 
-	const char* output = json_get_str_def(conf_var, "output", "");
-	if (strcmp(output, "dpi") != 0) {
-		json_var_unref(conf_var);
-		return;
-	}
+    const char* output = json_get_str_def(conf_var, "output", "");
+    if (strcmp(output, "dpi") != 0) {
+        json_var_unref(conf_var);
+        return;
+    }
 
-	memset(&_dpi_timing, 0, sizeof(_dpi_timing));
-	_dpi_timing.pixel_clock_hz = (uint32_t)json_get_int_def(conf_var, "pclk", 0);
-	_dpi_timing.hfp    = (uint32_t)json_get_int_def(conf_var, "hfp", 0);
-	_dpi_timing.hsync  = (uint32_t)json_get_int_def(conf_var, "hsync", 0);
-	_dpi_timing.hbp    = (uint32_t)json_get_int_def(conf_var, "hbp", 0);
-	_dpi_timing.vfp    = (uint32_t)json_get_int_def(conf_var, "vfp", 0);
-	_dpi_timing.vsync  = (uint32_t)json_get_int_def(conf_var, "vsync", 0);
-	_dpi_timing.vbp    = (uint32_t)json_get_int_def(conf_var, "vbp", 0);
-	_dpi_timing.hsync_pos = (uint8_t)json_get_int_def(conf_var, "hsync_pol", 1);
-	_dpi_timing.vsync_pos = (uint8_t)json_get_int_def(conf_var, "vsync_pol", 1);
-	_dpi_timing.mode = (uint8_t)json_get_int_def(conf_var, "mode", 7);
-	_dpi_timing.bl_pin = (int8_t)json_get_int_def(conf_var, "bl_pin", -1);
-	json_var_unref(conf_var);
-	_dpi_output = 1;
-	slog("fbdisplayd: dpi output selected mode=%u pclk=%u bl_pin=%d\n",
-			_dpi_timing.mode, _dpi_timing.pixel_clock_hz, _dpi_timing.bl_pin);
+    memset(&_dpi_timing, 0, sizeof(_dpi_timing));
+    _dpi_timing.pixel_clock_hz = (uint32_t)json_get_int_def(conf_var, "pclk", 0);
+    _dpi_timing.hfp    = (uint32_t)json_get_int_def(conf_var, "hfp", 0);
+    _dpi_timing.hsync  = (uint32_t)json_get_int_def(conf_var, "hsync", 0);
+    _dpi_timing.hbp    = (uint32_t)json_get_int_def(conf_var, "hbp", 0);
+    _dpi_timing.vfp    = (uint32_t)json_get_int_def(conf_var, "vfp", 0);
+    _dpi_timing.vsync  = (uint32_t)json_get_int_def(conf_var, "vsync", 0);
+    _dpi_timing.vbp    = (uint32_t)json_get_int_def(conf_var, "vbp", 0);
+    _dpi_timing.hsync_pos = (uint8_t)json_get_int_def(conf_var, "hsync_pol", 1);
+    _dpi_timing.vsync_pos = (uint8_t)json_get_int_def(conf_var, "vsync_pol", 1);
+    _dpi_timing.mode = (uint8_t)json_get_int_def(conf_var, "mode", 7);
+    _dpi_timing.bl_pin = (int8_t)json_get_int_def(conf_var, "bl_pin", -1);
+    json_var_unref(conf_var);
+    _dpi_output = 1;
+    slog("fbdisplayd: dpi output selected mode=%u pclk=%u bl_pin=%d\n",
+            _dpi_timing.mode, _dpi_timing.pixel_clock_hz, _dpi_timing.bl_pin);
 }
 
 static int _display_index = 0;
 
 static int doargs(int argc, char* argv[]) {
-	int c = 0;
-	while (c != -1) {
+    int c = 0;
+    while (c != -1) {
                 c = getopt (argc, argv, "c:i:");
-		if(c == -1)
-			break;
+        if(c == -1)
+            break;
 
-		switch (c) {
-		case 'c':
-			_conf_file = optarg;
-			break;
+        switch (c) {
+        case 'c':
+            _conf_file = optarg;
+            break;
                 case 'i':
                         _display_index = atoi(optarg);
                         break;
-		default:
-			c = -1;
-			break;
-		}
-	}
-	return optind;
+        default:
+            c = -1;
+            break;
+        }
+    }
+    return optind;
 }
 
 int main(int argc, char** argv) {
-	fbdisplayd_t fbdisplayd;
-	_g = NULL;
-	memset(&fbdisplayd, 0, sizeof(fbdisplayd));
+    fbdisplayd_t fbdisplayd;
+    _g = NULL;
+    memset(&fbdisplayd, 0, sizeof(fbdisplayd));
 
-	int opti = doargs(argc, argv);
-	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
+    int opti = doargs(argc, argv);
+    const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
 
-	load_dpi_conf(_conf_file);
-	if (_dpi_output) {
-		pthread_t th;
-		pthread_create(&th, NULL, dpi_watchdog, NULL);
-	}
+    load_dpi_conf(_conf_file);
+    if (_dpi_output) {
+        pthread_t th;
+        pthread_create(&th, NULL, dpi_watchdog, NULL);
+    }
 
-	fbdisplayd.splash = NULL;
-	fbdisplayd.flush = flush;
-	fbdisplayd.init = init;
-	fbdisplayd.get_info = get_info;
-	fbdisplayd_set_flush_rect(fbdisplayd_flush_rect_to);
+    fbdisplayd.splash = NULL;
+    fbdisplayd.flush = flush;
+    fbdisplayd.init = init;
+    fbdisplayd.get_info = get_info;
+    fbdisplayd_set_flush_rect(fbdisplayd_flush_rect_to);
         int res = fbdisplayd_run(&fbdisplayd, mnt_point, 0, 0, _conf_file, _display_index);
-	if(_g != NULL)
-		graph_free(_g);
-	return res;
+    if(_g != NULL)
+        graph_free(_g);
+    return res;
 }

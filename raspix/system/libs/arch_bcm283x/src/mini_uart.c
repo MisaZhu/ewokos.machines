@@ -30,59 +30,59 @@
 #define UART_RXD_GPIO 15
 
 static inline uint32_t get_baud(uint32_t uart_baud) {
-	if(uart_baud == 9600)
-		return UART_BAUD_9600;
-	return UART_BAUD_DEFAULT;
+    if(uart_baud == 9600)
+        return UART_BAUD_9600;
+    return UART_BAUD_DEFAULT;
 }
 
 int32_t bcm283x_mini_uart_init(void) {
-	unsigned int data = get32(AUX_ENABLES);
-	/* enable uart */
-	put32(AUX_ENABLES, data | UART_AUX_ENABLE);
-	/* configure uart */
-	put32(UART_LCR_REG, 0x03);
-	put32(UART_MCR_REG, 0x00);
-	put32(UART_IER_REG, 0x00);
-	put32(UART_BAUD_REG, get_baud(115200));
-	bcm283x_gpio_pull(UART_TXD_GPIO, GPIO_PULL_NONE);
-	/* RX idle must stay high; pull-up prevents a floating line from streaming 0x00 */
-	bcm283x_gpio_pull(UART_RXD_GPIO, GPIO_PULL_UP);
-	bcm283x_gpio_config(UART_TXD_GPIO, GPIO_ALTF5);
-	bcm283x_gpio_config(UART_RXD_GPIO, GPIO_ALTF5);
-	/* clear pending RX/TX state before enabling the port */
-	put32(UART_IIR_REG, 0xC6);
-	put32(UART_CNTL_REG, 0x03);
-	return 0;
+    unsigned int data = get32(AUX_ENABLES);
+    /* enable uart */
+    put32(AUX_ENABLES, data | UART_AUX_ENABLE);
+    /* configure uart */
+    put32(UART_LCR_REG, 0x03);
+    put32(UART_MCR_REG, 0x00);
+    put32(UART_IER_REG, 0x00);
+    put32(UART_BAUD_REG, get_baud(115200));
+    bcm283x_gpio_pull(UART_TXD_GPIO, GPIO_PULL_NONE);
+    /* RX idle must stay high; pull-up prevents a floating line from streaming 0x00 */
+    bcm283x_gpio_pull(UART_RXD_GPIO, GPIO_PULL_UP);
+    bcm283x_gpio_config(UART_TXD_GPIO, GPIO_ALTF5);
+    bcm283x_gpio_config(UART_RXD_GPIO, GPIO_ALTF5);
+    /* clear pending RX/TX state before enabling the port */
+    put32(UART_IIR_REG, 0xC6);
+    put32(UART_CNTL_REG, 0x03);
+    return 0;
 }
 
 #define UART_TXFIFO_EMPTY 0x20
 #define UART_RXFIFO_AVAIL 0x01
 
 static inline int32_t bcm283x_mini_uart_ready_to_recv(void) {
-	if((get32(UART_LSR_REG)&UART_RXFIFO_AVAIL) == 0)
-		return -1;
-	return 0;
+    if((get32(UART_LSR_REG)&UART_RXFIFO_AVAIL) == 0)
+        return -1;
+    return 0;
 }
 
 static inline int32_t bcm283x_mini_uart_ready_to_send(void) {
-	if((get32(UART_LSR_REG)&UART_TXFIFO_EMPTY) == 0)
-		return -1;
-	return 0;
+    if((get32(UART_LSR_REG)&UART_TXFIFO_EMPTY) == 0)
+        return -1;
+    return 0;
 }
 
 int32_t bcm283x_mini_uart_recv(void) {
-	while(bcm283x_mini_uart_ready_to_recv() != 0) {
-		usleep(1000);
-	}
-	return get32(UART_IO_REG) & 0xFF;
+    while(bcm283x_mini_uart_ready_to_recv() != 0) {
+        usleep(1000);
+    }
+    return get32(UART_IO_REG) & 0xFF;
 }
 
 int32_t bcm283x_mini_uart_send(uint8_t data) {
-	while(bcm283x_mini_uart_ready_to_send() != 0) {
-		usleep(1000);
-	}
-	put32(UART_IO_REG, data);
-	return 0;
+    while(bcm283x_mini_uart_ready_to_send() != 0) {
+        usleep(1000);
+    }
+    put32(UART_IO_REG, data);
+    return 0;
 }
 
 int32_t bcm283x_mini_uart_write(const void* data, uint32_t size) {

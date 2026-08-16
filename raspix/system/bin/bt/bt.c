@@ -35,124 +35,124 @@ enum {
 int32_t bt_send_hci_command_bytes(uint8_t* opcodebytes, uint8_t* data, uint8_t len) {
     // HCI命令包格式: 0x01 + opcode (2字节) + 参数长度 (1字节) + 参数
     bcm283x_pl011_uart_send(HCI_COMMAND_PKT); // HCI命令包标识
-	bcm283x_pl011_uart_send(opcodebytes[0]);
-	bcm283x_pl011_uart_send(opcodebytes[1]);
-	bcm283x_pl011_uart_send(len);
+    bcm283x_pl011_uart_send(opcodebytes[0]);
+    bcm283x_pl011_uart_send(opcodebytes[1]);
+    bcm283x_pl011_uart_send(len);
     
     for (uint8_t i = 0; i < len; i++) {
         bcm283x_pl011_uart_send(data[i]);
     }
 
-	uint8_t res = bcm283x_pl011_uart_recv(100);
-	if(res != HCI_EVENT_PKT)  {
-		slog("bt_send_hci_command_bytes failed, res=0x%X\n", res);
-		return 1;
-	}
+    uint8_t res = bcm283x_pl011_uart_recv(100);
+    if(res != HCI_EVENT_PKT)  {
+        slog("bt_send_hci_command_bytes failed, res=0x%X\n", res);
+        return 1;
+    }
 
     uint8_t code = bcm283x_pl011_uart_recv(100);
     if (code == CONNECT_COMPLETE_CODE) {
-		if (bcm283x_pl011_uart_recv(100) != 4)
-			return 2;
+        if (bcm283x_pl011_uart_recv(100) != 4)
+            return 2;
 
-		res = bcm283x_pl011_uart_recv(100);
-		if (res != 0) {
-				slog("Saw HCI COMMAND STATUS error %d\n", res);
-				return 12;
-		}
+        res = bcm283x_pl011_uart_recv(100);
+        if (res != 0) {
+                slog("Saw HCI COMMAND STATUS error %d\n", res);
+                return 12;
+        }
 
-		if (bcm283x_pl011_uart_recv(100) == 0)
-			return 3;
-		if (bcm283x_pl011_uart_recv(100) != opcodebytes[0])
-			return 4;
-		if (bcm283x_pl011_uart_recv(100) != opcodebytes[1])
-			return 5;
+        if (bcm283x_pl011_uart_recv(100) == 0)
+            return 3;
+        if (bcm283x_pl011_uart_recv(100) != opcodebytes[0])
+            return 4;
+        if (bcm283x_pl011_uart_recv(100) != opcodebytes[1])
+            return 5;
     } 
-	else if (code == COMMAND_COMPLETE_CODE) {
-		if (bcm283x_pl011_uart_recv(100) != 4)
-			return 6;
-		if (bcm283x_pl011_uart_recv(100) == 0)
-			return 7;
-		if (bcm283x_pl011_uart_recv(100) != opcodebytes[0])	
-			return 8;
-		if (bcm283x_pl011_uart_recv(100) != opcodebytes[1])
-			return 9;
-		if (bcm283x_pl011_uart_recv(100) != 0)
-			return 10;
+    else if (code == COMMAND_COMPLETE_CODE) {
+        if (bcm283x_pl011_uart_recv(100) != 4)
+            return 6;
+        if (bcm283x_pl011_uart_recv(100) == 0)
+            return 7;
+        if (bcm283x_pl011_uart_recv(100) != opcodebytes[0])	
+            return 8;
+        if (bcm283x_pl011_uart_recv(100) != opcodebytes[1])
+            return 9;
+        if (bcm283x_pl011_uart_recv(100) != 0)
+            return 10;
     }
-	else
-		return 11;
+    else
+        return 11;
 
     return 0;
 }
 
 // 发送HCI命令
 int32_t bt_send_hci_command(uint16_t ogf, uint16_t ocf, uint8_t* data, uint32_t len) {
-	uint16_t opcode = ogf << 10 | ocf;
+    uint16_t opcode = ogf << 10 | ocf;
     uint8_t  opcodebytes[2] = { lo(opcode), hi(opcode) };
-	return bt_send_hci_command_bytes(opcodebytes, data, len);
+    return bt_send_hci_command_bytes(opcodebytes, data, len);
 }
 
 // 蓝牙固件下载
 void bt_load_firmware(void) {
-	volatile unsigned char empty[] = {};
-	int32_t res = bt_send_hci_command(OGF_VENDOR, COMMAND_LOAD_FIRMWARE, empty, 0);
-	if(res != 0) {
-		slog("loadFirmware() failed: %d\n", res);
-		return;
-	}
+    volatile unsigned char empty[] = {};
+    int32_t res = bt_send_hci_command(OGF_VENDOR, COMMAND_LOAD_FIRMWARE, empty, 0);
+    if(res != 0) {
+        slog("loadFirmware() failed: %d\n", res);
+        return;
+    }
 
-	uint32_t offset = 0;
-	uint32_t size = bcm4345c0_hcd_len;
-	uint8_t opcodebytes[2];
-	uint8_t length;
-	uint8_t *data = (uint8_t *)bcm4345c0_hcd;
+    uint32_t offset = 0;
+    uint32_t size = bcm4345c0_hcd_len;
+    uint8_t opcodebytes[2];
+    uint8_t length;
+    uint8_t *data = (uint8_t *)bcm4345c0_hcd;
 
-	while (offset < size) {
-		opcodebytes[0] = *data;
-		opcodebytes[1] = *(data+1);
-		length =         *(data+2);
-		data += 3;
+    while (offset < size) {
+        opcodebytes[0] = *data;
+        opcodebytes[1] = *(data+1);
+        length =         *(data+2);
+        data += 3;
 
-		int32_t res = bt_send_hci_command_bytes(opcodebytes, data, length);
-		if(res != 0) {
-			slog("bt_send_hci_command_bytes failed, res=%d\n", res);
-			break;
-		}
-		data += length;
-		offset += 3 + length;
-	}
+        int32_t res = bt_send_hci_command_bytes(opcodebytes, data, length);
+        if(res != 0) {
+            slog("bt_send_hci_command_bytes failed, res=%d\n", res);
+            break;
+        }
+        data += length;
+        offset += 3 + length;
+    }
 }
 
 int main(int argc, char* argv[]) {
-	_mmio_base = mmio_map();
+    _mmio_base = mmio_map();
 
-	sys_info_t sysinfo;
-	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-	if(strcmp(sysinfo.machine, "raspberry-pi1") == 0 ||
-			strcmp(sysinfo.machine, "raspberry-pi2b") == 0)  {
-		printf("bt not support with pl011_uart\n");
-		return -1;
-	}
-	slog("bt: init pl011_uart\n");
-	bcm283x_pl011_uart_init_bt();
-	bcm283x_pl011_uart_recv(100); // 清空接收缓冲区
-	sleep(1);
+    sys_info_t sysinfo;
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+    if(strcmp(sysinfo.machine, "raspberry-pi1") == 0 ||
+            strcmp(sysinfo.machine, "raspberry-pi2b") == 0)  {
+        printf("bt not support with pl011_uart\n");
+        return -1;
+    }
+    slog("bt: init pl011_uart\n");
+    bcm283x_pl011_uart_init_bt();
+    bcm283x_pl011_uart_recv(100); // 清空接收缓冲区
+    sleep(1);
 
     // 重置蓝牙芯片
-	slog("reset firmware ... ");
+    slog("reset firmware ... ");
     volatile uint8_t empty[] = {};
-	int32_t res = bt_send_hci_command(OGF_HOST_CONTROL, COMMAND_RESET_CHIP, empty, 0);
-	if(res != 0) {
-		slog("failed: %d\n", res);
-		return -1;
-	}
+    int32_t res = bt_send_hci_command(OGF_HOST_CONTROL, COMMAND_RESET_CHIP, empty, 0);
+    if(res != 0) {
+        slog("failed: %d\n", res);
+        return -1;
+    }
     usleep(1000000); // 等待重置完成
-	slog("done\n");
+    slog("done\n");
 
-	// 加载蓝牙固件
-	slog("load firmware ... ");
+    // 加载蓝牙固件
+    slog("load firmware ... ");
     bt_load_firmware();
-	slog("done\n");
+    slog("done\n");
     
-	return 0;
+    return 0;
 }

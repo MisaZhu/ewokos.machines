@@ -18,70 +18,70 @@
 static charbuf_t *_RxBuf = NULL;
 
 static int uart_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, 
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)node;
-	(void)size;
-	(void)offset;
-	(void)p;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)node;
+    (void)size;
+    (void)offset;
+    (void)p;
 
-	int i;
-	for(i = 0; i < size; i++){
-	int res = charbuf_pop(_RxBuf, buf + i);
-		if(res != 0)
-			break;
-	}
-	return (i==0)?VFS_ERR_RETRY:i;
+    int i;
+    for(i = 0; i < size; i++){
+    int res = charbuf_pop(_RxBuf, buf + i);
+        if(res != 0)
+            break;
+    }
+    return (i==0)?VFS_ERR_RETRY:i;
 }
 
 static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		const void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)node;
-	(void)from_pid;
-	(void)offset;
-	(void)p;
-	char c;
+        const void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)node;
+    (void)from_pid;
+    (void)offset;
+    (void)p;
+    char c;
 
-	for(int i = 0; i < size; i++){
-		c = ((char*)buf)[i];
-		if(c == '\r') c = '\n';
-		while (((REG32(_mmio_base + 0xa0014)) & UART_LSR_THRE) == 0);	
-			REG32(_mmio_base + 0xa0000) = c;
-	}
-	return size;
+    for(int i = 0; i < size; i++){
+        c = ((char*)buf)[i];
+        if(c == '\r') c = '\n';
+        while (((REG32(_mmio_base + 0xa0014)) & UART_LSR_THRE) == 0);	
+            REG32(_mmio_base + 0xa0000) = c;
+    }
+    return size;
 }
 
 static int loop(vdevice_t* dev, void* p) {
-	(void)dev;
-	(void)p;
-	int rx = 0;
-	while((REG32(_mmio_base + 0xa0014) & UART_LSR_DR)){
-		charbuf_push(_RxBuf,  REG32(_mmio_base + 0xa0000), true);
-		rx++;
-	}
+    (void)dev;
+    (void)p;
+    int rx = 0;
+    while((REG32(_mmio_base + 0xa0014) & UART_LSR_DR)){
+        charbuf_push(_RxBuf,  REG32(_mmio_base + 0xa0000), true);
+        rx++;
+    }
 
-	if(rx){
-		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
-	}
-	proc_usleep(10);
+    if(rx){
+        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
+    }
+    proc_usleep(10);
 }
 
 int main(int argc, char** argv) {
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/tty1";
-	_mmio_base = mmio_map();
-	_RxBuf = charbuf_new(0);
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/tty1";
+    _mmio_base = mmio_map();
+    _RxBuf = charbuf_new(0);
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "uart");
-	dev.read = uart_read;
-	dev.write = uart_write;
-	dev.loop_step = loop;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "uart");
+    dev.read = uart_read;
+    dev.write = uart_write;
+    dev.loop_step = loop;
 
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
-	return 0;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    return 0;
 }

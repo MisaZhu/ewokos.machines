@@ -18,7 +18,7 @@
 #define MMC_RSP_NONE  (0)
 #define MMC_RSP_R1  (MMC_RSP_PRESENT|MMC_RSP_CRC|MMC_RSP_OPCODE)
 #define MMC_RSP_R1b (MMC_RSP_PRESENT|MMC_RSP_CRC|MMC_RSP_OPCODE| \
-		MMC_RSP_BUSY)
+        MMC_RSP_BUSY)
 #define MMC_RSP_R2  (MMC_RSP_PRESENT|MMC_RSP_136|MMC_RSP_CRC)
 #define MMC_RSP_R3  (MMC_RSP_PRESENT)
 #define MMC_RSP_R4  (MMC_RSP_PRESENT)
@@ -85,187 +85,187 @@
 
 // shared variables between SDC driver and interrupt handler
 typedef struct {
-	char rxbuf[SECTOR_SIZE];
-	char txbuf[SECTOR_SIZE];
-	char *rxbuf_index;
-	const char *txbuf_index;
-	uint32_t rxcount, txcount, rxdone, txdone;
+    char rxbuf[SECTOR_SIZE];
+    char txbuf[SECTOR_SIZE];
+    char *rxbuf_index;
+    const char *txbuf_index;
+    uint32_t rxcount, txcount, rxdone, txdone;
 } sd_t;
 
 static sd_t _sdc;
 
 static inline void do_command(int32_t cmd, int32_t arg, int32_t resp) {
-	put32(SD_BASE + ARGUMENT, arg);
-	put32(SD_BASE + COMMAND, 0x400 | (resp<<6) | cmd);
+    put32(SD_BASE + ARGUMENT, arg);
+    put32(SD_BASE + COMMAND, 0x400 | (resp<<6) | cmd);
 }
 
 int32_t versatilepb_sd_init(void) {
-	_mmio_base = mmio_map();
-	sd_t* sdc = &_sdc;
-	memset(sdc, 0, sizeof(sd_t));
-	sdc->rxdone = 1;
-	sdc->txdone = 1;
+    _mmio_base = mmio_map();
+    sd_t* sdc = &_sdc;
+    memset(sdc, 0, sizeof(sd_t));
+    sdc->rxdone = 1;
+    sdc->txdone = 1;
 
-	put32(SD_BASE + POWER, 0xBF); // power on
-	put32(SD_BASE + CLOCK, 0xC6); // default CLK
+    put32(SD_BASE + POWER, 0xBF); // power on
+    put32(SD_BASE + CLOCK, 0xC6); // default CLK
 
-	// send init command sequence
-	do_command(0, 0, MMC_RSP_NONE);// idle state
-	do_command(55, 0, MMC_RSP_R1);  // ready state  
-	do_command(41, 0x10000, MMC_RSP_R3);  // argument must not be zero
-	do_command(2, 0, MMC_RSP_R2);  // ask card CID
-	do_command(3, SD_RCA, MMC_RSP_R1);  // assign RCA
-	do_command(7, SD_RCA, MMC_RSP_R1);  // transfer state: must use RCA
-	do_command(16, 512, MMC_RSP_R1);  // set data sector length
+    // send init command sequence
+    do_command(0, 0, MMC_RSP_NONE);// idle state
+    do_command(55, 0, MMC_RSP_R1);  // ready state  
+    do_command(41, 0x10000, MMC_RSP_R3);  // argument must not be zero
+    do_command(2, 0, MMC_RSP_R2);  // ask card CID
+    do_command(3, SD_RCA, MMC_RSP_R1);  // assign RCA
+    do_command(7, SD_RCA, MMC_RSP_R1);  // transfer state: must use RCA
+    do_command(16, 512, MMC_RSP_R1);  // set data sector length
 
-	// set interrupt MASK0 registers bits = RxFULL(17)|TxEmpty(18)
-	put32(SD_BASE + MASK0, (1<<17)|(1<<18));
-	return 0;
+    // set interrupt MASK0 registers bits = RxFULL(17)|TxEmpty(18)
+    put32(SD_BASE + MASK0, (1<<17)|(1<<18));
+    return 0;
 }
 
 static int32_t sd_read_sector(int32_t sector) {
-	uint32_t cmd, arg;
-	sd_t* sdc = (sd_t*)&_sdc;
-	if(sdc->rxdone == 0) {
-		return -1;
-	}
+    uint32_t cmd, arg;
+    sd_t* sdc = (sd_t*)&_sdc;
+    if(sdc->rxdone == 0) {
+        return -1;
+    }
 
-	//printf("getsector %d ", sector);
-	sdc->rxbuf_index = sdc->rxbuf; 
-	sdc->rxcount = SECTOR_SIZE;
-	sdc->rxdone = 0;
+    //printf("getsector %d ", sector);
+    sdc->rxbuf_index = sdc->rxbuf; 
+    sdc->rxcount = SECTOR_SIZE;
+    sdc->rxdone = 0;
 
-	put32(SD_BASE + DATATIMER, 0xFFFF0000);
-	// write data_len to datalength reg
-	put32(SD_BASE + DATALENGTH, SECTOR_SIZE);
+    put32(SD_BASE + DATATIMER, 0xFFFF0000);
+    // write data_len to datalength reg
+    put32(SD_BASE + DATALENGTH, SECTOR_SIZE);
 
-	cmd = 18; // CMD17 = READ single sector; 18=read sector
-	arg = (uint32_t)(sector*SECTOR_SIZE);  // absolute byte offset in diks
-	do_command(cmd, arg, MMC_RSP_R1);
+    cmd = 18; // CMD17 = READ single sector; 18=read sector
+    arg = (uint32_t)(sector*SECTOR_SIZE);  // absolute byte offset in diks
+    do_command(cmd, arg, MMC_RSP_R1);
 
-	//printf("dataControl=%x\n", 0x93);
-	// 0x93=|9|0011|=|9|DMA=0,0=BLOCK,1=Host<-Card,1=Enable
-	put32(SD_BASE + DATACTRL, 0x93);
-	//printf("getsector return\n");
-	return 0;
+    //printf("dataControl=%x\n", 0x93);
+    // 0x93=|9|0011|=|9|DMA=0,0=BLOCK,1=Host<-Card,1=Enable
+    put32(SD_BASE + DATACTRL, 0x93);
+    //printf("getsector return\n");
+    return 0;
 }
 
 static int32_t sd_write_sector(int32_t sector, const void* buf) {
-	sd_t* sdc = (sd_t*)&_sdc;
-	uint32_t cmd, arg;
-	if(sdc->txdone == 0) {
-		return -1;
-	}
-	memcpy(sdc->txbuf, buf, SECTOR_SIZE);
-	sdc->txbuf_index = sdc->txbuf; sdc->txcount = SECTOR_SIZE;
-	sdc->txdone = 0;
+    sd_t* sdc = (sd_t*)&_sdc;
+    uint32_t cmd, arg;
+    if(sdc->txdone == 0) {
+        return -1;
+    }
+    memcpy(sdc->txbuf, buf, SECTOR_SIZE);
+    sdc->txbuf_index = sdc->txbuf; sdc->txcount = SECTOR_SIZE;
+    sdc->txdone = 0;
 
-	put32(SD_BASE + DATATIMER, 0xFFFF0000);
-	put32(SD_BASE + DATALENGTH, SECTOR_SIZE);
+    put32(SD_BASE + DATATIMER, 0xFFFF0000);
+    put32(SD_BASE + DATALENGTH, SECTOR_SIZE);
 
-	cmd = 25;                  // CMD24 = Write single sector; 25=write sector
-	arg = (uint32_t)(sector*SECTOR_SIZE);  // absolute byte offset in diks
-	do_command(cmd, arg, MMC_RSP_R1);
+    cmd = 25;                  // CMD24 = Write single sector; 25=write sector
+    arg = (uint32_t)(sector*SECTOR_SIZE);  // absolute byte offset in diks
+    do_command(cmd, arg, MMC_RSP_R1);
 
-	// write 0x91=|9|0001|=|9|DMA=0,BLOCK=0,0=Host->Card, Enable
-	put32(SD_BASE + DATACTRL, 0x91); // Host->card
-	return 0;
+    // write 0x91=|9|0001|=|9|DMA=0,BLOCK=0,0=Host->Card, Enable
+    put32(SD_BASE + DATACTRL, 0x91); // Host->card
+    return 0;
 }
 
 static void sd_dev_handle(void) {
-	sd_t* sdc = (sd_t*)&_sdc;
-	int32_t status, status_err;
-	int32_t i; 
-	uint32_t *up;
+    sd_t* sdc = (sd_t*)&_sdc;
+    int32_t status, status_err;
+    int32_t i; 
+    uint32_t *up;
 
-	// read status register to find out TXempty or RxAvail
-	status = get32(SD_BASE + STATUS);
+    // read status register to find out TXempty or RxAvail
+    status = get32(SD_BASE + STATUS);
 
-	if (status & (1<<17)){ // RxFull: read 16 uint32_t at a time;
-		//printf("SDC RX interrupt: ");
-		up = (uint32_t *)sdc->rxbuf_index;
-		status_err = status & (SDI_STA_DCRCFAIL|SDI_STA_DTIMEOUT|SDI_STA_RXOVERR);
-		if (!status_err && sdc->rxcount) {
-			//printf("R%d ", sdc->rxcount);
-			for (i = 0; i < 16; i++)
-				*(up + i) = get32(SD_BASE + FIFO);
-			up += 16;
-			sdc->rxcount -= 64;
-			sdc->rxbuf_index += 64;
-			status = get32(SD_BASE + STATUS); // read status to clear Rx interrupt
-		}
-		if (sdc->rxcount == 0){
-			do_command(12, 0, MMC_RSP_R1); // stop transmission
-			sdc->rxdone = 1;
-			//printf("SDC handler done ");
-		}
-	}
-	else if (status & (1<<18)){ // TXempty: write 16 uint32_t at a time
-		//printf("TX interrupt: ");
-		up = (uint32_t *)sdc->txbuf_index;
-		status_err = status & (SDI_STA_DCRCFAIL | SDI_STA_DTIMEOUT);
+    if (status & (1<<17)){ // RxFull: read 16 uint32_t at a time;
+        //printf("SDC RX interrupt: ");
+        up = (uint32_t *)sdc->rxbuf_index;
+        status_err = status & (SDI_STA_DCRCFAIL|SDI_STA_DTIMEOUT|SDI_STA_RXOVERR);
+        if (!status_err && sdc->rxcount) {
+            //printf("R%d ", sdc->rxcount);
+            for (i = 0; i < 16; i++)
+                *(up + i) = get32(SD_BASE + FIFO);
+            up += 16;
+            sdc->rxcount -= 64;
+            sdc->rxbuf_index += 64;
+            status = get32(SD_BASE + STATUS); // read status to clear Rx interrupt
+        }
+        if (sdc->rxcount == 0){
+            do_command(12, 0, MMC_RSP_R1); // stop transmission
+            sdc->rxdone = 1;
+            //printf("SDC handler done ");
+        }
+    }
+    else if (status & (1<<18)){ // TXempty: write 16 uint32_t at a time
+        //printf("TX interrupt: ");
+        up = (uint32_t *)sdc->txbuf_index;
+        status_err = status & (SDI_STA_DCRCFAIL | SDI_STA_DTIMEOUT);
 
-		if (!status_err && sdc->txcount) {
-			// printf("W%d ", sdc->txcount);
-			for (i = 0; i < 16; i++)
-				put32(SD_BASE + FIFO, *(up + i));
-			up += 16;
-			sdc->txcount -= 64;
-			sdc->txbuf_index += 64;            // advance sdc->txbuf_index for next write  
-			status = get32(SD_BASE + STATUS); // read status to clear Tx interrupt
-		}
-		if (sdc->txcount == 0){
-			do_command(12, 0, MMC_RSP_R1); // stop transmission
-			sdc->txdone = 1;
-		}
-	}
-	else {
-		//sleep(0);
-		return;
-	}
-	//printf("write to clear register\n");
-	put32(SD_BASE + STATUS_CLEAR, 0xFFFFFFFF);
-	// printf("SDC interrupt handler done\n");
+        if (!status_err && sdc->txcount) {
+            // printf("W%d ", sdc->txcount);
+            for (i = 0; i < 16; i++)
+                put32(SD_BASE + FIFO, *(up + i));
+            up += 16;
+            sdc->txcount -= 64;
+            sdc->txbuf_index += 64;            // advance sdc->txbuf_index for next write  
+            status = get32(SD_BASE + STATUS); // read status to clear Tx interrupt
+        }
+        if (sdc->txcount == 0){
+            do_command(12, 0, MMC_RSP_R1); // stop transmission
+            sdc->txdone = 1;
+        }
+    }
+    else {
+        //sleep(0);
+        return;
+    }
+    //printf("write to clear register\n");
+    put32(SD_BASE + STATUS_CLEAR, 0xFFFFFFFF);
+    // printf("SDC interrupt handler done\n");
 }
 
 static inline int32_t sd_read_done(void* buf) {
-	sd_t* sdc = (sd_t*)&_sdc;
-	sd_dev_handle();
-	if(sdc->rxdone == 0) {
-		return -1;
-	}
-	memcpy(buf, (void*)sdc->rxbuf, SECTOR_SIZE);
-	return 0;
+    sd_t* sdc = (sd_t*)&_sdc;
+    sd_dev_handle();
+    if(sdc->rxdone == 0) {
+        return -1;
+    }
+    memcpy(buf, (void*)sdc->rxbuf, SECTOR_SIZE);
+    return 0;
 }
 
 static inline int32_t sd_write_done(void) {
-	sd_t* sdc = (sd_t*)&_sdc;
-	sd_dev_handle();
-	if(sdc->txdone == 0) {
-		return -1;
-	}
-	return 0;
+    sd_t* sdc = (sd_t*)&_sdc;
+    sd_dev_handle();
+    if(sdc->txdone == 0) {
+        return -1;
+    }
+    return 0;
 }
 
 int32_t versatilepb_sd_read_sector(int32_t sector, void* buf) {
-	if(sd_read_sector(sector) != 0)
-		return -1;
+    if(sd_read_sector(sector) != 0)
+        return -1;
 
-	while(1) {
-		if(sd_read_done(buf) == 0) {
-			break;
-		}
-	}
-	return 0;
+    while(1) {
+        if(sd_read_done(buf) == 0) {
+            break;
+        }
+    }
+    return 0;
 }
 
 int32_t versatilepb_sd_write_sector(int32_t sector, const void* buf) {
-	if(sd_write_sector(sector, buf) != 0)
-		return -1;
+    if(sd_write_sector(sector, buf) != 0)
+        return -1;
 
-	while(1) {
-		if(sd_write_done() == 0)
-			break;
-	}
-	return 0;
+    while(1) {
+        if(sd_write_done() == 0)
+            break;
+    }
+    return 0;
 }

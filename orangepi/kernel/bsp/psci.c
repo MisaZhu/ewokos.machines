@@ -77,98 +77,98 @@ struct __attribute__((packed)) sunxi_cpucfg_reg {
 
 static void  cp15_write_cntp_tval(uint32_t tval)
 {
-	__asm volatile ("mcr p15, 0, %0, c14, c2, 0" : : "r" (tval));
+    __asm volatile ("mcr p15, 0, %0, c14, c2, 0" : : "r" (tval));
 }
 
 static void  cp15_write_cntp_ctl(uint32_t val)
 {
-	__asm volatile ("mcr p15, 0, %0, c14, c2, 1" : : "r" (val));
+    __asm volatile ("mcr p15, 0, %0, c14, c2, 1" : : "r" (val));
 }
 
 static uint32_t  cp15_read_cntp_ctl(void)
 {
-	uint32_t val;
+    uint32_t val;
 
-	__asm volatile ("mrc p15, 0, %0, c14, c2, 1" : "=r" (val));
+    __asm volatile ("mrc p15, 0, %0, c14, c2, 1" : "=r" (val));
 
-	return val;
+    return val;
 }
 
 #define ONE_MS (COUNTER_FREQUENCY / 1000)
 
 static void  __mdelay(uint32_t ms)
 {
-	uint32_t reg = ONE_MS * ms;
+    uint32_t reg = ONE_MS * ms;
 
-	cp15_write_cntp_tval(reg);
-	isb();
-	cp15_write_cntp_ctl(3);
+    cp15_write_cntp_tval(reg);
+    isb();
+    cp15_write_cntp_ctl(3);
 
-	do {
-		isb();
-		reg = cp15_read_cntp_ctl();
-	} while (!(reg & BIT(2)));
+    do {
+        isb();
+        reg = cp15_read_cntp_ctl();
+    } while (!(reg & BIT(2)));
 
-	cp15_write_cntp_ctl(0);
-	isb();
+    cp15_write_cntp_ctl(0);
+    isb();
 }
 
 static void  clamp_release(uint32_t  *clamp)
 {
 #if defined(CONFIG_MACH_SUN6I) || defined(CONFIG_MACH_SUN7I) || \
-	defined(CONFIG_MACH_SUN8I_H3) || \
-	defined(CONFIG_MACH_SUN8I_R40)
-	uint32_t tmp = 0x1ff;
-	do {
-		tmp >>= 1;
-		writel(tmp, clamp);
-	} while (tmp);
+    defined(CONFIG_MACH_SUN8I_H3) || \
+    defined(CONFIG_MACH_SUN8I_R40)
+    uint32_t tmp = 0x1ff;
+    do {
+        tmp >>= 1;
+        writel(tmp, clamp);
+    } while (tmp);
 
-	__mdelay(10);
+    __mdelay(10);
 #endif
 }
 
 static void  clamp_set(uint32_t __maybe_unused *clamp)
 {
 #if defined(CONFIG_MACH_SUN6I) || defined(CONFIG_MACH_SUN7I) || \
-	defined(CONFIG_MACH_SUN8I_H3) || \
-	defined(CONFIG_MACH_SUN8I_R40)
-	writel(0xff, clamp);
+    defined(CONFIG_MACH_SUN8I_H3) || \
+    defined(CONFIG_MACH_SUN8I_R40)
+    writel(0xff, clamp);
 #endif
 }
 
 static void  sunxi_power_switch(uint32_t *clamp, uint32_t *pwroff, int on,
-					int cpu)
+                    int cpu)
 {
-	if (on) {
-		/* Release power clamp */
-		clamp_release(clamp);
+    if (on) {
+        /* Release power clamp */
+        clamp_release(clamp);
 
-		/* Clear power gating */
-		clrbits_le32(pwroff, BIT(cpu));
-	} else {
-		/* Set power gating */
-		setbits_le32(pwroff, BIT(cpu));
+        /* Clear power gating */
+        clrbits_le32(pwroff, BIT(cpu));
+    } else {
+        /* Set power gating */
+        setbits_le32(pwroff, BIT(cpu));
 
-		/* Activate power clamp */
-		clamp_set(clamp);
-	}
+        /* Activate power clamp */
+        clamp_set(clamp);
+    }
 }
 
 #ifdef CONFIG_MACH_SUN8I_R40
 /* secondary core entry address is programmed differently on R40 */
 static void  sunxi_set_entry_address(void *entry)
 {
-	writel((uint32_t)entry,
-	       SUNXI_SRAMC_BASE + SUN8I_R40_SRAMC_SOFT_ENTRY_REG0);
+    writel((uint32_t)entry,
+           SUNXI_SRAMC_BASE + SUN8I_R40_SRAMC_SOFT_ENTRY_REG0);
 }
 #else
 static void  sunxi_set_entry_address(void *entry)
 {
-	struct sunxi_cpucfg_reg *cpucfg =
-		(struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
+    struct sunxi_cpucfg_reg *cpucfg =
+        (struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
 
-	writel((uint32_t)entry, &cpucfg->priv0);
+    writel((uint32_t)entry, &cpucfg->priv0);
 }
 #endif
 
@@ -176,72 +176,72 @@ static void  sunxi_set_entry_address(void *entry)
 /* sun7i (A20) is different from other single cluster SoCs */
 static void  sunxi_cpu_set_power(int __always_unused cpu, int on)
 {
-	struct sunxi_cpucfg_reg *cpucfg =
-		(struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
+    struct sunxi_cpucfg_reg *cpucfg =
+        (struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
 
-	sunxi_power_switch(&cpucfg->cpu1_pwr_clamp, &cpucfg->cpu1_pwroff,
-			   on, 0);
+    sunxi_power_switch(&cpucfg->cpu1_pwr_clamp, &cpucfg->cpu1_pwroff,
+               on, 0);
 }
 #elif defined CONFIG_MACH_SUN8I_R40
 static void  sunxi_cpu_set_power(int cpu, int on)
 {
-	struct sunxi_cpucfg_reg *cpucfg =
-		(struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
+    struct sunxi_cpucfg_reg *cpucfg =
+        (struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
 
-	sunxi_power_switch((void *)cpucfg + SUN8I_R40_PWR_CLAMP(cpu),
-			   (void *)cpucfg + SUN8I_R40_PWROFF,
-			   on, 0);
+    sunxi_power_switch((void *)cpucfg + SUN8I_R40_PWR_CLAMP(cpu),
+               (void *)cpucfg + SUN8I_R40_PWROFF,
+               on, 0);
 }
 #else /* ! CONFIG_MACH_SUN7I && ! CONFIG_MACH_SUN8I_R40 */
 static void  sunxi_cpu_set_power(int cpu, int on)
 {
-	struct sunxi_prcm_reg *prcm =
-		(struct sunxi_prcm_reg *)SUNXI_PRCM_BASE;
+    struct sunxi_prcm_reg *prcm =
+        (struct sunxi_prcm_reg *)SUNXI_PRCM_BASE;
 
-	sunxi_power_switch(&prcm->cpu_pwr_clamp[cpu], &prcm->cpu_pwroff,
-			   on, cpu);
+    sunxi_power_switch(&prcm->cpu_pwr_clamp[cpu], &prcm->cpu_pwroff,
+               on, cpu);
 }
 #endif /* CONFIG_MACH_SUN7I */
 
 void  sunxi_cpu_power_off(uint32_t cpuid)
 {
-	struct sunxi_cpucfg_reg *cpucfg =
-		(struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
-	uint32_t cpu = cpuid & 0x3;
+    struct sunxi_cpucfg_reg *cpucfg =
+        (struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
+    uint32_t cpu = cpuid & 0x3;
 
-	/* Wait for the core to enter WFI */
-	while (1) {
-		if (readl(&cpucfg->cpu[cpu].status) & BIT(2))
-			break;
-		__mdelay(1);
-	}
+    /* Wait for the core to enter WFI */
+    while (1) {
+        if (readl(&cpucfg->cpu[cpu].status) & BIT(2))
+            break;
+        __mdelay(1);
+    }
 
-	/* Assert reset on target CPU */
-	writel(0, &cpucfg->cpu[cpu].rst);
+    /* Assert reset on target CPU */
+    writel(0, &cpucfg->cpu[cpu].rst);
 
-	/* Lock CPU (Disable external debug access) */
-	clrbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
+    /* Lock CPU (Disable external debug access) */
+    clrbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
 
-	/* Power down CPU */
-	sunxi_cpu_set_power(cpuid, false);
+    /* Power down CPU */
+    sunxi_cpu_set_power(cpuid, false);
 
-	/* Unlock CPU (Disable external debug access) */
-	setbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
+    /* Unlock CPU (Disable external debug access) */
+    setbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
 }
 
 static uint32_t  cp15_read_scr(void)
 {
-	uint32_t scr;
+    uint32_t scr;
 
-	__asm volatile ("mrc p15, 0, %0, c1, c1, 0" : "=r" (scr));
+    __asm volatile ("mrc p15, 0, %0, c1, c1, 0" : "=r" (scr));
 
-	return scr;
+    return scr;
 }
 
 static void  cp15_write_scr(uint32_t scr)
 {
-	__asm volatile ("mcr p15, 0, %0, c1, c1, 0" : : "r" (scr));
-	isb();
+    __asm volatile ("mcr p15, 0, %0, c1, c1, 0" : : "r" (scr));
+    isb();
 }
 
 /*
@@ -252,98 +252,98 @@ static void  cp15_write_scr(uint32_t scr)
  */
 void  __irq psci_fiq_enter(void)
 {
-	uint32_t scr, reg, cpu;
+    uint32_t scr, reg, cpu;
 
-	/* Switch to secure mode */
-	scr = cp15_read_scr();
-	cp15_write_scr(scr & ~BIT(0));
+    /* Switch to secure mode */
+    scr = cp15_read_scr();
+    cp15_write_scr(scr & ~BIT(0));
 
-	/* Validate reason based on IAR and acknowledge */
-	reg = readl(GICC_BASE + GICC_IAR);
+    /* Validate reason based on IAR and acknowledge */
+    reg = readl(GICC_BASE + GICC_IAR);
 
-	/* Skip spurious interrupts 1022 and 1023 */
-	if (reg == 1023 || reg == 1022)
-		goto out;
+    /* Skip spurious interrupts 1022 and 1023 */
+    if (reg == 1023 || reg == 1022)
+        goto out;
 
-	/* End of interrupt */
-	writel(reg, GICC_BASE + GICC_EOIR);
-	dsb();
+    /* End of interrupt */
+    writel(reg, GICC_BASE + GICC_EOIR);
+    dsb();
 
-	/* Get CPU number */
-	cpu = (reg >> 10) & 0x7;
+    /* Get CPU number */
+    cpu = (reg >> 10) & 0x7;
 
-	/* Power off the CPU */
-	sunxi_cpu_power_off(cpu);
+    /* Power off the CPU */
+    sunxi_cpu_power_off(cpu);
 
 out:
-	/* Restore security level */
-	cp15_write_scr(scr);
+    /* Restore security level */
+    cp15_write_scr(scr);
 }
 
 int  psci_cpu_on(uint32_t unused, uint32_t mpidr, uint32_t pc)
 {
-	struct sunxi_cpucfg_reg *cpucfg =
-		(struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
-	uint32_t cpu = (mpidr & 0x3);
+    struct sunxi_cpucfg_reg *cpucfg =
+        (struct sunxi_cpucfg_reg *)SUNXI_CPUCFG_BASE;
+    uint32_t cpu = (mpidr & 0x3);
 
-	/* store target PC */
-	psci_save_target_pc(cpu, pc);
+    /* store target PC */
+    psci_save_target_pc(cpu, pc);
 
-	/* Set secondary core power on PC */
-	sunxi_set_entry_address(0);
+    /* Set secondary core power on PC */
+    sunxi_set_entry_address(0);
 
-	/* Assert reset on target CPU */
-	writel(0, &cpucfg->cpu[cpu].rst);
+    /* Assert reset on target CPU */
+    writel(0, &cpucfg->cpu[cpu].rst);
 
-	/* Invalidate L1 cache */
-	clrbits_le32(&cpucfg->gen_ctrl, BIT(cpu));
+    /* Invalidate L1 cache */
+    clrbits_le32(&cpucfg->gen_ctrl, BIT(cpu));
 
-	/* Lock CPU (Disable external debug access) */
-	clrbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
+    /* Lock CPU (Disable external debug access) */
+    clrbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
 
-	/* Power up target CPU */
-	sunxi_cpu_set_power(cpu, true);
+    /* Power up target CPU */
+    sunxi_cpu_set_power(cpu, true);
 
-	/* De-assert reset on target CPU */
-	writel(BIT(1) | BIT(0), &cpucfg->cpu[cpu].rst);
+    /* De-assert reset on target CPU */
+    writel(BIT(1) | BIT(0), &cpucfg->cpu[cpu].rst);
 
-	/* Unlock CPU (Disable external debug access) */
-	setbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
+    /* Unlock CPU (Disable external debug access) */
+    setbits_le32(&cpucfg->dbg_ctrl1, BIT(cpu));
 
-	return 0;
+    return 0;
 }
 
 void  psci_cpu_off(void)
 {
-	psci_cpu_off_common();
+    psci_cpu_off_common();
 
-	/* Ask CPU0 via SGI15 to pull the rug... */
-	writel(BIT(16) | 15, GICD_BASE + GICD_SGIR);
-	dsb();
+    /* Ask CPU0 via SGI15 to pull the rug... */
+    writel(BIT(16) | 15, GICD_BASE + GICD_SGIR);
+    dsb();
 
-	/* Wait to be turned off */
-	while (1)
-		wfi();
+    /* Wait to be turned off */
+    while (1)
+        wfi();
 }
 
 void  psci_arch_init(void)
 {
-	uint32_t reg;
+    uint32_t reg;
 
-	/* SGI15 as Group-0 */
-	clrbits_le32(GICD_BASE + GICD_IGROUPRn, BIT(15));
+    /* SGI15 as Group-0 */
+    clrbits_le32(GICD_BASE + GICD_IGROUPRn, BIT(15));
 
-	/* Set SGI15 priority to 0 */
-	writeb(0, GICD_BASE + GICD_IPRIORITYRn + 15);
+    /* Set SGI15 priority to 0 */
+    writeb(0, GICD_BASE + GICD_IPRIORITYRn + 15);
 
-	/* Be cool with non-secure */
-	writel(0xff, GICC_BASE + GICC_PMR);
+    /* Be cool with non-secure */
+    writel(0xff, GICC_BASE + GICC_PMR);
 
-	/* Switch FIQEn on */
-	setbits_le32(GICC_BASE + GICC_CTLR, BIT(3));
+    /* Switch FIQEn on */
+    setbits_le32(GICC_BASE + GICC_CTLR, BIT(3));
 
-	reg = cp15_read_scr();
-	reg |= BIT(2);  /* Enable FIQ in monitor mode */
-	reg &= ~BIT(0); /* Secure mode */
-	cp15_write_scr(reg);
+    reg = cp15_read_scr();
+    reg |= BIT(2);  /* Enable FIQ in monitor mode */
+    reg &= ~BIT(0); /* Secure mode */
+    cp15_write_scr(reg);
 }

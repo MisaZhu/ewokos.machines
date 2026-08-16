@@ -20,9 +20,9 @@ int32_t bcm283x_sd_read(int32_t sector, void* buf, int count) {
         if (result != (uint32_t)count) {
                 return -1;
         }
-	return 0;
+    return 0;
 }
 
 int32_t bcm283x_sd_write(int32_t sector, const void* buf, int count) {
-	return -1;
+    return -1;
 }

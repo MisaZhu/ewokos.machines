@@ -13,22 +13,22 @@ void irq_init_arch(void) {
 }
 
 void irq_enable_arch(uint32_t irq) {
-	pic_regs_t* pic = (pic_regs_t*)(PIC);
-	sic_regs_t* sic = (sic_regs_t*)(SIC);
+    pic_regs_t* pic = (pic_regs_t*)(PIC);
+    sic_regs_t* sic = (sic_regs_t*)(SIC);
 
-	if(irq == IRQ_TIMER0) 
-		pic->enable |= PIC_INT_TIMER0;
-	else if(irq < 31)
-		pic->enable |= (1<<irq);
-	else if(irq >= 32) {
-		pic->enable |= (0x80000000); //sic enabled
-		sic->enable |= (1<<(irq-32));
-	}
+    if(irq == IRQ_TIMER0) 
+        pic->enable |= PIC_INT_TIMER0;
+    else if(irq < 31)
+        pic->enable |= (1<<irq);
+    else if(irq >= 32) {
+        pic->enable |= (0x80000000); //sic enabled
+        sic->enable |= (1<<(irq-32));
+    }
 }
 
 void irq_enable_core_arch(uint32_t core, uint32_t irq) {
-	(void)core;
-	irq_enable_arch(irq);
+    (void)core;
+    irq_enable_arch(irq);
 }
 
 inline void irq_clear_core_arch(uint32_t core, uint32_t irq) {
@@ -40,52 +40,52 @@ inline void irq_clear_arch(uint32_t irq) {
 }
 
 void irq_disable_arch(uint32_t irq) {
-	pic_regs_t* pic = (pic_regs_t*)(PIC);
-	sic_regs_t* sic = (sic_regs_t*)(SIC);
-	
-	if(irq == IRQ_TIMER0) 
-		pic->enable &= (~PIC_INT_TIMER0);
-	else if(irq < 31)
-		pic->enable &= ~(1<<irq);
-	else if(irq >= 32)
-		sic->enable &= ~(1<<(irq-32));
+    pic_regs_t* pic = (pic_regs_t*)(PIC);
+    sic_regs_t* sic = (sic_regs_t*)(SIC);
+    
+    if(irq == IRQ_TIMER0) 
+        pic->enable &= (~PIC_INT_TIMER0);
+    else if(irq < 31)
+        pic->enable &= ~(1<<irq);
+    else if(irq >= 32)
+        sic->enable &= ~(1<<(irq-32));
 }
 
 static inline int get_irq_raw(uint32_t irq_status) {
-	uint32_t i=0;
-	while(i<32) {
-		if(((irq_status >> i) & 0x1) != 0)
-			break;
-		i++;
-	}
-	if(i >= 32)
-		i = 0;
-	return i;
+    uint32_t i=0;
+    while(i<32) {
+        if(((irq_status >> i) & 0x1) != 0)
+            break;
+        i++;
+    }
+    if(i >= 32)
+        i = 0;
+    return i;
 }
 
 inline uint32_t irq_get_arch(void) {
-	uint32_t ret = 0;
-	pic_regs_t* pic = (pic_regs_t*)(PIC);
-	sic_regs_t* sic = (sic_regs_t*)(SIC);
+    uint32_t ret = 0;
+    pic_regs_t* pic = (pic_regs_t*)(PIC);
+    sic_regs_t* sic = (sic_regs_t*)(SIC);
 
-	if((pic->status & PIC_INT_TIMER0) != 0) 
-		ret = IRQ_TIMER0;
-	else {
-		if((pic->status & 0x7fffffff) != 0) {
-			ret = get_irq_raw(pic->status);
-		}
-		else if(sic->status != 0) {
-			ret = get_irq_raw(sic->status) + 32;
-		}
-	}
-	return ret;
+    if((pic->status & PIC_INT_TIMER0) != 0) 
+        ret = IRQ_TIMER0;
+    else {
+        if((pic->status & 0x7fffffff) != 0) {
+            ret = get_irq_raw(pic->status);
+        }
+        else if(sic->status != 0) {
+            ret = get_irq_raw(sic->status) + 32;
+        }
+    }
+    return ret;
 }
 
 inline uint32_t irq_get_unified_arch(uint32_t irqno) {
-	return irqno;
+    return irqno;
 }
 
 inline void irq_eoi_arch(uint32_t irq_raw) {
-	(void)irq_raw;
+    (void)irq_raw;
 }
 

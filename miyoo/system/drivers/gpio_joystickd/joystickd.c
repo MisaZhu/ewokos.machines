@@ -35,28 +35,28 @@
 #define DECLARE_GPIO_KEY(name, level)	{name, name##_PIN, level, !level}
 
 struct gpio_pins{
-	int key;
-	int pin;
-	int active;
-	int status;
+    int key;
+    int pin;
+    int active;
+    int status;
 }_pins[] = {
-	DECLARE_GPIO_KEY(KEY_UP, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_DOWN, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_LEFT, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_RIGHT, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_A, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_B, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_X, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_Y, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_SELECT, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_START, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_L1, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_L2, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_R1, GPIO_LOW),
-	DECLARE_GPIO_KEY(JOYSTICK_R2, GPIO_LOW),
-	//DECLARE_GPIO_KEY(KEY_END, GPIO_LOW),
-	DECLARE_GPIO_KEY(KEY_POWER, GPIO_HIGH),
-	DECLARE_GPIO_KEY(KEY_HOME, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_UP, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_DOWN, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_LEFT, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_RIGHT, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_A, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_B, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_X, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_Y, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_SELECT, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_START, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_L1, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_L2, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_R1, GPIO_LOW),
+    DECLARE_GPIO_KEY(JOYSTICK_R2, GPIO_LOW),
+    //DECLARE_GPIO_KEY(KEY_END, GPIO_LOW),
+    DECLARE_GPIO_KEY(KEY_POWER, GPIO_HIGH),
+    DECLARE_GPIO_KEY(KEY_HOME, GPIO_LOW),
 };
 
 #define GPIO_NUMBER                         91
@@ -65,12 +65,12 @@ struct gpio_pins{
 void miyoo_gpio_set(int pin, int level){
     if (pin >= 0 && pin < GPIO_NUMBER)
     {
-		REG8(gpio_table[pin].r_oen) &= (~gpio_table[pin].m_oen);
-		if(level){
-			REG8(gpio_table[pin].r_out) |= gpio_table[pin].m_out;
-		}else{
-			REG8(gpio_table[pin].r_out) &= ~gpio_table[pin].m_out;
-		}
+        REG8(gpio_table[pin].r_oen) &= (~gpio_table[pin].m_oen);
+        if(level){
+            REG8(gpio_table[pin].r_out) |= gpio_table[pin].m_out;
+        }else{
+            REG8(gpio_table[pin].r_out) &= ~gpio_table[pin].m_out;
+        }
     }
 }
 
@@ -78,10 +78,10 @@ void miyoo_gpio_pull(int  pin, int level)
 {
     if (pin >= 0 && pin < GPIO_NUMBER)
     {
-		if(level)
-        	REG8(gpio_table[pin].r_out) |= gpio_table[pin].m_out;
-		else
-        	REG8(gpio_table[pin].r_out) &= ~gpio_table[pin].m_out;
+        if(level)
+            REG8(gpio_table[pin].r_out) |= gpio_table[pin].m_out;
+        else
+            REG8(gpio_table[pin].r_out) &= ~gpio_table[pin].m_out;
     }
 }
 
@@ -106,75 +106,75 @@ int miyoo_gpio_read(int pin)
 }
 
 static int joystick_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		void* buf, int size, int offset, void* p) {
-	(void)dev;
-	(void)fd;
-	(void)from_pid;
-	(void)node;
-	(void)offset;
-	(void)size;
-	(void)p;
+        void* buf, int size, int offset, void* p) {
+    (void)dev;
+    (void)fd;
+    (void)from_pid;
+    (void)node;
+    (void)offset;
+    (void)size;
+    (void)p;
 
-	char* keys = (char*)buf;
-	int key_cnt = 0;
-	memset(keys, 0, size);
-	for(int i = 0; i < sizeof(_pins)/sizeof(struct gpio_pins);  i++){
-		if(miyoo_gpio_read(_pins[i].pin) == _pins[i].active){
-			*keys = _pins[i].key;
-			keys++;
-			key_cnt++;
-			if(key_cnt >= size)
-				break;
-		}
-	}
-	if(key_cnt <= 0)
-		return 0;
-	return key_cnt;
+    char* keys = (char*)buf;
+    int key_cnt = 0;
+    memset(keys, 0, size);
+    for(int i = 0; i < sizeof(_pins)/sizeof(struct gpio_pins);  i++){
+        if(miyoo_gpio_read(_pins[i].pin) == _pins[i].active){
+            *keys = _pins[i].key;
+            keys++;
+            key_cnt++;
+            if(key_cnt >= size)
+                break;
+        }
+    }
+    if(key_cnt <= 0)
+        return 0;
+    return key_cnt;
 }
 
 static void init_gpio(void) {
-	for(int i = 0; i < sizeof(_pins)/sizeof(struct gpio_pins);  i++){
-		miyoo_gpio_init(_pins[i].pin);
-		miyoo_gpio_pull(_pins[i].pin, !_pins[i].active);
-	}
+    for(int i = 0; i < sizeof(_pins)/sizeof(struct gpio_pins);  i++){
+        miyoo_gpio_init(_pins[i].pin);
+        miyoo_gpio_pull(_pins[i].pin, !_pins[i].active);
+    }
 }
 
 static void check_power(void) {
-	static int count = 0;
-	if(miyoo_gpio_read(86) != 0)
-		count++;
-	else
-		count = 0;
+    static int count = 0;
+    if(miyoo_gpio_read(86) != 0)
+        count++;
+    else
+        count = 0;
 
-	if(count >= 10){
-		//close screnn
-		miyoo_gpio_set(4, 0);
-		printf("power down!\n");
-		proc_usleep(1000);
-		miyoo_gpio_set(85, 0);
-	}
+    if(count >= 10){
+        //close screnn
+        miyoo_gpio_set(4, 0);
+        printf("power down!\n");
+        proc_usleep(1000);
+        miyoo_gpio_set(85, 0);
+    }
 }
 
 static int power_button(vdevice_t* dev, void* p) {
-	(void)dev;
-	(void)p;
-	ipc_disable();
-	check_power();
-	ipc_enable();
-	proc_usleep(200000);
+    (void)dev;
+    (void)p;
+    ipc_disable();
+    check_power();
+    ipc_enable();
+    proc_usleep(200000);
 }
 
 int main(int argc, char** argv) {
-	 _mmio_base = mmio_map();
+     _mmio_base = mmio_map();
 
-	const char* mnt_point = argc > 1 ? argv[1]: "/dev/joykeyb";
-	init_gpio();
+    const char* mnt_point = argc > 1 ? argv[1]: "/dev/joykeyb";
+    init_gpio();
 
-	vdevice_t dev;
-	memset(&dev, 0, sizeof(vdevice_t));
-	strcpy(dev.name, "joykeyb");
-	dev.read = joystick_read;
-	dev.loop_step = power_button;
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
-	return 0;
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    strcpy(dev.name, "joykeyb");
+    dev.read = joystick_read;
+    dev.loop_step = power_button;
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    return 0;
 }

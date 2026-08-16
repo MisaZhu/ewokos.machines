@@ -54,19 +54,19 @@
 static volatile uint32_t* _pv1 = 0;
 
 static void _pv_init(void) {
-	if (_pv1 == 0 && _mmio_base != 0) {
-		_pv1 = (volatile uint32_t*)(uintptr_t)(_mmio_base + UC_PV1_OFFSET);
-	}
+    if (_pv1 == 0 && _mmio_base != 0) {
+        _pv1 = (volatile uint32_t*)(uintptr_t)(_mmio_base + UC_PV1_OFFSET);
+    }
 }
 
 static uint32_t _pv_read(uint32_t off) {
-	if (_pv1 == 0) return 0;
-	return _pv1[off / 4];
+    if (_pv1 == 0) return 0;
+    return _pv1[off / 4];
 }
 
 static void _pv_write(uint32_t off, uint32_t v) {
-	if (_pv1 == 0) return;
-	_pv1[off / 4] = v;
+    if (_pv1 == 0) return;
+    _pv1[off / 4] = v;
 }
 
 /*
@@ -92,77 +92,77 @@ static void _pv_write(uint32_t off, uint32_t v) {
  * 720x1280, hfp=43/hsw=20/hbp=20, vfp=8/vsw=2/vbp=16.
  */
 int uc_pv_configure(void) {
-	const uc_panel_mode_t* mode = uc_panel_mode();
-	uint32_t control;
+    const uc_panel_mode_t* mode = uc_panel_mode();
+    uint32_t control;
 
-	_pv_init();
-	if (_pv1 == 0) return -1;
+    _pv_init();
+    if (_pv1 == 0) return -1;
 
-	/* vc4_crtc_pixelvalve_reset(): disable, then clear FIFO. */
-	_pv_write(PV_CONTROL, _pv_read(PV_CONTROL) & ~PV_CONTROL_EN);
-	_pv_write(PV_CONTROL, _pv_read(PV_CONTROL) | PV_CONTROL_FIFO_CLR);
+    /* vc4_crtc_pixelvalve_reset(): disable, then clear FIFO. */
+    _pv_write(PV_CONTROL, _pv_read(PV_CONTROL) & ~PV_CONTROL_EN);
+    _pv_write(PV_CONTROL, _pv_read(PV_CONTROL) | PV_CONTROL_FIFO_CLR);
 
-	/* Horizontal: HBP | HSYNC in HORZA, HFP | HACTIVE in HORZB. */
-	_pv_write(PV_HORZA,
-			(mode->hbp << PV_HORZA_HBP_SHIFT) |
-			(mode->hsw << PV_HORZA_HSYNC_SHIFT));
-	_pv_write(PV_HORZB,
-			(mode->hfp   << PV_HORZB_HFP_SHIFT) |
-			(mode->width << PV_HORZB_HACTIVE_SHIFT));
+    /* Horizontal: HBP | HSYNC in HORZA, HFP | HACTIVE in HORZB. */
+    _pv_write(PV_HORZA,
+            (mode->hbp << PV_HORZA_HBP_SHIFT) |
+            (mode->hsw << PV_HORZA_HSYNC_SHIFT));
+    _pv_write(PV_HORZB,
+            (mode->hfp   << PV_HORZB_HFP_SHIFT) |
+            (mode->width << PV_HORZB_HACTIVE_SHIFT));
 
-	/* Vertical. */
-	_pv_write(PV_VERTA,
-			(mode->vbp << PV_VERTA_VBP_SHIFT) |
-			(mode->vsw << PV_VERTA_VSYNC_SHIFT));
-	_pv_write(PV_VERTB,
-			(mode->vfp    << PV_VERTB_VFP_SHIFT) |
-			(mode->height << PV_VERTB_VACTIVE_SHIFT));
+    /* Vertical. */
+    _pv_write(PV_VERTA,
+            (mode->vbp << PV_VERTA_VBP_SHIFT) |
+            (mode->vsw << PV_VERTA_VSYNC_SHIFT));
+    _pv_write(PV_VERTB,
+            (mode->vfp    << PV_VERTB_VFP_SHIFT) |
+            (mode->height << PV_VERTB_VACTIVE_SHIFT));
 
-	/* DSI needs an HACT_ACT hint (pixel_rep=1 -> hdisplay). */
-	_pv_write(PV_HACT_ACT, mode->width);
+    /* DSI needs an HACT_ACT hint (pixel_rep=1 -> hdisplay). */
+    _pv_write(PV_HACT_ACT, mode->width);
 
-	/* HVS5: no RGB pixel swap. */
-	_pv_write(PV_MUX_CFG,
-			PV_MUX_CFG_RGB_PIXEL_MUX_MODE_NO_SWAP <<
-			PV_MUX_CFG_RGB_PIXEL_MUX_MODE_SHIFT);
+    /* HVS5: no RGB pixel swap. */
+    _pv_write(PV_MUX_CFG,
+            PV_MUX_CFG_RGB_PIXEL_MUX_MODE_NO_SWAP <<
+            PV_MUX_CFG_RGB_PIXEL_MUX_MODE_SHIFT);
 
-	/*
-	 * V_CONTROL: continuous non-interlaced, DSI encoder.  Upstream
-	 * writes VIDEN=0 here and only ORs VIDEN in later.
-	 */
-	_pv_write(PV_V_CONTROL,
-			PV_VCONTROL_CONTINUOUS | PV_VCONTROL_DSI);
-	_pv_write(PV_VSYNCD_EVEN, 0);
+    /*
+     * V_CONTROL: continuous non-interlaced, DSI encoder.  Upstream
+     * writes VIDEN=0 here and only ORs VIDEN in later.
+     */
+    _pv_write(PV_V_CONTROL,
+            PV_VCONTROL_CONTINUOUS | PV_VCONTROL_DSI);
+    _pv_write(PV_VSYNCD_EVEN, 0);
 
-	/*
-	 * Control: DSIV_24, CLK_SELECT=DSI, wait-hstart, correct FIFO
-	 * full level (46 for PV1/hvs5).  EN stays clear here; upstream
-	 * ORs it in from vc4_crtc_atomic_enable.
-	 */
-	control = PV_CONTROL_FIFO_CLR |
-	          (PV_CONTROL_FORMAT_DSIV_24 << PV_CONTROL_FORMAT_SHIFT) |
-	          (PV_CONTROL_CLK_SELECT_DSI << PV_CONTROL_CLK_SELECT_SHIFT) |
-	          PV_CONTROL_CLR_AT_START |
-	          PV_CONTROL_TRIGGER_UNDERFLOW |
-	          PV_CONTROL_WAIT_HSTART |
-	          ((UC_PV1_FIFO_FULL_LEVEL & 0x3fU) << PV_CONTROL_FIFO_LEVEL_SHIFT) |
-	          (((UC_PV1_FIFO_FULL_LEVEL >> 6) & 0x3U) << PV5_CONTROL_FIFO_LEVEL_HIGH_SHIFT);
-	_pv_write(PV_CONTROL, control);
-	return 0;
+    /*
+     * Control: DSIV_24, CLK_SELECT=DSI, wait-hstart, correct FIFO
+     * full level (46 for PV1/hvs5).  EN stays clear here; upstream
+     * ORs it in from vc4_crtc_atomic_enable.
+     */
+    control = PV_CONTROL_FIFO_CLR |
+              (PV_CONTROL_FORMAT_DSIV_24 << PV_CONTROL_FORMAT_SHIFT) |
+              (PV_CONTROL_CLK_SELECT_DSI << PV_CONTROL_CLK_SELECT_SHIFT) |
+              PV_CONTROL_CLR_AT_START |
+              PV_CONTROL_TRIGGER_UNDERFLOW |
+              PV_CONTROL_WAIT_HSTART |
+              ((UC_PV1_FIFO_FULL_LEVEL & 0x3fU) << PV_CONTROL_FIFO_LEVEL_SHIFT) |
+              (((UC_PV1_FIFO_FULL_LEVEL >> 6) & 0x3U) << PV5_CONTROL_FIFO_LEVEL_HIGH_SHIFT);
+    _pv_write(PV_CONTROL, control);
+    return 0;
 }
 
 /* CRTC_WRITE(PV_CONTROL, CRTC_READ(PV_CONTROL) | PV_CONTROL_EN) */
 int uc_pv_enable(void) {
-	_pv_init();
-	if (_pv1 == 0) return -1;
-	_pv_write(PV_CONTROL, _pv_read(PV_CONTROL) | PV_CONTROL_EN);
-	return 0;
+    _pv_init();
+    if (_pv1 == 0) return -1;
+    _pv_write(PV_CONTROL, _pv_read(PV_CONTROL) | PV_CONTROL_EN);
+    return 0;
 }
 
 /* CRTC_WRITE(PV_V_CONTROL, CRTC_READ(PV_V_CONTROL) | PV_VCONTROL_VIDEN) */
 int uc_pv_video_enable(void) {
-	_pv_init();
-	if (_pv1 == 0) return -1;
-	_pv_write(PV_V_CONTROL, _pv_read(PV_V_CONTROL) | PV_VCONTROL_VIDEN);
-	return 0;
+    _pv_init();
+    if (_pv1 == 0) return -1;
+    _pv_write(PV_V_CONTROL, _pv_read(PV_V_CONTROL) | PV_VCONTROL_VIDEN);
+    return 0;
 }

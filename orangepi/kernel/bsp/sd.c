@@ -118,7 +118,7 @@ static int mmc_rint_wait(void *priv, uint32_t timeout_msecs, uint32_t done_bit)
     unsigned int status;
     unsigned int done = 0;
     unsigned long start =0;
-	struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
+    struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
 
     do {
         status = reg->rint;
@@ -129,8 +129,8 @@ static int mmc_rint_wait(void *priv, uint32_t timeout_msecs, uint32_t done_bit)
         }
 
         done = (status & done_bit);
-		start++;
-		_delay_msec(1);
+        start++;
+        _delay_msec(1);
     } while (!done);
 
     return 0;
@@ -146,8 +146,8 @@ static int mmc_trans_data_by_cpu(void *priv, struct mmc_data *data)
     unsigned byte_cnt = data->blocksize * data->blocks;
     unsigned timeout_msecs = byte_cnt;
     unsigned long  start;
-	struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
-	
+    struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
+    
 
 
     if (timeout_msecs < 2000)
@@ -159,11 +159,11 @@ static int mmc_trans_data_by_cpu(void *priv, struct mmc_data *data)
         while (reg->status & status_bit) {
             if (start > timeout_msecs){
                 return -1;
-			}
-			start++;
-			_delay_msec(1);
+            }
+            start++;
+            _delay_msec(1);
         }
-		
+        
         if (reading)
             buff[i] = reg->fifo;
         else
@@ -176,15 +176,15 @@ static void sunxi_mmc_set_rdtmout_reg(void *priv, unsigned int rdtmout)
 {
     unsigned int rval = 0;
     unsigned int rdto_clk = 0;
-	struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
-	
+    struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
+    
     rdto_clk = (25000000 / 1000 * rdtmout) << 8;
     rval = reg->ntsr;
 
     rval = reg->gctrl;
     /*ddr50 mode don't use 256x timeout unit*/
-   	rdto_clk = 0xffffff;
-   	rval &= ~(0x1 << 11);
+    rdto_clk = 0xffffff;
+    rval &= ~(0x1 << 11);
 
     reg->gctrl = rval;
 
@@ -196,12 +196,12 @@ static void sunxi_mmc_set_rdtmout_reg(void *priv, unsigned int rdtmout)
 
 static int send_command(void *priv, struct mmc_cmd *cmd, struct mmc_data *data){
 
-	unsigned int cmdval = SUNXI_MMC_CMD_START;
+    unsigned int cmdval = SUNXI_MMC_CMD_START;
     unsigned int timeout_msecs;
     int error = 0;
     unsigned int status = 0;
     unsigned int timeout = 0;
-	struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
+    struct sunxi_mmc *reg = (struct sunxi_mmc*)priv;
 
     if (cmd->resp_type & MMC_RSP_PRESENT){
         cmdval |= SUNXI_MMC_CMD_RESP_EXPIRE;
@@ -215,7 +215,7 @@ static int send_command(void *priv, struct mmc_cmd *cmd, struct mmc_data *data){
         cmdval |= SUNXI_MMC_CMD_CHK_RESPONSE_CRC;
     }
 
-	if (data) {
+    if (data) {
         cmdval |= SUNXI_MMC_CMD_DATA_EXPIRE|SUNXI_MMC_CMD_WAIT_PRE_OVER;
         if (data->flags & MMC_DATA_WRITE)
             cmdval |= SUNXI_MMC_CMD_WRITE;
@@ -248,7 +248,7 @@ static int send_command(void *priv, struct mmc_cmd *cmd, struct mmc_data *data){
         goto out;
     }
 
-	 if (data) {
+     if (data) {
         timeout_msecs = 6000;
         error = mmc_rint_wait(priv, timeout_msecs,
                       data->blocks > 1 ?
@@ -275,8 +275,8 @@ static int send_command(void *priv, struct mmc_cmd *cmd, struct mmc_data *data){
                 error = -1;
                 goto out;
             }
-			timeout++;
-			_delay_msec(1);
+            timeout++;
+            _delay_msec(1);
         } while (status & SUNXI_MMC_STATUS_CARD_DATA_BUSY);
     }
 
@@ -296,11 +296,11 @@ out:
             if (!(timeout--)) {
                 break;
             }
-		}
-		
-		reg->gctrl = 0x7;
+        }
+        
+        reg->gctrl = 0x7;
     }
-	return error;
+    return error;
 }
 
 static uint8_t _sector_buf[512];
@@ -323,25 +323,25 @@ int32_t sd_dev_read(int32_t sector) {
         return -1;
     }
 
-	return 0;
+    return 0;
 }
 
 int32_t sd_dev_read_done(void* buf) {
-	memcpy(buf, _sector_buf, 512);
-	return 0;
+    memcpy(buf, _sector_buf, 512);
+    return 0;
 }
 
 int32_t sd_dev_write(int32_t sector, const void* buf) {
     (void)sector;
     (void)buf;
-	return 0;
+    return 0;
 }
 
 int32_t sd_dev_write_done(void) {
-	return 0;
+    return 0;
 }
 
 
 int32_t sd_init(void) {
-	return 0;
+    return 0;
 }
