@@ -929,10 +929,12 @@ int connect(const char*ssid, const char* pmk)
      */
     brcmf_fil_cmd_data_set(0, BRCMF_C_DISASSOC, NULL, 0);
 
-    /* A normal (non P2P) connection request setup. */
-    const char ie[22] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 
-                         0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x01, 0x00, 
-                         0x00, 0x0f, 0xac, 0x02, 0x80, 0x00};
+    /* Advertise a plain WPA2-PSK/AES RSN profile. Some APs reject the
+     * previous PMF-capable IE during reassociation and answer with repeated
+     * disassoc/link-down events before the join ever completes. */
+    const char ie[22] = {0x30, 0x14, 0x01, 0x00, 0x00, 0x0f, 0xac, 0x04,
+                         0x01, 0x00, 0x00, 0x0f, 0xac, 0x04, 0x01, 0x00,
+                         0x00, 0x0f, 0xac, 0x02, 0x00, 0x00};
 
     brcmf_fil_iovar_data_set(0, "wpaie", ie, sizeof(ie));
 
@@ -954,7 +956,7 @@ int connect(const char*ssid, const char* pmk)
         return err;
     }
 
-    err = brcmf_fil_iovar_int_set(0, "wsec", AES_ENABLED|TKIP_ENABLED);
+    err = brcmf_fil_iovar_int_set(0, "wsec", AES_ENABLED);
     if (err) {
         brcm_log("error (%d)\n", err);
         return err;
@@ -966,22 +968,9 @@ int connect(const char*ssid, const char* pmk)
         return err;
     }
 
-    err = brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_CAPABLE);
+    err = brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_NONE);
     if (err) {
-        /*
-         * "mfp" only latches while the interface is down (fw BCME_NOTDOWN,
-         * -5). The first connect after init runs before BRCMF_C_UP took
-         * effect so it succeeds, but every reconnect hits NOTDOWN; bounce
-         * the interface around the retry instead of silently dropping PMF.
-         */
-        int32_t down_err = brcmf_fil_cmd_int_set(0, BRCMF_C_DOWN, 1);
-        if (!down_err) {
-            err = brcmf_fil_iovar_int_set(0, "mfp", BRCMF_MFP_CAPABLE);
-            brcmf_fil_cmd_int_set(0, BRCMF_C_UP, 1);
-        }
-        if (err) {
-            brcm_log("set mfp failed (%d), continue without mfp\n", err);
-        }
+        brcm_log("set mfp=none failed (%d), continue\n", err);
     }
 
     err = brcmf_fil_iovar_int_set(0, "wpa_auth", WPA2_AUTH_PSK);
