@@ -128,6 +128,28 @@ static int32_t bsp_sd_write_cache(int32_t sector, const void *buf) {
 	return 0;
 }
 
+static int32_t bsp_sd_write_cache_sectors(int32_t sector, const void *buf, uint32_t count) {
+        const uint8_t *src = (const uint8_t*)buf;
+
+        if(count == 0)
+                return 0;
+        if(mmc_write_blocks(sector, count, (void*)buf) != count)
+                return -1;
+
+        for(uint32_t i = 0; i < count; i++) {
+                void **l3_entry = bsp_sd_get_l3((uint32_t)sector + i, 0);
+                if(l3_entry != 0) {
+                        uint32_t current_sector = (uint32_t)sector + i;
+                        uint8_t *page = l3_entry[(current_sector >> 3) & 0x1FF];
+                        if(page != 0) {
+                                memcpy(page + (current_sector & (SD_CACHE_PAGE_SECTORS - 1)) * 512U,
+                                                src + i * 512U, 512U);
+                        }
+                }
+        }
+        return 0;
+}
+
 int32_t bsp_sd_init_by_info(void) {
 	sys_info_t sysinfo;
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
@@ -155,8 +177,8 @@ int32_t bsp_sd_init_by_info(void) {
 }
 
 int bsp_sd_init(void) {
-	int ret = sd_init_ex(bsp_sd_init_by_info, bsp_sd_read_cache,
-			bsp_sd_read_cache_sectors, bsp_sd_write_cache);
+        int ret = sd_init_ex2(bsp_sd_init_by_info, bsp_sd_read_cache,
+                        bsp_sd_read_cache_sectors, bsp_sd_write_cache, bsp_sd_write_cache_sectors);
 	if(ret == 0)
 		sd_enable_sector_buffer(0);
 	return ret;

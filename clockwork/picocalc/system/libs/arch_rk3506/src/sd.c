@@ -14,6 +14,8 @@ extern int mmc_read_blocks(struct dwmci_host *host, void *dst, uint32_t sector);
 extern int mmc_read_sectors(struct dwmci_host *host, void *dst, uint32_t sector,
 		uint32_t count);
 extern int mmc_write_blocks(struct dwmci_host *host, const void *src, uint32_t sector);
+extern int mmc_write_sectors(struct dwmci_host *host, const void *src, uint32_t sector,
+                uint32_t count);
 
 static struct dwmci_host dwc_host = {
     .fifoth_val = 0,
@@ -242,4 +244,38 @@ int32_t rk3506_sd_write_sector(int32_t sector, const void* buf) {
         }
 
         return ret;
+}
+
+int32_t rk3506_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
+        const uint8_t *src = (const uint8_t*)buf;
+
+        if(buf == NULL)
+                return -1;
+        while(count > 0) {
+                uint32_t chunk = (_active_chunk_sectors > count) ?
+                                count : _active_chunk_sectors;
+                int ret;
+
+                if(chunk > 1) {
+                        ret = mmc_write_sectors(&dwc_host, src, sector, chunk);
+                        if(ret == 0) {
+                                rk3506_sd_note_success();
+                                src += chunk * 512U;
+                                sector += chunk;
+                                count -= chunk;
+                                continue;
+                        }
+                        rk3506_sd_note_chunk_error();
+                        rk3506_sd_recover();
+                }
+
+                ret = rk3506_sd_write_sector(sector, src);
+                if(ret != 0)
+                        return ret;
+                src += 512U;
+                sector++;
+                count--;
+        }
+
+        return 0;
 }

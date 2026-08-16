@@ -62,17 +62,22 @@ static int32_t bsp_sd_read_sector(int32_t sector, void* buf) {
 }
 
 static int32_t bsp_sd_write_sector(int32_t sector, const void* buf) {
-	if(sd_ra_hit(sector, 1))
-		sd_ra_invalidate();
+        sd_ra_invalidate();
 	return miyoo_sd_write_sector(sector, buf);
+}
+
+static int32_t bsp_sd_write_sectors(int32_t sector, const void* buf, uint32_t count) {
+        sd_ra_invalidate();
+        return miyoo_sd_write_blocks(sector, buf, count);
 }
 
 int bsp_sd_init(void) {
 	sys_info_t sysinfo;
 
 	syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-	return sd_init_ex(miyoo_sd_init,
+        return sd_init_ex2(miyoo_sd_init,
 			bsp_sd_read_sector,
 			bsp_sd_read_sectors,
-			bsp_sd_write_sector);
+                        bsp_sd_write_sector,
+                        bsp_sd_write_sectors);
 }

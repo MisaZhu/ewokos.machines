@@ -12,7 +12,7 @@
 @/bin/ipcserv /drivers/timerd                
 
 @/bin/splash -m "start /dev/touch0" -p 20
-@/bin/ipcserv /drivers/waveshare/gt911_touchd -t 1 /dev/touch0
+@/bin/ipcserv /drivers/waveshare/dsi_touchd /dev/touch0
 
 @/bin/splash -m "start /dev/null" -p 30
 @/bin/ipcserv /drivers/nulld                 /dev/null
