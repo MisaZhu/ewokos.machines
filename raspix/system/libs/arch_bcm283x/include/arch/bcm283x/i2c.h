@@ -20,6 +20,20 @@ uint32_t  i2c_puts(uint32_t addr, uint32_t regs, uint8_t* pdat, uint32_t size);
 uint32_t  i2c_gets(uint32_t addr, uint32_t regs, uint8_t* pdat, uint32_t size);
 uint32_t i2c_puts_raw(uint32_t addr, uint8_t* pdat, uint32_t size);
 uint32_t i2c_gets_raw(uint32_t addr, uint8_t* pdat, uint32_t size);
+int32_t  bcm283x_i2c0_init(int32_t sda_gpio, int32_t scl_gpio);
+int32_t  bcm283x_i2c0_probe(uint8_t addr);
+int32_t  bcm283x_i2c0_write(uint8_t addr, const uint8_t* data, uint32_t size);
+int32_t  bcm283x_i2c0_read(uint8_t addr, uint8_t* data, uint32_t size);
+int32_t  bcm283x_i2c0_write_read(uint8_t addr,
+                const uint8_t* write_data, uint32_t write_size,
+                uint8_t* read_data, uint32_t read_size);
+int32_t  bcm283x_i2c1_init(int32_t sda_gpio, int32_t scl_gpio);
+int32_t  bcm283x_i2c1_probe(uint8_t addr);
+int32_t  bcm283x_i2c1_write(uint8_t addr, const uint8_t* data, uint32_t size);
+int32_t  bcm283x_i2c1_read(uint8_t addr, uint8_t* data, uint32_t size);
+int32_t  bcm283x_i2c1_write_read(uint8_t addr,
+                const uint8_t* write_data, uint32_t write_size,
+                uint8_t* read_data, uint32_t read_size);
 /*----------------------------------------------------------------------------*/
 #endif
 /*----------------------------------------------------------------------------*/

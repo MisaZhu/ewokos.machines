@@ -20,6 +20,7 @@ LIB_ARCH_BCM283X_OBJS = $(ARCH)/src/framebuffer.o \
 	$(ARCH)/src/pl011_uart.o \
 	$(ARCH)/src/sd.o \
 	$(ARCH)/src/i2c.o \
+        $(ARCH)/src/i2c_bsc.o \
 	$(ARCH)/src/spi.o \
 	$(ARCH)/src/mmc.o \
 	$(ARCH)/src/emmc.o \
