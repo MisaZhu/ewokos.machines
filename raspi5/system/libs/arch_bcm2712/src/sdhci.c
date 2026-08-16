@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <ewoksys/mmio.h>
+#include <ewoksys/kernel_tic.h>
 #include <arch/bcm2712/mmc.h>
 
 /*
@@ -69,6 +70,8 @@
 #define  SDHCI_CARD_STATE_STABLE BIT(17)
 #define  SDHCI_CARD_DETECT_PIN_LEVEL BIT(18)
 #define  SDHCI_WRITE_PROTECT    BIT(19)
+#define  SDHCI_DATA_LVL_MASK    0x00F00000
+#define   SDHCI_DATA_0_LVL_MASK BIT(20)
 #define SDHCI_HOST_CONTROL      0x28
 #define  SDHCI_CTRL_LED         BIT(0)
 #define  SDHCI_CTRL_4BITBUS     BIT(1)
@@ -228,6 +231,12 @@
 #define SDHCI_DEFAULT_BOUNDARY_ARG   (7)
 
 #define SDHCI_GET_VERSION(x) (x->version & SDHCI_SPEC_VER_MASK)
+
+#define SDHCI_TRANSFER_TIMEOUT_MS  3000
+#define SDHCI_R1B_BUSY_TIMEOUT_MS  3000
+
+/* Elapsed ms since "start" (unsigned delta, wrap-safe) */
+#define get_timer(x)    (kernel_tic_ms(0) - (x))
 
 #define readl(addr)  (*((volatile uint32_t *)(addr)))
 #define writel(val, addr) (*((volatile uint32_t *)(addr)) = (uint32_t)(val))
@@ -470,7 +479,16 @@ int sdhci_set_clock(struct sdhci_host *host, unsigned int clock)
                         break;
                 }
             }
-            div <<= 1;
+            /*
+             * SDHCI v3.00 divided-clock encoding: the register
+             * field is (div/2) and the controller divides by 2x
+             * that value. U-Boot/Linux use "div >>= 1" here; the
+             * previous "div <<= 1" wrote 2*div, running the SD bus
+             * at 1/4 of the intended clock (e.g. 6.25MHz instead of
+             * 25MHz). Same fix as the kernel-side and wland SDIO
+             * copies.
+             */
+            div >>= 1;
         }
     } else {
         for (div = 1; div < SDHCI_MAX_DIV_SPEC_200; div *= 2) {
@@ -630,10 +648,10 @@ static void sdhci_transfer_pio(struct sdhci_host *host, struct mmc_data *data)
 
 static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 {
-    unsigned int stat, rdy, mask, timeout, block = 0;
+    unsigned int stat, rdy, mask, block = 0;
     bool transfer_done = false;
+    uint64_t start = get_timer(0);
 
-    timeout = 100000;
     rdy = SDHCI_INT_SPACE_AVAIL | SDHCI_INT_DATA_AVAIL;
     mask = SDHCI_DATA_AVAILABLE | SDHCI_SPACE_AVAILABLE;
     do {
@@ -644,21 +662,33 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
             return -EIO;
         }
         if (!transfer_done && (stat & rdy)) {
-            if (!(sdhci_readl(host, SDHCI_PRESENT_STATE) & mask))
-                continue;
-            sdhci_writel(host, rdy, SDHCI_INT_STATUS);
-            sdhci_transfer_pio(host, data);
-            if (data->flags == MMC_DATA_READ)
-                data->dest += data->blocksize;
-            else
-                data->src += data->blocksize;
-            if (++block >= data->blocks) {
-                transfer_done = true;
-                continue;
+            if (sdhci_readl(host, SDHCI_PRESENT_STATE) & mask) {
+                sdhci_writel(host, rdy, SDHCI_INT_STATUS);
+                sdhci_transfer_pio(host, data);
+                if (data->flags == MMC_DATA_READ)
+                    data->dest += data->blocksize;
+                else
+                    data->src += data->blocksize;
+                if (++block >= data->blocks) {
+                    /* Keep looping until SDHCI_INT_DATA_END is
+                     * seen, even if we finished sending all the
+                     * blocks.
+                     */
+                    transfer_done = true;
+                }
             }
         }
-        if (timeout-- == 0){
-            printf("%s: Transfer data timeout\n", __func__);
+        /* Wall-clock bound, not an iteration budget: for writes
+         * DATA_END only fires once the card releases busy after the
+         * last block (flash programming), which on slow cards takes
+         * far longer than the old 100000-tight-iteration budget,
+         * reporting writes as failed although the data had been
+         * accepted. The timeout must also be checked on every path
+         * (the old "continue" branches skipped it and could hang
+         * forever on a stuck FIFO). */
+        if (get_timer(start) > SDHCI_TRANSFER_TIMEOUT_MS) {
+            printf("%s: Transfer data timeout (stat 0x%x)\n",
+                   __func__, stat);
             return -ETIMEDOUT;
         }
     } while (!(stat & SDHCI_INT_DATA_END));
@@ -689,10 +719,9 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
     int ret = 0;
     int trans_bytes = 0, is_aligned = 1;
     uint32_t mask, flags, mode = 0;
-    unsigned int time = 0;
+    uint64_t start;
 
     host->start_addr = 0;
-    static unsigned int cmd_timeout = SDHCI_CMD_DEFAULT_TIMEOUT;
 
     mask = SDHCI_CMD_INHIBIT | SDHCI_DATA_INHIBIT;
 
@@ -701,18 +730,19 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
           cmd->cmdidx == MMC_CMD_SEND_TUNING_BLOCK_HS200) && !data))
         mask &= ~SDHCI_DATA_INHIBIT;
 
+    /* DATA inhibit stays set while the card holds DAT0 low after a
+     * write (flash programming). Wait on wall-clock time: the old
+     * delay-less counter spin burned its budget within a few ms and
+     * its count leaked into the response wait below, so commands sent
+     * while the card was still programming failed with fake timeouts. */
+    start = get_timer(0);
     while (sdhci_readl(host, SDHCI_PRESENT_STATE) & mask) {
-        if (time >= cmd_timeout) {
-            if (2 * cmd_timeout <= SDHCI_CMD_MAX_TIMEOUT) {
-                cmd_timeout += cmd_timeout;
-                printf("timeout increasing to: %u ms.\n",
-                       cmd_timeout);
-            } else {
-                printf("timeout.\n");
-                return -ECOMM;
-            }
+        if (get_timer(start) >= SDHCI_CMD_DEFAULT_TIMEOUT) {
+            printf("%s: inhibit timeout, state 0x%x\n", __func__,
+                   sdhci_readl(host, SDHCI_PRESENT_STATE));
+            return -ECOMM;
         }
-        time++;
+        usleep(1000);
     }
 
     sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
@@ -762,27 +792,18 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
     sdhci_writel(host, cmd->cmdarg, SDHCI_ARGUMENT);
     sdhci_writew(host, SDHCI_MAKE_CMD(cmd->cmdidx, flags), SDHCI_COMMAND);
 
+    start = get_timer(0);
     do {
         stat = sdhci_readl(host, SDHCI_INT_STATUS);
         if (stat & SDHCI_INT_ERROR)
             break;
 
-        if (host->quirks & SDHCI_QUIRK_BROKEN_R1B &&
-            cmd->resp_type & MMC_RSP_BUSY && !data) {
-            unsigned int state =
-                sdhci_readl(host, SDHCI_PRESENT_STATE);
-
-            if (!(state & SDHCI_DAT_ACTIVE))
-                return 0;
-        }
-
-        if (time >= SDHCI_READ_STATUS_TIMEOUT) {
+        if (get_timer(start) >= SDHCI_READ_STATUS_TIMEOUT) {
             printf("%s: Timeout for status update: %08x %08x\n",
                    __func__, stat, mask);
             dump(host);
             return -ETIMEDOUT;
         }
-        time++;
     } while ((stat & mask) != mask);
 
     if ((stat & (SDHCI_INT_ERROR | mask)) == mask) {
@@ -790,6 +811,24 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
         sdhci_writel(host, mask, SDHCI_INT_STATUS);
     } else
         ret = -1;
+
+    /* R1b without data (CMD12/...): this controller's busy signalling
+     * for such commands is unreliable (SDHCI_QUIRK_BROKEN_R1B), so
+     * poll DAT0 directly. Returning while the card still holds DAT0
+     * low made a "successful" stop command race the card's internal
+     * programming. */
+    if (!ret && (cmd->resp_type & MMC_RSP_BUSY) && !data) {
+        start = get_timer(0);
+        while (!(sdhci_readl(host, SDHCI_PRESENT_STATE) &
+                SDHCI_DATA_0_LVL_MASK)) {
+            if (get_timer(start) > SDHCI_R1B_BUSY_TIMEOUT_MS) {
+                printf("%s: R1b busy timeout\n", __func__);
+                ret = -ETIMEDOUT;
+                break;
+            }
+            usleep(100);
+        }
+    }
 
     if (!ret && data)
         ret = sdhci_transfer_data(host, data);
