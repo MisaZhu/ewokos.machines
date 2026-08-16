@@ -63,26 +63,23 @@ int mmc_poll_for_busy(struct mmc *mmc, int timeout_ms)
         if (err)
             return err;
 
+        /* Return success right here: the old shared break + trailing
+         * "timeout_ms <= 0" check misreported a card that became
+         * ready on the very last poll iteration as a timeout. */
         if ((status & MMC_STATUS_RDY_FOR_DATA) &&
             ((status & MMC_STATUS_CURR_STATE) !=
              MMC_STATE_PRG))
-            break;
+            return 0;
 
         if (status & MMC_STATUS_MASK) {
             return -ECOMM;
         }
 
         if (timeout_ms-- <= 0)
-            break;
+            return -ETIMEDOUT;
 
         proc_usleep(1000);
     }
-
-    if (timeout_ms <= 0) {
-        return -ETIMEDOUT;
-    }
-
-    return 0;
 }
 
 int mmc_send_stop_transmission(struct mmc *mmc, int write)

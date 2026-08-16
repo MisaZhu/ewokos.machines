@@ -25,7 +25,13 @@
 #define EMMC_BASE     (_mmio_base + EMMC_WIN_OFF + EMMC_OFF)
 
 #define SDHCI_CMD_MAX_TIMEOUT           3200
-#define SDHCI_CMD_DEFAULT_TIMEOUT       10000
+/* Upper bound for the inhibit wait before a command. Normal inhibit
+ * clears in microseconds; the longest legitimate hold is DAT0 busy
+ * after a write (spec-worst well under a second), so 2s is generous.
+ * Keep this small: sdfsd serves all clients from one IPC slot, and a
+ * wedged controller must fail fast into recovery instead of stalling
+ * every SD request for many seconds. */
+#define SDHCI_CMD_DEFAULT_TIMEOUT       2000
 #define SDHCI_READ_STATUS_TIMEOUT       1000
 
 #define SDHCI_DMA_ADDRESS       0x00
@@ -740,6 +746,12 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
         if (get_timer(start) >= SDHCI_CMD_DEFAULT_TIMEOUT) {
             printf("%s: inhibit timeout, state 0x%x\n", __func__,
                    sdhci_readl(host, SDHCI_PRESENT_STATE));
+            /* The inhibit bits are wedged: without a reset every
+             * following command (including the CMD12 recovery the
+             * mmc layer sends) would burn this whole timeout again
+             * and fail too, stalling all SD I/O. */
+            sdhci_reset(SDHCI_RESET_CMD);
+            sdhci_reset(SDHCI_RESET_DATA);
             return -ECOMM;
         }
         usleep(1000);
@@ -775,6 +787,17 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
         mode = SDHCI_TRNS_BLK_CNT_EN;
         trans_bytes = data->blocks * data->blocksize;
         if (data->blocks > 1)
+            /*
+             * Do NOT use AUTO CMD12 (SDHCI_TRNS_ACMD12) on this
+             * controller: BCM2712's EMMC2 does not handle it and
+             * both reads and writes fail with it enabled. The
+             * proven path (same as the kernel boot driver, which
+             * reliably reads the SD card on real Pi5 hardware) is
+             * MULTI + BLK_CNT_EN with a manual CMD12 issued by
+             * mmc.c after DATA_END. DATA_END here fires only after
+             * the card releases busy, so the manual stop cannot
+             * race the card's programming state.
+             */
             mode |= SDHCI_TRNS_MULTI | SDHCI_TRNS_BLK_CNT_EN;
 
         if (data->flags == MMC_DATA_READ)
@@ -798,10 +821,38 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
         if (stat & SDHCI_INT_ERROR)
             break;
 
+        /* BROKEN_R1B: for R1b commands without data (CMD12...) this
+         * controller intermittently never raises INT_RESPONSE, so a
+         * manual stop after a multi-block read eventually fakes a
+         * timeout, the card is left in the data state and every
+         * following transfer wedges. Use the EXACT condition of the
+         * kernel boot driver, which sustains full-rootfs reads on
+         * real Pi5 hardware: DAT lines idle == command done. Do NOT
+         * additionally require DAT0 high here — that extra condition
+         * may never be met on this controller during a read-stop and
+         * would disable the workaround entirely. Post-stop busy
+         * safety (writes) is guaranteed by mmc.c polling CMD13
+         * (mmc_poll_for_busy) after every stop instead. */
+        if ((host->quirks & SDHCI_QUIRK_BROKEN_R1B) &&
+            (cmd->resp_type & MMC_RSP_BUSY) && !data) {
+            uint32_t state = sdhci_readl(host, SDHCI_PRESENT_STATE);
+            if (!(state & SDHCI_DAT_ACTIVE)) {
+                sdhci_cmd_done(host, cmd);
+                sdhci_writel(host, SDHCI_INT_ALL_MASK,
+                        SDHCI_INT_STATUS);
+                return 0;
+            }
+        }
+
         if (get_timer(start) >= SDHCI_READ_STATUS_TIMEOUT) {
             printf("%s: Timeout for status update: %08x %08x\n",
                    __func__, stat, mask);
             dump(host);
+            /* A command was issued and never completed: reset the
+             * CMD/DATA lines like the normal error path below does,
+             * or the controller stays wedged for every later command. */
+            sdhci_reset(SDHCI_RESET_CMD);
+            sdhci_reset(SDHCI_RESET_DATA);
             return -ETIMEDOUT;
         }
     } while ((stat & mask) != mask);
@@ -875,6 +926,9 @@ static int sdhci_set_ios(struct mmc *mmc)
 static struct bus_ops _ops = {
     .set_ios = sdhci_set_ios,
     .send_command = sdhci_send_command,
+    /* BCM2712 EMMC2 AUTO CMD12 is unusable: mmc.c must issue the
+     * manual CMD12 after every multi-block transfer. */
+    .auto_stop = false,
 };
 
 struct bus_ops* bcm2712_sdhci_init(void)
@@ -885,7 +939,12 @@ struct bus_ops* bcm2712_sdhci_init(void)
      */
 
     _host.bus_width  = 1;
-    _host.max_clk = 50000000;
+    /* bcm2712.dtsi wires both SDHCI hosts through the dedicated EMMC
+     * clock domain; the sibling raspi5 WLAN sdio2 path already uses
+     * the fixed 200MHz clk_emmc2 rate for the exact same divider math.
+     * Keeping 50MHz here makes every requested SD clock 4x too fast on
+     * real hardware once sdhci_set_clock() encodes the v3 divider. */
+    _host.max_clk = 200000000;
     _host.clock = 400000;
     _host.name = "sdhci";
     _host.ioaddr = (uint8_t*)EMMC_BASE;

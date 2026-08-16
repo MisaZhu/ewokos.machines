@@ -56,26 +56,23 @@ int mmc_poll_for_busy(struct mmc *mmc, int timeout_ms)
         if (err)
             return err;
 
+        /* Return success right here: the old shared break + trailing
+         * "timeout_ms <= 0" check misreported a card that became
+         * ready on the very last poll iteration as a timeout. */
         if ((status & MMC_STATUS_RDY_FOR_DATA) &&
             (status & MMC_STATUS_CURR_STATE) !=
              MMC_STATE_PRG)
-            break;
+            return 0;
 
         if (status & MMC_STATUS_MASK) {
             return -ECOMM;
         }
 
         if (timeout_ms-- <= 0)
-            break;
+            return -ETIMEDOUT;
 
         usleep(1000);
     }
-
-    if (timeout_ms <= 0) {
-        return -ETIMEDOUT;
-    }
-
-    return 0;
 }
 
 int mmc_send_stop_transmission(struct mmc *mmc, int write)
@@ -84,6 +81,11 @@ int mmc_send_stop_transmission(struct mmc *mmc, int write)
 
     cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
     cmd.cmdarg = 0;
+    /* Keep BCM2712's userspace SD path aligned with the kernel-side
+     * bcm2712 implementation: SD uses the R1b form for CMD12 and the
+     * SDHCI_QUIRK_BROKEN_R1B workaround in sdhci.c handles the missing
+     * INT_RESPONSE case. This makes the normal multi-block stop and the
+     * recovery stop go through the same command semantics. */
     cmd.resp_type = (IS_SD(mmc) || write) ? MMC_RSP_R1b : MMC_RSP_R1;
 
     return mmc_send_cmd(mmc, &cmd, NULL);
@@ -502,6 +504,8 @@ static int mmc_startup(struct mmc *mmc)
 
 int mmc_init(int host_index) {
     (void)host_index;
+    int ret;
+
     if (_mmc.has_init)
         return 0;
 
@@ -516,15 +520,25 @@ int mmc_init(int host_index) {
     _mmc.cfg->voltages = MMC_VDD_32_33 | MMC_VDD_33_34;
 
     _mmc.ops = bcm2712_sdhci_init();
-
-    if (mmc_get_op_cond(&_mmc) != 0) {
+    if (_mmc.ops == NULL)
         return -1;
-    }
+
+    ret = mmc_get_op_cond(&_mmc);
+    if (ret != 0)
+        return ret;
 
     _mmc.bus_width = 4;
     _mmc.clock = 25000000;
-    _mmc.ops->set_ios(&_mmc);
-    mmc_startup(&_mmc);
+    ret = _mmc.ops->set_ios(&_mmc);
+    if (ret != 0)
+        return ret;
+
+    ret = mmc_startup(&_mmc);
+    if (ret != 0)
+        return ret;
+    if (_mmc.read_bl_len == 0)
+        return -EIO;
+
     _mmc.capacity = _mmc.capacity_user / _mmc.read_bl_len;
     _mmc.has_init = true;
     return 0;
@@ -534,6 +548,10 @@ int mmc_read_blocks(void *dst, lbaint_t start, lbaint_t blkcnt)
 {
     struct mmc_cmd cmd;
     struct mmc_data data;
+    int retries = 3;
+    int reinited = 0;
+
+retry_read:
     if (blkcnt > 1)
         cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
     else
@@ -551,15 +569,48 @@ int mmc_read_blocks(void *dst, lbaint_t start, lbaint_t blkcnt)
     data.flags = MMC_DATA_READ;
 
     if (mmc_send_cmd(&_mmc, &cmd, &data))
-        return 0;
+        goto recover_read;
 
-    if (blkcnt > 1) {
-        if (mmc_send_stop_transmission(&_mmc, false)) {
-            return 0;
-        }
+    if (blkcnt > 1 && !_mmc.ops->auto_stop) {
+        if (mmc_send_stop_transmission(&_mmc, false))
+            goto recover_read;
+        /* Same as raspix: after the stop command, wait until the card
+         * has fully left the data state before the next command is
+         * allowed through, or the following transfer can start while
+         * the DAT lines are still settling. */
+        if (mmc_poll_for_busy(&_mmc, 1000))
+            goto recover_read;
     }
 
     return blkcnt;
+
+recover_read:
+    /* Failed data phase, stop or ready wait: the card may be stalled
+     * (internal housekeeping after write bursts) or stuck in the data
+     * state. Per the SD spec recovery sequence force it back to tran
+     * with CMD12, wait for ready, then redo the whole read. Returning
+     * without this recovery leaves the card in the data state and
+     * wedges every following transfer. */
+    {
+        mmc_send_stop_transmission(&_mmc, false);
+        mmc_poll_for_busy(&_mmc, 500);
+    }
+    if (--retries > 0)
+        goto retry_read;
+    /* CMD12-based recovery could not unwedge the card: fall back to a
+     * full controller reset + card re-enumeration (what a reboot
+     * does), then give the read one more chance. */
+    if (!reinited) {
+        reinited = 1;
+        printf("mmc_read: recover failed, re-initializing card\n");
+        _mmc.has_init = false;
+        if (mmc_init(0) == 0) {
+            retries = 1;
+            goto retry_read;
+        }
+    }
+    printf("mmc_read: FAILED (sec %u cnt %u)\n", start, blkcnt);
+    return 0;
 }
 
 uint32_t mmc_write_blocks(uint32_t start, uint32_t blkcnt, const void *src)
@@ -567,10 +618,18 @@ uint32_t mmc_write_blocks(uint32_t start, uint32_t blkcnt, const void *src)
     struct mmc_cmd cmd;
     struct mmc_data data;
     int timeout_ms = 1000;
+    int retried = 0;
+    /*
+     * Amortize post-write verification into multi-block reads so
+     * large sequential writes don't pay one CMD17 per sector.
+     */
+    enum { MMC_VERIFY_CHUNK_BLOCKS = 128 };
 
     if (blkcnt == 0)
         return 0;
-    else if (blkcnt == 1)
+
+retry_write:
+    if (blkcnt == 1)
         cmd.cmdidx = MMC_CMD_WRITE_SINGLE_BLOCK;
     else
         cmd.cmdidx = MMC_CMD_WRITE_MULTIPLE_BLOCK;
@@ -588,22 +647,86 @@ uint32_t mmc_write_blocks(uint32_t start, uint32_t blkcnt, const void *src)
     data.flags = MMC_DATA_WRITE;
 
     if (mmc_send_cmd(&_mmc, &cmd, &data)) {
-        printf("mmc write failed\n");
+        printf("mmc_write: data phase FAILED (sec %u, resp0 0x%x)\n",
+                start, cmd.response[0]);
+        /* Per the SD spec error recovery sequence: a failed write data
+         * phase can leave the card in the rcv/data state, where it will
+         * reject any further data command. Send CMD12 to force it back
+         * to tran and wait for ready before any retry. */
+        struct mmc_cmd stop;
+        stop.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+        stop.cmdarg = 0;
+        stop.resp_type = MMC_RSP_R1b;
+        mmc_send_cmd(&_mmc, &stop, NULL);
+        mmc_poll_for_busy(&_mmc, timeout_ms);
+        if (!retried) {
+            retried = 1;
+            goto retry_write;
+        }
+        printf("mmc_write: FAILED for good (sec %u)\n", start);
         return 0;
     }
 
-    if (blkcnt > 1) {
+    /* Only needed when the host does not issue AUTO CMD12 itself. */
+    if (blkcnt > 1 && !_mmc.ops->auto_stop) {
         cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
         cmd.cmdarg = 0;
         cmd.resp_type = MMC_RSP_R1b;
         if (mmc_send_cmd(&_mmc, &cmd, NULL)) {
-            printf("mmc fail to send stop cmd\n");
+            printf("mmc_write: stop FAILED (sec %u)\n", start);
+            /* Do not bail out with the card possibly still in the
+             * rcv state: force it back to tran, wait for ready and
+             * redo the whole write, or every following transfer
+             * would be rejected. */
+            struct mmc_cmd stop;
+            stop.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+            stop.cmdarg = 0;
+            stop.resp_type = MMC_RSP_R1b;
+            mmc_send_cmd(&_mmc, &stop, NULL);
+            mmc_poll_for_busy(&_mmc, timeout_ms);
+            if (!retried) {
+                retried = 1;
+                goto retry_write;
+            }
+            printf("mmc_write: FAILED for good (sec %u)\n", start);
             return 0;
         }
     }
 
-    if (mmc_poll_for_busy(&_mmc, timeout_ms))
+    /* Waiting for the ready status */
+    if (mmc_poll_for_busy(&_mmc, timeout_ms)) {
+        printf("mmc_write: poll busy after write FAILED (sec %u)\n",
+                start);
         return 0;
+    }
 
+    /* Read-back verification, bypassing every RAM cache layer: a write
+     * data phase can "complete" while the card silently discards the
+     * block (lost data only shows up after reboot, as filesystem
+     * corruption). Compare what the card actually stored and retry the
+     * whole write once on mismatch. Same mechanism as the raspix
+     * driver, which observes these mismatches on real hardware. */
+    static uint8_t verify_buf[MMC_VERIFY_CHUNK_BLOCKS * 512];
+    for (uint32_t vi = 0; vi < blkcnt; ) {
+        uint32_t verify_blocks = blkcnt - vi;
+        if (verify_blocks > MMC_VERIFY_CHUNK_BLOCKS)
+            verify_blocks = MMC_VERIFY_CHUNK_BLOCKS;
+        if (mmc_read_blocks(verify_buf, start + vi, verify_blocks)
+                != (int)verify_blocks ||
+            memcmp(verify_buf, (const uint8_t*)src + vi * 512,
+                verify_blocks * 512) != 0) {
+            printf("mmc_write: VERIFY MISMATCH sec %u cnt %u\n",
+                    start + vi, verify_blocks);
+            if (!retried) {
+                retried = 1;
+                mmc_poll_for_busy(&_mmc, timeout_ms);
+                goto retry_write;
+            }
+            printf("mmc_write: VERIFY FAILED for good (sec %u)\n",
+                    start + vi);
+            return 0;
+        }
+        vi += verify_blocks;
+    }
     return blkcnt;
 }

@@ -564,6 +564,8 @@ static int mmc_startup(struct mmc *mmc)
 
 
 int mmc_init(void){
+    int ret;
+
     if(_mmc.has_init)
         return 0;
 
@@ -582,13 +584,25 @@ int mmc_init(void){
     else
         _mmc.ops = bcm283x_sdhost_init();
 
-    mmc_get_op_cond(&_mmc);
+    ret = mmc_get_op_cond(&_mmc);
+    if (ret)
+        return ret;
 
     _mmc.bus_width = 4;
     _mmc.clock = 25000000;
-    _mmc.ops->set_ios(&_mmc);
-    mmc_startup(&_mmc);
+    ret = _mmc.ops->set_ios(&_mmc);
+    if (ret)
+        return ret;
+
+    ret = mmc_startup(&_mmc);
+    if (ret)
+        return ret;
+
     mmc_switch(&_mmc, UHS_SDR25);
+    if (_mmc.read_bl_len == 0)
+        return -EIO;
+
+    _mmc.capacity = _mmc.capacity_user / _mmc.read_bl_len;
     _mmc.has_init = true;
     return 0;
 }

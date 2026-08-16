@@ -233,6 +233,8 @@ struct mmc; /* forward declaration for bus_ops */
 struct bus_ops {
 	int (*set_ios)(struct mmc *mmc);
 	int (*send_command)(struct mmc_cmd *cmd, struct mmc_data *data);
+	/* Host issues AUTO CMD12 itself for multi-block transfers. */
+	bool auto_stop;
 };
 
 struct mmc {

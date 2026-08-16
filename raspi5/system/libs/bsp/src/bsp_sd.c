@@ -16,7 +16,14 @@ static int _sd_aggressive_read_opt = 1;
 
 #define SD_CACHE_PAGE_SECTORS 8U
 #define SD_CACHE_PAGE_SIZE (SD_CACHE_PAGE_SECTORS * 512U)
-#define SD_CACHE_MAX_BATCH_PAGES 32U
+/*
+ * Keep prefetch batches small (8 pages = 64 sectors = one 32KB
+ * CMD18). Larger batches make every cold read hold the card for
+ * longer, widening the window for card stalls mid-transfer and
+ * delaying any following command. Small batches stay responsive
+ * while still amortizing misses for sequential access.
+ */
+#define SD_CACHE_MAX_BATCH_PAGES 8U
 
 static void** bsp_sd_get_l3(uint32_t sector, int create) {
     uint32_t l1 = (sector >> 21) & 0x1FF;

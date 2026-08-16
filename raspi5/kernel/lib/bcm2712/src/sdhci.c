@@ -931,7 +931,11 @@ struct bus_ops* bcm2712_sdhci_init(void)
      */
 
     _host.bus_width  = 1;
-    _host.max_clk = 50000000;
+    /* bcm2712.dtsi places the SD card host and the WiFi SDIO host in
+     * the same dedicated EMMC clock domain. The raspi5 sdio2 path
+     * already uses 200MHz for identical divider programming; leaving
+     * 50MHz here makes the v3 SDCLKFS divisor math run 4x too fast. */
+    _host.max_clk = 200000000;
     _host.clock = 400000;
     _host.name = "sdhci";
     _host.ioaddr = (uint8_t*)PI5_EMMC_BASE;

@@ -541,7 +541,13 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
                         break;
                 }
             }
-            div <<= 1;
+            /*
+             * SDHCI v3.00 divided-clock encoding stores (div / 2) in
+             * SDCLKFS and the controller divides by another factor of
+             * 2 internally. Writing 2*div here makes the effective bus
+             * clock 4x off the requested target.
+             */
+            div >>= 1;
         }
     } else {
         /* Version 2.00 divisors must be a power of 2. */
@@ -972,7 +978,9 @@ struct bus_ops* bcm2711_sdhci_init(void)
     bcm283x_sdhci_gpio_init(true);
 
     _host.bus_width  = 1;
-    _host.max_clk = 50000000;
+    /* Pi4/CM4 eMMC2 uses the 200MHz SDHCI base clock domain; keeping
+     * 50MHz here misprograms every v3 divider derived from max_clk. */
+    _host.max_clk = 200000000;
     _host.clock = 400000;
     _host.name = "sdhci";
     _host.ioaddr = picked_ioaddr;

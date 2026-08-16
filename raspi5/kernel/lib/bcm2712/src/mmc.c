@@ -567,6 +567,8 @@ static int mmc_startup(struct mmc *mmc)
 
 
 int mmc_init(void){
+    int ret;
+
     if(_mmc.has_init)
         return 0;
 
@@ -581,15 +583,23 @@ int mmc_init(void){
     _mmc.cfg->voltages = MMC_VDD_32_33 | MMC_VDD_33_34;
 
     _mmc.ops = bcm2712_sdhci_init();
-
-    if(mmc_get_op_cond(&_mmc) != 0) {
+    if (_mmc.ops == NULL)
         return -1;
-    }
+
+    ret = mmc_get_op_cond(&_mmc);
+    if (ret != 0)
+        return ret;
 
     _mmc.bus_width = 4;
     _mmc.clock = 25000000;
-    _mmc.ops->set_ios(&_mmc);
-        mmc_startup(&_mmc);
+    ret = _mmc.ops->set_ios(&_mmc);
+    if (ret != 0)
+        return ret;
+
+    ret = mmc_startup(&_mmc);
+    if (ret != 0)
+        return ret;
+
     _mmc.has_init = true;
     return 0;
 }

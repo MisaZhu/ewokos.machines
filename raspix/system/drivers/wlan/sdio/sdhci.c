@@ -567,7 +567,13 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
                         break;
                 }
             }
-            div <<= 1;
+            /*
+             * SDHCI v3.00 divided-clock mode stores (div / 2) in
+             * SDCLKFS and the controller applies another factor of 2
+             * internally. Writing 2*div here programs a clock 4x away
+             * from the requested target.
+             */
+            div >>= 1;
         }
     } else {
         /* Version 2.00 divisors must be a power of 2. */

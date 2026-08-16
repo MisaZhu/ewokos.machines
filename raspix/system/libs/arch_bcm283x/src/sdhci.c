@@ -573,7 +573,15 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
                         break;
                 }
             }
-            div <<= 1;
+            /*
+             * SDHCI v3.00 divided-clock encoding stores (div / 2) in
+             * SDCLKFS and the controller applies another factor of 2
+             * internally. Programming 2*div here makes the bus run at
+             * one quarter of the intended rate; the proven encoding is
+             * the same div >>= 1 used by the raspi5 bcm2712 path and
+             * the kernel-side copies.
+             */
+            div >>= 1;
         }
     } else {
         /* Version 2.00 divisors must be a power of 2. */
@@ -904,6 +912,12 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
         if (get_timer(start) >= SDHCI_CMD_DEFAULT_TIMEOUT) {
             printf("%s: inhibit timeout, state 0x%x\n", __func__,
                    sdhci_readl(host, SDHCI_PRESENT_STATE));
+            /* The inhibit bits are wedged: without a reset every
+             * following command (including the CMD12 recovery the
+             * mmc layer sends) would burn this whole timeout again
+             * and fail too, stalling all SD I/O. */
+            sdhci_reset(SDHCI_RESET_CMD);
+            sdhci_reset(SDHCI_RESET_DATA);
             return -ECOMM;
         }
         proc_usleep(1000);
@@ -977,6 +991,11 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
             printf("%s: Timeout for status update: %08x %08x\n",
                    __func__, stat, mask);
             dump(host);
+            /* A command was issued and never completed: reset the
+             * CMD/DATA lines like the normal error path below does,
+             * or the controller stays wedged for every later command. */
+            sdhci_reset(SDHCI_RESET_CMD);
+            sdhci_reset(SDHCI_RESET_DATA);
             return -ETIMEDOUT;
         }
     } while ((stat & mask) != mask);
@@ -1068,7 +1087,10 @@ struct bus_ops* bcm2711_sdhci_init(void)
     bcm283x_sdhci_gpio_init(true);
 
     _host.bus_width  = 1;
-    _host.max_clk = 50000000;
+    /* The Pi4/CM4 eMMC2 SDHCI block is clocked from the same 200MHz
+     * domain that the raspi5 code treats as the SDHCI base clock.
+     * Keeping 50MHz here skews every v3 divider calculation. */
+    _host.max_clk = 200000000;
     _host.clock = 400000;
     _host.name = "sdhci";
     _host.ioaddr = bcm2711_sdhci_pick_ioaddr(hostsel);
