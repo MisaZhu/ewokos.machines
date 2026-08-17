@@ -19,10 +19,11 @@
  *
  * This daemon drives the whole MIPI DSI path from cold:
  *   CPRMAN clocks (PLLD_DSI0/1 + DSInE + DSInP)
- *   -> DSI PHY/host into LP-11 (port auto-selected: DSI0 on Pi3,
- *      DSI1 on Pi4/CM4)
+ *   -> DSI PHY/host into LP-11 (port auto-selected: DSI1 on both
+ *      Pi3 and Pi4/CM4 — the display connector wiring; DSI0 fallback)
  *   -> panel enable over I2C (BSC0 on GPIO44/45, panel at 0x45)
- *   -> HVS channel 1 dlist scan-out -> PixelValve -> DSI video mode
+ *   -> HVS dlist scan-out (channel 0 for DSI0, 2 for gen4 DSI1,
+ *      1 for gen5 DSI1) -> PixelValve -> DSI video mode
  *
  * The SoC generation is detected at runtime inside the arch library;
  * the same binary runs on both Pi3 (gen4) and Pi4 (gen5).
@@ -489,20 +490,30 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	}
 
 	/*
-	 * The DSI port is fixed, not probed: the 15-pin DISPLAY
-	 * connector is wired to DSI1 on EVERY consumer Pi — Pi3
-	 * included — and on the CM4/uConsole (the vc4-kms dts overlays
-	 * default to &dsi1; DSI0 pads only exist on Compute Module
-	 * carriers with custom wiring).  The old write-readback probe
-	 * was doubly worthless here: gen4 DSI1's broken AXI slave
-	 * drops ARM writes, so it misread the live port as dead, and
-	 * its register traffic was the first thing to touch the
-	 * freshly powered block.  Print BEFORE any DSI1 register
-	 * access so a boot photo can bisect a die-on-first-touch.
+	 * Pick the DSI port the panel actually hangs off: the display
+	 * connector is wired to DSI1 on every supported board (Pi 3A+
+	 * included — DSI0 pads are only bonded out on Compute Modules;
+	 * on gen4 the DSI1 probe write must go through the DMA engine
+	 * because of the broken AXI slave, probe_port handles that).
+	 * Probe DSI1 first; DSI0 is the fallback for CM-only wiring.
+	 * A powered-off port silently drops writes, so the first live
+	 * port in that order wins.
 	 */
-	bcm283x_dsi1_set_port(1);
-	printf("dsi_fbdisplayd: using DSI%d (fixed wiring)\n",
-			bcm283x_dsi1_port());
+	{
+		int first = 1;
+		if (bcm283x_dsi1_probe_port(first) == 0) {
+			bcm283x_dsi1_set_port(first);
+		} else if (bcm283x_dsi1_probe_port(first ^ 1) == 0) {
+			bcm283x_dsi1_set_port(first ^ 1);
+		} else {
+			/* Neither DSI block accepts writes. */
+			printf("dsi_fbdisplayd: probe DSI0=%d DSI1=%d\n",
+					bcm283x_dsi1_probe_port(0) == 0,
+					bcm283x_dsi1_probe_port(1) == 0);
+			return fail_stage(1);
+		}
+		printf("dsi_fbdisplayd: using DSI%d\n", bcm283x_dsi1_port());
+	}
 
 	/*
 	 * The firmware is still streaming video on this port; kill its
@@ -510,21 +521,17 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * transmitter fights ours (LP contention, lanes never stop).
 	 */
 	bcm283x_dsi1_firmware_handoff();
-	printf("dsi_fbdisplayd: handoff done\n");
 
 	if (bcm283x_dsi1_clock_bringup(&_panel_mode, &adj) != 0)
 		return fail_stage(2);
-	printf("dsi_fbdisplayd: clocks up\n");
 	if (bcm283x_dsi1_alive() != 0) {
 		/* ID register wrong: register bus/power issue, not timing. */
 		return fail_stage(3);
 	}
-	printf("dsi_fbdisplayd: id ok\n");
 
 	if (bcm283x_dsi1_host_bringup(_panel_mode.lanes, adj.hs_clock_hz,
 			_panel_mode.continuous_clock) != 0)
 		return fail_stage(4);
-	printf("dsi_fbdisplayd: host up\n");
 	if (bcm283x_dsi1_lanes_stopped() != 0) {
 		/*
 		 * DSI1 STAT lane-stop bits are documented (and proven on
@@ -558,7 +565,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 */
 	if (ws_panel_pre_enable() != 0)
 		return fail_stage(6);
-	printf("dsi_fbdisplayd: panel cfgd\n");
 
 	/* Prime the scan-out buffer BEFORE the pipeline starts fetching. */
 	fill_black(&_fb_info);
@@ -578,7 +584,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	bcm283x_dsi1_pv_enable();
 	bcm283x_dsi1_pv_video_enable();
 	bcm283x_dsi1_video_mode(adj.pix_clk_divider);
-	printf("dsi_fbdisplayd: pipe on\n");
 
 	/*
 	 * Runtime evidence, not just "we wrote the registers":

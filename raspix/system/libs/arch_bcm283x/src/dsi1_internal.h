@@ -9,12 +9,12 @@
  * Shared internals of the bcm283x DSI pipeline.  Block offsets from
  * _mmio_base are identical on BCM2835/2837 (gen4) and BCM2711 (gen5).
  *
- * Two DSI ports exist.  The 15-pin DISPLAY connector is wired to DSI1
- * on every consumer Pi (Pi3 included); DSI0 pads only exist on Compute
- * Modules.  Every block accessor below routes through the port
- * selected with dsi1_set_port().  NOTE gen4 DSI1 register writes are
- * silently dropped by its broken AXI slave and must go through the
- * DMA engine (vc4_dsi.c) — dsi1_dsi_write() handles that.
+ * The display connector is wired to DSI1 on all supported boards
+ * (Pi 3A+ included); DSI0 remains as a fallback for Compute-Module
+ * wiring.  The daemon probes DSI1 first and selects the port with
+ * dsi1_set_port(); every DSI/PV accessor below routes through it.
+ * On gen4, DSI1 register writes must go through the DMA engine
+ * (broken AXI slave) — dsi1_dsi_write handles that transparently.
  */
 #define DSI1_CPRMAN_OFFSET      0x101000U
 #define DSI1_HVS_OFFSET         0x00400000U
@@ -60,8 +60,5 @@ void     dsi1_hvs_write(uint32_t off, uint32_t val);
 void     dsi1_hvs_dump_live(void);
 uint32_t dsi1_pv_read(uint32_t off);
 void     dsi1_pv_write(uint32_t off, uint32_t val);
-
-/* gen4-DSI1 register-write DMA workaround failure count. */
-uint32_t dsi1_reg_dma_errors(void);
 
 #endif

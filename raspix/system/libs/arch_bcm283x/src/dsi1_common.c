@@ -1,8 +1,8 @@
 #include "dsi1_internal.h"
 
-#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #include <ewoksys/dma.h>
 #include <ewoksys/mmio.h>
@@ -34,10 +34,10 @@ uint32_t dsi1_xosc_hz(void) {
 
 /* ---------- raw block accessors ---------- */
 
-/* Selected DSI port.  The 15-pin DISPLAY connector is wired to DSI1
- * on EVERY consumer Pi (the vc4-kms-dsi-* overlays default to &dsi1);
- * DSI0 pads are only bonded out on Compute Modules.  The daemon still
- * probes both and sets this. */
+/* Selected DSI port; the display connector is wired to DSI1 on all
+ * supported boards (Pi 3A+ included — DSI0 pads are only bonded out
+ * on Compute Modules), so the daemon probes DSI1 first and falls back
+ * to DSI0. */
 static int _dsi_port = 1;
 
 int dsi1_port(void) {
@@ -75,151 +75,6 @@ void dsi1_cprman_write(uint32_t off, uint32_t val) {
 	}
 }
 
-/* ---------- gen4 DSI1 register-write DMA workaround ---------- */
-
-/*
- * vc4_dsi.c: "DSI1 on BCM2835/6/7 has a broken AXI slave that doesn't
- * respond to writes from the ARM.  It does handle writes from the DMA
- * engine."  So on gen4 every DSI1 register write is a 4-byte DMA
- * memcpy from RAM to the register's VC bus address; reads work
- * directly.  DSI0 and gen5 (BCM2711) DSI1 write directly.
- *
- * Channel 4: inside Linux's bcm2835 free-channel mask (0x7f35, i.e.
- * not firmware-owned), full-featured, and not channel 5 which soundd
- * uses for PWM audio.
- */
-#define DSI1_DMA_OFFSET       0x007000U
-#define DSI1_DMA_CHANNEL      4U
-#define DSI1_DMA_CHAN_OFF     (DSI1_DMA_OFFSET + DSI1_DMA_CHANNEL * 0x100U)
-#define DSI1_DMA_ENABLE_OFF   (DSI1_DMA_OFFSET + 0xff0U)
-
-/* DMA channel registers (word indices into the channel block). */
-#define DMA_CS                0U
-#define  DMA_CS_ACTIVE         (1U << 0)
-#define  DMA_CS_END            (1U << 1)
-#define  DMA_CS_INT            (1U << 2)
-#define  DMA_CS_ERROR          (1U << 8)
-#define  DMA_CS_RESET          (1U << 31)
-#define DMA_CONBLK_AD         1U
-
-/* Control-block TI bits. */
-#define DMA_TI_WAIT_RESP      (1U << 3)
-#define DMA_TI_DEST_INC       (1U << 4)
-#define DMA_TI_SRC_INC        (1U << 8)
-
-/* Peripherals sit at 0x7e000000 on the VC bus; RAM reads go through
- * the uncached 0xC0000000 alias (same convention as soundd). */
-#define DSI1_PERI_BUS_BASE    0x7e000000U
-#define DSI1_DMA_VC_ALIAS     0xC0000000U
-
-typedef struct {
-	uint32_t ti;
-	uint32_t source_ad;
-	uint32_t dest_ad;
-	uint32_t txfr_len;
-	uint32_t stride;
-	uint32_t nextconbk;
-	uint32_t pad[2];
-} dsi1_dma_cb_t;             /* must be 32-byte aligned */
-
-static volatile dsi1_dma_cb_t* _reg_cb = 0;
-static volatile uint32_t* _reg_val = 0;
-
-/* Drain the CPU write buffer so the DMA engine sees the CB and the
- * payload in DRAM before the channel is kicked.  Normal-NC stores
- * are posted and NOT ordered against the Device store that starts
- * the DMA (Linux writel carries an implicit dsb; raw volatile
- * pointers do not) — without this the engine can fetch a stale/
- * garbage CB and run a wild transfer through random RAM. */
-static inline void _dma_wmb(void) {
-	__asm__ volatile("dsb sy" ::: "memory");
-}
-static uint32_t _reg_cb_bus = 0;
-static uint32_t _reg_val_bus = 0;
-static uint32_t _reg_dma_err = 0;
-
-/* Ports whose AXI slave drops ARM writes: DSI1 on gen4 only. */
-static int _axi_broken(int port) {
-	return (port == 1) && !bcm283x_dsi1_is_gen5();
-}
-
-static int _reg_dma_init(void) {
-	volatile uint32_t* en;
-	volatile uint32_t* ch;
-	uint32_t va, phy, aligned;
-	int spin;
-
-	if (_reg_cb != 0) {
-		return 0;
-	}
-	/* CB (32 bytes, 32-aligned) + the value word behind it. */
-	va = (uint32_t)dma_alloc(0, 96);
-	if (va == 0) {
-		return -1;
-	}
-	aligned = (va + 31U) & ~31U;
-	phy = dma_phy_addr(0, (ewokos_addr_t)aligned);
-	_reg_val = (volatile uint32_t*)(uintptr_t)(aligned + 32U);
-	_reg_cb_bus = phy | DSI1_DMA_VC_ALIAS;
-	_reg_val_bus = (phy + 32U) | DSI1_DMA_VC_ALIAS;
-
-	en = _block(DSI1_DMA_ENABLE_OFF);
-	ch = _block(DSI1_DMA_CHAN_OFF);
-	if (en == 0 || ch == 0) {
-		return -1;
-	}
-	*en |= (1U << DSI1_DMA_CHANNEL);
-	ch[DMA_CS] = DMA_CS_RESET;
-	for (spin = 0; spin < 1000; spin++) {
-		if ((ch[DMA_CS] & DMA_CS_RESET) == 0) {
-			break;
-		}
-	}
-	_reg_cb = (volatile dsi1_dma_cb_t*)(uintptr_t)aligned;
-	return 0;
-}
-
-static void _dsi_dma_write(uint32_t bus_addr, uint32_t val) {
-	volatile uint32_t* ch;
-	uint32_t spin;
-
-	if (_reg_dma_init() != 0) {
-		_reg_dma_err++;
-		return;
-	}
-	ch = _block(DSI1_DMA_CHAN_OFF);
-
-	*_reg_val = val;
-	_reg_cb->ti = DMA_TI_SRC_INC | DMA_TI_DEST_INC | DMA_TI_WAIT_RESP;
-	_reg_cb->source_ad = _reg_val_bus;
-	_reg_cb->dest_ad = bus_addr;
-	_reg_cb->txfr_len = 4;
-	_reg_cb->stride = 0;
-	_reg_cb->nextconbk = 0;
-	_dma_wmb();
-
-	ch[DMA_CS] = DMA_CS_END | DMA_CS_INT;      /* W1C stale flags */
-	ch[DMA_CONBLK_AD] = _reg_cb_bus;
-	ch[DMA_CS] = DMA_CS_ACTIVE;
-	for (spin = 0; spin < 100000; spin++) {
-		uint32_t cs = ch[DMA_CS];
-		if ((cs & DMA_CS_ACTIVE) == 0) {
-			if (cs & DMA_CS_ERROR) {
-				_reg_dma_err++;
-			}
-			return;
-		}
-	}
-	/* No AXI write response (e.g. target block unpowered): reset
-	 * the channel so it doesn't stay stuck ACTIVE forever. */
-	ch[DMA_CS] = DMA_CS_RESET;
-	_reg_dma_err++;
-}
-
-uint32_t dsi1_reg_dma_errors(void) {
-	return _reg_dma_err;
-}
-
 uint32_t dsi1_dsi_read(uint32_t off) {
 	volatile uint32_t* base =
 			_block(_dsi_port ? DSI1_DSI_OFFSET : DSI0_DSI_OFFSET);
@@ -239,17 +94,91 @@ uint32_t dsi1_pv_read_port(int port, uint32_t off) {
 	return base ? base[off / 4] : 0;
 }
 
-void dsi1_dsi_write(uint32_t off, uint32_t val) {
-	volatile uint32_t* base;
+/*
+ * gen4 DSI1 broken-AXI write workaround (vc4_dsi.c
+ * broken_axi_workaround): on BCM2835/6/7 the DSI1 AXI slave silently
+ * drops ARM writes (reads work) but accepts writes from the DMA
+ * engine.  Every DSI1 register write on gen4 therefore goes through
+ * a 4-byte DMA memcpy on channel 4 (soundd owns 5); a plain store
+ * would vanish without a trace and leave the panel black.
+ */
+#define DSI1_WA_DMA_CHAN      4U
+#define DSI1_GEN4_DSI_BUS     0x7e700000U   /* DSI1 bus base on gen4 */
+#define DSI1_WA_DMA_BASE_OFF  0x007000U
+#define DSI1_WA_DMA_EN_OFF    0x007FF0U
+#define  WA_TI_SRC_INC        (1U << 8)
+#define  WA_TI_WAIT_RESP      (1U << 3)
+#define  WA_CS_ACTIVE         (1U << 0)
+#define  WA_CS_RESET          (1U << 31)
+#define  WA_CS_PRIO           ((8U << 16) | (8U << 20))
 
-	if (_axi_broken(_dsi_port)) {
-		_dsi_dma_write(DSI1_PERI_BUS_BASE + DSI1_DSI_OFFSET + off, val);
+/* word 0 = value to write, words 8..15 = the control block. */
+static volatile uint32_t* _wa_buf = 0;
+static uint32_t _wa_phy = 0;
+
+static void dsi1_dsi_write_dma(uint32_t off, uint32_t val) {
+	volatile uint32_t* dma;
+	volatile uint32_t* cb;
+	volatile uint32_t* en;
+	uint32_t spin;
+
+	if (_wa_buf == 0) {
+		_wa_buf = (volatile uint32_t*)(uintptr_t)dma_alloc(0, 64);
+		if (_wa_buf == 0) {
+			return;
+		}
+		_wa_phy = (uint32_t)dma_phy_addr(0,
+				(ewokos_addr_t)(uintptr_t)_wa_buf);
+	}
+
+	dma = _block(DSI1_WA_DMA_BASE_OFF + DSI1_WA_DMA_CHAN * 0x100U);
+	en = _block(DSI1_WA_DMA_EN_OFF);
+	if (dma == 0 || en == 0) {
 		return;
 	}
-	base = _block(_dsi_port ? DSI1_DSI_OFFSET : DSI0_DSI_OFFSET);
+	cb = _wa_buf + 8;
+
+	_wa_buf[0] = val;
+	cb[0] = WA_TI_SRC_INC | WA_TI_WAIT_RESP;  /* TI */
+	cb[1] = _wa_phy | 0xC0000000U;            /* SOURCE_AD */
+	cb[2] = DSI1_GEN4_DSI_BUS + off;          /* DEST_AD */
+	cb[3] = 4;                                /* TXFR_LEN */
+	cb[4] = 0;                                /* STRIDE */
+	cb[5] = 0;                                /* NEXTCONBK */
+	cb[6] = 0;
+	cb[7] = 0;
+
+	dma[0] = WA_CS_RESET;
+	(void)dma[0];
+	*en = *en | (1U << DSI1_WA_DMA_CHAN);
+	dma[1] = (_wa_phy + 32U) | 0xC0000000U;   /* CONBLK_AD */
+	dma[0] = WA_CS_ACTIVE | WA_CS_PRIO;
+	for (spin = 0; spin < 10000; spin++) {
+		if ((dma[0] & WA_CS_ACTIVE) == 0) {
+			return;
+		}
+		bcm283x_dsi1_udelay(1);
+	}
+	/* Stuck: reset the channel and drop the write. */
+	dma[0] = WA_CS_RESET;
+}
+
+/* Per-port raw writer: gen4 DSI1 must use the DMA workaround. */
+static void _dsi_write_port(int port, uint32_t off, uint32_t val) {
+	volatile uint32_t* base;
+
+	if (port == 1 && !bcm283x_dsi1_is_gen5()) {
+		dsi1_dsi_write_dma(off, val);
+		return;
+	}
+	base = _block(port ? DSI1_DSI_OFFSET : DSI0_DSI_OFFSET);
 	if (base) {
 		base[off / 4] = val;
 	}
+}
+
+void dsi1_dsi_write(uint32_t off, uint32_t val) {
+	_dsi_write_port(_dsi_port, off, val);
 }
 
 uint32_t dsi1_hvs_read(uint32_t off) {
@@ -280,32 +209,21 @@ void dsi1_pv_write(uint32_t off, uint32_t val) {
 
 /*
  * Port liveness probe.  The ID register reads fine even on a powered
- * down port, so it cannot discriminate; a write-readback can.
+ * down port (observed on Pi3 DSI1), so it cannot discriminate.  A
+ * write-readback can: with the firmware power domain off the register
+ * bus silently drops writes.  On gen4 DSI1 the same "dropped write"
+ * signature comes from the broken AXI slave even when the port IS
+ * live, so the probe write goes through the DMA workaround there
+ * (_dsi_write_port) or a live DSI1 would misread as powered off.
  *
  * The probe register is INT_EN (0x28 DSI0 / 0x34 DSI1): a plain latch
  * with no side effect on the pipeline.  CTRL bit 10 (SOFT_RESET_CFG)
- * looked tempting but does NOT read back as written on a live port,
- * so a RW latch is the only reliable witness.  INT_EN defaults to 0,
- * so restoring it to 0 leaves the port exactly as found.
- *
- * Writes go through _probe_write(): on gen4 DSI1 a direct ARM write
- * is ALWAYS dropped by the broken AXI slave (vc4_dsi.c) — that is
- * what previously made this probe misread a live DSI1 as powered off
- * on the Pi3 — so that combination must use the DMA path.
+ * looked tempting but does NOT read back as written on a live port
+ * (both ports failed that test on a Pi 3A+ where DSI0 is demonstrably
+ * running), so a RW latch is the only reliable witness.  INT_EN
+ * defaults to 0, so restoring it to 0 leaves the port exactly as
+ * found even when the readback is trusted.
  */
-static void _probe_write(int port, uint32_t off, uint32_t val) {
-	volatile uint32_t* base;
-
-	if (_axi_broken(port)) {
-		_dsi_dma_write(DSI1_PERI_BUS_BASE + DSI1_DSI_OFFSET + off, val);
-		return;
-	}
-	base = _block(port ? DSI1_DSI_OFFSET : DSI0_DSI_OFFSET);
-	if (base) {
-		base[off / 4] = val;
-	}
-}
-
 int bcm283x_dsi1_probe_port(int port) {
 	volatile uint32_t* base;
 	uint32_t old;
@@ -323,11 +241,11 @@ int bcm283x_dsi1_probe_port(int port) {
 
 	old = base[off / 4];
 	test = old ^ 0x00000001U;     /* toggle bit 0 */
-	_probe_write(port, off, test);
+	_dsi_write_port(port, off, test);
 	if (base[off / 4] != test) {
-		return -1;            /* write dropped: port dead */
+		return -1;            /* write dropped: port powered off */
 	}
-	_probe_write(port, off, old);
+	_dsi_write_port(port, off, old);
 	return 0;
 }
 

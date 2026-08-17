@@ -9,16 +9,16 @@
  * HVS (Hardware Video Scaler) at MMIO+0x400000 on both gens.
  *
  * PV<->FIFO routing (vc4_crtc.c / vc4_hvs.c):
- *   PV0 (DSI0) is HARDWIRED to HVS FIFO/channel 0 on both gens —
- *   there is no mux for it; the low bits of SCALER_DISPCTRL are
- *   per-channel IRQ enables, NOT a DSP0 mux.
- *   PV1 (DSI1) is fed through DSP3_MUX (bits 19:18), which selects
- *   the HVS channel (3 = disconnected).
- * The scan-out channel for PV1 is per-gen: gen4 hardware assigns
- * FIFO 2 to PV1 (bcm2835_pv1_data.hvs_output = 2; FIFO 1 belongs to
- * PV2/HDMI), gen5 uses channel 1 (uconsole-proven).  The dlist word
- * layout and the COB allocation differ between HVS4 (BCM2835/2837,
- * gen4) and HVS5 (BCM2711, gen5); everything else is shared.
+ *   gen4: PV0 hardwired to FIFO 0, PV1 hardwired to FIFO 2, PV2 to
+ *   FIFO 1 (bcm2835_pvX_data.hvs_output; get_fifo_from_output returns
+ *   the output as-is).  DSP3_MUX only feeds EOF/EOLN-style IRQ
+ *   grouping there — upstream hw_init parks it at 3 (disconnected).
+ *   gen5: PV1 is HVS output 3 and DSP3_MUX (bits 19:18) selects the
+ *   FIFO that feeds it (3 = disconnected).
+ * So the scan-out channel is: port0 -> 0; port1 -> 2 on gen4, 1 on
+ * gen5 (+DSP3_MUX).  The dlist word layout and the COB allocation
+ * differ between HVS4 (BCM2835/2837, gen4) and HVS5 (BCM2711, gen5);
+ * everything else is shared.
  */
 
 #define SCALER_DISPCTRL           0x00000000U
@@ -61,7 +61,8 @@
 #define   SCALER_DISPSTATX_MODE_EOF       3U
 
 /* Frame counters for channels 0 and 1 BOTH live in DISPSTAT1, at
- * different bit positions per generation (vc4_regs.h). */
+ * different bit positions per generation (vc4_regs.h); channel 2's
+ * counter lives in DISPSTAT2. */
 #define  SCALER_DISPSTAT1_FRCNT0_SHIFT     18   /* gen4: bits 23:18 */
 #define  SCALER_DISPSTAT1_FRCNT0_MASK      (0x3fU << 18)
 #define  SCALER_DISPSTAT1_FRCNT1_SHIFT     12   /* gen4: bits 17:12 */
@@ -70,7 +71,6 @@
 #define  SCALER5_DISPSTAT1_FRCNT0_MASK     (0x3fU << 20)
 #define  SCALER5_DISPSTAT1_FRCNT1_SHIFT    14   /* gen5: bits 19:14 */
 #define  SCALER5_DISPSTAT1_FRCNT1_MASK     (0x3fU << 14)
-/* Channel 2's counter lives in DISPSTAT2 (vc4_regs.h). */
 #define SCALER_DISPSTAT2          0x00000068U
 #define  SCALER_DISPSTAT2_FRCNT2_SHIFT     12   /* gen4: bits 17:12 */
 #define  SCALER_DISPSTAT2_FRCNT2_MASK      (0x3fU << 12)
@@ -155,8 +155,8 @@ static uint32_t _dl_ctx_off = 0;
 static uint32_t _dl_ptr0_off = 0;
 static uint32_t _dl_ptrctx_off = 0;
 
-/* Scan-out channel: PV0 -> 0; PV1 -> 1 on gen5, 2 on gen4 (FIFO 1
- * belongs to PV2/HDMI there — vc4_crtc.c bcm2835_pv1_data). */
+/* Scan-out channel: PV0 -> 0; PV1 hardwired to FIFO 2 on gen4,
+ * routed through DSP3_MUX to FIFO 1 on gen5. */
 static uint32_t _channel(void) {
 	if (!dsi1_port()) {
 		return 0U;
@@ -293,14 +293,19 @@ int bcm283x_dsi1_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h,
 
 	/*
 	 * Global enable + route the HVS channel to the active PV.
-	 * PV1 (port 1) is fed through DSP3_MUX; PV0 (port 0) is
+	 * gen5: PV1 is HVS output 3, fed through DSP3_MUX; PV0 is
 	 * hardwired to FIFO 0 and needs no routing.
+	 * gen4: the PV<->FIFO crossbar is hardwired (PV1 reads FIFO 2)
+	 * and upstream hw_init parks DSP3_MUX at 3 (disconnected) —
+	 * mirror that so no stray IRQ grouping rides our channel.
 	 */
 	dispctrl = dsi1_hvs_read(SCALER_DISPCTRL);
 	dispctrl |= SCALER_DISPCTRL_ENABLE;
-	if (dsi1_port()) {
-		dispctrl &= ~SCALER_DISPCTRL_DSP3_MUX_MASK;
+	dispctrl &= ~SCALER_DISPCTRL_DSP3_MUX_MASK;
+	if (gen5 && dsi1_port()) {
 		dispctrl |= (ch << SCALER_DISPCTRL_DSP3_MUX_SHIFT);
+	} else if (!gen5) {
+		dispctrl |= (3U << SCALER_DISPCTRL_DSP3_MUX_SHIFT);
 	}
 	dsi1_hvs_write(SCALER_DISPCTRL, dispctrl);
 
@@ -371,7 +376,7 @@ static uint32_t _frame_count(void) {
 	uint32_t ch = _channel();
 	uint32_t v;
 
-	if (ch == 2U) {
+	if (ch == 2) {
 		v = dsi1_hvs_read(SCALER_DISPSTAT2);
 		if (bcm283x_dsi1_is_gen5()) {
 			return (v & SCALER5_DISPSTAT2_FRCNT2_MASK) >>
