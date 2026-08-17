@@ -14,7 +14,7 @@ JOYSTICKD_OBJS = $(ARCH)/joystickd.o
 JOYSTICKD = $(TARGET_DIR)/drivers/miyoo/gpio_joystickd
 
 $(JOYSTICKD): $(JOYSTICKD_OBJS) \
-		$(EWOK_LIBC_A)  
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(JOYSTICKD_OBJS) -o $(JOYSTICKD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

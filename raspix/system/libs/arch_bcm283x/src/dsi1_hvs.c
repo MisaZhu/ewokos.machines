@@ -14,10 +14,11 @@
  *   per-channel IRQ enables, NOT a DSP0 mux.
  *   PV1 (DSI1) is fed through DSP3_MUX (bits 19:18), which selects
  *   the HVS channel (3 = disconnected).
- * So the scan-out channel follows the DSI port: port0 -> channel 0,
- * port1 -> channel 1 (+DSP3_MUX).  The dlist word layout and the COB
- * allocation differ between HVS4 (BCM2835/2837, gen4) and HVS5
- * (BCM2711, gen5); everything else is shared.
+ * The scan-out channel for PV1 is per-gen: gen4 hardware assigns
+ * FIFO 2 to PV1 (bcm2835_pv1_data.hvs_output = 2; FIFO 1 belongs to
+ * PV2/HDMI), gen5 uses channel 1 (uconsole-proven).  The dlist word
+ * layout and the COB allocation differ between HVS4 (BCM2835/2837,
+ * gen4) and HVS5 (BCM2711, gen5); everything else is shared.
  */
 
 #define SCALER_DISPCTRL           0x00000000U
@@ -69,6 +70,12 @@
 #define  SCALER5_DISPSTAT1_FRCNT0_MASK     (0x3fU << 20)
 #define  SCALER5_DISPSTAT1_FRCNT1_SHIFT    14   /* gen5: bits 19:14 */
 #define  SCALER5_DISPSTAT1_FRCNT1_MASK     (0x3fU << 14)
+/* Channel 2's counter lives in DISPSTAT2 (vc4_regs.h). */
+#define SCALER_DISPSTAT2          0x00000068U
+#define  SCALER_DISPSTAT2_FRCNT2_SHIFT     12   /* gen4: bits 17:12 */
+#define  SCALER_DISPSTAT2_FRCNT2_MASK      (0x3fU << 12)
+#define  SCALER5_DISPSTAT2_FRCNT2_SHIFT    14   /* gen5: bits 19:14 */
+#define  SCALER5_DISPSTAT2_FRCNT2_MASK     (0x3fU << 14)
 
 /* DISPBKGND bits.  Bit 31 is AUTOHS on HVS4 but BCK2BCK on HVS5,
  * so it is only set on gen4 (vc4_hvs.c vc4_crtc setup). */
@@ -148,9 +155,13 @@ static uint32_t _dl_ctx_off = 0;
 static uint32_t _dl_ptr0_off = 0;
 static uint32_t _dl_ptrctx_off = 0;
 
-/* Scan-out channel follows the DSI port: PV0 -> 0, PV1 -> 1. */
+/* Scan-out channel: PV0 -> 0; PV1 -> 1 on gen5, 2 on gen4 (FIFO 1
+ * belongs to PV2/HDMI there — vc4_crtc.c bcm2835_pv1_data). */
 static uint32_t _channel(void) {
-	return dsi1_port() ? 1U : 0U;
+	if (!dsi1_port()) {
+		return 0U;
+	}
+	return bcm283x_dsi1_is_gen5() ? 1U : 2U;
 }
 #define REG_DISPLISTX(ch)  (SCALER_DISPLIST0  + (ch) * 4U)
 #define REG_DISPCTRLX(ch)  (SCALER_DISPCTRL0  + (ch) * 0x10U)
@@ -357,16 +368,28 @@ int bcm283x_dsi1_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h,
 }
 
 static uint32_t _frame_count(void) {
-	uint32_t v = dsi1_hvs_read(SCALER_DISPSTAT1);
+	uint32_t ch = _channel();
+	uint32_t v;
+
+	if (ch == 2U) {
+		v = dsi1_hvs_read(SCALER_DISPSTAT2);
+		if (bcm283x_dsi1_is_gen5()) {
+			return (v & SCALER5_DISPSTAT2_FRCNT2_MASK) >>
+					SCALER5_DISPSTAT2_FRCNT2_SHIFT;
+		}
+		return (v & SCALER_DISPSTAT2_FRCNT2_MASK) >>
+				SCALER_DISPSTAT2_FRCNT2_SHIFT;
+	}
+	v = dsi1_hvs_read(SCALER_DISPSTAT1);
 	if (bcm283x_dsi1_is_gen5()) {
-		if (_channel() == 0) {
+		if (ch == 0) {
 			return (v & SCALER5_DISPSTAT1_FRCNT0_MASK) >>
 					SCALER5_DISPSTAT1_FRCNT0_SHIFT;
 		}
 		return (v & SCALER5_DISPSTAT1_FRCNT1_MASK) >>
 				SCALER5_DISPSTAT1_FRCNT1_SHIFT;
 	}
-	if (_channel() == 0) {
+	if (ch == 0) {
 		return (v & SCALER_DISPSTAT1_FRCNT0_MASK) >>
 				SCALER_DISPSTAT1_FRCNT0_SHIFT;
 	}

@@ -14,8 +14,8 @@ ADCD_OBJS = $(ARCH)/main.o
 ADCD = $(TARGET_DIR)/drivers/ev3/adcd
 
 $(ADCD): $(ADCD_OBJS) \
-	   	$(BUILD_DIR)/lib/libarch_ev3.a \
-		$(EWOK_LIBC_A) 
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libbsp.a
 	$(LD) -Ttext=100 $(ADCD_OBJS) -o $(ADCD) -larch_ev3  $(BSP_LFLAGS) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

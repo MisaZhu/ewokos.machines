@@ -14,8 +14,11 @@ G2DD_OBJS = $(ARCH)/g2dd.o $(ARCH)/vc_g2d.o $(ARCH)/vc4_bo.o $(ARCH)/vc4_cl.o $(
 G2DD = $(TARGET_DIR)/drivers/raspix/g2dd
 
 $(G2DD): $(G2DD_OBJS) \
-		$(EWOK_LIBC_A) \
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libdisplay.a \
 		$(BUILD_DIR)/lib/libgraph.a \
+		$(BUILD_DIR)/lib/libfont.a \
+		$(BUILD_DIR)/lib/libdisplayman.a \
 		$(BUILD_DIR)/lib/libtinyjson.a \
 		$(BUILD_DIR)/lib/libarch_bcm283x.a \
 		$(BUILD_DIR)/lib/libbsp.a

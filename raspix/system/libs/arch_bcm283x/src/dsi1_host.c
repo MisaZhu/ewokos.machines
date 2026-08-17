@@ -547,13 +547,14 @@ void bcm283x_dsi1_video_mode(uint32_t pix_clk_divider) {
  * bit, or PV V_CONTROL without VIDEN, means the link never started.
  */
 void bcm283x_dsi1_dump_live(void) {
-	printf("dsi%d: live CTRL=%08x STAT=%08x DISP0=%08x | pv C=%08x V=%08x\n",
+	printf("dsi%d: live CTRL=%08x STAT=%08x DISP0=%08x | pv C=%08x V=%08x dmaerr=%u\n",
 			dsi1_port(),
 			(unsigned)dsi1_dsi_read(R(R_CTRL)),
 			(unsigned)dsi1_dsi_read(R(R_STAT)),
 			(unsigned)dsi1_dsi_read(R(R_DISP0)),
 			(unsigned)dsi1_pv_read(0x00U),
-			(unsigned)dsi1_pv_read(0x04U));
+			(unsigned)dsi1_pv_read(0x04U),
+			(unsigned)dsi1_reg_dma_errors());
 	dsi1_hvs_dump_live();
 }
 
@@ -618,12 +619,40 @@ void bcm283x_dsi1_dump(void) {
  * controller gated off, PV off — the link falls to LP-11 and the
  * panel waits for the next T_INIT from our bring-up.
  */
+static uint32_t _fw_dsi_ctrl[2];
+static uint32_t _fw_dsi_disp0[2];
+static uint32_t _fw_pv_c[2];
+
 void bcm283x_dsi1_firmware_handoff(void) {
-	dsi1_dsi_write(R(R_DISP0), 0);
-	dsi1_dsi_write(R(R_CTRL),
-			dsi1_dsi_read(R(R_CTRL)) & ~DSI_CTRL_EN);
-	dsi1_pv_write(0x00U, dsi1_pv_read(0x00U) & ~1U);
-	bcm283x_dsi1_mdelay(20);
+	int p = dsi1_port();
+	int touched = 0;
+
+	/*
+	 * Decide from the boot-time firmware snapshot (taken before the
+	 * power domains were switched on — reads were provably safe
+	 * then), NOT from live register access: the port is powered but
+	 * its escape clock is still gated here, and an AXI transaction
+	 * to a powered-yet-unclocked block misbehaves (a write wedges
+	 * the DMA channel with the transaction outstanding; Linux never
+	 * touches a DSI block before clk_prepare_enable(escape_clock) —
+	 * vc4_dsi_bridge_pre_enable).  A port the firmware left running
+	 * is clocked by the firmware's own setup, so quiescing writes
+	 * complete fine.  A dead port (Pi3 boot: CTRL=0 DISP0=0 PV
+	 * EN=0) gets NOTHING — there is no stream to kill, and our
+	 * clock_bringup enables the escape clock before host_bringup
+	 * issues the first write.
+	 */
+	if ((_fw_dsi_ctrl[p] & DSI_CTRL_EN) != 0 || _fw_dsi_disp0[p] != 0) {
+		dsi1_dsi_write(R(R_DISP0), 0);
+		dsi1_dsi_write(R(R_CTRL), _fw_dsi_ctrl[p] & ~DSI_CTRL_EN);
+		touched = 1;
+	}
+	if ((_fw_pv_c[p] & 1U) != 0) {
+		dsi1_pv_write(0x00U, dsi1_pv_read(0x00U) & ~1U);
+		touched = 1;
+	}
+	if (touched)
+		bcm283x_dsi1_mdelay(20);
 }
 
 /*
@@ -632,10 +661,20 @@ void bcm283x_dsi1_firmware_handoff(void) {
  * recipe for this exact board.  Capture it before anything is
  * overwritten — read-only, both ports, no port routing.  The lines
  * are also kept in a buffer so the fatal dump can reprint them after
- * they have scrolled off the console.
+ * they have scrolled off the console.  The per-port CTRL/DISP0/PV
+ * values are additionally kept raw: firmware_handoff must decide
+ * "was the firmware driving this port" WITHOUT touching the block
+ * again (see the comment there).
  */
 void bcm283x_dsi1_dump_firmware(void) {
 	int n = 0;
+	int p;
+
+	for (p = 0; p < 2; p++) {
+		_fw_dsi_ctrl[p] = dsi1_dsi_read_port(p, 0x00U);
+		_fw_dsi_disp0[p] = dsi1_dsi_read_port(p, 0x18U);
+		_fw_pv_c[p] = dsi1_pv_read_port(p, 0x00U);
+	}
 
 	n += snprintf(_fw_snap + n, sizeof(_fw_snap) - n,
 		"dsi: fw CM DSI0 E=%08x D=%08x P=%08x Q=%08x HSCK=%08x\n",

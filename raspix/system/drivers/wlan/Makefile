@@ -35,7 +35,8 @@ BRCMFMACD = $(TARGET_DIR)/drivers/raspix/wland
 $(BRCMFMACD): $(BRCMFMACD_OBJS) \
 		$(BUILD_DIR)/lib/libewoksys.a \
 		$(BUILD_DIR)/lib/libgloss.a  \
-		$(BUILD_DIR)/lib/libarch_bcm283x.a 
+		$(BUILD_DIR)/lib/libarch_bcm283x.a \
+		$(BUILD_DIR)/lib/libtinyjson.a
 	$(LD) -Ttext=100 $(BRCMFMACD_OBJS) -o $(BRCMFMACD) $(LDFLAGS) -ltinyjson -larch_bcm283x $(EWOK_LIBC) 
 	mkdir -p  $(TARGET_DIR)/etc/wlan/
 	cp -r network.json $(TARGET_DIR)/etc/wlan/

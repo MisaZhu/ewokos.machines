@@ -7,7 +7,9 @@ UARTD_OBJS = uartd.o sc16is750.o
 
 UARTD = $(BUILD_DIR)/spi2uartd
 
-$(UARTD): $(UARTD_OBJS)
+$(UARTD): $(UARTD_OBJS) \
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libbsp.a
 	mkdir -p $(BUILD_DIR)
 	$(LD) -Ttext=100 $(UARTD_OBJS) -o $(UARTD) $(LDFLAGS) $(BSP_LFLAGS) $(EWOK_LIBC)
 

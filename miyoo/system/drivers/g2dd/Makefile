@@ -26,8 +26,11 @@ G2DD_OBJS = $(ARCH)/g2dd.o
 G2DD = $(TARGET_DIR)/drivers/miyoo/g2dd
 
 $(G2DD): $(G2DD_OBJS) \
-		$(EWOK_LIBC_A) \
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libdisplay.a \
 		$(BUILD_DIR)/lib/libgraph.a \
+		$(BUILD_DIR)/lib/libfont.a \
+		$(BUILD_DIR)/lib/libdisplayman.a \
 		$(BUILD_DIR)/lib/libarch_miyoo.a \
 		$(BUILD_DIR)/lib/libbsp.a
 	$(LD) -Ttext=100 $(G2DD_OBJS) -o $(G2DD) $(LDFLAGS) $(SIGMASTAR_MI_LIBS) $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) $(EWOK_LIBC)

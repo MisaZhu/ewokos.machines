@@ -14,12 +14,15 @@ FBDISPLAYD_OBJS = $(ARCH)/fbdisplayd.o
 FBDISPLAYD = $(TARGET_DIR)/drivers/raspix/fbdisplayd
 
 $(FBDISPLAYD): $(FBDISPLAYD_OBJS) \
-		$(EWOK_LIBC_A)  \
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libdisplay.a \
 		$(BUILD_DIR)/lib/libgraph.a \
+		$(BUILD_DIR)/lib/libfont.a \
+		$(BUILD_DIR)/lib/libdisplayman.a \
 		$(BUILD_DIR)/lib/libdisplayd.a \
-		$(BUILD_DIR)/lib/libgraph.a \
 		$(BUILD_DIR)/lib/libtinyjson.a \
-		$(BUILD_DIR)/lib/libarch_bcm283x.a
+		$(BUILD_DIR)/lib/libarch_bcm283x.a \
+		$(BUILD_DIR)/lib/libbsp.a
 	$(LD) -Ttext=100 $(FBDISPLAYD_OBJS) -o $(FBDISPLAYD) $(LDFLAGS) -ldisplayd $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
 
 clean:

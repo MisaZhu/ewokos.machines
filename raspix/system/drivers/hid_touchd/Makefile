@@ -14,7 +14,7 @@ HID_TOUCHD_OBJS = $(ARCH)/hid_touchd.o
 HID_TOUCHD = $(TARGET_DIR)/drivers/raspix/hid_touchd
 
 $(HID_TOUCHD): $(HID_TOUCHD_OBJS) \
-		$(EWOK_LIBC_A)
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(HID_TOUCHD_OBJS) -o $(HID_TOUCHD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

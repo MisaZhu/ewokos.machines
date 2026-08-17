@@ -14,7 +14,7 @@ UARTD_OBJS = $(ARCH)/uartd.o
 UARTD = $(TARGET_DIR)/drivers/rk3506/uartd
 
 $(UARTD): $(UARTD_OBJS) \
-		$(EWOK_LIBC_A) 
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(UARTD_OBJS) -o $(UARTD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

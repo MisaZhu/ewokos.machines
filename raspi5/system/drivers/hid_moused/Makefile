@@ -14,7 +14,7 @@ HID_MOUSED_OBJS = $(ARCH)/hid_moused.o
 HID_MOUSED = $(TARGET_DIR)/drivers/raspi5/hid_moused
 
 $(HID_MOUSED): $(HID_MOUSED_OBJS) \
-		$(EWOK_LIBC_A)  
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(HID_MOUSED_OBJS) -o $(HID_MOUSED) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

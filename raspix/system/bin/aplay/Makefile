@@ -14,7 +14,7 @@ TASK_OBJS = $(ARCH)/aplay.o
 TASK = $(TARGET_DIR)/bin/aplay
 
 $(TASK): $(TASK_OBJS) \
-		$(EWOK_LIBC_A)  \
+		$(BUILD_DIR)/lib/libewoksys.a \
 		$(BUILD_DIR)/lib/libarch_bcm283x.a
 	$(LD) -Ttext=100 $(TASK_OBJS) -o $(TASK) $(LDFLAGS) -larch_bcm283x $(EWOK_LIBC)
 

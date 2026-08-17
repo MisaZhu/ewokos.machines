@@ -14,7 +14,7 @@ USBHOSTD_OBJS = $(ARCH)/usbhostd.o $(ARCH)/xhci.o
 USBHOSTD = $(TARGET_DIR)/drivers/raspi5/usbhostd
 
 $(USBHOSTD): $(USBHOSTD_OBJS) \
-		$(EWOK_LIBC_A) \
+		$(BUILD_DIR)/lib/libewoksys.a \
 		$(BUILD_DIR)/lib/libarch_bcm2712.a
 	$(LD) -Ttext=100 $(USBHOSTD_OBJS) -o $(USBHOSTD) $(LDFLAGS) -larch_bcm2712 $(EWOK_LIBC)
 

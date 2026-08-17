@@ -14,7 +14,7 @@ MS_UARTD_OBJS = $(ARCH)/ms_uartd.o
 MS_UARTD = $(TARGET_DIR)/drivers/miyoo/ms_uartd
 
 $(MS_UARTD): $(MS_UARTD_OBJS) \
-		$(EWOK_LIBC_A) 
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(MS_UARTD_OBJS) -o $(MS_UARTD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

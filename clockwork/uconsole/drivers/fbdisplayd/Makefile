@@ -12,7 +12,15 @@ CXXFLAGS += -I $(DSI_COMMON_DIR)
 
 all: $(TASK)
 
-$(TASK): $(TASK_OBJS)
+$(TASK): $(TASK_OBJS) \
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libdisplay.a \
+		$(BUILD_DIR)/lib/libgraph.a \
+		$(BUILD_DIR)/lib/libfont.a \
+		$(BUILD_DIR)/lib/libdisplayman.a \
+		$(BUILD_DIR)/lib/libdisplayd.a \
+		$(BUILD_DIR)/lib/libtinyjson.a \
+		$(BUILD_DIR)/lib/libbsp.a
 	mkdir -p $(BUILD_DIR)
 	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS) -ldisplayd $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
 

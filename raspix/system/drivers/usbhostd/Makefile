@@ -14,7 +14,7 @@ USBHOSTD_OBJS = $(ARCH)/usbhostd.o
 USBHOSTD = $(TARGET_DIR)/drivers/raspix/usbhostd
 
 $(USBHOSTD): $(USBHOSTD_OBJS) \
-		$(EWOK_LIBC_A) \
+		$(BUILD_DIR)/lib/libewoksys.a \
 		$(BUILD_DIR)/lib/libarch_bcm283x.a
 	$(LD) -Ttext=100 $(USBHOSTD_OBJS) -o $(USBHOSTD) $(LDFLAGS) -larch_bcm283x $(EWOK_LIBC)
 

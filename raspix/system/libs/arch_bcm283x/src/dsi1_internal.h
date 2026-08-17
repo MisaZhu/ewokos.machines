@@ -9,9 +9,12 @@
  * Shared internals of the bcm283x DSI pipeline.  Block offsets from
  * _mmio_base are identical on BCM2835/2837 (gen4) and BCM2711 (gen5).
  *
- * Two DSI ports exist; which one is wired to the display connector is
- * board dependent (Pi3: DSI0, Pi4/CM4: DSI1), so every block accessor
- * below routes through the port selected with dsi1_set_port().
+ * Two DSI ports exist.  The 15-pin DISPLAY connector is wired to DSI1
+ * on every consumer Pi (Pi3 included); DSI0 pads only exist on Compute
+ * Modules.  Every block accessor below routes through the port
+ * selected with dsi1_set_port().  NOTE gen4 DSI1 register writes are
+ * silently dropped by its broken AXI slave and must go through the
+ * DMA engine (vc4_dsi.c) — dsi1_dsi_write() handles that.
  */
 #define DSI1_CPRMAN_OFFSET      0x101000U
 #define DSI1_HVS_OFFSET         0x00400000U
@@ -33,9 +36,6 @@
 /* Escape clock target — vc4_dsi.c does clk_set_rate(escape, 100 MHz)
  * and every escape-domain timing constant assumes 10 ns per tick. */
 #define DSI1_ESC_CLOCK_HZ       100000000U
-
-/* HVS channel that feeds PV1 and its DSP3_MUX selector (both gens). */
-#define DSI1_HVS_CHANNEL        1U
 
 /* ---------- shared accessors (dsi1_common.c) ---------- */
 
@@ -60,5 +60,8 @@ void     dsi1_hvs_write(uint32_t off, uint32_t val);
 void     dsi1_hvs_dump_live(void);
 uint32_t dsi1_pv_read(uint32_t off);
 void     dsi1_pv_write(uint32_t off, uint32_t val);
+
+/* gen4-DSI1 register-write DMA workaround failure count. */
+uint32_t dsi1_reg_dma_errors(void);
 
 #endif

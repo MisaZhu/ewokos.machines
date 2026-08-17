@@ -11,7 +11,15 @@ BUILD_DIR = $(MF_ROOT_DIR)/build/apps/$(TASK)
 
 all: $(TASK)
 
-$(TASK): $(TASK_OBJS)
+$(TASK): $(TASK_OBJS) \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libewoksys.a \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libewokstl.a \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libx++.a \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libx.a \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libfont.a \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libgraph.a \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libwidget++.a \
+		$(SYS_BUILD_DIR)/$(HW)/lib/libcxx.a
 	mkdir -p $(BUILD_DIR)
 	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS) $(EWOK_LIB_X) $(EWOK_LIB_GRAPH) $(EWOK_LIBC) -lcxx
 	cp -r res $(BUILD_DIR)

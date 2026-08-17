@@ -14,8 +14,8 @@ CPUD_OBJS = $(ARCH)/cpud.o
 CPUD = $(TARGET_DIR)/drivers/raspi5/cpud
 
 $(CPUD): $(CPUD_OBJS) \
-		$(BUILD_DIR)/lib/libarch_bcm2712.a \
-		$(EWOK_LIBC_A)
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libarch_bcm2712.a
 	$(LD) -Ttext=100 $(CPUD_OBJS) -o $(CPUD) $(LDFLAGS) -larch_bcm2712 $(EWOK_LIBC)
 
 clean:

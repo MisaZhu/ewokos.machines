@@ -14,7 +14,7 @@ SMC91C111D_OBJS = $(ARCH)/smc91c111d.o
 SMC91C111D = $(TARGET_DIR)/drivers/versatilepb/smc91c111d
 
 $(SMC91C111D): $(SMC91C111D_OBJS) \
-		$(EWOK_LIBC_A) 
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(SMC91C111D_OBJS) -o $(SMC91C111D) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

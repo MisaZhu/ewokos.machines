@@ -14,7 +14,7 @@ MS_AUD_OBJS = $(ARCH)/audctrl.o $(ARCH)/pcm_lib.o $(ARCH)/miyoo-dais.o $(ARCH)/r
 MS_AUD = $(TARGET_DIR)/drivers/miyoo/audctrl
 
 $(MS_AUD): $(MS_AUD_OBJS) \
-		$(EWOK_LIBC_A) 
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(MS_AUD_OBJS) -o $(MS_AUD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

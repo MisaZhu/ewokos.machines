@@ -14,8 +14,8 @@ UARTD_OBJS = $(ARCH)/uartd.o
 UARTD = $(TARGET_DIR)/drivers/raspix/uartd
 
 $(UARTD): $(UARTD_OBJS) \
-		$(BUILD_DIR)/lib/libarch_bcm283x.a \
-		$(EWOK_LIBC_A) 
+		$(BUILD_DIR)/lib/libewoksys.a \
+		$(BUILD_DIR)/lib/libarch_bcm283x.a
 	$(LD) -Ttext=100 $(UARTD_OBJS) -o $(UARTD) $(LDFLAGS) -larch_bcm283x $(EWOK_LIBC)
 
 clean:

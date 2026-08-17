@@ -14,7 +14,7 @@ PS2KEYBD_OBJS = $(ARCH)/ps2keybd.o
 PS2KEYBD = $(TARGET_DIR)/drivers/versatilepb/ps2keybd
 
 $(PS2KEYBD): $(PS2KEYBD_OBJS) \
-		$(EWOK_LIBC_A)  
+		$(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(PS2KEYBD_OBJS) -o $(PS2KEYBD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:
