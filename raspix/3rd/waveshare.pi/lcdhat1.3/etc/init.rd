@@ -4,7 +4,7 @@
 #@set_stdio /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand           
-@/bin/ipcserv /drivers/waveshare/lcdhatd  /dev/disp0 
+@/bin/ipcserv /drivers/waveshare/lcd1.3d  /dev/disp0 
 @/bin/ipcserv /drivers/fontd              
 
 @/bin/ipcserv /drivers/consoled       

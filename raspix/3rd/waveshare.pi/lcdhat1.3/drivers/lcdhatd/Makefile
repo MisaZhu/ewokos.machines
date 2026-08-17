@@ -3,7 +3,7 @@ EXTRA_LIBS_DIR = ../../../../libs
 TASK_OBJS = \
 		$(EXTRA_LIBS_DIR)/st77xx/src/st77xx.o \
 		display.o lcdhatd.o
-TASK = lcdhatd 
+TASK = lcd1.3d 
 
 MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/../../make.inc

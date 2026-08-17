@@ -91,7 +91,6 @@ void  bcm283x_mailbox_call(mail_message_t* msg) {
 
 int bcm283x_mailbox_call_timeout(mail_message_t* msg, uint32_t timeout_loops) {
     uint32_t attempts = timeout_loops == 0 ? MAILBOX_TIMEOUT_LOOPS : timeout_loops;
-    uint8_t channel = msg->channel;
     uint32_t raw_msg = mailbox_pack_message(msg);
 
     if (mailbox_wait_nonfull(attempts) != 0) {
@@ -99,16 +98,26 @@ int bcm283x_mailbox_call_timeout(mail_message_t* msg, uint32_t timeout_loops) {
     }
     mailbox_write_data_raw(raw_msg);
 
+    /*
+     * The property channel is shared by every process that talks to
+     * the firmware (cpud, wlan, this daemon, ...), so the read FIFO
+     * can carry replies belonging to other clients.  The firmware
+     * echoes the request word verbatim, so match the full packed
+     * message instead of only the channel: accepting a foreign reply
+     * would both fail our transaction and eat the other client's
+     * response.
+     */
     for (uint32_t loops = attempts; loops > 0; --loops) {
         if (mailbox_read_status_raw() & MAILBOX_STATUS_EMPTY) {
             continue;
         }
 
         raw_msg = mailbox_read_data_raw();
-        mailbox_unpack_message(msg, raw_msg);
-        if (msg->channel == channel) {
-            return 0;
+        if (raw_msg != mailbox_pack_message(msg)) {
+            continue;
         }
+        mailbox_unpack_message(msg, raw_msg);
+        return 0;
     }
     return -1;
 }

@@ -5,7 +5,7 @@ TASK_OBJS = \
 		$(EXTRA_LIBS_DIR)/ili9486/src/ili9486.o \
 		display.o
 
-TASK = lcdhatd 
+TASK = lcd3.5ad 
 
 MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/../../make.inc

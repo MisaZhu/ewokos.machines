@@ -1,5 +1,5 @@
 TASK_OBJS = display.o epaperd.o
-TASK = epaperd 
+TASK = epaper3.7d 
 
 MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/../../make.inc

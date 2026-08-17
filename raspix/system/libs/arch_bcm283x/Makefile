@@ -26,7 +26,12 @@ LIB_ARCH_BCM283X_OBJS = $(ARCH)/src/framebuffer.o \
 	$(ARCH)/src/emmc.o \
 	$(ARCH)/src/sdhost.o \
 	$(ARCH)/src/sdhci.o \
-	$(ARCH)/src/auxspi.o 
+	$(ARCH)/src/auxspi.o \
+	$(ARCH)/src/dsi1_common.o \
+	$(ARCH)/src/dsi1_clock.o \
+	$(ARCH)/src/dsi1_host.o \
+	$(ARCH)/src/dsi1_hvs.o \
+	$(ARCH)/src/dsi1_pv.o
 
 ARCH_BCM283X = $(TARGET_DIR)/lib/libarch_bcm283x.a
 

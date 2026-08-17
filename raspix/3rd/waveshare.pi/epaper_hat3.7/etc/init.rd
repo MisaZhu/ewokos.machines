@@ -1,7 +1,7 @@
 @/bin/ipcserv /drivers/logd /dev/log
 
 @/bin/ipcserv /drivers/displaymand              
-@/bin/ipcserv /drivers/waveshare/epaperd     /dev/disp0 
+@/bin/ipcserv /drivers/waveshare/epaper3.7d     /dev/disp0 
 @/bin/ipcserv /drivers/fontd                 
 
 @export UX_ID=0

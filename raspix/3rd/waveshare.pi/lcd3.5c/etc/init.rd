@@ -3,7 +3,7 @@
 @/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand             
-@/bin/ipcserv /drivers/waveshare/lcdhatd   /dev/disp0
+@/bin/ipcserv /drivers/waveshare/lcd3.5cd   /dev/disp0
 @/bin/ipcserv /drivers/fontd                
 
 @export UX_ID=0

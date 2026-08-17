@@ -6,7 +6,8 @@
 @/bin/bgrun /bin/session -r -t /dev/tty0 
 
 @/bin/ipcserv /drivers/displaymand        
-@/bin/ipcserv /drivers/raspix/fbdisplayd      /dev/disp0
+#@/bin/ipcserv /drivers/raspix/fbdisplayd      /dev/disp0
+@/bin/ipcserv /drivers/raspix/dsi_fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/fontd           
 
 #@/bin/ipcserv /drivers/consoled        -i /dev/keyb0
