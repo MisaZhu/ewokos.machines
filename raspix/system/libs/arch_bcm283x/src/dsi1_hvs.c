@@ -155,9 +155,19 @@ static uint32_t _dl_ctx_off = 0;
 static uint32_t _dl_ptr0_off = 0;
 static uint32_t _dl_ptrctx_off = 0;
 
+/* Saved by bringup so the crossbar probe can mirror the channel. */
+static uint32_t _w = 0, _h = 0, _dlist_idx = 0;
+/* Runtime channel override: the gen4 PV1->FIFO crossbar is assumed
+ * hardwired (PV1 reads FIFO 2), but if hardware shows the vstart
+ * arriving on another FIFO the scan-out channel follows it. */
+static int _channel_override = -1;
+
 /* Scan-out channel: PV0 -> 0; PV1 hardwired to FIFO 2 on gen4,
  * routed through DSP3_MUX to FIFO 1 on gen5. */
 static uint32_t _channel(void) {
+	if (_channel_override >= 0) {
+		return (uint32_t)_channel_override;
+	}
 	if (!dsi1_port()) {
 		return 0U;
 	}
@@ -328,6 +338,9 @@ int bcm283x_dsi1_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h,
 
 	/* Write the dlist, then point the channel at it. */
 	dlist_word_idx = _write_dlist(phy_fb, w, h, dep, pitch, gen5);
+	_w = w;
+	_h = h;
+	_dlist_idx = dlist_word_idx;
 	dsi1_hvs_write(REG_DISPLISTX(ch), dlist_word_idx);
 
 	/*
@@ -382,8 +395,13 @@ static uint32_t _frame_count(void) {
 			return (v & SCALER5_DISPSTAT2_FRCNT2_MASK) >>
 					SCALER5_DISPSTAT2_FRCNT2_SHIFT;
 		}
-		return (v & SCALER_DISPSTAT2_FRCNT2_MASK) >>
-				SCALER_DISPSTAT2_FRCNT2_SHIFT;
+		/*
+		 * HVS4 has no FRCNT2 (frame counters only exist in
+		 * DISPSTAT1, for channels 0/1).  Use mode + current
+		 * line as the motion signature: a scanning channel
+		 * changes LINE constantly, a stalled one never does.
+		 */
+		return v & (SCALER_DISPSTATX_MODE_MASK | 0xfffU);
 	}
 	v = dsi1_hvs_read(SCALER_DISPSTAT1);
 	if (bcm283x_dsi1_is_gen5()) {
@@ -456,6 +474,57 @@ int bcm283x_dsi1_hvs_frames_advancing(uint32_t wait_ms) {
 		}
 		bcm283x_dsi1_mdelay(1);
 	}
+	return -1;
+}
+
+/*
+ * Empirical PV->FIFO crossbar probe for gen4 DSI1.  Upstream says
+ * PV1's vstart lands on FIFO 2, but when an enabled, scanning PV1
+ * leaves channel 2 in INIT, enable channel 0 with the same dlist
+ * and watch for the vstart there.  PV0 is not enabled in this
+ * configuration, so channel 0 can only leave INIT if PV1's vstart
+ * wire actually feeds FIFO 0 on this silicon.  On success the
+ * scan-out channel is re-targeted to 0 for the rest of the session
+ * (FRCNT0 then also serves frames_advancing).  Returns 0 on switch.
+ */
+int bcm283x_dsi1_hvs_crossbar_probe(void) {
+	uint32_t mode;
+	uint32_t i;
+
+	if (_mmio_base == 0 || _dlist_idx == 0 || _w == 0) {
+		return -1;
+	}
+	if (dsi1_port() != 1 || bcm283x_dsi1_is_gen5()) {
+		return -1;
+	}
+
+	/* vc4_hvs_init_channel sequence on channel 0, same dlist. */
+	dsi1_hvs_write(REG_DISPCTRLX(0), 0);
+	dsi1_hvs_write(REG_DISPCTRLX(0), SCALER_DISPCTRLX_RESET);
+	bcm283x_dsi1_udelay(10);
+	dsi1_hvs_write(REG_DISPCTRLX(0), 0);
+	dsi1_hvs_write(REG_DISPLISTX(0), _dlist_idx);
+	dsi1_hvs_write(REG_DISPCTRLX(0), SCALER_DISPCTRLX_ENABLE |
+			(_w << SCALER_DISPCTRLX_WIDTH_SHIFT) |
+			(_h << SCALER_DISPCTRLX_HEIGHT_SHIFT));
+	dsi1_hvs_write(REG_DISPBKGNDX(0), SCALER_DISPBKGND_AUTOHS |
+			SCALER_DISPBKGND_FILL | 0x00ff0000U);
+
+	for (i = 0; i < 300; ++i) {
+		mode = (dsi1_hvs_read(SCALER_DISPSTAT0) &
+				SCALER_DISPSTATX_MODE_MASK) >>
+				SCALER_DISPSTATX_MODE_SHIFT;
+		if (mode == SCALER_DISPSTATX_MODE_RUN ||
+				mode == SCALER_DISPSTATX_MODE_EOF) {
+			_channel_override = 0;
+			printf("dsi: vstart on FIFO0: scanout -> ch0\n");
+			return 0;
+		}
+		bcm283x_dsi1_mdelay(1);
+	}
+	printf("dsi: crossbar probe: S0=%08x S2=%08x\n",
+			(unsigned)dsi1_hvs_read(SCALER_DISPSTAT0),
+			(unsigned)dsi1_hvs_read(SCALER_DISPSTAT2));
 	return -1;
 }
 

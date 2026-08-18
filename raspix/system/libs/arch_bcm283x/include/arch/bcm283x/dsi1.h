@@ -167,16 +167,25 @@ int bcm283x_dsi1_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h,
  */
 int bcm283x_dsi1_hvs_wait_running(uint32_t timeout_ms);
 int bcm283x_dsi1_hvs_frames_advancing(uint32_t wait_ms);
+/* Empirical PV->FIFO crossbar probe (gen4 DSI1 only): if PV1's
+ * vstart never reaches FIFO 2, try FIFO 0 and re-target the scan-out
+ * channel on success.  0 = channel switched, -1 = no vstart anywhere. */
+int bcm283x_dsi1_hvs_crossbar_probe(void);
 
 /*
  * PixelValve1 (the DSI1 encoder's pixel source).  Split like upstream
  * vc4_crtc: configure() programs every PV register EXCEPT the EN and
- * VIDEN kick bits, which pv_enable()/pv_video_enable() set.  Sequence:
- *   hvs_bringup -> pv_configure -> pv_enable -> pv_video_enable ->
- *   dsi1_video_mode
+ * VIDEN kick bits, which pv_enable()/pv_video_enable() set.  Upstream
+ * order (vc4_crtc_atomic_enable): EN, then the DSI host video-mode
+ * start, then VIDEN — so:
+ *   hvs_bringup -> pv_configure -> pv_enable -> dsi1_video_mode ->
+ *   pv_video_enable
  */
 int bcm283x_dsi1_pv_configure(const bcm283x_dsi1_adjusted_mode_t* mode);
 int bcm283x_dsi1_pv_enable(void);
 int bcm283x_dsi1_pv_video_enable(void);
+/* Diagnostic: clear WAIT_HSTART so the PV free-runs without the DSI
+ * host hstart handshake (see dsi1_pv.c). */
+int bcm283x_dsi1_pv_clear_wait_hstart(void);
 
 #endif

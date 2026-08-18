@@ -570,20 +570,24 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	fill_black(&_fb_info);
 
 	/*
-	 * Mirror the DRM atomic commit path:
+	 * Mirror the DRM atomic commit path (vc4_crtc_atomic_enable):
 	 *   vc4_hvs_atomic_enable   (channel + dlist)
 	 *   vc4_crtc_config_pv      (all PV regs, EN=0, VIDEN=0)
 	 *   PV_CONTROL |= EN
-	 *   PV_V_CONTROL |= VIDEN
-	 *   DISP0_CTRL |= ENABLE    (LAST — after PV is pushing pixels)
+	 *   vc4_dsi_encoder_enable  (DISP0_CTRL |= ENABLE, HS start)
+	 *   PV_V_CONTROL |= VIDEN   (LAST — after the host can hand
+	 *                            the PV its hstart handshake)
 	 */
 	if (bcm283x_dsi1_hvs_bringup(_fb_info.phy_base, w, h, dep,
 			_fb_info.pitch) != 0)
 		return fail_stage(7);
 	bcm283x_dsi1_pv_configure(&adj);
 	bcm283x_dsi1_pv_enable();
-	bcm283x_dsi1_pv_video_enable();
 	bcm283x_dsi1_video_mode(adj.pix_clk_divider);
+	bcm283x_dsi1_pv_video_enable();
+	printf("dsi: adj pix=%uHz hs=%uHz hfp=%u\n",
+			(unsigned)adj.pixel_clock_hz,
+			(unsigned)adj.hs_clock_hz, (unsigned)adj.hfp);
 
 	/*
 	 * Runtime evidence, not just "we wrote the registers":
@@ -591,12 +595,25 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 *           and the HVS video engine is in RUN/EOF.
 	 *  stage 8: the frame counter advances => PV keeps consuming
 	 *           frames, i.e. DSI1 video mode is draining pixels.
-	 * A healthy pipeline clears both within a frame or two, so the
-	 * 100/300ms figures are only the FAILURE budget.
+	 * The budget is generous (400ms) because a slow first frame
+	 * (PHY/video engine startup) must not read as a stall.  If the
+	 * hstart handshake (WAIT_HSTART) is the blocker, clearing it
+	 * lets the PV free-run: log which path got us running.
 	 */
-	if (bcm283x_dsi1_hvs_wait_running(100) != 0)
-		return fail_stage(7);
-	if (bcm283x_dsi1_hvs_frames_advancing(300) != 0)
+	if (bcm283x_dsi1_hvs_wait_running(400) != 0) {
+		printf("dsi: no vstart with WAIT_HSTART; retrying free-run\n");
+		bcm283x_dsi1_pv_clear_wait_hstart();
+		if (bcm283x_dsi1_hvs_wait_running(400) != 0) {
+			/*
+			 * PV may be scanning while its vstart lands on
+			 * another FIFO than upstream's hardwired map
+			 * says.  Probe the crossbar and follow it.
+			 */
+			if (bcm283x_dsi1_hvs_crossbar_probe() != 0)
+				return fail_stage(7);
+		}
+	}
+	if (bcm283x_dsi1_hvs_frames_advancing(500) != 0)
 		return fail_stage(8);
 
 	/*

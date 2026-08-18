@@ -153,3 +153,16 @@ int bcm283x_dsi1_pv_video_enable(void) {
 	dsi1_pv_write(PV_V_CONTROL, dsi1_pv_read(PV_V_CONTROL) | PV_VCONTROL_VIDEN);
 	return 0;
 }
+
+/*
+ * Diagnostic fallback: with WAIT_HSTART set the PV gates every line
+ * (and thus the whole frame, vstart included) on the hstart handshake
+ * from the DSI host.  If that handshake never arrives the channel
+ * stays INIT forever; clearing the bit lets the PV free-run its own
+ * timings so the two cases are distinguishable at runtime.
+ */
+int bcm283x_dsi1_pv_clear_wait_hstart(void) {
+	dsi1_pv_write(PV_CONTROL,
+			dsi1_pv_read(PV_CONTROL) & ~PV_CONTROL_WAIT_HSTART);
+	return 0;
+}

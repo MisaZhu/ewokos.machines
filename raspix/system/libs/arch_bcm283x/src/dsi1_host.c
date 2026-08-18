@@ -608,6 +608,52 @@ void bcm283x_dsi1_dump(void) {
 			(unsigned)dsi1_dsi_read(R(R_DISP1)),
 			(unsigned)dsi1_dsi_read(R(R_CLT0)),
 			(unsigned)dsi1_dsi_read(R(R_DLT4)));
+
+	/*
+	 * PV + HVS channel truth for stage-7/8 failures: did the PV
+	 * enable bits stick, and what mode does the scan-out channel
+	 * report (INIT = no vstart from the PV, RUN/EOF = live).
+	 * S0/S1 show whether some other channel runs instead.
+	 */
+	{
+		uint32_t ch = (p == 0) ? 0U :
+				(bcm283x_dsi1_is_gen5() ? 1U : 2U);
+		printf("dsi%d: pv C=%08x V=%08x | hvs CTL=%08x\n",
+				p,
+				(unsigned)dsi1_pv_read(0x00U),
+				(unsigned)dsi1_pv_read(0x04U),
+				(unsigned)dsi1_hvs_read(0x00U));
+		printf("dsi%d: ch%u CTL=%08x BKGND=%08x LIST=%08x STAT=%08x | S0=%08x S1=%08x\n",
+				p, (unsigned)ch,
+				(unsigned)dsi1_hvs_read(0x40U + ch * 0x10U),
+				(unsigned)dsi1_hvs_read(0x44U + ch * 0x10U),
+				(unsigned)dsi1_hvs_read(0x20U + ch * 4U),
+				(unsigned)dsi1_hvs_read(0x48U + ch * 0x10U),
+				(unsigned)dsi1_hvs_read(0x48U),
+				(unsigned)dsi1_hvs_read(0x58U));
+		/* Hardware-measured escape/pixel clock rates (TCNT). */
+		printf("dsi: meas e=%uHz p=%uHz\n",
+				(unsigned)bcm283x_dsi1_measure_hz(p ? 19U : 18U),
+				(unsigned)bcm283x_dsi1_measure_hz(p ? 13U : 12U));
+		/*
+		 * Is the PV timing engine actually moving (vcount/hcount
+		 * in PV_STAT), and does the channel state change over
+		 * 150ms?  Plus the CM escape/pixel divider readbacks so
+		 * the measured rates can be reconciled with the taps.
+		 */
+		{
+			uint32_t ps0 = dsi1_pv_read(0x2cU);
+			uint32_t cs0 = dsi1_hvs_read(0x48U + ch * 0x10U);
+
+			bcm283x_dsi1_mdelay(150);
+			printf("dsi%d: pvSTAT=%08x->%08x chSTAT=%08x->%08x\n",
+					p, ps0, (unsigned)dsi1_pv_read(0x2cU),
+					cs0, (unsigned)dsi1_hvs_read(0x48U + ch * 0x10U));
+			printf("dsi%d: EDIV=%08x PDIV=%08x\n", p,
+					(unsigned)dsi1_cprman_read(p ? 0x15cU : 0x05cU),
+					(unsigned)dsi1_cprman_read(p ? 0x164U : 0x064U));
+		}
+	}
 }
 
 /*

@@ -461,18 +461,22 @@ int bcm283x_dsi1_clock_bringup(const bcm283x_dsi1_mode_t* mode,
 	}
 
 	/*
-	 * DSI escape clock: source dsiX_ddr2 (mux index 6), the HS bit
-	 * clock divided by 4 — the same parent the Linux clock tree
-	 * uses — target 100 MHz, what vc4_dsi.c requests via
-	 * clk_set_rate(escape, 100 MHz) and what every escape-domain
-	 * constant assumes.
+	 * DSI escape clock: source dsiX_ddr2 (mux index 6), target
+	 * 100 MHz — what vc4_dsi.c requests via clk_set_rate(escape,
+	 * 100 MHz) and what every escape-domain constant assumes.
+	 *
+	 * The ddr2 tap is the HS bit clock divided by 2, not by 4:
+	 * hardware TCNT measurement on gen4 showed 200 MHz out of the
+	 * escape generator (div 2.5 off a 998.4 MHz HS clock) when the
+	 * parent was assumed /4 — exactly double the intended 100 MHz.
+	 * A 2x escape clock halves every LP period the host emits.
 	 *
 	 * CM_*DIV registers hold the divider in 12.12 fixed point
 	 * REGARDLESS of the clock's int_bits/frac_bits — those only say
 	 * which bits are wired.  dsiXe wires int_bits=4, frac_bits=8:
 	 * mask the unused low 4 fraction bits.
 	 */
-	esc_parent_hz = adj->hs_clock_hz / 4U;
+	esc_parent_hz = adj->hs_clock_hz / 2U;
 	if (esc_parent_hz == 0) {
 		esc_parent_hz = 1;
 	}
