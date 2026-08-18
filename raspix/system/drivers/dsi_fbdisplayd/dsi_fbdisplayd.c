@@ -60,6 +60,9 @@
 #define WS_PANEL_I2C_ADDR      0x45U
 #define WS_PANEL_I2C_SDA_GPIO  44
 #define WS_PANEL_I2C_SCL_GPIO  45
+/* DIP switch position "I2C1": panel MCU on the 40-pin header bus. */
+#define WS_PANEL_I2C1_SDA_GPIO 2
+#define WS_PANEL_I2C1_SCL_GPIO 3
 
 /*
  * On-panel MCU power controller registers and state bits (same map
@@ -249,6 +252,43 @@ static void fill_black(const fbinfo_t* fbi) {
 }
 
 /*
+ * The panel's I2C DIP switch selects which bus the control MCU
+ * answers on: "I2C0" = BSC0 through the DSI FPC (GPIO44/45, Linux
+ * i2c_csi_dsi — the shipping overlay default), "I2C1" = BSC1 on the
+ * 40-pin header (GPIO2/3, the overlay's i2c1 parameter).  Probe the
+ * FPC bus first and fall back to the header bus; once the MCU ACKs
+ * the bus is latched, so re-inits skip the probe.  The BSC layer
+ * drives one active controller at a time — every ws_panel_i2c_*
+ * transfer below follows whichever bus this init selected.
+ */
+static int _ws_i2c_bus = -1;
+
+static int32_t ws_panel_i2c_init(void) {
+	if (_ws_i2c_bus != 1) {
+		if (bcm283x_i2c0_init(WS_PANEL_I2C_SDA_GPIO,
+				WS_PANEL_I2C_SCL_GPIO) == 0 &&
+				(_ws_i2c_bus == 0 ||
+				bcm283x_i2c0_probe(WS_PANEL_I2C_ADDR) == 0)) {
+			_ws_i2c_bus = 0;
+			return 0;
+		}
+	}
+	if (bcm283x_i2c1_init(WS_PANEL_I2C1_SDA_GPIO,
+			WS_PANEL_I2C1_SCL_GPIO) == 0 &&
+			(_ws_i2c_bus == 1 ||
+			bcm283x_i2c1_probe(WS_PANEL_I2C_ADDR) == 0)) {
+		_ws_i2c_bus = 1;
+		return 0;
+	}
+	_ws_i2c_bus = -1;
+	printf("dsi_fbdisplayd: panel MCU 0x%02x on neither BSC0 (GPIO%d/%d) nor BSC1 (GPIO%d/%d)\n",
+			WS_PANEL_I2C_ADDR,
+			WS_PANEL_I2C_SDA_GPIO, WS_PANEL_I2C_SCL_GPIO,
+			WS_PANEL_I2C1_SDA_GPIO, WS_PANEL_I2C1_SCL_GPIO);
+	return -1;
+}
+
+/*
  * Waveshare panel control register write (smbus byte-data = the two
  * raw bytes {reg, val}).
  */
@@ -273,16 +313,13 @@ static int32_t ws_panel_i2c_write(uint8_t reg, uint8_t val) {
  *               the DSI video stream is live.  Writing 0xad before a
  *               valid stream lets the bridge latch a no-signal state
  *               (black panel) that only clears on its slow retry.
- * The panel has no reset GPIO and no DCS path; BSC0 on GPIO44/45
- * (ALTF1) is the only control channel — the same bus the kernel's
- * i2c_csi_dsi node uses.
+ * The panel has no reset GPIO and no DCS path; the MCU's I2C bus
+ * (selected by the DIP switch, see ws_panel_i2c_init) is the only
+ * control channel.
  */
 static int32_t ws_panel_pre_enable(void) {
-	if (bcm283x_i2c0_init(WS_PANEL_I2C_SDA_GPIO, WS_PANEL_I2C_SCL_GPIO) != 0) {
-		printf("dsi_fbdisplayd: BSC0 (GPIO%d/%d) init failed\n",
-				WS_PANEL_I2C_SDA_GPIO, WS_PANEL_I2C_SCL_GPIO);
+	if (ws_panel_i2c_init() != 0)
 		return -1;
-	}
 
 	if (ws_panel_i2c_write(0xc0, 0x01) != 0 ||
 			ws_panel_i2c_write(0xc2, 0x01) != 0 ||
@@ -339,11 +376,8 @@ static int32_t ws_mcu_get_power(uint16_t* state) {
 static void ws_panel_power(void) {
 	uint16_t state = 0;
 
-	if (bcm283x_i2c0_init(WS_PANEL_I2C_SDA_GPIO, WS_PANEL_I2C_SCL_GPIO) != 0) {
-		printf("dsi_fbdisplayd: BSC0 (GPIO%d/%d) init failed\n",
-				WS_PANEL_I2C_SDA_GPIO, WS_PANEL_I2C_SCL_GPIO);
+	if (ws_panel_i2c_init() != 0)
 		return;
-	}
 	if (ws_mcu_get_power(&state) != 0) {
 		printf("dsi_fbdisplayd: mcu power sync failed\n");
 		return;
