@@ -404,8 +404,7 @@ int loop_step(vdevice_t* dev, void* p) {
 int main(int argc, char** argv) {
     const char* mnt_point = argc > 1 ? argv[1]: "/dev/eth0";
     eth_init();
-    vdevice_t _dev;
-    _dev = &dev;
+    vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
     strcpy(dev.name, "eth");
     dev.read = eth_read;
