@@ -15,8 +15,8 @@ CFLAGS += -I $(EXTRA_LIBS_DIR)/gt911/include
 all: $(TASK)
 
 $(TASK): $(TASK_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a \
-		$(BUILD_DIR)/lib/libbsp.a
+		$(SDK_DIR)/lib/libewoksys.a \
+		$(SDK_DIR)/lib/libbsp.a
 	mkdir -p $(BUILD_DIR)
 	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  $(BSP_LFLAGS) $(EWOK_LIBC)
 

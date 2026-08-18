@@ -14,8 +14,8 @@ SOUNDPWMD_OBJS = $(ARCH)/soundpwmd.o
 SOUNDPWMD = $(TARGET_DIR)/drivers/raspix/soundpwmd
 
 $(SOUNDPWMD): $(SOUNDPWMD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a \
-		$(BUILD_DIR)/lib/libarch_bcm283x.a
+		$(SDK_DIR)/lib/libewoksys.a \
+		$(SDK_DIR)/lib/libarch_bcm283x.a
 	$(LD) -Ttext=100 $(SOUNDPWMD_OBJS) -o $(SOUNDPWMD) $(LDFLAGS) -larch_bcm283x $(EWOK_LIBC)
 
 clean:

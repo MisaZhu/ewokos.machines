@@ -235,9 +235,6 @@ static int32_t map_scanout_buffer(uint32_t w, uint32_t h, uint32_t dep) {
 		_fb_info.pointer = 0;
 		return -1;
 	}
-	printf("dsi_fbdisplayd: fb phy=%08x ptr=%08x pitch=%u size=%u\n",
-			(uint32_t)_fb_info.phy_base, (uint32_t)_fb_info.pointer,
-			_fb_info.pitch, _fb_info.size);
 	return 0;
 }
 
@@ -249,44 +246,6 @@ static void fill_black(const fbinfo_t* fbi) {
 	if (fbi == NULL || fbi->pointer == 0)
 		return;
 	memset((void*)(uintptr_t)fbi->pointer, 0, fbi->size);
-}
-
-/*
- * Unmistakable visual proof that the DSI pipeline is scanning our
- * memory: eight vertical color bars.  Painted only after the frame
- * counter is advancing, and held (see init) before fbdisplayd_run
- * starts serving /dev/disp0 — the console would repaint over a plain
- * black buffer immediately, which on the panel reads as "no image".
- */
-static void fill_bars(const fbinfo_t* fbi) {
-	/*
-	 * Opaque alpha (0xff top byte) is mandatory: the HVS plane is
-	 * programmed RGBA8888 and straight-alpha blended, so 0x00xxxxxx
-	 * pixels composite to invisible over the black background —
-	 * the exact "backlight on, no image" symptom.
-	 */
-	static const uint32_t cols[8] = {
-		0xffffffff, 0xffffff00, 0xff00ffff, 0xff00ff00,
-		0xffff00ff, 0xffff0000, 0xff0000ff, 0xff000000,
-	};
-	uint32_t x, y;
-
-	if (fbi == NULL || fbi->pointer == 0)
-		return;
-
-	for (y = 0; y < fbi->height; y++) {
-		if (fbi->depth == 16) {
-			uint16_t* row = (uint16_t*)(uintptr_t)fbi->pointer +
-					y * (fbi->pitch / 2);
-			for (x = 0; x < fbi->width; x++)
-				row[x] = rgb565_from_u32(cols[x * 8 / fbi->width]);
-		} else {
-			uint32_t* row = (uint32_t*)(uintptr_t)fbi->pointer +
-					y * (fbi->pitch / 4);
-			for (x = 0; x < fbi->width; x++)
-				row[x] = cols[x * 8 / fbi->width];
-		}
-	}
 }
 
 /*
@@ -399,7 +358,6 @@ static void ws_panel_power(void) {
 		printf("dsi_fbdisplayd: mcu avdd/iovcc write failed\n");
 		return;
 	}
-	printf("dsi_fbdisplayd: mcu pwr %04x (rails on)\n", (unsigned)state);
 }
 
 /*
@@ -484,9 +442,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 		if (d1 == 0)
 			bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_DSI1, 1);
 		bcm283x_dsi1_mdelay(20);
-		printf("dsi_fbdisplayd: dom dsi0 %d->%d dsi1 %d->%d\n",
-				d0, bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_DSI0),
-				d1, bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_DSI1));
 	}
 
 	/*
@@ -512,7 +467,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 					bcm283x_dsi1_probe_port(1) == 0);
 			return fail_stage(1);
 		}
-		printf("dsi_fbdisplayd: using DSI%d\n", bcm283x_dsi1_port());
 	}
 
 	/*
@@ -585,9 +539,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	bcm283x_dsi1_pv_enable();
 	bcm283x_dsi1_video_mode(adj.pix_clk_divider);
 	bcm283x_dsi1_pv_video_enable();
-	printf("dsi: adj pix=%uHz hs=%uHz hfp=%u\n",
-			(unsigned)adj.pixel_clock_hz,
-			(unsigned)adj.hs_clock_hz, (unsigned)adj.hfp);
 
 	/*
 	 * Runtime evidence, not just "we wrote the registers":
@@ -624,30 +575,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	if (ws_panel_enable() != 0)
 		return fail_stage(6);
 
-	/*
-	 * The pipeline is provably consuming frames: show what it is
-	 * scanning.  Paint the bars and hold them on the panel before
-	 * the console service attaches to /dev/disp0 and repaints.
-	 */
-	bcm283x_dsi1_dump_live();
-	fill_bars(&_fb_info);
-	{
-		/*
-		 * One-boot isolation of "no image during the hold":
-		 *  rb  = CPU readback of bar pixels (writes landed?)
-		 *  adv = HVS frame counter still advancing now
-		 * If both are good the panel side is the only place
-		 * left to look; if rb is zero the mapping lied.
-		 */
-		const uint32_t* px = (const uint32_t*)(uintptr_t)_fb_info.pointer;
-
-		printf("dsi_fbdisplayd: bars rb %08x %08x %08x adv=%d\n",
-				px[0], px[_fb_info.width / 2],
-				px[_fb_info.width * (_fb_info.height / 2)],
-				bcm283x_dsi1_hvs_frames_advancing(120) == 0);
-	}
-	printf("dsi_fbdisplayd: color bars live, holding 3s\n");
-	bcm283x_dsi1_mdelay(3000);
 	return 0;
 }
 

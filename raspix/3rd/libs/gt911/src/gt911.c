@@ -9,21 +9,20 @@
 static GT911_Status_t CommunicationResult;
 static uint8_t RxBuffer[200];
 static uint8_t gt911_addr = GOODIX_ADDRESS_5D;
-static int32_t gt911_sda = 2;
-static int32_t gt911_scl = 3;
+static GT911_Platform_t gt911_platform = {
+    .bus = -1,
+    .sda = 2,
+    .scl = 3,
+    .rst = 17,
+    .irq = 4,
+    .addr = 0,
+};
 
 /* raw bit-bang primitives from arch_bcm283x i2c.c */
 extern void i2c_do_start(void);
 extern void i2c_do_stop(void);
 extern uint32_t i2c_do_write_byte(uint8_t data);
 extern uint8_t i2c_do_read_byte(int32_t ack);
-
-typedef struct {
-    int32_t sda;
-    int32_t scl;
-        int32_t rst;
-        int32_t intr;
-} gt911_bus_t;
 
 
 GT911_Status_t GT911_I2C_Write(uint8_t Addr, uint8_t *write_data, uint16_t write_length) {
@@ -167,40 +166,50 @@ static void GT911_ResetSelect(int32_t rst, int32_t intr, int32_t int_level) {
         proc_usleep(20000);
 }
 
-static GT911_Status_t GT911_Probe(uint8_t addr, int32_t sda, int32_t scl, uint32_t* productID) {
+static GT911_Status_t GT911_Probe(uint8_t addr, uint32_t* productID) {
     gt911_addr = addr;
-    gt911_sda = sda;
-    gt911_scl = scl;
-    i2c_init(gt911_sda, gt911_scl);
     proc_usleep(2000);
     return GT911_GetProductID(productID);
 }
 
-GT911_Status_t GT911_Init(void){
-    static const gt911_bus_t buses[] = {
-                {2, 3, 17, 4},
-                {10, 11, -1, -1},
-    };
-    static const uint8_t addresses[] = {
+GT911_Status_t GT911_Init(const GT911_Platform_t* platform){
+    static const uint8_t probe_addresses[] = {
         GOODIX_ADDRESS_5D,
         GOODIX_ADDRESS_14,
     };
     uint32_t productID = 0;
-    for(uint32_t bus = 0; bus < sizeof(buses) / sizeof(buses[0]); bus++){
-                int32_t reset_try_max = (buses[bus].rst >= 0 && buses[bus].intr >= 0) ? 2 : 1;
+    uint8_t addresses[2];
+    uint32_t address_count;
 
-                for(int32_t reset_try = 0; reset_try < reset_try_max; reset_try++) {
-                        if (reset_try_max > 1)
-                                GT911_ResetSelect(buses[bus].rst, buses[bus].intr, reset_try);
+    if (platform != NULL)
+        gt911_platform = *platform;
 
-                        for(uint32_t i = 0; i < sizeof(addresses) / sizeof(addresses[0]); i++){
-                                productID = 0;
-                                CommunicationResult = GT911_Probe(addresses[i], buses[bus].sda, buses[bus].scl, &productID);
-                                if(CommunicationResult == GT911_OK &&
-                                                productID != 0 &&
-                                                productID != 0xffffffffu){
-                                        goto gt911_ready;
-                                }
+    if (gt911_platform.sda < 0 || gt911_platform.scl < 0)
+        return GT911_Error;
+    i2c_init(gt911_platform.sda, gt911_platform.scl);
+
+    if (gt911_platform.addr == 0) {
+        addresses[0] = probe_addresses[0];
+        addresses[1] = probe_addresses[1];
+        address_count = 2;
+    } else {
+        addresses[0] = gt911_platform.addr;
+        address_count = 1;
+    }
+
+    int32_t reset_try_max = (gt911_platform.rst >= 0 && gt911_platform.irq >= 0) ? 2 : 1;
+
+    for(int32_t reset_try = 0; reset_try < reset_try_max; reset_try++) {
+        if (reset_try_max > 1)
+            GT911_ResetSelect(gt911_platform.rst, gt911_platform.irq, reset_try);
+
+        for(uint32_t i = 0; i < address_count; i++){
+            productID = 0;
+            CommunicationResult = GT911_Probe(addresses[i], &productID);
+            if(CommunicationResult == GT911_OK &&
+                    productID != 0 &&
+                    productID != 0xffffffffu){
+                goto gt911_ready;
             }
         }
     }

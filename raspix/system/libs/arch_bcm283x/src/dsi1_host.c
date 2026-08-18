@@ -575,11 +575,12 @@ void bcm283x_dsi1_dump(void) {
 			(unsigned)dsi1_xosc_hz(), p,
 			bcm283x_dsi1_probe_port(0) == 0 ? 1 : 0,
 			bcm283x_dsi1_probe_port(1) == 0 ? 1 : 0);
-	printf("dsi: CM_LOCK=%08x CM_PLLD=%08x A2W CTRL=%08x FRAC=%08x PER=%08x PLLA_DSI0=%08x PLLD_DSI0=%08x PLLD_DSI1=%08x\n",
+	printf("dsi: CM_LOCK=%08x CM_PLLD=%08x A2W CTRL=%08x FRAC=%08x ANA1=%08x PER=%08x PLLA_DSI0=%08x PLLD_DSI0=%08x PLLD_DSI1=%08x\n",
 			(unsigned)dsi1_cprman_read(0x114U),
 			(unsigned)dsi1_cprman_read(0x10cU),
 			(unsigned)dsi1_cprman_read(0x1140U),
 			(unsigned)dsi1_cprman_read(0x1240U),
+			(unsigned)dsi1_cprman_read(0x1054U),
 			(unsigned)dsi1_cprman_read(0x1540U),
 			(unsigned)dsi1_cprman_read(0x1300U),
 			(unsigned)dsi1_cprman_read(0x1340U),
@@ -677,8 +678,7 @@ void bcm283x_dsi1_firmware_handoff(void) {
  * daemon starts, so its DSI/PV/clock programming is a known-good
  * recipe for this exact board.  Capture it before anything is
  * overwritten — read-only, both ports, no port routing.  The lines
- * are also kept in a buffer so the fatal dump can reprint them after
- * they have scrolled off the console.
+ * are only ever printed by the fatal dump; a clean boot stays quiet.
  */
 void bcm283x_dsi1_dump_firmware(void) {
 	int n = 0;
@@ -713,5 +713,4 @@ void bcm283x_dsi1_dump_firmware(void) {
 		(unsigned)dsi1_pv_read_port(1, 0x14U),
 		(unsigned)dsi1_pv_read_port(1, 0x18U),
 		(unsigned)dsi1_pv_read_port(1, 0x30U));
-	printf("%s", _fw_snap);
 }

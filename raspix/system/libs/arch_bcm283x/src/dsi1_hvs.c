@@ -9,12 +9,15 @@
  * HVS (Hardware Video Scaler) at MMIO+0x400000 on both gens.
  *
  * PV<->FIFO routing (vc4_crtc.c / vc4_hvs.c):
- *   gen4: PV0 hardwired to FIFO 0, PV1 hardwired to FIFO 2, PV2 to
- *   FIFO 1 (bcm2835_pvX_data.hvs_output; get_fifo_from_output returns
- *   the output as-is).  DSP3_MUX only feeds EOF/EOLN-style IRQ
- *   grouping there — upstream hw_init parks it at 3 (disconnected).
- *   gen5: PV1 is HVS output 3 and DSP3_MUX (bits 19:18) selects the
- *   FIFO that feeds it (3 = disconnected).
+ *   gen4: PV0 hardwired to FIFO 0, PV2 to FIFO 1 — but PV1 (the DSI1
+ *   pixelvalve) is the "DSP3" output and DSP3_MUX (bits 19:18)
+ *   selects the FIFO that feeds it; upstream vc4_hvs_bind routes it
+ *   to FIFO 2 ("Set DSP3 (PV1) to use HVS channel 2").  Parking the
+ *   mux at 3 disconnects PV1 from every FIFO: the PV free-runs while
+ *   the enabled channel never sees a vstart (mode stays DISABLED) —
+ *   proven on a Pi 3A+.
+ *   gen5: PV1 is HVS output 3 and DSP3_MUX selects the FIFO that
+ *   feeds it (3 = disconnected).
  * So the scan-out channel is: port0 -> 0; port1 -> 2 on gen4, 1 on
  * gen5 (+DSP3_MUX).  The dlist word layout and the COB allocation
  * differ between HVS4 (BCM2835/2837, gen4) and HVS5 (BCM2711, gen5);
@@ -305,9 +308,14 @@ int bcm283x_dsi1_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h,
 	 * Global enable + route the HVS channel to the active PV.
 	 * gen5: PV1 is HVS output 3, fed through DSP3_MUX; PV0 is
 	 * hardwired to FIFO 0 and needs no routing.
-	 * gen4: the PV<->FIFO crossbar is hardwired (PV1 reads FIFO 2)
-	 * and upstream hw_init parks DSP3_MUX at 3 (disconnected) —
-	 * mirror that so no stray IRQ grouping rides our channel.
+	 * gen4: PV1 is the DSP3 output and DSP3_MUX selects its FIFO
+	 * — upstream vc4_hvs_bind routes it to FIFO 2 unconditionally
+	 * ("Set DSP3 (PV1) to use HVS channel 2").  Mux value 3 means
+	 * disconnected: the PV then free-runs while the enabled
+	 * channel never receives a vstart (Pi 3A+ symptom).  PV0
+	 * (DSI0) is hardwired to FIFO 0, so setting the mux is
+	 * harmless there — mirror upstream and always route DSP3 to
+	 * the gen4 DSI1 scan-out channel.
 	 */
 	dispctrl = dsi1_hvs_read(SCALER_DISPCTRL);
 	dispctrl |= SCALER_DISPCTRL_ENABLE;
@@ -315,7 +323,7 @@ int bcm283x_dsi1_hvs_bringup(uint32_t phy_fb, uint32_t w, uint32_t h,
 	if (gen5 && dsi1_port()) {
 		dispctrl |= (ch << SCALER_DISPCTRL_DSP3_MUX_SHIFT);
 	} else if (!gen5) {
-		dispctrl |= (3U << SCALER_DISPCTRL_DSP3_MUX_SHIFT);
+		dispctrl |= (2U << SCALER_DISPCTRL_DSP3_MUX_SHIFT);
 	}
 	dsi1_hvs_write(SCALER_DISPCTRL, dispctrl);
 

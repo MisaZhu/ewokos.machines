@@ -80,11 +80,25 @@
 #define A2W_PLLD_PER         0x1540U
 #define A2W_PLLD_DSI0        0x1340U
 #define A2W_PLLD_DSI1        0x1640U
+#define A2W_PLLD_ANA1        0x1054U  /* ana_reg_base(0x1050) + 4 */
 
 /* A2W PLLA wrappers — the spare PLL Linux dedicates to DSI0. */
 #define A2W_PLLA_CTRL        0x1100U
 #define A2W_PLLA_FRAC        0x1200U
 #define A2W_PLLA_DSI0        0x1300U
+#define A2W_PLLA_ANA1        0x1014U  /* ana_reg_base(0x1010) + 4 */
+
+/*
+ * ANA1 feedback pre-divider (bcm2835_ana_default.fb_prediv_mask).
+ * When set, the PLL feedback path is divided by 2, i.e. the VCO runs
+ * at TWICE the rate the NDIV/FDIV registers alone suggest.  The Pi3
+ * firmware boots PLLD this way: CTRL reads NDIV=52 ("1 GHz") but the
+ * real VCO is 2 GHz — cross-checked by PLLD_PER div 4 = the well-known
+ * 500 MHz plld_per.  Linux bcm2835_pll_get_rate() doubles both NDIV
+ * and FDIV when this bit is set; miss it and every divider derived
+ * from the VCO is 2x off (a "1 Gbps" DSI link actually at 2 Gbps).
+ */
+#define A2W_PLL_ANA1_FB_PREDIV       (1U << 14)
 
 /* A2W_PLL_CTRL bits. */
 #define A2W_PLL_CTRL_PDIV_SHIFT      12
@@ -195,12 +209,14 @@ static int _cm_set(uint32_t ctl_off, uint32_t div_off,
 
 /*
  * Read PLLD's actual VCO frequency:
- *   VCO = XOSC * (NDIV + FDIV / 2^20) / PDIV
- * NDIV lives in A2W_PLLD_CTRL[9:0], FDIV in A2W_PLLD_FRAC[19:0].
- * PLLD normally has PDIV=1 (VCO ~3 GHz on both gens), but if the VC
- * firmware boots with PDIV != 1 we MUST honour it or we'll pick a
- * PLLD_DSI1 divider that's off by pdiv and the panel will never lock
- * on the HS clock.
+ *   VCO = XOSC * (NDIV + FDIV / 2^20) * (FB prediv ? 2 : 1) / PDIV
+ * NDIV lives in A2W_PLLD_CTRL[9:0], FDIV in A2W_PLLD_FRAC[19:0], the
+ * FB pre-divider in ANA1[14].  Getting any factor wrong means every
+ * divider derived from the VCO is off and the panel never locks on
+ * the HS clock: the Pi3 firmware boots PLLD with the FB prediv SET
+ * (registers say 1 GHz, real VCO 2 GHz), which put the "1 Gbps" HS
+ * link at an unreceivable 2 Gbps while every on-chip block (HVS, PV,
+ * DSI host — all fed from divided-down taps) kept running happily.
  */
 static uint32_t _plld_vco_hz(void) {
 	uint32_t ctl = dsi1_cprman_read(A2W_PLLD_CTRL);
@@ -210,6 +226,11 @@ static uint32_t _plld_vco_hz(void) {
 	uint32_t fdiv = dsi1_cprman_read(A2W_PLLD_FRAC) & 0xfffffU;
 	uint32_t xosc_hz = dsi1_xosc_hz();
 	uint64_t vco;
+
+	if (dsi1_cprman_read(A2W_PLLD_ANA1) & A2W_PLL_ANA1_FB_PREDIV) {
+		ndiv *= 2;
+		fdiv *= 2;
+	}
 
 	vco = (uint64_t)xosc_hz * ndiv;
 	vco += ((uint64_t)xosc_hz * fdiv) >> 20;
@@ -234,13 +255,18 @@ static uint32_t _plla_set_vco(uint32_t vco_hz) {
 	uint32_t xosc_hz = dsi1_xosc_hz();
 	uint64_t div;
 	uint32_t ndiv, fdiv, ctrl;
+	uint32_t prediv;
 	int spin;
 
 	if (xosc_hz == 0) {
 		return 0;
 	}
+	/* Honour the firmware's FB prediv: with it set the VCO runs at
+	 * 2x the programmed multiplier, so halve what we write. */
+	prediv = (dsi1_cprman_read(A2W_PLLA_ANA1) & A2W_PLL_ANA1_FB_PREDIV)
+			? 2U : 1U;
 	div = (((uint64_t)vco_hz << A2W_PLL_FRAC_BITS) + xosc_hz / 2U) /
-			xosc_hz;
+			xosc_hz / prediv;
 	ndiv = (uint32_t)(div >> A2W_PLL_FRAC_BITS);
 	fdiv = (uint32_t)(div & A2W_PLL_FRAC_MASK);
 
@@ -274,8 +300,9 @@ static uint32_t _plla_set_vco(uint32_t vco_hz) {
 			dsi1_cprman_read(A2W_PLLA_CTRL) |
 			A2W_PLL_CTRL_PRST_DISABLE);
 
-	return (uint32_t)((uint64_t)xosc_hz * ndiv +
-			(((uint64_t)xosc_hz * fdiv) >> A2W_PLL_FRAC_BITS));
+	return (uint32_t)(((uint64_t)xosc_hz * ndiv +
+			(((uint64_t)xosc_hz * fdiv) >> A2W_PLL_FRAC_BITS)) *
+			prediv);
 }
 
 /*
@@ -465,18 +492,18 @@ int bcm283x_dsi1_clock_bringup(const bcm283x_dsi1_mode_t* mode,
 	 * 100 MHz — what vc4_dsi.c requests via clk_set_rate(escape,
 	 * 100 MHz) and what every escape-domain constant assumes.
 	 *
-	 * The ddr2 tap is the HS bit clock divided by 2, not by 4:
-	 * hardware TCNT measurement on gen4 showed 200 MHz out of the
-	 * escape generator (div 2.5 off a 998.4 MHz HS clock) when the
-	 * parent was assumed /4 — exactly double the intended 100 MHz.
-	 * A 2x escape clock halves every LP period the host emits.
+	 * The ddr2 tap is the HS bit clock divided by 4, as documented.
+	 * (An early gen4 TCNT measurement seemed to show /2 — 200 MHz
+	 * out of a div-2.5 generator — but that run was computed off a
+	 * PLLD VCO under-read by 2x thanks to the missed FB prediv; with
+	 * the VCO read correctly the same measurement is exactly /4.)
 	 *
 	 * CM_*DIV registers hold the divider in 12.12 fixed point
 	 * REGARDLESS of the clock's int_bits/frac_bits — those only say
 	 * which bits are wired.  dsiXe wires int_bits=4, frac_bits=8:
 	 * mask the unused low 4 fraction bits.
 	 */
-	esc_parent_hz = adj->hs_clock_hz / 2U;
+	esc_parent_hz = adj->hs_clock_hz / 4U;
 	if (esc_parent_hz == 0) {
 		esc_parent_hz = 1;
 	}
