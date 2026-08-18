@@ -1,0 +1,16 @@
+i{
+    "width": 480,
+    "height": 800,
+    "rotate": 3,
+    "depth": 32,
+    "zoom": 1,
+    "logo": "/usr/system/images/logos/ewokos.png",
+
+    "output": "dsi",
+    "width": 480,  "height": 800,
+    "hfp": 150, "hsync": 100, "hbp": 150,
+    "vfp": 20,  "vsync": 100, "vbp": 20,
+    "pclk": 50000000,
+    "lanes": 2,
+    "cont_clock": 0
+}

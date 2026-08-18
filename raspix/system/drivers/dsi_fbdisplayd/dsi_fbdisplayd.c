@@ -12,6 +12,8 @@
 #include <graph/graph.h>
 #include <arch/bcm283x/dsi1.h>
 #include <arch/bcm283x/i2c.h>
+#include <tinyjson/tinyjson.h>
+#include <ewoksys/klog.h>
 
 /*
  * Waveshare 4inch DSI LCD (480x800) framebuffer daemon for Raspberry
@@ -78,7 +80,14 @@
 #define WS_PWR_VCC             (1u << 8)
 #define WS_PWR_TS_RESET        (1u << 9)
 
-static const bcm283x_dsi1_mode_t _panel_mode = {
+/*
+ * Built-in defaults: the kernel's ws_panel_4_0_mode.  Any field can
+ * be overridden from the display config when it carries
+ * "output":"dsi" (same pattern as the raspi5 fbdisplayd DPI conf),
+ * so other panels of the Waveshare DSI family (same MCU, different
+ * timings) work without a rebuild.
+ */
+static bcm283x_dsi1_mode_t _panel_mode = {
 	.width = 480,
 	.height = 800,
 	.hfp = 150, .hsw = 100, .hbp = 150,
@@ -113,6 +122,38 @@ static int doargs(int argc, char* argv[]) {
 		}
 	}
 	return optind;
+}
+
+static void load_panel_conf(const char* conf_file) {
+	if (conf_file == NULL || conf_file[0] == '\0')
+		conf_file = "/etc/display.json";
+
+	json_var_t* conf_var = json_parse_file(conf_file);
+	if (conf_var == NULL)
+		return;
+
+	if (strcmp(json_get_str_def(conf_var, "output", ""), "dsi") != 0) {
+		json_var_unref(conf_var);
+		return;
+	}
+
+	_panel_mode.width  = (uint32_t)json_get_int_def(conf_var, "width",  (int)_panel_mode.width);
+	_panel_mode.height = (uint32_t)json_get_int_def(conf_var, "height", (int)_panel_mode.height);
+	_panel_mode.hfp    = (uint32_t)json_get_int_def(conf_var, "hfp",    (int)_panel_mode.hfp);
+	_panel_mode.hsw    = (uint32_t)json_get_int_def(conf_var, "hsync",  (int)_panel_mode.hsw);
+	_panel_mode.hbp    = (uint32_t)json_get_int_def(conf_var, "hbp",    (int)_panel_mode.hbp);
+	_panel_mode.vfp    = (uint32_t)json_get_int_def(conf_var, "vfp",    (int)_panel_mode.vfp);
+	_panel_mode.vsw    = (uint32_t)json_get_int_def(conf_var, "vsync",  (int)_panel_mode.vsw);
+	_panel_mode.vbp    = (uint32_t)json_get_int_def(conf_var, "vbp",    (int)_panel_mode.vbp);
+	_panel_mode.pixel_clock_hz = (uint32_t)json_get_int_def(conf_var, "pclk",
+			(int)_panel_mode.pixel_clock_hz);
+	_panel_mode.lanes  = (uint32_t)json_get_int_def(conf_var, "lanes",  (int)_panel_mode.lanes);
+	_panel_mode.continuous_clock = json_get_int_def(conf_var, "cont_clock",
+			_panel_mode.continuous_clock);
+	json_var_unref(conf_var);
+	slog("dsi_fbdisplayd: conf mode %ux%u pclk=%u lanes=%u\n",
+			_panel_mode.width, _panel_mode.height,
+			_panel_mode.pixel_clock_hz, _panel_mode.lanes);
 }
 
 static uint16_t rgb565_from_u32(uint32_t s) {
@@ -616,6 +657,8 @@ int main(int argc, char** argv) {
 	fbdisplayd_t fbdisplayd;
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
+
+	load_panel_conf(_conf_file);
 
 	memset(&fbdisplayd, 0, sizeof(fbdisplayd));
 	fbdisplayd.splash = NULL;   /* default logo splash from libdisplayd */
