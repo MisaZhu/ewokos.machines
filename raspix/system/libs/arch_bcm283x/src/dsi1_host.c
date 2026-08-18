@@ -416,7 +416,7 @@ static int _mipi_is_long(uint8_t dt) {
 }
 
 int bcm283x_dsi1_cmd_write(uint8_t data_type, const uint8_t* payload,
-		uint32_t len) {
+		uint32_t len, int lp) {
 	uint32_t pkth = 0;
 	uint32_t pktc = 0;
 	uint32_t cmd_fifo_len = 0;
@@ -476,8 +476,11 @@ int bcm283x_dsi1_cmd_write(uint8_t data_type, const uint8_t* payload,
 		       ((p0 | (p1 << 8)) << TXPKT1H_BC_PARAM_SHIFT);
 	}
 
-	/* HS command mode (upstream default when the panel does not set
-	 * MIPI_DSI_MODE_LPM). */
+	/* LP escape-mode command when the peripheral demands
+	 * MIPI_DSI_MODE_LPM (vc4 maps MIPI_DSI_MSG_USE_LPM to
+	 * CMD_MODE_LP); HS command mode otherwise (upstream default). */
+	if (lp)
+		pktc |= TXPKT1C_CMD_MODE_LP;
 	pktc |= TXPKT1C_CMD_CTRL_TX;
 	pktc |= (1U << TXPKT1C_CMD_REPEAT_SHIFT);
 	pktc |= TXPKT1C_CMD_EN;

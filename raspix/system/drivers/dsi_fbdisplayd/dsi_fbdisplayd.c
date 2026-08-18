@@ -16,8 +16,19 @@
 #include <ewoksys/klog.h>
 
 /*
- * Waveshare 4inch DSI LCD (480x800) framebuffer daemon for Raspberry
- * Pi 3 (BCM2837) and Pi 4 (BCM2711).
+ * Waveshare DSI LCD framebuffer daemon for Raspberry Pi 3 (BCM2837)
+ * and Pi 4 (BCM2711).  Two panel families share the 0x45 I2C address
+ * but speak completely different protocols; the daemon auto-detects
+ * which one is connected (see panel_setup):
+ *
+ *   PANEL_WS   Waveshare's own MCU family (4inch 480x800 etc.,
+ *              Linux panel-waveshare-dsi): I2C-only control, no
+ *              DCS over DSI, no reset GPIO.
+ *   PANEL_RPI7 official RPi 7" touchscreen protocol clones
+ *              (Waveshare "5inch DSI LCD" 800x480 etc., Linux
+ *              vc4-kms-dsi-7inch overlay): ATTINY power controller
+ *              (rpi-panel-attiny-regulator) + TC358762 DSI->DPI
+ *              bridge initialized over DSI LP generic writes.
  *
  * This daemon drives the whole MIPI DSI path from cold:
  *   CPRMAN clocks (PLLD_DSI0/1 + DSInE + DSInP)
@@ -30,16 +41,22 @@
  * The SoC generation is detected at runtime inside the arch library;
  * the same binary runs on both Pi3 (gen4) and Pi4 (gen5).
  *
- * Panel control is I2C-only (no DCS over DSI, no reset GPIO),
- * mirroring the Linux panel-waveshare-dsi driver:
+ * PANEL_WS control, mirroring the Linux panel-waveshare-dsi driver:
  *   probe writes:  0xc0=1, 0xc2=1, 0xac=1
  *   enable:        0xad=1
  *   backlight:     0xab = 0xff - brightness, then 0xaa = 1
- *
  * Mode from the kernel's ws_panel_4_0_mode: 480x800 @ 50 MHz pixel
  * clock, hfp/hsw/hbp = 150/100/150, vfp/vsw/vbp = 20/100/20, RGB888,
  * 2 lanes, non-continuous HS clock (VIDEO | VIDEO_HSE |
  * CLOCK_NON_CONTINUOUS).
+ *
+ * PANEL_RPI7 control, mirroring rpi-panel-attiny-regulator.c +
+ * tc358762.c: ATTINY PORTA/B/C rail+reset walk and PWM backlight
+ * over I2C, TC358762 bridge registers programmed with 6-byte DSI
+ * generic long writes in LP mode.  Mode from the firmware modeline
+ * (panel-raspberrypi-touchscreen.c): 800x480 @ 25.9794 MHz,
+ * hfp/hsw/hbp = 1/2/46, vfp/vsw/vbp = 7/2/21, RGB888, 1 lane,
+ * continuous HS clock (VIDEO | VIDEO_SYNC_PULSE | LPM | VIDEO_HSE).
  *
  * Scan-out targets a fixed reserved DRAM window — the uconsole
  * fbdisplayd model (UCONSOLE_FB_PHYS_BASE) with a per-board base:
@@ -81,6 +98,61 @@
 #define WS_PWR_TS_RESET        (1u << 9)
 
 /*
+ * PANEL_RPI7: ATTINY power controller registers and port bits
+ * (rpi-panel-attiny-regulator.c).  Same 0x45 address as the WS MCU;
+ * REG_ID reading 0xde (ver 1) or 0xc3 (ver 2) is the detection
+ * signature.
+ */
+#define RPI7_REG_ID            0x80U
+#define RPI7_REG_PORTA         0x81U
+#define RPI7_REG_PORTB         0x82U
+#define RPI7_REG_PORTC         0x83U
+#define RPI7_REG_POWERON       0x85U
+#define RPI7_REG_PWM           0x86U
+#define RPI7_REG_ADDR_L        0x8cU
+#define RPI7_REG_ADDR_H        0x8dU
+#define RPI7_REG_WRITE_H       0x90U
+#define RPI7_REG_WRITE_L       0x91U
+
+#define RPI7_ID_V1             0xdeU
+#define RPI7_ID_V2             0xc3U
+
+#define RPI7_PA_LCD_LR         (1u << 2)
+#define RPI7_PB_LCD_MAIN       (1u << 7)
+#define RPI7_PC_LED_EN         (1u << 0)
+#define RPI7_PC_RST_TP_N       (1u << 1)
+#define RPI7_PC_RST_LCD_N      (1u << 2)
+#define RPI7_PC_RST_BRIDGE_N   (1u << 3)
+
+/*
+ * TC358762 DSI->DPI bridge registers (tc358762.c), written as 6-byte
+ * DSI generic long writes: {addr_lo, addr_hi, val LE32}.
+ */
+#define TC_PPI_STARTPPI        0x0104U
+#define TC_PPI_LPTXTIMECNT     0x0114U
+#define TC_PPI_D0S_ATMR        0x0144U
+#define TC_PPI_D1S_ATMR        0x0148U
+#define TC_PPI_D0S_CLRSIPOCOUNT 0x0164U
+#define TC_PPI_D1S_CLRSIPOCOUNT 0x0168U
+#define TC_DSI_STARTDSI        0x0204U
+#define TC_DSI_LANEENABLE      0x0210U
+#define TC_LCDCTRL             0x0420U
+#define TC_LCD_HS_HBP          0x0424U
+#define TC_LCD_HDISP_HFP       0x0428U
+#define TC_LCD_VS_VBP          0x042cU
+#define TC_LCD_VDISP_VFP       0x0430U
+#define TC_SPICMR              0x0450U
+#define TC_SYSCTRL             0x0464U
+
+#define TC_LANEENABLE_CLEN     (1u << 0)
+#define TC_LANEENABLE_L0EN     (1u << 1)
+/* VSDELAY(1) | RGB888 | UNK6 | VTGEN, positive syncs — the constant
+ * the old panel-raspberrypi-touchscreen.c hardcoded (0x00100150). */
+#define TC_LCDCTRL_MAGIC       0x00100150U
+#define TC_SYSCTRL_MAGIC       0x040fU
+#define TC_LPX_PERIOD          3U
+
+/*
  * Built-in defaults: the kernel's ws_panel_4_0_mode.  Any field can
  * be overridden from the display config when it carries
  * "output":"dsi" (same pattern as the raspi5 fbdisplayd DPI conf),
@@ -96,6 +168,25 @@ static bcm283x_dsi1_mode_t _panel_mode = {
 	.lanes = 2,
 	.continuous_clock = 0,
 };
+
+/* PANEL_RPI7 mode: the firmware modeline with HFP=1 (see
+ * panel-raspberrypi-touchscreen.c rpi_touchscreen_modes). */
+static const bcm283x_dsi1_mode_t _rpi7_mode = {
+	.width = 800,
+	.height = 480,
+	.hfp = 1,  .hsw = 2, .hbp = 46,
+	.vfp = 7,  .vsw = 2, .vbp = 21,
+	.pixel_clock_hz = 25979400U,
+	.lanes = 1,
+	.continuous_clock = 1,
+};
+
+#define PANEL_WS    0
+#define PANEL_RPI7  1
+/* Resolved panel family: conf "panel" key or REG_ID probe. */
+static int _panel_kind = PANEL_WS;
+static int _panel_kind_conf = -1;   /* -1 = auto-detect */
+static int _conf_has_mode = 0;      /* conf carried explicit timing */
 
 static const char* _conf_file = "";
 static int _display_index = 0;
@@ -136,6 +227,20 @@ static void load_panel_conf(const char* conf_file) {
 		json_var_unref(conf_var);
 		return;
 	}
+
+	/* Optional panel-family override; "auto" (default) probes the
+	 * MCU.  Forcing "rpi7" swaps in its mode defaults first so the
+	 * timing keys below only need to list deviations. */
+	{
+		const char* panel = json_get_str_def(conf_var, "panel", "auto");
+		if (strcmp(panel, "ws") == 0) {
+			_panel_kind_conf = PANEL_WS;
+		} else if (strcmp(panel, "rpi7") == 0) {
+			_panel_kind_conf = PANEL_RPI7;
+			_panel_mode = _rpi7_mode;
+		}
+	}
+	_conf_has_mode = 1;
 
 	_panel_mode.width  = (uint32_t)json_get_int_def(conf_var, "width",  (int)_panel_mode.width);
 	_panel_mode.height = (uint32_t)json_get_int_def(conf_var, "height", (int)_panel_mode.height);
@@ -453,16 +558,137 @@ static int32_t ws_panel_reset_pulse(void) {
 	return 0;
 }
 
+/* ---- PANEL_RPI7: ATTINY power controller + TC358762 bridge ---- */
+
+static int32_t rpi7_bridge_write(uint16_t reg, uint32_t val) {
+	uint8_t buf[6] = {
+		(uint8_t)(reg & 0xffU), (uint8_t)(reg >> 8),
+		(uint8_t)(val & 0xffU), (uint8_t)((val >> 8) & 0xffU),
+		(uint8_t)((val >> 16) & 0xffU), (uint8_t)((val >> 24) & 0xffU),
+	};
+
+	/* 0x29 = generic long write, in LP mode (MIPI_DSI_MODE_LPM). */
+	if (bcm283x_dsi1_cmd_write(0x29, buf, sizeof(buf), 1) != 0) {
+		printf("dsi_fbdisplayd: TC358762 write 0x%04x=0x%08x failed\n",
+				reg, val);
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * ATTINY rails up BEFORE any DSI PHY activity (same doctrine as
+ * ws_panel_power).  Mirrors attiny_i2c_probe() +
+ * attiny_lcd_power_enable(): everything held in reset, orientation,
+ * LCD rails on, LED enable — the bridge stays in reset until
+ * rpi7_bridge_enable() (its reset is the "vddc regulator" in Linux).
+ */
+static void rpi7_panel_power(void) {
+	if (ws_panel_i2c_init() != 0)
+		return;
+	ws_panel_i2c_write(RPI7_REG_POWERON, 0x00);
+	bcm283x_dsi1_mdelay(30);
+	ws_panel_i2c_write(RPI7_REG_PWM, 0x00);
+	bcm283x_dsi1_mdelay(10);
+
+	ws_panel_i2c_write(RPI7_REG_PORTC, 0x00);
+	bcm283x_dsi1_mdelay(10);
+	ws_panel_i2c_write(RPI7_REG_PORTA, RPI7_PA_LCD_LR);
+	bcm283x_dsi1_mdelay(10);
+	ws_panel_i2c_write(RPI7_REG_PORTB, RPI7_PB_LCD_MAIN);
+	bcm283x_dsi1_mdelay(10);
+	ws_panel_i2c_write(RPI7_REG_PORTC, RPI7_PC_LED_EN);
+	bcm283x_dsi1_mdelay(80);
+}
+
+/*
+ * Bridge out of reset + TC358762 init, with the host at LP-11 — the
+ * DRM pre_enable analog (tc358762_pre_enable with
+ * pre_enable_prev_first, so the DSI host is already up).  The PORTC
+ * write is Linux's "vddc" fixed regulator (RST_BRIDGE_N gpio) plus
+ * the attiny_gpio_set() firmware magic that follows it; TP reset is
+ * released too so a future touch daemon finds the controller alive.
+ * The register recipe is tc358762_init() verbatim.
+ */
+static int32_t rpi7_bridge_enable(void) {
+	int32_t rc = 0;
+
+	if (ws_panel_i2c_write(RPI7_REG_PORTC,
+			RPI7_PC_LED_EN | RPI7_PC_RST_TP_N |
+			RPI7_PC_RST_LCD_N | RPI7_PC_RST_BRIDGE_N) != 0)
+		return -1;
+	bcm283x_dsi1_mdelay(8);
+	ws_panel_i2c_write(RPI7_REG_ADDR_H, 0x04);
+	bcm283x_dsi1_mdelay(8);
+	ws_panel_i2c_write(RPI7_REG_ADDR_L, 0x7c);
+	bcm283x_dsi1_mdelay(8);
+	ws_panel_i2c_write(RPI7_REG_WRITE_H, 0x00);
+	bcm283x_dsi1_mdelay(8);
+	ws_panel_i2c_write(RPI7_REG_WRITE_L, 0x00);
+	bcm283x_dsi1_mdelay(100);
+
+	rc |= rpi7_bridge_write(TC_DSI_LANEENABLE,
+			TC_LANEENABLE_CLEN | TC_LANEENABLE_L0EN);
+	rc |= rpi7_bridge_write(TC_PPI_D0S_CLRSIPOCOUNT, 5);
+	rc |= rpi7_bridge_write(TC_PPI_D1S_CLRSIPOCOUNT, 5);
+	rc |= rpi7_bridge_write(TC_PPI_D0S_ATMR, 0);
+	rc |= rpi7_bridge_write(TC_PPI_D1S_ATMR, 0);
+	rc |= rpi7_bridge_write(TC_PPI_LPTXTIMECNT, TC_LPX_PERIOD);
+	rc |= rpi7_bridge_write(TC_SPICMR, 0x00);
+	rc |= rpi7_bridge_write(TC_LCDCTRL, TC_LCDCTRL_MAGIC);
+	rc |= rpi7_bridge_write(TC_SYSCTRL, TC_SYSCTRL_MAGIC);
+	rc |= rpi7_bridge_write(TC_LCD_HS_HBP,
+			_panel_mode.hsw | (_panel_mode.hbp << 16));
+	rc |= rpi7_bridge_write(TC_LCD_HDISP_HFP,
+			_panel_mode.width | (_panel_mode.hfp << 16));
+	rc |= rpi7_bridge_write(TC_LCD_VS_VBP,
+			_panel_mode.vsw | (_panel_mode.vbp << 16));
+	rc |= rpi7_bridge_write(TC_LCD_VDISP_VFP,
+			_panel_mode.height | (_panel_mode.vfp << 16));
+	bcm283x_dsi1_mdelay(100);
+
+	rc |= rpi7_bridge_write(TC_PPI_STARTPPI, 1);
+	rc |= rpi7_bridge_write(TC_DSI_STARTDSI, 1);
+	bcm283x_dsi1_mdelay(100);
+
+	return rc != 0 ? -1 : 0;
+}
+
+static int32_t rpi7_backlight(void) {
+	return ws_panel_i2c_write(RPI7_REG_PWM, 0xff);
+}
+
+/*
+ * Resolve which panel family sits on the connector.  The conf
+ * "panel" key wins; otherwise probe REG_ID (0x80) — only the ATTINY
+ * answers 0xde/0xc3 there, the WS MCU does not.  On PANEL_RPI7 the
+ * mode defaults are swapped in unless the conf carried explicit
+ * timing.  Needs mmio (I2C) up, so this runs inside init().
+ */
+static void panel_setup(void) {
+	if (_panel_kind_conf >= 0) {
+		_panel_kind = _panel_kind_conf;
+	} else {
+		uint8_t id = 0;
+
+		_panel_kind = PANEL_WS;
+		if (ws_panel_i2c_init() == 0 &&
+				ws_panel_i2c_read(RPI7_REG_ID, &id) == 0 &&
+				(id == RPI7_ID_V1 || id == RPI7_ID_V2)) {
+			_panel_kind = PANEL_RPI7;
+			if (!_conf_has_mode)
+				_panel_mode = _rpi7_mode;
+		}
+	}
+	slog("dsi_fbdisplayd: panel %s %ux%u\n",
+			_panel_kind == PANEL_RPI7 ? "rpi7(attiny+tc358762)" : "ws(mcu)",
+			_panel_mode.width, _panel_mode.height);
+}
+
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	bcm283x_dsi1_adjusted_mode_t adj;
 	int st;
 
-	/*
-	 * The scan-out geometry must match the physical panel, so force
-	 * w/h to the panel mode regardless of what the config said.
-	 */
-	w = _panel_mode.width;
-	h = _panel_mode.height;
 	if (dep != 16 && dep != 32)
 		dep = 32;
 
@@ -477,11 +703,23 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	bcm283x_dsi1_dump_firmware();
 
 	/*
+	 * Resolve the panel family (needs I2C, so after mmio_map), then
+	 * force the scan-out geometry to the physical panel regardless
+	 * of what the config said.
+	 */
+	panel_setup();
+	w = _panel_mode.width;
+	h = _panel_mode.height;
+
+	/*
 	 * Panel rails FIRST, before any DSI register/PHY activity
 	 * (see ws_panel_power): a cold DDIC must see its rails up
 	 * before the lanes go LP-11.
 	 */
-	ws_panel_power();
+	if (_panel_kind == PANEL_RPI7)
+		rpi7_panel_power();
+	else
+		ws_panel_power();
 
 	/*
 	 * Firmware power domains: upstream Linux never power-cycles
@@ -575,11 +813,15 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	}
 
 	/*
-	 * Lanes are at LP-11: give the DDIC its reset pulse so it
-	 * comes out of reset into a live bus, then the bridge
-	 * pre_enable writes (display-on comes later, see below).
+	 * Lanes are at LP-11.  PANEL_WS: DDIC reset pulse so it comes
+	 * out of reset into a live bus.  PANEL_RPI7: bridge out of
+	 * reset + the full TC358762 register init over DSI LP writes
+	 * (display-on/backlight still waits for the live stream).
 	 */
-	if (ws_panel_reset_pulse() != 0)
+	if (_panel_kind == PANEL_RPI7) {
+		if (rpi7_bridge_enable() != 0)
+			return fail_stage(6);
+	} else if (ws_panel_reset_pulse() != 0)
 		printf("dsi_fbdisplayd: WARN panel reset pulse failed\n");
 
 	if (map_scanout_buffer(w, h, dep) != 0)
@@ -589,10 +831,11 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * DRM bridge pre_enable while the host sits at LP-11: the
 	 * panel is probed/configured but NOT displayed yet.  The
 	 * display-on + backlight writes wait for a live video stream
-	 * (ws_panel_enable() after stage 8) — enabling the bridge
-	 * against a dead stream latches a no-signal black state.
+	 * (after stage 8) — enabling the bridge against a dead stream
+	 * latches a no-signal black state.  PANEL_RPI7 has no I2C
+	 * pre_enable step; its bridge init already ran above.
 	 */
-	if (ws_panel_pre_enable() != 0)
+	if (_panel_kind == PANEL_WS && ws_panel_pre_enable() != 0)
 		return fail_stage(6);
 
 	/* Prime the scan-out buffer BEFORE the pipeline starts fetching. */
@@ -644,10 +887,14 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 
 	/*
 	 * Stream is provably live: DRM bridge enable step.  The panel
-	 * now sees display-on against a valid video stream and locks
-	 * immediately instead of latching no-signal.
+	 * now sees display-on (PANEL_WS) or backlight PWM (PANEL_RPI7)
+	 * against a valid video stream and locks immediately instead
+	 * of latching no-signal.
 	 */
-	if (ws_panel_enable() != 0)
+	if (_panel_kind == PANEL_RPI7) {
+		if (rpi7_backlight() != 0)
+			return fail_stage(6);
+	} else if (ws_panel_enable() != 0)
 		return fail_stage(6);
 
 	return 0;

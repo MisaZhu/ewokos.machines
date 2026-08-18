@@ -134,12 +134,14 @@ int bcm283x_dsi1_lanes_stopped(void);
 
 /*
  * Send one MIPI DSI packet.  data_type is the MIPI data type byte
- * (0x05 DCS short write, 0x39 DCS long write, ...).  For short packets
- * payload carries up to 2 parameter bytes.  Returns 0 when TXPKT1_DONE
- * was observed within the timeout.
+ * (0x05 DCS short write, 0x29 generic long write, 0x39 DCS long
+ * write, ...).  For short packets payload carries up to 2 parameter
+ * bytes.  lp selects LP escape-mode transmission (peripherals with
+ * MIPI_DSI_MODE_LPM, e.g. the TC358762 bridge); 0 sends in HS mode.
+ * Returns 0 when TXPKT1_DONE was observed within the timeout.
  */
 int bcm283x_dsi1_cmd_write(uint8_t data_type, const uint8_t* payload,
-		uint32_t len);
+		uint32_t len, int lp);
 
 /*
  * Switch DISP0 into video mode with the full ENABLE write (call AFTER
