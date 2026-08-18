@@ -14,7 +14,7 @@ USBMOUSED_OBJS = $(ARCH)/usbmoused.o
 USBMOUSED = $(TARGET_DIR)/drivers/x86/usbmoused
 
 $(USBMOUSED): $(USBMOUSED_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(USBMOUSED_OBJS) -o $(USBMOUSED) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

@@ -11,9 +11,9 @@ OBJS = $(ARCH)/fand.o
 TARGET = $(TARGET_DIR)/drivers/raspi5/fand
 
 $(TARGET): $(OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a \
-		$(BUILD_DIR)/lib/libarch_bcm2712.a \
-		$(BUILD_DIR)/lib/libbsp.a
+		$(SDK_DIR)/lib/libewoksys.a \
+		$(SDK_DIR)/lib/libarch_bcm2712.a \
+		$(SDK_DIR)/lib/libbsp.a
 	$(LD) -Ttext=100 $(OBJS) -o $(TARGET) $(LDFLAGS) $(BSP_LFLAGS) $(EWOK_LIBC)
 
 clean:

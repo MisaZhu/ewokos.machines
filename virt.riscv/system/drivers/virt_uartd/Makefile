@@ -14,7 +14,7 @@ VIRT_UARTD_OBJS = $(ARCH)/virt_uartd.o
 VIRT_UARTD = $(TARGET_DIR)/drivers/virt/virt_uartd
 
 $(VIRT_UARTD): $(VIRT_UARTD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(VIRT_UARTD_OBJS) -o $(VIRT_UARTD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

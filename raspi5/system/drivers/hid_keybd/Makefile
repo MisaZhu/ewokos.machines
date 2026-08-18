@@ -14,7 +14,7 @@ HID_KEYBD_OBJS = $(ARCH)/hid_keybd.o
 HID_KEYBD = $(TARGET_DIR)/drivers/raspi5/hid_keybd
 
 $(HID_KEYBD): $(HID_KEYBD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(HID_KEYBD_OBJS) -o $(HID_KEYBD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

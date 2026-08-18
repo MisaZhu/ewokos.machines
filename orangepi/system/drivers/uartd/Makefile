@@ -14,7 +14,7 @@ MS_UARTD_OBJS = $(ARCH)/uartd.o
 MS_UARTD = $(TARGET_DIR)/drivers/orangepi/uartd
 
 $(MS_UARTD): $(MS_UARTD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(MS_UARTD_OBJS) -o $(MS_UARTD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

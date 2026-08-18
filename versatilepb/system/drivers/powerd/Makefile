@@ -14,8 +14,8 @@ PMU_OBJS = $(ARCH)/powerd.o
 PMU = $(TARGET_DIR)/drivers/versatilepb/powerd
 
 $(PMU): $(PMU_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a \
-		$(BUILD_DIR)/lib/libarch_vpb.a
+		$(SDK_DIR)/lib/libewoksys.a \
+		$(SDK_DIR)/lib/libarch_vpb.a
 	$(LD) -Ttext=100 $(PMU_OBJS) -o $(PMU) $(LDFLAGS) -larch_vpb $(EWOK_LIBC)
 
 clean:

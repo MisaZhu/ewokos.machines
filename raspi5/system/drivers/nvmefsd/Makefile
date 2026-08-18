@@ -13,11 +13,11 @@ NVMEFSD_SRC = nvmefsd.c
 NVMEFSD = $(TARGET_DIR)/drivers/raspi5/nvmefsd
 
 $(NVMEFSD): $(NVMEFSD_OBJ) \
-		$(BUILD_DIR)/lib/libewoksys.a \
-		$(BUILD_DIR)/lib/libext2.a \
-		$(BUILD_DIR)/lib/libsd.a \
-		$(BUILD_DIR)/lib/libarch_bcm2712.a \
-		$(BUILD_DIR)/lib/libbsp.a
+		$(SDK_DIR)/lib/libewoksys.a \
+		$(SDK_DIR)/lib/libext2.a \
+		$(SDK_DIR)/lib/libsd.a \
+		$(SDK_DIR)/lib/libarch_bcm2712.a \
+		$(SDK_DIR)/lib/libbsp.a
 	$(LD) -Ttext=100 $(NVMEFSD_OBJ) -o $(NVMEFSD) $(LDFLAGS) \
 		$(BSP_LFLAGS) -lext2 -lsd $(EWOK_LIBC)
 

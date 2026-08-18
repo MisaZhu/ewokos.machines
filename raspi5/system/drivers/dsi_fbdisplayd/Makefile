@@ -9,21 +9,21 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-FBDISPLAYD_OBJS = $(ARCH)/fbdisplayd.o $(ARCH)/ili9488.o
+DSI_FBDISPLAYD_OBJS = $(ARCH)/dsi_fbdisplayd.o
 
-FBDISPLAYD = $(TARGET_DIR)/drivers/rk3506/fbdisplayd
+DSI_FBDISPLAYD = $(TARGET_DIR)/drivers/raspi5/dsi_fbdisplayd
 
-$(FBDISPLAYD): $(FBDISPLAYD_OBJS) \
+$(DSI_FBDISPLAYD): $(DSI_FBDISPLAYD_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \
 		$(SDK_DIR)/lib/libdisplay.a \
 		$(SDK_DIR)/lib/libgraph.a \
 		$(SDK_DIR)/lib/libfont.a \
 		$(SDK_DIR)/lib/libdisplayman.a \
-		$(SDK_DIR)/lib/libarch_rk3506.a \
 		$(SDK_DIR)/lib/libdisplayd.a \
 		$(SDK_DIR)/lib/libtinyjson.a \
+		$(SDK_DIR)/lib/libarch_bcm2712.a \
 		$(SDK_DIR)/lib/libbsp.a
-	$(LD) -Ttext=100 $(FBDISPLAYD_OBJS) -o $(FBDISPLAYD) $(LDFLAGS) -larch_rk3506 -ldisplayd $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(DSI_FBDISPLAYD_OBJS) -o $(DSI_FBDISPLAYD) $(LDFLAGS) -ldisplayd $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
 
 clean:
-	rm -f $(FBDISPLAYD_OBJS)
+	rm -f $(DSI_FBDISPLAYD_OBJS)

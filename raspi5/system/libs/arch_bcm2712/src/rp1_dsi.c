@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <sysinfo.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/syscall.h>
@@ -518,7 +519,6 @@ static int rp1_dsi_host_setup(const bcm2712_dsi_mode_t *mode) {
 	const uint32_t hdisplay = mode->width;
 	const uint32_t vdisplay = mode->height;
 	const uint32_t htotal = mode->width + mode->hfp + mode->hsw + mode->hbp;
-	const uint32_t vtotal = mode->height + mode->vfp + mode->vsw + mode->vbp;
 	uint64_t byte_clock = ((uint64_t)bpp * mode->pixel_clock_hz) / (8U * lanes);
 	uint32_t timeout, mask, clkdiv;
 	uint32_t actual_vco;

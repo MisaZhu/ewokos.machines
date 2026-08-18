@@ -14,8 +14,8 @@ UARTD_OBJS = $(ARCH)/uartd.o
 UARTD = $(TARGET_DIR)/drivers/raspi5/uartd
 
 $(UARTD): $(UARTD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a \
-		$(BUILD_DIR)/lib/libarch_bcm2712.a
+		$(SDK_DIR)/lib/libewoksys.a \
+		$(SDK_DIR)/lib/libarch_bcm2712.a
 	$(LD) -Ttext=100 $(UARTD_OBJS) -o $(UARTD) $(LDFLAGS) -larch_bcm2712 $(EWOK_LIBC)
 
 clean:

@@ -18,6 +18,7 @@ LIB_ARCH_BCM2712_OBJS = $(ARCH)/src/mailbox.o \
 	$(ARCH)/src/framebuffer.o \
 	$(ARCH)/src/native_hdmi.o \
 	$(ARCH)/src/rp1_dpi.o \
+	$(ARCH)/src/rp1_dsi.o \
 	$(ARCH)/src/i2c.o \
 	$(ARCH)/src/spi.o \
 	$(ARCH)/src/nvme.o

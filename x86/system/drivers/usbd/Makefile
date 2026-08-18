@@ -14,7 +14,7 @@ USBD_OBJS = $(ARCH)/usbd.o
 USBD = $(TARGET_DIR)/drivers/x86/usbd
 
 $(USBD): $(USBD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(USBD_OBJS) -o $(USBD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

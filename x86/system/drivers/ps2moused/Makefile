@@ -14,7 +14,7 @@ MOUSED_OBJS = $(ARCH)/moused.o
 MOUSED = $(TARGET_DIR)/drivers/x86/ps2moused
 
 $(MOUSED): $(MOUSED_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(MOUSED_OBJS) -o $(MOUSED) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

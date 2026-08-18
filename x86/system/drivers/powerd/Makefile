@@ -14,7 +14,7 @@ PMU_OBJS = $(ARCH)/powerd.o
 PMU = $(TARGET_DIR)/drivers/x86/powerd
 
 $(PMU): $(PMU_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(PMU_OBJS) -o $(PMU) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

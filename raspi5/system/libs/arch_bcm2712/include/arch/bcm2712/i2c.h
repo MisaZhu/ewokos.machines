@@ -35,6 +35,13 @@
 #define BCM2712_I2C_ERR_COMP_TYPE -5
 
 int bcm2712_i2c_init(int bus);
+/*
+ * Same as bcm2712_i2c_init(), but muxes sda/scl explicitly (both pulled
+ * up, funcsel a3) instead of the header default pair. Needed for bus 4-6
+ * (display/camera connector control buses, e.g. bus 4 = GPIO40/41 =
+ * i2c_csi_dsi) and whenever a bus's default pair is used by other logic.
+ */
+int bcm2712_i2c_init_pins(int bus, uint32_t sda, uint32_t scl);
 /* hz <= 100000 selects standard mode, anything above selects fast mode (400k) */
 int bcm2712_i2c_set_speed(int bus, uint32_t hz);
 

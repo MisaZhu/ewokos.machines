@@ -161,7 +161,13 @@ static void i2c_recover(ewokos_addr_t base) {
     i2c_set_enable(base, 0);
 }
 
-int bcm2712_i2c_init(int bus) {
+int bcm2712_i2c_init_pins(int bus, uint32_t sda, uint32_t scl);
+
+/*
+ * Common init; pins == NULL skips pinmux (bus 4-6 default), otherwise the
+ * two GPIOs are pulled up and muxed to i2c (funcsel a3 on all RP1 pins).
+ */
+static int i2c_init_impl(int bus, const uint8_t *pins) {
     if (bus < 0 || bus >= RP1_I2C_NUM)
         return BCM2712_I2C_ERR_INVALID;
 
@@ -196,10 +202,10 @@ int bcm2712_i2c_init(int bus) {
             return rp1_ret - 10;
     }
 
-    if (bus < 4) {
+    if (pins != NULL) {
         bcm2712_gpio_init();
         for (int i = 0; i < 2; i++) {
-            uint32_t pin = _i2c_pins[bus][i];
+            uint32_t pin = pins[i];
             bcm2712_gpio_pull(pin, GPIO_PULL_UP);
             bcm2712_gpio_config(pin, GPIO_FUNC_ALTF3);
         }
@@ -244,6 +250,22 @@ int bcm2712_i2c_init(int bus) {
 
     _i2c_ready[bus] = 1;
     return 0;
+}
+
+int bcm2712_i2c_init(int bus) {
+    return i2c_init_impl(bus, (bus >= 0 && bus < 4) ? _i2c_pins[bus] : NULL);
+}
+
+/*
+ * Init with an explicit sda/scl pin pair instead of the header default —
+ * e.g. bus 4 on GPIO40/41 (display connector control i2c, i2c_csi_dsi) or
+ * bus 1 on GPIO2/3 when its default pair is used by something else.
+ */
+int bcm2712_i2c_init_pins(int bus, uint32_t sda, uint32_t scl) {
+    if (sda > 53 || scl > 53)
+        return BCM2712_I2C_ERR_INVALID;
+    uint8_t pins[2] = {(uint8_t)sda, (uint8_t)scl};
+    return i2c_init_impl(bus, pins);
 }
 
 int bcm2712_i2c_set_speed(int bus, uint32_t hz) {

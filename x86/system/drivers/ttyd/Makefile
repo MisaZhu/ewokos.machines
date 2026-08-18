@@ -14,7 +14,7 @@ TTYD_OBJS = $(ARCH)/ttyd.o
 TTYD = $(TARGET_DIR)/drivers/x86/ttyd
 
 $(TTYD): $(TTYD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(TTYD_OBJS) -o $(TTYD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:

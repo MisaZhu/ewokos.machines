@@ -14,7 +14,7 @@ USBKEYBD_OBJS = $(ARCH)/usbkeybd.o
 USBKEYBD = $(TARGET_DIR)/drivers/x86/usbkeybd
 
 $(USBKEYBD): $(USBKEYBD_OBJS) \
-		$(BUILD_DIR)/lib/libewoksys.a
+		$(SDK_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(USBKEYBD_OBJS) -o $(USBKEYBD) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:
