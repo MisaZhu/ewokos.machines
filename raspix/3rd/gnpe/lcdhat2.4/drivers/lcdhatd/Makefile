@@ -4,7 +4,7 @@ TASK_OBJS = \
 		$(EXTRA_LIBS_DIR)/ili9341/src/ili9341.o \
 		display.o
 
-TASK = lcdhatd 
+TASK = lcd2.4d 
 
 include ../../../../make.inc
 

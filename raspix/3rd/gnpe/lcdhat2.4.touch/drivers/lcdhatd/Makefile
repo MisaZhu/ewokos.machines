@@ -5,7 +5,7 @@ TASK_OBJS = \
 		$(EXTRA_LIBS_DIR)/st77xx/src/st77xx.o \
 		display.o
 
-TASK = lcdhatd 
+TASK = lcd2.4touchd 
 
 include ../../../../make.inc
 
