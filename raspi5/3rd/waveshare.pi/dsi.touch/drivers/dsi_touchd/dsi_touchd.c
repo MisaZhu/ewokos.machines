@@ -230,6 +230,50 @@ static int32_t dsi_i2c_select(const dsi_i2c_bus_t* bus) {
 	return 0;
 }
 
+/*
+ * I2C bus clear: if a transfer died mid-byte the slave may still be
+ * holding SDA low waiting for clocks, which would wedge every later
+ * transfer for good. Re-mux SCL/SDA as GPIOs, clock SCL nine times to
+ * flush the slave's state machine, emit a STOP, then hand the pins
+ * back to the controller. Open-drain is emulated by switching between
+ * output-low and input-with-pull-up, so a clock-stretching slave is
+ * never fought.
+ */
+static void dsi_i2c_bus_clear(const dsi_i2c_bus_t* bus) {
+	uint32_t i;
+
+	if (bus == NULL)
+		return;
+
+	bcm2712_gpio_init();
+	bcm2712_gpio_write((uint32_t)bus->scl, false);
+	bcm2712_gpio_write((uint32_t)bus->sda, false);
+	bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_INPUT);
+	bcm2712_gpio_pull((uint32_t)bus->scl, GPIO_PULL_UP);
+	bcm2712_gpio_config((uint32_t)bus->sda, GPIO_FUNC_INPUT);
+	bcm2712_gpio_pull((uint32_t)bus->sda, GPIO_PULL_UP);
+	proc_usleep(10);
+
+	for (i = 0; i < 9; i++) {
+		bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_OUTPUT);
+		proc_usleep(5);
+		bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_INPUT);
+		proc_usleep(5);
+	}
+
+	/* STOP: SDA pulled low, SCL released, then SDA released while SCL high */
+	bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_OUTPUT);
+	bcm2712_gpio_config((uint32_t)bus->sda, GPIO_FUNC_OUTPUT);
+	proc_usleep(5);
+	bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_INPUT);
+	proc_usleep(5);
+	bcm2712_gpio_config((uint32_t)bus->sda, GPIO_FUNC_INPUT);
+	proc_usleep(10);
+
+	/* pins back to the DW controller, controller re-initialised */
+	dsi_i2c_select(bus);
+}
+
 static uint32_t dsi_i2c_write_reg16(uint8_t addr, uint16_t reg,
 		const uint8_t* data, uint16_t len) {
 	uint8_t buf[258];
@@ -652,9 +696,21 @@ static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 		pts[i].y = (uint16_t)((buf[3] << 8) | buf[2]);
 	}
 
+	/*
+	 * The buffer-status clear must not be fire-and-forget: if it is
+	 * lost, the GT911 keeps the ready flag raised with the same stale
+	 * coordinates and never refreshes, and the emit dedup then swallows
+	 * the repeated reports silently — the touch looks frozen from then
+	 * on. Retry the clear, and report a persistent failure so the poll
+	 * loop's recovery path can kick in.
+	 */
 	status = 0;
-	goodix_write_reg(GOODIX_REG_STATUS, &status, 1);
-	return TP_OK;
+	for (i = 0; i < TP_I2C_RETRY_MAX; i++) {
+		if (goodix_write_reg(GOODIX_REG_STATUS, &status, 1) == TP_OK)
+			return TP_OK;
+		proc_usleep(2000);
+	}
+	return TP_NOT_RESPONSE;
 }
 
 static tp_status_t ft5x06_read_touch(tp_point_t* pts, uint8_t* nr) {
@@ -767,10 +823,30 @@ static int tp_loop(vdevice_t* dev, void* p) {
 	ret = tp_read_touch(point, &point_nr);
 
 	if (ret == TP_NOT_RESPONSE) {
+		/*
+		 * A single failed transaction (the GT911 NAKs while it is
+		 * busy, FPC noise next to the DSI lanes) must not burn the
+		 * link budget: retry inside the poll and only count a real
+		 * streak of failures.
+		 */
+		uint8_t retry;
+		for (retry = 1; retry < TP_I2C_RETRY_MAX; retry++) {
+			proc_usleep(2000);
+			ret = tp_read_touch(point, &point_nr);
+			if (ret != TP_NOT_RESPONSE)
+				break;
+		}
+	}
+
+	if (ret == TP_NOT_RESPONSE) {
 		i2c_fail_count++;
 		if (i2c_fail_count >= TP_I2C_FAIL_MAX) {
 			i2c_fail_count = 0;
 			need_wakeup = touch_release_if_pressed() || need_wakeup;
+			/* a transfer that died mid-byte can leave the slave
+			 * holding SDA low, wedging every later transfer; clock
+			 * the bus clear before re-probing */
+			dsi_i2c_bus_clear(active_bus);
 			tp_ready = false;
 			tp_retry_ts = now_ms;
 			slog("dsi_touchd: link_lost bus=%s addr=0x%02x kind=%s\n",

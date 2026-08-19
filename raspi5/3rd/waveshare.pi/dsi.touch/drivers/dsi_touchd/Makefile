@@ -13,6 +13,7 @@ all: $(TASK)
 
 $(TASK): $(TASK_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \
+		$(SDK_DIR)/lib/libarch_bcm2712.a \
 		$(SDK_DIR)/lib/libbsp.a
 	mkdir -p $(BUILD_DIR)
 	$(LD) -Ttext=100 $(TASK_OBJS) -o $(BUILD_DIR)/$(TASK) $(LDFLAGS)  $(BSP_LFLAGS) $(EWOK_LIBC)
