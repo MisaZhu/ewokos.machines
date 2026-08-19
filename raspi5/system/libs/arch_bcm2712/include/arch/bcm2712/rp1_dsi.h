@@ -77,10 +77,32 @@ int bcm2712_rp1_dsi_check(void);
  * DSI_MODE_CFG=1, i.e. between bcm2712_rp1_dsi_init() and
  * bcm2712_rp1_dsi_video_start()). data_type is the MIPI data type byte
  * (0x29 = generic long write); lp selects the LP escape flavour. Port of
- * rp1dsi_dsi_send(). Returns 0 on success.
+ * rp1dsi_dsi_send(). LP commands request a peripheral ACK (BTA): returns
+ * 0 on a clean ACK, 1 when the peripheral answered with an error report
+ * (resend the packet), -1 on hard failure.
  */
 int bcm2712_rp1_dsi_cmd_write(uint8_t data_type, const uint8_t* data,
 		int len, int lp);
+
+/*
+ * Send one SHORT packet (parameters ride in the header, no payload):
+ * dt 0x37 = Set Maximum Return Packet Size, dt 0x23 = generic short
+ * write 2 params, etc. Same contract and return values as cmd_write().
+ */
+int bcm2712_rp1_dsi_cmd_short(uint8_t data_type, uint8_t p0, uint8_t p1,
+		int lp);
+
+/*
+ * Generic read: send the read-request short packet (dt 0x24 = generic
+ * read 2 params, dt 0x14 = 1 param), let the host run the BTA
+ * (DSI_PCKHDL_CFG.BTA_EN), and collect the peripheral's response from
+ * the read FIFO — port of rp1dsi_dsi_recv(). Returns the number of
+ * bytes received (may be shorter than rxlen), or -1 on timeout/error.
+ * Send a Set Maximum Return Packet Size (cmd_short 0x37) first if more
+ * than 2 response bytes are expected.
+ */
+int bcm2712_rp1_dsi_cmd_read(uint8_t data_type, uint8_t p0, uint8_t p1,
+		uint8_t* rx, int rxlen, int lp);
 
 /* Register snapshot of all three MIPI1 banks for bring-up diagnosis. */
 void bcm2712_rp1_dsi_dump(void);

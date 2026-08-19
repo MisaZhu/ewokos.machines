@@ -66,6 +66,8 @@
 #define DSI_GEN_HDR		0x06C
 #define DSI_GEN_PLD_DATA	0x070
 #define DSI_CMD_PKT_STATUS	0x074
+#define DSI_INT_ST0		0x0BC
+#define DSI_INT_ST1		0x0C0
 #define DSI_TO_CNT_CFG		0x078
 #define DSI_BTA_TO_CNT		0x08C
 #define DSI_LPCLK_CTRL		0x094
@@ -92,6 +94,9 @@
 
 /* every command flavour transmitted in LP (rp1_dsi_dsi.c) */
 #define DSI_CMD_MODE_ALL_LP	0x10f7f00U
+/* request a peripheral ACK trigger / error report (BTA) after every
+ * command — turns each LP write into a verified transaction */
+#define DSI_CMD_MODE_ACK_RQST	(1U << 1)
 
 #define DSI_PHYRSTZ_SHUTDOWNZ	(1U << 0)
 #define DSI_PHYRSTZ_RSTZ	(1U << 1)
@@ -388,9 +393,6 @@ static uint32_t dphy_configure_pll(uint32_t refclk, uint32_t vco_freq) {
 				(uint8_t)(0x80 | ((m - 1) >> 5)));
 		/* M[4:0] (program M-1) */
 		dphy_transaction(DPHY_PLL_LOOP_DIV_OFFSET, (uint8_t)((m - 1) & 0x1F));
-		slog("rp1-dsi: DPHY vco want %uHz got %uHz = %u * (%uHz / %u) hsfreqrange=0x%02x\n",
-				vco_freq, actual, m, refclk, n,
-				hsfreq_table[_dsi_hsfreq_index].hsfreqrange);
 	} else {
 		slog("rp1-dsi: error configuring DPHY PLL %uHz\n", vco_freq);
 	}
@@ -503,9 +505,6 @@ static void rp1_dsi_dpi_clock_start(uint32_t byte_clock,
 			(auxsrc << CLK_CTRL_AUXSRC_LSB) |
 			(CLK_CTRL_SRC_AUX << CLK_CTRL_SRC_LSB) |
 			CLK_CTRL_ENABLE);
-
-	slog("rp1-dsi: byte clock %u dpi clock target %u parent(%u) %u\n",
-			byte_clock, dpi_rate, auxsrc, parent_rate);
 }
 
 /* ─── SNPS DSI host setup ─── */
@@ -574,16 +573,15 @@ static int rp1_dsi_host_setup(const bcm2712_dsi_mode_t *mode) {
 	/* LPM is the 7" family's own flag: commands always go out in LP */
 	host_write(DSI_CMD_MODE_CFG, DSI_CMD_MODE_ALL_LP);
 	/*
-	 * vc4 transmits with DSI_CTRL_HSDT_EOT_DISABLE — no EoTp after
-	 * HS packets.  The clone bridges of the 7" family have only ever
-	 * seen that shape: a stray EoTp after every sync-event and pixel
-	 * packet is charged to the data stream as a fixed per-line
-	 * surplus, which desyncs the bridge into repeated bands.  Drop
-	 * it; PCKHDL EOTP_TX_EN covers HS transmissions only, so the LP
-	 * bridge-init writes (whose EoT vc4 keeps, LPDT not disabled)
-	 * still carry theirs.
+	 * EoTp ON, exactly like Linux rp1_dsi_dsi.c: neither tc358762 nor
+	 * the WS panels set MIPI_DSI_MODE_NO_EOT_PACKET, so the RP1 host
+	 * always transmits EoTp after HS bursts.  (vc4 ports disable EoT —
+	 * DSI_CTRL_HSDT_EOT_DISABLE — because vc4's line budget doesn't
+	 * account for it; the DWC host here budgets EoTp inside its own
+	 * hline time, and the bridge relies on it to delimit HS
+	 * transmissions under a continuous clock.)
 	 */
-	host_write(DSI_PCKHDL_CFG, DSI_PCKHDL_BTA_EN);
+	host_write(DSI_PCKHDL_CFG, DSI_PCKHDL_BTA_EN | DSI_PCKHDL_EOTP_TX_EN);
 
 	/* command mode first; video mode is switched on once the DMA runs */
 	host_write(DSI_MODE_CFG, 1);
@@ -803,8 +801,20 @@ int bcm2712_rp1_dsi_init(const bcm2712_dsi_mode_t *mode) {
 }
 
 /*
- * Configure the DMA engine for the framebuffer, arm it (scanout starts
- * with the address write) and switch the host from command to video mode.
+ * Switch the host from command to video mode, then configure the DMA
+ * engine for the framebuffer and arm it (scanout starts with the
+ * address write).
+ *
+ * The order matters and is not visible in a register dump: the host
+ * must already be in video mode when the first DPI line arrives, so
+ * that it latches the very first HSYNC/VSYNC edge as a frame start.
+ * Arming the DMA first lets the DPI raster run while the host is
+ * still in command mode; the host then joins mid-line, keeps a
+ * permanent line/frame phase offset against the DMA and overruns its
+ * payload FIFO (INT_ST1 bit7 dpi_pld_wr_err) — which shows up as
+ * repeated non-integer bands with torn rows. Linux does the same
+ * thing in rp1dsi_encoder_enable(): "Put DSI into video mode before
+ * starting video".
  */
 int bcm2712_rp1_dsi_video_start(uint64_t bus_addr, uint32_t stride,
 		uint32_t w, uint32_t h, uint32_t dep) {
@@ -815,13 +825,14 @@ int bcm2712_rp1_dsi_video_start(uint64_t bus_addr, uint32_t stride,
 	if (dep != 16 && dep != 32)
 		return -1;
 
+	/* video mode: the host is now waiting for the DPI stream */
+	host_write(DSI_MODE_CFG, 0);
+	(void)host_read(DSI_MODE_CFG);
+
 	rp1_dsi_dma_setup(w, h, dep);
 	_dsi_bus_addr = bus_addr;
 	_dsi_stride = stride;
 	rp1_dsi_dma_start(bus_addr, stride);
-
-	/* video mode: the DMA stream now drives the panel */
-	host_write(DSI_MODE_CFG, 0);
 	return 0;
 }
 
@@ -830,10 +841,9 @@ int bcm2712_rp1_dsi_video_start(uint64_t bus_addr, uint32_t stride,
  * had stopped and was restarted (state logged), -1 = DSI not initialized.
  */
 int bcm2712_rp1_dsi_check(void) {
-	uint32_t status, flags, ctrl, panics;
+	uint32_t status, flags, ctrl;
 	static uint32_t last_underflows;
 	static uint32_t underflow_total;
-	static uint32_t last_panics;
 
 	if (!_dsi_ready || _dsi_bus_addr == 0)
 		return -1;
@@ -841,7 +851,6 @@ int bcm2712_rp1_dsi_check(void) {
 	status = dma_read(DPI_DMA_STATUS);
 	flags = dma_read(DPI_DMA_IRQ_FLAGS);
 	ctrl = dma_read(DPI_DMA_CONTROL);
-	panics = dma_read(DPI_DMA_PANICS);
 
 	if (flags & (1U << 1)) {	/* UNDERFLOW latches; write 1 to clear */
 		underflow_total++;
@@ -850,15 +859,8 @@ int bcm2712_rp1_dsi_check(void) {
 	if (underflow_total != last_underflows) {
 		last_underflows = underflow_total;
 		slog("rp1-dsi: UNDERFLOW detected (total=%u panics=%08x)\n",
-				underflow_total, panics);
-	} else if (panics != last_panics) {
-		/* PANICS[15:0]/[31:16] are the two FIFO panic counters
-		 * (cumulative); rising without a latched underflow still
-		 * means the engine runs dry against the tiny 7" porches */
-		slog("rp1-dsi: FIFO panics %08x -> %08x (underflows=%u)\n",
-				last_panics, panics, underflow_total);
+				underflow_total, dma_read(DPI_DMA_PANICS));
 	}
-	last_panics = panics;
 
 	if ((status & DPI_DMA_STATUS_BUSY_MASK) != 0)
 		return 0;
@@ -870,6 +872,35 @@ int bcm2712_rp1_dsi_check(void) {
 
 	rp1_dsi_dma_start(_dsi_bus_addr, _dsi_stride);
 	return 1;
+}
+
+/* read-clear both latched error banks so a following check sees only
+ * the errors of the command just sent */
+static void dsi_int_clear(void) {
+	(void)host_read(DSI_INT_ST0);
+	(void)host_read(DSI_INT_ST1);
+}
+
+/*
+ * With ACK_RQST the peripheral answers every command with either an
+ * ACK trigger (clean) or an error report carrying its accumulated
+ * error flags; the report lands in the latched INT_ST0[15:0]
+ * ack_with_err bits (bit6 = false control error etc). Wait out the LP
+ * response — this is what tells a corrupted LP write from a clean one,
+ * per register. Returns 0 for a clean ACK, 1 when the peripheral
+ * reported errors (the packet may have been dropped — the caller can
+ * simply send it again). Silent by design: the callers decide what is
+ * worth reporting, a single stale report on the first command of a
+ * bring-up is normal.
+ */
+static int dsi_cmd_ack_check(uint8_t data_type) {
+	uint32_t st0, st1;
+
+	(void)data_type;
+	usleep(1000);
+	st0 = host_read(DSI_INT_ST0);
+	st1 = host_read(DSI_INT_ST1);
+	return (st0 != 0 || st1 != 0) ? 1 : 0;
 }
 
 /*
@@ -914,8 +945,10 @@ int bcm2712_rp1_dsi_cmd_write(uint8_t data_type, const uint8_t* data,
 	else
 		val &= ~DSI_VID_MODE_LP_CMD_EN;
 	host_write(DSI_VID_MODE_CFG, val);
-	host_write(DSI_CMD_MODE_CFG, lp ? DSI_CMD_MODE_ALL_LP : 0);
+	host_write(DSI_CMD_MODE_CFG,
+			lp ? (DSI_CMD_MODE_ALL_LP | DSI_CMD_MODE_ACK_RQST) : 0);
 	(void)host_read(DSI_CMD_MODE_CFG);
+	dsi_int_clear();
 
 	for (i = 0; i < len; i += 4) {
 		val = data[i];
@@ -945,7 +978,113 @@ int bcm2712_rp1_dsi_cmd_write(uint8_t data_type, const uint8_t* data,
 				data_type, host_read(DSI_CMD_PKT_STATUS));
 		return -1;
 	}
+	if (lp)
+		return dsi_cmd_ack_check(data_type);
 	return 0;
+}
+
+/* shared front half of the short-packet paths: command mode + idle
+ * FIFOs + LP/HS command flavour selected, exactly like cmd_write */
+static int dsi_cmd_prepare(int lp, int ack) {
+	uint32_t val;
+	int spin;
+
+	if (!_dsi_ready) {
+		slog("rp1-dsi: cmd before init\n");
+		return -1;
+	}
+	if (host_read(DSI_MODE_CFG) != 1) {
+		slog("rp1-dsi: cmd outside command mode\n");
+		return -1;
+	}
+	for (spin = 0; spin < 256; ++spin) {
+		if ((host_read(DSI_CMD_PKT_STATUS) & 0xfU) == 0x5U)
+			break;
+		usleep(100);
+	}
+	if ((host_read(DSI_CMD_PKT_STATUS) & 0xfU) != 0x5U) {
+		slog("rp1-dsi: cmd FIFOs not idle (status=%08x)\n",
+				host_read(DSI_CMD_PKT_STATUS));
+		return -1;
+	}
+
+	val = host_read(DSI_VID_MODE_CFG);
+	if (lp)
+		val |= DSI_VID_MODE_LP_CMD_EN;
+	else
+		val &= ~DSI_VID_MODE_LP_CMD_EN;
+	host_write(DSI_VID_MODE_CFG, val);
+	host_write(DSI_CMD_MODE_CFG, lp ? (DSI_CMD_MODE_ALL_LP |
+			(ack ? DSI_CMD_MODE_ACK_RQST : 0)) : 0);
+	(void)host_read(DSI_CMD_MODE_CFG);
+	dsi_int_clear();
+	return 0;
+}
+
+/*
+ * Short packet: both parameters ride in the header, nothing enters the
+ * payload FIFO (a short packet with its params pushed as payload — the
+ * cmd_write() path — would be sent as a malformed long packet).
+ */
+int bcm2712_rp1_dsi_cmd_short(uint8_t data_type, uint8_t p0, uint8_t p1,
+		int lp) {
+	int spin;
+
+	if (dsi_cmd_prepare(lp, 1) != 0)
+		return -1;
+	host_write(DSI_GEN_HDR, (uint32_t)(data_type & 0x3fU) |
+			((uint32_t)p0 << 8) | ((uint32_t)p1 << 16));
+	for (spin = 0; spin < 256; ++spin) {
+		if ((host_read(DSI_CMD_PKT_STATUS) & 0xfU) == 0x5U) {
+			if (lp)
+				return dsi_cmd_ack_check(data_type);
+			return 0;
+		}
+		usleep(100);
+	}
+	slog("rp1-dsi: cmd 0x%02x stuck (status=%08x)\n",
+			data_type, host_read(DSI_CMD_PKT_STATUS));
+	return -1;
+}
+
+/*
+ * Read request + BTA response collection — port of the
+ * rp1dsi_host_transfer() read path + rp1dsi_dsi_recv(): send the
+ * read-request short packet, then wait for GEN_RD_CMD_BUSY(6) to clear
+ * with the read FIFO no longer empty (GEN_PLD_R_EMPTY(4)), and drain
+ * 32-bit words. The host runs the bus turnaround itself
+ * (DSI_PCKHDL_CFG.BTA_EN).
+ */
+int bcm2712_rp1_dsi_cmd_read(uint8_t data_type, uint8_t p0, uint8_t p1,
+		uint8_t* rx, int rxlen, int lp) {
+	uint32_t val;
+	int i, j, spin;
+
+	if (dsi_cmd_prepare(lp, 0) != 0)
+		return -1;
+	host_write(DSI_GEN_HDR, (uint32_t)(data_type & 0x3fU) |
+			((uint32_t)p0 << 8) | ((uint32_t)p1 << 16));
+
+	for (spin = 0; spin < 1024; ++spin) {
+		if ((host_read(DSI_CMD_PKT_STATUS) & ((1U << 6) | (1U << 4))) == 0)
+			break;
+		usleep(100);
+	}
+	if ((host_read(DSI_CMD_PKT_STATUS) & ((1U << 6) | (1U << 4))) != 0) {
+		slog("rp1-dsi: cmd 0x%02x read timeout (status=%08x int=%08x/%08x)\n",
+				data_type, host_read(DSI_CMD_PKT_STATUS),
+				host_read(DSI_INT_ST0), host_read(DSI_INT_ST1));
+		return -1;
+	}
+
+	for (i = 0; i < rxlen; i += 4) {
+		if (host_read(DSI_CMD_PKT_STATUS) & (1U << 4))
+			break;
+		val = host_read(DSI_GEN_PLD_DATA);
+		for (j = 0; j < 4 && i + j < rxlen; ++j)
+			rx[i + j] = (uint8_t)(val >> (8 * j));
+	}
+	return (i > 0 || rxlen == 0) ? (i < rxlen ? i : rxlen) : -1;
 }
 
 /*
@@ -968,6 +1107,11 @@ void bcm2712_rp1_dsi_dump(void) {
 			host_read(DSI_PHY_STATUS), host_read(DSI_PHYRSTZ),
 			host_read(DSI_LPCLK_CTRL), host_read(DSI_CMD_PKT_STATUS),
 			host_read(DSI_PCKHDL_CFG));
+	/* latched peripheral-reported ACK errors / PHY+DPI faults since the
+	 * last dump (both registers are clear-on-read): a bridge that NAKed
+	 * an LP write shows up here and nowhere else */
+	slog("rp1-dsi dump host: int_st0=%08x int_st1=%08x\n",
+			host_read(DSI_INT_ST0), host_read(DSI_INT_ST1));
 	slog("rp1-dsi dump vid: pkt=%08x hsa=%08x hbp=%08x hline=%08x\n",
 			host_read(DSI_VID_PKT_SIZE), host_read(DSI_VID_HSA_TIME),
 			host_read(DSI_VID_HBP_TIME), host_read(DSI_VID_HLINE_TIME));

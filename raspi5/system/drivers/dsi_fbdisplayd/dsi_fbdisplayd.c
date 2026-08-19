@@ -148,9 +148,25 @@
 
 #define TC_LANEENABLE_CLEN     (1u << 0)
 #define TC_LANEENABLE_L0EN     (1u << 1)
-/* VSDELAY(1) | RGB888 | UNK6 | VTGEN, positive syncs — the constant
- * the old panel-raspberrypi-touchscreen.c hardcoded (0x00100150). */
+/* VSDELAY(1) | RGB888 | UNK6 | VTGEN — the constant tc358762_init()
+ * builds (LCDCTRL_VSDELAY(1)|LCDCTRL_RGB888|LCDCTRL_UNK6|LCDCTRL_VTGEN).
+ * VTGEN means the bridge runs the panel from its OWN timing generator
+ * (loaded from the LCD_* registers below), so those values and the
+ * sync polarities must describe the panel exactly.
+ * NOTE: EVTMODE (bit 5) is CLEAR in it, i.e. the bridge reconstructs
+ * its timing from sync PULSES (HSS..HSE pairs).  Linux pairs this
+ * exact value with MIPI_DSI_MODE_VIDEO_SYNC_PULSE on the Pi5 host.
+ * If the host runs sync EVENTS instead, EVTMODE must be set or the
+ * bridge waits for sync-end packets that never come, loses vertical
+ * lock and re-scans the panel several times per incoming frame
+ * (screen tiled with N stacked copies of the frame top). */
 #define TC_LCDCTRL_MAGIC       0x00100150U
+#define TC_LCDCTRL_EVTMODE     (1u << 5)
+/* the panel mode carries DRM_MODE_FLAG_NHSYNC|NVSYNC, which
+ * tc358762_init() turns into these two polarity bits — without them
+ * VTGEN drives the glass with inverted syncs */
+#define TC_LCDCTRL_HSPOL       (1u << 17)
+#define TC_LCDCTRL_VSPOL       (1u << 19)
 #define TC_SYSCTRL_MAGIC       0x040fU
 #define TC_LPX_PERIOD          3U
 
@@ -172,16 +188,25 @@ static bcm2712_dsi_mode_t _panel_mode = {
 };
 
 /*
- * PANEL_RPI7 mode: the firmware modeline with HFP=1 (see
- * panel-raspberrypi-touchscreen.c rpi_touchscreen_modes) — the mode
- * the Waveshare 5inch DSI LCD ships with (vc4-kms-dsi-7inch overlay).
+ * PANEL_RPI7 mode: raspberrypi_7inch_mode from panel-simple.c, the
+ * mode Linux actually feeds the TC358762 bridge path (compatible
+ * "raspberrypi,7inch-dsi", used by the vc4-kms-dsi-7inch overlay):
+ * 30MHz, hfp/hsw/hbp = 131/2/45 (htotal 978), vfp/vsw/vbp = 7/2/22
+ * (vtotal 511) => 60.03Hz, negative H and V sync.
+ *
+ * The old firmware modeline (25979400Hz, hfp=1, htotal=849) belongs to
+ * panel-raspberrypi-touchscreen.c, which drives the glass through its
+ * own DSI host, not through this bridge: at htotal=849 the DSI link
+ * budget is exactly 3 bytes per pixel (byteclk/pclk = 3.000), leaving
+ * no room for packet headers/checksums/EoTp, and the bridge's VTGEN
+ * gets a line far shorter than the glass needs.
  */
 static const bcm2712_dsi_mode_t _rpi7_mode = {
 	.width = 800,
 	.height = 480,
-	.hfp = 1,  .hsw = 2, .hbp = 46,
-	.vfp = 7,  .vsw = 2, .vbp = 21,
-	.pixel_clock_hz = 25979400U,
+	.hfp = 131, .hsw = 2, .hbp = 45,
+	.vfp = 7,   .vsw = 2, .vbp = 22,
+	.pixel_clock_hz = 30000000U,
 	.lanes = 1,
 	.continuous_clock = 1,
 	.sync_pulse = 1,
@@ -191,9 +216,6 @@ static const bcm2712_dsi_mode_t _rpi7_mode = {
 #define PANEL_RPI7  1
 /* Resolved panel family: conf "panel" key or REG_ID probe. */
 static int _panel_kind = PANEL_WS;
-/* Conf "test_pattern": repaint the fb with a row-index ramp so a photo
- * of the panel reads out the screen-row -> fb-row map directly. */
-static int _test_pattern = 0;
 static int _panel_kind_conf = -1;   /* -1 = auto-detect */
 static int _conf_has_mode = 0;      /* conf carried explicit timing */
 
@@ -269,11 +291,7 @@ static void load_panel_conf(const char* conf_file) {
 			(int)_panel_mode.sync_pulse);
 	_panel_mode.lp_hblank = (uint32_t)json_get_int_def(conf_var, "lp_hblank",
 			(int)_panel_mode.lp_hblank);
-	_test_pattern = json_get_int_def(conf_var, "test_pattern", 0);
 	json_var_unref(conf_var);
-	slog("dsi_fbdisplayd: conf mode %ux%u pclk=%u lanes=%u\n",
-			_panel_mode.width, _panel_mode.height,
-			_panel_mode.pixel_clock_hz, _panel_mode.lanes);
 }
 
 static uint16_t rgb565_from_u32(uint32_t s) {
@@ -560,14 +578,22 @@ static int32_t rpi7_bridge_write(uint16_t reg, uint32_t val) {
 		(uint8_t)(val & 0xffU), (uint8_t)((val >> 8) & 0xffU),
 		(uint8_t)((val >> 16) & 0xffU), (uint8_t)((val >> 24) & 0xffU),
 	};
+	int try, r = -1;
 
-	/* 0x29 = generic long write, in LP mode (MIPI_DSI_MODE_LPM). */
-	if (bcm2712_rp1_dsi_cmd_write(0x29, buf, sizeof(buf), 1) != 0) {
-		slog("dsi_fbdisplayd: TC358762 write 0x%04x=0x%08x failed\n",
-				reg, val);
-		return -1;
+	/* 0x29 = generic long write, in LP mode (MIPI_DSI_MODE_LPM).
+	 * r==1: the packet went out but the bridge's ACK carried an error
+	 * report (e.g. false control error) — the write may have been
+	 * dropped on the wire, so send it again until the ACK is clean. */
+	for (try = 0; try < 3; ++try) {
+		r = bcm2712_rp1_dsi_cmd_write(0x29, buf, sizeof(buf), 1);
+		if (r == 0)
+			return 0;
+		if (r < 0)
+			break;
 	}
-	return 0;
+	slog("dsi_fbdisplayd: TC358762 write 0x%04x=0x%08x %s\n", reg, val,
+			r < 0 ? "failed" : "still reporting errors");
+	return r < 0 ? -1 : 0;
 }
 
 /*
@@ -593,7 +619,6 @@ static void rpi7_panel_power(void) {
 	ws_panel_mdelay(10);
 	ws_panel_i2c_write(RPI7_REG_PORTC, RPI7_PC_LED_EN);
 	ws_panel_mdelay(80);
-	slog("dsi_fbdisplayd: attiny rails up\n");
 }
 
 /*
@@ -607,6 +632,8 @@ static void rpi7_panel_power(void) {
  */
 static int32_t rpi7_bridge_enable(void) {
 	int32_t rc = 0;
+	uint32_t lcdctrl = TC_LCDCTRL_MAGIC |
+			TC_LCDCTRL_HSPOL | TC_LCDCTRL_VSPOL;
 
 	if (ws_panel_i2c_write(RPI7_REG_PORTC,
 			RPI7_PC_LED_EN | RPI7_PC_RST_TP_N |
@@ -622,6 +649,13 @@ static int32_t rpi7_bridge_enable(void) {
 	ws_panel_i2c_write(RPI7_REG_WRITE_L, 0x00);
 	ws_panel_mdelay(100);
 
+	/* absorb the error flags the bridge accumulated while the host
+	 * PHY was coming up (LP glitches during lane bring-up latch a
+	 * false-control error): SMRPS is a pure protocol command with no
+	 * register side effect, its ACK carries the stale report away so
+	 * every following write's ACK speaks only for itself */
+	bcm2712_rp1_dsi_cmd_short(0x37, 4, 0, 1);
+
 	rc |= rpi7_bridge_write(TC_DSI_LANEENABLE,
 			TC_LANEENABLE_CLEN | TC_LANEENABLE_L0EN);
 	rc |= rpi7_bridge_write(TC_PPI_D0S_CLRSIPOCOUNT, 5);
@@ -630,7 +664,13 @@ static int32_t rpi7_bridge_enable(void) {
 	rc |= rpi7_bridge_write(TC_PPI_D1S_ATMR, 0);
 	rc |= rpi7_bridge_write(TC_PPI_LPTXTIMECNT, TC_LPX_PERIOD);
 	rc |= rpi7_bridge_write(TC_SPICMR, 0x00);
-	rc |= rpi7_bridge_write(TC_LCDCTRL, TC_LCDCTRL_MAGIC);
+	/* the bridge's sync flavour must match the host's
+	 * VID_MODE_CFG: pulse mode (EVTMODE clear) for sync_pulse=1,
+	 * event mode (EVTMODE set) for sync events — a mismatch
+	 * desyncs VTGEN into repeated frame bands */
+	if (!_panel_mode.sync_pulse)
+		lcdctrl |= TC_LCDCTRL_EVTMODE;
+	rc |= rpi7_bridge_write(TC_LCDCTRL, lcdctrl);
 	rc |= rpi7_bridge_write(TC_SYSCTRL, TC_SYSCTRL_MAGIC);
 	rc |= rpi7_bridge_write(TC_LCD_HS_HBP,
 			_panel_mode.hsw | (_panel_mode.hbp << 16));
@@ -646,8 +686,6 @@ static int32_t rpi7_bridge_enable(void) {
 	rc |= rpi7_bridge_write(TC_DSI_STARTDSI, 1);
 	ws_panel_mdelay(100);
 
-	if (rc == 0)
-		slog("dsi_fbdisplayd: tc358762 bridge initialized\n");
 	return rc != 0 ? -1 : 0;
 }
 
@@ -813,15 +851,9 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	st = bcm2712_rp1_dsi_check();
 	if (st < 0)
 		return fail_stage(7);
-	slog("dsi_fbdisplayd: video stream live\n");
-
-	/* one effective-value snapshot on the healthy path too: the
-	 * repeated-band/tearing geometry bugs hide in the readback, not
-	 * just in the failed-bringup dumps */
-	slog("dsi_fbdisplayd: fb %ux%u depth=%u pitch=%u size=%u\n",
+	slog("dsi_fbdisplayd: video stream live %ux%u depth=%u pitch=%u\n",
 			_fb_info.width, _fb_info.height, _fb_info.depth,
-			_fb_info.pitch, _fb_info.size);
-	bcm2712_rp1_dsi_dump();
+			_fb_info.pitch);
 
 	/*
 	 * Stream is live: display-on (PANEL_WS) or backlight PWM
@@ -831,7 +863,6 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	if (_panel_kind == PANEL_RPI7) {
 		if (rpi7_backlight() != 0)
 			return fail_stage(5);
-		slog("dsi_fbdisplayd: rpi7 backlight on\n");
 	} else if (ws_panel_enable() != 0)
 		return fail_stage(5);
 
@@ -840,96 +871,16 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 }
 
 /*
- * Sample framebuffer rows once the desktop has had a second to render.
- * The on-screen bands repeat every height/5 rows, so comparing rows 0/1
- * against rows band/band+1 (and 2*band) tells the two fault families
- * apart: equal bytes mean the repeat is already composited into the fb
- * (software side above the DMA engine), differing bytes mean the
- * DMA/DSI/bridge pipeline repeats a fraction of the frame on its own,
- * and an all-black fb under a lit panel would mean the engine scans
- * foreign memory (bad framebuffer address).
- */
-static void snapshot_fb_rows(void) {
-	volatile const uint32_t* fb;
-	uint32_t stride_px, band;
-	uint32_t i;
-	static const uint32_t offs[6][2] = {
-		{0, 0}, {1, 0}, {0, 1}, {1, 1}, {0, 2}, {0, 4}
-	};
-
-	if (_fb_info.pointer == 0 || _fb_info.depth != 32 ||
-			_fb_info.height < 5U)
-		return;
-	fb = (volatile const uint32_t*)(uintptr_t)_fb_info.pointer;
-	stride_px = _fb_info.pitch / 4U;
-	band = _fb_info.height / 5U;
-	for (i = 0; i < 6U; ++i) {
-		uint32_t row = offs[i][0] + offs[i][1] * band;
-		volatile const uint32_t* p = fb + (uint64_t)row * stride_px;
-		slog("dsi_fbdisplayd: fb row %u px0-3 %08x %08x %08x %08x\n",
-				row, p[0], p[1], p[2], p[3]);
-	}
-}
-
-/*
- * Test pattern: repaint the whole fb once per second with a vertical
- * row-index ramp (blue at row 0 -> red at the last row) over black
- * reference bars — a horizontal bar for every 48 fb rows and a
- * vertical bar for every 100 fb columns — plus a white origin mark
- * at (0,0).  A photo of the panel then reads the screen-row ->
- * fb-row map straight off the colours: e.g. four identical
- * blue-to-purple ramps mean the panel repeats fb[0:120] four times,
- * one continuous ramp means the rows map in order, and mixed
- * orderings localise the fold.  Repaints keep winning over an idle
- * desktop's one-shot renders; drop "test_pattern" from display.json
- * to give the fb back to the GUI.
- */
-static void paint_test_pattern(void) {
-	volatile uint32_t* fb;
-	uint32_t w, h, stride_px, row, col;
-
-	if (_fb_info.pointer == 0 || _fb_info.depth != 32 || _fb_info.width < 2U)
-		return;
-	fb = (volatile uint32_t*)(uintptr_t)_fb_info.pointer;
-	w = _fb_info.width;
-	h = _fb_info.height;
-	stride_px = _fb_info.pitch / 4U;
-	for (row = 0; row < h; ++row) {
-		uint32_t r = row * 255U / (h - 1U);
-		volatile uint32_t* p = fb + (uint64_t)row * stride_px;
-		for (col = 0; col < w; ++col) {
-			uint32_t v = 0xff000000u | (r << 16) | (255U - r);
-			if ((row % 48U) >= 44U || (col % 100U) >= 96U)
-				v = 0xff000000u;
-			p[col] = v;
-		}
-	}
-	for (row = 0; row < 8U && row < h; ++row) {
-		volatile uint32_t* p = fb + (uint64_t)row * stride_px;
-		for (col = 0; col < 64U && col < w; ++col)
-			p[col] = 0xffffffffu;
-	}
-}
-
-/*
  * Watchdog thread: independent of any GUI redraws, polls the DSI scanout
  * engine once per second. bcm2712_rp1_dsi_check() logs a status snapshot
  * and restarts the engine if it ever stops.
  */
 static void* dsi_watchdog(void* arg) {
-	int snapshotted = 0;
-
 	(void)arg;
 	while (!_dsi_ok)
 		usleep(100000);
 	while (1) {
 		sleep(1);
-		if (_test_pattern)
-			paint_test_pattern();
-		if (!snapshotted) {
-			snapshot_fb_rows();
-			snapshotted = 1;
-		}
 		bcm2712_rp1_dsi_check();
 	}
 	return NULL;
