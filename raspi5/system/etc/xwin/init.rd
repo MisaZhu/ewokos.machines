@@ -3,7 +3,8 @@
 
 
 @/bin/ipcserv /drivers/displaymand
-@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
+#@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
+@/bin/ipcserv /drivers/raspi5/dsi_fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/fontd
 
 @/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 12 -d

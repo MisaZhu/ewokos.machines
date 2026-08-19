@@ -77,36 +77,6 @@ static const char *brcmf_cmd_name(uint32_t cmd)
     }
 }
 
-/* #region debug-point D:join-config */
-static void brcmf_debug_log_iovar_u32(const char *tag, char *name)
-{
-    uint32_t val = 0;
-    int32_t err = brcmf_fil_iovar_int_get(0, name, &val);
-
-    if (err)
-        brcm_log("[DEBUG][%s] iovar %s read failed err=%d\n", tag, name, err);
-    else
-        brcm_log("[DEBUG][%s] iovar %s=%u (0x%x)\n", tag, name, val, val);
-}
-
-static void brcmf_debug_log_country(void)
-{
-    struct brcmf_fil_country_le ccreq;
-    int32_t err;
-
-    memset(&ccreq, 0, sizeof(ccreq));
-    err = brcmf_fil_iovar_data_get(0, "country", &ccreq, sizeof(ccreq));
-    if (err) {
-        brcm_log("[DEBUG][C] iovar country read failed err=%d\n", err);
-        return;
-    }
-    ccreq.country_abbrev[BRCMF_COUNTRY_BUF_SZ - 1] = '\0';
-    ccreq.ccode[BRCMF_COUNTRY_BUF_SZ - 1] = '\0';
-    brcm_log("[DEBUG][C] country abbrev=%s ccode=%s rev=%d\n",
-            ccreq.country_abbrev, ccreq.ccode, (int)ccreq.rev);
-}
-/* #endregion */
-
 static bool brcmf_fwerr_is_ignorable(uint32_t cmd, bool set, int32_t fwerr)
 {
     /*
@@ -940,18 +910,10 @@ int brcm_mac_ready(void)
 int connect(const char*ssid, const char* pmk)
 {
     int32_t err = 0;
-    static uint32_t join_attempt = 0;
-
     if(strlen(pmk) < 64){
         brcm_log("Wrong PMK lens\n");
         return -1;
     }
-
-    join_attempt++;
-    /* #region debug-point A:join-entry */
-    brcm_log("[DEBUG][A] join attempt=%u ssid=%s pmk_len=%u\n",
-            join_attempt, ssid, (unsigned)strlen(pmk));
-    /* #endregion */
 
     /* A background escan in flight would make the firmware queue the join
      * until the channel sweep ends; abort it so the join starts now. */
@@ -975,7 +937,7 @@ int connect(const char*ssid, const char* pmk)
 
     err = brcmf_fil_iovar_data_set(0, "wpaie", ie, sizeof(ie));
     if (err) {
-        brcm_log("[DEBUG][D] wpaie set failed err=%d\n", err);
+        brcm_log("wpaie set failed err=%d\n", err);
         return err;
     }
 
@@ -1020,14 +982,6 @@ int connect(const char*ssid, const char* pmk)
         return err;
     }
 
-    /* #region debug-point C:pre-join-readback */
-    brcmf_debug_log_country();
-    brcmf_debug_log_iovar_u32("D", "wsec");
-    brcmf_debug_log_iovar_u32("D", "wpa_auth");
-    brcmf_debug_log_iovar_u32("A", "mfp");
-    brcmf_debug_log_iovar_u32("D", "sup_wpa");
-    /* #endregion */
-
     /* enable firmware supplicant for this interface */
     err = brcmf_fil_iovar_int_set(0, "sup_wpa", 1);
     if (err < 0) {
@@ -1053,16 +1007,8 @@ int connect(const char*ssid, const char* pmk)
     err = brcmf_join(0, ssid);
     if (err < 0){
         brcm_log("failed to join SSID:%s\n", ssid);
-        /* #region debug-point D:join-result */
-        brcm_log("[DEBUG][D] join attempt=%u ssid=%s brcm_join err=%d\n",
-                join_attempt, ssid, err);
-        /* #endregion */
         goto done;
     }
-    /* #region debug-point D:join-result */
-    brcm_log("[DEBUG][D] join attempt=%u ssid=%s brcm_join queued\n",
-            join_attempt, ssid);
-    /* #endregion */
 done:
     return err;
 }

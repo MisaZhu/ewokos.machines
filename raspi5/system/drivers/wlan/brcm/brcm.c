@@ -1156,10 +1156,6 @@ static void brcmf_mark_connected(void)
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
-    /* #region debug-point B:connected */
-    brcm_log("[DEBUG][B] connected ssid=%s recovery_streak=%u\n",
-            bus->ssid, (unsigned)bus->recovery_streak);
-    /* #endregion */
     brcmf_scan_set_mpc(true);
     /* persist the successfully joined network into /etc/wlan/network.json
        (existing entries only get their password updated, no duplicates);
@@ -3275,36 +3271,6 @@ static bool brcmf_self_disassoc_active(void)
         (kernel_tic_ms(0) - bus->self_disassoc_ms) < BRCMF_SELF_DISASSOC_WINDOW_MS;
 }
 
-/* #region debug-point B:event-stream */
-static const char *brcmf_event_name(uint32_t event_type)
-{
-    switch (event_type) {
-    case BRCMF_E_AUTH:
-        return "AUTH";
-    case BRCMF_E_DEAUTH:
-        return "DEAUTH";
-    case BRCMF_E_DEAUTH_IND:
-        return "DEAUTH_IND";
-    case BRCMF_E_ASSOC:
-        return "ASSOC";
-    case BRCMF_E_DISASSOC:
-        return "DISASSOC";
-    case BRCMF_E_DISASSOC_IND:
-        return "DISASSOC_IND";
-    case BRCMF_E_LINK:
-        return "LINK";
-    case BRCMF_E_ROAM:
-        return "ROAM";
-    case BRCMF_E_SET_SSID:
-        return "SET_SSID";
-    default:
-        return "EVENT";
-    }
-}
-
-/* #endregion */
-
-
 void brcmf_rx_event( struct sk_buff *skb)
 {
     struct brcmf_event *event;
@@ -3344,22 +3310,6 @@ void brcmf_rx_event( struct sk_buff *skb)
     data_end = skb->data + skb->len;
     if (data + datalen > data_end)
         datalen = data_end > data ? (uint32_t)(data_end - data) : 0;
-
-    if (event_type == BRCMF_E_SET_SSID || event_type == BRCMF_E_AUTH ||
-            event_type == BRCMF_E_ASSOC || event_type == BRCMF_E_LINK ||
-            event_type == BRCMF_E_DEAUTH || event_type == BRCMF_E_DEAUTH_IND ||
-            event_type == BRCMF_E_DISASSOC || event_type == BRCMF_E_DISASSOC_IND ||
-            event_type == BRCMF_E_ROAM) {
-        /* #region debug-point B:event-stream */
-        brcm_log("[DEBUG][B] event=%s(%u) status=%u reason=%u flags=0x%x state=%s ssid=%s self_disassoc=%u recoveries=%u streak=%u\n",
-                brcmf_event_name(event_type), event_type, event_status,
-                event_reason, emsg.flags, bus ? brcmf_state_name(bus->state) : "NULL",
-                (bus && bus->ssid[0] != '\0') ? bus->ssid : "<none>",
-                (unsigned)(brcmf_self_disassoc_active() ? 1 : 0),
-                bus ? (unsigned)bus->recovery_count : 0,
-                bus ? (unsigned)bus->recovery_streak : 0);
-        /* #endregion */
-    }
 
     if(event_type == BRCMF_E_ESCAN_RESULT){
         struct brcmf_escan_result_le *result;
@@ -4240,25 +4190,11 @@ int brcmf_sdiod_probe(void){
         usleep(20000);
     }
 
-    // #region debug-point C/E:probe-f1-ready
-    {
-        int dbg_err = 0;
-        uint8_t dbg_ioe = brcmf_sdiod_func0_rb(SDIO_CCCR_IOEx, &dbg_err);
-        uint8_t dbg_ior = brcmf_sdiod_func0_rb(SDIO_CCCR_IORx, &dbg_err);
-        brcm_log("debug probe f1-state ret=%d ioe=0x%02x ior=0x%02x err=%d\n",
-                 ret, dbg_ioe, dbg_ior, dbg_err);
-    }
-    // #endregion
-
     uint32_t clkctl = 0;
     /*
      * Force PLL off until brcmf_chip_attach()
      * programs PLL control regs
      */
-
-    // #region debug-point D/E:probe-chipclkcsr-before
-    brcm_log("debug probe chipclkcsr-write val=0x%02x\n", BRCMF_INIT_CLKCTL1);
-    // #endregion
 
     brcmf_sdiod_writeb(SBSDIO_FUNC1_CHIPCLKCSR, BRCMF_INIT_CLKCTL1,
                &err);

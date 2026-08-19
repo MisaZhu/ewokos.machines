@@ -8,7 +8,8 @@
 @/bin/bgrun /bin/session -r -t /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand
-@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
+#@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
+@/bin/ipcserv /drivers/raspi5/dsi_fbdisplayd /dev/disp0
 #@/bin/ipcserv /drivers/raspi5/gt911_touchd /dev/touch0
 @/bin/ipcserv /drivers/fontd
 

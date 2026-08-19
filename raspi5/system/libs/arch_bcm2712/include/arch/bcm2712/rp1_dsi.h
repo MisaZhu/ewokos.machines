@@ -35,6 +35,15 @@ typedef struct {
 	uint32_t pixel_clock_hz;
 	uint32_t lanes;            /* 1..4; Waveshare panels use 2 (or 4) */
 	uint32_t continuous_clock; /* 0 = HS clock returns to LP-11 in blanking */
+	uint32_t sync_pulse;       /* 1 = sync pulse packets + LP command mode,
+	                            * 0 = sync events — vc4's ST_END shape, the
+	                            * one the Waveshare clones of the 7" bridge
+	                            * actually cope with */
+	uint32_t lp_hblank;        /* 1 = lanes drop to LP in every blanking
+	                            * interval (the official Pi5 recipe);
+	                            * 0 keeps them HS across whole lines and
+	                            * parks them once per frame in the vertical
+	                            * blanking — vc4's LP_STOP_PERFRAME shape */
 } bcm2712_dsi_mode_t;
 
 /*
@@ -62,6 +71,16 @@ int bcm2712_rp1_dsi_video_start(uint64_t bus_addr, uint32_t stride,
  * restarted (state was logged), -1 = DSI not initialized.
  */
 int bcm2712_rp1_dsi_check(void);
+
+/*
+ * Send one generic packet in command mode (host must sit at LP-11 with
+ * DSI_MODE_CFG=1, i.e. between bcm2712_rp1_dsi_init() and
+ * bcm2712_rp1_dsi_video_start()). data_type is the MIPI data type byte
+ * (0x29 = generic long write); lp selects the LP escape flavour. Port of
+ * rp1dsi_dsi_send(). Returns 0 on success.
+ */
+int bcm2712_rp1_dsi_cmd_write(uint8_t data_type, const uint8_t* data,
+		int len, int lp);
 
 /* Register snapshot of all three MIPI1 banks for bring-up diagnosis. */
 void bcm2712_rp1_dsi_dump(void);

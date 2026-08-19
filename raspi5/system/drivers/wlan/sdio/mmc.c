@@ -58,11 +58,6 @@ int mmc_io_rw_direct_host(int write, unsigned fn,
     if (err){
         brcm_log("cmd52 transport fail w=%d fn=%u addr=0x%x in=0x%x err=%d stat_resp=0x%x\n",
             write, fn, addr, in, err, cmd.response[0]);
-                // #region debug-point A/D:mmc-cmd52-fail
-                brcm_log("debug cmd52 fail fn=%u addr=0x%x write=%d clock=%u width=%u mode=%u cmdarg=0x%08x\n",
-                        fn, addr, write, _mmc.clock, _mmc.bus_width,
-                        _mmc.selected_mode, cmd.cmdarg);
-                // #endregion
         return err;
     }
 

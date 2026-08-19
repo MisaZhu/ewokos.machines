@@ -90,6 +90,9 @@
 #define DSI_VID_MODE_SYNC_EVENTS 1U
 #define DSI_VID_MODE_BURST	2U
 
+/* every command flavour transmitted in LP (rp1_dsi_dsi.c) */
+#define DSI_CMD_MODE_ALL_LP	0x10f7f00U
+
 #define DSI_PHYRSTZ_SHUTDOWNZ	(1U << 0)
 #define DSI_PHYRSTZ_RSTZ	(1U << 1)
 #define DSI_PHYRSTZ_ENABLECLK	(1U << 2)
@@ -154,6 +157,7 @@
 #define VIDEO_CLK_MIPI1_DPI_CTRL	(0x4000 + 0x0030)
 #define VIDEO_CLK_MIPI1_DPI_DIV_INT	(0x4000 + 0x0034)
 #define VIDEO_CLK_MIPI1_DPI_DIV_FRAC	(0x4000 + 0x0038)
+#define VIDEO_CLK_MIPI1_DPI_SEL	(0x4000 + 0x003c)
 
 /* clk_mipi1_dpi aux parents (num_std_parents = 0): pll_sys, pll_video_sec,
  * pll_video, clksrc_mipi1_dsi_byteclk, gp0..gp3 */
@@ -535,13 +539,51 @@ static int rp1_dsi_host_setup(const bcm2712_dsi_mode_t *mode) {
 	host_write(DSI_GEN_VCID, 0);
 	host_write(DSI_DPI_COLOR_CODING, 0x005);	/* RGB888 */
 
+	/*
+	 * Video-mode flavour (rp1dsi_dsi_setup).  vc4 drives every video
+	 * panel — the official 7" protocol family included — in one fixed
+	 * shape: LP_STOP_PERFRAME plus ST_END ("enables end events for
+	 * HSYNC/VSYNC"), i.e. the lanes park once per frame in the
+	 * vertical blanking and the sync packets are DSI sync events.  It
+	 * ignores the SYNC_PULSE flag the 7" panel declares, so that
+	 * family never actually ran sync pulses until the DWC host on RP1
+	 * started honouring it — and the Waveshare clones of the 7"
+	 * bridge only cope with the vc4 shape: per-line LP in the
+	 * horizontal blanking (hfp=1 = 3 byte clocks) cannot even fit the
+	 * ~30-UI HS->LP->HS turnaround.  Default (lp_hblank=0) therefore
+	 * keeps the lanes HS across whole lines, parking them once per
+	 * frame in the vertical blanking; sync_pulse then only picks the
+	 * packet flavour (pulses vs events) on top.  lp_hblank=1 opts back
+	 * into the official Pi5 recipe — every blanking interval LP, plus
+	 * the dw-mipi-dsi HBP drop when the DPI clock is not an exact
+	 * byte-clock multiple (8*lanes > bpp).
+	 */
 	mask = DSI_VID_MODE_LP_HFP_EN | DSI_VID_MODE_LP_HBP_EN |
 			DSI_VID_MODE_LP_VACT_EN | DSI_VID_MODE_LP_VFP_EN |
-			DSI_VID_MODE_LP_VBP_EN | DSI_VID_MODE_LP_VSA_EN |
-			DSI_VID_MODE_SYNC_EVENTS;
+			DSI_VID_MODE_LP_VBP_EN | DSI_VID_MODE_LP_VSA_EN;
+	if (mode->sync_pulse)
+		mask |= DSI_VID_MODE_LP_CMD_EN;
+	else
+		mask |= DSI_VID_MODE_SYNC_EVENTS;
+	if (!mode->lp_hblank)
+		mask &= ~(DSI_VID_MODE_LP_HFP_EN | DSI_VID_MODE_LP_HBP_EN |
+				DSI_VID_MODE_LP_VACT_EN);
+	else if (mode->sync_pulse && 8U * lanes > bpp)
+		mask &= ~DSI_VID_MODE_LP_HBP_EN;
 	host_write(DSI_VID_MODE_CFG, mask);
-	host_write(DSI_CMD_MODE_CFG, 0);	/* commands go HS if ever sent */
-	host_write(DSI_PCKHDL_CFG, DSI_PCKHDL_BTA_EN | DSI_PCKHDL_EOTP_TX_EN);
+	/* LPM is the 7" family's own flag: commands always go out in LP */
+	host_write(DSI_CMD_MODE_CFG, DSI_CMD_MODE_ALL_LP);
+	/*
+	 * vc4 transmits with DSI_CTRL_HSDT_EOT_DISABLE — no EoTp after
+	 * HS packets.  The clone bridges of the 7" family have only ever
+	 * seen that shape: a stray EoTp after every sync-event and pixel
+	 * packet is charged to the data stream as a fixed per-line
+	 * surplus, which desyncs the bridge into repeated bands.  Drop
+	 * it; PCKHDL EOTP_TX_EN covers HS transmissions only, so the LP
+	 * bridge-init writes (whose EoT vc4 keeps, LPDT not disabled)
+	 * still carry theirs.
+	 */
+	host_write(DSI_PCKHDL_CFG, DSI_PCKHDL_BTA_EN);
 
 	/* command mode first; video mode is switched on once the DMA runs */
 	host_write(DSI_MODE_CFG, 1);
@@ -584,6 +626,8 @@ static int rp1_dsi_host_setup(const bcm2712_dsi_mode_t *mode) {
 
 	/* LP bytes that fit into the horizontal blanking (databook 3.6.2.1) */
 	cmdtim = (int)htotal;
+	if (mode->sync_pulse)
+		cmdtim -= (int)mode->hsw;
 	cmdtim = ((int)bpp * cmdtim - 64) / (int)(8 * lanes);
 	cmdtim -= hsfreq_table[_dsi_hsfreq_index].data_hs2lp;
 	cmdtim -= hsfreq_table[_dsi_hsfreq_index].data_lp2hs;
@@ -789,6 +833,7 @@ int bcm2712_rp1_dsi_check(void) {
 	uint32_t status, flags, ctrl, panics;
 	static uint32_t last_underflows;
 	static uint32_t underflow_total;
+	static uint32_t last_panics;
 
 	if (!_dsi_ready || _dsi_bus_addr == 0)
 		return -1;
@@ -806,7 +851,14 @@ int bcm2712_rp1_dsi_check(void) {
 		last_underflows = underflow_total;
 		slog("rp1-dsi: UNDERFLOW detected (total=%u panics=%08x)\n",
 				underflow_total, panics);
+	} else if (panics != last_panics) {
+		/* PANICS[15:0]/[31:16] are the two FIFO panic counters
+		 * (cumulative); rising without a latched underflow still
+		 * means the engine runs dry against the tiny 7" porches */
+		slog("rp1-dsi: FIFO panics %08x -> %08x (underflows=%u)\n",
+				last_panics, panics, underflow_total);
 	}
+	last_panics = panics;
 
 	if ((status & DPI_DMA_STATUS_BUSY_MASK) != 0)
 		return 0;
@@ -820,7 +872,89 @@ int bcm2712_rp1_dsi_check(void) {
 	return 1;
 }
 
-/* Register snapshot of all three MIPI1 banks for bring-up diagnosis. */
+/*
+ * Send one generic packet in command mode — port of rp1dsi_dsi_send()
+ * (rp1_dsi_dsi.c): wait for both FIFOs empty, select the LP/HS flavour
+ * through VID_MODE_CFG/CMD_MODE_CFG, push the payload as 32-bit words
+ * and the header (dt | vc<<6 | wc<<8), then wait for the FIFOs to drain
+ * again. Must run while the host sits in command mode with the lanes
+ * parked at LP-11 (i.e. after bcm2712_rp1_dsi_init(), before
+ * bcm2712_rp1_dsi_video_start()) — the TC358762 bridge on the official
+ * 7" protocol panels is initialized exactly this way.
+ */
+int bcm2712_rp1_dsi_cmd_write(uint8_t data_type, const uint8_t* data,
+		int len, int lp) {
+	uint32_t val, hdr;
+	int i, spin;
+
+	if (!_dsi_ready) {
+		slog("rp1-dsi: cmd_write before init\n");
+		return -1;
+	}
+	if (host_read(DSI_MODE_CFG) != 1) {
+		slog("rp1-dsi: cmd_write outside command mode\n");
+		return -1;
+	}
+
+	/* FIFOs idle = GEN_CMD_EMPTY(0) | GEN_PLD_W_EMPTY(2) set */
+	for (spin = 0; spin < 256; ++spin) {
+		if ((host_read(DSI_CMD_PKT_STATUS) & 0xfU) == 0x5U)
+			break;
+		usleep(100);
+	}
+	if ((host_read(DSI_CMD_PKT_STATUS) & 0xfU) != 0x5U) {
+		slog("rp1-dsi: cmd FIFOs not idle (status=%08x)\n",
+				host_read(DSI_CMD_PKT_STATUS));
+		return -1;
+	}
+
+	val = host_read(DSI_VID_MODE_CFG);
+	if (lp)
+		val |= DSI_VID_MODE_LP_CMD_EN;
+	else
+		val &= ~DSI_VID_MODE_LP_CMD_EN;
+	host_write(DSI_VID_MODE_CFG, val);
+	host_write(DSI_CMD_MODE_CFG, lp ? DSI_CMD_MODE_ALL_LP : 0);
+	(void)host_read(DSI_CMD_MODE_CFG);
+
+	for (i = 0; i < len; i += 4) {
+		val = data[i];
+		if (i + 1 < len)
+			val |= (uint32_t)data[i + 1] << 8;
+		if (i + 2 < len)
+			val |= (uint32_t)data[i + 2] << 16;
+		if (i + 3 < len)
+			val |= (uint32_t)data[i + 3] << 24;
+		host_write(DSI_GEN_PLD_DATA, val);
+	}
+	/* GEN_HDR[7:0] = vc<<6 | dt, [23:8] = word count — the layout the
+	 * rpi dw-mipi-dsi.c writes straight out of mipi_dsi_create_packet.
+	 * Shifting dt here turns a 0x29 generic long write into a 0x24
+	 * generic READ: the payload then never drains from the pld FIFO. */
+	hdr = ((uint32_t)(len & 0xffffU) << 8) |
+			(uint32_t)(data_type & 0x3fU);
+	host_write(DSI_GEN_HDR, hdr);
+
+	for (spin = 0; spin < 256; ++spin) {
+		if ((host_read(DSI_CMD_PKT_STATUS) & 0xfU) == 0x5U)
+			break;
+		usleep(100);
+	}
+	if ((host_read(DSI_CMD_PKT_STATUS) & 0xfU) != 0x5U) {
+		slog("rp1-dsi: cmd 0x%02x stuck (status=%08x)\n",
+				data_type, host_read(DSI_CMD_PKT_STATUS));
+		return -1;
+	}
+	return 0;
+}
+
+/*
+ * Register snapshot of all three MIPI1 banks. Used on bring-up failure
+ * and once on the live path: the repeated-band / tearing geometry bugs
+ * hide in the effective video-timing values, so read back the VID_*
+ * timings, the DMA geometry registers and the dpi clock SEL/DIV — a
+ * mismatch between written and read-back values localises the fault.
+ */
 void bcm2712_rp1_dsi_dump(void) {
 	if (!_dsi_ready) {
 		slog("rp1-dsi: dump before init\n");
@@ -830,17 +964,34 @@ void bcm2712_rp1_dsi_dump(void) {
 			host_read(DSI_VERSION_CFG), host_read(DSI_PWR_UP),
 			host_read(DSI_MODE_CFG), host_read(DSI_VID_MODE_CFG),
 			host_read(DSI_CLKMGR_CFG));
-	slog("rp1-dsi dump host: phy_status=%08x phyrstz=%08x lpclk=%08x cmdpkt=%08x if=%08x\n",
+	slog("rp1-dsi dump host: phy_status=%08x phyrstz=%08x lpclk=%08x cmdpkt=%08x pckhdl=%08x\n",
 			host_read(DSI_PHY_STATUS), host_read(DSI_PHYRSTZ),
 			host_read(DSI_LPCLK_CTRL), host_read(DSI_CMD_PKT_STATUS),
-			host_read(DSI_PHY_IF_CFG));
+			host_read(DSI_PCKHDL_CFG));
+	slog("rp1-dsi dump vid: pkt=%08x hsa=%08x hbp=%08x hline=%08x\n",
+			host_read(DSI_VID_PKT_SIZE), host_read(DSI_VID_HSA_TIME),
+			host_read(DSI_VID_HBP_TIME), host_read(DSI_VID_HLINE_TIME));
+	slog("rp1-dsi dump vid: vsa=%08x vbp=%08x vfp=%08x vact=%08x\n",
+			host_read(DSI_VID_VSA_LINES), host_read(DSI_VID_VBP_LINES),
+			host_read(DSI_VID_VFP_LINES), host_read(DSI_VID_VACTIVE_LINES));
 	slog("rp1-dsi dump dma: ctrl=%08x status=%08x flags=%08x addr=%08x%08x stride=%08x\n",
 			dma_read(DPI_DMA_CONTROL), dma_read(DPI_DMA_STATUS),
 			dma_read(DPI_DMA_IRQ_FLAGS), dma_read(DPI_DMA_DMA_ADDR_H),
 			dma_read(DPI_DMA_DMA_ADDR_L), dma_read(DPI_DMA_DMA_STRIDE));
+	slog("rp1-dsi dump dma: visible=%08x sync=%08x bp=%08x fp=%08x rgbsz=%08x panics=%08x\n",
+			dma_read(DPI_DMA_VISIBLE_AREA), dma_read(DPI_DMA_SYNC_WIDTH),
+			dma_read(DPI_DMA_BACK_PORCH), dma_read(DPI_DMA_FRONT_PORCH),
+			dma_read(DPI_DMA_RGBSZ), dma_read(DPI_DMA_PANICS));
 	slog("rp1-dsi dump cfg: cfg=%08x mon=%08x clk_ctrl=%08x dpi_ctrl=%08x\n",
 			get32(_cfg_base + MIPICFG_CFG),
 			get32(_cfg_base + MIPICFG_DPHY_MONITOR),
 			get32(_clk_base + CLK_MIPI1_CFG_CTRL),
 			get32(_clk_base + VIDEO_CLK_MIPI1_DPI_CTRL));
+	/* SEL is the glitchless-mux selection bitmap: bit N = parent N of
+	 * clk_mipi1_dpi (aux 3 = the DSI byte clock); DIV is 16.16 */
+	slog("rp1-dsi dump clk: dpi_div=%08x.%08x dpi_sel=%08x cfg_div=%08x\n",
+			get32(_clk_base + VIDEO_CLK_MIPI1_DPI_DIV_INT),
+			get32(_clk_base + VIDEO_CLK_MIPI1_DPI_DIV_FRAC),
+			get32(_clk_base + VIDEO_CLK_MIPI1_DPI_SEL),
+			get32(_clk_base + CLK_MIPI1_CFG_DIV_INT));
 }

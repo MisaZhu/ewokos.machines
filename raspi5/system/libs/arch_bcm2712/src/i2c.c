@@ -206,8 +206,14 @@ static int i2c_init_impl(int bus, const uint8_t *pins) {
         bcm2712_gpio_init();
         for (int i = 0; i < 2; i++) {
             uint32_t pin = pins[i];
+            /* funcsel is per-pin on RP1 (pinctrl-rp1.c PIN table):
+             * i2c4 sits on ALT2 of GPIO40/41, while every other pair
+             * used here (i2c0-3 defaults, i2c1@GPIO10/11, i2c6@GPIO38/39)
+             * is ALT3 */
+            uint32_t fsel = (pin == 40 || pin == 41) ?
+                GPIO_FUNC_ALTF2 : GPIO_FUNC_ALTF3;
             bcm2712_gpio_pull(pin, GPIO_PULL_UP);
-            bcm2712_gpio_config(pin, GPIO_FUNC_ALTF3);
+            bcm2712_gpio_config(pin, fsel);
         }
     }
 

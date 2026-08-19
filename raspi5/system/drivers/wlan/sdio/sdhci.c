@@ -1167,19 +1167,6 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
     stat = sdhci_readl(host, SDHCI_INT_STATUS);
     sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
 
-        // #region debug-point A/B/C/D:sdhci-error-snapshot
-        if (ret && (cmd->cmdidx == SD_IO_RW_DIRECT || cmd->cmdidx == SD_IO_RW_EXTENDED)) {
-                brcm_log("debug sdhci err cmd=%u arg=0x%08x ret=%d stat=0x%08x ps=0x%08x clkctl=0x%04x hostctl=0x%02x hostctl2=0x%04x clock=%u width=%d mode=%u\n",
-                        cmd->cmdidx, cmd->cmdarg, ret, stat,
-                        sdhci_readl(host, SDHCI_PRESENT_STATE),
-                        sdhci_readw(host, SDHCI_CLOCK_CONTROL),
-                        sdhci_readb(host, SDHCI_HOST_CONTROL),
-                        sdhci_readw(host, SDHCI_HOST_CONTROL2),
-                        host->clock, host->bus_width,
-                        host->mmc ? host->mmc->selected_mode : 0);
-        }
-        // #endregion
-
     // if(cmd->cmdidx != 52 && cmd->cmdidx != 53)
     // 	brcm_log("ret:%d resp: %x %x %x %x\n", ret, cmd->response[0], cmd->response[1],cmd->response[2],cmd->response[3]);
 

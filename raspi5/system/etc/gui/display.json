@@ -1,10 +1,26 @@
 {
-    "width": 0,
-    "height": 0,
     "rotate": 0,
     "depth": 32,
     "zoom": 1,
     "logo": "/usr/system/images/logos/ewokos.png",
+
+    "output": "dsi",
+    "panel": "rpi7",
+    "width": 800,
+    "height": 480,
+    "pclk": 25979400,
+    "lanes": 1,
+    "cont_clock": 1,
+    "sync_pulse": 0,
+    "lp_hblank": 0,
+
+    "hfp": 1,
+    "hsync": 2,
+    "hbp": 46,
+
+    "vfp": 7,
+    "vsync": 2,
+    "vbp": 21,
 
     "#output": "dpi",
     "#mode": 6,
