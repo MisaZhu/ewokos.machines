@@ -70,6 +70,7 @@
 
 #define FT5X06_REG_TD_STATUS      0x02
 #define FT5X06_REG_P1_XH          0x03
+#define FT5X06_REG_P2_XH          0x09
 #define FT5X06_REG_P1_XL          0x04
 #define FT5X06_REG_P1_YH          0x05
 #define FT5X06_REG_P1_YL          0x06
@@ -715,6 +716,8 @@ static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 
 static tp_status_t ft5x06_read_touch(tp_point_t* pts, uint8_t* nr) {
 	uint8_t buf[5];
+	/* drain target for P2..Pn when more than one finger is reported */
+	uint8_t dump[FT5X06_POINT_SIZE * (FT5X06_MAX_POINTS - 1)];
 	uint8_t count;
 	uint8_t event;
 
@@ -730,12 +733,36 @@ static tp_status_t ft5x06_read_touch(tp_point_t* pts, uint8_t* nr) {
 			return TP_NOT_RESPONSE;
 	}
 
+	/*
+	 * Garbage frame: a 0xff TD_STATUS is the data phase clocking in
+	 * all-ones (controller mid-boot or a NAK'd read), not a real
+	 * 15-touch report — drop it instead of parsing phantom points.
+	 */
+	if (buf[0] == 0xff) {
+		*nr = 0;
+		return TP_NO_DATA;
+	}
+
 	count = (uint8_t)(buf[0] & 0x0f);
 	if (count > FT5X06_MAX_POINTS)
 		count = FT5X06_MAX_POINTS;
 	if (count == 0) {
 		*nr = 0;
 		return TP_OK;
+	}
+
+	/*
+	 * Multi-touch: report only the first point (single-touch service),
+	 * but consume every reported point register. This controller
+	 * latches its report frame while extra points sit unread —
+	 * TD_STATUS freezes at count>=2, P1 repeats forever, the release
+	 * never arrives and the touch service dies. Draining P2..Pn
+	 * clears the frame so the controller keeps serving.
+	 */
+	if (count > 1) {
+		if (dsi_i2c_read_regs8_retry(FT5X06_ADDR, FT5X06_REG_P2_XH,
+				dump, (uint16_t)((count - 1) * FT5X06_POINT_SIZE)) != 0)
+			return TP_NOT_RESPONSE;
 	}
 
 	event = (uint8_t)(buf[1] >> 6);
