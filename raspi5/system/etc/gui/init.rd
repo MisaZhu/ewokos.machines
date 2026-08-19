@@ -10,7 +10,7 @@
 @/bin/ipcserv /drivers/displaymand
 #@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
 @/bin/ipcserv /drivers/raspi5/dsi_fbdisplayd /dev/disp0
-#@/bin/ipcserv /drivers/raspi5/gt911_touchd /dev/touch0
+@/bin/ipcserv /drivers/raspi5/dsi_touchd   /dev/touch0
 @/bin/ipcserv /drivers/fontd
 
 @/bin/ipcserv /drivers/consoled
@@ -23,7 +23,7 @@
 @/bin/ipcserv /drivers/raspi5/usbhostd    /dev/hid0
 @/bin/ipcserv /drivers/raspi5/hid_keybd   /dev/keyb0  /dev/hid0
 @/bin/ipcserv /drivers/raspi5/hid_moused  /dev/mouse0 /dev/hid0
-# GT911 owns /dev/touch0; use another mount point if USB touch is enabled.
+# dsi_touchd owns /dev/touch0; use another mount point if USB touch is enabled.
 #@/bin/ipcserv /drivers/raspi5/hid_touchd  /dev/touch1 /dev/hid0
 
 @/bin/bgrun /bin/session -r -t /dev/console0

@@ -34,6 +34,9 @@
 @/bin/ipcserv /drivers/raspi5/hid_keybd   /dev/keyb0  /dev/hid0
 @/bin/ipcserv /drivers/raspi5/hid_moused  /dev/mouse0 /dev/hid0
 
+@/bin/splash -m "start /dev/touch0" -p 30
+@/bin/ipcserv /drivers/raspi5/dsi_touchd  /dev/touch0
+
 @/bin/splash -m "mount /tmp" -p 40
 @/bin/ipcserv /drivers/ramfsd          /tmp
 
@@ -61,7 +64,7 @@
 @/bin/splash -m "start x" -p 100
 @/bin/ipcserv /drivers/xserverd        /dev/x
 
-#@/bin/bgrun /sbin/x/xtouch
+@/bin/bgrun /sbin/x/xtouch /dev/touch0
 @/bin/bgrun /sbin/x/xmouse
 @/bin/bgrun /sbin/x/xim_none
 #@/bin/bgrun /sbin/x/xim_vkey -h 168
