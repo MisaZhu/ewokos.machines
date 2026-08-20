@@ -235,8 +235,8 @@ int32_t bsp_sd_init_by_info(void) {
 }
 
 int bsp_sd_init(void) {
-        int ret = sd_init_ex2(bsp_sd_init_by_info, bsp_sd_read_cache,
-                        bsp_sd_read_cache_sectors, bsp_sd_write_cache, bsp_sd_write_cache_sectors);
+        int ret = sd_init_ex(bsp_sd_init_by_info, bsp_sd_read_cache,
+                        bsp_sd_read_cache_sectors, bsp_sd_write_cache, bsp_sd_write_cache_sectors, bsp_sd_flush);
     if(ret == 0)
         sd_enable_sector_buffer(0);
     return ret;

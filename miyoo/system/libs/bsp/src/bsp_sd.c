@@ -75,7 +75,7 @@ int bsp_sd_init(void) {
     sys_info_t sysinfo;
 
     syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-        return sd_init_ex2(miyoo_sd_init,
+        return sd_init_ex(miyoo_sd_init,
             bsp_sd_read_sector,
             bsp_sd_read_sectors,
                         bsp_sd_write_sector,

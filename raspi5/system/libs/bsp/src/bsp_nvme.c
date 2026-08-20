@@ -282,7 +282,8 @@ int bsp_nvme_init(void) {
     int ret = sd_init_ex(bsp_nvme_controller_init,
                  bsp_nvme_sd_read_sector,
                  bsp_nvme_sd_read_sectors,
-                 bsp_nvme_sd_write_sector);
+                 bsp_nvme_sd_write_sector, 
+                 NULL, NULL);
     if (ret == 0)
         sd_enable_sector_buffer(0);
     return ret;
