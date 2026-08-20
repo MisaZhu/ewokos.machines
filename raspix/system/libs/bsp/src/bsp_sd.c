@@ -147,30 +147,29 @@ static int32_t bsp_sd_read_cache(int32_t sector, void *buf){
     return bsp_sd_read_cache_sectors(sector, buf, 1);
 }
 
-static int32_t bsp_sd_write_cache(int32_t sector, const void *buf){
-    /*uint32_t l1 = (sector >> 21) & 0x1FF;
-    if(cache_entry[l1] == 0)
-        cache_entry[l1] = calloc(4096, 1);
-
-    uint32_t *l2_entry = cache_entry[l1];
-    uint32_t l2 = (sector >> 12) & 0x1FF;
-    if(l2_entry[l2] == 0)
-        l2_entry[l2] = calloc(4096, 1);
-
-    uint32_t *l3_entry = l2_entry[l2];
-    uint32_t l3 = (sector >> 3) & 0x1FF;
-    if(l3_entry[l3] == 0){
-        l3_entry[l3] = malloc(4096);
-        mmc_read_blocks(l3_entry[l3], sector&(~0x7),1);
+/* Drop the cached pages covering [sector, sector+count). Needed after a
+ * failed/partial card write: the card may have programmed a prefix of
+ * the range while the cache still holds the old data, so those pages
+ * must be re-fetched from the card on the next read instead of serving
+ * stale bytes. */
+static void bsp_sd_invalidate_sectors(uint32_t sector, uint32_t count) {
+    for(uint32_t i = 0; i < count; i++) {
+        void **l3_entry = bsp_sd_get_l3(sector + i, 0);
+        if(l3_entry == 0)
+            continue;
+        uint32_t l3 = ((sector + i) >> 3) & 0x1FF;
+        if(l3_entry[l3] != 0) {
+            free(l3_entry[l3]);
+            l3_entry[l3] = 0;
+        }
     }
-    uint8_t *page = l3_entry[l3];
-    memcpy(page + (sector & 0x7) * 512, buf, 512);
-    // Write back the modified page to SD card
-    mmc_write_blocks(sector&(~0x7), 1, page);
-    */
+}
 
-    if(mmc_write_blocks(sector, 1, (void*)buf) != 1)
+static int32_t bsp_sd_write_cache(int32_t sector, const void *buf){
+    if(mmc_write_blocks(sector, 1, (void*)buf) != 1) {
+        bsp_sd_invalidate_sectors((uint32_t)sector, 1);
         return -1;
+    }
 
     void **l3_entry = bsp_sd_get_l3(sector, 0);
     if(l3_entry != 0) {
@@ -186,8 +185,10 @@ static int32_t bsp_sd_write_cache_sectors(int32_t sector, const void *buf, uint3
 
         if(count == 0)
                 return 0;
-        if(mmc_write_blocks(sector, count, (void*)buf) != count)
+        if(mmc_write_blocks(sector, count, (void*)buf) != count) {
+                bsp_sd_invalidate_sectors((uint32_t)sector, count);
                 return -1;
+        }
 
         for(uint32_t i = 0; i < count; i++) {
                 void **l3_entry = bsp_sd_get_l3((uint32_t)sector + i, 0);

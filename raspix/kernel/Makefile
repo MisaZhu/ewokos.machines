@@ -43,7 +43,7 @@ include make.bsp
 include $(EWOKOS_ROOT_DIR)/kernel/platform/${ARCH}/make.rule
 
 QEMU_ARGS += -kernel $(OS_IMG)
-QEMU_ARGS += -sd $(SYS_DIR)/root_$(ARCH).ext2
+QEMU_ARGS += -sd $(SYS_DIR)/root_$(ARCH).img
 
 asm:
 	$(OBJDUMP) -D $(BUILD_DIR)/$(OS_ELF) > $(BUILD_DIR)/kernel.asm

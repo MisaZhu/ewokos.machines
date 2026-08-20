@@ -31,7 +31,7 @@ EWOKOS_ROOT_DIR = $(ewokos)
 
 MACHINE = x86
 SYS_DIR = $(EWOKOS_ROOT_DIR)/system/build/$(MACHINE)
-SYS_ROOTFS = $(SYS_DIR)/root_$(ARCH).ext2
+SYS_ROOTFS = $(SYS_DIR)/root_$(ARCH).img
 
 include make.bsp
 include $(EWOKOS_ROOT_DIR)/kernel/platform/$(ARCH)/make.rule
