@@ -539,7 +539,7 @@ static void bt_emit_device_line(const char* prefix, const bt_device_t* dev) {
         (int)dev->rssi,
         dev->connected ? 1 : 0,
         dev->has_link_key ? 1 : 0,
-        dev->desc[0] ? dev->desc : "-");
+        dev->name[0] ? dev->name : "-");
 }
 
 static void bt_ret_append_device_line(int dev_id, char* ret, size_t ret_sz,
@@ -556,7 +556,7 @@ static void bt_ret_append_device_line(int dev_id, char* ret, size_t ret_sz,
         (int)dev->rssi,
         dev->connected ? 1 : 0,
         dev->has_link_key ? 1 : 0,
-        dev->desc[0] ? dev->desc : "-");
+        dev->name[0] ? dev->name : "-");
 }
 
 static int bt_hci_reject_connection(const uint8_t* addr) {
@@ -635,9 +635,9 @@ static void bt_handle_inquiry_result_common(
     dev->clock_offset = clock_offset;
     dev->rssi = rssi;
     if (name != NULL && name[0] != 0) {
-        strncpy(dev->desc, name, sizeof(dev->desc) - 1);
-        dev->desc[sizeof(dev->desc) - 1] = 0;
-        bt_trim_name(dev->desc);
+        strncpy(dev->name, name, sizeof(dev->name) - 1);
+        dev->name[sizeof(dev->name) - 1] = 0;
+        bt_trim_name(dev->name);
     }
     bt_emit_device_line("device", dev);
 }
@@ -778,17 +778,17 @@ static void bt_handle_remote_name_complete(const uint8_t* payload, size_t len) {
         return;
     }
 
-    memset(dev->desc, 0, sizeof(dev->desc));
-    for (i = 0; i < sizeof(dev->desc) - 1 && (i + 7) < len; ++i) {
+    memset(dev->name, 0, sizeof(dev->name));
+    for (i = 0; i < sizeof(dev->name) - 1 && (i + 7) < len; ++i) {
         unsigned char ch = payload[7 + i];
         if (ch == 0) {
             break;
         }
-        dev->desc[i] = isprint(ch) ? (char)ch : '.';
+        dev->name[i] = isprint(ch) ? (char)ch : '.';
     }
-    bt_trim_name(dev->desc);
+    bt_trim_name(dev->name);
     bt_addr_to_str(dev->addr, addr, sizeof(addr));
-    bt_emit("name %s status=%u value=%s\n", addr, payload[0], dev->desc[0] ? dev->desc : "-");
+    bt_emit("name %s status=%u value=%s\n", addr, payload[0], dev->name[0] ? dev->name : "-");
 }
 
 static void bt_handle_connection_complete(const uint8_t* payload, size_t len) {
