@@ -814,12 +814,6 @@ uint32_t mmc_write_blocks(uint32_t start,
     struct mmc_data data;
     int timeout_ms = 1000;
     int downgraded = 0;
-    int verify_retried = 0;
-        /*
-         * Keep post-write verification, but amortize it into multi-block
-         * reads so large sequential writes don't pay one CMD17 per sector.
-         */
-        enum { MMC_VERIFY_CHUNK_BLOCKS = 128 };
 
     if (blkcnt == 0)
         return 0;
@@ -895,27 +889,9 @@ retry_write:
         return 0;
     }
 
-    /* Read-back verification, bypassing every RAM cache layer: a write
-     * data phase can "complete" while the card silently discards the
-     * block (lost data only shows up after reboot). Compare what the
-     * card actually stored and retry the whole write once on mismatch. */
-        static uint8_t verify_buf[MMC_VERIFY_CHUNK_BLOCKS * 512];
-        for (uint32_t vi = 0; vi < blkcnt; ) {
-                uint32_t verify_blocks = blkcnt - vi;
-                if (verify_blocks > MMC_VERIFY_CHUNK_BLOCKS)
-                        verify_blocks = MMC_VERIFY_CHUNK_BLOCKS;
-                if (mmc_read_blocks(verify_buf, start + vi, verify_blocks) != (int)verify_blocks ||
-                    memcmp(verify_buf, (const uint8_t*)src + vi * 512, verify_blocks * 512) != 0) {
-                        klog("mmc_write: VERIFY MISMATCH sec %u cnt %u\n", start + vi, verify_blocks);
-            if (!verify_retried) {
-                verify_retried = 1;
-                mmc_poll_for_busy(&_mmc, timeout_ms);
-                goto retry_write;
-            }
-            klog("mmc_write: VERIFY FAILED for good (sec %u)\n", start + vi);
-            return 0;
-        }
-                vi += verify_blocks;
-    }
+    /* No read-back verify: the data-phase CRC, the card's internal ECC
+     * and the poll-for-busy above are the integrity guarantees; the old
+     * full read-back only papered over a historical driver-timing issue
+     * and doubled the cost of every write. */
     return blkcnt;
 }

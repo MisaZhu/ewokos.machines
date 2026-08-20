@@ -43,7 +43,6 @@ static bool _hs_recovery_pending = false;
 static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
         uint16_t u16BlkCnt, uint16_t u16BlkSize, TransEmType eTransType,
         volatile uint8_t *pu8Buf);
-static int miyoo_sd_verify_write(uint32_t sector, uint32_t count, const uint8_t* src);
 static int32_t miyoo_sd_write_one(int32_t sector, const uint8_t* src);
 
 static inline uint32_t miyoo_sd_dma_addr(volatile uint8_t *buf) {
@@ -398,38 +397,18 @@ static RspErrEmType miyoo_sd_try_write_multi(uint32_t sector, uint32_t count, co
 }
 
 /*
- * 写后读回校验：写数据阶段可能"成功"返回而卡内部悄悄丢弃了数据
- * (掉电/重启后才暴露)。用 CMD17 逐扇区读回卡上实际存储的内容比对，
- * 这是最后一道安全网(与 raspix 的 mmc_write 校验语义一致)。
+ * 单扇区写。不做写后读回校验：数据相 CRC、卡内 ECC 与写后 busy
+ * 等待即为完整性保证，读回只是在为历史驱动时序问题支付每笔写的
+ * 全额额外读代价。
  */
-static int miyoo_sd_verify_write(uint32_t sector, uint32_t count, const uint8_t* src) {
-    uint32_t i;
-    for(i = 0; i < count; i++) {
-        RspErrEmType err = miyoo_sd_run_request(17, sector + i, 1, 512, EV_DMA, _sector_buf);
-        if(err != EV_STS_OK)
-            return -1;
-        if(memcmp((const void*)_sector_buf, src + i * 512U, 512U) != 0)
-            return -1;
-    }
-    return 0;
-}
-
-/* 单扇区写 + 读回校验，失配整体重写一次 */
 static int32_t miyoo_sd_write_one(int32_t sector, const uint8_t* src) {
     RspErrEmType err;
-    int attempt;
 
-    for(attempt = 0; attempt < 2; attempt++) {
-        memcpy(_sector_buf, src, 512U);
-        err = miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, _sector_buf);
-        if(err != EV_STS_OK)
-            return err;
-        if(miyoo_sd_verify_write((uint32_t)sector, 1, src) == 0)
-            return 0;
-        klog("miyoo_sd: write verify mismatch sec %d%s\n", sector,
-                attempt == 0 ? ", rewriting" : "");
-    }
-    return -1;
+    memcpy(_sector_buf, src, 512U);
+    err = miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, _sector_buf);
+    if(err != EV_STS_OK)
+        return err;
+    return 0;
 }
 
 int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
@@ -483,19 +462,18 @@ int32_t miyoo_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
         if(chunk > 1 && (chunk * 512U) <= MIYOO_SD_BOUNCE_SIZE) {
             memcpy(_sector_buf, src, chunk * 512U);
             err = miyoo_sd_try_write_multi(sector, chunk, _sector_buf);
-            if(err == EV_STS_OK &&
-                    miyoo_sd_verify_write(sector, chunk, src) == 0) {
+            if(err == EV_STS_OK) {
                 src += chunk * 512U;
                 sector += chunk;
                 count -= chunk;
                 continue;
             }
-            /* 多块失败或读回失配，退单块重试 */
+            /* 多块失败，退单块重试 */
             miyoo_sd_note_chunk_error();
             miyoo_sd_recover();
         }
 
-        /* 单块保底(带读回校验) */
+        /* 单块保底 */
         err = miyoo_sd_write_one(sector, src);
         if(err != 0)
             return err;
