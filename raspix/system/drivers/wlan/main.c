@@ -417,7 +417,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "wlan");
+    strcpy(dev.desc, "wlan");
     _wland_dev = &dev;
     /*
      * BCM43430/CYW43439 boards are sensitive to WL_REG_ON timing.
@@ -435,7 +435,7 @@ int main(int argc, char** argv) {
 
 
     const char* mnt_point = argc > 1 ? argv[1]: "/dev/eth0";
-    strcpy(dev.name, "eth");
+    strcpy(dev.desc, "eth");
     dev.read = net_read;
     dev.write = net_write;
     dev.dev_cntl = net_dcntl;

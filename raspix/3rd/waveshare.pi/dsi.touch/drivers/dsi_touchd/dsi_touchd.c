@@ -899,7 +899,7 @@ int main(int argc, char** argv) {
     _mmio_base = mmio_map();
 
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "dsi_touch");
+    strcpy(dev.desc, "dsi_touch");
     dev.read = tp_read;
     dev.loop_step = tp_loop;
     dev.check_poll_events = tp_check_poll_events;

@@ -2248,7 +2248,7 @@ int main(int argc, char** argv) {
     _next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "usb-hid");
+    strcpy(dev.desc, "usb-hid");
     dev.loop_step = usb_step;
     dev.open = usb_open;
     dev.close = usb_close;

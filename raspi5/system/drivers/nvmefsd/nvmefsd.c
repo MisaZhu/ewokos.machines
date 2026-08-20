@@ -381,7 +381,7 @@ int main(int argc, char **argv) {
     nvmefsd_log_fs_info(&ext2);
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "nvmefs(ext2)");
+    strcpy(dev.desc, "nvmefs(ext2)");
     dev.mount = nvmeext2_mount;
     dev.read = nvmeext2_read;
     dev.write = nvmeext2_write;

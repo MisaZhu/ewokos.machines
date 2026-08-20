@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
     _mmio_base = mmio_map_offset(0x10000000, 8*1024*1024);
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "rk_uart");
+    strcpy(dev.desc, "rk_uart");
     dev.read = uart_read;
     dev.write = uart_write;
 

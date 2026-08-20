@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
     memset(kb_states, 0, sizeof(kb_states));
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "keyboard");
+    strcpy(dev.desc, "keyboard");
 
     dev.read = kbd_read;
     dev.loop_step = kbd_loop;

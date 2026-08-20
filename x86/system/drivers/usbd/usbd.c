@@ -1310,7 +1310,7 @@ int main(int argc, char** argv) {
     usb_scan_ports();
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "usb-hid");
+    strcpy(dev.desc, "usb-hid");
     dev.open = usb_open;
     dev.close = usb_close;
     dev.read = usb_read;

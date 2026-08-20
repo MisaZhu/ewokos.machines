@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "joystick");
+    strcpy(dev.desc, "joystick");
     dev.loop_step = loop;
     dev.read = joystick_read;
     dev.check_poll_events = joystick_check_poll_events;

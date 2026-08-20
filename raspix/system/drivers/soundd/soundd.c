@@ -1808,7 +1808,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "bcm283x-snd");
+    strcpy(dev.desc, "bcm283x-snd");
     dev.open = sound_open;
     dev.close = sound_close;
     dev.write = sound_write;

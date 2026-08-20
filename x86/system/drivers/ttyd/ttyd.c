@@ -126,10 +126,10 @@ int main(int argc, char** argv) {
     }
 
     vdevice_t dev = {0};
-    dev.name[0] = 't';
-    dev.name[1] = 't';
-    dev.name[2] = 'y';
-    dev.name[3] = 0;
+    dev.desc[0] = 't';
+    dev.desc[1] = 't';
+    dev.desc[2] = 'y';
+    dev.desc[3] = 0;
     dev.read = tty_read;
     dev.write = tty_write;
     dev.loop_step = tty_loop;

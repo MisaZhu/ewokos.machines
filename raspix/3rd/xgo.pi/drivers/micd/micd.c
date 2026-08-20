@@ -189,7 +189,7 @@ int main(int argc, char** argv) {
 
     _mic_buf = charbuf_new(MIC_BUF_BYTES);
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "xgo-mic");
+    strcpy(dev.desc, "xgo-mic");
     dev.open = mic_open;
     dev.close = mic_close;
     dev.read = mic_read;

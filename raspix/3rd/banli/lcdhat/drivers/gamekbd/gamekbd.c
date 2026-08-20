@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "gamekb");
+    strcpy(dev.desc, "gamekb");
     dev.read = gamekb_read;
 
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);

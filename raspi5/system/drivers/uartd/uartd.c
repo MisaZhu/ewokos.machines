@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "pi5_pl011_uart");
+    strcpy(dev.desc, "pi5_pl011_uart");
 
     _RxBuf = charbuf_new(0);
 

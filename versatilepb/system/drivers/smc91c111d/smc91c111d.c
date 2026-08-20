@@ -406,7 +406,7 @@ int main(int argc, char** argv) {
     eth_init();
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "eth");
+    strcpy(dev.desc, "eth");
     dev.read = eth_read;
     dev.write = eth_write;
     dev.dev_cntl = eth_dcntl;

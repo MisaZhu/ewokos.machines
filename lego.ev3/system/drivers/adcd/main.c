@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "adcd");
+    strcpy(dev.desc, "adcd");
     dev.read = adcd_read;
     dev.loop_step = adcd_loop;
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);

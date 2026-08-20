@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
     try_open_hid();
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "usb-mouse");
+    strcpy(dev.desc, "usb-mouse");
     dev.read = usbmoused_read;
     dev.loop_step = mouse_loop;
     return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);

@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "xpt2046");
+    strcpy(dev.desc, "xpt2046");
     dev.read = tp_read;
 
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);

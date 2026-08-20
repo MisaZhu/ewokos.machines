@@ -326,7 +326,7 @@ int main(int argc, char** argv) {
     memset(&dev, 0, sizeof(vdevice_t));
     _wland_dev = &dev;
 
-    strcpy(dev.name, "eth");
+    strcpy(dev.desc, "eth");
     dev.read = net_read;
     dev.write = net_write;
     dev.dev_cntl = net_dcntl;

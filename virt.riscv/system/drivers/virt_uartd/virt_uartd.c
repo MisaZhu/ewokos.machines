@@ -72,7 +72,7 @@ int main(int argc, char** argv) {
     _mmio_base = mmio_map();
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "virt_uart");
+    strcpy(dev.desc, "virt_uart");
     dev.read = uart_read;
     dev.write = uart_write;
 

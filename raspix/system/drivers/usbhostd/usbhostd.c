@@ -3627,13 +3627,13 @@ int main(int argc, char** argv) {
     _next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "usb-hid");
+    strcpy(dev.desc, "usb-hid");
     dev.loop_step = usb_step;
     dev.open = usb_open;
     dev.close = usb_close;
     dev.read = usb_read;
     dev.fcntl = usb_fcntl;
     dev.check_poll_events = usb_check_poll_events;
-    slog("usbhostd: device_run name=%s mnt=%s\n", dev.name, mnt_point);
+    slog("usbhostd: device_run name=%s mnt=%s\n", dev.desc, mnt_point);
     return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 }

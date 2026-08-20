@@ -206,7 +206,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "gt911");
+    strcpy(dev.desc, "gt911");
     dev.read = tp_read;
     dev.loop_step = tp_loop;
     dev.check_poll_events = tp_check_poll_events;

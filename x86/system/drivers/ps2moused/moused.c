@@ -391,7 +391,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "mouse");
+    strcpy(dev.desc, "mouse");
     dev.read = moused_read;
     dev.loop_step = mouse_loop;
 

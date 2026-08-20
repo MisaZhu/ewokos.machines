@@ -831,7 +831,7 @@ int main(int argc, char** argv) {
 
     /* register vdevice */
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "cam");
+    strcpy(dev.desc, "cam");
     dev.read = cam_read;
     dev.open = cam_open;
     dev.close = cam_close;

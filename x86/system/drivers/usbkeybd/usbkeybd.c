@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
     try_open_hid();
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "usb-keyboard");
+    strcpy(dev.desc, "usb-keyboard");
     dev.read = keybd_read;
     dev.loop_step = keybd_loop;
     return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);

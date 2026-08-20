@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "uart");
+    strcpy(dev.desc, "uart");
     dev.read = uart_read;
     dev.write = uart_write;
     dev.loop_step = loop;

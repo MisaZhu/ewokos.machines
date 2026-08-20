@@ -25,13 +25,13 @@ int main(int argc, char** argv) {
     const char* mnt_point = argc > 1 ? argv[1] : "/dev/power0";
 
     vdevice_t dev = {0};
-    dev.name[0] = 'p';
-    dev.name[1] = 'o';
-    dev.name[2] = 'w';
-    dev.name[3] = 'e';
-    dev.name[4] = 'r';
-    dev.name[5] = 'd';
-    dev.name[6] = 0;
+    dev.desc[0] = 'p';
+    dev.desc[1] = 'o';
+    dev.desc[2] = 'w';
+    dev.desc[3] = 'e';
+    dev.desc[4] = 'r';
+    dev.desc[5] = 'd';
+    dev.desc[6] = 0;
     dev.read = power_read;
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
     return 0;

@@ -157,12 +157,12 @@ int main(int argc, char** argv) {
     syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
     if(strcmp(sysinfo.machine, "raspberry-pi1") == 0 ||
             strcmp(sysinfo.machine, "raspberry-pi2b") == 0)  {
-        strcpy(dev.name, "pl011_uart");
+        strcpy(dev.desc, "pl011_uart");
         _mini_uart = false;
         bcm283x_pl011_uart_init();
     }
     else {
-        strcpy(dev.name, "mini_uart");
+        strcpy(dev.desc, "mini_uart");
         bcm283x_mini_uart_init();
     }
 

@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "touch");
+    strcpy(dev.desc, "touch");
     dev.loop_step = touch_loop;
     dev.read = touch_read;
     dev.check_poll_events = touch_check_poll_events;

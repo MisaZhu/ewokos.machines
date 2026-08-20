@@ -897,7 +897,7 @@ int main(int argc, char** argv) {
     dma_chain_init();
 
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "audio");
+    strcpy(dev.desc, "audio");
     dev.open = sound_open;
     dev.close = sound_close;
     dev.write = sound_write;

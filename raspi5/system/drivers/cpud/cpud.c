@@ -718,7 +718,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "pi5_cpud");
+    strcpy(dev.desc, "pi5_cpud");
     dev.read = cpud_read;
     dev.cmd = cpud_cmd;
 

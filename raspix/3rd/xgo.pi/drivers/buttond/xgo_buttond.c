@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "xgo_button");
+    strcpy(dev.desc, "xgo_button");
     dev.read = xgo_button_read;
     //dev.loop_step = check_ux;
 

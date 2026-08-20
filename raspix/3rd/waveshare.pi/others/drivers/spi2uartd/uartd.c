@@ -246,7 +246,7 @@ int main(int argc, char** argv) {
 
         vdevice_t dev;
         memset(&dev, 0, sizeof(vdevice_t));
-        strcpy(dev.name, "spi_uart");
+        strcpy(dev.desc, "spi_uart");
 
         SC16IS750_init(&spiuart, SC16IS750_PROTOCOL_SPI, 18, SC16IS750_DUAL_CHANNEL);
         SC16IS750_begin(&spiuart, SC16IS750_DEFAULT_SPEED, SC16IS750_DEFAULT_SPEED, 14745600UL);

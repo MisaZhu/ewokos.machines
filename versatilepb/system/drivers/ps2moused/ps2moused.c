@@ -250,7 +250,7 @@ int main(int argc, char** argv) {
     mouse_init();
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.name, "mouse");
+    strcpy(dev.desc, "mouse");
     dev.read = _read;
     dev.loop_step = loop_step;
 

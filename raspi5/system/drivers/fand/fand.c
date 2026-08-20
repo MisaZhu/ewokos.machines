@@ -419,7 +419,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.name, "fan");
+    strcpy(dev.desc, "fan");
     dev.read = fan_read;
     dev.write = fan_write;
     dev.cmd = fan_cmd;
