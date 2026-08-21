@@ -134,7 +134,7 @@ static uint32_t blt32_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
     uint32_t row_bytes = (uint32_t)g->w * bytes_per_pixel;
     uint32_t total_bytes = (uint32_t)g->h * row_bytes;
 
-    if (contrast_active()) {
+    /*if (contrast_active()) {
         for (int32_t y = 0; y < g->h; ++y) {
             uint32_t* dst_row = (uint32_t*)(void*)(dst + y * fbinfo->pitch);
             const uint32_t* src_row = src + y * g->w;
@@ -145,6 +145,7 @@ static uint32_t blt32_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
         }
         return total_bytes;
     }
+    */
 
     if (fbinfo->pitch == row_bytes) {
         memcpy(dst, src, total_bytes);
