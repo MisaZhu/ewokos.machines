@@ -19,14 +19,9 @@
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0 
 
-@/bin/splash -m "start /dev/tty0" -p 15
-@/bin/ipcserv /drivers/raspix/soundd         /dev/sound0
-
 @/bin/splash -m "start /dev/timer" -p 20
 @/bin/ipcserv /drivers/timerd
 
-@/bin/splash -m "start /dev/touch0" -p 30
-@/bin/ipcserv /drivers/waveshare/gt911_touchd  /dev/touch0
 
 @/bin/splash -m "mount /tmp" -p 40
 @/bin/ipcserv /drivers/ramfsd          /tmp
@@ -34,13 +29,13 @@
 @/bin/splash -m "start /dev/null" -p 50
 @/bin/ipcserv /drivers/nulld           /dev/null
 
-@/bin/splash -m "start /dev/sound0" -p 55
-@/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
+#@/bin/splash -m "start /dev/sound0" -p 55
+#@/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
 
-@/bin/splash -m "start /dev/wl0" -p 60
+#@/bin/splash -m "start /dev/wl0" -p 60
 #@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
 
-@/bin/splash -m "start /dev/net0" -p 70
+#@/bin/splash -m "start /dev/net0" -p 70
 #@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
 
 @/bin/splash -m "start /dev/time" -p 80
@@ -49,18 +44,22 @@
 #@/bin/splash -m "start telnetd" -p 83
 #@/bin/bgrun /sbin/telnetd
 
-@/bin/splash -m "start sshd" -p 84
-@/bin/bgrun /sbin/sshd
+#@/bin/splash -m "start sshd" -p 84
+#@/bin/bgrun /sbin/sshd
 
 #@/bin/splash -m "start /dev/bt0" -p 85
 #@/bin/ipcserv /drivers/raspix/btd    /dev/bt0
 
-#@/bin/splash -m "load fonts" -p 95
+#@/bin/splash -m "load fonts" -p 90
 #@/bin/load_font
+
+#@/bin/splash -m "start xtouch" -p 95
+#@/bin/bgrun /sbin/x/xtouch
+
+#@/bin/splash -m "start xim" -p 98
+#@/bin/bgrun /sbin/x/xim_vkey -h 168
 
 @/bin/splash -m "start x" -p 100
 @/bin/ipcserv /drivers/xserverd        /dev/x
 
-@/bin/bgrun /sbin/x/xtouch
-@/bin/bgrun /sbin/x/xim_vkey -h 168
 @/bin/bgrun /bin/x/xsession  misa
