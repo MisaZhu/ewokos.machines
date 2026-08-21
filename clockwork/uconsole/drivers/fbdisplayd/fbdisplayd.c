@@ -394,10 +394,10 @@ int main(int argc, char** argv) {
     fbdisplayd.splash = NULL;   /* default logo splash from libfbdisplayd */
     fbdisplayd.flush = flush;
     /* flush is a plain blit into the scan-out buffer, so the libfbdisplayd
-     * generic direct-to-fb rotation applies: it rotates the client
-     * frame straight into fb memory (destination row-sequential for
-     * NC write-combining), skipping the intermediate rotate buffer
-     * and the extra full-frame copy. */
+     * generic rotation applies: fbdisplayd_rotate_to() rotates the client
+     * frame into a cacheable intermediate buffer (L1/L2 write-back), then
+     * does a single sequential memcpy to the NC scan-out buffer (maximum
+     * write-combine efficiency). */
     fbdisplayd.flush_rotate = fbdisplayd_rotate_to;
     /* Non-rotated scan-out is also a plain memory blit, so libfbdisplayd can
      * push just the dirty rects instead of falling back to a full frame. */

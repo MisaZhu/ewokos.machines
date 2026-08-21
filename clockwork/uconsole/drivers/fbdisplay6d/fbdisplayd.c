@@ -236,11 +236,13 @@ static uint32_t clamp_contrast_pct(int pct) {
 
 /*
  * Contrast only exists inside our own blit, so while it is active the two
- * generic libfbdisplayd fast paths must go: fbdisplayd_rotate_to() rotates straight into
- * scan-out and never calls flush() at all, and fbdisplayd_flush_rect_to() would
- * push raw dirty rects, leaving untransformed patches on an otherwise
- * transformed screen. Without them libfbdisplayd rotates through its own buffer
- * and always full-flushes, i.e. everything funnels through flush().
+ * generic libfbdisplayd fast paths must go: fbdisplayd_rotate_to() rotates
+ * into an intermediate buffer and copies to scan-out without calling our
+ * flush() (so the contrast LUT is never applied), and
+ * fbdisplayd_flush_rect_to() would push raw dirty rects, leaving
+ * untransformed patches on an otherwise transformed screen. Without them
+ * libfbdisplayd rotates through its own buffer and always full-flushes,
+ * i.e. everything funnels through flush().
  */
 static void contrast_sync_fast_paths(void) {
     if (contrast_active()) {
@@ -601,12 +603,12 @@ int main(int argc, char** argv) {
     _fbdisplayd_cfg.get_info = get_info;
     /*
      * flush is a plain blit into the scan-out buffer, so the libfbdisplayd
-     * generic direct-to-fb rotation applies: it rotates the client frame
-     * straight into fb memory (destination row-sequential for NC
-     * write-combining), skipping the intermediate rotate buffer and the
-     * extra full-frame copy. Non-rotated scan-out is a plain blit too, so
-     * libfbdisplayd can push just the dirty rects instead of a full frame.
-     * Both hooks are installed (and dropped again) by
+     * generic rotation applies: fbdisplayd_rotate_to() rotates the client
+     * frame into a cacheable intermediate buffer (L1/L2 write-back), then
+     * does a single sequential memcpy to the NC scan-out buffer (maximum
+     * write-combine efficiency). Non-rotated scan-out is a plain blit too,
+     * so libfbdisplayd can push just the dirty rects instead of a full
+     * frame. Both hooks are installed (and dropped again) by
      * contrast_sync_fast_paths(), since neither can carry the contrast LUT.
      */
     contrast_build_lut();
