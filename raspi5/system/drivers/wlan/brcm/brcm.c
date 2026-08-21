@@ -3359,22 +3359,32 @@ void brcmf_rx_event( struct sk_buff *skb)
              event_status == BRCMF_E_STATUS_SUCCESS &&
              (emsg.flags & BRCMF_EVENT_MSG_LINK)){
         brcmf_mark_connected();
-    }else if(event_type == BRCMF_E_DEAUTH ||
-             event_type == BRCMF_E_DEAUTH_IND ||
-             event_type == BRCMF_E_DISASSOC ||
-             event_type == BRCMF_E_DISASSOC_IND){
-        /* our own teardown during an AP switch, not a link loss */
+    }else if((event_type == BRCMF_E_DEAUTH ||
+              event_type == BRCMF_E_DEAUTH_IND ||
+              event_type == BRCMF_E_DISASSOC ||
+              event_type == BRCMF_E_DISASSOC_IND) &&
+             bus->state == CONNECTED){
+        /* Link loss on a live session. While CONNECTING these events are
+         * normal join byproducts (our own DISASSOC teardown in connect(),
+         * or the AP answering deauth reason 2 mid-handshake while the
+         * firmware supplicant retries auth internally); aborting the join
+         * on them made every auto-connect restart with a fresh DISASSOC,
+         * which re-provoked the AP and looped "link/setup failed" resets
+         * for minutes. The definitive join verdict is the failure status
+         * event below plus the connect timeout. */
         if (!brcmf_self_disassoc_active())
             brcmf_mark_disconnected("deauth/disassoc", event_type, event_status, event_reason);
     }else if((event_type == BRCMF_E_SET_SSID ||
               event_type == BRCMF_E_ASSOC ||
               event_type == BRCMF_E_AUTH ||
               event_type == BRCMF_E_ROAM) &&
-             event_status != BRCMF_E_STATUS_SUCCESS){
+             event_status != BRCMF_E_STATUS_SUCCESS &&
+             bus->state == CONNECTING){
         brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
     }else if(event_type == BRCMF_E_LINK &&
              (event_status != BRCMF_E_STATUS_SUCCESS ||
-              !(emsg.flags & BRCMF_EVENT_MSG_LINK))){
+              !(emsg.flags & BRCMF_EVENT_MSG_LINK)) &&
+             bus->state == CONNECTED){
         if (!brcmf_self_disassoc_active())
             brcmf_mark_disconnected("link/setup failed", event_type, event_status, event_reason);
     }
@@ -5041,7 +5051,7 @@ static void *brcm_lifecycle_thread(void *p)
         }
         restart_rounds++;
 
-        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 : 30000;
+        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 : 10000;
         brcm_log("wlan: worker exited, full restart #%u in %ums\n",
                 (unsigned)restart_rounds, (unsigned)delay_ms);
         usleep(delay_ms * 1000);
