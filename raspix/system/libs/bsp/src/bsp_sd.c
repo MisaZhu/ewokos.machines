@@ -22,6 +22,10 @@ static int _sd_aggressive_read_opt = 1;
    reads like sdfsd's inode-table prefetch become a single CMD18 burst
    instead of one 4KB command per page. */
 #define SD_CACHE_MAX_BATCH_PAGES 32U
+/* Streaming (cache-bypass) runs go straight into the caller's buffer,
+   so they can ride the full vfs transfer chunk (SHM_MAX, 256KB = 64
+   pages) in a single CMD18 without evicting anything from the cache. */
+#define SD_STREAM_MAX_BATCH_PAGES 64U
 
 static void** bsp_sd_get_l3(uint32_t sector, int create) {
     uint32_t l1 = (sector >> 21) & 0x1FF;
@@ -104,8 +108,8 @@ static int32_t bsp_sd_read_cache_sectors(int32_t sector, void *buf, uint32_t cou
                 uint32_t run = remaining / SD_CACHE_PAGE_SECTORS;
                 if(run > max_run)
                     run = max_run;
-                if(run > SD_CACHE_MAX_BATCH_PAGES)
-                    run = SD_CACHE_MAX_BATCH_PAGES;
+                if(run > SD_STREAM_MAX_BATCH_PAGES)
+                    run = SD_STREAM_MAX_BATCH_PAGES;
                 uint32_t uncached = 0;
                 while(uncached < run && l3_entry[l3 + uncached] == 0)
                     uncached++;

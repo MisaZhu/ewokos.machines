@@ -293,8 +293,10 @@ static struct sdhci_host _host;
 /* SDMA bounce buffer, allocated from the DMA region (mapped uncached,
    so no explicit cache maintenance is needed). Only used on the
    bcm2711 eMMC2 controller, whose DMA engine takes legacy bus
-   addresses (0xC0000000 alias, uncached). */
-#define SDHCI_SDMA_BOUNCE_SIZE	(64 * 1024)
+   addresses (0xC0000000 alias, uncached). Sized to the vfs transfer
+   chunk (SHM_MAX, 256KB) so bulk reads/writes stay on SDMA instead of
+   silently falling back to PIO when trans_bytes exceeds the bounce. */
+#define SDHCI_SDMA_BOUNCE_SIZE	(256 * 1024)
 #define SDHCI_SDMA_TIMEOUT_MS	1000
 #define SDHCI_BUS_ADDR_UNCACHED	0xC0000000u
 #define SDHCI_BUS_ADDR_MASK	0x3FFFFFFFu

@@ -24,6 +24,12 @@ static int _sd_aggressive_read_opt = 1;
  * while still amortizing misses for sequential access.
  */
 #define SD_CACHE_MAX_BATCH_PAGES 8U
+/* Streaming (cache-bypass) runs land straight in the caller's buffer
+ * and are issued only for bulk sequential reads, where per-command
+ * overhead (CMD18 + manual CMD12 + busy poll) dominates. Let them
+ * ride the full vfs transfer chunk (SHM_MAX, 256KB = 64 pages) in one
+ * CMD18; mmc_read_blocks' CMD12/reinit recovery bounds the stall risk. */
+#define SD_STREAM_MAX_BATCH_PAGES 64U
 
 static void** bsp_sd_get_l3(uint32_t sector, int create) {
     uint32_t l1 = (sector >> 21) & 0x1FF;
@@ -108,8 +114,8 @@ static int32_t bsp_sd_read_cache_sectors(int32_t sector, void *buf, uint32_t cou
                 uint32_t run = remaining / SD_CACHE_PAGE_SECTORS;
                 if(run > max_run)
                     run = max_run;
-                if(run > SD_CACHE_MAX_BATCH_PAGES)
-                    run = SD_CACHE_MAX_BATCH_PAGES;
+                if(run > SD_STREAM_MAX_BATCH_PAGES)
+                    run = SD_STREAM_MAX_BATCH_PAGES;
                 uint32_t uncached = 0;
                 while(uncached < run && l3_entry[l3 + uncached] == 0)
                     uncached++;
