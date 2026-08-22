@@ -279,3 +279,12 @@ int32_t rk3506_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) 
 
         return 0;
 }
+
+/*
+ * All DWMMC writes are synchronous (data done + busy released before
+ * return, single-sector writes verified by read-back), so there is no
+ * pending state to commit.
+ */
+int32_t rk3506_sd_flush(void) {
+        return 0;
+}
