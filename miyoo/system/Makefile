@@ -6,10 +6,10 @@ INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
+include $(SYS_ROOT_DIR)/platform/make.inc
+
 all: x_sys
 	@echo "all done."
-
-include $(SYS_ROOT_DIR)/platform/make.inc
 
 DIRS = libs $(SYS_ROOT_DIR)/basic $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/gui drivers $(SYS_ROOT_DIR)/xwin
 x_sys: kernel_heads 
@@ -20,6 +20,7 @@ x_sys: kernel_heads
 		$(MAKE) -C $$dir || exit 1; \
 	done
 	cp -r etc $(TARGET_DIR)/
+	@$(MAKE) final
 
 CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic
 clean:
@@ -28,3 +29,4 @@ clean:
 	done
 	cd $(EWOKOS_ROOT_DIR)/sw.extra/; $(MAKE) HW=$(HW) clean
 	rm -fr $(BUILD_DIR)
+	rm -fr $(FINAL_DIR)
