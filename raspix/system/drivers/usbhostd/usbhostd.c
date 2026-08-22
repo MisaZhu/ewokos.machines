@@ -43,6 +43,10 @@ extern ewokos_addr_t _mmio_base;
 #define USB_POLL_INTERVAL_MIN_MS 8u
 #define USB_POLL_INTERVAL_MAX_MS 40u
 #define USB_POLL_IDLE_THRESHOLD 64u
+/* hub downstream-port bring-up: cap the bPwrOn2PwrGood wait and give
+   slow-debouncing devices a grace window after power-good */
+#define USB_HUB_PWR_WAIT_MAX_MS 500u
+#define USB_HUB_CONNECT_GRACE_MS 300u
 #define USB_LOG_TRANSFER_VERBOSE 0
 /* per-transfer errors, poll fail/recover, stats and idle-port traces:
    only wanted when debugging the controller itself */
@@ -2793,33 +2797,56 @@ static int usb_enumerate_hub(uint8_t addr, bool low_speed, uint8_t ep_mps, int d
     for (uint8_t port = 1; port <= num_ports; ++port) {
         usb_hub_port_feature(addr, low_speed, ep_mps, port, USB_HUB_FEAT_PORT_POWER, true);
     }
-    /* small settle time — the scan-retry loop (200ms cadence) gives the
-       hub's downstream ports plenty of time to power up across cycles
-       without blocking the entire event loop here */
-    proc_usleep(10000);
+    /* The hub only reports stable connection status after downstream VBUS
+       has ramped (bPwrOn2PwrGood). Waiting here lets the first scan pass
+       find the devices; skipping it made every pass miss them and the
+       retry loop kept re-resetting the whole tree, so inputs took tens
+       of seconds to appear */
+    if (pwr_ms > USB_HUB_PWR_WAIT_MAX_MS) {
+        pwr_ms = USB_HUB_PWR_WAIT_MAX_MS;
+    }
+    proc_usleep(pwr_ms * 1000u);
 
-    for (uint8_t port = 1; port <= num_ports; ++port) {
-        uint16_t status = 0;
-        uint16_t change = 0;
-        int ret;
+    /* Scan ports until every port is handled, with a bounded grace window
+       for devices that debounce slowly after power-good */
+    uint32_t handled = 0;
+    uint64_t grace_deadline = kernel_tic_ms(0) + USB_HUB_CONNECT_GRACE_MS;
+    for (;;) {
+        bool all_done = true;
 
-        if (usb_hub_port_status(addr, low_speed, ep_mps, port, &status, &change) != 0) {
-            slog("usbhostd: hub addr=%u port=%u status_failed\n", addr, port);
-            continue;
+        for (uint8_t port = 1; port <= num_ports; ++port) {
+            uint16_t status = 0;
+            uint16_t change = 0;
+            int ret;
+
+            if ((handled & (1u << port)) != 0) {
+                continue;
+            }
+            if (usb_hub_port_status(addr, low_speed, ep_mps, port, &status, &change) != 0) {
+                slog("usbhostd: hub addr=%u port=%u status_failed\n", addr, port);
+                handled |= (1u << port);
+                continue;
+            }
+            if (USB_LOG_RUNTIME_VERBOSE) {
+                slog("usbhostd: hub addr=%u port=%u status=%04x change=%04x\n",
+                        addr, port, status, change);
+            }
+            if ((status & USB_HUB_PS_CONNECTION) == 0) {
+                all_done = false;
+                continue;
+            }
+            handled |= (1u << port);
+            usb_hub_port_feature(addr, low_speed, ep_mps, port,
+                    USB_HUB_FEAT_C_PORT_CONNECTION, false);
+            ret = usb_hub_port_attach(addr, low_speed, ep_mps, port, depth);
+            if (ret > 0) {
+                registered += ret;
+            }
         }
-        if (USB_LOG_RUNTIME_VERBOSE) {
-            slog("usbhostd: hub addr=%u port=%u status=%04x change=%04x\n",
-                    addr, port, status, change);
+        if (all_done || kernel_tic_ms(0) >= grace_deadline) {
+            break;
         }
-        if ((status & USB_HUB_PS_CONNECTION) == 0) {
-            continue;
-        }
-        usb_hub_port_feature(addr, low_speed, ep_mps, port,
-                USB_HUB_FEAT_C_PORT_CONNECTION, false);
-        ret = usb_hub_port_attach(addr, low_speed, ep_mps, port, depth);
-        if (ret > 0) {
-            registered += ret;
-        }
+        proc_usleep(20000);
     }
     return registered;
 }

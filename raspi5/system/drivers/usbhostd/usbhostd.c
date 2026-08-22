@@ -57,6 +57,12 @@
 #define USB_IDLE_SLEEP_MAX_US 8000u
 #define USB_NO_INPUT_SLEEP_US 20000u
 #define USB_MAX_HUB_DEPTH 2
+/* hub downstream-port bring-up: cap the bPwrOn2PwrGood wait, give
+   slow-debouncing devices a grace window after power-good, and pace
+   attach retries for ports whose first enumeration failed */
+#define USB_HUB_PWR_WAIT_MAX_MS 500u
+#define USB_HUB_CONNECT_GRACE_MS 300u
+#define USB_HUB_RETRY_INTERVAL_MS 500u
 
 /* enumeration / bring-up logging; per-report traffic stays silent */
 #define USB_LOG_ENABLE 0
@@ -267,6 +273,7 @@ typedef struct {
     int8_t parent;       /* _devs index of parent hub, -1 = root port */
     uint8_t parent_port; /* hub port (1-based) when parent >= 0 */
     uint8_t depth;
+    uint64_t port_retry_ms[9]; /* per hub port: next allowed attach retry */
     xhci_dev_t xdev;
 } usb_dev_t;
 
@@ -1854,35 +1861,77 @@ static int usb_enumerate_hub(int dev_idx) {
     for (uint8_t port = 1; port <= num_ports; ++port) {
         usb_hub_port_feature(&dev->xdev, port, USB_HUB_FEAT_PORT_POWER, true);
     }
-    /* bPwrOn2PwrGood is in 2ms units; add margin for slow rails */
-    proc_usleep(((uint32_t)hub_desc[5] * 2u + 100u) * 1000u);
+    /* bPwrOn2PwrGood is in 2ms units; add margin for slow rails. The hub
+       only reports stable connection status once downstream VBUS has
+       ramped, so actually waiting here is what lets the first scan pass
+       find the devices */
+    uint32_t pwr_ms = (uint32_t)hub_desc[5] * 2u + 100u;
+    if (pwr_ms > USB_HUB_PWR_WAIT_MAX_MS) {
+        pwr_ms = USB_HUB_PWR_WAIT_MAX_MS;
+    }
+    proc_usleep(pwr_ms * 1000u);
 
-    for (uint8_t port = 1; port <= num_ports; ++port) {
-        uint16_t status = 0, change = 0;
-        int ret;
+    /* Scan ports until every port is handled, with a bounded grace window
+       for devices that debounce slowly after power-good: a device missed
+       here has its connection change bit consumed below, so without the
+       grace window it would only resurface on a later scan tick */
+    uint32_t handled = 0;
+    uint64_t grace_deadline = kernel_tic_ms(0) + USB_HUB_CONNECT_GRACE_MS;
+    for (;;) {
+        bool all_done = true;
 
-        if (usb_hub_port_status(&dev->xdev, port, &status, &change) != 0) {
-            continue;
+        for (uint8_t port = 1; port <= num_ports; ++port) {
+            uint16_t status = 0, change = 0;
+            int ret;
+
+            if ((handled & (1u << port)) != 0) {
+                continue;
+            }
+            if (usb_hub_port_status(&dev->xdev, port, &status, &change) != 0) {
+                handled |= (1u << port);
+                continue;
+            }
+            if (change & USB_HUB_PC_CONNECTION) {
+                usb_hub_port_feature(&dev->xdev, port, USB_HUB_FEAT_C_PORT_CONNECTION, false);
+            }
+            if ((status & USB_HUB_PS_CONNECTION) == 0) {
+                all_done = false;
+                continue;
+            }
+            handled |= (1u << port);
+            ret = usb_hub_attach_port(dev_idx, port);
+            if (ret > 0) {
+                registered += ret;
+            }
+            else {
+                /* bring-up failed: pace the recovery retries in usb_hub_scan */
+                dev->port_retry_ms[port] = kernel_tic_ms(0) + USB_HUB_RETRY_INTERVAL_MS;
+            }
         }
-        if (change & USB_HUB_PC_CONNECTION) {
-            usb_hub_port_feature(&dev->xdev, port, USB_HUB_FEAT_C_PORT_CONNECTION, false);
+        if (all_done || kernel_tic_ms(0) >= grace_deadline) {
+            break;
         }
-        if ((status & USB_HUB_PS_CONNECTION) == 0) {
-            continue;
-        }
-        ret = usb_hub_attach_port(dev_idx, port);
-        if (ret > 0) {
-            registered += ret;
-        }
+        proc_usleep(20000);
     }
     /* the hub device itself stays registered even with no children yet:
        the periodic scan keeps watching its ports */
     return registered;
 }
 
+static bool hub_port_has_child(int dev_idx, uint8_t port) {
+    for (int i = 0; i < USB_MAX_DEVS; ++i) {
+        if (_devs[i].present && _devs[i].parent == dev_idx &&
+                _devs[i].parent_port == port) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* poll a live hub for connect/disconnect changes on its ports */
 static void usb_hub_scan(int dev_idx) {
     usb_dev_t* dev = &_devs[dev_idx];
+    uint64_t now = kernel_tic_ms(0);
 
     for (uint8_t port = 1; port <= dev->hub_ports; ++port) {
         uint16_t status = 0, change = 0;
@@ -1890,21 +1939,38 @@ static void usb_hub_scan(int dev_idx) {
         if (usb_hub_port_status(&dev->xdev, port, &status, &change) != 0) {
             continue;
         }
-        if ((change & USB_HUB_PC_CONNECTION) == 0) {
+        if ((change & USB_HUB_PC_CONNECTION) != 0) {
+            usb_hub_port_feature(&dev->xdev, port, USB_HUB_FEAT_C_PORT_CONNECTION, false);
+
+            /* drop whatever was on this port */
+            for (int i = 0; i < USB_MAX_DEVS; ++i) {
+                if (_devs[i].present && _devs[i].parent == dev_idx &&
+                        _devs[i].parent_port == port) {
+                    slog("usbhostd: hub dev=%d port=%u disconnected\n", dev_idx, port);
+                    usb_dev_remove_tree(i);
+                }
+            }
+            if (status & USB_HUB_PS_CONNECTION) {
+                if (usb_hub_attach_port(dev_idx, port) <= 0) {
+                    dev->port_retry_ms[port] = now + USB_HUB_RETRY_INTERVAL_MS;
+                }
+                else {
+                    dev->port_retry_ms[port] = 0;
+                }
+            }
             continue;
         }
-        usb_hub_port_feature(&dev->xdev, port, USB_HUB_FEAT_C_PORT_CONNECTION, false);
-
-        /* drop whatever was on this port */
-        for (int i = 0; i < USB_MAX_DEVS; ++i) {
-            if (_devs[i].present && _devs[i].parent == dev_idx &&
-                    _devs[i].parent_port == port) {
-                slog("usbhostd: hub dev=%d port=%u disconnected\n", dev_idx, port);
-                usb_dev_remove_tree(i);
+        /* a connected port with no child failed its bring-up earlier (its
+           connection change bit was already consumed during enumeration):
+           keep retrying at a paced interval instead of leaving the device
+           dead until a physical replug */
+        if ((status & USB_HUB_PS_CONNECTION) != 0 &&
+                !hub_port_has_child(dev_idx, port) &&
+                now >= dev->port_retry_ms[port]) {
+            dev->port_retry_ms[port] = now + USB_HUB_RETRY_INTERVAL_MS;
+            if (usb_hub_attach_port(dev_idx, port) > 0) {
+                dev->port_retry_ms[port] = 0;
             }
-        }
-        if (status & USB_HUB_PS_CONNECTION) {
-            usb_hub_attach_port(dev_idx, port);
         }
     }
 }
