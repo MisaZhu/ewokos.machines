@@ -34,8 +34,8 @@
 @/bin/splash -m "start /dev/timer" -p 20
 @/bin/ipcserv /drivers/timerd
 
-#@/bin/splash -m "start /dev/touch0" -p 30
-#@/bin/ipcserv /drivers/waveshare/dsi_touchd /dev/touch0
+@/bin/splash -m "start /dev/touch0" -p 30
+@/bin/ipcserv /drivers/waveshare/dsi_touchd /dev/touch0
 
 @/bin/splash -m "mount /tmp" -p 40
 @/bin/ipcserv /drivers/ramfsd          /tmp
