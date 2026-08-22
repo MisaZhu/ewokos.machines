@@ -1,0 +1,12 @@
+enable_uart=1
+force_turbo=1
+core_freq=250
+
+dtparam=spi=on
+dtparam=i2c_arm=on
+dtparam=i2c=on
+dtparam=i2s=on
+
+max_usb_current=1
+current_limit_override=0x5A000020
+avoid_warnings=2

@@ -1,25 +1,62 @@
+@export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log
-
-#@/bin/ipcserv /drivers/raspix/uartd       /dev/tty0
-#@set_stdio /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand           
 @/bin/ipcserv /drivers/waveshare/lcd3.5gd  /dev/disp0 
 @/bin/ipcserv /drivers/fontd              
 
-@export UX_ID=0
-@/bin/ipcserv /drivers/consoled       
-@set_stdio /dev/console0
+@/bin/splash -m "start /dev/tty0" -p 10
+@/bin/ipcserv /drivers/raspix/uartd         /dev/tty0
+@/bin/ipcserv /drivers/raspix/cpud          /dev/cpu
 
-@/bin/ipcserv /drivers/timerd             
-#@/bin/ipcserv /drivers/nulld              /dev/null
-#@/bin/ipcserv /drivers/ramfsd             /tmp
-
+@/bin/splash -m "run sessiond" -p 12
 @/bin/ipcserv /sbin/sessiond
+@/bin/bgrun /bin/session -r -t /dev/tty0 
 
-#@/bin/bgrun /sbin/x/xtouch     /dev/disp0
-@/bin/bgrun /sbin/x/xim_vkey 
+@/bin/splash -m "start /dev/timer" -p 20
+@/bin/ipcserv /drivers/timerd
 
-@/bin/load_font
-@/bin/ipcserv /drivers/xserverd           /dev/x
-@/bin/bgrun /bin/x/xsession misa 
+@/bin/splash -m "start usbhostd" -p 24
+@/bin/ipcserv /drivers/raspix/usbhostd      /dev/hid0
+@/bin/ipcserv /drivers/raspix/hid_touchd    /dev/touch0 /dev/hid0
+
+@/bin/splash -m "mount /tmp" -p 40
+@/bin/ipcserv /drivers/ramfsd          /tmp
+
+@/bin/splash -m "start /dev/null" -p 50
+@/bin/ipcserv /drivers/nulld           /dev/null
+
+#@/bin/splash -m "start /dev/sound0" -p 55
+#@/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
+
+@/bin/splash -m "start /dev/wl0" -p 60
+@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
+
+@/bin/splash -m "start /dev/net0" -p 70
+@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
+
+@/bin/splash -m "start /dev/time" -p 80
+@/bin/ipcserv /drivers/timed    /dev/time
+
+#@/bin/splash -m "start telnetd" -p 83
+#@/bin/bgrun /sbin/telnetd
+
+@/bin/splash -m "start sshd" -p 84
+@/bin/bgrun /sbin/sshd
+
+#@/bin/splash -m "start /dev/bt0" -p 85
+#@/bin/ipcserv /drivers/raspix/btd    /dev/bt0
+
+#@/bin/splash -m "load fonts" -p 90
+#@/bin/load_font
+
+@/bin/splash -m "start xtouch" -p 95
+@/bin/bgrun /sbin/x/xtouch /dev/disp0
+
+@/bin/splash -m "start xim" -p 98
+@/bin/bgrun /sbin/x/xim_vkey -h 168
+
+@/bin/splash -m "start x" -p 100
+@/bin/ipcserv /drivers/xserverd        /dev/x
+
+@/bin/bgrun /bin/x/xsession  misa

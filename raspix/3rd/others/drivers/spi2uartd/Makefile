@@ -1,7 +1,6 @@
-MF ?= waveshare
 MF_ROOT_DIR=../..
 include $(MF_ROOT_DIR)/../make.inc
-BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(MF)
+BUILD_DIR = $(MF_ROOT_DIR)/build/drivers/$(HW)
 
 UARTD_OBJS = uartd.o sc16is750.o
 
