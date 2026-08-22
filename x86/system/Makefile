@@ -16,9 +16,6 @@ all: x
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
-final:
-	@echo "all done."
-
 basic: basic_sys
 	@$(MAKE) final
 

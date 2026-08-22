@@ -23,7 +23,7 @@ ewokos=~/work/ewokos
 endif
 EWOKOS_ROOT_DIR = $(ewokos)
 MACHINE = raspix
-SYS_DIR = $(EWOKOS_ROOT_DIR)/system/build/$(MACHINE)
+FINAL_SYS_DIR = ../system
 
 ifeq ($(QEMU_DISPLAY_OPTS),cocoa)
 QEMU_FLAGS += -display cocoa
@@ -43,7 +43,7 @@ include make.bsp
 include $(EWOKOS_ROOT_DIR)/kernel/platform/${ARCH}/make.rule
 
 QEMU_ARGS += -kernel $(OS_IMG)
-QEMU_ARGS += -sd $(SYS_DIR)/root_$(ARCH).img
+QEMU_ARGS += -sd $(FINAL_SYS_DIR)/root_$(ARCH).img
 
 asm:
 	$(OBJDUMP) -D $(BUILD_DIR)/$(OS_ELF) > $(BUILD_DIR)/kernel.asm
