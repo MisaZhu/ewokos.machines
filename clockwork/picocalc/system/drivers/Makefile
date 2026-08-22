@@ -1,9 +1,11 @@
+DIRS = fbdisplayd kbd uartd
 all: 
-	cd fbdisplayd; $(MAKE)
-	cd kbd; $(MAKE)
-	cd uartd; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+CLEAN_DIRS = fbdisplayd kbd uartd
 clean:	
-	cd fbdisplayd; $(MAKE) clean
-	cd kbd; $(MAKE) clean
-	cd uartd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

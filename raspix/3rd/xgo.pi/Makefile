@@ -1,23 +1,15 @@
 export MF=xgo
 
+DIRS = lib drivers/spilcdd drivers/buttond drivers/soundd drivers/micd apps/xgo apps/cam apps/xgoAI
 all: 
 	mkdir -p build 
-	cd lib; $(MAKE)
-	cd drivers/spilcdd; $(MAKE)
-	cd drivers/buttond; $(MAKE)
-	cd drivers/soundd; $(MAKE)
-	cd drivers/micd; $(MAKE)
-	cd apps/xgo; $(MAKE)
-	cd apps/cam; $(MAKE)
-	cd apps/xgoAI; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 	cp -r etc build 
 
+CLEAN_DIRS = drivers/spilcdd drivers/buttond drivers/soundd drivers/micd lib apps/xgo apps/cam apps/xgoAI
 clean:	
-	cd drivers/spilcdd; $(MAKE) clean
-	cd drivers/buttond; $(MAKE) clean
-	cd drivers/soundd; $(MAKE) clean
-	cd drivers/micd; $(MAKE) clean
-	cd lib; $(MAKE) clean
-	cd apps/xgo; $(MAKE) clean
-	cd apps/cam; $(MAKE) clean
-	cd apps/xgoAI; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

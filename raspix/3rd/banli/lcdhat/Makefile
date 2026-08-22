@@ -1,12 +1,16 @@
 export MF=banli
 
+DIRS = drivers/gamekbd drivers/lcdhatd
 all: 
 	mkdir -p build
-	cd drivers/gamekbd; $(MAKE)
-	cd drivers/lcdhatd; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 	cp -r etc build
 
+CLEAN_DIRS = drivers/gamekbd drivers/lcdhatd
 clean:	
-	cd drivers/gamekbd; $(MAKE) clean
-	cd drivers/lcdhatd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
 	rm -fr build

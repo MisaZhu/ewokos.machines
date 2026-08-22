@@ -1,9 +1,11 @@
+DIRS = fbdisplayd gpio_joystickd rk_uartd
 all: 
-	cd fbdisplayd; $(MAKE)
-	cd gpio_joystickd; $(MAKE)
-	cd rk_uartd; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+CLEAN_DIRS = fbdisplayd gpio_joystickd rk_uartd
 clean:	
-	cd fbdisplayd; $(MAKE) clean
-	cd gpio_joystickd; $(MAKE) clean
-	cd rk_uartd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

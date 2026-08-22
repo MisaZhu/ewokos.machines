@@ -1,7 +1,11 @@
+DIRS = bt aplay
 all: 
-	cd bt;$(MAKE)
-	cd aplay;$(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+CLEAN_DIRS = aplay bt
 clean:
-	cd aplay;$(MAKE) clean
-	cd bt;$(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

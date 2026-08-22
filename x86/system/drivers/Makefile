@@ -1,23 +1,19 @@
+BASIC_DIRS = ttyd powerd
 basic:
-	cd ttyd; $(MAKE)
-	cd powerd; $(MAKE)
+	@for dir in $(BASIC_DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+GUI_DIRS = fbdisplayd usbd usbkeybd usbmoused ps2keybd ps2moused
 gui:
-	cd fbdisplayd; $(MAKE)
-	cd usbd; $(MAKE)
-	cd usbkeybd; $(MAKE)
-	cd usbmoused; $(MAKE)
-	cd ps2keybd; $(MAKE)
-	cd ps2moused; $(MAKE)
+	@for dir in $(GUI_DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
 network:
 
+CLEAN_DIRS = ttyd powerd fbdisplayd usbd usbkeybd usbmoused ps2keybd ps2moused
 clean:
-	cd ttyd; $(MAKE) clean
-	cd powerd; $(MAKE) clean
-	cd fbdisplayd; $(MAKE) clean
-	cd usbd; $(MAKE) clean
-	cd usbkeybd; $(MAKE) clean
-	cd usbmoused; $(MAKE) clean
-	cd ps2keybd; $(MAKE) clean
-	cd ps2moused; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

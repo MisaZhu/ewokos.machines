@@ -1,13 +1,11 @@
+DIRS = audio fbdisplayd g2dd gpio_joystickd ms_uartd
 all: 
-	cd audio; $(MAKE)
-	cd fbdisplayd; $(MAKE)
-	cd g2dd; $(MAKE)
-	cd gpio_joystickd; $(MAKE)
-	cd ms_uartd; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+CLEAN_DIRS = audio fbdisplayd g2dd gpio_joystickd ms_uartd
 clean:	
-	cd audio; $(MAKE) clean
-	cd fbdisplayd; $(MAKE) clean
-	cd g2dd; $(MAKE) clean
-	cd gpio_joystickd; $(MAKE) clean
-	cd ms_uartd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

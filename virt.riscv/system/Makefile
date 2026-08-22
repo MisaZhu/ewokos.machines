@@ -20,22 +20,20 @@ all: x_sys
 
 include $(SYS_ROOT_DIR)/platform/riscv/make.inc
 
+DIRS = libs $(SYS_ROOT_DIR)/basic $(SYS_ROOT_DIR)/gui drivers $(SYS_ROOT_DIR)/xwin
 x_sys: kernel_heads 
 	rm -f $(BUILD_DIR)/lib/libbsp.a
 
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
-	cd libs;$(MAKE)
-	cd $(SYS_ROOT_DIR)/basic;$(MAKE)
-	cd $(SYS_ROOT_DIR)/gui;$(MAKE)
-	cd drivers;$(MAKE)
-	cd $(SYS_ROOT_DIR)/xwin;$(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 	cp -r etc $(TARGET_DIR)/
 
+CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic
 clean:
-	cd libs;$(MAKE) clean
-	cd drivers;$(MAKE) clean
-	cd $(SYS_ROOT_DIR)/xwin;$(MAKE) clean
-	cd $(SYS_ROOT_DIR)/gui;$(MAKE) clean
-	cd $(SYS_ROOT_DIR)/basic;$(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
 	rm -fr $(BUILD_DIR)
 	rm -fr $(MACHINE_BUILD_DIR)

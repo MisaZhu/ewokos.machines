@@ -1,37 +1,23 @@
+BASIC_DIRS = uartd cpud soundd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd usbhostd hid_keybd hid_joystickd camd
 basic:
-	cd uartd; $(MAKE)
-	cd cpud; $(MAKE)
-	cd soundd; $(MAKE)
-	cd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd; $(MAKE)
-	cd usbhostd; $(MAKE)
-	cd hid_keybd; $(MAKE)
-	cd hid_joystickd; $(MAKE)
-	cd camd; $(MAKE)
+	@for dir in $(BASIC_DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+GUI_DIRS = fbdisplayd dsi_fbdisplayd g2dd hid_moused hid_touchd
 gui:
-	cd fbdisplayd; $(MAKE)
-	cd dsi_fbdisplayd; $(MAKE)
-	cd g2dd; $(MAKE)
-	cd hid_moused; $(MAKE)
-	cd hid_touchd; $(MAKE)
+	@for dir in $(GUI_DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+NETWORK_DIRS = wlan btd
 network:
-	cd wlan; $(MAKE)
-	cd btd; $(MAKE)
+	@for dir in $(NETWORK_DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+CLEAN_DIRS = uartd cpud fbdisplayd dsi_fbdisplayd g2dd soundd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd usbhostd hid_keybd hid_moused hid_touchd hid_joystickd wlan btd camd
 clean:	
-	cd uartd; $(MAKE) clean
-	cd cpud; $(MAKE) clean
-	cd fbdisplayd; $(MAKE) clean
-	cd dsi_fbdisplayd; $(MAKE) clean
-	cd g2dd; $(MAKE) clean
-	cd soundd; $(MAKE) clean
-	cd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd; $(MAKE) clean
-	cd usbhostd; $(MAKE) clean
-	cd hid_keybd; $(MAKE) clean
-	cd hid_moused; $(MAKE) clean
-	cd hid_touchd; $(MAKE) clean
-	cd hid_joystickd; $(MAKE) clean
-	cd wlan; $(MAKE) clean
-	cd btd; $(MAKE) clean
-	cd camd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

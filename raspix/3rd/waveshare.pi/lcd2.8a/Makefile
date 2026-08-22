@@ -1,12 +1,16 @@
 export MF=waveshare
 
+DIRS = drivers/lcdhatd drivers/keybd
 all: 
 	mkdir -p build
-	cd drivers/lcdhatd; $(MAKE)
-	cd drivers/keybd; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 	cp -r etc build
 
+CLEAN_DIRS = drivers/lcdhatd drivers/keybd
 clean:	
-	cd drivers/lcdhatd; $(MAKE) clean
-	cd drivers/keybd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
 	rm -fr build

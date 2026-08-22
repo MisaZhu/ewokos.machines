@@ -1,15 +1,17 @@
 export HW=raspix
 export MF=gnpe
 
+DIRS = drivers/kbd drivers/lcdhatd drivers/soundpwmd
+
 all: 
 	mkdir -p build
-	cd drivers/kbd; make
-	cd drivers/lcdhatd; make
-	cd drivers/soundpwmd; make
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 	cp -r etc build
 
 clean:	
-	cd drivers/kbd; make clean
-	cd drivers/lcdhatd; make clean
-	cd drivers/soundpwmd; make clean
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
 	rm -fr build

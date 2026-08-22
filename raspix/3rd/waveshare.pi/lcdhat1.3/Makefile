@@ -1,14 +1,16 @@
 export MF=waveshare
 
+DIRS = drivers/joykeybd drivers/gamekbd drivers/lcdhatd
 all: 
 	mkdir -p build
-	cd drivers/joykeybd; $(MAKE)
-	cd drivers/gamekbd; $(MAKE)
-	cd drivers/lcdhatd; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 	cp -r etc build
 
+CLEAN_DIRS = drivers/joykeybd drivers/gamekbd drivers/lcdhatd
 clean:	
-	cd drivers/joykeybd; $(MAKE) clean
-	cd drivers/gamekbd; $(MAKE) clean
-	cd drivers/lcdhatd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
 	rm -fr build

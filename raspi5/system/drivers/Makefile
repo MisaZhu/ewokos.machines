@@ -1,29 +1,20 @@
+BASIC_DIRS = uartd fand cpud nvmefsd
 basic:
-	cd uartd; $(MAKE)
-	cd fand; $(MAKE)
-	cd cpud; $(MAKE)
-	cd nvmefsd; $(MAKE)
+	@for dir in $(BASIC_DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
 network:
 	cd wlan; $(MAKE)
 
+GUI_DIRS = fbdisplayd dsi_fbdisplayd usbhostd hid_keybd hid_moused hid_touchd
 gui:
-	cd fbdisplayd; $(MAKE)
-	cd dsi_fbdisplayd; $(MAKE)
-	cd usbhostd; $(MAKE)
-	cd hid_keybd; $(MAKE)
-	cd hid_moused; $(MAKE)
-	cd hid_touchd; $(MAKE)
+	@for dir in $(GUI_DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 
+CLEAN_DIRS = uartd fand cpud nvmefsd fbdisplayd dsi_fbdisplayd usbhostd hid_keybd hid_moused hid_touchd wlan
 clean:
-	cd uartd; $(MAKE) clean
-	cd fand; $(MAKE) clean
-	cd cpud; $(MAKE) clean
-	cd nvmefsd; $(MAKE) clean
-	cd fbdisplayd; $(MAKE) clean
-	cd dsi_fbdisplayd; $(MAKE) clean
-	cd usbhostd; $(MAKE) clean
-	cd hid_keybd; $(MAKE) clean
-	cd hid_moused; $(MAKE) clean
-	cd hid_touchd; $(MAKE) clean
-	cd wlan; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done

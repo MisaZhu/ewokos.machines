@@ -1,16 +1,16 @@
 export MF=clockwork
 
+DIRS = drivers/fbdisplayd drivers/fbdisplay6d drivers/powerd drivers/soundpwmd
 all: 
 	mkdir -p build
-	cd drivers/fbdisplayd; $(MAKE)
-	cd drivers/fbdisplay6d; $(MAKE)
-	cd drivers/powerd; $(MAKE)
-	cd drivers/soundpwmd; $(MAKE)
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir || exit 1; \
+	done
 	cp -r etc build/
 
+CLEAN_DIRS = drivers/fbdisplayd drivers/fbdisplay6d drivers/powerd drivers/soundpwmd
 clean:	
-	cd drivers/fbdisplayd; $(MAKE) clean
-	cd drivers/fbdisplay6d; $(MAKE) clean
-	cd drivers/powerd; $(MAKE) clean
-	cd drivers/soundpwmd; $(MAKE) clean
+	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
 	rm -fr build
