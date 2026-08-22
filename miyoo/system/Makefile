@@ -6,10 +6,10 @@ INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
-include $(SYS_ROOT_DIR)/platform/make.inc
-
 all: x_sys
 	@echo "all done."
+
+include $(SYS_ROOT_DIR)/platform/make.inc
 
 DIRS = libs $(SYS_ROOT_DIR)/basic $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/gui drivers $(SYS_ROOT_DIR)/xwin
 x_sys: kernel_heads 
