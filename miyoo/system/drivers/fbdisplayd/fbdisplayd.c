@@ -10,11 +10,11 @@
 
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
-    rgb2nv12(fbinfo->pointer, g->buffer, g->w, g->h);
+    argb_2_nv12(fbinfo->pointer, g->buffer, g->w, g->h);
     return 4 * g->w * g->h;
 }
 
-/*same integer coefficients as rgb2nv12 (graph/uv12.c); pixels are BGRA*/
+/*same integer coefficients as argb_2_nv12 (graph/uv12.c); pixels are BGRA*/
 static inline uint8_t px2y(uint32_t p) {
     uint32_t b = p & 0xff;
     uint32_t g = (p >> 8) & 0xff;
@@ -30,7 +30,7 @@ static inline void px2uv(uint32_t p, uint8_t* uv) {
     uv[1] = (uint8_t)(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
 }
 
-/*push only the dirty rect. rgb2nv12 renders the frame rotated 180 degrees
+/*push only the dirty rect. argb_2_nv12 renders the frame rotated 180 degrees
   (output pixel (x,y) reads source (w-1-x, h-1-y)), so the dirty rect is
   mirrored to the matching output region and snapped out to even 2x2 blocks
   for the subsampled chroma. Returns 0 to make libfbdisplayd fall back to a full

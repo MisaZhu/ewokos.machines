@@ -612,7 +612,7 @@ static void g2d_blit_release(graph_t* owned_graph, void* shm_ptr) {
 static int32_t g2d_present(g2d_state_t* state) {
     if(state == NULL || state->fbinfo == NULL || state->canvas == NULL)
         return -1;
-    rgb2nv12((uint8_t*)state->fbinfo->pointer,
+    argb_2_nv12((uint8_t*)state->fbinfo->pointer,
             state->canvas->buffer,
             state->canvas->w,
             state->canvas->h);
