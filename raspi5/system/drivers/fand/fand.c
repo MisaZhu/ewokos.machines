@@ -101,7 +101,7 @@
                  FAN_PWM_PERIOD_NS) / 1000000000ULL))
 
 #define FAN_LEVEL_MAX           10
-#define FAN_LEVEL_DEFAULT       3
+#define FAN_LEVEL_DEFAULT       5
 
 /* dev_cntl commands */
 #define FAN_CNTL_SET_LEVEL      1
