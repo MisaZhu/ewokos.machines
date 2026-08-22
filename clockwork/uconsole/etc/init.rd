@@ -2,8 +2,8 @@
 @/bin/ipcserv /drivers/logd /dev/log
 
 @/bin/ipcserv /drivers/displaymand              
-@/bin/ipcserv /drivers/clockwork/fbdisplayd         /dev/disp0
-#@/bin/ipcserv /drivers/clockwork/fbdisplay6d         /dev/disp0
+#@/bin/ipcserv /drivers/clockwork/fbdisplayd         /dev/disp0
+@/bin/ipcserv /drivers/clockwork/fbdisplay6d         /dev/disp0
 @/bin/ipcserv /drivers/fontd                 
 
 @/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 12 -d
