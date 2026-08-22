@@ -82,7 +82,6 @@ int xpt2046_read(uint16_t* press,  uint16_t* x, uint16_t* y) {
         do_read(x, y);
         _x = *x;
         _y = *y;
-        klog("tp: x=%d, y=%d\n", _x, _y);
     }
     else {  //release
         _down = false;

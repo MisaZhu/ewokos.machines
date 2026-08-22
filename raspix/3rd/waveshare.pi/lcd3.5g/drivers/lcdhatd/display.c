@@ -8,6 +8,12 @@
 #include <ili9486/ili9486.h>
 #include <xpt2046/xpt2046.h>
 
+/*GPIO pins of the 3.5" (B) HAT: LCD and touch share SPI0, CS lines are
+  software-driven */
+#define PIN_LCD_CS 8
+#define PIN_TP_CS  7
+#define PIN_TP_IRQ 17
+
 int  do_flush(const void* buf, uint32_t size) {
     ili9486_flush(buf, size);
     return 0;
@@ -15,10 +21,9 @@ int  do_flush(const void* buf, uint32_t size) {
 
 void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
     const int lcd_dc = 22;
-    const int lcd_cs = 8;
     const int lcd_rst = 27;
     const int lcd_bl = 18;
-    ili9486_init(w, h, G_ROTATE_270, 1, lcd_dc, lcd_cs, lcd_rst, lcd_bl, div);
+    ili9486_init(w, h, G_ROTATE_270, 1, lcd_dc, PIN_LCD_CS, lcd_rst, lcd_bl, div);
 }
 
 static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
@@ -75,9 +80,12 @@ static int tp_read(uint8_t* buf, uint32_t size) {
     memset(buf, 0, size);
     if(size >= 6) {
         uint16_t* d = (uint16_t*)buf;
-        bsp_gpio_write(8, 1);
+        /*deselect the LCD while the touch is on the shared SPI bus: with
+          the panel still holding a pending memory-write, the XPT2046 poll
+          bytes would be swallowed as pixels (garbage blocks on screen) */
+        bsp_gpio_write(PIN_LCD_CS, 1);
         xpt2046_read(&d[0], &d[1], &d[2]);
-        bsp_gpio_write(8, 0);
+        bsp_gpio_write(PIN_LCD_CS, 0);
         //klog("tp_read: %d %d %d\n", d[0], d[1], d[2]);
     }
     return 6;	
@@ -94,9 +102,7 @@ int main(int argc, char** argv) {
 
     lcd_init(w, h, _spi_div);
 
-    const int tp_cs = 7;
-    const int tp_irq = 17;
-    xpt2046_init(tp_cs, tp_irq, 64);
+    xpt2046_init(PIN_TP_CS, PIN_TP_IRQ, 64);
 
     fbdisplayd_t display;
     memset(&display, 0, sizeof(fbdisplayd_t));
