@@ -47,6 +47,14 @@ extern ewokos_addr_t _mmio_base;
    slow-debouncing devices a grace window after power-good */
 #define USB_HUB_PWR_WAIT_MAX_MS 500u
 #define USB_HUB_CONNECT_GRACE_MS 300u
+/* per-stage control transfer timeouts.  They only bound the "device is
+   completely silent" case: NAK/error handshakes wake the channel via
+   interrupt immediately, and any device that can respond does so within
+   milliseconds.  3 attempts per stage still apply, so these stay generous
+   while making each failed enumeration attempt at boot much cheaper. */
+#define USB_CTRL_SETUP_TIMEOUT_MS 100u
+#define USB_CTRL_DATA_TIMEOUT_MS 250u
+#define USB_CTRL_STATUS_TIMEOUT_MS 100u
 #define USB_LOG_TRANSFER_VERBOSE 0
 /* per-transfer errors, poll fail/recover, stats and idle-port traces:
    only wanted when debugging the controller itself */
@@ -1421,8 +1429,8 @@ static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
     (void)status_zlp;
 
     ret = dwc_control_stage_transfer("setup", 0, addr, 0, false, low_speed, 0,
-            ep_mps, DWC_PID_SETUP, setup_phys, sizeof(*setup_dma), 200,
-            setup->bRequest);
+            ep_mps, DWC_PID_SETUP, setup_phys, sizeof(*setup_dma),
+            USB_CTRL_SETUP_TIMEOUT_MS, setup->bRequest);
     if (ret < 0) {
         if (USB_LOG_RUNTIME_VERBOSE) {
             slog("usbhostd: ctrl setup_stage_failed addr=%u req=%02x\n", addr, setup->bRequest);
@@ -1436,8 +1444,8 @@ static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
 
     if (setup->wLength > 0) {
         ret = dwc_control_stage_transfer("data", 0, addr, 0, data_in, low_speed, 0,
-                ep_mps, DWC_PID_DATA1, payload_phys, setup->wLength, 500,
-                setup->bRequest);
+                ep_mps, DWC_PID_DATA1, payload_phys, setup->wLength,
+                USB_CTRL_DATA_TIMEOUT_MS, setup->bRequest);
         if (ret < 0) {
             if (USB_LOG_RUNTIME_VERBOSE) {
                 slog("usbhostd: ctrl data_stage_failed addr=%u req=%02x dir=%s len=%u\n",
@@ -1457,7 +1465,8 @@ static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
     }
 
     ret = dwc_control_stage_transfer("status", 0, addr, 0, !data_in, low_speed, 0,
-            ep_mps, DWC_PID_DATA1, status_zlp_phys, 0, 200, setup->bRequest);
+            ep_mps, DWC_PID_DATA1, status_zlp_phys, 0,
+            USB_CTRL_STATUS_TIMEOUT_MS, setup->bRequest);
     dma_pool_rewind(mark);
     if (ret < 0) {
         if (USB_LOG_RUNTIME_VERBOSE) {
@@ -3650,8 +3659,14 @@ int main(int argc, char** argv) {
         slog("usbhostd: host_init_failed\n");
         return -1;
     }
-    usb_scan_root();
-    _next_scan_ms = kernel_tic_ms(0) + USB_SCAN_INTERVAL_MS;
+    /* Register /dev/hid0 immediately instead of blocking here on a first
+       enumeration pass: ipcserv waits for the registration before init.rd
+       starts hid_keybd/hid_moused/hid_touchd, and a failed attempt on a
+       device still booting (internal CH552) would stall the whole boot.
+       open/fcntl/read are all safe before enumeration completes; the first
+       usb_step scans within a few ms and the paced retry logic takes
+       over from there. */
+    _next_scan_ms = 0;
 
     memset(&dev, 0, sizeof(dev));
     strcpy(dev.desc, "usb-hid");
