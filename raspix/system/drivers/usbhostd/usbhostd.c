@@ -795,8 +795,10 @@ static int dma_pool_init(void) {
     }
     _dma_pool.phys = dma_phy_addr(0, _dma_pool.virt);
     memset((void*)(uintptr_t)_dma_pool.virt, 0, _dma_pool.size);
-    slog("usbhostd: dma init virt=%08x phys=%08x size=%u\n",
-            (uint32_t)_dma_pool.virt, _dma_pool.phys, _dma_pool.size);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: dma init virt=%08x phys=%08x size=%u\n",
+                (uint32_t)_dma_pool.virt, _dma_pool.phys, _dma_pool.size);
+    }
     return 0;
 }
 
@@ -1150,15 +1152,19 @@ static int dwc_reset_port(bool* low_speed) {
                 DWC_HFIR_48MHZ_FSLS :
                 DWC_HFIR_60MHZ_FSLS);
     }
-    slog("usbhostd: port reset done speed=%s hprt=%08x\n",
-            usb_port_speed_name(reg), reg);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: port reset done speed=%s hprt=%08x\n",
+                usb_port_speed_name(reg), reg);
+    }
     return 0;
 }
 
 static int dwc_host_init(void) {
     uint32_t reg;
 
-    slog("usbhostd: host init begin mmio=%08x\n", _mmio_base);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: host init begin mmio=%08x\n", _mmio_base);
+    }
     if (bcm2835_power_on_usb() != 0) {
         slog("usbhostd: host init power_on_failed\n");
         return -1;
@@ -1169,13 +1175,17 @@ static int dwc_host_init(void) {
 
     /* dump core identity/config once: helps confirm the core is powered,
        clocked and matches expected dwc2 synopsys version */
-    slog("usbhostd: core gsnpsid=%08x ghwcfg1=%08x ghwcfg2=%08x ghwcfg3=%08x ghwcfg4=%08x\n",
-            usb_readl(DWC_REG_GSNPSID), usb_readl(DWC_REG_GHWCFG1),
-            usb_readl(DWC_REG_GHWCFG2), usb_readl(DWC_REG_GHWCFG3),
-            usb_readl(DWC_REG_GHWCFG4));
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: core gsnpsid=%08x ghwcfg1=%08x ghwcfg2=%08x ghwcfg3=%08x ghwcfg4=%08x\n",
+                usb_readl(DWC_REG_GSNPSID), usb_readl(DWC_REG_GHWCFG1),
+                usb_readl(DWC_REG_GHWCFG2), usb_readl(DWC_REG_GHWCFG3),
+                usb_readl(DWC_REG_GHWCFG4));
+    }
     /* GHWCFG2[17:14] = number of host channels - 1 */
     _num_host_channels = ((usb_readl(DWC_REG_GHWCFG2) >> 14) & 0xFu) + 1u;
-    slog("usbhostd: core host_channels=%u\n", _num_host_channels);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: core host_channels=%u\n", _num_host_channels);
+    }
 
     usb_writel(DWC_REG_PCGCR, 0);
     reg = usb_readl(DWC_REG_GUSBCFG);
@@ -1190,8 +1200,10 @@ static int dwc_host_init(void) {
         reg |= (DWC_USBTRDTIM_UTMI_8BIT << DWC_GUSBCFG_USBTRDTIM_SHIFT);
     reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
     usb_writel(DWC_REG_GUSBCFG, reg);
-    slog("usbhostd: host base=%llx gusbcfg=%08x\n",
-            (unsigned long long)_usb_base, reg);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: host base=%llx gusbcfg=%08x\n",
+                (unsigned long long)_usb_base, reg);
+    }
     proc_usleep(50000);
 
     if (dwc_core_soft_reset() != 0) {
@@ -1240,11 +1252,13 @@ static int dwc_host_init(void) {
     proc_usleep(100000);
     dwc_ack_port_change();
     reg = usb_readl(DWC_REG_GINTSTS);
-    slog("usbhostd: host init ready gahbcfg=%08x gintmsk=%08x hcfg=%08x hfir=%08x hprt=%08x curmod=%s conid=%s\n",
-            usb_readl(DWC_REG_GAHBCFG), usb_readl(DWC_REG_GINTMSK),
-            usb_readl(DWC_REG_HCFG), usb_readl(DWC_REG_HFIR), usb_readl(DWC_REG_HPRT),
-            (reg & DWC_GINTSTS_CURMODE_HOST) ? "host" : "device",
-            (usb_readl(DWC_REG_GOTGCTL) & DWC_GOTGCTL_CONID_B) ? "B" : "A");
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: host init ready gahbcfg=%08x gintmsk=%08x hcfg=%08x hfir=%08x hprt=%08x curmod=%s conid=%s\n",
+                usb_readl(DWC_REG_GAHBCFG), usb_readl(DWC_REG_GINTMSK),
+                usb_readl(DWC_REG_HCFG), usb_readl(DWC_REG_HFIR), usb_readl(DWC_REG_HPRT),
+                (reg & DWC_GINTSTS_CURMODE_HOST) ? "host" : "device",
+                (usb_readl(DWC_REG_GOTGCTL) & DWC_GOTGCTL_CONID_B) ? "B" : "A");
+    }
     return 0;
 }
 
@@ -2808,8 +2822,10 @@ static int usb_enumerate_hub(uint8_t addr, bool low_speed, uint8_t ep_mps, int d
     num_ports = hub_desc[2];
     /* bPwrOn2PwrGood is in 2ms units; add margin for slow rails */
     pwr_ms = (uint32_t)hub_desc[5] * 2u + 100u;
-    slog("usbhostd: hub addr=%u ports=%u pwr2good=%ums depth=%d\n",
-            addr, num_ports, pwr_ms, depth);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: hub addr=%u ports=%u pwr2good=%ums depth=%d\n",
+                addr, num_ports, pwr_ms, depth);
+    }
     if (num_ports > 8) {
         num_ports = 8;
     }
@@ -3079,10 +3095,12 @@ static int usb_enumerate_device(bool low_speed, int depth) {
         free(cfg_buf);
         return -1;
     }
-    slog("usbhostd: enumerate dev addr=%u cfg=%u maxpower=%umA attrs=%02x\n",
-            addr, ((usb_config_desc_t*)cfg_buf)->bConfigurationValue,
-            (uint32_t)((usb_config_desc_t*)cfg_buf)->bMaxPower * 2u,
-            ((usb_config_desc_t*)cfg_buf)->bmAttributes);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: enumerate dev addr=%u cfg=%u maxpower=%umA attrs=%02x\n",
+                addr, ((usb_config_desc_t*)cfg_buf)->bConfigurationValue,
+                (uint32_t)((usb_config_desc_t*)cfg_buf)->bMaxPower * 2u,
+                ((usb_config_desc_t*)cfg_buf)->bmAttributes);
+    }
     proc_usleep(10000);
 
     if (dev_desc.bDeviceClass == USB_CLASS_HUB) {
@@ -3221,8 +3239,10 @@ static int usb_enumerate_device(bool low_speed, int depth) {
         }
     }
 
-    slog("usbhostd: enumerate dev done addr=%u registered=%d depth=%d\n",
-            addr, registered, depth);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: enumerate dev done addr=%u registered=%d depth=%d\n",
+                addr, registered, depth);
+    }
     return registered;
 }
 
@@ -3651,7 +3671,9 @@ static int usb_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, int of
     info->from_pid = from_pid;
     queue_init(&info->queue);
     fd_add(info);
-    slog("usbhostd: open fd=%d pid=%d\n", fd, from_pid);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: open fd=%d pid=%d\n", fd, from_pid);
+    }
     return 0;
 }
 
@@ -3660,7 +3682,9 @@ static int usb_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo
     (void)node;
     (void)fsinfo;
     (void)p;
-    slog("usbhostd: close fd=%d pid=%d\n", fd, from_pid);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: close fd=%d pid=%d\n", fd, from_pid);
+    }
     fd_del(fd, from_pid);
     return 0;
 }
@@ -3693,12 +3717,14 @@ static int usb_fcntl(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
     if (cmd == 0) {
         item->report_id = (uint8_t)proto_read_int(in);
         queue_clear(&item->queue);
-        slog("usbhostd: subscribe fd=%d pid=%d report_id=%u type=%s\n",
-                fd, from_pid, item->report_id,
-                item->report_id == USB_REPORT_ID_MOUSE ? usb_input_type_name(USB_INPUT_MOUSE) :
-                (item->report_id == USB_REPORT_ID_KEYBOARD ? usb_input_type_name(USB_INPUT_KEYBOARD) :
-                (item->report_id == USB_REPORT_ID_TOUCH ? usb_input_type_name(USB_INPUT_TOUCH) :
-                usb_input_type_name(USB_INPUT_NONE))));
+        if (USB_LOG_RUNTIME_VERBOSE) {
+            slog("usbhostd: subscribe fd=%d pid=%d report_id=%u type=%s\n",
+                    fd, from_pid, item->report_id,
+                    item->report_id == USB_REPORT_ID_MOUSE ? usb_input_type_name(USB_INPUT_MOUSE) :
+                    (item->report_id == USB_REPORT_ID_KEYBOARD ? usb_input_type_name(USB_INPUT_KEYBOARD) :
+                    (item->report_id == USB_REPORT_ID_TOUCH ? usb_input_type_name(USB_INPUT_TOUCH) :
+                    usb_input_type_name(USB_INPUT_NONE))));
+        }
         return 0;
     }
     return -1;
@@ -3752,6 +3778,8 @@ int main(int argc, char** argv) {
     dev.read = usb_read;
     dev.fcntl = usb_fcntl;
     dev.check_poll_events = usb_check_poll_events;
-    slog("usbhostd: device_run name=%s mnt=%s\n", dev.desc, mnt_point);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: device_run name=%s mnt=%s\n", dev.desc, mnt_point);
+    }
     return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
 }
