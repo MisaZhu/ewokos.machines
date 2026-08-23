@@ -6,7 +6,7 @@
 @/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
 @/bin/ipcserv /drivers/fontd
 
-@/bin/ipcserv /drivers/sunfounder/i2cdisplayd /dev/fb1
+@/bin/ipcserv /drivers/sunfounder/i2cdisplayd /dev/disp1
 @/bin/ipcserv /drivers/consoled  -d 1 /dev/console0
 @set_stdio /dev/console0
 
@@ -65,7 +65,7 @@
 #@/bin/ipcserv /drivers/raspi5/btd    /dev/bt0
 
 @/bin/splash -m "start i2cdisp" -p 90
-@/bin/bgrun /bin/i2cdisp
+@/bin/bgrun /bin/i2cdisp -i 1
 
 @/bin/splash -m "start x" -p 100
 @/bin/ipcserv /drivers/xserverd     -d 0   /dev/x
