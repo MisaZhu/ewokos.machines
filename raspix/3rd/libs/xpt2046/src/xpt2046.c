@@ -49,6 +49,12 @@ static bool do_read(uint16_t* x, uint16_t* y){
     uint16_t i=0;
 
     bsp_spi_set_div(SPI_DIV);
+    /*route the SPI controller's hardware CS away from CE0 while polling:
+      on boards sharing SPI0 with an LCD, CE0N is wired to the panel CS
+      (GPIO8), and bcm283x_spi_activate() would assert it for the whole
+      transfer, letting the panel swallow the poll bytes as pixels. The
+      touch itself is selected through the software TP_CS below.*/
+    bsp_spi_select(SPI_SELECT_1);
     bsp_gpio_write(TP_CS, 0);
     bsp_spi_activate(1);
 
@@ -60,6 +66,7 @@ static bool do_read(uint16_t* x, uint16_t* y){
 
     bsp_spi_activate(0);
     bsp_gpio_write(TP_CS, 1);
+    bsp_spi_select(SPI_SELECT_0);
 
 
     *x = tx/4;

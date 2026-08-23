@@ -76,6 +76,7 @@ static inline void lcd_reset( void ) {
 }
 
 static inline void lcd_start(void) {
+    bsp_spi_select(SPI_SELECT_0);
     bsp_gpio_write(LCD_CS, 0);
     bsp_spi_activate(1);
 }
@@ -399,6 +400,14 @@ void st77xx_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
     if(cdiv > 0)
         SPI_DIV = cdiv;
     bsp_spi_init();
+    /*bsp_spi_init() muxes CE0N/CE1N (GPIO8/GPIO7) to the SPI peripheral,
+      which silently stole LCD_CS from the manual lcd_start()/lcd_end()
+      control above. Take it back as a plain output, otherwise the SPI
+      controller asserts the panel CS during unrelated transactions
+      (e.g. XPT2046 touch polls) and the panel swallows those bytes as
+      pixels of the pending memory-write: garbage blocks on screen.*/
+    bsp_gpio_config(LCD_CS, GPIO_OUTPUT);
+    bsp_gpio_write(LCD_CS, 1);
     bsp_spi_set_div(SPI_DIV);
     bsp_spi_select(SPI_SELECT_0);
 

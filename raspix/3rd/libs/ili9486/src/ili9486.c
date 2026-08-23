@@ -78,6 +78,7 @@ static inline void lcd_reset( void ) {
 }
 
 static inline void lcd_start(void) {
+    bsp_spi_select(SPI_SELECT_0);
     bsp_gpio_write(LCD_CS, 0);
     bsp_spi_activate(1);
 }
