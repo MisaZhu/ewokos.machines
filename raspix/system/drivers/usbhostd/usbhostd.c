@@ -56,12 +56,15 @@ extern ewokos_addr_t _mmio_base;
 #define USB_CTRL_DATA_TIMEOUT_MS 250u
 #define USB_CTRL_STATUS_TIMEOUT_MS 100u
 #define USB_LOG_TRANSFER_VERBOSE 0
-/* per-transfer errors, poll fail/recover, stats and idle-port traces:
-   only wanted when debugging the controller itself */
-#define USB_LOG_RUNTIME_VERBOSE 1
+/* per-transfer errors, poll recover, stats heartbeat, enumeration chatter
+   and idle-port traces: only wanted when debugging the controller itself */
+#define USB_LOG_RUNTIME_VERBOSE 0
+/* per-report input traces (key/mouse/touch events and raw report dumps):
+   only wanted when debugging HID report parsing end to end */
+#define USB_LOG_EVENT_VERBOSE 0
 /* master switch: set to 0 to silence all usbhostd logging (slog becomes a
    no-op); set to 1 to emit logs through ewoksys slog (/dev/log) */
-#define USB_LOG_ENABLE 0
+#define USB_LOG_ENABLE 1
 #if !USB_LOG_ENABLE
 static inline void usb_log_none(const char* fmt, ...) { (void)fmt; }
 #define slog(...) usb_log_none(__VA_ARGS__)
@@ -478,6 +481,10 @@ static uint32_t _num_host_channels = 8;
 static uint64_t _next_idle_log_ms = 0;
 static uint32_t _enum_fail_streak = 0;
 static uint32_t _connect_flaps = 0;
+/* latched after a high-speed root-port probe dies with pure TXERR: makes
+   subsequent port resets arm FS/LS-only mode (FSLSSUPP) before the reset
+   handshake, so the device never chirps and enumerates at full speed */
+static bool _force_fs_only = false;
 
 /* hubs found during enumeration, rescanned periodically for hotplug */
 typedef struct {
@@ -529,6 +536,19 @@ static const char* usb_input_type_name(usb_input_type_t type) {
 
 static const char* usb_speed_name(bool low_speed) {
     return low_speed ? "low" : "full";
+}
+
+static const char* usb_port_speed_name(uint32_t hprt) {
+    switch ((hprt & DWC_HPRT_SPEED_MASK) >> DWC_HPRT_SPEED_SHIFT) {
+    case 0u:
+        return "high";
+    case 1u:
+        return "full";
+    case 2u:
+        return "low";
+    default:
+        return "reserved";
+    }
 }
 
 /* decode hcint bits into a readable flag string for error analysis */
@@ -623,7 +643,7 @@ static void usb_log_touch_event(const usb_input_dev_t* in, const uint8_t* payloa
 }
 
 static void usb_log_input_event(usb_input_dev_t* in, const uint8_t* report, int len, const uint8_t* payload) {
-    if (!USB_LOG_ENABLE) {
+    if (!USB_LOG_EVENT_VERBOSE) {
         return;
     }
     uint64_t now = kernel_tic_ms(0);
@@ -1069,6 +1089,13 @@ static int dwc_reset_port(bool* low_speed) {
         return -1;
     }
 
+    /* the HS chirp handshake runs during the reset window, so FS/LS-only
+       mode must be armed before reset is asserted: with FSLSSUPP set the
+       host never answers the device chirp and the device stays full speed */
+    if (_force_fs_only) {
+        usb_writel(DWC_REG_HCFG, DWC_HCFG_FSLSPCLKSEL_30_60MHZ | DWC_HCFG_FSLSSUPP);
+    }
+
     dwc_port_write(DWC_HPRT_PWR | DWC_HPRT_RST, 0);
     proc_usleep(30000);
     dwc_port_write(DWC_HPRT_PWR, DWC_HPRT_RST);
@@ -1108,18 +1135,23 @@ static int dwc_reset_port(bool* low_speed) {
         return -1;
     }
     if (low_speed != NULL) {
+        uint32_t hcfg;
         *low_speed = ((reg & DWC_HPRT_SPEED_MASK) >> DWC_HPRT_SPEED_SHIFT) == 2u;
         /* BCM2835 uses the internal HS UTMI PHY. FS uses 30/60MHz. LS keeps
            the dedicated low-power clock at 48MHz on this platform. */
-        usb_writel(DWC_REG_HCFG, *low_speed ?
+        hcfg = *low_speed ?
                 (DWC_HCFG_FSLSPCLKSEL_48MHZ | DWC_HCFG_FSLSSUPP) :
-                DWC_HCFG_FSLSPCLKSEL_30_60MHZ);
+                DWC_HCFG_FSLSPCLKSEL_30_60MHZ;
+        if (_force_fs_only) {
+            hcfg |= DWC_HCFG_FSLSSUPP;
+        }
+        usb_writel(DWC_REG_HCFG, hcfg);
         usb_writel(DWC_REG_HFIR, *low_speed ?
                 DWC_HFIR_48MHZ_FSLS :
                 DWC_HFIR_60MHZ_FSLS);
     }
     slog("usbhostd: port reset done speed=%s hprt=%08x\n",
-            usb_speed_name(low_speed != NULL && *low_speed), reg);
+            usb_port_speed_name(reg), reg);
     return 0;
 }
 
@@ -3065,17 +3097,21 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 
     memset(candidates, 0, sizeof(candidates));
     cand_count = usb_parse_candidates(cfg_buf, total_len, candidates, USB_MAX_CANDIDATES);
-    slog("usbhostd: enumerate dev candidates=%d config_len=%u addr=%u\n", cand_count, total_len, addr);
+    if (USB_LOG_RUNTIME_VERBOSE) {
+        slog("usbhostd: enumerate dev candidates=%d config_len=%u addr=%u\n", cand_count, total_len, addr);
+    }
     free(cfg_buf);
 
     for (int i = 0; i < cand_count; ++i) {
         if (!candidates[i].valid) {
             continue;
         }
-        slog("usbhostd: candidate idx=%d iface=%u subclass=%u proto=%u ep=%02x interval=%u maxpkt=%u report_desc=%u\n",
-                i, candidates[i].iface_num, candidates[i].subclass, candidates[i].protocol,
-                candidates[i].ep_addr, candidates[i].interval, candidates[i].max_packet,
-                candidates[i].report_desc_len);
+        if (USB_LOG_RUNTIME_VERBOSE) {
+            slog("usbhostd: candidate idx=%d iface=%u subclass=%u proto=%u ep=%02x interval=%u maxpkt=%u report_desc=%u\n",
+                    i, candidates[i].iface_num, candidates[i].subclass, candidates[i].protocol,
+                    candidates[i].ep_addr, candidates[i].interval, candidates[i].max_packet,
+                    candidates[i].report_desc_len);
+        }
         {
             uint8_t* report_desc = NULL;
             bool desc_ok = false;
@@ -3125,7 +3161,9 @@ static int usb_enumerate_device(bool low_speed, int depth) {
                    from a boot-subclass interface once in Report protocol */
                 kbd_rid = hid_find_kbd_report_id(report_desc,
                         candidates[i].report_desc_len);
-                slog("usbhostd: candidate idx=%d report_desc_type=%d kbd_rid=%u\n", i, dev_type, kbd_rid);
+                if (USB_LOG_RUNTIME_VERBOSE) {
+                    slog("usbhostd: candidate idx=%d report_desc_type=%d kbd_rid=%u\n", i, dev_type, kbd_rid);
+                }
             }
 
             /* uConsole keyboard: boot-keyboard interface whose report
@@ -3190,8 +3228,9 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 
 static int usb_enumerate_root(void) {
     bool low_speed = false;
-    int registered;
+    int registered = -1;
     uint64_t enum_start_ms = kernel_tic_ms(0);
+    int attempt;
 
     if (USB_LOG_RUNTIME_VERBOSE) {
         slog("usbhostd: enumerate root begin\n");
@@ -3201,14 +3240,45 @@ static int usb_enumerate_root(void) {
        re-recorded as they get enumerated */
     memset(_hubs, 0, sizeof(_hubs));
     _next_address = 2;
-    if (dwc_reset_port(&low_speed) != 0) {
-        if (USB_LOG_RUNTIME_VERBOSE) {
-            slog("usbhostd: enumerate root reset_failed\n");
-        }
-        return -1;
-    }
 
-    registered = usb_enumerate_device(low_speed, 0);
+    for (attempt = 0; attempt < 2; attempt++) {
+        uint32_t hprt;
+        bool port_hs;
+
+        if (dwc_reset_port(&low_speed) != 0) {
+            if (USB_LOG_RUNTIME_VERBOSE) {
+                slog("usbhostd: enumerate root reset_failed\n");
+            }
+            return -1;
+        }
+        hprt = usb_readl(DWC_REG_HPRT);
+        port_hs = ((hprt & DWC_HPRT_SPEED_MASK) >> DWC_HPRT_SPEED_SHIFT) == 0u;
+
+        registered = usb_enumerate_device(low_speed, 0);
+        if (registered >= 0 || !port_hs || _force_fs_only ||
+                (_last_hcint & DWC_HCINT_TXERR) == 0) {
+            break;
+        }
+        /* The port negotiated high speed but the device never answers a
+           single SETUP (instant TXERR): the 480Mbps data path is dead on
+           this board.  Even a working HS link would be of no use here --
+           this driver has no split-transaction (TT) support, so the FS/LS
+           HID devices behind a HS hub could not be polled anyway.  Latch
+           FS/LS-only mode so the next reset suppresses the chirp and the
+           device enumerates at full speed right away, instead of
+           reset-hammering for seconds until the chirp randomly fails. */
+        _force_fs_only = true;
+        slog("usbhostd: hs data path dead (pure txerr), force fs-only mode\n");
+        /* flipping FSLSSUPP while the port is still enabled in HS mode
+           leaves the dwc2 port-enable state machine wedged (subsequent
+           resets keep failing not_enabled until a core soft reset clears
+           it): re-init the core now so the retry below comes up clean
+           full-speed on the first attempt */
+        if (dwc_host_init() != 0) {
+            slog("usbhostd: fs-only reinit failed\n");
+            return -1;
+        }
+    }
 
     slog("usbhostd: enumerate root done registered=%d cost=%ums\n",
             registered, (uint32_t)(kernel_tic_ms(0) - enum_start_ms));
@@ -3265,6 +3335,10 @@ static void usb_scan_root(void) {
             }
         }
         _port_connected = false;
+        /* a fresh attach gets one high-speed probe again: the latch only
+           exists to skip HS on a link that already proved it cannot move
+           a single byte at 480Mbps */
+        _force_fs_only = false;
         return;
     }
 
@@ -3423,8 +3497,9 @@ static void usb_poll_inputs(vdevice_t* dev) {
                         body_len > USB_KEYBOARD_EVENT_SIZE ? USB_KEYBOARD_EVENT_SIZE : body_len);
             }
             dispatch_data(USB_REPORT_ID_KEYBOARD, payload, USB_KEYBOARD_EVENT_SIZE);
-            /* always-on rate-limited trace to debug keyboards end to end */
-            if ((now - in->last_log_ms) >= USB_EVENT_LOG_INTERVAL_MS) {
+            /* rate-limited trace to debug keyboards end to end */
+            if (USB_LOG_EVENT_VERBOSE &&
+                    (now - in->last_log_ms) >= USB_EVENT_LOG_INTERVAL_MS) {
                 in->last_log_ms = now;
                 slog("usbhostd: kbd slot=%d addr=%u ep=%02x len=%d raw=[%s]\n",
                         i, in->addr, in->ep_addr, ret, usb_hex_str(report, ret));
@@ -3459,8 +3534,9 @@ static void usb_poll_inputs(vdevice_t* dev) {
             if (ret < 2) {
                 continue;
             }
-            /* always-on rate-limited trace: every arriving composite report */
-            if ((now - in->last_log_ms) >= USB_EVENT_LOG_INTERVAL_MS) {
+            /* rate-limited trace of arriving composite reports */
+            if (USB_LOG_EVENT_VERBOSE &&
+                    (now - in->last_log_ms) >= USB_EVENT_LOG_INTERVAL_MS) {
                 in->last_log_ms = now;
                 slog("usbhostd: composite slot=%d addr=%u ep=%02x len=%d raw=[%s]\n",
                         i, in->addr, in->ep_addr, ret, usb_hex_str(report, ret));
