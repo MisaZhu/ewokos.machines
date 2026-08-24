@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 #include <ewoksys/mmio.h>
@@ -11,6 +12,8 @@
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/syscall.h>
+#include <ewoksys/proc.h>
+#include <ewoksys/usbmsc.h>
 #include <arch/bcm283x/mailbox.h>
 
 extern ewokos_addr_t _mmio_base;
@@ -128,6 +131,27 @@ static inline void usb_log_none(const char* fmt, ...) { (void)fmt; }
 
 #define USB_ENDPOINT_IN 0x80
 #define USB_ENDPOINT_XFER_INTERRUPT 0x03
+#define USB_ENDPOINT_XFER_BULK 0x02
+
+/* mass storage class: bulk-only transport over SCSI transparent command set */
+#define USB_CLASS_MSC 0x08
+#define USB_MSC_SUBCLASS_SCSI 0x06
+#define USB_MSC_SUBCLASS_UFI 0x04
+#define USB_MSC_PROTO_BBB 0x50
+#define USB_MSC_REQ_RESET 0xFF
+#define USB_MSC_REQ_GET_MAX_LUN 0xFE
+#define USB_ENDPOINT_FEAT_HALT 0
+#define USB_MSC_CH_OUT 2
+#define USB_MSC_CH_IN 3
+/* one CBW round-trip per IPC: keep the DMA buffer inside the 64K pool */
+#define USB_MSC_SECTOR_SIZE 512u
+
+#define SCSI_OPCODE_TEST_UNIT_READY 0x00
+#define SCSI_OPCODE_INQUIRY 0x12
+#define SCSI_OPCODE_READ_CAPACITY10 0x25
+#define SCSI_OPCODE_READ10 0x28
+#define SCSI_OPCODE_WRITE10 0x2A
+#define SCSI_OPCODE_SYNC_CACHE10 0x35
 
 #define HID_USAGE_PAGE_GENERIC_DESKTOP 0x01
 #define HID_USAGE_PAGE_BUTTON 0x09
@@ -341,6 +365,24 @@ typedef struct __attribute__((packed)) {
     uint16_t wReportDescriptorLength;
 } usb_hid_desc_t;
 
+/* mass storage bulk-only transport: command block / command status wrappers */
+typedef struct __attribute__((packed)) {
+    uint32_t dCBWSignature;
+    uint32_t dCBWTag;
+    uint32_t dCBWDataTransferLength;
+    uint8_t bmCBWFlags;
+    uint8_t bCBWLUN;
+    uint8_t bCBWCBLength;
+    uint8_t CBWCB[16];
+} usb_cbw_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t dCSWSignature;
+    uint32_t dCSWTag;
+    uint32_t dCSWDataResidue;
+    uint8_t bCSWStatus;
+} usb_csw_t;
+
 typedef struct __attribute__((packed)) {
     uint32_t buf_size;
     uint32_t code;
@@ -518,6 +560,33 @@ typedef struct {
 
 static usb_stats_t _stats;
 static uint64_t _next_stats_ms = 0;
+
+/* The IPC handler thread serves mass-storage sector requests while the main
+   thread polls HID endpoints: both touch the dwc2 channels and the shared
+   DMA pool, so every top-level transfer takes this lock. */
+static pthread_mutex_t _usb_xfer_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* single attached mass-storage device (the first MSC interface found) */
+typedef struct {
+    bool ready;             /* initialized and serving sector requests */
+    bool claimed;           /* interface found, init may still be running */
+    uint8_t addr;
+    bool low_speed;
+    uint8_t ctrl_mps;
+    uint8_t iface_num;
+    uint8_t ep_in;
+    uint8_t ep_out;
+    uint16_t mps_in;
+    uint16_t mps_out;
+    uint8_t toggle_in;
+    uint8_t toggle_out;
+    uint32_t tag;
+    uint32_t sector_count;
+    uint32_t sector_size;
+    int child_pid;          /* fat32fsd serving /mnt/udisk0 */
+} usb_msc_dev_t;
+
+static usb_msc_dev_t _msc;
 
 static const char* usb_input_type_name(usb_input_type_t type) {
     switch (type) {
@@ -1431,7 +1500,8 @@ static int dwc_control_stage_transfer(const char* stage_name, int ch, uint8_t ad
     return ret;
 }
 
-static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
+/* _usb_xfer_lock must be held by the caller */
+static int usb_control_msg_unlocked(uint8_t addr, bool low_speed, uint8_t ep_mps,
         const usb_setup_pkt_t* setup, void* data, bool data_in) {
     uint32_t mark = dma_pool_mark();
     usb_setup_pkt_t* setup_dma;
@@ -1527,14 +1597,27 @@ static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
     return actual;
 }
 
+static int usb_control_msg(uint8_t addr, bool low_speed, uint8_t ep_mps,
+        const usb_setup_pkt_t* setup, void* data, bool data_in) {
+    int ret;
+    pthread_mutex_lock(&_usb_xfer_lock);
+    ret = usb_control_msg_unlocked(addr, low_speed, ep_mps, setup, data, data_in);
+    pthread_mutex_unlock(&_usb_xfer_lock);
+    return ret;
+}
+
 static int usb_interrupt_in(usb_input_dev_t* dev, void* data, uint16_t size) {
-    uint32_t mark = dma_pool_mark();
     uint8_t* payload;
     uint32_t payload_phys = 0;
+    uint32_t mark;
     int ret;
+
+    pthread_mutex_lock(&_usb_xfer_lock);
+    mark = dma_pool_mark();
 
     payload = (uint8_t*)dma_pool_alloc(size, 8, &payload_phys);
     if (payload == NULL) {
+        pthread_mutex_unlock(&_usb_xfer_lock);
         return -1;
     }
 
@@ -1543,6 +1626,7 @@ static int usb_interrupt_in(usb_input_dev_t* dev, void* data, uint16_t size) {
             payload_phys, size, 50);
     if (ret == USB_XFER_RETRY) {
         dma_pool_rewind(mark);
+        pthread_mutex_unlock(&_usb_xfer_lock);
         return 0;
     }
     if (ret >= 0) {
@@ -1568,10 +1652,473 @@ static int usb_interrupt_in(usb_input_dev_t* dev, void* data, uint16_t size) {
             dev->toggle ^= 1u;
         }
         dma_pool_rewind(mark);
+        pthread_mutex_unlock(&_usb_xfer_lock);
         return 0;
     }
     dma_pool_rewind(mark);
+    pthread_mutex_unlock(&_usb_xfer_lock);
     return ret;
+}
+
+static inline uint32_t be32(const void* p) {
+    const uint8_t* b = (const uint8_t*)p;
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+            ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
+static inline void put_be32(void* p, uint32_t v) {
+    uint8_t* b = (uint8_t*)p;
+    b[0] = (uint8_t)(v >> 24);
+    b[1] = (uint8_t)(v >> 16);
+    b[2] = (uint8_t)(v >> 8);
+    b[3] = (uint8_t)v;
+}
+
+/* one bulk transaction on a dedicated MSC channel; NAK returns
+   USB_XFER_RETRY so the caller can re-arm without disturbing the toggle.
+   _usb_xfer_lock must be held by the caller. */
+static int usb_bulk_xfer_unlocked(bool dir_in, uint8_t ep_num, uint16_t max_packet,
+        uint8_t* toggle, uint32_t buffer_phys, uint32_t length, uint32_t timeout_ms) {
+    int ch = dir_in ? USB_MSC_CH_IN : USB_MSC_CH_OUT;
+    uint32_t pid = (*toggle != 0) ? DWC_PID_DATA1 : DWC_PID_DATA0;
+    int ret = dwc_channel_transfer(ch, _msc.addr, ep_num, dir_in, _msc.low_speed,
+            2, max_packet, pid, buffer_phys, length, timeout_ms);
+
+    if (ret == USB_XFER_RETRY) {
+        return USB_XFER_RETRY;
+    }
+    /* resync the toggle from the core's next-PID view, same as the
+       interrupt-IN path: blind xor desyncs across ZLPs */
+    uint32_t hwpid = (usb_readl(DWC_HCTSIZ(ch)) >> DWC_HCTSIZ_PID_SHIFT) & 0x3u;
+    if (hwpid == DWC_PID_DATA0 || hwpid == DWC_PID_DATA1) {
+        *toggle = (hwpid == DWC_PID_DATA1) ? 1u : 0u;
+    }
+    else if (ret >= 0) {
+        *toggle ^= 1u;
+    }
+    return ret;
+}
+
+/* bulk-only reset + clear endpoint halts; _usb_xfer_lock must be held */
+static void usb_msc_recover_locked(void) {
+    usb_setup_pkt_t setup;
+
+    memset(&setup, 0, sizeof(setup));
+    setup.bmRequestType = USB_REQTYPE_CLASS_IFACE_OUT;
+    setup.bRequest = USB_MSC_REQ_RESET;
+    setup.wIndex = _msc.iface_num;
+    (void)usb_control_msg_unlocked(_msc.addr, _msc.low_speed, _msc.ctrl_mps,
+            &setup, NULL, false);
+    proc_usleep(10000);
+
+    memset(&setup, 0, sizeof(setup));
+    setup.bmRequestType = USB_REQTYPE_STD_OUT;
+    setup.bRequest = USB_REQ_CLEAR_FEATURE;
+    setup.wValue = USB_ENDPOINT_FEAT_HALT;
+    setup.wIndex = _msc.ep_in;
+    (void)usb_control_msg_unlocked(_msc.addr, _msc.low_speed, _msc.ctrl_mps,
+            &setup, NULL, false);
+    setup.wIndex = _msc.ep_out;
+    (void)usb_control_msg_unlocked(_msc.addr, _msc.low_speed, _msc.ctrl_mps,
+            &setup, NULL, false);
+    _msc.toggle_in = 0;
+    _msc.toggle_out = 0;
+}
+
+/* bulk-only transport: CBW -> optional data phase -> CSW.
+   dir_in: true when the data phase is device-to-host.
+   Returns 0 on CSW status "passed", -1 otherwise. */
+static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
+        void* data, uint32_t data_len) {
+    uint32_t mark;
+    usb_cbw_t* cbw;
+    usb_csw_t* csw;
+    uint8_t* payload = NULL;
+    uint32_t cbw_phys = 0, csw_phys = 0, payload_phys = 0;
+    uint32_t tag;
+    int ret = -1;
+    int attempt;
+
+    if (!_msc.claimed || cdb_len > 16) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&_usb_xfer_lock);
+    mark = dma_pool_mark();
+    cbw = (usb_cbw_t*)dma_pool_alloc(sizeof(*cbw), 8, &cbw_phys);
+    csw = (usb_csw_t*)dma_pool_alloc(sizeof(*csw), 8, &csw_phys);
+    if (cbw == NULL || csw == NULL) {
+        dma_pool_rewind(mark);
+        pthread_mutex_unlock(&_usb_xfer_lock);
+        return -1;
+    }
+    if (data_len > 0) {
+        payload = (uint8_t*)dma_pool_alloc(data_len, 8, &payload_phys);
+        if (payload == NULL) {
+            dma_pool_rewind(mark);
+            pthread_mutex_unlock(&_usb_xfer_lock);
+            return -1;
+        }
+        if (!dir_in) {
+            memcpy(payload, data, data_len);
+        }
+    }
+
+    for (attempt = 0; attempt < 2; ++attempt) {
+        tag = ++_msc.tag;
+        if (tag == 0) {
+            tag = ++_msc.tag;
+        }
+        memset(cbw, 0, sizeof(*cbw));
+        cbw->dCBWSignature = 0x43425355u; /* "USBC" */
+        cbw->dCBWTag = tag;
+        cbw->dCBWDataTransferLength = data_len;
+        cbw->bmCBWFlags = dir_in ? 0x80u : 0x00u;
+        cbw->bCBWLUN = 0;
+        cbw->bCBWCBLength = cdb_len;
+        memcpy(cbw->CBWCB, cdb, cdb_len);
+
+        if (usb_bulk_xfer_unlocked(false, (uint8_t)(_msc.ep_out & 0x0Fu),
+                _msc.mps_out, &_msc.toggle_out, cbw_phys,
+                sizeof(*cbw), 500) != (int)sizeof(*cbw)) {
+            continue;
+        }
+
+        if (data_len > 0) {
+            /* flash devices NAK while programming: retry until the data
+               phase moves or a hard error aborts it */
+            int tries = 0;
+            int xret;
+            do {
+                xret = usb_bulk_xfer_unlocked(dir_in,
+                        dir_in ? (uint8_t)(_msc.ep_in & 0x0Fu) :
+                                 (uint8_t)(_msc.ep_out & 0x0Fu),
+                        dir_in ? _msc.mps_in : _msc.mps_out,
+                        dir_in ? &_msc.toggle_in : &_msc.toggle_out,
+                        payload_phys, data_len, 2000);
+                if (xret == USB_XFER_RETRY && (++tries % 50) == 0) {
+                    proc_usleep(1000);
+                }
+            } while (xret == USB_XFER_RETRY && tries < 3000);
+            if (xret != (int)data_len) {
+                usb_msc_recover_locked();
+                continue;
+            }
+        }
+
+        {
+            int tries = 0;
+            int xret;
+            do {
+                xret = usb_bulk_xfer_unlocked(true, (uint8_t)(_msc.ep_in & 0x0Fu),
+                        _msc.mps_in, &_msc.toggle_in, csw_phys,
+                        sizeof(*csw), 2000);
+                if (xret == USB_XFER_RETRY && (++tries % 50) == 0) {
+                    proc_usleep(1000);
+                }
+            } while (xret == USB_XFER_RETRY && tries < 3000);
+            if (xret != (int)sizeof(*csw)) {
+                usb_msc_recover_locked();
+                continue;
+            }
+        }
+
+        if (csw->dCSWSignature != 0x53425355u || csw->dCSWTag != tag) { /* "USBS" */
+            usb_msc_recover_locked();
+            continue;
+        }
+        if (csw->bCSWStatus != 0) {
+            ret = -1;
+            goto out;
+        }
+        if (dir_in && data != NULL && data_len > 0) {
+            memcpy(data, payload, data_len);
+        }
+        ret = 0;
+        goto out;
+    }
+
+out:
+    dma_pool_rewind(mark);
+    pthread_mutex_unlock(&_usb_xfer_lock);
+    return ret;
+}
+
+static int usb_msc_test_unit_ready(void) {
+    uint8_t cdb[6];
+    memset(cdb, 0, sizeof(cdb));
+    cdb[0] = SCSI_OPCODE_TEST_UNIT_READY;
+    return usb_msc_command(cdb, 6, false, NULL, 0);
+}
+
+static int usb_msc_sync_cache(void) {
+    uint8_t cdb[10];
+    memset(cdb, 0, sizeof(cdb));
+    cdb[0] = SCSI_OPCODE_SYNC_CACHE10;
+    return usb_msc_command(cdb, 10, false, NULL, 0);
+}
+
+static int usb_msc_attach(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
+        uint8_t iface_num, uint8_t ep_in, uint8_t ep_out,
+        uint16_t mps_in, uint16_t mps_out);
+
+/* scan the config descriptor for a bulk-only mass-storage interface and
+   attach it; only the first MSC interface is used */
+static int usb_msc_try_attach_from_config(uint8_t addr, bool low_speed,
+        uint8_t ctrl_mps, const uint8_t* cfg, int cfg_len) {
+    const usb_iface_desc_t* msc_iface = NULL;
+    uint8_t ep_in = 0, ep_out = 0;
+    uint16_t mps_in = 0, mps_out = 0;
+
+    for (int off = 0; off + 2 <= cfg_len; ) {
+        uint8_t len = cfg[off];
+        uint8_t type = cfg[off + 1];
+
+        if (len < 2 || off + len > cfg_len) {
+            break;
+        }
+        if (type == USB_DESC_INTERFACE && len >= sizeof(usb_iface_desc_t)) {
+            const usb_iface_desc_t* iface = (const usb_iface_desc_t*)(cfg + off);
+            if (iface->bInterfaceClass == USB_CLASS_MSC &&
+                    iface->bInterfaceProtocol == USB_MSC_PROTO_BBB &&
+                    (iface->bInterfaceSubClass == USB_MSC_SUBCLASS_SCSI ||
+                     iface->bInterfaceSubClass == USB_MSC_SUBCLASS_UFI)) {
+                if (msc_iface == NULL) {
+                    msc_iface = iface;
+                    ep_in = 0;
+                    ep_out = 0;
+                }
+            }
+            else {
+                /* endpoints belong to the preceding interface only */
+                msc_iface = NULL;
+            }
+        }
+        else if (type == USB_DESC_ENDPOINT && msc_iface != NULL &&
+                len >= sizeof(usb_ep_desc_t)) {
+            const usb_ep_desc_t* ep = (const usb_ep_desc_t*)(cfg + off);
+            if ((ep->bmAttributes & 0x3u) == USB_ENDPOINT_XFER_BULK) {
+                if ((ep->bEndpointAddress & USB_ENDPOINT_IN) != 0) {
+                    ep_in = ep->bEndpointAddress;
+                    mps_in = (uint16_t)(ep->wMaxPacketSize & 0x07FFu);
+                }
+                else {
+                    ep_out = ep->bEndpointAddress;
+                    mps_out = (uint16_t)(ep->wMaxPacketSize & 0x07FFu);
+                }
+            }
+        }
+        off += len;
+    }
+
+    if (msc_iface == NULL || ep_in == 0 || ep_out == 0) {
+        return -1;
+    }
+    slog("usbhostd: msc found addr=%u iface=%u subclass=%u ep_in=%02x ep_out=%02x\n",
+            addr, msc_iface->bInterfaceNumber, msc_iface->bInterfaceSubClass,
+            ep_in, ep_out);
+    return usb_msc_attach(addr, low_speed, ctrl_mps, msc_iface->bInterfaceNumber,
+            ep_in, ep_out, mps_in, mps_out);
+}
+
+/* bring the attached MSC interface to a serving state and auto-mount the
+   FAT32 volume through fat32fsd */
+static int usb_msc_attach(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
+        uint8_t iface_num, uint8_t ep_in, uint8_t ep_out,
+        uint16_t mps_in, uint16_t mps_out) {
+    uint8_t inquiry[36];
+    uint8_t capacity[8];
+    uint8_t cdb[10];
+
+    if (_msc.ready || _msc.claimed) {
+        slog("usbhostd: msc already attached, ignoring iface=%u\n", iface_num);
+        return -1;
+    }
+
+    memset(&_msc, 0, sizeof(_msc));
+    _msc.claimed = true;
+    _msc.addr = addr;
+    _msc.low_speed = low_speed;
+    _msc.ctrl_mps = ctrl_mps;
+    _msc.iface_num = iface_num;
+    _msc.ep_in = ep_in;
+    _msc.ep_out = ep_out;
+    _msc.mps_in = mps_in == 0 ? 64 : mps_in;
+    _msc.mps_out = mps_out == 0 ? 64 : mps_out;
+    _msc.tag = 1;
+
+    memset(cdb, 0, sizeof(cdb));
+    cdb[0] = SCSI_OPCODE_INQUIRY;
+    cdb[4] = sizeof(inquiry);
+    memset(inquiry, 0, sizeof(inquiry));
+    if (usb_msc_command(cdb, 6, true, inquiry, sizeof(inquiry)) != 0) {
+        slog("usbhostd: msc inquiry_failed addr=%u\n", addr);
+        memset(&_msc, 0, sizeof(_msc));
+        return -1;
+    }
+    slog("usbhostd: msc inquiry addr=%u type=%02x vendor=%.8s product=%.16s\n",
+            addr, inquiry[0], (const char*)(inquiry + 8), (const char*)(inquiry + 16));
+
+    /* media may need a spin-up/debounce window after plug-in */
+    {
+        int ready = -1;
+        for (int i = 0; i < 20; ++i) {
+            ready = usb_msc_test_unit_ready();
+            if (ready == 0) {
+                break;
+            }
+            proc_usleep(100000);
+        }
+        if (ready != 0) {
+            slog("usbhostd: msc not_ready addr=%u\n", addr);
+            memset(&_msc, 0, sizeof(_msc));
+            return -1;
+        }
+    }
+
+    memset(cdb, 0, sizeof(cdb));
+    cdb[0] = SCSI_OPCODE_READ_CAPACITY10;
+    memset(capacity, 0, sizeof(capacity));
+    if (usb_msc_command(cdb, 10, true, capacity, sizeof(capacity)) != 0) {
+        slog("usbhostd: msc read_capacity_failed addr=%u\n", addr);
+        memset(&_msc, 0, sizeof(_msc));
+        return -1;
+    }
+    /* READ CAPACITY returns the last LBA; sector_count is last_lba + 1 */
+    _msc.sector_count = be32(capacity) + 1u;
+    _msc.sector_size = be32(capacity + 4);
+    if (_msc.sector_size != USB_MSC_SECTOR_SIZE) {
+        slog("usbhostd: msc unsupported_sector_size=%u addr=%u\n",
+                _msc.sector_size, addr);
+        memset(&_msc, 0, sizeof(_msc));
+        return -1;
+    }
+    _msc.ready = true;
+    slog("usbhostd: msc attached addr=%u sectors=%u size=%u\n",
+            addr, _msc.sector_count, _msc.sector_size);
+
+    /* auto-mount the FAT32 volume: spawn a fat32fsd bound to this device.
+       A stale mount left by a daemon that did not exit blocks the new
+       mount, so skip the spawn in that case instead of double-mounting. */
+    {
+        fsinfo_t mnt_info;
+        if (vfs_get_by_name("/mnt/udisk0", &mnt_info) == 0) {
+            slog("usbhostd: msc mount busy, /mnt/udisk0 still mounted\n");
+        }
+        else {
+            int pid = fork();
+            if (pid == 0) {
+                proc_detach();
+                if (proc_exec("/drivers/fat32fsd -u /dev/hid0 /mnt/udisk0") != 0) {
+                    exit(-1);
+                }
+            }
+            else if (pid > 0) {
+                _msc.child_pid = pid;
+                slog("usbhostd: msc mounting /mnt/udisk0 pid=%d\n", pid);
+            }
+            else {
+                slog("usbhostd: msc mount_fork_failed\n");
+            }
+        }
+    }
+    return 0;
+}
+
+/* device (or the tree it sits on) is gone: tell the fs daemon to exit and
+   drop all MSC state.  Safe to call when nothing is attached. */
+static void usb_msc_notify_disconnect(void) {
+    if (!_msc.claimed) {
+        return;
+    }
+    slog("usbhostd: msc detached addr=%u\n", _msc.addr);
+    if (_msc.child_pid > 0) {
+        /* fire-and-forget: the device is already gone, the daemon only
+           needs the hint to unmount and exit */
+        dev_cntl_by_pid(_msc.child_pid, USBFS_CMD_QUIT, NULL, NULL);
+    }
+    memset(&_msc, 0, sizeof(_msc));
+}
+
+/* sector transport served to fat32fsd over FS_CMD_DEV_CNTL */
+static int usb_msc_read_sectors(uint32_t sector, uint32_t count, proto_t* out) {
+    uint8_t cdb[10];
+    uint32_t len = count * USB_MSC_SECTOR_SIZE;
+    uint8_t* buf = (uint8_t*)malloc(len);
+
+    if (buf == NULL) {
+        return -1;
+    }
+    memset(cdb, 0, sizeof(cdb));
+    cdb[0] = SCSI_OPCODE_READ10;
+    put_be32(cdb + 2, sector);
+    cdb[7] = (uint8_t)(count >> 8);
+    cdb[8] = (uint8_t)(count & 0xFFu);
+    if (usb_msc_command(cdb, 10, true, buf, len) != 0) {
+        free(buf);
+        return -1;
+    }
+    PF->add(out, buf, len);
+    free(buf);
+    return 0;
+}
+
+static int usb_msc_write_sectors(uint32_t sector, uint32_t count,
+        const void* data, int32_t data_len) {
+    uint8_t cdb[10];
+    uint32_t len = count * USB_MSC_SECTOR_SIZE;
+
+    if ((uint32_t)data_len < len) {
+        return -1;
+    }
+    memset(cdb, 0, sizeof(cdb));
+    cdb[0] = SCSI_OPCODE_WRITE10;
+    put_be32(cdb + 2, sector);
+    cdb[7] = (uint8_t)(count >> 8);
+    cdb[8] = (uint8_t)(count & 0xFFu);
+    return usb_msc_command(cdb, 10, false, (void*)data, len);
+}
+
+static int usb_dev_cntl(vdevice_t* dev, int from_pid, int cmd,
+        proto_t* in, proto_t* out, void* p) {
+    (void)dev;
+    (void)from_pid;
+    (void)p;
+
+    switch (cmd) {
+    case USBMSC_CMD_INFO:
+        PF->addi(out, _msc.ready ? 1 : 0);
+        PF->addi(out, _msc.sector_count);
+        PF->addi(out, _msc.sector_size);
+        return 0;
+    case USBMSC_CMD_READ: {
+        uint32_t sector = (uint32_t)proto_read_int(in);
+        uint32_t count = (uint32_t)proto_read_int(in);
+        if (!_msc.ready || count == 0 || count > USBMSC_MAX_SECTORS ||
+                sector + count > _msc.sector_count) {
+            return -1;
+        }
+        return usb_msc_read_sectors(sector, count, out);
+    }
+    case USBMSC_CMD_WRITE: {
+        uint32_t sector = (uint32_t)proto_read_int(in);
+        uint32_t count = (uint32_t)proto_read_int(in);
+        int32_t sz = 0;
+        void* data = proto_read(in, &sz);
+        if (!_msc.ready || count == 0 || count > USBMSC_MAX_SECTORS ||
+                sector + count > _msc.sector_count || data == NULL) {
+            return -1;
+        }
+        return usb_msc_write_sectors(sector, count, data, sz);
+    }
+    case USBMSC_CMD_FLUSH:
+        if (!_msc.ready) {
+            return 0;
+        }
+        return (usb_msc_sync_cache() == 0) ? 0 : -1;
+    default:
+        return -1;
+    }
 }
 
 static int usb_get_descriptor(uint8_t addr, bool low_speed, uint8_t ep_mps,
@@ -2766,6 +3313,13 @@ static int usb_register_touch(uint8_t addr, bool low_speed, uint8_t ctrl_mps, co
 
 static int usb_enumerate_device(bool low_speed, int depth);
 
+static int usb_msc_attach(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
+        uint8_t iface_num, uint8_t ep_in, uint8_t ep_out,
+        uint16_t mps_in, uint16_t mps_out);
+static int usb_msc_try_attach_from_config(uint8_t addr, bool low_speed,
+        uint8_t ctrl_mps, const uint8_t* cfg, int cfg_len);
+static void usb_msc_notify_disconnect(void);
+
 /* ---- hub class support: the uConsole keyboard sits behind a GL850G hub ---- */
 
 static int usb_hub_port_attach(uint8_t addr, bool low_speed, uint8_t ep_mps,
@@ -3013,6 +3567,7 @@ static void usb_hub_rescan(void) {
                 /* selective input removal would need per-port bookkeeping;
                    a full re-enumeration is simple and re-registers whatever
                    is still plugged in */
+                usb_msc_notify_disconnect();
                 usb_inputs_clear();
                 _device_ready = false;
                 return;
@@ -3115,6 +3670,7 @@ static int usb_enumerate_device(bool low_speed, int depth) {
 
     memset(candidates, 0, sizeof(candidates));
     cand_count = usb_parse_candidates(cfg_buf, total_len, candidates, USB_MAX_CANDIDATES);
+    usb_msc_try_attach_from_config(addr, low_speed, ctrl_mps, cfg_buf, total_len);
     if (USB_LOG_RUNTIME_VERBOSE) {
         slog("usbhostd: enumerate dev candidates=%d config_len=%u addr=%u\n", cand_count, total_len, addr);
     }
@@ -3327,6 +3883,7 @@ static void usb_scan_root(void) {
             _stats.port_disconnect++;
             slog("usbhostd: port disconnected, clear active inputs hprt=%08x gintsts=%08x\n",
                     usb_readl(DWC_REG_HPRT), usb_readl(DWC_REG_GINTSTS));
+            usb_msc_notify_disconnect();
             usb_inputs_clear();
             _device_ready = false;
         }
@@ -3777,6 +4334,7 @@ int main(int argc, char** argv) {
     dev.close = usb_close;
     dev.read = usb_read;
     dev.fcntl = usb_fcntl;
+    dev.dev_cntl = usb_dev_cntl;
     dev.check_poll_events = usb_check_poll_events;
     if (USB_LOG_RUNTIME_VERBOSE) {
         slog("usbhostd: device_run name=%s mnt=%s\n", dev.desc, mnt_point);
