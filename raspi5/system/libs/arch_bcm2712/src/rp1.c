@@ -36,6 +36,25 @@
 #define PCIE_MISC_HARD_PCIE_HARD_DEBUG                  0x4304
 #define PCIE_MISC_AXI_READ_ERROR_DATA                   0x4170
 
+/* QoS forwarding of RP1's VDM-tagged traffic (Linux brcm_pcie_set_tc_qos) */
+#define PCIE_RC_TL_VDM_CTL1                             0x0a0c
+#define PCIE_RC_TL_VDM_CTL0                             0x0a20
+#define  VDM_CTL0_VDM_ENABLED                           (1u << 16)
+#define  VDM_CTL0_VDM_IGNORETAG                         (1u << 17)
+#define  VDM_CTL0_VDM_IGNOREVNDRID                      (1u << 18)
+#define PCIE_MISC_CTRL_1                                0x40a0
+#define  MISC_CTRL_1_EN_VDM_QOS_CONTROL                 (1u << 5)
+#define PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_HI            0x4164
+#define PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_LO            0x4168
+#define PCIE_MISC_AXI_INTF_CTRL                         0x416c
+#define  AXI_EN_RCLK_QOS_ARRAY_FIX                      (1u << 13)
+#define  AXI_EN_QOS_UPDATE_TIMING_FIX                   (1u << 12)
+#define  AXI_DIS_QOS_GATING_IN_MASTER                   (1u << 11)
+#define  AXI_REQFIFO_EN_QOS_PROPAGATION                 (1u << 7)
+#define  AXI_MASTER_MAX_OUTSTANDING_REQUESTS_MASK       0x3f
+/* Pi 5 device tree: rp1_target: &pcie2 { brcm,vdm-qos-map = <0xbbaa9888>; } */
+#define VDM_QOS_MAP                                     0xbbaa9888u
+
 #define PCI_COMMAND              0x04
 #define PCI_CACHE_LINE_SIZE      0x0c
 #define PCI_SECONDARY_BUS        0x19
@@ -163,6 +182,40 @@ static int link_up(ewokos_addr_t host) {
         (PCIE_STATUS_PHY_LINK_UP | PCIE_STATUS_DL_ACTIVE);
 }
 
+/*
+ * Forward RP1's VDM-tagged traffic priorities to the RC's AXI QoS
+ * interface — Linux brcm_pcie_set_tc_qos() driven by the Pi 5 device
+ * tree's "brcm,vdm-qos-map = <0xbbaa9888>" on pcie2. RP1 marks its
+ * real-time flows (DPI/DSI scan-out fetch, CSI) with VDM priorities;
+ * without this map those reads contend with CPU traffic at the DRAM
+ * controller on equal terms, so the display DMA underflows whenever
+ * the CPU streams memory (irregular banding/shift only while the
+ * screen is being redrawn, static frames fine).
+ */
+static void set_tc_qos(ewokos_addr_t host) {
+    /* disable broken QoS forwarding search, set 2712D0 chicken bits */
+    update32(host + PCIE_MISC_AXI_INTF_CTRL,
+        AXI_REQFIFO_EN_QOS_PROPAGATION,
+        AXI_EN_RCLK_QOS_ARRAY_FIX | AXI_EN_QOS_UPDATE_TIMING_FIX |
+        AXI_DIS_QOS_GATING_IN_MASTER);
+    /* timing-fix bit reserved-0 means 2712C1: best-effort alternative
+       is to throttle in-flight AXI requests to the SDC */
+    if (!(get32(host + PCIE_MISC_AXI_INTF_CTRL) & AXI_EN_QOS_UPDATE_TIMING_FIX))
+        update32(host + PCIE_MISC_AXI_INTF_CTRL,
+            AXI_MASTER_MAX_OUTSTANDING_REQUESTS_MASK, 15);
+
+    /* map every VDM priority index to elevated QoS levels 8..11 */
+    update32(host + PCIE_MISC_CTRL_1, 0, MISC_CTRL_1_EN_VDM_QOS_CONTROL);
+    put32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_LO, VDM_QOS_MAP);
+    put32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_HI, VDM_QOS_MAP);
+
+    /* match vendor ID 0, forward VDMs to the priority interface */
+    put32(host + PCIE_RC_TL_VDM_CTL1, 0);
+    update32(host + PCIE_RC_TL_VDM_CTL0, 0,
+        VDM_CTL0_VDM_ENABLED | VDM_CTL0_VDM_IGNORETAG |
+        VDM_CTL0_VDM_IGNOREVNDRID);
+}
+
 static int train_link(ewokos_addr_t host, ewokos_addr_t reset, ewokos_addr_t rescal) {
     /* RESCAL deassert, from Circle's rescal_reset_deassert(). */
     uint32_t value = get32(rescal + 0x500);
@@ -257,6 +310,10 @@ int bcm2712_rp1_init(void) {
             return -2;
         }
     }
+
+    /* applied unconditionally: the link may already have been trained
+       by another driver process, and these RC-side writes are idempotent */
+    set_tc_qos(host);
 
     /* Enable bus 1 and forward its memory transactions through the bridge. */
     write8(host + PCI_CACHE_LINE_SIZE, 64 / 4);
