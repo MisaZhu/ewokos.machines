@@ -9,20 +9,17 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-G2DD_OBJS = $(ARCH)/g2dd.o $(ARCH)/vc_g2d.o $(ARCH)/vc4_bo.o $(ARCH)/vc4_cl.o $(ARCH)/vc4_draw.o $(ARCH)/vc4_shaders.o $(ARCH)/vc4_v3d.o $(ARCH)/vc4_kms_v3d.o
+G2DD_OBJS = $(ARCH)/g2dd.o
 
 G2DD = $(TARGET_DIR)/drivers/raspix/g2dd
 
 $(G2DD): $(G2DD_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \
-		$(SDK_DIR)/lib/libdisplay.a \
-		$(SDK_DIR)/lib/libgraph.a \
-		$(SDK_DIR)/lib/libfont.a \
-		$(SDK_DIR)/lib/libdisplayman.a \
 		$(SDK_DIR)/lib/libtinyjson.a \
 		$(SDK_DIR)/lib/libarch_bcm283x.a \
 		$(SDK_DIR)/lib/libbsp.a
-	$(LD) -Ttext=100 $(G2DD_OBJS) -o $(G2DD) $(LDFLAGS) $(EWOK_LIB_GRAPH) -ltinyjson $(BSP_LFLAGS) $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(G2DD_OBJS) -o $(G2DD) $(LDFLAGS) $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
 
 clean:
 	rm -f $(G2DD_OBJS)
+	rm -f $(G2DD)
