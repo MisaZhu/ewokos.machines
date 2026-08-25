@@ -10,14 +10,6 @@
 #include <tinyjson/tinyjson.h>
 #include <g2dclient/g2dclient.h>
 
-/* rotate codes in g2d_rotate_req_t / g2d_blit_req_t: clockwise degrees / 90 */
-enum {
-    G2DD_ROTATE_0 = 0,
-    G2DD_ROTATE_90 = 1,
-    G2DD_ROTATE_180 = 2,
-    G2DD_ROTATE_270 = 3
-};
-
 typedef struct {
     uint32_t width;
     uint32_t height;
@@ -78,52 +70,44 @@ static int32_t g2d_surface_fill_rect(g2d_surface_t* surface, const g2d_fill_req_
     return 0;
 }
 
-static int32_t g2d_blit_rotate_valid(uint8_t rotate) {
-    switch (rotate) {
-    case G2DD_ROTATE_0:
-    case G2DD_ROTATE_90:
-    case G2DD_ROTATE_180:
-    case G2DD_ROTATE_270:
-        return 1;
-    default:
-        return 0;
-    }
+static int32_t g2d_norm_degree(int32_t degree) {
+    return ((degree % 360) + 360) % 360;
 }
 
-static int32_t g2d_blit_rotate_degree(uint8_t rotate) {
-    return (int32_t)rotate * 90;
-}
-
-static int32_t g2d_surface_rotate(g2d_surface_t* surface, uint8_t rotate) {
+static int32_t g2d_surface_rotate(g2d_surface_t* surface, int32_t degree) {
     uint32_t* rotated;
-    uint32_t tmp;
+    int32_t new_w;
+    int32_t new_h;
 
     if (surface == NULL || surface->buffer == NULL)
         return -1;
-    if (!g2d_blit_rotate_valid(rotate))
-        return -1;
-    if (rotate == G2DD_ROTATE_0)
+
+    degree = g2d_norm_degree(degree);
+    if (degree == 0)
         return 0;
 
-    if (rotate == G2DD_ROTATE_180) {
+    if (degree == 180) {
         /* bsp_g2d_rotate supports 180 in place */
         bsp_g2d_rotate(surface->buffer, (int32_t)surface->width, (int32_t)surface->height,
                 surface->buffer, (int32_t)surface->width, (int32_t)surface->height, 180);
         return 0;
     }
 
-    /* 90/270 swap dimensions, need a new buffer */
-    rotated = (uint32_t*)malloc((size_t)surface->width * surface->height * sizeof(uint32_t));
+    /* any other angle changes the surface dimensions (90/270 swap them,
+       other angles grow to the rotated bounding box), need a new buffer */
+    bsp_g2d_rotated_size((int32_t)surface->width, (int32_t)surface->height,
+            degree, &new_w, &new_h);
+    if (new_w <= 0 || new_h <= 0)
+        return -1;
+    rotated = (uint32_t*)malloc((size_t)new_w * new_h * sizeof(uint32_t));
     if (rotated == NULL)
         return -1;
     bsp_g2d_rotate(surface->buffer, (int32_t)surface->width, (int32_t)surface->height,
-            rotated, (int32_t)surface->height, (int32_t)surface->width,
-            g2d_blit_rotate_degree(rotate));
+            rotated, new_w, new_h, degree);
     free(surface->buffer);
     surface->buffer = rotated;
-    tmp = surface->width;
-    surface->width = surface->height;
-    surface->height = tmp;
+    surface->width = (uint32_t)new_w;
+    surface->height = (uint32_t)new_h;
     return 0;
 }
 
@@ -173,6 +157,7 @@ static int32_t g2d_surface_blit(g2d_surface_t* dst, const g2d_import_t* src,
         const g2d_blit_req_t* req, uint8_t use_alpha) {
     uint32_t* cropped;
     uint32_t* rotated;
+    int32_t degree;
     int32_t rw;
     int32_t rh;
     int32_t ret;
@@ -180,16 +165,17 @@ static int32_t g2d_surface_blit(g2d_surface_t* dst, const g2d_import_t* src,
     if (dst == NULL || dst->buffer == NULL || src == NULL ||
             src->buffer == NULL || req == NULL)
         return -1;
-    if (!g2d_blit_rotate_valid(req->rotate))
-        return -1;
     if (req->sx < 0 || req->sy < 0 || req->sw <= 0 || req->sh <= 0)
         return -1;
     if (req->sx + req->sw > (int32_t)src->width ||
             req->sy + req->sh > (int32_t)src->height)
         return -1;
 
+    /* rotate is clockwise degrees, normalized to [0, 360) */
+    degree = g2d_norm_degree(req->rotate);
+
     /* no rotation: blt scales and clips the crop rect directly */
-    if (req->rotate == G2DD_ROTATE_0) {
+    if (degree == 0) {
         return g2d_surface_render(dst, src->buffer,
                 (int32_t)src->width, (int32_t)src->height,
                 req->sx, req->sy, req->sw, req->sh, req, use_alpha);
@@ -203,19 +189,17 @@ static int32_t g2d_surface_blit(g2d_surface_t* dst, const g2d_import_t* src,
             req->sx, req->sy, req->sw, req->sh,
             cropped, req->sw, req->sh, 0, 0, req->sw, req->sh);
 
-    rw = req->sw;
-    rh = req->sh;
-    if (req->rotate == G2DD_ROTATE_90 || req->rotate == G2DD_ROTATE_270) {
-        rw = req->sh;
-        rh = req->sw;
+    bsp_g2d_rotated_size(req->sw, req->sh, degree, &rw, &rh);
+    if (rw <= 0 || rh <= 0) {
+        free(cropped);
+        return -1;
     }
     rotated = (uint32_t*)malloc((size_t)rw * rh * sizeof(uint32_t));
     if (rotated == NULL) {
         free(cropped);
         return -1;
     }
-    bsp_g2d_rotate(cropped, req->sw, req->sh, rotated, rw, rh,
-            g2d_blit_rotate_degree(req->rotate));
+    bsp_g2d_rotate(cropped, req->sw, req->sh, rotated, rw, rh, degree);
     free(cropped);
 
     ret = g2d_surface_render(dst, rotated, rw, rh,
@@ -337,10 +321,10 @@ static int32_t g2d_state_blit(g2d_state_t* state, const g2d_blit_req_t* req, con
     return g2d_surface_blit(&state->dst, src, req, use_alpha);
 }
 
-static int32_t g2d_state_rotate(g2d_state_t* state, uint8_t rotate) {
+static int32_t g2d_state_rotate(g2d_state_t* state, int32_t degree) {
     if (state == NULL)
         return -1;
-    return g2d_surface_rotate(&state->dst, rotate);
+    return g2d_surface_rotate(&state->dst, degree);
 }
 
 static int32_t g2d_state_scale_to(g2d_state_t* state, uint32_t width, uint32_t height) {

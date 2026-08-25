@@ -1,4 +1,5 @@
-SYS_DIR=../../../../system
+include ../../make.inc
+SYS_DIR=$(ewokos)/system
 include $(SYS_DIR)/platform/$(ARCH)/make.rule
 
 BUILD_DIR = $(SYS_DIR)/build_$(ARCH)/$(HW)

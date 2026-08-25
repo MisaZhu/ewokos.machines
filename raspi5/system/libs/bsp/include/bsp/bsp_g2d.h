@@ -23,8 +23,16 @@ void  bsp_g2d_blt_alpha(uint32_t* argb_src, int32_t src_w, int32_t src_h,
 void  bsp_g2d_scale_to(uint32_t* argb_src, int32_t src_w, int32_t src_h,
 			uint32_t* argb_dst, int32_t dst_w, int32_t dst_h);
 
-/* rotate the whole source surface clockwise by degree (0/90/180/270).
-   dst must be src_w x src_h for 0/180, src_h x src_w for 90/270.
+/* smallest size able to hold src_w x src_h rotated clockwise by degree
+   (any angle). exact swap/keep for multiples of 90, rotated bounding
+   box otherwise. */
+void  bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
+			int32_t* dst_w, int32_t* dst_h);
+
+/* rotate the whole source surface clockwise by degree (any angle).
+   dst must be at least the size given by bsp_g2d_rotated_size(); for
+   angles other than 0/90/180/270 pixels outside the rotated content
+   become transparent.
    in-place (argb_src == argb_dst) is only valid for 0/180. */
 void  bsp_g2d_rotate(uint32_t* argb_src, int32_t src_w, int32_t src_h,
 			uint32_t* argb_dst, int32_t dst_w, int32_t dst_h, int32_t degree);

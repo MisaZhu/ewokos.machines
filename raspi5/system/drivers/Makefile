@@ -7,7 +7,7 @@ basic:
 network:
 	cd wlan; $(MAKE)
 
-GUI_DIRS = fbdisplayd dsi_fbdisplayd 
+GUI_DIRS = fbdisplayd dsi_fbdisplayd g2dd
 gui:
 	@for dir in $(GUI_DIRS); do \
 		$(MAKE) -C $$dir || exit 1; \
