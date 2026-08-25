@@ -1,5 +1,5 @@
-#ifndef USBHOSTD_XHCI_H
-#define USBHOSTD_XHCI_H
+#ifndef __ARCH_BCM2712_XHCI_H
+#define __ARCH_BCM2712_XHCI_H
 
 /*
  * Polled xHCI host controller driver for the RP1 southbridge (Raspberry Pi 5).
@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <ewoksys/ewokdef.h>
+#include <usb/usb_defs.h>
 
 #define XHCI_MAX_PORTS      8
 #define XHCI_MAX_SLOTS      16
@@ -125,14 +126,7 @@ struct xhci_hc {
 	xhci_dev_t* slot_dev[XHCI_MAX_SLOTS + 1];
 };
 
-/* USB setup packet */
-typedef struct __attribute__((packed)) {
-	uint8_t  bmRequestType;
-	uint8_t  bRequest;
-	uint16_t wValue;
-	uint16_t wIndex;
-	uint16_t wLength;
-} usb_setup_pkt_t;
+/* USB setup packet comes from the shared usb_defs.h (usb_setup_pkt_t) */
 
 /*
  * DMA pool. All "phys" values in this driver are PCIe bus addresses

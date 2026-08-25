@@ -22,7 +22,7 @@
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/sys.h>
-#include "xhci.h"
+#include <arch/bcm2712/xhci.h>
 
 #define xhci_dmb() __asm__ volatile("dmb sy" ::: "memory")
 

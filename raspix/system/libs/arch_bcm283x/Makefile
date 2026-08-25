@@ -7,7 +7,9 @@ TARGET_DIR = $(BUILD_DIR)
 
 LDFLAGS = -L $(TARGET_DIR)/lib
 
-CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
+CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
+	-I $(SYS_DIR)/basic/libs/usb/include \
+	-Iinclude -I $(TARGET_DIR)/include
 
 LIB_ARCH_BCM283X_OBJS = $(ARCH)/src/framebuffer.o \
 	$(ARCH)/src/dsi.o \
@@ -31,7 +33,8 @@ LIB_ARCH_BCM283X_OBJS = $(ARCH)/src/framebuffer.o \
 	$(ARCH)/src/dsi1_clock.o \
 	$(ARCH)/src/dsi1_host.o \
 	$(ARCH)/src/dsi1_hvs.o \
-	$(ARCH)/src/dsi1_pv.o
+	$(ARCH)/src/dsi1_pv.o \
+	$(ARCH)/src/dwc2.o
 
 ARCH_BCM283X = $(TARGET_DIR)/lib/libarch_bcm283x.a
 

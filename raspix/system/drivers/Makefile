@@ -1,10 +1,10 @@
-BASIC_DIRS = uartd cpud soundd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd usbhostd hid_keybd hid_joystickd camd
+BASIC_DIRS = uartd cpud soundd camd 
 basic:
 	@for dir in $(BASIC_DIRS); do \
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-GUI_DIRS = fbdisplayd dsi_fbdisplayd g2dd hid_moused hid_touchd
+GUI_DIRS = fbdisplayd dsi_fbdisplayd g2dd
 gui:
 	@for dir in $(GUI_DIRS); do \
 		$(MAKE) -C $$dir || exit 1; \
@@ -16,8 +16,11 @@ network:
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-CLEAN_DIRS = uartd cpud fbdisplayd dsi_fbdisplayd g2dd soundd ../../3rd/gnpe/lcdhat2.4.touch/drivers/soundpwmd usbhostd hid_keybd hid_moused hid_touchd hid_joystickd wlan btd camd
-clean:	
+CLEAN_DIRS = uartd cpud fbdisplayd dsi_fbdisplayd g2dd soundd hid_joystickd wlan btd camd
+clean:
 	@for dir in $(CLEAN_DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
+	@for dir in $(USB_STACK_DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done

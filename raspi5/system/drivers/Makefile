@@ -7,13 +7,13 @@ basic:
 network:
 	cd wlan; $(MAKE)
 
-GUI_DIRS = fbdisplayd dsi_fbdisplayd usbhostd hid_keybd hid_moused hid_touchd
+GUI_DIRS = fbdisplayd dsi_fbdisplayd 
 gui:
 	@for dir in $(GUI_DIRS); do \
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-CLEAN_DIRS = uartd fand cpud nvmefsd fbdisplayd dsi_fbdisplayd usbhostd hid_keybd hid_moused hid_touchd wlan
+CLEAN_DIRS = wlan $(BASIC_DIRS) $(GUI_DIRS)
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \

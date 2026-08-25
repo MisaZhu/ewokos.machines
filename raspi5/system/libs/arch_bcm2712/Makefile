@@ -7,7 +7,7 @@ TARGET_DIR = $(BUILD_DIR)
 
 LDFLAGS = -L $(TARGET_DIR)/lib
 
-CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -Iinclude -I $(TARGET_DIR)/include
+CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -I $(SYS_DIR)/basic/libs/usb/include -Iinclude -I $(TARGET_DIR)/include
 
 LIB_ARCH_BCM2712_OBJS = $(ARCH)/src/mailbox.o \
 	$(ARCH)/src/pl011_uart.o \
@@ -21,6 +21,7 @@ LIB_ARCH_BCM2712_OBJS = $(ARCH)/src/mailbox.o \
 	$(ARCH)/src/rp1_dsi.o \
 	$(ARCH)/src/i2c.o \
 	$(ARCH)/src/spi.o \
+	$(ARCH)/src/xhci.o \
 	$(ARCH)/src/nvme.o
 
 ARCH_BCM2712 = $(TARGET_DIR)/lib/libarch_bcm2712.a
