@@ -32,6 +32,12 @@ typedef struct bsp_usb_dev bsp_usb_dev_t;
    degrades to "no usb" instead of dying (ipcserv would hang otherwise);
    every call below is then a safe no-op */
 int  bsp_usb_init(void);
+/* full controller re-init after repeated enumeration failures: some
+   controllers latch a wedged port state that only a bring-up from
+   scratch clears. Drops all device state. Returns 0 on success,
+   -1 when the platform does not support it (the policy layer then
+   keeps its paced retries). */
+int  bsp_usb_reinit(void);
 /* drain controller event rings; call from the daemon's main loop */
 void bsp_usb_poll(void);
 

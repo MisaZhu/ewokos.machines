@@ -4,7 +4,7 @@ basic:
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-GUI_DIRS = fbdisplayd usbd usbkeybd usbmoused ps2keybd ps2moused
+GUI_DIRS = fbdisplayd ps2keybd ps2moused
 gui:
 	@for dir in $(GUI_DIRS); do \
 		$(MAKE) -C $$dir || exit 1; \
@@ -12,7 +12,7 @@ gui:
 
 network:
 
-CLEAN_DIRS = ttyd powerd fbdisplayd usbd usbkeybd usbmoused ps2keybd ps2moused
+CLEAN_DIRS = ttyd powerd fbdisplayd ps2keybd ps2moused
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \

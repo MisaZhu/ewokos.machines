@@ -1,23 +1,22 @@
 /*
- * bsp_usb.c: raspix USB host abstraction on top of the polled DWC2 driver.
+ * bsp_usb.c: x86 USB host abstraction on top of the polled UHCI driver.
  *
- * One root port, one addressed device per slot, no split transactions:
- * FS/LS devices behind a high-speed hub cannot be served, and a board
- * whose 480Mbps data path is dead gets latched into FS/LS-only mode
- * (the state machine that used to live in usbhostd now sits here).
+ * Flattens the root ports of every UHCI controller found on PCI into one
+ * 1-based port space and hands out opaque device handles. Devices behind
+ * hubs are reached by their own address (no split transactions needed on
+ * UHCI), so hub topology is otherwise ignored.
  *
- * Also owns the mass-storage policy for raspix: the bulk-only transport
- * and the fat32fsd auto-mount ride on dwc2's dedicated bulk channels and
- * are served through the bsp_usb_msc_* hooks of the shared usbhostd.
+ * Also owns the mass-storage policy for x86: the bulk-only transport and
+ * the fat32fsd auto-mount ride on uhci's bulk path and are served through
+ * the bsp_usb_msc_* hooks of the shared usbhostd.
  */
-#include <usb/bsp_usb.h>
-#include <arch/bcm283x/dwc2.h>
+#include <bsp/bsp_usb.h>
+#include <bsp/uhci.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
-#include <ewoksys/mmio.h>
 #include <ewoksys/vfs.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/kernel_tic.h>
@@ -25,6 +24,7 @@
 #include <ewoksys/usbmsc.h>
 
 #define BSP_USB_MAX_DEVS 8
+#define BSP_USB_MAX_PORTS (UHCI_MAX_CONTROLLERS * UHCI_PORTS_PER_CTRL)
 
 /* interrupt-IN pacing: the shared layer passes bInterval through; a
    polled controller honours it as a floor and stretches it while the
@@ -34,15 +34,14 @@
 #define BSP_USB_INT_IDLE_STRETCH_2 64u
 #define BSP_USB_INT_IDLE_STRETCH_4 256u
 
-/* the dwc2 port can latch a dead not_enabled state that only a full
-   core re-init clears; reinit after this many consecutive reset fails */
-#define BSP_USB_RESET_FAIL_REINIT 6u
-
 struct bsp_usb_dev {
     bool used;
     uint8_t addr;
     bool low_speed;
     uint8_t ctrl_mps;
+    /* uhci flat (0-based) port this device hangs off; transfers of a
+       device behind a hub still run on its root port's controller */
+    int root_flat;
     /* single polled interrupt-IN endpoint (the HID report endpoint) */
     uint8_t int_ep_addr;
     uint16_t int_mps;
@@ -54,14 +53,27 @@ struct bsp_usb_dev {
 
 static bsp_usb_dev_t _devs[BSP_USB_MAX_DEVS];
 static uint8_t _next_address = 2;
-static bool _prev_connected = false;
-static uint32_t _reset_fail_streak = 0;
-/* high-speed probe in progress: set when the last root-port reset came
-   back HIGH, cleared when the first transaction moves data or the port
-   drops to FS/LS. A pure-TXERR failure while it is set means the 480Mbps
-   data path is dead on this board -> latch FS/LS-only */
-static bool _pending_hs = false;
-static bool _fs_only = false;
+static bool _prev_connected[BSP_USB_MAX_PORTS];
+static bool _inited = false;
+
+typedef struct {
+    bool ready;
+    bool claimed;
+    bsp_usb_dev_t* dev;
+    uint8_t iface_num;
+    uint8_t ep_in;   /* endpoint address (with USB_ENDPOINT_IN) */
+    uint8_t ep_out;
+    uint16_t mps_in;
+    uint16_t mps_out;
+    uint8_t toggle_in;
+    uint8_t toggle_out;
+    uint32_t tag;
+    uint32_t sector_count;
+    uint32_t sector_size;
+    int child_pid;
+} usb_msc_t;
+
+static usb_msc_t _msc;
 
 static inline uint32_t be32(const void* p) {
     const uint8_t* b = (const uint8_t*)p;
@@ -80,33 +92,29 @@ static inline void put_be32(void* p, uint32_t v) {
 /* ---- init / poll ---- */
 
 int bsp_usb_init(void) {
-    ewokos_addr_t base = mmio_map();
-    if (base == 0) {
-        klog("bsp_usb: mmio_map failed, running without usb\n");
+    if (_inited) {
         return 0;
     }
-    if (dwc2_init(base) != 0) {
-        klog("bsp_usb: dwc2 init failed, running without usb\n");
+    _inited = true;
+    memset(_devs, 0, sizeof(_devs));
+    memset(_prev_connected, 0, sizeof(_prev_connected));
+    uhci_init(); /* degrades to zero ports, never fails */
+    if (uhci_port_count() == 0) {
+        klog("bsp_usb: no uhci controller found, running without usb\n");
     }
     return 0;
 }
 
 int bsp_usb_reinit(void) {
-    if (!dwc2_ready()) {
+    if (uhci_reinit() != 0) {
         return -1;
     }
     /* a re-init drops every device: the controller forgets all addresses,
        so the policy layer must re-enumerate the tree from scratch */
     memset(_devs, 0, sizeof(_devs));
+    memset(_prev_connected, 0, sizeof(_prev_connected));
+    memset(&_msc, 0, sizeof(_msc));
     _next_address = 2;
-    _prev_connected = false;
-    _reset_fail_streak = 0;
-    _pending_hs = false;
-    _fs_only = false;
-    if (dwc2_reinit() != 0) {
-        klog("bsp_usb: core reinit failed\n");
-        return -1;
-    }
     return 0;
 }
 
@@ -114,64 +122,49 @@ void bsp_usb_poll(void) {
     /* everything is polled on demand; nothing to drain */
 }
 
-/* ---- root port (single) ---- */
+/* ---- root ports (flat 1-based across all controllers) ---- */
 
 int bsp_usb_root_port_count(void) {
-    return 1;
+    return uhci_port_count();
 }
 
 bool bsp_usb_root_port_connected(int port) {
-    if (port != 1) {
+    if (port < 1 || port > uhci_port_count()) {
         return false;
     }
-    return dwc2_port_connected();
+    return uhci_port_connected(port - 1);
 }
 
 uint32_t bsp_usb_root_port_changes(void) {
-    bool conn;
-    uint32_t changed;
+    uint32_t changes = 0;
+    int count = uhci_port_count();
 
-    if (!dwc2_ready()) {
-        return 0;
+    for (int i = 0; i < count && i < BSP_USB_MAX_PORTS; ++i) {
+        bool conn = uhci_port_connected(i);
+        if (conn != _prev_connected[i]) {
+            changes |= 1u << i;
+            _prev_connected[i] = conn;
+            if (!conn) {
+                _next_address = 2;
+            }
+        }
+        uhci_ack_port_change(i);
     }
-    conn = dwc2_port_connected();
-    changed = (conn != _prev_connected) ? 1u : 0u;
-    _prev_connected = conn;
-    if (!conn) {
-        /* a fresh attach gets one high-speed probe again: the latch only
-           exists to skip HS on a link that already proved it cannot move
-           a single byte at 480Mbps */
-        _fs_only = false;
-        dwc2_force_fs_only(false);
-        _pending_hs = false;
-        _reset_fail_streak = 0;
-        _next_address = 2;
-    }
-    dwc2_ack_port_change();
-    return changed;
+    return changes;
 }
 
 int bsp_usb_root_port_reset(int port) {
     int speed;
 
-    if (port != 1 || !dwc2_ready()) {
+    if (port < 1 || port > uhci_port_count()) {
         return -1;
     }
     _next_address = 2;
-    speed = dwc2_reset_port();
+    speed = uhci_reset_port(port - 1);
     if (speed < 0) {
-        _reset_fail_streak++;
-        if (_reset_fail_streak >= BSP_USB_RESET_FAIL_REINIT) {
-            klog("bsp_usb: core reinit after %u failed resets\n",
-                    _reset_fail_streak);
-            _reset_fail_streak = 0;
-            (void)dwc2_reinit();
-        }
         return -1;
     }
-    _reset_fail_streak = 0;
-    _pending_hs = (speed == BSP_USB_SPEED_HIGH);
-    return speed;
+    return speed == 0 ? BSP_USB_SPEED_LOW : BSP_USB_SPEED_FULL;
 }
 
 /* ---- device lifecycle ---- */
@@ -181,11 +174,17 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     bsp_usb_dev_t* dev = NULL;
     usb_setup_pkt_t setup;
     uint8_t addr;
+    int flat;
 
-    (void)parent_hub;
-    (void)hub_port; /* topology is irrelevant for polled channel xfers */
-    if (root_port != 1 || !dwc2_ready()) {
-        return NULL;
+    (void)hub_port; /* devices behind a hub are reached by their address */
+    if (parent_hub != NULL) {
+        flat = parent_hub->root_flat;
+    }
+    else {
+        if (root_port < 1 || root_port > uhci_port_count()) {
+            return NULL;
+        }
+        flat = root_port - 1;
     }
 
     for (int i = 0; i < BSP_USB_MAX_DEVS; ++i) {
@@ -207,21 +206,8 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     setup.bmRequestType = USB_REQTYPE_STD_OUT;
     setup.bRequest = USB_REQ_SET_ADDRESS;
     setup.wValue = addr;
-    if (dwc2_control_xfer(0, speed == BSP_USB_SPEED_LOW, 8,
+    if (uhci_control_xfer(flat, speed == BSP_USB_SPEED_LOW, 0, 8,
             &setup, NULL, false) < 0) {
-        /* The port negotiated high speed but the device never answers a
-           single SETUP (instant TXERR): the 480Mbps data path is dead on
-           this board. Latch FS/LS-only so the next reset suppresses the
-           chirp and the device enumerates at full speed, instead of
-           reset-hammering until the chirp randomly fails. Re-init the
-           core too: flipping FSLSSUPP while the port is still enabled in
-           HS mode wedges the port-enable state machine. */
-        if (_pending_hs && !_fs_only && dwc2_last_xfer_txerr()) {
-            klog("bsp_usb: hs data path dead (pure txerr), force fs-only mode\n");
-            _fs_only = true;
-            dwc2_force_fs_only(true);
-            (void)dwc2_reinit();
-        }
         return NULL;
     }
     proc_usleep(10000); /* USB spec: new address is valid after 2ms */
@@ -231,6 +217,7 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     dev->addr = addr;
     dev->low_speed = (speed == BSP_USB_SPEED_LOW);
     dev->ctrl_mps = 8;
+    dev->root_flat = flat;
     return dev;
 }
 
@@ -249,8 +236,8 @@ int bsp_usb_device_update_mps0(bsp_usb_dev_t* dev, uint8_t mps0) {
     return 0;
 }
 
-/* no TT bookkeeping needed: devices behind an FS hub are reached by
-   their own address, FS/LS behind a HS hub is simply impossible here */
+/* no TT bookkeeping on UHCI: devices behind a hub are addressed
+   directly, the hub's port numbering never enters a transfer */
 int bsp_usb_device_configure_hub(bsp_usb_dev_t* dev, int num_ports) {
     (void)dev;
     (void)num_ports;
@@ -264,8 +251,8 @@ int bsp_usb_control_xfer(bsp_usb_dev_t* dev, const usb_setup_pkt_t* setup,
     if (dev == NULL || !dev->used) {
         return -1;
     }
-    return dwc2_control_xfer(dev->addr, dev->low_speed, dev->ctrl_mps,
-            setup, data, dir_in);
+    return uhci_control_xfer(dev->root_flat, dev->low_speed, dev->addr,
+            dev->ctrl_mps, setup, data, dir_in);
 }
 
 int bsp_usb_int_in_open(bsp_usb_dev_t* dev, uint8_t ep_addr, uint16_t mps,
@@ -322,9 +309,10 @@ int bsp_usb_int_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
     }
     dev->int_next_ms = now + int_in_interval(dev);
 
-    ret = dwc2_int_in_xfer(dev->addr, dev->low_speed, ep_addr & 0x0Fu,
-            dev->int_mps, &dev->int_toggle, buf, (uint16_t)size);
-    if (ret == DWC2_XFER_RETRY) {
+    ret = uhci_int_in_xfer(dev->root_flat, dev->low_speed, dev->addr,
+            ep_addr & 0x0Fu, dev->int_mps, &dev->int_toggle, buf,
+            (uint16_t)size);
+    if (ret == -2) {
         return -2; /* endpoint STALL: let the policy layer clear halt */
     }
     if (ret > 0) {
@@ -337,27 +325,33 @@ int bsp_usb_int_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
         dev->int_idle_polls++;
         return 0;
     }
+    /* hard error: UHCI tends to drop port-enable after babble/timeout,
+       re-enable so the next poll does not die on a disabled port */
+    uhci_recover_port(dev->root_flat);
     dev->int_idle_polls++;
     return -1;
 }
 
-/* generic bulk API stays stubbed: the MSC path below uses dwc2's
-   dedicated bulk channels with its own retry/recovery policy */
 int bsp_usb_bulk_open(bsp_usb_dev_t* dev, uint8_t ep_addr, uint16_t mps) {
-    (void)dev;
     (void)ep_addr;
     (void)mps;
-    return -1;
+    if (dev == NULL || !dev->used) {
+        return -1;
+    }
+    /* stateless: endpoint state (toggle) is tracked per consumer */
+    return 0;
 }
 
 int bsp_usb_bulk_xfer(bsp_usb_dev_t* dev, uint8_t ep_addr, void* data,
         int len, bool dir_in) {
-    (void)dev;
-    (void)ep_addr;
-    (void)data;
-    (void)len;
-    (void)dir_in;
-    return -1;
+    uint8_t toggle = 0;
+    if (dev == NULL || !dev->used || len <= 0) {
+        return -1;
+    }
+    /* stateless one-shot: the MSC path keeps its own toggle bookkeeping
+       and calls uhci_bulk_xfer() directly */
+    return uhci_bulk_xfer(dev->root_flat, dev->low_speed, dir_in, dev->addr,
+            ep_addr & 0x0Fu, 64, &toggle, data, (uint32_t)len, 2000u);
 }
 
 int bsp_usb_ep_clear_halt(bsp_usb_dev_t* dev, uint8_t ep_addr) {
@@ -383,49 +377,37 @@ int bsp_usb_ep_clear_halt(bsp_usb_dev_t* dev, uint8_t ep_addr) {
 
 #define MSC_BULK_TIMEOUT_MS 2000u
 #define MSC_CBW_TIMEOUT_MS 500u
-#define MSC_NAK_RETRIES 3000
 
-typedef struct {
-    bool ready;
-    bool claimed;
-    bsp_usb_dev_t* dev;
-    uint8_t iface_num;
-    uint8_t ep_in;   /* endpoint address (with USB_ENDPOINT_IN) */
-    uint8_t ep_out;
-    uint16_t mps_in;
-    uint16_t mps_out;
-    uint8_t toggle_in;
-    uint8_t toggle_out;
-    uint32_t tag;
-    uint32_t sector_count;
-    uint32_t sector_size;
-    int child_pid;
-} usb_msc_t;
-
-static usb_msc_t _msc;
-
-/* one bulk transaction with the NAK retry loop: flash devices NAK while
-   programming, so retry until the phase moves or a hard error aborts */
+/* one bulk transaction; uhci_bulk_xfer already retries pure NAKs */
 static int msc_bulk_xfer(bool dir_in, uint8_t ep_addr, uint16_t mps,
         uint8_t* toggle, void* data, uint32_t len, uint32_t timeout_ms) {
-    int tries = 0;
-    int xret;
-
-    do {
-        xret = dwc2_bulk_xfer(dir_in, _msc.dev->addr, _msc.dev->low_speed,
-                ep_addr & 0x0Fu, mps, toggle, data, len, timeout_ms);
-        if (xret == DWC2_XFER_RETRY && (++tries % 50) == 0) {
-            proc_usleep(1000);
-        }
-    } while (xret == DWC2_XFER_RETRY && tries < MSC_NAK_RETRIES);
-    return xret;
+    return uhci_bulk_xfer(_msc.dev->root_flat, _msc.dev->low_speed, dir_in,
+            _msc.dev->addr, ep_addr & 0x0Fu, mps, toggle, data, len,
+            timeout_ms);
 }
 
+/* bulk-only mass storage reset + endpoint unhalt, then resync toggles */
 static void msc_recover(void) {
-    dwc2_msc_recover(_msc.dev->addr, _msc.dev->low_speed,
-            _msc.dev->ctrl_mps, _msc.iface_num, _msc.ep_in, _msc.ep_out);
+    usb_setup_pkt_t setup;
+
+    memset(&setup, 0, sizeof(setup));
+    setup.bmRequestType = USB_REQTYPE_CLASS_IFACE_OUT;
+    setup.bRequest = 0xFF; /* bulk-only mass storage reset */
+    setup.wIndex = _msc.iface_num;
+    (void)bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
+
+    memset(&setup, 0, sizeof(setup));
+    setup.bmRequestType = USB_REQTYPE_STD_EP_OUT;
+    setup.bRequest = USB_REQ_CLEAR_FEATURE;
+    setup.wValue = USB_FEAT_ENDPOINT_HALT;
+    setup.wIndex = _msc.ep_in;
+    (void)bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
+    setup.wIndex = _msc.ep_out;
+    (void)bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
+
     _msc.toggle_in = 0;
     _msc.toggle_out = 0;
+    uhci_recover_port(_msc.dev->root_flat);
 }
 
 /* CBW -> optional data phase -> CSW. dir_in: data phase is IN.

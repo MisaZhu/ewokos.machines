@@ -6,7 +6,7 @@
  * xhci_dev_t slots. The usbhostd policy layer never touches xhci_*
  * directly.
  */
-#include <bsp/bsp_usb.h>
+#include <usb/bsp_usb.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -142,6 +142,28 @@ int bsp_usb_init(void) {
     }
     if (found == 0) {
         klog("bsp_usb: no xhci controller found, running without usb\n");
+    }
+    return 0;
+}
+
+int bsp_usb_reinit(void) {
+    if (!_inited) {
+        return -1;
+    }
+    /* HCRST drops every slot context: all attached devices become stale,
+       so forget the local handles too. The policy layer re-enumerates
+       the tree from scratch afterwards. */
+    memset(_devs, 0, sizeof(_devs));
+    int found = 0;
+    if (xhci_init(&_hcs[0], 0, _mmio_base + RP1_XHCI0_OFF) == 0) {
+        found++;
+    }
+    if (xhci_init(&_hcs[1], 1, _mmio_base + RP1_XHCI1_OFF) == 0) {
+        found++;
+    }
+    if (found == 0) {
+        klog("bsp_usb: reinit found no xhci controller\n");
+        return -1;
     }
     return 0;
 }

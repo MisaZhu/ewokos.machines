@@ -9,9 +9,10 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libs/libc/ewoksys/include \
 	-I $(SYS_DIR)/basic/libs/sd/include \
+	-I $(SYS_DIR)/basic/libs/usb/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
-LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o
+LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_usb.o
 
 BSP = $(TARGET_DIR)/lib/libbsp.a
 
