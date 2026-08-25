@@ -17,5 +17,5 @@ system/tmp
 .vscode/targets.log
 .qoder
 system/make.rule
-build
+build*
 .xmake

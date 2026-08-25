@@ -16,7 +16,7 @@ all: x_sys
 include $(SYS_ROOT_DIR)/platform/riscv/make.inc
 
 DIRS = libs $(SYS_ROOT_DIR)/basic $(SYS_ROOT_DIR)/gui drivers $(SYS_ROOT_DIR)/xwin
-x_sys: kernel_heads 
+x_sys: kernel_heads ewok_heads 
 	rm -f $(BUILD_DIR)/lib/libbsp.a
 
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
