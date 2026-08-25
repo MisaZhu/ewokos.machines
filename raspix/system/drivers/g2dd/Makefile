@@ -15,10 +15,9 @@ G2DD = $(TARGET_DIR)/drivers/raspix/g2dd
 
 $(G2DD): $(G2DD_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \
-		$(SDK_DIR)/lib/libtinyjson.a \
 		$(SDK_DIR)/lib/libarch_bcm283x.a \
 		$(SDK_DIR)/lib/libbsp.a
-	$(LD) -Ttext=100 $(G2DD_OBJS) -o $(G2DD) $(LDFLAGS) $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) -ltinyjson $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(G2DD_OBJS) -o $(G2DD) $(LDFLAGS) $(EWOK_LIB_GRAPH) $(BSP_LFLAGS) $(EWOK_LIBC)
 
 clean:
 	rm -f $(G2DD_OBJS)
