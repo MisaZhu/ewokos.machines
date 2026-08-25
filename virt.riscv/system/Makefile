@@ -5,7 +5,7 @@ export ARCH=riscv
 EWOKOS_ROOT_DIR = ../../..
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
 INST_DIR = /usr/local/ewokos
-BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
+BUILD_DIR = $(SYS_ROOT_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
 export BSP_LFLAGS= -lbsp -larch_virt

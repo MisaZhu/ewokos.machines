@@ -23,7 +23,7 @@ SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build
 
 include $(SYS_ROOT_DIR)/platform/$(ARCH)/make.rule
 
-SDK_DIR= $(SYS_ROOT_DIR)/build/$(HW)
+SDK_DIR= $(SYS_ROOT_DIR)/build_$(ARCH)/$(HW)
 LDFLAGS += -L $(SDK_DIR)/lib
 CFLAGS += -I include -I $(SDK_DIR)/include
 CXXFLAGS += -I include -I $(SDK_DIR)/include

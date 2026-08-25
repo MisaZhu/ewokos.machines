@@ -16,7 +16,7 @@ export HW=raspix
 
 EWOKOS_ROOT_DIR = $(ewokos)
 SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system
-SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
+SYS_BUILD_DIR = $(SYS_ROOT_DIR)/build_$(ARCH)/$(HW)
 
 SDK_DIR= $(SYS_BUILD_DIR)
 

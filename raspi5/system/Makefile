@@ -2,7 +2,7 @@ include make.inc
 
 EWOKOS_ROOT_DIR = $(ewokos)
 INST_DIR = /usr/local/ewokos
-BUILD_DIR = $(SYS_ROOT_DIR)/build/$(HW)
+BUILD_DIR = $(SYS_ROOT_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
 all: x
