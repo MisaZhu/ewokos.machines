@@ -4,7 +4,7 @@ basic:
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-GUI_DIRS = fbdisplayd dsi_fbdisplayd g2dd
+GUI_DIRS = fbdisplayd dsi_fbdisplayd
 gui:
 	@for dir in $(GUI_DIRS); do \
 		$(MAKE) -C $$dir || exit 1; \
