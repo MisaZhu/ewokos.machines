@@ -7,6 +7,8 @@
 #@/bin/ipcserv /drivers/raspix/dsi_fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/fontd
 
+#@/bin/ipcserv /drivers/raspix/g2dd
+
 @/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 12 -d
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
 
