@@ -273,20 +273,16 @@ static uint32_t blt32_pitch(const disp_info_t* fbinfo, const graph_t* g) {
 	uint8_t* dst = (uint8_t*)(uintptr_t)(fbinfo->pointer +
 			fbinfo->yoffset * fbinfo->pitch +
 			fbinfo->xoffset * bytes_per_pixel);
-	const uint32_t* src = g->buffer;
-	uint32_t row_bytes = (uint32_t)g->w * bytes_per_pixel;
-	uint32_t total_bytes = (uint32_t)g->h * row_bytes;
+	uint32_t total_bytes = (uint32_t)g->h * (uint32_t)g->w * bytes_per_pixel;
 
-	if (fbinfo->pitch == row_bytes) {
-		memcpy(dst, src, total_bytes);
-		return total_bytes;
-	}
-
-	for (int32_t y = 0; y < g->h; ++y) {
-		uint8_t* dst_row = dst + y * fbinfo->pitch;
-		const uint8_t* src_row = (const uint8_t*)(src + y * g->w);
-		memcpy(dst_row, src_row, row_bytes);
-	}
+	/* wrap the framebuffer as a graph (row stride = pitch) and let
+	   graph_blt run the arch-accelerated 1:1 copy */
+	graph_t fb_g;
+	graph_init(&fb_g, (const uint32_t*)dst,
+			(int32_t)(fbinfo->pitch / bytes_per_pixel),
+			(int32_t)fbinfo->yoffset + g->h);
+	graph_blt((graph_t*)g, 0, 0, g->w, g->h,
+			&fb_g, 0, 0, g->w, g->h);
 	return total_bytes;
 }
 
