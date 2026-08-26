@@ -2,7 +2,7 @@
 #define BCM2712_RP1_DPI_H
 
 #include <stdint.h>
-#include <ewoksys/fbinfo.h>
+#include <ewoksys/dispinfo.h>
 #include <sysinfo.h>
 
 /*
@@ -12,7 +12,7 @@
  * southbridge contains a DPI-DMA block that generates the display timing
  * and DMAs the framebuffer straight out of host RAM, plus a video PLL for
  * the pixel clock. This API brings that path up and hands back a standard
- * fbinfo_t, in the same shape bcm2712_native_hdmi_init_mode() does.
+ * disp_info_t, in the same shape bcm2712_native_hdmi_init_mode() does.
  */
 
 typedef struct {
@@ -43,7 +43,7 @@ typedef struct {
  */
 int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
 		uint32_t w, uint32_t h, uint32_t dep,
-		const bcm2712_dpi_timing_t *timing, fbinfo_t *info);
+		const bcm2712_dpi_timing_t *timing, disp_info_t *info);
 
 /*
  * Health check for a running DPI pipe: 0 = scanning out, 1 = engine had

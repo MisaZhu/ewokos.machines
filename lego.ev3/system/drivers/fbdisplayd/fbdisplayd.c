@@ -20,13 +20,13 @@ static void argb32_to_gray(uint32_t *argb, uint8_t *gray, int size){
     }
 }
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     argb32_to_gray(g->buffer, (uint8_t*)fbinfo->pointer, g->w * g->h);
     st7586_update((uint8_t*)fbinfo->pointer, g->w , g->h);
     return 4 * g->w * g->h;
 }
 
-static fbinfo_t* get_info(void) {
+static disp_info_t* get_info(void) {
     return bsp_get_fbinfo();
 }
 

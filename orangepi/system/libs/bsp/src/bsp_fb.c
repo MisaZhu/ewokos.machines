@@ -3,10 +3,10 @@
 #include <sysinfo.h>
 #include <string.h>
 
-static fbinfo_t _fb_info;
+static disp_info_t _fb_info;
 static char _framebuffer[640*480*4] = {0};
 
-fbinfo_t* bsp_get_fbinfo(void) {
+disp_info_t* bsp_get_fbinfo(void) {
     _fb_info.width = 640;
     _fb_info.height = 480;
     _fb_info.vwidth = 640;

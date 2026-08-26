@@ -3,7 +3,7 @@
 #include <string.h>
 #include <arch/bcm2712/framebuffer.h>
 
-fbinfo_t* bsp_get_fbinfo(void) {
+disp_info_t* bsp_get_fbinfo(void) {
     return bcm2712_get_fbinfo();
 }
 

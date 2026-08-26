@@ -952,7 +952,7 @@ int bcm2712_native_hdmi_supported(uint32_t w, uint32_t h, uint32_t dep) {
 
 int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
         const bcm2712_hdmi_mode_t *mode,
-        fbinfo_t *info) {
+        disp_info_t *info) {
     uint32_t bytes_per_pixel;
     uint32_t pitch;
     uint32_t size;
@@ -1034,7 +1034,7 @@ int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
 
 int bcm2712_native_hdmi_init(const sys_info_t *sysinfo,
         uint32_t w, uint32_t h, uint32_t dep,
-        fbinfo_t *info) {
+        disp_info_t *info) {
     bcm2712_hdmi_mode_t mode;
 
     if (bcm2712_native_hdmi_cvt_mode(w, h, dep, 60, &mode) != 0) {

@@ -8,15 +8,15 @@
 #include <displayd/displayd.h>
 #include <st77xx/st77xx.h>
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     (void)fbinfo;
     uint32_t sz = 4 * g->w * g->h;
     st77xx_flush(g->buffer, sz);
     return sz;
 }
 
-static fbinfo_t* get_info(void) {
-    static fbinfo_t fbinfo;
+static disp_info_t* get_info(void) {
+    static disp_info_t fbinfo;
     fbinfo.width = LCD_WIDTH;
     fbinfo.height = LCD_HEIGHT;
     fbinfo.depth = 32;

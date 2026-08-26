@@ -20,7 +20,7 @@ static void blt16(uint32_t* src, uint16_t* dst, uint32_t w, uint32_t h) {
     }
 }
 
-static uint32_t blt32(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t blt32(const disp_info_t* fbinfo, const graph_t* g) {
     uint32_t bytes_per_pixel = fbinfo->depth / 8;
     uint8_t* dst = (uint8_t*)(uintptr_t)(fbinfo->pointer +
             fbinfo->yoffset * fbinfo->pitch +
@@ -42,7 +42,7 @@ static uint32_t blt32(const fbinfo_t* fbinfo, const graph_t* g) {
     return total_bytes;
 }
 
-static uint32_t blt16_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t blt16_pitch(const disp_info_t* fbinfo, const graph_t* g) {
     uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
             fbinfo->yoffset * fbinfo->pitch +
             fbinfo->xoffset * 2;
@@ -56,7 +56,7 @@ static uint32_t blt16_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
     return g->w * g->h * 2;
 }
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     if (fbinfo->depth != 32 && fbinfo->depth != 16) {
         return 0;
     }
@@ -70,7 +70,7 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
     return g->w * g->h * 4;
 }
 
-static fbinfo_t* get_info(void) {
+static disp_info_t* get_info(void) {
     return bsp_get_fbinfo();
 }
 

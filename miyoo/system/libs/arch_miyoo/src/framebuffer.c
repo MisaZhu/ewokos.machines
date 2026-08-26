@@ -4,7 +4,7 @@
 #include <sysinfo.h>
 #include <ewoksys/mmio.h>
 
-static fbinfo_t _fb_info;
+static disp_info_t _fb_info;
 
 #define MIYOO_FB_PHY_BASE 0x27c00000U
 #define MIYOO_FB_PLUS_OFFSET 628U
@@ -59,6 +59,6 @@ int32_t miyoo_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     return 0;
 }
 
-fbinfo_t* miyoo_get_fbinfo(void) {
+disp_info_t* miyoo_get_fbinfo(void) {
     return &_fb_info;
 }

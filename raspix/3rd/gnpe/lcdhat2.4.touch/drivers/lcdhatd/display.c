@@ -63,15 +63,15 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t div) {
     lcd_init_variant(w, h, div, &cfg);
 }
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     uint32_t sz = 4 * g->w * g->h;
     do_flush(g->buffer, sz);
     return sz;
 }
 
-static fbinfo_t* get_info(void) {
-    static fbinfo_t fbinfo;
-    memset(&fbinfo, 0, sizeof(fbinfo_t));
+static disp_info_t* get_info(void) {
+    static disp_info_t fbinfo;
+    memset(&fbinfo, 0, sizeof(disp_info_t));
     fbinfo.width = LCD_WIDTH;
     fbinfo.height = LCD_HEIGHT;
     fbinfo.depth = 32;

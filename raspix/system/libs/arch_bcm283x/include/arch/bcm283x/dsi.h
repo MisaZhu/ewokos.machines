@@ -2,7 +2,7 @@
 #define BCM283X_DSI_H
 
 #include <stdint.h>
-#include <ewoksys/fbinfo.h>
+#include <ewoksys/dispinfo.h>
 
 typedef struct {
 	int32_t reset_gpio;
@@ -24,6 +24,6 @@ int bcm283x_dsi_panel_prepare(const bcm283x_dsi_panel_t* panel);
 int bcm283x_dsi_panel_enable_backlight(const bcm283x_dsi_panel_t* panel);
 int32_t bcm283x_dsi_fb_init(const bcm283x_dsi_panel_t* panel,
 		uint32_t w, uint32_t h, uint32_t dep);
-fbinfo_t* bcm283x_dsi_get_fbinfo(void);
+disp_info_t* bcm283x_dsi_get_fbinfo(void);
 
 #endif

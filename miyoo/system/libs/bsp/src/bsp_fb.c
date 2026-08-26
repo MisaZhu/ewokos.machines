@@ -4,7 +4,7 @@
 #include <string.h>
 #include <arch/miyoo/framebuffer.h>
 
-fbinfo_t* bsp_get_fbinfo(void) {
+disp_info_t* bsp_get_fbinfo(void) {
   return miyoo_get_fbinfo();
 }
 

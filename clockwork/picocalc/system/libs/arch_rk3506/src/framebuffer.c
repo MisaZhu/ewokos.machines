@@ -4,7 +4,7 @@
 #include <sysinfo.h>
 #include <ewoksys/mmio.h>
 
-static fbinfo_t _fb_info;
+static disp_info_t _fb_info;
 
 static uint32_t _framebuffer[320*320];
 
@@ -44,6 +44,6 @@ int32_t rk3506_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     return 0;
 }
 
-fbinfo_t* rk3506_get_fbinfo(void) {
+disp_info_t* rk3506_get_fbinfo(void) {
     return &_fb_info;
 }

@@ -9,7 +9,7 @@
 
 #include "ili9488.h"
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     uint32_t sz = 4 * g->w * g->h;
     uint32_t w = g->w;
     uint32_t h = g->h;
@@ -27,7 +27,7 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
   frame (stride g->w); ili9488_draw_stride pulls the sub-rect straight out of
   it, then the panel driver's own shadow-diff pushes just the changed pixels
   over SPI. Returns 0 to fall back to a full frame if geometry is unexpected.*/
-static uint32_t flush_rect(const fbinfo_t* fbinfo, const graph_t* g, const grect_t* r) {
+static uint32_t flush_rect(const disp_info_t* fbinfo, const graph_t* g, const grect_t* r) {
     (void)fbinfo;
     if (g == NULL || g->buffer == NULL || r == NULL)
         return 0;
@@ -48,7 +48,7 @@ static uint32_t flush_rect(const fbinfo_t* fbinfo, const graph_t* g, const grect
     return (uint32_t)w * (uint32_t)h * 2;
 }
 
-static fbinfo_t* get_info(void) {
+static disp_info_t* get_info(void) {
     return bsp_get_fbinfo();
 }
 

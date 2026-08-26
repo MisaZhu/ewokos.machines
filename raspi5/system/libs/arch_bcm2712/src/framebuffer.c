@@ -9,7 +9,7 @@
 #include <ewoksys/dma.h>
 #include <arch/bcm2712/native_hdmi.h>
 
-static fbinfo_t _fb_info;
+static disp_info_t _fb_info;
 
 /* ─── structured property tag types (mirrors Circle's bcmpropertytags.h) ─── */
 
@@ -231,7 +231,7 @@ static int fb_adopt(const sys_info_t *sysinfo,
         uint32_t vw, uint32_t vh, uint32_t dep,
         uint32_t xoff, uint32_t yoff,
         ewokos_addr_t phy, uint32_t size, uint32_t pitch,
-        fbinfo_t *info) {
+        disp_info_t *info) {
     uint32_t page_size;
     uint32_t phy_page_off;
     ewokos_addr_t phy_page;
@@ -249,7 +249,7 @@ static int fb_adopt(const sys_info_t *sysinfo,
     phy_page_off = (uint32_t)(phy & (page_size - 1));
     phy_page = phy - phy_page_off;
 
-    memset(info, 0, sizeof(fbinfo_t));
+    memset(info, 0, sizeof(disp_info_t));
     info->width = w;
     info->height = h;
     info->vwidth = vw != 0 ? vw : w;
@@ -270,7 +270,7 @@ static int fb_adopt(const sys_info_t *sysinfo,
             (ewokos_addr_t)info->size_max) == 0) {
         klog("fb: mem_map fail v=%x phy=%x size=%u\n",
                 (uint32_t)(info->pointer - phy_page_off), (uint32_t)phy_page, info->size_max);
-        memset(info, 0, sizeof(fbinfo_t));
+        memset(info, 0, sizeof(disp_info_t));
         return -1;
     }
     return 0;
@@ -600,7 +600,7 @@ static int fb_mode_equal(const fb_mode_t *a, const fb_mode_t *b) {
             a->depth == b->depth;
 }
 
-static int fb_mode_matches_info(const fb_mode_t *mode, const fbinfo_t *info) {
+static int fb_mode_matches_info(const fb_mode_t *mode, const disp_info_t *info) {
         if (mode == NULL || info == NULL) {
                 return 0;
         }
@@ -613,7 +613,7 @@ static int fb_mode_matches_info(const fb_mode_t *mode, const fbinfo_t *info) {
  * Uses the structured tag block (SET tags + ALLOCATE).
  */
 static int fb_try_mode(const sys_info_t *sysinfo,
-        const fb_mode_t *mode, fbinfo_t *info) {
+        const fb_mode_t *mode, disp_info_t *info) {
     fb_init_tags_t t;
 
     fb_init_tags_init(&t, mode->width, mode->height, mode->depth);
@@ -662,7 +662,7 @@ static int fb_try_mode(const sys_info_t *sysinfo,
  * fb_query_existing — adopt the framebuffer the firmware already set up at
  * boot.  Uses GET tags plus ALLOCATE_BUFFER with 0 request bytes.
  */
-static int fb_query_existing(const sys_info_t *sysinfo, fbinfo_t *info) {
+static int fb_query_existing(const sys_info_t *sysinfo, disp_info_t *info) {
     fb_query_tags_t t;
 
     fb_query_tags_init(&t);
@@ -721,7 +721,7 @@ typedef struct {
 } __attribute__((aligned(16))) fb_ch1_msg_t;
 
 static int fb_channel1_init(const sys_info_t *sysinfo,
-        const fb_mode_t *mode, fbinfo_t *info) {
+        const fb_mode_t *mode, disp_info_t *info) {
     fb_ch1_msg_t *msg = (fb_ch1_msg_t *)dma_alloc(0, sizeof(fb_ch1_msg_t));
     mail_message_t mailbox_msg;
     uint32_t w, h, vw, vh, dep, phy, size, pitch;
@@ -784,13 +784,13 @@ static int fb_channel1_init(const sys_info_t *sysinfo,
  * fb_try_mode_list — try a requested mode followed by a fallback list
  * using a given strategy function. Returns 0 on first success.
  */
-typedef int (*fb_init_fn_t)(const sys_info_t *, const fb_mode_t *, fbinfo_t *);
+typedef int (*fb_init_fn_t)(const sys_info_t *, const fb_mode_t *, disp_info_t *);
 
 static int fb_try_mode_list(const sys_info_t *sysinfo,
         const fb_mode_t *requested,
         const fb_mode_t *fallbacks, uint32_t n_fallbacks,
         fb_init_fn_t init_fn, const char *strat_name,
-        fbinfo_t *info) {
+        disp_info_t *info) {
     if (init_fn(sysinfo, requested, info) == 0) {
         return 0;
     }
@@ -825,7 +825,7 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     };
     const uint32_t n_fallbacks = sizeof(fallbacks) / sizeof(fallbacks[0]);
 
-    memset(&_fb_info, 0, sizeof(fbinfo_t));
+    memset(&_fb_info, 0, sizeof(disp_info_t));
     syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
     if (bcm2712_mailbox_init() == 0) {
@@ -951,7 +951,7 @@ done:
         return 0;
 }
 
-fbinfo_t *bcm2712_get_fbinfo(void) {
+disp_info_t *bcm2712_get_fbinfo(void) {
         return &_fb_info;
 }
 
@@ -964,11 +964,11 @@ int32_t bcm2712_fb_init_dpi(uint32_t w, uint32_t h, uint32_t dep,
         const bcm2712_dpi_timing_t *timing) {
     sys_info_t sysinfo;
 
-    memset(&_fb_info, 0, sizeof(fbinfo_t));
+    memset(&_fb_info, 0, sizeof(disp_info_t));
     syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
     if (bcm2712_rp1_dpi_init(&sysinfo, w, h, dep, timing, &_fb_info) != 0) {
-        memset(&_fb_info, 0, sizeof(fbinfo_t));
+        memset(&_fb_info, 0, sizeof(disp_info_t));
         klog("fb_init_dpi: rp1 dpi failed %ux%u@%u\n", w, h, dep);
         return -1;
     }

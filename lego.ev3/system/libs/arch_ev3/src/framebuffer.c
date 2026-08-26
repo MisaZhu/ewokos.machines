@@ -9,10 +9,10 @@
 #define FB_DEP 32
 
 static uint8_t _framebuffer[FB_DEF_W*FB_DEF_H*FB_DEP/8];
-static fbinfo_t _fb_info;
+static disp_info_t _fb_info;
 
 int32_t ev3_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
-    memset(&_fb_info, 0, sizeof(fbinfo_t));
+    memset(&_fb_info, 0, sizeof(disp_info_t));
     (void)w;
     (void)h;
     (void)dep;
@@ -31,6 +31,6 @@ int32_t ev3_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     return 0;
 }
 
-fbinfo_t* ev3_get_fbinfo(void) {
+disp_info_t* ev3_get_fbinfo(void) {
     return &_fb_info;
 }

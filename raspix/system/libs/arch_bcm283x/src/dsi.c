@@ -109,6 +109,6 @@ int32_t bcm283x_dsi_fb_init(const bcm283x_dsi_panel_t* panel,
     return bcm283x_dsi_panel_enable_backlight(panel);
 }
 
-fbinfo_t* bcm283x_dsi_get_fbinfo(void) {
+disp_info_t* bcm283x_dsi_get_fbinfo(void) {
     return bcm283x_get_fbinfo();
 }

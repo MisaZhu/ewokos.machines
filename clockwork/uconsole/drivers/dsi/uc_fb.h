@@ -2,7 +2,7 @@
 #define UC_FB_H
 
 #include <stdint.h>
-#include <ewoksys/fbinfo.h>
+#include <ewoksys/dispinfo.h>
 
 /*
  * Fallback framebuffer path: ask the VideoCore mailbox to allocate/
@@ -18,6 +18,6 @@
  */
 
 int32_t   uc_fb_mailbox_init(uint32_t w, uint32_t h, uint32_t dep);
-fbinfo_t* uc_fb_mailbox_info(void);
+disp_info_t* uc_fb_mailbox_info(void);
 
 #endif

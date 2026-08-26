@@ -190,7 +190,7 @@ static int _conf_has_mode = 0;      /* conf carried explicit timing */
 
 static const char* _conf_file = "";
 static int _display_index = 0;
-static fbinfo_t _fb_info;
+static disp_info_t _fb_info;
 
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
@@ -268,7 +268,7 @@ static uint16_t rgb565_from_u32(uint32_t s) {
 	return (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
 
-static uint32_t blt32_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t blt32_pitch(const disp_info_t* fbinfo, const graph_t* g) {
 	uint32_t bytes_per_pixel = fbinfo->depth / 8;
 	uint8_t* dst = (uint8_t*)(uintptr_t)(fbinfo->pointer +
 			fbinfo->yoffset * fbinfo->pitch +
@@ -290,7 +290,7 @@ static uint32_t blt32_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
 	return total_bytes;
 }
 
-static uint32_t blt16_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t blt16_pitch(const disp_info_t* fbinfo, const graph_t* g) {
 	uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
 			fbinfo->yoffset * fbinfo->pitch +
 			fbinfo->xoffset * 2;
@@ -306,8 +306,8 @@ static uint32_t blt16_pitch(const fbinfo_t* fbinfo, const graph_t* g) {
 	return (uint32_t)g->w * (uint32_t)g->h * 2U;
 }
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
-	const fbinfo_t* phy = fbinfo != NULL ? fbinfo : &_fb_info;
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
+	const disp_info_t* phy = fbinfo != NULL ? fbinfo : &_fb_info;
 
 	if (phy == NULL || phy->pointer == 0)
 		return 0;
@@ -323,7 +323,7 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
 	return blt32_pitch(phy, g);
 }
 
-static fbinfo_t* get_info(void) {
+static disp_info_t* get_info(void) {
 	return &_fb_info;
 }
 
@@ -391,7 +391,7 @@ static int32_t map_scanout_buffer(uint32_t w, uint32_t h, uint32_t dep) {
  * Prime the whole scan-out buffer to black so the first frames the
  * pipeline fetches are defined content instead of leftover DRAM.
  */
-static void fill_black(const fbinfo_t* fbi) {
+static void fill_black(const disp_info_t* fbi) {
 	if (fbi == NULL || fbi->pointer == 0)
 		return;
 	memset((void*)(uintptr_t)fbi->pointer, 0, fbi->size);

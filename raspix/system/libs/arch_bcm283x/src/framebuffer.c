@@ -7,7 +7,7 @@
 #include <ewoksys/mmio.h>
 #include <ewoksys/dma.h>
 
-static fbinfo_t _fb_info;
+static disp_info_t _fb_info;
 
 /*
  * QEMU's Raspberry Pi mailbox/property emulation is happiest with the
@@ -386,7 +386,7 @@ static void fb_build_request(uint32_t* req, uint32_t w, uint32_t h, uint32_t dep
     req[34] = 0;
 }
 
-static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_t* info) {
+static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_info_t* info) {
     uint32_t* req = (uint32_t*)dma_alloc(0, 35 * sizeof(uint32_t));
     uint32_t alias_used = 0;
     uint32_t page_size;
@@ -444,7 +444,7 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_
     resp_phy_page_off = resp_phy & (page_size - 1);
     resp_phy_page = resp_phy - resp_phy_page_off;
 
-    memset(info, 0, sizeof(fbinfo_t));
+    memset(info, 0, sizeof(disp_info_t));
     info->width = resp_w;
     info->height = resp_h;
     info->vwidth = resp_vw != 0 ? resp_vw : resp_w;
@@ -466,7 +466,7 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, fbinfo_
         klog("fb_init: mem_map failed %ux%ux%u alias=%x v=%x phy=%x size=%u\n",
                 mode->width, mode->height, mode->depth, alias_used,
                 (uint32_t)(info->pointer - resp_phy_page_off), resp_phy_page, info->size_max);
-        memset(info, 0, sizeof(fbinfo_t));
+        memset(info, 0, sizeof(disp_info_t));
         return -1;
     }
     return 0;
@@ -482,7 +482,7 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
         {640, 480, 16},
     };
 
-    memset(&_fb_info, 0, sizeof(fbinfo_t));
+    memset(&_fb_info, 0, sizeof(disp_info_t));
     syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
     bcm283x_mailbox_init();
@@ -520,6 +520,6 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     return -1;
 }
 
-fbinfo_t* bcm283x_get_fbinfo(void) {
+disp_info_t* bcm283x_get_fbinfo(void) {
     return &_fb_info;
 }

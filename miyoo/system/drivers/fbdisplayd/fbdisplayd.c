@@ -9,7 +9,7 @@
 #include <bsp/bsp_fb.h>
 
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     argb_2_nv12(fbinfo->pointer, g->buffer, g->w, g->h);
     return 4 * g->w * g->h;
 }
@@ -35,7 +35,7 @@ static inline void px2uv(uint32_t p, uint8_t* uv) {
   mirrored to the matching output region and snapped out to even 2x2 blocks
   for the subsampled chroma. Returns 0 to make libfbdisplayd fall back to a full
   frame whenever the geometry cannot be honoured.*/
-static uint32_t flush_rect(const fbinfo_t* fbinfo, const graph_t* g, const grect_t* r) {
+static uint32_t flush_rect(const disp_info_t* fbinfo, const graph_t* g, const grect_t* r) {
     if(fbinfo == NULL || g == NULL || g->buffer == NULL || r == NULL)
         return 0;
     if(fbinfo->pointer == 0)
@@ -92,7 +92,7 @@ static uint32_t flush_rect(const fbinfo_t* fbinfo, const graph_t* g, const grect
     return (uint32_t)(ox1 - ox0) * (uint32_t)(oy1 - oy0) * 2;
 }
 
-static fbinfo_t* get_info(void) {
+static disp_info_t* get_info(void) {
     return bsp_get_fbinfo();
 }
 

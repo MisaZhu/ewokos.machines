@@ -491,7 +491,7 @@ static int rp1_dpi_make_timing(uint32_t w, uint32_t h, uint32_t dep,
 
 int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
         uint32_t w, uint32_t h, uint32_t dep,
-        const bcm2712_dpi_timing_t *timing, fbinfo_t *info) {
+        const bcm2712_dpi_timing_t *timing, disp_info_t *info) {
     bcm2712_dpi_timing_t t;
     uint32_t actual_fpix = 0;
     uint32_t bytes_per_pixel, pitch, size, alloc_size, page_size;

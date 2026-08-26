@@ -20,13 +20,13 @@ int argv2rgb(uint8_t  *out,  uint32_t *in , int w, int h)
 }
 
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     uint32_t sz = 4 * g->w * g->h;
     memcpy((uint8_t*)fbinfo->pointer, (uint32_t*)g->buffer, sz);
     return sz;
 }
 
-static fbinfo_t* get_info(void) {
+static disp_info_t* get_info(void) {
     return bsp_get_fbinfo();
 }
 

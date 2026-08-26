@@ -38,10 +38,10 @@
 #define X86_FB_DEF_DEPTH 32
 #define X86_FB_FALLBACK_PHY_BASE 0xFD000000u
 
-static fbinfo_t _fbinfo;
+static disp_info_t _fbinfo;
 
 static inline void fbinfo_reset(void) {
-    _fbinfo = (fbinfo_t){0};
+    _fbinfo = (disp_info_t){0};
 }
 
 static inline uint32_t align_up(uint32_t value, uint32_t align) {
@@ -119,7 +119,7 @@ static int find_display_bar0(ewokos_addr_t* phy_base) {
     return -1;
 }
 
-fbinfo_t* bsp_get_fbinfo(void) {
+disp_info_t* bsp_get_fbinfo(void) {
     return &_fbinfo;
 }
 

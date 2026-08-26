@@ -5,7 +5,7 @@
 #include <unistd.h>
 #include <sys/shm.h>
 #include <ewoksys/dma.h>
-#include <ewoksys/fbinfo.h>
+#include <ewoksys/dispinfo.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/proto.h>
 #include <ewoksys/vdevice.h>
@@ -50,7 +50,7 @@ typedef struct {
 #endif
 
 struct g2d_state {
-    fbinfo_t* fbinfo;
+    disp_info_t* fbinfo;
     graph_t* canvas;
     uint32_t clear_color;
     const g2d_backend_t* backend;

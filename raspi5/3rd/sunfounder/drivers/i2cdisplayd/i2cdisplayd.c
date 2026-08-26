@@ -13,7 +13,7 @@
 #define OLED_PAGES	(OLED_HEIGHT / 8)
 #define OLED_BUF_SIZE	(OLED_WIDTH * OLED_PAGES)
 
-static fbinfo_t _fbinfo;
+static disp_info_t _fbinfo;
 static uint8_t _oled_buf[OLED_BUF_SIZE];
 static uint8_t _i2c_addr = 0x3c;
 static int _i2c_bus = BCM2712_I2C_BUS_HEADER;
@@ -110,7 +110,7 @@ static inline int pixel_is_on(uint32_t pixel) {
     return gray >= 0x80;
 }
 
-static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
     (void)fbinfo;
     memset(_oled_buf, 0, sizeof(_oled_buf));
 
@@ -129,7 +129,7 @@ static uint32_t flush(const fbinfo_t* fbinfo, const graph_t* g) {
     return (uint32_t)g->w * (uint32_t)g->h * 4;
 }
 
-static fbinfo_t* get_info(void) {
+static disp_info_t* get_info(void) {
     memset(&_fbinfo, 0, sizeof(_fbinfo));
     _fbinfo.width = OLED_WIDTH;
     _fbinfo.height = OLED_HEIGHT;

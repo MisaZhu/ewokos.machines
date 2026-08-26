@@ -2,7 +2,7 @@
 #define BCM2712_NATIVE_HDMI_H
 
 #include <stdint.h>
-#include <ewoksys/fbinfo.h>
+#include <ewoksys/dispinfo.h>
 #include <sysinfo.h>
 
 typedef struct {
@@ -25,9 +25,9 @@ int bcm2712_native_hdmi_cvt_mode(uint32_t w, uint32_t h, uint32_t dep,
 		uint32_t refresh_hz, bcm2712_hdmi_mode_t *mode);
 int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
 		const bcm2712_hdmi_mode_t *mode,
-		fbinfo_t *info);
+		disp_info_t *info);
 int bcm2712_native_hdmi_init(const sys_info_t *sysinfo,
 		uint32_t w, uint32_t h, uint32_t dep,
-		fbinfo_t *info);
+		disp_info_t *info);
 
 #endif

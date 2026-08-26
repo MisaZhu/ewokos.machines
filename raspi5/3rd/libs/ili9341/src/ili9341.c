@@ -216,7 +216,7 @@ static inline void lcd_show_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
     }
 }
 
-uint32_t ili9341_flush_rect(const fbinfo_t* fbinfo, const graph_t* g, const grect_t* r) {
+uint32_t ili9341_flush_rect(const disp_info_t* fbinfo, const graph_t* g, const grect_t* r) {
         uint32_t row;
         uint32_t col;
         uint32_t idx;
