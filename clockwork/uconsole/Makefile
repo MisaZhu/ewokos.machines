@@ -8,9 +8,8 @@ all:
 	done
 	cp -r etc build/
 
-CLEAN_DIRS = drivers/fbdisplayd drivers/fbdisplay6d drivers/powerd drivers/soundpwmd
 clean:	
-	@for dir in $(CLEAN_DIRS); do \
+	@for dir in $(DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
 	rm -fr build

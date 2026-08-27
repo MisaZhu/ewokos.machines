@@ -4,8 +4,7 @@ all:
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-CLEAN_DIRS = fbdisplayd kbd uartd
 clean:	
-	@for dir in $(CLEAN_DIRS); do \
+	@for dir in $(DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done

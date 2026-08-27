@@ -12,7 +12,7 @@ gui:
 
 network:
 
-CLEAN_DIRS = ttyd powerd fbdisplayd ps2keybd ps2moused
+CLEAN_DIRS = $(BASIC_DIRS) $(GUI_DIRS) 
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \

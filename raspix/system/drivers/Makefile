@@ -16,7 +16,7 @@ network:
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-CLEAN_DIRS = uartd cpud fbdisplayd dsi_fbdisplayd g2dd soundd hid_joystickd wlan btd camd
+CLEAN_DIRS = $(BASIC_DIRS) $(GUI_DIRS) $(NETWORK_DIRS)
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \

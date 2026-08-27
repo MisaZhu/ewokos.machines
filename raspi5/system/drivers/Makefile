@@ -4,6 +4,7 @@ basic:
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
+NETWORK_DIRS = wlan
 network:
 	cd wlan; $(MAKE)
 
@@ -13,7 +14,7 @@ gui:
 		$(MAKE) -C $$dir || exit 1; \
 	done
 
-CLEAN_DIRS = wlan $(BASIC_DIRS) $(GUI_DIRS)
+CLEAN_DIRS = $(NETWORK_DIRS) $(BASIC_DIRS) $(GUI_DIRS)
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \
