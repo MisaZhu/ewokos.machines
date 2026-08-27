@@ -1,19 +1,18 @@
 BASIC_DIRS = ttyd powerd
-basic:
-	@for dir in $(BASIC_DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
+basic: $(BASIC_DIRS)
 
 GUI_DIRS = fbdisplayd ps2keybd ps2moused
-gui:
-	@for dir in $(GUI_DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
+gui: $(GUI_DIRS)
 
 network:
 
-CLEAN_DIRS = $(BASIC_DIRS) $(GUI_DIRS) 
+$(BASIC_DIRS) $(GUI_DIRS):
+	@$(MAKE) -C $@
+
+CLEAN_DIRS = $(BASIC_DIRS) $(GUI_DIRS)
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
+
+.PHONY: basic gui network clean $(BASIC_DIRS) $(GUI_DIRS)

@@ -1,8 +1,12 @@
 all: basic_libs
 	@echo "all done."
 
-basic_libs:
-	cd bsp;$(MAKE)
+basic_libs: bsp
+
+bsp:
+	@$(MAKE) -C bsp
 
 clean:
-	cd bsp;$(MAKE) clean
+	@$(MAKE) -C bsp clean
+
+.PHONY: all basic_libs clean bsp
