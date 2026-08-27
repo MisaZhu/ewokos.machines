@@ -572,6 +572,6 @@ int main(int argc, char** argv) {
     dev.cmd = light_cmd;
     dev.dev_cntl = light_dcntl;
     dev.loop_step = light_loop_step;
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
     return 0;
 }

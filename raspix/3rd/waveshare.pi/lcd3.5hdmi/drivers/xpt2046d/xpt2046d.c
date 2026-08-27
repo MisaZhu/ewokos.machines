@@ -44,6 +44,6 @@ int main(int argc, char** argv) {
     strcpy(dev.desc, "xpt2046");
     dev.read = tp_read;
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     return 0;
 }

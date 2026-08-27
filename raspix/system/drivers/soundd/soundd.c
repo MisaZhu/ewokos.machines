@@ -1825,6 +1825,6 @@ int main(int argc, char** argv) {
         _snd_feeder_started = true;
     }
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
     return 0;
 }

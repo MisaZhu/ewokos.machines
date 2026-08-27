@@ -142,6 +142,6 @@ int main(int argc, char** argv) {
 
     dev.read = kbd_read;
     dev.loop_step = kbd_loop;
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     return 0;
 }

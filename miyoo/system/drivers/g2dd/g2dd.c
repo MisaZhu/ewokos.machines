@@ -996,7 +996,7 @@ int main(int argc, char** argv) {
     dev.cmd = g2d_cmd;
     dev.extra_data = &state;
 
-    if(device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666) != 0) {
+    if(device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false) != 0) {
         g2d_teardown(&state);
         return -1;
     }

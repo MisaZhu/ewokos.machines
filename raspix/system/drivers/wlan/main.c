@@ -441,7 +441,7 @@ int main(int argc, char** argv) {
     dev.dev_cntl = net_dcntl;
     dev.check_poll_events = net_check_poll_events;
     dev.cmd = net_dev_cmd;
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
 
 
     return 0;

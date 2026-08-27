@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
     dev.read = uart_read;
     dev.write = uart_write;
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
     return 0;
 }
 

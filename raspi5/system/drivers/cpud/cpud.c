@@ -722,7 +722,7 @@ int main(int argc, char** argv) {
     dev.read = cpud_read;
     dev.cmd = cpud_cmd;
 
-    int ret = device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    int ret = device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     if(_read_cache != NULL)
         free(_read_cache);
     return ret;

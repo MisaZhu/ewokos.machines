@@ -196,6 +196,6 @@ int main(int argc, char** argv) {
     dev.check_poll_events = mic_check_poll_events;
     dev.loop_step = mic_loop;
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     return 0;
 }
