@@ -42,9 +42,10 @@ gui_sys: network_sys
 
 x_sys: gui_sys
 	cd $(SYS_ROOT_DIR)/xwin;make
+	cd apps/xcpuinfo;$(MAKE)
 	@cp -r etc/xwin/* ${TARGET_DIR}/etc
 
-CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/basic
+CLEAN_DIRS = libs drivers apps/xcpuinfo $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/basic
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \
