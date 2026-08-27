@@ -21,6 +21,9 @@
 @/bin/ipcserv /drivers/raspi5/fand          /dev/fan
 @/bin/ipcserv /drivers/raspi5/cpud          /dev/cpu
 
+# Pironman 5 WS2812 RGB LEDs on SPI0 MOSI (GPIO10)
+@/bin/ipcserv /drivers/sunfounder/spilightd /dev/light
+
 #@/bin/splash -m "mount NVMe at /mnt" -p 16
 #@/bin/ipcserv /drivers/raspi5/nvmefsd       /mnt
 
