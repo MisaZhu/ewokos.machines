@@ -13,6 +13,13 @@ avoid_warnings=2
 
 #disable_splash=1
 
+#-----waveshare 3.5 inchs i2c touch hdmi_lcd------------
+hdmi_force_hotplug=1
+hdmi_group=2
+hdmi_mode=87
+hdmi_cvt=640 480 60 6 0 0 0
+disable_overscan=1
+
 #-----waveshare 8 inchs usb touch hdmi_lcd------------
 hdmi_group=2
 hdmi_mode=87
