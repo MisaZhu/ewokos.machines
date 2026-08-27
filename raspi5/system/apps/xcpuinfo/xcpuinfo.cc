@@ -192,6 +192,8 @@ protected:
 			snprintf(s, sizeof(s), "cpu: n/a");
 
 		int32_t ty = r.y + (r.h - (int32_t)theme->basic.fontSize) / 2;
+		graph_draw_text_font(g, r.x+7, ty+1, s,
+				theme->getFont(), theme->basic.fontSize, theme->basic.bgColor);
 		graph_draw_text_font(g, r.x+6, ty, s,
 				theme->getFont(), theme->basic.fontSize, theme->basic.fgColor);
 	}
