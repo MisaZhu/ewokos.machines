@@ -12,6 +12,7 @@
 @/bin/ipcserv /drivers/raspi5/dsi_fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/waveshare/dsi_touchd /dev/touch0
 @/bin/ipcserv /drivers/fontd
+@/bin/ipcserv /drivers/raspi5/g2dd        /dev/g2d
 
 @/bin/ipcserv /drivers/consoled
 @set_stdio /dev/console0

@@ -16,6 +16,12 @@
 #define PI5_MMIO_PHY        0x107C000000ULL
 #define PI5_MMIO_SIZE       (64*MB)
 
+/* VideoCore VII (V3D) block: hub at 0x1002000000, core0 at +0x8000,
+   SMS at +0x30800.  Outside the main MMIO window; the g2d driver maps
+   this window through SYS_MEM_MAP to drive CSD dispatch. */
+#define PI5_V3D_PHY        0x1002000000ULL
+#define PI5_V3D_SIZE       (4*MB)
+
 /* offsets inside the peripheral window */
 #define PI5_UART0_OFF       0x01001000  /* PL011, console on GPIO14/15   */
 #define PI5_MAILBOX_OFF     0x00013880  /* legacy VPU property mailbox   */
