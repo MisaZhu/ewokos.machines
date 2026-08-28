@@ -248,6 +248,13 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
         phy_base + size <= PI5_EMMC_PHY_WIN + PI5_EMMC_WIN_SIZE)
         return 0;
 
+    /* VideoCore VII block: 0x1002000000 - 0x1002400000 (hub + core0 +
+       SMS).  The g2d driver maps it through SYS_MEM_MAP for CSD
+       dispatch; without this whitelist the mapping is refused. */
+    if (phy_base >= PI5_V3D_PHY &&
+        phy_base + size <= PI5_V3D_PHY + PI5_V3D_SIZE)
+        return 0;
+
     /* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */
     /* PCIe2 host bridge for the onboard RP1 southbridge. */
     /* pcie1 host bridge — external connector where an NVMe HAT is
