@@ -400,6 +400,6 @@ int main(int argc, char** argv) {
     handler.handler = mouse_interrupt_handle;
     sys_interrupt_setup(IRQ_MOUSE, &handler);
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     return 0;
 }

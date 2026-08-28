@@ -1,20 +1,19 @@
 BASIC_DIRS = uartd fand cpud nvmefsd
-basic:
-	@for dir in $(BASIC_DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
+basic: $(BASIC_DIRS)
 
-network:
-	cd wlan; $(MAKE)
+NETWORK_DIRS = wlan
+network: $(NETWORK_DIRS)
 
 GUI_DIRS = fbdisplayd dsi_fbdisplayd
-gui:
-	@for dir in $(GUI_DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
+gui: $(GUI_DIRS)
 
-CLEAN_DIRS = wlan $(BASIC_DIRS) $(GUI_DIRS)
+$(BASIC_DIRS) $(NETWORK_DIRS) $(GUI_DIRS):
+	@$(MAKE) -C $@
+
+CLEAN_DIRS = $(NETWORK_DIRS) $(BASIC_DIRS) $(GUI_DIRS)
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
+
+.PHONY: basic network gui clean $(BASIC_DIRS) $(NETWORK_DIRS) $(GUI_DIRS)

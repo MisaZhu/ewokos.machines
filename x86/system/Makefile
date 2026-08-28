@@ -1,5 +1,13 @@
 include make.inc
 
+# default to parallel build; sub-makes share the jobserver via $(MAKE)
+ifeq ($(MAKELEVEL),0)
+ifeq ($(filter -j%,$(MAKEFLAGS)),)
+NPROCS := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+MAKEFLAGS += -j$(NPROCS)
+endif
+endif
+
 EWOKOS_ROOT_DIR = $(ewokos)
 SYS_ROOT_DIR = ${EWOKOS_ROOT_DIR}/system
 INST_DIR = /usr/local/ewokos
@@ -31,31 +39,35 @@ x: x_sys
 basic_sys: kernel_heads ewok_heads
 	rm -f $(BUILD_DIR)/lib/libbsp.a
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
-	cd libs;$(MAKE)
-	cd $(SYS_ROOT_DIR)/basic;$(MAKE)
-	cd drivers;$(MAKE) basic
-	@cp -r etc/basic/* ${TARGET_DIR}/etc
+	$(MAKE) -C libs
+	$(MAKE) -C $(SYS_ROOT_DIR)/basic
+	$(MAKE) -C drivers basic
+	@mkdir -p ${TARGET_DIR}/etc
+	@cp -Rp etc/basic/. ${TARGET_DIR}/etc/
 
 gui_sys: basic_sys
-	cd $(SYS_ROOT_DIR)/gui;$(MAKE)
-	cd drivers;$(MAKE) gui
-	@cp -r etc/gui/* ${TARGET_DIR}/etc
+	$(MAKE) -C $(SYS_ROOT_DIR)/gui
+	$(MAKE) -C drivers gui
+	@mkdir -p ${TARGET_DIR}/etc
+	@cp -Rp etc/gui/. ${TARGET_DIR}/etc/
 
 network_sys: gui_sys
-	cd $(SYS_ROOT_DIR)/network;$(MAKE)
-	cd drivers;$(MAKE) network
-	@cp -r etc/network/* ${TARGET_DIR}/etc
+	$(MAKE) -C $(SYS_ROOT_DIR)/network
+	$(MAKE) -C drivers network
+	@mkdir -p ${TARGET_DIR}/etc
+	@cp -Rp etc/network/. ${TARGET_DIR}/etc/
 
 x_sys: network_sys
-	cd $(SYS_ROOT_DIR)/xwin;$(MAKE)
-	@cp -r etc/xwin/* ${TARGET_DIR}/etc
+	$(MAKE) -C $(SYS_ROOT_DIR)/xwin
+	@mkdir -p ${TARGET_DIR}/etc
+	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
 
 CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/basic
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
-	cd $(EWOKOS_ROOT_DIR)/sw.extra/; $(MAKE) HW=$(HW) clean
+	$(MAKE) -C $(EWOKOS_ROOT_DIR)/sw.extra HW=$(HW) clean
 	rm -fr $(BUILD_DIR)
 	rm -fr $(FINAL_DIR)
 

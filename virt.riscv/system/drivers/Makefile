@@ -1,9 +1,13 @@
+DIRS = virt_uartd
 
-dirs=$(shell find . -maxdepth 1 -type d)
+all: $(DIRS)
 
-all: 
-	cd virt_uartd;$(MAKE)
+$(DIRS):
+	@$(MAKE) -C $@
 
-clean:	
-	cd virt_uartd;$(MAKE) clean
+clean:
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
 
+.PHONY: all clean $(DIRS)

@@ -1,26 +1,19 @@
-BASIC_DIRS = uartd cpud soundd camd 
-basic:
-	@for dir in $(BASIC_DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
+BASIC_DIRS = uartd cpud soundd camd
+basic: $(BASIC_DIRS)
 
 GUI_DIRS = fbdisplayd dsi_fbdisplayd
-gui:
-	@for dir in $(GUI_DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
+gui: $(GUI_DIRS)
 
 NETWORK_DIRS = wlan btd
-network:
-	@for dir in $(NETWORK_DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
+network: $(NETWORK_DIRS)
 
-CLEAN_DIRS = uartd cpud fbdisplayd dsi_fbdisplayd g2dd soundd hid_joystickd wlan btd camd
+$(BASIC_DIRS) $(GUI_DIRS) $(NETWORK_DIRS):
+	@$(MAKE) -C $@
+
+CLEAN_DIRS = $(BASIC_DIRS) $(GUI_DIRS) $(NETWORK_DIRS)
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
-	@for dir in $(USB_STACK_DIRS); do \
-		$(MAKE) -C $$dir clean; \
-	done
+
+.PHONY: basic gui network clean $(BASIC_DIRS) $(GUI_DIRS) $(NETWORK_DIRS)

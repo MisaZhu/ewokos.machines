@@ -1,6 +1,6 @@
 export MF=sunfounder
 
-DIRS = drivers/i2cdisplayd bin
+DIRS = drivers/i2cdisplayd drivers/spilightd bin apps/xsunfd
 all:
 	mkdir -p build
 	@for dir in $(DIRS); do \
@@ -8,9 +8,8 @@ all:
 	done
 	cp -r etc build
 
-CLEAN_DIRS = drivers/i2cdisplayd bin
 clean:
-	@for dir in $(CLEAN_DIRS); do \
+	@for dir in $(DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
 	rm -fr build

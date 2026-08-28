@@ -8,8 +8,7 @@ all:
 	done
 	cp -r etc build 
 
-CLEAN_DIRS = drivers/spilcdd drivers/buttond drivers/soundd drivers/micd lib apps/xgo apps/cam apps/xgoAI
 clean:	
-	@for dir in $(CLEAN_DIRS); do \
+	@for dir in $(DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done

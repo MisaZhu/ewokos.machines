@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
     dev.loop_step = loop;
     dev.check_poll_events = uart_check_poll_events;
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
 
     charbuf_free(_RxBuf);
     return 0;

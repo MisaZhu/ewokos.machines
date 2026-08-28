@@ -424,6 +424,6 @@ int main(int argc, char** argv) {
     dev.write = fan_write;
     dev.cmd = fan_cmd;
     dev.dev_cntl = fan_dcntl;
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
     return 0;
 }

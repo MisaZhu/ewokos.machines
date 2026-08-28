@@ -134,7 +134,7 @@ int main(int argc, char** argv) {
     sys_interrupt_setup(53, &handler);
     ev3_uart_enable_irq(UART_BASE, EV3_IRQ_RX, EV3_IRQ_ENABLE);
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
 
     fifo_free(_RxBuf);
     fifo_free(_TxBuf);

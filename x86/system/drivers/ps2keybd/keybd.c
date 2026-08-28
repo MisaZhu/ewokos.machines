@@ -273,6 +273,6 @@ int main(int argc, char** argv) {
     handler.handler = keybd_interrupt_handle;
     sys_interrupt_setup(IRQ_KEYBD, &handler);
 
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     return 0;
 }

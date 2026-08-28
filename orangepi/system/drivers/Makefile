@@ -1,5 +1,13 @@
-all: 
-	cd uartd; $(MAKE)
+DIRS = uartd
 
-clean:	
-	cd uartd; $(MAKE) clean
+all: $(DIRS)
+
+$(DIRS):
+	@$(MAKE) -C $@
+
+clean:
+	@for dir in $(DIRS); do \
+		$(MAKE) -C $$dir clean; \
+	done
+
+.PHONY: all clean $(DIRS)

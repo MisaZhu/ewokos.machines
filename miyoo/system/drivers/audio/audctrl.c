@@ -29,7 +29,7 @@ static int enter_pcm_device_loop(struct snd_pcm *pcm, const char* dev_name)
      * the VFS layer walk past the buffer when registering the mount.
      */
     snprintf(mount_point, sizeof(mount_point), "%s", dev_name);
-    return device_run(vdev, mount_point, FS_TYPE_CHAR, 0666);
+    return device_run(vdev, mount_point, FS_TYPE_CHAR, 0666, false);
 }
 
 int main(int argc, char *argv[])

@@ -838,5 +838,5 @@ int main(int argc, char** argv) {
     dev.fcntl = cam_fcntl;
     dev.loop_step = cam_loop_step;
 
-    return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    return device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
 }

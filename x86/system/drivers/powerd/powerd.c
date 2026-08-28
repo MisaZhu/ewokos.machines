@@ -33,6 +33,6 @@ int main(int argc, char** argv) {
     dev.desc[5] = 'd';
     dev.desc[6] = 0;
     dev.read = power_read;
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     return 0;
 }

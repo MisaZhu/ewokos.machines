@@ -1112,6 +1112,19 @@ int xhci_int_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
     return 0;
 }
 
+/* arm one interrupt-IN TD; the controller polls the device in hardware
+   until it completes, so a permanently armed EP loses no reports */
+static void int_in_arm(xhci_dev_t* dev, xhci_ep_t* ep, uint32_t dci) {
+    ep->buf_len = ep->mps;
+    ep->short_left = 0;
+    ep->td_last_phys = ring_push(ep->ring, ep->ring_phys,
+            &ep->enq, &ep->cycle, false,
+            (uint32_t)ep->data_phys, (uint32_t)(ep->data_phys >> 32),
+            ep->mps, TRB_TYPE(TRB_NORMAL) | TRB_ISP | TRB_IOC);
+    ep->in_flight = true;
+    ring_doorbell(dev->hc, dev->slot_id, dci);
+}
+
 int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
     uint32_t ep_num = ep_addr & 0x0fu;
     uint32_t dci = ep_num * 2u + 1u;
@@ -1132,6 +1145,9 @@ int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
             if (n > 0) {
                 memcpy(buf, ep->data, n);
             }
+            /* re-arm immediately: otherwise the next report waits a whole
+               usbhostd loop cycle (~2ms quantized sleep) for a fresh TD */
+            int_in_arm(dev, ep, dci);
             return n;
         }
         /* STALL/error: recover the ring; caller decides on re-poll/drop */
@@ -1140,15 +1156,7 @@ int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
     }
 
     if (!ep->in_flight) {
-        /* arm the next TD; the controller polls the device in hardware */
-        ep->buf_len = ep->mps;
-        ep->short_left = 0;
-        ep->td_last_phys = ring_push(ep->ring, ep->ring_phys,
-                &ep->enq, &ep->cycle, false,
-                (uint32_t)ep->data_phys, (uint32_t)(ep->data_phys >> 32),
-                ep->mps, TRB_TYPE(TRB_NORMAL) | TRB_ISP | TRB_IOC);
-        ep->in_flight = true;
-        ring_doorbell(dev->hc, dev->slot_id, dci);
+        int_in_arm(dev, ep, dci);
     }
     return 0;
 }

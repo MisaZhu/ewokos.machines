@@ -109,7 +109,7 @@ int main(int argc, char** argv) {
     strcpy(dev.desc, "adcd");
     dev.read = adcd_read;
     dev.loop_step = adcd_loop;
-    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666);
+    device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
 
     davinci_spi_release_bus();
     return 0;

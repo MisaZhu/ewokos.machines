@@ -1,11 +1,13 @@
 DIRS = fbdisplayd kbd uartd
-all: 
-	@for dir in $(DIRS); do \
-		$(MAKE) -C $$dir || exit 1; \
-	done
 
-CLEAN_DIRS = fbdisplayd kbd uartd
-clean:	
-	@for dir in $(CLEAN_DIRS); do \
+all: $(DIRS)
+
+$(DIRS):
+	@$(MAKE) -C $@
+
+clean:
+	@for dir in $(DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
+
+.PHONY: all clean $(DIRS)

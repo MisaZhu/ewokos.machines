@@ -8,9 +8,8 @@ all:
 	done
 	cp -r etc build
 
-CLEAN_DIRS = drivers/joykeybd drivers/gamekbd drivers/lcdhatd
 clean:	
-	@for dir in $(CLEAN_DIRS); do \
+	@for dir in $(DIRS); do \
 		$(MAKE) -C $$dir clean; \
 	done
 	rm -fr build
