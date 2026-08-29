@@ -77,7 +77,7 @@ static int gpu_ok(int32_t w, int32_t h)
 
 static void log_cpu_fallback(const char *operation)
 {
-    //klog("g2d: CPU fallback: %s\r\n", operation);
+    slog("g2d: CPU fallback: %s\r\n", operation);
 }
 
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
@@ -343,7 +343,7 @@ int32_t arch_g2d_init(void)
     return v3d_g2d_init();
 }
 
-void arch_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
+int32_t arch_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
                    int32_t argb_w, int32_t argb_h,
                    int32_t x, int32_t y, int32_t w, int32_t h,
                    uint32_t color)
@@ -359,15 +359,15 @@ void arch_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
     if (phys) {
         /* Never replay a submitted operation on the CPU: a timed-out
          * dispatch may still own or have partially written dst. */
-        (void)gpu_fill_surface(phys, argb, argb_w, argb_h, rx, ry,
-                               rx + rw, ry + rh, color);
-        return;
+        return gpu_fill_surface(phys, argb, argb_w, argb_h, rx, ry,
+                                rx + rw, ry + rh, color) ? 0 : -1;
     }
     log_cpu_fallback("fill");
     g2d_cpu_fill(argb, argb_w, argb_h, x, y, w, h, color);
+    return 0;
 }
 
-void arch_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
+int32_t arch_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                   int32_t src_w, int32_t src_h,
                   int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                   uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
@@ -388,18 +388,18 @@ void arch_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
     if (src_phys && dst_phys) {
         g2d_cpu_map_params(sx, sy, sw, sh, dx, dy, dw, dh, G2D_MAP_ROT_0, &m);
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
-            (void)gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
-                                   dst_phys, argb_dst, dst_w, dst_h, rx, ry,
-                                   rx + rw, ry + rh);
-            return;
+            return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                                    dst_phys, argb_dst, dst_w, dst_h, rx, ry,
+                                    rx + rw, ry + rh) ? 0 : -1;
         }
     }
     log_cpu_fallback("blt");
     g2d_cpu_blt(argb_src, src_w, src_h, sx, sy, sw, sh,
                 argb_dst, dst_w, dst_h, dx, dy, dw, dh);
+    return 0;
 }
 
-void arch_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
+int32_t arch_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                         int32_t src_w, int32_t src_h,
                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                         uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
@@ -412,7 +412,7 @@ void arch_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
     uint32_t src_phys = 0, dst_phys = 0;
 
     if (alpha == 0)
-        return;
+        return 0;
 
     if (argb_src && argb_dst && argb_src != argb_dst &&
         sw > 0 && sh > 0 && dw > 0 && dh > 0 &&
@@ -424,17 +424,17 @@ void arch_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
             g2d_cpu_map_params(sx, sy, sw, sh, dx, dy, dw, dh,
                                G2D_MAP_ROT_0, &m);
             if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
-                (void)gpu_alpha_surface(&m, alpha, src_phys, argb_src,
-                                        src_w, src_h, dst_phys, argb_dst,
-                                        dst_w, dst_h, rx, ry,
-                                        rx + rw, ry + rh);
-                return;
+                return gpu_alpha_surface(&m, alpha, src_phys, argb_src,
+                                         src_w, src_h, dst_phys, argb_dst,
+                                         dst_w, dst_h, rx, ry,
+                                         rx + rw, ry + rh) ? 0 : -1;
             }
         }
     }
     log_cpu_fallback("blt_alpha");
     g2d_cpu_blt_alpha(argb_src, src_w, src_h, sx, sy, sw, sh,
                       argb_dst, dst_w, dst_h, dx, dy, dw, dh, alpha);
+    return 0;
 }
 
 /* Scalar source-over blend, identical math to g2d_cpu_blt_alpha:
@@ -459,21 +459,21 @@ static uint32_t blend_argb_scalar(uint32_t dst_color, uint8_t a,
 /* CPU-only alpha fill of a sub-rect, clipped to the buffer bounds:
  * exact per-pixel access, no alignment/contiguity requirements;
  * same blend math as arch_g2d_blt_alpha.  alpha == 0 is a no-op. */
-void arch_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
+int32_t arch_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
                          int32_t x, int32_t y, int32_t w, int32_t h,
                          uint32_t color)
 {
     uint8_t a;
 
     if (argb == NULL)
-        return;
+        return 0;
     a = (uint8_t)((color >> 24) & 0xff);
     if (a == 0)
-        return;
+        return 0;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
     if (w <= 0 || h <= 0 || x >= argb_w || y >= argb_h)
-        return;
+        return 0;
     if (x + w > argb_w) w = argb_w - x;
     if (y + h > argb_h) h = argb_h - y;
 
@@ -486,6 +486,7 @@ void arch_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
                     (uint8_t)(color & 0xff));
         }
     }
+    return 0;
 }
 
 /* CPU back end for sub-alignment tails and narrow copies: scalar 1:1
@@ -496,16 +497,16 @@ void arch_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
  * the next row).  use_alpha == 0 is a plain copy; otherwise the same
  * math as arch_g2d_blt_alpha (effective alpha (src_a * alpha) >> 8,
  * then the /255 blend). */
-void arch_g2d_blt_cpu(uint32_t *argb_src, int32_t src_w, int32_t src_h,
+int32_t arch_g2d_blt_cpu(uint32_t *argb_src, int32_t src_w, int32_t src_h,
                       int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                       uint32_t *argb_dst, int32_t dst_w, int32_t dst_h,
                       int32_t dx, int32_t dy, uint8_t use_alpha,
                       uint8_t alpha)
 {
     if (argb_src == NULL || argb_dst == NULL || sw <= 0 || sh <= 0)
-        return;
+        return 0;
     if (use_alpha != 0 && alpha == 0)
-        return;
+        return 0;
 
     /* 1:1 mapping: cutting one side shifts the other surface's origin
      * by the same delta, cutting right/bottom just shrinks the size */
@@ -518,7 +519,7 @@ void arch_g2d_blt_cpu(uint32_t *argb_src, int32_t src_w, int32_t src_h,
     if (dx + sw > dst_w) sw = dst_w - dx;
     if (dy + sh > dst_h) sh = dst_h - dy;
     if (sw <= 0 || sh <= 0)
-        return;
+        return 0;
 
     for (int32_t row = 0; row < sh; row++) {
         const uint32_t *sp = argb_src + (sy + row) * src_w + sx;
@@ -548,9 +549,10 @@ void arch_g2d_blt_cpu(uint32_t *argb_src, int32_t src_w, int32_t src_h,
                     (uint8_t)(color & 0xff));
         }
     }
+    return 0;
 }
 
-void arch_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
+int32_t arch_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                        int32_t src_w, int32_t src_h,
                        uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
                        int32_t dst_w, int32_t dst_h)
@@ -568,23 +570,24 @@ void arch_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
         g2d_cpu_map_params(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
                            G2D_MAP_ROT_0, &m);
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
-            (void)gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
-                                   dst_phys, argb_dst, dst_w, dst_h,
-                                   0, 0, dst_w, dst_h);
-            return;
+            return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                                    dst_phys, argb_dst, dst_w, dst_h,
+                                    0, 0, dst_w, dst_h) ? 0 : -1;
         }
     }
     log_cpu_fallback("scale_to");
     g2d_cpu_scale_to(argb_src, src_w, src_h, argb_dst, dst_w, dst_h);
+    return 0;
 }
 
-void arch_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
+int32_t arch_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
                            int32_t *dst_w, int32_t *dst_h)
 {
     g2d_cpu_rotated_size(src_w, src_h, degree, dst_w, dst_h);
+    return 0;
 }
 
-void arch_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
+int32_t arch_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                      int32_t src_w, int32_t src_h,
                      uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
                      int32_t dst_w, int32_t dst_h, int32_t degree)
@@ -616,12 +619,12 @@ void arch_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_cont
         if (bw > 0 && bh > 0) {
             g2d_cpu_map_rotate(src_w, src_h, rot, bw, bh, &m);
             if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
-                (void)gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
-                                         dst_phys, argb_dst, dst_w, dst_h);
-                return;
+                return gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
+                                          dst_phys, argb_dst, dst_w, dst_h) ? 0 : -1;
             }
         }
     }
     log_cpu_fallback("rotate");
     g2d_cpu_rotate(argb_src, src_w, src_h, argb_dst, dst_w, dst_h, degree);
+    return 0;
 }
