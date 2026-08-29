@@ -12,7 +12,8 @@
  *   bsp_g2d_fill       any clipped rect        -> argb_fill kernel
  *   bsp_g2d_blt        any clipped dst rect    -> argb_blit kernel
  *   bsp_g2d_scale_to   whole dst               -> argb_blit kernel
- *   bsp_g2d_rotate     any angle, any dst size -> argb_rotate kernel
+ *   bsp_g2d_rotate     right-angle content box -> argb_blit; otherwise
+ *                      any angle/size -> argb_rotate kernel
  *                       (dst < box: clipped to dst top-left)
  *
  * bsp_g2d_blt_alpha uses a dedicated source-over kernel.  Its two-read
