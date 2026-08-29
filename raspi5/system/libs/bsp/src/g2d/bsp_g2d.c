@@ -808,6 +808,17 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
         if (bw > 0 && bh > 0) {
             g2d_map_rotate(src_w, src_h, rot, bw, bh, &m);
             if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
+                /* Exact right-angle maps stay inside the rotated content
+                 * box, so the transparent-outside test in argb_rotate is
+                 * unnecessary.  Dispatch the shorter argb_blit kernel;
+                 * padded destinations still use rotate because blit clamps
+                 * out-of-range samples instead of writing transparent 0.
+                 */
+                if ((rot % 90) == 0 && dst_w <= bw && dst_h <= bh) {
+                    return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                                            dst_phys, argb_dst, dst_w, dst_h,
+                                            0, 0, dst_w, dst_h) ? 0 : -1;
+                }
                 return gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
                                           dst_phys, argb_dst, dst_w, dst_h) ? 0 : -1;
             }
