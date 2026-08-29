@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* kernel argb_alpha: 224 instructions */
+/* kernel argb_alpha: 200 instructions */
 const uint64_t g2d_qpu_argb_alpha[] = {
     0x39800000bb03f000ULL,  /*   nop */
     0x39804000bb03f000ULL,  /*   nop */
@@ -39,7 +39,7 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x24000700bb55f000ULL,  /*   nop */
     0x3800001a3803f69cULL,  /*   add */
     0x08048700bb298000ULL,  /*   nop */
-    0x020005960000d000ULL,  /*   branch ANYA */
+    0x020004d60000d000ULL,  /*   branch ANYA */
     0x39828000bb03f000ULL,  /*   nop */
     0x39e0001c7c03f546ULL,  /*   shl */
     0x3800000a3803f29cULL,  /*   add */
@@ -54,9 +54,8 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x24000540bb019000ULL,  /*   nop */
-    0x39e000157e03f54fULL,  /*   asr */
+    0x25e006d57e09854fULL,  /*   asr */
     0x380000153803f541ULL,  /*   add */
-    0x240006c0bb098000ULL,  /*   nop */
     0x39e0001b7e03f6cfULL,  /*   asr */
     0x3800001b3803f6c3ULL,  /*   add */
     0x39e000157903f540ULL,  /*   max */
@@ -78,48 +77,39 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x3808001ff903f683ULL,  /*   mov */
     0x3800100cf903f7c3ULL,  /*   mov */
     0x38874000bb03f000ULL,  /*   nop */
-    0x380000157d03f711ULL,  /*   shr */
-    0x39e000157d03f548ULL,  /*   shr */
+    0x39e000157f03f718ULL,  /*   ror */
     0x38000015b503f553ULL,  /*   and */
     0x0c0006c0bb54b000ULL,  /*   nop */
     0x39e0001b7d03f6c8ULL,  /*   shr */
     0x380000143c03f4dbULL,  /*   sub */
     0x38000015b503f713ULL,  /*   and */
-    0x0c000780bb55b000ULL,  /*   nop */
-    0x38000015b503f753ULL,  /*   and */
-    0x0c0007c0bb554000ULL,  /*   nop */
-    0x3800001e3803f79fULL,  /*   add */
+    0x0c000787b555b753ULL,  /*   and */
+    0x0c0001c0bb1d4000ULL,  /*   nop */
+    0x3800001e3803f787ULL,  /*   add */
     0x39e0001e7d03f788ULL,  /*   shr */
-    0x39e000157d03f708ULL,  /*   shr */
+    0x39e000157f03f708ULL,  /*   ror */
     0x38000015b503f553ULL,  /*   and */
-    0x0c0007c0bb55b000ULL,  /*   nop */
-    0x39e000157d03f748ULL,  /*   shr */
-    0x38000015b503f553ULL,  /*   and */
-    0x0c000540bb554000ULL,  /*   nop */
-    0x3800001f3803f7d5ULL,  /*   add */
+    0x0de007c77f55b748ULL,  /*   ror */
+    0x38000007b503f1d3ULL,  /*   and */
+    0x0c0001c0bb1d4000ULL,  /*   nop */
+    0x3800001f3803f7c7ULL,  /*   add */
     0x39e0001f7d03f7c8ULL,  /*   shr */
-    0x39e0001f7c03f7c8ULL,  /*   shl */
-    0x3800001e3803f79fULL,  /*   add */
     0x380000157d03f711ULL,  /*   shr */
     0x38000015b503f553ULL,  /*   and */
-    0x0c0007c0bb55b000ULL,  /*   nop */
-    0x380000157d03f751ULL,  /*   shr */
-    0x38000015b503f553ULL,  /*   and */
-    0x0c000540bb554000ULL,  /*   nop */
-    0x3800001f3803f7d5ULL,  /*   add */
-    0x39e0001f7d03f7c8ULL,  /*   shr */
-    0x380000157d03f751ULL,  /*   shr */
+    0x0c0005477d55b751ULL,  /*   shr */
+    0x38000007b503f1d3ULL,  /*   and */
+    0x0c0001c0bb1d4000ULL,  /*   nop */
+    0x380000153803f547ULL,  /*   add */
     0x39e000157d03f548ULL,  /*   shr */
-    0x38000015b503f553ULL,  /*   and */
-    0x380000143c03f4d5ULL,  /*   sub */
-    0x0c0006c0bb51b000ULL,  /*   nop */
-    0x39e0001b7d03f6c8ULL,  /*   shr */
-    0x380000153803f55bULL,  /*   add */
-    0x380000157c03f551ULL,  /*   shl */
-    0x39e000157c03f548ULL,  /*   shl */
-    0x3800001f7c03f7d1ULL,  /*   shl */
-    0x380000153803f55fULL,  /*   add */
-    0x3800001e3803f55eULL,  /*   add */
+    0x3800001ef703f79fULL,  /*   vpack */
+    0x39e000077f03f758ULL,  /*   ror */
+    0x38000007b503f1d3ULL,  /*   and */
+    0x3800001f3c03f4c7ULL,  /*   sub */
+    0x0c0007c0bb7db000ULL,  /*   nop */
+    0x39e0001f7d03f7c8ULL,  /*   shr */
+    0x380000073803f1dfULL,  /*   add */
+    0x38000015f703f547ULL,  /*   vpack */
+    0x3800001ef803f795ULL,  /*   v8pack */
     0x38000015f903f683ULL,  /*   mov */
     0x39c0401bf903f003ULL,  /*   mov */
     0x3802401b3c03f64dULL,  /*   sub */
@@ -128,19 +118,14 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x3802001b3c03f610ULL,  /*   sub */
     0x380a0015f903f283ULL,  /*   mov */
     0x380022c0bb783000ULL,  /*   nop */
-    0x3800100cf903f543ULL,  /*   mov */
-    0x39e080173c03f5c1ULL,  /*   sub */
-    0x380000193803f651ULL,  /*   add */
-    0x38080017f903f243ULL,  /*   mov */
-    0x39e800183803f601ULL,  /*   add */
-    0x38080019f903f583ULL,  /*   mov */
-    0x39e000157c03f442ULL,  /*   shl */
-    0x3800001a3803f695ULL,  /*   add */
+    0x0be495ccf95c1543ULL,  /*   mov */
+    0x07f00617f9601243ULL,  /*   mov */
+    0x05e006557c651442ULL,  /*   shl */
+    0x380c065a38583695ULL,  /*   add */
     0x3808001a3c03f692ULL,  /*   sub */
     0x24000540bb019000ULL,  /*   nop */
-    0x39e000157e03f54fULL,  /*   asr */
+    0x25e006d57e09854fULL,  /*   asr */
     0x380000153803f541ULL,  /*   add */
-    0x240006c0bb098000ULL,  /*   nop */
     0x39e0001b7e03f6cfULL,  /*   asr */
     0x3800001b3803f6c3ULL,  /*   add */
     0x39e000157903f540ULL,  /*   max */
@@ -162,50 +147,41 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x3808001ff903f683ULL,  /*   mov */
     0x3800100cf903f7c3ULL,  /*   mov */
     0x38874000bb03f000ULL,  /*   nop */
-    0x380000157d03f711ULL,  /*   shr */
-    0x39e000157d03f548ULL,  /*   shr */
+    0x39e000157f03f718ULL,  /*   ror */
     0x38000015b503f553ULL,  /*   and */
     0x0c0006c0bb54b000ULL,  /*   nop */
     0x39e0001b7d03f6c8ULL,  /*   shr */
     0x380000143c03f4dbULL,  /*   sub */
     0x38000015b503f713ULL,  /*   and */
-    0x0c000780bb55b000ULL,  /*   nop */
-    0x38000015b503f753ULL,  /*   and */
-    0x0c0007c0bb554000ULL,  /*   nop */
-    0x3800001e3803f79fULL,  /*   add */
+    0x0c000787b555b753ULL,  /*   and */
+    0x0c0001c0bb1d4000ULL,  /*   nop */
+    0x3800001e3803f787ULL,  /*   add */
     0x39e0001e7d03f788ULL,  /*   shr */
-    0x39e000157d03f708ULL,  /*   shr */
+    0x39e000157f03f708ULL,  /*   ror */
     0x38000015b503f553ULL,  /*   and */
-    0x0c0007c0bb55b000ULL,  /*   nop */
-    0x39e000157d03f748ULL,  /*   shr */
-    0x38000015b503f553ULL,  /*   and */
-    0x0c000540bb554000ULL,  /*   nop */
-    0x3800001f3803f7d5ULL,  /*   add */
+    0x0de007c77f55b748ULL,  /*   ror */
+    0x38000007b503f1d3ULL,  /*   and */
+    0x0c0001c0bb1d4000ULL,  /*   nop */
+    0x3800001f3803f7c7ULL,  /*   add */
     0x39e0001f7d03f7c8ULL,  /*   shr */
-    0x39e0001f7c03f7c8ULL,  /*   shl */
-    0x3800001e3803f79fULL,  /*   add */
     0x380000157d03f711ULL,  /*   shr */
     0x38000015b503f553ULL,  /*   and */
-    0x0c0007c0bb55b000ULL,  /*   nop */
-    0x380000157d03f751ULL,  /*   shr */
-    0x38000015b503f553ULL,  /*   and */
-    0x0c000540bb554000ULL,  /*   nop */
-    0x3800001f3803f7d5ULL,  /*   add */
-    0x39e0001f7d03f7c8ULL,  /*   shr */
-    0x380000157d03f751ULL,  /*   shr */
+    0x0c0005477d55b751ULL,  /*   shr */
+    0x38000007b503f1d3ULL,  /*   and */
+    0x0c0001c0bb1d4000ULL,  /*   nop */
+    0x380000153803f547ULL,  /*   add */
     0x39e000157d03f548ULL,  /*   shr */
-    0x38000015b503f553ULL,  /*   and */
-    0x380000143c03f4d5ULL,  /*   sub */
-    0x0c0006c0bb51b000ULL,  /*   nop */
-    0x39e0001b7d03f6c8ULL,  /*   shr */
-    0x380000153803f55bULL,  /*   add */
-    0x380000157c03f551ULL,  /*   shl */
-    0x39e000157c03f548ULL,  /*   shl */
-    0x3800001f7c03f7d1ULL,  /*   shl */
-    0x380000153803f55fULL,  /*   add */
-    0x3800001e3803f55eULL,  /*   add */
+    0x3800001ef703f79fULL,  /*   vpack */
+    0x39e000077f03f758ULL,  /*   ror */
+    0x38000007b503f1d3ULL,  /*   and */
+    0x3800001f3c03f4c7ULL,  /*   sub */
+    0x0c0007c0bb7db000ULL,  /*   nop */
+    0x39e0001f7d03f7c8ULL,  /*   shr */
+    0x380000073803f1dfULL,  /*   add */
+    0x38000015f703f547ULL,  /*   vpack */
+    0x3800001ef803f795ULL,  /*   v8pack */
     0x39e0400c3c03f301ULL,  /*   sub */
-    0x02fffd3dff00d000ULL,  /*   branch ANYNA */
+    0x02fffdadff00d000ULL,  /*   branch ANYNA */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
@@ -230,241 +206,10 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
 };
-const unsigned g2d_qpu_argb_alpha_n = 224;
+const unsigned g2d_qpu_argb_alpha_n = 200;
 
-/* kernel argb_rotate: 226 instructions */
+/* kernel argb_rotate: 202 instructions */
 const uint64_t g2d_qpu_argb_rotate[] = {
-    0x39800000bb03f000ULL,  /*   nop */
-    0x39804000bb03f000ULL,  /*   nop */
-    0x39808000bb03f000ULL,  /*   nop */
-    0x3980c000bb03f000ULL,  /*   nop */
-    0x39810000bb03f000ULL,  /*   nop */
-    0x39814000bb03f000ULL,  /*   nop */
-    0x39818000bb03f000ULL,  /*   nop */
-    0x3981c000bb03f000ULL,  /*   nop */
-    0x39820000bb03f000ULL,  /*   nop */
-    0x39824000bb03f000ULL,  /*   nop */
-    0x39828000bb03f000ULL,  /*   nop */
-    0x3982c000bb03f000ULL,  /*   nop */
-    0x39830000bb03f000ULL,  /*   nop */
-    0x39834000bb03f000ULL,  /*   nop */
-    0x39838000bb03f000ULL,  /*   nop */
-    0x3983c000bb03f000ULL,  /*   nop */
-    0x39840000bb03f000ULL,  /*   nop */
-    0x39844000bb03f000ULL,  /*   nop */
-    0x39848000bb03f000ULL,  /*   nop */
-    0x3984c000bb03f000ULL,  /*   nop */
-    0x39870000bb03f000ULL,  /*   nop */
-    0x38000014bb03f002ULL,  /*   eidx */
-    0x38000015f903f503ULL,  /*   mov */
-    0x39e0001e7c03f502ULL,  /*   shl */
-    0x380000193803f25eULL,  /*   add */
-    0x3800001ff903f703ULL,  /*   mov */
-    0x39830000bb03f000ULL,  /*   nop */
-    0x39878000bb03f000ULL,  /*   nop */
-    0x38000018f903f543ULL,  /*   mov */
-    0x38000014bb03f001ULL,  /*   tidx */
-    0x39e000147d03f502ULL,  /*   shr */
-    0x39e00014b503f50fULL,  /*   and */
-    0x24000700bb50c000ULL,  /*   nop */
-    0x38000017f903f703ULL,  /*   mov */
-    0x24000700bb51e000ULL,  /*   nop */
-    0x380000193803f65cULL,  /*   add */
-    0x08048700bb357000ULL,  /*   nop */
-    0x0200058e0000d000ULL,  /*   branch ANYA */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x39834000bb03f000ULL,  /*   nop */
-    0x38000016f903f2c3ULL,  /*   mov */
-    0x39c0001af903f3c3ULL,  /*   mov */
-    0x39e0001a3803f681ULL,  /*   add */
-    0x39e0001b7c03f682ULL,  /*   shl */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x39e0401c3c03f7c1ULL,  /*   sub */
-    0x020002b60000d000ULL,  /*   branch ANYA */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x24000780bb018000ULL,  /*   nop */
-    0x240007c0bb057000ULL,  /*   nop */
-    0x3800001e3803f79fULL,  /*   add */
-    0x39e0001e7e03f78fULL,  /*   asr */
-    0x3800001e3803f784ULL,  /*   add */
-    0x240007c0bb098000ULL,  /*   nop */
-    0x24000700bb0d7000ULL,  /*   nop */
-    0x3800001f3803f7dcULL,  /*   add */
-    0x39e0001f7e03f7cfULL,  /*   asr */
-    0x3800001f3803f7c5ULL,  /*   add */
-    0x39c0401cf903f003ULL,  /*   mov */
-    0x39e2401c3c03f780ULL,  /*   sub */
-    0x3802401c3c03f19eULL,  /*   sub */
-    0x39e2401c3c03f7c0ULL,  /*   sub */
-    0x3802401c3c03f1dfULL,  /*   sub */
-    0x39e0001e7903f780ULL,  /*   max */
-    0x3800001e7803f786ULL,  /*   min */
-    0x39e0001f7903f7c0ULL,  /*   max */
-    0x3800001f7803f7c7ULL,  /*   min */
-    0x24000700bb7c8000ULL,  /*   nop */
-    0x3800001c3803f71eULL,  /*   add */
-    0x39e0001c7c03f702ULL,  /*   shl */
-    0x3800001d3803f70aULL,  /*   add */
-    0x3800100cf903f743ULL,  /*   mov */
-    0x3887c000bb03f000ULL,  /*   nop */
-    0x39ca001ff903f003ULL,  /*   mov */
-    0x38000014f903f643ULL,  /*   mov */
-    0x39c0401cf903f003ULL,  /*   mov */
-    0x3802401c3c03f610ULL,  /*   sub */
-    0x3802001c3c03f611ULL,  /*   sub */
-    0x3802401c3c03f5d2ULL,  /*   sub */
-    0x3802001c3c03f5d3ULL,  /*   sub */
-    0x380a0014f903f343ULL,  /*   mov */
-    0x3800100bf903f7c3ULL,  /*   mov */
-    0x3800100cf903f503ULL,  /*   mov */
-    0x380000193803f65bULL,  /*   add */
-    0x39e080163c03f581ULL,  /*   sub */
-    0x38080016f903f2c3ULL,  /*   mov */
-    0x39e800173803f5c1ULL,  /*   add */
-    0x380000183803f61aULL,  /*   add */
-    0x38080018f903f543ULL,  /*   mov */
-    0x380800193c03f64eULL,  /*   sub */
-    0x24000700bb018000ULL,  /*   nop */
-    0x24000780bb057000ULL,  /*   nop */
-    0x3800001c3803f71eULL,  /*   add */
-    0x39e0001c7e03f70fULL,  /*   asr */
-    0x3800001c3803f704ULL,  /*   add */
-    0x24000780bb098000ULL,  /*   nop */
-    0x240007c0bb0d7000ULL,  /*   nop */
-    0x3800001e3803f79fULL,  /*   add */
-    0x39e0001e7e03f78fULL,  /*   asr */
-    0x3800001e3803f785ULL,  /*   add */
-    0x39c0400cf903f003ULL,  /*   mov */
-    0x39e2400c3c03f700ULL,  /*   sub */
-    0x3802400c3c03f19cULL,  /*   sub */
-    0x39e2400c3c03f780ULL,  /*   sub */
-    0x3802400c3c03f1deULL,  /*   sub */
-    0x39e0001c7903f700ULL,  /*   max */
-    0x3800001c7803f706ULL,  /*   min */
-    0x39e0001e7903f780ULL,  /*   max */
-    0x3800001e7803f787ULL,  /*   min */
-    0x24000740bb788000ULL,  /*   nop */
-    0x3800001d3803f75cULL,  /*   add */
-    0x39e0001d7c03f742ULL,  /*   shl */
-    0x3800001d3803f74aULL,  /*   add */
-    0x3800100cf903f743ULL,  /*   mov */
-    0x3887c000bb03f000ULL,  /*   nop */
-    0x39ca001ff903f003ULL,  /*   mov */
-    0x39e0400f3c03f3c1ULL,  /*   sub */
-    0x02fffe8dff00d000ULL,  /*   branch ANYNA */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x3800100bf903f7c3ULL,  /*   mov */
-    0x3800100cf903f343ULL,  /*   mov */
-    0x38001006bb03f00fULL,  /*   tmuwt */
-    0x38201012bb03f00eULL,  /*   barrierid */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x24000780bb015000ULL,  /*   nop */
-    0x240007c0bb057000ULL,  /*   nop */
-    0x3800001e3803f79fULL,  /*   add */
-    0x240007c0bb095000ULL,  /*   nop */
-    0x24000700bb0d7000ULL,  /*   nop */
-    0x3800001f3803f7dcULL,  /*   add */
-    0x39e0001c7e03f78fULL,  /*   asr */
-    0x3800001c3803f704ULL,  /*   add */
-    0x39e0001d7e03f7cfULL,  /*   asr */
-    0x3800001d3803f745ULL,  /*   add */
-    0x39c04014f903f003ULL,  /*   mov */
-    0x39e240143c03f700ULL,  /*   sub */
-    0x380240143c03f19cULL,  /*   sub */
-    0x39e240143c03f740ULL,  /*   sub */
-    0x380240143c03f1ddULL,  /*   sub */
-    0x39e0001c7903f700ULL,  /*   max */
-    0x3800001c7803f706ULL,  /*   min */
-    0x39e0001d7903f740ULL,  /*   max */
-    0x3800001d7803f747ULL,  /*   min */
-    0x24000740bb748000ULL,  /*   nop */
-    0x3800001d3803f75cULL,  /*   add */
-    0x39e0001d7c03f742ULL,  /*   shl */
-    0x3800001d3803f74aULL,  /*   add */
-    0x3800100cf903f743ULL,  /*   mov */
-    0x38870000bb03f000ULL,  /*   nop */
-    0x39ca001cf903f003ULL,  /*   mov */
-    0x3800000ff903f303ULL,  /*   mov */
-    0x38000018f903f643ULL,  /*   mov */
-    0x3800100bf903f703ULL,  /*   mov */
-    0x3800100cf903f603ULL,  /*   mov */
-    0x39e080163c03f581ULL,  /*   sub */
-    0x38080016f903f2c3ULL,  /*   mov */
-    0x39e800173803f5c1ULL,  /*   add */
-    0x39e8000f3c03f3c1ULL,  /*   sub */
-    0x3800001e3803f792ULL,  /*   add */
-    0x3800001f3803f7d3ULL,  /*   add */
-    0x3808001e3c03f790ULL,  /*   sub */
-    0x3808001f3c03f7d1ULL,  /*   sub */
-    0x380000193803f65bULL,  /*   add */
-    0x380800193c03f64eULL,  /*   sub */
-    0x39e0001c7e03f78fULL,  /*   asr */
-    0x3800001c3803f704ULL,  /*   add */
-    0x39e0001d7e03f7cfULL,  /*   asr */
-    0x3800001d3803f745ULL,  /*   add */
-    0x39c0400cf903f003ULL,  /*   mov */
-    0x39e2400c3c03f700ULL,  /*   sub */
-    0x3802400c3c03f19cULL,  /*   sub */
-    0x39e2400c3c03f740ULL,  /*   sub */
-    0x3802400c3c03f1ddULL,  /*   sub */
-    0x39e0001c7903f700ULL,  /*   max */
-    0x3800001c7803f706ULL,  /*   min */
-    0x39e0001d7903f740ULL,  /*   max */
-    0x3800001d7803f747ULL,  /*   min */
-    0x24000740bb748000ULL,  /*   nop */
-    0x3800001d3803f75cULL,  /*   add */
-    0x39e0001d7c03f742ULL,  /*   shl */
-    0x3800001d3803f74aULL,  /*   add */
-    0x3800100cf903f743ULL,  /*   mov */
-    0x38870000bb03f000ULL,  /*   nop */
-    0x39ca001cf903f003ULL,  /*   mov */
-    0x39e0401d3c03f3c0ULL,  /*   sub */
-    0x02fffed5ff00d000ULL,  /*   branch ANYNA */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x3800100bf903f703ULL,  /*   mov */
-    0x3800100cf903f343ULL,  /*   mov */
-    0x38001006bb03f00fULL,  /*   tmuwt */
-    0x38201012bb03f00eULL,  /*   barrierid */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38200000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
-};
-const unsigned g2d_qpu_argb_rotate_n = 226;
-
-/* kernel argb_blit: 202 instructions */
-const uint64_t g2d_qpu_argb_blit[] = {
     0x39800000bb03f000ULL,  /*   nop */
     0x39804000bb03f000ULL,  /*   nop */
     0x39808000bb03f000ULL,  /*   nop */
@@ -514,7 +259,214 @@ const uint64_t g2d_qpu_argb_blit[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x39e0401c3c03f7c1ULL,  /*   sub */
-    0x020002560000d000ULL,  /*   branch ANYA */
+    0x0200025e0000d000ULL,  /*   branch ANYA */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x24000780bb018000ULL,  /*   nop */
+    0x240007c0bb057000ULL,  /*   nop */
+    0x3800001e3803f79fULL,  /*   add */
+    0x39e0001e7e03f78fULL,  /*   asr */
+    0x3800001e3803f784ULL,  /*   add */
+    0x240007c0bb098000ULL,  /*   nop */
+    0x24000700bb0d7000ULL,  /*   nop */
+    0x3800001f3803f7dcULL,  /*   add */
+    0x39e0001f7e03f7cfULL,  /*   asr */
+    0x3800001f3803f7c5ULL,  /*   add */
+    0x39c0401cf903f003ULL,  /*   mov */
+    0x39e2401c3c03f780ULL,  /*   sub */
+    0x3802401c3c03f19eULL,  /*   sub */
+    0x39e2401c3c03f7c0ULL,  /*   sub */
+    0x3802401c3c03f1dfULL,  /*   sub */
+    0x24000700bb7c8000ULL,  /*   nop */
+    0x3800001c3803f71eULL,  /*   add */
+    0x39e0001c7c03f702ULL,  /*   shl */
+    0x3800001d3803f70aULL,  /*   add */
+    0x380a001df903f343ULL,  /*   mov */
+    0x3800100cf903f743ULL,  /*   mov */
+    0x3887c000bb03f000ULL,  /*   nop */
+    0x39ca001ff903f003ULL,  /*   mov */
+    0x38000014f903f643ULL,  /*   mov */
+    0x39c0401cf903f003ULL,  /*   mov */
+    0x3802401c3c03f610ULL,  /*   sub */
+    0x3802001c3c03f611ULL,  /*   sub */
+    0x3802401c3c03f5d2ULL,  /*   sub */
+    0x3802001c3c03f5d3ULL,  /*   sub */
+    0x380a0014f903f343ULL,  /*   mov */
+    0x3800100bf903f7c3ULL,  /*   mov */
+    0x3800100cf903f503ULL,  /*   mov */
+    0x0be485993858165bULL,  /*   add */
+    0x07f005d6f95c12c3ULL,  /*   mov */
+    0x380000183803f61aULL,  /*   add */
+    0x08100658f964e543ULL,  /*   mov */
+    0x24000700bb018000ULL,  /*   nop */
+    0x24000780bb057000ULL,  /*   nop */
+    0x2400079c3809871eULL,  /*   add */
+    0x25e007dc7e0d770fULL,  /*   asr */
+    0x3800001c3803f704ULL,  /*   add */
+    0x3800001e3803f79fULL,  /*   add */
+    0x39e0001e7e03f78fULL,  /*   asr */
+    0x3800001e3803f785ULL,  /*   add */
+    0x39c0400cf903f003ULL,  /*   mov */
+    0x39e2400c3c03f700ULL,  /*   sub */
+    0x3802400c3c03f19cULL,  /*   sub */
+    0x39e2400c3c03f780ULL,  /*   sub */
+    0x3802400c3c03f1deULL,  /*   sub */
+    0x24000740bb788000ULL,  /*   nop */
+    0x3800001d3803f75cULL,  /*   add */
+    0x39e0001d7c03f742ULL,  /*   shl */
+    0x3800001d3803f74aULL,  /*   add */
+    0x380a001df903f343ULL,  /*   mov */
+    0x3800100cf903f743ULL,  /*   mov */
+    0x3887c000bb03f000ULL,  /*   nop */
+    0x39ca001ff903f003ULL,  /*   mov */
+    0x39e0400f3c03f3c1ULL,  /*   sub */
+    0x02fffecdff00d000ULL,  /*   branch ANYNA */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x3800100bf903f7c3ULL,  /*   mov */
+    0x3800100cf903f343ULL,  /*   mov */
+    0x38001006bb03f00fULL,  /*   tmuwt */
+    0x38201012bb03f00eULL,  /*   barrierid */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x24000780bb015000ULL,  /*   nop */
+    0x240007c0bb057000ULL,  /*   nop */
+    0x3800001e3803f79fULL,  /*   add */
+    0x240007c0bb095000ULL,  /*   nop */
+    0x24000700bb0d7000ULL,  /*   nop */
+    0x3800001f3803f7dcULL,  /*   add */
+    0x39e0001c7e03f78fULL,  /*   asr */
+    0x3800001c3803f704ULL,  /*   add */
+    0x39e0001d7e03f7cfULL,  /*   asr */
+    0x3800001d3803f745ULL,  /*   add */
+    0x39c04014f903f003ULL,  /*   mov */
+    0x39e240143c03f700ULL,  /*   sub */
+    0x380240143c03f19cULL,  /*   sub */
+    0x39e240143c03f740ULL,  /*   sub */
+    0x380240143c03f1ddULL,  /*   sub */
+    0x24000740bb748000ULL,  /*   nop */
+    0x3800001d3803f75cULL,  /*   add */
+    0x39e0001d7c03f742ULL,  /*   shl */
+    0x3800001d3803f74aULL,  /*   add */
+    0x380a001df903f343ULL,  /*   mov */
+    0x3800100cf903f743ULL,  /*   mov */
+    0x38870000bb03f000ULL,  /*   nop */
+    0x39ca001cf903f003ULL,  /*   mov */
+    0x3800000ff903f303ULL,  /*   mov */
+    0x380022c0bb703000ULL,  /*   nop */
+    0x0be4958cf9581643ULL,  /*   mov */
+    0x0bf003d6f93c12c3ULL,  /*   mov */
+    0x040007de387d3792ULL,  /*   add */
+    0x081007de3c7d1790ULL,  /*   sub */
+    0x380000193803f65bULL,  /*   add */
+    0x380800193c03f64eULL,  /*   sub */
+    0x39e0001c7e03f78fULL,  /*   asr */
+    0x05e0071d7e7047cfULL,  /*   asr */
+    0x04000740bb745000ULL,  /*   nop */
+    0x39c0400cf903f003ULL,  /*   mov */
+    0x39e2400c3c03f700ULL,  /*   sub */
+    0x3802400c3c03f19cULL,  /*   sub */
+    0x39e2400c3c03f740ULL,  /*   sub */
+    0x3802400c3c03f1ddULL,  /*   sub */
+    0x24000740bb748000ULL,  /*   nop */
+    0x3800001d3803f75cULL,  /*   add */
+    0x39e0001d7c03f742ULL,  /*   shl */
+    0x3800001d3803f74aULL,  /*   add */
+    0x380a001df903f343ULL,  /*   mov */
+    0x3800100cf903f743ULL,  /*   mov */
+    0x38870000bb03f000ULL,  /*   nop */
+    0x39ca001cf903f003ULL,  /*   mov */
+    0x39e0401d3c03f3c0ULL,  /*   sub */
+    0x02ffff25ff00d000ULL,  /*   branch ANYNA */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x3800100bf903f703ULL,  /*   mov */
+    0x3800100cf903f343ULL,  /*   mov */
+    0x38001006bb03f00fULL,  /*   tmuwt */
+    0x38201012bb03f00eULL,  /*   barrierid */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+};
+const unsigned g2d_qpu_argb_rotate_n = 202;
+
+/* kernel argb_blit: 183 instructions */
+const uint64_t g2d_qpu_argb_blit[] = {
+    0x39800000bb03f000ULL,  /*   nop */
+    0x39804000bb03f000ULL,  /*   nop */
+    0x39808000bb03f000ULL,  /*   nop */
+    0x3980c000bb03f000ULL,  /*   nop */
+    0x39810000bb03f000ULL,  /*   nop */
+    0x39814000bb03f000ULL,  /*   nop */
+    0x39818000bb03f000ULL,  /*   nop */
+    0x3981c000bb03f000ULL,  /*   nop */
+    0x39820000bb03f000ULL,  /*   nop */
+    0x39824000bb03f000ULL,  /*   nop */
+    0x39828000bb03f000ULL,  /*   nop */
+    0x3982c000bb03f000ULL,  /*   nop */
+    0x39830000bb03f000ULL,  /*   nop */
+    0x39834000bb03f000ULL,  /*   nop */
+    0x39838000bb03f000ULL,  /*   nop */
+    0x3983c000bb03f000ULL,  /*   nop */
+    0x39840000bb03f000ULL,  /*   nop */
+    0x39844000bb03f000ULL,  /*   nop */
+    0x39848000bb03f000ULL,  /*   nop */
+    0x3984c000bb03f000ULL,  /*   nop */
+    0x39870000bb03f000ULL,  /*   nop */
+    0x38000014bb03f002ULL,  /*   eidx */
+    0x38000015f903f503ULL,  /*   mov */
+    0x39e0001e7c03f502ULL,  /*   shl */
+    0x380000193803f25eULL,  /*   add */
+    0x3800001ff903f703ULL,  /*   mov */
+    0x39830000bb03f000ULL,  /*   nop */
+    0x39878000bb03f000ULL,  /*   nop */
+    0x38000018f903f543ULL,  /*   mov */
+    0x38000014bb03f001ULL,  /*   tidx */
+    0x39e000147d03f502ULL,  /*   shr */
+    0x39e00014b503f50fULL,  /*   and */
+    0x24000700bb50c000ULL,  /*   nop */
+    0x38000017f903f703ULL,  /*   mov */
+    0x24000700bb51e000ULL,  /*   nop */
+    0x380000193803f65cULL,  /*   add */
+    0x08048700bb357000ULL,  /*   nop */
+    0x020004360000d000ULL,  /*   branch ANYA */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x39834000bb03f000ULL,  /*   nop */
+    0x38000016f903f2c3ULL,  /*   mov */
+    0x39c0001af903f3c3ULL,  /*   mov */
+    0x39e0001a3803f681ULL,  /*   add */
+    0x39e0001b7c03f682ULL,  /*   shl */
+    0x38200000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x39e0401c3c03f7c1ULL,  /*   sub */
+    0x020002160000d000ULL,  /*   branch ANYA */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x24000780bb018000ULL,  /*   nop */
@@ -546,20 +498,15 @@ const uint64_t g2d_qpu_argb_blit[] = {
     0x380a0014f903f343ULL,  /*   mov */
     0x3800100bf903f7c3ULL,  /*   mov */
     0x3800100cf903f503ULL,  /*   mov */
-    0x380000193803f65bULL,  /*   add */
-    0x39e080163c03f581ULL,  /*   sub */
-    0x38080016f903f2c3ULL,  /*   mov */
-    0x39e800173803f5c1ULL,  /*   add */
+    0x0be485993858165bULL,  /*   add */
+    0x07f005d6f95c12c3ULL,  /*   mov */
     0x380000183803f61aULL,  /*   add */
-    0x38080018f903f543ULL,  /*   mov */
-    0x380800193c03f64eULL,  /*   sub */
+    0x08100658f964e543ULL,  /*   mov */
     0x24000700bb018000ULL,  /*   nop */
     0x24000780bb057000ULL,  /*   nop */
-    0x3800001c3803f71eULL,  /*   add */
-    0x39e0001c7e03f70fULL,  /*   asr */
+    0x2400079c3809871eULL,  /*   add */
+    0x25e007dc7e0d770fULL,  /*   asr */
     0x3800001c3803f704ULL,  /*   add */
-    0x24000780bb098000ULL,  /*   nop */
-    0x240007c0bb0d7000ULL,  /*   nop */
     0x3800001e3803f79fULL,  /*   add */
     0x39e0001e7e03f78fULL,  /*   asr */
     0x3800001e3803f785ULL,  /*   add */
@@ -567,16 +514,13 @@ const uint64_t g2d_qpu_argb_blit[] = {
     0x3800001c7803f706ULL,  /*   min */
     0x39e0001e7903f780ULL,  /*   max */
     0x3800001e7803f787ULL,  /*   min */
-    0x24000740bb788000ULL,  /*   nop */
+    0x25e0474f3c7883c1ULL,  /*   sub */
     0x3800001d3803f75cULL,  /*   add */
     0x39e0001d7c03f742ULL,  /*   shl */
     0x3800001d3803f74aULL,  /*   add */
+    0x02fffefdff00d000ULL,  /*   branch ANYNA */
     0x3800100cf903f743ULL,  /*   mov */
     0x3887c000bb03f000ULL,  /*   nop */
-    0x39e0400f3c03f3c1ULL,  /*   sub */
-    0x02fffebdff00d000ULL,  /*   branch ANYNA */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x3800100bf903f7c3ULL,  /*   mov */
     0x3800100cf903f343ULL,  /*   mov */
@@ -613,37 +557,26 @@ const uint64_t g2d_qpu_argb_blit[] = {
     0x3800100cf903f743ULL,  /*   mov */
     0x38870000bb03f000ULL,  /*   nop */
     0x3800000ff903f303ULL,  /*   mov */
-    0x38000018f903f643ULL,  /*   mov */
-    0x3800100bf903f703ULL,  /*   mov */
-    0x3800100cf903f603ULL,  /*   mov */
-    0x39e080163c03f581ULL,  /*   sub */
-    0x38080016f903f2c3ULL,  /*   mov */
-    0x39e800173803f5c1ULL,  /*   add */
-    0x39e8000f3c03f3c1ULL,  /*   sub */
-    0x3800001e3803f792ULL,  /*   add */
-    0x3800001f3803f7d3ULL,  /*   add */
-    0x3808001e3c03f790ULL,  /*   sub */
-    0x3808001f3c03f7d1ULL,  /*   sub */
+    0x380022c0bb703000ULL,  /*   nop */
+    0x0be4958cf9581643ULL,  /*   mov */
+    0x0bf003d6f93c12c3ULL,  /*   mov */
+    0x040007de387d3792ULL,  /*   add */
+    0x081007de3c7d1790ULL,  /*   sub */
     0x380000193803f65bULL,  /*   add */
     0x380800193c03f64eULL,  /*   sub */
-    0x39e0401c3c03f3c0ULL,  /*   sub */
     0x39e0001c7e03f78fULL,  /*   asr */
-    0x3800001c3803f704ULL,  /*   add */
-    0x39e0001d7e03f7cfULL,  /*   asr */
-    0x3800001d3803f745ULL,  /*   add */
-    0x39e0001c7903f700ULL,  /*   max */
+    0x05e0071d7e7047cfULL,  /*   asr */
+    0x05e0075c79745700ULL,  /*   max */
     0x3800001c7803f706ULL,  /*   min */
     0x39e0001d7903f740ULL,  /*   max */
     0x3800001d7803f747ULL,  /*   min */
-    0x24000740bb748000ULL,  /*   nop */
+    0x25e047583c7483c0ULL,  /*   sub */
     0x3800001d3803f75cULL,  /*   add */
     0x39e0001d7c03f742ULL,  /*   shl */
     0x3800001d3803f74aULL,  /*   add */
+    0x02ffff5dff00d000ULL,  /*   branch ANYNA */
     0x3800100cf903f743ULL,  /*   mov */
     0x38870000bb03f000ULL,  /*   nop */
-    0x02ffff05ff00d000ULL,  /*   branch ANYNA */
-    0x38000000bb03f000ULL,  /*   nop */
-    0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x3800100bf903f703ULL,  /*   mov */
     0x3800100cf903f343ULL,  /*   mov */
@@ -668,9 +601,9 @@ const uint64_t g2d_qpu_argb_blit[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
 };
-const unsigned g2d_qpu_argb_blit_n = 202;
+const unsigned g2d_qpu_argb_blit_n = 183;
 
-/* kernel argb_fill: 99 instructions */
+/* kernel argb_fill: 100 instructions */
 const uint64_t g2d_qpu_argb_fill[] = {
     0x39800000bb03f000ULL,  /*   nop */
     0x39804000bb03f000ULL,  /*   nop */
@@ -695,12 +628,18 @@ const uint64_t g2d_qpu_argb_fill[] = {
     0x38000011bb03f001ULL,  /*   tidx */
     0x39e000117d03f442ULL,  /*   shr */
     0x39e00011b503f44fULL,  /*   and */
+    0x39e000183803f441ULL,  /*   add */
+    0x39e040183c03f601ULL,  /*   sub */
+    0x02ffffddff00d000ULL,  /*   branch ANYNA */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
     0x24000440bb455000ULL,  /*   nop */
     0x3800000ef903f443ULL,  /*   mov */
     0x24000440bb442000ULL,  /*   nop */
     0x380000103803f411ULL,  /*   add */
     0x08048440bb0ce000ULL,  /*   nop */
-    0x020001de0000d000ULL,  /*   branch ANYA */
+    0x020001b60000d000ULL,  /*   branch ANYA */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x3800000ff903f303ULL,  /*   mov */
@@ -709,7 +648,7 @@ const uint64_t g2d_qpu_argb_fill[] = {
     0x39e000123803f481ULL,  /*   add */
     0x39e000137c03f482ULL,  /*   shl */
     0x39e040113c03f501ULL,  /*   sub */
-    0x020000ee0000d000ULL,  /*   branch ANYA */
+    0x020000d60000d000ULL,  /*   branch ANYA */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x02fffffdff00d000ULL,  /*   branch ANYNA */
@@ -723,14 +662,11 @@ const uint64_t g2d_qpu_argb_fill[] = {
     0x380200113c03f38aULL,  /*   sub */
     0x380a001af903f5c3ULL,  /*   mov */
     0x39e0a2cd3c003341ULL,  /*   sub */
-    0x3808000df903f043ULL,  /*   mov */
-    0x39e8000e3803f381ULL,  /*   add */
-    0x3800000f3803f3d2ULL,  /*   add */
-    0x3808000ff903f303ULL,  /*   mov */
-    0x380000103803f413ULL,  /*   add */
-    0x380800103c03f404ULL,  /*   sub */
+    0x07f0038df9381043ULL,  /*   mov */
+    0x0400040f384133d2ULL,  /*   add */
+    0x0810040ff9404303ULL,  /*   mov */
     0x39e040053c03f141ULL,  /*   sub */
-    0x02ffff6dff00d000ULL,  /*   branch ANYNA */
+    0x02ffff85ff00d000ULL,  /*   branch ANYNA */
     0x3800100cf903f683ULL,  /*   mov */
     0x38000000bb03f000ULL,  /*   nop */
     0x38001006bb03f00fULL,  /*   tmuwt */
@@ -745,13 +681,11 @@ const uint64_t g2d_qpu_argb_fill[] = {
     0x38000019f903f543ULL,  /*   mov */
     0x3800001af903f403ULL,  /*   mov */
     0x39e0a2cd3c003341ULL,  /*   sub */
-    0x3808000df903f043ULL,  /*   mov */
-    0x39e800193c03f641ULL,  /*   sub */
-    0x39e8000e3803f381ULL,  /*   add */
-    0x380000103803f413ULL,  /*   add */
+    0x0bf0064df9641043ULL,  /*   mov */
+    0x05e8040e38413381ULL,  /*   add */
     0x380800103c03f404ULL,  /*   sub */
     0x39e040113c03f640ULL,  /*   sub */
-    0x02ffffa5ff00d000ULL,  /*   branch ANYNA */
+    0x02ffffb5ff00d000ULL,  /*   branch ANYNA */
     0x3800100cf903f683ULL,  /*   mov */
     0x38000000bb03f000ULL,  /*   nop */
     0x38001006bb03f00fULL,  /*   tmuwt */
@@ -772,5 +706,5 @@ const uint64_t g2d_qpu_argb_fill[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
 };
-const unsigned g2d_qpu_argb_fill_n = 99;
+const unsigned g2d_qpu_argb_fill_n = 100;
 
