@@ -72,6 +72,8 @@ extern const uint64_t g2d_qpu_argb_fill[];
 extern const unsigned g2d_qpu_argb_fill_n;
 extern const uint64_t g2d_qpu_argb_blit[];
 extern const unsigned g2d_qpu_argb_blit_n;
+extern const uint64_t g2d_qpu_argb_rotate[];
+extern const unsigned g2d_qpu_argb_rotate_n;
 extern const uint64_t g2d_qpu_argb_alpha[];
 extern const unsigned g2d_qpu_argb_alpha_n;
 
