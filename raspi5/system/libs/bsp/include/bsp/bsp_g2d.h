@@ -5,7 +5,8 @@
 #include <ewoksys/ewokdef.h>
 
 /* initialize the 2D engine before first use. safe to call multiple
-   times. returns 0 on success. */
+   times. returns 0 on success. drawing operations return -1 when the
+   gpu cannot execute them: there is no cpu fallback. */
 int32_t bsp_g2d_init(void);
 
 /* contig/src_contig/dst_contig: != 0 when the buffer backing is
@@ -53,7 +54,7 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
    dst must be at least the size given by bsp_g2d_rotated_size(); for
    angles other than 0/90/180/270 pixels outside the rotated content
    become transparent.
-   in-place (argb_src == argb_dst) is only valid for 0/180. */
+   in-place (argb_src == argb_dst) is not supported and fails with -1. */
 int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
 			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree);
 
