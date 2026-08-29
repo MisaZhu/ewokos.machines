@@ -81,6 +81,17 @@ void g2d_cpu_scale_to(uint32_t *argb_src, int32_t src_w, int32_t src_h,
 void g2d_cpu_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
                           int32_t *dst_w, int32_t *dst_h);
 
+/* Whole-surface clockwise rotation map (canonical rotate semantics shared
+ * with the argb_rotate GPU kernel): rotation around the surface centres,
+ * content written into the top-left bw x bh box of the destination.
+ *   u = floor((x*c14 + y*s14)/2^14) + cu,   v = floor((-x*s14 + y*c14)/2^14) + cv
+ * Q15 coefficients pu = 2*c14 etc., so the GPU kernel's (pu*x + qu*y)>>15
+ * reproduces the fixed-point formula exactly; for 0/90/180/270 the map
+ * degenerates exactly to the swap/keep right-angle coefficient sets.
+ * bw/bh must be the size returned by g2d_cpu_rotated_size(). */
+void g2d_cpu_map_rotate(int32_t src_w, int32_t src_h, int32_t degree,
+                        int32_t bw, int32_t bh, g2d_cpu_map_t *m);
+
 /* Rotate the whole source surface clockwise by degree (any angle) into
  * dst, which must be at least the size returned by
  * g2d_cpu_rotated_size().  For angles other than 0/90/180/270 pixels

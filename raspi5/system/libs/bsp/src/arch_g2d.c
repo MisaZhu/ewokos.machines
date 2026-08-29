@@ -12,11 +12,22 @@
  *   arch_g2d_fill       any clipped rect        -> argb_fill kernel
  *   arch_g2d_blt        any clipped dst rect    -> argb_blit kernel
  *   arch_g2d_scale_to   whole dst               -> argb_blit kernel
- *   arch_g2d_rotate     0/90/180/270 exact-size -> argb_blit kernel
+ *   arch_g2d_rotate     any angle, any dst size -> argb_rotate kernel
+ *                        (dst < box: clipped to dst top-left)
  *
  * arch_g2d_blt_alpha uses a dedicated source-over kernel.  Its two-read
- * pipeline currently requires a destination width divisible by 16;
- * incompatible alpha operations and arbitrary-angle rotation use the CPU.
+ * pipeline rect-gates BOTH streams: the destination read of an
+ * out-of-rect lane (tail lane of an unaligned row, lane past the rect
+ * edge) is rerouted to the lane-private scratch word, so any destination
+ * width is supported on the GPU.
+ *
+ * The rotate kernel runs the same affine engine as blit for every angle
+ * (the canonical centres-based map degenerates exactly to the right-angle
+ * coefficient sets) and writes every destination pixel: rotated content,
+ * or transparent 0 for pixels whose pre-clamp source coordinate is out of
+ * range (a five-instruction flag chain, then `mov ifna <data>, 0` right
+ * after the LDTMU).  The clamp is kept so out-of-range TMU reads stay in
+ * the source buffer.
  *
  * GPU eligibility (on top of the width/size checks):
  *   - the *_contig flag is set and the matching *_phy carries a valid
@@ -177,13 +188,14 @@ static int gpu_fill_surface(uint32_t phys, uint32_t *argb,
                        (size_t)w * (size_t)h * 4u) == 0;
 }
 
-/* affine blit of a clipped dst rect (argb_blit kernel) */
-static int gpu_blit_surface(const g2d_cpu_map_t *m,
-                            uint32_t src_phys, uint32_t *argb_src,
-                            int32_t src_w, int32_t src_h,
-                            uint32_t dst_phys, uint32_t *argb_dst,
-                            int32_t dst_w, int32_t dst_h,
-                            int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+/* affine blit of a clipped dst rect (argb_blit / argb_rotate kernel) */
+static int gpu_affine_surface(const uint64_t *kcode, int knwords,
+                              const g2d_cpu_map_t *m,
+                              uint32_t src_phys, uint32_t *argb_src,
+                              int32_t src_w, int32_t src_h,
+                              uint32_t dst_phys, uint32_t *argb_dst,
+                              int32_t dst_w, int32_t dst_h,
+                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
     uint32_t u[24];
     int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
@@ -233,9 +245,38 @@ static int gpu_blit_surface(const g2d_cpu_map_t *m,
     u[21] = (uint32_t)rows;
     u[22] = (uint32_t)(rows * (int32_t)dst_w * 4);  /* rows_stride */
     u[23] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    return v3d_g2d_run(g2d_qpu_argb_blit, g2d_qpu_argb_blit_n, u, 24,
+    return v3d_g2d_run(kcode, knwords, u, 24,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0;
+}
+
+/* clamped-edge blit (argb_blit kernel) */
+static int gpu_blit_surface(const g2d_cpu_map_t *m,
+                            uint32_t src_phys, uint32_t *argb_src,
+                            int32_t src_w, int32_t src_h,
+                            uint32_t dst_phys, uint32_t *argb_dst,
+                            int32_t dst_w, int32_t dst_h,
+                            int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{
+    return gpu_affine_surface(g2d_qpu_argb_blit, g2d_qpu_argb_blit_n, m,
+                              src_phys, argb_src, src_w, src_h,
+                              dst_phys, argb_dst, dst_w, dst_h,
+                              x0, y0, x1, y1);
+}
+
+/* whole-surface rotation (argb_rotate kernel): every destination pixel is
+ * written - rotated content or transparent 0 - so dst may be any size
+ * holding the rotated content box */
+static int gpu_rotate_surface(const g2d_cpu_map_t *m,
+                              uint32_t src_phys, uint32_t *argb_src,
+                              int32_t src_w, int32_t src_h,
+                              uint32_t dst_phys, uint32_t *argb_dst,
+                              int32_t dst_w, int32_t dst_h)
+{
+    return gpu_affine_surface(g2d_qpu_argb_rotate, g2d_qpu_argb_rotate_n, m,
+                              src_phys, argb_src, src_w, src_h,
+                              dst_phys, argb_dst, dst_w, dst_h,
+                              0, 0, dst_w, dst_h);
 }
 
 /* alpha blend of a clipped dst rect (argb_alpha kernel): the blend is
@@ -251,11 +292,14 @@ static int gpu_alpha_surface(const g2d_cpu_map_t *m, uint8_t alpha,
                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
     uint32_t u[23];
-    int32_t L = dst_w >> 4;
+    int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
 
-    if ((dst_w & 15) != 0 || dst_h <= 0 || x0 < 0 || y0 < 0 || alpha == 0)
+    /* The kernel's dst-read stream is rect-gated (out-of-rect lanes read
+     * their lane-private scratch word), so any dst width works - no
+     * 16-pixel alignment requirement. */
+    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 || alpha == 0)
         return 0;
     if (!gpu_map_fits(m, dst_w, dst_h))
         return 0;
@@ -280,10 +324,10 @@ static int gpu_alpha_surface(const g2d_cpu_map_t *m, uint8_t alpha,
     u[15] = (uint32_t)y0;
     u[16] = (uint32_t)y1;
     u[17] = 16u;
-    u[18] = 64u;
+    u[18] = (uint32_t)(L * 64 - dst_w * 4);   /* jump: L*64 - dst stride */
     u[19] = 255u;
     u[20] = (uint32_t)rows;
-    u[21] = (uint32_t)(rows * L * 64);              /* rows_stride */
+    u[21] = (uint32_t)(rows * (int32_t)dst_w * 4); /* rows * stride (bytes) */
     u[22] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
     return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 23,
                        nq, argb_src, (size_t)src_w * src_h * 4,
@@ -371,7 +415,6 @@ void arch_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
         return;
 
     if (argb_src && argb_dst && argb_src != argb_dst &&
-        (dst_w & 15) == 0 &&
         sw > 0 && sh > 0 && dw > 0 && dh > 0 &&
         gpu_clip_rect(&rx, &ry, &rw, &rh, dst_w, dst_h) &&
         gpu_ok(dst_w, dst_h)) {
@@ -548,35 +591,35 @@ void arch_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_cont
 {
     g2d_cpu_map_t m;
     int32_t rot = ((degree % 360) + 360) % 360;
-    int rot_code;
+    int32_t bw, bh;
     uint32_t src_phys = 0, dst_phys = 0;
 
-    /* GPU: 0/90/180/270 with an exactly-sized destination (whole-surface
-     * write).  In-place is NOT supported on the GPU: the blit kernel
-     * walks the destination in ascending row-major order, so for
-     * ROT_180 an in-place copy reads src pixels (W-1-x, H-1-y) that the
-     * walk has already overwritten (proven on the Pi 5). */
-    if (argb_src && argb_dst && rot % 90 == 0 &&
-        argb_src != argb_dst && src_w > 0 && src_h > 0 &&
-        gpu_ok(dst_w, dst_h) &&
-        ((rot == 0 && dst_w == src_w && dst_h == src_h) ||
-         (rot == 90 && dst_w == src_h && dst_h == src_w) ||
-         (rot == 270 && dst_w == src_h && dst_h == src_w) ||
-         (rot == 180 && dst_w == src_w && dst_h == src_h))) {
+    /* GPU: any angle, any destination size (the argb_rotate kernel writes
+     * every destination pixel - content or transparent 0 - so a dst
+     * larger than the rotated content box needs no pre-clear, and a dst
+     * smaller than the box is simply clipped: the map is built against
+     * the bw x bh content box and the walk stops at the dst edge, so
+     * dst only ever shows the top-left corner of the rotated content).
+     * In-place is NOT supported on the GPU: the affine walk covers the
+     * destination in ascending row-major order, so the map's reads would
+     * hit pixels the walk has already overwritten (proven on the Pi 5
+     * for 180).  The CPU rasterizer handles in-place via a direct
+     * reversal. */
+    if (argb_src && argb_dst && argb_src != argb_dst &&
+        src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0 &&
+        gpu_ok(dst_w, dst_h)) {
         src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
         dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
     }
     if (src_phys && dst_phys) {
-        rot_code = (rot == 0) ? G2D_MAP_ROT_0 :
-                   (rot == 90) ? G2D_MAP_ROT_90 :
-                   (rot == 270) ? G2D_MAP_ROT_270 : G2D_MAP_ROT_180;
-        g2d_cpu_map_params(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
-                           rot_code, &m);
-        if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
-            (void)gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
-                                   dst_phys, argb_dst, dst_w, dst_h,
-                                   0, 0, dst_w, dst_h);
-            return;
+        g2d_cpu_rotated_size(src_w, src_h, rot, &bw, &bh);
+        if (bw > 0 && bh > 0) {
+            g2d_cpu_map_rotate(src_w, src_h, rot, bw, bh, &m);
+            if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
+                (void)gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
+                                         dst_phys, argb_dst, dst_w, dst_h);
+                return;
+            }
         }
     }
     log_cpu_fallback("rotate");

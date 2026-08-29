@@ -316,12 +316,48 @@ void g2d_cpu_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
     *dst_h = (h < 1) ? 1 : h;
 }
 
+/* Whole-surface clockwise rotation map (canonical rotate semantics shared
+ * with the argb_rotate GPU kernel).  Rotation around the surface centres,
+ * written into the top-left bw x bh box of the destination:
+ *
+ *   u = floor((x*c14 + y*s14)/2^14) + cu,   c14/s14 = 14-bit cos/sin
+ *   v = floor((-x*s14 + y*c14)/2^14) + cv
+ *
+ * where cu/cv place the rotated src centre on the content-box centre:
+ *
+ *   cu = round((sw-1)/2 - (dcx*c14 + dcy*s14)/2^28)
+ *   cv = round((sh-1)/2 - (dcy*c14 - dcx*s14)/2^28)
+ *
+ * with dcx/dcy the 14-bit half-pixel centres of the content box.  Q15
+ * coefficients: pu = 2*c14 etc., so the kernel's (pu*x + qu*y)>>15
+ * reproduces the fixed-point formula exactly (arithmetic shift, no
+ * truncation drift), and for 0/90/180/270 the map degenerates exactly to
+ * the swap/keep right-angle coefficient sets. */
+void g2d_cpu_map_rotate(int32_t src_w, int32_t src_h, int32_t degree,
+                        int32_t bw, int32_t bh, g2d_cpu_map_t *m)
+{
+    int32_t c = g2d_cos_fp(degree);
+    int32_t s = g2d_sin_fp(degree);
+    int64_t dcx = ((int64_t)bw - 1) << (G2D_FP_BITS - 1);
+    int64_t dcy = ((int64_t)bh - 1) << (G2D_FP_BITS - 1);
+
+    m->pu = c << 1;
+    m->qu = s << 1;
+    m->pv = -(s << 1);
+    m->qv = c << 1;
+    /* (sw-1)/2 in 2^28 units is (sw-1) << 27 */
+    m->cu = (int32_t)((((int64_t)(src_w - 1) << 27) - (dcx * c + dcy * s)
+                       + (1 << 27)) >> 28);
+    m->cv = (int32_t)((((int64_t)(src_h - 1) << 27) - (dcy * c - dcx * s)
+                       + (1 << 27)) >> 28);
+}
+
 void g2d_cpu_rotate(uint32_t *argb_src, int32_t src_w, int32_t src_h,
                     uint32_t *argb_dst, int32_t dst_w, int32_t dst_h,
                     int32_t degree)
 {
-    int32_t bw, bh, c, s, scx, scy, dcx, dcy;
-    int32_t x, y;
+    int32_t bw, bh, x, y;
+    g2d_cpu_map_t m;
 
     if (argb_src == NULL || argb_dst == NULL ||
         src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0)
@@ -329,104 +365,74 @@ void g2d_cpu_rotate(uint32_t *argb_src, int32_t src_w, int32_t src_h,
 
     degree = g2d_norm_degree(degree);
     if (degree == 0) {
-        if (dst_w < src_w || dst_h < src_h)
-            return;
+        /* identity: dst pixels sample src pixel-for-pixel; a dst smaller
+         * than src shows the top-left corner (clipped), a larger dst has
+         * transparent (0) padding - the same walk the GPU kernel does.
+         * (Pure loops: this file is compiled freestanding for the V3D
+         * test kernel, so no libc string helpers.) */
         if (argb_src != argb_dst) {
-            uint32_t n = (uint32_t)src_w * (uint32_t)src_h;
-            uint32_t i;
-            if (dst_w != src_w || dst_h != src_h)
-                g2d_cpu_fill(argb_dst, dst_w, dst_h, 0, 0, dst_w, dst_h, 0);
-            for (i = 0; i < n; i++)
-                argb_dst[i] = argb_src[i];
-        }
-        return;
-    }
-
-    if (degree == 180) {
-        if (dst_w < src_w || dst_h < src_h)
-            return;
-        if (argb_src == argb_dst) {
-            /* in-place reversal */
-            uint32_t *lo = argb_src;
-            uint32_t *hi = argb_src + (size_t)src_w * src_h - 1;
-            while (lo < hi) {
-                uint32_t t = *lo;
-                *lo = *hi;
-                *hi = t;
-                lo++;
-                hi--;
-            }
-            return;
-        }
-        if (dst_w != src_w || dst_h != src_h)
-            g2d_cpu_fill(argb_dst, dst_w, dst_h, 0, 0, dst_w, dst_h, 0);
-        for (y = 0; y < src_h; y++) {
-            uint32_t *drow = argb_dst + (uint32_t)y * (uint32_t)dst_w;
-            const uint32_t *srow =
-                argb_src + (uint32_t)(src_h - 1 - y) * (uint32_t)src_w;
-            for (x = 0; x < src_w; x++)
-                drow[x] = srow[src_w - 1 - x];
-        }
-        return;
-    }
-
-    if (degree == 90 || degree == 270) {
-        /* 90/270 swap the surface dimensions; in-place is not supported */
-        if (argb_src == argb_dst || dst_w < src_h || dst_h < src_w)
-            return;
-        if (dst_w != src_h || dst_h != src_w)
-            g2d_cpu_fill(argb_dst, dst_w, dst_h, 0, 0, dst_w, dst_h, 0);
-        if (degree == 90) {
-            /* dst[y][x] = src[src_h-1-x][y] */
-            for (y = 0; y < src_w; y++) {
+            int32_t n = dst_w < src_w ? dst_w : src_w;
+            int32_t m = dst_h < src_h ? dst_h : src_h;
+            for (y = 0; y < m; y++) {
                 uint32_t *drow = argb_dst + (uint32_t)y * (uint32_t)dst_w;
-                for (x = 0; x < src_h; x++)
-                    drow[x] =
-                        argb_src[(uint32_t)(src_h - 1 - x) * (uint32_t)src_w +
-                                 (uint32_t)y];
+                const uint32_t *srow =
+                    argb_src + (uint32_t)y * (uint32_t)src_w;
+                for (x = 0; x < n; x++)
+                    drow[x] = srow[x];
+                for (x = n; x < dst_w; x++)
+                    drow[x] = 0;
             }
-        } else {
-            /* dst[y][x] = src[x][src_w-1-y] */
-            for (y = 0; y < src_w; y++) {
+            for (y = m; y < dst_h; y++) {
                 uint32_t *drow = argb_dst + (uint32_t)y * (uint32_t)dst_w;
-                for (x = 0; x < src_h; x++)
-                    drow[x] = argb_src[(uint32_t)x * (uint32_t)src_w +
-                                       (uint32_t)(src_w - 1 - y)];
+                for (x = 0; x < dst_w; x++)
+                    drow[x] = 0;
             }
+        }
+        return; /* src == dst: no-op */
+    }
+
+    if (degree == 180 && argb_src == argb_dst) {
+        /* in-place reversal (no dst-size semantics: the buffer is src) */
+        uint32_t *lo = argb_src;
+        uint32_t *hi = argb_src + (size_t)src_w * src_h - 1;
+        while (lo < hi) {
+            uint32_t t = *lo;
+            *lo = *hi;
+            *hi = t;
+            lo++;
+            hi--;
         }
         return;
     }
 
-    /* arbitrary angle: inverse-mapped nearest neighbour, rotation around
-     * the centres, content written into the top-left bw x bh box. */
+    /* 90/270/arbitrary (and 180 with distinct buffers) share one path:
+     * the canonical Q15 rotate map with a transparent (0) pixel wherever
+     * the inverse sample falls outside the source.  The map is built
+     * against the bw x bh rotated content box; every destination pixel
+     * is written (content or 0), so a padded destination needs no
+     * pre-clear and a destination smaller than the box is clipped - only
+     * the top-left corner of the rotated content is visible, matching
+     * the argb_rotate GPU kernel exactly.  In-place is invalid here:
+     * the ascending dst write collides with the map's reads. */
     if (argb_src == argb_dst)
         return;
     g2d_cpu_rotated_size(src_w, src_h, degree, &bw, &bh);
-    if (bw <= 0 || bh <= 0 || dst_w < bw || dst_h < bh)
+    if (bw <= 0 || bh <= 0)
         return;
 
-    g2d_cpu_fill(argb_dst, dst_w, dst_h, 0, 0, dst_w, dst_h, 0);
-
-    c = g2d_cos_fp(degree);
-    s = g2d_sin_fp(degree);
-    scx = (src_w - 1) << (G2D_FP_BITS - 1);
-    scy = (src_h - 1) << (G2D_FP_BITS - 1);
-    dcx = (bw - 1) << (G2D_FP_BITS - 1);
-    dcy = (bh - 1) << (G2D_FP_BITS - 1);
-
-    for (y = 0; y < bh; y++) {
+    g2d_cpu_map_rotate(src_w, src_h, degree, bw, bh, &m);
+    for (y = 0; y < dst_h; y++) {
         uint32_t *drow = argb_dst + (uint32_t)y * (uint32_t)dst_w;
-        int64_t dy = (int64_t)y * G2D_FP_ONE - dcy;
-        for (x = 0; x < bw; x++) {
-            int64_t dx = (int64_t)x * G2D_FP_ONE - dcx;
-            /* inverse of clockwise rotation: src = R(-degree) * dst */
-            int64_t sxf = ((dx * c + dy * s) >> G2D_FP_BITS) + scx;
-            int64_t syf = ((dy * c - dx * s) >> G2D_FP_BITS) + scy;
-            int32_t sx = (int32_t)((sxf + G2D_FP_HALF) >> G2D_FP_BITS);
-            int32_t sy = (int32_t)((syf + G2D_FP_HALF) >> G2D_FP_BITS);
-            if (sx >= 0 && sx < src_w && sy >= 0 && sy < src_h)
-                drow[x] = argb_src[(uint32_t)sy * (uint32_t)src_w +
-                                   (uint32_t)sx];
+        for (x = 0; x < dst_w; x++) {
+            int64_t u = ((int64_t)m.pu * x + (int64_t)m.qu * y) >> 15;
+            int64_t v = ((int64_t)m.pv * x + (int64_t)m.qv * y) >> 15;
+            int32_t ui = (int32_t)(u + m.cu);
+            int32_t vi = (int32_t)(v + m.cv);
+            if (ui >= 0 && ui < src_w && vi >= 0 && vi < src_h)
+                drow[x] = argb_src[(uint32_t)vi * (uint32_t)src_w +
+                                   (uint32_t)ui];
+            else
+                drow[x] = 0;
         }
     }
 }
