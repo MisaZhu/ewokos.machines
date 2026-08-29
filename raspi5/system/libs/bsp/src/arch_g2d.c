@@ -77,7 +77,7 @@ static int gpu_ok(int32_t w, int32_t h)
 
 static void log_cpu_fallback(const char *operation)
 {
-    slog("g2d: CPU fallback: %s\r\n", operation);
+    //slog("g2d: CPU fallback: %s\r\n", operation);
 }
 
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
