@@ -531,7 +531,9 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[20] = (uint32_t)rows;
     u[21] = (uint32_t)(rows * (int32_t)dst_w * 4); /* rows * stride (bytes) */
     u[22] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 23,
+    const uint64_t *kcode = (alpha == 255) ? g2d_qpu_argb_alpha_255 : g2d_qpu_argb_alpha;
+    int knwords = (alpha == 255) ? g2d_qpu_argb_alpha_255_n : g2d_qpu_argb_alpha_n;
+    return v3d_g2d_run(kcode, knwords, u, 23,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0;
 }

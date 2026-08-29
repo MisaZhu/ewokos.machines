@@ -156,10 +156,11 @@ static inline volatile uint32_t *v3d_core(void)
 #define KERN_BLIT 1
 #define KERN_ALPHA 2
 #define KERN_ROTATE 3
-static uint64_t *_kcode[4];        /* per-kernel code staging VA (dma) */
-static uint32_t _kcode_p[4];       /* per-kernel code staging physical */
-static const uint64_t *_ksrc[4];   /* kernel source arrays */
-static unsigned _ksrc_n[4];        /* kernel instruction counts */
+#define KERN_ALPHA_255 4
+static uint64_t *_kcode[5];        /* per-kernel code staging VA (dma) */
+static uint32_t _kcode_p[5];       /* per-kernel code staging physical */
+static const uint64_t *_ksrc[5];   /* kernel source arrays */
+static unsigned _ksrc_n[5];        /* kernel instruction counts */
 static uint32_t *_unif;            /* uniform staging (64 words) */
 static uint32_t *_scratch;         /* TMU write scratch (16 KiB) */
 static uint32_t _unif_p, _scratch_p;
@@ -488,7 +489,8 @@ int v3d_g2d_init(void)
     _ksrc[KERN_BLIT] = g2d_qpu_argb_blit; _ksrc_n[KERN_BLIT] = g2d_qpu_argb_blit_n;
     _ksrc[KERN_ALPHA] = g2d_qpu_argb_alpha; _ksrc_n[KERN_ALPHA] = g2d_qpu_argb_alpha_n;
     _ksrc[KERN_ROTATE] = g2d_qpu_argb_rotate; _ksrc_n[KERN_ROTATE] = g2d_qpu_argb_rotate_n;
-    for (i = 0; i < 4; i++) {
+    _ksrc[KERN_ALPHA_255] = g2d_qpu_argb_alpha_255; _ksrc_n[KERN_ALPHA_255] = g2d_qpu_argb_alpha_255_n;
+    for (i = 0; i < 5; i++) {
         uint32_t k;
         _kcode[i] = (uint64_t *)dma_alloc(0, CSD_CODE_WORDS * 8);
         if (_kcode[i] == 0)
@@ -598,6 +600,8 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         kern = KERN_BLIT;
     else if (code == g2d_qpu_argb_alpha)
         kern = KERN_ALPHA;
+    else if (code == g2d_qpu_argb_alpha_255)
+        kern = KERN_ALPHA_255;
     else if (code == g2d_qpu_argb_rotate)
         kern = KERN_ROTATE;
     else
