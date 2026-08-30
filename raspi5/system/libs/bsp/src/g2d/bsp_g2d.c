@@ -902,7 +902,16 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
             uint32_t ratio_x = gpu_pow2_scale_factor(src_w, dst_w);
             uint32_t ratio_y = gpu_pow2_scale_factor(src_h, dst_h);
             if ((dst_w & 15) == 0 && ratio_x != 0 && ratio_x == ratio_y &&
-                ((src_w > dst_w) == (src_h > dst_h))) {
+                src_w > dst_w) {
+                /* downscale only: the scale_pow2 walk (group step + row
+                 * extra) beats the general blit loop on the Pi 5 (~800 vs
+                 * ~940 cyc/group).  The up walk is NOT used: at 2x up its
+                 * 16 lanes read only 8 distinct source words (two lanes per
+                 * address, plus the rewind), and that duplicate-address
+                 * pattern measures ~3.6x slower than the blit loop on real
+                 * V3D.  Upscales keep the blit kernel (Q15 map, clamp-free
+                 * loop - the pow2 up map stays in-bounds), the same path
+                 * the fractional upscale benches hit. */
                 kcode = g2d_qpu_argb_scale_pow2;
                 knwords = g2d_qpu_argb_scale_pow2_n;
             }
