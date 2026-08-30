@@ -11,8 +11,12 @@
  *
  *   bsp_g2d_fill       any clipped rect        -> argb_fill kernel
  *   bsp_g2d_blt        any clipped dst rect    -> argb_blit kernel
- *   bsp_g2d_scale_to   whole dst               -> argb_blit kernel
- *   bsp_g2d_rotate     any angle, any dst size -> argb_rotate kernel
+ *   bsp_g2d_scale_to   whole dst               -> power-of-two scale kernel
+ *                                                  for aligned exact 2^n sizes,
+ *                                                  otherwise argb_blit
+ *   bsp_g2d_rotate     90/270, exact size, src w%16==0 -> argb_rot90
+ *                      right-angle content box -> argb_blit; otherwise
+ *                      any angle/size -> argb_rotate kernel
  *                       (dst < box: clipped to dst top-left)
  *
  * bsp_g2d_blt_alpha uses a dedicated source-over kernel.  Its two-read
@@ -276,9 +280,52 @@ static int g2d_fit_nq(int nq, int32_t H)
     return nq;
 }
 
+/* Largest divisor of H that is <= nq, yields rows = H/nq >= 4 and
+ * rows % 4 == 0, or 0 when no such divisor exists.  The rot90 kernel's
+ * T-counter wraps every rows/4 passes (4 rows per pass), so a strip
+ * (rows rows) must be an exact multiple of 4 rows for the wrap to land
+ * on strip boundaries; trying smaller nq keeps e.g. 1080p (rows = 108
+ * at nq = 10) on the fast path. */
+static int g2d_fit_nq_rot90(int nq, int32_t H)
+{
+    if (nq > H)
+        nq = H;
+    while (nq >= 4) {
+        if (H % nq == 0) {
+            int32_t rows = H / nq;
+            if (rows >= 4 && rows % 4 == 0)
+                return nq;
+        }
+        nq--;
+    }
+    return 0;
+}
+
 static int gpu_ok(int32_t w, int32_t h)
 {
     return v3d_g2d_ready() && w > 0 && h > 0;
+}
+
+/* Return a strict integer power-of-two scale factor, or zero when the
+ * source/destination pair is not an exact 2^n resize (n >= 1). */
+static uint32_t gpu_pow2_scale_factor(int32_t src, int32_t dst)
+{
+    uint32_t ratio;
+
+    if (src <= 0 || dst <= 0)
+        return 0;
+    if (src > dst) {
+        if (src % dst != 0)
+            return 0;
+        ratio = (uint32_t)(src / dst);
+    } else {
+        if (dst % src != 0)
+            return 0;
+        ratio = (uint32_t)(dst / src);
+    }
+    if (ratio < 2u || (ratio & (ratio - 1u)) != 0)
+        return 0;
+    return ratio;
 }
 
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
@@ -432,10 +479,20 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     if (full) {
         /* whole-surface fast path: u16..u19 carry the incremental-map
          * constants (see the kernel header) */
-        u[16] = (uint32_t)((int64_t)m->pu * dst_w - m->qu);  /* uxwrap */
-        u[17] = (uint32_t)((int64_t)m->pv * dst_w - m->qv);  /* vxwrap */
-        u[18] = (uint32_t)(m->pu << 4);                      /* pu16 */
-        u[19] = (uint32_t)(m->pv << 4);                      /* pv16 */
+        if (kcode == g2d_qpu_argb_scale_pow2) {
+            uint32_t factor = gpu_pow2_scale_factor(src_w, dst_w);
+            uint32_t down = (src_w > dst_w);
+            u[16] = down ? (factor - 1u) * (uint32_t)src_w * 4u :
+                          (uint32_t)dst_w;            /* row extra / x wrap */
+            u[17] = down ? factor : 0u;       /* y step; zero selects up */
+            u[18] = down ? 64u * factor : 16u;
+            u[19] = __builtin_ctz(factor);    /* shift amount */
+        } else {
+            u[16] = (uint32_t)((int64_t)m->pu * dst_w - m->qu);  /* uxwrap */
+            u[17] = (uint32_t)((int64_t)m->pv * dst_w - m->qv);  /* vxwrap */
+            u[18] = (uint32_t)(m->pu << 4);                      /* pu16 */
+            u[19] = (uint32_t)(m->pv << 4);                      /* pv16 */
+        }
     } else {
         u[16] = (uint32_t)x0;
         u[17] = (uint32_t)x1;
@@ -480,6 +537,66 @@ static int gpu_rotate_surface(const g2d_map_t *m,
                               0, 0, dst_w, dst_h);
 }
 
+/* dedicated 90/270 rotation (argb_rot90 kernel): the traversal reads the
+ * source CONTIGUOUSLY (one 64 B line per group, streamed down column
+ * strips) and strides only the WRITES (fire-and-forget through the
+ * combiner), with every lane's write address strictly ascending - the
+ * affine path instead reads 16 stride-apart lines per group (measured
+ * ~7.7x slower on the Pi 5 at 720p).  One kernel serves both directions
+ * via signed uniform deltas:
+ *   90 CW : outer column groups ascend, inner rows DESCEND
+ *   270 CW: outer column groups descend, inner rows ASCEND
+ * Eligibility: src width % 16 == 0, exact-size destination, band rows
+ * >= 4 (single wrap per 4-group block) with rows % 4 == 0 (the kernel
+ * unrolls 4 rows per pass, so the T-counter wrap only lands on strip
+ * boundaries when the strip height is a multiple of 4). */
+static int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
+                             int32_t src_w, int32_t src_h,
+                             uint32_t dst_phys, uint32_t *argb_dst,
+                             int32_t dst_w, int32_t dst_h, int rot)
+{
+    uint32_t u[16];
+    int32_t L = src_w >> 4;
+    int32_t rows, ss, ds;
+    int nq;
+    int r90 = (rot == 90);
+
+    if ((src_w & 15) != 0 || src_w <= 0 || src_h < 4)
+        return 0;
+    if (dst_w != src_h || dst_h != src_w)
+        return 0;                      /* exact rotated size only */
+    nq = g2d_fit_nq_rot90(v3d_g2d_num_qpus(), src_h);
+    if (nq == 0)
+        return 0;
+    rows = src_h / nq;
+    ss = src_w * 4;
+    ds = dst_w * 4;
+    u[0] = src_phys;                                  /* PHYSICAL address */
+    u[1] = dst_phys;                                  /* PHYSICAL address */
+    u[2] = (uint32_t)((int64_t)rows * ss);            /* read band pitch */
+    u[3] = r90 ? (uint32_t)(((int64_t)rows - 1) * ss) /* read phase */
+               : (uint32_t)((int64_t)(L - 1) * 64);
+    u[4] = r90 ? (uint32_t)(-(int64_t)ss) : (uint32_t)ss;   /* rd_inner */
+    u[5] = (uint32_t)(r90 ? ((int64_t)rows * ss + 64)      /* rd_wrap */
+                          : -((int64_t)rows * ss + 64));
+    u[6] = (uint32_t)(r90 ? -((int64_t)rows * 4)           /* write pitch */
+                          : (int64_t)rows * 4);
+    u[7] = r90 ? (uint32_t)(((int64_t)src_h - rows) * 4)   /* write phase */
+               : (uint32_t)(((int64_t)src_w - 1 -
+                             (int64_t)(L - 1) * 16) * ds); /* y' = W-1-c, c starts at (L-1)*16 */
+    u[8] = (uint32_t)((int64_t)16 * ds - ((int64_t)rows - 1) * 4 - 4);
+    u[9] = (uint32_t)(rows - 1);
+    u[10] = (uint32_t)((int64_t)rows * L / 4);         /* blocks per QPU */
+    u[11] = v3d_g2d_scratch_phys();                    /* final-block reads */
+    u[12] = (uint32_t)nq;
+    u[13] = (uint32_t)rows;
+    u[14] = 16u;                                       /* block write delta */
+    u[15] = (uint32_t)(r90 ? (int64_t)ds : -(int64_t)ds);   /* eidx coeff */
+    return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 16,
+                       nq, argb_src, (size_t)src_w * (size_t)src_h * 4u,
+                       argb_dst, (size_t)dst_w * (size_t)dst_h * 4u) == 0;
+}
+
 /* alpha blend of a clipped dst rect (argb_alpha kernel): the blend is
  * done entirely on the GPU - two TMU read streams (mapped src sample and
  * the real dst pixel), per-channel (s*sa + d*(255-sa)) >> 8 with the
@@ -492,10 +609,18 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                              int32_t dst_w, int32_t dst_h,
                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
-    uint32_t u[23];
+    uint32_t u[24];
     int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
+    /* full: dst rect covers the whole surface AND dst_w % 16 == 0.  The
+     * kernel then branches to loop_full, which drops the write gate, the
+     * dst-read gate and the per-pixel map (incremental ux/vy walk with
+     * u13/u14 repurposed as (pu*16, pu*16*L)).  For a whole-dst ROT_0 map
+     * the samples never leave [0,sw1]x[0,sh1], so the clamps are skipped
+     * too - see argb_alpha.qpu. */
+    int full = ((dst_w & 15) == 0 &&
+                x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h);
 
     /* The kernel's dst-read stream is rect-gated (out-of-rect lanes read
      * their lane-private scratch word), so any dst width works - no
@@ -520,8 +645,10 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[10] = (uint32_t)(dst_h - 1);
     u[11] = alpha;
     u[12] = (uint32_t)(L * (int)dst_h);   /* full-surface n; kernel clips per QPU */
-    u[13] = (uint32_t)x0;
-    u[14] = (uint32_t)x1;
+    u[13] = full ? (uint32_t)((int64_t)m->pu * 16)
+                 : (uint32_t)x0;             /* full: pu16 */
+    u[14] = full ? (uint32_t)((int64_t)m->pu * 16 * L)
+                 : (uint32_t)x1;             /* full: pu*16*L (pu*W) */
     u[15] = (uint32_t)y0;
     u[16] = (uint32_t)y1;
     u[17] = 16u;
@@ -530,7 +657,8 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[20] = (uint32_t)rows;
     u[21] = (uint32_t)(rows * (int32_t)dst_w * 4); /* rows * stride (bytes) */
     u[22] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 23,
+    u[23] = (uint32_t)full;
+    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 24,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0;
 }
@@ -762,9 +890,19 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
         g2d_map_params(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
                            G2D_MAP_ROT_0, &m);
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
-            return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
-                                    dst_phys, argb_dst, dst_w, dst_h,
-                                    0, 0, dst_w, dst_h) ? 0 : -1;
+            const uint64_t *kcode = g2d_qpu_argb_blit;
+            int knwords = g2d_qpu_argb_blit_n;
+            uint32_t ratio_x = gpu_pow2_scale_factor(src_w, dst_w);
+            uint32_t ratio_y = gpu_pow2_scale_factor(src_h, dst_h);
+            if ((dst_w & 15) == 0 && ratio_x != 0 && ratio_x == ratio_y &&
+                ((src_w > dst_w) == (src_h > dst_h))) {
+                kcode = g2d_qpu_argb_scale_pow2;
+                knwords = g2d_qpu_argb_scale_pow2_n;
+            }
+            return gpu_affine_surface(kcode, knwords, &m,
+                                      src_phys, argb_src, src_w, src_h,
+                                      dst_phys, argb_dst, dst_w, dst_h,
+                                      0, 0, dst_w, dst_h) ? 0 : -1;
         }
     }
     return -1;
@@ -804,10 +942,30 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
         dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
     }
     if (src_phys && dst_phys) {
+        /* Dedicated 90/270 fast path: contiguous reads, strided writes.
+         * Exact-size right-angle rotation with src width % 16 == 0 (e.g.
+         * 1280x720 and, unlike the affine path, 1920x1080 whose dst width
+         * 1080 % 16 != 0) - falls through to the generic paths when not
+         * eligible. */
+        if ((rot == 90 || rot == 270) &&
+            gpu_rot90_surface(src_phys, argb_src, src_w, src_h,
+                              dst_phys, argb_dst, dst_w, dst_h, rot))
+            return 0;
         g2d_rotated_size(src_w, src_h, rot, &bw, &bh);
         if (bw > 0 && bh > 0) {
             g2d_map_rotate(src_w, src_h, rot, bw, bh, &m);
             if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
+                /* Exact right-angle maps stay inside the rotated content
+                 * box, so the transparent-outside test in argb_rotate is
+                 * unnecessary.  Dispatch the shorter argb_blit kernel;
+                 * padded destinations still use rotate because blit clamps
+                 * out-of-range samples instead of writing transparent 0.
+                 */
+                if ((rot % 90) == 0 && dst_w <= bw && dst_h <= bh) {
+                    return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                                            dst_phys, argb_dst, dst_w, dst_h,
+                                            0, 0, dst_w, dst_h) ? 0 : -1;
+                }
                 return gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
                                           dst_phys, argb_dst, dst_w, dst_h) ? 0 : -1;
             }
