@@ -267,20 +267,9 @@ static void g2d_map_rotate(int32_t src_w, int32_t src_h, int32_t degree,
 
 /* The kernels' slice guard only tests the band START (H1 - qid*rows < 0
  * -> skip); a band that starts inside the surface but extends past H1
- * writes out of bounds.  Choosing nq so that H % nq == 0 makes every
- * band exactly H/nq rows (the guard then never fires), so dispatches can
- * never scribble past the surface.  Returns the largest divisor of H
- * that is <= nq (>= 1). */
-static int g2d_fit_nq(int nq, int32_t H)
-{
-    if (nq > H)
-        nq = H;
-    while (nq > 1 && H % nq != 0)
-        nq--;
-    return nq;
-}
-
-/* Largest divisor of H that is <= nq, yields rows = H/nq >= 4 and
+ * (removed: the kernels now clip the tail band and join the barrier, so
+ * any nq works; the driver uses ceil(band_h/nq) with an in-kernel guard.)
+ * Largest divisor of H that is <= nq, yields rows = H/nq >= 4 and
  * rows % 4 == 0, or 0 when no such divisor exists.  The rot90 kernel's
  * T-counter wraps every rows/4 passes (4 rows per pass), so a strip
  * (rows rows) must be an exact multiple of 4 rows for the wrap to land
@@ -403,25 +392,31 @@ static int gpu_fill_surface(uint32_t phys, uint32_t *argb,
                             uint32_t color)
 {
     uint32_t u[16];
-    int32_t L = (int32_t)(((uint32_t)w + 15u) >> 4);
+    int32_t g0 = x0 >> 4;
+    int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
+    int32_t L = g1 - g0;
+    int32_t band_h = y1 - y0;
     int full = ((w & 15) == 0 &&
                 x0 == 0 && y0 == 0 && x1 == w && y1 == h);
     int nq, rows;
 
-    if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0)
+    if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 ||
+        x1 <= x0 || y1 <= y0 || x1 > w || y1 > h)
         return 0;
     /* One dispatch covers the whole surface.  The legal V3D thread-end
      * sequence retires every QPU cleanly, so no 16 KiB batching or dummy
      * TMU transaction is needed. */
-    nq = g2d_fit_nq(v3d_g2d_num_qpus(), h);
-    rows = h / nq;
+    nq = v3d_g2d_num_qpus();
+    if (nq > band_h)
+        nq = band_h;
+    rows = (band_h + nq - 1) / nq;
     u[0] = color;
-    u[1] = (uint32_t)(L - 1);
+    u[1] = (uint32_t)(L - 1);      /* groups in the clipped rect row */
     u[2] = (uint32_t)(w * 4u);
-    u[3] = (uint32_t)(h - 1);
-    u[4] = (uint32_t)(L * 64u - (uint32_t)w * 4u);
-    u[5] = (uint32_t)(L * rows);
-    u[6] = phys;
+    u[3] = (uint32_t)(y1 - 1);     /* final traversed row */
+    u[4] = (uint32_t)(L * 64u - (uint32_t)w * 4u);  /* jump: L*64 - stride */
+    u[5] = (uint32_t)(L * rows);   /* nominal iterations; kernel clips tail band */
+    u[6] = phys + (uint32_t)((int64_t)y0 * w + g0 * 16) * 4u; /* band base */
     u[7] = (uint32_t)x0;
     u[8] = (uint32_t)x1;
     u[9] = (uint32_t)y0;
@@ -446,20 +441,23 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
                               int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
     uint32_t u[24];
-    int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
+    int32_t g0 = x0 >> 4;
+    int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
+    int32_t L = g1 - g0;
+    int32_t band_h = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
     int full = ((dst_w & 15) == 0 &&
                 x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h);
 
-    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0)
+    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 ||
+        x1 <= x0 || y1 <= y0 || x1 > dst_w || y1 > dst_h)
         return 0;
-    if (!gpu_map_fits(m, (int64_t)L * 16, dst_h))
+    if (!gpu_map_fits(m, x1, y1))
         return 0;
-    /* nq must divide dst_h: the slice guard only tests the band start,
-     * so a non-divisible rows count writes past the last row. */
-    nq = g2d_fit_nq(nq, dst_h);
-    rows = dst_h / nq;
+    if (nq > band_h)
+        nq = band_h;
+    rows = (band_h + nq - 1) / nq;
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->qu;
     u[2] = (uint32_t)m->pv;
@@ -469,11 +467,11 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     u[6] = (uint32_t)(src_w - 1);
     u[7] = (uint32_t)(src_h - 1);
     u[8] = (uint32_t)src_w;
-    u[9] = dst_phys;        /* PHYSICAL addresses */
+    u[9] = dst_phys + (uint32_t)((int64_t)y0 * dst_w + g0 * 16) * 4u;
     u[10] = src_phys;
     u[11] = (uint32_t)(L - 1);
     u[12] = (uint32_t)dst_w * 4u;
-    u[13] = (uint32_t)(dst_h - 1);
+    u[13] = (uint32_t)(y1 - 1);
     u[14] = (uint32_t)(L * 64 - (uint32_t)dst_w * 4u);
     u[15] = (uint32_t)(L * rows);
     if (full) {
@@ -610,7 +608,10 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
     uint32_t u[24];
-    int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
+    int32_t g0 = x0 >> 4;
+    int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
+    int32_t L = g1 - g0;
+    int32_t band_h = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
     /* full: dst rect covers the whole surface AND dst_w % 16 == 0.  The
@@ -625,13 +626,14 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     /* The kernel's dst-read stream is rect-gated (out-of-rect lanes read
      * their lane-private scratch word), so any dst width works - no
      * 16-pixel alignment requirement. */
-    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 || alpha == 0)
+    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 ||
+        x1 <= x0 || y1 <= y0 || x1 > dst_w || y1 > dst_h || alpha == 0)
         return 0;
-    if (!gpu_map_fits(m, dst_w, dst_h))
+    if (!gpu_map_fits(m, x1, y1))
         return 0;
-    /* nq must divide dst_h (slice guard tests only the band start) */
-    nq = g2d_fit_nq(nq, dst_h);
-    rows = dst_h / nq;
+    if (nq > band_h)
+        nq = band_h;
+    rows = (band_h + nq - 1) / nq;
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->cu;
     u[2] = (uint32_t)m->qv;
@@ -639,12 +641,12 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[4] = (uint32_t)(src_w - 1);
     u[5] = (uint32_t)(src_h - 1);
     u[6] = (uint32_t)src_w;
-    u[7] = dst_phys;        /* PHYSICAL addresses */
+    u[7] = dst_phys + (uint32_t)((int64_t)y0 * dst_w + g0 * 16) * 4u;
     u[8] = src_phys;
     u[9] = (uint32_t)(L - 1);
-    u[10] = (uint32_t)(dst_h - 1);
+    u[10] = (uint32_t)(y1 - 1);
     u[11] = alpha;
-    u[12] = (uint32_t)(L * (int)dst_h);   /* full-surface n; kernel clips per QPU */
+    u[12] = (uint32_t)(L * rows);   /* nominal n; kernel clips tail band */
     u[13] = full ? (uint32_t)((int64_t)m->pu * 16)
                  : (uint32_t)x0;             /* full: pu16 */
     u[14] = full ? (uint32_t)((int64_t)m->pu * 16 * L)
