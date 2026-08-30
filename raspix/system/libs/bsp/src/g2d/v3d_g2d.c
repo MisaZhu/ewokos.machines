@@ -118,6 +118,7 @@
 #define V3D_SQRSV1   0x414u          /* SRQ reserved state */
 #define V3D_SQCNTL   0x418u          /* SRQ control */
 #define V3D_ERRSTAT  0xf20u          /* error status latch */
+#define V3D_VPMBASE  0x504u          /* [4:0] user VPM reservation, x256B */
 
 /* ---- PM power domain ---- */
 #define PM_GRAFX_OFF 0x10cu
@@ -223,6 +224,14 @@ typedef struct {
  * which never killed the box). */
 #define G2D_PM_RESET_RECOVERY 0
 
+/* DEBUG SWITCH: the one-shot wedge-bisection probes at init (the W
+ * round).  Result on real Pi3 hardware: D2/W1/W2/W3/W4/W5/W6 all ok,
+ * W2b TIMEOUT exactly as designed (split A/B register files proven;
+ * uniform values proven delivered via the 0xC0000000 direct alias).
+ * They now stay OFF: W2b's deliberate spin permanently occupies one
+ * QPU (PM recovery is gated) and production dispatch needs all 12. */
+#define G2D_VC4_PROBES 0
+
 /* nop kernel: exits immediately - used to separate "QPU launch never
  * completes" from "the dispatched kernels hang". */
 static const uint64_t g2d_nop_vc4[] = {
@@ -293,8 +302,8 @@ static uint32_t *_scratch;         /* TMU write scratch (16 KiB) */
 static uint32_t _unif_p, _scratch_p;
 static uint64_t *_nop_code;        /* dma staging of g2d_nop_vc4 */
 static uint32_t _nop_code_p;
-static uint64_t *_diag_code[12];   /* dma staging of the diag_*_vc4 */
-static uint32_t _diag_code_p[12];
+static uint64_t *_diag_code[22];   /* dma staging of the diag_*_vc4 */
+static uint32_t _diag_code_p[22];
 
 static int _inited = 0;
 static int _ok = 0;
@@ -737,7 +746,7 @@ int v3d_g2d_init(void)
      * D5 minimal VPM write + VDW DMA, W1-W6 uniform/regfile/ifn data
      * path probes) */
     {
-        static const struct { const uint64_t *src; unsigned n; } DIAG[12] = {
+        static const struct { const uint64_t *src; unsigned n; } DIAG[22] = {
             { g2d_qpu_diag_unif_vc4,        g2d_qpu_diag_unif_vc4_n },
             { g2d_qpu_diag_branch_vc4,      g2d_qpu_diag_branch_vc4_n },
             { g2d_qpu_diag_host_vc4,        g2d_qpu_diag_host_vc4_n },
@@ -750,8 +759,18 @@ int v3d_g2d_init(void)
             { g2d_qpu_diag_unifrf_vc4,      g2d_qpu_diag_unifrf_vc4_n },
             { g2d_qpu_diag_rowsrf_vc4,      g2d_qpu_diag_rowsrf_vc4_n },
             { g2d_qpu_diag_ifn_vc4,         g2d_qpu_diag_ifn_vc4_n },
+            { g2d_qpu_diag_rt_vc4,          g2d_qpu_diag_rt_vc4_n },
+            { g2d_qpu_diag_rtb_vc4,         g2d_qpu_diag_rtb_vc4_n },
+            { g2d_qpu_diag_rtd_vc4,         g2d_qpu_diag_rtd_vc4_n },
+            { g2d_qpu_diag_rtn_vc4,         g2d_qpu_diag_rtn_vc4_n },
+            { g2d_qpu_diag_rtbn_vc4,        g2d_qpu_diag_rtbn_vc4_n },
+            { g2d_qpu_diag_rtg_vc4,         g2d_qpu_diag_rtg_vc4_n },
+            { g2d_qpu_diag_rt2_vc4,         g2d_qpu_diag_rt2_vc4_n },
+            { 0, 0 },
         };
-        for (i = 0; i < 12; i++) {
+        for (i = 0; i < 22; i++) {
+            if (DIAG[i].src == 0)
+                continue;
             _diag_code[i] = (uint64_t *)(uintptr_t)dma_alloc(
                                 0, DIAG[i].n * 8u);
             if (_diag_code[i] != 0) {
@@ -775,8 +794,16 @@ int v3d_g2d_init(void)
 
     /* VC4: user-space QPU access needs a firmware handshake before the
      * first SRQ launch (GPU_FFT does the same at alloc time). */
-    if (_ver == 21)
+    if (_ver == 21) {
         g2d_qpu_enable();
+        /* Reset reserves NO VPM for user (SRQ) programs, and QPU
+         * writes outside the reserved window are masked (3D guide:
+         * "a portion of the VPM must be reserved for general-purpose
+         * use").  Reserve the max 31 x 256B = 7936 bytes - legal
+         * while idle, before any shading has commenced. */
+        v3d_ctl()[V3D_VPMBASE / 4] = 0x1fu;
+        g2d_dsb();
+    }
 
 #if G2D_VC4_NOP_TEST
     if (_ver == 21 && _nop_code_p != 0) {
@@ -804,6 +831,187 @@ int v3d_g2d_init(void)
              cap[0], cap[1], cap[2], cap[3]);
     }
 
+    if (_ver == 21 && _diag_code_p[4] != 0) {
+        /* S probes: the minimal VPM+VDW store (diag_vdw) into the
+         * scratch dma buffer, verified by the CPU AFTERWARD - the
+         * first probes that observe a GPU WRITE (the D/W rounds could
+         * only encode their answer in completion).  Production ops
+         * all complete but land zero pixels, so the store path is the
+         * open question.  S1 stores through the 0xC0000000 direct
+         * alias (what bsp_g2d passes), S2 through the plain physical
+         * address - a difference isolates alias handling in the VDW
+         * address path.  Sentinel words separate "never written" from
+         * "written with the wrong value". */
+        static const uint32_t SENT = 0xA5A5A5A5u;
+        uint32_t srqcs = 0, q, run;
+
+        for (run = 0; run < 2; run++) {
+            uint32_t dst_p = _scratch_p + run * 64u;   /* disjoint 16-word slots */
+            uint32_t *dst_va = _scratch + run * 16u;
+
+            for (q = 0; q < 16; q++)
+                dst_va[q] = SENT;
+            g2d_dsb();
+            for (q = 0; q < 16; q++) {
+                uint32_t *s = _unif + q * VC4_UNIF_QWORDS;
+
+                s[0] = 0x12345678u;                     /* color */
+                s[1] = 0;                               /* qid */
+                s[2] = 0;                               /* L-1 */
+                s[3] = run ? dst_p : (dst_p | V3D_VC_ALIAS_DIRECT);
+                s[4] = 0;                               /* x0 */
+                s[5] = 16;                              /* x1: one full group */
+                s[6] = 0;                               /* rowjump */
+                s[7] = 1;                               /* rows_q */
+                s[8] = 0;                               /* gx0 */
+            }
+            g2d_invalidate_caches();
+            if (g2d_vc4_launch(_diag_code_p[4], _unif_p, 1u, &srqcs) != 0) {
+                g2d_vc4_dump_regs(run ? "S2" : "S1");
+                slog("g2d: VC4 probe %s TIMEOUT SRQCS=0x%x\r\n",
+                     run ? "S2" : "S1", srqcs);
+                v3d_ctl()[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
+                (void)g2d_vc4_recover();
+            } else {
+                /* VDW stores pass through the V3D L2; without a
+                 * CLEAN the lines can stay in the cache and the CPU
+                 * readback sees the sentinel even though the DMA
+                 * ran clean (exactly the 0x1000-ERRSTAT symptom).
+                 * Read with and without the flush to discriminate. */
+                uint32_t r0 = dst_va[0], r15 = dst_va[15];
+
+                g2d_flush_l2();
+                g2d_invalidate_caches();
+                slog("g2d: VC4 probe %s pre w[0]=0x%x w[15]=0x%x\r\n",
+                     run ? "S2" : "S1", r0, r15);
+                slog("g2d: VC4 probe %s done w[0..3]=0x%x 0x%x 0x%x 0x%x "
+                     "w[15]=0x%x err=0x%x\r\n",
+                     run ? "S2" : "S1",
+                     dst_va[0], dst_va[1], dst_va[2], dst_va[3],
+                     dst_va[15], v3d_ctl()[V3D_ERRSTAT / 4]);
+            }
+        }
+
+        /* RT probes: bisect the silent store.  The S probes now run
+         * clean (no ERRSTAT bits) yet write nothing, so the setup
+         * words are accepted but the data never reaches DRAM.  RT is
+         * a pure QPU->VPM->QPU round trip (the guide guarantees read
+         * data even outside the reserved window): it completes only
+         * when BOTH the VPM write and the read work.  RTB controls
+         * the read path alone.  RTD repeats the S store but polls
+         * VPM_ST_BUSY to zero before exiting - a hang IS a result
+         * (DMA started, never finished); completing with pixels
+         * still missing means busy read 0 from the outset (the DMA
+         * never started at all).
+         * Round 5: the RT/RTB compares were themselves buggy (the 2nd
+         * rf operand reads register file B, never written - a
+         * guaranteed wedge), so both Round-4 TIMEOUTs were false
+         * signals.  The compares now stage through an accumulator, and
+         * RTN/RTBN are INVERSE-polarity twins (wedge on EQUAL):
+         * exactly one of each pair must complete, so two TIMEOUTs
+         * prove a true stall.  RTG replays the GPU_FFT store shape
+         * verbatim (vertical VPM writes + UNITS=16 VDW) to separate
+         * "our store shape is wrong" from "VDW is dead here".
+         * Round 6 results: RTG DID store (row 0 landed) but the RT
+         * family timed out on ANOTHER probe bug - the read setup word
+         * 0x101A00 carries NUM=1 (Table 33 bits 23:20) while each
+         * probe makes four raddr-48 reads, so every read past the
+         * first never got data.  NUM is now 0 (=>16) and the latency
+         * gap is plain nops (nop_reads were extra VPM reads!).  RTG
+         * now writes DISTINCT colors (column i = color+i) and its
+         * readback scans all 256 words: Table 35 defines the VDW
+         * STRIDE as the GAP between rows, so 0xc0000040 may be a
+         * 128B row pitch (rows at w0/w32/w64...) - Round 5 only
+         * looked at w[0]/w[15]/w[16]/w[255].  RT2 = RTG with UNITS=1
+         * bisects RTD's zero-byte UNITS=1 word. */
+        {
+            static const struct { const char *tag; int idx; } RTP[7] = {
+                { "RT", 12 }, { "RTB", 13 }, { "RTD", 14 },
+                { "RTN", 15 }, { "RTBN", 16 }, { "RTG", 17 },
+                { "RT2", 18 },
+            };
+            uint32_t rt, rp;
+
+            for (rt = 0; rt < 7; rt++) {
+                uint32_t code_p = _diag_code_p[RTP[rt].idx];
+                uint32_t front = (RTP[rt].idx == 14 || RTP[rt].idx == 17
+                                  || RTP[rt].idx == 18);
+                uint32_t *dst_va = _scratch +
+                    (RTP[rt].idx == 17 ? 256
+                     : RTP[rt].idx == 18 ? 512 : 32); /* RTD/RTG/RT2 */
+
+                if (code_p == 0)
+                    continue;
+                if (front) {                  /* RTD/RTG/RT2: fill front */
+                    for (rp = 0; rp < (RTP[rt].idx >= 17 ? 256u : 16u); rp++)
+                        dst_va[rp] = SENT;
+                    g2d_dsb();
+                }
+                for (rp = 0; rp < 16; rp++) {
+                    uint32_t *s = _unif + rp * VC4_UNIF_QWORDS;
+
+                    s[0] = 0x12345678u;             /* color */
+                    s[1] = 0;                       /* qid */
+                    s[2] = 0;                       /* L-1 */
+                    s[3] = RTP[rt].idx == 14
+                        ? (_scratch_p + 128u) | V3D_VC_ALIAS_DIRECT
+                        : RTP[rt].idx == 17
+                        ? (_scratch_p + 1024u) | V3D_VC_ALIAS_DIRECT
+                        : RTP[rt].idx == 18
+                        ? (_scratch_p + 2048u) | V3D_VC_ALIAS_DIRECT : 0;
+                    s[4] = 0;                       /* x0 */
+                    s[5] = 16;                      /* x1: one group */
+                    s[6] = 0;                       /* rowjump */
+                    s[7] = 1;                       /* rows_q */
+                    s[8] = 0;                       /* gx0 */
+                }
+                g2d_invalidate_caches();
+                if (g2d_vc4_launch(code_p, _unif_p, 1u, &srqcs) != 0) {
+                    g2d_vc4_dump_regs(RTP[rt].tag);
+                    slog("g2d: VC4 probe %s TIMEOUT SRQCS=0x%x\r\n",
+                         RTP[rt].tag, srqcs);
+                    v3d_ctl()[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
+                    (void)g2d_vc4_recover();
+                } else if (front) {
+                    g2d_flush_l2();
+                    g2d_invalidate_caches();
+                    if (RTP[rt].idx >= 17) {
+                        /* RTG/RT2: full-buffer scan - every VPM column
+                         * got a DISTINCT color, so the runs say which
+                         * words landed where (row count AND pitch). */
+                        uint32_t rs[8], rl[8], rn = 0, tot = 0, j;
+
+                        for (rp = 0; rp < 256; rp++) {
+                            if (dst_va[rp] == SENT)
+                                continue;
+                            tot++;
+                            if (rp == 0 || dst_va[rp - 1] == SENT) {
+                                if (rn < 8) { rs[rn] = rp; rl[rn] = 1; rn++; }
+                            } else if (rn > 0) {
+                                rl[rn - 1]++;
+                            }
+                        }
+                        slog("g2d: VC4 probe %s done runs=%d tot=%d "
+                             "err=0x%x\r\n", RTP[rt].tag, rn, tot,
+                             v3d_ctl()[V3D_ERRSTAT / 4]);
+                        for (j = 0; j < rn && j < 4; j++)
+                            slog("g2d: VC4 probe %s run%d w%d..%d "
+                                 "v0=0x%x vL=0x%x\r\n", RTP[rt].tag, j,
+                                 rs[j], rs[j] + rl[j] - 1, dst_va[rs[j]],
+                                 dst_va[rs[j] + rl[j] - 1]);
+                    } else
+                        slog("g2d: VC4 probe RTD done w[0..3]=0x%x 0x%x 0x%x "
+                             "0x%x w[15]=0x%x err=0x%x\r\n",
+                             dst_va[0], dst_va[1], dst_va[2], dst_va[3],
+                             dst_va[15], v3d_ctl()[V3D_ERRSTAT / 4]);
+                } else {
+                    slog("g2d: VC4 probe %s ok\r\n", RTP[rt].tag);
+                }
+            }
+        }
+    }
+
+#if G2D_VC4_PROBES
     if (_ver == 21) {
         /* Staged bring-up probes that encode their answer in the
          * COMPLETION itself (scratch/uniform reads never proved a GPU
@@ -874,6 +1082,7 @@ int v3d_g2d_init(void)
             }
         }
     }
+#endif
 #endif
 
     /* usable when the dispatch engine and the matching kernel flavor

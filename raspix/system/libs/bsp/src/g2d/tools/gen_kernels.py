@@ -574,19 +574,23 @@ def vc4_tmu_load(k, addr_src, dst, comment='tmu load'):
 
 
 def vc4_store(k, pixel, tag):
-    """VPM + VDW store of the 16 lane pixels (GPU_FFT protocol).
-    Live regs: rf22 = VPM write setup (vpm_setup(1,1,h32(qid)): one
-    16-lane row, horizontal, 32-bit), rf23 = vdw_setup_0 base
-    (DEPTH=1 | HORIZ | qid<<7),
-    rf11 = count (1..16), rf14 = xstart (absolute), rf4 = dst row base
-    (x=0), rf24 = gx (current group's absolute x).  The VPM X field of
-    the VDW setup word is only 4 bits wide (word units), so it must be
-    the GROUP-LOCAL xstart - gx, not the absolute xstart.  The memory
+    """VPM + VDW store of the 16 lane pixels.  Live regs: rf22 = VPM
+    write setup (one 16-lane row, horizontal, 32-bit, Y=qid), rf23 =
+    vdw_setup_0 base (ID=2 | HORIZ | qid<<7), rf11 = count (1..16),
+    rf14 = xstart (absolute), rf4 = dst row base (x=0), rf24 = gx
+    (current group's absolute x).  The VPM X field of the VDW setup
+    word is only 4 bits wide (word units), so it must be the
+    GROUP-LOCAL xstart - gx, not the absolute xstart.  The memory
     address, by contrast, is absolute: rf4 + gx*4 + hstart*4 (rf4 is
     the ROW base, vc4_bookkeep only adds 64 per group).  The count is
-    the words-per-row UNITS field [29:23] of vdw_setup_0 with DEPTH=1
-    (one contiguous row segment), not DEPTH [22:16]: DEPTH steps the
-    VPM Y origin and would read garbage rows qid+1.. instead."""
+    the DEPTH field [22:16] (row length in memory words) with UNITS=1
+    (one memory row): per the 3D guide Tables 34/35, UNITS is the row
+    count and BLOCKMODE=0 steps the VPM Y origin per row, so putting
+    count into UNITS would DMA garbage rows qid+1.. instead of our
+    single row qid.
+    NOTE: vpmvcd/vpmaddr are B-bank magic writes - qpuasm routes them
+    with ws=1 so they hit VPMVCD_WR_SETUP/VPM_ST_ADDR (a ws=0 write
+    would land in the LOAD side and the DMA would never fire)."""
     k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
             comment='wait for the previous VDW DMA')
     k.alu(a=('mov', 'vpmvcd', 'rf22'),
@@ -597,13 +601,11 @@ def vc4_store(k, pixel, tag):
             comment='QPU->VPM write must complete before the VDW setup'
                     ' (GPU_FFT store protocol)')
     k.alu(a=('mov', 'r1', 'rf11'), comment='count')
-    k.alu(a=('shl', 'r1', 'r1', '#16'), comment='count << 16 ...')
-    k.alu(a=('shl', 'r1', 'r1', '#7'),
-            comment='... << 7: count -> UNITS field [29:23]'
-                    ' (no #23: small-imms stop at 16)')
+    k.alu(a=('shl', 'r1', 'r1', '#16'),
+            comment='count -> DEPTH field [22:16] (row length, UNITS=1)')
     k.alu(a=('mov', 'r0', 'rf23'), comment='vdw setup0 base')
     k.alu(a=('or', 'r0', 'r0', 'r1'),
-            comment='vdw_setup_0(count, 1, HORIZ | qid<<7)')
+            comment='vdw_setup_0(UNITS=1, DEPTH=count, HORIZ | qid<<7)')
     k.alu(a=('mov', 'r3', 'rf24'), comment='gx (acc staging)')
     k.alu(a=('sub', 'r1', 'rf14', 'r3'),
             comment='hstart = xstart - gx (VPM X is 4 bits, group-local)')
@@ -611,7 +613,7 @@ def vc4_store(k, pixel, tag):
     k.alu(a=('or', 'r0', 'r0', 'r2'), comment='+ dma_h32(qid, hstart)')
     k.k.alu(a=('mov', 'vpmvcd', 'r0'), comment='vw_setup: basic (ID=2)')
     k.alu(a=('mov', 'vpmvcd', '#0xC0000000'),
-            comment='vw_setup: stride (ID=3, moot with DEPTH=1)')
+            comment='vw_setup: stride (ID=3, moot with UNITS=1)')
     k.alu(a=('shl', 'r2', 'r1', '#2'), comment='hstart * 4')
     k.alu(a=('shl', 'r1', 'rf24', '#2'), comment='gx * 4')
     k.alu(a=('add', 'r1', 'r1', 'rf4'), comment='row base + gx*4')
@@ -706,18 +708,15 @@ def vc4_prod_init(k, abs_reg, sign_imm, prod_reg, comment):
 
 
 def vc4_store_consts(k):
-    """rf22 = 0x101A00|qid (VPM write setup: vpm_setup(1, 1, h32(qid)) -
-    vc4.qinc lays out num[23:20]|stride[17:12]|dma[11:0]; num=1 counts
-    the single 16-lane vector row, stride=1, h32 = H|Size=2 (32-bit) |
-    Y.  num MUST NOT be 0: it is the write-block row count the VPM
-    write state machine (and vw_wait) tracks, so a zero wedges any
-    vw_wait forever), rf23 = 0x80014000 | qid<<7 (VDW basic setup base:
-    ID=2, DEPTH=1, UNITS filled per group, HORIZ, VPM origin y=qid) -
-    read from rf21 (qid, already masked to 6 bits)"""
-    k.alu(a=('mov', 'r2', '#0x101A00'), comment='vpm_setup(1,1,h32(0))')
+    """rf22 = 0x101A00|qid (VPM write setup, Table 32: ID=0, STRIDE=1,
+    HORIZ, SIZE=2 (32-bit), ADDR=Y=qid), rf23 = 0x80804000 | qid<<7
+    (VDW basic setup base, Table 34: ID=2, UNITS=1 (0 would mean 128
+    rows of garbage!), DEPTH filled per group, HORIZ, VPM origin
+    y=qid, MODEW=0 32-bit) - read from rf21 (qid, masked to 6 bits)"""
+    k.alu(a=('mov', 'r2', '#0x101A00'), comment='vpm wr setup: h32(Y=0)')
     k.alu(a=('or', 'rf22', 'rf21', 'r2'), comment='vpm write setup word')
     k.alu(a=('shl', 'rf23', 'rf21', '#7'), comment='qid << 7 (dma Y)')
-    k.alu(a=('mov', 'r2', '#0x80014000'), comment='')
+    k.alu(a=('mov', 'r2', '#0x80804000'), comment='')
     k.alu(a=('or', 'rf23', 'rf23', 'r2'), comment='vdw setup0 base')
 
 
@@ -772,8 +771,10 @@ def vc4_affine_map(k):
 
 def vc4_src_load(k):
     """TMU read of src[(v,u)] into rf26 with the clamped coordinates;
-    rf26/rf27 keep the ORIGINAL (pre-clamp) u/v for the rotate
-    out-of-bounds mask, the clamped pair sits in r0/r1"""
+    rf27 keeps the ORIGINAL (pre-clamp) v for the rotate out-of-bounds
+    mask, and the pre-clamp u is STASHED into rf28 before the load:
+    the pixel landing in rf26 clobbers it (rf28 = |pu| is dead after
+    vc4_prod_init).  The clamped pair sits in r0/r1."""
     k.alu(a=('max', 'r0', 'rf26', '#0'), comment='u clamp ...')
     k.alu(a=('min', 'r0', 'r0', 'rf15'), comment='... min(src_w-1)')
     k.alu(a=('max', 'r1', 'rf27', '#0'), comment='v clamp ...')
@@ -782,17 +783,21 @@ def vc4_src_load(k):
     k.alu(a=('add', 'r2', 'r2', 'r0'), comment='+ u')
     k.alu(a=('shl', 'r2', 'r2', '#2'), comment='* 4')
     k.alu(a=('add', 'r2', 'r2', 'rf9'), comment='+ src phys')
+    k.alu(a=('mov', 'rf28', 'rf26'),
+          comment='save u orig (the TMU pixel below clobbers rf26)')
     vc4_tmu_load(k, 'r2', 'rf26', 'src pixel')
 
 
 def vc4_oob_mask(k):
     """rotate: zero the pixel when its PRE-clamp coordinate left the
     source surface.  Operand orientation matters: `src1 - u` goes
-    negative exactly when u > src1 (equality stays in-bounds)."""
+    negative exactly when u > src1 (equality stays in-bounds).  u orig
+    lives in rf28 (stashed by vc4_src_load: rf26 now holds the pixel,
+    v orig stays in rf27)."""
     k.alu(a=('mov', 'r2', 'r4'), comment='pixel')
-    k.alu(a=('sub', 'r3', 'rf26', '#0'), flags={'sf': True}, comment='u < 0 ?')
+    k.alu(a=('sub', 'r3', 'rf28', '#0'), flags={'sf': True}, comment='u < 0 ?')
     k.alu(a=('sub', 'r2', 'r2', 'r2'), flags={'ac': 'ifn'}, comment='-> 0')
-    k.alu(a=('mov', 'r0', 'rf26'), comment='u orig (acc staging)')
+    k.alu(a=('mov', 'r0', 'rf28'), comment='u orig (acc staging)')
     k.alu(a=('sub', 'r3', 'rf15', 'r0'), flags={'sf': True},
           comment='u > src_w-1 ?')
     k.alu(a=('sub', 'r2', 'r2', 'r2'), flags={'ac': 'ifn'}, comment='-> 0')
@@ -816,7 +821,9 @@ def vc4_affine(rotate):
     # rf0/1=u/v products rf2/3=cu,cv rf4=row base rf5/6=x0,x1 rf7=rowjump
     # rf8=src_w rf9=src phys rf10=rows rf11=count rf12=L-1 rf13=ctr
     # rf14=hstart rf15/16=src_w-1,src_h-1 rf17..20=steps rf21=qid
-    # rf22/23=store constants rf24=gx rf25=gx0 rf26/27=u/v orig (pixel)
+    # rf22/23=store constants rf24=gx rf25=gx0 rf26/27=u/v orig (pixel
+    # lands in rf26; u orig is stashed to rf28 = |pu|, dead after
+    # vc4_prod_init)
     # u23 is a trailing unused word: loading it into rf28 here would
     # CLOBBER |pu| (u16) before vc4_prod_init reads it - consume and
     # drop it instead.
@@ -1234,6 +1241,237 @@ def vc4_diag_ifn():
     return k.k
 
 
+# VPM store path bisection (the S probes stay all-sentinel with a
+# clean ERRSTAT, so the store instructions are accepted but nothing
+# reaches DRAM): RT proves or kills the QPU->VPM write by reading the
+# written vector back; RTB controls the read path alone (two reads of
+# the same vector must agree); RTD keeps the full VDW store but polls
+# VPM_ST_BUSY to zero before exiting so a teardown-before-DMA race
+# cannot hide a working store.  NOTE: the Round-4 RT/RTB compares
+# used TWO rf operands - the assembler routes the second rf operand
+# through raddr_b/register file B (never written), so both wedged on
+# garbage regardless of the VPM path.  Every compare now stages the
+# second operand through an accumulator first.  RTN/RTBN are the
+# INVERSE-polarity twins (wedge on EQUAL): exactly one of each pair
+# must complete, so two TIMEOUTs prove a true stall (not a wedge) and
+# a wrong-polarity completion proves the compared data.
+
+VPM_RW_SETUP = '#0x1A00'     # ID=0, NUM=0 (=>16), STRIDE=1, HORIZ, 32-bit,
+                             # Y=0.  Round 5 used 0x101A00: bits 23:20 are
+                             # NUM on the READ setup (Table 33), so the DMA
+                             # delivered ONE vector while each probe makes
+                             # four raddr-48 reads -> reads past the first
+                             # never get data = the Round-5 RT timeouts.
+
+
+def vc4_diag_rt():
+    """RT: VPM write -> VPM read round trip (no VDW involved).
+    Writes the color into VPM Y=0 through the ws=1 write setup, then
+    reads the same vector back through a ws=0 read setup (regfile-A
+    VPMVCD_RD_SETUP) + raddr 48 and compares.  Completes -> both VPM
+    write and read work and the S-probe failure is VDW-side; TIMEOUT
+    -> the VPM write is masked or the read path is broken (RTB/RTN
+    disambiguate)."""
+    k = V21('diag_rt_vc4')
+    k.k.alu(a=('mov', 'rf0', 'unif'), comment='u0 color')
+    k.k.alu(a=('mov', 'rf21', 'unif'), comment='u1 qid (stream shape)')
+    k.live = frozenset()
+    k.alu(a=('mov', 'vpmvcd', VPM_RW_SETUP),
+          comment='VPM write setup h32(Y=0) [ws=1, VPMVCD_WR_SETUP]')
+    k.alu(a=('mov', 'vpm', 'rf0'), comment='16 lanes -> VPM')
+    k.nop(3, 'VPM write FIFO settle')
+    k.alu(a=('mov', 'vr_setup', VPM_RW_SETUP),
+          comment='VPM read setup NUM=16 h32(Y=0) [ws=0, RD_SETUP]')
+    k.nop(3, 'read setup latency (guide: min 3 instructions)')
+    k.k.alu(a=('mov', 'rf10', 'vpm'), comment='read vector 0 back')
+    k.live = frozenset()
+    k.alu(a=('mov', 'r1', 'rf0'),
+          comment='color -> acc (a 2nd rf operand would read file B)')
+    k.alu(a=('sub', 'r0', 'rf10', 'r1'), flags={'sf': True},
+          comment='readback == color ?')
+    k.branch('spin', 'anynz', 'mismatch -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_rtn():
+    """RTN: inverse-polarity twin of RT - identical VPM write -> read
+    round trip but wedges when the values ARE EQUAL (branch on allz).
+    RT ok + RTN TIMEOUT -> round trip works, the S failure is
+    VDW-side.  RT TIMEOUT + RTN ok -> reads complete but return the
+    WRONG data (masked VPM write or stale window).  Both TIMEOUT ->
+    a true VPM-read stall."""
+    k = V21('diag_rtn_vc4')
+    k.k.alu(a=('mov', 'rf0', 'unif'), comment='u0 color')
+    k.k.alu(a=('mov', 'rf21', 'unif'), comment='u1 qid (stream shape)')
+    k.live = frozenset()
+    k.alu(a=('mov', 'vpmvcd', VPM_RW_SETUP),
+          comment='VPM write setup h32(Y=0) [ws=1, VPMVCD_WR_SETUP]')
+    k.alu(a=('mov', 'vpm', 'rf0'), comment='16 lanes -> VPM')
+    k.nop(3, 'VPM write FIFO settle')
+    k.alu(a=('mov', 'vr_setup', VPM_RW_SETUP),
+          comment='VPM read setup NUM=16 h32(Y=0) [ws=0, RD_SETUP]')
+    k.nop(3, 'read setup latency (guide: min 3 instructions)')
+    k.k.alu(a=('mov', 'rf10', 'vpm'), comment='read vector 0 back')
+    k.live = frozenset()
+    k.alu(a=('mov', 'r1', 'rf0'),
+          comment='color -> acc (a 2nd rf operand would read file B)')
+    k.alu(a=('sub', 'r0', 'rf10', 'r1'), flags={'sf': True},
+          comment='readback == color ?')
+    k.branch('spin', 'allz', 'EQUAL -> wedge (inverse polarity)')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_rtb():
+    """RTB: control for RT - two consecutive reads of the SAME (never
+    written) VPM vector must return identical data.  Completes -> the
+    VPM read path is sane; TIMEOUT -> the read path itself is broken.
+    RT fail + RTB pass isolates a masked VPM WRITE."""
+    k = V21('diag_rtb_vc4')
+    k.k.alu(a=('mov', 'rf0', 'unif'), comment='u0 color (stream shape)')
+    k.k.alu(a=('mov', 'rf21', 'unif'), comment='u1 qid (stream shape)')
+    k.live = frozenset()
+    k.alu(a=('mov', 'vr_setup', VPM_RW_SETUP), comment='read setup 1')
+    k.nop(3, 'read setup latency (guide: min 3 instructions)')
+    k.k.alu(a=('mov', 'rf10', 'vpm'), comment='read 1')
+    k.live = frozenset()
+    k.alu(a=('mov', 'vr_setup', VPM_RW_SETUP), comment='read setup 2')
+    k.nop(3, 'read setup latency')
+    k.k.alu(a=('mov', 'rf11', 'vpm'), comment='read 2')
+    k.live = frozenset()
+    k.alu(a=('mov', 'r1', 'rf11'),
+          comment='read2 -> acc (a 2nd rf operand would read file B)')
+    k.alu(a=('sub', 'r0', 'rf10', 'r1'), flags={'sf': True},
+          comment='read1 == read2 ?')
+    k.branch('spin', 'anynz', 'unstable reads -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_rtbn():
+    """RTBN: inverse-polarity twin of RTB - wedges when the two reads
+    ARE EQUAL.  RTB ok + RTBN TIMEOUT -> reads are stable; RTB
+    TIMEOUT + RTBN ok -> reads complete but unstable; both TIMEOUT ->
+    a true VPM-read stall."""
+    k = V21('diag_rtbn_vc4')
+    k.k.alu(a=('mov', 'rf0', 'unif'), comment='u0 color (stream shape)')
+    k.k.alu(a=('mov', 'rf21', 'unif'), comment='u1 qid (stream shape)')
+    k.live = frozenset()
+    k.alu(a=('mov', 'vr_setup', VPM_RW_SETUP), comment='read setup 1')
+    k.nop(3, 'read setup latency (guide: min 3 instructions)')
+    k.k.alu(a=('mov', 'rf10', 'vpm'), comment='read 1')
+    k.live = frozenset()
+    k.alu(a=('mov', 'vr_setup', VPM_RW_SETUP), comment='read setup 2')
+    k.nop(3, 'read setup latency')
+    k.k.alu(a=('mov', 'rf11', 'vpm'), comment='read 2')
+    k.live = frozenset()
+    k.alu(a=('mov', 'r1', 'rf11'),
+          comment='read2 -> acc (a 2nd rf operand would read file B)')
+    k.alu(a=('sub', 'r0', 'rf10', 'r1'), flags={'sf': True},
+          comment='read1 == read2 ?')
+    k.branch('spin', 'allz', 'EQUAL -> wedge (inverse polarity)')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_rtd():
+    """RTD: the diag_vdw store plus a VPM_ST_BUSY poll before exit.
+    After vw_addr fires the DMA, raddr_b 49 read through regfile B
+    (Table 31 'B rd' = VPM_ST_BUSY) is polled until zero - an
+    unbounded loop: a HANG here is itself the answer (DMA started but
+    never completes).  Completes with pixels still missing -> busy
+    read 0 from the outset, the DMA never started; completes WITH
+    pixels -> the vw_wait-only tail of the S probe exited before the
+    store landed."""
+    k = V21('diag_rtd_vc4')
+    vc4_ldunif(k, FILL_UNIF)
+    vc4_rows_guard(k)          # never taken at rows_q=1
+    vc4_lane_init(k)
+    vc4_store_consts(k)
+    k.alu(a=('mov', 'rf24', 'rf25'), comment='gx = gx0')
+    vc4_clip_width(k)
+    vc4_store(k, 'rf0', 'diag ')
+    # poll VPM_ST_BUSY until the store DMA goes idle
+    k.label('poll')
+    k.k.nop_reads(39, 49, comment='raddr_b=49 residency')
+    k.k.alu(a=('mov', 'r0', 'vw_busy'), comment='VPM_ST_BUSY -> r0')
+    k.alu(a=('sub', 'r2', 'r0', '#0'), flags={'sf': True},
+          comment='busy == 0 ?')
+    k.branch('poll', 'anynz', 'still busy -> keep polling')
+    k.nop(3, 'poll exit delay slots')
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='wait for the final VDW DMA')
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend')
+    k.k.nop(2, 'exit delay slots')
+    k.label('gexit')           # guard target, unreachable at rows_q=1
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend')
+    k.k.nop(2, 'gexit delay slots')
+    return k.k
+
+
+def _vc4_rtg_body(k, vdw_basic):
+    """Shared GPU_FFT-shape store body for RTG/RT2: 16 vertical VPM
+    vector writes (column i gets color+i so every transferred word is
+    DISTINCT - the driver scan then shows exactly which VPM words
+    landed where) + one VDW kick with `vdw_basic` + stride 0xc0000040.
+    Round 5's RTG wrote only row 0 visible at w[0..15] - but Table 35
+    defines STRIDE as the DISTANCE BETWEEN THE LAST BYTE OF A ROW AND
+    THE START OF THE NEXT: with 64-byte rows 0xc0000040 may be a 128B
+    row PITCH (rows at w0, w32, w64...) and w[16] was padding.  The
+    distinct colors + the driver's full-buffer scan settle rows-vs-
+    pitch-vs-VPM-mapping in one boot."""
+    vc4_ldunif(k, FILL_UNIF)
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='drain any prior VDW DMA')
+    k.alu(a=('mov', 'vpmvcd', '#0x00101200'),
+          comment='GPU_FFT vpm wr setup: v32 vertical stride 1, col 0')
+    k.alu(a=('mov', 'vpm', 'rf0'), comment='column 0: color+0')
+    for i in range(1, 16):
+        k.alu(a=('add', 'r0', 'rf0', '#%d' % i),
+              comment='color + %d (single rf operand)' % i)
+        k.alu(a=('mov', 'vpm', 'r0'), comment='column %d' % i)
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='QPU->VPM writes must complete before the VDW setup'
+                    ' (GPU_FFT store protocol)')
+    k.alu(a=('mov', 'vpmvcd', vdw_basic),
+          comment='vdw_setup_0 basic (ID=2)')
+    k.alu(a=('mov', 'vpmvcd', '#0xC0000040'),
+          comment='vdw stride 0x40 (ID=3): pitch 64 or 128?')
+    k.alu(a=('mov', 'r1', 'rf4'), comment='dst base (acc staging)')
+    k.k.alu(a=('mov', 'vpmaddr', 'r1'), comment='vw_addr fires the DMA')
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='wait for the VDW DMA')
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend')
+    k.k.nop(2, 'exit delay slots')
+
+
+def vc4_diag_rtg():
+    """RTG: the GPU_FFT store shape verbatim (known-good silicon
+    protocol): VPM wr setup 0x00101200 (vertical stride 1) + 16
+    back-to-back vector writes (column i = color+i) + vdw_setup_0
+    0x88104000 (ID=2, UNITS=16, DEPTH=16, HORIZ, VPM origin 0) +
+    stride 0xc0000040 + vw_addr = dst.  The driver scans all 256
+    words: runs at w0/w16/w32... = pitch 64 (16 rows), runs at
+    w0/w32/w64... = pitch 128 (stride is a GAP, Table 35), all
+    sentinel = VDW dead."""
+    k = V21('diag_rtg_vc4')
+    _vc4_rtg_body(k, '#0x88104000')
+    return k.k
+
+
+def vc4_diag_rt2():
+    """RT2: RTG with UNITS=1 (0x80904000: DEPTH=16, HORIZ, VPM origin
+    0) - the ONLY field difference vs RTG, bisecting the production
+    store's UNITS=1 word (RTD wrote ZERO bytes).  Row 0 of the buffer
+    must show color+0..color+15: RT2 ok -> UNITS=1 works and RTD's
+    failure is its runtime-computed word or horiz VPM write setup;
+    RT2 all-sentinel -> UNITS=1 itself never fires a DMA here."""
+    k = V21('diag_rt2_vc4')
+    _vc4_rtg_body(k, '#0x80904000')
+    return k.k
+
+
 # --------------------------------------------------------------------------
 # header emission
 # --------------------------------------------------------------------------
@@ -1296,7 +1534,7 @@ def emit(kernels, path):
                  ' ISA and')
     lines.append(' * four SRQ kernels for the VC4 (V3D 2.1, BCM2837) QPU ISA,'
                  ' plus')
-    lines.append(' * twelve tiny VC4 wedge-bisection diagnostics'
+    lines.append(' * nineteen tiny VC4 wedge-bisection diagnostics'
                  ' (diag_*_vc4).')
     lines.append(' * GENERATED by tools/gen_kernels.py - edit that script,'
                  ' not this file.')
@@ -1349,7 +1587,14 @@ def main():
                   vc4_diag_unifadv,
                   vc4_diag_unifrf,
                   vc4_diag_rowsrf,
-                  vc4_diag_ifn):
+                  vc4_diag_ifn,
+                  vc4_diag_rt,
+                  vc4_diag_rtb,
+                  vc4_diag_rtd,
+                  vc4_diag_rtn,
+                  vc4_diag_rtbn,
+                  vc4_diag_rtg,
+                  vc4_diag_rt2):
         k = build()
         rows = k.finish()
         words = [w for w, c in rows]

@@ -725,6 +725,11 @@ MAGIC21 = {32: 'r0', 33: 'r1', 34: 'r2', 35: 'r3', 36: 'noswap',
            56: 'tmu0_s', 57: 'tmu0_t', 58: 'tmu0_r', 59: 'tmu0_b',
            60: 'tmu1_s', 61: 'tmu1_t', 62: 'tmu1_r', 63: 'tmu1_b'}
 MAGIC21_INV = {v: k for k, v in MAGIC21.items()}
+# Table 31 write side is split by register file: the A-bank names below
+# hit the LOAD registers (ws stays 0), the B-bank names in B_BANK_WR21
+# hit VPMVCD_WR_SETUP / VPM_ST_ADDR (the emit forces ws=1).
+MAGIC21_INV['vr_setup'] = 49   # regfile A: VPMVCD_RD_SETUP
+MAGIC21_INV['vr_addr'] = 50    # regfile A: VPM_LD_ADDR
 
 ADD21 = {'fadd': 1, 'fsub': 2, 'fmin': 3, 'fmax': 4, 'add': 12,
          'sub': 13, 'shr': 14, 'asr': 15, 'ror': 16, 'shl': 17,
@@ -755,6 +760,14 @@ NOP21_WORD = 0x100009e7009e7000
 UNIF_RADDR21 = 32
 ELEM_RADDR21 = 38
 VPM_WAIT_RADDR21 = 50
+# Magic write functions split by register file (3D guide Table 31):
+# waddr 49/50 via regfile A = the LOAD side (VPMVCD_RD_SETUP / VPM_LD_ADDR),
+# via regfile B = the store side (VPMVCD_WR_SETUP / VPM_ST_ADDR).  A ws=0
+# ADD-pipe write therefore lands in the load registers and the VDW DMA
+# never starts - the store must go through ws=1 (address stays in the
+# waddr_add field, see _bbank_fixup).  The check is by dst NAME so the
+# vr_setup/vr_addr A-bank aliases keep ws=0.
+B_BANK_WR21 = ('vpmvcd', 'vpmaddr')
 # VC4 small immediates: raddr_b field = table index (= value for 0..16,
 # verified against GPU_FFT words: #1 -> 1, #4 -> 4, #8 -> 8)
 SMALL_IMM21 = list(range(17)) + [32, 64, 128]
@@ -791,6 +804,13 @@ class K21:
         # finished: GPU_FFT's 'mov -, vw_wait' = or -, b, b with rb=50
         if s == 'vw_wait':
             return {'kind': 'vw_wait'}
+        # Magic READ ports (3D guide Table 31 read side): raddr 48
+        # returns VPM read data (set up via vr_setup), raddr 49 read
+        # through regfile B returns VPM_ST_BUSY (store DMA status).
+        if s == 'vpm':
+            return {'kind': 'magic_rd', 'addr': 48, 'file': 'a'}
+        if s == 'vw_busy':
+            return {'kind': 'magic_rd', 'addr': 49, 'file': 'b'}
         if s.startswith('rf'):
             n = int(s[2:])
             if n > 63:
@@ -829,6 +849,7 @@ class K21:
         smimm = None
         big_imm = None
         vw_wait = False
+        magic_rd = {}
         operands = []
         for side, d in (('a', a), ('m', m)):
             if not d or d['nsrc'] == 0:
@@ -854,6 +875,12 @@ class K21:
                         raddrs.append(p['kind'])
                 elif p['kind'] == 'vw_wait':
                     vw_wait = True
+                elif p['kind'] == 'magic_rd':
+                    cur = magic_rd.get(p['file'])
+                    if cur is not None and cur != p['addr']:
+                        raise AsmError('conflicting magic %s reads'
+                                       % p['file'])
+                    magic_rd[p['file']] = p['addr']
         if big_imm is not None:
             # sig loadimm: the constant sits in bits 31:0 and is routed
             # straight to the waddr fields (no op/mux fields at all);
@@ -872,13 +899,22 @@ class K21:
             word = fld_set(word, (ac << 3) | mc, 51, 46)
             word = fld_set(word, wa, 43, 38)
             word = fld_set(word, wm, 37, 32)
+            word = self._bbank_fixup(word, a)
             word = fld_set(word, SIG21_INV['loadimm'], 63, 60)
             self.raw(word, comment)
             return
-        if len(raddrs) > (1 if (smimm is not None or vw_wait) else 2):
+        if len(raddrs) > (1 if (smimm is not None or vw_wait
+                                or 'b' in magic_rd) else 2):
             raise AsmError('more rf addresses than one instruction carries')
         if smimm is not None and vw_wait:
             raise AsmError('small immediate and vw_wait clash on raddr_b')
+        if 'b' in magic_rd:
+            if smimm is not None:
+                raise AsmError('small immediate clashes with magic B read')
+            if vw_wait:
+                raise AsmError('vw_wait clashes with magic B read')
+        if 'a' in magic_rd and raddrs:
+            raise AsmError('magic A read clashes with rf/unif reads')
         if smimm is not None and sig not in ('', 'smimm'):
             raise AsmError('small immediate needs sig smimm')
         if smimm is not None and sig == '':
@@ -898,8 +934,12 @@ class K21:
         # sit in raddr_b (reading raddr 50 = VPM_LD_WAIT blocks until
         # every pending VPM->VDW DMA finished)
         raddr_a = addr_of(raddrs[0]) if raddrs else 39
+        if 'a' in magic_rd:
+            raddr_a = magic_rd['a']
         if vw_wait:
             raddr_b = VPM_WAIT_RADDR21
+        elif 'b' in magic_rd:
+            raddr_b = magic_rd['b']
         elif len(raddrs) > 1:
             raddr_b = addr_of(raddrs[1])
         elif smimm is not None:
@@ -910,6 +950,8 @@ class K21:
         def mux_of(p):
             if p['kind'] == 'mux':
                 return p['mux']
+            if p['kind'] == 'magic_rd':
+                return 6 if p['file'] == 'a' else 7
             if p['kind'] in ('smimm', 'vw_wait'):
                 return 7
             return 6 if p['addr'] == raddr_a else 7
@@ -936,12 +978,33 @@ class K21:
         word = fld_set(word, raddr_b, 17, 12)
         word = self._pack_add(word, a)
         word = self._pack_mul(word, m)
+        word = self._bbank_fixup(word, a, m)
         word = fld_set(word, (ac << 3) | mc, 51, 46)
         word = fld_set(word, 1 if flags.get('sf') else 0, 45, 45)
         if sig not in SIG21_INV:
             raise AsmError('no sig encoding for %r' % sig)
         word = fld_set(word, SIG21_INV[sig], 63, 60)
         self.raw(word, comment)
+
+    def _bbank_fixup(self, word, a, m=None):
+        """route an ADD-pipe write to a B-bank magic function (49/50).
+        The write ADDRESS stays in the waddr_add field; ws=1 redirects
+        the ADD result to register file B (3D guide field table:
+        'waddr_add: if ws=0 regfile writes go to regfile A, else
+        regfile B'; Mesa qpu_a_dst does exactly addr-in-WADDR_ADD +
+        QPU_WS).  ws=0 hits the regfile-A functions (vr_setup/vr_addr)
+        and the VDW DMA never fires.  Moving the address into the
+        waddr_mul field at the same time is WRONG: mul+ws=1 targets
+        regfile A again, so the write vanishes entirely."""
+        if not (a and a['dst']):
+            return word
+        if a['dst'] not in B_BANK_WR21:
+            return word
+        if m and m['dst']:
+            raise AsmError('B-bank magic write clashes with a MUL dst')
+        word = fld_set(word, 39, 37, 32)          # waddr mul = nop
+        word = fld_set(word, 1, 44, 44)           # ws: add -> regfile B
+        return word
 
     def _norm_op(self, op):
         if op is None:
