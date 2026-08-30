@@ -69,7 +69,7 @@
 #define PM_PASSWORD  0x5A000000u
 #define PM_V3DRSTN   (1u << 6)
 
-#define CSD_CODE_WORDS 256
+#define CSD_CODE_WORDS 512   /* 324-word argb_alpha (full fast path) */
 #define CSD_UNIF_WORDS 64
 
 /* Raspberry Pi firmware property tags and clock ID. */

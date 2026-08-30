@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* kernel argb_scale_pow2: 206 instructions */
+/* kernel argb_scale_pow2: 207 instructions */
 const uint64_t g2d_qpu_argb_scale_pow2[] = {
     0x39800000bb03f000ULL,  /*   nop */
     0x39804000bb03f000ULL,  /*   nop */
@@ -42,7 +42,7 @@ const uint64_t g2d_qpu_argb_scale_pow2[] = {
     0x24000700bb51e000ULL,  /*   nop */
     0x380000193803f65cULL,  /*   add */
     0x08048700bb357000ULL,  /*   nop */
-    0x020004ee0000d000ULL,  /*   branch ANYA */
+    0x020004f60000d000ULL,  /*   branch ANYA */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x39834000bb03f000ULL,  /*   nop */
@@ -125,7 +125,7 @@ const uint64_t g2d_qpu_argb_scale_pow2[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x39e0401c3c03f440ULL,  /*   sub */
-    0x0200010e0000d000ULL,  /*   branch ANYA */
+    0x020001160000d000ULL,  /*   branch ANYA */
     0x3800000ff903f303ULL,  /*   mov */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
@@ -140,11 +140,12 @@ const uint64_t g2d_qpu_argb_scale_pow2[] = {
     0x380022c0bb703000ULL,  /*   nop */
     0x0be4958cf9581643ULL,  /*   mov */
     0x0bf003d6f93c12c3ULL,  /*   mov */
-    0x040c075d38750752ULL,  /*   add */
+    0x3800001d3803f752ULL,  /*   add */
+    0x3808001d3803f750ULL,  /*   add */
     0x380000193803f65bULL,  /*   add */
     0x380800193c03f64eULL,  /*   sub */
     0x39e0401c3c03f3c0ULL,  /*   sub */
-    0x02ffffadff00d000ULL,  /*   branch ANYNA */
+    0x02ffffa5ff00d000ULL,  /*   branch ANYNA */
     0x3808001df903f343ULL,  /*   mov */
     0x3800100cf903f743ULL,  /*   mov */
     0x38870000bb03f000ULL,  /*   nop */
@@ -212,9 +213,9 @@ const uint64_t g2d_qpu_argb_scale_pow2[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
 };
-const unsigned g2d_qpu_argb_scale_pow2_n = 206;
+const unsigned g2d_qpu_argb_scale_pow2_n = 207;
 
-/* kernel argb_alpha: 324 instructions */
+/* kernel argb_alpha: 327 instructions */
 const uint64_t g2d_qpu_argb_alpha[] = {
     0x39800000bb03f000ULL,  /*   nop */
     0x39804000bb03f000ULL,  /*   nop */
@@ -238,6 +239,8 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x3984c000bb03f000ULL,  /*   nop */
     0x39850000bb03f000ULL,  /*   nop */
     0x3987c000bb03f000ULL,  /*   nop */
+    0x39878000bb03f000ULL,  /*   nop */
+    0x39874000bb03f000ULL,  /*   nop */
     0x38000015bb03f002ULL,  /*   eidx */
     0x38000016f903f543ULL,  /*   mov */
     0x39e000157c03f542ULL,  /*   shl */
@@ -250,10 +253,11 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x24000700bb55f000ULL,  /*   nop */
     0x3800001a3803f69cULL,  /*   add */
     0x08048700bb298000ULL,  /*   nop */
-    0x020008b60000d000ULL,  /*   branch ANYA */
-    0x39828000bb03f000ULL,  /*   nop */
+    0x020008be0000d000ULL,  /*   branch ANYA */
     0x39e0001c7c03f546ULL,  /*   shl */
-    0x3800000a3803f29cULL,  /*   add */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x38000000bb03f000ULL,  /*   nop */
+    0x3800000a3803f79cULL,  /*   add */
     0x39e0001c7c03f582ULL,  /*   shl */
     0x3800000a3803f29cULL,  /*   add */
     0x39e0001c3803f241ULL,  /*   add */
@@ -261,8 +265,7 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x3800000cf903f703ULL,  /*   mov */
     0x38000019f903f583ULL,  /*   mov */
     0x38000017f903f243ULL,  /*   mov */
-    0x3987c000bb03f000ULL,  /*   nop */
-    0x39e0401c3c03f7c1ULL,  /*   sub */
+    0x39e0401c3c03f741ULL,  /*   sub */
     0x0200049e0000d000ULL,  /*   branch ANYA */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
@@ -417,6 +420,7 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x38200000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
+    0x39e000127c03f442ULL,  /*   shl */
     0x24000640bb016000ULL,  /*   nop */
     0x24000600bb098000ULL,  /*   nop */
     0x39e0001b7e03f64fULL,  /*   asr */
@@ -469,7 +473,7 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x04100617f9602243ULL,  /*   mov */
     0x380000193803f64dULL,  /*   add */
     0x380800193c03f64eULL,  /*   sub */
-    0x05e006957c695442ULL,  /*   shl */
+    0x3800001a3803f692ULL,  /*   add */
     0x39e0001b7e03f64fULL,  /*   asr */
     0x3800001b3803f6c1ULL,  /*   add */
     0x39e0001c7e03f60fULL,  /*   asr */
@@ -541,7 +545,7 @@ const uint64_t g2d_qpu_argb_alpha[] = {
     0x38000000bb03f000ULL,  /*   nop */
     0x38000000bb03f000ULL,  /*   nop */
 };
-const unsigned g2d_qpu_argb_alpha_n = 324;
+const unsigned g2d_qpu_argb_alpha_n = 327;
 
 /* kernel argb_rot90: 108 instructions */
 const uint64_t g2d_qpu_argb_rot90[] = {
