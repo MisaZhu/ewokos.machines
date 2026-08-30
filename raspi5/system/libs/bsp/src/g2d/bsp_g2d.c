@@ -438,9 +438,10 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
                               int32_t src_w, int32_t src_h,
                               uint32_t dst_phys, uint32_t *argb_dst,
                               int32_t dst_w, int32_t dst_h,
-                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+                              int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                              int no_clamp)
 {
-    uint32_t u[24];
+    uint32_t u[25];
     int32_t g0 = x0 >> 4;
     int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
     int32_t L = g1 - g0;
@@ -501,23 +502,27 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     u[21] = (uint32_t)rows;
     u[22] = (uint32_t)(rows * (int32_t)dst_w * 4);  /* rows_stride */
     u[23] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    return v3d_g2d_run(kcode, knwords, u, 24,
+    u[24] = (uint32_t)no_clamp;                     /* blit full-loop clamp skip */
+    return v3d_g2d_run(kcode, knwords, u, 25,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0;
 }
 
-/* clamped-edge blit (argb_blit kernel) */
+/* clamped-edge blit (argb_blit kernel); no_clamp selects the clamp-free
+ * full loop for whole-surface maps whose samples provably stay inside the
+ * source (scale_to, right-angle rotate) */
 static int gpu_blit_surface(const g2d_map_t *m,
                             uint32_t src_phys, uint32_t *argb_src,
                             int32_t src_w, int32_t src_h,
                             uint32_t dst_phys, uint32_t *argb_dst,
                             int32_t dst_w, int32_t dst_h,
-                            int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+                            int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            int no_clamp)
 {
     return gpu_affine_surface(g2d_qpu_argb_blit, g2d_qpu_argb_blit_n, m,
                               src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, dst_w, dst_h,
-                              x0, y0, x1, y1);
+                              x0, y0, x1, y1, no_clamp);
 }
 
 /* whole-surface rotation (argb_rotate kernel): every destination pixel is
@@ -532,7 +537,7 @@ static int gpu_rotate_surface(const g2d_map_t *m,
     return gpu_affine_surface(g2d_qpu_argb_rotate, g2d_qpu_argb_rotate_n, m,
                               src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, dst_w, dst_h,
-                              0, 0, dst_w, dst_h);
+                              0, 0, dst_w, dst_h, 0);
 }
 
 /* dedicated 90/270 rotation (argb_rot90 kernel): the traversal reads the
@@ -718,7 +723,7 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
             return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                     dst_phys, argb_dst, dst_w, dst_h, rx, ry,
-                                    rx + rw, ry + rh) ? 0 : -1;
+                                    rx + rw, ry + rh, 0) ? 0 : -1;
         }
     }
     return -1;
@@ -904,7 +909,7 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
             return gpu_affine_surface(kcode, knwords, &m,
                                       src_phys, argb_src, src_w, src_h,
                                       dst_phys, argb_dst, dst_w, dst_h,
-                                      0, 0, dst_w, dst_h) ? 0 : -1;
+                                      0, 0, dst_w, dst_h, 1) ? 0 : -1;
         }
     }
     return -1;
@@ -966,7 +971,7 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
                 if ((rot % 90) == 0 && dst_w <= bw && dst_h <= bh) {
                     return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                             dst_phys, argb_dst, dst_w, dst_h,
-                                            0, 0, dst_w, dst_h) ? 0 : -1;
+                                            0, 0, dst_w, dst_h, 1) ? 0 : -1;
                 }
                 return gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
                                           dst_phys, argb_dst, dst_w, dst_h) ? 0 : -1;
