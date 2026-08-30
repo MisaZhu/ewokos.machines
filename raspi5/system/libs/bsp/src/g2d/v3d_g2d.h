@@ -76,7 +76,7 @@ extern const uint64_t g2d_qpu_argb_rotate[];
 extern const unsigned g2d_qpu_argb_rotate_n;
 extern const uint64_t g2d_qpu_argb_alpha[];
 extern const unsigned g2d_qpu_argb_alpha_n;
-extern const uint64_t g2d_qpu_argb_alpha_255[];
-extern const unsigned g2d_qpu_argb_alpha_255_n;
+extern const uint64_t g2d_qpu_argb_scale_pow2[];
+extern const unsigned g2d_qpu_argb_scale_pow2_n;
 
 #endif /* V3D_G2D_H */

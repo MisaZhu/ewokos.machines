@@ -11,7 +11,9 @@
  *
  *   bsp_g2d_fill       any clipped rect        -> argb_fill kernel
  *   bsp_g2d_blt        any clipped dst rect    -> argb_blit kernel
- *   bsp_g2d_scale_to   whole dst               -> argb_blit kernel
+ *   bsp_g2d_scale_to   whole dst               -> power-of-two scale kernel
+ *                                                  for aligned exact 2^n sizes,
+ *                                                  otherwise argb_blit
  *   bsp_g2d_rotate     right-angle content box -> argb_blit; otherwise
  *                      any angle/size -> argb_rotate kernel
  *                       (dst < box: clipped to dst top-left)
@@ -282,6 +284,28 @@ static int gpu_ok(int32_t w, int32_t h)
     return v3d_g2d_ready() && w > 0 && h > 0;
 }
 
+/* Return a strict integer power-of-two scale factor, or zero when the
+ * source/destination pair is not an exact 2^n resize (n >= 1). */
+static uint32_t gpu_pow2_scale_factor(int32_t src, int32_t dst)
+{
+    uint32_t ratio;
+
+    if (src <= 0 || dst <= 0)
+        return 0;
+    if (src > dst) {
+        if (src % dst != 0)
+            return 0;
+        ratio = (uint32_t)(src / dst);
+    } else {
+        if (dst % src != 0)
+            return 0;
+        ratio = (uint32_t)(dst / src);
+    }
+    if (ratio < 2u || (ratio & (ratio - 1u)) != 0)
+        return 0;
+    return ratio;
+}
+
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
  * addresses.  Returns the physical address usable by the kernels, or 0
  * when the canvas cannot run on the GPU (not physically contiguous, no
@@ -433,10 +457,20 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     if (full) {
         /* whole-surface fast path: u16..u19 carry the incremental-map
          * constants (see the kernel header) */
-        u[16] = (uint32_t)((int64_t)m->pu * dst_w - m->qu);  /* uxwrap */
-        u[17] = (uint32_t)((int64_t)m->pv * dst_w - m->qv);  /* vxwrap */
-        u[18] = (uint32_t)(m->pu << 4);                      /* pu16 */
-        u[19] = (uint32_t)(m->pv << 4);                      /* pv16 */
+        if (kcode == g2d_qpu_argb_scale_pow2) {
+            uint32_t factor = gpu_pow2_scale_factor(src_w, dst_w);
+            uint32_t down = (src_w > dst_w);
+            u[16] = down ? (factor - 1u) * (uint32_t)src_w * 4u :
+                          (uint32_t)dst_w;            /* row extra / x wrap */
+            u[17] = down ? factor : 0u;       /* y step; zero selects up */
+            u[18] = down ? 64u * factor : 16u;
+            u[19] = __builtin_ctz(factor);    /* shift amount */
+        } else {
+            u[16] = (uint32_t)((int64_t)m->pu * dst_w - m->qu);  /* uxwrap */
+            u[17] = (uint32_t)((int64_t)m->pv * dst_w - m->qv);  /* vxwrap */
+            u[18] = (uint32_t)(m->pu << 4);                      /* pu16 */
+            u[19] = (uint32_t)(m->pv << 4);                      /* pv16 */
+        }
     } else {
         u[16] = (uint32_t)x0;
         u[17] = (uint32_t)x1;
@@ -531,9 +565,7 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[20] = (uint32_t)rows;
     u[21] = (uint32_t)(rows * (int32_t)dst_w * 4); /* rows * stride (bytes) */
     u[22] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    const uint64_t *kcode = (alpha == 255) ? g2d_qpu_argb_alpha_255 : g2d_qpu_argb_alpha;
-    int knwords = (alpha == 255) ? g2d_qpu_argb_alpha_255_n : g2d_qpu_argb_alpha_n;
-    return v3d_g2d_run(kcode, knwords, u, 23,
+    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 23,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0;
 }
@@ -765,9 +797,19 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
         g2d_map_params(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
                            G2D_MAP_ROT_0, &m);
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
-            return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
-                                    dst_phys, argb_dst, dst_w, dst_h,
-                                    0, 0, dst_w, dst_h) ? 0 : -1;
+            const uint64_t *kcode = g2d_qpu_argb_blit;
+            int knwords = g2d_qpu_argb_blit_n;
+            uint32_t ratio_x = gpu_pow2_scale_factor(src_w, dst_w);
+            uint32_t ratio_y = gpu_pow2_scale_factor(src_h, dst_h);
+            if ((dst_w & 15) == 0 && ratio_x != 0 && ratio_x == ratio_y &&
+                ((src_w > dst_w) == (src_h > dst_h))) {
+                kcode = g2d_qpu_argb_scale_pow2;
+                knwords = g2d_qpu_argb_scale_pow2_n;
+            }
+            return gpu_affine_surface(kcode, knwords, &m,
+                                      src_phys, argb_src, src_w, src_h,
+                                      dst_phys, argb_dst, dst_w, dst_h,
+                                      0, 0, dst_w, dst_h) ? 0 : -1;
         }
     }
     return -1;
