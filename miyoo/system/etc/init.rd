@@ -33,6 +33,7 @@
 @/bin/ipcserv /drivers/nulld          /dev/null
 
 @/bin/splash -m "loading ramfs" -p 40
+@/bin/ipcserv /drivers/piped          /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd         /tmp
 
 @/bin/splash -m "starting sessiond" -p 50

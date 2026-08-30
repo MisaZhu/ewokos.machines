@@ -12,6 +12,7 @@
 @/bin/ipcserv /drivers/timerd               
 
 @/bin/ipcserv /drivers/nulld                /dev/null
+@/bin/ipcserv /drivers/piped                /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd               /tmp
 
 @/bin/bgrun /sbin/x/xtouch /dev/disp0 

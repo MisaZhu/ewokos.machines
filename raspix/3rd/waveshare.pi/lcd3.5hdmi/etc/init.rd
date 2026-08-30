@@ -17,6 +17,7 @@
 @/bin/ipcserv /drivers/waveshare/xpt2046d   /dev/touch0
 
 @/bin/ipcserv /drivers/nulld                /dev/null
+@/bin/ipcserv /drivers/piped                /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd               /tmp
 
 @/bin/ipcserv sbin/sessiond

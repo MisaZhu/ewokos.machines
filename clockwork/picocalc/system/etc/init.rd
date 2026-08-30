@@ -30,6 +30,7 @@
 @/bin/ipcserv /drivers/nulld                /dev/null
 
 @/bin/splash -m "config  ramfs" -p 70
+@/bin/ipcserv /drivers/piped                /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd               /tmp
 
 @/bin/splash -m "config  sessiond" -p 80

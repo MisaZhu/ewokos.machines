@@ -575,8 +575,9 @@ def vc4_tmu_load(k, addr_src, dst, comment='tmu load'):
 
 def vc4_store(k, pixel, tag):
     """VPM + VDW store of the 16 lane pixels (GPU_FFT protocol).
-    Live regs: rf22 = VPM write setup (0x1A00|qid: row qid, horizontal,
-    32-bit), rf23 = vdw_setup_0 base (UNITS=1 | HORIZ | qid<<7),
+    Live regs: rf22 = VPM write setup (vpm_setup(1,1,h32(qid)): one
+    16-lane row, horizontal, 32-bit), rf23 = vdw_setup_0 base
+    (UNITS=1 | HORIZ | qid<<7),
     rf11 = count (1..16), rf14 = xstart (absolute), rf4 = dst row base
     (x=0).  The VPM X field of the VDW setup word is only 4 bits wide
     (word units), so it must be the GROUP-LOCAL xstart - gx, not the
@@ -587,6 +588,9 @@ def vc4_store(k, pixel, tag):
             comment='%sVPM write setup (row qid)' % tag)
     k.alu(a=('mov', 'vpm', pixel),
             comment='%s16 lanes -> VPM row qid' % tag)
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='QPU->VPM write must complete before the VDW setup'
+                    ' (GPU_FFT store protocol)')
     k.alu(a=('mov', 'r0', 'rf23'), comment='vdw setup0 base')
     k.alu(a=('shl', 'r1', 'rf11', '#16'), comment='count -> DEPTH field')
     k.alu(a=('or', 'r0', 'r0', 'r1'), comment='')
@@ -674,11 +678,15 @@ def vc4_prod_init(k, abs_reg, sign_imm, prod_reg, comment):
 
 
 def vc4_store_consts(k):
-    """rf22 = 0x1A00|qid (VPM write setup: horizontal 32-bit row qid),
-    rf23 = 0x80804000 | qid<<7 (VDW basic setup base: ID=2, UNITS=1,
-    DEPTH filled per group, HORIZ, VPM origin y=qid) - read from rf21
-    (qid, already masked to 6 bits)"""
-    k.alu(a=('mov', 'r2', '#0x1A00'), comment='')
+    """rf22 = 0x101A00|qid (VPM write setup: vpm_setup(1, 1, h32(qid)) -
+    vc4.qinc lays out num[23:20]|stride[17:12]|dma[11:0]; num=1 counts
+    the single 16-lane vector row, stride=1, h32 = H|Size=2 (32-bit) |
+    Y.  num MUST NOT be 0: it is the write-block row count the VPM
+    write state machine (and vw_wait) tracks, so a zero wedges any
+    vw_wait forever), rf23 = 0x80804000 | qid<<7 (VDW basic setup base:
+    ID=2, UNITS=1, DEPTH filled per group, HORIZ, VPM origin y=qid) -
+    read from rf21 (qid, already masked to 6 bits)"""
+    k.alu(a=('mov', 'r2', '#0x101A00'), comment='vpm_setup(1,1,h32(0))')
     k.alu(a=('or', 'rf22', 'rf21', 'r2'), comment='vpm write setup word')
     k.alu(a=('shl', 'rf23', 'rf21', '#7'), comment='qid << 7 (dma Y)')
     k.alu(a=('mov', 'r2', '#0x80804000'), comment='')
@@ -687,12 +695,15 @@ def vc4_store_consts(k):
 
 def vc4_prologue(k, tg):
     """common prologue: uniform stream, rows guard, lane, store setup
-    constants, gx = gx0 (both rf24/rf25)"""
+    constants, gx = gx0 (both rf24/rf25), group ctr = L-1"""
     vc4_ldunif(k, tg)
     vc4_rows_guard(k)
     vc4_lane_init(k)
     vc4_store_consts(k)
     k.alu(a=('mov', 'rf24', 'rf25'), comment='gx = gx0')
+    k.alu(a=('mov', 'rf13', 'rf12'),
+          comment='group ctr = L-1 (MUST init: rf is power-on garbage,'
+          ' a large value wedges the row loop forever)')
 
 
 def vc4_fill():
@@ -791,6 +802,8 @@ def vc4_affine(rotate):
     vc4_prod_init(k, 'rf29', '#2', 'rf1', 'v_prod')
     vc4_store_consts(k)
     k.alu(a=('mov', 'rf24', 'rf25'), comment='gx = gx0')
+    k.alu(a=('mov', 'rf13', 'rf12'),
+          comment='group ctr = L-1 (MUST init: rf is power-on garbage)')
     k.label('loop')
     vc4_affine_map(k)
     vc4_src_load(k)
@@ -843,6 +856,8 @@ def vc4_alpha():
     k.alu(a=('add', 'rf27', 'rf27', 'r0'), comment='scratch lane addr')
     vc4_store_consts(k)
     k.alu(a=('mov', 'rf24', 'rf25'), comment='gx = gx0')
+    k.alu(a=('mov', 'rf13', 'rf12'),
+          comment='group ctr = L-1 (MUST init: rf is power-on garbage)')
     k.label('loop')
     # ---- src sample: u = (u_prod >> 15) + cu, v = broadcast rf1 ------
     k.alu(a=('mov', 'r0', 'rf0'), comment='u_prod')

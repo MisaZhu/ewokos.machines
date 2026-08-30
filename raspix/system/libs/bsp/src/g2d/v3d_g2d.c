@@ -735,6 +735,55 @@ int v3d_g2d_init(void)
             slog("g2d: VC4 init nop launch ok\r\n");
         }
     }
+
+    if (_ver == 21) {
+        /* Staged bring-up probes on the REAL fill kernel, one failure
+         * domain at a time (the first TIMEOUT line in the log names
+         * the wedging stage; later probes then fail by wedge fallout):
+         *   P1 rows_q=0: uniform stream + branch + exit, no VPM/DMA
+         *   P2 16x1 into scratch: + VPM write + VDW DMA + vw_wait
+         *   P3 64x48 into scratch: + multi-group row-wrap cycling */
+        static const struct { uint32_t l1, x1, rows; } PRB[3] = {
+            { 0, 16, 0 },               /* P1: no rows, exit at once */
+            { 0, 16, 1 },               /* P2: one 16px group, 1 row */
+            { 3, 64, 4 },               /* P3: 4 groups x 4 rows/QPU */
+        };
+        uint32_t prb, q, srqcs = 0;
+
+        /* the nop probe proves _nop_code_p fetches fine; the fill
+         * kernel hangs at its first unif read, so dump every address
+         * the QPU is asked to touch and compare against the known-
+         * good nop code address */
+        slog("g2d: VC4 probe addrs unif_p=0x%x fill_p=0x%x nop_p=0x%x scratch_p=0x%x\r\n",
+             _unif_p, _kcode_p[KERN_FILL_VC4], _nop_code_p, _scratch_p);
+
+        for (prb = 0; prb < 3; prb++) {
+            for (q = 0; q < 16; q++) {
+                uint32_t *s = _unif + q * VC4_UNIF_QWORDS;
+                s[0] = 0x12345678u;             /* color */
+                s[1] = q;                       /* qid */
+                s[2] = PRB[prb].l1;             /* L-1 */
+                s[3] = (_scratch_p +
+                        q * PRB[prb].rows * PRB[prb].x1 * 4u)
+                       | MAILBOX_VC_ALIAS_NONCACHED;  /* dst row 0 */
+                s[4] = 0;                       /* x0 */
+                s[5] = PRB[prb].x1;             /* x1 */
+                s[6] = 0;                       /* rowjump */
+                s[7] = PRB[prb].rows;           /* rows_q */
+                s[8] = 0;                       /* gx0 */
+            }
+            g2d_invalidate_caches();
+            if (g2d_vc4_launch(_kcode_p[KERN_FILL_VC4], _unif_p,
+                               (uint32_t)_num_qpus, &srqcs) != 0) {
+                v3d_ctl()[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
+                slog("g2d: VC4 probe P%u TIMEOUT SRQCS=0x%x\r\n",
+                     prb + 1, srqcs);
+            } else {
+                slog("g2d: VC4 probe P%u ok scratch0=0x%x\r\n",
+                     prb + 1, (uint32_t)_scratch[0]);
+            }
+        }
+    }
 #endif
 
     /* usable when the dispatch engine and the matching kernel flavor

@@ -21,6 +21,7 @@
 @/bin/ipcserv /drivers/nulld                 /dev/null
 
 @/bin/splash -m "mount /tmp" -p 40
+@/bin/ipcserv /drivers/piped                 /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd                /tmp
 
 @/bin/splash -m "start /dev/wl0" -p 50

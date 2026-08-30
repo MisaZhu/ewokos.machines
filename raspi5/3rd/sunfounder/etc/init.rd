@@ -42,6 +42,7 @@
 @/bin/ipcserv /drivers/raspi5/hid_moused  /dev/mouse0 /dev/hid0
 
 @/bin/splash -m "mount /tmp" -p 40
+@/bin/ipcserv /drivers/piped           /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd          /tmp
 
 @/bin/splash -m "start /dev/null" -p 50

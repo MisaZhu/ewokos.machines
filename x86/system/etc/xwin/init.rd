@@ -8,6 +8,7 @@
 
 @/bin/ipcserv /drivers/timerd
 @/bin/ipcserv /drivers/nulld /dev/null
+@/bin/ipcserv /drivers/piped  /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd /tmp
 
 #@/bin/ipcserv /drivers/x86/ps2keybd /dev/keyb0

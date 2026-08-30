@@ -19,6 +19,7 @@
 @/bin/ipcserv /drivers/raspix/uartd   /dev/tty0
 
 @/bin/splash -m "mount /tmp" -p 35
+@/bin/ipcserv /drivers/piped           /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd          /tmp
 
 @/bin/splash -m "start /dev/wl0" -p 40
