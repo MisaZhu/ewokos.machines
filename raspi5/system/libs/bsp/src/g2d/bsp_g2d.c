@@ -609,10 +609,18 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                              int32_t dst_w, int32_t dst_h,
                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
-    uint32_t u[23];
+    uint32_t u[24];
     int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
+    /* full: dst rect covers the whole surface AND dst_w % 16 == 0.  The
+     * kernel then branches to loop_full, which drops the write gate, the
+     * dst-read gate and the per-pixel map (incremental ux/vy walk with
+     * u13/u14 repurposed as (pu*16, pu*16*L)).  For a whole-dst ROT_0 map
+     * the samples never leave [0,sw1]x[0,sh1], so the clamps are skipped
+     * too - see argb_alpha.qpu. */
+    int full = ((dst_w & 15) == 0 &&
+                x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h);
 
     /* The kernel's dst-read stream is rect-gated (out-of-rect lanes read
      * their lane-private scratch word), so any dst width works - no
@@ -637,8 +645,10 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[10] = (uint32_t)(dst_h - 1);
     u[11] = alpha;
     u[12] = (uint32_t)(L * (int)dst_h);   /* full-surface n; kernel clips per QPU */
-    u[13] = (uint32_t)x0;
-    u[14] = (uint32_t)x1;
+    u[13] = full ? (uint32_t)((int64_t)m->pu * 16)
+                 : (uint32_t)x0;             /* full: pu16 */
+    u[14] = full ? (uint32_t)((int64_t)m->pu * 16 * L)
+                 : (uint32_t)x1;             /* full: pu*16*L (pu*W) */
     u[15] = (uint32_t)y0;
     u[16] = (uint32_t)y1;
     u[17] = 16u;
@@ -647,7 +657,8 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[20] = (uint32_t)rows;
     u[21] = (uint32_t)(rows * (int32_t)dst_w * 4); /* rows * stride (bytes) */
     u[22] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 23,
+    u[23] = (uint32_t)full;
+    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 24,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0;
 }
