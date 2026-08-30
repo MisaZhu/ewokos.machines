@@ -61,6 +61,17 @@
 
 #define G2D_MAX_COEF (1 << 23)  /* |map coefficient| must fit smul24 */
 
+/* VC bus address alias for the VC4 (V3D 2.1) kernels: every memory
+ * address a kernel touches (canvas band bases, source, scratch sink)
+ * must carry this L2-cached VC bus alias - the same alias the SRQ
+ * launcher applies to the code/uniform fetches (not exported by
+ * mailbox.h; the other bcm283x drivers carry the same local define).
+ * A raw ARM physical address wedges the QPU memory pipe on real Pi3
+ * hardware: the dispatch times out with zero completions and the
+ * canvas untouched.  The V3D >= 4.x CSD paths take plain physical
+ * addresses and must NOT be aliased. */
+#define VC4_BUS_ALIAS 0x40000000u
+
 /* ------------------------------------------------------------------ */
 /* affine map coefficients (shared with the GPU kernels)               */
 /* ------------------------------------------------------------------ */
@@ -425,7 +436,8 @@ static int gpu_fill_surface_vc4(uint32_t phys, uint32_t *argb,
         s[0] = color;
         s[1] = (uint32_t)q;
         s[2] = (uint32_t)(L - 1);
-        s[3] = phys + (uint32_t)y_start * (uint32_t)w * 4u;
+        s[3] = (phys + (uint32_t)y_start * (uint32_t)w * 4u)
+               | VC4_BUS_ALIAS;
         s[4] = (uint32_t)x0;
         s[5] = (uint32_t)x1;
         s[6] = (uint32_t)L * 64u - (uint32_t)w * 4u;
@@ -535,8 +547,9 @@ static int gpu_affine_surface_vc4(const uint64_t *kcode, int knwords,
         s[2] = (uint32_t)(src_w - 1);
         s[3] = (uint32_t)(src_h - 1);
         s[4] = (uint32_t)src_w;
-        s[5] = src_phys;
-        s[6] = dst_phys + (uint32_t)y_start * (uint32_t)dst_w * 4u;
+        s[5] = src_phys | VC4_BUS_ALIAS;
+        s[6] = (dst_phys + (uint32_t)y_start * (uint32_t)dst_w * 4u)
+               | VC4_BUS_ALIAS;
         s[7] = (uint32_t)(L - 1);
         s[8] = (uint32_t)rows;
         s[9] = (uint32_t)x0;
@@ -704,9 +717,10 @@ static int gpu_alpha_surface_vc4(const g2d_map_t *m, uint8_t alpha,
         s[2] = (uint32_t)(src_w - 1);
         s[3] = (uint32_t)(src_h - 1);
         s[4] = (uint32_t)src_w;
-        s[5] = src_phys;
-        s[6] = v3d_g2d_scratch_phys();
-        s[7] = dst_phys + (uint32_t)y_start * (uint32_t)dst_w * 4u;
+        s[5] = src_phys | VC4_BUS_ALIAS;
+        s[6] = v3d_g2d_scratch_phys() | VC4_BUS_ALIAS;
+        s[7] = (dst_phys + (uint32_t)y_start * (uint32_t)dst_w * 4u)
+               | VC4_BUS_ALIAS;
         s[8] = (uint32_t)(L - 1);
         s[9] = (uint32_t)rows;
         s[10] = (uint32_t)x0;

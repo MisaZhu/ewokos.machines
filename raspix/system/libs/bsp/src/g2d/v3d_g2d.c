@@ -907,10 +907,13 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 /* ------------------------------------------------------------------ */
 
 /* GPU_FFT launch sequence: disable the doorbell machinery, clear the
- * QPU interrupt throttles, then enqueue one thread per QPU.  Writing
- * SRQPC enqueues.  Addresses carry the 0x40000000 VC bus alias - the
- * same alias GPU_FFT uses on Pi2/3 for its SRQUA/SRQPC values.  The
- * caller must have run g2d_invalidate_caches first so the freshly
+ * QPU interrupt throttles, then enqueue one thread per QPU.  Each
+ * SRQPC write enqueues one thread AND snapshots the current SRQUA, so
+ * the uniform address must advance per enqueue (one 32-word slot per
+ * QPU, GPU_FFT does the same) - with a shared SRQUA every QPU would
+ * read slot 0's words.  Addresses carry the 0x40000000 VC bus alias -
+ * the same alias GPU_FFT uses on Pi2/3 for its SRQUA/SRQPC values.
+ * The caller must have run g2d_invalidate_caches first so the freshly
  * written staging is fetched from DRAM.  On timeout SRQCS is left
  * UNCLEANED and returned through `srqcs_out` for diagnostics; the
  * caller must clear it.  Returns 0 on completion, 1 on timeout. */
@@ -925,7 +928,8 @@ static int g2d_vc4_launch(uint32_t code_p, uint32_t unif_p, uint32_t nq,
     core[V3D_DBQITC / 4] = ~0u;
     core[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
     for (q = 0; q < nq; q++) {
-        core[V3D_SRQUA / 4] = unif_p | MAILBOX_VC_ALIAS_NONCACHED;
+        core[V3D_SRQUA / 4] = (unif_p + q * (VC4_UNIF_QWORDS * 4u))
+                              | MAILBOX_VC_ALIAS_NONCACHED;
         core[V3D_SRQPC / 4] = code_p | MAILBOX_VC_ALIAS_NONCACHED;
     }
 

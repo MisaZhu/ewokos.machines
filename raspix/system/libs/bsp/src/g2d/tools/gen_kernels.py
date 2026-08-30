@@ -577,7 +577,10 @@ def vc4_store(k, pixel, tag):
     """VPM + VDW store of the 16 lane pixels (GPU_FFT protocol).
     Live regs: rf22 = VPM write setup (0x1A00|qid: row qid, horizontal,
     32-bit), rf23 = vdw_setup_0 base (UNITS=1 | HORIZ | qid<<7),
-    rf11 = count (1..16), rf14 = hstart, rf4 = dst row base (x=0)."""
+    rf11 = count (1..16), rf14 = xstart (absolute), rf4 = dst row base
+    (x=0).  The VPM X field of the VDW setup word is only 4 bits wide
+    (word units), so it must be the GROUP-LOCAL xstart - gx, not the
+    absolute xstart."""
     k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
             comment='wait for the previous VDW DMA')
     k.alu(a=('mov', 'vpmvcd', 'rf22'),
@@ -587,7 +590,9 @@ def vc4_store(k, pixel, tag):
     k.alu(a=('mov', 'r0', 'rf23'), comment='vdw setup0 base')
     k.alu(a=('shl', 'r1', 'rf11', '#16'), comment='count -> DEPTH field')
     k.alu(a=('or', 'r0', 'r0', 'r1'), comment='')
-    k.alu(a=('shl', 'r1', 'rf14', '#3'), comment='hstart -> dma X field')
+    k.alu(a=('sub', 'r1', 'rf14', 'rf24'),
+            comment='hstart = xstart - gx (VPM X is 4 bits, group-local)')
+    k.alu(a=('shl', 'r1', 'r1', '#3'), comment='hstart -> dma X field')
     k.alu(a=('or', 'r0', 'r0', 'r1'),
             comment='vdw_setup_0(1, count, dma_h32(qid, hstart))')
     k.k.alu(a=('mov', 'vpmvcd', 'r0'), comment='vw_setup: basic (ID=2)')
@@ -602,7 +607,8 @@ def vc4_clip_width(k):
     """count / hstart of the lanes of the current group inside the x
     clip rect.  Reads: rf24 = gx, rf5 = x0, rf6 = x1; writes rf11 =
     count (>= 1 - the VDW depth field encodes 1..16 directly) and
-    rf14 = hstart = max(gx, x0) - gx."""
+    rf14 = xstart = max(gx, x0) (ABSOLUTE x; vc4_store turns it into
+    the group-local VPM X origin by subtracting gx)."""
     k.alu(a=('add', 'r0', 'rf24', '#16'), comment='gx + 16')
     k.alu(a=('min', 'r0', 'r0', 'rf6'), comment='up = min(gx+16, x1)')
     k.alu(a=('max', 'rf14', 'rf24', 'rf5'), comment='x start = max(gx, x0)')
@@ -706,6 +712,8 @@ def vc4_fill():
           comment='rows == 0 ?')
     k.branch('loop', 'anynz', 'while rows != 0')
     k.nop(3, 'branch delay slots')
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='wait for the last VDW DMA before exiting')
     k.exit()
     k.label('gexit')
     k.exit()
@@ -768,9 +776,12 @@ def vc4_affine(rotate):
     # rf8=src_w rf9=src phys rf10=rows rf11=count rf12=L-1 rf13=ctr
     # rf14=hstart rf15/16=src_w-1,src_h-1 rf17..20=steps rf21=qid
     # rf22/23=store constants rf24=gx rf25=gx0 rf26/27=u/v orig (pixel)
+    # u23 is a trailing unused word: loading it into rf28 here would
+    # CLOBBER |pu| (u16) before vc4_prod_init reads it - consume and
+    # drop it instead.
     tg = ['rf2', 'rf3', 'rf15', 'rf16', 'rf8', 'rf9', 'rf4', 'rf12',
           'rf10', 'rf5', 'rf6', 'rf25', 'rf21', 'rf7', 'rf0', 'rf1',
-          'rf28', 'rf29', 'rf30', 'rf17', 'rf18', 'rf19', 'rf20', 'rf28']
+          'rf28', 'rf29', 'rf30', 'rf17', 'rf18', 'rf19', 'rf20', None]
     vc4_ldunif(k, tg)
     vc4_rows_guard(k)
     vc4_lane_init(k)
@@ -792,6 +803,8 @@ def vc4_affine(rotate):
           comment='rows == 0 ?')
     k.branch('loop', 'anynz', 'while rows != 0')
     k.nop(3, 'branch delay slots')
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='wait for the last VDW DMA before exiting')
     k.exit()
     k.label('gexit')
     k.exit()
@@ -846,10 +859,14 @@ def vc4_alpha():
     k.alu(a=('add', 'r0', 'r0', 'rf26'), comment='+ u')
     k.alu(a=('shl', 'r0', 'r0', '#2'), comment='* 4')
     k.alu(a=('add', 'r0', 'r0', 'rf9'), comment='+ src phys')
-    k.alu(a=('add', 'r1', 'rf24', 'rf31'), comment='x = gx + lane')
+    k.alu(a=('add', 'r1', 'rf24', 'elem'),
+          comment='x = gx + lane (elem: rf31 gets clobbered by S)')
     vc4_tmu_load(k, 'r0', 'rf31', 'S')
     # ---- dst sample: real dst pixel in-rect, scratch word otherwise --
-    k.alu(a=('mov', 'r0', 'rf4'), comment='read addr = dst')
+    k.alu(a=('mov', 'r0', 'elem'), comment='lane (rf31 holds S)')
+    k.alu(a=('shl', 'r0', 'r0', '#2'), comment='lane * 4')
+    k.alu(a=('add', 'r0', 'r0', 'rf4'),
+          comment='read addr = dst row base + lane*4')
     k.alu(a=('sub', 'r2', 'r1', 'rf5'), flags={'sf': True},
           comment='x < x0 ?')
     k.alu(a=('mov', 'r0', 'rf27'), flags={'ac': 'ifn'}, comment='-> scratch')
@@ -914,6 +931,8 @@ def vc4_alpha():
           comment='rows == 0 ?')
     k.branch('loop', 'anynz', 'while rows != 0')
     k.nop(3, 'branch delay slots')
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='wait for the last VDW DMA before exiting')
     k.exit()
     k.label('gexit')
     k.exit()
