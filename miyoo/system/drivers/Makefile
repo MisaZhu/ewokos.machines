@@ -1,4 +1,4 @@
-DIRS = audio fbdisplayd g2dd gpio_joystickd ms_uartd
+DIRS = audio fbdisplayd gpio_joystickd ms_uartd
 
 all: $(DIRS)
 

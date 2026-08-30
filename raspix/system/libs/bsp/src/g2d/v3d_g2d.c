@@ -49,6 +49,18 @@
  * the other bcm283x drivers carry the same local define). */
 #define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
 
+/* VC bus alias for everything the QPU itself fetches or DMAs
+ * (SRQUA/SRQPC addresses, canvas rows, TMU sources, scratch):
+ * 0xC0000000 = coherent/direct, bypassing the VC L2 caches.  This is
+ * exactly what GPU_FFT release 3.0 hands the V3D on Pi2/3 (mem_alloc
+ * flag 0x4 = MEM_FLAG_COHERENT; its comment: "ARM cannot see VC4 L2
+ * on Pi 2").  The 0x40000000 alias is VC-L2-CACHEABLE: the V3D L2T
+ * served stale lines for freshly written uniforms and every
+ * uniform-value probe saw garbage while uniform-free probes passed.
+ * The mailbox property tags above keep the 0x40000000 alias (the
+ * firmware owns that handshake). */
+#define V3D_VC_ALIAS_DIRECT 0xC0000000u
+
 /* ---- offsets inside the shared MMIO window (_mmio_base) ---- */
 #define V3D_MMIO_OFF   0xC00000u   /* Pi3: 0x3fc00000, Pi4: 0xfec00000 */
 #define PM_MMIO_OFF    0x100000u   /* Pi3: 0x3f100000, Pi4: 0xfe100000 */
@@ -101,6 +113,11 @@
 /* GPU_FFT's reset value: clear the done counter (bit 16), the request
  * counter (bit 8) and the error flag (bit 7). */
 #define V3D_SRQCS_CLEAR  ((1u << 16) | (1u << 8) | (1u << 7))
+
+/* diagnostic reads around a wedged launch (Linux vc4_regs.h offsets) */
+#define V3D_SQRSV1   0x414u          /* SRQ reserved state */
+#define V3D_SQCNTL   0x418u          /* SRQ control */
+#define V3D_ERRSTAT  0xf20u          /* error status latch */
 
 /* ---- PM power domain ---- */
 #define PM_GRAFX_OFF 0x10cu
@@ -195,6 +212,17 @@ typedef struct {
  * separate "launch never completes" from "the real kernels hang". */
 #define G2D_VC4_NOP_TEST 1
 
+/* DEBUG SWITCH: PM_GRAFX.V3DRSTN power-cycle as the wedge recovery.
+ * The FIRST hardware run with this enabled died with a black screen
+ * and a full machine freeze, and the raspi5 driver carries the same
+ * warning ("writing PM_GRAFX.V3DRSTN can hang the Device write /
+ * dsb"), so the recovery stays gated until the read-only bisect
+ * probes (D1-D3) and the register dumps identify the wedge and the
+ * PM write is proven safe on this silicon.  When 0, g2d_vc4_recover
+ * only logs and leaves the wedge in place (the previous behaviour,
+ * which never killed the box). */
+#define G2D_PM_RESET_RECOVERY 0
+
 /* nop kernel: exits immediately - used to separate "QPU launch never
  * completes" from "the dispatched kernels hang". */
 static const uint64_t g2d_nop_vc4[] = {
@@ -209,6 +237,10 @@ static const uint64_t g2d_nop_vc4[] = {
  * dispatch section defines it) */
 static int g2d_vc4_launch(uint32_t code_p, uint32_t unif_p, uint32_t nq,
                           uint32_t *srqcs_out);
+static int g2d_vc4_launch_capture(uint32_t code_p, uint32_t unif_p,
+                                  uint32_t nq, uint32_t cap[4]);
+static void g2d_vc4_dump_regs(const char *tag);
+static int g2d_vc4_recover(void);
 
 /* ---- mapped register windows (inside the shared MMIO window) ---- */
 static volatile uint32_t *_v3d;   /* V3D block (hub at +0, core at +0x8000) */
@@ -261,6 +293,8 @@ static uint32_t *_scratch;         /* TMU write scratch (16 KiB) */
 static uint32_t _unif_p, _scratch_p;
 static uint64_t *_nop_code;        /* dma staging of g2d_nop_vc4 */
 static uint32_t _nop_code_p;
+static uint64_t *_diag_code[12];   /* dma staging of the diag_*_vc4 */
+static uint32_t _diag_code_p[12];
 
 static int _inited = 0;
 static int _ok = 0;
@@ -534,24 +568,15 @@ static void g2d_flush_l2(void)
     g2d_dsb();
 }
 
-/* Per-job GPU cache maintenance (the V3D caches do not snoop CPU
- * writes): invalidate the texture L2 + all slice caches so a reused
- * staging buffer or freshly written uniform block is never served
- * stale - the same discipline as the Linux vc4 driver's
- * vc4_flush_caches() before every job. */
+/* Per-job GPU cache maintenance, exactly GPU_FFT's launch preamble
+ * (proven on this V3D generation): clear the L2 and every slice
+ * cache.  The staging addresses themselves carry the 0xC0000000
+ * direct alias, so the fetches bypass the caches anyway - the clear
+ * only protects against leftovers from any earlier cached access. */
 static void g2d_invalidate_caches(void)
 {
-    uint32_t i;
-
-    v3d_ctl()[CTL_L2TFLSTA / 4] = 0;
-    v3d_ctl()[CTL_L2TFLEND / 4] = ~0u;
-    v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 0) | (0u << 1);   /* L2TFLS | FLUSH */
-    /* GFXH-1897: a pending L2T flush must complete before any further
-     * L2TCACTL write or QPU traffic */
-    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
-        ;
-    v3d_ctl()[CTL_SLCACTL / 4] = 0x0F0F0F0Fu;  /* clear T1/T0/U/I slice caches */
-    v3d_ctl()[CTL_L2CACTL / 4] = (1u << 2) | (1u << 0);    /* L2CCLR | L2CENA */
+    v3d_ctl()[CTL_L2CACTL / 4] = 1u << 2;     /* L2 clear (GPU_FFT) */
+    v3d_ctl()[CTL_SLCACTL / 4] = ~0u;         /* clear T1/T0/U/I slice caches */
     g2d_dsb();
 }
 
@@ -595,9 +620,14 @@ static int g2d_count_qpus(void)
 }
 
 /* Reset the V3D block via the PM power domain (assert/deassert
- * V3DRSTN).  Disabled by default on BCM2835/2711 - see
- * G2D_SKIP_PM_RESET. */
-#if !G2D_SKIP_PM_RESET
+ * V3DRSTN).  On BCM2835/2711 the V3D domain is normally already
+ * powered by the firmware, so the INIT-time power-cycle stays gated
+ * by G2D_SKIP_PM_RESET; the function itself is always compiled
+ * because it doubles as the wedge recovery (a hung SRQ thread can
+ * only be reclaimed by resetting the domain - the raspi5 driver used
+ * the same power-cycle to cure a "QPU array never launches" state).
+ * Both callers sit behind debug switches, hence the unused marker. */
+static void g2d_pm_reset(void) __attribute__((unused));
 static void g2d_pm_reset(void)
 {
     volatile uint32_t *pg = _pm + (PM_GRAFX_OFF / 4);
@@ -611,7 +641,6 @@ static void g2d_pm_reset(void)
     g2d_dsb();
     usleep(200);
 }
-#endif
 
 int v3d_g2d_init(void)
 {
@@ -703,6 +732,35 @@ int v3d_g2d_init(void)
         _nop_code_p = (uint32_t)dma_phy_addr(0,
                         (ewokos_addr_t)(uintptr_t)_nop_code);
     }
+    /* wedge-bisection diagnostic kernels (D1 uniform reads only,
+     * D2 branch only, D3 host-interrupt exit, D4 fill front replica,
+     * D5 minimal VPM write + VDW DMA, W1-W6 uniform/regfile/ifn data
+     * path probes) */
+    {
+        static const struct { const uint64_t *src; unsigned n; } DIAG[12] = {
+            { g2d_qpu_diag_unif_vc4,        g2d_qpu_diag_unif_vc4_n },
+            { g2d_qpu_diag_branch_vc4,      g2d_qpu_diag_branch_vc4_n },
+            { g2d_qpu_diag_host_vc4,        g2d_qpu_diag_host_vc4_n },
+            { g2d_qpu_diag_fillfront_vc4,   g2d_qpu_diag_fillfront_vc4_n },
+            { g2d_qpu_diag_vdw_vc4,         g2d_qpu_diag_vdw_vc4_n },
+            { g2d_qpu_diag_unifacc_vc4,     g2d_qpu_diag_unifacc_vc4_n },
+            { g2d_qpu_diag_rfacca_vc4,      g2d_qpu_diag_rfacca_vc4_n },
+            { g2d_qpu_diag_rfaccb_vc4,      g2d_qpu_diag_rfaccb_vc4_n },
+            { g2d_qpu_diag_unifadv_vc4,     g2d_qpu_diag_unifadv_vc4_n },
+            { g2d_qpu_diag_unifrf_vc4,      g2d_qpu_diag_unifrf_vc4_n },
+            { g2d_qpu_diag_rowsrf_vc4,      g2d_qpu_diag_rowsrf_vc4_n },
+            { g2d_qpu_diag_ifn_vc4,         g2d_qpu_diag_ifn_vc4_n },
+        };
+        for (i = 0; i < 12; i++) {
+            _diag_code[i] = (uint64_t *)(uintptr_t)dma_alloc(
+                                0, DIAG[i].n * 8u);
+            if (_diag_code[i] != 0) {
+                memcpy(_diag_code[i], DIAG[i].src, DIAG[i].n * 8u);
+                _diag_code_p[i] = (uint32_t)dma_phy_addr(0,
+                                (ewokos_addr_t)(uintptr_t)_diag_code[i]);
+            }
+        }
+    }
 #if G2D_HW_PROBE_ONLY
     /* TEMP-BISECT: stop here - no register writes.  The kernels sit in
      * staging but V3D is left exactly as the firmware booted it. */
@@ -722,65 +780,97 @@ int v3d_g2d_init(void)
 
 #if G2D_VC4_NOP_TEST
     if (_ver == 21 && _nop_code_p != 0) {
+        /* baseline: ERRSTAT is a sticky latch (no public bit doc) -
+         * record it before the first launch so a later 0x50-like value
+         * can be attributed to the launch that latched it */
+        slog("g2d: VC4 ERRSTAT baseline=0x%x\r\n",
+             v3d_ctl()[V3D_ERRSTAT / 4]);
         /* BRING-UP probe: launch the nop kernel immediately so the
          * boot log shows whether SRQ dispatch works on this silicon
-         * independently of the real kernels. */
-        uint32_t srqcs = 0;
+         * independently of the real kernels.  The capture variant
+         * records SRQCS at four points (before clear / after clear /
+         * after the last enqueue / final poll value) to nail the
+         * field semantics on this silicon. */
+        uint32_t cap[4] = { 0 };
         g2d_invalidate_caches();
-        if (g2d_vc4_launch(_nop_code_p, _unif_p,
-                           (uint32_t)_num_qpus, &srqcs) != 0) {
+        if (g2d_vc4_launch_capture(_nop_code_p, _unif_p,
+                                   (uint32_t)_num_qpus, cap) != 0) {
             v3d_ctl()[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
-            slog("g2d: VC4 init nop launch FAILED SRQCS=0x%x\r\n", srqcs);
+            slog("g2d: VC4 init nop launch FAILED SRQCS=0x%x\r\n", cap[3]);
         } else {
             slog("g2d: VC4 init nop launch ok\r\n");
         }
+        slog("g2d: VC4 SRQCS seq pre=0x%x clr=0x%x enq=0x%x end=0x%x\r\n",
+             cap[0], cap[1], cap[2], cap[3]);
     }
 
     if (_ver == 21) {
-        /* Staged bring-up probes on the REAL fill kernel, one failure
-         * domain at a time (the first TIMEOUT line in the log names
-         * the wedging stage; later probes then fail by wedge fallout):
-         *   P1 rows_q=0: uniform stream + branch + exit, no VPM/DMA
-         *   P2 16x1 into scratch: + VPM write + VDW DMA + vw_wait
-         *   P3 64x48 into scratch: + multi-group row-wrap cycling */
-        static const struct { uint32_t l1, x1, rows; } PRB[3] = {
-            { 0, 16, 0 },               /* P1: no rows, exit at once */
-            { 0, 16, 1 },               /* P2: one 16px group, 1 row */
-            { 3, 64, 4 },               /* P3: 4 groups x 4 rows/QPU */
+        /* Staged bring-up probes that encode their answer in the
+         * COMPLETION itself (scratch/uniform reads never proved a GPU
+         * write yet, so "ok" with silent memory stays ambiguous):
+         *   D2  control: acc-setf + taken branch (was ok, must stay)
+         *   W1  uniform word 0 -> ACCUMULATOR compare (no regfile)
+         *   W2  loadimm -> rf20 (file A) -> acc round trip
+         *   W2b ra20+ra21 written, compare reads rf20 via raddr_b
+         *       (FILE B, never written): TIMEOUT is the EXPECTED
+         *       result (split regfile); completion == the files alias
+         *   W3  uniform stream advance: the 8th word must be rows_q
+         *   W4  the fill 9-word uniform front, rf0 (color) readback
+         *   W5  the fill front, rf10 (rows_q) readback
+         *   W6  ifn conditional execution (N set must fire, N clear
+         *       must not)
+         * Probes launch ONE thread (nq=1): a hung probe then occupies
+         * a single QPU and the following probes still run on the
+         * other eleven (a 12-thread launch would wedge every QPU and
+         * poison the rest of the sequence). */
+        static const struct {
+            const char *tag; int kern; uint32_t rows;
+        } PRB[8] = {
+            { "D2",  -2, 0 },   /* control: must stay ok */
+            { "W1",  -6, 0 },   /* uniform word 0 -> acc */
+            { "W2",  -7, 0 },   /* rf file-A round trip */
+            { "W2b", -8, 0 },   /* file-B read: TIMEOUT expected */
+            { "W3",  -9, 5 },   /* stream advance: u7 == rows_q */
+            { "W4", -10, 0 },   /* fill front: rf0 == color */
+            { "W5", -11, 1 },   /* fill front: rf10 == rows_q */
+            { "W6", -12, 0 },   /* ifn conditional execution */
         };
         uint32_t prb, q, srqcs = 0;
 
-        /* the nop probe proves _nop_code_p fetches fine; the fill
-         * kernel hangs at its first unif read, so dump every address
-         * the QPU is asked to touch and compare against the known-
-         * good nop code address */
-        slog("g2d: VC4 probe addrs unif_p=0x%x fill_p=0x%x nop_p=0x%x scratch_p=0x%x\r\n",
-             _unif_p, _kcode_p[KERN_FILL_VC4], _nop_code_p, _scratch_p);
+        slog("g2d: VC4 probe addrs unif_p=0x%x fill_p=0x%x nop_p=0x%x "
+             "scratch_p=0x%x w1=0x%x w2=0x%x w2b=0x%x w6=0x%x\r\n",
+             _unif_p, _kcode_p[KERN_FILL_VC4], _nop_code_p, _scratch_p,
+             _diag_code_p[5], _diag_code_p[6], _diag_code_p[7],
+             _diag_code_p[11]);
 
-        for (prb = 0; prb < 3; prb++) {
+        for (prb = 0; prb < 8; prb++) {
+            uint32_t code_p = (PRB[prb].kern < 0)
+                ? _diag_code_p[-PRB[prb].kern - 1]
+                : _kcode_p[PRB[prb].kern];
+            if (code_p == 0)
+                continue;
             for (q = 0; q < 16; q++) {
                 uint32_t *s = _unif + q * VC4_UNIF_QWORDS;
+
                 s[0] = 0x12345678u;             /* color */
                 s[1] = q;                       /* qid */
-                s[2] = PRB[prb].l1;             /* L-1 */
-                s[3] = (_scratch_p +
-                        q * PRB[prb].rows * PRB[prb].x1 * 4u)
-                       | MAILBOX_VC_ALIAS_NONCACHED;  /* dst row 0 */
+                s[2] = 0;                       /* L-1 */
+                s[3] = 0;                       /* dst row 0 */
                 s[4] = 0;                       /* x0 */
-                s[5] = PRB[prb].x1;             /* x1 */
+                s[5] = 0;                       /* x1 */
                 s[6] = 0;                       /* rowjump */
                 s[7] = PRB[prb].rows;           /* rows_q */
                 s[8] = 0;                       /* gx0 */
             }
             g2d_invalidate_caches();
-            if (g2d_vc4_launch(_kcode_p[KERN_FILL_VC4], _unif_p,
-                               (uint32_t)_num_qpus, &srqcs) != 0) {
-                v3d_ctl()[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
-                slog("g2d: VC4 probe P%u TIMEOUT SRQCS=0x%x\r\n",
-                     prb + 1, srqcs);
+            /* one thread: a hang costs one QPU, not the whole array */
+            if (g2d_vc4_launch(code_p, _unif_p, 1u, &srqcs) != 0) {
+                g2d_vc4_dump_regs(PRB[prb].tag);
+                slog("g2d: VC4 probe %s TIMEOUT SRQCS=0x%x\r\n",
+                     PRB[prb].tag, srqcs);
+                (void)g2d_vc4_recover();
             } else {
-                slog("g2d: VC4 probe P%u ok scratch0=0x%x\r\n",
-                     prb + 1, (uint32_t)_scratch[0]);
+                slog("g2d: VC4 probe %s ok\r\n", PRB[prb].tag);
             }
         }
     }
@@ -960,9 +1050,10 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
  * SRQPC write enqueues one thread AND snapshots the current SRQUA, so
  * the uniform address must advance per enqueue (one 32-word slot per
  * QPU, GPU_FFT does the same) - with a shared SRQUA every QPU would
- * read slot 0's words.  Addresses carry the 0x40000000 VC bus alias -
- * the same alias GPU_FFT uses on Pi2/3 for its SRQUA/SRQPC values.
- * The caller must have run g2d_invalidate_caches first so the freshly
+ * read slot 0's words.  Addresses carry the 0xC0000000 direct VC bus
+ * alias - exactly what GPU_FFT hands SRQUA/SRQPC on Pi2/3 (mem_alloc
+ * flag 0x4 = MEM_FLAG_COHERENT).  The caller must have run
+ * g2d_invalidate_caches first so the freshly
  * written staging is fetched from DRAM.  On timeout SRQCS is left
  * UNCLEANED and returned through `srqcs_out` for diagnostics; the
  * caller must clear it.  Returns 0 on completion, 1 on timeout. */
@@ -978,8 +1069,8 @@ static int g2d_vc4_launch(uint32_t code_p, uint32_t unif_p, uint32_t nq,
     core[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
     for (q = 0; q < nq; q++) {
         core[V3D_SRQUA / 4] = (unif_p + q * (VC4_UNIF_QWORDS * 4u))
-                              | MAILBOX_VC_ALIAS_NONCACHED;
-        core[V3D_SRQPC / 4] = code_p | MAILBOX_VC_ALIAS_NONCACHED;
+                              | V3D_VC_ALIAS_DIRECT;
+        core[V3D_SRQPC / 4] = code_p | V3D_VC_ALIAS_DIRECT;
     }
 
     /* SRQCS bits 23:16 count completed threads */
@@ -993,6 +1084,85 @@ static int g2d_vc4_launch(uint32_t code_p, uint32_t unif_p, uint32_t nq,
     }
     core[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
     return 0;
+}
+
+/* Init-time diagnostic variant of g2d_vc4_launch: captures SRQCS at
+ * four points (before clear / after clear / after the last enqueue /
+ * final poll value) on a KNOWN-GOOD launch so the field semantics can
+ * be checked against this silicon.  Leaves SRQCS uncleared on timeout
+ * (the caller clears it). */
+static int g2d_vc4_launch_capture(uint32_t code_p, uint32_t unif_p,
+                                  uint32_t nq, uint32_t cap[4])
+{
+    volatile uint32_t *core = v3d_ctl();
+    uint32_t i, q;
+
+    cap[0] = core[V3D_SRQCS / 4];
+    core[V3D_DBCFG / 4] = 0;
+    core[V3D_DBQITE / 4] = 0;
+    core[V3D_DBQITC / 4] = ~0u;
+    core[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
+    cap[1] = core[V3D_SRQCS / 4];
+    for (q = 0; q < nq; q++) {
+        core[V3D_SRQUA / 4] = (unif_p + q * (VC4_UNIF_QWORDS * 4u))
+                              | V3D_VC_ALIAS_DIRECT;
+        core[V3D_SRQPC / 4] = code_p | V3D_VC_ALIAS_DIRECT;
+    }
+    cap[2] = core[V3D_SRQCS / 4];
+    for (i = 0; i < 2000000; i++)
+        if (((core[V3D_SRQCS / 4] >> 16) & 0xFFu) == nq)
+            break;
+    cap[3] = core[V3D_SRQCS / 4];
+    if (i == 2000000)
+        return 1;
+    core[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
+    return 0;
+}
+
+/* Dump the VC4 state around a wedged launch BEFORE any register is
+ * cleaned (SRQCS first so the captured done/req/err fields survive). */
+static void g2d_vc4_dump_regs(const char *tag)
+{
+    volatile uint32_t *core = v3d_ctl();
+
+    slog("g2d: VC4 %s regs SRQCS=0x%x SQRSV1=0x%x SQCNTL=0x%x ERRSTAT=0x%x\r\n",
+         tag,
+         (uint32_t)core[V3D_SRQCS / 4],
+         (uint32_t)core[V3D_SQRSV1 / 4],
+         (uint32_t)core[V3D_SQCNTL / 4],
+         (uint32_t)core[V3D_ERRSTAT / 4]);
+}
+
+/* Wedge recovery (raspi5 pattern): a hung SRQ thread can only be
+ * reclaimed by power-cycling the GRAFX.V3D domain.  Clear the SRQ
+ * state, assert/deassert V3DRSTN, re-enable L2 and the caches, then
+ * prove dispatch works again with a single-QPU nop.  Returns 0 when
+ * the nop completes. */
+static int g2d_vc4_recover(void)
+{
+#if !G2D_PM_RESET_RECOVERY
+    /* the PM write is suspected of freezing the box (see the switch
+     * comment) - stay read-only: log the wedge and leave it in place */
+    slog("g2d: VC4 wedge recovery skipped (PM reset gated)\r\n");
+    return 1;
+#else
+    uint32_t srqcs = 0;
+
+    if (_nop_code_p == 0)
+        return 1;
+    v3d_ctl()[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
+    g2d_pm_reset();
+    g2d_l2c_enable();
+    g2d_invalidate_caches();
+    if (g2d_vc4_launch(_nop_code_p, _unif_p, 1, &srqcs) != 0) {
+        v3d_ctl()[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
+        slog("g2d: VC4 pm-reset recovery FAILED (nop SRQCS=0x%x)\r\n",
+             srqcs);
+        return 1;
+    }
+    slog("g2d: VC4 pm-reset recovery ok\r\n");
+    return 0;
+#endif
 }
 
 /* Launch one SRQ thread per QPU of `code` (GPU_FFT protocol): stage
@@ -1054,10 +1224,13 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
         return 0;
     }
 
-    /* Timeout diagnostics: dump the captured SRQCS (done 23:16,
+    /* Timeout diagnostics: dump the VC4 state (SRQCS done 23:16,
      * req 15:8, err 7), clear it, then re-launch the nop kernel to
      * separate a dead launch path (nop also times out - power/clock/
-     * reset/QPU lock) from a hung real kernel (nop completes). */
+     * reset/QPU lock) from a hung real kernel (nop completes).  When
+     * the nop also dies the QPU array is wedged - run the PM_GRAFX
+     * power-cycle recovery. */
+    g2d_vc4_dump_regs("SRQ timeout");
     core[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
     slog("g2d: VC4 SRQ timeout kern=%u nq=%u SRQCS=0x%x\r\n",
          (uint32_t)kern, nq, srqcs);
@@ -1067,6 +1240,7 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
         core[V3D_SRQCS / 4] = V3D_SRQCS_CLEAR;
         slog("g2d: VC4 nop launch also timed out (SRQCS=0x%x) - "
              "QPU not dispatching\r\n", srqcs);
+        (void)g2d_vc4_recover();
     } else if (_nop_code_p != 0) {
         slog("g2d: VC4 nop launch completed - kernel %u hangs\r\n",
              (uint32_t)kern);

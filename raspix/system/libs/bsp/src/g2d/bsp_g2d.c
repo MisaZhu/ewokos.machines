@@ -63,14 +63,15 @@
 
 /* VC bus address alias for the VC4 (V3D 2.1) kernels: every memory
  * address a kernel touches (canvas band bases, source, scratch sink)
- * must carry this L2-cached VC bus alias - the same alias the SRQ
- * launcher applies to the code/uniform fetches (not exported by
- * mailbox.h; the other bcm283x drivers carry the same local define).
- * A raw ARM physical address wedges the QPU memory pipe on real Pi3
- * hardware: the dispatch times out with zero completions and the
- * canvas untouched.  The V3D >= 4.x CSD paths take plain physical
- * addresses and must NOT be aliased. */
-#define VC4_BUS_ALIAS 0x40000000u
+ * must carry this DIRECT/coherent VC bus alias - the same alias the
+ * SRQ launcher applies to the code/uniform fetches, and the exact
+ * addressing GPU_FFT release 3.0 uses on Pi2/3 (mem_alloc flag 0x4 =
+ * MEM_FLAG_COHERENT, "ARM cannot see VC4 L2 on Pi 2").  The cached
+ * 0x40000000 alias served stale V3D-L2T lines for freshly written
+ * uniforms on real Pi3 hardware: the QPU read garbage uniform values
+ * and every uniform-dependent dispatch spun forever.  The V3D >= 4.x
+ * CSD paths take plain physical addresses and must NOT be aliased. */
+#define VC4_BUS_ALIAS 0xC0000000u
 
 /* ------------------------------------------------------------------ */
 /* affine map coefficients (shared with the GPU kernels)               */
@@ -883,69 +884,6 @@ int32_t bsp_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
         uint32_t *dp = argb + row * argb_w + x;
         for (int32_t col = 0; col < w; col++) {
             dp[col] = blend_argb_scalar(dp[col], a,
-                    (uint8_t)((color >> 16) & 0xff),
-                    (uint8_t)((color >> 8) & 0xff),
-                    (uint8_t)(color & 0xff));
-        }
-    }
-    return 0;
-}
-
-/* CPU back end for sub-alignment tails and narrow copies: scalar 1:1
- * copy or blend with exact per-pixel access, no alignment, contiguity
- * or GPU requirements.  The 1:1 rect is clipped against both buffer
- * bounds first (callers hand in unclipped window rects: a row that
- * overruns the right edge would otherwise wrap into the left edge of
- * the next row).  use_alpha == 0 is a plain copy; otherwise the same
- * math as bsp_g2d_blt_alpha (effective alpha (src_a * alpha) >> 8,
- * then the /255 blend). */
-int32_t bsp_g2d_blt_cpu(uint32_t *argb_src, int32_t src_w, int32_t src_h,
-                      int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-                      uint32_t *argb_dst, int32_t dst_w, int32_t dst_h,
-                      int32_t dx, int32_t dy, uint8_t use_alpha,
-                      uint8_t alpha)
-{
-    if (argb_src == NULL || argb_dst == NULL || sw <= 0 || sh <= 0)
-        return 0;
-    if (use_alpha != 0 && alpha == 0)
-        return 0;
-
-    /* 1:1 mapping: cutting one side shifts the other surface's origin
-     * by the same delta, cutting right/bottom just shrinks the size */
-    if (dx < 0) { sx -= dx; sw += dx; dx = 0; }
-    if (dy < 0) { sy -= dy; sh += dy; dy = 0; }
-    if (sx < 0) { dx -= sx; sw += sx; sx = 0; }
-    if (sy < 0) { dy -= sy; sh += sy; sy = 0; }
-    if (sx + sw > src_w) sw = src_w - sx;
-    if (sy + sh > src_h) sh = src_h - sy;
-    if (dx + sw > dst_w) sw = dst_w - dx;
-    if (dy + sh > dst_h) sh = dst_h - dy;
-    if (sw <= 0 || sh <= 0)
-        return 0;
-
-    for (int32_t row = 0; row < sh; row++) {
-        const uint32_t *sp = argb_src + (sy + row) * src_w + sx;
-        uint32_t *dp = argb_dst + (dy + row) * dst_w + dx;
-
-        if (use_alpha == 0) {
-            memcpy(dp, sp, (size_t)sw * sizeof(uint32_t));
-            continue;
-        }
-        for (int32_t col = 0; col < sw; col++) {
-            uint32_t color = sp[col];
-            uint32_t src_a = (color >> 24) & 0xff;
-            uint8_t sa;
-
-            if (src_a == 0)
-                continue;
-            sa = (uint8_t)((alpha == 0xff) ? src_a : (src_a * alpha) >> 8);
-            if (sa == 0)
-                continue;
-            if (sa == 0xff) {
-                dp[col] = color;
-                continue;
-            }
-            dp[col] = blend_argb_scalar(dp[col], sa,
                     (uint8_t)((color >> 16) & 0xff),
                     (uint8_t)((color >> 8) & 0xff),
                     (uint8_t)(color & 0xff));

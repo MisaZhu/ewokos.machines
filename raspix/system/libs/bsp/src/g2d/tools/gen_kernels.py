@@ -577,11 +577,16 @@ def vc4_store(k, pixel, tag):
     """VPM + VDW store of the 16 lane pixels (GPU_FFT protocol).
     Live regs: rf22 = VPM write setup (vpm_setup(1,1,h32(qid)): one
     16-lane row, horizontal, 32-bit), rf23 = vdw_setup_0 base
-    (UNITS=1 | HORIZ | qid<<7),
+    (DEPTH=1 | HORIZ | qid<<7),
     rf11 = count (1..16), rf14 = xstart (absolute), rf4 = dst row base
-    (x=0).  The VPM X field of the VDW setup word is only 4 bits wide
-    (word units), so it must be the GROUP-LOCAL xstart - gx, not the
-    absolute xstart."""
+    (x=0), rf24 = gx (current group's absolute x).  The VPM X field of
+    the VDW setup word is only 4 bits wide (word units), so it must be
+    the GROUP-LOCAL xstart - gx, not the absolute xstart.  The memory
+    address, by contrast, is absolute: rf4 + gx*4 + hstart*4 (rf4 is
+    the ROW base, vc4_bookkeep only adds 64 per group).  The count is
+    the words-per-row UNITS field [29:23] of vdw_setup_0 with DEPTH=1
+    (one contiguous row segment), not DEPTH [22:16]: DEPTH steps the
+    VPM Y origin and would read garbage rows qid+1.. instead."""
     k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
             comment='wait for the previous VDW DMA')
     k.alu(a=('mov', 'vpmvcd', 'rf22'),
@@ -591,31 +596,40 @@ def vc4_store(k, pixel, tag):
     k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
             comment='QPU->VPM write must complete before the VDW setup'
                     ' (GPU_FFT store protocol)')
+    k.alu(a=('mov', 'r1', 'rf11'), comment='count')
+    k.alu(a=('shl', 'r1', 'r1', '#16'), comment='count << 16 ...')
+    k.alu(a=('shl', 'r1', 'r1', '#7'),
+            comment='... << 7: count -> UNITS field [29:23]'
+                    ' (no #23: small-imms stop at 16)')
     k.alu(a=('mov', 'r0', 'rf23'), comment='vdw setup0 base')
-    k.alu(a=('shl', 'r1', 'rf11', '#16'), comment='count -> DEPTH field')
-    k.alu(a=('or', 'r0', 'r0', 'r1'), comment='')
-    k.alu(a=('sub', 'r1', 'rf14', 'rf24'),
-            comment='hstart = xstart - gx (VPM X is 4 bits, group-local)')
-    k.alu(a=('shl', 'r1', 'r1', '#3'), comment='hstart -> dma X field')
     k.alu(a=('or', 'r0', 'r0', 'r1'),
-            comment='vdw_setup_0(1, count, dma_h32(qid, hstart))')
+            comment='vdw_setup_0(count, 1, HORIZ | qid<<7)')
+    k.alu(a=('mov', 'r3', 'rf24'), comment='gx (acc staging)')
+    k.alu(a=('sub', 'r1', 'rf14', 'r3'),
+            comment='hstart = xstart - gx (VPM X is 4 bits, group-local)')
+    k.alu(a=('shl', 'r2', 'r1', '#3'), comment='hstart -> dma X field')
+    k.alu(a=('or', 'r0', 'r0', 'r2'), comment='+ dma_h32(qid, hstart)')
     k.k.alu(a=('mov', 'vpmvcd', 'r0'), comment='vw_setup: basic (ID=2)')
     k.alu(a=('mov', 'vpmvcd', '#0xC0000000'),
-            comment='vw_setup: stride (ID=3, moot with UNITS=1)')
-    k.alu(a=('shl', 'r1', 'rf14', '#2'), comment='hstart * 4')
-    k.alu(a=('add', 'r1', 'r1', 'rf4'), comment='DMA addr = row base + x')
+            comment='vw_setup: stride (ID=3, moot with DEPTH=1)')
+    k.alu(a=('shl', 'r2', 'r1', '#2'), comment='hstart * 4')
+    k.alu(a=('shl', 'r1', 'rf24', '#2'), comment='gx * 4')
+    k.alu(a=('add', 'r1', 'r1', 'rf4'), comment='row base + gx*4')
+    k.alu(a=('add', 'r1', 'r1', 'r2'),
+            comment='DMA addr = row base + gx*4 + hstart*4')
     k.k.alu(a=('mov', 'vpmaddr', 'r1'), comment='vw_addr fires the DMA')
 
 
 def vc4_clip_width(k):
     """count / hstart of the lanes of the current group inside the x
     clip rect.  Reads: rf24 = gx, rf5 = x0, rf6 = x1; writes rf11 =
-    count (>= 1 - the VDW depth field encodes 1..16 directly) and
+    count (>= 1 - the VDW UNITS field encodes 1..16 directly) and
     rf14 = xstart = max(gx, x0) (ABSOLUTE x; vc4_store turns it into
     the group-local VPM X origin by subtracting gx)."""
     k.alu(a=('add', 'r0', 'rf24', '#16'), comment='gx + 16')
     k.alu(a=('min', 'r0', 'r0', 'rf6'), comment='up = min(gx+16, x1)')
-    k.alu(a=('max', 'rf14', 'rf24', 'rf5'), comment='x start = max(gx, x0)')
+    k.alu(a=('mov', 'r3', 'rf5'), comment='x0 (acc staging)')
+    k.alu(a=('max', 'rf14', 'rf24', 'r3'), comment='x start = max(gx, x0)')
     k.alu(a=('sub', 'rf11', 'r0', 'rf14'), comment='count = up - x start')
 
 
@@ -625,27 +639,39 @@ def vc4_bookkeep(k, products=True):
     wrap and every wrap fix-up runs under ifn.  Live regs: rf13 = ctr,
     rf12 = L-1, rf24 = gx, rf25 = gx0, rf4 = row base, rf7 = rowjump,
     rf10 = rows; products: rf0/1 = u/v products, rf17/18 = pu16/pv16,
-    rf19/20 = uxwrap/vxwrap."""
-    k.alu(a=('add', 'rf4', 'rf4', '#64'), comment='row base += 64')
+    rf19/20 = uxwrap/vxwrap.  ALL of it runs on the ADD pipe: the VC4
+    MUL ALU has NO integer add/sub (op_mul 0/1 = NOP/FMUL - the
+    decrement would silently compute a float product), and a second
+    rf operand would read register file B (never-written garbage), so
+    every second source is staged through r3."""
+    k.alu(a=('add', 'rf4', 'rf4', '#64'), comment='row base += 64 (= one 16px group)')
     k.alu(a=('add', 'rf24', 'rf24', '#16'), comment='gx += 16')
     if products:
-        k.alu(a=('add', 'rf0', 'rf0', 'rf17'), comment='u_prod += pu16')
-        k.alu(a=('add', 'rf1', 'rf1', 'rf18'), comment='v_prod += pv16')
-    k.alu(m=('sub', 'rf13', 'rf13', '#1'), flags={'sf': True},
-          comment='group ctr --')
+        k.alu(a=('mov', 'r3', 'rf17'), comment='pu16 (acc staging)')
+        k.alu(a=('add', 'rf0', 'rf0', 'r3'), comment='u_prod += pu16')
+        k.alu(a=('mov', 'r3', 'rf18'), comment='pv16 (acc staging)')
+        k.alu(a=('add', 'rf1', 'rf1', 'r3'), comment='v_prod += pv16')
+    k.alu(a=('sub', 'rf13', 'rf13', '#1'), flags={'sf': True},
+          comment='group ctr -- (ADD pipe: MUL has no integer sub)')
     k.alu(a=('mov', 'rf13', 'rf12'), flags={'ac': 'ifn'},
           comment='reload L-1 at row wrap')
     k.alu(a=('mov', 'rf24', 'rf25'), flags={'ac': 'ifn'},
           comment='gx = gx0 at row wrap')
-    k.alu(a=('sub', 'rf4', 'rf4', 'rf7'), flags={'ac': 'ifn'},
+    k.alu(a=('mov', 'r3', 'rf7'), flags={'ac': 'ifn'},
+          comment='rowjump (acc staging)')
+    k.alu(a=('sub', 'rf4', 'rf4', 'r3'), flags={'ac': 'ifn'},
           comment='row base -= rowjump at wrap')
     if products:
-        k.alu(a=('sub', 'rf0', 'rf0', 'rf19'), flags={'ac': 'ifn'},
+        k.alu(a=('mov', 'r3', 'rf19'), flags={'ac': 'ifn'},
+              comment='uxwrap (acc staging)')
+        k.alu(a=('sub', 'rf0', 'rf0', 'r3'), flags={'ac': 'ifn'},
               comment='u_prod -= uxwrap at wrap')
-        k.alu(a=('sub', 'rf1', 'rf1', 'rf20'), flags={'ac': 'ifn'},
+        k.alu(a=('mov', 'r3', 'rf20'), flags={'ac': 'ifn'},
+              comment='vxwrap (acc staging)')
+        k.alu(a=('sub', 'rf1', 'rf1', 'r3'), flags={'ac': 'ifn'},
               comment='v_prod -= vxwrap at wrap')
-    k.alu(m=('sub', 'rf10', 'rf10', '#1'), flags={'mc': 'ifn'},
-          comment='rows -- at row wrap')
+    k.alu(a=('sub', 'rf10', 'rf10', '#1'), flags={'ac': 'ifn'},
+          comment='rows -- at row wrap (ADD pipe)')
 
 
 def vc4_rows_guard(k):
@@ -668,7 +694,9 @@ def vc4_prod_init(k, abs_reg, sign_imm, prod_reg, comment):
     |coef| plus a packed sign word (bit0 = u, bit1 = v) and the lane
     product gets a two's-complement flip when its sign bit is set.
     Staging: abs_reg = |coef|, rf30 = signs, rf31 = lane."""
-    k.alu(m=('mul24', 'r0', abs_reg, 'rf31'), comment='%s: |coef|*lane' % comment)
+    k.alu(a=('mov', 'r3', 'rf31'),
+          comment='lane (acc staging: a 2nd rf operand would read file B)')
+    k.alu(m=('mul24', 'r0', abs_reg, 'r3'), comment='%s: |coef|*lane' % comment)
     k.alu(a=('and', 'r2', 'rf30', sign_imm), flags={'sf': True},
           comment='%s: sign bit ?' % comment)
     k.alu(a=('not', 'r0', 'r0'), flags={'ac': 'ifnz'}, comment='-x - 1')
@@ -683,13 +711,13 @@ def vc4_store_consts(k):
     the single 16-lane vector row, stride=1, h32 = H|Size=2 (32-bit) |
     Y.  num MUST NOT be 0: it is the write-block row count the VPM
     write state machine (and vw_wait) tracks, so a zero wedges any
-    vw_wait forever), rf23 = 0x80804000 | qid<<7 (VDW basic setup base:
-    ID=2, UNITS=1, DEPTH filled per group, HORIZ, VPM origin y=qid) -
+    vw_wait forever), rf23 = 0x80014000 | qid<<7 (VDW basic setup base:
+    ID=2, DEPTH=1, UNITS filled per group, HORIZ, VPM origin y=qid) -
     read from rf21 (qid, already masked to 6 bits)"""
     k.alu(a=('mov', 'r2', '#0x101A00'), comment='vpm_setup(1,1,h32(0))')
     k.alu(a=('or', 'rf22', 'rf21', 'r2'), comment='vpm write setup word')
     k.alu(a=('shl', 'rf23', 'rf21', '#7'), comment='qid << 7 (dma Y)')
-    k.alu(a=('mov', 'r2', '#0x80804000'), comment='')
+    k.alu(a=('mov', 'r2', '#0x80014000'), comment='')
     k.alu(a=('or', 'rf23', 'rf23', 'r2'), comment='vdw setup0 base')
 
 
@@ -764,12 +792,14 @@ def vc4_oob_mask(k):
     k.alu(a=('mov', 'r2', 'r4'), comment='pixel')
     k.alu(a=('sub', 'r3', 'rf26', '#0'), flags={'sf': True}, comment='u < 0 ?')
     k.alu(a=('sub', 'r2', 'r2', 'r2'), flags={'ac': 'ifn'}, comment='-> 0')
-    k.alu(a=('sub', 'r3', 'rf15', 'rf26'), flags={'sf': True},
+    k.alu(a=('mov', 'r0', 'rf26'), comment='u orig (acc staging)')
+    k.alu(a=('sub', 'r3', 'rf15', 'r0'), flags={'sf': True},
           comment='u > src_w-1 ?')
     k.alu(a=('sub', 'r2', 'r2', 'r2'), flags={'ac': 'ifn'}, comment='-> 0')
     k.alu(a=('sub', 'r3', 'rf27', '#0'), flags={'sf': True}, comment='v < 0 ?')
     k.alu(a=('sub', 'r2', 'r2', 'r2'), flags={'ac': 'ifn'}, comment='-> 0')
-    k.alu(a=('sub', 'r3', 'rf16', 'rf27'), flags={'sf': True},
+    k.alu(a=('mov', 'r0', 'rf27'), comment='v orig (acc staging)')
+    k.alu(a=('sub', 'r3', 'rf16', 'r0'), flags={'sf': True},
           comment='v > src_h-1 ?')
     k.alu(a=('sub', 'r2', 'r2', 'r2'), flags={'ac': 'ifn'}, comment='-> 0')
     k.alu(a=('mov', 'rf26', 'r2'), comment='pixel (masked)')
@@ -846,7 +876,8 @@ def vc4_alpha():
     vc4_lane_init(k)
     # u_prod(lane) = u_base + pu*lane (pu >= 0: no sign machinery);
     # v depends only on y - rf1 already holds the per-QPU v_base
-    k.alu(m=('mul24', 'r0', 'rf29', 'rf31'), comment='u_prod: pu * lane')
+    k.alu(a=('mov', 'r3', 'rf31'), comment='lane (acc staging)')
+    k.alu(m=('mul24', 'r0', 'rf29', 'r3'), comment='u_prod: pu * lane')
     k.alu(a=('add', 'rf0', 'rf0', 'r0'), comment='u_prod = base + pu*lane')
     k.alu(a=('mov', 'rf18', '#0'), comment='pv16 = 0 (v is y-only)')
     # lane-private scratch word: scratch + qid*64 + lane*4
@@ -867,7 +898,8 @@ def vc4_alpha():
     k.alu(a=('asr', 'r1', 'r1', '#15'), comment='>> 15')
     k.alu(a=('add', 'r1', 'r1', 'rf3'), comment='v')
     k.alu(a=('max', 'rf26', 'rf26', '#0'), comment='u clamp ...')
-    k.alu(a=('min', 'rf26', 'rf26', 'rf15'), comment='... min(src_w-1)')
+    k.alu(a=('mov', 'r0', 'rf15'), comment='src_w-1 (acc staging)')
+    k.alu(a=('min', 'rf26', 'rf26', 'r0'), comment='... min(src_w-1)')
     k.alu(a=('max', 'r1', 'r1', '#0'), comment='v clamp ...')
     k.alu(a=('min', 'r1', 'r1', 'rf16'), comment='... min(src_h-1)')
     k.alu(m=('mul24', 'r0', 'r1', 'rf8'), comment='v * src_w')
@@ -880,8 +912,10 @@ def vc4_alpha():
     # ---- dst sample: real dst pixel in-rect, scratch word otherwise --
     k.alu(a=('mov', 'r0', 'elem'), comment='lane (rf31 holds S)')
     k.alu(a=('shl', 'r0', 'r0', '#2'), comment='lane * 4')
+    k.alu(a=('shl', 'r2', 'rf24', '#2'), comment='gx * 4')
+    k.alu(a=('add', 'r0', 'r0', 'r2'), comment='(gx + lane) * 4')
     k.alu(a=('add', 'r0', 'r0', 'rf4'),
-          comment='read addr = dst row base + lane*4')
+          comment='read addr = dst row base + x*4 (x = gx + lane)')
     k.alu(a=('sub', 'r2', 'r1', 'rf5'), flags={'sf': True},
           comment='x < x0 ?')
     k.alu(a=('mov', 'r0', 'rf27'), flags={'ac': 'ifn'}, comment='-> scratch')
@@ -889,53 +923,69 @@ def vc4_alpha():
           comment='x >= x1 ?')
     k.alu(a=('mov', 'r0', 'rf27'), flags={'ac': 'ifnn'}, comment='-> scratch')
     vc4_tmu_load(k, 'r0', 'r3', 'D')
-    # ---- blend: out.c = (S.c*sa' + D.c*(255-sa')) >> 8 (over-alpha) --
+    # ---- blend in lerp form: out.c = D.c + ((S.c - D.c) * sa') >> 8.
+    # No 255-mask register and no inv term: VC4 can't read two rf
+    # registers in one instruction (the 2nd would hit file B) and
+    # r4/r5 are not writable accumulators.  mul24 is unsigned 24-bit,
+    # so the (S-D) difference wraps mod 2^24 - the product's low 32
+    # bits are still the correct two's-complement value and asr>>8
+    # keeps the sign.  sa' in r0, D in r3, pixel accumulates in r2.
     k.alu(a=('mov', 'r0', 'rf31'), comment='S')
     k.alu(a=('shr', 'r0', 'r0', '#16'), comment='S >> 16')
     k.alu(a=('shr', 'r0', 'r0', '#8'), comment='S >> 24')
     k.alu(m=('mul24', 'r0', 'r0', 'rf28'), comment='sa * global alpha')
     k.alu(a=('shr', 'r0', 'r0', '#8'), comment="sa'")
     k.alu(a=('mov', 'rf29', '#0xFF'), comment='255')
-    k.alu(a=('sub', 'r1', 'rf29', 'r0'), comment="inv = 255 - sa'")
-    # blue -> r2
-    k.alu(a=('and', 'r2', 'rf31', 'rf29'), comment='S.b')
-    k.alu(m=('mul24', 'r2', 'r2', 'r0'), comment="S.b * sa'")
-    k.alu(a=('and', 'rf26', 'r3', 'rf29'), comment='D.b')
-    k.alu(m=('mul24', 'rf26', 'rf26', 'r1'), comment='D.b * inv')
-    k.alu(a=('add', 'r2', 'r2', 'rf26'), comment='')
-    k.alu(a=('shr', 'r2', 'r2', '#8'), comment='out.b')
-    # green -> rf26 (folds into r2 << 8)
-    k.alu(a=('shr', 'rf26', 'rf31', '#8'), comment='S >> 8')
-    k.alu(a=('and', 'rf26', 'rf26', 'rf29'), comment='S.g')
-    k.alu(m=('mul24', 'rf26', 'rf26', 'r0'), comment="S.g * sa'")
-    k.alu(a=('shr', 'r3', 'r3', '#8'), comment='D >> 8')
-    k.alu(a=('and', 'r3', 'r3', 'rf29'), comment='D.g')
-    k.alu(m=('mul24', 'r3', 'r3', 'r1'), comment='D.g * inv')
-    k.alu(a=('add', 'rf26', 'rf26', 'r3'), comment='')
-    k.alu(a=('shr', 'rf26', 'rf26', '#8'), comment='out.g')
-    k.alu(a=('shl', 'rf26', 'rf26', '#8'), comment='<< 8')
-    k.alu(a=('add', 'r2', 'r2', 'rf26'), comment='b | g<<8')
-    # red -> rf26
-    k.alu(a=('shr', 'rf26', 'rf31', '#16'), comment='S >> 16')
-    k.alu(a=('and', 'rf26', 'rf26', 'rf29'), comment='S.r')
-    k.alu(m=('mul24', 'rf26', 'rf26', 'r0'), comment="S.r * sa'")
-    k.alu(a=('shr', 'r3', 'r3', '#8'), comment='D >> 16')
-    k.alu(a=('and', 'r3', 'r3', 'rf29'), comment='D.r')
-    k.alu(m=('mul24', 'r3', 'r3', 'r1'), comment='D.r * inv')
-    k.alu(a=('add', 'rf26', 'rf26', 'r3'), comment='')
-    k.alu(a=('shr', 'rf26', 'rf26', '#8'), comment='out.r')
+    # blue -> r2 (no #24 small-imm on VC4: 24-bit shifts go via #16+#8)
+    k.alu(a=('shl', 'r2', 'rf31', '#16'), comment='S << 16 ...')
+    k.alu(a=('shl', 'r2', 'r2', '#8'), comment='... << 8 (S << 24)')
+    k.alu(a=('shr', 'r2', 'r2', '#16'), comment='S >> 16 ...')
+    k.alu(a=('shr', 'r2', 'r2', '#8'), comment='... >> 8 (S.b)')
+    k.alu(a=('shl', 'r1', 'r3', '#16'), comment='D << 16 ...')
+    k.alu(a=('shl', 'r1', 'r1', '#8'), comment='... << 8 (D << 24)')
+    k.alu(a=('shr', 'r1', 'r1', '#16'), comment='D >> 16 ...')
+    k.alu(a=('shr', 'r1', 'r1', '#8'), comment='... >> 8 (D.b)')
+    k.alu(a=('sub', 'r2', 'r2', 'r1'), comment='S.b - D.b')
+    k.alu(m=('mul24', 'r2', 'r2', 'r0'), comment="* sa'")
+    k.alu(a=('asr', 'r2', 'r2', '#8'), comment='>> 8')
+    k.alu(a=('add', 'r2', 'r2', 'r1'), comment='out.b')
+    # green -> r1 (folded into r2 << 8)
+    k.alu(a=('shl', 'r1', 'rf31', '#16'), comment='S << 16')
+    k.alu(a=('shr', 'r1', 'r1', '#16'), comment='S >> 16 ...')
+    k.alu(a=('shr', 'r1', 'r1', '#8'), comment='... >> 8 (S.g)')
+    k.alu(a=('shl', 'rf26', 'r3', '#16'), comment='D << 16')
+    k.alu(a=('shr', 'rf26', 'rf26', '#16'), comment='D >> 16 ...')
+    k.alu(a=('shr', 'rf26', 'rf26', '#8'), comment='... >> 8 (D.g)')
+    k.alu(a=('sub', 'r1', 'r1', 'rf26'), comment='S.g - D.g')
+    k.alu(m=('mul24', 'r1', 'r1', 'r0'), comment="* sa'")
+    k.alu(a=('asr', 'r1', 'r1', '#8'), comment='>> 8')
+    k.alu(a=('add', 'r1', 'r1', 'rf26'), comment='out.g')
+    k.alu(a=('shl', 'r1', 'r1', '#8'), comment='<< 8')
+    k.alu(a=('add', 'r2', 'r2', 'r1'), comment='b | g<<8')
+    # red -> r1
+    k.alu(a=('shl', 'r1', 'rf31', '#8'), comment='S << 8')
+    k.alu(a=('shr', 'r1', 'r1', '#16'), comment='S >> 16 ...')
+    k.alu(a=('shr', 'r1', 'r1', '#8'), comment='... >> 8 (S.r)')
+    k.alu(a=('shr', 'rf26', 'r3', '#16'), comment='D >> 16')
+    k.alu(a=('shl', 'rf26', 'rf26', '#16'), comment='D << 16 ...')
+    k.alu(a=('shl', 'rf26', 'rf26', '#8'), comment='... << 8 (D.r << 24)')
+    k.alu(a=('shr', 'rf26', 'rf26', '#16'), comment='D >> 16 ...')
+    k.alu(a=('shr', 'rf26', 'rf26', '#8'), comment='... >> 8 (D.r)')
+    k.alu(a=('sub', 'r1', 'r1', 'rf26'), comment='S.r - D.r')
+    k.alu(m=('mul24', 'r1', 'r1', 'r0'), comment="* sa'")
+    k.alu(a=('asr', 'r1', 'r1', '#8'), comment='>> 8')
+    k.alu(a=('add', 'r1', 'r1', 'rf26'), comment='out.r')
+    k.alu(a=('shl', 'r1', 'r1', '#16'), comment='<< 16')
+    k.alu(a=('add', 'r2', 'r2', 'r1'), comment='b | g<<8 | r<<16')
     # alpha -> r3: da + ((255-da)*sa') >> 8
-    k.alu(a=('shr', 'r3', 'r3', '#8'), comment='D >> 24')
-    k.alu(a=('and', 'r3', 'r3', 'rf29'), comment='da')
+    k.alu(a=('shr', 'r3', 'r3', '#16'), comment='D >> 16 ...')
+    k.alu(a=('shr', 'r3', 'r3', '#8'), comment='... >> 8 (da, <= 255)')
     k.alu(a=('sub', 'r1', 'rf29', 'r3'), comment='255 - da')
     k.alu(m=('mul24', 'r1', 'r1', 'r0'), comment="(255-da) * sa'")
     k.alu(a=('shr', 'r1', 'r1', '#8'), comment='>> 8')
     k.alu(a=('add', 'r3', 'r3', 'r1'), comment='out.a')
-    # compose -> rf26
-    k.alu(a=('shl', 'r3', 'r3', '#16'), comment='a << 16')
-    k.alu(a=('shl', 'r3', 'r3', '#8'), comment='a << 24')
-    k.alu(a=('shl', 'rf26', 'rf26', '#16'), comment='r << 16')
-    k.alu(a=('add', 'r3', 'r3', 'rf26'), comment='a | r')
+    k.alu(a=('shl', 'r3', 'r3', '#16'), comment='a << 16 ...')
+    k.alu(a=('shl', 'r3', 'r3', '#8'), comment='... << 8 (a << 24)')
     k.alu(a=('add', 'r2', 'r2', 'r3'), comment='out pixel')
     k.alu(a=('mov', 'rf26', 'r2'), comment='')
     # ---- store + bookkeeping -------------------------------------------
@@ -951,6 +1001,236 @@ def vc4_alpha():
     k.exit()
     k.label('gexit')
     k.exit()
+    return k.k
+
+
+# --------------------------------------------------------------------------
+# VC4 wedge-bisection diagnostics (the init-time probe block in v3d_g2d.c
+# launches them one at a time; each isolates exactly one suspect feature
+# of the real kernels against the known-good nop)
+# --------------------------------------------------------------------------
+
+DIAG_UNIF = ['rf0', 'rf1', 'rf2', 'rf3', 'rf4', 'rf5', 'rf6', 'rf7', 'rf8']
+
+
+def vc4_diag_unif():
+    """D1: uniform stream reads ONLY + pure thrend exit (no branch, no
+    host write, no VPM).  Hangs -> the uniform fetch itself wedges."""
+    k = V21('diag_unif_vc4')
+    vc4_ldunif(k, DIAG_UNIF)
+    k.nop(1, 'settle')
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend')
+    k.k.nop(2, 'exit delay slots')
+    return k.k
+
+
+def vc4_diag_branch():
+    """D2: setf + always-taken branch + thrend exit; no uniforms, no
+    host write.  Hangs -> the branch/flag machinery wedges."""
+    k = V21('diag_branch_vc4')
+    k.alu(a=('mov', 'r0', '#0'), comment='r0 = 0')
+    k.alu(a=('sub', 'r1', 'r0', 'r0'), flags={'sf': True},
+          comment='setf: 0 - 0 (all lanes Z)')
+    k.branch('done', 'allz', 'must be taken')
+    k.nop(3, 'branch delay slots')
+    k.alu(a=('mov', 'r1', '#1'), comment='SHOULD NEVER execute')
+    k.label('done')
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend')
+    k.k.nop(2, 'exit delay slots')
+    return k.k
+
+
+def vc4_diag_host():
+    """D3: uniform reads + the production host-interrupt exit
+    (mov r0,#1; mov host,r0; prog_end); no branch, no VPM.  Hangs ->
+    the exit path (host write / prog_end) wedges."""
+    k = V21('diag_host_vc4')
+    vc4_ldunif(k, DIAG_UNIF)
+    k.nop(1, 'settle')
+    k.exit()
+    return k.k
+
+
+FILL_UNIF = ['rf0', 'rf21', 'rf12', 'rf4', 'rf5', 'rf6', 'rf7',
+             'rf10', 'rf25']
+
+
+def vc4_diag_fillfront():
+    """D4: exact copy of the fill kernel front - uniform reads into
+    the fill rf targets + the rows guard (sub.setf rf+small-imm, the
+    LONG allz branch) + thrend fallback + gexit host exit.  Launched
+    with rows_q == 0 it takes the branch into gexit; rows_q != 0
+    falls through to the thrend fallback.  Hangs with rows_q == 0 ->
+    the rf+smimm setf / long branch / branch-into-host-exit
+    combination wedges (D1-D3 passed all three parts separately)."""
+    k = V21('diag_fillfront_vc4')
+    vc4_ldunif(k, FILL_UNIF)
+    vc4_rows_guard(k)
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend (rows != 0 fallback)')
+    k.k.nop(2, 'fallback exit delay slots')
+    k.label('gexit')
+    k.exit()
+    return k.k
+
+
+def vc4_diag_vdw():
+    """D5: minimal VPM write + VDW DMA: fill front + lane init + store
+    constants + ONE clipped 16px group store + vw_wait + thrend.  No
+    loop, no bookkeeping, no host exit.  Launch with rows_q == 1 (the
+    guard never takes).  Hangs -> the VPM/VDW setup words or vw_wait
+    wedge (P2/P3 hang in exactly this region)."""
+    k = V21('diag_vdw_vc4')
+    vc4_ldunif(k, FILL_UNIF)
+    vc4_rows_guard(k)          # never taken at rows_q=1
+    vc4_lane_init(k)
+    vc4_store_consts(k)
+    k.alu(a=('mov', 'rf24', 'rf25'), comment='gx = gx0')
+    vc4_clip_width(k)
+    vc4_store(k, 'rf0', 'diag ')
+    k.k.alu(a=('or', None, 'vw_wait', 'vw_wait'),
+            comment='wait for the final VDW DMA')
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend')
+    k.k.nop(2, 'exit delay slots')
+    k.label('gexit')           # guard target, unreachable at rows_q=1
+    k.k.raw(0x300009e7009e7000, 'nop; nop; thrend')
+    k.k.nop(2, 'gexit delay slots')
+    return k.k
+
+
+def _diag_spin_tail(k):
+    """shared tail for the W probes: fall-through == pass (exit),
+    branch target == fail (deliberate spin).  The answer is encoded
+    in COMPLETION because no memory observation channel is proven."""
+    k.nop(3, 'branch delay slots')
+    k.exit()
+    k.label('spin')
+    k.branch('spin', 'always', 'FAIL: deliberate wedge')
+    k.nop(3, 'spin delay slots')
+
+
+def vc4_diag_unifacc():
+    """W1: does uniform word 0 (color) reach an ACCUMULATOR intact?
+    mov r0, unif + acc-acc compare (D2-proven setf/branch form) -
+    no register file involved at all."""
+    k = V21('diag_unifacc_vc4')
+    k.k.alu(a=('mov', 'r0', 'unif'), comment='u0 (color) -> r0')
+    k.live = frozenset()
+    k.alu(a=('mov', 'r1', '#0x12345678'), comment='expected (loadimm)')
+    k.alu(a=('sub', 'r2', 'r0', 'r1'), flags={'sf': True},
+          comment='acc-acc compare')
+    k.branch('spin', 'anynz', 'mismatch -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_rfacca():
+    """W2: register file round trip WITHOUT uniforms: loadimm -> r0
+    -> rf20 (add-pipe write) -> back to r1 (single-operand mux-A
+    read) -> acc-acc compare."""
+    k = V21('diag_rfacca_vc4')
+    k.alu(a=('mov', 'r0', '#0x12345678'), comment='known value (loadimm)')
+    k.alu(a=('mov', 'rf20', 'r0'), comment='acc -> rf20 (add-pipe write)')
+    k.nop(1, 'rf write -> read distance')
+    k.alu(a=('mov', 'r1', 'rf20'), comment='rf20 -> acc (mux A)')
+    k.alu(a=('sub', 'r2', 'r0', 'r1'), flags={'sf': True},
+          comment='compare')
+    k.branch('spin', 'anynz', 'mismatch -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_rfaccb():
+    """W2b: file-split probe.  ra20 AND ra21 are both written (add
+    pipe -> file A); the compare reads rf21 via mux A (file A) but
+    rf20 via mux B (FILE B = rb20, never written).  TIMEOUT is the
+    EXPECTED result on real VC4 (split regfile, like Mesa's model);
+    completion would mean raddr_b aliases file A."""
+    k = V21('diag_rfaccb_vc4')
+    k.alu(a=('mov', 'r0', '#0x12345678'), comment='known value (loadimm)')
+    k.alu(a=('mov', 'rf20', 'r0'), comment='ra20 = value')
+    k.alu(a=('mov', 'rf21', 'r0'), comment='ra21 = value')
+    k.nop(1, 'rf write -> read distance')
+    k.alu(a=('sub', 'r2', 'rf21', 'rf20'), flags={'sf': True},
+          comment='ra21 - rb20 (2nd rf operand reads file B)')
+    k.branch('spin', 'anynz', 'file split confirmed -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_unifadv():
+    """W3: uniform STREAM ADVANCE: consume 7 words, the 8th must be
+    rows_q (the probe passes rows_q = 5).  Mismatch -> the stream
+    pointer did not advance (or the values are wrong)."""
+    k = V21('diag_unifadv_vc4')
+    for i in range(7):
+        k.k.alu(a=('mov', 'r3', 'unif'), comment='u%d -' % i)
+    k.k.alu(a=('mov', 'r0', 'unif'), comment='u7 (rows_q) -> r0')
+    k.live = frozenset()
+    k.alu(a=('mov', 'r1', '#5'), comment='expected rows_q (loadimm)')
+    k.alu(a=('sub', 'r2', 'r0', 'r1'), flags={'sf': True},
+          comment='compare')
+    k.branch('spin', 'anynz', 'mismatch -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_unifrf():
+    """W4: the real 9-word FILL_UNIF front (uniform -> rf writes),
+    then rf0 (color) back to an accumulator and compare."""
+    k = V21('diag_unifrf_vc4')
+    vc4_ldunif(k, FILL_UNIF)
+    k.alu(a=('mov', 'r0', 'rf0'), comment='color back out of rf0')
+    k.alu(a=('mov', 'r1', '#0x12345678'), comment='expected (loadimm)')
+    k.alu(a=('sub', 'r2', 'r0', 'r1'), flags={'sf': True},
+          comment='compare')
+    k.branch('spin', 'anynz', 'mismatch -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_rowsrf():
+    """W5: FILL_UNIF front, then rf10 (rows_q, the exact value the
+    rows guard tests) back to an accumulator; compare against 1
+    (the probe passes rows_q = 1)."""
+    k = V21('diag_rowsrf_vc4')
+    vc4_ldunif(k, FILL_UNIF)
+    k.alu(a=('mov', 'r0', 'rf10'), comment='rows_q back out of rf10')
+    k.alu(a=('mov', 'r1', '#1'), comment='expected rows_q (loadimm)')
+    k.alu(a=('sub', 'r2', 'r0', 'r1'), flags={'sf': True},
+          comment='compare')
+    k.branch('spin', 'anynz', 'mismatch -> wedge')
+    _diag_spin_tail(k)
+    return k.k
+
+
+def vc4_diag_ifn():
+    """W6: conditional execution on the N flag (the bookkeep wrap
+    mechanism).  5-6 sets N: a mov under ifn MUST fire (r3 = 9).
+    6-5 clears N: a second ifn mov must NOT fire (r3 stays 7)."""
+    k = V21('diag_ifn_vc4')
+    k.alu(a=('mov', 'r0', '#5'), comment='')
+    k.alu(a=('mov', 'r1', '#6'), comment='')
+    k.alu(a=('sub', 'r2', 'r0', 'r1'), flags={'sf': True},
+          comment='5-6 -> N set')
+    k.alu(a=('mov', 'r3', '#7'), comment='marker (loadimm keeps flags)')
+    k.alu(a=('mov', 'r3', '#9'), flags={'ac': 'ifn'},
+          comment='MUST fire (N set)')
+    k.alu(a=('mov', 'r0', '#9'), comment='')
+    k.alu(a=('sub', 'r2', 'r3', 'r0'), flags={'sf': True},
+          comment='r3 == 9 ?')
+    k.branch('spin', 'anynz', 'ifn did not fire -> wedge')
+    k.nop(3, 'branch delay slots')
+    k.alu(a=('mov', 'r0', '#5'), comment='')
+    k.alu(a=('sub', 'r2', 'r1', 'r0'), flags={'sf': True},
+          comment='6-5 -> N clear')
+    k.alu(a=('mov', 'r3', '#7'), comment='marker')
+    k.alu(a=('mov', 'r3', '#9'), flags={'ac': 'ifn'},
+          comment='must NOT fire (N clear)')
+    k.alu(a=('mov', 'r0', '#7'), comment='')
+    k.alu(a=('sub', 'r2', 'r3', 'r0'), flags={'sf': True},
+          comment='r3 == 7 ?')
+    k.branch('spin', 'anynz', 'ifn wrongly fired -> wedge')
+    _diag_spin_tail(k)
     return k.k
 
 
@@ -1014,7 +1294,10 @@ def emit(kernels, path):
                  ' bsp_g2d')
     lines.append(' * back end: four CSD kernels for the V3D 4.2 (BCM2711) QPU'
                  ' ISA and')
-    lines.append(' * four SRQ kernels for the VC4 (V3D 2.1, BCM2837) QPU ISA.')
+    lines.append(' * four SRQ kernels for the VC4 (V3D 2.1, BCM2837) QPU ISA,'
+                 ' plus')
+    lines.append(' * twelve tiny VC4 wedge-bisection diagnostics'
+                 ' (diag_*_vc4).')
     lines.append(' * GENERATED by tools/gen_kernels.py - edit that script,'
                  ' not this file.')
     for ln in HEADER_DOC.split('\n'):
@@ -1054,7 +1337,19 @@ def main():
                   vc4_fill,
                   lambda: vc4_affine(False),
                   lambda: vc4_affine(True),
-                  vc4_alpha):
+                  vc4_alpha,
+                  vc4_diag_unif,
+                  vc4_diag_branch,
+                  vc4_diag_host,
+                  vc4_diag_fillfront,
+                  vc4_diag_vdw,
+                  vc4_diag_unifacc,
+                  vc4_diag_rfacca,
+                  vc4_diag_rfaccb,
+                  vc4_diag_unifadv,
+                  vc4_diag_unifrf,
+                  vc4_diag_rowsrf,
+                  vc4_diag_ifn):
         k = build()
         rows = k.finish()
         words = [w for w, c in rows]
