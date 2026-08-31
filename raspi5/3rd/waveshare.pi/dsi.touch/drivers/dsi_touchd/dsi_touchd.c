@@ -455,6 +455,20 @@ static bool waveshare_mcu_present(const dsi_i2c_bus_t* bus) {
 	return dsi_i2c_probe_addr_only(DISPLAY_MCU_ADDR) == 0;
 }
 
+/*
+ * Positive chip identification, not just an address ACK: the 0x45 slot
+ * is shared by two incompatible parts — the Waveshare panel MCU
+ * (registers 0x94+) and the official RPi 7" panel's ATTINY (registers
+ * 0x80-0x91). The ATTINY NAKs the register phase of a 0x98 read, the
+ * Waveshare MCU answers it.
+ */
+static bool waveshare_mcu_identified(void) {
+	uint8_t id = 0;
+
+	return dsi_i2c_read_reg8_retry(DISPLAY_MCU_ADDR,
+			WAVESHARE_REG_ID, &id) == 0;
+}
+
 static int32_t waveshare_mcu_write_power(uint16_t state, uint32_t settle_ms, const char* tag) {
 	(void)tag;
 
@@ -525,6 +539,17 @@ static tp_status_t ft5x06_probe(const dsi_i2c_bus_t* bus) {
 
 static tp_status_t waveshare_mcu_probe_touch_sequence(const dsi_i2c_bus_t* bus) {
 	if (!waveshare_mcu_present(bus))
+		return TP_NOT_RESPONSE;
+	/*
+	 * Run the power walk only against a positively identified
+	 * Waveshare MCU: the walk writes registers 0x94/0x95, and against
+	 * the ATTINY those bytes land on its own register space and
+	 * power-cycle the panel out from under dsi_fbdisplayd — wedging
+	 * the touch controller and glitching the display. An ATTINY panel
+	 * falls through to the direct GT911 probe: fbdisplayd has already
+	 * walked its rails and released TP reset.
+	 */
+	if (!waveshare_mcu_identified())
 		return TP_NOT_RESPONSE;
 
 	if (waveshare_mcu_sync_power() != 0)
@@ -644,12 +669,23 @@ static tp_status_t goodix_set_command(uint8_t value) {
 }
 
 static tp_status_t goodix_probe_addr(uint8_t addr, uint8_t* id_buf) {
-	tp_status_t ret;
+	uint32_t attempt;
 
 	touch_addr = addr;
 	touch_kind = TOUCH_KIND_GOODIX;
-	ret = goodix_read_reg(GOODIX_REG_ID, id_buf, 4);
-	return ret;
+	/* the ID read is the first contact with a controller that may
+	 * still be coming out of reset: a single NAK must not sink the
+	 * whole candidate — retry with a bus clear between attempts */
+	for (attempt = 0; attempt < TP_I2C_RETRY_MAX; attempt++) {
+		if (goodix_read_reg(GOODIX_REG_ID, id_buf, 4) == TP_OK)
+			return TP_OK;
+		if (active_bus == NULL)
+			break;
+		proc_usleep(2000);
+		dsi_i2c_bus_clear(active_bus);
+		proc_usleep(2000);
+	}
+	return TP_NOT_RESPONSE;
 }
 
 static tp_status_t goodix_probe_candidates(const dsi_i2c_bus_t* bus) {
