@@ -1,4 +1,5 @@
 @/bin/ipcserv /drivers/logd /dev/log
+@/bin/ipcserv /drivers/miyoo/g2dd     /dev/g2d
 
 @/bin/ipcserv /drivers/displaymand       
 @/bin/ipcserv /drivers/miyoo/fbdisplayd      /dev/disp0
@@ -47,8 +48,6 @@
 @/bin/bgrun /sbin/x/xim_none   /dev/vjoystick 
 @/bin/bgrun /sbin/x/xmouse    /dev/vjoystick 
 @/bin/bgrun /sbin/x/xim_vkey -h 120
-
-@/bin/ipcserv /drivers/miyoo/g2dd     /dev/g2d
 
 @/bin/splash -m "starting X" -p 100
 @/bin/ipcserv /drivers/xserverd       /dev/x
