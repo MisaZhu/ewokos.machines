@@ -805,6 +805,54 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
     return -1;
 }
 
+int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
+                      int32_t src_w, int32_t src_h,
+                      int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                      ewokos_addr_t dst_phy, uint32_t dst_size,
+                      int32_t dst_w, int32_t dst_h, uint32_t dst_pitch,
+                      int32_t dx, int32_t dy, int32_t dw, int32_t dh)
+{
+    g2d_map_t m;
+    int32_t rx = dx, ry = dy, rw = dw, rh = dh;
+    uint32_t src_phys = 0, dst_phys = 0;
+    int32_t surf_w;
+    size_t dst_bytes;
+
+    if (dst_pitch < (uint32_t)dst_w * 4u || (dst_pitch & 3u) != 0 ||
+        dst_size == 0)
+        return -1;
+    /* stride-unaware geometry would let the kernel run past the rows:
+     * the last touched byte is the rect's bottom row end */
+    if ((uint64_t)(dst_h - 1) * dst_pitch +
+        (uint64_t)dst_w * 4u > dst_size)
+        return -1;
+    surf_w = (int32_t)(dst_pitch / 4u);
+    dst_bytes = (size_t)(dst_h - 1) * dst_pitch + (size_t)dst_w * 4u;
+
+    if (argb_src &&
+        sw > 0 && sh > 0 && dw > 0 && dh > 0 &&
+        gpu_clip_rect(&rx, &ry, &rw, &rh, dst_w, dst_h) &&
+        gpu_ok(dst_w, dst_h)) {
+        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
+        dst_phys = gpu_phys(dst_phy, dst_bytes, 1);
+    }
+    if (src_phys && dst_phys) {
+        g2d_map_params(sx, sy, sw, sh, dx, dy, dw, dh, G2D_MAP_ROT_0, &m);
+        if (gpu_map_fits(&m, ((int64_t)surf_w + 15) / 16 * 16, dst_h)) {
+            /* the surface is modelled pitch/4 pixels wide so each row
+             * strides by dst_pitch; the rect sits in the visible
+             * left-hand part and the in-rect lane gate keeps every
+             * write inside it.  dst has no kernel-visible VA here (raw
+             * physical range): the dispatch's flush covers visibility.
+             * Never replay a submitted operation on the CPU. */
+            return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                                    dst_phys, NULL, surf_w, dst_h, rx, ry,
+                                    rx + rw, ry + rh) ? 0 : -1;
+        }
+    }
+    return -1;
+}
+
 int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                         int32_t src_w, int32_t src_h,
                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,

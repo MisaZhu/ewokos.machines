@@ -96,11 +96,14 @@
 
 /*
  * No-progress poll budget. One iteration is a handful of device-memory
- * reads (~0.5us), so this is a few tens of milliseconds: long enough for a
- * slave that stretches the clock, short enough that a dead bus cannot wedge
- * the caller's IPC loop for seconds.
+ * reads (~0.5us) plus the periodic backoff sleep; 10000 iterations cap a
+ * stalled phase at ~35ms wall time. The longest legitimate transaction
+ * on these buses is well under 2ms (a 40-byte GT911 burst read), so a
+ * stalled phase is always a wedged bus and must be failed fast: with a
+ * 100000 budget every stalled transaction cost ~0.4s, and a probe that
+ * touches three buses crawled for half a minute per round.
  */
-#define I2C_POLL_MAX        100000
+#define I2C_POLL_MAX        10000
 /*
  * Idle backoff for the transfer spin: while the wire is busy every idle
  * iteration issues several non-posted MMIO reads over the PCIe link that
@@ -111,6 +114,16 @@
  */
 #define I2C_IDLE_SPIN_MAX   32u
 #define I2C_IDLE_SLEEP_US   20u
+/*
+ * Drain-tail cadence: the transaction only ends once TFE/!ACTIVITY is
+ * observed, so this tail adds up to one poll cycle to every transfer.
+ * Tighter than the in-transfer backoff — the drain lasts just a few
+ * byte-times, so the read burst is tiny and never starves the display
+ * fetch, while every transaction returns tens of us sooner. (usleep()
+ * below 200us is a kernel_tic busy-wait, so the cadence is exact.)
+ */
+#define I2C_DRAIN_SPIN_MAX  8u
+#define I2C_DRAIN_SLEEP_US  5u
 /* IC_ENABLE_STATUS follows IC_ENABLE within a few clk_sys cycles */
 #define I2C_ENABLE_POLL_MAX 100
 
@@ -291,8 +304,14 @@ int bcm2712_i2c_set_speed(int bus, uint32_t hz) {
         return -1;
 
     ewokos_addr_t base = i2c_base(bus);
-    if (i2c_set_enable(base, 0) != 0)
-        return -1;
+    if (i2c_set_enable(base, 0) != 0) {
+        /* a dead transaction can leave the master holding SCL (on-hold),
+         * in which state a plain disable write is ignored; abort-recover
+         * the way i2c_xfer does instead of failing the speed change */
+        i2c_recover(base);
+        if (i2c_set_enable(base, 0) != 0)
+            return -1;
+    }
 
     _i2c_con[bus] &= ~IC_CON_SPEED_MASK;
     _i2c_con[bus] |= (hz <= 100000) ? IC_CON_SPEED_STD : IC_CON_SPEED_FAST;
@@ -401,8 +420,8 @@ static int i2c_xfer(int bus, uint8_t addr, const uint8_t *wbuf, int wlen,
             break;
         if (idle > I2C_POLL_MAX)
             goto abort;
-        if ((idle % I2C_IDLE_SPIN_MAX) == 0)
-            usleep(I2C_IDLE_SLEEP_US);
+        if (idle != 0 && (idle % I2C_DRAIN_SPIN_MAX) == 0)
+            usleep(I2C_DRAIN_SLEEP_US);
     }
 
     i2c_set_enable(base, 0);

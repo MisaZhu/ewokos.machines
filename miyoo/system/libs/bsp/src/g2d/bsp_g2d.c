@@ -221,6 +221,52 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
 	return -1;
 }
 
+/* 1:1 blit of a clipped rect into a RAW PHYSICAL destination (scan-out
+ * buffer): no dst virtual address exists in this process, the GE writes
+ * the physical range directly through its MIU bus address.  The surface
+ * is modelled pitch/4 pixels wide so each row strides by dst_pitch, and
+ * the clip keeps every write inside the visible dst_w x dst_h window. */
+int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
+                      int32_t src_w, int32_t src_h,
+                      int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                      ewokos_addr_t dst_phy, uint32_t dst_size,
+                      int32_t dst_w, int32_t dst_h, uint32_t dst_pitch,
+                      int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
+	int32_t surf_w;
+	size_t dst_bytes;
+
+	if (dst_pitch < (uint32_t)dst_w * 4u || (dst_pitch & 3u) != 0 ||
+	    dst_size == 0)
+		return -1;
+	/* stride-unaware geometry would let the engine run past the rows:
+	 * the last touched byte is the dst surface's bottom row end */
+	if ((uint64_t)(dst_h - 1) * dst_pitch +
+	    (uint64_t)dst_w * 4u > dst_size)
+		return -1;
+	surf_w = (int32_t)(dst_pitch / 4u);
+	dst_bytes = (size_t)(dst_h - 1) * dst_pitch + (size_t)dst_w * 4u;
+
+	/* GE does 1:1 copies only (same constraint as bsp_g2d_blt) */
+	if (argb_src != NULL &&
+	    sw > 0 && sh > 0 && dw > 0 && dh > 0 &&
+	    sw == dw && sh == dh &&
+	    ge_ok(dst_w, dst_h)) {
+		int32_t csx = sx, csy = sy, cw = dw, ch = dh;
+		int32_t cdx = dx, cdy = dy;
+
+		if (ge_clip_blit(&csx, &csy, &cdx, &cdy, &cw, &ch,
+		                 src_w, src_h, dst_w, dst_h)) {
+			uint32_t src_miu = ge_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
+			uint32_t dst_miu = ge_phys(dst_phy, dst_bytes, 1);
+			if (src_miu != 0 && dst_miu != 0)
+				return ge_g2d_blit(src_miu, src_w, src_h, csx, csy,
+				                   dst_miu, surf_w, dst_h, cdx, cdy,
+				                   cw, ch);
+		}
+	}
+	return -1;
+}
+
 /* CPU-only by API design (no physical base): alpha fill of a sub-rect,
  * clipped to the buffer bounds, exact per-pixel access; same blend math
  * as the GE constant-alpha path.  alpha == 0 is a no-op. */
