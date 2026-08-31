@@ -235,8 +235,6 @@ static int32_t dsi_i2c_select(const dsi_i2c_bus_t* bus) {
 	   with the display scan-out DMA */
 	(void)bcm2712_i2c_set_speed(bus->bus, 400000);
 	proc_usleep(2000);
-	slog("dsi_touchd: bus=%s i2c=400kHz poll>=%ums (display-priority build)\n",
-			bus->name, (unsigned)(TP_POLL_MIN_US / 1000u));
 	return 0;
 }
 

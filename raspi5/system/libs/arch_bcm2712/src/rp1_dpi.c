@@ -443,8 +443,6 @@ static void rp1_dpi_dma_setup(const bcm2712_dpi_timing_t *t,
 
     ctrl = DPI_DMA_CTRL_ARM |
             DPI_DMA_CTRL_AUTO_REPEAT |
-            /* 448 = full FIFO depth; a higher watermark is unreachable and
-               wedges the engine (black screen) */
             (448U << DPI_DMA_CTRL_HIGH_WATER_LSB) |
             (t->hsync_pos ? 0U : DPI_DMA_CTRL_HSYNC_POL) |
             (t->vsync_pos ? 0U : DPI_DMA_CTRL_VSYNC_POL) |
