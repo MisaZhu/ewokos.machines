@@ -1046,6 +1046,17 @@ int xhci_control_xfer(xhci_dev_t* dev, const usb_setup_pkt_t* setup,
     return (int)got;
 }
 
+/*
+ * On Pi 5 the xHCI shares RP1's single PCIe master port with the display
+ * scan-out DMA and the I2C touch path. An interrupt-IN endpoint armed at
+ * 1ms (bInterval=1 on HS/SS, common on gaming mice) generates a steady
+ * stream of TRB/event DMA that contends with the display fetch and
+ * starves it. hid_moused coalesces reports to <=100Hz anyway, so floor
+ * the polling period at 8ms (125Hz): no perceptible latency, ~8x fewer
+ * transactions on the shared link.
+ */
+#define INT_IN_MIN_EXP 6u /* 125us * 2^6 = 8ms */
+
 /* interrupt interval -> xHCI EP context interval exponent (125us * 2^n) */
 static uint32_t int_interval(int speed, uint8_t bInterval) {
     uint32_t exp;
@@ -1069,6 +1080,8 @@ static uint32_t int_interval(int speed, uint8_t bInterval) {
             exp++;
         }
     }
+    if (exp < INT_IN_MIN_EXP)
+        exp = INT_IN_MIN_EXP;
     return exp > 15 ? 15 : exp;
 }
 

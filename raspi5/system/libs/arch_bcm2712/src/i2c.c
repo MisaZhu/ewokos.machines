@@ -101,6 +101,16 @@
  * the caller's IPC loop for seconds.
  */
 #define I2C_POLL_MAX        100000
+/*
+ * Idle backoff for the transfer spin: while the wire is busy every idle
+ * iteration issues several non-posted MMIO reads over the PCIe link that
+ * RP1 shares with the display scan-out DMA, and a tight spin (tens of
+ * thousands of reads per transaction) starves the display fetch. After a
+ * short burst of no progress yield ~20us instead; the FIFOs cover several
+ * wire byte-times, so refilling on a 20us cadence costs no throughput.
+ */
+#define I2C_IDLE_SPIN_MAX   32u
+#define I2C_IDLE_SLEEP_US   20u
 /* IC_ENABLE_STATUS follows IC_ENABLE within a few clk_sys cycles */
 #define I2C_ENABLE_POLL_MAX 100
 
@@ -375,6 +385,8 @@ static int i2c_xfer(int bus, uint8_t addr, const uint8_t *wbuf, int wlen,
             idle = 0;
         else if (++idle > I2C_POLL_MAX)
             goto abort;
+        else if ((idle % I2C_IDLE_SPIN_MAX) == 0)
+            usleep(I2C_IDLE_SLEEP_US);
     }
 
     /*
@@ -389,6 +401,8 @@ static int i2c_xfer(int bus, uint8_t addr, const uint8_t *wbuf, int wlen,
             break;
         if (idle > I2C_POLL_MAX)
             goto abort;
+        if ((idle % I2C_IDLE_SPIN_MAX) == 0)
+            usleep(I2C_IDLE_SLEEP_US);
     }
 
     i2c_set_enable(base, 0);

@@ -42,7 +42,10 @@
  * raspix dsi_touchd.
  */
 
-#define TP_POLL_MIN_US           8000u
+/* keep I2C-over-PCIe polling below 100Hz: the touch controller runs over
+   RP1 I2C, and every transaction occupies RP1's single PCIe master port
+   shared with the display scan-out DMA */
+#define TP_POLL_MIN_US          12000u
 #define TP_POLL_MAX_US          50000u
 #define TP_RELEASE_DELAY_MS        20
 #define TP_RELEASE_TIMEOUT_MS      80
@@ -227,7 +230,13 @@ static int32_t dsi_i2c_select(const dsi_i2c_bus_t* bus) {
 	if (bcm2712_i2c_init_pins(bus->bus, (uint32_t)bus->sda,
 			(uint32_t)bus->scl) != 0)
 		return -1;
+	/* GT911/FT5x06 both support fast mode; 400kHz quarters the wire time
+	   per poll and with it the MMIO spin load on the PCIe link shared
+	   with the display scan-out DMA */
+	(void)bcm2712_i2c_set_speed(bus->bus, 400000);
 	proc_usleep(2000);
+	slog("dsi_touchd: bus=%s i2c=400kHz poll>=%ums (display-priority build)\n",
+			bus->name, (unsigned)(TP_POLL_MIN_US / 1000u));
 	return 0;
 }
 

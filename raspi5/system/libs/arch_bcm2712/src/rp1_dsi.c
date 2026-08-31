@@ -731,9 +731,18 @@ static void rp1_dsi_dma_setup(uint32_t w, uint32_t h, uint32_t dep) {
 			(23U << 15) | (15U << 20) | (7U << 25));
 	dma_write(DPI_DMA_RGBSZ, rgbsz);
 
+	/*
+	 * AXI QoS ladder for the scan-out fetch master. USB (xHCI), I2C and
+	 * the CPU MMIO path all share RP1's single PCIe master port with this
+	 * engine, so the fetch must outrank them or the FIFO underruns while
+	 * a mouse is being moved. Baseline above the bulk masters, escalated
+	 * at the ULEV/LLEV fill thresholds, max priority at panic level.
+	 */
 	dma_write(DPI_DMA_QOS,
-			(0x0U << 0) | (0xbU << 4) | (0x2U << 8) |
-			(0x8U << 12) | (0x7U << 16));
+			(0x8U << 0) | (0xbU << 4) | (0xaU << 8) |
+			(0x8U << 12) | (0xcU << 16));
+	slog("rp1-dsi: QOS=%08x water=448 (display-priority build)\n",
+			dma_read(DPI_DMA_QOS));
 	dma_write(DPI_DMA_IRQ_FLAGS, 0xffffffffU);
 	/* no interrupt wired: mask the line, keep underflow latch visible */
 	dma_write(DPI_DMA_IRQ_EN,
@@ -744,6 +753,8 @@ static void rp1_dsi_dma_setup(uint32_t w, uint32_t h, uint32_t dep) {
 
 	ctrl = DPI_DMA_CTRL_ARM |
 		DPI_DMA_CTRL_AUTO_REPEAT |
+		/* 448 = full FIFO depth; a higher watermark is unreachable and
+		   wedges the engine (black screen) */
 		(448U << DPI_DMA_CTRL_HIGH_WATER_LSB) |
 		DPI_DMA_CTRL_HBP_EN | DPI_DMA_CTRL_HFP_EN |
 		DPI_DMA_CTRL_VBP_EN | DPI_DMA_CTRL_VFP_EN |

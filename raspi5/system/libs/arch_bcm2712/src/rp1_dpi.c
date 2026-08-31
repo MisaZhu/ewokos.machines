@@ -416,9 +416,16 @@ static void rp1_dpi_dma_setup(const bcm2712_dpi_timing_t *t,
     put32(_dpi_base + DPI_DMA_SHIFT, shift);
     put32(_dpi_base + DPI_DMA_RGBSZ, rgbsz);
 
+    /*
+     * AXI QoS ladder for the scan-out fetch master. USB (xHCI), I2C and
+     * the CPU MMIO path all share RP1's single PCIe master port with this
+     * engine, so the fetch must outrank them or the FIFO underruns while
+     * a mouse is being moved. Baseline above the bulk masters, escalated
+     * at the ULEV/LLEV fill thresholds, max priority at panic level.
+     */
     put32(_dpi_base + DPI_DMA_QOS,
-            (0x0U << 0) | (0xbU << 4) | (0x2U << 8) |
-            (0x8U << 12) | (0x7U << 16));
+            (0x8U << 0) | (0xbU << 4) | (0xaU << 8) |
+            (0x8U << 12) | (0xcU << 16));
 
     put32(_dpi_base + DPI_DMA_VISIBLE_AREA,
             ((h - 1U) << 0) | ((w - 1U) << 16));
@@ -436,6 +443,8 @@ static void rp1_dpi_dma_setup(const bcm2712_dpi_timing_t *t,
 
     ctrl = DPI_DMA_CTRL_ARM |
             DPI_DMA_CTRL_AUTO_REPEAT |
+            /* 448 = full FIFO depth; a higher watermark is unreachable and
+               wedges the engine (black screen) */
             (448U << DPI_DMA_CTRL_HIGH_WATER_LSB) |
             (t->hsync_pos ? 0U : DPI_DMA_CTRL_HSYNC_POL) |
             (t->vsync_pos ? 0U : DPI_DMA_CTRL_VSYNC_POL) |
