@@ -132,6 +132,14 @@ typedef struct {
  * after "pm GRAFX pre=", set back to 1. */
 #define G2D_SKIP_PM_RESET 1
 
+/* L2TFLM mode bits (empirically settled on real Pi 5 hardware):
+ *   0 = clean + invalidate (the ONLY mode usable for the pre-job walk)
+ *   2 = clean: writes dirty lines back but LEAVES THEM RESIDENT -
+ *       correct for the post-job flush, fatal before a job.
+ *   DO NOT retry a cheaper pre-job walk with mode 2: it was tried and
+ *       produced wrong pixels on the panel - the old lines survive the
+ *       walk and the next job reads them. */
+
 /* ---- mapped register windows ---- */
 static volatile uint32_t *_v3d;   /* V3D block (hub at +0) */
 static volatile uint32_t *_pm;    /* PM power domain */
@@ -240,16 +248,28 @@ static void g2d_dcache_invalidate(void *addr, size_t len)
  * settle minimums and harmless for them. */
 #define g2d_delay_us(us) usleep(us)
 
+/* spin-wait hint for the register polls below: a tight loop of
+ * device-memory reads issues a fresh uncached AXI transaction every
+ * iteration and still occupies the ARM pipeline between them; yielding
+ * lets a second thread on the same core make progress while the GPU
+ * flushes, so the waits show up as mostly-idle instead of 100% busy.
+ * The flush duration itself is GPU-bound - the hint only moves the
+ * waste off the CPU. */
+#define g2d_poll_hint() __asm__ __volatile__("yield")
+
+/* cached sys_dma window: captured once at init.  is_dma_addr() runs
+ * three times per dispatch, so re-querying SYS_GET_SYS_INFO every time
+ * burned kernel transitions; the window never changes at runtime. */
+static ewokos_addr_t _dma_v_base = 0, _dma_v_size = 0;
+
 /* is the pointer inside the sys_dma NOCACHE window? (no cache
  * maintenance needed there) */
 static int is_dma_addr(const void *v)
 {
-    sys_info_t si;
     uintptr_t a = (uintptr_t)v;
 
-    sys_get_sys_info(&si);
-    return a >= (uintptr_t)si.sys_dma.v_base &&
-           a < (uintptr_t)(si.sys_dma.v_base + si.sys_dma.size);
+    return a >= (uintptr_t)_dma_v_base &&
+           a < (uintptr_t)(_dma_v_base + _dma_v_size);
 }
 
 static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
@@ -363,25 +383,29 @@ static void g2d_flush_l2(void)
     uint32_t i;
 
     v3d_core()[CTL_L2TCACTL / 4] = (1u << 8);               /* TMUWCF */
-    for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 8)); i++) {}
+    for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 8)); i++)
+        g2d_poll_hint();
     v3d_core()[CTL_L2TCACTL / 4] = (1u << 0) | (2u << 1);   /* L2TFLS | CLEAN */
-    for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 0)); i++) {}
+    for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
+        g2d_poll_hint();
     __asm__ __volatile__("dsb sy");
 }
 
-/* Flush the GPU texture L1/L2 caches so a reused CSD buffer is not
- * served stale. */
+/* Flush the GPU texture L1/L2 caches so a reused canvas is not served
+ * stale. */
 static void g2d_invalidate_caches(void)
 {
     uint32_t i;
 
     v3d_core()[0x34 / 4] = 0;                       /* L2TFLSTA */
     v3d_core()[0x38 / 4] = ~0u;                     /* L2TFLEND */
+    /* mode 0 = clean + invalidate: the lines MUST be dropped here (see
+     * the L2TFLM mode note above the switches) */
     v3d_core()[0x30 / 4] = (1u << 0) | (0u << 1);   /* L2TCACTL: L2TFLS|FLUSH */
     /* GFXH-1897: a pending L2T flush must complete before any further
      * L2TCACTL write or QPU traffic */
     for (i = 0; i < 2000000 && (v3d_core()[0x30 / 4] & (1u << 0)); i++)
-        ;
+        g2d_poll_hint();
     v3d_core()[0x24 / 4] = 0x0F0F0F0Fu;             /* SLCACTL */
     __asm__ __volatile__("dsb sy");
 }
@@ -461,6 +485,8 @@ int v3d_g2d_init(void)
     _ram_contig_base = si.shm_contig.phy_base;
     _ram_contig_top = si.shm_contig.phy_base + si.shm_contig.size;
     _ram_total = si.total_phy_mem_size;
+    _dma_v_base = si.sys_dma.v_base;
+    _dma_v_size = si.sys_dma.size;
     /* Dedicated device-window VAs: framebuffer.c fb_adopt() places the
      * scanout mapping at sys_dma.v_base+size in its own process; never
      * reuse that same VA range here. Overlapping dynamic VA slots across
@@ -644,9 +670,11 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 
     /* Every production kernel waits for pending TMU writes and then uses
      * the legal thread-end protocol, so CSD_DONE is authoritative. */
-    for (i = 0; i < 2000000; i++)
+    for (i = 0; i < 2000000; i++) {
         if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
             break;
+        g2d_poll_hint();
+    }
     if (i == 2000000) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         /* A timeout is a real failure.  Do not reset the graphics domain
