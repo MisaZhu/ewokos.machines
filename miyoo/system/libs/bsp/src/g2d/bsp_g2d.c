@@ -9,22 +9,21 @@
  *   bsp_g2d_blt         1:1 copy (sw==dw, sh==dh)      -> GE bitblt
  *   bsp_g2d_blt_alpha   1:1 copy, global const alpha   -> GE bitblt + DFB
  *   bsp_g2d_fill_alpha  any                            -> scalar cpu
- *   bsp_g2d_blt_cpu     any                            -> scalar cpu
- *   bsp_g2d_scale_to    any                            -> -1
- *   bsp_g2d_rotate      any                            -> -1
+ *   bsp_g2d_scale_to    any                            -> arch engine
+ *   bsp_g2d_rotate      any                            -> arch engine
  *
  * Everything the recovered GE register interface can do runs on the
- * hardware.  What remains on the cpu is there by API design, not as a
- * fallback: bsp_g2d_fill_alpha and bsp_g2d_blt_cpu carry no physical
- * base, so no hardware path can ever take them (fill_alpha is the
- * translucent-color fill the g2dd routes away from the opaque
- * bsp_g2d_fill; blt_cpu serves g2dd's sub-8px pitch-alignment tails).
+ * hardware.  bsp_g2d_fill_alpha stays on the cpu by API design: it
+ * carries no physical base, so no hardware path can ever take it (it
+ * is the translucent-color fill the g2dd routes away from the opaque
+ * bsp_g2d_fill).
  *
- * Scale and rotate are NOT implementable: the vendor library exposes
- * neither on this chip (MI_GFX_Rotate_e knows only ROTATE_0, no
- * StretchBlit ioctl was recovered), so they return -1.  There is no
- * software fallback here - when the device path fails, the client side
- * (libgraph graph_*_arch/cpu) renders on the cpu.
+ * Scale and rotate are NOT implementable on the GE: the vendor library
+ * exposes neither on this chip (MI_GFX_Rotate_e knows only ROTATE_0,
+ * no StretchBlit ioctl was recovered).  They are delegated to the
+ * platform arch_g2d_* back end (the ARMv7 NEON engine, resolved at
+ * link time through libgraph in the g2dd), the same policy machine.virt
+ * uses for every operation.
  *
  * GE eligibility (on top of the size checks):
  *   - the *_contig flag is set and the matching *_phy carries a valid
@@ -42,8 +41,7 @@
  */
 
 #include <bsp/bsp_g2d.h>
-
-#include <string.h>
+#include <g2d_arch.h>
 
 #include "ge_g2d.h"
 
@@ -299,86 +297,28 @@ int32_t bsp_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
 	return 0;
 }
 
-/* CPU-only by API design (no physical base): serves g2dd's sub-8px
- * pitch-alignment tails and narrow 1:1 copies.  1:1 clip: cutting one
- * side shifts the other surface's origin by the same delta. */
-int32_t bsp_g2d_blt_cpu(uint32_t *argb_src, int32_t src_w, int32_t src_h,
-                      int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-                      uint32_t *argb_dst, int32_t dst_w, int32_t dst_h,
-                      int32_t dx, int32_t dy, uint8_t use_alpha,
-                      uint8_t alpha) {
-	if (argb_src == NULL || argb_dst == NULL || sw <= 0 || sh <= 0)
-		return 0;
-	if (use_alpha != 0 && alpha == 0)
-		return 0;
-
-	if (dx < 0) { sx -= dx; sw += dx; dx = 0; }
-	if (dy < 0) { sy -= dy; sh += dy; dy = 0; }
-	if (sx < 0) { dx -= sx; sw += sx; sx = 0; }
-	if (sy < 0) { dy -= sy; sh += sy; sy = 0; }
-	if (sx + sw > src_w) sw = src_w - sx;
-	if (sy + sh > src_h) sh = src_h - sy;
-	if (dx + sw > dst_w) sw = dst_w - dx;
-	if (dy + sh > dst_h) sh = dst_h - dy;
-	if (sw <= 0 || sh <= 0)
-		return 0;
-
-	for (int32_t row = 0; row < sh; row++) {
-		const uint32_t *sp = argb_src + (sy + row) * src_w + sx;
-		uint32_t *dp = argb_dst + (dy + row) * dst_w + dx;
-
-		if (use_alpha == 0) {
-			memcpy(dp, sp, (size_t)sw * sizeof(uint32_t));
-			continue;
-		}
-		for (int32_t col = 0; col < sw; col++) {
-			uint32_t color = sp[col];
-			uint32_t src_a = (color >> 24) & 0xff;
-			uint8_t sa;
-
-			if (src_a == 0)
-				continue;
-			sa = (uint8_t)((alpha == 0xff) ? src_a : (src_a * alpha) >> 8);
-			if (sa == 0)
-				continue;
-			if (sa == 0xff) {
-				dp[col] = color;
-				continue;
-			}
-			dp[col] = blend_argb_scalar(dp[col], sa,
-					(uint8_t)((color >> 16) & 0xff),
-					(uint8_t)((color >> 8) & 0xff),
-					(uint8_t)(color & 0xff));
-		}
-	}
-	return 0;
-}
-
 /* GE stretch is not implementable: the vendor library exposes no
  * StretchBlit on this chip and the recovered register set programs a
- * single block size for both surfaces */
+ * single block size for both surfaces - delegate to the arch engine */
 int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                        int32_t src_w, int32_t src_h,
                        uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
                        int32_t dst_w, int32_t dst_h) {
-	return -1;
+	return arch_g2d_scale_to(argb_src, src_phy, src_contig, src_w, src_h,
+	                         argb_dst, dst_phy, dst_contig, dst_w, dst_h);
 }
 
 /* GE rotation is not implementable: the vendor MI_GFX_Rotate_e knows
- * only ROTATE_0 on this chip.  report a zero result size so the caller
- * fails the operation cleanly */
+ * only ROTATE_0 on this chip - delegate to the arch engine */
 int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
                            int32_t *dst_w, int32_t *dst_h) {
-	if (dst_w != NULL)
-		*dst_w = 0;
-	if (dst_h != NULL)
-		*dst_h = 0;
-	return -1;
+	return arch_g2d_rotated_size(src_w, src_h, degree, dst_w, dst_h);
 }
 
 int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                      int32_t src_w, int32_t src_h,
                      uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
                      int32_t dst_w, int32_t dst_h, int32_t degree) {
-	return -1;
+	return arch_g2d_rotate(argb_src, src_phy, src_contig, src_w, src_h,
+	                       argb_dst, dst_phy, dst_contig, dst_w, dst_h, degree);
 }
