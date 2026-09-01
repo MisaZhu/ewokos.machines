@@ -489,10 +489,6 @@ struct brcmf_dev{
     uint32_t rxskip_usec;   /* timestamp when rxskip was set */
     uint32_t tx_starve_usec; /* timestamp when TX credits first exhausted */
     bool tx_starving;        /* true when credits exhausted with queued data */
-    uint32_t diag_tx_frames;        /* frames actually pushed to the chip */
-    uint32_t diag_tx_credit_stalls; /* credit-exhaustion episodes */
-    uint32_t diag_tx_breakthroughs; /* 500ms starvation breakthroughs */
-    uint32_t diag_tx_qblocks;       /* writer-side backpressure hits */
 
     uint32_t hostintmask;
     uint32_t intstatus;
@@ -1122,10 +1118,6 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->intstatus = 0;
     bus->tx_starving = false;
     bus->tx_starve_usec = 0;
-    bus->diag_tx_frames = 0;
-    bus->diag_tx_credit_stalls = 0;
-    bus->diag_tx_breakthroughs = 0;
-    bus->diag_tx_qblocks = 0;
     bus->state_since_ms = kernel_tic_ms(0);
     bus->rx_queue_blocked = false;
     bus->tx_queue_blocked = false;
@@ -3715,6 +3707,27 @@ static uint32_t brcmf_sdio_hostmail(void)
     return intstatus;
 }
 
+/*
+ * Window exhausted: ask the firmware for credits via F1 WFRAMEBC. Without
+ * this the only credit source is incoming RX frame headers, and bulk TX
+ * outruns the ACK-return stream.
+ */
+static void brcmf_sdio_credit_poll(void)
+{
+    uint8_t hi, lo;
+    uint32_t count;
+
+    hi = brcmf_sdiod_readb(SBSDIO_FUNC1_WFRAMEBCHI, NULL);
+    lo = brcmf_sdiod_readb(SBSDIO_FUNC1_WFRAMEBCLO, NULL);
+    count = ((uint32_t)hi << 8) | lo;
+    if (count == 0 || count > 0x40)
+        return;
+    bus->tx_max = (uint8_t)(bus->tx_seq + count);
+    if ((uint8_t)(bus->tx_max - bus->tx_seq) > 0x40)
+        bus->tx_max = (uint8_t)(bus->tx_seq + 2);
+    bus->tx_starving = false;
+}
+
 /* To check if there's window offered */
 static bool txctl_ok(void)
 {
@@ -3732,18 +3745,24 @@ static bool txctl_ok(void)
         bus->tx_starving = false;
         return true;
     }
+
+    brcmf_sdio_credit_poll();
+    tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
+    if (tx_credit != 0 && ((tx_credit & 0x80) == 0)) {
+        bus->tx_starving = false;
+        return true;
+    }
+
     /* Credits exhausted — track starvation duration */
     if (!bus->tx_starving) {
         bus->tx_starving = true;
         bus->tx_starve_usec = brcmf_now_usec();
-        bus->diag_tx_credit_stalls++;
         return false;
     }
 
     /* Allow TX after 500ms starvation to break deadlock */
     if (brcmf_elapsed_usec(bus->tx_starve_usec, brcmf_now_usec()) > 500000) {
         bus->tx_starving = false;
-        bus->diag_tx_breakthroughs++;
         return true;
     }
 
@@ -4082,7 +4101,6 @@ static void brcmf_sdio_dpc(void)
         bus->tx_fail_count = 0;
         bus->tx_seq++;
         tx_sent++;
-        bus->diag_tx_frames++;
         if (brcmf_tx_queue_resume_writes_if_room())
             tx_writable = true;
     }
@@ -4642,19 +4660,6 @@ static void* brcm_worker_main(void* p) {
         uint32_t now_ms = kernel_tic_ms(0);
         if (now_ms >= next_housekeeping_ms) {
             next_housekeeping_ms = now_ms + 1000;
-            if (bus->diag_tx_frames || bus->diag_tx_qblocks ||
-                    bus->diag_tx_credit_stalls || bus->diag_tx_breakthroughs) {
-                /*brcm_log("wtx: sent=%u qblk=%u cstall=%u brk=%u cred=%d qd=%d fc=%u tx_max=%u tx_seq=%u\n",
-                        bus->diag_tx_frames, bus->diag_tx_qblocks,
-                        bus->diag_tx_credit_stalls, bus->diag_tx_breakthroughs,
-                        (int)(int8_t)(bus->tx_max - bus->tx_seq),
-                        queue_buffer_check(bus->tx_queue), bus->fcstate,
-                        bus->tx_max, bus->tx_seq);*/
-                bus->diag_tx_frames = 0;
-                bus->diag_tx_qblocks = 0;
-                bus->diag_tx_credit_stalls = 0;
-                bus->diag_tx_breakthroughs = 0;
-            }
             /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
@@ -5142,13 +5147,11 @@ int brcm_send(uint8_t *buf, int len){
         return 0;
     }
     if (brcmf_tx_queue_should_block_writes()) {
-        bus->diag_tx_qblocks++;
         return 0;
     }
     int ret = queue_buffer_push(bus->tx_queue, buf, len);
     if (ret == 0) {
         bus->tx_queue_drops++;
-        bus->diag_tx_qblocks++;
         brcmf_note_queue_drop("tx_queue", bus->tx_queue_drops,
                 queue_buffer_check(bus->tx_queue));
     }
