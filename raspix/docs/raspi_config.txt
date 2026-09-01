@@ -13,6 +13,14 @@ avoid_warnings=2
 
 #disable_splash=1
 
+[pi5]
+disable_fw_kms_setup=1
+max_framebuffers=2
+dtparam=pciex1
+gpu_freq=1150
+over_voltage_delta=25000
+
+
 #-----waveshare 3.5 inchs i2c touch hdmi_lcd------------
 hdmi_force_hotplug=1
 hdmi_group=2
