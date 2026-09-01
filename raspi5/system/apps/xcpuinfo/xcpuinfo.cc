@@ -22,6 +22,8 @@
 
 #include <x++/X.h>
 #include <ewoksys/vdevice.h>
+#include <ewoksys/sys.h>
+#include <sysinfo.h>
 #include <tinyjson/tinyjson.h>
 
 #include <stdio.h>
@@ -60,6 +62,20 @@ static bool parseFanStatus(const char* s, FanState& st) {
 	st.duty = duty;
 	st.rpm = rpm;
 	return true;
+}
+
+/* find the array entry whose "name" member matches */
+static json_var_t* findNamedVar(json_var_t* arr, const char* name) {
+	if(arr == NULL)
+		return NULL;
+	uint32_t n = json_var_array_size(arr);
+	for(uint32_t i = 0; i < n; i++) {
+		json_var_t* item = json_var_array_get_var(arr, i);
+		if(item != NULL &&
+				strcmp(json_get_str_def(item, "name", ""), name) == 0)
+			return item;
+	}
+	return NULL;
 }
 
 /*
@@ -156,7 +172,8 @@ public:
 
 /*
  * CPU temperature bar: fill width is current/max milli-Celsius, fill
- * color lerps green->yellow->red with the same ratio.
+ * color lerps dark->red over the useful window from the cool baseline
+ * to the throttle temperature (dark when cool, red when hot).
  */
 class TempBar: public Widget {
 	int mc;     /* current temperature, milli-Celsius; <0 = unknown */
@@ -168,12 +185,21 @@ protected:
 		char s[48];
 		if(mc >= 0) {
 			uint32_t full = maxMc > 0 ? (uint32_t)maxMc : 100000;
-			uint32_t ratio = (uint32_t)mc * 255 / full;
-			if(ratio > 255)
-				ratio = 255;
-			uint32_t cr = ratio < 128 ? ratio * 2 : 255;
-			uint32_t cg = ratio < 128 ? 255 : (255 - ratio) * 2;
-			uint32_t color = 0xff000000 | (cr << 16) | (cg << 8);
+			/* color ratio over the cool->hot window (40C .. throttle),
+			   so idle temperatures show green instead of yellow */
+			const uint32_t coolMc = 40000;
+			uint32_t ratio = 0;
+			if(full > coolMc) {
+				if((uint32_t)mc > coolMc)
+					ratio = ((uint32_t)mc - coolMc) * 255 / (full - coolMc);
+				if(ratio > 255)
+					ratio = 255;
+			}
+			/* lerp dark blue-grey -> red */
+			uint32_t cr = 128 + (255 - 128) * ratio / 255;
+			uint32_t cg = 40 * (255 - ratio) / 255;
+			uint32_t cb = 64 * (255 - ratio) / 255;
+			uint32_t color = 0xff000000 | (cr << 16) | (cg << 8) | cb;
 
 			int32_t fw = (int32_t)((uint32_t)(r.w - 4) * (uint32_t)mc / full);
 			if(fw < 2)
@@ -214,9 +240,11 @@ public:
 
 class XCpuInfoWin: public WidgetWin {
 	TempBar* tempBar;
+	Label* cpuTitle;
 	Label* fanLabel;
 	CmdSlider* levelSlider;
 	CmdSlider* dutySlider;
+	uint32_t cores;      /* cpu core count from sysinfo, 0 = unknown */
 protected:
 	void onTimer(uint32_t timerFPS, uint32_t timerSteps) {
 		if(timerSteps % timerFPS == 0)
@@ -227,13 +255,18 @@ protected:
 public:
 	XCpuInfoWin() {
 		tempBar = NULL;
+		cpuTitle = NULL;
 		fanLabel = NULL;
 		levelSlider = dutySlider = NULL;
+		cores = 0;
 	}
 
-	void setWidgets(TempBar* temp, Label* fanInfo,
+	void setCores(uint32_t n) { cores = n; }
+
+	void setWidgets(TempBar* temp, Label* cpuInfo, Label* fanInfo,
 			CmdSlider* level, CmdSlider* duty) {
 		tempBar = temp;
+		cpuTitle = cpuInfo;
 		fanLabel = fanInfo;
 		levelSlider = level;
 		dutySlider = duty;
@@ -270,6 +303,25 @@ public:
 		free(ret);
 	}
 
+	/* "CPU: x4, 1.5 GHz, 850.8 mV"; each part shows only when known */
+	void updateCpuTitle(int armMhz, int coreUv) {
+		char s[48];
+		size_t n = snprintf(s, sizeof(s), "CPU");
+		if(cores > 0)
+			n += snprintf(s+n, sizeof(s)-n, ": x%u", (unsigned)cores);
+		if(armMhz > 0) {
+			if(armMhz >= 1000)
+				n += snprintf(s+n, sizeof(s)-n, ", %d.%d GHz",
+						armMhz / 1000, (armMhz / 100) % 10);
+			else
+				n += snprintf(s+n, sizeof(s)-n, ", %d MHz", armMhz);
+		}
+		if(coreUv > 0)
+			snprintf(s+n, sizeof(s)-n, ", %d.%d mV",
+					coreUv / 1000, (coreUv / 100) % 10);
+		cpuTitle->setLabel(s);
+	}
+
 	void pollCpu() {
 		char* ret = dev_cmd(CPU_DEV, "info");
 		if(ret == NULL) {
@@ -287,6 +339,21 @@ public:
 					json_get_int_def(t, "max_millic", 0));
 		else
 			tempBar->setTemp(-1, 0);
+
+		/* current_hz can exceed int range (arm up to 2.4GHz); tinyjson
+		   keeps such values as float, so read through the float getter */
+		json_var_t* arm = findNamedVar(json_get_obj(obj, "clocks"), "arm");
+		float armHzF = (arm != NULL && json_get_bool_def(arm, "current_available", false)) ?
+				json_get_float_def(arm, "current_hz", 0.0f) : 0.0f;
+		int armMhz = armHzF > 0.0f ? (int)(armHzF / 1000000.0f + 0.5f) : 0;
+
+		json_var_t* core = findNamedVar(json_get_obj(obj, "voltages"), "core");
+		int coreUv = (core != NULL && json_get_bool_def(core, "current_available", false)) ?
+				json_get_int_def(core, "current_uv", 0) : 0;
+		if(coreUv < 0)
+			coreUv = 0;
+		updateCpuTitle(armMhz, coreUv);
+
 		json_var_unref(obj);
 	}
 };
@@ -320,6 +387,10 @@ int main(int argc, char** argv) {
 	X x;
 	XCpuInfoWin win;
 
+	sys_info_t sysinfo;
+	if(sys_get_sys_info(&sysinfo) == 0)
+		win.setCores(sysinfo.cores);
+
 	RootWidget* root = new RootWidget();
 	win.setRoot(root);
 	root->setType(Container::VERTICAL);
@@ -349,9 +420,9 @@ int main(int argc, char** argv) {
 	rev->setEventFunc(XCpuInfoWin::revClick, &win);
 	root->add(rev);
 
-	win.setWidgets(temp, fanInfo, level, duty);
+	win.setWidgets(temp, cpuTitle, fanInfo, level, duty);
 
-	win.open(&x, 0, -1, -1, 280, 200, "xcpuinfo",
+	win.open(&x, 0, -1, -1, 320, 180, "xcpuinfo",
 			XWIN_STYLE_NORMAL | XWIN_STYLE_NO_BG_EFFECT);
 	win.setTimer(4);
 
