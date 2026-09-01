@@ -37,7 +37,6 @@
 #include <ewoksys/sys.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
-#include <ewoksys/kernel_tic.h>
 #include <arch/bcm2712/mailbox.h>
 #include "v3d_g2d.h"
 #include "g2d_qpu_kernels.h"
@@ -257,49 +256,6 @@ static void g2d_dcache_invalidate(void *addr, size_t len)
  * The flush duration itself is GPU-bound - the hint only moves the
  * waste off the CPU. */
 #define g2d_poll_hint() __asm__ __volatile__("yield")
-
-/* DEBUG SWITCH: per-dispatch phase timing.  Accumulates the three waits
- * of every dispatch (pre-job V3D cache walk, QPU execution, post-job
- * TMU/L2 flush) and klogs one summary line per second, so full-surface
- * slowdowns can be attributed to kernel execution vs cache maintenance.
- * g2dd serializes dispatches, so the accumulators need no lock. */
-#define G2D_TIMING 1
-
-#if G2D_TIMING
-static uint64_t _t_n, _t_inv_us, _t_exec_us, _t_flush_us;
-static uint32_t _t_last_ms;
-
-static uint32_t g2d_now_us(void)
-{
-    uint32_t lo = 0;
-
-    kernel_tic32(NULL, NULL, &lo);
-    return lo;
-}
-
-static void g2d_timing_add(uint32_t inv_us, uint32_t exec_us,
-                           uint32_t flush_us)
-{
-    uint32_t now_ms;
-
-    _t_n++;
-    _t_inv_us += inv_us;
-    _t_exec_us += exec_us;
-    _t_flush_us += flush_us;
-    now_ms = g2d_now_us() / 1000u;
-    if (_t_last_ms == 0) {
-        _t_last_ms = now_ms;
-    } else if (now_ms - _t_last_ms >= 1000u) {
-        slog("g2d timing: %llu disp/s inv=%llu us exec=%llu us flush=%llu us\r\n",
-             (unsigned long long)_t_n,
-             (unsigned long long)_t_inv_us,
-             (unsigned long long)_t_exec_us,
-             (unsigned long long)_t_flush_us);
-        _t_n = _t_inv_us = _t_exec_us = _t_flush_us = 0;
-        _t_last_ms = now_ms;
-    }
-}
-#endif
 
 /* cached sys_dma window: captured once at init.  is_dma_addr() runs
  * three times per dispatch, so re-querying SYS_GET_SYS_INFO every time
@@ -652,18 +608,13 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len)
+                void *dst, size_t dst_len, unsigned maint)
 {
     volatile uint32_t *csd =
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
     int kern = -1;
-#if G2D_TIMING
-    uint32_t t0 = 0, t1 = 0, t2 = 0, t3 = 0;
-
-    t0 = g2d_now_us();
-#endif
 
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
         nunifs < 0 || nunifs >= CSD_UNIF_WORDS || num_qpus <= 0 || !_ok)
@@ -689,13 +640,15 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     if ((uint32_t)nwords > _ksrc_n[kern])
         return -1;
 
-    /* make the caller's ARM-side writes visible to the GPU, and drop the
-     * ARM's stale copies of the destination.  NOCACHE dma canvases need
-     * no maintenance. */
-    if (src && src_len && !is_dma_addr(src))
-        g2d_dcache_clean((void *)src, src_len);
-    if (dst && dst_len && !is_dma_addr(dst))
-        g2d_dcache_clean_invalidate(dst, dst_len);
+    /* PRE: make the caller's ARM-side writes visible to the GPU, and
+     * drop the ARM's stale copies of the destination.  NOCACHE dma
+     * canvases need no maintenance. */
+    if (maint & V3D_G2D_MAINT_PRE) {
+        if (src && src_len && !is_dma_addr(src))
+            g2d_dcache_clean((void *)src, src_len);
+        if (dst && dst_len && !is_dma_addr(dst))
+            g2d_dcache_clean_invalidate(dst, dst_len);
+    }
 
     /* only the uniforms change per call; the kernel is already in dma */
     for (i = 0; i < (uint32_t)nunifs; i++)
@@ -703,10 +656,8 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* extra trailing uniform: scratch base for the kernels' flush
      * epilogue (physical address - the QPU has no MMU) */
     _unif[nunifs] = _scratch_p;
-    g2d_invalidate_caches();
-#if G2D_TIMING
-    t1 = g2d_now_us();
-#endif
+    if (maint & V3D_G2D_MAINT_PRE)
+        g2d_invalidate_caches();
 
     /* py-videocore7's proven Pi 5 config: cfg[0] = 1 workgroup in X,
      * cfg[3] = 0x000FF010, cfg[4] = batches = one per QPU */
@@ -727,27 +678,20 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
             break;
         g2d_poll_hint();
     }
-#if G2D_TIMING
-    t2 = g2d_now_us();
-#endif
     if (i == 2000000) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         /* A timeout is a real failure.  Do not reset the graphics domain
          * and do not replay this possibly-live operation. */
-#if G2D_TIMING
-        g2d_timing_add(t1 - t0, t2 - t1, 0);
-#endif
         return 1;
     }
     v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
 
-    /* GPU writes -> DRAM, then drop the ARM's stale destination lines */
-    g2d_flush_l2();
-    if (dst && dst_len && !is_dma_addr(dst))
-        g2d_dcache_invalidate(dst, dst_len);
-#if G2D_TIMING
-    t3 = g2d_now_us();
-    g2d_timing_add(t1 - t0, t2 - t1, t3 - t2);
-#endif
+    /* POST: GPU writes -> DRAM, then drop the ARM's stale destination
+     * lines */
+    if (maint & V3D_G2D_MAINT_POST) {
+        g2d_flush_l2();
+        if (dst && dst_len && !is_dma_addr(dst))
+            g2d_dcache_invalidate(dst, dst_len);
+    }
     return 0;
 }

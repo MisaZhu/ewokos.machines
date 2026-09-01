@@ -53,19 +53,35 @@ uint32_t v3d_g2d_scratch_phys(void);
  * dispatch is allowed. */
 int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
 
+/* Cache-maintenance flags for v3d_g2d_run.  PRE: pre-job invalidation
+ * (drop stale V3D L2/slice lines so the QPU sees fresh DRAM data) plus
+ * the ARM-side clean of the sources.  POST: post-job flush (drain the
+ * TMU write combiner and clean the L2 so the job's writes reach DRAM)
+ * plus the ARM-side invalidate of the destination.  A standalone
+ * dispatch needs both; back-to-back bands of one large-surface op skip
+ * PRE on all but the first band and POST on all but the last - the
+ * maps are row independent and no CPU access happens between bands,
+ * so the intermediate full-L2 walks are redundant (a failed band still
+ * leaves any dirty lines to the next dispatch's PRE, whose mode-0
+ * clean+invalidate writes them back first, so nothing is lost). */
+#define V3D_G2D_MAINT_PRE  (1u << 0)
+#define V3D_G2D_MAINT_POST (1u << 1)
+#define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
+
 /*
  * Run one CSD dispatch of `code` with `unifs` against the surfaces
  * `src`/`dst` (either may be NULL/0).  src/dst are VIRTUAL addresses;
  * the caller has already substituted physical addresses into the uniform
  * fields that describe them.  This wrapper keeps the ARM/V3D caches
  * coherent around the dispatch (dc civac/ivac for cacheable canvases,
- * nothing for NOCACHE dma canvases).  Returns 0 on success.
+ * nothing for NOCACHE dma canvases), bounded by the maint flags.
+ * Returns 0 on success.
  */
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len);
+                void *dst, size_t dst_len, unsigned maint);
 
 /* The ARGB8888 CSD kernels (assembled from the .qpu sources). */
 extern const uint64_t g2d_qpu_argb_fill[];

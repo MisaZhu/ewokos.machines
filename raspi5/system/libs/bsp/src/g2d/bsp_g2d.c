@@ -39,11 +39,21 @@
  *     memory); the physical address must fit the kernels' 32-bit TMU
  *     addresses.
  *
- * LARGE-SURFACE BATCHING (blt / blt_alpha / scale_to): when the
- * destination image memory exceeds 4 MB the rect is NOT dispatched in
- * one shot - it is split into bands of at most 2 MB of pixel data and
- * each band is dispatched separately (the maps are row independent, so
- * a band only ever reads/writes its own rows).
+ * LARGE-SURFACE BATCHING (blt / blt_alpha / blt_phy / scale_to): a
+ * forward-walk dispatch stalls ~3-4x once its read+write working set
+ * outgrows the V3D L2 (measured on the Pi 5: blit_opaque@1280x960 exec
+ * 11.9 ms vs rotate_180's 3.6 ms for the same byte count; the cliff
+ * starts near 4 MB surfaces).  Rects on destinations past
+ * G2D_BIG_SURFACE are split into horizontal bands of at most
+ * G2D_BAND_BYTES of pixel data, so one dispatch's footprint stays
+ * cache-sized and the band's dst writes drain at the band-end flush
+ * instead of interleaving with the src reads on DRAM.  The maps are
+ * row independent, so a band only ever reads/writes its own rows.
+ * Back-to-back bands share one cache-maintenance bracket: the pre-job
+ * invalidation runs on the first band only, the post-job flush on the
+ * last only (see g2d_band_maint).
+ * Banding smaller surfaces would only buy extra dispatch overhead
+ * (~80 us per launch), hence the 4 MB threshold.
  *
  * ZERO COPY: the GPU operates directly on the caller's buffers through
  * the caller-supplied physical bases; the kernels are preloaded once at
@@ -65,12 +75,14 @@
 #define G2D_MAX_COEF (1 << 23)  /* |map coefficient| must fit smul24 */
 
 /* Large-surface batching for bsp_g2d_blt / bsp_g2d_blt_alpha /
- * bsp_g2d_scale_to: a destination whose image memory exceeds
- * G2D_BIG_SURFACE is processed in horizontal bands whose pixel data is
- * at most G2D_BAND_BYTES each, so no single dispatch walks more than
- * 2 MB of image memory. */
-#define G2D_BIG_SURFACE (4u * 1024u * 1024u)   /* batching threshold (bytes) */
-#define G2D_BAND_BYTES  (2u * 1024u * 1024u)   /* per-band pixel budget */
+ * bsp_g2d_blt_phy / bsp_g2d_scale_to: a destination whose image memory
+ * exceeds G2D_BIG_SURFACE is processed in horizontal bands whose pixel
+ * data is at most G2D_BAND_BYTES each (see the header note for the
+ * measured walk-order cliff this works around).  G2D_BAND_BYTES is the
+ * hardware-tune knob: sweep 256 KB - 1 MB on the Pi 5 and keep the
+ * fastest (2 MB bands were measured NOT to cure the cliff). */
+#define G2D_BIG_SURFACE (4u * 1024u * 1024u)   /* cliff onset (bytes) */
+#define G2D_BAND_BYTES  (512u * 1024u)         /* per-band pixel budget */
 
 /* Band height (rows) whose ARGB8888 pixel data stays within
  * G2D_BAND_BYTES; at least one row so pathological widths terminate. */
@@ -79,6 +91,25 @@ static int32_t g2d_band_rows(int32_t w)
     int32_t rows = (int32_t)(G2D_BAND_BYTES / ((uint32_t)w * 4u));
 
     return rows < 1 ? 1 : rows;
+}
+
+/* Cache-maintenance flags for one band of a banded op: the first band
+ * takes the pre-job invalidation (freshness vs CPU writes; being
+ * full-range it also drops every pre-op line, so later bands cannot
+ * hit pre-op staleness), the last band takes the post-job flush (DRAM
+ * visibility for the whole op).  Bands in between touch row-disjoint
+ * ranges of the same op with no CPU access in between, so both
+ * full-L2 walks are redundant there. */
+static unsigned g2d_band_maint(int32_t y, int32_t next, int32_t first_y,
+                               int32_t yend)
+{
+    unsigned m = 0;
+
+    if (y == first_y)
+        m |= V3D_G2D_MAINT_PRE;
+    if (next >= yend)
+        m |= V3D_G2D_MAINT_POST;
+    return m;
 }
 
 /* ------------------------------------------------------------------ */
@@ -451,7 +482,8 @@ static int gpu_fill_surface(uint32_t phys, uint32_t *argb,
     u[15] = 0u;
     return v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n, u, 16,
                        nq, NULL, 0, argb,
-                       (size_t)w * (size_t)h * 4u) == 0;
+                       (size_t)w * (size_t)h * 4u,
+                       V3D_G2D_MAINT_ALL) == 0;
 }
 
 /* affine blit of a clipped dst rect (argb_blit / argb_rotate kernel) */
@@ -462,7 +494,7 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
                               uint32_t dst_phys, uint32_t *argb_dst,
                               int32_t dst_w, int32_t dst_h,
                               int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                              int no_clamp)
+                              int no_clamp, unsigned maint)
 {
     uint32_t u[25];
     int32_t g0 = x0 >> 4;
@@ -527,13 +559,13 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     u[23] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
     u[24] = (uint32_t)no_clamp;                     /* blit full-loop clamp skip */
     /* The kernel only writes the rect's rows [y0, y1): hand v3d_g2d_run
-     * exactly that window so the per-dispatch destination maintenance
-     * stays bounded (this is what keeps banded big-surface blits at
-     * ~2 MB per dispatch). */
+     * exactly that window so the per-dispatch footprint is just the
+     * band (see the header LARGE-SURFACE BATCHING note). */
     return v3d_g2d_run(kcode, knwords, u, 25,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst ? argb_dst + (size_t)y0 * dst_w : NULL,
-                       (size_t)(y1 - y0) * (size_t)dst_w * 4) == 0;
+                       (size_t)(y1 - y0) * (size_t)dst_w * 4,
+                       maint) == 0;
 }
 
 /* clamped-edge blit (argb_blit kernel); no_clamp selects the clamp-free
@@ -545,12 +577,12 @@ static int gpu_blit_surface(const g2d_map_t *m,
                             uint32_t dst_phys, uint32_t *argb_dst,
                             int32_t dst_w, int32_t dst_h,
                             int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                            int no_clamp)
+                            int no_clamp, unsigned maint)
 {
     return gpu_affine_surface(g2d_qpu_argb_blit, g2d_qpu_argb_blit_n, m,
                               src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, dst_w, dst_h,
-                              x0, y0, x1, y1, no_clamp);
+                              x0, y0, x1, y1, no_clamp, maint);
 }
 
 /* whole-surface rotation (argb_rotate kernel): every destination pixel is
@@ -565,7 +597,7 @@ static int gpu_rotate_surface(const g2d_map_t *m,
     return gpu_affine_surface(g2d_qpu_argb_rotate, g2d_qpu_argb_rotate_n, m,
                               src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, dst_w, dst_h,
-                              0, 0, dst_w, dst_h, 0);
+                              0, 0, dst_w, dst_h, 0, V3D_G2D_MAINT_ALL);
 }
 
 /* dedicated 90/270 rotation (argb_rot90 kernel): the traversal reads the
@@ -625,7 +657,8 @@ static int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
     u[15] = (uint32_t)(r90 ? (int64_t)ds : -(int64_t)ds);   /* eidx coeff */
     return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 16,
                        nq, argb_src, (size_t)src_w * (size_t)src_h * 4u,
-                       argb_dst, (size_t)dst_w * (size_t)dst_h * 4u) == 0;
+                       argb_dst, (size_t)dst_w * (size_t)dst_h * 4u,
+                       V3D_G2D_MAINT_ALL) == 0;
 }
 
 /* alpha blend of a clipped dst rect (argb_alpha kernel): the blend is
@@ -638,7 +671,8 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                              int32_t src_w, int32_t src_h,
                              uint32_t dst_phys, uint32_t *argb_dst,
                              int32_t dst_w, int32_t dst_h,
-                             int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+                             int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                             unsigned maint)
 {
     uint32_t u[24];
     int32_t g0 = x0 >> 4;
@@ -693,12 +727,13 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[21] = (uint32_t)(rows * (int32_t)dst_w * 4); /* rows * stride (bytes) */
     u[22] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
     u[23] = (uint32_t)full;
-    /* dst maintenance window = the rect's rows only (see the affine
-     * helper): banded big-surface blends stay ~2 MB per dispatch. */
+    /* dst window = the rect's rows only (see the affine helper):
+     * banded big-surface blends dispatch one band at a time. */
     return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 24,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst + (size_t)y0 * dst_w,
-                       (size_t)(y1 - y0) * (size_t)dst_w * 4) == 0;
+                       (size_t)(y1 - y0) * (size_t)dst_w * 4,
+                       maint) == 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -756,18 +791,20 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
             if ((size_t)dst_w * dst_h * 4 <= G2D_BIG_SURFACE)
                 return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                         dst_phys, argb_dst, dst_w, dst_h, rx,
-                                        ry, rx + rw, ry + rh, 0) ? 0 : -1;
-            /* destination image memory > 4 MB: split the rect into
-             * horizontal bands of at most 2 MB of pixel data and
-             * dispatch one band at a time (the ROT_0 map is row
-             * independent, so bands never touch each other's rows) */
+                                        ry, rx + rw, ry + rh, 0,
+                                        V3D_G2D_MAINT_ALL) ? 0 : -1;
+            /* destination image memory past the cliff: split the rect
+             * into horizontal bands and dispatch one band at a time
+             * (the ROT_0 map is row independent, so bands never touch
+             * each other's rows) - see the header note */
             band = g2d_band_rows(dst_w);
             yend = ry + rh;
             for (y = ry; y < yend; y = next) {
                 next = (yend - y < band) ? yend : y + band;
                 if (!gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                       dst_phys, argb_dst, dst_w, dst_h,
-                                      rx, y, rx + rw, next, 0))
+                                      rx, y, rx + rw, next, 0,
+                                      g2d_band_maint(y, next, ry, yend)))
                     return -1;
             }
             return 0;
@@ -788,6 +825,7 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
     uint32_t src_phys = 0, dst_phys = 0;
     int32_t surf_w;
     size_t dst_bytes;
+    int32_t band, y, yend, next;
 
     if (dst_pitch < (uint32_t)dst_w * 4u || (dst_pitch & 3u) != 0 ||
         dst_size == 0)
@@ -816,9 +854,25 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
              * write inside it.  dst has no kernel-visible VA here (raw
              * physical range): the dispatch's flush covers visibility.
              * Never replay a submitted operation on the CPU. */
-            return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
-                                    dst_phys, NULL, surf_w, dst_h, rx, ry,
-                                    rx + rw, ry + rh, 0) ? 0 : -1;
+            if ((size_t)dst_h * dst_pitch <= G2D_BIG_SURFACE)
+                return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                                        dst_phys, NULL, surf_w, dst_h, rx, ry,
+                                        rx + rw, ry + rh, 0,
+                                        V3D_G2D_MAINT_ALL) ? 0 : -1;
+            /* scanout past the cliff: dispatch the rect in horizontal
+             * bands like bsp_g2d_blt (the 1:1 map is row independent);
+             * displayd's full-frame flush hits this path */
+            band = g2d_band_rows(surf_w);
+            yend = ry + rh;
+            for (y = ry; y < yend; y = next) {
+                next = (yend - y < band) ? yend : y + band;
+                if (!gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                                      dst_phys, NULL, surf_w, dst_h,
+                                      rx, y, rx + rw, next, 0,
+                                      g2d_band_maint(y, next, ry, yend)))
+                    return -1;
+            }
+            return 0;
         }
     }
     return -1;
@@ -854,11 +908,12 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
                     return gpu_alpha_surface(&m, alpha, src_phys, argb_src,
                                              src_w, src_h, dst_phys, argb_dst,
                                              dst_w, dst_h, rx, ry,
-                                             rx + rw, ry + rh) ? 0 : -1;
-                /* destination image memory > 4 MB: blend the rect in
-                 * horizontal bands of at most 2 MB of pixel data; the
-                 * source-over blend only reads/writes the band's own
-                 * dst rows, so sequential bands compose correctly */
+                                             rx + rw, ry + rh,
+                                             V3D_G2D_MAINT_ALL) ? 0 : -1;
+                /* destination image memory past the cliff: blend the
+                 * rect in horizontal bands; the source-over blend only
+                 * reads/writes the band's own dst rows, so sequential
+                 * bands compose correctly */
                 band = g2d_band_rows(dst_w);
                 yend = ry + rh;
                 for (y = ry; y < yend; y = next) {
@@ -866,7 +921,8 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
                     if (!gpu_alpha_surface(&m, alpha, src_phys, argb_src,
                                            src_w, src_h, dst_phys, argb_dst,
                                            dst_w, dst_h,
-                                           rx, y, rx + rw, next))
+                                           rx, y, rx + rw, next,
+                                           g2d_band_maint(y, next, ry, yend)))
                         return -1;
                 }
                 return 0;
@@ -969,9 +1025,10 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
                 return gpu_affine_surface(kcode, knwords, &m,
                                           src_phys, argb_src, src_w, src_h,
                                           dst_phys, argb_dst, dst_w, dst_h,
-                                          0, 0, dst_w, dst_h, 1) ? 0 : -1;
-            /* destination image memory > 4 MB: scale in horizontal bands
-             * of at most 2 MB of pixel data.  The scale_pow2 walk is only
+                                          0, 0, dst_w, dst_h, 1,
+                                          V3D_G2D_MAINT_ALL) ? 0 : -1;
+            /* destination image memory past the cliff: scale in
+             * horizontal bands.  The scale_pow2 walk is only
              * proven for whole-surface dispatches (u16..u19 incremental
              * constants), so the banded path falls back to the rect-safe
              * argb_blit kernel. */
@@ -983,7 +1040,8 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
                 if (!gpu_affine_surface(kcode, knwords, &m,
                                         src_phys, argb_src, src_w, src_h,
                                         dst_phys, argb_dst, dst_w, dst_h,
-                                        0, y, dst_w, next, 0))
+                                        0, y, dst_w, next, 0,
+                                        g2d_band_maint(y, next, 0, dst_h)))
                     return -1;
             }
             return 0;
@@ -1048,7 +1106,8 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
                 if ((rot % 90) == 0 && dst_w <= bw && dst_h <= bh) {
                     return gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                             dst_phys, argb_dst, dst_w, dst_h,
-                                            0, 0, dst_w, dst_h, 1) ? 0 : -1;
+                                            0, 0, dst_w, dst_h, 1,
+                                            V3D_G2D_MAINT_ALL) ? 0 : -1;
                 }
                 return gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
                                           dst_phys, argb_dst, dst_w, dst_h) ? 0 : -1;
