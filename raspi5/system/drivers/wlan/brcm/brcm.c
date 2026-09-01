@@ -487,15 +487,6 @@ struct brcmf_dev{
     uint32_t tx_starve_usec; /* timestamp when TX credits first exhausted */
     bool tx_starving;        /* true when credits exhausted with queued data */
 
-    /* --- TX throughput diagnostics: accumulated between once/sec dumps --- */
-    uint32_t diag_tx_frames;        /* frames actually pushed to the chip */
-    uint32_t diag_rx_frames;        /* frames handed to the netd RX queue */
-    uint32_t diag_tx_credit_stalls; /* credit-exhaustion episodes (txctl_ok denials) */
-    uint32_t diag_tx_breakthroughs; /* 500ms starvation breakthroughs */
-    uint32_t diag_credit_polls;     /* F1 WFRAMECNTL polls that yielded credits */
-    uint32_t diag_tx_qblocks;       /* brcm_send() write-block/drop events (netd sees EAGAIN) */
-    uint32_t diag_dump_ms;          /* kernel_tic_ms of last TX diag dump */
-
     uint32_t hostintmask;
     uint32_t intstatus;
     uint32_t fcstate;
@@ -3453,7 +3444,6 @@ void brcmf_rx_frame(struct sk_buff *skb)
             brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops, depth);
         }
         bus->rx_fail_count = 0;
-        bus->diag_rx_frames++;
         brcm_wakeup_dev(VFS_EVT_RD);
     }
     skb_free(skb);
@@ -3700,7 +3690,6 @@ static void brcmf_sdio_credit_poll(void)
     if ((uint8_t)(bus->tx_max - bus->tx_seq) > 0x40)
         bus->tx_max = (uint8_t)(bus->tx_seq + 2);
     bus->tx_starving = false;
-    bus->diag_credit_polls++;
 }
 
 /* To check if there's window offered */
@@ -3733,14 +3722,12 @@ static bool txctl_ok(void)
     if (!bus->tx_starving) {
         bus->tx_starving = true;
         bus->tx_starve_usec = brcmf_now_usec();
-        bus->diag_tx_credit_stalls++;
         return false;
     }
 
     /* Allow TX after 500ms starvation to break deadlock */
     if (brcmf_elapsed_usec(bus->tx_starve_usec, brcmf_now_usec()) > 500000) {
         bus->tx_starving = false;
-        bus->diag_tx_breakthroughs++;
         return true;
     }
 
@@ -4078,7 +4065,6 @@ static void brcmf_sdio_dpc(void)
         bus->tx_fail_count = 0;
         bus->tx_seq++;
         tx_sent++;
-        bus->diag_tx_frames++;
         if (brcmf_tx_queue_resume_writes_if_room())
             tx_writable = true;
     }
@@ -4655,29 +4641,6 @@ static void* brcm_worker_main(void* p) {
         if (now_ms >= next_housekeeping_ms) {
             next_housekeeping_ms = now_ms + 1000;
             /*
-             * TX throughput diagnostic counters (frames/qblocks/credit-stalls/
-             * breakthroughs) are maintained in the TX paths. While hunting the
-             * low-throughput scp issue, print the once/sec "wtx:" line whenever
-             * any traffic moved in the last second (silent when idle). win=
-             * shows the live SDPCM window (tx_seq/tx_max).
-             */
-            if (bus->diag_tx_frames + bus->diag_rx_frames > 0) {
-                brcm_log("wtx: tx=%u rx=%u qblk=%u cstall=%u bt=%u cp=%u win=%u/%u\n",
-                        (unsigned)bus->diag_tx_frames,
-                        (unsigned)bus->diag_rx_frames,
-                        (unsigned)bus->diag_tx_qblocks,
-                        (unsigned)bus->diag_tx_credit_stalls,
-                        (unsigned)bus->diag_tx_breakthroughs,
-                        (unsigned)bus->diag_credit_polls,
-                        (unsigned)bus->tx_seq, (unsigned)bus->tx_max);
-            }
-            bus->diag_tx_frames = 0;
-            bus->diag_rx_frames = 0;
-            bus->diag_tx_qblocks = 0;
-            bus->diag_tx_credit_stalls = 0;
-            bus->diag_tx_breakthroughs = 0;
-            bus->diag_credit_polls = 0;
-            /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
              * consistently triggered by external inbound traffic, so keep
@@ -5162,7 +5125,6 @@ int brcm_send(uint8_t *buf, int len){
     if (bus->state != CONNECTED)
         return 0;
     if (brcmf_tx_queue_should_block_writes()) {
-        bus->diag_tx_qblocks++;
         return 0;
     }
 
@@ -5170,7 +5132,6 @@ int brcm_send(uint8_t *buf, int len){
     if (ret <= 0) {
         bus->tx_queue_blocked = true;
         bus->tx_queue_drops++;
-        bus->diag_tx_qblocks++;
         brcmf_note_queue_drop("tx_queue", bus->tx_queue_drops,
                 queue_buffer_check(bus->tx_queue));
         return 0;

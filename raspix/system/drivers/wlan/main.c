@@ -271,8 +271,25 @@ static int net_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
     if (!brcm_connected())
         return VFS_ERR_RETRY;
 
-    int len = brcm_send((uint8_t*)buf, size);
-    return (len > 0)?len:VFS_ERR_RETRY; 
+    /*
+     * Batched framing from netd's ether_tap: [u16 len][frame] entries. One
+     * write IPC now carries a whole TCP burst (~16 frames) instead of one
+     * IPC per frame; the per-frame IPC round trips were the upload ceiling.
+     */
+    const uint8_t* in = (const uint8_t*)buf;
+    int off = 0;
+    while (off + 2 <= size) {
+        int flen = in[off] | (in[off + 1] << 8);
+        if (flen == 0 || off + 2 + flen > size) {
+            /* malformed entry: stop here, report what was consumed */
+            break;
+        }
+        int len = brcm_send((uint8_t*)(in + off + 2), flen);
+        if (len <= 0)
+            break;
+        off += 2 + flen;
+    }
+    return (off > 0) ? off : VFS_ERR_RETRY;
 }
 
 static int net_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in, proto_t* ret, void* p) {
