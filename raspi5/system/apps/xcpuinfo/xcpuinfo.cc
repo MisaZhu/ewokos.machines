@@ -82,8 +82,10 @@ static json_var_t* findNamedVar(json_var_t* arr, const char* name) {
 /*
  * Slider bound to one "<prefix> <value>" dev.cmd. While dragging only
  * the value label follows the knob; the command goes out on mouse
- * release. syncValue() moves the knob from device state without echoing
- * a command back to the driver.
+ * release. The device value is the source of truth: syncValue() stores
+ * it and onResize() maps it onto the knob as soon as the layout gives
+ * the widget its area, so the initial position already matches the
+ * current /dev/fan state on the very first paint.
  */
 class CmdSlider: public Slider {
 	string dev;
@@ -91,8 +93,9 @@ class CmdSlider: public Slider {
 	int base;            /* value = slider position + base */
 	const char* suffix;
 	Label* valueLabel;
+	int curValue;        /* stored device value (incl. base) */
 	bool pending;        /* dragged since last send */
-	bool guard;          /* set while syncing from device state */
+	bool guard;          /* set while moving the knob from device state */
 
 	int value() { return (int)getValue() + base; }
 
@@ -109,6 +112,26 @@ class CmdSlider: public Slider {
 		snprintf(cmd, sizeof(cmd), "%s %d", prefix.c_str(), value());
 		sendCmd(dev.c_str(), cmd);
 	}
+
+	/* no-op until the layout gave the widget an area; while dragging
+	   the user owns the knob */
+	void applyPos() {
+		if(isDragging)
+			return;
+		uint32_t max = horizontal ?
+			(area.w > area.h ? area.w - area.h : 0) :
+			(area.h > area.w ? area.h - area.w : 0);
+		if(max == 0)
+			return;
+		/* round to the nearest position so value survives the
+		   pos->value round trip (Slider::setValue truncates) */
+		uint32_t p = ((uint32_t)curValue * max + range / 2) / range;
+		if(p >= max)
+			p = max - 1;
+		guard = true;
+		setPos(p);
+		guard = false;
+	}
 protected:
 	void onPosChange() {
 		if(guard)
@@ -119,6 +142,12 @@ protected:
 			return;
 		}
 		send();
+	}
+
+	/* layout just assigned the area: place the knob from the stored
+	   device value so it is right before the first paint */
+	void onResize() {
+		applyPos();
 	}
 
 	bool onMouse(xevent_t* ev) {
@@ -137,6 +166,7 @@ public:
 		this->base = base;
 		this->suffix = suffix;
 		valueLabel = NULL;
+		curValue = 0;
 		pending = false;
 		guard = false;
 		setRange(range);
@@ -144,35 +174,20 @@ public:
 
 	void setValueLabel(Label* label) { valueLabel = label; }
 
-	/* for diagnostics: "wxh" of the layout area */
-	void areaStr(char* s, int len) {
-		snprintf(s, len, "%dx%d", area.w, area.h);
-	}
-
-	/* false when the widget has no area yet (layout not done) */
-	bool syncValue(int v) {
+	/* store the device value (incl. base) and move the knob when the
+	   area is available; safe to call before the layout is done.
+	   while dragging the user owns the knob, so polling stays out */
+	void syncValue(int v) {
 		if(isDragging)
-			return true;
+			return;
 		v -= base;
 		if(v < 0)
 			v = 0;
 		if(v > (int)range - 1)
 			v = (int)range - 1;
-		uint32_t max = horizontal ?
-			(area.w > area.h ? area.w - area.h : 0) :
-			(area.h > area.w ? area.h - area.w : 0);
-		if(max == 0)
-			return false;
-		/* round to the nearest position so value survives the
-		   pos->value round trip (Slider::setValue truncates) */
-		uint32_t p = ((uint32_t)v * max + range / 2) / range;
-		if(p >= max)
-			p = max - 1;
-		guard = true;
-		setPos(p);
-		guard = false;
-		showValue(v + base);
-		return true;
+		curValue = v;
+		showValue(curValue + base);
+		applyPos();
 	}
 };
 
@@ -266,14 +281,11 @@ class XCpuInfoWin: public WidgetWin {
 	CmdSlider* levelSlider;
 	CmdSlider* dutySlider;
 	uint32_t cores;      /* cpu core count from sysinfo, 0 = unknown */
-	bool fanSynced;      /* sliders show device state at least once */
 protected:
 	void onTimer(uint32_t timerFPS, uint32_t timerSteps) {
 		/* repaint the overheat blink at every tick (125ms at 8 fps) */
 		tempBar->tick();
-		/* until the sliders match the device state (layout may not be
-		   ready on the first polls) retry every tick */
-		if(!fanSynced || timerSteps % timerFPS == 0)
+		if(timerSteps % timerFPS == 0)
 			pollFan();
 		if(timerSteps % (timerFPS * 2) == 0)
 			pollCpu();
@@ -285,7 +297,6 @@ public:
 		fanLabel = NULL;
 		levelSlider = dutySlider = NULL;
 		cores = 0;
-		fanSynced = false;
 	}
 
 	void setCores(uint32_t n) { cores = n; }
@@ -311,29 +322,25 @@ public:
 	void applyFan(const FanState& st) {
 		char s[48];
 		if(st.manual)
-			snprintf(s, sizeof(s), "manual %d%% rpm %u", st.duty, st.rpm);
+			snprintf(s, sizeof(s), "FAN: manual %d%% rpm %u", st.duty, st.rpm);
 		else
-			snprintf(s, sizeof(s), "level %d rpm %u", st.value, st.rpm);
-		/* syncValue() fails until the widget has its layout area */
-		bool synced = dutySlider->syncValue(st.duty);
+			snprintf(s, sizeof(s), "FAN: level %d rpm %u", st.value, st.rpm);
+		/* syncValue() stores the value; the knob follows once the
+		   layout gives the slider its area (CmdSlider::onResize) */
+		dutySlider->syncValue(st.duty);
 		if(!st.manual)
-			synced = levelSlider->syncValue(st.value) && synced;
-		if(synced)
-			fanSynced = true;
-		else {
-			/* diag: sliders have no layout area yet */
-			char a1[16], a2[16];
-			levelSlider->areaStr(a1, sizeof(a1));
-			dutySlider->areaStr(a2, sizeof(a2));
-			snprintf(s, sizeof(s), "sync wait %s %s", a1, a2);
-		}
+			levelSlider->syncValue(st.value);
+		else
+			/* manual duty mode: no level in the status, show the
+			   equivalent level so both sliders match the fan state */
+			levelSlider->syncValue((st.duty + 5) / 10);
 		fanLabel->setLabel(s);
 	}
 
 	void pollFan() {
 		char* ret = dev_cmd(FAN_DEV, "status");
 		if(ret == NULL) {
-			fanLabel->setLabel("fan: n/a");
+			fanLabel->setLabel("FAN: n/a");
 			return;
 		}
 		FanState st;
@@ -342,7 +349,7 @@ public:
 		else {
 			/* diag: show the raw reply so a format change is visible */
 			char s[48];
-			snprintf(s, sizeof(s), "fan: ? %.30s", ret);
+			snprintf(s, sizeof(s), "FAN: ? %.30s", ret);
 			fanLabel->setLabel(s);
 		}
 		free(ret);
@@ -449,12 +456,9 @@ int main(int argc, char** argv) {
 	TempBar* temp = new TempBar();
 	root->add(temp);
 
-	Label* fanTitle = new Label("FAN");
-	fanTitle->fix(0, 20);
-	root->add(fanTitle);
-
-	Label* fanInfo = new Label("fan: -");
-	fanInfo->fix(0, 24);
+	/* one row like the CPU title: "FAN: level 5 rpm 1200" */
+	Label* fanInfo = new Label("FAN: -");
+	fanInfo->fix(0, 20);
 	root->add(fanInfo);
 
 	CmdSlider* level = addSliderRow(root, "level", 40, FAN_DEV, "run", 0, 11, "");
@@ -466,6 +470,9 @@ int main(int argc, char** argv) {
 	root->add(rev);
 
 	win.setWidgets(temp, cpuTitle, fanInfo, level, duty);
+	/* preload the current /dev/fan state so the slider knobs start at
+	   the device values; the layout applies them on the first paint */
+	win.pollFan();
 
 	win.open(&x, 0, -1, -1, 320, 180, "xcpuinfo",
 			XWIN_STYLE_NO_RESIZE | XWIN_STYLE_NO_BG_EFFECT);
