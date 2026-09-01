@@ -1,0 +1,26 @@
+{
+
+    "width": 640,
+    "height": 480,
+
+    "rotate": 0,
+    "depth": 32,
+    "zoom": 1,
+    "logo": "/usr/system/images/logos/ewokos.png",
+
+    "output": "dpi",
+    "mode": 6,
+    "pclk": 60000000,
+
+    "hfp": 20,
+    "hsync": 10,
+    "hbp": 10,
+
+    "vfp": 10,
+    "vsync": 5,
+    "vbp": 5,
+
+    "hsync_pol": 0,
+    "vsync_pol": 0
+}
+
