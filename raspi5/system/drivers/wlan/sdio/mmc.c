@@ -204,6 +204,50 @@ int mmc_configure_sdio_bus(uint8_t width, uint32_t clock)
     return sdhci_set_ios(&_mmc);
 }
 
+/*
+ * CYW43455 advertises SHS in CCCR SPEED like every raspix-proven
+ * 4343x/43455 board; switch the card side to high-speed timing (EHS)
+ * so the host can run the 50MHz rung. Mirrors the raspix helper.
+ */
+static int mmc_sdio_try_enable_high_speed(bool *enabled)
+{
+    uint8_t speed = 0;
+    int err;
+
+    *enabled = false;
+
+    err = mmc_io_rw_direct(0, 0, SDIO_CCCR_SPEED, 0, &speed);
+    if (err)
+        return err;
+
+    if ((speed & SDIO_SPEED_SHS) == 0)
+        return 0;
+
+    speed &= ~SDIO_SPEED_BSS_MASK;
+    speed |= SDIO_SPEED_EHS;
+    err = mmc_io_rw_direct(1, 0, SDIO_CCCR_SPEED, speed, NULL);
+    if (err)
+        return err;
+
+    *enabled = true;
+    return 0;
+}
+
+/* Undo the card-side high-speed bit after the clock ladder stepped
+ * below 50MHz: a card left in HS timing while the host drops to legacy
+ * speeds would run both ends out of spec and wedge the CMD52 path. */
+static void mmc_sdio_disable_high_speed(void)
+{
+    uint8_t speed = 0;
+
+    if (mmc_io_rw_direct(0, 0, SDIO_CCCR_SPEED, 0, &speed))
+        return;
+    if ((speed & SDIO_SPEED_BSS_MASK) == 0)
+        return;
+    speed &= ~SDIO_SPEED_BSS_MASK;
+    mmc_io_rw_direct(1, 0, SDIO_CCCR_SPEED, speed, NULL);
+}
+
 static int brcm_init(void)
 {
     struct mmc_cmd cmd = {};
@@ -252,33 +296,44 @@ static int brcm_init(void)
         return err;
 
         /*
-         * Keep the Pi5 WLAN path in legacy timing for now. Runtime evidence
-         * shows fn0 CCCR traffic and func1 enable succeed, but the very first
-         * func1 CHIPCLKCSR CMD52 immediately times out once the bus has moved
-         * into the HS/SDR25 path. Hold the host/card in legacy timing (the
-         * ladder below picks the fastest rate that survives verification)
-         * until func1/backplane traffic is stable there.
+         * Enable SDIO high-speed timing on the card before raising the
+         * clock. An earlier attempt kept legacy timing because the first
+         * func1 CHIPCLKCSR CMD52 timed out right after the switch, but
+         * that happened while sdhci_set_clock() still mis-encoded the
+         * 10-bit divisor (the bus ran ~4x slower than reported); the
+         * divider fix has since been proven at the corrected bus clock.
+         * Same setup as the raspix-proven bring-up: enable HS on the
+         * card, then ladder 50 -> 25 -> 10MHz with the host/card timing
+         * switched accordingly.
          */
+    bool high_speed = false;
+
     err = mmc_sdio_set_bus_width(4);
     if (err)
         return err;
 
+    err = mmc_sdio_try_enable_high_speed(&high_speed);
+    if (err) {
+        brcm_log("sdio high-speed enable failed %d, keep legacy timing\n", err);
+        high_speed = false;
+    }
+
         /*
-         * Verify the Pi5 SDIO2 bus at a conservative rate before handing it
-         * to the probe path. Legacy (default-speed) timing tops out at 25MHz
-         * per the SD spec, so that is the ceiling of the ladder while the
-         * host keeps SDHCI_QUIRK_NO_HISPD_BIT.
+         * Verify the Pi5 SDIO2 bus at each rung before handing it to the
+         * probe path. The 50MHz rung requires card-side HS (SD spec
+         * legacy ceiling is 25MHz); if the bus falls back below it, both
+         * ends revert to legacy timing.
          */
         {
                 static const uint32_t try_clks[] =
-                        { 25000000, 12500000, 10000000 };
+                        { 50000000, 25000000, 10000000 };
                 unsigned int i, n;
                 uint8_t cccr_rev;
 
                 err = -EIO;
                 for (i = 0; i < sizeof(try_clks)/sizeof(try_clks[0]); i++) {
                         _mmc.clock = try_clks[i];
-                        _mmc.selected_mode = MMC_LEGACY;
+                        _mmc.selected_mode = high_speed ? MMC_HS : MMC_LEGACY;
                         err = sdhci_set_ios(&_mmc);
                         if (err)
                                 continue;
@@ -304,13 +359,20 @@ static int brcm_init(void)
                         brcm_log("sdio bus unstable at %uHz (read %u/%u failed, err=%d), stepping down\n",
                                  try_clks[i], n + 1,
                                  (unsigned int)SDIO_CLOCK_VERIFY_READS, err);
+                        /* Keep the remaining attempts on the host AND the
+                         * card side in legacy timing so the mode does not
+                         * oscillate across the ladder. */
+                        if (high_speed) {
+                                high_speed = false;
+                                mmc_sdio_disable_high_speed();
+                        }
                 }
                 if (err) {
                         brcm_log("sdio bus unusable at any clock, err=%d\n", err);
                         return err;
                 }
                 brcm_log("sdio bus running at %uHz, mode %s\n", _mmc.clock,
-                         "legacy");
+                         high_speed ? "high-speed" : "legacy");
         }
 
     return 0;

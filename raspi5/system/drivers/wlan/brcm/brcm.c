@@ -489,8 +489,10 @@ struct brcmf_dev{
 
     /* --- TX throughput diagnostics: accumulated between once/sec dumps --- */
     uint32_t diag_tx_frames;        /* frames actually pushed to the chip */
+    uint32_t diag_rx_frames;        /* frames handed to the netd RX queue */
     uint32_t diag_tx_credit_stalls; /* credit-exhaustion episodes (txctl_ok denials) */
     uint32_t diag_tx_breakthroughs; /* 500ms starvation breakthroughs */
+    uint32_t diag_credit_polls;     /* F1 WFRAMECNTL polls that yielded credits */
     uint32_t diag_tx_qblocks;       /* brcm_send() write-block/drop events (netd sees EAGAIN) */
     uint32_t diag_dump_ms;          /* kernel_tic_ms of last TX diag dump */
 
@@ -3451,6 +3453,7 @@ void brcmf_rx_frame(struct sk_buff *skb)
             brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops, depth);
         }
         bus->rx_fail_count = 0;
+        bus->diag_rx_frames++;
         brcm_wakeup_dev(VFS_EVT_RD);
     }
     skb_free(skb);
@@ -3673,6 +3676,33 @@ static uint32_t brcmf_sdio_hostmail(void)
     return intstatus;
 }
 
+/*
+ * Fetch pending TX credits from the firmware directly (Linux brcmfmac-style
+ * credit poll). SDPCM credits normally arrive piggybacked in the swheader of
+ * firmware RX frames, but bulk upload pushes far more frames than the peer
+ * ACKs return, so the piggyback supply starves the pipeline while the
+ * firmware still has room in its F2 FIFO. The F1 WFRAMEBC registers hold the
+ * number of frames the host may still write; reading them is side-effect
+ * free. Same sanity bound as brcmf_sdio_hdparse(): a window beyond 0x40
+ * frames is treated as bogus and left untouched.
+ */
+static void brcmf_sdio_credit_poll(void)
+{
+    uint8_t hi, lo;
+    uint32_t count;
+
+    hi = brcmf_sdiod_readb(SBSDIO_FUNC1_WFRAMEBCHI, NULL);
+    lo = brcmf_sdiod_readb(SBSDIO_FUNC1_WFRAMEBCLO, NULL);
+    count = ((uint32_t)hi << 8) | lo;
+    if (count == 0 || count > 0x40)
+        return;
+    bus->tx_max = (uint8_t)(bus->tx_seq + count);
+    if ((uint8_t)(bus->tx_max - bus->tx_seq) > 0x40)
+        bus->tx_max = (uint8_t)(bus->tx_seq + 2);
+    bus->tx_starving = false;
+    bus->diag_credit_polls++;
+}
+
 /* To check if there's window offered */
 static bool txctl_ok(void)
 {
@@ -3681,6 +3711,18 @@ static bool txctl_ok(void)
     if (!bus)
         return false;
 
+    tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
+    if (tx_credit != 0 && ((tx_credit & 0x80) == 0)) {
+        bus->tx_starving = false;
+        return true;
+    }
+
+    /*
+     * Window exhausted (or wrapped bogus): ask the firmware for credits
+     * before giving up. Without this the only credit source is incoming
+     * RX frame headers, and bulk TX outruns the ACK-return stream.
+     */
+    brcmf_sdio_credit_poll();
     tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
     if (tx_credit != 0 && ((tx_credit & 0x80) == 0)) {
         bus->tx_starving = false;
@@ -4614,14 +4656,27 @@ static void* brcm_worker_main(void* p) {
             next_housekeeping_ms = now_ms + 1000;
             /*
              * TX throughput diagnostic counters (frames/qblocks/credit-stalls/
-             * breakthroughs) are still maintained in the TX paths for on-demand
-             * debugging, but the once/sec "wtx:" console line is intentionally
-             * not printed. Reset the counters each second so they stay bounded.
+             * breakthroughs) are maintained in the TX paths. While hunting the
+             * low-throughput scp issue, print the once/sec "wtx:" line whenever
+             * any traffic moved in the last second (silent when idle). win=
+             * shows the live SDPCM window (tx_seq/tx_max).
              */
+            if (bus->diag_tx_frames + bus->diag_rx_frames > 0) {
+                brcm_log("wtx: tx=%u rx=%u qblk=%u cstall=%u bt=%u cp=%u win=%u/%u\n",
+                        (unsigned)bus->diag_tx_frames,
+                        (unsigned)bus->diag_rx_frames,
+                        (unsigned)bus->diag_tx_qblocks,
+                        (unsigned)bus->diag_tx_credit_stalls,
+                        (unsigned)bus->diag_tx_breakthroughs,
+                        (unsigned)bus->diag_credit_polls,
+                        (unsigned)bus->tx_seq, (unsigned)bus->tx_max);
+            }
             bus->diag_tx_frames = 0;
+            bus->diag_rx_frames = 0;
             bus->diag_tx_qblocks = 0;
             bus->diag_tx_credit_stalls = 0;
             bus->diag_tx_breakthroughs = 0;
+            bus->diag_credit_polls = 0;
             /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
