@@ -30,6 +30,7 @@
 
 #include <x++/X.h>
 #include <ewoksys/vdevice.h>
+#include <ewoksys/kernel_tic.h>
 #include <tinyjson/tinyjson.h>
 
 #include <stdio.h>
@@ -172,6 +173,11 @@ public:
 
 	void setValueLabel(Label* label) { valueLabel = label; }
 
+	/* for diagnostics: "wxh" of the layout area */
+	void areaStr(char* s, int len) {
+		snprintf(s, len, "%dx%d", area.w, area.h);
+	}
+
 	/* false when the widget has no area yet (layout not done) */
 	bool syncValue(int v) {
 		if(isDragging)
@@ -246,11 +252,15 @@ class XSunfWin;
 
 /*
  * CPU temperature bar: fill width is current/max milli-Celsius, fill
- * color lerps green->yellow->red with the same ratio.
+ * color lerps dark-blue->red over the useful window from the cool
+ * baseline (45C) to the throttle temperature (blue when cool, red
+ * when hot). Above HOT_MC the fill blinks at 4 Hz between the lerped
+ * color and pure red; tick() keeps the blink repainting.
  */
 class TempBar: public Widget {
 	int mc;     /* current temperature, milli-Celsius; <0 = unknown */
 	int maxMc;  /* throttle temperature, milli-Celsius; <=0 = unknown */
+	static const uint32_t HOT_MC = 60000; /* blink threshold, 60C */
 protected:
 	void onRepaint(graph_t* g, XTheme* theme, const grect_t& r) {
 		graph_fill_3d(g, r.x, r.y, r.w, r.h, theme->basic.bgColor, true);
@@ -258,12 +268,26 @@ protected:
 		char s[48];
 		if(mc >= 0) {
 			uint32_t full = maxMc > 0 ? (uint32_t)maxMc : 100000;
-			uint32_t ratio = (uint32_t)mc * 255 / full;
-			if(ratio > 255)
-				ratio = 255;
-			uint32_t cr = ratio < 128 ? ratio * 2 : 255;
-			uint32_t cg = ratio < 128 ? 255 : (255 - ratio) * 2;
-			uint32_t color = 0xff000000 | (cr << 16) | (cg << 8);
+			/* color ratio over the cool->hot window (45C .. throttle),
+			   so temperatures within 45C stay in the blue range */
+			const uint32_t coolMc = 45000;
+			uint32_t ratio = 0;
+			if(full > coolMc) {
+				if((uint32_t)mc > coolMc)
+					ratio = ((uint32_t)mc - coolMc) * 255 / (full - coolMc);
+				if(ratio > 255)
+					ratio = 255;
+			}
+			/* lerp dark blue -> red */
+			uint32_t cr = 32 + (255 - 32) * ratio / 255;
+			uint32_t cg = 48 * (255 - ratio) / 255;
+			uint32_t cb = 128 * (255 - ratio) / 255;
+			uint32_t color = 0xff000000 | (cr << 16) | (cg << 8) | cb;
+
+			/* overheat blink: 4 Hz toggle (125ms per state) between the
+			   lerped color and pure red */
+			if((uint32_t)mc > HOT_MC && (kernel_tic_ms(0) % 250) >= 125)
+				color = 0xffff0000;
 
 			int32_t fw = (int32_t)((uint32_t)(r.w - 4) * (uint32_t)mc / full);
 			if(fw < 2)
@@ -298,6 +322,13 @@ public:
 		this->maxMc = maxMc;
 		update();
 	}
+
+	/* called on every timer tick: repaint for the blink phase while
+	   overheating (setTemp() skips updates on unchanged values) */
+	void tick() {
+		if(mc > (int)HOT_MC)
+			update();
+	}
 };
 
 /* current color swatch; click opens the ColorDialog to pick a new one */
@@ -330,6 +361,7 @@ class XSunfWin: public WidgetWin {
 	LightState light;
 	FanState fan;
 	bool lightSynced;
+	bool fanSynced;      /* fan sliders show device state at least once */
 
 	LabelButton* onOffBtn;
 	ColorPreview* colorPreview;
@@ -360,11 +392,14 @@ protected:
 	}
 
 	void onTimer(uint32_t timerFPS, uint32_t timerSteps) {
+		/* repaint the overheat blink at every tick (125ms at 8 fps) */
+		tempBar->tick();
 		/*keep retrying until the driver answered once with the
 		  layout already in place (sliders need a sized area)*/
 		if(!lightSynced)
 			syncLight();
-		if(timerSteps % timerFPS == 0)
+		/* until the fan sliders match the device state retry every tick */
+		if(!fanSynced || timerSteps % timerFPS == 0)
 			pollFan();
 		if(timerSteps % (timerFPS * 2) == 0)
 			pollCpu();
@@ -372,6 +407,7 @@ protected:
 public:
 	XSunfWin() {
 		lightSynced = false;
+		fanSynced = false;
 		onOffBtn = NULL;
 		colorPreview = NULL;
 		brightSlider = speedSlider = ledSlider = NULL;
@@ -452,19 +488,37 @@ public:
 			snprintf(s, sizeof(s), "manual %d%% rpm %u", st.duty, st.rpm);
 		else
 			snprintf(s, sizeof(s), "level %d rpm %u", st.value, st.rpm);
-		fanLabel->setLabel(s);
-		dutySlider->syncValue(st.duty);
+		/* syncValue() fails until the widget has its layout area */
+		bool synced = dutySlider->syncValue(st.duty);
 		if(!st.manual)
-			levelSlider->syncValue(st.value);
+			synced = levelSlider->syncValue(st.value) && synced;
+		if(synced)
+			fanSynced = true;
+		else {
+			/* diag: sliders have no layout area yet */
+			char a1[16], a2[16];
+			levelSlider->areaStr(a1, sizeof(a1));
+			dutySlider->areaStr(a2, sizeof(a2));
+			snprintf(s, sizeof(s), "sync wait %s %s", a1, a2);
+		}
+		fanLabel->setLabel(s);
 	}
 
 	void pollFan() {
 		char* ret = dev_cmd(FAN_DEV, "status");
-		if(ret == NULL)
+		if(ret == NULL) {
+			fanLabel->setLabel("fan: n/a");
 			return;
+		}
 		FanState st;
 		if(parseFanStatus(ret, st))
 			applyFan(st);
+		else {
+			/* diag: show the raw reply so a format change is visible */
+			char s[48];
+			snprintf(s, sizeof(s), "fan: ? %.30s", ret);
+			fanLabel->setLabel(s);
+		}
 		free(ret);
 	}
 
@@ -612,7 +666,9 @@ int main(int argc, char** argv) {
 
 	win.open(&x, 0, -1, -1, 520, 360, "xsunfd",
 			XWIN_STYLE_NORMAL | XWIN_STYLE_NO_BG_EFFECT);
-	win.setTimer(4);
+	/* 8 fps tick: 125ms matches the overheat blink phase; fan polls
+	   every 8 ticks (1s), cpu info every 16 ticks (2s) */
+	win.setTimer(8);
 
 	widgetXRun(&x, &win);
 	return 0;
