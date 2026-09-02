@@ -53,6 +53,13 @@ uint32_t v3d_g2d_scratch_phys(void);
  * dispatch is allowed. */
 int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
 
+/* One-shot hardware probe of the vec4 (TMUC general-access) TMU path
+ * used by the argb_copy/argb_fill4 kernels: runs a small GPU copy into
+ * scratch and verifies it on the CPU.  Non-zero when the fast vec4
+ * kernels are usable; callers must fall back to the single-word kernels
+ * otherwise.  The result is cached after the first call. */
+int v3d_g2d_vec4_ok(void);
+
 /* Cache-maintenance flags for v3d_g2d_run.  PRE: pre-job invalidation
  * (drop stale V3D L2/slice lines so the QPU sees fresh DRAM data) plus
  * the ARM-side clean of the sources.  POST: post-job flush (drain the
@@ -63,7 +70,14 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
  * maps are row independent and no CPU access happens between bands,
  * so the intermediate full-L2 walks are redundant (a failed band still
  * leaves any dirty lines to the next dispatch's PRE, whose mode-0
- * clean+invalidate writes them back first, so nothing is lost). */
+ * clean+invalidate writes them back first, so nothing is lost).
+ * PRE-elided dispatches are NOT free of ordering work: v3d_g2d_run
+ * still runs a uniform-visibility barrier (g2d_uniform_fresh: dsb plus
+ * a ranged clean+invalidate of just the 256-byte uniform block and a
+ * slice invalidate), because the QPU uniform fetch is served through
+ * the L2T/slice caches and would otherwise re-read the previous
+ * dispatch's stale uniform block - eliding it made every middle band
+ * re-render band 0 (measured on silicon). */
 #define V3D_G2D_MAINT_PRE  (1u << 0)
 #define V3D_G2D_MAINT_POST (1u << 1)
 #define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
@@ -96,5 +110,9 @@ extern const uint64_t g2d_qpu_argb_alpha[];
 extern const unsigned g2d_qpu_argb_alpha_n;
 extern const uint64_t g2d_qpu_argb_scale_pow2[];
 extern const unsigned g2d_qpu_argb_scale_pow2_n;
+extern const uint64_t g2d_qpu_argb_copy[];
+extern const unsigned g2d_qpu_argb_copy_n;
+extern const uint64_t g2d_qpu_argb_fill4[];
+extern const unsigned g2d_qpu_argb_fill4_n;
 
 #endif /* V3D_G2D_H */

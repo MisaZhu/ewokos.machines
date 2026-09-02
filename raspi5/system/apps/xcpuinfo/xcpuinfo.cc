@@ -5,7 +5,7 @@
  * control, everything through the dev.cmd interface (dev_cmd()):
  *
  *   /dev/cpu  cpud - SoC temperature (JSON snapshot)
- *   /dev/fan  fand - cooling fan: level 0-10, raw duty %, rev, rpm
+ *   /dev/fan  fand - cooling fan: level 0-10, rev, rpm
  *
  * All rows only fix their height, so every widget follows the window
  * width; the temperature bar is the flexible child and also absorbs
@@ -279,7 +279,6 @@ class XCpuInfoWin: public WidgetWin {
 	Label* cpuTitle;
 	Label* fanLabel;
 	CmdSlider* levelSlider;
-	CmdSlider* dutySlider;
 	uint32_t cores;      /* cpu core count from sysinfo, 0 = unknown */
 protected:
 	void onTimer(uint32_t timerFPS, uint32_t timerSteps) {
@@ -295,19 +294,18 @@ public:
 		tempBar = NULL;
 		cpuTitle = NULL;
 		fanLabel = NULL;
-		levelSlider = dutySlider = NULL;
+		levelSlider = NULL;
 		cores = 0;
 	}
 
 	void setCores(uint32_t n) { cores = n; }
 
 	void setWidgets(TempBar* temp, Label* cpuInfo, Label* fanInfo,
-			CmdSlider* level, CmdSlider* duty) {
+			CmdSlider* level) {
 		tempBar = temp;
 		cpuTitle = cpuInfo;
 		fanLabel = fanInfo;
 		levelSlider = level;
-		dutySlider = duty;
 	}
 
 	static void revClick(Widget* wd, xevent_t* evt, void* arg) {
@@ -327,12 +325,11 @@ public:
 			snprintf(s, sizeof(s), "FAN: level %d rpm %u", st.value, st.rpm);
 		/* syncValue() stores the value; the knob follows once the
 		   layout gives the slider its area (CmdSlider::onResize) */
-		dutySlider->syncValue(st.duty);
 		if(!st.manual)
 			levelSlider->syncValue(st.value);
 		else
-			/* manual duty mode: no level in the status, show the
-			   equivalent level so both sliders match the fan state */
+			/* manual duty mode (set elsewhere): no level in the status,
+			   show the equivalent level so the slider matches the fan */
 			levelSlider->syncValue((st.duty + 5) / 10);
 		fanLabel->setLabel(s);
 	}
@@ -462,19 +459,18 @@ int main(int argc, char** argv) {
 	root->add(fanInfo);
 
 	CmdSlider* level = addSliderRow(root, "level", 40, FAN_DEV, "run", 0, 11, "");
-	CmdSlider* duty  = addSliderRow(root, "duty", 40, FAN_DEV, "duty", 0, 101, "%");
 
 	LabelButton* rev = new LabelButton("rev");
 	rev->fix(0, 30);
 	rev->setEventFunc(XCpuInfoWin::revClick, &win);
 	root->add(rev);
 
-	win.setWidgets(temp, cpuTitle, fanInfo, level, duty);
+	win.setWidgets(temp, cpuTitle, fanInfo, level);
 	/* preload the current /dev/fan state so the slider knobs start at
 	   the device values; the layout applies them on the first paint */
 	win.pollFan();
 
-	win.open(&x, 0, -1, -1, 320, 180, "xcpuinfo",
+	win.open(&x, 0, -1, -1, 320, 140, "xcpuinfo",
 			XWIN_STYLE_NO_RESIZE | XWIN_STYLE_NO_BG_EFFECT);
 	/* 8 fps tick: 125ms matches the overheat blink phase; fan polls
 	   every 8 ticks (1s), cpu info every 16 ticks (2s) */

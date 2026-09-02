@@ -69,7 +69,7 @@
 #define PM_PASSWORD  0x5A000000u
 #define PM_V3DRSTN   (1u << 6)
 
-#define CSD_CODE_WORDS 512   /* 324-word argb_alpha (full fast path) */
+#define CSD_CODE_WORDS 512   /* 344-word argb_alpha (endpoint-exact blend) */
 #define CSD_UNIF_WORDS 64
 
 /* Raspberry Pi firmware property tags and clock ID. */
@@ -166,7 +166,9 @@ static inline volatile uint32_t *v3d_core(void)
 #define KERN_ROTATE 3
 #define KERN_SCALE_POW2 4
 #define KERN_ROT90 5
-#define KERN_N 6
+#define KERN_COPY 6
+#define KERN_FILL4 7
+#define KERN_N 8
 static uint64_t *_kcode[KERN_N];     /* per-kernel code staging VA (dma) */
 static uint32_t _kcode_p[KERN_N];    /* per-kernel code staging physical */
 static const uint64_t *_ksrc[KERN_N];/* kernel source arrays */
@@ -410,6 +412,35 @@ static void g2d_invalidate_caches(void)
     __asm__ __volatile__("dsb sy");
 }
 
+/* Uniform-visibility barrier for PRE-elided dispatches (the middle
+ * bands/tiles of a batched large-surface op).  The QPU's uniform fetch
+ * is served through the V3D L2T/slice caches, so a dispatch that skips
+ * the full pre-job invalidation would re-read the PREVIOUS dispatch's
+ * uniform block (still resident from its fetch) and re-run its
+ * parameters - empirically every elided band re-rendered band 0 (only
+ * the first band/tile ever landed).  The canvas data needs no
+ * maintenance here (row/tile-disjoint, no CPU access between
+ * dispatches, the first dispatch's full PRE dropped the stale lines);
+ * only the freshly-written 256-byte uniform block must be pushed out
+ * and dropped from the GPU caches.  A ranged mode-0 L2T flush over
+ * those few lines costs microseconds, unlike the full-L2 walk. */
+static void g2d_uniform_fresh(void)
+{
+    uint32_t i;
+
+    __asm__ __volatile__("dsb sy");            /* _unif writes -> DRAM */
+    v3d_core()[0x34 / 4] = _unif_p & ~63u;      /* L2TFLSTA */
+    v3d_core()[0x38 / 4] =                      /* L2TFLEND */
+        (_unif_p + CSD_UNIF_WORDS * 4u + 63u) & ~63u;
+    v3d_core()[0x30 / 4] = (1u << 0) | (0u << 1);   /* L2TFLS | FLUSH */
+    /* GFXH-1897: a pending L2T flush must complete before any further
+     * L2TCACTL write or QPU traffic */
+    for (i = 0; i < 2000000 && (v3d_core()[0x30 / 4] & (1u << 0)); i++)
+        g2d_poll_hint();
+    v3d_core()[0x24 / 4] = 0x0F0F0F0Fu;             /* SLCACTL */
+    __asm__ __volatile__("dsb sy");
+}
+
 /* SMS power-up + reset kick: without it the QPU never launches. */
 static void g2d_sms_powerup(void)
 {
@@ -519,6 +550,8 @@ int v3d_g2d_init(void)
     _ksrc[KERN_ROTATE] = g2d_qpu_argb_rotate; _ksrc_n[KERN_ROTATE] = g2d_qpu_argb_rotate_n;
     _ksrc[KERN_SCALE_POW2] = g2d_qpu_argb_scale_pow2; _ksrc_n[KERN_SCALE_POW2] = g2d_qpu_argb_scale_pow2_n;
     _ksrc[KERN_ROT90] = g2d_qpu_argb_rot90; _ksrc_n[KERN_ROT90] = g2d_qpu_argb_rot90_n;
+    _ksrc[KERN_COPY] = g2d_qpu_argb_copy; _ksrc_n[KERN_COPY] = g2d_qpu_argb_copy_n;
+    _ksrc[KERN_FILL4] = g2d_qpu_argb_fill4; _ksrc_n[KERN_FILL4] = g2d_qpu_argb_fill4_n;
     for (i = 0; i < KERN_N; i++) {
         uint32_t k;
         _kcode[i] = (uint64_t *)dma_alloc(0, CSD_CODE_WORDS * 8);
@@ -600,6 +633,60 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes)
     return 0;
 }
 
+/* One-shot hardware probe of the vec4 (TMUC general-access) path used
+ * by argb_copy/argb_fill4: copy a 512-byte pattern between two scratch
+ * regions on ONE QPU and verify it on the CPU.  The TMUC config
+ * protocol is proven on the simulator but this hand-rolled CSD form is
+ * unverified silicon territory, so a failed probe simply parks the fast
+ * kernels (callers fall back to the single-word paths) instead of
+ * shipping corrupted pixels. */
+int v3d_g2d_vec4_ok(void)
+{
+    static int cached = -1;
+    uint32_t u[10];
+    uint32_t i;
+    int rc;
+
+    if (cached >= 0)
+        return cached;
+    if (!_ok)
+        return 0;
+    /* pattern in scratch[0..511], destination at scratch+4096; both
+     * regions sit above the 3 KiB tail-redirect area only when V16=256,
+     * which this probe uses (all 16 lanes valid, no redirect) */
+    for (i = 0; i < 128; i++)
+        _scratch[i] = 0x51C40000u + i * 0x101u;
+    for (i = 0; i < 128; i++)
+        _scratch[1024 + i] = 0xDEADBEEFu;
+    u[0] = _scratch_p + 4096u;      /* dst */
+    u[1] = _scratch_p;              /* src */
+    u[2] = 256u;                    /* dstride */
+    u[3] = 256u;                    /* sstride */
+    u[4] = 0u;                      /* C = 0: single tail chunk per row */
+    u[5] = 256u;                    /* V16 = 256: all 16 lanes valid */
+    u[6] = 2u;                      /* H */
+    u[7] = 2u;                      /* rpq */
+    u[8] = 512u;                    /* drows */
+    u[9] = 512u;                    /* srows */
+    /* u10 = scratch base is appended by v3d_g2d_run (unused: V16=256) */
+    rc = v3d_g2d_run(g2d_qpu_argb_copy, (int)g2d_qpu_argb_copy_n, u, 10, 1,
+                     _scratch, 512, _scratch + 1024, 512,
+                     V3D_G2D_MAINT_ALL);
+    cached = (rc == 0);
+    if (!cached)
+        slog("g2d vec4 probe: dispatch rc=%d\n", rc);
+    for (i = 0; cached && i < 128; i++) {
+        if (_scratch[1024 + i] != 0x51C40000u + i * 0x101u) {
+            slog("g2d vec4 probe: word %u got %08x want %08x\n", i,
+                 _scratch[1024 + i], 0x51C40000u + i * 0x101u);
+            cached = 0;
+        }
+    }
+    if (cached)
+        slog("g2d vec4 probe: TMUC vec4 general access ok\n");
+    return cached;
+}
+
 /* ------------------------------------------------------------------ */
 /* CSD dispatch                                                        */
 /* ------------------------------------------------------------------ */
@@ -635,6 +722,10 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         kern = KERN_ROTATE;
     else if (code == g2d_qpu_argb_rot90)
         kern = KERN_ROT90;
+    else if (code == g2d_qpu_argb_copy)
+        kern = KERN_COPY;
+    else if (code == g2d_qpu_argb_fill4)
+        kern = KERN_FILL4;
     else
         return -1;      /* only the bsp_g2d kernels are supported */
     if ((uint32_t)nwords > _ksrc_n[kern])
@@ -658,6 +749,8 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     _unif[nunifs] = _scratch_p;
     if (maint & V3D_G2D_MAINT_PRE)
         g2d_invalidate_caches();
+    else
+        g2d_uniform_fresh();    /* stale-uniform guard, see above */
 
     /* py-videocore7's proven Pi 5 config: cfg[0] = 1 workgroup in X,
      * cfg[3] = 0x000FF010, cfg[4] = batches = one per QPU */
