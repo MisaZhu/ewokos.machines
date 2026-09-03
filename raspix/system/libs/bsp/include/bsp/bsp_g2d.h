@@ -9,6 +9,12 @@
    gpu cannot execute them: there is no cpu fallback. */
 int32_t bsp_g2d_init(void);
 
+/* clock rate of the 2D engine in Hz, as confirmed during bsp_g2d_init()
+   (the hardware backend pins the GPU to its max rate at init and reads
+   back the actual rate). returns 0 when the platform has no such clock
+   (software backends) or the rate could not be confirmed. */
+uint32_t bsp_g2d_clock_hz(void);
+
 /* contig/src_contig/dst_contig: != 0 when the buffer backing is
    physically contiguous (contig shm slab or dma memory), required by
    hardware 2d paths that work on physical addresses. *_phy carries the
@@ -51,7 +57,7 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 			int32_t* dst_w, int32_t* dst_h);
 
 /* rotate the whole source surface clockwise by degree (any angle).
-   dst must be at least the size given by bsp_g2d_rotated_size(); for
+   dst must exactly match the size given by bsp_g2d_rotated_size(); for
    angles other than 0/90/180/270 pixels outside the rotated content
    become transparent.
    in-place (argb_src == argb_dst) is not supported and fails with -1. */
