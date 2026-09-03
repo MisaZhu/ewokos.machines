@@ -482,12 +482,6 @@ static volatile uint32_t *_pm;    /* PM power domain */
 enum { G2D_SOC_UNKNOWN = 0, G2D_SOC_BCM2837, G2D_SOC_BCM2711 };
 static int _soc = G2D_SOC_UNKNOWN;
 static int _csd_timeout_logs = 0;
-#if G2D_CSD_SELFTEST
-/* first-silicon experiment selector: 0 = production workgroup model,
- * 1 = batch model (1 WG replicated across nq batches, one per QPU),
- * 2 = Pi5-exact encoding.  Only the self-test sweep sets this. */
-static int _csd_cfg_mode = 0;
-#endif
 
 static inline volatile uint32_t *v3d_hub(void)
 {
@@ -1871,31 +1865,24 @@ int v3d_g2d_init(void)
             slog("g2d: CSD self-test ret=%d pixel=0x%x (expect 0xff204060)"
                  "\r\n", r, (uint32_t)buf[0]);
 
-            /* ---- part 2: config-mode x nq qid-reveal sweep ----
+            /* ---- part 2: production-config stability check ----
              * 16-row x 16-px tile, rows=1 per band so band offset =
              * qid*64 = row qid; the written-row mask is the exact qid
-             * set the dispatch produced.  mode 0 = workgroup model
-             * (known scattered: qid resolves to the physical QPU the
-             * CSD happens to schedule each WG onto); modes 1/2 = batch
-             * model (1 WG replicated across nq batches, one per QPU,
-             * THREAD_ID = batch*4).  Correct = mask == (1<<nq)-1. */
+             * set the dispatch produced.  The 4.2 batch config plus the
+             * pre-dispatch CSDDONE clear + idle wait must give a FULL,
+             * STABLE mask (== (1<<nq)-1) on EVERY rep.  A rep that drops
+             * a band means the completion handshake is still returning
+             * before the QPU writes drain. */
             {
-                static const int modes[3] = { 0, 1, 2 };
-                int m, rep;
+                static const int snq[2] = { 4, 8 };
+                int q, rep;
 
-                /* repeat each config 4x at the real QPU count (8): a
-                 * mask that is STABLE across reps = deterministic config
-                 * gap (fixable by the right CSD fields); a mask that
-                 * VARIES rep to rep = a flush / CSDDONE-too-early race
-                 * (the QPU writes have not drained when we read back). */
-                for (m = 0; m < 3; m++) {
+                for (q = 0; q < 2; q++) {
                     for (rep = 0; rep < 4; rep++) {
-                        uint32_t nq = 8u;
-                        uint32_t color = 0xff000000u | (nq << 16)
-                                       | ((uint32_t)modes[m] << 8) | 0xa5u;
+                        uint32_t nq = (uint32_t)snq[q];
+                        uint32_t color = 0xff000000u | (nq << 16) | 0x00a5u;
                         uint32_t mask = 0;
 
-                        _csd_cfg_mode = modes[m];
                         for (row = 0; row < 16 * 16; row++)
                             buf[row] = 0u;
                         g2d_dsb();
@@ -1920,13 +1907,11 @@ int v3d_g2d_init(void)
                         for (row = 0; row < 16; row++)
                             if (buf[row * 16] == color)
                                 mask |= (1u << row);
-                        slog("g2d: CSD mode=%d rep=%d nq=8 ret=%d "
-                             "mask=0x%04x (want 0x00ff) id0=0x%x\r\n",
-                             modes[m], rep, r, mask,
-                             (uint32_t)v3d_ctl()[0x93cu / 4]);
+                        slog("g2d: CSD prod nq=%u rep=%d ret=%d "
+                             "mask=0x%04x (want 0x%04x)\r\n",
+                             nq, rep, r, mask, (1u << nq) - 1u);
                     }
                 }
-                _csd_cfg_mode = 0;           /* restore production model */
             }
         }
     }
@@ -2056,45 +2041,36 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         uint32_t nq = (uint32_t)num_qpus;
 
         if (nq > 16)
-            return -1;                      /* WGS_PER_SG is 4 bits */
-#if G2D_CSD_SELFTEST
-        if (_csd_cfg_mode == 1) {
-            /* batch model: ONE 16-thread workgroup replicated across nq
-             * batches, one batch per QPU.  THREAD_ID = batch_index*4, so
-             * qid = (tidx>>2)&15 = batch_index = 0..nq-1 deterministically
-             * (this is how the Pi5 7.1 path enumerates QPUs). */
-            cfg[0] = 1u << 16;              /* NUM_WGS_X = 1 */
-            cfg[1] = 1u << 16;              /* NUM_WGS_Y = 1 */
-            cfg[2] = 1u << 16;              /* NUM_WGS_Z = 1 */
-            cfg[3] = (1u << 8)              /* WGS_PER_SG = 1 */
-                   | ((nq - 1u) << 12)      /* BATCHES_PER_SG - 1 = nq-1 */
-                   | 16u;                   /* WG_SIZE = 16 */
-            cfg[4] = nq - 1u;               /* NUM_BATCHES - 1 = nq-1 */
-            cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
-                   | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
-        } else if (_csd_cfg_mode == 2) {
-            /* Pi5-exact encoding, verbatim cfg3/cfg4 semantics */
-            cfg[0] = 1u << 16;              /* NUM_WGS_X = 1 */
-            cfg[3] = 0x000FF010u;
-            cfg[4] = nq;                    /* batches = one per QPU */
-            cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
-                   | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
-        } else
-#endif
-        {
-            cfg[0] = nq << 16;              /* workgroup count X */
-            cfg[1] = 1u << 16;              /* workgroup count Y */
-            cfg[2] = 1u << 16;              /* workgroup count Z */
-            cfg[3] = ((nq & 0xfu) << 8)     /* WGS_PER_SG (0 encodes 16) */
-                   | ((nq - 1u) << 12)      /* BATCHES_PER_SG - 1 */
-                   | 16u;                   /* WG_SIZE */
-            cfg[4] = nq - 1u;               /* NUM_BATCHES - 1 */
-            cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
-                   | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
-        }
+            return -1;
+        /* V3D 4.2 batch model (silicon-verified on BCM2711): ONE
+         * workgroup replicated across nq batches, one batch per QPU, so
+         * THREAD_ID = batch*4 and qid = (tidx>>2)&15 = batch = 0..nq-1
+         * deterministically.  The workgroup model (NUM_WGS_X = nq)
+         * instead resolves qid to the physical QPU the CSD
+         * nondeterministically schedules each WG onto, which scatters
+         * bands and drops rows.  cfg3/cfg4 use the exact encoding proven
+         * on the Pi5 7.1 path. */
+        cfg[0] = 1u << 16;                  /* NUM_WGS_X = 1 */
+        cfg[3] = 0x000FF010u;               /* WG_SIZE=16, SG/batch max */
+        cfg[4] = nq;                        /* batches = one per QPU */
+        cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
+               | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
     }
     cfg[6] = _unif_p;
     cfg[7] = 0;                         /* V3D 7.x CFG7 only */
+
+    /* Clear any stale CSDDONE and, on 4.2, wait for the CSD to retire
+     * the previous dispatch before arming this one.  Without this the
+     * completion poll below can break on the previous dispatch's
+     * done-bit: on back-to-back 4.2 dispatches that made every other
+     * call return before its QPUs finished, so the frame was read back
+     * partially drained (verified: period-2 mask alternation). */
+    v3d_ctl()[INT_CLR / 4] = csd_done;
+    if (_ver < 71)
+        for (i = 0; i < 100000u; i++)
+            if ((v3d_ctl()[CSD_STATUS_OFF / 4] & 0x3u) == 0u)
+                break;
+
     for (i = 1; i <= (uint32_t)((_ver >= 71) ? 7 : 6); i++)
         csd[i] = cfg[i];
     csd[0] = cfg[0];                    /* sole CFG0 write starts it */
