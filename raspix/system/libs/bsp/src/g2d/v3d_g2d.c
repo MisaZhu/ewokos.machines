@@ -125,7 +125,7 @@
 #define PM_PASSWORD  0x5A000000u
 #define PM_V3DRSTN   (1u << 6)
 
-#define CSD_CODE_WORDS 256
+#define CSD_CODE_WORDS 512      /* 376-word argb_alpha (raspi5 translation) */
 #define CSD_UNIF_WORDS 512      /* VC4: 16 QPUs x VC4_UNIF_QWORDS slots */
 
 /* Raspberry Pi firmware property tags and clock ID. */
@@ -278,21 +278,38 @@ static inline void g2d_dsb(void)
 #endif
 }
 
+/* spin-wait hint for the register polls below: a tight loop of
+ * device-memory reads issues a fresh uncached AXI transaction every
+ * iteration and still occupies the ARM pipeline between them; yielding
+ * lets a second thread on the same core make progress while the GPU
+ * flushes.  The flush duration itself is GPU-bound - the hint only
+ * moves the waste off the CPU.  The arm build target defaults to a
+ * pre-ARMv7 assembler where `yield` does not exist - plain nop. */
+#if defined(__aarch64__)
+#define g2d_poll_hint() __asm__ __volatile__("yield")
+#else
+#define g2d_poll_hint() __asm__ __volatile__("nop")
+#endif
+
 /* ---- dma staging (physically contiguous, NOCACHE) ----
- * The eight ARGB kernels (four V3D 4.2 CSD + four VC4 SRQ) are
- * PRELOADED once at init into their own 256-word dma regions, so a
- * dispatch never re-copies code - only the small uniform block is
- * refreshed per call.  The GPU operates directly on the caller's
- * canvas addresses (zero copy). */
+ * The twelve ARGB kernels (eight V3D 4.2 CSD, translated from raspi5,
+ * + four VC4 SRQ) are PRELOADED once at init into their own dma
+ * regions, so a dispatch never re-copies code - only the small uniform
+ * block is refreshed per call.  The GPU operates directly on the
+ * caller's canvas addresses (zero copy). */
 #define KERN_FILL 0
 #define KERN_BLIT 1
 #define KERN_ALPHA 2
 #define KERN_ROTATE 3
-#define KERN_FILL_VC4 4
-#define KERN_BLIT_VC4 5
-#define KERN_ALPHA_VC4 6
-#define KERN_ROTATE_VC4 7
-#define KERN_TOTAL 8
+#define KERN_SCALE_POW2 4
+#define KERN_ROT90 5
+#define KERN_COPY 6
+#define KERN_FILL4 7
+#define KERN_FILL_VC4 8
+#define KERN_BLIT_VC4 9
+#define KERN_ALPHA_VC4 10
+#define KERN_ROTATE_VC4 11
+#define KERN_TOTAL 12
 static uint64_t *_kcode[KERN_TOTAL];        /* per-kernel code VA (dma) */
 static uint32_t _kcode_p[KERN_TOTAL];       /* per-kernel code physical */
 static const uint64_t *_ksrc[KERN_TOTAL];   /* kernel source arrays */
@@ -342,16 +359,19 @@ static ewokos_addr_t _ram_total = 0;
  * the L2T afterwards (see g2d_invalidate_caches / g2d_flush_l2), the
  * same discipline the Linux vc4 driver uses (vc4_flush_caches). */
 
+/* cached sys_dma window: captured once at init.  is_dma_addr() runs
+ * three times per dispatch, so re-querying SYS_GET_SYS_INFO every time
+ * burned kernel transitions; the window never changes at runtime. */
+static ewokos_addr_t _dma_v_base = 0, _dma_v_size = 0;
+
 /* is the pointer inside the sys_dma NOCACHE window? (no cache
  * maintenance needed there) */
 static int is_dma_addr(const void *v)
 {
-    sys_info_t si;
     uintptr_t a = (uintptr_t)v;
 
-    sys_get_sys_info(&si);
-    return a >= (uintptr_t)si.sys_dma.v_base &&
-           a < (uintptr_t)(si.sys_dma.v_base + si.sys_dma.size);
+    return a >= (uintptr_t)_dma_v_base &&
+           a < (uintptr_t)(_dma_v_base + _dma_v_size);
 }
 
 static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
@@ -571,9 +591,11 @@ static void g2d_flush_l2(void)
     uint32_t i;
 
     v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 8);               /* TMUWCF */
-    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 8)); i++) {}
+    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 8)); i++)
+        g2d_poll_hint();
     v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 0) | (2u << 1);   /* L2TFLS | CLEAN */
-    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++) {}
+    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
+        g2d_poll_hint();
     g2d_dsb();
 }
 
@@ -586,6 +608,35 @@ static void g2d_invalidate_caches(void)
 {
     v3d_ctl()[CTL_L2CACTL / 4] = 1u << 2;     /* L2 clear (GPU_FFT) */
     v3d_ctl()[CTL_SLCACTL / 4] = ~0u;         /* clear T1/T0/U/I slice caches */
+    g2d_dsb();
+}
+
+/* Uniform-visibility barrier for PRE-elided dispatches (the middle
+ * bands of a batched large-surface op).  The QPU's uniform fetch is
+ * served through the V3D L2T/slice caches, so a dispatch that skips
+ * the full pre-job invalidation would re-read the PREVIOUS dispatch's
+ * uniform block (still resident from its fetch) and re-run its
+ * parameters - on raspi5 silicon every elided band re-rendered band 0.
+ * The canvas data needs no maintenance here (rows are band-disjoint,
+ * no CPU access between dispatches, the first dispatch's full PRE
+ * dropped the stale lines); only the freshly-written uniform block
+ * must be pushed out and dropped from the GPU caches.  A ranged
+ * mode-0 L2T flush over those few lines costs microseconds, unlike
+ * the full-L2 walk.  CSD-only (never called on the VC4 SRQ path). */
+static void g2d_uniform_fresh(void)
+{
+    uint32_t i;
+
+    g2d_dsb();                                  /* _unif writes -> DRAM */
+    v3d_ctl()[CTL_L2TFLSTA / 4] = _unif_p & ~63u;
+    v3d_ctl()[CTL_L2TFLEND / 4] =
+        (_unif_p + CSD_UNIF_WORDS * 4u + 63u) & ~63u;
+    /* mode 0 = clean + invalidate; GFXH-1897: a pending L2T flush must
+     * complete before any further L2TCACTL write or QPU traffic */
+    v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 0) | (0u << 1);   /* L2TFLS | FLUSH */
+    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
+        g2d_poll_hint();
+    v3d_ctl()[CTL_SLCACTL / 4] = ~0u;
     g2d_dsb();
 }
 
@@ -672,6 +723,8 @@ int v3d_g2d_init(void)
     _ram_contig_base = si.shm_contig.phy_base;
     _ram_contig_top = si.shm_contig.phy_base + si.shm_contig.size;
     _ram_total = si.total_phy_mem_size;
+    _dma_v_base = si.sys_dma.v_base;    /* cached for is_dma_addr() */
+    _dma_v_size = si.sys_dma.size;
 
     /* the V3D and PM blocks sit INSIDE the 32 MB MMIO window that the
      * kernel maps into every process - no SYS_MEM_MAP needed */
@@ -710,6 +763,10 @@ int v3d_g2d_init(void)
     _ksrc[KERN_BLIT] = g2d_qpu_argb_blit; _ksrc_n[KERN_BLIT] = g2d_qpu_argb_blit_n;
     _ksrc[KERN_ALPHA] = g2d_qpu_argb_alpha; _ksrc_n[KERN_ALPHA] = g2d_qpu_argb_alpha_n;
     _ksrc[KERN_ROTATE] = g2d_qpu_argb_rotate; _ksrc_n[KERN_ROTATE] = g2d_qpu_argb_rotate_n;
+    _ksrc[KERN_SCALE_POW2] = g2d_qpu_argb_scale_pow2; _ksrc_n[KERN_SCALE_POW2] = g2d_qpu_argb_scale_pow2_n;
+    _ksrc[KERN_ROT90] = g2d_qpu_argb_rot90; _ksrc_n[KERN_ROT90] = g2d_qpu_argb_rot90_n;
+    _ksrc[KERN_COPY] = g2d_qpu_argb_copy; _ksrc_n[KERN_COPY] = g2d_qpu_argb_copy_n;
+    _ksrc[KERN_FILL4] = g2d_qpu_argb_fill4; _ksrc_n[KERN_FILL4] = g2d_qpu_argb_fill4_n;
     _ksrc[KERN_FILL_VC4] = g2d_qpu_argb_fill_vc4; _ksrc_n[KERN_FILL_VC4] = g2d_qpu_argb_fill_vc4_n;
     _ksrc[KERN_BLIT_VC4] = g2d_qpu_argb_blit_vc4; _ksrc_n[KERN_BLIT_VC4] = g2d_qpu_argb_blit_vc4_n;
     _ksrc[KERN_ALPHA_VC4] = g2d_qpu_argb_alpha_vc4; _ksrc_n[KERN_ALPHA_VC4] = g2d_qpu_argb_alpha_vc4_n;
@@ -1144,6 +1201,60 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes)
     return 0;
 }
 
+/* One-shot hardware probe of the vec4 (TMUC general-access) path used
+ * by argb_copy/argb_fill4: copy a 512-byte pattern between two scratch
+ * regions on ONE QPU and verify it on the CPU.  The TMUC config
+ * protocol is proven on raspi5 silicon and the simulator, but this
+ * 4.2 translation is unverified silicon territory, so a failed probe
+ * simply parks the fast kernels (callers fall back to the single-word
+ * paths) instead of shipping corrupted pixels. */
+int v3d_g2d_vec4_ok(void)
+{
+    static int cached = -1;
+    uint32_t u[10];
+    uint32_t i;
+    int rc;
+
+    if (cached >= 0)
+        return cached;
+    if (!_ok || !_has_hub)      /* VC4 (2.1) cannot run the CSD kernels */
+        return 0;
+    /* pattern in scratch[0..511], destination at scratch+4096; both
+     * regions sit above the 3 KiB tail-redirect area only when V16=256,
+     * which this probe uses (all 16 lanes valid, no redirect) */
+    for (i = 0; i < 128; i++)
+        _scratch[i] = 0x51C40000u + i * 0x101u;
+    for (i = 0; i < 128; i++)
+        _scratch[1024 + i] = 0xDEADBEEFu;
+    u[0] = _scratch_p + 4096u;      /* dst */
+    u[1] = _scratch_p;              /* src */
+    u[2] = 256u;                    /* dstride */
+    u[3] = 256u;                    /* sstride */
+    u[4] = 0u;                      /* C = 0: single tail chunk per row */
+    u[5] = 256u;                    /* V16 = 256: all 16 lanes valid */
+    u[6] = 2u;                      /* H */
+    u[7] = 2u;                      /* rpq */
+    u[8] = 512u;                    /* drows */
+    u[9] = 512u;                    /* srows */
+    /* u10 = scratch base is appended by v3d_g2d_run (unused: V16=256) */
+    rc = v3d_g2d_run(g2d_qpu_argb_copy, (int)g2d_qpu_argb_copy_n, u, 10, 1,
+                     _scratch, 512, _scratch + 1024, 512,
+                     V3D_G2D_MAINT_ALL);
+    cached = (rc == 0);
+    if (!cached)
+        slog("g2d vec4 probe: dispatch rc=%d\n", rc);
+    for (i = 0; cached && i < 128; i++) {
+        if (_scratch[1024 + i] != 0x51C40000u + i * 0x101u) {
+            slog("g2d vec4 probe: word %u got %08x want %08x\n", i,
+                 _scratch[1024 + i], 0x51C40000u + i * 0x101u);
+            cached = 0;
+        }
+    }
+    if (cached)
+        slog("g2d vec4 probe: TMUC vec4 general access ok\n");
+    return cached;
+}
+
 /* ------------------------------------------------------------------ */
 /* CSD dispatch                                                        */
 /* ------------------------------------------------------------------ */
@@ -1152,7 +1263,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len)
+                void *dst, size_t dst_len, unsigned maint)
 {
     uint32_t csd_base = (_ver >= 71) ? CSD_CFG_BASE_V7 : CSD_CFG_BASE_OLD;
     uint32_t csd_done = (_ver >= 71) ? INT_CSDDONE_V7 : INT_CSDDONE_OLD;
@@ -1162,8 +1273,11 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     uint32_t i;
     int kern = -1;
 
+    /* CSD only: VC4 (2.1) has no compute dispatcher - callers must use
+     * v3d_g2d_run_vc4 there */
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
-        nunifs < 0 || nunifs >= CSD_UNIF_WORDS || num_qpus <= 0 || !_ok)
+        nunifs < 0 || nunifs >= CSD_UNIF_WORDS || num_qpus <= 0 ||
+        !_ok || _ver < 41)
         return -1;
 
     /* select the preloaded kernel staging: no code is ever copied at
@@ -1177,18 +1291,28 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         kern = KERN_ALPHA;
     else if (code == g2d_qpu_argb_rotate)
         kern = KERN_ROTATE;
+    else if (code == g2d_qpu_argb_scale_pow2)
+        kern = KERN_SCALE_POW2;
+    else if (code == g2d_qpu_argb_rot90)
+        kern = KERN_ROT90;
+    else if (code == g2d_qpu_argb_copy)
+        kern = KERN_COPY;
+    else if (code == g2d_qpu_argb_fill4)
+        kern = KERN_FILL4;
     else
-        return -1;      /* only the four bsp_g2d kernels are supported */
+        return -1;      /* only the bsp_g2d kernels are supported */
     if ((uint32_t)nwords > _ksrc_n[kern])
         return -1;
 
-    /* make the caller's ARM-side writes visible to the GPU, and drop the
-     * ARM's stale copies of the destination.  NOCACHE dma/contig
-     * canvases need no maintenance beyond the dsb inside the helpers. */
-    if (src && src_len && !is_dma_addr(src))
-        g2d_dsb();
-    if (dst && dst_len && !is_dma_addr(dst))
-        g2d_dsb();
+    /* PRE: make the caller's ARM-side writes visible to the GPU, and
+     * drop the ARM's stale copies of the destination.  NOCACHE
+     * dma/contig canvases need no maintenance beyond the dsb. */
+    if (maint & V3D_G2D_MAINT_PRE) {
+        if (src && src_len && !is_dma_addr(src))
+            g2d_dsb();
+        if (dst && dst_len && !is_dma_addr(dst))
+            g2d_dsb();
+    }
 
     /* only the uniforms change per call; the kernel is already in dma */
     for (i = 0; i < (uint32_t)nunifs; i++)
@@ -1196,7 +1320,10 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* extra trailing uniform: scratch base for the kernels' flush
      * epilogue (physical address - the QPU has no MMU) */
     _unif[nunifs] = _scratch_p;
-    g2d_invalidate_caches();
+    if (maint & V3D_G2D_MAINT_PRE)
+        g2d_invalidate_caches();
+    else
+        g2d_uniform_fresh();    /* stale-uniform guard, see above */
 
     /* V3D 7.1: the exact config of the proven raspi5 path.  V3D 4.2:
      * Mesa's compute model (drm/v3d CSD submit) - num_qpus workgroups
@@ -1232,9 +1359,11 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 
     /* Every production kernel waits for pending TMU writes and then
      * uses the legal thread-end protocol, so CSDDONE is authoritative. */
-    for (i = 0; i < 2000000; i++)
+    for (i = 0; i < 2000000; i++) {
         if (v3d_ctl()[INT_STS / 4] & csd_done)
             break;
+        g2d_poll_hint();
+    }
     if (i == 2000000) {
         v3d_ctl()[INT_CLR / 4] = csd_done;
         /* A timeout is a real failure.  Do not reset the graphics domain
@@ -1243,10 +1372,13 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     }
     v3d_ctl()[INT_CLR / 4] = csd_done;
 
-    /* GPU writes -> DRAM, then drop the ARM's stale destination lines */
-    g2d_flush_l2();
-    if (dst && dst_len && !is_dma_addr(dst))
-        g2d_dsb();
+    /* POST: GPU writes -> DRAM, then drop the ARM's stale destination
+     * lines */
+    if (maint & V3D_G2D_MAINT_POST) {
+        g2d_flush_l2();
+        if (dst && dst_len && !is_dma_addr(dst))
+            g2d_dsb();
+    }
     return 0;
 }
 
