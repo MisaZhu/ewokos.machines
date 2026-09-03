@@ -85,9 +85,23 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 /*
  * VC4 (V3D 2.1) counterpart of v3d_g2d_run(): launches one SRQ thread
  * per QPU of `code`.  The uniform stream is PER-QPU: QPU q reads its
- * contract words starting at unifs + q * VC4_UNIF_QWORDS (32-word
- * slots; words beyond the kernel contract are ignored).  Returns 0 on
- * success, 1 on launch timeout, -1 on a bad argument.
+ * contract words starting at unifs + q * VC4_UNIF_QWORDS (words beyond
+ * the kernel contract are ignored).  Returns 0 on success, 1 on launch
+ * timeout, -1 on a bad argument.
+ *
+ * This stride is the per-launch cost that every VC4 dispatch pays:
+ * both staging paths copy nq * VC4_UNIF_QWORDS words from the caller's
+ * array into DMA memory and the ring consumes the same amount per
+ * launch.  It is sized by the widest per-QPU contract in the tree, which
+ * is the alpha pipeline's staging contracts; the self-looping copy
+ * kernel reads s[0..6].  32 * 4 = 128 bytes is also a multiple of
+ * VC4_STAGING_ALIGN, so every per-QPU block starts on the alignment the
+ * SRQUA register requires.
+ *
+ * Shrinking it was tried (32 -> 16) while only the span-shaped kernels
+ * were in the tree and their widest contract was 4 words; keep the
+ * headroom so a wider future contract fails the v3d_g2d.c guard instead
+ * of reading a neighbour's words.
  */
 #define VC4_UNIF_QWORDS 32
 int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
@@ -149,5 +163,15 @@ extern const uint64_t g2d_qpu_argb_gather_vc4[];
 extern const unsigned g2d_qpu_argb_gather_vc4_n;
 extern const uint64_t g2d_qpu_argb_alpha_gather_vc4[];
 extern const unsigned g2d_qpu_argb_alpha_gather_vc4_n;
+/* Self-looping VC4 copy kernel: one launch per 12 destination rows for
+ * integer Q15 maps.  Dispatched only under the G2D_BAND_MAX_VDW
+ * per-thread iteration cap. */
+extern const uint64_t g2d_qpu_argb_copy_loop_vc4[];
+extern const unsigned g2d_qpu_argb_copy_loop_vc4_n;
+/* Self-looping VC4 alpha kernel: copy-loop shape plus a dst TMU gather
+ * and the source-over ALU blend - one launch per 12 destination rows
+ * under the same eligibility and iteration cap as the copy loop. */
+extern const uint64_t g2d_qpu_argb_alpha_loop_vc4[];
+extern const unsigned g2d_qpu_argb_alpha_loop_vc4_n;
 
 #endif /* V3D_G2D_H */

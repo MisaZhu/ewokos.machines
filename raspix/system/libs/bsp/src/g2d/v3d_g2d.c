@@ -122,7 +122,21 @@
 #define PM_V3DRSTN   (1u << 6)
 
 #define CSD_CODE_WORDS 256
-#define CSD_UNIF_WORDS 1024     /* VC4: 2 x (16 QPUs x VC4_UNIF_QWORDS) */
+#define CSD_UNIF_WORDS 1024     /* _unif allocation, in words */
+
+/* _unif is indexed as _unif[q * VC4_UNIF_QWORDS + i] for every q below the
+ * maximum QPU count, so the allocation has to cover the widest per-QPU
+ * contract at that count.  Guard the pairing rather than letting a future
+ * VC4_UNIF_QWORDS increase silently run off the end of the buffer. */
+#if 16 * VC4_UNIF_QWORDS > CSD_UNIF_WORDS
+#error "CSD_UNIF_WORDS must hold 16 QPUs x VC4_UNIF_QWORDS words"
+#endif
+/* The per-QPU uniform stride must cover the widest VC4 contract in the
+ * tree (the copy-loop kernel reads s[0..6]); keep headroom so a wider
+ * future contract fails here instead of reading a neighbour's words. */
+#if VC4_UNIF_QWORDS < 8
+#error "VC4_UNIF_QWORDS must be at least the copy-loop contract's 7 words"
+#endif
 
 /* Raspberry Pi firmware property tags and clock ID. */
 #define FW_GET_CLOCK_RATE      0x00030002u
@@ -474,7 +488,15 @@ static inline void g2d_dsb(void)
 #define KERN_ALPHA_GATHER_VC4 9
 #define KERN_CACHE_SCRUB_VC4 10
 #define KERN_FILL_LOOP_VC4 11
-#define KERN_TOTAL 12
+/* Self-looping TMU copy kernel: one launch walks whole rows, each QPU
+ * thread gathering and storing up to G2D_BAND_MAX_VDW 16-pixel spans
+ * (the per-thread iteration cap is enforced by bsp_g2d.c). */
+#define KERN_COPY_LOOP_VC4 12
+/* Self-looping TMU alpha kernel: copy-loop shape plus a dst gather and
+ * the source-over ALU blend - one launch per 12 destination rows under
+ * the same eligibility and iteration cap as the copy loop. */
+#define KERN_ALPHA_LOOP_VC4 13
+#define KERN_TOTAL 14
 /* Alpha has one immutable code address per exact output span.  VC4 does
  * not reliably observe either dynamic late-uniform VDW setups or code
  * replacement at an address already present in its instruction cache. */
@@ -1026,6 +1048,8 @@ int v3d_g2d_init(void)
     _ksrc[KERN_ALPHA_GATHER_VC4] = g2d_qpu_argb_alpha_gather_vc4; _ksrc_n[KERN_ALPHA_GATHER_VC4] = g2d_qpu_argb_alpha_gather_vc4_n;
     _ksrc[KERN_CACHE_SCRUB_VC4] = g2d_qpu_cache_scrub_vc4; _ksrc_n[KERN_CACHE_SCRUB_VC4] = g2d_qpu_cache_scrub_vc4_n;
     _ksrc[KERN_FILL_LOOP_VC4] = g2d_qpu_argb_fill_loop_vc4; _ksrc_n[KERN_FILL_LOOP_VC4] = g2d_qpu_argb_fill_loop_vc4_n;
+    _ksrc[KERN_COPY_LOOP_VC4] = g2d_qpu_argb_copy_loop_vc4; _ksrc_n[KERN_COPY_LOOP_VC4] = g2d_qpu_argb_copy_loop_vc4_n;
+    _ksrc[KERN_ALPHA_LOOP_VC4] = g2d_qpu_argb_alpha_loop_vc4; _ksrc_n[KERN_ALPHA_LOOP_VC4] = g2d_qpu_argb_alpha_loop_vc4_n;
     for (i = 0; i < KERN_TOTAL; i++) {
         uint32_t k;
         _kcode[i] = (uint64_t *)(uintptr_t)dma_alloc(0, CSD_CODE_WORDS * 8);
@@ -2069,6 +2093,10 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
         kern = KERN_GATHER_VC4;
     else if (code == g2d_qpu_argb_alpha_gather_vc4)
         kern = KERN_ALPHA_GATHER_VC4;
+    else if (code == g2d_qpu_argb_copy_loop_vc4)
+        kern = KERN_COPY_LOOP_VC4;
+    else if (code == g2d_qpu_argb_alpha_loop_vc4)
+        kern = KERN_ALPHA_LOOP_VC4;
     else
         return -1;      /* only the four bsp_g2d kernels are supported */
     if ((uint32_t)nwords > _ksrc_n[kern])
@@ -2156,6 +2184,10 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
     {
         uint32_t write_addr;
 
+        /* The destination uniform is not at a fixed index: each kernel
+         * family puts dst_row0 / dst span address somewhere different.
+         * Reading the wrong word would derive flush_writes from a colour
+         * or a map constant and be right only by accident. */
         if (kern == KERN_FILL_VC4 || kern == KERN_FILL_LOOP_VC4)
             write_addr = unifs[0];
         else
