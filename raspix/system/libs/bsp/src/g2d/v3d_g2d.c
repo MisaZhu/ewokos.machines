@@ -20,7 +20,11 @@
  *     NUM_BATCHES-1 in CFG4, shader-record bits in CFG5), while the
  *     V3D 7.x path keeps the proven raspi5 register values;
  *   - V3D 2.1 has no usable CSD: the *_vc4 kernels run through the
- *     SRQ user-program launcher (the GPU_FFT protocol).
+ *     SRQ user-program launcher (the GPU_FFT protocol);
+ *   - the two SoCs are identified at init and powered differently:
+ *     BCM2837 needs the firmware GRAFX domain call, BCM2711 keeps V3D
+ *     behind a stopped AXI async bridge (every read 0xdeadbeef) that
+ *     only the PM/ASB register sequence below opens.
  *
  * CSD code/uniform/scratch staging is dma_alloc'ed (physically
  * contiguous sys_dma memory), so the QPU fetches them by physical
@@ -120,6 +124,22 @@
 #define PM_GRAFX_OFF 0x10cu
 #define PM_PASSWORD  0x5A000000u
 #define PM_V3DRSTN   (1u << 6)
+
+/* ---- BCM2711 (Pi4/CM4) V3D AXI async bridge (Linux bcm2835-power.c,
+ * v6.1: the "rpivid_asb" block; on 2711 the V3D master/slave bridges
+ * live here, not in the old ASB).  While a bridge is stopped every
+ * register read behind it returns 0xdeadbeef - exactly what a probe of
+ * an un-powered Pi4 V3D sees. */
+#define ASB_MMIO_OFF     0xC11000u  /* Pi4: 0x7ec11000 */
+#define ASB_V3D_S_CTRL   0x08u
+#define ASB_V3D_M_CTRL   0x0cu
+#define ASB_REQ_STOP     (1u << 0)
+#define ASB_ACK          (1u << 1)
+#define ASB_AXI_BRDG_ID  0x20u
+#define BCM_BRDG_ID      0x62726467u  /* "BRDG" */
+/* bcm2711.dtsi v3d node: hub 0x7ec00000 0x4000, core0 0x7ec04000 - the
+ * 0x8000 core stride is the V3D 7.x (raspi5) layout, not this one. */
+#define V3D_CORE0_OFF_2711 0x4000u
 
 #define CSD_CODE_WORDS 256
 #define CSD_UNIF_WORDS 1024     /* _unif allocation, in words */
@@ -227,6 +247,12 @@ typedef struct {
  * kernels (exit-only, 1 uniform read, 9 uniform reads) to isolate which
  * instruction stream wedges the SRQ dispatch.  0 for production. */
 #define G2D_VC4_MICRO_TEST 0
+
+/* BRING-UP SWITCH: V3D 4.x CSD self-test at init - dispatch the real
+ * fill kernel onto a private 4x4 dma tile and read the pixel back.
+ * Separates "the CSD machinery never retires" from "the bsp uniform
+ * contract is wrong" on first silicon.  0 once Pi4 is proven. */
+#define G2D_CSD_SELFTEST 1
 
 /* Pi3 bring-up: GPU_FFT on Pi 2/3 feeds SRQPC the PLAIN (L2-cached)
  * VC address of its code - mem_alloc returns GPU-side addresses in
@@ -447,6 +473,22 @@ static int g2d_vc4_launch_mode(uint32_t code_p, uint32_t unif_p, uint32_t nq,
 static volatile uint32_t *_v3d;   /* V3D block (hub at +0, core at +0x8000) */
 static volatile uint32_t *_pm;    /* PM power domain */
 
+/* ---- SoC generation ----
+ * Pi3 and Pi4 carry different VideoCore blocks: BCM2837 = VC4 (V3D
+ * 2.1, single core at base+0, SRQ launcher, firmware GRAFX domain),
+ * BCM2711 = V3D 4.2 (hub + core0 at base+0x4000, CSD compute, V3D
+ * behind an AXI async bridge).  Identified once at init; selects the
+ * power-on sequence and the core0 stride. */
+enum { G2D_SOC_UNKNOWN = 0, G2D_SOC_BCM2837, G2D_SOC_BCM2711 };
+static int _soc = G2D_SOC_UNKNOWN;
+static int _csd_timeout_logs = 0;
+#if G2D_CSD_SELFTEST
+/* first-silicon experiment selector: 0 = production workgroup model,
+ * 1 = batch model (1 WG replicated across nq batches, one per QPU),
+ * 2 = Pi5-exact encoding.  Only the self-test sweep sets this. */
+static int _csd_cfg_mode = 0;
+#endif
+
 static inline volatile uint32_t *v3d_hub(void)
 {
     return _v3d + (V3D_HUB_OFF / 4);
@@ -454,7 +496,9 @@ static inline volatile uint32_t *v3d_hub(void)
 
 static inline volatile uint32_t *v3d_core(void)
 {
-    return _v3d + (V3D_CORE0_OFF / 4);
+    uint32_t off = (_soc == G2D_SOC_BCM2711) ? V3D_CORE0_OFF_2711
+                                             : V3D_CORE0_OFF;
+    return _v3d + (off / 4);
 }
 
 /* ---- arch-portable barriers (this file builds for arm AND aarch64) ----
@@ -557,10 +601,11 @@ static int _num_qpus = 0;
 static int _has_hub = 0;
 static uint32_t _v3d_clock_hz = 0;
 
-/* Core (control) register block: hub-style V3D >= 3.3 keeps the core
- * at base+0x8000 next to the hub; V3D 2.1 (VC4) has no hub and the
- * whole core block (IDENT, L2C, SRQ, ...) sits at base+0x0000 - the
- * layout the Linux vc4 driver uses. */
+/* Core (control) register block: hub-style V3D keeps the core next to
+ * the hub (+0x4000 on BCM2711, +0x8000 on the V3D 7.x layout, see
+ * v3d_core); V3D 2.1 (VC4) has no hub and the whole core block (IDENT,
+ * L2C, SRQ, ...) sits at base+0x0000 - the layout the Linux vc4 driver
+ * uses. */
 static inline volatile uint32_t *v3d_ctl(void)
 {
     return _has_hub ? v3d_core() : v3d_hub();
@@ -816,6 +861,58 @@ static void g2d_power_on_v3d(void)
     slog("g2d: V3D power domain on failed\r\n");
 }
 
+/* SoC identification: the machine string names the board family (the
+ * same match bsp_sd.c uses); the BCM2711 ASB bridge ID doubles as a
+ * hardware cross-check - no other SoC in this driver answers "BRDG"
+ * at mmio+0xC11020. */
+static void g2d_ident_soc(void)
+{
+    sys_info_t si;
+    volatile uint32_t *asb =
+        (volatile uint32_t *)(uintptr_t)(_mmio_base + ASB_MMIO_OFF);
+
+    sys_get_sys_info(&si);
+    if (strstr(si.machine, "pi4") || strstr(si.machine, "cm4") ||
+        strstr(si.machine, "2711"))
+        _soc = G2D_SOC_BCM2711;
+    else
+        _soc = G2D_SOC_BCM2837;
+
+    if (asb[ASB_AXI_BRDG_ID / 4] == BCM_BRDG_ID)
+        _soc = G2D_SOC_BCM2711;      /* hardware wins over the string */
+    slog("g2d: SoC %s (machine '%s')\r\n",
+         _soc == G2D_SOC_BCM2711 ? "BCM2711" : "BCM2837", si.machine);
+}
+
+/* BCM2711: the firmware domain call cannot open the V3D AXI bridges -
+ * run the Linux bcm2835-power sequence directly: deassert PM_GRAFX
+ * V3DRSTN, then open the ASB master and slave bridges (poll each ACK
+ * until the stop request retires).  The V3D clock must run first or
+ * the bridges never ack. */
+static void g2d_power_on_v3d_2711(void)
+{
+    static const uint32_t br[2] = { ASB_V3D_M_CTRL, ASB_V3D_S_CTRL };
+    volatile uint32_t *asb =
+        (volatile uint32_t *)(uintptr_t)(_mmio_base + ASB_MMIO_OFF);
+    uint32_t i, b, v;
+
+    g2d_clock_set_max();
+
+    v = _pm[PM_GRAFX_OFF / 4];
+    _pm[PM_GRAFX_OFF / 4] = PM_PASSWORD | v | PM_V3DRSTN;
+    g2d_dsb();
+
+    for (b = 0; b < 2; b++) {
+        asb[br[b] / 4] = PM_PASSWORD | (asb[br[b] / 4] & ~ASB_REQ_STOP);
+        for (i = 0; i < 2000000 && (asb[br[b] / 4] & ASB_ACK); i++)
+            ;
+        if (asb[br[b] / 4] & ASB_ACK)
+            slog("g2d: ASB bridge 0x%x stuck (ctrl=0x%x)\r\n",
+                 br[b], (uint32_t)asb[br[b] / 4]);
+    }
+    g2d_dsb();
+}
+
 /* ------------------------------------------------------------------ */
 /* bring-up                                                            */
 /* ------------------------------------------------------------------ */
@@ -919,12 +1016,26 @@ static int g2d_probe(void)
 static int g2d_count_qpus(void)
 {
     uint32_t id1 = v3d_ctl()[CTL_IDENT1 / 4];
-    int qups = (int)((id1 >> 8) & 0xFu) + 1;
-    int nslc = (int)((id1 >> 4) & 0xFu) + 1;
-    int n = qups * nslc;
+    int qups = (int)((id1 >> 8) & 0xFu);
+    int nslc = (int)((id1 >> 4) & 0xFu);
+    int n;
+
+    /* The QUPS/NSLC nibble semantics differ per generation: VC4 (V3D
+     * 2.1) encodes both minus one (Pi3: 3x4=12 QPUs reads as 2,3),
+     * while V3D 4.x encodes absolute counts (BCM2711: 2 slices x 4
+     * QPUs = 8 reads as 4,2).  Adding one on 4.x turns the real 8 into
+     * 15 - and a 15-workgroup supergroup then deadlocks the CSD
+     * scheduler on 8 physical QPUs (verified on Pi4 silicon). */
+    if (_ver == 21) {
+        qups++;
+        nslc++;
+    }
+    n = qups * nslc;
 
     if (n <= 0 || n > 16)
-        n = 12;
+        n = (_ver == 21) ? 12 : 8;
+    slog("g2d: IDENT1=0x%x -> %d QPUs (%d/slice x %d slices)\r\n",
+         id1, n, qups, nslc);
     return n;
 }
 
@@ -1010,11 +1121,20 @@ int v3d_g2d_init(void)
     _v3d = (volatile uint32_t *)(uintptr_t)(_mmio_base + V3D_MMIO_OFF);
     _pm = (volatile uint32_t *)(uintptr_t)(_mmio_base + PM_MMIO_OFF);
 
+    /* Pi3 and Pi4 need different power-on sequences and core strides:
+     * identify the SoC before the first probe. */
+    g2d_ident_soc();
+
     if (!g2d_probe()) {
-        /* BCM2835/2837: the V3D GRAFX domain may be OFF at boot -
-         * Linux powers it through the firmware before touching any
-         * V3D register.  Power it on and probe again. */
-        g2d_power_on_v3d();
+        /* BCM2837: the V3D GRAFX domain may be OFF at boot - Linux
+         * powers it through the firmware before touching any V3D
+         * register.  BCM2711: V3D sits behind stopped AXI async
+         * bridges (every read 0xdeadbeef) - open them the Linux
+         * bcm2835-power way.  Power on and probe again. */
+        if (_soc == G2D_SOC_BCM2711)
+            g2d_power_on_v3d_2711();
+        else
+            g2d_power_on_v3d();
         if (!g2d_probe()) {
             slog("g2d: no V3D block at mmio+0x%x (hub id0=0x%x id0=0x%x id1=0x%x)\r\n",
                  V3D_MMIO_OFF,
@@ -1710,6 +1830,107 @@ int v3d_g2d_init(void)
     if (!_ok)
         slog("g2d: GPU not dispatchable (ver=%u kernels=%u)\r\n",
              (uint32_t)_ver, kn_total);
+
+#if G2D_CSD_SELFTEST
+    if (_ok && _ver >= 41) {
+        /* first-silicon probe.  Part 1: single-QPU 4x4 fill proves the
+         * CSD chain end to end.  Part 2: qid-reveal sweep - fill a
+         * 16-row x 16-px tile with rows=1 per QPU, so band offset =
+         * qid*64 = row qid.  Launching nq workgroups then writes row
+         * qid for every qid the hardware actually produces; the 16-bit
+         * row mask shows the exact qid set.  Correct behaviour is
+         * mask = (1<<nq)-1 (qids 0..nq-1); anything else means the
+         * 4.2 THREAD_ID -> qid mapping or the workgroup/batch config
+         * does not enumerate the QPUs the way the kernel assumes. */
+        uint32_t u[16];
+        ewokos_addr_t tv = dma_alloc(0, 1024);
+        uint32_t tp = (tv != 0) ? dma_phy_addr(0, tv) : 0;
+
+        if (tv != 0 && tp != 0) {
+            volatile uint32_t *buf = (volatile uint32_t *)(uintptr_t)tv;
+            int row, r;
+
+            /* ---- part 1: single-QPU 4x4 sanity ---- */
+            memset(u, 0, sizeof(u));
+            u[0] = 0xff204060u;          /* color */
+            u[1] = 0u;                   /* L - 1: one 16-px group */
+            u[2] = 16u;                  /* row bytes (4 px) */
+            u[3] = 3u;                   /* h - 1 */
+            u[4] = 48u;                  /* group pad minus row bytes */
+            u[5] = 4u;                   /* L * rows per QPU */
+            u[6] = tp;                   /* dst physical */
+            u[8] = 4u;                   /* x1 */
+            u[10] = 4u;                  /* y1 */
+            u[11] = 1u;                  /* full */
+            u[12] = 4u;                  /* rows */
+            u[13] = 64u;                 /* rows * row bytes */
+            u[14] = _scratch_p;
+            r = v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n,
+                            u, 16, 1, NULL, 0,
+                            (void *)(uintptr_t)tv, 64);
+            slog("g2d: CSD self-test ret=%d pixel=0x%x (expect 0xff204060)"
+                 "\r\n", r, (uint32_t)buf[0]);
+
+            /* ---- part 2: config-mode x nq qid-reveal sweep ----
+             * 16-row x 16-px tile, rows=1 per band so band offset =
+             * qid*64 = row qid; the written-row mask is the exact qid
+             * set the dispatch produced.  mode 0 = workgroup model
+             * (known scattered: qid resolves to the physical QPU the
+             * CSD happens to schedule each WG onto); modes 1/2 = batch
+             * model (1 WG replicated across nq batches, one per QPU,
+             * THREAD_ID = batch*4).  Correct = mask == (1<<nq)-1. */
+            {
+                static const int modes[3] = { 0, 1, 2 };
+                int m, rep;
+
+                /* repeat each config 4x at the real QPU count (8): a
+                 * mask that is STABLE across reps = deterministic config
+                 * gap (fixable by the right CSD fields); a mask that
+                 * VARIES rep to rep = a flush / CSDDONE-too-early race
+                 * (the QPU writes have not drained when we read back). */
+                for (m = 0; m < 3; m++) {
+                    for (rep = 0; rep < 4; rep++) {
+                        uint32_t nq = 8u;
+                        uint32_t color = 0xff000000u | (nq << 16)
+                                       | ((uint32_t)modes[m] << 8) | 0xa5u;
+                        uint32_t mask = 0;
+
+                        _csd_cfg_mode = modes[m];
+                        for (row = 0; row < 16 * 16; row++)
+                            buf[row] = 0u;
+                        g2d_dsb();
+
+                        memset(u, 0, sizeof(u));
+                        u[0] = color;
+                        u[1] = 0u;           /* L - 1 (w=16 -> one group) */
+                        u[2] = 64u;          /* row bytes (16 px) */
+                        u[3] = 15u;          /* h - 1 (16 rows) */
+                        u[4] = 0u;           /* L*64 - w*4 = 0 */
+                        u[5] = 1u;           /* L * rows per QPU (rows=1) */
+                        u[6] = tp;
+                        u[8] = 16u;          /* x1 */
+                        u[10] = 16u;         /* y1 */
+                        u[11] = 1u;          /* full */
+                        u[12] = 1u;          /* rows = 1 per QPU */
+                        u[13] = 64u;         /* band stride = 1 row */
+                        u[14] = _scratch_p;
+                        r = v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n,
+                                        u, 16, (int)nq, NULL, 0,
+                                        (void *)(uintptr_t)tv, 1024);
+                        for (row = 0; row < 16; row++)
+                            if (buf[row * 16] == color)
+                                mask |= (1u << row);
+                        slog("g2d: CSD mode=%d rep=%d nq=8 ret=%d "
+                             "mask=0x%04x (want 0x00ff) id0=0x%x\r\n",
+                             modes[m], rep, r, mask,
+                             (uint32_t)v3d_ctl()[0x93cu / 4]);
+                    }
+                }
+                _csd_cfg_mode = 0;           /* restore production model */
+            }
+        }
+    }
+#endif
     return 0;
 }
 
@@ -1779,8 +2000,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 {
     uint32_t csd_base = (_ver >= 71) ? CSD_CFG_BASE_V7 : CSD_CFG_BASE_OLD;
     uint32_t csd_done = (_ver >= 71) ? INT_CSDDONE_V7 : INT_CSDDONE_OLD;
-    volatile uint32_t *csd =
-        _v3d + (((_has_hub ? V3D_CORE0_OFF : 0u) + csd_base) / 4);
+    volatile uint32_t *csd = v3d_ctl() + (csd_base / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
     int kern = -1;
@@ -1837,15 +2057,41 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 
         if (nq > 16)
             return -1;                      /* WGS_PER_SG is 4 bits */
-        cfg[0] = nq << 16;                  /* workgroup count X */
-        cfg[1] = 1u << 16;                  /* workgroup count Y */
-        cfg[2] = 1u << 16;                  /* workgroup count Z */
-        cfg[3] = ((nq & 0xfu) << 8)         /* WGS_PER_SG (0 encodes 16) */
-               | ((nq - 1u) << 12)          /* BATCHES_PER_SG - 1 */
-               | 16u;                       /* WG_SIZE */
-        cfg[4] = nq - 1u;                   /* NUM_BATCHES - 1 */
-        cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
-               | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
+#if G2D_CSD_SELFTEST
+        if (_csd_cfg_mode == 1) {
+            /* batch model: ONE 16-thread workgroup replicated across nq
+             * batches, one batch per QPU.  THREAD_ID = batch_index*4, so
+             * qid = (tidx>>2)&15 = batch_index = 0..nq-1 deterministically
+             * (this is how the Pi5 7.1 path enumerates QPUs). */
+            cfg[0] = 1u << 16;              /* NUM_WGS_X = 1 */
+            cfg[1] = 1u << 16;              /* NUM_WGS_Y = 1 */
+            cfg[2] = 1u << 16;              /* NUM_WGS_Z = 1 */
+            cfg[3] = (1u << 8)              /* WGS_PER_SG = 1 */
+                   | ((nq - 1u) << 12)      /* BATCHES_PER_SG - 1 = nq-1 */
+                   | 16u;                   /* WG_SIZE = 16 */
+            cfg[4] = nq - 1u;               /* NUM_BATCHES - 1 = nq-1 */
+            cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
+                   | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
+        } else if (_csd_cfg_mode == 2) {
+            /* Pi5-exact encoding, verbatim cfg3/cfg4 semantics */
+            cfg[0] = 1u << 16;              /* NUM_WGS_X = 1 */
+            cfg[3] = 0x000FF010u;
+            cfg[4] = nq;                    /* batches = one per QPU */
+            cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
+                   | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
+        } else
+#endif
+        {
+            cfg[0] = nq << 16;              /* workgroup count X */
+            cfg[1] = 1u << 16;              /* workgroup count Y */
+            cfg[2] = 1u << 16;              /* workgroup count Z */
+            cfg[3] = ((nq & 0xfu) << 8)     /* WGS_PER_SG (0 encodes 16) */
+                   | ((nq - 1u) << 12)      /* BATCHES_PER_SG - 1 */
+                   | 16u;                   /* WG_SIZE */
+            cfg[4] = nq - 1u;               /* NUM_BATCHES - 1 */
+            cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
+                   | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
+        }
     }
     cfg[6] = _unif_p;
     cfg[7] = 0;                         /* V3D 7.x CFG7 only */
@@ -1860,6 +2106,25 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
             break;
     if (i == 2000000) {
         v3d_ctl()[INT_CLR / 4] = csd_done;
+        /* bring-up: where did the dispatch die?  STATUS says whether
+         * the block ever accepted it (HAVE_CURRENT/NUM_ACTIVE), the
+         * CURRENT_ID pair shows the workgroup it stalled on. */
+        if (_ver >= 41 && _csd_timeout_logs < 3) {
+            volatile uint32_t *core = v3d_ctl();
+
+            _csd_timeout_logs++;
+            slog("g2d: CSD timeout kern=%d sts=0x%x int=0x%x cur0=0x%x "
+                 "cur4=0x%x id0=0x%x id1=0x%x cfg3=0x%x cfg5=0x%x "
+                 "cfg6=0x%x\r\n",
+                 kern,
+                 (uint32_t)core[CSD_STATUS_OFF / 4],
+                 (uint32_t)core[INT_STS / 4],
+                 (uint32_t)core[0x920u / 4],
+                 (uint32_t)core[0x930u / 4],
+                 (uint32_t)core[0x93cu / 4],
+                 (uint32_t)core[0x940u / 4],
+                 cfg[3], cfg[5], cfg[6]);
+        }
         /* A timeout is a real failure.  Do not reset the graphics domain
          * and do not replay this possibly-live operation. */
         return 1;
