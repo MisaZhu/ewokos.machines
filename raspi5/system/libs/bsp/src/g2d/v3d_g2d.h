@@ -37,6 +37,10 @@ int v3d_g2d_init(void);
 /* Non-zero once the GPU is usable. */
 int v3d_g2d_ready(void);
 
+/* V3D clock rate in Hz as confirmed at init (0 when unknown/unsupported,
+ * e.g. the property mailbox was unavailable). */
+uint32_t v3d_g2d_clock_hz(void);
+
 /* Number of QPUs available for CSD dispatch (12 on BCM2712). */
 int v3d_g2d_num_qpus(void);
 
