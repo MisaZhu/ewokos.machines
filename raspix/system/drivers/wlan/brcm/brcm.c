@@ -180,6 +180,10 @@
  */
 #define BRCMF_MAX_INIT_ATTEMPTS 3
 #define BRCMF_MAX_RESTART_ROUNDS 10
+/* a link that stays CONNECTED this long counts as recovered: the lifecycle
+   restart counter is reset so transient recovery storms spread across
+   uptime never accumulate into a permanent give-up */
+#define BRCMF_STABLE_RESET_MS 300000U
 #define BRCMF_FW_DEAD_SCAN_STREAK 3
 /*
  * Repeated link resets with no successful join in between mean the
@@ -522,6 +526,10 @@ struct brcmf_dev{
 
     bool scan_results_ready;
     bool scan_mpc_off;
+    /* set from event/DPC context, actioned by the worker: restore mpc
+       without issuing a dcmd from inside readframes (a dcmd spins a nested
+       DPC that would corrupt the live cur_read of the outer pass) */
+    bool mpc_restore_pending;
     uint32_t scan_count;
     uint32_t scan_cache_ms;   /* kernel_tic_ms of last SCAN_COMPLETE (cache freshness) */
     volatile uint32_t pending_cmd; /* BRCMF_CMD_* queued by net_dev_cmd, run by worker */
@@ -559,6 +567,7 @@ struct brcmf_dev{
     uint32_t state_since_ms;
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
+    uint32_t last_tx_success_ms;   /* last frame actually put on the air */
     uint32_t scan_cmd_fail_streak; /* consecutive scan cmd errors (dead fw) */
     uint32_t recovery_streak;      /* link resets since last successful join */
     uint32_t self_disassoc_ms;     /* when we tore down our own link (AP switch) */
@@ -1123,6 +1132,7 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->tx_queue_blocked = false;
     bus->rxpending_since_ms = 0;
     bus->last_rx_success_ms = kernel_tic_ms(0);
+    bus->last_tx_success_ms = kernel_tic_ms(0);
     bus->sdio_cmd_fail_count = 0;
     if (flush_queues)
         brcmf_flush_data_queues();
@@ -1154,7 +1164,8 @@ static void brcmf_mark_connected(void)
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
-    brcmf_scan_set_mpc(true);
+    /* event context: defer the mpc dcmd to the worker (mpc_restore_pending) */
+    bus->mpc_restore_pending = true;
     /* persist the successfully joined network into /etc/wlan/network.json
        (existing entries only get their password updated, no duplicates);
        only for a manual connect -- auto-connects already come from the
@@ -1189,7 +1200,8 @@ static void brcmf_mark_disconnected(const char *reason,
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s",
             reason ? reason : "disconnected");
     brcmf_reset_runtime_state(true);
-    brcmf_scan_set_mpc(true);
+    /* may run in event context: defer the mpc dcmd to the worker */
+    bus->mpc_restore_pending = true;
     if (was_connected || reason != NULL) {
         brcm_log("link reset: reason=%s event=%u status=%u fw_reason=%u recoveries=%u\n",
                 reason ? reason : "unknown",
@@ -3361,8 +3373,12 @@ void brcmf_rx_event( struct sk_buff *skb)
     }else if(event_type == BRCMF_E_SCAN_COMPLETE){
         bus->scan_results_ready = true;
         bus->scan_cache_ms = kernel_tic_ms(0);
+        /* event context (inside readframes/DPC): never issue the mpc dcmd
+           inline -- brcmf_sdio_bus_txctl spins a nested DPC that would
+           corrupt the live cur_read of the outer readframes pass; flag it
+           for the worker instead */
         if (bus->state != SCANNING)
-            brcmf_scan_set_mpc(true);
+            bus->mpc_restore_pending = true;
     }else if(event_type == BRCMF_E_IF){
         if (datalen < sizeof(struct brcmf_if_event))
             goto done;
@@ -4104,8 +4120,11 @@ static void brcmf_sdio_dpc(void)
         if (brcmf_tx_queue_resume_writes_if_room())
             tx_writable = true;
     }
-    if (tx_sent > 0 && (tx_writable || !brcmf_tx_queue_should_block_writes()))
-        brcm_wakeup_dev(VFS_EVT_WR);
+    if (tx_sent > 0) {
+        bus->last_tx_success_ms = kernel_tic_ms(0);
+        if (tx_writable || !brcmf_tx_queue_should_block_writes())
+            brcm_wakeup_dev(VFS_EVT_WR);
+    }
 
     brcm_dpc_last_usec = brcmf_elapsed_usec(start_usec, brcmf_now_usec());
     brcmf_dpc_leave();
@@ -4646,6 +4665,13 @@ static void* brcm_worker_main(void* p) {
          * IPC handler — see brcmf_run_pending_cmd(). */
         brcmf_run_pending_cmd();
 
+        /* mpc restore requested from event/DPC context: the dcmd is only
+           safe to issue from the worker's own context */
+        if (bus->mpc_restore_pending) {
+            bus->mpc_restore_pending = false;
+            brcmf_scan_set_mpc(true);
+        }
+
         /*
          * Housekeeping runs on the kernel wall clock, not on accumulated
          * usleep requests. usleep() is quantised to scheduler ticks and the
@@ -4685,12 +4711,21 @@ static void* brcm_worker_main(void* p) {
              */
             if (bus->state == CONNECTED) {
                 uint32_t now_ms = kernel_tic_ms(0);
-                if ((now_ms - bus->last_rx_success_ms) > BRCMF_FW_LIVENESS_MS &&
-                    (bus->rx_fail_count > 0 || bus->sdio_cmd_fail_count > 0)) {
-                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u cmd_fails=%u), resetting link\n",
+                bool rx_silent = (now_ms - bus->last_rx_success_ms) > BRCMF_FW_LIVENESS_MS;
+                bool errs_seen = (bus->rx_fail_count > 0 || bus->sdio_cmd_fail_count > 0);
+                /* "clean" firmware stall: the SDIO bus answers fine and no
+                   read errors surface, but the dongle stops delivering
+                   frames entirely. If we kept transmitting (ARP/TCP/ssh
+                   retries) across a doubled window with zero frames back,
+                   the link is dead regardless of the error counters. */
+                bool clean_stall = (now_ms - bus->last_rx_success_ms) > 2 * BRCMF_FW_LIVENESS_MS &&
+                    (now_ms - bus->last_tx_success_ms) < BRCMF_FW_LIVENESS_MS;
+                if ((rx_silent && errs_seen) || clean_stall) {
+                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u cmd_fails=%u clean_stall=%d), resetting link\n",
                             now_ms - bus->last_rx_success_ms,
                             bus->rx_fail_count,
-                            bus->sdio_cmd_fail_count);
+                            bus->sdio_cmd_fail_count,
+                            clean_stall ? 1 : 0);
                     brcmf_sdio_checkdied();
                     brcmf_mark_disconnected("fw liveness timeout",
                             0, bus->rx_fail_count, 0);
@@ -5057,6 +5092,7 @@ static void *brcm_lifecycle_thread(void *p)
 {
     (void)p;
     uint32_t restart_rounds = 0;
+    uint32_t connected_since_ms = 0;
 
     while (1) {
         usleep(1000000);
@@ -5080,19 +5116,36 @@ static void *brcm_lifecycle_thread(void *p)
             continue;
         }
 
-        if (!brcm_worker_exited)
+        if (!brcm_worker_exited) {
+            /* a stable link proves the last recovery worked: reset the
+               restart counter so transient storms spread across uptime
+               never accumulate into a permanent give-up */
+            if (brcm_state() == CONNECTED) {
+                if (connected_since_ms == 0)
+                    connected_since_ms = now;
+                else if ((now - connected_since_ms) >= BRCMF_STABLE_RESET_MS &&
+                         restart_rounds > 0) {
+                    brcm_log("wlan: link stable for %ums, restart counter reset\n",
+                            (unsigned)BRCMF_STABLE_RESET_MS);
+                    restart_rounds = 0;
+                }
+            } else {
+                connected_since_ms = 0;
+            }
             continue;
+        }
         brcm_worker_exited = false;
 
-        if (restart_rounds >= BRCMF_MAX_RESTART_ROUNDS) {
-            brcm_log("wlan: giving up after %u restart rounds\n",
-                    (unsigned)restart_rounds);
-            while (1)
-                usleep(1000000);
-        }
         restart_rounds++;
 
-        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 : 10000;
+        /* Never park the thread for good: with the device dead and nobody
+           left to restart it the box stays unreachable until reboot, so
+           keep power-cycling the chip with a capped backoff instead. */
+        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 :
+                (restart_rounds <= BRCMF_MAX_RESTART_ROUNDS) ? 10000 : 60000;
+        if (restart_rounds == BRCMF_MAX_RESTART_ROUNDS + 1)
+            brcm_log("wlan: %u restart rounds without recovery, backing off to 60s\n",
+                    (unsigned)restart_rounds);
         brcm_log("wlan: worker exited, full restart #%u in %ums\n",
                 (unsigned)restart_rounds, (unsigned)delay_ms);
         usleep(delay_ms * 1000);
