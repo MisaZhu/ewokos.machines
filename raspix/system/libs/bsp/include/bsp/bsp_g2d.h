@@ -9,6 +9,12 @@
    gpu cannot execute them: there is no cpu fallback. */
 int32_t bsp_g2d_init(void);
 
+/* clock rate of the 2D engine in Hz, as confirmed during bsp_g2d_init()
+   (the hardware backend pins the GPU to its max rate at init and reads
+   back the actual rate). returns 0 when the platform has no such clock
+   (software backends) or the rate could not be confirmed. */
+uint32_t bsp_g2d_clock_hz(void);
+
 /* contig/src_contig/dst_contig: != 0 when the buffer backing is
    physically contiguous (contig shm slab or dma memory), required by
    hardware 2d paths that work on physical addresses. *_phy carries the
@@ -29,19 +35,31 @@ int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_conti
 
 /* 1:1 blit of a clipped rect into a RAW PHYSICAL destination (e.g. the
    scan-out buffer): no dst virtual address exists in this process, the
-   gpu writes the physical range directly. dst_pitch is the row stride
-   in bytes (>= dst_w*4, %4==0); [dst_phy, dst_phy+dst_size) must be
-   physically contiguous ram inside the validated windows. */
+   2d engine writes the physical range directly. dst_pitch is the row
+   stride in bytes (>= dst_w*4, %4==0); [dst_phy, dst_phy+dst_size)
+   must be physically contiguous ram. returns -1 when the back end
+   cannot write the physical range: the caller falls back to its cpu
+   flush path. */
 int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 			uint32_t dst_pitch,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh);
 
+
 int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh, uint8_t alpha);
+
+/* scalar cpu 1:1 copy or blend of a sub-rect, clipped against both
+   buffer bounds: exact per-pixel access, no alignment/contiguity/simd
+   requirements. use_alpha == 0 is a plain copy; otherwise the same
+   blend math as bsp_g2d_blt_alpha. */
+int32_t bsp_g2d_blt_cpu(uint32_t* argb_src, int32_t src_w, int32_t src_h,
+			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+			uint32_t* argb_dst, int32_t dst_w, int32_t dst_h,
+			int32_t dx, int32_t dy, uint8_t use_alpha, uint8_t alpha);
 
 int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
 			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h);
@@ -53,7 +71,7 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 			int32_t* dst_w, int32_t* dst_h);
 
 /* rotate the whole source surface clockwise by degree (any angle).
-   dst must be at least the size given by bsp_g2d_rotated_size(); for
+   dst must exactly match the size given by bsp_g2d_rotated_size(); for
    angles other than 0/90/180/270 pixels outside the rotated content
    become transparent.
    in-place (argb_src == argb_dst) is not supported and fails with -1. */

@@ -180,6 +180,10 @@ static uint32_t _unif_p, _scratch_p;
 static int _inited = 0;
 static int _ok = 0;
 
+/* V3D clock rate in Hz as set by g2d_clock_set_max() at init (0 until
+   confirmed, or when the property mailbox is unavailable) */
+static uint32_t _v3d_clock_hz = 0;
+
 /* physical RAM ranges captured at init, used by v3d_g2d_phy_valid to
  * reject caller-supplied *_phy values that would let the GPU (no MMU)
  * scribble over arbitrary memory */
@@ -303,7 +307,7 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
         if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
             (req->code & FW_RESPONSE) != 0 &&
             (req->tag.value_len & FW_RESPONSE) != 0 &&
-            (req->tag.value_len & ~FW_RESPONSE) >= 8 &&
+            (req->tag.value_len & ~FW_RESPONSE) >= 4 &&
             req->tag.clock_id == FW_CLOCK_V3D && req->tag.rate_hz != 0) {
             *rate_hz = req->tag.rate_hz;
             result = 0;
@@ -365,6 +369,7 @@ static void g2d_clock_set_max(void)
         return;
     }
     slog("g2d: V3D clock max=%u Hz actual=%u Hz\r\n", max_hz, actual_hz);
+    _v3d_clock_hz = actual_hz;
 }
 
 /* ------------------------------------------------------------------ */
@@ -600,6 +605,12 @@ int v3d_g2d_init(void)
 int v3d_g2d_ready(void)
 {
     return _ok;
+}
+
+/* V3D clock rate in Hz confirmed at init (0 when unknown/unsupported) */
+uint32_t v3d_g2d_clock_hz(void)
+{
+    return _v3d_clock_hz;
 }
 
 int v3d_g2d_num_qpus(void)

@@ -45,6 +45,9 @@ int v3d_g2d_init(void);
 /* Non-zero once the GPU is usable. */
 int v3d_g2d_ready(void);
 
+/* V3D clock rate in Hz confirmed during initialization, or 0 if unknown. */
+uint32_t v3d_g2d_clock_hz(void);
+
 /* V3D architecture version x10 (42 = V3D 4.2 Pi4, 21 = V3D 2.1 Pi3). */
 int v3d_g2d_ver(void);
 
@@ -65,43 +68,19 @@ uint32_t v3d_g2d_scratch_phys(void);
  * dispatch is allowed. */
 int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
 
-/* One-shot hardware probe of the vec4 (TMUC general-access) TMU path
- * used by the argb_copy/argb_fill4 kernels: runs a small GPU copy into
- * scratch and verifies it on the CPU.  Non-zero when the fast vec4
- * kernels are usable; callers must fall back to the single-word kernels
- * otherwise.  The result is cached after the first call.  Always 0 on
- * VC4 (V3D 2.1) where the CSD kernels cannot run. */
-int v3d_g2d_vec4_ok(void);
-
-/* Cache-maintenance flags for v3d_g2d_run.  PRE: pre-job invalidation
- * (drop stale V3D L2/slice lines so the QPU sees fresh DRAM data).
- * POST: post-job flush (drain the TMU write combiner and clean the L2
- * so the job's writes reach DRAM).  A standalone dispatch needs both;
- * back-to-back bands of one large-surface op skip PRE on all but the
- * first band and POST on all but the last - the maps are row
- * independent and no CPU access happens between bands, so the
- * intermediate full-L2 walks are redundant.  PRE-elided dispatches
- * still refresh the uniform block visibility (the QPU uniform fetch is
- * served through the L2T/slice caches and would otherwise re-read the
- * previous dispatch's stale uniform block). */
-#define V3D_G2D_MAINT_PRE  (1u << 0)
-#define V3D_G2D_MAINT_POST (1u << 1)
-#define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
-
 /*
  * Run one CSD dispatch of `code` with `unifs` against the surfaces
  * `src`/`dst` (either may be NULL/0).  src/dst are VIRTUAL addresses;
  * the caller has already substituted physical addresses into the uniform
  * fields that describe them.  This wrapper keeps the ARM/V3D caches
- * coherent around the dispatch (nothing for NOCACHE dma canvases),
- * bounded by the maint flags.
+ * coherent around the dispatch (nothing for NOCACHE dma canvases).
  * Returns 0 on success.
  */
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len, unsigned maint);
+                void *dst, size_t dst_len);
 
 /*
  * VC4 (V3D 2.1) counterpart of v3d_g2d_run(): launches one SRQ thread
@@ -116,32 +95,59 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
                     const void *src, size_t src_len,
                     void *dst, size_t dst_len);
 
-/* The ARGB8888 kernels (see g2d_qpu_kernels.h): the CSD kernels are
- * 1:1 binary translations of the raspi5 (V3D 7.1) kernels to the V3D
- * 4.2 ISA; *_vc4 are VC4 (V3D 2.1) SRQ kernels. */
+/* VC4 only: evict the BCM2837 system L3 before a public operation starts
+ * reading caller-owned memory.  Call once before the operation's first SRQ
+ * dispatch; a multi-batch operation must not repeat the 384 KiB scrub for
+ * every batch.  Returns 0 on success and -1 when preparation cannot run. */
+int v3d_g2d_vc4_prepare_reads(void);
+
+/* VC4 only: allocate short-lived GPU-visible dispatch data from the
+ * driver's reusable staging arena.  The returned address remains valid
+ * until the next allocation wraps the arena; completed SRQ batches are
+ * retired and the cache scrub runs before any physical address is reused. */
+void *v3d_g2d_vc4_staging_alloc(size_t bytes, uint32_t *phys_out);
+
+/* VC4 (V3D 2.1): stage `code` into the proven per-launch fetch region
+ * (_run_code) and return its physical launch address for SRQPC, or 0 on
+ * error.  Pi3 bring-up: on BCM2837 the QPU cannot reliably fetch the
+ * init-time dma staging regions (stale 0x55555555 data, SRQ wedges), so
+ * every VC4 dispatch must launch from this region.  Call before
+ * v3d_g2d_vc4_run() with a code you did not get from the preloaded
+ * kernel table. */
+uint32_t v3d_g2d_vc4_stage_at(const uint64_t *code, int nwords, int off);
+#define v3d_g2d_vc4_stage(code, nwords) v3d_g2d_vc4_stage_at((code), (nwords), 0)
+
+/* Real-silicon diagnostic helper: launch code previously copied with
+ * v3d_g2d_vc4_stage(), using the normal driver's SRQ/cache discipline.
+ * This intentionally does not accept an arbitrary code pointer: callers
+ * must stage into the driver's proven fetch region first. */
+int v3d_g2d_vc4_run_staged(uint32_t code_p, const uint32_t *unifs,
+                           int num_qpus, uint32_t *srqcs_out);
+
+/* The ARGB8888 kernels (see g2d_qpu_kernels.h): *_fill/_blit/_rotate/
+ * _alpha are V3D 4.2 CSD kernels, *_vc4 are VC4 (V3D 2.1) SRQ
+ * kernels. */
 extern const uint64_t g2d_qpu_argb_fill[];
 extern const unsigned g2d_qpu_argb_fill_n;
 extern const uint64_t g2d_qpu_argb_blit[];
 extern const unsigned g2d_qpu_argb_blit_n;
 extern const uint64_t g2d_qpu_argb_rotate[];
 extern const unsigned g2d_qpu_argb_rotate_n;
-extern const uint64_t g2d_qpu_argb_rot90[];
-extern const unsigned g2d_qpu_argb_rot90_n;
 extern const uint64_t g2d_qpu_argb_alpha[];
 extern const unsigned g2d_qpu_argb_alpha_n;
-extern const uint64_t g2d_qpu_argb_scale_pow2[];
-extern const unsigned g2d_qpu_argb_scale_pow2_n;
-extern const uint64_t g2d_qpu_argb_copy[];
-extern const unsigned g2d_qpu_argb_copy_n;
-extern const uint64_t g2d_qpu_argb_fill4[];
-extern const unsigned g2d_qpu_argb_fill4_n;
 extern const uint64_t g2d_qpu_argb_fill_vc4[];
 extern const unsigned g2d_qpu_argb_fill_vc4_n;
+extern const uint64_t g2d_qpu_argb_fill_loop_vc4[];
+extern const unsigned g2d_qpu_argb_fill_loop_vc4_n;
 extern const uint64_t g2d_qpu_argb_blit_vc4[];
 extern const unsigned g2d_qpu_argb_blit_vc4_n;
 extern const uint64_t g2d_qpu_argb_rotate_vc4[];
 extern const unsigned g2d_qpu_argb_rotate_vc4_n;
 extern const uint64_t g2d_qpu_argb_alpha_vc4[];
 extern const unsigned g2d_qpu_argb_alpha_vc4_n;
+extern const uint64_t g2d_qpu_argb_gather_vc4[];
+extern const unsigned g2d_qpu_argb_gather_vc4_n;
+extern const uint64_t g2d_qpu_argb_alpha_gather_vc4[];
+extern const unsigned g2d_qpu_argb_alpha_gather_vc4_n;
 
 #endif /* V3D_G2D_H */
