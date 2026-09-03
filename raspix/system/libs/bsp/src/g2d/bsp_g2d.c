@@ -1091,6 +1091,21 @@ uint32_t bsp_g2d_clock_hz(void)
     return v3d_g2d_clock_hz();
 }
 
+/* blit into a raw physical destination (scan-out push): the hardware engine could write the physical range directly, but that fast path is not wired up on this platform yet, so decline and let the caller (displayd flush_g2d) fall back to its cpu flush path */
+int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+    			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+    			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
+    			uint32_t dst_pitch,
+    			int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
+    (void)argb_src; (void)src_phy; (void)src_contig; (void)src_w; (void)src_h;
+    (void)sx; (void)sy; (void)sw; (void)sh;
+    (void)dst_phy; (void)dst_size; (void)dst_w; (void)dst_h;
+    (void)dst_pitch;
+    (void)dx; (void)dy; (void)dw; (void)dh;
+    return -1;
+    }
+
+
 int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
                    int32_t argb_w, int32_t argb_h,
                    int32_t x, int32_t y, int32_t w, int32_t h,
