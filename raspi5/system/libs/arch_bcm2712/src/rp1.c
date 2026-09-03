@@ -67,7 +67,21 @@
 #define PCI_BASE_ADDRESS_2       0x18
 #define PCI_BASE_ADDRESS_3       0x1c
 #define PCI_EXP_LNKCAP           0x0c
+#define  PCI_EXP_LNKCAP_ASPM_MASK   (3u << 10)
+#define  PCI_EXP_LNKCAP_CLKPM       (1u << 18)
+#define PCI_EXP_LNKCTL           0x10
+#define  PCI_EXP_LNKCTL_ASPMC_MASK  0x0003
+#define  PCI_EXP_LNKCTL_CLKPM_EN    (1u << 8)
+#define PCI_EXP_LNKSTA           0x12
 #define PCI_EXP_LNKCTL2          0x30
+#define  PCI_EXP_LNKCTL2_HW_SPEED_DIS (1u << 5)
+#define PCI_CAP_PTR              0x34
+#define PCI_CAP_ID_EXP           0x10
+/* extended capability chain (4KB config space) */
+#define PCI_EXT_CAP_START        0x100
+#define PCI_EXT_CAP_ID_L1SS      0x1e
+#define PCI_L1SS_CTL1            0x08
+#define  PCI_L1SS_CTL1_MASK      0x000fu /* PCIPM/ASPM L1.2 + L1.1 enables */
 #define BRCM_PCIE_CAP_REGS       0x00ac
 
 #define PCI_COMMAND_MEMORY       0x0002
@@ -85,6 +99,10 @@ static int rp1_ready;
 
 static inline void write8(ewokos_addr_t addr, uint8_t value) {
     *((volatile uint8_t *)addr) = value;
+}
+
+static inline uint8_t read8(ewokos_addr_t addr) {
+    return *((volatile uint8_t *)addr);
 }
 
 static inline uint16_t read16(ewokos_addr_t addr) {
@@ -192,7 +210,7 @@ static int link_up(ewokos_addr_t host) {
  * the CPU streams memory (irregular banding/shift only while the
  * screen is being redrawn, static frames fine).
  */
-static void set_tc_qos(ewokos_addr_t host) {
+static void tc_qos_program(ewokos_addr_t host) {
     /* disable broken QoS forwarding search, set 2712D0 chicken bits */
     update32(host + PCIE_MISC_AXI_INTF_CTRL,
         AXI_REQFIFO_EN_QOS_PROPAGATION,
@@ -214,6 +232,112 @@ static void set_tc_qos(ewokos_addr_t host) {
     update32(host + PCIE_RC_TL_VDM_CTL0, 0,
         VDM_CTL0_VDM_ENABLED | VDM_CTL0_VDM_IGNORETAG |
         VDM_CTL0_VDM_IGNOREVNDRID);
+}
+
+static int tc_qos_ok(ewokos_addr_t host) {
+    return get32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_LO) == VDM_QOS_MAP &&
+        get32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_HI) == VDM_QOS_MAP &&
+        (get32(host + PCIE_MISC_CTRL_1) & MISC_CTRL_1_EN_VDM_QOS_CONTROL) != 0 &&
+        (get32(host + PCIE_RC_TL_VDM_CTL0) & VDM_CTL0_VDM_ENABLED) != 0;
+}
+
+static void set_tc_qos(ewokos_addr_t host) {
+    tc_qos_program(host);
+    /* the DSI scan-out silently falls back to default DRAM priority if
+       any of this did not stick (the load-dependent banding returns),
+       so verify by readback and retry once before giving up */
+    if (!tc_qos_ok(host)) {
+        tc_qos_program(host);
+        if (!tc_qos_ok(host))
+            klog("rp1-pcie: QoS map did not stick, display fetch runs at "
+                "default priority\n");
+    }
+    klog("rp1-pcie: qos map=%08x/%08x ctrl1=%08x axi=%08x vdm=%08x\n",
+        get32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_LO),
+        get32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_HI),
+        get32(host + PCIE_MISC_CTRL_1),
+        get32(host + PCIE_MISC_AXI_INTF_CTRL),
+        get32(host + PCIE_RC_TL_VDM_CTL0));
+}
+
+/* PCI Express extended capability chain walk (RC config space) */
+static uint32_t find_ext_cap(ewokos_addr_t cfg, uint16_t id) {
+    uint32_t off = PCI_EXT_CAP_START;
+
+    for (int hops = 0; hops < 64 &&
+            off >= PCI_EXT_CAP_START && off < 0x1000; hops++) {
+        uint32_t hdr = get32(cfg + off);
+        if (hdr == 0 || hdr == 0xffffffffu)
+            break;
+        if ((hdr & 0xffffu) == id)
+            return off;
+        off = (hdr >> 20) & 0xffcu;
+    }
+    return 0;
+}
+
+/*
+ * Pin the link's dynamic power/speed management. RP1's DSI scan-out
+ * rides this link at a fixed byte rate; any ASPM L0s/L1 entry, reference
+ * clock gating or autonomous speed change varies the fetch
+ * latency/bandwidth over time — the panel then sees the display's
+ * refresh rate and bandwidth being adjusted underneath it (DMA
+ * underflow, MIPI bitclock drift). The DPI engine has no rate control
+ * of its own, so freezing the link freezes the display. The same wakeup
+ * latency hits every RP1 register access, which is why the I2C touch
+ * path slows down at the same time.
+ */
+static void lock_link_state(ewokos_addr_t host) {
+    uint32_t lnkcap0 = get32(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKCAP);
+    uint16_t lnkctl0 = read16(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKCTL);
+    uint16_t lnksta = read16(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKSTA);
+    uint32_t l1ss;
+
+    /* what the firmware armed before the pinning: non-zero ASPM/CLKPM
+     * here is exactly the dynamic power management that drops the link
+     * speed and gates its reference clock whenever the link looks idle,
+     * and makes every later I2C MMIO access and display fetch pay the
+     * wakeup latency */
+    klog("rp1-pcie: link gen%u x%u lnkcap=%08x lnkctl=%04x -> pinning PM off\n",
+        lnksta & 0xfu, (lnksta >> 4) & 0x3fu, lnkcap0, lnkctl0);
+
+    put32(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKCAP,
+        lnkcap0 & ~(PCI_EXP_LNKCAP_ASPM_MASK | PCI_EXP_LNKCAP_CLKPM));
+    write16(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKCTL,
+        lnkctl0 & ~(PCI_EXP_LNKCTL_ASPMC_MASK | PCI_EXP_LNKCTL_CLKPM_EN));
+    uint16_t lnkctl2 = read16(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKCTL2);
+    write16(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKCTL2,
+        lnkctl2 | PCI_EXP_LNKCTL2_HW_SPEED_DIS);
+
+    /* no deep L1 substates either; the substates activate only when both
+     * ports enable them, so disabling them on the RC side is enough */
+    l1ss = find_ext_cap(host, PCI_EXT_CAP_ID_L1SS);
+    if (l1ss != 0)
+        update32(host + l1ss + PCI_L1SS_CTL1, PCI_L1SS_CTL1_MASK, 0);
+}
+
+/*
+ * RP1 endpoint side of the same pinning. The PCIe capability's offset
+ * varies between RP1 revisions, so walk the capability list.
+ */
+static void lock_endpoint_state(ewokos_addr_t rp1_cfg) {
+    uint8_t ptr = read8(rp1_cfg + PCI_CAP_PTR) & ~3u;
+
+    for (int hops = 0; ptr >= 0x40 && hops < 16; hops++) {
+        uint8_t id = read8(rp1_cfg + ptr);
+        if (id == 0)
+            break;
+        if (id == PCI_CAP_ID_EXP) {
+            uint16_t lnkctl = read16(rp1_cfg + ptr + PCI_EXP_LNKCTL);
+            write16(rp1_cfg + ptr + PCI_EXP_LNKCTL,
+                lnkctl & ~(PCI_EXP_LNKCTL_ASPMC_MASK | PCI_EXP_LNKCTL_CLKPM_EN));
+            uint16_t lnkctl2 = read16(rp1_cfg + ptr + PCI_EXP_LNKCTL2);
+            write16(rp1_cfg + ptr + PCI_EXP_LNKCTL2,
+                lnkctl2 | PCI_EXP_LNKCTL2_HW_SPEED_DIS);
+            return;
+        }
+        ptr = read8(rp1_cfg + ptr + 1) & ~3u;
+    }
 }
 
 static int train_link(ewokos_addr_t host, ewokos_addr_t reset, ewokos_addr_t rescal) {
@@ -314,6 +438,9 @@ int bcm2712_rp1_init(void) {
     /* applied unconditionally: the link may already have been trained
        by another driver process, and these RC-side writes are idempotent */
     set_tc_qos(host);
+    /* likewise idempotent, and must hold even when the link was trained
+       by firmware with power management already armed */
+    lock_link_state(host);
 
     /* Enable bus 1 and forward its memory transactions through the bridge. */
     write8(host + PCI_CACHE_LINE_SIZE, 64 / 4);
@@ -332,6 +459,7 @@ int bcm2712_rp1_init(void) {
         klog("rp1-pcie: configuration space unavailable id=%08x\n", id);
         return -3;
     }
+    lock_endpoint_state(rp1_cfg);
     write8(rp1_cfg + PCI_CACHE_LINE_SIZE, 64 / 4);
     put32(rp1_cfg + PCI_BASE_ADDRESS_0, PCI_BASE_ADDRESS_MEM_64);
     put32(rp1_cfg + PCI_BASE_ADDRESS_1, 0);

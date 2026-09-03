@@ -406,6 +406,21 @@ static bool hc_check_fatal(xhci_hc_t* hc) {
 void xhci_process_events(xhci_hc_t* hc) {
     int handled = 0;
 
+    if (hc->failed) {
+        return;
+    }
+    /*
+     * Fast path: peek the event ring's cycle bit (a plain uncached-RAM
+     * read) and leave when nothing new is posted. The USBSTS read inside
+     * hc_check_fatal() is a PCIe non-posted MMIO round trip, and this
+     * function runs several times per usbhostd loop, so the fatal check
+     * only happens when an event is actually visible. A dead controller
+     * posting no events is caught by the explicit hc_check_fatal() calls
+     * in the xhci_cmd()/ep_wait() timeout loops instead.
+     */
+    if ((hc->evt[hc->evt_deq * 4 + 3] & 1u) != hc->evt_cycle) {
+        return;
+    }
     if (hc_check_fatal(hc)) {
         return;
     }
@@ -506,7 +521,9 @@ static int xhci_cmd(xhci_hc_t* hc, uint32_t d0, uint32_t d1, uint32_t d2,
         if (hc->cmd_done) {
             break;
         }
-        if (hc->failed) {
+        /* xhci_process_events() only reads USBSTS when an event is
+           visible; a fatal error that posts none must be caught here */
+        if (hc_check_fatal(hc)) {
             return -1;
         }
         if (now_ms() > deadline) {
@@ -918,6 +935,11 @@ static int ep_wait(xhci_dev_t* dev, xhci_ep_t* ep, uint32_t timeout_ms) {
         if (ep->done) {
             break;
         }
+        /* see xhci_cmd(): fatal errors without events are only visible
+           through an explicit USBSTS check */
+        if (hc_check_fatal(dev->hc)) {
+            return -1;
+        }
         if (now_ms() > deadline) {
             return -1;
         }
@@ -1024,6 +1046,17 @@ int xhci_control_xfer(xhci_dev_t* dev, const usb_setup_pkt_t* setup,
     return (int)got;
 }
 
+/*
+ * On Pi 5 the xHCI shares RP1's single PCIe master port with the display
+ * scan-out DMA and the I2C touch path. An interrupt-IN endpoint armed at
+ * 1ms (bInterval=1 on HS/SS, common on gaming mice) generates a steady
+ * stream of TRB/event DMA that contends with the display fetch and
+ * starves it. hid_moused coalesces reports to <=100Hz anyway, so floor
+ * the polling period at 8ms (125Hz): no perceptible latency, ~8x fewer
+ * transactions on the shared link.
+ */
+#define INT_IN_MIN_EXP 6u /* 125us * 2^6 = 8ms */
+
 /* interrupt interval -> xHCI EP context interval exponent (125us * 2^n) */
 static uint32_t int_interval(int speed, uint8_t bInterval) {
     uint32_t exp;
@@ -1047,6 +1080,8 @@ static uint32_t int_interval(int speed, uint8_t bInterval) {
             exp++;
         }
     }
+    if (exp < INT_IN_MIN_EXP)
+        exp = INT_IN_MIN_EXP;
     return exp > 15 ? 15 : exp;
 }
 
@@ -1133,7 +1168,12 @@ int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
     }
     xhci_ep_t* ep = &dev->eps[dci];
 
-    xhci_process_events(dev->hc);
+    /* a completion latched earlier (by bsp_usb_poll's drain, which always
+       runs before the input polls each usbhostd pass) is consumed below
+       without touching the event ring again */
+    if (!ep->done) {
+        xhci_process_events(dev->hc);
+    }
 
     if (ep->done) {
         ep->done = false;

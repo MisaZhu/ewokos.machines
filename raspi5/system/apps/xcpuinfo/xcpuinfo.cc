@@ -5,7 +5,7 @@
  * control, everything through the dev.cmd interface (dev_cmd()):
  *
  *   /dev/cpu  cpud - SoC temperature (JSON snapshot)
- *   /dev/fan  fand - cooling fan: level 0-10, raw duty %, rev, rpm
+ *   /dev/fan  fand - cooling fan: level 0-10, rev, rpm
  *
  * All rows only fix their height, so every widget follows the window
  * width; the temperature bar is the flexible child and also absorbs
@@ -22,6 +22,9 @@
 
 #include <x++/X.h>
 #include <ewoksys/vdevice.h>
+#include <ewoksys/sys.h>
+#include <ewoksys/kernel_tic.h>
+#include <sysinfo.h>
 #include <tinyjson/tinyjson.h>
 
 #include <stdio.h>
@@ -62,11 +65,27 @@ static bool parseFanStatus(const char* s, FanState& st) {
 	return true;
 }
 
+/* find the array entry whose "name" member matches */
+static json_var_t* findNamedVar(json_var_t* arr, const char* name) {
+	if(arr == NULL)
+		return NULL;
+	uint32_t n = json_var_array_size(arr);
+	for(uint32_t i = 0; i < n; i++) {
+		json_var_t* item = json_var_array_get_var(arr, i);
+		if(item != NULL &&
+				strcmp(json_get_str_def(item, "name", ""), name) == 0)
+			return item;
+	}
+	return NULL;
+}
+
 /*
  * Slider bound to one "<prefix> <value>" dev.cmd. While dragging only
  * the value label follows the knob; the command goes out on mouse
- * release. syncValue() moves the knob from device state without echoing
- * a command back to the driver.
+ * release. The device value is the source of truth: syncValue() stores
+ * it and onResize() maps it onto the knob as soon as the layout gives
+ * the widget its area, so the initial position already matches the
+ * current /dev/fan state on the very first paint.
  */
 class CmdSlider: public Slider {
 	string dev;
@@ -74,8 +93,9 @@ class CmdSlider: public Slider {
 	int base;            /* value = slider position + base */
 	const char* suffix;
 	Label* valueLabel;
+	int curValue;        /* stored device value (incl. base) */
 	bool pending;        /* dragged since last send */
-	bool guard;          /* set while syncing from device state */
+	bool guard;          /* set while moving the knob from device state */
 
 	int value() { return (int)getValue() + base; }
 
@@ -92,6 +112,26 @@ class CmdSlider: public Slider {
 		snprintf(cmd, sizeof(cmd), "%s %d", prefix.c_str(), value());
 		sendCmd(dev.c_str(), cmd);
 	}
+
+	/* no-op until the layout gave the widget an area; while dragging
+	   the user owns the knob */
+	void applyPos() {
+		if(isDragging)
+			return;
+		uint32_t max = horizontal ?
+			(area.w > area.h ? area.w - area.h : 0) :
+			(area.h > area.w ? area.h - area.w : 0);
+		if(max == 0)
+			return;
+		/* round to the nearest position so value survives the
+		   pos->value round trip (Slider::setValue truncates) */
+		uint32_t p = ((uint32_t)curValue * max + range / 2) / range;
+		if(p >= max)
+			p = max - 1;
+		guard = true;
+		setPos(p);
+		guard = false;
+	}
 protected:
 	void onPosChange() {
 		if(guard)
@@ -102,6 +142,12 @@ protected:
 			return;
 		}
 		send();
+	}
+
+	/* layout just assigned the area: place the knob from the stored
+	   device value so it is right before the first paint */
+	void onResize() {
+		applyPos();
 	}
 
 	bool onMouse(xevent_t* ev) {
@@ -120,6 +166,7 @@ public:
 		this->base = base;
 		this->suffix = suffix;
 		valueLabel = NULL;
+		curValue = 0;
 		pending = false;
 		guard = false;
 		setRange(range);
@@ -127,40 +174,34 @@ public:
 
 	void setValueLabel(Label* label) { valueLabel = label; }
 
-	/* false when the widget has no area yet (layout not done) */
-	bool syncValue(int v) {
+	/* store the device value (incl. base) and move the knob when the
+	   area is available; safe to call before the layout is done.
+	   while dragging the user owns the knob, so polling stays out */
+	void syncValue(int v) {
 		if(isDragging)
-			return true;
+			return;
 		v -= base;
 		if(v < 0)
 			v = 0;
 		if(v > (int)range - 1)
 			v = (int)range - 1;
-		uint32_t max = horizontal ?
-			(area.w > area.h ? area.w - area.h : 0) :
-			(area.h > area.w ? area.h - area.w : 0);
-		if(max == 0)
-			return false;
-		/* round to the nearest position so value survives the
-		   pos->value round trip (Slider::setValue truncates) */
-		uint32_t p = ((uint32_t)v * max + range / 2) / range;
-		if(p >= max)
-			p = max - 1;
-		guard = true;
-		setPos(p);
-		guard = false;
-		showValue(v + base);
-		return true;
+		curValue = v;
+		showValue(curValue + base);
+		applyPos();
 	}
 };
 
 /*
  * CPU temperature bar: fill width is current/max milli-Celsius, fill
- * color lerps green->yellow->red with the same ratio.
+ * color lerps dark-blue->red over the useful window from the cool
+ * baseline (45C) to the throttle temperature (blue when cool, red
+ * when hot). Above HOT_MC the fill blinks at 4 Hz between the lerped
+ * color and pure red; tick() keeps the blink repainting.
  */
 class TempBar: public Widget {
 	int mc;     /* current temperature, milli-Celsius; <0 = unknown */
 	int maxMc;  /* throttle temperature, milli-Celsius; <=0 = unknown */
+	static const uint32_t HOT_MC = 60000; /* blink threshold, 60C */
 protected:
 	void onRepaint(graph_t* g, XTheme* theme, const grect_t& r) {
 		graph_fill_3d(g, r.x, r.y, r.w, r.h, theme->basic.bgColor, true);
@@ -168,12 +209,26 @@ protected:
 		char s[48];
 		if(mc >= 0) {
 			uint32_t full = maxMc > 0 ? (uint32_t)maxMc : 100000;
-			uint32_t ratio = (uint32_t)mc * 255 / full;
-			if(ratio > 255)
-				ratio = 255;
-			uint32_t cr = ratio < 128 ? ratio * 2 : 255;
-			uint32_t cg = ratio < 128 ? 255 : (255 - ratio) * 2;
-			uint32_t color = 0xff000000 | (cr << 16) | (cg << 8);
+			/* color ratio over the cool->hot window (45C .. throttle),
+			   so temperatures within 45C stay in the blue range */
+			const uint32_t coolMc = 45000;
+			uint32_t ratio = 0;
+			if(full > coolMc) {
+				if((uint32_t)mc > coolMc)
+					ratio = ((uint32_t)mc - coolMc) * 255 / (full - coolMc);
+				if(ratio > 255)
+					ratio = 255;
+			}
+			/* lerp dark blue -> red */
+			uint32_t cr = 32 + (255 - 32) * ratio / 255;
+			uint32_t cg = 48 * (255 - ratio) / 255;
+			uint32_t cb = 128 * (255 - ratio) / 255;
+			uint32_t color = 0xff000000 | (cr << 16) | (cg << 8) | cb;
+
+			/* overheat blink: 4 Hz toggle (125ms per state) between the
+			   lerped color and pure red */
+			if((uint32_t)mc > HOT_MC && (kernel_tic_ms(0) % 250) >= 125)
+				color = 0xffff0000;
 
 			int32_t fw = (int32_t)((uint32_t)(r.w - 4) * (uint32_t)mc / full);
 			if(fw < 2)
@@ -210,15 +265,25 @@ public:
 		this->maxMc = maxMc;
 		update();
 	}
+
+	/* called on every timer tick: repaint for the blink phase while
+	   overheating (setTemp() skips updates on unchanged values) */
+	void tick() {
+		if(mc > (int)HOT_MC)
+			update();
+	}
 };
 
 class XCpuInfoWin: public WidgetWin {
 	TempBar* tempBar;
+	Label* cpuTitle;
 	Label* fanLabel;
 	CmdSlider* levelSlider;
-	CmdSlider* dutySlider;
+	uint32_t cores;      /* cpu core count from sysinfo, 0 = unknown */
 protected:
 	void onTimer(uint32_t timerFPS, uint32_t timerSteps) {
+		/* repaint the overheat blink at every tick (125ms at 8 fps) */
+		tempBar->tick();
 		if(timerSteps % timerFPS == 0)
 			pollFan();
 		if(timerSteps % (timerFPS * 2) == 0)
@@ -227,16 +292,20 @@ protected:
 public:
 	XCpuInfoWin() {
 		tempBar = NULL;
+		cpuTitle = NULL;
 		fanLabel = NULL;
-		levelSlider = dutySlider = NULL;
+		levelSlider = NULL;
+		cores = 0;
 	}
 
-	void setWidgets(TempBar* temp, Label* fanInfo,
-			CmdSlider* level, CmdSlider* duty) {
+	void setCores(uint32_t n) { cores = n; }
+
+	void setWidgets(TempBar* temp, Label* cpuInfo, Label* fanInfo,
+			CmdSlider* level) {
 		tempBar = temp;
+		cpuTitle = cpuInfo;
 		fanLabel = fanInfo;
 		levelSlider = level;
-		dutySlider = duty;
 	}
 
 	static void revClick(Widget* wd, xevent_t* evt, void* arg) {
@@ -251,23 +320,55 @@ public:
 	void applyFan(const FanState& st) {
 		char s[48];
 		if(st.manual)
-			snprintf(s, sizeof(s), "manual %d%% rpm %u", st.duty, st.rpm);
+			snprintf(s, sizeof(s), "FAN: manual %d%% rpm %u", st.duty, st.rpm);
 		else
-			snprintf(s, sizeof(s), "level %d rpm %u", st.value, st.rpm);
-		fanLabel->setLabel(s);
-		dutySlider->syncValue(st.duty);
+			snprintf(s, sizeof(s), "FAN: level %d rpm %u", st.value, st.rpm);
+		/* syncValue() stores the value; the knob follows once the
+		   layout gives the slider its area (CmdSlider::onResize) */
 		if(!st.manual)
 			levelSlider->syncValue(st.value);
+		else
+			/* manual duty mode (set elsewhere): no level in the status,
+			   show the equivalent level so the slider matches the fan */
+			levelSlider->syncValue((st.duty + 5) / 10);
+		fanLabel->setLabel(s);
 	}
 
 	void pollFan() {
 		char* ret = dev_cmd(FAN_DEV, "status");
-		if(ret == NULL)
+		if(ret == NULL) {
+			fanLabel->setLabel("FAN: n/a");
 			return;
+		}
 		FanState st;
 		if(parseFanStatus(ret, st))
 			applyFan(st);
+		else {
+			/* diag: show the raw reply so a format change is visible */
+			char s[48];
+			snprintf(s, sizeof(s), "FAN: ? %.30s", ret);
+			fanLabel->setLabel(s);
+		}
 		free(ret);
+	}
+
+	/* "CPU: x4, 1.5 GHz, 850.8 mV"; each part shows only when known */
+	void updateCpuTitle(int armMhz, int coreUv) {
+		char s[48];
+		size_t n = snprintf(s, sizeof(s), "CPU");
+		if(cores > 0)
+			n += snprintf(s+n, sizeof(s)-n, ": x%u", (unsigned)cores);
+		if(armMhz > 0) {
+			if(armMhz >= 1000)
+				n += snprintf(s+n, sizeof(s)-n, ", %d.%d GHz",
+						armMhz / 1000, (armMhz / 100) % 10);
+			else
+				n += snprintf(s+n, sizeof(s)-n, ", %d MHz", armMhz);
+		}
+		if(coreUv > 0)
+			snprintf(s+n, sizeof(s)-n, ", %d.%d mV",
+					coreUv / 1000, (coreUv / 100) % 10);
+		cpuTitle->setLabel(s);
 	}
 
 	void pollCpu() {
@@ -287,6 +388,21 @@ public:
 					json_get_int_def(t, "max_millic", 0));
 		else
 			tempBar->setTemp(-1, 0);
+
+		/* current_hz can exceed int range (arm up to 2.4GHz); tinyjson
+		   keeps such values as float, so read through the float getter */
+		json_var_t* arm = findNamedVar(json_get_obj(obj, "clocks"), "arm");
+		float armHzF = (arm != NULL && json_get_bool_def(arm, "current_available", false)) ?
+				json_get_float_def(arm, "current_hz", 0.0f) : 0.0f;
+		int armMhz = armHzF > 0.0f ? (int)(armHzF / 1000000.0f + 0.5f) : 0;
+
+		json_var_t* core = findNamedVar(json_get_obj(obj, "voltages"), "core");
+		int coreUv = (core != NULL && json_get_bool_def(core, "current_available", false)) ?
+				json_get_int_def(core, "current_uv", 0) : 0;
+		if(coreUv < 0)
+			coreUv = 0;
+		updateCpuTitle(armMhz, coreUv);
+
 		json_var_unref(obj);
 	}
 };
@@ -320,6 +436,10 @@ int main(int argc, char** argv) {
 	X x;
 	XCpuInfoWin win;
 
+	sys_info_t sysinfo;
+	if(sys_get_sys_info(&sysinfo) == 0)
+		win.setCores(sysinfo.cores);
+
 	RootWidget* root = new RootWidget();
 	win.setRoot(root);
 	root->setType(Container::VERTICAL);
@@ -333,27 +453,28 @@ int main(int argc, char** argv) {
 	TempBar* temp = new TempBar();
 	root->add(temp);
 
-	Label* fanTitle = new Label("FAN");
-	fanTitle->fix(0, 20);
-	root->add(fanTitle);
-
-	Label* fanInfo = new Label("fan: -");
-	fanInfo->fix(0, 24);
+	/* one row like the CPU title: "FAN: level 5 rpm 1200" */
+	Label* fanInfo = new Label("FAN: -");
+	fanInfo->fix(0, 20);
 	root->add(fanInfo);
 
 	CmdSlider* level = addSliderRow(root, "level", 40, FAN_DEV, "run", 0, 11, "");
-	CmdSlider* duty  = addSliderRow(root, "duty", 40, FAN_DEV, "duty", 0, 101, "%");
 
 	LabelButton* rev = new LabelButton("rev");
 	rev->fix(0, 30);
 	rev->setEventFunc(XCpuInfoWin::revClick, &win);
 	root->add(rev);
 
-	win.setWidgets(temp, fanInfo, level, duty);
+	win.setWidgets(temp, cpuTitle, fanInfo, level);
+	/* preload the current /dev/fan state so the slider knobs start at
+	   the device values; the layout applies them on the first paint */
+	win.pollFan();
 
-	win.open(&x, 0, -1, -1, 280, 200, "xcpuinfo",
-			XWIN_STYLE_NORMAL | XWIN_STYLE_NO_BG_EFFECT);
-	win.setTimer(4);
+	win.open(&x, 0, -1, -1, 320, 140, "xcpuinfo",
+			XWIN_STYLE_NO_RESIZE | XWIN_STYLE_NO_BG_EFFECT);
+	/* 8 fps tick: 125ms matches the overheat blink phase; fan polls
+	   every 8 ticks (1s), cpu info every 16 ticks (2s) */
+	win.setTimer(8);
 
 	widgetXRun(&x, &win);
 	return 0;

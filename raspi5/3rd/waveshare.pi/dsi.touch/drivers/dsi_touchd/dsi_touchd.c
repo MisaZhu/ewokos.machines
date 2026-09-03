@@ -44,6 +44,26 @@
 
 #define TP_POLL_MIN_US           8000u
 #define TP_POLL_MAX_US          50000u
+/* Every bus runs at the speed declared in its table entry, forever —
+ * probing, polling and recovery included. The speed never changes at
+ * runtime: failed transactions are absorbed by the driver-level
+ * recovery (in-poll retry, SDA-wedge bus clear, re-probe), never by
+ * stepping the bus down. Flipping the speed back and forth also
+ * re-initialises the controller each time, which was itself a source
+ * of dead spells.
+ *
+ * The FPC bus is declared at standard speed because that is its
+ * physical ceiling, not a software concession: the official RPi 7"
+ * panel parks an ATTINY firmware I2C slave (0x45) on it which only
+ * answers at 100kHz, and the long FPC cable starves fast-mode rise
+ * times — 9 probe rounds at 400kHz got not one ACK from any device on
+ * the board, while dsi_fbdisplayd demonstrably talks the same ATTINY
+ * at standard speed. The touch and the display panel share that bus,
+ * so the touch inherits the panel's ceiling; matching dsi_fbdisplayd's
+ * speed also keeps the two daemons from fighting over IC_CON. The
+ * video stream never touches I2C, so this costs the display nothing. */
+#define TP_STD_HZ               100000u
+#define TP_FAST_HZ              400000u
 #define TP_RELEASE_DELAY_MS        20
 #define TP_RELEASE_TIMEOUT_MS      80
 #define TP_INIT_RETRY_MS         1000
@@ -138,6 +158,7 @@ typedef struct {
 	int32_t sda;
 	int32_t scl;
 	const char* name;
+	uint32_t hz;	/* fixed bus speed, declared once, never changed */
 } dsi_i2c_bus_t;
 
 typedef enum {
@@ -147,9 +168,10 @@ typedef enum {
 } touch_kind_t;
 
 static const dsi_i2c_bus_t dsi_i2c_buses[] = {
-	{DSI_I2C_BUS_FPC,  DSI_I2C_FPC_SDA, DSI_I2C_FPC_SCL, "i2c4-fpc"},
-	{DSI_I2C_BUS_C0,   DSI_I2C_C0_SDA,  DSI_I2C_C0_SCL,  "i2c6-c0"},
-	{DSI_I2C_BUS_DIP1, DSI_I2C1_SDA,    DSI_I2C1_SCL,    "i2c1-header"},
+	/* FPC: panel ATTINY is standard-speed only (see TP_STD_HZ note) */
+	{DSI_I2C_BUS_FPC,  DSI_I2C_FPC_SDA, DSI_I2C_FPC_SCL, "i2c4-fpc", TP_STD_HZ},
+	{DSI_I2C_BUS_C0,   DSI_I2C_C0_SDA,  DSI_I2C_C0_SCL,  "i2c6-c0",  TP_FAST_HZ},
+	{DSI_I2C_BUS_DIP1, DSI_I2C1_SDA,    DSI_I2C1_SCL,    "i2c1-header", TP_FAST_HZ},
 };
 
 static bool press = false;
@@ -226,6 +248,14 @@ static int32_t dsi_i2c_select(const dsi_i2c_bus_t* bus) {
 	active_bus = bus;
 	if (bcm2712_i2c_init_pins(bus->bus, (uint32_t)bus->sda,
 			(uint32_t)bus->scl) != 0)
+		return -1;
+	/*
+	 * Controller init resets IC_CON back to standard speed; pin the
+	 * bus straight back to its declared speed. Every select does
+	 * this, so probe, recovery and normal polling all run at one
+	 * fixed speed — the bus never steps.
+	 */
+	if (bcm2712_i2c_set_speed(bus->bus, bus->hz) != 0)
 		return -1;
 	proc_usleep(2000);
 	return 0;
@@ -372,8 +402,10 @@ static uint32_t dsi_i2c_read_reg8_retry(uint8_t addr, uint8_t reg, uint8_t* valu
 		if (active_bus == NULL)
 			break;
 		proc_usleep(2000);
-		if (dsi_i2c_select(active_bus) != 0)
-			break;
+		/* a failed transaction can leave the slave holding SDA low;
+		 * re-initialising the controller alone will not release the
+		 * wire — clock a bus clear (which re-selects the bus too) */
+		dsi_i2c_bus_clear(active_bus);
 		proc_usleep(2000);
 	}
 	return 1;
@@ -391,8 +423,10 @@ static uint32_t dsi_i2c_read_regs8_retry(uint8_t addr, uint8_t reg,
 		if (active_bus == NULL)
 			break;
 		proc_usleep(2000);
-		if (dsi_i2c_select(active_bus) != 0)
-			break;
+		/* a failed transaction can leave the slave holding SDA low;
+		 * re-initialising the controller alone will not release the
+		 * wire — clock a bus clear (which re-selects the bus too) */
+		dsi_i2c_bus_clear(active_bus);
 		proc_usleep(2000);
 	}
 	return 1;
@@ -419,6 +453,20 @@ static bool waveshare_mcu_present(const dsi_i2c_bus_t* bus) {
 	if (!waveshare_mcu_bus(bus))
 		return false;
 	return dsi_i2c_probe_addr_only(DISPLAY_MCU_ADDR) == 0;
+}
+
+/*
+ * Positive chip identification, not just an address ACK: the 0x45 slot
+ * is shared by two incompatible parts — the Waveshare panel MCU
+ * (registers 0x94+) and the official RPi 7" panel's ATTINY (registers
+ * 0x80-0x91). The ATTINY NAKs the register phase of a 0x98 read, the
+ * Waveshare MCU answers it.
+ */
+static bool waveshare_mcu_identified(void) {
+	uint8_t id = 0;
+
+	return dsi_i2c_read_reg8_retry(DISPLAY_MCU_ADDR,
+			WAVESHARE_REG_ID, &id) == 0;
 }
 
 static int32_t waveshare_mcu_write_power(uint16_t state, uint32_t settle_ms, const char* tag) {
@@ -460,7 +508,9 @@ static int32_t waveshare_mcu_set_gpio(uint8_t gpio, bool level,
 	else
 		waveshare_power_state &= (uint16_t)~bit;
 
-	return waveshare_mcu_write_power(waveshare_power_state, settle_ms, tag);
+	if (waveshare_mcu_write_power(waveshare_power_state, settle_ms, tag) != 0)
+		return -1;
+	return 0;
 }
 
 static tp_status_t waveshare_probe_goodix(const dsi_i2c_bus_t* bus) {
@@ -489,6 +539,17 @@ static tp_status_t ft5x06_probe(const dsi_i2c_bus_t* bus) {
 
 static tp_status_t waveshare_mcu_probe_touch_sequence(const dsi_i2c_bus_t* bus) {
 	if (!waveshare_mcu_present(bus))
+		return TP_NOT_RESPONSE;
+	/*
+	 * Run the power walk only against a positively identified
+	 * Waveshare MCU: the walk writes registers 0x94/0x95, and against
+	 * the ATTINY those bytes land on its own register space and
+	 * power-cycle the panel out from under dsi_fbdisplayd — wedging
+	 * the touch controller and glitching the display. An ATTINY panel
+	 * falls through to the direct GT911 probe: fbdisplayd has already
+	 * walked its rails and released TP reset.
+	 */
+	if (!waveshare_mcu_identified())
 		return TP_NOT_RESPONSE;
 
 	if (waveshare_mcu_sync_power() != 0)
@@ -608,12 +669,23 @@ static tp_status_t goodix_set_command(uint8_t value) {
 }
 
 static tp_status_t goodix_probe_addr(uint8_t addr, uint8_t* id_buf) {
-	tp_status_t ret;
+	uint32_t attempt;
 
 	touch_addr = addr;
 	touch_kind = TOUCH_KIND_GOODIX;
-	ret = goodix_read_reg(GOODIX_REG_ID, id_buf, 4);
-	return ret;
+	/* the ID read is the first contact with a controller that may
+	 * still be coming out of reset: a single NAK must not sink the
+	 * whole candidate — retry with a bus clear between attempts */
+	for (attempt = 0; attempt < TP_I2C_RETRY_MAX; attempt++) {
+		if (goodix_read_reg(GOODIX_REG_ID, id_buf, 4) == TP_OK)
+			return TP_OK;
+		if (active_bus == NULL)
+			break;
+		proc_usleep(2000);
+		dsi_i2c_bus_clear(active_bus);
+		proc_usleep(2000);
+	}
+	return TP_NOT_RESPONSE;
 }
 
 static tp_status_t goodix_probe_candidates(const dsi_i2c_bus_t* bus) {
@@ -658,9 +730,8 @@ static tp_status_t goodix_init(void) {
 	uint32_t bus_i;
 
 	for (bus_i = 0; bus_i < sizeof(dsi_i2c_buses) / sizeof(dsi_i2c_buses[0]); bus_i++) {
-		if (dsi_i2c_select(&dsi_i2c_buses[bus_i]) != 0) {
+		if (dsi_i2c_select(&dsi_i2c_buses[bus_i]) != 0)
 			continue;
-		}
 		proc_usleep(20000);
 
 		if (ft5x06_probe(&dsi_i2c_buses[bus_i]) == TP_OK)
@@ -677,7 +748,7 @@ static tp_status_t goodix_init(void) {
 
 static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 	uint8_t status;
-	uint8_t buf[GOODIX_POINT_SIZE];
+	uint8_t buf[GOODIX_POINT_SIZE * GOODIX_MAX_POINTS];
 	uint8_t i;
 
 	if (goodix_read_reg(GOODIX_REG_STATUS, &status, 1) != TP_OK)
@@ -689,12 +760,21 @@ static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 	if (*nr > GOODIX_MAX_POINTS)
 		*nr = GOODIX_MAX_POINTS;
 
+	/*
+	 * The point records are contiguous: one bulk read instead of one
+	 * transaction per point. Every transaction costs an address phase,
+	 * a start/stop on the wire and a controller disable/enable cycle
+	 * over PCIe MMIO — with five points that is five times the bus and
+	 * link load of a single burst, for the same coordinate bytes.
+	 */
+	if (*nr > 0 &&
+			goodix_read_reg(GOODIX_REG_POINT1, buf,
+				(uint16_t)(*nr * GOODIX_POINT_SIZE)) != TP_OK)
+		return TP_NOT_RESPONSE;
 	for (i = 0; i < *nr; i++) {
-		if (goodix_read_reg((uint16_t)(GOODIX_REG_POINT1 + i * GOODIX_POINT_SIZE),
-				buf, sizeof(buf)) != TP_OK)
-			return TP_NOT_RESPONSE;
-		pts[i].x = (uint16_t)((buf[1] << 8) | buf[0]);
-		pts[i].y = (uint16_t)((buf[3] << 8) | buf[2]);
+		const uint8_t* p = buf + i * GOODIX_POINT_SIZE;
+		pts[i].x = (uint16_t)((p[1] << 8) | p[0]);
+		pts[i].y = (uint16_t)((p[3] << 8) | p[2]);
 	}
 
 	/*
@@ -831,12 +911,20 @@ static int tp_loop(vdevice_t* dev, void* p) {
 				tp_ready = true;
 				i2c_fail_count = 0;
 				poll_sleep_us = TP_POLL_MIN_US;
-				slog("dsi_touchd: touch on bus=%s addr=0x%02x kind=%s\n",
+				slog("dsi_touchd: touch on bus=%s addr=0x%02x kind=%s %ukHz\n",
 						active_bus == NULL ? "?" : active_bus->name,
 						touch_addr,
-						touch_kind == TOUCH_KIND_FT5X06 ? "ft5x06" : "goodix");
+						touch_kind == TOUCH_KIND_FT5X06 ? "ft5x06" : "goodix",
+						active_bus == NULL ? 0u : active_bus->hz / 1000u);
 			}
 			else {
+				/* probe failures are otherwise silent; log every few
+				 * rounds so a dead bus is diagnosable from the boot
+				 * log */
+				if ((tp_retry_count % 5) == 1)
+					slog("dsi_touchd: no touch on %u buses (round %u)\n",
+							(uint32_t)(sizeof(dsi_i2c_buses) / sizeof(dsi_i2c_buses[0])),
+							tp_retry_count);
 				tp_retry_ts = now_ms + TP_INIT_RETRY_MS;
 			}
 		}
@@ -872,7 +960,8 @@ static int tp_loop(vdevice_t* dev, void* p) {
 			need_wakeup = touch_release_if_pressed() || need_wakeup;
 			/* a transfer that died mid-byte can leave the slave
 			 * holding SDA low, wedging every later transfer; clock
-			 * the bus clear before re-probing */
+			 * the bus clear before re-probing (the re-select inside
+			 * re-pins the bus's declared speed) */
 			dsi_i2c_bus_clear(active_bus);
 			tp_ready = false;
 			tp_retry_ts = now_ms;
@@ -930,6 +1019,18 @@ int main(int argc, char** argv) {
 	dev.loop_step = tp_loop;
 	dev.check_poll_events = tp_check_poll_events;
 
-	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
+	slog("dsi_touchd: starting, mount=%s\n", mnt_point);
+
+	/*
+	 * multi_task is mandatory here: in single-task mode the kernel's
+	 * sys_usleep takes the "schedule, do not really sleep" fast path
+	 * for the main context while a blocked client (xtouch reading
+	 * /dev/touch0) keeps an ipc task queued. Every usleep in the poll
+	 * loop — including all the 20-180ms rail-settle and reset waits
+	 * inside the probe sequence — then collapses to nothing: the loop
+	 * burns a whole core, and the GT911 power-up timing never holds,
+	 * so probing fails forever.
+	 */
+	device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, true);
 	return 0;
 }

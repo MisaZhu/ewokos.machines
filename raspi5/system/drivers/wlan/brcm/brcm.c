@@ -487,13 +487,6 @@ struct brcmf_dev{
     uint32_t tx_starve_usec; /* timestamp when TX credits first exhausted */
     bool tx_starving;        /* true when credits exhausted with queued data */
 
-    /* --- TX throughput diagnostics: accumulated between once/sec dumps --- */
-    uint32_t diag_tx_frames;        /* frames actually pushed to the chip */
-    uint32_t diag_tx_credit_stalls; /* credit-exhaustion episodes (txctl_ok denials) */
-    uint32_t diag_tx_breakthroughs; /* 500ms starvation breakthroughs */
-    uint32_t diag_tx_qblocks;       /* brcm_send() write-block/drop events (netd sees EAGAIN) */
-    uint32_t diag_dump_ms;          /* kernel_tic_ms of last TX diag dump */
-
     uint32_t hostintmask;
     uint32_t intstatus;
     uint32_t fcstate;
@@ -3673,6 +3666,32 @@ static uint32_t brcmf_sdio_hostmail(void)
     return intstatus;
 }
 
+/*
+ * Fetch pending TX credits from the firmware directly (Linux brcmfmac-style
+ * credit poll). SDPCM credits normally arrive piggybacked in the swheader of
+ * firmware RX frames, but bulk upload pushes far more frames than the peer
+ * ACKs return, so the piggyback supply starves the pipeline while the
+ * firmware still has room in its F2 FIFO. The F1 WFRAMEBC registers hold the
+ * number of frames the host may still write; reading them is side-effect
+ * free. Same sanity bound as brcmf_sdio_hdparse(): a window beyond 0x40
+ * frames is treated as bogus and left untouched.
+ */
+static void brcmf_sdio_credit_poll(void)
+{
+    uint8_t hi, lo;
+    uint32_t count;
+
+    hi = brcmf_sdiod_readb(SBSDIO_FUNC1_WFRAMEBCHI, NULL);
+    lo = brcmf_sdiod_readb(SBSDIO_FUNC1_WFRAMEBCLO, NULL);
+    count = ((uint32_t)hi << 8) | lo;
+    if (count == 0 || count > 0x40)
+        return;
+    bus->tx_max = (uint8_t)(bus->tx_seq + count);
+    if ((uint8_t)(bus->tx_max - bus->tx_seq) > 0x40)
+        bus->tx_max = (uint8_t)(bus->tx_seq + 2);
+    bus->tx_starving = false;
+}
+
 /* To check if there's window offered */
 static bool txctl_ok(void)
 {
@@ -3687,18 +3706,28 @@ static bool txctl_ok(void)
         return true;
     }
 
+    /*
+     * Window exhausted (or wrapped bogus): ask the firmware for credits
+     * before giving up. Without this the only credit source is incoming
+     * RX frame headers, and bulk TX outruns the ACK-return stream.
+     */
+    brcmf_sdio_credit_poll();
+    tx_credit = (uint8_t)(bus->tx_max - bus->tx_seq);
+    if (tx_credit != 0 && ((tx_credit & 0x80) == 0)) {
+        bus->tx_starving = false;
+        return true;
+    }
+
     /* Credits exhausted — track starvation duration */
     if (!bus->tx_starving) {
         bus->tx_starving = true;
         bus->tx_starve_usec = brcmf_now_usec();
-        bus->diag_tx_credit_stalls++;
         return false;
     }
 
     /* Allow TX after 500ms starvation to break deadlock */
     if (brcmf_elapsed_usec(bus->tx_starve_usec, brcmf_now_usec()) > 500000) {
         bus->tx_starving = false;
-        bus->diag_tx_breakthroughs++;
         return true;
     }
 
@@ -4036,7 +4065,6 @@ static void brcmf_sdio_dpc(void)
         bus->tx_fail_count = 0;
         bus->tx_seq++;
         tx_sent++;
-        bus->diag_tx_frames++;
         if (brcmf_tx_queue_resume_writes_if_room())
             tx_writable = true;
     }
@@ -4613,16 +4641,6 @@ static void* brcm_worker_main(void* p) {
         if (now_ms >= next_housekeeping_ms) {
             next_housekeeping_ms = now_ms + 1000;
             /*
-             * TX throughput diagnostic counters (frames/qblocks/credit-stalls/
-             * breakthroughs) are still maintained in the TX paths for on-demand
-             * debugging, but the once/sec "wtx:" console line is intentionally
-             * not printed. Reset the counters each second so they stay bounded.
-             */
-            bus->diag_tx_frames = 0;
-            bus->diag_tx_qblocks = 0;
-            bus->diag_tx_credit_stalls = 0;
-            bus->diag_tx_breakthroughs = 0;
-            /*
              * On raspix, periodic console polling adds extra F1/backplane
              * traffic while normal F2 RX/TX is active. The regression is
              * consistently triggered by external inbound traffic, so keep
@@ -5107,7 +5125,6 @@ int brcm_send(uint8_t *buf, int len){
     if (bus->state != CONNECTED)
         return 0;
     if (brcmf_tx_queue_should_block_writes()) {
-        bus->diag_tx_qblocks++;
         return 0;
     }
 
@@ -5115,7 +5132,6 @@ int brcm_send(uint8_t *buf, int len){
     if (ret <= 0) {
         bus->tx_queue_blocked = true;
         bus->tx_queue_drops++;
-        bus->diag_tx_qblocks++;
         brcmf_note_queue_drop("tx_queue", bus->tx_queue_drops,
                 queue_buffer_check(bus->tx_queue));
         return 0;

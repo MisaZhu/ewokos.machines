@@ -32,6 +32,26 @@ struct bsp_usb_dev {
 static xhci_hc_t _hcs[BSP_USB_NUM_HCS];
 static bsp_usb_dev_t _devs[BSP_USB_MAX_DEVS];
 static bool _inited = false;
+/*
+ * Per-controller activity: bsp_usb_poll() skips a controller that holds no
+ * attached device and is not marked dirty. With an idle mouse port the
+ * usbhostd loop would otherwise walk both event rings hundreds of times
+ * per second for nothing. Dirty is set on detach so the command events a
+ * device teardown posts are drained once afterwards. Hot-plug detection
+ * does not depend on this path: usb_scan_root_ports() reads port status
+ * straight from PORTSC.
+ */
+static uint32_t _hc_dev_count[BSP_USB_NUM_HCS];
+static bool _hc_dirty[BSP_USB_NUM_HCS];
+
+static int hc_index(xhci_hc_t* hc) {
+    for (int i = 0; i < BSP_USB_NUM_HCS; ++i) {
+        if (&_hcs[i] == hc) {
+            return i;
+        }
+    }
+    return -1;
+}
 
 /* ---- flat root port numbering across the present controllers ---- */
 
@@ -89,6 +109,8 @@ int bsp_usb_init(void) {
     }
     _inited = true;
     memset(_devs, 0, sizeof(_devs));
+    memset(_hc_dev_count, 0, sizeof(_hc_dev_count));
+    memset(_hc_dirty, 0, sizeof(_hc_dirty));
 
     /* map the main MMIO window plus the RP1 window, like the other RP1
        users (uartd, i2c, spi) */
@@ -154,6 +176,10 @@ int bsp_usb_reinit(void) {
        so forget the local handles too. The policy layer re-enumerates
        the tree from scratch afterwards. */
     memset(_devs, 0, sizeof(_devs));
+    memset(_hc_dev_count, 0, sizeof(_hc_dev_count));
+    for (int i = 0; i < BSP_USB_NUM_HCS; ++i) {
+        _hc_dirty[i] = true;
+    }
     int found = 0;
     if (xhci_init(&_hcs[0], 0, _mmio_base + RP1_XHCI0_OFF) == 0) {
         found++;
@@ -170,7 +196,8 @@ int bsp_usb_reinit(void) {
 
 void bsp_usb_poll(void) {
     for (int i = 0; i < BSP_USB_NUM_HCS; ++i) {
-        if (_hcs[i].present) {
+        if (_hcs[i].present && (_hc_dev_count[i] > 0 || _hc_dirty[i])) {
+            _hc_dirty[i] = false;
             xhci_process_events(&_hcs[i]);
         }
     }
@@ -260,6 +287,10 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
         return NULL;
     }
     dev->used = true;
+    int idx = hc_index(dev->xdev.hc);
+    if (idx >= 0) {
+        _hc_dev_count[idx]++;
+    }
     return dev;
 }
 
@@ -267,7 +298,14 @@ void bsp_usb_device_detach(bsp_usb_dev_t* dev) {
     if (dev == NULL || !dev->used) {
         return;
     }
+    int idx = hc_index(dev->xdev.hc);
     xhci_device_detach(&dev->xdev);
+    if (idx >= 0 && _hc_dev_count[idx] > 0) {
+        _hc_dev_count[idx]--;
+        /* the teardown commands post events; drain them once even if
+           this was the controller's last device */
+        _hc_dirty[idx] = true;
+    }
     memset(dev, 0, sizeof(*dev));
 }
 

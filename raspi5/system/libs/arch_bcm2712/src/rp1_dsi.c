@@ -731,9 +731,20 @@ static void rp1_dsi_dma_setup(uint32_t w, uint32_t h, uint32_t dep) {
 			(23U << 15) | (15U << 20) | (7U << 25));
 	dma_write(DPI_DMA_RGBSZ, rgbsz);
 
+	/*
+	 * AXI QoS ladder for the scan-out fetch master. USB (xHCI), I2C and
+	 * the CPU MMIO path all share RP1's single PCIe master port with this
+	 * engine, so the fetch must outrank them or the FIFO underruns while
+	 * a mouse is being moved. Baseline above the bulk masters, escalated
+	 * at the ULEV/LLEV fill thresholds, max priority at panic level.
+	 */
 	dma_write(DPI_DMA_QOS,
-			(0x0U << 0) | (0xbU << 4) | (0x2U << 8) |
-			(0x8U << 12) | (0x7U << 16));
+			(0x8U << 0) | (0xbU << 4) | (0xaU << 8) |
+			(0x8U << 12) | (0xcU << 16));
+	if (dma_read(DPI_DMA_QOS) != ((0x8U << 0) | (0xbU << 4) | (0xaU << 8) |
+			(0x8U << 12) | (0xcU << 16)))
+		slog("rp1-dsi: DMA QoS did not stick (qos=%08x)\n",
+				dma_read(DPI_DMA_QOS));
 	dma_write(DPI_DMA_IRQ_FLAGS, 0xffffffffU);
 	/* no interrupt wired: mask the line, keep underflow latch visible */
 	dma_write(DPI_DMA_IRQ_EN,
@@ -1122,10 +1133,11 @@ void bcm2712_rp1_dsi_dump(void) {
 			dma_read(DPI_DMA_CONTROL), dma_read(DPI_DMA_STATUS),
 			dma_read(DPI_DMA_IRQ_FLAGS), dma_read(DPI_DMA_DMA_ADDR_H),
 			dma_read(DPI_DMA_DMA_ADDR_L), dma_read(DPI_DMA_DMA_STRIDE));
-	slog("rp1-dsi dump dma: visible=%08x sync=%08x bp=%08x fp=%08x rgbsz=%08x panics=%08x\n",
+	slog("rp1-dsi dump dma: visible=%08x sync=%08x bp=%08x fp=%08x rgbsz=%08x panics=%08x qos=%08x\n",
 			dma_read(DPI_DMA_VISIBLE_AREA), dma_read(DPI_DMA_SYNC_WIDTH),
 			dma_read(DPI_DMA_BACK_PORCH), dma_read(DPI_DMA_FRONT_PORCH),
-			dma_read(DPI_DMA_RGBSZ), dma_read(DPI_DMA_PANICS));
+			dma_read(DPI_DMA_RGBSZ), dma_read(DPI_DMA_PANICS),
+			dma_read(DPI_DMA_QOS));
 	slog("rp1-dsi dump cfg: cfg=%08x mon=%08x clk_ctrl=%08x dpi_ctrl=%08x\n",
 			get32(_cfg_base + MIPICFG_CFG),
 			get32(_cfg_base + MIPICFG_DPHY_MONITOR),
