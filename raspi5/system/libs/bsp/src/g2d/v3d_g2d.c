@@ -379,7 +379,13 @@ static void g2d_l2c_enable(void)
 }
 
 /* Write back dirty V3D caches to DRAM: flush the TMU write combiner,
- * then the L2T in CLEAN mode. */
+ * then the L2T in CLEAN mode.  The clean must span the WHOLE L2T:
+ * g2d_uniform_fresh() narrows L2TFLSTA/L2TFLEND to the uniform block
+ * for the middle bands/tiles of a batched large-surface op and never
+ * restores them, so reprogram the full range here - otherwise this
+ * post-job flush writes back only those few uniform lines and the
+ * canvas's dirty lines stay in the L2T, invisible to the CPU reading
+ * DRAM (the batched op's final band/tile reads back stale). */
 static void g2d_flush_l2(void)
 {
     uint32_t i;
@@ -387,6 +393,8 @@ static void g2d_flush_l2(void)
     v3d_core()[CTL_L2TCACTL / 4] = (1u << 8);               /* TMUWCF */
     for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 8)); i++)
         g2d_poll_hint();
+    v3d_core()[0x34 / 4] = 0;                       /* L2TFLSTA */
+    v3d_core()[0x38 / 4] = ~0u;                     /* L2TFLEND */
     v3d_core()[CTL_L2TCACTL / 4] = (1u << 0) | (2u << 1);   /* L2TFLS | CLEAN */
     for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
         g2d_poll_hint();
