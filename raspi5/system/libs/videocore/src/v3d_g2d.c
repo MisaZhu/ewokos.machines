@@ -746,7 +746,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     else if (code == g2d_qpu_argb_fill4)
         kern = KERN_FILL4;
     else
-        return -1;      /* only the bsp_g2d kernels are supported */
+        return -1;      /* only the vc_g2d QPU kernels are supported */
     if ((uint32_t)nwords > _ksrc_n[kern])
         return -1;
 

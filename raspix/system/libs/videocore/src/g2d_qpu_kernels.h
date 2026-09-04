@@ -11,7 +11,7 @@
  * kernels below have separate, smaller contracts and must not be inferred
  * from this CSD scheduling description.
  *
- * Uniform contract (uint32 words, see bsp_g2d.c):
+ * Uniform contract (uint32 words, see vc_g2d.c):
  *   argb_fill (16): 0=color 1=L-1 2=stride 3=h-1 4=L*64-stride
  *     5=L*rows 6=phys 7,8=x0,x1 9,10=y0,y1 11=full 12=rows
  *     13=rows*stride 14=scratch 15=0
@@ -32,7 +32,7 @@
  * BCM2837.  The host must not infer a general row-band, rotate, or
  * multi-dispatch contract from these arrays.
  *
- * Uniform contract per QPU (uint32 words, see bsp_g2d.c):
+ * Uniform contract per QPU (uint32 words, see vc_g2d.c):
  *   argb_fill_vc4 (3): one QPU per row; 0=dst_bus 1=color
  *     2=number of 16-word groups
  *   argb_blit_vc4 / argb_rotate_vc4 (24): 0,1=cu,cv 2,3=src_w-1,src_h-1

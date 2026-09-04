@@ -967,7 +967,7 @@ HEADER_DOC = """\
  * are uniform (ub=0); the driver appends one trailing uniform word
  * (scratch phys) that the kernels never consume.
  *
- * Uniform contract (uint32 words, see bsp_g2d.c):
+ * Uniform contract (uint32 words, see vc_g2d.c):
  *   argb_fill (16): 0=color 1=L-1 2=stride 3=h-1 4=L*64-stride
  *     5=L*rows 6=phys 7,8=x0,x1 9,10=y0,y1 11=full 12=rows
  *     13=rows*stride 14=scratch 15=0
@@ -992,7 +992,7 @@ HEADER_DOC = """\
  * vc4_lane_init adds mul24(|pu|, lane) with the host-supplied absolute
  * value and sign word (mul24 is unsigned).
  *
- * Uniform contract per QPU (uint32 words, see bsp_g2d.c):
+ * Uniform contract per QPU (uint32 words, see vc_g2d.c):
  *   argb_fill_vc4 (9): 0=color 1=qid 2=L-1 3=dst_row0 4,5=x0,x1
  *     6=rowjump (L*64-stride) 7=rows_q 8=gx0
  *   argb_blit_vc4 / argb_rotate_vc4 (24): 0,1=cu,cv 2,3=src_w-1,src_h-1

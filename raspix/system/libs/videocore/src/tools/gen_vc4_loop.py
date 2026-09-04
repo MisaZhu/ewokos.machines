@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 gen_vc4_loop.py - generator for the self-looping VC4 (V3D 2.1) QPU
-kernels used by bsp_g2d.c on BCM2837:
+kernels used by vc_g2d.c on BCM2837:
 
     argb_fill_loop_vc4   one QPU walks N contiguous 16-word groups,
                          one VDW per group (color preloaded in VPM row 0)

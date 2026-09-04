@@ -1,10 +1,12 @@
 all: basic_libs
 	@echo "all done."
 
-DIRS = arch_bcm283x bsp
+DIRS = arch_bcm283x videocore bsp
 
-# bsp includes headers installed by arch_bcm283x into the SDK include dir
-bsp: arch_bcm283x
+# videocore and bsp include headers installed by arch_bcm283x into the SDK
+# include dir; bsp_g2d additionally includes videocore/vc_g2d.h
+videocore: arch_bcm283x
+bsp: arch_bcm283x videocore
 
 basic_libs: $(DIRS)
 

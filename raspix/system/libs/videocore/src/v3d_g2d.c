@@ -346,7 +346,7 @@ static const uint64_t g2d_nop_vc4[] = {
 };
 
 /* Pi3 bring-up bisection kernels (assembled with the EwokOS qpuasm
- * K21 VC4 backend; see machines/raspix/.../g2d/tools/gen_kernels.py).
+ * K21 VC4 backend; see machines/raspix/.../videocore/src/tools/gen_kernels.py).
  *  - t_exit:   GPU_FFT completion write (mov host, r0; prog_end) only
  *  - t_unif1:  one uniform read then the same exit
  *  - t_unif9:  the argb_fill_vc4 uniform prologue then the exit        */
@@ -575,7 +575,7 @@ static inline void g2d_dsb(void)
 #define KERN_FILL_LOOP_VC4 11
 /* Self-looping TMU copy kernel: one launch walks whole rows, each QPU
  * thread gathering and storing up to G2D_BAND_MAX_VDW 16-pixel spans
- * (the per-thread iteration cap is enforced by bsp_g2d.c). */
+ * (the per-thread iteration cap is enforced by vc_g2d.c). */
 #define KERN_COPY_LOOP_VC4 12
 /* Self-looping TMU alpha kernel: copy-loop shape plus a dst gather and
  * the source-over ALU blend - one launch per 12 destination rows under
@@ -3009,7 +3009,7 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
     else if (code == g2d_qpu_argb_alpha_loop_vc4)
         kern = KERN_ALPHA_LOOP_VC4;
     else
-        return -1;      /* only the four bsp_g2d kernels are supported */
+        return -1;      /* only the vc_g2d QPU kernels are supported */
     if ((uint32_t)nwords > _ksrc_n[kern])
         return -1;
 
