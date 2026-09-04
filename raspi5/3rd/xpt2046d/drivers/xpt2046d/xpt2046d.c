@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <displayd/displayd.h>
 #include <xpt2046/xpt2046.h>
+#include <xpt2046/tp_filter.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 #include <ewoksys/proc.h>
@@ -14,82 +15,8 @@ static int _spi_div = 128;
 static int _tp_cs = 7;
 static int _tp_irq = 25;
 
-/* Touch position filtering pipeline (classic combo):
- *   raw ADC -> clamp (reject jumps) -> median (kill impulses)
- *           -> moving average (smooth) -> output
- * Filters are re-seeded on every pen-down edge so a new touch never
- * inherits the previous touch's coordinates; on release the last
- * filtered position is reported. */
-
-#define TP_MAX_JUMP  400 /* max plausible delta between two samples (~1/10 of the 12-bit range) */
-#define TP_MEDIAN_N  5   /* median window (odd) */
-#define TP_AVG_N     4   /* moving average window */
-
-typedef struct {
-    uint16_t med[TP_MEDIAN_N];
-    uint8_t  med_n;   /* samples filled in the median window */
-    uint8_t  med_idx; /* median ring write position */
-    uint16_t avg[TP_AVG_N];
-    uint8_t  avg_n;
-    uint8_t  avg_idx;
-    uint16_t last;    /* last accepted (clamped) sample */
-    uint16_t out;     /* last filtered output */
-    uint8_t  seeded;  /* clamp reference valid */
-} tp_filter_t;
-
 static tp_filter_t _fx, _fy;
 static bool _pen_down = false;
-
-static void tp_filter_reset(tp_filter_t* f) {
-    f->med_n = f->med_idx = 0;
-    f->avg_n = f->avg_idx = 0;
-    f->seeded = 0;
-    /* keep f->out: release events still report the last filtered position */
-}
-
-static uint16_t tp_filter_in(tp_filter_t* f, uint16_t v) {
-    uint8_t i;
-
-    /* 1. clamp: reject samples jumping too far from the last accepted one */
-    if(f->seeded) {
-        int32_t d = (int32_t)v - (int32_t)f->last;
-        if(d > TP_MAX_JUMP || d < -TP_MAX_JUMP)
-            v = f->last;
-    }
-    f->last = v;
-
-    /* 2. median over the clamped window (kills impulse noise) */
-    f->med[f->med_idx] = v;
-    f->med_idx = (f->med_idx + 1) % TP_MEDIAN_N;
-    if(f->med_n < TP_MEDIAN_N)
-        f->med_n++;
-
-    uint16_t tmp[TP_MEDIAN_N];
-    memcpy(tmp, f->med, f->med_n * sizeof(uint16_t));
-    for(i = 1; i < f->med_n; i++) { /* insertion sort, N is tiny */
-        uint16_t k = tmp[i];
-        int8_t j = (int8_t)i - 1;
-        while(j >= 0 && tmp[j] > k) {
-            tmp[j + 1] = tmp[j];
-            j--;
-        }
-        tmp[j + 1] = k;
-    }
-    uint16_t m = tmp[f->med_n / 2];
-
-    /* 3. moving average over the median outputs (smoothing) */
-    f->avg[f->avg_idx] = m;
-    f->avg_idx = (f->avg_idx + 1) % TP_AVG_N;
-    if(f->avg_n < TP_AVG_N)
-        f->avg_n++;
-
-    uint32_t s = 0;
-    for(i = 0; i < f->avg_n; i++)
-        s += f->avg[i];
-    f->out = (uint16_t)(s / f->avg_n);
-    f->seeded = 1;
-    return f->out;
-}
 
 /*
  * Event queue between the sampler loop and readers: fixed 6-byte events
