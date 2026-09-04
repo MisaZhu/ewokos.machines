@@ -96,6 +96,11 @@
  */
 #define BRCMF_WORKER_SPIN_FALLBACK_LOOPS 64U
 #define BRCMF_WORKER_SPIN_FALLBACK_SLEEP_US 200U
+/* pending-io claims work but nothing is moving: the predicate is stuck
+ * (wedged rxpending, phantom credits), not a burst. Poll at this bounded
+ * cadence while the wall-clock recoveries (rxskip 200ms, rxpending 2s,
+ * rxfail thresholds) run, instead of burning the CPU at sleep_us=0. */
+#define BRCMF_WORKER_STALL_SLEEP_US 1000U
 #define BRCMF_DPC_SLOW_USEC 5000U
 #define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
 /*
@@ -4738,6 +4743,7 @@ static void* brcm_worker_main(void* p) {
     uint32_t next_scan_ms = 0;
     uint32_t sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
     uint32_t spin_loops = 0;
+    uint32_t last_frames = 0;
     int err = -1;
     int attempt;
 
@@ -4877,22 +4883,42 @@ static void* brcm_worker_main(void* p) {
                 uint32_t now_ms = kernel_tic_ms(0);
                 bool rx_silent = (now_ms - bus->last_rx_success_ms) > BRCMF_FW_LIVENESS_MS;
                 bool errs_seen = (bus->rx_fail_count > 0 || bus->sdio_cmd_fail_count > 0);
-                /* "clean" firmware stall: the SDIO bus answers fine and no
-                   read errors surface, but the dongle stops delivering
-                   frames entirely. If we kept transmitting (ARP/TCP/ssh
-                   retries) across a doubled window with zero frames back,
-                   the link is dead regardless of the error counters. */
-                bool clean_stall = (now_ms - bus->last_rx_success_ms) > 2 * BRCMF_FW_LIVENESS_MS &&
+                /* "clean" firmware stall suspicion: the SDIO bus answers
+                   fine and no read errors surface, but the dongle stops
+                   delivering frames entirely. TX-with-zero-RX across a
+                   doubled window is only suspicion though: a quiet link
+                   with purely outbound traffic (keepalives, ARP) looks
+                   identical, and resetting on suspicion flap-loops a
+                   healthy idle link -- the scan+rejoin churn is itself a
+                   permanent wland CPU burn. Prove it with a dcmd instead:
+                   a live firmware answers GET_RSSI, a wedged one times
+                   out. */
+                bool clean_stall_suspect =
+                    (now_ms - bus->last_rx_success_ms) > 2 * BRCMF_FW_LIVENESS_MS &&
                     (now_ms - bus->last_tx_success_ms) < BRCMF_FW_LIVENESS_MS;
-                if ((rx_silent && errs_seen) || clean_stall) {
-                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u cmd_fails=%u clean_stall=%d), resetting link\n",
+                if (rx_silent && errs_seen) {
+                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u cmd_fails=%u), resetting link\n",
                             now_ms - bus->last_rx_success_ms,
                             bus->rx_fail_count,
-                            bus->sdio_cmd_fail_count,
-                            clean_stall ? 1 : 0);
+                            bus->sdio_cmd_fail_count);
                     brcmf_sdio_checkdied();
                     brcmf_mark_disconnected("fw liveness timeout",
                             0, bus->rx_fail_count, 0);
+                } else if (clean_stall_suspect) {
+                    uint32_t rssi = 0;
+                    if (brcmf_fil_cmd_int_get(0, BRCMF_C_GET_RSSI, &rssi) != 0) {
+                        brcm_log("fw liveness: probe dcmd failed after %u ms rx silence, resetting link\n",
+                                now_ms - bus->last_rx_success_ms);
+                        brcmf_sdio_checkdied();
+                        brcmf_mark_disconnected("fw liveness probe failed",
+                                0, bus->rx_fail_count, 0);
+                    } else {
+                        /* firmware answered: proven alive; reopen the
+                           suspect window for a full liveness span, so a
+                           healthy quiet link is probed at most once per
+                           minute */
+                        bus->last_rx_success_ms = now_ms;
+                    }
                 }
             }
 
@@ -4997,22 +5023,36 @@ static void* brcm_worker_main(void* p) {
 worker_done:
         brcmf_maybe_kick_reader();
 
-        if (brcmf_worker_has_pending_io()) {
-            /* More RX/TX ready right now: loop immediately instead of
-             * sleeping a full busy interval. Sleeping between drain
-             * batches injects per-batch latency and bufferbloat that
-             * shows up as network stutter under bursty traffic. Each
-             * iteration still performs real SDIO work, so this is not a
-             * busy-spin — but bound it anyway: if the pending-io
-             * condition wedges true, fall back to a short yield instead
-             * of spinning forever. */
+        /*
+         * Cadence is earned by frames actually moved, not by having run
+         * the DPC. run_dpc used to reset the idle ramp to the 400us busy
+         * tier on its own, so any spurious card-irq latch, func0 probe
+         * hit or stray broadcast frame pinned the worker at busy cadence
+         * for as long as the noise continued -- and every busy iteration
+         * pays SDIO command gaps as pure busy-spin, which is what burned
+         * the CPU at idle. A lone broadcast is still drained by the DPC
+         * it triggered, it just no longer collapses the ramp; a real
+         * burst re-earns the zero-sleep/busy tiers on the very next
+         * iteration, so throughput is unaffected.
+         */
+        uint32_t frames_now = brcmf_stat.rx_frames + brcmf_stat.tx_frames;
+        bool progress = (frames_now != last_frames);
+        bool pending_io = brcmf_worker_has_pending_io();
+        last_frames = frames_now;
+
+        if (pending_io && progress) {
+            /* Burst drain, unchanged: loop immediately while frames move.
+             * Still bounded: 64 working loops force one short yield. */
             sleep_us = 0;
             spin_loops++;
             if (spin_loops >= BRCMF_WORKER_SPIN_FALLBACK_LOOPS) {
                 sleep_us = BRCMF_WORKER_SPIN_FALLBACK_SLEEP_US;
                 spin_loops = 0;
             }
-        } else if (run_dpc || brcmf_worker_has_work()) {
+        } else if (pending_io) {
+            sleep_us = BRCMF_WORKER_STALL_SLEEP_US;
+            spin_loops = 0;
+        } else if (progress || brcmf_worker_has_work()) {
             sleep_us = BRCMF_WORKER_BUSY_SLEEP_US;
             spin_loops = 0;
         } else {
