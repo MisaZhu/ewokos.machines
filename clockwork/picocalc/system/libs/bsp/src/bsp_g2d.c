@@ -57,12 +57,21 @@ int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src
 		argb_dst, dst_phy, dst_contig, dst_w, dst_h, dx, dy, dw, dh, alpha);
 }
 
+/* cpu path for sub-alignment tails and narrow copies: handed to the back
+   end's 1:1 blit, which works purely on the virtual pointers and ignores
+   phy/contig (passed 0 here). its simd blocks plus scalar/padded tail
+   handle any width, and it clips the rect against both buffer bounds.
+   use_alpha == 0 is a plain copy; otherwise the same blend math as
+   bsp_g2d_blt_alpha, and alpha == 0 is a no-op. */
 int32_t bsp_g2d_blt_cpu(uint32_t* argb_src, int32_t src_w, int32_t src_h,
 		int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 		uint32_t* argb_dst, int32_t dst_w, int32_t dst_h,
 		int32_t dx, int32_t dy, uint8_t use_alpha, uint8_t alpha) {
-	return arch_g2d_blt_cpu(argb_src, src_w, src_h, sx, sy, sw, sh,
-		argb_dst, dst_w, dst_h, dx, dy, use_alpha, alpha);
+	if(use_alpha != 0)
+		return arch_g2d_blt_alpha(argb_src, 0, 0, src_w, src_h, sx, sy, sw, sh,
+			argb_dst, 0, 0, dst_w, dst_h, dx, dy, sw, sh, alpha);
+	return arch_g2d_blt(argb_src, 0, 0, src_w, src_h, sx, sy, sw, sh,
+		argb_dst, 0, 0, dst_w, dst_h, dx, dy, sw, sh);
 }
 
 int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
