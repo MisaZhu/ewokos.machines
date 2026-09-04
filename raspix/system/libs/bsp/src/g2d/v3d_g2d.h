@@ -82,6 +82,33 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const void *src, size_t src_len,
                 void *dst, size_t dst_len);
 
+/* V3D 4.2 fixed-function TLB clear probe.  Returns -2 when unsupported. */
+int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
+                         uint32_t width, uint32_t height, uint32_t argb);
+
+/* V3D 4.2 fixed-function TLB raster-to-raster copy.  This is intentionally
+ * restricted to equal-stride, whole-surface ARGB8888 copies; callers use the
+ * QPU path for clipping, scaling and format conversion. */
+int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
+                        uint32_t stride_bytes,
+                        uint32_t width, uint32_t height);
+
+/* Cycle breakdown of the most recent synchronous CSD submission.  This is
+ * diagnostic state only: reading it does not alter cache or dispatch policy. */
+typedef struct {
+    uint64_t total;
+    uint64_t prepare;
+    uint64_t invalidate;
+    uint64_t execute;
+    uint64_t flush;
+    uint32_t invalidate_polls;
+    uint32_t execute_polls;
+    uint32_t flush_polls;
+    uint32_t perf[16];
+} v3d_g2d_profile_t;
+
+void v3d_g2d_get_profile(v3d_g2d_profile_t *out);
+
 /*
  * VC4 (V3D 2.1) counterpart of v3d_g2d_run(): launches one SRQ thread
  * per QPU of `code`.  The uniform stream is PER-QPU: QPU q reads its
@@ -147,6 +174,8 @@ extern const uint64_t g2d_qpu_argb_blit[];
 extern const unsigned g2d_qpu_argb_blit_n;
 extern const uint64_t g2d_qpu_argb_rotate[];
 extern const unsigned g2d_qpu_argb_rotate_n;
+extern const uint64_t g2d_qpu_argb_rot90[];
+extern const unsigned g2d_qpu_argb_rot90_n;
 extern const uint64_t g2d_qpu_argb_alpha[];
 extern const unsigned g2d_qpu_argb_alpha_n;
 extern const uint64_t g2d_qpu_argb_fill_vc4[];

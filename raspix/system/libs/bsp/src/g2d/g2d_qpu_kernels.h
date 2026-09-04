@@ -172,6 +172,12 @@ const uint64_t g2d_qpu_argb_rotate[] = {
 };
 const unsigned g2d_qpu_argb_rotate_n = 160;
 
+/* Dispatch token for the dedicated rot90 kernel.  BCM2711 selects and
+ * executes g2d_qpu_v42_argb_rot90 from the versioned kernel object; this
+ * local symbol only gives the shared BSP API a stable kernel identity. */
+const uint64_t g2d_qpu_argb_rot90[] = { 0 };
+const unsigned g2d_qpu_argb_rot90_n = 1;
+
 /* argb_alpha: 148 instructions */
 const uint64_t g2d_qpu_argb_alpha[] = {
     0x3d803186bb800000ULL, 0x3d807186bb800000ULL, 0x3d80b186bb800000ULL, 0x3d80f186bb800000ULL,
