@@ -232,21 +232,102 @@ const uint64_t g2d_qpu_argb_fill_vc4[] = {
 };
 const unsigned g2d_qpu_argb_fill_vc4_n = 13;
 
-/* argb_fill_loop_vc4: aligned full-row fill.  Uniforms per QPU:
- * 0=destination bus address, 1=color, 2=number of 16-pixel groups. */
+/* argb_fill_loop_vc4: contiguous group fill loop (see
+ * tools/gen_vc4_loop.py).  Each QPU walks `count` contiguous 16-word
+ * groups, one exact 16-word VDW per group, with the colour preloaded
+ * once into VPM row 0 (shared across QPUs - same colour per launch).
+ * The host caps count at G2D_BAND_MAX_VDW (512) per thread.
+ * Uniforms per QPU: 0=dst bus address, 1=color, 2=group count. */
 const uint64_t g2d_qpu_argb_fill_loop_vc4[] = {
-    0x1002002715827d80ULL, 0x1002082715827d80ULL,
-    0x100200a715827d80ULL, 0xe00208a700000040ULL,
-    0xe0021c6700101a00ULL, 0x10020c27159e7000ULL,
-    0x100209e7159f2fc0ULL, 0xe0021c6780904000ULL,
-    0x10021ca715027d80ULL, 0x100209e7159f2fc0ULL,
-    0xd00220a70d081dc0ULL, 0xf03809e7ffffffc0ULL,
-    0x100200270c027c80ULL, 0x100209e7009e7000ULL,
-    0x100209e7009e7000ULL, 0xd00209a7159c0fc0ULL,
+    0x1002006715827d80ULL, 0x1002082715827d80ULL, 0x100200a715827d80ULL,
+    0xe0021c6700101a00ULL, 0x10020c27159e7000ULL, 0x100209e7159f2fc0ULL,
+    0xe00208a700000040ULL, 0xe0021c6780904000ULL, 0x10021ca715067d80ULL,
+    0x100209e7159f2fc0ULL, 0x100200670c067c80ULL, 0xd00220a70d081dc0ULL,
+    0xf03809e7ffffffb8ULL, 0x100209e7009e7000ULL, 0x100209e7009e7000ULL,
+    0x100209e7009e7000ULL, 0xd00209a7159c0fc0ULL, 0x300009e7009e7000ULL,
     0x100209e7009e7000ULL, 0x100209e7009e7000ULL,
-    0x300009e7009e7000ULL,
 };
-const unsigned g2d_qpu_argb_fill_loop_vc4_n = 19;
+const unsigned g2d_qpu_argb_fill_loop_vc4_n = 20;
+
+/* argb_copy_loop_vc4: TMU linear-gather span-copy loop, no VDR (see
+ * tools/gen_vc4_loop.py).  Each QPU walks `count` 16-pixel spans of one
+ * destination row: per iteration one 16-lane TMU gather (per-lane source
+ * addresses advance linearly, so identity blits, right-angle rotates and
+ * integer-coefficient scales all fit) and one exact 16-word VDW.  The
+ * per-QPU VPM window (rows 1+4q, VDW setup u6+(qpu*4)<<7) is exactly the
+ * proven argb_gather_vc4 shape; the TMU-in-loop shape is the proven
+ * cache_scrub_vc4 one.  The host caps count at G2D_BAND_MAX_VDW (512).
+ * Uniforms per QPU: 0=src lane-0 address (L2 alias), 1=dst span address
+ * (direct alias), 2=span count, 3=per-lane source byte step (add part),
+ * 4=per-lane step (subtract part), 5=per-span source byte step (signed),
+ * 6=VDW setup base 0x80904080. */
+const uint64_t g2d_qpu_argb_copy_loop_vc4[] = {
+    0x1002006715827d80ULL, 0x100200a715827d80ULL, 0x100200e715827d80ULL,
+    0x1002082715827d80ULL, 0x1002086715827d80ULL, 0x100208a715827d80ULL,
+    0x100201e715827d80ULL, 0x100208e7159e6fc0ULL, 0xd00208e7119c27c0ULL,
+    0x10020127159e76c0ULL, 0xd00208e7119c77c0ULL, 0x100208e70c1e7780ULL,
+    0x100201a7159e76c0ULL, 0xe00208e700101a01ULL, 0x100208e70c127780ULL,
+    0x10020167159e76c0ULL, 0x100208e7159a7d80ULL, 0x100049e0409e7018ULL,
+    0x100049e1409e7019ULL, 0x100208270d9e7040ULL, 0x100200670c067c00ULL,
+    0xe00208e700000040ULL, 0x10020e2715067d80ULL, 0xa00249e7009e7000ULL,
+    0x10021c6715167d80ULL, 0x10020c27159e7900ULL, 0x10021c67151a7d80ULL,
+    0x10021ca7150a7d80ULL, 0x100209e7159f2fc0ULL, 0x100200670c067c80ULL,
+    0x100200a70c0a7cc0ULL, 0xd00220e70d0c1dc0ULL, 0xf03809e7ffffff90ULL,
+    0x100209e7009e7000ULL, 0x100209e7009e7000ULL, 0x100209e7009e7000ULL,
+    0xd00209a7159c0fc0ULL, 0x300009e7009e7000ULL, 0x100209e7009e7000ULL,
+    0x100209e7009e7000ULL,
+};
+const unsigned g2d_qpu_argb_copy_loop_vc4_n = 40;
+
+/* argb_alpha_loop_vc4: TMU-gather source-over blend loop, no VDR (see
+ * tools/gen_vc4_loop.py).  Copy-loop shape plus a second 16-lane TMU
+ * gather of the destination span and the staged pipeline's exact blend
+ * (sa'=(S.a*alpha)>>8; out.c=(S.c*sa'+D.c*(255-sa'))>>8;
+ * out.a=D.a+((255-D.a)*sa')>>8) - one launch blends up to 12 whole
+ * destination rows instead of three launches per 12 spans.  The host
+ * caps count at G2D_BAND_MAX_VDW (512).
+ * Uniforms per QPU: 0=src lane-0 address (L2 alias), 1=dst span address
+ * (direct alias, VDW), 2=span count, 3=per-lane source byte step (add
+ * part), 4=per-lane step (subtract part), 5=per-span source byte step
+ * (signed), 6=VDW setup base 0x80904080, 7=dst span address (L2 alias,
+ * TMU gather), 8=global alpha (1..255, or 256 when fully opaque). */
+const uint64_t g2d_qpu_argb_alpha_loop_vc4[] = {
+    0x1002006715827d80ULL, 0x100200a715827d80ULL, 0x100200e715827d80ULL,
+    0x1002082715827d80ULL, 0x1002086715827d80ULL, 0x100202e715827d80ULL,
+    0x100201e715827d80ULL, 0x1002022715827d80ULL, 0x1002026715827d80ULL,
+    0x100208e7159e6fc0ULL, 0xd00208e7119c27c0ULL, 0x10020127159e76c0ULL,
+    0xd00208e7119c77c0ULL, 0x100208e70c1e7780ULL, 0x100201a7159e76c0ULL,
+    0xe00208e700101a01ULL, 0x100208e70c127780ULL, 0x10020167159e76c0ULL,
+    0x100208e7159a7d80ULL, 0x100049e0409e7018ULL, 0x100049e1409e7019ULL,
+    0x100208270d9e7040ULL, 0x100200670c067c00ULL, 0xd00208e7119c27c0ULL,
+    0x100202270c227cc0ULL, 0xe00208a7000000ffULL, 0x10020e2715067d80ULL,
+    0xa00249e7009e7000ULL, 0x10020367159e7900ULL, 0x10020e2715227d80ULL,
+    0xa00249e7009e7000ULL, 0xd00208270e348dc0ULL, 0xd00208270e9c81c0ULL,
+    0xd00208270e9c81c0ULL, 0x100049e040267006ULL, 0xd00208270e9c81c0ULL,
+    0xd00208e70e9c71c0ULL, 0x100208270c9e70c0ULL, 0x100208670d9e7400ULL,
+    0xd00208670c9c13c0ULL, 0x100208e714367c80ULL, 0x10020327149e7880ULL,
+    0x100049e3409e7018ULL, 0x100059cc40327031ULL, 0xd00203a70e348dc0ULL,
+    0x100208e70c327780ULL, 0xd00208e70e9c87c0ULL, 0x100203e7159e76c0ULL,
+    0x100203a7143a7c80ULL, 0xd00208e70e9c89c0ULL, 0x100059ce403a7030ULL,
+    0x100208e7149e7680ULL, 0x100049e3409e7019ULL, 0x100208e70c3a7780ULL,
+    0xd00208e70e9c87c0ULL, 0xd00208e7119c87c0ULL, 0x100203e70c3e7cc0ULL,
+    0xd00203a70e348dc0ULL, 0xd00208e70e9c89c0ULL, 0xd00203a70e388dc0ULL,
+    0xd00208e70e9c87c0ULL, 0x100203a7143a7c80ULL, 0x100208e7149e7680ULL,
+    0x100059ce403a7030ULL, 0x100049e3409e7019ULL, 0x100208e70c3a7780ULL,
+    0xd00208e70e9c87c0ULL, 0xd00208e7119c87c0ULL, 0xd00208e7119c87c0ULL,
+    0x100203e70c3e7cc0ULL, 0xd00208e70e9c89c0ULL, 0xd00208e70e9c87c0ULL,
+    0xd00208e70e9c87c0ULL, 0x100208670d9e74c0ULL, 0x100049e1409e7008ULL,
+    0xd00208670e9c83c0ULL, 0x100208e70c9e7640ULL, 0xd00208e7119c87c0ULL,
+    0xd00208e7119c87c0ULL, 0xd00208e7119c87c0ULL, 0x100203e70c3e7cc0ULL,
+    0x10021c6715167d80ULL, 0x10020c27153e7d80ULL, 0x10021c67151a7d80ULL,
+    0x10021ca7150a7d80ULL, 0x100209e7159f2fc0ULL, 0x10020827152e7d80ULL,
+    0xe002086700000040ULL, 0x100200670c067c00ULL, 0x100202270c227c40ULL,
+    0x100200a70c0a7c40ULL, 0xd00220e70d0c1dc0ULL, 0xf03809e7fffffdd0ULL,
+    0x100209e7009e7000ULL, 0x100209e7009e7000ULL, 0x100209e7009e7000ULL,
+    0xd00209a7159c0fc0ULL, 0x300009e7009e7000ULL, 0x100209e7009e7000ULL,
+    0x100209e7009e7000ULL,
+};
+const unsigned g2d_qpu_argb_alpha_loop_vc4_n = 100;
 
 /* argb_blit_vc4: exact 1..16-pixel row copy.  Source:
  * simulator/vc4kernels/vc4_blit_span.qpu.  Each QPU uses a private VPM
@@ -405,5 +486,6 @@ const uint64_t g2d_qpu_argb_gather_vc4[] = {
     0x100209e7009e7000ULL,
 };
 const unsigned g2d_qpu_argb_gather_vc4_n = 34;
+
 
 #endif /* G2D_QPU_KERNELS_H */

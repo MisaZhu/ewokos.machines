@@ -767,6 +767,39 @@ void sdhci_enable_irq(int enable)
     sdhci_writel(&_host, ier, SDHCI_SIGNAL_ENABLE);
 }
 
+/*
+ * Free, MMIO-only answer to "does the card need attention?".
+ *
+ * The card side is already armed for this: sdio_claim_irq() sets the func
+ * bit plus the master enable in SDIO_CCCR_IENx, and sdhci_enable_irq(1)
+ * unmasks SDHCI_INT_CARD_INT in the host, so the Arasan controller latches
+ * the card's DAT1 assertion into SDHCI_INT_STATUS. sdhci_send_command()
+ * clears the whole INT_STATUS word both before and after every transaction,
+ * which makes the bit mean exactly "the card rang since my last SDIO
+ * command".
+ *
+ * That is the same question brcmf_worker_irq_pending() was asking with a
+ * func0 CMD52 read of SDIO_CCCR_INTx -- but a func0/func1 access pays
+ * SDHCI_MIN_CMD_GAP_US (250us) of issue-side spacing before it can even be
+ * committed, so the CMD52 version stalled the RX/TX pump for 250us on every
+ * idle worker iteration purely to ask whether there was work. During a
+ * transfer that ran in the sleep_us=0 spin loop, i.e. thousands of times a
+ * second.
+ *
+ * Deliberately not authoritative on its own: a card that never drives DAT1
+ * would read as permanently quiet here, so the caller still falls back to
+ * the func0 probe at a bounded rate. That fallback is also what keeps
+ * feeding sdio_cmd_fail_count, the dead-card liveness watchdog.
+ */
+bool sdhci_card_irq_pending(void)
+{
+    /* Not yet brought up (sdhci_init() runs from mmc_initialize()): report
+     * quiet rather than dereferencing an unmapped register window. */
+    if (_host.ioaddr == NULL)
+        return false;
+    return (sdhci_readl(&_host, SDHCI_INT_STATUS) & SDHCI_INT_CARD_INT) != 0;
+}
+
 
 static void sdhci_transfer_pio(struct sdhci_host *host, struct mmc_data *data)
 {

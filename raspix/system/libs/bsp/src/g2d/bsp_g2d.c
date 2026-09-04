@@ -14,11 +14,10 @@
  *   bsp_g2d_scale_to   whole dst               -> argb_blit kernel
  *   bsp_g2d_rotate     any angle, exact bbox   -> argb_rotate kernel
  *
- * bsp_g2d_blt_alpha uses a dedicated source-over pipeline.  On VC4 the
- * mapped source is gathered through TMU, the contiguous destination span
- * is staged through VDR, and one SRQ launch blends up to twelve spans in
- * parallel through the direct bus alias.  Sixteen immutable span variants
- * provide exact 1..16 pixel VDW writes without a CPU fallback.
+ * bsp_g2d_blt_alpha uses a dedicated source-over pipeline.  V3D >= 4
+ * blends through the CSD kernel; on VC4 the self-looping TMU blend
+ * kernel gathers source and destination, blends in the ALU and writes
+ * back through the direct bus alias - one SRQ launch per 12 rows.
  *
  * The rotate kernel runs the same affine engine as blit for every angle
  * (the canonical centres-based map degenerates exactly to the right-angle
@@ -28,10 +27,18 @@
  * after the LDTMU).  The clamp is kept so out-of-range TMU reads stay in
  * the source buffer.
  *
- * VC4 path (Pi3, V3D 2.1): fill, blit, scale and rotate flatten work into
- * exact 1..16-pixel spans and submit fully retired 12-QPU SRQ batches.
- * Alpha batches its two staging steps, then serializes the long blend kernel
- * to avoid the VC4 VPM DMA deadlock.  Public hardware APIs are GPU-only.
+ * VC4 path (Pi3, V3D 2.1): fill dispatches the self-looping group-fill
+ * kernel (one SRQ launch covers up to 12 x 512 groups); blit, scale and
+ * rotate dispatch the self-looping TMU copy kernel whenever the Q15 map
+ * has exact integer coefficients (identity blits, right-angle rotates,
+ * 1:1 scales) - one launch per 12 destination rows.  Every loop thread
+ * is bounded by G2D_BAND_MAX_VDW iterations, and the exact 1..16-pixel
+ * span/gather batches remain the verified fallback for everything the
+ * opaque loop kernels decline (narrow rects, fractional maps) and for
+ * a rejected first launch.  Alpha has deliberately no fallback: blends
+ * are not idempotent, so the loop kernel validates everything up front
+ * and any decline or failure reports -1 to the caller.
+ * Public hardware APIs are GPU-only.
  *
  * GPU eligibility (on top of the width/size checks):
  *   - the *_contig flag is set and the matching *_phy carries a valid
@@ -66,15 +73,21 @@
 #define VC4_BUS_ALIAS 0x40000000u
 #define VC4_BUS_ALIAS_DIRECT 0xc0000000u
 
-/* A long VC4 loop reduces SRQ overhead, but an excessively long VDW loop
- * can delay thread retirement on BCM2837.  Sixteen rows/QPU is the
- * validated default; keep this tunable for real-silicon characterization. */
-#ifndef VC4_FILL_ROWS_PER_QPU
-#define VC4_FILL_ROWS_PER_QPU 16
-#endif
-#if VC4_FILL_ROWS_PER_QPU < 1 || VC4_FILL_ROWS_PER_QPU > 64
-#error "VC4_FILL_ROWS_PER_QPU must be in the range 1..64"
-#endif
+/* Hard ceiling on the VDW transactions one looping-kernel QPU thread may
+ * issue in a single launch.
+ *
+ * The loop kernels iterate INSIDE one thread - one VDW per 16-pixel
+ * group - so the iteration count is the number of VDW DMAs a thread has
+ * outstanding before it retires.  On BCM2837 with the Mar-2023 firmware
+ * that count is the wedge trigger: a thread asked for 640 iterations
+ * retires cleanly, 800 retires cleanly, and 1280 wedges VideoCore for
+ * good (no SRQ completion, GPU dead until power cycle).  The cap is what
+ * makes the looping shape usable at all.
+ *
+ * 512 sits 2.5x below the smallest observed failure and 1.6x below the
+ * smallest observed success, and still lets one thread walk a whole
+ * 1920-wide destination row (120 groups) with 4x headroom. */
+#define G2D_BAND_MAX_VDW 512
 
 static int gpu_vc4_run_once(const uint64_t *code, int nwords,
                             const uint32_t *unifs, int nq,
@@ -465,8 +478,11 @@ static int gpu_fill_surface(uint32_t phys, uint32_t *argb,
            GPU_DONE : GPU_FAILED;
 }
 
-/* VC4 exact fill, one SRQ/QPU thread per 1..16-pixel span.  Each thread
- * performs one VDW and the ARM batches spans at the physical QPU count. */
+/* VC4 exact fill fallback, one SRQ/QPU thread per 1..16-pixel span.  Each
+ * thread performs one VDW and the ARM batches spans at the physical QPU
+ * count.  Used where gpu_fill_loop_vc4() declines (rects narrower than
+ * one 16-pixel group, or a rejected first launch) and for the 1..15
+ * pixel right-edge tail of a loop fill. */
 static int gpu_fill_surface_vc4(uint32_t phys, uint32_t *argb,
                                 int32_t w, int32_t h,
                                 int32_t x0, int32_t y0,
@@ -486,75 +502,33 @@ static int gpu_fill_surface_vc4(uint32_t phys, uint32_t *argb,
     if (groups <= 0 || maxq > 16)
         return 0;
     total = rows * groups;
-    /* Full 16-pixel groups can be emitted by one QPU loop per row.  This
-     * cuts a 320x240 fill from 400 SRQ launches to two with the default
-     * 16-row batches while preserving the
-     * exact-span kernel for clipped or unaligned rectangles. */
-    if ((x0 & 15) == 0 && ((x1 - x0) & 15) == 0) {
-        int32_t row_batch;
-        /* When the rectangle spans the complete surface width, rows are
-         * physically contiguous.  Let each QPU walk a small bounded row
-         * block.  Very long VDW loops (thousands of groups in one thread)
-         * can leave BCM2837's SRQ state wedged after the thread retires;
-         * the bounded row count keeps the loop short while reducing
-         * dispatches versus the original one-row launch scheme. */
-        if (x0 == 0 && x1 == w) {
-            const int32_t rows_per_qpu = VC4_FILL_ROWS_PER_QPU;
-            int32_t row_batch;
-            for (row_batch = 0; row_batch < rows;
-                 row_batch += maxq * rows_per_qpu) {
-                int32_t nqb = 0;
-                for (q = 0; q < maxq; q++) {
-                    int32_t row = row_batch + q * rows_per_qpu;
-                    int32_t nrows;
-                    uint32_t *s;
-                    if (row >= rows)
-                        break;
-                    nrows = rows - row;
-                    if (nrows > rows_per_qpu)
-                        nrows = rows_per_qpu;
-                    s = u + nqb * VC4_UNIF_QWORDS;
-                    s[0] = (phys + (((uint32_t)y0 + (uint32_t)row) *
-                                    (uint32_t)w) * 4u) |
-                           VC4_BUS_ALIAS_DIRECT;
-                    s[1] = color;
-                    s[2] = (uint32_t)groups * (uint32_t)nrows;
-                    nqb++;
-                }
-                q = gpu_vc4_run_once(g2d_qpu_argb_fill_loop_vc4,
-                                     g2d_qpu_argb_fill_loop_vc4_n, u, nqb,
-                                     NULL, 0, argb,
-                                     (size_t)w * (size_t)h * 4u);
-                if (q != 0)
-                    return q > 0 && row_batch == 0 ? GPU_UNSUPPORTED :
-                           GPU_FAILED;
-            }
-            return GPU_DONE;
-        }
-        for (row_batch = 0; row_batch < rows; row_batch += maxq) {
-            int32_t nqb = rows - row_batch;
-            if (nqb > maxq)
-                nqb = maxq;
-            for (q = 0; q < nqb; q++) {
-                uint32_t *s = u + q * VC4_UNIF_QWORDS;
-                int32_t row = row_batch + q;
-                s[0] = (phys + (((uint32_t)y0 + (uint32_t)row) *
-                                (uint32_t)w + (uint32_t)x0) * 4u) |
-                       VC4_BUS_ALIAS_DIRECT;
-                s[1] = color;
-                s[2] = (uint32_t)groups;
-            }
-            q = gpu_vc4_run_once(g2d_qpu_argb_fill_loop_vc4,
-                                 g2d_qpu_argb_fill_loop_vc4_n, u, nqb,
-                                 NULL, 0, argb,
-                                 (size_t)w * (size_t)h * 4u);
-            if (q != 0)
-                return q > 0 && row_batch == 0 ? GPU_UNSUPPORTED : GPU_FAILED;
-        }
-        return GPU_DONE;
-    }
-    /* Each QPU performs one VDW.  Work beyond the physical QPU count is
-     * split into fully retired SRQ batches. */
+    /* One 1..16-pixel span per QPU per launch, with work beyond the
+     * physical QPU count split into fully retired SRQ batches.
+     *
+     * This shape pays a launch per maxq spans, and the launch is almost
+     * all of the cost.  Measured on Pi3 at 640x480 (19200 spans, 1600
+     * launches) a blit frame takes 15807 us - 9.9 us per launch, or
+     * 0.82 us per span - while a looping kernel retires the same 19200
+     * VDWs in a handful of launches.  So the loop path is the primary
+     * one and this is the fallback.
+     *
+     * What this shape buys is a hard bound on thread lifetime: no launch
+     * here asks a thread for more than one VDW, so the BCM2837 iteration
+     * wedge cannot be reached at any surface size.  The loop path gets
+     * the same bound from G2D_BAND_MAX_VDW instead of from the kernel
+     * shape, which is why it can afford to be fast.
+     *
+     * The L2 and slice cache clears around each dispatch are NOT
+     * negotiable: eliding them was tried and measured ~4x slower per
+     * launch, because a bulk invalidate is cheaper than letting a 1.2 MiB
+     * source stream thrash-evict its way through the 128 KiB V3D L2, and
+     * they are also the documented cure for stale QPU code/uniform
+     * fetches.  With the loop path there are only a few launches per
+     * frame instead of 1600, so that cost stops mattering.
+     *
+     * The span kernel is also the fill path the pixel-checking
+     * functional tests verified on silicon, so it stays reachable as
+     * the trusted fallback. */
     for (int32_t batch = 0; batch < total; batch += maxq) {
         int32_t nqb = total - batch;
         if (nqb > maxq)
@@ -582,6 +556,113 @@ static int gpu_fill_surface_vc4(uint32_t phys, uint32_t *argb,
             return batch == 0 ? GPU_UNSUPPORTED : GPU_FAILED;
         if (q < 0)
             return GPU_FAILED;
+    }
+    return GPU_DONE;
+}
+
+/* Primary VC4 fill: the self-looping group-fill kernel.  Each QPU thread
+ * writes one 16-pixel group per iteration (one VDW each) and loops up to
+ * G2D_BAND_MAX_VDW times, so a full-width rect retires in a handful of
+ * launches instead of one launch per 12 spans.
+ *
+ * Two shapes:
+ *   - the rect spans the full surface width and starts at x0 == 0: the
+ *     groups form one contiguous run, so it is cut into equal per-thread
+ *     slices regardless of row boundaries (a 640x480 clear is 4 launches);
+ *   - otherwise one thread per destination row, 12 rows per launch.
+ * The kernel decrements its count until zero, so a thread must NEVER be
+ * handed count == 0 (it would loop 2^32 times); both shapes guarantee
+ * count >= 1 per launched thread.  The 1..15-pixel right-edge tail is
+ * finished by the exact span kernel. */
+static int gpu_fill_loop_vc4(uint32_t phys, uint32_t *argb,
+                             int32_t w, int32_t h, int32_t x0, int32_t y0,
+                             int32_t x1, int32_t y1, uint32_t color)
+{
+    uint32_t u[16 * VC4_UNIF_QWORDS] = { 0 };
+    int32_t maxq = v3d_g2d_num_qpus();
+    int32_t L, tail_x, r;
+    int launched = 0;
+
+    if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 || x1 <= x0 || y1 <= y0 ||
+        x1 > w || y1 > h || maxq <= 0 || maxq > 16)
+        return GPU_UNSUPPORTED;
+    L = (x1 - x0) >> 4;
+    tail_x = x0 + L * 16;
+    if (L <= 0)
+        return GPU_UNSUPPORTED;
+    if (x0 == 0 && tail_x == w) {
+        /* contiguous run: rows abut in memory, slice by group count */
+        int64_t total = (int64_t)L * (y1 - y0), done = 0;
+        uint32_t base = phys + (uint32_t)y0 * (uint32_t)w * 4u;
+
+        while (done < total) {
+            int64_t left = total - done;
+            int32_t iters = (int32_t)((left + maxq - 1) / maxq);
+            int32_t nq, q;
+            int64_t covered;
+
+            if (iters > G2D_BAND_MAX_VDW)
+                iters = G2D_BAND_MAX_VDW;
+            nq = (int32_t)((left + iters - 1) / iters);
+            if (nq > maxq)
+                nq = maxq;
+            for (q = 0; q < nq; q++) {
+                uint32_t *s = u + q * VC4_UNIF_QWORDS;
+                int64_t off = done + (int64_t)q * iters;
+                int64_t cnt = left - (int64_t)q * iters;
+
+                if (cnt > iters)
+                    cnt = iters;
+                s[0] = (base + (uint32_t)(off * 64)) | VC4_BUS_ALIAS_DIRECT;
+                s[1] = color;
+                s[2] = (uint32_t)cnt;
+            }
+            r = gpu_vc4_run_once(g2d_qpu_argb_fill_loop_vc4,
+                                 g2d_qpu_argb_fill_loop_vc4_n, u, nq,
+                                 NULL, 0, argb,
+                                 (size_t)w * (size_t)h * 4u);
+            if (r != 0)
+                return launched ? GPU_FAILED : GPU_UNSUPPORTED;
+            launched = 1;
+            covered = (int64_t)nq * iters;
+            if (covered > left)
+                covered = left;
+            done += covered;
+        }
+    } else {
+        /* one thread per destination row, maxq rows per launch */
+        int32_t y;
+
+        if (L > G2D_BAND_MAX_VDW)
+            return GPU_UNSUPPORTED;
+        for (y = y0; y < y1; y += maxq) {
+            int32_t nq = y1 - y, q;
+
+            if (nq > maxq)
+                nq = maxq;
+            for (q = 0; q < nq; q++) {
+                uint32_t *s = u + q * VC4_UNIF_QWORDS;
+
+                s[0] = (phys + (((uint32_t)(y + q)) * (uint32_t)w +
+                                (uint32_t)x0) * 4u) | VC4_BUS_ALIAS_DIRECT;
+                s[1] = color;
+                s[2] = (uint32_t)L;
+            }
+            r = gpu_vc4_run_once(g2d_qpu_argb_fill_loop_vc4,
+                                 g2d_qpu_argb_fill_loop_vc4_n, u, nq,
+                                 NULL, 0, argb,
+                                 (size_t)w * (size_t)h * 4u);
+            if (r != 0)
+                return launched ? GPU_FAILED : GPU_UNSUPPORTED;
+            launched = 1;
+        }
+    }
+    if (tail_x < x1) {
+        /* 1..15-pixel right-edge tail via the exact span kernel */
+        r = gpu_fill_surface_vc4(phys, argb, w, h, tail_x, y0, x1, y1,
+                                 color);
+        if (r != GPU_DONE)
+            return launched ? GPU_FAILED : r;
     }
     return GPU_DONE;
 }
@@ -624,11 +705,14 @@ static int gpu_blit_surface_vc4(const g2d_map_t *m,
     if (sx0 < 0 || sy0 < 0 ||
         sx0 + (x1 - x0) > src_w || sy0 + rows > src_h)
         return 0;
-    /* Aligned full-width identity copies are physically contiguous across
-     * rows.  Use the loop kernel so each QPU retires a bounded row block
-     * instead of one SRQ launch per 16-pixel span. */
     total = rows * groups;
-    /* A short launch must use its actual QPU count; forcing maxq can wedge
+    /* One 1..16-pixel VDR/VDW span per QPU per launch.  An aligned
+     * full-width copy is physically contiguous across rows and so could be
+     * walked by a single loop thread, but that shape is both the slower one
+     * and the BCM2837 wedge source; see the measured argument in
+     * gpu_fill_surface_vc4().
+     *
+     * A short launch must use its actual QPU count; forcing maxq can wedge
      * SRQ before the first VDW on BCM2837. */
     for (batch = 0; batch < total; batch += maxq) {
         nqb = total - batch;
@@ -636,28 +720,26 @@ static int gpu_blit_surface_vc4(const g2d_map_t *m,
             nqb = maxq;
         for (q = 0; q < nqb; q++) {
             uint32_t *s = u + q * VC4_UNIF_QWORDS;
-            if (q < nqb) {
-                int32_t gid = batch + q;
-                /* Group-major ordering keeps concurrent QPUs on distinct
-                 * rows.  The only multi-QPU/multi-group probe verified on
-                 * BCM2837 had exactly this row-separated shape. */
-                int32_t group = gid / rows;
-                int32_t row = gid % rows;
-                int32_t span = x1 - (x0 + group * 16);
-                if (span > 16)
-                    span = 16;
-                s[0] = (src_phys + (((uint32_t)sy0 + (uint32_t)row) *
-                                    (uint32_t)src_w + (uint32_t)sx0 +
-                                    (uint32_t)group * 16u) * 4u) |
-                        VC4_BUS_ALIAS;
-                s[1] = (dst_phys + (((uint32_t)y0 + (uint32_t)row) *
-                                    (uint32_t)dst_w + (uint32_t)x0 +
-                                    (uint32_t)group * 16u) * 4u) |
-                        VC4_BUS_ALIAS_DIRECT;
-                s[2] = 0x83010000u |
-                       (span == 16 ? 0u : (uint32_t)span << 20);
-                s[3] = 0x80804000u | ((uint32_t)span << 16);
-            }
+            int32_t gid = batch + q;
+            /* Group-major ordering keeps concurrent QPUs on distinct
+             * rows.  The only multi-QPU/multi-group probe verified on
+             * BCM2837 had exactly this row-separated shape. */
+            int32_t group = gid / rows;
+            int32_t row = gid % rows;
+            int32_t span = x1 - (x0 + group * 16);
+            if (span > 16)
+                span = 16;
+            s[0] = (src_phys + (((uint32_t)sy0 + (uint32_t)row) *
+                                (uint32_t)src_w + (uint32_t)sx0 +
+                                (uint32_t)group * 16u) * 4u) |
+                    VC4_BUS_ALIAS;
+            s[1] = (dst_phys + (((uint32_t)y0 + (uint32_t)row) *
+                                (uint32_t)dst_w + (uint32_t)x0 +
+                                (uint32_t)group * 16u) * 4u) |
+                    VC4_BUS_ALIAS_DIRECT;
+            s[2] = 0x83010000u |
+                   (span == 16 ? 0u : (uint32_t)span << 20);
+            s[3] = 0x80804000u | ((uint32_t)span << 16);
         }
         nqb = gpu_vc4_run_once(g2d_qpu_argb_blit_vc4,
                                g2d_qpu_argb_blit_vc4_n, u, nqb,
@@ -753,7 +835,8 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
 /* VC4 affine gather.  The ARM builds only source-address vectors; TMU0
  * performs every pixel read and VDW performs every destination write.
  * This avoids signed-mul24 limitations while retaining exact Q15 mapping.
- * Blits clamp out-of-range samples; rotations write transparent zero. */
+ * Blits clamp out-of-range samples; rotations write transparent zero.
+ * Fallback for maps gpu_copy_loop_vc4() declines. */
 static int gpu_affine_surface_vc4(const g2d_map_t *m, int transparent_oob,
                                   uint32_t src_phys, uint32_t *argb_src,
                                   int32_t src_w, int32_t src_h,
@@ -804,15 +887,28 @@ static int gpu_affine_surface_vc4(const g2d_map_t *m, int transparent_oob,
             int32_t Y = y0 + row;
             int32_t span = x1 - X0;
             int32_t lane;
+            /* Walk the map incrementally.  The coefficients are constant
+             * across a span, so consecutive lanes advance the source
+             * position by exactly (pu, pv) in Q15 and two int64 multiplies
+             * per QPU replace two per lane.  That matters because this loop
+             * is the ARM-side half of the affine dispatch cost: a 45-degree
+             * rotate of a 640x480 source walks ~39600 spans, ~633k lanes.
+             * Lanes past the span end clamp to the last sampled pixel, so
+             * they stop advancing - the same value the per-lane form got
+             * from X0 + span - 1. */
+            int64_t up = (int64_t)m->pu * X0 + (int64_t)m->qu * Y;
+            int64_t vp = (int64_t)m->pv * X0 + (int64_t)m->qv * Y;
 
             if (span > 16)
                 span = 16;
             for (lane = 0; lane < 16; lane++) {
-                int32_t X = X0 + (lane < span ? lane : span - 1);
-                int64_t up = (int64_t)m->pu * X + (int64_t)m->qu * Y;
-                int64_t vp = (int64_t)m->pv * X + (int64_t)m->qv * Y;
                 int64_t sx = (up >> 15) + m->cu;
                 int64_t sy = (vp >> 15) + m->cv;
+
+                if (lane + 1 < span) {
+                    up += m->pu;
+                    vp += m->pv;
+                }
 
                 if (transparent_oob &&
                     (sx < 0 || sy < 0 || sx >= src_w || sy >= src_h)) {
@@ -845,6 +941,114 @@ static int gpu_affine_surface_vc4(const g2d_map_t *m, int transparent_oob,
     return GPU_DONE;
 }
 
+/* Primary VC4 blit/rotate path: the self-looping TMU copy kernel.  It
+ * handles exactly the Q15 maps whose coefficients are whole pixels -
+ * identity blits, right-angle rotates, 1:1 scale sub-rects - where each
+ * destination row samples the source at a constant byte step, so one
+ * thread copies a whole row (one 16-lane linear TMU gather + one VDW per
+ * group) and one launch covers maxq rows.  Everything else (fractional
+ * scales, 45-degree rotates) is declined to the exact gather path.
+ *
+ * Correctness guards:
+ *   - all four corners of the full-group region must land inside the
+ *     source, so the kernel needs no clamp and blit/rotate out-of-source
+ *     policies never differ inside the loop region;
+ *   - the lane offset is built with unsigned mul24 (lane * |step|), so
+ *     |step| is bounded; the signed part is a separate subtract;
+ *   - L <= G2D_BAND_MAX_VDW bounds thread lifetime, and count >= 1 is
+ *     guaranteed (a zero count would loop 2^32 times).
+ * The 1..15-pixel right-edge tail keeps the operation's own OOB policy
+ * via the exact gather path (transparent_oob). */
+static int gpu_copy_loop_vc4(const g2d_map_t *m, int transparent_oob,
+                             uint32_t src_phys, uint32_t *argb_src,
+                             int32_t src_w, int32_t src_h,
+                             uint32_t dst_phys, uint32_t *argb_dst,
+                             int32_t dst_w, int32_t dst_h,
+                             int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+{
+    uint32_t u[16 * VC4_UNIF_QWORDS] = { 0 };
+    int32_t maxq = v3d_g2d_num_qpus();
+    int32_t ipu, iqu, ipv, iqv, L, tail_x, y;
+    int64_t sb;
+    int launched = 0;
+
+    if (!m || !argb_src || !argb_dst || src_w <= 0 || src_h <= 0 ||
+        dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 || x1 <= x0 ||
+        y1 <= y0 || x1 > dst_w || y1 > dst_h || maxq <= 0 || maxq > 16)
+        return GPU_UNSUPPORTED;
+    if ((m->pu | m->qu | m->pv | m->qv) & 32767)
+        return GPU_UNSUPPORTED;          /* integer maps only */
+    ipu = m->pu >> 15;
+    iqu = m->qu >> 15;
+    ipv = m->pv >> 15;
+    iqv = m->qv >> 15;
+    L = (x1 - x0) >> 4;
+    tail_x = x0 + L * 16;
+    if (L <= 0 || L > G2D_BAND_MAX_VDW)
+        return GPU_UNSUPPORTED;
+    /* per-lane source byte step along a destination row */
+    sb = ((int64_t)ipu + (int64_t)ipv * src_w) * 4;
+    if (sb > (1 << 20) || sb < -(1 << 20))
+        return GPU_UNSUPPORTED;          /* mul24 lane-offset range */
+    {
+        /* all 4 corners of the full-group region must be in-source */
+        int32_t xs[2], ys[2], i, j;
+
+        xs[0] = x0; xs[1] = tail_x - 1;
+        ys[0] = y0; ys[1] = y1 - 1;
+        for (i = 0; i < 2; i++) {
+            for (j = 0; j < 2; j++) {
+                int64_t su = (int64_t)ipu * xs[i] + (int64_t)iqu * ys[j] +
+                             m->cu;
+                int64_t sv = (int64_t)ipv * xs[i] + (int64_t)iqv * ys[j] +
+                             m->cv;
+
+                if (su < 0 || sv < 0 || su >= src_w || sv >= src_h)
+                    return GPU_UNSUPPORTED;
+            }
+        }
+    }
+    for (y = y0; y < y1; y += maxq) {
+        int32_t nq = y1 - y, q, r;
+
+        if (nq > maxq)
+            nq = maxq;
+        for (q = 0; q < nq; q++) {
+            uint32_t *s = u + q * VC4_UNIF_QWORDS;
+            int32_t Y = y + q;
+            int64_t su = (int64_t)ipu * x0 + (int64_t)iqu * Y + m->cu;
+            int64_t sv = (int64_t)ipv * x0 + (int64_t)iqv * Y + m->cv;
+
+            s[0] = (src_phys + (uint32_t)((sv * src_w + su) * 4)) |
+                   VC4_BUS_ALIAS;
+            s[1] = (dst_phys + ((uint32_t)Y * (uint32_t)dst_w +
+                                (uint32_t)x0) * 4u) | VC4_BUS_ALIAS_DIRECT;
+            s[2] = (uint32_t)L;
+            s[3] = sb >= 0 ? (uint32_t)sb : 0u;      /* lane step, add part */
+            s[4] = sb >= 0 ? 0u : (uint32_t)(-sb);   /* lane step, sub part */
+            s[5] = (uint32_t)(int32_t)(sb * 16);     /* per-group src step */
+            s[6] = 0x80904080u;                      /* VDW setup base */
+        }
+        r = gpu_vc4_run_once(g2d_qpu_argb_copy_loop_vc4,
+                             g2d_qpu_argb_copy_loop_vc4_n, u, nq,
+                             argb_src, (size_t)src_w * (size_t)src_h * 4u,
+                             argb_dst, (size_t)dst_w * (size_t)dst_h * 4u);
+        if (r != 0)
+            return launched ? GPU_FAILED : GPU_UNSUPPORTED;
+        launched = 1;
+    }
+    if (tail_x < x1) {
+        /* unaligned tail columns via the exact gather path */
+        int r = gpu_affine_surface_vc4(m, transparent_oob, src_phys,
+                                       argb_src, src_w, src_h, dst_phys,
+                                       argb_dst, dst_w, dst_h,
+                                       tail_x, y0, x1, y1);
+        if (r != GPU_DONE)
+            return GPU_FAILED;
+    }
+    return GPU_DONE;
+}
+
 /* clamped-edge blit (argb_blit kernel) */
 static int gpu_blit_surface(const g2d_map_t *m,
                             uint32_t src_phys, uint32_t *argb_src,
@@ -860,9 +1064,17 @@ static int gpu_blit_surface(const g2d_map_t *m,
          * reads caller memory. */
         if (v3d_g2d_vc4_prepare_reads() != 0)
             return GPU_FAILED;
-        int gr = gpu_blit_surface_vc4(m, src_phys, argb_src, src_w, src_h,
-                                      dst_phys, argb_dst, dst_w, dst_h,
-                                      x0, y0, x1, y1);
+        /* looping copy kernel first: one launch per 12 rows instead of
+         * one launch per 12 spans (see the measured argument in
+         * gpu_fill_surface_vc4()) */
+        int gr = gpu_copy_loop_vc4(m, 0, src_phys, argb_src,
+                                   src_w, src_h, dst_phys, argb_dst,
+                                   dst_w, dst_h, x0, y0, x1, y1);
+        if (gr != GPU_UNSUPPORTED)
+            return gr;
+        gr = gpu_blit_surface_vc4(m, src_phys, argb_src, src_w, src_h,
+                                  dst_phys, argb_dst, dst_w, dst_h,
+                                  x0, y0, x1, y1);
         if (gr != GPU_UNSUPPORTED)
             return gr;
         return gpu_affine_surface_vc4(m, 0, src_phys, argb_src,
@@ -1022,6 +1234,13 @@ static int gpu_rotate_surface(const g2d_map_t *m,
     if (v3d_g2d_ver() == 21) {
         if (v3d_g2d_vc4_prepare_reads() != 0)
             return GPU_FAILED;
+        /* looping copy kernel first; the gather path below pays a launch
+         * per 12 spans plus the ARM-side per-lane address vectors */
+        int gr = gpu_copy_loop_vc4(m, 1, src_phys, argb_src,
+                                   src_w, src_h, dst_phys, argb_dst,
+                                   dst_w, dst_h, 0, 0, dst_w, dst_h);
+        if (gr != GPU_UNSUPPORTED)
+            return gr;
         return gpu_affine_surface_vc4(m, 1, src_phys, argb_src,
                                       src_w, src_h, dst_phys, argb_dst,
                                       dst_w, dst_h, 0, 0, dst_w, dst_h);
@@ -1033,14 +1252,105 @@ static int gpu_rotate_surface(const g2d_map_t *m,
 }
 
 /* Alpha blend of a clipped dst rect.  V3D >= 4 uses the CSD kernel below;
- * VC4 selects its staged VDR/TMU pipeline in gpu_alpha_surface_vc4(). */
-static int gpu_alpha_surface_vc4(const g2d_map_t *m, uint8_t alpha,
-                                 uint32_t src_phys, uint32_t *argb_src,
-                                 int32_t src_w, int32_t src_h,
-                                 uint32_t dst_phys, uint32_t *argb_dst,
-                                 int32_t dst_w, int32_t dst_h,
-                                 int32_t x0, int32_t y0,
-                                 int32_t x1, int32_t y1);
+ * VC4 uses the self-looping TMU blend kernel only. */
+
+/* The only VC4 alpha path: the self-looping TMU blend kernel.  Same
+ * shape and eligibility as gpu_copy_loop_vc4() - integer Q15 maps whose
+ * region is entirely in-source - plus a dst TMU gather and the
+ * source-over ALU blend inside the loop, so one launch blends maxq
+ * whole rows instead of three launches per maxq 16-pixel spans (the
+ * launch count is what made blit_alpha ~10x slower than blit_opaque).
+ * There is deliberately no fallback: blending is not idempotent, so
+ * anything the kernel cannot cover (fractional maps, widths that are
+ * not 16-pixel multiples, out-of-source corners) fails up front -
+ * before any destination row is touched - and reports -1. */
+static int gpu_alpha_loop_vc4(const g2d_map_t *m, uint8_t alpha,
+                              uint32_t src_phys, uint32_t *argb_src,
+                              int32_t src_w, int32_t src_h,
+                              uint32_t dst_phys, uint32_t *argb_dst,
+                              int32_t dst_w, int32_t dst_h,
+                              int32_t x0, int32_t y0,
+                              int32_t x1, int32_t y1)
+{
+    uint32_t u[16 * VC4_UNIF_QWORDS] = { 0 };
+    int32_t maxq = v3d_g2d_num_qpus();
+    int32_t ipu, iqu, ipv, iqv, L, y;
+    int64_t sb;
+
+    if (!m || !argb_src || !argb_dst || src_w <= 0 || src_h <= 0 ||
+        dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 || x1 <= x0 ||
+        y1 <= y0 || x1 > dst_w || y1 > dst_h || alpha == 0 ||
+        maxq <= 0 || maxq > 16)
+        return GPU_FAILED;
+    if ((m->pu | m->qu | m->pv | m->qv) & 32767)
+        return GPU_FAILED;               /* integer maps only */
+    if ((x1 - x0) & 15)
+        return GPU_FAILED;               /* whole 16-pixel groups only */
+    ipu = m->pu >> 15;
+    iqu = m->qu >> 15;
+    ipv = m->pv >> 15;
+    iqv = m->qv >> 15;
+    L = (x1 - x0) >> 4;
+    if (L <= 0 || L > G2D_BAND_MAX_VDW)
+        return GPU_FAILED;
+    /* per-lane source byte step along a destination row */
+    sb = ((int64_t)ipu + (int64_t)ipv * src_w) * 4;
+    if (sb > (1 << 20) || sb < -(1 << 20))
+        return GPU_FAILED;               /* mul24 lane-offset range */
+    {
+        /* all 4 corners of the full-group region must be in-source */
+        int32_t xs[2], ys[2], i, j;
+
+        xs[0] = x0; xs[1] = x1 - 1;
+        ys[0] = y0; ys[1] = y1 - 1;
+        for (i = 0; i < 2; i++) {
+            for (j = 0; j < 2; j++) {
+                int64_t su = (int64_t)ipu * xs[i] + (int64_t)iqu * ys[j] +
+                             m->cu;
+                int64_t sv = (int64_t)ipv * xs[i] + (int64_t)iqv * ys[j] +
+                             m->cv;
+
+                if (su < 0 || sv < 0 || su >= src_w || sv >= src_h)
+                    return GPU_FAILED;
+            }
+        }
+    }
+    /* evict the shared system L3 once before any row is read */
+    if (v3d_g2d_vc4_prepare_reads() != 0)
+        return GPU_FAILED;
+    for (y = y0; y < y1; y += maxq) {
+        int32_t nq = y1 - y, q, r;
+
+        if (nq > maxq)
+            nq = maxq;
+        for (q = 0; q < nq; q++) {
+            uint32_t *s = u + q * VC4_UNIF_QWORDS;
+            int32_t Y = y + q;
+            int64_t su = (int64_t)ipu * x0 + (int64_t)iqu * Y + m->cu;
+            int64_t sv = (int64_t)ipv * x0 + (int64_t)iqv * Y + m->cv;
+            uint32_t drow = dst_phys + ((uint32_t)Y * (uint32_t)dst_w +
+                                        (uint32_t)x0) * 4u;
+
+            s[0] = (src_phys + (uint32_t)((sv * src_w + su) * 4)) |
+                   VC4_BUS_ALIAS;
+            s[1] = drow | VC4_BUS_ALIAS_DIRECT;      /* VDW target */
+            s[2] = (uint32_t)L;
+            s[3] = sb >= 0 ? (uint32_t)sb : 0u;      /* lane step, add part */
+            s[4] = sb >= 0 ? 0u : (uint32_t)(-sb);   /* lane step, sub part */
+            s[5] = (uint32_t)(int32_t)(sb * 16);     /* per-group src step */
+            s[6] = 0x80904080u;                      /* VDW setup base */
+            s[7] = drow | VC4_BUS_ALIAS;             /* dst TMU gather */
+            s[8] = alpha == 0xff ? 256u : (uint32_t)alpha;
+        }
+        r = gpu_vc4_run_once(g2d_qpu_argb_alpha_loop_vc4,
+                             g2d_qpu_argb_alpha_loop_vc4_n, u, nq,
+                             argb_src, (size_t)src_w * (size_t)src_h * 4u,
+                             argb_dst, (size_t)dst_w * (size_t)dst_h * 4u);
+        if (r != 0)
+            return GPU_FAILED;
+    }
+    return GPU_DONE;
+}
 
 static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                              uint32_t src_phys, uint32_t *argb_src,
@@ -1068,9 +1378,11 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     if (!gpu_map_fits(m, x1, y1))
         return 0;
     if (v3d_g2d_ver() == 21)
-        return gpu_alpha_surface_vc4(m, alpha, src_phys, argb_src,
-                                     src_w, src_h, dst_phys, argb_dst,
-                                     dst_w, dst_h, x0, y0, x1, y1);
+        /* The loop path validates the complete operation before launch;
+         * alpha cannot fall back after a possibly successful blend. */
+        return gpu_alpha_loop_vc4(m, alpha, src_phys, argb_src,
+                                  src_w, src_h, dst_phys, argb_dst,
+                                  dst_w, dst_h, x0, y0, x1, y1);
     if (nq > band_h)
         nq = band_h;
     rows = (band_h + nq - 1) / nq;
@@ -1113,136 +1425,6 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
            GPU_DONE : GPU_FAILED;
-}
-
-/* VC4 source-over pipeline.  Short gather kernels stage source and
- * destination pixels, then the long blend kernel processes one span per
- * QPU in a single SRQ batch.  Each QPU derives a private VPM window from
- * its physical qpu_number. */
-static int gpu_alpha_surface_vc4(const g2d_map_t *m, uint8_t alpha,
-                                 uint32_t src_phys, uint32_t *argb_src,
-                                 int32_t src_w, int32_t src_h,
-                                 uint32_t dst_phys, uint32_t *argb_dst,
-                                 int32_t dst_w, int32_t dst_h,
-                                 int32_t x0, int32_t y0,
-                                 int32_t x1, int32_t y1)
-{
-    uint32_t us[16 * VC4_UNIF_QWORDS] = { 0 };
-    uint32_t ud[16 * VC4_UNIF_QWORDS] = { 0 };
-    uint32_t ua[16 * VC4_UNIF_QWORDS] = { 0 };
-    int32_t groups, rows, maxq, q;
-    int64_t total, batch;
-
-    if (!m || !argb_src || !argb_dst || src_w <= 0 || src_h <= 0 ||
-        dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 || x1 <= x0 ||
-        y1 <= y0 || x1 > dst_w || y1 > dst_h)
-        return GPU_UNSUPPORTED;
-    if (!gpu_map_fits(m, x1, y1))
-        return GPU_UNSUPPORTED;
-    groups = (x1 - x0 + 15) >> 4;
-    rows = y1 - y0;
-    maxq = v3d_g2d_num_qpus();
-    if (groups <= 0 || rows <= 0 || maxq <= 0 || maxq > 16)
-        return GPU_UNSUPPORTED;
-    if (v3d_g2d_vc4_prepare_reads() != 0)
-        return GPU_FAILED;
-    total = (int64_t)groups * rows;
-    for (batch = 0; batch < total; batch += maxq) {
-        int32_t nqb = (int32_t)(total - batch);
-        uint32_t *addrv, *stage;
-        uint32_t addrv_phys, stage_phys;
-
-        if (nqb > maxq)
-            nqb = maxq;
-        /* These blocks are consumed by the three launches below and are
-         * then fully retired before the next batch allocates from the
-         * staging ring.  Per-batch allocation is required: keeping one
-         * pair for the whole operation lets uniform allocations wrap the
-         * ring and overwrite that pair during large alpha operations. */
-        addrv = (uint32_t *)gpu_dma_alloc((size_t)nqb * 16u * 4u,
-                                          &addrv_phys);
-        stage = (uint32_t *)gpu_dma_alloc((size_t)nqb * 32u * 4u,
-                                          &stage_phys);
-        if (!addrv || !stage)
-            return batch == 0 ? GPU_UNSUPPORTED : GPU_FAILED;
-        for (q = 0; q < nqb; q++) {
-            uint32_t *s = us + (uint32_t)q * VC4_UNIF_QWORDS;
-            uint32_t *d = ud + (uint32_t)q * VC4_UNIF_QWORDS;
-            uint32_t *a = ua + (uint32_t)q * VC4_UNIF_QWORDS;
-            uint32_t *sav = addrv + (uint32_t)q * 16u;
-            int64_t gid = batch + q;
-            int32_t row = (int32_t)(gid / groups);
-            int32_t group = (int32_t)(gid % groups);
-            int32_t X0 = x0 + group * 16;
-            int32_t Y = y0 + row;
-            int32_t span = x1 - X0;
-            int32_t lane;
-
-            if (span > 16)
-                span = 16;
-            for (lane = 0; lane < 16; lane++) {
-                int32_t X = X0 + (lane < span ? lane : span - 1);
-                int64_t up = (int64_t)m->pu * X + (int64_t)m->qu * Y;
-                int64_t vp = (int64_t)m->pv * X + (int64_t)m->qv * Y;
-                int64_t sx = (up >> 15) + m->cu;
-                int64_t sy = (vp >> 15) + m->cv;
-
-                if (sx < 0) sx = 0;
-                if (sy < 0) sy = 0;
-                if (sx >= src_w) sx = src_w - 1;
-                if (sy >= src_h) sy = src_h - 1;
-                sav[lane] = (src_phys +
-                             ((uint32_t)sy * (uint32_t)src_w +
-                              (uint32_t)sx) * 4u) | VC4_BUS_ALIAS;
-            }
-            s[0] = (addrv_phys + (uint32_t)q * 16u * 4u) |
-                   VC4_BUS_ALIAS;
-            s[1] = (stage_phys + (uint32_t)q * 32u * 4u) |
-                   VC4_BUS_ALIAS;
-            s[2] = 0x80804080u | ((uint32_t)span << 16);
-            s[3] = (uint32_t)q * 4u;
-            d[0] = (dst_phys + ((uint32_t)Y * (uint32_t)dst_w +
-                                (uint32_t)X0) * 4u) |
-                   VC4_BUS_ALIAS;
-            d[1] = (stage_phys +
-                    ((uint32_t)q * 32u + 16u) * 4u) |
-                   VC4_BUS_ALIAS;
-            d[2] = 0x83010000u |
-                   (span == 16 ? 0u : (uint32_t)span << 20);
-            d[3] = 0x80804000u | ((uint32_t)span << 16);
-            a[0] = (stage_phys + (uint32_t)q * 32u * 4u) |
-                   VC4_BUS_ALIAS;
-            a[1] = (dst_phys + ((uint32_t)Y * (uint32_t)dst_w +
-                                (uint32_t)X0) * 4u) |
-                   VC4_BUS_ALIAS_DIRECT;
-            a[2] = alpha == 0xff ? 256u : (uint32_t)alpha;
-            /* The kernel derives its private four-row VPM window from the
-             * physical qpu_number; SRQ slot order is not a stable QPU id. */
-            a[3] = 0u;
-            a[4] = (uint32_t)span;
-        }
-        q = gpu_vc4_run_once(g2d_qpu_argb_gather_vc4,
-                             g2d_qpu_argb_gather_vc4_n, us, nqb,
-                             argb_src, (size_t)src_w * (size_t)src_h * 4u,
-                             stage, (size_t)nqb * 32u * 4u);
-        if (q != 0)
-            return GPU_FAILED;
-        q = gpu_vc4_run_once(g2d_qpu_argb_blit_vc4,
-                             g2d_qpu_argb_blit_vc4_n, ud, nqb,
-                             argb_dst, (size_t)dst_w * (size_t)dst_h * 4u,
-                             stage, (size_t)nqb * 32u * 4u);
-        if (q != 0)
-            return GPU_FAILED;
-        /* Private VPM windows let all spans blend in one SRQ launch. */
-        q = gpu_vc4_run_once(g2d_qpu_argb_alpha_vc4,
-                             g2d_qpu_argb_alpha_vc4_n, ua, nqb,
-                             stage, (size_t)nqb * 32u * 4u,
-                             argb_dst,
-                             (size_t)dst_w * (size_t)dst_h * 4u);
-        if (q != 0)
-            return GPU_FAILED;
-    }
-    return GPU_DONE;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1290,10 +1472,14 @@ int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
     if (gpu_ok(argb_w, argb_h))
         phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
     if (phys) {
-        if (v3d_g2d_ver() == 21)
-            gr = gpu_fill_surface_vc4(phys, argb, argb_w, argb_h, rx, ry,
-                                      rx + rw, ry + rh, color);
-        else
+        if (v3d_g2d_ver() == 21) {
+            gr = gpu_fill_loop_vc4(phys, argb, argb_w, argb_h, rx, ry,
+                                   rx + rw, ry + rh, color);
+            if (gr == GPU_UNSUPPORTED)
+                gr = gpu_fill_surface_vc4(phys, argb, argb_w, argb_h,
+                                          rx, ry, rx + rw, ry + rh,
+                                          color);
+        } else
             gr = gpu_fill_surface(phys, argb, argb_w, argb_h, rx, ry,
                                   rx + rw, ry + rh, color);
         if (gr == GPU_DONE)

@@ -787,10 +787,16 @@ class K21:
             return {'kind': 'unif', 'addr': UNIF_RADDR21}
         if s == 'elem':
             return {'kind': 'elem', 'addr': ELEM_RADDR21}
-        # reading raddr 50 (VPM_LD_WAIT) stalls until all VPM stores
-        # finished: GPU_FFT's 'mov -, vw_wait' = or -, b, b with rb=50
+        # reading raddr 50 stalls on the matching DMA direction: in
+        # raddr_a it is VPM_LD_WAIT (A rd - all VPM reads / VDR loads
+        # finished), in raddr_b VPM_ST_WAIT (B rd - all VPM writes and
+        # VDW stores finished).  GPU_FFT's 'mov -, vw_wait' = or -, b, b
+        # with rb=50; the proven argb_blit_vc4 / argb_gather_vc4 use the
+        # ra=50 form after their VDR fire.
         if s == 'vw_wait':
             return {'kind': 'vw_wait'}
+        if s == 'vl_wait':
+            return {'kind': 'vl_wait'}
         if s.startswith('rf'):
             n = int(s[2:])
             if n > 63:
@@ -829,6 +835,7 @@ class K21:
         smimm = None
         big_imm = None
         vw_wait = False
+        vl_wait = False
         operands = []
         for side, d in (('a', a), ('m', m)):
             if not d or d['nsrc'] == 0:
@@ -854,13 +861,15 @@ class K21:
                         raddrs.append(p['kind'])
                 elif p['kind'] == 'vw_wait':
                     vw_wait = True
+                elif p['kind'] == 'vl_wait':
+                    vl_wait = True
         if big_imm is not None:
             # sig loadimm: the constant sits in bits 31:0 and is routed
             # straight to the waddr fields (no op/mux fields at all);
             # one dst per pipe allowed (GPU_FFT 'mov rx, imm')
             if sig not in ('', 'loadimm'):
                 raise AsmError('32-bit immediate needs sig loadimm')
-            if smimm is not None or raddrs or vw_wait:
+            if smimm is not None or raddrs or vw_wait or vl_wait:
                 raise AsmError('immediate instruction takes no other src')
             if not (a and a['dst']) and not (m and m['dst']):
                 raise AsmError('mov dst, #imm needs a dst')
@@ -875,10 +884,13 @@ class K21:
             word = fld_set(word, SIG21_INV['loadimm'], 63, 60)
             self.raw(word, comment)
             return
-        if len(raddrs) > (1 if (smimm is not None or vw_wait) else 2):
+        if len(raddrs) > (1 if (smimm is not None or vw_wait or
+                                vl_wait) else 2):
             raise AsmError('more rf addresses than one instruction carries')
         if smimm is not None and vw_wait:
             raise AsmError('small immediate and vw_wait clash on raddr_b')
+        if smimm is not None and vl_wait:
+            raise AsmError('small immediate and vl_wait clash on raddr_a')
         if smimm is not None and sig not in ('', 'smimm'):
             raise AsmError('small immediate needs sig smimm')
         if smimm is not None and sig == '':
@@ -894,10 +906,13 @@ class K21:
                 return {'unif': UNIF_RADDR21, 'elem': ELEM_RADDR21}[k]
             return k
 
-        # GPU_FFT leaves unused raddrs at 39 (nop); a vw_wait read must
-        # sit in raddr_b (reading raddr 50 = VPM_LD_WAIT blocks until
-        # every pending VPM->VDW DMA finished)
-        raddr_a = addr_of(raddrs[0]) if raddrs else 39
+        # GPU_FFT leaves unused raddrs at 39 (nop); a wait read pins
+        # raddr 50 to its own slot (vl_wait -> raddr_a, vw_wait ->
+        # raddr_b), so the two can share one instruction
+        if vl_wait:
+            raddr_a = VPM_WAIT_RADDR21
+        else:
+            raddr_a = addr_of(raddrs[0]) if raddrs else 39
         if vw_wait:
             raddr_b = VPM_WAIT_RADDR21
         elif len(raddrs) > 1:
@@ -910,6 +925,8 @@ class K21:
         def mux_of(p):
             if p['kind'] == 'mux':
                 return p['mux']
+            if p['kind'] == 'vl_wait':
+                return 6
             if p['kind'] in ('smimm', 'vw_wait'):
                 return 7
             return 6 if p['addr'] == raddr_a else 7
@@ -938,6 +955,19 @@ class K21:
         word = self._pack_mul(word, m)
         word = fld_set(word, (ac << 3) | mc, 51, 46)
         word = fld_set(word, 1 if flags.get('sf') else 0, 45, 45)
+        # ws (bit 44) redirects the ADD result to regfile B.  For the
+        # magic addresses 49 (VPMVCD) and 50 (VPM_ST/LD_ADDR) that selects
+        # the STORE side - VPMVCD_WR_SETUP / VPM_ST_ADDR, i.e. the VDW -
+        # while ws=0 selects the LOAD side (VPMVCD_RD_SETUP / VPM_LD_ADDR,
+        # i.e. the VDR).  The address must stay in waddr_add: putting it
+        # in waddr_mul with ws=1 flips twice and lands back on the A bank,
+        # so the write silently vanishes.  Every proven VC4 kernel sets it
+        # on exactly its two VDW-side writes (vw_setup and vw_addr).
+        if flags.get('ws'):
+            if not (a and a['dst'] and self.dst(a['dst'])[1]):
+                raise AsmError('ws needs a magic regfile-B dst on the ADD'
+                               ' pipe')
+            word |= (1 << 44)
         if sig not in SIG21_INV:
             raise AsmError('no sig encoding for %r' % sig)
         word = fld_set(word, SIG21_INV[sig], 63, 60)

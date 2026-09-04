@@ -17,6 +17,7 @@
 #include <utils/pbkdf2.h>
 #include <sdio/sdio.h>
 #include <sdio/mmc.h>
+#include <sdio/sdhci.h>
 
 #include <ewoksys/ipc.h>
 #include <ewoksys/vdevice.h>
@@ -63,7 +64,16 @@
 #define BRCMF_RAMRW_SCRATCH (BRCMF_RAMRW_CHUNK + 4)
 #define BRCMF_FIRSTREAD (1 << 6)
 #define BRCMF_CONSOLE   10  /* watchdog interval to poll console */
-#define BRCMF_WORKER_BUSY_SLEEP_US 1000U
+/*
+ * proc_usleep() is tick-quantised: sleep_counter is only decremented from
+ * the kernel timer IRQ, so N us costs ceil(N / tick) ticks. At the shipped
+ * timer_freq of 1024Hz (tick = 976us) a 1000us request left 24us on the
+ * counter and always slept TWO ticks (~1.95ms), which doubled the gap
+ * between DPC polls of the SDIO interrupt flag. 400us is below the tick
+ * period for every timer_freq the kernel accepts (>= 256Hz), so the busy
+ * cadence now lands on the first tick (0..976us, ~490us average).
+ */
+#define BRCMF_WORKER_BUSY_SLEEP_US 400U
 /*
  * CONNECTED idle cap raised 2ms -> 10ms: the worker polls the SDIO
  * interrupt flag once per sleep cycle, so a 2ms cap woke it 500x/s
@@ -88,6 +98,34 @@
 #define BRCMF_WORKER_SPIN_FALLBACK_SLEEP_US 200U
 #define BRCMF_DPC_SLOW_USEC 5000U
 #define BRCMF_WORKER_POST_SLOW_DPC_YIELD_US 500U
+/*
+ * SDIO control-plane spacing, not the radio, is what caps this bus.
+ *
+ * Every func0 or func1 access pays SDHCI_MIN_CMD_GAP_US (250us) of
+ * issue-side gap before the command can even be committed; a func2 data
+ * transfer pays only SDHCI_MIN_CMD_GAP_F2_US (25us). The worker used to pay
+ * the expensive class twice per iteration -- a func0 CMD52 read of
+ * SDIO_CCCR_INTx to ask "did the card ring?", then a func1 intstatus read
+ * plus intstatus write at the top of brcmf_sdio_dpc() -- so roughly 750us of
+ * the ~1.4ms per-frame period observed at 1MB/s was spent asking whether
+ * there was work instead of moving it, and the func2 payload transfers were
+ * the cheap part.
+ *
+ * Both questions get a cheaper answer:
+ *  - "did the card ring?" is sdhci_card_irq_pending(), a plain MMIO read of
+ *    the DAT1 assertion the host controller already latched;
+ *  - the func1 intstatus pair is issued only when something actually rang,
+ *    when readframes still expects more data, or when the bounded poll
+ *    interval below has elapsed.
+ *
+ * The interval is what makes skipping safe. If the card turns out not to
+ * drive DAT1 at all, the func0 probe still runs exactly as often as before
+ * (it is only short-circuited when the latch already said yes) and the
+ * intstatus pair is still forced every BRCMF_DPC_INTR_POLL_MAX_MS, so a
+ * missed I_HMB_FC_CHANGE or I_HMB_FRAME_IND delays the bus by a bounded few
+ * milliseconds instead of wedging it.
+ */
+#define BRCMF_DPC_INTR_POLL_MAX_MS 2U
 #define BRCMF_CTL_FAST_POLL_LOOPS 8U
 #define BRCMF_CTL_MEDIUM_POLL_LOOPS 32U
 #define BRCMF_CTL_FAST_SLEEP_US 250U
@@ -180,6 +218,10 @@
  */
 #define BRCMF_MAX_INIT_ATTEMPTS 3
 #define BRCMF_MAX_RESTART_ROUNDS 10
+/* a link that stays CONNECTED this long counts as recovered: the lifecycle
+   restart counter is reset so transient recovery storms spread across
+   uptime never accumulate into a permanent give-up */
+#define BRCMF_STABLE_RESET_MS 300000U
 #define BRCMF_FW_DEAD_SCAN_STREAK 3
 /*
  * Repeated link resets with no successful join in between mean the
@@ -522,6 +564,10 @@ struct brcmf_dev{
 
     bool scan_results_ready;
     bool scan_mpc_off;
+    /* set from event/DPC context, actioned by the worker: restore mpc
+       without issuing a dcmd from inside readframes (a dcmd spins a nested
+       DPC that would corrupt the live cur_read of the outer pass) */
+    bool mpc_restore_pending;
     uint32_t scan_count;
     uint32_t scan_cache_ms;   /* kernel_tic_ms of last SCAN_COMPLETE (cache freshness) */
     volatile uint32_t pending_cmd; /* BRCMF_CMD_* queued by net_dev_cmd, run by worker */
@@ -559,6 +605,7 @@ struct brcmf_dev{
     uint32_t state_since_ms;
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
+    uint32_t last_tx_success_ms;   /* last frame actually put on the air */
     uint32_t scan_cmd_fail_streak; /* consecutive scan cmd errors (dead fw) */
     uint32_t recovery_streak;      /* link resets since last successful join */
     uint32_t self_disassoc_ms;     /* when we tore down our own link (AP switch) */
@@ -591,7 +638,27 @@ static pthread_t brcm_dpc_owner;
 static int brcm_dpc_depth;
 static bool brcm_dpc_owner_valid;
 static uint32_t brcm_dpc_last_usec;
+/*
+ * SDIO pump diagnostics. These exist so "wland state" can show where the
+ * pump's bus time actually goes -- control-plane accesses versus payload
+ * frames -- which a throughput number alone cannot answer. Written from the
+ * worker/DPC thread, read from the dev-cmd IPC handler; plain uint32 with no
+ * lock, so a stale or torn read is possible and irrelevant.
+ */
+struct brcmf_pump_stat {
+    uint32_t dpc_rounds;    /* brcmf_sdio_dpc_ex() entries */
+    uint32_t intr_reads;    /* func1 intstatus read+write pairs issued */
+    uint32_t intr_skips;    /* DPC rounds that skipped that pair */
+    uint32_t cardirq_hits;  /* free MMIO DAT1 latch answered "pending" */
+    uint32_t func0_probes;  /* func0 CMD52 SDIO_CCCR_INTx probes issued */
+    uint32_t rx_frames;     /* frames accepted into rx_queue */
+    uint32_t tx_frames;     /* frames handed to the firmware */
+    uint32_t rd_wakeups;    /* vfs_wakeup(VFS_EVT_RD) calls */
+    uint32_t last_intr_read_ms;
+};
+static struct brcmf_pump_stat brcmf_stat;
 static void brcmf_sdio_dpc(void);
+static void brcmf_sdio_dpc_ex(bool read_intr);
 static void brcmf_scan_set_mpc(bool enable);
 static inline void brcm_wakeup_dev(int evt);
 static void brcmf_set_init_failed(int err);
@@ -1123,6 +1190,7 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->tx_queue_blocked = false;
     bus->rxpending_since_ms = 0;
     bus->last_rx_success_ms = kernel_tic_ms(0);
+    bus->last_tx_success_ms = kernel_tic_ms(0);
     bus->sdio_cmd_fail_count = 0;
     if (flush_queues)
         brcmf_flush_data_queues();
@@ -1154,7 +1222,8 @@ static void brcmf_mark_connected(void)
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s", "connected");
     bus->rx_fail_count = 0;
     bus->tx_fail_count = 0;
-    brcmf_scan_set_mpc(true);
+    /* event context: defer the mpc dcmd to the worker (mpc_restore_pending) */
+    bus->mpc_restore_pending = true;
     /* persist the successfully joined network into /etc/wlan/network.json
        (existing entries only get their password updated, no duplicates);
        only for a manual connect -- auto-connects already come from the
@@ -1189,7 +1258,8 @@ static void brcmf_mark_disconnected(const char *reason,
     snprintf(bus->last_reason, sizeof(bus->last_reason), "%s",
             reason ? reason : "disconnected");
     brcmf_reset_runtime_state(true);
-    brcmf_scan_set_mpc(true);
+    /* may run in event context: defer the mpc dcmd to the worker */
+    bus->mpc_restore_pending = true;
     if (was_connected || reason != NULL) {
         brcm_log("link reset: reason=%s event=%u status=%u fw_reason=%u recoveries=%u\n",
                 reason ? reason : "unknown",
@@ -1262,6 +1332,17 @@ static bool brcmf_worker_irq_pending(void)
 
     if (!bus)
         return false;
+
+    /*
+     * Expensive fallback, not the first question asked: this is a func0 CMD52,
+     * so it pays SDHCI_MIN_CMD_GAP_US (250us) of issue-side spacing on top of
+     * the transfer. The worker only reaches it when the free MMIO latch in
+     * sdhci_card_irq_pending() said "quiet", which keeps the cost off the hot
+     * path while preserving both jobs this probe has: catching a card that
+     * does not drive DAT1, and feeding sdio_cmd_fail_count for the dead-card
+     * liveness watchdog.
+     */
+    brcmf_stat.func0_probes++;
 
     devpend = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, &err);
     /*
@@ -1341,6 +1422,8 @@ static inline void brcm_wakeup_dev(int evt)
 {
     if (dev == NULL || dev->mnt_info.node <= 0)
         return;
+    if ((evt & VFS_EVT_RD) != 0)
+        brcmf_stat.rd_wakeups++;
     vfs_wakeup(dev->mnt_info.node, evt);
 }
 
@@ -3361,8 +3444,12 @@ void brcmf_rx_event( struct sk_buff *skb)
     }else if(event_type == BRCMF_E_SCAN_COMPLETE){
         bus->scan_results_ready = true;
         bus->scan_cache_ms = kernel_tic_ms(0);
+        /* event context (inside readframes/DPC): never issue the mpc dcmd
+           inline -- brcmf_sdio_bus_txctl spins a nested DPC that would
+           corrupt the live cur_read of the outer readframes pass; flag it
+           for the worker instead */
         if (bus->state != SCANNING)
-            brcmf_scan_set_mpc(true);
+            bus->mpc_restore_pending = true;
     }else if(event_type == BRCMF_E_IF){
         if (datalen < sizeof(struct brcmf_if_event))
             goto done;
@@ -3472,7 +3559,30 @@ void brcmf_rx_frame(struct sk_buff *skb)
             brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops, depth);
         }
         bus->rx_fail_count = 0;
-        brcm_wakeup_dev(VFS_EVT_RD);
+        brcmf_stat.rx_frames++;
+        /*
+         * Edge-trigger the reader wakeup instead of firing it per frame.
+         *
+         * netd opens this device O_NONBLOCK and polls it (tap_select()
+         * dev_cntl plus non-blocking read()s), so it never parks on the read
+         * wait queue and these wakeups woke nobody. Each one was still a
+         * blocking IPC to vfsd that took vfsd's global write lock
+         * (_vfs_lock), issued from this SDIO RX pump thread -- at ~720
+         * frames/s that is 720 pointless global-lock acquisitions per second
+         * plus 720 times the pump stalled on an IPC round trip.
+         *
+         * depth == 1 is the only transition a parked reader can miss: it
+         * means this frame found the queue empty, so it is the edge from
+         * "nothing to read" to "something to read". Anything deeper is
+         * already visible to a poller through net_check_poll_events(), which
+         * recomputes the event mask from brcm_check_data() on every poll.
+         * A reader that parks anyway and then stalls is covered by
+         * brcmf_maybe_kick_reader(), which runs every worker iteration and
+         * re-issues the RD wakeup once the dequeue has been stalled for
+         * BRCMF_RX_READER_KICK_STALL_MS.
+         */
+        if (depth == 1)
+            brcm_wakeup_dev(VFS_EVT_RD);
     }
     skb_free(skb);
 }
@@ -3951,7 +4061,7 @@ int brcmf_sdiod_send_pkt(struct sk_buff* pkt)
 }
 
 
-static void brcmf_sdio_dpc(void)
+static void brcmf_sdio_dpc_ex(bool read_intr)
 {
     uint32_t newstatus = 0;
     uint32_t intstat_addr = bus->sdio_core->base + SD_REG(intstatus);
@@ -3961,7 +4071,29 @@ static void brcmf_sdio_dpc(void)
 
     start_usec = brcmf_now_usec();
     brcmf_dpc_enter();
-    err = brcmf_sdio_intr_rstatus();
+    brcmf_stat.dpc_rounds++;
+    /*
+     * The func1 intstatus read+write pair is the most expensive single thing
+     * a DPC round does: two accesses outside func2, each paying
+     * SDHCI_MIN_CMD_GAP_US (250us) of issue-side spacing, i.e. 500us of the
+     * pump standing still to ask the firmware what it wants. read_intr is
+     * only set when the answer can actually be new, so a plain TX-queue drain
+     * now costs no control-plane bus time at all.
+     *
+     * Reusing bus->intstatus when skipping is not acting on stale data: that
+     * field is written back at the end of this function and carries exactly
+     * the bits deliberately deferred from the previous round. bus->fcstate
+     * likewise only changes on I_HMB_FC_CHANGE, which raises a card
+     * interrupt, and BRCMF_DPC_INTR_POLL_MAX_MS bounds how long a missed one
+     * could go unnoticed.
+     */
+    if (read_intr) {
+        err = brcmf_sdio_intr_rstatus();
+        brcmf_stat.intr_reads++;
+        brcmf_stat.last_intr_read_ms = kernel_tic_ms(0);
+    } else {
+        brcmf_stat.intr_skips++;
+    }
     intstatus = bus->intstatus;
 
     /* Handle flow-control change: read new state in case our ack
@@ -4104,11 +4236,27 @@ static void brcmf_sdio_dpc(void)
         if (brcmf_tx_queue_resume_writes_if_room())
             tx_writable = true;
     }
-    if (tx_sent > 0 && (tx_writable || !brcmf_tx_queue_should_block_writes()))
-        brcm_wakeup_dev(VFS_EVT_WR);
+    if (tx_sent > 0) {
+        brcmf_stat.tx_frames += (uint32_t)tx_sent;
+        bus->last_tx_success_ms = kernel_tic_ms(0);
+        if (tx_writable || !brcmf_tx_queue_should_block_writes())
+            brcm_wakeup_dev(VFS_EVT_WR);
+    }
 
     brcm_dpc_last_usec = brcmf_elapsed_usec(start_usec, brcmf_now_usec());
     brcmf_dpc_leave();
+}
+
+/*
+ * Bring-up, recovery and control-poll contexts: always read intstatus. They
+ * are not throughput sensitive and must not act on a deferred view of the
+ * firmware's interrupt state. Only the data-path worker loop in
+ * brcm_worker_main() skips it, and only under the conditions documented at
+ * brcmf_sdio_dpc_ex().
+ */
+static void brcmf_sdio_dpc(void)
+{
+    brcmf_sdio_dpc_ex(true);
 }
 
 int brcmf_sdio_bus_txctl(unsigned char *msg, uint msglen)
@@ -4634,10 +4782,45 @@ static void* brcm_worker_main(void* p) {
     brcm_init_phase_mark(0); /* running */
     while(1){
         bool busy = brcmf_worker_has_work();
-        bool run_dpc = busy || brcmf_worker_irq_pending();
+        /*
+         * Ask the free question first. The host controller already latches
+         * the card's DAT1 assertion, so sdhci_card_irq_pending() answers "did
+         * the card ring?" with one MMIO read instead of a func0 CMD52 and its
+         * 250us issue gap. The func0 probe is still reached whenever the
+         * latch is quiet and nothing else is pending, so a card that does not
+         * drive DAT1 keeps exactly the behaviour it has today.
+         */
+        bool card_irq = sdhci_card_irq_pending();
+        bool func0_irq = false;
+        bool run_dpc = busy || card_irq;
 
-        if (run_dpc)
-            brcmf_sdio_dpc();
+        if (card_irq)
+            brcmf_stat.cardirq_hits++;
+        if (!run_dpc) {
+            func0_irq = brcmf_worker_irq_pending();
+            run_dpc = func0_irq;
+        }
+
+        if (run_dpc) {
+            /*
+             * Only pay the func1 intstatus read+write pair when the answer
+             * can be new: the card rang, readframes still expects more data,
+             * or BRCMF_DPC_INTR_POLL_MAX_MS has elapsed since the last read.
+             * That last condition is the safety net -- it bounds how long a
+             * card interrupt we failed to observe (DAT1 not latched, or the
+             * func0 probe short-circuited by a permanently busy TX queue) can
+             * delay an I_HMB_FRAME_IND or I_HMB_FC_CHANGE, so the worst case
+             * is a few milliseconds of added latency rather than a wedged
+             * bus.
+             */
+            bool read_intr = card_irq || func0_irq || bus->rxpending;
+
+            if (!read_intr &&
+                    (kernel_tic_ms(0) - brcmf_stat.last_intr_read_ms) >=
+                    BRCMF_DPC_INTR_POLL_MAX_MS)
+                read_intr = true;
+            brcmf_sdio_dpc_ex(read_intr);
+        }
 
         if (run_dpc && brcmf_diag_last_dpc_usec() >= BRCMF_DPC_SLOW_USEC)
             usleep(BRCMF_WORKER_POST_SLOW_DPC_YIELD_US);
@@ -4645,6 +4828,13 @@ static void* brcm_worker_main(void* p) {
         /* Drain queued dev-cmd requests (scan/connect) here, never in the
          * IPC handler — see brcmf_run_pending_cmd(). */
         brcmf_run_pending_cmd();
+
+        /* mpc restore requested from event/DPC context: the dcmd is only
+           safe to issue from the worker's own context */
+        if (bus->mpc_restore_pending) {
+            bus->mpc_restore_pending = false;
+            brcmf_scan_set_mpc(true);
+        }
 
         /*
          * Housekeeping runs on the kernel wall clock, not on accumulated
@@ -4685,12 +4875,21 @@ static void* brcm_worker_main(void* p) {
              */
             if (bus->state == CONNECTED) {
                 uint32_t now_ms = kernel_tic_ms(0);
-                if ((now_ms - bus->last_rx_success_ms) > BRCMF_FW_LIVENESS_MS &&
-                    (bus->rx_fail_count > 0 || bus->sdio_cmd_fail_count > 0)) {
-                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u cmd_fails=%u), resetting link\n",
+                bool rx_silent = (now_ms - bus->last_rx_success_ms) > BRCMF_FW_LIVENESS_MS;
+                bool errs_seen = (bus->rx_fail_count > 0 || bus->sdio_cmd_fail_count > 0);
+                /* "clean" firmware stall: the SDIO bus answers fine and no
+                   read errors surface, but the dongle stops delivering
+                   frames entirely. If we kept transmitting (ARP/TCP/ssh
+                   retries) across a doubled window with zero frames back,
+                   the link is dead regardless of the error counters. */
+                bool clean_stall = (now_ms - bus->last_rx_success_ms) > 2 * BRCMF_FW_LIVENESS_MS &&
+                    (now_ms - bus->last_tx_success_ms) < BRCMF_FW_LIVENESS_MS;
+                if ((rx_silent && errs_seen) || clean_stall) {
+                    brcm_log("fw liveness: no rx for %u ms (rx_fails=%u cmd_fails=%u clean_stall=%d), resetting link\n",
                             now_ms - bus->last_rx_success_ms,
                             bus->rx_fail_count,
-                            bus->sdio_cmd_fail_count);
+                            bus->sdio_cmd_fail_count,
+                            clean_stall ? 1 : 0);
                     brcmf_sdio_checkdied();
                     brcmf_mark_disconnected("fw liveness timeout",
                             0, bus->rx_fail_count, 0);
@@ -5033,6 +5232,26 @@ char* brcm_state_info(void)
     json_var_add(json_var, "event_type", json_var_new_int((int)last_event_type));
     json_var_add(json_var, "event_status", json_var_new_int((int)last_event_status));
     json_var_add(json_var, "event_reason", json_var_new_int((int)last_event_reason));
+    /*
+     * SDIO pump accounting. Sample twice around a transfer and divide the
+     * deltas by the elapsed seconds to see the real cost structure:
+     * intr_reads x 500us is control-plane bus time, func0_probes x 250us more,
+     * and rx_frames + tx_frames is what that time actually bought.
+     * rd_wakeups should now track rx_frames only at burst starts, not 1:1.
+     */
+    json_var_add(json_var, "dpc_rounds", json_var_new_int((int)brcmf_stat.dpc_rounds));
+    json_var_add(json_var, "dpc_intr_reads", json_var_new_int((int)brcmf_stat.intr_reads));
+    json_var_add(json_var, "dpc_intr_skips", json_var_new_int((int)brcmf_stat.intr_skips));
+    json_var_add(json_var, "dpc_cardirq_hits", json_var_new_int((int)brcmf_stat.cardirq_hits));
+    json_var_add(json_var, "dpc_func0_probes", json_var_new_int((int)brcmf_stat.func0_probes));
+    json_var_add(json_var, "dpc_last_usec", json_var_new_int((int)brcmf_diag_last_dpc_usec()));
+    json_var_add(json_var, "rx_frames", json_var_new_int((int)brcmf_stat.rx_frames));
+    json_var_add(json_var, "tx_frames", json_var_new_int((int)brcmf_stat.tx_frames));
+    json_var_add(json_var, "rd_wakeups", json_var_new_int((int)brcmf_stat.rd_wakeups));
+    json_var_add(json_var, "rx_queue_depth", json_var_new_int(brcm_check_data()));
+    json_var_add(json_var, "rx_queue_drops", json_var_new_int((int)bus->rx_queue_drops));
+    json_var_add(json_var, "tx_queue_drops", json_var_new_int((int)bus->tx_queue_drops));
+    json_var_add(json_var, "sdio_cmd_fails", json_var_new_int((int)bus->sdio_cmd_fail_count));
     ret = json_var_to_cstr(json_var);
     json_var_unref(json_var);
     return ret;
@@ -5057,6 +5276,7 @@ static void *brcm_lifecycle_thread(void *p)
 {
     (void)p;
     uint32_t restart_rounds = 0;
+    uint32_t connected_since_ms = 0;
 
     while (1) {
         usleep(1000000);
@@ -5080,19 +5300,36 @@ static void *brcm_lifecycle_thread(void *p)
             continue;
         }
 
-        if (!brcm_worker_exited)
+        if (!brcm_worker_exited) {
+            /* a stable link proves the last recovery worked: reset the
+               restart counter so transient storms spread across uptime
+               never accumulate into a permanent give-up */
+            if (brcm_state() == CONNECTED) {
+                if (connected_since_ms == 0)
+                    connected_since_ms = now;
+                else if ((now - connected_since_ms) >= BRCMF_STABLE_RESET_MS &&
+                         restart_rounds > 0) {
+                    brcm_log("wlan: link stable for %ums, restart counter reset\n",
+                            (unsigned)BRCMF_STABLE_RESET_MS);
+                    restart_rounds = 0;
+                }
+            } else {
+                connected_since_ms = 0;
+            }
             continue;
+        }
         brcm_worker_exited = false;
 
-        if (restart_rounds >= BRCMF_MAX_RESTART_ROUNDS) {
-            brcm_log("wlan: giving up after %u restart rounds\n",
-                    (unsigned)restart_rounds);
-            while (1)
-                usleep(1000000);
-        }
         restart_rounds++;
 
-        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 : 10000;
+        /* Never park the thread for good: with the device dead and nobody
+           left to restart it the box stays unreachable until reboot, so
+           keep power-cycling the chip with a capped backoff instead. */
+        uint32_t delay_ms = (restart_rounds <= 3) ? 5000 :
+                (restart_rounds <= BRCMF_MAX_RESTART_ROUNDS) ? 10000 : 60000;
+        if (restart_rounds == BRCMF_MAX_RESTART_ROUNDS + 1)
+            brcm_log("wlan: %u restart rounds without recovery, backing off to 60s\n",
+                    (unsigned)restart_rounds);
         brcm_log("wlan: worker exited, full restart #%u in %ums\n",
                 (unsigned)restart_rounds, (unsigned)delay_ms);
         usleep(delay_ms * 1000);

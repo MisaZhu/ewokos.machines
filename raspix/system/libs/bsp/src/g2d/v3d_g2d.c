@@ -20,7 +20,11 @@
  *     NUM_BATCHES-1 in CFG4, shader-record bits in CFG5), while the
  *     V3D 7.x path keeps the proven raspi5 register values;
  *   - V3D 2.1 has no usable CSD: the *_vc4 kernels run through the
- *     SRQ user-program launcher (the GPU_FFT protocol).
+ *     SRQ user-program launcher (the GPU_FFT protocol);
+ *   - the two SoCs are identified at init and powered differently:
+ *     BCM2837 needs the firmware GRAFX domain call, BCM2711 keeps V3D
+ *     behind a stopped AXI async bridge (every read 0xdeadbeef) that
+ *     only the PM/ASB register sequence below opens.
  *
  * CSD code/uniform/scratch staging is dma_alloc'ed (physically
  * contiguous sys_dma memory), so the QPU fetches them by physical
@@ -194,6 +198,20 @@
 #define CSD_CODE_WORDS 512     /* Pi 4 alpha lowering expands to 363 words */
 #define CSD_UNIF_WORDS 1024     /* VC4: 2 x (16 QPUs x VC4_UNIF_QWORDS) */
 
+/* _unif is indexed as _unif[q * VC4_UNIF_QWORDS + i] for every q below the
+ * maximum QPU count, so the allocation has to cover the widest per-QPU
+ * contract at that count.  Guard the pairing rather than letting a future
+ * VC4_UNIF_QWORDS increase silently run off the end of the buffer. */
+#if 16 * VC4_UNIF_QWORDS > CSD_UNIF_WORDS
+#error "CSD_UNIF_WORDS must hold 16 QPUs x VC4_UNIF_QWORDS words"
+#endif
+/* The per-QPU uniform stride must cover the widest VC4 contract in the
+ * tree (the copy-loop kernel reads s[0..6]); keep headroom so a wider
+ * future contract fails here instead of reading a neighbour's words. */
+#if VC4_UNIF_QWORDS < 8
+#error "VC4_UNIF_QWORDS must be at least the copy-loop contract's 7 words"
+#endif
+
 /* Raspberry Pi firmware property tags and clock ID. */
 #define FW_GET_CLOCK_RATE      0x00030002u
 #define FW_GET_MAX_CLOCK_RATE  0x00030004u
@@ -285,6 +303,12 @@ typedef struct {
  * kernels (exit-only, 1 uniform read, 9 uniform reads) to isolate which
  * instruction stream wedges the SRQ dispatch.  0 for production. */
 #define G2D_VC4_MICRO_TEST 0
+
+/* BRING-UP SWITCH: V3D 4.x CSD self-test at init - dispatch the real
+ * fill kernel onto a private 4x4 dma tile and read the pixel back.
+ * Separates "the CSD machinery never retires" from "the bsp uniform
+ * contract is wrong" on first silicon.  0 once Pi4 is proven. */
+#define G2D_CSD_SELFTEST 0
 
 /* Pi3 bring-up: GPU_FFT on Pi 2/3 feeds SRQPC the PLAIN (L2-cached)
  * VC address of its code - mem_alloc returns GPU-side addresses in
@@ -506,6 +530,7 @@ static volatile uint32_t *_v3d;   /* V3D hub block */
 static volatile uint32_t *_pm;    /* PM power domain */
 static int _ver = 0;              /* architecture version x10 */
 static int _is_bcm2711;
+static int _csd_timeout_logs = 0;
 
 static inline volatile uint32_t *v3d_hub(void)
 {
@@ -548,10 +573,18 @@ static inline void g2d_dsb(void)
 #define KERN_ALPHA_GATHER_VC4 9
 #define KERN_CACHE_SCRUB_VC4 10
 #define KERN_FILL_LOOP_VC4 11
-#define KERN_ROT90 12
-#define KERN_ROT90_TILE 13
-#define KERN_ROT90_VPM 14
-#define KERN_TOTAL 15
+/* Self-looping TMU copy kernel: one launch walks whole rows, each QPU
+ * thread gathering and storing up to G2D_BAND_MAX_VDW 16-pixel spans
+ * (the per-thread iteration cap is enforced by bsp_g2d.c). */
+#define KERN_COPY_LOOP_VC4 12
+/* Self-looping TMU alpha kernel: copy-loop shape plus a dst gather and
+ * the source-over ALU blend - one launch per 12 destination rows under
+ * the same eligibility and iteration cap as the copy loop. */
+#define KERN_ALPHA_LOOP_VC4 13
+#define KERN_ROT90 14
+#define KERN_ROT90_TILE 15
+#define KERN_ROT90_VPM 16
+#define KERN_TOTAL 17
 /* Alpha has one immutable code address per exact output span.  VC4 does
  * not reliably observe either dynamic late-uniform VDW setups or code
  * replacement at an address already present in its instruction cache. */
@@ -685,10 +718,11 @@ static int _num_qpus = 0;
 static int _has_hub = 0;
 static uint32_t _v3d_clock_hz = 0;
 
-/* Core (control) register block: hub-style V3D >= 3.3 keeps the core
- * at base+0x8000 next to the hub; V3D 2.1 (VC4) has no hub and the
- * whole core block (IDENT, L2C, SRQ, ...) sits at base+0x0000 - the
- * layout the Linux vc4 driver uses. */
+/* Core (control) register block: hub-style V3D keeps the core next to
+ * the hub (+0x4000 on BCM2711, +0x8000 on the V3D 7.x layout, see
+ * v3d_core); V3D 2.1 (VC4) has no hub and the whole core block (IDENT,
+ * L2C, SRQ, ...) sits at base+0x0000 - the layout the Linux vc4 driver
+ * uses. */
 static inline volatile uint32_t *v3d_ctl(void)
 {
     return _has_hub ? v3d_core() : v3d_hub();
@@ -1523,6 +1557,8 @@ static int g2d_count_qpus(void)
 
     if (n <= 0 || n > 16)
         n = (_ver == 42) ? 8 : 12;
+    slog("g2d: IDENT1=0x%x -> %d QPUs (%d/slice x %d slices)\r\n",
+         id1, n, qups, nslc);
     return n;
 }
 
@@ -1701,6 +1737,8 @@ int v3d_g2d_init(void)
     _ksrc[KERN_ALPHA_GATHER_VC4] = g2d_qpu_argb_alpha_gather_vc4; _ksrc_n[KERN_ALPHA_GATHER_VC4] = g2d_qpu_argb_alpha_gather_vc4_n;
     _ksrc[KERN_CACHE_SCRUB_VC4] = g2d_qpu_cache_scrub_vc4; _ksrc_n[KERN_CACHE_SCRUB_VC4] = g2d_qpu_cache_scrub_vc4_n;
     _ksrc[KERN_FILL_LOOP_VC4] = g2d_qpu_argb_fill_loop_vc4; _ksrc_n[KERN_FILL_LOOP_VC4] = g2d_qpu_argb_fill_loop_vc4_n;
+    _ksrc[KERN_COPY_LOOP_VC4] = g2d_qpu_argb_copy_loop_vc4; _ksrc_n[KERN_COPY_LOOP_VC4] = g2d_qpu_argb_copy_loop_vc4_n;
+    _ksrc[KERN_ALPHA_LOOP_VC4] = g2d_qpu_argb_alpha_loop_vc4; _ksrc_n[KERN_ALPHA_LOOP_VC4] = g2d_qpu_argb_alpha_loop_vc4_n;
     if (_ver == 21) {
         _ksrc[KERN_ROT90_TILE] = g2d_qpu_argb_rotate_vc4;
         _ksrc_n[KERN_ROT90_TILE] = g2d_qpu_argb_rotate_vc4_n;
@@ -2399,6 +2437,98 @@ int v3d_g2d_init(void)
     if (!_ok)
         slog("g2d: GPU not dispatchable (ver=%u kernels=%u)\r\n",
              (uint32_t)_ver, kn_total);
+
+#if G2D_CSD_SELFTEST
+    if (_ok && _ver >= 41) {
+        /* first-silicon probe.  Part 1: single-QPU 4x4 fill proves the
+         * CSD chain end to end.  Part 2: qid-reveal sweep - fill a
+         * 16-row x 16-px tile with rows=1 per QPU, so band offset =
+         * qid*64 = row qid.  Launching nq workgroups then writes row
+         * qid for every qid the hardware actually produces; the 16-bit
+         * row mask shows the exact qid set.  Correct behaviour is
+         * mask = (1<<nq)-1 (qids 0..nq-1); anything else means the
+         * 4.2 THREAD_ID -> qid mapping or the workgroup/batch config
+         * does not enumerate the QPUs the way the kernel assumes. */
+        uint32_t u[16];
+        ewokos_addr_t tv = dma_alloc(0, 1024);
+        uint32_t tp = (tv != 0) ? dma_phy_addr(0, tv) : 0;
+
+        if (tv != 0 && tp != 0) {
+            volatile uint32_t *buf = (volatile uint32_t *)(uintptr_t)tv;
+            int row, r;
+
+            /* ---- part 1: single-QPU 4x4 sanity ---- */
+            memset(u, 0, sizeof(u));
+            u[0] = 0xff204060u;          /* color */
+            u[1] = 0u;                   /* L - 1: one 16-px group */
+            u[2] = 16u;                  /* row bytes (4 px) */
+            u[3] = 3u;                   /* h - 1 */
+            u[4] = 48u;                  /* group pad minus row bytes */
+            u[5] = 4u;                   /* L * rows per QPU */
+            u[6] = tp;                   /* dst physical */
+            u[8] = 4u;                   /* x1 */
+            u[10] = 4u;                  /* y1 */
+            u[11] = 1u;                  /* full */
+            u[12] = 4u;                  /* rows */
+            u[13] = 64u;                 /* rows * row bytes */
+            u[14] = _scratch_p;
+            r = v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n,
+                            u, 16, 1, NULL, 0,
+                            (void *)(uintptr_t)tv, 64);
+            slog("g2d: CSD self-test ret=%d pixel=0x%x (expect 0xff204060)"
+                 "\r\n", r, (uint32_t)buf[0]);
+
+            /* ---- part 2: production-config stability check ----
+             * 16-row x 16-px tile, rows=1 per band so band offset =
+             * qid*64 = row qid; the written-row mask is the exact qid
+             * set the dispatch produced.  The 4.2 batch config plus the
+             * pre-dispatch CSDDONE clear + idle wait must give a FULL,
+             * STABLE mask (== (1<<nq)-1) on EVERY rep.  A rep that drops
+             * a band means the completion handshake is still returning
+             * before the QPU writes drain. */
+            {
+                static const int snq[2] = { 4, 8 };
+                int q, rep;
+
+                for (q = 0; q < 2; q++) {
+                    for (rep = 0; rep < 4; rep++) {
+                        uint32_t nq = (uint32_t)snq[q];
+                        uint32_t color = 0xff000000u | (nq << 16) | 0x00a5u;
+                        uint32_t mask = 0;
+
+                        for (row = 0; row < 16 * 16; row++)
+                            buf[row] = 0u;
+                        g2d_dsb();
+
+                        memset(u, 0, sizeof(u));
+                        u[0] = color;
+                        u[1] = 0u;           /* L - 1 (w=16 -> one group) */
+                        u[2] = 64u;          /* row bytes (16 px) */
+                        u[3] = 15u;          /* h - 1 (16 rows) */
+                        u[4] = 0u;           /* L*64 - w*4 = 0 */
+                        u[5] = 1u;           /* L * rows per QPU (rows=1) */
+                        u[6] = tp;
+                        u[8] = 16u;          /* x1 */
+                        u[10] = 16u;         /* y1 */
+                        u[11] = 1u;          /* full */
+                        u[12] = 1u;          /* rows = 1 per QPU */
+                        u[13] = 64u;         /* band stride = 1 row */
+                        u[14] = _scratch_p;
+                        r = v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n,
+                                        u, 16, (int)nq, NULL, 0,
+                                        (void *)(uintptr_t)tv, 1024);
+                        for (row = 0; row < 16; row++)
+                            if (buf[row * 16] == color)
+                                mask |= (1u << row);
+                        slog("g2d: CSD prod nq=%u rep=%d ret=%d "
+                             "mask=0x%04x (want 0x%04x)\r\n",
+                             nq, rep, r, mask, (1u << nq) - 1u);
+                    }
+                }
+            }
+        }
+    }
+#endif
     return 0;
 }
 
@@ -2601,6 +2731,25 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                  (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
                  (uint32_t)v3d_ctl()[INT_STS / 4]);
         v3d_ctl()[INT_CLR / 4] = csd_done;
+        /* bring-up: where did the dispatch die?  STATUS says whether
+         * the block ever accepted it (HAVE_CURRENT/NUM_ACTIVE), the
+         * CURRENT_ID pair shows the workgroup it stalled on. */
+        if (_ver >= 41 && _csd_timeout_logs < 3) {
+            volatile uint32_t *core = v3d_ctl();
+
+            _csd_timeout_logs++;
+            slog("g2d: CSD timeout kern=%d sts=0x%x int=0x%x cur0=0x%x "
+                 "cur4=0x%x id0=0x%x id1=0x%x cfg3=0x%x cfg5=0x%x "
+                 "cfg6=0x%x\r\n",
+                 kern,
+                 (uint32_t)core[CSD_STATUS_OFF / 4],
+                 (uint32_t)core[INT_STS / 4],
+                 (uint32_t)core[0x920u / 4],
+                 (uint32_t)core[0x930u / 4],
+                 (uint32_t)core[0x93cu / 4],
+                 (uint32_t)core[0x940u / 4],
+                 cfg[3], cfg[5], cfg[6]);
+        }
         /* A timeout is a real failure.  Do not reset the graphics domain
          * and do not replay this possibly-live operation. */
         return 1;
@@ -2855,6 +3004,10 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
         kern = KERN_GATHER_VC4;
     else if (code == g2d_qpu_argb_alpha_gather_vc4)
         kern = KERN_ALPHA_GATHER_VC4;
+    else if (code == g2d_qpu_argb_copy_loop_vc4)
+        kern = KERN_COPY_LOOP_VC4;
+    else if (code == g2d_qpu_argb_alpha_loop_vc4)
+        kern = KERN_ALPHA_LOOP_VC4;
     else
         return -1;      /* only the four bsp_g2d kernels are supported */
     if ((uint32_t)nwords > _ksrc_n[kern])
@@ -2942,6 +3095,10 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
     {
         uint32_t write_addr;
 
+        /* The destination uniform is not at a fixed index: each kernel
+         * family puts dst_row0 / dst span address somewhere different.
+         * Reading the wrong word would derive flush_writes from a colour
+         * or a map constant and be right only by accident. */
         if (kern == KERN_FILL_VC4 || kern == KERN_FILL_LOOP_VC4)
             write_addr = unifs[0];
         else
