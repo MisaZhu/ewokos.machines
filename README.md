@@ -20,7 +20,7 @@ LEGO EV3, RISC-V, x86) at various stages of completeness.
 ```text
 machines/
 ├── README.md               # this file
-├── docs/                   # shared board notes (SD layout, screenshots)
+├── LICENSE                 # Apache-2.0
 ├── clockwork/
 │   ├── picocalc/           # ClockworkPi PicoCalc (Rockchip RK3506)
 │   └── uconsole/           # ClockworkPi uConsole overlay (rides on raspix / CM4)
@@ -33,6 +33,10 @@ machines/
 ├── x2lite.rk3128/          # Rockchip RK3128 board
 └── x86/                    # x86 / x86_64 PC-style target
 ```
+
+Board notes (firmware `config.txt` recipes, panel/overlay revisions, SD layout)
+live **per target** under `<target>/docs/` — e.g. `raspix/docs/`,
+`clockwork/uconsole/docs/`, `orangepi/docs/` — not at the `machines/` root.
 
 ## Anatomy of a Machine Port
 
