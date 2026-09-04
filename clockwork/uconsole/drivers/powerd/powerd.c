@@ -54,14 +54,75 @@ static uint8_t adc2level(uint8_t adc){
         return 5;
     return 0;
 }
+/*
+ * CM4/SDHCI SD-card power-off.
+ *
+ * The uConsole CM4 boots its SD card from the EMMC2 SDHCI host (see
+ * system/libs/arch_bcm283x/src/sdhci.c: GPIO48-53 ALTF3, ioaddr =
+ * _mmio_base + 0x340000). SDHCI_POWER_CONTROL is byte register 0x29 and
+ * the bcm2711 host only accepts 32-bit aligned accesses, so clearing that
+ * byte means read-modify-writing bits[15:8] of the word at offset 0x28.
+ * Writing 0 removes card VDD, which force-resets the card back to idle --
+ * the CM4 equivalent of the D1/AXP202 reference's "CMD0 + SD_VCC LDO off".
+ * Without it the card can be caught mid-transfer and, if backfeed holds its
+ * rail up after the PMIC cut, the next cold boot cannot talk to it until the
+ * card is physically re-seated (exactly the reported symptom: powers off,
+ * LED comes back on, but no boot until the SD card is pulled). Both the
+ * EMMC2 (0x340000) and legacy (0x300000) hosts are cleared; whichever holds
+ * the card powers down, the other is a harmless no-op.
+ */
+static void sdhci_card_power_off(void) {
+    static const uint32_t host_off[2] = { 0x340000, 0x300000 };
+    for(int h = 0; h < 2; h++) {
+        volatile uint32_t* pwr =
+            (volatile uint32_t*)(_mmio_base + host_off[h] + 0x28);
+        *pwr &= ~(0xffU << 8); /* byte 0x29 = SDHCI_POWER_CONTROL -> 0 */
+    }
+}
+
 static void power_off(){
-        uint8_t reg = i2c_getb(0x34, 0x32);	
-        i2c_putb(0x34, 0x32, reg | 0x80);
-        for(int i = 0; i < 60 ; i++){
+    /*
+     * Shutdown order mirrors the reference sequence, adapted to this board's
+     * real parts (CM4 + AXP223, NOT D1 + AXP202):
+     *
+     * Step 3 - SDIO IO to true high-Z FIRST. GPIO48-53 are the SD card's
+     *   CLK/CMD/DAT lines (ALTF3 on the CM4 EMMC2 host). Setting the pin MUX
+     *   to input + no-pull disconnects the SoC's output drivers from the
+     *   pads, so the SoC can no longer backfeed a collapsing card rail
+     *   through the card's ESD diodes (the reason a re-seated card used to be
+     *   needed). Every other pin is driven low to minimise residual current,
+     *   except the AXP223 I2C bus (GPIO0/1), which is left idle-high so the
+     *   Step 6 PMIC command still gets through.
+     */
+    for(int i = 0; i < 60 ; i++){
+        if(i >= 48 && i <= 53) {
+            bcm283x_gpio_pull(i, GPIO_PULL_NONE);
+            bcm283x_gpio_config(i, GPIO_INPUT);
+        } else if(i != 0 && i != 1) {
             bcm283x_gpio_clr(i);
             bcm283x_gpio_config(i, GPIO_OUTPUT);
         }
-        while(1);
+    }
+
+    /*
+     * Steps 1/2/4 - cut the card's own VDD at the SDHCI host. With the IO
+     * lines already high-Z, removing card power cleanly force-resets the card
+     * to idle, so the next power-on cold-boots from a card in a known state
+     * instead of one stranded mid-operation.
+     */
+    sdhci_card_power_off();
+
+    /* Step 5 - let the card rail and bus caps discharge before the PMIC cut. */
+    proc_usleep(20000); /* 20 ms */
+
+    /*
+     * Step 6 - AXP223 software power-off (REG 0x32 bit7). i2c_do_start()
+     * reconfigures GPIO0/1 on every transaction, so the bit-banged bus is
+     * still usable here even though the pin walk above ran first.
+     */
+    uint8_t reg = i2c_getb(0x34, 0x32);
+    i2c_putb(0x34, 0x32, reg | 0x80);
+    while(1);
 }
 
 /*
