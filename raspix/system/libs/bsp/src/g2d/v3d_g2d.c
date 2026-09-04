@@ -7,9 +7,9 @@
  *   Pi 3 family BCM2837  V3D 2.1  (single-core, SRQ user programs)
  *
  * Differences from the raspi5 driver:
- *   - registers live INSIDE the shared 32 MB MMIO window (V3D at
- *     mmio_base+0xC00000, PM at mmio_base+0x100000), so the windows are
- *     reached through _mmio_base instead of SYS_MEM_MAP;
+ *   - registers are in the Pi3/4 identity-mapped peripheral windows (V3D at
+ *     0x3fc00000 on Pi3, 0xfec00000 on Pi4; PM at the SoC PM base), so the
+ *     windows are reached directly instead of SYS_MEM_MAP;
  *   - no SMS power-up / hub AXI kick: those blocks only exist on V3D
  *     7.x (raspi5); V3D 4.x is brought up by probe + clock + staging;
  *   - V3D 4.x CSD register block sits at 0x904..0x91c (the V3D 7.x
@@ -39,9 +39,11 @@
 #include <ewoksys/dma.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/kernel_tic.h>
 #include <arch/bcm283x/mailbox.h>
 #include "v3d_g2d.h"
 #include "g2d_qpu_kernels.h"
+#include "g2d_qpu_kernels_v42.h"
 
 /* VC bus address alias for uncached access (not exported by mailbox.h;
  * the other bcm283x drivers carry the same local define). */
@@ -57,7 +59,8 @@
 
 /* ---- V3D register layout (Linux drm/v3d v3d_regs.h) ---- */
 #define V3D_HUB_OFF    0x00000u
-#define V3D_CORE0_OFF  0x08000u
+#define V3D_CORE0_OFF_V42 0x04000u
+#define V3D_CORE0_OFF_V7  0x08000u
 
 /* hub registers (V3D >= 3.3 only; absent on V3D 2.1) */
 #define HUB_IDENT0 0x08u           /* "VHUB" = 0x42554856 */
@@ -75,10 +78,42 @@
 #define INT_STS      0x50u
 #define INT_CLR      0x58u
 
+/* V3D 4.2 bin/render control-list engine. */
+#define CLE_CT0CS    0x100u
+#define CLE_CT1CS    0x104u
+#define CLE_CT0CA    0x110u
+#define CLE_CT1CA    0x114u
+#define CLE_BFC      0x134u
+#define CLE_RFC      0x138u
+#define CLE_CT1CFG   0x144u
+#define CLE_CT0QTS   0x15cu
+#define CLE_CT0QBA   0x160u
+#define CLE_CT1QBA   0x164u
+#define CLE_CT0QEA   0x168u
+#define CLE_CT1QEA   0x16cu
+#define CLE_CT0QMA   0x170u
+#define CLE_CT0QMS   0x174u
+#define CLE_CT1QCFG  0x178u
+#define PTB_BPOS     0x30cu
+#define V3D_ERRSTAT  0xf20u
+
+#define RENDER_CL_BYTES      4096u
+#define RENDER_GENERIC_BYTES 256u
+#define RENDER_TILE_BYTES    (256u * 1024u)
+#define RENDER_STATE_BYTES   (512u * 1024u)
+
+#define V4_PCTR_EN       0x650u
+#define V4_PCTR_CLR      0x654u
+#define PCTR_OVERFLOW    0x658u
+#define V4_PCTR_SRC0_3   0x660u
+#define PCTR_VALUE0      0x680u
+
 /* CSD dispatch: offsets and the completion bit differ between the
  * V3D 7.x layout (0x930) and the older one (0x904); CFG0..CFG6 carry
  * the same fields on both. */
 #define CSD_STATUS_OFF      0x900u
+#define CSD_STATUS_HAVE_QUEUED  (1u << 0)
+#define CSD_STATUS_HAVE_CURRENT (1u << 1)
 #define CSD_CFG_BASE_OLD    0x904u    /* V3D < 71 */
 #define CSD_CFG_BASE_V7     0x930u    /* V3D >= 71 */
 #define INT_CSDDONE_OLD     (1u << 7)
@@ -89,6 +124,31 @@
 #define CSD_CFG5_THREADING  (1u << 0)
 #define CSD_CFG5_SINGLE_SEG (1u << 1)
 #define CSD_CFG5_PROP_NANS  (1u << 2)
+
+/* V3D 3.x+ GPU-local single-level MMU.  CSD instruction fetch can run
+ * while this is disabled, but BCM2711 TMU data accesses require it. */
+#define V3D_MMUC_CONTROL          0x1000u
+#define V3D_MMUC_ENABLE           (1u << 0)
+#define V3D_MMUC_FLUSH            (1u << 1)
+#define V3D_MMUC_FLUSHING         (1u << 2)
+#define V3D_MMU_CTL               0x1200u
+#define V3D_MMU_PT_PA_BASE        0x1204u
+#define V3D_MMU_ILLEGAL_ADDR      0x1230u
+#define V3D_MMU_ENABLE            (1u << 0)
+#define V3D_MMU_TLB_CLEAR         (1u << 2)
+#define V3D_MMU_TLB_CLEARING      (1u << 7)
+#define V3D_MMU_WRITE_INT         (1u << 10)
+#define V3D_MMU_WRITE_ABORT       (1u << 11)
+#define V3D_MMU_PT_INVALID_ENABLE (1u << 16)
+#define V3D_MMU_PT_INVALID_INT    (1u << 18)
+#define V3D_MMU_PT_INVALID_ABORT  (1u << 19)
+#define V3D_MMU_CAP_INT           (1u << 25)
+#define V3D_MMU_CAP_ABORT         (1u << 26)
+#define V3D_MMU_ILLEGAL_ENABLE    (1u << 31)
+#define V3D_MMU_PTE_VALID         (1u << 28)
+#define V3D_MMU_PTE_WRITEABLE     (1u << 29)
+#define V3D_MMU_IDENT_SPAN        0x40000000u
+#define V3D_MMU_PT_BYTES          (V3D_MMU_IDENT_SPAN >> 10)
 
 /* ---- VC4 (V3D 2.1) SRQ user-program launcher (GPU_FFT protocol) ----
  * On V3D 2.1 the core block sits at the hub offset (no hub block).
@@ -118,10 +178,20 @@
 
 /* ---- PM power domain ---- */
 #define PM_GRAFX_OFF 0x10cu
+#define PM_GRAFX_2712_OFF 0x304u
 #define PM_PASSWORD  0x5A000000u
 #define PM_V3DRSTN   (1u << 6)
 
-#define CSD_CODE_WORDS 256
+/* BCM2711 RPiVid async AXI bridge.  Although the main ASB window reports
+ * enabled after firmware power-up, V3D transactions pass through this
+ * second bridge and read as 0xdeadbeef while REQ_STOP/ACK remain set. */
+#define BCM2711_RPIVID_ASB_OFF 0x11000u
+#define ASB_V3D_S_CTRL         0x08u
+#define ASB_V3D_M_CTRL         0x0cu
+#define ASB_REQ_STOP           (1u << 0)
+#define ASB_ACK                (1u << 1)
+
+#define CSD_CODE_WORDS 512     /* Pi 4 alpha lowering expands to 363 words */
 #define CSD_UNIF_WORDS 1024     /* VC4: 2 x (16 QPUs x VC4_UNIF_QWORDS) */
 
 /* Raspberry Pi firmware property tags and clock ID. */
@@ -133,7 +203,8 @@
 #define FW_SET_DOMAIN_STATE    0x00038030u
 #define FW_SET_POWER_STATE     0x00028001u   /* old interface */
 #define FW_CLOCK_V3D           5u
-/* firmware power-domain indices (Linux dt-bindings index + 1) */
+/* The firmware interface uses the Raspberry Pi power binding index + 1.
+ * RPI_POWER_DOMAIN_V3D is 10, therefore SET_DOMAIN_STATE receives 11. */
 #define FW_DOMAIN_V3D          11u
 #define FW_OLD_DEVICE_V3D      10u           /* old SET_POWER_STATE id */
 #define FW_RESPONSE            0x80000000u
@@ -197,6 +268,7 @@ typedef struct {
  *                   1 = probe + dma staging only; no V3D register
  *                       writes at all */
 #define G2D_HW_PROBE_ONLY 0
+#define G2D_V42_STORE_PROBE 0
 
 /* DEBUG SWITCH: PM_GRAFX.V3DRSTN power-cycle at mmio+0x100000.
  * The raspi5 driver REQUIRED the power-cycle for the V3D 7.x QPU array
@@ -429,9 +501,11 @@ static int g2d_vc4_launch_mode(uint32_t code_p, uint32_t unif_p, uint32_t nq,
                                uint32_t *srqcs_out, int flush_writes,
                                int invalidate);
 
-/* ---- mapped register windows (inside the shared MMIO window) ---- */
-static volatile uint32_t *_v3d;   /* V3D block (hub at +0, core at +0x8000) */
+/* ---- mapped register windows ---- */
+static volatile uint32_t *_v3d;   /* V3D hub block */
 static volatile uint32_t *_pm;    /* PM power domain */
+static int _ver = 0;              /* architecture version x10 */
+static int _is_bcm2711;
 
 static inline volatile uint32_t *v3d_hub(void)
 {
@@ -440,7 +514,7 @@ static inline volatile uint32_t *v3d_hub(void)
 
 static inline volatile uint32_t *v3d_core(void)
 {
-    return _v3d + (V3D_CORE0_OFF / 4);
+    return _v3d + ((_ver >= 70) ? V3D_CORE0_OFF_V7 : V3D_CORE0_OFF_V42) / 4;
 }
 
 /* ---- arch-portable barriers (this file builds for arm AND aarch64) ----
@@ -474,7 +548,10 @@ static inline void g2d_dsb(void)
 #define KERN_ALPHA_GATHER_VC4 9
 #define KERN_CACHE_SCRUB_VC4 10
 #define KERN_FILL_LOOP_VC4 11
-#define KERN_TOTAL 12
+#define KERN_ROT90 12
+#define KERN_ROT90_TILE 13
+#define KERN_ROT90_VPM 14
+#define KERN_TOTAL 15
 /* Alpha has one immutable code address per exact output span.  VC4 does
  * not reliably observe either dynamic late-uniform VDW setups or code
  * replacement at an address already present in its instruction cache. */
@@ -487,6 +564,31 @@ static unsigned _ksrc_n[KERN_TOTAL];        /* kernel instruction counts */
 static uint32_t *_unif;            /* uniform staging (CSD_UNIF_WORDS) */
 static uint32_t *_scratch;         /* TMU write scratch (16 KiB) */
 static uint32_t _unif_p, _scratch_p;
+static uint32_t *_mmu_pt;
+static uint32_t _mmu_pt_p, _mmu_illegal_p;
+static uint8_t *_render_cl, *_render_generic, *_render_tile, *_render_state;
+static uint32_t _render_cl_p, _render_generic_p, _render_tile_p;
+static uint32_t _render_state_p;
+static uint32_t _render_binned_w, _render_binned_h;
+
+static uint8_t *g2d_dma_alloc_phys_aligned(uint32_t bytes, uint32_t align,
+                                           uint32_t *phys_out)
+{
+    ewokos_addr_t raw_v, raw_p;
+    uint32_t delta;
+
+    if (!phys_out || !align || (align & (align - 1u)))
+        return NULL;
+    raw_v = dma_alloc(0, bytes + align - 1u);
+    if (!raw_v)
+        return NULL;
+    raw_p = dma_phy_addr(0, raw_v);
+    if (!raw_p || (sizeof(raw_p) > 4 && (raw_p >> 32) != 0))
+        return NULL;
+    delta = (uint32_t)(-(uint32_t)raw_p) & (align - 1u);
+    *phys_out = (uint32_t)raw_p + delta;
+    return (uint8_t *)(uintptr_t)(raw_v + delta);
+}
 static uint64_t *_nop_code;        /* dma staging of g2d_nop_vc4 */
 static uint32_t _nop_code_p;
 
@@ -503,6 +605,55 @@ static uint32_t _run_code_p;
 static uint8_t _vc4_slot_ready[VC4_RUN_SLOTS];
 /* Set by prepare_reads() after the caller has rewritten source memory. */
 static int _vc4_need_invalidate = 1;
+static v3d_g2d_profile_t _last_profile;
+static inline volatile uint32_t *v3d_ctl(void);
+
+static inline uint64_t g2d_profile_ticks(void)
+{
+    uint64_t usec = 0;
+    if (kernel_tic(NULL, &usec) != 0)
+        return 0;
+    return usec;
+}
+
+void v3d_g2d_get_profile(v3d_g2d_profile_t *out)
+{
+    if (out)
+        *out = _last_profile;
+}
+
+static void g2d_perf_start(void)
+{
+    volatile uint32_t *ctl;
+
+    if (_ver != 42)
+        return;
+    ctl = v3d_ctl();
+    ctl[V4_PCTR_EN / 4] = 0;
+    /* V3D 4.2 deprecated counter source IDs from drm_v3d.h. */
+    ctl[(V4_PCTR_SRC0_3 + 0) / 4] = 16u | (17u << 8) | (18u << 16) | (30u << 24);
+    ctl[(V4_PCTR_SRC0_3 + 4) / 4] = 31u | (32u << 8) | (50u << 16) | (51u << 24);
+    ctl[(V4_PCTR_SRC0_3 + 8) / 4] = 52u | (53u << 8) | (54u << 16) | (56u << 24);
+    ctl[(V4_PCTR_SRC0_3 + 12) / 4] = 71u | (72u << 8) | (76u << 16) | (86u << 24);
+    ctl[V4_PCTR_CLR / 4] = 0xffffu;
+    ctl[PCTR_OVERFLOW / 4] = 0xffffu;
+    ctl[V4_PCTR_EN / 4] = 0xffffu;
+    g2d_dsb();
+}
+
+static void g2d_perf_stop(uint32_t values[16])
+{
+    volatile uint32_t *ctl;
+    uint32_t i;
+
+    if (_ver != 42)
+        return;
+    ctl = v3d_ctl();
+    for (i = 0; i < 16; i++)
+        values[i] = ctl[(PCTR_VALUE0 + i * 4u) / 4];
+    ctl[V4_PCTR_EN / 4] = 0;
+    g2d_dsb();
+}
 /* The BCM2837 V3D caches sit above a shared system L3 that ARM-side
  * V3D register clears cannot invalidate.  A read-only QPU stream over
  * more than the cache capacity evicts historical GPU-owned lines before
@@ -530,7 +681,6 @@ static uint32_t _vc4_dispatch_seq;
 
 static int _inited = 0;
 static int _ok = 0;
-static int _ver = 0;               /* architecture version x10 */
 static int _num_qpus = 0;
 static int _has_hub = 0;
 static uint32_t _v3d_clock_hz = 0;
@@ -785,13 +935,48 @@ static int g2d_power_domain_call(uint32_t tag, uint32_t domain_id)
 
 static void g2d_power_on_v3d(void)
 {
+    int new_ok, old_ok = 0;
+    slog("g2d: power request begin\r\n");
     if (bcm283x_mailbox_init() == 0)
         return;
-    if (g2d_power_domain_call(FW_SET_DOMAIN_STATE, FW_DOMAIN_V3D) == 0)
-        return;
-    if (g2d_power_domain_call(FW_SET_POWER_STATE, FW_OLD_DEVICE_V3D) == 0)
-        return;
-    slog("g2d: V3D power domain on failed\r\n");
+    new_ok = g2d_power_domain_call(FW_SET_DOMAIN_STATE, FW_DOMAIN_V3D) == 0;
+    /* BCM2711 exposes the generic power-domain tag.  The legacy device
+     * power tag targets the old BCM283x firmware device table and must not
+     * be sent on Pi 4: firmware may acknowledge it while changing an
+     * unrelated domain, leaving the V3D AXI bridge wedged. */
+    if (!_is_bcm2711 && !new_ok)
+        old_ok = g2d_power_domain_call(FW_SET_POWER_STATE,
+                                       FW_OLD_DEVICE_V3D) == 0;
+    slog("g2d: power tags new=%d old=%d\r\n", new_ok, old_ok);
+}
+
+static int g2d_bcm2711_asb_enable(void)
+{
+    volatile uint32_t *asb;
+    static const uint32_t regs[] = { ASB_V3D_M_CTRL, ASB_V3D_S_CTRL };
+    unsigned i, spin;
+
+    if (!_is_bcm2711)
+        return 0;
+    asb = _v3d + BCM2711_RPIVID_ASB_OFF / 4;
+    for (i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
+        volatile uint32_t *r = asb + regs[i] / 4;
+        uint32_t v = *r & ~ASB_REQ_STOP;
+        *r = PM_PASSWORD | v;
+        g2d_dsb();
+        for (spin = 0; spin < 100000; spin++)
+            if ((*r & ASB_ACK) == 0)
+                break;
+        if (spin == 100000) {
+            slog("g2d: BCM2711 ASB timeout reg=0x%x val=0x%x\r\n",
+                 regs[i], (uint32_t)*r);
+            return -1;
+        }
+    }
+    slog("g2d: BCM2711 ASB enabled master=0x%x slave=0x%x\r\n",
+         (uint32_t)asb[ASB_V3D_M_CTRL / 4],
+         (uint32_t)asb[ASB_V3D_S_CTRL / 4]);
+    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -807,9 +992,9 @@ static void g2d_l2c_enable(void)
 
 /* Write back dirty V3D caches to DRAM: flush the TMU write combiner,
  * then the L2T in CLEAN mode. */
-static void g2d_flush_l2(void)
+static uint32_t g2d_flush_l2(void)
 {
-    uint32_t i;
+    uint32_t i, polls = 0;
 
     /* VC4 has no L2TCACTL at 0x30 (that offset is INTCTL).  Its QPU
      * memory traffic is retired by clearing the unified V3D L2 cache. */
@@ -819,14 +1004,17 @@ static void g2d_flush_l2(void)
              (v3d_ctl()[CTL_L2CACTL / 4] & (1u << 2)); i++)
             ;
         g2d_dsb();
-        return;
+        return i;
     }
 
     v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 8);               /* TMUWCF */
     for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 8)); i++) {}
+    polls += i;
     v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 0) | (2u << 1);   /* L2TFLS | CLEAN */
     for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++) {}
+    polls += i;
     g2d_dsb();
+    return polls;
 }
 
 /* Per-job GPU cache maintenance (the V3D caches do not snoop CPU
@@ -834,9 +1022,9 @@ static void g2d_flush_l2(void)
  * staging buffer or freshly written uniform block is never served
  * stale - the same discipline as the Linux vc4 driver's
  * vc4_flush_caches() before every job. */
-static void g2d_invalidate_caches(void)
+static uint32_t g2d_invalidate_caches(void)
 {
-    uint32_t i;
+    uint32_t i, polls = 0;
 
     if (_ver != 21) {
         v3d_ctl()[CTL_L2TFLSTA / 4] = 0;
@@ -848,15 +1036,444 @@ static void g2d_invalidate_caches(void)
         for (i = 0; i < 2000000 &&
              (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
             ;
+        polls += i;
     }
     v3d_ctl()[CTL_SLCACTL / 4] = 0x0F0F0F0Fu;  /* clear T1/T0/U/I slice caches */
-    v3d_ctl()[CTL_L2CACTL / 4] = (1u << 2) | (1u << 0); /* L2CCLR | L2CENA */
-    /* L2CCLR is asynchronous.  Returning before it self-clears lets a
-     * following Normal-NC CPU write race an old GPU line being retired. */
-    for (i = 0; i < 2000000 &&
-         (v3d_ctl()[CTL_L2CACTL / 4] & (1u << 2)); i++)
-        ;
+    /* V3D 3.3+ no longer uses L2C for uniforms/instructions.  Linux's
+     * v3d_invalidate_l2c() deliberately skips it on these generations. */
+    if (_ver < 33) {
+        v3d_ctl()[CTL_L2CACTL / 4] = (1u << 2) | (1u << 0);
+        for (i = 0; i < 2000000 &&
+             (v3d_ctl()[CTL_L2CACTL / 4] & (1u << 2)); i++)
+            ;
+        polls += i;
+    }
     g2d_dsb();
+    return polls;
+}
+
+/* V3D 4.2 fixed-function clear.  The packet order and the generic per-tile
+ * list mirror Mesa's v3dx_rcl.c.  In particular, ZS_CLEAR_VALUES must be the
+ * final rendering-mode config packet; violating that rule raises VCDI. */
+static uint32_t render_put_u8(uint8_t *buf, uint32_t cap,
+                              uint32_t off, uint32_t value)
+{
+    if (off < cap)
+        buf[off] = (uint8_t)value;
+    return off + 1u;
+}
+
+static uint32_t render_put_u16(uint8_t *buf, uint32_t cap,
+                               uint32_t off, uint32_t value)
+{
+    off = render_put_u8(buf, cap, off, value);
+    return render_put_u8(buf, cap, off, value >> 8);
+}
+
+static uint32_t render_put_u32(uint8_t *buf, uint32_t cap,
+                               uint32_t off, uint32_t value)
+{
+    off = render_put_u16(buf, cap, off, value);
+    return render_put_u16(buf, cap, off, value >> 16);
+}
+
+static uint32_t render_store_none(uint8_t *buf, uint32_t cap, uint32_t off)
+{
+    uint32_t i;
+
+    off = render_put_u8(buf, cap, off, 0x1d); /* STORE_TILE_BUFFER_GENERAL */
+    off = render_put_u8(buf, cap, off, 8);    /* buffer NONE */
+    for (i = 0; i < 11; i++)
+        off = render_put_u8(buf, cap, off, 0);
+    return off;
+}
+
+static uint32_t render_store_argb(uint8_t *buf, uint32_t cap, uint32_t off,
+                                  uint32_t dst_phys, uint32_t stride)
+{
+    off = render_put_u8(buf, cap, off, 0x1d);      /* STORE_TILE_BUFFER_GENERAL */
+    off = render_put_u8(buf, cap, off, 0);         /* RT0, raster */
+    off = render_put_u8(buf, cap, off, 27u << 4);  /* RGBA8 low format bits */
+    off = render_put_u8(buf, cap, off, 27u >> 4);  /* format high; ARGB is native */
+    off = render_put_u8(buf, cap, off, stride << 4);
+    off = render_put_u8(buf, cap, off, stride >> 4);
+    off = render_put_u8(buf, cap, off, stride >> 12);
+    off = render_put_u16(buf, cap, off, 0);         /* raster ignores height */
+    return render_put_u32(buf, cap, off, dst_phys);
+}
+
+static uint32_t render_load_argb(uint8_t *buf, uint32_t cap, uint32_t off,
+                                 uint32_t src_phys, uint32_t stride)
+{
+    off = render_put_u8(buf, cap, off, 0x1e);      /* LOAD_TILE_BUFFER_GENERAL */
+    off = render_put_u8(buf, cap, off, 0);         /* RT0, raster */
+    off = render_put_u8(buf, cap, off, 27u << 4);  /* RGBA8 low format bits */
+    off = render_put_u8(buf, cap, off, 27u >> 4);  /* format high; ARGB is native */
+    off = render_put_u8(buf, cap, off, stride << 4);
+    off = render_put_u8(buf, cap, off, stride >> 4);
+    off = render_put_u8(buf, cap, off, stride >> 12);
+    off = render_put_u16(buf, cap, off, 0);         /* raster ignores height */
+    return render_put_u32(buf, cap, off, src_phys);
+}
+
+static uint32_t render_build_bcl(uint32_t width, uint32_t height)
+{
+    uint32_t off = 0;
+
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x77); /* layers */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0);    /* one layer */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x78); /* bin cfg */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 1u << 2);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0); /* 1 RT, 32 bpp */
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, 0);
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, width - 1u);
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, height - 1u);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x13); /* FLUSH_VCD */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x06); /* START_BIN */
+    return render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x04); /* FLUSH */
+}
+
+static uint32_t render_build_generic(uint32_t src_phys, uint32_t dst_phys,
+                                     uint32_t stride)
+{
+    uint32_t off = 0;
+
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x7d);
+    if (src_phys)
+        off = render_load_argb(_render_generic, RENDER_GENERIC_BYTES, off,
+                               src_phys, stride);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x1a);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x38);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 2); /* triangles */
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x36);
+    off = render_put_u32(_render_generic, RENDER_GENERIC_BYTES, off, 0);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x15);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0);
+    off = render_store_argb(_render_generic, RENDER_GENERIC_BYTES, off,
+                            dst_phys, stride);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x19);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 1);
+    off = render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x1b);
+    return render_put_u8(_render_generic, RENDER_GENERIC_BYTES, off, 0x12);
+}
+
+static uint32_t render_build_rcl(uint32_t src_phys, uint32_t dst_phys,
+                                 uint32_t stride,
+                                 uint32_t width, uint32_t height,
+                                 uint32_t argb, uint32_t *generic_len)
+{
+    uint32_t off = 0, i, x, y;
+    uint32_t tx = (width + 63u) >> 6;
+    uint32_t ty = (height + 63u) >> 6;
+    uint32_t sw = 1, sh = 1, sx, sy;
+
+    while (((tx + sw - 1u) / sw) * ((ty + sh - 1u) / sh) > 256u) {
+        if (sw < sh)
+            sw++;
+        else
+            sh++;
+    }
+    sx = (tx + sw - 1u) / sw;
+    sy = (ty + sh - 1u) / sh;
+
+    /* Common must be first. */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x79);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0);
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, width);
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, height);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 1u << 6);
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, 0);
+
+    /* 32-bpp targets consume only CLEAR_COLORS_PART1. */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x79);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 3);
+    off = render_put_u32(_render_cl, RENDER_CL_BYTES, off, argb);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0);
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, 0);
+
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x79); /* color cfg */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 1u | (2u << 6));
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, 0);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0);
+    off = render_put_u32(_render_cl, RENDER_CL_BYTES, off, 0);
+
+    /* Must be the final rendering-mode config packet. */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x79);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 2);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0);
+    off = render_put_u32(_render_cl, RENDER_CL_BYTES, off, 0x3f800000u);
+    off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, 0);
+
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x7e);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 5); /* autochain, 128 B */
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x7b);
+    off = render_put_u32(_render_cl, RENDER_CL_BYTES, off, _render_tile_p);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x7a);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, sw - 1u);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, sh - 1u);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, sx);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, sy);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, tx);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off,
+                        ((ty & 0x0fu) << 4) | (tx >> 8));
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, ty >> 4);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0);
+
+    /* GFXH-1742: two dummy stores after changing TLB type/size. */
+    for (i = 0; i < 2; i++) {
+        off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x7c);
+        off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0);
+        off = render_put_u16(_render_cl, RENDER_CL_BYTES, off, 0);
+        off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x1a);
+        off = render_store_none(_render_cl, RENDER_CL_BYTES, off);
+        if (i == 0) {
+            off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x19);
+            off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 1);
+        }
+        off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x1b);
+    }
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x13);
+
+    *generic_len = render_build_generic(src_phys, dst_phys, stride);
+    off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x14);
+    off = render_put_u32(_render_cl, RENDER_CL_BYTES, off, _render_generic_p);
+    off = render_put_u32(_render_cl, RENDER_CL_BYTES, off,
+                         _render_generic_p + *generic_len);
+    for (y = 0; y < sy; y++)
+        for (x = 0; x < sx; x++) {
+            off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x17);
+            off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, x);
+            off = render_put_u8(_render_cl, RENDER_CL_BYTES, off, y);
+        }
+    return render_put_u8(_render_cl, RENDER_CL_BYTES, off, 0x0d);
+}
+
+static int render_wait_counter(uint32_t reg, uint32_t before,
+                               uint32_t *polls)
+{
+    uint32_t i;
+
+    for (i = 0; i < 2000000u; i++)
+        if (v3d_ctl()[reg / 4] != before) {
+            if (polls)
+                *polls += i;
+            return 0;
+        }
+    if (polls)
+        *polls += i;
+    slog("g2d: V3D render queue timeout reg=0x%x before=0x%x now=0x%x "
+         "ct0cs=0x%x ct1cs=0x%x ca=0x%x ea=0x%x ra=0x%x err=0x%x\r\n",
+         reg, before,
+         (uint32_t)v3d_ctl()[reg / 4],
+         (uint32_t)v3d_ctl()[CLE_CT0CS / 4],
+         (uint32_t)v3d_ctl()[CLE_CT1CS / 4],
+         (uint32_t)v3d_ctl()[CLE_CT1CA / 4],
+         (uint32_t)v3d_ctl()[0x10c / 4],
+         (uint32_t)v3d_ctl()[0x11c / 4],
+         (uint32_t)v3d_ctl()[0xf20 / 4]);
+    return -1;
+}
+
+int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
+                         uint32_t width, uint32_t height, uint32_t argb)
+{
+    uint64_t t0, t_prepare, t_invalidate, t_execute, t_flush;
+    uint32_t off, generic_len, before, tx, ty, polls = 0;
+    volatile uint32_t *ctl;
+
+    if (!_ok || _ver != 42 || !_render_cl || !_render_generic || !_render_tile ||
+        !_render_state ||
+        !dst_phys || !width || !height || stride_bytes != width * 4u ||
+        width > 65535u || height > 65535u)
+        return -2;
+    tx = (width + 63u) >> 6;
+    ty = (height + 63u) >> 6;
+    if ((uint64_t)tx * ty * 128u + 8192u > RENDER_TILE_BYTES ||
+        (uint64_t)tx * ty * 256u > RENDER_STATE_BYTES)
+        return -2;
+
+    memset(&_last_profile, 0, sizeof(_last_profile));
+    ctl = v3d_ctl();
+    t0 = g2d_profile_ticks();
+    if (_render_binned_w != width || _render_binned_h != height) {
+        off = render_build_bcl(width, height);
+        g2d_dsb();
+        _last_profile.invalidate_polls = g2d_invalidate_caches();
+        before = ctl[CLE_BFC / 4];
+        /* Reset the previous binner job's overflow position.  The mainline
+         * driver does this before every CT0 submission. */
+        ctl[PTB_BPOS / 4] = 0;
+        ctl[CLE_CT0QMA / 4] = _render_tile_p;
+        ctl[CLE_CT0QMS / 4] = RENDER_TILE_BYTES;
+        ctl[CLE_CT0QTS / 4] = _render_state_p | (1u << 1);
+        ctl[CLE_CT0QBA / 4] = _render_cl_p;
+        ctl[CLE_CT0QEA / 4] = _render_cl_p + off;
+        if (render_wait_counter(CLE_BFC, before, &polls) != 0)
+            return -1;
+        _render_binned_w = width;
+        _render_binned_h = height;
+    }
+
+    off = render_build_rcl(0, dst_phys, stride_bytes, width, height, argb,
+                           &generic_len);
+    if (off > RENDER_CL_BYTES || generic_len > RENDER_GENERIC_BYTES)
+        return -2;
+    g2d_dsb();
+    t_prepare = g2d_profile_ticks();
+    _last_profile.invalidate_polls += g2d_invalidate_caches();
+    t_invalidate = g2d_profile_ticks();
+    before = ctl[CLE_RFC / 4];
+    ctl[CLE_CT1QCFG / 4] = (1u << 7) | (1u << 6); /* ETFILT | ETPROC */
+    g2d_perf_start();
+    ctl[CLE_CT1QBA / 4] = _render_cl_p;
+    ctl[CLE_CT1QEA / 4] = _render_cl_p + off;
+    if (render_wait_counter(CLE_RFC, before, &polls) != 0)
+        return -1;
+    t_execute = g2d_profile_ticks();
+    g2d_perf_stop(_last_profile.perf);
+    _last_profile.execute_polls = polls;
+    /* TLB raster stores bypass the TMU/L2T write path. */
+    _last_profile.flush_polls = 0;
+    t_flush = g2d_profile_ticks();
+    _last_profile.prepare = t_prepare - t0;
+    _last_profile.invalidate = t_invalidate - t_prepare;
+    _last_profile.execute = t_execute - t_invalidate;
+    _last_profile.flush = t_flush - t_execute;
+    _last_profile.total = t_flush - t0;
+    return 0;
+}
+
+
+int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
+                        uint32_t stride_bytes,
+                        uint32_t width, uint32_t height)
+{
+    uint64_t t0, t_prepare, t_invalidate, t_execute, t_flush;
+    uint32_t off, generic_len, before, tx, ty, polls = 0;
+    volatile uint32_t *ctl;
+
+    if (!_ok || _ver != 42 || !_render_cl || !_render_generic || !_render_tile ||
+        !_render_state || !src_phys || !dst_phys || src_phys == dst_phys ||
+        !width || !height || stride_bytes != width * 4u ||
+        width > 65535u || height > 65535u)
+        return -2;
+    tx = (width + 63u) >> 6;
+    ty = (height + 63u) >> 6;
+    if ((uint64_t)tx * ty * 128u + 8192u > RENDER_TILE_BYTES ||
+        (uint64_t)tx * ty * 256u > RENDER_STATE_BYTES)
+        return -2;
+
+    memset(&_last_profile, 0, sizeof(_last_profile));
+    ctl = v3d_ctl();
+    t0 = g2d_profile_ticks();
+    if (_render_binned_w != width || _render_binned_h != height) {
+        off = render_build_bcl(width, height);
+        g2d_dsb();
+        _last_profile.invalidate_polls = g2d_invalidate_caches();
+        before = ctl[CLE_BFC / 4];
+        ctl[PTB_BPOS / 4] = 0;
+        ctl[CLE_CT0QMA / 4] = _render_tile_p;
+        ctl[CLE_CT0QMS / 4] = RENDER_TILE_BYTES;
+        ctl[CLE_CT0QTS / 4] = _render_state_p | (1u << 1);
+        ctl[CLE_CT0QBA / 4] = _render_cl_p;
+        ctl[CLE_CT0QEA / 4] = _render_cl_p + off;
+        if (render_wait_counter(CLE_BFC, before, &polls) != 0)
+            return -1;
+        _render_binned_w = width;
+        _render_binned_h = height;
+    }
+
+    /* The clear color is irrelevant: every tile loads RT0 before storing it. */
+    off = render_build_rcl(src_phys, dst_phys, stride_bytes,
+                           width, height, 0, &generic_len);
+    if (off > RENDER_CL_BYTES || generic_len > RENDER_GENERIC_BYTES)
+        return -2;
+    g2d_dsb();
+    t_prepare = g2d_profile_ticks();
+    _last_profile.invalidate_polls += g2d_invalidate_caches();
+    t_invalidate = g2d_profile_ticks();
+    before = ctl[CLE_RFC / 4];
+    ctl[CLE_CT1QCFG / 4] = (1u << 7) | (1u << 6);
+    g2d_perf_start();
+    ctl[CLE_CT1QBA / 4] = _render_cl_p;
+    ctl[CLE_CT1QEA / 4] = _render_cl_p + off;
+    if (render_wait_counter(CLE_RFC, before, &polls) != 0)
+        return -1;
+    t_execute = g2d_profile_ticks();
+    g2d_perf_stop(_last_profile.perf);
+    _last_profile.execute_polls = polls;
+    _last_profile.flush_polls = 0;
+    t_flush = g2d_profile_ticks();
+    _last_profile.prepare = t_prepare - t0;
+    _last_profile.invalidate = t_invalidate - t_prepare;
+    _last_profile.execute = t_execute - t_invalidate;
+    _last_profile.flush = t_flush - t_execute;
+    _last_profile.total = t_flush - t0;
+    return 0;
+}
+
+static int g2d_mmu_identity_enable(void)
+{
+    volatile uint32_t *hub = v3d_hub();
+    const uint32_t npages = V3D_MMU_IDENT_SPAN >> 12;
+    uint32_t ctl, i;
+    uintptr_t raw;
+
+    if (_ver < 33)
+        return 0;
+
+    raw = (uintptr_t)dma_alloc(0, V3D_MMU_PT_BYTES + 4095u);
+    if (raw == 0)
+        return -1;
+    raw = (raw + 4095u) & ~(uintptr_t)4095u;
+    _mmu_pt = (uint32_t *)raw;
+    _mmu_pt_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)raw);
+
+    raw = (uintptr_t)dma_alloc(0, 4096u + 4095u);
+    if (raw == 0 || _mmu_pt_p == 0)
+        return -1;
+    raw = (raw + 4095u) & ~(uintptr_t)4095u;
+    _mmu_illegal_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)raw);
+    if (_mmu_illegal_p == 0)
+        return -1;
+
+    _mmu_pt[0] = 0;
+    for (i = 1; i < npages; i++)
+        _mmu_pt[i] = V3D_MMU_PTE_VALID | V3D_MMU_PTE_WRITEABLE | i;
+    g2d_dsb();
+
+    hub[V3D_MMU_PT_PA_BASE / 4] = _mmu_pt_p >> 12;
+    hub[V3D_MMU_ILLEGAL_ADDR / 4] =
+        (_mmu_illegal_p >> 12) | V3D_MMU_ILLEGAL_ENABLE;
+    ctl = V3D_MMU_ENABLE |
+          V3D_MMU_PT_INVALID_ENABLE |
+          V3D_MMU_PT_INVALID_ABORT |
+          V3D_MMU_PT_INVALID_INT |
+          V3D_MMU_WRITE_ABORT |
+          V3D_MMU_WRITE_INT |
+          V3D_MMU_CAP_ABORT |
+          V3D_MMU_CAP_INT;
+    hub[V3D_MMU_CTL / 4] = ctl;
+    hub[V3D_MMUC_CONTROL / 4] = V3D_MMUC_ENABLE;
+    hub[V3D_MMUC_CONTROL / 4] = V3D_MMUC_ENABLE | V3D_MMUC_FLUSH;
+    for (i = 0; i < 2000000u; i++)
+        if (!(hub[V3D_MMUC_CONTROL / 4] & V3D_MMUC_FLUSHING))
+            break;
+    if (i == 2000000u)
+        return -1;
+
+    hub[V3D_MMU_CTL / 4] |= V3D_MMU_TLB_CLEAR;
+    for (i = 0; i < 2000000u; i++)
+        if (!(hub[V3D_MMU_CTL / 4] & V3D_MMU_TLB_CLEARING))
+            break;
+    if (i == 2000000u)
+        return -1;
+    g2d_dsb();
+
+    slog("g2d: V3D MMU identity map pt=0x%x ctl=0x%x mmuc=0x%x\r\n",
+         _mmu_pt_p, (uint32_t)hub[V3D_MMU_CTL / 4],
+         (uint32_t)hub[V3D_MMUC_CONTROL / 4]);
+    return 0;
 }
 
 /* V3D identification: returns the architecture version x10 (42, 21,
@@ -864,11 +1481,12 @@ static void g2d_invalidate_caches(void)
 static int g2d_probe(void)
 {
     uint32_t id0, id1;
+    volatile uint32_t *candidate = _v3d;
 
-    id0 = v3d_hub()[HUB_IDENT0 / 4];
-    if (id0 == HUB_IDENT0_EXPECT) {                     /* "VHUB" */
+    id0 = candidate[HUB_IDENT0 / 4];
+    if (id0 == HUB_IDENT0_EXPECT) {
         _has_hub = 1;
-        id1 = v3d_hub()[HUB_IDENT1 / 4];
+        id1 = candidate[HUB_IDENT1 / 4];
         /* Linux drm/v3d: ver = TVER * 10 + REV */
         _ver = (int)(id1 & 0xFu) * 10 + (int)((id1 >> 4) & 0xFu);
         return (_ver >= 20) ? 1 : 0;
@@ -878,8 +1496,11 @@ static int g2d_probe(void)
      * registers sit at base+0 here - read IDENT0 at offset 0x00. */
     _has_hub = 0;
     id0 = v3d_ctl()[CTL_IDENT0 / 4];
-    if ((id0 & 0x0FFFFFF0u) != 0x02443350u)
+    if ((id0 & 0x0FFFFFF0u) != 0x02443350u) {
+        slog("g2d: V3D probe hub0=0x%x core0=0x%x\r\n",
+             candidate[HUB_IDENT0 / 4], id0);
         return 0;
+    }
     _ver = 21;
     /* Pi3 bring-up diagnostic: VPM size (IDENT1 bits 31:28) and QPU
      * count (QUPS bits 11:8, NSLC bits 7:4). */
@@ -892,17 +1513,16 @@ static int g2d_probe(void)
     return 1;
 }
 
-/* QPU count: (QUPS+1) slices x (NSLC+1) QPUs per slice, from the core
- * IDENT1; falls back to 12 (the BCM2711/BCM2837 part count). */
+/* QPU count: QUPS x NSLC from the core IDENT1. */
 static int g2d_count_qpus(void)
 {
     uint32_t id1 = v3d_ctl()[CTL_IDENT1 / 4];
-    int qups = (int)((id1 >> 8) & 0xFu) + 1;
-    int nslc = (int)((id1 >> 4) & 0xFu) + 1;
+    int qups = (int)((id1 >> 8) & 0xFu);
+    int nslc = (int)((id1 >> 4) & 0xFu);
     int n = qups * nslc;
 
     if (n <= 0 || n > 16)
-        n = 12;
+        n = (_ver == 42) ? 8 : 12;
     return n;
 }
 
@@ -912,7 +1532,10 @@ static int g2d_count_qpus(void)
 #if !G2D_SKIP_PM_RESET
 static void g2d_pm_reset(void)
 {
-    volatile uint32_t *pg = _pm + (PM_GRAFX_OFF / 4);
+    uint32_t off = _is_bcm2711 ?
+                   PM_GRAFX_2712_OFF : PM_GRAFX_OFF;
+    volatile uint32_t *pg = _pm + (off / 4);
+    slog("g2d: pm reset read off=0x%x\r\n", off);
     uint32_t v = *pg;
 
     *pg = PM_PASSWORD | (v & ~PM_V3DRSTN);      /* assert V3D reset */
@@ -922,6 +1545,7 @@ static void g2d_pm_reset(void)
     *pg = PM_PASSWORD | (v & ~PM_V3DRSTN) | PM_V3DRSTN;
     g2d_dsb();
     usleep(200);
+    slog("g2d: pm reset done\r\n");
 }
 #endif
 
@@ -973,6 +1597,8 @@ int v3d_g2d_init(void)
      * allocable region, the sys_dma window and the IPC_CONTIG shm slab
      * (only the sub-4 GB part is usable by the 32-bit QPU addresses) */
     sys_get_sys_info(&si);
+    _is_bcm2711 = strstr(si.machine, "pi4") != NULL ||
+                  strstr(si.machine, "cm4") != NULL;
     _ram_alloc_base = si.allocable_phy_mem_base;
     _ram_alloc_top = si.allocable_phy_mem_top;
     _ram_dma_base = si.sys_dma.phy_base;
@@ -988,24 +1614,37 @@ int v3d_g2d_init(void)
     _v3d = (volatile uint32_t *)(uintptr_t)(_mmio_base + V3D_MMIO_OFF);
     _pm = (volatile uint32_t *)(uintptr_t)(_mmio_base + PM_MMIO_OFF);
 
+    /* BCM2711 can leave the valid high-peripheral V3D window powered off;
+     * reading it before runtime-PM brings the domain up can stall the AXI
+     * bridge.  Request power before the first IDENT read, matching Linux. */
+    g2d_power_on_v3d();
+    /* The firmware may leave the V3D clock gated even after acknowledging
+     * the power-domain request.  Program the clock before touching IDENT. */
+    g2d_clock_set_max();
+    /* Some Pi 4 firmware leaves the separate RPiVid ASB stopped after the
+     * domain request.  Release that bridge without duplicating PM writes. */
+    if (g2d_bcm2711_asb_enable() != 0)
+        return -1;
+#if !G2D_SKIP_PM_RESET
+    g2d_pm_reset();
+#endif
     if (!g2d_probe()) {
-        /* BCM2835/2837: the V3D GRAFX domain may be OFF at boot -
-         * Linux powers it through the firmware before touching any
-         * V3D register.  Power it on and probe again. */
-        g2d_power_on_v3d();
-        if (!g2d_probe()) {
-            slog("g2d: no V3D block at mmio+0x%x (hub id0=0x%x id0=0x%x id1=0x%x)\r\n",
-                 V3D_MMIO_OFF,
-                 (uint32_t)v3d_hub()[HUB_IDENT0 / 4],
-                 (uint32_t)v3d_ctl()[CTL_IDENT0 / 4],
-                 (uint32_t)v3d_ctl()[CTL_IDENT1 / 4]);
-            return -1;
-        }
+        slog("g2d: no V3D block at 0x%x (hub id0=0x%x core id0=0x%x id1=0x%x)\r\n",
+             (uint32_t)(uintptr_t)_v3d,
+             (uint32_t)v3d_hub()[HUB_IDENT0 / 4],
+             (uint32_t)v3d_ctl()[CTL_IDENT0 / 4],
+             (uint32_t)v3d_ctl()[CTL_IDENT1 / 4]);
+        return -1;
     }
     _num_qpus = g2d_count_qpus();
     slog("g2d: V3D %u.%u %s, %u QPUs\r\n",
          (uint32_t)(_ver / 10), (uint32_t)(_ver % 10),
          _has_hub ? "(hub)" : "(vc4 core)", (uint32_t)_num_qpus);
+    if (_ver == 42) {
+        uint32_t ident1 = v3d_ctl()[CTL_IDENT1 / 4];
+        slog("g2d: V3D 4.2 IDENT1=0x%x VPM=%u bytes\r\n", ident1,
+             (uint32_t)(((ident1 >> 28) & 0xfu) * 8192u));
+    }
 
     /* Clock setup is optional: keep the GPU usable at the firmware's
      * current rate if the property mailbox is unavailable. */
@@ -1014,10 +1653,46 @@ int v3d_g2d_init(void)
     /* CSD staging in physically-contiguous dma memory (NOCACHE, so the
      * QPU sees the writes without ARM cache maintenance).  Kernels are
      * loaded once here; dispatches only refresh uniforms. */
-    _ksrc[KERN_FILL] = g2d_qpu_argb_fill; _ksrc_n[KERN_FILL] = g2d_qpu_argb_fill_n;
-    _ksrc[KERN_BLIT] = g2d_qpu_argb_blit; _ksrc_n[KERN_BLIT] = g2d_qpu_argb_blit_n;
-    _ksrc[KERN_ALPHA] = g2d_qpu_argb_alpha; _ksrc_n[KERN_ALPHA] = g2d_qpu_argb_alpha_n;
-    _ksrc[KERN_ROTATE] = g2d_qpu_argb_rotate; _ksrc_n[KERN_ROTATE] = g2d_qpu_argb_rotate_n;
+    if (_ver == 42) {
+#if G2D_V42_STORE_PROBE
+        _ksrc[KERN_FILL] = g2d_qpu_v42_v42_store;
+        _ksrc_n[KERN_FILL] = g2d_qpu_v42_v42_store_n;
+#else
+        _ksrc[KERN_FILL] = g2d_qpu_v42_argb_fill;
+        _ksrc_n[KERN_FILL] = g2d_qpu_v42_argb_fill_n;
+#endif
+        _ksrc[KERN_BLIT] = g2d_qpu_v42_argb_blit;
+        _ksrc_n[KERN_BLIT] = g2d_qpu_v42_argb_blit_n;
+        _ksrc[KERN_ALPHA] = g2d_qpu_v42_argb_alpha;
+        _ksrc_n[KERN_ALPHA] = g2d_qpu_v42_argb_alpha_n;
+        _ksrc[KERN_ROTATE] = g2d_qpu_v42_argb_rotate;
+        _ksrc_n[KERN_ROTATE] = g2d_qpu_v42_argb_rotate_n;
+        _ksrc[KERN_ROT90] = g2d_qpu_v42_argb_rot90;
+        _ksrc_n[KERN_ROT90] = g2d_qpu_v42_argb_rot90_n;
+        _ksrc[KERN_ROT90_TILE] = g2d_qpu_v42_argb_rot90_tile;
+        _ksrc_n[KERN_ROT90_TILE] = g2d_qpu_v42_argb_rot90_tile_n;
+        _ksrc[KERN_ROT90_VPM] = g2d_qpu_v42_argb_rot90_vpm;
+        _ksrc_n[KERN_ROT90_VPM] = g2d_qpu_v42_argb_rot90_vpm_n;
+    } else if (_ver >= 71) {
+        _ksrc[KERN_FILL] = g2d_qpu_argb_fill;
+        _ksrc_n[KERN_FILL] = g2d_qpu_argb_fill_n;
+        _ksrc[KERN_BLIT] = g2d_qpu_argb_blit;
+        _ksrc_n[KERN_BLIT] = g2d_qpu_argb_blit_n;
+        _ksrc[KERN_ALPHA] = g2d_qpu_argb_alpha;
+        _ksrc_n[KERN_ALPHA] = g2d_qpu_argb_alpha_n;
+        _ksrc[KERN_ROTATE] = g2d_qpu_argb_rotate;
+        _ksrc_n[KERN_ROTATE] = g2d_qpu_argb_rotate_n;
+        _ksrc[KERN_ROT90] = g2d_qpu_argb_rot90;
+        _ksrc_n[KERN_ROT90] = g2d_qpu_argb_rot90_n;
+        _ksrc[KERN_ROT90_TILE] = g2d_qpu_argb_rot90;
+        _ksrc_n[KERN_ROT90_TILE] = g2d_qpu_argb_rot90_n;
+        _ksrc[KERN_ROT90_VPM] = g2d_qpu_argb_rot90;
+        _ksrc_n[KERN_ROT90_VPM] = g2d_qpu_argb_rot90_n;
+    } else if (_ver != 21) {
+        slog("g2d: unsupported V3D version %u.%u\r\n",
+             (uint32_t)(_ver / 10), (uint32_t)(_ver % 10));
+        return -1;
+    }
     _ksrc[KERN_FILL_VC4] = g2d_qpu_argb_fill_vc4; _ksrc_n[KERN_FILL_VC4] = g2d_qpu_argb_fill_vc4_n;
     _ksrc[KERN_BLIT_VC4] = g2d_qpu_argb_blit_vc4; _ksrc_n[KERN_BLIT_VC4] = g2d_qpu_argb_blit_vc4_n;
     _ksrc[KERN_ALPHA_VC4] = g2d_qpu_argb_alpha_vc4; _ksrc_n[KERN_ALPHA_VC4] = g2d_qpu_argb_alpha_vc4_n;
@@ -1026,6 +1701,12 @@ int v3d_g2d_init(void)
     _ksrc[KERN_ALPHA_GATHER_VC4] = g2d_qpu_argb_alpha_gather_vc4; _ksrc_n[KERN_ALPHA_GATHER_VC4] = g2d_qpu_argb_alpha_gather_vc4_n;
     _ksrc[KERN_CACHE_SCRUB_VC4] = g2d_qpu_cache_scrub_vc4; _ksrc_n[KERN_CACHE_SCRUB_VC4] = g2d_qpu_cache_scrub_vc4_n;
     _ksrc[KERN_FILL_LOOP_VC4] = g2d_qpu_argb_fill_loop_vc4; _ksrc_n[KERN_FILL_LOOP_VC4] = g2d_qpu_argb_fill_loop_vc4_n;
+    if (_ver == 21) {
+        _ksrc[KERN_ROT90_TILE] = g2d_qpu_argb_rotate_vc4;
+        _ksrc_n[KERN_ROT90_TILE] = g2d_qpu_argb_rotate_vc4_n;
+        _ksrc[KERN_ROT90_VPM] = g2d_qpu_argb_rotate_vc4;
+        _ksrc_n[KERN_ROT90_VPM] = g2d_qpu_argb_rotate_vc4_n;
+    }
     for (i = 0; i < KERN_TOTAL; i++) {
         uint32_t k;
         _kcode[i] = (uint64_t *)(uintptr_t)dma_alloc(0, CSD_CODE_WORDS * 8);
@@ -1129,8 +1810,40 @@ int v3d_g2d_init(void)
 #if !G2D_SKIP_PM_RESET
     g2d_pm_reset();      /* power-cycle GRAFX_V3D */
 #endif
+    if (g2d_mmu_identity_enable() != 0) {
+        slog("g2d: V3D MMU identity setup failed\r\n");
+        return -1;
+    }
+    if (_ver == 42) {
+        uint32_t ct0cs = v3d_ctl()[CLE_CT0CS / 4];
+        uint32_t ct1cs = v3d_ctl()[CLE_CT1CS / 4];
+
+        /* The queue registers survive a serial-loader app restart.  Record
+         * their state, but do not issue CTRSTA on an idle queue: CTRSTA is a
+         * resume operation and leaves a fresh QBA/QEA submission blocked. */
+        slog("g2d: V3D CLE initial ct0=0x%x ct1=0x%x\r\n", ct0cs, ct1cs);
+        _render_cl = (uint8_t *)(uintptr_t)dma_alloc(0, RENDER_CL_BYTES);
+        _render_generic = (uint8_t *)(uintptr_t)dma_alloc(0,
+                                                      RENDER_GENERIC_BYTES);
+        _render_tile = g2d_dma_alloc_phys_aligned(RENDER_TILE_BYTES, 4096u,
+                                                  &_render_tile_p);
+        _render_state = g2d_dma_alloc_phys_aligned(RENDER_STATE_BYTES, 4096u,
+                                                   &_render_state_p);
+        if (!_render_cl || !_render_generic || !_render_tile || !_render_state)
+            return -1;
+        _render_cl_p = (uint32_t)dma_phy_addr(
+                           0, (ewokos_addr_t)(uintptr_t)_render_cl);
+        _render_generic_p = (uint32_t)dma_phy_addr(
+                                0, (ewokos_addr_t)(uintptr_t)_render_generic);
+        if (!_render_cl_p || !_render_generic_p || !_render_tile_p ||
+            !_render_state_p || (_render_tile_p & 4095u) ||
+            (_render_state_p & 4095u))
+            return -1;
+        slog("g2d: V3D TLB arena cl=0x%x generic=0x%x tile=0x%x state=0x%x\r\n",
+             _render_cl_p, _render_generic_p, _render_tile_p,
+             _render_state_p);
+    }
     g2d_l2c_enable();
-    /* NOTE: no V3D MMU page table - the proven path runs without it */
 
     /* VC4: user-space QPU access needs a firmware handshake before the
      * first SRQ launch (GPU_FFT does the same at alloc time).  Reserve
@@ -1755,11 +2468,14 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 {
     uint32_t csd_base = (_ver >= 71) ? CSD_CFG_BASE_V7 : CSD_CFG_BASE_OLD;
     uint32_t csd_done = (_ver >= 71) ? INT_CSDDONE_V7 : INT_CSDDONE_OLD;
-    volatile uint32_t *csd =
-        _v3d + (((_has_hub ? V3D_CORE0_OFF : 0u) + csd_base) / 4);
+    volatile uint32_t *csd = v3d_ctl() + (csd_base / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
     int kern = -1;
+    uint64_t t0, t_prepare, t_invalidate, t_execute, t_flush;
+
+    memset(&_last_profile, 0, sizeof(_last_profile));
+    t0 = g2d_profile_ticks();
 
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
         nunifs < 0 || nunifs >= CSD_UNIF_WORDS || num_qpus <= 0 || !_ok)
@@ -1776,9 +2492,19 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         kern = KERN_ALPHA;
     else if (code == g2d_qpu_argb_rotate)
         kern = KERN_ROTATE;
+    else if (code == g2d_qpu_argb_rot90)
+        kern = KERN_ROT90;
+    else if (_ver == 42 && code == g2d_qpu_v42_argb_rot90_tile)
+        kern = KERN_ROT90_TILE;
+    else if (_ver == 42 && code == g2d_qpu_v42_argb_rot90_vpm)
+        kern = KERN_ROT90_VPM;
     else
-        return -1;      /* only the four bsp_g2d kernels are supported */
-    if ((uint32_t)nwords > _ksrc_n[kern])
+        return -1;
+    if ((uint32_t)nwords > _ksrc_n[kern]
+#if G2D_V42_STORE_PROBE
+        && !(_ver == 42 && kern == KERN_FILL)
+#endif
+       )
         return -1;
 
     /* make the caller's ARM-side writes visible to the GPU, and drop the
@@ -1795,7 +2521,9 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* extra trailing uniform: scratch base for the kernels' flush
      * epilogue (physical address - the QPU has no MMU) */
     _unif[nunifs] = _scratch_p;
-    g2d_invalidate_caches();
+    t_prepare = g2d_profile_ticks();
+    _last_profile.invalidate_polls = g2d_invalidate_caches();
+    t_invalidate = g2d_profile_ticks();
 
     /* V3D 7.1: the exact config of the proven raspi5 path.  V3D 4.2:
      * Mesa's compute model (drm/v3d CSD submit) - num_qpus workgroups
@@ -1820,14 +2548,45 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                | ((nq - 1u) << 12)          /* BATCHES_PER_SG - 1 */
                | 16u;                       /* WG_SIZE */
         cfg[4] = nq - 1u;                   /* NUM_BATCHES - 1 */
-        cfg[5] = _kcode_p[kern] | CSD_CFG5_THREADING
-               | CSD_CFG5_SINGLE_SEG | CSD_CFG5_PROP_NANS;
+        cfg[5] = _kcode_p[kern];
     }
     cfg[6] = _unif_p;
     cfg[7] = 0;                         /* V3D 7.x CFG7 only */
+
+    /* A completion interrupt is a level of persistent peripheral state, not
+     * a submission sequence number.  Never queue behind an operation that a
+     * previous caller may still have live, and make the clear observable
+     * before CFG0 can start this dispatch. */
+    for (i = 0; i < 2000000u; i++) {
+        uint32_t status = v3d_ctl()[CSD_STATUS_OFF / 4];
+        if (!(status & (CSD_STATUS_HAVE_QUEUED |
+                        CSD_STATUS_HAVE_CURRENT)))
+            break;
+    }
+    if (i == 2000000u) {
+        slog("g2d: V3D CSD queue busy status=0x%x int=0x%x\r\n",
+             (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
+             (uint32_t)v3d_ctl()[INT_STS / 4]);
+        return 1;
+    }
+    for (i = 0; i < 1024u; i++) {
+        v3d_ctl()[INT_CLR / 4] = csd_done;
+        g2d_dsb();
+        if (!(v3d_ctl()[INT_STS / 4] & csd_done))
+            break;
+    }
+    if (i == 1024u) {
+        slog("g2d: V3D CSD stale completion status=0x%x int=0x%x\r\n",
+             (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
+             (uint32_t)v3d_ctl()[INT_STS / 4]);
+        return 1;
+    }
     for (i = 1; i <= (uint32_t)((_ver >= 71) ? 7 : 6); i++)
         csd[i] = cfg[i];
+    g2d_perf_start();
+    g2d_dsb();
     csd[0] = cfg[0];                    /* sole CFG0 write starts it */
+    g2d_dsb();
 
     /* Every production kernel waits for pending TMU writes and then
      * uses the legal thread-end protocol, so CSDDONE is authoritative. */
@@ -1835,17 +2594,44 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         if (v3d_ctl()[INT_STS / 4] & csd_done)
             break;
     if (i == 2000000) {
+        if (_ver == 42)
+            slog("g2d: V3D 4.2 CSD timeout cfg=%x,%x,%x,%x,%x,%x,%x "
+                 "status=0x%x int=0x%x\r\n",
+                 cfg[0], cfg[1], cfg[2], cfg[3], cfg[4], cfg[5], cfg[6],
+                 (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
+                 (uint32_t)v3d_ctl()[INT_STS / 4]);
         v3d_ctl()[INT_CLR / 4] = csd_done;
         /* A timeout is a real failure.  Do not reset the graphics domain
          * and do not replay this possibly-live operation. */
         return 1;
     }
+    t_execute = g2d_profile_ticks();
+    _last_profile.execute_polls = i;
+    g2d_perf_stop(_last_profile.perf);
+    if (_ver == 42) {
+        static int logged;
+        if (!logged) {
+            slog("g2d: V3D 4.2 CSD done cfg=%x,%x,%x,%x,%x,%x,%x "
+                 "status=0x%x int=0x%x\r\n",
+                 cfg[0], cfg[1], cfg[2], cfg[3], cfg[4], cfg[5], cfg[6],
+                 (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
+                 (uint32_t)v3d_ctl()[INT_STS / 4]);
+            logged = 1;
+        }
+    }
     v3d_ctl()[INT_CLR / 4] = csd_done;
+    g2d_dsb();
 
     /* GPU writes -> DRAM, then drop the ARM's stale destination lines */
-    g2d_flush_l2();
+    _last_profile.flush_polls = g2d_flush_l2();
+    t_flush = g2d_profile_ticks();
     if (dst && dst_len)
         g2d_dsb();
+    _last_profile.prepare = t_prepare - t0;
+    _last_profile.invalidate = t_invalidate - t_prepare;
+    _last_profile.execute = t_execute - t_invalidate;
+    _last_profile.flush = t_flush - t_execute;
+    _last_profile.total = g2d_profile_ticks() - t0;
     return 0;
 }
 

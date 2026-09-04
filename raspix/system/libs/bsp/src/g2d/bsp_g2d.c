@@ -53,6 +53,7 @@
 
 #include "ewoksys/dma.h"
 #include "v3d_g2d.h"
+#include "g2d_qpu_kernels_v42.h"
 
 #define G2D_MAX_COEF (1 << 23)  /* |map coefficient| must fit smul24 */
 
@@ -311,21 +312,6 @@ static void g2d_map_rotate(int32_t src_w, int32_t src_h, int32_t degree,
 /* GPU eligibility helpers                                             */
 /* ------------------------------------------------------------------ */
 
-/* The kernels' slice guard only tests the band START (H1 - qid*rows < 0
- * -> skip); a band that starts inside the surface but extends past H1
- * writes out of bounds.  Choosing nq so that H % nq == 0 makes every
- * band exactly H/nq rows (the guard then never fires), so dispatches can
- * never scribble past the surface.  Returns the largest divisor of H
- * that is <= nq (>= 1). */
-static int g2d_fit_nq(int nq, int32_t H)
-{
-    if (nq > H)
-        nq = H;
-    while (nq > 1 && H % nq != 0)
-        nq--;
-    return nq;
-}
-
 static int gpu_ok(int32_t w, int32_t h)
 {
     return v3d_g2d_ready() && w > 0 && h > 0;
@@ -433,25 +419,37 @@ static int gpu_fill_surface(uint32_t phys, uint32_t *argb,
                             uint32_t color)
 {
     uint32_t u[16];
-    int32_t L = (int32_t)(((uint32_t)w + 15u) >> 4);
+    int32_t g0 = x0 >> 4;
+    int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
+    int32_t L = g1 - g0;
+    int32_t band_h = y1 - y0;
     int full = ((w & 15) == 0 &&
                 x0 == 0 && y0 == 0 && x1 == w && y1 == h);
     int nq, rows;
 
-    if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0)
+    if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 ||
+        x1 <= x0 || y1 <= y0 || x1 > w || y1 > h)
         return 0;
+    if (v3d_g2d_ver() == 42 && x0 == 0 && y0 == 0 && x1 == w && y1 == h) {
+        int rc = v3d_g2d_render_clear(phys, (uint32_t)w * 4u,
+                                      (uint32_t)w, (uint32_t)h, color);
+        return rc == 0 ? GPU_DONE : GPU_FAILED;
+    }
     /* One dispatch covers the whole surface.  The legal V3D thread-end
      * sequence retires every QPU cleanly, so no 16 KiB batching or dummy
      * TMU transaction is needed. */
-    nq = g2d_fit_nq(v3d_g2d_num_qpus(), h);
-    rows = h / nq;
+    nq = v3d_g2d_num_qpus();
+    if (nq > band_h)
+        nq = band_h;
+    rows = (band_h + nq - 1) / nq;
     u[0] = color;
     u[1] = (uint32_t)(L - 1);
     u[2] = (uint32_t)(w * 4u);
-    u[3] = (uint32_t)(h - 1);
+    u[3] = (uint32_t)(y1 - 1);
     u[4] = (uint32_t)(L * 64u - (uint32_t)w * 4u);
     u[5] = (uint32_t)(L * rows);
-    u[6] = phys;
+    u[6] = phys + ((uint32_t)y0 * (uint32_t)w +
+                   (uint32_t)g0 * 16u) * 4u;
     u[7] = (uint32_t)x0;
     u[8] = (uint32_t)x1;
     u[9] = (uint32_t)y0;
@@ -680,23 +678,27 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
                               int32_t src_w, int32_t src_h,
                               uint32_t dst_phys, uint32_t *argb_dst,
                               int32_t dst_w, int32_t dst_h,
-                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+                              int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                              int no_clamp)
 {
-    uint32_t u[24];
-    int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
+    uint32_t u[26];
+    int32_t g0 = x0 >> 4;
+    int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
+    int32_t L = g1 - g0;
+    int32_t band_h = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
     int full = ((dst_w & 15) == 0 &&
                 x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h);
 
-    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0)
+    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 ||
+        x1 <= x0 || y1 <= y0 || x1 > dst_w || y1 > dst_h)
         return 0;
-    if (!gpu_map_fits(m, (int64_t)L * 16, dst_h))
+    if (!gpu_map_fits(m, x1, y1))
         return 0;
-    /* nq must divide dst_h: the slice guard only tests the band start,
-     * so a non-divisible rows count writes past the last row. */
-    nq = g2d_fit_nq(nq, dst_h);
-    rows = dst_h / nq;
+    if (nq > band_h)
+        nq = band_h;
+    rows = (band_h + nq - 1) / nq;
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->qu;
     u[2] = (uint32_t)m->pv;
@@ -706,11 +708,12 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     u[6] = (uint32_t)(src_w - 1);
     u[7] = (uint32_t)(src_h - 1);
     u[8] = (uint32_t)src_w;
-    u[9] = dst_phys;        /* PHYSICAL addresses */
+    u[9] = dst_phys + ((uint32_t)y0 * (uint32_t)dst_w +
+                       (uint32_t)g0 * 16u) * 4u;
     u[10] = src_phys;
     u[11] = (uint32_t)(L - 1);
     u[12] = (uint32_t)dst_w * 4u;
-    u[13] = (uint32_t)(dst_h - 1);
+    u[13] = (uint32_t)(y1 - 1);
     u[14] = (uint32_t)(L * 64 - (uint32_t)dst_w * 4u);
     u[15] = (uint32_t)(L * rows);
     if (full) {
@@ -730,7 +733,18 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     u[21] = (uint32_t)rows;
     u[22] = (uint32_t)(rows * (int32_t)dst_w * 4);  /* rows_stride */
     u[23] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    return v3d_g2d_run(kcode, knwords, u, 24,
+    u[24] = (uint32_t)no_clamp;
+    u[25] = 0;
+    if (kcode == g2d_qpu_argb_blit && full) {
+        if (src_w == dst_w && src_h == dst_h &&
+            m->pu == 32768 && m->qu == 0 &&
+            m->pv == 0 && m->qv == 32768 &&
+            m->cu == 0 && m->cv == 0)
+            u[25] = 1;       /* exact linear copy */
+        else if (no_clamp)
+            u[25] = 2;       /* full-surface in-bounds scale */
+    }
+    return v3d_g2d_run(kcode, knwords, u, 26,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
            GPU_DONE : GPU_FAILED;
@@ -837,7 +851,8 @@ static int gpu_blit_surface(const g2d_map_t *m,
                             int32_t src_w, int32_t src_h,
                             uint32_t dst_phys, uint32_t *argb_dst,
                             int32_t dst_w, int32_t dst_h,
-                            int32_t x0, int32_t y0, int32_t x1, int32_t y1)
+                            int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            int no_clamp)
 {
     if (v3d_g2d_ver() == 21) {
         /* L2CACTL/SLCACTL cannot invalidate BCM2837's shared system L3.
@@ -854,10 +869,145 @@ static int gpu_blit_surface(const g2d_map_t *m,
                                       src_w, src_h, dst_phys, argb_dst,
                                       dst_w, dst_h, x0, y0, x1, y1);
     }
+    if (v3d_g2d_ver() == 42 && src_w == dst_w && src_h == dst_h &&
+        x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h &&
+        m->pu == 32768 && m->qu == 0 && m->pv == 0 && m->qv == 32768 &&
+        m->cu == 0 && m->cv == 0) {
+        int rc = v3d_g2d_render_copy(src_phys, dst_phys,
+                                     (uint32_t)dst_w * 4u,
+                                     (uint32_t)dst_w, (uint32_t)dst_h);
+        return rc == 0 ? GPU_DONE : GPU_FAILED;
+    }
     return gpu_affine_surface(g2d_qpu_argb_blit, g2d_qpu_argb_blit_n, m,
                               src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, dst_w, dst_h,
-                              x0, y0, x1, y1);
+                              x0, y0, x1, y1, no_clamp);
+}
+
+/* The dedicated 90/270 kernel consumes four source rows per inner pass.
+ * Choose the largest QPU count whose band height is an exact multiple of
+ * four, so every QPU ends on a band boundary. */
+static int g2d_fit_nq_rot90_block(int nq, int32_t h, int32_t block)
+{
+    if (nq > h)
+        nq = h;
+    while (nq >= 1) {
+        if (h % nq == 0) {
+            int32_t rows = h / nq;
+            if (rows >= block && rows % block == 0)
+                return nq;
+        }
+        nq--;
+    }
+    return 0;
+}
+
+/* Dedicated right-angle path: source reads are contiguous and only writes
+ * stride, avoiding the generic affine kernel's 16 stride-apart TMU reads. */
+static int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
+                             int32_t src_w, int32_t src_h,
+                             uint32_t dst_phys, uint32_t *argb_dst,
+                             int32_t dst_w, int32_t dst_h, int rot)
+{
+    uint32_t u[18];
+    uint32_t tu[14];
+    int32_t L = (src_w + 15) >> 4;
+    int32_t rows, ss, ds;
+    int nq;
+    int r90 = (rot == 90);
+
+    if (src_w < 16 || src_h < 4 ||
+        (!r90 && (src_w & 15) != 0) ||
+        dst_w != src_h || dst_h != src_w)
+        return GPU_UNSUPPORTED;
+    ss = src_w * 4;
+    ds = dst_w * 4;
+#if V42_ROT90_VPM_PROBE
+    /* Bring-up only.  Mode 1 isolates the VPM algorithm on one workgroup;
+     * mode 2 exercises concurrent workgroups.  Production remains on the
+     * proven 4x4 ROT path until both modes are exact on real BCM2711. */
+    if (v3d_g2d_ver() == 42 && r90 && (src_w & 15) == 0) {
+        nq = V42_ROT90_VPM_PROBE == 1 ? 1 :
+             g2d_fit_nq_rot90_block(v3d_g2d_num_qpus(), src_h, 16);
+        if (nq == 0)
+            return GPU_UNSUPPORTED;
+        rows = src_h / nq;
+        tu[0] = src_phys;
+        tu[1] = dst_phys;
+        tu[2] = (uint32_t)((int64_t)rows * ss);
+        tu[3] = (uint32_t)(((int64_t)rows - 1) * ss);
+        tu[4] = (uint32_t)(-(int64_t)ss);
+        tu[5] = (uint32_t)((int64_t)rows * ss + 64);
+        tu[6] = (uint32_t)(-((int64_t)rows * 4));
+        tu[7] = (uint32_t)(((int64_t)src_h - rows) * 4);
+        tu[8] = (uint32_t)((int64_t)16 * ds - (int64_t)rows * 4);
+        tu[9] = (uint32_t)(rows / 16);
+        tu[10] = (uint32_t)((int64_t)rows * L / 16);
+        tu[11] = v3d_g2d_scratch_phys();
+        tu[12] = (uint32_t)nq;
+        tu[13] = (uint32_t)ds;
+        return v3d_g2d_run(g2d_qpu_v42_argb_rot90_vpm,
+                           g2d_qpu_v42_argb_rot90_vpm_n, tu, 14,
+                           nq, argb_src, (size_t)src_w * src_h * 4,
+                           argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+               GPU_DONE : GPU_FAILED;
+    }
+#endif
+    /* The 4x4 ROT path is fully QPU/GPU accelerated and has exact
+     * multi-workgroup results on BCM2711. */
+    nq = g2d_fit_nq_rot90_block(v3d_g2d_num_qpus(), src_h, 4);
+    if (nq == 0)
+        return GPU_UNSUPPORTED;
+    rows = src_h / nq;
+    if (v3d_g2d_ver() == 42 && r90 && (src_w & 15) == 0) {
+        tu[0] = src_phys;
+        tu[1] = dst_phys;
+        tu[2] = (uint32_t)((int64_t)rows * ss);
+        tu[3] = (uint32_t)(((int64_t)rows - 1) * ss);
+        tu[4] = (uint32_t)(-(int64_t)ss);
+        tu[5] = (uint32_t)((int64_t)rows * ss + 64);
+        tu[6] = (uint32_t)(-((int64_t)rows * 4));
+        tu[7] = (uint32_t)(((int64_t)src_h - rows) * 4);
+        tu[8] = (uint32_t)((int64_t)16 * ds - (int64_t)rows * 4);
+        tu[9] = (uint32_t)(rows / 4);
+        tu[10] = (uint32_t)((int64_t)rows * L / 4);
+        tu[11] = v3d_g2d_scratch_phys();
+        tu[12] = (uint32_t)nq;
+        tu[13] = (uint32_t)ds;
+        return v3d_g2d_run(g2d_qpu_v42_argb_rot90_tile,
+                           g2d_qpu_v42_argb_rot90_tile_n, tu, 14,
+                           nq, argb_src, (size_t)src_w * src_h * 4,
+                           argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+               GPU_DONE : GPU_FAILED;
+    }
+    u[0] = src_phys;
+    u[1] = dst_phys;
+    u[2] = (uint32_t)((int64_t)rows * ss);
+    u[3] = r90 ? (uint32_t)(((int64_t)rows - 1) * ss)
+               : (uint32_t)((int64_t)(L - 1) * 64);
+    u[4] = r90 ? (uint32_t)(-(int64_t)ss) : (uint32_t)ss;
+    u[5] = (uint32_t)(r90 ? ((int64_t)rows * ss + 64)
+                          : -((int64_t)rows * ss + 64));
+    u[6] = (uint32_t)(r90 ? -((int64_t)rows * 4)
+                          : (int64_t)rows * 4);
+    u[7] = r90 ? (uint32_t)(((int64_t)src_h - rows) * 4)
+               : (uint32_t)(((int64_t)src_w - 1 -
+                              (int64_t)(L - 1) * 16) * ds);
+    u[8] = (uint32_t)((int64_t)16 * ds -
+                      ((int64_t)rows - 1) * 4 - 4);
+    u[9] = (uint32_t)(rows - 1);
+    u[10] = (uint32_t)((int64_t)rows * L / 4);
+    u[11] = v3d_g2d_scratch_phys();
+    u[12] = (uint32_t)nq;
+    u[13] = (uint32_t)rows;
+    u[14] = 16u;
+    u[15] = (uint32_t)(r90 ? (int64_t)ds : -(int64_t)ds);
+    u[16] = (uint32_t)(src_w - (L - 1) * 16); /* valid lanes in last group */
+    u[17] = (uint32_t)(L - 1);
+    return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 18,
+                       nq, argb_src, (size_t)src_w * src_h * 4,
+                       argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+           GPU_DONE : GPU_FAILED;
 }
 
 /* whole-surface rotation (argb_rotate kernel): every destination pixel is
@@ -879,7 +1029,7 @@ static int gpu_rotate_surface(const g2d_map_t *m,
     return gpu_affine_surface(g2d_qpu_argb_rotate, g2d_qpu_argb_rotate_n, m,
                               src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, dst_w, dst_h,
-                              0, 0, dst_w, dst_h);
+                              0, 0, dst_w, dst_h, 0);
 }
 
 /* Alpha blend of a clipped dst rect.  V3D >= 4 uses the CSD kernel below;
@@ -899,25 +1049,31 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                              int32_t dst_w, int32_t dst_h,
                              int32_t x0, int32_t y0, int32_t x1, int32_t y1)
 {
-    uint32_t u[23];
-    int32_t L = (int32_t)(((uint32_t)dst_w + 15u) >> 4);
+    uint32_t u[28];
+    int32_t g0 = x0 >> 4;
+    int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
+    int32_t L = g1 - g0;
+    int32_t band_h = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
+    int full = ((dst_w & 15) == 0 &&
+                x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h);
 
     /* The kernel's dst-read stream is rect-gated (out-of-rect lanes read
      * their lane-private scratch word), so any dst width works - no
      * 16-pixel alignment requirement. */
-    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 || alpha == 0)
+    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 ||
+        x1 <= x0 || y1 <= y0 || x1 > dst_w || y1 > dst_h || alpha == 0)
         return 0;
-    if (!gpu_map_fits(m, dst_w, dst_h))
+    if (!gpu_map_fits(m, x1, y1))
         return 0;
     if (v3d_g2d_ver() == 21)
         return gpu_alpha_surface_vc4(m, alpha, src_phys, argb_src,
                                      src_w, src_h, dst_phys, argb_dst,
                                      dst_w, dst_h, x0, y0, x1, y1);
-    /* nq must divide dst_h (slice guard tests only the band start) */
-    nq = g2d_fit_nq(nq, dst_h);
-    rows = dst_h / nq;
+    if (nq > band_h)
+        nq = band_h;
+    rows = (band_h + nq - 1) / nq;
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->cu;
     u[2] = (uint32_t)m->qv;
@@ -925,14 +1081,19 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[4] = (uint32_t)(src_w - 1);
     u[5] = (uint32_t)(src_h - 1);
     u[6] = (uint32_t)src_w;
-    u[7] = dst_phys;        /* PHYSICAL addresses */
+    u[7] = dst_phys + ((uint32_t)y0 * (uint32_t)dst_w +
+                       (uint32_t)g0 * 16u) * 4u;
     u[8] = src_phys;
     u[9] = (uint32_t)(L - 1);
-    u[10] = (uint32_t)(dst_h - 1);
-    u[11] = alpha;
-    u[12] = (uint32_t)(L * (int)dst_h);   /* full-surface n; kernel clips per QPU */
-    u[13] = (uint32_t)x0;
-    u[14] = (uint32_t)x1;
+    u[10] = (uint32_t)(y1 - 1);
+    /* Preserve source alpha exactly for the public alpha==255 case.  The
+     * kernel computes effective alpha as (src_a * u11) >> 8. */
+    u[11] = alpha == 0xff ? 256u : (uint32_t)alpha;
+    u[12] = (uint32_t)(L * rows);
+    u[13] = full ? (uint32_t)((int64_t)m->pu * 16)
+                 : (uint32_t)x0;
+    u[14] = full ? (uint32_t)((int64_t)m->pu * 16 * L)
+                 : (uint32_t)x1;
     u[15] = (uint32_t)y0;
     u[16] = (uint32_t)y1;
     u[17] = 16u;
@@ -941,7 +1102,14 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[20] = (uint32_t)rows;
     u[21] = (uint32_t)(rows * (int32_t)dst_w * 4); /* rows * stride (bytes) */
     u[22] = v3d_g2d_scratch_phys();                 /* out-of-rect write target */
-    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 23,
+    u[23] = (uint32_t)full;
+    u[24] = 0x00ff00ffu;
+    u[25] = 0x00010001u;
+    u[26] = 0x00ff0000u;
+    u[27] = (uint32_t)(full && src_w == dst_w && src_h == dst_h &&
+                       m->pu == 32768 && m->cu == 0 &&
+                       m->qv == 32768 && m->cv == 0);
+    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 28,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
            GPU_DONE : GPU_FAILED;
@@ -1163,7 +1331,7 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
             gr = gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                   dst_phys, argb_dst, dst_w, dst_h, rx, ry,
-                                  rx + rw, ry + rh);
+                                  rx + rw, ry + rh, 0);
             if (gr == GPU_DONE)
                 return 0;
             if (gr == GPU_FAILED)
@@ -1353,7 +1521,7 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
             gr = gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                   dst_phys, argb_dst, dst_w, dst_h,
-                                  0, 0, dst_w, dst_h);
+                                  0, 0, dst_w, dst_h, 1);
             if (gr == GPU_DONE)
                 return 0;
             if (gr == GPU_FAILED)
@@ -1398,6 +1566,14 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
     if (src_phys && dst_phys) {
         g2d_rotated_size(src_w, src_h, rot, &bw, &bh);
         if (bw > 0 && bh > 0 && dst_w == bw && dst_h == bh) {
+            if (v3d_g2d_ver() != 21 && (rot == 90 || rot == 270)) {
+                gr = gpu_rot90_surface(src_phys, argb_src, src_w, src_h,
+                                       dst_phys, argb_dst, dst_w, dst_h, rot);
+                if (gr == GPU_DONE)
+                    return 0;
+                if (gr == GPU_FAILED)
+                    return -1;
+            }
             g2d_map_rotate(src_w, src_h, rot, bw, bh, &m);
             if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
                 gr = gpu_rotate_surface(&m, src_phys, argb_src, src_w, src_h,
