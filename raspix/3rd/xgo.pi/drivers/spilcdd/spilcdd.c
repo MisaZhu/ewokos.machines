@@ -78,10 +78,11 @@ int main(int argc, char** argv) {
     st77xx_init(LCD_WIDTH, LCD_HEIGHT, G_ROTATE_90, 1,
             lcd_dc, lcd_cs, lcd_rst, lcd_bl > 0 ? lcd_bl : -1, 4);
 
-    fbdisplayd_t fbdisplayd;
+    displayd_t fbdisplayd;
+    memset(&fbdisplayd, 0, sizeof(fbdisplayd));
     fbdisplayd.splash = NULL;
     fbdisplayd.flush = flush;
     fbdisplayd.init = init;
     fbdisplayd.get_info = get_info;
-        return fbdisplayd_run(&fbdisplayd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
+    return fbdisplayd_run(&fbdisplayd, mnt_point, LCD_WIDTH, LCD_HEIGHT, "", _display_index);
 }

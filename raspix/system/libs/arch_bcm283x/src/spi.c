@@ -66,6 +66,16 @@
 #define SPI_ACTIVATE 1
 #define SPI_DEACTIVATE 0
 
+/* Max stalled MMIO poll iterations (~tens of ms) before aborting a transfer,
+   so a dead/disturbed SPI0 controller can never hang the caller forever.
+   Mirrors the watchdog already used in auxspi.c. */
+#define SPI0_STALL_TIMEOUT 100000
+
+/* SPI0 TX and RX FIFOs are 16 bytes deep. A bulk send must never push more
+   bytes than the RX side can drain, otherwise the RX FIFO overflows, bytes
+   are lost, and read_count never reaches size -> the transfer wedges. */
+#define SPI0_FIFO_DEPTH 16
+
 #define SPI0_CS_CPOL                 0x00000008 ///< Clock Polarity
 #define SPI0_CS_CPHA                 0x00000004 ///< Clock Phase
 
@@ -111,6 +121,17 @@ struct SPI0_regs {
 };
 #define _spi0_regs ((struct SPI0_regs *)(SPI_BASE))
 
+/* Return the controller to a known-clean state after an aborted transfer:
+   drop transfer-active and flush both FIFOs. Without this a half-finished
+   transaction leaves stale RX bytes / a stuck TA that misaligns (or wedges)
+   every following transaction. Mirrors spi_reset() in the raspi5 driver. */
+static inline void bcm283x_spi_reset(void) {
+    uint32_t cs = _spi0_regs->cs;
+    cs &= ~SPI_CNTL_TRXACT;                    /* drop transfer-active */
+    cs |= SPI_CNTL_CLR_RX | SPI_CNTL_CLR_TX;   /* flush both FIFOs */
+    _spi0_regs->cs = cs;
+}
+
 inline void bcm283x_spi_activate(uint8_t enable) {
     //uint32_t data = SPI_CNTL_TRXACT;
     if (enable) {
@@ -132,9 +153,17 @@ inline void bcm283x_spi_send_recv(const uint8_t* send, uint8_t* recv, uint32_t s
     _spi0_regs->size = size;
     uint32_t read_count = 0;
     uint32_t write_count = 0;
+    uint32_t stall = 0;
 
     while(read_count < size || write_count < size) {
-        while(write_count < size && _spi0_regs->cs & SPI_STAT_TXDATA) {
+        uint32_t prev_read = read_count;
+        uint32_t prev_write = write_count;
+
+        /* keep at most one FIFO-depth of bytes in flight so the RX side can
+           never overflow (lost RX bytes would wedge the loop forever) */
+        while(write_count < size &&
+                (write_count - read_count) < SPI0_FIFO_DEPTH &&
+                _spi0_regs->cs & SPI_STAT_TXDATA) {
             if (send)
                 _spi0_regs->fifo = *send++;
             else
@@ -148,16 +177,44 @@ inline void bcm283x_spi_send_recv(const uint8_t* send, uint8_t* recv, uint32_t s
                 *recv++ = data;
             read_count++;
         }
+
+        /* watchdog: bail out if the controller makes no progress at all
+           (disturbed state machine, dead clock...), never hang the caller */
+        if(read_count == prev_read && write_count == prev_write) {
+            if(++stall >= SPI0_STALL_TIMEOUT) {
+                slog("bcm283x_spi_send_recv: stall timeout, aborting\n");
+                bcm283x_spi_reset();
+                return;
+            }
+        }
+        else {
+            stall = 0;
+        }
     }
 }
 
 inline uint8_t bcm283x_spi_transfer(uint8_t data) {
+    uint32_t stall = 0;
+
     //write
-    while (!(_spi0_regs->cs & SPI_STAT_TXDATA));
+    while (!(_spi0_regs->cs & SPI_STAT_TXDATA)) {
+        if(++stall >= SPI0_STALL_TIMEOUT) {
+            slog("bcm283x_spi_transfer: TX stall timeout, aborting\n");
+            bcm283x_spi_reset();
+            return 0;
+        }
+    }
     _spi0_regs->fifo = data;
 
     //read
-    while (!(_spi0_regs->cs & SPI_STAT_RXDATA));
+    stall = 0;
+    while (!(_spi0_regs->cs & SPI_STAT_RXDATA)) {
+        if(++stall >= SPI0_STALL_TIMEOUT) {
+            slog("bcm283x_spi_transfer: RX stall timeout, aborting\n");
+            bcm283x_spi_reset();
+            return 0;
+        }
+    }
     data  = _spi0_regs->fifo;
     return data;
 }

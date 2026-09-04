@@ -2,6 +2,7 @@ EXTRA_LIBS_DIR = ../../../../libs
 
 TASK_OBJS = \
 		$(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.o \
+		$(EXTRA_LIBS_DIR)/xpt2046/src/tp_filter.o \
 		$(EXTRA_LIBS_DIR)/st77xx/src/st77xx.o \
 		display.o
 
@@ -22,6 +23,9 @@ $(EXTRA_LIBS_DIR)/st77xx/src/st77xx.o: $(EXTRA_LIBS_DIR)/st77xx/src/st77xx.c $(E
 
 $(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.o: $(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.c $(EXTRA_LIBS_DIR)/xpt2046/include/xpt2046/xpt2046.h
 	$(CC) $(CFLAGS) -c -o $@ $(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.c
+
+$(EXTRA_LIBS_DIR)/xpt2046/src/tp_filter.o: $(EXTRA_LIBS_DIR)/xpt2046/src/tp_filter.c $(EXTRA_LIBS_DIR)/xpt2046/include/xpt2046/tp_filter.h
+	$(CC) $(CFLAGS) -c -o $@ $(EXTRA_LIBS_DIR)/xpt2046/src/tp_filter.c
 
 $(TASK): $(TASK_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \

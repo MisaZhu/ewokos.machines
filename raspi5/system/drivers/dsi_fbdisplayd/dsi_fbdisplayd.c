@@ -883,7 +883,7 @@ static void* dsi_watchdog(void* arg) {
 }
 
 int main(int argc, char** argv) {
-	fbdisplayd_t fbdisplayd;
+	displayd_t fbdisplayd;
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
 

@@ -76,8 +76,8 @@ int main(int argc, char** argv) {
     lcd_init(w, h, G_ROTATE_0, _spi_div);
 
 
-    fbdisplayd_t display;
-    memset(&display, 0, sizeof(fbdisplayd_t));
+    displayd_t display;
+    memset(&display, 0, sizeof(displayd_t));
     display.splash = NULL;
     display.flush = flush;
     display.init = init;

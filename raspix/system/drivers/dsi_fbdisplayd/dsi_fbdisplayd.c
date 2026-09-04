@@ -897,7 +897,7 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 }
 
 int main(int argc, char** argv) {
-	fbdisplayd_t fbdisplayd;
+	displayd_t fbdisplayd;
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
 

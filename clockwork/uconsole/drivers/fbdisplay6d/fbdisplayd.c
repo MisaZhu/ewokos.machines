@@ -64,7 +64,7 @@
 static const char* _conf_file = "";
 static int _display_index = 0;
 static disp_info_t _fb_info;
-static fbdisplayd_t _fbdisplayd_cfg;
+static displayd_t _fbdisplayd_cfg;
 static uint8_t _bl_level = UC_BACKLIGHT_DEFAULT;
 static uint32_t _contrast_pct = UC_CONTRAST_DEFAULT_PCT;
 static uint8_t _contrast_lut[256];
