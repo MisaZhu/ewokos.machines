@@ -64,19 +64,52 @@ static void power_off(){
         while(1);
 }
 
+/*
+ * This board's PMIC is an AXP223 (see drivers/dsi/uc_pmu.h), not an
+ * AXP202. REG 0x00 is the shared AXP20X "power input status" register
+ * (ACIN/VBUS/charge state) -- bit0 there has nothing to do with the
+ * power key, which is why reading it never saw a press.
+ *
+ * AXP22X reports the power key ("PEK") as debounced, one-shot events
+ * latched in the IRQ status registers, already enabled in main() via
+ * i2c_putb(0x34, 0x42, 0x3):
+ *   IRQ3_STATE (0x4A) bit0 = PEK_LONG  (held past the long-press threshold)
+ *   IRQ3_STATE (0x4A) bit1 = PEK_SHORT (pressed and released, short press)
+ * The IRQ pin isn't wired to the SoC on this board, so these bits are
+ * polled every power_step() tick and cleared (write-1-to-clear) by hand.
+ * There is no live "is the key down right now" register on AXP22X, so a
+ * latched event since the last poll is the best available signal.
+ * Returns 0 = down(event seen), 1 = up(no event), matching the
+ * "is_power_button_down() == 0" check in power_step().
+ */
+static int is_power_button_down(void) {
+    uint8_t irq3 = i2c_getb(0x34, 0x4A);
+    uint8_t pek = irq3 & 0x3; /* bit0=PEK_LONG, bit1=PEK_SHORT */
+    if(pek) {
+        i2c_putb(0x34, 0x4A, pek); /* write-1-to-clear, only what we saw */
+        return 0; /* down */
+    }
+    return 1; /* up */
+}
+
+static void power_sample(void) {
+    uint8_t state = i2c_getb(0x34, 0x01);
+    _hasBattery = !!(state & (0x1 << 5));
+    _charging = !!(state & (0x1 << 6));
+    _capacity = adc2level(i2c_getb(0x34, 0x78));
+}
+
 static int power_step(vdevice_t* dev, void* p) {
     (void)dev;
     (void)p;	
-    int irq = bcm283x_gpio_read(_gpio_pwr);
-    if(!irq){
-        //power_off();
+
+    if(is_power_button_down() == 0){ //down
+        power_off();
     }
-    uint8_t state = i2c_getb(0x34, 0x01);	
-    _hasBattery = !!(state & (0x1 << 5));
-    _charging = !!(state & (0x1 << 6));
-    _capacity = adc2level(i2c_getb(0x34, 0x78)); 
-    //if(_capacity < 10)
-        //power_off();
+    power_sample();
+    if(_capacity < 3) { //out of power
+        power_off();
+    }
     proc_usleep(300000); 
     return 0;
 }
@@ -116,6 +149,55 @@ static int doargs(int argc, char* argv[]) {
     return optind;
 }
 
+static char* power_help(void) {
+    const char* usage =
+        "usage: dev.cmd /dev/power0 <cmd>\n"
+        "  help     show this help\n"
+        "  status   re-sample PMU and show battery/charging/capacity/gpio\n"
+        "  off      force power off\n";
+    char* ret = (char*)malloc(strlen(usage) + 1);
+    if(ret != NULL)
+        strcpy(ret, usage);
+    return ret;
+}
+
+static char* power_status(void) {
+    power_sample();
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+            "battery=%s charging=%s capacity=%u%% gpio_pwr=%u\n",
+            _hasBattery ? "yes" : "no",
+            _charging ? "yes" : "no",
+            (unsigned)_capacity,
+            (unsigned)_gpio_pwr);
+    char* ret = (char*)malloc(strlen(buf) + 1);
+    if(ret != NULL)
+        strcpy(ret, buf);
+    return ret;
+}
+
+static char* power_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) {
+    (void)dev;
+    (void)from_pid;
+    (void)p;
+
+    if(argc <= 0 || argv == NULL || argv[0] == NULL)
+        return NULL;
+
+    if(strcmp(argv[0], "help") == 0)
+        return power_help();
+
+    if(strcmp(argv[0], "status") == 0)
+        return power_status();
+
+    if(strcmp(argv[0], "off") == 0) {
+        power_off();
+        return NULL;
+    }
+
+    return NULL;
+}
+
 
 int main(int argc, char** argv) {
     _gpio_pwr = 26;
@@ -130,7 +212,24 @@ int main(int argc, char** argv) {
     bcm283x_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
 
     i2c_init(0,1);
+    /*
+     * REG 0x36 bits[1:0] = AXP22X hardware long-press force-poweroff delay
+     * (0=4s, 1=6s, 2=8s, 3=10s) -- unlike AXP202's 3-bit field, AXP22X has
+     * no "disable" setting here, so set the longest delay available. This
+     * gives power_off() the most time to run a clean shutdown before the
+     * PMIC would force VCC off by itself on a very long hold.
+     */
+    {
+        uint8_t pek_key = i2c_getb(0x34, 0x36);
+        i2c_putb(0x34, 0x36, (pek_key & ~0x3) | 0x3);
+    }
     i2c_putb(0x34, 0x42, 0x3);
+    /*
+     * Discard any PEK_LONG/PEK_SHORT event already latched before we
+     * started polling (e.g. the button press that powered the board on),
+     * so it isn't mistaken for a fresh press on the first power_step().
+     */
+    i2c_putb(0x34, 0x4A, 0x3);
     i2c_putb(0x34, 0x82, 0x80);
     const char* mnt_point = "/dev/power0";
     if(argind < argc) {
@@ -143,6 +242,7 @@ int main(int argc, char** argv) {
     strcpy(dev.desc, "powerd");
     dev.loop_step = power_step;
     dev.read = power_read;
+    dev.cmd = power_dev_cmd;
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0444, false);
     return 0;
 }
