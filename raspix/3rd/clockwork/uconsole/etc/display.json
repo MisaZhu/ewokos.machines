@@ -1,4 +1,10 @@
 {
+    "output": "dsi",
+    "panel": "cwu50",
+    "#panel": "cwu50 = uConsole 5in 720x1280 newer batch, cwu50_old = same glass original batch, cwd686 = DevTerm 6.86in 480x1280",
+    "#panel2": "cwu50 and cwu50_old are two hardware batches with identical timings but mutually exclusive DDIC init tables; pick the one matching your screen, neither is auto-detected",
+    "#contrast": "dev.cmd ct [up|down|20-300] only takes effect at depth 16; at depth 32 the zero-copy flush path cannot carry the LUT",
+    "#geometry": "for those three panels width/height below are ignored: the panel key forces the native mode its DCS init table matches",
     "width": 720,
     "#width": 480,
     "height": 1280,

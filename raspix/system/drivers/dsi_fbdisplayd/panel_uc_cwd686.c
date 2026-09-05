@@ -1,6 +1,4 @@
-#include "uc_cwd686.h"
-#include "uc_dsi.h"
-#include "uc_time.h"
+#include "panel_uc.h"
 
 #include <stdint.h>
 
@@ -76,7 +74,7 @@ static int _send_buf(const uint8_t* buf, uint32_t len) {
     } else {
         dt = DT_DCS_LONG_WRITE;
     }
-    return uc_dsi_dcs_write(dt, buf, len);
+    return uc_dcs_write(dt, buf, len);
 }
 
 int uc_cwd686_init(void) {
@@ -91,7 +89,7 @@ int uc_cwd686_init(void) {
      */
     {
         uint8_t tear[2] = { 0x35, 0x00 };
-        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2) != 0) {
+        if (uc_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2) != 0) {
             failures++;
             consec++;
         }
@@ -120,10 +118,10 @@ int uc_cwd686_init(void) {
     {
         uint8_t slpout[1] = { 0x11 };
         uint8_t dspon[1]  = { 0x29 };
-        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, slpout, 1) != 0) failures++;
-        uc_mdelay(120);
-        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, dspon,  1) != 0) failures++;
-        uc_mdelay(20);
+        if (uc_dcs_write(DT_DCS_SHORT_WRITE_0P, slpout, 1) != 0) failures++;
+        bcm283x_dsi1_mdelay(120);
+        if (uc_dcs_write(DT_DCS_SHORT_WRITE_0P, dspon,  1) != 0) failures++;
+        bcm283x_dsi1_mdelay(20);
     }
 
     return failures;

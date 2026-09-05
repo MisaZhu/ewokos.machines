@@ -1,6 +1,4 @@
-#include "uc_cwu50.h"
-#include "uc_dsi.h"
-#include "uc_time.h"
+#include "panel_uc.h"
 
 #include <stdint.h>
 
@@ -8,7 +6,7 @@
  * MIPI DSI data types.  For panel init the driver only uses:
  *   0x05 -- DCS short write, no parameter (1-byte payload)
  *   0x15 -- DCS short write, 1 parameter  (2-byte payload)
- * Everything else the sequence needs is handled by uc_dsi_dcs_write().
+ * Everything else the sequence needs is handled by uc_dcs_write().
  */
 #define DT_DCS_SHORT_WRITE_0P    0x05U
 #define DT_DCS_SHORT_WRITE_1P    0x15U
@@ -20,8 +18,28 @@ typedef struct {
 } cwu50_cmd_t;
 
 /*
- * Full cwu50 vendor init table, transcribed verbatim from
- * drivers/gpu/drm/panel/panel-cwu50.c :: cwu50_init_sequence().
+ * cwu50 bring-up for the ORIGINAL hardware batch.
+ *
+ * The ClockworkPi uConsole 5" panel exists in two hardware batches and
+ * each needs its own DDIC init table:
+ *
+ *   panel_uc_cwu50.c      _cwu50_seq2  190 entries  newer "future LCD"
+ *   panel_uc_cwu50old.c   _cwu50_seq   212 entries  original batch (here)
+ *
+ * Upstream these were two separate daemon trees -- fbdisplay6d drove the
+ * newer batch, fbdisplayd the original one -- and they are mutually
+ * exclusive: neither tree could light the other's glass.  Both carried a
+ * byte-identical _mode_cwu50 (720x1280, hfp 43 / hsw 20 / hbp 20,
+ * vfp 8 / vsw 2 / vbp 16, 62.5 MHz pixel clock, 4 lanes, 375 MHz HS
+ * clock), so the batches differ ONLY in this table; the clock, PHY, HVS
+ * and PV programming is shared with panel_uc_cwu50.c.
+ *
+ * The table below is transcribed verbatim from fbdisplayd/uc_cwu50.c,
+ * which mirrors drivers/gpu/drm/panel/panel-cwu50.c :: cwu50_init_sequence().
+ *
+ * Neither batch can be auto-detected: the only readback upstream ever
+ * issued (DCS 0x04) had its result discarded and never selected a
+ * sequence, so the conf "panel" key is the sole switch.
  */
 static const cwu50_cmd_t _cwu50_seq[] = {
     { 2, { 0xE1, 0x93, 0x00 }, 0 },
@@ -244,17 +262,40 @@ static const cwu50_cmd_t _cwu50_seq[] = {
 
 static int _send_one(const cwu50_cmd_t* c) {
     uint8_t dt = (c->len == 1) ? DT_DCS_SHORT_WRITE_0P : DT_DCS_SHORT_WRITE_1P;
-    int rc = uc_dsi_dcs_write(dt, c->data, c->len);
+    int rc = uc_dcs_write(dt, c->data, c->len);
     if (c->delay_ms > 0) {
-        uc_mdelay(c->delay_ms);
+        bcm283x_dsi1_mdelay(c->delay_ms);
     }
     return rc;
 }
 
-int uc_cwu50_init(void) {
+static int _send_checked(const cwu50_cmd_t* c, int* failures, int* consec) {
+    if (_send_one(c) != 0) {
+        (*failures)++;
+        (*consec)++;
+        if (*consec >= 3) {
+            return -1;
+        }
+    } else {
+        *consec = 0;
+    }
+    return 0;
+}
+
+static int _run_seq(const cwu50_cmd_t* seq, uint32_t len, int* failures, int* consec) {
+    uint32_t i;
+
+    for (i = 0; i < len; i++) {
+        if (_send_checked(&seq[i], failures, consec) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int uc_cwu50old_init(void) {
     int failures = 0;
     int consec = 0;
-    uint32_t i;
 
     /*
      * panel-cwu50.c :: cwu50_prepare() first calls
@@ -265,45 +306,39 @@ int uc_cwu50_init(void) {
      */
     {
         uint8_t tear[2] = { 0x35, 0x00 };
-        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2) != 0) {
+        if (uc_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2) != 0) {
             failures++;
             consec++;
         }
     }
 
-    for (i = 0; i < _CWU50_SEQ_LEN; i++) {
-        if (_send_one(&_cwu50_seq[i]) != 0) {
-            failures++;
-            consec++;
-            /*
-             * TXPKT1_DONE is a controller-side completion bit; it
-             * never needs a panel ACK. Three consecutive timeouts
-             * mean the DSI host itself cannot serialise packets
-             * (PHY/byte clock dead) — every later entry would eat
-             * its full 200ms timeout too, so bail out instead of
-             * burning ~45s on the rest of the table.
-             */
-            if (consec >= 3) {
-                return failures;
-            }
-        } else {
-            consec = 0;
-        }
+    if (_run_seq(_cwu50_seq, _CWU50_SEQ_LEN, &failures, &consec) != 0) {
+        /*
+         * TXPKT1_DONE is a controller-side completion bit; it never
+         * needs a panel ACK.  Three consecutive timeouts mean the DSI
+         * host itself cannot serialise packets (PHY/byte clock dead) --
+         * every later entry would eat its full 200 ms timeout too, so
+         * bail out instead of burning ~45 s on the rest of the table.
+         */
+        return failures;
     }
 
     /*
-     * After the table, cwu50_prepare() also invokes the standard
-     * DCS helpers exit_sleep_mode + set_display_on with their own
-     * 120 / 20 ms sleeps.  Repeat here — some panels tolerate the
-     * duplication, and skipping breaks display readiness on cwu50.
+     * After the table, cwu50_prepare() also invokes the standard DCS
+     * helpers exit_sleep_mode + set_display_on with their own 120/20 ms
+     * sleeps.  Repeat here: the original batch tolerates the
+     * duplication, and skipping it breaks display readiness on cwu50.
+     * The newer batch needs no such tail because _cwu50_seq2 already
+     * carries its own SLPOUT/DSPON/TE, which is why panel_uc_cwu50.c
+     * stops right after the table.
      */
     {
         uint8_t slpout[1] = { 0x11 };
         uint8_t dspon[1]  = { 0x29 };
-        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, slpout, 1) != 0) failures++;
-        uc_mdelay(120);
-        if (uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_0P, dspon,  1) != 0) failures++;
-        uc_mdelay(20);
+        if (uc_dcs_write(DT_DCS_SHORT_WRITE_0P, slpout, 1) != 0) failures++;
+        bcm283x_dsi1_mdelay(120);
+        if (uc_dcs_write(DT_DCS_SHORT_WRITE_0P, dspon,  1) != 0) failures++;
+        bcm283x_dsi1_mdelay(20);
     }
 
     return failures;

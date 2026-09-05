@@ -15,6 +15,8 @@
 #include <tinyjson/tinyjson.h>
 #include <ewoksys/klog.h>
 
+#include "panel_uc.h"
+
 /*
  * Waveshare DSI LCD framebuffer daemon for Raspberry Pi 3 (BCM2837)
  * and Pi 4 (BCM2711).  Two panel families share the 0x45 I2C address
@@ -181,16 +183,74 @@ static const bcm283x_dsi1_mode_t _rpi7_mode = {
 	.continuous_clock = 1,
 };
 
-#define PANEL_WS    0
-#define PANEL_RPI7  1
+#define PANEL_WS      0
+#define PANEL_RPI7    1
+/*
+ * ClockworkPi uConsole 5" (cwu50) and DevTerm 6.86" (cwd686).  Unlike the
+ * two families above these are raw MIPI DSI panels whose DDIC is brought
+ * up by a vendor DCS command sequence over the link, plus a GPIO reset
+ * pulse, an OCP8178 1-wire backlight and AXP223 PMIC rails — none of
+ * which an I2C-controlled panel has.  All of that lives in panel_uc.c;
+ * the DCS transport and the clock/PHY bring-up are in panel_uc_dsi.c, and
+ * HVS/PV stay on the shared arch library.
+ *
+ * cwu50 comes in two mutually exclusive hardware batches that need
+ * different DDIC init tables but identical timings (see the PROVENANCE
+ * note in panel_uc.h), hence the separate PANEL_CWU50OLD kind.
+ */
+#define PANEL_CWU50     2
+#define PANEL_CWD686    3
+#define PANEL_CWU50OLD  4
+
+#define PANEL_IS_UC(k)  ((k) == PANEL_CWU50 || (k) == PANEL_CWD686 || \
+                         (k) == PANEL_CWU50OLD)
+
+/* PANEL_* -> the UC_PANEL_* family id panel_uc.c expects. */
+static int _uc_family(int kind) {
+	switch (kind) {
+	case PANEL_CWD686:   return UC_PANEL_CWD686;
+	case PANEL_CWU50OLD: return UC_PANEL_CWU50OLD;
+	default:             return UC_PANEL_CWU50;
+	}
+}
+
+static const char* _panel_kind_name(int kind) {
+	switch (kind) {
+	case PANEL_RPI7:     return "rpi7(attiny+tc358762)";
+	case PANEL_CWU50:    return "cwu50(dcs+ocp8178+axp223)";
+	case PANEL_CWU50OLD: return "cwu50_old(dcs+ocp8178+axp223)";
+	case PANEL_CWD686:   return "cwd686(dcs+ocp8178+axp223)";
+	default:             return "ws(mcu)";
+	}
+}
+
 /* Resolved panel family: conf "panel" key or REG_ID probe. */
 static int _panel_kind = PANEL_WS;
 static int _panel_kind_conf = -1;   /* -1 = auto-detect */
 static int _conf_has_mode = 0;      /* conf carried explicit timing */
 
+/* OCP8178 level currently driven; the `bl` dev.cmd knob moves it. */
+static uint8_t _uc_bl_level = UC_BACKLIGHT_DEFAULT;
+
+/*
+ * Software contrast, the `ct` dev.cmd knob, transcribed from
+ * fbdisplay6d.  It is a plain centre-preserving LUT applied on the flush
+ * path, so it stays inert at the default 100% and never affects the
+ * ws/rpi7 families, which do not register uc_dev_cmd at all.
+ */
+#define UC_CONTRAST_MIN_PCT      20
+#define UC_CONTRAST_MAX_PCT      300
+#define UC_CONTRAST_DEFAULT_PCT  100
+#define UC_CONTRAST_STEP_PCT     10
+
+static uint32_t _contrast_pct = UC_CONTRAST_DEFAULT_PCT;
+static uint8_t _contrast_lut[256];
+
 static const char* _conf_file = "";
 static int _display_index = 0;
 static disp_info_t _fb_info;
+/* Hoisted out of main() so contrast_sync_fast_paths() can reach it. */
+static displayd_t _fbdisplayd_cfg;
 
 static int doargs(int argc, char* argv[]) {
 	int c = 0;
@@ -230,10 +290,20 @@ static void load_panel_conf(const char* conf_file) {
 
 	/* Optional panel-family override; "auto" (default) probes the
 	 * MCU.  Forcing "rpi7" swaps in its mode defaults first so the
-	 * timing keys below only need to list deviations. */
+	 * timing keys below only need to list deviations.  The ClockworkPi
+	 * families are never auto-detected: a raw DSI panel has no control
+	 * MCU at 0x45 to probe, so the conf must name it. */
 	{
 		const char* panel = json_get_str_def(conf_var, "panel", "auto");
-		if (strcmp(panel, "ws") == 0) {
+		int uc = uc_panel_from_name(panel);
+		if (uc >= 0) {
+			switch (uc) {
+			case UC_PANEL_CWD686:   _panel_kind_conf = PANEL_CWD686;   break;
+			case UC_PANEL_CWU50OLD: _panel_kind_conf = PANEL_CWU50OLD; break;
+			default:                _panel_kind_conf = PANEL_CWU50;    break;
+			}
+			_panel_mode = *uc_panel_mode(uc);
+		} else if (strcmp(panel, "ws") == 0) {
 			_panel_kind_conf = PANEL_WS;
 		} else if (strcmp(panel, "rpi7") == 0) {
 			_panel_kind_conf = PANEL_RPI7;
@@ -242,8 +312,18 @@ static void load_panel_conf(const char* conf_file) {
 	}
 	_conf_has_mode = 1;
 
-	_panel_mode.width  = (uint32_t)json_get_int_def(conf_var, "width",  (int)_panel_mode.width);
-	_panel_mode.height = (uint32_t)json_get_int_def(conf_var, "height", (int)_panel_mode.height);
+	/*
+	 * Geometry overrides are skipped for the ClockworkPi panels: their
+	 * vendor DCS init table is a matched set with the native mode, so a
+	 * conf width/height disagreeing with the panel would drive glass
+	 * whose DDIC was never initialised for those timings.  The
+	 * blanking / pixel-clock / lane keys stay honoured so a new panel
+	 * of the same family can be tried without a rebuild.
+	 */
+	if (!PANEL_IS_UC(_panel_kind_conf)) {
+		_panel_mode.width  = (uint32_t)json_get_int_def(conf_var, "width",  (int)_panel_mode.width);
+		_panel_mode.height = (uint32_t)json_get_int_def(conf_var, "height", (int)_panel_mode.height);
+	}
 	_panel_mode.hfp    = (uint32_t)json_get_int_def(conf_var, "hfp",    (int)_panel_mode.hfp);
 	_panel_mode.hsw    = (uint32_t)json_get_int_def(conf_var, "hsync",  (int)_panel_mode.hsw);
 	_panel_mode.hbp    = (uint32_t)json_get_int_def(conf_var, "hbp",    (int)_panel_mode.hbp);
@@ -259,6 +339,30 @@ static void load_panel_conf(const char* conf_file) {
 	slog("dsi_fbdisplayd: conf mode %ux%u pclk=%u lanes=%u\n",
 			_panel_mode.width, _panel_mode.height,
 			_panel_mode.pixel_clock_hz, _panel_mode.lanes);
+}
+
+static int contrast_active(void) {
+	return _contrast_pct != UC_CONTRAST_DEFAULT_PCT;
+}
+
+/* Centre-preserving gain: 128 maps to 128 at any percentage. */
+static void contrast_build_lut(void) {
+	for (int32_t i = 0; i < 256; ++i) {
+		int32_t v = (((i - 128) * (int32_t)_contrast_pct) / 100) + 128;
+
+		if (v < 0)
+			v = 0;
+		else if (v > 255)
+			v = 255;
+		_contrast_lut[i] = (uint8_t)v;
+	}
+}
+
+static inline uint32_t contrast_pixel(uint32_t s) {
+	return (s & 0xff000000U) |
+			((uint32_t)_contrast_lut[(s >> 16) & 0xff] << 16) |
+			((uint32_t)_contrast_lut[(s >> 8) & 0xff] << 8) |
+			(uint32_t)_contrast_lut[s & 0xff];
 }
 
 static uint16_t rgb565_from_u32(uint32_t s) {
@@ -290,13 +394,15 @@ static uint32_t blt16_pitch(const disp_info_t* fbinfo, const graph_t* g) {
 	uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
 			fbinfo->yoffset * fbinfo->pitch +
 			fbinfo->xoffset * 2;
+	int ct = contrast_active();
 
 	for (int32_t y = 0; y < g->h; ++y) {
 		uint16_t* dst_row = (uint16_t*)(dst_base + y * fbinfo->pitch);
 		const uint32_t* src_row = g->buffer + y * g->w;
 
 		for (int32_t x = 0; x < g->w; ++x) {
-			dst_row[x] = rgb565_from_u32(src_row[x]);
+			uint32_t s = src_row[x];
+			dst_row[x] = rgb565_from_u32(ct ? contrast_pixel(s) : s);
 		}
 	}
 	return (uint32_t)g->w * (uint32_t)g->h * 2U;
@@ -313,7 +419,14 @@ static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
 	if (phy->depth == 16)
 		return blt16_pitch(phy, g);
 
-	/* Zero-copy fast path: rendering already targets the framebuffer. */
+	/*
+	 * Zero-copy fast path: rendering already targets the framebuffer.
+	 * Contrast cannot be honoured here even when active — source and
+	 * destination are the same pixels, so a LUT pass would re-apply
+	 * itself on every frame and progressively destroy the image.
+	 * blt32_pitch() stays contrast-free for the same reason, so the
+	 * LUT is a 16bpp-only feature exactly as it was in fbdisplay6d.
+	 */
 	if ((uintptr_t)phy->pointer == (uintptr_t)g->buffer)
 		return (uint32_t)g->w * (uint32_t)g->h * 4U;
 	return blt32_pitch(phy, g);
@@ -335,6 +448,15 @@ static int32_t fail_stage(int stage) {
 	/* The register banks + port probes tell the story. */
 	if (stage >= 1) {
 		bcm283x_dsi1_dump();
+	}
+	/*
+	 * A handheld has no console to read, so also flag the stage on the
+	 * backlight.  Finite, unlike the standalone uConsole daemon's
+	 * uc_backlight_panic(): this returns and lets the daemon exit
+	 * normally so init can carry on.
+	 */
+	if (PANEL_IS_UC(_panel_kind)) {
+		uc_backlight_blink((uint32_t)stage);
 	}
 	return -1;
 }
@@ -362,7 +484,8 @@ static int32_t map_scanout_buffer(uint32_t w, uint32_t h, uint32_t dep) {
 	_fb_info.vheight = h;
 	_fb_info.depth = dep;
 	_fb_info.pitch = pitch;
-	_fb_info.phy_base = pick_fb_phys_base();
+	_fb_info.phy_base = PANEL_IS_UC(_panel_kind) ?
+			UC_PANEL_FB_PHYS_BASE : pick_fb_phys_base();
 	_fb_info.size = size;
 	_fb_info.size_max = size_max;
 	_fb_info.xoffset = 0;
@@ -655,6 +778,123 @@ static int32_t rpi7_backlight(void) {
 }
 
 /*
+ * dev.cmd backlight knob for the ClockworkPi panels.  The OCP8178 sits
+ * on its own 1-wire GPIO, so a level change never touches the scan-out
+ * path and needs no repaint.  The contrast knob below is the opposite
+ * case: it rewrites pixels, so it must force one.
+ */
+static void _uc_bl_set(int level) {
+	if (level < 0)
+		level = 0;
+	if (level > UC_BACKLIGHT_MAX_LEVEL)
+		level = UC_BACKLIGHT_MAX_LEVEL;
+	_uc_bl_level = (uint8_t)level;
+	uc_backlight_set(_uc_bl_level);
+}
+
+/*
+ * The rotate and dirty-rect fast paths blit straight into the scan-out
+ * buffer without passing through flush(), so neither can carry the
+ * contrast LUT.  Pull them out while contrast is active and put them
+ * back once it returns to 100%.
+ */
+static void contrast_sync_fast_paths(void) {
+	if (contrast_active()) {
+		_fbdisplayd_cfg.flush_rotate = NULL;
+		fbdisplayd_set_flush_rect(NULL);
+	} else {
+		_fbdisplayd_cfg.flush_rotate = fbdisplayd_rotate_to;
+		fbdisplayd_set_flush_rect(fbdisplayd_flush_rect_to);
+	}
+}
+
+static uint32_t clamp_contrast_pct(int pct) {
+	if (pct < UC_CONTRAST_MIN_PCT)
+		return UC_CONTRAST_MIN_PCT;
+	if (pct > UC_CONTRAST_MAX_PCT)
+		return UC_CONTRAST_MAX_PCT;
+	return (uint32_t)pct;
+}
+
+static void apply_contrast_pct(int pct) {
+	_contrast_pct = clamp_contrast_pct(pct);
+	contrast_build_lut();
+	contrast_sync_fast_paths();
+	/* Repaint what is already on screen through the new LUT. */
+	fbdisplayd_refresh();
+}
+
+static char* uc_dev_cmd(int from_pid, int argc, char** argv) {
+	char* ret = (char*)malloc(128);
+	char* end = NULL;
+	long requested = 0;
+
+	(void)from_pid;
+	if (ret == NULL)
+		return NULL;
+	if (argc <= 0 || argv == NULL || argv[0] == NULL) {
+		free(ret);
+		return NULL;
+	}
+	if (strcmp(argv[0], "help") == 0) {
+		snprintf(ret, 128,
+			"help: show commands\n"
+			"bl [up|down|0-%d]: backlight level\n"
+			"ct [up|down|%d-%d]: contrast percent (%d = off)\n",
+			UC_BACKLIGHT_MAX_LEVEL,
+			UC_CONTRAST_MIN_PCT, UC_CONTRAST_MAX_PCT,
+			UC_CONTRAST_DEFAULT_PCT);
+		return ret;
+	}
+	if (strcmp(argv[0], "bl") == 0) {
+		if (argc < 2 || argv[1] == NULL) {
+			snprintf(ret, 128, "backlight=%u/%d\n",
+				(unsigned)_uc_bl_level, UC_BACKLIGHT_MAX_LEVEL);
+			return ret;
+		}
+		if (strcmp(argv[1], "up") == 0) {
+			_uc_bl_set((int)_uc_bl_level + 1);
+		} else if (strcmp(argv[1], "down") == 0) {
+			_uc_bl_set((int)_uc_bl_level - 1);
+		} else {
+			requested = strtol(argv[1], &end, 10);
+			if (argv[1][0] == 0 || end == NULL || *end != 0) {
+				snprintf(ret, 128, "usage: bl [up|down|0-%d]\n",
+					UC_BACKLIGHT_MAX_LEVEL);
+				return ret;
+			}
+			_uc_bl_set((int)requested);
+		}
+		snprintf(ret, 128, "backlight=%u/%d\n",
+			(unsigned)_uc_bl_level, UC_BACKLIGHT_MAX_LEVEL);
+		return ret;
+	}
+	if (strcmp(argv[0], "ct") == 0) {
+		if (argc < 2 || argv[1] == NULL) {
+			snprintf(ret, 128, "contrast=%u%%\n", (unsigned)_contrast_pct);
+			return ret;
+		}
+		if (strcmp(argv[1], "up") == 0) {
+			apply_contrast_pct((int)_contrast_pct + UC_CONTRAST_STEP_PCT);
+		} else if (strcmp(argv[1], "down") == 0) {
+			apply_contrast_pct((int)_contrast_pct - UC_CONTRAST_STEP_PCT);
+		} else {
+			requested = strtol(argv[1], &end, 10);
+			if (argv[1][0] == 0 || end == NULL || *end != 0) {
+				snprintf(ret, 128, "usage: ct [up|down|%d-%d]\n",
+					UC_CONTRAST_MIN_PCT, UC_CONTRAST_MAX_PCT);
+				return ret;
+			}
+			apply_contrast_pct((int)requested);
+		}
+		snprintf(ret, 128, "contrast=%u%%\n", (unsigned)_contrast_pct);
+		return ret;
+	}
+	snprintf(ret, 128, "unknown command: %s\ntry: help\n", argv[0]);
+	return ret;
+}
+
+/*
  * Resolve which panel family sits on the connector.  The conf
  * "panel" key wins; otherwise probe REG_ID (0x80) — only the ATTINY
  * answers 0xde/0xc3 there, the WS MCU does not.  On PANEL_RPI7 the
@@ -677,7 +917,7 @@ static void panel_setup(void) {
 		}
 	}
 	slog("dsi_fbdisplayd: panel %s %ux%u\n",
-			_panel_kind == PANEL_RPI7 ? "rpi7(attiny+tc358762)" : "ws(mcu)",
+			_panel_kind_name(_panel_kind),
 			_panel_mode.width, _panel_mode.height);
 }
 
@@ -712,7 +952,9 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * (see ws_panel_power): a cold DDIC must see its rails up
 	 * before the lanes go LP-11.
 	 */
-	if (_panel_kind == PANEL_RPI7)
+	if (PANEL_IS_UC(_panel_kind))
+		uc_panel_prepare();
+	else if (_panel_kind == PANEL_RPI7)
 		rpi7_panel_power();
 	else
 		ws_panel_power();
@@ -725,32 +967,54 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * that when reported OFF; the port probe below is the real
 	 * arbiter for everything else.
 	 */
-	st = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_VIDEO_SCALER);
-	if (st == 0) {
-		if (bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_VIDEO_SCALER, 1) != 0)
-			return fail_stage(1);
-		bcm283x_dsi1_mdelay(20);
-	}
+	if (PANEL_IS_UC(_panel_kind)) {
+		/*
+		 * fbdisplay6d's CM4 order: DSI1 domain first — and a failed
+		 * set IS fatal there, since the glass hangs off that port and
+		 * nothing downstream can rescue it — then VIDEO_SCALER.
+		 * DSI0 is deliberately left alone: the ClockworkPi panels are
+		 * DSI1-only, so powering a second analog island is a deviation
+		 * from the proven sequence with nothing to gain.
+		 */
+		st = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_DSI1);
+		if (st == 0) {
+			if (bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_DSI1, 1) != 0)
+				return fail_stage(1);
+			bcm283x_dsi1_mdelay(20);
+		}
+		st = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_VIDEO_SCALER);
+		if (st == 0) {
+			bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_VIDEO_SCALER, 1);
+			bcm283x_dsi1_mdelay(20);
+		}
+	} else {
+		st = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_VIDEO_SCALER);
+		if (st == 0) {
+			if (bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_VIDEO_SCALER, 1) != 0)
+				return fail_stage(1);
+			bcm283x_dsi1_mdelay(20);
+		}
 
-	/*
-	 * The DSI analog AFE island is parked off after boot; a live
-	 * digital bank with a dead AFE shows up as LP contention and
-	 * lanes that never settle to STOP (exactly the cold-DSI0
-	 * signature).  Firmware domain ids come from
-	 * dt-bindings/power/raspberrypi-power.h (+1): DSI0=18, DSI1=19.
-	 * There is no pixelvalve domain in the firmware table.  A
-	 * failed set is not fatal (old firmware blobs may not know a
-	 * domain id).
-	 */
-	{
-		int d0 = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_DSI0);
-		int d1 = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_DSI1);
+		/*
+		 * The DSI analog AFE island is parked off after boot; a live
+		 * digital bank with a dead AFE shows up as LP contention and
+		 * lanes that never settle to STOP (exactly the cold-DSI0
+		 * signature).  Firmware domain ids come from
+		 * dt-bindings/power/raspberrypi-power.h (+1): DSI0=18, DSI1=19.
+		 * There is no pixelvalve domain in the firmware table.  A
+		 * failed set is not fatal (old firmware blobs may not know a
+		 * domain id).
+		 */
+		{
+			int d0 = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_DSI0);
+			int d1 = bcm283x_dsi1_power_domain_get(BCM283X_PWR_DOMAIN_DSI1);
 
-		if (d0 == 0)
-			bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_DSI0, 1);
-		if (d1 == 0)
-			bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_DSI1, 1);
-		bcm283x_dsi1_mdelay(20);
+			if (d0 == 0)
+				bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_DSI0, 1);
+			if (d1 == 0)
+				bcm283x_dsi1_power_domain_set(BCM283X_PWR_DOMAIN_DSI1, 1);
+			bcm283x_dsi1_mdelay(20);
+		}
 	}
 
 	/*
@@ -763,7 +1027,16 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * A powered-off port silently drops writes, so the first live
 	 * port in that order wins.
 	 */
-	{
+	if (PANEL_IS_UC(_panel_kind)) {
+		/*
+		 * fbdisplay6d hardwires DSI1 and never probes.  Probing is
+		 * not neutral here: if DSI1's write-readback missed and DSI0
+		 * answered, every register write from then on would go to the
+		 * wrong host — the backlight (plain GPIO) still comes up while
+		 * the panel stays deaf, i.e. exactly "backlight on, no image".
+		 */
+		bcm283x_dsi1_set_port(1);
+	} else {
 		int first = 1;
 		if (bcm283x_dsi1_probe_port(first) == 0) {
 			bcm283x_dsi1_set_port(first);
@@ -782,30 +1055,84 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * The firmware is still streaming video on this port; kill its
 	 * DISP0/CTRL/PV before reprogramming the PHY, or the live HS
 	 * transmitter fights ours (LP contention, lanes never stop).
+	 * The ClockworkPi boards skip this: their VC firmware has no
+	 * cwu50/cwd686 panel config at all, so there is no stream to hand
+	 * off, and gating DSI CTRL is a step fbdisplay6d never performs.
 	 */
-	bcm283x_dsi1_firmware_handoff();
+	if (!PANEL_IS_UC(_panel_kind))
+		bcm283x_dsi1_firmware_handoff();
 
-	if (bcm283x_dsi1_clock_bringup(&_panel_mode, &adj) != 0)
-		return fail_stage(2);
-	if (bcm283x_dsi1_alive() != 0) {
-		/* ID register wrong: register bus/power issue, not timing. */
-		return fail_stage(3);
-	}
-
-	if (bcm283x_dsi1_host_bringup(_panel_mode.lanes, adj.hs_clock_hz,
-			_panel_mode.continuous_clock) != 0)
-		return fail_stage(4);
-	if (bcm283x_dsi1_lanes_stopped() != 0) {
+	if (PANEL_IS_UC(_panel_kind)) {
 		/*
-		 * DSI1 STAT lane-stop bits are documented (and proven on
-		 * CM4); DSI0's STAT layout is not, so on port 0 a miss is
-		 * a warning, not a failure — upstream never checks.
+		 * fbdisplay6d's clock and host layers, transcribed into
+		 * panel_uc_dsi.c.  The shared library's equivalents are not
+		 * used for these two stages: they deviate from the proven
+		 * sequence in the PLLD VCO derivation, the DSI1E escape-clock
+		 * parent and the CTRL_EN ordering, and every one of those
+		 * lands inside stage 2 -> stage 4.  The full register-level
+		 * list is in that file's header comment.
+		 *
+		 * The target is the vendor's hardcoded hs_clock_hz, and the
+		 * HS clock PLLD actually generates (its return value) is what
+		 * the PHY timing bank is built from — fbdisplay6d does exactly
+		 * this by passing mode->hs_clock_hz to both uc_clock_bringup
+		 * and uc_dsi_set_hs_clock.
 		 */
-		if (bcm283x_dsi1_port() == 0) {
-			printf("dsi_fbdisplayd: WARN lanes not stopped\n");
-			bcm283x_dsi1_dump();
-		} else
+		uint32_t hs = uc_clock_bringup_dsi1(
+				uc_panel_hs_clock(_uc_family(_panel_kind)));
+		if (hs == 0)
+			return fail_stage(2);
+		if (uc_dsi_alive() != 0) {
+			/* ID register wrong: register bus/power issue, not timing. */
+			return fail_stage(3);
+		}
+		if (uc_dsi_bringup(hs) != 0 || uc_dsi_lanes_stopped() != 0)
+			/* PHY refused to drive LP-11 on the data lanes. */
 			return fail_stage(4);
+
+		/*
+		 * HVS and PV stay on the shared library, so adj has to
+		 * describe the mode uc_pv_configure() would have programmed:
+		 * the RAW panel blanking (uc_pv.c writes mode->hfp verbatim —
+		 * there is no integer-PLL compensation step in the uConsole
+		 * tree), the HS clock PLLD really made, and
+		 * PIX_CLK_DIV = 24bpp / lanes.
+		 */
+		adj.width  = _panel_mode.width;
+		adj.height = _panel_mode.height;
+		adj.hfp = _panel_mode.hfp;
+		adj.hsw = _panel_mode.hsw;
+		adj.hbp = _panel_mode.hbp;
+		adj.vfp = _panel_mode.vfp;
+		adj.vsw = _panel_mode.vsw;
+		adj.vbp = _panel_mode.vbp;
+		adj.hs_clock_hz = hs;
+		adj.pix_clk_divider = (_panel_mode.lanes != 0) ?
+				(24U / _panel_mode.lanes) : 6U;
+		adj.pixel_clock_hz = hs / adj.pix_clk_divider;
+	} else {
+		if (bcm283x_dsi1_clock_bringup(&_panel_mode, &adj) != 0)
+			return fail_stage(2);
+		if (bcm283x_dsi1_alive() != 0) {
+			/* ID register wrong: register bus/power issue, not timing. */
+			return fail_stage(3);
+		}
+
+		if (bcm283x_dsi1_host_bringup(_panel_mode.lanes, adj.hs_clock_hz,
+				_panel_mode.continuous_clock) != 0)
+			return fail_stage(4);
+		if (bcm283x_dsi1_lanes_stopped() != 0) {
+			/*
+			 * DSI1 STAT lane-stop bits are documented (and proven on
+			 * CM4); DSI0's STAT layout is not, so on port 0 a miss is
+			 * a warning, not a failure — upstream never checks.
+			 */
+			if (bcm283x_dsi1_port() == 0) {
+				printf("dsi_fbdisplayd: WARN lanes not stopped\n");
+				bcm283x_dsi1_dump();
+			} else
+				return fail_stage(4);
+		}
 	}
 
 	/*
@@ -814,13 +1141,33 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * reset + the full TC358762 register init over DSI LP writes
 	 * (display-on/backlight still waits for the live stream).
 	 */
-	if (_panel_kind == PANEL_RPI7) {
+	/*
+	 * fbdisplay6d maps the scan-out window BEFORE the panel init (its
+	 * stage 5 precedes stage 6).  Keep that order for the uc families so
+	 * the SYS_MEM_MAP syscall is not interleaved between the DCS table
+	 * and the pipeline start.
+	 */
+	if (PANEL_IS_UC(_panel_kind) && map_scanout_buffer(w, h, dep) != 0)
+		return fail_stage(5);
+
+	if (PANEL_IS_UC(_panel_kind)) {
+		/*
+		 * Reset pulse then the vendor DCS table, both at LP-11 and
+		 * both before HVS/PV start pushing pixels — upstream keeps
+		 * DISP0_CTRL at 0 through panel init, and panel-*.c's
+		 * .prepare() (which ends in SLPOUT + DSPON) runs at bridge
+		 * pre_enable, not after the stream is live.
+		 */
+		uc_panel_reset_pulse();
+		if (uc_panel_init_table(_uc_family(_panel_kind)) != 0)
+			return fail_stage(6);
+	} else if (_panel_kind == PANEL_RPI7) {
 		if (rpi7_bridge_enable() != 0)
 			return fail_stage(6);
 	} else if (ws_panel_reset_pulse() != 0)
 		printf("dsi_fbdisplayd: WARN panel reset pulse failed\n");
 
-	if (map_scanout_buffer(w, h, dep) != 0)
+	if (!PANEL_IS_UC(_panel_kind) && map_scanout_buffer(w, h, dep) != 0)
 		return fail_stage(5);
 
 	/*
@@ -851,8 +1198,22 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 		return fail_stage(7);
 	bcm283x_dsi1_pv_configure(&adj);
 	bcm283x_dsi1_pv_enable();
-	bcm283x_dsi1_video_mode(adj.pix_clk_divider);
-	bcm283x_dsi1_pv_video_enable();
+	if (PANEL_IS_UC(_panel_kind)) {
+		/*
+		 * fbdisplayd AND fbdisplay6d both kick PV VIDEN before the
+		 * DISP0 video-mode write — the reverse of the
+		 * vc4_crtc_atomic_enable order this library documents and the
+		 * ws/rpi7 families use.  Both uConsole daemons are proven on
+		 * this glass, so their order wins here.  The video-mode write
+		 * itself goes through panel_uc_dsi.c too, since the host was
+		 * brought up there and DISP0_CTRL has been 0 all along.
+		 */
+		bcm283x_dsi1_pv_video_enable();
+		uc_dsi_video_mode();
+	} else {
+		bcm283x_dsi1_video_mode(adj.pix_clk_divider);
+		bcm283x_dsi1_pv_video_enable();
+	}
 
 	/*
 	 * Runtime evidence, not just "we wrote the registers":
@@ -865,21 +1226,34 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * hstart handshake (WAIT_HSTART) is the blocker, clearing it
 	 * lets the PV free-run: log which path got us running.
 	 */
-	if (bcm283x_dsi1_hvs_wait_running(400) != 0) {
-		printf("dsi: no vstart with WAIT_HSTART; retrying free-run\n");
-		bcm283x_dsi1_pv_clear_wait_hstart();
+	if (PANEL_IS_UC(_panel_kind)) {
+		/*
+		 * fbdisplay6d's budgets (100ms/300ms) and no recovery path:
+		 * clearing WAIT_HSTART or re-targeting the HVS crossbar both
+		 * rewrite PV/HVS state the proven uConsole sequence never
+		 * touches, so a miss is reported rather than papered over.
+		 */
+		if (bcm283x_dsi1_hvs_wait_running(100) != 0)
+			return fail_stage(7);
+		if (bcm283x_dsi1_hvs_frames_advancing(300) != 0)
+			return fail_stage(8);
+	} else {
 		if (bcm283x_dsi1_hvs_wait_running(400) != 0) {
-			/*
-			 * PV may be scanning while its vstart lands on
-			 * another FIFO than upstream's hardwired map
-			 * says.  Probe the crossbar and follow it.
-			 */
-			if (bcm283x_dsi1_hvs_crossbar_probe() != 0)
-				return fail_stage(7);
+			printf("dsi: no vstart with WAIT_HSTART; retrying free-run\n");
+			bcm283x_dsi1_pv_clear_wait_hstart();
+			if (bcm283x_dsi1_hvs_wait_running(400) != 0) {
+				/*
+				 * PV may be scanning while its vstart lands on
+				 * another FIFO than upstream's hardwired map
+				 * says.  Probe the crossbar and follow it.
+				 */
+				if (bcm283x_dsi1_hvs_crossbar_probe() != 0)
+					return fail_stage(7);
+			}
 		}
+		if (bcm283x_dsi1_hvs_frames_advancing(500) != 0)
+			return fail_stage(8);
 	}
-	if (bcm283x_dsi1_hvs_frames_advancing(500) != 0)
-		return fail_stage(8);
 
 	/*
 	 * Stream is provably live: DRM bridge enable step.  The panel
@@ -887,7 +1261,10 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * against a valid video stream and locks immediately instead
 	 * of latching no-signal.
 	 */
-	if (_panel_kind == PANEL_RPI7) {
+	if (PANEL_IS_UC(_panel_kind)) {
+		/* SLPOUT/DSPON already ran at the tail of the DCS table and
+		 * the backlight was lit in uc_panel_prepare(). */
+	} else if (_panel_kind == PANEL_RPI7) {
 		if (rpi7_backlight() != 0)
 			return fail_stage(6);
 	} else if (ws_panel_enable() != 0)
@@ -897,25 +1274,29 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 }
 
 int main(int argc, char** argv) {
-	displayd_t fbdisplayd;
 	int opti = doargs(argc, argv);
 	const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
 
 	load_panel_conf(_conf_file);
+	if (PANEL_IS_UC(_panel_kind_conf))
+		fbdisplayd_set_dev_cmd(uc_dev_cmd);
 
-	memset(&fbdisplayd, 0, sizeof(fbdisplayd));
-	fbdisplayd.splash = NULL;   /* default logo splash from libdisplayd */
-	fbdisplayd.flush = flush;
-	/* flush is a plain blit into the scan-out buffer, so the
-	 * libdisplayd generic direct-to-fb rotation applies. */
-	fbdisplayd.flush_rotate = fbdisplayd_rotate_to;
-	/* Non-rotated scan-out is also a plain memory blit, so
-	 * libdisplayd can push just the dirty rects. */
-	fbdisplayd_set_flush_rect(fbdisplayd_flush_rect_to);
-	fbdisplayd.init = init;
-	fbdisplayd.get_info = get_info;
+	memset(&_fbdisplayd_cfg, 0, sizeof(_fbdisplayd_cfg));
+	_fbdisplayd_cfg.splash = NULL;   /* default logo splash from libdisplayd */
+	_fbdisplayd_cfg.flush = flush;
+	_fbdisplayd_cfg.init = init;
+	_fbdisplayd_cfg.get_info = get_info;
+	/*
+	 * flush is a plain blit into the scan-out buffer, so libdisplayd's
+	 * generic direct-to-fb rotation and dirty-rect push both apply —
+	 * but only while contrast is off, since neither fast path goes
+	 * through flush() where the LUT lives.  contrast_sync_fast_paths()
+	 * installs them here and swaps them out on every `ct` change.
+	 */
+	contrast_build_lut();
+	contrast_sync_fast_paths();
 
-	return fbdisplayd_run(&fbdisplayd, mnt_point,
+	return fbdisplayd_run(&_fbdisplayd_cfg, mnt_point,
 			_panel_mode.width, _panel_mode.height,
 			_conf_file, _display_index);
 }

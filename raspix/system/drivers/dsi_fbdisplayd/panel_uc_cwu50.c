@@ -1,6 +1,4 @@
-#include "uc_cwu50.h"
-#include "uc_dsi.h"
-#include "uc_time.h"
+#include "panel_uc.h"
 
 #include <stdint.h>
 
@@ -8,7 +6,7 @@
  * MIPI DSI data types.  For panel init the driver only uses:
  *   0x05 -- DCS short write, no parameter (1-byte payload)
  *   0x15 -- DCS short write, 1 parameter  (2-byte payload)
- * Everything else the sequence needs is handled by uc_dsi_dcs_write().
+ * Everything else the sequence needs is handled by uc_dcs_write().
  */
 #define DT_DCS_SHORT_WRITE_0P    0x05U
 #define DT_DCS_SHORT_WRITE_1P    0x15U
@@ -223,9 +221,9 @@ static const cwu50_cmd_t _cwu50_seq2[] = {
 
 static int _send_one(const cwu50_cmd_t* c) {
     uint8_t dt = (c->len == 1) ? DT_DCS_SHORT_WRITE_0P : DT_DCS_SHORT_WRITE_1P;
-    int rc = uc_dsi_dcs_write(dt, c->data, c->len);
+    int rc = uc_dcs_write(dt, c->data, c->len);
     if (c->delay_ms > 0) {
-        uc_mdelay(c->delay_ms);
+        bcm283x_dsi1_mdelay(c->delay_ms);
     }
     return rc;
 }
@@ -267,7 +265,7 @@ int uc_cwu50_init(void) {
      */
     {
         uint8_t tear[2] = { 0x35, 0x00 };
-        int tear_rc = uc_dsi_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2);
+        int tear_rc = uc_dcs_write(DT_DCS_SHORT_WRITE_1P, tear, 2);
         if (tear_rc != 0) {
             failures++;
             consec++;
@@ -279,11 +277,20 @@ int uc_cwu50_init(void) {
      * switch back to page 0 before running the new-panel sequence.  For
      * fb6d we target only the newer hardware batch, so the readback
      * result is intentionally ignored.
+     *
+     * fbdisplay6d also issued a DCS 0x04 read here
+     * (`(void)uc_dsi_dcs_read(0x04, readbuf, 3, 1)`) purely as link
+     * evidence: the value was discarded and never influenced which
+     * sequence ran.  The shared arch library exposes no DCS read
+     * primitive (bcm283x_dsi1_cmd_write only), and adding one would mean
+     * rebuilding libarch_bcm283x for a probe whose result is thrown
+     * away, so the write-side ordering above is kept and the read is
+     * dropped.  A DCS read does not alter DDIC state, so the panel sees
+     * the identical command stream.
      */
     {
         static const cwu50_cmd_t predetect_slpout = { 1, { 0x11, 0x00, 0x00 }, 120 };
         static const cwu50_cmd_t predetect_page0  = { 2, { 0xE0, 0x00, 0x00 }, 0 };
-        uint8_t readbuf[3];
 
         if (_send_checked(&predetect_slpout, &failures, &consec) != 0) {
             return failures;
@@ -291,7 +298,6 @@ int uc_cwu50_init(void) {
         if (_send_checked(&predetect_page0, &failures, &consec) != 0) {
             return failures;
         }
-        (void)uc_dsi_dcs_read(0x04, readbuf, sizeof(readbuf), 1);
     }
 
     if (_run_seq(_cwu50_seq2, _CWU50_SEQ2_LEN, &failures, &consec) != 0) {
