@@ -58,6 +58,8 @@
 
 #define SOUND_FEED_KICK_SLEEP_US 500U
 #define SOUND_FEED_IDLE_SLEEP_US 1000U
+/* buffering towards the start target with nothing to publish: poll lazily */
+#define SOUND_FEED_WAIT_SLEEP_US 4000U
 #define SOUND_FEED_DEEP_IDLE_SLEEP_US 200000U
 
 /* never wait for more than half the PCM ring before starting playback */
@@ -548,10 +550,20 @@ static uint32_t audio_service_ring_locked(void) {
 }
 
 static int audio_start_ring_locked(void) {
-    int ret = rp1_audio_setup_ring(SOUND_RING_SLOTS, SOUND_RING_SLOT_FRAMES);
-    if (ret != RP1_AUDIO_ERR_NONE) {
-        klog("soundpwm: rp1 ring setup failed %d\n", ret);
-        return -1;
+    int ret;
+
+    /*
+     * Reuse the ring across an idle stop/restart: the geometry never changes
+     * within one pcm_config, and rp1_audio_start() rebuilds every descriptor
+     * and resets CH_LLP to slot 0 anyway.
+     */
+    if (rp1_audio_slots() != SOUND_RING_SLOTS ||
+            rp1_audio_slot_frames() != SOUND_RING_SLOT_FRAMES) {
+        ret = rp1_audio_setup_ring(SOUND_RING_SLOTS, SOUND_RING_SLOT_FRAMES);
+        if (ret != RP1_AUDIO_ERR_NONE) {
+            klog("soundpwm: rp1 ring setup failed %d\n", ret);
+            return -1;
+        }
     }
     audio_resamp_reset();
 
@@ -746,6 +758,14 @@ static uint32_t sound_feeder_sleep_usec(void) {
     if (_snd.frame_bytes != 0 &&
             audio_pcm_ring_pending_bytes() >= _snd.frame_bytes) {
         return SOUND_FEED_KICK_SLEEP_US;
+    }
+    if (_snd.started && !_snd.dma_running) {
+        /*
+         * Either still buffering towards the start target or idle-stopped:
+         * there is no live ring to republish, so the next write() is what
+         * matters and a lazy poll is enough.
+         */
+        return SOUND_FEED_WAIT_SLEEP_US;
     }
     return SOUND_FEED_IDLE_SLEEP_US;
 }
@@ -1131,12 +1151,17 @@ static void audio_hw_init(void) {
      * so only the headphone detect and amplifier enable pins are ours here.
      * The detect pad keeps whatever pull the RP1 firmware left on it, the
      * same as the bcm283x driver did by not touching GPPUD.
+     *
+     * This runs BEFORE rp1_audio_init(): the amplifier has to be pinned off
+     * first, because as soon as the pins are muxed the modulator drives them
+     * with its muted bias level (a 50% duty PWM) and an amplifier that is
+     * still floating from the firmware's boot state would turn that into an
+     * audible pop. audio_update_amp_state() is what releases it afterwards.
      */
     bcm2712_gpio_config(SOUNDPWM_GPIO_HP_DETECT, GPIO_FUNC_INPUT);
     bcm2712_gpio_config(SOUNDPWM_GPIO_AMP_ENABLE, GPIO_FUNC_OUTPUT);
     bcm2712_gpio_write(SOUNDPWM_GPIO_AMP_ENABLE, false);
     _snd_amp_enabled = false;
-    audio_update_amp_state();
 }
 
 int main(int argc, char** argv) {
@@ -1150,17 +1175,19 @@ int main(int argc, char** argv) {
     }
 
     bcm2712_gpio_init();
+    /* hold the amplifier off before the modulator reaches the pins */
+    audio_hw_init();
     /*
      * Audio clock tree, audio_out block, DMAC and the GPIO12/13 "aaud"
-     * pinmux. The output comes out of this muted, so nothing clicks before
-     * audio_hw_init() has the amplifier enable pin under control.
+     * pinmux. The output comes out of this muted, so it is safe to let the
+     * amplifier follow the headphone jack now.
      */
     ret = rp1_audio_init(0);
     if (ret != RP1_AUDIO_ERR_NONE) {
         klog("soundpwm: rp1 audio init failed %d\n", ret);
         return -1;
     }
-    audio_hw_init();
+    audio_update_amp_state();
     pthread_mutex_init(&_snd_lock, NULL);
 
     vdevice_t dev;

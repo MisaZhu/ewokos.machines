@@ -121,37 +121,16 @@ static void sdhci_card_power_off(void) {
 
 static void power_off(){
     /*
-     * Steps 1/2/4 - software-reset the SDHCI hosts FIRST to stop them from
-     * driving the SDIO pads, then cut card VDD.  Must happen before the GPIO
-     * walk: on raspix the equivalent is high-Z'ing GPIO48-53 as the first
-     * action; on BCM2712 the SDIO pads are dedicated SoC pins controlled by
-     * the host, so the host reset is the disconnect mechanism.
-     */
-    sdhci_card_power_off();
-
-    /*
-     * Step 3 - park the RP1 GPIOs. Every pin is driven low to minimise
-     * residual current, except GPIO0/1, which stay muxed to RP1 i2c0 so
-     * the Step 6 PMIC command still gets through. That pinmux is set once
-     * by bcm2712_i2c_init() and never touched again, so the bus survives
-     * this walk (the old bit-banged driver had to re-mux on every
-     * transaction). The level is written before the direction is switched,
-     * so no pin glitches high on the way down.
-     */
-    for(uint32_t i = 0; i < RP1_NUM_GPIOS; i++){
-        if(i == 0 || i == 1)
-            continue; /* PMU i2c bus */
-        bcm2712_gpio_write(i, false);
-        bcm2712_gpio_config(i, GPIO_FUNC_OUTPUT);
-    }
-
-    /* Step 5 - let the card rail and bus caps discharge before the PMIC cut. */
-    proc_usleep(20000); /* 20 ms */
-
-    /*
-     * Step 6 - AXP223 software power-off (REG 0x32 bit7). Retry up to 5
-     * times: the RP1 DW i2c controller can transiently fail if a previous
-     * poll left it in master-on-hold state.
+     * CRITICAL: send the AXP223 power-off command FIRST, before touching
+     * any GPIO or SDHCI register.  The RP1 DW_apb_i2c controller is known
+     * to wedge when other RP1 subsystems are disturbed (the GPIO walk
+     * drives 52 pins simultaneously, causing internal RP1 bus contention).
+     * On CM4/raspix the bit-banged i2c re-muxes pins per transaction and
+     * is immune to this; on CM5 the hardware controller is not.
+     *
+     * At this point the i2c bus is in a known-good state (power_step just
+     * successfully polled REG 0x4A to detect the button press), so the
+     * transaction is guaranteed to go through.
      */
     for(int attempt = 0; attempt < 5; attempt++) {
         int reg = bcm2712_i2c_getb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x32);
@@ -162,23 +141,37 @@ static void power_off(){
     }
 
     /*
-     * High-Z the PMU i2c pins AFTER the command lands.  The AXP223's i2c
-     * interface remains powered from VBAT (always-on domain) even after
-     * software power-off.  If the RP1 internal pull-ups on GPIO0/1 stay
-     * enabled, current flows from the PMU's SDA/SCL pins through the
-     * pull-ups into the collapsing VDDIO (3.3V) rail, keeping it partially
-     * alive — the "faint power-button LED" symptom.  On CM4/raspix the
-     * bit-banged i2c driver never enables internal pull-ups, so this path
-     * does not exist there.
+     * Clamp the PMU i2c pins LOW immediately after the command.
      *
-     * Disable pull-ups and park both pins as high-Z inputs to eliminate the
-     * backfeed.  The AXP223 no longer needs the bus (power-off is latched
-     * internally), so releasing it is safe.
+     * The carrier has external pull-ups on SDA/SCL tied to VBAT (always-on).
+     * After the PMU begins its power-off sequence and VDDIO collapses, those
+     * pull-ups would raise the lines above VDDIO+0.7V, forward-biasing the
+     * RP1 pad ESD diodes and backfeeding the 3.3V rail (faint power LED).
+     * Driving LOW clamps the pads at 0V, keeping the ESD diodes off.
      */
     bcm2712_gpio_pull(0, GPIO_PULL_NONE);
     bcm2712_gpio_pull(1, GPIO_PULL_NONE);
-    bcm2712_gpio_config(0, GPIO_FUNC_INPUT);
-    bcm2712_gpio_config(1, GPIO_FUNC_INPUT);
+    bcm2712_gpio_write(0, false);
+    bcm2712_gpio_write(1, false);
+    bcm2712_gpio_config(0, GPIO_FUNC_OUTPUT);
+    bcm2712_gpio_config(1, GPIO_FUNC_OUTPUT);
+
+    /*
+     * Software-reset the SDHCI hosts to stop them driving the SDIO pads.
+     * On BCM2712 the SD card sits on dedicated SoC pads (not RP1 GPIOs),
+     * so the host reset is the only way to disconnect the output drivers
+     * and prevent backfeed through the card's ESD diodes.
+     */
+    sdhci_card_power_off();
+
+    /*
+     * Park remaining RP1 GPIOs low to minimise residual current during
+     * the PMU's power-off sequence (rails collapse over ~100ms).
+     */
+    for(uint32_t i = 2; i < RP1_NUM_GPIOS; i++){
+        bcm2712_gpio_write(i, false);
+        bcm2712_gpio_config(i, GPIO_FUNC_OUTPUT);
+    }
 
     while(1);
 }
