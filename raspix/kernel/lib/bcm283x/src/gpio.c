@@ -18,7 +18,7 @@ void bcm283x_gpio_config(int32_t no, int32_t gpio_sel) {
 void bcm283x_gpio_pull(int32_t no, int32_t pull_dir) {
     uint32_t shift = (no % 32);
     uint32_t index = (no/32) + 1;
-    *GPIO_PUD = pull_dir & bcm283x_gpio_pull_MASK;
+    *GPIO_PUD = pull_dir & GPIO_PULL_MASK;
 
     uint32_t n = 150; while(n > 0) n--; //delay 150
     put32((ewokos_addr_t)GPIO_PUD + (index<<2), 1<<shift); /* enable ppud clock */

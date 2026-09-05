@@ -135,10 +135,10 @@ static int32_t bcm283x_i2c0_get_alt(int32_t gpio) {
     case 1:
     case 28:
     case 29:
-        return GPIO_ALTF0;
+        return GPIO_FUNC_ALTF0;
     case 44:
     case 45:
-        return GPIO_ALTF1;
+        return GPIO_FUNC_ALTF1;
     default:
         return -1;
     }
@@ -148,7 +148,7 @@ static int32_t bcm283x_i2c1_get_alt(int32_t gpio) {
         switch (gpio) {
         case 2:
         case 3:
-                return GPIO_ALTF0;
+                return GPIO_FUNC_ALTF0;
         default:
                 return -1;
         }

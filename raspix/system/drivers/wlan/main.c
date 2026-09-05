@@ -216,7 +216,7 @@ void clock_init(void){
 
     /* Route GPCLK2 to the WLAN 32k pin before releasing module reset. */
     bcm283x_gpio_init();
-    bcm283x_gpio_config(43, GPIO_ALTF0);
+    bcm283x_gpio_config(43, GPIO_FUNC_ALTF0);
     usleep(20000);
 
     //set 32.768 clock for wifi module

@@ -113,7 +113,7 @@
 #define SOUNDPWM_SOFT_GAIN_DEN 1
 #define SOUNDPWM_GPIO_LEFT 18
 #define SOUNDPWM_GPIO_RIGHT 19
-#define SOUNDPWM_GPIO_ALT GPIO_ALTF5
+#define SOUNDPWM_GPIO_ALT GPIO_FUNC_ALTF5
 typedef struct dma_cb {
    unsigned int ti;
    unsigned int source_ad;

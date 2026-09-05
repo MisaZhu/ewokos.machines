@@ -349,17 +349,17 @@ static void bcm283x_sdhci_gpio_init(bool use_pi4_sd_pins){
     bcm283x_gpio_init();
 
 
-    bcm283x_gpio_config(43, GPIO_ALTF0);  //32k clock
+    bcm283x_gpio_config(43, GPIO_FUNC_ALTF0);  //32k clock
     proc_usleep(20000);
 
     if (use_pi4_sd_pins) {
         /* Pi4 SD card slot / EMMC2 uses GPIO48-53 ALT3. */
-        bcm283x_gpio_config(48, GPIO_ALTF3);
-        bcm283x_gpio_config(49, GPIO_ALTF3);
-        bcm283x_gpio_config(50, GPIO_ALTF3);
-        bcm283x_gpio_config(51, GPIO_ALTF3);
-        bcm283x_gpio_config(52, GPIO_ALTF3);
-        bcm283x_gpio_config(53, GPIO_ALTF3);
+        bcm283x_gpio_config(48, GPIO_FUNC_ALTF3);
+        bcm283x_gpio_config(49, GPIO_FUNC_ALTF3);
+        bcm283x_gpio_config(50, GPIO_FUNC_ALTF3);
+        bcm283x_gpio_config(51, GPIO_FUNC_ALTF3);
+        bcm283x_gpio_config(52, GPIO_FUNC_ALTF3);
+        bcm283x_gpio_config(53, GPIO_FUNC_ALTF3);
         bcm283x_gpio_pull(48, GPIO_PULL_NONE);
         bcm283x_gpio_pull(49, GPIO_PULL_UP);
         bcm283x_gpio_pull(50, GPIO_PULL_UP);
@@ -370,12 +370,12 @@ static void bcm283x_sdhci_gpio_init(bool use_pi4_sd_pins){
     }
 
     /* Legacy/WLAN-style SDIO wiring on GPIO34-39. */
-    bcm283x_gpio_config(34, GPIO_ALTF3);  //clock
-    bcm283x_gpio_config(35, GPIO_ALTF3);  //cmd
-    bcm283x_gpio_config(36, GPIO_ALTF3);
-    bcm283x_gpio_config(37, GPIO_ALTF3);
-    bcm283x_gpio_config(38, GPIO_ALTF3);
-    bcm283x_gpio_config(39, GPIO_ALTF3);
+    bcm283x_gpio_config(34, GPIO_FUNC_ALTF3);  //clock
+    bcm283x_gpio_config(35, GPIO_FUNC_ALTF3);  //cmd
+    bcm283x_gpio_config(36, GPIO_FUNC_ALTF3);
+    bcm283x_gpio_config(37, GPIO_FUNC_ALTF3);
+    bcm283x_gpio_config(38, GPIO_FUNC_ALTF3);
+    bcm283x_gpio_config(39, GPIO_FUNC_ALTF3);
 
     bcm283x_gpio_pull(34, GPIO_PULL_NONE);
     bcm283x_gpio_pull(35, GPIO_PULL_UP);

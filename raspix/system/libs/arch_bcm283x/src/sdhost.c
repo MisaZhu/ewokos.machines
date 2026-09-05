@@ -176,12 +176,12 @@ static void bcm2835_dumpregs(struct bcm2835_host *host)
 
 static int bcm283x_sdio_gpio_init(void){
     bcm283x_gpio_init();
-    bcm283x_gpio_config(48, GPIO_ALTF0);
-    bcm283x_gpio_config(49, GPIO_ALTF0);
-    bcm283x_gpio_config(50, GPIO_ALTF0);
-    bcm283x_gpio_config(51, GPIO_ALTF0);
-    bcm283x_gpio_config(52, GPIO_ALTF0);
-    bcm283x_gpio_config(53, GPIO_ALTF0);
+    bcm283x_gpio_config(48, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(49, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(50, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(51, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(52, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(53, GPIO_FUNC_ALTF0);
     return 0;
 }
 

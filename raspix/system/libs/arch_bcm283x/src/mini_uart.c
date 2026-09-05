@@ -47,8 +47,8 @@ int32_t bcm283x_mini_uart_init(void) {
     bcm283x_gpio_pull(UART_TXD_GPIO, GPIO_PULL_NONE);
     /* RX idle must stay high; pull-up prevents a floating line from streaming 0x00 */
     bcm283x_gpio_pull(UART_RXD_GPIO, GPIO_PULL_UP);
-    bcm283x_gpio_config(UART_TXD_GPIO, GPIO_ALTF5);
-    bcm283x_gpio_config(UART_RXD_GPIO, GPIO_ALTF5);
+    bcm283x_gpio_config(UART_TXD_GPIO, GPIO_FUNC_ALTF5);
+    bcm283x_gpio_config(UART_RXD_GPIO, GPIO_FUNC_ALTF5);
     /* clear pending RX/TX state before enabling the port */
     put32(UART_IIR_REG, 0xC6);
     put32(UART_CNTL_REG, 0x03);

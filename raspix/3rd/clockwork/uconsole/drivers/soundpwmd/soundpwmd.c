@@ -121,7 +121,7 @@
  */
 #define SOUNDPWM_GPIO_LEFT 12
 #define SOUNDPWM_GPIO_RIGHT 13
-#define SOUNDPWM_GPIO_ALT GPIO_ALTF0
+#define SOUNDPWM_GPIO_ALT GPIO_FUNC_ALTF0
 #define SOUNDPWM_GPIO_HP_DETECT 10
 #define SOUNDPWM_GPIO_AMP_ENABLE 11
 
@@ -240,7 +240,7 @@ static void audio_detect_hw_config(void) {
     const bool use_uconsole_header_pwm =
             SOUNDPWM_GPIO_LEFT == 12 &&
             SOUNDPWM_GPIO_RIGHT == 13 &&
-            SOUNDPWM_GPIO_ALT == GPIO_ALTF0;
+            SOUNDPWM_GPIO_ALT == GPIO_FUNC_ALTF0;
 
     _snd_pi4_pwm = running_on_bcm2711;
     if (_snd_pi4_pwm && !use_uconsole_header_pwm) {
@@ -1850,8 +1850,8 @@ static void* sound_feeder_thread(void* arg) {
 static void audio_hw_init(void) {
     volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
 
-    bcm283x_gpio_config(SOUNDPWM_GPIO_HP_DETECT, GPIO_INPUT);
-    bcm283x_gpio_config(SOUNDPWM_GPIO_AMP_ENABLE, GPIO_OUTPUT);
+    bcm283x_gpio_config(SOUNDPWM_GPIO_HP_DETECT, GPIO_FUNC_INPUT);
+    bcm283x_gpio_config(SOUNDPWM_GPIO_AMP_ENABLE, GPIO_FUNC_OUTPUT);
     bcm283x_gpio_write(SOUNDPWM_GPIO_AMP_ENABLE, 0);
     _snd_amp_enabled = false;
     bcm283x_gpio_config(SOUNDPWM_GPIO_LEFT, SOUNDPWM_GPIO_ALT);

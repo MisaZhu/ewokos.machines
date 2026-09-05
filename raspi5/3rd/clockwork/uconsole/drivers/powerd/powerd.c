@@ -7,13 +7,28 @@
 #include <ewoksys/mmio.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/interrupt.h>
-#include <arch/bcm283x/gpio.h>
-#include <arch/bcm283x/i2c.h>
+#include <ewoksys/klog.h>
+#include <arch/bcm2712/gpio.h>
+#include <arch/bcm2712/i2c.h>
+#include <arch/bcm2712/mmio.h>
+
+/*
+ * The uConsole carrier wires the AXP223 PMU to the module's GPIO0/1, which
+ * on BCM2712 are RP1 GPIO0/1 = RP1 i2c0 (funcsel a3). bcm2712_i2c_init()
+ * maps the main + RP1 windows and muxes/pulls up those two pins itself, at
+ * standard speed (100kHz) -- slow enough for the weak RP1 internal
+ * pull-ups, and the PMU answers fine there.
+ */
+#define PMU_I2C_BUS   0
+#define PMU_I2C_ADDR  0x34
 
 static uint8_t  _hasBattery = 0;
 static uint8_t  _charging = 0;
 static uint8_t 	_capacity = 0;
 static uint8_t  _gpio_pwr = 26; //uconsole power gpio = 26, devterm gpio = 2
+/* set when the SDHCI host window could be mapped; power_off() then skips
+ * the card power-down instead of faulting on an unmapped address */
+static int _emmc_mapped = 0;
 
 // 　　100%----4.20V
 // 　　90%-----4.06V
@@ -55,85 +70,128 @@ static uint8_t adc2level(uint8_t adc){
     return 0;
 }
 /*
- * CM4/SDHCI SD-card power-off.
+ * BCM2712 SD-card power-off.
  *
- * The uConsole CM4 boots its SD card from the EMMC2 SDHCI host (see
- * system/libs/arch_bcm283x/src/sdhci.c: GPIO48-53 ALTF3, ioaddr =
- * _mmio_base + 0x340000). SDHCI_POWER_CONTROL is byte register 0x29 and
- * the bcm2711 host only accepts 32-bit aligned accesses, so clearing that
- * byte means read-modify-writing bits[15:8] of the word at offset 0x28.
+ * On the CM5 the SD card hangs off the dedicated sdio1 host at
+ * 0x1000FFF000 (see arch_bcm2712/src/sdhci.c: ioaddr = _mmio_base +
+ * PI5_EMMC_WIN_OFF + PI5_EMMC_OFF). Unlike the CM4 there are no GPIO48-53
+ * SDIO lines to high-Z first -- the card sits on dedicated SoC pads, so the
+ * host's own power control is the only thing that can cut card VDD.
+ * SDHCI_POWER_CONTROL is byte register 0x29 and this host only accepts
+ * 32-bit aligned accesses (SDHCI_QUIRK_REG32_RW), so clearing that byte
+ * means read-modify-writing bits[15:8] of the word at offset 0x28.
  * Writing 0 removes card VDD, which force-resets the card back to idle --
- * the CM4 equivalent of the D1/AXP202 reference's "CMD0 + SD_VCC LDO off".
+ * the CM5 equivalent of the D1/AXP202 reference's "CMD0 + SD_VCC LDO off".
  * Without it the card can be caught mid-transfer and, if backfeed holds its
  * rail up after the PMIC cut, the next cold boot cannot talk to it until the
- * card is physically re-seated (exactly the reported symptom: powers off,
- * LED comes back on, but no boot until the SD card is pulled). Both the
- * EMMC2 (0x340000) and legacy (0x300000) hosts are cleared; whichever holds
- * the card powers down, the other is a harmless no-op.
+ * card is physically re-seated. Both the SD host (sdio1) and the WLAN SDIO
+ * host (sdio2) are cleared; whichever is live powers down, the other is a
+ * harmless no-op.
  */
 static void sdhci_card_power_off(void) {
-    static const uint32_t host_off[2] = { 0x340000, 0x300000 };
+    if(!_emmc_mapped)
+        return;
+    static const uint32_t host_off[2] = { PI5_EMMC_OFF, PI5_WLAN_SDIO_OFF };
+    ewokos_addr_t win = _mmio_base + PI5_EMMC_WIN_OFF;
     for(int h = 0; h < 2; h++) {
-        volatile uint32_t* pwr =
-            (volatile uint32_t*)(_mmio_base + host_off[h] + 0x28);
-        *pwr &= ~(0xffU << 8); /* byte 0x29 = SDHCI_POWER_CONTROL -> 0 */
+        ewokos_addr_t host = win + host_off[h];
+        /*
+         * Software reset (byte 0x2F bit0 = Reset For All) stops the host
+         * from driving the SDIO pads and resets all registers to default,
+         * including POWER_CONTROL to 0.  This is the BCM2712 equivalent of
+         * the raspix GPIO48-53 high-Z step: on CM5 the SDIO pads are
+         * dedicated SoC pins (not RP1 GPIOs), so the host reset is the only
+         * way to disconnect the output drivers and prevent backfeed through
+         * the card's ESD diodes into the collapsing VDD rail.
+         *
+         * Byte 0x2F sits in the 32-bit word at offset 0x2C, bits [31:24].
+         * SDHCI_QUIRK_REG32_RW: this host only accepts 32-bit aligned access.
+         */
+        volatile uint32_t* rst = (volatile uint32_t*)(host + 0x2C);
+        *rst |= (0x01U << 24);
+        for(int t = 0; t < 10000; t++) {
+            if (!(*rst & (0x01U << 24)))
+                break;
+        }
+        /* Belt-and-suspenders: explicitly clear POWER_CONTROL (byte 0x29) */
+        volatile uint32_t* pwr = (volatile uint32_t*)(host + 0x28);
+        *pwr &= ~(0xffU << 8);
     }
 }
 
 static void power_off(){
     /*
-     * Shutdown order mirrors the reference sequence, adapted to this board's
-     * real parts (CM4 + AXP223, NOT D1 + AXP202):
-     *
-     * Step 3 - SDIO IO to true high-Z FIRST. GPIO48-53 are the SD card's
-     *   CLK/CMD/DAT lines (ALTF3 on the CM4 EMMC2 host). Setting the pin MUX
-     *   to input + no-pull disconnects the SoC's output drivers from the
-     *   pads, so the SoC can no longer backfeed a collapsing card rail
-     *   through the card's ESD diodes (the reason a re-seated card used to be
-     *   needed). Every other pin is driven low to minimise residual current,
-     *   except the AXP223 I2C bus (GPIO0/1), which is left idle-high so the
-     *   Step 6 PMIC command still gets through.
-     */
-    for(int i = 0; i < 60 ; i++){
-        if(i >= 48 && i <= 53) {
-            bcm283x_gpio_pull(i, GPIO_PULL_NONE);
-            bcm283x_gpio_config(i, GPIO_INPUT);
-        } else if(i != 0 && i != 1) {
-            bcm283x_gpio_clr(i);
-            bcm283x_gpio_config(i, GPIO_OUTPUT);
-        }
-    }
-
-    /*
-     * Steps 1/2/4 - cut the card's own VDD at the SDHCI host. With the IO
-     * lines already high-Z, removing card power cleanly force-resets the card
-     * to idle, so the next power-on cold-boots from a card in a known state
-     * instead of one stranded mid-operation.
+     * Steps 1/2/4 - software-reset the SDHCI hosts FIRST to stop them from
+     * driving the SDIO pads, then cut card VDD.  Must happen before the GPIO
+     * walk: on raspix the equivalent is high-Z'ing GPIO48-53 as the first
+     * action; on BCM2712 the SDIO pads are dedicated SoC pins controlled by
+     * the host, so the host reset is the disconnect mechanism.
      */
     sdhci_card_power_off();
+
+    /*
+     * Step 3 - park the RP1 GPIOs. Every pin is driven low to minimise
+     * residual current, except GPIO0/1, which stay muxed to RP1 i2c0 so
+     * the Step 6 PMIC command still gets through. That pinmux is set once
+     * by bcm2712_i2c_init() and never touched again, so the bus survives
+     * this walk (the old bit-banged driver had to re-mux on every
+     * transaction). The level is written before the direction is switched,
+     * so no pin glitches high on the way down.
+     */
+    for(uint32_t i = 0; i < RP1_NUM_GPIOS; i++){
+        if(i == 0 || i == 1)
+            continue; /* PMU i2c bus */
+        bcm2712_gpio_write(i, false);
+        bcm2712_gpio_config(i, GPIO_FUNC_OUTPUT);
+    }
 
     /* Step 5 - let the card rail and bus caps discharge before the PMIC cut. */
     proc_usleep(20000); /* 20 ms */
 
     /*
-     * Step 6 - AXP223 software power-off (REG 0x32 bit7). i2c_do_start()
-     * reconfigures GPIO0/1 on every transaction, so the bit-banged bus is
-     * still usable here even though the pin walk above ran first.
+     * Step 6 - AXP223 software power-off (REG 0x32 bit7). Retry up to 5
+     * times: the RP1 DW i2c controller can transiently fail if a previous
+     * poll left it in master-on-hold state.
      */
-    uint8_t reg = i2c_getb(0x34, 0x32);
-    i2c_putb(0x34, 0x32, reg | 0x80);
+    for(int attempt = 0; attempt < 5; attempt++) {
+        int reg = bcm2712_i2c_getb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x32);
+        uint8_t val = (reg >= 0) ? (uint8_t)(reg | 0x80) : 0x80;
+        if(bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x32, val) == 0)
+            break;
+        proc_usleep(2000);
+    }
+
+    /*
+     * High-Z the PMU i2c pins AFTER the command lands.  The AXP223's i2c
+     * interface remains powered from VBAT (always-on domain) even after
+     * software power-off.  If the RP1 internal pull-ups on GPIO0/1 stay
+     * enabled, current flows from the PMU's SDA/SCL pins through the
+     * pull-ups into the collapsing VDDIO (3.3V) rail, keeping it partially
+     * alive — the "faint power-button LED" symptom.  On CM4/raspix the
+     * bit-banged i2c driver never enables internal pull-ups, so this path
+     * does not exist there.
+     *
+     * Disable pull-ups and park both pins as high-Z inputs to eliminate the
+     * backfeed.  The AXP223 no longer needs the bus (power-off is latched
+     * internally), so releasing it is safe.
+     */
+    bcm2712_gpio_pull(0, GPIO_PULL_NONE);
+    bcm2712_gpio_pull(1, GPIO_PULL_NONE);
+    bcm2712_gpio_config(0, GPIO_FUNC_INPUT);
+    bcm2712_gpio_config(1, GPIO_FUNC_INPUT);
+
     while(1);
 }
 
 /*
- * This board's PMIC is an AXP223 (see drivers/dsi/uc_pmu.h), not an
- * AXP202. REG 0x00 is the shared AXP20X "power input status" register
+ * This board's PMIC is an AXP223, not an AXP202. REG 0x00 is the shared
+ * AXP20X "power input status" register
  * (ACIN/VBUS/charge state) -- bit0 there has nothing to do with the
  * power key, which is why reading it never saw a press.
  *
  * AXP22X reports the power key ("PEK") as debounced, one-shot events
- * latched in the IRQ status registers, already enabled in main() via
- * i2c_putb(0x34, 0x42, 0x3):
+ * latched in the IRQ status registers, already enabled by the REG 0x42
+ * write in main():
  *   IRQ3_STATE (0x4A) bit0 = PEK_LONG  (held past the long-press threshold)
  *   IRQ3_STATE (0x4A) bit1 = PEK_SHORT (pressed and released, short press)
  * The IRQ pin isn't wired to the SoC on this board, so these bits are
@@ -144,20 +202,31 @@ static void power_off(){
  * "is_power_button_down() == 0" check in power_step().
  */
 static int is_power_button_down(void) {
-    uint8_t irq3 = i2c_getb(0x34, 0x4A);
-    uint8_t pek = irq3 & 0x3; /* bit0=PEK_LONG, bit1=PEK_SHORT */
+    int irq3 = bcm2712_i2c_getb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x4A);
+    if(irq3 < 0)
+        return 1; /* a bus error is NOT a key event: never power off on one */
+    uint8_t pek = (uint8_t)irq3 & 0x3; /* bit0=PEK_LONG, bit1=PEK_SHORT */
     if(pek) {
-        i2c_putb(0x34, 0x4A, pek); /* write-1-to-clear, only what we saw */
+        bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x4A, pek); /* write-1-to-clear, only what we saw */
         return 0; /* down */
     }
     return 1; /* up */
 }
 
-static void power_sample(void) {
-    uint8_t state = i2c_getb(0x34, 0x01);
+/*
+ * Returns 0 when both PMU registers were read. On failure the last good
+ * sample is kept, so a transient bus error can never be mistaken for an
+ * empty battery (which power_step() would act on by powering off).
+ */
+static int power_sample(void) {
+    int state = bcm2712_i2c_getb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x01);
+    int adc = bcm2712_i2c_getb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x78);
+    if(state < 0 || adc < 0)
+        return -1;
     _hasBattery = !!(state & (0x1 << 5));
     _charging = !!(state & (0x1 << 6));
-    _capacity = adc2level(i2c_getb(0x34, 0x78));
+    _capacity = adc2level((uint8_t)adc);
+    return 0;
 }
 
 static int power_step(vdevice_t* dev, void* p) {
@@ -167,9 +236,9 @@ static int power_step(vdevice_t* dev, void* p) {
     if(is_power_button_down() == 0){ //down
         power_off();
     }
-    power_sample();
-    if(_capacity < 3) { //out of power
-        power_off();
+    /* only a successfully-read capacity may trigger the shutdown */
+    if(power_sample() == 0 && _capacity < 3) { //out of power
+        //power_off();
     }
     proc_usleep(300000); 
     return 0;
@@ -223,14 +292,15 @@ static char* power_help(void) {
 }
 
 static char* power_status(void) {
-    power_sample();
-    char buf[128];
+    int ok = (power_sample() == 0);
+    char buf[160];
     snprintf(buf, sizeof(buf),
-            "battery=%s charging=%s capacity=%u%% gpio_pwr=%u\n",
+            "battery=%s charging=%s capacity=%u%% gpio_pwr=%u pmu=%s\n",
             _hasBattery ? "yes" : "no",
             _charging ? "yes" : "no",
             (unsigned)_capacity,
-            (unsigned)_gpio_pwr);
+            (unsigned)_gpio_pwr,
+            ok ? "ok" : "i2c error");
     char* ret = (char*)malloc(strlen(buf) + 1);
     if(ret != NULL)
         strcpy(ret, buf);
@@ -264,15 +334,28 @@ int main(int argc, char** argv) {
     _gpio_pwr = 26;
     int32_t argind =  doargs(argc, argv);
 
-    ewokos_addr_t _mmio_base = mmio_map();
+    _mmio_base = mmio_map();
     if(_mmio_base == 0)
         return -1;
 
-    bcm283x_gpio_init();
-    bcm283x_gpio_config(_gpio_pwr, GPIO_INPUT);
-    bcm283x_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
+    bcm2712_gpio_init();
+    bcm2712_gpio_config(_gpio_pwr, GPIO_FUNC_INPUT);
+    bcm2712_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
 
-    i2c_init(0,1);
+    if(bcm2712_i2c_init(PMU_I2C_BUS) != 0) {
+        klog("powerd: i2c%d init failed\n", PMU_I2C_BUS);
+        return -1;
+    }
+    /*
+     * The SDHCI host window is only touched by power_off(); map it once here
+     * so the shutdown path never has to syscall and never faults on an
+     * unmapped address. Failure is not fatal -- the card power-down is then
+     * simply skipped and the PMIC still cuts the board.
+     */
+    _emmc_mapped = (syscall3(SYS_MEM_MAP,
+            _mmio_base + PI5_EMMC_WIN_OFF,
+            PI5_EMMC_PHY_WIN,
+            PI5_EMMC_WIN_SIZE) == _mmio_base + PI5_EMMC_WIN_OFF);
     /*
      * REG 0x36 bits[1:0] = AXP22X hardware long-press force-poweroff delay
      * (0=4s, 1=6s, 2=8s, 3=10s) -- unlike AXP202's 3-bit field, AXP22X has
@@ -281,17 +364,22 @@ int main(int argc, char** argv) {
      * PMIC would force VCC off by itself on a very long hold.
      */
     {
-        uint8_t pek_key = i2c_getb(0x34, 0x36);
-        i2c_putb(0x34, 0x36, (pek_key & ~0x3) | 0x3);
+        int pek_key = bcm2712_i2c_getb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x36);
+        if(pek_key >= 0)
+            bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x36,
+                    (uint8_t)((pek_key & ~0x3) | 0x3));
+        else
+            klog("powerd: no AXP223 answer on i2c%d addr 0x%02x\n",
+                    PMU_I2C_BUS, PMU_I2C_ADDR);
     }
-    i2c_putb(0x34, 0x42, 0x3);
+    bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x42, 0x3);
     /*
      * Discard any PEK_LONG/PEK_SHORT event already latched before we
      * started polling (e.g. the button press that powered the board on),
      * so it isn't mistaken for a fresh press on the first power_step().
      */
-    i2c_putb(0x34, 0x4A, 0x3);
-    i2c_putb(0x34, 0x82, 0x80);
+    bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x4A, 0x3);
+    bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x82, 0x80);
     const char* mnt_point = "/dev/power0";
     if(argind < argc) {
         mnt_point = argv[argind];

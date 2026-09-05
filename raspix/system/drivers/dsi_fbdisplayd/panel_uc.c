@@ -216,7 +216,7 @@ static void _reset_pin_claim(void) {
 	 * plain output driven by us, at its probe-time level.
 	 */
 	bcm283x_gpio_pull(UC_PANEL_RESET_GPIO, GPIO_PULL_NONE);
-	bcm283x_gpio_config(UC_PANEL_RESET_GPIO, GPIO_OUTPUT);
+	bcm283x_gpio_config(UC_PANEL_RESET_GPIO, GPIO_FUNC_OUTPUT);
 	bcm283x_gpio_write(UC_PANEL_RESET_GPIO, 0);
 }
 
@@ -329,7 +329,7 @@ void uc_backlight_init(void) {
 	 * plain output before we start pulsing.
 	 */
 	bcm283x_gpio_pull(UC_BACKLIGHT_GPIO, GPIO_PULL_NONE);
-	bcm283x_gpio_config(UC_BACKLIGHT_GPIO, GPIO_OUTPUT);
+	bcm283x_gpio_config(UC_BACKLIGHT_GPIO, GPIO_FUNC_OUTPUT);
 	_bl_gpio_set(1);
 	_bl_ready = 1;
 }

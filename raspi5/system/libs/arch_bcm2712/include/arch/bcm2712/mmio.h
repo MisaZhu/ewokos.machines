@@ -4,10 +4,11 @@
 /*
  * BCM2712 (Raspberry Pi 5) MMIO physical address windows.
  *
- * The Pi 5 has three distinct peripheral windows:
+ * The Pi 5 has four distinct peripheral windows:
  *   1. Main window: 64 MB at 0x10_7C000000  (UART, Mailbox, GIC)
  *   2. EMMC window:  4 MB at 0x10_00E00000  (SDHCI hosts: SD card + WiFi SDIO)
- *   3. RP1 window:   6 MB at 0x1F_00000000  (GPIO, SPI, I2C, etc.)
+ *   3. RP1 window:   6 MB at 0x1F_00000000  (GPIO, SPI, I2C, xHCI, etc.)
+ *   4. USB2 window: 64 KB at 0x10_00480000  (SoC DWC2 host, CM5's USB 2.0)
  *
  * ewokos_addr_t is uint64_t on aarch64, so full 64-bit physical
  * addresses are passed to syscall3(SYS_MEM_MAP, ...).
@@ -103,6 +104,22 @@
  * rp1.c place each control page on a dedicated runtime-sized page.
  */
 #define PI5_RP1_CTRL_WIN_OFF 0x04500000
+
+/*
+ * BCM2712 SoC USB 2.0 host (Synopsys DWC2, "brcm,bcm2835-usb"): 64 KB at
+ * 0x10_00480000, a separate window from the main peripheral block and from
+ * RP1. CM5 boards such as the uConsole hang their onboard hub (keyboard +
+ * trackball) off this controller, so usbhostd drives it alongside the RP1
+ * xHCI pair.
+ *
+ * Must match PI5_USB_DWC2_WIN_OFF/PI5_USB_DWC2_PHY/PI5_USB_DWC2_SIZE in
+ * machines/raspi5/kernel/bsp/hw_arch.h: the kernel maps nothing here, it only
+ * whitelists the physical range in check_mem_map_arch() so the SYS_MEM_MAP
+ * below is accepted.
+ */
+#define PI5_USB_DWC2_PHY      0x1000480000ULL
+#define PI5_USB_DWC2_WIN_OFF  0x04700000
+#define PI5_USB_DWC2_WIN_SIZE (64 * 1024)
 
 /* Must match PI5_RP1_WIN_OFF/PI5_RP1_SIZE in kernel/bsp/hw_arch.h. */
 #define PI5_RP1_WIN_OFF     0x06000000

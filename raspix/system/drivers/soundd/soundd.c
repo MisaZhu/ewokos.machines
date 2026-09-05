@@ -1780,8 +1780,8 @@ static void* sound_feeder_thread(void* arg) {
 static void audio_hw_init(void) {
     volatile uint32_t* clk = (uint32_t*)(uintptr_t)CLOCK_BASE;
 
-    bcm283x_gpio_config(40, GPIO_ALTF0);
-    bcm283x_gpio_config(41, GPIO_ALTF0);
+    bcm283x_gpio_config(40, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(41, GPIO_FUNC_ALTF0);
 
     proc_usleep(2000);
 

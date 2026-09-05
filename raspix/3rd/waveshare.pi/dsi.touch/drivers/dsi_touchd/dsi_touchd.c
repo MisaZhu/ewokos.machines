@@ -595,8 +595,8 @@ static void goodix_reset_select(const dsi_i2c_bus_t* bus, uint8_t addr) {
 
     int_level = (addr == GOODIX_ADDR_FALLBACK) ? 1 : 0;
 
-    bcm283x_gpio_config(GOODIX_RESET_GPIO, GPIO_OUTPUT);
-    bcm283x_gpio_config(GOODIX_INT_GPIO, GPIO_OUTPUT);
+    bcm283x_gpio_config(GOODIX_RESET_GPIO, GPIO_FUNC_OUTPUT);
+    bcm283x_gpio_config(GOODIX_INT_GPIO, GPIO_FUNC_OUTPUT);
     bcm283x_gpio_pull(GOODIX_INT_GPIO, GPIO_PULL_NONE);
 
     if (int_level != 0)
@@ -609,7 +609,7 @@ static void goodix_reset_select(const dsi_i2c_bus_t* bus, uint8_t addr) {
     bcm283x_gpio_set(GOODIX_RESET_GPIO);
     proc_usleep(60000);
 
-    bcm283x_gpio_config(GOODIX_INT_GPIO, GPIO_INPUT);
+    bcm283x_gpio_config(GOODIX_INT_GPIO, GPIO_FUNC_INPUT);
     bcm283x_gpio_pull(GOODIX_INT_GPIO, GPIO_PULL_UP);
     proc_usleep(20000);
 }

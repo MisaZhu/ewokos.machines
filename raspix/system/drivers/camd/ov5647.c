@@ -29,8 +29,8 @@ static int32_t _sda_pin, _scl_pin;
 /* I2C bus recovery: send 9 clocks to release stuck SDA */
 static void i2c_bus_recovery(void) {
     int i;
-    bcm283x_gpio_config(_scl_pin, GPIO_OUTPUT);
-    bcm283x_gpio_config(_sda_pin, GPIO_INPUT);
+    bcm283x_gpio_config(_scl_pin, GPIO_FUNC_OUTPUT);
+    bcm283x_gpio_config(_sda_pin, GPIO_FUNC_INPUT);
     for (i = 0; i < 9; i++) {
         bcm283x_gpio_clr(_scl_pin);
         proc_usleep(5);
@@ -38,7 +38,7 @@ static void i2c_bus_recovery(void) {
         proc_usleep(5);
     }
     /* generate STOP to reset bus state */
-    bcm283x_gpio_config(_sda_pin, GPIO_OUTPUT);
+    bcm283x_gpio_config(_sda_pin, GPIO_FUNC_OUTPUT);
     bcm283x_gpio_clr(_sda_pin);
     proc_usleep(5);
     bcm283x_gpio_set(_scl_pin);

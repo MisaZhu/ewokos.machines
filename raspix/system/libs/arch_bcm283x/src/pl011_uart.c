@@ -161,10 +161,10 @@ static void bcm283x_pl011_uart_prepare_gpio14_15(void) {
 
 static void bcm283x_pl011_uart_prepare_bt_gpio30_33(void) {
     bcm283x_gpio_init();
-    bcm283x_gpio_config(30, GPIO_ALTF3); /* CTS0 */
-    bcm283x_gpio_config(31, GPIO_ALTF3); /* RTS0 */
-    bcm283x_gpio_config(32, GPIO_ALTF3); /* TXD0 */
-    bcm283x_gpio_config(33, GPIO_ALTF3); /* RXD0 */
+    bcm283x_gpio_config(30, GPIO_FUNC_ALTF3); /* CTS0 */
+    bcm283x_gpio_config(31, GPIO_FUNC_ALTF3); /* RTS0 */
+    bcm283x_gpio_config(32, GPIO_FUNC_ALTF3); /* TXD0 */
+    bcm283x_gpio_config(33, GPIO_FUNC_ALTF3); /* RXD0 */
     bcm283x_gpio_pull(30, GPIO_PULL_UP);
     bcm283x_gpio_pull(31, GPIO_PULL_NONE);
     bcm283x_gpio_pull(32, GPIO_PULL_NONE);

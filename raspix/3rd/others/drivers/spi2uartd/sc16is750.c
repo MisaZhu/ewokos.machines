@@ -80,7 +80,7 @@ void SC16IS750_begin(SC16IS750_t * dev, uint32_t baud_A, uint32_t baud_B, long c
         dev->spi_channel = 0;
         //wiringPiSPISetup(dev->spi_channel, 4*1000*1000); // 4MHz
         wiringPiSPISetup(dev->spi_channel, 1*1000*1000); // 1MHz
-        bcm283x_gpio_config(dev->device_address_sspin, GPIO_OUTPUT);
+        bcm283x_gpio_config(dev->device_address_sspin, GPIO_FUNC_OUTPUT);
         bcm283x_gpio_write(dev->device_address_sspin, 1);
     };
     SC16IS750_ResetDevice(dev);
@@ -297,7 +297,7 @@ void SC16IS750_GPIOSetPinMode(SC16IS750_t * dev, uint8_t pin_number, uint8_t i_o
     uint8_t temp_iodir;
 
     temp_iodir = SC16IS750_ReadRegister(dev, SC16IS750_CHANNEL_BOTH, SC16IS750_REG_IODIR);
-    if ( i_o == GPIO_OUTPUT ) {
+    if ( i_o == GPIO_FUNC_OUTPUT ) {
         temp_iodir |= (0x01 << pin_number);
     } else {
         temp_iodir &= (uint8_t)~(0x01 << pin_number);

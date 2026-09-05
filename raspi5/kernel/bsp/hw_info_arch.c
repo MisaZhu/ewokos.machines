@@ -283,6 +283,14 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
         phy_base + size <= rescal_page_base + PI5_RESCAL_PAGE_SIZE)
         return 0;
 
+    /* SoC USB 2.0 (DWC2) window: 64 KB at 0x10_00480000. CM5 boards such
+     * as the uConsole wire their onboard hub to this controller instead of
+     * RP1's xHCI, so usbhostd maps it through SYS_MEM_MAP to run the polled
+     * dwc2 host. */
+    if (phy_base >= PI5_USB_DWC2_PHY &&
+        phy_base + size <= PI5_USB_DWC2_PHY + PI5_USB_DWC2_SIZE)
+        return 0;
+
     /* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */
     if (phy_base >= PI5_RP1_PHY &&
         phy_base + size <= PI5_RP1_PHY + PI5_RP1_SIZE)

@@ -432,7 +432,7 @@ static void bt_enable_gpclk2_32k(void) {
 
     /* CYW43455 combo module needs the 32k reference clock on GPIO43/GPCLK2. */
     bcm283x_gpio_init();
-    bcm283x_gpio_config(43, GPIO_ALTF0);
+    bcm283x_gpio_config(43, GPIO_FUNC_ALTF0);
     usleep(20000);
 
     put32(CM_GP2CTL, CM_PASSWORD | 0x1);

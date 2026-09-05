@@ -389,11 +389,11 @@ void st77xx_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
     LCD_RST = pin_rst;
     LCD_BL = pin_bl;
     bsp_gpio_init();
-    bsp_gpio_config(LCD_DC, GPIO_OUTPUT);
-    bsp_gpio_config(LCD_CS, GPIO_OUTPUT);
-    bsp_gpio_config(LCD_RST, GPIO_OUTPUT);
+    bsp_gpio_config(LCD_DC, GPIO_FUNC_OUTPUT);
+    bsp_gpio_config(LCD_CS, GPIO_FUNC_OUTPUT);
+    bsp_gpio_config(LCD_RST, GPIO_FUNC_OUTPUT);
     if(LCD_BL >= 0) {
-        bsp_gpio_config(LCD_BL, GPIO_OUTPUT);
+        bsp_gpio_config(LCD_BL, GPIO_FUNC_OUTPUT);
     }
 
     lcd_reset();
@@ -406,7 +406,7 @@ void st77xx_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
       controller asserts the panel CS during unrelated transactions
       (e.g. XPT2046 touch polls) and the panel swallows those bytes as
       pixels of the pending memory-write: garbage blocks on screen.*/
-    bsp_gpio_config(LCD_CS, GPIO_OUTPUT);
+    bsp_gpio_config(LCD_CS, GPIO_FUNC_OUTPUT);
     bsp_gpio_write(LCD_CS, 1);
     bsp_spi_set_div(SPI_DIV);
     bsp_spi_select(SPI_SELECT_0);

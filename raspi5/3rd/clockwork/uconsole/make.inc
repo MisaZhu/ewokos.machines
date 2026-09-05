@@ -11,8 +11,8 @@ ifeq ($(ewokos),)
 ewokos = ~/work/ewokos
 endif
 
-export BSP_LFLAGS= -lbsp -larch_bcm283x
-export HW=raspix
+export BSP_LFLAGS= -lbsp -larch_bcm2712
+export HW=raspi5
 
 EWOKOS_ROOT_DIR = $(ewokos)
 SYS_ROOT_DIR = $(EWOKOS_ROOT_DIR)/system

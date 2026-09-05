@@ -97,10 +97,10 @@ static void power_off(){
     for(int i = 0; i < 60 ; i++){
         if(i >= 48 && i <= 53) {
             bcm283x_gpio_pull(i, GPIO_PULL_NONE);
-            bcm283x_gpio_config(i, GPIO_INPUT);
+            bcm283x_gpio_config(i, GPIO_FUNC_INPUT);
         } else if(i != 0 && i != 1) {
             bcm283x_gpio_clr(i);
-            bcm283x_gpio_config(i, GPIO_OUTPUT);
+            bcm283x_gpio_config(i, GPIO_FUNC_OUTPUT);
         }
     }
 
@@ -269,7 +269,7 @@ int main(int argc, char** argv) {
         return -1;
 
     bcm283x_gpio_init();
-    bcm283x_gpio_config(_gpio_pwr, GPIO_INPUT);
+    bcm283x_gpio_config(_gpio_pwr, GPIO_FUNC_INPUT);
     bcm283x_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
 
     i2c_init(0,1);

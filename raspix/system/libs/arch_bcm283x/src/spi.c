@@ -95,11 +95,11 @@ void bcm283x_spi_init(void) {
     /* clear spi fifo */
     put32(SPI_CS_REG,data);
     /* setup spi pins (ALTF0) */
-    bcm283x_gpio_config(SPI_SCLK, GPIO_ALTF0);
-    bcm283x_gpio_config(SPI_MOSI, GPIO_ALTF0);
-    bcm283x_gpio_config(SPI_MISO, GPIO_ALTF0);
-    bcm283x_gpio_config(SPI_CE0N, GPIO_ALTF0);
-    bcm283x_gpio_config(SPI_CE1N, GPIO_ALTF0);
+    bcm283x_gpio_config(SPI_SCLK, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(SPI_MOSI, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(SPI_MISO, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(SPI_CE0N, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(SPI_CE1N, GPIO_FUNC_ALTF0);
 }
 
 void bcm283x_spi_select(uint32_t which) {

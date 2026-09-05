@@ -471,12 +471,37 @@ static uint32_t rp1_pll_sys_rate(void) {
  * the link, and divide to the pixel rate — the 16.16 fixed-point divider
  * of this clock lands the rate exactly (rp1_dpi's plain clk_dpi has no
  * fractional register, this one does).
+ *
+ * THE RATE IS NOT THE MODE'S NOMINAL PIXEL CLOCK.  The DWC host
+ * free-runs its video-mode line schedule from DSI_VID_HLINE_TIME, an
+ * integer count of byte clocks; it does not re-arm on each incoming DPI
+ * hsync.  When bpp*htotal is not divisible by 8*lanes the truncated
+ * register makes the host's line shorter than the DPI engine's line at
+ * the nominal pixel rate — for cwu50 (24*803/32 = 602.25 -> 602) by
+ * 0.25 byte clocks per line.  That deficit accumulates across the
+ * frame, drains the DPI->host pixel FIFO part-way down, and every
+ * frame ends in a growing horizontal shear (the top stays clean —
+ * vsync realigns both sides).  vc4 never had the problem because its
+ * pixel valve clock is derived from the DSI PLL itself, so the ratio
+ * is exact by construction.  Here the same invariant is restored by
+ * deriving the DPI rate from the SAME truncated hline the host was
+ * programmed with: htotal pixels must take exactly hline byte clocks.
+ * Exact-ratio panels (ws 1320, rpi7 2934) reduce to the nominal pixel
+ * clock bit-for-bit.
  */
 static void rp1_dsi_dpi_clock_start(uint32_t byte_clock,
 		uint32_t bpp, uint32_t lanes) {
-	uint32_t dpi_rate = (4U * lanes * byte_clock) / (bpp >> 1);
+	uint32_t htotal = _dsi_mode.width + _dsi_mode.hfp +
+			_dsi_mode.hsw + _dsi_mode.hbp;
+	uint32_t hline = (bpp * htotal) / (8U * lanes);
+	uint32_t dpi_rate;
 	uint32_t auxsrc, parent_rate;
 	uint64_t div_fp;
+
+	if (hline == 0)
+		hline = 1;
+	dpi_rate = (uint32_t)(((uint64_t)byte_clock * htotal + hline / 2) /
+			hline);
 
 	if (bpp >= 8U * lanes) {
 		auxsrc = MIPI1_DPI_AUXSRC_DSI_BYTECLK;
@@ -505,6 +530,11 @@ static void rp1_dsi_dpi_clock_start(uint32_t byte_clock,
 			(auxsrc << CLK_CTRL_AUXSRC_LSB) |
 			(CLK_CTRL_SRC_AUX << CLK_CTRL_SRC_LSB) |
 			CLK_CTRL_ENABLE);
+
+	slog("rp1-dsi: dpi clk %u (parent %u div %u+%u/65536) hline %u htotal %u\n",
+			dpi_rate, parent_rate,
+			(uint32_t)(div_fp >> 16), (uint32_t)(div_fp & 0xffffU),
+			hline, htotal);
 }
 
 /* ─── SNPS DSI host setup ─── */
