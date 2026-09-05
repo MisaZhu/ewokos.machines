@@ -22,8 +22,7 @@ machines/
 ├── README.md               # this file
 ├── LICENSE                 # Apache-2.0
 ├── clockwork/
-│   ├── picocalc/           # ClockworkPi PicoCalc (Rockchip RK3506)
-│   └── uconsole/           # ClockworkPi uConsole overlay (rides on raspix / CM4)
+│   └── picocalc/           # ClockworkPi PicoCalc (Rockchip RK3506)
 ├── lego.ev3/               # LEGO Mindstorms EV3 (ARM926EJ-S)
 ├── miyoo/                  # Miyoo retro handheld (Allwinner sunxi)
 ├── orangepi/               # Orange Pi (Allwinner)
@@ -36,7 +35,8 @@ machines/
 
 Board notes (firmware `config.txt` recipes, panel/overlay revisions, SD layout)
 live **per target** under `<target>/docs/` — e.g. `raspix/docs/`,
-`clockwork/uconsole/docs/`, `orangepi/docs/` — not at the `machines/` root.
+`raspix/3rd/clockwork/uconsole/docs/`, `orangepi/docs/` — not at the `machines/`
+root.
 
 ## Anatomy of a Machine Port
 
@@ -83,7 +83,7 @@ validation depth varies by board.
 |--------|-------------|------|----------------|-----|-----------------|--------|
 | `raspi5/` | Raspberry Pi 5 · BCM2712 (Cortex-A76) + RP1 | `aarch64` v8 | **VideoCore VII** (V3D 7.1, 12 QPUs) | yes | Real HW (no upstream QEMU model) | Active, most complete HW stack |
 | `raspix/` | Raspberry Pi 1..4 / CM4 · BCM283x | `arm` v7 + `aarch64` v8 | **VideoCore IV** (V3D 2.1) + **VideoCore VI** (V3D 4.2) | yes | QEMU (`raspi2b`/`raspi3b`) + real HW | Strong, broad add-on ecosystem |
-| `clockwork/uconsole/` | ClockworkPi uConsole · Raspberry Pi CM4 (BCM2711) | `aarch64` v8 | VideoCore VI (inherits `raspix`) | yes | Real HW | Overlay on `raspix` |
+| `raspix/3rd/clockwork/uconsole/` | ClockworkPi uConsole · Raspberry Pi CM4 (BCM2711) | `aarch64` v8 | VideoCore VI (inherits `raspix`) | yes | Real HW | Overlay on `raspix` |
 | `clockwork/picocalc/` | ClockworkPi PicoCalc · Rockchip RK3506 | `arm` v7 | none (framebuffer) | yes | QEMU (`raspi2b`) + real HW | Specialized board port |
 | `x2lite.rk3128/` | Rockchip RK3128 board | `arm` v7 | none (framebuffer) | yes | QEMU (`raspi2b`) + real HW | In-tree port |
 | `miyoo/` | Miyoo handheld · Allwinner sunxi | `arm` v7 (Cortex-A7) | none (framebuffer) | yes | Real HW | Active handheld port |
@@ -139,15 +139,17 @@ RISC-V, and x86 ports drive a plain framebuffer with the software/NEON/SSE
 - **drivers**: `cpud`, `uartd`, `soundd`, `camd` (Unicam camera), `btd`
   (Bluetooth), `wlan`, `g2dd`, `hid_joystickd`, `fbdisplayd`, `dsi_fbdisplayd`.
 - **3rd/**: the largest overlay set — `waveshare.pi` (many LCD/touch HATs),
-  `banli`, `gnpe`, `xgo.pi` (robot dog), `unified`, `others`.
+  `clockwork/uconsole` (ClockworkPi uConsole / DevTerm on CM4), `banli`, `gnpe`,
+  `xgo.pi` (robot dog), `unified`, `others`.
 - **docs/**: `board revisions`, `raspi_config.txt` (firmware `config.txt`
   recipes per panel/overlay).
 
-### `clockwork/uconsole/` — ClockworkPi uConsole (CM4)
+### `raspix/3rd/clockwork/uconsole/` — ClockworkPi uConsole (CM4)
 
-- Not a standalone kernel: it is a **system overlay on `raspix`** (`HW=raspix`,
+- Not a standalone kernel: it is a **`raspix` overlay** (`HW=raspix`,
   `ARCH=aarch64`, `BSP_LFLAGS = -lbsp -larch_bcm283x`), so it inherits the
-  BCM2711 VideoCore VI path.
+  BCM2711 VideoCore VI path. It carries its own `make.inc` and builds into
+  `raspix/3rd/clockwork/uconsole/build/drivers/clockwork/` (`MF=clockwork`).
 - Adds uConsole-specific **drivers**: `soundpwmd` (PWM audio), `dsi`,
   `fbdisplayd` / `fbdisplay6d` (DSI panel), `powerd` (power/battery).
 - `etc/` ships the firmware `config.txt` overlays: `clockworkpi-uconsole` (Pi 4)
@@ -413,4 +415,5 @@ SD card, then apply the matching firmware `config.txt` overlays (see
 - If a directory referenced here is missing locally, the `machines/` tree may be
   a submodule in your checkout — initialize submodules before building.
 - The `3rd/` overlay trees (Pi only) integrate Waveshare/SunFounder LCD+touch
-  HATs and other add-ons; each carries its own display config and driver glue.
+  HATs, the ClockworkPi uConsole/DevTerm panel+power stack and other add-ons;
+  each carries its own display config and driver glue.
