@@ -119,18 +119,80 @@ static void sdhci_card_power_off(void) {
     }
 }
 
+/*
+ * CM5 module self-power-off via the BCM2712 PM/watchdog block.
+ *
+ * KEY DIFFERENCE FROM CM4: on the uConsole CM4 the module's 5V comes from
+ * AXP223-switched rails, so the AXP software power-off (REG 0x32) kills the
+ * whole board.  The CM5 has its own onboard PMIC (DA9091) and its power
+ * input is NOT gated by the AXP223 — the official Linux device tree for
+ * uConsole CM5 does not even set "system-power-controller" on the AXP node.
+ * So after the AXP cut, the display/wifi rails die (screen off) but the CM5
+ * keeps running, and the board never reaches a wakeable off state.
+ *
+ * Linux powers the CM5 off the same way bcm2835-wdt does: write "partition
+ * 63" (0x555 spread over PM_RSTS bits 0,2,4,6,8,10) and trigger a watchdog
+ * full reset.  The VPU firmware sees partition 63, halts instead of
+ * rebooting, and (with the CM5 default POWER_OFF_ON_HALT) commands the
+ * DA9091 to switch off all module rails.  A later power-button press
+ * cold-boots normally.
+ *
+ * The PM block sits at 0x10_7D200000, inside the main 64MB MMIO window
+ * (0x10_7C000000) that mmio_map() already provides.
+ */
+#define PI5_PM_OFF               0x1200000  /* 0x107D200000 - 0x107C000000 */
+#define PM_RSTC                  0x1c
+#define PM_RSTS                  0x20
+#define PM_WDOG                  0x24
+#define PM_PASSWORD              0x5a000000
+#define PM_RSTC_WRCFG_CLR        0xffffffcf
+#define PM_RSTC_WRCFG_FULL_RESET 0x20
+#define PM_RSTS_PARTITION_CLR    0xfffffaaa
+#define PM_RSTS_PARTITION_HALT   0x555      /* partition 63 = halt/power-off */
+
+static void cm5_module_power_off(void) {
+    volatile uint32_t* rstc =
+        (volatile uint32_t*)(_mmio_base + PI5_PM_OFF + PM_RSTC);
+    volatile uint32_t* rsts =
+        (volatile uint32_t*)(_mmio_base + PI5_PM_OFF + PM_RSTS);
+    volatile uint32_t* wdog =
+        (volatile uint32_t*)(_mmio_base + PI5_PM_OFF + PM_WDOG);
+
+    uint32_t val = *rsts;
+    val &= PM_RSTS_PARTITION_CLR;
+    val |= PM_PASSWORD | PM_RSTS_PARTITION_HALT;
+    *rsts = val;
+
+    val = *rstc;
+    val &= PM_RSTC_WRCFG_CLR;
+    val |= PM_PASSWORD | PM_RSTC_WRCFG_FULL_RESET;
+    *wdog = PM_PASSWORD | 10; /* ~150us until the reset fires */
+    *rstc = val;
+}
+
 static void power_off(){
     /*
-     * CRITICAL: send the AXP223 power-off command FIRST, before touching
-     * any GPIO or SDHCI register.  The RP1 DW_apb_i2c controller is known
-     * to wedge when other RP1 subsystems are disturbed (the GPIO walk
-     * drives 52 pins simultaneously, causing internal RP1 bus contention).
-     * On CM4/raspix the bit-banged i2c re-muxes pins per transaction and
-     * is immune to this; on CM5 the hardware controller is not.
+     * Release the power-button GPIO FIRST.  On the uConsole carrier GPIO26
+     * is wired to the same net as the AXP223's PEK pin.  If we leave it
+     * driven LOW (output) during the PMU's power-off sequence, the AXP223
+     * sees PEK held and aborts/restarts the shutdown — the board never
+     * reaches the "off" state and a subsequent physical press cannot wake
+     * it (PEK is already LOW, no falling edge).
      *
-     * At this point the i2c bus is in a known-good state (power_step just
-     * successfully polled REG 0x4A to detect the button press), so the
-     * transaction is guaranteed to go through.
+     * On CM4 the SoC dies within a few ms of the PMU cutting rails, so
+     * GPIO26 goes high-Z before the sequence completes.  On CM5 the RP1
+     * has more bulk capacitance and survives longer, keeping the pin
+     * driven LOW through the critical window.
+     *
+     * Setting INPUT + NO PULL makes the pad high-Z; the AXP223's internal
+     * PEK pull-up (to VBAT, always-on) then holds the line HIGH = released.
+     */
+    bcm2712_gpio_pull(_gpio_pwr, GPIO_PULL_NONE);
+    bcm2712_gpio_config(_gpio_pwr, GPIO_FUNC_INPUT);
+
+    /*
+     * Send the AXP223 power-off command while the RP1 i2c controller is
+     * still in its known-good state (power_step just polled REG 0x4A).
      */
     for(int attempt = 0; attempt < 5; attempt++) {
         int reg = bcm2712_i2c_getb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x32);
@@ -141,13 +203,8 @@ static void power_off(){
     }
 
     /*
-     * Clamp the PMU i2c pins LOW immediately after the command.
-     *
-     * The carrier has external pull-ups on SDA/SCL tied to VBAT (always-on).
-     * After the PMU begins its power-off sequence and VDDIO collapses, those
-     * pull-ups would raise the lines above VDDIO+0.7V, forward-biasing the
-     * RP1 pad ESD diodes and backfeeding the 3.3V rail (faint power LED).
-     * Driving LOW clamps the pads at 0V, keeping the ESD diodes off.
+     * Clamp the i2c pins LOW to prevent ESD-diode backfeed from the
+     * carrier's VBAT-tied pull-ups into the collapsing VDDIO rail.
      */
     bcm2712_gpio_pull(0, GPIO_PULL_NONE);
     bcm2712_gpio_pull(1, GPIO_PULL_NONE);
@@ -156,22 +213,28 @@ static void power_off(){
     bcm2712_gpio_config(0, GPIO_FUNC_OUTPUT);
     bcm2712_gpio_config(1, GPIO_FUNC_OUTPUT);
 
-    /*
-     * Software-reset the SDHCI hosts to stop them driving the SDIO pads.
-     * On BCM2712 the SD card sits on dedicated SoC pads (not RP1 GPIOs),
-     * so the host reset is the only way to disconnect the output drivers
-     * and prevent backfeed through the card's ESD diodes.
-     */
+    /* Stop SDHCI hosts from driving the SDIO pads (SoC-side, not RP1). */
     sdhci_card_power_off();
 
     /*
-     * Park remaining RP1 GPIOs low to minimise residual current during
-     * the PMU's power-off sequence (rails collapse over ~100ms).
+     * Park remaining RP1 GPIOs low to minimise residual current.
+     * Skip: 0/1 (i2c, already clamped above) and _gpio_pwr (PEK net,
+     * must stay high-Z so the AXP223 sees button-released).
      */
     for(uint32_t i = 2; i < RP1_NUM_GPIOS; i++){
+        if(i == _gpio_pwr)
+            continue;
         bcm2712_gpio_write(i, false);
         bcm2712_gpio_config(i, GPIO_FUNC_OUTPUT);
     }
+
+    /*
+     * Finally power the CM5 module itself off.  Without this the module
+     * keeps running from its own (non-AXP-gated) supply: screen dark but
+     * system alive, power LED faintly lit, button unable to wake — the
+     * exact difference from the CM4, whose rails all die with the AXP.
+     */
+    cm5_module_power_off();
 
     while(1);
 }
