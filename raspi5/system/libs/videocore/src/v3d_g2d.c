@@ -66,8 +66,17 @@
 
 /* ---- PM power domain (reset GRAFX_V3D) ---- */
 #define PM_GRAFX_OFF 0x10cu
+/* BCM2712 V3D power-domain / core-reset register.  Linux
+ * bcm2835-power.c: on BCM2712 (which has NO asb) the GRAFX_V3D domain is
+ * brought up via PM_GRAFX_2712 (0x304), NOT the legacy PM_GRAFX (0x10c).
+ * EwokOS poking 0x10c hit a different register (it reads 0x706d = ASCII
+ * "pm" on the 2GB board), so PM_V3DRSTN was never deasserted and the V3D
+ * CORE stayed held in reset - every core-register read then stalled the
+ * ARM on an AXI response that never came and wedged the whole SoC. */
+#define PM_GRAFX_2712_OFF 0x304u
 #define PM_PASSWORD  0x5A000000u
 #define PM_V3DRSTN   (1u << 6)
+#define PM_ENAB      (1u << 12)
 
 #define CSD_CODE_WORDS 512   /* 344-word argb_alpha (endpoint-exact blend) */
 #define CSD_UNIF_WORDS 64
@@ -78,6 +87,18 @@
 #define FW_SET_CLOCK_RATE      0x00038002u
 #define FW_CLOCK_V3D           5u
 #define FW_RESPONSE            0x80000000u
+/* Firmware power/clock tags (authoritative: raspberrypi-firmware.h).  The
+ * V3D clock (DT clocks = <&firmware_clocks 5>) is firmware-managed, and
+ * SET_CLOCK_RATE only sets the PLL rate - it does NOT gate the clock on;
+ * that is SET_CLOCK_STATE.  GET_CLOCK_MEASURED reports the ACTUAL running
+ * rate (0 when gated), a safe mailbox probe for "is the V3D core clocked".
+ * EwokOS only ever set the rate, so if the firmware left the gate off the
+ * core block is unclocked and any core READ stalls the AXI bus (proven
+ * freeze), while posted core writes still "succeed". */
+#define FW_GET_CLOCK_STATE     0x00030001u
+#define FW_SET_CLOCK_STATE     0x00038001u
+#define FW_GET_CLOCK_MEASURED  0x00030047u
+#define FW_SET_ENABLE_QPU      0x00030012u
 
 typedef struct {
     uint32_t buf_size;
@@ -122,6 +143,86 @@ typedef struct {
  * kernel/platform/aarch64/arch/v8/system.S). */
 #define G2D_HW_PROBE_ONLY 0
 
+/* BRING-UP SWITCH (ROOT-CAUSE FIX probe, V3D CORE power/clock):
+ *   G2D_POWER_DIAG
+ *                   1 = at end of init, query the firmware for the V3D
+ *                       clock STATE and MEASURED (real running) rate,
+ *                       attempt the enable EwokOS never issued
+ *                       (SET_CLOCK_STATE + SET_ENABLE_QPU), re-measure,
+ *                       and slog the SMS/hub/PM_GRAFX state.  Everything
+ *                       goes through the mailbox and the already-proven-
+ *                       readable hub/SMS/PM registers - NEVER a V3D core
+ *                       read - so this build still BOOTS.  It answers
+ *                       whether the V3D core clock is gated (measured=0)
+ *                       on the 2GB board and whether the firmware enable
+ *                       brings it up, without risking another wedge. */
+#define G2D_POWER_DIAG 1
+
+/* BRING-UP SWITCH (TEMP-BISECT step 1):
+ *   G2D_DISABLE_DISPATCH
+ *                   0 = normal (every op dispatched on the V3D QPU)
+ *                   1 = v3d_g2d_run returns before touching ANY V3D
+ *                       register, so every g2d op takes the caller's CPU
+ *                       fallback.  Decides whether the 2GB hard freeze
+ *                       lives inside the V3D dispatch path at all: freeze
+ *                       gone => it does (bisect further: uniform L2T-flush
+ *                       MMIO vs CFG0 QPU launch vs INT_STS poll); freeze
+ *                       persists => it is NOT in v3d_g2d_run (look at g2dd
+ *                       init mem-map / clock mailbox, or outside g2d). */
+/* ROOT CAUSE (proven on the 2GB board by TEMP-BISECT step 4): a bare
+ * READ of any V3D CORE register wedges the whole SoC.  init only WRITES
+ * core regs (posted AXI writes need no response) and reads hub (IDENT0) /
+ * SMS, so it completes and the desktop comes up; but the first core READ
+ * - which every real dispatch does (the L2TCACTL and INT_STS polls) -
+ * stalls the ARM waiting for a data response that never arrives and
+ * locks the interconnect (RP1 network/USB die with it).  Step 4 moved a
+ * single core read to the end of init and the board hung at BOOT,
+ * single-variable against the config that boots, so this is conclusive:
+ * the V3D CORE domain is not powered/readable in this state.  QPU count,
+ * canvas addresses and the CSD timeout path are all irrelevant - they are
+ * never reached.  Linux powers this domain via its devicetree power-
+ * domain / firmware PM before probe; bare-metal EwokOS has no such step
+ * and the 2GB firmware does not do it for us.  Until the CORE power
+ * domain is brought up properly (firmware mailbox power-domain / PM - a
+ * separate, deeper task), dispatch must stay off: v3d_g2d_run returns
+ * before touching any V3D register and every g2d op takes the caller's
+ * CPU fallback, which is stable (no freeze). */
+/* STAGED (safe confirmation boot): the CORE power-domain fix
+ * (G2D_V3D_CORE_POWER, PM_GRAFX_2712 0x304 V3DRSTN deassert - the
+ * authoritative Linux BCM2712 sequence) is APPLIED and its before/after
+ * V3DRSTN state logged, but dispatch stays OFF so NO V3D core register is
+ * read at boot.  This build therefore BOOTS SAFELY and /dev/log stays
+ * readable over SSH.  Once the logs confirm V3DRSTN read 0 (core was in
+ * reset) and took the deassert, flip this to 0 AND G2D_CORE_PROBE to 1 to
+ * restore GPU acceleration. */
+#define G2D_DISABLE_DISPATCH 1
+
+/* BRING-UP SWITCH (TEMP-BISECT step 2):
+ *   G2D_FORCE_SINGLE_QPU
+ *                   0 = normal 12-QPU parallel CSD dispatch
+ *                   1 = every dispatch uses num_qpus=1 (CSD_QUEUED_CFG4=1,
+ *                       one batch on a single QPU).
+ * Step 1 proved the wedge lives inside the V3D dispatch path.  The one-qpu
+ * vec4 probe already performs a REAL CSD launch that does NOT wedge, while
+ * the 12-qpu argb fill/blit/copy/rotate dispatches do - and both use the
+ * same all-below-1GB canvas addresses measured on the 2GB board (fb
+ * phy=0x1340000, canvas phys=0x3310000, src=0x3488000), so the outstanding
+ * difference is the QPU count, not the addresses.  num_qpus is a hardcoded
+ * guess: g2d_probe() only checks HUB_IDENT0 == "VHUB" and never reads the
+ * real QPU count from CTL/HUB IDENT.  Forcing 1 keeps the IDENTICAL kernel
+ * and IDENTICAL addresses and removes only the multi-QPU launch:
+ *   freeze gone     => the 12-QPU CSD dispatch itself wedges the fabric
+ *                      (ship single-QPU, or find the real QPU count);
+ *   freeze persists => not the QPU count (next: argb kernel body / canvas
+ *                      addressing / L2T flush / CFG0 launch itself).
+ * Output stays CORRECT because rows=(band_h+nq-1)/nq rescales the uniforms
+ * to the QPU count, so 1 QPU simply walks every band (slower, not wrong). */
+/* STEP 2 RESULT (real 2GB board): forcing num_qpus=1 STILL froze on the
+ * first real dispatch, so the QPU COUNT is ruled out - the wedge is the
+ * CFG0 launch of the array itself.  Reverted to 0 (12 QPU) so step 3
+ * tests the PM power-cycle against the original freeze baseline. */
+#define G2D_FORCE_SINGLE_QPU 0
+
 /* DEBUG SWITCH: PM_GRAFX.V3DRSTN power-cycle.  The proven bare-metal
  * sequence REQUIRES it - without the power-cycle the QPU array never
  * launches (first CSD dispatch reports done-timeout, ic-miss stays 0).
@@ -130,7 +231,43 @@ typedef struct {
  * kernel/platform/aarch64/arch/v8/system.S), so the write is enabled
  * again for the first real V3D experiments.  If the console dies right
  * after "pm GRAFX pre=", set back to 1. */
+/* STEP 3 RESULT (real 2GB board): enabling the PM_GRAFX.V3DRSTN
+ * power-cycle did NOT fix the freeze AND corrupted the display (heavy
+ * vertical tearing across the boot splash) - PM_GRAFX resets/disturbs the
+ * display pipeline as well, so it is the wrong tool on BCM2712.  Reverted
+ * to 1 (skip).  The wedge stays localized to the dispatch itself. */
 #define G2D_SKIP_PM_RESET 1
+
+/* BRING-UP SWITCH (ROOT-CAUSE FIX, BCM2712 V3D CORE power domain):
+ *   G2D_V3D_CORE_POWER
+ *                   1 = during init, deassert the V3D core reset
+ *                       (PM_V3DRSTN) at PM offset 0x304 (PM_GRAFX_2712),
+ *                       then probe one core register to confirm it became
+ *                       readable.  This is the authoritative Linux
+ *                       bcm2835-power.c BCM2712 GRAFX_V3D sequence
+ *                       (no-asb path: bcm2835_asb_power_on with
+ *                       pm_reg=PM_GRAFX_2712, reset_flags=PM_V3DRSTN).
+ *                   0 = leave the core reset as the firmware set it.
+ * Ground truth (2GB board): V3D clock MEASURED running at 1150 MHz,
+ * clk_state=1, hub+SMS readable, SMS TEE IDLE, PM_GRAFX(0x10c)=0x706d
+ * ("pm") - yet every V3D CORE read wedges the SoC.  That is a core held
+ * in reset; EwokOS never deasserted it because it poked 0x10c instead of
+ * the BCM2712 0x304.  8GB/16GB firmware leaves V3DRSTN deasserted, which
+ * is why only the 2GB board froze. */
+#define G2D_V3D_CORE_POWER 1
+
+/* BRING-UP SWITCH (staged confirmation, pair with G2D_DISABLE_DISPATCH):
+ *   G2D_CORE_PROBE
+ *                   1 = at end of init do ONE V3D core read (INT_STS) to
+ *                       confirm the core became readable after the 0x304
+ *                       deassert.  A core read STILL wedges the whole
+ *                       board if the core is not actually up, and a boot-
+ *                       time wedge leaves /dev/log unreadable (no SSH),
+ *                       so only enable this together with dispatch AFTER
+ *                       the 0x304 before/after logs have confirmed
+ *                       V3DRSTN was 0 and took the deassert.  This build
+ *                       keeps it 0 -> boots safely, reports 0x304 only. */
+#define G2D_CORE_PROBE 0
 
 /* L2TFLM mode bits (empirically settled on real Pi 5 hardware):
  *   0 = clean + invalidate (the ONLY mode usable for the pre-job walk)
@@ -372,6 +509,77 @@ static void g2d_clock_set_max(void)
     _v3d_clock_hz = actual_hz;
 }
 
+/* Generic firmware property tag whose value buffer is [w0, w1]; captures
+ * the response's second word into *out.  Covers GET/SET_CLOCK_STATE and
+ * GET_CLOCK_MEASURED (w0 = clock id) and SET_ENABLE_QPU (w0 = enable,
+ * vbuf_size 4).  Mailbox only - never touches a V3D register. */
+static int g2d_fw_tag(uint32_t tag, uint32_t w0, uint32_t w1,
+                      uint32_t vbuf_size, uint32_t vlen_req, uint32_t *out)
+{
+    g2d_clock_get_req_t *req;
+    ewokos_addr_t vaddr;
+    ewokos_addr_t phys;
+    mail_message_t msg;
+    int result = -1;
+
+    vaddr = dma_alloc(0, sizeof(*req));
+    if (vaddr == 0)
+        return -1;
+    req = (g2d_clock_get_req_t *)(uintptr_t)vaddr;
+    memset(req, 0, sizeof(*req));
+    req->buf_size = sizeof(*req);
+    req->tag.tag = tag;
+    req->tag.value_buf_size = vbuf_size;
+    req->tag.value_len = vlen_req;
+    req->tag.clock_id = w0;
+    req->tag.rate_hz = w1;
+
+    phys = dma_phy_addr(0, vaddr);
+    if (phys != 0 && (phys >> 32) == 0) {
+        memset(&msg, 0, sizeof(msg));
+        msg.data = (((uint32_t)phys | MAILBOX_VC_ALIAS_NONCACHED) >> 4);
+        msg.channel = PROPERTY_CHANNEL;
+        if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
+            (req->code & FW_RESPONSE) != 0 &&
+            (req->tag.value_len & FW_RESPONSE) != 0) {
+            if (out != NULL)
+                *out = req->tag.rate_hz;
+            result = 0;
+        }
+    }
+    dma_free(0, vaddr);
+    return result;
+}
+
+/* SAFE V3D power/clock diagnostic + firmware-side enable attempt.  Reads
+ * only the mailbox and the hub/SMS/PM registers already proven readable
+ * during init; it never reads a V3D CORE register, so it cannot wedge the
+ * fabric even if the core is still gated.  The BEFORE/AFTER measured-rate
+ * pair tells us whether the missing SET_CLOCK_STATE actually starts the
+ * V3D core clock on this board. */
+static void g2d_power_diag(void)
+{
+    uint32_t st0 = 0xffffffffu, ms0 = 0xffffffffu;
+    uint32_t st1 = 0xffffffffu, ms1 = 0xffffffffu;
+    volatile uint32_t *pg = _pm + (PM_GRAFX_OFF / 4);
+
+    g2d_fw_tag(FW_GET_CLOCK_STATE, FW_CLOCK_V3D, 0, 8, 4, &st0);
+    g2d_fw_tag(FW_GET_CLOCK_MEASURED, FW_CLOCK_V3D, 0, 8, 4, &ms0);
+    slog("g2d pwr BEFORE: clk_state=%u clk_measured=%u Hz pm_grafx=0x%08x\r\n",
+         st0, ms0, *pg);
+
+    /* the enable EwokOS never issued: gate the V3D clock on, then QPU */
+    g2d_fw_tag(FW_SET_CLOCK_STATE, FW_CLOCK_V3D, 1, 8, 8, NULL);
+    g2d_fw_tag(FW_SET_ENABLE_QPU, 1, 0, 4, 4, NULL);
+
+    g2d_fw_tag(FW_GET_CLOCK_STATE, FW_CLOCK_V3D, 0, 8, 4, &st1);
+    g2d_fw_tag(FW_GET_CLOCK_MEASURED, FW_CLOCK_V3D, 0, 8, 4, &ms1);
+    slog("g2d pwr AFTER : clk_state=%u clk_measured=%u Hz\r\n", st1, ms1);
+    slog("g2d pwr regs  : sms_tee=0x%08x sms_ree=0x%08x hub_id0=0x%08x\r\n",
+         _v3d[(V3D_SMS_OFF + 0x400u) / 4], _v3d[V3D_SMS_OFF / 4],
+         v3d_hub()[HUB_IDENT0 / 4]);
+}
+
 /* ------------------------------------------------------------------ */
 /* bring-up                                                            */
 /* ------------------------------------------------------------------ */
@@ -505,6 +713,35 @@ static void g2d_pm_reset(void)
 }
 #endif
 
+#if G2D_V3D_CORE_POWER
+/* BCM2712 V3D CORE power-domain bring-up.  Replicates Linux
+ * bcm2835-power.c bcm2835_asb_power_on(pd, PM_GRAFX_2712, 0, 0,
+ * PM_V3DRSTN) for the no-asb BCM2712 case: the V3D core reset line
+ * (PM_V3DRSTN, bit6) lives at PM offset 0x304 on BCM2712, NOT at the
+ * legacy PM_GRAFX 0x10c EwokOS used to poke.  Deassert it (set the bit);
+ * do NOT assert first - Linux does not, and asserting would reset an
+ * already-live core.  The V3D clock is already running (measured 1150
+ * MHz at init), so no clk dance is needed.  Returns 0 when V3DRSTN reads
+ * back set.  This is the step that makes V3D CORE registers readable;
+ * before it, any core read wedged the whole SoC on the 2GB board. */
+static int g2d_v3d_core_power_on(void)
+{
+    volatile uint32_t *pg = _pm + (PM_GRAFX_2712_OFF / 4);
+    uint32_t before = *pg;
+    uint32_t after;
+
+    slog("g2d PM_GRAFX_2712(0x304) before=0x%08x V3DRSTN=%d ENAB=%d\r\n",
+         before, (before & PM_V3DRSTN) ? 1 : 0, (before & PM_ENAB) ? 1 : 0);
+    *pg = PM_PASSWORD | (before | PM_V3DRSTN);   /* deassert V3D core reset */
+    __asm__ __volatile__("dsb sy");
+    g2d_delay_us(20);
+    after = *pg;
+    slog("g2d PM_GRAFX_2712(0x304) after =0x%08x V3DRSTN=%d ENAB=%d\r\n",
+         after, (after & PM_V3DRSTN) ? 1 : 0, (after & PM_ENAB) ? 1 : 0);
+    return (after & PM_V3DRSTN) ? 0 : -1;
+}
+#endif
+
 int v3d_g2d_init(void)
 {
     sys_info_t si;
@@ -591,13 +828,28 @@ int v3d_g2d_init(void)
     _ok = 1;
     return 0;
 #endif
+#if G2D_V3D_CORE_POWER
+    /* BCM2712: deassert the V3D core reset at PM 0x304 (PM_GRAFX_2712)
+     * so the CORE block becomes readable - the missing step behind the
+     * 2GB wedge.  Must precede any V3D core access. */
+    g2d_v3d_core_power_on();
+#endif
     g2d_sms_powerup();
 #if !G2D_SKIP_PM_RESET
     g2d_pm_reset();      /* power-cycle GRAFX_V3D (QPU array launch fix) */
 #endif
+#if G2D_CORE_PROBE
+    /* Confirm the core is now accessible with the exact read that wedged
+     * the SoC before the 0x304 deassert.  If this line logs, the fix took
+     * and the dispatch path below is safe. */
+    slog("g2d core probe: INT_STS=0x%08x\r\n", v3d_core()[INT_STS / 4]);
+#endif
     g2d_l2c_enable();
     /* NOTE: no V3D MMU page table - the proven path runs without it */
 
+#if G2D_POWER_DIAG
+    g2d_power_diag();
+#endif
     _ok = 1;
     return 0;
 }
@@ -615,7 +867,11 @@ uint32_t v3d_g2d_clock_hz(void)
 
 int v3d_g2d_num_qpus(void)
 {
+#if G2D_FORCE_SINGLE_QPU
+    return 1;               /* TEMP-BISECT step 2: single-QPU dispatch */
+#else
     return 12;              /* BCM2712 V3D 7.1 */
+#endif
 }
 
 uint32_t v3d_g2d_scratch_phys(void)
@@ -716,6 +972,14 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const void *src, size_t src_len,
                 void *dst, size_t dst_len, unsigned maint)
 {
+#if G2D_DISABLE_DISPATCH
+    /* TEMP-BISECT step 1: touch no V3D register at all; return the same
+     * non-zero "did-not-run" code the timeout path uses so the caller
+     * takes its CPU fallback for this op. */
+    (void)code; (void)nwords; (void)unifs; (void)nunifs; (void)num_qpus;
+    (void)src; (void)src_len; (void)dst; (void)dst_len; (void)maint;
+    return 1;
+#else
     volatile uint32_t *csd =
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
     uint32_t cfg[8] = { 0 };
@@ -792,8 +1056,23 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     }
     if (i == 2000000) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
-        /* A timeout is a real failure.  Do not reset the graphics domain
-         * and do not replay this possibly-live operation. */
+        /* A CSD job that fails to retire inside the poll window is still
+         * LIVE on the no-MMU QPU array.  The upstream drm/v3d Raspberry
+         * Pi 5 GPU-reset series (github.com/raspberrypi/linux/issues/6660)
+         * establishes that on V3D 7.1 such a job must be cleared through
+         * the SMS block, otherwise the next dispatch writes CSD_QUEUED_CFG
+         * on top of it and wedges the whole VideoCore fabric - a hard
+         * freeze that stalls even RP1 network/USB and needs a power cycle.
+         * Re-run the exact proven bring-up sequence (SMS idle+reset, then
+         * L2C) to quiesce the array: the preloaded kernels stay in dma
+         * staging and the uniforms are rewritten every dispatch, so the
+         * GPU comes back clean and immediately usable - acceleration is
+         * NOT lost.  Never poke PM_GRAFX.V3DRSTN here: that external reset
+         * alone is what hangs the Device store (see G2D_SKIP_PM_RESET).
+         * This op still returns 1 so its caller falls back to the CPU
+         * pass for this one operation. */
+        g2d_sms_powerup();
+        g2d_l2c_enable();
         return 1;
     }
     v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
@@ -806,4 +1085,5 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
             g2d_dcache_invalidate(dst, dst_len);
     }
     return 0;
+#endif
 }
