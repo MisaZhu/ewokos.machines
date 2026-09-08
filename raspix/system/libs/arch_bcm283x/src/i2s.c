@@ -16,10 +16,10 @@
 #define read32(p)	(*((uint32_t*)(p)))
 
 static void gpio_init(void) {
-    bcm283x_gpio_config(18, GPIO_ALTF0);
-    bcm283x_gpio_config(19, GPIO_ALTF0);
-    bcm283x_gpio_config(20, GPIO_ALTF0);
-    bcm283x_gpio_config(21, GPIO_ALTF0);
+    bcm283x_gpio_config(18, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(19, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(20, GPIO_FUNC_ALTF0);
+    bcm283x_gpio_config(21, GPIO_FUNC_ALTF0);
 }
 
 static void clock_init(uint32_t bclk_hz) {

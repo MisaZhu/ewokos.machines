@@ -373,10 +373,10 @@ void ili9341_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
     /* #endregion debug-point gnpe-ili9341-madctl-probe */
 
     bsp_gpio_init();
-    bsp_gpio_config(LCD_DC, GPIO_OUTPUT);
-    bsp_gpio_config(LCD_RST, GPIO_OUTPUT);
+    bsp_gpio_config(LCD_DC, GPIO_FUNC_OUTPUT);
+    bsp_gpio_config(LCD_RST, GPIO_FUNC_OUTPUT);
     if(LCD_BL >= 0) {
-        bsp_gpio_config(LCD_BL, GPIO_OUTPUT);
+        bsp_gpio_config(LCD_BL, GPIO_FUNC_OUTPUT);
     }
 
     if(cdiv > 0) {

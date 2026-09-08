@@ -172,7 +172,7 @@ static int doargs(int argc, char* argv[]) {
 }
 
 int main(int argc, char** argv) {
-    fbdisplayd_t fbdisplayd;
+    displayd_t fbdisplayd;
     _g = NULL;
     memset(&fbdisplayd, 0, sizeof(fbdisplayd));
 

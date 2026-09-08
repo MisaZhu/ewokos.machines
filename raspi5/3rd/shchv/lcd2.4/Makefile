@@ -2,6 +2,7 @@ EXTRA_LIBS_DIR = ../../libs
 
 TASK_OBJS = \
 		$(EXTRA_LIBS_DIR)/xpt2046/src/xpt2046.o \
+		$(EXTRA_LIBS_DIR)/xpt2046/src/tp_filter.o \
 		$(EXTRA_LIBS_DIR)/ili9341/src/ili9341.o \
 		display.o
 

@@ -322,16 +322,16 @@ static void bcm283x_sdhci_gpio_init(void){
     bcm283x_gpio_init();
 
 
-    bcm283x_gpio_config(43, GPIO_ALTF0);  //32k clock
+    bcm283x_gpio_config(43, GPIO_FUNC_ALTF0);  //32k clock
     usleep(20000);
 
     //init sdio interface
-    bcm283x_gpio_config(34, GPIO_ALTF3);  //clock
-    bcm283x_gpio_config(35, GPIO_ALTF3);  //cmd
-    bcm283x_gpio_config(36, GPIO_ALTF3);
-    bcm283x_gpio_config(37, GPIO_ALTF3);
-    bcm283x_gpio_config(38, GPIO_ALTF3);
-    bcm283x_gpio_config(39, GPIO_ALTF3);
+    bcm283x_gpio_config(34, GPIO_FUNC_ALTF3);  //clock
+    bcm283x_gpio_config(35, GPIO_FUNC_ALTF3);  //cmd
+    bcm283x_gpio_config(36, GPIO_FUNC_ALTF3);
+    bcm283x_gpio_config(37, GPIO_FUNC_ALTF3);
+    bcm283x_gpio_config(38, GPIO_FUNC_ALTF3);
+    bcm283x_gpio_config(39, GPIO_FUNC_ALTF3);
 
     bcm283x_gpio_pull(34, GPIO_PULL_NONE);
     bcm283x_gpio_pull(35, GPIO_PULL_UP);
@@ -340,12 +340,12 @@ static void bcm283x_sdhci_gpio_init(void){
     bcm283x_gpio_pull(38, GPIO_PULL_UP);
     bcm283x_gpio_pull(39, GPIO_PULL_UP);
 
-    // bcm283x_gpio_config(48, GPIO_ALTF3);
-    // bcm283x_gpio_config(49, GPIO_ALTF3);
-    // bcm283x_gpio_config(50, GPIO_ALTF3);
-    // bcm283x_gpio_config(51, GPIO_ALTF3);
-    // bcm283x_gpio_config(52, GPIO_ALTF3);
-    // bcm283x_gpio_config(53, GPIO_ALTF3);
+    // bcm283x_gpio_config(48, GPIO_FUNC_ALTF3);
+    // bcm283x_gpio_config(49, GPIO_FUNC_ALTF3);
+    // bcm283x_gpio_config(50, GPIO_FUNC_ALTF3);
+    // bcm283x_gpio_config(51, GPIO_FUNC_ALTF3);
+    // bcm283x_gpio_config(52, GPIO_FUNC_ALTF3);
+    // bcm283x_gpio_config(53, GPIO_FUNC_ALTF3);
 }
 
 #define BCM2835_SDHCI_WRITE_DELAY(f)    (((2 * 1000000) / f) + 1)

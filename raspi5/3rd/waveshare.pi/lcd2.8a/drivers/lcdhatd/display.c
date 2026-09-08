@@ -3,10 +3,15 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
+#include <stdbool.h>
 #include <bsp/bsp_spi.h>
 #include <displayd/displayd.h>
 #include <ili9486/ili9486.h>
 #include <xpt2046/xpt2046.h>
+#include <xpt2046/tp_filter.h>
+#include <ewoksys/vdevice.h>
+#include <ewoksys/vfs.h>
+#include <ewoksys/proc.h>
 
 static int _lcd_dc_pin = 22;
 static int _lcd_cs_pin = 8;
@@ -82,17 +87,109 @@ static int doargs(int argc, char* argv[]) {
     return optind;
 }
 
+static tp_filter_t _fx, _fy;
+static bool _pen_down = false;
+
+/*
+ * Event queue between the sampler loop (displayd_t.step_loop) and readers:
+ * fixed 6-byte events (state, x, y), same wire format as before. A wedged
+ * reader drops the oldest event; a blocked reader wakes on the first
+ * queued one.
+ */
+#define TOUCH_CACHE_SIZE 32
+
+static uint16_t touch_data[TOUCH_CACHE_SIZE][3];
+static uint32_t touch_data_read = 0;
+static uint32_t touch_data_write = 0;
+
+static bool touch_has_data(void) {
+    return (touch_data_write - touch_data_read) > 0;
+}
+
+static void touch_push(uint16_t state, uint16_t x, uint16_t y) {
+    if(touch_data_write - touch_data_read >= TOUCH_CACHE_SIZE)
+        touch_data_read++; /* queue full: drop the oldest event */
+
+    uint16_t* evt = touch_data[touch_data_write % TOUCH_CACHE_SIZE];
+    evt[0] = state;
+    evt[1] = x;
+    evt[2] = y;
+    touch_data_write++;
+}
+
+/* sampling cadence: 10ms -> at most 100 events/s while pressed,
+   one plain GPIO read per tick while idle */
+#define TP_POLL_US 10000
+
+static const char* _tp_dev_name = "/dev/disp0";
+
 static int tp_read(uint8_t* buf, uint32_t size) {
-    memset(buf, 0, size);
-    if(size >= 6) {
-        uint16_t* d = (uint16_t*)buf;
-        if(_lcd_cs_pin >= 0)
-            bsp_gpio_write(_lcd_cs_pin, 1);
-        xpt2046_read(&d[0], &d[1], &d[2]);
-        if(_lcd_cs_pin >= 0)
-            bsp_gpio_write(_lcd_cs_pin, 0);
+    if(!touch_has_data())
+        return VFS_ERR_RETRY;
+    if(size < 6)
+        return -1;
+
+    memcpy(buf, touch_data[touch_data_read % TOUCH_CACHE_SIZE], 6);
+    touch_data_read++;
+    return 6;
+}
+
+static int32_t tp_check_poll(void) {
+    return touch_has_data() ? VFS_EVT_RD : 0;
+}
+
+/*
+ * Device-loop tick: sample the touch panel on the shared SPI bus, filter it
+ * (clamp + median + moving average, see tp_filter), queue state changes and
+ * wake up any blocked reader. The LCD CS is parked deselected around the
+ * sample so the panel and the touch controller do not fight over SPI0.
+ */
+static int tp_step(void) {
+    static ewokos_addr_t node = 0;
+    uint16_t press, x, y;
+
+    if(_lcd_cs_pin >= 0)
+        bsp_gpio_write(_lcd_cs_pin, 1);
+    int res = xpt2046_read(&press, &x, &y);
+    if(_lcd_cs_pin >= 0)
+        bsp_gpio_write(_lcd_cs_pin, 0);
+
+    if(res == 0) {
+        if(press != 0) {
+            if(!_pen_down) {
+                tp_filter_reset(&_fx);
+                tp_filter_reset(&_fy);
+                _pen_down = true;
+                touch_push(1, tp_filter_in(&_fx, x), tp_filter_in(&_fy, y));
+            }
+            else {
+                uint16_t px = _fx.out, py = _fy.out;
+                uint16_t fx = tp_filter_in(&_fx, x);
+                uint16_t fy = tp_filter_in(&_fy, y);
+                if(fx != px || fy != py)
+                    touch_push(1, fx, fy);
+            }
+        }
+        else {
+            _pen_down = false;
+            tp_filter_reset(&_fx);
+            tp_filter_reset(&_fy);
+            touch_push(0, _fx.out, _fy.out);
+        }
     }
-    return 6;	
+
+    if(touch_has_data()) {
+        if(node == 0) {
+            fsinfo_t info;
+            if(vfs_get_by_name(_tp_dev_name, &info) == 0)
+                node = info.node;
+        }
+        if(node != 0)
+            vfs_wakeup(node, VFS_EVT_RD);
+    }
+
+    proc_usleep(TP_POLL_US);
+    return 0;
 }
 
 int main(int argc, char** argv) {
@@ -106,16 +203,22 @@ int main(int argc, char** argv) {
     ILI9486_REG_WIDTH_16 = 0;
     ILI9486_INIT_PROFILE = ILI9486_INIT_PROFILE_GENERIC;
     lcd_init(w, h);
-    //xpt2046_set_config(_tp_cs_pin, _tp_irq_pin, _tp_spi_div, _tp_spi_select);
-    //xpt2046_init(_tp_cs_pin, _tp_irq_pin, _tp_spi_div);
 
-    fbdisplayd_t display;
-    memset(&display, 0, sizeof(fbdisplayd_t));
+    displayd_t display;
+    memset(&display, 0, sizeof(displayd_t));
     display.splash = NULL;
     display.flush = flush;
     display.init = init;
     display.get_info = get_info;
+    /* touch is disabled on this panel for now: keep the xpt2046 init and the
+       loop hooks commented out so nothing samples an uninitialized chip.
+    _tp_dev_name = mnt_point;
+    xpt2046_set_config(_tp_cs_pin, _tp_irq_pin, _tp_spi_div, _tp_spi_select);
+    xpt2046_init(_tp_cs_pin, _tp_irq_pin, _tp_spi_div);
     display.read = tp_read;
+    display.step_loop = tp_step;
+    display.check_poll_events = tp_check_poll;
+    */
     int ret = fbdisplayd_run(&display, mnt_point, LCD_WIDTH, LCD_HEIGHT, _conf_file, _display_index);
     return ret;
 }

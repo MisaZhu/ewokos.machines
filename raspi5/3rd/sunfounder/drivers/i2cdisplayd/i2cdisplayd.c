@@ -198,7 +198,7 @@ static int doargs(int argc, char* argv[]) {
 }
 
 int main(int argc, char** argv) {
-    fbdisplayd_t display;
+    displayd_t display;
     int opti = doargs(argc, argv);
     const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
 

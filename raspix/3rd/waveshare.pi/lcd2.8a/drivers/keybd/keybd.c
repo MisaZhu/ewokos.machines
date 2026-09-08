@@ -53,7 +53,7 @@ static void init_gpio(void) {
         if(_gpio_keys[i].key == 0)
             break;
 
-        bsp_gpio_config(_gpio_keys[i].pin, GPIO_INPUT);//input	
+        bsp_gpio_config(_gpio_keys[i].pin, GPIO_FUNC_INPUT);//input	
         bsp_gpio_pull(_gpio_keys[i].pin, GPIO_PULL_UP); //pull up
         i++;
     }

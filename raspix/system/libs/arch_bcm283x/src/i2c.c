@@ -27,8 +27,8 @@ void i2c_do_start(void) {
     /* enforce bus free time */
     I2C_BIT_DELAY();
     /* now we are driving! master! */
-    bcm283x_gpio_config(i2c_scl,GPIO_OUTPUT);
-    bcm283x_gpio_config(i2c_sda,GPIO_OUTPUT);
+    bcm283x_gpio_config(i2c_scl,GPIO_FUNC_OUTPUT);
+    bcm283x_gpio_config(i2c_sda,GPIO_FUNC_OUTPUT);
     bcm283x_gpio_set(i2c_sda);
     I2C_BIT_DELAY();
     bcm283x_gpio_set(i2c_scl);
@@ -49,8 +49,8 @@ void i2c_do_stop(void) {
     /* no hold time for stop condition? :p */
     I2C_BIT_DELAY();
     /* stop driving! release lines */
-    bcm283x_gpio_config(i2c_sda,GPIO_INPUT);
-    //bcm283x_gpio_config(i2c_scl,GPIO_INPUT);
+    bcm283x_gpio_config(i2c_sda,GPIO_FUNC_INPUT);
+    //bcm283x_gpio_config(i2c_scl,GPIO_FUNC_INPUT);
 }
 /*----------------------------------------------------------------------------*/
 /** routine i2c to write 1 bit */
@@ -69,7 +69,7 @@ uint8_t i2c_do_read_bit(void) {
     uint8_t data = 0;
     /* release the line for slave */
     bcm283x_gpio_set(i2c_sda);
-    bcm283x_gpio_config(i2c_sda,GPIO_INPUT);
+    bcm283x_gpio_config(i2c_sda,GPIO_FUNC_INPUT);
     I2C_BIT_DELAY();
     bcm283x_gpio_set(i2c_scl);
     /* should check clock stretching? in case slave pull scl low! */
@@ -77,7 +77,7 @@ uint8_t i2c_do_read_bit(void) {
     if (bcm283x_gpio_read(i2c_sda)) data = 1;
     bcm283x_gpio_clr(i2c_scl);
     /* retake the line */
-    bcm283x_gpio_config(i2c_sda,GPIO_OUTPUT);
+    bcm283x_gpio_config(i2c_sda,GPIO_FUNC_OUTPUT);
     return data;
 }
 /*----------------------------------------------------------------------------*/
@@ -112,8 +112,8 @@ void i2c_init(int32_t sda_gpio, int32_t scl_gpio) {
     bcm283x_gpio_pull(i2c_sda,GPIO_PULL_UP);
     bcm283x_gpio_pull(i2c_scl,GPIO_PULL_UP);
     /* setup i2c sda1/scl1 as input (tri-state) - in case multiple masters */
-    bcm283x_gpio_config(i2c_sda,GPIO_INPUT);
-    bcm283x_gpio_config(i2c_scl,GPIO_INPUT);
+    bcm283x_gpio_config(i2c_sda,GPIO_FUNC_INPUT);
+    bcm283x_gpio_config(i2c_scl,GPIO_FUNC_INPUT);
     /* just prepare this */
     bcm283x_gpio_set(i2c_sda);
     bcm283x_gpio_set(i2c_scl);

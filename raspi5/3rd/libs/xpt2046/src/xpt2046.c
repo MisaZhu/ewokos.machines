@@ -99,7 +99,9 @@ int xpt2046_read(uint16_t* press,  uint16_t* x, uint16_t* y) {
         do_read(x, y);
         _x = *x;
         _y = *y;
+        /* per-sample log floods the console under the 100Hz sampler loop
         klog("tp: x=%d, y=%d\n", _x, _y);
+        */
     }
     else {  //release
         _down = false;
@@ -107,7 +109,7 @@ int xpt2046_read(uint16_t* press,  uint16_t* x, uint16_t* y) {
         *x = _x;
         *y = _y;
     }
-    return 0;	
+    return 0;
 }
 
 void xpt2046_set_config(int pin_cs, int pin_irq, int cdiv, int spi_select) {

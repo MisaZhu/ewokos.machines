@@ -126,9 +126,9 @@ int bcm283x_auxspi_init(int ch)
 
     if(ch == 0){
         klog("bcm283x_auxspi_init\n");
-        bcm283x_gpio_config(SPI1_SCLK, GPIO_ALTF4);
-        bcm283x_gpio_config(SPI1_MOSI, GPIO_ALTF4);
-        bcm283x_gpio_config(SPI1_MISO, GPIO_ALTF4);
+        bcm283x_gpio_config(SPI1_SCLK, GPIO_FUNC_ALTF4);
+        bcm283x_gpio_config(SPI1_MOSI, GPIO_FUNC_ALTF4);
+        bcm283x_gpio_config(SPI1_MISO, GPIO_FUNC_ALTF4);
         SPI_BASE = _mmio_base + SPI1_OFFSET;
         WRITE32(BCM2835_AUX_ENABLE, BCM2835_AUX_ENABLE_SPI0|READ32(BCM2835_AUX_ENABLE));
     }else{

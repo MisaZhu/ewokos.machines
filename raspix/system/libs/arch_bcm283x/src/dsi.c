@@ -54,7 +54,7 @@ int bcm283x_dsi_panel_prepare(const bcm283x_dsi_panel_t* panel) {
     }
 
     dsi_gpio_prepare();
-    bcm283x_gpio_config(panel->reset_gpio, GPIO_OUTPUT);
+    bcm283x_gpio_config(panel->reset_gpio, GPIO_FUNC_OUTPUT);
 
     bcm283x_gpio_write(panel->reset_gpio,
             dsi_gpio_level(panel->reset_active_high, 0));
@@ -74,7 +74,7 @@ int bcm283x_dsi_panel_enable_backlight(const bcm283x_dsi_panel_t* panel) {
     }
 
     dsi_gpio_prepare();
-    bcm283x_gpio_config(panel->backlight_gpio, GPIO_OUTPUT);
+    bcm283x_gpio_config(panel->backlight_gpio, GPIO_FUNC_OUTPUT);
     bcm283x_gpio_write(panel->backlight_gpio,
             dsi_gpio_level(panel->backlight_active_high, 1));
     dsi_sleep_ms(panel->backlight_delay_ms);

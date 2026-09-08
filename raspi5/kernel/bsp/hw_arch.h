@@ -82,6 +82,31 @@
 #define PI5_RESCAL_PAGE_SIZE PAGE_SIZE
 
 /*
+ * BCM2712 SoC USB 2.0 host (Synopsys DWC2, same IP as bcm283x).
+ *
+ * bcm2712.dtsi declares usb@480000, compatible "brcm,bcm2835-usb", at
+ * 0x10_00480000 with a 64 KB register file, interrupts GIC_SPI 73 and a
+ * usb-nop-xceiv PHY (nothing to program); bcm2712-rpi.dtsi binds it to a
+ * firmware power domain, so it is only alive after a mailbox power-on.
+ *
+ * This is NOT the RP1 xHCI pair. CM5 exposes this SoC controller as its
+ * "built-in USB 2.0 hub" and a board such as the uConsole wires the onboard
+ * GL850 hub (keyboard + trackball) to it — its config.txt carries
+ * dtoverlay=dwc2,dr_mode=host under [all], which is what activates those
+ * ports for pi5 as well as pi4. usbhostd therefore has to drive it too, and
+ * maps the window through SYS_MEM_MAP: without this whitelist entry the
+ * mapping is refused and the first register read aborts.
+ *
+ * Virtual offset 0x04700000 sits inside MMIO_MAX_SIZE and clear of EMMC
+ * (0x04000000), pcie2 (0x04400000), rp1 ctrl (0x04500000), pcie1 plus its
+ * BAR0 sub-window (0x04600000), reset/rescal (0x04620000/0x04630000) and
+ * RP1 (0x06000000).
+ */
+#define PI5_USB_DWC2_WIN_OFF 0x04700000
+#define PI5_USB_DWC2_PHY     0x1000480000UL
+#define PI5_USB_DWC2_SIZE    (64*KB)
+
+/*
  * RP1 has to stay strictly inside MMIO_MAX_SIZE. At offset 0x08000000 it sat
  * at exactly MMIO_BASE + MMIO_MAX_SIZE, which is DMA_V_BASE: its 32MB device
  * window then covered the whole 32MB DMA window that every process shares, so

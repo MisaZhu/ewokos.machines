@@ -21,8 +21,8 @@ static void TP_init(void) {
     bsp_spi_set_div(SPI_DIV);
     bsp_spi_select(SPI_SELECT_0);
 
-    bsp_gpio_config(TP_CS, GPIO_OUTPUT);
-    bsp_gpio_config(TP_IRQ, GPIO_INPUT);
+    bsp_gpio_config(TP_CS, GPIO_FUNC_OUTPUT);
+    bsp_gpio_config(TP_IRQ, GPIO_FUNC_INPUT);
     bsp_gpio_pull(TP_IRQ, GPIO_PULL_UP);
     bsp_gpio_write(TP_CS, 1); // prevent blockage of the SPI bus
     //klog("tp_init done\n");

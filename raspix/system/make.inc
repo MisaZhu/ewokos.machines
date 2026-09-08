@@ -13,4 +13,6 @@ LDFLAGS += -L $(SDK_DIR)/lib
 CFLAGS += -I include -I $(SDK_DIR)/include
 CXXFLAGS += -I include -I $(SDK_DIR)/include
 
-export BSP_LFLAGS= -lbsp -larch_bcm283x
+# link order matters: libbsp's bsp_g2d calls into libvideocore, which in
+# turn calls the bcm283x mailbox helpers in libarch_bcm283x
+export BSP_LFLAGS= -lbsp -lvideocore -larch_bcm283x

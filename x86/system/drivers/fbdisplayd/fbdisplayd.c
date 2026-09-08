@@ -104,9 +104,9 @@ static int doargs(int argc, char* argv[]) {
 }
 
 int main(int argc, char** argv) {
-    fbdisplayd_t fbdisplayd;
-        int opti = doargs(argc, argv);
-        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
+    displayd_t fbdisplayd;
+    int opti = doargs(argc, argv);
+    const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
 
     memset(&fbdisplayd, 0, sizeof(fbdisplayd));
     fbdisplayd.splash = NULL;
@@ -115,5 +115,5 @@ int main(int argc, char** argv) {
     fbdisplayd.get_info = get_info;
     fbdisplayd_set_flush_rect(fbdisplayd_flush_rect_to);
 
-        return fbdisplayd_run(&fbdisplayd, mnt_point, 1024, 768, _conf_file, _display_index);
+    return fbdisplayd_run(&fbdisplayd, mnt_point, 1024, 768, _conf_file, _display_index);
 }

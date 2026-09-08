@@ -70,9 +70,10 @@ static int doargs(int argc, char* argv[]) {
 }
 
 int main(int argc, char** argv) {
-    fbdisplayd_t fbdisplayd;
-        int opti = doargs(argc, argv);
-        const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
+    displayd_t fbdisplayd;
+    memset(&fbdisplayd, 0, sizeof(fbdisplayd));
+    int opti = doargs(argc, argv);
+    const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
     _mmio_base = mmio_map();
     st7586_init();
 
@@ -80,5 +81,5 @@ int main(int argc, char** argv) {
     fbdisplayd.flush = flush;
     fbdisplayd.init = init;
     fbdisplayd.get_info = get_info;
-        return fbdisplayd_run(&fbdisplayd, mnt_point, 178, 128, _conf_file, _display_index);
+    return fbdisplayd_run(&fbdisplayd, mnt_point, 178, 128, _conf_file, _display_index);
 }

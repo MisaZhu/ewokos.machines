@@ -28,19 +28,19 @@
 #define GPIO_SEL_BITS 3
 #define GPIO_SEL      0x07
 
-#define GPIO_INPUT  0x00
-#define GPIO_OUTPUT 0x01
-#define GPIO_ALTF5  0x02
-#define GPIO_ALTF4  0x03
-#define GPIO_ALTF0  0x04
-#define GPIO_ALTF1  0x05
-#define GPIO_ALTF2  0x06
-#define GPIO_ALTF3  0x07
+#define GPIO_FUNC_INPUT  0x00
+#define GPIO_FUNC_OUTPUT 0x01
+#define GPIO_FUNC_ALTF5  0x02
+#define GPIO_FUNC_ALTF4  0x03
+#define GPIO_FUNC_ALTF0  0x04
+#define GPIO_FUNC_ALTF1  0x05
+#define GPIO_FUNC_ALTF2  0x06
+#define GPIO_FUNC_ALTF3  0x07
 
-#define bcm283x_gpio_pull_NONE 0x00
-#define bcm283x_gpio_pull_DOWN 0x01
-#define bcm283x_gpio_pull_UP   0x02
-#define bcm283x_gpio_pull_MASK 0x03
+#define GPIO_PULL_NONE 0x00
+#define GPIO_PULL_DOWN 0x01
+#define GPIO_PULL_UP   0x02
+#define GPIO_PULL_MASK 0x03
 
 void     bcm283x_gpio_init(void);
 void     bcm283x_gpio_config(int32_t gpio_no, int32_t gpio_sel);

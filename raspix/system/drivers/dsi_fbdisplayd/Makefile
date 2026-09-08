@@ -9,7 +9,12 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-DSI_FBDISPLAYD_OBJS = $(ARCH)/dsi_fbdisplayd.o
+DSI_FBDISPLAYD_OBJS = $(ARCH)/dsi_fbdisplayd.o \
+		$(ARCH)/panel_uc.o \
+		$(ARCH)/panel_uc_dsi.o \
+		$(ARCH)/panel_uc_cwu50.o \
+		$(ARCH)/panel_uc_cwu50old.o \
+		$(ARCH)/panel_uc_cwd686.o
 
 DSI_FBDISPLAYD = $(TARGET_DIR)/drivers/raspix/dsi_fbdisplayd
 

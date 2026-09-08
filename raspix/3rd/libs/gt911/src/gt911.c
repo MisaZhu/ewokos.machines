@@ -147,8 +147,8 @@ static void GT911_ResetSelect(int32_t rst, int32_t intr, int32_t int_level) {
         if (rst < 0 || intr < 0)
                 return;
 
-        bcm283x_gpio_config(rst, GPIO_OUTPUT);
-        bcm283x_gpio_config(intr, GPIO_OUTPUT);
+        bcm283x_gpio_config(rst, GPIO_FUNC_OUTPUT);
+        bcm283x_gpio_config(intr, GPIO_FUNC_OUTPUT);
         bcm283x_gpio_pull(intr, GPIO_PULL_NONE);
 
         if (int_level)
@@ -161,7 +161,7 @@ static void GT911_ResetSelect(int32_t rst, int32_t intr, int32_t int_level) {
         bcm283x_gpio_set(rst);
         proc_usleep(60000);
 
-        bcm283x_gpio_config(intr, GPIO_INPUT);
+        bcm283x_gpio_config(intr, GPIO_FUNC_INPUT);
         bcm283x_gpio_pull(intr, GPIO_PULL_UP);
         proc_usleep(20000);
 }
