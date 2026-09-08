@@ -233,7 +233,7 @@ static int _inited = 0;
 static int _ok = 0;
 static int _num_qpus = 1;
 static int _disable_vec4 = 0;
-static int _d0_2g_quirk = 0;
+static int _trailing_l2t_quirk = 0;
 static uint32_t _mmu_debug_info = 0;
 static uint32_t _mmu_va_width = 32;
 
@@ -687,24 +687,25 @@ static int g2d_mmu_check_fault(int kern, int nunifs, int num_qpus)
               (client_id == 0x38u ? "PTB" :
                (client_id == 0x39u ? "PSE" :
                 (client_id == 0x3au ? "CSD" : "other"))));
-    /* BCM2712 D0 emits a trailing L2T request with a bogus 36-bit VA after
-     * otherwise-complete production CSD kernels.  The same request is
-     * reproducible in the bare-metal MMU/canary harness: the destination is
-     * complete and no protected RAM changes.  With the MMU disabled that
-     * transaction becomes the low-RAM corruption seen on the 2GB board.
+    /* V3D 7.1 IP revision 10 emits a trailing L2T request with a bogus
+     * 36-bit VA after otherwise-complete production CSD kernels.  The same
+     * request is reproducible in the bare-metal MMU/canary harness: the
+     * destination is complete and no protected RAM changes.  Without MMU
+     * containment it becomes the low-RAM corruption seen on the 2GB board.
      *
      * Keep the MMU's invalid-PTE abort/redirect as the containment boundary.
-     * Once CSD_DONE has arrived, only this exact D0 signature may continue to
-     * the mandatory L2 writeback below.  A write violation, cap fault, or a
-     * fault from any non-L2T client remains fatal. */
-    recoverable = _d0_2g_quirk &&
+     * Once CSD_DONE has arrived, only this exact IP-revision signature may
+     * continue to the mandatory L2 writeback below.  A write violation, cap
+     * fault, or a fault from any non-L2T client remains fatal. */
+    recoverable = _trailing_l2t_quirk &&
                   client_id < 0x30u &&
                   (ctl & V3D_MMU_PT_INVALID_FAULT) != 0 &&
                   (ctl & (V3D_MMU_WRITE_FAULT | V3D_MMU_CAP_FAULT)) == 0 &&
+                  (hub_int & HUB_INT_MMU_PTI) != 0 &&
                   (hub_int & (HUB_INT_MMU_WRV | HUB_INT_MMU_CAP)) == 0;
-    /* The D0 quirk can occur after every dispatch.  Record it once instead
-     * of turning a successful benchmark into an unbounded kernel-log stream;
-     * fatal faults remain visible on every occurrence. */
+    /* The trailing request can occur after every dispatch.  Record it once
+     * instead of turning a successful benchmark into an unbounded kernel-log
+     * stream; fatal faults remain visible on every occurrence. */
     if (!recoverable || !recoverable_reported) {
         slog("g2d: V3D MMU fault kernel=%s ctl=0x%x id=0x%x(%s) "
              "hub=0x%x vio_reg=0x%x va=0x%x%08x pte=0x%x action=%s\r\n",
@@ -795,13 +796,10 @@ int v3d_g2d_init(void)
     _ram_contig_top = si.shm_contig.phy_base + si.shm_contig.size;
     _dma_v_base = si.sys_dma.v_base;
     _dma_v_size = si.sys_dma.size;
-    /* BCM2712 D0 currently ships in the 2GB product.  Its TMUC vec4 path
-     * can raise an abort during the capability probe, and an aborted TMU
-     * sequence is not recoverable without a full GPU reset.  Keep the
-     * proven scalar kernels on this variant instead of poisoning all
-     * subsequent CSD jobs with a deliberately speculative probe. */
-    _d0_2g_quirk = si.total_phy_mem_size <= (2ull << 30);
-    _disable_vec4 = _d0_2g_quirk;
+    /* Keep the 2GB variant on the conservative scalar path.  This is
+     * separate from the trailing L2T quirk, which is a V3D IP-revision
+     * property and is also present on the 8GB board. */
+    _disable_vec4 = si.total_phy_mem_size <= (2ull << 30);
     /* Dedicated device-window VAs: framebuffer.c fb_adopt() places the
      * scanout mapping at sys_dma.v_base+size in its own process; never
      * reuse that same VA range here. Overlapping dynamic VA slots across
@@ -869,10 +867,12 @@ int v3d_g2d_init(void)
     {
         uint32_t ident1 = v3d_core()[CTL_IDENT1 / 4];
         uint32_t ident3 = v3d_hub()[HUB_IDENT3 / 4];
+        uint32_t iprev = (ident3 >> 8) & 0xffu;
         uint32_t nslc = (ident1 >> 4) & 0xfu;
         uint32_t qpus_per_slice = (ident1 >> 8) & 0xfu;
         uint32_t detected = nslc * qpus_per_slice;
 
+        _trailing_l2t_quirk = iprev == 10u;
         if (detected != 0 && detected <= 16u)
             _num_qpus = (int)detected;
         /* Keep D0/2GB on one logical batch until its TIDX behaviour is
@@ -881,9 +881,10 @@ int v3d_g2d_init(void)
         if (_disable_vec4)
             _num_qpus = 1;
         slog("g2d: V3D ident3=0x%x iprev=%u ident1=0x%x qpus=%u "
-             "hw_qpus=%u vec4=%s\r\n", ident3, (ident3 >> 8) & 0xffu,
+             "hw_qpus=%u vec4=%s l2t_tail=%s\r\n", ident3, iprev,
              ident1, (uint32_t)_num_qpus, detected,
-             _disable_vec4 ? "off-2g-d0" : "probe");
+             _disable_vec4 ? "off-2g" : "probe",
+             _trailing_l2t_quirk ? "redirect" : "fatal");
     }
     if (g2d_mmu_enable() != 0) {
         slog("g2d: V3D MMU setup failed\r\n");
