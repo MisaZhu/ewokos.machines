@@ -31,6 +31,7 @@
 
 #define HCI_OGF_LINK_CTRL 0x01
 #define HCI_OGF_HOST_CTRL 0x03
+#define HCI_OGF_INFO 0x04
 #define HCI_OGF_VENDOR 0x3f
 
 #define HCI_OCF_INQUIRY 0x0001
@@ -53,6 +54,7 @@
 
 #define HCI_OCF_SET_EVENT_MASK 0x0001
 #define HCI_OCF_RESET 0x0003
+#define HCI_OCF_READ_LOCAL_VERSION 0x0001
 #define HCI_OCF_WRITE_SCAN_ENABLE 0x001a
 #define HCI_OCF_WRITE_AUTH_ENABLE 0x0020
 #define HCI_OCF_WRITE_INQUIRY_MODE 0x0045
@@ -72,6 +74,7 @@
 #define EVT_REMOTE_NAME_COMPLETE 0x07
 #define EVT_CMD_COMPLETE 0x0e
 #define EVT_CMD_STATUS 0x0f
+#define EVT_HARDWARE_ERROR 0x10
 #define EVT_PIN_CODE_REQUEST 0x16
 #define EVT_LINK_KEY_REQUEST 0x17
 #define EVT_LINK_KEY_NOTIFY 0x18
@@ -1063,6 +1066,11 @@ static void bt_handle_event(uint8_t event_code, const uint8_t* payload, size_t l
     case EVT_CMD_STATUS:
         bt_handle_command_status(payload, len);
         break;
+    case EVT_HARDWARE_ERROR:
+        /* the cyw chip reports its post-launch fault through this: the
+           1-byte code is the only clue it gives us */
+        slog("bluetooth hw_error code=0x%02x\n", len > 0 ? payload[0] : 0xff);
+        break;
     case EVT_INQUIRY_COMPLETE:
         _scanning = false;
         bt_emit("scan_done status=%u", len > 0 ? payload[0] : 0xff);
@@ -1366,6 +1374,14 @@ static int bt_driver_init(void) {
     }
     if (ret != 0) {
         slog("bluetooth init post_fw_reset_failed\n");
+        /* is anything still alive out there? READ_LOCAL_VERSION is legal
+           both in rom download mode and in the patchram firmware */
+        if (bt_hci_command_sync(HCI_OGF_INFO, HCI_OCF_READ_LOCAL_VERSION, NULL, 0, 500) == 0) {
+            slog("bluetooth init post_fw_probe answered (chip alive, fw state wrong)\n");
+        }
+        else {
+            slog("bluetooth init post_fw_probe silent (chip wedged)\n");
+        }
         return ret;
     }
 
