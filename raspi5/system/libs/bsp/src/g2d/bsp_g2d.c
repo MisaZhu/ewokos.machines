@@ -38,8 +38,8 @@
  * GPU eligibility (on top of the width/size checks):
  *   - the *_contig flag is set and the matching *_phy carries a valid
  *     physical base (the caller resolves it: contig shm slab / sys_dma
- *     memory); the physical address must fit the kernels' 32-bit TMU
- *     addresses.
+ *     memory); its low 32 bits form the kernels' V3D IOVA and the buffer
+ *     must not cross the 4GB IOVA wrap.
  *
  * LARGE-SURFACE BATCHING (blt / blt_alpha / blt_phy / scale_to): a
  * forward-walk dispatch stalls ~3-4x once its read+write working set
@@ -68,9 +68,8 @@
  * walk already streams at DRAM bandwidth past the cliff (measured).
  *
  * ZERO COPY: the GPU operates directly on the caller's buffers through
- * the caller-supplied physical bases; the kernels are preloaded once at
- * init and a dispatch only refreshes the small uniform block (see
- * v3d_g2d.c).
+ * page-table-mapped V3D IOVAs; the kernels are preloaded once at init and
+ * a dispatch only refreshes the small uniform block (see v3d_g2d.c).
  *
  * NO CPU FALLBACK: an operation that cannot run on the GPU (not
  * eligible, or the dispatch failed) returns -1.  A failed dispatch is
@@ -385,19 +384,21 @@ static uint32_t gpu_pow2_scale_factor(int32_t src, int32_t dst)
 }
 
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
- * addresses.  Returns the physical address usable by the kernels, or 0
- * when the canvas cannot run on the GPU (not physically contiguous, no
- * phy supplied, > 4 GB physical, or the address fails the RAM-range
- * validation gate). */
+ * addresses.  The V3D page table uses the physical address's low 32 bits
+ * as its IOVA, allowing the high DMA carve-outs on 8GB boards as long as
+ * the buffer does not cross an IOVA wrap. */
 static uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes, uint8_t contig)
 {
+    uint64_t iova;
+
     if (!contig)
         return 0;
-    if (phys == 0 || (phys >> 32) != 0)
+    if (phys == 0)
         return 0;
-    if ((ewokos_addr_t)(uint32_t)phys + bytes < (uint32_t)phys)
-        return 0;                       /* wrap */
-    if (!v3d_g2d_phy_valid((ewokos_addr_t)(uint32_t)phys, bytes))
+    iova = (uint32_t)phys;
+    if (iova == 0 || iova + bytes > (1ull << 32))
+        return 0;
+    if (!v3d_g2d_phy_valid(phys, bytes))
         return 0;
     return (uint32_t)phys;
 }
