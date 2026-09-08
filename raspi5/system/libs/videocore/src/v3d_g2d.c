@@ -31,12 +31,12 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <unistd.h>
 #include <sysinfo.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/sys.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/proc.h>
 #include <arch/bcm2712/mailbox.h>
 #include "v3d_g2d.h"
 #include "g2d_qpu_kernels.h"
@@ -122,6 +122,8 @@
 
 #define CSD_CODE_WORDS 512   /* 344-word argb_alpha (endpoint-exact blend) */
 #define CSD_UNIF_WORDS 64
+#define CSD_POLL_SPIN_LIMIT 2000000u
+#define CSD_POLL_YIELD_LIMIT 256u
 
 /* Raspberry Pi firmware property tags and clock ID. */
 #define FW_GET_CLOCK_RATE      0x00030002u
@@ -302,10 +304,10 @@ static void g2d_dcache_invalidate(void *addr, size_t len)
 /* (delay helper) the driver runs as a user-space daemon, so register-settle
  * waits use the OS sleep API.  The bare-metal harness polled CNTPCT_EL0
  * directly, which traps at EL0 unless the kernel enables CNTKCTL_EL1
- * timer access - never assume that in OS-portable code.  usleep() rounds
+ * timer access - never assume that in OS-portable code.  proc_usleep() rounds
  * up to the kernel tick (~976us at timer_freq=1024), far above these
  * settle minimums and harmless for them. */
-#define g2d_delay_us(us) usleep(us)
+#define g2d_delay_us(us) proc_usleep(us)
 
 /* spin-wait hint for the register polls below: a tight loop of
  * device-memory reads issues a fresh uncached AXI transaction every
@@ -753,7 +755,7 @@ static int g2d_probe(void)
 
 /* Reset the V3D block via the PM power domain (assert/deassert
  * V3DRSTN); without the power-cycle the QPU array never launches.
- * Settle delays go through g2d_delay_us == usleep(): only lower bounds
+ * Settle delays go through g2d_delay_us == proc_usleep(): only lower bounds
  * are required here (tens / ~200 us), so tick-rounded sleeps are fine. */
 #if !G2D_SKIP_PM_RESET
 static void g2d_pm_reset(void)
@@ -989,12 +991,14 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len, unsigned maint)
+                void *dst, size_t dst_len, unsigned flags)
 {
     volatile uint32_t *csd =
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
+    uint32_t poll_limit = (flags & V3D_G2D_POLL_YIELD) ?
+                          CSD_POLL_YIELD_LIMIT : CSD_POLL_SPIN_LIMIT;
     int kern = -1;
 
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
@@ -1028,7 +1032,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* PRE: make the caller's ARM-side writes visible to the GPU, and
      * drop the ARM's stale copies of the destination.  NOCACHE dma
      * canvases need no maintenance. */
-    if (maint & V3D_G2D_MAINT_PRE) {
+    if (flags & V3D_G2D_MAINT_PRE) {
         if (src && src_len && !is_dma_addr(src))
             g2d_dcache_clean((void *)src, src_len);
         if (dst && dst_len && !is_dma_addr(dst))
@@ -1041,7 +1045,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* extra trailing uniform: scratch base for the kernels' flush
      * epilogue (identity-mapped V3D address) */
     _unif[nunifs] = _scratch_p;
-    if (maint & V3D_G2D_MAINT_PRE)
+    if (flags & V3D_G2D_MAINT_PRE)
         g2d_invalidate_caches();
     else
         g2d_uniform_fresh();    /* stale-uniform guard, see above */
@@ -1059,13 +1063,18 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     csd[0] = cfg[0];            /* sole CFG0 write starts the dispatch */
 
     /* Every production kernel waits for pending TMU writes and then uses
-     * the legal thread-end protocol, so CSD_DONE is authoritative. */
-    for (i = 0; i < 2000000; i++) {
+     * the legal thread-end protocol, so CSD_DONE is authoritative.  A long
+     * job polls once per scheduler frame (about 1 ms at timer_freq=1024),
+     * with a 256-frame timeout comparable to the short job's spin bound. */
+    for (i = 0; i < poll_limit; i++) {
         if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
             break;
-        g2d_poll_hint();
+        if (flags & V3D_G2D_POLL_YIELD)
+            proc_usleep(0);
+        else
+            g2d_poll_hint();
     }
-    if (i == 2000000) {
+    if (i == poll_limit) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         (void)g2d_mmu_check_fault(kern, nunifs, num_qpus);
         /* A timeout is a real failure.  Do not reset the graphics domain
@@ -1078,7 +1087,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 
     /* POST: GPU writes -> DRAM, then drop the ARM's stale destination
      * lines */
-    if (maint & V3D_G2D_MAINT_POST) {
+    if (flags & V3D_G2D_MAINT_POST) {
         g2d_flush_l2();
         if (dst && dst_len && !is_dma_addr(dst))
             g2d_dcache_invalidate(dst, dst_len);
