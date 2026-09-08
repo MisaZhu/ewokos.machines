@@ -57,6 +57,13 @@ SECTIONS
 
 	. = . + 0x4000;
 	_svc_stack = .;
+	/*
+	 * The AArch64 SMP entry code gives each core a private SVC stack by
+	 * adding core_id * 0x4000 to _svc_stack.  Reserve the corresponding
+	 * three additional stack slots here; without them cores 1..3 landed
+	 * in KERNEL_VSYSCALL_INFO/page-table memory and corrupted kernel state.
+	 */
+	. = . + (0x4000 * 3);
 	PROVIDE(_kernel_sp = .);
 
 	. = ALIGN(page_align_size);
