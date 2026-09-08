@@ -392,17 +392,22 @@ static uint32_t gpu_pow2_scale_factor(int32_t src, int32_t dst)
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
  * addresses.  Returns the physical address usable by the kernels, or 0
  * when the canvas cannot run on the GPU (not physically contiguous, no
- * phy supplied, > 4 GB physical, or the address fails the RAM-range
- * validation gate). */
+ * phy supplied, or the address fails the RAM-range validation gate).
+ * The V3D page table uses the physical address's low 32 bits as its IOVA,
+ * allowing the high DMA carve-outs on 8GB boards as long as the buffer
+ * does not cross an IOVA wrap. */
 uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes, uint8_t contig)
 {
+    uint64_t iova;
+
     if (!contig)
         return 0;
-    if (phys == 0 || (phys >> 32) != 0)
+    if (phys == 0)
         return 0;
-    if ((ewokos_addr_t)(uint32_t)phys + bytes < (uint32_t)phys)
-        return 0;                       /* wrap */
-    if (!v3d_g2d_phy_valid((ewokos_addr_t)(uint32_t)phys, bytes))
+    iova = (uint32_t)phys;
+    if (iova == 0 || iova + bytes > (1ull << 32))
+        return 0;                       /* IOVA wrap */
+    if (!v3d_g2d_phy_valid(phys, bytes))
         return 0;
     return (uint32_t)phys;
 }

@@ -7,16 +7,16 @@
  * the PM power domain into the caller's address space through
  * SYS_MEM_MAP, then power-cycles the GRAFX_V3D domain and enables the
  * L2 cache.  CSD code/uniform staging lives in physically-contiguous
- * sys_dma buffers (dma_alloc), so the QPU fetches them by physical
- * address without a V3D MMU page table.
+ * sys_dma buffers (dma_alloc).  A V3D-local page table limits QPU access
+ * to the DMA and contiguous-shm windows, including their >4GB locations.
  *
  * Canvases arrive as virtual addresses (shmat() / dma window addresses)
  * with their resolved physical base supplied by the caller (the bsp_g2d
  * *_phy parameters); v3d_g2d_run() maintains the ARM/V3D caches around
- * the dispatch and the kernels write the physical addresses directly.
+ * the dispatch and the kernels use page-table-mapped V3D IOVAs.
  *
  * ZERO COPY: the GPU never copies canvas pixels.  The kernels write and
- * read the caller's buffers in place through their physical addresses;
+ * read the caller's buffers in place through their V3D IOVAs;
  * the only memory the driver touches is the (small) uniform block, which
  * is refreshed per call.  The CSD kernels are preloaded once at init, so
  * a dispatch copies nothing but the uniforms.
@@ -41,20 +41,18 @@ int v3d_g2d_ready(void);
  * e.g. the property mailbox was unavailable). */
 uint32_t v3d_g2d_clock_hz(void);
 
-/* Number of QPUs available for CSD dispatch (12 on BCM2712). */
+/* Number of logical CSD batches used by the kernels.  BCM2712 exposes
+ * 12 QPUs; the 2GB/D0 stability path currently uses one batch. */
 int v3d_g2d_num_qpus(void);
 
-/* Physical address of the TMU write-scratch surface the kernels use for
- * out-of-rect writes and the flush epilogue (feed it to uniforms). */
+/* V3D IOVA of the TMU write-scratch surface the kernels use for out-of-rect
+ * writes and the flush epilogue (feed it to uniforms). */
 uint32_t v3d_g2d_scratch_phys(void);
 
 /* Address validation gate: returns non-zero when [phy, phy+bytes) lies
- * inside a legitimate physical RAM region (the allocable memory range,
- * the sys_dma window, the IPC_CONTIG shm slab, or below the total
- * physical memory size).  The GPU kernels write through 32-bit physical
- * addresses with no MMU, so a bad address would corrupt arbitrary
- * memory; every caller-supplied *_phy must pass this check before a
- * dispatch is allowed. */
+ * inside a region installed in the V3D-local page table (the sys_dma
+ * window or IPC_CONTIG shm slab).  Every
+ * caller-supplied *_phy must pass this check before dispatch. */
 int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
 
 /* One-shot hardware probe of the vec4 (TMUC general-access) TMU path
@@ -89,8 +87,8 @@ int v3d_g2d_vec4_ok(void);
 /*
  * Run one CSD dispatch of `code` with `unifs` against the surfaces
  * `src`/`dst` (either may be NULL/0).  src/dst are VIRTUAL addresses;
- * the caller has already substituted physical addresses into the uniform
- * fields that describe them.  This wrapper keeps the ARM/V3D caches
+ * the caller has already substituted V3D IOVAs into the uniform fields
+ * that describe them.  This wrapper keeps the ARM/V3D caches
  * coherent around the dispatch (dc civac/ivac for cacheable canvases,
  * nothing for NOCACHE dma canvases), bounded by the maint flags.
  * Returns 0 on success.
