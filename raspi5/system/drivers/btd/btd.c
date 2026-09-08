@@ -13,11 +13,9 @@
 #include <ewoksys/mmio.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/ipc.h>
-#include <ewoksys/dma.h>
+#include <ewoksys/kernel_tic.h>
 
-#include <arch/bcm283x/gpio.h>
-#include <arch/bcm283x/pl011_uart.h>
-#include <arch/bcm283x/mailbox.h>
+#include <arch/bcm2712/mmio.h>
 
 #include "firmware_4345c0.h"
 
@@ -84,51 +82,56 @@
 #define EVT_SIMPLE_PAIRING_COMPLETE 0x36
 #define EVT_EXTENDED_INQUIRY_RESULT 0x2f
 
-#define BCM2835_MBOX_POWER_DEVID_UART0 1
-#define BCM2835_MBOX_TAG_SET_POWER_STATE 0x00028001
-#define BCM2835_MBOX_SET_POWER_STATE_REQ_ON (1 << 0)
-#define BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT (1 << 1)
-#define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
+/*
+ * Pi 5 (BCM2712) Bluetooth hardware, from the official device tree
+ * (bcm2712.dtsi + bcm2712-rpi-5-b.dts):
+ *   - the HCI UART is the SoC 16550 ("brcm,bcm7271-uart", reg 0x20 bytes,
+ *     32-bit registers at stride 4) "uarta" @ 0x7d50c000 (main window
+ *     offset 0x0150c000), 96MHz uartclk, on gpio24(BT_RTS)/25(BT_CTS)/
+ *     26(BT_TXD)/27(BT_RXD) - pinctrl function "uart0", fsel 4 on all
+ *     four pins on the D0 stepping - with hardware flow control
+ *     (uart-has-rtscts / auto-flow-control). NOTE: uarta is NOT a PL011;
+ *     only the console uart10 is.
+ *   - BT_ON is "gio" brcmstb-gpio bank0 GPIO29 active high (the dts
+ *     bt_shutdown_pins); WL_ON is GPIO28, shared with the wlan driver.
+ *   - no external 32kHz clock: the Pi4 GPCLK2 scheme does not exist
+ *     here, the chip LPO runs from its own crystal.
+ */
+#define PI5_UARTA_OFF 0x0150C000u
+/* 16550/bcm7271 register map, byte offsets from the uart base */
+#define UARTA_THR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x00u)
+#define UARTA_RBR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x00u)
+#define UARTA_DLL_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x00u)
+#define UARTA_IER_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x04u)
+#define UARTA_DLM_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x04u)
+#define UARTA_FCR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x08u)
+#define UARTA_LCR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x0cu)
+#define UARTA_MCR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x10u)
+#define UARTA_LSR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x14u)
+#define UARTA_MSR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x18u)
 
-#define CM_GP2CTL ((uintptr_t)_mmio_base + 0x101080u)
-#define CM_GP2DIV ((uintptr_t)_mmio_base + 0x101084u)
-#define CM_PASSWORD 0x5a000000u
-#define CM_BUSY (1u << 7)
-#define CM_ENABLE (1u << 4)
+#define UART_LSR_DR   (1u << 0) /* rx data ready */
+#define UART_LSR_THRE (1u << 5) /* tx holding register empty */
 
-#define UART0_BASE_OFF 0x00201000u
-#define UART0_FR_REG ((uintptr_t)_mmio_base + UART0_BASE_OFF + 0x18u)
+#define PI5_BT_UART_CLOCK_HZ 96000000u
+#define PI5_BT_BAUD_RATE 115200u
 
-typedef struct {
-    uint32_t buf_size;
-    uint32_t code;
-} bcm2835_mbox_hdr_t;
+/* The gpio24-27 fsel fields (4 bits each, shifts 0/4/8/12) all live in
+   pinctrl register 0x08; fsel 4 is the uart0 function that routes them
+   to uarta. The gpio28/gpio29 fields (shifts 16/20) of the same register
+   must stay at function 0 so the gio bank keeps driving WL_ON/BT_ON. */
+#define PI5_PINCTRL_FSEL_REG  0x08u
+#define PI5_BT_UART_FSEL_MASK 0x0000FFFFu
+#define PI5_BT_UART_FSEL_VAL  0x00004444u
+#define PI5_WL_ON_FSEL_MASK   (0xfu << 16)
+#define PI5_BT_ON_FSEL_MASK   (0xfu << 20)
 
-typedef struct {
-    uint32_t tag;
-    uint32_t val_buf_size;
-    uint32_t val_len;
-} bcm2835_mbox_tag_hdr_t;
-
-typedef struct {
-    bcm2835_mbox_tag_hdr_t tag_hdr;
-    union {
-        struct {
-            uint32_t device_id;
-            uint32_t state;
-        } req;
-        struct {
-            uint32_t device_id;
-            uint32_t state;
-        } resp;
-    } body;
-} bcm2835_mbox_tag_set_power_state_t;
-
-typedef struct {
-    bcm2835_mbox_hdr_t hdr;
-    bcm2835_mbox_tag_set_power_state_t set_power_state;
-    uint32_t end_tag;
-} msg_set_power_state_t;
+#define PI5_GIO_BASE ((uintptr_t)_mmio_base + PI5_GIO_OFF)
+#define GIO_ODEN  0x00u
+#define GIO_DATA  0x04u
+#define GIO_IODIR 0x08u
+#define WL_ON_BIT (1u << 28)
+#define BT_ON_BIT (1u << 29)
 
 typedef struct {
     bool used;
@@ -387,78 +390,40 @@ static void bt_ret_append(char* ret, size_t ret_sz, const char* fmt, ...) {
     va_end(ap);
 }
 
-static uint32_t mailbox_data_from_dma_buf(void* buf) {
-    uint32_t phy = dma_phy_addr(0, (ewokos_addr_t)buf);
-    if (phy == 0) {
-        return 0;
+/* push-pull gio output, same register sequence the wlan platform glue
+   uses for WL_REG_ON: open-drain off, direction out, then drive the line */
+static void pi5_gio_output(uint32_t bit, bool on) {
+    put32(PI5_GIO_BASE + GIO_ODEN, get32(PI5_GIO_BASE + GIO_ODEN) & ~bit);
+    put32(PI5_GIO_BASE + GIO_IODIR, get32(PI5_GIO_BASE + GIO_IODIR) & ~bit);
+    if (on) {
+        put32(PI5_GIO_BASE + GIO_DATA, get32(PI5_GIO_BASE + GIO_DATA) | bit);
     }
-    /* bus address = phys | VC alias; '+' would carry when the dma buffer
-       lands above 1GB (bit 30 already set) and the firmware never sees
-       the request - the exact trap the pl011 clock query hit */
-    return (phy | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    else {
+        put32(PI5_GIO_BASE + GIO_DATA, get32(PI5_GIO_BASE + GIO_DATA) & ~bit);
+    }
 }
 
-static int bt_power_on_uart0(void) {
-    mail_message_t msg;
-    msg_set_power_state_t* req;
-    uint32_t mailbox_data;
+static void pi5_bt_uart_init(void) {
+    uintptr_t fsel_reg = (uintptr_t)_mmio_base + PI5_PINCTRL_OFF + PI5_PINCTRL_FSEL_REG;
+    /* 16550 divisor = uartclk / (16 * baud); 96MHz -> 115200 gives 52
+       (+0.16% error, same as linux 8250_bcm7271) */
+    uint32_t div = PI5_BT_UART_CLOCK_HZ / (16u * PI5_BT_BAUD_RATE);
 
-    req = (msg_set_power_state_t*)dma_alloc(0, sizeof(msg_set_power_state_t));
-    if (req == NULL) {
-        return -1;
-    }
+    /* mux gpio24-27 onto uarta; leave gio28/29 as plain gpio */
+    put32(fsel_reg, (get32(fsel_reg)
+            & ~(PI5_BT_UART_FSEL_MASK | PI5_WL_ON_FSEL_MASK | PI5_BT_ON_FSEL_MASK))
+        | PI5_BT_UART_FSEL_VAL);
 
-    memset(req, 0, sizeof(*req));
-    req->hdr.buf_size = sizeof(*req);
-    req->set_power_state.tag_hdr.tag = BCM2835_MBOX_TAG_SET_POWER_STATE;
-    req->set_power_state.tag_hdr.val_buf_size = sizeof(req->set_power_state.body);
-    req->set_power_state.tag_hdr.val_len = sizeof(req->set_power_state.body.req);
-    req->set_power_state.body.req.device_id = BCM2835_MBOX_POWER_DEVID_UART0;
-    req->set_power_state.body.req.state =
-        BCM2835_MBOX_SET_POWER_STATE_REQ_ON |
-        BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT;
-
-    mailbox_data = mailbox_data_from_dma_buf(req);
-    if (mailbox_data == 0) {
-        dma_free(0, (ewokos_addr_t)req);
-        return -1;
-    }
-
-    msg.data = mailbox_data;
-    msg.channel = PROPERTY_CHANNEL;
-    bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)req);
-    return 0;
-}
-
-static void bt_enable_gpclk2_32k(void) {
-    int timeout = 1000;
-
-    /* CYW43455 combo module needs the 32k reference clock on GPIO43/GPCLK2. */
-    bcm283x_gpio_init();
-    bcm283x_gpio_config(43, GPIO_FUNC_ALTF0);
-    usleep(20000);
-
-    put32(CM_GP2CTL, CM_PASSWORD | 0x1);
-    while (timeout-- > 0) {
-        if ((get32(CM_GP2CTL) & CM_BUSY) == 0) {
-            break;
-        }
-        usleep(1000);
-    }
-
-    /* 32.768kHz = 19.2MHz / (585 + 3840 / 4096). */
-    put32(CM_GP2DIV, CM_PASSWORD | (585u << 12) | 3840u);
-    put32(CM_GP2CTL, CM_PASSWORD | (1u << 9) | 0x1);
-    put32(CM_GP2CTL, CM_PASSWORD | (1u << 9) | 0x1 | CM_ENABLE);
-
-    timeout = 1000;
-    while (timeout-- > 0) {
-        if ((get32(CM_GP2CTL) & CM_BUSY) != 0) {
-            break;
-        }
-        usleep(1000);
-    }
+    put32(UARTA_IER_REG, 0x00u); /* polled mode, no irqs */
+    put32(UARTA_LCR_REG, 0x80u); /* DLAB: divisor latch access */
+    put32(UARTA_DLL_REG, div & 0xffu);
+    put32(UARTA_DLM_REG, (div >> 8) & 0xffu);
+    put32(UARTA_LCR_REG, 0x03u); /* 8N1 */
+    put32(UARTA_FCR_REG, 0x07u); /* fifo enable + rx/tx fifo reset */
+    put32(UARTA_FCR_REG, 0x01u); /* keep fifo enabled */
+    /* DTR | RTS | AFE: hardware auto RTS/CTS flow control
+       (dts: uart-has-rtscts + auto-flow-control) */
+    put32(UARTA_MCR_REG, (1u << 0) | (1u << 1) | (1u << 5));
 }
 
 static void bt_prepare_combo_chip_power(void) {
@@ -467,42 +432,80 @@ static void bt_prepare_combo_chip_power(void) {
         return;
     }
 
-    /* expgpio 1 is WL_ON; keep it enabled when BT is started standalone. */
+    /* gio28 is WL_ON; keep it enabled when BT is started standalone. */
     slog("bluetooth init standalone enable_wl_on\n");
-    bcm283x_mailbox_gpio_config(1, true, true);
+    pi5_gio_output(WL_ON_BIT, true);
     usleep(100000);
 }
 
 static void bt_release_bt_shutdown(void) {
-    /* expgpio 0 is BT_ON/shutdown-gpios on Raspberry Pi wifi/bt boards. */
+    /* gio29 is BT_ON/shutdown-gpios of the Pi 5 combo chip. */
     slog("bluetooth init assert_bt_on\n");
-    bcm283x_mailbox_gpio_config(0, true, false);
+    pi5_gio_output(BT_ON_BIT, false);
     usleep(100000);
     slog("bluetooth init deassert_bt_on\n");
-    bcm283x_mailbox_gpio_config(0, true, true);
+    pi5_gio_output(BT_ON_BIT, true);
     usleep(100000);
 }
 
+static int32_t pi5_bt_uart_send(uint8_t c) {
+    /* bounded: a healthy uarta drains its fifo in ~1.4ms at 115200; 100ms
+       per byte only trips when the chip stops asserting CTS (or the line
+       is dead) - without this a stuck flow control hangs the whole daemon
+       inside the firmware download */
+    uint32_t waited = 0;
+    while (!(get32(UARTA_LSR_REG) & UART_LSR_THRE)) {
+        if (++waited > 100) {
+            slog("bluetooth tx_timeout lsr=0x%02x msr=0x%02x\n",
+                get32(UARTA_LSR_REG) & 0xffu, get32(UARTA_MSR_REG) & 0xffu);
+            return -1;
+        }
+        usleep(1000);
+    }
+    put32(UARTA_THR_REG, c);
+    return 0;
+}
+
+static int pi5_bt_uart_recv(uint32_t timeout_ms) {
+    uint32_t waited = 0;
+
+    while (!(get32(UARTA_LSR_REG) & UART_LSR_DR)) {
+        if (waited >= timeout_ms) {
+            return -1;
+        }
+        usleep(1000);
+        waited++;
+    }
+    return (int)(get32(UARTA_RBR_REG) & 0xFFu);
+}
+
 static int bt_uart_recv_timeout(uint32_t timeout_ms) {
-    return bcm283x_pl011_uart_recv(timeout_ms);
+    return pi5_bt_uart_recv(timeout_ms);
 }
 
 static int bt_uart_flush(void) {
     int n = 0;
 
-    while (bt_uart_recv_timeout(1) >= 0) {
+    /* bounded too: if the uart block ever reads garbage, an endless stream
+       of fake "bytes" must not hang init */
+    while (n < 1024 && bt_uart_recv_timeout(1) >= 0) {
         ++n;
     }
     return n;
 }
 
-static void bt_hci_send_packet(uint8_t pkt_type, const uint8_t* data, size_t len) {
+static int bt_hci_send_packet(uint8_t pkt_type, const uint8_t* data, size_t len) {
     size_t i;
 
-    bcm283x_pl011_uart_send(pkt_type);
-    for (i = 0; i < len; ++i) {
-        bcm283x_pl011_uart_send(data[i]);
+    if (pi5_bt_uart_send(pkt_type) != 0) {
+        return -1;
     }
+    for (i = 0; i < len; ++i) {
+        if (pi5_bt_uart_send(data[i]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
 }
 
 static int bt_hci_send_command_raw(uint16_t opcode, const uint8_t* params, uint8_t param_len) {
@@ -512,10 +515,14 @@ static int bt_hci_send_command_raw(uint16_t opcode, const uint8_t* params, uint8
     hdr[0] = hci_opcode_lo(opcode);
     hdr[1] = hci_opcode_hi(opcode);
     hdr[2] = param_len;
-    bt_hci_send_packet(HCI_PKT_COMMAND, hdr, sizeof(hdr));
+    if (bt_hci_send_packet(HCI_PKT_COMMAND, hdr, sizeof(hdr)) != 0) {
+        return -1;
+    }
     if (param_len > 0 && params != NULL) {
         for (i = 0; i < param_len; ++i) {
-            bcm283x_pl011_uart_send(params[i]);
+            if (pi5_bt_uart_send(params[i]) != 0) {
+                return -1;
+            }
         }
     }
     return 0;
@@ -1152,12 +1159,13 @@ static int bt_poll_once(uint32_t first_timeout_ms) {
     if (pkt_type == HCI_PKT_EVENT) {
         ++_wait_debug.event_packets;
         if (bt_recv_exact(hdr, 2, BT_UART_PKT_FOLLOW_TIMEOUT_MS) != 0) {
-            slog("bluetooth poll event_header_timeout fr=0x%08x\n", get32(UART0_FR_REG));
+            slog("bluetooth poll event_header_timeout lsr=0x%02x msr=0x%02x\n",
+                get32(UARTA_LSR_REG) & 0xffu, get32(UARTA_MSR_REG) & 0xffu);
             return -1;
         }
         if (bt_recv_exact(payload, hdr[1], BT_UART_PKT_FOLLOW_TIMEOUT_MS) != 0) {
-            slog("bluetooth poll event_payload_timeout evt=0x%02x len=%u fr=0x%08x\n",
-                hdr[0], hdr[1], get32(UART0_FR_REG));
+            slog("bluetooth poll event_payload_timeout evt=0x%02x len=%u lsr=0x%02x msr=0x%02x\n",
+                hdr[0], hdr[1], get32(UARTA_LSR_REG) & 0xffu, get32(UARTA_MSR_REG) & 0xffu);
             return -1;
         }
         bt_handle_event(hdr[0], payload, hdr[1]);
@@ -1167,7 +1175,8 @@ static int bt_poll_once(uint32_t first_timeout_ms) {
     if (pkt_type == HCI_PKT_ACL) {
         ++_wait_debug.acl_packets;
         if (bt_recv_exact(hdr, 4, BT_UART_PKT_FOLLOW_TIMEOUT_MS) != 0) {
-            slog("bluetooth poll acl_header_timeout fr=0x%08x\n", get32(UART0_FR_REG));
+            slog("bluetooth poll acl_header_timeout lsr=0x%02x msr=0x%02x\n",
+                get32(UARTA_LSR_REG) & 0xffu, get32(UARTA_MSR_REG) & 0xffu);
             return -1;
         }
         acl_len = (uint16_t)hdr[2] | ((uint16_t)hdr[3] << 8);
@@ -1194,20 +1203,28 @@ static int bt_wait_for_opcode(uint16_t opcode, uint32_t timeout_ms) {
     _wait_debug.last_opcode = 0xffff;
     _wait_debug.last_status = -1;
 
-    while (!_wait_cmd.done && waited < timeout_ms) {
-        if (bt_poll_once(1) <= 0) {
-            ++waited;
+    /* wall-clock bound: a continuous garbage rx stream (wrong baud, floating
+       line) keeps bt_poll_once returning > 0, so counting only idle polls
+       never reaches the timeout and the daemon hangs */
+    {
+        uint64_t start_ms = kernel_tic_ms(0);
+        while (!_wait_cmd.done && (uint32_t)(kernel_tic_ms(0) - start_ms) < timeout_ms) {
+            if (bt_poll_once(1) <= 0) {
+                ++waited;
+            }
         }
+        waited = (uint32_t)(kernel_tic_ms(0) - start_ms);
     }
 
     _wait_cmd.active = false;
     if (!_wait_cmd.done) {
-        slog("bluetooth wait timeout opcode=0x%04x waited=%u seen=%u evt=%u acl=%u other=%u last_pkt=0x%02x last_evt=0x%02x len=%u last_opcode=0x%04x last_status=%d fr=0x%08x\n",
+        slog("bluetooth wait timeout opcode=0x%04x waited=%u seen=%u evt=%u acl=%u other=%u last_pkt=0x%02x last_evt=0x%02x len=%u last_opcode=0x%04x last_status=%d lsr=0x%02x msr=0x%02x\n",
             opcode, waited, _wait_debug.packets_seen, _wait_debug.event_packets,
             _wait_debug.acl_packets, _wait_debug.other_packets,
             _wait_debug.last_pkt_type, _wait_debug.last_event_code,
             _wait_debug.last_event_len, _wait_debug.last_opcode,
-            _wait_debug.last_status, get32(UART0_FR_REG));
+            _wait_debug.last_status, get32(UARTA_LSR_REG) & 0xffu,
+            get32(UARTA_MSR_REG) & 0xffu);
     }
     return _wait_cmd.done ? _wait_cmd.status : -1;
 }
@@ -1216,7 +1233,10 @@ static int bt_hci_command_sync(uint16_t ogf, uint16_t ocf,
         const uint8_t* params, uint8_t param_len, uint32_t timeout_ms) {
     uint16_t opcode = HCI_OPCODE(ogf, ocf);
 
-    bt_hci_send_command_raw(opcode, params, param_len);
+    if (bt_hci_send_command_raw(opcode, params, param_len) != 0) {
+        slog("bluetooth cmd send_failed opcode=0x%04x\n", opcode);
+        return -1;
+    }
     return bt_wait_for_opcode(opcode, timeout_ms);
 }
 
@@ -1299,6 +1319,7 @@ static int bt_configure_controller(void) {
 static int bt_driver_init(void) {
     int ret;
     int flushed;
+    int attempt;
 
     _mmio_base = mmio_map();
     if (_mmio_base == 0) {
@@ -1306,21 +1327,14 @@ static int bt_driver_init(void) {
         return -1;
     }
 
-    ret = bt_power_on_uart0();
-    if (ret != 0) {
-        slog("bluetooth init power_on_uart0_failed ret=%d\n", ret);
-        return ret;
-    }
-
-    bt_enable_gpclk2_32k();
     bt_prepare_combo_chip_power();
     bt_release_bt_shutdown();
 
-    bcm283x_pl011_uart_init_bt();
+    pi5_bt_uart_init();
     flushed = bt_uart_flush();
-    slog("bluetooth init pl011 clock=%u ibrd=%u fbrd=%u flushed=%d fr=0x%08x\n",
-        bcm283x_pl011_uart_clock_hz(), bcm283x_pl011_uart_ibrd(),
-        bcm283x_pl011_uart_fbrd(), flushed, get32(UART0_FR_REG));
+    slog("bluetooth init 16550 clock=%u div=%u flushed=%d lsr=0x%02x msr=0x%02x\n",
+        PI5_BT_UART_CLOCK_HZ, PI5_BT_UART_CLOCK_HZ / (16u * PI5_BT_BAUD_RATE),
+        flushed, get32(UARTA_LSR_REG) & 0xffu, get32(UARTA_MSR_REG) & 0xffu);
     usleep(1000000);
 
     ret = bt_hci_command_sync(HCI_OGF_HOST_CTRL, HCI_OCF_RESET, NULL, 0, 3000);
@@ -1336,6 +1350,24 @@ static int bt_driver_init(void) {
         return ret;
     }
     usleep(300000);
+
+    /* the patchram launch record reboots the chip into RAM firmware; the
+       uart glitches during the handoff (stray 0x00 bytes) and the fresh
+       firmware may need a few hundred ms before answering - flush the
+       garbage and retry the post-fw reset instead of failing once */
+    ret = -1;
+    for (attempt = 0; attempt < 5 && ret != 0; ++attempt) {
+        usleep(200000);
+        bt_uart_flush();
+        ret = bt_hci_command_sync(HCI_OGF_HOST_CTRL, HCI_OCF_RESET, NULL, 0, 1000);
+        if (ret != 0) {
+            slog("bluetooth init post_fw_reset retry=%d ret=%d\n", attempt, ret);
+        }
+    }
+    if (ret != 0) {
+        slog("bluetooth init post_fw_reset_failed\n");
+        return ret;
+    }
 
     ret = bt_configure_controller();
     if (ret != 0) {
@@ -1663,8 +1695,8 @@ static int bt_close_adapter(char* ret, size_t ret_sz) {
                 &scan_enable, 1, 500);
     }
 
-    /* expgpio 0 is BT_ON on Raspberry Pi wifi/bt boards. */
-    bcm283x_mailbox_gpio_config(0, true, false);
+    /* gio29 is BT_ON on the Pi 5 wifi/bt combo chip. */
+    pi5_gio_output(BT_ON_BIT, false);
     usleep(100000);
 
     _powered = false;
