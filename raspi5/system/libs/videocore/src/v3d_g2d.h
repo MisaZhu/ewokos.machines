@@ -41,8 +41,8 @@ int v3d_g2d_ready(void);
  * e.g. the property mailbox was unavailable). */
 uint32_t v3d_g2d_clock_hz(void);
 
-/* Number of logical CSD batches used by the kernels.  BCM2712 exposes
- * 12 QPUs; the 2GB/D0 stability path currently uses one batch. */
+/* Number of logical CSD batches used by the kernels, derived from the
+ * hardware's slice and QPU counts. */
 int v3d_g2d_num_qpus(void);
 
 /* V3D IOVA of the TMU write-scratch surface the kernels use for out-of-rect

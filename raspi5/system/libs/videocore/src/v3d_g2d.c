@@ -232,7 +232,6 @@ static ewokos_addr_t _mmu_pt_p, _mmu_illegal_p;
 static int _inited = 0;
 static int _ok = 0;
 static int _num_qpus = 1;
-static int _disable_vec4 = 0;
 static int _trailing_l2t_quirk = 0;
 static uint32_t _mmu_debug_info = 0;
 static uint32_t _mmu_va_width = 32;
@@ -796,10 +795,6 @@ int v3d_g2d_init(void)
     _ram_contig_top = si.shm_contig.phy_base + si.shm_contig.size;
     _dma_v_base = si.sys_dma.v_base;
     _dma_v_size = si.sys_dma.size;
-    /* Keep the 2GB variant on the conservative scalar path.  This is
-     * separate from the trailing L2T quirk, which is a V3D IP-revision
-     * property and is also present on the 8GB board. */
-    _disable_vec4 = si.total_phy_mem_size <= (2ull << 30);
     /* Dedicated device-window VAs: framebuffer.c fb_adopt() places the
      * scanout mapping at sys_dma.v_base+size in its own process; never
      * reuse that same VA range here. Overlapping dynamic VA slots across
@@ -875,15 +870,9 @@ int v3d_g2d_init(void)
         _trailing_l2t_quirk = iprev == 10u;
         if (detected != 0 && detected <= 16u)
             _num_qpus = (int)detected;
-        /* Keep D0/2GB on one logical batch until its TIDX behaviour is
-         * proven.  This bounds every scalar kernel to band zero and avoids
-         * a bad physical thread ID turning into a far-out TMU address. */
-        if (_disable_vec4)
-            _num_qpus = 1;
         slog("g2d: V3D ident3=0x%x iprev=%u ident1=0x%x qpus=%u "
-             "hw_qpus=%u vec4=%s l2t_tail=%s\r\n", ident3, iprev,
+             "hw_qpus=%u vec4=probe l2t_tail=%s\r\n", ident3, iprev,
              ident1, (uint32_t)_num_qpus, detected,
-             _disable_vec4 ? "off-2g" : "probe",
              _trailing_l2t_quirk ? "redirect" : "fatal");
     }
     if (g2d_mmu_enable() != 0) {
@@ -956,11 +945,6 @@ int v3d_g2d_vec4_ok(void)
         return cached;
     if (!_ok)
         return 0;
-    if (_disable_vec4) {
-        cached = 0;
-        slog("g2d vec4 probe: disabled on BCM2712 D0/2GB\r\n");
-        return cached;
-    }
     /* pattern in scratch[0..511], destination at scratch+4096; both
      * regions sit above the 3 KiB tail-redirect area only when V16=256,
      * which this probe uses (all 16 lanes valid, no redirect) */
