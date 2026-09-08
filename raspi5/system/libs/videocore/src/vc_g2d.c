@@ -115,6 +115,38 @@ uint32_t vc_g2d_clock_hz(void)
 #define G2D_BIG_SURFACE (4u * 1024u * 1024u)   /* cliff onset (bytes) */
 #define G2D_BAND_BYTES  (512u * 1024u)         /* per-band pixel budget */
 
+/* Approximate pixels completed per millisecond at the measured Pi 5
+ * operating point (V3D 1.15 GHz, 12 QPUs).  These conservative cutoffs
+ * only choose the CSD polling policy: predicted-long dispatches yield a
+ * scheduler frame between polls, while short dispatches keep the low-latency
+ * spin path.  Prediction is per dispatch, not per whole banded operation. */
+#define G2D_1MS_FILL4_PIXELS  900000u
+#define G2D_1MS_FILL_PIXELS   450000u
+#define G2D_1MS_COPY_PIXELS   450000u
+#define G2D_1MS_BLIT_PIXELS   450000u
+#define G2D_1MS_ALPHA_PIXELS  280000u
+#define G2D_1MS_ROT90_PIXELS  220000u
+#define G2D_1MS_ROTATE_PIXELS  50000u
+#define G2D_PREDICT_REF_HZ 1150000000u
+#define G2D_PREDICT_REF_QPUS 12u
+
+static unsigned g2d_poll_flags(unsigned flags, uint64_t pixels,
+                               uint32_t pixels_per_ms, int num_qpus)
+{
+    uint64_t capacity = pixels_per_ms;
+    uint32_t hz = v3d_g2d_clock_hz();
+
+    /* Only scale the measured capacity downward.  Memory-bound kernels do
+     * not necessarily improve linearly above the reference operating point. */
+    if (hz != 0 && hz < G2D_PREDICT_REF_HZ)
+        capacity = capacity * hz / G2D_PREDICT_REF_HZ;
+    if (num_qpus > 0 && num_qpus < (int)G2D_PREDICT_REF_QPUS)
+        capacity = capacity * (uint32_t)num_qpus / G2D_PREDICT_REF_QPUS;
+    if (capacity == 0 || pixels > capacity)
+        flags |= V3D_G2D_POLL_YIELD;
+    return flags;
+}
+
 /* Band height (rows) whose ARGB8888 pixel data stays within
  * G2D_BAND_BYTES; at least one row so pathological widths terminate. */
 static int32_t g2d_band_rows(int32_t w)
@@ -477,6 +509,7 @@ static int gpu_fill4_surface(uint32_t phys, uint32_t *argb,
     int32_t H = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rpq;
+    unsigned flags;
 
     (void)h;
     if (V == 0) {       /* the tail chunk is the last full chunk */
@@ -495,11 +528,14 @@ static int gpu_fill4_surface(uint32_t phys, uint32_t *argb,
     u[6] = (uint32_t)rpq;
     u[7] = (uint32_t)(rpq * w * 4);
     /* u8 = scratch: v3d_g2d_run appends the scratch physical base */
+    flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
+                           (uint64_t)(x1 - x0) * (uint32_t)H,
+                           G2D_1MS_FILL4_PIXELS, nq);
     return v3d_g2d_run(g2d_qpu_argb_fill4, g2d_qpu_argb_fill4_n, u, 8,
                        nq, NULL, 0,
                        argb + (size_t)y0 * w,
                        (size_t)H * (size_t)w * 4u,
-                       V3D_G2D_MAINT_ALL) == 0;
+                       flags) == 0;
 }
 
 /* identity 1:1 copy of a clipped dst rect (argb_copy kernel): each lane
@@ -540,6 +576,9 @@ static int gpu_copy_surface(uint32_t src_phys, uint32_t *argb_src,
     u[8] = (uint32_t)(rpq * dst_w * 4);
     u[9] = (uint32_t)(rpq * src_w * 4);
     /* u10 = scratch: v3d_g2d_run appends the scratch physical base */
+    maint = g2d_poll_flags(maint,
+                           (uint64_t)(x1 - x0) * (uint32_t)H,
+                           G2D_1MS_COPY_PIXELS, nq);
     return v3d_g2d_run(g2d_qpu_argb_copy, g2d_qpu_argb_copy_n, u, 10,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst ? argb_dst + (size_t)y0 * dst_w : NULL,
@@ -598,6 +637,7 @@ int gpu_fill_surface(uint32_t phys, uint32_t *argb,
     int full = ((w & 15) == 0 &&
                 x0 == 0 && y0 == 0 && x1 == w && y1 == h);
     int nq, rows;
+    unsigned flags;
 
     if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 ||
         x1 <= x0 || y1 <= y0 || x1 > w || y1 > h)
@@ -642,10 +682,13 @@ int gpu_fill_surface(uint32_t phys, uint32_t *argb,
     u[13] = (uint32_t)(rows * (int32_t)w * 4);
     u[14] = v3d_g2d_scratch_phys();
     u[15] = 0u;
+    flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
+                           (uint64_t)L * 16u * (uint32_t)band_h,
+                           G2D_1MS_FILL_PIXELS, nq);
     return v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n, u, 16,
                        nq, NULL, 0, argb,
                        (size_t)w * (size_t)h * 4u,
-                       V3D_G2D_MAINT_ALL) == 0;
+                       flags) == 0;
 }
 
 /* affine blit of a clipped dst rect (argb_blit / argb_rotate kernel) */
@@ -723,6 +766,18 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     /* The kernel only writes the rect's rows [y0, y1): hand v3d_g2d_run
      * exactly that window so the per-dispatch footprint is just the
      * band (see the header LARGE-SURFACE BATCHING note). */
+    if (kcode == g2d_qpu_argb_rotate)
+        maint = g2d_poll_flags(maint,
+                               (uint64_t)L * 16u * (uint32_t)band_h,
+                               G2D_1MS_ROTATE_PIXELS, nq);
+    else if (m->pu == 0 && m->qv == 0)
+        maint = g2d_poll_flags(maint,
+                               (uint64_t)L * 16u * (uint32_t)band_h,
+                               G2D_1MS_ROT90_PIXELS, nq);
+    else
+        maint = g2d_poll_flags(maint,
+                               (uint64_t)L * 16u * (uint32_t)band_h,
+                               G2D_1MS_BLIT_PIXELS, nq);
     return v3d_g2d_run(kcode, knwords, u, 25,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst ? argb_dst + (size_t)y0 * dst_w : NULL,
@@ -812,22 +867,25 @@ static int gpu_rotate_tiled(const uint64_t *kcode, int knwords,
  * via signed uniform deltas:
  *   90 CW : outer column groups ascend, inner rows DESCEND
  *   270 CW: outer column groups descend, inner rows ASCEND
- * Eligibility: src width % 16 == 0, exact-size destination, band rows
- * >= 4 (single wrap per 4-group block) with rows % 4 == 0 (the kernel
- * unrolls 4 rows per pass, so the T-counter wrap only lands on strip
- * boundaries when the strip height is a multiple of 4). */
+ * Eligibility: exact-size destination and band rows >= 4 (single wrap
+ * per 4-group block) with rows % 4 == 0 (the kernel unrolls 4 rows per
+ * pass, so the T-counter wrap only lands on strip boundaries when the
+ * strip height is a multiple of 4).  A partial final source-column group
+ * is masked through scratch for 90 CW; 270 CW retains the aligned-width
+ * requirement because it traverses column groups in reverse order. */
 int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                       int32_t src_w, int32_t src_h,
                       uint32_t dst_phys, uint32_t *argb_dst,
                       int32_t dst_w, int32_t dst_h, int rot)
 {
-    uint32_t u[16];
-    int32_t L = src_w >> 4;
+    uint32_t u[18];
+    int32_t L = (src_w + 15) >> 4;
     int32_t rows, ss, ds;
     int nq;
     int r90 = (rot == 90);
+    unsigned flags;
 
-    if ((src_w & 15) != 0 || src_w <= 0 || src_h < 4)
+    if (src_w < 16 || src_h < 4 || (!r90 && (src_w & 15) != 0))
         return 0;
     if (dst_w != src_h || dst_h != src_w)
         return 0;                      /* exact rotated size only */
@@ -858,10 +916,15 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
     u[13] = (uint32_t)rows;
     u[14] = 16u;                                       /* block write delta */
     u[15] = (uint32_t)(r90 ? (int64_t)ds : -(int64_t)ds);   /* eidx coeff */
-    return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 16,
+    u[16] = (uint32_t)(src_w - (L - 1) * 16);          /* last-group lanes */
+    u[17] = (uint32_t)(L - 1);                         /* last group index */
+    flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
+                           (uint64_t)L * 16u * (uint32_t)src_h,
+                           G2D_1MS_ROT90_PIXELS, nq);
+    return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 18,
                        nq, argb_src, (size_t)src_w * (size_t)src_h * 4u,
                        argb_dst, (size_t)dst_w * (size_t)dst_h * 4u,
-                       V3D_G2D_MAINT_ALL) == 0;
+                       flags) == 0;
 }
 
 /* alpha blend of a clipped dst rect (argb_alpha kernel): the blend is
@@ -932,6 +995,9 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[23] = (uint32_t)full;
     /* dst window = the rect's rows only (see the affine helper):
      * banded big-surface blends dispatch one band at a time. */
+    maint = g2d_poll_flags(maint,
+                           (uint64_t)L * 16u * (uint32_t)band_h,
+                           G2D_1MS_ALPHA_PIXELS, nq);
     return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 24,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst + (size_t)y0 * dst_w,

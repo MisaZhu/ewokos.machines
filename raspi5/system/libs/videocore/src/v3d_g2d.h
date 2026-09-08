@@ -41,8 +41,8 @@ int v3d_g2d_ready(void);
  * e.g. the property mailbox was unavailable). */
 uint32_t v3d_g2d_clock_hz(void);
 
-/* Number of logical CSD batches used by the kernels.  BCM2712 exposes
- * 12 QPUs; the 2GB/D0 stability path currently uses one batch. */
+/* Number of logical CSD batches used by the kernels, derived from the
+ * hardware's slice and QPU counts. */
 int v3d_g2d_num_qpus(void);
 
 /* V3D IOVA of the TMU write-scratch surface the kernels use for out-of-rect
@@ -62,7 +62,7 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
  * otherwise.  The result is cached after the first call. */
 int v3d_g2d_vec4_ok(void);
 
-/* Cache-maintenance flags for v3d_g2d_run.  PRE: pre-job invalidation
+/* Run flags for v3d_g2d_run.  PRE: pre-job invalidation
  * (drop stale V3D L2/slice lines so the QPU sees fresh DRAM data) plus
  * the ARM-side clean of the sources.  POST: post-job flush (drain the
  * TMU write combiner and clean the L2 so the job's writes reach DRAM)
@@ -79,10 +79,13 @@ int v3d_g2d_vec4_ok(void);
  * slice invalidate), because the QPU uniform fetch is served through
  * the L2T/slice caches and would otherwise re-read the previous
  * dispatch's stale uniform block - eliding it made every middle band
- * re-render band 0 (measured on silicon). */
+ * re-render band 0 (measured on silicon).  POLL_YIELD tells the CSD-done
+ * loop that the caller predicts a >1 ms dispatch, so it may yield one
+ * scheduler frame with proc_usleep(0) between register polls. */
 #define V3D_G2D_MAINT_PRE  (1u << 0)
 #define V3D_G2D_MAINT_POST (1u << 1)
 #define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
+#define V3D_G2D_POLL_YIELD (1u << 2)
 
 /*
  * Run one CSD dispatch of `code` with `unifs` against the surfaces
@@ -90,14 +93,14 @@ int v3d_g2d_vec4_ok(void);
  * the caller has already substituted V3D IOVAs into the uniform fields
  * that describe them.  This wrapper keeps the ARM/V3D caches
  * coherent around the dispatch (dc civac/ivac for cacheable canvases,
- * nothing for NOCACHE dma canvases), bounded by the maint flags.
+ * nothing for NOCACHE dma canvases), bounded by the run flags.
  * Returns 0 on success.
  */
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len, unsigned maint);
+                void *dst, size_t dst_len, unsigned flags);
 
 /* The ARGB8888 CSD kernels (assembled from the .qpu sources). */
 extern const uint64_t g2d_qpu_argb_fill[];

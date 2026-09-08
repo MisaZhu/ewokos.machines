@@ -160,9 +160,10 @@ int gpu_scale_op(const g2d_map_t *m,
 
 /* Dedicated right-angle (rot == 90/270) whole-surface rotation: source
  * reads are contiguous and only writes stride, avoiding the generic affine
- * kernel's 16 stride-apart TMU reads.  Returns 0 when the geometry is not
- * eligible (src width % 16, exact size swap, QPU count) or the dispatch
- * failed; the caller then falls through to the generic paths. */
+ * kernel's 16 stride-apart TMU reads.  The 90-degree path masks a partial
+ * final 16-pixel group through scratch; 270 degrees still requires aligned
+ * source width.  Returns 0 when the geometry or QPU layout is not eligible,
+ * or the dispatch failed; the caller then falls through to generic paths. */
 int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                       int32_t src_w, int32_t src_h,
                       uint32_t dst_phys, uint32_t *argb_dst,

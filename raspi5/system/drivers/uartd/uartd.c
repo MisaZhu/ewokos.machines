@@ -137,7 +137,8 @@ int main(int argc, char** argv) {
             PI5_RP1_PHY,
             PI5_RP1_WIN_SIZE);
 
-    /* Initialize PL011 UART: query clock via mailbox, set baud rate */
+    /* The firmware-configured console UART is used as-is (no baud
+     * reprogramming - see arch_bcm2712/pl011_uart.c). */
     bcm2712_pl011_uart_init();
 
     vdevice_t dev;

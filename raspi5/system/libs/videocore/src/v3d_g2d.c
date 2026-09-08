@@ -31,12 +31,12 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <unistd.h>
 #include <sysinfo.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/sys.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/proc.h>
 #include <arch/bcm2712/mailbox.h>
 #include "v3d_g2d.h"
 #include "g2d_qpu_kernels.h"
@@ -122,6 +122,8 @@
 
 #define CSD_CODE_WORDS 512   /* 344-word argb_alpha (endpoint-exact blend) */
 #define CSD_UNIF_WORDS 64
+#define CSD_POLL_SPIN_LIMIT 2000000u
+#define CSD_POLL_YIELD_LIMIT 256u
 
 /* Raspberry Pi firmware property tags and clock ID. */
 #define FW_GET_CLOCK_RATE      0x00030002u
@@ -232,8 +234,7 @@ static ewokos_addr_t _mmu_pt_p, _mmu_illegal_p;
 static int _inited = 0;
 static int _ok = 0;
 static int _num_qpus = 1;
-static int _disable_vec4 = 0;
-static int _d0_2g_quirk = 0;
+static int _trailing_l2t_quirk = 0;
 static uint32_t _mmu_debug_info = 0;
 static uint32_t _mmu_va_width = 32;
 
@@ -303,10 +304,10 @@ static void g2d_dcache_invalidate(void *addr, size_t len)
 /* (delay helper) the driver runs as a user-space daemon, so register-settle
  * waits use the OS sleep API.  The bare-metal harness polled CNTPCT_EL0
  * directly, which traps at EL0 unless the kernel enables CNTKCTL_EL1
- * timer access - never assume that in OS-portable code.  usleep() rounds
+ * timer access - never assume that in OS-portable code.  proc_usleep() rounds
  * up to the kernel tick (~976us at timer_freq=1024), far above these
  * settle minimums and harmless for them. */
-#define g2d_delay_us(us) usleep(us)
+#define g2d_delay_us(us) proc_usleep(us)
 
 /* spin-wait hint for the register polls below: a tight loop of
  * device-memory reads issues a fresh uncached AXI transaction every
@@ -687,24 +688,25 @@ static int g2d_mmu_check_fault(int kern, int nunifs, int num_qpus)
               (client_id == 0x38u ? "PTB" :
                (client_id == 0x39u ? "PSE" :
                 (client_id == 0x3au ? "CSD" : "other"))));
-    /* BCM2712 D0 emits a trailing L2T request with a bogus 36-bit VA after
-     * otherwise-complete production CSD kernels.  The same request is
-     * reproducible in the bare-metal MMU/canary harness: the destination is
-     * complete and no protected RAM changes.  With the MMU disabled that
-     * transaction becomes the low-RAM corruption seen on the 2GB board.
+    /* V3D 7.1 IP revision 10 emits a trailing L2T request with a bogus
+     * 36-bit VA after otherwise-complete production CSD kernels.  The same
+     * request is reproducible in the bare-metal MMU/canary harness: the
+     * destination is complete and no protected RAM changes.  Without MMU
+     * containment it becomes the low-RAM corruption seen on the 2GB board.
      *
      * Keep the MMU's invalid-PTE abort/redirect as the containment boundary.
-     * Once CSD_DONE has arrived, only this exact D0 signature may continue to
-     * the mandatory L2 writeback below.  A write violation, cap fault, or a
-     * fault from any non-L2T client remains fatal. */
-    recoverable = _d0_2g_quirk &&
+     * Once CSD_DONE has arrived, only this exact IP-revision signature may
+     * continue to the mandatory L2 writeback below.  A write violation, cap
+     * fault, or a fault from any non-L2T client remains fatal. */
+    recoverable = _trailing_l2t_quirk &&
                   client_id < 0x30u &&
                   (ctl & V3D_MMU_PT_INVALID_FAULT) != 0 &&
                   (ctl & (V3D_MMU_WRITE_FAULT | V3D_MMU_CAP_FAULT)) == 0 &&
+                  (hub_int & HUB_INT_MMU_PTI) != 0 &&
                   (hub_int & (HUB_INT_MMU_WRV | HUB_INT_MMU_CAP)) == 0;
-    /* The D0 quirk can occur after every dispatch.  Record it once instead
-     * of turning a successful benchmark into an unbounded kernel-log stream;
-     * fatal faults remain visible on every occurrence. */
+    /* The trailing request can occur after every dispatch.  Record it once
+     * instead of turning a successful benchmark into an unbounded kernel-log
+     * stream; fatal faults remain visible on every occurrence. */
     if (!recoverable || !recoverable_reported) {
         slog("g2d: V3D MMU fault kernel=%s ctl=0x%x id=0x%x(%s) "
              "hub=0x%x vio_reg=0x%x va=0x%x%08x pte=0x%x action=%s\r\n",
@@ -753,7 +755,7 @@ static int g2d_probe(void)
 
 /* Reset the V3D block via the PM power domain (assert/deassert
  * V3DRSTN); without the power-cycle the QPU array never launches.
- * Settle delays go through g2d_delay_us == usleep(): only lower bounds
+ * Settle delays go through g2d_delay_us == proc_usleep(): only lower bounds
  * are required here (tens / ~200 us), so tick-rounded sleeps are fine. */
 #if !G2D_SKIP_PM_RESET
 static void g2d_pm_reset(void)
@@ -795,13 +797,6 @@ int v3d_g2d_init(void)
     _ram_contig_top = si.shm_contig.phy_base + si.shm_contig.size;
     _dma_v_base = si.sys_dma.v_base;
     _dma_v_size = si.sys_dma.size;
-    /* BCM2712 D0 currently ships in the 2GB product.  Its TMUC vec4 path
-     * can raise an abort during the capability probe, and an aborted TMU
-     * sequence is not recoverable without a full GPU reset.  Keep the
-     * proven scalar kernels on this variant instead of poisoning all
-     * subsequent CSD jobs with a deliberately speculative probe. */
-    _d0_2g_quirk = si.total_phy_mem_size <= (2ull << 30);
-    _disable_vec4 = _d0_2g_quirk;
     /* Dedicated device-window VAs: framebuffer.c fb_adopt() places the
      * scanout mapping at sys_dma.v_base+size in its own process; never
      * reuse that same VA range here. Overlapping dynamic VA slots across
@@ -869,21 +864,18 @@ int v3d_g2d_init(void)
     {
         uint32_t ident1 = v3d_core()[CTL_IDENT1 / 4];
         uint32_t ident3 = v3d_hub()[HUB_IDENT3 / 4];
+        uint32_t iprev = (ident3 >> 8) & 0xffu;
         uint32_t nslc = (ident1 >> 4) & 0xfu;
         uint32_t qpus_per_slice = (ident1 >> 8) & 0xfu;
         uint32_t detected = nslc * qpus_per_slice;
 
+        _trailing_l2t_quirk = iprev == 10u;
         if (detected != 0 && detected <= 16u)
             _num_qpus = (int)detected;
-        /* Keep D0/2GB on one logical batch until its TIDX behaviour is
-         * proven.  This bounds every scalar kernel to band zero and avoids
-         * a bad physical thread ID turning into a far-out TMU address. */
-        if (_disable_vec4)
-            _num_qpus = 1;
         slog("g2d: V3D ident3=0x%x iprev=%u ident1=0x%x qpus=%u "
-             "hw_qpus=%u vec4=%s\r\n", ident3, (ident3 >> 8) & 0xffu,
+             "hw_qpus=%u vec4=probe l2t_tail=%s\r\n", ident3, iprev,
              ident1, (uint32_t)_num_qpus, detected,
-             _disable_vec4 ? "off-2g-d0" : "probe");
+             _trailing_l2t_quirk ? "redirect" : "fatal");
     }
     if (g2d_mmu_enable() != 0) {
         slog("g2d: V3D MMU setup failed\r\n");
@@ -955,11 +947,6 @@ int v3d_g2d_vec4_ok(void)
         return cached;
     if (!_ok)
         return 0;
-    if (_disable_vec4) {
-        cached = 0;
-        slog("g2d vec4 probe: disabled on BCM2712 D0/2GB\r\n");
-        return cached;
-    }
     /* pattern in scratch[0..511], destination at scratch+4096; both
      * regions sit above the 3 KiB tail-redirect area only when V16=256,
      * which this probe uses (all 16 lanes valid, no redirect) */
@@ -1004,12 +991,14 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len, unsigned maint)
+                void *dst, size_t dst_len, unsigned flags)
 {
     volatile uint32_t *csd =
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
+    uint32_t poll_limit = (flags & V3D_G2D_POLL_YIELD) ?
+                          CSD_POLL_YIELD_LIMIT : CSD_POLL_SPIN_LIMIT;
     int kern = -1;
 
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
@@ -1043,7 +1032,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* PRE: make the caller's ARM-side writes visible to the GPU, and
      * drop the ARM's stale copies of the destination.  NOCACHE dma
      * canvases need no maintenance. */
-    if (maint & V3D_G2D_MAINT_PRE) {
+    if (flags & V3D_G2D_MAINT_PRE) {
         if (src && src_len && !is_dma_addr(src))
             g2d_dcache_clean((void *)src, src_len);
         if (dst && dst_len && !is_dma_addr(dst))
@@ -1056,7 +1045,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* extra trailing uniform: scratch base for the kernels' flush
      * epilogue (identity-mapped V3D address) */
     _unif[nunifs] = _scratch_p;
-    if (maint & V3D_G2D_MAINT_PRE)
+    if (flags & V3D_G2D_MAINT_PRE)
         g2d_invalidate_caches();
     else
         g2d_uniform_fresh();    /* stale-uniform guard, see above */
@@ -1074,13 +1063,18 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     csd[0] = cfg[0];            /* sole CFG0 write starts the dispatch */
 
     /* Every production kernel waits for pending TMU writes and then uses
-     * the legal thread-end protocol, so CSD_DONE is authoritative. */
-    for (i = 0; i < 2000000; i++) {
+     * the legal thread-end protocol, so CSD_DONE is authoritative.  A long
+     * job polls once per scheduler frame (about 1 ms at timer_freq=1024),
+     * with a 256-frame timeout comparable to the short job's spin bound. */
+    for (i = 0; i < poll_limit; i++) {
         if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
             break;
-        g2d_poll_hint();
+        if (flags & V3D_G2D_POLL_YIELD)
+            proc_usleep(0);
+        else
+            g2d_poll_hint();
     }
-    if (i == 2000000) {
+    if (i == poll_limit) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         (void)g2d_mmu_check_fault(kern, nunifs, num_qpus);
         /* A timeout is a real failure.  Do not reset the graphics domain
@@ -1093,7 +1087,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
 
     /* POST: GPU writes -> DRAM, then drop the ARM's stale destination
      * lines */
-    if (maint & V3D_G2D_MAINT_POST) {
+    if (flags & V3D_G2D_MAINT_POST) {
         g2d_flush_l2();
         if (dst && dst_len && !is_dma_addr(dst))
             g2d_dcache_invalidate(dst, dst_len);

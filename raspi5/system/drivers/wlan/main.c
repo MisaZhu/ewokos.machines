@@ -83,7 +83,9 @@ static uint32_t mailbox_data_from_dma_buf(void* buf)
         brcm_log("wlan mailbox: dma_phy_addr failed for %p\n", buf);
         return 0;
     }
-    return (phy + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    /* OR (not +): dma buffers above 1GB already carry the alias bit,
+       and + would point the firmware 1GB past the buffer. */
+    return (phy | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
 }
 
 /*

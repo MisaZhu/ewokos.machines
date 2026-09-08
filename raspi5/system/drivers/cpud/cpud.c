@@ -254,7 +254,9 @@ static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
             continue;
 
         memset(&msg, 0, sizeof(msg));
-        msg.data = (phy + aliases[i]) >> 4;
+        /* OR (not +): dma buffers above 1GB already carry the alias bit,
+           and + would point the firmware 1GB past the buffer. */
+        msg.data = (phy | aliases[i]) >> 4;
         msg.channel = PROPERTY_CHANNEL;
         if(bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
                 (hdr->code & PROP_CODE_RESPONSE_SUCCESS) != 0) {
