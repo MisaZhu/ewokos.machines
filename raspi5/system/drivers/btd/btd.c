@@ -3543,7 +3543,7 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
 }
 
 static int bt_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     bt_subscriber_t* sub;
     int i;
 

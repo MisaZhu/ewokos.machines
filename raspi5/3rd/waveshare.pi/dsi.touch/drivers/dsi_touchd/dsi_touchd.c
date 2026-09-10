@@ -866,7 +866,7 @@ static tp_status_t tp_read_touch(tp_point_t* pts, uint8_t* nr) {
 }
 
 static int tp_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-		void* buf, int size, int offset, void* p) {
+		void* buf, int size, off_t offset, void* p) {
 	(void)dev;
 	(void)fd;
 	(void)from_pid;

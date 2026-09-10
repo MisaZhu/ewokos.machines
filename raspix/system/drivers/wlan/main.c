@@ -243,7 +243,7 @@ void clock_init(void){
 }
 
 static int net_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;
@@ -256,7 +256,7 @@ static int net_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 }
 
 static int net_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        const void* buf, int size, int offset, void* p) {
+        const void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;

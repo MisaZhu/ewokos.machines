@@ -1746,7 +1746,7 @@ int fdev_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t* in
 }
 
 
-int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void* buf, int size, int offset, void* p)
+int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void* buf, int size, off_t offset, void* p)
 {
     UNUSED(dev);
     UNUSED(fd);
@@ -1781,7 +1781,7 @@ int fdev_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void*
     return res;
 }
 
-int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p)
+int fdev_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, off_t offset, void* p)
 {
     UNUSED(dev);
     UNUSED(fd);

@@ -51,7 +51,7 @@ static void tty_poll_input(void) {
 }
 
 static int tty_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;
@@ -86,7 +86,7 @@ static uint32_t tty_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsin
 }
 
 static int tty_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
-        const void* buf, int size, int offset, void* p) {
+        const void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;

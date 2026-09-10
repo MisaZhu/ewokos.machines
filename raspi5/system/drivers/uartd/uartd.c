@@ -30,7 +30,7 @@ static charbuf_t *_RxBuf;
 static uint32_t _idle_sleep_us;
 
 static int uart_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;
@@ -49,7 +49,7 @@ static int uart_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 }
 
 static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        const void* buf, int size, int offset, void* p) {
+        const void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)node;

@@ -2,6 +2,8 @@ export HW=raspi5
 export ARCH=aarch64
 export ARCH_VER=v8
 
+#export LARGE_FILE=yes
+
 ifeq ($(ewokos),)
 ewokos=~/work/ewokos
 endif

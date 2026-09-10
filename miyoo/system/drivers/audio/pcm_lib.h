@@ -62,8 +62,8 @@ struct file_operation {
 	int (*open)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int oflag, void* p);
 	int (*create)(vdevice_t* dev, fsinfo_t* info_to, fsinfo_t* info, void* p);
 	int (*close)(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsinfo_t* info, void* p);
-	int (*read)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, int offset, void* p);
-	int (*write)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void* buf, int size, int offset, void* p);
+	int (*read)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, void* buf, int size, off_t offset, void* p);
+	int (*write)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, const void* buf, int size, off_t offset, void* p);
 	int (*read_block)(vdevice_t* dev, int from_pid, void* buf, int size, int index, void* p);
 	int (*write_block)(vdevice_t* dev, int from_pid, const void* buf, int size, int index, void* p);
 	int (*dma)(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info, int* size, void* p);

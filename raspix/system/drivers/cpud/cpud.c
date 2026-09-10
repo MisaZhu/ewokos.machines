@@ -780,7 +780,7 @@ static int cpud_refresh_read_cache(void) {
 }
 
 static int cpud_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     int remain;
     int len;
 

@@ -431,7 +431,7 @@ static char* light_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void
 }
 
 static int light_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev; (void)fd; (void)from_pid; (void)info; (void)p;
 
     if(size <= 0 || offset != 0)
@@ -447,7 +447,7 @@ static int light_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
 
 /* write one byte: brightness 0..100 (like fand takes a level byte) */
 static int light_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
-        const void* buf, int size, int offset, void* p) {
+        const void* buf, int size, off_t offset, void* p) {
     (void)dev; (void)fd; (void)from_pid; (void)info; (void)offset; (void)p;
 
     if(size <= 0)

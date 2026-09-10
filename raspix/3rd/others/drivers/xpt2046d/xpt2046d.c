@@ -79,7 +79,7 @@ static int doargs(int argc, char* argv[]) {
  * then parked in vfs_block_by_fd() until tp_loop() asserts VFS_EVT_RD.
  */
 static int tp_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;

@@ -1546,7 +1546,7 @@ static int sound_close(vdevice_t* dev, int fd, int from_pid, uint32_t node, fsin
 }
 
 static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
-                       const void *buf, int size, int offset, void *p) {
+                       const void *buf, int size, off_t offset, void *p) {
     UNUSED(dev);
     UNUSED(fd);
     UNUSED(node);

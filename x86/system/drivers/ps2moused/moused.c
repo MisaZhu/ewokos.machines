@@ -350,7 +350,7 @@ static void mouse_interrupt_handle(uint32_t interrupt, ewokos_addr_t data) {
 }
 
 static int moused_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;

@@ -641,7 +641,7 @@ static int cam_bringup(void) {
 /* vdevice callbacks */
 
 static int cam_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev; (void)fd; (void)from_pid; (void)node; (void)offset; (void)p;
 
     /* libc dev_read clamps each IPC to 64KB and char devices always pass

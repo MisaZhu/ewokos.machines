@@ -109,7 +109,7 @@ static GT911_Status_t tp_init_selected(void) {
 }
 
 static int tp_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
-        void* buf, int size, int offset, void* p) {
+        void* buf, int size, off_t offset, void* p) {
     (void)dev;
     (void)fd;
     (void)from_pid;
