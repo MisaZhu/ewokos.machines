@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/kernel_tic.h>
+#include <ewoksys/dma.h>
+#include <ewoksys/klog.h>
 #include <arch/bcm2712/mmc.h>
 
 /*
@@ -15,8 +17,8 @@
  *   Host physical: 0x1000FFF000
  *   Userspace virt: _mmio_base + 0x04000000 + 0x001FF000
  *
- * PIO mode only (no DMA).  Quirks: BROKEN_VOLTAGE | BROKEN_R1B |
- * WAIT_SEND_CMD | NO_HISPD_BIT.
+ * Data phase runs through SDMA, PIO stays as the automatic fallback.
+ * Quirks: BROKEN_VOLTAGE | BROKEN_R1B | WAIT_SEND_CMD | NO_HISPD_BIT.
  */
 
 /* EMMC base relative to _mmio_base */
@@ -293,6 +295,77 @@ struct sdhci_host {
 
 static struct sdhci_host _host;
 
+/*
+ * SDMA bounce buffer for the data phase.
+ *
+ * PIO copies the FIFO 4 bytes per MMIO access: ~131 register accesses
+ * for every 512-byte block. Each access to the BCM2712 EMMC2 register
+ * file costs microseconds, which pins bulk reads near 1MB/s no matter
+ * the 25MHz/4-bit bus clock (12.5MB/s on paper) - the PIO loop itself,
+ * not the card, is the bottleneck.
+ *
+ * SDMA on this exact IP is already proven in-tree by the sibling WLAN
+ * driver: sdio2 sits at 0x1001100000, the same EMMC window as this SD
+ * card host at 0x1000FFF000, and it takes plain ARM physical addresses
+ * in its 32-bit system-address register (no bcm2711-style 0xC0000000
+ * bus alias). The dma pool is mapped uncached, so no cache maintenance
+ * is needed around the transfer.
+ *
+ * Sized to the vfs transfer chunk (SHM_MAX, 256KB), which is also
+ * SD_STREAM_MAX_BATCH_PAGES in bsp_sd.c, so bulk reads/writes stay on
+ * SDMA instead of silently dropping back to PIO. Anything larger runs
+ * on PIO exactly as before.
+ */
+#define SDHCI_SDMA_BOUNCE_SIZE  (256 * 1024)
+/* A single transient controller error must not permanently drop the
+ * data phase back to the slow PIO copy, but this is the rootfs: after
+ * this many consecutive SDMA failures the card is far better served by
+ * the proven PIO path than by retrying DMA on every transfer. Any clean
+ * transfer resets the streak. */
+#define SDHCI_SDMA_FAIL_LIMIT   3
+/* Set to 0 to pin the data phase to PIO (same switch style as the
+ * raspix eMMC2 driver, which keeps SDMA off until proven stable). */
+#define SDHCI_SD_ENABLE_SDMA    1
+
+static uint8_t* _sdma_bounce;
+static uint32_t _sdma_bounce_phys;
+static bool _sdma_unavailable;
+static uint32_t _sdma_fail_streak;
+static bool _sdma_path_logged;
+
+static int sdhci_sdma_init(void)
+{
+    ewokos_addr_t vaddr, phys;
+
+    if (_sdma_bounce != NULL)
+        return 0;
+    if (_sdma_unavailable)
+        return -1;
+
+    vaddr = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
+    if (vaddr == 0) {
+        _sdma_unavailable = true;
+        klog("sdhci: dma_alloc(%u) failed, staying on PIO\n",
+                (unsigned)SDHCI_SDMA_BOUNCE_SIZE);
+        return -1;
+    }
+
+    /* The system-address register is 32-bit: an out-of-window pool must
+     * never be truncated and handed to the controller. */
+    phys = dma_phy_addr(0, vaddr);
+    if (phys == 0 || phys > 0xffffffffUL) {
+        dma_free(0, vaddr);
+        _sdma_unavailable = true;
+        klog("sdhci: SDMA bounce phys 0x%lx outside 32-bit window, staying on PIO\n",
+                (unsigned long)phys);
+        return -1;
+    }
+
+    _sdma_bounce = (uint8_t*)(uintptr_t)vaddr;
+    _sdma_bounce_phys = (uint32_t)phys;
+    return 0;
+}
+
 static void dump(struct sdhci_host *host)
 {
     printf(": =========== REGISTER DUMP ===========\n");
@@ -554,6 +627,21 @@ static int sdhci_get_info(struct sdhci_host *host)
     caps = sdhci_readl(host, SDHCI_CAPABILITIES);
     host->version = sdhci_readw(host, SDHCI_HOST_VERSION);
 
+#if SDHCI_SD_ENABLE_SDMA
+    /*
+     * Force SDMA on regardless of the advertised capability bit: the
+     * sibling WLAN driver on this same EMMC2 IP found SDHCI_CAN_DO_SDMA
+     * unreliable, and leaving the data phase on PIO caps the card at
+     * ~1MB/s. Both fallbacks keep the card usable if DMA turns out not
+     * to work here: sdhci_sdma_init() stays on PIO when the dma pool is
+     * unusable, sdhci_transfer_data_sdma() drops USE_SDMA permanently
+     * after SDHCI_SDMA_FAIL_LIMIT consecutive failures.
+     */
+    host->flags |= USE_SDMA;
+    klog("sdhci: caps=0x%08x can_do_sdma=%d, USE_SDMA forced on\n",
+            caps, (caps & SDHCI_CAN_DO_SDMA) ? 1 : 0);
+#endif
+
     if (SDHCI_GET_VERSION(host) >= SDHCI_SPEC_300) {
         caps_1 = sdhci_readl(host, SDHCI_CAPABILITIES_1);
         host->clk_mul = (caps_1 & SDHCI_CLOCK_MUL_MASK) >>
@@ -702,6 +790,57 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
     return 0;
 }
 
+/*
+ * Wait out an SDMA data phase. Only two events matter: DMA_END (the
+ * engine stopped at a buffer boundary and must be restarted from the
+ * address it latched) and DATA_END (transfer complete). The FIFO is
+ * never touched here, so a whole 256KB batch costs a couple of register
+ * reads per poll instead of ~131 per 512-byte block.
+ *
+ * Writes reuse the PIO wall-clock bound: DATA_END only fires once the
+ * card releases busy after the last block, which on slow cards takes far
+ * longer than a fixed iteration budget would allow.
+ */
+static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *data)
+{
+    unsigned int stat;
+    uint64_t start = get_timer(0);
+
+    while (1) {
+        stat = sdhci_readl(host, SDHCI_INT_STATUS);
+        if (stat & SDHCI_INT_ERROR) {
+            if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
+                host->flags &= ~USE_SDMA;
+                klog("sdhci: SDMA error status=0x%x, %u consecutive fails -> PIO\n",
+                        stat, _sdma_fail_streak);
+            }
+            return -EIO;
+        }
+        if (stat & SDHCI_INT_DMA_END) {
+            /* boundary reached: restart from the latched system address */
+            sdhci_writel(host, sdhci_readl(host, SDHCI_DMA_ADDRESS),
+                    SDHCI_DMA_ADDRESS);
+            sdhci_writel(host, SDHCI_INT_DMA_END, SDHCI_INT_STATUS);
+        }
+        if (stat & SDHCI_INT_DATA_END)
+            break;
+        if (get_timer(start) > SDHCI_TRANSFER_TIMEOUT_MS) {
+            if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
+                host->flags &= ~USE_SDMA;
+                klog("sdhci: SDMA timeout status=0x%x, %u consecutive fails -> PIO\n",
+                        stat, _sdma_fail_streak);
+            }
+            return -ETIMEDOUT;
+        }
+    }
+
+    /* A full burst completed cleanly: drop any transient-failure streak. */
+    _sdma_fail_streak = 0;
+    if (data->flags == MMC_DATA_READ)
+        memcpy(data->dest, _sdma_bounce, data->blocks * data->blocksize);
+    return 0;
+}
+
 static void sdhci_cmd_done(struct sdhci_host *host, struct mmc_cmd *cmd)
 {
     int i;
@@ -726,6 +865,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
     int trans_bytes = 0, is_aligned = 1;
     uint32_t mask, flags, mode = 0;
     uint64_t start;
+    bool use_sdma = false;
 
     host->start_addr = 0;
 
@@ -802,6 +942,22 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 
         if (data->flags == MMC_DATA_READ)
             mode |= SDHCI_TRNS_READ;
+
+        if ((host->flags & USE_SDMA) && trans_bytes > 0 &&
+                (uint32_t)trans_bytes <= SDHCI_SDMA_BOUNCE_SIZE &&
+                sdhci_sdma_init() == 0) {
+            use_sdma = true;
+            mode |= SDHCI_TRNS_DMA;
+            if (data->flags != MMC_DATA_READ)
+                memcpy(_sdma_bounce, data->src, trans_bytes);
+            sdhci_writel(host, _sdma_bounce_phys, SDHCI_DMA_ADDRESS);
+        }
+
+        if (!_sdma_path_logged) {
+            _sdma_path_logged = true;
+            klog("sdhci: first data xfer path=%s trans_bytes=%d\n",
+                    use_sdma ? "SDMA" : "PIO", trans_bytes);
+        }
 
         sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,
                 data->blocksize),
@@ -881,8 +1037,12 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
         }
     }
 
-    if (!ret && data)
-        ret = sdhci_transfer_data(host, data);
+    if (!ret && data) {
+        if (use_sdma)
+            ret = sdhci_transfer_data_sdma(host, data);
+        else
+            ret = sdhci_transfer_data(host, data);
+    }
 
     if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD)
         usleep(10);
@@ -958,6 +1118,15 @@ struct bus_ops* bcm2712_sdhci_init(void)
     sdhci_set_power(&_host, MMC_VDD_33_34);
 
     sdhci_get_info(&_host);
+
+    /* Select SDMA in HOST_CONTROL (the field defaults to SDMA=0 after
+     * reset, write it explicitly anyway - same as the WLAN sdio2 path). */
+    if (_host.flags & USE_SDMA) {
+        uint8_t ctrl = sdhci_readb(&_host, SDHCI_HOST_CONTROL);
+        ctrl &= ~SDHCI_CTRL_DMA_MASK;
+        ctrl |= SDHCI_CTRL_SDMA;
+        sdhci_writeb(&_host, ctrl, SDHCI_HOST_CONTROL);
+    }
 
     sdhci_set_clock(&_host, 25000000);
     sdhci_set_bus_width(&_host, 4);
