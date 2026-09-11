@@ -6,6 +6,8 @@
 #include <string.h>
 #include <stdbool.h>
 #include <ewoksys/dma.h>
+#include <ewoksys/kernel_tic.h>
+#include <ewoksys/klog.h>
 
 
 #define SDHCI_CMD_MAX_TIMEOUT			3200
@@ -292,18 +294,34 @@ static struct sdhci_host _host;
 
 /* SDMA bounce buffer, allocated from the DMA region (mapped uncached,
    so no explicit cache maintenance is needed). Only used on the
-   bcm2711 eMMC2 controller, whose DMA engine takes legacy bus
-   addresses (0xC0000000 alias, uncached). Sized to the vfs transfer
-   chunk (SHM_MAX, 256KB) so bulk reads/writes stay on SDMA instead of
-   silently falling back to PIO when trans_bytes exceeds the bounce. */
+   bcm2711 eMMC2 controller, whose DMA engine takes legacy VideoCore
+   bus addresses (0xC0000000 uncached alias), NOT the plain ARM
+   physical address the bcm2712/raspi5 path uses - this is the one part
+   of the raspi5 SDMA conclusion that must not be copied verbatim. The
+   0xC0000000 alias only spans the first 1GB of RAM (0x3FFFFFFF mask),
+   the same convention soundd/camd/cpud already use for DMA-to-RAM on
+   this SoC. Sized to the vfs transfer chunk (SHM_MAX, 256KB) so bulk
+   reads/writes stay on SDMA instead of silently falling back to PIO
+   when trans_bytes exceeds the bounce. */
 #define SDHCI_SDMA_BOUNCE_SIZE	(256 * 1024)
 #define SDHCI_SDMA_TIMEOUT_MS	1000
 #define SDHCI_BUS_ADDR_UNCACHED	0xC0000000u
 #define SDHCI_BUS_ADDR_MASK	0x3FFFFFFFu
+/* A single transient controller error must not permanently drop the
+ * data phase back to the slow PIO copy, but this is the rootfs: after
+ * this many consecutive SDMA failures the card is far better served by
+ * the proven PIO path than by retrying DMA on every transfer. Any clean
+ * transfer resets the streak. Same policy as the raspi5 bcm2712 path. */
+#define SDHCI_SDMA_FAIL_LIMIT	3
+/* Set to 0 to pin the data phase to PIO (the pre-optimization raspix
+ * behaviour), kept as a build-time kill switch. */
+#define SDHCI_SD_ENABLE_SDMA	1
 
 static uint8_t *_sdma_bounce = NULL;
 static uint32_t _sdma_bounce_bus = 0;
 static bool _sdma_unavailable = false;
+static uint32_t _sdma_fail_streak = 0;
+static bool _sdma_path_logged = false;
 
 static int sdhci_sdma_init(void)
 {
@@ -315,12 +333,20 @@ static int sdhci_sdma_init(void)
     ewokos_addr_t v = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
     if (v == 0) {
         _sdma_unavailable = true;
+        klog("sdhci: dma_alloc(%u) failed, staying on PIO\n",
+                (unsigned)SDHCI_SDMA_BOUNCE_SIZE);
         return -1;
     }
     uint32_t phys = dma_phy_addr(0, v);
-    if (phys == 0) {
+    /* The 0xC0000000 legacy alias only covers the first 1GB of RAM: a
+     * pool above that would be silently truncated by SDHCI_BUS_ADDR_MASK
+     * and point the controller at the wrong memory, so refuse SDMA and
+     * stay on PIO instead of corrupting the rootfs. */
+    if (phys == 0 || phys > SDHCI_BUS_ADDR_MASK) {
         dma_free(0, v);
         _sdma_unavailable = true;
+        klog("sdhci: SDMA bounce phys 0x%x outside 1GB legacy window, staying on PIO\n",
+                phys);
         return -1;
     }
     _sdma_bounce = (uint8_t *)(uintptr_t)v;
@@ -840,8 +866,11 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *da
     while (1) {
         stat = sdhci_readl(host, SDHCI_INT_STATUS);
         if (stat & SDHCI_INT_ERROR) {
-            printf("%s: SDMA error, status 0x%x\n", __func__, stat);
-                       host->flags &= ~USE_SDMA;
+            if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
+                host->flags &= ~USE_SDMA;
+                klog("sdhci: SDMA error status=0x%x, %u consecutive fails -> PIO\n",
+                        stat, _sdma_fail_streak);
+            }
             return -EIO;
         }
         if (stat & SDHCI_INT_DMA_END) {
@@ -854,12 +883,17 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *da
         if (stat & SDHCI_INT_DATA_END)
             break;
         if (get_timer(start) > SDHCI_SDMA_TIMEOUT_MS) {
-            printf("%s: SDMA timeout, status 0x%x\n", __func__, stat);
-                       host->flags &= ~USE_SDMA;
+            if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
+                host->flags &= ~USE_SDMA;
+                klog("sdhci: SDMA timeout status=0x%x, %u consecutive fails -> PIO\n",
+                        stat, _sdma_fail_streak);
+            }
             return -ETIMEDOUT;
         }
     }
 
+    /* A full burst completed cleanly: drop any transient-failure streak. */
+    _sdma_fail_streak = 0;
     if (data->flags == MMC_DATA_READ)
         memcpy(data->dest, _sdma_bounce,
                 data->blocks * data->blocksize);
@@ -962,14 +996,20 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
         if (data->flags == MMC_DATA_READ)
             mode |= SDHCI_TRNS_READ;
 
-        if ((host->flags & USE_SDMA) &&
-                trans_bytes <= SDHCI_SDMA_BOUNCE_SIZE &&
+        if ((host->flags & USE_SDMA) && trans_bytes > 0 &&
+                (uint32_t)trans_bytes <= SDHCI_SDMA_BOUNCE_SIZE &&
                 sdhci_sdma_init() == 0) {
             use_sdma = true;
             mode |= SDHCI_TRNS_DMA;
             if (data->flags != MMC_DATA_READ)
                 memcpy(_sdma_bounce, data->src, trans_bytes);
             sdhci_writel(host, _sdma_bounce_bus, SDHCI_DMA_ADDRESS);
+        }
+
+        if (!_sdma_path_logged) {
+            _sdma_path_logged = true;
+            klog("sdhci: first data xfer path=%s trans_bytes=%d\n",
+                    use_sdma ? "SDMA" : "PIO", trans_bytes);
         }
 
         sdhci_writew(host, SDHCI_MAKE_BLKSZ(SDHCI_DEFAULT_BOUNDARY_ARG,
@@ -1107,8 +1147,38 @@ struct bus_ops* bcm2711_sdhci_init(void)
 
     sdhci_get_info(&_host);
 
-    /* Keep the pre-b34826f PIO path on real Pi4 until SDMA is proven stable. */
+#if SDHCI_SD_ENABLE_SDMA
+    /*
+     * Route the data phase through SDMA, mirroring the raspi5 bcm2712
+     * path that lifted bulk SD reads off the ~1MB/s PIO ceiling. PIO
+     * copies the FIFO 4 bytes per MMIO access (~131 register reads per
+     * 512-byte block); SDMA moves a whole 256KB batch with a couple of
+     * register reads per poll.
+     *
+     * The bus address stays on the bcm2711 legacy 0xC0000000 VC alias
+     * (see sdhci_sdma_init) - NOT the plain ARM physical address raspi5
+     * uses; that is the one part of the raspi5 conclusion that must not
+     * be copied verbatim here. Two fallbacks keep the rootfs usable if
+     * SDMA misbehaves: sdhci_sdma_init() stays on PIO when the dma pool
+     * is unusable or above the 1GB legacy window, and
+     * sdhci_transfer_data_sdma() drops USE_SDMA permanently after
+     * SDHCI_SDMA_FAIL_LIMIT consecutive failures.
+     */
+    _host.flags |= USE_SDMA;
+    klog("sdhci: USE_SDMA forced on (bcm2711 legacy 0xC0000000 bus alias)\n");
+#else
+    /* Kill switch: pin the data phase to the proven PIO path. */
     _host.flags &= ~USE_SDMA;
+#endif
+
+    /* Select SDMA in HOST_CONTROL (the field defaults to SDMA=0 after
+     * reset; write it explicitly anyway - same as the raspi5 path). */
+    if (_host.flags & USE_SDMA) {
+        uint8_t ctrl = sdhci_readb(&_host, SDHCI_HOST_CONTROL);
+        ctrl &= ~SDHCI_CTRL_DMA_MASK;
+        ctrl |= SDHCI_CTRL_SDMA;
+        sdhci_writeb(&_host, ctrl, SDHCI_HOST_CONTROL);
+    }
 
     sdhci_set_clock(&_host, 25000000);
     sdhci_set_bus_width(&_host, 4);
