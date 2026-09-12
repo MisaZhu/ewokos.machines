@@ -9,6 +9,7 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/basic/libs/usb/include \
+	-I $(SYS_DIR)/basic/libs/hid/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 LIB_ARCH_BCM283X_OBJS = $(ARCH)/src/framebuffer.o \
