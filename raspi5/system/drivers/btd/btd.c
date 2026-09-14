@@ -914,24 +914,26 @@ static bool bt_json_int_field(const char* begin, const char* end,
     return true;
 }
 
-static void bt_key_to_hex(const uint8_t* key, char* out) {
+/* hex helpers sized by the caller, so the same code writes a 16-byte link
+   key or LTK and an 8-byte LE diversifier */
+static void bt_bytes_to_hex(const uint8_t* b, size_t n, char* out) {
     static const char hexd[] = "0123456789abcdef";
-    int i;
+    size_t i;
 
-    for (i = 0; i < 16; ++i) {
-        out[i * 2] = hexd[key[i] >> 4];
-        out[i * 2 + 1] = hexd[key[i] & 0x0f];
+    for (i = 0; i < n; ++i) {
+        out[i * 2] = hexd[b[i] >> 4];
+        out[i * 2 + 1] = hexd[b[i] & 0x0f];
     }
-    out[32] = 0;
+    out[n * 2] = 0;
 }
 
-static bool bt_hex_to_key(const char* hex, uint8_t* key) {
-    int i;
+static bool bt_hex_to_bytes(const char* hex, uint8_t* b, size_t n) {
+    size_t i;
 
-    if (strlen(hex) != 32) {
+    if (strlen(hex) != n * 2) {
         return false;
     }
-    for (i = 0; i < 32; ++i) {
+    for (i = 0; i < n * 2; ++i) {
         char c = hex[i];
         int v;
         if (c >= '0' && c <= '9') {
@@ -947,10 +949,10 @@ static bool bt_hex_to_key(const char* hex, uint8_t* key) {
             return false;
         }
         if ((i & 1) == 0) {
-            key[i / 2] = (uint8_t)(v << 4);
+            b[i / 2] = (uint8_t)(v << 4);
         }
         else {
-            key[i / 2] |= (uint8_t)v;
+            b[i / 2] |= (uint8_t)v;
         }
     }
     return true;
@@ -998,6 +1000,9 @@ static int bt_known_load(void) {
         uint8_t addr[6];
         bt_known_t* k;
         int paired = 0;
+        int le = 0;
+        int atype = 0;
+        int ediv = 0;
 
         if (obj_end == NULL) {
             break;
@@ -1012,8 +1017,26 @@ static int bt_known_load(void) {
                 k->paired = true;
             }
             if (bt_json_str_field(p, obj_end, "key", hex, sizeof(hex)) &&
-                    bt_hex_to_key(hex, k->key)) {
+                    bt_hex_to_bytes(hex, k->key, sizeof(k->key))) {
                 k->has_key = true;
+                k->paired = true;
+            }
+            if (bt_json_int_field(p, obj_end, "le", &le) && le) {
+                k->le = true;
+            }
+            if (bt_json_int_field(p, obj_end, "atype", &atype)) {
+                k->addr_type = (uint8_t)atype;
+            }
+            /* an LTK on its own cannot answer an LE Long Term Key Request,
+               so the EDIV and the diversifier stand or fall with it; hex
+               is reused safely because && evaluates left to right */
+            if (bt_json_str_field(p, obj_end, "ltk", hex, sizeof(hex)) &&
+                    bt_hex_to_bytes(hex, k->ltk, sizeof(k->ltk)) &&
+                    bt_json_int_field(p, obj_end, "ediv", &ediv) &&
+                    bt_json_str_field(p, obj_end, "lrand", hex, sizeof(hex)) &&
+                    bt_hex_to_bytes(hex, k->ltk_rand, sizeof(k->ltk_rand))) {
+                k->ediv = (uint16_t)ediv;
+                k->has_ltk = true;
                 k->paired = true;
             }
             ++count;
@@ -1044,8 +1067,10 @@ static void bt_json_write_escaped(int fd, const char* str) {
 }
 
 static int bt_known_save(void) {
-    char line[160];
+    char line[256];
     char hex[40];
+    char ltkhex[40];
+    char lrandhex[24];
     int fd;
     int i;
     int written = 0;
@@ -1068,17 +1093,30 @@ static int bt_known_save(void) {
         }
         bt_addr_to_str(_known[i].addr, addr, sizeof(addr));
         if (_known[i].has_key) {
-            bt_key_to_hex(_known[i].key, hex);
+            bt_bytes_to_hex(_known[i].key, sizeof(_known[i].key), hex);
         }
         else {
             hex[0] = 0;
+        }
+        if (_known[i].has_ltk) {
+            bt_bytes_to_hex(_known[i].ltk, sizeof(_known[i].ltk), ltkhex);
+            bt_bytes_to_hex(_known[i].ltk_rand, sizeof(_known[i].ltk_rand),
+                    lrandhex);
+        }
+        else {
+            ltkhex[0] = 0;
+            lrandhex[0] = 0;
         }
         len = snprintf(line, sizeof(line),
             "%s    {\"addr\":\"%s\",\"name\":\"", written > 0 ? ",\n" : "", addr);
         write(fd, line, len);
         bt_json_write_escaped(fd, _known[i].name);
-        len = snprintf(line, sizeof(line), "\",\"paired\":%d,\"key\":\"%s\"}\n",
-            _known[i].paired ? 1 : 0, hex);
+        len = snprintf(line, sizeof(line),
+            "\",\"paired\":%d,\"key\":\"%s\",\"le\":%d,\"atype\":%u,"
+            "\"ltk\":\"%s\",\"ediv\":%u,\"lrand\":\"%s\"}\n",
+            _known[i].paired ? 1 : 0, hex, _known[i].le ? 1 : 0,
+            (unsigned)_known[i].addr_type, ltkhex, (unsigned)_known[i].ediv,
+            lrandhex);
         write(fd, line, len);
         ++written;
     }
@@ -1105,6 +1143,17 @@ static void bt_known_touch_from_device(const bt_device_t* dev) {
         k->has_key = true;
         memcpy(k->key, dev->link_key, 16);
     }
+    if (dev->le) {
+        k->le = true;
+        k->addr_type = dev->addr_type;
+    }
+    if (dev->has_ltk) {
+        k->paired = true;
+        k->has_ltk = true;
+        memcpy(k->ltk, dev->ltk, 16);
+        k->ediv = dev->ediv;
+        memcpy(k->ltk_rand, dev->ltk_rand, 8);
+    }
     bt_known_save();
 }
 
@@ -1129,6 +1178,18 @@ static void bt_known_seed_devices(void) {
         if (_known[i].has_key) {
             memcpy(dev->link_key, _known[i].key, 16);
             dev->has_link_key = true;
+        }
+        /* the address type travels with the bond: LE_Create_Connection
+           takes both and picking the wrong one finds nothing */
+        if (_known[i].le) {
+            dev->le = true;
+            dev->addr_type = _known[i].addr_type;
+        }
+        if (_known[i].has_ltk) {
+            memcpy(dev->ltk, _known[i].ltk, 16);
+            dev->ediv = _known[i].ediv;
+            memcpy(dev->ltk_rand, _known[i].ltk_rand, 8);
+            dev->has_ltk = true;
         }
         if (dev->page_scan_rep_mode == 0) {
             dev->page_scan_rep_mode = 1; /* R1, the common case */
@@ -1387,17 +1448,23 @@ static void bt_update_wait_cmd_complete(uint16_t opcode, int status) {
     }
 }
 
+/* name= stays the last field on purpose: it may contain spaces, and xbt
+   reads everything after it up to the end of the line. le= is what lets
+   bt_moused accept a BLE-only mouse whose Class of Device is zero. */
 static void bt_emit_device_line(const char* prefix, const bt_device_t* dev) {
     char addr[24];
 
     bt_addr_to_str(dev->addr, addr, sizeof(addr));
-    bt_emit("%s %s class=0x%06X rssi=%d connected=%d paired=%d name=%s\n",
+    bt_emit("%s %s class=0x%06X rssi=%d connected=%d paired=%d le=%d "
+        "appearance=%u name=%s\n",
         prefix,
         addr,
         dev->class_of_device & 0xffffffu,
         (int)dev->rssi,
         dev->connected ? 1 : 0,
-        dev->has_link_key ? 1 : 0,
+        (dev->has_link_key || dev->has_ltk) ? 1 : 0,
+        dev->le ? 1 : 0,
+        (unsigned)dev->appearance,
         dev->name[0] ? dev->name : "-");
 }
 
@@ -1407,14 +1474,17 @@ static void bt_ret_append_device_line(int dev_id, char* ret, size_t ret_sz,
 
     bt_addr_to_str(dev->addr, addr, sizeof(addr));
     bt_ret_append(ret, ret_sz,
-        "%d: %s %s class=0x%06X rssi=%d connected=%d paired=%d name=%s\n",
+        "%d: %s %s class=0x%06X rssi=%d connected=%d paired=%d le=%d "
+        "appearance=%u name=%s\n",
         dev_id,
         prefix,
         addr,
         dev->class_of_device & 0xffffffu,
         (int)dev->rssi,
         dev->connected ? 1 : 0,
-        dev->has_link_key ? 1 : 0,
+        (dev->has_link_key || dev->has_ltk) ? 1 : 0,
+        dev->le ? 1 : 0,
+        (unsigned)dev->appearance,
         dev->name[0] ? dev->name : "-");
 }
 
@@ -1492,6 +1562,10 @@ static void bt_handle_inquiry_result_common(
         return;
     }
 
+    /* everything that arrives through an inquiry result is by definition
+       reachable over BR/EDR, which is what keeps a dual-mode device from
+       being sent down the LE bring-up path */
+    dev->classic = true;
     dev->page_scan_rep_mode = page_scan_rep_mode;
     dev->class_of_device = class_of_device;
     dev->clock_offset = clock_offset;
@@ -1732,6 +1806,7 @@ static void bt_handle_disconnection_complete(const uint8_t* payload, size_t len)
         bt_emit("disconnect handle=0x%04X status=%u reason=%u\n",
             handle, payload[0], payload[3]);
         bt_hid_link_closed(handle, "acl_disconnect");
+        bt_le_link_closed(handle, payload[3]);
         return;
     }
 
@@ -1740,6 +1815,7 @@ static void bt_handle_disconnection_complete(const uint8_t* payload, size_t len)
     bt_addr_to_str(dev->addr, addr, sizeof(addr));
     bt_emit("disconnect %s status=%u reason=%u\n", addr, payload[0], payload[3]);
     bt_hid_link_closed(handle, "acl_disconnect");
+    bt_le_link_closed(handle, payload[3]);
     if (_pending.handle == handle) {
         bt_clear_pending();
     }
@@ -2676,6 +2752,15 @@ static void l2cap_dispatch(uint16_t handle, const uint8_t* pdu, size_t len) {
         pdu_len = (uint16_t)(len - 4); /* truncated fragment: use what we have */
     }
 
+    /* the LE fixed channels are connectionless from L2CAP's point of view:
+       they are never opened by signalling and never appear in _l2chans, so
+       they are handed to the LE stack before any channel lookup. */
+    if (cid == L2CAP_CID_ATT || cid == L2CAP_CID_SMP ||
+            cid == L2CAP_CID_LE_SIGNAL) {
+        bt_le_l2cap_rx(handle, cid, pdu + 4, pdu_len);
+        return;
+    }
+
     if (cid == L2CAP_CID_SIGNAL) {
         l2cap_handle_signal(handle, pdu + 4, pdu_len);
         return;
@@ -2756,6 +2841,7 @@ static void bt_hid_stack_reset(void) {
     memset(&_reas_buf, 0, sizeof(_reas_buf));
     _reas_active = false;
     _acl_credits = 0;
+    bt_le_stack_reset();
 }
 
 static void bt_handle_event(uint8_t event_code, const uint8_t* payload, size_t len) {
@@ -2774,8 +2860,16 @@ static void bt_handle_event(uint8_t event_code, const uint8_t* payload, size_t l
         slog("bluetooth hw_error code=0x%02x\n", len > 0 ? payload[0] : 0xff);
         break;
     case EVT_INQUIRY_COMPLETE:
-        _scanning = false;
-        bt_emit("scan_done status=%u", len > 0 ? payload[0] : 0xff);
+        /* the inquiry slice ended, not the scan session: bt_le_step owns
+           _scanning and either flips to the LE slice or closes the
+           session when its total time is up */
+        _inquiry_running = false;
+        if (_scanning && _scan_slice == BT_SCAN_SLICE_CLASSIC) {
+            _scan_slice_end_ms = 0; /* hand over immediately */
+        }
+        if (!_scanning) {
+            bt_emit("scan_done status=%u", len > 0 ? payload[0] : 0xff);
+        }
         break;
     case EVT_INQUIRY_RESULT:
         bt_handle_inquiry_result(payload, len);
@@ -2821,6 +2915,12 @@ static void bt_handle_event(uint8_t event_code, const uint8_t* payload, size_t l
         break;
     case EVT_SIMPLE_PAIRING_COMPLETE:
         bt_handle_simple_pairing_complete(payload, len);
+        break;
+    case EVT_ENCRYPTION_CHANGE:
+        bt_handle_encryption_change(payload, len);
+        break;
+    case EVT_LE_META:
+        bt_handle_le_meta(payload, len);
         break;
     case EVT_NUM_COMPLETED_PKTS:
         bt_handle_num_completed_pkts(payload, len);
@@ -2899,9 +2999,10 @@ static int bt_poll_once(uint32_t first_timeout_ms) {
         handle = (uint16_t)(((uint16_t)hdr[0] | ((uint16_t)hdr[1] << 8)) & 0x0fff);
         pb = (uint8_t)((hdr[1] >> 4) & 0x03);
 
-        /* reassemble one L2CAP PDU across pb=0b10 (start) + pb=0b01
-           (continuation) fragments; anything else (SCO etc.) is dropped */
-        if (pb == 0x02) {
+        /* reassemble one L2CAP PDU across a start fragment (pb=0b10 for
+           BR/EDR, pb=0b00 for the LE links some controllers report) plus
+           pb=0b01 continuations; anything else (SCO etc.) is dropped */
+        if (pb == 0x02 || pb == 0x00) {
             _reas_handle = handle;
             _reas_active = false;
             _reas_pos = 0;
@@ -3535,6 +3636,7 @@ static void bt_le_handle_adv_report(const uint8_t* p, size_t len) {
         char name[64];
         bt_device_t* dev;
         bool fresh;
+        bool updated = false;
 
         if (off + 9 > len) {
             return;
@@ -3581,14 +3683,20 @@ static void bt_le_handle_adv_report(const uint8_t* p, size_t len) {
             strncpy(dev->name, name, sizeof(dev->name) - 1);
             dev->name[sizeof(dev->name) - 1] = 0;
             bt_trim_name(dev->name);
+            updated = true;
         }
-        if (fresh) {
+        /* a device we already hold - seeded from the bond store at boot, or
+           seen in an ADV_IND before its SCAN_RSP - still has to be
+           re-announced once the name turns up, or xbt keeps showing the
+           bare address */
+        if (fresh || updated) {
             bt_emit_device_line("device", dev);
         }
 
-        /* a bonded peripheral that just showed up reconnects by itself */
-        if (_le_autoconnect && dev->has_ltk && !dev->connected &&
-                (dev->adv_hid || dev->appearance != 0)) {
+        /* a bonded peripheral that just showed up reconnects by itself;
+           has_ltk already means we paired with it once, so it is a HID
+           device whatever this particular advertisement happens to carry */
+        if (_le_autoconnect && dev->has_ltk && !dev->connected) {
             char addr_str[24];
 
             if (bt_le_queue_request(dev, false)) {
@@ -3680,7 +3788,12 @@ static void bt_le_handle_ltk_request(const uint8_t* p, size_t len) {
     params[0] = (uint8_t)(handle & 0xff);
     params[1] = (uint8_t)(handle >> 8);
 
-    dev = bt_find_device(_le.addr, false);
+    /* the handle is the reliable key here: _le.addr is only guaranteed to
+       be filled while a bring-up we started is running */
+    dev = bt_find_device_by_handle(handle);
+    if (dev == NULL) {
+        dev = bt_find_device(_le.addr, false);
+    }
     if (dev != NULL && dev->has_ltk && dev->ediv == ediv &&
             memcmp(dev->ltk_rand, p + 2, 8) == 0) {
         memcpy(params + 2, dev->ltk, 16);
@@ -3735,10 +3848,12 @@ static void bt_handle_encryption_change(const uint8_t* payload, size_t len) {
     }
     if (payload[0] == 0 && payload[3] != 0) {
         _le.encrypted = true;
+        _smp.enc_changed = true;
         slog("bluetooth le_encrypted handle=0x%04x\n", handle);
     }
     else {
         _le.encrypted = false;
+        _smp.enc_changed = true;
         slog("bluetooth le_encrypt_failed handle=0x%04x status=0x%02x\n",
             handle, payload[0]);
     }
@@ -4234,7 +4349,9 @@ static bool le_link_up_pred(void* ctx) {
 
 static bool le_encrypted_pred(void* ctx) {
     (void)ctx;
-    return _le.encrypted || _le.state == LE_ST_FAILED;
+    /* enc_changed releases the wait on a refusal too, so a rejected key
+       costs one event round trip instead of the whole timeout */
+    return _le.encrypted || _smp.enc_changed || _le.state == LE_ST_FAILED;
 }
 
 /* ---- discovery slicing --------------------------------------------------
@@ -4456,6 +4573,7 @@ static int smp_start_encryption(uint16_t handle, const uint8_t* ltk,
 
     _le.encrypted = false;
     _le.state = LE_ST_ENCRYPTING;
+    _smp.enc_changed = false; /* this attempt's Encryption Change is pending */
     return bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_START_ENCRYPTION,
             params, sizeof(params), 2000);
 }
@@ -4763,11 +4881,19 @@ static int bt_le_connect(bt_device_t* dev, bool pair,
     }
     if (!bt_poll_until(le_link_up_pred, NULL, BT_LE_CONNECT_TIMEOUT_MS) ||
             !_le.handle_valid) {
+        /* A Connection Complete carrying a non-zero status already put us
+           in LE_ST_FAILED, and that is a different story from a radio that
+           never answered: the peripheral is awake but refusing us. The
+           state has to be read before the reset wipes it. */
+        bool refused = _le.state == LE_ST_FAILED;
+
         (void)bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_CREATE_CONN_CANCEL,
                 NULL, 0, 1000);
         bt_le_stack_reset();
-        bt_emit("connect_fail %s reason=le_timeout\n", addr_str);
-        slog("bluetooth le_connect_timeout %s\n", addr_str);
+        bt_emit("connect_fail %s reason=%s\n", addr_str,
+                refused ? "le_conn_refused" : "le_timeout");
+        slog("bluetooth le_connect_%s %s\n", refused ? "refused" : "timeout",
+                addr_str);
         return -1;
     }
 
@@ -5070,6 +5196,9 @@ static int bt_configure_controller(void) {
     (void)bt_hci_command_sync(HCI_OGF_HOST_CTRL, HCI_OCF_WRITE_INQUIRY_MODE, &inquiry_mode, 1, 1000);
     (void)bt_hci_command_sync(HCI_OGF_HOST_CTRL, HCI_OCF_WRITE_SIMPLE_PAIRING_MODE, &simple_pair, 1, 1000);
     (void)bt_hci_command_sync(HCI_OGF_HOST_CTRL, HCI_OCF_WRITE_SCAN_ENABLE, &scan_enable, 1, 1000);
+    /* LE support is optional: a controller that refuses LE_Set_Event_Mask
+       simply leaves _le_supported clear and discovery stays classic-only */
+    (void)bt_le_controller_init();
     return 0;
 }
 
@@ -5144,46 +5273,45 @@ static int bt_driver_init(void) {
     return 0;
 }
 
+/* A scan session alternates LE and classic slices until the requested
+   time is up, and bt_le_step drives the alternation. Opening with the LE
+   slice is what makes BLE-only mice and keyboards show up at all: they
+   never answer a BR/EDR inquiry. */
 static int bt_start_scan(int seconds) {
-    uint8_t params[5];
-    int inquiry_len;
-    int ret;
-
     if (!_ready) {
         return -1;
     }
-
     if (seconds <= 0) {
         seconds = 10;
     }
-    inquiry_len = (seconds * 100 + 127) / 128;
-    if (inquiry_len < 1) {
-        inquiry_len = 1;
-    }
-    if (inquiry_len > 0x30) {
-        inquiry_len = 0x30;
+    if (seconds > 120) {
+        seconds = 120;
     }
 
-    params[0] = 0x33;
-    params[1] = 0x8b;
-    params[2] = 0x9e;
-    params[3] = (uint8_t)inquiry_len;
-    params[4] = 0x00;
-
+    bt_scan_suspend();
+    _scan_total_end_ms = kernel_tic_ms(0) + (uint64_t)seconds * 1000u;
     _scanning = true;
-    ret = bt_hci_command_sync(HCI_OGF_LINK_CTRL, HCI_OCF_INQUIRY, params, sizeof(params), 1500);
-    if (ret != 0) {
+    bt_le_step(); /* enter the first slice right away */
+
+    if (_scan_slice == BT_SCAN_SLICE_NONE && _le.state == LE_ST_IDLE &&
+            !_le_req_active) {
         _scanning = false;
-        return ret;
+        return -1;
     }
     return 0;
 }
 
 static int bt_stop_scan(void) {
-    int ret = bt_hci_command_sync(HCI_OGF_LINK_CTRL, HCI_OCF_INQUIRY_CANCEL, NULL, 0, 1000);
-
+    if (!_scanning) {
+        return 0;
+    }
+    bt_scan_slice_stop();
+    _scan_slice = BT_SCAN_SLICE_NONE;
+    _scan_slice_end_ms = 0;
+    _scan_total_end_ms = 0;
     _scanning = false;
-    return ret;
+    _le_autoconnect = false;
+    return 0;
 }
 
 static int bt_start_connection(const uint8_t* addr, bool pair, const char* pin,
@@ -5202,6 +5330,14 @@ static int bt_start_connection(const uint8_t* addr, bool pair, const char* pin,
     }
 
     bt_addr_to_str(addr, addr_str, sizeof(addr_str));
+
+    /* a BLE-only peripheral has no BR/EDR page to answer, so it takes the
+       LE bring-up path instead; a dual-mode device keeps the classic one,
+       which already works and needs no SMP round */
+    if (dev->le && !dev->classic) {
+        return bt_le_request(dev, pair, ret_text, ret_text_sz);
+    }
+
     if (dev->connected) {
         if (pair) {
             memset(&_pending, 0, sizeof(_pending));
@@ -5254,6 +5390,7 @@ static int bt_start_connection(const uint8_t* addr, bool pair, const char* pin,
    before; each attempt is bounded (1.5s cmd status + 3s page wait) so a
    drawer full of absent devices cannot stall the daemon for long */
 static void bt_autoconnect_known(void) {
+    int le_known = 0;
     int i;
 
     if (!_ready || _scanning || _pending.type != BT_PENDING_NONE) {
@@ -5266,6 +5403,13 @@ static void bt_autoconnect_known(void) {
         uint64_t start_ms;
 
         if (!_known[i].used) {
+            continue;
+        }
+        /* a bonded LE peripheral can only be reached while it advertises,
+           so paging it is pointless: it is counted here and picked up by
+           the bounded scan session armed below */
+        if (_known[i].le && !_known[i].has_key) {
+            ++le_known;
             continue;
         }
         dev = bt_find_device(_known[i].addr, true);
@@ -5288,6 +5432,14 @@ static void bt_autoconnect_known(void) {
                 (uint32_t)(kernel_tic_ms(0) - start_ms) < 3000) {
             bt_poll_once(10);
         }
+    }
+
+    if (le_known > 0 && _le_supported && !_scanning && !_le_req_active &&
+            _le.state == LE_ST_IDLE) {
+        _le_autoconnect = true;
+        slog("bluetooth le_autoconnect_arm devices=%d seconds=%d\n",
+                le_known, BT_LE_AUTOCONNECT_SCAN_S);
+        (void)bt_start_scan(BT_LE_AUTOCONNECT_SCAN_S);
     }
 }
 
@@ -5354,6 +5506,10 @@ static int bt_forget_device(const char* arg, char* ret, size_t ret_sz) {
     if (dev != NULL) {
         dev->has_link_key = false;
         memset(dev->link_key, 0, sizeof(dev->link_key));
+        dev->has_ltk = false;
+        memset(dev->ltk, 0, sizeof(dev->ltk));
+        memset(dev->ltk_rand, 0, sizeof(dev->ltk_rand));
+        dev->ediv = 0;
     }
     bt_known_save();
     if (ret != NULL && ret_sz != 0) {
@@ -5365,18 +5521,37 @@ static int bt_forget_device(const char* arg, char* ret, size_t ret_sz) {
 static void bt_dump_state_ret(char* ret, size_t ret_sz) {
     int i;
     int count = 0;
+    int le_only = 0;
 
     for (i = 0; i < MAX_BT_DEVICES; ++i) {
         if (_devices[i].used) {
             ++count;
+            if (_devices[i].le && !_devices[i].classic) {
+                ++le_only;
+            }
         }
     }
-    bt_ret_append(ret, ret_sz, "state powered=%d ready=%d scanning=%d devices=%d pending=%d\n",
+    /* one line of named fields: xbt reads powered=/ready=/scanning= out of
+       it and ignores the rest, and the LE half is what makes "the scan
+       found nothing" diagnosable from the device itself */
+    bt_ret_append(ret, ret_sz,
+        "state powered=%d ready=%d scanning=%d slice=%d devices=%d le_only=%d "
+        "pending=%d le_supported=%d le_state=%d le_handle=0x%04X le_enc=%d "
+        "hogp_boot=%d hogp_sub=%d hogp_mtu=%u\n",
         _powered ? 1 : 0,
         _ready ? 1 : 0,
         _scanning ? 1 : 0,
+        (int)_scan_slice,
         count,
-        (int)_pending.type);
+        le_only,
+        (int)_pending.type,
+        _le_supported ? 1 : 0,
+        (int)_le.state,
+        _le.handle,
+        _le.encrypted ? 1 : 0,
+        _hogp.boot_mode_ok ? 1 : 0,
+        _hogp.n_subscribed,
+        (unsigned)_hogp.mtu);
 }
 
 static void bt_help_emit(void) {
@@ -5400,17 +5575,17 @@ static void bt_help_emit(void) {
 static void bt_help_ret(char* ret, size_t ret_sz) {
     bt_ret_append(ret, ret_sz, "open: power on the bluetooth adapter\n");
     bt_ret_append(ret, ret_sz, "close: power off the bluetooth adapter\n");
-    bt_ret_append(ret, ret_sz, "scan [seconds]\n");
+    bt_ret_append(ret, ret_sz, "scan [seconds]: alternate LE and BR/EDR discovery until the time is up\n");
     bt_ret_append(ret, ret_sz, "stop\n");
     bt_ret_append(ret, ret_sz, "devices\n");
     bt_ret_append(ret, ret_sz, "known: list devices remembered in /etc/bt/bt.json\n");
     bt_ret_append(ret, ret_sz, "forget <bdaddr>: drop a remembered device\n");
     bt_ret_append(ret, ret_sz, "state\n");
     bt_ret_append(ret, ret_sz, "name <bdaddr>\n");
-    bt_ret_append(ret, ret_sz, "connect <bdaddr>\n");
+    bt_ret_append(ret, ret_sz, "connect <bdaddr>: BR/EDR page, or LE connect + pair + HID-over-GATT for a BLE device\n");
     bt_ret_append(ret, ret_sz, "pair <bdaddr> [pin]\n");
     bt_ret_append(ret, ret_sz, "disconnect <bdaddr|handle>\n");
-    bt_ret_append(ret, ret_sz, "hid_open <bdaddr>: open HID ctrl+intr channels on a connected device\n");
+    bt_ret_append(ret, ret_sz, "hid_open <bdaddr>: open HID ctrl+intr channels, or bring up an LE HID device\n");
     bt_ret_append(ret, ret_sz, "hid_close: tear the HID session down\n");
     bt_ret_append(ret, ret_sz, "hid_state: HID session + subscriber summary\n");
 }
@@ -5492,10 +5667,16 @@ static int bt_disconnect_target(const char* arg, char* ret_text, size_t ret_text
 static void bt_disconnect_all(void) {
     int i;
 
+    /* HCI_Disconnect is transport-agnostic, so the LE link goes down with
+       the classic ones; an LE bring-up in flight is released by the
+       disconnection-complete event it triggers */
     for (i = 0; i < MAX_BT_DEVICES; ++i) {
         if (_devices[i].used && _devices[i].connected) {
             bt_hci_disconnect(_devices[i].handle);
         }
+    }
+    if (_le.handle_valid) {
+        bt_hci_disconnect(_le.handle);
     }
 }
 
@@ -5508,6 +5689,11 @@ static void bt_mark_all_disconnected(void) {
             _devices[i].handle = 0;
         }
     }
+    _le_autoconnect = false;
+    _le_supported = false; /* re-probed by bt_le_controller_init on open */
+    _scan_slice = BT_SCAN_SLICE_NONE;
+    _scan_slice_end_ms = 0;
+    _scan_total_end_ms = 0;
     bt_hid_stack_reset();
 }
 
@@ -5554,6 +5740,7 @@ static int bt_close_adapter(char* ret, size_t ret_sz) {
     if (!_powered) {
         _ready = false;
         _scanning = false;
+        _le_autoconnect = false;
         bt_clear_pending();
         bt_emit("power_off state=already_off\n");
         if (ret != NULL && ret_sz != 0) {
@@ -5578,6 +5765,7 @@ static int bt_close_adapter(char* ret, size_t ret_sz) {
     _powered = false;
     _ready = false;
     _scanning = false;
+    _le_autoconnect = false;
     bt_clear_pending();
     bt_mark_all_disconnected();
     bt_emit("power_off state=powered_off\n");
@@ -5711,7 +5899,28 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
             return 0;
         }
         dev = bt_find_device(addr, false);
-        if (dev == NULL || !dev->connected || dev->handle == 0) {
+        if (dev == NULL) {
+            snprintf(ret, ret_sz, "hid_open_fail reason=not_connected\n");
+            return 0;
+        }
+        /* an LE HID device has no ctrl/intr channels to open: the link is
+           either brought up and already reporting, or it still has to be
+           connected, which bt_le_request queues for bt_le_step */
+        if (dev->le && !dev->classic) {
+            if (_le.state == LE_ST_READY && bt_addr_equal(_le.addr, dev->addr)) {
+                snprintf(ret, ret_sz, "hid_open_ok %s le=1 handle=0x%04X\n",
+                        arg1, _le.handle);
+                return 0;
+            }
+            if (bt_le_request(dev, true, NULL, 0) != 0) {
+                snprintf(ret, ret_sz, "hid_open_fail %s reason=le_busy\n", arg1);
+            }
+            else {
+                snprintf(ret, ret_sz, "hid_open_begin %s le=1\n", arg1);
+            }
+            return 0;
+        }
+        if (!dev->connected || dev->handle == 0) {
             snprintf(ret, ret_sz, "hid_open_fail reason=not_connected\n");
             return 0;
         }
@@ -5728,26 +5937,34 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
     }
     else if (strcmp(cmd, "hid_state") == 0) {
         char haddr[24];
-        int sub_cnt = 0;
-        int i;
+        int sub_cnt = hid_srv_count(HID_REPORT_ID_MOUSE);
 
-        for (i = 0; i < BT_SUBSCRIBER_MAX; ++i) {
-            if (_subs[i].used && _subs[i].report_id == BT_REPORT_ID_MOUSE) {
-                ++sub_cnt;
-            }
-        }
-        if (!_hid.active) {
-            snprintf(ret, ret_sz, "hid_state active=0 mouse_subs=%d\n", sub_cnt);
+        /* bt_moused polls this string and only attaches while active=0, so
+           it has to say active=1 for an LE session too */
+        if (_hid.active) {
+            bt_addr_to_str(_hid.addr, haddr, sizeof(haddr));
+            snprintf(ret, ret_sz,
+                "hid_state active=1 addr=%s handle=0x%04X up=%d boot=%d "
+                "ctrl=%d intr=%d le=0 mouse_subs=%d\n",
+                haddr, _hid.acl_handle, _hid.up ? 1 : 0,
+                _hid.boot_protocol_ok ? 1 : 0,
+                _hid.ctrl != NULL ? _hid.ctrl->state : -1,
+                _hid.intr != NULL ? _hid.intr->state : -1,
+                sub_cnt);
             return 0;
         }
-        bt_addr_to_str(_hid.addr, haddr, sizeof(haddr));
-        snprintf(ret, ret_sz,
-            "hid_state active=1 addr=%s handle=0x%04X up=%d boot=%d "
-            "ctrl=%d intr=%d mouse_subs=%d\n",
-            haddr, _hid.acl_handle, _hid.up ? 1 : 0, _hid.boot_protocol_ok ? 1 : 0,
-            _hid.ctrl != NULL ? _hid.ctrl->state : -1,
-            _hid.intr != NULL ? _hid.intr->state : -1,
-            sub_cnt);
+        if (_le.state == LE_ST_READY && _le.handle_valid) {
+            bt_addr_to_str(_le.addr, haddr, sizeof(haddr));
+            snprintf(ret, ret_sz,
+                "hid_state active=1 addr=%s handle=0x%04X up=1 boot=%d "
+                "le=1 reports=%d mouse_subs=%d\n",
+                haddr, _le.handle, _hogp.boot_mode_ok ? 1 : 0,
+                _hogp.n_subscribed, sub_cnt);
+            return 0;
+        }
+        snprintf(ret, ret_sz, "hid_state active=0 le_supported=%d le_state=%d "
+                "mouse_subs=%d\n", _le_supported ? 1 : 0, (int)_le.state,
+                sub_cnt);
     }
     else {
         snprintf(ret, ret_sz, "unknown command\n");
@@ -5758,25 +5975,17 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
 
 static int bt_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
         void* buf, int size, off_t offset, void* p) {
-    bt_subscriber_t* sub;
     int i;
-
-    (void)dev;
-    (void)node;
-    (void)offset;
-    (void)p;
 
     if (size <= 0) {
         return VFS_ERR_RETRY;
     }
 
     /* a subscriber that picked a report id reads fixed events from its
-       own queue (usbhidsrv wire protocol); report_id 0 keeps the legacy
+       own queue (libhid's wire protocol); report_id 0 keeps the legacy
        text event stream so xbt/devcmd readers are unaffected */
-    sub = bt_sub_find(fd, from_pid);
-    if (sub != NULL && sub->report_id != 0) {
-        int n = sub_queue_pop(sub, buf, size);
-        return n > 0 ? n : VFS_ERR_RETRY;
+    if (hid_srv_report_id(fd, from_pid) != 0) {
+        return hid_vdev_read(dev, fd, from_pid, node, buf, size, offset, p);
     }
 
     for (i = 0; i < size; ++i) {
@@ -5808,15 +6017,8 @@ static char* bt_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, voi
 }
 
 static uint32_t bt_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node, void* p) {
-    bt_subscriber_t* sub;
-
-    (void)dev;
-    (void)node;
-    (void)p;
-
-    sub = bt_sub_find(fd, from_pid);
-    if (sub != NULL && sub->report_id != 0) {
-        return sub_queue_has_data(sub) ? VFS_EVT_RD : 0;
+    if (hid_srv_report_id(fd, from_pid) != 0) {
+        return hid_vdev_check_poll_events(dev, fd, from_pid, node, p);
     }
     if (_evt_buf != NULL && !charbuf_is_empty(_evt_buf)) {
         return VFS_EVT_RD;
@@ -5827,8 +6029,9 @@ static uint32_t bt_check_poll_events(vdevice_t* dev, int fd, int from_pid, fsinf
 static int bt_loop(vdevice_t* dev, void* p) {
     int packets = 0;
 
-    (void)dev;
     (void)p;
+
+    hid_set_node(dev->mnt_info.node);
 
     while (bt_poll_once(0) > 0) {
         ++packets;
@@ -5838,11 +6041,16 @@ static int bt_loop(vdevice_t* dev, void* p) {
        SET_PROTOCOL kick once both HID channels are open) */
     l2cap_step();
 
+    /* LE discovery slicing, queued LE bring-ups and the LE link's own
+       deadlines all live here instead of in the command handlers, which
+       have to stay short enough for a click in xbt to feel instant */
+    bt_le_step();
+
     /* a mouse subscriber's edge wake can get spent on a generic IPC wait:
        re-assert while queues still hold undrained events */
     if (_sub_reassert_ms != 0 && (int64_t)(kernel_tic_ms(0) - _sub_reassert_ms) >= 0) {
-        if (bt_hid_backlog()) {
-            bt_hid_rewake_backlog();
+        if (hid_backlog()) {
+            hid_rewake_backlog();
             _sub_reassert_ms = kernel_tic_ms(0) + BT_HID_REASSERT_MS;
         }
         else {

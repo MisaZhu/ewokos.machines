@@ -303,11 +303,13 @@ static void bt_try_attach_hid(void) {
         char addr[24] = {0};
         unsigned int cod = 0;
         int connected = 0;
+        int le = 0;
 
         if (next != NULL)
             *next = 0;
         if (strncmp(line, "device ", 7) == 0) {
-            /* line format: "device <addr> class=0x%06X rssi=%d connected=%d ..." */
+            /* line format: "device <addr> class=0x%06X rssi=%d connected=%d
+               paired=%d le=%d appearance=%u name=..." */
             char* p = line + 7;
             char* q = strchr(p, ' ');
             if (q != NULL) {
@@ -317,13 +319,21 @@ static void bt_try_attach_hid(void) {
                 memcpy(addr, p, alen);
                 if (strstr(q, "connected=1") != NULL)
                     connected = 1;
+                if (strstr(q, " le=1") != NULL)
+                    le = 1;
                 p = strstr(q, "class=0x");
                 if (p != NULL)
                     cod = (unsigned int)strtoul(p + 8, NULL, 16);
             }
         }
+        /* A BLE-only mouse or keyboard carries no Class of Device at all,
+           so the BR/EDR peripheral filter below cannot see it; btd only
+           ever connects an LE device the user asked for or one it is
+           bonded with, so connected=1 plus le=1 already is the decision.
+           hid_open on an LE link that is already up is a no-op, so a
+           keyboard picked up here costs nothing. */
         if (connected && addr[0] != 0 &&
-                ((cod >> 8) & 0x1f) == 0x05 && (cod & 0xc0) != 0) {
+                ((((cod >> 8) & 0x1f) == 0x05 && (cod & 0xc0) != 0) || le)) {
             char cmd[64];
             char* r;
             snprintf(cmd, sizeof(cmd), "hid_open %s", addr);
