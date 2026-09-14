@@ -7,7 +7,7 @@ TARGET_DIR = $(BUILD_DIR)
 
 LDFLAGS = -L $(TARGET_DIR)/lib
 
-CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -I $(SYS_DIR)/basic/libs/usb/include -Iinclude -I $(TARGET_DIR)/include
+CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include -I $(SYS_DIR)/basic/libs/usb/include -I $(SYS_DIR)/basic/libs/hid/include -Iinclude -I $(TARGET_DIR)/include
 
 LIB_ARCH_BCM2712_OBJS = $(ARCH)/src/mailbox.o \
 	$(ARCH)/src/pl011_uart.o \
