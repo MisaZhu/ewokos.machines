@@ -14,6 +14,9 @@ FBDISPLAYD_OBJS = $(ARCH)/fbdisplayd.o
 FBDISPLAYD = $(TARGET_DIR)/drivers/raspi5/fbdisplayd
 
 $(FBDISPLAYD): $(FBDISPLAYD_OBJS) \
+		$(SDK_DIR)/lib/libarch_bcm2712.a \
+		$(SDK_DIR)/lib/libvideocore.a \
+		$(SDK_DIR)/lib/libbsp.a \
 		$(SDK_DIR)/lib/libewoksys.a \
 		$(SDK_DIR)/lib/libdisplay.a \
 		$(SDK_DIR)/lib/libgraph.a \
