@@ -304,10 +304,7 @@ char* net_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) 
     }
 }
 
-int main(int argc, char** argv) {
-    _mmio_base = mmio_map();
-    log_init();
-
+static int net_mounted(vdevice_t* dev, ewokos_addr_t node, void* p) {
     /*
      * Pi5 WiFi bring-up (bcm2712-rpi-5-b.dts):
      *   - sdio2 host clock = clk_emmc2 (200MHz), no GPCLK2 32k and no
@@ -340,7 +337,12 @@ int main(int argc, char** argv) {
         brcm_log("wlan platform: brcm_init failed\n");
         return -1;
     }
+    return 0;
+}
 
+int main(int argc, char** argv) {
+    _mmio_base = mmio_map();
+    log_init();
 
     const char* mnt_point = argc > 1 ? argv[1]: "/dev/eth0";
 
@@ -349,6 +351,7 @@ int main(int argc, char** argv) {
     _wland_dev = &dev;
 
     strcpy(dev.desc, "eth");
+    dev.mounted = net_mounted;
     dev.read = net_read;
     dev.write = net_write;
     dev.dev_cntl = net_dcntl;
