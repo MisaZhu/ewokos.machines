@@ -30,7 +30,7 @@ endif
 EWOKOS_ROOT_DIR = $(ewokos)
 
 MACHINE = x86
-SYS_DIR = $(EWOKOS_ROOT_DIR)/system/build/$(MACHINE)
+SYS_DIR = ../system
 SYS_ROOTFS = $(SYS_DIR)/root_$(ARCH).img
 
 include make.bsp

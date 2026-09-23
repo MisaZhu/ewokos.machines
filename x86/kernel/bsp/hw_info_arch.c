@@ -219,21 +219,7 @@ void arch_vm(page_dir_entry_t* vm) {
 }
 
 void kalloc_arch(void) {
-    ewokos_addr_t base = P2V(_sys_info.allocable_phy_mem_base);
-    page_list_t* head;
-    uint32_t pages = kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
-    head = (page_list_t*)(P2V(_sys_info.allocable_phy_mem_top) - PAGE_SIZE);
-    printf("kalloc_arch: base=%x top=%x map=%x/%x/%x head=%x next=%x next2=%x pages=%d free=%d\n",
-            base,
-            P2V(_sys_info.allocable_phy_mem_top),
-            resolve_phy_address(_kernel_info.kernel_vm, base),
-            resolve_phy_address(_kernel_info.kernel_vm, base + PAGE_SIZE),
-            resolve_phy_address(_kernel_info.kernel_vm, base + PAGE_SIZE * 2),
-            (ewokos_addr_t)head,
-            head != NULL ? (ewokos_addr_t)head->next : 0,
-            (head != NULL && head->next != NULL) ? (ewokos_addr_t)head->next->next : 0,
-            pages,
-            get_free_mem_size());
+    kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
 int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
