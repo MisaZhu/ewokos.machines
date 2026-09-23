@@ -421,9 +421,9 @@ char* net_dev_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p) 
     }
 }
 
-int main(int argc, char** argv) {
-    _mmio_base = mmio_map();
-    log_init();	
+static int net_mounted(vdevice_t* dev, ewokos_addr_t node, void* p) {
+    (void)node;
+    (void)p;
     bcm2835_power_on_module(BCM2835_MBOX_POWER_DEVID_SDHCI);
     {
         uint32_t emmc_clk = bcm2835_get_emmc_clock();
@@ -432,10 +432,6 @@ int main(int argc, char** argv) {
     }
     clock_init();
 
-    vdevice_t dev;
-    memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.desc, "wlan");
-    _wland_dev = &dev;
     /*
      * BCM43430/CYW43439 boards are sensitive to WL_REG_ON timing.
      * Match the known-good 10 ms low / 250 ms high pulse used by
@@ -449,10 +445,21 @@ int main(int argc, char** argv) {
         brcm_log("wlan platform: brcm_init failed\n");
         return -1;
     }
+    return 0;
+}
 
+int main(int argc, char** argv) {
+    _mmio_base = mmio_map();
+    log_init();	
+
+    vdevice_t dev;
+    memset(&dev, 0, sizeof(vdevice_t));
+    _wland_dev = &dev;
 
     const char* mnt_point = argc > 1 ? argv[1]: "/dev/eth0";
     strcpy(dev.desc, "eth");
+
+    dev.mounted = net_mounted;
     dev.read = net_read;
     dev.write = net_write;
     dev.dev_cntl = net_dcntl;

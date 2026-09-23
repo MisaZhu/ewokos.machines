@@ -1,7 +1,7 @@
 @export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log
-@/bin/ipcserv /drivers/raspi5/g2dd        /dev/g2d
 
+@/bin/ipcserv /drivers/raspi5/g2dd        /dev/g2d
 
 @/bin/ipcserv /drivers/displaymand
 #@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0

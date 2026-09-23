@@ -30,8 +30,7 @@ typedef struct {
 } mail_message_t;
 
 ewokos_addr_t bcm2712_mailbox_init(void);
-void     bcm2712_mailbox_read(mail_message_t* msg);
-void     bcm2712_mailbox_send(mail_message_t* msg);
+/* Only complete, system-wide serialized transactions are exposed. */
 void     bcm2712_mailbox_call(mail_message_t* msg);
 int      bcm2712_mailbox_call_timeout(mail_message_t* msg, uint32_t timeout_loops);
 
