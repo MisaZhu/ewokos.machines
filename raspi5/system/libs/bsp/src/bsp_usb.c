@@ -53,6 +53,14 @@
    re-init clears; reinit after this many consecutive reset fails */
 #define BSP_USB_RESET_FAIL_REINIT 6u
 
+/*
+ * CM5/uConsole routes its GL850 hub through the SoC DWC2 root. This HCD has
+ * no split-transaction support, so an HS hub would make its FS/LS keyboard
+ * and trackball unreachable. Keep this root FS/LS-only from its first reset;
+ * RP1 xHCI ports retain their normal high/super-speed operation.
+ */
+#define BSP_USB_DWC2_FORCE_FS_ONLY 1
+
 struct bsp_usb_dev {
     bool used;
     /* true: owned by the SoC DWC2, the xhci_dev_t below is unused and the
@@ -248,6 +256,11 @@ int bsp_usb_init(void) {
      */
     if (dwc2_init() == 0) {
         _dwc2_present = true;
+#if BSP_USB_DWC2_FORCE_FS_ONLY
+        _dwc2_fs_only = true;
+        dwc2_force_fs_only(true);
+        slog("bsp_usb: dwc2 uconsole fs-only mode\n");
+#endif
         found++;
     }
 
@@ -262,8 +275,13 @@ static void dwc2_state_reset(void) {
     _dwc2_prev_connected = false;
     _dwc2_reset_fail_streak = 0;
     _dwc2_pending_hs = false;
+#if BSP_USB_DWC2_FORCE_FS_ONLY
+    _dwc2_fs_only = true;
+    dwc2_force_fs_only(true);
+#else
     _dwc2_fs_only = false;
     dwc2_force_fs_only(false);
+#endif
 }
 
 int bsp_usb_reinit(void) {

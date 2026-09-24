@@ -252,6 +252,16 @@ static inline void dwc_writel_sync(uint32_t reg, uint32_t value) {
     (void)usb_readl(reg);
 }
 
+/*
+ * sys_dma is Normal-NC while the controller registers are Device memory.
+ * ARM does not order those two memory types without an explicit handoff:
+ * publish CPU writes before CHENA, and acquire controller DMA writes after
+ * completion. Keep this local to each transfer instead of sweeping caches.
+ */
+static inline void dwc_dma_barrier(void) {
+    __asm__ volatile("dmb sy" ::: "memory");
+}
+
 /* ---------------- window mapping ---------------- */
 
 /*
@@ -930,6 +940,7 @@ static int dwc_channel_transfer(int ch, uint8_t dev_addr, uint8_t ep_num, bool d
     hcchar_start = usb_readl(DWC_HCCHAR(ch));
     hcchar_start &= ~DWC_HCCHAR_CHDIS;
     hcchar_start |= DWC_HCCHAR_CHENA;
+    dwc_dma_barrier();
     dwc_writel_sync(DWC_HCCHAR(ch), hcchar_start);
 
     if (dwc_channel_wait(ch, timeout_ms, &hcint, &remaining) != 0) {
@@ -938,6 +949,7 @@ static int dwc_channel_transfer(int ch, uint8_t dev_addr, uint8_t ep_num, bool d
         return -1;
     }
 
+    dwc_dma_barrier();
     usb_writel(DWC_HCINT(ch), hcint);
     _last_hcint = hcint;
     if (hcint & (DWC_HCINT_AHBERR | DWC_HCINT_STALL | DWC_HCINT_TXERR |
