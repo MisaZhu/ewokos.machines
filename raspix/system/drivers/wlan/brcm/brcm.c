@@ -2538,7 +2538,7 @@ static int brcmf_sdio_hdparse(uint8_t *header,
     }
     if ((uint16_t)(~(len ^ checksum))) {
         brcm_log("HW header checksum error\n");
-        brcmf_sdio_rxfail(false, false);
+        brcmf_sdio_rxfail(false, true);
         return -EIO;
     }
     if (len < SDPCM_HDRLEN) {
