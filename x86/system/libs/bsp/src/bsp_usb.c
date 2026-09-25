@@ -52,7 +52,6 @@ struct bsp_usb_dev {
 };
 
 static bsp_usb_dev_t _devs[BSP_USB_MAX_DEVS];
-static uint8_t _next_address = 2;
 static bool _prev_connected[BSP_USB_MAX_PORTS];
 static bool _inited = false;
 
@@ -114,7 +113,6 @@ int bsp_usb_reinit(void) {
     memset(_devs, 0, sizeof(_devs));
     memset(_prev_connected, 0, sizeof(_prev_connected));
     memset(&_msc, 0, sizeof(_msc));
-    _next_address = 2;
     return 0;
 }
 
@@ -144,9 +142,6 @@ uint32_t bsp_usb_root_port_changes(void) {
         if (conn != _prev_connected[i]) {
             changes |= 1u << i;
             _prev_connected[i] = conn;
-            if (!conn) {
-                _next_address = 2;
-            }
         }
         uhci_ack_port_change(i);
     }
@@ -159,7 +154,6 @@ int bsp_usb_root_port_reset(int port) {
     if (port < 1 || port > uhci_port_count()) {
         return -1;
     }
-    _next_address = 2;
     speed = uhci_reset_port(port - 1);
     if (speed < 0) {
         return -1;
@@ -168,6 +162,29 @@ int bsp_usb_root_port_reset(int port) {
 }
 
 /* ---- device lifecycle ---- */
+
+/* Allocate the lowest USB device address (1..127) not currently held by an
+   attached device; address 0 is the default/broadcast address and is never
+   assigned. Scanning the live device table keeps addresses globally unique
+   across all root ports. A plain incrementing counter that is reset on every
+   port reset would hand the SAME address to devices enumerated on different
+   ports (they share one UHCI bus), making the second device's control
+   transfers answer with the first device's descriptors. */
+static uint8_t usb_alloc_address(void) {
+    for (int a = 1; a <= 127; ++a) {
+        bool taken = false;
+        for (int i = 0; i < BSP_USB_MAX_DEVS; ++i) {
+            if (_devs[i].used && _devs[i].addr == (uint8_t)a) {
+                taken = true;
+                break;
+            }
+        }
+        if (!taken) {
+            return (uint8_t)a;
+        }
+    }
+    return 0;
+}
 
 bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
         bsp_usb_dev_t* parent_hub, int hub_port) {
@@ -197,10 +214,9 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
         return NULL;
     }
 
-    addr = _next_address++;
-    if (addr == 0 || addr > 126) {
-        _next_address = 2;
-        addr = _next_address++;
+    addr = usb_alloc_address();
+    if (addr == 0) {
+        return NULL;
     }
     memset(&setup, 0, sizeof(setup));
     setup.bmRequestType = USB_REQTYPE_STD_OUT;

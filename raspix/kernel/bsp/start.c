@@ -1,5 +1,8 @@
 #include <mm/mmu.h>
-#include <mm/boot_pgt.h>
+#ifdef __aarch64__
+#include <mm/boot_pgt.h> /* aarch64-only boot page-table helpers; the __arm__
+                            branch below uses its own section-type page dir */
+#endif
 
 #ifdef __arm__
 #define PDE_SHIFT     20   // shift how many bits to get PDE index

@@ -511,6 +511,13 @@ static int uhci_data_xfer(uhci_ctrl_t* hc, bool low_speed, bool dir_in,
         return ret; /* 0 = pure NAKs (no data), -1 = hard error */
     }
 
+    /* Walk the chain in order, accumulating the bytes each completed TD
+       moved. A NAK only means "the device has nothing more right now"; it
+       must NOT discard packets already moved by earlier TDs of the same
+       chain. An interrupt-IN poll asks for a full report buffer but the
+       device answers with a single max-packet report and then NAKs the
+       remaining TDs -- the old code saw that trailing NAK and threw the
+       report away, so no HID input ever reached usbhostd. */
     for (int i = 0; i < td_count; ++i) {
         uint32_t sts = tds[i]->ctrl_status;
         if ((sts & UHCI_TD_STS_STALLED) != 0) {
@@ -522,13 +529,8 @@ static int uhci_data_xfer(uhci_ctrl_t* hc, bool low_speed, bool dir_in,
             return -1;
         }
         if ((sts & UHCI_TD_STS_NAK) != 0) {
-            /* NAKed before any packet of this chain moved */
-            dma_pool_rewind(mark);
-            return 0;
+            break; /* keep whatever the earlier TDs already moved */
         }
-    }
-
-    for (int i = 0; i < td_count; ++i) {
         bytes_done += uhci_td_actual_len(tds[i]);
     }
     if ((uint32_t)bytes_done > len) {
@@ -551,11 +553,16 @@ int uhci_int_in_xfer(int flat_port, bool low_speed, uint8_t addr,
         uint16_t size) {
     uint8_t port;
     uhci_ctrl_t* hc = flat_to_ctrl(flat_port, &port);
+    uint16_t xlen;
     if (hc == NULL || size == 0) {
         return -1;
     }
+    /* An interrupt-IN endpoint yields at most one max-packet report per poll;
+       asking for more only builds extra TDs that NAK. Clamp to a single
+       packet (never past the caller's buffer). */
+    xlen = (mps != 0 && size > mps) ? mps : size;
     return uhci_data_xfer(hc, low_speed, true, addr, ep, mps, toggle,
-            data, size, UHCI_INT_IN_TIMEOUT_MS);
+            data, xlen, UHCI_INT_IN_TIMEOUT_MS);
 }
 
 int uhci_bulk_xfer(int flat_port, bool low_speed, bool dir_in,
