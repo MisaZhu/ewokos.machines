@@ -65,4 +65,11 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
 		uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree);
 
+/* whole-surface separable Gaussian blur: software two-pass on the CPU
+   (no blur-capable GPU back end on this machine); fixed Q16 weights,
+   bit-exact with the GPU kernels and g2dtest's scalar reference. */
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
+			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
+			int32_t argb_w, int32_t argb_h, int32_t radius);
+
 #endif

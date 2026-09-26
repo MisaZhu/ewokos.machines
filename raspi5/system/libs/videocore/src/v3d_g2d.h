@@ -120,4 +120,15 @@ extern const unsigned g2d_qpu_argb_copy_n;
 extern const uint64_t g2d_qpu_argb_fill4[];
 extern const unsigned g2d_qpu_argb_fill4_n;
 
+/* Separable Gaussian blur passes, radius 2 (h5+v5) and radius 4 (h9+v9):
+ * hardware-verified encodings, see g2d_qpu_kernels.h. */
+extern const uint64_t g2d_qpu_gauss_h5[];
+extern const unsigned g2d_qpu_gauss_h5_n;
+extern const uint64_t g2d_qpu_gauss_v5[];
+extern const unsigned g2d_qpu_gauss_v5_n;
+extern const uint64_t g2d_qpu_gauss_h9[];
+extern const unsigned g2d_qpu_gauss_h9_n;
+extern const uint64_t g2d_qpu_gauss_v9[];
+extern const unsigned g2d_qpu_gauss_v9_n;
+
 #endif /* V3D_G2D_H */

@@ -90,3 +90,86 @@ int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_co
 	return arch_g2d_rotate(argb_src, src_phy, src_contig, src_w, src_h,
 		argb_dst, dst_phy, dst_contig, dst_w, dst_h, degree);
 }
+/* fixed Q16 weights of the gaussian blur (sigma = radius/2, normalized to
+   exactly 65536 with the center weight absorbing the rounding) - the same
+   tables the hardware blur kernels use, so software and GPU outputs are
+   bit-exact against each other and against g2dtest's scalar reference. */
+static const uint16_t gauss_wk2[5] = { 25386, 5664, 3436, 5664, 25386 };
+static const uint16_t gauss_wk4[9] = { 17608, 7340, 3929, 2700, 2382,
+        2700, 3929, 7340, 17608 };
+
+/* whole-surface separable gaussian blur, software two-pass on the CPU
+   (this machine has no blur-capable GPU back end, so the bsp implements
+   the op itself - same fixed Q16 weights, edge replication and round
+   half-up as the GPU kernels).  tmp is the caller's scratch surface
+   (>= w*h*4 bytes); phy/contig are ignored by the software path. */
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
+			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
+			int32_t argb_w, int32_t argb_h, int32_t radius) {
+    const uint16_t* wk;
+    uint32_t x, y, t, ks;
+    (void)argb_phy; (void)contig; (void)tmp_phy; (void)tmp_contig;
+
+    /* the G2D_* result codes are the g2dclient wire values: -1 FAILED,
+       -2 NOT_SUPPORTED (g2dd passes the return through verbatim) */
+    if(argb == NULL || tmp == NULL || argb_w <= 0 || argb_h <= 0)
+        return -1;
+    if(radius == 2) {
+        wk = gauss_wk2;
+        ks = 5;
+    }
+    else if(radius == 4) {
+        wk = gauss_wk4;
+        ks = 9;
+    }
+    else {
+        return -2; /* G2D_ERR_NOT_SUPPORTED */
+    }
+
+    /* H pass: argb -> tmp */
+    for(y = 0; y < (uint32_t)argb_h; y++) {
+        const uint32_t* srow = argb + (size_t)y * (uint32_t)argb_w;
+        for(x = 0; x < (uint32_t)argb_w; x++) {
+            uint32_t sb = 0, sg = 0, sr = 0, sa = 0;
+            for(t = 0; t < ks; t++) {
+                int32_t xx = (int32_t)x + (int32_t)t - radius;
+                uint32_t p;
+                if(xx < 0) xx = 0;
+                if(xx >= argb_w) xx = argb_w - 1;
+                p = srow[xx];
+                sb += (p & 0xff) * wk[t];
+                sg += ((p >> 8) & 0xff) * wk[t];
+                sr += ((p >> 16) & 0xff) * wk[t];
+                sa += ((p >> 24) & 0xff) * wk[t];
+            }
+            tmp[y * (uint32_t)argb_w + x] =
+                (((sa + 32768) >> 16) << 24) |
+                (((sr + 32768) >> 16) << 16) |
+                (((sg + 32768) >> 16) << 8) |
+                ((sb + 32768) >> 16);
+        }
+    }
+    /* V pass: tmp -> argb (in place) */
+    for(y = 0; y < (uint32_t)argb_h; y++) {
+        for(x = 0; x < (uint32_t)argb_w; x++) {
+            uint32_t sb = 0, sg = 0, sr = 0, sa = 0;
+            for(t = 0; t < ks; t++) {
+                int32_t yy = (int32_t)y + (int32_t)t - radius;
+                uint32_t p;
+                if(yy < 0) yy = 0;
+                if(yy >= argb_h) yy = argb_h - 1;
+                p = tmp[(uint32_t)yy * (uint32_t)argb_w + x];
+                sb += (p & 0xff) * wk[t];
+                sg += ((p >> 8) & 0xff) * wk[t];
+                sr += ((p >> 16) & 0xff) * wk[t];
+                sa += ((p >> 24) & 0xff) * wk[t];
+            }
+            argb[y * (uint32_t)argb_w + x] =
+                (((sa + 32768) >> 16) << 24) |
+                (((sr + 32768) >> 16) << 16) |
+                (((sg + 32768) >> 16) << 8) |
+                ((sb + 32768) >> 16);
+        }
+    }
+    return 0; /* G2D_OK */
+}

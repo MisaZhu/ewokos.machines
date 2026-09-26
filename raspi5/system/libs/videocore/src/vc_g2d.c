@@ -1183,3 +1183,93 @@ int gpu_rotate_op(const g2d_map_t *m, int32_t rot, int32_t bw, int32_t bh,
     return gpu_rotate_surface(m, src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, dst_w, dst_h);
 }
+
+/* ------------------------------------------------------------------ */
+/* Gaussian blur: the two-pass separable pair (the default blur
+ * algorithm).  The kernels band the surface internally via
+ * qid = (tidx>>2)&0xF rows slicing, so one dispatch per pass covers the
+ * whole surface; the caller's scratch carries the H pass between them.
+ * Fixed per-radius Q16 weights (host-verified to match the EwokOS
+ * gaussian_blur_neon weight derivation bit-for-bit). */
+
+#define G2D_1MS_GAUSS_PIXELS 130000u   /* measured two-pass pair, Pi 5 */
+
+int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
+                         uint32_t tmp_phys, uint32_t *tmp,
+                         int32_t w, int32_t h, int32_t radius)
+{
+    static const uint16_t wk2[5] = { 25386, 5664, 3436, 5664, 25386 };
+    static const uint16_t wk4[9] = { 17608, 7340, 3929, 2700, 2382,
+                                     2700, 3929, 7340, 17608 };
+    uint32_t u[18];
+    const uint16_t *wk;
+    const uint64_t *hcode, *vcode;
+    unsigned hn, vn;
+    int nq, rows, i, k, rc;
+    unsigned flags;
+    uint64_t pixels;
+
+    if (argb == NULL || tmp == NULL || w <= 0 || h <= 0 ||
+        (w & 15) != 0 || (radius != 2 && radius != 4))
+        return -1;
+
+    if (radius == 2) {
+        wk = wk2;
+        k = 5;
+        hcode = g2d_qpu_gauss_h5;
+        hn = g2d_qpu_gauss_h5_n;
+        vcode = g2d_qpu_gauss_v5;
+        vn = g2d_qpu_gauss_v5_n;
+    }
+    else {
+        wk = wk4;
+        k = 9;
+        hcode = g2d_qpu_gauss_h9;
+        hn = g2d_qpu_gauss_h9_n;
+        vcode = g2d_qpu_gauss_v9;
+        vn = g2d_qpu_gauss_v9_n;
+    }
+
+    nq = v3d_g2d_num_qpus();
+    if (nq > h)
+        nq = h;
+    rows = (h + nq - 1) / nq;
+    /* the kernels build the per-QPU band offset with smul24 */
+    if ((uint32_t)(nq - 1) * (uint32_t)rows * (uint32_t)(w * 4) >=
+        (1u << 24))
+        return -1;
+
+    u[0] = phys;                       /* H pass: argb -> tmp */
+    u[1] = tmp_phys;
+    u[2] = (uint32_t)w * 4u;
+    u[3] = (uint32_t)w - 1u;
+    u[4] = (uint32_t)h - 1u;
+    u[5] = (uint32_t)(w / 16) - 1u;    /* L1: 16-px groups - 1 */
+    u[6] = (uint32_t)((w / 16) * 64 - w * 4);
+    u[7] = (uint32_t)rows;
+    u[8] = (uint32_t)(rows * w * 4);
+    for (i = 0; i < k; i++)
+        u[9 + i] = wk[i];
+
+    pixels = (uint64_t)w * (uint64_t)h;
+    flags = g2d_poll_flags(V3D_G2D_MAINT_ALL, pixels,
+                           G2D_1MS_GAUSS_PIXELS, nq);
+    rc = v3d_g2d_run(hcode, (int)hn, u, 9 + k, nq,
+                     argb, (size_t)w * (size_t)h * 4u,
+                     tmp, (size_t)w * (size_t)h * 4u, flags);
+    if (rc != 0) {
+        slog("g2d blur: H dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
+             rc, w, h, radius, nq);
+        return -1;
+    }
+
+    u[0] = tmp_phys;                   /* V pass: tmp -> argb, in place */
+    u[1] = phys;
+    rc = v3d_g2d_run(vcode, (int)vn, u, 9 + k, nq,
+                     tmp, (size_t)w * (size_t)h * 4u,
+                     argb, (size_t)w * (size_t)h * 4u, flags);
+    if (rc != 0)
+        slog("g2d blur: V dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
+             rc, w, h, radius, nq);
+    return (rc == 0) ? 0 : -1;
+}

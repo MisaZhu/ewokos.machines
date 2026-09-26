@@ -180,4 +180,18 @@ int gpu_rotate_op(const g2d_map_t *m, int32_t rot, int32_t bw, int32_t bh,
                   uint32_t dst_phys, uint32_t *argb_dst,
                   int32_t dst_w, int32_t dst_h);
 
+/* Whole-surface separable Gaussian blur (the two-pass pair: radius 2 ->
+ * gauss_h5+gauss_v5, radius 4 -> gauss_h9+gauss_v9).  The H pass reads
+ * argb and writes the caller's scratch surface tmp (>= w*h*4 bytes,
+ * GPU-visible like argb); the V pass reads tmp and writes argb back in
+ * place.  Fixed per-radius Q16 weight tables (sigma = radius/2, center
+ * weight absorbs the rounding) - bit-exact vs the EwokOS NEON reference.
+ * Both kernels band the surface internally, so one dispatch per pass
+ * covers every geometry with w % 16 == 0.  Returns 0 on success, -1 on
+ * ineligible geometry or a failed dispatch (never retried - see the
+ * no-replay rule above). */
+int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
+                         uint32_t tmp_phys, uint32_t *tmp,
+                         int32_t w, int32_t h, int32_t radius);
+
 #endif /* VIDEOCORE_VC_G2D_H */

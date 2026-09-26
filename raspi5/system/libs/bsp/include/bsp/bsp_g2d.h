@@ -66,4 +66,16 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
 			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree);
 
+/* whole-surface separable Gaussian blur (the default blur algorithm):
+   radius 2 -> the gauss_h5+gauss_v5 QPU pair, radius 4 -> gauss_h9+v9.
+   in-place on argb; tmp is the caller's GPU-visible scratch surface
+   (>= argb_w*argb_h*4 bytes, like argb physically contiguous).  fixed
+   per-radius Q16 weights (sigma = radius/2) - bit-exact vs the EwokOS
+   NEON reference.  requires argb_w % 16 == 0.  GPU-only: returns -1 on
+   ineligible geometry, a non-GPU-visible surface or a failed dispatch
+   (never replayed on the CPU - see the no-replay rule). */
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
+			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
+			int32_t argb_w, int32_t argb_h, int32_t radius);
+
 #endif
