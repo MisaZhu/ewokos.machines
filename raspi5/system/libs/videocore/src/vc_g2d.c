@@ -1216,7 +1216,9 @@ static int gpu_gauss_decompose(int radius, int *stages)
 
 int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
                          uint32_t tmp_phys, uint32_t *tmp,
-                         int32_t w, int32_t h, int32_t radius)
+                         int32_t w, int32_t h,
+                         int32_t rx, int32_t ry,
+                         int32_t rw, int32_t rh, int32_t radius)
 {
     static const uint16_t wk1[3] = { 30691, 4154, 30691 };
     static const uint16_t wk2[5] = { 25386, 5664, 3436, 5664, 25386 };
@@ -1248,6 +1250,8 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     int nq, rows, i, k, rc;
     unsigned flags;
     uint64_t pixels;
+    uint32_t pitch4;
+    size_t tmp_need, src_off;
 
     static const struct {
         const uint16_t *wk;
@@ -1260,6 +1264,8 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     int ns, si;
 
     if (argb == NULL || tmp == NULL || w <= 0 || h <= 0 ||
+        rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
+        rx > w - rw || ry > h - rh ||
         radius < 1 || radius > 64)
         return -1;
 
@@ -1290,35 +1296,46 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         vcode = setp->vcode;
         vn = *setp->vn;
 
-        u[0] = phys;                   /* H pass: argb -> tmp */
+        /* Both passes carry the SAME row pitch (the canvas pitch): the
+         * per-QPU band offset u8 = rows*pitch is then valid for the
+         * source AND the destination, and the tmp is a pitch-strided
+         * (rh - 1)-row region plus one rect row.  u0/u1 are the RECT
+         * origins; maintenance covers the whole canvas on the canvas
+         * side and the tmp extent on the scratch side. */
+        pitch4 = (uint32_t)w * 4u;
+        tmp_need = (size_t)(rh - 1) * pitch4 + (size_t)rw * 4u;
+        src_off = (size_t)ry * pitch4 + (size_t)rx * 4u;
+
+        u[0] = phys + (uint32_t)src_off;   /* H pass: canvas rect -> tmp */
         u[1] = tmp_phys;
-        u[2] = (uint32_t)w * 4u;
-        u[3] = (uint32_t)w - 1u;
-        u[4] = (uint32_t)h - 1u;
-        u[5] = (uint32_t)((w + 15) / 16) - 1u;     /* L1: groups/row (ceil) - 1 */
-        u[6] = (uint32_t)((w + 15) / 16 * 64 - w * 4); /* row-wrap dst jump */
+        u[2] = pitch4;
+        u[3] = (uint32_t)rw - 1u;
+        u[4] = (uint32_t)rh - 1u;
+        u[5] = (uint32_t)((rw + 15) / 16) - 1u;  /* L1: groups/row (ceil) - 1 */
+        u[6] = (uint32_t)((uint32_t)((rw + 15) / 16) * 64u - pitch4);
         u[7] = (uint32_t)rows;
-        u[8] = (uint32_t)(rows * w * 4);
+        u[8] = (uint32_t)rows * pitch4;
         for (i = 0; i < k; i++)
             u[9 + i] = wk[i];
 
         rc = v3d_g2d_run(hcode, (int)hn, u, 9 + k, nq,
-                         argb, (size_t)w * (size_t)h * 4u,
-                         tmp, (size_t)w * (size_t)h * 4u, flags);
+                         (uint8_t *)argb + src_off, (size_t)h * pitch4,
+                         tmp, tmp_need, flags);
         if (rc != 0) {
-            slog("g2d blur: H dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
-                 rc, w, h, radius, nq);
+            slog("g2d blur: H dispatch rc=%d (w=%d h=%d rect %d,%d %dx%d "
+                 "r=%d nq=%d)\n", rc, w, h, rx, ry, rw, rh, radius, nq);
             return -1;
         }
 
-        u[0] = tmp_phys;               /* V pass: tmp -> argb, in place */
-        u[1] = phys;
+        u[0] = tmp_phys;               /* V pass: tmp -> canvas rect */
+        u[1] = phys + (uint32_t)src_off;
         rc = v3d_g2d_run(vcode, (int)vn, u, 9 + k, nq,
-                         tmp, (size_t)w * (size_t)h * 4u,
-                         argb, (size_t)w * (size_t)h * 4u, flags);
+                         tmp, tmp_need,
+                         (uint8_t *)argb + src_off, (size_t)h * pitch4,
+                         flags);
         if (rc != 0) {
-            slog("g2d blur: V dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
-                 rc, w, h, radius, nq);
+            slog("g2d blur: V dispatch rc=%d (w=%d h=%d rect %d,%d %dx%d "
+                 "r=%d nq=%d)\n", rc, w, h, rx, ry, rw, rh, radius, nq);
             return -1;
         }
     }

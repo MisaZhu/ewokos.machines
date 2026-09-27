@@ -193,6 +193,8 @@ int gpu_rotate_op(const g2d_map_t *m, int32_t rot, int32_t bw, int32_t bh,
  * no-replay rule above). */
 int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
                          uint32_t tmp_phys, uint32_t *tmp,
-                         int32_t w, int32_t h, int32_t radius);
+                         int32_t w, int32_t h,
+                         int32_t rx, int32_t ry,
+                         int32_t rw, int32_t rh, int32_t radius);
 
 #endif /* VIDEOCORE_VC_G2D_H */

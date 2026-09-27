@@ -523,8 +523,8 @@ const uint64_t g2d_qpu_gauss_h7[] = {
     0x380800003803f002ULL,  /*   add */
     0x380800143c03f506ULL,  /*   sub */
     0x39e000153803f54aULL,  /*   add */
-    0x3808001d3803f086ULL,  /*   add */
-    0x39e8001d7d03f742ULL,  /*   shr */
+    0x39e8001d3803f141ULL,  /*   add */
+    0x39e8001d7c03f744ULL,  /*   shl */
     0x380800153c03f55dULL,  /*   sub */
     0x39e000163c03f58fULL,  /*   sub */
     0x39e000163c03f581ULL,  /*   sub */
@@ -876,8 +876,8 @@ const uint64_t g2d_qpu_gauss_h3[] = {
     0x380800003803f002ULL,  /*   add */
     0x380800143c03f506ULL,  /*   sub */
     0x39e000153803f54eULL,  /*   add */
-    0x3808001d3803f086ULL,  /*   add */
-    0x39e8001d7d03f742ULL,  /*   shr */
+    0x39e8001d3803f141ULL,  /*   add */
+    0x39e8001d7c03f744ULL,  /*   shl */
     0x380800153c03f55dULL,  /*   sub */
     0x39e0000e3c03f38fULL,  /*   sub */
     0x39e0000e3c03f381ULL,  /*   sub */
@@ -2989,8 +2989,8 @@ const uint64_t g2d_qpu_gauss_h9[] = {
     0x380800003803f002ULL,  /*   add */
     0x380800143c03f506ULL,  /*   sub */
     0x39e000153803f548ULL,  /*   add */
-    0x3808001d3803f086ULL,  /*   add */
-    0x39e8001d7d03f742ULL,  /*   shr */
+    0x39e8001d3803f141ULL,  /*   add */
+    0x39e8001d7c03f744ULL,  /*   shl */
     0x380800153c03f55dULL,  /*   sub */
     0x39e000163c03f58fULL,  /*   sub */
     0x39e000163c03f581ULL,  /*   sub */
@@ -3440,8 +3440,8 @@ const uint64_t g2d_qpu_gauss_h5[] = {
     0x380800003803f002ULL,  /*   add */
     0x380800143c03f506ULL,  /*   sub */
     0x39e000153803f54cULL,  /*   add */
-    0x3808001d3803f086ULL,  /*   add */
-    0x39e8001d7d03f742ULL,  /*   shr */
+    0x39e8001d3803f141ULL,  /*   add */
+    0x39e8001d7c03f744ULL,  /*   shl */
     0x380800153c03f55dULL,  /*   sub */
     0x39e000103c03f40fULL,  /*   sub */
     0x39e000103c03f401ULL,  /*   sub */

@@ -73,11 +73,17 @@ int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_co
    in-place on argb; tmp is the caller's GPU-visible scratch surface
    (>= argb_w*argb_h*4 bytes, like argb physically contiguous).  fixed
    per-radius Q16 weights (sigma = radius/2) - bit-exact vs the EwokOS
-   NEON reference.  requires argb_w % 16 == 0.  GPU-only: returns -1 on
-   ineligible geometry, a non-GPU-visible surface or a failed dispatch
-   (never replayed on the CPU - see the no-replay rule). */
+   NEON reference.  any rect within the canvas is runnable (the kernels
+   tail-mask the final partial 16-px group of each row); tmp must be a
+   pitch-strided (rect_h - 1)-row region of the canvas pitch plus one
+   rect row.  GPU-only: returns -1 on ineligible geometry, a
+   non-GPU-visible surface or a failed dispatch (never replayed on the
+   CPU - see the no-replay rule). */
 int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
 			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h, int32_t radius);
+			int32_t argb_w, int32_t argb_h,
+			int32_t rect_x, int32_t rect_y,
+			int32_t rect_w, int32_t rect_h,
+			int32_t radius);
 
 #endif
