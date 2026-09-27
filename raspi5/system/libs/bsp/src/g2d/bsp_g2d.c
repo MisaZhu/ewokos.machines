@@ -369,12 +369,17 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
     }
     /* Never replay a submitted operation on the CPU: a timed-out
      * dispatch may still own or have partially written dst. */
-    if (gpu_gaussian_blur_op(phys, argb, scratch_phys, tmp,
-                             argb_w, argb_h,
-                             rect_x, rect_y, rect_w, rect_h,
-                             radius) == 0)
-        return 0;
-    klog("g2d blur: dispatch failed (w=%d h=%d rect %d,%d %dx%d r=%d)\n",
-         argb_w, argb_h, rect_x, rect_y, rect_w, rect_h, radius);
-    return -1;
+    {
+        int rc = gpu_gaussian_blur_op(phys, argb, scratch_phys, tmp,
+                                      argb_w, argb_h,
+                                      rect_x, rect_y, rect_w, rect_h,
+                                      radius);
+        if (rc == 0)
+            return 0;
+        /* rc: 1 = CSD poll timeout, -1 = fault/gate inside the op */
+        klog("g2d blur: dispatch failed rc=%d (w=%d h=%d rect %d,%d %dx%d "
+             "r=%d)\n", rc, argb_w, argb_h,
+             rect_x, rect_y, rect_w, rect_h, radius);
+        return -1;
+    }
 }
