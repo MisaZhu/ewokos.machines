@@ -180,8 +180,9 @@ int gpu_rotate_op(const g2d_map_t *m, int32_t rot, int32_t bw, int32_t bh,
                   uint32_t dst_phys, uint32_t *argb_dst,
                   int32_t dst_w, int32_t dst_h);
 
-/* Whole-surface separable Gaussian blur (the two-pass pair: radius 2 ->
- * gauss_h5+gauss_v5, radius 4 -> gauss_h9+gauss_v9).  The H pass reads
+/* Whole-surface separable Gaussian blur (the two-pass pair: radius 1..4,
+ * one separable kernel pair per radius - r2/r4 hand-verified, r1/r3
+ * generated from the same chassis).  The H pass reads
  * argb and writes the caller's scratch surface tmp (>= w*h*4 bytes,
  * GPU-visible like argb); the V pass reads tmp and writes argb back in
  * place.  Fixed per-radius Q16 weight tables (sigma = radius/2, center

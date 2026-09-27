@@ -1194,13 +1194,53 @@ int gpu_rotate_op(const g2d_map_t *m, int32_t rot, int32_t bw, int32_t bh,
 
 #define G2D_1MS_GAUSS_PIXELS 130000u   /* measured two-pass pair, Pi 5 */
 
+/* Decompose radius N > 4 into r1..r4 stages (N^2 = sum ri^2, greedy
+ * {16,9,4,1}; a square mod 16 is 0/1/4/9 so at most one small stage
+ * remains after the r4s).  Returns the stage count. */
+static int gpu_gauss_decompose(int radius, int *stages)
+{
+    static const struct {
+        int sq;
+        int r;
+    } cand[4] = { { 16, 4 }, { 9, 3 }, { 4, 2 }, { 1, 1 } };
+    int rem = radius * radius;
+    int n = 0, i;
+
+    for (i = 0; i < 4; i++)
+        while (rem >= cand[i].sq) {
+            stages[n++] = cand[i].r;
+            rem -= cand[i].sq;
+        }
+    return n;
+}
+
 int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
                          uint32_t tmp_phys, uint32_t *tmp,
                          int32_t w, int32_t h, int32_t radius)
 {
+    static const uint16_t wk1[3] = { 30691, 4154, 30691 };
     static const uint16_t wk2[5] = { 25386, 5664, 3436, 5664, 25386 };
+    static const uint16_t wk3[7] = { 20926, 6889, 3537, 2832, 3537,
+                                     6889, 20926 };
     static const uint16_t wk4[9] = { 17608, 7340, 3929, 2700, 2382,
                                      2700, 3929, 7340, 17608 };
+    static const struct {
+        const uint16_t *wk;
+        const uint64_t *hcode;
+        const unsigned *hn;   /* extern _n values are not initializer
+                               * constants - store the addresses */
+        const uint64_t *vcode;
+        const unsigned *vn;
+    } set[5] = {
+        [1] = { wk1, g2d_qpu_gauss_h3, &g2d_qpu_gauss_h3_n,
+                g2d_qpu_gauss_v3, &g2d_qpu_gauss_v3_n },
+        [2] = { wk2, g2d_qpu_gauss_h5, &g2d_qpu_gauss_h5_n,
+                g2d_qpu_gauss_v5, &g2d_qpu_gauss_v5_n },
+        [3] = { wk3, g2d_qpu_gauss_h7, &g2d_qpu_gauss_h7_n,
+                g2d_qpu_gauss_v7, &g2d_qpu_gauss_v7_n },
+        [4] = { wk4, g2d_qpu_gauss_h9, &g2d_qpu_gauss_h9_n,
+                g2d_qpu_gauss_v9, &g2d_qpu_gauss_v9_n },
+    };
     uint32_t u[18];
     const uint16_t *wk;
     const uint64_t *hcode, *vcode;
@@ -1209,25 +1249,23 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     unsigned flags;
     uint64_t pixels;
 
+    static const struct {
+        const uint16_t *wk;
+        const uint64_t *hcode;
+        const unsigned *hn;
+        const uint64_t *vcode;
+        const unsigned *vn;
+    } *setp;
+    int stages[80];
+    int ns, si;
+
     if (argb == NULL || tmp == NULL || w <= 0 || h <= 0 ||
-        (w & 15) != 0 || (radius != 2 && radius != 4))
+        (w & 15) != 0 || radius < 1 || radius > 64)
         return -1;
 
-    if (radius == 2) {
-        wk = wk2;
-        k = 5;
-        hcode = g2d_qpu_gauss_h5;
-        hn = g2d_qpu_gauss_h5_n;
-        vcode = g2d_qpu_gauss_v5;
-        vn = g2d_qpu_gauss_v5_n;
-    }
-    else {
-        wk = wk4;
-        k = 9;
-        hcode = g2d_qpu_gauss_h9;
-        hn = g2d_qpu_gauss_h9_n;
-        vcode = g2d_qpu_gauss_v9;
-        vn = g2d_qpu_gauss_v9_n;
+    ns = (radius <= 4) ? 1 : gpu_gauss_decompose(radius, stages);
+    if (radius <= 4) {
+        stages[0] = radius;
     }
 
     nq = v3d_g2d_num_qpus();
@@ -1239,37 +1277,50 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         (1u << 24))
         return -1;
 
-    u[0] = phys;                       /* H pass: argb -> tmp */
-    u[1] = tmp_phys;
-    u[2] = (uint32_t)w * 4u;
-    u[3] = (uint32_t)w - 1u;
-    u[4] = (uint32_t)h - 1u;
-    u[5] = (uint32_t)(w / 16) - 1u;    /* L1: 16-px groups - 1 */
-    u[6] = (uint32_t)((w / 16) * 64 - w * 4);
-    u[7] = (uint32_t)rows;
-    u[8] = (uint32_t)(rows * w * 4);
-    for (i = 0; i < k; i++)
-        u[9 + i] = wk[i];
-
     pixels = (uint64_t)w * (uint64_t)h;
     flags = g2d_poll_flags(V3D_G2D_MAINT_ALL, pixels,
                            G2D_1MS_GAUSS_PIXELS, nq);
-    rc = v3d_g2d_run(hcode, (int)hn, u, 9 + k, nq,
-                     argb, (size_t)w * (size_t)h * 4u,
-                     tmp, (size_t)w * (size_t)h * 4u, flags);
-    if (rc != 0) {
-        slog("g2d blur: H dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
-             rc, w, h, radius, nq);
-        return -1;
-    }
 
-    u[0] = tmp_phys;                   /* V pass: tmp -> argb, in place */
-    u[1] = phys;
-    rc = v3d_g2d_run(vcode, (int)vn, u, 9 + k, nq,
-                     tmp, (size_t)w * (size_t)h * 4u,
-                     argb, (size_t)w * (size_t)h * 4u, flags);
-    if (rc != 0)
-        slog("g2d blur: V dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
-             rc, w, h, radius, nq);
-    return (rc == 0) ? 0 : -1;
+    for (si = 0; si < ns; si++) {
+        setp = &set[stages[si]];
+        wk = setp->wk;
+        k = 2 * stages[si] + 1;
+        hcode = setp->hcode;
+        hn = *setp->hn;
+        vcode = setp->vcode;
+        vn = *setp->vn;
+
+        u[0] = phys;                   /* H pass: argb -> tmp */
+        u[1] = tmp_phys;
+        u[2] = (uint32_t)w * 4u;
+        u[3] = (uint32_t)w - 1u;
+        u[4] = (uint32_t)h - 1u;
+        u[5] = (uint32_t)(w / 16) - 1u;    /* L1: 16-px groups - 1 */
+        u[6] = (uint32_t)((w / 16) * 64 - w * 4);
+        u[7] = (uint32_t)rows;
+        u[8] = (uint32_t)(rows * w * 4);
+        for (i = 0; i < k; i++)
+            u[9 + i] = wk[i];
+
+        rc = v3d_g2d_run(hcode, (int)hn, u, 9 + k, nq,
+                         argb, (size_t)w * (size_t)h * 4u,
+                         tmp, (size_t)w * (size_t)h * 4u, flags);
+        if (rc != 0) {
+            slog("g2d blur: H dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
+                 rc, w, h, radius, nq);
+            return -1;
+        }
+
+        u[0] = tmp_phys;               /* V pass: tmp -> argb, in place */
+        u[1] = phys;
+        rc = v3d_g2d_run(vcode, (int)vn, u, 9 + k, nq,
+                         tmp, (size_t)w * (size_t)h * 4u,
+                         argb, (size_t)w * (size_t)h * 4u, flags);
+        if (rc != 0) {
+            slog("g2d blur: V dispatch rc=%d (w=%d h=%d r=%d nq=%d)\n",
+                 rc, w, h, radius, nq);
+            return -1;
+        }
+    }
+    return 0;
 }

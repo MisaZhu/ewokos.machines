@@ -348,7 +348,7 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
     uint32_t scratch_phys = 0;
 
     if (argb && tmp && (argb_w & 15) == 0 &&
-        (radius == 2 || radius == 4) &&
+        radius >= 1 && radius <= 64 &&
         gpu_ok(argb_w, argb_h)) {
         phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
         scratch_phys = gpu_phys(tmp_phy, (size_t)argb_w * argb_h * 4,

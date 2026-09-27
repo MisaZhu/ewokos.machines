@@ -130,5 +130,13 @@ extern const uint64_t g2d_qpu_gauss_h9[];
 extern const unsigned g2d_qpu_gauss_h9_n;
 extern const uint64_t g2d_qpu_gauss_v9[];
 extern const unsigned g2d_qpu_gauss_v9_n;
+extern const uint64_t g2d_qpu_gauss_h3[];
+extern const unsigned g2d_qpu_gauss_h3_n;
+extern const uint64_t g2d_qpu_gauss_v3[];
+extern const unsigned g2d_qpu_gauss_v3_n;
+extern const uint64_t g2d_qpu_gauss_h7[];
+extern const unsigned g2d_qpu_gauss_h7_n;
+extern const uint64_t g2d_qpu_gauss_v7[];
+extern const unsigned g2d_qpu_gauss_v7_n;
 
 #endif /* V3D_G2D_H */

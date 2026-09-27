@@ -67,7 +67,9 @@ int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_co
 			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree);
 
 /* whole-surface separable Gaussian blur (the default blur algorithm):
-   radius 2 -> the gauss_h5+gauss_v5 QPU pair, radius 4 -> gauss_h9+v9.
+   radius 1..4 dispatch their own separable QPU pair (r1/r3 generated
+   by the videocore workspace tools/gen_gauss.py); radius > 4 composes
+   the greedy r1..r4 stage sequence (Gaussian variances add).
    in-place on argb; tmp is the caller's GPU-visible scratch surface
    (>= argb_w*argb_h*4 bytes, like argb physically contiguous).  fixed
    per-radius Q16 weights (sigma = radius/2) - bit-exact vs the EwokOS
