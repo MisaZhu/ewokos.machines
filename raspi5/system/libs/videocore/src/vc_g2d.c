@@ -1260,7 +1260,7 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     int ns, si;
 
     if (argb == NULL || tmp == NULL || w <= 0 || h <= 0 ||
-        (w & 15) != 0 || radius < 1 || radius > 64)
+        radius < 1 || radius > 64)
         return -1;
 
     ns = (radius <= 4) ? 1 : gpu_gauss_decompose(radius, stages);
@@ -1295,8 +1295,8 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         u[2] = (uint32_t)w * 4u;
         u[3] = (uint32_t)w - 1u;
         u[4] = (uint32_t)h - 1u;
-        u[5] = (uint32_t)(w / 16) - 1u;    /* L1: 16-px groups - 1 */
-        u[6] = (uint32_t)((w / 16) * 64 - w * 4);
+        u[5] = (uint32_t)((w + 15) / 16) - 1u;     /* L1: groups/row (ceil) - 1 */
+        u[6] = (uint32_t)((w + 15) / 16 * 64 - w * 4); /* row-wrap dst jump */
         u[7] = (uint32_t)rows;
         u[8] = (uint32_t)(rows * w * 4);
         for (i = 0; i < k; i++)
