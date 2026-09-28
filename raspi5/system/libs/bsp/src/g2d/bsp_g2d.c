@@ -19,6 +19,8 @@
  */
 
 #include <bsp/bsp_g2d.h>
+#include <g2d_arch.h>
+#include <g2dclient/g2dclient.h>
 
 #include <videocore/vc_g2d.h>
 #include <ewoksys/klog.h>
@@ -347,6 +349,8 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius)
 {
+   	return G2D_ERR_NOT_SUPPORTED; //TODO
+    /*
     uint32_t phys = 0;
     uint32_t scratch_phys = 0;
     size_t tmp_need = (size_t)(rect_h - 1) * (size_t)argb_w * 4u +
@@ -367,8 +371,8 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
              radius);
         return -1;
     }
-    /* Never replay a submitted operation on the CPU: a timed-out
-     * dispatch may still own or have partially written dst. */
+    //Never replay a submitted operation on the CPU: a timed-out
+    //dispatch may still own or have partially written dst.
     {
         int rc = gpu_gaussian_blur_op(phys, argb, scratch_phys, tmp,
                                       argb_w, argb_h,
@@ -376,10 +380,11 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
                                       radius);
         if (rc == 0)
             return 0;
-        /* rc: 1 = CSD poll timeout, -1 = fault/gate inside the op */
+        // rc: 1 = CSD poll timeout, -1 = fault/gate inside the op
         klog("g2d blur: dispatch failed rc=%d (w=%d h=%d rect %d,%d %dx%d "
              "r=%d)\n", rc, argb_w, argb_h,
              rect_x, rect_y, rect_w, rect_h, radius);
         return -1;
     }
+    */
 }

@@ -13,6 +13,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/basic/libs/gpio/include \
 	-I $(SYS_DIR)/basic/libs/usb/include \
 	-I $(SYS_DIR)/basic/libs/hid/include \
+	-I $(SYS_DIR)/gui/libs/g2dclient/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 # bsp_g2d.c is the public g2d API only: the VideoCore back end it calls

@@ -237,6 +237,7 @@ ErrGrpEmType Hal_SDMMC_ErrGroup(RspErrEmType eErrType);
 
 void Hal_SDMMC_ClkCtrl(IPEmType eIP, bool bOpen, uint16_t u16DelayMs);
 void Hal_SDMMC_Reset(IPEmType eIP);
+void sdmmc_init(void);
 void Hal_SDMMC_WaitProcessCtrl(IPEmType eIP, bool bStop);
 bool Hal_SDMMC_OtherPreUse(IPEmType eIP);
 

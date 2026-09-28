@@ -1,5 +1,5 @@
 @/bin/ipcserv /drivers/logd /dev/log
-@/bin/ipcserv /drivers/miyoo/g2dd     /dev/g2d
+#@/bin/ipcserv /drivers/miyoo/g2dd     /dev/g2d
 
 @/bin/ipcserv /drivers/displaymand       
 @/bin/ipcserv /drivers/miyoo/fbdisplayd      /dev/disp0
