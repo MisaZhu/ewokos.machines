@@ -1,14 +1,16 @@
 /*
  * picocalc kernel-side SD driver.
  *
- * 参考 miyoo 的加速方案：
- *   - CMD18 真正的多块读（mmc_read_multi_blocks）替代 CMD17 逐扇区循环；
- *   - 自适应预读窗口：随机读用小窗口（4 扇区），检测到顺序读
- *     （sector == 上次完成扇区 + 1）时放大到 128 扇区，一次 CMD18 填满；
- *   - sd_dev_read_blocks 批量接口按 bounce 容量分块 CMD18 直读后拷出，
- *     供 ext2 加载路径整块读取。
- * dwmmc 走 FIFO PIO，数据由 CPU 从 FIFO 读出，无 DMA 一致性问题，
- * bounce buffer 用普通静态内存即可。
+ * Follows the miyoo speed-up scheme:
+ *   - real CMD18 multi-block reads (mmc_read_multi_blocks) replace the
+ *     per-sector CMD17 loop;
+ *   - adaptive read-ahead window: random reads use a small window (4
+ *     sectors); once a sequential read is detected (sector == last completed
+ *     sector + 1) it grows to 128 sectors, filled by one CMD18;
+ *   - the sd_dev_read_blocks bulk interface reads bounce-sized chunks with
+ *     CMD18 and copies them out, for whole-block reads on the ext2 load path.
+ * dwmmc uses FIFO PIO: the CPU reads data out of the FIFO, so there is no DMA
+ * coherency issue and the bounce buffer can be ordinary static memory.
  */
 #include <dev/sd.h>
 #include <mm/mmu.h>
@@ -30,7 +32,7 @@ extern int mmc_read_blocks(void *dst, uint32_t sector);
 extern int mmc_read_multi_blocks(void *dst, uint32_t sector, uint32_t count);
 
 /* ------------------------------------------------------------------
- * 预读窗口管理
+ * Read-ahead window management
  * ------------------------------------------------------------------ */
 static inline int sd_ra_hit(int32_t sector) {
     return _ra_start_sector >= 0 &&
@@ -60,7 +62,8 @@ static int sd_read_multi_retry(void* dst, uint32_t sector, uint32_t count) {
     return ret;
 }
 
-/* 一次 CMD18 填满预读窗口；失败退回单块读保证可用性 */
+/* Fill the read-ahead window with one CMD18; on failure fall back to
+ * single-block reads to stay usable */
 static int32_t sd_fill_ra_window(int32_t sector) {
     uint32_t window = sd_pick_ra_window(sector);
 
@@ -113,8 +116,9 @@ int32_t sd_dev_read_done(void* buf) {
 }
 
 /*
- * 批量读：目标缓冲 4 字节对齐时 CMD18 直读，否则经 bounce 中转
- * （FIFO 按 32bit 字读出，要求目的地址字对齐）。
+ * Bulk read: CMD18 straight into the target when it is 4-byte aligned,
+ * otherwise through the bounce buffer (the FIFO is read as 32-bit words and
+ * needs a word-aligned destination).
  */
 int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
     uint8_t* out = (uint8_t*)buf;

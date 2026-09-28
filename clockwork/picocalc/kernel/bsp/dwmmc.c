@@ -319,9 +319,10 @@ int mmc_read_blocks(void *dst, uint32_t sector)
 }
 
 /*
- * CMD18 多块读：一次命令连读 count 个扇区（FIFO PIO 模式）。
- * 读完（无论成败）必须 CMD12 停止传输，否则卡停在 send-data 状态
- * 占住数据线；后续命令由 DWMCI_CMD_PRV_DAT_WAIT 等 busy 释放。
+ * CMD18 multi-block read: one command reads count sectors back to back
+ * (FIFO PIO mode). Once done (success or failure) a CMD12 must stop the
+ * transfer, otherwise the card stays in send-data state holding the data
+ * lines; later commands wait for busy release via DWMCI_CMD_PRV_DAT_WAIT.
  */
 int mmc_read_multi_blocks(void *dst, uint32_t sector, uint32_t count)
 {

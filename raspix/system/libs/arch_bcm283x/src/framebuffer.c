@@ -65,7 +65,7 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias
     return -1;
 }
 
-// 定义常用的 Mailbox 标签
+// Common Mailbox tag definitions
 #define TAG_SET_PHYS_SIZE   0x00048003
 #define TAG_SET_VIRT_SIZE   0x00048004
 #define TAG_SET_DEPTH       0x00048005
@@ -80,7 +80,7 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias
 #define TAG_EXECUTE_CODE    0x00030010
 #define TAG_BLIT_IMAGE      0x0004000A
 
-// 分配GPU内存
+// Allocate GPU memory
 uint32_t allocate_gpu_memory(uint32_t size, uint32_t alignment, uint32_t flags) {
     uint32_t* buffer = (uint32_t*)(dma_alloc(0, 10*4));
     
@@ -101,12 +101,12 @@ uint32_t allocate_gpu_memory(uint32_t size, uint32_t alignment, uint32_t flags) 
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
     
-    uint32_t ret = buffer[5]; // 返回内存句柄
+    uint32_t ret = buffer[5]; // return the memory handle
     dma_free(0, (ewokos_addr_t)buffer);
     return ret;
 }
 
-// 锁定GPU内存，获取物理地址
+// Lock GPU memory to obtain the physical address
 uint32_t lock_gpu_memory(uint32_t handle) {
     uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4));
     
@@ -125,12 +125,12 @@ uint32_t lock_gpu_memory(uint32_t handle) {
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
     
-    uint32_t ret = buffer[5]; // 返回物理地址
+    uint32_t ret = buffer[5]; // return the physical address
     dma_free(0, (ewokos_addr_t)buffer);
     return ret;
 }
 
-// 解锁GPU内存
+// Unlock GPU memory
 void unlock_gpu_memory(uint32_t handle) {
     uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4));
     
@@ -151,7 +151,7 @@ void unlock_gpu_memory(uint32_t handle) {
     dma_free(0, (ewokos_addr_t)buffer);
 }
 
-// 释放GPU内存
+// Free GPU memory
 void free_gpu_memory(uint32_t handle) {
     uint32_t* buffer = (uint32_t*)(dma_alloc(0, 7*4));
     
@@ -172,7 +172,7 @@ void free_gpu_memory(uint32_t handle) {
     dma_free(0, (ewokos_addr_t)buffer);
 }
 
-// 执行带alpha通道的BLT操作
+// Perform a BLT with an alpha channel
 void gpu_blt_with_alpha(
     uint32_t src_addr, uint32_t src_width, uint32_t src_height,
     uint32_t dst_addr, uint32_t dst_width, uint32_t dst_height,
@@ -185,37 +185,37 @@ void gpu_blt_with_alpha(
     buffer[1] = 0;
     
     buffer[2] = TAG_BLIT_IMAGE;
-    buffer[3] = 64; // 值大小
-    buffer[4] = 64; // 请求类型
+    buffer[3] = 64; // value size
+    buffer[4] = 64; // request type
     
-    // 源矩形区域
+    // Source rectangle
     buffer[5] = src_x;
     buffer[6] = src_y;
     buffer[7] = src_x + width;
     buffer[8] = src_y + height;
     
-    // 目标位置
+    // Destination position
     buffer[9] = dst_x;
     buffer[10] = dst_y;
     
-    // 颜色空间和alpha选项
-    buffer[11] = 0; // 源颜色空间 (0=RGB)
-    buffer[12] = 0; // 目标颜色空间
-    buffer[13] = flags; // 操作标志 (包含alpha选项)
+    // Color space and alpha options
+    buffer[11] = 0; // source color space (0=RGB)
+    buffer[12] = 0; // destination color space
+    buffer[13] = flags; // operation flags (includes alpha options)
     
-    // 源缓冲区信息
+    // Source buffer info
     buffer[14] = src_addr;
     buffer[15] = src_width;
     buffer[16] = src_height;
-    buffer[17] = src_width * 4; // 行字节数 (RGBA)
+    buffer[17] = src_width * 4; // row bytes (RGBA)
     
-    // 目标缓冲区信息
+    // Destination buffer info
     buffer[18] = dst_addr;
     buffer[19] = dst_width;
     buffer[20] = dst_height;
-    buffer[21] = dst_width * 4; // 行字节数 (RGBA)
+    buffer[21] = dst_width * 4; // row bytes (RGBA)
     
-    buffer[22] = 0; // 结束标记
+    buffer[22] = 0; // end marker
     
     mail_message_t msg;
     msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
@@ -224,7 +224,7 @@ void gpu_blt_with_alpha(
     dma_free(0, (ewokos_addr_t)buffer);
 }
 
-// 填充屏幕为单一颜色
+// Fill the screen with a single color
 void fill_screen(uint32_t color) {
     uint32_t* buffer = (uint32_t*)(dma_alloc(0, 24*4));
     
@@ -232,37 +232,37 @@ void fill_screen(uint32_t color) {
     buffer[1] = 0;
     
     buffer[2] = TAG_BLIT_IMAGE;
-    buffer[3] = 36; // 值大小
-    buffer[4] = 36; // 请求类型
+    buffer[3] = 36; // value size
+    buffer[4] = 36; // request type
     
-    // 源矩形区域 (填充操作不需要实际源数据)
+    // Source rectangle (a fill needs no actual source data)
     buffer[5] = 0;
     buffer[6] = 0;
     buffer[7] = _fb_info.width;
     buffer[8] = _fb_info.height;
     
-    // 目标位置
+    // Destination position
     buffer[9] = 0;
     buffer[10] = 0;
     
-    // 颜色空间和操作选项 (1=填充颜色)
+    // Color space and operation options (1=fill color)
     buffer[11] = 0;
     buffer[12] = 0;
     buffer[13] = 1;
     
-    // 源缓冲区信息 (填充颜色)
+    // Source buffer info (fill color)
     buffer[14] = color;
     buffer[15] = 0;
     buffer[16] = 0;
     buffer[17] = 0;
     
-    // 目标缓冲区信息
+    // Destination buffer info
     buffer[18] = _fb_info.phy_base;
     buffer[19] = _fb_info.width;
     buffer[20] = _fb_info.height;
     buffer[21] = _fb_info.pitch;
     
-    buffer[22] = 0; // 结束标记
+    buffer[22] = 0; // end marker
 
     mail_message_t msg;
     msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
@@ -271,19 +271,19 @@ void fill_screen(uint32_t color) {
     dma_free(0, (ewokos_addr_t)buffer);
 }
 
-// 主函数示例
+// Example main function
 void test(void) {
-    // 填充屏幕为蓝色
-    fill_screen(0xFF0000FF); // ARGB格式：不透明蓝色
+    // Fill the screen with blue
+    fill_screen(0xFF0000FF); // ARGB format: opaque blue
     
-    /*// 分配GPU内存用于源图像
-    uint32_t src_handle = allocate_gpu_memory(200 * 200 * 4, 16, 0xC); // 可缓存内存
+    /*// Allocate GPU memory for the source image
+    uint32_t src_handle = allocate_gpu_memory(200 * 200 * 4, 16, 0xC); // cacheable memory
     klog("src handle: %x", src_handle);
     if (!src_handle) {
         while (1);
     }
     
-    // 锁定内存获取物理地址
+    // Lock the memory to get the physical address
     uint32_t src_phys_addr = lock_gpu_memory(src_handle);
     if (!src_phys_addr) {
         free_gpu_memory(src_handle);
@@ -291,11 +291,11 @@ void test(void) {
     }
     klog("src_phys_addr: %x", src_phys_addr);
     
-    // 获取CPU可访问的地址
+    // Get a CPU-accessible address
     uint32_t* src_cpu_addr = (uint32_t*)(src_phys_addr + 0xC0000000);
     klog("src_cpu_addr: %x", src_cpu_addr);
     
-    // 创建一个简单的测试图案 (红色圆形带alpha渐变)
+    // Create a simple test pattern (a red circle with an alpha gradient)
     for (int y = 0; y < 200; y++) {
         for (int x = 0; x < 200; x++) {
             int dx = x - 100;
@@ -303,35 +303,35 @@ void test(void) {
             int distance_squared = dx * dx + dy * dy;
             
             if (distance_squared <= 100 * 100) {
-                // 计算距离边缘的距离，用于alpha渐变
+                // Distance to the edge, for the alpha gradient
                 int distance_to_edge = 100 - (int)__builtin_sqrt(distance_squared);
                 uint8_t alpha = (uint8_t)(distance_to_edge * 255 / 100);
                 
-                // ARGB格式：红色带alpha渐变
+                // ARGB format: red with an alpha gradient
                 src_cpu_addr[y * 200 + x] = (alpha << 24) | (0xFF << 16);
             } else {
-                // 透明
+                // transparent
                 src_cpu_addr[y * 200 + x] = 0x00000000;
             }
         }
     }
     
-    // 执行带alpha通道的BLT操作，将圆形绘制到屏幕中心
+    // Perform the BLT with alpha, drawing the circle at the screen center
     gpu_blt_with_alpha(
-        src_phys_addr, 200, 200,           // 源图像信息
-        _fb_info.phy_base,           // 目标地址（帧缓冲）
-        _fb_info.width, _fb_info.height, // 目标尺寸
-        0, 0,                              // 源矩形起点
-        300, 200,                          // 目标位置
-        200, 200,                          // 宽度和高度
-        0x01000000 | 0x00000001           // 标志：启用alpha，SRC_OVER混合模式
+        src_phys_addr, 200, 200,           // source image info
+        _fb_info.phy_base,           // destination address (framebuffer)
+        _fb_info.width, _fb_info.height, // destination size
+        0, 0,                              // source rect origin
+        300, 200,                          // Destination position
+        200, 200,                          // width and height
+        0x01000000 | 0x00000001           // flags: enable alpha, SRC_OVER blend mode
     );
     
-    // 解锁并释放GPU内存
+    // Unlock and free GPU memory
     unlock_gpu_memory(src_handle);
     free_gpu_memory(src_handle);
     
-    // 进入无限循环，保持程序运行
+    // Enter an infinite loop to keep the program running
     */
 }
 
