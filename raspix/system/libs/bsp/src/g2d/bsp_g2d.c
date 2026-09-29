@@ -368,15 +368,18 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
     }
     return -1;
 }
-/* whole-surface separable gaussian blur: delegated to the platform's
-   arch_g2d_* back end (the NEON software engine), which blurs in place
-   and allocates its own scratch, so tmp/tmp_phy/tmp_contig are unused.
-   g2dd pre-validates radius (2/4) and width (%16) before dispatch; the
-   back end accepts any radius and clips the rect to the buffer bounds. */
+/* in-place separable gaussian blur of a sub-rect: delegated to the
+   platform's arch_g2d_* back end (the NEON software engine), which
+   blurs in place, clips the rect to the buffer bounds and allocates
+   its own scratch, so tmp/tmp_phy/tmp_contig are unused. the back end
+   accepts any radius. */
 int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
 			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h, int32_t radius) {
+			int32_t argb_w, int32_t argb_h,
+			int32_t rect_x, int32_t rect_y,
+			int32_t rect_w, int32_t rect_h,
+			int32_t radius) {
 	(void)tmp; (void)tmp_phy; (void)tmp_contig;
 	return arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
-			0, 0, argb_w, argb_h, radius);
+			rect_x, rect_y, rect_w, rect_h, radius);
 }
