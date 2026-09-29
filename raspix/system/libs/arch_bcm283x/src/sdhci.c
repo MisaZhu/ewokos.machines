@@ -313,9 +313,29 @@ static struct sdhci_host _host;
  * the proven PIO path than by retrying DMA on every transfer. Any clean
  * transfer resets the streak. Same policy as the raspi5 bcm2712 path. */
 #define SDHCI_SDMA_FAIL_LIMIT	3
-/* Set to 0 to pin the data phase to PIO (the pre-optimization raspix
- * behaviour), kept as a build-time kill switch. */
-#define SDHCI_SD_ENABLE_SDMA	1
+/* The data phase stays on PIO: SDMA has never been proven on bcm2711,
+ * and enabling it stops a real Pi4 from mounting its rootfs, so the boot
+ * dies right after init with "mmc_read: sec 0 cnt 8 failed". This is the
+ * second time it has broken - b34826f turned SDMA on and a3efd99 ("pi4
+ * sdc bug fixed") had to pin the pre-b34826f PIO path back two days
+ * later; re-enabling it regressed Pi4 again. Note a3efd99 already gated
+ * SDMA on the EMMC2 controller, so selecting the right host or the right
+ * bus address is not what is missing here. The kernel-side bcm283x SDHCI
+ * driver has only ever used PIO, which is why the kernel still loads
+ * init from SD while userspace cannot read the card afterwards.
+ *
+ * Pi3 is unaffected (its SD slot is on the separate sdhost driver) and
+ * Pi5 is unaffected (its own arch_bcm2712 SDHCI, where SDMA does work),
+ * so bcm2711 is the only host that must keep this switch off.
+ *
+ * Do not flip this to 1 without a real Pi4 to test on: QEMU's raspi4b
+ * attaches the card to the legacy controller and silently completes a
+ * mis-addressed SDMA burst with no error, so it can neither exercise the
+ * EMMC2 path nor catch the failure. If SDMA is revisited, also lower
+ * SDHCI_SDMA_FAIL_LIMIT to 1 - the rootfs mount only re-issues CMD18 a
+ * couple of times, so waiting for three consecutive failures exhausts
+ * that budget and fails the mount instead of falling back to PIO. */
+#define SDHCI_SD_ENABLE_SDMA	0
 
 static uint8_t *_sdma_bounce = NULL;
 static uint32_t _sdma_bounce_bus = 0;
