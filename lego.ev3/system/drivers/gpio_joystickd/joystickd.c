@@ -79,7 +79,7 @@ static void init_gpio(void) {
 
 static void check_power(void) {
     static int count = 0;
-    if(bsp_gpio_read(KEY_POWER_PIN) != 0)
+    if(bsp_gpio_read(KEY_HOME_PIN) != 0)
         count++;
     else
         count = 0;

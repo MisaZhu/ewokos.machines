@@ -4,10 +4,10 @@
 @/bin/ipcserv /drivers/ev3/fbdisplayd      /dev/disp0
 @/bin/ipcserv /drivers/fontd           
 
-@/bin/ipcserv /drivers/consoled        -u 0
+@/bin/ipcserv /drivers/consoled
 @set_stdio /dev/console0
 
-@/bin/load_font
+#@/bin/load_font
 
 @/bin/ipcserv /drivers/ev3/gpio_joystickd     /dev/joystick
 @/bin/ipcserv /drivers/ev3/adcd     /dev/adc0
@@ -30,8 +30,9 @@
 @/bin/ipcserv /drivers/ev3/ledd          /dev/led
 @/bin/ipcserv /drivers/ev3/beepd         /dev/beep
 @/bin/ipcserv /drivers/ev3/batteryd      /dev/battery
+
 @/bin/ipcserv /drivers/ramfsd       /tmp         
-@/bin/ipcserv /drivers/piped         
+#@/bin/ipcserv /drivers/piped         
 @/bin/ipcserv /drivers/timerd         
 
 @/bin/ipcserv /sbin/sessiond

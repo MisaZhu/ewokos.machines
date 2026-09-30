@@ -379,14 +379,17 @@ protected:
 			graph_fill_rect(g, r.x, r.y, r.w, r.h, theme->basic.selectBGColor);
 			fg = theme->basic.selectColor;
 		}
-		graph_draw_text_font(g, r.x + 2, r.y + 1, items[index].label,
+		/* center the text in the row so big fonts are not clipped */
+		int fh = (int)theme->basic.fontSize;
+		int y = r.y + (r.h > fh ? (r.h - fh) / 2 : 0);
+		graph_draw_text_font(g, r.x + 2, y, items[index].label,
 				theme->getFont(), theme->basic.fontSize, fg);
 	}
 	void onSelect(int sel);   /* defined after Ev3TestWin */
 public:
 	NavList(Ev3TestWin* w) {
 		win = w; items = NULL; count = 0; guard = false;
-		setItemSize(15);
+		setItemMargin(1);
 	}
 	void setEntries(const MenuEntry* e, int n) {
 		items = e; count = n; setItemNum((uint32_t)n);
@@ -410,6 +413,7 @@ public:
 	int path[MAX_PATH];
 	int pathLen;
 	int motorPort;
+	int fontH;          /* theme font size; all row heights derive from it */
 
 	Label* titleLabel;
 	Label* statusLabel;
@@ -432,6 +436,7 @@ public:
 		pathLen = 1;
 		path[0] = S_ROOT;
 		motorPort = MOTOR_PORT_A;
+		fontH = 12;
 		titleLabel = statusLabel = NULL;
 		list = NULL;
 		liveCount = 0;
@@ -449,6 +454,10 @@ public:
 	}
 
 	int cur() { return path[pathLen - 1]; }
+
+	void setFontSize(int fs) {
+		fontH = (fs > 0) ? fs : 12;
+	}
 
 	const MenuEntry* currentEntries(int* count) {
 		if (cur() == S_RESULTS) {
@@ -494,7 +503,7 @@ public:
 		const MenuEntry* entries = currentEntries(&count);
 
 		titleLabel = new Label(titleFor(s));
-		titleLabel->fix(0, 14);
+		titleLabel->fix(0, fontH + 2);
 		root->add(titleLabel);
 
 		int ll = screenLiveLines(s);
@@ -502,14 +511,14 @@ public:
 			ll = MAX_LIVE;
 		for (int i = 0; i < ll; i++) {
 			Label* L = new Label("");
-			L->fix(0, 13);
+			L->fix(0, fontH + 1);
 			root->add(L);
 			liveLabels[i] = L;
 		}
 		liveCount = ll;
 
 		statusLabel = new Label("OK=sel  LT=back");
-		statusLabel->fix(0, 13);
+		statusLabel->fix(0, fontH + 1);
 		root->add(statusLabel);
 
 		Container* row = new Container();
@@ -518,6 +527,7 @@ public:
 
 		list = new NavList(this);
 		list->setEntries(entries, count);
+		list->setItemSize(fontH + 3);
 		row->add(list);
 
 		Scroller* sr = new Scroller();
@@ -1060,6 +1070,11 @@ int main(int argc, char** argv) {
 
 	X x;
 	Ev3TestWin win;
+
+	/* row heights follow the theme font so big fonts are not clipped */
+	x_theme_t th;
+	if (x.getTheme(&th) == 0)
+		win.setFontSize((int)th.fontSize);
 
 	RootWidget* root = new RootWidget();
 	win.setRoot(root);

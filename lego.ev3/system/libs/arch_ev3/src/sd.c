@@ -10,6 +10,7 @@
 #include "mmc.h"
 
 #define WATCHDOG_COUNT      (1000000)
+#define EV3_SD_MAX_BLOCKS   32
 
 #define get_val(addr)       (*(volatile uint32_t*)(addr))
 #define set_val(addr, val)  (*(volatile uint32_t*)(addr) = (val))
@@ -22,7 +23,6 @@ static int dmmc_busy_wait(volatile struct davinci_mmc_regs *regs)
     uint32_t  wdog = WATCHDOG_COUNT;
 
     while (--wdog && (get_val(&regs->mmcst1) & MMCST1_BUSY));
-        //proc_usleep(0);
 
     if (wdog == 0)
         return -1;
@@ -37,10 +37,6 @@ dmmc_wait_fifo_status(volatile struct davinci_mmc_regs *regs, unsigned int statu
     int wdog = WATCHDOG_COUNT;
 
     while (--wdog && ((get_val(&regs->mmcst1) & status) != status));
-        //proc_usleep(0);
-
-    if (!(get_val(&regs->mmcctl) & MMCCTL_WIDTH_4_BIT))
-        proc_usleep(0);
 
     if (wdog == 0)
         return -1;
@@ -72,8 +68,6 @@ static int dmmc_check_status(volatile struct davinci_mmc_regs *regs,
                 return 0;
             return -1;
         }
-        //proc_usleep(0);
-
         mmcstatus = get_val(&regs->mmcst0);
     }
 
@@ -268,6 +262,29 @@ davinci_mmc_send_cmd(struct davinci_mmc_regs *regs, struct mmc_cmd *cmd, struct 
 
 int32_t ev3_sd_init(void) {
     _mmio_base = mmio_map();
+
+    /* Ensure 4-bit bus width is enabled (bootloader may have set it,
+     * but re-apply in case of warm restart). ACMD6 = CMD55 + CMD6. */
+    volatile struct davinci_mmc_regs *regs =
+        (volatile struct davinci_mmc_regs*)(_mmio_base + MMC_BASE);
+
+    struct mmc_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+
+    /* CMD55 (APP_CMD) */
+    cmd.cmdidx = MMC_CMD_APP_CMD;
+    cmd.cmdarg = 0;
+    cmd.resp_type = MMC_RSP_R1;
+    davinci_mmc_send_cmd((void*)regs, &cmd, NULL);
+
+    /* ACMD6: SET_BUS_WIDTH = 4-bit (arg=2) */
+    cmd.cmdidx = SD_CMD_APP_SET_BUS_WIDTH;
+    cmd.cmdarg = 2;
+    cmd.resp_type = MMC_RSP_R1;
+    if(davinci_mmc_send_cmd((void*)regs, &cmd, NULL) == 0) {
+        set_bit(&regs->mmcctl, MMCCTL_WIDTH_4_BIT);
+    }
+
     return 0;
 }
 
@@ -277,7 +294,6 @@ int32_t ev3_sd_read_sector(int32_t sector, void* buf) {
 
     cmd.cmdidx = MMC_CMD_READ_SINGLE_BLOCK;
     cmd.cmdarg = sector;
-
     cmd.resp_type = MMC_RSP_R1;
 
     data.un.dest = (char*)buf;
@@ -285,15 +301,123 @@ int32_t ev3_sd_read_sector(int32_t sector, void* buf) {
     data.blocksize = 512;
     data.flags = MMC_DATA_READ;
 
-    if (davinci_mmc_send_cmd((void*)( _mmio_base + MMC_BASE), &cmd, &data)){
+    if (davinci_mmc_send_cmd((void*)(_mmio_base + MMC_BASE), &cmd, &data))
         return -1;
-    }
 
     return 0;
 }
 
+int32_t ev3_sd_read_sectors(int32_t sector, void* buf, uint32_t count) {
+    volatile struct davinci_mmc_regs *regs =
+        (volatile struct davinci_mmc_regs*)(_mmio_base + MMC_BASE);
+    char *dst = (char*)buf;
+
+    if(count == 0)
+        return 0;
+    if(count == 1)
+        return ev3_sd_read_sector(sector, buf);
+
+    while(count > 0) {
+        uint32_t chunk = (count > EV3_SD_MAX_BLOCKS) ? EV3_SD_MAX_BLOCKS : count;
+        struct mmc_cmd cmd;
+        struct mmc_data data;
+
+        cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
+        cmd.cmdarg = sector;
+        cmd.resp_type = MMC_RSP_R1;
+
+        data.un.dest = dst;
+        data.blocks = chunk;
+        data.blocksize = 512;
+        data.flags = MMC_DATA_READ;
+
+        if(davinci_mmc_send_cmd((void*)regs, &cmd, &data)) {
+            /* multi-block failed, try single-block fallback */
+            if(ev3_sd_read_sector(sector, dst) != 0)
+                return -1;
+            dst += 512;
+            sector++;
+            count--;
+            continue;
+        }
+
+        /* CMD12: stop transmission (R1, no busy for read-stop) */
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+        cmd.cmdarg = 0;
+        cmd.resp_type = MMC_RSP_R1;
+        davinci_mmc_send_cmd((void*)regs, &cmd, NULL);
+
+        dst += chunk * 512;
+        sector += (int32_t)chunk;
+        count -= chunk;
+    }
+    return 0;
+}
+
 int32_t ev3_sd_write_sector(int32_t sector, const void* buf) {
-    (void)sector;
-    (void)buf;
+    struct mmc_cmd cmd;
+    struct mmc_data data;
+
+    cmd.cmdidx = MMC_CMD_WRITE_SINGLE_BLOCK;
+    cmd.cmdarg = sector;
+    cmd.resp_type = MMC_RSP_R1;
+
+    data.un.src = (const char*)buf;
+    data.blocks = 1;
+    data.blocksize = 512;
+    data.flags = MMC_DATA_WRITE;
+
+    if(davinci_mmc_send_cmd((void*)(_mmio_base + MMC_BASE), &cmd, &data))
+        return -1;
+
+    return 0;
+}
+
+int32_t ev3_sd_write_sectors(int32_t sector, const void* buf, uint32_t count) {
+    volatile struct davinci_mmc_regs *regs =
+        (volatile struct davinci_mmc_regs*)(_mmio_base + MMC_BASE);
+    const char *src = (const char*)buf;
+
+    if(count == 0)
+        return 0;
+    if(count == 1)
+        return ev3_sd_write_sector(sector, buf);
+
+    while(count > 0) {
+        uint32_t chunk = (count > EV3_SD_MAX_BLOCKS) ? EV3_SD_MAX_BLOCKS : count;
+        struct mmc_cmd cmd;
+        struct mmc_data data;
+
+        cmd.cmdidx = MMC_CMD_WRITE_MULTIPLE_BLOCK;
+        cmd.cmdarg = sector;
+        cmd.resp_type = MMC_RSP_R1;
+
+        data.un.src = src;
+        data.blocks = chunk;
+        data.blocksize = 512;
+        data.flags = MMC_DATA_WRITE;
+
+        if(davinci_mmc_send_cmd((void*)regs, &cmd, &data)) {
+            /* multi-block write failed, single-block fallback */
+            if(ev3_sd_write_sector(sector, src) != 0)
+                return -1;
+            src += 512;
+            sector++;
+            count--;
+            continue;
+        }
+
+        /* CMD12: stop transmission (R1b for write-stop: card may hold busy) */
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+        cmd.cmdarg = 0;
+        cmd.resp_type = MMC_RSP_R1b;
+        davinci_mmc_send_cmd((void*)regs, &cmd, NULL);
+
+        src += chunk * 512;
+        sector += (int32_t)chunk;
+        count -= chunk;
+    }
     return 0;
 }
