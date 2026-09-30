@@ -12,7 +12,7 @@
  *   (Motor inserts one more level to pick output port A/B/C/D.)
  *
  * Input: the EV3 brick has no mouse/touch - its 6 buttons arrive as
- * XEVT_IM key events (UP/DOWN/LEFT/RIGHT/ENTER/HOME, see gpio_joystickd
+ * XEVT_IM key events (UP/DOWN/LEFT/RIGHT/ENTER/ESC, see gpio_joystickd
  * + xim_none). So the window intercepts those keys to move the selection
  * and activate entries; plain mouse selection (as in wDemo) also works.
  * Navigation/activation is deferred to onTimer so the widget tree is never
@@ -1017,7 +1017,7 @@ public:
 				case KEY_LEFT:  nm = "LT"; break;
 				case KEY_RIGHT: nm = "RT"; break;
 				case KEY_ENTER: nm = "OK"; break;
-				case KEY_HOME:  nm = "HM"; break;
+				case KEY_ESC:  nm = "ESC"; break;
 				default: break;
 				}
 				off += snprintf(line + off, sizeof(line) - off, " %s", nm);
@@ -1036,13 +1036,14 @@ public:
 			if (k == KEY_UP)        { moveSel(-1); return; }
 			else if (k == KEY_DOWN) { moveSel(1);  return; }
 			else if (k == KEY_ENTER || k == KEY_RIGHT) { activateSel(); return; }
-			else if (k == KEY_LEFT || k == KEY_HOME || k == KEY_ESC) { requestBack(); return; }
+			else if (k == KEY_LEFT || k == KEY_ESC) { requestBack(); return; }
 		}
 		WidgetWin::onEvent(ev);
 	}
 
 	void onTimer(uint32_t timerFPS, uint32_t timerSteps) {
 		(void)timerFPS;
+		(void)timerSteps;
 		if (pendingOp != 0) {
 			int op = pendingOp, sel = pendingSel;
 			pendingOp = 0;
@@ -1052,8 +1053,9 @@ public:
 				pop();
 			return;   /* render() already polled the new screen */
 		}
-		if ((timerSteps % 3) == 0)
-			poll();
+		/* every tick: the daemons cache the latest sample, polling is a
+		 * cheap dev_cntl and keeps the live panel in step with the sensor */
+		poll();
 	}
 };
 
@@ -1084,7 +1086,7 @@ int main(int argc, char** argv) {
 	win.render();
 	win.open(&x, 0, 0, 0, 178, 128, "ev3test",
 			XWIN_STYLE_NO_FRAME | XWIN_STYLE_NO_TITLE);
-	win.setTimer(16);
+	win.setTimer(30);
 
 	widgetXRun(&x, &win);
 	return 0;
