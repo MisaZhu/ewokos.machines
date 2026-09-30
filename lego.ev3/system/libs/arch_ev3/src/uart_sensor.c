@@ -371,11 +371,9 @@ static int32_t handle_msg(ev3_uart_sensor_t* s, uint32_t now) {
         if (s->_state != ST_DATA)
             return -1;             /* DATA before INFO complete */
         int32_t mode = cmd;
-        if (mode != s->mode) {
-            if (mode != s->_new_mode)
-                s->errors++;       /* unexpected mode, follow the sensor anyway */
-            s->mode = mode;
-        }
+        if (mode != s->mode)
+            s->mode = mode;        /* follow the sensor: a stale answer to a
+                                    * superseded CMD_SELECT is legitimate */
         if (mode == s->_new_mode) {
             s->_new_mode = -1;     /* CMD_SELECT completed */
             s->_requested_mode = mode;
@@ -538,18 +536,17 @@ void ev3_uart_sensor_poll(ev3_uart_sensor_t* s) {
         break;
 
     case ST_DATA:
+        /* the DATA rate is mode dependent and can be slower than the
+         * keep-alive period, so silence counts against the watchdog only
+         * (resync reports it once); per-tick accounting inflated errors on
+         * healthy links */
+        if (s->_num_data_err > EV3_UART_MAX_DATA_ERR ||
+            now - s->_last_data_ms >= EV3_UART_WATCHDOG_MS) {
+            resync(s);
+            break;
+        }
         if (now - s->_keep_alive_ms >= EV3_UART_KEEP_ALIVE_MS) {
             s->_keep_alive_ms = now;
-            /* no good DATA since the last keep-alive counts as an error */
-            if (now - s->_last_data_ms >= EV3_UART_KEEP_ALIVE_MS) {
-                s->errors++;
-                s->_num_data_err++;
-            }
-            if (s->_num_data_err > EV3_UART_MAX_DATA_ERR ||
-                now - s->_last_data_ms >= EV3_UART_WATCHDOG_MS) {
-                resync(s);
-                break;
-            }
             uart_put(s, SYS_NACK);
         }
         if (s->_new_mode >= 0 && now - s->_set_mode_ms >= EV3_UART_SET_MODE_MS) {

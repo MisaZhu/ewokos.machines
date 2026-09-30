@@ -11,6 +11,9 @@
 
 #define WATCHDOG_COUNT      (1000000)
 #define EV3_SD_MAX_BLOCKS   32
+#define EV3_SD_INPUT_CLK    100000000U  /* AM1808 MMC_CLKIN from PLL0 */
+#define MMC_CMD6_CHECK_HS   0x00FFFFF1U
+#define MMC_CMD6_SWITCH_HS  0x80FFFFF1U
 
 #define get_val(addr)       (*(volatile uint32_t*)(addr))
 #define set_val(addr, val)  (*(volatile uint32_t*)(addr) = (val))
@@ -263,21 +266,22 @@ davinci_mmc_send_cmd(struct davinci_mmc_regs *regs, struct mmc_cmd *cmd, struct 
 int32_t ev3_sd_init(void) {
     _mmio_base = mmio_map();
 
-    /* Ensure 4-bit bus width is enabled (bootloader may have set it,
-     * but re-apply in case of warm restart). ACMD6 = CMD55 + CMD6. */
     volatile struct davinci_mmc_regs *regs =
         (volatile struct davinci_mmc_regs*)(_mmio_base + MMC_BASE);
 
     struct mmc_cmd cmd;
+    struct mmc_data data;
+    uint8_t switch_status[64];
+    uint32_t saved_clkrt;
+
     memset(&cmd, 0, sizeof(cmd));
 
-    /* CMD55 (APP_CMD) */
+    /* --- 4-bit bus width (ACMD6 = CMD55 + ACMD6) --- */
     cmd.cmdidx = MMC_CMD_APP_CMD;
     cmd.cmdarg = 0;
     cmd.resp_type = MMC_RSP_R1;
     davinci_mmc_send_cmd((void*)regs, &cmd, NULL);
 
-    /* ACMD6: SET_BUS_WIDTH = 4-bit (arg=2) */
     cmd.cmdidx = SD_CMD_APP_SET_BUS_WIDTH;
     cmd.cmdarg = 2;
     cmd.resp_type = MMC_RSP_R1;
@@ -285,6 +289,60 @@ int32_t ev3_sd_init(void) {
         set_bit(&regs->mmcctl, MMCCTL_WIDTH_4_BIT);
     }
 
+    /* --- High-Speed mode (50MHz) via CMD6 --- */
+    /* Step 1: CMD6 CHECK - read 64-byte switch status */
+    cmd.cmdidx = SD_CMD_SWITCH_FUNC;
+    cmd.cmdarg = MMC_CMD6_CHECK_HS;
+    cmd.resp_type = MMC_RSP_R1;
+    data.un.dest = (char*)switch_status;
+    data.blocks = 1;
+    data.blocksize = 64;
+    data.flags = MMC_DATA_READ;
+
+    if(davinci_mmc_send_cmd((void*)regs, &cmd, &data) != 0)
+        return 0;  /* HS check failed, stay at default speed */
+
+    /* Byte 13 bit 1 of switch status = HS supported in group 1 */
+    if(!(switch_status[13] & 0x02))
+        return 0;  /* card does not support HS */
+
+    /* Step 2: CMD6 SWITCH - actually switch card to HS */
+    cmd.cmdidx = SD_CMD_SWITCH_FUNC;
+    cmd.cmdarg = MMC_CMD6_SWITCH_HS;
+    cmd.resp_type = MMC_RSP_R1;
+    if(davinci_mmc_send_cmd((void*)regs, &cmd, NULL) != 0)
+        return 0;  /* switch failed, card stays default speed */
+
+    /* Step 3: Set host clock to 50MHz (CLKRT=0: 100/(2*1)=50MHz) */
+    saved_clkrt = get_val(&regs->mmcclk);
+    set_val(&regs->mmcclk, MMCCLK_CLKEN | 0);  /* CLKRT=0 */
+
+    /* Step 4: Verify with a test read of sector 0 */
+    {
+        uint8_t verify_buf[512];
+        struct mmc_cmd vcmd;
+        struct mmc_data vdata;
+        vcmd.cmdidx = MMC_CMD_READ_SINGLE_BLOCK;
+        vcmd.cmdarg = 0;
+        vcmd.resp_type = MMC_RSP_R1;
+        vdata.un.dest = (char*)verify_buf;
+        vdata.blocks = 1;
+        vdata.blocksize = 512;
+        vdata.flags = MMC_DATA_READ;
+
+        if(davinci_mmc_send_cmd((void*)regs, &vcmd, &vdata) != 0 ||
+           verify_buf[510] != 0x55 || verify_buf[511] != 0xAA) {
+            /* HS verification failed: revert card and host */
+            cmd.cmdidx = SD_CMD_SWITCH_FUNC;
+            cmd.cmdarg = 0x80FFFFF0U;  /* switch back to default */
+            cmd.resp_type = MMC_RSP_R1;
+            davinci_mmc_send_cmd((void*)regs, &cmd, NULL);
+            set_val(&regs->mmcclk, saved_clkrt);
+            return 0;
+        }
+    }
+
+    /* HS mode active: 50MHz x 4-bit = ~25MB/s theoretical bus */
     return 0;
 }
 
