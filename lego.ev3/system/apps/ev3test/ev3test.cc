@@ -1017,7 +1017,7 @@ public:
 				case KEY_LEFT:  nm = "LT"; break;
 				case KEY_RIGHT: nm = "RT"; break;
 				case KEY_ENTER: nm = "OK"; break;
-				case KEY_ESC:  nm = "ESC"; break;
+				case KEY_END:  nm = "END"; break;
 				default: break;
 				}
 				off += snprintf(line + off, sizeof(line) - off, " %s", nm);
@@ -1036,7 +1036,7 @@ public:
 			if (k == KEY_UP)        { moveSel(-1); return; }
 			else if (k == KEY_DOWN) { moveSel(1);  return; }
 			else if (k == KEY_ENTER || k == KEY_RIGHT) { activateSel(); return; }
-			else if (k == KEY_LEFT || k == KEY_ESC) { requestBack(); return; }
+			else if (k == KEY_LEFT || k == KEY_END) { requestBack(); return; }
 		}
 		WidgetWin::onEvent(ev);
 	}

@@ -9,9 +9,9 @@ LDFLAGS = -L $(BUILD_DIR)/lib -Llib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-KBD_OBJS = $(ARCH)/joystickd.o
+KBD_OBJS = $(ARCH)/keybd.o
 
-KBD = $(TARGET_DIR)/drivers/ev3/gpio_joystickd
+KBD = $(TARGET_DIR)/drivers/ev3/gpio_keybd
 
 $(KBD): $(KBD_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \

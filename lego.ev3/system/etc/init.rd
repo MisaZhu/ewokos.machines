@@ -9,11 +9,13 @@
 
 #@/bin/load_font
 
-@/bin/ipcserv /sbin/splashd -w 178 -h 128 -f 10 -d
+@/bin/ipcserv /sbin/splashd -w 178 -h 128 -f 10
 @/bin/splash -i /usr/system/icons/lego.png -m "start..."
 
-@/bin/splash -m "start /dev/joystick" -p 20
-@/bin/ipcserv /drivers/ev3/gpio_joystickd     /dev/joystick
+@/bin/splash -m "start /dev/keyb" -p 20
+@/bin/ipcserv /drivers/ev3/gpio_keybd     /dev/keyb0
+@/bin/ipcserv /drivers/vkeybd   /dev/vkeyb    /dev/keyb0
+
 @/bin/splash -m "start /dev/adc0" -p 30
 @/bin/ipcserv /drivers/ev3/adcd     /dev/adc0
 
@@ -50,7 +52,7 @@
 @/bin/ipcserv /sbin/sessiond
 
 @/bin/splash -m "start xim" -p 90
-@/bin/bgrun /sbin/x/xim_none   /dev/joystick -t 30000
+@/bin/bgrun /sbin/x/xim_none   /dev/vkeyb -t 30000
 @/bin/bgrun /sbin/x/xim_vkey -w 178 -h 60
 
 @/bin/splash -m "startx" -p 100
