@@ -1085,7 +1085,7 @@ int main(int argc, char** argv) {
 
 	win.render();
 	win.open(&x, 0, 0, 0, 178, 128, "ev3test",
-			XWIN_STYLE_NO_FRAME | XWIN_STYLE_NO_TITLE);
+			XWIN_STYLE_NO_FRAME | XWIN_STYLE_NO_TITLE | XWIN_STYLE_LAUNCHER);
 	win.setTimer(30);
 
 	widgetXRun(&x, &win);
