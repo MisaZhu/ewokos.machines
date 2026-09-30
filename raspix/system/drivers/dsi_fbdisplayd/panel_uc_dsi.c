@@ -2,6 +2,7 @@
 #include <stdint.h>
 
 #include <ewoksys/mmio.h>
+#include <ewoksys/klog.h>
 
 #include <arch/bcm283x/dsi1.h>
 
@@ -454,6 +455,12 @@ static volatile uint32_t* _dsi1 = 0;
 /* HS bit clock used for the PHY timing computation. */
 static uint32_t _hs_clock_hz = 0;
 
+/* DSI1_STAT lane-STOP bits, all four data lanes (both uc panels are 4-lane). */
+static uint32_t _lane_stop_mask(void) {
+	return UC_DSI1_STAT_PHY_D0_STOP | UC_DSI1_STAT_PHY_D1_STOP |
+			UC_DSI1_STAT_PHY_D2_STOP | UC_DSI1_STAT_PHY_D3_STOP;
+}
+
 static void _dsi1_init(void) {
 	if (_dsi1 == 0 && _mmio_base != 0)
 		_dsi1 = (volatile uint32_t*)(uintptr_t)(_mmio_base +
@@ -507,16 +514,84 @@ int uc_dsi_alive(void) {
 /*
  * After bring-up all four data lanes must sit in LP-11 STOP: that is
  * the analog PHY actually driving the lines.
+ *
+ * The AFE needs settle time after the AFEC0 RESET release before the
+ * lane state machines report STOP, so poll instead of taking a single
+ * instant read — the same reasoning bcm283x_dsi1_lanes_stopped()
+ * documents for the ws/rpi7 families.  100 ms budget, early exit, so a
+ * healthy link pays nothing.
  */
 int uc_dsi_lanes_stopped(void) {
-	uint32_t stat_stop;
+	uint32_t stat_stop = _lane_stop_mask();
+	int spin;
 
 	_dsi1_init();
 	if (_dsi1 == 0)
 		return -1;
-	stat_stop = UC_DSI1_STAT_PHY_D0_STOP | UC_DSI1_STAT_PHY_D1_STOP |
-			UC_DSI1_STAT_PHY_D2_STOP | UC_DSI1_STAT_PHY_D3_STOP;
-	return ((_dsi1_read(UC_DSI1_STAT) & stat_stop) == stat_stop) ? 0 : -1;
+	for (spin = 0; spin < 10000; spin++) {
+		if ((_dsi1_read(UC_DSI1_STAT) & stat_stop) == stat_stop)
+			return 0;
+		bcm283x_dsi1_udelay(10);
+	}
+	return -1;
+}
+
+/*
+ * How many of the four data lanes are sitting in LP-11 STOP right now.
+ * For the backlight blink code: uc_dsi_lanes_stopped() is all-or-nothing,
+ * but 0 stopped lanes and 3 stopped lanes are different faults (panel
+ * rails dead / DDIC clamping every line, versus one bad lane), and on a
+ * board with no console that distinction is the whole diagnosis.
+ * Single instant read — the caller only reaches here after
+ * uc_dsi_lanes_stopped() has already burned its 100ms settle budget.
+ */
+int uc_dsi_lane_stop_count(void) {
+	uint32_t stat;
+	int n = 0;
+
+	_dsi1_init();
+	if (_dsi1 == 0)
+		return 0;
+	stat = _dsi1_read(UC_DSI1_STAT);
+	if (stat & UC_DSI1_STAT_PHY_D0_STOP) n++;
+	if (stat & UC_DSI1_STAT_PHY_D1_STOP) n++;
+	if (stat & UC_DSI1_STAT_PHY_D2_STOP) n++;
+	if (stat & UC_DSI1_STAT_PHY_D3_STOP) n++;
+	return n;
+}
+
+/*
+ * Compact register report for the bring-up failure path.  This daemon has
+ * no stdout attached, so printf output is simply lost; everything here
+ * goes to slog (/dev/log, served by logd — readable once the boot has
+ * carried on: `cat /dev/log` over ssh/telnet, or a serial console).
+ */
+void uc_dsi_report(void) {
+	_dsi1_init();
+	if (_dsi1 == 0)
+		return;
+
+	slog("uc_dsi: hs=%u ui_ns=%u ID=%08x CTRL=%08x STAT=%08x stop=%08x/%08x\n",
+			(unsigned)_hs_clock_hz,
+			(unsigned)(_hs_clock_hz != 0 ? _ui_ns() : 0),
+			(unsigned)_dsi1_read(UC_DSI1_ID),
+			(unsigned)_dsi1_read(UC_DSI1_CTRL),
+			(unsigned)_dsi1_read(UC_DSI1_STAT),
+			(unsigned)(_dsi1_read(UC_DSI1_STAT) & _lane_stop_mask()),
+			(unsigned)_lane_stop_mask());
+	slog("uc_dsi: PHYC=%08x AFEC0=%08x AFEC1=%08x DISP0=%08x DISP1=%08x\n",
+			(unsigned)_dsi1_read(UC_DSI1_PHYC),
+			(unsigned)_dsi1_read(UC_DSI1_PHY_AFEC0),
+			(unsigned)_dsi1_read(UC_DSI1_PHY_AFEC1),
+			(unsigned)_dsi1_read(UC_DSI1_DISP0_CTRL),
+			(unsigned)_dsi1_read(UC_DSI1_DISP1_CTRL));
+	slog("uc_dsi: DSI1ECTL=%08x DSI1EDIV=%08x DSI1PCTL=%08x PLLD_CTRL=%08x PLLD_DSI1=%08x PLLD_PER=%08x\n",
+			(unsigned)_cprman_read(UC_CM_DSI1ECTL),
+			(unsigned)_cprman_read(UC_CM_DSI1EDIV),
+			(unsigned)_cprman_read(UC_CM_DSI1PCTL),
+			(unsigned)_cprman_read(UC_A2W_PLLD_CTRL),
+			(unsigned)_cprman_read(UC_A2W_PLLD_DSI1),
+			(unsigned)_cprman_read(UC_A2W_PLLD_PER));
 }
 
 int uc_dsi_bringup(uint32_t hs_clock_hz) {
@@ -639,10 +714,7 @@ int uc_dsi_bringup(uint32_t hs_clock_hz) {
 	 * clock, so the clock lane is never put into ULPS either.
 	 */
 	if (_dsi1_read(UC_DSI1_PHY_AFEC0) & UC_DSI1_PHY_AFEC0_LATCH_ULPS) {
-		uint32_t stat_stop = UC_DSI1_STAT_PHY_D0_STOP |
-				UC_DSI1_STAT_PHY_D1_STOP |
-				UC_DSI1_STAT_PHY_D2_STOP |
-				UC_DSI1_STAT_PHY_D3_STOP;
+		uint32_t stat_stop = _lane_stop_mask();
 		uint32_t phyc_ulps = (1U << 1) | (1U << 5) | (1U << 9) | (1U << 13);
 		int spin;
 

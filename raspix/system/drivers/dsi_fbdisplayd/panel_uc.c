@@ -5,6 +5,7 @@
 #include <arch/bcm283x/dsi1.h>
 #include <arch/bcm283x/gpio.h>
 #include <arch/bcm283x/i2c.h>
+#include <ewoksys/klog.h>
 
 #include "panel_uc.h"
 
@@ -116,6 +117,7 @@ int uc_panel_init_table(int which) {
  * panel MCU probe on the other families.
  */
 #define AXP_ADDR            0x34U
+#define AXP_CHIP_ID         0x03U
 #define AXP_PWR_OUT_CTRL1   0x10U
 #define AXP_PWR_OUT_CTRL2   0x12U
 #define AXP_ALDO1_V_OUT     0x28U
@@ -134,7 +136,40 @@ int uc_panel_init_table(int which) {
 #define AXP_SDA_GPIO        0
 #define AXP_SCL_GPIO        1
 
-static int _axp_try_once(void) {
+/*
+ * Readback snapshot of one attempt.  The bus is bit-banged and reports no
+ * ACK status, so the sampled bytes are the only evidence of whether a PMIC
+ * is actually on GPIO0/GPIO1: 0xff on everything means the lines just sat
+ * at their pull-ups (nothing answered), 0x00 means a line is held low.
+ */
+typedef struct {
+	uint8_t chip;     /* 0x03 IC type: proves something ACKs at 0x34 */
+	uint8_t ctrl1;    /* 0x10 as read back after the enable write */
+	uint8_t ctrl2;    /* 0x12 as read back after the enable write */
+	uint8_t aldo2;    /* 0x29 display-vcc voltage select */
+} axp_state_t;
+
+/*
+ * Verdict of the last _axp_display_power() pass, kept so the fatal path
+ * can flash it on the backlight:
+ *   0 = the display rails read back enabled
+ *   1 = a PMIC answered at 0x34, so the bus works, but the enable bits
+ *       never read back set
+ *   2 = nothing answered on GPIO0/GPIO1 at all — every readback sat at
+ *       the pull-ups (0xff) or was held low (0x00)
+ *  -1 = uc_panel_prepare() has not run yet
+ *
+ * The 1-vs-2 split is the part worth having: an unpowered DDIC clamps
+ * the MIPI lanes through its ESD diodes, which later shows up as "lanes
+ * never reach LP-11" and reads exactly like a PHY timing bug.
+ */
+static int _rails_status = -1;
+
+int uc_panel_rails_status(void) {
+	return _rails_status;
+}
+
+static int _axp_try_once(axp_state_t* st) {
 	uint8_t v;
 
 	/* Rail voltages first, then the enable bits (regulator core order). */
@@ -152,17 +187,20 @@ static int _axp_try_once(void) {
 			v | CTRL2_DLDO2_EN | CTRL2_DLDO3_EN | CTRL2_DLDO4_EN);
 
 	/* Verify the display rail actually latched. */
-	v = i2c_getb(AXP_ADDR, AXP_PWR_OUT_CTRL1);
-	if ((v & CTRL1_ALDO2_EN) == 0)
+	st->chip  = i2c_getb(AXP_ADDR, AXP_CHIP_ID);
+	st->aldo2 = i2c_getb(AXP_ADDR, AXP_ALDO2_V_OUT);
+	st->ctrl1 = i2c_getb(AXP_ADDR, AXP_PWR_OUT_CTRL1);
+	if ((st->ctrl1 & CTRL1_ALDO2_EN) == 0)
 		return -1;
-	v = i2c_getb(AXP_ADDR, AXP_PWR_OUT_CTRL2);
-	if ((v & (CTRL2_DLDO2_EN | CTRL2_DLDO3_EN | CTRL2_DLDO4_EN)) !=
+	st->ctrl2 = i2c_getb(AXP_ADDR, AXP_PWR_OUT_CTRL2);
+	if ((st->ctrl2 & (CTRL2_DLDO2_EN | CTRL2_DLDO3_EN | CTRL2_DLDO4_EN)) !=
 			(CTRL2_DLDO2_EN | CTRL2_DLDO3_EN | CTRL2_DLDO4_EN))
 		return -1;
 	return 0;
 }
 
-static void _axp_display_power(void) {
+static int _axp_display_power(void) {
+	axp_state_t st = { 0xff, 0xff, 0xff, 0xff };
 	int attempt;
 
 	bcm283x_gpio_init();
@@ -174,21 +212,30 @@ static void _axp_display_power(void) {
 	 * times rather than trusting a single pass.
 	 */
 	for (attempt = 0; attempt < 5; attempt++) {
-		if (_axp_try_once() == 0) {
+		if (_axp_try_once(&st) == 0) {
 			/* Let the panel rails rise + panel logic settle.
 			 * This also covers the JD9365DA-H3 tRPWIRES gap
 			 * between rails up and the reset pulse. */
 			bcm283x_dsi1_mdelay(20);
-			return;
+			_rails_status = 0;
+			slog("panel_uc: AXP ok chip=%02x ctrl1=%02x ctrl2=%02x aldo2=%02x\n",
+					st.chip, st.ctrl1, st.ctrl2, st.aldo2);
+			return 0;
 		}
 		bcm283x_dsi1_mdelay(5);
 	}
 	/*
 	 * Not fatal: the PMIC may already hold the rails on from its own
 	 * defaults, in which case the DCS table is the real verdict.
+	 * printf has no stdout in this daemon, so the readback has to go to
+	 * /dev/log or the failure is invisible on a handheld.
 	 */
-	printf("panel_uc: AXP223 display rails did not verify (addr 0x%02x)\n",
-			AXP_ADDR);
+	_rails_status = (st.chip == 0xffU || st.chip == 0x00U) ? 2 : 1;
+	slog("panel_uc: WARN AXP display rails did not verify (addr 0x%02x "
+			"chip=%02x ctrl1=%02x ctrl2=%02x aldo2=%02x status=%d)\n",
+			AXP_ADDR, st.chip, st.ctrl1, st.ctrl2, st.aldo2,
+			_rails_status);
+	return -1;
 }
 
 /* ---------------- GPIO 8 reset ---------------- */
@@ -378,6 +425,80 @@ void uc_backlight_blink(uint32_t n) {
 	bcm283x_dsi1_mdelay(400);
 }
 
+/*
+ * Grouped blink code — the only diagnostic channel a DevTerm/uConsole has
+ * when there is no serial console and no network to `cat /dev/log` over.
+ *
+ * One blink count can carry a single number, which is not enough to tell
+ * the stage-4 candidates apart.  This emits three fixed-order groups per
+ * repeat, and repeats the whole thing so a miscount is recoverable:
+ *
+ *   [1400ms dark] stage 1..8  [700ms dark] rails 0..2  [700ms dark]
+ *                 lanes 0..4  [700ms dark]   -> next repeat
+ *
+ * Digit n = n short (130ms) dark pulses separated by 260ms of light.
+ * n == 0 cannot be encoded as "no pulses" — that is indistinguishable from
+ * a group the eye skipped — so zero is one 450ms dark pulse: longer than a
+ * digit, far shorter than the 1400ms repeat marker.
+ *
+ * Each lit period costs two ~4ms dark blips, because re-entering the
+ * OCP8178 1-wire mode is the only way to turn the backlight back on after
+ * a shutdown pulse (see _bl_entry_1wire_mode).  They read as a faint
+ * flicker at the start of a lit period, not as digits: the
+ * 130/450/700/1400ms ratios are what keep the count unambiguous.
+ */
+#define UC_BLINK_PULSE_MS   130U  /* one digit pulse          */
+#define UC_BLINK_ZERO_MS    450U  /* the digit zero           */
+#define UC_BLINK_GAP_MS     260U  /* lit time between pulses  */
+#define UC_BLINK_SEP_MS     700U  /* dark gap between groups  */
+#define UC_BLINK_MARK_MS   1400U  /* dark marker: new repeat  */
+#define UC_BLINK_REPEATS      3
+
+/* Dark for >= OCP_SHUTDOWN_MS, which is what actually blanks the panel. */
+static void _bl_dark(uint32_t ms) {
+	_bl_gpio_set(0);
+	bcm283x_dsi1_mdelay(ms);
+}
+
+static void _bl_lit(uint32_t ms) {
+	uc_backlight_set(UC_BACKLIGHT_DEFAULT);
+	bcm283x_dsi1_mdelay(ms);
+}
+
+static void _bl_digit(uint32_t n) {
+	uint32_t i;
+
+	if (n == 0) {
+		_bl_dark(UC_BLINK_ZERO_MS);
+		_bl_lit(UC_BLINK_GAP_MS);
+		return;
+	}
+	for (i = 0; i < n; ++i) {
+		_bl_dark(UC_BLINK_PULSE_MS);
+		_bl_lit(UC_BLINK_GAP_MS);
+	}
+}
+
+void uc_backlight_blink_code(uint32_t stage, uint32_t rails, uint32_t lanes) {
+	int rep;
+
+	if (!_bl_ready)
+		uc_backlight_init();
+	for (rep = 0; rep < UC_BLINK_REPEATS; ++rep) {
+		_bl_dark(UC_BLINK_MARK_MS);
+		_bl_lit(UC_BLINK_GAP_MS);
+		_bl_digit(stage);
+		_bl_dark(UC_BLINK_SEP_MS);
+		_bl_lit(UC_BLINK_GAP_MS);
+		_bl_digit(rails);
+		_bl_dark(UC_BLINK_SEP_MS);
+		_bl_lit(UC_BLINK_GAP_MS);
+		_bl_digit(lanes);
+		_bl_dark(UC_BLINK_SEP_MS);
+		_bl_lit(UC_BLINK_GAP_MS);
+	}
+}
+
 /* ---------------- Early bring-up sequence ---------------- */
 
 /*
@@ -385,9 +506,9 @@ void uc_backlight_blink(uint32_t n) {
  * above in the exact order the standalone uConsole daemon used:
  * claim reset -> backlight -> panel rails, all before any DSI PHY work.
  */
-void uc_panel_prepare(void) {
+int uc_panel_prepare(void) {
 	_reset_pin_claim();
 	uc_backlight_init();
 	uc_backlight_set(UC_BACKLIGHT_DEFAULT);
-	_axp_display_power();
+	return _axp_display_power();
 }
