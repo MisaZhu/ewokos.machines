@@ -6,10 +6,14 @@
 #include <kernel/proc.h>
 #include <kernel/hw_info.h>
 #include <dev/sd.h>
+#include <dev/timer.h>
 
 #include "mmc.h"
 
-#define WATCHDOG_COUNT      (10000)
+/* u-boot davinci_mmc: 100000 polls x 10us = 1s per wait. The SD spec allows
+ * up to 100ms read access time, so the old 10000 was only safe while the
+ * delay below was a slow uncached spin loop. */
+#define WATCHDOG_COUNT      (100000)
 #define SD_RA_SECTORS       32
 #define SD_MAX_BLOCKS       32
 
@@ -18,9 +22,11 @@
 #define set_bit(addr, val)  set_val((addr), (get_val(addr) | (val)))
 #define clear_bit(addr, val)    set_val((addr), (get_val(addr) & ~(val)))
 
-static void delay_us(volatile int us){
-    us *= 10;
-    while(us-- > 0);
+/* Must be timer based: with I/D cache on, a CPU spin loop runs ~15x faster
+ * than it did uncached, which silently shrank every SD timeout below the
+ * card's worst-case latency and made the boot-time reads fail at random. */
+static void delay_us(uint32_t us){
+    _delay_usec(us);
 }
 
 /* Busy bit wait loop for MMCST1 */
@@ -274,6 +280,8 @@ davinci_mmc_send_cmd(struct davinci_mmc_regs *regs, struct mmc_cmd *cmd, struct 
 }
 
 int32_t sd_init(void) {
+    /* runs before timer_set_interval(); start TIM34 so delay_us() has a clock */
+    timer_init();
     return 0;
 }
 

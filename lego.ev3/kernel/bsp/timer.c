@@ -49,8 +49,16 @@
 #define readl(reg)			(*(volatile uint32_t*)(reg))
 
 static uint32_t _sys_sec_tic = 0;
+static uint32_t _timer_inited = 0;
 
+/* Brings TIM0 up once. TIM34 free-runs as the system usec source from here
+ * on, so a later timer_set_interval() must not reset it: that would bounce
+ * the counter back to zero and timer_read_sys_usec() would see a bogus wrap
+ * and jump forward a whole second. */
 static void davinci_timer_init(void){
+    if(_timer_inited)
+        return;
+    _timer_inited = 1;
 
     /* Disabled, Internal clock source */
     writel(0, TIM0_BASE + TCR);
@@ -77,6 +85,12 @@ static void davinci_timer_init(void){
     writel(TIM0_CLK, TIM0_BASE + PRD34);
 
     writel(TCR_ENAMODE_PERIODIC << 22, TIM0_BASE + TCR);
+}
+
+/* Called from sd_init() so _delay_usec() works before the scheduler timer is
+ * programmed; the SD driver needs a real time base for its timeouts. */
+void timer_init(void) {
+    davinci_timer_init();
 }
 
 void timer_set_interval(uint32_t id, uint32_t times_per_sec) {
@@ -117,5 +131,7 @@ uint64_t timer_read_sys_usec(void) {
         _sys_sec_tic += 1;
     }
     last_counter = counter;
-    return _sys_sec_tic * 1000000 + fast_div_25(counter);
+    /* widen before the multiply: uint32 seconds*1e6 wraps after ~71 minutes
+     * and would send _delay_usec() spinning until the clock caught up */
+    return (uint64_t)_sys_sec_tic * 1000000 + fast_div_25(counter);
 }
