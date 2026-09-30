@@ -2,6 +2,15 @@
 
 #define PDE_SHIFT     20   // shift how many bits to get PDE index
 
+/*
+ * ARM926EJ-S I/D cache enable. u-boot's `go` hands over with the caches in
+ * whatever state it left them; nothing in the kernel touched c1 before, so
+ * the box ran uncached. Set to 0 to build an uncached image for A/B testing.
+ */
+#ifndef EV3_ENABLE_CACHE
+#define EV3_ENABLE_CACHE 1
+#endif
+
 static __attribute__((__aligned__(PAGE_DIR_SIZE))) 
 uint32_t startup_page_dir[PAGE_DIR_NUM] = { 0 };
 
@@ -29,6 +38,18 @@ static void set_boot_pgt(uint32_t virt, uint32_t phy, uint32_t len, uint8_t is_d
 
 static void load_boot_pgt(void) {
     volatile uint32_t val;
+
+    // whatever the boot loader left in the caches belongs to its own mappings
+    // (and the page dir written above may still sit dirty in it): write back
+    // and drop everything before the new tables go live
+    __asm volatile(
+        "1: MRC p15, 0, r15, c7, c14, 3\n"   // test, clean and invalidate one line
+        "   bne 1b\n"
+        "   mov r0, #0\n"
+        "   MCR p15, 0, r0, c7, c5, 0\n"     // invalidate icache
+        "   MCR p15, 0, r0, c7, c10, 4\n"    // drain write buffer
+        ::: "r0", "cc", "memory");
+
     // set domain access control: all domain will be checked for permission
     val = 0x55555555;
     __asm("MCR p15, 0, %[v], c3, c0, 0": :[v]"r" (val):);
@@ -39,9 +60,16 @@ static void load_boot_pgt(void) {
     // set the user page table
     __asm("MCR p15, 0, %[v], c2, c0, 0": :[v]"r" (val):);
 
+    // flush all TLB
+    val = 0;
+    __asm("MCR p15, 0, %[r], c8, c7, 0": :[r]"r" (val):);
+
     // ok, enable paging using read/modify/write
     __asm("MRC p15, 0, %[r], c1, c0, 0": [r]"=r" (val)::); //read
     val |= 0x2001; // enable MMU, high vector tbl
+#if EV3_ENABLE_CACHE
+    val |= (1 << 12) | (1 << 2); // I-cache, D-cache
+#endif
     __asm("MCR p15, 0, %[r], c1, c0, 0": :[r]"r" (val):); //write
 
     // flush all TLB

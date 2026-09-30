@@ -29,8 +29,8 @@ static uint32_t prefetch_buf_sectors = 0;
 
 #define SD_CACHE_PAGE_SECTORS 8U
 #define SD_CACHE_PAGE_SIZE (SD_CACHE_PAGE_SECTORS * 512U)
-#define SD_CACHE_MAX_BATCH_PAGES 16U
-#define SD_STREAM_MAX_BATCH_PAGES 32U
+#define SD_CACHE_MAX_BATCH_PAGES 32U
+#define SD_STREAM_MAX_BATCH_PAGES 64U
 
 static void** bsp_sd_get_l3(uint32_t sector, int create) {
     uint32_t l1 = (sector >> 21) & 0x1FF;
