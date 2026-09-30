@@ -56,12 +56,42 @@ static bsp_usb_dev_t _devs[BSP_USB_MAX_DEVS];
 static uint8_t _next_address = 2;
 static bool _prev_connected = false;
 static uint32_t _reset_fail_streak = 0;
-/* high-speed probe in progress: set when the last root-port reset came
-   back HIGH, cleared when the first transaction moves data or the port
-   drops to FS/LS. A pure-TXERR failure while it is set means the 480Mbps
-   data path is dead on this board -> latch FS/LS-only */
+/* the root port negotiated high speed and the link is still up in that
+   mode. Set by bsp_usb_root_port_reset(), cleared only when the port drops
+   or the core is re-initialised -- deliberately NOT cleared once data
+   starts moving, because "the link is high speed" has to stay true for as
+   long as a hub hangs off it: combined with a non-HIGH device speed in
+   bsp_usb_device_attach() it is what proves the device sits behind a
+   high-speed hub, the one topology this controller cannot serve. */
 static bool _pending_hs = false;
+/* FS/LS-only mode is latched. Two reasons arm it: an FS/LS child of a
+   high-speed hub (structural -- this controller has no split transactions,
+   so it can never start working) and a 480Mbps data path that provably
+   cannot move a byte (uConsole CM4). Both end up sticky, because a sticky
+   latch is what stops the enumeration loop from re-probing a link speed
+   that has already been ruled out; they differ only in how much evidence
+   is needed first -- the structural one is certain on the first sighting,
+   the TXERR one only after BSP_USB_HS_TXERR_LATCH consecutive failures. */
 static bool _fs_only = false;
+static bool _fs_only_sticky = false;
+/* consecutive pure-TXERR SETUP failures on a freshly negotiated high-speed
+   link. One sample is not proof: a device still waking after reset can miss
+   a SETUP, and condemning the link on that single sample is what pinned a
+   DevTerm to full speed forever after one bad chirp. Bounded all the same,
+   because a board whose HS path really is dead must not re-probe it after
+   every controller re-init either. dwc2_control_xfer() already retries each
+   stage 3 times, so this is 3*3 SETUPS before the downgrade. */
+#define BSP_USB_HS_TXERR_LATCH 3u
+static uint32_t _hs_txerr_streak = 0;
+
+static const char* _xfer_stage_name(uint32_t stage) {
+    switch (stage) {
+    case DWC2_XFER_STAGE_SETUP:  return "setup";
+    case DWC2_XFER_STAGE_DATA:   return "data";
+    case DWC2_XFER_STAGE_STATUS: return "status";
+    default:                     return "none";
+    }
+}
 
 static inline uint32_t be32(const void* p) {
     const uint8_t* b = (const uint8_t*)p;
@@ -82,11 +112,11 @@ static inline void put_be32(void* p, uint32_t v) {
 int bsp_usb_init(void) {
     ewokos_addr_t base = mmio_map();
     if (base == 0) {
-        klog("bsp_usb: mmio_map failed, running without usb\n");
+        slog("bsp_usb: mmio_map failed, running without usb\n");
         return 0;
     }
     if (dwc2_init(base) != 0) {
-        klog("bsp_usb: dwc2 init failed, running without usb\n");
+        slog("bsp_usb: dwc2 init failed, running without usb\n");
     }
     return 0;
 }
@@ -102,9 +132,15 @@ int bsp_usb_reinit(void) {
     _prev_connected = false;
     _reset_fail_streak = 0;
     _pending_hs = false;
-    _fs_only = false;
+    _hs_txerr_streak = 0;
+    /* carry a proven latch across the re-init, and tell the controller about
+       it. These two used to drift apart here -- this flag cleared while
+       dwc2's own stayed set -- which left the effective link speed
+       depending on whichever path happened to run last */
+    _fs_only = _fs_only_sticky;
+    dwc2_force_fs_only(_fs_only_sticky);
     if (dwc2_reinit() != 0) {
-        klog("bsp_usb: core reinit failed\n");
+        slog("bsp_usb: core reinit failed\n");
         return -1;
     }
     return 0;
@@ -138,13 +174,19 @@ uint32_t bsp_usb_root_port_changes(void) {
     changed = (conn != _prev_connected) ? 1u : 0u;
     _prev_connected = conn;
     if (!conn) {
-        /* a fresh attach gets one high-speed probe again: the latch only
-           exists to skip HS on a link that already proved it cannot move
-           a single byte at 480Mbps */
-        _fs_only = false;
-        dwc2_force_fs_only(false);
+        /* a fresh attach gets one high-speed probe again, but only when the
+           latch was armed by a flaky data path. A structural latch survives:
+           it describes what is wired to the port, which unplugging cannot
+           change, and dwc2_reinit() itself reads as briefly disconnected --
+           disarming there would undo the very re-init that armed it and the
+           enumeration would never converge */
+        if (!_fs_only_sticky) {
+            _fs_only = false;
+            dwc2_force_fs_only(false);
+        }
         _pending_hs = false;
         _reset_fail_streak = 0;
+        _hs_txerr_streak = 0;
         _next_address = 2;
     }
     dwc2_ack_port_change();
@@ -162,7 +204,7 @@ int bsp_usb_root_port_reset(int port) {
     if (speed < 0) {
         _reset_fail_streak++;
         if (_reset_fail_streak >= BSP_USB_RESET_FAIL_REINIT) {
-            klog("bsp_usb: core reinit after %u failed resets\n",
+            slog("bsp_usb: core reinit after %u failed resets\n",
                     _reset_fail_streak);
             _reset_fail_streak = 0;
             (void)dwc2_reinit();
@@ -181,10 +223,45 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     bsp_usb_dev_t* dev = NULL;
     usb_setup_pkt_t setup;
     uint8_t addr;
+    uint8_t ep0_mps;
 
     (void)parent_hub;
-    (void)hub_port; /* topology is irrelevant for polled channel xfers */
+    (void)hub_port; /* the topology is inferred from _pending_hs + speed */
     if (root_port != 1 || !dwc2_ready()) {
+        return NULL;
+    }
+
+    /*
+     * No split transactions (see arch_bcm283x/dwc2.h): an FS/LS child of a
+     * high-speed hub can never be served, so the SETUP below is guaranteed
+     * to fail. It is also provably a child of a high-speed hub -- a directly
+     * attached FS/LS device makes dwc2_reset_port() report FULL/LOW, so
+     * _pending_hs can only still be set if a hub took the link to 480Mbps.
+     * Don't burn the attempt: drop the link to full speed now, so the hub
+     * re-enumerates at FS and its children become reachable. This is the
+     * case the pure-TXERR latch below cannot catch, because a FS/LS child of
+     * a HS hub typically dies as a timeout or a NAK rather than a TXERR.
+     *
+     * raspi5 pins its dwc2 unconditionally (BSP_USB_DWC2_FORCE_FS_ONLY) as
+     * it only ever drives the uConsole CM5's onboard hub; raspix also covers
+     * boards with a high-speed device straight on the root port, so 480Mbps
+     * is kept until a topology actually needs the downgrade.
+     */
+    if (_pending_hs && !_fs_only && speed != BSP_USB_SPEED_HIGH) {
+        slog("bsp_usb: fs/ls device behind a high-speed hub and no split "
+                "support, forcing fs-only mode\n");
+        _fs_only = true;
+        _fs_only_sticky = true;
+        dwc2_force_fs_only(true);
+        /* the re-init forgets every address, so no local handle may outlive
+           it -- the same teardown bsp_usb_reinit() does, minus the latch.
+           The policy layer sees this as an unreachable hub, drops its tree
+           and re-walks from the root, which now comes up at full speed. */
+        memset(_devs, 0, sizeof(_devs));
+        _next_address = 2;
+        _reset_fail_streak = 0;
+        _pending_hs = false;
+        (void)dwc2_reinit();
         return NULL;
     }
 
@@ -207,30 +284,106 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     setup.bmRequestType = USB_REQTYPE_STD_OUT;
     setup.bRequest = USB_REQ_SET_ADDRESS;
     setup.wValue = addr;
-    if (dwc2_control_xfer(0, speed == BSP_USB_SPEED_LOW, 8,
+    /* USB 2.0 fixes EP0 at 64 bytes for a high-speed device, and Linux starts
+       from maxpacket = 64 for this very SET_ADDRESS rather than the
+       full-speed 8. The smaller value is harmless on the OUT side, where it
+       only bounds what the host sends, but it is what the core measures an
+       incoming packet against. */
+    ep0_mps = (speed == BSP_USB_SPEED_HIGH) ? 64 : 8;
+    if (dwc2_control_xfer(0, speed == BSP_USB_SPEED_LOW, ep0_mps,
             &setup, NULL, false) < 0) {
+        bool txerr = dwc2_last_xfer_txerr();
+        uint32_t hprt = dwc2_port_status();
+        uint32_t hcint = dwc2_last_xfer_hcint();
+        uint32_t stage = dwc2_last_xfer_stage();
+
+        /*
+         * slog, not klog: a handheld has no console, and this is the only
+         * place that knows why the very first SETUP died. Decoding HPRT
+         * separates three failures that are indistinguishable from up
+         * here -- a device that simply never answers (connected, enabled,
+         * no TXERR), a 480Mbps data path that cannot move a byte (TXERR),
+         * and a port the host had to give up on or that is browning out
+         * (ENA clear, or over-current active because VBUS cannot feed what
+         * is plugged into it).
+         */
+        slog("bsp_usb: set_address %u failed speed=%d txerr=%d hprt=%08x "
+                "conn=%d ena=%d ovrcurr=%d pwr=%d linest=%u spd=%u\n",
+                (unsigned)addr, speed, (int)txerr, hprt,
+                (int)((hprt & DWC2_HPRT_CONNSTAT) != 0),
+                (int)((hprt & DWC2_HPRT_ENA) != 0),
+                (int)((hprt & DWC2_HPRT_OVRCURRACT) != 0),
+                (int)((hprt & DWC2_HPRT_PWR) != 0),
+                (unsigned)((hprt >> DWC2_HPRT_LINESTS_SHIFT) & 3u),
+                (unsigned)((hprt >> DWC2_HPRT_SPEED_SHIFT) & 3u));
+
+        /*
+         * And the handshake itself. "txerr" is one bit out of eleven, and the
+         * other ten are what actually locate the fault: ack/nak/stall prove a
+         * device is on the bus and answering, which turns this from a wiring
+         * problem back into a software one; ahberr points at the DMA buffer
+         * rather than at the wire. The stage matters just as much, because
+         * SET_ADDRESS is a SETUP followed by a zero-length IN status -- a
+         * device that takes the SETUP and then vanishes on the status stage is
+         * alive and merely unhappy, and that reads exactly like a dead link if
+         * the two are not told apart.
+         */
+        slog("bsp_usb: set_address %u failed stage=%s hcint=%08x "
+                "ack=%d nak=%d stall=%d nyet=%d txerr=%d bbl=%d dt=%d ahb=%d xfrc=%d\n",
+                (unsigned)addr, _xfer_stage_name(stage), hcint,
+                (int)((hcint & DWC2_HCINT_ACK) != 0),
+                (int)((hcint & DWC2_HCINT_NAK) != 0),
+                (int)((hcint & DWC2_HCINT_STALL) != 0),
+                (int)((hcint & DWC2_HCINT_NYET) != 0),
+                (int)((hcint & DWC2_HCINT_TXERR) != 0),
+                (int)((hcint & DWC2_HCINT_BBLERR) != 0),
+                (int)((hcint & DWC2_HCINT_DTERR) != 0),
+                (int)((hcint & DWC2_HCINT_AHBERR) != 0),
+                (int)((hcint & DWC2_HCINT_XFRC) != 0));
+
         /* The port negotiated high speed but the device never answers a
            single SETUP (instant TXERR): the 480Mbps data path is dead on
            this board. Latch FS/LS-only so the next reset suppresses the
            chirp and the device enumerates at full speed, instead of
            reset-hammering until the chirp randomly fails. Re-init the
            core too: flipping FSLSSUPP while the port is still enabled in
-           HS mode wedges the port-enable state machine. */
-        if (_pending_hs && !_fs_only && dwc2_last_xfer_txerr()) {
-            klog("bsp_usb: hs data path dead (pure txerr), force fs-only mode\n");
-            _fs_only = true;
-            dwc2_force_fs_only(true);
-            (void)dwc2_reinit();
+           HS mode wedges the port-enable state machine.
+
+           Only the SETUP stage counts, though. A failure in the status or
+           data stage means the device ACKed the SETUP, which is positive
+           proof that 480Mbps just moved bytes -- downgrading on that
+           evidence throws away the one link speed known to reach the
+           device. */
+        if (_pending_hs && !_fs_only && txerr &&
+                stage == DWC2_XFER_STAGE_SETUP) {
+            if (++_hs_txerr_streak >= BSP_USB_HS_TXERR_LATCH) {
+                slog("bsp_usb: hs data path dead (pure txerr x%u), "
+                        "force fs-only mode\n", _hs_txerr_streak);
+                _hs_txerr_streak = 0;
+                _fs_only = true;
+                _fs_only_sticky = true;
+                dwc2_force_fs_only(true);
+                (void)dwc2_reinit();
+            }
+            else {
+                slog("bsp_usb: txerr on a high-speed link (%u/%u), "
+                        "re-probing before downgrading\n",
+                        _hs_txerr_streak, BSP_USB_HS_TXERR_LATCH);
+            }
+        }
+        else if (!txerr || stage != DWC2_XFER_STAGE_SETUP) {
+            _hs_txerr_streak = 0;
         }
         return NULL;
     }
+    _hs_txerr_streak = 0;
     proc_usleep(10000); /* USB spec: new address is valid after 2ms */
 
     memset(dev, 0, sizeof(*dev));
     dev->used = true;
     dev->addr = addr;
     dev->low_speed = (speed == BSP_USB_SPEED_LOW);
-    dev->ctrl_mps = 8;
+    dev->ctrl_mps = ep0_mps;
     return dev;
 }
 

@@ -108,6 +108,9 @@
 
 #define DWC_HFIR_60MHZ_FSLS 59999u
 #define DWC_HFIR_48MHZ_FSLS 47999u
+/* high speed frames are 125us microframes, so the same 60MHz PHY clock wants
+   125*60-1 here, not 1000*60-1 (Linux: dwc2_calc_frame_interval) */
+#define DWC_HFIR_60MHZ_HS   7499u
 
 #define DWC_HPRT_CONNDET (1u << 1)
 #define DWC_HPRT_ENA (1u << 2)
@@ -204,6 +207,7 @@ static dma_pool_t _dma_pool;
 static ewokos_addr_t _usb_base = 0;
 static bool _ready = false;
 static uint32_t _last_hcint = 0;
+static uint32_t _last_xfer_stage = DWC2_XFER_STAGE_NONE;
 static uint32_t _num_host_channels = 8;
 /* latched after a high-speed root-port probe dies with pure TXERR: makes
    subsequent port resets arm FS/LS-only mode (FSLSSUPP) before the reset
@@ -547,13 +551,24 @@ int dwc2_reset_port(void) {
         uint32_t hcfg = low_speed ?
                 (DWC_HCFG_FSLSPCLKSEL_48MHZ | DWC_HCFG_FSLSSUPP) :
                 DWC_HCFG_FSLSPCLKSEL_30_60MHZ;
+        /* HFIR is the frame interval counted in PHY clocks, and which clock it
+           counts depends on the speed the port actually came up at. Writing
+           the 1ms value to a high-speed port makes the core treat a 125us
+           microframe as eight times longer than it is, so every transaction
+           it places in that window is mis-timed -- visible as a SETUP the
+           device answers and a status stage it apparently never hears. */
+        uint32_t hfir;
+        if (speed_bits == 0u) {
+            hfir = DWC_HFIR_60MHZ_HS;
+        }
+        else {
+            hfir = low_speed ? DWC_HFIR_48MHZ_FSLS : DWC_HFIR_60MHZ_FSLS;
+        }
         if (_force_fs_only) {
             hcfg |= DWC_HCFG_FSLSSUPP;
         }
         usb_writel(DWC_REG_HCFG, hcfg);
-        usb_writel(DWC_REG_HFIR, low_speed ?
-                DWC_HFIR_48MHZ_FSLS :
-                DWC_HFIR_60MHZ_FSLS);
+        usb_writel(DWC_REG_HFIR, hfir);
     }
     if (speed_bits == 0u) {
         return DWC2_SPEED_HIGH;
@@ -567,6 +582,21 @@ void dwc2_force_fs_only(bool enable) {
 
 bool dwc2_last_xfer_txerr(void) {
     return (_last_hcint & DWC_HCINT_TXERR) != 0;
+}
+
+uint32_t dwc2_port_status(void) {
+    if (!_ready) {
+        return 0;
+    }
+    return usb_readl(DWC_REG_HPRT);
+}
+
+uint32_t dwc2_last_xfer_hcint(void) {
+    return _last_hcint;
+}
+
+uint32_t dwc2_last_xfer_stage(void) {
+    return _last_xfer_stage;
 }
 
 /* ---------------- host init ---------------- */
@@ -743,6 +773,15 @@ static int dwc_channel_transfer(int ch, uint8_t dev_addr, uint8_t ep_num, bool d
     if (low_speed) {
         hcchar |= DWC_HCCHAR_LSPDDEV;
     }
+    /* MC/EC must never be left at 0: the databook treats that as reserved, and
+       Linux programs multi_count = 1 for every non-split control/bulk channel
+       (hcd.c: dwc2_hc_init), reserving larger counts for high-bandwidth
+       periodic endpoints. Nothing here splits and nothing puts more than one
+       packet in a (micro)frame, so 1 is both the floor and the correct
+       value. DWC_HCCHAR_MC_SHIFT was declared but never written, which left
+       the core counting packets per microframe with an undefined value -- on
+       the one board that happened to tolerate it, transfers worked. */
+    hcchar |= (1u << DWC_HCCHAR_MC_SHIFT);
     /* Periodic transfers execute in the frame whose parity matches ODDFRM:
        schedule for the next frame relative to the current frame number. */
     if (ep_type == 1 || ep_type == 3) {
@@ -839,6 +878,7 @@ static int usb_control_msg_unlocked(uint8_t addr, bool low_speed, uint8_t ep_mps
     }
     (void)status_zlp;
 
+    _last_xfer_stage = DWC2_XFER_STAGE_SETUP;
     ret = dwc_control_stage_transfer(DWC_CH_CTRL, addr, 0, false, low_speed, 0,
             ep_mps, DWC_PID_SETUP, setup_phys, sizeof(*setup_dma),
             USB_CTRL_SETUP_TIMEOUT_MS);
@@ -848,6 +888,7 @@ static int usb_control_msg_unlocked(uint8_t addr, bool low_speed, uint8_t ep_mps
     }
 
     if (setup->wLength > 0) {
+        _last_xfer_stage = DWC2_XFER_STAGE_DATA;
         ret = dwc_control_stage_transfer(DWC_CH_CTRL, addr, 0, data_in, low_speed, 0,
                 ep_mps, DWC_PID_DATA1, payload_phys, setup->wLength,
                 USB_CTRL_DATA_TIMEOUT_MS);
@@ -861,6 +902,7 @@ static int usb_control_msg_unlocked(uint8_t addr, bool low_speed, uint8_t ep_mps
         }
     }
 
+    _last_xfer_stage = DWC2_XFER_STAGE_STATUS;
     ret = dwc_control_stage_transfer(DWC_CH_CTRL, addr, 0, !data_in, low_speed, 0,
             ep_mps, DWC_PID_DATA1, status_zlp_phys, 0,
             USB_CTRL_STATUS_TIMEOUT_MS);
