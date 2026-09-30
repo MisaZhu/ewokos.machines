@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <ewoksys/mmio.h>
 
+#include "../include/arch/ev3/uart.h"
 
 #define UART_PWREMU		(0x30)
 
@@ -21,7 +22,20 @@
 #define UART_REV2		(0x2C)
 
 #define UART_LSR_THRE   (0x20)
+#define UART_LSR_TEMT   (0x40)
 #define UART_LSR_DR     (0x01)
+
+#define UART_FCR_FIFOEN (0x01)
+#define UART_FCR_RXCLR  (0x02)
+#define UART_FCR_TXCLR  (0x04)
+
+/* UART functional clock is PLL0_SYSCLK2 (150 MHz) / 16 */
+#define UART_CLK_DIV16  9375000u
+
+static inline uint16_t baud_div(int baudrate) {
+    if (baudrate <= 0) baudrate = 2400;
+    return (uint16_t)((UART_CLK_DIV16 + (uint32_t)baudrate / 2) / (uint32_t)baudrate);
+}
 
 #define REG32(x) (*(volatile uint32_t*)(_mmio_base + base + (x)))
 
@@ -44,7 +58,7 @@ void ev3_uart_enable_irq(ewokos_addr_t base, int dir, int en){
 }
 
 void ev3_uart_init(ewokos_addr_t base, int baudrate){
-    uint16_t div = (int)(9375000.0f/baudrate + 0.5f);
+    uint16_t div = baud_div(baudrate);
 
     REG32(UART_PWREMU) = 0x1 | 0x1 << 13 | 0x1 << 14;
     REG32(UART_DLL) = div & 0xFF;
@@ -52,7 +66,22 @@ void ev3_uart_init(ewokos_addr_t base, int baudrate){
 
     REG32(UART_LCR) = 0x3; // 8n1
     
-    REG32(UART_FCR) = 0x1;
+    REG32(UART_FCR) = UART_FCR_FIFOEN | UART_FCR_RXCLR | UART_FCR_TXCLR;
+}
+
+void ev3_uart_set_baud(ewokos_addr_t base, int baudrate){
+    uint16_t div = baud_div(baudrate);
+    REG32(UART_DLL) = div & 0xFF;
+    REG32(UART_DLH) = (div >> 8) & 0xFF;
+    ev3_uart_flush_rx(base);
+}
+
+void ev3_uart_flush_rx(ewokos_addr_t base){
+    REG32(UART_FCR) = UART_FCR_FIFOEN | UART_FCR_RXCLR;
+}
+
+int ev3_uart_tx_empty(ewokos_addr_t base){
+    return ((REG32(UART_LSR)) & UART_LSR_TEMT);
 }
 
 int ev3_uart_can_write(ewokos_addr_t base){

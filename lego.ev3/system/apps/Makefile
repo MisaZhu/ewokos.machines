@@ -1,4 +1,4 @@
-DIRS = fbdisplayd uartd gpio_joystickd adcd motord touchd ultrasonicd gyrod colord ird ledd beepd batteryd i2cd nxt-ultrasonicd
+DIRS = ev3test
 
 all: $(DIRS)
 
