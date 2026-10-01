@@ -41,11 +41,14 @@ static void load_boot_pgt(void) {
 
     // whatever the boot loader left in the caches belongs to its own mappings
     // (and the page dir written above may still sit dirty in it): write back
-    // and drop everything before the new tables go live
+    // and drop everything before the new tables go live.  The c7,c14,3 loop
+    // only removes dirty lines; c7,c6,0 drops the remaining clean lines so
+    // no stale VIVT tag can alias with the new kernel mappings.
     __asm volatile(
         "1: MRC p15, 0, r15, c7, c14, 3\n"   // test, clean and invalidate one line
         "   bne 1b\n"
         "   mov r0, #0\n"
+        "   MCR p15, 0, r0, c7, c6, 0\n"     // invalidate entire D-cache
         "   MCR p15, 0, r0, c7, c5, 0\n"     // invalidate icache
         "   MCR p15, 0, r0, c7, c10, 4\n"    // drain write buffer
         ::: "r0", "cc", "memory");
