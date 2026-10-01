@@ -126,16 +126,56 @@ static const MenuEntry menu_root[] = {
 	EXIT_ITEM,
 };
 
-static const MenuEntry menu_sensors[] = {
-	TEST("Touch    in1", S_TOUCH),
-	TEST("Ultrasonic in2", S_US),
-	TEST("Gyro     in?", S_GYRO),
-	TEST("Color    in?", S_COLOR),
-	TEST("IR       in?", S_IR),
-	TEST("NXT-US   i2c", S_NXTUS),
-	TEST("ADC raw", S_ADC),
-	BACK_ITEM,
+/*
+ * The sensor menu is built at runtime by discoverSensors(): every slot below is
+ * always listed. Slots whose daemon is mounted get labelled with their real
+ * type and input port (e.g. colord on port 1 -> "Color     in1"); absent ones
+ * keep an "in?" marker so the entry never disappears. Each slot maps a device
+ * node to the screen that renders its live data and mode submenu, and the
+ * kSensorSlots order fixes the menu order.
+ */
+struct SensorSlot {
+	const char* dev;
+	int scr;
+	const char* name;   /* fallback label when GET_DATA is unavailable */
 };
+
+static const SensorSlot kSensorSlots[] = {
+	{ DEV_TOUCH, S_TOUCH, "Touch"     },
+	{ DEV_US,    S_US,    "Ultrsonic" },
+	{ DEV_COLOR, S_COLOR, "Color"     },
+	{ DEV_GYRO,  S_GYRO,  "Gyro"      },
+	{ DEV_IR,    S_IR,     "IR"        },
+	{ DEV_NXTUS, S_NXTUS, "NXT-US"    },
+};
+
+/* Map the daemon-reported EV3_SENSOR_TYPE_* to a short display name. */
+static const char* sensorTypeName(int type, const char* fallback) {
+	switch (type) {
+	case EV3_SENSOR_TYPE_NXT_TOUCH: return "NXT-Tch";
+	case EV3_SENSOR_TYPE_EV3_TOUCH: return "Touch";
+	case EV3_SENSOR_TYPE_NXT_US:    return "NXT-US";
+	case EV3_SENSOR_TYPE_EV3_US:    return "Ultrsonic";
+	case EV3_SENSOR_TYPE_EV3_COLOR: return "Color";
+	case EV3_SENSOR_TYPE_EV3_GYRO:  return "Gyro";
+	case EV3_SENSOR_TYPE_EV3_IR:    return "IR";
+	default:                        return fallback;
+	}
+}
+
+/*
+ * Dynamic sensor-menu storage. Kept at file scope (the app has a single
+ * Ev3TestWin instance) so the window object stays exactly as small as it was
+ * before runtime discovery existed: all of it lands in .bss instead of on
+ * main()'s stack frame. scrPort[] stores port+1 (1..4); 0 means "unknown /
+ * daemon not started", which is also the zero-initialized .bss default, so
+ * titleFor() is correct even before discoverSensors() has ever run.
+ */
+enum { MAX_SENSORS = 8, SLABEL = 16 };
+static char sensorLabels[MAX_SENSORS][SLABEL];
+static MenuEntry sensorEntries[MAX_SENSORS];
+static int sensorCount;
+static int scrPort[S_COUNT];
 
 static const MenuEntry menu_actuators[] = {
 	SUB("Motor  >", S_MOTORPORT),
@@ -254,7 +294,6 @@ static const MenuEntry menu_i2c[] = {
 static const MenuEntry* screenEntries(int scr, int* count) {
 	switch (scr) {
 	case S_ROOT:       *count = NELEM(menu_root);       return menu_root;
-	case S_SENSORS:    *count = NELEM(menu_sensors);    return menu_sensors;
 	case S_ACTUATORS:  *count = NELEM(menu_actuators);  return menu_actuators;
 	case S_SYSTEM:     *count = NELEM(menu_system);     return menu_system;
 	case S_MOTORPORT:  *count = NELEM(menu_motorport);  return menu_motorport;
@@ -323,8 +362,8 @@ static const char* screenTitle(int scr) {
 	case S_LED:       return "LED";
 	case S_BEEP:      return "Beep";
 	case S_BATTERY:   return "Battery";
-	case S_TOUCH:     return "Touch in1";
-	case S_US:        return "Ultrasonic in2";
+	case S_TOUCH:     return "Touch";
+	case S_US:        return "Ultrasonic";
 	case S_GYRO:      return "Gyro";
 	case S_COLOR:     return "Color";
 	case S_IR:        return "IR";
@@ -464,12 +503,83 @@ public:
 			*count = dynCount;
 			return dynEntries;
 		}
+		if (cur() == S_SENSORS) {
+			*count = sensorCount;
+			return sensorEntries;
+		}
 		return screenEntries(cur(), count);
+	}
+
+	/*
+	 * Rebuild the sensor menu, always listing every sensor kind. For each
+	 * candidate node: if a daemon is mounted (dev_get_pid>0) and answers
+	 * GET_DATA, the entry shows its real type and input port (self-reported in
+	 * ev3_sensor_data_t), e.g. "Color     in1"; otherwise the daemon is absent
+	 * or the sensor is not synced, and the entry stays visible with the unknown
+	 * -port marker "in?" rather than disappearing. Called from render() whenever
+	 * the Sensors screen is shown, so starting or stopping a daemon is reflected
+	 * the next time the menu is opened. ADC raw is always offered.
+	 */
+	void discoverSensors() {
+		sensorCount = 0;
+		for (int i = 0; i < S_COUNT; i++)
+			scrPort[i] = 0;   /* 0 = unknown (see scrPort[] note above) */
+
+		int nslots = NELEM(kSensorSlots);
+		for (int i = 0; i < nslots && sensorCount < MAX_SENSORS - 2; i++) {
+			const SensorSlot& sl = kSensorSlots[i];
+			ev3_sensor_data_t d;
+			const char* nm = sl.name;
+			int port = -1;
+			if (dev_get_pid(sl.dev) > 0 && sensorGet(sl.dev, &d)) {
+				port = d.port;
+				nm = sensorTypeName(d.type, sl.name);
+			}
+			scrPort[sl.scr] = (port >= 0) ? (port + 1) : 0;
+
+			/* pad the name to a fixed column so the port field lines up,
+			 * then show the real port or "in?" when unknown (not started) */
+			char* lab = sensorLabels[sensorCount];
+			int k = snprintf(lab, SLABEL, "%s", nm);
+			if (k < 0) k = 0;
+			if (k > 10) k = 10;
+			while (k < 10 && k < SLABEL - 4)
+				lab[k++] = ' ';
+			if (port >= 0) {
+				int p = port + 1;
+				if (p > 9) p = 9;   /* ports are 0..3; keep %d one digit */
+				snprintf(lab + k, SLABEL - k, "in%d", p);
+			} else {
+				snprintf(lab + k, SLABEL - k, "in?");
+			}
+
+			MenuEntry& m = sensorEntries[sensorCount];
+			m.label = lab;
+			m.op = OP_TEST;
+			m.cmd = sl.scr;
+			m.a0 = m.a1 = m.a2 = 0;
+			m.text = NULL;
+			sensorCount++;
+		}
+
+		MenuEntry& adc = sensorEntries[sensorCount];
+		adc.label = "ADC raw"; adc.op = OP_TEST; adc.cmd = S_ADC;
+		adc.a0 = adc.a1 = adc.a2 = 0; adc.text = NULL;
+		sensorCount++;
+		MenuEntry& bk = sensorEntries[sensorCount];
+		bk.label = ".. back"; bk.op = OP_BACK; bk.cmd = 0;
+		bk.a0 = bk.a1 = bk.a2 = 0; bk.text = NULL;
+		sensorCount++;
 	}
 
 	const char* titleFor(int s) {
 		if (s == S_MOTOR) {
 			snprintf(titleBuf, sizeof(titleBuf), "Motor %c", 'A' + motorPort);
+			return titleBuf;
+		}
+		if (s >= 0 && s < S_COUNT && scrPort[s] > 0) {
+			snprintf(titleBuf, sizeof(titleBuf), "%s in%d",
+					screenTitle(s), scrPort[s]);
 			return titleBuf;
 		}
 		return screenTitle(s);
@@ -499,6 +609,8 @@ public:
 			liveLabels[i] = NULL;
 
 		int s = cur();
+		if (s == S_SENSORS)
+			discoverSensors();
 		int count = 0;
 		const MenuEntry* entries = currentEntries(&count);
 
