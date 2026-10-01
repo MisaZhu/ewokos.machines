@@ -1,4 +1,5 @@
 *.o
+*.d
 *.swp
 *_data.c
 .DS_*
