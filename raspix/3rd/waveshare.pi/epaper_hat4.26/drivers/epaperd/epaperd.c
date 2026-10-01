@@ -22,10 +22,19 @@
 #define EPD_WIDTH       800
 #define EPD_HEIGHT      480
 
-/* 2bpp gray image buffer: 4 pixels per byte -> WIDTH*HEIGHT/4 bytes */
-#define EPD_GRAY_BYTES  (EPD_WIDTH * EPD_HEIGHT / 4)
-/* one bit-plane size: WIDTH*HEIGHT/8 bytes */
+/* 1bpp image plane: WIDTH*HEIGHT/8 bytes, bit 1 = white, bit 0 = black */
 #define EPD_PLANE_BYTES (EPD_WIDTH * EPD_HEIGHT / 8)
+
+/* Refresh strategy (see Waveshare 4.26" manual, Precautions #1):
+ * normal frames use the PARTIAL waveform (0x22=0xFF), which rewrites only the
+ * pixels that change and produces NO black<->white inversion flash. Because
+ * partial-only updates slowly accumulate ghosting, a normal full refresh
+ * (0xF7, the only waveform that clears it) is forced once every
+ * EPD_FULL_REFRESH_EVERY frames. Set that to 0 to disable the periodic full
+ * refresh entirely (never any inversion, but ghosting will build up and can
+ * eventually become permanent - see the manual). A larger value = fewer
+ * inversions but more ghosting. */
+#define EPD_FULL_REFRESH_EVERY  30
 
 #define DEV_Delay_ms(x) proc_usleep((x)*1000)
 #define DEV_Digital_Write bsp_gpio_write
@@ -45,14 +54,12 @@
 #define DEEP_SLEEP_MODE                      0x10
 #define DATA_ENTRY_MODE_SETTING              0x11
 #define BOOSTER_SOFT_START_CONTROL           0x0C
-#define GATE_SCAN_START_POSITION             0x0F
 #define TEMPERATURE_SENSOR_CONTROL           0x18
+#define WRITE_TEMP_SENSOR_CALIBRATION        0x1A
 #define MASTER_ACTIVATION                    0x20
 #define DISPLAY_UPDATE_CONTROL_2             0x22
 #define WRITE_RAM_BLACK                      0x24
 #define WRITE_RAM_RED                        0x26
-#define WRITE_VCOM_REGISTER                  0x2C
-#define WRITE_LUT_REGISTER                   0x32
 #define BORDER_WAVEFORM_CONTROL              0x3C
 #define DRIVER_OUTPUT_CONTROL                0x01
 #define SET_RAM_X_ADDRESS_START_END_POSITION 0x44
@@ -60,32 +67,24 @@
 #define SET_RAM_X_ADDRESS_COUNTER            0x4E
 #define SET_RAM_Y_ADDRESS_COUNTER            0x4F
 
-/* 4-gray look-up table (112 bytes), matching the official EPD_4in26 driver.
- * Bytes [0..104] go to the waveform LUT (0x32); the trailing bytes carry the
- * gate/source voltage and VCOM settings loaded by epd_load_lut(). */
-static const UBYTE LUT_DATA_4GRAY[112] = {
-    0x80, 0x48, 0x4A, 0x22, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x0A, 0x48, 0x68, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x88, 0x48, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0xA8, 0x48, 0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x07, 0x1E, 0x1C, 0x02, 0x00,
-    0x05, 0x01, 0x05, 0x01, 0x02,
-    0x08, 0x01, 0x01, 0x04, 0x04,
-    0x00, 0x02, 0x00, 0x02, 0x01,
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x01,
-    0x22, 0x22, 0x22, 0x22, 0x22,
-    0x17, 0x41, 0xA8, 0x32, 0x30,
-    0x00, 0x00,
-};
+/* Display Update Control 2 (0x22) values from the official EPD_4in26 driver */
+#define DUP_FULL    0xF7   /* normal full refresh (clears ghosting, inversion flash) */
+#define DUP_FAST    0xC7   /* fast full refresh (single quick flash)                 */
+#define DUP_PART    0xFF   /* partial refresh (no inversion flash)                   */
 
-/* packed 2bpp framebuffer handed to epd_4gray_display() */
-static UBYTE _gray_image[EPD_GRAY_BYTES];
+/* 1bpp framebuffer handed to the panel (bit 1 = white) */
+static UBYTE _bw_image[EPD_PLANE_BYTES];
+
+/* frames since the last normal full refresh */
+static uint32_t _frame_count = 0;
+
+/* 4x4 Bayer ordered-dither matrix (values 0..15) */
+static const uint8_t BAYER4[16] = {
+     0,  8,  2, 10,
+    12,  4, 14,  6,
+     3, 11,  1,  9,
+    15,  7, 13,  5,
+};
 
 static inline void DEV_SPI_Write(uint8_t* data, uint32_t len) {
     bsp_spi_activate(1);
@@ -152,25 +151,6 @@ static void epd_send_data_n(const uint8_t* data, uint32_t len) {
 }
 
 /******************************************************************************
-function :  load the 4-gray LUT plus gate/source/VCOM voltages
-******************************************************************************/
-static void epd_load_lut(void) {
-    epd_send_command(WRITE_LUT_REGISTER);           /* 0x32 waveform LUT */
-    epd_send_data_n(LUT_DATA_4GRAY, 105);
-
-    epd_send_command(0x03);                         /* VGH */
-    epd_send_data(LUT_DATA_4GRAY[105]);
-
-    epd_send_command(0x04);                         /* VSH1, VSH2, VSL */
-    epd_send_data(LUT_DATA_4GRAY[106]);
-    epd_send_data(LUT_DATA_4GRAY[107]);
-    epd_send_data(LUT_DATA_4GRAY[108]);
-
-    epd_send_command(WRITE_VCOM_REGISTER);          /* 0x2C VCOM */
-    epd_send_data(LUT_DATA_4GRAY[109]);
-}
-
-/******************************************************************************
 function :  set the display window (X/Y start & end, 2 bytes each)
 ******************************************************************************/
 static void epd_set_windows(UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend) {
@@ -201,19 +181,20 @@ static void epd_set_cursor(UWORD Xstart, UWORD Ystart) {
 }
 
 /******************************************************************************
-function :  trigger a 4-gray display update
+function :  trigger a display update with the given 0x22 sequence code
 ******************************************************************************/
-static void epd_turn_on_display_4gray(void) {
+static void epd_turn_on_display(uint8_t mode) {
     epd_send_command(DISPLAY_UPDATE_CONTROL_2);
-    epd_send_data(0xC7);
+    epd_send_data(mode);
     epd_send_command(MASTER_ACTIVATION);
     epd_wait_until_idle();
 }
 
 /******************************************************************************
-function :  initialize the panel for 4-gray mode
+function :  initialize the panel for 1-bit fast refresh
+            (port of EPD_4in26_Init_Fast)
 ******************************************************************************/
-static void epd_init_4gray(void) {
+static void epd_init_fast(void) {
     epd_reset();
     DEV_Delay_ms(100);
 
@@ -231,9 +212,9 @@ static void epd_init_4gray(void) {
     epd_send_data(0xC0);
     epd_send_data(0x80);
 
-    epd_send_command(DRIVER_OUTPUT_CONTROL);        /* gate count (4-gray uses WIDTH) */
-    epd_send_data((EPD_WIDTH - 1) % 256);
-    epd_send_data((EPD_WIDTH - 1) / 256);
+    epd_send_command(DRIVER_OUTPUT_CONTROL);        /* gate count */
+    epd_send_data((EPD_HEIGHT - 1) % 256);
+    epd_send_data((EPD_HEIGHT - 1) / 256);
     epd_send_data(0x02);
 
     epd_send_command(BORDER_WAVEFORM_CONTROL);      /* border */
@@ -247,87 +228,40 @@ static void epd_init_4gray(void) {
 
     epd_wait_until_idle();
 
-    epd_load_lut();
+    /* pin the waveform temperature so the fast LUT is always selected */
+    epd_send_command(WRITE_TEMP_SENSOR_CALIBRATION);
+    epd_send_data(0x5A);
+
+    epd_send_command(DISPLAY_UPDATE_CONTROL_2);
+    epd_send_data(0x91);
+    epd_send_command(MASTER_ACTIVATION);
+    epd_wait_until_idle();
 }
 
 /******************************************************************************
-function :  push a packed 2bpp image to both RAM planes and refresh (4-gray).
-            image holds WIDTH*HEIGHT/4 bytes, 4 pixels per byte, MSB first.
-            pixel code (2 bits): 0b11 = white, 0b10 = light gray,
-                                 0b01 = dark gray, 0b00 = black.
+function :  write the 1bpp image to RAM (0x24) and refresh.
+            mode = DUP_PART (no inversion), DUP_FAST (single flash) or
+            DUP_FULL (ghost-clearing inversion).
 ******************************************************************************/
-static void epd_4gray_display(const UBYTE* image) {
-    UDOUBLE i, j, k;
-    UBYTE temp1, temp2, temp3;
+static void epd_display(const UBYTE* image, uint8_t mode) {
+    /* partial refresh holds the border at Hi-Z (0x80) so the edge does not
+     * flash; full/fast refresh use the normal border waveform. */
+    epd_send_command(BORDER_WAVEFORM_CONTROL);
+    epd_send_data(mode == DUP_PART ? 0x80 : 0x01);
 
-    /* old-data plane (0x24) */
+    epd_set_cursor(0, 0);
     epd_send_command(WRITE_RAM_BLACK);
-    for(i = 0; i < EPD_PLANE_BYTES; i++) {
-        temp3 = 0;
-        for(j = 0; j < 2; j++) {
-            temp1 = image[i*2 + j];
-            for(k = 0; k < 2; k++) {
-                temp2 = temp1 & 0xC0;
-                if(temp2 == 0xC0)      temp3 |= 0x00; /* white  */
-                else if(temp2 == 0x00) temp3 |= 0x01; /* black  */
-                else if(temp2 == 0x80) temp3 |= 0x01; /* gray1  */
-                else                   temp3 |= 0x00; /* gray2  */
-                temp3 <<= 1;
-
-                temp1 <<= 2;
-                temp2 = temp1 & 0xC0;
-                if(temp2 == 0xC0)      temp3 |= 0x00; /* white  */
-                else if(temp2 == 0x00) temp3 |= 0x01; /* black  */
-                else if(temp2 == 0x80) temp3 |= 0x01; /* gray1  */
-                else                   temp3 |= 0x00; /* gray2  */
-                if(j != 1 || k != 1)
-                    temp3 <<= 1;
-
-                temp1 <<= 2;
-            }
-        }
-        epd_send_data(temp3);
-    }
-
-    /* new-data plane (0x26) */
-    epd_send_command(WRITE_RAM_RED);
-    for(i = 0; i < EPD_PLANE_BYTES; i++) {
-        temp3 = 0;
-        for(j = 0; j < 2; j++) {
-            temp1 = image[i*2 + j];
-            for(k = 0; k < 2; k++) {
-                temp2 = temp1 & 0xC0;
-                if(temp2 == 0xC0)      temp3 |= 0x00; /* white  */
-                else if(temp2 == 0x00) temp3 |= 0x01; /* black  */
-                else if(temp2 == 0x80) temp3 |= 0x00; /* gray1  */
-                else                   temp3 |= 0x01; /* gray2  */
-                temp3 <<= 1;
-
-                temp1 <<= 2;
-                temp2 = temp1 & 0xC0;
-                if(temp2 == 0xC0)      temp3 |= 0x00; /* white  */
-                else if(temp2 == 0x00) temp3 |= 0x01; /* black  */
-                else if(temp2 == 0x80) temp3 |= 0x00; /* gray1  */
-                else                   temp3 |= 0x01; /* gray2  */
-                if(j != 1 || k != 1)
-                    temp3 <<= 1;
-
-                temp1 <<= 2;
-            }
-        }
-        epd_send_data(temp3);
-    }
-
-    epd_turn_on_display_4gray();
+    epd_send_data_n(image, EPD_PLANE_BYTES);
+    epd_turn_on_display(mode);
 }
 
 /******************************************************************************
-function :  clear the screen to white (4-gray path)
+function :  clear the screen to white with a normal full refresh
 ******************************************************************************/
 static void epd_clear(void) {
-    /* 0xFF = four pixels of 0b11 = white */
-    memset(_gray_image, 0xFF, EPD_GRAY_BYTES);
-    epd_4gray_display(_gray_image);
+    memset(_bw_image, 0xFF, EPD_PLANE_BYTES);   /* 1 = white */
+    epd_display(_bw_image, DUP_FULL);
+    _frame_count = 0;
 }
 
 /******************************************************************************
@@ -360,19 +294,14 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
     bsp_spi_set_div(div);
     bsp_spi_select(SPI_SELECT_0);      /* CE0 */
 
-    epd_init_4gray();
+    epd_init_fast();
     epd_clear();
 }
 
 /******************************************************************************
-function :  convert an RGB32 framebuffer to the packed 2bpp gray image and
-            refresh the panel.
-
-    luminance -> 2-bit code (brightness grows with the code value):
-        code 0 (0b00) = black
-        code 1 (0b01) = dark gray
-        code 2 (0b10) = light gray
-        code 3 (0b11) = white
+function :  convert an RGB32 framebuffer to 1bpp (Bayer ordered dither) and
+            refresh the panel with the flicker-free partial waveform, forcing
+            an occasional normal full refresh to clear accumulated ghosting.
 ******************************************************************************/
 int do_flush(const void* buf, uint32_t size) {
     uint32_t pixel_count = EPD_WIDTH * EPD_HEIGHT;
@@ -381,28 +310,38 @@ int do_flush(const void* buf, uint32_t size) {
 
     const uint32_t* src = (const uint32_t*)buf;
 
-    memset(_gray_image, 0x00, EPD_GRAY_BYTES);
+    memset(_bw_image, 0x00, EPD_PLANE_BYTES);
 
-    for(uint32_t i = 0; i < pixel_count; i++) {
-        uint32_t c = src[i];
-        uint8_t r = color_r(c);
-        uint8_t g = color_g(c);
-        uint8_t b = color_b(c);
+    for(uint32_t y = 0; y < EPD_HEIGHT; y++) {
+        uint32_t row = y * EPD_WIDTH;
+        const uint8_t* bayer_row = &BAYER4[(y & 3) * 4];
+        for(uint32_t x = 0; x < EPD_WIDTH; x++) {
+            uint32_t c = src[row + x];
+            uint8_t r = color_r(c);
+            uint8_t g = color_g(c);
+            uint8_t b = color_b(c);
 
-        uint32_t gray = (r * 300 + g * 400 + b * 300) / 1000;
+            uint32_t gray = (r * 300 + g * 400 + b * 300) / 1000;
+            /* ordered dither: static per-pixel threshold, no temporal crawl */
+            uint32_t threshold = (uint32_t)bayer_row[x & 3] * 16 + 8;
 
-        uint8_t level;
-        if(gray < 64)       level = 0; /* black      */
-        else if(gray < 128) level = 1; /* dark gray  */
-        else if(gray < 192) level = 2; /* light gray */
-        else                level = 3; /* white      */
-
-        uint32_t addr = i / 4;
-        uint32_t shift = (i % 4) * 2;
-        _gray_image[addr] = (_gray_image[addr] & ~(0xC0 >> shift)) |
-                            ((level << 6) >> shift);
+            uint32_t idx = row + x;
+            if(gray >= threshold)               /* white -> bit 1 */
+                _bw_image[idx / 8] |= (1 << (7 - (idx % 8)));
+        }
     }
 
-    epd_4gray_display(_gray_image);
+    /* default: flicker-free partial refresh. Only every EPD_FULL_REFRESH_EVERY
+     * frames force a normal full refresh to burn off accumulated ghosting
+     * (0 disables it, so there is never an inversion flash). */
+    uint8_t mode = DUP_PART;
+#if EPD_FULL_REFRESH_EVERY > 0
+    if(++_frame_count >= EPD_FULL_REFRESH_EVERY) {
+        mode = DUP_FULL;
+        _frame_count = 0;
+    }
+#endif
+
+    epd_display(_bw_image, mode);
     return 0;
 }
