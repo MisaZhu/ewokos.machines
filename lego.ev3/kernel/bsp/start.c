@@ -3,12 +3,37 @@
 #define PDE_SHIFT     20   // shift how many bits to get PDE index
 
 /*
- * ARM926EJ-S I/D cache enable. u-boot's `go` hands over with the caches in
- * whatever state it left them; nothing in the kernel touched c1 before, so
- * the box ran uncached. Set to 0 to build an uncached image for A/B testing.
+ * ARM926EJ-S cache enable, split so the I-cache and D-cache are controlled
+ * independently (this box has no serial console, so build flags are the only
+ * bisect lever). u-boot's `go` hands over with the caches in whatever state it
+ * left them; nothing in the kernel touched c1 before, so the box ran uncached.
+ *
+ * Hardware A/B on real EV3 silicon (cold-boot, repeated) established:
+ *   I+D both OFF (0x2001) -> stable but slow
+ *   I-cache ONLY (0x3001) -> stable, faster, but still too slow
+ *   D-cache ON in WRITE-BACK (0x2005/0x3005) -> intermittent boot failure
+ * so the D-cache was the culprit and it could not simply be turned on.
+ *
+ * The D-cache fault is now fixed at its source rather than avoided: the ARM926
+ * D-cache is VIVT with no ASID and its translation-table walk is cached when D
+ * is on, so Write-Back left dirty PTEs / DMA-shared data unpublished in DRAM and
+ * the walker intermittently read stale memory. v5/mmu_pte_flags.c therefore maps
+ * all normal memory Write-Through, No-Write-Allocate (C=1,B=0): every store
+ * reaches DRAM immediately (fully coherent for the walker, DMA and cross-VA
+ * readers) while read-caching - the dominant speedup - is retained. The stale
+ * CLEAN-line alias across an address-space switch is covered by the full c7,c6,0
+ * invalidate in set_translation_table_base(). With that in place BOTH caches are
+ * enabled by default (fast AND coherent).
+ *
+ * Override to re-test other points of the matrix, e.g.:
+ *   -DEV3_ENABLE_ICACHE=0 -DEV3_ENABLE_DCACHE=0  -> fully uncached
+ *   -DEV3_ENABLE_DCACHE=0                        -> I-cache only
  */
-#ifndef EV3_ENABLE_CACHE
-#define EV3_ENABLE_CACHE 1
+#ifndef EV3_ENABLE_ICACHE
+#define EV3_ENABLE_ICACHE 1
+#endif
+#ifndef EV3_ENABLE_DCACHE
+#define EV3_ENABLE_DCACHE 1
 #endif
 
 static __attribute__((__aligned__(PAGE_DIR_SIZE))) 
@@ -70,8 +95,11 @@ static void load_boot_pgt(void) {
     // ok, enable paging using read/modify/write
     __asm("MRC p15, 0, %[r], c1, c0, 0": [r]"=r" (val)::); //read
     val |= 0x2001; // enable MMU, high vector tbl
-#if EV3_ENABLE_CACHE
-    val |= (1 << 12) | (1 << 2); // I-cache, D-cache
+#if EV3_ENABLE_ICACHE
+    val |= (1 << 12);            // I-cache
+#endif
+#if EV3_ENABLE_DCACHE
+    val |= (1 << 2);             // D-cache
 #endif
     __asm("MCR p15, 0, %[r], c1, c0, 0": :[r]"r" (val):); //write
 
