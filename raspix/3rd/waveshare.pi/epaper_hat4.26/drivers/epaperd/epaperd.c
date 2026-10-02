@@ -25,16 +25,11 @@
 /* 1bpp image plane: WIDTH*HEIGHT/8 bytes, bit 1 = white, bit 0 = black */
 #define EPD_PLANE_BYTES (EPD_WIDTH * EPD_HEIGHT / 8)
 
-/* Refresh strategy (see Waveshare 4.26" manual, Precautions #1):
- * normal frames use the PARTIAL waveform (0x22=0xFF), which rewrites only the
- * pixels that change and produces NO black<->white inversion flash. Because
- * partial-only updates slowly accumulate ghosting, a normal full refresh
- * (0xF7, the only waveform that clears it) is forced once every
- * EPD_FULL_REFRESH_EVERY frames. Set that to 0 to disable the periodic full
- * refresh entirely (never any inversion, but ghosting will build up and can
- * eventually become permanent - see the manual). A larger value = fewer
- * inversions but more ghosting. */
-#define EPD_FULL_REFRESH_EVERY  30
+/* Refresh strategy: all frames use the PARTIAL waveform (0x22=0xFF), which
+ * rewrites only changed pixels and produces NO black<->white inversion flash.
+ * Set EPD_FULL_REFRESH_EVERY to 0 to never invert (ghosting will slowly
+ * accumulate); set it to N>0 to force a full refresh every N frames. */
+#define EPD_FULL_REFRESH_EVERY  0
 
 #define DEV_Delay_ms(x) proc_usleep((x)*1000)
 #define DEV_Digital_Write bsp_gpio_write
@@ -78,13 +73,9 @@ static UBYTE _bw_image[EPD_PLANE_BYTES];
 /* frames since the last normal full refresh */
 static uint32_t _frame_count = 0;
 
-/* 4x4 Bayer ordered-dither matrix (values 0..15) */
-static const uint8_t BAYER4[16] = {
-     0,  8,  2, 10,
-    12,  4, 14,  6,
-     3, 11,  1,  9,
-    15,  7, 13,  5,
-};
+/* Floyd-Steinberg error-diffusion row buffers (800+2 pixels, padded) */
+static int16_t _err_cur[EPD_WIDTH + 2];
+static int16_t _err_next[EPD_WIDTH + 2];
 
 static inline void DEV_SPI_Write(uint8_t* data, uint32_t len) {
     bsp_spi_activate(1);
@@ -299,9 +290,10 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
 }
 
 /******************************************************************************
-function :  convert an RGB32 framebuffer to 1bpp (Bayer ordered dither) and
-            refresh the panel with the flicker-free partial waveform, forcing
-            an occasional normal full refresh to clear accumulated ghosting.
+function :  convert an RGB32 framebuffer to 1bpp using Floyd-Steinberg error
+            diffusion, then refresh with the flicker-free partial waveform.
+            Error diffusion produces sharp text edges and smooth organic
+            gradients without the visible grid pattern of ordered dithering.
 ******************************************************************************/
 int do_flush(const void* buf, uint32_t size) {
     uint32_t pixel_count = EPD_WIDTH * EPD_HEIGHT;
@@ -311,29 +303,47 @@ int do_flush(const void* buf, uint32_t size) {
     const uint32_t* src = (const uint32_t*)buf;
 
     memset(_bw_image, 0x00, EPD_PLANE_BYTES);
+    memset(_err_cur, 0, sizeof(_err_cur));
+    memset(_err_next, 0, sizeof(_err_next));
 
     for(uint32_t y = 0; y < EPD_HEIGHT; y++) {
+        /* swap row buffers */
+        int16_t* tmp = _err_cur;
+        memcpy(_err_cur, _err_next, sizeof(_err_next));
+        memset(_err_next, 0, sizeof(_err_next));
+        (void)tmp;
+
         uint32_t row = y * EPD_WIDTH;
-        const uint8_t* bayer_row = &BAYER4[(y & 3) * 4];
         for(uint32_t x = 0; x < EPD_WIDTH; x++) {
             uint32_t c = src[row + x];
             uint8_t r = color_r(c);
             uint8_t g = color_g(c);
             uint8_t b = color_b(c);
 
-            uint32_t gray = (r * 300 + g * 400 + b * 300) / 1000;
-            /* ordered dither: static per-pixel threshold, no temporal crawl */
-            uint32_t threshold = (uint32_t)bayer_row[x & 3] * 16 + 8;
+            /* luminance + accumulated error (offset +1 for left padding) */
+            int32_t val = (int32_t)((r * 300 + g * 400 + b * 300) / 1000)
+                        + _err_cur[x + 1];
+            if(val < 0) val = 0;
+            if(val > 255) val = 255;
 
             uint32_t idx = row + x;
-            if(gray >= threshold)               /* white -> bit 1 */
+            int32_t err;
+            if(val >= 128) {
                 _bw_image[idx / 8] |= (1 << (7 - (idx % 8)));
+                err = val - 255;
+            } else {
+                err = val;
+            }
+
+            /* distribute error: right 7/16, below-left 3/16, below 5/16, below-right 1/16 */
+            _err_cur[x + 2]  += (int16_t)(err * 7 >> 4);
+            _err_next[x]     += (int16_t)(err * 3 >> 4);
+            _err_next[x + 1] += (int16_t)(err * 5 >> 4);
+            _err_next[x + 2] += (int16_t)(err >> 4);
         }
     }
 
-    /* default: flicker-free partial refresh. Only every EPD_FULL_REFRESH_EVERY
-     * frames force a normal full refresh to burn off accumulated ghosting
-     * (0 disables it, so there is never an inversion flash). */
+    /* flicker-free partial refresh (no inversion flash) */
     uint8_t mode = DUP_PART;
 #if EPD_FULL_REFRESH_EVERY > 0
     if(++_frame_count >= EPD_FULL_REFRESH_EVERY) {
