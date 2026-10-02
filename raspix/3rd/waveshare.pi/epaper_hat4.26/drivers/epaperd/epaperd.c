@@ -290,12 +290,8 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
 }
 
 /******************************************************************************
-function :  maximum-sharpness 1bpp conversion.
-            - 2x contrast expansion pushes most content to pure black/white
-            - hard snap zone: gray < 48 or > 208 after contrast → direct
-              threshold with ZERO error propagation (pixel-perfect edges)
-            - only the narrow mid-band gets error diffusion at 1/2 strength
-            Result: text/lines are perfectly crisp; gradients still smooth.
+function :  convert an RGB32 framebuffer to 1bpp using Floyd-Steinberg error
+            diffusion, then refresh with the flicker-free partial waveform.
 ******************************************************************************/
 int do_flush(const void* buf, uint32_t size) {
     uint32_t pixel_count = EPD_WIDTH * EPD_HEIGHT;
@@ -319,30 +315,12 @@ int do_flush(const void* buf, uint32_t size) {
             uint8_t g = color_g(c);
             uint8_t b = color_b(c);
 
-            /* 2x contrast expansion around midpoint */
-            int32_t gray = (int32_t)((r * 300 + g * 400 + b * 300) / 1000);
-            gray = 128 + (gray - 128) * 2;
-            if(gray < 0) gray = 0;
-            if(gray > 255) gray = 255;
-
-            uint32_t idx = row + x;
-
-            /* hard snap: pure black/white with no error bleed */
-            if(gray < 32) {
-                /* definitely black — no dithering, no error */
-                continue;
-            }
-            if(gray > 220) {
-                /* definitely white — no dithering, no error */
-                _bw_image[idx / 8] |= (1 << (7 - (idx % 8)));
-                continue;
-            }
-
-            /* mid-tone: error diffusion at 1/2 strength */
-            int32_t val = gray + _err_cur[x + 1];
+            int32_t val = (int32_t)((r * 300 + g * 400 + b * 300) / 1000)
+                        + _err_cur[x + 1];
             if(val < 0) val = 0;
             if(val > 255) val = 255;
 
+            uint32_t idx = row + x;
             int32_t err;
             if(val >= 128) {
                 _bw_image[idx / 8] |= (1 << (7 - (idx % 8)));
@@ -351,12 +329,10 @@ int do_flush(const void* buf, uint32_t size) {
                 err = val;
             }
 
-            /* distribute only 1/2 of error — maximum edge isolation */
-            int32_t e = err >> 1;
-            _err_cur[x + 2]  += (int16_t)(e * 7 >> 4);
-            _err_next[x]     += (int16_t)(e * 3 >> 4);
-            _err_next[x + 1] += (int16_t)(e * 5 >> 4);
-            _err_next[x + 2] += (int16_t)(e >> 4);
+            _err_cur[x + 2]  += (int16_t)(err * 7 >> 4);
+            _err_next[x]     += (int16_t)(err * 3 >> 4);
+            _err_next[x + 1] += (int16_t)(err * 5 >> 4);
+            _err_next[x + 2] += (int16_t)(err >> 4);
         }
     }
 
