@@ -242,31 +242,29 @@ char ev3_pru_uart_getc(int port);
 #define PRU_ARM_TO_PRU_EVT      0x20u   /* SYS_EVT32 */
 
 /* ======================================================================== *
- *  GATE-FLAGGED BLOCK 1 - firmware ABI (PRU0 DRAM control region)          *
+ *  BLOCK 1 - firmware ABI (PRU0 DRAM control region)                        *
  *                                                                          *
- *  These offsets live in TI's suart_pru_regs.h, which is not public. They   *
- *  are DERIVED from the standard PRU_SUART firmware DRAM layout: the 8       *
- *  16-byte channel blocks occupy 0x00..0x7F, so the control region begins   *
- *  at 0x80. Field sizes/order are taken from how suart_api.c reads/writes   *
- *  each (1- or 2-byte accesses at the named symbol). MUST be verified       *
- *  against the dropped-in firmware at the Stage 1 gate; if the blob uses a  *
- *  different control-region base, only these six defines change.            *
+ *  CONFIRMED against TI's suart_pru_regs.h (obtained from the ev3dev         *
+ *  lego-linux-drivers tree): the 8 x 16-byte channel blocks occupy          *
+ *  0x00..0x7F, and the control region begins at 0x80. Field sizes/order     *
+ *  match how suart_api.c reads/writes each symbol. Values are authoritative,*
+ *  no longer derived.                                                       *
  * ======================================================================== */
-#define PRU_SUART_PRU0_RX_TX_MODE           0x80  /* 1B: PRU_MODE_RX_TX_BOTH == 3 */
-#define PRU_SUART_PRU0_DELAY_OFFSET         0x81  /* 1B: bit-bang delay count     */
+#define PRU_SUART_PRU0_IMR_OFFSET           0x80  /* 2B: per-channel CMPLT + gbl  */
 #define PRU_SUART_PRU0_ISR_OFFSET           0x82  /* 2B; clr_isrstatus uses +1    */
-#define PRU_SUART_PRU0_IDLE_TIMEOUT_OFFSET  0x84  /* 2B: FIFO idle timeout        */
-#define PRU_SUART_PRU0_ID_ADDR              0x86  /* 1B: PRU id (0 for PRU0)      */
-#define PRU_SUART_PRU0_IMR_OFFSET           0x88  /* 2B: per-channel CMPLT + gbl  */
+#define PRU_SUART_PRU0_ID_ADDR              0x84  /* 1B: PRU id (0 for PRU0)      */
+#define PRU_SUART_PRU0_RX_TX_MODE           0x85  /* 1B: PRU_MODE_RX_TX_BOTH == 3 */
+#define PRU_SUART_PRU0_DELAY_OFFSET         0x86  /* 1B: bit-bang delay count     */
+#define PRU_SUART_PRU0_IDLE_TIMEOUT_OFFSET  0x88  /* 2B: FIFO idle timeout        */
 
 #define PRU_MODE_RX_TX_BOTH     0x3u
 #define SUART_PRU_ID_MASK       0xFFu
 
 /* ======================================================================== *
- *  GATE-FLAGGED BLOCK 2 - EV3 board wiring (serialisers, PINMUX, FIFO)     *
+ *  BLOCK 2 - EV3 board wiring (serialisers, PINMUX, FIFO)                   *
  *                                                                          *
- *  TI ships these in omapl_suart_board.h (not public). Values derived from  *
- *  the EV3 schematic + ev3dev/lego board files in prior research:           *
+ *  Serialiser assignments CONFIRMED against TI's omapl_suart_board.h        *
+ *  (obtained from the ev3dev lego-linux-drivers tree):                       *
  *   - port 4 (SUART1): TX on McASP AXR3, RX on AXR1                         *
  *   - port 3 (SUART2): TX on McASP AXR4, RX on AXR2                         *
  *   - McASP master clock/frame pins (ACLKX/AHCLKX/AFSX/ACLKR/AHCLKR/AFSR,   *
