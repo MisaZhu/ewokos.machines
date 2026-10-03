@@ -11,7 +11,8 @@
  *   COLOR_MODE_CAL     5  COL-CAL
  *
  * Protocol: arch/ev3/sensor_dev.h.
- * Options: -p <1-4> input port (default 2), -m <mode> (default 2).
+ * Options: -p <1-4> optional port restriction (default: auto-detect the port
+ * from the sensor ID voltage and follow it on hot-plug), -m <mode> (default 2).
  */
 #include <arch/ev3/port.h>
 #include <arch/ev3/uart_sensor.h>

@@ -22,20 +22,25 @@
 @/bin/splash -m "start /dev/motor" -p 40
 @/bin/ipcserv /drivers/ev3/motord        /dev/motor
 @/bin/splash -m "start sensors" -p 55
-# Input ports: one daemon per port. Analog (touchd), UART (ultrasonicd/
-# gyrod/colord/ird) and I2C (i2cd/nxt-ultrasonicd) all share pin 5/6, so
-# never start two of them on the same port. Only ports 1 and 2 have a
-# hardware UART (3/4 are PRU soft-UART, not implemented here); GPIO I2C
-# works on any port.
-@/bin/ipcserv /drivers/ev3/touchd        -p 1  /dev/touch0
-@/bin/ipcserv /drivers/ev3/ultrasonicd   -p 2  /dev/us0
-@/bin/ipcserv /drivers/ev3/i2cd          -p 3  /dev/i2c2
-# Alternatives, start manually on a free port:
-#   @/bin/ipcserv /drivers/ev3/gyrod  -p 2  /dev/gyro0
-#   @/bin/ipcserv /drivers/ev3/colord -p 2  /dev/color0
-#   @/bin/ipcserv /drivers/ev3/ird    -p 2  /dev/ir0
-#   @/bin/ipcserv /drivers/ev3/touchd -n -p 4  /dev/touch1      (NXT touch)
-#   @/bin/ipcserv /drivers/ev3/nxt-ultrasonicd -p 4  /dev/nxt-us0
+# Sensor daemons no longer take a port: each one scans the input ports for the
+# ID voltage of its own sensor type (adcd above publishes the pin 1 channels),
+# binds the port it finds and follows the sensor when it is re-plugged elsewhere
+# (hot-plug). The bound port is a device property, readable via GET_DATA
+# (ev3_sensor_data_t.port). Because a daemon only claims a port whose detected
+# type matches, several of them can run at once without colliding. Only ports 1
+# and 2 have a hardware UART (3/4 are PRU soft-UART, not implemented), so the
+# UART sensors bind just those; analog touch and GPIO-I2C sensors work on any
+# port. i2cd is a raw bus (not a sensor) and still selects its port with -p.
+@/bin/ipcserv /drivers/ev3/touchd         /dev/touch0
+@/bin/ipcserv /drivers/ev3/ultrasonicd    /dev/us0
+@/bin/ipcserv /drivers/ev3/gyrod          /dev/gyro0
+@/bin/ipcserv /drivers/ev3/colord         /dev/color0
+@/bin/ipcserv /drivers/ev3/ird            /dev/ir0
+@/bin/ipcserv /drivers/ev3/i2cd     -p 3  /dev/i2c2
+
+# Alternatives, also auto-detecting their port:
+#   @/bin/ipcserv /drivers/ev3/touchd       -n    /dev/touch1      (NXT touch)
+#   @/bin/ipcserv /drivers/ev3/nxt-ultrasonicd    /dev/nxt-us0     (avoid a port used by i2cd)
 
 @/bin/splash -m "start /dev/led" -p 65
 @/bin/ipcserv /drivers/ev3/ledd          /dev/led

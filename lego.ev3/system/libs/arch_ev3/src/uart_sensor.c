@@ -26,6 +26,7 @@
 #include "../include/arch/ev3/uart_sensor.h"
 #include "../include/arch/ev3/uart.h"
 #include "../include/arch/ev3/port.h"
+#include "../include/arch/ev3/sensor_detect.h"
 
 /* ---- header bit fields ---- */
 #define MSG_TYPE_MASK  0xC0
@@ -119,6 +120,32 @@ static int32_t rx_pop(ev3_uart_sensor_t* s, uint8_t* b) {
 
 static void rx_flush(ev3_uart_sensor_t* s) {
     s->_rx_tail = s->_rx_head;
+}
+
+/* Pull any bytes still sitting in the hardware RX FIFO into the ring.
+ *
+ * RX is nominally interrupt driven (rx_irq), but if this port's AINTC line is
+ * never delivered to the process the FIFO fills and is never read, so no sensor
+ * ever announces itself - which is indistinguishable from "nothing plugged
+ * in". Draining the FIFO here as well makes detection independent of interrupt
+ * delivery. Masking the UART RX interrupt around the drain stops rx_irq() from
+ * racing us on the ring head, and because reading RBR is what pops a byte, each
+ * byte is consumed exactly once and lands in the ring in wire order whichever
+ * path picks it up. */
+static void rx_drain_hw(ev3_uart_sensor_t* s) {
+    ev3_uart_enable_irq(s->_base, EV3_IRQ_RX, EV3_IRQ_DISABLE);
+    while (ev3_uart_can_read(s->_base)) {
+        uint8_t b = (uint8_t)ev3_uart_getc(s->_base);
+        uint32_t head = s->_rx_head;
+        uint32_t next = (head + 1) & RING_MASK;
+        if (next == s->_rx_tail) {
+            s->_rx_overrun++;
+            continue;
+        }
+        s->_rx_ring[head] = b;
+        s->_rx_head = next;
+    }
+    ev3_uart_enable_irq(s->_base, EV3_IRQ_RX, EV3_IRQ_ENABLE);
 }
 
 /* ---------------- low-level helpers ---------------- */
@@ -377,6 +404,18 @@ static int32_t handle_msg(ev3_uart_sensor_t* s, uint32_t now) {
         if (mode == s->_new_mode) {
             s->_new_mode = -1;     /* CMD_SELECT completed */
             s->_requested_mode = mode;
+            /* ev3dev#1401 (LEGO EV3 UART sensors, colour in particular): the
+             * first DATA frame that reports a newly selected mode carries a
+             * STALE value - the reading from before the switch - because the
+             * sensor answers ahead of its next measurement. Publish the mode
+             * change but drop this one sample so a client never latches the
+             * pre-switch value; the following frame carries the real reading.
+             * The link is healthy, so still refresh the watchdog and back off
+             * any bad-frame streak. */
+            s->_last_data_ms = now;
+            if (s->_num_data_err > 0)
+                s->_num_data_err--;
+            return 0;
         }
 
         int32_t fmt = s->fmt[mode];
@@ -481,7 +520,7 @@ int ev3_uart_sensor_open(ev3_uart_sensor_t* s, int32_t port, int32_t report_mode
     s->speed = EV3_UART_SPEED_MIN;
     s->_state = ST_SYNC;
 
-    ev3_input_port_power(port, 1);
+    ev3_input_port_power(port, ev3_sensor_power_level());
     if (ev3_input_port_uart_enable(port) != 0)
         return -1;
     s->_base = base;
@@ -503,7 +542,14 @@ void ev3_uart_sensor_close(ev3_uart_sensor_t* s) {
     if (s->port >= 0 && s->port < EV3_IN_PORT_COUNT && _irq_owner[s->port] == s)
         _irq_owner[s->port] = NULL;
     ev3_input_port_uart_disable(s->port);
-    ev3_input_port_power(s->port, 0);
+    /* Drain the RX FIFO before letting go of the port. A probe that opened and
+     * closed this port leaves the bytes it captured behind; flush them so the
+     * next daemon that opens this port starts from a clean ring and stale
+     * CMD_TYPE bytes cannot be mistaken for the current sensor. */
+    ev3_uart_flush_rx(s->_base);
+    /* Release pin 1 to the EV3 sensing level (LOW/float). Driving it HIGH here
+     * would switch the ~9 V NXT supply onto the line. */
+    ev3_input_port_power(s->port, ev3_sensor_power_level());
     s->_base = 0;
     s->synced = 0;
     s->_state = ST_SYNC;
@@ -512,6 +558,10 @@ void ev3_uart_sensor_close(ev3_uart_sensor_t* s) {
 void ev3_uart_sensor_poll(ev3_uart_sensor_t* s) {
     if (s == NULL || s->_base == 0)
         return;
+
+    /* do not depend solely on the RX interrupt: pull anything still in the
+     * hardware FIFO into the ring first (see rx_drain_hw). */
+    rx_drain_hw(s);
 
     uint32_t now = now_ms();
     uint8_t b;

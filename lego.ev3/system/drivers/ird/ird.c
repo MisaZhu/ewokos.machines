@@ -1,5 +1,5 @@
 /*
- * ird - EV3 infrared sensor (UART, type 33) on input port 2.
+ * ird - EV3 infrared sensor (UART, type 33), port auto-detected.
  *
  * Modes (arch/ev3/sensor_dev.h): IR_MODE_PROX / SEEK / REMOTE / ...
  * All read/write/dev_cntl payloads are fixed-width structs; the shared

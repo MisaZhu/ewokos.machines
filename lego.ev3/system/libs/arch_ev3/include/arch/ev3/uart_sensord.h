@@ -17,17 +17,23 @@
  *   dev_cntl(EV3_SENSOR_CNTL_COMMAND)         in : ev3_sensor_cmd_t
  *
  * Command line handled by ev3_uart_sensord_main():
- *   -p <1-4>   input port (only 1 and 2 have a hardware UART)
+ *   -p <1-4>   optional: restrict detection to one port (only 1 and 2 have a
+ *              hardware UART). By default the daemon auto-detects the port
+ *              from the sensor's pin 1 ID voltage and follows it on hot-plug.
  *   -m <mode>  initial mode
  *   [mount]    mount point
  *
- * Text interface (dev.cmd) for the shell: "info", "mode <n>", "reset".
+ * Port auto-detection needs adcd (/dev/adc0) running. The daemon reports the
+ * port it bound to in ev3_sensor_data_t.port (-1 while it is still searching).
+ *
+ * Text interface (dev.cmd) for the shell: "info", "mode <n>", "reset", "scan".
  */
 typedef struct {
     const char* name;          /* vdevice description, e.g. "gyrod"        */
     const char* mnt_point;     /* default mount point                      */
-    int32_t     type_id;       /* expected EV3_UART_TYPE_*, 0 = any        */
-    int32_t     default_port;  /* EV3_IN_PORT_x                            */
+    int32_t     type_id;       /* EV3_UART_TYPE_* to scan for (== the pin 1
+                                * ID type; also reported while searching)   */
+    int32_t     default_port;  /* legacy, ignored: the port is auto-detected */
     int32_t     default_mode;
 } ev3_uart_sensord_cfg_t;
 

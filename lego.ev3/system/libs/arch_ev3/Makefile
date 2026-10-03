@@ -17,6 +17,7 @@ LIB_ARCH_EV3_OBJS = $(ARCH)/src/framebuffer.o \
 	$(ARCH)/src/uart_sensord.o \
 	$(ARCH)/src/pwm.o \
 	$(ARCH)/src/port.o \
+	$(ARCH)/src/sensor_detect.o \
 	$(ARCH)/src/led.o \
 	$(ARCH)/src/sound.o \
 	$(ARCH)/src/i2c.o \

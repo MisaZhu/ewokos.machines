@@ -11,6 +11,29 @@
 #define UART0_IRQ   25
 #define UART1_IRQ   53
 
+/* CFGCHIP3.ASYNC3_CLKSRC (bit 4): 0 = async3 fed by pll0_sysclk2 (parent0),
+ * 1 = pll1_sysclk2 (parent1). UART1 (input port 1) takes its clock from
+ * async3, while UART0 (input port 2) takes pll0_sysclk2 directly. */
+#define CFGCHIP3_ASYNC3_CLKSRC  (1u << 4)
+
+/* DA850 PSC (Power/Sleep Controller) LPSC registers. A peripheral receives no
+ * functional clock until its module is switched to ENABLE, so each sensor UART
+ * must be ungated here before its 16550 registers are touched. da850.dtsi
+ * gates them through power-domains = <&psc0 9> (serial0/UART0) and <&psc1 12>
+ * (serial1/UART1) and Linux's PSC driver turns those on at probe; nothing in
+ * EwokOS does (the kernel has no PSC code and uart_dev_init() is a no-op), so
+ * without this the UART stays clock-gated and every divisor/FIFO/PWREMU write
+ * is inert on BOTH ports. sd.c (EDMA), sound.c/pwm.c (eHRPWM) and i2c.c (I2C1)
+ * each enable their own module the same way, which is exactly why those
+ * peripherals work and the sensor UARTs did not. */
+#define PSC0_BASE       0x01C10000u
+#define PSC1_BASE       0x01E27000u
+#define PSC_MDSTAT(n)   (0x800 + (n) * 4)
+#define PSC_MDCTL(n)    (0xA00 + (n) * 4)
+#define PSC_PTCMD       0x120
+#define PSC_PTSTAT      0x128
+#define PSC_MD_ENABLE   0x3     /* MDSTAT/MDCTL.STATE field = ENABLE */
+
 /* ---------------- input (sensor) ports ---------------- */
 
 struct in_port {
@@ -26,16 +49,18 @@ struct in_port {
     int pmux_reg; /* PINMUX register index for the UART pins        */
     uint32_t pmux_val;
     uint32_t pmux_mask;
+    uint32_t psc_base; /* PSC controller gating the UART clock (0 = none) */
+    int psc_mod;       /* LPSC module number within that controller       */
 };
 
 /* Numbers from da850-lego-ev3.dts (ev3-ports/in1..in4) and da850.dtsi
  * (serial0_rxtx_pins = PINMUX3[23:16] = 0x22, serial1_rxtx_pins =
  * PINMUX4[31:24] = 0x22). */
 static const struct in_port _in[EV3_IN_PORT_COUNT] = {
-    /* port 1 */ { 138,  34,  2, 15, 139,  6,  5, UART1_BASE, UART1_IRQ, 4, 0x22000000, 0xff000000 },
-    /* port 2 */ { 140, 143, 14, 13, 142,  8,  7, UART0_BASE, UART0_IRQ, 3, 0x00220000, 0x00ff0000 },
-    /* port 3 */ { 137, 123, 12, 30, 121, 10,  9, 0,          0,         0, 0,          0          },
-    /* port 4 */ { 100, 120,  1, 31, 122, 12, 11, 0,          0,         0, 0,          0          },
+    /* port 1 */ { 138,  34,  2, 15, 139,  6,  5, UART1_BASE, UART1_IRQ, 4, 0x22000000, 0xff000000, PSC1_BASE, 12 },
+    /* port 2 */ { 140, 143, 14, 13, 142,  8,  7, UART0_BASE, UART0_IRQ, 3, 0x00220000, 0x00ff0000, PSC0_BASE,  9 },
+    /* port 3 */ { 137, 123, 12, 30, 121, 10,  9, 0,          0,         0, 0,          0,          0,         0 },
+    /* port 4 */ { 100, 120,  1, 31, 122, 12, 11, 0,          0,         0, 0,          0,          0,         0 },
 };
 
 static inline bool in_ok(int port) {
@@ -92,11 +117,48 @@ int ev3_input_port_adc_channel_pin1(int port) {
     return _in[port].adc_pin1;
 }
 
+/* Switch a DA850 PSC LPSC module to ENABLE so its peripheral is clocked.
+ * No-op when already enabled; identical to the sequence sd.c (PSC0) and
+ * sound.c/pwm.c/i2c.c (PSC1) use for theirs. */
+static void psc_module_enable(uint32_t psc_base, int module) {
+    if (psc_base == 0)
+        return;
+    volatile uint32_t* mdctl  = (volatile uint32_t*)(_mmio_base + psc_base + PSC_MDCTL(module));
+    volatile uint32_t* mdstat = (volatile uint32_t*)(_mmio_base + psc_base + PSC_MDSTAT(module));
+    volatile uint32_t* ptcmd  = (volatile uint32_t*)(_mmio_base + psc_base + PSC_PTCMD);
+    volatile uint32_t* ptstat = (volatile uint32_t*)(_mmio_base + psc_base + PSC_PTSTAT);
+    int t;
+
+    if ((*mdstat & 0x1f) == PSC_MD_ENABLE)
+        return;                                   /* already enabled */
+    t = 100000; while (*ptstat && --t > 0) ;      /* wait for any in-flight transition */
+    *mdctl = (*mdctl & ~0x1fu) | PSC_MD_ENABLE;   /* NEXT = ENABLE */
+    *ptcmd = 0x1;                                 /* GO */
+    t = 100000; while (*ptstat && --t > 0) ;
+    t = 100000; while (((*mdstat & 0x1f) != PSC_MD_ENABLE) && --t > 0) ;
+}
+
 int ev3_input_port_uart_enable(int port) {
     if (!in_ok(port))
         return -1;
     if (_in[port].uart_base == 0)
         return -1;   /* PRU soft-UART ports are not supported */
+
+    /* Input port 1 is UART1, whose functional clock is async3: a CFGCHIP3 mux
+     * between pll0_sysclk2 and pll1_sysclk2. Linux reparents async3 to pll1
+     * for CPU-frequency independence, but nothing here does that and pll1 may
+     * not even be running - which would leave UART1 with no (or a different)
+     * clock, so the baud divisor computed for pll0_sysclk2 would be wrong and
+     * every byte garbage. Force async3 onto pll0_sysclk2: the same 150 MHz
+     * clock that already feeds UART0 (input port 2) and the SD controller the
+     * board boots from, so both sensor UARTs share one known baud reference.
+     * Masked read-modify-write: only bit 4 changes. */
+    ev3_syscfg_write(EV3_SYSCFG_CFGCHIP3, 0, CFGCHIP3_ASYNC3_CLKSRC);
+
+    /* Ungate the UART's LPSC module so it actually receives its clock. Until
+     * this the 16550 registers are inert and the divisor/FIFO/PWREMU writes in
+     * ev3_uart_init() have no effect - the port looks permanently empty. */
+    psc_module_enable(_in[port].psc_base, _in[port].psc_mod);
 
     /* Route the port TX/RX pins to the hardware UART (SYSCFG is
      * privileged-only, so this must go through the kernel). */

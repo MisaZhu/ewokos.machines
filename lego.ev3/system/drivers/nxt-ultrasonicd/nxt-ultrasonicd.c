@@ -19,8 +19,13 @@
  *   write(fd, &ev3_sensor_cmd_t, sizeof)     SET_MODE arg0 = NXTUS_MODE_*
  *   dev_cntl(EV3_SENSOR_CNTL_GET_DATA / SET_MODE / COMMAND)
  *
+ * The port is not fixed at launch: the daemon scans the input ports for the
+ * NXT ultrasonic ID voltage (arch/ev3/sensor_detect.h), binds the port it
+ * finds and follows the sensor on hot-plug. The bound port is reported in
+ * ev3_sensor_data_t.port (-1 while searching).
+ *
  * Options:
- *   -p <1-4>   input port (default 1)
+ *   -p <1-4>   optional: restrict detection to one input port
  *   -m <mode>  initial mode (default 2 = continuous)
  *   [mount]    mount point (default /dev/nxt-us0)
  */
@@ -40,6 +45,7 @@
 #include <arch/ev3/port.h>
 #include <arch/ev3/i2c.h>
 #include <arch/ev3/sensor_dev.h>
+#include <arch/ev3/sensor_detect.h>
 
 #define NXTUS_ADDR         0x01     /* 7-bit */
 #define NXTUS_REG_VENDOR   0x08
@@ -49,9 +55,17 @@
 
 #define NXTUS_MAX_FAILS    3        /* consecutive I2C errors -> unplugged */
 #define NXTUS_POLL_US      100000   /* sensor updates roughly every 60 ms   */
+#define NXTUS_SCAN_MS      300      /* port (re)scan cadence while searching */
+#define NXTUS_MISS_MAX     4        /* absent scans before re-binding a port */
 
 static ev3_i2c_gpio_t _bus;
-static int32_t _port = EV3_IN_PORT_1;
+static int32_t _want = EV3_SENSOR_TYPE_NXT_US;   /* ID type we look for      */
+static int32_t _port = EV3_SENSOR_PORT_NONE;     /* bound port, -1 = none    */
+static int32_t _pinned = -1;      /* -p override: restrict to one port       */
+static int     _adc_fd = -1;
+static int32_t _bus_open = 0;     /* _bus currently opened on _port          */
+static int32_t _miss = 0;         /* consecutive absent port scans           */
+static uint32_t _scan_ms = 0;
 static int32_t _mode = NXTUS_MODE_CONTINUOUS;
 static int32_t _pending_mode = -1;  /* mode requested by a client, applied in loop */
 
@@ -88,6 +102,48 @@ static void set_value(int32_t connected, int32_t cm) {
 static bool detect_sensor(void) {
     uint8_t id[4];
     return us_read_reg(NXTUS_REG_VENDOR, id, 4) == 0;
+}
+
+/* ---------------- port auto-detection / hot-plug ---------------- */
+
+static void bind(int port) {
+    if (ev3_i2c_gpio_open(&_bus, port, EV3_I2C_GPIO_HZ_NXT) != 0)
+        return;
+    _bus_open = 1;
+    _port = port;
+    _data.port = port;
+    _fails = 0;
+    _miss = 0;
+    _wakeup = true;
+    /* (re)arm the current mode on the freshly bound sensor */
+    us_write_reg(NXTUS_REG_CMD, (uint8_t)_mode);
+}
+
+static void unbind(void) {
+    if (_bus_open) {
+        ev3_i2c_gpio_close(&_bus);
+        _bus_open = 0;
+    }
+    _port = EV3_SENSOR_PORT_NONE;
+    _data.port = EV3_SENSOR_PORT_NONE;
+    _fails = 0;
+    _miss = 0;
+    set_value(0, NXTUS_NO_ECHO);
+}
+
+static void scan_and_bind(uint32_t now) {
+    _scan_ms = now;
+    if (_adc_fd < 0)
+        _adc_fd = ev3_sensor_adc_open();   /* adcd may come up late */
+    ev3_sensor_power_ports();
+    int port;
+    if (_pinned >= 0)
+        port = (ev3_sensor_detect_port(_adc_fd, _pinned) == _want) ?
+                _pinned : EV3_SENSOR_PORT_NONE;
+    else
+        port = ev3_sensor_find(_adc_fd, _want, EV3_SENSOR_PORT_NONE);
+    if (port >= 0)
+        bind(port);
 }
 
 static int32_t do_command(const ev3_sensor_cmd_t* c) {
@@ -169,6 +225,17 @@ static char* us_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p
                 do_command(&c) == 0 ? "ok" : "error (0/1/2)");
         return buf;
     }
+    if (argc > 0 && strcmp(argv[0], "scan") == 0) {
+        if (_port >= 0)
+            unbind();
+        scan_and_bind((uint32_t)kernel_tic_ms(0));
+        snprintf(buf, 160, "scan -> %s\n", _port >= 0 ? "bound" : "not found");
+        return buf;
+    }
+    if (_port < 0) {
+        snprintf(buf, 160, "nxt-us searching type=%d (no port)\n", _want);
+        return buf;
+    }
     snprintf(buf, 160,
             "nxt-us port %d: connected=%d distance=%d cm mode=%d nacks=%d\n",
             _port + 1, _data.connected, _data.value[0], _mode, _bus.nacks);
@@ -180,40 +247,58 @@ static char* us_cmd(vdevice_t* dev, int from_pid, int argc, char** argv, void* p
 static int us_loop(vdevice_t* dev, void* p) {
     (void)p;
 
-    ipc_disable();
+    uint32_t now = (uint32_t)kernel_tic_ms(0);
 
-    if (!_data.connected) {
-        if (detect_sensor()) {
-            _fails = 0;
-            us_write_reg(NXTUS_REG_CMD, (uint8_t)_mode);
-            set_value(1, NXTUS_NO_ECHO);
-        }
+    if (_port < 0) {
+        /* searching: scan the ports for an NXT ultrasonic ID */
+        if ((int32_t)(now - _scan_ms) >= NXTUS_SCAN_MS)
+            scan_and_bind(now);
     } else {
-        if (_pending_mode >= 0) {
-            int32_t m = _pending_mode;
-            _pending_mode = -1;
-            if (us_write_reg(NXTUS_REG_CMD, (uint8_t)m) == 0) {
-                if (valid_mode(m))
-                    _mode = m;
-                else
-                    _pending_mode = _mode;   /* reset: re-arm current mode */
+        ipc_disable();
+
+        if (!_data.connected) {
+            if (detect_sensor()) {
+                _fails = 0;
+                us_write_reg(NXTUS_REG_CMD, (uint8_t)_mode);
+                set_value(1, NXTUS_NO_ECHO);
+            }
+        } else {
+            if (_pending_mode >= 0) {
+                int32_t m = _pending_mode;
+                _pending_mode = -1;
+                if (us_write_reg(NXTUS_REG_CMD, (uint8_t)m) == 0) {
+                    if (valid_mode(m))
+                        _mode = m;
+                    else
+                        _pending_mode = _mode;   /* reset: re-arm current mode */
+                }
+            }
+
+            if (_mode != NXTUS_MODE_OFF) {
+                uint8_t raw = NXTUS_NO_ECHO;
+                if (us_read_reg(NXTUS_REG_DIST, &raw, 1) == 0) {
+                    _fails = 0;
+                    set_value(1, raw);
+                    if (_mode == NXTUS_MODE_SINGLE)
+                        us_write_reg(NXTUS_REG_CMD, NXTUS_MODE_SINGLE);
+                } else if (++_fails >= NXTUS_MAX_FAILS) {
+                    set_value(0, NXTUS_NO_ECHO);
+                }
             }
         }
 
-        if (_mode != NXTUS_MODE_OFF) {
-            uint8_t raw = NXTUS_NO_ECHO;
-            if (us_read_reg(NXTUS_REG_DIST, &raw, 1) == 0) {
-                _fails = 0;
-                set_value(1, raw);
-                if (_mode == NXTUS_MODE_SINGLE)
-                    us_write_reg(NXTUS_REG_CMD, NXTUS_MODE_SINGLE);
-            } else if (++_fails >= NXTUS_MAX_FAILS) {
-                set_value(0, NXTUS_NO_ECHO);
-            }
+        ipc_enable();
+
+        /* hot-plug: if the sensor is no longer on our port, release it and go
+         * back to searching so we follow it wherever it is re-inserted */
+        if ((int32_t)(now - _scan_ms) >= NXTUS_SCAN_MS) {
+            _scan_ms = now;
+            if (ev3_sensor_detect_port(_adc_fd, _port) == _want)
+                _miss = 0;
+            else if (++_miss >= NXTUS_MISS_MAX)
+                unbind();
         }
     }
-
-    ipc_enable();
 
     if (_wakeup) {
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
@@ -227,7 +312,7 @@ static int doargs(int argc, char* argv[]) {
     int c;
     while ((c = getopt(argc, argv, "p:m:")) != -1) {
         switch (c) {
-        case 'p': _port = atoi(optarg) - 1; break;
+        case 'p': _pinned = atoi(optarg) - 1; break;   /* optional restriction */
         case 'm': _mode = atoi(optarg); break;
         default: break;
         }
@@ -241,23 +326,26 @@ int main(int argc, char** argv) {
     if (argind < argc)
         mnt_point = argv[argind];
 
-    if (_port < 0 || _port >= EV3_IN_PORT_COUNT)
-        _port = EV3_IN_PORT_1;
+    if (_pinned < -1 || _pinned >= EV3_IN_PORT_COUNT)
+        _pinned = -1;
     if (!valid_mode(_mode))
         _mode = NXTUS_MODE_CONTINUOUS;
 
     ev3_gpio_init();
-    if (ev3_i2c_gpio_open(&_bus, _port, EV3_I2C_GPIO_HZ_NXT) != 0) {
-        printf("nxt-ultrasonicd: cannot open input port %d\n", _port + 1);
-        return -1;
-    }
+
+    _adc_fd = ev3_sensor_adc_open();
+    if (_adc_fd < 0)
+        printf("nxt-ultrasonicd: /dev/adc0 not ready; ADC detection off, will retry\n");
 
     memset(&_data, 0, sizeof(_data));
     _data.type = EV3_SENSOR_TYPE_NXT_US;
-    _data.port = _port;
+    _data.port = EV3_SENSOR_PORT_NONE;   /* searching */
     _data.mode = _mode;
     _data.nvalues = 1;
     _data.value[0] = NXTUS_NO_ECHO;
+
+    /* bind right away when the sensor is already plugged in */
+    scan_and_bind((uint32_t)kernel_tic_ms(0));
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
@@ -269,6 +357,8 @@ int main(int argc, char** argv) {
     dev.loop_step = us_loop;
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
 
-    ev3_i2c_gpio_close(&_bus);
+    if (_bus_open)
+        ev3_i2c_gpio_close(&_bus);
+    ev3_sensor_adc_close(_adc_fd);
     return 0;
 }

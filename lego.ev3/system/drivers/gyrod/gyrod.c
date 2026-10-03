@@ -12,7 +12,8 @@
  * EV3_SENSOR_CMD_RESET re-zeroes the angle by bouncing the mode, the way
  * ev3dev does it. Protocol: arch/ev3/sensor_dev.h.
  *
- * Options: -p <1-4> input port (default 2), -m <mode> (default 0).
+ * Options: -p <1-4> optional port restriction (default: auto-detect the port
+ * from the sensor ID voltage and follow it on hot-plug), -m <mode> (default 0).
  */
 #include <arch/ev3/port.h>
 #include <arch/ev3/uart_sensor.h>

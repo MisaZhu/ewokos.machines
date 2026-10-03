@@ -22,9 +22,10 @@
  * (the fixed-width-int structs from the arch/ev3 device headers); the raw
  * ADC and joystick nodes are read with read(). Each test screen polls its
  * device on the window timer and prints the result in the live panel; each
- * action prints its outcome on the status line. Drivers that are not
- * started (gyro/color/ir/nxt-us are commented out in init.rd) simply show
- * "n/a" instead of failing.
+ * action prints its outcome on the status line. The sensor daemons pick their
+ * input port automatically (see arch/ev3/sensor_detect.h) and report it in
+ * ev3_sensor_data_t.port; a screen shows "searching..." while the daemon has
+ * not found its sensor yet, and "n/a" when the daemon is not running.
  *
  * The EV3 LCD is 178x128 @ font 12, so text is kept short and the window
  * opens full-screen with no frame/title (use the Exit entry to quit).
@@ -511,14 +512,18 @@ public:
 	}
 
 	/*
-	 * Rebuild the sensor menu, always listing every sensor kind. For each
+	 * Rebuild the sensor menu, always listing every sensor kind. The sensor
+	 * daemons auto-detect which input port their sensor is on (and follow it
+	 * on hot-plug), reporting the bound port in ev3_sensor_data_t.port; -1
+	 * means "searching" (no matching sensor plugged in yet). For each
 	 * candidate node: if a daemon is mounted (dev_get_pid>0) and answers
-	 * GET_DATA, the entry shows its real type and input port (self-reported in
-	 * ev3_sensor_data_t), e.g. "Color     in1"; otherwise the daemon is absent
-	 * or the sensor is not synced, and the entry stays visible with the unknown
-	 * -port marker "in?" rather than disappearing. Called from render() whenever
-	 * the Sensors screen is shown, so starting or stopping a daemon is reflected
-	 * the next time the menu is opened. ADC raw is always offered.
+	 * GET_DATA, the entry shows its real type and the self-reported input
+	 * port, e.g. "Color     in1"; while searching (or when the daemon is not
+	 * started) the port is unknown and the entry stays visible with the "in?"
+	 * marker rather than disappearing. Called from render() whenever the
+	 * Sensors screen is shown, so plugging/unplugging or starting/stopping a
+	 * daemon is reflected the next time the menu is opened. ADC raw is always
+	 * offered.
 	 */
 	void discoverSensors() {
 		sensorCount = 0;
@@ -531,14 +536,16 @@ public:
 			ev3_sensor_data_t d;
 			const char* nm = sl.name;
 			int port = -1;
-			if (dev_get_pid(sl.dev) > 0 && sensorGet(sl.dev, &d)) {
+			bool alive = (dev_get_pid(sl.dev) > 0 && sensorGet(sl.dev, &d));
+			if (alive) {
 				port = d.port;
 				nm = sensorTypeName(d.type, sl.name);
 			}
 			scrPort[sl.scr] = (port >= 0) ? (port + 1) : 0;
 
 			/* pad the name to a fixed column so the port field lines up,
-			 * then show the real port or "in?" when unknown (not started) */
+			 * then show the real port; "in?" = daemon running but still
+			 * scanning for its sensor, "off" = daemon not started at all */
 			char* lab = sensorLabels[sensorCount];
 			int k = snprintf(lab, SLABEL, "%s", nm);
 			if (k < 0) k = 0;
@@ -549,8 +556,10 @@ public:
 				int p = port + 1;
 				if (p > 9) p = 9;   /* ports are 0..3; keep %d one digit */
 				snprintf(lab + k, SLABEL - k, "in%d", p);
-			} else {
+			} else if (alive) {
 				snprintf(lab + k, SLABEL - k, "in?");
+			} else {
+				snprintf(lab + k, SLABEL - k, "off");
 			}
 
 			MenuEntry& m = sensorEntries[sensorCount];
@@ -1001,29 +1010,42 @@ public:
 			if (ok)
 				proto_read_to(&out, &d, sizeof(d));
 			PF->clear(&out);
-			if (ok)
-				snprintf(b, sizeof(b), "%s  %d mV",
-						d.value[0] ? "PRESS" : "release", d.raw_mv);
-			else
+			if (!ok)
 				snprintf(b, sizeof(b), "touch n/a");
+			else if (d.port < 0)
+				snprintf(b, sizeof(b), "touch searching...");
+			else
+				snprintf(b, sizeof(b), "in%d %s  %d mV", d.port + 1,
+						d.value[0] ? "PRESS" : "release", d.raw_mv);
 			setLive(0, b);
 		} break;
 		case S_US: {
 			ev3_sensor_data_t d;
-			if (sensorGet(DEV_US, &d)) {
-				snprintf(b, sizeof(b), "%d %s conn:%d", d.value[0],
+			bool got = sensorGet(DEV_US, &d);
+			if (!got) {
+				setLive(0, "us n/a");
+				setLive(1, "(not started)");
+			} else if (d.port < 0) {
+				setLive(0, "us searching...");
+				setLive(1, "(no sensor)");
+			} else {
+				snprintf(b, sizeof(b), "in%d %d %s conn:%d", d.port + 1, d.value[0],
 						d.mode == US_MODE_DIST_IN ? "0.1in" : "mm", d.connected);
 				setLive(0, b);
 				snprintf(b, sizeof(b), "type:%d mode:%d err:%d", d.type, d.mode, d.errors);
 				setLive(1, b);
-			} else {
-				setLive(0, "us n/a");
-				setLive(1, "(not started)");
 			}
 		} break;
 		case S_GYRO: {
 			ev3_sensor_data_t d;
-			if (sensorGet(DEV_GYRO, &d)) {
+			bool got = sensorGet(DEV_GYRO, &d);
+			if (!got) {
+				setLive(0, "gyro n/a");
+				setLive(1, "(not started)");
+			} else if (d.port < 0) {
+				setLive(0, "gyro searching...");
+				setLive(1, "(no sensor)");
+			} else {
 				if (d.mode == GYRO_MODE_GA)
 					snprintf(b, sizeof(b), "angle:%d rate:%d", d.value[0], d.value[1]);
 				else if (d.mode == GYRO_MODE_ANG)
@@ -1031,31 +1053,41 @@ public:
 				else
 					snprintf(b, sizeof(b), "rate:%d", d.value[0]);
 				setLive(0, b);
-				snprintf(b, sizeof(b), "mode:%d conn:%d err:%d", d.mode, d.connected, d.errors);
+				snprintf(b, sizeof(b), "in%d mode:%d conn:%d err:%d",
+						d.port + 1, d.mode, d.connected, d.errors);
 				setLive(1, b);
-			} else {
-				setLive(0, "gyro n/a");
-				setLive(1, "(not started)");
 			}
 		} break;
 		case S_COLOR: {
 			ev3_sensor_data_t d;
-			if (sensorGet(DEV_COLOR, &d)) {
+			bool got = sensorGet(DEV_COLOR, &d);
+			if (!got) {
+				setLive(0, "color n/a");
+				setLive(1, "(not started)");
+			} else if (d.port < 0) {
+				setLive(0, "color searching...");
+				setLive(1, "(no sensor)");
+			} else {
 				if (d.mode == COLOR_MODE_RGB_RAW)
 					snprintf(b, sizeof(b), "rgb %d,%d,%d", d.value[0], d.value[1], d.value[2]);
 				else
 					snprintf(b, sizeof(b), "val:%d", d.value[0]);
 				setLive(0, b);
-				snprintf(b, sizeof(b), "mode:%d conn:%d err:%d", d.mode, d.connected, d.errors);
+				snprintf(b, sizeof(b), "in%d mode:%d conn:%d err:%d",
+						d.port + 1, d.mode, d.connected, d.errors);
 				setLive(1, b);
-			} else {
-				setLive(0, "color n/a");
-				setLive(1, "(not started)");
 			}
 		} break;
 		case S_IR: {
 			ev3_sensor_data_t d;
-			if (sensorGet(DEV_IR, &d)) {
+			bool got = sensorGet(DEV_IR, &d);
+			if (!got) {
+				setLive(0, "ir n/a");
+				setLive(1, "(not started)");
+			} else if (d.port < 0) {
+				setLive(0, "ir searching...");
+				setLive(1, "(no sensor)");
+			} else {
 				if (d.mode == IR_MODE_REMOTE)
 					snprintf(b, sizeof(b), "rem %d %d %d %d",
 							d.value[0], d.value[1], d.value[2], d.value[3]);
@@ -1064,20 +1096,21 @@ public:
 				else
 					snprintf(b, sizeof(b), "prox:%d", d.value[0]);
 				setLive(0, b);
-				snprintf(b, sizeof(b), "mode:%d conn:%d err:%d", d.mode, d.connected, d.errors);
+				snprintf(b, sizeof(b), "in%d mode:%d conn:%d err:%d",
+						d.port + 1, d.mode, d.connected, d.errors);
 				setLive(1, b);
-			} else {
-				setLive(0, "ir n/a");
-				setLive(1, "(not started)");
 			}
 		} break;
 		case S_NXTUS: {
 			ev3_sensor_data_t d;
-			if (sensorGet(DEV_NXTUS, &d))
-				snprintf(b, sizeof(b), "conn:%d cm:%d mode:%d",
-						d.connected, d.value[0], d.mode);
-			else
+			bool got = sensorGet(DEV_NXTUS, &d);
+			if (!got)
 				snprintf(b, sizeof(b), "nxtus n/a");
+			else if (d.port < 0)
+				snprintf(b, sizeof(b), "nxtus searching...");
+			else
+				snprintf(b, sizeof(b), "in%d conn:%d cm:%d mode:%d",
+						d.port + 1, d.connected, d.value[0], d.mode);
 			setLive(0, b);
 		} break;
 		case S_I2C: {
@@ -1101,9 +1134,14 @@ public:
 				setLive(0, "adc no data");
 				break;
 			}
+			/* Full 16-channel grid, rows labelled by base index, so any
+			 * channel that moves when a sensor is plugged in is visible.
+			 * Expected (if the mapping holds): port N pin-1 ID sits at
+			 * ch 6/8/10/12 and pin-6 analog at ch 5/7/9/11. A sensor ID
+			 * voltage reads ~1000..4500 mV; unplugged floats ~0 or ~5000. */
 			for (int row = 0; row < 4; row++) {
 				int base = row * 4;
-				snprintf(b, sizeof(b), "%d:%4d%4d%4d%4d", base,
+				snprintf(b, sizeof(b), "%2d:%4d%4d%4d%4d", base,
 						ch[base], ch[base + 1], ch[base + 2], ch[base + 3]);
 				setLive(row, b);
 			}
@@ -1154,8 +1192,6 @@ public:
 	}
 
 	void onTimer(uint32_t timerFPS, uint32_t timerSteps) {
-		(void)timerFPS;
-		(void)timerSteps;
 		if (pendingOp != 0) {
 			int op = pendingOp, sel = pendingSel;
 			pendingOp = 0;
@@ -1164,6 +1200,22 @@ public:
 			else if (op == 2)
 				pop();
 			return;   /* render() already polled the new screen */
+		}
+		/* Sensors list: rebuild ~1 Hz so hot-plug is reflected. timerSteps
+		 * advances once per frame at timerFPS, so this fires once a second.
+		 * discoverSensors() only rewrites the label buffers in place and the
+		 * list reads them at paint time, so the highlight is preserved. Mark
+		 * the LIST dirty via list->update(): this window is non-alpha, so
+		 * repaint() redraws only dirty widgets - a bare root->refresh() sets
+		 * doRefresh but leaves every widget clean, so nothing is redrawn.
+		 * update() sets the list's dirty flag and flags the window. Its
+		 * dev_cntl reads are served from each daemon's cached data (answered
+		 * even while a daemon is mid-probe), so this never disturbs sensing. */
+		if (cur() == S_SENSORS && timerFPS != 0 &&
+				(timerSteps % timerFPS) == 0) {
+			discoverSensors();
+			if (list != NULL)
+				list->update();
 		}
 		/* every tick: the daemons cache the latest sample, polling is a
 		 * cheap dev_cntl and keeps the live panel in step with the sensor */

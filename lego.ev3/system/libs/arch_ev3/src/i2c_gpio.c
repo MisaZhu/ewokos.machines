@@ -23,6 +23,7 @@
 #include "../include/arch/ev3/i2c.h"
 #include "../include/arch/ev3/gpio.h"
 #include "../include/arch/ev3/port.h"
+#include "../include/arch/ev3/sensor_detect.h"
 
 #define WAIT_AFTER_WRITE 4    /* half-periods (legoev3-fiq TRANSFER_WAIT) */
 #define WAIT_AFTER_READ  2
@@ -135,6 +136,9 @@ int32_t ev3_i2c_gpio_open(ev3_i2c_gpio_t* bus, int32_t port, int32_t hz) {
     bus->half_us = 500000 / hz;
     if (bus->half_us < 5) bus->half_us = 5;
 
+    /* This is the NXT path: NXT I2C sensors are fed from the ~9 V battery
+     * rail, so pin 1 (I_ON) is driven HIGH here - the deliberate exception to
+     * the EV3 sensing rule (see sensor_detect.h). */
     ev3_input_port_power(port, 1);
     if (ev3_input_port_i2c_enable(port) != 0)
         return -1;
@@ -158,6 +162,7 @@ void ev3_i2c_gpio_close(ev3_i2c_gpio_t* bus) {
         return;
     ev3_gpio_config(bus->scl, GPIO_INPUT);
     ev3_gpio_config(bus->sda, GPIO_INPUT);
+    /* Release the 9 V NXT supply: drive pin 1 back LOW (float). */
     ev3_input_port_power(bus->port, 0);
     bus->port = -1;
 }

@@ -1,5 +1,5 @@
 /*
- * ultrasonicd - EV3 ultrasonic sensor (UART, type 30) on input port 2.
+ * ultrasonicd - EV3 ultrasonic sensor (UART, type 30), port auto-detected.
  *
  * Modes (arch/ev3/sensor_dev.h): US_MODE_DIST_CM (value[0] = mm) /
  * DIST_IN / LISTEN / ...

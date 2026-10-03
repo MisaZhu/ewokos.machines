@@ -39,6 +39,12 @@ typedef struct {
     int32_t raw_mv;       /* analog sensors: pin voltage in mV         */
     int32_t errors;       /* protocol error counter                    */
     int64_t timestamp_ms; /* kernel ms of the last update              */
+    int32_t probing;      /* UART daemons only: 0 = not probing, else the
+                           * port index + 1 the daemon is actively probing
+                           * right now. A transient claim so peer daemons keep
+                           * off that port; it is NOT a binding (see port).
+                           * Encoded +1 so a zero-initialised struct (touchd,
+                           * nxt-ultrasonicd) safely means "not probing". */
 } ev3_sensor_data_t;
 
 typedef struct {
