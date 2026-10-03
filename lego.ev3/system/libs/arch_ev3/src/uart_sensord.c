@@ -276,8 +276,9 @@ static void scan_and_bind(uint32_t now) {
         /* explicit -p: trust the operator. The ADC cannot name a UART sensor
          * (pin 1 is pulled to ground, no ID voltage), so gating on
          * ev3_sensor_detect_port here would reject every UART port - bind the
-         * requested port directly as long as it has a hardware UART. This is
-         * the fixed-port behaviour that is known to work. */
+         * requested port directly as long as it has a UART transport (a 16550
+         * base for ports 1/2, or the non-zero PRU sentinel for ports 3/4). This
+         * is the fixed-port behaviour that is known to work. */
         port = (ev3_input_port_uart_base(_pinned) != 0) ? _pinned : EV3_SENSOR_PORT_NONE;
     else
         port = ev3_sensor_find_uart(_adc_fd, _cfg->type_id, EV3_SENSOR_PORT_NONE);
@@ -316,10 +317,11 @@ static void scan_and_bind(uint32_t now) {
  * because device_run() services IPC with IPC_NON_BLOCK and the probe only masks
  * IPC around each individual poll, so the claim is always readable.
  *
- * Only input ports 1 and 2 have a hardware UART (ports 3 and 4 are PRU
- * soft-UART and cannot be driven here), so a probe must cover BOTH of them:
- * probing just the first and returning would starve input port 2 whenever
- * input port 1 is empty or holds a different sensor.
+ * All four input ports are UART-capable: ports 1/2 are 16550s and ports 3/4 are
+ * PRU0 soft-UART (a sentinel base routes ev3_uart_* to the PRU transport, see
+ * uart.c/port.c). A probe must therefore cover ALL of them: probing just the
+ * first and returning would starve the others whenever an earlier port is empty
+ * or holds a different sensor.
  */
 #define PROBE_STAGGER_MS 300      /* per-daemon offset for the FIRST probe only,
                                    * so the four daemons (started together at
@@ -405,13 +407,17 @@ static int port_owned_by_peer(int port) {
 /* Probe every UART-capable port: skip any a peer already holds, otherwise open
  * it, give the handshake up to PROBE_SYNC_MS to report a type, and keep the
  * port only if the type is ours. Because probes are staggered per daemon (see
- * PROBE_STAGGER_MS), only one daemon probes at a time, so walking both ports
+ * PROBE_STAGGER_MS), only one daemon probes at a time, so walking all four ports
  * here cannot contend with another daemon's probe, and port_owned_by_peer()
  * keeps us off any port a peer has already bound and is driving. */
 static void protocol_probe(void) {
     for (int p = 0; p < EV3_IN_PORT_COUNT; p++) {
+        /* Ports 1/2 are 16550s; ports 3/4 carry a PRU soft-UART sentinel base
+         * (non-zero), so all four are UART-drivable and walked here. A port with
+         * no transport at all would report base 0 - none do now, but keep the
+         * guard so a future portless config cannot open a null base. */
         if (ev3_input_port_uart_base(p) == 0)
-            continue;               /* PRU soft-UART ports 3/4: not drivable */
+            continue;
 
         /* Claim the port BEFORE asking the peers (write-then-read). With this
          * order two daemons can never both see the port free: if A and B race,

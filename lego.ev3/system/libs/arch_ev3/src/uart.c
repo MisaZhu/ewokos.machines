@@ -3,6 +3,7 @@
 #include <ewoksys/mmio.h>
 
 #include "../include/arch/ev3/uart.h"
+#include "../include/arch/ev3/pru_uart.h"
 
 #define UART_PWREMU		(0x30)
 
@@ -45,11 +46,18 @@ static inline uint16_t baud_div(int baudrate) {
 #define REG32(x) (*(volatile uint32_t*)(_mmio_base + base + (x)))
 
 uint32_t ev3_uart_get_irq(ewokos_addr_t base){
+    if(EV3_UART_IS_PRU(base))
+        return ev3_pru_uart_get_irq(EV3_UART_PRU_PORT(base));
     return REG32(UART_IIR);
 }
 
 void ev3_uart_enable_irq(ewokos_addr_t base, int dir, int en){
     uint32_t mask;
+
+    if(EV3_UART_IS_PRU(base)){
+        ev3_pru_uart_enable_irq(EV3_UART_PRU_PORT(base), dir, en);
+        return;
+    }
 
     if(dir)
         mask = 0x2;
@@ -64,6 +72,11 @@ void ev3_uart_enable_irq(ewokos_addr_t base, int dir, int en){
 
 void ev3_uart_init(ewokos_addr_t base, int baudrate){
     uint16_t div = baud_div(baudrate);
+
+    if(EV3_UART_IS_PRU(base)){
+        ev3_pru_uart_init(EV3_UART_PRU_PORT(base), baudrate);
+        return;
+    }
 
     /* TI PWREMU_MGMT sequence: keep FREE-run on but hold the receiver and
      * transmitter in reset (URRST/UTRST clear) while the port is programmed,
@@ -88,7 +101,14 @@ void ev3_uart_init(ewokos_addr_t base, int baudrate){
 
 void ev3_uart_set_baud(ewokos_addr_t base, int baudrate){
     uint16_t div = baud_div(baudrate);
-    uint32_t lcr = REG32(UART_LCR);
+    uint32_t lcr;
+
+    if(EV3_UART_IS_PRU(base)){
+        ev3_pru_uart_set_baud(EV3_UART_PRU_PORT(base), baudrate);
+        return;
+    }
+
+    lcr = REG32(UART_LCR);
     REG32(UART_LCR) = lcr | UART_LCR_DLAB;    /* DLAB=1: 0x00/0x04 are DLL/DLH */
     REG32(UART_DLL) = div & 0xFF;
     REG32(UART_DLH) = (div >> 8) & 0xFF;
@@ -97,25 +117,41 @@ void ev3_uart_set_baud(ewokos_addr_t base, int baudrate){
 }
 
 void ev3_uart_flush_rx(ewokos_addr_t base){
+    if(EV3_UART_IS_PRU(base)){
+        ev3_pru_uart_flush_rx(EV3_UART_PRU_PORT(base));
+        return;
+    }
     REG32(UART_FCR) = UART_FCR_FIFOEN | UART_FCR_RXCLR;
 }
 
 int ev3_uart_tx_empty(ewokos_addr_t base){
+    if(EV3_UART_IS_PRU(base))
+        return ev3_pru_uart_tx_empty(EV3_UART_PRU_PORT(base));
     return ((REG32(UART_LSR)) & UART_LSR_TEMT);
 }
 
 int ev3_uart_can_write(ewokos_addr_t base){
+    if(EV3_UART_IS_PRU(base))
+        return ev3_pru_uart_can_write(EV3_UART_PRU_PORT(base));
     return ((REG32(UART_LSR)) & UART_LSR_THRE);
 }
 
 int ev3_uart_can_read(ewokos_addr_t base){
+    if(EV3_UART_IS_PRU(base))
+        return ev3_pru_uart_can_read(EV3_UART_PRU_PORT(base));
     return REG32(UART_LSR) & UART_LSR_DR;
 }
 
 void ev3_uart_putc(ewokos_addr_t base, char ch){
+    if(EV3_UART_IS_PRU(base)){
+        ev3_pru_uart_putc(EV3_UART_PRU_PORT(base), ch);
+        return;
+    }
     REG32(UART_TX) = ch;
 }
 
 char ev3_uart_getc(ewokos_addr_t base){
+    if(EV3_UART_IS_PRU(base))
+        return ev3_pru_uart_getc(EV3_UART_PRU_PORT(base));
     return  REG32(UART_TX);
 }

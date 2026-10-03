@@ -4,12 +4,23 @@
 
 #include "../include/arch/ev3/port.h"
 #include "../include/arch/ev3/gpio.h"
+#include "../include/arch/ev3/uart.h"      /* EV3_UART_PRU_BASE / EV3_UART_IS_PRU */
+#include "../include/arch/ev3/pru_uart.h"  /* ev3_pru_uart_port_enable/disable    */
 
 /* Hardware UART controllers (AM1808) and their AINTC lines. */
 #define UART0_BASE  0x01C42000
 #define UART1_BASE  0x01D0C000
 #define UART0_IRQ   25
 #define UART1_IRQ   53
+
+/* Ports 3/4 have no 16550; they are driven by the PRU0 SUART firmware. Each
+ * channel's RX host event reaches the ARM as a distinct PRU_EVTOUT->AINTC sysint
+ * (EVTOUT2=5 for port 4 / SUART1, EVTOUT3=6 for port 3 / SUART2 - see
+ * pru_uart.h), so the two ports never share an IRQ line. The sentinel base makes
+ * uart_sensor.c's `base==0` gates pass while uart.c routes ev3_uart_* to the PRU
+ * transport instead of a 16550. */
+#define PRU_EVTOUT2_IRQ 5
+#define PRU_EVTOUT3_IRQ 6
 
 /* CFGCHIP3.ASYNC3_CLKSRC (bit 4): 0 = async3 fed by pll0_sysclk2 (parent0),
  * 1 = pll1_sysclk2 (parent1). UART1 (input port 1) takes its clock from
@@ -59,8 +70,8 @@ struct in_port {
 static const struct in_port _in[EV3_IN_PORT_COUNT] = {
     /* port 1 */ { 138,  34,  2, 15, 139,  6,  5, UART1_BASE, UART1_IRQ, 4, 0x22000000, 0xff000000, PSC1_BASE, 12 },
     /* port 2 */ { 140, 143, 14, 13, 142,  8,  7, UART0_BASE, UART0_IRQ, 3, 0x00220000, 0x00ff0000, PSC0_BASE,  9 },
-    /* port 3 */ { 137, 123, 12, 30, 121, 10,  9, 0,          0,         0, 0,          0,          0,         0 },
-    /* port 4 */ { 100, 120,  1, 31, 122, 12, 11, 0,          0,         0, 0,          0,          0,         0 },
+    /* port 3 */ { 137, 123, 12, 30, 121, 10,  9, EV3_UART_PRU_BASE(2), PRU_EVTOUT3_IRQ, 0, 0, 0, 0, 0 },
+    /* port 4 */ { 100, 120,  1, 31, 122, 12, 11, EV3_UART_PRU_BASE(3), PRU_EVTOUT2_IRQ, 0, 0, 0, 0, 0 },
 };
 
 static inline bool in_ok(int port) {
@@ -141,8 +152,19 @@ static void psc_module_enable(uint32_t psc_base, int module) {
 int ev3_input_port_uart_enable(int port) {
     if (!in_ok(port))
         return -1;
+
+    /* Ports 3/4 are PRU soft-UART: the McASP serialisers (not the 16550 pins)
+     * drive the port, so skip the CFGCHIP3 reparent / PSC / 16550-PINMUX below
+     * and let pru_uart.c own the PRUSS+McASP bring-up and its own PINMUX. The
+     * RX line buffer is still enabled (active low) exactly as for a HW UART. */
+    if (EV3_UART_IS_PRU(_in[port].uart_base)) {
+        ev3_gpio_config(_in[port].buf_en, GPIO_OUTPUT);
+        ev3_gpio_write(_in[port].buf_en, 0);
+        return ev3_pru_uart_port_enable(port);
+    }
+
     if (_in[port].uart_base == 0)
-        return -1;   /* PRU soft-UART ports are not supported */
+        return -1;
 
     /* Input port 1 is UART1, whose functional clock is async3: a CFGCHIP3 mux
      * between pll0_sysclk2 and pll1_sysclk2. Linux reparents async3 to pll1
@@ -174,6 +196,8 @@ int ev3_input_port_uart_enable(int port) {
 void ev3_input_port_uart_disable(int port) {
     if (!in_ok(port))
         return;
+    if (EV3_UART_IS_PRU(_in[port].uart_base))
+        ev3_pru_uart_port_disable(port);   /* stop RX, deactivate serialiser */
     ev3_gpio_config(_in[port].buf_en, GPIO_OUTPUT);
     ev3_gpio_write(_in[port].buf_en, 1);   /* disabled = high */
 }
