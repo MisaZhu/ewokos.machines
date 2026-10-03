@@ -95,7 +95,7 @@ static int power_button(vdevice_t* dev, void* p) {
     ipc_disable();
     check_power();
     ipc_enable();
-    proc_usleep(200000);
+    usleep(200000);
 }
 
 int main(int argc, char** argv) {

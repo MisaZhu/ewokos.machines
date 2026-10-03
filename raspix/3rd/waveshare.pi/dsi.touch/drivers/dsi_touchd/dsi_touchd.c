@@ -207,7 +207,7 @@ static int32_t dsi_i2c_select(const dsi_i2c_bus_t* bus) {
     else {
         i2c_init(bus->sda, bus->scl);
     }
-    proc_usleep(2000);
+    usleep(2000);
     return 0;
 }
 
@@ -280,12 +280,12 @@ static uint32_t dsi_i2c_read_reg16_split(uint8_t addr, uint16_t reg,
         if (active_bus->mode == DSI_I2C_MODE_I2C1) {
             if (bcm283x_i2c1_write(addr, reg_buf, sizeof(reg_buf)) != 0)
                 return 1;
-            proc_usleep(TP_I2C_SPLIT_DELAY_US);
+            usleep(TP_I2C_SPLIT_DELAY_US);
             return bcm283x_i2c1_read(addr, data, len) == 0 ? 0 : 1;
         }
         if (bcm283x_i2c0_write(addr, reg_buf, sizeof(reg_buf)) != 0)
             return 1;
-        proc_usleep(TP_I2C_SPLIT_DELAY_US);
+        usleep(TP_I2C_SPLIT_DELAY_US);
         return bcm283x_i2c0_read(addr, data, len) == 0 ? 0 : 1;
     }
 
@@ -339,12 +339,12 @@ static uint32_t dsi_i2c_read_reg8_split(uint8_t addr, uint8_t reg, uint8_t* valu
         if (active_bus->mode == DSI_I2C_MODE_I2C1) {
             if (bcm283x_i2c1_write(addr, &reg, 1) != 0)
                 return 1;
-            proc_usleep(TP_I2C_SPLIT_DELAY_US);
+            usleep(TP_I2C_SPLIT_DELAY_US);
             return bcm283x_i2c1_read(addr, value, 1) == 0 ? 0 : 1;
         }
         if (bcm283x_i2c0_write(addr, &reg, 1) != 0)
             return 1;
-        proc_usleep(TP_I2C_SPLIT_DELAY_US);
+        usleep(TP_I2C_SPLIT_DELAY_US);
         return bcm283x_i2c0_read(addr, value, 1) == 0 ? 0 : 1;
     }
 
@@ -383,12 +383,12 @@ static uint32_t dsi_i2c_read_regs8_split(uint8_t addr, uint8_t reg,
         if (active_bus->mode == DSI_I2C_MODE_I2C1) {
             if (bcm283x_i2c1_write(addr, &reg, 1) != 0)
                 return 1;
-            proc_usleep(TP_I2C_SPLIT_DELAY_US);
+            usleep(TP_I2C_SPLIT_DELAY_US);
             return bcm283x_i2c1_read(addr, data, len) == 0 ? 0 : 1;
         }
         if (bcm283x_i2c0_write(addr, &reg, 1) != 0)
             return 1;
-        proc_usleep(TP_I2C_SPLIT_DELAY_US);
+        usleep(TP_I2C_SPLIT_DELAY_US);
         return bcm283x_i2c0_read(addr, data, len) == 0 ? 0 : 1;
     }
 
@@ -405,10 +405,10 @@ static uint32_t dsi_i2c_read_reg8_retry(uint8_t addr, uint8_t reg, uint8_t* valu
             return 0;
         if (!active_bus_hw || active_bus == NULL)
             break;
-        proc_usleep(2000);
+        usleep(2000);
         if (dsi_i2c_select(active_bus) != 0)
             break;
-        proc_usleep(2000);
+        usleep(2000);
     }
     return 1;
 }
@@ -424,10 +424,10 @@ static uint32_t dsi_i2c_read_regs8_retry(uint8_t addr, uint8_t reg,
             return 0;
         if (!active_bus_hw || active_bus == NULL)
             break;
-        proc_usleep(2000);
+        usleep(2000);
         if (dsi_i2c_select(active_bus) != 0)
             break;
-        proc_usleep(2000);
+        usleep(2000);
     }
     return 1;
 }
@@ -469,7 +469,7 @@ static int32_t waveshare_mcu_write_power(uint16_t state, uint32_t settle_ms, con
     if (dsi_i2c_write_reg8(DISPLAY_MCU_ADDR, WAVESHARE_REG_LCD,
                 (uint8_t)(state & 0xff)) != 0)
         return -1;
-    proc_usleep(settle_ms * 1000u);
+    usleep(settle_ms * 1000u);
     return 0;
 }
 
@@ -605,13 +605,13 @@ static void goodix_reset_select(const dsi_i2c_bus_t* bus, uint8_t addr) {
         bcm283x_gpio_clr(GOODIX_INT_GPIO);
 
     bcm283x_gpio_clr(GOODIX_RESET_GPIO);
-    proc_usleep(20000);
+    usleep(20000);
     bcm283x_gpio_set(GOODIX_RESET_GPIO);
-    proc_usleep(60000);
+    usleep(60000);
 
     bcm283x_gpio_config(GOODIX_INT_GPIO, GPIO_FUNC_INPUT);
     bcm283x_gpio_pull(GOODIX_INT_GPIO, GPIO_PULL_UP);
-    proc_usleep(20000);
+    usleep(20000);
 }
 
 static bool goodix_id_valid(const uint8_t* id_buf) {
@@ -695,7 +695,7 @@ static tp_status_t goodix_init(void) {
         if (dsi_i2c_select(&dsi_i2c_buses[bus_i]) != 0) {
             continue;
         }
-        proc_usleep(20000);
+        usleep(20000);
 
                 if (ft5x06_probe(&dsi_i2c_buses[bus_i]) == TP_OK)
                         return TP_OK;

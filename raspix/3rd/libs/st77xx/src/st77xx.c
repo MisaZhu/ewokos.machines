@@ -43,7 +43,7 @@ uint16_t LCD_MODE = LCD_MODE_0;
 uint16_t LCD_FLUSH_MODE = LCD_FLUSH_AUTO;
 
 static inline void delay(int32_t count) {
-    proc_usleep(count);
+    usleep(count);
 }
 
 /* LCD CONTROL */

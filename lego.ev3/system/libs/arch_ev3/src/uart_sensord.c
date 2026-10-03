@@ -467,7 +467,7 @@ static void protocol_probe(void) {
             }
             if (t - t0 >= PROBE_SYNC_MS)
                 break;                       /* a full cycle, still no type */
-            proc_usleep(2000);
+            usleep(2000);
         }
         if (_s.type_id != 0 && _s.type_id == _cfg->type_id) {
             _port = p;
@@ -555,7 +555,7 @@ static int sensor_loop(vdevice_t* dev, void* p) {
     if (ev3_uart_sensor_consume_wakeup(&_s))
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 
-    proc_usleep(1000);
+    usleep(1000);
     return 0;
 }
 

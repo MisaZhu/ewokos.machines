@@ -226,7 +226,7 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
             &setup, NULL, false) < 0) {
         return NULL;
     }
-    proc_usleep(10000); /* USB spec: new address is valid after 2ms */
+    usleep(10000); /* USB spec: new address is valid after 2ms */
 
     memset(dev, 0, sizeof(*dev));
     dev->used = true;
@@ -558,7 +558,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
             if (ready == 0) {
                 break;
             }
-            proc_usleep(100000);
+            usleep(100000);
         }
         if (ready != 0) {
             klog("bsp_usb: msc not_ready addr=%u\n", dev->addr);

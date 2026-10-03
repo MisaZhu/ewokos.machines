@@ -5,7 +5,7 @@
 #include <ewoksys/proc.h>
 #include <ewoksys/kernel_tic.h>
 
-#define usleep	        proc_usleep
+#define usleep	        usleep
 #define get_timer(x)    (kernel_tic_ms(0) - (x))
 
 void log_init(void);

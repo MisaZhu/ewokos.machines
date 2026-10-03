@@ -517,7 +517,7 @@ static void sdhci_pre_cmd_gap(uint32_t gap_us)
  *
  * The waits in sdhci_send_command()/sdhci_transfer_data() are microsecond
  * scale: a command response arrives within ~64 SD clocks (~2us at 50MHz)
- * and a 512-byte block moves in ~20-90us. Yielding with sleep(0) on every
+ * and a 512-byte block moves in ~20-90us. Yielding with sched_yield() on every
  * poll iteration hands the CPU to the scheduler for a full multi-ms round
  * trip (netd, sshd and the pump thread are all runnable during transfers),
  * so each CMD53 paid several milliseconds of pure scheduling latency --
@@ -532,7 +532,7 @@ static void sdhci_pre_cmd_gap(uint32_t gap_us)
 static inline void sdhci_poll_relax(uint32_t spin_start_us)
 {
     if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US)
-        sleep(0);
+        sched_yield();
 }
 
 
@@ -907,7 +907,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
     bool transfer_done = false;
     uint32_t spin_start_us = sdhci_now_us();
     /* Wall-clock deadline, not an iteration count: a stuck FIFO used to
-     * cost 100000 sleep(0) round trips (tens of seconds under load) and
+     * cost 100000 sched_yield() round trips (tens of seconds under load) and
      * wedged the whole firmware download. Measured as elapsed-since-start:
      * get_timer() is an unsigned kernel_tic_ms delta, so the old
      * "now + timeout" deadline underflowed and fired on the very first
@@ -937,7 +937,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
              * the whole multi-block CMD53. A normal 3-block WLAN
              * frame can exceed SDHCI_POLL_SPIN_US end-to-end, so
              * keeping the transfer-start timestamp here drops the
-             * second/third block straight into sleep(0) even though
+             * second/third block straight into sched_yield() even though
              * the controller is making steady progress - that
              * injects a millisecond-class scheduler gap into every
              * packet and caps throughput in the few-hundred-KB/s
@@ -1061,7 +1061,7 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 
     {
         /* Wall-clock busy cap: the old iteration-count loop (each
-         * iteration one sleep(0) round trip, doubling up to 32000)
+         * iteration one sched_yield() round trip, doubling up to 32000)
          * turned one stuck inhibit bit into tens of seconds of
          * scheduler spinning before anyone noticed. Elapsed-since-
          * start form: get_timer() deltas are unsigned, a "now +

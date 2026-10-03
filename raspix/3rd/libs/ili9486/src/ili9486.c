@@ -43,7 +43,7 @@ uint16_t LCD_HEIGHT = DEF_SCREEN_HEIGHT;
 int ILI9486_REG_WIDTH_16 = 0;
 
 static inline void delay(int32_t count) {
-    proc_usleep(count);
+    usleep(count);
 }
 
 /* LCD CONTROL */

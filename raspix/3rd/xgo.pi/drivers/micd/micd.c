@@ -139,7 +139,7 @@ static int mic_loop(vdevice_t* dev, void* p) {
     /* nobody listening: keep quiet and stay away from vfsd */
     if (_mic_clients <= 0) {
         pcm_read(raw, sizeof(raw)); /* drain FIFO so it doesn't sit in overrun */
-        proc_usleep(20000);
+        usleep(20000);
         return 0;
     }
 
@@ -165,7 +165,7 @@ static int mic_loop(vdevice_t* dev, void* p) {
      * The 64-word RX FIFO fills in ~0.67ms at 48kHz stereo; poll well
      * under that or hardware overrun drops samples (CS_A_RXERR).
      */
-    proc_usleep(200);
+    usleep(200);
     return 0;
 }
 

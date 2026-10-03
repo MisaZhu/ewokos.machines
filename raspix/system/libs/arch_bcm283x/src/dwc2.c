@@ -322,7 +322,7 @@ static int dwc_wait_grstctl_clear(uint32_t mask, uint32_t timeout_ms) {
         if ((usb_readl(DWC_REG_GRSTCTL) & mask) == 0) {
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -334,7 +334,7 @@ static int dwc_wait_ahb_idle(uint32_t timeout_ms) {
         if ((usb_readl(DWC_REG_GRSTCTL) & DWC_GRSTCTL_AHB_IDLE) != 0) {
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -352,7 +352,7 @@ static int dwc_core_soft_reset(void) {
     }
     /* Some DWC2 revisions need extra settle time before post-reset
        register writes become reliable. */
-    proc_usleep(10000);
+    usleep(10000);
     return 0;
 }
 
@@ -377,7 +377,7 @@ static int dwc_wait_channel_stopped(int ch, uint32_t timeout_ms) {
         if ((hcchar & DWC_HCCHAR_CHENA) == 0 || (hcint & DWC_HCINT_CHH) != 0) {
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -439,7 +439,7 @@ static int dwc_host_halt_all_channels(void) {
             if (waited++ > 100) {
                 break;
             }
-            proc_usleep(1000);
+            usleep(1000);
         }
         dwc_channel_reset_regs(ch);
     }
@@ -502,7 +502,7 @@ int dwc2_reset_port(void) {
         return -1;
     }
     dwc_port_write(DWC_HPRT_PWR, 0);
-    proc_usleep(10000);
+    usleep(10000);
     if (!dwc2_port_connected()) {
         return -1;
     }
@@ -515,9 +515,9 @@ int dwc2_reset_port(void) {
     }
 
     dwc_port_write(DWC_HPRT_PWR | DWC_HPRT_RST, 0);
-    proc_usleep(30000);
+    usleep(30000);
     dwc_port_write(DWC_HPRT_PWR, DWC_HPRT_RST);
-    proc_usleep(5000);
+    usleep(5000);
     for (;;) {
         reg = usb_readl(DWC_REG_HPRT);
         if ((reg & 0x1u) == 0) {
@@ -530,14 +530,14 @@ int dwc2_reset_port(void) {
             dwc2_ack_port_change();
             return -1;
         }
-        proc_usleep(1000);
+        usleep(1000);
     }
     dwc2_ack_port_change();
     /* USB spec reset recovery: device may ignore traffic briefly after reset.
        10ms is the spec minimum; slow or marginal MCUs (and devices running
        near their brown-out limit) need longer before their transceiver is
        stable, so give them 50ms */
-    proc_usleep(50000);
+    usleep(50000);
 
     reg = usb_readl(DWC_REG_HPRT);
     if (!dwc2_port_connected()) {
@@ -608,7 +608,7 @@ static int dwc_host_init(void) {
         klog("dwc2: host init power_on_failed\n");
         return -1;
     }
-    proc_usleep(20000);
+    usleep(20000);
 
     /* GHWCFG2[17:14] = number of host channels - 1 */
     _num_host_channels = ((usb_readl(DWC_REG_GHWCFG2) >> 14) & 0xFu) + 1u;
@@ -626,7 +626,7 @@ static int dwc_host_init(void) {
     reg |= (DWC_USBTRDTIM_UTMI_8BIT << DWC_GUSBCFG_USBTRDTIM_SHIFT);
     reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
     usb_writel(DWC_REG_GUSBCFG, reg);
-    proc_usleep(50000);
+    usleep(50000);
 
     if (dwc_core_soft_reset() != 0) {
         klog("dwc2: host init soft_reset_failed\n");
@@ -644,7 +644,7 @@ static int dwc_host_init(void) {
     reg |= (DWC_USBTRDTIM_UTMI_8BIT << DWC_GUSBCFG_USBTRDTIM_SHIFT);
     reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
     usb_writel(DWC_REG_GUSBCFG, reg);
-    proc_usleep(25000);
+    usleep(25000);
 
     usb_writel(DWC_REG_GRXFSIZ, DWC_RX_FIFO_SIZE);
     usb_writel(DWC_REG_GNPTXFSIZ, (DWC_NP_TX_FIFO_SIZE << 16) | DWC_RX_FIFO_SIZE);
@@ -671,7 +671,7 @@ static int dwc_host_init(void) {
     reg |= DWC_GAHBCFG_DMA_EN | DWC_GAHBCFG_WAIT_AXI_WRITES;
     usb_writel(DWC_REG_GAHBCFG, reg);
     dwc_port_write(DWC_HPRT_PWR, 0);
-    proc_usleep(100000);
+    usleep(100000);
     dwc2_ack_port_change();
     return 0;
 }
@@ -725,7 +725,7 @@ static int dwc_channel_wait(int ch, uint32_t timeout_ms, uint32_t* hcint_out, ui
             }
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -835,7 +835,7 @@ static int dwc_control_stage_transfer(int ch, uint8_t addr,
             return ret;
         }
         if (attempt < 3) {
-            proc_usleep(5000);
+            usleep(5000);
         }
     }
     return ret;
@@ -1058,7 +1058,7 @@ void dwc2_msc_recover(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
     setup.bRequest = USB_MSC_REQ_RESET;
     setup.wIndex = iface_num;
     (void)dwc2_control_xfer(addr, low_speed, ctrl_mps, &setup, NULL, false);
-    proc_usleep(10000);
+    usleep(10000);
 
     memset(&setup, 0, sizeof(setup));
     setup.bmRequestType = USB_REQTYPE_STD_OUT;

@@ -14,7 +14,7 @@
 /*
  * The RP1 arch library exposes no bcm283x_dsi1_mdelay/udelay equivalent,
  * so the vendor tables call these instead.  They ride EwokOS usleep(),
- * whose proc_usleep() busy-waits on kernel_tic() for anything <= 200us and
+ * whose usleep() busy-waits on kernel_tic() for anything <= 200us and
  * only yields to the scheduler above that.  That split is exactly what the
  * two delay users need:
  *   uc_udelay  -- OCP8178 1-wire bit times (10/50us) and DETECT_DELAY

@@ -396,7 +396,7 @@ static void bcm283x_sdhci_gpio_init(bool use_pi4_sd_pins){
 
 
     bcm283x_gpio_config(43, GPIO_FUNC_ALTF0);  //32k clock
-    proc_usleep(20000);
+    usleep(20000);
 
     if (use_pi4_sd_pins) {
         /* Pi4 SD card slot / EMMC2 uses GPIO48-53 ALT3. */
@@ -584,7 +584,7 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
         }
 
         timeout--;
-        proc_usleep(100);
+        usleep(100);
     }
 
     sdhci_writew(host, 0, SDHCI_CLOCK_CONTROL);
@@ -657,7 +657,7 @@ int sdhci_set_clock(struct sdhci_host *host , unsigned int clock)
             return -EBUSY;
         }
         timeout--;
-        proc_usleep(1000);
+        usleep(1000);
     }
 
     clk |= SDHCI_CLOCK_CARD_EN;
@@ -805,7 +805,7 @@ void sdhci_reset(uint8_t mask)
             return;
         }
         timeout--;
-        proc_usleep(1000);
+        usleep(1000);
     }
 }
 
@@ -976,7 +976,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
             sdhci_reset(SDHCI_RESET_DATA);
             return -ECOMM;
         }
-        proc_usleep(1000);
+        usleep(1000);
     }
 
     sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);
@@ -1082,7 +1082,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
                 ret = -ETIMEDOUT;
                 break;
             }
-            proc_usleep(100);
+            usleep(100);
         }
     }
 
@@ -1094,7 +1094,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
     }
 
     if (host->quirks & SDHCI_QUIRK_WAIT_SEND_CMD)
-        proc_usleep(10);
+        usleep(10);
 
     stat = sdhci_readl(host, SDHCI_INT_STATUS);
     sdhci_writel(host, SDHCI_INT_ALL_MASK, SDHCI_INT_STATUS);

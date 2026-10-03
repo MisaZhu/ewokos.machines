@@ -78,7 +78,7 @@ int mmc_poll_for_busy(struct mmc *mmc, int timeout_ms)
         if (timeout_ms-- <= 0)
             return -ETIMEDOUT;
 
-        proc_usleep(1000);
+        usleep(1000);
     }
 }
 
@@ -107,7 +107,7 @@ static int mmc_go_idle(struct mmc *mmc)
     struct mmc_cmd cmd;
     int err;
 
-    proc_usleep(1000);
+    usleep(1000);
 
     cmd.cmdidx = MMC_CMD_GO_IDLE_STATE;
     cmd.cmdarg = 0;
@@ -118,7 +118,7 @@ static int mmc_go_idle(struct mmc *mmc)
     if (err)
         return err;
 
-    proc_usleep(2000);
+    usleep(2000);
 
     return 0;
 }
@@ -214,7 +214,7 @@ static int sd_send_op_cond(struct mmc *mmc, bool uhs_en)
         if (timeout-- <= 0)
             return -EOPNOTSUPP;
 
-        proc_usleep(1000);
+        usleep(1000);
     }
 
     if (mmc->version != SD_VERSION_2)
@@ -265,7 +265,7 @@ static int mmc_send_op_cond(struct mmc *mmc)
 
         if (retry_count > timeout)
             return -ETIMEDOUT;
-        sleep(0);
+        sched_yield();
     }
     mmc->op_cond_pending = 1;
     return 0;
@@ -332,7 +332,7 @@ static int mmc_complete_op_cond(struct mmc *mmc)
                 break;
             if (retry_count > timeout)
                 return -EOPNOTSUPP;
-            sleep(0);
+            sched_yield();
         }
     }
 

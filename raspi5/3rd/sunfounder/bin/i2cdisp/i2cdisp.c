@@ -204,7 +204,7 @@ int main(int argc, char** argv) {
         }
 
         draw_screen(&display, font, ips, count);
-        proc_usleep(DRAW_UPDATE_US);
+        usleep(DRAW_UPDATE_US);
     }
 
     font_free(font);

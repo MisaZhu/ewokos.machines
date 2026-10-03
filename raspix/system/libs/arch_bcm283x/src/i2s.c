@@ -41,11 +41,11 @@ static void clock_init(uint32_t bclk_hz) {
     divf = div_x4096 & 0xFFFu;
 
     write32(CM_BASE + CM_I2SCTL, CM_PASSWORD | CM_SRC_OSCILLATOR);
-    proc_usleep(10);
+    usleep(10);
     write32(CM_BASE + CM_I2SDIV, CM_PASSWORD | (divi << 12) | divf);
-    proc_usleep(10);
+    usleep(10);
     write32(CM_BASE + CM_I2SCTL, CM_PASSWORD | CM_SRC_OSCILLATOR | CM_ENABLE);
-    proc_usleep(10);
+    usleep(10);
 }
 
 static uint32_t pcm_sample_width_bits(uint32_t sample_bits) {
@@ -63,11 +63,11 @@ static void pcm_init_cfg(uint32_t slot_bits, uint32_t sample_bits, bool tx_enabl
     gpio_init();
 
     write32(ARM_PCM_CS_A, 1 << 4);
-    proc_usleep(10);
+    usleep(10);
     write32(ARM_PCM_CS_A, 0);
-    proc_usleep(10);
+    usleep(10);
     write32(ARM_PCM_CS_A, read32(ARM_PCM_CS_A) | CS_A_TXCLR | CS_A_RXCLR);
-    proc_usleep(10);
+    usleep(10);
 
     width_bits = pcm_sample_width_bits(sample_bits);
     write32(ARM_PCM_TXC_A, TXC_A_CH1WEX |
@@ -111,10 +111,10 @@ static void pcm_init_cfg(uint32_t slot_bits, uint32_t sample_bits, bool tx_enabl
     write32(ARM_PCM_DREQ_A, (0x10 << DREQ_A_TX__SHIFT) | 0x10);
 
     write32(ARM_PCM_CS_A, read32(ARM_PCM_CS_A) | CS_A_STBY);
-    proc_usleep(50);
+    usleep(50);
 
     write32(ARM_PCM_CS_A, read32(ARM_PCM_CS_A) | CS_A_EN);
-    proc_usleep(10);
+    usleep(10);
 
     write32(ARM_PCM_CS_A, read32(ARM_PCM_CS_A) | CS_A_DMAEN);
     if (tx_enable) {

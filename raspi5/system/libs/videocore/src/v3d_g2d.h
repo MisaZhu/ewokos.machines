@@ -81,7 +81,7 @@ int v3d_g2d_vec4_ok(void);
  * dispatch's stale uniform block - eliding it made every middle band
  * re-render band 0 (measured on silicon).  POLL_YIELD tells the CSD-done
  * loop that the caller predicts a >1 ms dispatch, so it may yield one
- * scheduler frame with proc_usleep(0) between register polls. */
+ * scheduler frame with sched_yield() between register polls. */
 #define V3D_G2D_MAINT_PRE  (1u << 0)
 #define V3D_G2D_MAINT_POST (1u << 1)
 #define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)

@@ -88,7 +88,7 @@ static int loop(vdevice_t* dev, void* p) {
     char tmp[256];
 
     if(!uart_can_recv()) {
-        proc_usleep(_idle_sleep_us);
+        usleep(_idle_sleep_us);
         if(_idle_sleep_us < 50000)
             _idle_sleep_us <<= 1;
         return 0;

@@ -31,7 +31,7 @@
  * accumulate); set it to N>0 to force a full refresh every N frames. */
 #define EPD_FULL_REFRESH_EVERY  0
 
-#define DEV_Delay_ms(x) proc_usleep((x)*1000)
+#define DEV_Delay_ms(x) usleep((x)*1000)
 #define DEV_Digital_Write bsp_gpio_write
 #define DEV_Digital_Read  bsp_gpio_read
 

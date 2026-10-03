@@ -39,7 +39,7 @@ static uint32_t _pend_min_y = 0;
 static uint32_t _pend_max_y = 0;
 
 static inline void delay(int32_t count) {
-    proc_usleep(count);
+    usleep(count);
 }
 
 static inline void lcd_spi_send(uint8_t byte) {

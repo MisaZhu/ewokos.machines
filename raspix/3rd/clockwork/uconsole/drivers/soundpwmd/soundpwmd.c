@@ -1343,7 +1343,7 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
     uint32_t ring_bytes;
 
     *(pwm + BCM283x_PWM_CONTROL) = 0;
-    proc_usleep(2000);
+    usleep(2000);
     _snd.pwm_range = audio_rate_to_pwm_range(cfg->rate);
     _snd.pwm_scale = (_snd.pwm_range > 0) ? (_snd.pwm_range - 1U) : 0;
     audio_set_pwm_range(_snd.pwm_range);
@@ -1615,7 +1615,7 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 
     /*
      * Never sleep here: this runs in IPC handler context where
-     * proc_usleep() degenerates to a yield-spin (the kernel skips the
+     * usleep() degenerates to a yield-spin (the kernel skips the
      * real sleep for tasks with an in-flight IPC), which burns CPU and
      * blocks every other IPC to soundpwmd. When the ring is full, hand
      * the waiting over to vfsd: return VFS_ERR_RETRY so the client libc
@@ -1648,7 +1648,7 @@ static int sound_loop(vdevice_t* dev, void* p) {
     UNUSED(dev);
     UNUSED(p);
     audio_update_amp_state();
-    proc_usleep(SOUND_FEED_DEEP_IDLE_SLEEP_US);
+    usleep(SOUND_FEED_DEEP_IDLE_SLEEP_US);
     return 0;
 }
 
@@ -1842,7 +1842,7 @@ static void* sound_feeder_thread(void* arg) {
         if (wake_writer && _snd_dev != NULL) {
             vfs_wakeup(_snd_dev->mnt_info.node, VFS_EVT_WR);
         }
-        proc_usleep(sleep_usec);
+        usleep(sleep_usec);
     }
     return NULL;
 }
@@ -1857,15 +1857,15 @@ static void audio_hw_init(void) {
     bcm283x_gpio_config(SOUNDPWM_GPIO_LEFT, SOUNDPWM_GPIO_ALT);
     bcm283x_gpio_config(SOUNDPWM_GPIO_RIGHT, SOUNDPWM_GPIO_ALT);
 
-    proc_usleep(2000);
+    usleep(2000);
 
     *(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | (1 << 5);
-    proc_usleep(2000);
+    usleep(2000);
 
     *(clk + BCM283x_PWMCLK_DIV)  = PM_PASSWORD |
             (_snd_pwm_clock_div_int << 12) | _snd_pwm_clock_div_frac;
     *(clk + BCM283x_PWMCLK_CNTL) = PM_PASSWORD | 16 | _snd_pwm_clock_source;
-    proc_usleep(2000);
+    usleep(2000);
     audio_update_amp_state();
 }
 

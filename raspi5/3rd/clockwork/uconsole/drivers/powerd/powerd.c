@@ -199,7 +199,7 @@ static void power_off(){
         uint8_t val = (reg >= 0) ? (uint8_t)(reg | 0x80) : 0x80;
         if(bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x32, val) == 0)
             break;
-        proc_usleep(2000);
+        usleep(2000);
     }
 
     /*
@@ -296,7 +296,7 @@ static int power_step(vdevice_t* dev, void* p) {
     if(power_sample() == 0 && _capacity < 3) { //out of power
         //power_off();
     }
-    proc_usleep(300000); 
+    usleep(300000); 
     return 0;
 }
 

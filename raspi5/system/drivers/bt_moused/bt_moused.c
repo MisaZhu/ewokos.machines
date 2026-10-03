@@ -354,7 +354,7 @@ static int _loop(vdevice_t* dev, void* p) {
     (void)p;
 
     if (!bt_connect()) {
-        proc_usleep(BT_CONNECT_SLEEP_US);
+        usleep(BT_CONNECT_SLEEP_US);
         return 0;
     }
 
@@ -398,7 +398,7 @@ static int _loop(vdevice_t* dev, void* p) {
         close(bt);
         bt = -1;
         memset(&_bt_info, 0, sizeof(fsinfo_t));
-        proc_usleep(BT_CONNECT_SLEEP_US);
+        usleep(BT_CONNECT_SLEEP_US);
         return 0;
     }
 
@@ -430,7 +430,7 @@ static int _loop(vdevice_t* dev, void* p) {
         uint64_t now = kernel_tic_ms(0);
         uint64_t next = last_flush_ms + MOUSE_FLUSH_MS;
         if (now < next)
-            proc_usleep((uint32_t)((next - now) * 1000u));
+            usleep((uint32_t)((next - now) * 1000u));
         mouse_flush_pending();
     }
 

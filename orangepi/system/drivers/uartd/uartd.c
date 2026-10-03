@@ -51,7 +51,7 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
     (void)p;
 
     for(int i = 0 ; i < size; i++){
-        while(((REG32(UART_LSR)) & UART_LSR_THRE) == 0)proc_usleep(10);
+        while(((REG32(UART_LSR)) & UART_LSR_THRE) == 0)usleep(10);
         REG32(UART_TX) = ((char*)buf)[i];
     }
     return size;
@@ -67,7 +67,7 @@ static int loop(vdevice_t* dev, void* p){
         charbuf_push(_RxBuf, REG32(UART_TX), true);
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     }else{
-        proc_usleep(10);
+        usleep(10);
     }
     return 0;
 }

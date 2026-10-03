@@ -66,7 +66,7 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
             if(charbuf_push(&_TxBuf, ch, false) == 0){
                 break;
             } 
-            proc_usleep(100);
+            usleep(100);
         };
     }
     return size;
@@ -108,7 +108,7 @@ static int loop(vdevice_t* dev, void* p) {
         char tmp[256];
 
     if(!uart_can_recv()) {
-        proc_usleep(_idle_sleep_us);
+        usleep(_idle_sleep_us);
         if(_idle_sleep_us < 50000)
             _idle_sleep_us <<= 1;
         return 0;

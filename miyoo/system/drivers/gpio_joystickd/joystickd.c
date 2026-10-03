@@ -150,7 +150,7 @@ static void check_power(void) {
         //close screnn
         miyoo_gpio_set(4, 0);
         printf("power down!\n");
-        proc_usleep(1000);
+        usleep(1000);
         miyoo_gpio_set(85, 0);
     }
 }
@@ -161,7 +161,7 @@ static int power_button(vdevice_t* dev, void* p) {
     ipc_disable();
     check_power();
     ipc_enable();
-    proc_usleep(200000);
+    usleep(200000);
 }
 
 int main(int argc, char** argv) {
