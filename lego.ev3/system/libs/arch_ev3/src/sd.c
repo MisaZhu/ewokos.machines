@@ -520,7 +520,7 @@ davinci_mmc_send_cmd(struct davinci_mmc_regs *regs, struct mmc_cmd *cmd, struct 
             else if (bytes_left == fifo_bytes) {
                 dmmc_wait_fifo_status(regs, 0x40);
                 if (cmd->cmdidx == MMC_CMD_SEND_EXT_CSD)
-                    proc_usleep(0);
+                    sched_yield();
             }
 
             for (i = 0; bytes_left && (i < fifo_words); i++) {

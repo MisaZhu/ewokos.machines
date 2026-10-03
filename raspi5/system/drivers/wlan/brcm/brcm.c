@@ -65,7 +65,7 @@
 #define BRCMF_FIRSTREAD (1 << 6)
 #define BRCMF_CONSOLE   10  /* watchdog interval to poll console */
 /*
- * proc_usleep() is tick-quantised: sleep_counter is only decremented from
+ * usleep() is tick-quantised: sleep_counter is only decremented from
  * the kernel timer IRQ, so N us costs ceil(N / tick) ticks. At the shipped
  * timer_freq of 1024Hz (tick = 976us) a 1000us request left 24us on the
  * counter and always slept TWO ticks (~1.95ms), which doubled the gap

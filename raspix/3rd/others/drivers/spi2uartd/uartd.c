@@ -233,7 +233,7 @@ static int loop(vdevice_t* dev, void* p) {
         if(wake_wr)
                 vfs_wakeup(dev->mnt_info.node, VFS_EVT_WR);
         if(rx == 0 && tx == 0)
-                proc_usleep(10000);
+                usleep(10000);
         return 0;
 }
 
@@ -250,7 +250,7 @@ int main(int argc, char** argv) {
 
         SC16IS750_init(&spiuart, SC16IS750_PROTOCOL_SPI, 18, SC16IS750_DUAL_CHANNEL);
         SC16IS750_begin(&spiuart, SC16IS750_DEFAULT_SPEED, SC16IS750_DEFAULT_SPEED, 14745600UL);
-        proc_usleep(1000);
+        usleep(1000);
 
         if(!sc16is750_detect_channel(&spiuart, &_uart_channel)) {
                 slog("spi2uartd: sc16is750 probe failed on both channels\n");

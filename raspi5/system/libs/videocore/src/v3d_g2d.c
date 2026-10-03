@@ -312,10 +312,10 @@ static void g2d_dcache_invalidate(void *addr, size_t len)
 /* (delay helper) the driver runs as a user-space daemon, so register-settle
  * waits use the OS sleep API.  The bare-metal harness polled CNTPCT_EL0
  * directly, which traps at EL0 unless the kernel enables CNTKCTL_EL1
- * timer access - never assume that in OS-portable code.  proc_usleep() rounds
+ * timer access - never assume that in OS-portable code.  usleep() rounds
  * up to the kernel tick (~976us at timer_freq=1024), far above these
  * settle minimums and harmless for them. */
-#define g2d_delay_us(us) proc_usleep(us)
+#define g2d_delay_us(us) usleep(us)
 
 /* spin-wait hint for the register polls below: a tight loop of
  * device-memory reads issues a fresh uncached AXI transaction every
@@ -764,7 +764,7 @@ static int g2d_probe(void)
 
 /* Reset the V3D block via the PM power domain (assert/deassert
  * V3DRSTN); without the power-cycle the QPU array never launches.
- * Settle delays go through g2d_delay_us == proc_usleep(): only lower bounds
+ * Settle delays go through g2d_delay_us == usleep(): only lower bounds
  * are required here (tens / ~200 us), so tick-rounded sleeps are fine. */
 #if !G2D_SKIP_PM_RESET
 static void g2d_pm_reset(void)
@@ -1103,7 +1103,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
             break;
         if (flags & V3D_G2D_POLL_YIELD)
-            proc_usleep(0);
+            sched_yield();
         else
             g2d_poll_hint();
     }

@@ -474,7 +474,7 @@ static int dwc2_device_attach(bsp_usb_dev_t* dev, int speed) {
         }
         return -1;
     }
-    proc_usleep(10000); /* USB spec: new address is valid after 2ms */
+    usleep(10000); /* USB spec: new address is valid after 2ms */
 
     dev->used = true;
     dev->on_dwc2 = true;

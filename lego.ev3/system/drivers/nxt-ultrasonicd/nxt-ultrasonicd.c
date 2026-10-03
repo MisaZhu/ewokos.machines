@@ -304,7 +304,7 @@ static int us_loop(vdevice_t* dev, void* p) {
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
         _wakeup = false;
     }
-    proc_usleep(NXTUS_POLL_US);
+    usleep(NXTUS_POLL_US);
     return 0;
 }
 

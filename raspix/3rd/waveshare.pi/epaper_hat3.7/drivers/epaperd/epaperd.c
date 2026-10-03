@@ -192,9 +192,9 @@ function :  millisecond delay that is guaranteed to last at least `ms`
 ******************************************************************************/
 static void delay_ms(uint32_t ms) {
     uint64_t until = kernel_tic_ms(0) + ms;
-    proc_usleep(ms * 1000);
+    usleep(ms * 1000);
     while(kernel_tic_ms(0) < until)
-        proc_usleep(1000);
+        usleep(1000);
 }
 
 /* ------------------------------------------------------- pin helpers --- */
@@ -276,10 +276,10 @@ static void diag_regs(const char* tag) {
    holds the line). RST is NOT toggled here: a low pulse resets the panel. */
 static void diag_pin_readback(const char* name, uint32_t pin) {
     bsp_gpio_write(pin, 1);
-    proc_usleep(1000);
+    usleep(1000);
     uint32_t hi = diag_lev(pin);
     bsp_gpio_write(pin, 0);
-    proc_usleep(1000);
+    usleep(1000);
     uint32_t lo = diag_lev(pin);
     slog("epaper3.7d: %s(gpio%u) readback 1->%u 0->%u %s\n", name, pin, hi, lo,
          (hi == 1 && lo == 0) ? "ok" : "FAIL");
@@ -340,7 +340,7 @@ static int epd_wait_idle_ms(uint32_t max_ms, uint32_t floor_ms) {
             ret = -1;
             break;
         }
-        proc_usleep(5000);
+        usleep(5000);
     }
     _busy_last_ms = (uint32_t)(kernel_tic_ms(0) - start);
     _busy_last_seen = (uint8_t)seen;

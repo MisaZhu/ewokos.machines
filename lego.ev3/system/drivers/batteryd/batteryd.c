@@ -180,7 +180,7 @@ static int batt_loop(vdevice_t* dev, void* p) {
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
         _wakeup = false;
     }
-    proc_usleep(200000);   /* ~5 Hz is plenty for a battery gauge */
+    usleep(200000);   /* ~5 Hz is plenty for a battery gauge */
     return 0;
 }
 

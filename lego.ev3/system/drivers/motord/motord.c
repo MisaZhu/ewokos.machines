@@ -590,7 +590,7 @@ static int motor_loop(vdevice_t* dev, void* p) {
         control_step(i, now);
     ipc_enable();
 
-    proc_usleep(PID_DT_US);
+    usleep(PID_DT_US);
     return 0;
 }
 

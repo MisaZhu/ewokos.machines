@@ -18,7 +18,7 @@ static uint8_t _shadow_ready;
 #define DIRTY_AREA_FULL_THRESHOLD 3  /* dirty_area > total/THRESHOLD => full refresh */
 
 static inline void sleep_ms(int ms){
-    proc_usleep(ms * 1000);
+    usleep(ms * 1000);
 }
 
 static inline void spi_set_byte_mode(void) {
@@ -245,9 +245,9 @@ void ili9488_init(void){
     rk_gpio_config(LCD_DC,	1);
 
     rk_gpio_write(LCD_RST, 0);
-    proc_usleep(100);
+    usleep(100);
     rk_gpio_write(LCD_RST, 1);
-    proc_usleep(10000);
+    usleep(10000);
 
     _fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
     _shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));

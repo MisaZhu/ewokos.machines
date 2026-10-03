@@ -8,7 +8,7 @@ static inline void bsp_i2c_delay(i2c_bus_t *bus){
     if(delay < 100){
         while(delay--);
     }else{
-        proc_usleep(delay/100);
+        usleep(delay/100);
     }
 }
 

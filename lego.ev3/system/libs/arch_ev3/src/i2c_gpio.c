@@ -13,7 +13,7 @@
  *     NXT ultrasonic sensor needs exactly this,
  *   - SDA is left floating after STOP so pin 6 can be used for detection.
  *
- * Each half-period is a busy wait (proc_usleep <= 200 us spins), so a
+ * Each half-period is a busy wait (usleep <= 200 us spins), so a
  * transfer blocks the caller: ~1 ms per byte at 9.6 kHz.
  */
 #include <stdint.h>
@@ -29,7 +29,7 @@
 #define WAIT_AFTER_READ  2
 
 static inline void tick(ev3_i2c_gpio_t* bus) {
-    proc_usleep((uint32_t)bus->half_us);
+    usleep((uint32_t)bus->half_us);
 }
 
 static inline void scl(ev3_i2c_gpio_t* bus, int32_t v) {

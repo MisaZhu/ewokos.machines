@@ -8,7 +8,7 @@
 #include <arch/bcm283x/i2c.h>
 #include <unistd.h>
 
-//#define I2C_BIT_DELAY() proc_usleep(i2c_wait) 
+//#define I2C_BIT_DELAY() usleep(i2c_wait) 
 
 /*static inline void udelay(volatile uint32_t loop){
     while(loop--){
@@ -17,7 +17,7 @@
 #define I2C_BIT_DELAY() udelay(30000);
 */
 
-#define I2C_BIT_DELAY() proc_yield();
+#define I2C_BIT_DELAY() sched_yield();
 /*----------------------------------------------------------------------------*/
 static int32_t i2c_sda, i2c_scl, i2c_stop;
 static uint32_t i2c_wait;

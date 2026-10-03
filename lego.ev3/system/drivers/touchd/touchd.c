@@ -185,7 +185,7 @@ static int touch_loop(vdevice_t* dev, void* p) {
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
         _wakeup = false;
     }
-    proc_usleep(20000);   /* ~50 Hz */
+    usleep(20000);   /* ~50 Hz */
     return 0;
 }
 

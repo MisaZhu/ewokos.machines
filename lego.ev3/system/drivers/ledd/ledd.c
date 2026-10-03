@@ -303,7 +303,7 @@ static int led_loop(vdevice_t* dev, void* p) {
     (void)dev; (void)p;
 
     anim_step(kernel_tic_ms(0));
-    proc_usleep(20000);   /* ~50 Hz is plenty for LED animation */
+    usleep(20000);   /* ~50 Hz is plenty for LED animation */
     return 0;
 }
 

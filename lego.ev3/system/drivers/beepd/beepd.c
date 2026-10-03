@@ -263,7 +263,7 @@ static int beep_loop(vdevice_t* dev, void* p) {
         }
     }
 
-    proc_usleep(5000);   /* 5 ms tick is enough for beep timing */
+    usleep(5000);   /* 5 ms tick is enough for beep timing */
     return 0;
 }
 

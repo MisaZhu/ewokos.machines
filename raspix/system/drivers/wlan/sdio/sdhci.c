@@ -12,7 +12,7 @@
 /*
  * Wall-clock cap for the command/data inhibit wait in
  * sdhci_send_command(). A hung controller never clears the inhibit
- * bits; the old iteration-count loop (10000 x sleep(0)) spun ~20s per
+ * bits; the old iteration-count loop (10000 x sched_yield()) spun ~20s per
  * command with no log output, serially starving the wlan worker so
  * housekeeping and every recovery watchdog crawled. Healthy transfers
  * clear inhibit in micro-to-milliseconds, even at low init clocks.
@@ -469,7 +469,7 @@ static void sdhci_pre_cmd_gap(uint32_t gap_us)
  *
  * The waits in sdhci_send_command()/sdhci_transfer_data() are microsecond
  * scale: a command response arrives within ~64 SD clocks (~2us at 50MHz)
- * and a 512-byte block moves in ~20-90us. Yielding with sleep(0) on every
+ * and a 512-byte block moves in ~20-90us. Yielding with sched_yield() on every
  * poll iteration hands the CPU to the scheduler for a full multi-ms round
  * trip (netd, sshd and the pump thread are all runnable during transfers),
  * so each CMD53 paid several milliseconds of pure scheduling latency --
@@ -484,7 +484,7 @@ static void sdhci_pre_cmd_gap(uint32_t gap_us)
 static inline void sdhci_poll_relax(uint32_t spin_start_us)
 {
     if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US);
-        //sleep(0);
+        //sched_yield();
 }
 
 
@@ -858,7 +858,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
              * whole multi-block CMD53. On raspix's 20MHz SDIO source a
              * normal 3-block WLAN frame already exceeds 500us end-to-end;
              * if we keep the original transfer-start timestamp here, the
-             * second/third block fall straight into sleep(0) despite the
+             * second/third block fall straight into sched_yield() despite the
              * controller making steady progress, injecting millisecond
              * scheduler gaps into every packet and capping throughput in
              * the few-hundred-KB/s range. Progress just happened, so start
@@ -944,7 +944,7 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
                 sdhci_reset(SDHCI_RESET_DATA);
                 return -ECOMM;
             }
-            sleep(0);
+            sched_yield();
         }
     }
 

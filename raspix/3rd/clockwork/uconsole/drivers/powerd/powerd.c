@@ -113,7 +113,7 @@ static void power_off(){
     sdhci_card_power_off();
 
     /* Step 5 - let the card rail and bus caps discharge before the PMIC cut. */
-    proc_usleep(20000); /* 20 ms */
+    usleep(20000); /* 20 ms */
 
     /*
      * Step 6 - AXP223 software power-off (REG 0x32 bit7). i2c_do_start()
@@ -171,7 +171,7 @@ static int power_step(vdevice_t* dev, void* p) {
     if(_capacity < 3) { //out of power
         power_off();
     }
-    proc_usleep(300000); 
+    usleep(300000); 
     return 0;
 }
 

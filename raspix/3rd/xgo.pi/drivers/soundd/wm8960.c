@@ -17,9 +17,9 @@ int wm8960_write(uint8_t reg, uint16_t value) {
     uint8_t data[2];
     data[0] = (reg << 1) | ((value >> 8) & 0x1);
     data[1] = value & 0xFF;
-    proc_usleep(3000);
+    usleep(3000);
     int ret = i2c_puts_raw(WM8960_ADDR, data, 2);
-    proc_usleep(3000);
+    usleep(3000);
     return ret;
 }
 

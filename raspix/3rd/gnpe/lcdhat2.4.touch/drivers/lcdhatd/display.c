@@ -234,7 +234,7 @@ static int tp_step(void) {
             vfs_wakeup(node, VFS_EVT_RD);
     }
 
-    proc_usleep(TP_POLL_US);
+    usleep(TP_POLL_US);
     return 0;
 }
 
@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
     const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti]: "/dev/disp0";
 
     lcd_init(LCD_WIDTH, LCD_HEIGHT, _spi_div);
-    proc_usleep(10000);
+    usleep(10000);
 
     const int tp_cs = 7;
     const int tp_irq = 17;

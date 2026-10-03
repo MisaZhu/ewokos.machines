@@ -1855,7 +1855,7 @@ static int bt_loop(vdevice_t* dev, void* p) {
     }
 
     if (packets == 0) {
-        proc_usleep(_idle_sleep_us);
+        usleep(_idle_sleep_us);
         if (_idle_sleep_us < 50000) {
             _idle_sleep_us <<= 1;
         }

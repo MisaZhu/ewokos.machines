@@ -182,7 +182,7 @@ static int tp_step(void) {
             vfs_wakeup(node, VFS_EVT_RD);
     }
 
-    proc_usleep(TP_POLL_US);
+    usleep(TP_POLL_US);
     return 0;
 }
 
