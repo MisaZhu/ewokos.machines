@@ -1,0 +1,147 @@
+#!/usr/bin/env expect -f
+# ewokos x86 ISO 硬件矩阵回归: 同一份 ewokos.iso × 硬件配置组合
+#
+#   BIOS 流: SeaBIOS El Torito no-emulation, 仅内核日志
+#           验收到 "loading init ... [failed!]" (无 rootfs 停机, 设计内),
+#           且不得出现 "login:"
+#   UEFI 流: OVMF + 内存盘 rootfs, 完整启动
+#           验收: bootinfo v3 ramdisk 行 + 登录 + shell echo 回环
+#
+# 用法: expect scripts/iso_matrix.exp bios|uefi
+# 前置: make iso 产物 ewokos.iso 就绪; 结果写 /tmp/iso_matrix/<tag>.log
+set timeout 300
+cd /Users/tony/work/ewokos/machines/x86/kernel
+
+if {![file exists ewokos.iso]} {
+    puts "FAIL: ewokos.iso 不存在, 先 make iso"
+    exit 1
+}
+exec mkdir -p /tmp/iso_matrix
+# UEFI/BIOS 共用的 U 盘仿真: 空白数据盘 (ramdisk 存在时必须被忽略)
+set BLANK /tmp/iso_matrix/blank1g.img
+if {![file exists $BLANK]} {
+    exec dd if=/dev/zero of=$BLANK bs=1048576 count=1024 2>/dev/null
+}
+
+set USB_ARGS {-usb -device usb-kbd,port=1,usb_version=1 -device usb-mouse,port=2,usb_version=1}
+set OVMF boot/uefi/OVMF.fd
+set pass 0
+set fail 0
+
+proc kill_vm {tag} {
+    # 按唯一 -name 点名杀 VM; 不 close (expect 的 close 会波及 stdout)
+    catch {exec pkill -9 -f "qemu-system-x86_64.*iso-matrix-$tag"}
+    catch {wait}
+    # 等磁盘锁释放 (pkill 异步, 下一配置同盘会 QEMU 写锁失败)
+    exec sleep 2
+}
+
+# grep -c 包装: 计数 0 时 grep 退出码非 0, exec 会抛错, 这里归一为 0/1
+proc grepc {pat file} {
+    if {[catch {exec grep -ac -- $pat $file} n]} { return 0 }
+    return $n
+}
+
+# ---------- BIOS 流: 内核日志 -> loading init 失败停机 ----------
+proc run_bios {tag margs} {
+    global USB_ARGS pass fail
+    puts "\n=== BIOS $tag ==="
+    log_file -noappend /tmp/iso_matrix/$tag.log
+    if {[catch {
+        eval spawn qemu-system-x86_64 -name iso-matrix-$tag -accel tcg -display none \
+            -no-reboot -no-shutdown -serial stdio -boot d -cdrom ewokos.iso \
+            $USB_ARGS $margs
+    } err]} {
+        puts "FAIL: $tag spawn: $err"; incr fail; log_file; return
+    }
+    set timeout 240
+    expect {
+        -re "loading init" {}
+        -re "login:" { puts "FAIL: $tag 不应完整启动 (无 rootfs)"; kill_vm $tag; incr fail; log_file; return }
+        timeout { puts "FAIL: $tag 未到 loading init 失败点"; kill_vm $tag; incr fail; log_file; return }
+        eof { puts "FAIL: $tag QEMU 提前退出"; incr fail; log_file; return }
+    }
+    # 确认走到了失败停机而非别的退出路径
+    set logf /tmp/iso_matrix/$tag.log
+    if {[grepc "loading init" $logf] < 1 || [grepc "login:" $logf] > 0} {
+        puts "FAIL: $tag 终态不符 (应有 loading init 失败, 无 login)"
+        kill_vm $tag; incr fail; log_file; return
+    }
+    kill_vm $tag
+    puts "PASS: $tag (内核引导 -> loading init 失败停机)"
+    incr pass
+    log_file
+}
+
+# ---------- UEFI 流: 内存盘 rootfs 完整启动 ----------
+proc run_uefi {tag margs} {
+    global USB_ARGS OVMF BLANK pass fail
+    puts "\n=== UEFI $tag ==="
+    log_file -noappend /tmp/iso_matrix/$tag.log
+    if {[catch {
+        eval spawn qemu-system-x86_64 -name iso-matrix-$tag -accel tcg -display none \
+            -no-reboot -no-shutdown -serial stdio -boot d -cdrom ewokos.iso \
+            $USB_ARGS -drive if=pflash,format=raw,file=$OVMF,readonly=on $margs
+    } err]} {
+        puts "FAIL: $tag spawn: $err"; incr fail; log_file; return
+    }
+    set timeout 420
+    expect {
+        -re "login:" { send "root\r" }
+        timeout { puts "FAIL: $tag 无登录提示"; kill_vm $tag; incr fail; log_file; return }
+        eof { puts "FAIL: $tag QEMU 提前退出"; incr fail; log_file; return }
+    }
+    # 登录 + shell: q35 TCG 下守护进程初始化 ~90s/个, 登录会话可能超时
+    # 重提示 —— 循环重发登录直到拿到 shell 提示 (快配置首个模式即命中)
+    set timeout 420
+    set logged_in 0
+    set attempts 0
+    while {!$logged_in && $attempts < 4} {
+        incr attempts
+        expect {
+            -re ":/home/root" { set logged_in 1 }
+            -re "login:" { send "root\r" }
+            -re "password:" { send "root\r" }
+            timeout {}
+            eof {}
+        }
+    }
+    if {!$logged_in} {
+        puts "FAIL: $tag 无 shell 提示"; kill_vm $tag; incr fail; log_file; return
+    }
+    # 内存盘 rootfs 确实来自 bootinfo v3 (而非磁盘)
+    if {[grepc "ramdisk 128MB@" /tmp/iso_matrix/$tag.log] < 1} {
+        puts "FAIL: $tag 未见 bootinfo v3 ramdisk 行"
+        kill_vm $tag; incr fail; log_file; return
+    }
+    # shell 就绪缓冲 (TCG 慢机)
+    exec sleep 3
+    send -- "echo ISO-MATRIX-$tag-OK\r"
+    expect {
+        -re "ISO-MATRIX-$tag-OK" { puts "PASS: $tag (登录 + shell 回环 + ramdisk rootfs)" }
+        timeout { puts "FAIL: $tag shell 回环"; incr fail; log_file; return }
+    }
+    kill_vm $tag
+    incr pass
+    log_file
+}
+
+switch [lindex $argv 0] {
+    bios {
+        run_bios bios-pc-512       {-M pc -m 512}
+        run_bios bios-q35-512      {-M q35 -m 512}
+        run_bios bios-pc-256       {-M pc -m 256}
+    }
+    uefi {
+        run_uefi uefi-pc-1024      {-M pc -m 1024}
+        run_uefi uefi-pc-1024-smp4 {-M pc -m 1024 -smp 4}
+        run_uefi uefi-pc-512       {-M pc -m 512}
+        run_uefi uefi-pc-1024-idisk {-M pc -m 1024 -drive file=$BLANK,format=raw,if=ide,index=1,media=disk}
+        run_uefi uefi-q35-1024     {-M q35 -m 1024}
+        run_uefi uefi-q35-1024-ahcidisk {-M q35 -m 1024 -drive if=none,id=hd0,file=$BLANK,format=raw -device ich9-ahci,id=ahci0 -device ide-hd,drive=hd0,bus=ahci0.0}
+    }
+    default { puts "usage: expect scripts/iso_matrix.exp bios|uefi"; exit 1 }
+}
+
+puts "\n=== ISO 矩阵 [lindex $argv 0] 结束: $pass PASS / $fail FAIL ==="
+exit [expr {$fail > 0}]

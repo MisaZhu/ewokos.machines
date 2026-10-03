@@ -1,0 +1,14 @@
+ kernel/dev/include/dev/uart.h                      |  4 +
+ kernel/kernel/include/mm/mmu.h                     |  4 +-
+ kernel/kernel/include/sysinfo.h                    | 14 ++++
+ kernel/kernel/src/hw_info.c                        |  9 ++-
+ kernel/kernel/src/kernel.c                         | 16 ++++
+ .../platform/x86/arch/common/include/mm/mmu_arch.h | 13 ++++
+ kernel/platform/x86/arch/common/src/x86_smp.c      |  1 +
+ kernel/platform/x86/arch/x64/boot.S                | 89 +++++++++++++++++++++-
+ system/basic/drivers/hid_keybd/hid_keybd.c         |  7 ++
+ system/basic/drivers/usbhostd/usbhostd.c           |  4 +-
+ .../basic/libc/libewoksys/ewoksys/src/basic_math.c |  6 +-
+ system/basic/libs/ext3/src/ext3fs.c                |  9 ++-
+ system/gui/libs/graph/src/graph_ex.c               |  4 +
+ 13 files changed, 170 insertions(+), 10 deletions(-)

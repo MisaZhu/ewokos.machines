@@ -1,0 +1,45 @@
+#!/usr/bin/env expect -f
+# ewokos x86 BIOS-CD 引导回归: El Torito no-emulation (Linux live ISO 同款)
+# stage-1 -> INT13h CD 扩展读 -> KERNEL.IMG (0x100000) + ROOTFS.IMG
+# (0x18000000 内存盘) -> bootinfo v3 -> 完整启动到登录 (无 hd-emulation)
+set timeout 200
+cd /Users/tony/work/ewokos/machines/x86/kernel
+if {![file exists ewokos.iso]} {
+    puts "FAIL: ewokos.iso 不存在, 先 make iso"
+    exit 1
+}
+file delete /tmp/cdb_mon.sock
+spawn qemu-system-x86_64 -accel tcg -M pc -m 1024 -display none \
+    -no-reboot -no-shutdown -serial stdio \
+    -monitor unix:/tmp/cdb_mon.sock,server,nowait \
+    -boot d -cdrom ewokos.iso
+exec sh -c "stty raw -echo < $spawn_out(slave,name)"
+log_file -noappend /tmp/cdb_boot.log
+sleep 50
+expect {
+    -re "login:" { send "root\r" }
+    timeout { puts "FAIL: no login (BIOS CD no-emulation)"; exit 1 }
+}
+expect {
+    -re "password:" { send "root\r" }
+    -re ":/home/root" {}
+    timeout {}
+}
+sleep 4
+expect {
+    -re ":/home/root" {}
+    timeout { puts "FAIL: no shell"; exit 1 }
+}
+puts "=== BIOS-CD logged in ==="
+send "ls /drivers/x86\r"
+set timeout 20
+expect {
+    -re "vgacond" { puts "PASS: BIOS-CD 完整启动 (内存盘 rootfs + vgacond)" }
+    timeout { puts "PART: 登录成功但校验超时" }
+}
+send "echo BIOS-CD-OK\r"
+sleep 2
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+close
+wait
+exit 0

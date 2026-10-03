@@ -28,13 +28,22 @@ int32_t uart_dev_init(uint32_t baud) {
 }
 
 static void uart_putc(char c) {
-    while (!uart_tx_ready()) {
+    /* 有限轮询: 串口不存在/无响应 (无串口平台, -serial null) 时 LSR 的
+     * THRE 可能永远不置位, 无限等待会把系统挂在第一个 kout 上。
+     * 超时后仍写一次寄存器 (无害), 日志在 VGA 上继续可见。 */
+    for (int i = 0; i < 100000; ++i) {
+        if (uart_tx_ready()) {
+            break;
+        }
+        __asm__ volatile("pause");
     }
     outb(COM1_PORT, (uint8_t)c);
 }
 
 int32_t uart_write(const void* data, uint32_t size) {
     const char* s = (const char*)data;
+    /* 镜像到 VGA 文本控制台: 无串口平台上引导日志/挂死点仍可见 */
+    vgacon_write(s, size);
     for (uint32_t i = 0; i < size; ++i) {
         if (s[i] == '\n') {
             uart_putc('\r');
@@ -42,6 +51,10 @@ int32_t uart_write(const void* data, uint32_t size) {
         uart_putc(s[i]);
     }
     return (int32_t)size;
+}
+
+void console_handoff(void) {
+    vgacon_handoff();
 }
 
 int32_t uart_getc(void) {

@@ -1,0 +1,58 @@
+#!/usr/bin/env expect -f
+# ewokos x86 GRUB chainload 回归: 第三方引导器引导 ISO
+#
+# GRUB 2.14 救援 CD 引导 -> set root=(hd0) -> chainloader +1 -> boot
+#   -> bios_boot.S INT13h 读内核 -> 内核 banner (串口验证)
+#
+# 注意: GRUB 2.14 的 chainloader 传给 DL 的是 GRUB 自己的引导盘号(救援
+# CD = 0xE0), 必须先 `set root=(hd0)` 让它拿到目标盘的 BIOS 盘号 (0x80),
+# 否则引导扇区会在错误的盘上读内核并以入口魔数不符停机 (hang32)。
+#
+# 前置: make iso 产物 ewokos.iso; GRUB 救援镜像 (本目录, 约 3MB):
+#   curl -o grub-rescue-cdrom.iso http://ftp.debian.org/debian/pool/main/g/grub2/grub-rescue-pc_2.14-4_amd64.deb
+#   ar x grub-rescue-pc_2.14-4_amd64.deb data.tar.xz \
+#     && tar xf data.tar.xz usr/lib/grub-rescue/grub-rescue-cdrom.iso \
+#     && mv usr/lib/grub-rescue/grub-rescue-cdrom.iso .
+set timeout 60
+cd /Users/tony/work/ewokos/machines/x86/kernel
+
+if {![file exists ewokos.iso]} {
+    puts "FAIL: ewokos.iso 不存在, 先 make iso"
+    exit 1
+}
+if {![file exists grub-rescue-cdrom.iso]} {
+    puts "FAIL: grub-rescue-cdrom.iso 不存在, 按脚本头部的说明下载"
+    exit 1
+}
+
+file delete /tmp/grub_test_mon.sock
+spawn qemu-system-x86_64 -accel tcg -M pc -m 512 -display none \
+    -no-reboot -no-shutdown -serial stdio \
+    -monitor unix:/tmp/grub_test_mon.sock,server,nowait \
+    -boot d -cdrom grub-rescue-cdrom.iso \
+    -drive file=ewokos.iso,format=raw,if=ide,index=0,media=disk
+exec sh -c "stty raw -echo < $spawn_out(slave,name)"
+log_file -noappend /tmp/grub_test.log
+
+# GRUB 救援镜像进菜单 (16s 自动引导), 按 c 进命令行
+sleep 8
+exec python3 scripts/sendkey_seq.py /tmp/grub_test_mon.sock "c"
+sleep 1
+# 输入走 VGA 盲打 (GRUB 救援镜像无串口终端模块); 结果经内核串口验证
+exec python3 scripts/sendkey_seq.py /tmp/grub_test_mon.sock "set root=(hd0)" --ret
+sleep 1
+exec python3 scripts/sendkey_seq.py /tmp/grub_test_mon.sock "chainloader +1" --ret
+sleep 1
+exec python3 scripts/sendkey_seq.py /tmp/grub_test_mon.sock "boot" --ret
+
+set timeout 180
+expect {
+    -re "=== ewokos booting ===" {
+        puts "PASS: GRUB chainload 引导 ewokos.iso MBR, 内核启动"
+    }
+    timeout { puts "FAIL: GRUB chainload 后内核未启动" }
+}
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+close
+wait
+exit 0

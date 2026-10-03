@@ -9,6 +9,7 @@
 
 #define IA32_APIC_BASE_MSR        0x1b
 #define IA32_APIC_BASE_ENABLE     0x800
+#define IA32_APIC_BASE_X2APIC     0x400
 
 #define LAPIC_ID_REG              0x020
 #define LAPIC_EOI_REG             0x0b0
@@ -84,6 +85,23 @@ static inline void x86_wrmsr(uint32_t msr, uint64_t value) {
 static inline ewokos_addr_t x86_lapic_phys_base(void) {
 	uint64_t base = x86_rdmsr(IA32_APIC_BASE_MSR);
 	return (ewokos_addr_t)(base & 0xfffff000u);
+}
+
+/* x2APIC -> xAPIC 降级: 真机固件可能以 x2APIC 模式交接 (IA32_APIC_BASE
+ * bit10), 内核全部 LAPIC 访问走 xAPIC MMIO (x86_lapic_vaddr) —— x2APIC
+ * 模式下 MMIO 窗口不响应。按 SDM 顺序: 先全局关闭 APIC (bit11=0), 再清
+ * bit10, 最后重新使能 (bit11=1)。每核独立 MSR, BSP/AP 各自调用。
+ * x86_lapic_init 与 x86_irq_percpu_init 前必须先跑 (首个 LAPIC 触碰点) */
+static inline void x86_lapic_mode_fixup(void) {
+	uint64_t base = x86_rdmsr(IA32_APIC_BASE_MSR);
+
+	if ((base & IA32_APIC_BASE_X2APIC) == 0) {
+		return;
+	}
+	x86_wrmsr(IA32_APIC_BASE_MSR,
+			base & ~(uint64_t)(IA32_APIC_BASE_ENABLE | IA32_APIC_BASE_X2APIC));
+	x86_wrmsr(IA32_APIC_BASE_MSR,
+			(base & ~(uint64_t)IA32_APIC_BASE_X2APIC) | IA32_APIC_BASE_ENABLE);
 }
 
 static inline uintptr_t x86_lapic_vaddr(void) {

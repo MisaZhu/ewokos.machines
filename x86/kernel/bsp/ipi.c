@@ -8,6 +8,7 @@ void ipi_enable(uint32_t core_id) {
 }
 
 void x86_lapic_init(void) {
+    x86_lapic_mode_fixup();                  /* x2APIC 交接降级 (真机固件) */
     uint64_t apic_base = x86_rdmsr(IA32_APIC_BASE_MSR);
 
     if ((apic_base & IA32_APIC_BASE_ENABLE) == 0) {

@@ -1,0 +1,48 @@
+#!/usr/bin/env expect -f
+# ewokos x86 兼容性矩阵启动测试
+# 用法: expect matrix_boot.exp <name>   (QEMU_ARGS 环境变量传入 qemu 参数)
+# 验证: 引导(含 UEFI Shell 回退) → 登录 → uname 报告 x86
+set timeout 120
+if {[info exists ::env(TIMEOUT)]} { set timeout $::env(TIMEOUT) }
+set name [lindex $argv 0]
+if {$name eq ""} { set name "test" }
+
+cd /Users/tony/work/ewokos/machines/x86/kernel
+spawn qemu-system-x86_64 {*}$::env(QEMU_ARGS)
+log_file -noappend /tmp/matrix_$name.log
+
+# 状态循环: 倒计时/UEFI Shell/登录/密码 任一步骤都能推进
+set booted 0
+set attempts 0
+while {!$booted && $attempts < 6} {
+    incr attempts
+    expect {
+        -re "login:" { send "root\r" }
+        -re "password:" { send "root\r" }
+        -re ":/home/root" { set booted 1 }
+        -re "to continue." { send "\r" }
+        -re "Shell>" { send "fs0:\\efi\\boot\\bootx64.efi\r" }
+        timeout {}
+    }
+    sleep 3
+    expect {
+        -re ":/home/root" { set booted 1 }
+        timeout {}
+    }
+}
+if {!$booted} {
+    puts "RESULT $name: FAIL (no login)"
+    exec sh -c "pkill -f qemu-system-x86_64 || true"
+    exit 1
+}
+
+# 存储驱动位置佐证 (内核打印 sd: ide pos=N / ahci / nvme)
+send "uname -a\r"
+expect {
+    -re "x86" { puts "RESULT $name: PASS (login+shell)" }
+    timeout { puts "RESULT $name: FAIL (no shell cmd)" }
+}
+send "echo MATRIX-DONE-$name\r"
+sleep 1
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+exit 0

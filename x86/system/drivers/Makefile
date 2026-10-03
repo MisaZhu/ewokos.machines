@@ -1,4 +1,4 @@
-BASIC_DIRS = ttyd powerd
+BASIC_DIRS = ttyd powerd nvmefsd atafsd vgacond
 basic: $(BASIC_DIRS)
 
 GUI_DIRS = fbdisplayd ps2keybd ps2moused

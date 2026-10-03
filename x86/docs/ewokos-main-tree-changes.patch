@@ -1,0 +1,361 @@
+diff --git a/kernel/dev/include/dev/uart.h b/kernel/dev/include/dev/uart.h
+index 35335e117..9fb31df25 100644
+--- a/kernel/dev/include/dev/uart.h
++++ b/kernel/dev/include/dev/uart.h
+@@ -6,4 +6,8 @@
+ int32_t uart_dev_init(uint32_t baud);
+ int32_t uart_write(const void* data, uint32_t size);
+ 
++/* 控制台移交: init 加载完成后由内核调用。有 VGA console 的平台在此停写
++ * 内核镜像 (屏幕保留最后一屏内核日志), 无此实现的平台为空操作。 */
++void console_handoff(void);
++
+ #endif
+diff --git a/kernel/kernel/include/sysinfo.h b/kernel/kernel/include/sysinfo.h
+index e0eb87428..229080b1d 100644
+--- a/kernel/kernel/include/sysinfo.h
++++ b/kernel/kernel/include/sysinfo.h
+@@ -23,6 +23,16 @@ typedef struct {
+ 	ewokos_addr_t v_base;
+ } dma_info_t;
+ 
++/* pre-configured linear framebuffer handed over by the bootloader
++   (UEFI GOP); phy_base == 0 means no bootloader framebuffer */
++typedef struct {
++	ewokos_addr_t phy_base;
++	uint32_t width;
++	uint32_t height;
++	uint32_t pitch;
++	uint32_t bpp;
++} fb_info_t;
++
+ #define MAX_CORE_NUM 8
+ #define MAX_PROC_NUM 512
+ #define MACHINE_MAX  32
+@@ -56,6 +66,10 @@ typedef struct {
+ 	uint32_t       max_task_num;
+ 	uint32_t       max_task_per_proc;
+ 	uint32_t       page_size;
++	fb_info_t      fb;
++	/* 内存盘 rootfs (x86 UEFI 引导时 stub 拷入 RAM 的 ROOTFS.IMG);
++	   phy_base == 0 表示未提供 */
++	dma_info_t     rd;
+ } sys_info_t;
+ 
+ /*dynamic attr*/
+diff --git a/kernel/kernel/src/hw_info.c b/kernel/kernel/src/hw_info.c
+index 5b1b44c4e..bfc9cd685 100644
+--- a/kernel/kernel/src/hw_info.c
++++ b/kernel/kernel/src/hw_info.c
+@@ -135,8 +135,13 @@ void sys_info_config(void) {
+     }
+ #endif
+ 
+-    _sys_info.sys_dma.phy_base = _sys_info.allocable_phy_mem_base;
+-    _sys_info.allocable_phy_mem_base += _sys_info.sys_dma.size;
++    /* dma 区物理基址必须页对齐: 内核 dma_set 会对齐 phys_base, 而
++     * dma_phy_addr 按 (va - v_base + phy_base) 线性换算 —— 基址不对齐
++     * 时两者偏差, 设备拿到错误物理地址(x86 KMALLOC_END 非 4K 对齐) */
++    _sys_info.sys_dma.phy_base = (_sys_info.allocable_phy_mem_base +
++            (PAGE_SIZE - 1)) & ~((ewokos_addr_t)(PAGE_SIZE - 1));
++    _sys_info.allocable_phy_mem_base = _sys_info.sys_dma.phy_base +
++            _sys_info.sys_dma.size;
+ 
+     /* physically-contiguous slab for IPC_CONTIG shm segments, carved right
+        after the dma window with a default size. kernel.conf "shm_contig_size"
+diff --git a/kernel/kernel/src/kernel.c b/kernel/kernel/src/kernel.c
+index 030fdf2da..a91c40e89 100644
+--- a/kernel/kernel/src/kernel.c
++++ b/kernel/kernel/src/kernel.c
+@@ -126,6 +126,10 @@ static void clone_kernel_vm(page_dir_entry_t* vm) {
+     // the user half private for per-process mappings.
+     map_pages_size(vm, _sys_info.sys_dma.phy_base, _sys_info.sys_dma.phy_base,
+             _sys_info.sys_dma.size, AP_RW_D, PTE_ATTR_NOCACHE);
++    // VGA 文本控制台恒等页 (用户可写): 内核 kout 镜像 + 用户态 vgacond
++    // (/dev/vga0) 接管的载体; 带引用计数, 进程退出释放平衡
++    map_page_ref(vm, X86_VGA_TEXT_PHYS, X86_VGA_TEXT_PHYS, AP_RW_RW,
++            PTE_ATTR_DEV);
+     flush_tlb();
+ }
+ #elif defined(__aarch64__)
+@@ -384,6 +388,13 @@ void _kernel_entry_c(void) {
+     copy_interrupt_table();
+ 
+     init_kernel_vm();  
++#ifdef __x86_64__
++    {   /* CR3 已切到内核 VM: 启用 GOP 帧缓冲控制台 (真机 UEFI 唯一可见
++        * 输出; boot_pml4 阶段无 fb 窗口映射, 不可提前) */
++        extern void vgacon_fb_ready(void);
++        vgacon_fb_ready();
++    }
++#endif
+ 
+     uart_dev_init(19200);
+     kout_str("\n=== ewokos booting ===\n\n");
+@@ -447,6 +458,13 @@ void _kernel_entry_c(void) {
+     }
+     printf("[ok]\n");
+ 
++#ifdef __x86_64__
++    /* 控制台移交 (x86 BSP, 见 machines/x86/kernel/bsp/uart.c): 用户态
++     * 启动后内核 VGA 镜像停写, 屏幕保留最后一屏内核日志 —— 引导阶段
++     * 的挂死点在无串口平台上依然全程可见 */
++    console_handoff();
++#endif
++
+     kfork_core_halt(0);
+     if(_cpu_cores[0].idle_proc != NULL) {
+         _cpu_cores[0].idle_proc->info.state = RUNNING;
+diff --git a/kernel/platform/x86/arch/common/include/mm/mmu_arch.h b/kernel/platform/x86/arch/common/include/mm/mmu_arch.h
+index f6513e7c0..03cadcbf8 100644
+--- a/kernel/platform/x86/arch/common/include/mm/mmu_arch.h
++++ b/kernel/platform/x86/arch/common/include/mm/mmu_arch.h
+@@ -46,4 +46,17 @@ page_table_entry_t* get_page_table_entry(page_dir_entry_t* vm, ewokos_addr_t vir
+ void __set_translation_table_base(uint64_t base);
+ void __flush_tlb(void);
+ 
++/* PC 标准 VGA 文本缓冲区 (vgacon: kout 的第二输出汇点, 无串口平台的
++ * 内核日志可见性)。VA 选在 PDPT[2] (0x80000000-0xBFFFFFFF) 的空闲 PD 480:
++ * clone_kernel_vm 把 PDPT[2] 按引用共享给所有任务页表 (不参与进程退出
++ * 回收), 内核与全部用户进程通写同一映射; 该 VA 避开内核镜像/页目录/
++ * kmalloc/sys_dma/allocable 直连/mmio 等所有运行时映射区间。物理地址
++ * 恒为 PC 标准的 0xB8000。 */
++#define X86_VGA_TEXT_VADDR  0xBE000000UL
++/* GOP 帧缓冲控制台窗口 (PDPT[2] PD 448 起, 2MB 大页, arch_vm 映射)。
++ * 布局约束: PD 0-255=内核 P2V 直映射, 256-287=mmio VA, 272-279=sys_dma VA,
++ * 384-447=ramdisk 窗口(128MB), 400=用户态 fb (bsp_fb), 496=VGA 文本 */
++#define X86_FB_VA           0xB8000000UL
++#define X86_VGA_TEXT_PHYS   0xB8000UL
++
+ #endif
+diff --git a/kernel/platform/x86/arch/common/src/x86_smp.c b/kernel/platform/x86/arch/common/src/x86_smp.c
+index 2e1853bbe..873150b0d 100644
+--- a/kernel/platform/x86/arch/common/src/x86_smp.c
++++ b/kernel/platform/x86/arch/common/src/x86_smp.c
+@@ -169,6 +169,7 @@ static void x86_lapic_send_ipi_raw(uint32_t apic_id, uint32_t icr_low) {
+ }
+ 
+ static void x86_lapic_init(void) {
++    x86_lapic_mode_fixup();                  /* x2APIC 交接降级 (真机固件) */
+     uint64_t apic_base = x86_rdmsr(IA32_APIC_BASE_MSR);
+     if ((apic_base & IA32_APIC_BASE_ENABLE) == 0) {
+         x86_wrmsr(IA32_APIC_BASE_MSR, apic_base | IA32_APIC_BASE_ENABLE);
+diff --git a/kernel/platform/x86/arch/x64/boot.S b/kernel/platform/x86/arch/x64/boot.S
+index 956e52967..0913a78aa 100644
+--- a/kernel/platform/x86/arch/x64/boot.S
++++ b/kernel/platform/x86/arch/x64/boot.S
+@@ -13,11 +13,15 @@ boot_pml4:
+     .fill 511, 8, 0
+ 
+ .align 4096
++.global boot_pdpt
+ boot_pdpt:
+     .quad boot_pd + 0x003
+     .quad 0
+     .quad boot_pd_high + 0x003
+-    .fill 509, 8, 0
++    /* PDPT[3]: VA 0xC0000000 区, 供内核运行时映射 AHCI ABAR 等
++     * PCI MMIO(见 hw_info_arch.c x86_early_map_pci_mmio) */
++    .quad boot_pd_spare + 0x003
++    .fill 508, 8, 0
+ 
+ .align 4096
+ boot_pd:
+@@ -32,6 +36,14 @@ boot_pd_high:
+     .quad boot_pt_high0 + 0x003
+     .fill 511, 8, 0
+ 
++/* VA 0xC0000000 区备用 PD: 内核启动早期由 hw_info_arch 填入
++ * 2MB 页, 映射 PCI MMIO(如 q35 的 AHCI ABAR), 内核页表(arch_vm)
++ * 对同一 VA 做同样映射, 保证重映射前后地址不变 */
++.align 4096
++.global boot_pd_spare
++boot_pd_spare:
++    .fill 512, 8, 0
++
+ .align 4096
+ boot_pt_high0:
+     .set page, 0x00100000
+@@ -63,6 +75,9 @@ gdt32_ptr:
+ __entry:
+     cli
+     cld
++    /* rdi = bootinfo 物理地址 (BIOS-CD no-emulation 路径; BIOS 硬盘路径
++     * 传 0)。hw_info 按魔数校验, 垃圾/0 均安全回退到自探测 */
++    mov dword ptr [x86_uefi_bootinfo], edi    /* 分页未开: 线性 = 物理 */
+     mov esp, offset _svc_start_stack
+     lgdt [gdt32_ptr]
+ 1:
+@@ -191,3 +206,75 @@ halt_forever:
+     cli
+     hlt
+     jmp halt_forever
++
++/* ------------------------------------------------------------------
++ * UEFI 入口 (boot/uefi stub 在 ExitBootServices 后进入)
++ * 此时: 长模式 + 固件页表(全恒等映射), rdi = bootinfo 物理地址,
++ *       段寄存器/栈仍是固件的(栈可能在 >1GB 处, 切 CR3 后不可见)。
++ * 因此必须先切内核栈/段(恒等映射区内), 再切 boot_pml4 —— 与 BIOS
++ * 路径的 long_mode_entry 完全同一套早期页表(恒等 0-1GB +
++ * 0x80000000 -> PA 0x100000 的 2MB 高映射), 之后行为与 BIOS 一致。
++ * 布局约定(boot/uefi stub 依赖): uefi_header 首个 .quad 为
++ * boot_pml4 地址, uefi_entry 位于其 +8 处。
++ * ------------------------------------------------------------------ */
++.section .uefi,"ax"
++.p2align 4
++.global uefi_header
++uefi_header:
++    .quad boot_pml4
++.global uefi_entry
++uefi_entry:
++    cli
++    cld
++    /* 暂存 bootinfo 指针, 供 hw_info_arch 消费 */
++    mov qword ptr [rip + x86_uefi_bootinfo], rdi
++    mov dx, 0x3fd
++1:
++    in al, dx
++    test al, 0x20
++    jz 1b
++    mov dx, 0x3f8
++    mov al, 'U'
++    out dx, al
++
++    /* 固件栈随 CR3 切换失效, 先换到内核 init 栈(恒等映射区) */
++    lea rsp, [rip + _svc_start_stack]
++    lgdt [rip + gdt32_ptr]
++    lea rax, [rip + uefi_reload_cs]
++    push 0x08
++    push rax
++    retfq
++uefi_reload_cs:
++    mov ax, 0x10
++    mov ds, ax
++    mov es, ax
++    mov ss, ax
++    xor eax, eax
++    mov fs, ax
++    mov gs, ax
++
++    /* 切到内核早期页表(与 BIOS 路径相同), 此后调用高半区代码 */
++    mov rax, offset boot_pml4
++    mov cr3, rax
++
++    lea rdi, [rip + _bss_start]
++    lea rcx, [rip + _bss_end]
++    sub rcx, rdi
++    xor eax, eax
++    shr rcx, 3
++    rep stosq
++
++    call x86_runtime_init
++    call _boot_start
++    lea rsp, [rip + _svc_stack]
++    call _kernel_entry_c
++
++uefi_halt:
++    cli
++    hlt
++    jmp uefi_halt
++
++.section .init.data
++.global x86_uefi_bootinfo
++x86_uefi_bootinfo:
++    .quad 0
+diff --git a/system/basic/drivers/hid_keybd/hid_keybd.c b/system/basic/drivers/hid_keybd/hid_keybd.c
+index 45b42f26f..2050ee2f7 100644
+--- a/system/basic/drivers/hid_keybd/hid_keybd.c
++++ b/system/basic/drivers/hid_keybd/hid_keybd.c
+@@ -306,6 +306,13 @@ static int loop(vdevice_t* dev, void* p) {
+             _mod = buf[0];
+             _key_count = count;
+             memcpy(_keys, keys, sizeof(keys));
++            /* pace the drain by one log line: under TCG, without this
++               pause a drained key report never becomes visible to
++               /dev/keyb0 readers (wake/block timing, see the usbhostd
++               hid_backlog note). One line per report CHANGE - silent on
++               idle polling; on KVM/real hardware it is 1 line per key. */
++            klog("hid_keybd: snapshot count=%d key=%02x\n", count,
++                    count > 0 ? keys[0] : 0);
+             continue;
+         }
+         if (res < 0 && errno != EAGAIN) {
+diff --git a/system/basic/drivers/usbhostd/usbhostd.c b/system/basic/drivers/usbhostd/usbhostd.c
+index 6f4738379..65c1f540b 100644
+--- a/system/basic/drivers/usbhostd/usbhostd.c
++++ b/system/basic/drivers/usbhostd/usbhostd.c
+@@ -61,7 +61,9 @@
+ /* enumeration / bring-up logging; per-report traffic stays silent */
+ #define USB_LOG_ENABLE 1
+ #if USB_LOG_ENABLE
+-//#define slog(...) klog(__VA_ARGS__)
++/* enumeration-time logging via klog: register/reject/error lines only,
++   the per-report loop stays silent (see the dispatch paths below) */
++#define slog(...) klog(__VA_ARGS__)
+ #else
+ static inline void usb_log_none(const char* fmt, ...) { (void)fmt; }
+ //#define slog(...) usb_log_none(__VA_ARGS__)
+diff --git a/system/basic/libc/libewoksys/ewoksys/src/basic_math.c b/system/basic/libc/libewoksys/ewoksys/src/basic_math.c
+index a249a67c3..2b7ba0007 100644
+--- a/system/basic/libc/libewoksys/ewoksys/src/basic_math.c
++++ b/system/basic/libc/libewoksys/ewoksys/src/basic_math.c
+@@ -16,7 +16,11 @@ inline uint32_t random_u32(void) {
+ }
+ 
+ inline uint32_t random_to(uint32_t to) {
+-    uint32_t r = random_u32();	
++    uint32_t r = random_u32();
++    /* to==0 (如 X 会话早于 displayd 就绪, 屏幕尺寸仍为 0) 时取模
++     * 触发 #DE, statusbar 曾因此整进程崩溃; 约定返回 0 */
++    if(to == 0)
++        return 0;
+     return r % to;
+ }
+ 
+diff --git a/system/basic/libs/ext3/src/ext3fs.c b/system/basic/libs/ext3/src/ext3fs.c
+index ea2d1fc1a..dc15ea081 100644
+--- a/system/basic/libs/ext3/src/ext3fs.c
++++ b/system/basic/libs/ext3/src/ext3fs.c
+@@ -1,4 +1,5 @@
+ #include <sd/sd.h>
++#include <stdint.h>
+ #include <ext3/ext3fs.h>
+ #include <ewoksys/vfs.h>
+ #include <string.h>
+@@ -2112,17 +2113,17 @@ int32_t ext3_init_ex2(ext3_t* ext3, read_block_func_t read_block, read_blocks_fu
+ 
+     //read super block
+     if(ext3->read_block(1, buf) != 0) {
+-        return EXT3_ERR_IO;
++        return -101;
+     }
+     memcpy(&ext3->super, buf, sizeof(EXT3_SUPER));
+     if(ext3_validate_super(ext3) != 0) {
+-        return EXT3_ERR_IO;
++        return -102;
+     }
+     if(sd_set_block_size(ext3_block_size(ext3)) != 0) {
+-        return EXT3_ERR_IO;
++        return -103;
+     }
+     if(ext3_get_gds(ext3) != 0) {
+-        return EXT3_ERR_IO;
++        return -104;
+     }
+     ext3->dirty_gds = (uint8_t*)calloc((size_t)ext3->group_num, sizeof(uint8_t));
+     if(ext3->dirty_gds == NULL) {
+diff --git a/system/gui/libs/graph/src/graph_ex.c b/system/gui/libs/graph/src/graph_ex.c
+index 529809913..8df273e09 100644
+--- a/system/gui/libs/graph/src/graph_ex.c
++++ b/system/gui/libs/graph/src/graph_ex.c
+@@ -100,6 +100,10 @@ void graph_draw_dot_pattern(graph_t* g,int x, int y, int w, int h, uint32_t c1,
+ }
+ 
+ void graph_gradation(graph_t* graph, int x, int y, int w, int h, uint32_t c1, uint32_t c2, bool vertical) {
++        /* 零/负尺寸直接返回: 下方按 w 或 h 做除法, 0 触发 #DE
++         * (statusbar 充电动画在 w=0 时曾整进程崩溃) */
++        if(w <= 0 || h <= 0)
++                return;
+         int32_t a1 = (c1 >> 24) & 0xff;
+         int32_t a2 = (c2 >> 24) & 0xff;
+         int32_t r1 = (c1 >> 16) & 0xff;

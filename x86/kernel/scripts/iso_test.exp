@@ -1,0 +1,73 @@
+#!/usr/bin/env expect -f
+# ewokos x86 ISO 回归: 同一份 ewokos.iso 两条引导路径
+#   UEFI (OVMF): BOOTX64.EFI 读 ISO9660 的 KERNEL.ELF + ROOTFS.IMG,
+#                rootfs 拷入内存盘 -> 完整启动 -> 登录 -> shell 命令回环
+#   BIOS (SeaBIOS): El Torito hd 仿真盘只有 MBR+内核, 无 rootfs ->
+#                内核日志后 sd init 失败停机 (设计内行为, 见 README)
+# 前置: make iso 产物 ewokos.iso 就绪; OVMF 用 boot/uefi/OVMF.fd
+set timeout 240
+cd /Users/tony/work/ewokos/machines/x86/kernel
+
+if {![file exists ewokos.iso]} {
+    puts "FAIL: ewokos.iso 不存在, 先 make iso"
+    exit 1
+}
+
+# ---------- UEFI 路径: 完整启动 ----------
+spawn qemu-system-x86_64 -accel tcg -M pc -m 1024 -display none \
+    -no-reboot -no-shutdown -serial stdio \
+    -boot d -cdrom ewokos.iso \
+    -drive if=pflash,format=raw,file=boot/uefi/OVMF.fd,readonly=on
+exec sh -c "stty raw -echo < $spawn_out(slave,name)"
+log_file -noappend /tmp/iso_test.log
+
+# ramdisk 128MB 在 ExitBootServices 前拷入 RAM, TCG 下整个引导 ~90s
+sleep 95
+expect {
+    -re "login:" { send "root\r" }
+    timeout { puts "FAIL: UEFI: no login prompt"; exit 1 }
+}
+expect {
+    -re "password:" { send "root\r" }
+    -re ":/home/root" {}
+    timeout {}
+}
+sleep 4
+expect {
+    -re ":/home/root" {}
+    timeout { puts "FAIL: UEFI: no shell prompt"; exit 1 }
+}
+puts "=== ISO-UEFI logged in ==="
+
+proc run {cmd pattern desc} {
+    set timeout 40
+    send -- "$cmd\r"
+    expect {
+        -re $pattern { puts "PASS: $desc" }
+        timeout { puts "FAIL: $desc" }
+    }
+    set timeout 240
+}
+
+run {ls /}              {bin}   {UEFI: 内存盘 rootfs 根目录可读}
+run {echo ISO-UEFI-OK}  {ISO-UEFI-OK} {UEFI: shell echo 回环}
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+close
+wait
+
+# ---------- BIOS 路径: 内核日志后 sd init 失败停机 (设计内) ----------
+spawn qemu-system-x86_64 -accel tcg -M pc -m 512 -display none \
+    -no-reboot -no-shutdown -serial stdio \
+    -boot d -cdrom ewokos.iso
+exec sh -c "stty raw -echo < $spawn_out(slave,name)"
+sleep 25
+expect {
+    -re "login:" { puts "FAIL: BIOS: 不应完整启动 (仿真盘无 rootfs)" }
+    -re "sd.*abort|sd.*fail|no.*bar" {
+        puts "PASS: BIOS: 内核引导后 sd init 失败停机 (设计内, 见 README)"
+    }
+    timeout { puts "FAIL: BIOS: 未到达 sd init 失败点" }
+}
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+puts "\n=== ISO 回归结束 ==="
+exit 0

@@ -14,6 +14,7 @@ SECTIONS
 	{
 		KEEP(*(.multiboot))
 		KEEP(*(.init .init.*))
+		KEEP(*(.uefi .uefi.*))
 		*/start*.o(.text .text.*)
 		*/start*.o(.rodata .rodata.*)
 		*/start*.o(.data .data.*)
@@ -43,6 +44,17 @@ SECTIONS
 	}
 	. = ALIGN(4096);
 	_bss_end = .;
+
+	/* AHCI DMA 结构区(命令列表/FIS/命令表/数据缓冲): 必须位于内核镜像
+	 * 内, 重映射后的内核页表才可直访; 物理地址 = V2P(此处 VA) */
+	. = ALIGN(4096);
+	_ahci_dma_base = .;
+	. = . + 0x1000;
+
+	/* NVMe DMA 区: admin/IO 队列 + IDENTIFY 缓冲 + 数据缓冲, 页对齐 */
+	. = ALIGN(4096);
+	_nvme_dma_base = .;
+	. = . + 0x6000;
 
 	. = . + 0x4000;
 	_irq_stack = .;

@@ -1,0 +1,106 @@
+#!/usr/bin/env expect -f
+# ewokos x86 xHCI 外设测试: qemu-xhci 键鼠走用户态 xHCI HCD, 与 UHCI MSC 盘共存
+# 键盘/鼠标端到端: HMP monitor socket (scripts/hmp.py) sendkey/mouse_move
+#   -> xHCI 中断 IN 传输 -> usbhostd -> /dev/keyb0|mouse0 -> cat 输出回串口
+# 用法: expect xhci_test.exp [登录前静默秒数, 默认 20]
+set timeout 90
+set quiet [lindex $argv 0]
+if {$quiet eq ""} { set quiet 20 }
+
+cd /Users/tony/work/ewokos/machines/x86/kernel
+file delete /tmp/xhci_mon.sock /tmp/xhci_qmp.sock
+spawn qemu-system-x86_64 -accel tcg -M pc -m 512 -display none \
+    -no-reboot -no-shutdown -serial stdio \
+    -monitor unix:/tmp/xhci_mon.sock,server,nowait \
+    -qmp unix:/tmp/xhci_qmp.sock,server,nowait \
+    -boot c -drive file=kernel.hdd,format=raw,if=ide,index=0,media=disk \
+    -device qemu-xhci,id=xhci0 \
+    -device usb-kbd,bus=xhci0.0 -device usb-mouse,bus=xhci0.0 \
+    -device piix3-usb-uhci,id=uhci0 \
+    -drive id=ustick,file=usb_test.img,format=raw,if=none \
+    -device usb-storage,bus=uhci0.0,port=2,drive=ustick
+
+log_file -noappend /tmp/xhci.log
+
+# pty 行规程设为 raw: 否则发给 guest 串口的 \x03 (Ctrl-C 杀前台 cat) 会被
+# ISIG 拦截变成 SIGINT 打死 qemu 本身
+exec sh -c "stty raw -echo < $spawn_out(slave,name)"
+
+# HMP 命令注入 (scripts/hmp.py)
+proc mon {cmd} {
+    exec python3 scripts/hmp.py /tmp/xhci_mon.sock $cmd >@ stdout 2>@ stdout
+}
+
+sleep $quiet
+expect {
+    -re "login:" { send "root\r" }
+    timeout { puts "FAIL: no login prompt"; exit 1 }
+}
+expect {
+    -re "password:" { send "root\r" }
+    -re ":/home/root" {}
+    timeout {}
+}
+sleep 4
+expect {
+    -re ":/home/root" {}
+    timeout { puts "FAIL: no shell prompt"; exit 1 }
+}
+puts "=== logged in, running checks ==="
+
+proc run {cmd pattern desc} {
+    set timeout 40
+    send -- "$cmd\r"
+    expect {
+        -re $pattern { puts "PASS: $desc" }
+        timeout { puts "FAIL: $desc" }
+    }
+    set timeout 120
+}
+
+run {ls /dev}                        {hid0}                 {USB: /dev/hid0 存在 (usbhostd)}
+run {ls /mnt/udisk0}                 {usb_marker}           {USB: UHCI MSC 盘自动挂载 (双控制器共存)}
+run {cat /mnt/udisk0/usb_marker.txt} {hello from usb stick} {USB: UHCI bulk 数据回读}
+
+# ---- 鼠标端到端: mouse_move 10 5 -> xHCI usb-mouse -> /dev/mouse0 ----
+# moused 报文 [btn, dx, dy] = [., 0x0a(=\\n), 0x05]
+send -- "cat /dev/mouse0\r"
+sleep 2
+mon "mouse_move 10 5"
+sleep 4
+set timeout 10
+expect {
+    -re ".\n\005" { puts "PASS: xHCI 鼠标端到端 (mouse_move 10 5 -> /dev/mouse0)" }
+    timeout { puts "FAIL: xHCI 鼠标端到端" }
+}
+send -- "\x03"
+sleep 1
+expect {
+    -re ":/home/root" {}
+    timeout {}
+}
+set timeout 120
+
+# ---- 键盘端到端: QMP 按住 400ms 再释放 -> xHCI usb-kbd -> /dev/keyb0 ----
+# HMP sendkey 按下/释放只隔几 ms, 会被 hid_keybd 的最新快照耗尽塌缩掉;
+# qmp_key.py 按真实键盘语义按住 400ms, 多个轮询周期都能看到按下状态
+send -- "cat /dev/keyb0\r"
+sleep 2
+exec python3 scripts/qmp_key.py /tmp/xhci_qmp.sock h
+sleep 2
+exec python3 scripts/qmp_key.py /tmp/xhci_qmp.sock i
+sleep 3
+set timeout 10
+expect {
+    -re "\[hi\]" { puts "PASS: xHCI 键盘端到端 (QMP hold->usb-kbd->/dev/keyb0)" }
+    timeout { puts "FAIL: xHCI 键盘端到端" }
+}
+send -- "\x03"
+sleep 1
+set timeout 120
+
+puts "\n=== 测试结束 ==="
+close
+wait
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+exit 0

@@ -75,11 +75,16 @@ ifeq ($(FS),)
 FS=ext3
 endif
 
+# rootfs 镜像大小 (MB), 默认 512; make sd-iso 用 128 (内存盘 rootfs)
+ifeq ($(ROOTFS_MB),)
+ROOTFS_MB=512
+endif
+
 SD = root_$(ARCH).img
 sd:
 	@echo "\n====building ${FS} format sdcard image===="
 #512M ext2/ext3 sd
-	dd if=/dev/zero of=${SD} bs=1k count=512k
+	dd if=/dev/zero of=${SD} bs=1k count=$(shell expr ${ROOTFS_MB} \* 1024)
 #make ext2/ext3 fs with: block_size=4096 inode_size=128
 	mke2fs -t ${FS} -b 4096 -I 128 ${SD}
 
@@ -87,3 +92,8 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 
 	@echo "==== ${FS} format sdcard image created  ====\n"
+
+# ISO 用精简 rootfs 镜像 (~128MB, UEFI 引导时 BOOTX64.EFI 拷入内存盘)
+SD_ISO = root_$(ARCH)_iso.img
+sd-iso:
+	@$(MAKE) --no-print-directory sd SD=${SD_ISO} ROOTFS_MB=128

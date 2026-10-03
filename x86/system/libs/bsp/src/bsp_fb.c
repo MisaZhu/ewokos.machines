@@ -135,6 +135,39 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     uint32_t size;
     uint32_t size_max;
 
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+
+    /* UEFI 启动: 固件(GOP)已配置好线性帧缓冲, 直接映射使用, 不再动 DISPI 寄存器 */
+    if (sysinfo.fb.phy_base != 0 && sysinfo.fb.width > 0 && sysinfo.fb.height > 0) {
+        uint32_t fbsize = sysinfo.fb.pitch * sysinfo.fb.height;
+        uint32_t fbsize_max = align_up(fbsize, 4096);
+        fbinfo_reset();
+        /* VA 固定 0xB8400000 (PD 450+): 不能用 sys_dma 末尾 (0xB2000000 起
+         * 落在内核 ramdisk VA 窗口 0xB0000000-0xB7FFFFFF 内, 用户态访问
+         * 即 data abort —— GPD 实测) */
+        _fbinfo.pointer = (void *)0xB8400000UL;
+        _fbinfo.size = fbsize;
+        _fbinfo.size_max = fbsize_max;
+        _fbinfo.width = sysinfo.fb.width;
+        _fbinfo.height = sysinfo.fb.height;
+        _fbinfo.vwidth = sysinfo.fb.width;
+        _fbinfo.vheight = sysinfo.fb.height;
+        _fbinfo.depth = sysinfo.fb.bpp;
+        _fbinfo.pitch = sysinfo.fb.pitch;
+        _fbinfo.xoffset = 0;
+        _fbinfo.yoffset = 0;
+        _fbinfo.dma_id = -1;
+        _fbinfo.phy_base = sysinfo.fb.phy_base;
+        if (syscall3(SYS_MEM_MAP,
+                (ewokos_addr_t)_fbinfo.pointer,
+                (ewokos_addr_t)_fbinfo.phy_base,
+                (ewokos_addr_t)_fbinfo.size_max) == 0) {
+            fbinfo_reset();
+            return -1;
+        }
+        return 0;
+    }
+
     if (w == 0) {
         w = X86_FB_DEF_W;
     }
@@ -187,10 +220,8 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     }
 
     find_display_bar0(&phy_base);
-    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-
     fbinfo_reset();
-    _fbinfo.pointer = sysinfo.sys_dma.v_base + sysinfo.sys_dma.size;
+    _fbinfo.pointer = (void *)0xB8400000UL;   /* PD 450+, ramdisk 窗口之外 */
     _fbinfo.size = size;
     _fbinfo.size_max = size_max;
     _fbinfo.width = w;

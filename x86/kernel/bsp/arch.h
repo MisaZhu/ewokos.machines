@@ -27,4 +27,20 @@ static inline void outw(uint16_t port, uint16_t value) {
 	__asm__ volatile("outw %0, %1" : : "a"(value), "Nd"(port));
 }
 
+static inline uint32_t inl(uint16_t port) {
+	uint32_t value;
+	__asm__ volatile("inl %1, %0" : "=a"(value) : "Nd"(port));
+	return value;
+}
+
+static inline void outl(uint16_t port, uint32_t value) {
+	__asm__ volatile("outl %0, %1" : : "a"(value), "Nd"(port));
+}
+
+/* vgacon.c: 内核 VGA 文本控制台 (kout 的第二输出汇点) */
+void vgacon_init(void);
+void vgacon_write(const char* s, uint32_t len);
+void vgacon_fb_ready(void);
+void vgacon_handoff(void);
+
 #endif

@@ -1,0 +1,53 @@
+#!/usr/bin/expect -f
+# ewokos x86 存储驱动验证: UEFI 启动 + AHCI/NVMe 附加盘挂载读取
+set timeout 90
+set log scripts/../build_storage_interaction.log
+
+cd /Users/tony/work/ewokos/machines/x86/kernel
+spawn qemu-system-x86_64 -M pc -m 512 -display none -no-reboot -no-shutdown \
+    -serial mon:stdio -drive if=pflash,format=raw,file=boot/uefi/OVMF.fd,readonly=on \
+    -boot c -drive file=kernel.hdd,format=raw,if=ide,index=0,media=disk \
+    -device ahci,id=ahci0 -drive id=dsata,file=sata_test.img,format=raw,if=none \
+    -device ide-hd,drive=dsata,bus=ahci0.0 \
+    -drive id=dnvme,file=nvme_test.img,format=raw,if=none \
+    -device nvme,drive=dnvme,serial=ewok0 \
+    -usb -device usb-kbd,port=1,usb_version=1 -device usb-mouse,port=2,usb_version=1
+
+log_file -noappend $log
+
+expect {
+    -re "login:" { send "root\r" }
+    timeout { puts "FAIL: no login prompt"; exit 1 }
+}
+expect {
+    -re "password:" { send "root\r" }
+    -re "\[#$\] *" {}
+    timeout { puts "FAIL: no password prompt"; exit 1 }
+}
+sleep 3
+
+send "ls /mnt/sata\r"
+expect {
+    -re "sata_marker" { puts "PASS: AHCI sata mounted, marker visible" }
+    timeout { puts "FAIL: /mnt/sata"; exit 1 }
+}
+send "cat /mnt/sata/sata_marker.txt\r"
+expect {
+    -re "hello from sata" { puts "PASS: AHCI read roundtrip" }
+    timeout { puts "FAIL: cat sata marker"; exit 1 }
+}
+send "ls /mnt/nvme\r"
+expect {
+    -re "nvme_marker" { puts "PASS: NVMe mounted, marker visible" }
+    timeout { puts "FAIL: /mnt/nvme"; exit 1 }
+}
+send "cat /mnt/nvme/nvme_marker.txt\r"
+expect {
+    -re "hello from nvme" { puts "PASS: NVMe read roundtrip" }
+    timeout { puts "FAIL: cat nvme marker"; exit 1 }
+}
+puts "ALL-PASS: storage drivers (AHCI + NVMe) verified"
+close
+wait
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+exit 0

@@ -1,0 +1,12 @@
+*.o
+*.img
+*.hdd
+*.elf
+*.bin
+*.EFI
+*.fd
+*.inc
+build*/
+boot/uefi/OVMF.fd
+*.iso
+*.deb

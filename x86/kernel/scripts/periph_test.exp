@@ -1,0 +1,88 @@
+#!/usr/bin/env expect -f
+# ewokos x86 外设测试: USB(UHCI+MSC) / SATA(AHCI+atafsd) / NVMe(nvmefsd)
+# 用法: expect periph_test.exp [登录前静默秒数, 默认 25]
+set timeout 90
+set quiet [lindex $argv 0]
+if {$quiet eq ""} { set quiet 25 }
+
+cd /Users/tony/work/ewokos/machines/x86/kernel
+spawn qemu-system-x86_64 -accel tcg -M pc -m 512 -display none \
+    -no-reboot -no-shutdown -serial mon:stdio \
+    -drive if=pflash,format=raw,file=boot/uefi/OVMF.fd,readonly=on \
+    -boot c -drive file=kernel.hdd,format=raw,if=ide,index=0,media=disk \
+    -device ahci,id=ahci0 -drive id=dsata,file=sata_test.img,format=raw,if=none \
+    -device ide-hd,drive=dsata,bus=ahci0.0 \
+    -device nvme,id=nv0,serial=ewok0 -device nvme-ns,bus=nv0,drive=dnvme \
+    -drive id=dnvme,file=nvme_test.img,format=raw,if=none \
+    -usb -device usb-kbd,port=1,usb_version=1 \
+    -drive id=ustick,file=usb_test.img,format=raw,if=none \
+    -device usb-storage,drive=ustick,port=2
+
+log_file -noappend /tmp/periph.log
+
+# 等 bgrun 守护进程的 klog 平息, 避免打断登录输入
+sleep $quiet
+expect {
+    -re "to continue." {
+        send -- "\r"   ;# 跳过 startup.nsh
+        sleep 1
+        # ESP 的 FS 映射号随枚举顺序变化 (fs0/fs1), 两个都试
+        send -- "fs0:\\efi\\boot\\bootx64.efi\r"
+        sleep 3
+        send -- "fs1:\\efi\\boot\\bootx64.efi\r"
+    }
+    -re "login:" { send "root\r" }
+    timeout { puts "FAIL: no login prompt"; exit 1 }
+}
+expect {
+    -re "password:" { send "root\r" }
+    -re ":/home/root" {}
+    timeout {}
+}
+sleep 4
+expect {
+    -re ":/home/root" {}
+    timeout { puts "FAIL: no shell prompt"; exit 1 }
+}
+puts "=== logged in, running checks ==="
+
+# basic init.rd 不自动启动 atafsd (根盘在 AHCI 时会与 sdfsd 双挂载死锁),
+# SATA 数据盘测试在此显式拉起 (独立 ahci0 设备, 见 README 外设测试前置)
+send -- "bgrun /drivers/x86/atafsd /mnt/sata\r"
+sleep 12
+
+proc run {cmd pattern desc} {
+    set timeout 40
+    send -- "$cmd\r"
+    expect {
+        -re $pattern { puts "PASS: $desc" }
+        timeout { puts "FAIL: $desc" }
+    }
+    set timeout 120
+}
+
+run {ls /dev}                              {hid0}              {USB: /dev/hid0 存在 (usbhostd+UHCI)}
+run {ls /mnt/udisk0}                       {usb_marker}             {USB: FAT32 U 盘自动挂载 /mnt/udisk0}
+run {cat /mnt/udisk0/usb_marker.txt}       {hello from usb stick}   {USB: U 盘标记文件回读}
+run {ls /mnt/sata}                         {sata_marker}            {SATA: atafd 挂载 /mnt/sata}
+run {cat /mnt/sata/sata_marker.txt}        {hello from sata}        {SATA: 标记文件回读}
+sleep 20   ;# nvmefsd 为 bgrun 异步挂载, 完成最晚
+# NVMe 挂载时延波动较大(TCG), 重试等待
+set nvok 0
+for {set i 0} {$i < 3 && !$nvok} {incr i} {
+    sleep 12
+    send -- "cat /mnt/nvme/nvme_marker.txt\r"
+    expect {
+        -re {hello from nvme} { set nvok 1 }
+        timeout {}
+    }
+}
+if {$nvok} { puts "PASS: NVMe: nvmefsd 挂载 + 标记文件回读" } else { puts "FAIL: NVMe: nvmefsd 挂载 + 标记文件回读" }
+
+send "echo PERIPH-DONE\r"
+sleep 1
+puts "\n=== 测试结束 ==="
+close
+wait
+exec sh -c "pkill -f qemu-system-x86_64 || true"
+exit 0

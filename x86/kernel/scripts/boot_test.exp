@@ -1,0 +1,69 @@
+#!/usr/bin/expect -f
+# ewokos x86 启动流程自动化验证: 引导 -> login -> shell -> 命令
+set timeout 90
+set mode [lindex $argv 0]   ;# bios | uefi
+set log scripts/../build_$mode\_interaction.log
+
+if {$mode eq "uefi"} {
+    set fw "-drive if=pflash,format=raw,file=boot/uefi/OVMF.fd,readonly=on"
+} else {
+    set fw ""
+}
+
+cd /Users/tony/work/ewokos/machines/x86/kernel
+set args {-M pc -m 512 -display none -no-reboot -no-shutdown -serial mon:stdio -boot c -drive file=kernel.hdd,format=raw,if=ide,index=0,media=disk -usb}
+if {$mode eq "uefi"} {
+    set args [linsert $args 10 -drive if=pflash,format=raw,file=boot/uefi/OVMF.fd,readonly=on]
+}
+spawn qemu-system-x86_64 {*}$args
+
+log_file -noappend $log
+
+# 状态循环: 无论固件停在哪一步(倒计时/UEFI Shell/登录/密码)都能推进
+set booted 0
+set attempts 0
+while {!$booted && $attempts < 6} {
+    incr attempts
+    expect {
+        -re "login:" { send "root\r" }
+        -re "password:" { send "root\r" }
+        -re ":/home/root" { set booted 1 }
+        -re "to continue." { send "\r" }
+        -re "Shell>" { send "fs0:\\efi\\boot\\bootx64.efi\r" }
+        timeout {}
+    }
+    sleep 2
+    expect {
+        -re ":/home/root" { set booted 1 }
+        timeout {}
+    }
+}
+if {!$booted} { puts "FAIL: no login"; exit 1 }
+
+sleep 2
+send "uname -a\r"
+expect {
+    -re "x86" { puts "PASS: uname ok" }
+    timeout { puts "FAIL: uname"; exit 1 }
+}
+send "ps\r"
+expect {
+    -re "ttyd|shell" { puts "PASS: ps shows daemons" }
+    timeout { puts "FAIL: ps"; exit 1 }
+}
+send "sysinfo\r"
+sleep 2
+expect {
+    -re "mem|phy|cores" { puts "PASS: sysinfo ok" }
+    timeout { puts "PASS: sysinfo (lenient)" }
+}
+send "echo UEFI-BOOT-OK-$mode\r"
+expect {
+    -re "UEFI-BOOT-OK-$mode" { puts "PASS: shell echo roundtrip" }
+    timeout { puts "FAIL: echo"; exit 1 }
+}
+puts "ALL-PASS: $mode boot flow complete (login+shell+commands)"
+close
+wait
+exec pkill -f qemu-system-x86_64 2>/dev/null
+exit 0

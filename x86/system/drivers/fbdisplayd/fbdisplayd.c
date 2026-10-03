@@ -56,11 +56,35 @@ static uint32_t blt16_pitch(const disp_info_t* fbinfo, const graph_t* g) {
     return g->w * g->h * 2;
 }
 
+/* 24bpp (真机 GOP 常见): 源 32bpp ARGB 小端内存序 B,G,R,A —— 逐像素
+ * 拷前 3 字节, 字节序与固件帧缓冲一致, 无需换算 */
+static uint32_t blt24_pitch(const disp_info_t* fbinfo, const graph_t* g) {
+    uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
+            fbinfo->yoffset * fbinfo->pitch +
+            fbinfo->xoffset * 3;
+    const uint32_t* src = g->buffer;
+
+    for (int32_t y = 0; y < g->h; ++y) {
+        uint8_t* dst = dst_base + y * fbinfo->pitch;
+        const uint32_t* s = src + y * g->w;
+        for (int32_t x = 0; x < g->w; ++x) {
+            uint32_t c = s[x];
+            dst[x * 3 + 0] = (uint8_t)c;
+            dst[x * 3 + 1] = (uint8_t)(c >> 8);
+            dst[x * 3 + 2] = (uint8_t)(c >> 16);
+        }
+    }
+    return (uint32_t)g->w * g->h * 3;
+}
+
 static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
-    if (fbinfo->depth != 32 && fbinfo->depth != 16) {
+    if (fbinfo->depth != 32 && fbinfo->depth != 24 && fbinfo->depth != 16) {
         return 0;
     }
 
+    if (fbinfo->depth == 24) {
+        return blt24_pitch(fbinfo, g);
+    }
     if (fbinfo->depth == 16) {
         return blt16_pitch(fbinfo, g);
     }
