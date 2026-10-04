@@ -25,9 +25,12 @@
 /* 1bpp image plane: WIDTH*HEIGHT/8 bytes, bit 1 = white, bit 0 = black */
 #define EPD_PLANE_BYTES (EPD_WIDTH * EPD_HEIGHT / 8)
 
-/* Refresh strategy: all frames use the PARTIAL waveform (0x22=0xFF), which
- * rewrites only changed pixels and produces NO black<->white inversion flash.
- * Set EPD_FULL_REFRESH_EVERY to 0 to never invert (ghosting will slowly
+/* Refresh strategy: all frames use the PARTIAL waveform (0x22=0xFF). The DU
+ * waveform drives only the pixels whose (old,new) pair differs, where "old"
+ * is the RED RAM (0x26) we seed with _prev_plane every frame -- that seeding
+ * is what actually suppresses the black<->white flash, not the 0xFF alone.
+ * Identical frames are skipped outright (see do_flush). Set
+ * EPD_FULL_REFRESH_EVERY to 0 to never invert (ghosting will slowly
  * accumulate); set it to N>0 to force a full refresh every N frames. */
 #define EPD_FULL_REFRESH_EVERY  0
 
@@ -69,6 +72,13 @@
 
 /* 1bpp framebuffer handed to the panel (bit 1 = white) */
 static UBYTE _bw_image[EPD_PLANE_BYTES];
+
+/* The picture the panel physically shows right now. It is written to the RED
+ * ("old") RAM (0x26) before every refresh so the DU/partial waveform's
+ * (old,new) transition lookup only drives pixels that really changed. Without
+ * it the controller compares against power-on garbage and flashes the whole
+ * screen on every "partial" refresh. Mirrors the epaper_hat3.7 driver. */
+static UBYTE _prev_plane[EPD_PLANE_BYTES];
 
 /* frames since the last normal full refresh */
 static uint32_t _frame_count = 0;
@@ -182,10 +192,20 @@ static void epd_turn_on_display(uint8_t mode) {
 }
 
 /******************************************************************************
-function :  initialize the panel for 1-bit fast refresh
-            (port of EPD_4in26_Init_Fast)
+function :  initialize the panel with the standard (OTP) waveform
+            (port of EPD_4in26_Init, NOT Init_Fast).
+
+            The fast init pins the waveform temperature (0x1A=0x5A) so the
+            controller always selects the quick, inversion-flashing waveform
+            bank. That bank has no flash-free variant, so a 0x22=0xFF
+            "partial" refresh issued after a fast init STILL flashes the whole
+            screen -- which is exactly the flicker seen here. The official
+            Waveshare partial path pairs 0xFF with this normal init, whose
+            internal temperature sensor selects the true direct-update (DU)
+            waveform: only pixels whose (old,new) pair differs are driven, so
+            unchanged areas never move and there is no inversion flash.
 ******************************************************************************/
-static void epd_init_fast(void) {
+static void epd_init(void) {
     epd_reset();
     DEV_Delay_ms(100);
 
@@ -218,21 +238,12 @@ static void epd_init_fast(void) {
     epd_set_cursor(0, 0);
 
     epd_wait_until_idle();
-
-    /* pin the waveform temperature so the fast LUT is always selected */
-    epd_send_command(WRITE_TEMP_SENSOR_CALIBRATION);
-    epd_send_data(0x5A);
-
-    epd_send_command(DISPLAY_UPDATE_CONTROL_2);
-    epd_send_data(0x91);
-    epd_send_command(MASTER_ACTIVATION);
-    epd_wait_until_idle();
 }
 
 /******************************************************************************
-function :  write the 1bpp image to RAM (0x24) and refresh.
-            mode = DUP_PART (no inversion), DUP_FAST (single flash) or
-            DUP_FULL (ghost-clearing inversion).
+function :  write the old plane to RED RAM (0x26), the new image to BW RAM
+            (0x24) and refresh. mode = DUP_PART (no inversion), DUP_FAST
+            (single flash) or DUP_FULL (ghost-clearing inversion).
 ******************************************************************************/
 static void epd_display(const UBYTE* image, uint8_t mode) {
     /* partial refresh holds the border at Hi-Z (0x80) so the edge does not
@@ -240,16 +251,32 @@ static void epd_display(const UBYTE* image, uint8_t mode) {
     epd_send_command(BORDER_WAVEFORM_CONTROL);
     epd_send_data(mode == DUP_PART ? 0x80 : 0x01);
 
+    /* old picture -> RED RAM (0x26). The DU/partial waveform only drives a
+     * pixel whose (old,new) pair differs, so seeding this from what the panel
+     * really shows is what makes the partial refresh flash-free. */
+    epd_set_cursor(0, 0);
+    epd_send_command(WRITE_RAM_RED);
+    epd_send_data_n(_prev_plane, EPD_PLANE_BYTES);
+
+    /* new picture -> BW RAM (0x24) */
     epd_set_cursor(0, 0);
     epd_send_command(WRITE_RAM_BLACK);
     epd_send_data_n(image, EPD_PLANE_BYTES);
+
     epd_turn_on_display(mode);
+
+    /* the panel now shows `image` */
+    if(image != _prev_plane)
+        memcpy(_prev_plane, image, EPD_PLANE_BYTES);
 }
 
 /******************************************************************************
 function :  clear the screen to white with a normal full refresh
 ******************************************************************************/
 static void epd_clear(void) {
+    /* seed both planes white so the very first partial refresh after the
+     * power-on clear compares against the real (all-white) picture. */
+    memset(_prev_plane, 0xFF, EPD_PLANE_BYTES);
     memset(_bw_image, 0xFF, EPD_PLANE_BYTES);   /* 1 = white */
     epd_display(_bw_image, DUP_FULL);
     _frame_count = 0;
@@ -285,7 +312,7 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t div) {
     bsp_spi_set_div(div);
     bsp_spi_select(SPI_SELECT_0);      /* CE0 */
 
-    epd_init_fast();
+    epd_init();
     epd_clear();
 }
 
@@ -335,6 +362,11 @@ int do_flush(const void* buf, uint32_t size) {
             _err_next[x + 2] += (int16_t)(err >> 4);
         }
     }
+
+    /* Nothing changed since the last frame? A redundant refresh is pure
+     * flicker on e-paper, so skip the panel update entirely. */
+    if(memcmp(_bw_image, _prev_plane, EPD_PLANE_BYTES) == 0)
+        return 0;
 
     /* flicker-free partial refresh (no inversion flash) */
     uint8_t mode = DUP_PART;
