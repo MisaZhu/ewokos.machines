@@ -67,9 +67,14 @@
 
 /* one TD per mps chunk keeps buffers off 4K page boundaries */
 #define UHCI_MAX_TDS 128
-/* interrupt-IN poll: a couple of frames of NAK retry is plenty, the bsp
-   pacing owns the cadence */
-#define UHCI_INT_IN_TIMEOUT_MS 5u
+/* interrupt-IN poll: an idle endpoint NAKs, which leaves the TD active and
+   retries every frame, so this wait always burns the full timeout when
+   there is no report -- it is the per-poll cost of the bsp cadence. Two
+   frames is plenty to catch a ready report (a full/low-speed interrupt IN
+   completes within one 1ms frame, seen on the wait's second check) while
+   keeping a 2ms idle poll cheap enough to sustain the tight keyboard
+   cadence in bsp_usb without pinning the usbhostd thread. */
+#define UHCI_INT_IN_TIMEOUT_MS 2u
 /* bulk NAK retry budget (flash devices NAK while programming) */
 #define UHCI_BULK_NAK_RETRIES 3000
 
@@ -284,7 +289,22 @@ static int uhci_td_actual_len(const uhci_td_t* td) {
 
 static int uhci_wait_chain(uhci_td_t** tds, int td_count, uint32_t timeout_ms) {
     uint32_t waited = 0;
-    while (waited < timeout_ms) {
+    /*
+     * Check-then-sleep, with a FINAL check after the last sleep before giving
+     * up. The final check is not optional: a NAKing interrupt TD stays active
+     * and is retried every 1ms frame, so a report that the device presents
+     * during the last sleep completes the TD (controller ACKs it, device
+     * advances its data toggle) *after* the previous check but *before* the
+     * loop would otherwise bail. Returning -1 there makes the caller run
+     * uhci_chain_timeout_classify(), which only inspects error bits -- a
+     * completed, error-free TD classifies as "no data", so the report is
+     * thrown away without reading the buffer and WITHOUT advancing the host
+     * toggle. Under Set_Idle(0) the device never resends that report, so the
+     * keystroke is lost outright, and the now-mismatched data toggle makes the
+     * controller reject every subsequent report until re-enumeration. One extra
+     * status read per timed-out chain removes the whole window.
+     */
+    for (;;) {
         bool done = true;
         for (int i = 0; i < td_count; ++i) {
             if ((tds[i]->ctrl_status & UHCI_TD_STS_ACTIVE) != 0) {
@@ -295,10 +315,12 @@ static int uhci_wait_chain(uhci_td_t** tds, int td_count, uint32_t timeout_ms) {
         if (done) {
             return 0;
         }
+        if (waited >= timeout_ms) {
+            return -1;
+        }
         usleep(1000);
         waited++;
     }
-    return -1;
 }
 
 static int uhci_run_chain(uhci_ctrl_t* hc, uhci_td_t** tds, uint32_t first_phys, int td_count,
@@ -507,8 +529,42 @@ static int uhci_data_xfer(uhci_ctrl_t* hc, bool low_speed, bool dir_in,
 
     if (uhci_run_chain(hc, tds, td_phys[0], td_count, timeout_ms) != 0) {
         ret = uhci_chain_timeout_classify(tds, td_count);
+        if (ret != 0) {
+            dma_pool_rewind(mark);
+            return ret; /* -1 = hard error */
+        }
+        /*
+         * No hard error, so normally every TD is still active (pure NAKs) and
+         * there is nothing to report. But a report can complete in the narrow
+         * window between wait_chain's final status read and run_chain retiring
+         * the schedule: the controller already ACKed it and the device already
+         * advanced its data toggle. Discarding it here loses the keystroke
+         * outright (Set_Idle(0): the device never resends) and desyncs the
+         * toggle, after which the controller rejects every later report. Salvage
+         * any TD that actually finished -- only an INACTIVE, non-NAK TD carries a
+         * valid actual-length; a still-active TD's length field is stale.
+         */
+        for (int i = 0; i < td_count; ++i) {
+            uint32_t sts = tds[i]->ctrl_status;
+            if ((sts & UHCI_TD_STS_ACTIVE) != 0 || (sts & UHCI_TD_STS_NAK) != 0) {
+                break;
+            }
+            bytes_done += uhci_td_actual_len(tds[i]);
+        }
+        if ((uint32_t)bytes_done > len) {
+            bytes_done = (int)len;
+        }
+        if (bytes_done > 0) {
+            if (dir_in && data != NULL) {
+                memcpy(data, payload, bytes_done);
+            }
+            if (toggle != NULL) {
+                uint32_t packets = ((uint32_t)bytes_done + mps - 1u) / mps;
+                *toggle = (uint8_t)((*toggle + packets) & 1u);
+            }
+        }
         dma_pool_rewind(mark);
-        return ret; /* 0 = pure NAKs (no data), -1 = hard error */
+        return bytes_done; /* 0 = pure NAKs (no data) */
     }
 
     /* Walk the chain in order, accumulating the bytes each completed TD

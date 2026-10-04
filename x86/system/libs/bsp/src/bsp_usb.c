@@ -28,11 +28,21 @@
 
 /* interrupt-IN pacing: the shared layer passes bInterval through; a
    polled controller honours it as a floor and stretches it while the
-   endpoint keeps NAKing */
-#define BSP_USB_INT_MIN_INTERVAL_MS 8u
-#define BSP_USB_INT_MAX_INTERVAL_MS 40u
-#define BSP_USB_INT_IDLE_STRETCH_2 64u
-#define BSP_USB_INT_IDLE_STRETCH_4 256u
+   endpoint keeps NAKing.
+
+   The floor/cap directly bound keyboard event loss: a HID keyboard runs
+   with Set_Idle(0) (report on change only), so a key pressed AND released
+   inside one poll gap leaves the endpoint back at its baseline state and
+   the press is never seen. The old 8ms floor ignored fast keyboards whose
+   real bInterval is 1-2ms, and the 40ms cap let an idle endpoint stretch
+   far past the device's own report rate, so quick taps after a pause were
+   swallowed whole. Honour the device down to 2ms and cap the idle stretch
+   near a normal report period; the tighter cadence stays affordable
+   because the NAK poll now returns fast (UHCI_INT_IN_TIMEOUT_MS). */
+#define BSP_USB_INT_MIN_INTERVAL_MS 2u
+#define BSP_USB_INT_MAX_INTERVAL_MS 16u
+#define BSP_USB_INT_IDLE_STRETCH_2 32u
+#define BSP_USB_INT_IDLE_STRETCH_4 96u
 
 struct bsp_usb_dev {
     bool used;
