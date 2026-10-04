@@ -139,7 +139,10 @@ static void init_gpio(void) {
     }
 }
 
-static void check_power(void) {
+/*returns 1 when a long power-button press was detected and the power-off
+  sequence ran. NOTE: never printf()/write() in here - the caller holds
+  ipc_disable(), so any blocking stdout write would deadlock the driver.*/
+static int check_power(void) {
     static int count = 0;
     if(miyoo_gpio_read(86) != 0)
         count++;
@@ -147,21 +150,26 @@ static void check_power(void) {
         count = 0;
 
     if(count >= 10){
+        count = 0;
         //close screnn
         miyoo_gpio_set(4, 0);
-        printf("power down!\n");
         usleep(1000);
         miyoo_gpio_set(85, 0);
+        return 1;
     }
+    return 0;
 }
 
 static int power_button(vdevice_t* dev, void* p) {
     (void)dev;
     (void)p;
     ipc_disable();
-    check_power();
+    int power_off = check_power();
     ipc_enable();
+    if(power_off)
+        printf("power down!\n");
     usleep(200000);
+    return 0;
 }
 
 int main(int argc, char** argv) {

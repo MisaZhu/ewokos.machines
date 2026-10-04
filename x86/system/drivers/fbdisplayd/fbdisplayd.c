@@ -113,7 +113,10 @@ int main(int argc, char** argv) {
     fbdisplayd.flush = flush;
     fbdisplayd.init = init;
     fbdisplayd.get_info = get_info;
-    fbdisplayd_set_flush_rect(fbdisplayd_flush_rect_to);
+    /* No flush-rect hook on x86: partial dirty-rect pushes into the UC-
+       mapped scan-out leave the bottom-anchored regions (statusbar, dock
+       label strip) showing stale pixels. Always do a full-frame flush so
+       the whole panel is rewritten every repaint. */
 
     return fbdisplayd_run(&fbdisplayd, mnt_point, 1024, 768, _conf_file, _display_index);
 }
