@@ -312,9 +312,10 @@ static void g2d_dcache_invalidate(void *addr, size_t len)
 /* (delay helper) the driver runs as a user-space daemon, so register-settle
  * waits use the OS sleep API.  The bare-metal harness polled CNTPCT_EL0
  * directly, which traps at EL0 unless the kernel enables CNTKCTL_EL1
- * timer access - never assume that in OS-portable code.  usleep() rounds
- * up to the kernel tick (~976us at timer_freq=1024), far above these
- * settle minimums and harmless for them. */
+ * timer access - never assume that in OS-portable code.  For these small
+ * values usleep() busy-spins on the fine counter for exactly the requested
+ * microseconds (it no longer rounds up to a tick); that still meets the
+ * settle lower bounds documented at the call sites. */
 #define g2d_delay_us(us) usleep(us)
 
 /* spin-wait hint for the register polls below: a tight loop of
@@ -1103,7 +1104,11 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
             break;
         if (flags & V3D_G2D_POLL_YIELD)
-            sched_yield();
+            usleep(200);    /* one scheduler frame (~976us tick): >200 so it
+                             * parks instead of busy-spinning, <one tick so it
+                             * wakes on the first decrement.  usleep(1000)
+                             * would round up to two ticks; sched_yield()
+                             * would not pace at all. */
         else
             g2d_poll_hint();
     }
