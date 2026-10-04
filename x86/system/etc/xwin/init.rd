@@ -1,3 +1,6 @@
+@export TZ=CST-8
+@/bin/ipcserv /drivers/logd  /dev/log
+
 @/bin/ipcserv /drivers/x86/ttyd /dev/tty0
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
@@ -28,6 +31,21 @@
 
 @/bin/splash -m "start /dev/mouse0" -p 65
 @/bin/ipcserv /drivers/x86/hid_moused  /dev/mouse0 /dev/hid0
+
+@/bin/splash -m "start /dev/eth0" -p 70
+@/bin/ipcserv /drivers/x86/net /dev/eth0
+
+@/bin/splash -m "start /dev/net0" -p 72
+@/bin/ipcserv /drivers/netd /dev/net0 /dev/eth0
+
+@/bin/splash -m "start /dev/time" -p 74
+@/bin/ipcserv /drivers/timed    /dev/time
+
+@/bin/splash -m "start telnetd" -p 76
+@/bin/bgrun /sbin/telnetd
+
+@/bin/splash -m "start sshd" -p 78
+@/bin/bgrun /sbin/sshd
 
 @/bin/splash -m "load fonts" -p 80
 @/bin/load_font

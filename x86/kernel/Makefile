@@ -21,6 +21,8 @@ QEMU_ARGS += -drive file=$(OS_HDD),format=raw,if=ide,index=0,media=disk
 QEMU_ARGS += -usb
 QEMU_ARGS += -device usb-kbd,port=1,usb_version=1
 QEMU_ARGS += -device usb-mouse,port=2,usb_version=1
+QEMU_ARGS += -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::2223-:23
+QEMU_ARGS += -device rtl8139,netdev=net0
 
 MACHINE = x86
 
