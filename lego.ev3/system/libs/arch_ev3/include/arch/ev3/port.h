@@ -52,6 +52,29 @@ void     ev3_input_port_power(int port, int on);
 int      ev3_input_port_detect(int port);
 
 /*
+ * Put the port in ev3dev's "float" detection state, mirroring
+ * ev3_input_port_float() in ev3/ev3_ports_in.c: pin 1 driven LOW (the EV3
+ * sensing level, never the ~9 V NXT supply), pin 2/5/6 as digital inputs and
+ * the line buffer disabled (so pin 5/6 read as plain GPIO levels rather than
+ * being driven by a UART). This is the state ev3dev samples to classify the
+ * connection type; see sensor_detect.h's ev3_sensor_conn_type().
+ *
+ * MUST NOT be called on a port another daemon has bound: on the hardware-UART
+ * ports (1/2) floating re-muxes pin 5/6 to GPIO and would tear down that
+ * daemon's live UART / I2C link. On the PRU soft-UART ports (3/4) pin 5/6 are
+ * McASP lines the PRU owns, so float leaves pin 5/6 and buf_en untouched there
+ * and only drives pin 1 low / reads pin 2 - re-muxing the McASP pins to GPIO
+ * would float the PRU's RX input and storm PRU_EVTOUT interrupts.
+ */
+void     ev3_input_port_float(int port);
+
+/* True for the PRU0 soft-UART input ports (physical 3/4), whose pin 5/6 are
+ * McASP serialiser lines rather than GPIO. ev3_sensor_conn_type() uses this to
+ * avoid reading pin 5/6 (invalid there) and classify those ports from pin 2 +
+ * pin 1 alone. */
+int      ev3_input_port_is_pru(int port);
+
+/*
  * Put the port in UART mode: enable the line buffer (active low) and mux
  * TX/RX to the hardware UART. Only input ports 1 and 2 are wired to a
  * hardware UART (UART1 / UART0); ports 3 and 4 use PRU soft-UARTs which

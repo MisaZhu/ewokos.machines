@@ -27,20 +27,28 @@
 # binds the port it finds and follows the sensor when it is re-plugged elsewhere
 # (hot-plug). The bound port is a device property, readable via GET_DATA
 # (ev3_sensor_data_t.port). Because a daemon only claims a port whose detected
-# type matches, several of them can run at once without colliding. Only ports 1
-# and 2 have a hardware UART (3/4 are PRU soft-UART, not implemented), so the
-# UART sensors bind just those; analog touch and GPIO-I2C sensors work on any
-# port. i2cd is a raw bus (not a sensor) and still selects its port with -p.
+# type matches, several of them can run at once without colliding. All four
+# ports auto-detect an I2C (NXT) sensor from a UART (EV3) one: ports 1/2 are
+# hardware 16550 UARTs, ports 3/4 are the PRU0 soft-UART, and a UART daemon
+# skips any port conn_type names as I2C/analog so it never drives UART framing
+# onto an I2C sensor's lines.
 @/bin/ipcserv /drivers/ev3/touchd         /dev/touch0
 @/bin/ipcserv /drivers/ev3/ultrasonicd    /dev/us0
 @/bin/ipcserv /drivers/ev3/gyrod          /dev/gyro0
 @/bin/ipcserv /drivers/ev3/colord         /dev/color0
 @/bin/ipcserv /drivers/ev3/ird            /dev/ir0
-@/bin/ipcserv /drivers/ev3/i2cd     -p 3  /dev/i2c2
+# i2cd is a RAW bit-banged GPIO-I2C bus, not a sensor, and it must NOT sit on a
+# PRU soft-UART port. Ports 3/4's pin 5/6 ARE the McASP serialiser lines PRU0
+# clocks, so opening them as GPIO here fights the soft-UART that the daemons
+# above bring up (their probe walks all four ports) and storms PRU_EVTOUT
+# (IRQ 5/6): the boot then hangs right here, waiting for /dev/i2c2 that never
+# registers. Start it manually on a free NON-PRU port only when a raw bus is
+# wanted, e.g.  /bin/ipcserv /drivers/ev3/i2cd -p 1 /dev/i2c0
+#@/bin/ipcserv /drivers/ev3/i2cd     -p 3  /dev/i2c2
 
 # Alternatives, also auto-detecting their port:
 #   @/bin/ipcserv /drivers/ev3/touchd       -n    /dev/touch1      (NXT touch)
-#   @/bin/ipcserv /drivers/ev3/nxt-ultrasonicd    /dev/nxt-us0     (avoid a port used by i2cd)
+#   @/bin/ipcserv /drivers/ev3/nxt-ultrasonicd    /dev/nxt-us0     (NXT I2C sensor)
 
 @/bin/splash -m "start /dev/led" -p 65
 @/bin/ipcserv /drivers/ev3/ledd          /dev/led

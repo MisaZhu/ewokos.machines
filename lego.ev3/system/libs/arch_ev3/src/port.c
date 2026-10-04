@@ -104,6 +104,45 @@ int ev3_input_port_detect(int port) {
     return ev3_gpio_read(_in[port].pin2);
 }
 
+/* ev3dev's ev3_input_port_float(): the detection state the connection-type
+ * classifier samples. pin 1 LOW (EV3 sensing, never the 9 V NXT supply),
+ * pin 2/5/6 digital inputs, line buffer DISABLED so pin 5/6 are plain GPIO.
+ * The buffer is active-low in hardware (DTS GPIO_ACTIVE_LOW): disabled = raw 1,
+ * exactly what ev3_input_port_i2c_enable()/uart_disable() already use. */
+void ev3_input_port_float(int port) {
+    if (!in_ok(port))
+        return;
+    ev3_gpio_config(_in[port].pin1, GPIO_OUTPUT);
+    ev3_gpio_write(_in[port].pin1, 0);            /* pin 1 LOW: EV3 sense level */
+    ev3_gpio_config(_in[port].pin2, GPIO_INPUT);  /* NXT-vs-EV3 discriminator   */
+
+    /* Ports 3/4 are the PRU0 soft-UART: pin 5/6 are McASP serialiser lines that
+     * pru_pinmux() claims (PINMUX0 AHCLK + PINMUX2 AXR1..4), and buf_en must
+     * stay enabled for PRU RX. ev3_gpio_config(pin,GPIO_INPUT) re-muxes the pin
+     * via gpio_mux_cfg(MODE_GPIO), so floating pin 5/6 here would steal the McASP
+     * pins back to GPIO: the RX input floats while the PRU keeps clocking it,
+     * which turns into a garbage-RX PRU_EVTOUT (IRQ 5/6) interrupt storm that
+     * freezes the single-core system, and it tears down any live soft-UART link.
+     * pin 1 (I_ON) and pin 2 (LEGDET) are dedicated GPIOs, never McASP, and pin 2
+     * low already tells an NXT sensor from an EV3 one - so on PRU ports float
+     * only pin 1/pin 2 and leave pin 5/6/buf_en to pru_uart.c. */
+    if (EV3_UART_IS_PRU(_in[port].uart_base))
+        return;
+
+    ev3_gpio_config(_in[port].pin5, GPIO_INPUT);  /* pull-up: low => fault      */
+    ev3_gpio_config(_in[port].pin6, GPIO_INPUT);  /* pull-down: high => I2C     */
+    ev3_gpio_config(_in[port].buf_en, GPIO_OUTPUT);
+    ev3_gpio_write(_in[port].buf_en, 1);          /* buffer disabled = raw high */
+}
+
+/* True for the PRU0 soft-UART ports (physical 3/4). Their pin 5/6 belong to the
+ * McASP serialisers, so callers must not treat them as GPIO (see float above). */
+int ev3_input_port_is_pru(int port) {
+    if (!in_ok(port))
+        return 0;
+    return EV3_UART_IS_PRU(_in[port].uart_base) ? 1 : 0;
+}
+
 uint32_t ev3_input_port_uart_base(int port) {
     if (!in_ok(port))
         return 0;
@@ -205,6 +244,18 @@ void ev3_input_port_uart_disable(int port) {
 int ev3_input_port_i2c_enable(int port) {
     if (!in_ok(port))
         return -1;
+
+    /* On the PRU soft-UART ports (3/4) pin 5/6 are McASP serialiser lines that
+     * PRU0 actively clocks. The ev3_gpio_config(..., GPIO_INPUT) calls below
+     * re-mux them to GPIO (gpio_mux_cfg MODE_GPIO); doing that while the soft-UART
+     * still runs floats the PRU's RX input and storms PRU_EVTOUT (IRQ 5/6) - the
+     * same single-core freeze ev3_input_port_float() guards against. Stop this
+     * port's soft-UART channel first, so its RX serialiser is inactive and its
+     * host event masked before the pins become GPIO. This is the I2C-side mirror
+     * of ev3_input_port_uart_enable()'s PRU bring-up; the next uart_enable on this
+     * port re-opens the channel. */
+    if (EV3_UART_IS_PRU(_in[port].uart_base))
+        ev3_pru_uart_port_disable(port);
 
     /* Keep the UART buffer off so pin5/pin6 are plain GPIO lines. */
     ev3_gpio_config(_in[port].buf_en, GPIO_OUTPUT);

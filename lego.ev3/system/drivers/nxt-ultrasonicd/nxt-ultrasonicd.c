@@ -57,15 +57,25 @@
 #define NXTUS_POLL_US      100000   /* sensor updates roughly every 60 ms   */
 #define NXTUS_SCAN_MS      300      /* port (re)scan cadence while searching */
 #define NXTUS_MISS_MAX     4        /* absent scans before re-binding a port */
+#define NXTUS_BOOT_MS      2000     /* grace after 9 V is applied: the sensor
+                                     * reboots on bind, so it will not ACK I2C
+                                     * until it is up. ev3dev waits 1000 ms
+                                     * (ev3_ports_in.c SENSOR_NXT_I2C "Give the
+                                     * sensor time to boot"); 2x that keeps the
+                                     * hot-plug miss counter from unbinding a
+                                     * healthy sensor that is still starting. */
 
 static ev3_i2c_gpio_t _bus;
-static int32_t _want = EV3_SENSOR_TYPE_NXT_US;   /* ID type we look for      */
+static int32_t _want = EV3_SENSOR_TYPE_NXT_US;   /* type we report while searching */
 static int32_t _port = EV3_SENSOR_PORT_NONE;     /* bound port, -1 = none    */
 static int32_t _pinned = -1;      /* -p override: restrict to one port       */
 static int     _adc_fd = -1;
+static const char* _self_node;    /* our /dev node, so the shared port-busy
+                                   * query never asks ourselves               */
 static int32_t _bus_open = 0;     /* _bus currently opened on _port          */
 static int32_t _miss = 0;         /* consecutive absent port scans           */
 static uint32_t _scan_ms = 0;
+static uint32_t _bind_ms = 0;     /* when 9 V was applied; boot-grace origin */
 static int32_t _mode = NXTUS_MODE_CONTINUOUS;
 static int32_t _pending_mode = -1;  /* mode requested by a client, applied in loop */
 
@@ -112,6 +122,8 @@ static void bind(int port) {
     _bus_open = 1;
     _port = port;
     _data.port = port;
+    _bind_ms = (uint32_t)kernel_tic_ms(0);   /* 9 V just applied: start the
+                                              * boot-grace window */
     _fails = 0;
     _miss = 0;
     _wakeup = true;
@@ -135,15 +147,34 @@ static void scan_and_bind(uint32_t now) {
     _scan_ms = now;
     if (_adc_fd < 0)
         _adc_fd = ev3_sensor_adc_open();   /* adcd may come up late */
-    ev3_sensor_power_ports();
-    int port;
-    if (_pinned >= 0)
-        port = (ev3_sensor_detect_port(_adc_fd, _pinned) == _want) ?
-                _pinned : EV3_SENSOR_PORT_NONE;
-    else
-        port = ev3_sensor_find(_adc_fd, _want, EV3_SENSOR_PORT_NONE);
-    if (port >= 0)
-        bind(port);
+
+    /* The NXT ultrasonic is an I2C sensor, which carries NO pin 1 ID voltage -
+     * so the old ev3_sensor_detect_port()/ev3_sensor_find() path (which only
+     * ever names analog ID resistors) could never return NXT_US and this daemon
+     * never auto-bound. Detect it the way ev3dev does instead: float the port
+     * and classify the connection electrically (pin 2 tied low + pin 6 high =
+     * NXT I2C). That works on ALL FOUR input ports and, because the decision is
+     * GPIO-based, even before /dev/adc0 is up. */
+    int lo = (_pinned >= 0) ? _pinned : 0;
+    int hi = (_pinned >= 0) ? _pinned : EV3_IN_PORT_COUNT - 1;
+    for (int port = lo; port <= hi; port++) {
+        /* Claim the port BEFORE asking the peers (write-then-read), exactly
+         * like the UART daemons: of two daemons racing for one port at least
+         * one sees the other's claim and backs off, so a UART daemon never
+         * drives 2400-baud framing onto a port we are about to open as I2C,
+         * and we never float a port a peer has bound. */
+        _data.probing = port + 1;
+        if (ev3_sensor_port_busy(port, _self_node)) {
+            _data.probing = 0;
+            continue;               /* a peer holds, or is mid-probe on, it */
+        }
+        int is_i2c = (ev3_sensor_conn_type(_adc_fd, port, NULL) == EV3_CONN_NXT_I2C);
+        _data.probing = 0;
+        if (is_i2c) {
+            bind(port);
+            return;
+        }
+    }
 }
 
 static int32_t do_command(const ev3_sensor_cmd_t* c) {
@@ -289,14 +320,32 @@ static int us_loop(vdevice_t* dev, void* p) {
 
         ipc_enable();
 
-        /* hot-plug: if the sensor is no longer on our port, release it and go
-         * back to searching so we follow it wherever it is re-inserted */
+        /* Hot-plug: while bound we must NOT re-float the port to re-classify it
+         * - floating drops the 9 V supply and releases SCL/SDA, tearing down the
+         * live bus (and the old ev3_sensor_detect_port() check never matched
+         * NXT_US anyway, so it unbound a healthy sensor after a few scans).
+         * Confirm presence over I2C instead: a vendor-register read that leaves
+         * the port config untouched. An unplugged sensor stops ACKing; after
+         * NXTUS_MISS_MAX consecutive absent scans we release the port and go
+         * back to searching so we follow it wherever it is re-inserted. This
+         * also covers NXTUS_MODE_OFF, where the distance poll is idle. */
         if ((int32_t)(now - _scan_ms) >= NXTUS_SCAN_MS) {
             _scan_ms = now;
-            if (ev3_sensor_detect_port(_adc_fd, _port) == _want)
+            if ((int32_t)(now - _bind_ms) < NXTUS_BOOT_MS) {
+                /* Inside the boot-grace: the sensor is still powering up after
+                 * bind applied 9 V, so an absent I2C read here is NOT an unplug.
+                 * Hold the binding and do not accrue misses (mirrors ev3dev's
+                 * msleep(1000) before it ever talks to an NXT I2C sensor). */
                 _miss = 0;
-            else if (++_miss >= NXTUS_MISS_MAX)
-                unbind();
+            } else {
+                ipc_disable();
+                int alive = detect_sensor();
+                ipc_enable();
+                if (alive)
+                    _miss = 0;
+                else if (++_miss >= NXTUS_MISS_MAX)
+                    unbind();
+            }
         }
     }
 
@@ -325,6 +374,7 @@ int main(int argc, char** argv) {
     const char* mnt_point = "/dev/nxt-us0";
     if (argind < argc)
         mnt_point = argv[argind];
+    _self_node = mnt_point;   /* so ev3_sensor_port_busy() never queries us */
 
     if (_pinned < -1 || _pinned >= EV3_IN_PORT_COUNT)
         _pinned = -1;

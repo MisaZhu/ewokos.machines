@@ -375,33 +375,10 @@ static int probe_slot(void) {
  * UARTs stay clock-gated until ev3_input_port_uart_enable() ungates them, and
  * an LSR read of a gated 16550 returns all-ones on DA8xx, which the old peek
  * mistook for "RX data ready" on every port - so nothing was ever probed.
- * A peer that is not running holds nothing, and a peer that answers with a
- * different struct simply fails the size check and is treated as free. */
-static const char* const _peer_nodes[] = {
-    "/dev/color0", "/dev/us0", "/dev/gyro0", "/dev/ir0",
-    "/dev/touch0", "/dev/nxt-us0",
-};
-
+ * The shared query lives in sensor_detect.c so the I2C daemon (nxt-ultrasonicd)
+ * and every UART daemon agree on exactly the same peer set and claim encoding. */
 static int port_owned_by_peer(int port) {
-    for (unsigned i = 0; i < sizeof(_peer_nodes) / sizeof(_peer_nodes[0]); i++) {
-        const char* node = _peer_nodes[i];
-        if (_self_node && strcmp(node, _self_node) == 0)
-            continue;                    /* never query ourselves: it would
-                                          * block waiting for our own reply */
-        if (dev_get_pid(node) <= 0)
-            continue;                    /* daemon not running: holds nothing */
-        proto_t ret;
-        PF->init(&ret);
-        ev3_sensor_data_t d;
-        memset(&d, 0, sizeof(d));
-        int ok = (dev_cntl(node, EV3_SENSOR_CNTL_GET_DATA, NULL, &ret) == 0 &&
-                  proto_read_int(&ret) == 0 &&
-                  proto_read_to(&ret, &d, sizeof(d)) == (int32_t)sizeof(d));
-        PF->clear(&ret);
-        if (ok && (d.port == port || d.probing == port + 1))
-            return 1;
-    }
-    return 0;
+    return ev3_sensor_port_busy(port, _self_node);
 }
 
 /* Probe every UART-capable port: skip any a peer already holds, otherwise open
@@ -431,6 +408,29 @@ static void protocol_probe(void) {
             _probe_claim = EV3_SENSOR_PORT_NONE;
             continue;               /* a peer holds, or is mid-probe on, this port */
         }
+
+        /* Classify the port electrically (ev3dev's decision tree, see
+         * sensor_detect.h) before touching the UART. A POSITIVELY identified
+         * non-UART device - an I2C sensor (pin 2 low + pin 6 high, or pin 6
+         * high alone), an NXT analog sensor, or an EV3 analog ID resistor - is
+         * left to its own daemon (nxt-ultrasonicd / touchd): probing it here
+         * would drive 2400-baud UART framing onto lines that device uses for
+         * I2C or analog and could never report our type anyway. This is what
+         * lets all four input ports tell an I2C sensor from a UART sensor.
+         *
+         * Deliberately conservative - we skip ONLY on a positive non-UART
+         * identification. EV3_CONN_EV3_UART proceeds, and NONE / ERR / an
+         * unreadable ADC (fd < 0) also proceed to the probe, so the hardware-
+         * validated UART detection is never regressed by a mis-read pin. The
+         * port is already claimed and peer-free, so floating it to sample is
+         * safe; ev3_uart_sensor_open() re-muxes pin 5/6 back to the UART. */
+        ev3_conn_type_t conn = ev3_sensor_conn_type(_adc_fd, p, NULL);
+        if (conn == EV3_CONN_NXT_I2C || conn == EV3_CONN_NXT_ANALOG ||
+            conn == EV3_CONN_NXT_COLOR || conn == EV3_CONN_EV3_ANALOG) {
+            _probe_claim = EV3_SENSOR_PORT_NONE;
+            continue;               /* an I2C / analog sensor: not ours to drive */
+        }
+
         if (ev3_uart_sensor_open(&_s, p, _mode) != 0) {
             _probe_claim = EV3_SENSOR_PORT_NONE;
             continue;
