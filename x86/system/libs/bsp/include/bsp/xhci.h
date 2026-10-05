@@ -59,6 +59,9 @@ typedef struct {
 	/* DMA data buffer for interrupt IN */
 	uint64_t data_phys;
 	uint8_t* data;
+	/* now_ms() timestamp of the last int-in arm; drives the stalled
+	   endpoint self-heal in xhci_int_in_poll */
+	uint64_t armed_ms;
 } xhci_ep_t;
 
 typedef struct xhci_dev {

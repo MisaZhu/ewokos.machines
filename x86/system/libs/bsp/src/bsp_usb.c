@@ -225,6 +225,8 @@ static int speed_to_xhci(int speed) {
         return XHCI_SPEED_LOW;
     case BSP_USB_SPEED_HIGH:
         return XHCI_SPEED_HIGH;
+    case BSP_USB_SPEED_SUPER:
+        return XHCI_SPEED_SUPER;
     default:
         return XHCI_SPEED_FULL;
     }
@@ -235,8 +237,15 @@ static int speed_from_xhci(int speed) {
     case XHCI_SPEED_LOW:
         return BSP_USB_SPEED_LOW;
     case XHCI_SPEED_HIGH:
-    case XHCI_SPEED_SUPER:
         return BSP_USB_SPEED_HIGH;
+    case XHCI_SPEED_SUPER:
+        /* SS must round-trip as SS: mapping it to HIGH made the attach
+           program the slot context with the wrong speed, real xHCI rejects
+           Address Device with Parameter Error (QEMU accepts it), the
+           enumeration failed 6 times and the escalation HCRST the whole
+           controller - killing the mouse sharing it. Root cause of the
+           "insert USB3 stick, mouse stutters then dies" bug. */
+        return BSP_USB_SPEED_SUPER;
     default:
         return BSP_USB_SPEED_FULL;
     }

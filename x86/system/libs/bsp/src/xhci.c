@@ -395,6 +395,13 @@ static void handle_xfer_event(xhci_hc_t* hc, uint32_t d0, uint32_t d1,
     xhci_ep_t* ep = &dev->eps[dci];
 
     if (trb != ep->td_last_phys) {
+        /* stale event: the TD it belongs to was already discarded (wedge
+           recovery re-primes the ring). in_flight is false while no TD is
+           posted, so treating this as an EP error would make the recovery
+           re-trigger itself off its own discarded-TD events. */
+        if (!ep->in_flight) {
+            return;
+        }
         /* mid-TD event: a short data stage inside a control TD */
         if (code == CC_SHORT_PKT) {
             ep->short_left = residue;
@@ -1263,8 +1270,25 @@ static void int_in_arm(xhci_dev_t* dev, xhci_ep_t* ep, uint32_t dci) {
             (uint32_t)ep->data_phys, (uint32_t)(ep->data_phys >> 32),
             ep->mps, TRB_TYPE(TRB_NORMAL) | TRB_ISP | TRB_IOC);
     ep->in_flight = true;
+    ep->armed_ms = now_ms();
     ring_doorbell(dev->hc, dev->slot_id, dci);
 }
+
+/* an armed int-in TD that sees no completion event for this long while
+   the device is still connected is treated as a wedged endpoint (dropped
+   completion, ring desync, controller stopped scheduling the EP).
+   The threshold must be LONG - "no completion for N seconds" is also the
+   perfectly healthy idle state of a keyboard (reports only on keypress),
+   so a short threshold churns the recovery on a live endpoint, and each
+   recovery discards the posted TD: a report completing inside that
+   discard window can desync the host/device data toggles and wire-lock
+   the endpoint (the real-machine "keyboard hangs sometimes" bug).
+   The recovery below does a FULL resync so it always converges: RESET_EP
+   + Set TR Dequeue (host side), then CLEAR_FEATURE(ENDPOINT_HALT) - a
+   legal no-op on a non-halted endpoint that resets the DEVICE side data
+   toggle to DATA0, matching the host after the reset. From any toggle
+   state the endpoint comes back consistent. */
+#define XHCI_INT_IN_WEDGE_MS 30000u
 
 int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
     uint32_t ep_num = ep_addr & 0x0fu;
@@ -1302,6 +1326,42 @@ int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
     }
 
     if (!ep->in_flight) {
+        int_in_arm(dev, ep, dci);
+    }
+    else if (now_ms() - ep->armed_ms > XHCI_INT_IN_WEDGE_MS &&
+            xhci_port_connected(dev->hc, dev->root_port)) {
+        /* armed TD never completed with the device still attached: treat
+           the endpoint as wedged and do the full resync (see the threshold
+           comment): host side via ep_recover (RESET_EP + Set TR Dequeue),
+           device side via CLEAR_FEATURE(ENDPOINT_HALT), which is a no-op
+           for a non-halted endpoint but resets its data toggle to DATA0.
+           The posted TD is discarded - a report completing inside this
+           window is lost, but with a 30s threshold on a healthy endpoint
+           (pure idle) this costs nothing, and from any wedged/toggle-
+           desynced state the endpoint converges instead of wire-locking. */
+        klog("xhci%d: int-in ep slot=%u dci=%u idle-wedged %ums, resync\n",
+                dev->hc->id, dev->slot_id, dci,
+                (uint32_t)(now_ms() - ep->armed_ms));
+        ep_recover(dev, dci);
+
+        usb_setup_pkt_t setup;
+        memset(&setup, 0, sizeof(setup));
+        setup.bmRequestType = USB_REQTYPE_STD_EP_OUT;
+        setup.bRequest = USB_REQ_CLEAR_FEATURE;
+        setup.wValue = USB_FEAT_ENDPOINT_HALT;
+        setup.wIndex = ep_addr;
+        (void)xhci_control_xfer(dev, &setup, NULL, false);
+
+        /* the discarded TD may have posted STOPPED/error events; consume
+           whatever is pending so the stale events meet in_flight == false
+           and are ignored (stale-event guard in handle_xfer_event) */
+        ep->done = false;
+        ep->comp_code = 0;
+        ep->in_flight = false;
+        xhci_process_events(dev->hc);
+        ep->done = false;
+        ep->in_flight = false;
+
         int_in_arm(dev, ep, dci);
     }
     return 0;
