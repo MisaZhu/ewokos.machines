@@ -5109,37 +5109,11 @@ static int hogp_bringup(uint16_t handle) {
         slog("bluetooth le_no_report_map\n");
         return -1;
     }
-    /* dump the raw Report Map so a mis-parsed axis layout can be reproduced
-       offline against the exact descriptor bytes (capped to one slog line) */
-    {
-        static const char hexd[] = "0123456789abcdef";
-        char hex[257];
-        uint16_t n = _hogp.report_map_len > 128 ? 128 : _hogp.report_map_len;
-        uint16_t k;
-
-        for (k = 0; k < n; ++k) {
-            hex[k * 2] = hexd[_hogp.report_map[k] >> 4];
-            hex[k * 2 + 1] = hexd[_hogp.report_map[k] & 0x0f];
-        }
-        hex[n * 2] = 0;
-        slog("bluetooth le_report_map_hex len=%u %s\n", _hogp.report_map_len, hex);
-    }
     if (hid_parse_mouse_report(_hogp.report_map, (int)_hogp.report_map_len,
             &_hogp.mouse) == 0 &&
             mouse_parser_sane(&_hogp.mouse, 64, false)) {
         _hogp.mouse_ok = true;
     }
-    slog("bluetooth le_mouse_map ok=%d rid=%d id=%u bytes=%u rel=%d "
-            "x=%d/%d y=%d/%d wheel=%d/%d btn=%d/%d,%d/%d,%d/%d\n",
-            _hogp.mouse_ok ? 1 : 0,
-            _hogp.mouse.has_report_id ? 1 : 0, _hogp.mouse.report_id,
-            _hogp.mouse.report_bytes, _hogp.mouse.axis_relative ? 1 : 0,
-            _hogp.mouse.x_bit, _hogp.mouse.x_size,
-            _hogp.mouse.y_bit, _hogp.mouse.y_size,
-            _hogp.mouse.wheel_bit, _hogp.mouse.wheel_size,
-            _hogp.mouse.button_bit[0], _hogp.mouse.button_size[0],
-            _hogp.mouse.button_bit[1], _hogp.mouse.button_size[1],
-            _hogp.mouse.button_bit[2], _hogp.mouse.button_size[2]);
     for (i = 0; i < _hogp.n_attrs; ++i) {
         hogp_attr_t* a = &_hogp.attrs[i];
 
