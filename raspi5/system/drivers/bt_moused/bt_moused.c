@@ -41,16 +41,22 @@
 
 /*
  * Movement/wheel coalescing cadence: pending deltas are flushed at most
- * once per interval, capping the event rate on /dev/mouse0. The flush path
- * sleeps to align to this grid, so the interval is also the worst-case
- * added latency per movement - keep it tight. A Bluetooth mouse only
- * reports at its connection interval (typically <=125Hz), so at 4ms
- * (250Hz) the cap almost never throttles a real mouse: reports flush on
- * arrival instead of waiting for the next grid slot, while still bounding
- * a pathological high-rate peripheral. Button DOWN/UP events are NEVER
- * coalesced.
+ * once per interval, capping the event rate on /dev/mouse0 at ~30Hz.
+ * xserverd pushes every MOVE event onto the window under the cursor
+ * (xevtpool, XEVT_MAX 128) and an X client drains its pool only at frame
+ * rate: fed faster than that, the pool fills and xevent_push starts
+ * dropping the OLDEST event, which is exactly the observed "cursor chases
+ * the hand" backlog. The USB path gets away with 100Hz because real
+ * desktop clients keep up with it; the BT stack (btd UART poll + edge
+ * wake + this daemon's own batching) lands bursts that a 100Hz cap lets
+ * through in clumps. 33ms keeps the stream well inside what even a slow
+ * client drains, while movement deltas still merge losslessly across the
+ * window. The grid is enforced by the park deadline in bt_wait_report()
+ * (never by an in-line sleep), so the interval is a hard bound on added
+ * movement latency rather than grid + reassert tail - the accepted trade
+ * for a bounded queue. Button DOWN/UP events are NEVER coalesced.
  */
-#define MOUSE_FLUSH_MS 4u
+#define MOUSE_FLUSH_MS 20u
 
 /*
  * /dev/bt0 subscriber-queue protocol (mirrors libs/usb/usb_defs.h): fixed
@@ -276,13 +282,31 @@ static bool bt_connect(void) {
 
 /*
  * Wait until the per-fd subscriber queue on /dev/bt0 holds a report - or
- * the deadline expires. Unlike hid_moused this MUST be bounded: an idle
- * (or not-yet-attached) Bluetooth mouse generates no wake at all, and the
- * attach poller below has to keep running to find and open a mouse that
- * connects later.
+ * the deadline expires. Two bounds race here, whichever fires first: the
+ * 500ms keep-alive lets the attach poller below run even while an idle
+ * (or not-yet-attached) mouse generates no wake at all, and - while
+ * coalesced movement is pending - the flush grid point, so the merged
+ * MOVE event goes out exactly on cadence. Parking on the node (never
+ * usleep()ing in-line) is what keeps the edge wake useful: an edge that
+ * lands while this daemon is merely sleeping is dropped by the kernel,
+ * and the queued report then sits out btd's 30ms backlog reassert before
+ * it is even drained.
  */
 static void bt_wait_report(void) {
-    proc_block_timeout(_bt_info.node, BT_WAIT_REPORT_US);
+    uint32_t wait_us = BT_WAIT_REPORT_US;
+
+    if (pend_dx != 0 || pend_dy != 0 || pend_wheel != 0) {
+        uint64_t now = kernel_tic_ms(0);
+        uint64_t next = last_flush_ms + MOUSE_FLUSH_MS;
+        if (now >= next) {
+            return; /* grid point reached: flush first, wait afterwards */
+        }
+        uint32_t grid_us = (uint32_t)(next - now) * 1000u;
+        if (grid_us < wait_us) {
+            wait_us = grid_us;
+        }
+    }
+    proc_block_timeout(_bt_info.node, wait_us);
 }
 
 /*
@@ -428,16 +452,19 @@ static int _loop(vdevice_t* dev, void* p) {
     }
 
     /*
-     * Flush coalesced movement/wheel at most once per MOUSE_FLUSH_MS so the
-     * event rate on /dev/mouse0 never exceeds 100Hz. Button edges were
-     * already pushed during the drain above.
+     * Flush coalesced movement/wheel once the grid point is reached, so the
+     * event rate on /dev/mouse0 never exceeds ~30Hz. No in-line sleep: the
+     * grid deadline is enforced by bt_wait_report() above, which keeps the
+     * edge wake alive for reports arriving inside the window - a report's
+     * worst-case added latency is exactly MOUSE_FLUSH_MS, the stroke's
+     * first report even flushes immediately (last_flush_ms is one grid
+     * behind by then). Button edges were already pushed during the drain.
      */
     if (pend_dx != 0 || pend_dy != 0 || pend_wheel != 0) {
         uint64_t now = kernel_tic_ms(0);
-        uint64_t next = last_flush_ms + MOUSE_FLUSH_MS;
-        if (now < next)
-            usleep((uint32_t)((next - now) * 1000u));
-        mouse_flush_pending();
+        if (now - last_flush_ms >= MOUSE_FLUSH_MS) {
+            mouse_flush_pending();
+        }
     }
 
     /*

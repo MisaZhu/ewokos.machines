@@ -188,15 +188,32 @@ static int pi5_bt_uart_send(uint8_t pkt_type, const uint8_t* data, size_t len) {
     return 0;
 }
 
+/*
+ * RX poll quantum while waiting out an inter-byte gap. The HCI UART is
+ * polled (IER=0) and one byte at 115200 baud takes ~87us on the wire:
+ * sleeping a full 1ms per poll (the old granularity) throttled any burst
+ * longer than the 32-byte RX FIFO to ~1 byte/ms - 11x slower than the
+ * wire. A BLE mouse delivers several reports per connection event and any
+ * long HCI event (a 240-byte extended inquiry/advertising report) dwarfs
+ * the FIFO too, so those streams read SLOWER than they arrive; hardware
+ * flow control then backs them up inside the controller, which never
+ * drops a byte - a reliable queue whose latency grew for as long as the
+ * mouse kept moving, and drained (visibly replayed) only after it stopped.
+ * 100us keeps the reader ahead of the wire; idle polling is unaffected
+ * because a 0 timeout still returns before ever sleeping here.
+ */
+#define BT_UART_RX_POLL_US 100u
+
 static int pi5_bt_uart_recv(uint32_t timeout_ms) {
-    uint32_t waited = 0;
+    uint32_t waited_us = 0;
+    uint32_t budget_us = timeout_ms * 1000u;
 
     while (!(get32(UARTA_LSR_REG) & UART_LSR_DR)) {
-        if (waited >= timeout_ms) {
+        if (waited_us >= budget_us) {
             return -1;
         }
-        usleep(1000);
-        waited++;
+        usleep(BT_UART_RX_POLL_US);
+        waited_us += BT_UART_RX_POLL_US;
     }
     return (int)(get32(UARTA_RBR_REG) & 0xFFu);
 }
