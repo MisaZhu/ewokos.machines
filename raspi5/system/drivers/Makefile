@@ -1,4 +1,4 @@
-BASIC_DIRS = uartd fand cpud nvmefsd bt_moused
+BASIC_DIRS = uartd fand cpud nvmefsd bt_moused bt_keybd
 basic: $(BASIC_DIRS)
 
 NETWORK_DIRS = wlan btd

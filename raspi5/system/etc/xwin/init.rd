@@ -1,14 +1,12 @@
 @export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log
-
-@/bin/ipcserv /drivers/raspi5/g2dd        /dev/g2d
+@/bin/ipcserv /drivers/raspi5/g2dd
 
 @/bin/ipcserv /drivers/displaymand
-#@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
-@/bin/ipcserv /drivers/raspi5/dsi_fbdisplayd /dev/disp0
+@/bin/ipcserv /drivers/raspi5/fbdisplayd      /dev/disp0
 @/bin/ipcserv /drivers/fontd
 
-@/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 12 -d
+@/bin/ipcserv /sbin/splashd -w 320 -h 240 -f 12 -d -i  0
 @/bin/splash -i /usr/system/images/logos/ewokos.png -m "start..."
 
 @/bin/splash -m "start /dev/tty0" -p 10
@@ -34,9 +32,7 @@
 @/bin/splash -m "start /dev/keyb0" -p 28
 @/bin/ipcserv /drivers/raspi5/hid_keybd   /dev/keyb0  /dev/hid0
 @/bin/ipcserv /drivers/raspi5/hid_moused  /dev/mouse0 /dev/hid0
-
-@/bin/splash -m "start /dev/touch0" -p 30
-@/bin/ipcserv /drivers/waveshare/dsi_touchd /dev/touch0
+@/bin/ipcserv /drivers/raspi5/hid_touchd  /dev/touch0 /dev/hid0
 
 @/bin/splash -m "mount /tmp" -p 40
 @/bin/ipcserv /drivers/piped           /dev/pipe0
@@ -60,14 +56,16 @@
 @/bin/splash -m "start sshd" -p 84
 @/bin/bgrun /sbin/sshd
 
-#@/bin/splash -m "start /dev/bt0" -p 85
-#@/bin/ipcserv /drivers/raspi5/btd    /dev/bt0
+@/bin/splash -m "start /dev/bt0" -p 85
+@/bin/ipcserv /drivers/raspi5/btd    /dev/bt0
+@/bin/ipcserv /drivers/raspi5/bt_moused  /dev/mouse1 /dev/bt0
+@/bin/ipcserv /drivers/raspi5/bt_keybd  /dev/keyb1 /dev/bt0
 
 @/bin/splash -m "start x" -p 100
-@/bin/ipcserv /drivers/xserverd        /dev/x
+@/bin/ipcserv /drivers/xserverd     -d 0   /dev/x
 
-@/bin/bgrun /sbin/x/xtouch /dev/touch0
-@/bin/bgrun /sbin/x/xmouse
-@/bin/bgrun /sbin/x/xim_none
-#@/bin/bgrun /sbin/x/xim_vkey -h 168
+@/bin/bgrun /sbin/x/xtouch
+@/bin/bgrun /sbin/x/xmouse /dev/mouse1
+@/bin/bgrun /sbin/x/xim_none /dev/keyb1
+#@/bin/bgrun /sbin/x/xim_vkey -h 180
 @/bin/bgrun /bin/x/xsession  misa

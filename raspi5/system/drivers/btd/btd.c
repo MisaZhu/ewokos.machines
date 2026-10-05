@@ -63,6 +63,7 @@
 #define HCI_OCF_PIN_CODE_REQ_REPLY 0x000d
 #define HCI_OCF_PIN_CODE_REQ_NEG_REPLY 0x000e
 #define HCI_OCF_AUTH_REQ 0x0011
+#define HCI_OCF_SET_CONN_ENCRYPT 0x0013
 #define HCI_OCF_REMOTE_NAME_REQ 0x0019
 #define HCI_OCF_IO_CAPABILITY_REQ_REPLY 0x002b
 #define HCI_OCF_USER_CONFIRM_REQ_REPLY 0x002c
@@ -102,6 +103,17 @@
 #define HCI_OCF_LE_CLEAR_RESOLV_LIST 0x0029
 #define HCI_OCF_LE_READ_RESOLV_LIST_SIZE 0x002a
 #define HCI_OCF_LE_SET_ADDR_RESOLUTION_ENABLE 0x002d
+/* LE 5.0 extended scanning / initiating. A BLE 5.0 peripheral (many
+   keyboards) advertises with ADV_EXT_IND, which a legacy LE_Set_Scan_Enable
+   scan physically cannot receive: the controller only reports those PDUs to
+   an extended scan, as an LE_Extended_Advertising_Report (subevent 0x0d).
+   Extended scanning also receives legacy ADV_IND (reported through the same
+   0x0d event with the "legacy PDU" bit set), so it supersedes the legacy
+   path on any controller that supports it. Connecting to an extended-only
+   advertiser likewise needs LE_Extended_Create_Connection. */
+#define HCI_OCF_LE_SET_EXT_SCAN_PARAMS 0x0041
+#define HCI_OCF_LE_SET_EXT_SCAN_ENABLE 0x0042
+#define HCI_OCF_LE_EXT_CREATE_CONNECTION 0x0043
 
 /* host-controller commands we need for the LE path (OGF 0x03) */
 #define HCI_OCF_READ_BD_ADDR 0x0009
@@ -427,6 +439,11 @@ typedef struct {
     int8_t rssi;
     uint16_t handle;
     bool connected;
+    /* classic (BR/EDR) HID: the L2CAP HID channels are deferred until the
+       link is authenticated AND encrypted, because an input peripheral will
+       not send reports over a plain link. Set on connect, cleared when the
+       security sequence finishes and bt_hid_start runs. */
+    bool hid_after_sec;
     bool has_link_key;
     uint8_t link_key[16];
     char name[64];
@@ -441,6 +458,10 @@ typedef struct {
     uint8_t addr_type;
     uint16_t appearance;   /* GAP appearance, 0 when not advertised */
     bool adv_hid;          /* advertised the HID Service or a HID appearance */
+    /* set once we have seen a non-legacy (BLE 5.0 extended) advertising PDU
+       from this peer: it can only be reached with LE_Extended_Create_
+       Connection, so the connect path branches on it */
+    bool ext_adv;
     uint64_t last_seen_ms; /* LE entries are evicted oldest-first when full */
     /* LE long-term key. A bonded peripheral re-encrypts with this instead
        of running SMP again. */
@@ -670,6 +691,11 @@ static bool _scanning = false;
 static bt_device_t _devices[MAX_BT_DEVICES];
 static bt_known_t _known[MAX_BT_KNOWN];
 static bt_pending_t _pending;
+/* classic handle with an outstanding Set_Connection_Encryption: if the
+   controller rejects it (no Encryption_Change event will follow) the
+   Command_Complete fallback brings the HID channels up on the still-
+   authenticated link instead of waiting forever */
+static uint16_t _sec_encrypt_handle = 0;
 static bt_wait_cmd_t _wait_cmd;
 static bt_wait_debug_t _wait_debug;
 
@@ -722,6 +748,12 @@ static bt_scan_slice_t _scan_slice = BT_SCAN_SLICE_NONE;
 static uint64_t _scan_slice_end_ms = 0;
 static uint64_t _scan_total_end_ms = 0;
 static bool _le_scan_enabled = false;
+/* _le_scan_extended says the currently enabled scan is the extended one, so
+   bt_scan_slice_stop disables it with the matching command; _le_ext_scan_supp
+   caches the one-time probe of extended-scan support (-1 unknown, 0 no, 1 yes)
+   so an unsupported controller is not re-probed on every slice. */
+static bool _le_scan_extended = false;
+static int _le_ext_scan_supp = -1;
 static bool _inquiry_running = false;
 
 static void l2cap_step(void);
@@ -865,6 +897,61 @@ static bt_known_t* bt_known_find(const uint8_t* addr) {
         }
     }
     return NULL;
+}
+
+static bt_known_t* bt_known_find_by_ltk(uint16_t ediv, const uint8_t* rand8) {
+    int i;
+
+    for (i = 0; i < MAX_BT_KNOWN; ++i) {
+        if (_known[i].used && _known[i].le && _known[i].has_ltk &&
+                _known[i].ediv == ediv &&
+                memcmp(_known[i].ltk_rand, rand8, 8) == 0) {
+            return &_known[i];
+        }
+    }
+    return NULL;
+}
+
+/* The only stable handle on a peer that rotates an unresolvable private
+   address (NRPA): its name. The address changes every rotation and an NRPA
+   carries no IRK-resolvable identity, so a bonded LE device is recognised by
+   name to keep exactly one bond per physical device. */
+static bt_known_t* bt_known_find_le_by_name(const char* name) {
+    int i;
+
+    if (name == NULL || name[0] == 0) {
+        return NULL;
+    }
+    for (i = 0; i < MAX_BT_KNOWN; ++i) {
+        if (_known[i].used && _known[i].le && _known[i].name[0] != 0 &&
+                strcmp(_known[i].name, name) == 0) {
+            return &_known[i];
+        }
+    }
+    return NULL;
+}
+
+/* Collapse duplicate LE bonds left behind by a rotating-address peripheral
+   that re-paired on each reconnect: they all share the device name, so keep
+   the first and drop the rest. Returns how many were removed. The kept bond
+   self-heals on the next reconnect (its address and LTK are refreshed). */
+static int bt_known_dedup_le(void) {
+    int i, j;
+    int removed = 0;
+
+    for (i = 0; i < MAX_BT_KNOWN; ++i) {
+        if (!_known[i].used || !_known[i].le || _known[i].name[0] == 0) {
+            continue;
+        }
+        for (j = i + 1; j < MAX_BT_KNOWN; ++j) {
+            if (_known[j].used && _known[j].le &&
+                    strcmp(_known[j].name, _known[i].name) == 0) {
+                _known[j].used = false;
+                ++removed;
+            }
+        }
+    }
+    return removed;
 }
 
 static bt_known_t* bt_known_upsert(const uint8_t* addr) {
@@ -1190,7 +1277,29 @@ static int bt_known_save(void) {
 /* record a device we just connected/paired with (link key included when
    we have one, so the next power-on reconnects without re-pairing) */
 static void bt_known_touch_from_device(const bt_device_t* dev) {
-    bt_known_t* k = bt_known_upsert(dev->addr);
+    bt_known_t* k = NULL;
+
+    /* A rotating-private-address (NRPA) LE peripheral lands on a fresh address
+       every reconnect; keying its bond by address would add another entry for
+       the SAME device each time - the duplicate list xbt shows. Once we know
+       its name, collapse onto the existing same-name LE bond and move that
+       bond onto the address we are talking to now, dropping the stale device
+       entry seeded from the previous rotation. */
+    if (dev->le && dev->name[0] != 0) {
+        k = bt_known_find_le_by_name(dev->name);
+        if (k != NULL && !bt_addr_equal(k->addr, dev->addr)) {
+            bt_device_t* stale = bt_find_device(k->addr, false);
+            if (stale != NULL && !stale->connected &&
+                    !bt_addr_equal(stale->addr, dev->addr)) {
+                stale->used = false;
+            }
+            memcpy(k->addr, dev->addr, 6);
+            k->addr_type = dev->addr_type;
+        }
+    }
+    if (k == NULL) {
+        k = bt_known_upsert(dev->addr);
+    }
 
     if (k == NULL) {
         return;
@@ -1586,6 +1695,15 @@ static int bt_hci_auth_request(uint16_t handle) {
     return bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_AUTH_REQ, params, sizeof(params));
 }
 
+static int bt_hci_set_conn_encrypt(uint16_t handle) {
+    uint8_t params[3];
+
+    params[0] = (uint8_t)(handle & 0xff);
+    params[1] = (uint8_t)(handle >> 8);
+    params[2] = 0x01; /* enable link encryption */
+    return bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_SET_CONN_ENCRYPT, params, sizeof(params));
+}
+
 static int bt_hci_disconnect(uint16_t handle) {
     uint8_t params[3];
 
@@ -1689,6 +1807,21 @@ static void bt_handle_command_complete(const uint8_t* payload, size_t len) {
     _wait_debug.last_opcode = opcode;
     _wait_debug.last_status = status;
     bt_update_wait_cmd_complete(opcode, status);
+
+    /* classic HID fallback: Set_Connection_Encryption was rejected (the peer
+       does not support link encryption), so no Encryption_Change event will
+       arrive. The link is still authenticated, which is enough for many
+       keyboards - bring the HID channels up now instead of waiting forever. */
+    if (opcode == HCI_OPCODE(HCI_OGF_LINK_CTRL, HCI_OCF_SET_CONN_ENCRYPT) &&
+            status != 0 && _sec_encrypt_handle != 0) {
+        uint16_t h = _sec_encrypt_handle;
+        bt_device_t* dev = bt_find_device_by_handle(h);
+        _sec_encrypt_handle = 0;
+        if (dev != NULL && dev->hid_after_sec) {
+            dev->hid_after_sec = false;
+            bt_hid_start(h, dev->addr);
+        }
+    }
 }
 
 static void bt_handle_command_status(const uint8_t* payload, size_t len) {
@@ -1823,6 +1956,12 @@ static void bt_handle_remote_name_complete(const uint8_t* payload, size_t len) {
     bt_emit("name %s status=%u value=%s\n", addr, payload[0], dev->name[0] ? dev->name : "-");
 }
 
+/* CoD major class 0x05 (Peripheral) with any minor bits: a mouse, keyboard
+   or other HID device. Used to decide the classic security-then-HID flow. */
+static bool bt_cod_is_hid_peripheral(uint32_t cod) {
+    return ((cod >> 8) & 0x1f) == 0x05 && (cod & 0xc0) != 0;
+}
+
 static void bt_handle_connection_complete(const uint8_t* payload, size_t len) {
     bt_device_t* dev;
     uint8_t status;
@@ -1846,20 +1985,34 @@ static void bt_handle_connection_complete(const uint8_t* payload, size_t len) {
         dev->handle = handle;
         bt_known_touch_from_device(dev);
         bt_emit("connect_ok %s handle=0x%04X\n", addr, handle);
-        if (_pending.type == BT_PENDING_PAIR && bt_addr_equal(_pending.addr, dev->addr)) {
+        if (bt_cod_is_hid_peripheral(dev->class_of_device)) {
+            /* A classic HID peripheral (mouse/keyboard) will not send input
+               reports over a plain link: secure it first. Authenticate now,
+               request encryption from the auth-complete handler, and only bring
+               the L2CAP HID channels up from the encryption-change event.
+               Opening them here - on the still-unauthenticated link - is what
+               made a connected keyboard produce no keystrokes. Force the
+               pending target to PAIR so SSP Just Works is auto-accepted even
+               when the user issued a plain "connect". */
+            dev->hid_after_sec = true;
+            if (_pending.type != BT_PENDING_PAIR ||
+                    !bt_addr_equal(_pending.addr, dev->addr)) {
+                memset(&_pending, 0, sizeof(_pending));
+                _pending.type = BT_PENDING_PAIR;
+                memcpy(_pending.addr, dev->addr, 6);
+                strncpy(_pending.pin, "0000", sizeof(_pending.pin) - 1);
+            }
+            _pending.handle = handle;
+            bt_hci_auth_request(handle);
+            bt_emit("pair_wait_auth %s\n", addr);
+        }
+        else if (_pending.type == BT_PENDING_PAIR && bt_addr_equal(_pending.addr, dev->addr)) {
             _pending.handle = handle;
             bt_hci_auth_request(handle);
             bt_emit("pair_wait_auth %s\n", addr);
         }
         else if (_pending.type == BT_PENDING_CONNECT && bt_addr_equal(_pending.addr, dev->addr)) {
             bt_clear_pending();
-        }
-        /* a pointing-class peripheral (CoD major 0x05, minor bits 0x80):
-           bring up the HID channels right away, standard mice accept the
-           host-initiated PSM 0x0011/0x0013 pair */
-        if (((dev->class_of_device >> 8) & 0x1f) == 0x05 &&
-                (dev->class_of_device & 0xc0) != 0) {
-            bt_hid_start(handle, dev->addr);
         }
     }
     else {
@@ -1919,9 +2072,22 @@ static void bt_handle_auth_complete(const uint8_t* payload, size_t len) {
     if (payload[0] == 0) {
         bt_known_touch_from_device(dev);
         bt_emit("pair_ok %s handle=0x%04X\n", addr, handle);
+        /* the link is authenticated; a classic HID peripheral still needs it
+           encrypted before it will send reports. Request encryption and bring
+           the HID channels up from the encryption-change event. If the send
+           itself fails, fall back to starting HID on the authenticated link. */
+        if (dev->hid_after_sec) {
+            _sec_encrypt_handle = handle;
+            if (bt_hci_set_conn_encrypt(handle) != 0) {
+                _sec_encrypt_handle = 0;
+                dev->hid_after_sec = false;
+                bt_hid_start(handle, dev->addr);
+            }
+        }
     }
     else {
         bt_emit("pair_fail %s status=%u\n", addr, payload[0]);
+        dev->hid_after_sec = false;
     }
     if (_pending.type == BT_PENDING_PAIR && _pending.handle == handle) {
         bt_clear_pending();
@@ -2608,8 +2774,19 @@ static void l2cap_handle_conf_req(uint16_t handle, uint8_t id,
     if (len < 4) {
         return;
     }
+    /* A Configuration Request's Destination CID names the endpoint at the
+       RECEIVER of the request - our own local CID for that channel, never the
+       peer's. Match on local CID first, falling back to the remote/pending
+       lookup only to tolerate a peer that races its ConfigReq ahead of our
+       Connection Response. The old remote-only lookup matched purely by
+       accident (when our local CID happened to equal the peer's), which is why
+       the HID control channel came up while the interrupt channel - allocated
+       a different CID - was rejected and timed out. */
     dcid = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-    ch = l2cap_find_by_remote(handle, dcid);
+    ch = l2cap_find_by_local(dcid);
+    if (ch == NULL) {
+        ch = l2cap_find_by_remote(handle, dcid);
+    }
     if (ch == NULL) {
         uint8_t rsp[6];
 
@@ -2624,11 +2801,6 @@ static void l2cap_handle_conf_req(uint16_t handle, uint8_t id,
     }
     ch->conf_req_recv = true;
     l2cap_send_conf_rsp(ch, id, L2CAP_CONF_SUCCESS);
-    if (ch->state == L2CAP_STATE_CONN_REQ_SENT && ch->remote_cid == 0) {
-        /* their config request raced our connection response: adopt the
-           source cid it carries */
-        ch->remote_cid = dcid;
-    }
 }
 
 static void l2cap_handle_conf_rsp(uint16_t handle, uint8_t id,
@@ -3757,6 +3929,44 @@ static int bt_le_scan_params(void) {
             sizeof(params), 1000);
 }
 
+/* LE 5.0 extended scanning. Scanning_PHYs = LE 1M only (bit 0): every HID
+   peripheral advertises on 1M, and adding the Coded PHY would double the
+   per-PHY parameter block for no benefit here. One Scan_Type/Interval/Window
+   triple follows for that single PHY. Filter policy 0x00 = accept all. */
+static int bt_le_ext_scan_params(void) {
+    uint8_t params[8];
+
+    params[0] = _local_addr_type;      /* Own_Address_Type */
+    params[1] = 0x00;                  /* Scanning_Filter_Policy: accept all */
+    params[2] = 0x01;                  /* Scanning_PHYs: LE 1M */
+    params[3] = BT_LE_SCAN_TYPE_ACTIVE; /* Scan_Type[1M]: active (get SCAN_RSP) */
+    params[4] = (uint8_t)(BT_LE_SCAN_INTERVAL & 0xff);
+    params[5] = (uint8_t)(BT_LE_SCAN_INTERVAL >> 8);
+    params[6] = (uint8_t)(BT_LE_SCAN_WINDOW & 0xff);
+    params[7] = (uint8_t)(BT_LE_SCAN_WINDOW >> 8);
+    return bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_SET_EXT_SCAN_PARAMS,
+            params, sizeof(params), 1000);
+}
+
+/* Duration = 0 (no limit) and Period = 0 (scan continuously) keep the radio
+   on until we explicitly disable it, matching the legacy scan's behaviour
+   across a discovery slice. */
+static int bt_le_ext_scan_enable(bool enable, bool filter_dup) {
+    uint8_t params[6];
+    int ret;
+
+    params[0] = enable ? 0x01 : 0x00;
+    params[1] = filter_dup ? 0x01 : 0x00;
+    params[2] = 0x00; params[3] = 0x00; /* Duration: 0 = until disabled */
+    params[4] = 0x00; params[5] = 0x00; /* Period: 0 = continuous */
+    ret = bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_SET_EXT_SCAN_ENABLE,
+            params, sizeof(params), 1000);
+    if (ret == 0) {
+        _le_scan_enabled = enable;
+    }
+    return ret;
+}
+
 /* ---------- GAP advertising data ----------
    An advertising report is a run of length-type-value fields. The three
    we care about are the name (what the user picks from), the 16-bit
@@ -3873,6 +4083,129 @@ static bool bt_le_queue_request(const bt_device_t* dev, bool pair) {
     return true;
 }
 
+/* Find an already-bonded LE device carrying this name, other than `exclude`.
+   Used to recognise a rotating-address (NRPA) peripheral that reappeared under
+   a fresh address during a scan, so the new entry can be folded back onto the
+   bonded one instead of piling up a duplicate. Skips a device that is the
+   target of an in-flight LE bring-up. */
+static bt_device_t* bt_find_le_bonded_by_name(const char* name,
+        const bt_device_t* exclude) {
+    int i;
+
+    for (i = 0; i < MAX_BT_DEVICES; ++i) {
+        bt_device_t* d = &_devices[i];
+        if (d == exclude || !d->used || !d->le || d->connected ||
+                !d->has_ltk || d->name[0] == 0) {
+            continue;
+        }
+        if (_le.handle_valid && bt_addr_equal(_le.addr, d->addr)) {
+            continue;
+        }
+        if (strcmp(d->name, name) == 0) {
+            return d;
+        }
+    }
+    return NULL;
+}
+
+/* Shared admission logic for one advertising report, whatever transport it
+   arrived on (legacy LE Advertising Report or LE Extended Advertising
+   Report). ext_pdu marks a report that came from a non-legacy BLE 5.0
+   extended PDU; such a peer can only be connected with LE_Extended_Create_
+   Connection, so the flag is recorded on the device for the connect path. */
+static void bt_le_admit_adv(const uint8_t* addr, uint8_t addr_type,
+        const uint8_t* data, uint8_t data_len, int8_t rssi, bool ext_pdu) {
+    uint16_t appearance = 0;
+    bool adv_hid = false;
+    char name[64];
+    bt_device_t* dev;
+    bool fresh;
+    bool updated = false;
+
+    name[0] = 0;
+    bt_le_parse_ad(data, data_len, &appearance, &adv_hid, name, sizeof(name));
+
+    /* A nameless report claiming neither the HID Service nor a HID
+       appearance is a beacon or a phone. Admitting those would evict
+       real peripherals from the table within seconds, so they are
+       dropped unless we already know the address. */
+    dev = bt_find_device(addr, false);
+    fresh = dev == NULL;
+    if (fresh) {
+        if (!adv_hid && name[0] == 0) {
+            return;
+        }
+        dev = bt_le_alloc_device(addr);
+        if (dev == NULL) {
+            return;
+        }
+    }
+    dev->le = true;
+    dev->addr_type = addr_type;
+    dev->rssi = rssi;
+    dev->last_seen_ms = kernel_tic_ms(0);
+    if (ext_pdu) {
+        dev->ext_adv = true;
+    }
+    if (appearance != 0) {
+        dev->appearance = appearance;
+    }
+    if (adv_hid) {
+        dev->adv_hid = true;
+    }
+    if (name[0] != 0 && dev->name[0] == 0) {
+        strncpy(dev->name, name, sizeof(dev->name) - 1);
+        dev->name[sizeof(dev->name) - 1] = 0;
+        bt_trim_name(dev->name);
+        updated = true;
+    }
+    /* A bonded NRPA peripheral reappears under a fresh address every scan. Now
+       that its name is known, fold this new entry back onto the bonded one:
+       move the bond onto the address currently on air and drop the duplicate,
+       so xbt keeps showing a single device instead of one per rotation. */
+    if (updated && dev->name[0] != 0 && !dev->connected && !dev->has_ltk) {
+        bt_device_t* b = bt_find_le_bonded_by_name(dev->name, dev);
+        if (b != NULL) {
+            bt_known_t* k;
+            memcpy(b->addr, dev->addr, 6);
+            b->addr_type = dev->addr_type;
+            b->rssi = dev->rssi;
+            b->last_seen_ms = dev->last_seen_ms;
+            if (ext_pdu) {
+                b->ext_adv = true;
+            }
+            k = bt_known_find_le_by_name(b->name);
+            if (k != NULL) {
+                memcpy(k->addr, b->addr, 6);
+                k->addr_type = b->addr_type;
+            }
+            memset(dev, 0, sizeof(*dev));
+            bt_emit_device_line("device", b);
+            return;
+        }
+    }
+    /* a device we already hold - seeded from the bond store at boot, or
+       seen in an ADV_IND before its SCAN_RSP - still has to be
+       re-announced once the name turns up, or xbt keeps showing the
+       bare address */
+    if (fresh || updated) {
+        bt_emit_device_line("device", dev);
+    }
+
+    /* a bonded peripheral that just showed up reconnects by itself;
+       has_ltk already means we paired with it once, so it is a HID
+       device whatever this particular advertisement happens to carry */
+    if (_le_autoconnect && dev->has_ltk && !dev->connected) {
+        char addr_str[24];
+
+        if (bt_le_queue_request(dev, false)) {
+            bt_addr_to_str(dev->addr, addr_str, sizeof(addr_str));
+            bt_emit("le_autoconnect %s\n", addr_str);
+            _le_autoconnect = false;
+        }
+    }
+}
+
 /* LE Advertising Report: Num_Reports(1), then per report Event_Type(1)
    Address_Type(1) Address(6) Data_Length(1) Data(n) RSSI(1). */
 static void bt_le_handle_adv_report(const uint8_t* p, size_t len) {
@@ -3890,12 +4223,6 @@ static void bt_le_handle_adv_report(const uint8_t* p, size_t len) {
         uint8_t data_len;
         const uint8_t* data;
         int8_t rssi;
-        uint16_t appearance = 0;
-        bool adv_hid = false;
-        char name[64];
-        bt_device_t* dev;
-        bool fresh;
-        bool updated = false;
 
         if (off + 9 > len) {
             return;
@@ -3910,60 +4237,57 @@ static void bt_le_handle_adv_report(const uint8_t* p, size_t len) {
         rssi = (int8_t)p[off + 9 + data_len];
         off += 10 + (size_t)data_len;
 
-        name[0] = 0;
-        bt_le_parse_ad(data, data_len, &appearance, &adv_hid, name, sizeof(name));
+        /* a legacy report is never an extended PDU */
+        bt_le_admit_adv(addr, addr_type, data, data_len, rssi, false);
+    }
+}
 
-        /* A nameless report claiming neither the HID Service nor a HID
-           appearance is a beacon or a phone. Admitting those would evict
-           real peripherals from the table within seconds, so they are
-           dropped unless we already know the address. */
-        dev = bt_find_device(addr, false);
-        fresh = dev == NULL;
-        if (fresh) {
-            if (!adv_hid && name[0] == 0) {
-                continue;
-            }
-            dev = bt_le_alloc_device(addr);
-            if (dev == NULL) {
-                continue;
-            }
-        }
-        dev->le = true;
-        dev->addr_type = addr_type;
-        dev->rssi = rssi;
-        dev->last_seen_ms = kernel_tic_ms(0);
-        if (appearance != 0) {
-            dev->appearance = appearance;
-        }
-        if (adv_hid) {
-            dev->adv_hid = true;
-        }
-        if (name[0] != 0 && dev->name[0] == 0) {
-            strncpy(dev->name, name, sizeof(dev->name) - 1);
-            dev->name[sizeof(dev->name) - 1] = 0;
-            bt_trim_name(dev->name);
-            updated = true;
-        }
-        /* a device we already hold - seeded from the bond store at boot, or
-           seen in an ADV_IND before its SCAN_RSP - still has to be
-           re-announced once the name turns up, or xbt keeps showing the
-           bare address */
-        if (fresh || updated) {
-            bt_emit_device_line("device", dev);
-        }
+/* LE Extended Advertising Report (subevent 0x0d): Num_Reports(1), then per
+   report a fixed 24-octet header followed by Data:
+     Event_Type(2) Address_Type(1) Address(6) Primary_PHY(1) Secondary_PHY(1)
+     Advertising_SID(1) TX_Power(1) RSSI(1) Periodic_Adv_Interval(2)
+     Direct_Address_Type(1) Direct_Address(6) Data_Length(1) Data(n)
+   Event_Type bit 4 marks a legacy PDU (a pre-5.0 advertiser relayed through
+   the extended report); such a peer stays reachable with the legacy create
+   connection, so only a clear bit 4 flags dev->ext_adv. */
+static void bt_le_handle_ext_adv_report(const uint8_t* p, size_t len) {
+    uint8_t n;
+    size_t off = 1;
+    uint8_t i;
 
-        /* a bonded peripheral that just showed up reconnects by itself;
-           has_ltk already means we paired with it once, so it is a HID
-           device whatever this particular advertisement happens to carry */
-        if (_le_autoconnect && dev->has_ltk && !dev->connected) {
-            char addr_str[24];
+    if (len < 1) {
+        return;
+    }
+    n = p[0];
+    for (i = 0; i < n; ++i) {
+        uint8_t addr[6];
+        uint8_t addr_type;
+        uint8_t data_len;
+        const uint8_t* data;
+        int8_t rssi;
+        uint16_t evt_type;
+        bool legacy_pdu;
 
-            if (bt_le_queue_request(dev, false)) {
-                bt_addr_to_str(dev->addr, addr_str, sizeof(addr_str));
-                bt_emit("le_autoconnect %s\n", addr_str);
-                _le_autoconnect = false;
-            }
+        if (off + 24 > len) {
+            return;
         }
+        evt_type = (uint16_t)((uint16_t)p[off] | ((uint16_t)p[off + 1] << 8));
+        addr_type = p[off + 2];
+        memcpy(addr, p + off + 3, 6);
+        rssi = (int8_t)p[off + 13];
+        data_len = p[off + 23];
+        if (off + 24 + (size_t)data_len > len) {
+            return;
+        }
+        data = p + off + 24;
+        off += 24 + (size_t)data_len;
+
+        /* 0xFF = anonymous advertisement: nothing to key a device on */
+        if (addr_type == 0xFF) {
+            continue;
+        }
+        legacy_pdu = (evt_type & 0x0010) != 0;
+        bt_le_admit_adv(addr, addr_type, data, data_len, rssi, !legacy_pdu);
     }
 }
 
@@ -4062,6 +4386,48 @@ static void bt_le_handle_ltk_request(const uint8_t* p, size_t len) {
         slog("bluetooth le_ltk_reply handle=0x%04x ediv=0x%04x\n", handle, ediv);
         return;
     }
+
+    /* A peer that rotates an unresolvable private address (NRPA, top two bits
+       00) reconnects from a fresh address that carries no LTK, and an NRPA
+       cannot be resolved by an IRK, so the address-keyed lookup above misses.
+       The key material itself is stable, though: recognise the stored bond by
+       its EDIV + randomizer, answer with its LTK (so the peer encrypts instead
+       of re-pairing), then rebind the bond onto the address we are talking to
+       now and drop the stale device entry seeded from the previous rotation -
+       otherwise one mouse piles up a new list entry every time it rotates. */
+    {
+        bt_known_t* k = bt_known_find_by_ltk(ediv, p + 2);
+        if (k != NULL) {
+            bt_device_t* cur = (dev != NULL) ? dev
+                    : bt_find_device(_le.addr, false);
+            memcpy(params + 2, k->ltk, 16);
+            _le.encrypted = false;
+            (void)bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_LTK_REQ_REPLY,
+                    params, sizeof(params), 1000);
+            slog("bluetooth le_ltk_reply handle=0x%04x ediv=0x%04x rebind=1\n",
+                    handle, ediv);
+            if (cur != NULL && !bt_addr_equal(cur->addr, k->addr)) {
+                bt_device_t* stale = bt_find_device(k->addr, false);
+                if (stale != NULL && !stale->connected) {
+                    stale->used = false;
+                }
+                memcpy(k->addr, cur->addr, 6);
+                k->addr_type = cur->addr_type;
+                cur->le = true;
+                cur->has_ltk = true;
+                memcpy(cur->ltk, k->ltk, 16);
+                cur->ediv = k->ediv;
+                memcpy(cur->ltk_rand, k->ltk_rand, 8);
+                if (cur->name[0] == 0 && k->name[0] != 0) {
+                    strncpy(cur->name, k->name, sizeof(cur->name) - 1);
+                    cur->name[sizeof(cur->name) - 1] = 0;
+                }
+                bt_known_save();
+            }
+            return;
+        }
+    }
+
     (void)bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_LTK_REQ_NEG_REPLY, params,
             2, 1000);
     slog("bluetooth le_ltk_neg_reply handle=0x%04x ediv=0x%04x\n", handle, ediv);
@@ -4081,15 +4447,18 @@ static void bt_handle_le_meta(const uint8_t* payload, size_t len) {
     case LE_EVT_ADV_REPORT:
         bt_le_handle_adv_report(payload + 1, len - 1);
         break;
+    case LE_EVT_EXT_ADV_REPORT:
+        bt_le_handle_ext_adv_report(payload + 1, len - 1);
+        break;
     case LE_EVT_CONN_UPDATE:
         bt_le_handle_conn_update(payload + 1, len - 1);
         break;
     case LE_EVT_LTK_REQUEST:
         bt_le_handle_ltk_request(payload + 1, len - 1);
         break;
-    /* extended advertising reports only arrive after
-       LE_Set_Extended_Scan_Enable, which we never send; remote feature
-       reads are not part of the bring-up either */
+    /* remote feature reads and periodic-advertising reports are not part
+       of the bring-up; the extended advertising report (0x0d) is handled
+       above whenever the controller accepted extended scanning */
     default:
         break;
     }
@@ -4097,24 +4466,42 @@ static void bt_handle_le_meta(const uint8_t* payload, size_t len) {
 
 static void bt_handle_encryption_change(const uint8_t* payload, size_t len) {
     uint16_t handle;
+    bt_device_t* dev;
 
     if (len < 4) {
         return;
     }
     handle = (uint16_t)(att_le16(payload + 1) & 0x0fff);
-    if (!_le.handle_valid || handle != _le.handle) {
+
+    if (_le.handle_valid && handle == _le.handle) {
+        if (payload[0] == 0 && payload[3] != 0) {
+            _le.encrypted = true;
+            _smp.enc_changed = true;
+            slog("bluetooth le_encrypted handle=0x%04x\n", handle);
+        }
+        else {
+            _le.encrypted = false;
+            _smp.enc_changed = true;
+            slog("bluetooth le_encrypt_failed handle=0x%04x status=0x%02x\n",
+                handle, payload[0]);
+        }
         return;
     }
-    if (payload[0] == 0 && payload[3] != 0) {
-        _le.encrypted = true;
-        _smp.enc_changed = true;
-        slog("bluetooth le_encrypted handle=0x%04x\n", handle);
+
+    /* classic (BR/EDR) link: HID bring-up was deferred until the link is
+       secured. Whether encryption ended up enabled or was refused, the link
+       is authenticated now, so open the L2CAP HID channels. */
+    if (_sec_encrypt_handle == handle) {
+        _sec_encrypt_handle = 0;
     }
-    else {
-        _le.encrypted = false;
-        _smp.enc_changed = true;
-        slog("bluetooth le_encrypt_failed handle=0x%04x status=0x%02x\n",
-            handle, payload[0]);
+    dev = bt_find_device_by_handle(handle);
+    if (dev != NULL && dev->hid_after_sec) {
+        char addr[24];
+        dev->hid_after_sec = false;
+        bt_addr_to_str(dev->addr, addr, sizeof(addr));
+        slog("bluetooth hid_secured %s handle=0x%04x encrypted=%d\n",
+            addr, handle, payload[3] ? 1 : 0);
+        bt_hid_start(handle, dev->addr);
     }
 }
 
@@ -4635,9 +5022,28 @@ static int bt_le_slice_start(void) {
     if (!_le_supported) {
         return -1;
     }
+    /* Prefer extended scanning: it reports both legacy ADV_IND and BLE 5.0
+       ADV_EXT_IND, so a keyboard that only sends extended PDUs becomes
+       visible. Probe support once - a controller without LE 5.0 extended
+       scanning refuses Set_Extended_Scan_Parameters and we fall back to the
+       legacy path that already works for mice. */
+    if (_le_ext_scan_supp != 0) {
+        if (bt_le_ext_scan_params() == 0) {
+            _le_ext_scan_supp = 1;
+            if (bt_le_ext_scan_enable(true, true) == 0) {
+                _le_scan_extended = true;
+                return 0;
+            }
+            /* params accepted but enable failed: fall through to legacy */
+        }
+        else {
+            _le_ext_scan_supp = 0;
+        }
+    }
     if (bt_le_scan_params() != 0) {
         return -1;
     }
+    _le_scan_extended = false;
     return bt_le_scan_enable(true, true);
 }
 
@@ -4674,7 +5080,12 @@ static int bt_classic_inquiry_start(int slice_ms) {
 
 static void bt_scan_slice_stop(void) {
     if (_scan_slice == BT_SCAN_SLICE_LE && _le_scan_enabled) {
-        (void)bt_le_scan_enable(false, false);
+        if (_le_scan_extended) {
+            (void)bt_le_ext_scan_enable(false, false);
+        }
+        else {
+            (void)bt_le_scan_enable(false, false);
+        }
     }
     if (_scan_slice == BT_SCAN_SLICE_CLASSIC && _inquiry_running) {
         (void)bt_hci_command_sync(HCI_OGF_LINK_CTRL, HCI_OCF_INQUIRY_CANCEL,
@@ -5165,13 +5576,53 @@ static void bt_le_stack_reset(void) {
    encrypted ATT bearer - so the caller's pair flag changes nothing here,
    and a bonded peripheral is re-encrypted instead of going through SMP
    again. */
+/* LE_Extended_Create_Connection for a single initiating PHY (LE 1M). The
+   header is Initiator_Filter_Policy, Own_Address_Type, Peer_Address_Type,
+   Peer_Address(6), Initiating_PHYs; then per selected PHY a 16-octet block
+   Scan_Interval, Scan_Window, Conn_Interval_Min, Conn_Interval_Max,
+   Max_Latency, Supervision_Timeout, Min_CE_Length, Max_CE_Length. A peer
+   that only sends ADV_EXT_IND is unreachable with the legacy command, which
+   scans for ADV_IND alone. */
+static int bt_le_ext_create_connection(void) {
+    uint8_t p[26];
+    int i;
+
+    p[0] = 0x00; /* Initiator_Filter_Policy: peer address, not the accept list */
+    p[1] = _local_addr_type; /* Own_Address_Type */
+    p[2] = _le.addr_type;    /* Peer_Address_Type */
+    for (i = 0; i < 6; ++i) {
+        p[3 + i] = _le.addr[i];
+    }
+    p[9] = 0x01; /* Initiating_PHYs: LE 1M */
+    p[10] = (uint8_t)(BT_LE_SCAN_INTERVAL & 0xff);
+    p[11] = (uint8_t)(BT_LE_SCAN_INTERVAL >> 8);
+    p[12] = (uint8_t)(BT_LE_SCAN_WINDOW & 0xff);
+    p[13] = (uint8_t)(BT_LE_SCAN_WINDOW >> 8);
+    p[14] = (uint8_t)(BT_LE_CONN_ITV_MIN & 0xff);
+    p[15] = (uint8_t)(BT_LE_CONN_ITV_MIN >> 8);
+    p[16] = (uint8_t)(BT_LE_CONN_ITV_MAX & 0xff);
+    p[17] = (uint8_t)(BT_LE_CONN_ITV_MAX >> 8);
+    p[18] = (uint8_t)(BT_LE_CONN_LATENCY & 0xff);
+    p[19] = (uint8_t)(BT_LE_CONN_LATENCY >> 8);
+    p[20] = (uint8_t)(BT_LE_CONN_TIMEOUT & 0xff);
+    p[21] = (uint8_t)(BT_LE_CONN_TIMEOUT >> 8);
+    p[22] = (uint8_t)(BT_LE_CONN_CE_LEN & 0xff);
+    p[23] = (uint8_t)(BT_LE_CONN_CE_LEN >> 8);
+    p[24] = (uint8_t)(BT_LE_CONN_CE_LEN & 0xff);
+    p[25] = (uint8_t)(BT_LE_CONN_CE_LEN >> 8);
+    return bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_EXT_CREATE_CONNECTION, p,
+            sizeof(p), 2000);
+}
+
 static int bt_le_connect(bt_device_t* dev, bool pair,
         char* ret_text, size_t ret_text_sz) {
     uint8_t p[25];
     char addr_str[24];
+    bool ext_conn;
     int i;
 
     (void)pair;
+    ext_conn = dev->ext_adv; /* capture before dev is re-resolved below */
     bt_le_stack_reset();
     memcpy(_le.addr, dev->addr, 6);
     _le.addr_type = dev->addr_type;
@@ -5203,7 +5654,14 @@ static int bt_le_connect(bt_device_t* dev, bool pair,
     p[23] = (uint8_t)(BT_LE_CONN_CE_LEN & 0xff);
     p[24] = (uint8_t)(BT_LE_CONN_CE_LEN >> 8);
 
-    if (bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_CREATE_CONNECTION, p,
+    /* An extended-advertising peer needs LE_Extended_Create_Connection; a
+       legacy one keeps the plain command. If the extended command is refused
+       (a controller that accepted extended scanning should not, but stay
+       defensive) fall back to the legacy create connection. */
+    if (ext_conn && bt_le_ext_create_connection() == 0) {
+        /* accepted */
+    }
+    else if (bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_CREATE_CONNECTION, p,
             sizeof(p), 2000) != 0) {
         bt_le_stack_reset();
         bt_emit("connect_fail %s reason=le_create_conn\n", addr_str);
@@ -6407,6 +6865,9 @@ static int bt_mounted(vdevice_t* dev, ewokos_addr_t node, void* p) {
     (void)p;
 
     bt_known_load();
+    if (bt_known_dedup_le() > 0) {
+        bt_known_save();
+    }
     bt_known_seed_devices();
     /* materialize the store right away (even while still empty) so its
        presence - and the SD card's writability - is visible at boot
