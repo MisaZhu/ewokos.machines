@@ -133,7 +133,7 @@ make run-iso-uefi     # UEFI (OVMF): 内核 + 内存盘 rootfs, 完整启动到�
 
 | 总线/设备 | 驱动(路径) | 说明 |
 |---|---|---|
-| USB (UHCI) | `system/libs/bsp/src/bsp_usb.c` + `uhci.c`(x86 HCD) + `system/basic/drivers/usbhostd` + `hid_keybd/hid_moused/hid_touchd` + `usbfat32fsd` | 平台无关 usbhostd 枚举 + x86 UHCI 轮询 HCD; QEMU `-usb -device usb-kbd` 即可验证 |
+| USB (UHCI) | `system/libs/bsp/src/bsp_usb.c` + `uhci.c`(x86 HCD) + `system/gui/drivers/usbhostd` + `hid_keybd/hid_moused/hid_touchd` + `usbfat32fsd` | 平台无关 usbhostd 枚举 + x86 UHCI 轮询 HCD; QEMU `-usb -device usb-kbd` 即可验证 |
 | USB (xHCI) | `system/libs/bsp/src/xhci.c`(自 raspi5 `arch_bcm2712/xhci.c` 移植) + `bsp_usb.c` 双控制器扁平端口层 | PCI(class 0C/03/30)→ 64 位 BAR0 经 SYS_MEM_MAP 映射 → 全轮询事件环; 支持 slot 寻址/控制传输/中断 IN(HID 键鼠)与 hub(TT/route string)。UHCI 端口索引保持不变, xHCI 端口追加其后, 两类控制器共存于同一扁平端口空间; 批量(bulk)/MSC 仍走 UHCI(xHCI 驱动尚无 bulk)。QEMU `-device qemu-xhci` 验证 |
 | SATA (AHCI) | `system/libs/bsp/src/ahci.c`(用户态 HCD) + `drivers/x86/atafsd` | PCI 探测(class 0106)→ABAR 映射→轮询 DMA 读/写/flush; atafsd 在其上挂 ext3; **另提供内核态 AHCI 引导路径**(见 `machines/x86/kernel/bsp/sd.c`) |
 | NVMe | `system/libs/bsp/src/nvme.c` + `drivers/x86/nvmefsd`(自 raspi5 移植, 平台无关) | **全链路实测通过**: PCI 探测→BAR0 映射→控制器使能→IDENTIFY→IO CQ/SQ 创建→ext3 挂载 `/mnt/nvme`→文件数据回读。修复过程修正了 CQE/CDoorbell/CDW 打包、返回值语义等多个 bug, 详见 git 历史 |
@@ -264,6 +264,6 @@ machines/x86/system/libs/bsp/src/bsp_usb.c
 machines/x86/system/drivers/atafsd/     AHCI 上的 ext3 服务
 machines/x86/system/drivers/nvmefsd/    NVMe 上的 ext3 服务
 kernel/kernel/src/hw_info.c             sys_dma 物理基址页对齐(dma_phy_addr 修正)
-system/basic/drivers/usbhostd/usbhostd.c 枚举日志走 klog(slog→klog, 热路径仍静默)
-system/basic/drivers/hid_keybd/          耗尽节奏注释(TCG 下按键快照可见性)
+system/gui/drivers/usbhostd/usbhostd.c   枚举日志走 klog(slog→klog, 热路径仍静默)
+system/gui/drivers/hid_keybd/            耗尽节奏注释(TCG 下按键快照可见性)
 ```
