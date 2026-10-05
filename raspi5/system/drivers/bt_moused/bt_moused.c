@@ -41,10 +41,16 @@
 
 /*
  * Movement/wheel coalescing cadence: pending deltas are flushed at most
- * once per interval, capping the event rate on /dev/mouse0 at 100Hz.
- * Button DOWN/UP events are NEVER coalesced.
+ * once per interval, capping the event rate on /dev/mouse0. The flush path
+ * sleeps to align to this grid, so the interval is also the worst-case
+ * added latency per movement - keep it tight. A Bluetooth mouse only
+ * reports at its connection interval (typically <=125Hz), so at 4ms
+ * (250Hz) the cap almost never throttles a real mouse: reports flush on
+ * arrival instead of waiting for the next grid slot, while still bounding
+ * a pathological high-rate peripheral. Button DOWN/UP events are NEVER
+ * coalesced.
  */
-#define MOUSE_FLUSH_MS 10u
+#define MOUSE_FLUSH_MS 4u
 
 /*
  * /dev/bt0 subscriber-queue protocol (mirrors libs/usb/usb_defs.h): fixed
