@@ -94,6 +94,14 @@
 #define HCI_OCF_LE_START_ENCRYPTION 0x0019
 #define HCI_OCF_LE_LTK_REQ_REPLY 0x001a
 #define HCI_OCF_LE_LTK_REQ_NEG_REPLY 0x001b
+/* LE privacy (resolving list): hand the controller a peer's IRK + identity
+   address once and it maps that peer's rotating private address back to the
+   stable identity address in every advertising report and connection
+   complete, so one device stops looking like a new one per rotation. */
+#define HCI_OCF_LE_ADD_DEV_RESOLV_LIST 0x0027
+#define HCI_OCF_LE_CLEAR_RESOLV_LIST 0x0029
+#define HCI_OCF_LE_READ_RESOLV_LIST_SIZE 0x002a
+#define HCI_OCF_LE_SET_ADDR_RESOLUTION_ENABLE 0x002d
 
 /* host-controller commands we need for the LE path (OGF 0x03) */
 #define HCI_OCF_READ_BD_ADDR 0x0009
@@ -440,6 +448,16 @@ typedef struct {
     uint8_t ltk[16];
     uint16_t ediv;
     uint8_t ltk_rand[8];
+    /* LE privacy: the peer's IRK and its stable identity address, learned in
+       SMP phase 3 when it honours the IdKey request. Held in the controller's
+       resolving list they collapse a rotating private address to id_addr, so
+       the device keeps ONE entry (and ONE bond, keyed by id_addr) across
+       reconnects instead of a fresh pair per address rotation. */
+    bool has_irk;
+    uint8_t irk[16];
+    bool has_id_addr;
+    uint8_t id_addr[6];
+    uint8_t id_addr_type;
 } bt_device_t;
 
 typedef enum {
@@ -493,6 +511,13 @@ typedef struct {
     uint8_t ltk[16];
     uint16_t ediv;
     uint8_t ltk_rand[8];
+    /* LE privacy: IRK + identity address, persisted so the resolving list is
+       rebuilt at boot and a rotating-address peer keeps a single bond */
+    bool has_irk;
+    uint8_t irk[16];
+    bool has_id_addr;
+    uint8_t id_addr[6];
+    uint8_t id_addr_type;
 } bt_known_t;
 
 /* one L2CAP connection-oriented channel (HID control or interrupt) */
@@ -594,6 +619,11 @@ typedef struct {
     bool got_srand;
     bool got_peer_ltk;
     bool got_peer_ident;
+    uint8_t peer_irk[16];       /* Identity Information (IRK) */
+    uint8_t peer_id_addr[6];    /* Identity Address Information */
+    uint8_t peer_id_addr_type;
+    bool got_peer_irk;
+    bool got_peer_id_addr;
     bool enc_changed;
     bool failed;
     uint8_t fail_reason;
@@ -628,6 +658,7 @@ typedef struct {
     bool boot_mode_ok;   /* Protocol Mode accepted GATT_PROTOCOL_MODE_BOOT */
     mouse_parser_t mouse;
     bool mouse_ok;       /* Report Map yielded a usable mouse bit layout */
+    int report_dumps;    /* count of raw->decoded report samples logged */
     int n_subscribed;
 } hogp_state_t;
 
@@ -1003,6 +1034,7 @@ static int bt_known_load(void) {
         int le = 0;
         int atype = 0;
         int ediv = 0;
+        int idtype = 0;
 
         if (obj_end == NULL) {
             break;
@@ -1039,6 +1071,21 @@ static int bt_known_load(void) {
                 k->has_ltk = true;
                 k->paired = true;
             }
+            /* the IRK + identity address let the resolving list collapse a
+               rotating private address back to one stable identity at boot;
+               hex/addr_str are reused safely (&& is left to right) */
+            if (bt_json_str_field(p, obj_end, "irk", hex, sizeof(hex)) &&
+                    bt_hex_to_bytes(hex, k->irk, sizeof(k->irk))) {
+                k->has_irk = true;
+            }
+            if (bt_json_str_field(p, obj_end, "idaddr", addr_str,
+                    sizeof(addr_str)) &&
+                    bt_parse_addr(addr_str, k->id_addr)) {
+                k->has_id_addr = true;
+                if (bt_json_int_field(p, obj_end, "idtype", &idtype)) {
+                    k->id_addr_type = (uint8_t)idtype;
+                }
+            }
             ++count;
         }
         p = obj_end + 1;
@@ -1067,10 +1114,12 @@ static void bt_json_write_escaped(int fd, const char* str) {
 }
 
 static int bt_known_save(void) {
-    char line[256];
+    char line[384];
     char hex[40];
     char ltkhex[40];
     char lrandhex[24];
+    char irkhex[40];
+    char idaddr[24];
     int fd;
     int i;
     int written = 0;
@@ -1107,16 +1156,29 @@ static int bt_known_save(void) {
             ltkhex[0] = 0;
             lrandhex[0] = 0;
         }
+        if (_known[i].has_irk) {
+            bt_bytes_to_hex(_known[i].irk, sizeof(_known[i].irk), irkhex);
+        }
+        else {
+            irkhex[0] = 0;
+        }
+        if (_known[i].has_id_addr) {
+            bt_addr_to_str(_known[i].id_addr, idaddr, sizeof(idaddr));
+        }
+        else {
+            idaddr[0] = 0;
+        }
         len = snprintf(line, sizeof(line),
             "%s    {\"addr\":\"%s\",\"name\":\"", written > 0 ? ",\n" : "", addr);
         write(fd, line, len);
         bt_json_write_escaped(fd, _known[i].name);
         len = snprintf(line, sizeof(line),
             "\",\"paired\":%d,\"key\":\"%s\",\"le\":%d,\"atype\":%u,"
-            "\"ltk\":\"%s\",\"ediv\":%u,\"lrand\":\"%s\"}\n",
+            "\"ltk\":\"%s\",\"ediv\":%u,\"lrand\":\"%s\","
+            "\"irk\":\"%s\",\"idaddr\":\"%s\",\"idtype\":%u}\n",
             _known[i].paired ? 1 : 0, hex, _known[i].le ? 1 : 0,
             (unsigned)_known[i].addr_type, ltkhex, (unsigned)_known[i].ediv,
-            lrandhex);
+            lrandhex, irkhex, idaddr, (unsigned)_known[i].id_addr_type);
         write(fd, line, len);
         ++written;
     }
@@ -1154,6 +1216,15 @@ static void bt_known_touch_from_device(const bt_device_t* dev) {
         k->ediv = dev->ediv;
         memcpy(k->ltk_rand, dev->ltk_rand, 8);
     }
+    if (dev->has_irk) {
+        k->has_irk = true;
+        memcpy(k->irk, dev->irk, 16);
+    }
+    if (dev->has_id_addr) {
+        k->has_id_addr = true;
+        memcpy(k->id_addr, dev->id_addr, 6);
+        k->id_addr_type = dev->id_addr_type;
+    }
     bt_known_save();
 }
 
@@ -1190,6 +1261,15 @@ static void bt_known_seed_devices(void) {
             dev->ediv = _known[i].ediv;
             memcpy(dev->ltk_rand, _known[i].ltk_rand, 8);
             dev->has_ltk = true;
+        }
+        if (_known[i].has_irk) {
+            memcpy(dev->irk, _known[i].irk, 16);
+            dev->has_irk = true;
+        }
+        if (_known[i].has_id_addr) {
+            memcpy(dev->id_addr, _known[i].id_addr, 6);
+            dev->id_addr_type = _known[i].id_addr_type;
+            dev->has_id_addr = true;
         }
         if (dev->page_scan_rep_mode == 0) {
             dev->page_scan_rep_mode = 1; /* R1, the common case */
@@ -1940,12 +2020,20 @@ static void bt_handle_io_capability_request(const uint8_t* payload, size_t len) 
 
     memset(params, 0, sizeof(params));
     memcpy(params, payload, 6);
+    /* IO_Capability NoInputNoOutput: a mouse/keyboard has no display and no
+       yes/no input, so SSP falls back to the Just Works association model */
     params[6] = 0x03;
+    /* no OOB pairing data present */
     params[7] = 0x00;
-    params[8] = 0x01;
+    /* Authentication_Requirements = MITM Not Required - General Bonding.
+       This MUST request bonding: a No-Bonding value makes the controller
+       finish SSP without deriving a link key, so LINK_KEY_NOTIFY never
+       arrives, has_link_key stays false, the device shows paired=0 and it
+       cannot re-authenticate on the next connection. */
+    params[8] = 0x04;
     bt_hci_send_command(HCI_OGF_LINK_CTRL, HCI_OCF_IO_CAPABILITY_REQ_REPLY, params, sizeof(params));
     bt_addr_to_str(payload, addr, sizeof(addr));
-    bt_emit("pair_io_cap %s capability=noinput\n", addr);
+    bt_emit("pair_io_cap %s capability=noinput bonding=general\n", addr);
 }
 
 static void bt_handle_user_confirmation_request(const uint8_t* payload, size_t len) {
@@ -3225,6 +3313,7 @@ static void aes128_encrypt(const uint8_t key[16], const uint8_t in[16],
     uint8_t st[16];
     int rnd;
     int c;
+    int r;
     int i;
 
     aes128_expand_key(key, rk);
@@ -3237,14 +3326,17 @@ static void aes128_encrypt(const uint8_t key[16], const uint8_t in[16],
         for (i = 0; i < 16; ++i) {
             st[i] = _aes_sbox[st[i]];
         }
-        /* ShiftRows: row r rotates left by r, so rows 1..3 each rotate by
-           one, twice and three times */
-        for (i = 1; i < 4; ++i) {
-            uint8_t first = st[i];
-            st[i] = st[i + 4];
-            st[i + 4] = st[i + 8];
-            st[i + 8] = st[i + 12];
-            st[i + 12] = first;
+        /* ShiftRows: row r rotates left by r positions, so rows 1..3 each
+           rotate by one, two and three. Row r lives at st[r + 4*c] for
+           column c, so new[c] = old[(c + r) % 4]. */
+        for (r = 1; r < 4; ++r) {
+            uint8_t tmp[4];
+            for (c = 0; c < 4; ++c) {
+                tmp[c] = st[r + 4 * ((c + r) % 4)];
+            }
+            for (c = 0; c < 4; ++c) {
+                st[r + 4 * c] = tmp[c];
+            }
         }
         if (rnd < 10) {
             for (c = 0; c < 4; ++c) {
@@ -3392,6 +3484,69 @@ static void bt_fill_random(uint8_t* out, size_t n) {
     }
 }
 
+/* True once we hold a usable own address (any non-zero six octets). */
+static bool bt_local_addr_valid(void) {
+    int i;
+
+    for (i = 0; i < 6; ++i) {
+        if (_local_addr[i] != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Establish the address we present on air before any scan or connect. If the
+   controller reports no usable public BD_ADDR (an unprogrammed CYW4345C0, or
+   a flaky transport that dropped the Read_BD_ADDR reply), we must NOT let
+   LE_Create_Connection go out with Own_Address_Type=public and an all-zero
+   address: the controller then puts some InitA on air that we do not know,
+   the peer hashes that unknown address into its c1 confirm, and every legacy
+   pairing aborts with reason 0x04 (Confirm Value Failed). Synthesize a random
+   static address, program it with LE_Set_Random_Address and switch our own
+   address type to RANDOM, so the InitA on air and the ia we feed c1 are the
+   very same value we control. */
+static void bt_le_provision_own_addr(void) {
+    uint8_t addr_ret[8];
+    uint8_t addr_ret_len = 0;
+    char ia_str[24];
+    int rc;
+
+    if (bt_local_addr_valid()) {
+        bt_addr_to_str(_local_addr, ia_str, sizeof(ia_str));
+        slog("bluetooth local_addr %s type=%u\n", ia_str, _local_addr_type);
+        return;
+    }
+
+    memset(addr_ret, 0, sizeof(addr_ret));
+    rc = bt_hci_command_sync_ret(HCI_OGF_HOST_CTRL, HCI_OCF_READ_BD_ADDR, NULL,
+            0, 1000, addr_ret, sizeof(addr_ret), &addr_ret_len);
+    slog("bluetooth read_bd_addr rc=%d len=%u raw=%02x%02x%02x%02x%02x%02x\n",
+            rc, addr_ret_len, addr_ret[0], addr_ret[1], addr_ret[2],
+            addr_ret[3], addr_ret[4], addr_ret[5]);
+    if (rc == 0 && addr_ret_len >= 6) {
+        memcpy(_local_addr, addr_ret, 6);
+    }
+    if (bt_local_addr_valid()) {
+        bt_addr_to_str(_local_addr, ia_str, sizeof(ia_str));
+        slog("bluetooth local_addr %s type=%u\n", ia_str, _local_addr_type);
+        return;
+    }
+
+    /* No usable public address: build a random static one. The two most
+       significant bits of the most significant octet (addr[5]; HCI stores
+       octets LSB first) must be 1 for a static random address. */
+    bt_fill_random(_local_addr, sizeof(_local_addr));
+    _local_addr[5] = (uint8_t)((_local_addr[5] & 0x3f) | 0xc0);
+    _local_addr_type = BT_LE_ADDR_TYPE_RANDOM;
+    if (bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_SET_RANDOM_ADDRESS,
+            _local_addr, sizeof(_local_addr), 1000) != 0) {
+        slog("bluetooth le_set_random_addr_failed\n");
+    }
+    bt_addr_to_str(_local_addr, ia_str, sizeof(ia_str));
+    slog("bluetooth local_addr_synth %s type=random\n", ia_str);
+}
+
 /* ---------- bounded waits ----------
    Every LE bring-up step ends in "wait for the controller or the peer to
    answer", and all of them go through here so the deadline is real and
@@ -3415,10 +3570,110 @@ static bool bt_poll_until(bt_pred_fn pred, void* ctx, uint32_t timeout_ms) {
    LE_Set_Event_Mask with Unknown HCI Command and the classic-only path
    carries on; the Pi 5's CYW4345C0 is dual-mode, so this normally
    succeeds. */
+/* ---- LE address resolution (privacy) ------------------------------------
+   A peripheral that rotates a resolvable private address cannot be tracked
+   by its on-air address: every rotation looks like a brand-new device, so the
+   scan list fills with duplicates and the bond (keyed by address) never
+   matches, forcing a full re-pair each time. The standard remedy is the
+   controller's resolving list - hand it each peer's IRK + identity address
+   once, enable resolution, and from then on every advertising report and
+   connection complete carries the STABLE identity address instead of the
+   rotating one. The device table, the bond store and c1 all key off that one
+   address, so the duplicates disappear and reconnection re-encrypts.
+   Everything here is fail-safe: a controller without LE privacy just refuses
+   the commands and we carry on exactly as before (an unresolvable address
+   likewise stays as-is, so nothing that works today regresses). */
+static bool _le_resolving = false;
+
+static int bt_le_resolving_list_add(uint8_t id_addr_type,
+        const uint8_t* id_addr, const uint8_t* peer_irk) {
+    uint8_t p[39];
+
+    /* Peer_Identity_Address_Type(1) Peer_Identity_Address(6) Peer_IRK(16)
+       Local_IRK(16). A zero Local_IRK keeps our own static random address as
+       InitA instead of asking the controller to mint an RPA for us. */
+    p[0] = id_addr_type;
+    memcpy(p + 1, id_addr, 6);
+    memcpy(p + 7, peer_irk, 16);
+    memset(p + 23, 0, 16);
+    return bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_ADD_DEV_RESOLV_LIST,
+            p, sizeof(p), 1000);
+}
+
+/* Rebuild the resolving list from the bonds loaded at mount and enable
+   resolution. Called at the end of the LE controller bring-up, before any
+   scan or connection, which is the only point LE_Set_Address_Resolution_Enable
+   is guaranteed to be accepted. */
+static void bt_le_resolving_setup(void) {
+    uint8_t size_ret[4];
+    uint8_t size_len = 0;
+    uint8_t cap;
+    uint8_t on = 1;
+    int added = 0;
+    int i;
+
+    if (!_le_supported) {
+        return;
+    }
+    /* LE_Read_Resolving_List_Size doubles as the "does this controller
+       implement LE privacy at all" probe */
+    if (bt_hci_command_sync_ret(HCI_OGF_LE, HCI_OCF_LE_READ_RESOLV_LIST_SIZE,
+            NULL, 0, 1000, size_ret, sizeof(size_ret), &size_len) != 0 ||
+            size_len < 1 || size_ret[0] == 0) {
+        slog("bluetooth le_resolving unsupported\n");
+        return;
+    }
+    cap = size_ret[0];
+    (void)bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_CLEAR_RESOLV_LIST,
+            NULL, 0, 1000);
+    for (i = 0; i < MAX_BT_KNOWN && added < (int)cap; ++i) {
+        if (!_known[i].used || !_known[i].has_irk || !_known[i].has_id_addr) {
+            continue;
+        }
+        if (bt_le_resolving_list_add(_known[i].id_addr_type, _known[i].id_addr,
+                _known[i].irk) == 0) {
+            ++added;
+        }
+    }
+    if (added == 0) {
+        slog("bluetooth le_resolving empty cap=%u\n", (unsigned)cap);
+        return;
+    }
+    if (bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_SET_ADDR_RESOLUTION_ENABLE,
+            &on, 1, 1000) != 0) {
+        slog("bluetooth le_resolving enable_failed added=%d\n", added);
+        return;
+    }
+    _le_resolving = true;
+    slog("bluetooth le_resolving enabled cap=%u added=%d\n", (unsigned)cap,
+            added);
+}
+
+/* Note a freshly bonded peer in the resolving list. Adding an entry is
+   allowed while a connection is up; enabling resolution is not, so on the
+   very first bond it stays off until the next controller init picks it up
+   from the store. */
+static void bt_le_resolving_note_bond(const bt_device_t* dev) {
+    uint8_t on = 1;
+
+    if (!_le_supported || dev == NULL || !dev->has_irk || !dev->has_id_addr) {
+        return;
+    }
+    if (bt_le_resolving_list_add(dev->id_addr_type, dev->id_addr,
+            dev->irk) != 0) {
+        slog("bluetooth le_resolving add_failed\n");
+        return;
+    }
+    if (!_le_resolving &&
+            bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_SET_ADDR_RESOLUTION_ENABLE,
+                    &on, 1, 1000) == 0) {
+        _le_resolving = true;
+        slog("bluetooth le_resolving enabled_live\n");
+    }
+}
+
 static int bt_le_controller_init(void) {
     uint8_t le_mask[8];
-    uint8_t addr_ret[8];
-    uint8_t addr_ret_len = 0;
     uint8_t buf_ret[8];
     uint8_t buf_ret_len = 0;
     uint16_t le_len = 0;
@@ -3435,12 +3690,11 @@ static int bt_le_controller_init(void) {
         return -1;
     }
 
-    /* c1 hashes both link addresses, so we need our own */
-    if (bt_hci_command_sync_ret(HCI_OGF_HOST_CTRL, HCI_OCF_READ_BD_ADDR, NULL, 0,
-            1000, addr_ret, sizeof(addr_ret), &addr_ret_len) == 0 &&
-            addr_ret_len >= 6) {
-        memcpy(_local_addr, addr_ret, 6);
-    }
+    /* Our own address (hashed by c1, and used as Own_Address_Type/address by
+       LE_Set_Scan_Parameters and LE_Create_Connection) is provisioned once at
+       the end of this bring-up, after LE is marked supported so the
+       random-static fallback can use hardware randomness and
+       LE_Set_Random_Address. */
 
     /* LE_Read_Buffer_Size: [len_lo, len_hi, num]. A zero length means the
        controller shares one ACL pool with BR/EDR, in which case the
@@ -3460,6 +3714,12 @@ static int bt_le_controller_init(void) {
         le_len, le_num, _acl_credits);
 
     _le_supported = true;
+    bt_le_provision_own_addr();
+    /* rebuild the resolving list from the bonds loaded at mount and turn on
+       address resolution before any scan, so a peer that rotates a
+       resolvable private address is reported by its stable identity address
+       from the very first advertising report */
+    bt_le_resolving_setup();
     return 0;
 }
 
@@ -3966,17 +4226,43 @@ static void bt_le_handle_notify(uint16_t value_handle, const uint8_t* value,
     }
     if (a->uuid == GATT_CHR_REPORT) {
         if (_hogp.mouse_ok) {
+            uint8_t rbuf[65];
             const uint8_t* rp = value;
-            int rl = (int)len;
+            int rlen = (int)len;
 
-            /* a descriptor with a Report Reference means the report is
-               prefixed by its id, which the parser does not expect */
-            if (_hogp.mouse.has_report_id && rl > 1) {
-                ++rp;
-                --rl;
+            /* A HOGP Report characteristic value OMITS the Report ID octet
+               (the id lives in the Report Reference descriptor), but the
+               parser's bit offsets include it (report_bits[id] starts at 8)
+               and mouse_normalize_report validates report[0] == report_id and
+               len >= report_bytes. Prepend the id so a report-id mouse decodes
+               through the real layout; passing the bare value made normalize
+               bail and drop to the boot fallback, where evt[1]=x_lo tracked X
+               but evt[2]=x_hi stayed ~0 -> "X works, Y stuck at 0". */
+            if (_hogp.mouse.has_report_id &&
+                    rlen == _hogp.mouse.report_bytes - 1 &&
+                    rlen + 1 <= (int)sizeof(rbuf)) {
+                rbuf[0] = _hogp.mouse.report_id;
+                memcpy(rbuf + 1, value, (size_t)rlen);
+                rp = rbuf;
+                rlen += 1;
             }
-            if (mouse_normalize_report(&_hogp.mouse, rp, rl, evt) ==
+            if (mouse_normalize_report(&_hogp.mouse, rp, rlen, evt) ==
                     HID_POINTER_EVENT_SIZE) {
+                /* sample the first several real reports: raw bytes vs decoded
+                   event, so a wrong y_bit/y_size shows up as dy staying 0
+                   while the raw Y octets clearly change */
+                if (_hogp.report_dumps < 12) {
+                    _hogp.report_dumps++;
+                    slog("bluetooth le_report raw(%u)=%02x %02x %02x %02x %02x "
+                            "%02x %02x %02x -> btn=%02x dx=%d dy=%d wheel=%d\n",
+                            (unsigned)len,
+                            value[0], len > 1 ? value[1] : 0,
+                            len > 2 ? value[2] : 0, len > 3 ? value[3] : 0,
+                            len > 4 ? value[4] : 0, len > 5 ? value[5] : 0,
+                            len > 6 ? value[6] : 0, len > 7 ? value[7] : 0,
+                            evt[0], (int)(int8_t)evt[1], (int)(int8_t)evt[2],
+                            (int)(int8_t)evt[3]);
+                }
                 bt_hid_dispatch_mouse(evt);
                 return;
             }
@@ -4471,6 +4757,13 @@ static bool smp_keys_pred(void* ctx) {
     return (_smp.got_peer_ltk && _smp.got_peer_ident) || _smp.failed;
 }
 
+/* Identity Information (IRK) then Identity Address Information arrive after
+   the LTK/Master Identification when the peer honoured the IdKey request. */
+static bool smp_ident_pred(void* ctx) {
+    (void)ctx;
+    return (_smp.got_peer_irk && _smp.got_peer_id_addr) || _smp.failed;
+}
+
 static bool smp_security_request_pred(void* ctx) {
     (void)ctx;
     return _smp.security_request_seen;
@@ -4479,9 +4772,10 @@ static bool smp_security_request_pred(void* ctx) {
 /* Pairing Request from the central. NoInputNoOutput with the MITM bit
    clear is what makes Just Works the negotiated method, and clearing the
    SC bit keeps a Secure-Connections-capable peripheral on the legacy flow
-   implemented here. RespKeyDist asks for the LTK only: the peripheral's
-   LTK is what makes reconnection work, while taking on our own phase-3
-   distribution would risk a 30s SMP timeout on the peer. */
+   implemented here. RespKeyDist asks for the LTK (reconnection re-encrypts
+   with it) and the IRK + identity address (the resolving list uses them to
+   collapse a rotating private address to one stable identity). We still
+   distribute nothing ourselves, which would risk a 30s SMP timeout. */
 static int smp_start_pairing(uint16_t handle) {
     uint8_t pdu[7];
 
@@ -4491,7 +4785,7 @@ static int smp_start_pairing(uint16_t handle) {
     pdu[3] = SMP_AUTHREQ_BONDING;
     pdu[4] = 0x10; /* maximum encryption key size */
     pdu[5] = 0x00; /* initiator key distribution: none */
-    pdu[6] = SMP_DIST_ENCKEY;
+    pdu[6] = SMP_DIST_ENCKEY | SMP_DIST_IDKEY;
 
     memcpy(_smp.preq, pdu, sizeof(pdu));
     _smp.active = true;
@@ -4508,6 +4802,16 @@ static void smp_handle_rx(uint16_t handle, const uint8_t* pdu, size_t len) {
         if (len >= 7 && !_smp.got_pres) {
             memcpy(_smp.pres, pdu, 7);
             _smp.got_pres = true;
+            /* decode the peer's feature bits: SC set means the mouse wants
+               LE Secure Connections (which this legacy-only SMP cannot do),
+               MITM+non-NoInputNoOutput means a non-zero TK (passkey) that
+               would also break our Just Works confirm */
+            slog("bluetooth smp_pres io=0x%02x authreq=0x%02x%s%s maxkey=%u "
+                    "iat=%u rat=%u\n",
+                    pdu[1], pdu[3],
+                    (pdu[3] & SMP_AUTHREQ_SC) ? " SC" : "",
+                    (pdu[3] & SMP_AUTHREQ_MITM) ? " MITM" : "",
+                    pdu[4], _local_addr_type, _le.addr_type);
         }
         break;
     case SMP_CMD_PAIRING_CONFIRM:
@@ -4544,13 +4848,26 @@ static void smp_handle_rx(uint16_t handle, const uint8_t* pdu, size_t len) {
             _smp.got_peer_ident = true;
         }
         break;
+    case SMP_CMD_IDENTITY_INFO:
+        if (len >= 17) {
+            memcpy(_smp.peer_irk, pdu + 1, 16);
+            _smp.got_peer_irk = true;
+        }
+        break;
+    case SMP_CMD_IDENTITY_ADDR_INFO:
+        if (len >= 8) {
+            _smp.peer_id_addr_type = pdu[1];
+            memcpy(_smp.peer_id_addr, pdu + 2, 6);
+            _smp.got_peer_id_addr = true;
+        }
+        break;
     case SMP_CMD_SECURITY_REQUEST:
         _smp.security_request_seen = true;
         _smp.security_request_auth = len >= 2 ? pdu[1] : 0;
         break;
     default:
-        /* Identity Info, Identity Address Info and Signing Info are legal
-           phase-3 PDUs we never asked for; ignoring beats failing. */
+        /* Signing Info is a legal phase-3 PDU we never asked for;
+           ignoring beats failing. */
         break;
     }
 }
@@ -4674,6 +4991,36 @@ static int smp_run(uint16_t handle, bt_device_t* dev) {
         dev->has_ltk = true;
         slog("bluetooth smp_ltk_stored %s ediv=0x%04x\n", addr_str, dev->ediv);
     }
+
+    /* The peer's IRK + identity address (when it honoured the IdKey request)
+       let the controller's resolving list turn its rotating private address
+       back into one stable identity. Rekey this entry and the link onto the
+       identity address so the bond is stored under the address every future
+       resolved connection reports - that is what stops the device list (and
+       bt.json) accumulating one entry per address rotation. */
+    if ((_smp.pres[6] & SMP_DIST_IDKEY) != 0 && dev != NULL) {
+        (void)bt_poll_until(smp_ident_pred, NULL, 2000);
+    }
+    if (dev != NULL && _smp.got_peer_irk && _smp.got_peer_id_addr) {
+        char id_str[24];
+
+        memcpy(dev->irk, _smp.peer_irk, 16);
+        dev->has_irk = true;
+        memcpy(dev->id_addr, _smp.peer_id_addr, 6);
+        dev->id_addr_type = _smp.peer_id_addr_type;
+        dev->has_id_addr = true;
+        memcpy(dev->addr, dev->id_addr, 6);
+        dev->addr_type = dev->id_addr_type;
+        memcpy(_le.addr, dev->id_addr, 6);
+        _le.addr_type = dev->id_addr_type;
+        bt_addr_to_str(dev->id_addr, id_str, sizeof(id_str));
+        slog("bluetooth smp_ident_stored id=%s idtype=%u\n", id_str,
+                (unsigned)dev->id_addr_type);
+        bt_le_resolving_note_bond(dev);
+    }
+    else {
+        slog("bluetooth smp_no_ident respdist=0x%02x\n", _smp.pres[6]);
+    }
     return 0;
 }
 
@@ -4778,11 +5125,37 @@ static int hogp_bringup(uint16_t handle) {
         slog("bluetooth le_no_report_map\n");
         return -1;
     }
+    /* dump the raw Report Map so a mis-parsed axis layout can be reproduced
+       offline against the exact descriptor bytes (capped to one slog line) */
+    {
+        static const char hexd[] = "0123456789abcdef";
+        char hex[257];
+        uint16_t n = _hogp.report_map_len > 128 ? 128 : _hogp.report_map_len;
+        uint16_t k;
+
+        for (k = 0; k < n; ++k) {
+            hex[k * 2] = hexd[_hogp.report_map[k] >> 4];
+            hex[k * 2 + 1] = hexd[_hogp.report_map[k] & 0x0f];
+        }
+        hex[n * 2] = 0;
+        slog("bluetooth le_report_map_hex len=%u %s\n", _hogp.report_map_len, hex);
+    }
     if (hid_parse_mouse_report(_hogp.report_map, (int)_hogp.report_map_len,
             &_hogp.mouse) == 0 &&
             mouse_parser_sane(&_hogp.mouse, 64, false)) {
         _hogp.mouse_ok = true;
     }
+    slog("bluetooth le_mouse_map ok=%d rid=%d id=%u bytes=%u rel=%d "
+            "x=%d/%d y=%d/%d wheel=%d/%d btn=%d/%d,%d/%d,%d/%d\n",
+            _hogp.mouse_ok ? 1 : 0,
+            _hogp.mouse.has_report_id ? 1 : 0, _hogp.mouse.report_id,
+            _hogp.mouse.report_bytes, _hogp.mouse.axis_relative ? 1 : 0,
+            _hogp.mouse.x_bit, _hogp.mouse.x_size,
+            _hogp.mouse.y_bit, _hogp.mouse.y_size,
+            _hogp.mouse.wheel_bit, _hogp.mouse.wheel_size,
+            _hogp.mouse.button_bit[0], _hogp.mouse.button_size[0],
+            _hogp.mouse.button_bit[1], _hogp.mouse.button_size[1],
+            _hogp.mouse.button_bit[2], _hogp.mouse.button_size[2]);
     for (i = 0; i < _hogp.n_attrs; ++i) {
         hogp_attr_t* a = &_hogp.attrs[i];
 
@@ -6070,25 +6443,10 @@ static int bt_loop(vdevice_t* dev, void* p) {
     return 0;
 }
 
-int main(int argc, char** argv) {
-    vdevice_t dev;
-    const char* mnt_point = argc > 1 ? argv[1] : "/dev/bt0";
-
-    _evt_buf = charbuf_new(0);
-    if (_evt_buf == NULL) {
-        return -1;
-    }
-
-    memset(&dev, 0, sizeof(dev));
-    strcpy(dev.desc, "bluetooth");
-    dev.open = bt_vdev_open;
-    dev.close = bt_vdev_close;
-    dev.fcntl = bt_vdev_fcntl;
-    dev.read = bt_read;
-    dev.loop_step = bt_loop;
-    dev.check_poll_events = bt_check_poll_events;
-    dev.cmd = bt_dev_cmd;
-    _bt_dev = &dev;
+static int bt_mounted(vdevice_t* dev, ewokos_addr_t node, void* p) {
+    (void)dev;
+    (void)node;
+    (void)p;
 
     bt_known_load();
     bt_known_seed_devices();
@@ -6101,13 +6459,36 @@ int main(int argc, char** argv) {
 
     if (bt_driver_init() != 0) {
         slog("bluetooth error init_failed\n");
+        return -1;
     }
-    else {
-        _powered = true;
-        slog("bluetooth ready classic_hci=1 scan=1 pair=1 connect=1\n");
-        bt_help_emit();
-        bt_autoconnect_known();
+
+    _powered = true;
+    slog("bluetooth ready classic_hci=1 scan=1 pair=1 connect=1\n");
+    bt_help_emit();
+    bt_autoconnect_known();
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    vdevice_t dev;
+    const char* mnt_point = argc > 1 ? argv[1] : "/dev/bt0";
+
+    _evt_buf = charbuf_new(0);
+    if (_evt_buf == NULL) {
+        return -1;
     }
+
+    memset(&dev, 0, sizeof(dev));
+    strcpy(dev.desc, "bluetooth");
+    dev.mounted = bt_mounted;
+    dev.open = bt_vdev_open;
+    dev.close = bt_vdev_close;
+    dev.fcntl = bt_vdev_fcntl;
+    dev.read = bt_read;
+    dev.loop_step = bt_loop;
+    dev.check_poll_events = bt_check_poll_events;
+    dev.cmd = bt_dev_cmd;
+    _bt_dev = &dev;
 
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);
 
