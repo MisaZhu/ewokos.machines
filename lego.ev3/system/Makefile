@@ -19,7 +19,7 @@ all: x_sys
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
-DIRS = libs $(SYS_ROOT_DIR)/basic $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/gui drivers $(SYS_ROOT_DIR)/xwin
+DIRS = libs $(SYS_ROOT_DIR)/basic $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/gui drivers $(SYS_ROOT_DIR)/xwin apps
 
 # parallel phases with the same ordering the old serial loop guaranteed
 prep:
@@ -38,6 +38,8 @@ drivers: $(SYS_ROOT_DIR)/gui
 	@$(MAKE) -C drivers
 $(SYS_ROOT_DIR)/xwin: $(SYS_ROOT_DIR)/gui
 	@$(MAKE) -C $(SYS_ROOT_DIR)/xwin
+apps: $(SYS_ROOT_DIR)/xwin
+	@$(MAKE) -C apps
 
 x_sys: $(DIRS)
 	@mkdir -p ${TARGET_DIR}/etc ${TARGET_DIR}/usr
@@ -45,9 +47,9 @@ x_sys: $(DIRS)
 	@cp -Rp usr/. ${TARGET_DIR}/usr/
 	@$(MAKE) final
 
-.PHONY: x_sys prep libs drivers $(DIRS)
+.PHONY: x_sys prep libs drivers apps $(DIRS)
 
-CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/basic
+CLEAN_DIRS = apps libs drivers $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/basic
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \

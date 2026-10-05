@@ -846,7 +846,7 @@ static void* sound_feeder_thread(void* arg) {
         if (wake_writer && _snd_dev != NULL) {
             vfs_wakeup(_snd_dev->mnt_info.node, VFS_EVT_WR);
         }
-        proc_usleep(sleep_usec);
+        usleep(sleep_usec);
     }
     return NULL;
 }
@@ -972,7 +972,7 @@ static int sound_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t *node,
 
     /*
      * Never sleep here: this runs in IPC handler context where
-     * proc_usleep() degenerates to a yield-spin (the kernel skips the
+     * usleep() degenerates to a yield-spin (the kernel skips the
      * real sleep for tasks with an in-flight IPC), which burns CPU and
      * blocks every other IPC to soundpwmd. When the ring is full, hand
      * the waiting over to vfsd: return VFS_ERR_RETRY so the client libc
@@ -1005,7 +1005,7 @@ static int sound_loop(vdevice_t* dev, void* p) {
     UNUSED(dev);
     UNUSED(p);
     audio_update_amp_state();
-    proc_usleep(SOUND_FEED_DEEP_IDLE_SLEEP_US);
+    usleep(SOUND_FEED_DEEP_IDLE_SLEEP_US);
     return 0;
 }
 

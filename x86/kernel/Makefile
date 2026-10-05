@@ -55,6 +55,8 @@ QEMU_ARGS += -drive file=$(OS_HDD),format=raw,if=ide,index=0,media=disk
 QEMU_ARGS += -usb
 QEMU_ARGS += -device usb-kbd,port=1,usb_version=1
 QEMU_ARGS += -device usb-mouse,port=2,usb_version=1
+QEMU_ARGS += -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::2223-:23
+QEMU_ARGS += -device rtl8139,netdev=net0
 # UEFI: OVMF 固件作为 pflash, 同一块双路径磁盘
 QEMU_UEFI = -drive if=pflash,format=raw,file=$(OVMF_FD),readonly=on
 # q35 机型: 无 legacy IDE, 根盘走 AHCI (内核 sd.c 自动回退 AHCI 路径)

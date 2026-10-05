@@ -107,3 +107,24 @@ uint64_t timer_read_sys_usec(void) {
         return _tsc_base_usec;
     return _tsc_base_usec + (t - _tsc_base) / _tsc_counts_per_usec;
 }
+
+/*
+ * <dev/timer.h>: override the platform's weak no-counter stub with the calibrated
+ * TSC. The counter returned here is the very one userspace reads with rdtsc (see
+ * libewoksys kernel_tic.c fine_cnt_read()), which is the contract the vsyscall
+ * clock interpolation depends on - and the very TSC timer_read_sys_usec() runs
+ * on. Returns hz == 0 until the one-shot tsc_calibrate() yields a plausible
+ * rate, so libc falls back to the tick-quantized clock rather than
+ * interpolating from a counter it cannot scale to nanoseconds.
+ */
+uint32_t timer_fine_cnt(uint64_t* cnt) {
+    uint64_t hz;
+    if(_tsc_counts_per_usec == 0)
+        return 0;
+    hz = _tsc_counts_per_usec * 1000000ULL;
+    if(hz > 0xffffffffULL) /* 契约返回 uint32; TSC > ~4.29GHz 视为不可表示 */
+        return 0;
+    if(cnt)
+        *cnt = tsc_read();
+    return (uint32_t)hz;
+}

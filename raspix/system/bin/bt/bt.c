@@ -31,10 +31,10 @@ enum {
     LL_ADV_NONCONN_IND        = 0x03
 };
 
-// 发送HCI命令
+// Send HCI command
 int32_t bt_send_hci_command_bytes(uint8_t* opcodebytes, uint8_t* data, uint8_t len) {
-    // HCI命令包格式: 0x01 + opcode (2字节) + 参数长度 (1字节) + 参数
-    bcm283x_pl011_uart_send(HCI_COMMAND_PKT); // HCI命令包标识
+    // HCI command packet format: 0x01 + opcode (2 bytes) + param length (1 byte) + params
+    bcm283x_pl011_uart_send(HCI_COMMAND_PKT); // HCI command packet identifier
     bcm283x_pl011_uart_send(opcodebytes[0]);
     bcm283x_pl011_uart_send(opcodebytes[1]);
     bcm283x_pl011_uart_send(len);
@@ -85,14 +85,14 @@ int32_t bt_send_hci_command_bytes(uint8_t* opcodebytes, uint8_t* data, uint8_t l
     return 0;
 }
 
-// 发送HCI命令
+// Send HCI command
 int32_t bt_send_hci_command(uint16_t ogf, uint16_t ocf, uint8_t* data, uint32_t len) {
     uint16_t opcode = ogf << 10 | ocf;
     uint8_t  opcodebytes[2] = { lo(opcode), hi(opcode) };
     return bt_send_hci_command_bytes(opcodebytes, data, len);
 }
 
-// 蓝牙固件下载
+// Download Bluetooth firmware
 void bt_load_firmware(void) {
     volatile unsigned char empty[] = {};
     int32_t res = bt_send_hci_command(OGF_VENDOR, COMMAND_LOAD_FIRMWARE, empty, 0);
@@ -135,10 +135,10 @@ int main(int argc, char* argv[]) {
     }
     slog("bt: init pl011_uart\n");
     bcm283x_pl011_uart_init_bt();
-    bcm283x_pl011_uart_recv(100); // 清空接收缓冲区
+    bcm283x_pl011_uart_recv(100); // clear the receive buffer
     sleep(1);
 
-    // 重置蓝牙芯片
+    // Reset the Bluetooth chip
     slog("reset firmware ... ");
     volatile uint8_t empty[] = {};
     int32_t res = bt_send_hci_command(OGF_HOST_CONTROL, COMMAND_RESET_CHIP, empty, 0);
@@ -146,10 +146,10 @@ int main(int argc, char* argv[]) {
         slog("failed: %d\n", res);
         return -1;
     }
-    usleep(1000000); // 等待重置完成
+    usleep(1000000); // wait for the reset to finish
     slog("done\n");
 
-    // 加载蓝牙固件
+    // Load the Bluetooth firmware
     slog("load firmware ... ");
     bt_load_firmware();
     slog("done\n");

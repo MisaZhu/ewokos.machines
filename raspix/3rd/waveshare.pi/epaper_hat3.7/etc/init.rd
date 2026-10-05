@@ -1,10 +1,10 @@
+@export TZ=CST-8
 @/bin/ipcserv /drivers/logd /dev/log
 
 @/bin/ipcserv /drivers/displaymand              
 @/bin/ipcserv /drivers/waveshare/epaper3.7d     /dev/disp0 
 @/bin/ipcserv /drivers/fontd                 
 
-@export UX_ID=0
 @/bin/ipcserv /drivers/consoled       
 @set_stdio /dev/console0
 
@@ -13,7 +13,12 @@
 @/bin/ipcserv /drivers/piped               /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd             /tmp
 
-@/bin/ipcserv /drivers/xserverd           /dev/x
+@/bin/ipcserv /drivers/raspix/wland          /dev/wl0
+@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
+@/bin/ipcserv /drivers/timed    /dev/time
 
 @/bin/ipcserv /sbin/sessiond
+
+@/bin/bgrun /sbin/sshd
+@/bin/ipcserv /drivers/xserverd           /dev/x
 @/bin/bgrun /bin/x/xsession misa 

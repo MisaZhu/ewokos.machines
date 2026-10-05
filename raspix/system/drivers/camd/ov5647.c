@@ -33,18 +33,18 @@ static void i2c_bus_recovery(void) {
     bcm283x_gpio_config(_sda_pin, GPIO_FUNC_INPUT);
     for (i = 0; i < 9; i++) {
         bcm283x_gpio_clr(_scl_pin);
-        proc_usleep(5);
+        usleep(5);
         bcm283x_gpio_set(_scl_pin);
-        proc_usleep(5);
+        usleep(5);
     }
     /* generate STOP to reset bus state */
     bcm283x_gpio_config(_sda_pin, GPIO_FUNC_OUTPUT);
     bcm283x_gpio_clr(_sda_pin);
-    proc_usleep(5);
+    usleep(5);
     bcm283x_gpio_set(_scl_pin);
-    proc_usleep(5);
+    usleep(5);
     bcm283x_gpio_set(_sda_pin);
-    proc_usleep(5);
+    usleep(5);
 }
 
 static void ov5647_write_reg(uint16_t reg, uint8_t val) {
@@ -194,11 +194,11 @@ static int ov5647_write_reg_checked(uint16_t reg, uint8_t val) {
     int retry;
     for (retry = 0; retry < 3; retry++) {
         ov5647_write_reg(reg, val);
-        proc_usleep(200);
+        usleep(200);
         if (ov5647_read_reg(reg) == val)
             return 0;
         i2c_bus_recovery();
-        proc_usleep(1000);
+        usleep(1000);
     }
     return -1;
 }
@@ -214,7 +214,7 @@ static int write_reg_table(const reg_entry_t* table) {
             /* reset reads back 0; just write and settle - writes after a
              * reset are silently lost without the delay */
             ov5647_write_reg(reg, val);
-            proc_usleep(10000);
+            usleep(10000);
             continue;
         }
         if (ov5647_write_reg_checked(reg, val) != 0) {
@@ -235,11 +235,11 @@ int ov5647_init(int32_t sda_gpio, int32_t scl_gpio) {
 
     i2c_init(sda_gpio, scl_gpio);
     i2c_set_wait_time(2); /* slow down bit-bang for sensor */
-    proc_usleep(10000);
+    usleep(10000);
 
     /* bus recovery in case SDA is stuck low */
     i2c_bus_recovery();
-    proc_usleep(10000);
+    usleep(10000);
 
     /* retry chip ID read */
     for (retry = 0; retry < 3; retry++) {
@@ -249,7 +249,7 @@ int ov5647_init(int32_t sda_gpio, int32_t scl_gpio) {
             break;
         printf("ov5647: retry %d, got %02x%02x\n", retry, id_hi, id_lo);
         i2c_bus_recovery();
-        proc_usleep(50000);
+        usleep(50000);
     }
 
     if (id_hi != OV5647_CHIPID_HI || id_lo != OV5647_CHIPID_LO) {
@@ -259,9 +259,9 @@ int ov5647_init(int32_t sda_gpio, int32_t scl_gpio) {
 
     /* software reset */
     ov5647_write_reg(OV5647_REG_SW_RESET, 0x01);
-    proc_usleep(5000);
+    usleep(5000);
     ov5647_write_reg(OV5647_REG_SW_RESET, 0x00);
-    proc_usleep(5000);
+    usleep(5000);
 
     return 0;
 }
@@ -306,13 +306,13 @@ int ov5647_set_mode(int mode) {
 
     for (retry = 0; retry < 3; retry++) {
         int failed = write_reg_table(ov5647_640x480_raw8);
-        proc_usleep(10000);
+        usleep(10000);
         if (failed == 0 && verify_mode_regs() == 0)
             break;
         printf("ov5647: mode apply incomplete (failed=%d), retry %d\n",
                 failed, retry);
         i2c_bus_recovery();
-        proc_usleep(10000);
+        usleep(10000);
     }
     if (retry >= 3)
         return -1;
@@ -332,7 +332,7 @@ int ov5647_stream_on(void) {
     ov5647_write_reg_checked(OV5647_REG_MIPI_CTRL00, 0x04);
     ov5647_write_reg_checked(OV5647_REG_FRAME_OFF_NUM, 0x00);
     ov5647_write_reg_checked(OV5647_REG_PAD_OUT, 0x00);
-    proc_usleep(50000); /* 50ms for first frame to stabilize */
+    usleep(50000); /* 50ms for first frame to stabilize */
     printf("ov5647: stream on, 4800=%02x\n",
             ov5647_read_reg(OV5647_REG_MIPI_CTRL00));
     return 0;

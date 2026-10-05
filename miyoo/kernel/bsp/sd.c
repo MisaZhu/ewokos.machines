@@ -1,22 +1,33 @@
 /*
  * miyoo kernel-side SD driver.
  *
- * 按 system 侧的读流程改写：
- *   1) 完整初始化 SD 卡（不再假设前一阶段已把卡配置好）：
- *        CMD0 -> CMD8 -> ACMD41(轮询 OCR) -> CMD2 -> CMD3 -> CMD7(R1B busy)
- *        -> CMD13 轮询直到 TRAN -> ACMD6(4-bit) -> CMD16(512)
- *      每一步都校验响应，结束时用 CMD13 确认卡处于 TRAN 且 READY_FOR_DATA，
- *      保证进入读路径前卡状态正确。数据读取出错时整体重走该初始化恢复。
- *   2) CMD6 (SWITCH, arg 0x80FFFFF1) 切到 High-Speed：
- *        DMA 读回 64 字节 switch status，校验 group1 支持位与切换结果位，
- *        成功后 host 侧切 EV_BUS_HS 采样时序；失败/不支持则保持默认速度。
- *      注意：host 侧 SD 时钟暂维持 boot 阶段的 8MHz 不变（system 的时钟
- *      设置寄存器待后续从固件反查后单独加入），本次只做卡侧切换 + HS 时序。
+ * Rewritten to follow the system-side read flow:
+ *   1) Full SD card initialization (no longer assumes an earlier stage left
+ *      the card configured):
+ *        CMD0 -> CMD8 -> ACMD41(poll OCR) -> CMD2 -> CMD3 -> CMD7(R1B busy)
+ *        -> CMD13 poll until TRAN -> ACMD6(4-bit) -> CMD16(512)
+ *      Every step checks its response, and a final CMD13 confirms the card
+ *      is in TRAN with READY_FOR_DATA, so the card state is correct before
+ *      entering the read path. A data read error reruns this whole
+ *      initialization to recover.
+ *   2) CMD6 (SWITCH, arg 0x80FFFFF1) to High-Speed:
+ *        the 64-byte switch status is read back by DMA and the group1
+ *        support and switch-result bits are checked; on success the host
+ *        switches to EV_BUS_HS sampling timing, otherwise (failure or no
+ *        support) the default speed is kept.
+ *      Note: the host SD clock stays at the boot-stage 8MHz for now (the
+ *      system clock-setting registers will be added separately once
+ *      recovered from the firmware); this only does the card-side switch
+ *      plus HS timing.
  *
- * 读路径：CMD18 真正的多块读 + 单段 DMA（替代 CMD17 逐块循环）。
- *   - 预读窗口（4 -> 128 扇区）一次 CMD18 填满 bounce buffer；
- *   - 读完无论成败都发 CMD12 停止传输（R1B 等 DAT0），再 CMD13 确认回 TRAN；
- *   - sd_dev_read_blocks 按 bounce 容量分块 CMD18 直读后拷出。
+ * Read path: real CMD18 multi-block reads + single-segment DMA (replacing the
+ * per-block CMD17 loop).
+ *   - the read-ahead window (4 -> 128 sectors) fills the bounce buffer with
+ *     one CMD18;
+ *   - after every read, success or not, CMD12 stops the transfer (R1B waits
+ *     on DAT0), then CMD13 confirms the return to TRAN;
+ *   - sd_dev_read_blocks reads bounce-sized chunks with CMD18 and copies
+ *     them out.
  */
 #include <dev/sd.h>
 
@@ -58,7 +69,7 @@
 #define SD_R1_READY_FOR_DATA(st) (((st) >> 8) & 0x1U)
 #define SD_STATE_TRAN 4U
 
-/* mode=switch(1), group1(access mode)=HS(1), 其余 group 保持(0xF) */
+/* mode=switch(1), group1(access mode)=HS(1), other groups unchanged(0xF) */
 #define SD_CMD6_ARG_HS      0x80FFFFF1U
 #define SD_SWITCH_STS_BYTES 64U
 
@@ -69,11 +80,11 @@
 static uint8_t *_sector_buf = (uint8_t*)MIYOO_SD_BOUNCE_VIRT;
 
 typedef struct {
-    int inited;    /* 完整初始化流程已成功走完 */
-    int is_v2;     /* CMD8 有响应: SD 规范 v2+ 卡 */
-    int is_sdhc;   /* OCR CCS: SDHC/SDXC，块寻址 */
-    int is_hs;     /* CMD6 高速切换已被卡接受 */
-    int bus_4bit;  /* ACMD6 4-bit 已被卡接受 */
+    int inited;    /* the full initialization sequence completed */
+    int is_v2;     /* CMD8 answered: SD spec v2+ card */
+    int is_sdhc;   /* OCR CCS: SDHC/SDXC, block addressing */
+    int is_hs;     /* the card accepted the CMD6 high-speed switch */
+    int bus_4bit;  /* the card accepted ACMD6 4-bit */
     uint16_t rca;
 } MiyooSDCard;
 
@@ -92,7 +103,7 @@ static inline void sd_msleep(uint32_t ms) {
     _delay(ms * 1000U);
 }
 
-/* R1/R3/R6/R7 的 32bit 负载: token[1..4]，MSB 在前 */
+/* 32-bit payload of R1/R3/R6/R7: token[1..4], MSB first */
 static inline uint32_t sd_rsp32(const RspStruct *rsp) {
     return ((uint32_t)rsp->u8ArrRspToken[1] << 24) |
            ((uint32_t)rsp->u8ArrRspToken[2] << 16) |
@@ -101,7 +112,7 @@ static inline uint32_t sd_rsp32(const RspStruct *rsp) {
 }
 
 /* ------------------------------------------------------------------
- * 预读窗口管理
+ * Read-ahead window management
  * ------------------------------------------------------------------ */
 static inline int miyoo_sd_ra_hit(int32_t sector) {
         return _ra_start_sector >= 0 &&
@@ -122,7 +133,7 @@ static inline uint32_t miyoo_sd_pick_ra_window(int32_t sector) {
 }
 
 /* ------------------------------------------------------------------
- * 命令收发包装
+ * Command send/receive wrappers
  * ------------------------------------------------------------------ */
 static RspErrEmType miyoo_sd_cmd(uint8_t cmd, uint32_t arg, SDMMCRspEmType rsp_type) {
     Hal_SDMMC_SetCmdToken(MIYOO_SD_IP, cmd, arg);
@@ -139,10 +150,11 @@ static RspErrEmType miyoo_sd_acmd(uint16_t rca, uint8_t acmd, uint32_t arg,
 }
 
 /* ------------------------------------------------------------------
- * 初始化子步骤
+ * Initialization sub-steps
  * ------------------------------------------------------------------ */
 
-/* CMD8 探测 SD v2；无响应/CRC 错都按 v1 传统卡继续走 */
+/* CMD8 probes for SD v2; no response or a CRC error continues as a legacy
+ * v1 card */
 static int miyoo_sd_probe_v2(void) {
     RspErrEmType err = miyoo_sd_cmd(SD_CMD_SEND_IF_COND, 0x1AAU, EV_R7);
     RspStruct *rsp = Hal_SDMMC_GetRspToken(MIYOO_SD_IP);
@@ -152,7 +164,7 @@ static int miyoo_sd_probe_v2(void) {
     return (sd_rsp32(rsp) & 0xFFFU) == 0x1AAU;
 }
 
-/* ACMD41 轮询直到 OCR busy 位置起（卡上电完成） */
+/* Poll ACMD41 until the OCR busy bit is set (card power-up done) */
 static int miyoo_sd_init_ocr(uint32_t arg) {
     uint32_t elapsed = 0;
 
@@ -163,7 +175,7 @@ static int miyoo_sd_init_ocr(uint32_t arg) {
 
         if(err == EV_STS_OK && (ocr & SD_OCR_BUSY)) {
             if(!(ocr & SD_OCR_VDD_27_36))
-                return -1; /* 电压范围不匹配 */
+                return -1; /* voltage range mismatch */
             _card.is_sdhc = (ocr & SD_OCR_CCS) ? 1 : 0;
             return 0;
         }
@@ -173,7 +185,7 @@ static int miyoo_sd_init_ocr(uint32_t arg) {
     return -1;
 }
 
-/* CMD13 轮询，直到 CURRENT_STATE == 目标状态且 READY_FOR_DATA */
+/* Poll CMD13 until CURRENT_STATE == the wanted state and READY_FOR_DATA */
 static int miyoo_sd_wait_state(uint32_t want_state, uint32_t timeout_ms) {
     uint32_t elapsed = 0;
 
@@ -194,11 +206,12 @@ static int miyoo_sd_wait_state(uint32_t want_state, uint32_t timeout_ms) {
 }
 
 /*
- * CMD6 切 High-Speed。64 字节 switch status 走 DMA 读回 bounce buffer
- * 头部（dev-mapped 区，DMA 一致，无 cache 问题）。
- * 校验点（大端字节序）：
- *   byte[13] bit1  -> group1 function1 (HS) 支持位
- *   byte[16] 3:0   -> group1 实际切换结果，==1 才算成功
+ * CMD6 switch to High-Speed. The 64-byte switch status is read by DMA into
+ * the head of the bounce buffer (dev-mapped region, DMA-coherent, no cache
+ * issue).
+ * Checks (big-endian byte order):
+ *   byte[13] bit1  -> group1 function1 (HS) support bit
+ *   byte[16] 3:0   -> group1 actual switch result, must be 1 to succeed
  */
 static int miyoo_sd_try_switch_hs(void) {
     volatile uint8_t *sts = _sector_buf;
@@ -217,14 +230,14 @@ static int miyoo_sd_try_switch_hs(void) {
         return -1;
 
     if(!(sts[13] & 0x02))
-        return -1; /* 卡不支持 HS */
+        return -1; /* card does not support HS */
     if((sts[16] & 0x0F) != 0x01)
-        return -1; /* 切换未生效 */
+        return -1; /* switch did not take effect */
     return 0;
 }
 
 /* ------------------------------------------------------------------
- * 完整卡初始化（init 与运行期错误恢复共用）
+ * Full card initialization (shared by init and runtime error recovery)
  * ------------------------------------------------------------------ */
 static int miyoo_sd_card_init(void) {
     IPEmType ip = MIYOO_SD_IP;
@@ -245,10 +258,11 @@ static int miyoo_sd_card_init(void) {
     Hal_SDMMC_SetBusTiming(ip, EV_BUS_DEF);
     Hal_SDMMC_SetNrcDelay(ip, MIYOO_SD_REAL_CLK_HZ);
 
-    /* 时钟由 boot 阶段保持开启，这里补一段空转时钟满足 >=74 clocks 要求 */
+    /* The clock stays on from the boot stage; add idle clocks here to meet
+     * the >=74 clocks requirement */
     Hal_SDMMC_ClkCtrl(ip, TRUE, 1);
 
-    /* CMD0: 回到 idle（允许失败重试几次，覆盖热重启场景） */
+    /* CMD0: back to idle (a few retries allowed, covering warm reboots) */
     err = EV_OTHER_ERR;
     for(retry = 0; retry < 3; retry++) {
         err = miyoo_sd_cmd(SD_CMD_GO_IDLE_STATE, 0, EV_NO);
@@ -286,32 +300,34 @@ static int miyoo_sd_card_init(void) {
         return -1;
     }
 
-    /* CMD7 选中卡，R1B；HAL 内部会等 DAT0 释放 */
+    /* CMD7 selects the card, R1B; the HAL waits for DAT0 release */
     err = miyoo_sd_cmd(SD_CMD_SELECT_CARD, (uint32_t)_card.rca << 16, EV_R1B);
     if(err != EV_STS_OK) {
         printf("[SD] CMD7 fail: 0x%X\n", err);
         return -1;
     }
 
-    /* 确认进入 TRAN 且 READY_FOR_DATA，状态正确后再配置总线 */
+    /* Confirm TRAN with READY_FOR_DATA before configuring the bus */
     if(miyoo_sd_wait_state(SD_STATE_TRAN, SD_INIT_STATE_TIMEOUT_MS) != 0) {
         printf("[SD] wait TRAN fail\n");
         return -1;
     }
 
-    /* ACMD6 切 4-bit；失败则保持 1-bit 继续（host 侧默认已是 1-bit） */
+    /* ACMD6 to 4-bit; on failure continue with 1-bit (the host defaults to
+     * 1-bit) */
     if(miyoo_sd_acmd(_card.rca, SD_ACMD_SET_BUS_WIDTH, 2, EV_R1) == EV_STS_OK) {
         _card.bus_4bit = 1;
         Hal_SDMMC_SetDataWidth(ip, EV_BUS_4BITS);
     }
 
-    /* 块长度固定 512（SDHC 会忽略，SDSC 必须） */
+    /* Block length fixed at 512 (ignored by SDHC, required by SDSC) */
     if(miyoo_sd_cmd(SD_CMD_SET_BLOCKLEN, 512, EV_R1) != EV_STS_OK) {
         printf("[SD] CMD16 fail\n");
         return -1;
     }
 
-    /* CMD6 高速切换（只对 v2 卡尝试；失败不影响默认速度可用性） */
+    /* CMD6 high-speed switch (only tried on v2 cards; failure leaves the
+     * default speed usable) */
     if(_card.is_v2 && miyoo_sd_try_switch_hs() == 0) {
         _card.is_hs = 1;
         Hal_SDMMC_SetBusTiming(ip, EV_BUS_HS);
@@ -319,7 +335,7 @@ static int miyoo_sd_card_init(void) {
         Hal_SDMMC_SetBusTiming(ip, EV_BUS_DEF);
     }
 
-    /* 切换后再次确认卡状态正确 */
+    /* Confirm the card state again after the switch */
     if(miyoo_sd_wait_state(SD_STATE_TRAN, SD_INIT_STATE_TIMEOUT_MS) != 0) {
         printf("[SD] wait TRAN after switch fail\n");
         return -1;
@@ -344,10 +360,11 @@ static int miyoo_sd_should_retry(RspErrEmType err) {
 }
 
 /* ------------------------------------------------------------------
- * CMD18 多块读：单段 DMA 读 blk_cnt 个扇区到 buf。
- * 读完成（无论成败）必须 CMD12 停止传输，否则卡会停在 send-data
- * 状态占住 DAT 线；随后 CMD13 确认卡回到 TRAN，状态不对则整体
- * 重初始化再重试。
+ * CMD18 multi-block read: one DMA segment reads blk_cnt sectors into buf.
+ * Once the read completes (success or failure) CMD12 must stop the
+ * transfer, otherwise the card stays in send-data state holding the DAT
+ * lines; CMD13 then confirms the card is back in TRAN, and if not the card
+ * is fully reinitialized and the read retried.
  * ------------------------------------------------------------------ */
 static RspErrEmType miyoo_sd_read_multi(uint32_t sector, uint16_t blk_cnt,
                 volatile uint8_t *buf) {
@@ -356,7 +373,7 @@ static RspErrEmType miyoo_sd_read_multi(uint32_t sector, uint16_t blk_cnt,
         uint32_t attempt;
 
         for(attempt = 0; attempt < MIYOO_SD_RETRY_COUNT; attempt++) {
-                /* SDHC/SDXC 块寻址，SDSC 字节寻址 */
+                /* SDHC/SDXC use block addressing, SDSC byte addressing */
                 uint32_t addr = _card.is_sdhc ? sector : sector * 512U;
 
                 rsp = _SDMMC_DATAReq(0, SD_CMD_READ_MULTIPLE_BLOCK, addr,
@@ -369,7 +386,7 @@ static RspErrEmType miyoo_sd_read_multi(uint32_t sector, uint16_t blk_cnt,
                         if(miyoo_sd_wait_state(SD_STATE_TRAN,
                                         SD_STOP_STATE_TIMEOUT_MS) == 0)
                                 return EV_STS_OK;
-                        data_err = EV_STS_DAT0_BUSY; /* 停在非 TRAN 态，可重试 */
+                        data_err = EV_STS_DAT0_BUSY; /* stuck outside TRAN, retryable */
                 }
 
                 if(!miyoo_sd_should_retry(data_err))
@@ -411,7 +428,8 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
         return eRspSt;
 }
 
-/* 一次 CMD18 填满预读窗口（最大 128 扇区，恰好用满 bounce buffer） */
+/* Fill the read-ahead window with one CMD18 (at most 128 sectors, exactly
+ * filling the bounce buffer) */
 static int32_t miyoo_sd_fill_ra_window(int32_t sector) {
         uint32_t window = miyoo_sd_pick_ra_window(sector);
         RspErrEmType err = miyoo_sd_read_multi((uint32_t)sector,
@@ -429,7 +447,8 @@ int32_t sd_dev_read(int32_t sector) {
         if(sector < 0)
                 return -1;
 
-        /* 兜底：未经 sd_init() 直接进入读路径时自动完成初始化 */
+        /* Fallback: initialize automatically when the read path is entered
+         * without sd_init() */
         if(!_card.inited && miyoo_sd_card_init() != 0)
                 return -1;
 
@@ -456,8 +475,9 @@ int32_t sd_dev_read_done(void* buf) {
 }
 
 /*
- * 批量读：按 bounce 容量分块，每块一次 CMD18 直读 bounce buffer 后拷出。
- * 走 bounce 中转是为了 DMA 一致性（bounce 在 dev-mapped 区，无 cache）。
+ * Bulk read: split by bounce capacity, one CMD18 per chunk straight into the
+ * bounce buffer, then copied out. Going through the bounce buffer keeps DMA
+ * coherent (the bounce buffer is in the dev-mapped region, uncached).
  */
 int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
     uint8_t* out = (uint8_t*)buf;

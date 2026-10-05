@@ -95,7 +95,7 @@ static uint32_t _cm_cam_div = 0x4C; /* CM_CAM1DIV */
  * devices always pass offset 0, so a full frame is delivered in chunks */
 static uint32_t _read_pos = 0;
 
-/* frame snapshot: filled by loop_step (normal context, where proc_usleep
+/* frame snapshot: filled by loop_step (normal context, where usleep
  * really sleeps); cam_read only copies from it and never waits. This also
  * prevents tearing: the DMA buffer is free-running and would be overwritten
  * while a client is still reading a frame in 64KB chunks. */
@@ -244,7 +244,7 @@ static int cm_cam_start(uint32_t src, uint32_t div) {
     for (i = 0; i < 100; i++) {
         if ((cm_readl(_cm_cam_ctl) & CM_BUSY) == 0)
             break;
-        proc_usleep(100);
+        usleep(100);
     }
 
     cm_writel(_cm_cam_div, CM_PASSWD | (div & 0x00FFFFFFu));
@@ -255,7 +255,7 @@ static int cm_cam_start(uint32_t src, uint32_t div) {
     for (i = 0; i < 50; i++) {
         if (cm_readl(_cm_cam_ctl) & CM_BUSY)
             return 0;
-        proc_usleep(100);
+        usleep(100);
     }
     return -1;
 }
@@ -312,7 +312,7 @@ static void unicam_start_rx(void) {
     /* analogue PHY: enable with reset held, then release */
     val = UNICAM_AR | (7u << UNICAM_CTATADJ_SHIFT) | (7u << UNICAM_PTATADJ_SHIFT);
     unicam_writel(UNICAM_ANA, val);
-    proc_usleep(2000);
+    usleep(2000);
     unicam_writel(UNICAM_ANA, val & ~UNICAM_AR);
 
     /* peripheral reset pulse */
@@ -399,7 +399,7 @@ static void unicam_stop_rx(void) {
     unicam_writel(UNICAM_DAT1, 0);
     /* peripheral reset pulse, then disable */
     unicam_writel(UNICAM_CTRL, unicam_readl(UNICAM_CTRL) | UNICAM_CPR);
-    proc_usleep(100);
+    usleep(100);
     unicam_writel(UNICAM_CTRL, unicam_readl(UNICAM_CTRL) & ~UNICAM_CPR);
     unicam_writel(UNICAM_CTRL, unicam_readl(UNICAM_CTRL) & ~UNICAM_CPE);
     unicam_writel(UNICAM_DCS, 0);
@@ -430,7 +430,7 @@ static int unicam_capture_frame(void) {
         return -1;
 
     /* clear frame status, wait for the next frame start.
-     * NOTE: proc_usleep granularity is a scheduler tick (~1ms), so poll
+     * NOTE: usleep granularity is a scheduler tick (~1ms), so poll
      * once per ms: CAM_FRAME_TIMEOUT_MS iterations total */
     unicam_writel(UNICAM_ISTA, UNICAM_ISTA_MASK_ALL);
     unicam_writel(UNICAM_STA, UNICAM_STA_MASK_ALL);
@@ -439,7 +439,7 @@ static int unicam_capture_frame(void) {
     while (timeout > 0) {
         if (unicam_readl(UNICAM_ISTA) & UNICAM_ISTA_FSI)
             break;
-        proc_usleep(1000);
+        usleep(1000);
         timeout--;
     }
     if (timeout == 0)
@@ -478,7 +478,7 @@ static int unicam_capture_frame(void) {
         if (ista & UNICAM_ISTA_FSI) {
             goto fail_rearm;
         }
-        proc_usleep(1000);
+        usleep(1000);
         timeout--;
     }
     if (timeout == 0)
@@ -526,12 +526,12 @@ static int unicam_capture_frame(void) {
     while (timeout > 0) {
         if (unicam_readl(UNICAM_ISTA) & UNICAM_ISTA_FSI)
             break;
-        proc_usleep(1000);
+        usleep(1000);
         timeout--;
     }
     if (timeout == 0)
         goto fail_rearm;
-    proc_usleep(CAM_FRAME_DRAIN_MARGIN_MS * 1000); /* let final AXI writes drain */
+    usleep(CAM_FRAME_DRAIN_MARGIN_MS * 1000); /* let final AXI writes drain */
 
     done = _cap_idx;
     _cap_idx = next;
@@ -567,7 +567,7 @@ static int unicam_probe_instance(uint32_t pd) {
             ov5647_set_mode(_mode);
         }
         ov5647_stream_off();  /* clock lane -> LP-11 */
-        proc_usleep(10000);
+        usleep(10000);
         unicam_start_rx();
         ov5647_stream_on();
 
@@ -576,7 +576,7 @@ static int unicam_probe_instance(uint32_t pd) {
 
         ov5647_stream_off();
         unicam_stop_rx();
-        proc_usleep(10000);
+        usleep(10000);
     }
     return -1;
 }
@@ -617,9 +617,9 @@ static void cam_hard_reset(void) {
     printf("camd: hard reset: power-cycling camera module\n");
     ov5647_stream_off();
     cam_power_set(0);
-    proc_usleep(200000);
+    usleep(200000);
     cam_power_set(1);
-    proc_usleep(300000); /* sensor power-up settle */
+    usleep(300000); /* sensor power-up settle */
     if (ov5647_init(_i2c_sda, _i2c_scl) != 0) {
         printf("camd: hard reset: sensor re-init failed\n");
         return;
@@ -646,7 +646,7 @@ static int cam_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 
     /* libc dev_read clamps each IPC to 64KB and char devices always pass
      * offset 0, so a full frame is delivered in chunks via _read_pos.
-     * NEVER wait here: this runs in IPC context where proc_usleep degrades
+     * NEVER wait here: this runs in IPC context where usleep degrades
      * to yield; frames are captured by cam_loop_step into _snap_buf. */
     uint32_t frame_size = _width * _height * _bpp;
     uint32_t remain, n;
@@ -681,7 +681,7 @@ static int cam_open(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
     _read_pos = 0;       /* fresh client: restart frame chunking */
     _snap_ready = false; /* and force a fresh, un-consumed snapshot */
     /* NOTE: sensor streaming is started once in main(); I2C bit-bang
-     * timing relies on proc_usleep which degrades inside IPC handlers */
+     * timing relies on usleep which degrades inside IPC handlers */
     return 0;
 }
 
@@ -716,7 +716,7 @@ static int cam_fcntl(vdevice_t* dev, int fd, int from_pid, fsinfo_t* info,
     return -1;
 }
 
-/* frame pump: runs in device_run's main loop (normal context, proc_usleep
+/* frame pump: runs in device_run's main loop (normal context, usleep
  * really sleeps). Captures into the DMA buffer, then snapshots it so
  * cam_read (IPC context) never has to wait on hardware. */
 static int cam_loop_step(vdevice_t* dev, void* p) {
@@ -724,7 +724,7 @@ static int cam_loop_step(vdevice_t* dev, void* p) {
 
     if (_snap_buf == NULL || _snap_ready) {
         /* idle until the last snapshot is consumed by the client */
-        proc_usleep(10000);
+        usleep(10000);
         return 0;
     }
 
@@ -746,7 +746,7 @@ static int cam_loop_step(vdevice_t* dev, void* p) {
             _cap_fails = 0;
         }
     }
-    proc_usleep(10000);
+    usleep(10000);
     return 0;
 }
 
@@ -771,7 +771,7 @@ int main(int argc, char** argv) {
     /* raise CAM_GPIO (firmware expander) to power the camera module */
     if (cam_power_set(1) != 0)
         printf("camd: warning: cam power-on mailbox call failed\n");
-    proc_usleep(300000); /* sensor power-up settle */
+    usleep(300000); /* sensor power-up settle */
 
     /* init sensor via I2C; auto-probe pin pairs if default fails */
     if (ov5647_init(i2c_sda, i2c_scl) != 0) {

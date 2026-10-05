@@ -44,9 +44,11 @@
 #@/bin/splash -m "loading fonts" -p 60
 #@/bin/load_font
 
-@/bin/splash -m "loading X input" -p 80
+@/bin/splash -m "input: xim_none" -p 81
 @/bin/bgrun /sbin/x/xim_none   /dev/vjoystick 
+@/bin/splash -m "input: xmouse" -p 82
 @/bin/bgrun /sbin/x/xmouse    /dev/vjoystick 
+@/bin/splash -m "input: xim_vkey" -p 83
 @/bin/bgrun /sbin/x/xim_vkey -h 120
 
 @/bin/splash -m "starting X" -p 100

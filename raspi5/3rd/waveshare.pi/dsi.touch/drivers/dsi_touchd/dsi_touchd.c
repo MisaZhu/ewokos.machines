@@ -257,7 +257,7 @@ static int32_t dsi_i2c_select(const dsi_i2c_bus_t* bus) {
 	 */
 	if (bcm2712_i2c_set_speed(bus->bus, bus->hz) != 0)
 		return -1;
-	proc_usleep(2000);
+	usleep(2000);
 	return 0;
 }
 
@@ -283,23 +283,23 @@ static void dsi_i2c_bus_clear(const dsi_i2c_bus_t* bus) {
 	bcm2712_gpio_pull((uint32_t)bus->scl, GPIO_PULL_UP);
 	bcm2712_gpio_config((uint32_t)bus->sda, GPIO_FUNC_INPUT);
 	bcm2712_gpio_pull((uint32_t)bus->sda, GPIO_PULL_UP);
-	proc_usleep(10);
+	usleep(10);
 
 	for (i = 0; i < 9; i++) {
 		bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_OUTPUT);
-		proc_usleep(5);
+		usleep(5);
 		bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_INPUT);
-		proc_usleep(5);
+		usleep(5);
 	}
 
 	/* STOP: SDA pulled low, SCL released, then SDA released while SCL high */
 	bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_OUTPUT);
 	bcm2712_gpio_config((uint32_t)bus->sda, GPIO_FUNC_OUTPUT);
-	proc_usleep(5);
+	usleep(5);
 	bcm2712_gpio_config((uint32_t)bus->scl, GPIO_FUNC_INPUT);
-	proc_usleep(5);
+	usleep(5);
 	bcm2712_gpio_config((uint32_t)bus->sda, GPIO_FUNC_INPUT);
-	proc_usleep(10);
+	usleep(10);
 
 	/* pins back to the DW controller, controller re-initialised */
 	dsi_i2c_select(bus);
@@ -341,7 +341,7 @@ static uint32_t dsi_i2c_read_reg16_split(uint8_t addr, uint16_t reg,
 	reg_buf[1] = (uint8_t)(reg & 0xff);
 	if (bcm2712_i2c_write(active_bus->bus, addr, reg_buf, sizeof(reg_buf)) != 0)
 		return 1;
-	proc_usleep(TP_I2C_SPLIT_DELAY_US);
+	usleep(TP_I2C_SPLIT_DELAY_US);
 	return bcm2712_i2c_read(active_bus->bus, addr, data, len) == 0 ? 0 : 1;
 }
 
@@ -367,7 +367,7 @@ static uint32_t dsi_i2c_read_reg8_split(uint8_t addr, uint8_t reg, uint8_t* valu
 		return 1;
 	if (bcm2712_i2c_write(active_bus->bus, addr, &reg, 1) != 0)
 		return 1;
-	proc_usleep(TP_I2C_SPLIT_DELAY_US);
+	usleep(TP_I2C_SPLIT_DELAY_US);
 	return bcm2712_i2c_read(active_bus->bus, addr, value, 1) == 0 ? 0 : 1;
 }
 
@@ -387,7 +387,7 @@ static uint32_t dsi_i2c_read_regs8_split(uint8_t addr, uint8_t reg,
 		return 1;
 	if (bcm2712_i2c_write(active_bus->bus, addr, &reg, 1) != 0)
 		return 1;
-	proc_usleep(TP_I2C_SPLIT_DELAY_US);
+	usleep(TP_I2C_SPLIT_DELAY_US);
 	return bcm2712_i2c_read(active_bus->bus, addr, data, len) == 0 ? 0 : 1;
 }
 
@@ -401,12 +401,12 @@ static uint32_t dsi_i2c_read_reg8_retry(uint8_t addr, uint8_t reg, uint8_t* valu
 			return 0;
 		if (active_bus == NULL)
 			break;
-		proc_usleep(2000);
+		usleep(2000);
 		/* a failed transaction can leave the slave holding SDA low;
 		 * re-initialising the controller alone will not release the
 		 * wire — clock a bus clear (which re-selects the bus too) */
 		dsi_i2c_bus_clear(active_bus);
-		proc_usleep(2000);
+		usleep(2000);
 	}
 	return 1;
 }
@@ -422,12 +422,12 @@ static uint32_t dsi_i2c_read_regs8_retry(uint8_t addr, uint8_t reg,
 			return 0;
 		if (active_bus == NULL)
 			break;
-		proc_usleep(2000);
+		usleep(2000);
 		/* a failed transaction can leave the slave holding SDA low;
 		 * re-initialising the controller alone will not release the
 		 * wire — clock a bus clear (which re-selects the bus too) */
 		dsi_i2c_bus_clear(active_bus);
-		proc_usleep(2000);
+		usleep(2000);
 	}
 	return 1;
 }
@@ -478,7 +478,7 @@ static int32_t waveshare_mcu_write_power(uint16_t state, uint32_t settle_ms, con
 	if (dsi_i2c_write_reg8(DISPLAY_MCU_ADDR, WAVESHARE_REG_LCD,
 			(uint8_t)(state & 0xff)) != 0)
 		return -1;
-	proc_usleep(settle_ms * 1000u);
+	usleep(settle_ms * 1000u);
 	return 0;
 }
 
@@ -632,13 +632,13 @@ static void goodix_reset_select(const dsi_i2c_bus_t* bus, uint8_t addr) {
 	bcm2712_gpio_write(GOODIX_INT_GPIO, int_level);
 
 	bcm2712_gpio_write(GOODIX_RESET_GPIO, false);
-	proc_usleep(20000);
+	usleep(20000);
 	bcm2712_gpio_write(GOODIX_RESET_GPIO, true);
-	proc_usleep(60000);
+	usleep(60000);
 
 	bcm2712_gpio_config(GOODIX_INT_GPIO, GPIO_FUNC_INPUT);
 	bcm2712_gpio_pull(GOODIX_INT_GPIO, GPIO_PULL_UP);
-	proc_usleep(20000);
+	usleep(20000);
 }
 
 static bool goodix_id_valid(const uint8_t* id_buf) {
@@ -681,9 +681,9 @@ static tp_status_t goodix_probe_addr(uint8_t addr, uint8_t* id_buf) {
 			return TP_OK;
 		if (active_bus == NULL)
 			break;
-		proc_usleep(2000);
+		usleep(2000);
 		dsi_i2c_bus_clear(active_bus);
-		proc_usleep(2000);
+		usleep(2000);
 	}
 	return TP_NOT_RESPONSE;
 }
@@ -732,7 +732,7 @@ static tp_status_t goodix_init(void) {
 	for (bus_i = 0; bus_i < sizeof(dsi_i2c_buses) / sizeof(dsi_i2c_buses[0]); bus_i++) {
 		if (dsi_i2c_select(&dsi_i2c_buses[bus_i]) != 0)
 			continue;
-		proc_usleep(20000);
+		usleep(20000);
 
 		if (ft5x06_probe(&dsi_i2c_buses[bus_i]) == TP_OK)
 			return TP_OK;
@@ -789,7 +789,7 @@ static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 	for (i = 0; i < TP_I2C_RETRY_MAX; i++) {
 		if (goodix_write_reg(GOODIX_REG_STATUS, &status, 1) == TP_OK)
 			return TP_OK;
-		proc_usleep(2000);
+		usleep(2000);
 	}
 	return TP_NOT_RESPONSE;
 }
@@ -946,7 +946,7 @@ static int tp_loop(vdevice_t* dev, void* p) {
 		 */
 		uint8_t retry;
 		for (retry = 1; retry < TP_I2C_RETRY_MAX; retry++) {
-			proc_usleep(2000);
+			usleep(2000);
 			ret = tp_read_touch(point, &point_nr);
 			if (ret != TP_NOT_RESPONSE)
 				break;

@@ -135,7 +135,7 @@ inline void _delay_usec(int64_t count) {
     uint64_t end = timer_usec() + count;
 
     while(count > 0) {
-        proc_usleep(count);
+        usleep(count);
         count = end - timer_usec();
     }
 }

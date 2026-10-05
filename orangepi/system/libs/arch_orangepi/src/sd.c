@@ -129,7 +129,7 @@ struct sunxi_mmc {
 };
 
 void _delay_msec(volatile uint64_t ms){
-    proc_usleep(ms * 1000);
+    usleep(ms * 1000);
 //	ms *= 100000;
 //	while(ms--){
 //		__asm("NOP");

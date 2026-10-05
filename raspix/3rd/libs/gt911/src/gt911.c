@@ -157,18 +157,18 @@ static void GT911_ResetSelect(int32_t rst, int32_t intr, int32_t int_level) {
                 bcm283x_gpio_clr(intr);
 
         bcm283x_gpio_clr(rst);
-        proc_usleep(20000);
+        usleep(20000);
         bcm283x_gpio_set(rst);
-        proc_usleep(60000);
+        usleep(60000);
 
         bcm283x_gpio_config(intr, GPIO_FUNC_INPUT);
         bcm283x_gpio_pull(intr, GPIO_PULL_UP);
-        proc_usleep(20000);
+        usleep(20000);
 }
 
 static GT911_Status_t GT911_Probe(uint8_t addr, uint32_t* productID) {
     gt911_addr = addr;
-    proc_usleep(2000);
+    usleep(2000);
     return GT911_GetProductID(productID);
 }
 

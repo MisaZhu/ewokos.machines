@@ -200,7 +200,7 @@ int davinci_spi_claim_bus(int cs)
     _spi.cur_cs = ~(1 << cs);
     /* Enable the SPI hardware */
     writel(SPIGCR0_SPIRST_MASK, &_spi.regs->gcr0);
-    proc_usleep(1000);
+    usleep(1000);
 
     writel(SPIGCR0_SPIENA_MASK, &_spi.regs->gcr0);
 

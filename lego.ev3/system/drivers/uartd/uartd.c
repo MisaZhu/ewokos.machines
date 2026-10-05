@@ -71,7 +71,7 @@ static int uart_write(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
 //		}
 //	}
 //	ipc_enable();
-//	proc_usleep(10);
+//	usleep(10);
 //	return 0;
 //}
 //

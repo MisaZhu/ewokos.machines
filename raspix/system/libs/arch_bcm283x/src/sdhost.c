@@ -227,17 +227,17 @@ static void bcm2835_reset_internal(struct bcm2835_host *host)
     temp |= (FIFO_READ_THRESHOLD << SDEDM_READ_THRESHOLD_SHIFT) |
         (FIFO_WRITE_THRESHOLD << SDEDM_WRITE_THRESHOLD_SHIFT);
     writel(temp, host->ioaddr + SDEDM);
-    /* Wait for FIFO threshold to populate (wall-clock 20ms: proc_usleep
+    /* Wait for FIFO threshold to populate (wall-clock 20ms: usleep
      * can return early under IPC preemption, and a short power-on wait
      * leaves the controller half-initialized). */
     uint64_t t = kernel_tic_ms(0);
     while (kernel_tic_ms(0) - t < 20)
-        proc_usleep(1000);
+        usleep(1000);
     writel(SDVDD_POWER_ON, host->ioaddr + SDVDD);
     /* Wait for all components to go through power on cycle */
     t = kernel_tic_ms(0);
     while (kernel_tic_ms(0) - t < 20)
-        proc_usleep(1000);
+        usleep(1000);
     host->clock = 0;
     writel(host->hcfg, host->ioaddr + SDHCFG);
     writel(SDCDIV_MAX_CDIV, host->ioaddr + SDCDIV);

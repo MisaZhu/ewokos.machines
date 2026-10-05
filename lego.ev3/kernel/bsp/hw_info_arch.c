@@ -33,6 +33,18 @@ void kalloc_arch(void) {
 }
 
 int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
+    /* DA850 on-chip shared RAM: 128 KiB at [0x8000_0000,0x8002_0000), bus
+     * mastered by ARM + PRU0 (and DSP/system-DMA). The PRU soft-UART for input
+     * ports 3/4 keeps its ARM<->PRU byte rings here, reached by the PRU through
+     * constant-table C30 (=0x0100 -> 0x80nn_nn00). It is NOT part of the MMIO
+     * window [0,32MB) and NOT allocable RAM (it sits far below
+     * allocable_phy_mem_base = 0xC000_0000), so without this whitelist a
+     * daemon's SYS_MEM_MAP of it is rejected. mem_map_is_normal_ram_arch()
+     * returns 0 for it, so svc.c maps it Device/uncached - exactly what PRU
+     * coherency needs (no stale cache lines between ARM and PRU0). */
+    if(phy_base >= 0x80000000 && size <= 0x20000 &&
+            phy_base + size <= 0x80020000)
+        return 0;
     if(phy_base >= _sys_info.mmio.phy_base && size <= _sys_info.mmio.size)
         return 0;
     return -1;

@@ -156,7 +156,7 @@ static int tp_loop(vdevice_t* dev, void* p) {
     if(touch_has_data())
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 
-    proc_usleep(TP_POLL_US);
+    usleep(TP_POLL_US);
     return 0;
 }
 

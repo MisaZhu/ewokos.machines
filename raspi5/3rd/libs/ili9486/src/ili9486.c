@@ -60,7 +60,7 @@ static inline uint8_t lcd_get_rotation_madctl(uint16_t rot) {
 }
 
 static inline void delay(int32_t count) {
-    proc_usleep(count);
+    usleep(count);
 }
 
 /* LCD CONTROL */

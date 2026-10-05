@@ -552,7 +552,7 @@ int SC16IS750_WriteByte(SC16IS750_t * dev, uint8_t channel, uint8_t val)
                         SC16IS750_WriteRegister(dev, channel, SC16IS750_REG_THR, val);
                         return 0;
                 }
-                proc_usleep(100);
+                usleep(100);
         } while (--retry > 0);
 
         return -1;
@@ -647,7 +647,7 @@ int16_t SC16IS750_readwithtimeout(SC16IS750_t * dev, uint8_t * channel)
             tmp = SC16IS750_read(dev, SC16IS750_CHANNEL_B);
             if (tmp >= 0) return tmp;
         }
-        proc_usleep(0);
+        sched_yield();
         retry_count++;
     } while(retry_count < dev->timeout);
     return -1;	 // -1 indicates timeout
@@ -663,7 +663,7 @@ int SC16IS750_flush(SC16IS750_t * dev, uint8_t channel)
         tmp_lsr = SC16IS750_ReadRegister(dev, channel, SC16IS750_REG_LSR);
         if ((tmp_lsr & 0x20) != 0)
             return 0;
-        proc_usleep(100);
+        usleep(100);
     } while (--retry > 0);
 
     return -1;

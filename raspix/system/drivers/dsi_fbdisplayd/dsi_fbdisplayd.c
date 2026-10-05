@@ -445,18 +445,36 @@ static disp_info_t* get_info(void) {
  */
 static int32_t fail_stage(int stage) {
 	printf("dsi_fbdisplayd: bring-up failed at stage %d\n", stage);
+	/*
+	 * printf has no stdout in this daemon and bcm283x_dsi1_dump() is
+	 * printf-only too, so on a handheld the blink code is the ONLY thing
+	 * that survives unless the same verdict is pushed to /dev/log as well
+	 * (ssh in, `cat /dev/log`).  uc_dsi_report() is the slog twin of the
+	 * dump for the ClockworkPi PHY/clock registers.
+	 */
+	slog("dsi_fbdisplayd: bring-up failed at stage %d\n", stage);
 	/* The register banks + port probes tell the story. */
 	if (stage >= 1) {
 		bcm283x_dsi1_dump();
+		if (PANEL_IS_UC(_panel_kind))
+			uc_dsi_report();
 	}
 	/*
-	 * A handheld has no console to read, so also flag the stage on the
-	 * backlight.  Finite, unlike the standalone uConsole daemon's
-	 * uc_backlight_panic(): this returns and lets the daemon exit
-	 * normally so init can carry on.
+	 * A handheld has no console to read, so also flag the failure on the
+	 * backlight.  Three groups, not one count: the stage alone cannot
+	 * separate "the AXP rails never came up" from "the PHY refused to
+	 * park the lanes", and those two have completely different fixes.
+	 * Rails 3 means uc_panel_prepare() never ran (non-uc panel, or the
+	 * failure predates it).  Finite, unlike the standalone uConsole
+	 * daemon's uc_backlight_panic(): this returns and lets the daemon
+	 * exit normally so init can carry on.
 	 */
 	if (PANEL_IS_UC(_panel_kind)) {
-		uc_backlight_blink((uint32_t)stage);
+		int rails = uc_panel_rails_status();
+		if (rails < 0)
+			rails = 3;
+		uc_backlight_blink_code((uint32_t)stage, (uint32_t)rails,
+				(uint32_t)uc_dsi_lane_stop_count());
 	}
 	return -1;
 }
@@ -952,9 +970,11 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 	 * (see ws_panel_power): a cold DDIC must see its rails up
 	 * before the lanes go LP-11.
 	 */
-	if (PANEL_IS_UC(_panel_kind))
-		uc_panel_prepare();
-	else if (_panel_kind == PANEL_RPI7)
+	if (PANEL_IS_UC(_panel_kind)) {
+		if (uc_panel_prepare() != 0)
+			slog("dsi_fbdisplayd: WARN panel rails unverified; an "
+					"unpowered DDIC clamps the DSI lanes\n");
+	} else if (_panel_kind == PANEL_RPI7)
 		rpi7_panel_power();
 	else
 		ws_panel_power();
@@ -1086,9 +1106,24 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
 			/* ID register wrong: register bus/power issue, not timing. */
 			return fail_stage(3);
 		}
-		if (uc_dsi_bringup(hs) != 0 || uc_dsi_lanes_stopped() != 0)
-			/* PHY refused to drive LP-11 on the data lanes. */
+		if (uc_dsi_bringup(hs) != 0)
+			/* PHY/host programming itself failed. */
 			return fail_stage(4);
+		if (uc_dsi_lanes_stopped() != 0) {
+			/*
+			 * A warning, not a failure, for the uc families — unlike
+			 * ws/rpi7 below.  Upstream vc4 never checks lane STOP at
+			 * all, and stage 6's TXPKT1_DONE count is a strictly
+			 * better hardware-side verdict: a link that is really
+			 * dead fails there and blinks 6 instead of 4, which says
+			 * far more.  What a missed STOP does catch is an
+			 * unpowered DDIC clamping the lanes through its ESD
+			 * diodes, so report it and carry on.
+			 */
+			slog("dsi_fbdisplayd: WARN lanes not in LP-11 STOP "
+					"(panel rails dead, or AFE still settling)\n");
+			uc_dsi_report();
+		}
 
 		/*
 		 * HVS and PV stay on the shared library, so adj has to

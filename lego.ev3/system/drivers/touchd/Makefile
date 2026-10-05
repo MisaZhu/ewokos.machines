@@ -5,18 +5,18 @@ include $(SYS_DIR)/platform/$(ARCH)/make.rule
 BUILD_DIR = $(SYS_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
-LDFLAGS = -L $(BUILD_DIR)/lib -Llib 
+LDFLAGS = -L $(BUILD_DIR)/lib
 
 CFLAGS += -I $(BUILD_DIR)/include
 
-KBD_OBJS = $(ARCH)/joystickd.o
+TOUCHD_OBJS = $(ARCH)/touchd.o
 
-KBD = $(TARGET_DIR)/drivers/ev3/gpio_joystickd
+TOUCHD = $(TARGET_DIR)/drivers/ev3/touchd
 
-$(KBD): $(KBD_OBJS) \
+$(TOUCHD): $(TOUCHD_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \
 		$(SDK_DIR)/lib/libbsp.a
-	$(LD) -Ttext=100 $(KBD_OBJS) -o $(KBD) $(LDFLAGS) -larch_ev3  $(BSP_LFLAGS) $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(TOUCHD_OBJS) -o $(TOUCHD) -larch_ev3  $(BSP_LFLAGS) $(LDFLAGS) $(EWOK_LIBC)
 
 clean:
-	rm -f $(KBD_OBJS)
+	rm -f $(TOUCHD_OBJS) $(TOUCHD)

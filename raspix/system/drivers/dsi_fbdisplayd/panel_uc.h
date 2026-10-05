@@ -119,9 +119,23 @@ uint32_t uc_panel_hs_clock(int which);
  * deaf to reset, DCS and BTA.  Linux never hits this because the AXP
  * regulators are regulator-always-on from early boot.  A rail failure is
  * not fatal — the PMIC defaults may already hold them on, and the DCS
- * table is the real verdict — so it is logged, not returned.
+ * table is the real verdict — but it IS returned, because an unpowered
+ * DDIC clamps the MIPI lanes through its ESD diodes and that later shows
+ * up as "lanes never reach LP-11", which looks like a PHY timing bug and
+ * is not one.
+ *
+ * 0 = the display rails verified, -1 = they did not.
  */
-void uc_panel_prepare(void);
+int uc_panel_prepare(void);
+
+/*
+ * Verdict of the last uc_panel_prepare() rail pass, for the blink code:
+ *   0 = the display rails read back enabled
+ *   1 = a PMIC answered at 0x34 but the enable bits did not latch
+ *   2 = nothing answered on GPIO0/GPIO1 at all
+ *  -1 = uc_panel_prepare() has not run yet
+ */
+int uc_panel_rails_status(void);
 
 /*
  * HW reset pulse.  MUST run with the DSI host already parked in LP-11
@@ -173,6 +187,17 @@ void uc_backlight_set(uint8_t level);   /* 0..UC_BACKLIGHT_MAX_LEVEL */
  * of hanging in an infinite panic loop.
  */
 void uc_backlight_blink(uint32_t n);
+
+/*
+ * Grouped blink code: three fixed-order numbers (bring-up stage, AXP rail
+ * verdict, count of data lanes in LP-11 STOP), flashed UC_BLINK_REPEATS
+ * times.  This is the diagnostic channel for a board with no serial
+ * console and no network — a single count cannot carry all three.
+ * Encoding: 1400ms dark marks the start of a repeat, a digit n is n
+ * 130ms dark pulses, and 0 is one 450ms dark pulse; groups are separated
+ * by 700ms of dark.  Full rationale in panel_uc.c.
+ */
+void uc_backlight_blink_code(uint32_t stage, uint32_t rails, uint32_t lanes);
 
 /*
  * DCS transport shared by the two vendor tables.  Sends in HS command
@@ -228,6 +253,21 @@ int uc_dsi_bringup(uint32_t hs_clock_hz);
 
 /* All four data lanes must sit in LP-11 STOP.  0 = stopped. */
 int uc_dsi_lanes_stopped(void);
+
+/*
+ * How many of the four data lanes are in LP-11 STOP right now (0..4), for
+ * the blink code — uc_dsi_lanes_stopped() alone cannot say whether every
+ * lane is clamped or just one.
+ */
+int uc_dsi_lane_stop_count(void);
+
+/*
+ * slog the bring-up registers (DSI1 CTRL/STAT/PHYC/AFEC0 + CPRMAN
+ * clocks) plus the HS clock the PHY timing bank was built from.  For the
+ * failure path only: printf is lost in this daemon, so anything worth
+ * reading afterwards has to go through /dev/log.
+ */
+void uc_dsi_report(void);
 
 /* One-shot DISP0_CTRL video-mode write (PIX_CLK_DIV=6, RGB888). */
 void uc_dsi_video_mode(void);

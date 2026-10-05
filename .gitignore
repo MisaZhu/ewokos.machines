@@ -1,4 +1,5 @@
 *.o
+*.d
 *.swp
 *_data.c
 .DS_*
@@ -19,3 +20,4 @@ system/tmp
 system/make.rule
 build*
 .xmake
+x86/kernel/boot/bootcfg.inc

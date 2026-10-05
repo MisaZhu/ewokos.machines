@@ -32,7 +32,7 @@
 
 
 static void msleep(int ms){
-    proc_usleep(ms * 1000);
+    usleep(ms * 1000);
 }
 
 static void st7586_command0(uint8_t cmd){

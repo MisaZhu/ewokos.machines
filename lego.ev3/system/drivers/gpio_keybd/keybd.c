@@ -19,7 +19,7 @@
 #define  KEY_DOWN_PIN			126
 #define  KEY_LEFT_PIN			102
 #define  KEY_RIGHT_PIN			124
-#define  KEY_HOME_PIN			106
+#define  KEY_END_PIN			106
 #define  KEY_ENTER_PIN			29
 
 #define  KEY_POWER_PIN			29
@@ -38,7 +38,7 @@ struct gpio_pins{
     DECLARE_GPIO_KEY(KEY_LEFT, GPIO_HIGH),
     DECLARE_GPIO_KEY(KEY_RIGHT, GPIO_HIGH),
     DECLARE_GPIO_KEY(KEY_ENTER, GPIO_HIGH),
-    DECLARE_GPIO_KEY(KEY_HOME, GPIO_HIGH),
+    DECLARE_GPIO_KEY(KEY_END, GPIO_HIGH),
 };
 
 static int joystick_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
@@ -79,7 +79,7 @@ static void init_gpio(void) {
 
 static void check_power(void) {
     static int count = 0;
-    if(bsp_gpio_read(KEY_POWER_PIN) != 0)
+    if(bsp_gpio_read(KEY_END_PIN) != 0)
         count++;
     else
         count = 0;
@@ -95,7 +95,7 @@ static int power_button(vdevice_t* dev, void* p) {
     ipc_disable();
     check_power();
     ipc_enable();
-    proc_usleep(200000);
+    usleep(200000);
 }
 
 int main(int argc, char** argv) {

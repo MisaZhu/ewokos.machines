@@ -6,19 +6,27 @@
 #include <kernel/proc.h>
 #include <kernel/hw_info.h>
 #include <dev/sd.h>
+#include <dev/timer.h>
 
 #include "mmc.h"
 
-#define WATCHDOG_COUNT      (10000)
+/* u-boot davinci_mmc: 100000 polls x 10us = 1s per wait. The SD spec allows
+ * up to 100ms read access time, so the old 10000 was only safe while the
+ * delay below was a slow uncached spin loop. */
+#define WATCHDOG_COUNT      (100000)
+#define SD_RA_SECTORS       32
+#define SD_MAX_BLOCKS       32
 
 #define get_val(addr)       (*(volatile uint32_t*)(addr))
 #define set_val(addr, val)  (*(volatile uint32_t*)(addr) = (val))
 #define set_bit(addr, val)  set_val((addr), (get_val(addr) | (val)))
 #define clear_bit(addr, val)    set_val((addr), (get_val(addr) & ~(val)))
 
-static void delay_us(volatile int us){
-    us *= 10;
-    while(us-- > 0);
+/* Must be timer based: with I/D cache on, a CPU spin loop runs ~15x faster
+ * than it did uncached, which silently shrank every SD timeout below the
+ * card's worst-case latency and made the boot-time reads fail at random. */
+static void delay_us(uint32_t us){
+    _delay_usec(us);
 }
 
 /* Busy bit wait loop for MMCST1 */
@@ -272,34 +280,152 @@ davinci_mmc_send_cmd(struct davinci_mmc_regs *regs, struct mmc_cmd *cmd, struct 
 }
 
 int32_t sd_init(void) {
+    /* runs before timer_set_interval(); start TIM34 so delay_us() has a clock */
+    timer_init();
     return 0;
 }
 
-static uint8_t _sector_buf[512];
+static uint8_t _sector_buf[SD_RA_SECTORS * 512];
+static int32_t _ra_start = -1;
+static uint32_t _ra_count = 0;
+static int32_t _pending_sector = -1;
 
-int32_t sd_dev_read(int32_t sector) {
+static int32_t sd_read_multi(int32_t sector, uint32_t count, uint8_t* buf) {
     struct mmc_cmd cmd;
     struct mmc_data data;
 
-    cmd.cmdidx = MMC_CMD_READ_SINGLE_BLOCK;
+    if(count == 1) {
+        cmd.cmdidx = MMC_CMD_READ_SINGLE_BLOCK;
+        cmd.cmdarg = sector;
+        cmd.resp_type = MMC_RSP_R1;
+        data.un.dest = (char*)buf;
+        data.blocks = 1;
+        data.blocksize = 512;
+        data.flags = MMC_DATA_READ;
+        if(davinci_mmc_send_cmd((void*)MMC_BASE, &cmd, &data))
+            return -1;
+        return 0;
+    }
+
+    cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
     cmd.cmdarg = sector;
-
     cmd.resp_type = MMC_RSP_R1;
-
-    data.un.dest = (char*)_sector_buf;
-    data.blocks = 1;
+    data.un.dest = (char*)buf;
+    data.blocks = count;
     data.blocksize = 512;
     data.flags = MMC_DATA_READ;
 
-    if (davinci_mmc_send_cmd((void*)MMC_BASE, &cmd, &data)){
-        return -1;
+    if(davinci_mmc_send_cmd((void*)MMC_BASE, &cmd, &data)) {
+        /* multi-block failed, fallback to single */
+        cmd.cmdidx = MMC_CMD_READ_SINGLE_BLOCK;
+        cmd.cmdarg = sector;
+        cmd.resp_type = MMC_RSP_R1;
+        data.blocks = 1;
+        if(davinci_mmc_send_cmd((void*)MMC_BASE, &cmd, &data))
+            return -1;
+        return 0;  /* only 1 sector valid */
     }
 
+    /* CMD12 stop (R1, no busy for read-stop) */
+    cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+    cmd.cmdarg = 0;
+    cmd.resp_type = MMC_RSP_R1;
+    davinci_mmc_send_cmd((void*)MMC_BASE, &cmd, NULL);
+    return 0;
+}
+
+int32_t sd_dev_read(int32_t sector) {
+    if(sector < 0)
+        return -1;
+
+    /* Check readahead window hit */
+    if(_ra_start >= 0 && sector >= _ra_start &&
+       (uint32_t)(sector - _ra_start) < _ra_count) {
+        _pending_sector = sector;
+        return 0;
+    }
+
+    /* Fill readahead window: read up to SD_RA_SECTORS starting at sector */
+    uint32_t count = SD_RA_SECTORS;
+    if(sd_read_multi(sector, count, _sector_buf) != 0)
+        return -1;
+
+    _ra_start = sector;
+    _ra_count = count;
+    _pending_sector = sector;
     return 0;
 }
 
 int32_t sd_dev_read_done(void* buf) {
-    memcpy(buf, _sector_buf, 512);
+    if(_pending_sector < 0 || _ra_start < 0)
+        return -1;
+
+    uint32_t offset = (uint32_t)(_pending_sector - _ra_start) * 512;
+    if(offset >= _ra_count * 512)
+        return -1;
+
+    memcpy(buf, _sector_buf + offset, 512);
+    return 0;
+}
+
+int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
+    uint8_t* out = (uint8_t*)buf;
+
+    if(buf == 0 || count == 0)
+        return -1;
+
+    /* Invalidate readahead window */
+    _ra_start = -1;
+    _ra_count = 0;
+
+    while(count > 0) {
+        uint32_t chunk = (count > SD_MAX_BLOCKS) ? SD_MAX_BLOCKS : count;
+        struct mmc_cmd cmd;
+        struct mmc_data data;
+
+        if(chunk == 1) {
+            if(sd_read_multi(sector, 1, _sector_buf) != 0)
+                return -1;
+            memcpy(out, _sector_buf, 512);
+            sector++;
+            out += 512;
+            count--;
+            continue;
+        }
+
+        /* Try CMD18 multi-block */
+        cmd.cmdidx = MMC_CMD_READ_MULTIPLE_BLOCK;
+        cmd.cmdarg = sector;
+        cmd.resp_type = MMC_RSP_R1;
+        data.un.dest = (char*)_sector_buf;
+        data.blocks = chunk;
+        data.blocksize = 512;
+        data.flags = MMC_DATA_READ;
+
+        if(davinci_mmc_send_cmd((void*)MMC_BASE, &cmd, &data) == 0) {
+            /* Success: send CMD12 stop */
+            cmd.cmdidx = MMC_CMD_STOP_TRANSMISSION;
+            cmd.cmdarg = 0;
+            cmd.resp_type = MMC_RSP_R1;
+            davinci_mmc_send_cmd((void*)MMC_BASE, &cmd, NULL);
+
+            memcpy(out, _sector_buf, chunk * 512);
+            sector += (int32_t)chunk;
+            out += chunk * 512;
+            count -= chunk;
+        } else {
+            /* Multi-block failed: single-block fallback */
+            for(uint32_t i = 0; i < chunk; i++) {
+                if(sd_read_multi(sector + (int32_t)i, 1,
+                        _sector_buf) != 0)
+                    return -1;
+                memcpy(out + i * 512, _sector_buf, 512);
+            }
+            sector += (int32_t)chunk;
+            out += chunk * 512;
+            count -= chunk;
+        }
+    }
     return 0;
 }
 

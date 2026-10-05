@@ -5,19 +5,6 @@
 
 #include "../include/arch/ev3/gpio.h"
 
-#define GPIO_INPUT  0x00
-#define GPIO_OUTPUT 0x01
-#define GPIO_ALTF5  0x02
-#define GPIO_ALTF4  0x03
-#define GPIO_ALTF0  0x04
-#define GPIO_ALTF1  0x05
-#define GPIO_ALTF2  0x06
-#define GPIO_ALTF3  0x07
-
-#define GPIO_PULL_NONE 0x00
-#define GPIO_PULL_DOWN 0x01
-#define GPIO_PULL_UP   0x02
-
 #define writel(val, reg)    (*(volatile uint32_t*)(reg) = (val))
 #define readl(reg)          (*(volatile uint32_t*)(reg))
 
@@ -229,14 +216,23 @@ struct davinci_gpio_regs {
     volatile uint32_t intstat;
 };
 
+#define GPIO_BASE       0x01E26000
+#define GPIO_BINTEN     (GPIO_BASE + 0x08)
+#define GPIO_BANKS      (GPIO_BASE + 0x10)
+#define PINMUX0_PHYS    0x01C14120
+#define PUPD_ENA_PHYS   0x01E2C00C
+#define PUPD_SEL_PHYS   0x01E2C010
+
 static struct davinci_gpio_regs *davinci_gpios;
-static volatile uint32_t *pinmux_regs;
-static volatile uint32_t *pull_enable;
-static volatile uint32_t *pull_up_down;
+static volatile uint32_t *binten;
 
-
-static uint32_t write_syscfg(uint32_t reg, uint32_t val, uint32_t mask){
+/* SYSCFG registers are privileged-only: route through the kernel. */
+static uint32_t write_syscfg(volatile void* reg, uint32_t val, uint32_t mask){
     return syscall3(SYS_MMIO_RW, (ewokos_addr_t)reg, (ewokos_addr_t)val, (ewokos_addr_t)mask);
+}
+
+uint32_t ev3_syscfg_write(uint32_t phys, uint32_t val, uint32_t mask){
+    return write_syscfg((volatile void*)(_mmio_base + phys), val, mask);
 }
 
 void gpio_mux_cfg(int pin, int mode){
@@ -247,7 +243,7 @@ void gpio_mux_cfg(int pin, int mode){
     else
         mode &= 0xF;
 
-    write_syscfg(&pinmux_regs[idx], mode << shift, 0xf << shift);
+    ev3_syscfg_write(PINMUX0_PHYS + idx*4, mode << shift, 0xf << shift);
 }
 
 void ev3_gpio_config(int32_t pin, int32_t mode)
@@ -269,9 +265,22 @@ void ev3_gpio_config(int32_t pin, int32_t mode)
             temp |= mask;
         }
         writel(temp, &g->dir);
-    }else if(mode >= 16){
+    }else if(mode & 0x10){
         gpio_mux_cfg(pin, mode);
     }
+}
+
+void ev3_gpio_dir(int32_t pin, int32_t output){
+    if(pin < 0 || pin >= MAX_GPIO)
+        return;
+    struct davinci_gpio_regs *g = &davinci_gpios[pin / 32];
+    uint32_t mask = GPIO_MASK(pin);
+    uint32_t temp = readl(&g->dir);
+    if(output)
+        temp &= ~mask;
+    else
+        temp |= mask;
+    writel(temp, &g->dir);
 }
 
 void ev3_gpio_write(int32_t pin, int32_t value){
@@ -295,32 +304,67 @@ uint8_t ev3_gpio_read(int32_t pin){
 }
 
 void ev3_gpio_pull(int32_t pin, int32_t updown){
-    if(pin > 144)
+    if(pin < 0 || pin >= MAX_GPIO)
         return;
 
     int gp = pullgp[pin];
 
-    if(gp > 32)
+    if(gp >= 32)
         return;
 
     uint32_t mask = 0x1 << gp;
-    uint32_t reg = *pull_enable;
 
     if(updown == GPIO_PULL_NONE){
-        write_syscfg(pull_enable, 0, 0x1 << gp);
+        ev3_syscfg_write(PUPD_ENA_PHYS, 0, mask);
     }else{
-        write_syscfg(pull_enable, 0x1 << gp, 0x1 << gp);
+        ev3_syscfg_write(PUPD_ENA_PHYS, mask, mask);
         if(updown == GPIO_PULL_UP)
-            write_syscfg(pull_up_down, 0x1 << gp, 0x1 << gp);
+            ev3_syscfg_write(PUPD_SEL_PHYS, mask, mask);
         else
-            write_syscfg(pull_up_down, 0, 0x1 << gp);
+            ev3_syscfg_write(PUPD_SEL_PHYS, 0, mask);
     }
+}
+
+/* ---- edge interrupts ---- */
+
+uint32_t ev3_gpio_irq_num(int32_t pin){
+    return EV3_GPIO_IRQ_BASE + (pin / 16);
+}
+
+void ev3_gpio_irq_enable(int32_t pin, int32_t rising, int32_t falling){
+    if(pin < 0 || pin >= MAX_GPIO)
+        return;
+    struct davinci_gpio_regs *g = &davinci_gpios[pin / 32];
+    uint32_t mask = GPIO_MASK(pin);
+
+    writel(mask, rising  ? &g->set_rising  : &g->clr_rising);
+    writel(mask, falling ? &g->set_falling : &g->clr_falling);
+    writel(mask, &g->intstat);                 /* drop stale status */
+    writel(readl(binten) | (1u << (pin / 16)), binten);
+}
+
+void ev3_gpio_irq_disable(int32_t pin){
+    if(pin < 0 || pin >= MAX_GPIO)
+        return;
+    struct davinci_gpio_regs *g = &davinci_gpios[pin / 32];
+    uint32_t mask = GPIO_MASK(pin);
+    writel(mask, &g->clr_rising);
+    writel(mask, &g->clr_falling);
+    writel(mask, &g->intstat);
+}
+
+uint32_t ev3_gpio_irq_ack(int32_t pin){
+    if(pin < 0 || pin >= MAX_GPIO)
+        return 0;
+    struct davinci_gpio_regs *g = &davinci_gpios[pin / 32];
+    uint32_t st = readl(&g->intstat);
+    if(st)
+        writel(st, &g->intstat);               /* W1C */
+    return st;
 }
 
 void ev3_gpio_init(void){
     _mmio_base = mmio_map();
-    davinci_gpios = (struct davinci_gpio_regs*)(_mmio_base + 0x01E26010);
-    pinmux_regs = (uint32_t*)(_mmio_base + 0x1c14120);
-    pull_enable = (uint32_t*)(_mmio_base + 0x1e2c00C);
-    pull_up_down = (uint32_t*)(_mmio_base + 0x1e2c010);
+    davinci_gpios = (struct davinci_gpio_regs*)(_mmio_base + GPIO_BANKS);
+    binten = (volatile uint32_t*)(_mmio_base + GPIO_BINTEN);
 }

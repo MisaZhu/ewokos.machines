@@ -56,13 +56,23 @@
 #define XHCI_BAR_VA_BASE 0x51400000
 #define XHCI_BAR_MAP_SIZE 0x10000u
 
-/* interrupt-IN pacing: the shared layer passes bInterval through; the
-   polled UHCI honours it as a floor and stretches it while the endpoint
-   keeps NAKing (xHCI schedules periodic transfers in hardware) */
-#define BSP_USB_INT_MIN_INTERVAL_MS 8u
-#define BSP_USB_INT_MAX_INTERVAL_MS 40u
-#define BSP_USB_INT_IDLE_STRETCH_2 64u
-#define BSP_USB_INT_IDLE_STRETCH_4 256u
+/* interrupt-IN pacing: the shared layer passes bInterval through; a
+   polled controller honours it as a floor and stretches it while the
+   endpoint keeps NAKing.
+
+   The floor/cap directly bound keyboard event loss: a HID keyboard runs
+   with Set_Idle(0) (report on change only), so a key pressed AND released
+   inside one poll gap leaves the endpoint back at its baseline state and
+   the press is never seen. The old 8ms floor ignored fast keyboards whose
+   real bInterval is 1-2ms, and the 40ms cap let an idle endpoint stretch
+   far past the device's own report rate, so quick taps after a pause were
+   swallowed whole. Honour the device down to 2ms and cap the idle stretch
+   near a normal report period; the tighter cadence stays affordable
+   because the NAK poll now returns fast (UHCI_INT_IN_TIMEOUT_MS). */
+#define BSP_USB_INT_MIN_INTERVAL_MS 2u
+#define BSP_USB_INT_MAX_INTERVAL_MS 16u
+#define BSP_USB_INT_IDLE_STRETCH_2 32u
+#define BSP_USB_INT_IDLE_STRETCH_4 96u
 
 struct bsp_usb_dev {
     bool used;
@@ -553,7 +563,7 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
         return NULL;
     }
     klog("bsp_usb: uhci attached addr=%u flat=%d speed=%d\n", addr, flat, speed);
-    proc_usleep(10000); /* USB spec: new address is valid after 2ms */
+    usleep(10000); /* USB spec: new address is valid after 2ms */
 
     memset(dev, 0, sizeof(*dev));
     dev->used = true;
@@ -933,7 +943,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
             if (ready == 0) {
                 break;
             }
-            proc_usleep(100000);
+            usleep(100000);
         }
         if (ready != 0) {
             klog("bsp_usb: msc not_ready addr=%u\n", dev->addr);

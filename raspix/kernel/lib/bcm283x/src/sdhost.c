@@ -315,7 +315,7 @@ static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
         tstart_ms = kernel_tic_ms(0);
 
         /*
-        sleep(0);
+        sched_yield();
         retry_count++;
         if(retry_count > 10000) {
             printf("wait_transfer_complete - still waiting after %d times\n",

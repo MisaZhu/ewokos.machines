@@ -9,4 +9,6 @@
 @export XTHEME=opencde
 @/bin/ipcserv /sbin/x/xwm_opencde
 
-@/apps/xapps/xapps -l &
+#@/apps/xapps/xapps -l --item_size=64 --font_size=12 &
+
+@/apps/ev3test/ev3test &

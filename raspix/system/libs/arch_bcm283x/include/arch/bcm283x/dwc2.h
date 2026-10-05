@@ -29,6 +29,41 @@
 #define DWC2_SPEED_FULL 1
 #define DWC2_SPEED_HIGH 2
 
+/* HPRT bit layout, exposed so a caller can decode dwc2_port_status() in a
+   log line without duplicating the register map */
+#define DWC2_HPRT_CONNSTAT      (1u << 0)
+#define DWC2_HPRT_ENA           (1u << 2)
+#define DWC2_HPRT_OVRCURRACT    (1u << 4)
+#define DWC2_HPRT_PWR           (1u << 12)
+#define DWC2_HPRT_LINESTS_SHIFT 10   /* 2 bits: D+/D- line state  */
+#define DWC2_HPRT_SPEED_SHIFT   17   /* 2 bits: 0=high 1=full 2=low */
+
+/* HCINT bit layout, exposed for the same reason: "TXERR" alone collapses five
+   different failures into one word. ACK/STALL/NAK all prove the device is on
+   the bus and answering, AHBERR points at the DMA buffer rather than the wire,
+   and TXERR on its own is the only one that really means "nothing came back". */
+#define DWC2_HCINT_XFRC         (1u << 0)
+#define DWC2_HCINT_CHH          (1u << 1)
+#define DWC2_HCINT_AHBERR       (1u << 2)
+#define DWC2_HCINT_STALL        (1u << 3)
+#define DWC2_HCINT_NAK          (1u << 4)
+#define DWC2_HCINT_ACK          (1u << 5)
+#define DWC2_HCINT_NYET         (1u << 6)
+#define DWC2_HCINT_TXERR        (1u << 7)
+#define DWC2_HCINT_BBLERR       (1u << 8)
+#define DWC2_HCINT_FRMOVRUN     (1u << 9)
+#define DWC2_HCINT_DTERR        (1u << 10)
+
+/* which stage of the last control transfer was in flight when it failed.
+   SET_ADDRESS is two transactions, not one -- a SETUP the device may well
+   accept, then a zero-length IN status stage it may not -- and telling those
+   apart is the difference between "the device never answered" and "the device
+   answered and then went away". */
+#define DWC2_XFER_STAGE_NONE    0
+#define DWC2_XFER_STAGE_SETUP   1
+#define DWC2_XFER_STAGE_DATA    2
+#define DWC2_XFER_STAGE_STATUS  3
+
 /* transaction ended in NAK/NYET/frame-overrun: nothing moved, the
    toggle is untouched and the caller may retry later */
 #define DWC2_XFER_RETRY (-2)
@@ -54,6 +89,15 @@ void dwc2_force_fs_only(bool enable);
    negotiated high-speed link that never moved a byte this marks a dead
    480Mbps data path */
 bool dwc2_last_xfer_txerr(void);
+/* raw HPRT for diagnostics. On a board with no console this is the only way
+   to tell a device that refuses to talk from a port the host had to give up
+   on: over-current active, port enable dropped, and the D+/D- line state all
+   live here and none of them reach the caller of a failed transfer */
+uint32_t dwc2_port_status(void);
+/* raw HCINT of the last failed channel transaction, and the control stage it
+   died in (DWC2_XFER_STAGE_*) */
+uint32_t dwc2_last_xfer_hcint(void);
+uint32_t dwc2_last_xfer_stage(void);
 
 /* control transfer on EP0: setup/data/status with 3 attempts per stage.
    Returns bytes moved in the data stage or < 0 */

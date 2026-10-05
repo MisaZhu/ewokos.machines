@@ -120,6 +120,9 @@
 
 #define DWC_HFIR_60MHZ_FSLS 59999u
 #define DWC_HFIR_48MHZ_FSLS 47999u
+/* high speed frames are 125us microframes, so the same 60MHz PHY clock wants
+   125*60-1 here, not 1000*60-1 (Linux: dwc2_calc_frame_interval) */
+#define DWC_HFIR_60MHZ_HS   7499u
 
 #define DWC_HPRT_CONNDET (1u << 1)
 #define DWC_HPRT_ENA (1u << 2)
@@ -428,7 +431,7 @@ static int dwc2_power_on_core(void) {
 
     for (unsigned i = 0; i < sizeof(ids) / sizeof(ids[0]); ++i) {
         (void)bcm2712_set_power_state(ids[i]);
-        proc_usleep(20000);
+        usleep(20000);
         if (dwc2_core_present()) {
             klog("dwc2: core alive after power id %u, gsnpsid=0x%08x\n",
                     ids[i], usb_readl(DWC_REG_GSNPSID));
@@ -446,7 +449,7 @@ static int dwc_wait_grstctl_clear(uint32_t mask, uint32_t timeout_ms) {
         if ((usb_readl(DWC_REG_GRSTCTL) & mask) == 0) {
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -458,7 +461,7 @@ static int dwc_wait_ahb_idle(uint32_t timeout_ms) {
         if ((usb_readl(DWC_REG_GRSTCTL) & DWC_GRSTCTL_AHB_IDLE) != 0) {
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -476,7 +479,7 @@ static int dwc_core_soft_reset(void) {
     }
     /* Some DWC2 revisions need extra settle time before post-reset
        register writes become reliable. */
-    proc_usleep(10000);
+    usleep(10000);
     return 0;
 }
 
@@ -501,7 +504,7 @@ static int dwc_wait_channel_stopped(int ch, uint32_t timeout_ms) {
         if ((hcchar & DWC_HCCHAR_CHENA) == 0 || (hcint & DWC_HCINT_CHH) != 0) {
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -563,7 +566,7 @@ static int dwc_host_halt_all_channels(void) {
             if (waited++ > 100) {
                 break;
             }
-            proc_usleep(1000);
+            usleep(1000);
         }
         dwc_channel_reset_regs(ch);
     }
@@ -656,7 +659,7 @@ int dwc2_reset_port(void) {
         return -1;
     }
     dwc_port_write(DWC_HPRT_PWR, 0);
-    proc_usleep(10000);
+    usleep(10000);
     if (!dwc2_port_connected()) {
         return -1;
     }
@@ -669,9 +672,9 @@ int dwc2_reset_port(void) {
     }
 
     dwc_port_write(DWC_HPRT_PWR | DWC_HPRT_RST, 0);
-    proc_usleep(30000);
+    usleep(30000);
     dwc_port_write(DWC_HPRT_PWR, DWC_HPRT_RST);
-    proc_usleep(5000);
+    usleep(5000);
     for (;;) {
         reg = usb_readl(DWC_REG_HPRT);
         if ((reg & 0x1u) == 0) {
@@ -684,14 +687,14 @@ int dwc2_reset_port(void) {
             dwc2_ack_port_change();
             return -1;
         }
-        proc_usleep(1000);
+        usleep(1000);
     }
     dwc2_ack_port_change();
     /* USB spec reset recovery: device may ignore traffic briefly after reset.
        10ms is the spec minimum; slow or marginal MCUs (and devices running
        near their brown-out limit) need longer before their transceiver is
        stable, so give them 50ms */
-    proc_usleep(50000);
+    usleep(50000);
 
     reg = usb_readl(DWC_REG_HPRT);
     if (!dwc2_port_connected()) {
@@ -708,13 +711,23 @@ int dwc2_reset_port(void) {
         uint32_t hcfg = low_speed ?
                 (DWC_HCFG_FSLSPCLKSEL_48MHZ | DWC_HCFG_FSLSSUPP) :
                 DWC_HCFG_FSLSPCLKSEL_30_60MHZ;
+        /* HFIR is the frame interval in PHY clocks, and in high speed the
+           frame is a 125us microframe rather than a 1ms one. Writing the
+           full-speed value to a high-speed port makes the core count a
+           microframe as eight times longer than it is, and everything it
+           schedules inside that window is mis-timed. */
+        uint32_t hfir;
+        if (speed_bits == 0u) {
+            hfir = DWC_HFIR_60MHZ_HS;
+        }
+        else {
+            hfir = low_speed ? DWC_HFIR_48MHZ_FSLS : DWC_HFIR_60MHZ_FSLS;
+        }
         if (_force_fs_only) {
             hcfg |= DWC_HCFG_FSLSSUPP;
         }
         usb_writel(DWC_REG_HCFG, hcfg);
-        usb_writel(DWC_REG_HFIR, low_speed ?
-                DWC_HFIR_48MHZ_FSLS :
-                DWC_HFIR_60MHZ_FSLS);
+        usb_writel(DWC_REG_HFIR, hfir);
     }
     if (speed_bits == 0u) {
         return DWC2_SPEED_HIGH;
@@ -752,7 +765,7 @@ static int dwc_host_init(void) {
     reg |= (DWC_USBTRDTIM_UTMI_8BIT << DWC_GUSBCFG_USBTRDTIM_SHIFT);
     reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
     usb_writel(DWC_REG_GUSBCFG, reg);
-    proc_usleep(50000);
+    usleep(50000);
 
     /* the mode switch is asynchronous: GINTSTS.CurMod has to read host before
        any host register is programmed */
@@ -761,7 +774,7 @@ static int dwc_host_init(void) {
             klog("dwc2: core never reached host mode\n");
             return -1;
         }
-        proc_usleep(1000);
+        usleep(1000);
     }
 
     if (dwc_core_soft_reset() != 0) {
@@ -780,7 +793,7 @@ static int dwc_host_init(void) {
     reg |= (DWC_USBTRDTIM_UTMI_8BIT << DWC_GUSBCFG_USBTRDTIM_SHIFT);
     reg |= DWC_GUSBCFG_FORCE_HOST_MODE;
     usb_writel(DWC_REG_GUSBCFG, reg);
-    proc_usleep(25000);
+    usleep(25000);
 
     dwc_program_fifos();
     if (dwc_flush_fifos() != 0) {
@@ -804,7 +817,7 @@ static int dwc_host_init(void) {
     reg |= DWC_GAHBCFG_DMA_EN | DWC_GAHBCFG_WAIT_AXI_WRITES;
     usb_writel(DWC_REG_GAHBCFG, reg);
     dwc_port_write(DWC_HPRT_PWR, 0);
-    proc_usleep(100000);
+    usleep(100000);
     dwc2_ack_port_change();
     return 0;
 }
@@ -879,7 +892,7 @@ static int dwc_channel_wait(int ch, uint32_t timeout_ms, uint32_t* hcint_out, ui
             }
             return 0;
         }
-        proc_usleep(1000);
+        usleep(1000);
         waited++;
     }
     return -1;
@@ -927,6 +940,12 @@ static int dwc_channel_transfer(int ch, uint8_t dev_addr, uint8_t ep_num, bool d
     if (low_speed) {
         hcchar |= DWC_HCCHAR_LSPDDEV;
     }
+    /* MC/EC must not be left at 0 -- the databook reserves that value, and
+       Linux programs multi_count = 1 for every non-split control/bulk channel
+       (hcd.c: dwc2_hc_init). Nothing here splits and nothing puts more than
+       one packet in a (micro)frame, so 1 is both the floor and the correct
+       value; DWC_HCCHAR_MC_SHIFT was declared but never written. */
+    hcchar |= (1u << DWC_HCCHAR_MC_SHIFT);
     /* Periodic transfers execute in the frame whose parity matches ODDFRM:
        schedule for the next frame relative to the current frame number. */
     if (ep_type == 1 || ep_type == 3) {
@@ -982,7 +1001,7 @@ static int dwc_control_stage_transfer(int ch, uint8_t addr,
             return ret;
         }
         if (attempt < 3) {
-            proc_usleep(5000);
+            usleep(5000);
         }
     }
     return ret;
@@ -1202,7 +1221,7 @@ void dwc2_msc_recover(uint8_t addr, bool low_speed, uint8_t ctrl_mps,
     setup.bRequest = USB_MSC_REQ_RESET;
     setup.wIndex = iface_num;
     (void)dwc2_control_xfer(addr, low_speed, ctrl_mps, &setup, NULL, false);
-    proc_usleep(10000);
+    usleep(10000);
 
     memset(&setup, 0, sizeof(setup));
     setup.bmRequestType = USB_REQTYPE_STD_OUT;

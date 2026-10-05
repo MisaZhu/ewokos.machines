@@ -66,7 +66,7 @@ static int check_ux(void* p) {
         core_next_ux(0);
     }
     ipc_enable();
-    proc_usleep(200000);
+    usleep(200000);
     return 0;
 }
 

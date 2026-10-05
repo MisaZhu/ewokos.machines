@@ -1,7 +1,7 @@
 {
-    "fps": 32,
-    "#cursor": "mouse",
+    "fps": 16,
     "cursor": "none",
+    "#cursor": "mouse",
     "##cursor": "touch",
     "gray_mode": 0
 }

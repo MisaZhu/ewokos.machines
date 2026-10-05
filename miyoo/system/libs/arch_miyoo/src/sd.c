@@ -33,10 +33,11 @@ static uint32_t _active_chunk_sectors = 0;
 #define MIYOO_SD_CHECK_HS_ARG 0x00FFFFF1U
 #define MIYOO_SD_SWITCH_HS_ARG 0x80FFFFF1U
 /*
- * 单条 CMD18 的扇区数(32KB)。bounce buffer 可用上限是 127 扇区
- * (第 128 扇区放 ADMA descriptor)，取 64 保持 2 的幂，与
- * miyoo_sd_note_success 的倍增爬升逻辑吻合；出错仍会回落到
- * SAFE_CHUNK 再逐步恢复，不改变任何容错时序。
+ * Sectors per CMD18 (32KB). The usable bounce buffer ceiling is 127 sectors
+ * (sector 128 holds the ADMA descriptor); 64 keeps it a power of two and
+ * matches the doubling ramp-up in miyoo_sd_note_success. On error it still
+ * falls back to SAFE_CHUNK and recovers gradually, leaving every
+ * fault-tolerance timing unchanged.
  */
 #define MIYOO_SD_SYSTEM_FAST_CHUNK  64U
 
@@ -56,7 +57,8 @@ static void miyoo_sd_apply_bus_width(SDMMCBusWidthEmType bus_width) {
     _active_bus_width = bus_width;
     Hal_SDMMC_SetDataWidth(EV_IP_FCIE1, _active_bus_width);
     Hal_SDMMC_SetBusTiming(EV_IP_FCIE1, _active_bus_timing);
-    /* 采样模式不改变实际时钟；仍按当前 8MHz 配置命令间隔。 */
+    /* Sampling mode does not change the real clock; command spacing still
+     * uses the current 8MHz configuration. */
     Hal_SDMMC_SetNrcDelay(EV_IP_FCIE1, MIYOO_SD_REAL_CLK_HZ);
 }
 
@@ -77,7 +79,8 @@ static void miyoo_sd_note_success(void) {
 static void miyoo_sd_note_retryable_error(void) {
     _stable_successes = 0;
     _active_chunk_sectors = MIYOO_SD_SYSTEM_SAFE_CHUNK;
-    /* 只缩小批次。没有卡端协商时不能单独改变主机位宽或采样模式。 */
+    /* Only shrink the batch. Without card-side negotiation the host bus
+     * width or sampling mode must not be changed on its own. */
 }
 
 /*
@@ -96,7 +99,8 @@ static RspErrEmType miyoo_sd_recover(void) {
     Hal_SDMMC_Reset(EV_IP_FCIE1);
     sdmmc_init();
     miyoo_sd_apply_bus_width(_active_bus_width);
-    /* 主机复位不复位卡；停止残留的数据传输并等待 DAT0 释放。 */
+    /* A host reset does not reset the card; stop any lingering data
+     * transfer and wait for DAT0 to release. */
     return miyoo_sd_cmd12(EV_IP_FCIE1);
 }
 
@@ -117,7 +121,8 @@ static RspErrEmType miyoo_sd_run_request(uint8_t cmd, uint32_t sector,
 
     for(attempt = 0; attempt < MIYOO_SD_RETRY_COUNT; attempt++) {
         RspStruct *rsp = _SDMMC_DATAReq(0, cmd, sector, blk_cnt, blk_size, trans_type, buf);
-        /* 响应属于 HAL 共享存储，恢复或下一条命令都会覆盖它。 */
+        /* The response lives in HAL shared storage; recovery or the next
+         * command will overwrite it. */
         err = rsp->eErrCode;
         if(err == EV_STS_OK) {
             miyoo_sd_note_success();
@@ -181,10 +186,12 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
 }
 
 /*
- * CMD6 的检查和切换都必须接收 64 字节状态，不能用 MBR 签名代替。
- * 只在初始化时探测，避免运行期探测覆盖读写共用的 bounce buffer。
- * 返回 1 表示已切换，0 表示不支持或暂忙，-1 表示传输/状态异常。
- * 这里只设置 HS 采样模式，不修改实际 SD 时钟。
+ * The CMD6 check and switch must both receive the 64-byte status; an MBR
+ * signature cannot stand in for it. Probe only at init time so a runtime
+ * probe does not clobber the bounce buffer shared by reads and writes.
+ * Returns 1 if switched, 0 if unsupported or busy, -1 on transfer/status
+ * error. Only the HS sampling mode is set here; the real SD clock is
+ * unchanged.
  */
 static int miyoo_sd_try_high_speed(void) {
     RspStruct *rsp;
@@ -239,7 +246,8 @@ int32_t miyoo_sd_init(void) {
     _stable_successes = 0;
     miyoo_sd_apply_bus_width(boot_bus_width);
 
-    /* 可选探测失败后先结束卡端传输；恢复失败不能伪装成初始化成功。 */
+    /* End the card-side transfer first after an optional probe failure; a
+     * failed recovery must not masquerade as a successful init. */
     int hs = miyoo_sd_try_high_speed();
     if(hs < 0) {
         if(miyoo_sd_recover() != EV_STS_OK)
@@ -292,14 +300,17 @@ static RspErrEmType miyoo_sd_try_read_multi(uint32_t sector, uint32_t count, vol
     RspStruct *rsp;
     RspErrEmType err;
     /*
-     * FCIE5 多块读必须走 ADMA：DMA 模式下 JOB_BLK_CNT 直接等于块数，
-     * 但 Hal_SDMMC_SendCmdAndWaitProcess 的 R_DATA_END 是按 JOB_BLK_CNT
-     * 触发的，控制器硬件不会按 CMD18 的块数自动拆 8 个 block；
-     * ADMA descriptor 里的 u32_JobCnt=chunks 才会驱动多块续传。
+     * FCIE5 multi-block reads must go through ADMA: in DMA mode
+     * JOB_BLK_CNT equals the block count directly, but
+     * Hal_SDMMC_SendCmdAndWaitProcess triggers R_DATA_END by JOB_BLK_CNT and
+     * the controller hardware will not auto-split 8 blocks per the CMD18
+     * block count; only u32_JobCnt=chunks in the ADMA descriptor drives
+     * multi-block continuation.
      *
-     * 重试在多块读这里是反效果：rdata 状态下重复发同一条 CMD18 必然超时，
-     * miyoo_sd_run_request 的 5×2s 耗时会直接打穿上层文件系统的读超时。
-     * 失败就让外层 miyoo_sd_read_blocks 走单块保底路径。
+     * Retrying is counterproductive here: resending the same CMD18 in rdata
+     * state always times out, and miyoo_sd_run_request's 5x2s cost would
+     * blow through the upper filesystem's read timeout. On failure let the
+     * outer miyoo_sd_read_blocks take the single-block fallback path.
      */
     if(count == 1)
         return miyoo_sd_run_request(17, sector, 1, 512, EV_ADMA, buf);
@@ -311,7 +322,8 @@ static RspErrEmType miyoo_sd_try_read_multi(uint32_t sector, uint32_t count, vol
      * CMD18 leaves the card in rdata state with DAT0 busy; the FCIE5 HAL
      * does not auto-issue CMD12, so we must stop the transfer explicitly
      * before the next command (or the very next read will time out).
-     * 失败也照发：把卡从 rdata 拉回 tran，否则后面的单块保底也会卡死。
+     * Send it even on failure: pull the card from rdata back to tran,
+     * otherwise the later single-block fallback will also hang.
      */
     RspErrEmType stop_err = miyoo_sd_cmd12(EV_IP_FCIE1);
     if(err == EV_STS_OK)
@@ -328,9 +340,11 @@ static RspErrEmType miyoo_sd_try_write_multi(uint32_t sector, uint32_t count, co
     if(count == 1)
         return miyoo_sd_run_request(24, sector, 1, 512, EV_DMA, (volatile uint8_t*)buf);
     /*
-     * 与多块读同理：CMD25 失败后卡还滞留在 rcv 态，原地重发同一条
-     * CMD25 只会连环超时(run_request 的 5 次盲重试在这里是反效果)。
-     * 单次尝试，失败让外层退单块保底路径。
+     * Same as multi-block read: after a failed CMD25 the card stays in rcv
+     * state, and resending the same CMD25 in place only times out
+     * repeatedly (run_request's 5 blind retries are counterproductive
+     * here). Single attempt; on failure let the outer layer use the
+     * single-block fallback path.
      */
     rsp = _SDMMC_DATAReq(0, 25, sector, (uint16_t)count, 512, EV_DMA, (volatile uint8_t*)buf);
     err = rsp->eErrCode;
@@ -345,9 +359,10 @@ static RspErrEmType miyoo_sd_try_write_multi(uint32_t sector, uint32_t count, co
 }
 
 /*
- * 单扇区写。不做写后读回校验：数据相 CRC、卡内 ECC 与写后 busy
- * 等待即为完整性保证，读回只是在为历史驱动时序问题支付每笔写的
- * 全额额外读代价。
+ * Single-sector write. No read-back verification after writing: the data
+ * phase CRC, on-card ECC and post-write busy wait are the integrity
+ * guarantee; a read-back would only pay a full extra read per write to
+ * cover historical driver timing problems.
  */
 static int32_t miyoo_sd_write_one(int32_t sector, const uint8_t* src) {
     RspErrEmType err;
@@ -378,13 +393,13 @@ int32_t miyoo_sd_read_blocks(int32_t sector, void* buf, uint32_t count) {
                 count -= chunk;
                 continue;
             }
-            /* 多块失败，退单块重试 */
+            /* multi-block failed, fall back to single-block retry */
             miyoo_sd_note_chunk_error();
             if(miyoo_sd_recover() != EV_STS_OK)
                 return err;
         }
 
-        /* 单块保底 */
+        /* single-block fallback */
         err = miyoo_sd_run_request(17, sector, 1, 512, EV_DMA, _sector_buf);
         if(err != EV_STS_OK)
             return err;
@@ -415,13 +430,13 @@ int32_t miyoo_sd_write_blocks(int32_t sector, const void* buf, uint32_t count) {
                 count -= chunk;
                 continue;
             }
-            /* 多块失败，退单块重试 */
+            /* multi-block failed, fall back to single-block retry */
             miyoo_sd_note_chunk_error();
             if(miyoo_sd_recover() != EV_STS_OK)
                 return err;
         }
 
-        /* 单块保底 */
+        /* single-block fallback */
         err = miyoo_sd_write_one(sector, src);
         if(err != 0)
             return err;

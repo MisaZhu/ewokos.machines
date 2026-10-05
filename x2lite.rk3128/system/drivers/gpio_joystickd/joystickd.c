@@ -201,11 +201,11 @@ static int power_button(vdevice_t* dev, void* p) {
         //close screnn
         rockchip_gpio_set(44, 1);
         printf("power down!\n");
-        proc_usleep(1000);
+        usleep(1000);
         rockchip_gpio_set(122, 0);
     }
     ipc_enable();
-    proc_usleep(200000);
+    usleep(200000);
 }
 
 
