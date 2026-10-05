@@ -659,10 +659,7 @@ int uhci_bulk_xfer(int flat_port, bool low_speed, bool dir_in,
         if (kernel_tic_ms(0) > deadline) {
             return -1; /* NAK budget exhausted: device stays busy */
         }
-        if ((tries % 50) == 0) {
-            usleep(1000);
-        }
-        proc_usleep(1000);
+        usleep(1000);
     }
 }
 

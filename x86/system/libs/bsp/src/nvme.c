@@ -192,13 +192,13 @@ static int admin_submit(nvme_cmd_t *cmd, uint16_t *status_out) {
     sq_doorbell(0, _nv.asq_tail);
 
     /* 轮询完成队列 phase 位; TCG(单线程)下设备完成经 QEMU 主循环
-     * 的 bottom-half 投递, 必须周期性让出 vCPU(proc_usleep -> 内核
+     * 的 bottom-half 投递, 必须周期性让出 vCPU(usleep -> 内核
      * hlt) BH 才能得到执行 */
     for (uint64_t spins = 0; spins < 3000ull; spins++) {
         nvme_cq_entry_t *e = &cq[_nv.acq_head];
         uint16_t p = (e->dw3 >> 16) & 1;
         if ((spins & 0x3F) == 0x3F) {
-            proc_usleep(500);
+            usleep(500);
         }
         if (p == _nv.acq_phase) {
             /* dw3: [15:0]=CID [16]=P(phase) [31:17]=SF(status) */
@@ -252,7 +252,7 @@ static int io_submit(nvme_cmd_t *cmd) {
             return st ? -1 : 0;
         }
         if ((spins & 0x3F) == 0x3F) {
-            proc_usleep(500);
+            usleep(500);
         }
     }
     klog("nvmefsd: io cmd %x cid=%u timeout\n", cmd->opcode, cmd->cid);
@@ -524,7 +524,7 @@ static int32_t bsp_nvme_controller_init(void) {
         for (uint32_t drain = 0; drain < 6000; drain++) {
             nvme_cq_entry_t *e = &_nv.iocq[_nv.iocq_head];
             if (((e->dw3 >> 16) & 1) != _nv.iocq_phase) {
-                proc_usleep(500);
+                usleep(500);
                 continue;
             }
             _nv.iocq_head = (_nv.iocq_head + 1) % IOQ_SIZE;
