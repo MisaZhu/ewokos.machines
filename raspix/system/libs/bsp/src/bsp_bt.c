@@ -195,6 +195,11 @@ int bsp_bt_init(bool recovery) {
         return -1;
     }
     _transport_up = true;
+    /* the mailbox-derived uartclk and the resulting divisors are the first
+       thing to check when the controller never answers HCI_Reset */
+    slog("bluetooth init pl011 clock=%u ibrd=%u fbrd=%u flushed=%d fr=0x%08x\n",
+        bcm283x_pl011_uart_clock_hz(), bcm283x_pl011_uart_ibrd(),
+        bcm283x_pl011_uart_fbrd(), bsp_bt_flush(), get32(UART0_FR_REG));
 
     /* the ROM bootloader needs a moment after BT_ON release before the
        first HCI_Reset is answered (the daemon's 3s command window covers
