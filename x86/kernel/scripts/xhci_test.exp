@@ -31,16 +31,22 @@ proc mon {cmd} {
     exec python3 scripts/hmp.py /tmp/xhci_mon.sock $cmd >@ stdout 2>@ stdout
 }
 
-sleep $quiet
+# 登录逐字符慢速输入: 突发送入在 tty0 串口路径上偶发字节丢失(真实手打
+# 速度不受影响), 用真实键盘节奏保证测试稳定
 expect {
-    -re "login:" { send "root\r" }
+    -re "login:" {}
     timeout { puts "FAIL: no login prompt"; exit 1 }
 }
+foreach ch {r o o t} { send -- "$ch"; after 150 }
+send -- "\r"
 expect {
-    -re "password:" { send "root\r" }
+    -re "password:" {}
     -re ":/home/root" {}
-    timeout {}
+    timeout { puts "FAIL: no password prompt"; exit 1 }
 }
+sleep 1
+foreach ch {r o o t} { send -- "$ch"; after 150 }
+send -- "\r"
 sleep 4
 expect {
     -re ":/home/root" {}
@@ -58,20 +64,46 @@ proc run {cmd pattern desc} {
     set timeout 120
 }
 
-run {ls /dev}                        {hid0}                 {USB: /dev/hid0 存在 (usbhostd)}
-run {ls /mnt/udisk0}                 {usb_marker}           {USB: UHCI MSC 盘自动挂载 (双控制器共存)}
-run {cat /mnt/udisk0/usb_marker.txt} {hello from usb stick} {USB: UHCI bulk 数据回读}
+proc run {cmd pattern desc {tmo 40}} {
+    set timeout $tmo
+    send -- "$cmd\r"
+    expect {
+        -re $pattern { puts "PASS: $desc" }
+        timeout { puts "FAIL: $desc" }
+    }
+    set timeout 120
+}
 
-# ---- 鼠标端到端: mouse_move 10 5 -> xHCI usb-mouse -> /dev/mouse0 ----
-# moused 报文 [btn, dx, dy] = [., 0x0a(=\\n), 0x05]
+run {ls /dev}                        {hid0}                 {USB: /dev/hid0 存在 (usbhostd)}
+
+# MSC 挂载 spawn 在 /dev/hid0 之后由 bsp_usb_poll 驱动, TCG 慢机上可达
+# 数十秒; 90s 窗口内轮询而不是一次等待
+run {ls /mnt/udisk0}                 {usb_marker}           {USB: MSC 盘自动挂载 (双控制器共存)} 90
+run {cat /mnt/udisk0/usb_marker.txt} {hello from usb stick} {USB: MSC bulk 数据回读}
+
+# ---- 鼠标端到端: mouse_move -> xHCI usb-mouse -> /dev/mouse0 ----
+# moused 报文 [btn, dx, dy]; 串口 tty 会在块间插 \r, 报文模式可能跨块断开,
+# 所以反复注入并在整个窗口内等报文字节 (dx=10=0x0a 或 dy=5=0x05 均算到达)
 send -- "cat /dev/mouse0\r"
 sleep 2
-mon "mouse_move 10 5"
-sleep 4
-set timeout 10
+set timeout 30
 expect {
-    -re ".\n\005" { puts "PASS: xHCI 鼠标端到端 (mouse_move 10 5 -> /dev/mouse0)" }
-    timeout { puts "FAIL: xHCI 鼠标端到端" }
+    ":\[0-9]*k? \*mouse0" {}
+    timeout {}
+}
+set got_mouse 0
+for {set i 0} {$i < 8 && !$got_mouse} {incr i} {
+    mon "mouse_move 10 5"
+    sleep 2
+    expect {
+        -re {.\x0a\x05|\x00\x0a|\x05\x00} { set got_mouse 1 }
+        timeout {}
+    }
+}
+if {$got_mouse} {
+    puts "PASS: xHCI 鼠标端到端 (mouse_move -> /dev/mouse0)"
+} else {
+    puts "FAIL: xHCI 鼠标端到端"
 }
 send -- "\x03"
 sleep 1
@@ -81,19 +113,24 @@ expect {
 }
 set timeout 120
 
-# ---- 键盘端到端: QMP 按住 400ms 再释放 -> xHCI usb-kbd -> /dev/keyb0 ----
-# HMP sendkey 按下/释放只隔几 ms, 会被 hid_keybd 的最新快照耗尽塌缩掉;
-# qmp_key.py 按真实键盘语义按住 400ms, 多个轮询周期都能看到按下状态
+# ---- 键盘端到端: QMP 按住 800ms 再释放 -> xHCI usb-kbd -> /dev/keyb0 ----
+# hid_keybd 维护按键快照, 按住期间 /dev/keyb0 可重复读到 make-code 字符
+# ('h' = 0x68); 注入后立即短窗口匹配, 慢机再重试
 send -- "cat /dev/keyb0\r"
 sleep 2
-exec python3 scripts/qmp_key.py /tmp/xhci_qmp.sock h
-sleep 2
-exec python3 scripts/qmp_key.py /tmp/xhci_qmp.sock i
-sleep 3
-set timeout 10
-expect {
-    -re "\[hi\]" { puts "PASS: xHCI 键盘端到端 (QMP hold->usb-kbd->/dev/keyb0)" }
-    timeout { puts "FAIL: xHCI 键盘端到端" }
+set got_key 0
+for {set i 0} {$i < 5 && !$got_key} {incr i} {
+    exec python3 scripts/qmp_key.py /tmp/xhci_qmp.sock h 800
+    set timeout 4
+    expect {
+        -re "h" { set got_key 1 }
+        timeout {}
+    }
+}
+if {$got_key} {
+    puts "PASS: xHCI 键盘端到端 (QMP hold->usb-kbd->/dev/keyb0)"
+} else {
+    puts "FAIL: xHCI 键盘端到端"
 }
 send -- "\x03"
 sleep 1

@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "x86_machine_smp.h"
+#include "x86_platform.h"
 #include "x86_bootinfo.h"
 
 extern uint32_t interrupt_table_start;
@@ -19,6 +20,10 @@ extern uint64_t x86_uefi_bootinfo;
 /* 内存盘 rootfs 物理区间 (bootinfo v3, 0 = 未提供; bsp/sd.c 消费) */
 uint64_t x86_rd_base = 0;
 uint64_t x86_rd_size = 0;
+
+/* 平台特定数据 (sys_info_t.platform_data 的源实例, 供用户态经
+ * SYS_GET_SYS_INFO 读取); 布局见 ../include/x86_platform.h */
+x86_platform_data_t x86_platform_data;
 
 ewokos_addr_t _core_base_offset = 0;
 
@@ -515,11 +520,11 @@ static void x86_parse_bootinfo(void) {
     }
 
     if (bi->fb_addr != 0 && bi->fb_width > 0 && bi->fb_height > 0) {
-        _sys_info.fb.phy_base = bi->fb_addr;
-        _sys_info.fb.width = bi->fb_width;
-        _sys_info.fb.height = bi->fb_height;
-        _sys_info.fb.pitch = bi->fb_pitch;
-        _sys_info.fb.bpp = bi->fb_bpp;
+        x86_platform_data.fb.phy_base = bi->fb_addr;
+        x86_platform_data.fb.width = bi->fb_width;
+        x86_platform_data.fb.height = bi->fb_height;
+        x86_platform_data.fb.pitch = bi->fb_pitch;
+        x86_platform_data.fb.bpp = bi->fb_bpp;
     }
 
     if (bi->version >= 2 && bi->madt_addr != 0 && bi->madt_len >= 44) {
@@ -535,18 +540,18 @@ static void x86_parse_bootinfo(void) {
         if (rd_end <= _sys_info.total_phy_mem_size && bi->rd_base >= 8 * MB) {
             x86_rd_base = bi->rd_base;
             x86_rd_size = bi->rd_size;
-            _sys_info.rd.phy_base = (ewokos_addr_t)bi->rd_base;
-            _sys_info.rd.v_base = (ewokos_addr_t)X86_RAMDISK_VA(x86_rd_base & 0x1FFFFF);
-            _sys_info.rd.size = (uint32_t)bi->rd_size;
+            x86_platform_data.rd.phy_base = (ewokos_addr_t)bi->rd_base;
+            x86_platform_data.rd.v_base = (ewokos_addr_t)X86_RAMDISK_VA(x86_rd_base & 0x1FFFFF);
+            x86_platform_data.rd.size = (uint32_t)bi->rd_size;
         }
     }
 
     printf("boot: uefi bootinfo v%d, firmware %x, mem %dMB",
             bi->version, (uint32_t)bi->firmware_rev,
             (int32_t)(_sys_info.total_phy_mem_size / MB));
-    if (_sys_info.fb.phy_base != 0) {
-        printf(", fb %dx%d@%d\n", _sys_info.fb.width, _sys_info.fb.height,
-                _sys_info.fb.bpp);
+    if (x86_platform_data.fb.phy_base != 0) {
+        printf(", fb %dx%d@%d\n", x86_platform_data.fb.width,
+                x86_platform_data.fb.height, x86_platform_data.fb.bpp);
     } else {
         printf(", no fb\n");
     }
@@ -592,6 +597,8 @@ void sys_info_init_arch(void) {
     x86_detect_smp_topology();
     _sys_info.cores = get_cpu_cores();
     _sys_info.allocable_phy_mem_top = _sys_info.phy_offset + _sys_info.total_usable_mem_size;
+    memcpy(_sys_info.platform_data, &x86_platform_data,
+            sizeof(x86_platform_data));   /* 用户态经 SYS_GET_SYS_INFO 可见 */
 }
 
 /* 取/建下一级页表 (与 mmu_arch.c next_table 同手法) */
@@ -656,13 +663,13 @@ static void x86_map_ramdisk_vm(page_dir_entry_t* vm) {
 /* GOP 帧缓冲 2MB 大页映射到 X86_FB_VA 窗口 (vgacon GOP 控制台):
  * UEFI 机器 0xB8000 文本区不接显示, 帧缓冲是唯一可见输出 */
 static void x86_map_fb_vm(page_dir_entry_t* vm) {
-    if (_sys_info.fb.phy_base == 0 || _sys_info.fb.pitch == 0 ||
-            _sys_info.fb.height == 0 || _sys_info.fb.bpp < 16) {
+    if (x86_platform_data.fb.phy_base == 0 || x86_platform_data.fb.pitch == 0 ||
+            x86_platform_data.fb.height == 0 || x86_platform_data.fb.bpp < 16) {
         return;
     }
-    uint64_t fb_size = (uint64_t)_sys_info.fb.pitch * _sys_info.fb.height;
-    uint64_t pstart = _sys_info.fb.phy_base & ~0x1FFFFFULL;
-    uint64_t pend = (_sys_info.fb.phy_base + fb_size + 0x1FFFFFULL) & ~0x1FFFFFULL;
+    uint64_t fb_size = (uint64_t)x86_platform_data.fb.pitch * x86_platform_data.fb.height;
+    uint64_t pstart = x86_platform_data.fb.phy_base & ~0x1FFFFFULL;
+    uint64_t pend = (x86_platform_data.fb.phy_base + fb_size + 0x1FFFFFULL) & ~0x1FFFFFULL;
     uint32_t idx = (X86_FB_VA >> 21) & 0x1FF;
     page_table_entry_t *pdpt = x86_vm_next_table((page_table_entry_t *)vm,
             PAGE_PML4_INDEX(X86_FB_VA));
@@ -689,6 +696,12 @@ void arch_vm(page_dir_entry_t* vm) {
      * 内核与所有任务页表通写, 不参与 per-process 页表回收。
      * AP_RW_RW: console_handoff 后由用户态 vgacond (/dev/vga0) 接管续写 */
     map_pages_size(vm, X86_VGA_TEXT_VADDR, X86_VGA_TEXT_PHYS, PAGE_SIZE,
+            AP_RW_RW, PTE_ATTR_DEV);
+    /* VGA 文本低恒等页 (VA 0xB8000, 用户可写): 自 kernel.c
+     * clone_kernel_vm 的每进程 map_page_ref 移入 —— 消费者 (vgacond
+     * 文本回退/内核早期) 均已迁移或走 boot_pml4 低恒等, 内核 VM 一次性
+     * 映射即可; 不用 map_page_ref: arch_vm 时 _pages_ref 未初始化 */
+    map_pages_size(vm, X86_VGA_TEXT_PHYS, X86_VGA_TEXT_PHYS, PAGE_SIZE,
             AP_RW_RW, PTE_ATTR_DEV);
     x86_map_ramdisk_vm(vm);
     x86_map_fb_vm(vm);                   /* fb 映射进内核 VM (PDPT[2] 共享);
@@ -739,11 +752,11 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
     /* GOP 帧缓冲: QEMU 落在 0x80000000, 真机固件可能给 <0x80000000
      * (如 0x60000000) 或 4GB 以上 —— 4GB 以上由下方 PCI 洞规则放行,
      * 这里按 bootinfo 上报的 fb 区间精确放行 (大小 = pitch*height) */
-    if (_sys_info.fb.phy_base != 0 && _sys_info.fb.pitch > 0 &&
-            _sys_info.fb.height > 0) {
-        uint64_t fb_size = (uint64_t)_sys_info.fb.pitch * _sys_info.fb.height;
-        if ((uint64_t)phy_base >= _sys_info.fb.phy_base &&
-                (uint64_t)map_end <= _sys_info.fb.phy_base + fb_size) {
+    if (x86_platform_data.fb.phy_base != 0 && x86_platform_data.fb.pitch > 0 &&
+            x86_platform_data.fb.height > 0) {
+        uint64_t fb_size = (uint64_t)x86_platform_data.fb.pitch * x86_platform_data.fb.height;
+        if ((uint64_t)phy_base >= x86_platform_data.fb.phy_base &&
+                (uint64_t)map_end <= x86_platform_data.fb.phy_base + fb_size) {
             return 0;
         }
     }

@@ -1,6 +1,6 @@
-@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
+#@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
 @/bin/ipcserv /sbin/sessiond
-@/bin/bgrun /bin/session -r -t /dev/tty0
+#@/bin/bgrun /bin/session -r -t /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand        
 @/bin/ipcserv /drivers/x86/fbdisplayd      /dev/disp0

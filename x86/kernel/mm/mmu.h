@@ -16,4 +16,9 @@
 #undef ALLOCABLE_PAGE_DIR_SIZE
 #define ALLOCABLE_PAGE_DIR_SIZE       (ALIGN_UP(2 * (_sys_info.total_phy_mem_size / KB), PAGE_SIZE))
 
+/* 同因防护: kmalloc_size 若被 kernel.conf 配成非页对齐值, KMALLOC_END
+ * (即 sys_dma 基址的上游) 不对齐会让设备 DMA 拿到错误物理地址 */
+#undef KMALLOC_END
+#define KMALLOC_END                   (ALIGN_UP(KMALLOC_BASE + _sys_info.kmalloc_size, PAGE_SIZE))
+
 #endif

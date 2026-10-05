@@ -3,6 +3,7 @@
 #include <bsp/x86_pio.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
+#include <x86_platform.h>
 
 #define PCI_CFG_ADDR_PORT 0xCF8
 #define PCI_CFG_DATA_PORT 0xCFC
@@ -138,8 +139,9 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
     /* UEFI 启动: 固件(GOP)已配置好线性帧缓冲, 直接映射使用, 不再动 DISPI 寄存器 */
-    if (sysinfo.fb.phy_base != 0 && sysinfo.fb.width > 0 && sysinfo.fb.height > 0) {
-        uint32_t fbsize = sysinfo.fb.pitch * sysinfo.fb.height;
+    const x86_platform_data_t *pd = x86_platform_data_of(sysinfo);
+    if (pd->fb.phy_base != 0 && pd->fb.width > 0 && pd->fb.height > 0) {
+        uint32_t fbsize = pd->fb.pitch * pd->fb.height;
         uint32_t fbsize_max = align_up(fbsize, 4096);
         fbinfo_reset();
         /* VA 固定 0xB8400000 (PD 450+): 不能用 sys_dma 末尾 (0xB2000000 起
@@ -148,16 +150,16 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
         _fbinfo.pointer = (void *)0xB8400000UL;
         _fbinfo.size = fbsize;
         _fbinfo.size_max = fbsize_max;
-        _fbinfo.width = sysinfo.fb.width;
-        _fbinfo.height = sysinfo.fb.height;
-        _fbinfo.vwidth = sysinfo.fb.width;
-        _fbinfo.vheight = sysinfo.fb.height;
-        _fbinfo.depth = sysinfo.fb.bpp;
-        _fbinfo.pitch = sysinfo.fb.pitch;
+        _fbinfo.width = pd->fb.width;
+        _fbinfo.height = pd->fb.height;
+        _fbinfo.vwidth = pd->fb.width;
+        _fbinfo.vheight = pd->fb.height;
+        _fbinfo.depth = pd->fb.bpp;
+        _fbinfo.pitch = pd->fb.pitch;
         _fbinfo.xoffset = 0;
         _fbinfo.yoffset = 0;
         _fbinfo.dma_id = -1;
-        _fbinfo.phy_base = sysinfo.fb.phy_base;
+        _fbinfo.phy_base = pd->fb.phy_base;
         if (syscall3(SYS_MEM_MAP,
                 (ewokos_addr_t)_fbinfo.pointer,
                 (ewokos_addr_t)_fbinfo.phy_base,

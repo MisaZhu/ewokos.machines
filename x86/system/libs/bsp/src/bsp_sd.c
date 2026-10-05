@@ -3,6 +3,7 @@
 #include <bsp/bsp_ahci.h>
 #include <sd/sd.h>
 #include <sysinfo.h>
+#include <x86_platform.h>
 #include <ewoksys/syscall.h>
 #include <string.h>
 #include <stdint.h>
@@ -124,23 +125,24 @@ static int32_t rd_init(void) {
     sys_info_t sysinfo;
     ewokos_addr_t ret;
     int32_t src = (int32_t)syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+    const x86_platform_data_t *pd = x86_platform_data_of(sysinfo);
     klog("sdfsd: rd probe src=%d machine=%s mem=%llx phy=%llx size=%x\n",
             src, sysinfo.machine, (unsigned long long)sysinfo.total_phy_mem_size,
-            (unsigned long long)sysinfo.rd.phy_base, sysinfo.rd.size);
-    if (sysinfo.rd.size == 0 || sysinfo.rd.phy_base == 0) {
+            (unsigned long long)pd->rd.phy_base, pd->rd.size);
+    if (pd->rd.size == 0 || pd->rd.phy_base == 0) {
         return -1;
     }
     /* VA 选在用户地址空间空闲位置 (与 ahci.c map_bar 的 0x50000000 错开) */
     ewokos_addr_t va = 0x60000000;
-    ret = syscall3(SYS_MEM_MAP, va, sysinfo.rd.phy_base,
-            sysinfo.rd.size);
+    ret = syscall3(SYS_MEM_MAP, va, pd->rd.phy_base,
+            pd->rd.size);
     klog("sdfsd: rd map va=%llx ret=%llx\n",
             (unsigned long long)va, (unsigned long long)ret);
     if (ret != va) {
         return -1;
     }
     _rd_va = (uint8_t *)va;
-    _rd_size = sysinfo.rd.size;
+    _rd_size = pd->rd.size;
     return 0;
 }
 

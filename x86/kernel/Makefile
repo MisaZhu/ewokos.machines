@@ -30,7 +30,7 @@ ESP_SIZE_MB = 64
 
 # ---- 可引导 ISO (Ventoy/CDROM; UEFI 路径把 rootfs 拷入内存盘) ----
 OS_ISO = ewokos.iso
-ISO_ROOTFS = $(SYS_DIR)/root_$(ARCH)_iso.img
+ISO_ROOTFS = $(SYS_DIR)/root_$(ARCH).img
 # ESP 4MB 足够 (只放 BOOTX64.EFI): mformat 默认生成合法 FAT12;
 # 不可超 32MiB —— El Torito EFI 条目 SectorCount 为 16 位 (≤65535 个
 # 512B 扇区)。注意: mformat 配方改动后必须 rm esp_iso.img 强制重建,
@@ -76,6 +76,9 @@ EWOKOS_ROOT_DIR = $(ewokos)
 MACHINE = x86
 SYS_DIR = ../system
 SYS_ROOTFS = $(SYS_DIR)/root_$(ARCH).img
+
+CFLAGS += -I ../include
+export CFLAGS
 
 include make.bsp
 include $(EWOKOS_ROOT_DIR)/kernel/platform/$(ARCH)/make.rule

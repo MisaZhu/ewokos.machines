@@ -22,6 +22,7 @@
 #include <ewoksys/mmio.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
+#include <x86_platform.h>
 #include "fb_font.h"
 
 #define VGA_TEXT_VADDR  0xBE000000UL    /* 内核为所有任务映射的用户可写恒等页 */
@@ -216,15 +217,16 @@ static int fb_init(void) {
     if (syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo) != 0) {
         return -1;
     }
-    if (sysinfo.fb.phy_base == 0 || sysinfo.fb.pitch == 0 ||
-            sysinfo.fb.height == 0 || sysinfo.fb.width == 0 ||
-            sysinfo.fb.bpp < 16) {
+    const x86_platform_data_t *pd = x86_platform_data_of(sysinfo);
+    if (pd->fb.phy_base == 0 || pd->fb.pitch == 0 ||
+            pd->fb.height == 0 || pd->fb.width == 0 ||
+            pd->fb.bpp < 16) {
         return -1;                           /* 无 GOP (BIOS 机器) */
     }
-    _fb_w = sysinfo.fb.width;
-    _fb_h = sysinfo.fb.height;
-    _fb_pitch = sysinfo.fb.pitch;
-    _fb_bpp = sysinfo.fb.bpp;
+    _fb_w = pd->fb.width;
+    _fb_h = pd->fb.height;
+    _fb_pitch = pd->fb.pitch;
+    _fb_bpp = pd->fb.bpp;
     _fb_scale = (_fb_w >= 1600) ? 2 : 1;
     _fb_cols = _fb_w / (8 * _fb_scale);
     _fb_rows = _fb_h / (16 * _fb_scale);
@@ -234,7 +236,7 @@ static int fb_init(void) {
     void *va = (void *)0x40000000UL;
     uint32_t size = _fb_pitch * _fb_h;
     if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)va,
-            (ewokos_addr_t)sysinfo.fb.phy_base, (ewokos_addr_t)size) != 0) {
+            (ewokos_addr_t)pd->fb.phy_base, (ewokos_addr_t)size) != 0) {
         return -1;
     }
     _fb = (volatile uint8_t *)va;

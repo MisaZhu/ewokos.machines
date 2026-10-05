@@ -23,6 +23,7 @@
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/sys.h>
+#include <ewoksys/syscall.h>
 #include <bsp/xhci.h>
 
 /* x86 store ordering vs MMIO: mfence drains the store buffer before any
@@ -106,8 +107,13 @@ static inline void put32(ewokos_addr_t addr, uint32_t val) {
 #define PORTSC_CEC       (1u << 23)
 #define PORTSC_CHANGE_BITS (PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | \
         PORTSC_OCC | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC)
-/* bits safe to write back unchanged (RW, not RW1C, not reserved-preserve) */
-#define PORTSC_PRESERVE  (PORTSC_PP | (3u << 14) | (7u << 25))
+/* bits safe to write back unchanged (RW, not RW1C, not reserved-preserve).
+ * WOE/WDE/WCE (wake on connect/disconnect/over-current, bits 13-15) are
+ * deliberately NOT preserved: after the BIOS handoff they keep routing
+ * port events to firmware SMI handlers on real hardware (every keystroke
+ * costs an SMI and the box crawls, then wedges). Clear them like Linux
+ * does once the OS owns the controller. */
+#define PORTSC_PRESERVE  (PORTSC_PP | (7u << 25))
 
 /* runtime registers: interrupter 0 register set */
 #define XHCI_IR0_IMAN    0x20
@@ -242,8 +248,17 @@ static uint32_t xhci_pick_page_size(ewokos_addr_t op_base) {
     return 4096;
 }
 
+/* xHCI DMA pool CPU window: mapped explicitly via SYS_MEM_MAP into the
+ * per-process private PDPT[1] range, next to the BAR windows (ahci
+ * 0x50000000, nvme 0x51000000, xHCI BAR 0x51400000). The dma_alloc()
+ * v_base window hangs off the SHARED kernel PDPT[2] tables, where a
+ * recycled dma node's new owner rewrites PTEs out from under live
+ * drivers, and the identity window (PDPT[0]) can be shadowed by stale
+ * TLB state from earlier user mappings — both observed as a driver
+ * reading zeros from rings the controller had filled. */
+#define XHCI_POOL_VA  0x51800000ul
+
 int xhci_dma_init(void) {
-    /* over-allocate one boundary so the pool can start on a 64KB line */
     ewokos_addr_t raw = dma_alloc(0, XHCI_DMA_POOL_SIZE + XHCI_RING_BOUNDARY);
     if (raw == 0) {
         klog("xhci: dma pool alloc failed (%u bytes)\n",
@@ -255,12 +270,16 @@ int xhci_dma_init(void) {
         klog("xhci: dma pool phy addr failed\n");
         return -1;
     }
-    /* the DMA window is mapped linearly, so the same pad aligns both views;
-       XHCI_DMA_BUS_OFFSET is 0 on x86 and does not disturb it */
     uint32_t pad = (uint32_t)((XHCI_RING_BOUNDARY - (phy & (XHCI_RING_BOUNDARY - 1u)))
             & (XHCI_RING_BOUNDARY - 1u));
-    _pool.virt = (uint8_t*)(raw + pad);
-    _pool.bus = (uint64_t)(phy + pad) + XHCI_DMA_BUS_OFFSET;
+    ewokos_addr_t pool_phy = phy + pad;
+    if (syscall3(SYS_MEM_MAP, XHCI_POOL_VA, pool_phy,
+            XHCI_DMA_POOL_SIZE) != XHCI_POOL_VA) {
+        klog("xhci: pool map va=%lx failed\n", (unsigned long)XHCI_POOL_VA);
+        return -1;
+    }
+    _pool.virt = (uint8_t*)XHCI_POOL_VA;
+    _pool.bus = (uint64_t)pool_phy + XHCI_DMA_BUS_OFFSET;
     _pool.used = 0;
     memset(_pool.virt, 0, XHCI_DMA_POOL_SIZE);
     memset(_arenas, 0, sizeof(_arenas));
@@ -574,6 +593,55 @@ static int xhci_cmd(xhci_hc_t* hc, uint32_t d0, uint32_t d1, uint32_t d2,
 
 /* ---------------- controller init ---------------- */
 
+/*
+ * BIOS ownership handoff (xHCI 1.2 7.1 / Intel PCH EDS). Real firmware
+ * (AMI Aptio on e.g. Intel PCH) may still own the controller when the OS
+ * starts: the xECP with ID 1 (USB Legacy Support) latches BIOS-owned and
+ * keeps legacy SMIs rooted at the controller. While owned, USBCMD/PORTSC
+ * writes can be swallowed and ports never enumerate. Claim it: set the
+ * OS Owned Semaphore, wait for BIOS to drop its semaphore (Linux
+ * force-clears it on timeout - some firmware never does), then silence
+ * the legacy SMIs in USBLEGCTLSTS. QEMU has no LEGSUP cap, so the xECP
+ * walk just finds nothing there.
+ */
+#define XHCI_XECP_ID_LEGSUP      1
+#define XHCI_LEGSUP_BIOS_OWNED   (1u << 16) /* RO */
+#define XHCI_LEGSUP_OS_OWNED     (1u << 24) /* RW */
+#define XHCI_LEGSUP_TIMEOUT_MS   3000
+
+static void xhci_bios_handoff(ewokos_addr_t cap_base) {
+    uint32_t ecp = (get32(cap_base + XHCI_HCCPARAMS1) >> 16) & 0xffffu;
+    int hops = 0;
+
+    while (ecp != 0 && hops++ < 16) {
+        ewokos_addr_t cap = cap_base + (ewokos_addr_t)ecp * 4u;
+        uint32_t d0 = get32(cap);
+        uint32_t id = d0 & 0xffu;
+        uint32_t next = (d0 >> 8) & 0xffu;
+
+        if (id == XHCI_XECP_ID_LEGSUP) {
+            if ((d0 & (XHCI_LEGSUP_BIOS_OWNED | XHCI_LEGSUP_OS_OWNED)) == 0) {
+                return; /* unowned: nothing to negotiate */
+            }
+            put32(cap, d0 | XHCI_LEGSUP_OS_OWNED);
+            uint64_t deadline = now_ms() + XHCI_LEGSUP_TIMEOUT_MS;
+            while ((get32(cap) & XHCI_LEGSUP_BIOS_OWNED) != 0) {
+                if (now_ms() > deadline) {
+                    klog("xhci: BIOS handoff timeout, forcing ownership\n");
+                    put32(cap, XHCI_LEGSUP_OS_OWNED | XHCI_LEGSUP_BIOS_OWNED);
+                    break;
+                }
+                usleep(1000);
+            }
+            /* USBLEGCTLSTS: clear the SMI enables so firmware stops
+               routing controller events to SMI handlers */
+            put32(cap + 4, 0);
+            return;
+        }
+        ecp = next;
+    }
+}
+
 int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     memset(hc, 0, sizeof(*hc));
     hc->id = id;
@@ -599,6 +667,10 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
         hc->max_slots = XHCI_MAX_SLOTS;
     }
     hc->csz = (get32(cap_base + XHCI_HCCPARAMS1) & (1u << 2)) ? 64 : 32;
+
+    /* must precede any operational-register access: while BIOS-owned the
+       firmware may revert our writes */
+    xhci_bios_handoff(cap_base);
 
     /* halt, then reset */
     uint64_t deadline = now_ms() + XHCI_RESET_TIMEOUT_MS;
@@ -680,12 +752,13 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
         usleep(100);
     }
 
-    /* power up all root ports */
+    /* power up all root ports + strip firmware wake-routing (WOE/WDE/WCE):
+       with them armed, port activity keeps firing BIOS SMI handlers long
+       after the LEGSUP handoff */
     for (uint32_t p = 1; p <= hc->num_ports; ++p) {
         uint32_t sc = get32(hc->op + XHCI_PORTSC(p));
-        if ((sc & PORTSC_PP) == 0) {
-            put32(hc->op + XHCI_PORTSC(p), (sc & PORTSC_PRESERVE) | PORTSC_PP);
-        }
+        put32(hc->op + XHCI_PORTSC(p),
+                (sc & PORTSC_PRESERVE) | PORTSC_PP);
     }
 
     hc->present = true;

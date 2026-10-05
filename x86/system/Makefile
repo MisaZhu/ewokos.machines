@@ -36,7 +36,13 @@ gui: gui_sys
 x: x_sys
 	@$(MAKE) final
 
-basic_sys: kernel_heads ewok_heads
+# 平台头文件暂存: x86_platform.h (sys_info_t.platform_data 布局) 供
+# 用户态驱动解析, 与 kernel_heads 暂存的共享 sysinfo.h 配对使用
+platform_headers:
+	mkdir -p $(BUILD_DIR)/include
+	cp ../include/x86_platform.h $(BUILD_DIR)/include/
+
+basic_sys: kernel_heads ewok_heads platform_headers
 	rm -f $(BUILD_DIR)/lib/libbsp.a
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
 	$(MAKE) -C libs
@@ -75,15 +81,30 @@ ifeq ($(FS),)
 FS=ext3
 endif
 
-# rootfs 镜像大小 (MB), 默认 512; make sd-iso 用 128 (内存盘 rootfs)
+# rootfs 镜像大小 (MB): 单一镜像同时服务 hdd 引导 (内核直读, 可持久化)
+# 与 ISO/UEFI 引导 (整个拷入内存盘, 128MB 在 512MB RAM 下实证可跑完整
+# GUI 栈)。128 上限 = 内存盘路径的 RAM 预算约束。
 ifeq ($(ROOTFS_MB),)
-ROOTFS_MB=512
+ROOTFS_MB=128
 endif
 
 SD = root_$(ARCH).img
+# 成像自 staging (FINAL_DIR)。staging 为空时尝试跑 final 从
+# $(BUILD_DIR)/rootfs 同步 (final 会消费该目录); 两者皆无则明确报错 ——
+# 首次构建请先 `make all`。
 sd:
+	@if [ -z "$$(ls -A $(FINAL_DIR) 2>/dev/null)" ]; then \
+		if [ ! -d "$(BUILD_DIR)/rootfs" ]; then \
+			echo "ERROR: no rootfs staging ('$(FINAL_DIR)' empty and '$(BUILD_DIR)/rootfs' missing) -- run 'make all' first"; \
+			exit 1; \
+		fi; \
+		$(MAKE) final; \
+	fi
+	@if [ -z "$$(ls -A $(FINAL_DIR) 2>/dev/null)" ]; then \
+		echo "ERROR: rootfs staging '$(FINAL_DIR)' is empty -- run 'make all' first"; \
+		exit 1; \
+	fi
 	@echo "\n====building ${FS} format sdcard image===="
-#512M ext2/ext3 sd
 	dd if=/dev/zero of=${SD} bs=1k count=$(shell expr ${ROOTFS_MB} \* 1024)
 #make ext2/ext3 fs with: block_size=4096 inode_size=128
 	mke2fs -t ${FS} -b 4096 -I 128 ${SD}
@@ -93,7 +114,7 @@ sd:
 
 	@echo "==== ${FS} format sdcard image created  ====\n"
 
-# ISO 用精简 rootfs 镜像 (~128MB, UEFI 引导时 BOOTX64.EFI 拷入内存盘)
-SD_ISO = root_$(ARCH)_iso.img
+# ISO 与 hdd 共用同一 rootfs 镜像 (root_x86.img); sd-iso 保留为兼容别名
+SD_ISO = root_$(ARCH).img
 sd-iso:
 	@$(MAKE) --no-print-directory sd SD=${SD_ISO} ROOTFS_MB=128

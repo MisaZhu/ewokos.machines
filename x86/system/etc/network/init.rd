@@ -1,4 +1,4 @@
-@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
+#@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
 
 @/bin/ipcserv /drivers/timerd
 @/bin/ipcserv /drivers/piped  /dev/pipe0
@@ -6,4 +6,4 @@
 @/bin/ipcserv /drivers/nulld /dev/null
 
 @/bin/ipcserv /sbin/sessiond
-@/bin/bgrun /bin/session -r -t /dev/tty0
+#@/bin/bgrun /bin/session -r -t /dev/tty0

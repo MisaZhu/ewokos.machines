@@ -25,8 +25,11 @@
 #include <ewoksys/ewokdef.h>
 #include <usb/usb_defs.h>
 
-#define XHCI_MAX_PORTS      8
-#define XHCI_MAX_SLOTS      16
+/* real PCH xHCs expose up to ~20 root ports and enable >16 slots; the
+   caps below are only sanity ceilings, everything scales with what the
+   controller reports (HCSPARAMS1) */
+#define XHCI_MAX_PORTS      32
+#define XHCI_MAX_SLOTS      32
 #define XHCI_MAX_EPS        32   /* device context entries (DCI 0..31) */
 
 /* xHCI/USB speed IDs (PORTSC.PS and slot context speed field) */

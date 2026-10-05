@@ -12,6 +12,8 @@
 #include <string.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/proc.h>
+#include <ewoksys/kernel_tic.h>
+#include <ewoksys/klog.h>
 
 #define PCI_CFG_ADDR_PORT 0xCF8
 #define PCI_CFG_DATA_PORT 0xCFC
@@ -576,6 +578,17 @@ int uhci_bulk_xfer(int flat_port, bool low_speed, bool dir_in,
     if (hc == NULL || len == 0) {
         return -1;
     }
+    /*
+     * NAK 重试按"总时长预算"而不是按次数封顶。每次 data_xfer 对 NAK 中的
+     * 端点会等满 timeout_ms (数据阶段 2s), 旧的 3000 次重试上限让一次
+     * 卡住的扇区读把调用方 (usbhostd 主循环, 单任务 server) 钉住几分钟
+     * 到几小时 —— U 盘控制器内部 GC/写平衡让 bulk 端点 NAK 几秒在真机
+     * 上很常见, 这正是"U 盘在位则键鼠冻死、拔盘恢复"的根因。预算取
+     * timeout_ms 总量 (与单次尝试同量级): 闪存 GC 通常亚秒级完成, 更久
+     * 的 NAK 当作硬错误交由上层 recover/重试。每次重试让出 1ms, NAK
+     * 窗口内系统其余部分保持可调度。
+     */
+    uint64_t deadline = kernel_tic_ms(0) + timeout_ms;
     for (;;) {
         ret = uhci_data_xfer(hc, low_speed, dir_in, addr, ep, mps, toggle,
                 data, len, timeout_ms);
@@ -587,9 +600,10 @@ int uhci_bulk_xfer(int flat_port, bool low_speed, bool dir_in,
         if (++tries >= UHCI_BULK_NAK_RETRIES) {
             return -1;
         }
-        if ((tries % 50) == 0) {
-            proc_usleep(1000);
+        if (kernel_tic_ms(0) > deadline) {
+            return -1; /* NAK budget exhausted: device stays busy */
         }
+        proc_usleep(1000);
     }
 }
 
@@ -782,6 +796,8 @@ int uhci_init(void) {
                 _ctrls[count].func = func;
                 _ctrls[count].io_base = io_base;
                 if (uhci_init_controller(&_ctrls[count]) == 0) {
+                    klog("bsp_usb: uhci%d at %02x:%02x.%x io=%04x\n",
+                            count, bus, dev, func, io_base);
                     count++;
                 }
                 else {

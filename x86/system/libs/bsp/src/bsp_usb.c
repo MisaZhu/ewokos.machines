@@ -84,6 +84,7 @@ struct bsp_usb_dev {
     uint32_t int_interval_ms;
     uint64_t int_next_ms;
     uint32_t int_idle_polls;
+    uint8_t dbg_polls; /* 输入链路诊断: 已跟踪的前几次 poll */
 };
 
 static bsp_usb_dev_t _devs[BSP_USB_MAX_DEVS];
@@ -548,8 +549,10 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     setup.wValue = addr;
     if (uhci_control_xfer(flat, speed == BSP_USB_SPEED_LOW, 0, 8,
             &setup, NULL, false) < 0) {
+        klog("bsp_usb: uhci set_address failed flat=%d speed=%d\n", flat, speed);
         return NULL;
     }
+    klog("bsp_usb: uhci attached addr=%u flat=%d speed=%d\n", addr, flat, speed);
     proc_usleep(10000); /* USB spec: new address is valid after 2ms */
 
     memset(dev, 0, sizeof(*dev));
@@ -679,6 +682,15 @@ int bsp_usb_int_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
         return 0;
     }
     now = kernel_tic_ms(0);
+    /* 输入链路诊断: 每个 HCD 设备只跟踪前 5 次到达 cadence 判定的 poll,
+     * 输出内部调度状态 (now/next/idle/toggle), 静默期零输出。 */
+    if (dev->dbg_polls < 5) {
+        dev->dbg_polls++;
+        klog("bsp_usb: int_poll addr=%u ep=%02x now=%u next=%u idle=%u tgl=%u\n",
+                dev->addr, ep_addr, (uint32_t)now,
+                (uint32_t)dev->int_next_ms, dev->int_idle_polls,
+                dev->int_toggle);
+    }
     if (now < dev->int_next_ms) {
         return 0;
     }
@@ -751,7 +763,7 @@ int bsp_usb_ep_clear_halt(bsp_usb_dev_t* dev, uint8_t ep_addr) {
 
 /* ---------------- mass storage (bulk-only transport) ---------------- */
 
-#define MSC_BULK_TIMEOUT_MS 2000u
+#define MSC_BULK_TIMEOUT_MS 800u  /* 单次数据阶段上限: 坏盘一次读最多吃 usbhostd 0.8s (HID 间隙有界) */
 #define MSC_CBW_TIMEOUT_MS 500u
 
 /* one bulk transaction; uhci_bulk_xfer already retries pure NAKs */

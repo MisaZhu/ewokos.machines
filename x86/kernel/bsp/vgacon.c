@@ -12,6 +12,7 @@
  */
 #include <mm/mmu.h>
 #include "arch.h"
+#include "x86_platform.h"
 #include "fb_font.h"
 
 /* boot.S 的早期页表 (低 VA 恒等 = 物理地址); CR3 等于它说明还在重映射
@@ -169,20 +170,19 @@ static void fb_putchar(char c) {
 
 /* hw_info_arch.c: fb 映射 (arch_vm) 完成后调用, 启用 GOP 控制台 */
 void vgacon_fb_ready(void) {
-    if (_sys_info.fb.pitch == 0 || _sys_info.fb.height == 0 ||
-            _sys_info.fb.bpp < 16 || _sys_info.fb.width == 0) {
-        printf("vgacon_fb_ready: 参数不完整, 留在 VGA 文本后端\n");
+    if (x86_platform_data.fb.pitch == 0 || x86_platform_data.fb.height == 0 ||
+            x86_platform_data.fb.bpp < 16 || x86_platform_data.fb.width == 0) {
         return;
     }
-    _fb_w = _sys_info.fb.width;
-    _fb_h = _sys_info.fb.height;
-    _fb_pitch = _sys_info.fb.pitch;
-    _fb_bpp = _sys_info.fb.bpp;
+    _fb_w = x86_platform_data.fb.width;
+    _fb_h = x86_platform_data.fb.height;
+    _fb_pitch = x86_platform_data.fb.pitch;
+    _fb_bpp = x86_platform_data.fb.bpp;
     _fb_scale = (_fb_w >= 1600) ? 2 : 1;
     _fb_cols = _fb_w / (FB_GLYPH_W * _fb_scale);
     _fb_rows = _fb_h / (FB_GLYPH_H * _fb_scale);
     _fb = (volatile uint8_t *)(uintptr_t)X86_FB_VA +
-            (uint32_t)(_sys_info.fb.phy_base & 0x1FFFFF);
+            (uint32_t)(x86_platform_data.fb.phy_base & 0x1FFFFF);
     _fb_cx = _vga_col;                       /* 续写文本阶段的列位置 */
     _fb_cy = 0;
     fb_fill_screen();
@@ -221,6 +221,16 @@ void vgacon_write(const char* s, uint32_t len) {
     }
     if (!_vga_init) {
         vgacon_init();
+    }
+    if (!_fb_ready) {
+        /* 惰性激活: fb 窗口仅在内核 VM (PDPT[2]) 映射, CR3 切换前写入
+         * 会踩未映射页 —— boot_pml4 阶段保持 VGA 文本后端, 切换后首个
+         * kout 激活 GOP (真机 UEFI 唯一可见输出) */
+        uint64_t cr3;
+        __asm__ volatile("movq %%cr3, %0" : "=r"(cr3));
+        if (cr3 != (uint64_t)(uintptr_t)&boot_pml4 && 0) {   /* BISECT: lazy 禁用 */
+            vgacon_fb_ready();
+        }
     }
     if (_fb_ready) {
         for (uint32_t i = 0; i < len; ++i) {

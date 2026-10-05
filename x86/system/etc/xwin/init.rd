@@ -1,6 +1,8 @@
-@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
+# 串口控制台关闭: 目标机无串口, ttyd/悬空串口线只带来噪声输入与回显洪水
+# (ttyd 高占用根源)。需要串口台时取消下面两行注释。
+#@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
 @/bin/ipcserv /sbin/sessiond
-@/bin/bgrun /bin/session -r -t /dev/tty0
+#@/bin/bgrun /bin/session -r -t /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/x86/fbdisplayd /dev/disp0

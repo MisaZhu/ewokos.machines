@@ -13,7 +13,8 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 # installs libg2dclient's headers, so on a clean build the installed copies
 # do not exist yet. g2d_arch.o (built here) includes <openlibm.h> under
 # ARCH_BOOST, hence the openlibm source include.
-CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
+CFLAGS += -I $(MAKEINC_DIR)/../include \
+	-I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/platform/$(ARCH)/include/$(ARCH) \
 	-I $(SYS_DIR)/basic/libs/sd/include \
 	-I $(SYS_DIR)/basic/libs/gpio/include \
