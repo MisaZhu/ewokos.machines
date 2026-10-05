@@ -13,6 +13,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/basic/libs/gpio/include \
 	-I $(SYS_DIR)/basic/libs/usb/include \
 	-I $(SYS_DIR)/basic/libs/hid/include \
+	-I $(SYS_DIR)/basic/libs/bt/include \
 	-I $(SYS_DIR)/gui/libs/g2dclient/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
@@ -20,7 +21,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 # (vc_g2d/v3d_g2d and the generated QPU kernels) lives in libs/videocore and
 # reaches the binaries through -lvideocore in BSP_LFLAGS.
 LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_fb.o $(ARCH)/src/bsp_gpio.o $(ARCH)/src/bsp_spi.o \
-	$(ARCH)/src/bsp_nvme.o $(ARCH)/src/bsp_usb.o \
+	$(ARCH)/src/bsp_nvme.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_bt.o \
 	$(ARCH)/src/g2d/bsp_g2d.o
 
 BSP = $(TARGET_DIR)/lib/libbsp.a

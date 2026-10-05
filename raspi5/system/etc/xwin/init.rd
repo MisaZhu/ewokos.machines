@@ -58,8 +58,8 @@
 
 @/bin/splash -m "start /dev/bt0" -p 85
 @/bin/ipcserv /drivers/raspi5/btd    /dev/bt0
-@/bin/ipcserv /drivers/raspi5/bt_moused  /dev/mouse1 /dev/bt0
-@/bin/ipcserv /drivers/raspi5/bt_keybd  /dev/keyb1 /dev/bt0
+@/bin/ipcserv /drivers/raspi5/hid_moused  /dev/mouse1 /dev/bt0 bt
+@/bin/ipcserv /drivers/raspi5/hid_keybd  /dev/keyb1 /dev/bt0 bt
 
 @/bin/splash -m "start x" -p 100
 @/bin/ipcserv /drivers/xserverd     -d 0   /dev/x

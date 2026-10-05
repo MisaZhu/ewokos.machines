@@ -1,0 +1,18 @@
+@/bin/ipcserv /drivers/raspi5/uartd         /dev/tty0
+@set_stdio /dev/tty0
+
+@/bin/ipcserv /drivers/timerd          
+@/bin/ipcserv /drivers/piped           /dev/pipe0
+@/bin/ipcserv /drivers/ramfsd          /tmp
+@/bin/ipcserv /drivers/nulld           /dev/null
+
+@/bin/ipcserv /drivers/raspi5/wland          /dev/wl0
+@/bin/ipcserv /drivers/netd                  /dev/net0 /dev/wl0
+@/bin/ipcserv /drivers/timed    /dev/time
+
+@/bin/ipcserv /sbin/sessiond
+
+@/bin/bgrun /sbin/telnetd
+@/bin/bgrun /sbin/sshd
+
+@/bin/bgrun /bin/session -r -t /dev/tty0 

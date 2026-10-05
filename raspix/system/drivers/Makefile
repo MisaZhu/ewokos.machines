@@ -4,7 +4,7 @@ basic: $(BASIC_DIRS)
 GUI_DIRS = fbdisplayd dsi_fbdisplayd
 gui: $(GUI_DIRS)
 
-NETWORK_DIRS = wlan btd
+NETWORK_DIRS = wlan
 network: $(NETWORK_DIRS)
 
 $(BASIC_DIRS) $(GUI_DIRS) $(NETWORK_DIRS):

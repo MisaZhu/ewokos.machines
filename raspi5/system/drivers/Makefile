@@ -1,7 +1,7 @@
-BASIC_DIRS = uartd fand cpud nvmefsd bt_moused bt_keybd
+BASIC_DIRS = uartd fand cpud nvmefsd
 basic: $(BASIC_DIRS)
 
-NETWORK_DIRS = wlan btd
+NETWORK_DIRS = wlan
 network: $(NETWORK_DIRS)
 
 GUI_DIRS = fbdisplayd dsi_fbdisplayd
