@@ -658,7 +658,6 @@ typedef struct {
     bool boot_mode_ok;   /* Protocol Mode accepted GATT_PROTOCOL_MODE_BOOT */
     mouse_parser_t mouse;
     bool mouse_ok;       /* Report Map yielded a usable mouse bit layout */
-    int report_dumps;    /* count of raw->decoded report samples logged */
     int n_subscribed;
 } hogp_state_t;
 
@@ -4248,21 +4247,6 @@ static void bt_le_handle_notify(uint16_t value_handle, const uint8_t* value,
             }
             if (mouse_normalize_report(&_hogp.mouse, rp, rlen, evt) ==
                     HID_POINTER_EVENT_SIZE) {
-                /* sample the first several real reports: raw bytes vs decoded
-                   event, so a wrong y_bit/y_size shows up as dy staying 0
-                   while the raw Y octets clearly change */
-                if (_hogp.report_dumps < 12) {
-                    _hogp.report_dumps++;
-                    slog("bluetooth le_report raw(%u)=%02x %02x %02x %02x %02x "
-                            "%02x %02x %02x -> btn=%02x dx=%d dy=%d wheel=%d\n",
-                            (unsigned)len,
-                            value[0], len > 1 ? value[1] : 0,
-                            len > 2 ? value[2] : 0, len > 3 ? value[3] : 0,
-                            len > 4 ? value[4] : 0, len > 5 ? value[5] : 0,
-                            len > 6 ? value[6] : 0, len > 7 ? value[7] : 0,
-                            evt[0], (int)(int8_t)evt[1], (int)(int8_t)evt[2],
-                            (int)(int8_t)evt[3]);
-                }
                 bt_hid_dispatch_mouse(evt);
                 return;
             }
