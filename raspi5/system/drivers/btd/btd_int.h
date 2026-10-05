@@ -111,6 +111,7 @@
    stable identity address in every advertising report and connection
    complete, so one device stops looking like a new one per rotation. */
 #define HCI_OCF_LE_ADD_DEV_RESOLV_LIST 0x0027
+#define HCI_OCF_LE_REMOVE_DEV_RESOLV_LIST 0x0028
 #define HCI_OCF_LE_CLEAR_RESOLV_LIST 0x0029
 #define HCI_OCF_LE_READ_RESOLV_LIST_SIZE 0x002a
 #define HCI_OCF_LE_SET_ADDR_RESOLUTION_ENABLE 0x002d

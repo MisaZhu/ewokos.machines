@@ -1028,6 +1028,94 @@ static int bt_forget_device(const char* arg, char* ret, size_t ret_sz) {
     return 0;
 }
 
+/* "unpair" = forget + drop the live link: forget only rewrites the store,
+   so a connection authenticated with the old key would otherwise keep
+   running (an LE session would even keep streaming reports). Works on a
+   runtime-only bond too (store write pending or failed), and evicts the
+   peer from the controller's resolving list when it had an IRK, or a
+   rotating private address would keep resolving onto a bond that no longer
+   exists. */
+static int bt_unpair_device(const char* arg, char* ret, size_t ret_sz) {
+    uint8_t addr[6];
+    uint8_t id_addr[6];
+    uint8_t id_addr_type = 0;
+    bool have_id = false;
+    bt_known_t* k;
+    bt_device_t* dev;
+    int s;
+
+    if (!bt_parse_addr(arg, addr)) {
+        if (ret != NULL && ret_sz != 0) {
+            snprintf(ret, ret_sz, "unpair_fail reason=bad_addr\n");
+        }
+        return -1;
+    }
+
+    k = bt_known_find(addr);
+    dev = bt_find_device(addr, false);
+    if (k == NULL && (dev == NULL ||
+            (!dev->has_link_key && !dev->has_ltk && !dev->has_irk))) {
+        if (ret != NULL && ret_sz != 0) {
+            snprintf(ret, ret_sz, "unpair_fail %s reason=not_paired\n", arg);
+        }
+        return -1;
+    }
+
+    /* every live link to the peer goes down first: the classic link on
+       dev->handle, plus any LE session carrying this address (their
+       disconnect-complete handlers do the session/channel teardown) */
+    if (dev != NULL && dev->connected) {
+        bt_hci_disconnect(dev->handle);
+        (void)bt_wait_for_opcode(HCI_OPCODE(HCI_OGF_LINK_CTRL, HCI_OCF_DISCONNECT), 1500);
+    }
+    for (s = 0; s < MAX_LE_SESSIONS; ++s) {
+        if (_les[s].le.handle_valid && bt_addr_equal(_les[s].le.addr, addr)) {
+            bt_hci_disconnect(_les[s].le.handle);
+            (void)bt_wait_for_opcode(HCI_OPCODE(HCI_OGF_LINK_CTRL, HCI_OCF_DISCONNECT), 1500);
+        }
+    }
+
+    if (dev != NULL && dev->has_irk && dev->has_id_addr) {
+        have_id = true;
+        id_addr_type = dev->id_addr_type;
+        memcpy(id_addr, dev->id_addr, 6);
+    }
+    else if (k != NULL && k->has_irk && k->has_id_addr) {
+        have_id = true;
+        id_addr_type = k->id_addr_type;
+        memcpy(id_addr, k->id_addr, 6);
+    }
+    if (have_id && _ready && _le_resolving) {
+        uint8_t p[7];
+        p[0] = id_addr_type;
+        memcpy(p + 1, id_addr, 6);
+        (void)bt_hci_command_sync(HCI_OGF_LE, HCI_OCF_LE_REMOVE_DEV_RESOLV_LIST,
+                p, sizeof(p), 1000);
+    }
+
+    if (dev != NULL) {
+        dev->has_link_key = false;
+        memset(dev->link_key, 0, sizeof(dev->link_key));
+        dev->has_ltk = false;
+        memset(dev->ltk, 0, sizeof(dev->ltk));
+        memset(dev->ltk_rand, 0, sizeof(dev->ltk_rand));
+        dev->ediv = 0;
+        dev->has_irk = false;
+        memset(dev->irk, 0, sizeof(dev->irk));
+        dev->has_id_addr = false;
+        memset(dev->id_addr, 0, sizeof(dev->id_addr));
+    }
+    if (k != NULL) {
+        k->used = false;
+        bt_known_save();
+    }
+    bt_emit("unpair_ok %s\n", arg);
+    if (ret != NULL && ret_sz != 0) {
+        snprintf(ret, ret_sz, "unpair_ok %s\n", arg);
+    }
+    return 0;
+}
+
 static void bt_dump_state_ret(char* ret, size_t ret_sz) {
     int i;
     int count = 0;
@@ -1072,6 +1160,7 @@ static void bt_help_emit(void) {
     bt_emit("devices\n");
     bt_emit("known\n");
     bt_emit("forget <bdaddr>\n");
+    bt_emit("unpair <bdaddr>\n");
     bt_emit("state\n");
     bt_emit("name <bdaddr>\n");
     bt_emit("connect <bdaddr>\n");
@@ -1090,6 +1179,7 @@ static void bt_help_ret(char* ret, size_t ret_sz) {
     bt_ret_append(ret, ret_sz, "devices\n");
     bt_ret_append(ret, ret_sz, "known: list devices remembered in /etc/bt/bt.json\n");
     bt_ret_append(ret, ret_sz, "forget <bdaddr>: drop a remembered device\n");
+    bt_ret_append(ret, ret_sz, "unpair <bdaddr>: forget the bond and drop its link first\n");
     bt_ret_append(ret, ret_sz, "state\n");
     bt_ret_append(ret, ret_sz, "name <bdaddr>\n");
     bt_ret_append(ret, ret_sz, "connect <bdaddr>: BR/EDR page, or LE connect + pair + HID-over-GATT for a BLE device\n");
@@ -1351,6 +1441,13 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
             return 0;
         }
         bt_forget_device(arg1, ret, ret_sz);
+    }
+    else if (strcmp(cmd, "unpair") == 0) {
+        if (arg1 == NULL) {
+            snprintf(ret, ret_sz, "unpair_fail reason=missing_target\n");
+            return 0;
+        }
+        bt_unpair_device(arg1, ret, ret_sz);
     }
     else if (strcmp(cmd, "scan") == 0) {
         int seconds = arg1 != NULL ? atoi(arg1) : 10;

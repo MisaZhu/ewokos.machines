@@ -1494,6 +1494,7 @@ static void bt_help_emit(void) {
     bt_emit("name <bdaddr>\n");
     bt_emit("connect <bdaddr>\n");
     bt_emit("pair <bdaddr> [pin]\n");
+    bt_emit("unpair <bdaddr>\n");
     bt_emit("disconnect <bdaddr|handle>\n");
 }
 
@@ -1507,6 +1508,7 @@ static void bt_help_ret(char* ret, size_t ret_sz) {
     bt_ret_append(ret, ret_sz, "name <bdaddr>\n");
     bt_ret_append(ret, ret_sz, "connect <bdaddr>\n");
     bt_ret_append(ret, ret_sz, "pair <bdaddr> [pin]\n");
+    bt_ret_append(ret, ret_sz, "unpair <bdaddr>: forget the stored link key, dropping the link first\n");
     bt_ret_append(ret, ret_sz, "disconnect <bdaddr|handle>\n");
 }
 
@@ -1580,6 +1582,38 @@ static int bt_disconnect_target(const char* arg, char* ret_text, size_t ret_text
     }
     if (ret_text != NULL && ret_text_sz != 0) {
         snprintf(ret_text, ret_text_sz, "disconnect_begin handle=0x%04X\n", handle);
+    }
+    return 0;
+}
+
+/* "unpair": forget the stored link key for one device. Keys live in the
+   host cache only - the controller asks via LINK_KEY_REQUEST and btd answers
+   from this table, nothing is ever written to controller storage - so
+   clearing has_link_key is the whole unpair. A live link is dropped first,
+   or it would keep running on the old credentials. Works with the radio off
+   too: the disconnect is simply skipped when the controller is not ready. */
+static int bt_unpair_device(const uint8_t* addr, char* ret_text, size_t ret_text_sz) {
+    bt_device_t* dev = bt_find_device(addr, false);
+    char addr_str[24];
+
+    bt_addr_to_str(addr, addr_str, sizeof(addr_str));
+    if (dev == NULL || !dev->has_link_key) {
+        if (ret_text != NULL && ret_text_sz != 0) {
+            snprintf(ret_text, ret_text_sz, "unpair_fail %s reason=not_paired\n", addr_str);
+        }
+        return -1;
+    }
+
+    if (dev->connected && _ready) {
+        bt_hci_disconnect(dev->handle);
+        (void)bt_wait_for_opcode(HCI_OPCODE(HCI_OGF_LINK_CTRL, HCI_OCF_DISCONNECT), 1500);
+    }
+
+    dev->has_link_key = false;
+    memset(dev->link_key, 0, sizeof(dev->link_key));
+    bt_emit("unpair_ok %s\n", addr_str);
+    if (ret_text != NULL && ret_text_sz != 0) {
+        snprintf(ret_text, ret_text_sz, "unpair_ok %s\n", addr_str);
     }
     return 0;
 }
@@ -1769,6 +1803,13 @@ static int bt_handle_cmd_args(int argc, char** argv, char* ret, size_t ret_sz) {
             return 0;
         }
         bt_start_connection(addr, true, arg2, ret, ret_sz);
+    }
+    else if (strcmp(cmd, "unpair") == 0) {
+        if (arg1 == NULL || !bt_parse_addr(arg1, addr)) {
+            snprintf(ret, ret_sz, "unpair_fail reason=bad_addr\n");
+            return 0;
+        }
+        bt_unpair_device(addr, ret, ret_sz);
     }
     else if (strcmp(cmd, "disconnect") == 0) {
         if (!_ready) {
