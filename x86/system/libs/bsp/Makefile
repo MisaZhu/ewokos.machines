@@ -20,9 +20,9 @@ CFLAGS += -I $(MAKEINC_DIR)/../include \
 	-I $(SYS_DIR)/basic/libs/gpio/include \
 	-I $(SYS_DIR)/gui/libs/graph/include \
 	-I $(SYS_DIR)/gui/libs/g2dclient/include \
-	-I $(SYS_DIR)/basic/libs/usb/include \
-	-I $(SYS_DIR)/basic/libs/hid/include \
-	-I $(SYS_DIR)/basic/libs/bt/include \
+	-I $(SYS_DIR)/gui/libs/usb/include \
+	-I $(SYS_DIR)/gui/libs/hid/include \
+	-I $(SYS_DIR)/gui/libs/bt/include \
 	-I $(SYS_DIR)/basic/libs/openlibm/include \
 	-I $(SYS_DIR)/basic/libs/openlibm/src \
 	-Iinclude -I $(TARGET_DIR)/include

@@ -8,10 +8,11 @@
 @/bin/ipcserv /drivers/nulld /dev/null
 @/bin/ipcserv /sbin/sessiond
 
-# USB: usbhostd(UHCI) 枚举; MSC 盘由 bsp_usb 自动挂到 /mnt/udisk0
-@/bin/ipcserv /drivers/x86/usbhostd    /dev/hid0
-@/bin/ipcserv /drivers/x86/hid_keybd   /dev/keyb0  /dev/hid0
-@/bin/ipcserv /drivers/x86/hid_moused  /dev/mouse0 /dev/hid0
+# USB: usbhostd/hid_* 已移到 system/gui 阶段构建, basic-only 镜像不含这些二进制;
+# 需要 USB 键鼠请构建到 gui 运行级 (etc/gui/init.rd 内已有对应启动行)。
+#@/bin/ipcserv /drivers/x86/usbhostd    /dev/hid0
+#@/bin/ipcserv /drivers/x86/hid_keybd   /dev/keyb0  /dev/hid0
+#@/bin/ipcserv /drivers/x86/hid_moused  /dev/mouse0 /dev/hid0
 
 # VGA 控制台: 用户态接管 (console_handoff 之后), 系统输出经 /dev/vga0 可见;
 # GOP 机器 (UEFI-only, 无文本区) 上 vgacond 写 GOP 帧缓冲 —— 唯一可见输出

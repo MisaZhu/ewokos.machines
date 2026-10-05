@@ -1,5 +1,5 @@
 /* bsp_bt.c: raspi5 bluetooth HCI transport (bsp_bt contract, see
-   system/basic/libs/bt). The shared btd daemon drives the CYW43455 combo
+   system/gui/libs/bt). The shared btd daemon drives the CYW43455 combo
    chip through these hooks; everything BCM2712-specific lives here.
 
    Pi 5 (BCM2712) Bluetooth hardware, from the official device tree

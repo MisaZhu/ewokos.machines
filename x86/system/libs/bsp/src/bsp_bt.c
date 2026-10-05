@@ -1,6 +1,6 @@
 /* bsp_bt.c: the x86 machine has no bluetooth HCI transport wired up -
    no-op stub so the shared btd daemon links (bsp_bt contract,
-   system/basic/libs/bt), the same role the bsp_usb stub plays on machines
+   system/gui/libs/bt), the same role the bsp_usb stub plays on machines
    without USB host. bsp_bt_init() always fails, so even if btd were
    launched it would just sit in its bounded bring-up retry loop;
    init.rd never launches it. */

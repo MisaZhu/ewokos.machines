@@ -11,9 +11,9 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/platform/$(ARCH)/include/$(ARCH) \
 	-I $(SYS_DIR)/basic/libs/sd/include \
 	-I $(SYS_DIR)/basic/libs/gpio/include \
-	-I $(SYS_DIR)/basic/libs/usb/include \
-	-I $(SYS_DIR)/basic/libs/hid/include \
-	-I $(SYS_DIR)/basic/libs/bt/include \
+	-I $(SYS_DIR)/gui/libs/usb/include \
+	-I $(SYS_DIR)/gui/libs/hid/include \
+	-I $(SYS_DIR)/gui/libs/bt/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_fb.o $(ARCH)/src/bsp_gpio.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_bt.o \

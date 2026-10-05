@@ -1,5 +1,5 @@
 /* bsp_bt.c: raspix (Pi3/Pi4, BCM283x) bluetooth HCI transport (bsp_bt
-   contract, see system/basic/libs/bt). The shared btd daemon drives the
+   contract, see system/gui/libs/bt). The shared btd daemon drives the
    CYW43455 combo chip through these hooks; everything BCM283x-specific
    lives here:
      - HCI UART is PL011 UART0 @ 0x00201000, powered up through the
