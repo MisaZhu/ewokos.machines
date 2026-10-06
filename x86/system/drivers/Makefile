@@ -4,7 +4,7 @@ basic: $(BASIC_DIRS)
 GUI_DIRS = fbdisplayd ps2keybd ps2moused
 gui: $(GUI_DIRS)
 
-NET_DIRS = net
+NET_DIRS = net wlan
 network: $(NET_DIRS)
 
 $(BASIC_DIRS) $(GUI_DIRS) $(NET_DIRS):

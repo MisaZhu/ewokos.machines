@@ -16,8 +16,10 @@
  *
  * Also owns the mass-storage policy: the bulk-only transport and the
  * fat32fsd auto-mount ride on uhci's bulk path and are served through the
- * bsp_usb_msc_* hooks of the shared usbhostd. The xHCI driver has no bulk
- * endpoint support yet, so MSC devices are only claimed on UHCI.
+ * bsp_usb_msc_* hooks of the shared usbhostd. The xHCI driver carries
+ * bulk endpoints for the Intel Bluetooth HCI service (bsp_usbbt.c,
+ * claimed through the bsp_usb_bt_* hooks); MSC devices are only claimed
+ * on UHCI.
  */
 #include <bsp/bsp_usb.h>
 #include <bsp/uhci.h>
@@ -94,7 +96,6 @@ struct bsp_usb_dev {
     uint32_t int_interval_ms;
     uint64_t int_next_ms;
     uint32_t int_idle_polls;
-    uint8_t dbg_polls; /* 输入链路诊断: 已跟踪的前几次 poll */
 };
 
 static bsp_usb_dev_t _devs[BSP_USB_MAX_DEVS];
@@ -319,8 +320,6 @@ static int xhci_bring_up(void) {
                     continue;
                 }
                 if (xhci_init(&_xhcs[found], found, va) == 0) {
-                    klog("bsp_usb: xhci%d at %02x:%02x.%x ports=%u\n",
-                            found, bus, dev, func, _xhcs[found].num_ports);
                     found++;
                 }
             }
@@ -366,6 +365,7 @@ int bsp_usb_reinit(void) {
     memset(_xhc_dev_count, 0, sizeof(_xhc_dev_count));
     memset(&_msc, 0, sizeof(_msc));
     _msc_mount_pending = false;
+    bsp_usb_bt_reset();
     for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
         if (_xhcs[i].present || _xhcs[i].failed) {
             bool was = _xhcs[i].present;
@@ -393,6 +393,8 @@ void bsp_usb_poll(void) {
             xhci_process_events(&_xhcs[i]);
         }
     }
+    /* pump the BT HCI endpoints (int-in events + bulk ACL) into its ring */
+    bsp_usb_bt_poll();
     /* everything on uhci is polled on demand; nothing to drain */
 }
 
@@ -546,8 +548,6 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
             return NULL;
         }
         dev->used = true;
-        klog("bsp_usb: xhci attached slot=%d port=%d speed=%d\n",
-                dev->xdev.slot_id, hc_port, speed);
         dev->on_xhci = true;
         {
             int idx = xhci_hc_index(dev->xdev.hc);
@@ -571,7 +571,6 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
         klog("bsp_usb: uhci set_address failed flat=%d speed=%d\n", flat, speed);
         return NULL;
     }
-    klog("bsp_usb: uhci attached addr=%u flat=%d speed=%d\n", addr, flat, speed);
     usleep(10000); /* USB spec: new address is valid after 2ms */
 
     memset(dev, 0, sizeof(*dev));
@@ -649,10 +648,7 @@ int bsp_usb_int_in_open(bsp_usb_dev_t* dev, uint8_t ep_addr, uint16_t mps,
     if (dev->on_xhci) {
         /* hardware-paced: the controller schedules the periodic TDs and
            only completes one when the device actually answers */
-        int ret = xhci_int_in_open(&dev->xdev, ep_addr, mps, interval);
-        klog("bsp_usb: xhci int_in_open slot=%d ep=%02x mps=%u -> %d\n",
-                dev->xdev.slot_id, ep_addr, mps, ret);
-        return ret;
+        return xhci_int_in_open(&dev->xdev, ep_addr, mps, interval);
     }
     iv = interval == 0 ? 10u : interval;
     if (iv < BSP_USB_INT_MIN_INTERVAL_MS) {
@@ -701,15 +697,6 @@ int bsp_usb_int_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
         return 0;
     }
     now = kernel_tic_ms(0);
-    /* 输入链路诊断: 每个 HCD 设备只跟踪前 5 次到达 cadence 判定的 poll,
-     * 输出内部调度状态 (now/next/idle/toggle), 静默期零输出。 */
-    if (dev->dbg_polls < 5) {
-        dev->dbg_polls++;
-        klog("bsp_usb: int_poll addr=%u ep=%02x now=%u next=%u idle=%u tgl=%u\n",
-                dev->addr, ep_addr, (uint32_t)now,
-                (uint32_t)dev->int_next_ms, dev->int_idle_polls,
-                dev->int_toggle);
-    }
     if (now < dev->int_next_ms) {
         return 0;
     }
@@ -739,11 +726,15 @@ int bsp_usb_int_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
 }
 
 int bsp_usb_bulk_open(bsp_usb_dev_t* dev, uint8_t ep_addr, uint16_t mps) {
-    (void)ep_addr;
-    (void)mps;
     if (dev == NULL || !dev->used) {
         return -1;
     }
+    if (dev->on_xhci) {
+        /* real endpoint state: ring + doorbell, armed lazily on poll */
+        return xhci_bulk_open(&dev->xdev, ep_addr, mps);
+    }
+    (void)ep_addr;
+    (void)mps;
     /* stateless: endpoint state (toggle) is tracked per consumer */
     return 0;
 }
@@ -751,14 +742,41 @@ int bsp_usb_bulk_open(bsp_usb_dev_t* dev, uint8_t ep_addr, uint16_t mps) {
 int bsp_usb_bulk_xfer(bsp_usb_dev_t* dev, uint8_t ep_addr, void* data,
         int len, bool dir_in) {
     uint8_t toggle = 0;
-    if (dev == NULL || !dev->used || len <= 0 || dev->on_xhci) {
-        /* no bulk endpoint support in the xHCI driver yet (no consumer) */
+    if (dev == NULL || !dev->used || len <= 0) {
         return -1;
+    }
+    if (dev->on_xhci) {
+        /* bulk OUT only (BT ACL data + bootloader firmware chunks);
+           bulk IN rides the polled path below */
+        if (dir_in) {
+            return -1;
+        }
+        return xhci_bulk_out_xfer(&dev->xdev, ep_addr, data,
+                (uint32_t)len, 2000u);
     }
     /* stateless one-shot: the MSC path keeps its own toggle bookkeeping
        and calls uhci_bulk_xfer() directly */
     return uhci_bulk_xfer(dev->root_flat, dev->low_speed, dir_in, dev->addr,
             ep_addr & 0x0Fu, 64, &toggle, data, (uint32_t)len, 2000u);
+}
+
+/* polled bulk IN (BT ACL/events): same armed-TD model as interrupt-IN.
+   UHCI has no polled bulk consumer. */
+int bsp_usb_bulk_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
+        int size) {
+    if (dev == NULL || !dev->used) {
+        return -1;
+    }
+    if (dev->on_xhci) {
+        return xhci_int_in_poll(&dev->xdev, ep_addr, buf, size);
+    }
+    return -1;
+}
+
+/* bsp_usbbt.c claims xHCI-attached devices only (UHCI has no bulk
+   endpoint model); exported because struct bsp_usb_dev is local here */
+bool bsp_usb_xhci_owned(bsp_usb_dev_t* dev) {
+    return dev != NULL && dev->used && dev->on_xhci;
 }
 
 int bsp_usb_ep_clear_halt(bsp_usb_dev_t* dev, uint8_t ep_addr) {
@@ -940,10 +958,6 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
-    klog("bsp_usb: msc inquiry addr=%u type=%02x vendor=%.8s product=%.16s\n",
-            dev->addr, inquiry[0], (const char*)(inquiry + 8),
-            (const char*)(inquiry + 16));
-
     /* media may need a spin-up/debounce window after plug-in */
     {
         int ready = -1;
@@ -979,8 +993,6 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
         return -1;
     }
     _msc.ready = true;
-    klog("bsp_usb: msc attached addr=%u sectors=%u size=%u\n",
-            dev->addr, _msc.sector_count, _msc.sector_size);
 
     /* auto-mount the FAT32 volume: spawn a fat32fsd bound to this device,
        deferred to bsp_usb_poll (see _msc_mount_pending) */
@@ -1005,7 +1017,6 @@ static void msc_mount_spawn(void) {
     }
     else if (pid > 0) {
         _msc.child_pid = pid;
-        klog("bsp_usb: msc mounting /mnt/udisk0 pid=%d\n", pid);
     }
     else {
         klog("bsp_usb: msc mount_fork_failed\n");
@@ -1069,9 +1080,6 @@ int bsp_usb_msc_probe(bsp_usb_dev_t* dev, const uint8_t* cfg, int cfg_len) {
     if (msc_iface == NULL || ep_in == 0 || ep_out == 0) {
         return -1;
     }
-    klog("bsp_usb: msc found addr=%u iface=%u subclass=%u ep_in=%02x ep_out=%02x\n",
-            dev->addr, msc_iface->bInterfaceNumber, msc_iface->bInterfaceSubClass,
-            ep_in, ep_out);
     return msc_attach(dev, msc_iface->bInterfaceNumber,
             ep_in, ep_out, mps_in, mps_out);
 }
@@ -1082,7 +1090,6 @@ void bsp_usb_msc_detach(bsp_usb_dev_t* dev) {
     if (!_msc.claimed || _msc.dev != dev) {
         return;
     }
-    klog("bsp_usb: msc detached addr=%u\n", _msc.dev->addr);
     _msc_mount_pending = false;
     if (_msc.child_pid > 0) {
         /* fire-and-forget: the device is already gone, the daemon only

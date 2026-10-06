@@ -124,11 +124,8 @@ static uint32_t _rd_size = 0;
 static int32_t rd_init(void) {
     sys_info_t sysinfo;
     ewokos_addr_t ret;
-    int32_t src = (int32_t)syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
     const x86_platform_data_t *pd = x86_platform_data_of(sysinfo);
-    klog("sdfsd: rd probe src=%d machine=%s mem=%llx phy=%llx size=%x\n",
-            src, sysinfo.machine, (unsigned long long)sysinfo.total_phy_mem_size,
-            (unsigned long long)pd->rd.phy_base, pd->rd.size);
     if (pd->rd.size == 0 || pd->rd.phy_base == 0) {
         return -1;
     }
@@ -136,8 +133,6 @@ static int32_t rd_init(void) {
     ewokos_addr_t va = 0x60000000;
     ret = syscall3(SYS_MEM_MAP, va, pd->rd.phy_base,
             pd->rd.size);
-    klog("sdfsd: rd map va=%llx ret=%llx\n",
-            (unsigned long long)va, (unsigned long long)ret);
     if (ret != va) {
         return -1;
     }

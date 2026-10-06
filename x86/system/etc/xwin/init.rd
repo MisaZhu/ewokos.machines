@@ -1,11 +1,9 @@
 @export TZ=CST-8
 @/bin/ipcserv /drivers/logd  /dev/log
 
-# 串口控制台关闭: 目标机无串口, ttyd/悬空串口线只带来噪声输入与回显洪水
-# (ttyd 高占用根源)。需要串口台时取消下面两行注释。
-#@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
+@/bin/ipcserv /drivers/x86/ttyd /dev/tty0
 @/bin/ipcserv /sbin/sessiond
-#@/bin/bgrun /bin/session -r -t /dev/tty0
+@/bin/bgrun /bin/session -r -t /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/x86/fbdisplayd /dev/disp0
@@ -33,6 +31,18 @@
 
 @/bin/splash -m "start /dev/mouse0" -p 65
 @/bin/ipcserv /drivers/x86/hid_moused  /dev/mouse0 /dev/hid0
+
+# bluetooth: btd idles in its bounded retry loop when no Intel combo card
+# (or its firmware) is present, so the lines are safe on every PC
+@/bin/splash -m "start /dev/bt0" -p 66
+@/bin/ipcserv /drivers/x86/btd         /dev/bt0
+@/bin/ipcserv /drivers/x86/hid_moused  /dev/mouse1 /dev/bt0 bt
+@/bin/ipcserv /drivers/x86/hid_keybd   /dev/keyb1  /dev/bt0 bt
+
+# Intel WLAN (BE202 / AX211 / AX411): to use wifi instead of the wired
+# NIC, comment the two wired lines above and uncomment these:
+#@/bin/ipcserv /drivers/x86/wland /dev/wl0
+#@/bin/ipcserv /drivers/netd /dev/net0 /dev/wl0
 
 @/bin/splash -m "start /dev/eth0" -p 70
 @/bin/ipcserv /drivers/x86/net /dev/eth0

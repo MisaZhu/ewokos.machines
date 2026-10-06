@@ -513,6 +513,16 @@ int bsp_usb_bulk_xfer(bsp_usb_dev_t* dev, uint8_t ep_addr, void* data,
     return -1;
 }
 
+/* polled bulk IN (BT ACL/events): no consumer on this machine */
+int bsp_usb_bulk_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
+        int size) {
+    (void)dev;
+    (void)ep_addr;
+    (void)buf;
+    (void)size;
+    return -1;
+}
+
 int bsp_usb_ep_clear_halt(bsp_usb_dev_t* dev, uint8_t ep_addr) {
     usb_setup_pkt_t setup;
     int ret;
@@ -928,4 +938,34 @@ int bsp_usb_msc_cntl(vdevice_t* vdev, int from_pid, int cmd,
     default:
         return -1;
     }
+}
+
+/* bluetooth HCI over USB (Intel combo cards): x86-only service */
+int bsp_usb_bt_probe(bsp_usb_dev_t* dev, uint16_t vid, uint16_t pid,
+        const uint8_t* cfg, int cfg_len) {
+    (void)dev;
+    (void)vid;
+    (void)pid;
+    (void)cfg;
+    (void)cfg_len;
+    return -1;
+}
+
+void bsp_usb_bt_detach(bsp_usb_dev_t* dev) {
+    (void)dev;
+}
+
+bool bsp_usb_bt_attached(bsp_usb_dev_t* dev) {
+    (void)dev;
+    return false;
+}
+
+int bsp_usb_bt_cntl(vdevice_t* vdev, int from_pid, int cmd,
+        proto_t* in, proto_t* out) {
+    (void)vdev;
+    (void)from_pid;
+    (void)cmd;
+    (void)in;
+    (void)out;
+    return -1;
 }

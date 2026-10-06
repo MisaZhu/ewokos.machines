@@ -165,4 +165,12 @@ int  xhci_int_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
 /* non-blocking: >0 data bytes copied, 0 pending, <0 error */
 int  xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size);
 
+/* bulk endpoints (Intel BT HCI transport). bulk-IN reuses the armed-TD
+   poll of xhci_int_in_poll (the DCI of an IN endpoint is the same for
+   interrupt and bulk); bulk-OUT is a blocking one-shot bounced through
+   the device arena. ep_addr carries USB_ENDPOINT_IN for the IN side. */
+int  xhci_bulk_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps);
+int  xhci_bulk_out_xfer(xhci_dev_t* dev, uint8_t ep_addr,
+		const void* data, uint32_t len, uint32_t timeout_ms);
+
 #endif /* __BSP_XHCI_H__ */

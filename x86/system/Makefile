@@ -56,6 +56,11 @@ gui_sys: basic_sys
 	$(MAKE) -C drivers gui
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/gui/. ${TARGET_DIR}/etc/
+# Intel BT firmware blobs (ibt-*.sfi / *.ddc for AX211/AX411/BE202) are
+# user-supplied (linux-firmware): drop them under firmware/intel/ here and
+# they land at /usr/lib/firmware/intel/ in the rootfs for bsp_usbbt.
+	@mkdir -p ${TARGET_DIR}/usr/lib/firmware
+	@if [ -d firmware ]; then cp -Rp firmware/. ${TARGET_DIR}/usr/lib/firmware/; fi
 
 network_sys: gui_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/network
@@ -85,7 +90,7 @@ endif
 # 与 ISO/UEFI 引导 (整个拷入内存盘, 128MB 在 512MB RAM 下实证可跑完整
 # GUI 栈)。128 上限 = 内存盘路径的 RAM 预算约束。
 ifeq ($(ROOTFS_MB),)
-ROOTFS_MB=128
+ROOTFS_MB=512
 endif
 
 SD = root_$(ARCH).img

@@ -769,9 +769,6 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     }
 
     hc->present = true;
-    klog("xhci%d: v%x.%02x ports=%u slots=%u csz=%u scratch=%u page=%u\n",
-            id, version >> 8, version & 0xff,
-            hc->num_ports, hc->max_slots, hc->csz, n_scratch, scratch_page_size);
     return 0;
 }
 
@@ -1365,4 +1362,116 @@ int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
         int_in_arm(dev, ep, dci);
     }
     return 0;
+}
+
+/* ---------------- bulk endpoints ---------------- */
+
+/* bulk-OUT bounce window: one TD of up to this size per chunk (HCI ACL
+   frames and 0xfc09 firmware fragments both fit in a single chunk) */
+#define XHCI_BULK_OUT_BUF 1024u
+
+int xhci_bulk_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps) {
+    uint32_t ep_num = ep_addr & 0x0fu;
+    bool dir_in = (ep_addr & USB_ENDPOINT_IN) != 0;
+    uint32_t dci = ep_num * 2u + (dir_in ? 1u : 0u);
+    if (ep_num == 0 || dci >= XHCI_MAX_EPS || dev->eps[dci].open) {
+        return -1;
+    }
+    xhci_arena_t* arena = (xhci_arena_t*)dev->arena;
+    xhci_ep_t* ep = &dev->eps[dci];
+
+    memset(ep, 0, sizeof(*ep));
+    ep->ring = arena_alloc(arena, RING_BYTES, RING_BYTES, &ep->ring_phys);
+    /* IN bounces one mps packet per armed TD, OUT a full window per TD */
+    uint32_t buf_size = dir_in ? ((uint32_t)mps + 63u) & ~63u
+            : XHCI_BULK_OUT_BUF;
+    ep->data = arena_alloc(arena, buf_size, 64, &ep->data_phys);
+    if (ep->ring == NULL || ep->data == NULL) {
+        klog("xhci%d: arena full for slot=%u bulk ep=%02x\n",
+                dev->hc->id, dev->slot_id, ep_addr);
+        return -1;
+    }
+    memset(ep->ring, 0, RING_BYTES);
+    ep->enq = 0;
+    ep->cycle = 1;
+    ep->mps = mps;
+
+    /* configure endpoint: keep already-configured EPs, add this one */
+    ictx_clear(dev);
+    ictx(dev, 0)[1] = 0x1u | (1u << dci);
+    ictx_copy_slot(dev);
+    uint32_t* slot = ictx(dev, 1);
+    uint32_t entries = slot_ctx_entries(dev);
+    if (dci > entries) {
+        entries = dci;
+    }
+    slot[0] = (slot[0] & ~(0x1fu << 27)) | (entries << 27);
+
+    uint32_t* epc = ictx(dev, 1 + dci);
+    /* EP type 2 = bulk OUT, 6 = bulk IN; CErr=3, interval 0 (NAK-paced) */
+    epc[0] = 0;
+    epc[1] = (3u << 1) | ((dir_in ? 6u : 2u) << 3) | ((uint32_t)mps << 16);
+    epc[2] = (uint32_t)(ep->ring_phys | 1u);
+    epc[3] = (uint32_t)(ep->ring_phys >> 32);
+    /* Average TRB Length; Max ESIT Payload is 0 for aperiodic bulk */
+    epc[4] = (uint32_t)mps;
+
+    int code = xhci_cmd(dev->hc, (uint32_t)dev->in_ctx_phys,
+            (uint32_t)(dev->in_ctx_phys >> 32), 0,
+            TRB_TYPE(TRB_CONFIG_EP) | ((uint32_t)dev->slot_id << 24), NULL);
+    if (code != CC_SUCCESS) {
+        klog("xhci%d: config bulk ep slot=%u dci=%u failed code=%d\n",
+                dev->hc->id, dev->slot_id, dci, code);
+        return -1;
+    }
+    ep->open = true;
+    return 0;
+}
+
+int xhci_bulk_out_xfer(xhci_dev_t* dev, uint8_t ep_addr,
+        const void* data, uint32_t len, uint32_t timeout_ms) {
+    uint32_t ep_num = ep_addr & 0x0fu;
+    uint32_t dci = ep_num * 2u; /* OUT */
+    if (ep_num == 0 || dci >= XHCI_MAX_EPS || !dev->eps[dci].open ||
+            len == 0 || data == NULL) {
+        return -1;
+    }
+    xhci_ep_t* ep = &dev->eps[dci];
+    if (ep->in_flight) {
+        return -1; /* single outstanding TD per endpoint */
+    }
+
+    const uint8_t* p = (const uint8_t*)data;
+    uint32_t left = len;
+    while (left > 0) {
+        uint32_t chunk = left > XHCI_BULK_OUT_BUF ? XHCI_BULK_OUT_BUF : left;
+        memcpy(ep->data, p, chunk);
+
+        ep->done = false;
+        ep->short_left = 0;
+        ep->comp_code = 0;
+        ep->buf_len = chunk;
+        ep->td_last_phys = ring_push(ep->ring, ep->ring_phys,
+                &ep->enq, &ep->cycle, false,
+                (uint32_t)ep->data_phys, (uint32_t)(ep->data_phys >> 32),
+                chunk, TRB_TYPE(TRB_NORMAL) | TRB_IOC);
+        ep->in_flight = true;
+        ring_doorbell(dev->hc, dev->slot_id, dci);
+
+        if (ep_wait(dev, ep, timeout_ms) != 0) {
+            klog("xhci%d: bulk out timeout slot=%u dci=%u\n",
+                    dev->hc->id, dev->slot_id, dci);
+            ep_recover(dev, dci);
+            return -1;
+        }
+        if (ep->comp_code != CC_SUCCESS || ep->xfer_len != chunk) {
+            /* a short OUT means the device refused data mid-TD; the
+               caller's frame is now incomplete either way */
+            ep_recover(dev, dci);
+            return -1;
+        }
+        left -= chunk;
+        p += chunk;
+    }
+    return (int)len;
 }

@@ -852,8 +852,6 @@ int uhci_init(void) {
                 _ctrls[count].func = func;
                 _ctrls[count].io_base = io_base;
                 if (uhci_init_controller(&_ctrls[count]) == 0) {
-                    klog("bsp_usb: uhci%d at %02x:%02x.%x io=%04x\n",
-                            count, bus, dev, func, io_base);
                     count++;
                 }
                 else {

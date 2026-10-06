@@ -30,7 +30,7 @@ CFLAGS += -I $(MAKEINC_DIR)/../include \
 # bsp_g2d.o is a thin dispatch layer onto the arch_g2d_* software back end;
 # g2d_arch.o is bundled here too so its symbols resolve inside libbsp
 # regardless of the -lgraph ... -lbsp link order.
-LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_fb.o $(ARCH)/src/bsp_gpio.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_bt.o $(ARCH)/src/uhci.o $(ARCH)/src/xhci.o \
+LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_fb.o $(ARCH)/src/bsp_gpio.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_usbbt.o $(ARCH)/src/bsp_bt.o $(ARCH)/src/uhci.o $(ARCH)/src/xhci.o \
 	$(ARCH)/src/nvme.o $(ARCH)/src/ahci.o $(ARCH)/src/bsp_eth.o \
 	$(ARCH)/src/bsp_g2d.o $(SYS_DIR)/platform/$(ARCH)/src/g2d_arch.o
 
