@@ -8,16 +8,13 @@
 #include <arch/bcm283x/i2c.h>
 #include <unistd.h>
 
-//#define I2C_BIT_DELAY() usleep(i2c_wait) 
-
-/*static inline void udelay(volatile uint32_t loop){
-    while(loop--){
-    }
-}
-#define I2C_BIT_DELAY() udelay(30000);
-*/
-
-#define I2C_BIT_DELAY() sched_yield();
+/* Bit-banged I2C needs a deterministic edge delay (NXP UM10204 timing:
+ * Standard-mode tLOW>=4.7us/tHIGH>=4.0us, Fast-mode tLOW>=1.3us/tHIGH>=0.6us).
+ * sched_yield() is load-dependent -- microseconds when idle but a full
+ * scheduler round-trip (ms) under load -- so the SCL rate would drift with
+ * system activity and could even exceed the SMBus 25-35ms SCL-low timeout.
+ * usleep(i2c_wait) (i2c_wait is in us) gives a stable, tunable bit clock. */
+#define I2C_BIT_DELAY() usleep(i2c_wait);
 /*----------------------------------------------------------------------------*/
 static int32_t i2c_sda, i2c_scl, i2c_stop;
 static uint32_t i2c_wait;
@@ -118,7 +115,7 @@ void i2c_init(int32_t sda_gpio, int32_t scl_gpio) {
     bcm283x_gpio_set(i2c_sda);
     bcm283x_gpio_set(i2c_scl);
     /* default parameters */
-    i2c_wait = 1; /*1 msec*/
+    i2c_wait = 1; /* 1 usec per bit-bang delay (usleep unit); tune via i2c_set_wait_time() */
     i2c_stop = 0;
 }
 /*----------------------------------------------------------------------------*/

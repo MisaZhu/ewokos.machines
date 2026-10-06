@@ -531,8 +531,16 @@ static void sdhci_pre_cmd_gap(uint32_t gap_us)
 
 static inline void sdhci_poll_relax(uint32_t spin_start_us)
 {
+    /* Busy-spin the first SDHCI_POLL_SPIN_US: the normal FIFO-ready wait is
+     * ~20-90us (a command response is ~64 SD clocks, a 512B block ~20-90us),
+     * so spinning keeps throughput up. Past that window the wait is anomalous
+     * -- card busy/programming, which the SD spec lets hold DAT0 for ms up to
+     * ~100ms -- so park with usleep instead of spinning the core. Matches the
+     * inhibit wait in sdhci_send_command() (usleep(1000)); the enclosing
+     * transfer loop is wall-clock bounded (SDHCI_DATA_TIMEOUT_MS), so a timed
+     * park here cannot distort an iteration-count budget. */
     if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US)
-        sched_yield();
+        usleep(500);
 }
 
 

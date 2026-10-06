@@ -281,7 +281,7 @@ static int bcm2835_check_data_error(struct bcm2835_host *host, uint32_t intmask)
 
 static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
 {
-    uint64_t tstart_ms = 0;
+    uint64_t tstart_ms = kernel_tic_ms(0);
     //uint32_t retry_count = 0;
     while (1) {
         uint32_t edm, fsm;
@@ -301,18 +301,17 @@ static int bcm2835_wait_transfer_complete(struct bcm2835_host *host)
             break;
         }
 
-        /* Error out after ~1s */
-        if(tstart_ms > 0) {
-            uint64_t tlapse_ms = kernel_tic_ms(0) - tstart_ms;
-            if ( tlapse_ms > 1000 ) {
-
-                printf("wait_transfer_complete - still waiting after %lld ms\n",
-                    tlapse_ms);
-                bcm2835_dumpregs(host);
-                return -ETIMEDOUT;
-            }
+        /* Error out after ~1s. tstart_ms is captured once before the loop and
+         * must NOT be refreshed here: doing so made tlapse_ms measure a single
+         * microsecond-scale poll iteration, so this watchdog never fired and a
+         * stuck FSM spun the kernel forever. */
+        uint64_t tlapse_ms = kernel_tic_ms(0) - tstart_ms;
+        if ( tlapse_ms > 1000 ) {
+            printf("wait_transfer_complete - still waiting after %lld ms\n",
+                tlapse_ms);
+            bcm2835_dumpregs(host);
+            return -ETIMEDOUT;
         }
-        tstart_ms = kernel_tic_ms(0);
 
         /*
         sched_yield();

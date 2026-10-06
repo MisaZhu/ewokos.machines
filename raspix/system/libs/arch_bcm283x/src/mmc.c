@@ -263,9 +263,11 @@ static int mmc_send_op_cond(struct mmc *mmc)
         if (mmc->ocr & OCR_BUSY)
             break;
 
-        if (retry_count > timeout)
+        if (retry_count++ > timeout)
             return -ETIMEDOUT;
-        sched_yield();
+        /* ~1ms poll pacing, mirroring sd_send_op_cond(): parks the CPU
+         * instead of spinning on sched_yield() while the card powers up. */
+        usleep(1000);
     }
     mmc->op_cond_pending = 1;
     return 0;
@@ -330,9 +332,11 @@ static int mmc_complete_op_cond(struct mmc *mmc)
                 return err;
             if (mmc->ocr & OCR_BUSY)
                 break;
-            if (retry_count > timeout)
+            if (retry_count++ > timeout)
                 return -EOPNOTSUPP;
-            sched_yield();
+            /* ~1ms poll pacing (see mmc_send_op_cond); timeout=1000 gives a
+             * ~1s power-up budget, matching sd_send_op_cond(). */
+            usleep(1000);
         }
     }
 

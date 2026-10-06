@@ -4,6 +4,7 @@
 
 #include <types.h>
 #include <string.h>
+#include <unistd.h>
 #include <utils/log.h>
 
 #include "mmc.h"
@@ -481,10 +482,27 @@ static void sdhci_pre_cmd_gap(uint32_t gap_us)
  */
 #define SDHCI_POLL_SPIN_US 500
 
+/* Wall-clock cap for one command's data phase in sdhci_transfer_data().
+ * Replaces the old iteration count (timeout=100000): an iteration budget's
+ * wall-clock meaning depends entirely on how long each poll takes, so hang
+ * detection swung from ~sub-second (a lone sched_yield re-picks the caller
+ * immediately) to ~100s once poll_relax parked with usleep. A fixed
+ * elapsed-time deadline makes it deterministic (~2s, matching raspi5's
+ * SDHCI_DATA_TIMEOUT_MS) regardless of the relax primitive -- which is what
+ * lets poll_relax safely park the CPU with usleep() on an anomalous stall. */
+#define SDHCI_DATA_TIMEOUT_US 2000000
+
 static inline void sdhci_poll_relax(uint32_t spin_start_us)
 {
-    if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US);
-        //sched_yield();
+    /* Busy-spin the first SDHCI_POLL_SPIN_US for the normal ~20-90us
+     * FIFO-ready window, then park so an anomalously long wait (card busy /
+     * programming -- the SD spec lets DAT0 stay low for ms up to ~100ms) does
+     * not monopolise the core. usleep(500) blocks ~1 tick at 0% CPU. This is
+     * safe now that sdhci_transfer_data() bounds its wait with a wall-clock
+     * deadline (SDHCI_DATA_TIMEOUT_US) rather than an iteration count, so a
+     * timed park can no longer stretch the timeout -- matches raspi5. */
+    if ((uint32_t)(sdhci_now_us() - spin_start_us) >= SDHCI_POLL_SPIN_US)
+        usleep(500);
 }
 
 
@@ -830,11 +848,11 @@ static void sdhci_transfer_pio(struct sdhci_host *host, struct mmc_data *data)
 
 static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
 {
-    unsigned int stat, rdy, mask, timeout, block = 0;
+    unsigned int stat, rdy, mask, block = 0;
     bool transfer_done = false;
     uint32_t spin_start_us = sdhci_now_us();
+    uint32_t xfer_start_us = sdhci_now_us();
 
-    timeout = 100000;
     if (data->flags == MMC_DATA_READ) {
         rdy = SDHCI_INT_DATA_AVAIL;
         mask = SDHCI_DATA_AVAILABLE;
@@ -845,7 +863,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
     do {
         stat = sdhci_readl(host, SDHCI_INT_STATUS);
         if (stat & SDHCI_INT_ERROR) {
-            brcm_log("sdio dataerr status=0x%X timeout=%u\n", stat, timeout);
+            brcm_log("sdio dataerr status=0x%X\n", stat);
             return -EIO;
         }
         if (!transfer_done && (stat & rdy)) {
@@ -884,7 +902,7 @@ static int sdhci_transfer_data(struct sdhci_host *host, struct mmc_data *data)
              */
             sdhci_poll_relax(spin_start_us);
         }
-        if (timeout-- == 0){
+        if ((uint32_t)(sdhci_now_us() - xfer_start_us) > SDHCI_DATA_TIMEOUT_US) {
             brcm_log("%s: Transfer data timeout\n", __func__);
             return -ETIMEDOUT;
         }
@@ -944,7 +962,12 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
                 sdhci_reset(SDHCI_RESET_DATA);
                 return -ECOMM;
             }
-            sched_yield();
+            /* Card busy / previous cmd-data still draining can hold the
+             * inhibit bits for ms (the SD spec allows DAT0 busy up to ~100ms
+             * during programming); park instead of spinning the core. This
+             * loop is wall-clock bounded above by SDHCI_INHIBIT_WAIT_BUDGET_US,
+             * matching the raspi5 sdhci inhibit wait (usleep(1000)). */
+            usleep(1000);
         }
     }
 

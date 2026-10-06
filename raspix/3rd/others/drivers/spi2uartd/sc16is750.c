@@ -14,6 +14,7 @@ SC16IS750/752 Driver for RaspberryPi
 #include <arch/bcm283x/i2c.h>
 #include <arch/bcm283x/gpio.h>
 #include <ewoksys/proc.h>
+#include <unistd.h>
 
 #include "sc16is750.h"
 
@@ -647,7 +648,10 @@ int16_t SC16IS750_readwithtimeout(SC16IS750_t * dev, uint8_t * channel)
             tmp = SC16IS750_read(dev, SC16IS750_CHANNEL_B);
             if (tmp >= 0) return tmp;
         }
-        sched_yield();
+        /* ~1ms per retry so dev->timeout (default 1000) is a real ~1s
+         * wall-clock budget and the wait parks the CPU instead of spinning
+         * on sched_yield() while UART data is pending. */
+        usleep(1000);
         retry_count++;
     } while(retry_count < dev->timeout);
     return -1;	 // -1 indicates timeout
