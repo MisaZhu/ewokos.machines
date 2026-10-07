@@ -10,7 +10,11 @@
 #include "gt911/gt911.h"
 
 #define TP_POLL_MIN_US       8000u   /* ~125Hz while touching */
-#define TP_POLL_MAX_US       50000u  /* back off to 20Hz when idle */
+#define TP_POLL_MAX_US       20000u  /* back off to 50Hz when idle (was 20Hz:
+                                        the idle path is only a cheap IRQ-line
+                                        GPIO poll, but a 50ms cap added up to
+                                        50ms latency to the first touch after
+                                        the panel idled) */
 #define TP_POLL_HOLD_US      2000u   /* wait for the next IRQ while finger stays down */
 #define TP_RELEASE_DELAY_MS  20
 #define TP_I2C_FAIL_MAX      20     /* consecutive failures before reinit */

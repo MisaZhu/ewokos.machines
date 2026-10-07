@@ -7,17 +7,43 @@
 #include <arch/bcm283x/gpio.h>
 #include <arch/bcm283x/i2c.h>
 #include <unistd.h>
+#include <ewoksys/kernel_tic.h>
 
-/* Bit-banged I2C needs a deterministic edge delay (NXP UM10204 timing:
- * Standard-mode tLOW>=4.7us/tHIGH>=4.0us, Fast-mode tLOW>=1.3us/tHIGH>=0.6us).
- * sched_yield() is load-dependent -- microseconds when idle but a full
- * scheduler round-trip (ms) under load -- so the SCL rate would drift with
- * system activity and could even exceed the SMBus 25-35ms SCL-low timeout.
- * usleep(i2c_wait) (i2c_wait is in us) gives a stable, tunable bit clock. */
-#define I2C_BIT_DELAY() usleep(i2c_wait);
 /*----------------------------------------------------------------------------*/
 static int32_t i2c_sda, i2c_scl, i2c_stop;
 static uint32_t i2c_wait;
+
+/* Bit-banged I2C needs a deterministic edge delay (NXP UM10204 timing:
+ * Standard-mode tLOW>=4.7us/tHIGH>=4.0us, Fast-mode tLOW>=1.3us/tHIGH>=0.6us)
+ * that NEVER enters the scheduler. Both scheduler-based primitives tried here
+ * were wrong:
+ *   - sched_yield(): near-free when idle but a full scheduler round-trip (ms)
+ *     under load, so the SCL rate drifted with system activity and could even
+ *     exceed the SMBus 25-35ms SCL-low timeout.
+ *   - usleep(i2c_wait): only spins precisely when libc's fine-counter path is
+ *     active; otherwise it falls through to SYS_USLEEP, which is tick-quantised
+ *     (~976us at timer_freq=1024). A single GT911 touch read issues ~370 edge
+ *     delays, so the fallback inflated one read to ~180ms - touch felt frozen.
+ * Spin against the raw free-running counter (CNTVCT) instead: exact, load-
+ * independent and scheduler-free. Only when this platform publishes no readable
+ * counter (pre-ARMv7/x86) or it stalls do we fall back to a bounded instruction
+ * loop - coarse, but still deterministic and never a syscall. */
+#define I2C_SPIN_ITERS_PER_US  200u      /* fallback loop scale, ~1us per unit */
+#define I2C_SPIN_MAX_ITERS     2000000u  /* bound so a stuck counter can't hang */
+
+static inline void i2c_bit_delay(void) {
+    uint64_t start;
+    if (kernel_tic_fine_cnt(&start) == 0 &&
+            kernel_tic_spin_until(start, (uint64_t)i2c_wait * 1000ULL,
+                    I2C_SPIN_MAX_ITERS) == 0)
+        return;
+    {
+        volatile uint32_t n = i2c_wait * I2C_SPIN_ITERS_PER_US;
+        while (n--) { }
+    }
+}
+
+#define I2C_BIT_DELAY() i2c_bit_delay()
 /*----------------------------------------------------------------------------*/
 /** routine i2c to write out start marker */
 void i2c_do_start(void) {
