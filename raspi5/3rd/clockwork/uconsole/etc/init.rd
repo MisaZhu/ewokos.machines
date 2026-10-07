@@ -31,8 +31,8 @@
 @/bin/splash -m "start /dev/usb_mouse" -p 40
 @/bin/ipcserv /drivers/raspi5/hid_moused     /dev/mouse0
 
-#@/bin/splash -m "start /dev/usb_joystick" -p 45
-#@/bin/ipcserv /drivers/raspi5/hid_joystickd  /dev/joystick0
+@/bin/splash -m "start /dev/usb_joystick" -p 43
+@/bin/ipcserv /drivers/raspi5/hid_joystickd  /dev/joystick0
 
 @/bin/splash -m "start /dev/vkeyb" -p 45
 @/bin/ipcserv /drivers/vkeybd                /dev/vkeyb /dev/keyb0
@@ -59,20 +59,20 @@
 #@/bin/splash -m "start telnetd" -p 90
 #@/bin/bgrun /sbin/telnetd
 
-@/bin/splash -m "start sshd" -p 95
+@/bin/splash -m "start sshd" -p 91
 @/bin/bgrun /sbin/sshd
 
 
-@/bin/splash -m "start xmouse" -p 95
+@/bin/splash -m "start xmouse" -p 92
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0 
 
-@/bin/splash -m "start xim" -p 96
+@/bin/splash -m "start xim" -p 93
 @/bin/bgrun /sbin/x/xim_none /dev/vkeyb
 
-#@/bin/splash -m "start xim" -p 96
-#@/bin/bgrun /sbin/x/xim_none /dev/joystick0
+@/bin/splash -m "start xim" -p 94
+@/bin/bgrun /sbin/x/xim_none /dev/joystick0
 
-@/bin/splash -m "start /dev/sound0" -p 96
+@/bin/splash -m "start /dev/sound0" -p 95
 @/bin/ipcserv /drivers/clockwork/soundpwmd           /dev/sound0
 
 @/bin/splash -m "start x" -p 100
