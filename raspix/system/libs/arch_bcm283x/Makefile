@@ -13,6 +13,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 LIB_ARCH_BCM283X_OBJS = $(ARCH)/src/framebuffer.o \
+	$(ARCH)/src/board.o \
 	$(ARCH)/src/dsi.o \
 	$(ARCH)/src/gpio_actled.o \
 	$(ARCH)/src/gpio.o \

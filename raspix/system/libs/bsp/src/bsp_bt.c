@@ -1,15 +1,24 @@
-/* bsp_bt.c: raspix (Pi3/Pi4, BCM283x) bluetooth HCI transport (bsp_bt
+/* bsp_bt.c: raspix (BCM283x Raspberry Pi) bluetooth HCI transport (bsp_bt
    contract, see system/gui/libs/bt). The shared btd daemon drives the
-   CYW43455 combo chip through these hooks; everything BCM283x-specific
-   lives here:
+   on-board Broadcom combo chip through these hooks; everything BCM283x-
+   specific lives here:
      - HCI UART is PL011 UART0 @ 0x00201000, powered up through the
        mailbox SET_POWER_STATE tag (legacy device id 1);
      - the combo module wants a 32.768kHz reference on GPIO43/GPCLK2
        (19.2MHz / (585 + 3840/4096));
      - BT_ON/WL_ON are the wifi/bt expander GPIOs 0/1, driven through the
-       mailbox gpio property (bcm283x_mailbox_gpio_config). */
+       mailbox gpio property (bcm283x_mailbox_gpio_config).
+   The bring-up sequence above is common to every BCM283x Pi, but the HCI
+   patchram is chip-specific. Both blobs are always compiled in
+   (firmware_4345c0.h + firmware_43430a1.h) and bsp_bt_firmware picks the
+   right one at runtime from the board revision (bcm283x_bt_chip): CYW4345C0
+   for Pi 3A+/3B+/4B/400/CM4, CYW43430A1 for Pi 3B/Zero W/Zero 2 W. Handing a
+   chip the other's image would fail its chip-specific Write_RAM download and
+   wedge bring-up. Boards with no BCM283x radio (Pi 0/1/2B, CM3) report init
+   failure so btd idles in its retry loop. */
 #include <bt/bsp_bt.h>
 #include "firmware_4345c0.h"
+#include "firmware_43430a1.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -18,6 +27,7 @@
 #include <ewoksys/proc.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
+#include <arch/bcm283x/board.h>
 #include <arch/bcm283x/gpio.h>
 #include <arch/bcm283x/pl011_uart.h>
 #include <arch/bcm283x/mailbox.h>
@@ -173,6 +183,13 @@ static void bt_release_bt_shutdown(bool hard_pulse) {
 }
 
 int bsp_bt_init(bool recovery) {
+    bcm283x_bt_chip_t chip = bcm283x_bt_chip();
+
+    if (chip == BCM283X_BT_NONE) {
+        slog("bluetooth init no_bcm283x_radio\n");
+        return -1;
+    }
+
     /* A retry/reopen uses the same mapping; do not remap the MMIO window. */
     if (_mmio_base == 0) {
         _mmio_base = mmio_map();
@@ -181,6 +198,9 @@ int bsp_bt_init(bool recovery) {
         slog("bluetooth init mmio_map_failed\n");
         return -1;
     }
+
+    slog("bluetooth init chip=%s\n",
+        chip == BCM283X_BT_43430 ? "cyw43430" : "cyw43455");
 
     if (bt_power_on_uart0() != 0) {
         slog("bluetooth init power_on_uart0_failed\n");
@@ -248,10 +268,25 @@ int bsp_bt_flush(void) {
 }
 
 void bsp_bt_firmware(const uint8_t** data, uint32_t* len) {
-    /* the CYW43455 always boots from ROM and needs the patchram image
-       (local copy in firmware_4345c0.h, identical to the raspi5 one) */
-    *data = bcm4345c0_hcd;
-    *len = bcm4345c0_hcd_len;
+    /* both patchram blobs are compiled in; select purely at runtime by the
+       detected chip so every board gets its own image */
+    switch (bcm283x_bt_chip()) {
+    case BCM283X_BT_43455:
+        /* CYW4345C0: Pi 3A+/3B+/4B/400/CM4 (firmware_4345c0.h, byte-identical
+           to the raspi5 blob) */
+        *data = bcm4345c0_hcd;
+        *len = bcm4345c0_hcd_len;
+        return;
+    case BCM283X_BT_43430:
+        /* CYW43430A1: Pi 3B / Zero W / Zero 2 W (firmware_43430a1.h) */
+        *data = bcm43430a1_hcd;
+        *len = bcm43430a1_hcd_len;
+        return;
+    default:
+        /* no BCM283x radio: nothing to download */
+        *data = NULL;
+        *len = 0;
+    }
 }
 
 void bsp_bt_diag_str(char* buf, size_t size) {

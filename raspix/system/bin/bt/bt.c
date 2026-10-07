@@ -6,7 +6,8 @@
 #include <ewoksys/syscall.h>
 #include <ewoksys/mmio.h>
 #include <arch/bcm283x/pl011_uart.h>
-#include "../../drivers/btd/firmware_4345c0.h"
+#include <arch/bcm283x/board.h>
+#include "../../libs/bsp/src/firmware_4345c0.h"
 
 uint8_t lo(uint16_t val) { return (uint8_t)(val & 0xff); }
 uint8_t hi(uint16_t val) { return (uint8_t)((val & 0xff00) >> 8); }
@@ -94,6 +95,14 @@ int32_t bt_send_hci_command(uint16_t ogf, uint16_t ocf, uint8_t* data, uint32_t 
 
 // Download Bluetooth firmware
 void bt_load_firmware(void) {
+    if (bcm283x_bt_chip() != BCM283X_BT_43455) {
+        /* CYW43430A1 boards (Pi 3B / Zero W / Zero 2 W) run on ROM firmware:
+           no 43430 patchram ships in the tree and the 4345C0 image would fail
+           the download (chip-specific Write_RAM addresses). Skip it. */
+        slog("bt: no patchram for this chip, running ROM firmware\n");
+        return;
+    }
+
     volatile unsigned char empty[] = {};
     int32_t res = bt_send_hci_command(OGF_VENDOR, COMMAND_LOAD_FIRMWARE, empty, 0);
     if(res != 0) {
@@ -126,10 +135,7 @@ void bt_load_firmware(void) {
 int main(int argc, char* argv[]) {
     _mmio_base = mmio_map();
 
-    sys_info_t sysinfo;
-    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
-    if(strcmp(sysinfo.machine, "raspberry-pi1") == 0 ||
-            strcmp(sysinfo.machine, "raspberry-pi2b") == 0)  {
+    if(bcm283x_bt_chip() == BCM283X_BT_NONE) {
         printf("bt not support with pl011_uart\n");
         return -1;
     }

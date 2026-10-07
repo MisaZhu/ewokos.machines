@@ -51,6 +51,7 @@
 
 #@/bin/splash -m "start /dev/bt0" -p 85
 #@/bin/ipcserv /drivers/raspix/btd    /dev/bt0
+#@/bin/ipcserv /drivers/raspix/hid_joystickd /dev/js1 /dev/bt0 bt
 
 #@/bin/splash -m "load fonts" -p 90
 #@/bin/load_font

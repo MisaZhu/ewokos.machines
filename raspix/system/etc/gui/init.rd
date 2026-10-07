@@ -20,10 +20,12 @@
 @/bin/ipcserv /drivers/nulld           /dev/null
 
 #@/bin/ipcserv /drivers/raspix/btd    /dev/bt0
+#@/bin/ipcserv /drivers/raspix/hid_joystickd /dev/js1 /dev/bt0 bt
 
 @/bin/ipcserv /drivers/raspix/usbhostd    /dev/hid0
 @/bin/ipcserv /drivers/raspix/hid_keybd   /dev/keyb0  /dev/hid0
 @/bin/ipcserv /drivers/raspix/hid_moused  /dev/mouse0 /dev/hid0
 @/bin/ipcserv /drivers/raspix/hid_touchd  /dev/touch0 /dev/hid0
+@/bin/ipcserv /drivers/raspix/hid_joystickd /dev/js0  /dev/hid0
 
 @/bin/bgrun /bin/session -r -t /dev/console0
