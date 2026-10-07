@@ -11,6 +11,16 @@
 
 #define DEFAULT_WLAN_CFG	"/etc/wlan/network.json"
 
+/*
+ * wland can come up before vfsd has finished publishing the rootfs, so a
+ * single vfs_readfile() here can miss a perfectly good network.json and
+ * leave network_config NULL for the whole session (no auto-connect, no
+ * DHCP) even though the file is correct on disk. Retry briefly instead of
+ * latching the first miss.
+ */
+#define CONFIG_OPEN_RETRIES	20
+#define CONFIG_OPEN_RETRY_USEC	(100 * 1000)
+
 json_node_t* network_config; 
 static json_var_t* network_root;
 
@@ -19,9 +29,28 @@ void config_init(const char* path){
         path = DEFAULT_WLAN_CFG;
 
     int sz = 0;
-    char* str = (char*)vfs_readfile(path, &sz);
+    char* str = NULL;
+    int attempt;
+
+    for(attempt = 0; attempt < CONFIG_OPEN_RETRIES; attempt++) {
+        str = (char*)vfs_readfile(path, &sz);
+        if(str != NULL)
+            break;
+        usleep(CONFIG_OPEN_RETRY_USEC);
+    }
     if(str == NULL) {
-        brcm_log("Error: %s open failed\n", path);
+        /* vfs_readfile() returns NULL both when the lookup misses and when
+           the file exists but is empty (stat size<=0), and the two have very
+           different fixes on a persistent rootfs (reflash vs. a config_save
+           that left a 0-byte file). Stat it so the log tells them apart. */
+        char full[FS_FULL_NAME_MAX+1] = {0};
+        fsinfo_t st;
+        vfs_fullname(path, full, FS_FULL_NAME_MAX);
+        if(vfs_get_by_name(full, &st) != 0)
+            brcm_log("Error: %s open failed (not found)\n", path);
+        else
+            brcm_log("Error: %s open failed (present, size=%d)\n",
+                    path, (int)st.stat.size);
         return;
     }
 

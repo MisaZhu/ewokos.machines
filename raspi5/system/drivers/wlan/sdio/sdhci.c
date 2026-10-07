@@ -1023,6 +1023,19 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host,
     /* Full DMA burst completed cleanly: clear any transient-failure streak. */
     _sdma_fail_streak = 0;
     if (data->flags == MMC_DATA_READ) {
+        /*
+         * The controller posts DATA_END as soon as the SDIO block transfer
+         * ends, but the SDMA engine's stores into the (non-cacheable)
+         * bounce buffer can still be draining through the interconnect.
+         * readl()/writel() here are plain volatile MMIO with no barrier, so
+         * without an explicit DSB the memcpy below can race ahead of the
+         * landing DMA writes and copy stale/partial bytes. That shows up as
+         * intermittent "HW header checksum error" plus udp_input checksum
+         * failures whose rate grows with sustained RX load (back-to-back
+         * CMD53 bursts keep the write path busier). Order the DMA writes
+         * before the CPU read, matching the dsb the V3D/DWC2 DMA paths use.
+         */
+        __asm__ volatile("dsb sy" ::: "memory");
         memcpy(data->dest, _sdma_bounce,
                 data->blocks * data->blocksize);
     }
@@ -1127,8 +1140,14 @@ int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
                 sdhci_sdma_init() == 0) {
             use_sdma = true;
             mode |= SDHCI_TRNS_DMA;
-            if (data->flags != MMC_DATA_READ)
+            if (data->flags != MMC_DATA_READ) {
                 memcpy(_sdma_bounce, data->src, trans_bytes);
+                /* Symmetric to the read side: make sure the payload has
+                 * actually landed in the non-cacheable bounce buffer before
+                 * the command write below kicks the SDMA engine, which is
+                 * otherwise free to fetch it ahead of the CPU stores. */
+                __asm__ volatile("dsb sy" ::: "memory");
+            }
             sdhci_writel(host, _sdma_bounce_phys, SDHCI_DMA_ADDRESS);
         }
 
