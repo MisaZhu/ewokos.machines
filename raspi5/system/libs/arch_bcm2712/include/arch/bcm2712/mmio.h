@@ -121,6 +121,22 @@
 #define PI5_USB_DWC2_WIN_OFF  0x04700000
 #define PI5_USB_DWC2_WIN_SIZE (64 * 1024)
 
+/*
+ * BCM2712 legacy DMA controller ("dma32", brcm,bcm2712-dma): a 0x600 byte
+ * register file at 0x10_00010000, channels 0/2/4/5
+ * (brcm,dma-channel-mask = <0x0035>). The HDMI MAI audio FIFO is wired to it
+ * (bcm2712.dtsi: hdmi0 dmas = <&dma32 10>), so hdmi_soundd maps channel 0 and
+ * runs a polled cyclic mem-to-peripheral ring on DREQ 10.
+ *
+ * Must match PI5_DMA32_WIN_OFF/PI5_DMA32_PHY/PI5_DMA32_SIZE in
+ * machines/raspi5/kernel/bsp/hw_arch.h: the kernel maps nothing here, it only
+ * whitelists the physical range in check_mem_map_arch() so the SYS_MEM_MAP
+ * below is accepted.
+ */
+#define PI5_DMA32_PHY       0x1000010000ULL
+#define PI5_DMA32_WIN_OFF   0x04800000
+#define PI5_DMA32_WIN_SIZE  (64 * 1024)
+
 /* Must match PI5_RP1_WIN_OFF/PI5_RP1_SIZE in kernel/bsp/hw_arch.h. */
 #define PI5_RP1_WIN_OFF     0x06000000
 #define PI5_RP1_WIN_SIZE    (6 * 1024 * 1024)

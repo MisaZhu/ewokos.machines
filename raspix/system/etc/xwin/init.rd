@@ -33,6 +33,8 @@
 
 #@/bin/splash -m "start /dev/sound0" -p 55
 #@/bin/ipcserv /drivers/raspix/soundd           /dev/sound0
+# HDMI audio (Pi4/Pi3/PiZero2): use instead of the analog soundd above.
+#@/bin/ipcserv /drivers/raspix/hdmi_soundd      /dev/sound0
 
 #@/bin/splash -m "start /dev/wl0" -p 60
 #@/bin/ipcserv /drivers/raspix/wland          /dev/wl0

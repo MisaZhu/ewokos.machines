@@ -107,6 +107,23 @@
 #define PI5_USB_DWC2_SIZE    (64*KB)
 
 /*
+ * BCM2712 legacy DMA controller ("dma32", brcm,bcm2712-dma): a 0x600 byte
+ * register file at 0x10_00010000 exposing channels 0/2/4/5
+ * (brcm,dma-channel-mask = <0x0035>). This is the bcm2835-style DMA engine
+ * the HDMI MAI audio FIFO is wired to (bcm2712.dtsi: hdmi0 dmas = <&dma32 10>),
+ * so hdmi_soundd drives channel 0 as a polled cyclic mem-to-peripheral ring on
+ * DREQ 10 (see drivers/dma/bcm2835-dma.c and sound/soc/bcm/... vc4_hdmi.c).
+ *
+ * Like PI5_USB_DWC2 above, the kernel maps nothing here: it only whitelists
+ * the physical range in check_mem_map_arch() so the driver's SYS_MEM_MAP is
+ * accepted. Virtual offset 0x04800000 sits inside MMIO_MAX_SIZE and clear of
+ * the SoC USB2 window (0x04700000) and RP1 (0x06000000).
+ */
+#define PI5_DMA32_WIN_OFF  0x04800000
+#define PI5_DMA32_PHY      0x1000010000UL
+#define PI5_DMA32_SIZE     (64*KB)
+
+/*
  * RP1 has to stay strictly inside MMIO_MAX_SIZE. At offset 0x08000000 it sat
  * at exactly MMIO_BASE + MMIO_MAX_SIZE, which is DMA_V_BASE: its 32MB device
  * window then covered the whole 32MB DMA window that every process shares, so

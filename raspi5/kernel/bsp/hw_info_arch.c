@@ -291,6 +291,14 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
         phy_base + size <= PI5_USB_DWC2_PHY + PI5_USB_DWC2_SIZE)
         return 0;
 
+    /* Legacy DMA controller ("dma32") window: 0x600 bytes at 0x10_00010000,
+     * channels 0/2/4/5. The HDMI MAI audio FIFO is fed by this engine
+     * (bcm2712.dtsi: hdmi0 dmas = <&dma32 10>), so hdmi_soundd maps channel 0
+     * through SYS_MEM_MAP to run a polled cyclic ring on DREQ 10. */
+    if (phy_base >= PI5_DMA32_PHY &&
+        phy_base + size <= PI5_DMA32_PHY + PI5_DMA32_SIZE)
+        return 0;
+
     /* RP1 southbridge window: PI5_RP1_SIZE at 0x1F_00000000 */
     if (phy_base >= PI5_RP1_PHY &&
         phy_base + size <= PI5_RP1_PHY + PI5_RP1_SIZE)

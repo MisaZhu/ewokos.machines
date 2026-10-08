@@ -902,6 +902,26 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     }
 
     {
+        /*
+         * CEA-861 standard TV timings first: strict HDMI sinks (older
+         * plasma / Japanese TVs) often cannot lock onto the CVT-RB
+         * reduced-blanking pixel clock, so 1920x1080 must be driven at
+         * the exact 148.5MHz the firmware uses.  Falls through to CVT
+         * for non-TV resolutions.
+         */
+        bcm2712_hdmi_mode_t cea_mode;
+        if (bcm2712_native_hdmi_cea_mode(w, h, dep, 60, &cea_mode) == 0) {
+            klog("fb_init: cea %ux%u@%u pclk=%u\n",
+                    cea_mode.width, cea_mode.height,
+                    cea_mode.depth, cea_mode.pixel_clock_hz);
+            if (bcm2712_native_hdmi_init_mode(&sysinfo, &cea_mode, &_fb_info) == 0) {
+                goto done;
+            }
+            klog("fb_init: native hdmi0 cea path failed\n");
+        }
+    }
+
+    {
         bcm2712_hdmi_mode_t cvt_mode;
         if (bcm2712_native_hdmi_cvt_mode(w, h, dep, 60, &cvt_mode) == 0) {
             klog("fb_init: cvt %ux%u@%u pclk=%u\n",

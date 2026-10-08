@@ -408,6 +408,86 @@ int bcm2712_native_hdmi_cvt_mode(uint32_t w, uint32_t h, uint32_t dep,
     return 0;
 }
 
+/* ─── CEA-861 standard TV timings ─── */
+
+/*
+ * Strict HDMI sinks (notably older plasma / Japanese TVs such as the
+ * Panasonic 1080p panels) refuse or misrender CVT reduced-blanking
+ * timings: they only lock onto the exact CEA-861 pixel clock and
+ * blanking the firmware itself uses.  When the EDID preferred DTD does
+ * not yield a matching progressive mode, look the requested resolution
+ * up here before falling back to CVT-RB.
+ */
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t refresh_hz;
+    uint32_t pixel_clock_hz;
+    uint32_t hfp;
+    uint32_t hsync;
+    uint32_t hbp;
+    uint32_t vfp;
+    uint32_t vsync;
+    uint32_t vbp;
+    uint8_t  hsync_pos;
+    uint8_t  vsync_pos;
+} cea_timing_t;
+
+static const cea_timing_t _cea_timings[] = {
+    /* 1920x1080p — VIC 16/31/34/33/32 */
+    {1920, 1080, 60, 148500000U,  88, 44, 148, 4, 5, 36, 1, 1},
+    {1920, 1080, 50, 148500000U, 528, 44, 148, 4, 5, 36, 1, 1},
+    {1920, 1080, 30,  74250000U,  88, 44, 148, 4, 5, 36, 1, 1},
+    {1920, 1080, 25,  74250000U, 528, 44, 148, 4, 5, 36, 1, 1},
+    {1920, 1080, 24,  74250000U, 638, 44, 148, 4, 5, 36, 1, 1},
+    /* 1280x720p — VIC 4/19 */
+    {1280,  720, 60,  74250000U, 110, 40, 220, 5, 5, 20, 1, 1},
+    {1280,  720, 50,  74250000U, 440, 40, 220, 5, 5, 20, 1, 1},
+    /* 480p / 576p SD — negative syncs (VIC 3/18) */
+    { 720,  480, 60,  27027000U,  16, 62,  60, 9, 6, 30, 0, 0},
+    { 720,  576, 50,  27000000U,  12, 64,  68, 5, 5, 40, 0, 0},
+};
+
+int bcm2712_native_hdmi_cea_mode(uint32_t w, uint32_t h, uint32_t dep,
+        uint32_t refresh_hz, bcm2712_hdmi_mode_t *mode) {
+    uint32_t i;
+    const uint32_t n = sizeof(_cea_timings) / sizeof(_cea_timings[0]);
+
+    if (mode == NULL) {
+        return -1;
+    }
+    if (dep != 16U && dep != 32U) {
+        return -1;
+    }
+    if (refresh_hz == 0U) {
+        refresh_hz = 60U;
+    }
+
+    for (i = 0; i < n; ++i) {
+        const cea_timing_t *t = &_cea_timings[i];
+
+        if (t->width != w || t->height != h || t->refresh_hz != refresh_hz) {
+            continue;
+        }
+
+        memset(mode, 0, sizeof(*mode));
+        mode->width = t->width;
+        mode->height = t->height;
+        mode->depth = dep;
+        mode->pixel_clock_hz = t->pixel_clock_hz;
+        mode->hfp = t->hfp;
+        mode->hsync = t->hsync;
+        mode->hbp = t->hbp;
+        mode->vfp = t->vfp;
+        mode->vsync = t->vsync;
+        mode->vbp = t->vbp;
+        mode->hsync_pos = t->hsync_pos;
+        mode->vsync_pos = t->vsync_pos;
+        return 0;
+    }
+    return -1;
+}
+
 static inline void hvs_write(uint32_t off, uint32_t val) {
     put32(_mmio_base + PI5_HVS_OFF + off, val);
 }

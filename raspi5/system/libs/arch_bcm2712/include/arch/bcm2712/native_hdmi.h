@@ -23,6 +23,9 @@ typedef struct {
 int bcm2712_native_hdmi_supported(uint32_t w, uint32_t h, uint32_t dep);
 int bcm2712_native_hdmi_cvt_mode(uint32_t w, uint32_t h, uint32_t dep,
 		uint32_t refresh_hz, bcm2712_hdmi_mode_t *mode);
+/* CEA-861 standard TV timing lookup (1080p/720p/480p/576p); returns 0 on hit */
+int bcm2712_native_hdmi_cea_mode(uint32_t w, uint32_t h, uint32_t dep,
+		uint32_t refresh_hz, bcm2712_hdmi_mode_t *mode);
 int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
 		const bcm2712_hdmi_mode_t *mode,
 		disp_info_t *info);

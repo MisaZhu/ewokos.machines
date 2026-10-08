@@ -1,4 +1,4 @@
-BASIC_DIRS = uartd cpud soundd camd
+BASIC_DIRS = uartd cpud soundd hdmi_soundd camd
 basic: $(BASIC_DIRS)
 
 GUI_DIRS = fbdisplayd dsi_fbdisplayd
