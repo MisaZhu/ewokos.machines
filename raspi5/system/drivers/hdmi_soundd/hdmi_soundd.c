@@ -577,7 +577,7 @@ static int audio_start_ring_locked(void) {
      */
     ret = hdmi_audio_config(_snd.hw_rate, HDMI_AUDIO_CHANNELS);
     if (ret != HDMI_AUDIO_ERR_NONE) {
-        klog("hdmi-snd: config %uHz failed %d\n", (unsigned)_snd.hw_rate, ret);
+        slog("hdmi-snd: config %uHz failed %d\n", (unsigned)_snd.hw_rate, ret);
         return -1;
     }
 
@@ -590,7 +590,7 @@ static int audio_start_ring_locked(void) {
             hdmi_audio_slot_frames() != SOUND_RING_SLOT_FRAMES) {
         ret = hdmi_audio_setup_ring(SOUND_RING_SLOTS, SOUND_RING_SLOT_FRAMES);
         if (ret != HDMI_AUDIO_ERR_NONE) {
-            klog("hdmi-snd: ring setup failed %d\n", ret);
+            slog("hdmi-snd: ring setup failed %d\n", ret);
             return -1;
         }
     }
@@ -611,7 +611,7 @@ static int audio_start_ring_locked(void) {
     if (ret != HDMI_AUDIO_ERR_NONE) {
         /* no display / no pixel clock lands here; leave the stream up so a
          * later pass retries once HDMI is active */
-        klog("hdmi-snd: start failed %d\n", ret);
+        slog("hdmi-snd: start failed %d\n", ret);
         hdmi_audio_teardown_ring();
         return -1;
     }
@@ -885,6 +885,7 @@ static void* sound_feeder_thread(void* arg) {
         if (wake_writer) {
             _snd_writer_parked = false;
         }
+
         sleep_usec = sound_feeder_sleep_usec();
         pthread_mutex_unlock(&_snd_lock);
 
@@ -1205,7 +1206,7 @@ int main(int argc, char** argv) {
      */
     ret = hdmi_audio_init(HDMI_AUDIO_F_NONE);
     if (ret != HDMI_AUDIO_ERR_NONE) {
-        klog("hdmi-snd: init failed %d\n", ret);
+        slog("hdmi-snd: init failed %d\n", ret);
         return -1;
     }
     pthread_mutex_init(&_snd_lock, NULL);

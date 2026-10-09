@@ -1,17 +1,17 @@
 /*
- * HDMI (VC4 MAI) + legacy dma32 cyclic ring playback backend for BCM2712
- * (Raspberry Pi 5). See hdmi_audio.h for the caller-facing model.
+ * HDMI (VC4 MAI) + dma40 cyclic ring playback backend for BCM2712 (Raspberry
+ * Pi 5). See hdmi_audio.h for the caller-facing model.
  *
- * Everything here is polled: no dma32 interrupt reaches user space, so the
- * channel is left walking a closed chain of bcm2835 control blocks forever and
- * its position is read back from SOURCE_AD.
+ * Everything here is polled: no DMA interrupt reaches user space, so the channel
+ * is left walking a closed chain of 40-bit control blocks forever and its
+ * position is read back from the CB register.
  *
  * Register maps and programming sequences come from:
  *   drivers/gpu/drm/vc4/vc4_hdmi.c        MAI bring-up, N/CTS, audio infoframe
  *   drivers/gpu/drm/vc4/vc4_hdmi_regs.h   vc6_hdmi_hdmi0_fields[], MAI bitfields
- *   drivers/dma/bcm2835-dma.c             legacy dma32 engine (is_2712 path)
- *   arch/arm64/boot/dts/broadcom/bcm2712.dtsi  addresses, dma-ranges,
- *                                         hdmi0 dmas = <&dma32 10>
+ *   drivers/dma/bcm2835-dma.c             dma40 engine (is_40bit_channel path)
+ *   arch/arm64/boot/dts/broadcom/bcm2712.dtsi  addresses, axi identity
+ *                                         dma-ranges, dma40 @ 0x10_00010600
  * Circle's CHDMISoundBaseDevice / CSoundBaseDevice corroborate the fixed
  * 108 MHz MAI clock and the software IEC958 subframe packing on real Pi 5.
  */
@@ -54,7 +54,7 @@
 #define HDMI_MAI_CTL        0x0010
 #define HDMI_MAI_THR        0x0014
 #define HDMI_MAI_FMT        0x0018
-#define HDMI_MAI_DATA       0x001c   /* FIFO write port: the dma32 destination */
+#define HDMI_MAI_DATA       0x001c   /* FIFO write port: the dma40 destination */
 #define HDMI_MAI_SMP        0x0020
 
 /* "hdmi" bank registers (VC4_HDMI_REG) */
@@ -78,6 +78,7 @@
 #define VC4_HD_MAI_CTL_DLATE      BIT(15)
 #define VC4_HD_MAI_CTL_CHALIGN    BIT(13)
 #define VC4_HD_MAI_CTL_WHOLSMP    BIT(12)
+#define VC4_HD_MAI_CTL_EMPTY      BIT(10)   /* read-only: the FIFO has drained */
 #define VC4_HD_MAI_CTL_FLUSH      BIT(9)
 #define VC4_HD_MAI_CTL_PAREN      BIT(8)
 #define VC4_HD_MAI_CTL_CHNUM_MASK VC4_MASK(7, 4)
@@ -123,108 +124,226 @@
 #define VC4_HDMI_HOTPLUG_CONNECTED     BIT(0)
 
 /*
- * The vc6 MAI serial clock ("audio" clock) is a fixed 108 MHz (clk_108MHz in
- * bcm2712.dtsi); Circle hard-codes the same value. MAI_SMP divides it down to
- * the sample rate, so this never has to be queried.
+ * The vc6 MAI serial clock ("audio" clock) runs at a fixed 108 MHz (clk_108MHz
+ * in bcm2712.dtsi); Circle hard-codes the same value. MAI_SMP divides it down
+ * to the sample rate, so the *rate* never has to be queried.
+ *
+ * Unlike vc4 (where audio_clock == hsm_clock), vc5/vc6 keep a *separate*
+ * "audio" clock: vc4_hdmi.c vc5_hdmi_init_resources() does
+ * devm_clk_get(dev, "audio") and vc4_hdmi_runtime_resume() re-enables it with
+ * clk_prepare_enable(vc4_hdmi->audio_clock) before the MAI is touched. On
+ * BCM2712 that clock is "hdmi0-108MHz", a gate in the DVP block at SoC
+ * 0x7c700000 (clk-bcm2711-dvp.c: DVP_HT_RPI_MISC_CONFIG bit 3,
+ * CLK_GATE_SET_TO_DISABLE). The display bring-up only drives the HDMI DVP
+ * register bank at 0x7c701000 and never opens this gate, so the fixed rate is
+ * not enough: the gate has to be cleared here or the MAI FIFO logic has no
+ * clock, never drains, never raises a DREQ, and the dma40 channel parks with
+ * CS bit3 (DREQ) clear and CB frozen at CB0 forever.
  */
 #define HDMI_AUDIO_CLOCK_HZ  108000000ULL
+
+/* DVP clock/reset controller (brcm,brcm2711-dvp @ SoC 0x7c700000). Distinct
+ * from the HDMI DVP register bank at 0x7c701000 (PI5_HDMI0_DVP_OFF). */
+#define PI5_HDMI0_DVP_CLK_OFF       0x00700000U
+#define DVP_HT_RPI_MISC_CONFIG      0x08U
+/* CLK_GATE_SET_TO_DISABLE: clearing the bit enables "hdmi0-108MHz" */
+#define DVP_MISC_HDMI0_108MHZ_GATE  BIT(3)
 
 /* firmware mailbox clock query (native_hdmi.c uses the same tag/id) */
 #define RPI_FIRMWARE_GET_CLOCK_RATE  0x00030002u
 #define PI5_FW_CLK_HDMI0_PIXEL       9u
 
-/* ------------------------------------------------- legacy dma32 engine */
+/* ------------------------------------------------- BCM2712 dma40 engine */
 
-/* per-channel register stride and registers (bcm2835-dma.c) */
-#define DMA32_CHAN_STRIDE     0x100u
-#define BCM2835_DMA_CS        0x00
-#define BCM2835_DMA_ADDR      0x04   /* CONBLK_AD */
-#define BCM2835_DMA_TI        0x08
-#define BCM2835_DMA_SOURCE_AD 0x0c
-#define BCM2835_DMA_DEST_AD   0x10
-#define BCM2835_DMA_LEN       0x14
-#define BCM2835_DMA_STRIDE    0x18
-#define BCM2835_DMA_NEXTCB    0x1c
-#define BCM2835_DMA_DEBUG     0x20
+/*
+ * The runtime probe settled it on real hardware: the legacy dma32 slice never
+ * sees the HDMI MAI request line. Armed with PER_MAP 12 and 10 its CS bit3
+ * (DREQ) stayed clear and CONBLK_AD froze at CB0, so not one sample reached the
+ * FIFO. bcm2712.dtsi splits the one register file at 0x10_00010000 into two DT
+ * nodes -- dma32 @ +0x000 (channels 0-5, mask 0x0035) and dma40 @ +0x600
+ * (channels 6-11, mask 0x0fc0; the "6 40-bit channels DMA6..DMA11" of
+ * bcm2835-dma.c) -- and rpi-6.18.y drives HDMI audio through dma40 precisely
+ * because the MAI DREQ is only reachable from the 40-bit slice.
+ *
+ * dma40 channel 6 lives at 0x10_00010600 = PI5_DMA32_PHY + 0x600, inside the
+ * same 64 KB window this driver already maps and the kernel already whitelists,
+ * so only the channel index, register layout and control-block format change.
+ *
+ * Both DMA nodes hang off the "axi" bus whose dma-ranges are IDENTITY over the
+ * full 40-bit space (bcm2712.dtsi: <0x00 0x0 0x00 0x0 0x10 0x0>, ...), so a
+ * dma40 master addresses RAM at its raw physical address (NOT the legacy
+ * 0xc0000000 alias the dma32 path wrongly used) and reaches the MAI FIFO at its
+ * full physical 0x10_7c72001c (hdmi0 sits under "soc", whose ranges map
+ * 0x7c000000 -> 0x10_7c000000). The upper 8 bits ride in SCB.srci / SCB.dsti.
+ */
 
-/* CS bits */
-#define BCM2835_DMA_ACTIVE    BIT(0)
-#define BCM2835_DMA_END       BIT(1)
-#define BCM2835_DMA_DREQ      BIT(3)
-#define BCM2835_DMA_ERR       BIT(8)
-#define BCM2835_DMA_PRIORITY(x)      (((x) & 15) << 16)
-#define BCM2835_DMA_PANIC_PRIORITY(x) (((x) & 15) << 20)
-#define BCM2835_DMA_WAIT_FOR_WRITES  BIT(28)
-#define BCM2835_DMA_DIS_DEBUG        BIT(29)
-#define BCM2835_DMA_ABORT     BIT(30)
-#define BCM2835_DMA_RESET     BIT(31)
-#define BCM2835_DMA_CS_FLAGS(x) ((x) & (BCM2835_DMA_PRIORITY(15) | \
-        BCM2835_DMA_PANIC_PRIORITY(15) | BCM2835_DMA_WAIT_FOR_WRITES | \
-        BCM2835_DMA_DIS_DEBUG))
+/* per-channel register stride (channels are 0x100 apart in the shared file) */
+#define DMA_CHAN_STRIDE       0x100u
 
-/* TI / control-block info bits */
+/* dma40 per-channel registers (bcm2835-dma.c BCM2711_DMA40_*) */
+#define DMA40_CS              0x00
+#define DMA40_CB              0x04   /* current control block, held as addr>>5 */
+#define DMA40_DEBUG           0x0c
+#define DMA40_TI              0x10
+#define DMA40_SRC             0x14
+#define DMA40_SRCI            0x18
+#define DMA40_DEST            0x1c
+#define DMA40_DESTI           0x20
+#define DMA40_LEN             0x24
+#define DMA40_NEXT_CB         0x28
+#define DMA40_DEBUG2          0x2c
+
+/* dma40 CS bits */
+#define DMA40_ACTIVE          BIT(0)
+#define DMA40_END             BIT(1)
+#define DMA40_INT             BIT(2)
+#define DMA40_DREQ            BIT(3)
+#define DMA40_RD_PAUSED       BIT(4)
+#define DMA40_WR_PAUSED       BIT(5)
+#define DMA40_DREQ_PAUSED     BIT(6)
+#define DMA40_PROT            (BIT(8) | BIT(9))   /* supervisor-mode access */
+#define DMA40_ERR             BIT(10)
+#define DMA40_QOS(x)          (((x) & 0x1f) << 16)
+#define DMA40_PANIC_QOS(x)    (((x) & 0x1f) << 20)
+#define DMA40_TRANSACTIONS    BIT(25)
+#define DMA40_WAIT_FOR_WRITES BIT(28)
+#define DMA40_DISDEBUG        BIT(29)
+#define DMA40_ABORT           BIT(30)
+#define DMA40_HALT            BIT(31)
+#define DMA40_CS_FLAGS(x)     ((x) & (DMA40_QOS(15) | DMA40_PANIC_QOS(15) | \
+        DMA40_WAIT_FOR_WRITES | DMA40_DISDEBUG))
+
+/* dma40 DEBUG bits */
+#define DMA40_DEBUG_RESET     BIT(23)
+
+/* dma40 transfer-information (TI) bits */
+#define DMA40_INTEN           BIT(0)
+#define DMA40_TDMODE          BIT(1)
+#define DMA40_WAIT_RESP       BIT(2)
+#define DMA40_WAIT_RD_RESP    BIT(3)
+#define DMA40_PER_MAP(x)      (((x) & 31) << 9)
+#define DMA40_S_DREQ          BIT(14)
+#define DMA40_D_DREQ          BIT(15)
+
+/* dma40 SRCI / DSTI bits */
+#define DMA40_BURST_LEN(x)    (((x) & 15) << 8)
+#define DMA40_INC             BIT(12)
+#define DMA40_SIZE_32         (0u << 13)
+#define DMA40_SIZE_64         (1u << 13)
+#define DMA40_SIZE_128        (2u << 13)
+#define DMA40_SIZE_256        (3u << 13)
+#define DMA40_IGNORE          BIT(15)
+
+/*
+ * Legacy bcm2835 "info" bits. MAI_DMA_INFO() is still spelled with them and
+ * to_bcm2711_ti/srci/dsti() below translate it into the dma40 TI/SRCI/DSTI
+ * encoding, exactly as bcm2835-dma.c does for a 40-bit channel.
+ */
 #define BCM2835_DMA_INT_EN    BIT(0)
 #define BCM2835_DMA_WAIT_RESP BIT(3)
 #define BCM2835_DMA_D_INC     BIT(4)
+#define BCM2835_DMA_D_WIDTH   BIT(5)
 #define BCM2835_DMA_D_DREQ    BIT(6)
 #define BCM2835_DMA_S_INC     BIT(8)
+#define BCM2835_DMA_S_WIDTH   BIT(9)   /* 128-bit source reads (Circle sets this) */
 #define BCM2835_DMA_S_DREQ    BIT(10)
-#define BCM2835_DMA_PER_MAP(x) (((x) & 31) << 16)
-#define BCM2835_DMA_NO_WIDE_BURSTS BIT(26)
-
-#define BCM2835_DMA_DEBUG_LITE BIT(28)
-
-/* MAI is peripheral request line 10 (bcm2712.dtsi: hdmi0 dmas = <&dma32 10>) */
-#define MAI_DMA_DREQ     10u
-/* channel 0 of dma32 (brcm,dma-channel-mask = <0x0035> = {0,2,4,5}) */
-#define MAI_DMA_CHANNEL  0u
+#define BCM2835_DMA_PER_MAP(x)          (((x) & 31) << 16)
+#define BCM2835_DMA_BURST_LENGTH(x)     (((x) & 15) << 12)
+#define BCM2835_DMA_GET_BURST_LENGTH(x) (((x) >> 12) & 15)
 
 /*
- * info for a polled cyclic mem-to-peripheral transfer into the MAI FIFO.
- * bcm2835_dma_prep_dma_cyclic() builds exactly this for dreq 10:
- *   WAIT_RESP | PER_MAP(10) | D_DREQ | S_INC
- * The four "fake" width/burst request bits are clear for a plain dreq number,
- * and the slave path never adds NO_WIDE_BURSTS, so the value is constant.
+ * MAI peripheral request line. bcm2712.dtsi fixes hdmi0 audio at DREQ 10
+ * (<&dma32 10>) while Circle remaps it to 12 on the D0 stepping; the sources
+ * disagree and the dma40 wiring is undocumented, so both are probed at runtime
+ * (mai_probe_dreq) instead of guessed.
  */
-#define MAI_DMA_INFO (BCM2835_DMA_WAIT_RESP | BCM2835_DMA_PER_MAP(MAI_DMA_DREQ) | \
-        BCM2835_DMA_D_DREQ | BCM2835_DMA_S_INC)
+#define MAI_DMA_DREQ       10u
+#define MAI_DMA_DREQ_D0    12u
+/* dma40 channel 6 = register-file base + 6*0x100 = 0x10_00010600 (dma@10600) */
+#define MAI_DMA_CHANNEL    6u
 
-/* a lite channel caps one control block at 64K-4; a bulk channel at 1G */
-#define MAX_LITE_DMA_LEN  (65536u - 4u)
-#define MAX_DMA_LEN       0x40000000u
+/*
+ * DREQ lines to try at runtime, most likely first. With the FIFO empty the
+ * enabled MAI asserts its request line; a channel armed with the right PER_MAP
+ * shows CS bit3 (DREQ) set or walks its control block past CB0.
+ */
+static const uint32_t _mai_dreq_candidates[] = { MAI_DMA_DREQ_D0, MAI_DMA_DREQ };
+#define MAI_DREQ_CANDIDATE_COUNT \
+        (sizeof(_mai_dreq_candidates) / sizeof(_mai_dreq_candidates[0]))
 
-/* the 32-byte control block the engine fetches (struct bcm2835_dma_cb) */
+/*
+ * Legacy-style info for a polled cyclic mem-to-peripheral transfer into the MAI
+ * FIFO: WAIT_RESP | PER_MAP(dreq) | S_WIDTH | D_DREQ | S_INC. S_WIDTH issues
+ * 128-bit reads from the (16-byte aligned) slot buffers while the destination
+ * stays a 32-bit MAI FIFO port write, matching Circle's SetupCyclicIOWrite().
+ */
+#define MAI_DMA_INFO(dreq) (BCM2835_DMA_WAIT_RESP | BCM2835_DMA_PER_MAP(dreq) | \
+        BCM2835_DMA_S_WIDTH | BCM2835_DMA_D_DREQ | BCM2835_DMA_S_INC)
+
+/*
+ * CS that arms a dma40 channel: bcm2835_dma_start_desc() writes ACTIVE | PROT
+ * (supervisor) and the 40-bit path touches no global DMA_ENABLE register. QOS
+ * stays 0 like Linux; raise DMA40_QOS/PANIC_QOS only if the FIFO ever starves.
+ */
+#define DMA40_CS_START     (DMA40_ACTIVE | DMA40_PROT)
+
+/* a 40-bit channel is never "lite", so one control block spans up to 1 GB */
+#define MAX_DMA_LEN        0x40000000u
+
+/* the 32-byte dma40 control block (struct bcm2711_dma40_scb in bcm2835-dma.c) */
 typedef struct __attribute__((packed)) {
-    uint32_t info;
+    uint32_t ti;
     uint32_t src;
+    uint32_t srci;
     uint32_t dst;
-    uint32_t length;
-    uint32_t stride;
-    uint32_t next;
-    uint32_t pad[2];
-} bcm2835_dma_cb_t;
+    uint32_t dsti;
+    uint32_t len;
+    uint32_t next_cb;
+    uint32_t rsvd;
+} dma40_scb_t;
 
-typedef char bcm2835_dma_cb_must_be_32_bytes[(sizeof(bcm2835_dma_cb_t) == 32) ? 1 : -1];
+typedef char dma40_scb_must_be_32_bytes[(sizeof(dma40_scb_t) == 32) ? 1 : -1];
 
-/* CONBLK_AD and CB.next hold a bus address shifted right by 5 (to_40bit_cbaddr) */
+/* legacy info -> dma40 TI (bcm2835-dma.c to_bcm2711_ti) */
+static inline uint32_t to_bcm2711_ti(uint32_t info) {
+    return ((info & BCM2835_DMA_INT_EN) ? DMA40_INTEN : 0u) |
+            ((info & BCM2835_DMA_WAIT_RESP) ? DMA40_WAIT_RESP : 0u) |
+            ((info & BCM2835_DMA_S_DREQ) ? (DMA40_S_DREQ | DMA40_WAIT_RD_RESP) : 0u) |
+            ((info & BCM2835_DMA_D_DREQ) ? DMA40_D_DREQ : 0u) |
+            DMA40_PER_MAP((info >> 16) & 0x1f);
+}
+/* legacy info -> dma40 SRCI (bcm2835-dma.c to_bcm2711_srci) */
+static inline uint32_t to_bcm2711_srci(uint32_t info) {
+    return ((info & BCM2835_DMA_S_INC) ? DMA40_INC : 0u) |
+            ((info & BCM2835_DMA_S_WIDTH) ? DMA40_SIZE_128 : 0u) |
+            DMA40_BURST_LEN(BCM2835_DMA_GET_BURST_LENGTH(info));
+}
+/* legacy info -> dma40 DSTI (bcm2835-dma.c to_bcm2711_dsti) */
+static inline uint32_t to_bcm2711_dsti(uint32_t info) {
+    return ((info & BCM2835_DMA_D_INC) ? DMA40_INC : 0u) |
+            ((info & BCM2835_DMA_D_WIDTH) ? DMA40_SIZE_128 : 0u) |
+            DMA40_BURST_LEN(BCM2835_DMA_GET_BURST_LENGTH(info));
+}
+
+/* dma40 fetches control blocks at addr>>5, so every SCB must be 32-byte aligned */
 static inline uint32_t to_40bit_cbaddr(uint64_t addr) {
     return (uint32_t)(addr >> 5);
 }
 
-/* ------------------------------------------ dma32 bus address translation */
-/*
- * bcm2712.dtsi dma-ranges for the legacy dma32 engine:
- *   RAM:        <0xc0000000 0x00 0x00000000 0x40000000>  bus = 0xc0000000 + phys
- *   peripheral: <0x7c000000 0x10 0x7c000000 0x04000000>  bus = phys - 0x10_00000000
- * The MAI FIFO is at phys 0x10_7c72001c, i.e. bus 0x7c72001c. dma_alloc()
- * returns memory below 1 GB, so every RAM bus address stays under 0x1_00000000
- * and the CB.stride upper-address bits are zero.
- */
-#define DMA32_RAM_BUS_OFF  0xc0000000u
-#define HDMI_MAI_DATA_BUS  0x7c72001cu
+#define lower_32_bits(x) ((uint32_t)((uint64_t)(x) & 0xffffffffULL))
+#define upper_32_bits(x) ((uint32_t)(((uint64_t)(x) >> 32) & 0xffffffffULL))
 
-/* to_40bit_cbaddr() needs a 32-byte aligned bus address */
-#define DMA32_CB_ALIGN     32u
+/* ------------------------------------------- dma40 bus address translation */
+/*
+ * The "axi" dma-ranges are identity, so a dma40 bus address IS the physical
+ * address. RAM buffers keep the raw dma_phy_addr() value (dma_alloc() returns
+ * memory below 1 GB, so srci's upper bits stay 0) and the MAI FIFO write port
+ * is its full 40-bit physical address, whose upper 0x10 lands in dsti.
+ */
+#define HDMI_MAI_DATA_PHYS  0x107c72001cULL
+
+/* control blocks are 32 bytes, so the ring keeps a 32-byte aligned address */
+#define DMA40_CB_ALIGN      32u
 
 /* --------------------------------------------------------------- state */
 
@@ -233,15 +352,16 @@ static uint32_t _rate;
 static uint32_t _channels;
 static uint32_t _pixel_clock;      /* Hz, read from firmware in start() */
 static int _hvs_step_d0 = -1;
+static uint32_t _dreq;             /* DREQ line confirmed by the runtime probe */
 
-static ewokos_addr_t _dma_base;    /* dma32 channel register window */
-static uint32_t _dma_max_frame;    /* MAX_DMA_LEN or MAX_LITE_DMA_LEN */
+static ewokos_addr_t _dma_base;    /* dma40 channel 6 register window */
+static uint32_t _dma_max_frame;    /* MAX_DMA_LEN (a 40-bit channel is never lite) */
 
 static ewokos_addr_t _ring_raw;    /* dma_alloc() handle */
-static bcm2835_dma_cb_t* _cb;      /* control block array (virtual) */
-static uint64_t _cb_bus;           /* control block array (dma32 bus) */
+static dma40_scb_t* _cb;           /* control block array (virtual) */
+static uint64_t _cb_bus;           /* control block array bus addr (== phys) */
 static uint32_t* _slots_virt;      /* sample buffers (virtual) */
-static uint64_t _slots_bus;        /* sample buffers (dma32 bus) */
+static uint64_t _slots_bus;        /* sample buffers bus addr (== phys) */
 static uint32_t _slot_count;
 static uint32_t _slot_frames;
 static bool _running;
@@ -277,6 +397,26 @@ static int hvs_is_step_d0(void) {
     hvs_id = hvs_read(SCALER6D0_HVS_ID);
     _hvs_step_d0 = (hvs_id != 0U && hvs_id != 0xffffffffU) ? 1 : 0;
     return _hvs_step_d0;
+}
+
+/* D0 remaps the HDMI audio DREQ from 10 to 12 (see MAI_DMA_DREQ_D0) */
+static uint32_t mai_dma_dreq(void) {
+    /* the runtime probe overrides the HVS-stepping guess once it has run */
+    if (_dreq != 0)
+        return _dreq;
+    return hvs_is_step_d0() ? MAI_DMA_DREQ_D0 : MAI_DMA_DREQ;
+}
+
+/*
+ * Open the vc6 HDMI audio clock gate before any MAI programming, mirroring
+ * clk_prepare_enable(vc4_hdmi->audio_clock) in vc4_hdmi_runtime_resume(). The
+ * read-modify-write clears only bit 3 (hdmi0-108MHz), leaving bit 4 (hdmi1) and
+ * the other DVP config bits untouched.
+ */
+static void hdmi_audio_clock_enable(void) {
+    ewokos_addr_t misc =
+            _mmio_base + PI5_HDMI0_DVP_CLK_OFF + DVP_HT_RPI_MISC_CONFIG;
+    put32(misc, get32(misc) & ~DVP_MISC_HDMI0_108MHZ_GATE);
 }
 
 /* -------------------------------------------------- native rate table */
@@ -429,11 +569,15 @@ uint32_t hdmi_audio_iec958_subframe(int32_t sample24, uint32_t subframe_idx) {
 
 /* -------------------------------------------------------------- MAI */
 
-/* vc4_hdmi_audio_reset(): single-shot reset, then clear the error/flush bits */
+/*
+ * vc4_hdmi_audio_reset() / Circle RunHDMI(): assert reset+flush and latch-clear
+ * the delayed/error flags in ONE write, leaving the MAI disabled. It is enabled
+ * only at the very end of hdmi_audio_start(), after the DMA is armed.
+ */
 static void mai_reset(void) {
-    hd_write(HDMI_MAI_CTL, VC4_HD_MAI_CTL_RESET);
-    hd_write(HDMI_MAI_CTL, VC4_HD_MAI_CTL_ERRORF);
-    hd_write(HDMI_MAI_CTL, VC4_HD_MAI_CTL_FLUSH);
+    hd_write(HDMI_MAI_CTL,
+            VC4_HD_MAI_CTL_RESET | VC4_HD_MAI_CTL_FLUSH | VC4_HD_MAI_CTL_DLATE |
+            VC4_HD_MAI_CTL_ERRORE | VC4_HD_MAI_CTL_ERRORF);
 }
 
 /* vc4_hdmi_audio_set_mai_clock(): MAI_SMP = N / (M+1) of the 108 MHz clock */
@@ -450,9 +594,32 @@ static void set_mai_clock(uint32_t rate) {
 
 /* vc4_hdmi_set_n_cts(): clock regeneration N / CTS from the real pixel clock */
 static void set_n_cts(uint32_t rate) {
-    uint32_t n = 128u * rate / 1000u;
-    uint64_t tmp = (uint64_t)_pixel_clock * n;
+    uint32_t n;
+    uint64_t tmp;
     uint32_t cts;
+
+    /*
+     * N is NOT 128*rate/1000. The 44.1 kHz family must use the HDMI-spec N
+     * values (6272 / 12544 / 25088) so that CTS = pixel_clock*N/(128*fs)
+     * stays integral at the standard pixel clocks -- this is exactly the
+     * switch() in Linux vc4_hdmi_set_n_cts(). The old formula computed 5644
+     * for 44100 (instead of 6272), so a 44.1 kHz stream drove the sink with a
+     * wrong regenerated audio clock and stayed silent, while 48 kHz (whose
+     * 128*48 == 6144 already matches the spec) played fine. That is why
+     * nesemu (44100) had no sound but wavplayer (48000) did.
+     */
+    switch (rate) {
+    case 32000:  n = 4096u;  break;
+    case 44100:  n = 6272u;  break;
+    case 48000:  n = 6144u;  break;
+    case 88200:  n = 12544u; break;
+    case 96000:  n = 12288u; break;
+    case 176400: n = 25088u; break;
+    case 192000: n = 24576u; break;
+    default:     n = 128u * rate / 1000u; break;
+    }
+
+    tmp = (uint64_t)_pixel_clock * n;
     tmp /= (uint64_t)(128u * rate);
     cts = (uint32_t)tmp;
 
@@ -521,8 +688,7 @@ static int set_audio_infoframe(void) {
     /* stop this packet and let the RAM engine release it */
     hdmi_write(HDMI_RAM_PACKET_CONFIG,
             hdmi_read(HDMI_RAM_PACKET_CONFIG) & ~BIT(HDMI_AUDIO_PACKET_ID));
-    if (ram_packet_wait(BIT(HDMI_AUDIO_PACKET_ID), false) != 0)
-        klog("hdmi-audio: audio infoframe did not go idle\n");
+    ram_packet_wait(BIT(HDMI_AUDIO_PACKET_ID), false);
 
     /*
      * CEA audio infoframe: type 0x84, version 1, length 10, stereo PCM.
@@ -541,26 +707,122 @@ static int set_audio_infoframe(void) {
     /* enable the audio packet and wait for the engine to pick it up */
     hdmi_write(HDMI_RAM_PACKET_CONFIG,
             hdmi_read(HDMI_RAM_PACKET_CONFIG) | BIT(HDMI_AUDIO_PACKET_ID));
-    if (ram_packet_wait(BIT(HDMI_AUDIO_PACKET_ID), true) != 0)
-        klog("hdmi-audio: audio infoframe did not start\n");
+    ram_packet_wait(BIT(HDMI_AUDIO_PACKET_ID), true);
     return HDMI_AUDIO_ERR_NONE;
 }
 
-/* --------------------------------------------------------------- dma32 */
+/* --------------------------------------------------------------- dma40 */
 
-/* bcm2835_dma_terminate_all() for a non-40bit channel */
-static void dma32_abort(void) {
+/* bcm2835_dma_abort() for a 40-bit channel */
+static void dma40_abort(void) {
     uint32_t timeout = 100000u;
-    /* a zero CONBLK_AD means the channel is already idle */
-    if (dma_get32(BCM2835_DMA_ADDR) == 0)
+    /* a zero CB means the channel is already idle (ACTIVE is not reliable) */
+    if (dma_get32(DMA40_CB) == 0)
         return;
-    dma_put32(BCM2835_DMA_NEXTCB, 0);
-    dma_put32(BCM2835_DMA_CS,
-            dma_get32(BCM2835_DMA_CS) | BCM2835_DMA_ABORT | BCM2835_DMA_ACTIVE);
-    while ((dma_get32(BCM2835_DMA_CS) & BCM2835_DMA_ABORT) && --timeout)
-        ;   /* spin: the abort completes within a few bus cycles */
-    dma_put32(BCM2835_DMA_CS, dma_get32(BCM2835_DMA_CS) & ~BCM2835_DMA_ACTIVE);
-    dma_put32(BCM2835_DMA_CS, BCM2835_DMA_RESET);
+    /* pause the channel, then let outstanding bus transactions drain */
+    dma_put32(DMA40_CS, dma_get32(DMA40_CS) & ~DMA40_ACTIVE);
+    while ((dma_get32(DMA40_CS) & DMA40_TRANSACTIONS) && --timeout)
+        ;   /* spin: bounded so a stuck peripheral cannot hang the driver */
+    dma_put32(DMA40_CS, DMA40_PROT);
+    dma_put32(DMA40_DEBUG, dma_get32(DMA40_DEBUG) | DMA40_DEBUG_RESET);
+}
+
+/*
+ * Rewrite every SCB's TI with a candidate DREQ. Only TI carries PER_MAP, so
+ * src/srci/dst/dsti/len/next_cb are left intact. Must only be called while the
+ * channel is stopped, or the engine could fetch a half-written control block.
+ */
+static void ring_set_dreq(uint32_t dreq) {
+    uint32_t ti = to_bcm2711_ti(MAI_DMA_INFO(dreq));
+    for (uint32_t i = 0; i < _slot_count; i++)
+        _cb[i].ti = ti;
+    hdmi_dmb();
+}
+
+/*
+ * bcm2835_dma_start_desc() for a 40-bit channel: point CB at the first control
+ * block (addr>>5) and set ACTIVE|PROT. The 40-bit path has no global DMA_ENABLE
+ * register to poke -- writing CS is what starts the engine walking the chain.
+ */
+static void dma40_arm_start(void) {
+    dma40_abort();
+    hdmi_dmb();
+    dma_put32(DMA40_CB, to_40bit_cbaddr(_cb_bus));
+    dma_put32(DMA40_CS, DMA40_CS_START);
+    hdmi_dmb();
+}
+
+/*
+ * Disable the MAI and drain its FIFO to EMPTY. The DREQ threshold is 0x1c
+ * frames, so any residue left by a previous run keeps the MAI from asserting
+ * its request line; a channel armed afterwards then parks in CS bit6
+ * (DREQ_PAUSED) with a frozen CONBLK and a line that is really wired looks
+ * dead. Flushing first makes the next enable raise DREQ deterministically.
+ */
+static void mai_disable_flush(void) {
+    uint32_t drain = 100000u;
+    hd_write(HDMI_MAI_CTL,
+            VC4_HD_MAI_CTL_FLUSH | VC4_HD_MAI_CTL_DLATE |
+            VC4_HD_MAI_CTL_ERRORE | VC4_HD_MAI_CTL_ERRORF);
+    hdmi_dmb();
+    while (!(hd_read(HDMI_MAI_CTL) & VC4_HD_MAI_CTL_EMPTY) && --drain)
+        ;   /* bounded spin: a stuck FIFO must not hang the driver */
+    /* drop FLUSH; the MAI stays disabled over a provably empty FIFO */
+    hd_write(HDMI_MAI_CTL,
+            VC4_HD_MAI_CTL_DLATE | VC4_HD_MAI_CTL_ERRORE |
+            VC4_HD_MAI_CTL_ERRORF);
+    hdmi_dmb();
+}
+
+/*
+ * Discover which DREQ line the MAI actually drives on dma40. The MAI has to be
+ * enabled to assert its request line, but enabling it on an empty FIFO before
+ * the DMA is live underflows and latches DLATE (MAI_CTL bit15); once latched the
+ * MAI stops issuing DREQ and every candidate reads a frozen CONBLK (start -6).
+ * So each candidate is tried in the proven Circle order: arm the dma40 channel
+ * first, clear any DLATE latched by the previous candidate, then enable the MAI
+ * so the FIFO is fed the instant it is clocked. A line is wired if CS bit3
+ * (DREQ) reads set or CB has walked past CB0. Returns the winning DREQ (also
+ * stored in _dreq), or 0 if dma40 cannot service the MAI at all.
+ */
+static uint32_t mai_probe_dreq(void) {
+    uint32_t cb0 = to_40bit_cbaddr(_cb_bus);
+    uint32_t mai_run =
+            VC4_SET_FIELD(_channels, VC4_HD_MAI_CTL_CHNUM_MASK) |
+            VC4_HD_MAI_CTL_WHOLSMP |
+            VC4_HD_MAI_CTL_CHALIGN |
+            VC4_HD_MAI_CTL_ENABLE;
+    for (uint32_t i = 0; i < MAI_DREQ_CANDIDATE_COUNT; i++) {
+        uint32_t dreq = _mai_dreq_candidates[i];
+        dma40_abort();
+        ring_set_dreq(dreq);
+        /* disable + flush so the MAI provably starts from an empty FIFO */
+        mai_disable_flush();
+        /* Circle order: DMA armed first, then the MAI is enabled into the empty
+         * FIFO so it raises DREQ the instant it is clocked */
+        dma40_arm_start();
+        hd_write(HDMI_MAI_CTL, mai_run);
+        hdmi_dmb();
+        usleep(3000);
+        uint32_t cs = dma_get32(DMA40_CS);
+        uint32_t cb = dma_get32(DMA40_CB);
+        uint32_t ctl = hd_read(HDMI_MAI_CTL);
+        /*
+         * mai_disable_flush() left the FIFO EMPTY, so a cleared EMPTY bit is
+         * direct proof the DMA delivered samples on this line. Trust it: at
+         * 44.1 kHz a 3 ms probe moves only ~1 KB, far short of one 16 KB slot,
+         * so CB is still CB0, and the FIFO crossing DREQLOW drops DREQ before
+         * CS is sampled. The old (DREQ || CB!=CB0) test therefore missed a line
+         * that actually works and the driver retried for seconds until DREQ
+         * happened to read high -- exactly the long silence before first audio.
+         */
+        if ((cs & DMA40_DREQ) || cb != cb0 ||
+                !(ctl & VC4_HD_MAI_CTL_EMPTY)) {
+            _dreq = dreq;
+            return dreq;   /* MAI enabled and DMA walking: leave it running */
+        }
+    }
+    return 0;
 }
 
 /* ------------------------------------------------------------- windows */
@@ -573,18 +835,24 @@ static int audio_map_windows(void) {
     if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)sysinfo.mmio.v_base,
             (ewokos_addr_t)sysinfo.mmio.phy_base,
             (ewokos_addr_t)sysinfo.mmio.size) != sysinfo.mmio.v_base) {
-        klog("hdmi-audio: main MMIO map failed\n");
+        slog("hdmi-audio: main MMIO map failed\n");
         return HDMI_AUDIO_ERR_MAP;
     }
 
+    /*
+     * One 64 KB window covers the whole DMA register file (dma32 @ +0x000 and
+     * dma40 @ +0x600 are contiguous slices of it), so dma40 channel 6 at
+     * 0x10_00010600 is reached at dma_vbase + 6*0x100 with no extra mapping and
+     * no kernel-whitelist change.
+     */
     ewokos_addr_t dma_vbase = _mmio_base + PI5_DMA32_WIN_OFF;
     if (syscall3(SYS_MEM_MAP, dma_vbase, PI5_DMA32_PHY, PI5_DMA32_WIN_SIZE)
             != dma_vbase) {
-        klog("hdmi-audio: dma32 window map failed\n");
+        slog("hdmi-audio: dma window map failed\n");
         return HDMI_AUDIO_ERR_MAP;
     }
 
-    _dma_base = dma_vbase + MAI_DMA_CHANNEL * DMA32_CHAN_STRIDE;
+    _dma_base = dma_vbase + MAI_DMA_CHANNEL * DMA_CHAN_STRIDE;
     return HDMI_AUDIO_ERR_NONE;
 }
 
@@ -599,10 +867,11 @@ int hdmi_audio_init(uint32_t flags) {
     if (ret != HDMI_AUDIO_ERR_NONE)
         return ret;
 
-    /* a lite channel would cap each control block; record the real limit */
-    _dma_max_frame = (dma_get32(BCM2835_DMA_DEBUG) & BCM2835_DMA_DEBUG_LITE)
-            ? MAX_LITE_DMA_LEN : MAX_DMA_LEN;
+    /* dma40 channel 6 is a bulk (non-lite) channel: one control block spans 1 GB */
+    _dma_max_frame = MAX_DMA_LEN;
 
+    /* the MAI needs its own gated 108 MHz clock running before it is reset */
+    hdmi_audio_clock_enable();
     mai_reset();
 
     _ready = 1;
@@ -665,29 +934,30 @@ int hdmi_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     if (_cb != NULL)
         hdmi_audio_teardown_ring();
 
-    uint32_t cb_bytes = slots * (uint32_t)sizeof(bcm2835_dma_cb_t);
+    uint32_t cb_bytes = slots * (uint32_t)sizeof(dma40_scb_t);
     uint32_t buf_bytes = slots * slot_bytes;
     uint32_t total = cb_bytes + buf_bytes;
 
     /* over-allocate one alignment unit; dma_alloc() only guarantees a page */
-    ewokos_addr_t raw = dma_alloc(0, total + DMA32_CB_ALIGN);
+    ewokos_addr_t raw = dma_alloc(0, total + DMA40_CB_ALIGN);
     if (raw == 0) {
-        klog("hdmi-audio: ring dma_alloc(%u) failed\n", total + DMA32_CB_ALIGN);
+        slog("hdmi-audio: ring dma_alloc(%u) failed\n", total + DMA40_CB_ALIGN);
         return HDMI_AUDIO_ERR_DMA_MEM;
     }
     ewokos_addr_t phy = dma_phy_addr(0, raw);
     if (phy == 0) {
-        klog("hdmi-audio: ring dma_phy_addr failed\n");
+        slog("hdmi-audio: ring dma_phy_addr failed\n");
         dma_free(0, raw);
         return HDMI_AUDIO_ERR_DMA_MEM;
     }
 
-    /* the DMA window is mapped linearly, so one pad aligns both views */
-    uint32_t pad = (uint32_t)((DMA32_CB_ALIGN - (phy & (DMA32_CB_ALIGN - 1u)))
-            & (DMA32_CB_ALIGN - 1u));
+    /* SCBs are fetched at addr>>5, so the chain must start 32-byte aligned */
+    uint32_t pad = (uint32_t)((DMA40_CB_ALIGN - (phy & (DMA40_CB_ALIGN - 1u)))
+            & (DMA40_CB_ALIGN - 1u));
     _ring_raw = raw;
-    _cb = (bcm2835_dma_cb_t*)(raw + pad);
-    _cb_bus = (uint64_t)(phy + pad) + DMA32_RAM_BUS_OFF;
+    _cb = (dma40_scb_t*)(raw + pad);
+    /* axi dma-ranges are identity: the bus address IS the raw physical address */
+    _cb_bus = (uint64_t)(phy + pad);
     _slots_virt = (uint32_t*)((uint8_t*)_cb + cb_bytes);
     _slots_bus = _cb_bus + cb_bytes;
     _slot_count = slots;
@@ -697,21 +967,29 @@ int hdmi_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     memset(_slots_virt, 0, buf_bytes);
 
     /*
-     * Build the closed cyclic chain: one CB per slot, memory -> MAI FIFO.
-     * src walks the sample buffers (S_INC), dst is the fixed FIFO port, and
-     * the last CB links back to the first so the engine never stops. CB.next
-     * and CONBLK_AD are bus addresses >> 5 (is_2712 encoding).
+     * Build the closed cyclic chain: one SCB per slot, memory -> MAI FIFO.
+     * src walks the sample buffers (SRCI.INC), dst is the fixed FIFO port, and
+     * the last SCB links back to the first so the engine never stops. Each 40-bit
+     * address splits across src/srci and dst/dsti (upper 8 bits in the *I word)
+     * and next_cb holds the next SCB's physical address >> 5.
      */
+    uint32_t info = MAI_DMA_INFO(mai_dma_dreq());
+    uint32_t ti = to_bcm2711_ti(info);
+    uint32_t srci_attr = to_bcm2711_srci(info);
+    uint32_t dsti_attr = to_bcm2711_dsti(info);
     for (uint32_t i = 0; i < slots; i++) {
-        bcm2835_dma_cb_t* cb = &_cb[i];
-        uint64_t next_bus = _cb_bus +
-                (uint64_t)(((i + 1u) % slots) * sizeof(bcm2835_dma_cb_t));
-        cb->info = MAI_DMA_INFO;
-        cb->src = (uint32_t)(_slots_bus + (uint64_t)i * slot_bytes);
-        cb->dst = HDMI_MAI_DATA_BUS;
-        cb->length = slot_bytes;
-        cb->stride = 0;   /* upper 32 bits of src and dst are both zero */
-        cb->next = to_40bit_cbaddr(next_bus);
+        dma40_scb_t* scb = &_cb[i];
+        uint64_t src = _slots_bus + (uint64_t)i * slot_bytes;
+        uint64_t next_phys = _cb_bus +
+                (uint64_t)(((i + 1u) % slots) * sizeof(dma40_scb_t));
+        scb->ti = ti;
+        scb->src = lower_32_bits(src);
+        scb->srci = upper_32_bits(src) | srci_attr;
+        scb->dst = lower_32_bits(HDMI_MAI_DATA_PHYS);
+        scb->dsti = upper_32_bits(HDMI_MAI_DATA_PHYS) | dsti_attr;
+        scb->len = slot_bytes;
+        scb->next_cb = to_40bit_cbaddr(next_phys);
+        scb->rsvd = 0;
     }
     hdmi_dmb();
     return HDMI_AUDIO_ERR_NONE;
@@ -743,18 +1021,20 @@ int hdmi_audio_start(void) {
     /* N/CTS is derived from the live pixel clock; no mode means no clock */
     _pixel_clock = firmware_get_clock(PI5_FW_CLK_HDMI0_PIXEL);
     if (_pixel_clock == 0) {
-        klog("hdmi-audio: HDMI0 pixel clock unavailable\n");
+        slog("hdmi-audio: HDMI0 pixel clock unavailable\n");
         return HDMI_AUDIO_ERR_CLOCK;
     }
 
-    /* vc4_hdmi_audio_prepare(): reset, then program the whole MAI chain */
+    /*
+     * Program the whole MAI chain but leave it DISABLED, exactly like Circle's
+     * RunHDMI() and vc4_hdmi_audio_prepare() minus the enable. The MAI must not
+     * be turned on before the DMA is armed: an enabled-but-starved FIFO
+     * underflows, latches DLATE/ERRORE and stops issuing its DREQ, so a channel
+     * started afterwards parks forever in CS = ACTIVE|ISHELD (0x21) with a
+     * frozen CONBLK_AD and no sample ever reaches the FIFO.
+     */
     mai_reset();
     set_mai_clock(_rate);
-    hd_write(HDMI_MAI_CTL,
-            VC4_SET_FIELD(_channels, VC4_HD_MAI_CTL_CHNUM_MASK) |
-            VC4_HD_MAI_CTL_WHOLSMP |
-            VC4_HD_MAI_CTL_CHALIGN |
-            VC4_HD_MAI_CTL_ENABLE);
     hd_write(HDMI_MAI_FMT,
             VC4_SET_FIELD(sample_rate_to_mai_fmt(_rate),
                     VC4_HD_MAI_FMT_SAMPLE_RATE_MASK) |
@@ -781,28 +1061,55 @@ int hdmi_audio_start(void) {
     if (ret != HDMI_AUDIO_ERR_NONE)
         return ret;
 
-    /* prime the ring and let the engine walk it (bcm2835_dma_start_desc) */
-    dma32_abort();
-    hdmi_dmb();
-    dma_put32(BCM2835_DMA_CS, BCM2835_DMA_RESET);
-    dma_put32(BCM2835_DMA_ADDR, to_40bit_cbaddr(_cb_bus));
-    dma_put32(BCM2835_DMA_CS,
-            BCM2835_DMA_ACTIVE | BCM2835_DMA_CS_FLAGS(MAI_DMA_DREQ));
-    hdmi_dmb();
-
-    _running = (dma_get32(BCM2835_DMA_CS) & BCM2835_DMA_ACTIVE) != 0u;
-    if (!_running) {
-        klog("hdmi-audio: dma32 channel %u refused to start cs=%08x\n",
-                MAI_DMA_CHANNEL, dma_get32(BCM2835_DMA_CS));
+    /*
+     * The MAI request line is ambiguous across sources (dtsi DREQ 10 vs Circle's
+     * D0 DREQ 12 vs 6.18's move to dma40), so probe it instead of guessing.
+     * mai_probe_dreq() enables the MAI itself, per candidate, only AFTER that
+     * candidate's dma40 channel is armed. Enabling it here first -- on an empty
+     * FIFO with no DMA live -- underflows and latches DLATE, which stops the
+     * DREQ and fails every probe (start -6).
+     */
+    if (mai_probe_dreq() == 0) {
+        slog("hdmi-audio: no dma40 DREQ services the MAI (tried %u,%u) cs=%08x cb=%08x\n",
+                MAI_DMA_DREQ_D0, MAI_DMA_DREQ,
+                dma_get32(DMA40_CS), dma_get32(DMA40_CB));
+        dma40_abort();
         return HDMI_AUDIO_ERR_STATE;
     }
+
+    /*
+     * Restart cleanly on the winning line with the proven Circle order: stop the
+     * probe channel, disable the MAI and clear any latched error, re-arm the DMA
+     * (SCBs already carry the winning PER_MAP), then enable the MAI last so the
+     * empty FIFO is filled before any underflow can latch DLATE.
+     */
+    dma40_abort();
+    /* flush the residue the probe left so this clean restart also begins on an
+     * empty FIFO and pulls DREQ immediately on the enable below */
+    mai_disable_flush();
+    dma40_arm_start();
+
+    if (!(dma_get32(DMA40_CS) & DMA40_ACTIVE)) {
+        slog("hdmi-audio: dma40 channel %u refused to start cs=%08x\n",
+                MAI_DMA_CHANNEL, dma_get32(DMA40_CS));
+        return HDMI_AUDIO_ERR_STATE;
+    }
+
+    hd_write(HDMI_MAI_CTL,
+            VC4_SET_FIELD(_channels, VC4_HD_MAI_CTL_CHNUM_MASK) |
+            VC4_HD_MAI_CTL_WHOLSMP |
+            VC4_HD_MAI_CTL_CHALIGN |
+            VC4_HD_MAI_CTL_ENABLE);
+    hdmi_dmb();
+
+    _running = true;
     return HDMI_AUDIO_ERR_NONE;
 }
 
 void hdmi_audio_stop(void) {
     if (!_ready)
         return;
-    dma32_abort();
+    dma40_abort();
     /* vc4_hdmi_audio_shutdown(): mute, stop the infoframe, then reset */
     hd_write(HDMI_MAI_CTL,
             VC4_HD_MAI_CTL_DLATE | VC4_HD_MAI_CTL_ERRORE | VC4_HD_MAI_CTL_ERRORF);
@@ -816,7 +1123,7 @@ bool hdmi_audio_running(void) {
     if (!_running || !_ready)
         return false;
     /* the ring is free-running, so a dropped ACTIVE bit means it died */
-    return (dma_get32(BCM2835_DMA_CS) & BCM2835_DMA_ACTIVE) != 0u;
+    return (dma_get32(DMA40_CS) & DMA40_ACTIVE) != 0u;
 }
 
 uint32_t hdmi_audio_slots(void) { return _slot_count; }
@@ -831,22 +1138,24 @@ uint32_t* hdmi_audio_slot_buffer(uint32_t slot) {
 int hdmi_audio_hw_slot(void) {
     if (!_ready || _cb == NULL || _slot_count == 0)
         return -1;
-    if (!(dma_get32(BCM2835_DMA_CS) & BCM2835_DMA_ACTIVE))
+    if (!(dma_get32(DMA40_CS) & DMA40_ACTIVE))
         return -1;
 
     /*
-     * For a mem-to-dev transfer the engine keeps SOURCE_AD pointed at the byte
-     * it is about to read; bcm2835_dma_tx_status() reads the same register.
-     * Our bus addresses fit in 32 bits, so the read is the full address.
+     * The dma40 CB register always holds the physical address (>>5) of the
+     * control block the engine is executing, and we build exactly one SCB per
+     * slot, so the SCB index is the slot being drained into the FIFO. Shift the
+     * readback back up to a byte address before comparing against _cb_bus.
      */
-    uint64_t pos = dma_get32(BCM2835_DMA_SOURCE_AD);
-    if (pos < _slots_bus)
+    uint64_t cb = (uint64_t)dma_get32(DMA40_CB) << 5;
+    if (cb < _cb_bus)
         return -1;
-    uint64_t off = pos - _slots_bus;
-    uint32_t slot_bytes = _slot_frames * HDMI_AUDIO_FRAME_WORDS * 4u;
-    if (off >= (uint64_t)_slot_count * slot_bytes)
+    uint64_t off = cb - _cb_bus;
+    if (off >= (uint64_t)_slot_count * sizeof(dma40_scb_t))
         return -1;
-    return (int)(off / slot_bytes);
+    if ((off % sizeof(dma40_scb_t)) != 0u)
+        return -1;
+    return (int)(off / sizeof(dma40_scb_t));
 }
 
 bool hdmi_audio_slot_writable(uint32_t slot) {

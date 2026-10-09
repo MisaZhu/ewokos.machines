@@ -199,24 +199,39 @@ int bsp_bt_send(uint8_t pkt_type, const uint8_t* data, size_t len) {
 }
 
 /*
- * RX poll quantum while waiting out an inter-byte gap. The HCI UART is
- * polled (IER=0) and one byte at 115200 baud takes ~87us on the wire:
- * sleeping a full 1ms per poll (the old granularity) throttled any burst
- * longer than the 32-byte RX FIFO to ~1 byte/ms - 11x slower than the
- * wire. A BLE mouse delivers several reports per connection event and any
- * long HCI event (a 240-byte extended inquiry/advertising report) dwarfs
- * the FIFO too, so those streams read SLOWER than they arrive; hardware
- * flow control then backs them up inside the controller, which never
- * drops a byte - a reliable queue whose latency grew for as long as the
- * mouse kept moving, and drained (visibly replayed) only after it stopped.
- * 100us keeps the reader ahead of the wire; idle polling is unaffected
- * because a 0 timeout still returns before ever sleeping here.
+ * RX poll quantum for the usleep fallback, and the busy-spin budget that
+ * runs before it. The HCI UART is polled (IER=0) and one byte at 115200
+ * baud takes ~87us on the wire. A sleep-based poll can never match a
+ * CONTINUOUS stream: it notices a byte only at the next quantum boundary,
+ * so a 100us quantum reads ~1 byte/100us while bytes arrive ~1 byte/87us.
+ * The reader then loses ~13us per byte, the 32-byte RX FIFO fills, RTS
+ * hardware flow control backs the surplus up inside the controller (which
+ * never drops a byte), and latency grows for as long as the stream runs -
+ * draining (visibly replayed) only after it stops. A BLE mouse escaped
+ * this because it reports only on movement, leaving idle gaps the reader
+ * recovers in; a gamepad reports every connection event even at rest, so
+ * the stream never lets up and the backlog accumulates without bound.
+ *
+ * Fix: while draining the follow bytes of a packet already in progress
+ * (timeout_ms != 0, so the next byte is due within ~87us), spin on the LSR
+ * data-ready bit for a bounded window instead of sleeping. That reads each
+ * byte within ~1us of arrival, keeping the drain at wire speed so the FIFO
+ * never fills and flow control never engages. The spin is bounded and only
+ * runs mid-packet; a truly idle line (the main loop polls with timeout 0,
+ * which returns before ever reaching here) or a truncated packet falls
+ * through to the usleep quantum below, so idle polling still burns no CPU.
  */
 #define BT_UART_RX_POLL_US 100u
+/* ~one byte-time (87us) plus margin, in LSR-read iterations; the exact
+   wall time is CPU/board dependent but only needs to comfortably cover the
+   inter-byte gap of an in-flight packet, after which we fall back to the
+   usleep quantum. Bounded, so a stalled line never spins past the budget. */
+#define BT_UART_RX_SPIN_ITERS 2000u
 
 int bsp_bt_recv(uint32_t timeout_ms) {
     uint32_t waited_us = 0;
     uint32_t budget_us = timeout_ms * 1000u;
+    uint32_t spin = 0;
 
     if (!_transport_up) {
         return -1;
@@ -225,6 +240,15 @@ int bsp_bt_recv(uint32_t timeout_ms) {
     while (!(get32(UARTA_LSR_REG) & UART_LSR_DR)) {
         if (waited_us >= budget_us) {
             return -1;
+        }
+        /* mid-packet follow byte is due within ~one wire byte-time: spin on
+           the LSR so a continuous gamepad stream is drained at wire speed
+           and never backs up into the controller's flow-control buffer.
+           timeout 0 (the main loop's opportunistic first-byte check) skips
+           the spin and returns immediately, as before. */
+        if (timeout_ms != 0 && spin < BT_UART_RX_SPIN_ITERS) {
+            ++spin;
+            continue;
         }
         usleep(BT_UART_RX_POLL_US);
         waited_us += BT_UART_RX_POLL_US;
