@@ -73,5 +73,6 @@
 @/bin/bgrun /sbin/x/xtouch
 @/bin/bgrun /sbin/x/xmouse /dev/mouse1
 @/bin/bgrun /sbin/x/xim_none /dev/keyb1
+@/bin/bgrun /sbin/x/xim_none /dev/js1
 #@/bin/bgrun /sbin/x/xim_vkey -h 180
 @/bin/bgrun /bin/x/xsession  misa
