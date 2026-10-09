@@ -381,8 +381,31 @@ static void audio_set_mai_clock(unsigned int samplerate, uint64_t pixel_clock) {
 }
 
 static void audio_set_n_cts(unsigned int samplerate, uint64_t pixel_clock) {
-    uint32_t n = 128u * samplerate / 1000u;
-    uint32_t cts = (uint32_t)(pixel_clock / 1000ULL);
+    uint32_t n;
+    uint32_t cts;
+
+    /*
+     * N is NOT 128*rate/1000. The 44.1 kHz family must use the HDMI-spec N
+     * values (6272 / 12544 / 25088) so that CTS = pixel_clock*N/(128*fs) stays
+     * integral at the standard pixel clocks -- this is exactly the switch() in
+     * Linux vc4_hdmi_set_n_cts(). The old formula computed 5644 for 44100
+     * (instead of 6272) and paired it with cts = pixel_clock/1000, so a 44.1 kHz
+     * stream drove the sink with a wrong regenerated audio clock and stayed
+     * silent, while 48 kHz (whose 128*48 == 6144 already matches the spec)
+     * played fine. CTS must be derived from the chosen N, not assumed.
+     */
+    switch (samplerate) {
+    case 32000:  n = 4096u;  break;
+    case 44100:  n = 6272u;  break;
+    case 48000:  n = 6144u;  break;
+    case 88200:  n = 12544u; break;
+    case 96000:  n = 12288u; break;
+    case 176400: n = 25088u; break;
+    case 192000: n = 24576u; break;
+    default:     n = 128u * samplerate / 1000u; break;
+    }
+
+    cts = (uint32_t)((pixel_clock * n) / (128ULL * samplerate));
 
     core_wr(_board->off_crp_cfg,
             VC4_HDMI_CRP_CFG_EXTERNAL_CTS_EN |
