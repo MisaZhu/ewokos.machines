@@ -1,4 +1,4 @@
-BASIC_DIRS = uartd fand cpud nvmefsd
+BASIC_DIRS = uartd fand cpud nvmefsd hdmi_soundd
 basic: $(BASIC_DIRS)
 
 NETWORK_DIRS = wlan

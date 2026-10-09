@@ -19,6 +19,11 @@
 #@/bin/splash -m "mount NVMe at /mnt" -p 16
 #@/bin/ipcserv /drivers/raspi5/nvmefsd       /mnt
 
+# HDMI audio: VC4 MAI fed by the legacy dma32 engine, stereo /dev/sound0.
+# Needs an active HDMI display for the pixel clock, so it must start after
+# fbdisplayd above. Disabled by default: uncomment to enable HDMI sound.
+#@/bin/ipcserv /drivers/raspi5/hdmi_soundd   /dev/sound0
+
 @/bin/splash -m "run sessiond" -p 12
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
