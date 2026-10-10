@@ -161,6 +161,78 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
     return -1;
 }
 
+/* Right-angle rotation of a src rect straight into the scan-out: the
+ * rotated rect's top-left lands at (dx,dy) of the pitched dst surface.
+ * 90/270 take the argb_rot90 kernel with explicit strides (the src rect
+ * is addressed inside its canvas, the dst inside the scan-out by pitch);
+ * geometries the fast path refuses (rect height not splittable into
+ * 4-row strips over >= 4 QPUs, 270 with width % 16 != 0) and 180 take
+ * the affine blit through a rotate map, which can only model a packed
+ * source - so those need the rect to span full canvas rows (sx == 0,
+ * sw == src_w).  Anything else is declined before any write (-1), the
+ * caller keeps its own path.  Never replay a submitted dispatch. */
+int32_t bsp_g2d_rotate_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
+                         int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         ewokos_addr_t dst_phy, uint32_t dst_size,
+                         int32_t dst_w, int32_t dst_h, uint32_t dst_pitch,
+                         int32_t dx, int32_t dy, int32_t degree)
+{
+    g2d_map_t m;
+    int32_t rot = g2d_norm_degree(degree);
+    int32_t rw, rh;
+    int32_t surf_w;
+    uint32_t src_phys = 0, dst_phys = 0;
+    size_t src_off, dst_off, dst_bytes;
+
+    if (rot != 90 && rot != 180 && rot != 270)
+        return -1;
+    if (!argb_src || src_w <= 0 || src_h <= 0 || sw <= 0 || sh <= 0 ||
+        sx < 0 || sy < 0 || sx > src_w - sw || sy > src_h - sh)
+        return -1;
+    if (dst_pitch < (uint32_t)dst_w * 4u || (dst_pitch & 3u) != 0 ||
+        dst_size == 0 || !gpu_ok(dst_w, dst_h))
+        return -1;
+    g2d_rotated_size(sw, sh, rot, &rw, &rh);
+    if (rw <= 0 || rh <= 0 || dx < 0 || dy < 0 ||
+        dx > dst_w - rw || dy > dst_h - rh)
+        return -1;
+    /* the touched rows must fit the declared physical segment */
+    dst_off = (size_t)dy * dst_pitch + (size_t)dx * 4u;
+    dst_bytes = (size_t)(rh - 1) * dst_pitch + (size_t)rw * 4u;
+    if (dst_off + dst_bytes > dst_size)
+        return -1;
+    src_off = ((size_t)sy * (size_t)src_w + (size_t)sx) * 4u;
+
+    src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
+    dst_phys = gpu_phys(dst_phy, dst_off + dst_bytes, 1);
+    if (!src_phys || !dst_phys)
+        return -1;
+    src_phys += (uint32_t)src_off;
+    dst_phys += (uint32_t)dst_off;
+
+    if ((rot == 90 || rot == 270) &&
+        gpu_rot90_rect(src_phys, (uint32_t *)((uint8_t *)argb_src + src_off),
+                       sw, sh, src_w * 4,
+                       dst_phys, NULL, rw, rh, (int32_t)dst_pitch, rot))
+        return 0;
+
+    /* affine fallback: packed source rows only */
+    if (sx != 0 || sw != src_w)
+        return -1;
+    surf_w = (int32_t)(dst_pitch / 4u);
+    g2d_map_rotate(sw, sh, rot, rw, rh, &m);
+    if (!gpu_map_fits(&m, ((int64_t)surf_w + 15) / 16 * 16, rh))
+        return -1;
+    /* the dst is modelled pitch/4 pixels wide from the rect's top-left
+     * so each row strides by dst_pitch; the in-rect lane gate keeps
+     * every write inside [0,rw) x [0,rh).  Exact right-angle maps stay
+     * inside the content box, so argb_blit's clamp never engages. */
+    return gpu_blit_op(&m, src_phys, (uint32_t *)((uint8_t *)argb_src + src_off),
+                       sw, sh, dst_phys, NULL, surf_w, rh,
+                       0, 0, rw, rh, dst_bytes) ? 0 : -1;
+}
+
 int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                         int32_t src_w, int32_t src_h,
                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,

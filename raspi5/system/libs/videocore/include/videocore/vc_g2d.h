@@ -185,6 +185,18 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                       uint32_t dst_phys, uint32_t *argb_dst,
                       int32_t dst_w, int32_t dst_h, int rot);
 
+/* gpu_rot90_surface with explicit row strides (bytes): src_phys/argb_src
+ * point at the top-left of a src_w x src_h rect inside a wider surface
+ * (stride src_stride), and the dst_w x dst_h result rows stride by
+ * dst_stride - a pitched scan-out, or a rect inside a larger canvas.
+ * The kernel addresses every lane individually (32-bit TMU accesses),
+ * so neither base needs more than 4-byte alignment.  Same eligibility
+ * rules as gpu_rot90_surface; argb_dst may be NULL (raw physical dst). */
+int gpu_rot90_rect(uint32_t src_phys, uint32_t *argb_src,
+                   int32_t src_w, int32_t src_h, int32_t src_stride,
+                   uint32_t dst_phys, uint32_t *argb_dst,
+                   int32_t dst_w, int32_t dst_h, int32_t dst_stride, int rot);
+
 /* Whole-surface clockwise rotation through m into the bw x bh content box
  * of the dst_w x dst_h destination: exact right-angle maps whose content
  * fits the destination take the shorter argb_blit kernel, every other

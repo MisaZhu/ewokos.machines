@@ -255,6 +255,22 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
 	return -1;
 }
 
+/* rotate straight into a raw physical destination: no engine path on
+   this platform, decline as a missing capability (sticky) so displayd
+   stops asking and keeps its own rotate + flush path */
+int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+        int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+        ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
+        uint32_t dst_pitch,
+        int32_t dx, int32_t dy, int32_t degree) {
+    (void)argb_src; (void)src_phy; (void)src_contig; (void)src_w; (void)src_h;
+    (void)sx; (void)sy; (void)sw; (void)sh;
+    (void)dst_phy; (void)dst_size; (void)dst_w; (void)dst_h;
+    (void)dst_pitch;
+    (void)dx; (void)dy; (void)degree;
+    return -2 /* G2D_ERR_NOT_SUPPORTED */;
+}
+
 /* Alpha fill: the GE has no constant-colour blend, so this goes to the
  * platform arch_g2d_* NEON engine like scale/rotate/blur (it works on the
  * virtual pointer, clips internally and ignores the physical base).

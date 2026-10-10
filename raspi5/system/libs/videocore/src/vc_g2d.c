@@ -1012,10 +1012,10 @@ static int gpu_rotate_tiled(const uint64_t *kcode, int knwords,
  * strip height is a multiple of 4).  A partial final source-column group
  * is masked through scratch for 90 CW; 270 CW retains the aligned-width
  * requirement because it traverses column groups in reverse order. */
-int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
-                      int32_t src_w, int32_t src_h,
-                      uint32_t dst_phys, uint32_t *argb_dst,
-                      int32_t dst_w, int32_t dst_h, int rot)
+int gpu_rot90_rect(uint32_t src_phys, uint32_t *argb_src,
+                   int32_t src_w, int32_t src_h, int32_t src_stride,
+                   uint32_t dst_phys, uint32_t *argb_dst,
+                   int32_t dst_w, int32_t dst_h, int32_t dst_stride, int rot)
 {
     uint32_t u[18];
     int32_t L = (src_w + 15) >> 4;
@@ -1029,12 +1029,19 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
         return 0;
     if (dst_w != src_h || dst_h != src_w)
         return 0;                      /* exact rotated size only */
+    if (src_stride < src_w * 4 || dst_stride < dst_w * 4 ||
+        (src_stride & 3) != 0 || (dst_stride & 3) != 0)
+        return 0;
     nq = g2d_fit_nq_rot90(v3d_g2d_num_qpus(), src_h);
     if (nq == 0)
         return 0;
     rows = src_h / nq;
-    ss = src_w * 4;
-    ds = dst_w * 4;
+    /* the kernel addresses per lane (32-bit TMU reads/writes), so the
+     * row strides are free: a sub-rect of a wider source (base already
+     * offset to the rect's top-left) and a pitched destination (the
+     * scan-out) walk exactly like a packed surface */
+    ss = src_stride;
+    ds = dst_stride;
     u[0] = src_phys;                                  /* PHYSICAL address */
     u[1] = dst_phys;                                  /* PHYSICAL address */
     u[2] = (uint32_t)((int64_t)rows * ss);            /* read band pitch */
@@ -1062,13 +1069,22 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                            (uint64_t)L * 16u * (uint32_t)src_h,
                            G2D_1MS_ROT90_PIXELS, nq);
     mr.src_phy = src_phys;
-    mr.src_span = (size_t)src_w * (size_t)src_h * 4u;
+    mr.src_span = (size_t)(src_h - 1) * (size_t)ss + (size_t)src_w * 4u;
     mr.dst_phy = dst_phys;
-    mr.dst_span = (size_t)dst_w * (size_t)dst_h * 4u;
+    mr.dst_span = (size_t)(dst_h - 1) * (size_t)ds + (size_t)dst_w * 4u;
     return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 18,
-                       nq, argb_src, (size_t)src_w * (size_t)src_h * 4u,
-                       argb_dst, (size_t)dst_w * (size_t)dst_h * 4u,
+                       nq, argb_src, mr.src_span,
+                       argb_dst, mr.dst_span,
                        &mr, flags) == 0;
+}
+
+int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
+                      int32_t src_w, int32_t src_h,
+                      uint32_t dst_phys, uint32_t *argb_dst,
+                      int32_t dst_w, int32_t dst_h, int rot)
+{
+    return gpu_rot90_rect(src_phys, argb_src, src_w, src_h, src_w * 4,
+                          dst_phys, argb_dst, dst_w, dst_h, dst_w * 4, rot);
 }
 
 /* alpha blend of a clipped dst rect (argb_alpha kernel): the blend is
@@ -1465,12 +1481,12 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
                          int32_t rx, int32_t ry,
                          int32_t rw, int32_t rh, int32_t radius)
 {
-    static const uint16_t wk1[3] = { 30691, 4154, 30691 };
-    static const uint16_t wk2[5] = { 25386, 5664, 3436, 5664, 25386 };
-    static const uint16_t wk3[7] = { 20926, 6889, 3537, 2832, 3537,
-                                     6889, 20926 };
-    static const uint16_t wk4[9] = { 17608, 7340, 3929, 2700, 2382,
-                                     2700, 3929, 7340, 17608 };
+    static const uint16_t wk1[3] = { 6980, 51576, 6980 };
+    static const uint16_t wk2[5] = { 3571, 16004, 26386, 16004, 3571 };
+    static const uint16_t wk3[7] = { 2401, 7293, 14205, 17738, 14205,
+                                     7293, 2401 };
+    static const uint16_t wk4[9] = { 1811, 4344, 8115, 11808, 13380,
+                                     11808, 8115, 4344, 1811 };
     static const struct {
         const uint16_t *wk;
         const uint64_t *hcode;
