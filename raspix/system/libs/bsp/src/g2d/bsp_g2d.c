@@ -13,9 +13,11 @@
  * dispatch is never replayed, because a timed-out dispatch may still own
  * or have partially written the destination.
  *
- * bsp_g2d_fill_alpha and bsp_g2d_blt_cpu are the explicit CPU paths: exact
- * per-pixel access with no alignment, contiguity, SIMD or GPU requirement,
- * for callers that cannot satisfy the GPU eligibility gate.
+ * bsp_g2d_blt_cpu is the explicit CPU path: exact per-pixel access with no
+ * alignment, contiguity, SIMD or GPU requirement, for callers that cannot
+ * satisfy the GPU eligibility gate.  bsp_g2d_fill_alpha is GPU-only like
+ * the other hardware operations (the alpha pipeline over a constant
+ * source); a declined canvas reports -1 and the caller blends itself.
  */
 
 #include <bsp/bsp_g2d.h>
@@ -183,37 +185,34 @@ static uint32_t blend_argb_scalar(uint32_t dst_color, uint8_t a,
     return (oa << 24) | (dr << 16) | (dg << 8) | db;
 }
 
-/* CPU-only alpha fill of a sub-rect, clipped to the buffer bounds:
- * exact per-pixel access, no alignment/contiguity requirements;
- * same blend math as bsp_g2d_blt_alpha.  alpha == 0 is a no-op. */
-int32_t bsp_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
+/* Alpha fill of a sub-rect, clipped to the buffer bounds, on the GPU:
+ * the VideoCore alpha pipeline over a constant-colour source
+ * (gpu_fill_alpha_surface), effective alpha the colour's alpha byte.
+ * Same GPU-only contract as bsp_g2d_blt_alpha: a canvas that fails the
+ * eligibility gate, or a VC4 decline (rect width not a 16-pixel multiple),
+ * reports -1 before anything is written and the caller blends on the cpu;
+ * a submitted dispatch is never replayed.  alpha == 0 is a no-op. */
+int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
+                         int32_t argb_w, int32_t argb_h,
                          int32_t x, int32_t y, int32_t w, int32_t h,
                          uint32_t color)
 {
-    uint8_t a;
+    int32_t rx = x, ry = y, rw = w, rh = h;
+    uint32_t phys = 0;
 
-    if (argb == NULL)
+    if (((color >> 24) & 0xff) == 0)
         return 0;
-    a = (uint8_t)((color >> 24) & 0xff);
-    if (a == 0)
+    if (!argb || argb_w <= 0 || argb_h <= 0 || w <= 0 || h <= 0)
+        return -1;
+    if (!gpu_clip_rect(&rx, &ry, &rw, &rh, argb_w, argb_h))
         return 0;
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (w <= 0 || h <= 0 || x >= argb_w || y >= argb_h)
-        return 0;
-    if (x + w > argb_w) w = argb_w - x;
-    if (y + h > argb_h) h = argb_h - y;
-
-    for (int32_t row = y; row < y + h; row++) {
-        uint32_t *dp = argb + row * argb_w + x;
-        for (int32_t col = 0; col < w; col++) {
-            dp[col] = blend_argb_scalar(dp[col], a,
-                    (uint8_t)((color >> 16) & 0xff),
-                    (uint8_t)((color >> 8) & 0xff),
-                    (uint8_t)(color & 0xff));
-        }
-    }
-    return 0;
+    if (gpu_ok(argb_w, argb_h))
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+    if (!phys)
+        return -1;
+    return gpu_fill_alpha_surface(phys, argb, argb_w, argb_h,
+                                  rx, ry, rx + rw, ry + rh,
+                                  color) == GPU_DONE ? 0 : -1;
 }
 
 /* CPU back end for sub-alignment tails and narrow copies: scalar 1:1

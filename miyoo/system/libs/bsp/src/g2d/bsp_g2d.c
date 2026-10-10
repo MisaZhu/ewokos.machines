@@ -8,15 +8,15 @@
  *   bsp_g2d_fill        any clipped rect, opaque color -> GE rectfill
  *   bsp_g2d_blt         1:1 copy (sw==dw, sh==dh)      -> GE bitblt
  *   bsp_g2d_blt_alpha   1:1 copy, global const alpha   -> GE bitblt + DFB
- *   bsp_g2d_fill_alpha  any                            -> scalar cpu
+ *   bsp_g2d_fill_alpha  any                            -> arch engine
  *   bsp_g2d_scale_to    any                            -> arch engine
  *   bsp_g2d_rotate      any                            -> arch engine
  *
  * Everything the recovered GE register interface can do runs on the
- * hardware.  bsp_g2d_fill_alpha stays on the cpu by API design: it
- * carries no physical base, so no hardware path can ever take it (it
- * is the translucent-color fill the g2dd routes away from the opaque
- * bsp_g2d_fill).
+ * hardware.  bsp_g2d_fill_alpha stays on the cpu: the GE has no
+ * constant-colour blend (it is the translucent-color fill the g2dd
+ * routes away from the opaque bsp_g2d_fill), so it takes the arch
+ * engine's NEON fill.
  *
  * Scale and rotate are NOT implementable on the GE: the vendor library
  * exposes neither on this chip (MI_GFX_Rotate_e knows only ROTATE_0,
@@ -84,28 +84,6 @@ static int ge_clip_rect(int32_t *x, int32_t *y, int32_t *w, int32_t *h,
 	*w = (int32_t)(x1 - x0);
 	*h = (int32_t)(y1 - y0);
 	return 1;
-}
-
-/* ------------------------------------------------------------------ */
-/* scalar blend helper for the cpu-only entry points                   */
-/* ------------------------------------------------------------------ */
-
-/* Scalar source-over blend (same math as the raspi5 back end):
- * out_a = dst_a + ((255 - dst_a) * a) / 255,
- * out_c = (src_c * a + dst_c * (255 - a)) / 255. */
-static uint32_t blend_argb_scalar(uint32_t dst_color, uint8_t a,
-                                  uint8_t r, uint8_t g, uint8_t b) {
-	uint32_t oa = (dst_color >> 24) & 0xff;
-	uint32_t dr = (dst_color >> 16) & 0xff;
-	uint32_t dg = (dst_color >> 8) & 0xff;
-	uint32_t db = dst_color & 0xff;
-	uint32_t inv_a = 255 - a;
-
-	oa = oa + (255 - oa) * a / 255;
-	dr = (r * a + dr * inv_a) / 255;
-	dg = (g * a + dg * inv_a) / 255;
-	db = (b * a + db * inv_a) / 255;
-	return (oa << 24) | (dr << 16) | (dg << 8) | db;
 }
 
 /* ------------------------------------------------------------------ */
@@ -272,36 +250,17 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
 	return -1;
 }
 
-/* CPU-only by API design (no physical base): alpha fill of a sub-rect,
- * clipped to the buffer bounds, exact per-pixel access; same blend math
- * as the GE constant-alpha path.  alpha == 0 is a no-op. */
-int32_t bsp_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
+/* Alpha fill: the GE has no constant-colour blend, so this goes to the
+ * platform arch_g2d_* NEON engine like scale/rotate/blur (it works on the
+ * virtual pointer, clips internally and ignores the physical base).
+ * alpha == 0 is a no-op. */
+int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
+                         int32_t argb_w, int32_t argb_h,
                          int32_t x, int32_t y, int32_t w, int32_t h,
                          uint32_t color) {
-	uint8_t a;
-
-	if (argb == NULL)
-		return 0;
-	a = (uint8_t)((color >> 24) & 0xff);
-	if (a == 0)
-		return 0;
-	if (x < 0) { w += x; x = 0; }
-	if (y < 0) { h += y; y = 0; }
-	if (w <= 0 || h <= 0 || x >= argb_w || y >= argb_h)
-		return 0;
-	if (x + w > argb_w) w = argb_w - x;
-	if (y + h > argb_h) h = argb_h - y;
-
-	for (int32_t row = y; row < y + h; row++) {
-		uint32_t *dp = argb + row * argb_w + x;
-		for (int32_t col = 0; col < w; col++) {
-			dp[col] = blend_argb_scalar(dp[col], a,
-					(uint8_t)((color >> 16) & 0xff),
-					(uint8_t)((color >> 8) & 0xff),
-					(uint8_t)(color & 0xff));
-		}
-	}
-	return 0;
+        (void)argb_phy;
+        (void)contig;
+        return arch_g2d_fill_alpha(argb, argb_w, argb_h, x, y, w, h, color);
 }
 
 /* GE stretch is not implementable: the vendor library exposes no

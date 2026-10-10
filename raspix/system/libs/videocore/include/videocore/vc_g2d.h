@@ -137,6 +137,16 @@ int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                       int32_t dst_w, int32_t dst_h,
                       int32_t x0, int32_t y0, int32_t x1, int32_t y1);
 
+/* Constant-colour source-over fill of the clipped dst rect [x0,x1) x
+ * [y0,y1): the alpha pipeline over a zero map sampling a GPU-visible
+ * colour block, colour's alpha byte as the global alpha.  Same no-fallback
+ * contract as gpu_alpha_surface; GPU_UNSUPPORTED only when the colour block
+ * could not be allocated (nothing has been written). */
+int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
+                           int32_t dst_w, int32_t dst_h,
+                           int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                           uint32_t color);
+
 /* Whole-surface clockwise rotation through m (any angle), writing every
  * destination pixel: rotated content, or transparent 0 for pixels whose
  * pre-clamp source coordinate is out of range. */

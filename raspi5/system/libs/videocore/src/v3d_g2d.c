@@ -1064,9 +1064,9 @@ int v3d_g2d_vec4_ok(void)
  *
  * The lock lives here, at the innermost dispatch, rather than in the
  * g2dd service or the bsp_g2d API layer, so that:
- *   - CPU-only paths (g2dd's g2d_cpu_blt tail, bsp_g2d_fill_alpha,
- *     arch_g2d_* NEON) run fully parallel - they never touch this
- *     function and never see the lock;
+ *   - CPU-only paths (g2dd's g2d_cpu_blt tail, arch_g2d_* NEON) run
+ *     fully parallel - they never touch this function and never see
+ *     the lock;
  *   - banded / tiled large-surface ops interleave safely between
  *     workers: each band is one dispatch, and the mode-0 clean+
  *     invalidate on every PRE writes back any dirty L2T lines (ours

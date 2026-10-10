@@ -25,6 +25,8 @@
  * blends through the CSD kernel; on VC4 the self-looping TMU blend
  * kernel gathers source and destination, blends in the ALU and writes
  * back through the direct bus alias - one SRQ launch per 12 rows.
+ * gpu_fill_alpha_surface runs the same pipeline over a zero map sampling
+ * a constant-colour block, so translucent fills blend on the GPU too.
  *
  * The rotate kernel runs the same affine engine as blit for every angle
  * (the canonical centres-based map degenerates exactly to the right-angle
@@ -52,6 +54,7 @@
 
 #include <videocore/vc_g2d.h>
 
+#include <pthread.h>
 #include <string.h>
 
 #include "ewoksys/dma.h"
@@ -1432,4 +1435,100 @@ int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
            GPU_DONE : GPU_FAILED;
+}
+
+/* Constant-colour source-over fill through the alpha pipeline (zero map).
+ *
+ * Neither alpha kernel has a fill-flavoured variant: both blend a mapped
+ * SOURCE SAMPLE over dst.  The constant colour is therefore served from a
+ * GPU-visible 16x16 block filled with the colour (opaque alpha byte) and
+ * the map is all zeros: u = v = 0 for every destination pixel, so every
+ * lane samples pixel (0,0) of the block and the kernel's global alpha
+ * uniform carries the fill's alpha.  Both back ends compute the effective
+ * alpha as (src_a * alpha) >> 8, so the opaque source byte makes it
+ * exactly the fill's alpha.
+ *
+ * The block lives in the sys_dma window (NOCACHE on the ARM side, no
+ * dcache work; a plain physical address, so the VC4 path can OR its bus
+ * alias in like it does for every canvas).  The GPU side needs nothing
+ * extra either: the CSD path runs g2d_invalidate_caches before every
+ * dispatch, the VC4 loop evicts the system L3 (v3d_g2d_vc4_prepare_reads)
+ * before reading its first row - both after the recolour below.
+ *
+ * The block is single-instance: the recolour and the dispatch of one fill
+ * run under _fill_alpha_lock so two workers' fills cannot interleave.
+ * v3d_g2d_run takes its own lock inside - fill lock -> run lock only,
+ * never the reverse.
+ *
+ * Returns the usual three-state result; a VC4 decline (width not a
+ * 16-pixel multiple) surfaces as GPU_FAILED like every other alpha
+ * decline there, and the caller falls back to its own cpu fill because
+ * nothing has been written yet. */
+#define G2D_FILL_SRC_W 16
+#define G2D_FILL_SRC_H 16
+
+static pthread_mutex_t _fill_alpha_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t *_fill_src;          /* 16x16 ARGB block, virtual */
+static uint32_t _fill_src_phys;      /* its physical base, 0 until allocated */
+
+static int gpu_fill_src_ready(void)
+{
+    size_t bytes = (size_t)G2D_FILL_SRC_W * G2D_FILL_SRC_H * 4u;
+
+    if (_fill_src_phys != 0)
+        return 1;
+#ifdef VC4_HOST_TEST
+    {
+        uint32_t p;
+        void *v = gpu_dma_alloc(bytes, &p);
+
+        if (v == NULL)
+            return 0;
+        _fill_src = (uint32_t *)v;
+        _fill_src_phys = p;
+    }
+#else
+    {
+        ewokos_addr_t v = dma_alloc(0, (uint32_t)bytes);
+        ewokos_addr_t p;
+
+        if (v == 0)
+            return 0;
+        p = dma_phy_addr(0, v);
+        if (gpu_phys(p, bytes, 1) == 0)
+            return 0;                    /* outside the GPU-visible RAM ranges */
+        _fill_src = (uint32_t *)(uintptr_t)v;
+        _fill_src_phys = (uint32_t)p;
+    }
+#endif
+    return 1;
+}
+
+int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
+                           int32_t dst_w, int32_t dst_h,
+                           int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                           uint32_t color)
+{
+    g2d_map_t m;
+    uint8_t alpha = (uint8_t)(color >> 24);
+    uint32_t src = 0xff000000u | (color & 0x00ffffffu);
+    int gr, i;
+
+    if (alpha == 0)
+        return GPU_DONE;                 /* nothing to blend */
+    memset(&m, 0, sizeof(m));            /* every lane samples (0,0) */
+
+    pthread_mutex_lock(&_fill_alpha_lock);
+    if (!gpu_fill_src_ready()) {
+        pthread_mutex_unlock(&_fill_alpha_lock);
+        return GPU_UNSUPPORTED;
+    }
+    for (i = 0; i < G2D_FILL_SRC_W * G2D_FILL_SRC_H; i++)
+        _fill_src[i] = src;
+    gr = gpu_alpha_surface(&m, alpha, _fill_src_phys, _fill_src,
+                           G2D_FILL_SRC_W, G2D_FILL_SRC_H,
+                           dst_phys, argb_dst, dst_w, dst_h,
+                           x0, y0, x1, y1);
+    pthread_mutex_unlock(&_fill_alpha_lock);
+    return gr;
 }

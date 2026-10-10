@@ -1,21 +1,17 @@
 /*
- * bsp_g2d.c - raspberry-pi5 g2d public API: argument validation, rect
- * clipping and the scalar CPU path.  Every hardware operation is delegated
- * to the VideoCore back end in libvideocore (<videocore/vc_g2d.h>), which
- * owns the affine map construction shared with the QPU kernels, the
- * eligibility gate on caller-supplied physical addresses, the
- * large-surface batching policy and every dispatch.
+ * bsp_g2d.c - raspberry-pi5 g2d public API: argument validation and rect
+ * clipping.  Every operation is delegated to the VideoCore back end in
+ * libvideocore (<videocore/vc_g2d.h>), which owns the affine map
+ * construction shared with the QPU kernels, the eligibility gate on
+ * caller-supplied physical addresses, the large-surface batching policy
+ * and every dispatch.
  *
- * The hardware operations are GPU-only: a back-end call returns non-zero on
+ * The operations are GPU-only: a back-end call returns non-zero on
  * success and 0 when the operation was not eligible or the dispatch failed,
  * and both surface as -1 here.  There is no implicit CPU fallback for
- * fill/blit/scale/rotate - a submitted dispatch is never replayed, because
- * a timed-out dispatch may still own or have partially written the
- * destination.
- *
- * bsp_g2d_fill_alpha is the explicit CPU path: exact per-pixel access with
- * no alignment, contiguity, SIMD or GPU requirement, for callers that
- * cannot satisfy the GPU eligibility gate.
+ * fill/fill_alpha/blit/scale/rotate - a submitted dispatch is never
+ * replayed, because a timed-out dispatch may still own or have partially
+ * written the destination.
  */
 
 #include <bsp/bsp_g2d.h>
@@ -194,56 +190,30 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
     return -1;
 }
 
-/* Scalar source-over blend:
- * out_a = dst_a + ((255 - dst_a) * a) / 255,
- * out_c = (src_c * a + dst_c * (255 - a)) / 255. */
-static uint32_t blend_argb_scalar(uint32_t dst_color, uint8_t a,
-                                  uint8_t r, uint8_t g, uint8_t b)
-{
-    uint32_t oa = (dst_color >> 24) & 0xff;
-    uint32_t dr = (dst_color >> 16) & 0xff;
-    uint32_t dg = (dst_color >> 8) & 0xff;
-    uint32_t db = dst_color & 0xff;
-    uint32_t inv_a = 255 - a;
-
-    oa = oa + (255 - oa) * a / 255;
-    dr = (r * a + dr * inv_a) / 255;
-    dg = (g * a + dg * inv_a) / 255;
-    db = (b * a + db * inv_a) / 255;
-    return (oa << 24) | (dr << 16) | (dg << 8) | db;
-}
-
-/* CPU-only alpha fill of a sub-rect, clipped to the buffer bounds:
- * exact per-pixel access, no alignment/contiguity requirements;
- * same blend math as bsp_g2d_blt_alpha.  alpha == 0 is a no-op. */
-int32_t bsp_g2d_fill_alpha(uint32_t *argb, int32_t argb_w, int32_t argb_h,
+/* Translucent colour fill of a sub-rect: GPU-only like the other
+ * operations (the argb_alpha kernel over a constant-colour source, see
+ * gpu_fill_alpha_op), same eligibility gate as bsp_g2d_fill.  alpha == 0
+ * is a no-op.  Blends are not idempotent, so a failed dispatch is never
+ * replayed. */
+int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
+                         int32_t argb_w, int32_t argb_h,
                          int32_t x, int32_t y, int32_t w, int32_t h,
                          uint32_t color)
 {
-    uint8_t a;
+    int32_t rx = x, ry = y, rw = w, rh = h;
+    uint32_t phys = 0;
 
-    if (argb == NULL)
+    if (((color >> 24) & 0xff) == 0)
         return 0;
-    a = (uint8_t)((color >> 24) & 0xff);
-    if (a == 0)
-        return 0;
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (w <= 0 || h <= 0 || x >= argb_w || y >= argb_h)
-        return 0;
-    if (x + w > argb_w) w = argb_w - x;
-    if (y + h > argb_h) h = argb_h - y;
-
-    for (int32_t row = y; row < y + h; row++) {
-        uint32_t *dp = argb + row * argb_w + x;
-        for (int32_t col = 0; col < w; col++) {
-            dp[col] = blend_argb_scalar(dp[col], a,
-                    (uint8_t)((color >> 16) & 0xff),
-                    (uint8_t)((color >> 8) & 0xff),
-                    (uint8_t)(color & 0xff));
-        }
+    if (argb &&
+        gpu_clip_rect(&rx, &ry, &rw, &rh, argb_w, argb_h) &&
+        gpu_ok(argb_w, argb_h)) {
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
     }
-    return 0;
+    if (!phys)
+        return -1;
+    return gpu_fill_alpha_op(phys, argb, argb_w, argb_h, rx, ry,
+                             rx + rw, ry + rh, color) ? 0 : -1;
 }
 
 int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,

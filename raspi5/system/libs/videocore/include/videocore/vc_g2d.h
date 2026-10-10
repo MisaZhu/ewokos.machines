@@ -149,6 +149,16 @@ int gpu_alpha_op(const g2d_map_t *m, uint8_t alpha,
                  int32_t rx, int32_t ry, int32_t rx1, int32_t ry1,
                  size_t dst_bytes);
 
+/* Source-over fill of the clipped dst rect [rx,rx1) x [ry,ry1) with a
+ * translucent ARGB colour (its alpha byte is the blend alpha): the
+ * argb_alpha kernel sampling a constant-colour source block through a
+ * zero map.  alpha 0 is a no-op success.  Like gpu_alpha_op a failure is
+ * reported, never retried on the CPU. */
+int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
+                      int32_t dst_w, int32_t dst_h,
+                      int32_t rx, int32_t ry, int32_t rx1, int32_t ry1,
+                      uint32_t color);
+
 /* Whole-destination scale through the corner-preserving map m: aligned
  * exact power-of-two downscales take the faster argb_scale_pow2 kernel,
  * every other shape takes argb_blit. */

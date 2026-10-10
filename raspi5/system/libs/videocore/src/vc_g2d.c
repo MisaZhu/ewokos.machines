@@ -32,7 +32,9 @@
  * pipeline rect-gates BOTH streams: the destination read of an
  * out-of-rect lane (tail lane of an unaligned row, lane past the rect
  * edge) is rerouted to the lane-private scratch word, so any destination
- * width is supported on the GPU.
+ * width is supported on the GPU.  gpu_fill_alpha_op (translucent colour
+ * fill) is the same kernel sampling a constant-colour block through a
+ * zero map - see its comment.
  *
  * The rotate kernel runs the same affine engine as blit for every angle
  * (the canonical centres-based map degenerates exactly to the right-angle
@@ -88,7 +90,9 @@
 #include <videocore/vc_g2d.h>
 
 #include <string.h>
+#include <pthread.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/dma.h>
 
 #include "v3d_g2d.h"
 
@@ -1132,6 +1136,85 @@ int gpu_alpha_op(const g2d_map_t *m, uint8_t alpha,
             return 0;
     }
     return 1;
+}
+
+/* Constant-colour source-over fill (argb_alpha kernel through a zero map).
+ *
+ * The alpha kernel is a blend of a mapped SOURCE SAMPLE over dst; there is
+ * no fill-flavoured variant, so the constant colour is served from a
+ * GPU-visible 16x16 block in sys_dma memory filled with the colour (opaque
+ * alpha byte) and the map is all zeros: u = v = 0 for every destination
+ * pixel, so every lane samples pixel (0,0) of the block and the kernel's
+ * global alpha uniform carries the fill's alpha.  Whether the kernel
+ * folds the source alpha in (sa' = (S.a*alpha)>>8, as the V3D 4.2
+ * generator does) or uses the uniform alone, an opaque source byte makes
+ * the effective alpha the fill's alpha.
+ * The block is NOCACHE on the ARM side (dma window, no dcache work) but
+ * the V3D L2T may still hold its lines from the previous fill colour, so
+ * it is reported as the dispatch's source extent: the PRE walk's hull then
+ * covers it (the POST walk already spans the sys_dma TMU scratch, so the
+ * span is no wider than today's).
+ *
+ * The block is single-instance: the colour write and the dispatch(es) of
+ * one fill run under _fill_alpha_lock, so two workers' fills cannot
+ * interleave a recolour between a banded fill's bands.  v3d_g2d_run takes
+ * its own lock inside - fill lock -> run lock only, never the reverse. */
+#define G2D_FILL_SRC_W 16
+#define G2D_FILL_SRC_H 16
+
+static pthread_mutex_t _fill_alpha_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t *_fill_src;          /* dma window vaddr, 16x16 ARGB */
+static uint32_t _fill_src_phys;      /* its V3D IOVA, 0 until allocated */
+
+static int gpu_fill_src_ready(void)
+{
+    ewokos_addr_t v, p;
+    size_t bytes = (size_t)G2D_FILL_SRC_W * G2D_FILL_SRC_H * 4u;
+
+    if (_fill_src_phys != 0)
+        return 1;
+    v = dma_alloc(0, (uint32_t)bytes);
+    if (v == 0)
+        return 0;
+    p = dma_phy_addr(0, v);
+    if (gpu_phys(p, bytes, 1) == 0) {
+        klog("g2d fill_alpha: source block not GPU-visible (phy=%llx)\n",
+             (unsigned long long)p);
+        return 0;
+    }
+    _fill_src = (uint32_t *)(uintptr_t)v;
+    _fill_src_phys = (uint32_t)p;
+    return 1;
+}
+
+int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
+                      int32_t dst_w, int32_t dst_h,
+                      int32_t rx, int32_t ry, int32_t rx1, int32_t ry1,
+                      uint32_t color)
+{
+    g2d_map_t m;
+    uint8_t alpha = (uint8_t)(color >> 24);
+    uint32_t src = 0xff000000u | (color & 0x00ffffffu);
+    int ok, i;
+
+    if (alpha == 0)
+        return 1;                        /* nothing to blend */
+    memset(&m, 0, sizeof(m));            /* every lane samples (0,0) */
+
+    pthread_mutex_lock(&_fill_alpha_lock);
+    ok = gpu_fill_src_ready();
+    if (ok) {
+        for (i = 0; i < G2D_FILL_SRC_W * G2D_FILL_SRC_H; i++)
+            _fill_src[i] = src;
+        __asm__ __volatile__("dsb sy");  /* block -> DRAM before dispatch */
+        ok = gpu_alpha_op(&m, alpha, _fill_src_phys, _fill_src,
+                          G2D_FILL_SRC_W, G2D_FILL_SRC_H,
+                          dst_phys, argb_dst, dst_w, dst_h,
+                          rx, ry, rx1, ry1,
+                          (size_t)dst_w * (size_t)dst_h * 4u);
+    }
+    pthread_mutex_unlock(&_fill_alpha_lock);
+    return ok;
 }
 
 /* Whole-destination scale through the caller's corner-preserving map. */

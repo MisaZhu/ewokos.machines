@@ -59,7 +59,7 @@
  * note), and the uniform / scratch staging are single-instance globals
  * shared by every dispatch.  The lock lives here, at the innermost
  * dispatch entry, rather than in g2dd or bsp_g2d, so CPU-only paths
- * (g2dd's g2d_cpu_blt tail, bsp_g2d_fill_alpha, arch_g2d_* NEON) run
+ * (g2dd's g2d_cpu_blt tail, bsp_g2d_blt_cpu, arch_g2d_* NEON) run
  * fully parallel and any future caller of v3d_g2d_run{,_vc4} is
  * covered automatically.  This is a correctness guard, not a
  * performance optimization: without it the g2dd service's fine-grained
