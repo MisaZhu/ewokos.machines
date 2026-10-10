@@ -405,8 +405,16 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
    	//return G2D_ERR_NOT_SUPPORTED; //TODO
     uint32_t phys = 0;
     uint32_t scratch_phys = 0;
-    size_t tmp_need = (size_t)(rect_h - 1) * (size_t)argb_w * 4u +
-                      (size_t)rect_w * 4u;
+    /* Scratch row pitch = canvas pitch, padded by one 64 B cache line when
+     * that pitch is 4 KiB-aligned, so the V pass's (2r+1)-row gather lands
+     * in distinct L2T sets instead of all aliasing onto one (measured
+     * 1024^2 r4 = 29.6 ms vs NEON 16.2 ms).  This sizing MUST match what
+     * gpu_gaussian_blur_op writes in vc_g2d.c, and graph_g2d.c's
+     * blur_tmp_get allocation MUST be at least this large. */
+    uint32_t argb_pitch = (uint32_t)argb_w * 4u;
+    uint32_t tmp_pitch = ((argb_pitch & 4095u) == 0u) ? (argb_pitch + 64u)
+                                                      : argb_pitch;
+    size_t tmp_need = (size_t)(rect_h - 1) * tmp_pitch + (size_t)rect_w * 4u;
 
     if (argb && tmp &&
         radius >= 1 && radius <= 64 &&

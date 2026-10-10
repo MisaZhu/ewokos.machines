@@ -31,7 +31,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <ewoksys/spinlock.h>
+#include <pthread.h>
 #include <ewoksys/thread.h>
 #include <sysinfo.h>
 #include <ewoksys/syscall.h>
@@ -39,6 +39,7 @@
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
+#include <ewoksys/interrupt.h>
 #include <ewoksys/kernel_tic.h>
 #include <arch/bcm2712/mailbox.h>
 #include "v3d_g2d.h"
@@ -116,7 +117,16 @@
 #define CSD_CURRENT_CFG7 0x974u
 #define INT_STS         0x50u
 #define INT_CLR         0x58u
+#define INT_MSK_STS     0x5cu
+#define INT_MSK_SET     0x60u
+#define INT_MSK_CLR     0x64u
 #define INT_CSD_DONE    (1u << 6)
+
+/* core0 interrupt line: bcm2712.dtsi v3d node lists <GIC_SPI 250> (hub)
+ * and <GIC_SPI 249> (core0); the EwokOS user-space irq number is the GIC
+ * INTID, i.e. 32 + SPI (machines/raspi5/kernel/bsp/irq.c passes raw
+ * INTIDs through).  CSD_DONE is a core interrupt. */
+#define V3D_CORE0_IRQ   (32u + 249u)
 
 /* ---- PM power domain (reset GRAFX_V3D) ---- */
 #define PM_GRAFX_OFF 0x10cu
@@ -128,6 +138,16 @@
 #define CSD_SCRATCH_BYTES (4096u * 4u)   /* TMU write scratch size */
 #define CSD_POLL_SPIN_LIMIT 2000000u
 #define CSD_POLL_YIELD_LIMIT 256u
+/* IRQ wait: the worker parks on its own tid with this slice as a
+ * lost-interrupt bound (tick-granular, so ~2 frames), re-checking the
+ * done sequence and the status latch each wake, until the same ~256 ms
+ * budget the yield loop has.  CSD_IRQ_MISS_MAX consecutive dispatches
+ * that completed by the latch without a delivered interrupt switch the
+ * driver back to polling for good (wrong INTID / routing: slow, never
+ * stuck). */
+#define CSD_IRQ_WAIT_SLICE_US 1500u
+#define CSD_IRQ_WAIT_LIMIT_NS (256ull * 1000000ull)
+#define CSD_IRQ_MISS_MAX 8u
 
 /* Raspberry Pi firmware property tags and clock ID. */
 #define FW_GET_CLOCK_RATE      0x00030002u
@@ -829,6 +849,94 @@ static void g2d_pm_reset(void)
 }
 #endif
 
+/* ---- CSD_DONE interrupt -------------------------------------------
+ *
+ * The kernel injects a registered irq handler into the daemon's MAIN
+ * context (never into an ipc worker), on a private interrupt stack, with
+ * the line disabled in the GIC until the handler's sys_interrupt_end.
+ * The worker that owns the live dispatch therefore cannot be the one to
+ * take the interrupt; it parks with proc_block_timeout() on a token and
+ * the handler releases it with proc_wakeup_by().  The kernel latches a
+ * wake that lands before the block (wake_pending, same-token), so the
+ * check-then-block sequence below is race-free; the timed slice only
+ * bounds a lost interrupt.
+ *
+ * Completion is signalled through _csd_irq_seq (bumped by the handler),
+ * NOT by re-reading INT_STS: the handler must clear the status latch
+ * itself (level line, otherwise the irq re-fires straight after the
+ * kernel re-enables it), so a worker re-reading the latch after the
+ * handler ran would see "not done".
+ *
+ * CSD_DONE is unmasked only around an IRQ-waiting dispatch: a spin-path
+ * dispatch keeps today's proven poll loop and must not have its latch
+ * stolen by the handler, and masking also keeps the interrupt load off
+ * the short jobs where the handler round trip would cost more than the
+ * dispatch itself.  Everything else in INT_MSK stays masked; the
+ * handler acks whatever is latched so no foreign bit can hold the line.
+ */
+static interrupt_handler_t _csd_irq_handler;
+static volatile uint32_t _csd_irq_seq;        /* CSD_DONE deliveries */
+static volatile int32_t _csd_irq_waiter = -1; /* parked worker tid, or -1 */
+static volatile int _csd_irq_on;              /* 0: poll only, 1: armed */
+static uint32_t _csd_irq_miss_run;            /* consecutive silent completions */
+#define CSD_IRQ_TOKEN ((ewokos_addr_t)(uintptr_t)&_csd_irq_seq)
+
+static void g2d_csd_irq(uint32_t irq, ewokos_addr_t data)
+{
+    volatile uint32_t *core = v3d_core();
+    uint32_t sts = core[INT_STS / 4];
+    int32_t waiter;
+
+    (void)irq;
+    (void)data;
+    if (sts != 0)
+        core[INT_CLR / 4] = sts;      /* ack all: drop the level line */
+    if (!(sts & INT_CSD_DONE))
+        return;
+    _csd_irq_seq++;
+    __asm__ __volatile__("dmb ish" ::: "memory");
+    waiter = _csd_irq_waiter;
+    if (waiter >= 0)
+        proc_wakeup_by(waiter, CSD_IRQ_TOKEN);
+}
+
+static void g2d_csd_irq_init(void)
+{
+    volatile uint32_t *core = v3d_core();
+
+    core[INT_MSK_SET / 4] = ~0u;      /* nothing raises the line yet */
+    core[INT_CLR / 4] = ~0u;
+    __asm__ __volatile__("dsb sy");
+    _csd_irq_handler.handler = g2d_csd_irq;
+    _csd_irq_handler.data = 0;
+    if (sys_interrupt_setup(V3D_CORE0_IRQ, &_csd_irq_handler) == 0) {
+        _csd_irq_on = 1;
+        slog("g2d: V3D CSD_DONE irq %u armed (msk=0x%x)\r\n",
+             (uint32_t)V3D_CORE0_IRQ, (uint32_t)core[INT_MSK_STS / 4]);
+    } else {
+        slog("g2d: V3D CSD_DONE irq %u unavailable, polling\r\n",
+             (uint32_t)V3D_CORE0_IRQ);
+    }
+}
+
+/* Called under the run lock when the interrupt proved undeliverable. */
+static void g2d_csd_irq_off(void)
+{
+    volatile uint32_t *core = v3d_core();
+
+    _csd_irq_on = 0;
+    core[INT_MSK_SET / 4] = ~0u;
+    __asm__ __volatile__("dsb sy");
+    sys_interrupt_setup(V3D_CORE0_IRQ, NULL);
+    slog("g2d: V3D CSD_DONE irq %u never delivered, back to polling\r\n",
+         (uint32_t)V3D_CORE0_IRQ);
+}
+
+int v3d_g2d_irq_enabled(void)
+{
+    return _csd_irq_on;
+}
+
 int v3d_g2d_init(void)
 {
     sys_info_t si;
@@ -944,6 +1052,7 @@ int v3d_g2d_init(void)
         return -1;
     }
     g2d_l2c_enable();
+    g2d_csd_irq_init();
 
     _ok = 1;
     return 0;
@@ -1089,18 +1198,26 @@ int v3d_g2d_vec4_ok(void)
  * table filled at init, so an invalid request never serializes behind
  * a live dispatch.
  *
- * A TTAS spinlock, not a pthread_mutex: videocore takes no kernel
- * locks.  It is held across the whole dispatch, including a long job's
- * usleep(200) polls, so a second worker that lands on a live dispatch
- * spins (yield hint) for the remainder of that job instead of parking.
- * That costs cycles, not progress: the holder's poll park is a kernel
- * sleep woken by the timer tick, which also preempts a spinner sharing
- * its core, so the dispatch always completes and releases. */
-static spinlock_t _v3d_run_lock = SPINLOCK_INIT;
-/* owner/depth make the lock recursive for the op bracket.  Both are
- * written only by the holder; a non-holder's read sees -1 or a foreign
- * tid (tids are unique and the holder clears owner before the release
- * store), never its own, so the fast re-entry test is race-free. */
+ * A pthread_mutex, not a TTAS spinlock.  It is held across the whole
+ * dispatch, including a long job's wait (the CSD_DONE irq park, or the
+ * usleep(200) poll when the irq is off), and ewoksys spinlock.h forbids
+ * exactly that: while the holder slept on the irq, every other g2dd
+ * worker burned its core spinning on the word and starved the main
+ * context that must run the irq handler - measured on a Pi 5 as every
+ * 1080p band op 1.5-1.9x slower, 37 handler misses in 26684 waits and
+ * displayd's blit_phy at 24 ms average.  The libewoksys mutex is a
+ * futex-style word: uncontended lock/unlock is one CAS with no syscall,
+ * and only a waiter that actually finds the lock held parks on a lazily
+ * allocated kernel semaphore, so the holder's irq park no longer costs
+ * anyone else a core.  The irq handler itself never takes it (it only
+ * bumps the seq and posts the wake), so main-context injection cannot
+ * deadlock against a parked worker. */
+static pthread_mutex_t _v3d_run_lock = PTHREAD_MUTEX_INITIALIZER;
+/* owner/depth make the lock recursive for the op bracket (the libewoksys
+ * mutex is not).  Both are written only by the holder; a non-holder's
+ * read sees -1 or a foreign tid (tids are unique and the holder clears
+ * owner before the release), never its own, so the fast re-entry test
+ * is race-free. */
 static volatile int32_t _v3d_run_owner = -1;
 static volatile uint32_t _v3d_run_depth = 0;
 
@@ -1112,7 +1229,7 @@ static void g2d_run_lock(void)
         _v3d_run_depth++;
         return;
     }
-    spin_lock(&_v3d_run_lock);
+    pthread_mutex_lock(&_v3d_run_lock);
     _v3d_run_owner = me;
     _v3d_run_depth = 1;
 }
@@ -1122,7 +1239,7 @@ static void g2d_run_unlock(void)
     if (--_v3d_run_depth != 0)
         return;
     _v3d_run_owner = -1;
-    spin_unlock(&_v3d_run_lock);
+    pthread_mutex_unlock(&_v3d_run_lock);
 }
 
 void v3d_g2d_op_begin(void)
@@ -1168,8 +1285,9 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
-    uint32_t poll_limit = (flags & V3D_G2D_POLL_YIELD) ?
-                          CSD_POLL_YIELD_LIMIT : CSD_POLL_SPIN_LIMIT;
+    uint32_t poll_limit;
+    uint32_t seq0 = 0;
+    int use_irq, done;
     int kern = -1;
     int ret;
     uint64_t t0, t1, t2;
@@ -1177,6 +1295,11 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
         nunifs < 0 || nunifs >= CSD_UNIF_WORDS || num_qpus <= 0 || !_ok)
         return -1;
+    /* POLL_IRQ rides on top of the caller's spin/pace choice: if the irq
+     * is off or was retired between the caller's check and here, the
+     * dispatch simply waits the way it would have without the flag. */
+    poll_limit = (flags & V3D_G2D_POLL_YIELD) ?
+                 CSD_POLL_YIELD_LIMIT : CSD_POLL_SPIN_LIMIT;
 
     /* select the preloaded kernel staging: no code is ever copied at
      * dispatch time - the CSD fetches the kernel straight from the dma
@@ -1270,29 +1393,80 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     cfg[5] = _kcode_p[kern];    /* preloaded kernel's V3D IOVA */
     cfg[6] = _unif_p;
     cfg[7] = 0;
+    use_irq = (flags & V3D_G2D_POLL_IRQ) != 0 && _csd_irq_on;
+    if (use_irq) {
+        /* Publish the waiter before the line can rise: the handler reads
+         * it from the main context on whatever core takes the irq. */
+        seq0 = _csd_irq_seq;
+        _csd_irq_waiter = thread_get_id();
+        __asm__ __volatile__("dsb sy" ::: "memory");
+        v3d_core()[INT_MSK_CLR / 4] = INT_CSD_DONE;
+    }
     for (i = 1; i <= 7; i++)
         csd[i] = cfg[i];
     csd[0] = cfg[0];            /* sole CFG0 write starts the dispatch */
 
     /* Every production kernel waits for pending TMU writes and then uses
-     * the legal thread-end protocol, so CSD_DONE is authoritative.  A long
-     * job polls once per scheduler frame (about 1 ms at timer_freq=1024),
-     * with a 256-frame timeout comparable to the short job's spin bound. */
-    for (i = 0; i < poll_limit; i++) {
-        if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
-            break;
-        if (flags & V3D_G2D_POLL_YIELD)
-            usleep(200);    /* one scheduler frame (~976us tick): >200 so it
-                             * parks instead of busy-spinning, <one tick so it
-                             * wakes on the first decrement.  usleep(1000)
-                             * would round up to two ticks; sched_yield()
-                             * would not pace at all. */
-        else
-            g2d_poll_hint();
+     * the legal thread-end protocol, so CSD_DONE is authoritative. */
+    done = 0;
+    if (use_irq) {
+        /* Park until the handler bumps the sequence (see the CSD_DONE
+         * interrupt note above).  The status latch is consulted only
+         * after a full timed slice elapsed without a delivery: by then a
+         * set latch means the interrupt did not arrive, not that it is
+         * still in flight. */
+        uint64_t deadline = t1 + CSD_IRQ_WAIT_LIMIT_NS;
+        int missed = 0;
+
+        for (;;) {
+            if (_csd_irq_seq != seq0) {
+                done = 1;
+                break;
+            }
+            if (g2d_now_ns() >= deadline)
+                break;
+            proc_block_timeout(CSD_IRQ_TOKEN, CSD_IRQ_WAIT_SLICE_US);
+            if (_csd_irq_seq != seq0) {
+                done = 1;
+                break;
+            }
+            if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
+                done = 1;
+                missed = 1;
+                break;
+            }
+        }
+        _csd_irq_waiter = -1;
+        v3d_core()[INT_MSK_SET / 4] = INT_CSD_DONE;
+        _stats.irq_waits++;
+        if (missed) {
+            _stats.irq_miss++;
+            if (++_csd_irq_miss_run >= CSD_IRQ_MISS_MAX)
+                g2d_csd_irq_off();
+        } else if (done) {
+            _csd_irq_miss_run = 0;
+        }
+    } else {
+        /* A long job polls once per scheduler frame (about 1 ms at
+         * timer_freq=1024), with a 256-frame timeout comparable to the
+         * short job's spin bound. */
+        for (i = 0; i < poll_limit; i++) {
+            if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
+                break;
+            if (flags & V3D_G2D_POLL_YIELD)
+                usleep(200);    /* one scheduler frame (~976us tick): >200 so it
+                                 * parks instead of busy-spinning, <one tick so it
+                                 * wakes on the first decrement.  usleep(1000)
+                                 * would round up to two ticks; sched_yield()
+                                 * would not pace at all. */
+            else
+                g2d_poll_hint();
+        }
+        done = i < poll_limit;
     }
     t2 = g2d_now_ns();
     _stats.exec_ns += t2 - t1;
-    if (i == poll_limit) {
+    if (!done) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         (void)g2d_mmu_check_fault(kern, nunifs, num_qpus);
         /* A timeout is a real failure.  Do not reset the graphics domain

@@ -109,11 +109,23 @@ typedef struct {
  * 256-frame timeout below a long job's runtime and abandoning a
  * still-live dispatch (torn scanout).  The value is kept under one tick
  * (~976us) so it wakes on the first decrement rather than rounding up
- * to two frames. */
+ * to two frames.  POLL_IRQ asks for the CSD_DONE interrupt wait instead:
+ * the worker parks on a kernel block and the daemon's irq handler wakes
+ * it, so the core is free for the dispatch's whole duration and the
+ * wake comes within interrupt latency rather than at the next tick.
+ * It is layered on the spin/yield choice: when the irq is not armed
+ * (v3d_g2d_irq_enabled() == 0) the dispatch waits exactly as it would
+ * with POLL_IRQ absent. */
 #define V3D_G2D_MAINT_PRE  (1u << 0)
 #define V3D_G2D_MAINT_POST (1u << 1)
 #define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
 #define V3D_G2D_POLL_YIELD (1u << 2)
+#define V3D_G2D_POLL_IRQ   (1u << 3)
+
+/* 1 while the CSD_DONE interrupt is registered and delivering; 0 when
+ * the kernel refused the irq at init or the driver retired it after
+ * CSD_IRQ_MISS_MAX silent completions. */
+int v3d_g2d_irq_enabled(void);
 
 /*
  * Run one CSD dispatch of `code` with `unifs` against the surfaces
@@ -149,7 +161,10 @@ void v3d_g2d_op_end(void);
  * + ARM dcache invalidate.  *_span sums the bytes of the RANGED walks
  * so span/run against ns/run tells whether the walk cost scales with
  * the address span; *_full counts dispatches that fell back to the
- * whole-IOVA walk and *_skip the PRE/POST-elided middle bands/tiles. */
+ * whole-IOVA walk and *_skip the PRE/POST-elided middle bands/tiles.
+ * irq_waits counts dispatches that parked on the CSD_DONE interrupt,
+ * irq_miss those of them that completed by the status latch without a
+ * delivered interrupt (CSD_IRQ_MISS_MAX in a row retires the irq). */
 typedef struct {
     uint64_t runs;
     uint64_t timeouts;
@@ -157,6 +172,7 @@ typedef struct {
     uint64_t pre_span, post_span;
     uint64_t pre_full, post_full;
     uint64_t pre_skip, post_skip;
+    uint64_t irq_waits, irq_miss;
 } v3d_g2d_stats_t;
 
 /* Snapshot the counters (consistent: taken under the dispatch lock) and

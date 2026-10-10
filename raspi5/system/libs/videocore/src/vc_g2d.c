@@ -92,7 +92,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <ewoksys/spinlock.h>
+#include <pthread.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/dma.h>
 
@@ -128,21 +128,40 @@ uint32_t vc_g2d_clock_hz(void)
 static uint32_t _g2d_big_surface = 4u * 1024u * 1024u;
 static uint32_t _g2d_band_bytes = 1024u * 1024u;
 
+/* CSD_DONE interrupt wait threshold, `devcmd /dev/g2d irqus <us>`: a
+ * dispatch predicted to run longer than this parks on the irq (when
+ * v3d_g2d_irq_enabled()) instead of spinning on INT_STS; 0 disables
+ * the irq wait entirely (every dispatch back to spin / paced poll).
+ * History: with _v3d_run_lock still a TTAS spinlock, irqus 1000 vs 0
+ * measured on a Pi 5 under a live xwm made every 1280x960/1920x1080
+ * band op 1.5-1.9x slower (blit_opaque@1080p 2674 -> 5184 us/frame,
+ * fill_alpha 4788 -> 7833), irqus 3000 was still 1.1-1.8x, with 37
+ * handler misses out of 26684 waits and displayd's blit_phy at 24 ms
+ * avg vs 1.7 ms - while the holder slept on the irq every other worker
+ * spun on the lock and starved the main context that runs the handler.
+ * The parked dispatch itself only cost ~200 us of wake latency.  The
+ * run lock and _fill_alpha_lock are pthread mutexes now (waiters park),
+ * which removes that mechanism; 1 ms is the default again pending the
+ * same g2dtest A/B (irqus 0 vs 1000: PERF us/frame, stat exec, miss). */
+static uint32_t _g2d_irq_budget_us = 1000u;
+
 /* `big <KB>` / `band <KB>`: set (or with no value, show) the banding
  * threshold and the per-band budget in KiB; 0 KB threshold bands every
- * surface, so even the BREAKEVEN squares exercise the band loop. */
+ * surface, so even the BREAKEVEN squares exercise the band loop.
+ * `irqus <us>` uses the same shape with unit scale 1. */
 static int g2d_cmd_knob(int argc, char **argv, char *buf, size_t len,
-                        uint32_t *knob, const char *name)
+                        uint32_t *knob, const char *name,
+                        uint32_t scale, const char *unit)
 {
     if (argc > 1 && argv[1] != NULL) {
         char *end = NULL;
-        unsigned long kb = strtoul(argv[1], &end, 10);
+        unsigned long v = strtoul(argv[1], &end, 10);
 
-        if (end == argv[1] || *end != '\0' || kb > (1ul << 20))
+        if (end == argv[1] || *end != '\0' || v > (1ul << 20))
             return -1;
-        *knob = (uint32_t)kb * 1024u;
+        *knob = (uint32_t)v * scale;
     }
-    snprintf(buf, len, "%s %uKB", name, *knob / 1024u);
+    snprintf(buf, len, "%s %u%s", name, *knob / scale, unit);
     return 0;
 }
 
@@ -154,9 +173,14 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
     if (argc <= 0 || argv == NULL || argv[0] == NULL || buf == NULL || len == 0)
         return -1;
     if (strcmp(argv[0], "big") == 0)
-        return g2d_cmd_knob(argc, argv, buf, len, &_g2d_big_surface, "big");
+        return g2d_cmd_knob(argc, argv, buf, len, &_g2d_big_surface, "big",
+                            1024u, "KB");
     if (strcmp(argv[0], "band") == 0)
-        return g2d_cmd_knob(argc, argv, buf, len, &_g2d_band_bytes, "band");
+        return g2d_cmd_knob(argc, argv, buf, len, &_g2d_band_bytes, "band",
+                            1024u, "KB");
+    if (strcmp(argv[0], "irqus") == 0)
+        return g2d_cmd_knob(argc, argv, buf, len, &_g2d_irq_budget_us, "irqus",
+                            1u, "us");
     if (strcmp(argv[0], "stat") != 0)
         return -1;
 
@@ -170,7 +194,7 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
     snprintf(buf, len,
              "v3d dispatch %llu timeout %llu | avg us pre %llu exec %llu post %llu"
              " | pre span %lluKB full %llu skip %llu | post span %lluKB full %llu skip %llu"
-             " | big %uKB band %uKB",
+             " | irq %s wait %llu miss %llu | big %uKB band %uKB",
              (unsigned long long)s.runs,
              (unsigned long long)s.timeouts,
              (unsigned long long)(s.pre_ns / n / 1000u),
@@ -182,6 +206,9 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
              (unsigned long long)(s.post_span / ranged_post / 1024u),
              (unsigned long long)s.post_full,
              (unsigned long long)s.post_skip,
+             v3d_g2d_irq_enabled() ? "on" : "off",
+             (unsigned long long)s.irq_waits,
+             (unsigned long long)s.irq_miss,
              _g2d_big_surface / 1024u, _g2d_band_bytes / 1024u);
     return 0;
 }
@@ -221,7 +248,12 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
  * ~7.4 ms, a full-screen blit ~4.6 ms) instead of parking in ~1 ms poll
  * granularity; only larger surfaces and arbitrary-angle rotations yield.
  * The spin loop's 2 M MMIO-poll bound comfortably covers this budget,
- * and the 256-frame yield timeout (~256 ms) still bounds longer jobs. */
+ * and the 256-frame yield timeout (~256 ms) still bounds longer jobs.
+ *
+ * With the CSD_DONE irq armed the granularity argument disappears (the
+ * wake is interrupt latency, not a tick), so the much lower
+ * _g2d_irq_budget_us decides spin vs park instead; the ms budget then
+ * only matters as the fallback pacing when the irq is off or retired. */
 #define G2D_SPIN_BUDGET_MS 8u
 
 static unsigned g2d_poll_flags(unsigned flags, uint64_t pixels,
@@ -238,6 +270,9 @@ static unsigned g2d_poll_flags(unsigned flags, uint64_t pixels,
         capacity = capacity * (uint32_t)num_qpus / G2D_PREDICT_REF_QPUS;
     if (capacity == 0 || pixels > capacity * G2D_SPIN_BUDGET_MS)
         flags |= V3D_G2D_POLL_YIELD;
+    if (_g2d_irq_budget_us != 0 && v3d_g2d_irq_enabled() &&
+        (capacity == 0 || pixels * 1000u > capacity * _g2d_irq_budget_us))
+        flags |= V3D_G2D_POLL_IRQ;
     return flags;
 }
 
@@ -1296,11 +1331,13 @@ int gpu_alpha_op(const g2d_map_t *m, uint8_t alpha,
  * The block is single-instance: the colour write and the dispatch(es) of
  * one fill run under _fill_alpha_lock, so two workers' fills cannot
  * interleave a recolour between a banded fill's bands.  v3d_g2d_run takes
- * its own lock inside - fill lock -> run lock only, never the reverse. */
+ * its own lock inside - fill lock -> run lock only, never the reverse.
+ * A pthread_mutex for the same reason as _v3d_run_lock: it is held
+ * across the dispatch, which may park on the CSD_DONE irq. */
 #define G2D_FILL_SRC_W 16
 #define G2D_FILL_SRC_H 16
 
-static spinlock_t _fill_alpha_lock = SPINLOCK_INIT;
+static pthread_mutex_t _fill_alpha_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t *_fill_src;          /* dma window vaddr, 16x16 ARGB */
 static uint32_t _fill_src_phys;      /* its V3D IOVA, 0 until allocated */
 
@@ -1339,7 +1376,7 @@ int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
         return 1;                        /* nothing to blend */
     memset(&m, 0, sizeof(m));            /* every lane samples (0,0) */
 
-    spin_lock(&_fill_alpha_lock);
+    pthread_mutex_lock(&_fill_alpha_lock);
     ok = gpu_fill_src_ready();
     if (ok) {
         for (i = 0; i < G2D_FILL_SRC_W * G2D_FILL_SRC_H; i++)
@@ -1351,7 +1388,7 @@ int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
                           rx, ry, rx1, ry1,
                           (size_t)dst_w * (size_t)dst_h * 4u);
     }
-    spin_unlock(&_fill_alpha_lock);
+    pthread_mutex_unlock(&_fill_alpha_lock);
     return ok;
 }
 
@@ -1511,7 +1548,7 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     int nq, rows, i, k, rc;
     unsigned flags;
     uint64_t pixels;
-    uint32_t pitch4;
+    uint32_t pitch4, tmp_pitch, groups;
     size_t tmp_need, src_off;
     v3d_g2d_maint_t mr;
 
@@ -1540,9 +1577,25 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     if (nq > h)
         nq = h;
     rows = g2d_qpu_rows(h, nq, w * 4);
-    /* the kernels build the per-QPU band offset with smul24 */
-    if ((uint32_t)(nq - 1) * (uint32_t)rows * (uint32_t)(w * 4) >=
-        (1u << 24))
+
+    /* Scratch (tmp) row pitch, padded to break L2T set aliasing.  The V
+     * pass gathers (2r+1) tmp rows at once; when the canvas pitch is
+     * 4 KiB-aligned those rows are 4 KiB apart and collapse onto the same
+     * L2T sets (measured 1024^2 r4 = 29.6 ms vs NEON 16.2 ms).  One extra
+     * 64 B cache line makes the per-row set-index shift odd, so the
+     * gathered rows land in distinct sets; non-aligned pitches are left
+     * byte-identical.  A 4 KiB-aligned pitch means w is a multiple of 1024
+     * (hence of 16), so the padded path never has a partial tail group.
+     * MUST match the tmp sizing in bsp_g2d.c and graph_g2d.c. */
+    pitch4 = (uint32_t)w * 4u;
+    tmp_pitch = ((pitch4 & 4095u) == 0u) ? (pitch4 + 64u) : pitch4;
+    groups = (uint32_t)((rw + 15) / 16);
+    tmp_need = (size_t)(rh - 1) * tmp_pitch + (size_t)rw * 4u;
+    src_off = (size_t)ry * pitch4 + (size_t)rx * 4u;
+
+    /* the kernels build the per-QPU band offset with smul24; the widest
+     * band stride is the padded tmp (H-pass dst / V-pass src) */
+    if ((uint32_t)(nq - 1) * (uint32_t)rows * tmp_pitch >= (1u << 24))
         return -1;
 
     pixels = (uint64_t)w * (uint64_t)h;
@@ -1562,27 +1615,27 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         vcode = setp->vcode;
         vn = *setp->vn;
 
-        /* Both passes carry the SAME row pitch (the canvas pitch): the
-         * per-QPU band offset u8 = rows*pitch is then valid for the
-         * source AND the destination, and the tmp is a pitch-strided
-         * (rh - 1)-row region plus one rect row.  u0/u1 are the RECT
-         * origins; maintenance covers the whole canvas on the canvas
-         * side and the tmp extent on the scratch side. */
-        pitch4 = (uint32_t)w * 4u;
-        tmp_need = (size_t)(rh - 1) * pitch4 + (size_t)rw * 4u;
-        src_off = (size_t)ry * pitch4 + (size_t)rx * 4u;
+        /* The canvas is read/written at pitch4 on both passes, but the
+         * scratch is laid out at the padded tmp_pitch: H reads the canvas
+         * rect at pitch4 (src u2) and writes the tmp at tmp_pitch (dst row
+         * wrap u6 / band stride u8); V reads the tmp at tmp_pitch (src u2)
+         * and writes the canvas at pitch4 (dst u6 / u8).  u0/u1 are the
+         * RECT origins; maintenance covers the whole canvas on the canvas
+         * side and the padded tmp extent on the scratch side.  The
+         * geometry (pitch4/tmp_pitch/groups/tmp_need/src_off) is hoisted
+         * above the loop; only the weights and the per-pass pitches vary. */
+        u[3] = (uint32_t)rw - 1u;
+        u[4] = (uint32_t)rh - 1u;
+        u[5] = groups - 1u;                  /* L1: groups/row (ceil) - 1 */
+        u[7] = (uint32_t)rows;
+        for (i = 0; i < k; i++)
+            u[9 + i] = wk[i];
 
         u[0] = phys + (uint32_t)src_off;   /* H pass: canvas rect -> tmp */
         u[1] = tmp_phys;
-        u[2] = pitch4;
-        u[3] = (uint32_t)rw - 1u;
-        u[4] = (uint32_t)rh - 1u;
-        u[5] = (uint32_t)((rw + 15) / 16) - 1u;  /* L1: groups/row (ceil) - 1 */
-        u[6] = (uint32_t)((uint32_t)((rw + 15) / 16) * 64u - pitch4);
-        u[7] = (uint32_t)rows;
-        u[8] = (uint32_t)rows * pitch4;
-        for (i = 0; i < k; i++)
-            u[9 + i] = wk[i];
+        u[2] = pitch4;                     /* src row pitch   = canvas */
+        u[6] = groups * 64u - tmp_pitch;   /* dst row wrap    = tmp */
+        u[8] = (uint32_t)rows * tmp_pitch; /* dst band stride = tmp */
 
         mr.src_phy = phys;                      /* H pass: canvas -> tmp */
         mr.src_span = (size_t)h * pitch4;
@@ -1600,6 +1653,9 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
 
         u[0] = tmp_phys;               /* V pass: tmp -> canvas rect */
         u[1] = phys + (uint32_t)src_off;
+        u[2] = tmp_pitch;              /* src row pitch   = tmp */
+        u[6] = groups * 64u - pitch4;  /* dst row wrap    = canvas */
+        u[8] = (uint32_t)rows * pitch4;/* dst band stride = canvas */
         mr.src_phy = tmp_phys;         /* V pass: tmp -> canvas */
         mr.src_span = tmp_need;
         mr.dst_phy = phys;
