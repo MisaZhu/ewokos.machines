@@ -130,6 +130,16 @@ uint32_t vc_g2d_clock_hz(void)
 #define G2D_PREDICT_REF_HZ 1150000000u
 #define G2D_PREDICT_REF_QPUS 12u
 
+/* Spin budget (ms) for the CSD-done poll: a dispatch predicted to finish
+ * within this many milliseconds keeps the low-latency spin path, a longer
+ * one yields a scheduler frame (~1 ms) between polls.  Sized so the
+ * common full-screen work stays spinning (a 1080p alpha blend predicts
+ * ~7.4 ms, a full-screen blit ~4.6 ms) instead of parking in ~1 ms poll
+ * granularity; only larger surfaces and arbitrary-angle rotations yield.
+ * The spin loop's 2 M MMIO-poll bound comfortably covers this budget,
+ * and the 256-frame yield timeout (~256 ms) still bounds longer jobs. */
+#define G2D_SPIN_BUDGET_MS 8u
+
 static unsigned g2d_poll_flags(unsigned flags, uint64_t pixels,
                                uint32_t pixels_per_ms, int num_qpus)
 {
@@ -142,7 +152,7 @@ static unsigned g2d_poll_flags(unsigned flags, uint64_t pixels,
         capacity = capacity * hz / G2D_PREDICT_REF_HZ;
     if (num_qpus > 0 && num_qpus < (int)G2D_PREDICT_REF_QPUS)
         capacity = capacity * (uint32_t)num_qpus / G2D_PREDICT_REF_QPUS;
-    if (capacity == 0 || pixels > capacity)
+    if (capacity == 0 || pixels > capacity * G2D_SPIN_BUDGET_MS)
         flags |= V3D_G2D_POLL_YIELD;
     return flags;
 }
@@ -157,12 +167,13 @@ static int32_t g2d_band_rows(int32_t w)
 }
 
 /* Cache-maintenance flags for one band of a banded op: the first band
- * takes the pre-job invalidation (freshness vs CPU writes; being
- * full-range it also drops every pre-op line, so later bands cannot
- * hit pre-op staleness), the last band takes the post-job flush (DRAM
- * visibility for the whole op).  Bands in between touch row-disjoint
- * ranges of the same op with no CPU access in between, so both
- * full-L2 walks are redundant there. */
+ * takes the pre-job invalidation (freshness vs CPU writes; its ranged
+ * hull spans the WHOLE src/dst canvases - see v3d_g2d_maint_t - so it
+ * also drops every pre-op line the later bands could read), the last
+ * band takes the post-job flush (DRAM visibility for the whole op:
+ * its ranged clean likewise spans the whole dst canvas).  Bands in
+ * between touch row-disjoint ranges of the same op with no CPU access
+ * in between, so both L2 walks are redundant there. */
 static unsigned g2d_band_maint(int32_t y, int32_t next, int32_t first_y,
                                int32_t yend)
 {
@@ -510,8 +521,8 @@ static int gpu_fill4_surface(uint32_t phys, uint32_t *argb,
     int nq = v3d_g2d_num_qpus();
     int32_t rpq;
     unsigned flags;
+    v3d_g2d_maint_t mr;
 
-    (void)h;
     if (V == 0) {       /* the tail chunk is the last full chunk */
         C--;
         V = 16;
@@ -531,11 +542,13 @@ static int gpu_fill4_surface(uint32_t phys, uint32_t *argb,
     flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
                            (uint64_t)(x1 - x0) * (uint32_t)H,
                            G2D_1MS_FILL4_PIXELS, nq);
+    mr.src_phy = 0;     mr.src_span = 0;    /* fill: no source */
+    mr.dst_phy = phys;  mr.dst_span = (size_t)w * (size_t)h * 4u;
     return v3d_g2d_run(g2d_qpu_argb_fill4, g2d_qpu_argb_fill4_n, u, 8,
                        nq, NULL, 0,
                        argb + (size_t)y0 * w,
                        (size_t)H * (size_t)w * 4u,
-                       flags) == 0;
+                       &mr, flags) == 0;
 }
 
 /* identity 1:1 copy of a clipped dst rect (argb_copy kernel): each lane
@@ -545,7 +558,7 @@ static int gpu_fill4_surface(uint32_t phys, uint32_t *argb,
 static int gpu_copy_surface(uint32_t src_phys, uint32_t *argb_src,
                             int32_t src_w, int32_t src_h,
                             uint32_t dst_phys, uint32_t *argb_dst,
-                            int32_t dst_w,
+                            int32_t dst_w, size_t dst_span,
                             int32_t sx0, int32_t sy0,
                             int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                             unsigned maint)
@@ -557,6 +570,7 @@ static int gpu_copy_surface(uint32_t src_phys, uint32_t *argb_src,
     int32_t H = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rpq;
+    v3d_g2d_maint_t mr;
 
     if (V == 0) {       /* the tail chunk is the last full chunk */
         C--;
@@ -579,11 +593,15 @@ static int gpu_copy_surface(uint32_t src_phys, uint32_t *argb_src,
     maint = g2d_poll_flags(maint,
                            (uint64_t)(x1 - x0) * (uint32_t)H,
                            G2D_1MS_COPY_PIXELS, nq);
+    mr.src_phy = src_phys;
+    mr.src_span = (size_t)src_w * (size_t)src_h * 4u;
+    mr.dst_phy = dst_phys;      /* valid even when argb_dst is NULL (phy path) */
+    mr.dst_span = dst_span;
     return v3d_g2d_run(g2d_qpu_argb_copy, g2d_qpu_argb_copy_n, u, 10,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst ? argb_dst + (size_t)y0 * dst_w : NULL,
                        (size_t)H * (size_t)dst_w * 4,
-                       maint) == 0;
+                       &mr, maint) == 0;
 }
 
 /* argb_copy eligibility: unit 1:1 map with the source rect fully inside
@@ -638,6 +656,7 @@ int gpu_fill_surface(uint32_t phys, uint32_t *argb,
                 x0 == 0 && y0 == 0 && x1 == w && y1 == h);
     int nq, rows;
     unsigned flags;
+    v3d_g2d_maint_t mr;
 
     if (w <= 0 || h <= 0 || x0 < 0 || y0 < 0 ||
         x1 <= x0 || y1 <= y0 || x1 > w || y1 > h)
@@ -685,10 +704,12 @@ int gpu_fill_surface(uint32_t phys, uint32_t *argb,
     flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
                            (uint64_t)L * 16u * (uint32_t)band_h,
                            G2D_1MS_FILL_PIXELS, nq);
+    mr.src_phy = 0;     mr.src_span = 0;    /* fill: no source */
+    mr.dst_phy = phys;  mr.dst_span = (size_t)w * (size_t)h * 4u;
     return v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n, u, 16,
                        nq, NULL, 0, argb,
                        (size_t)w * (size_t)h * 4u,
-                       flags) == 0;
+                       &mr, flags) == 0;
 }
 
 /* affine blit of a clipped dst rect (argb_blit / argb_rotate kernel) */
@@ -708,6 +729,7 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
     int32_t band_h = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
+    v3d_g2d_maint_t mr;
     int full = ((dst_w & 15) == 0 &&
                 x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h);
 
@@ -778,11 +800,15 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
         maint = g2d_poll_flags(maint,
                                (uint64_t)L * 16u * (uint32_t)band_h,
                                G2D_1MS_BLIT_PIXELS, nq);
+    mr.src_phy = src_phys;
+    mr.src_span = (size_t)src_w * (size_t)src_h * 4u;
+    mr.dst_phy = dst_phys;      /* valid even when argb_dst is NULL (phy path) */
+    mr.dst_span = (size_t)dst_w * (size_t)dst_h * 4u;
     return v3d_g2d_run(kcode, knwords, u, 25,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst ? argb_dst + (size_t)y0 * dst_w : NULL,
                        (size_t)(y1 - y0) * (size_t)dst_w * 4,
-                       maint) == 0;
+                       &mr, maint) == 0;
 }
 
 /* clamped-edge blit (argb_blit kernel); no_clamp selects the clamp-free
@@ -884,6 +910,7 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
     int nq;
     int r90 = (rot == 90);
     unsigned flags;
+    v3d_g2d_maint_t mr;
 
     if (src_w < 16 || src_h < 4 || (!r90 && (src_w & 15) != 0))
         return 0;
@@ -921,10 +948,14 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
     flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
                            (uint64_t)L * 16u * (uint32_t)src_h,
                            G2D_1MS_ROT90_PIXELS, nq);
+    mr.src_phy = src_phys;
+    mr.src_span = (size_t)src_w * (size_t)src_h * 4u;
+    mr.dst_phy = dst_phys;
+    mr.dst_span = (size_t)dst_w * (size_t)dst_h * 4u;
     return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 18,
                        nq, argb_src, (size_t)src_w * (size_t)src_h * 4u,
                        argb_dst, (size_t)dst_w * (size_t)dst_h * 4u,
-                       flags) == 0;
+                       &mr, flags) == 0;
 }
 
 /* alpha blend of a clipped dst rect (argb_alpha kernel): the blend is
@@ -947,6 +978,7 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     int32_t band_h = y1 - y0;
     int nq = v3d_g2d_num_qpus();
     int32_t rows;
+    v3d_g2d_maint_t mr;
     /* full: dst rect covers the whole surface AND dst_w % 16 == 0.  The
      * kernel then branches to loop_full, which drops the write gate, the
      * dst-read gate and the per-pixel map (incremental ux/vy walk with
@@ -998,11 +1030,15 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     maint = g2d_poll_flags(maint,
                            (uint64_t)L * 16u * (uint32_t)band_h,
                            G2D_1MS_ALPHA_PIXELS, nq);
+    mr.src_phy = src_phys;
+    mr.src_span = (size_t)src_w * (size_t)src_h * 4u;
+    mr.dst_phy = dst_phys;
+    mr.dst_span = (size_t)dst_w * (size_t)dst_h * 4u;
     return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 24,
                        nq, argb_src, (size_t)src_w * src_h * 4,
                        argb_dst + (size_t)y0 * dst_w,
                        (size_t)(y1 - y0) * (size_t)dst_w * 4,
-                       maint) == 0;
+                       &mr, maint) == 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1022,7 +1058,7 @@ int gpu_copy_op(uint32_t src_phys, uint32_t *argb_src,
 
     if (dst_bytes <= G2D_BIG_SURFACE)
         return gpu_copy_surface(src_phys, argb_src, src_w, src_h,
-                                dst_phys, argb_dst, surf_w,
+                                dst_phys, argb_dst, surf_w, dst_bytes,
                                 csx, csy, rx, ry, rx1, ry1,
                                 V3D_G2D_MAINT_ALL);
     /* past the cliff: same banding as the blit path (rows are
@@ -1031,7 +1067,7 @@ int gpu_copy_op(uint32_t src_phys, uint32_t *argb_src,
     for (y = ry; y < ry1; y = next) {
         next = (ry1 - y < band) ? ry1 : y + band;
         if (!gpu_copy_surface(src_phys, argb_src, src_w, src_h,
-                              dst_phys, argb_dst, surf_w,
+                              dst_phys, argb_dst, surf_w, dst_bytes,
                               csx, csy + (y - ry), rx, y, rx1, next,
                               g2d_band_maint(y, next, ry, ry1)))
             return 0;
@@ -1252,6 +1288,7 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     uint64_t pixels;
     uint32_t pitch4;
     size_t tmp_need, src_off;
+    v3d_g2d_maint_t mr;
 
     static const struct {
         const uint16_t *wk;
@@ -1318,9 +1355,13 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         for (i = 0; i < k; i++)
             u[9 + i] = wk[i];
 
+        mr.src_phy = phys;                      /* H pass: canvas -> tmp */
+        mr.src_span = (size_t)h * pitch4;
+        mr.dst_phy = tmp_phys;
+        mr.dst_span = tmp_need;
         rc = v3d_g2d_run(hcode, (int)hn, u, 9 + k, nq,
                          (uint8_t *)argb + src_off, (size_t)h * pitch4,
-                         tmp, tmp_need, flags);
+                         tmp, tmp_need, &mr, flags);
         if (rc != 0) {
             slog("g2d blur: H dispatch rc=%d (w=%d h=%d rect %d,%d %dx%d "
                  "r=%d nq=%d)\n", rc, w, h, rx, ry, rw, rh, radius, nq);
@@ -1329,10 +1370,14 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
 
         u[0] = tmp_phys;               /* V pass: tmp -> canvas rect */
         u[1] = phys + (uint32_t)src_off;
+        mr.src_phy = tmp_phys;         /* V pass: tmp -> canvas */
+        mr.src_span = tmp_need;
+        mr.dst_phy = phys;
+        mr.dst_span = (size_t)h * pitch4;
         rc = v3d_g2d_run(vcode, (int)vn, u, 9 + k, nq,
                          tmp, tmp_need,
                          (uint8_t *)argb + src_off, (size_t)h * pitch4,
-                         flags);
+                         &mr, flags);
         if (rc != 0) {
             slog("g2d blur: V dispatch rc=%d (w=%d h=%d rect %d,%d %dx%d "
                  "r=%d nq=%d)\n", rc, w, h, rx, ry, rw, rh, radius, nq);

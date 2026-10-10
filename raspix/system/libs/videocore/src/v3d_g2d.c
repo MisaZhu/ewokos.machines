@@ -38,6 +38,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <sysinfo.h>
 #include <ewoksys/sys.h>
 #include <ewoksys/dma.h>
@@ -48,6 +49,23 @@
 #include "v3d_g2d.h"
 #include "g2d_qpu_kernels.h"
 #include "g2d_qpu_kernels_v42.h"
+
+/* One GPU dispatch at a time, shared by both the V3D 4.2 CSD path
+ * (v3d_g2d_run) and the V3D 2.1 SRQ path (v3d_g2d_run_vc4): only one
+ * of the two is live on any given SoC (selected by _ver at init), and
+ * both drive the same single QPU array / SRQ queue.  Writing the CSD
+ * config or kicking the SRQ while a previous job is still live wedges
+ * the machine the same way it does on raspi5 (see the 213976ac field
+ * note), and the uniform / scratch staging are single-instance globals
+ * shared by every dispatch.  The lock lives here, at the innermost
+ * dispatch entry, rather than in g2dd or bsp_g2d, so CPU-only paths
+ * (g2dd's g2d_cpu_blt tail, bsp_g2d_fill_alpha, arch_g2d_* NEON) run
+ * fully parallel and any future caller of v3d_g2d_run{,_vc4} is
+ * covered automatically.  This is a correctness guard, not a
+ * performance optimization: without it the g2dd service's fine-grained
+ * locking (which no longer serializes bsp_g2d_* calls) would leave the
+ * hardware dispatch unprotected against concurrent workers. */
+static pthread_mutex_t _v3d_run_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* VC bus address alias for uncached access (not exported by mailbox.h;
  * the other bcm283x drivers carry the same local define). */
@@ -2590,11 +2608,11 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes)
 /* CSD dispatch                                                        */
 /* ------------------------------------------------------------------ */
 
-int v3d_g2d_run(const uint64_t *code, int nwords,
-                const uint32_t *unifs, int nunifs,
-                int num_qpus,
-                const void *src, size_t src_len,
-                void *dst, size_t dst_len)
+static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
+                            const uint32_t *unifs, int nunifs,
+                            int num_qpus,
+                            const void *src, size_t src_len,
+                            void *dst, size_t dst_len)
 {
     uint32_t csd_base = (_ver >= 71) ? CSD_CFG_BASE_V7 : CSD_CFG_BASE_OLD;
     uint32_t csd_done = (_ver >= 71) ? INT_CSDDONE_V7 : INT_CSDDONE_OLD;
@@ -2782,6 +2800,20 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     _last_profile.flush = t_flush - t_execute;
     _last_profile.total = g2d_profile_ticks() - t0;
     return 0;
+}
+
+int v3d_g2d_run(const uint64_t *code, int nwords,
+                const uint32_t *unifs, int nunifs,
+                int num_qpus,
+                const void *src, size_t src_len,
+                void *dst, size_t dst_len)
+{
+    int ret;
+    pthread_mutex_lock(&_v3d_run_lock);
+    ret = v3d_g2d_run_impl(code, nwords, unifs, nunifs, num_qpus,
+                           src, src_len, dst, dst_len);
+    pthread_mutex_unlock(&_v3d_run_lock);
+    return ret;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2974,10 +3006,10 @@ int v3d_g2d_vc4_run_staged(uint32_t code_p, const uint32_t *unifs,
     return g2d_vc4_launch(code_p, _unif_p, nq, srqcs_out);
 }
 
-int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
-                    const uint32_t *unifs, int num_qpus,
-                    const void *src, size_t src_len,
-                    void *dst, size_t dst_len)
+static int v3d_g2d_run_vc4_impl(const uint64_t *code, int nwords,
+                                const uint32_t *unifs, int num_qpus,
+                                const void *src, size_t src_len,
+                                void *dst, size_t dst_len)
 {
     uint32_t nq = (uint32_t)num_qpus;
     uint32_t i, q, run_slot, span = 0, srqcs = 0;
@@ -3130,4 +3162,17 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
     /* A timeout is a real failure.  Do not replay this possibly-live
      * operation. */
     return 1;
+}
+
+int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
+                    const uint32_t *unifs, int num_qpus,
+                    const void *src, size_t src_len,
+                    void *dst, size_t dst_len)
+{
+    int ret;
+    pthread_mutex_lock(&_v3d_run_lock);
+    ret = v3d_g2d_run_vc4_impl(code, nwords, unifs, num_qpus,
+                                src, src_len, dst, dst_len);
+    pthread_mutex_unlock(&_v3d_run_lock);
+    return ret;
 }

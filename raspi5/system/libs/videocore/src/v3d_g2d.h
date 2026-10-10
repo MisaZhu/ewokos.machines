@@ -62,17 +62,38 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
  * otherwise.  The result is cached after the first call. */
 int v3d_g2d_vec4_ok(void);
 
+/* Cache-maintenance descriptor for one dispatch: the physical extents
+ * (V3D IOVA base + byte span) of the WHOLE source and destination
+ * canvases the job touches - not just this dispatch's rect or band.
+ * phy 0 marks a segment as unknown/absent (a fill has no source; a
+ * caller without a resolved physical base leaves the segment 0).  The
+ * ranges bound the L2T maintenance walks: the pre-job clean+invalidate
+ * covers the hull of both segments (every address this job reads or
+ * writes) and the post-job clean covers the destination segment plus
+ * the 16 KiB TMU scratch.  A dispatch whose ranges are unknown falls
+ * back to the full-L2 walks. */
+typedef struct {
+    uint32_t src_phy;    /* source canvas IOVA base (0 = none/unknown) */
+    size_t src_span;     /* source canvas bytes */
+    uint32_t dst_phy;    /* destination canvas IOVA base (0 = unknown) */
+    size_t dst_span;     /* destination canvas bytes */
+} v3d_g2d_maint_t;
+
 /* Run flags for v3d_g2d_run.  PRE: pre-job invalidation
- * (drop stale V3D L2/slice lines so the QPU sees fresh DRAM data) plus
- * the ARM-side clean of the sources.  POST: post-job flush (drain the
- * TMU write combiner and clean the L2 so the job's writes reach DRAM)
- * plus the ARM-side invalidate of the destination.  A standalone
- * dispatch needs both; back-to-back bands of one large-surface op skip
- * PRE on all but the first band and POST on all but the last - the
- * maps are row independent and no CPU access happens between bands,
- * so the intermediate full-L2 walks are redundant (a failed band still
- * leaves any dirty lines to the next dispatch's PRE, whose mode-0
- * clean+invalidate writes them back first, so nothing is lost).
+ * (clean+invalidate the stale V3D L2T/slice lines over the maint hull
+ * so the QPU sees fresh DRAM data) plus the ARM-side clean of the
+ * sources.  POST: post-job flush (drain the TMU write combiner and
+ * clean the L2T over the destination range plus the TMU scratch so
+ * the job's writes reach DRAM) plus the ARM-side invalidate of the
+ * destination.  A standalone dispatch needs both; back-to-back bands
+ * of one large-surface op skip PRE on all but the first band and POST
+ * on all but the last - the maps are row independent and no CPU access
+ * happens between bands, so the intermediate L2 walks are redundant (a
+ * failed band still leaves any dirty lines to the next dispatch's PRE,
+ * whose mode-0 clean+invalidate writes them back first, and the final
+ * band's POST cleans the WHOLE destination canvas, so every band's
+ * writes are covered - the maint ranges must stay whole-canvas for
+ * exactly this reason).
  * PRE-elided dispatches are NOT free of ordering work: v3d_g2d_run
  * still runs a uniform-visibility barrier (g2d_uniform_fresh: dsb plus
  * a ranged clean+invalidate of just the 256-byte uniform block and a
@@ -80,8 +101,9 @@ int v3d_g2d_vec4_ok(void);
  * the L2T/slice caches and would otherwise re-read the previous
  * dispatch's stale uniform block - eliding it made every middle band
  * re-render band 0 (measured on silicon).  POLL_YIELD tells the CSD-done
- * loop that the caller predicts a >1 ms dispatch, so it parks one
- * scheduler frame with usleep(500) between register polls.  It must be
+ * loop that the caller predicts a dispatch longer than its spin budget
+ * (see G2D_SPIN_BUDGET_MS in vc_g2d.c), so it parks one
+ * scheduler frame with usleep(200) between register polls.  It must be
  * a real timed park, not sched_yield(): a bare yield re-runs the daemon
  * in microseconds when it is the only ready process, collapsing the
  * 256-frame timeout below a long job's runtime and abandoning a
@@ -100,13 +122,17 @@ int v3d_g2d_vec4_ok(void);
  * that describe them.  This wrapper keeps the ARM/V3D caches
  * coherent around the dispatch (dc civac/ivac for cacheable canvases,
  * nothing for NOCACHE dma canvases), bounded by the run flags.
+ * `maint` supplies the whole-canvas physical ranges that bound the
+ * ranged L2T walks; NULL (or a segment with phy 0) selects the
+ * full-range fallback walk for that side.
  * Returns 0 on success.
  */
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len, unsigned flags);
+                void *dst, size_t dst_len,
+                const v3d_g2d_maint_t *maint, unsigned flags);
 
 /* The ARGB8888 CSD kernels (assembled from the .qpu sources). */
 extern const uint64_t g2d_qpu_argb_fill[];

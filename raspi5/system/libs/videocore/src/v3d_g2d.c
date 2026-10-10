@@ -31,6 +31,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <pthread.h>
 #include <sysinfo.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/sys.h>
@@ -122,6 +123,7 @@
 
 #define CSD_CODE_WORDS 512   /* 344-word argb_alpha (endpoint-exact blend) */
 #define CSD_UNIF_WORDS 64
+#define CSD_SCRATCH_BYTES (4096u * 4u)   /* TMU write scratch size */
 #define CSD_POLL_SPIN_LIMIT 2000000u
 #define CSD_POLL_YIELD_LIMIT 256u
 
@@ -447,37 +449,50 @@ static void g2d_l2c_enable(void)
     __asm__ __volatile__("dsb sy");
 }
 
-/* Write back dirty V3D caches to DRAM: flush the TMU write combiner,
- * then the L2T in CLEAN mode.  The clean must span the WHOLE L2T:
- * g2d_uniform_fresh() narrows L2TFLSTA/L2TFLEND to the uniform block
- * for the middle bands/tiles of a batched large-surface op and never
- * restores them, so reprogram the full range here - otherwise this
- * post-job flush writes back only those few uniform lines and the
- * canvas's dirty lines stay in the L2T, invisible to the CPU reading
- * DRAM (the batched op's final band/tile reads back stale). */
-static void g2d_flush_l2(void)
+/* Ranged post-job flush: drain the TMU write combiner, then clean
+ * (mode 2, lines stay resident) the L2T over [lo, hi).  Bounded like
+ * g2d_invalidate_range; the range registers are programmed explicitly
+ * on every call. */
+static void g2d_flush_l2_range(uint32_t lo, uint32_t hi)
 {
     uint32_t i;
 
     v3d_core()[CTL_L2TCACTL / 4] = (1u << 8);               /* TMUWCF */
     for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 8)); i++)
         g2d_poll_hint();
-    v3d_core()[0x34 / 4] = 0;                       /* L2TFLSTA */
-    v3d_core()[0x38 / 4] = ~0u;                     /* L2TFLEND */
+    v3d_core()[0x34 / 4] = lo & ~63u;                       /* L2TFLSTA */
+    v3d_core()[0x38 / 4] = (hi + 63u) & ~63u;               /* L2TFLEND */
     v3d_core()[CTL_L2TCACTL / 4] = (1u << 0) | (2u << 1);   /* L2TFLS | CLEAN */
     for (i = 0; i < 2000000 && (v3d_core()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
         g2d_poll_hint();
     __asm__ __volatile__("dsb sy");
 }
 
-/* Flush the GPU texture L1/L2 caches so a reused canvas is not served
- * stale. */
-static void g2d_invalidate_caches(void)
+/* Write back dirty V3D caches to DRAM: flush the TMU write combiner,
+ * then the L2T in CLEAN mode over the WHOLE IOVA range.  This is the
+ * fallback for a dispatch without usable maint ranges; callers that
+ * know their destination extent use g2d_flush_l2_range instead.  The
+ * range registers are reprogrammed explicitly on every walk (they are
+ * stateful - a narrowed range left behind by an earlier ranged walk
+ * would make this flush miss the canvas's dirty lines). */
+static void g2d_flush_l2(void)
+{
+    g2d_flush_l2_range(0u, ~0u);
+}
+
+/* Ranged L2T clean+invalidate (mode 0) over [lo, hi), 64-byte aligned.
+ * Same walk semantics as g2d_invalidate_caches but bounded by
+ * L2TFLSTA/L2TFLEND, so the walk cost scales with the touched address
+ * span instead of the whole 4 GB IOVA space.  The range registers are
+ * STATEFUL: program them explicitly on every call and never rely on a
+ * previous walk's settings (a narrowed range left behind once made a
+ * batched op's final band skip its writeback). */
+static void g2d_invalidate_range(uint32_t lo, uint32_t hi)
 {
     uint32_t i;
 
-    v3d_core()[0x34 / 4] = 0;                       /* L2TFLSTA */
-    v3d_core()[0x38 / 4] = ~0u;                     /* L2TFLEND */
+    v3d_core()[0x34 / 4] = lo & ~63u;             /* L2TFLSTA */
+    v3d_core()[0x38 / 4] = (hi + 63u) & ~63u;     /* L2TFLEND (hi clamps to ~0u) */
     /* mode 0 = clean + invalidate: the lines MUST be dropped here (see
      * the L2TFLM mode note above the switches) */
     v3d_core()[0x30 / 4] = (1u << 0) | (0u << 1);   /* L2TCACTL: L2TFLS|FLUSH */
@@ -489,33 +504,60 @@ static void g2d_invalidate_caches(void)
     __asm__ __volatile__("dsb sy");
 }
 
+/* Flush the GPU texture L1/L2 caches so a reused canvas is not served
+ * stale. */
+static void g2d_invalidate_caches(void)
+{
+    g2d_invalidate_range(0u, ~0u);
+}
+
 /* Uniform-visibility barrier for PRE-elided dispatches (the middle
  * bands/tiles of a batched large-surface op).  The QPU's uniform fetch
  * is served through the V3D L2T/slice caches, so a dispatch that skips
- * the full pre-job invalidation would re-read the PREVIOUS dispatch's
+ * the pre-job invalidation would re-read the PREVIOUS dispatch's
  * uniform block (still resident from its fetch) and re-run its
  * parameters - empirically every elided band re-rendered band 0 (only
  * the first band/tile ever landed).  The canvas data needs no
  * maintenance here (row/tile-disjoint, no CPU access between
- * dispatches, the first dispatch's full PRE dropped the stale lines);
+ * dispatches, the first dispatch's PRE dropped the stale lines);
  * only the freshly-written 256-byte uniform block must be pushed out
  * and dropped from the GPU caches.  A ranged mode-0 L2T flush over
- * those few lines costs microseconds, unlike the full-L2 walk. */
+ * those few lines costs microseconds, unlike a full-L2 walk. */
 static void g2d_uniform_fresh(void)
 {
-    uint32_t i;
-
     __asm__ __volatile__("dsb sy");            /* _unif writes -> DRAM */
-    v3d_core()[0x34 / 4] = _unif_p & ~63u;      /* L2TFLSTA */
-    v3d_core()[0x38 / 4] =                      /* L2TFLEND */
-        (_unif_p + CSD_UNIF_WORDS * 4u + 63u) & ~63u;
-    v3d_core()[0x30 / 4] = (1u << 0) | (0u << 1);   /* L2TFLS | FLUSH */
-    /* GFXH-1897: a pending L2T flush must complete before any further
-     * L2TCACTL write or QPU traffic */
-    for (i = 0; i < 2000000 && (v3d_core()[0x30 / 4] & (1u << 0)); i++)
-        g2d_poll_hint();
-    v3d_core()[0x24 / 4] = 0x0F0F0F0Fu;             /* SLCACTL */
-    __asm__ __volatile__("dsb sy");
+    g2d_invalidate_range(_unif_p,
+                         _unif_p + CSD_UNIF_WORDS * 4u);
+}
+
+/* Hull of the caller's maint ranges: the smallest [lo, hi) IOVA
+ * interval covering every known segment.  Returns 0 when no segment
+ * is usable (the caller then falls back to the full-range walk).  The
+ * hi computation is 64-bit and clamps to ~0u, so a segment ending at
+ * the top of the IOVA space cannot wrap. */
+static int g2d_maint_hull(const v3d_g2d_maint_t *m, uint32_t *lo, uint32_t *hi)
+{
+    uint64_t l = (uint64_t)~0u, h = 0;
+
+    if (m == NULL)
+        return 0;
+    if (m->src_phy != 0 && m->src_span != 0) {
+        uint64_t e = (uint64_t)m->src_phy + m->src_span;
+        if (m->src_phy < l) l = m->src_phy;
+        if (e > h) h = e;
+    }
+    if (m->dst_phy != 0 && m->dst_span != 0) {
+        uint64_t e = (uint64_t)m->dst_phy + m->dst_span;
+        if (m->dst_phy < l) l = m->dst_phy;
+        if (e > h) h = e;
+    }
+    if (h == 0 || l >= h)
+        return 0;
+    if (h > (uint64_t)~0u)
+        h = ~0u;
+    *lo = (uint32_t)l;
+    *hi = (uint32_t)h;
+    return 1;
 }
 
 /* SMS power-up + reset kick: without it the QPU never launches. */
@@ -983,9 +1025,15 @@ int v3d_g2d_vec4_ok(void)
     u[8] = 512u;                    /* drows */
     u[9] = 512u;                    /* srows */
     /* u10 = scratch base is appended by v3d_g2d_run (unused: V16=256) */
-    rc = v3d_g2d_run(g2d_qpu_argb_copy, (int)g2d_qpu_argb_copy_n, u, 10, 1,
-                     _scratch, 512, _scratch + 1024, 512,
-                     V3D_G2D_MAINT_ALL);
+    {
+        /* both probe buffers live in the scratch dma region */
+        v3d_g2d_maint_t pm;
+        pm.src_phy = _scratch_p;            pm.src_span = 512;
+        pm.dst_phy = _scratch_p + 4096u;    pm.dst_span = 512;
+        rc = v3d_g2d_run(g2d_qpu_argb_copy, (int)g2d_qpu_argb_copy_n, u, 10, 1,
+                         _scratch, 512, _scratch + 1024, 512,
+                         &pm, V3D_G2D_MAINT_ALL);
+    }
     cached = (rc == 0);
     if (!cached)
         slog("g2d vec4 probe: dispatch rc=%d\n", rc);
@@ -1005,11 +1053,43 @@ int v3d_g2d_vec4_ok(void)
 /* CSD dispatch                                                        */
 /* ------------------------------------------------------------------ */
 
+/* One dispatch at a time.  The CSD engine is single-issue: writing
+ * CSD_QUEUED_CFG0 while a previous job is still live wedges the whole
+ * machine (see the 213976ac field note - the QPU reads stale uniform
+ * physical addresses and runs off into the AXI fabric, taking ARM,
+ * RP1 networking and USB with it).  On top of that the uniform block
+ * (_unif / _unif_p) and the TMU scratch (_scratch / _scratch_p) are
+ * single-instance globals: two workers staging uniforms at once would
+ * corrupt both jobs even if the CSD could queue them.
+ *
+ * The lock lives here, at the innermost dispatch, rather than in the
+ * g2dd service or the bsp_g2d API layer, so that:
+ *   - CPU-only paths (g2dd's g2d_cpu_blt tail, bsp_g2d_fill_alpha,
+ *     arch_g2d_* NEON) run fully parallel - they never touch this
+ *     function and never see the lock;
+ *   - banded / tiled large-surface ops interleave safely between
+ *     workers: each band is one dispatch, and the mode-0 clean+
+ *     invalidate on every PRE writes back any dirty L2T lines (ours
+ *     or another worker's) before dropping them, so a mid-op PRE from
+ *     a second worker cannot lose the first worker's earlier bands.
+ *     The whole-canvas hull on the final POST (f8a7f225 invariant)
+ *     still flushes every band of that op;
+ *   - any future caller of v3d_g2d_run (probe paths, new ops) is
+ *     covered automatically instead of having to remember an outer
+ *     lock contract.
+ *
+ * Argument validation and the kernel-index lookup run BEFORE the lock:
+ * they touch only caller-supplied data and the read-only _ksrc_n[]
+ * table filled at init, so an invalid request never serializes behind
+ * a live dispatch. */
+static pthread_mutex_t _v3d_run_lock = PTHREAD_MUTEX_INITIALIZER;
+
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
-                void *dst, size_t dst_len, unsigned flags)
+                void *dst, size_t dst_len,
+                const v3d_g2d_maint_t *maint, unsigned flags)
 {
     volatile uint32_t *csd =
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
@@ -1018,6 +1098,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     uint32_t poll_limit = (flags & V3D_G2D_POLL_YIELD) ?
                           CSD_POLL_YIELD_LIMIT : CSD_POLL_SPIN_LIMIT;
     int kern = -1;
+    int ret;
 
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
         nunifs < 0 || nunifs >= CSD_UNIF_WORDS || num_qpus <= 0 || !_ok)
@@ -1063,6 +1144,8 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     if ((uint32_t)nwords > _ksrc_n[kern])
         return -1;
 
+    pthread_mutex_lock(&_v3d_run_lock);
+
     /* PRE: make the caller's ARM-side writes visible to the GPU, and
      * drop the ARM's stale copies of the destination.  NOCACHE dma
      * canvases need no maintenance. */
@@ -1079,10 +1162,23 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* extra trailing uniform: scratch base for the kernels' flush
      * epilogue (identity-mapped V3D address) */
     _unif[nunifs] = _scratch_p;
-    if (flags & V3D_G2D_MAINT_PRE)
-        g2d_invalidate_caches();
-    else
+    if (flags & V3D_G2D_MAINT_PRE) {
+        uint32_t lo, hi;
+
+        /* Ranged PRE: the hull of the whole src/dst canvases covers
+         * every address this job reads or writes (and, for a banded
+         * op, every band's - the caller passes whole-canvas ranges).
+         * The freshly-written uniform block sits outside the hull, so
+         * its ranged barrier still runs first.  Unknown ranges fall
+         * back to the full-L2 walk. */
         g2d_uniform_fresh();    /* stale-uniform guard, see above */
+        if (g2d_maint_hull(maint, &lo, &hi))
+            g2d_invalidate_range(lo, hi);
+        else
+            g2d_invalidate_caches();
+    } else {
+        g2d_uniform_fresh();    /* stale-uniform guard, see above */
+    }
 
     /* py-videocore7's proven Pi 5 config: cfg[0] = 1 workgroup in X,
      * cfg[3] = 0x000FF010, cfg[4] = batches = one per QPU */
@@ -1117,18 +1213,44 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         (void)g2d_mmu_check_fault(kern, nunifs, num_qpus);
         /* A timeout is a real failure.  Do not reset the graphics domain
          * and do not replay this possibly-live operation. */
-        return 1;
+        ret = 1;
+        goto out;
     }
     v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
-    if (g2d_mmu_check_fault(kern, nunifs, num_qpus) != 0)
-        return -1;
+    if (g2d_mmu_check_fault(kern, nunifs, num_qpus) != 0) {
+        ret = -1;
+        goto out;
+    }
 
     /* POST: GPU writes -> DRAM, then drop the ARM's stale destination
-     * lines */
+     * lines.  Ranged when the caller supplied a destination extent:
+     * the clean spans the WHOLE dst canvas (for a banded op every
+     * band's dirty lines) plus the TMU scratch (tail-redirect writes;
+     * the CPU also reads it back in the vec4 probe).  Scratch lines
+     * left dirty by other dispatches are harmless: scratch is a GPU
+     * write sink, coherent through the L2T for its own reads. */
     if (flags & V3D_G2D_MAINT_POST) {
-        g2d_flush_l2();
+        if (maint != NULL && maint->dst_phy != 0 && maint->dst_span != 0) {
+            uint64_t hi = (uint64_t)maint->dst_phy + maint->dst_span;
+            uint32_t slo = _scratch_p;
+            uint32_t shi = _scratch_p + CSD_SCRATCH_BYTES;
+            uint32_t lo = maint->dst_phy;
+
+            if (hi > (uint64_t)~0u)
+                hi = ~0u;
+            if (slo < lo)
+                lo = slo;
+            if (shi > (uint32_t)hi)
+                hi = shi;
+            g2d_flush_l2_range(lo, (uint32_t)hi);
+        } else {
+            g2d_flush_l2();
+        }
         if (dst && dst_len && !is_dma_addr(dst))
             g2d_dcache_invalidate(dst, dst_len);
     }
-    return 0;
+    ret = 0;
+out:
+    pthread_mutex_unlock(&_v3d_run_lock);
+    return ret;
 }
