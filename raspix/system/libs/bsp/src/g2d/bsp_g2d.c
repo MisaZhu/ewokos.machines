@@ -24,6 +24,7 @@
 
 #include <string.h>
 
+#include <g2dclient/g2dclient.h>
 #include <videocore/vc_g2d.h>
 
 /* the gaussian blur is delegated to the platform arch_g2d_* NEON engine
@@ -303,8 +304,24 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
         dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
     }
     if (src_phys && dst_phys) {
-        g2d_map_params(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
-                           G2D_BSP_MAP_ROT_0, &m);
+        /* Corner-preserving nearest map (scale_to semantics, same Q15
+         * contract as raspi5 and the g2dtest scale_tl/scale_br/
+         * scale_to_data oracle): u = (X*pu)>>15 with
+         * pu = ceil(((sw-1)<<15)/(dw-1)), so X = 0 samples column 0 and
+         * X = dw-1 samples column sw-1.  Rounded UP so the corner product
+         * never lands below (sw-1)<<15 and overshoots it by < 2^15, hence
+         * no sample leaves the source and no_clamp stays safe.  This is
+         * deliberately NOT g2d_map_params: that is the blt rect map
+         * u = X*sw/dw, whose floor walk stops short of the last source
+         * column but is exact for integer ratios. */
+        m.pu = (dst_w > 1) ? (int32_t)((((int64_t)(src_w - 1) << 15) +
+                                       dst_w - 2) / (dst_w - 1)) : 0;
+        m.qu = 0;
+        m.cu = 0;
+        m.pv = 0;
+        m.qv = (dst_h > 1) ? (int32_t)((((int64_t)(src_h - 1) << 15) +
+                                       dst_h - 2) / (dst_h - 1)) : 0;
+        m.cv = 0;
         if (gpu_map_fits(&m, ((int64_t)dst_w + 15) / 16 * 16, dst_h)) {
             gr = gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
                                   dst_phys, argb_dst, dst_w, dst_h,
@@ -387,6 +404,9 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
 	(void)tmp; (void)tmp_phy; (void)tmp_contig;
+   	return G2D_ERR_NOT_SUPPORTED; //TODO
+    /*
 	return arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
 			rect_x, rect_y, rect_w, rect_h, radius);
+    */
 }

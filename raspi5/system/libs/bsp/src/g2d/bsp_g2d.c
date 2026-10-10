@@ -237,16 +237,22 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
     }
     if (src_phys && dst_phys) {
         /* Corner-preserving nearest map (scale_to semantics, see the
-         * g2dtest scale_tl/scale_br checks): u = X*(sw-1)/(dw-1), so
-         * X = 0 samples column 0 and X = dw-1 samples column sw-1 -
-         * unlike the blt rect map u = X*sw/dw, whose floor walk stops
-         * short of the last source column (800->320 sampled (797,597)
-         * instead of (799,599)).  The Q15 coefficient is rounded UP:
-         * truncation could leave the corner product one below
-         * (sw-1)<<15, while ceil overshoots it by at most dw-2 < 2^15,
-         * so (pu*(dw-1))>>15 lands exactly on sw-1 and no sample ever
-         * leaves the source - the no_clamp fast path stays safe for
-         * destinations up to 32769 pixels wide/tall. */
+         * g2dtest scale_tl/scale_br/scale_to_data checks): the contract
+         * is the Q15 form the kernel evaluates, u = (X*pu)>>15 with
+         * pu = ceil(((sw-1)<<15)/(dw-1)), so X = 0 samples column 0 and
+         * X = dw-1 samples column sw-1 - unlike the blt rect map
+         * u = X*sw/dw, whose floor walk stops short of the last source
+         * column (800->320 sampled (797,597) instead of (799,599)).
+         * The coefficient is rounded UP: truncation could leave the
+         * corner product one below (sw-1)<<15, while ceil overshoots it
+         * by at most dw-2 < 2^15, so (pu*(dw-1))>>15 lands exactly on
+         * sw-1 and no sample ever leaves the source - the no_clamp fast
+         * path stays safe for destinations up to 32769 pixels wide/tall.
+         * Note the quantised map is NOT floor(X*(sw-1)/(dw-1)) at every
+         * X (800->320 differs at X=212, 531 vs 530.997); no integer Q15
+         * slope can reproduce that rational's floor for all X (the
+         * admissible interval is [82074.08, 82074.57) there), so the
+         * Q15 form is what the test mirrors. */
         m.pu = (dst_w > 1) ? (int32_t)((((int64_t)(src_w - 1) << 15) +
                                        dst_w - 2) / (dst_w - 1)) : 0;
         m.qu = 0;
@@ -324,8 +330,7 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius)
 {
-   	return G2D_ERR_NOT_SUPPORTED; //TODO
-    /*
+   	//return G2D_ERR_NOT_SUPPORTED; //TODO
     uint32_t phys = 0;
     uint32_t scratch_phys = 0;
     size_t tmp_need = (size_t)(rect_h - 1) * (size_t)argb_w * 4u +
@@ -361,5 +366,4 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
              rect_x, rect_y, rect_w, rect_h, radius);
         return -1;
     }
-    */
 }

@@ -143,19 +143,17 @@ static int gpu_vc4_run_once(const uint64_t *code, int nwords,
  * coefficient set identical to the kernels' uniform layout) are declared in
  * <videocore/vc_g2d.h>. */
 
-static int32_t g2d_scale_coef(int32_t src_len, int32_t dst_len)
-{
-    int64_t numerator;
-
-    if (src_len <= 1 || dst_len <= 1)
-        return 0;
-    numerator = (int64_t)(src_len - 1) << 15;
-    return (int32_t)((numerator + dst_len - 2) / (dst_len - 1));
-}
-
 /* Build the map that samples src crop (sx,sy,sw,sh) into dst rect
  * (dx,dy,dw,dh), optionally rotated clockwise.  dx/dy only select the
- * rect; the map is origin-independent. */
+ * rect; the map is origin-independent.
+ *
+ * Blt rect semantics: u = (X-dx)*sw/dw truncated, the same walk the CPU
+ * reference (graph_blt / g2dtest expect_blit_src) takes, so an exact
+ * integer ratio stays exact at every pixel.  The corner-preserving
+ * (sw-1)/(dw-1) map is scale_to's contract and is built by
+ * bsp_g2d_scale_to itself: putting it here made every scaled blt sample
+ * the +1 column once the fraction accumulated (640->160 at dst x offset
+ * 5 read source 21 instead of 20; 19000 of 19200 pixels off). */
 void g2d_map_params(int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                     int32_t dx, int32_t dy, int32_t dw, int32_t dh,
                     int rotate, g2d_map_t *m)
@@ -175,8 +173,8 @@ void g2d_map_params(int32_t sx, int32_t sy, int32_t sw, int32_t sh,
         sh = 1;
     /* Q15 scale factors: source pixel per destination pixel.  Computed in
      * 64 bits so wide crops cannot overflow the coefficient. */
-    ku = g2d_scale_coef(sw, dw);
-    kv = g2d_scale_coef(sh, dh);
+    ku = (int32_t)(((int64_t)sw << 15) / dw);
+    kv = (int32_t)(((int64_t)sh << 15) / dh);
     /* The map is evaluated at absolute destination pixels (X, Y), so the
      * constants carry the -(dx,dy) offset, shifted by 15 like the
      * multiply: at (X,Y)=(dx,dy) the sample is exactly (sx,sy). */

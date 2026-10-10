@@ -114,15 +114,19 @@ uint32_t vc_g2d_clock_hz(void)
  * or tiled op is several dispatches); spans are the average bytes of
  * the ranged L2T walks. */
 /* Large-surface banding knobs (see LARGE-SURFACE BATCHING below), runtime
- * tunable for the on-device sweep via `devcmd /dev/g2d big <KB>` /
- * `band <KB>`: the 2026-10 PERF run showed every banded forward op
- * (blit, alpha, fill_alpha, scale) at ~1.7x the us/MiB of its
- * sub-threshold size, while the unbanded backward rotate_180 and the
- * write-only fill stayed flat, so the 512 KB / 4 MB pair is not yet
- * proven optimal.  Read once per op; a sweep write landing mid-op only
- * changes the next op's banding. */
+ * tunable via `devcmd /dev/g2d big <KB>` / `band <KB>`.  Sweep history
+ * on the Pi 5 (g2dtest PERF, us/frame): whole-surface and 2 MB bands
+ * sat on the walk-order cliff (blit_opaque@1280x960 ~11.9 ms); 512 KB
+ * bands brought it to 2835 us but every banded forward op still ran at
+ * ~1.7x the us/MiB of its unbanded size, which fitted a ~110-130 us
+ * fixed cost per band at both 1280x960 and 1080p; 1 MB bands halved
+ * the band count and removed that residue - blit_opaque@1920x1080
+ * 5050 -> 2715 us, blit_alpha 10428 -> 5766, fill_alpha 7539 -> 4823,
+ * scale_1to1 5064 -> 2690, 1280x960 the same ~-42%, now at or below
+ * the per-MiB cost of the unbanded 800x600 group.  Read once per op; a
+ * knob write landing mid-op only changes the next op's banding. */
 static uint32_t _g2d_big_surface = 4u * 1024u * 1024u;
-static uint32_t _g2d_band_bytes = 512u * 1024u;
+static uint32_t _g2d_band_bytes = 1024u * 1024u;
 
 /* `big <KB>` / `band <KB>`: set (or with no value, show) the banding
  * threshold and the per-band budget in KiB; 0 KB threshold bands every
@@ -189,8 +193,9 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
  * exceeds G2D_BIG_SURFACE is processed in horizontal bands whose pixel
  * data is at most G2D_BAND_BYTES each (see the header note for the
  * measured walk-order cliff this works around).  G2D_BAND_BYTES is the
- * hardware-tune knob: sweep 256 KB - 1 MB on the Pi 5 and keep the
- * fastest (2 MB bands were measured NOT to cure the cliff). */
+ * hardware-tune knob: 1 MB measured fastest on the Pi 5 (512 KB paid a
+ * per-band fixed cost, 2 MB bands did NOT cure the cliff - see the knob
+ * comment above for the numbers). */
 #define G2D_BIG_SURFACE _g2d_big_surface   /* cliff onset (bytes) */
 #define G2D_BAND_BYTES  _g2d_band_bytes    /* per-band pixel budget */
 
