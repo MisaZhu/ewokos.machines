@@ -45,6 +45,14 @@ uint32_t bsp_g2d_clock_hz(void)
     return vc_g2d_clock_hz();
 }
 
+/* devcmd /dev/g2d <args>: g2dd answers its own "stat" line and then hands
+ * the arguments down here for the backend's share (the V3D per-dispatch
+ * phase counters, see vc_g2d_cmd). */
+int32_t bsp_g2d_cmd(int argc, char **argv, char *buf, uint32_t len)
+{
+    return vc_g2d_cmd(argc, argv, buf, (size_t)len);
+}
+
 /* blit into a raw physical destination (scan-out push): the hardware engine could write the physical range directly, but that fast path is not wired up on this platform yet, so decline and let the caller (displayd flush_g2d) fall back to its cpu flush path */
 int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
     			int32_t sx, int32_t sy, int32_t sw, int32_t sh,

@@ -66,6 +66,11 @@ int vc_g2d_init(void);
 /* V3D clock rate in Hz confirmed during vc_g2d_init(), or 0 when unknown. */
 uint32_t vc_g2d_clock_hz(void);
 
+/* Diagnostic command channel (devcmd /dev/g2d <args>): "stat" formats the
+ * V3D per-dispatch phase counters into buf, "stat reset" also zeroes them.
+ * Returns 0 with buf filled, -1 for an unknown command. */
+int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len);
+
 /* Build the map that samples src crop (sx,sy,sw,sh) into dst rect
  * (dx,dy,dw,dh), optionally rotated clockwise.  dx/dy only select the
  * rect; the map is origin-independent. */

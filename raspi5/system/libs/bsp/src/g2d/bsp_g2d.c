@@ -36,6 +36,11 @@ uint32_t bsp_g2d_clock_hz(void)
     return vc_g2d_clock_hz();
 }
 
+int32_t bsp_g2d_cmd(int argc, char **argv, char *buf, uint32_t len)
+{
+    return vc_g2d_cmd(argc, argv, buf, len);
+}
+
 int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
                    int32_t argb_w, int32_t argb_h,
                    int32_t x, int32_t y, int32_t w, int32_t h,

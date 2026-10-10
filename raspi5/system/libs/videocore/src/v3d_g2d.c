@@ -31,13 +31,15 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-#include <pthread.h>
+#include <ewoksys/spinlock.h>
+#include <ewoksys/thread.h>
 #include <sysinfo.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/sys.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
+#include <ewoksys/kernel_tic.h>
 #include <arch/bcm2712/mailbox.h>
 #include "v3d_g2d.h"
 #include "g2d_qpu_kernels.h"
@@ -1067,22 +1069,93 @@ int v3d_g2d_vec4_ok(void)
  *   - CPU-only paths (g2dd's g2d_cpu_blt tail, arch_g2d_* NEON) run
  *     fully parallel - they never touch this function and never see
  *     the lock;
- *   - banded / tiled large-surface ops interleave safely between
- *     workers: each band is one dispatch, and the mode-0 clean+
- *     invalidate on every PRE writes back any dirty L2T lines (ours
- *     or another worker's) before dropping them, so a mid-op PRE from
- *     a second worker cannot lose the first worker's earlier bands.
- *     The whole-canvas hull on the final POST (f8a7f225 invariant)
- *     still flushes every band of that op;
  *   - any future caller of v3d_g2d_run (probe paths, new ops) is
  *     covered automatically instead of having to remember an outer
  *     lock contract.
  *
+ * Banded / tiled large-surface ops hold it for the WHOLE op through
+ * v3d_g2d_op_begin/end (the lock is owner-recursive, so the per-band
+ * v3d_g2d_run calls inside the bracket just nest).  Interleaving bands
+ * of two workers was cache-safe (every PRE's mode-0 walk writes back
+ * the other op's dirty lines first), but it starved the short op: a
+ * TTAS holder re-acquires in nanoseconds between its own bands while a
+ * spinner only wins in the IPC gap between ops, so a 4-band 1080p
+ * screen flush behind a g2dtest stream waited one whole foreign op per
+ * band - 54 ms average against 0.6 ms idle, measured.  With the op
+ * bracket it waits at most one foreign op once.
+ *
  * Argument validation and the kernel-index lookup run BEFORE the lock:
  * they touch only caller-supplied data and the read-only _ksrc_n[]
  * table filled at init, so an invalid request never serializes behind
- * a live dispatch. */
-static pthread_mutex_t _v3d_run_lock = PTHREAD_MUTEX_INITIALIZER;
+ * a live dispatch.
+ *
+ * A TTAS spinlock, not a pthread_mutex: videocore takes no kernel
+ * locks.  It is held across the whole dispatch, including a long job's
+ * usleep(200) polls, so a second worker that lands on a live dispatch
+ * spins (yield hint) for the remainder of that job instead of parking.
+ * That costs cycles, not progress: the holder's poll park is a kernel
+ * sleep woken by the timer tick, which also preempts a spinner sharing
+ * its core, so the dispatch always completes and releases. */
+static spinlock_t _v3d_run_lock = SPINLOCK_INIT;
+/* owner/depth make the lock recursive for the op bracket.  Both are
+ * written only by the holder; a non-holder's read sees -1 or a foreign
+ * tid (tids are unique and the holder clears owner before the release
+ * store), never its own, so the fast re-entry test is race-free. */
+static volatile int32_t _v3d_run_owner = -1;
+static volatile uint32_t _v3d_run_depth = 0;
+
+static void g2d_run_lock(void)
+{
+    int32_t me = thread_get_id();
+
+    if (_v3d_run_depth != 0 && _v3d_run_owner == me) {
+        _v3d_run_depth++;
+        return;
+    }
+    spin_lock(&_v3d_run_lock);
+    _v3d_run_owner = me;
+    _v3d_run_depth = 1;
+}
+
+static void g2d_run_unlock(void)
+{
+    if (--_v3d_run_depth != 0)
+        return;
+    _v3d_run_owner = -1;
+    spin_unlock(&_v3d_run_lock);
+}
+
+void v3d_g2d_op_begin(void)
+{
+    g2d_run_lock();
+}
+
+void v3d_g2d_op_end(void)
+{
+    g2d_run_unlock();
+}
+
+/* phase accounting (see v3d_g2d_stats_t); written only under
+ * _v3d_run_lock */
+static v3d_g2d_stats_t _stats;
+
+static uint64_t g2d_now_ns(void)
+{
+    uint64_t ns = 0;
+
+    (void)kernel_tic_nsec(&ns);
+    return ns;
+}
+
+void v3d_g2d_stats_read(v3d_g2d_stats_t *out, int reset)
+{
+    g2d_run_lock();
+    if (out != NULL)
+        *out = _stats;
+    if (reset)
+        memset(&_stats, 0, sizeof(_stats));
+    g2d_run_unlock();
+}
 
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
@@ -1099,6 +1172,7 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                           CSD_POLL_YIELD_LIMIT : CSD_POLL_SPIN_LIMIT;
     int kern = -1;
     int ret;
+    uint64_t t0, t1, t2;
 
     if (code == NULL || nwords <= 0 || nwords > CSD_CODE_WORDS ||
         nunifs < 0 || nunifs >= CSD_UNIF_WORDS || num_qpus <= 0 || !_ok)
@@ -1144,7 +1218,9 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     if ((uint32_t)nwords > _ksrc_n[kern])
         return -1;
 
-    pthread_mutex_lock(&_v3d_run_lock);
+    g2d_run_lock();
+    t0 = g2d_now_ns();
+    _stats.runs++;
 
     /* PRE: make the caller's ARM-side writes visible to the GPU, and
      * drop the ARM's stale copies of the destination.  NOCACHE dma
@@ -1172,13 +1248,19 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
          * its ranged barrier still runs first.  Unknown ranges fall
          * back to the full-L2 walk. */
         g2d_uniform_fresh();    /* stale-uniform guard, see above */
-        if (g2d_maint_hull(maint, &lo, &hi))
+        if (g2d_maint_hull(maint, &lo, &hi)) {
             g2d_invalidate_range(lo, hi);
-        else
+            _stats.pre_span += hi - lo;
+        } else {
             g2d_invalidate_caches();
+            _stats.pre_full++;
+        }
     } else {
         g2d_uniform_fresh();    /* stale-uniform guard, see above */
+        _stats.pre_skip++;
     }
+    t1 = g2d_now_ns();
+    _stats.pre_ns += t1 - t0;
 
     /* py-videocore7's proven Pi 5 config: cfg[0] = 1 workgroup in X,
      * cfg[3] = 0x000FF010, cfg[4] = batches = one per QPU */
@@ -1208,11 +1290,14 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         else
             g2d_poll_hint();
     }
+    t2 = g2d_now_ns();
+    _stats.exec_ns += t2 - t1;
     if (i == poll_limit) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         (void)g2d_mmu_check_fault(kern, nunifs, num_qpus);
         /* A timeout is a real failure.  Do not reset the graphics domain
          * and do not replay this possibly-live operation. */
+        _stats.timeouts++;
         ret = 1;
         goto out;
     }
@@ -1243,14 +1328,19 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
             if (shi > (uint32_t)hi)
                 hi = shi;
             g2d_flush_l2_range(lo, (uint32_t)hi);
+            _stats.post_span += (uint32_t)hi - lo;
         } else {
             g2d_flush_l2();
+            _stats.post_full++;
         }
         if (dst && dst_len && !is_dma_addr(dst))
             g2d_dcache_invalidate(dst, dst_len);
+        _stats.post_ns += g2d_now_ns() - t2;
+    } else {
+        _stats.post_skip++;
     }
     ret = 0;
 out:
-    pthread_mutex_unlock(&_v3d_run_lock);
+    g2d_run_unlock();
     return ret;
 }

@@ -54,7 +54,8 @@
 
 #include <videocore/vc_g2d.h>
 
-#include <pthread.h>
+#include <ewoksys/spinlock.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "ewoksys/dma.h"
@@ -69,6 +70,33 @@ int vc_g2d_init(void)
 uint32_t vc_g2d_clock_hz(void)
 {
     return v3d_g2d_clock_hz();
+}
+
+int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
+{
+    v3d_g2d_stats_t s;
+    uint64_t n;
+
+    if (argc <= 0 || argv == NULL || argv[0] == NULL || buf == NULL || len == 0)
+        return -1;
+    if (strcmp(argv[0], "stat") != 0)
+        return -1;
+
+    v3d_g2d_stats_read(&s, argc > 1 && argv[1] != NULL &&
+                           strcmp(argv[1], "reset") == 0);
+    n = s.runs ? s.runs : 1;
+    snprintf(buf, len,
+             "v3d dispatch %llu (csd %llu srq %llu tlb %llu) timeout %llu"
+             " | avg us pre %llu exec %llu post %llu",
+             (unsigned long long)s.runs,
+             (unsigned long long)s.csd,
+             (unsigned long long)s.srq,
+             (unsigned long long)s.tlb,
+             (unsigned long long)s.timeouts,
+             (unsigned long long)(s.pre_ns / n / 1000u),
+             (unsigned long long)(s.exec_ns / n / 1000u),
+             (unsigned long long)(s.post_ns / n / 1000u));
+    return 0;
 }
 
 #define G2D_MAX_COEF (1 << 23)  /* |map coefficient| must fit smul24 */
@@ -411,6 +439,27 @@ static void *gpu_dma_alloc(size_t bytes, uint32_t *phys_out)
 #endif
 }
 
+/* Rows per QPU for the CSD row-split kernels (blit/scale/rotate/alpha):
+ * QPU q handles rows [q*rows, (q+1)*rows) of the band and every kernel
+ * clips/skips rows past band_h, so any rows with nq*rows >= band_h is
+ * legal.  The twist is the stride between the QPUs' streams: with
+ * rows*stride a large power-of-two multiple (48 KiB at 384x384, 192 KiB
+ * at 768x768) all nq read streams alias into the same L2T sets and the
+ * blend path slowed 2-5x per MiB on the Pi 5 (measured; 192/256/512
+ * squares were fine).  One extra row per QPU breaks the alignment; the
+ * last QPU's range then overshoots band_h and the kernel's clip absorbs
+ * it.  The V3D 4.2 L2T is organised the same way, so the same guard
+ * applies here. */
+static int32_t g2d_qpu_rows(int32_t band_h, int nq, int32_t stride)
+{
+    int32_t rows = (band_h + nq - 1) / nq;
+
+    if (nq > 1 && ((uint32_t)stride & 4095u) != 0 &&
+        (((uint32_t)rows * (uint32_t)stride) & 8191u) == 0)
+        rows++;
+    return rows;
+}
+
 /* constant-color fill of a clipped dst rect (argb_fill kernel);
  * phys = physical base of the surface, argb = its virtual address */
 static int gpu_fill_surface(uint32_t phys, uint32_t *argb,
@@ -664,10 +713,14 @@ int gpu_fill(uint32_t phys, uint32_t *argb, int32_t w, int32_t h,
     int gr;
 
     if (v3d_g2d_ver() == 21) {
+        /* a chain of SRQ launches (loop kernel, span fallback, edge
+         * tail): one lock bracket so no foreign op lands between them */
+        v3d_g2d_op_begin();
         gr = gpu_fill_loop_vc4(phys, argb, w, h, x0, y0, x1, y1, color);
         if (gr == GPU_UNSUPPORTED)
             gr = gpu_fill_surface_vc4(phys, argb, w, h, x0, y0, x1, y1,
                                       color);
+        v3d_g2d_op_end();
         return gr;
     }
     return gpu_fill_surface(phys, argb, w, h, x0, y0, x1, y1, color);
@@ -786,7 +839,7 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
         return 0;
     if (nq > band_h)
         nq = band_h;
-    rows = (band_h + nq - 1) / nq;
+    rows = g2d_qpu_rows(band_h, nq, dst_w * 4);
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->qu;
     u[2] = (uint32_t)m->pv;
@@ -1065,27 +1118,36 @@ int gpu_blit_surface(const g2d_map_t *m,
                      int no_clamp)
 {
     if (v3d_g2d_ver() == 21) {
+        int gr;
+
+        /* the L3 scrub plus every batch of the chosen path form one op:
+         * hold the dispatch lock across all of it (the scrub's effect
+         * must not be undone by a foreign op's launches, and the staging
+         * ring's wrap rule assumes one owner) */
+        v3d_g2d_op_begin();
         /* L2CACTL/SLCACTL cannot invalidate BCM2837's shared system L3.
          * Evict it once for the whole public operation, before any batch
          * reads caller memory. */
-        if (v3d_g2d_vc4_prepare_reads() != 0)
+        if (v3d_g2d_vc4_prepare_reads() != 0) {
+            v3d_g2d_op_end();
             return GPU_FAILED;
+        }
         /* looping copy kernel first: one launch per 12 rows instead of
          * one launch per 12 spans (see the measured argument in
          * gpu_fill_surface_vc4()) */
-        int gr = gpu_copy_loop_vc4(m, 0, src_phys, argb_src,
-                                   src_w, src_h, dst_phys, argb_dst,
-                                   dst_w, dst_h, x0, y0, x1, y1);
-        if (gr != GPU_UNSUPPORTED)
-            return gr;
-        gr = gpu_blit_surface_vc4(m, src_phys, argb_src, src_w, src_h,
-                                  dst_phys, argb_dst, dst_w, dst_h,
-                                  x0, y0, x1, y1);
-        if (gr != GPU_UNSUPPORTED)
-            return gr;
-        return gpu_affine_surface_vc4(m, 0, src_phys, argb_src,
-                                      src_w, src_h, dst_phys, argb_dst,
-                                      dst_w, dst_h, x0, y0, x1, y1);
+        gr = gpu_copy_loop_vc4(m, 0, src_phys, argb_src,
+                               src_w, src_h, dst_phys, argb_dst,
+                               dst_w, dst_h, x0, y0, x1, y1);
+        if (gr == GPU_UNSUPPORTED)
+            gr = gpu_blit_surface_vc4(m, src_phys, argb_src, src_w, src_h,
+                                      dst_phys, argb_dst, dst_w, dst_h,
+                                      x0, y0, x1, y1);
+        if (gr == GPU_UNSUPPORTED)
+            gr = gpu_affine_surface_vc4(m, 0, src_phys, argb_src,
+                                        src_w, src_h, dst_phys, argb_dst,
+                                        dst_w, dst_h, x0, y0, x1, y1);
+        v3d_g2d_op_end();
+        return gr;
     }
     if (v3d_g2d_ver() == 42 && src_w == dst_w && src_h == dst_h &&
         x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h &&
@@ -1242,18 +1304,25 @@ int gpu_rotate_surface(const g2d_map_t *m,
                        int32_t dst_w, int32_t dst_h)
 {
     if (v3d_g2d_ver() == 21) {
-        if (v3d_g2d_vc4_prepare_reads() != 0)
+        int gr;
+
+        /* same one-op lock bracket as gpu_blit_surface: scrub + chain */
+        v3d_g2d_op_begin();
+        if (v3d_g2d_vc4_prepare_reads() != 0) {
+            v3d_g2d_op_end();
             return GPU_FAILED;
+        }
         /* looping copy kernel first; the gather path below pays a launch
          * per 12 spans plus the ARM-side per-lane address vectors */
-        int gr = gpu_copy_loop_vc4(m, 1, src_phys, argb_src,
-                                   src_w, src_h, dst_phys, argb_dst,
-                                   dst_w, dst_h, 0, 0, dst_w, dst_h);
-        if (gr != GPU_UNSUPPORTED)
-            return gr;
-        return gpu_affine_surface_vc4(m, 1, src_phys, argb_src,
-                                      src_w, src_h, dst_phys, argb_dst,
-                                      dst_w, dst_h, 0, 0, dst_w, dst_h);
+        gr = gpu_copy_loop_vc4(m, 1, src_phys, argb_src,
+                               src_w, src_h, dst_phys, argb_dst,
+                               dst_w, dst_h, 0, 0, dst_w, dst_h);
+        if (gr == GPU_UNSUPPORTED)
+            gr = gpu_affine_surface_vc4(m, 1, src_phys, argb_src,
+                                        src_w, src_h, dst_phys, argb_dst,
+                                        dst_w, dst_h, 0, 0, dst_w, dst_h);
+        v3d_g2d_op_end();
+        return gr;
     }
     return gpu_affine_surface(g2d_qpu_argb_rotate, g2d_qpu_argb_rotate_n, m,
                               src_phys, argb_src, src_w, src_h,
@@ -1387,15 +1456,22 @@ int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
         return 0;
     if (!gpu_map_fits(m, x1, y1))
         return 0;
-    if (v3d_g2d_ver() == 21)
+    if (v3d_g2d_ver() == 21) {
+        int gr;
+
         /* The loop path validates the complete operation before launch;
-         * alpha cannot fall back after a possibly successful blend. */
-        return gpu_alpha_loop_vc4(m, alpha, src_phys, argb_src,
-                                  src_w, src_h, dst_phys, argb_dst,
-                                  dst_w, dst_h, x0, y0, x1, y1);
+         * alpha cannot fall back after a possibly successful blend.  Its
+         * scrub + per-maxq-rows launches are one op under the lock. */
+        v3d_g2d_op_begin();
+        gr = gpu_alpha_loop_vc4(m, alpha, src_phys, argb_src,
+                                src_w, src_h, dst_phys, argb_dst,
+                                dst_w, dst_h, x0, y0, x1, y1);
+        v3d_g2d_op_end();
+        return gr;
+    }
     if (nq > band_h)
         nq = band_h;
-    rows = (band_h + nq - 1) / nq;
+    rows = g2d_qpu_rows(band_h, nq, dst_w * 4);
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->cu;
     u[2] = (uint32_t)m->qv;
@@ -1467,7 +1543,7 @@ int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
 #define G2D_FILL_SRC_W 16
 #define G2D_FILL_SRC_H 16
 
-static pthread_mutex_t _fill_alpha_lock = PTHREAD_MUTEX_INITIALIZER;
+static spinlock_t _fill_alpha_lock = SPINLOCK_INIT;
 static uint32_t *_fill_src;          /* 16x16 ARGB block, virtual */
 static uint32_t _fill_src_phys;      /* its physical base, 0 until allocated */
 
@@ -1518,9 +1594,9 @@ int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
         return GPU_DONE;                 /* nothing to blend */
     memset(&m, 0, sizeof(m));            /* every lane samples (0,0) */
 
-    pthread_mutex_lock(&_fill_alpha_lock);
+    spin_lock(&_fill_alpha_lock);
     if (!gpu_fill_src_ready()) {
-        pthread_mutex_unlock(&_fill_alpha_lock);
+        spin_unlock(&_fill_alpha_lock);
         return GPU_UNSUPPORTED;
     }
     for (i = 0; i < G2D_FILL_SRC_W * G2D_FILL_SRC_H; i++)
@@ -1529,6 +1605,6 @@ int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
                            G2D_FILL_SRC_W, G2D_FILL_SRC_H,
                            dst_phys, argb_dst, dst_w, dst_h,
                            x0, y0, x1, y1);
-    pthread_mutex_unlock(&_fill_alpha_lock);
+    spin_unlock(&_fill_alpha_lock);
     return gr;
 }

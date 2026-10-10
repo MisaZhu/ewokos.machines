@@ -134,6 +134,35 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 void *dst, size_t dst_len,
                 const v3d_g2d_maint_t *maint, unsigned flags);
 
+/* Op bracket for banded / tiled operations: holds the dispatch lock
+ * across every v3d_g2d_run of one op so another worker's op cannot
+ * interleave between its bands (the lock is owner-recursive; the runs
+ * inside nest).  Must be paired on every return path; a single-dispatch
+ * op needs no bracket. */
+void v3d_g2d_op_begin(void);
+void v3d_g2d_op_end(void);
+
+/* Per-dispatch phase accounting, always on (four fine-clock reads per
+ * dispatch, no syscall).  pre = ARM dcache maintenance + uniform barrier
+ * + L2T invalidate up to the CFG0 write; exec = CFG0 write to CSD_DONE
+ * (a timeout counts its full poll budget); post = TMU drain + L2T clean
+ * + ARM dcache invalidate.  *_span sums the bytes of the RANGED walks
+ * so span/run against ns/run tells whether the walk cost scales with
+ * the address span; *_full counts dispatches that fell back to the
+ * whole-IOVA walk and *_skip the PRE/POST-elided middle bands/tiles. */
+typedef struct {
+    uint64_t runs;
+    uint64_t timeouts;
+    uint64_t pre_ns, exec_ns, post_ns;
+    uint64_t pre_span, post_span;
+    uint64_t pre_full, post_full;
+    uint64_t pre_skip, post_skip;
+} v3d_g2d_stats_t;
+
+/* Snapshot the counters (consistent: taken under the dispatch lock) and
+ * optionally zero them. */
+void v3d_g2d_stats_read(v3d_g2d_stats_t *out, int reset);
+
 /* The ARGB8888 CSD kernels (assembled from the .qpu sources). */
 extern const uint64_t g2d_qpu_argb_fill[];
 extern const unsigned g2d_qpu_argb_fill_n;

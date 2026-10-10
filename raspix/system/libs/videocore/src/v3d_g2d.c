@@ -38,7 +38,8 @@
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <ewoksys/spinlock.h>
+#include <ewoksys/thread.h>
 #include <sysinfo.h>
 #include <ewoksys/sys.h>
 #include <ewoksys/dma.h>
@@ -64,8 +65,95 @@
  * covered automatically.  This is a correctness guard, not a
  * performance optimization: without it the g2dd service's fine-grained
  * locking (which no longer serializes bsp_g2d_* calls) would leave the
- * hardware dispatch unprotected against concurrent workers. */
-static pthread_mutex_t _v3d_run_lock = PTHREAD_MUTEX_INITIALIZER;
+ * hardware dispatch unprotected against concurrent workers.  A TTAS
+ * spinlock, not a pthread_mutex: videocore takes no kernel locks, and
+ * the dispatch waits inside are busy polls, so a contending worker
+ * spins (yield hint) for the remainder of the live job.
+ *
+ * The lock also covers the V3D 4.2 TLB render paths (render_clear /
+ * render_copy share the CLE registers, the command-list staging and the
+ * binner cache with each other) and every VC4 helper that touches the
+ * single-instance staging ring (prepare_reads, staging_alloc, stage_at,
+ * run_staged): the ring's wrap rule - "every prior batch has completed
+ * before a new block is asked for" - only holds while one op owns the
+ * hardware.
+ *
+ * Multi-launch ops hold it for the WHOLE op through v3d_g2d_op_begin/end
+ * (the lock is owner-recursive, so the per-batch dispatches inside the
+ * bracket just nest).  Every VC4 op is such a chain - one L3 scrub plus
+ * one SRQ launch per maxq rows or spans, hundreds of launches for a
+ * rotate - and interleaving two workers' chains both broke the staging
+ * ring's wrap rule and starved the short op: a TTAS holder re-acquires
+ * in nanoseconds between its own launches while a spinner only wins in
+ * the IPC gap between ops (54 ms average wait measured on raspi5 for a
+ * 4-band flush behind a benchmark stream).  With the bracket an op waits
+ * at most one foreign op once. */
+static spinlock_t _v3d_run_lock = SPINLOCK_INIT;
+/* owner/depth make the lock recursive for the op bracket.  Both are
+ * written only by the holder; a non-holder's read sees -1 or a foreign
+ * tid (tids are unique and the holder clears owner before the release
+ * store), never its own, so the fast re-entry test is race-free.  The
+ * tid is read once per acquire: a register read on aarch64, a syscall on
+ * arm32 (no TLS base there), either way far below one SRQ launch. */
+static volatile int32_t _v3d_run_owner = -1;
+static volatile uint32_t _v3d_run_depth = 0;
+
+static void g2d_run_lock(void)
+{
+    int32_t me = thread_get_id();
+
+    if (_v3d_run_depth != 0 && _v3d_run_owner == me) {
+        _v3d_run_depth++;
+        return;
+    }
+    spin_lock(&_v3d_run_lock);
+    _v3d_run_owner = me;
+    _v3d_run_depth = 1;
+}
+
+static void g2d_run_unlock(void)
+{
+    if (--_v3d_run_depth != 0)
+        return;
+    _v3d_run_owner = -1;
+    spin_unlock(&_v3d_run_lock);
+}
+
+void v3d_g2d_op_begin(void)
+{
+    g2d_run_lock();
+}
+
+void v3d_g2d_op_end(void)
+{
+    g2d_run_unlock();
+}
+
+/* phase accounting (see v3d_g2d_stats_t); written only under
+ * _v3d_run_lock */
+static v3d_g2d_stats_t _stats;
+
+static void g2d_stats_add(uint64_t *queue, uint64_t pre, uint64_t exec,
+                          uint64_t post, int timeout)
+{
+    _stats.runs++;
+    (*queue)++;
+    if (timeout)
+        _stats.timeouts++;
+    _stats.pre_ns += pre;
+    _stats.exec_ns += exec;
+    _stats.post_ns += post;
+}
+
+void v3d_g2d_stats_read(v3d_g2d_stats_t *out, int reset)
+{
+    g2d_run_lock();
+    if (out != NULL)
+        *out = _stats;
+    if (reset)
+        memset(&_stats, 0, sizeof(_stats));
+    g2d_run_unlock();
+}
 
 /* VC bus address alias for uncached access (not exported by mailbox.h;
  * the other bcm283x drivers carry the same local define). */
@@ -661,10 +749,12 @@ static inline volatile uint32_t *v3d_ctl(void);
 
 static inline uint64_t g2d_profile_ticks(void)
 {
-    uint64_t usec = 0;
-    if (kernel_tic(NULL, &usec) != 0)
+    uint64_t ns = 0;
+    /* fine clock (vsyscall + counter read, no trap); falls back to the
+     * tick-quantized value on a platform without a user-readable counter */
+    if (kernel_tic_nsec(&ns) != 0)
         return 0;
-    return usec;
+    return ns;
 }
 
 void v3d_g2d_get_profile(v3d_g2d_profile_t *out)
@@ -1326,8 +1416,8 @@ static int render_wait_counter(uint32_t reg, uint32_t before,
     return -1;
 }
 
-int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
-                         uint32_t width, uint32_t height, uint32_t argb)
+static int render_clear_locked(uint32_t dst_phys, uint32_t stride_bytes,
+                               uint32_t width, uint32_t height, uint32_t argb)
 {
     uint64_t t0, t_prepare, t_invalidate, t_execute, t_flush;
     uint32_t off, generic_len, before, tx, ty, polls = 0;
@@ -1360,8 +1450,10 @@ int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
         ctl[CLE_CT0QTS / 4] = _render_state_p | (1u << 1);
         ctl[CLE_CT0QBA / 4] = _render_cl_p;
         ctl[CLE_CT0QEA / 4] = _render_cl_p + off;
-        if (render_wait_counter(CLE_BFC, before, &polls) != 0)
+        if (render_wait_counter(CLE_BFC, before, &polls) != 0) {
+            g2d_stats_add(&_stats.tlb, g2d_profile_ticks() - t0, 0, 0, 1);
             return -1;
+        }
         _render_binned_w = width;
         _render_binned_h = height;
     }
@@ -1379,8 +1471,11 @@ int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
     g2d_perf_start();
     ctl[CLE_CT1QBA / 4] = _render_cl_p;
     ctl[CLE_CT1QEA / 4] = _render_cl_p + off;
-    if (render_wait_counter(CLE_RFC, before, &polls) != 0)
+    if (render_wait_counter(CLE_RFC, before, &polls) != 0) {
+        g2d_stats_add(&_stats.tlb, t_invalidate - t0,
+                      g2d_profile_ticks() - t_invalidate, 0, 1);
         return -1;
+    }
     t_execute = g2d_profile_ticks();
     g2d_perf_stop(_last_profile.perf);
     _last_profile.execute_polls = polls;
@@ -1392,13 +1487,15 @@ int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
     _last_profile.execute = t_execute - t_invalidate;
     _last_profile.flush = t_flush - t_execute;
     _last_profile.total = t_flush - t0;
+    g2d_stats_add(&_stats.tlb, t_invalidate - t0, t_execute - t_invalidate,
+                  0, 0);
     return 0;
 }
 
 
-int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
-                        uint32_t stride_bytes,
-                        uint32_t width, uint32_t height)
+static int render_copy_locked(uint32_t src_phys, uint32_t dst_phys,
+                              uint32_t stride_bytes,
+                              uint32_t width, uint32_t height)
 {
     uint64_t t0, t_prepare, t_invalidate, t_execute, t_flush;
     uint32_t off, generic_len, before, tx, ty, polls = 0;
@@ -1429,8 +1526,10 @@ int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
         ctl[CLE_CT0QTS / 4] = _render_state_p | (1u << 1);
         ctl[CLE_CT0QBA / 4] = _render_cl_p;
         ctl[CLE_CT0QEA / 4] = _render_cl_p + off;
-        if (render_wait_counter(CLE_BFC, before, &polls) != 0)
+        if (render_wait_counter(CLE_BFC, before, &polls) != 0) {
+            g2d_stats_add(&_stats.tlb, g2d_profile_ticks() - t0, 0, 0, 1);
             return -1;
+        }
         _render_binned_w = width;
         _render_binned_h = height;
     }
@@ -1449,8 +1548,11 @@ int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
     g2d_perf_start();
     ctl[CLE_CT1QBA / 4] = _render_cl_p;
     ctl[CLE_CT1QEA / 4] = _render_cl_p + off;
-    if (render_wait_counter(CLE_RFC, before, &polls) != 0)
+    if (render_wait_counter(CLE_RFC, before, &polls) != 0) {
+        g2d_stats_add(&_stats.tlb, t_invalidate - t0,
+                      g2d_profile_ticks() - t_invalidate, 0, 1);
         return -1;
+    }
     t_execute = g2d_profile_ticks();
     g2d_perf_stop(_last_profile.perf);
     _last_profile.execute_polls = polls;
@@ -1461,7 +1563,33 @@ int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
     _last_profile.execute = t_execute - t_invalidate;
     _last_profile.flush = t_flush - t_execute;
     _last_profile.total = t_flush - t0;
+    g2d_stats_add(&_stats.tlb, t_invalidate - t0, t_execute - t_invalidate,
+                  0, 0);
     return 0;
+}
+
+/* The TLB render jobs share the CLE queue, the command-list staging and
+ * the cached binner state with each other and the QPU array with the CSD
+ * path: one dispatch at a time, same lock as v3d_g2d_run. */
+int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
+                         uint32_t width, uint32_t height, uint32_t argb)
+{
+    int ret;
+    g2d_run_lock();
+    ret = render_clear_locked(dst_phys, stride_bytes, width, height, argb);
+    g2d_run_unlock();
+    return ret;
+}
+
+int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
+                        uint32_t stride_bytes,
+                        uint32_t width, uint32_t height)
+{
+    int ret;
+    g2d_run_lock();
+    ret = render_copy_locked(src_phys, dst_phys, stride_bytes, width, height);
+    g2d_run_unlock();
+    return ret;
 }
 
 static int g2d_mmu_identity_enable(void)
@@ -2715,6 +2843,7 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         slog("g2d: V3D CSD queue busy status=0x%x int=0x%x\r\n",
              (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
              (uint32_t)v3d_ctl()[INT_STS / 4]);
+        g2d_stats_add(&_stats.csd, g2d_profile_ticks() - t0, 0, 0, 1);
         return 1;
     }
     for (i = 0; i < 1024u; i++) {
@@ -2727,6 +2856,7 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         slog("g2d: V3D CSD stale completion status=0x%x int=0x%x\r\n",
              (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
              (uint32_t)v3d_ctl()[INT_STS / 4]);
+        g2d_stats_add(&_stats.csd, g2d_profile_ticks() - t0, 0, 0, 1);
         return 1;
     }
     for (i = 1; i <= (uint32_t)((_ver >= 71) ? 7 : 6); i++)
@@ -2770,6 +2900,8 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         }
         /* A timeout is a real failure.  Do not reset the graphics domain
          * and do not replay this possibly-live operation. */
+        g2d_stats_add(&_stats.csd, t_invalidate - t0,
+                      g2d_profile_ticks() - t_invalidate, 0, 1);
         return 1;
     }
     t_execute = g2d_profile_ticks();
@@ -2799,6 +2931,8 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
     _last_profile.execute = t_execute - t_invalidate;
     _last_profile.flush = t_flush - t_execute;
     _last_profile.total = g2d_profile_ticks() - t0;
+    g2d_stats_add(&_stats.csd, t_invalidate - t0, t_execute - t_invalidate,
+                  t_flush - t_execute, 0);
     return 0;
 }
 
@@ -2809,10 +2943,10 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 void *dst, size_t dst_len)
 {
     int ret;
-    pthread_mutex_lock(&_v3d_run_lock);
+    g2d_run_lock();
     ret = v3d_g2d_run_impl(code, nwords, unifs, nunifs, num_qpus,
                            src, src_len, dst, dst_len);
-    pthread_mutex_unlock(&_v3d_run_lock);
+    g2d_run_unlock();
     return ret;
 }
 
@@ -2926,16 +3060,23 @@ static int g2d_vc4_launch(uint32_t code_p, uint32_t unif_p, uint32_t nq,
 int v3d_g2d_vc4_prepare_reads(void)
 {
     uint32_t srqcs = 0;
+    uint64_t t0;
+    int rc;
 
     if (!_ok || _ver != 21 || !_vc4_scrub_code_p ||
         !_vc4_scrub_unif_p || !_vc4_scrub_mem ||
         _num_qpus <= 0 || _num_qpus > 16)
         return -1;
+    /* the scrub is an SRQ launch like any other: one at a time */
+    g2d_run_lock();
     _vc4_need_invalidate = 1;
     g2d_dsb();
-    return g2d_vc4_launch_mode(_vc4_scrub_code_p, _vc4_scrub_unif_p,
-                               (uint32_t)_num_qpus, &srqcs, 0, 1) == 0 ?
-           0 : -1;
+    t0 = g2d_profile_ticks();
+    rc = g2d_vc4_launch_mode(_vc4_scrub_code_p, _vc4_scrub_unif_p,
+                             (uint32_t)_num_qpus, &srqcs, 0, 1);
+    g2d_stats_add(&_stats.srq, 0, g2d_profile_ticks() - t0, 0, rc != 0);
+    g2d_run_unlock();
+    return rc == 0 ? 0 : -1;
 }
 
 void *v3d_g2d_vc4_staging_alloc(size_t bytes, uint32_t *phys_out)
@@ -2952,18 +3093,27 @@ void *v3d_g2d_vc4_staging_alloc(size_t bytes, uint32_t *phys_out)
     if (aligned > VC4_STAGING_BYTES)
         return NULL;
 
+    /* The ring is a single bump pointer and its wrap rule assumes the
+     * prior batches are retired, so it is only touched under the dispatch
+     * lock (recursive: the SRQ impl allocates its uniform block while
+     * already holding it; a multi-launch op holds it across the whole
+     * chain through v3d_g2d_op_begin/end). */
+    g2d_run_lock();
     if (_vc4_staging_next > VC4_STAGING_BYTES - aligned) {
         /* Every prior user batch has completed before its caller asks for
          * another block.  Evict the system L3 before reusing old bus
          * addresses, which BCM2837 otherwise may serve with stale data. */
-        if (v3d_g2d_vc4_prepare_reads() != 0)
+        if (v3d_g2d_vc4_prepare_reads() != 0) {
+            g2d_run_unlock();
             return NULL;
+        }
         _vc4_staging_next = 0;
         _vc4_staging_wraps++;
     }
     ret = _vc4_staging + _vc4_staging_next;
     *phys_out = _vc4_staging_p + (uint32_t)_vc4_staging_next;
     _vc4_staging_next += aligned;
+    g2d_run_unlock();
     return ret;
 }
 
@@ -2979,11 +3129,13 @@ uint32_t v3d_g2d_vc4_stage_at(const uint64_t *code, int nwords, int off)
         off < 0 || off + nwords > CSD_CODE_WORDS ||
         !_ok || _ver != 21 || _run_code == 0)
         return 0;
+    g2d_run_lock();
     for (i = 0; i < (uint32_t)nwords; i++)
         _run_code[off + i] = code[i];
     /* drop stale L2/slice lines so the freshly staged kernels are
      * fetched from DRAM (same discipline as the micro-test battery) */
     g2d_invalidate_caches();
+    g2d_run_unlock();
     return _run_code_p + (uint32_t)off * 8u;
 }
 
@@ -2998,12 +3150,19 @@ int v3d_g2d_vc4_run_staged(uint32_t code_p, const uint32_t *unifs,
         unifs == NULL || nq == 0 || nq > 16 || !_ok || _ver != 21)
         return -1;
 
+    g2d_run_lock();
     for (q = 0; q < nq; q++)
         for (i = 0; i < VC4_UNIF_QWORDS; i++)
             _unif[q * VC4_UNIF_QWORDS + i] =
                 unifs[q * VC4_UNIF_QWORDS + i];
     g2d_invalidate_caches();
-    return g2d_vc4_launch(code_p, _unif_p, nq, srqcs_out);
+    {
+        uint64_t t0 = g2d_profile_ticks();
+        int rc = g2d_vc4_launch(code_p, _unif_p, nq, srqcs_out);
+        g2d_stats_add(&_stats.srq, 0, g2d_profile_ticks() - t0, 0, rc != 0);
+        g2d_run_unlock();
+        return rc;
+    }
 }
 
 static int v3d_g2d_run_vc4_impl(const uint64_t *code, int nwords,
@@ -3064,6 +3223,8 @@ static int v3d_g2d_run_vc4_impl(const uint64_t *code, int nwords,
         g2d_dsb();
     if (dst && dst_len)
         g2d_dsb();
+
+    uint64_t t0 = g2d_profile_ticks(), t_launch = t0;
 
     /* Allocate a fresh uniform block from the reusable staging ring.  The
      * ring is large enough for hundreds of dispatches; only a ring wrap
@@ -3138,6 +3299,7 @@ static int v3d_g2d_run_vc4_impl(const uint64_t *code, int nwords,
         int flush_writes = (write_addr & 0xc0000000u) != 0xc0000000u;
 
         _vc4_dispatch_seq++;
+        t_launch = g2d_profile_ticks();
         if (g2d_vc4_launch_mode(run_code_p, ubp, nq, &srqcs,
                                 flush_writes, 1) == 0) {
             _vc4_slot_ready[run_slot] = 1;
@@ -3146,9 +3308,13 @@ static int v3d_g2d_run_vc4_impl(const uint64_t *code, int nwords,
              * were cleaned by g2d_vc4_launch_mode(). */
             if (dst && dst_len)
                 g2d_dsb();
+            g2d_stats_add(&_stats.srq, t_launch - t0,
+                          g2d_profile_ticks() - t_launch, 0, 0);
             return 0;
         }
     }
+    g2d_stats_add(&_stats.srq, t_launch - t0, g2d_profile_ticks() - t_launch,
+                  0, 1);
 
     /* A timed-out QPU can remain live even after the counters are cleared.
      * Disable the backend so later clients fail immediately instead of
@@ -3170,9 +3336,9 @@ int v3d_g2d_run_vc4(const uint64_t *code, int nwords,
                     void *dst, size_t dst_len)
 {
     int ret;
-    pthread_mutex_lock(&_v3d_run_lock);
+    g2d_run_lock();
     ret = v3d_g2d_run_vc4_impl(code, nwords, unifs, num_qpus,
                                 src, src_len, dst, dst_len);
-    pthread_mutex_unlock(&_v3d_run_lock);
+    g2d_run_unlock();
     return ret;
 }

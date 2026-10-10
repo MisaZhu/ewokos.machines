@@ -93,7 +93,7 @@ int v3d_g2d_render_copy(uint32_t src_phys, uint32_t dst_phys,
                         uint32_t stride_bytes,
                         uint32_t width, uint32_t height);
 
-/* Cycle breakdown of the most recent synchronous CSD submission.  This is
+/* Nanosecond breakdown of the most recent synchronous CSD submission.  This is
  * diagnostic state only: reading it does not alter cache or dispatch policy. */
 typedef struct {
     uint64_t total;
@@ -108,6 +108,33 @@ typedef struct {
 } v3d_g2d_profile_t;
 
 void v3d_g2d_get_profile(v3d_g2d_profile_t *out);
+
+/* Op bracket for multi-launch operations: holds the dispatch lock across
+ * every v3d_g2d_run / v3d_g2d_run_vc4 / staging call of one op so another
+ * worker's op cannot interleave between its batches (the lock is
+ * owner-recursive; the dispatches inside nest).  Must be paired on every
+ * return path; a single-dispatch op needs no bracket. */
+void v3d_g2d_op_begin(void);
+void v3d_g2d_op_end(void);
+
+/* Per-dispatch phase accounting, always on (a few fine-clock reads per
+ * dispatch, no syscall).  One dispatch is one CSD job (V3D 4.2 QPU
+ * kernel), one SRQ launch (VC4) or one TLB render job (V3D 4.2
+ * render_clear / render_copy); csd/srq/tlb split runs by queue.
+ * pre = staging + V3D cache invalidate up to the kick; exec = kick to
+ * completion (a timeout counts its full poll budget); post = the L2
+ * flush after completion (CSD only; the SRQ launch flushes inside its
+ * own wait and the TLB stores bypass the L2T). */
+typedef struct {
+    uint64_t runs;
+    uint64_t csd, srq, tlb;
+    uint64_t timeouts;
+    uint64_t pre_ns, exec_ns, post_ns;
+} v3d_g2d_stats_t;
+
+/* Snapshot the counters (consistent: taken under the dispatch lock) and
+ * optionally zero them. */
+void v3d_g2d_stats_read(v3d_g2d_stats_t *out, int reset);
 
 /*
  * VC4 (V3D 2.1) counterpart of v3d_g2d_run(): launches one SRQ thread

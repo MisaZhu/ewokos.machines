@@ -90,7 +90,9 @@
 #include <videocore/vc_g2d.h>
 
 #include <string.h>
-#include <pthread.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <ewoksys/spinlock.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/dma.h>
 
@@ -107,6 +109,79 @@ uint32_t vc_g2d_clock_hz(void)
     return v3d_g2d_clock_hz();
 }
 
+/* `stat` reports the dispatch phase counters, `stat reset` reports and
+ * zeroes them.  Averages are per dispatch (not per request: a banded
+ * or tiled op is several dispatches); spans are the average bytes of
+ * the ranged L2T walks. */
+/* Large-surface banding knobs (see LARGE-SURFACE BATCHING below), runtime
+ * tunable for the on-device sweep via `devcmd /dev/g2d big <KB>` /
+ * `band <KB>`: the 2026-10 PERF run showed every banded forward op
+ * (blit, alpha, fill_alpha, scale) at ~1.7x the us/MiB of its
+ * sub-threshold size, while the unbanded backward rotate_180 and the
+ * write-only fill stayed flat, so the 512 KB / 4 MB pair is not yet
+ * proven optimal.  Read once per op; a sweep write landing mid-op only
+ * changes the next op's banding. */
+static uint32_t _g2d_big_surface = 4u * 1024u * 1024u;
+static uint32_t _g2d_band_bytes = 512u * 1024u;
+
+/* `big <KB>` / `band <KB>`: set (or with no value, show) the banding
+ * threshold and the per-band budget in KiB; 0 KB threshold bands every
+ * surface, so even the BREAKEVEN squares exercise the band loop. */
+static int g2d_cmd_knob(int argc, char **argv, char *buf, size_t len,
+                        uint32_t *knob, const char *name)
+{
+    if (argc > 1 && argv[1] != NULL) {
+        char *end = NULL;
+        unsigned long kb = strtoul(argv[1], &end, 10);
+
+        if (end == argv[1] || *end != '\0' || kb > (1ul << 20))
+            return -1;
+        *knob = (uint32_t)kb * 1024u;
+    }
+    snprintf(buf, len, "%s %uKB", name, *knob / 1024u);
+    return 0;
+}
+
+int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
+{
+    v3d_g2d_stats_t s;
+    uint64_t n, ranged_pre, ranged_post;
+
+    if (argc <= 0 || argv == NULL || argv[0] == NULL || buf == NULL || len == 0)
+        return -1;
+    if (strcmp(argv[0], "big") == 0)
+        return g2d_cmd_knob(argc, argv, buf, len, &_g2d_big_surface, "big");
+    if (strcmp(argv[0], "band") == 0)
+        return g2d_cmd_knob(argc, argv, buf, len, &_g2d_band_bytes, "band");
+    if (strcmp(argv[0], "stat") != 0)
+        return -1;
+
+    v3d_g2d_stats_read(&s, argc > 1 && argv[1] != NULL &&
+                           strcmp(argv[1], "reset") == 0);
+    n = s.runs ? s.runs : 1;
+    ranged_pre = s.runs - s.pre_full - s.pre_skip;
+    ranged_post = s.runs - s.post_full - s.post_skip;
+    if (ranged_pre == 0) ranged_pre = 1;
+    if (ranged_post == 0) ranged_post = 1;
+    snprintf(buf, len,
+             "v3d dispatch %llu timeout %llu | avg us pre %llu exec %llu post %llu"
+             " | pre span %lluKB full %llu skip %llu | post span %lluKB full %llu skip %llu"
+             " | big %uKB band %uKB",
+             (unsigned long long)s.runs,
+             (unsigned long long)s.timeouts,
+             (unsigned long long)(s.pre_ns / n / 1000u),
+             (unsigned long long)(s.exec_ns / n / 1000u),
+             (unsigned long long)(s.post_ns / n / 1000u),
+             (unsigned long long)(s.pre_span / ranged_pre / 1024u),
+             (unsigned long long)s.pre_full,
+             (unsigned long long)s.pre_skip,
+             (unsigned long long)(s.post_span / ranged_post / 1024u),
+             (unsigned long long)s.post_full,
+             (unsigned long long)s.post_skip,
+             _g2d_big_surface / 1024u, _g2d_band_bytes / 1024u);
+    return 0;
+}
+
 #define G2D_MAX_COEF (1 << 23)  /* |map coefficient| must fit smul24 */
 
 /* Large-surface batching for bsp_g2d_blt / bsp_g2d_blt_alpha /
@@ -116,8 +191,8 @@ uint32_t vc_g2d_clock_hz(void)
  * measured walk-order cliff this works around).  G2D_BAND_BYTES is the
  * hardware-tune knob: sweep 256 KB - 1 MB on the Pi 5 and keep the
  * fastest (2 MB bands were measured NOT to cure the cliff). */
-#define G2D_BIG_SURFACE (4u * 1024u * 1024u)   /* cliff onset (bytes) */
-#define G2D_BAND_BYTES  (512u * 1024u)         /* per-band pixel budget */
+#define G2D_BIG_SURFACE _g2d_big_surface   /* cliff onset (bytes) */
+#define G2D_BAND_BYTES  _g2d_band_bytes    /* per-band pixel budget */
 
 /* Approximate pixels completed per millisecond at the measured Pi 5
  * operating point (V3D 1.15 GHz, 12 QPUs).  These conservative cutoffs
@@ -159,6 +234,29 @@ static unsigned g2d_poll_flags(unsigned flags, uint64_t pixels,
     if (capacity == 0 || pixels > capacity * G2D_SPIN_BUDGET_MS)
         flags |= V3D_G2D_POLL_YIELD;
     return flags;
+}
+
+/* Rows per QPU for the nq-way row split of a band_h-row dispatch.  The
+ * kernels run nq streams rows*stride bytes apart (QPU q starts at row
+ * q*rows) and clip or skip the tail band, so any rows with nq*rows >=
+ * band_h is legal.  Plain ceil() puts those streams on a large
+ * power-of-two distance whenever rows*stride is: the g2dtest BREAKEVEN
+ * table measured blit_alpha 384x384 (12 x 48 KiB apart) and 768x768
+ * (12 x 192 KiB apart) at ~5x the us/MiB of 512x512, with 192x192
+ * (12 KiB apart) and 256x256 unaffected - the read streams of every QPU
+ * fall into the same L2T sets.  One extra row breaks the alignment
+ * (rows*stride 8 KiB-aligned with stride not 4 KiB-aligned means rows is
+ * even, so rows+1 leaves stride's own factor of two only).  A stride
+ * that is itself 4 KiB-aligned (1024-wide) aliases row to row anyway
+ * and is left alone.  Write-only fills showed no such dip. */
+static int32_t g2d_qpu_rows(int32_t band_h, int nq, int32_t stride)
+{
+    int32_t rows = (band_h + nq - 1) / nq;
+
+    if (nq > 1 && ((uint32_t)stride & 4095u) != 0 &&
+        (((uint32_t)rows * (uint32_t)stride) & 8191u) == 0)
+        rows++;
+    return rows;
 }
 
 /* Band height (rows) whose ARGB8888 pixel data stays within
@@ -744,7 +842,7 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
         return 0;
     if (nq > band_h)
         nq = band_h;
-    rows = (band_h + nq - 1) / nq;
+    rows = g2d_qpu_rows(band_h, nq, dst_w * 4);
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->qu;
     u[2] = (uint32_t)m->pv;
@@ -858,7 +956,8 @@ static int gpu_rotate_surface(const g2d_map_t *m,
  * note).  The map is evaluated at absolute destination pixels and the
  * rect path of both affine kernels is exact per tile, so tiling needs
  * no kernel support.  Back-to-back tiles share one cache-maintenance
- * bracket like the band loops (first tile PRE, last tile POST). */
+ * bracket like the band loops (first tile PRE, last tile POST) and one
+ * dispatch-lock bracket (no foreign op between tiles). */
 static int gpu_rotate_tiled(const uint64_t *kcode, int knwords,
                             const g2d_map_t *m,
                             uint32_t src_phys, uint32_t *argb_src,
@@ -867,8 +966,10 @@ static int gpu_rotate_tiled(const uint64_t *kcode, int knwords,
                             int32_t dst_w, int32_t dst_h, int no_clamp)
 {
     int32_t x0, y0, x1, y1;
+    int ok = 1;
 
-    for (y0 = 0; y0 < dst_h; y0 = y1) {
+    v3d_g2d_op_begin();
+    for (y0 = 0; y0 < dst_h && ok; y0 = y1) {
         y1 = (dst_h - y0 < G2D_ROT_TILE) ? dst_h : y0 + G2D_ROT_TILE;
         for (x0 = 0; x0 < dst_w; x0 = x1) {
             unsigned maint = 0;
@@ -881,11 +982,14 @@ static int gpu_rotate_tiled(const uint64_t *kcode, int knwords,
             if (!gpu_affine_surface(kcode, knwords, m,
                                     src_phys, argb_src, src_w, src_h,
                                     dst_phys, argb_dst, dst_w, dst_h,
-                                    x0, y0, x1, y1, no_clamp, maint))
-                return 0;
+                                    x0, y0, x1, y1, no_clamp, maint)) {
+                ok = 0;
+                break;
+            }
         }
     }
-    return 1;
+    v3d_g2d_op_end();
+    return ok;
 }
 
 /* dedicated 90/270 rotation (argb_rot90 kernel): the traversal reads the
@@ -1002,7 +1106,7 @@ static int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
         return 0;
     if (nq > band_h)
         nq = band_h;
-    rows = (band_h + nq - 1) / nq;
+    rows = g2d_qpu_rows(band_h, nq, dst_w * 4);
     u[0] = (uint32_t)m->pu;
     u[1] = (uint32_t)m->cu;
     u[2] = (uint32_t)m->qv;
@@ -1066,16 +1170,21 @@ int gpu_copy_op(uint32_t src_phys, uint32_t *argb_src,
                                 csx, csy, rx, ry, rx1, ry1,
                                 V3D_G2D_MAINT_ALL);
     /* past the cliff: same banding as the blit path (rows are
-     * independent, bands never touch each other) */
+     * independent, bands never touch each other); one lock bracket so
+     * no foreign op lands between the bands */
     band = g2d_band_rows(surf_w);
+    v3d_g2d_op_begin();
     for (y = ry; y < ry1; y = next) {
         next = (ry1 - y < band) ? ry1 : y + band;
         if (!gpu_copy_surface(src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, surf_w, dst_bytes,
                               csx, csy + (y - ry), rx, y, rx1, next,
-                              g2d_band_maint(y, next, ry, ry1)))
+                              g2d_band_maint(y, next, ry, ry1))) {
+            v3d_g2d_op_end();
             return 0;
+        }
     }
+    v3d_g2d_op_end();
     return 1;
 }
 
@@ -1097,14 +1206,18 @@ int gpu_blit_op(const g2d_map_t *m,
                                 dst_phys, argb_dst, surf_w, surf_h,
                                 rx, ry, rx1, ry1, 0, V3D_G2D_MAINT_ALL);
     band = g2d_band_rows(surf_w);
+    v3d_g2d_op_begin();
     for (y = ry; y < ry1; y = next) {
         next = (ry1 - y < band) ? ry1 : y + band;
         if (!gpu_blit_surface(m, src_phys, argb_src, src_w, src_h,
                               dst_phys, argb_dst, surf_w, surf_h,
                               rx, y, rx1, next, 0,
-                              g2d_band_maint(y, next, ry, ry1)))
+                              g2d_band_maint(y, next, ry, ry1))) {
+            v3d_g2d_op_end();
             return 0;
+        }
     }
+    v3d_g2d_op_end();
     return 1;
 }
 
@@ -1127,14 +1240,18 @@ int gpu_alpha_op(const g2d_map_t *m, uint8_t alpha,
                                  dst_phys, argb_dst, dst_w, dst_h,
                                  rx, ry, rx1, ry1, V3D_G2D_MAINT_ALL);
     band = g2d_band_rows(dst_w);
+    v3d_g2d_op_begin();
     for (y = ry; y < ry1; y = next) {
         next = (ry1 - y < band) ? ry1 : y + band;
         if (!gpu_alpha_surface(m, alpha, src_phys, argb_src, src_w, src_h,
                                dst_phys, argb_dst, dst_w, dst_h,
                                rx, y, rx1, next,
-                               g2d_band_maint(y, next, ry, ry1)))
+                               g2d_band_maint(y, next, ry, ry1))) {
+            v3d_g2d_op_end();
             return 0;
+        }
     }
+    v3d_g2d_op_end();
     return 1;
 }
 
@@ -1162,7 +1279,7 @@ int gpu_alpha_op(const g2d_map_t *m, uint8_t alpha,
 #define G2D_FILL_SRC_W 16
 #define G2D_FILL_SRC_H 16
 
-static pthread_mutex_t _fill_alpha_lock = PTHREAD_MUTEX_INITIALIZER;
+static spinlock_t _fill_alpha_lock = SPINLOCK_INIT;
 static uint32_t *_fill_src;          /* dma window vaddr, 16x16 ARGB */
 static uint32_t _fill_src_phys;      /* its V3D IOVA, 0 until allocated */
 
@@ -1201,7 +1318,7 @@ int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
         return 1;                        /* nothing to blend */
     memset(&m, 0, sizeof(m));            /* every lane samples (0,0) */
 
-    pthread_mutex_lock(&_fill_alpha_lock);
+    spin_lock(&_fill_alpha_lock);
     ok = gpu_fill_src_ready();
     if (ok) {
         for (i = 0; i < G2D_FILL_SRC_W * G2D_FILL_SRC_H; i++)
@@ -1213,7 +1330,7 @@ int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
                           rx, ry, rx1, ry1,
                           (size_t)dst_w * (size_t)dst_h * 4u);
     }
-    pthread_mutex_unlock(&_fill_alpha_lock);
+    spin_unlock(&_fill_alpha_lock);
     return ok;
 }
 
@@ -1256,15 +1373,19 @@ int gpu_scale_op(const g2d_map_t *m,
     kcode = g2d_qpu_argb_blit;
     knwords = g2d_qpu_argb_blit_n;
     band = g2d_band_rows(dst_w);
+    v3d_g2d_op_begin();
     for (y = 0; y < dst_h; y = next) {
         next = (dst_h - y < band) ? dst_h : y + band;
         if (!gpu_affine_surface(kcode, knwords, m,
                                 src_phys, argb_src, src_w, src_h,
                                 dst_phys, argb_dst, dst_w, dst_h,
                                 0, y, dst_w, next, 0,
-                                g2d_band_maint(y, next, 0, dst_h)))
+                                g2d_band_maint(y, next, 0, dst_h))) {
+            v3d_g2d_op_end();
             return 0;
+        }
     }
+    v3d_g2d_op_end();
     return 1;
 }
 
@@ -1397,7 +1518,7 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     nq = v3d_g2d_num_qpus();
     if (nq > h)
         nq = h;
-    rows = (h + nq - 1) / nq;
+    rows = g2d_qpu_rows(h, nq, w * 4);
     /* the kernels build the per-QPU band offset with smul24 */
     if ((uint32_t)(nq - 1) * (uint32_t)rows * (uint32_t)(w * 4) >=
         (1u << 24))
@@ -1407,6 +1528,10 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
     flags = g2d_poll_flags(V3D_G2D_MAINT_ALL, pixels,
                            G2D_1MS_GAUSS_PIXELS, nq);
 
+    /* every pass is a full-maintenance dispatch, so interleaving would be
+     * cache-safe; the bracket keeps the whole blur one op for the same
+     * starvation reason as the band loops */
+    v3d_g2d_op_begin();
     for (si = 0; si < ns; si++) {
         setp = &set[stages[si]];
         wk = setp->wk;
@@ -1448,6 +1573,7 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         if (rc != 0) {
             slog("g2d blur: H dispatch rc=%d (w=%d h=%d rect %d,%d %dx%d "
                  "r=%d nq=%d)\n", rc, w, h, rx, ry, rw, rh, radius, nq);
+            v3d_g2d_op_end();
             return -1;
         }
 
@@ -1464,8 +1590,10 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         if (rc != 0) {
             slog("g2d blur: V dispatch rc=%d (w=%d h=%d rect %d,%d %dx%d "
                  "r=%d nq=%d)\n", rc, w, h, rx, ry, rw, rh, radius, nq);
+            v3d_g2d_op_end();
             return -1;
         }
     }
+    v3d_g2d_op_end();
     return 0;
 }
