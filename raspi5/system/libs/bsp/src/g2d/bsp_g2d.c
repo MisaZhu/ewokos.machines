@@ -431,6 +431,69 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
              radius);
         return -1;
     }
+    /* Half-res fast path (quality-for-speed).  The caller's radius is passed
+     * through UNCHANGED - it is never halved - so the only quality knob the
+     * caller set still governs the blur.  The speedup comes purely from
+     * processing 1/4 the pixels: downsample the canvas 2x, blur the half-res
+     * image at that same radius, then upsample 2x back.  The accepted
+     * trade-off (the caller opted into "rougher but faster"): a radius-R blur
+     * on a half-res image spreads over ~2R full-res pixels, and the pow2
+     * down / nearest up are point-sampled, so the result is softer and not
+     * bit-exact.  That is fine behind a translucent frost, so this path is
+     * gated to whole-canvas blurs (gpu_scale_op is whole-surface) large
+     * enough that the blur dominates the two extra scale dispatches.
+     *
+     * Buffer reuse, no extra allocation: the half-res image lives at tmp[0]
+     * (hw*hh*4 bytes) and the half-res blur's scratch at tmp[off_b]; each
+     * region is ~1/4 of the full-res tmp_need, so off_b + scratch_need fits.
+     * The half-res blur is handed tmp[0] as its canvas and tmp[off_b] as its
+     * scratch - the REAL canvas is written only by the final upsample.  So a
+     * down or blur failure (even a submitted-dispatch timeout) leaves the
+     * canvas pristine and falls through to the exact blur below; only once the
+     * upsample is submitted is the canvas committed (never replayed). */
+    if (radius >= 2 &&
+        rect_x == 0 && rect_y == 0 &&
+        rect_w == argb_w && rect_h == argb_h &&
+        argb_w >= 64 && argb_h >= 64 &&
+        (int64_t)argb_w * (int64_t)argb_h >= 65536) {
+        int32_t hw = argb_w / 2, hh = argb_h / 2;
+        uint32_t half_pitch = (uint32_t)hw * 4u;
+        uint32_t half_tmp_pitch = ((half_pitch & 4095u) == 0u)
+                                      ? (half_pitch + 64u) : half_pitch;
+        size_t off_b = ((size_t)hw * (size_t)hh * 4u + 63u) & ~(size_t)63u;
+        size_t scratch_need = (size_t)(hh - 1) * half_tmp_pitch +
+                              (size_t)hw * 4u;
+        g2d_map_t m;
+        if (off_b + scratch_need <= tmp_need) {
+            uint32_t *tmp_b = (uint32_t *)((uint8_t *)tmp + off_b);
+            uint32_t scratch_b_phys = scratch_phys + (uint32_t)off_b;
+            /* down: canvas -> tmp[0] as a packed hw x hh surface */
+            g2d_map_params(0, 0, argb_w, argb_h, 0, 0, hw, hh,
+                           G2D_MAP_ROT_0, &m);
+            if (gpu_map_fits(&m, ((int64_t)hw + 15) / 16 * 16, hh) &&
+                gpu_scale_op(&m, phys, argb, argb_w, argb_h,
+                             scratch_phys, tmp, hw, hh)) {
+                /* blur tmp[0] at the FULL radius; scratch = tmp[off_b] */
+                if (gpu_gaussian_blur_op(scratch_phys, tmp,
+                                         scratch_b_phys, tmp_b,
+                                         hw, hh, 0, 0, hw, hh, radius) == 0) {
+                    /* up: tmp[0] (hw x hh) -> canvas */
+                    g2d_map_params(0, 0, hw, hh, 0, 0, argb_w, argb_h,
+                                   G2D_MAP_ROT_0, &m);
+                    if (gpu_map_fits(&m, ((int64_t)argb_w + 15) / 16 * 16,
+                                     argb_h) &&
+                        gpu_scale_op(&m, scratch_phys, tmp, hw, hh,
+                                     phys, argb, argb_w, argb_h))
+                        return 0;
+                    klog("g2d blur: half-res upsample failed (w=%d h=%d r=%d)\n",
+                         argb_w, argb_h, radius);
+                    return -1;
+                }
+            }
+        }
+        /* gate not met, scratch too small, or down/blur failed before the
+         * canvas was touched: fall through to the exact full-res blur. */
+    }
     //Never replay a submitted operation on the CPU: a timed-out
     //dispatch may still own or have partially written dst.
     {
