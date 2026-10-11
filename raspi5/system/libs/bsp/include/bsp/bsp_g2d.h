@@ -93,13 +93,26 @@ int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_co
    the greedy r1..r4 stage sequence (Gaussian variances add).
    in-place on argb; tmp is the caller's GPU-visible scratch surface
    (>= argb_w*argb_h*4 bytes, like argb physically contiguous).  fixed
-   per-radius Q16 weights (sigma = radius/2) - bit-exact vs the EwokOS
-   NEON reference.  any rect within the canvas is runnable (the kernels
-   tail-mask the final partial 16-px group of each row); tmp must be a
-   pitch-strided (rect_h - 1)-row region of the canvas pitch plus one
-   rect row.  GPU-only: returns -1 on ineligible geometry, a
-   non-GPU-visible surface or a failed dispatch (never replayed on the
-   CPU - see the no-replay rule). */
+   per-radius Q16 weights (sigma = radius/2).
+
+   two accuracy tiers.  a whole-canvas blur (rect == the full canvas) of
+   area >= 256*256 at radius >= 2 takes a HALF-RES fast path: downsample
+   2x, blur the half-res image at the SAME radius (never halved), upsample
+   2x.  it processes 1/4 the pixels - the speedup - but is NOT bit-exact:
+   the effective full-res spread doubles and the pow2 down / nearest up are
+   point-sampled, so the result is softer.  that is the intended
+   quality-for-speed trade for large backdrop/frost blurs.  every other
+   blur (sub-rect, area < 256*256, or radius 1) runs the EXACT separable
+   kernels, bit-exact vs the EwokOS NEON reference.  the half-res path
+   reuses tmp for both the half-res image and its scratch (each ~1/4 of
+   tmp_need), so the caller's tmp sizing contract is unchanged.
+
+   any rect within the canvas is runnable (the kernels tail-mask the
+   final partial 16-px group of each row); tmp must be a pitch-strided
+   (rect_h - 1)-row region of the canvas pitch plus one rect row.
+   GPU-only: returns -1 on ineligible geometry, a non-GPU-visible
+   surface or a failed dispatch (never replayed on the CPU - see the
+   no-replay rule). */
 int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
 			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
 			int32_t argb_w, int32_t argb_h,
