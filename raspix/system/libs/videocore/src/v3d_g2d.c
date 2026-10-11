@@ -690,7 +690,21 @@ static inline void g2d_dsb(void)
 #define KERN_ROT90 14
 #define KERN_ROT90_TILE 15
 #define KERN_ROT90_VPM 16
-#define KERN_TOTAL 17
+/* V3D 4.2 separable gaussian blur kernels: one H (row) + V (column) pair
+ * per radius 1..4; radius > 4 is composed from these by gpu_gauss_decompose
+ * in vc_g2d.c.  Registered here and preloaded into dma below so that
+ * v3d_g2d_run_impl's code-pointer match can select them - the CSD fetches
+ * the preloaded copy at _kcode_p[kern], never the caller's array.  Mirrors
+ * raspi5's KERN_GAUSS_* slots. */
+#define KERN_GAUSS_H3 17
+#define KERN_GAUSS_V3 18
+#define KERN_GAUSS_H5 19
+#define KERN_GAUSS_V5 20
+#define KERN_GAUSS_H7 21
+#define KERN_GAUSS_V7 22
+#define KERN_GAUSS_H9 23
+#define KERN_GAUSS_V9 24
+#define KERN_TOTAL 25
 /* Alpha has one immutable code address per exact output span.  VC4 does
  * not reliably observe either dynamic late-uniform VDW setups or code
  * replacement at an address already present in its instruction cache. */
@@ -1855,6 +1869,22 @@ int v3d_g2d_init(void)
         _ksrc_n[KERN_ROT90_TILE] = g2d_qpu_v42_argb_rot90_tile_n;
         _ksrc[KERN_ROT90_VPM] = g2d_qpu_v42_argb_rot90_vpm;
         _ksrc_n[KERN_ROT90_VPM] = g2d_qpu_v42_argb_rot90_vpm_n;
+        _ksrc[KERN_GAUSS_H3] = g2d_qpu_v42_gauss_h3;
+        _ksrc_n[KERN_GAUSS_H3] = g2d_qpu_v42_gauss_h3_n;
+        _ksrc[KERN_GAUSS_V3] = g2d_qpu_v42_gauss_v3;
+        _ksrc_n[KERN_GAUSS_V3] = g2d_qpu_v42_gauss_v3_n;
+        _ksrc[KERN_GAUSS_H5] = g2d_qpu_v42_gauss_h5;
+        _ksrc_n[KERN_GAUSS_H5] = g2d_qpu_v42_gauss_h5_n;
+        _ksrc[KERN_GAUSS_V5] = g2d_qpu_v42_gauss_v5;
+        _ksrc_n[KERN_GAUSS_V5] = g2d_qpu_v42_gauss_v5_n;
+        _ksrc[KERN_GAUSS_H7] = g2d_qpu_v42_gauss_h7;
+        _ksrc_n[KERN_GAUSS_H7] = g2d_qpu_v42_gauss_h7_n;
+        _ksrc[KERN_GAUSS_V7] = g2d_qpu_v42_gauss_v7;
+        _ksrc_n[KERN_GAUSS_V7] = g2d_qpu_v42_gauss_v7_n;
+        _ksrc[KERN_GAUSS_H9] = g2d_qpu_v42_gauss_h9;
+        _ksrc_n[KERN_GAUSS_H9] = g2d_qpu_v42_gauss_h9_n;
+        _ksrc[KERN_GAUSS_V9] = g2d_qpu_v42_gauss_v9;
+        _ksrc_n[KERN_GAUSS_V9] = g2d_qpu_v42_gauss_v9_n;
     } else if (_ver >= 71) {
         _ksrc[KERN_FILL] = g2d_qpu_argb_fill;
         _ksrc_n[KERN_FILL] = g2d_qpu_argb_fill_n;
@@ -2774,6 +2804,22 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         kern = KERN_ROT90_TILE;
     else if (_ver == 42 && code == g2d_qpu_v42_argb_rot90_vpm)
         kern = KERN_ROT90_VPM;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_h3)
+        kern = KERN_GAUSS_H3;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_v3)
+        kern = KERN_GAUSS_V3;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_h5)
+        kern = KERN_GAUSS_H5;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_v5)
+        kern = KERN_GAUSS_V5;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_h7)
+        kern = KERN_GAUSS_H7;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_v7)
+        kern = KERN_GAUSS_V7;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_h9)
+        kern = KERN_GAUSS_H9;
+    else if (_ver == 42 && code == g2d_qpu_v42_gauss_v9)
+        kern = KERN_GAUSS_V9;
     else
         return -1;
     if ((uint32_t)nwords > _ksrc_n[kern]

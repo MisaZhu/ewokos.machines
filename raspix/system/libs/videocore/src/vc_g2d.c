@@ -1606,3 +1606,185 @@ int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
     spin_unlock(&_fill_alpha_lock);
     return gr;
 }
+
+/* ---- separable gaussian blur (V3D 4.2 CSD) --------------------------
+ * Ported from raspi5's gpu_gaussian_blur_op and adapted to raspix:
+ *   - v3d_g2d_run does cache maintenance internally, so there is no
+ *     v3d_g2d_maint_t / g2d_poll_flags argument;
+ *   - returns the raspix GPU_DONE/GPU_UNSUPPORTED/GPU_FAILED tri-state;
+ *   - dispatches the V3D 4.2 g2d_qpu_v42_gauss_* arrays (VC4/Pi3 has no
+ *     gauss kernel, so ver != 42 declines with GPU_UNSUPPORTED and the
+ *     bsp falls back to the arch NEON engine);
+ *   - like raspi5, passes nunifs = 9 + k (the setup words plus the k
+ *     weights) and lets v3d_g2d_run append the tail-lane store-redirect
+ *     scratch (_scratch_p, the driver's 16 KiB out-of-rect dma region) at
+ *     uniform index 9 + k - exactly where the kernels read it, and the
+ *     same ABI the bit-exact host simulator models.
+ *
+ * Radius > 4 is composed from r1..r4 stages by gpu_gauss_decompose
+ * (greedy {16,9,4,1}); for radius 6 that yields {4,4,2}, exactly the
+ * stage sequence g2dtest's gaussian_blur_r6 reference composes, so the
+ * GPU result is bit-identical to it.  Each stage is an H pass
+ * (canvas rect -> tmp at the padded pitch) then a V pass (tmp -> canvas
+ * rect); the padded tmp pitch breaks the 4 KiB L2T set aliasing that
+ * otherwise collapses the V pass's gathered rows onto one set. */
+
+/* Decompose radius N > 4 into r1..r4 stages (N^2 = sum ri^2, greedy
+ * {16,9,4,1}; a square mod 16 is 0/1/4/9 so at most one small stage
+ * remains after the r4s).  Returns the stage count.  Non-static so the bsp
+ * NEON fallback (Pi3, no VC4 gauss kernel) can compose the same stage
+ * sequence and stay bit-exact with the GPU path and g2dtest's composed r6.
+ * stages[] must hold at least N*N/16 + 6 entries (<= 262 for radius <= 64). */
+int gpu_gauss_decompose(int radius, int *stages)
+{
+    static const struct {
+        int sq;
+        int r;
+    } cand[4] = { { 16, 4 }, { 9, 3 }, { 4, 2 }, { 1, 1 } };
+    int rem = radius * radius;
+    int n = 0, i;
+
+    for (i = 0; i < 4; i++)
+        while (rem >= cand[i].sq) {
+            stages[n++] = cand[i].r;
+            rem -= cand[i].sq;
+        }
+    return n;
+}
+
+/* Non-zero when the V3D 4.2 CSD gauss kernels are present (Pi4/BCM2711).
+ * bsp_g2d_gaussian_blur gates its half-res scale chain on this so a Pi3
+ * (VC4, no gauss kernel) never runs a wasted downsample blit before
+ * gpu_gaussian_blur_op declines with GPU_UNSUPPORTED. */
+int gpu_gauss_available(void)
+{
+    return v3d_g2d_ver() == 42;
+}
+
+int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
+                         uint32_t tmp_phys, uint32_t *tmp,
+                         int32_t w, int32_t h,
+                         int32_t rx, int32_t ry,
+                         int32_t rw, int32_t rh, int32_t radius)
+{
+    static const uint16_t wk1[3] = { 6980, 51576, 6980 };
+    static const uint16_t wk2[5] = { 3571, 16004, 26386, 16004, 3571 };
+    static const uint16_t wk3[7] = { 2401, 7293, 14205, 17738, 14205,
+                                     7293, 2401 };
+    static const uint16_t wk4[9] = { 1811, 4344, 8115, 11808, 13380,
+                                     11808, 8115, 4344, 1811 };
+    static const struct {
+        const uint16_t *wk;
+        const uint64_t *hcode;
+        const unsigned *hn;   /* extern _n values are not initializer
+                               * constants - store the addresses */
+        const uint64_t *vcode;
+        const unsigned *vn;
+    } set[5] = {
+        [1] = { wk1, g2d_qpu_v42_gauss_h3, &g2d_qpu_v42_gauss_h3_n,
+                g2d_qpu_v42_gauss_v3, &g2d_qpu_v42_gauss_v3_n },
+        [2] = { wk2, g2d_qpu_v42_gauss_h5, &g2d_qpu_v42_gauss_h5_n,
+                g2d_qpu_v42_gauss_v5, &g2d_qpu_v42_gauss_v5_n },
+        [3] = { wk3, g2d_qpu_v42_gauss_h7, &g2d_qpu_v42_gauss_h7_n,
+                g2d_qpu_v42_gauss_v7, &g2d_qpu_v42_gauss_v7_n },
+        [4] = { wk4, g2d_qpu_v42_gauss_h9, &g2d_qpu_v42_gauss_h9_n,
+                g2d_qpu_v42_gauss_v9, &g2d_qpu_v42_gauss_v9_n },
+    };
+    uint32_t u[20];
+    const uint16_t *wk;
+    const uint64_t *hcode, *vcode;
+    unsigned hn, vn;
+    int nq, rows, i, k, rc;
+    uint32_t pitch4, tmp_pitch, groups;
+    size_t tmp_need, src_off;
+    int stages[80];
+    int ns, si;
+
+    if (v3d_g2d_ver() != 42)
+        return GPU_UNSUPPORTED;          /* VC4 (Pi3): no gauss kernel */
+
+    if (argb == NULL || tmp == NULL || w <= 0 || h <= 0 ||
+        rx < 0 || ry < 0 || rw <= 0 || rh <= 0 ||
+        rx > w - rw || ry > h - rh ||
+        radius < 1 || radius > 64)
+        return GPU_UNSUPPORTED;
+
+    ns = (radius <= 4) ? 1 : gpu_gauss_decompose(radius, stages);
+    if (radius <= 4)
+        stages[0] = radius;
+
+    nq = v3d_g2d_num_qpus();
+    if (nq > h)
+        nq = h;
+    rows = g2d_qpu_rows(h, nq, w * 4);
+
+    /* Scratch (tmp) row pitch, padded to break L2T set aliasing: when the
+     * canvas pitch is 4 KiB-aligned the V pass's (2r+1) gathered tmp rows
+     * are 4 KiB apart and collapse onto the same L2T sets.  One extra 64 B
+     * cache line makes the per-row set-index shift odd; non-aligned pitches
+     * are left byte-identical.  A 4 KiB-aligned pitch means w is a multiple
+     * of 1024 (hence of 16), so the padded path never has a partial tail
+     * group.  MUST match the tmp sizing in bsp_g2d.c and graph_g2d.c. */
+    pitch4 = (uint32_t)w * 4u;
+    tmp_pitch = ((pitch4 & 4095u) == 0u) ? (pitch4 + 64u) : pitch4;
+    groups = (uint32_t)((rw + 15) / 16);
+    tmp_need = (size_t)(rh - 1) * tmp_pitch + (size_t)rw * 4u;
+    src_off = (size_t)ry * pitch4 + (size_t)rx * 4u;
+
+    /* the kernels build the per-QPU band offset with smul24; the widest
+     * band stride is the padded tmp (H-pass dst / V-pass src) */
+    if ((uint32_t)(nq - 1) * (uint32_t)rows * tmp_pitch >= (1u << 24))
+        return GPU_UNSUPPORTED;
+
+    /* every pass is a full-maintenance dispatch; the bracket keeps the
+     * whole blur one op so another worker cannot interleave a stage */
+    v3d_g2d_op_begin();
+    for (si = 0; si < ns; si++) {
+        int st = stages[si];
+        wk = set[st].wk;
+        k = 2 * st + 1;
+        hcode = set[st].hcode;
+        hn = *set[st].hn;
+        vcode = set[st].vcode;
+        vn = *set[st].vn;
+
+        u[3] = (uint32_t)rw - 1u;
+        u[4] = (uint32_t)rh - 1u;
+        u[5] = groups - 1u;                  /* L1: groups/row (ceil) - 1 */
+        u[7] = (uint32_t)rows;
+        for (i = 0; i < k; i++)
+            u[9 + i] = wk[i];
+        /* u[9 + k] - the tail-lane store-redirect scratch - is appended by
+         * v3d_g2d_run at index nunifs (= 9 + k), the raspi5 convention. */
+
+        /* H pass: canvas rect (pitch4) -> tmp (tmp_pitch) */
+        u[0] = phys + (uint32_t)src_off;
+        u[1] = tmp_phys;
+        u[2] = pitch4;                       /* src row pitch   = canvas */
+        u[6] = groups * 64u - tmp_pitch;     /* dst row wrap    = tmp */
+        u[8] = (uint32_t)rows * tmp_pitch;   /* dst band stride = tmp */
+        rc = v3d_g2d_run(hcode, (int)hn, u, 9 + k, nq,
+                         (const uint8_t *)argb + src_off, (size_t)h * pitch4,
+                         tmp, tmp_need);
+        if (rc != 0) {
+            v3d_g2d_op_end();
+            return GPU_FAILED;
+        }
+
+        /* V pass: tmp (tmp_pitch) -> canvas rect (pitch4) */
+        u[0] = tmp_phys;
+        u[1] = phys + (uint32_t)src_off;
+        u[2] = tmp_pitch;                    /* src row pitch   = tmp */
+        u[6] = groups * 64u - pitch4;        /* dst row wrap    = canvas */
+        u[8] = (uint32_t)rows * pitch4;      /* dst band stride = canvas */
+        rc = v3d_g2d_run(vcode, (int)vn, u, 9 + k, nq,
+                         tmp, tmp_need,
+                         (uint8_t *)argb + src_off, (size_t)h * pitch4);
+        if (rc != 0) {
+            v3d_g2d_op_end();
+            return GPU_FAILED;
+        }
+    }
+    v3d_g2d_op_end();
+    return GPU_DONE;
+}

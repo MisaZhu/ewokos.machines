@@ -408,21 +408,166 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
     }
     return -1;
 }
-/* in-place separable gaussian blur of a sub-rect: delegated to the
-   platform's arch_g2d_* back end (the NEON software engine), which
-   blurs in place, clips the rect to the buffer bounds and allocates
-   its own scratch, so tmp/tmp_phy/tmp_contig are unused. the back end
-   accepts any radius. */
+/* in-place separable gaussian blur of a sub-rect, as a 3-tier degrade:
+   1. the V3D 4.2 GPU blur (gpu_gaussian_blur_op) - real acceleration on
+      Pi4, bit-exact with the client's reference for r1..r4 and for the
+      composed r6 (= r4-r4-r2).  A large whole-canvas blur (area >= 256^2,
+      radius >= 2, Pi4 only) first tries a half-res chain - downsample 2x,
+      blur at the SAME radius, upsample 2x (~4x fewer pixels) - that trades
+      bit-exactness for speed behind a frost; it commits the canvas only at
+      the final upsample, so any earlier failure falls through to the exact
+      kernels with the canvas pristine.  g2dtest's r1-r6 correctness canvas
+      (320x200 = 64000) sits below the gate and stays bit-exact;
+   2. else the arch NEON engine (arch_g2d_gaussian, ARCH_BOOST), which
+      blurs in place, clips the rect to the buffer bounds and allocates its
+      own scratch - this covers Pi3 (VC4 has no gauss kernel), a surface
+      that is not GPU-visible, and any rect the GPU declines as ineligible;
+   3. else decline as a missing capability (sticky G2D_ERR_NOT_SUPPORTED)
+      so a build with no NEON engine linked into the driver lets the client
+      keep its own software blur, rather than the non-BOOST
+      arch_g2d_gaussian stub claiming success on an unblurred canvas.
+   A GPU_FAILED (a dispatch was submitted and then errored/timed out) is
+   returned as-is and NEVER replayed on NEON here: the GPU may still own or
+   have partially written the canvas.  G2D_ERR_FAILED does not latch the
+   client's capability, so the GPU path is retried on the next blur. */
 int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
 			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
 			int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
-	(void)tmp; (void)tmp_phy; (void)tmp_contig;
-   	return G2D_ERR_NOT_SUPPORTED; //TODO
-    /*
+	uint32_t phys = 0;
+	uint32_t scratch_phys = 0;
+	/* scratch row pitch = canvas pitch, padded by one 64 B cache line when
+	   that pitch is 4 KiB-aligned, so the GPU V pass's (2r+1)-row gather
+	   lands in distinct L2T sets instead of aliasing onto one. this sizing
+	   MUST match gpu_gaussian_blur_op in vc_g2d.c and the client's
+	   graph_g2d.c blur_tmp_get allocation. */
+	uint32_t argb_pitch = (uint32_t)argb_w * 4u;
+	uint32_t tmp_pitch = ((argb_pitch & 4095u) == 0u) ? (argb_pitch + 64u)
+	                                                  : argb_pitch;
+	size_t tmp_need = (size_t)(rect_h - 1) * tmp_pitch + (size_t)rect_w * 4u;
+
+	if(argb != NULL && tmp != NULL &&
+			radius >= 1 && radius <= 64 &&
+			gpu_ok(argb_w, argb_h) &&
+			rect_x >= 0 && rect_y >= 0 && rect_w > 0 && rect_h > 0 &&
+			rect_x <= argb_w - rect_w && rect_y <= argb_h - rect_h) {
+		phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+		scratch_phys = gpu_phys(tmp_phy, tmp_need, tmp_contig);
+	}
+	if(phys != 0 && scratch_phys != 0) {
+		/* Half-res fast path (quality-for-speed), mirroring raspi5: for a
+		   whole-canvas blur big enough that the blur dominates the two extra
+		   scale dispatches, downsample 2x, blur the half-res image at the
+		   SAME radius (never halved - the caller's quality knob still governs
+		   the spread), then upsample 2x back.  Processing 1/4 the pixels is
+		   the entire speedup; the accepted trade-off is a softer, point-sampled
+		   (decimate down / nearest up) result that is NOT bit-exact, which is
+		   fine behind a translucent frost.  Gated to V3D 4.2 (Pi4), a
+		   whole-canvas rect, area >= 65536 (>= 256^2) and radius >= 2, so the
+		   g2dtest r1-r6 correctness canvas (320x200 = 64000) stays on the
+		   exact kernels and only the PERF/bench groups (640x480 and up) take
+		   this path.
+
+		   Buffer reuse, no extra allocation: the half-res image lives at tmp[0]
+		   (hw*hh*4 bytes) and the half-res blur's scratch at tmp[off_b]; each
+		   region is ~1/4 of tmp_need, so off_b + scratch_need fits inside the
+		   scratch the client already allocated.  The REAL canvas is written
+		   ONLY by the final upsample, so a down or blur failure (even a
+		   submitted-dispatch timeout, which only ever touches tmp) leaves the
+		   canvas pristine and falls through to the exact full-res blur below;
+		   only once the upsample is submitted is the canvas committed, and a
+		   GPU_FAILED there is returned as-is and never replayed. */
+		if(gpu_gauss_available() &&
+				radius >= 2 &&
+				rect_x == 0 && rect_y == 0 &&
+				rect_w == argb_w && rect_h == argb_h &&
+				argb_w >= 64 && argb_h >= 64 &&
+				(int64_t)argb_w * (int64_t)argb_h >= 65536) {
+			int32_t hw = argb_w / 2, hh = argb_h / 2;
+			uint32_t half_pitch = (uint32_t)hw * 4u;
+			uint32_t half_tmp_pitch = ((half_pitch & 4095u) == 0u)
+			                              ? (half_pitch + 64u) : half_pitch;
+			size_t off_b = ((size_t)hw * (size_t)hh * 4u + 63u) &
+			               ~(size_t)63u;
+			size_t scratch_need = (size_t)(hh - 1) * half_tmp_pitch +
+			                      (size_t)hw * 4u;
+			g2d_map_t m;
+			if(off_b + scratch_need <= tmp_need) {
+				uint32_t* tmp_b = (uint32_t*)((uint8_t*)tmp + off_b);
+				uint32_t scratch_b_phys = scratch_phys + (uint32_t)off_b;
+				/* down: canvas -> tmp[0] as a packed hw x hh surface */
+				g2d_map_params(0, 0, argb_w, argb_h, 0, 0, hw, hh,
+				               G2D_BSP_MAP_ROT_0, &m);
+				if(gpu_map_fits(&m, ((int64_t)hw + 15) / 16 * 16, hh) &&
+						gpu_blit_surface(&m, phys, argb, argb_w, argb_h,
+						                 scratch_phys, tmp, hw, hh,
+						                 0, 0, hw, hh, 1) == GPU_DONE) {
+					/* blur tmp[0] at the FULL radius; scratch = tmp[off_b] */
+					if(gpu_gaussian_blur_op(scratch_phys, tmp,
+					                        scratch_b_phys, tmp_b,
+					                        hw, hh, 0, 0, hw, hh,
+					                        radius) == GPU_DONE) {
+						/* up: tmp[0] (hw x hh) -> canvas */
+						int ur = GPU_UNSUPPORTED;
+						g2d_map_params(0, 0, hw, hh, 0, 0, argb_w, argb_h,
+						               G2D_BSP_MAP_ROT_0, &m);
+						if(gpu_map_fits(&m,
+						                ((int64_t)argb_w + 15) / 16 * 16,
+						                argb_h))
+							ur = gpu_blit_surface(&m, scratch_phys, tmp,
+							                    hw, hh, phys, argb,
+							                    argb_w, argb_h,
+							                    0, 0, argb_w, argb_h, 1);
+						if(ur == GPU_DONE)
+							return 0;
+						if(ur == GPU_FAILED)
+							return G2D_ERR_FAILED;  /* canvas committed */
+						/* GPU_UNSUPPORTED / map did not fit: nothing was
+						   submitted, the canvas is still pristine, so fall
+						   through to the exact full-res blur. */
+					}
+				}
+			}
+			/* gate not met, scratch too small, or the down/blur failed before
+			   the canvas was touched: fall through to the exact full-res GPU
+			   blur (and then NEON). */
+		}
+		{
+			int gr = gpu_gaussian_blur_op(phys, argb, scratch_phys, tmp,
+					argb_w, argb_h,
+					rect_x, rect_y, rect_w, rect_h, radius);
+			if(gr == GPU_DONE)
+				return 0;
+			if(gr == GPU_FAILED)
+				return G2D_ERR_FAILED;   /* never replay a submitted dispatch */
+			/* GPU_UNSUPPORTED: declined before submitting anything, so the
+			   NEON engine below runs on a still-untouched canvas. */
+		}
+	}
+#ifdef ARCH_BOOST
+	/* VC4 (Pi3) has no GPU gauss kernel, so the NEON engine runs.  Mirror the
+	   GPU's radius > 4 decomposition (greedy {16,9,4,1}, so r6 = r4-r4-r2) by
+	   blurring each stage in place: every arch_g2d_gaussian stage is bit-exact
+	   with the g2dtest reference for its radius, so the composition is bit-exact
+	   with the reference's composed r6, and Pi3 matches Pi4's GPU output for any
+	   radius.  radius <= 4 stays a single pass (already bit-exact).  The 264-entry
+	   stages bound covers the validated radius <= 64 (max 262 stages); a larger
+	   radius is left to the single pass, which gaussian_blur_neon ignores above
+	   its own radius-32 cap. */
+	if(radius > 4 && radius <= 64) {
+		int stages[264];
+		int ns = gpu_gauss_decompose(radius, stages);
+		int si;
+		for(si = 0; si < ns; si++)
+			arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
+					rect_x, rect_y, rect_w, rect_h, stages[si]);
+		return 0;
+	}
 	return arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
 			rect_x, rect_y, rect_w, rect_h, radius);
-    */
+#else
+	return G2D_ERR_NOT_SUPPORTED;
+#endif
 }

@@ -170,4 +170,33 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                       uint32_t dst_phys, uint32_t *argb_dst,
                       int32_t dst_w, int32_t dst_h, int rot);
 
+/* In-place separable gaussian blur of the rect (rx,ry,rw,rh) of a w x h
+ * ARGB8888 canvas at physical base `phys` / virtual `argb`, using `tmp`
+ * (physical `tmp_phys`) as the intermediate scratch.  V3D 4.2 CSD path:
+ * radius 1..4 run one H+V kernel pair; radius > 4 is composed from r1..r4
+ * stages (greedy {16,9,4,1}), so radius 6 == r4-r4-r2.  The caller must
+ * size `tmp` for the padded pitch (see gpu_gaussian_blur_op: tmp rows are
+ * laid out at pitch4, or pitch4+64 when pitch4 is 4 KiB-aligned).  Returns
+ * GPU_DONE on success, GPU_UNSUPPORTED for VC4 (Pi3), ineligible geometry
+ * or a missing scratch, GPU_FAILED on a failed dispatch (never retried). */
+int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
+                         uint32_t tmp_phys, uint32_t *tmp,
+                         int32_t w, int32_t h,
+                         int32_t rx, int32_t ry,
+                         int32_t rw, int32_t rh, int32_t radius);
+
+/* Decompose a blur radius > 4 into the r1..r4 stage sequence the GPU uses
+ * (greedy {16,9,4,1}, so radius 6 -> {4,4,2}); returns the stage count and
+ * fills stages[] (caller sizes it for >= radius*radius/16 + 6 entries, i.e.
+ * 264 covers the validated radius <= 64).  Shared with the bsp NEON fallback
+ * so Pi3 (no VC4 gauss kernel) composes the same stages and matches the GPU
+ * result bit-for-bit. */
+int gpu_gauss_decompose(int radius, int *stages);
+
+/* Non-zero when the V3D 4.2 CSD gauss kernels are available (Pi4/BCM2711);
+ * zero on VC4 (Pi3/BCM2837), where gaussian blur has no GPU kernel.  Lets
+ * bsp_g2d_gaussian_blur skip its half-res scale chain on Pi3 instead of
+ * running a downsample blit that gpu_gaussian_blur_op would then decline. */
+int gpu_gauss_available(void);
+
 #endif /* VIDEOCORE_VC_G2D_H */

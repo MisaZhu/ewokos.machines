@@ -2147,3 +2147,1866 @@ const uint64_t g2d_qpu_v42_argb_fill[] = {
     0x3c000000bb800000ULL,  /*   nop  */
 };
 const unsigned g2d_qpu_v42_argb_fill_n = 105;
+
+/* kernel gauss_v9: 309 instructions */
+const uint64_t g2d_qpu_v42_gauss_v9[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d870000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d82c000bb800000ULL,  /*   nop  */
+    0x3d830000bb800000ULL,  /*   nop  */
+    0x3d834000bb800000ULL,  /*   nop  */
+    0x3d838000bb800000ULL,  /*   nop  */
+    0x3d83c000bb800000ULL,  /*   nop  */
+    0x3d840000bb800000ULL,  /*   nop  */
+    0x3d87c000bb800000ULL,  /*   nop  */
+    0x3de000123883ef01ULL,  /*   mov rf18, 1  */
+    0x3de000127c83e488ULL,  /*   shl rf18, rf18, 8  */
+    0x3de000123c83e481ULL,  /*   sub rf18, rf18, 1  */
+    0x3de000133883ef01ULL,  /*   mov rf19, 1  */
+    0x3de000137c83e4cfULL,  /*   shl rf19, rf19, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001d7c83e442ULL,  /*   shl rf29, rf17, 2  */
+    0x3c0000143883e05dULL,  /*   add rf20, rf1, rf29  */
+    0x3de000157c83e442ULL,  /*   shl rf21, rf17, 2  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059cULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x020007ce0000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c0000183c83e618ULL,  /*   mov rf24, 0  */
+    0x3c0000193c83e659ULL,  /*   mov rf25, 0  */
+    0x3c00001a3c83e69aULL,  /*   mov rf26, 0  */
+    0x3c00001b3c83e6dbULL,  /*   mov rf27, 0  */
+    0x3de0001e7c83e0c2ULL,  /*   shl rf30, rf3, 2  */
+    0x3c00801c3c83e795ULL,  /*   sub pushn rf28, rf30, rf21  */
+    0x3c0000157883e55eULL,  /*   min rf21, rf21, rf30  */
+    0x3de0001d3c83e584ULL,  /*   sub rf29, rf22, 4  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf80708ULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80789ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80789ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80789ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf80709ULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078aULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078aULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078aULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070aULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078bULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078bULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078bULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070bULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078cULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078cULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078cULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070cULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078dULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078dULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078dULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070dULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078eULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078eULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078eULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070eULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078fULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078fULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078fULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070fULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80790ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80790ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80790ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf80710ULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c00001d3883e613ULL,  /*   add rf29, rf24, rf19  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e653ULL,  /*   add rf30, rf25, rf19  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e693ULL,  /*   add rf30, rf26, rf19  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6d3ULL,  /*   add rf30, rf27, rf19  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e7fcULL,  /*   mov ifa rf30, rf31  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3de800163883e581ULL,  /*   add ifa rf22, rf22, 1  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3c0000153883e541ULL,  /*   add rf21, rf21, rf1  */
+    0x3de800157c83e442ULL,  /*   shl ifa rf21, rf17, 2  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fff86dff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_v9_n = 309;
+
+/* kernel gauss_h9: 305 instructions */
+const uint64_t g2d_qpu_v42_gauss_h9[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d874000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d82c000bb800000ULL,  /*   nop  */
+    0x3d830000bb800000ULL,  /*   nop  */
+    0x3d834000bb800000ULL,  /*   nop  */
+    0x3d838000bb800000ULL,  /*   nop  */
+    0x3d83c000bb800000ULL,  /*   nop  */
+    0x3d840000bb800000ULL,  /*   nop  */
+    0x3d87c000bb800000ULL,  /*   nop  */
+    0x3de000123883ef01ULL,  /*   mov rf18, 1  */
+    0x3de000127c83e488ULL,  /*   shl rf18, rf18, 8  */
+    0x3de000123c83e481ULL,  /*   sub rf18, rf18, 1  */
+    0x3de000133883ef01ULL,  /*   mov rf19, 1  */
+    0x3de000137c83e4cfULL,  /*   shl rf19, rf19, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001e7c83e442ULL,  /*   shl rf30, rf17, 2  */
+    0x3c0000143883e05eULL,  /*   add rf20, rf1, rf30  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059dULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x24000700bbf80582ULL,  /*   nop  */
+    0x3c0000003883e01cULL,  /*   add rf0, rf0, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x020007a60000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3de000153c83e444ULL,  /*   sub rf21, rf17, 4  */
+    0x3c0000163c83e0d1ULL,  /*   sub rf22, rf3, rf17  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c0000183c83e618ULL,  /*   mov rf24, 0  */
+    0x3c0000193c83e659ULL,  /*   mov rf25, 0  */
+    0x3c00001a3c83e69aULL,  /*   mov rf26, 0  */
+    0x3c00001b3c83e6dbULL,  /*   mov rf27, 0  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf80708ULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80789ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80789ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80789ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf80709ULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078aULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078aULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078aULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070aULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078bULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078bULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078bULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070bULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078cULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078cULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078cULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070cULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078dULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078dULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078dULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070dULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078eULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078eULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078eULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070eULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078fULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078fULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf8078fULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf8070fULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80790ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000183883e61eULL,  /*   add rf24, rf24, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80790ULL,  /*   shr rf28, rf28, 8  */
+    0x3c0000193883e65eULL,  /*   add rf25, rf25, rf30  */
+    0x3c00001eb583e712ULL,  /*   and rf30, rf28, rf18  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80790ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001a3883e69eULL,  /*   add rf26, rf26, rf30  */
+    0x0c000740bbf80710ULL,  /*   add rf26, rf26, rf30  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c00001d3883e613ULL,  /*   add rf29, rf24, rf19  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e653ULL,  /*   add rf30, rf25, rf19  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e693ULL,  /*   add rf30, rf26, rf19  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6d3ULL,  /*   add rf30, rf27, rf19  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3de0801c3c83e580ULL,  /*   sub pushn rf28, rf22, 0  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e7fcULL,  /*   mov ifa rf30, rf31  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3c0800003883e002ULL,  /*   add ifa rf0, rf0, rf2  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3de000153883e548ULL,  /*   add rf21, rf21, 8  */
+    0x3de8001d3883e141ULL,  /*   add ifa rf29, rf5, 1  */
+    0x3de8001d7c83e744ULL,  /*   shl ifa rf29, rf29, 4  */
+    0x3c0800153c83e55dULL,  /*   sub ifa rf21, rf21, rf29  */
+    0x3de000163c83e58fULL,  /*   sub rf22, rf22, 15  */
+    0x3de000163c83e581ULL,  /*   sub rf22, rf22, 1  */
+    0x3c0800163c83e0d1ULL,  /*   sub ifa rf22, rf3, rf17  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fff8a5ff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_h9_n = 305;
+
+/* kernel gauss_v7: 243 instructions */
+const uint64_t g2d_qpu_v42_gauss_v7[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d870000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d82c000bb800000ULL,  /*   nop  */
+    0x3d830000bb800000ULL,  /*   nop  */
+    0x3d834000bb800000ULL,  /*   nop  */
+    0x3d838000bb800000ULL,  /*   nop  */
+    0x3d87c000bb800000ULL,  /*   nop  */
+    0x3de0000f3883ef01ULL,  /*   mov rf15, 1  */
+    0x3de0000f7c83e3c8ULL,  /*   shl rf15, rf15, 8  */
+    0x3de0000f3c83e3c1ULL,  /*   sub rf15, rf15, 1  */
+    0x3de000103883ef01ULL,  /*   mov rf16, 1  */
+    0x3de000107c83e40fULL,  /*   shl rf16, rf16, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001d7c83e442ULL,  /*   shl rf29, rf17, 2  */
+    0x3c0000143883e05dULL,  /*   add rf20, rf1, rf29  */
+    0x3de000157c83e442ULL,  /*   shl rf21, rf17, 2  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059cULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x020005ce0000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3de0001e7c83e0c2ULL,  /*   shl rf30, rf3, 2  */
+    0x3c00801c3c83e795ULL,  /*   sub pushn rf28, rf30, rf21  */
+    0x3c0000157883e55eULL,  /*   min rf21, rf21, rf30  */
+    0x3de0001d3c83e583ULL,  /*   sub rf29, rf22, 3  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c874000bb800000ULL,  /*   nop  */
+    0x3c878000bb800000ULL,  /*   nop  */
+    0x3c848000bb800000ULL,  /*   nop  */
+    0x3c84c000bb800000ULL,  /*   nop  */
+    0x3c830000bb800000ULL,  /*   nop  */
+    0x3c834000bb800000ULL,  /*   nop  */
+    0x3c000019b583e70fULL,  /*   and rf25, rf28, rf15  */
+    0x3c00001ab583e34fULL,  /*   and rf26, rf13, rf15  */
+    0x3c0000193883e65aULL,  /*   add rf25, rf25, rf26  */
+    0x3c00001ab583e74fULL,  /*   and rf26, rf29, rf15  */
+    0x3c00001bb583e30fULL,  /*   and rf27, rf12, rf15  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e78fULL,  /*   and rf27, rf30, rf15  */
+    0x3c00000eb583e4cfULL,  /*   and rf14, rf19, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3c00000eb583e48fULL,  /*   and rf14, rf18, rf15  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000640bbf80648ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x0c0006c0bbf806caULL,  /*   shr rf30, rf30, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x0c000380bbf8038bULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3de0000c7d83e308ULL,  /*   shr rf12, rf12, 8  */
+    0x3de0000d7d83e348ULL,  /*   shr rf13, rf13, 8  */
+    0x3c0000183883e65aULL,  /*   add rf24, rf25, rf26  */
+    0x3c0000183883e61bULL,  /*   add rf24, rf24, rf27  */
+    0x3c0000183883e60eULL,  /*   add rf24, rf24, rf14  */
+    0x3c00001ab583e70fULL,  /*   and rf26, rf28, rf15  */
+    0x3c00001bb583e34fULL,  /*   and rf27, rf13, rf15  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e74fULL,  /*   and rf27, rf29, rf15  */
+    0x3c00000eb583e30fULL,  /*   and rf14, rf12, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000680bbf80688ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c0006c0bbf806c9ULL,  /*   shr rf29, rf29, 8  */
+    0x3c0000193883e69bULL,  /*   add rf25, rf26, rf27  */
+    0x3c00001ab583e78fULL,  /*   and rf26, rf30, rf15  */
+    0x3c00001bb583e4cfULL,  /*   and rf27, rf19, rf15  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x0c000680bbf8068aULL,  /*   shr rf30, rf30, 8  */
+    0x3c0000193883e65aULL,  /*   add rf25, rf25, rf26  */
+    0x3c00001ab583e48fULL,  /*   and rf26, rf18, rf15  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x0c000680bbf8068bULL,  /*   shr rf18, rf18, 8  */
+    0x3c0000193883e65aULL,  /*   add rf25, rf25, rf26  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3de0000c7d83e308ULL,  /*   shr rf12, rf12, 8  */
+    0x3de0000d7d83e348ULL,  /*   shr rf13, rf13, 8  */
+    0x3c00001bb583e70fULL,  /*   and rf27, rf28, rf15  */
+    0x3c00000eb583e34fULL,  /*   and rf14, rf13, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000680bbf806c8ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001bb583e74fULL,  /*   and rf27, rf29, rf15  */
+    0x3c00000eb583e30fULL,  /*   and rf14, rf12, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c0006c0bbf806c9ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e78fULL,  /*   and rf27, rf30, rf15  */
+    0x3c00000eb583e4cfULL,  /*   and rf14, rf19, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x0c0006c0bbf806caULL,  /*   shr rf30, rf30, 8  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e48fULL,  /*   and rf27, rf18, rf15  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x0c0006c0bbf806cbULL,  /*   shr rf18, rf18, 8  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3de0000c7d83e308ULL,  /*   shr rf12, rf12, 8  */
+    0x3de0000d7d83e348ULL,  /*   shr rf13, rf13, 8  */
+    0x3c00000e3883e70dULL,  /*   add rf14, rf28, rf13  */
+    0x3c00001c3883e74cULL,  /*   add rf28, rf29, rf12  */
+    0x3c00001d3883e793ULL,  /*   add rf29, rf30, rf19  */
+    0x0c000380bbf80388ULL,  /*   add rf29, rf30, rf19  */
+    0x0c000700bbf80709ULL,  /*   nop  */
+    0x0c000740bbf8074aULL,  /*   nop  */
+    0x0c000480bbf8048bULL,  /*   nop  */
+    0x3c00001b3883e39cULL,  /*   add rf27, rf14, rf28  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c00001b3883e6d2ULL,  /*   add rf27, rf27, rf18  */
+    0x3c00001d3883e610ULL,  /*   add rf29, rf24, rf16  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e650ULL,  /*   add rf30, rf25, rf16  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e690ULL,  /*   add rf30, rf26, rf16  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6d0ULL,  /*   add rf30, rf27, rf16  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e7fcULL,  /*   mov ifa rf30, rf31  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3de800163883e581ULL,  /*   add ifa rf22, rf22, 1  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3c0000153883e541ULL,  /*   add rf21, rf21, rf1  */
+    0x3de800157c83e442ULL,  /*   shl ifa rf21, rf17, 2  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fffa6dff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_v7_n = 243;
+
+/* kernel gauss_h7: 241 instructions */
+const uint64_t g2d_qpu_v42_gauss_h7[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d874000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d82c000bb800000ULL,  /*   nop  */
+    0x3d830000bb800000ULL,  /*   nop  */
+    0x3d834000bb800000ULL,  /*   nop  */
+    0x3d838000bb800000ULL,  /*   nop  */
+    0x3d87c000bb800000ULL,  /*   nop  */
+    0x3de0000f3883ef01ULL,  /*   mov rf15, 1  */
+    0x3de0000f7c83e3c8ULL,  /*   shl rf15, rf15, 8  */
+    0x3de0000f3c83e3c1ULL,  /*   sub rf15, rf15, 1  */
+    0x3de000103883ef01ULL,  /*   mov rf16, 1  */
+    0x3de000107c83e40fULL,  /*   shl rf16, rf16, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001e7c83e442ULL,  /*   shl rf30, rf17, 2  */
+    0x3c0000143883e05eULL,  /*   add rf20, rf1, rf30  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059dULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x24000700bbf80582ULL,  /*   nop  */
+    0x3c0000003883e01cULL,  /*   add rf0, rf0, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x020005b60000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3de000153c83e443ULL,  /*   sub rf21, rf17, 3  */
+    0x3c0000163c83e0d1ULL,  /*   sub rf22, rf3, rf17  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c874000bb800000ULL,  /*   nop  */
+    0x3c878000bb800000ULL,  /*   nop  */
+    0x3c848000bb800000ULL,  /*   nop  */
+    0x3c84c000bb800000ULL,  /*   nop  */
+    0x3c830000bb800000ULL,  /*   nop  */
+    0x3c834000bb800000ULL,  /*   nop  */
+    0x3c000019b583e70fULL,  /*   and rf25, rf28, rf15  */
+    0x3c00001ab583e34fULL,  /*   and rf26, rf13, rf15  */
+    0x3c0000193883e65aULL,  /*   add rf25, rf25, rf26  */
+    0x3c00001ab583e74fULL,  /*   and rf26, rf29, rf15  */
+    0x3c00001bb583e30fULL,  /*   and rf27, rf12, rf15  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e78fULL,  /*   and rf27, rf30, rf15  */
+    0x3c00000eb583e4cfULL,  /*   and rf14, rf19, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3c00000eb583e48fULL,  /*   and rf14, rf18, rf15  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000640bbf80648ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x0c0006c0bbf806caULL,  /*   shr rf30, rf30, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x0c000380bbf8038bULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3de0000c7d83e308ULL,  /*   shr rf12, rf12, 8  */
+    0x3de0000d7d83e348ULL,  /*   shr rf13, rf13, 8  */
+    0x3c0000183883e65aULL,  /*   add rf24, rf25, rf26  */
+    0x3c0000183883e61bULL,  /*   add rf24, rf24, rf27  */
+    0x3c0000183883e60eULL,  /*   add rf24, rf24, rf14  */
+    0x3c000019b583e70fULL,  /*   and rf25, rf28, rf15  */
+    0x3c00001ab583e34fULL,  /*   and rf26, rf13, rf15  */
+    0x3c0000193883e65aULL,  /*   add rf25, rf25, rf26  */
+    0x3c00001ab583e74fULL,  /*   and rf26, rf29, rf15  */
+    0x3c00001bb583e30fULL,  /*   and rf27, rf12, rf15  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e78fULL,  /*   and rf27, rf30, rf15  */
+    0x3c00000eb583e4cfULL,  /*   and rf14, rf19, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3c00000eb583e48fULL,  /*   and rf14, rf18, rf15  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000640bbf80648ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x0c0006c0bbf806caULL,  /*   shr rf30, rf30, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x0c000380bbf8038bULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3de0000c7d83e308ULL,  /*   shr rf12, rf12, 8  */
+    0x3de0000d7d83e348ULL,  /*   shr rf13, rf13, 8  */
+    0x3c0000193883e65aULL,  /*   add rf25, rf25, rf26  */
+    0x3c0000193883e65bULL,  /*   add rf25, rf25, rf27  */
+    0x3c0000193883e64eULL,  /*   add rf25, rf25, rf14  */
+    0x3c00001bb583e70fULL,  /*   and rf27, rf28, rf15  */
+    0x3c00000eb583e34fULL,  /*   and rf14, rf13, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000680bbf806c8ULL,  /*   shr rf28, rf28, 8  */
+    0x3c00001bb583e74fULL,  /*   and rf27, rf29, rf15  */
+    0x3c00000eb583e30fULL,  /*   and rf14, rf12, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c0006c0bbf806c9ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e78fULL,  /*   and rf27, rf30, rf15  */
+    0x3c00000eb583e4cfULL,  /*   and rf14, rf19, rf15  */
+    0x3c00001b3883e6ceULL,  /*   add rf27, rf27, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x0c0006c0bbf806caULL,  /*   shr rf30, rf30, 8  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c00001bb583e48fULL,  /*   and rf27, rf18, rf15  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x0c0006c0bbf806cbULL,  /*   shr rf18, rf18, 8  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3de0000c7d83e308ULL,  /*   shr rf12, rf12, 8  */
+    0x3de0000d7d83e348ULL,  /*   shr rf13, rf13, 8  */
+    0x3c00000e3883e70dULL,  /*   add rf14, rf28, rf13  */
+    0x3c00001c3883e74cULL,  /*   add rf28, rf29, rf12  */
+    0x3c00001d3883e793ULL,  /*   add rf29, rf30, rf19  */
+    0x0c000380bbf80388ULL,  /*   add rf29, rf30, rf19  */
+    0x0c000700bbf80709ULL,  /*   nop  */
+    0x0c000740bbf8074aULL,  /*   nop  */
+    0x0c000480bbf8048bULL,  /*   nop  */
+    0x3c00001b3883e39cULL,  /*   add rf27, rf14, rf28  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c00001b3883e6d2ULL,  /*   add rf27, rf27, rf18  */
+    0x3c00001d3883e610ULL,  /*   add rf29, rf24, rf16  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e650ULL,  /*   add rf30, rf25, rf16  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e690ULL,  /*   add rf30, rf26, rf16  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6d0ULL,  /*   add rf30, rf27, rf16  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3de0801c3c83e580ULL,  /*   sub pushn rf28, rf22, 0  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e7fcULL,  /*   mov ifa rf30, rf31  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3c0800003883e002ULL,  /*   add ifa rf0, rf0, rf2  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3de000153883e54aULL,  /*   add rf21, rf21, 10  */
+    0x3de8001d3883e141ULL,  /*   add ifa rf29, rf5, 1  */
+    0x3de8001d7c83e744ULL,  /*   shl ifa rf29, rf29, 4  */
+    0x3c0800153c83e55dULL,  /*   sub ifa rf21, rf21, rf29  */
+    0x3de000163c83e58fULL,  /*   sub rf22, rf22, 15  */
+    0x3de000163c83e581ULL,  /*   sub rf22, rf22, 1  */
+    0x3c0800163c83e0d1ULL,  /*   sub ifa rf22, rf3, rf17  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fffa95ff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_h7_n = 241;
+
+/* kernel gauss_v5: 201 instructions */
+const uint64_t g2d_qpu_v42_gauss_v5[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d87c000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d82c000bb800000ULL,  /*   nop  */
+    0x3d830000bb800000ULL,  /*   nop  */
+    0x3d83c000bb800000ULL,  /*   nop  */
+    0x3de0000d3883ef01ULL,  /*   mov rf13, 1  */
+    0x3de0000d7c83e348ULL,  /*   shl rf13, rf13, 8  */
+    0x3de0000d3c83e341ULL,  /*   sub rf13, rf13, 1  */
+    0x3de0000e3883ef01ULL,  /*   mov rf14, 1  */
+    0x3de0000e7c83e38fULL,  /*   shl rf14, rf14, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001d7c83e442ULL,  /*   shl rf29, rf17, 2  */
+    0x3c0000143883e05dULL,  /*   add rf20, rf1, rf29  */
+    0x3de000157c83e442ULL,  /*   shl rf21, rf17, 2  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059fULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x0200048e0000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3de0001e7c83e0c2ULL,  /*   shl rf30, rf3, 2  */
+    0x3c00801c3c83e795ULL,  /*   sub pushn rf28, rf30, rf21  */
+    0x3c0000157883e55eULL,  /*   min rf21, rf21, rf30  */
+    0x3de0001d3c83e582ULL,  /*   sub rf29, rf22, 2  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c874000bb800000ULL,  /*   nop  */
+    0x3c87c000bb800000ULL,  /*   nop  */
+    0x3c848000bb800000ULL,  /*   nop  */
+    0x3c84c000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e70dULL,  /*   and rf30, rf28, rf13  */
+    0x3c00001ab583e4cdULL,  /*   and rf26, rf19, rf13  */
+    0x3c00001e3883e79aULL,  /*   add rf30, rf30, rf26  */
+    0x3c00001ab583e74dULL,  /*   and rf26, rf29, rf13  */
+    0x3c00001bb583e48dULL,  /*   and rf27, rf18, rf13  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c000019b583e7cdULL,  /*   and rf25, rf31, rf13  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000640bbf8064aULL,  /*   shr rf31, rf31, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3c0000183883e79aULL,  /*   add rf24, rf30, rf26  */
+    0x3c0000183883e619ULL,  /*   add rf24, rf24, rf25  */
+    0x3c00001eb583e70dULL,  /*   and rf30, rf28, rf13  */
+    0x3c00001ab583e4cdULL,  /*   and rf26, rf19, rf13  */
+    0x3c00001e3883e79aULL,  /*   add rf30, rf30, rf26  */
+    0x3c00001ab583e74dULL,  /*   and rf26, rf29, rf13  */
+    0x3c00001bb583e48dULL,  /*   and rf27, rf18, rf13  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c000019b583e7cdULL,  /*   and rf25, rf31, rf13  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000640bbf8064aULL,  /*   shr rf31, rf31, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3c00001b3883e79aULL,  /*   add rf27, rf30, rf26  */
+    0x3c0000193883e6d9ULL,  /*   add rf25, rf27, rf25  */
+    0x3c00001eb583e70dULL,  /*   and rf30, rf28, rf13  */
+    0x3c00001bb583e4cdULL,  /*   and rf27, rf19, rf13  */
+    0x3c00001e3883e79bULL,  /*   add rf30, rf30, rf27  */
+    0x3c00001bb583e74dULL,  /*   and rf27, rf29, rf13  */
+    0x3c00001ab583e48dULL,  /*   and rf26, rf18, rf13  */
+    0x3c00001b3883e6daULL,  /*   add rf27, rf27, rf26  */
+    0x3c00001ab583e7cdULL,  /*   and rf26, rf31, rf13  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c0006c0bbf806c9ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000680bbf8068aULL,  /*   shr rf31, rf31, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3c00001e3883e79bULL,  /*   add rf30, rf30, rf27  */
+    0x3c00001a3883e79aULL,  /*   add rf26, rf30, rf26  */
+    0x3c00001e3883e713ULL,  /*   add rf30, rf28, rf19  */
+    0x0c0006c0bbf807caULL,  /*   add rf30, rf28, rf19  */
+    0x3c00001d3883e752ULL,  /*   add rf29, rf29, rf18  */
+    0x0c000780bbf80788ULL,  /*   add rf29, rf29, rf18  */
+    0x0c000740bbf80749ULL,  /*   nop  */
+    0x3c00001e3883e79dULL,  /*   add rf30, rf30, rf29  */
+    0x3c00001b3883e79bULL,  /*   add rf27, rf30, rf27  */
+    0x3c00001d3883e60eULL,  /*   add rf29, rf24, rf14  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e64eULL,  /*   add rf30, rf25, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e68eULL,  /*   add rf30, rf26, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6ceULL,  /*   add rf30, rf27, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e3fcULL,  /*   mov ifa rf30, rf15  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3de800163883e581ULL,  /*   add ifa rf22, rf22, 1  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3c0000153883e541ULL,  /*   add rf21, rf21, rf1  */
+    0x3de800157c83e442ULL,  /*   shl ifa rf21, rf17, 2  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fffbadff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_v5_n = 201;
+
+/* kernel gauss_h5: 202 instructions */
+const uint64_t g2d_qpu_v42_gauss_h5[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d874000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d82c000bb800000ULL,  /*   nop  */
+    0x3d830000bb800000ULL,  /*   nop  */
+    0x3d83c000bb800000ULL,  /*   nop  */
+    0x3de0000d3883ef01ULL,  /*   mov rf13, 1  */
+    0x3de0000d7c83e348ULL,  /*   shl rf13, rf13, 8  */
+    0x3de0000d3c83e341ULL,  /*   sub rf13, rf13, 1  */
+    0x3de0000e3883ef01ULL,  /*   mov rf14, 1  */
+    0x3de0000e7c83e38fULL,  /*   shl rf14, rf14, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001e7c83e442ULL,  /*   shl rf30, rf17, 2  */
+    0x3c0000143883e05eULL,  /*   add rf20, rf1, rf30  */
+    0x3c00001f3883e03cULL,  /*   mov rf31, rf0  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059dULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x24000700bbf80582ULL,  /*   nop  */
+    0x3c0000003883e01cULL,  /*   add rf0, rf0, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x020004860000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3de000153c83e442ULL,  /*   sub rf21, rf17, 2  */
+    0x3c0000103c83e0d1ULL,  /*   sub rf16, rf3, rf17  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c874000bb800000ULL,  /*   nop  */
+    0x3c87c000bb800000ULL,  /*   nop  */
+    0x3c848000bb800000ULL,  /*   nop  */
+    0x3c84c000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e70dULL,  /*   and rf30, rf28, rf13  */
+    0x3c00001ab583e4cdULL,  /*   and rf26, rf19, rf13  */
+    0x3c00001e3883e79aULL,  /*   add rf30, rf30, rf26  */
+    0x3c00001ab583e74dULL,  /*   and rf26, rf29, rf13  */
+    0x3c00001bb583e48dULL,  /*   and rf27, rf18, rf13  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c000019b583e7cdULL,  /*   and rf25, rf31, rf13  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000640bbf8064aULL,  /*   shr rf31, rf31, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3c0000183883e79aULL,  /*   add rf24, rf30, rf26  */
+    0x3c0000183883e619ULL,  /*   add rf24, rf24, rf25  */
+    0x3c00001eb583e70dULL,  /*   and rf30, rf28, rf13  */
+    0x3c00001ab583e4cdULL,  /*   and rf26, rf19, rf13  */
+    0x3c00001e3883e79aULL,  /*   add rf30, rf30, rf26  */
+    0x3c00001ab583e74dULL,  /*   and rf26, rf29, rf13  */
+    0x3c00001bb583e48dULL,  /*   and rf27, rf18, rf13  */
+    0x3c00001a3883e69bULL,  /*   add rf26, rf26, rf27  */
+    0x3c000019b583e7cdULL,  /*   and rf25, rf31, rf13  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000640bbf8064aULL,  /*   shr rf31, rf31, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3c00001b3883e79aULL,  /*   add rf27, rf30, rf26  */
+    0x3c0000193883e6d9ULL,  /*   add rf25, rf27, rf25  */
+    0x3c00001eb583e70dULL,  /*   and rf30, rf28, rf13  */
+    0x3c00001bb583e4cdULL,  /*   and rf27, rf19, rf13  */
+    0x3c00001e3883e79bULL,  /*   add rf30, rf30, rf27  */
+    0x3c00001bb583e74dULL,  /*   and rf27, rf29, rf13  */
+    0x3c00001ab583e48dULL,  /*   and rf26, rf18, rf13  */
+    0x3c00001b3883e6daULL,  /*   add rf27, rf27, rf26  */
+    0x3c00001ab583e7cdULL,  /*   and rf26, rf31, rf13  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000780bbf80788ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c0006c0bbf806c9ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000680bbf8068aULL,  /*   shr rf31, rf31, 8  */
+    0x3de000127d83e488ULL,  /*   shr rf18, rf18, 8  */
+    0x3de000137d83e4c8ULL,  /*   shr rf19, rf19, 8  */
+    0x3c00001e3883e79bULL,  /*   add rf30, rf30, rf27  */
+    0x3c00001a3883e79aULL,  /*   add rf26, rf30, rf26  */
+    0x3c00001e3883e713ULL,  /*   add rf30, rf28, rf19  */
+    0x0c0006c0bbf807caULL,  /*   add rf30, rf28, rf19  */
+    0x3c00001d3883e752ULL,  /*   add rf29, rf29, rf18  */
+    0x0c000780bbf80788ULL,  /*   add rf29, rf29, rf18  */
+    0x0c000740bbf80749ULL,  /*   nop  */
+    0x3c00001e3883e79dULL,  /*   add rf30, rf30, rf29  */
+    0x3c00001b3883e79bULL,  /*   add rf27, rf30, rf27  */
+    0x3c00001d3883e60eULL,  /*   add rf29, rf24, rf14  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e64eULL,  /*   add rf30, rf25, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e68eULL,  /*   add rf30, rf26, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6ceULL,  /*   add rf30, rf27, rf14  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3de0801c3c83e400ULL,  /*   sub pushn rf28, rf16, 0  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e3fcULL,  /*   mov ifa rf30, rf15  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3c0800003883e002ULL,  /*   add ifa rf0, rf0, rf2  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3de000153883e54cULL,  /*   add rf21, rf21, 12  */
+    0x3de8001d3883e141ULL,  /*   add ifa rf29, rf5, 1  */
+    0x3de8001d7c83e744ULL,  /*   shl ifa rf29, rf29, 4  */
+    0x3c0800153c83e55dULL,  /*   sub ifa rf21, rf21, rf29  */
+    0x3de000103c83e40fULL,  /*   sub rf16, rf16, 15  */
+    0x3de000103c83e401ULL,  /*   sub rf16, rf16, 1  */
+    0x3c0800103c83e0d1ULL,  /*   sub ifa rf16, rf3, rf17  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fffbc5ff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_h5_n = 202;
+
+/* kernel gauss_v3: 159 instructions */
+const uint64_t g2d_qpu_v42_gauss_v3[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d87c000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d834000bb800000ULL,  /*   nop  */
+    0x3de0000b3883ef01ULL,  /*   mov rf11, 1  */
+    0x3de0000b7c83e2c8ULL,  /*   shl rf11, rf11, 8  */
+    0x3de0000b3c83e2c1ULL,  /*   sub rf11, rf11, 1  */
+    0x3de0000c3883ef01ULL,  /*   mov rf12, 1  */
+    0x3de0000c7c83e30fULL,  /*   shl rf12, rf12, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001d7c83e442ULL,  /*   shl rf29, rf17, 2  */
+    0x3c0000143883e05dULL,  /*   add rf20, rf1, rf29  */
+    0x3de000157c83e442ULL,  /*   shl rf21, rf17, 2  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059fULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x0200034e0000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3de0001e7c83e0c2ULL,  /*   shl rf30, rf3, 2  */
+    0x3c00801c3c83e795ULL,  /*   sub pushn rf28, rf30, rf21  */
+    0x3c0000157883e55eULL,  /*   min rf21, rf21, rf30  */
+    0x3de0001d3c83e581ULL,  /*   sub rf29, rf22, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3de0001d3883e741ULL,  /*   add rf29, rf29, 1  */
+    0x3de0001e7983e740ULL,  /*   max rf30, rf29, 0  */
+    0x3c00001e7883e784ULL,  /*   min rf30, rf30, rf4  */
+    0x24000700bbf80782ULL,  /*   nop  */
+    0x3c00001c3883e700ULL,  /*   add rf28, rf28, rf0  */
+    0x3c00001c3883e715ULL,  /*   add rf28, rf28, rf21  */
+    0x3c00100c3883e73cULL,  /*   mov tmua, rf28  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c874000bb800000ULL,  /*   nop  */
+    0x3c87c000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e70bULL,  /*   and rf30, rf28, rf11  */
+    0x3c000018b583e74bULL,  /*   and rf24, rf29, rf11  */
+    0x3c000019b583e7cbULL,  /*   and rf25, rf31, rf11  */
+    0x3c0000193883e799ULL,  /*   add rf25, rf30, rf25  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000640bbf80648ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000600bbf80609ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x3c0000183883e658ULL,  /*   add rf24, rf25, rf24  */
+    0x3c00001eb583e70bULL,  /*   and rf30, rf28, rf11  */
+    0x3c000019b583e74bULL,  /*   and rf25, rf29, rf11  */
+    0x3c00001ab583e7cbULL,  /*   and rf26, rf31, rf11  */
+    0x3c00001a3883e79aULL,  /*   add rf26, rf30, rf26  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000680bbf80688ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000640bbf80649ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x3c0000193883e699ULL,  /*   add rf25, rf26, rf25  */
+    0x3c00001eb583e70bULL,  /*   and rf30, rf28, rf11  */
+    0x3c00001ab583e74bULL,  /*   and rf26, rf29, rf11  */
+    0x3c00001bb583e7cbULL,  /*   and rf27, rf31, rf11  */
+    0x3c00001b3883e79bULL,  /*   add rf27, rf30, rf27  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c0006c0bbf806c8ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000740bbf80749ULL,  /*   shr rf31, rf31, 8  */
+    0x3c00001a3883e6daULL,  /*   add rf26, rf27, rf26  */
+    0x3c00001b3883e71fULL,  /*   add rf27, rf28, rf31  */
+    0x0c0006c0bbf806c8ULL,  /*   nop  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c00001d3883e60cULL,  /*   add rf29, rf24, rf12  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e64cULL,  /*   add rf30, rf25, rf12  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e68cULL,  /*   add rf30, rf26, rf12  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6ccULL,  /*   add rf30, rf27, rf12  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e37cULL,  /*   mov ifa rf30, rf13  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3de800163883e581ULL,  /*   add ifa rf22, rf22, 1  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3c0000153883e541ULL,  /*   add rf21, rf21, rf1  */
+    0x3de800157c83e442ULL,  /*   shl ifa rf21, rf17, 2  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fffcedff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_v3_n = 159;
+
+/* kernel gauss_h3: 162 instructions */
+const uint64_t g2d_qpu_v42_gauss_h3[] = {
+    0x3c00003cb783e000ULL,  /*   xor rf60, rf0, rf0 ; nop ; # v42 zero constant */
+    0x3de0003d3883ef01ULL,  /*   add rf61, rf60, 1 ; nop ; # v42 one constant */
+    0x3de0003e7c83ef42ULL,  /*   shl rf62, rf61, 2 ; nop ; # v42 four constant */
+    0x3de0003b7c83ef82ULL,  /*   shl rf59, rf62, 2 ; nop ; # v42 sixteen constant */
+    0x3de0003a7c83ef81ULL,  /*   shl rf58, rf62, 1 ; nop ; # v42 eight constant */
+    0x3c00001abb801000ULL,  /*   tidx rf26  */
+    0x3de0001a7d83e682ULL,  /*   shr rf26, rf26, 2  */
+    0x3de0001ab583e68fULL,  /*   and rf26, rf26, 15  */
+    0x3d800000bb800000ULL,  /*   nop  */
+    0x3d804000bb800000ULL,  /*   nop  */
+    0x3d808000bb800000ULL,  /*   nop  */
+    0x3d80c000bb800000ULL,  /*   nop  */
+    0x3d810000bb800000ULL,  /*   nop  */
+    0x3d814000bb800000ULL,  /*   nop  */
+    0x3d818000bb800000ULL,  /*   nop  */
+    0x3d81c000bb800000ULL,  /*   nop  */
+    0x3d874000bb800000ULL,  /*   nop  */
+    0x3d820000bb800000ULL,  /*   nop  */
+    0x3d824000bb800000ULL,  /*   nop  */
+    0x3d828000bb800000ULL,  /*   nop  */
+    0x3d834000bb800000ULL,  /*   nop  */
+    0x3de0000b3883ef01ULL,  /*   mov rf11, 1  */
+    0x3de0000b7c83e2c8ULL,  /*   shl rf11, rf11, 8  */
+    0x3de0000b3c83e2c1ULL,  /*   sub rf11, rf11, 1  */
+    0x3de0000c3883ef01ULL,  /*   mov rf12, 1  */
+    0x3de0000c7c83e30fULL,  /*   shl rf12, rf12, 15  */
+    0x3c000011bb802000ULL,  /*   eidx rf17  */
+    0x3de0001e7c83e442ULL,  /*   shl rf30, rf17, 2  */
+    0x3c0000143883e05eULL,  /*   add rf20, rf1, rf30  */
+    0x3c00001f3883e03cULL,  /*   mov rf31, rf0  */
+    0x3c0000163883e6bcULL,  /*   mov rf22, rf26  */
+    0x24000700bbf8059dULL,  /*   nop  */
+    0x3c0000143883e51cULL,  /*   add rf20, rf20, rf28  */
+    0x24000700bbf80587ULL,  /*   nop  */
+    0x3c0000163883e73cULL,  /*   mov rf22, rf28  */
+    0x24000700bbf80582ULL,  /*   nop  */
+    0x3c0000003883e01cULL,  /*   add rf0, rf0, rf28  */
+    0x3de000013883ef01ULL,  /*   mov rf1, 1  */
+    0x3de000017c83e046ULL,  /*   shl rf1, rf1, 6  */
+    0x08048700bbf80116ULL,  /*   nop  */
+    0x020003560000d000ULL,  /*   branch ANYA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c00001c3c83e116ULL,  /*   sub rf28, rf4, rf22  */
+    0x3de0001c3883e701ULL,  /*   add rf28, rf28, 1  */
+    0x3c0000077883e1dcULL,  /*   min rf7, rf7, rf28  */
+    0x3c0000173883e17cULL,  /*   mov rf23, rf5  */
+    0x3de000153c83e441ULL,  /*   sub rf21, rf17, 1  */
+    0x3c00000e3c83e0d1ULL,  /*   sub rf14, rf3, rf17  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3de000153883e541ULL,  /*   add rf21, rf21, 1  */
+    0x3de0001d7983e540ULL,  /*   max rf29, rf21, 0  */
+    0x3c00001d7883e743ULL,  /*   min rf29, rf29, rf3  */
+    0x3de0001d7c83e742ULL,  /*   shl rf29, rf29, 2  */
+    0x3c00001d3883e740ULL,  /*   add rf29, rf29, rf0  */
+    0x3c00100c3883e77cULL,  /*   mov tmua, rf29  */
+    0x3c870000bb800000ULL,  /*   nop  */
+    0x3c874000bb800000ULL,  /*   nop  */
+    0x3c87c000bb800000ULL,  /*   nop  */
+    0x3c00001eb583e70bULL,  /*   and rf30, rf28, rf11  */
+    0x3c000018b583e74bULL,  /*   and rf24, rf29, rf11  */
+    0x3c000019b583e7cbULL,  /*   and rf25, rf31, rf11  */
+    0x3c0000193883e799ULL,  /*   add rf25, rf30, rf25  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000640bbf80648ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000600bbf80609ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x3c0000183883e658ULL,  /*   add rf24, rf25, rf24  */
+    0x3c00001eb583e70bULL,  /*   and rf30, rf28, rf11  */
+    0x3c000019b583e74bULL,  /*   and rf25, rf29, rf11  */
+    0x3c00001ab583e7cbULL,  /*   and rf26, rf31, rf11  */
+    0x3c00001a3883e79aULL,  /*   add rf26, rf30, rf26  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c000680bbf80688ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000640bbf80649ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x3c0000193883e699ULL,  /*   add rf25, rf26, rf25  */
+    0x3c00001eb583e70bULL,  /*   and rf30, rf28, rf11  */
+    0x3c00001ab583e74bULL,  /*   and rf26, rf29, rf11  */
+    0x3c00001bb583e7cbULL,  /*   and rf27, rf31, rf11  */
+    0x3c00001b3883e79bULL,  /*   add rf27, rf30, rf27  */
+    0x3de0001c7d83e708ULL,  /*   shr rf28, rf28, 8  */
+    0x0c0006c0bbf806c8ULL,  /*   shr rf28, rf28, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x0c000680bbf80689ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001f7d83e7c8ULL,  /*   shr rf31, rf31, 8  */
+    0x0c000740bbf80749ULL,  /*   shr rf31, rf31, 8  */
+    0x3c00001a3883e6daULL,  /*   add rf26, rf27, rf26  */
+    0x3c00001b3883e71fULL,  /*   add rf27, rf28, rf31  */
+    0x0c0006c0bbf806c8ULL,  /*   nop  */
+    0x3c00001b3883e6ddULL,  /*   add rf27, rf27, rf29  */
+    0x3c00001d3883e60cULL,  /*   add rf29, rf24, rf12  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3de0001d7d83e748ULL,  /*   shr rf29, rf29, 8  */
+    0x3c00001e3883e64cULL,  /*   add rf30, rf25, rf12  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e68cULL,  /*   add rf30, rf26, rf12  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3c00001e3883e6ccULL,  /*   add rf30, rf27, rf12  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7d83e788ULL,  /*   shr rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3de0001e7c83e788ULL,  /*   shl rf30, rf30, 8  */
+    0x3c00001db683e75eULL,  /*   or rf29, rf29, rf30  */
+    0x3de0801c3c83e380ULL,  /*   sub pushn rf28, rf14, 0  */
+    0x3c00001e3883e53cULL,  /*   mov rf30, rf20  */
+    0x3c08001e3883e37cULL,  /*   mov ifa rf30, rf13  */
+    0x3c00100b3883e77cULL,  /*   mov tmud, rf29  */
+    0x3c00100c3883e7bcULL,  /*   mov tmua, rf30  */
+    0x3c0000143883e501ULL,  /*   add rf20, rf20, rf1  */
+    0x080485c0bbf805fdULL,  /*   add rf20, rf20, rf1  */
+    0x3c0800173883e17cULL,  /*   mov ifa rf23, rf5  */
+    0x080c01c0bbf801fdULL,  /*   mov ifa rf23, rf5  */
+    0x3c0800003883e002ULL,  /*   add ifa rf0, rf0, rf2  */
+    0x3c0800143c83e506ULL,  /*   sub ifa rf20, rf20, rf6  */
+    0x3de000153883e54eULL,  /*   add rf21, rf21, 14  */
+    0x3de8001d3883e141ULL,  /*   add ifa rf29, rf5, 1  */
+    0x3de8001d7c83e744ULL,  /*   shl ifa rf29, rf29, 4  */
+    0x3c0800153c83e55dULL,  /*   sub ifa rf21, rf21, rf29  */
+    0x3de0000e3c83e38fULL,  /*   sub rf14, rf14, 15  */
+    0x3de0000e3c83e381ULL,  /*   sub rf14, rf14, 1  */
+    0x3c08000e3c83e0d1ULL,  /*   sub ifa rf14, rf3, rf17  */
+    0x3de0401d3c83e1c0ULL,  /*   sub pushz rf29, rf7, 0  */
+    0x02fffcf5ff00d000ULL,  /*   branch ANYNA */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c001006bb815000ULL,  /*   tmuwt nop  */
+    0x3c201012bb814000ULL,  /*   barrierid syncb  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c200000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+    0x3c000000bb800000ULL,  /*   nop  */
+};
+const unsigned g2d_qpu_v42_gauss_h3_n = 162;
+

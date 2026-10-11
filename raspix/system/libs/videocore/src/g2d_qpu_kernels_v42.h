@@ -24,5 +24,23 @@ extern const uint64_t g2d_qpu_v42_argb_scale_pow2[];
 extern const unsigned g2d_qpu_v42_argb_scale_pow2_n;
 extern const uint64_t g2d_qpu_v42_v42_store[];
 extern const unsigned g2d_qpu_v42_v42_store_n;
+/* separable gaussian blur passes: radius 1 -> h3/v3, 2 -> h5/v5, 3 -> h7/v7,
+ * 4 -> h9/v9 (radius > 4 is composed from these by gpu_gauss_decompose). */
+extern const uint64_t g2d_qpu_v42_gauss_h3[];
+extern const unsigned g2d_qpu_v42_gauss_h3_n;
+extern const uint64_t g2d_qpu_v42_gauss_v3[];
+extern const unsigned g2d_qpu_v42_gauss_v3_n;
+extern const uint64_t g2d_qpu_v42_gauss_h5[];
+extern const unsigned g2d_qpu_v42_gauss_h5_n;
+extern const uint64_t g2d_qpu_v42_gauss_v5[];
+extern const unsigned g2d_qpu_v42_gauss_v5_n;
+extern const uint64_t g2d_qpu_v42_gauss_h7[];
+extern const unsigned g2d_qpu_v42_gauss_h7_n;
+extern const uint64_t g2d_qpu_v42_gauss_v7[];
+extern const unsigned g2d_qpu_v42_gauss_v7_n;
+extern const uint64_t g2d_qpu_v42_gauss_h9[];
+extern const unsigned g2d_qpu_v42_gauss_h9_n;
+extern const uint64_t g2d_qpu_v42_gauss_v9[];
+extern const unsigned g2d_qpu_v42_gauss_v9_n;
 
 #endif
