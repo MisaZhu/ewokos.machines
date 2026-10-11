@@ -7,6 +7,10 @@ TARGET_DIR = $(BUILD_DIR)
 
 LDFLAGS = -L $(TARGET_DIR)/lib
 
+# g2dclient headers come from the source tree, not $(TARGET_DIR)/include:
+# bsp is built in the basic_sys phase (via -C libs), which runs before
+# gui_sys installs libg2dclient's headers, so on a clean build the
+# installed copy does not exist yet when bsp_g2d.c includes it.
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/platform/$(ARCH)/include/$(ARCH) \
 	-I $(SYS_DIR)/basic/libs/sd/include \
@@ -14,6 +18,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/gui/libs/usb/include \
 	-I $(SYS_DIR)/gui/libs/hid/include \
 	-I $(SYS_DIR)/gui/libs/bt/include \
+	-I $(SYS_DIR)/gui/libs/g2dclient/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 # bsp_g2d.c is the public g2d API only: the VideoCore back end it calls
