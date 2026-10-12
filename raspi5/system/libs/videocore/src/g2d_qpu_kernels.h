@@ -3198,14 +3198,14 @@ const uint64_t g2d_qpu_argb_triangle[] = {
     0x380000053c03fb77ULL,  /*   sub */
     0x380000383c03f60fULL,  /*   sub */
     0x24000e40bbb96000ULL,  /*   nop */
-    0x240008c0bbaf8000ULL,  /*   nop */
-    0x0400082038831e63ULL,  /*   add */
+    0x240008f938af8e71ULL,  /*   add rf57, rf57, rf49 ; smul24 rf35, rf43, rf56 */
+    0x380000203803fe63ULL,  /*   add rf32, rf57, rf35 */
     0x24000e40bbbd6000ULL,  /*   nop */
-    0x240008c0bbb38000ULL,  /*   nop */
-    0x0400086138872e63ULL,  /*   add */
+    0x240008f938b38e72ULL,  /*   add rf57, rf57, rf50 ; smul24 rf35, rf44, rf56 */
+    0x380000213803fe63ULL,  /*   add rf33, rf57, rf35 */
     0x24000e40bbc16000ULL,  /*   nop */
-    0x240008c0bbb78000ULL,  /*   nop */
-    0x040008a2388b3e63ULL,  /*   add */
+    0x240008f938b78e73ULL,  /*   add rf57, rf57, rf51 ; smul24 rf35, rf45, rf56 */
+    0x380000223803fe63ULL,  /*   add rf34, rf57, rf35 */
     0x3800001cf903f203ULL,  /*   mov */
     0x08048a80bb298000ULL,  /*   nop */
     0x020004a60000d000ULL,  /*   branch ANYA */
