@@ -252,7 +252,8 @@ static inline volatile uint32_t *v3d_core(void)
 #define KERN_GAUSS_V3 13
 #define KERN_GAUSS_H7 14
 #define KERN_GAUSS_V7 15
-#define KERN_N 16
+#define KERN_TRIANGLE 16
+#define KERN_N 17
 static uint64_t *_kcode[KERN_N];     /* per-kernel code staging VA (dma) */
 static uint32_t _kcode_p[KERN_N];    /* per-kernel code staging physical */
 static const uint64_t *_ksrc[KERN_N];/* kernel source arrays */
@@ -743,7 +744,7 @@ static int g2d_mmu_check_fault(int kern, int nunifs, int num_qpus)
     static const char *const names[KERN_N] = {
         "fill", "blit", "alpha", "rotate", "scale2", "rot90",
         "copy4", "fill4", "gauss_h5", "gauss_v5", "gauss_h9", "gauss_v9",
-        "gauss_h3", "gauss_v3", "gauss_h7", "gauss_v7"
+        "gauss_h3", "gauss_v3", "gauss_h7", "gauss_v7", "triangle"
     };
     uint32_t faults = V3D_MMU_WRITE_FAULT |
                       V3D_MMU_PT_INVALID_FAULT |
@@ -1001,6 +1002,7 @@ int v3d_g2d_init(void)
     _ksrc[KERN_GAUSS_V3] = g2d_qpu_gauss_v3; _ksrc_n[KERN_GAUSS_V3] = g2d_qpu_gauss_v3_n;
     _ksrc[KERN_GAUSS_H7] = g2d_qpu_gauss_h7; _ksrc_n[KERN_GAUSS_H7] = g2d_qpu_gauss_h7_n;
     _ksrc[KERN_GAUSS_V7] = g2d_qpu_gauss_v7; _ksrc_n[KERN_GAUSS_V7] = g2d_qpu_gauss_v7_n;
+    _ksrc[KERN_TRIANGLE] = g2d_qpu_argb_triangle; _ksrc_n[KERN_TRIANGLE] = g2d_qpu_argb_triangle_n;
     for (i = 0; i < KERN_N; i++) {
         uint32_t k;
         _kcode[i] = (uint64_t *)dma_alloc(0, CSD_CODE_WORDS * 8);
@@ -1336,6 +1338,8 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         kern = KERN_GAUSS_H7;
     else if (code == g2d_qpu_gauss_v7)
         kern = KERN_GAUSS_V7;
+    else if (code == g2d_qpu_argb_triangle)
+        kern = KERN_TRIANGLE;
     else
         return -1;      /* only the bsp_g2d kernels are supported */
     if ((uint32_t)nwords > _ksrc_n[kern])

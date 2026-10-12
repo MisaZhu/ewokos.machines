@@ -152,6 +152,21 @@ int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
                            int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                            uint32_t color);
 
+/* Filled triangle (x1,y1)-(x2,y2)-(x3,y3) source-over blended into the
+ * dst_w x dst_h ARGB8888 canvas at physical base dst_phys / virtual argb_dst,
+ * colour's alpha byte as the global alpha (alpha == 0 is a no-op).  The three
+ * edge half-planes carry a doubled + asymmetric half-pixel bias, so the covered
+ * pixel set matches arch_g2d_fill_triangle and each pixel is bit-identical to
+ * the same colour laid down by gpu_fill_alpha_surface.  V3D 4.2 CSD path:
+ * returns GPU_DONE on success (or a no-op: transparent colour / fully
+ * off-surface), GPU_UNSUPPORTED for VC4 (Pi3, no CSD triangle kernel), an
+ * invalid surface or a band too large for the kernel's smul24 dst offset,
+ * GPU_FAILED on a failed dispatch (never retried - a blend is not idempotent). */
+int gpu_fill_triangle_op(uint32_t dst_phys, uint32_t *argb_dst,
+                         int32_t dst_w, int32_t dst_h,
+                         int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                         int32_t x3, int32_t y3, uint32_t color);
+
 /* Whole-surface clockwise rotation through m (any angle), writing every
  * destination pixel: rotated content, or transparent 0 for pixels whose
  * pre-clamp source coordinate is out of range. */
@@ -198,5 +213,12 @@ int gpu_gauss_decompose(int radius, int *stages);
  * bsp_g2d_gaussian_blur skip its half-res scale chain on Pi3 instead of
  * running a downsample blit that gpu_gaussian_blur_op would then decline. */
 int gpu_gauss_available(void);
+
+/* Non-zero when the V3D 4.2 CSD triangle kernel is available (Pi4/BCM2711);
+ * zero on VC4 (Pi3/BCM2837), which has no CSD triangle primitive.  Lets
+ * bsp_g2d_fill_triangle latch the sticky G2D_ERR_NOT_SUPPORTED capability on
+ * Pi3 so the client rasterizes triangles in-process (graph_fill_triangle_arch)
+ * instead of paying a declined g2dd round-trip for every one. */
+int gpu_triangle_available(void);
 
 #endif /* VIDEOCORE_VC_G2D_H */

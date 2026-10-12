@@ -196,6 +196,8 @@ extern const uint64_t g2d_qpu_argb_copy[];
 extern const unsigned g2d_qpu_argb_copy_n;
 extern const uint64_t g2d_qpu_argb_fill4[];
 extern const unsigned g2d_qpu_argb_fill4_n;
+extern const uint64_t g2d_qpu_argb_triangle[];
+extern const unsigned g2d_qpu_argb_triangle_n;
 
 /* Separable Gaussian blur passes, radius 2 (h5+v5) and radius 4 (h9+v9):
  * hardware-verified encodings, see g2d_qpu_kernels.h. */

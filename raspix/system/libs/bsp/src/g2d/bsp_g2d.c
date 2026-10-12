@@ -240,6 +240,42 @@ int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t conti
                                   color) == GPU_DONE ? 0 : -1;
 }
 
+/* Filled triangle, GPU-accelerated on V3D 4.2 (Pi4/BCM2711) through the CSD
+ * argb_triangle kernel (gpu_fill_triangle_op): the same edge-function +
+ * half-pixel-bias rasterizer as the client's arch_g2d_fill_triangle, so the
+ * covered pixel set and each blended pixel are bit-identical to the NEON path.
+ * GPU-only like bsp_g2d_fill_alpha - this back end never rasterizes on the CPU:
+ *   - VC4 (Pi3) has no CSD triangle primitive, so gpu_triangle_available() is
+ *     false and we latch the sticky G2D_ERR_NOT_SUPPORTED capability, letting
+ *     the client rasterize every triangle in-process (graph_fill_triangle_arch)
+ *     instead of paying a declined round-trip each time;
+ *   - a canvas that fails the eligibility gate reports G2D_ERR_FAILED before
+ *     anything is written and the client blends that one on the cpu;
+ *   - a submitted dispatch (GPU_FAILED) or a band too large for the kernel's
+ *     smul24 dst offset (GPU_UNSUPPORTED, both non-zero here) is handed back as
+ *     G2D_ERR_FAILED and never replayed; alpha == 0 is a no-op. */
+int32_t bsp_g2d_fill_triangle(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
+                         int32_t argb_w, int32_t argb_h,
+                         int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                         int32_t x3, int32_t y3, uint32_t color)
+{
+    uint32_t phys = 0;
+
+    if (((color >> 24) & 0xff) == 0)
+        return 0;                          /* fully transparent: no-op */
+    if (!gpu_triangle_available())
+        return G2D_ERR_NOT_SUPPORTED;      /* VC4 (Pi3): no CSD triangle kernel */
+    if (!argb || argb_w <= 0 || argb_h <= 0)
+        return G2D_ERR_FAILED;
+    if (gpu_ok(argb_w, argb_h))
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+    if (!phys)
+        return G2D_ERR_FAILED;             /* not GPU-visible: client rasterizes */
+    return gpu_fill_triangle_op(phys, argb, argb_w, argb_h,
+                                x1, y1, x2, y2, x3, y3,
+                                color) == GPU_DONE ? 0 : G2D_ERR_FAILED;
+}
+
 /* CPU back end for sub-alignment tails and narrow copies: scalar 1:1
  * copy or blend with exact per-pixel access, no alignment, contiguity
  * or GPU requirements.  The 1:1 rect is clipped against both buffer

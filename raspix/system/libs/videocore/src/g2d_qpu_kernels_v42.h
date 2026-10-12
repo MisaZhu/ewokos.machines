@@ -42,5 +42,11 @@ extern const uint64_t g2d_qpu_v42_gauss_h9[];
 extern const unsigned g2d_qpu_v42_gauss_h9_n;
 extern const uint64_t g2d_qpu_v42_gauss_v9[];
 extern const unsigned g2d_qpu_v42_gauss_v9_n;
+/* Filled triangle (three edge half-planes, doubled + asymmetric half-pixel
+ * bias): V3D 4.2 / Pi 4 only - VC4 2.1 / Pi 3 has no CSD triangle primitive
+ * and declines.  Assembled from the same argb_triangle.qpu as the V3D 7.1
+ * array; rf58-62 stay untouched (the v42 constant prologue reserves them). */
+extern const uint64_t g2d_qpu_v42_argb_triangle[];
+extern const unsigned g2d_qpu_v42_argb_triangle_n;
 
 #endif

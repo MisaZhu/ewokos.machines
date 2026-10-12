@@ -165,6 +165,21 @@ int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
                       int32_t rx, int32_t ry, int32_t rx1, int32_t ry1,
                       uint32_t color);
 
+/* Filled triangle (x1,y1)-(x2,y2)-(x3,y3) in a constant ARGB colour (its
+ * alpha byte is the blend alpha; 0xff is an opaque store): the dedicated
+ * argb_triangle CSD kernel rasterizes the three edge half-planes directly
+ * on the GPU, walking them incrementally, so a triangle pixel is
+ * bit-identical to the same colour laid down by gpu_fill_alpha_op and the
+ * covered set matches arch_g2d_fill_triangle's rounded scanline span.
+ * Vertices may lie off-surface (the bbox is clipped and the kernel's
+ * right-edge clamp keeps every write inside).  alpha 0 or a fully
+ * off-surface triangle is a no-op success; like the other blends a
+ * failure is reported, never retried on the CPU. */
+int gpu_fill_triangle_op(uint32_t dst_phys, uint32_t *argb_dst,
+                         int32_t dst_w, int32_t dst_h,
+                         int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                         int32_t x3, int32_t y3, uint32_t color);
+
 /* Whole-destination scale through the corner-preserving map m: aligned
  * exact power-of-two downscales take the faster argb_scale_pow2 kernel,
  * every other shape takes argb_blit. */

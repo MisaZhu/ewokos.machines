@@ -1607,6 +1607,167 @@ int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
     return gr;
 }
 
+/* ---- filled triangle (V3D 4.2 CSD) ----------------------------------
+ * Ported from raspi5's gpu_fill_triangle_op and adapted to raspix:
+ *   - v3d_g2d_run does cache maintenance internally, so there is no
+ *     v3d_g2d_maint_t / g2d_poll_flags argument;
+ *   - returns the raspix GPU_DONE/GPU_UNSUPPORTED/GPU_FAILED tri-state;
+ *   - dispatches the V3D 4.2 g2d_qpu_v42_argb_triangle array (VC4/Pi3 has
+ *     no CSD triangle primitive, so ver != 42 declines with GPU_UNSUPPORTED
+ *     and the bsp latches the capability for the client's NEON rasterizer);
+ *   - raspix does not band: one dispatch covers the whole vertex bbox, and a
+ *     band whose per-QPU dst offset would overflow the kernel's smul24
+ *     (an absurdly large canvas) declines with GPU_UNSUPPORTED instead of
+ *     mis-dispatching.
+ *
+ * The three edge half-planes e_i = A_i*y + B_i*x + C_i (inside = all
+ * e_i >= 0) are built by tri_edges with the doubled + asymmetric half-pixel
+ * bias that reproduces the CPU scanline's iround(xl)..iround(xr) span exactly
+ * (k+0.5 ties round half up): A and B are doubled so the 0.5px outward shift
+ * becomes an integer folded into C - (B>0 left edge) 2C+B-1 strict, (B<0 right
+ * edge) 2C-B inclusive, (B==0 horizontal) 2C.  The kernel walks these
+ * incrementally and clamps every write to px < dst_w, so a triangle pixel is
+ * bit-identical to the same colour laid down by gpu_fill_alpha_surface and the
+ * covered set matches arch_g2d_fill_triangle.  Uniform ABI u[0..20]
+ * (nunifs = 21); v3d_g2d_run appends the tail-lane store-redirect scratch at
+ * index 21, but the kernel reads its scratch from u[18], set explicitly here. */
+static void tri_edges(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                      int32_t x2, int32_t y2, int32_t out[9])
+{
+    int32_t xs[3], ys[3], cx, cy, cp;
+    int i, bad = 0;
+
+    xs[0] = x0; ys[0] = y0;
+    xs[1] = x1; ys[1] = y1;
+    xs[2] = x2; ys[2] = y2;
+    cx = (x0 + x1 + x2) / 3;
+    cy = (y0 + y1 + y2) / 3;
+    for (i = 0; i < 3; i++) {
+        int32_t xi = xs[i], yi = ys[i];
+        int32_t xn = xs[(i + 1) % 3], yn = ys[(i + 1) % 3];
+        out[i * 3 + 0] = xn - xi;                         /* A = dx */
+        out[i * 3 + 1] = -(yn - yi);                      /* B = -dy */
+        out[i * 3 + 2] = (yn - yi) * xi - (xn - xi) * yi; /* C */
+        if (out[i * 3 + 0] * cy + out[i * 3 + 1] * cx +
+            out[i * 3 + 2] < 0)
+            bad = 1;
+    }
+    if (bad)
+        for (i = 0; i < 9; i++)
+            out[i] = -out[i];
+    for (i = 0; i < 3; i++) {
+        int32_t A = out[i * 3 + 0], B = out[i * 3 + 1], C = out[i * 3 + 2];
+        if (B > 0)      cp = 2 * C + B - 1;
+        else if (B < 0) cp = 2 * C - B;
+        else            cp = 2 * C;
+        out[i * 3 + 0] = 2 * A;
+        out[i * 3 + 1] = 2 * B;
+        out[i * 3 + 2] = cp;
+    }
+}
+
+/* One dispatch of the triangle kernel over the row band [y0,y1): nq QPUs
+ * banded by qid, each walking `rows` rows from y0+qid*rows (the tail band is
+ * clipped to y1-1 inside the kernel).  The edge constants Ea/Eb/Ec are
+ * re-evaluated at this band's y0 so the incremental walk starts exact.  There
+ * is no source stream - the colour is a uniform - so only the dst canvas is
+ * described to v3d_g2d_run. */
+static int gpu_fill_triangle_surface(const int32_t e[9], uint32_t color,
+                                     uint32_t dst_phys, uint32_t *argb_dst,
+                                     int32_t dst_w,
+                                     int32_t X0, int32_t L,
+                                     int32_t y0, int32_t y1)
+{
+    uint32_t u[21];
+    int32_t stride = dst_w * 4;
+    int32_t band_h = y1 - y0;
+    int nq = v3d_g2d_num_qpus();
+    int32_t rows;
+    uint8_t a = (uint8_t)(color >> 24);
+
+    if (nq > band_h)
+        nq = band_h;
+    rows = g2d_qpu_rows(band_h, nq, stride);
+    /* The kernel builds each QPU's dst offset with smul24 qid*(rows*stride),
+     * so rows*stride is a signed 24-bit operand; a band that would overflow
+     * it (an absurdly large canvas raspix cannot band) is declined, never
+     * mis-dispatched onto a wrapped offset. */
+    if ((uint32_t)rows * (uint32_t)stride >= (1u << 23))
+        return GPU_UNSUPPORTED;
+    u[0] = (uint32_t)e[0];
+    u[1] = (uint32_t)e[3];
+    u[2] = (uint32_t)e[6];
+    u[3] = (uint32_t)e[1];
+    u[4] = (uint32_t)e[4];
+    u[5] = (uint32_t)e[7];
+    /* Ea_i = A_i*y0 + B_i*X0 + C_i at this band's top-left group origin */
+    u[6] = (uint32_t)((int64_t)e[0] * y0 + (int64_t)e[1] * X0 + e[2]);
+    u[7] = (uint32_t)((int64_t)e[3] * y0 + (int64_t)e[4] * X0 + e[5]);
+    u[8] = (uint32_t)((int64_t)e[6] * y0 + (int64_t)e[7] * X0 + e[8]);
+    u[9] = 0xff000000u | (color & 0x00ffffffu);
+    u[10] = (a == 0xff) ? 256u : (uint32_t)a;
+    u[11] = dst_phys + (uint32_t)((int64_t)y0 * dst_w + X0) * 4u;
+    u[12] = (uint32_t)(L - 1);
+    u[13] = (uint32_t)(y1 - 1);                  /* H1: band's last row */
+    u[14] = (uint32_t)(L * 64 - stride);         /* jump: L*64 - stride */
+    u[15] = (uint32_t)y0;
+    u[16] = (uint32_t)rows;
+    u[17] = (uint32_t)(rows * stride);           /* rows * stride (bytes) */
+    u[18] = v3d_g2d_scratch_phys();              /* out-of-shape lane sink */
+    u[19] = 255u;
+    u[20] = (uint32_t)(dst_w - 1 - X0);          /* Wlim1: px < dst_w clamp */
+    return v3d_g2d_run(g2d_qpu_v42_argb_triangle, g2d_qpu_v42_argb_triangle_n,
+                       u, 21, nq, NULL, 0,
+                       argb_dst + (size_t)y0 * dst_w,
+                       (size_t)band_h * (size_t)dst_w * 4) == 0 ?
+           GPU_DONE : GPU_FAILED;
+}
+
+/* Non-zero when the V3D 4.2 CSD triangle kernel is present (Pi4/BCM2711).
+ * bsp_g2d_fill_triangle latches the sticky G2D_ERR_NOT_SUPPORTED capability on
+ * VC4 (Pi3, no CSD triangle primitive) so the client rasterizes every triangle
+ * in-process instead of paying a declined IPC round-trip each time. */
+int gpu_triangle_available(void)
+{
+    return v3d_g2d_ver() == 42;
+}
+
+int gpu_fill_triangle_op(uint32_t dst_phys, uint32_t *argb_dst,
+                         int32_t dst_w, int32_t dst_h,
+                         int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                         int32_t x3, int32_t y3, uint32_t color)
+{
+    int32_t e[9];
+    int32_t xmin, xmax, ymin, ymax, X0, L, yend;
+    uint8_t a = (uint8_t)(color >> 24);
+
+    if (v3d_g2d_ver() != 42)
+        return GPU_UNSUPPORTED;          /* VC4 (Pi3): no CSD triangle kernel */
+    if (a == 0)
+        return GPU_DONE;                 /* nothing to blend */
+    if (dst_w <= 0 || dst_h <= 0)
+        return GPU_UNSUPPORTED;
+    /* clip the vertex bbox to the surface; the kernel's right-edge clamp keeps
+     * the 16-pixel-group traversal inside a non-aligned width. */
+    xmin = x1 < x2 ? (x1 < x3 ? x1 : x3) : (x2 < x3 ? x2 : x3);
+    xmax = x1 > x2 ? (x1 > x3 ? x1 : x3) : (x2 > x3 ? x2 : x3);
+    ymin = y1 < y2 ? (y1 < y3 ? y1 : y3) : (y2 < y3 ? y2 : y3);
+    ymax = y1 > y2 ? (y1 > y3 ? y1 : y3) : (y2 > y3 ? y2 : y3);
+    if (xmin < 0) xmin = 0;
+    if (ymin < 0) ymin = 0;
+    if (xmax > dst_w - 1) xmax = dst_w - 1;
+    if (ymax > dst_h - 1) ymax = dst_h - 1;
+    if (xmin > xmax || ymin > ymax)
+        return GPU_DONE;                 /* fully off-surface: no-op */
+
+    tri_edges(x1, y1, x2, y2, x3, y3, e);
+    X0 = xmin & ~15;                     /* align_down(xmin,16) */
+    L = ((xmax + 16) >> 4) - (X0 >> 4);  /* ceil((xmax+1)/16) - X0/16 */
+    yend = ymax + 1;
+    return gpu_fill_triangle_surface(e, color, dst_phys, argb_dst,
+                                     dst_w, X0, L, ymin, yend);
+}
+
 /* ---- separable gaussian blur (V3D 4.2 CSD) --------------------------
  * Ported from raspi5's gpu_gaussian_blur_op and adapted to raspix:
  *   - v3d_g2d_run does cache maintenance internally, so there is no

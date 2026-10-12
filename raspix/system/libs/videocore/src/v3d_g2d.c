@@ -704,7 +704,8 @@ static inline void g2d_dsb(void)
 #define KERN_GAUSS_V7 22
 #define KERN_GAUSS_H9 23
 #define KERN_GAUSS_V9 24
-#define KERN_TOTAL 25
+#define KERN_TRIANGLE 25
+#define KERN_TOTAL 26
 /* Alpha has one immutable code address per exact output span.  VC4 does
  * not reliably observe either dynamic late-uniform VDW setups or code
  * replacement at an address already present in its instruction cache. */
@@ -1885,6 +1886,8 @@ int v3d_g2d_init(void)
         _ksrc_n[KERN_GAUSS_H9] = g2d_qpu_v42_gauss_h9_n;
         _ksrc[KERN_GAUSS_V9] = g2d_qpu_v42_gauss_v9;
         _ksrc_n[KERN_GAUSS_V9] = g2d_qpu_v42_gauss_v9_n;
+        _ksrc[KERN_TRIANGLE] = g2d_qpu_v42_argb_triangle;
+        _ksrc_n[KERN_TRIANGLE] = g2d_qpu_v42_argb_triangle_n;
     } else if (_ver >= 71) {
         _ksrc[KERN_FILL] = g2d_qpu_argb_fill;
         _ksrc_n[KERN_FILL] = g2d_qpu_argb_fill_n;
@@ -2820,6 +2823,8 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         kern = KERN_GAUSS_H9;
     else if (_ver == 42 && code == g2d_qpu_v42_gauss_v9)
         kern = KERN_GAUSS_V9;
+    else if (_ver == 42 && code == g2d_qpu_v42_argb_triangle)
+        kern = KERN_TRIANGLE;
     else
         return -1;
     if ((uint32_t)nwords > _ksrc_n[kern]

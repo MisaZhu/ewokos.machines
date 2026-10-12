@@ -1392,6 +1392,169 @@ int gpu_fill_alpha_op(uint32_t dst_phys, uint32_t *argb_dst,
     return ok;
 }
 
+/* Filled triangle (argb_triangle kernel).
+ *
+ * The three edge half-planes e_i = A_i*y + B_i*x + C_i (inside = all
+ * e_i >= 0) are built here with the doubled + asymmetric half-pixel bias
+ * that reproduces the CPU scanline's iround(xl)..iround(xr) span exactly
+ * (k+0.5 ties round half up): A and B are doubled so the 0.5px outward
+ * shift becomes an integer folded into C - (B>0 left edge) 2C+B-1 strict,
+ * (B<0 right edge) 2C-B inclusive, (B==0 horizontal) 2C.  The kernel
+ * walks these incrementally and clamps every write to px < dst_w, so a
+ * triangle pixel is bit-identical to the same colour laid down by
+ * gpu_fill_alpha_op and the covered set matches arch_g2d_fill_triangle. */
+static void tri_edges(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                      int32_t x2, int32_t y2, int32_t out[9])
+{
+    int32_t xs[3], ys[3], cx, cy, cp;
+    int i, bad = 0;
+
+    xs[0] = x0; ys[0] = y0;
+    xs[1] = x1; ys[1] = y1;
+    xs[2] = x2; ys[2] = y2;
+    cx = (x0 + x1 + x2) / 3;
+    cy = (y0 + y1 + y2) / 3;
+    for (i = 0; i < 3; i++) {
+        int32_t xi = xs[i], yi = ys[i];
+        int32_t xn = xs[(i + 1) % 3], yn = ys[(i + 1) % 3];
+        out[i * 3 + 0] = xn - xi;                         /* A = dx */
+        out[i * 3 + 1] = -(yn - yi);                      /* B = -dy */
+        out[i * 3 + 2] = (yn - yi) * xi - (xn - xi) * yi; /* C */
+        if (out[i * 3 + 0] * cy + out[i * 3 + 1] * cx +
+            out[i * 3 + 2] < 0)
+            bad = 1;
+    }
+    if (bad)
+        for (i = 0; i < 9; i++)
+            out[i] = -out[i];
+    for (i = 0; i < 3; i++) {
+        int32_t A = out[i * 3 + 0], B = out[i * 3 + 1], C = out[i * 3 + 2];
+        if (B > 0)      cp = 2 * C + B - 1;
+        else if (B < 0) cp = 2 * C - B;
+        else            cp = 2 * C;
+        out[i * 3 + 0] = 2 * A;
+        out[i * 3 + 1] = 2 * B;
+        out[i * 3 + 2] = cp;
+    }
+}
+
+/* One dispatch of the triangle kernel over the row band [y0,y1): nq QPUs
+ * banded by qid, each walking `rows` rows from y0+qid*rows (the tail band
+ * is clipped to y1-1 inside the kernel).  The edge constants Ea/Eb/Ec are
+ * re-evaluated at this band's y0 so the incremental walk starts exact.
+ * There is no source stream - the colour is a uniform - so the maint hull
+ * covers the dst canvas only. */
+static int gpu_fill_triangle_surface(const int32_t e[9], uint32_t color,
+                                     uint32_t dst_phys, uint32_t *argb_dst,
+                                     int32_t dst_w, int32_t dst_h,
+                                     int32_t X0, int32_t L,
+                                     int32_t y0, int32_t y1,
+                                     unsigned maint)
+{
+    uint32_t u[21];
+    int32_t stride = dst_w * 4;
+    int32_t band_h = y1 - y0;
+    int nq = v3d_g2d_num_qpus();
+    int32_t rows;
+    uint8_t a = (uint8_t)(color >> 24);
+    v3d_g2d_maint_t mr;
+
+    if (nq > band_h)
+        nq = band_h;
+    rows = g2d_qpu_rows(band_h, nq, stride);
+    u[0] = (uint32_t)e[0];
+    u[1] = (uint32_t)e[3];
+    u[2] = (uint32_t)e[6];
+    u[3] = (uint32_t)e[1];
+    u[4] = (uint32_t)e[4];
+    u[5] = (uint32_t)e[7];
+    /* Ea_i = A_i*y0 + B_i*X0 + C_i at this band's top-left group origin */
+    u[6] = (uint32_t)((int64_t)e[0] * y0 + (int64_t)e[1] * X0 + e[2]);
+    u[7] = (uint32_t)((int64_t)e[3] * y0 + (int64_t)e[4] * X0 + e[5]);
+    u[8] = (uint32_t)((int64_t)e[6] * y0 + (int64_t)e[7] * X0 + e[8]);
+    u[9] = 0xff000000u | (color & 0x00ffffffu);
+    u[10] = (a == 0xff) ? 256u : (uint32_t)a;
+    u[11] = dst_phys + (uint32_t)((int64_t)y0 * dst_w + X0) * 4u;
+    u[12] = (uint32_t)(L - 1);
+    u[13] = (uint32_t)(y1 - 1);                  /* H1: band's last row */
+    u[14] = (uint32_t)(L * 64 - stride);         /* jump: L*64 - stride */
+    u[15] = (uint32_t)y0;
+    u[16] = (uint32_t)rows;
+    u[17] = (uint32_t)(rows * stride);           /* rows * stride (bytes) */
+    u[18] = v3d_g2d_scratch_phys();              /* out-of-shape lane sink */
+    u[19] = 255u;
+    u[20] = (uint32_t)(dst_w - 1 - X0);          /* Wlim1: px < dst_w clamp */
+    maint = g2d_poll_flags(maint,
+                           (uint64_t)L * 16u * (uint32_t)band_h,
+                           G2D_1MS_ALPHA_PIXELS, nq);
+    mr.src_phy = 0;
+    mr.src_span = 0;
+    mr.dst_phy = dst_phys;
+    mr.dst_span = (size_t)dst_w * (size_t)dst_h * 4u;
+    return v3d_g2d_run(g2d_qpu_argb_triangle, g2d_qpu_argb_triangle_n,
+                       u, 21, nq, NULL, 0,
+                       argb_dst + (size_t)y0 * dst_w,
+                       (size_t)band_h * (size_t)dst_w * 4,
+                       &mr, maint) == 0;
+}
+
+int gpu_fill_triangle_op(uint32_t dst_phys, uint32_t *argb_dst,
+                         int32_t dst_w, int32_t dst_h,
+                         int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                         int32_t x3, int32_t y3, uint32_t color)
+{
+    int32_t e[9];
+    int32_t xmin, xmax, ymin, ymax, X0, L, yend;
+    int32_t band, y, next;
+    size_t dst_bytes;
+    uint8_t a = (uint8_t)(color >> 24);
+
+    if (a == 0)
+        return 1;                        /* nothing to blend */
+    if (dst_w <= 0 || dst_h <= 0)
+        return 0;
+    /* clip the vertex bbox to the surface; the kernel's right-edge clamp
+     * keeps the 16-pixel-group traversal inside a non-aligned width. */
+    xmin = x1 < x2 ? (x1 < x3 ? x1 : x3) : (x2 < x3 ? x2 : x3);
+    xmax = x1 > x2 ? (x1 > x3 ? x1 : x3) : (x2 > x3 ? x2 : x3);
+    ymin = y1 < y2 ? (y1 < y3 ? y1 : y3) : (y2 < y3 ? y2 : y3);
+    ymax = y1 > y2 ? (y1 > y3 ? y1 : y3) : (y2 > y3 ? y2 : y3);
+    if (xmin < 0) xmin = 0;
+    if (ymin < 0) ymin = 0;
+    if (xmax > dst_w - 1) xmax = dst_w - 1;
+    if (ymax > dst_h - 1) ymax = dst_h - 1;
+    if (xmin > xmax || ymin > ymax)
+        return 1;                        /* fully off-surface: no-op */
+
+    tri_edges(x1, y1, x2, y2, x3, y3, e);
+    X0 = xmin & ~15;                     /* align_down(xmin,16) */
+    L = ((xmax + 16) >> 4) - (X0 >> 4);  /* ceil((xmax+1)/16) - X0/16 */
+    yend = ymax + 1;
+    dst_bytes = (size_t)dst_w * (size_t)dst_h * 4u;
+
+    if (dst_bytes <= G2D_BIG_SURFACE)
+        return gpu_fill_triangle_surface(e, color, dst_phys, argb_dst,
+                                         dst_w, dst_h, X0, L,
+                                         ymin, yend, V3D_G2D_MAINT_ALL);
+    /* past the cliff: the rows are independent (each band re-seeds its
+     * edges at its own y0), so band like the alpha blend; one lock
+     * bracket so no foreign op lands between the bands. */
+    band = g2d_band_rows(dst_w);
+    v3d_g2d_op_begin();
+    for (y = ymin; y < yend; y = next) {
+        next = (yend - y < band) ? yend : y + band;
+        if (!gpu_fill_triangle_surface(e, color, dst_phys, argb_dst,
+                                       dst_w, dst_h, X0, L,
+                                       y, next,
+                                       g2d_band_maint(y, next, ymin, yend))) {
+            v3d_g2d_op_end();
+            return 0;
+        }
+    }
+    v3d_g2d_op_end();
+    return 1;
+}
+
 /* Whole-destination scale through the caller's corner-preserving map. */
 int gpu_scale_op(const g2d_map_t *m,
                  uint32_t src_phys, uint32_t *argb_src,

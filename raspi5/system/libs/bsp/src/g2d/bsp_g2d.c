@@ -293,6 +293,30 @@ int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t conti
                              rx + rw, ry + rh, color) ? 0 : -1;
 }
 
+/* Filled triangle: GPU-only like the other operations (the dedicated
+ * argb_triangle CSD kernel rasterizes the three edge half-planes with the
+ * doubled + asymmetric half-pixel bias, see gpu_fill_triangle_op), same
+ * eligibility gate as bsp_g2d_fill_alpha.  alpha == 0 is a no-op and the
+ * vertices may lie off-surface (the bbox is clipped and the kernel clamps
+ * every write inside).  Blends are not idempotent, so a failed dispatch is
+ * reported, never replayed on the CPU. */
+int32_t bsp_g2d_fill_triangle(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
+                         int32_t argb_w, int32_t argb_h,
+                         int32_t x1, int32_t y1, int32_t x2, int32_t y2,
+                         int32_t x3, int32_t y3, uint32_t color)
+{
+    uint32_t phys = 0;
+
+    if (((color >> 24) & 0xff) == 0)
+        return 0;
+    if (argb && gpu_ok(argb_w, argb_h))
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+    if (!phys)
+        return -1;
+    return gpu_fill_triangle_op(phys, argb, argb_w, argb_h,
+                                x1, y1, x2, y2, x3, y3, color) ? 0 : -1;
+}
+
 int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
                        int32_t src_w, int32_t src_h,
                        uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
