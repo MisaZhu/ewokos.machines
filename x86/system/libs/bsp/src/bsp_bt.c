@@ -152,6 +152,15 @@ int bsp_bt_recv(uint32_t timeout_ms) {
     }
 }
 
+/* The x86 shim's H4 stream comes from usbhostd over an IPC round-trip, so
+   there is no local IRQ line to arm; btd's bt_loop keeps its historical
+   usleep cadence here. Wiring an event-driven path would mean usbhostd
+   publishing a wake token, not a bsp_bt-local change. */
+int bsp_bt_wait_readable(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return -1;
+}
+
 int bsp_bt_flush(void) {
     proto_t in, out;
     int dropped = _rx_len - _rx_pos;

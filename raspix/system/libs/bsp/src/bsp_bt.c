@@ -256,6 +256,15 @@ int bsp_bt_recv(uint32_t timeout_ms) {
     return bcm283x_pl011_uart_recv(timeout_ms);
 }
 
+/* No event-driven wait on the Pi 4 PL011 path yet: the pl011 driver is
+   polled (bcm283x_pl011_uart_recv), so returning -1 keeps btd on its
+   historical usleep cadence. Wiring the PL011 RX interrupt here would
+   mirror what the raspi5 16550 path does. */
+int bsp_bt_wait_readable(uint32_t timeout_ms) {
+    (void)timeout_ms;
+    return -1;
+}
+
 int bsp_bt_flush(void) {
     int n = 0;
 
