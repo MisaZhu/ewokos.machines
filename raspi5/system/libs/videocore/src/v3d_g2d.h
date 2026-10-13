@@ -218,4 +218,17 @@ extern const unsigned g2d_qpu_gauss_h7_n;
 extern const uint64_t g2d_qpu_gauss_v7[];
 extern const unsigned g2d_qpu_gauss_v7_n;
 
+/* ---- internal 3D-mode support (v3d_3d.c) ---------------------------------
+ * The CLE/PTB 3D pipeline reuses the CSD path's mapped register window, the
+ * V3D MMU (identity over sys_dma + shm_contig), the SMS power-up and the
+ * clock, instead of remapping or re-powering the block.  A runtime
+ * power-domain write (PM GRAFX_V3D / SMS) wedges g2dd, so v3d_3d.c must never
+ * touch those - only the accessors below, and only after v3d_g2d_init()
+ * reports ready.  All 3D buffers must live in dma_alloc / contig-shm memory so
+ * they are already inside the V3D page table (IOVA = low 32 bits of phys). */
+volatile uint32_t *v3d_g2d_hub_regs(void);   /* hub window (MMU/INT at +0) */
+volatile uint32_t *v3d_g2d_core_regs(void);  /* core0 window (CLE/PTB/CSD) */
+void v3d_g2d_l2_flush_all(void);             /* post-render writeback to DRAM */
+void v3d_g2d_l2_invalidate_all(void);        /* pre-submit stale-line drop */
+
 #endif /* V3D_G2D_H */

@@ -1207,8 +1207,15 @@ struct bus_ops* bcm2711_sdhci_init(void)
     sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
             SDHCI_INT_ENABLE);
 
-    /* Mask all sdhci interrupt sources */
-    sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
-            SDHCI_SIGNAL_ENABLE);
+    /*
+     * Mask ALL signal sources -- write 0, not the DATA|CMD mask (writing the
+     * mask bits actually UNMASKS them). This userspace copy drives the same
+     * emmc2 controller as the kernel SD driver; on BCM2711 emmc2 shares GIC
+     * SPI 126 with the WLAN Arasan, so an unmasked CMD/DATA signal here would
+     * assert SPI 126 on every sdfat32fsd read and storm it once wland arms
+     * INTID 158. The SD path is PIO polling on INT_STATUS, so it needs no
+     * signal unmask. Mirrors the kernel bcm283x/src/sdhci.c fix.
+     */
+    sdhci_writel(&_host, 0, SDHCI_SIGNAL_ENABLE);
     return &_ops;
 }

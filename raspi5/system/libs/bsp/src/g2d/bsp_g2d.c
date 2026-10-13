@@ -19,6 +19,7 @@
 #include <g2dclient/g2dclient.h>
 
 #include <videocore/vc_g2d.h>
+#include <videocore/vc_pgl3d.h>
 #include <ewoksys/klog.h>
 
 /* ------------------------------------------------------------------ */
@@ -533,4 +534,142 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
              rect_x, rect_y, rect_w, rect_h, radius);
         return -1;
     }
+}
+
+/* ------------------------------------------------------------------ */
+/* portablegl GPU (V3D 7.1 3D-pipeline) offload                        */
+/* ------------------------------------------------------------------ */
+
+/* The 3D pipeline is brought up lazily on the first pgl op (idempotent,
+ * on top of the CSD path's V3D init that bsp_g2d_init already ran) and
+ * latched: once vc_pgl3d_init() declines, we never retry, so a portablegl
+ * client sees one sticky G2D_ERR_NOT_SUPPORTED and stays on its CPU
+ * rasterizer.  These two flags are only touched from g2dd's serialized
+ * dev_cntl path for a given requester; the vc_pgl3d layer owns the real
+ * GPU-dispatch lock. */
+static int _pgl3d_ready;
+static int _pgl3d_declined;
+
+static int pgl3d_ensure(void)
+{
+    if (_pgl3d_ready)
+        return 1;
+    if (_pgl3d_declined)
+        return 0;
+    if (vc_pgl3d_init() == VC_PGL3D_DONE) {
+        _pgl3d_ready = 1;
+        return 1;
+    }
+    _pgl3d_declined = 1;
+    return 0;
+}
+
+/* Map the vc_pgl3d tri-state onto the g2d result codes g2dd passes back
+ * verbatim: DONE -> G2D_OK, FAILED -> G2D_ERR_FAILED (transient), and
+ * UNSUPPORTED -> G2D_ERR_NOT_SUPPORTED (sticky, the client falls back). */
+static int32_t pgl3d_rc(int r)
+{
+    switch (r) {
+    case VC_PGL3D_DONE:
+        return G2D_OK;
+    case VC_PGL3D_FAILED:
+        return G2D_ERR_FAILED;
+    default: /* VC_PGL3D_UNSUPPORTED */
+        return G2D_ERR_NOT_SUPPORTED;
+    }
+}
+
+int32_t bsp_g2d_pgl_clear(uint32_t *fb, ewokos_addr_t fb_phy, uint8_t contig,
+                          int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+                          uint32_t color, int32_t rb_swap)
+{
+    /* the GPU clears through the physical base only; fb (the render-target
+     * VA) is not touched here. */
+    (void)fb;
+    if (!pgl3d_ensure())
+        return G2D_ERR_NOT_SUPPORTED;
+    return pgl3d_rc(vc_pgl3d_clear(fb_phy, contig, stride,
+                                   (uint32_t)w, (uint32_t)h, fmt, color,
+                                   rb_swap));
+}
+
+int32_t bsp_g2d_pgl_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
+                         int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+                         uint32_t mode, uint32_t nverts,
+                         ewokos_addr_t pos_phy, uint8_t pos_contig,
+                         ewokos_addr_t col_phy, uint8_t col_contig,
+                         uint32_t fs_id, uint32_t color, int32_t rb_swap,
+                         uint32_t depth_func, int32_t depth_mask,
+                         int32_t blend_en, int32_t cull_en,
+                         ewokos_addr_t z_phy, uint8_t z_contig,
+                         uint32_t z_stride, uint8_t first_frame,
+                         uint32_t clear_rgba, float clear_z,
+                         const void* ext, const void* tex)
+{
+    vc_pgl3d_draw_req_t req;
+
+    if (!pgl3d_ensure())
+        return G2D_ERR_NOT_SUPPORTED;
+
+    memset(&req, 0, sizeof(req));
+    req.mode       = mode;
+    req.nverts     = nverts;
+    req.pos_phy    = pos_phy;
+    req.pos_contig = pos_contig;
+    req.col_phy    = col_phy;
+    req.col_contig = col_contig;
+    req.fb_phy     = fb_phy;
+    req.fb_contig  = fb_contig;
+    req.stride     = stride;
+    req.w          = (uint32_t)w;
+    req.h          = (uint32_t)h;
+    req.fmt        = fmt;
+    req.fs_id      = fs_id;
+    req.rgba       = color;
+    req.rb_swap    = rb_swap;
+    req.depth_func = depth_func;
+    req.depth_mask = (uint8_t)depth_mask;
+    req.blend_en   = (uint8_t)blend_en;
+    req.cull_en    = (uint8_t)cull_en;
+    /* persistent Z32F depth surface + frame boundary (Phase A2): z_phy == 0
+     * falls back to tile-local Z; first_frame marks the frame's first
+     * dispatch (clears colour to clear_rgba + Z to clear_z), later dispatches
+     * LOAD the persisted colour+Z so a multi-draw frame accumulates. */
+    req.z_phy       = z_phy;
+    req.z_contig    = z_contig;
+    req.z_stride    = z_stride;
+    req.first_frame = first_frame;
+    req.clear_rgba  = clear_rgba;
+    req.clear_z     = clear_z;
+    /* Phase B2c extended render state (scissor / polygon offset / colour write
+     * mask).  ext is an opaque pointer to the caller's g2d_pgl_ext_t (the g2dd
+     * handler passes &req.ext); a NULL ext from an older caller leaves every
+     * field zero = scissor-off / no-offset / write-all, matching the memset. */
+    if (ext) {
+        const g2d_pgl_ext_t* e = (const g2d_pgl_ext_t*)ext;
+        req.scissor_x   = e->scissor_x;
+        req.scissor_y   = e->scissor_y;
+        req.scissor_w   = e->scissor_w;
+        req.scissor_h   = e->scissor_h;
+        req.poly_enable = e->poly_enable;
+        req.poly_factor = e->poly_factor;
+        req.poly_units  = e->poly_units;
+        req.color_mask  = e->color_mask;
+    }
+    /* Phase D texture state (fs_id == G2D_PGL_FS_TEX_MOD).  tex is an opaque
+     * pointer to the caller's g2d_pgl_tex_t (the g2dd handler passes a filled
+     * struct when it could resolve tex + uv canvases); a NULL tex from an
+     * older caller leaves every field zero = the back end declines TEX_MOD
+     * back to UNSUPPORTED, matching the memset. */
+    if (tex) {
+        const g2d_pgl_tex_t* t = (const g2d_pgl_tex_t*)tex;
+        req.tex_phy    = t->tex_phy;
+        req.tex_contig = t->tex_contig;
+        req.tex_stride = t->tex_stride;
+        req.tex_w      = t->tex_w;
+        req.tex_h      = t->tex_h;
+        req.uv_phy     = t->uv_phy;
+        req.uv_contig  = t->uv_contig;
+    }
+    return pgl3d_rc(vc_pgl3d_draw(&req));
 }

@@ -11,7 +11,8 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/platform/$(ARCH)/include/$(ARCH) \
 	-Iinclude -I $(TARGET_DIR)/include
 
-LIB_VIDEOCORE_OBJS = $(ARCH)/src/vc_g2d.o $(ARCH)/src/v3d_g2d.o
+LIB_VIDEOCORE_OBJS = $(ARCH)/src/vc_g2d.o $(ARCH)/src/v3d_g2d.o \
+	$(ARCH)/src/v3d_3d.o $(ARCH)/src/vc_pgl3d.o
 
 VIDEOCORE = $(TARGET_DIR)/lib/libvideocore.a
 

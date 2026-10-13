@@ -87,6 +87,14 @@
 #define BRCMF_WORKER_DISCONNECTED_IDLE_MAX_US 20000U
 #define BRCMF_WORKER_IDLE_STEP_US 1000U
 /*
+ * Cap on a single sdhci_card_irq_wait() park. The delivery-token wake is what
+ * bounds first-packet latency, but the housekeeping in the worker loop
+ * (rxskip/rxpending watchdogs, next_console, next_housekeeping_ms,
+ * brcmf_run_pending_cmd polling) has no event source and still needs to tick.
+ * 10ms keeps that cadence at ~100Hz worst case, matching the idle ramp cap.
+ */
+#define SDHCI_CARD_IRQ_WAIT_SLICE_US 10000U
+/*
  * Backstop for the sleep_us=0 fast loop: after this many consecutive
  * zero-sleep iterations, force a short yield. Real bursts keep making
  * progress (each iteration does SDIO work), but if a pending-io
@@ -1474,6 +1482,12 @@ static void brcmf_wlan_reg_on(bool on)
  */
 static void brcm_platform_reset(void)
 {
+    /* Retire the card IRQ before the reset: mmc_hw_reset() -> sdhci_init()
+     * would otherwise clear SIGNAL_ENABLE / INT_ENABLE out from under a live
+     * handler. sdhci_init() also calls sdhci_card_irq_off() itself as a
+     * belt-and-braces guard, but doing it here keeps the retire close to the
+     * WL_REG_ON drop that logically ends the previous session. */
+    sdhci_card_irq_off("platform_reset");
     brcmf_wlan_reg_on(false);
     usleep(20000);
     brcmf_wlan_reg_on(true);
@@ -4599,6 +4613,17 @@ int brcmf_sdiod_probe(void){
     sdio_claim_irq(1);
     sdio_claim_irq(2);
 
+    /*
+     * Card-side SDIO_CCCR_IENx is now programmed by sdio_claim_irq. On Pi4,
+     * arm the WLAN Arasan GIC SPI 126 (INTID 158) to a user-space handler so
+     * the worker can park on proc_block_timeout instead of polling the latch
+     * every 10ms; sdhci_card_irq_arm() latches host INT_ENABLE.CARD_INT and
+     * registers the handler. Falls back silently to the polled path on Pi3
+     * (not routed), if the kernel refuses the INTID, or if the miss watchdog
+     * trips later.
+     */
+    sdhci_card_irq_arm();
+
     uint8_t devpend = brcmf_sdiod_func0_rb(SDIO_CCCR_INTx, NULL);
     bus->intstatus = devpend & (INTR_STATUS_FUNC1 |
                                INTR_STATUS_FUNC2);
@@ -4802,9 +4827,27 @@ static void* brcm_worker_main(void* p) {
 
         if (card_irq)
             brcmf_stat.cardirq_hits++;
-        if (!run_dpc) {
+        /*
+         * The func0 CMD52 read of SDIO_CCCR_INTx is the ONLY thing that makes
+         * the card release DAT1 -- the func1 DPC reads the backplane intstatus
+         * and does not clear the SDIO in-band interrupt.
+         *
+         * Pi4 latches host INT_ENABLE.CARD_INT for the async IRQ, so once the
+         * card rings the latch stays hot and the func0 read MUST run every
+         * iteration or DAT1 never drops: CARD_INT would re-latch forever,
+         * card_irq would stay true, and sdhci_card_irq_wait()'s quiet-gate
+         * would decline every park -- the worker would spin (bounded to ~100Hz
+         * only by the decline-path usleep) and never actually park on the IRQ.
+         *
+         * Pi3 keeps the ORIGINAL probe-only cadence: injecting a func0 CMD52
+         * while a transfer is busy disrupts its SDIO timing (this regressed Pi3
+         * wland/netd), and Pi3 never latched the async path, so gate the extra
+         * read behind sdhci_is_pi4() to leave Pi3 byte-for-byte unchanged --
+         * (false && card_irq) || !run_dpc reduces to the original !run_dpc.
+         */
+        if ((sdhci_is_pi4() && card_irq) || !run_dpc) {
             func0_irq = brcmf_worker_irq_pending();
-            run_dpc = func0_irq;
+            run_dpc = run_dpc || func0_irq;
         }
 
         if (run_dpc) {
@@ -5062,7 +5105,28 @@ worker_done:
             spin_loops = 0;
         }
 
-        usleep(sleep_us);
+        /*
+         * Idle-ramp sleep. When the CARD_INT IRQ is armed (Pi4), park on the
+         * kernel delivery token instead of a plain usleep: the handler fires
+         * proc_wakeup_by() the moment DAT1 asserts, so first-packet latency
+         * drops from up to sleep_us (10ms connected / 20ms disconnected) to
+         * interrupt-delivery latency. The slice is capped at
+         * SDHCI_CARD_IRQ_WAIT_SLICE_US (10ms) even when sleep_us ramps past
+         * it, so the housekeeping cadence in this loop still ticks at ~100Hz
+         * worst case. sdhci_card_irq_wait() rearms SIGNAL_ENABLE at the start
+         * of every park (the handler masks it to break the DAT1-low re-latch),
+         * declines+sleeps while DAT1 is hot, and its miss watchdog permanently
+         * falls back to usleep if the SPI path is broken. On Pi3 is_on() is
+         * false, so this stays the plain polled usleep.
+         */
+        if (sleep_us > 0 && sdhci_card_irq_is_on()) {
+            uint32_t slice = sleep_us;
+            if (slice > SDHCI_CARD_IRQ_WAIT_SLICE_US)
+                slice = SDHCI_CARD_IRQ_WAIT_SLICE_US;
+            (void)sdhci_card_irq_wait(slice);
+        } else {
+            usleep(sleep_us);
+        }
     }
 }
 

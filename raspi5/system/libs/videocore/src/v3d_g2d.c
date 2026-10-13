@@ -1254,6 +1254,31 @@ void v3d_g2d_op_end(void)
     g2d_run_unlock();
 }
 
+/* ---- internal 3D-mode accessors (see v3d_g2d.h) ----
+ * Thin wrappers so v3d_3d.c drives the CLE/PTB 3D pipeline through the SAME
+ * mapped register window, V3D MMU and power state the CSD path established at
+ * init - it never remaps the block and never issues a runtime power-domain
+ * write (which wedges g2dd).  Valid only once v3d_g2d_ready() is non-zero. */
+volatile uint32_t *v3d_g2d_hub_regs(void)
+{
+    return v3d_hub();
+}
+
+volatile uint32_t *v3d_g2d_core_regs(void)
+{
+    return v3d_core();
+}
+
+void v3d_g2d_l2_flush_all(void)
+{
+    g2d_flush_l2();
+}
+
+void v3d_g2d_l2_invalidate_all(void)
+{
+    g2d_invalidate_caches();
+}
+
 /* phase accounting (see v3d_g2d_stats_t); written only under
  * _v3d_run_lock */
 static v3d_g2d_stats_t _stats;

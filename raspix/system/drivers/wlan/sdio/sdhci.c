@@ -6,6 +6,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <utils/log.h>
+#include <sysinfo.h>
+#include <ewoksys/syscall.h>
+#include <ewoksys/proc.h>
+#include <ewoksys/thread.h>
+#include <ewoksys/interrupt.h>
 
 #include "mmc.h"
 
@@ -773,6 +778,45 @@ void sdhci_reset(u8 mask)
     }
 }
 
+#define SDHCI_CARD_IRQ_MISS_MAX   5u
+
+static interrupt_handler_t _sdhci_card_irq_handler;
+static volatile uint32_t   _sdhci_card_seq;         /* bumped per delivery */
+static volatile int32_t    _sdhci_card_waiter = -1; /* parked worker tid */
+static volatile int        _sdhci_card_irq_on;      /* 0: poll, 1: armed */
+static uint32_t            _sdhci_card_irq_miss_run;
+static uint32_t            _sdhci_card_irq_num;     /* GIC INTID latched at arm */
+#define SDHCI_CARD_TOKEN ((ewokos_addr_t)(uintptr_t)&_sdhci_card_seq)
+
+static void sdhci_card_irq_signal(int enable);
+static uint32_t sdhci_card_irq_number(void);
+static int _sdhci_is_pi4 = -1;   /* -1 undetected, 0 Pi3, 1 Pi4 (cached) */
+
+/*
+ * Cached Pi4 (BCM2711) detection, keyed off mmio.phy_base == 0xfe000000.
+ *
+ * The whole card-IRQ register scheme -- latching host INT_ENABLE.CARD_INT
+ * while keeping SIGNAL_ENABLE masked except for the card-irq signal path --
+ * is REQUIRED on Pi4, where the WLAN Arasan shares GIC SPI 126 with emmc2,
+ * but it is a behavioural change that must never reach Pi3: Pi3's WLAN
+ * interrupt is a dedicated armctrl line (GPU IRQ 62, not shared with SD) and
+ * its worker has always run the original poll-only SDIO cadence. Every
+ * Pi4-only branch in this driver keys off sdhci_is_pi4() so that on Pi3 the
+ * register writes and worker logic stay byte-for-byte the pre-optimisation
+ * driver. Cached because the worker hot path calls it every iteration and
+ * SYS_GET_SYS_INFO must not become a per-loop syscall.
+ */
+bool sdhci_is_pi4(void)
+{
+    if (_sdhci_is_pi4 < 0) {
+        sys_info_t si;
+        memset(&si, 0, sizeof(si));
+        syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&si);
+        _sdhci_is_pi4 = (si.mmio.phy_base == 0xfe000000) ? 1 : 0;
+    }
+    return _sdhci_is_pi4 != 0;
+}
+
 void sdhci_enable_irq(int enable)
 {
     uint32_t ier = sdhci_readl(&_host, SDHCI_INT_ENABLE);
@@ -781,8 +825,28 @@ void sdhci_enable_irq(int enable)
     else
         ier &= ~SDHCI_INT_CARD_INT;
 
+    /*
+     * INT_ENABLE only controls which sources get LATCHED into INT_STATUS; it
+     * is what makes sdhci_card_irq_pending()'s MMIO read reflect the card's
+     * DAT1 assertion.
+     */
     sdhci_writel(&_host, ier, SDHCI_INT_ENABLE);
-    sdhci_writel(&_host, ier, SDHCI_SIGNAL_ENABLE);
+
+    /*
+     * SIGNAL_ENABLE (what actually drives the interrupt line to the CPU) is
+     * split by SoC:
+     *  - Pi4: owned exclusively by the card-IRQ path (sdhci_card_irq_signal),
+     *    which keeps CMD/DATA masked and unmasks only CARD_INT. Mirroring ier
+     *    here would unmask CMD/DATA on the WLAN Arasan; since it shares GIC
+     *    SPI 126 with emmc2, every PIO/SDMA transaction would then storm the
+     *    line. So Pi4 must NOT touch SIGNAL_ENABLE here.
+     *  - Pi3: the WLAN interrupt is a dedicated line (GPU IRQ 62), not shared
+     *    with SD, so preserve the original driver behaviour and mirror ier --
+     *    this is exactly what sdio_claim_irq() relied on before the card-IRQ
+     *    work, and dropping it regressed Pi3 wland/netd.
+     */
+    if (!sdhci_is_pi4())
+        sdhci_writel(&_host, ier, SDHCI_SIGNAL_ENABLE);
 }
 
 /*
@@ -816,6 +880,221 @@ bool sdhci_card_irq_pending(void)
     if (_host.ioaddr == NULL)
         return false;
     return (sdhci_readl(&_host, SDHCI_INT_STATUS) & SDHCI_INT_CARD_INT) != 0;
+}
+
+/*
+ * Pi4-only interrupt number. BCM2711 (Pi4) peripherals sit at phy_base
+ * 0xfe000000, where the WLAN Arasan (mmc@7e300000) is GIC SPI 126 ->
+ * EwokOS INTID 32+126 = 158. BCM2837 (Pi3/Zero2W, phy_base 0x3f000000)
+ * uses the legacy armctrl (GPU IRQ 62), which this build does NOT route in
+ * the kernel, so return 0 there and sdhci_card_irq_arm() leaves the worker
+ * on its existing polled path. One wland binary serves both generations.
+ */
+static uint32_t sdhci_card_irq_number(void)
+{
+    sys_info_t si;
+    memset(&si, 0, sizeof(si));
+    syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&si);
+    if (si.mmio.phy_base == 0xfe000000)
+        return 158u;
+    return 0u;
+}
+
+/*
+ * Only writer of SDHCI_SIGNAL_ENABLE. Keeps CMD/DATA completion bits
+ * permanently masked (their consumers are the PIO/SDMA spin loops, which
+ * poll INT_STATUS directly and would be broken by a handler acking the
+ * status word under them); toggles only CARD_INT.
+ */
+static void sdhci_card_irq_signal(int enable)
+{
+    uint32_t sig;
+    if (_host.ioaddr == NULL)
+        return;
+    sig = sdhci_readl(&_host, SDHCI_SIGNAL_ENABLE);
+    sig &= ~(SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK);
+    if (enable)
+        sig |= SDHCI_INT_CARD_INT;
+    else
+        sig &= ~SDHCI_INT_CARD_INT;
+    sdhci_writel(&_host, sig, SDHCI_SIGNAL_ENABLE);
+}
+
+static void sdhci_card_irq_handler(uint32_t irq, ewokos_addr_t data)
+{
+    uint32_t stat;
+    int32_t waiter;
+
+    (void)irq;
+    (void)data;
+
+    if (_host.ioaddr == NULL)
+        return;
+
+    stat = sdhci_readl(&_host, SDHCI_INT_STATUS);
+    if (!(stat & SDHCI_INT_CARD_INT)) {
+        /* SIGNAL_ENABLE is narrowed to CARD_INT only, so this should not
+         * happen. Ack nothing and return; if it ever does fire the miss
+         * watchdog on the worker side will catch the wedged path. */
+        return;
+    }
+
+    /* Mask the CARD_INT signal BEFORE acking the latch. The SDHCI spec
+     * re-latches CARD_INT while DAT1 stays low, and DAT1 only drops once
+     * the worker issues a func0 CMD52 read of SDIO_CCCR_INTx -- which
+     * happens on the DPC pass that follows this wake. Acking without
+     * masking would storm the shared SPI 126 line for the whole DPC. */
+    sdhci_card_irq_signal(0);
+    sdhci_writel(&_host, SDHCI_INT_CARD_INT, SDHCI_INT_STATUS);
+
+    _sdhci_card_seq++;
+    __asm__ __volatile__("dmb ish" ::: "memory");
+    waiter = _sdhci_card_waiter;
+    if (waiter >= 0)
+        proc_wakeup_by(waiter, SDHCI_CARD_TOKEN);
+}
+
+void sdhci_card_irq_arm(void)
+{
+    uint32_t irq;
+
+    if (_sdhci_card_irq_on)
+        return;
+    if (_host.ioaddr == NULL)
+        return;
+
+    irq = sdhci_card_irq_number();
+    if (irq == 0)
+        return;   /* Pi3: kernel does not route the armctrl line; keep polling */
+
+    /* Make sure CARD_INT is being latched into INT_STATUS (the card-side
+     * SDIO_CCCR_IENx is programmed by sdio_claim_irq before this runs). */
+    sdhci_enable_irq(1);
+
+    _sdhci_card_irq_num = irq;
+    _sdhci_card_seq = 0;
+    _sdhci_card_irq_miss_run = 0;
+    _sdhci_card_waiter = -1;
+
+    _sdhci_card_irq_handler.handler = sdhci_card_irq_handler;
+    _sdhci_card_irq_handler.data = 0;
+
+    /* Drop any stale latch from bring-up and register the kernel handler,
+     * but leave SIGNAL_ENABLE MASKED (SDHCI output low). The CYW43455 can
+     * boot with a pending SDIO interrupt holding DAT1 low; unmasking here --
+     * while this MAIN context is still busy running probe -- makes the GIC
+     * deliver 158 immediately, the kernel's interrupt_send_raw takes its
+     * deferred path (target interrupt.state != IDLE), calls
+     * irq_disable_arch(158) and never re-enables it: en=0/pend=1 forever,
+     * the handler never runs, and the miss watchdog falls back to polling.
+     * The worker unmasks in sdhci_card_irq_wait() at park time, once the DPC
+     * has drained func0 SDIO_CCCR_INTx (DAT1 released) and this main context
+     * is idle in device_run. */
+    sdhci_writel(&_host, SDHCI_INT_CARD_INT, SDHCI_INT_STATUS);
+    __asm__ __volatile__("dsb sy" ::: "memory");
+    if (sys_interrupt_setup(_sdhci_card_irq_num, &_sdhci_card_irq_handler) != 0) {
+        brcm_log("sdhci: card irq %u unavailable, polling\n",
+                _sdhci_card_irq_num);
+        return;
+    }
+    _sdhci_card_irq_on = 1;
+    brcm_log("sdhci: card irq %u armed\n", _sdhci_card_irq_num);
+}
+
+void sdhci_card_irq_off(const char* why)
+{
+    if (!_sdhci_card_irq_on)
+        return;
+    _sdhci_card_irq_on = 0;
+    /* Mask the signal first so the SPI cannot re-fire between the mask
+     * and the sys_interrupt_setup(NULL) below. */
+    sdhci_card_irq_signal(0);
+    __asm__ __volatile__("dsb sy" ::: "memory");
+    sys_interrupt_setup(_sdhci_card_irq_num, NULL);
+    _sdhci_card_waiter = -1;
+    brcm_log("sdhci: card irq %u off (%s), back to polling\n",
+            _sdhci_card_irq_num, why ? why : "?");
+}
+
+bool sdhci_card_irq_is_on(void)
+{
+    return _sdhci_card_irq_on != 0;
+}
+
+bool sdhci_card_irq_wait(uint32_t slice_us)
+{
+    uint32_t before;
+    int32_t me;
+
+    if (!_sdhci_card_irq_on)
+        return false;
+    if (slice_us == 0)
+        return false;
+
+    /*
+     * Never unmask into an already-asserted line: unmasking SIGNAL_ENABLE
+     * while DAT1 is hot raises 158 immediately, and that IRQ lands while this
+     * process's MAIN context -- the only context the kernel injects the
+     * handler into -- may still be busy. The kernel's interrupt_send_raw then
+     * takes its deferred path, calls irq_disable_arch(158) and never
+     * re-enables it, so the handler never runs. So when DAT1 is hot we decline
+     * to park and let the worker service the card via the DPC; we only
+     * unmask+park once DAT1 is quiet, so the next assertion is a genuine edge
+     * that fires while main is idle.
+     *
+     * The decline must still consume the slice: the worker's idle branch
+     * passes the ramped sleep_us and ignores our return value, so returning
+     * immediately would re-enter the DPC in a tight loop. A hot or spurious
+     * latch with no frames moving is exactly what ramps sleep_us up, and each
+     * DPC pays its SDIO command gaps as pure busy-spin -- that loop pins a
+     * core at 100%. usleep(slice_us) keeps the declined path at the same
+     * bounded ~100Hz cadence sleep_us earned.
+     */
+    if (sdhci_card_irq_pending()) {
+        usleep(slice_us);
+        return false;
+    }
+
+    /*
+     * Register the waiter first, then rearm the signal. Ordering matters:
+     * the handler is what fires the directed wake, so if the SPI edge lands
+     * between the rearm below and the waiter registration the wake has
+     * nowhere to go. The kernel's wake_pending latch (same token) covers the
+     * mirror race -- a wake that lands after registration but before
+     * proc_block_timeout is queued and returned immediately.
+     */
+    me = thread_get_id();
+    _sdhci_card_waiter = me;
+    __asm__ __volatile__("dmb ish" ::: "memory");
+
+    /* The handler masks CARD_INT in SIGNAL_ENABLE to break the DAT1-low
+     * re-latch. Rearm here: by this point the worker has drained the func0
+     * SDIO_CCCR_INTx via CMD52 during the DPC, so DAT1 is deasserted and a
+     * fresh assertion will produce a fresh edge. */
+    sdhci_card_irq_signal(1);
+
+    before = _sdhci_card_seq;
+    __asm__ __volatile__("dmb ish" ::: "memory");
+
+    if (_sdhci_card_seq == before)
+        proc_block_timeout(SDHCI_CARD_TOKEN, slice_us);
+
+    _sdhci_card_waiter = -1;
+    __asm__ __volatile__("dmb ish" ::: "memory");
+
+    if (_sdhci_card_seq != before) {
+        _sdhci_card_irq_miss_run = 0;
+        return true;
+    }
+
+    /* Slice elapsed silently. If the CARD_INT latch is nonetheless set, the
+     * SPI path is broken -- count a miss and permanently fall back to polling
+     * once the run trips. A genuinely idle slice (latch clear) is not a miss. */
+    if (sdhci_card_irq_pending()) {
+        if (++_sdhci_card_irq_miss_run >= SDHCI_CARD_IRQ_MISS_MAX)
+            sdhci_card_irq_off("never delivered");
+    }
+    return false;
 }
 
 
@@ -1109,6 +1388,13 @@ int sdhci_set_ios(struct mmc *mmc)
 
 void sdhci_init(void)
 {
+    /* If a previous session left the card IRQ armed, retire it before we
+     * start touching the register window: sdhci_reset() below would otherwise
+     * clear SIGNAL_ENABLE and INT_ENABLE out from under a live handler, and
+     * the kernel would keep SPI 126 routed to a stale callback. No-op when the
+     * IRQ was never armed. */
+    sdhci_card_irq_off("sdhci_init");
+
     bcm283x_sdhci_gpio_init();
 
     _host.bus_width  = 1;
@@ -1139,12 +1425,25 @@ void sdhci_init(void)
     sdhci_set_clock(&_host, 400000);
     sdhci_set_bus_width(&_host, 1);
     sdhci_set_uhs_timing(&_host, 0);
-    /* Enable only interrupts served by the SD controller */
-    sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
-            SDHCI_INT_ENABLE);
-
-    /* Mask all sdhci interrupt sources */
-    sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
-            SDHCI_SIGNAL_ENABLE);
+    if (sdhci_is_pi4()) {
+        /* Pi4: latch CARD_INT so sdhci_card_irq_pending() and the async
+         * handler see DAT1, and leave SIGNAL_ENABLE fully masked. The card
+         * IRQ is armed later by sdhci_card_irq_arm() and its signal is owned
+         * exclusively by sdhci_card_irq_signal(), which keeps the shared GIC
+         * SPI 126 masked except for CARD_INT (emmc2 shares that line). */
+        sdhci_writel(&_host,
+                SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK | SDHCI_INT_CARD_INT,
+                SDHCI_INT_ENABLE);
+        sdhci_writel(&_host, 0, SDHCI_SIGNAL_ENABLE);
+    } else {
+        /* Pi3: original register state, unchanged. CARD_INT is added to
+         * INT_ENABLE and mirrored into SIGNAL_ENABLE later by
+         * sdio_claim_irq() -> sdhci_enable_irq(1); the WLAN interrupt is a
+         * dedicated line here, so there is no shared-line hazard to mask. */
+        sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
+                SDHCI_INT_ENABLE);
+        sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
+                SDHCI_SIGNAL_ENABLE);
+    }
     return;
 }

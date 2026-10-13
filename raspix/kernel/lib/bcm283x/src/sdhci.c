@@ -1002,8 +1002,17 @@ struct bus_ops* bcm2711_sdhci_init(void)
     sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
             SDHCI_INT_ENABLE);
 
-    /* Mask all sdhci interrupt sources */
-    sdhci_writel(&_host, SDHCI_INT_DATA_MASK | SDHCI_INT_CMD_MASK,
-            SDHCI_SIGNAL_ENABLE);
+    /*
+     * Mask ALL signal sources -- write 0, not the DATA|CMD mask. Writing the
+     * mask bits into SIGNAL_ENABLE actually UNMASKS them (write-1 enable). On
+     * BCM2711 this emmc2 controller shares GIC SPI 126 with the WLAN Arasan;
+     * once wland arms INTID 158, every kernel SD read would assert the shared
+     * level line and -- because wland's handler acks only CARD_INT on the WLAN
+     * controller, never emmc2 -- SPI 126 would storm and wedge the system
+     * (netd and every later rootfs exec fail to start). The kernel SD path is
+     * PIO polling that reads INT_STATUS directly, so it needs no signal
+     * unmask; INT_ENABLE above still latches DATA/CMD for those polls.
+     */
+    sdhci_writel(&_host, 0, SDHCI_SIGNAL_ENABLE);
     return &_ops;
 }

@@ -19,4 +19,28 @@ void sdhci_enable_irq(int enable);
  * no bus turnaround is paid. See the comment on the implementation.
  */
 bool sdhci_card_irq_pending(void);
+
+/*
+ * Event-driven CARD_INT path.
+ *
+ * sdhci_card_irq_arm() routes the sdio2 GIC SPI to a user-space handler
+ * (same sys_interrupt_setup contract bsp_bt.c and v3d_g2d.c use). The
+ * handler masks the CARD_INT signal, acks the latch, bumps an internal
+ * sequence counter and fires a directed proc_wakeup_by() at the parked
+ * worker. Masking in the handler is required by the SDHCI spec: the
+ * controller re-latches CARD_INT while DAT1 stays low, so acking without
+ * masking would storm the SPI line.
+ *
+ * sdhci_card_irq_wait() parks the caller on the delivery token for up to
+ * slice_us, rearms the signal, and returns true if a delivery landed.
+ * Every wait that elapses silently while INT_STATUS.CARD_INT is set
+ * counts a miss; SDHCI_CARD_IRQ_MISS_MAX consecutive misses permanently
+ * disable the IRQ path (wrong INTID / routing broken) and the caller
+ * falls back to plain usleep polling. sdhci_card_irq_is_on() reports the
+ * current state so the worker can pick the sleep primitive accordingly.
+ */
+void sdhci_card_irq_arm(void);
+void sdhci_card_irq_off(const char* why);
+bool sdhci_card_irq_is_on(void);
+bool sdhci_card_irq_wait(uint32_t slice_us);
 #endif
