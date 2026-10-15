@@ -40,6 +40,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <ewoksys/dma.h>
@@ -57,27 +58,78 @@
 #define CLE_CT1QBA   0x164u   /* render queue base address                   */
 #define CLE_CT1QEA   0x16cu   /* render queue end address                    */
 #define CLE_CT1CFG   0x178u   /* render queue config                         */
+#define CLE_CT1CS    0x104u   /* control thread 1 (render) status            */
 #define CLE_BFC      0x134u   /* binning flush count                         */
 #define CLE_RFC      0x138u   /* render flush count                          */
 #define PTB_BPOS     0x30cu   /* binning pool overspill size (kernel zeroes) */
+#define PTB_BPCA     0x300u   /* binning pool current address (write cursor) */
+#define PTB_BPCS     0x304u   /* binning pool current size                   */
+#define CLE_CT0CS    0x100u   /* control thread 0 (binning) status           */
+#define CLE_CT0CA    0x110u   /* control thread 0 current CL address         */
+#define CLE_CT0RA    0x118u   /* control thread 0 read address               */
+#define CLE_CT0LC    0x120u   /* control thread 0 list counter               */
+#define CLE_CT0PC    0x128u   /* control thread 0 prim counter               */
+#define V3D_ERR_STAT 0xf20u   /* core error status                           */
+#define V3D_INT_STS  0x50u    /* interrupt status (flush-complete/error bits)*/
 
 /* ---- staging sizes ---------------------------------------------------- */
 #define V3D_3D_CL_MAX      (64u * 1024u)   /* control-list buffer           */
 #define V3D_3D_POOL_SIZE   (256u * 1024u)  /* binning tile-alloc pool       */
 #define V3D_3D_TSDA_SIZE   (64u * 1024u)   /* tile-state data array         */
 #define V3D_3D_SSR_SIZE    64u             /* 32 shader-rec + 2*16 attr-rec */
-#define V3D_3D_SHADER_WORDS 128u           /* staged frag+vtx+coord + tex frag/vtx QPU */
+#define V3D_3D_SHADER_WORDS 160u           /* staged frag+vtx+coord + tex frag/vtx QPU (127 used) */
 #define V3D_3D_UNIF_WORDS  8u              /* vtx/frag uniforms             */
 #define V3D_3D_GEN_SIZE    256u            /* generic tile list             */
+#define V3D_3D_COMPUTE_BUDGET_MS 2000u     /* compiled compute draw wait    */
 
 /* Wall-clock bound for a single bin or render flush wait (ms).  The CSD
  * path uses ~256 ms; a full-frame 3D render is given more head-room, but
  * still finite so a wedged pipeline degrades instead of hanging g2dd. */
 #define V3D_3D_WAIT_MS     1000u
 
+/* INTERIM GATE for the compiled-shader 3D draw (binning+render geometry).
+ * Device evidence on BCM2712/V3D 7.1 shows the binner geometry path never
+ * completes a flush for real primitives: the bin control-thread consumes the
+ * whole CL (CT0CA == CL end), runs the coord shader on every vertex
+ * (CT0PC == nverts) and writes tile lists to the pool (BPCA advances ~16 KB
+ * for 80 tiles), yet CLE_BFC never increments and the wait times out.  No
+ * fresh ERR_STAT, no MMU fault -- the flush simply never drains.  The
+ * bare-metal reference never solved primitive binning on VC7 either, so this
+ * path has NO proven-working precedent on this silicon.  A timed-out job
+ * leaves the CLE live and wedges the SHARED V3D block, corrupting the desktop
+ * compositor until a power cycle (there is no software V3D reset).  Until a
+ * proven execution path exists (CSD compute dispatch of memory-storing
+ * shaders), decline compiled draws fast so the client falls back to CPU and
+ * the desktop stays clean.  Flip to 1 to re-enable binner bring-up.
+ *
+ * RE-ENABLED (1) for on-device binner bring-up: the mutex+park dispatch fix
+ * means a timed-out bin no longer leaves a g2dd worker spinning at 96%, so the
+ * cost of a stall is now a wedged V3D (power cycle) rather than a hung daemon.
+ * This lets teapot's real 600-vert geometry bin run so the four BIN-timeout
+ * diagnostics can be captured FRESH (all prior captures were either the old
+ * As=2 record or a byte-identical stale binary). */
+#define V3D_3D_ENABLE_COMPILED_DRAW 1
+
+/* Fixed-function (hand-written _coord/_vtx/_frag shader) draws.  These
+ * shaders have never completed a bin on this silicon: the on-device capture
+ * shows the coord batch stalling at the first 16 vertices with a QPU
+ * interrupt (BIN timeout, ct0pc 0xf, intsts 0x10000) while mesa-compiled
+ * programs bin cleanly through the same CL builder.  Every portablegl app
+ * reaches this path through pgl_gpu_tri(), so one such draw used to wedge the
+ * shared V3D for shadertoy and the desktop too.  Decline them (client
+ * rasterizes on the CPU) until the hand-written shaders are proven. */
+#define V3D_3D_ENABLE_FIXED_DRAW 0
+
 /* ---- staged QPU code (V3D 7.1 encodings, verbatim from v3d.c) ----------
  * The QPU does not fetch code from .rodata reliably on this silicon, so the
  * three shaders are copied into dma staging at init and referenced by IOVA.
+ *
+ * Every shader ends "thrsw ; nop ; nop": the thread-end THRSW has two delay
+ * slots that still execute (mesa qpu_schedule.c pads the thrend with
+ * 3 - slots_filled nops; py-videocore7 ends thrsw/nop/nop).  Without the
+ * padding the delay slots run the first two words of whatever is staged next
+ * in _shaders (an ldvary / ldvpmv_in of the following shader) while the
+ * thread is ending.
  *
  * Fragment shader: four ldvary (R,G,B,A) then two f16 vfpack writes to the
  * tile buffer, then thrsw. */
@@ -89,6 +141,8 @@ static const uint64_t _frag_shader[] = {
     0x380031873903F001ull, /* vfpack tlb,rf0,rf1 ; nop      (R,G -> TLB)    */
     0x380031873903F083ull, /* vfpack tlb,rf2,rf3 ; nop      (B,A -> TLB)    */
     0x38203186BB03F000ull, /* nop            ; thrsw                        */
+    0x38000000bb03f000ull, /* nop            ; nop   (thrend delay slot 1)  */
+    0x38000000bb03f000ull, /* nop            ; nop   (thrend delay slot 2)  */
 };
 
 /* Vertex shader: viewport transform + pass-through of the rgba attribute.
@@ -123,6 +177,8 @@ static const uint64_t _vtx_shader[] = {
     0x39C02180BE03F185ull, /* stvpmv 6,rf5           ; nop (B) */
     0x39C02180BE03F1C6ull, /* stvpmv 7,rf6           ; nop (A) */
     0x38203186BB03F000ull, /* nop                    ; thrsw */
+    0x38000000bb03f000ull, /* nop                    ; nop (thrend delay slot 1) */
+    0x38000000bb03f000ull, /* nop                    ; nop (thrend delay slot 2) */
 };
 
 /* Coordinate shader: the binner's per-vertex position shader.  VPM input
@@ -146,6 +202,8 @@ static const uint64_t _coord_shader[] = {
     0x38002189F503F207ull, /* ftoin rf9,rf8          ; nop (Ys) */
     0x39C02180BE03F149ull, /* stvpmv 5,rf9           ; nop (Ys) */
     0x38203186BB03F000ull, /* nop                    ; thrsw */
+    0x38000000bb03f000ull, /* nop                    ; nop (thrend delay slot 1) */
+    0x38000000bb03f000ull, /* nop                    ; nop (thrend delay slot 2) */
 };
 
 /* ---- Phase D textured shaders -----------------------------------------
@@ -216,6 +274,8 @@ static const uint64_t _frag_shader_tex[] = {
     0x380010073503f30dull, /* vfpack tlb, rf12, rf13 ; nop  (R,G -> TLB)     */
     0x380010073503f38full, /* vfpack tlb, rf14, rf15 ; nop  (B,A -> TLB)     */
     0x38200000bb03f000ull, /* nop            ; thrsw                          */
+    0x38000000bb03f000ull, /* nop            ; nop   (thrend delay slot 1)    */
+    0x38000000bb03f000ull, /* nop            ; nop   (thrend delay slot 2)    */
 };
 
 /* Textured vertex shader: identical viewport transform as _vtx_shader but
@@ -248,6 +308,8 @@ static const uint64_t _vtx_shader_tex[] = {
     0x39C02180BE03F103ull, /* stvpmv 4,rf3           ; nop (u varying0) */
     0x39C02180BE03F144ull, /* stvpmv 5,rf4           ; nop (v varying1) */
     0x38203186BB03F000ull, /* nop                    ; thrsw */
+    0x38000000bb03f000ull, /* nop                    ; nop (thrend delay slot 1) */
+    0x38000000bb03f000ull, /* nop                    ; nop (thrend delay slot 2) */
 };
 
 /* ---- dma staging (VA + GPU IOVA), allocated once at init -------------- */
@@ -259,7 +321,22 @@ static uint64_t *_shaders_va; static uint32_t _shaders_p;
 static uint32_t *_unif_va;    static uint32_t _unif_p;  /* vtx/frag uniforms */
 static uint32_t *_cs_unif_va; static uint32_t _cs_unif_p;/* coord uniforms   */
 static uint32_t *_tex_unif_va; static uint32_t _tex_unif_p; /* tex frag uniforms */
+static uint32_t *_cvs_unif_va; static uint32_t _cvs_unif_p;/* compiled VS expanded uniforms */
+static uint32_t *_cfs_unif_va; static uint32_t _cfs_unif_p;/* compiled FS expanded uniforms */
+static uint32_t *_ccs_unif_va; static uint32_t _ccs_unif_p;/* compiled COORD expanded uniforms */
+static uint32_t *_ccu_unif_va; static uint32_t _ccu_unif_p;/* compiled COMPUTE expanded uniforms */
 static uint8_t  *_gen_va;     static uint32_t _gen_p;   /* generic tile list */
+
+/* WS4 compiled-shader sampler bindings: per-unit V3D71 TEXTURE_SHADER_STATE and
+ * SAMPLER_STATE records.  A mesa-compiled FS that samples iChannelN emits a
+ * QUNIFORM_TMU_CONFIG_P0/P1 pair per unit whose expansion ORs a 16-byte-aligned
+ * state-record IOVA into the template's low bits, so each record lives in its
+ * own 32-byte slot (V3D_3D_TEXSTATE_SLOT) to keep bits [3:0] free.  The sampler
+ * records are identical for every shadertoy texture (GL_NEAREST + GL_REPEAT) and
+ * are built once at init; the texture records are rebuilt each draw from ctex. */
+#define V3D_3D_TEXSTATE_SLOT 32u
+static uint8_t  *_texstate_va; static uint32_t _texstate_p; /* 4 texture records */
+static uint8_t  *_sampler_va;  static uint32_t _sampler_p;  /* 4 sampler records */
 
 /* staged shader addresses inside _shaders (IOVA), computed at init */
 static uint32_t _frag_iova, _vtx_iova, _coord_iova;
@@ -267,27 +344,258 @@ static uint32_t _frag_tex_iova, _vtx_tex_iova;
 
 static int _ready;
 
+/* ---- compiled-program cache (WS4) ---------------------------------- */
+/* Each uploaded program's GPU-resident IOVAs (VS/FS QPU + static uniform
+ * value streams) plus its CPU-side prog_data (uniform layout descriptors,
+ * VPM sizes, attribute/input maps, FS flags) are cached here by handle.  A
+ * later draw references the handle to build the shader record + per-draw
+ * uniform buffer.  Sized for the shadertoy effects plus head-room; the inline
+ * descriptor arrays bound the uniform stream (an out-of-range program is
+ * declined by v3d_3d_program, never truncated). */
+typedef struct {
+    int      used;
+    /* GPU-resident QPU code (dma IOVA + word count) */
+    uint32_t vs_qpu_iova;   uint32_t vs_qpu_words;
+    uint32_t fs_qpu_iova;   uint32_t fs_qpu_words;
+    uint32_t coord_qpu_iova; uint32_t coord_qpu_words; /* binning coord shader */
+    /* raw dma_alloc VAs of the four QPU code blocks (0 when absent) so
+     * v3d_3d_program_free can hand them back; the IOVAs above point into the
+     * page-rounded interior of these blocks and cannot be freed directly. */
+    ewokos_addr_t vs_qpu_raw, fs_qpu_raw, coord_qpu_raw, cs_qpu_raw;
+    /* GPU-resident static uniform value streams (dma IOVA); 0 when the stage
+     * has no uniforms.  A per-draw buffer is patched from these at draw. */
+    uint32_t vs_unif_iova;  uint32_t vs_num_uniforms;
+    uint32_t fs_unif_iova;  uint32_t fs_num_uniforms;
+    uint32_t coord_unif_iova; uint32_t coord_num_uniforms;
+    /* CPU-side uniform layout descriptors (how to build per-draw uniforms) */
+    uint32_t vs_unif_contents[V3D_3D_PROG_MAX_UNIF];
+    uint32_t fs_unif_contents[V3D_3D_PROG_MAX_UNIF];
+    uint32_t coord_unif_contents[V3D_3D_PROG_MAX_UNIF];
+    /* CPU-side per-slot uniform ARGS (the mesa `uniforms[]` stream).  The
+     * QUNIFORM interpreter reads these + the per-draw GL uniform blob at draw
+     * time and expands each slot into ONE u32 in the shared per-draw dma
+     * staging (_cvs_unif / _cfs_unif); the raw arg stream is never handed to
+     * the GPU directly.  vs_unif_iova / fs_unif_iova above are therefore only
+     * a 0 sentinel on the compiled path (no per-program dma upload). */
+    uint32_t vs_unif_data[V3D_3D_PROG_MAX_UNIF];
+    uint32_t fs_unif_data[V3D_3D_PROG_MAX_UNIF];
+    uint32_t coord_unif_data[V3D_3D_PROG_MAX_UNIF];
+    /* vertex-stage prog_data for the shader record */
+    uint8_t  vs_threads, vs_single_seg;
+    uint32_t vs_vpm_input_size, vs_vpm_output_size, vs_vcm_cache_size;
+    uint8_t  vs_separate_segments;
+    uint8_t  vs_vattr_sizes[V3D_3D_PROG_MAX_ATTRS / 4];
+    int32_t  vs_driver_location_map[V3D_3D_PROG_MAX_ATTRS];
+    /* fragment-stage prog_data for the shader record */
+    uint8_t  fs_threads, fs_single_seg;
+    uint8_t  fs_needs_coords, fs_uses_center_w, fs_writes_z, fs_disable_ez;
+    uint32_t fs_num_inputs;
+    uint32_t fs_input_slots[V3D_3D_PROG_MAX_INPUTS];
+    /* coordinate-stage prog_data: the shader record's coord VPM-segment fields.
+     * The coord shader writes only gl_Position (no varyings), so its VPM output
+     * size differs from the render VS's and must be programmed separately. */
+    uint8_t  coord_threads, coord_single_seg;
+    uint32_t coord_vpm_input_size, coord_vpm_output_size, coord_vcm_cache_size;
+    uint8_t  coord_separate_segments;
+    /* optional compute stage (shadertoy compute route); cs_qpu_words == 0 when
+     * absent.  Dispatched through v3d_g2d_run_csd instead of the binner. */
+    uint32_t cs_qpu_iova;   uint32_t cs_qpu_words;
+    uint32_t cs_num_uniforms;
+    uint32_t cs_unif_contents[V3D_3D_PROG_MAX_UNIF];
+    uint32_t cs_unif_data[V3D_3D_PROG_MAX_UNIF];
+    uint8_t  cs_threads, cs_single_seg;
+    uint32_t cs_local_size[3];
+    uint32_t cs_shared_size;
+    uint32_t cs_is_geom;    /* 1 = fixed geometry rasterizer (per-triangle grid) */
+} v3d_3d_prog_t;
+
+static v3d_3d_prog_t _progs[V3D_3D_MAX_PROGS];
+
 /* ------------------------------------------------------------------ */
 /* dma staging allocation: dma_alloc is not page-aligned, so over-       */
 /* allocate and round the VA up to a page (the contiguous dma mapping    */
 /* keeps phys page-aligned too).  Mirrors v3d_g2d.c's MMU-table alloc.   */
 /* ------------------------------------------------------------------ */
-static int alloc_stage(uint32_t size, void **va, uint32_t *iova)
+static int alloc_stage_raw(uint32_t size, void **va, uint32_t *iova,
+                           ewokos_addr_t *raw)
 {
-    ewokos_addr_t v = dma_alloc(0, size + 4095u);
-    ewokos_addr_t p;
+    ewokos_addr_t r = dma_alloc(0, size + 4095u);
+    ewokos_addr_t v, p;
 
-    if (v == 0)
+    if (r == 0)
         return -1;
-    v = (v + 4095u) & ~(ewokos_addr_t)4095u;
+    v = (r + 4095u) & ~(ewokos_addr_t)4095u;
     p = dma_phy_addr(0, v);
-    if (p == 0 || (p >> 32) != 0)
-        return -1;
     /* the buffer must be inside a RAM range present in the V3D page table */
-    if (!v3d_g2d_phy_valid(p, size))
+    if (p == 0 || (p >> 32) != 0 || !v3d_g2d_phy_valid(p, size)) {
+        dma_free(0, r);
         return -1;
+    }
     *va = (void *)(uintptr_t)v;
     *iova = (uint32_t)p;
+    if (raw != NULL)
+        *raw = r;
+    return 0;
+}
+
+/* permanent staging (never freed): the raw block handle is not needed */
+static int alloc_stage(uint32_t size, void **va, uint32_t *iova)
+{
+    return alloc_stage_raw(size, va, iova, NULL);
+}
+
+/* hand a program's QPU code blocks back to dma and clear the slot */
+static void release_prog(v3d_3d_prog_t *pr)
+{
+    if (pr->vs_qpu_raw)    dma_free(0, pr->vs_qpu_raw);
+    if (pr->fs_qpu_raw)    dma_free(0, pr->fs_qpu_raw);
+    if (pr->coord_qpu_raw) dma_free(0, pr->coord_qpu_raw);
+    if (pr->cs_qpu_raw)    dma_free(0, pr->cs_qpu_raw);
+    memset(pr, 0, sizeof(*pr));
+}
+
+/* ------------------------------------------------------------------ */
+/* WS4 compiled-shader sampler state records.                            */
+/*                                                                       */
+/* A mesa-compiled FS that samples iChannelN emits, per texture unit, a    */
+/* QUNIFORM_TMU_CONFIG_P0/P1 pair whose data word is (unit << 24) | low:   */
+/* P0 low bits [3:0] are return_words_of_texture_data and P1 low bits      */
+/* [2:0] are the per_pixel_mask/unnormalized/output_type_32 flags (see     */
+/* broadcom/compiler/v3d_tex.c ntq_emit_tmu_general).  The gallium driver  */
+/* expands each into a hardware address by OR-ing those low bits into a    */
+/* TEXTURE_SHADER_STATE (P0) / SAMPLER_STATE (P1) record's IOVA, so the    */
+/* records must be 16-byte aligned (each lives in its own 32-byte slot).   */
+/* gallium's v3d_texture.c is NOT vendored here, so the record contents    */
+/* are transcribed field-by-field from the authoritative encodings in the  */
+/* vendored tree: the bit layout from cle/v3d_packet_v71_pack.h, the RGBA8  */
+/* texture_type from enum V3D71_Texture_Data_Formats (=4), the swizzle     */
+/* values from common/v3d_util.c v3d_translate_pipe_swizzle (RED=2 ..      */
+/* ALPHA=5), and the 64-byte pixel-data alignment from the packet XML's    */
+/* address-field note.  All shadertoy textures are single-mip linear RGBA8 */
+/* sampled GL_NEAREST + GL_REPEAT.                                         */
+/* ------------------------------------------------------------------ */
+
+/* Set the little-endian bit field [lo..hi] (inclusive; bit 0 == rec[0] bit
+ * 0) of a packed 24-byte record to val, mirroring mesa's util_bitpack_uint
+ * so the layout matches the V3D71_*_pack functions exactly. */
+static void rec_set_bits(uint8_t *rec, uint32_t lo, uint32_t hi, uint32_t val)
+{
+    uint32_t b;
+    for (b = lo; b <= hi; b++) {
+        uint8_t mask = (uint8_t)(1u << (b & 7u));
+        if ((val >> (b - lo)) & 1u)
+            rec[b >> 3] |= mask;
+        else
+            rec[b >> 3] &= (uint8_t)~mask;
+    }
+}
+
+/* Pack a single-level, non-array RGBA8 V3D71_TEXTURE_SHADER_STATE (24 bytes)
+ * sampling the w x h image at base_iova (which must be 64-byte aligned: bits
+ * 0-5 of texture_base_pointer are overlaid by the reverse / transfer_func /
+ * flip flags, all 0 here).  tiling is the V3D_3D_TEX_TILING_* layout the
+ * client stored the pixels in (the TMU has no raster 2D mode): for the LT /
+ * UBLINEAR layouts the hardware infers the layout from the image size exactly
+ * as gallium's v3d_setup_slices chose it, so the level-0 fields stay 0; a
+ * UIF level 0 is declared explicitly (level_0_is_strictly_uif / xor_enable /
+ * ub_pad) and that requires the extended record (gallium v3dx_state.c
+ * create_texture_shader_state_bo sets extended whenever strictly_uif or
+ * uif_xor_disable is set). */
+static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
+                                 uint32_t w, uint32_t h,
+                                 uint32_t tiling, uint32_t ub_pad)
+{
+    uint32_t width  = w ? w - 1u : 0u;
+    uint32_t height = h ? h - 1u : 0u;
+    uint32_t uif = (tiling == V3D_3D_TEX_TILING_UIF_NO_XOR ||
+                    tiling == V3D_3D_TEX_TILING_UIF_XOR);
+
+    memset(rec, 0, 24);
+    rec_set_bits(rec,   0,  31, base_iova);   /* texture_base_pointer      */
+    /* reverse(5) / transfer_func(2-4) / flip_y(1) / flip_x(0) = 0;
+     * r_b_swap(32) = 0; array_stride_64_byte_aligned(33-56) = 0. */
+    rec_set_bits(rec,  58,  71, width);       /* image_width  = w - 1      */
+    rec_set_bits(rec,  72,  85, height);      /* image_height = h - 1      */
+    rec_set_bits(rec,  86,  99, 0u);          /* image_depth  = 0 (2D)     */
+    rec_set_bits(rec, 100, 106, 4u);          /* texture_type = RGBA8      */
+    rec_set_bits(rec, 107, 107, uif);         /* extended (level-0 fields) */
+    rec_set_bits(rec, 108, 110, 2u);          /* swizzle_r = RED           */
+    rec_set_bits(rec, 111, 113, 3u);          /* swizzle_g = GREEN         */
+    rec_set_bits(rec, 114, 116, 4u);          /* swizzle_b = BLUE          */
+    rec_set_bits(rec, 117, 119, 5u);          /* swizzle_a = ALPHA         */
+    rec_set_bits(rec, 120, 123, 0u);          /* max_level  = 0            */
+    rec_set_bits(rec, 124, 127, 0u);          /* base_level = 0            */
+    if (uif) {
+        rec_set_bits(rec, 128, 131, ub_pad & 0xFu);  /* level_0_ub_pad     */
+        rec_set_bits(rec, 132, 132,                  /* level_0_xor_enable */
+                     tiling == V3D_3D_TEX_TILING_UIF_XOR ? 1u : 0u);
+        rec_set_bits(rec, 134, 134, 1u);             /* level_0_is_strictly_uif */
+    }
+    rec_set_bits(rec, 135, 135, 0u);          /* uif_xor_disable = 0       */
+    /* chroma_offset_x/y, texture_base_pointer_cb/cr, pad = 0 (RGB, not YUV). */
+}
+
+/* Pack a GL_NEAREST + GL_REPEAT V3D71_SAMPLER_STATE (24 bytes): nearest
+ * mag/min/mip filters, sRGB disabled, LOD clamped to level 0, REPEAT wrap on
+ * all axes, no anisotropy, no border/depth-compare. */
+static void pack_sampler_state_nearest(uint8_t *rec)
+{
+    memset(rec, 0, 24);
+    rec_set_bits(rec,  0,  0, 1u);   /* mag_filter_nearest        */
+    rec_set_bits(rec,  1,  1, 1u);   /* min_filter_nearest        */
+    rec_set_bits(rec,  2,  2, 1u);   /* mip_filter_nearest        */
+    rec_set_bits(rec,  3,  3, 0u);   /* anisotropy_enable         */
+    rec_set_bits(rec,  4,  6, 0u);   /* depth_compare_function    */
+    rec_set_bits(rec,  7,  7, 1u);   /* srgb_disable              */
+    rec_set_bits(rec,  8, 19, 0u);   /* min_level_of_detail = 0.0 */
+    rec_set_bits(rec, 20, 31, 0u);   /* max_level_of_detail = 0.0 */
+    rec_set_bits(rec, 32, 47, 0u);   /* fixed_bias = 0.0          */
+    rec_set_bits(rec, 48, 50, 0u);   /* wrap_s = REPEAT           */
+    rec_set_bits(rec, 51, 53, 0u);   /* wrap_t = REPEAT           */
+    rec_set_bits(rec, 54, 56, 0u);   /* wrap_r = REPEAT           */
+    rec_set_bits(rec, 57, 57, 0u);   /* wrap_i_border             */
+    rec_set_bits(rec, 58, 60, 0u);   /* border_color_mode         */
+    rec_set_bits(rec, 61, 62, 0u);   /* maximum_anisotropy        */
+    /* border_color_word_0..3 (64-191) = 0. */
+}
+
+/* Build the four identical sampler records once (the shadertoy textures all
+ * use GL_NEAREST + GL_REPEAT). */
+static void build_sampler_records(void)
+{
+    uint32_t u;
+    for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++)
+        pack_sampler_state_nearest(_sampler_va + u * V3D_3D_TEXSTATE_SLOT);
+}
+
+/* Rebuild the per-unit texture records from this draw's ctex bindings.  A
+ * unit with ctex_iova == 0 stays unbound (zeroed record).  Returns 0 on
+ * success, -1 if a bound unit's pixel data is not 64-byte aligned or is still
+ * in raster layout (the TMU cannot sample it; the caller then declines to the
+ * CPU path rather than sample a scrambled image). */
+static int build_tex_state_records(const v3d_3d_ctex_t *ctex)
+{
+    uint32_t u;
+    if (ctex == NULL)
+        return 0;
+    for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++) {
+        uint8_t *rec = _texstate_va + u * V3D_3D_TEXSTATE_SLOT;
+        if (ctex->ctex_iova[u] == 0) {
+            memset(rec, 0, 24);
+            continue;
+        }
+        if ((ctex->ctex_iova[u] & 0x3Fu) != 0)
+            return -1;
+        if (ctex->ctex_tiling[u] == V3D_3D_TEX_TILING_RASTER ||
+            ctex->ctex_tiling[u] > V3D_3D_TEX_TILING_UIF_XOR) {
+            slog("v3d_3d: ctex unit %u tiling %u unsupported -> decline\r\n",
+                 u, (uint32_t)ctex->ctex_tiling[u]);
+            return -1;
+        }
+        pack_tex_state_rgba8(rec, ctex->ctex_iova[u],
+                             ctex->ctex_w[u], ctex->ctex_h[u],
+                             ctex->ctex_tiling[u], ctex->ctex_ub_pad[u]);
+    }
     return 0;
 }
 
@@ -333,9 +641,52 @@ int v3d_3d_init(void)
         return V3D_3D_UNSUPPORTED;
     _tex_unif_va = (uint32_t *)va; _tex_unif_p = iova;
 
+    /* compiled-draw per-stage expanded-uniform staging (WS4): one shared buffer
+     * per stage, filled by the QUNIFORM interpreter at draw time and referenced
+     * by the shader-state record.  Dispatches are serialized (v3d_g2d_op_begin)
+     * so a single shared buffer per stage is safe.  Sized for the largest
+     * cached uniform stream (V3D_3D_PROG_MAX_UNIF words). */
+    if (alloc_stage(V3D_3D_PROG_MAX_UNIF * 4u, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _cvs_unif_va = (uint32_t *)va; _cvs_unif_p = iova;
+
+    if (alloc_stage(V3D_3D_PROG_MAX_UNIF * 4u, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _cfs_unif_va = (uint32_t *)va; _cfs_unif_p = iova;
+
+    /* compiled coordinate-shader (binning) expanded-uniform staging: the coord
+     * stage is the same VS NIR compiled with is_coord=true, so it shares the
+     * render VS's uniform driver_locations and is expanded from the SAME
+     * per-draw blob into its own buffer (the coord QPU references its own
+     * uniform stream, which dead-strips the lighting uniforms but keeps e.g.
+     * mvp at the identical dword offset). */
+    if (alloc_stage(V3D_3D_PROG_MAX_UNIF * 4u, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _ccs_unif_va = (uint32_t *)va; _ccs_unif_p = iova;
+
+    /* compiled compute-stage expanded-uniform staging: the CSD fetches the
+     * expanded stream straight from here (cfg[6]). */
+    if (alloc_stage(V3D_3D_PROG_MAX_UNIF * 4u, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _ccu_unif_va = (uint32_t *)va; _ccu_unif_p = iova;
+
     if (alloc_stage(V3D_3D_GEN_SIZE, &va, &iova) != 0)
         return V3D_3D_UNSUPPORTED;
     _gen_va = (uint8_t *)va; _gen_p = iova;
+
+    /* WS4 compiled-shader sampler state records: 4 texture + 4 sampler records,
+     * each in its own 32-byte slot (16-byte aligned so the TMU_CONFIG low bits
+     * OR cleanly).  The sampler records are identical for every shadertoy
+     * texture, so build them once here; the texture records are rebuilt each
+     * draw from ctex (build_tex_state_records). */
+    if (alloc_stage(V3D_3D_MAX_TEX_UNITS * V3D_3D_TEXSTATE_SLOT, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _texstate_va = (uint8_t *)va; _texstate_p = iova;
+
+    if (alloc_stage(V3D_3D_MAX_TEX_UNITS * V3D_3D_TEXSTATE_SLOT, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _sampler_va = (uint8_t *)va; _sampler_p = iova;
+    build_sampler_records();
 
     /* stage the fixed-function QPU code once; the addresses are stable for
      * the process lifetime.  frag @ [0], vtx @ [nf], coord @ [nf+nv],
@@ -364,7 +715,7 @@ int v3d_3d_init(void)
     __asm__ __volatile__("dsb sy" ::: "memory");
 
     _ready = 1;
-    klog("v3d_3d: 3D pipeline staging ready (cl %u pool %u tsda %u)\n",
+    slog("v3d_3d: 3D pipeline staging ready (cl %u pool %u tsda %u)\r\n",
          _cl_p, _pool_p, _tsda_p);
     return V3D_3D_DONE;
 }
@@ -432,9 +783,41 @@ static uint16_t cl_f187(float v)
 /* GL shader-state record (32 bytes) + the two 16-byte attribute records */
 /* written CONTIGUOUSLY into the one page-based _ssr allocation.          */
 /* ------------------------------------------------------------------ */
+
+/* Low 3 bits of each shader code address in the GL Shader State Record
+ * (V3D71 GL_SHADER_STATE_RECORD, v3d_packet_v71_pack.h: cl[8]/[16]/[24] =
+ * addr | 4_way_threadable<<0 | start_in_final_thread_section<<1 |
+ * propagate_nans<<2).  The hardware uses them to decide how the thread is
+ * spawned and, critically, when it may END:
+ *   start_in_final_thread_section: the QPU is launched already past its
+ *     "last THRSW" so the single program-end THRSW terminates the thread.
+ *     Mesa sets this from prog_data->single_seg, which is !c->last_thrsw
+ *     (vir.c); non-fragment shaders without TMU traffic never get a last
+ *     THRSW pair (nir_to_vir.c vir_emit_last_thrsw skips them), so every
+ *     coord/vertex shader here has single_seg=1.  With the bit CLEAR the
+ *     hardware waits for a THRSW pair that never comes: the coord thread
+ *     never ends, its VPM segment is never released, the VCD stalls once the
+ *     VPM fills (CT0PC frozen at ~510 verts) and CLE_BFC never increments --
+ *     the device-observed BIN timeout with no MMU fault and no ERR_STAT bit.
+ *   4_way_threadable: threads == 4 (mesa v3d_pack_shader_state).
+ *   propagate_nans: mesa sets it unconditionally. */
+#define SH_FLAG_4WAY       (1u << 0)
+#define SH_FLAG_FINAL_SEG  (1u << 1)
+#define SH_FLAG_PROP_NANS  (1u << 2)
+
+static uint32_t sh_flags(uint32_t threads, uint32_t single_seg)
+{
+    return (threads == 4u ? SH_FLAG_4WAY : 0u) |
+           (single_seg ? SH_FLAG_FINAL_SEG : 0u) |
+           SH_FLAG_PROP_NANS;
+}
+
 static void build_shader_record(uint32_t frag_addr, uint32_t frag_unif,
+                                uint32_t frag_flags,
                                 uint32_t vtx_addr, uint32_t vtx_unif,
+                                uint32_t vtx_flags,
                                 uint32_t coord_addr, uint32_t coord_unif,
+                                uint32_t coord_flags,
                                 uint32_t varyings)
 {
     uint8_t *r = _ssr_va;                 /* bytes [0..31] */
@@ -450,7 +833,7 @@ static void build_shader_record(uint32_t frag_addr, uint32_t frag_unif,
     r[5] = 0x10;                          /* coord in segs=0, As=1  */
     r[6] = 0x01;                          /* vtx  out segs=1, Ve=0  */
     r[7] = 0x10;                          /* vtx  in segs=0, As=1   */
-    r[8]  = (uint8_t)(frag_addr & 0xF8);
+    r[8]  = (uint8_t)((frag_addr & 0xF8) | (frag_flags & 0x07u));
     r[9]  = (uint8_t)((frag_addr >> 8) & 0xFF);
     r[10] = (uint8_t)((frag_addr >> 16) & 0xFF);
     r[11] = (uint8_t)((frag_addr >> 24) & 0xFF);
@@ -458,7 +841,7 @@ static void build_shader_record(uint32_t frag_addr, uint32_t frag_unif,
     r[13] = (uint8_t)((frag_unif >> 8) & 0xFF);
     r[14] = (uint8_t)((frag_unif >> 16) & 0xFF);
     r[15] = (uint8_t)((frag_unif >> 24) & 0xFF);
-    r[16] = (uint8_t)(vtx_addr & 0xF8);
+    r[16] = (uint8_t)((vtx_addr & 0xF8) | (vtx_flags & 0x07u));
     r[17] = (uint8_t)((vtx_addr >> 8) & 0xFF);
     r[18] = (uint8_t)((vtx_addr >> 16) & 0xFF);
     r[19] = (uint8_t)((vtx_addr >> 24) & 0xFF);
@@ -466,7 +849,7 @@ static void build_shader_record(uint32_t frag_addr, uint32_t frag_unif,
     r[21] = (uint8_t)((vtx_unif >> 8) & 0xFF);
     r[22] = (uint8_t)((vtx_unif >> 16) & 0xFF);
     r[23] = (uint8_t)((vtx_unif >> 24) & 0xFF);
-    r[24] = (uint8_t)(coord_addr & 0xF8);
+    r[24] = (uint8_t)((coord_addr & 0xF8) | (coord_flags & 0x07u));
     r[25] = (uint8_t)((coord_addr >> 8) & 0xFF);
     r[26] = (uint8_t)((coord_addr >> 16) & 0xFF);
     r[27] = (uint8_t)((coord_addr >> 24) & 0xFF);
@@ -474,6 +857,65 @@ static void build_shader_record(uint32_t frag_addr, uint32_t frag_unif,
     r[29] = (uint8_t)((coord_unif >> 8) & 0xFF);
     r[30] = (uint8_t)((coord_unif >> 16) & 0xFF);
     r[31] = (uint8_t)((coord_unif >> 24) & 0xFF);
+}
+
+/* Compiled-shader variant of build_shader_record: lays down the identical
+ * flags / varying count / three code+uniform address pairs, then OVERWRITES
+ * the four VPM-segment bytes [4..7] with the compiled stages' real sizes from
+ * prog_data instead of the fixed pass-through constants (0x01/0x10).  A
+ * compiled coordinate shader (is_coord VS) and render VS have different VPM
+ * input/output segment sizes than the hand-written fixed shaders, so they must
+ * come from the compiler.  Encoding matches mesa's v3d_pack_shader_state via
+ * the V3D71 pack header (v3d_packet_v71_pack.h):
+ *   byte4 = coord_out_seg | (min_coord_out_in_play_addl_vcm << 4)
+ *   byte5 = coord_in_seg  | ((min_coord_in_in_play - 1) << 4)
+ *   byte6 = vtx_out_seg   | (min_vtx_out_in_play_addl_vcm << 4)
+ *   byte7 = vtx_in_seg    | ((min_vtx_in_in_play - 1) << 4)
+ * For a program with no geometry shader v3d_compute_vpm_config fixes
+ * As = 1 and Ve = 0, so (As - 1) = 0 and Ve = 0: every "min segments in
+ * play" high nibble is 0 and only the four segment sizes (low nibbles) vary.
+ * The VCM cache size (Vc) is a VPM-memory-pressure hint mesa programs into a
+ * separate VPM config; this pipeline relies on the hardware default (as the
+ * fixed path already does), so Vc is cached but not written here. */
+static void build_shader_record_compiled(uint32_t frag_addr, uint32_t frag_unif,
+                                         uint32_t frag_threads, uint32_t frag_single_seg,
+                                         uint32_t vtx_addr, uint32_t vtx_unif,
+                                         uint32_t vtx_threads, uint32_t vtx_single_seg,
+                                         uint32_t coord_addr, uint32_t coord_unif,
+                                         uint32_t coord_threads, uint32_t coord_single_seg,
+                                         uint32_t varyings,
+                                         uint32_t cs_vpm_out, uint32_t cs_vpm_in,
+                                         uint32_t vs_vpm_out, uint32_t vs_vpm_in)
+{
+    uint8_t *r = _ssr_va;                 /* bytes [0..31] */
+
+    build_shader_record(frag_addr, frag_unif, sh_flags(frag_threads, frag_single_seg),
+                        vtx_addr, vtx_unif, sh_flags(vtx_threads, vtx_single_seg),
+                        coord_addr, coord_unif, sh_flags(coord_threads, coord_single_seg),
+                        varyings);
+    /* V3D 7.1 VPM config (proven bare-metal record, v3d71_coord_shader_
+     * encoding.md S5 verified on real Pi5 + mesa v3d_packet.xml field layout):
+     *   byte5 = coord_in_seg | ((min_coord_in_in_play - 1) << 4)
+     *   byte7 = vtx_in_seg   | ((min_vtx_in_in_play   - 1) << 4)
+     * The high nibble is "min segments in play" MINUS ONE, so mesa's As=1
+     * (v3d_compute_vpm_config, no geometry shader) encodes as 0 -- NOT 1.  The
+     * previous 0x10 put 1 in the high nibble => As=2: the binner would not
+     * launch the coord shader until TWO input segments were in play.  A 4-vert
+     * single-batch quad (shadertoy) flushes before that ever bites, but a
+     * pipelined multi-batch mesh (teapot: 600 verts/patch) can never keep two
+     * input segments ahead, so the VCM blocks forever -> BIN timeout with
+     * ct0cs=CTRUN(0x20), bfc never advancing, the whole CL consumed and NO MMU
+     * fault (all device-confirmed).  The low nibble is the INPUT segment size
+     * in 8-word sectors and must be >=1 so the coord/vtx shader's ldvpmv_in has
+     * VPM to read; mesa folds input into output for its own shared-segment
+     * packing (vpm_input_size=0), but the proven hand-rolled record reserves
+     * one input sector.  Use the compiler's real input size when it supplies
+     * one, else 1.  Only the OUTPUT sizes otherwise vary per compiled program
+     * (8-word sectors, clamped >=1). */
+    r[4] = (uint8_t)((cs_vpm_out & 0xFu) ? (cs_vpm_out & 0xFu) : 1u);
+    r[5] = (uint8_t)((cs_vpm_in  & 0xFu) ? (cs_vpm_in  & 0xFu) : 1u);  /* coord in seg>=1, As=1 */
+    r[6] = (uint8_t)((vs_vpm_out & 0xFu) ? (vs_vpm_out & 0xFu) : 1u);
+    r[7] = (uint8_t)((vs_vpm_in  & 0xFu) ? (vs_vpm_in  & 0xFu) : 1u);  /* vtx   in seg>=1, As=1 */
 }
 
 /* attr record 0 = pos (float3, stride 12); attr record 1 = col (byte4
@@ -541,9 +983,30 @@ static int wait_flush(volatile uint32_t *core, uint32_t reg, uint32_t before)
     while (kernel_tic_ms(0) < deadline) {
         if (core[reg / 4] != before)
             return 0;
-        usleep(200);
+        /* >200us so libc takes the SYS_USLEEP park branch (0% CPU) instead of
+         * the <=200us fine-counter spin: a bin/render flush that never lands
+         * (V3D 3D timeout) must not peg a g2dd core for the whole wait.  The
+         * deadline above is wall-clock (kernel_tic_ms), so the one-tick park
+         * granularity (~976us) does not shorten V3D_3D_WAIT_MS. */
+        usleep(500);
     }
     return -1;
+}
+
+/* Description of the job currently on the CLE, set by v3d_3d_clear/draw before
+ * they ring CT0 and printed with any timeout so the stalling client/program is
+ * identifiable from /dev/log alone. */
+static char _job_desc[96] = "none";
+
+/* A bin/render flush never landed: the CLE thread is parked mid-job and no
+ * later dispatch would complete behind it.  Reset the block (Linux
+ * v3d_reset) so the 2D compositor, CSD effects and other 3D clients keep the
+ * GPU; v3d_g2d_recover latches the wedge itself when the reset fails or the
+ * per-boot cap is reached. */
+static void stalled(const char *why)
+{
+    slog("v3d_3d: %s on job: %s\r\n", why, _job_desc);
+    v3d_g2d_recover(why);
 }
 
 /* submit the binning CL: point the pool + tile-state at the dma staging,
@@ -551,6 +1014,14 @@ static int wait_flush(volatile uint32_t *core, uint32_t reg, uint32_t before)
 static int submit_bin(volatile uint32_t *core, uint32_t start, uint32_t end)
 {
     uint32_t before = core[CLE_BFC / 4];
+    /* ERR_STAT is a sticky latch the port never clears.  Writing ~0 to it (the
+     * VC4/pi3 reference idiom) is NOT safe on VC7: the VC7 reference only ever
+     * READS 0xf20, and adding a ~0 write here made even the empty-clear bin
+     * time out (pgl_g3d probe-clear -> "init FAIL probe-clear").  Detect a
+     * FRESH error by read-only difference instead -- snapshot before the ring,
+     * and after a timeout report only the bits that appeared during this bin. */
+    uint32_t err_before = core[V3D_ERR_STAT / 4];
+    int rc;
 
     core[CLE_CT0QMA / 4] = _pool_p;
     core[CLE_CT0QMS / 4] = V3D_3D_POOL_SIZE;
@@ -560,7 +1031,39 @@ static int submit_bin(volatile uint32_t *core, uint32_t start, uint32_t end)
     v3d_g2d_l2_invalidate_all();
     core[CLE_CT0QBA / 4] = start;
     core[CLE_CT0QEA / 4] = end;                   /* write starts the job */
-    return wait_flush(core, CLE_BFC, before);
+    rc = wait_flush(core, CLE_BFC, before);
+    if (rc != 0) {
+        uint32_t mctl = 0, mvio = 0, mid = 0, mint = 0;
+        int mf = v3d_g2d_mmu_fault_peek(&mctl, &mvio, &mid, &mint);
+        slog("v3d_3d: BIN timeout bfc %u->%u intsts 0x%x ct0cs 0x%x ct1cs 0x%x bpos 0x%x cl [%u,%u)\r\n",
+             before, core[CLE_BFC / 4], core[V3D_INT_STS / 4],
+             core[CLE_CT0CS / 4], core[CLE_CT1CS / 4], core[PTB_BPOS / 4],
+             start, end);
+        /* bin control-thread position: CT0CA/CT0RA = where in the CL it is
+         * stuck, CT0PC = primitives processed, ERR_STAT = core error latch. */
+        slog("v3d_3d: BIN ct0ca 0x%x ct0ra 0x%x ct0lc 0x%x ct0pc 0x%x err 0x%x\r\n",
+             core[CLE_CT0CA / 4], core[CLE_CT0RA / 4], core[CLE_CT0LC / 4],
+             core[CLE_CT0PC / 4], core[V3D_ERR_STAT / 4]);
+        /* MMU fault state: fault=1 + vio_id client 0x30-0x37=CLE / 0x38=PTB
+         * proves the binner hit an unmapped IOVA (vio_addr); fault=0 means the
+         * coord-shader QPU stalled with the mapping intact. */
+        slog("v3d_3d: BIN mmu fault=%d ctl=0x%x vio_addr=0x%x vio_id=0x%x hub_int=0x%x\r\n",
+             mf, mctl, mvio, mid, mint);
+        /* Binner pool write cursor: bpca advanced past the pool base (_pool_p)
+         * means the binner emitted tile lists (coord shader produced binnable
+         * vertices); bpca == base means it wrote nothing.  err is shown
+         * before->after with new = bits that appeared during THIS bin (sticky
+         * bits already set before the ring are masked out), so a new bit12
+         * (VCDI) proves this bin faulted rather than inheriting a stale latch. */
+        slog("v3d_3d: BIN pool base 0x%x bpca 0x%x bpcs 0x%x err %x->%x new %x\r\n",
+             _pool_p, core[PTB_BPCA / 4], core[PTB_BPCS / 4],
+             err_before, core[V3D_ERR_STAT / 4],
+             core[V3D_ERR_STAT / 4] & ~err_before);
+        /* CT0 is stuck mid-job: reset the block so later dispatches (2D/CSD
+         * included) do not wait out their budget behind it. */
+        stalled("bin timeout");
+    }
+    return rc;
 }
 
 /* submit the render CL: drop stale cache lines, ring CT1, wait for the
@@ -568,13 +1071,30 @@ static int submit_bin(volatile uint32_t *core, uint32_t start, uint32_t end)
 static int submit_render(volatile uint32_t *core, uint32_t start, uint32_t end)
 {
     uint32_t before = core[CLE_RFC / 4];
+    int rc;
 
     v3d_g2d_l2_invalidate_all();
     core[CLE_CT1CFG / 4] = 0;                     /* QCFG default */
+    /* Clear a boot-time halt on the render CLE thread before ringing CT1.
+     * The proven bare-metal bring-up (videocore7-exps/app/src/v3d.c,
+     * v3d_submit_render) writes CT1CS = 0 at exactly this point; the EwokOS
+     * port dropped it.  Without the write the render control thread stays
+     * parked from boot, the CT1 job never advances and CLE_RFC never
+     * increments, so wait_flush burns its whole deadline and every dispatch
+     * (even the shader-less probe clear) degrades to V3D_3D_FAILED -- which
+     * latches the client's GPU path off and drops shadertoy to the CPU. */
+    core[CLE_CT1CS / 4] = 0;
     __asm__ __volatile__("dsb sy" ::: "memory");
     core[CLE_CT1QBA / 4] = start;
     core[CLE_CT1QEA / 4] = end;
-    return wait_flush(core, CLE_RFC, before);
+    rc = wait_flush(core, CLE_RFC, before);
+    if (rc != 0) {
+        slog("v3d_3d: RENDER timeout rfc %u->%u intsts 0x%x ct0cs 0x%x ct1cs 0x%x cl [%u,%u)\r\n",
+             before, core[CLE_RFC / 4], core[V3D_INT_STS / 4],
+             core[CLE_CT0CS / 4], core[CLE_CT1CS / 4], start, end);
+        stalled("render timeout");
+    }
+    return rc;
 }
 
 /* ------------------------------------------------------------------ */
@@ -588,7 +1108,7 @@ static uint32_t build_bcl_empty(uint32_t w, uint32_t h)
     off = cl_u8(off, 0x77);                     /* NUMBER_OF_LAYERS */
     off = cl_u8(off, 0x00);                     /* layers - 1 = 0 */
     off = cl_u8(off, 0x78);                     /* TILE_BINNING_MODE_CFG */
-    off = cl_u8(off, (1u << 4) | (0u << 2));    /* init block 128b, overflow 64b */
+    off = cl_u8(off, (1u << 4) | (0u << 2));    /* block 128b, initial 64b (matches RCL 0x7E) */
     off = cl_u8(off, (1u << 3) | (1u << 0));    /* log2 tile h/w = 1 (16px) */
     off = cl_u8(off, 0x00);
     off = cl_u8(off, 0x00);
@@ -726,7 +1246,18 @@ static uint32_t build_draw_bcl(int mode, uint32_t nverts, uint32_t sr_iova,
     off = cl_u8(off, 0x00);
 
     off = cl_u8(off, 0x78);                     /* TILE_BINNING_MODE_CFG */
-    off = cl_u8(off, (0u << 4) | (1u << 2));    /* init 128B, overflow 64B */
+    /* cl[1]: bits4-5 = tile_allocation_block_size, bits2-3 =
+     * tile_allocation_initial_block_size (mesa v3d_packet.xml v71).  The
+     * draw bin previously emitted (0<<4)|(1<<2) = block 64b / initial 128b,
+     * copied from the bare-metal reference's UNFINISHED draw path, while the
+     * reference's clear bin -- the only binning config ever proven to
+     * complete on this silicon -- uses (1<<4)|(0<<2) = block 128b / initial
+     * 64b.  With the swapped pairing the tile allocator ran away (bpca
+     * advanced ~20 KB for 80 tiles / 2 triangles) and the bin flush never
+     * landed (bfc unmoved, no fresh ERR_STAT, no MMU fault).  Use the
+     * proven-completing pairing; cl[2] keeps the 64px tile size to match
+     * build_draw_rcl. */
+    off = cl_u8(off, (1u << 4) | (0u << 2));    /* block 128b, initial 64b */
     off = cl_u8(off, (uint8_t)((log2t << 3) | log2t));
     off = cl_u8(off, 0x00);
     off = cl_u8(off, 0x00);
@@ -961,9 +1492,14 @@ static uint32_t build_draw_rcl(uint32_t fb_iova, uint32_t stride_bytes,
         off = cl_u32le(off, zbits);
         off = cl_u16le(off, 0x0000);
     }
-    /* TILE_LIST_INITIAL_BLOCK_SIZE (0x7E): auto-chain, 128b */
+    /* TILE_LIST_INITIAL_BLOCK_SIZE (0x7E): auto-chain, first block 64b.
+     * MUST match the binner's tile_allocation_initial_block_size in
+     * TILE_BINNING_MODE_CFG (64b, bits 2-3 = 0): the render CLE walks each
+     * tile's first block with this size, so 128b here made it run past the
+     * 64b block the binner wrote into the neighbouring tile's list and fault
+     * with CTERR (ct1cs 0x218) as soon as real geometry landed in a tile. */
     off = cl_u8(off, 0x7E);
-    off = cl_u8(off, (1u << 2) | (1u << 0));
+    off = cl_u8(off, (1u << 2) | (0u << 0));
     /* MULTICORE_RENDERING_SUPERTILE_CFG (0x7A): 1 supertile = whole frame */
     off = cl_u8(off, 0x7A);
     off = cl_u8(off, (uint8_t)(tx - 1));        /* supertile_w - 1 (tiles) */
@@ -1022,7 +1558,16 @@ static uint32_t build_draw_rcl(uint32_t fb_iova, uint32_t stride_bytes,
         gp[g++] = 0x1A;                         /* END_OF_LOADS */
         gp[g++] = 0x38;                         /* PRIM_LIST_FORMAT */
         gp[g++] = prim_list_type(mode);         /* points/lines/triangles */
-        gp[g++] = 0x36;                         /* SET_INSTANCEID (PTB expects 0) */
+        /* SET_INSTANCEID (V3D71 length 5: opcode + u32 instance id; PTB
+         * expects 0).  Emitting only one id byte made the CLE swallow the
+         * following 0x15 0x00 0x1D bytes as the id and then fetch the STORE
+         * packet's buffer byte (0x00) as the next opcode = HALT: render thread
+         * stopped inside the generic list (ct1cs 0x110 = CTSUBS, RTSD 1,
+         * CTRUN 0, no CTERR) and RFC never advanced. */
+        gp[g++] = 0x36;
+        gp[g++] = 0x00;
+        gp[g++] = 0x00;
+        gp[g++] = 0x00;
         gp[g++] = 0x00;
         gp[g++] = 0x15;                         /* BRANCH_TO_IMPLICIT_TILE_LIST */
         gp[g++] = 0x00;                         /* set 0 */
@@ -1045,6 +1590,372 @@ static uint32_t build_draw_rcl(uint32_t fb_iova, uint32_t stride_bytes,
 }
 
 /* ------------------------------------------------------------------ */
+/* WS4 compiled-draw helpers: the mesa QUNIFORM interpreter + the           */
+/* full-screen-quad attribute wiring.                                      */
+/* ------------------------------------------------------------------ */
+
+/* mesa's NIR->QPU compiler emits, per uniform slot, a `contents` descriptor
+ * (enum quniform_contents, mesa/src/broadcom/compiler/v3d_compiler.h) plus a
+ * 32-bit arg.  At draw time the gallium driver (v3d_set_uniform) expands each
+ * slot into ONE u32 the QPU pulls with ldunifrf.  That driver is NOT vendored
+ * here (only broadcom/{cle,common,compiler,qpu} are), so expand_uniforms()
+ * mirrors its documented semantics for the subset the shadertoy full-screen-
+ * quad path can produce.  These values are the leading entries of the enum and
+ * are stable across the pinned mesa. */
+#define QUNIFORM_CONSTANT          0u
+#define QUNIFORM_UNIFORM           1u
+#define QUNIFORM_VIEWPORT_X_SCALE  2u
+#define QUNIFORM_VIEWPORT_Y_SCALE  3u
+#define QUNIFORM_VIEWPORT_Z_OFFSET 4u
+#define QUNIFORM_VIEWPORT_Z_SCALE  5u
+#define QUNIFORM_TMU_CONFIG_P0     6u
+#define QUNIFORM_TMU_CONFIG_P1     7u
+#define QUNIFORM_SSBO_OFFSET       19u  /* data = SSBO binding; compute route */
+
+static uint32_t f32_bits(float f)
+{
+    uint32_t u;
+    __builtin_memcpy(&u, &f, 4);
+    return u;
+}
+
+/* V3D 7.1 clipper XY granularity (mesa v3d_device_info.c: 64 for ver 71,
+ * 256 for ver 42): Xs/Ys VPM words and CLIPPER_XY_SCALING are in 1/64 px. */
+#define V3D_3D_CLIPPER_XY_GRANULARITY 64.0f
+
+/* Expand one stage's uniform stream into `out` (num u32s).  contents[]/data[]
+ * are the cached CPU descriptors+args (see v3d_3d_prog_t); job_unif (num_job
+ * u32s, may be NULL) is the per-draw GL uniform storage a QUNIFORM_UNIFORM slot
+ * indexes; vp_* are the viewport transform values (mesa's job->vp_xscale etc.).
+ * ctex carries this draw's per-unit texture bindings (may be NULL): a
+ * QUNIFORM_TMU_CONFIG_P0/P1 slot resolves its unit index (data >> 24) against
+ * the matching pre-built state record in _texstate / _sampler.
+ * Returns 0 on success, -1 if any slot's contents is outside the handled subset
+ * or a QUNIFORM_UNIFORM index is out of range (the caller then declines the
+ * draw rather than feeding the QPU a wrong value). */
+static int expand_uniforms(uint32_t *out, const uint32_t *contents,
+                           const uint32_t *data, uint32_t num,
+                           const uint32_t *job_unif, uint32_t num_job,
+                           const v3d_3d_ctex_t *ctex,
+                           float vp_xscale, float vp_yscale,
+                           float vp_zscale, float vp_zoff,
+                           const uint32_t *ssbo_iova, uint32_t num_ssbo)
+{
+    uint32_t i;
+    for (i = 0; i < num; i++) {
+        uint32_t c = contents[i] & 0xFFu;   /* the enum value (defensive mask) */
+        uint32_t d = data[i];
+        switch (c) {
+        case QUNIFORM_CONSTANT:
+            out[i] = d;                     /* the arg IS the value */
+            break;
+        case QUNIFORM_UNIFORM:
+            if (job_unif == NULL || d >= num_job) {
+                slog("v3d_3d: unif slot %u GL uniform[%u] out of %u -> decline\r\n",
+                     i, d, num_job);
+                return -1;                  /* per-draw GL uniform[d] */
+            }
+            out[i] = job_unif[d];
+            break;
+        /* Viewport uniforms are plain float32 (mesa cl_aligned_f): the
+         * compiled VS/coord shader does nir_fmul(pos, load_viewport_x_scale)
+         * then f2i32 to produce the Xs/Ys VPM words (v3d_nir_lower_io.c
+         * v3d_nir_emit_ff_vpm_outputs).  The X/Y scale carries the clipper
+         * granularity: 64 sub-pixel units on V3D 7.1 (v3d_device_info.c
+         * clipper_xy_granularity; 256 on 4.2), matching the BCL CLIPPER_XY_
+         * SCALING packet.  A packed half pair here reads as a ~1e17 float,
+         * saturating every Xs/Ys: the frame completes but nothing is
+         * rasterised. */
+        case QUNIFORM_VIEWPORT_X_SCALE:
+            out[i] = f32_bits(vp_xscale * V3D_3D_CLIPPER_XY_GRANULARITY);
+            break;
+        case QUNIFORM_VIEWPORT_Y_SCALE:
+            out[i] = f32_bits(vp_yscale * V3D_3D_CLIPPER_XY_GRANULARITY);
+            break;
+        case QUNIFORM_VIEWPORT_Z_SCALE:
+            out[i] = f32_bits(vp_zscale);
+            break;
+        case QUNIFORM_VIEWPORT_Z_OFFSET:
+            out[i] = f32_bits(vp_zoff);
+            break;
+        case QUNIFORM_TMU_CONFIG_P0: {
+            /* A compiled FS that samples iChannelN emits a TMU_CONFIG_P0/P1
+             * pair per unit.  data = (unit << 24) | low; the gallium driver
+             * ORs `low` into the matching hardware state record's IOVA.  The
+             * texture records were built for this draw by
+             * build_tex_state_records() into _texstate (32-byte slots, so bits
+             * [3:0] are free for return_words_of_texture_data).  Decline if the
+             * unit is unbound/out of range so a mis-wired FS falls back to CPU
+             * rather than sampling a stale or zero record. */
+            uint32_t unit = d >> 24;
+            if (ctex == NULL || unit >= V3D_3D_MAX_TEX_UNITS ||
+                ctex->ctex_iova[unit] == 0) {
+                slog("v3d_3d: unif slot %u TMU P0 unit %u unbound -> decline\r\n", i, unit);
+                return -1;
+            }
+            out[i] = (_texstate_p + unit * V3D_3D_TEXSTATE_SLOT) | (d & 0xFu);
+            break;
+        }
+        case QUNIFORM_TMU_CONFIG_P1: {
+            /* Same unit resolution; the sampler records are identical for every
+             * shadertoy texture (GL_NEAREST + GL_REPEAT) and built once at init.
+             * bits [2:0] carry per_pixel_mask / unnormalized / output_type_32. */
+            uint32_t unit = d >> 24;
+            if (ctex == NULL || unit >= V3D_3D_MAX_TEX_UNITS ||
+                ctex->ctex_iova[unit] == 0) {
+                slog("v3d_3d: unif slot %u TMU P1 unit %u unbound -> decline\r\n", i, unit);
+                return -1;
+            }
+            out[i] = (_sampler_p + unit * V3D_3D_TEXSTATE_SLOT) | (d & 0x7u);
+            break;
+        }
+        case QUNIFORM_SSBO_OFFSET:
+            /* Compute route: mesa resolves this slot to a bound SSBO's GPU
+             * address.  The compiler already remapped the slot data from the
+             * linker block index to the declared BINDING, so index the caller's
+             * ssbo_iova[] table by it.  The shadertoy route passes a 1-entry
+             * table (binding 0 = fb); the geometry rasterizer passes 4
+             * (fb/pos/nrm/depth). */
+            if (ssbo_iova == NULL || d >= num_ssbo || ssbo_iova[d] == 0) {
+                slog("v3d_3d: unif slot %u SSBO binding %u unbound -> decline\r\n", i, d);
+                return -1;
+            }
+            out[i] = ssbo_iova[d];
+            break;
+        default:
+            /* UBO-addr / blend-constant / line-width / spill / ... : the
+             * full-screen-quad shadertoy path never emits these, so decline
+             * rather than guess an encoding.  Log the slot so a device run
+             * names the missing QUNIFORM type instead of a bare -2. */
+            slog("v3d_3d: unif slot %u type %u data 0x%x unhandled -> decline\r\n",
+                 i, c, d);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Compiled-draw decline: name the gate so the client's bare -2 is
+ * attributable from /dev/log (the client latches to CPU after the first). */
+static int decline(const char *why)
+{
+    slog("v3d_3d: compiled draw declined: %s\r\n", why);
+    return V3D_3D_UNSUPPORTED;
+}
+
+/* Compute-route draw: the program's fragment stage was recompiled as a compute
+ * kernel (v3d_compile_compute) whose SSBO binding 0 is the render target and
+ * whose per-draw blob carries `v3d_cs_stride` (dwords per row) alongside the
+ * effect's own uniforms.  One invocation per pixel: the grid is
+ * ceil(w/lx) x ceil(h/ly) x 1 and the kernel clips x>=w / y>=h itself from
+ * iResolution.  Serialized against the 2D CSD kernels by the dispatch lock
+ * inside v3d_g2d_run_csd; the frame buffer is contig-shm / dma (NOCACHE on
+ * the ARM side), so GPU-side L2T invalidate pre / L2 writeback post is the
+ * whole coherency story. */
+static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
+                        uint32_t stride_bytes, uint32_t fmt,
+                        uint32_t w, uint32_t h,
+                        const uint32_t *unif, uint32_t num_uniforms,
+                        const v3d_3d_ctex_t *ctex)
+{
+    v3d_g2d_csd_job_t job;
+    int rc;
+
+    if (fmt != V3D_3D_FMT_RGBA8)
+        return decline("compute: fmt not RGBA8");
+    if ((stride_bytes & 3u) != 0 || stride_bytes < w * 4u)
+        return decline("compute: stride");
+    if (pr->cs_local_size[0] == 0 || pr->cs_local_size[1] == 0 ||
+        pr->cs_local_size[2] != 1u)
+        return decline("compute: local_size");
+    if (pr->cs_shared_size != 0)
+        return decline("compute: shared memory unsupported");
+
+    v3d_g2d_op_begin();
+    if (build_tex_state_records(ctex) != 0) {
+        v3d_g2d_op_end();
+        return decline("compute: ctex base not 64B aligned");
+    }
+    if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+                        pr->cs_num_uniforms, unif, num_uniforms, ctex,
+                        0.0f, 0.0f, 0.0f, 0.0f, &fb_iova, 1u) != 0) {
+        v3d_g2d_op_end();
+        return decline("compute: uniforms");
+    }
+    __asm__ __volatile__("dsb sy" ::: "memory");
+
+    memset(&job, 0, sizeof(job));
+    job.code_iova   = pr->cs_qpu_iova;
+    job.unif_iova   = _ccu_unif_p;
+    job.wg_count[0] = (w + pr->cs_local_size[0] - 1u) / pr->cs_local_size[0];
+    job.wg_count[1] = (h + pr->cs_local_size[1] - 1u) / pr->cs_local_size[1];
+    job.wg_count[2] = 1u;
+    job.wg_size     = pr->cs_local_size[0] * pr->cs_local_size[1];
+    job.threads     = pr->cs_threads;
+    job.single_seg  = pr->cs_single_seg;
+    job.dst_phy     = fb_iova;
+    job.dst_span    = stride_bytes * h;
+    /* a ray-marching effect at 640x480 legitimately runs for hundreds of ms;
+     * give it a real budget instead of the 2D fail-fast default */
+    job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
+    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
+                               V3D_G2D_POLL_IRQ);
+    v3d_g2d_op_end();
+    if (rc != 0) {
+        slog("v3d_3d: compute draw rc=%d grid %ux%u wg=%u thr=%u unif=%u\r\n",
+             rc, job.wg_count[0], job.wg_count[1], job.wg_size,
+             (uint32_t)pr->cs_threads, pr->cs_num_uniforms);
+        return rc > 0 ? V3D_3D_TIMEOUT : V3D_3D_MMU_FAULT;
+    }
+    return V3D_3D_DONE;
+}
+
+/* Geometry compute route (geom_raster_cs.h): ONE workgroup per triangle,
+ * local_size 8x8x1.  The kernel transforms/lights/rasterises the staged mesh
+ * entirely in compute: SSBO binding 0 = fb (uint/pixel, AABBGGRR packed),
+ * 1 = positions (float, 12-byte vec3), 2 = normals (same packing - the draw's
+ * col_iova carries them), 3 = depth (uint/pixel 24-bit unorm, atomicMin).
+ * The TEXTURED variant (cs_is_geom == 2, geom_raster_tex_cs_glsl) must fit
+ * the same FOUR binding points V3D 7.1 compute exposes, so it re-slots them:
+ * binding 1 = interleaved pos.xyz+uv.xy (6-float stride, the draw's pos_iova),
+ * binding 2 = depth, binding 3 = texture image (a linear uint32 array passed
+ * per-draw as tex_iova).  The client pre-clears fb and depth each frame; the
+ * kernel's per-draw blob carries uMVP/uModelView/uNormalMat/uMaterial/
+ * uLightEye/uShade/uViewportWH/uFbStride/uTriFirst/uTriCount (+ uTexW/uTexH).
+ * The depth surface is a SECOND GPU-written range, so it rides the job's aux
+ * POST writeback (v3d_g2d_csd_job_t): without it, dirty depth lines linger in
+ * L2T and tear the next frame. */
+static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
+                             uint32_t stride_bytes, uint32_t fmt,
+                             uint32_t w, uint32_t h, uint32_t nverts,
+                             uint32_t pos_iova, uint32_t nrm_iova,
+                             uint32_t depth_iova, uint32_t z_stride,
+                             const uint32_t *unif, uint32_t num_uniforms,
+                             uint32_t tex_iova)
+{
+    v3d_g2d_csd_job_t job;
+    uint32_t ssbo[4];
+    uint32_t ntris = nverts / 3u;
+    int rc;
+
+    if (fmt != V3D_3D_FMT_RGBA8)
+        return decline("geom: fmt not RGBA8");
+    if ((stride_bytes & 3u) != 0 || stride_bytes < w * 4u)
+        return decline("geom: stride");
+    if ((z_stride & 3u) != 0 || z_stride < w * 4u)
+        return decline("geom: depth stride");
+    if (ntris == 0 || ntris >= (1u << 16))
+        return decline("geom: triangle count");
+    if (pr->cs_local_size[0] == 0 || pr->cs_local_size[1] == 0 ||
+        pr->cs_local_size[2] != 1u)
+        return decline("geom: local_size");
+    if (pr->cs_shared_size != 0)
+        return decline("geom: shared memory unsupported");
+
+    /* SSBO layout: the textured kernel shares binding 1 between pos and uv
+       (interleaved) and moves depth to binding 2 so the texture image can
+       take binding 3; the gouraud kernel keeps pos/nrm/depth at 1/2/3. */
+    ssbo[0] = fb_iova;
+    ssbo[1] = pos_iova;
+    if (tex_iova != 0u) {
+        ssbo[2] = depth_iova;
+        ssbo[3] = tex_iova;
+    } else {
+        ssbo[2] = nrm_iova;
+        ssbo[3] = depth_iova;
+    }
+
+    v3d_g2d_op_begin();
+    if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+                        pr->cs_num_uniforms, unif, num_uniforms, NULL,
+                        0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u) != 0) {
+        v3d_g2d_op_end();
+        return decline("geom: uniforms");
+    }
+    __asm__ __volatile__("dsb sy" ::: "memory");
+
+    memset(&job, 0, sizeof(job));
+    job.code_iova   = pr->cs_qpu_iova;
+    job.unif_iova   = _ccu_unif_p;
+    job.wg_count[0] = ntris;    /* one workgroup per triangle */
+    job.wg_count[1] = 1u;
+    job.wg_count[2] = 1u;
+    job.wg_size     = pr->cs_local_size[0] * pr->cs_local_size[1];
+    job.threads     = pr->cs_threads;
+    job.single_seg  = pr->cs_single_seg;
+    job.dst_phy     = fb_iova;
+    job.dst_span    = stride_bytes * h;
+    job.aux_phy     = depth_iova;   /* atomicMin depth canvas writeback */
+    job.aux_span    = z_stride * h;
+    job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
+    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
+                               V3D_G2D_POLL_IRQ);
+    v3d_g2d_op_end();
+    if (rc != 0) {
+        slog("v3d_3d: geom draw rc=%d tris %u wg=%u thr=%u unif=%u\r\n",
+             rc, ntris, job.wg_size,
+             (uint32_t)pr->cs_threads, pr->cs_num_uniforms);
+        return rc > 0 ? V3D_3D_TIMEOUT : V3D_3D_MMU_FAULT;
+    }
+    return V3D_3D_DONE;
+}
+
+/* Compiled full-screen-quad attribute wiring: only attr0 = pos (float3, stride
+ * 12).  The mesa-compiled VS reads clip-space position from VPM input in[0..2]
+ * (driver location 0); a shadertoy quad carries no per-vertex colour or uv (the
+ * FS derives colour procedurally from iResolution / iTime), so nattrs == 1 and
+ * the second attribute record slot stays zeroed.  Written at _ssr + 32,
+ * contiguous after the 32-byte shader record (the CLE walks nattrs records from
+ * shader_record_address + 32).  Reuses the proven pos float3 encoding. */
+static void build_attr_records_compiled(uint32_t pos_iova)
+{
+    uint8_t *a = _ssr_va + 32;            /* bytes [32..63] */
+
+    memset(a, 0, 32);
+    a[0]  = (uint8_t)(pos_iova & 0xFF);
+    a[1]  = (uint8_t)((pos_iova >> 8) & 0xFF);
+    a[2]  = (uint8_t)((pos_iova >> 16) & 0xFF);
+    a[3]  = (uint8_t)((pos_iova >> 24) & 0xFF);
+    a[4]  = (3u << 0) | (2u << 2);        /* vec_size=3, type=FLOAT */
+    a[5]  = (3u << 4) | (3u << 0);        /* nvals vs=3, cs=3 */
+    a[8]  = 12;                           /* stride = 12 bytes */
+    a[12] = 0xFF; a[13] = 0xFF; a[14] = 0xFF; a[15] = 0xFF;  /* max index */
+}
+
+/* Compiled two-attribute variant: attr 0 = pos (float3), attr 1 = normal
+ * (float3), BOTH tightly packed at stride 12.  This mirrors the proven
+ * build_attr_records_tex float3 encoding (vec_size=3, type=FLOAT, nvals
+ * vs=3/cs=3, stride 12) so the compiled VS reads in[0..2]=pos.xyz and
+ * in[3..5]=normal.xyz against driver_location 0 and 1.  The mesh is staged
+ * de-interleaved (structure-of-arrays: a pos block followed by a normal
+ * block) rather than interleaved, so each attribute is its own contiguous
+ * stride-12 stream and no per-vertex stride override is needed - the daemon
+ * resolves pos_iova and normal_iova (col_iova) to two separate physical
+ * bases.  Sub-range draws offset each base by first*12. */
+static void build_attr_records_compiled2(uint32_t pos_iova, uint32_t normal_iova)
+{
+    uint8_t *a = _ssr_va + 32;            /* bytes [32..63] */
+
+    memset(a, 0, 32);
+    a[0]  = (uint8_t)(pos_iova & 0xFF);
+    a[1]  = (uint8_t)((pos_iova >> 8) & 0xFF);
+    a[2]  = (uint8_t)((pos_iova >> 16) & 0xFF);
+    a[3]  = (uint8_t)((pos_iova >> 24) & 0xFF);
+    a[4]  = (3u << 0) | (2u << 2);        /* vec_size=3, type=FLOAT */
+    a[5]  = (3u << 4) | (3u << 0);        /* nvals vs=3, cs=3 */
+    a[8]  = 12;                           /* stride = 12 bytes */
+    a[12] = 0xFF; a[13] = 0xFF; a[14] = 0xFF; a[15] = 0xFF;  /* max index */
+    a[16] = (uint8_t)(normal_iova & 0xFF);
+    a[17] = (uint8_t)((normal_iova >> 8) & 0xFF);
+    a[18] = (uint8_t)((normal_iova >> 16) & 0xFF);
+    a[19] = (uint8_t)((normal_iova >> 24) & 0xFF);
+    a[20] = (3u << 0) | (2u << 2);        /* vec_size=3, type=FLOAT */
+    a[21] = (3u << 4) | (3u << 0);        /* nvals vs=3, cs=3 */
+    a[24] = 12;                           /* stride = 12 bytes */
+    a[28] = 0xFF; a[29] = 0xFF; a[30] = 0xFF; a[31] = 0xFF;  /* max index */
+}
+
+/* ------------------------------------------------------------------ */
 /* public entry points                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -1057,6 +1968,8 @@ int v3d_3d_clear(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
 
     if (!_ready)
         return V3D_3D_UNSUPPORTED;
+    if (v3d_g2d_wedged())
+        return V3D_3D_UNSUPPORTED;   /* dead block: client stays on CPU */
     if (w == 0 || h == 0 || fb_iova == 0)
         return V3D_3D_UNSUPPORTED;
     if (!v3d_g2d_phy_valid(fb_iova, (size_t)stride_bytes * h))
@@ -1064,6 +1977,7 @@ int v3d_3d_clear(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
 
     core = v3d_g2d_core_regs();
     v3d_g2d_op_begin();
+    snprintf(_job_desc, sizeof(_job_desc), "clear %ux%u fmt %u", w, h, fmt);
 
     /* bin: empty frame -> per-tile lists */
     len = build_bcl_empty(w, h);
@@ -1096,31 +2010,98 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                 uint32_t z_iova, uint32_t z_stride, int first_frame,
                 uint32_t clear_rgba, float clear_z,
                 const v3d_3d_ext_t *ext,
-                const v3d_3d_tex_t *tex)
+                const v3d_3d_tex_t *tex,
+                int32_t prog_handle, const uint32_t *unif,
+                uint32_t num_uniforms,
+                const v3d_3d_ctex_t *ctex)
 {
     volatile uint32_t *core;
     uint32_t len;
     float fx, fy;
     uint32_t ux, uy;
+    uint32_t sr_nattrs;
     int rc, ret = V3D_3D_FAILED;
-    int tex_path = (tex != NULL && tex->tex_iova != 0 && tex->uv_iova != 0 &&
-                    tex->tex_w != 0 && tex->tex_h != 0);
+    int compiled = (prog_handle >= 0);
+    int tex_path = (!compiled && tex != NULL && tex->tex_iova != 0 &&
+                    tex->uv_iova != 0 && tex->tex_w != 0 && tex->tex_h != 0);
+
+    /* Compute route: a program carrying a compute stage never touches the
+     * binner, so it is dispatched ahead of the interim binner gate below. */
+    if (v3d_g2d_wedged())
+        return V3D_3D_UNSUPPORTED;   /* dead block, no reset: quiet CPU fallback */
+    if (compiled && _ready && (uint32_t)prog_handle < V3D_3D_MAX_PROGS &&
+        _progs[prog_handle].used && _progs[prog_handle].cs_qpu_words != 0) {
+        if (w == 0 || h == 0 || fb_iova == 0)
+            return decline("compute: zero w/h/fb");
+        if (!v3d_g2d_phy_valid(fb_iova, (size_t)stride_bytes * h))
+            return decline("compute: fb iova");
+        if (_progs[prog_handle].cs_is_geom) {
+            /* geometry rasterizer: triangles only; the staged streams and the
+             * depth canvas ride the draw's own iovas.  cs_is_geom == 2 is the
+             * TEXTURED kernel: pos_iova carries interleaved pos+uv (6-float
+             * stride, nverts*24 bytes), col_iova is unused (zero canvas), and
+             * the texture image arrives as ctex unit 0 (linear uint32). */
+            int gtex = (_progs[prog_handle].cs_is_geom == 2);
+            if (mode != V3D_3D_MODE_TRIANGLES)
+                return decline("geom: mode not triangles");
+            if (nverts == 0 || (nverts % 3u) != 0)
+                return decline("geom: nverts not multiple of 3");
+            if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * (gtex ? 24u : 12u)))
+                return decline("geom: pos iova");
+            if (!gtex && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
+                return decline("geom: nrm iova");
+            if (gtex && (ctex == NULL || ctex->ctex_iova[0] == 0))
+                return decline("geom tex: no texture bound");
+            if (gtex && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
+                !v3d_g2d_phy_valid(ctex->ctex_iova[0],
+                                   (size_t)ctex->ctex_stride[0] * ctex->ctex_h[0])))
+                return decline("geom tex: tex iova");
+            if (z_iova == 0 ||
+                !v3d_g2d_phy_valid(z_iova, (size_t)z_stride * h))
+                return decline("geom: depth iova");
+            return draw_compute_geom(&_progs[prog_handle], fb_iova,
+                                     stride_bytes, fmt, w, h, nverts,
+                                     pos_iova, col_iova, z_iova, z_stride,
+                                     unif, num_uniforms,
+                                     gtex ? ctex->ctex_iova[0] : 0u);
+        }
+        return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
+                            w, h, unif, num_uniforms, ctex);
+    }
+
+    /* Interim: the binner geometry path is unproven on this silicon and a
+     * timed-out bin wedges the shared V3D (desktop corruption until reboot).
+     * Decline compiled draws before touching the pipeline; see the gate
+     * comment at V3D_3D_ENABLE_COMPILED_DRAW. */
+    if (compiled && !V3D_3D_ENABLE_COMPILED_DRAW)
+        return decline("gate");
+    if (!compiled && !V3D_3D_ENABLE_FIXED_DRAW)
+        return V3D_3D_UNSUPPORTED;   /* unproven shaders: client draws on CPU */
 
     if (!_ready)
-        return V3D_3D_UNSUPPORTED;
+        return compiled ? decline("not ready") : V3D_3D_UNSUPPORTED;
     if (w == 0 || h == 0 || fb_iova == 0 || nverts == 0)
-        return V3D_3D_UNSUPPORTED;
+        return compiled ? decline("zero w/h/fb/nverts") : V3D_3D_UNSUPPORTED;
     if (nverts > V3D_3D_MAX_VERTS)
-        return V3D_3D_UNSUPPORTED;
+        return compiled ? decline("nverts > max") : V3D_3D_UNSUPPORTED;
     if (mode != V3D_3D_MODE_POINTS && mode != V3D_3D_MODE_LINES &&
         mode != V3D_3D_MODE_TRIANGLES)
-        return V3D_3D_UNSUPPORTED;
+        return compiled ? decline("mode") : V3D_3D_UNSUPPORTED;
+    /* a compiled draw must reference a live cache slot; reject a stale or
+     * out-of-range handle before touching the pipeline. */
+    if (compiled && ((uint32_t)prog_handle >= V3D_3D_MAX_PROGS ||
+                     !_progs[prog_handle].used))
+        return decline("prog handle not live");
     if (!v3d_g2d_phy_valid(fb_iova, (size_t)stride_bytes * h))
-        return V3D_3D_UNSUPPORTED;
+        return compiled ? decline("fb iova") : V3D_3D_UNSUPPORTED;
     if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * 12u))
-        return V3D_3D_UNSUPPORTED;
+        return compiled ? decline("pos iova") : V3D_3D_UNSUPPORTED;
     /* col_iova is not read on the tex path (attr slot 1 carries uv instead);
-     * uv float3 shares the pos encoding's 12-byte stride. */
+     * uv float3 shares the pos encoding's 12-byte stride.  On the compiled path
+     * col_iova is either 0 (pos-only full-screen quad, e.g. shadertoy) or the
+     * attr-1 normal float3 stream of a de-interleaved mesh (stride 12), so it
+     * is validated as nverts*12 only when present.  The fixed colour path keeps
+     * its byte4 (nverts*4) validation. */
     if (tex_path) {
         if (!v3d_g2d_phy_valid(tex->uv_iova, (size_t)nverts * 12u))
             return V3D_3D_UNSUPPORTED;
@@ -1129,29 +2110,96 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
         if (!v3d_g2d_phy_valid(tex->tex_iova,
                                (size_t)tex->tex_stride * tex->tex_h))
             return V3D_3D_UNSUPPORTED;
+    } else if (compiled) {
+        if (col_iova != 0 &&
+            !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
+            return decline("col/normal iova");
     } else if (!v3d_g2d_phy_valid(col_iova, (size_t)nverts * 4u)) {
         return V3D_3D_UNSUPPORTED;
     }
     /* a persistent Z surface is optional (z_iova == 0 -> tile-local Z only);
      * when present it must be a valid Z32F linear surface covering the frame */
     if (z_iova != 0 && !v3d_g2d_phy_valid(z_iova, (size_t)z_stride * h))
-        return V3D_3D_UNSUPPORTED;
+        return compiled ? decline("z iova") : V3D_3D_UNSUPPORTED;
 
-    /* viewport uniforms: [0]=1.0 w, [1]=x scale (w/2), [2]=y scale (-h/2),
-     * [3]=0.5 z scale, [4]=0.5 z off.  Coord shader uniforms: [0]=1.0 w,
-     * [1]=x scale, [2]=y scale. */
+    /* viewport transform values shared by every path: x scale = w/2, y scale =
+     * -h/2 (the target is y-down).  The fixed vertex + coord shaders read these
+     * as float32 uniforms; the compiled path hands them to the mesa VS as
+     * float32 too, scaled by the 7.1 clipper granularity (expand_uniforms). */
     fx = (float)(w / 2u);
     fy = -(float)(h / 2u);
     __builtin_memcpy(&ux, &fx, 4);
     __builtin_memcpy(&uy, &fy, 4);
+    /* the coordinate (binning) shader is our own hand-written pass-through and
+     * keeps its float32 viewport ABI on every path, including compiled draws
+     * (the binner only reads clip-space pos). */
+    _cs_unif_va[0] = 0x3F800000u;               /* coord: 1.0 (w) */
+    _cs_unif_va[1] = ux;                        /* coord: vp x scale */
+    _cs_unif_va[2] = uy;                        /* coord: vp y scale */
+
+    if (compiled) {
+        /* Compiled draw (WS3): expand the mesa VS / FS / COORD uniform streams
+         * into their shared per-draw dma staging, then build the shader-state
+         * record from the cached QPU IOVAs.  The coordinate (binning) shader is
+         * now the program's OWN compiled is_coord VS (pr->coord_qpu_iova) rather
+         * than the fixed pass-through, so the binner applies the real MVP and
+         * arbitrary geometry bins correctly; its uniforms expand from the SAME
+         * per-draw blob (the coord stage shares the render VS's driver_locations,
+         * so e.g. mvp lands at the identical dword offset).  The VPM segment
+         * bytes come from the cached coord/vs prog_data (build_shader_record_
+         * compiled).  The FS varying count is the compiled FS's input-slot count.
+         * A uniform slot outside the handled subset declines the whole draw
+         * (expand_uniforms returns -1) so the QPU is never fed a wrong value. */
+        const v3d_3d_prog_t *pr = &_progs[prog_handle];
+        /* Rebuild the per-unit V3D71 texture records this FS samples; a bound
+         * unit whose pixel data is not 64-byte aligned declines the draw (the
+         * caller then rasterizes on the CPU).  Must precede expand_uniforms,
+         * which references _texstate_p / _sampler_p for the TMU_CONFIG slots. */
+        if (build_tex_state_records(ctex) != 0)
+            return decline("ctex base not 64B aligned");
+        if (expand_uniforms(_cvs_unif_va, pr->vs_unif_contents, pr->vs_unif_data,
+                            pr->vs_num_uniforms, unif, num_uniforms, ctex,
+                            fx, fy, 0.5f, 0.5f, NULL, 0u) != 0)
+            return decline("vs uniforms");
+        if (expand_uniforms(_cfs_unif_va, pr->fs_unif_contents, pr->fs_unif_data,
+                            pr->fs_num_uniforms, unif, num_uniforms, ctex,
+                            fx, fy, 0.5f, 0.5f, NULL, 0u) != 0)
+            return decline("fs uniforms");
+        if (expand_uniforms(_ccs_unif_va, pr->coord_unif_contents,
+                            pr->coord_unif_data, pr->coord_num_uniforms,
+                            unif, num_uniforms, ctex,
+                            fx, fy, 0.5f, 0.5f, NULL, 0u) != 0)
+            return decline("coord uniforms");
+        build_shader_record_compiled(pr->fs_qpu_iova, _cfs_unif_p,
+                            pr->fs_threads, pr->fs_single_seg,
+                            pr->vs_qpu_iova, _cvs_unif_p,
+                            pr->vs_threads, pr->vs_single_seg,
+                            pr->coord_qpu_iova, _ccs_unif_p,
+                            pr->coord_threads, pr->coord_single_seg,
+                            pr->fs_num_inputs & 0x1Fu,
+                            pr->coord_vpm_output_size, pr->coord_vpm_input_size,
+                            pr->vs_vpm_output_size, pr->vs_vpm_input_size);
+        /* col_iova != 0 selects the two-attribute mesh path (attr0 = pos,
+         * attr1 = normal, both float3 stride 12); col_iova == 0 keeps the
+         * pos-only full-screen-quad path (shadertoy). */
+        if (col_iova != 0) {
+            build_attr_records_compiled2(pos_iova, col_iova);
+            sr_nattrs = 2;
+        } else {
+            build_attr_records_compiled(pos_iova);
+            sr_nattrs = 1;
+        }
+        __asm__ __volatile__("dsb sy" ::: "memory");
+        goto submit;
+    }
+
+    /* fixed-function paths: [0]=1.0 w, [1]=x scale (w/2), [2]=y scale (-h/2),
+     * [3]=0.5 z scale, [4]=0.5 z off. */
     _unif_va[0] = 0x3F800000u;                  /* 1.0 (w) */
     _unif_va[1] = ux;
     _unif_va[2] = uy;
     _unif_va[3] = 0x3F000000u;                  /* 0.5 z scale */
     _unif_va[4] = 0x3F000000u;                  /* 0.5 z offset */
-    _cs_unif_va[0] = 0x3F800000u;               /* coord: 1.0 (w) */
-    _cs_unif_va[1] = ux;                        /* coord: vp x scale */
-    _cs_unif_va[2] = uy;                        /* coord: vp y scale */
 
     /* tex fragment uniforms (see _frag_shader_tex's ldunifrf sequence):
      * [0]=tex_base IOVA, [1]=tex_stride (int), [2]=(W-1) float,
@@ -1177,24 +2225,33 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
     /* shader record + contiguous attribute records, then the CLs.  The tex
      * path swaps in the point-sampled frag/vtx pair (2 varyings u,v) and the
      * uv float3 attr-1 record; the coord shader and its uniforms are shared
-     * because the binner only reads pos. */
+     * because the binner only reads pos.  All five hand-written shaders are
+     * 1-thread with a single (thread-end) THRSW and no earlier THRSW pair, so
+     * they are the single_seg=1 shape: start_in_final_thread_section set. */
     if (tex_path) {
-        build_shader_record(_frag_tex_iova, _tex_unif_p,
-                            _vtx_tex_iova, _unif_p,
-                            _coord_iova, _cs_unif_p, 2u);
+        build_shader_record(_frag_tex_iova, _tex_unif_p, sh_flags(1u, 1u),
+                            _vtx_tex_iova, _unif_p, sh_flags(1u, 1u),
+                            _coord_iova, _cs_unif_p, sh_flags(1u, 1u), 2u);
         build_attr_records_tex(pos_iova, tex->uv_iova);
     } else {
-        build_shader_record(_frag_iova, _unif_p, _vtx_iova, _unif_p,
-                            _coord_iova, _cs_unif_p, 4u);
+        build_shader_record(_frag_iova, _unif_p, sh_flags(1u, 1u),
+                            _vtx_iova, _unif_p, sh_flags(1u, 1u),
+                            _coord_iova, _cs_unif_p, sh_flags(1u, 1u), 4u);
         build_attr_records(pos_iova, col_iova);
     }
+    sr_nattrs = 2;
     __asm__ __volatile__("dsb sy" ::: "memory");
 
+submit:
     core = v3d_g2d_core_regs();
     v3d_g2d_op_begin();
+    snprintf(_job_desc, sizeof(_job_desc),
+             "draw %s prog %d mode %d nverts %u %ux%u tex %d z %d attrs %u",
+             compiled ? "compiled" : "fixed", (int)prog_handle, mode, nverts,
+             w, h, tex_path, z_iova != 0, sr_nattrs);
 
     /* bin: the primitive list */
-    len = build_draw_bcl(mode, nverts, _ssr_p, 2, w, h,
+    len = build_draw_bcl(mode, nverts, _ssr_p, sr_nattrs, w, h,
                          depth_func, depth_mask, cull_en, ext);
     if (len > V3D_3D_CL_MAX)
         goto out;
@@ -1222,4 +2279,243 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
 out:
     v3d_g2d_op_end();
     return ret;
+}
+
+/* ------------------------------------------------------------------ */
+/* Compiled-program upload (WS4): copy the VS/FS QPU words into GPU dma via   */
+/* alloc_stage and cache the IOVAs + prog_data (uniform descriptors/args,     */
+/* VPM sizes, attribute/input maps, FS flags) by handle.  No dispatch happens */
+/* here; a later draw references the returned handle and expands the uniform  */
+/* streams into the shared per-draw dma staging.  A partially-uploaded       */
+/* program on a dma failure gives its blocks back and releases the slot.     */
+/* ------------------------------------------------------------------ */
+int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
+{
+    v3d_3d_prog_t *pr;
+    void *va;
+    uint32_t iova, i;
+    int slot = -1;
+
+    if (!_ready || desc == NULL)
+        return V3D_3D_PROG_UNSUPPORTED;
+
+    /* validate the stage payloads against the cache caps (decline, never
+     * truncate, so an out-of-range program falls back to the CPU path) */
+    if (desc->vs_qpu == NULL || desc->vs_qpu_words == 0 ||
+        desc->vs_qpu_words > V3D_3D_PROG_MAX_QPU ||
+        desc->fs_qpu == NULL || desc->fs_qpu_words == 0 ||
+        desc->fs_qpu_words > V3D_3D_PROG_MAX_QPU ||
+        desc->coord_qpu == NULL || desc->coord_qpu_words == 0 ||
+        desc->coord_qpu_words > V3D_3D_PROG_MAX_QPU ||
+        desc->cs_qpu_words > V3D_3D_PROG_MAX_QPU ||
+        desc->vs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+        desc->fs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+        desc->coord_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+        desc->cs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+        desc->fs_num_inputs > V3D_3D_PROG_MAX_INPUTS)
+        slog("v3d_3d: program over cap: qpu vs/fs/coord/cs %u/%u/%u/%u (max %u) "
+             "unif %u/%u/%u/%u (max %u) inputs %u (max %u)\r\n",
+             desc->vs_qpu_words, desc->fs_qpu_words, desc->coord_qpu_words,
+             desc->cs_qpu_words, V3D_3D_PROG_MAX_QPU,
+             desc->vs_num_uniforms, desc->fs_num_uniforms,
+             desc->coord_num_uniforms, desc->cs_num_uniforms,
+             V3D_3D_PROG_MAX_UNIF, desc->fs_num_inputs, V3D_3D_PROG_MAX_INPUTS);
+    if (desc->vs_qpu == NULL || desc->vs_qpu_words == 0 ||
+        desc->vs_qpu_words > V3D_3D_PROG_MAX_QPU)
+        return V3D_3D_PROG_UNSUPPORTED;
+    if (desc->fs_qpu == NULL || desc->fs_qpu_words == 0 ||
+        desc->fs_qpu_words > V3D_3D_PROG_MAX_QPU)
+        return V3D_3D_PROG_UNSUPPORTED;
+    /* the coordinate (binning) shader is mandatory on the compiled path: WS1
+     * always emits it, so a blob without one is malformed/stale (the version is
+     * already checked upstream) and is declined rather than binned wrong. */
+    if (desc->coord_qpu == NULL || desc->coord_qpu_words == 0 ||
+        desc->coord_qpu_words > V3D_3D_PROG_MAX_QPU)
+        return V3D_3D_PROG_UNSUPPORTED;
+    if (desc->vs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+        desc->fs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+        desc->coord_num_uniforms > V3D_3D_PROG_MAX_UNIF)
+        return V3D_3D_PROG_UNSUPPORTED;
+    if (desc->fs_num_inputs > V3D_3D_PROG_MAX_INPUTS)
+        return V3D_3D_PROG_UNSUPPORTED;
+    /* a non-empty uniform stream must carry both its descriptor and values */
+    if (desc->vs_num_uniforms &&
+        (desc->vs_unif_contents == NULL || desc->vs_unif_data == NULL))
+        return V3D_3D_PROG_UNSUPPORTED;
+    if (desc->fs_num_uniforms &&
+        (desc->fs_unif_contents == NULL || desc->fs_unif_data == NULL))
+        return V3D_3D_PROG_UNSUPPORTED;
+    if (desc->coord_num_uniforms &&
+        (desc->coord_unif_contents == NULL || desc->coord_unif_data == NULL))
+        return V3D_3D_PROG_UNSUPPORTED;
+    /* optional compute stage */
+    if (desc->cs_qpu_words != 0 &&
+        (desc->cs_qpu == NULL || desc->cs_qpu_words > V3D_3D_PROG_MAX_QPU ||
+         desc->cs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+         (desc->cs_num_uniforms &&
+          (desc->cs_unif_contents == NULL || desc->cs_unif_data == NULL))))
+        return V3D_3D_PROG_UNSUPPORTED;
+
+    /* reserve a free cache slot */
+    for (i = 0; i < V3D_3D_MAX_PROGS; i++) {
+        if (!_progs[i].used) { slot = (int)i; break; }
+    }
+    if (slot < 0)
+        return V3D_3D_PROG_UNSUPPORTED;      /* cache full */
+    pr = &_progs[slot];
+    memset(pr, 0, sizeof(*pr));
+
+    /* upload the VS QPU code into GPU dma (page-aligned -> 8-byte aligned,
+     * satisfying the shader record's address field) */
+    if (alloc_stage_raw(desc->vs_qpu_words * 4u, &va, &iova, &pr->vs_qpu_raw) != 0) {
+        slog("v3d_3d: program vs alloc_stage %u failed\r\n", desc->vs_qpu_words * 4u);
+        return -30;
+    }
+    memcpy(va, desc->vs_qpu, desc->vs_qpu_words * 4u);
+    pr->vs_qpu_iova  = iova;
+    pr->vs_qpu_words = desc->vs_qpu_words;
+
+    /* upload the FS QPU code */
+    if (alloc_stage_raw(desc->fs_qpu_words * 4u, &va, &iova, &pr->fs_qpu_raw) != 0)
+        goto fail;
+    memcpy(va, desc->fs_qpu, desc->fs_qpu_words * 4u);
+    pr->fs_qpu_iova  = iova;
+    pr->fs_qpu_words = desc->fs_qpu_words;
+
+    /* upload the COORD (binning) QPU code */
+    if (alloc_stage_raw(desc->coord_qpu_words * 4u, &va, &iova, &pr->coord_qpu_raw) != 0)
+        goto fail;
+    memcpy(va, desc->coord_qpu, desc->coord_qpu_words * 4u);
+    pr->coord_qpu_iova  = iova;
+    pr->coord_qpu_words = desc->coord_qpu_words;
+
+    /* upload the optional COMPUTE QPU code */
+    if (desc->cs_qpu_words != 0) {
+        if (alloc_stage_raw(desc->cs_qpu_words * 4u, &va, &iova, &pr->cs_qpu_raw) != 0)
+            goto fail;
+        memcpy(va, desc->cs_qpu, desc->cs_qpu_words * 4u);
+        pr->cs_qpu_iova  = iova;
+        pr->cs_qpu_words = desc->cs_qpu_words;
+        if (desc->cs_num_uniforms) {
+            memcpy(pr->cs_unif_contents, desc->cs_unif_contents,
+                   desc->cs_num_uniforms * 4u);
+            memcpy(pr->cs_unif_data, desc->cs_unif_data,
+                   desc->cs_num_uniforms * 4u);
+        }
+        pr->cs_num_uniforms = desc->cs_num_uniforms;
+        pr->cs_threads      = desc->cs_threads;
+        pr->cs_single_seg   = desc->cs_single_seg;
+        pr->cs_local_size[0] = desc->cs_local_size[0];
+        pr->cs_local_size[1] = desc->cs_local_size[1];
+        pr->cs_local_size[2] = desc->cs_local_size[2];
+        pr->cs_shared_size  = desc->cs_shared_size;
+        pr->cs_is_geom      = desc->cs_is_geom;
+    }
+
+    /* cache the uniform layout descriptors AND their per-slot args on the CPU.
+     * The GPU-resident uniform buffer is the shared per-draw expanded staging
+     * (_cvs_unif / _cfs_unif) that the QUNIFORM interpreter fills at draw time
+     * from these descriptors + args + the per-draw GL uniform blob, so the raw
+     * arg stream is deliberately NOT uploaded here (vs_unif_iova/fs_unif_iova
+     * stay 0). */
+    if (desc->vs_num_uniforms) {
+        memcpy(pr->vs_unif_contents, desc->vs_unif_contents,
+               desc->vs_num_uniforms * 4u);
+        memcpy(pr->vs_unif_data, desc->vs_unif_data,
+               desc->vs_num_uniforms * 4u);
+    }
+    pr->vs_num_uniforms = desc->vs_num_uniforms;
+
+    if (desc->fs_num_uniforms) {
+        memcpy(pr->fs_unif_contents, desc->fs_unif_contents,
+               desc->fs_num_uniforms * 4u);
+        memcpy(pr->fs_unif_data, desc->fs_unif_data,
+               desc->fs_num_uniforms * 4u);
+    }
+    pr->fs_num_uniforms = desc->fs_num_uniforms;
+
+    if (desc->coord_num_uniforms) {
+        memcpy(pr->coord_unif_contents, desc->coord_unif_contents,
+               desc->coord_num_uniforms * 4u);
+        memcpy(pr->coord_unif_data, desc->coord_unif_data,
+               desc->coord_num_uniforms * 4u);
+    }
+    pr->coord_num_uniforms = desc->coord_num_uniforms;
+
+    /* cache the vertex-stage prog_data */
+    pr->vs_threads           = desc->vs_threads;
+    pr->vs_single_seg        = desc->vs_single_seg;
+    pr->vs_vpm_input_size    = desc->vs_vpm_input_size;
+    pr->vs_vpm_output_size   = desc->vs_vpm_output_size;
+    pr->vs_vcm_cache_size    = desc->vs_vcm_cache_size;
+    pr->vs_separate_segments = desc->vs_separate_segments;
+    memcpy(pr->vs_vattr_sizes, desc->vs_vattr_sizes,
+           sizeof(pr->vs_vattr_sizes));
+    memcpy(pr->vs_driver_location_map, desc->vs_driver_location_map,
+           sizeof(pr->vs_driver_location_map));
+
+    /* cache the fragment-stage prog_data */
+    pr->fs_threads       = desc->fs_threads;
+    pr->fs_single_seg    = desc->fs_single_seg;
+    pr->fs_needs_coords  = desc->fs_needs_coords;
+    pr->fs_uses_center_w = desc->fs_uses_center_w;
+    pr->fs_writes_z      = desc->fs_writes_z;
+    pr->fs_disable_ez    = desc->fs_disable_ez;
+    pr->fs_num_inputs    = desc->fs_num_inputs;
+    memcpy(pr->fs_input_slots, desc->fs_input_slots,
+           sizeof(pr->fs_input_slots));
+
+    /* cache the coordinate-stage prog_data (coord VPM segments for the record) */
+    pr->coord_threads           = desc->coord_threads;
+    pr->coord_single_seg        = desc->coord_single_seg;
+    pr->coord_vpm_input_size    = desc->coord_vpm_input_size;
+    pr->coord_vpm_output_size   = desc->coord_vpm_output_size;
+    pr->coord_vcm_cache_size    = desc->coord_vcm_cache_size;
+    pr->coord_separate_segments = desc->coord_separate_segments;
+
+    __asm__ __volatile__("dsb sy" ::: "memory");
+    pr->used = 1;
+    slog("v3d_3d: program %d uploaded (vs %uw @%u, fs %uw @%u, coord %uw @%u, unif %u/%u/%u)\r\n",
+         slot, pr->vs_qpu_words, pr->vs_qpu_iova,
+         pr->fs_qpu_words, pr->fs_qpu_iova,
+         pr->coord_qpu_words, pr->coord_qpu_iova,
+         pr->vs_num_uniforms, pr->fs_num_uniforms, pr->coord_num_uniforms);
+    slog("v3d_3d: prog %d vpm coord out/in %u/%u vs out/in %u/%u fs_inputs %u\r\n",
+         slot, pr->coord_vpm_output_size, pr->coord_vpm_input_size,
+         pr->vs_vpm_output_size, pr->vs_vpm_input_size, pr->fs_num_inputs);
+    if (pr->cs_qpu_words)
+        slog("v3d_3d: prog %d compute %uw @%u unif %u local %ux%ux%u thr %u seg %u\r\n",
+             slot, pr->cs_qpu_words, pr->cs_qpu_iova, pr->cs_num_uniforms,
+             pr->cs_local_size[0], pr->cs_local_size[1], pr->cs_local_size[2],
+             (uint32_t)pr->cs_threads, (uint32_t)pr->cs_single_seg);
+    return slot;
+
+fail:
+    /* release the slot and the dma blocks already uploaded for it */
+    slog("v3d_3d: program %d alloc_stage failed (fs %u coord %u cs %u words)\r\n",
+         slot, desc->fs_qpu_words, desc->coord_qpu_words, desc->cs_qpu_words);
+    release_prog(pr);
+    return -31;
+}
+
+/* ------------------------------------------------------------------ */
+/* Drop a cached program: give its QPU code blocks back to dma and free   */
+/* the slot.  The daemon calls this for programs whose owning client has  */
+/* exited (it never tells us), so the 16-slot cache survives repeated app */
+/* launches.  A later draw naming the handle is declined (used == 0).     */
+/* ------------------------------------------------------------------ */
+int v3d_3d_program_free(int prog_handle)
+{
+    v3d_3d_prog_t *pr;
+
+    if (!_ready || prog_handle < 0 || (uint32_t)prog_handle >= V3D_3D_MAX_PROGS)
+        return V3D_3D_PROG_UNSUPPORTED;
+    pr = &_progs[prog_handle];
+    if (!pr->used)
+        return V3D_3D_PROG_UNSUPPORTED;
+    pr->used = 0;
+    __asm__ __volatile__("dsb sy" ::: "memory");
+    release_prog(pr);
+    slog("v3d_3d: program %d freed\r\n", prog_handle);
+    return 0;
 }

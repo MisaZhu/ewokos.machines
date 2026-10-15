@@ -46,6 +46,10 @@
 #define VC_PGL3D_DONE        0
 #define VC_PGL3D_FAILED      1
 #define VC_PGL3D_UNSUPPORTED 2
+/* compiled-draw refinements of FAILED (V3D_3D_TIMEOUT / V3D_3D_MMU_FAULT):
+ * the job was submitted but overran its wait budget / faulted the GPU MMU. */
+#define VC_PGL3D_TIMEOUT     3
+#define VC_PGL3D_MMU_FAULT   4
 
 /* Output image formats (V3D STORE_TILE_BUFFER_GENERAL field values). */
 #define VC_PGL3D_FMT_BGR565 7u
@@ -72,7 +76,7 @@ enum {
  * V3D depth_test_function (Compare Function enum) and turn the Z buffer on.
  * All eight GL compare functions are accepted for the built-in solid / gouraud
  * shaders; a code above VC_PGL3D_DEPTH_NOTEQUAL is declined.  Value-identical
- * to the V3D_3D_DEPTH_* / G2D_PGL_DEPTH_* / PGL_VC3D_DEPTH_* sets. */
+ * to the V3D_3D_DEPTH_* / G2D_PGL_DEPTH_* / PGL_G3D_DEPTH_* sets. */
 enum {
     VC_PGL3D_DEPTH_NONE = 0,
     VC_PGL3D_DEPTH_LESS,
@@ -100,6 +104,11 @@ enum {
 /* Maximum vertices per single draw dispatch (larger draws must be split by
  * the caller; a bigger count is declined). */
 #define VC_PGL3D_MAX_VERTS 4096u
+
+/* Maximum texture units a compiled FS may bind (iChannel0..iChannelN).
+ * Mirrors G2D_PGL_MAX_TEX_UNITS on the client protocol side and
+ * V3D_MAX_TEXTURE_SAMPLERS in the private v3d_3d layer. */
+#define VC_PGL3D_MAX_TEX_UNITS 4u
 
 /* One draw request, filled by bsp_g2d from the g2dclient shm command buffer.
  * The *_phy fields carry the resolved physical base of a contig buffer and
@@ -162,6 +171,41 @@ typedef struct {
     uint32_t      tex_w, tex_h; /* texture size, texels */
     ewokos_addr_t uv_phy;       /* per-vertex uv float3 (stride 12) */
     uint8_t       uv_contig;
+    /* WS4 compiled-shader draw reference.  prog_handle >= 0 selects an
+     * on-device-compiled program (uploaded via vc_pgl3d_program and cached by
+     * the private v3d_3d layer); the back end then builds the V3D shader-state
+     * record from the cached prog_data and dispatches the compiled VS/FS QPU
+     * instead of the fixed-function fs_id shaders.  `unif` points to
+     * num_uniforms u32 per-draw GL uniform values (the mesa job->uniforms
+     * storage) that the QUNIFORM interpreter indexes for QUNIFORM_UNIFORM
+     * slots; it is NULL when num_uniforms == 0.  prog_handle < 0 (the memset
+     * default is -1 from the protocol) keeps the historical fixed-function
+     * path, so every existing caller is unaffected. */
+    int32_t        prog_handle;
+    const uint32_t *unif;
+    uint32_t       num_uniforms;
+    /* WS4 compiled-shader sampler bindings.  A compiled FS may reference up to
+     * VC_PGL3D_MAX_TEX_UNITS texture units; each unit's QUNIFORM_TMU_CONFIG_P0/P1
+     * pair carries the unit index in the upper 8 bits of the data word, so
+     * v3d_3d's expand_uniforms walks the FS uniform stream, extracts each
+     * referenced unit index and binds the corresponding ctex_phy[i] image at
+     * that TMU slot.  A slot with ctex_phy[i] == 0 is unbound: the FS's sample
+     * returns whatever the driver leaves in the TMU config (safe black for
+     * shaders that never sample it).  Images are RGBA8 in the V3D texture
+     * memory layout named by ctex_tiling[i] (0 raster, 1 LT, 2/3 UBLINEAR,
+     * 4/5 UIF no-xor/xor; ctex_ub_pad[i] is the UIF level_0_ub_pad), contig
+     * or dma so the GPU can address them by physical base; ctex_stride[i] is
+     * the allocated (padded) row pitch, 0 lets the driver derive
+     * ctex_w[i] * 4.  Only meaningful when prog_handle >= 0.
+     * Every field defaults to zero through the request memset, so existing
+     * callers that never bind a texture are unaffected. */
+    ewokos_addr_t ctex_phy[VC_PGL3D_MAX_TEX_UNITS];
+    uint8_t       ctex_contig[VC_PGL3D_MAX_TEX_UNITS];
+    uint32_t      ctex_stride[VC_PGL3D_MAX_TEX_UNITS];
+    uint32_t      ctex_w[VC_PGL3D_MAX_TEX_UNITS];
+    uint32_t      ctex_h[VC_PGL3D_MAX_TEX_UNITS];
+    uint8_t       ctex_tiling[VC_PGL3D_MAX_TEX_UNITS];
+    uint8_t       ctex_ub_pad[VC_PGL3D_MAX_TEX_UNITS];
 } vc_pgl3d_draw_req_t;
 
 /* Bring up the 3D pipeline on top of the CSD path's V3D init (idempotent):
@@ -183,5 +227,101 @@ int vc_pgl3d_clear(ewokos_addr_t fb_phy, uint8_t contig, uint32_t stride,
  * Returns a tri-state; the caller falls back to the CPU on anything but
  * VC_PGL3D_DONE. */
 int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req);
+
+/* ------------------------------------------------------------------ */
+/* Compiled-shader program upload (WS4).                                 */
+/*                                                                       */
+/* A compiled program (VS/FS QPU words + uniform streams + prog_data)     */
+/* arrives from the client as a serialized g2d PGL_PROGRAM blob, which      */
+/* bsp_g3d parses into a vc_pgl3d_program_req_t.  vc_pgl3d_program          */
+/* probe-gates it and forwards to the private v3d_3d_program, which uploads */
+/* the QPU into GPU dma and caches the prog_data by handle.  A later draw    */
+/* references the returned handle (WS4 draw-ref).  The request struct        */
+/* mirrors the private v3d_3d_prog_desc_t field-for-field so libvideocore's  */
+/* private v3d_3d.h never leaks into bsp_g3d (the same boundary the          */
+/* vc_pgl3d_draw_req_t -> v3d_3d_draw translation already keeps).            */
+/* ------------------------------------------------------------------ */
+
+/* Program-upload result codes.  A non-negative return is the program handle
+ * forwarded to the client; the two negatives are value-identical to the
+ * G2D_ERR_FAILED / G2D_ERR_NOT_SUPPORTED codes so bsp_g3d forwards them
+ * verbatim. */
+#define VC_PGL3D_PROG_FAILED      (-1)
+#define VC_PGL3D_PROG_UNSUPPORTED (-2)
+
+/* Attribute / input slot caps, mirrored from the private v3d_3d layer so
+ * bsp_g3d can pre-validate a parsed blob before crossing into libvideocore. */
+#define VC_PGL3D_PROG_MAX_ATTRS  64u
+#define VC_PGL3D_PROG_MAX_INPUTS 64u
+
+/* One compiled-program upload request, filled by bsp_g3d from the parsed g2d
+ * PGL_PROGRAM blob.  Every pointer is CPU-side (into the attached blob canvas)
+ * and need only stay valid for the call: v3d_3d_program deep-copies the QPU
+ * words + uniform value streams into GPU dma and the layout descriptors into
+ * its inline cache. */
+typedef struct {
+    /* vertex stage */
+    const uint32_t *vs_qpu;             uint32_t vs_qpu_words;
+    const uint32_t *vs_unif_contents;   /* per-slot layout descriptor (CPU)  */
+    const uint32_t *vs_unif_data;       uint32_t vs_num_uniforms;
+    uint8_t  vs_threads;
+    uint8_t  vs_single_seg;
+    uint32_t vs_vpm_input_size;
+    uint32_t vs_vpm_output_size;
+    uint32_t vs_vcm_cache_size;
+    uint8_t  vs_separate_segments;
+    uint8_t  vs_vattr_sizes[VC_PGL3D_PROG_MAX_ATTRS / 4];
+    int32_t  vs_driver_location_map[VC_PGL3D_PROG_MAX_ATTRS];
+    /* fragment stage */
+    const uint32_t *fs_qpu;             uint32_t fs_qpu_words;
+    const uint32_t *fs_unif_contents;
+    const uint32_t *fs_unif_data;       uint32_t fs_num_uniforms;
+    uint8_t  fs_threads;
+    uint8_t  fs_single_seg;
+    uint8_t  fs_needs_coords;
+    uint8_t  fs_uses_center_w;
+    uint8_t  fs_writes_z;
+    uint8_t  fs_disable_ez;
+    uint32_t fs_num_inputs;
+    uint32_t fs_input_slots[VC_PGL3D_PROG_MAX_INPUTS];
+    /* coordinate (binning) stage: the same VS NIR compiled with is_coord=true.
+     * Carries its own QPU + uniform stream and VPM layout (it writes only
+     * gl_Position, no varyings, so its VPM output size differs from the render
+     * VS's).  Shares the VS's uniform driver_locations, so one per-draw blob
+     * feeds both expansions. */
+    const uint32_t *coord_qpu;          uint32_t coord_qpu_words;
+    const uint32_t *coord_unif_contents;
+    const uint32_t *coord_unif_data;    uint32_t coord_num_uniforms;
+    uint8_t  coord_threads;
+    uint8_t  coord_single_seg;
+    uint32_t coord_vpm_input_size;
+    uint32_t coord_vpm_output_size;
+    uint32_t coord_vcm_cache_size;
+    uint8_t  coord_separate_segments;
+    /* optional compute stage (g2d blob VERSION 3): the fragment program as a
+     * CSD kernel writing the render target through SSBO binding 0.
+     * cs_qpu_words == 0 means absent (the program draws through the binner). */
+    const uint32_t *cs_qpu;             uint32_t cs_qpu_words;
+    const uint32_t *cs_unif_contents;
+    const uint32_t *cs_unif_data;       uint32_t cs_num_uniforms;
+    uint8_t  cs_threads;
+    uint8_t  cs_single_seg;
+    uint32_t cs_local_size[3];
+    uint32_t cs_shared_size;
+    /* 1 = cs is the fixed geometry rasterizer (grid = one workgroup per
+     * triangle; draw pos/col/z iovas become SSBO bindings 1/2/3); 0 = the
+     * shadertoy full-frame route (grid covers the frame, SSBO 0 = fb). */
+    uint32_t cs_is_geom;
+} vc_pgl3d_program_req_t;
+
+/* Upload a compiled program into GPU dma and cache it by handle.  Returns the
+ * non-negative program handle on success, VC_PGL3D_PROG_UNSUPPORTED when the
+ * 3D path is not ready or a payload is out of range, VC_PGL3D_PROG_FAILED on a
+ * dma allocation failure.  The handle is later referenced by a draw request. */
+int vc_pgl3d_program(const vc_pgl3d_program_req_t *req);
+
+/* Drop a program uploaded by vc_pgl3d_program (slot + GPU dma released).
+ * Returns 0, or VC_PGL3D_PROG_UNSUPPORTED for an unknown / free handle. */
+int vc_pgl3d_program_free(int handle);
 
 #endif /* VIDEOCORE_VC_PGL3D_H */

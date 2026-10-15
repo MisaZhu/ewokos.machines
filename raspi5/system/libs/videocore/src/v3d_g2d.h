@@ -146,6 +146,40 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 void *dst, size_t dst_len,
                 const v3d_g2d_maint_t *maint, unsigned flags);
 
+/*
+ * Generic CSD dispatch of a mesa-compiled COMPUTE shader (the shadertoy
+ * "compute route": the fragment program is compiled as a compute kernel that
+ * writes its colour straight into the frame buffer through the TMU, so the
+ * V3D 7.1 binner is bypassed entirely).  Unlike v3d_g2d_run the code and the
+ * expanded uniform stream are NOT staged here: both already live in dma
+ * (v3d_3d.c's alloc_stage) and are referenced by IOVA.  The CFG words follow
+ * mesa's v3dv/v3dx launch_grid encoding for V3D 7.1 (one supergroup per
+ * workgroup when wg_size is a multiple of 16; cfg[4] is the batch count,
+ * not count-1, on IP rev >= 6).  dst_phy/dst_span bound the POST L2 writeback
+ * (0 = whole-L2 walk).  Same return contract as v3d_g2d_run: 0 done, 1
+ * timeout, -1 fault / bad arguments.
+ */
+typedef struct {
+    uint32_t code_iova;     /* compiled compute QPU code (dma IOVA)        */
+    uint32_t unif_iova;     /* expanded uniform stream (dma IOVA)          */
+    uint32_t wg_count[3];   /* dispatch grid in workgroups                 */
+    uint32_t wg_size;       /* local_size product, 1..256                  */
+    uint8_t  threads;       /* prog_data threads: 1, 2 or 4                */
+    uint8_t  single_seg;    /* prog_data single_seg                        */
+    uint32_t dst_phy;       /* destination surface base (for POST), or 0   */
+    uint32_t dst_span;      /* destination surface bytes, or 0             */
+    /* Second GPU-written surface that ALSO needs a POST L2 writeback (the geom
+     * rasterizer's atomicMin depth canvas).  The POST writeback is range-scoped
+     * to dst only; without aux the depth dirty lines linger in L2T until the
+     * NEXT dispatch's PRE writes them back after the CPU re-cleared the depth,
+     * tearing the frame at 64-byte granularity.  0 = no aux range. */
+    uint32_t aux_phy;       /* aux written surface base (for POST), or 0   */
+    uint32_t aux_span;      /* aux written surface bytes, or 0             */
+    uint32_t budget_ms;     /* completion wait budget; 0 = driver default  */
+} v3d_g2d_csd_job_t;
+
+int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags);
+
 /* Op bracket for banded / tiled operations: holds the dispatch lock
  * across every v3d_g2d_run of one op so another worker's op cannot
  * interleave between its bands (the lock is owner-recursive; the runs
@@ -230,5 +264,27 @@ volatile uint32_t *v3d_g2d_hub_regs(void);   /* hub window (MMU/INT at +0) */
 volatile uint32_t *v3d_g2d_core_regs(void);  /* core0 window (CLE/PTB/CSD) */
 void v3d_g2d_l2_flush_all(void);             /* post-render writeback to DRAM */
 void v3d_g2d_l2_invalidate_all(void);        /* pre-submit stale-line drop */
+
+/* Read-only V3D MMU fault probe for 3D bin/render timeout diagnostics.
+ * Returns 1 when a fault bit is latched and fills the outputs with the MMU
+ * control word, the violating IOVA, the faulting client id (CLE/PTB = the
+ * binner) and the hub interrupt status.  Does NOT clear the sticky bits (the
+ * CSD path's g2d_mmu_check_fault owns clear/redirect); it only peeks so a 3D
+ * timeout can tell an unmapped-buffer fault from a coord/VS/FS shader stall. */
+int v3d_g2d_mmu_fault_peek(uint32_t *ctl, uint32_t *vio_addr,
+                           uint32_t *vio_id, uint32_t *hub_int);
+
+/* Wedge latch: a timed-out 3D bin/render job leaves the shared V3D block
+ * dead (no register-level reset in this port).  v3d_3d marks it; every
+ * dispatch entry point (v3d_g2d_run / run_csd / 3D draw+clear) then fails
+ * immediately instead of burning its full timeout budget per call, so the
+ * g2d callers drop to their CPU paths and g2dd stays idle.  Cleared only by
+ * power cycle. */
+void v3d_g2d_mark_wedged(const char *why);
+int  v3d_g2d_wedged(void);
+/* Reset the block after a stalled 3D job (Linux v3d_reset equivalent) and
+ * clear the wedge; caller holds the run lock.  0 = GPU usable again, -1 = left
+ * wedged (reset failed or the per-boot reset cap was hit). */
+int  v3d_g2d_recover(const char *why);
 
 #endif /* V3D_G2D_H */

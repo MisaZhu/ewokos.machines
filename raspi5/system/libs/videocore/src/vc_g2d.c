@@ -549,7 +549,9 @@ static int g2d_fit_nq_rot90(int nq, int32_t H)
 
 int gpu_ok(int32_t w, int32_t h)
 {
-    return v3d_g2d_ready() && w > 0 && h > 0;
+    /* a wedged V3D (timed-out 3D job, no reset path) declines every op at
+     * the eligibility gate so the callers take their CPU path at once */
+    return v3d_g2d_ready() && !v3d_g2d_wedged() && w > 0 && h > 0;
 }
 
 /* Return a strict integer power-of-two scale factor, or zero when the

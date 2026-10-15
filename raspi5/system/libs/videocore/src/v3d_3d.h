@@ -56,9 +56,14 @@
 #define V3D_3D_DONE        0
 #define V3D_3D_FAILED      1
 #define V3D_3D_UNSUPPORTED 2
+/* compiled-draw refinements of FAILED (the job was submitted): the compute
+ * dispatch overran its wait budget / the GPU MMU faulted.  Mapped by the bsp
+ * layer onto distinct negative client codes so the client log names the cause. */
+#define V3D_3D_TIMEOUT     3
+#define V3D_3D_MMU_FAULT   4
 
 /* Depth-function codes for a draw (value-identical to the VC_PGL3D_DEPTH_*
- * set in vc_pgl3d.h and the G2D_PGL_DEPTH_* / PGL_VC3D_DEPTH_* protocol sets).
+ * set in vc_pgl3d.h and the G2D_PGL_DEPTH_* / PGL_G3D_DEPTH_* protocol sets).
  * NONE disables the depth test and leaves the tile-local Z buffer unallocated;
  * the rest select the V3D depth_test_function (Compare Function enum) and turn
  * on the Z buffer.  All eight GL compare functions are covered; depth_func_hw()
@@ -141,6 +146,41 @@ typedef struct {
     uint32_t uv_iova;       /* GPU IOVA of per-vertex uv float3, stride 12 */
 } v3d_3d_tex_t;
 
+/* Maximum sampler texture units a compiled FS may bind (mirrors
+ * VC_PGL3D_MAX_TEX_UNITS / G2D_PGL_MAX_TEX_UNITS). */
+#define V3D_3D_MAX_TEX_UNITS 4u
+
+/* Optional per-draw compiled-shader sampler bindings (WS4).  A compiled FS
+ * references up to V3D_3D_MAX_TEX_UNITS texture units; each unit's
+ * QUNIFORM_TMU_CONFIG_P0/P1 pair carries the unit index in the upper 8 bits
+ * of its data word, so expand_uniforms extracts the slot and ORs the packed
+ * template's low bits into the IOVA of a V3D71 TEXTURE_SHADER_STATE (P0) /
+ * SAMPLER_STATE (P1) record that build_tex_state_records() packed from
+ * ctex_iova[slot] / ctex_w[slot] / ctex_h[slot].
+ * A slot with ctex_iova[i] == 0 is unbound: the FS is declined (it must not
+ * sample an unbound unit).  Images are RGBA8 in the V3D texture memory
+ * layout named by ctex_tiling[i] (V3D_3D_TEX_TILING_*; the TMU cannot sample
+ * a raster 2D image, so the client tiles them), 64-byte aligned (the
+ * texture_base_pointer field overlays bits 0-5 with flag bits; UIF layouts
+ * need 4 KiB), with ctex_stride[i] >= ctex_w[i] * 4 (ctex_stride[i] == 0
+ * lets the driver derive ctex_w[i] * 4) and inside a memory range
+ * v3d_g2d_phy_valid() accepts.  A NULL ctex from the caller keeps every slot
+ * unbound. */
+#define V3D_3D_TEX_TILING_RASTER            0u
+#define V3D_3D_TEX_TILING_LINEARTILE        1u
+#define V3D_3D_TEX_TILING_UBLINEAR_1_COLUMN 2u
+#define V3D_3D_TEX_TILING_UBLINEAR_2_COLUMN 3u
+#define V3D_3D_TEX_TILING_UIF_NO_XOR        4u
+#define V3D_3D_TEX_TILING_UIF_XOR           5u
+typedef struct {
+    uint32_t ctex_iova[V3D_3D_MAX_TEX_UNITS];
+    uint32_t ctex_stride[V3D_3D_MAX_TEX_UNITS];
+    uint32_t ctex_w[V3D_3D_MAX_TEX_UNITS];
+    uint32_t ctex_h[V3D_3D_MAX_TEX_UNITS];
+    uint8_t  ctex_tiling[V3D_3D_MAX_TEX_UNITS];
+    uint8_t  ctex_ub_pad[V3D_3D_MAX_TEX_UNITS];
+} v3d_3d_ctex_t;
+
 /* Allocate dma staging and validate the GPU is usable for the 3D path.
  * Idempotent; requires v3d_g2d_ready().  Returns V3D_3D_DONE on success,
  * V3D_3D_UNSUPPORTED when the CSD bring-up is not ready or staging cannot be
@@ -176,7 +216,21 @@ int v3d_3d_clear(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
  *
  * ext carries the optional Phase B2c scissor / polygon-offset / colour-mask
  * state (NULL or all-zero = the historical full-frame, no-offset, write-all
- * path).  Returns a V3D_3D_* tri-state. */
+ * path).
+ *
+ * WS4 compiled draw: prog_handle >= 0 selects a program uploaded via
+ * v3d_3d_program (a mesa-compiled VS/FS QPU pair) instead of the built-in
+ * fixed-function shaders; the V3D shader-state record is built from that
+ * program's cached prog_data and its per-slot uniform stream is expanded by
+ * the QUNIFORM interpreter from `unif` (num_uniforms u32 per-draw GL uniform
+ * values indexed for QUNIFORM_UNIFORM slots, NULL when num_uniforms == 0).
+ * The compiled path is scoped to the full-screen-quad case (pos-only vertex
+ * attribute, the fixed coordinate shader reused for binning); prog_handle < 0
+ * keeps the historical fixed-function fs_id path.  A program that carries a
+ * COMPUTE stage (cs_qpu_words != 0) is instead dispatched through the CSD as a
+ * full-frame compute grid writing fb directly (RGBA8 target, stride a multiple
+ * of 4; pos/nverts/mode are ignored), bypassing the binner.
+ * Returns a V3D_3D_* tri-state. */
 int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                 uint32_t w, uint32_t h, int mode, uint32_t nverts,
                 uint32_t pos_iova, uint32_t col_iova,
@@ -185,6 +239,116 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                 uint32_t z_iova, uint32_t z_stride, int first_frame,
                 uint32_t clear_rgba, float clear_z,
                 const v3d_3d_ext_t *ext,
-                const v3d_3d_tex_t *tex);
+                const v3d_3d_tex_t *tex,
+                int32_t prog_handle, const uint32_t *unif,
+                uint32_t num_uniforms,
+                const v3d_3d_ctex_t *ctex);
+
+/* ------------------------------------------------------------------ */
+/* Compiled-shader program upload (WS4).                                 */
+/*                                                                       */
+/* A compiled program (VS/FS QPU words + uniform streams + prog_data)     */
+/* arrives from bsp_g3d via vc_pgl3d_program.  v3d_3d_program copies the   */
+/* GPU-resident parts (QPU code + the static uniform value stream) into    */
+/* dma through alloc_stage and caches the IOVAs + the CPU-side prog_data   */
+/* (uniform layout descriptors, VPM sizes, attribute/input maps) in a      */
+/* handle-indexed table, so a later draw can build the shader record and   */
+/* per-draw uniform buffer from the handle alone.                          */
+/* ------------------------------------------------------------------ */
+
+/* Program-cache bounds.  The QPU words and uniform streams are deep-copied
+ * into GPU dma / the inline cache; a program exceeding any cap is declined
+ * (never truncated) so the caller falls back to its CPU path.  MAX_QPU is in
+ * 32-bit words (2 words per V3D 7.1 QPU instruction). */
+#define V3D_3D_MAX_PROGS       16u    /* simultaneously cached programs       */
+#define V3D_3D_PROG_MAX_QPU    4096u  /* QPU 32-bit words per stage           */
+#define V3D_3D_PROG_MAX_UNIF   512u   /* uniform-stream words per stage       */
+#define V3D_3D_PROG_MAX_ATTRS  64u    /* VS attribute / driver-location slots */
+#define V3D_3D_PROG_MAX_INPUTS 64u    /* FS input (varying) slots             */
+
+/* Program-upload result codes.  A non-negative return is the program handle
+ * (an index into the cache); the two negatives are value-identical to the
+ * G2D_ERR_FAILED / G2D_ERR_NOT_SUPPORTED codes so bsp_g3d forwards them
+ * verbatim through the g2d dev-cntl reply. */
+#define V3D_3D_PROG_FAILED      (-1)
+#define V3D_3D_PROG_UNSUPPORTED (-2)
+
+/* Compiled-program descriptor handed to v3d_3d_program by vc_pgl3d (filled by
+ * bsp_g3d from the parsed g2d upload blob).  Every pointer is CPU-side and
+ * need only stay valid for the duration of the call; the QPU words and the
+ * uniform value streams are deep-copied into GPU dma, and the uniform layout
+ * descriptors + attribute/input maps are copied into the inline cache.  The
+ * shape mirrors the public vc_pgl3d_program_req_t field-for-field. */
+typedef struct {
+    /* vertex stage */
+    const uint32_t *vs_qpu;             uint32_t vs_qpu_words;
+    const uint32_t *vs_unif_contents;   /* per-slot layout descriptor (CPU)  */
+    const uint32_t *vs_unif_data;       uint32_t vs_num_uniforms;
+    uint8_t  vs_threads;
+    uint8_t  vs_single_seg;
+    uint32_t vs_vpm_input_size;
+    uint32_t vs_vpm_output_size;
+    uint32_t vs_vcm_cache_size;
+    uint8_t  vs_separate_segments;
+    uint8_t  vs_vattr_sizes[V3D_3D_PROG_MAX_ATTRS / 4];
+    int32_t  vs_driver_location_map[V3D_3D_PROG_MAX_ATTRS];
+    /* fragment stage */
+    const uint32_t *fs_qpu;             uint32_t fs_qpu_words;
+    const uint32_t *fs_unif_contents;
+    const uint32_t *fs_unif_data;       uint32_t fs_num_uniforms;
+    uint8_t  fs_threads;
+    uint8_t  fs_single_seg;
+    uint8_t  fs_needs_coords;
+    uint8_t  fs_uses_center_w;
+    uint8_t  fs_writes_z;
+    uint8_t  fs_disable_ez;
+    uint32_t fs_num_inputs;
+    uint32_t fs_input_slots[V3D_3D_PROG_MAX_INPUTS];
+    /* coordinate (binning) stage: the same VS NIR compiled with is_coord=true.
+     * Carries its own QPU + uniform stream and VPM layout (gl_Position only, no
+     * varyings, so its VPM output size differs from the render VS's).  Shares
+     * the VS's uniform driver_locations, so one per-draw blob feeds both. */
+    const uint32_t *coord_qpu;          uint32_t coord_qpu_words;
+    const uint32_t *coord_unif_contents;
+    const uint32_t *coord_unif_data;    uint32_t coord_num_uniforms;
+    uint8_t  coord_threads;
+    uint8_t  coord_single_seg;
+    uint32_t coord_vpm_input_size;
+    uint32_t coord_vpm_output_size;
+    uint32_t coord_vcm_cache_size;
+    uint8_t  coord_separate_segments;
+    /* optional COMPUTE stage (the shadertoy compute route): the fragment
+     * program recompiled as a compute kernel that writes ARGB8888 straight into
+     * the frame buffer through an SSBO (binding 0 = the render target).  A
+     * program with cs_qpu_words == 0 has no compute stage and draws through the
+     * binner.  cs_local_size is the kernel's workgroup shape; the dispatch grid
+     * is ceil(w / x) x ceil(h / y) x 1 (z must be 1). */
+    const uint32_t *cs_qpu;             uint32_t cs_qpu_words;
+    const uint32_t *cs_unif_contents;
+    const uint32_t *cs_unif_data;       uint32_t cs_num_uniforms;
+    uint8_t  cs_threads;
+    uint8_t  cs_single_seg;
+    uint32_t cs_local_size[3];
+    uint32_t cs_shared_size;
+    /* 1 = the compute stage is the fixed GEOMETRY rasterizer kernel
+     * (geom_raster_cs.h: one workgroup per triangle, SSBO bindings
+     * 0=fb 1=pos 2=nrm 3=depth) rather than a shadertoy full-frame effect.
+     * Geom programs dispatch grid (ntris,1,1) and take the draw's pos/col
+     * (col carries normals) /z iovas as SSBOs 1/2/3. */
+    uint32_t cs_is_geom;
+} v3d_3d_prog_desc_t;
+
+/* Upload a compiled program: copy the VS/FS QPU words and the static uniform
+ * value streams into GPU dma (alloc_stage), cache the resulting IOVAs plus the
+ * prog_data (uniform layout, VPM sizes, attribute/input maps, FS flags) in the
+ * handle table, and return the non-negative program handle.  Returns
+ * V3D_3D_PROG_UNSUPPORTED when the 3D path is not ready, a payload is out of
+ * range, or the cache is full; V3D_3D_PROG_FAILED on a dma allocation failure.
+ * A submitted upload is idempotent per call (each call consumes a new slot). */
+int v3d_3d_program(const v3d_3d_prog_desc_t *desc);
+
+/* Drop a cached program (free its slot and dma QPU blocks).  Returns 0, or
+ * V3D_3D_PROG_UNSUPPORTED for an unknown / already-free handle. */
+int v3d_3d_program_free(int prog_handle);
 
 #endif /* V3D_3D_H */
