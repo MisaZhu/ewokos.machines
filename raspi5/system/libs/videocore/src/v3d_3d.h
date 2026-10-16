@@ -341,6 +341,15 @@ typedef struct {
      * Geom programs dispatch grid (ntris,1,1) and take the draw's pos/col
      * (col carries normals) /z iovas as SSBOs 1/2/3. */
     uint32_t cs_is_geom;
+    /* Raster-pass triangles-per-workgroup for geom programs: 0 = the legacy
+     * one-workgroup-per-triangle grid; otherwise draw_compute_geom dispatches
+     * ceil(ntris/cs_geom_tpw) workgroups.  Must be 0 or equal to the cs
+     * workgroup lane count (one-lane-per-triangle kernels cover exactly one
+     * triangle per lane; validated at program upload).  The wide grid is the
+     * performance fix: the V3D 7.1 CSD charges ~3us fixed overhead per
+     * workgroup, so 6400 one-triangle workgroups cost ~19-20ms while 25
+     * 256-triangle workgroups cost well under 1ms. */
+    uint32_t cs_geom_tpw;
     /* second COMPUTE stage (VERSION 4): the VERTEX-TRANSFORM pass (pass 1) of
      * the two-pass geometry rasterizer.  cs2_qpu_words == 0 means absent (a
      * single-pass or non-geom program).  cs2 runs FIRST (one invocation per

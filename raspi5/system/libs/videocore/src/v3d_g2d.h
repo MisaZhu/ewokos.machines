@@ -175,8 +175,39 @@ typedef struct {
      * tearing the frame at 64-byte granularity.  0 = no aux range. */
     uint32_t aux_phy;       /* aux written surface base (for POST), or 0   */
     uint32_t aux_span;      /* aux written surface bytes, or 0             */
+    /* Ranged PRE extent: the ARM-written source surfaces this job READS
+     * (the geom pass-1 vertex streams, the geom-tex texture).  When set, a
+     * MAINT_PRE dispatch clean+invalidates exactly [src_phy, +src_span)
+     * instead of walking the whole 4 GB IOVA range, so the walk cost scales
+     * with the source span; when 0 the dispatch falls back to the full
+     * walk.  GPU-owned surfaces (vout, fb, depth) need no PRE at all: their
+     * lines are only ever dirtied by GPU writes and every writer's POST
+     * cleans them, and they are deliberately absent here. */
+    uint32_t src_phy;       /* PRE source extent base, or 0 (full walk)    */
+    uint32_t src_span;      /* PRE source extent bytes, or 0               */
+    /* Job-scoped uniform extent: the caller's expanded uniform stream is
+     * [unif_iova, +unif_span).  The pre-dispatch visibility barrier
+     * invalidates exactly this span - the 2D-kernel block v3d_g2d_run's
+     * g2d_uniform_fresh() covers is a DIFFERENT buffer, and a PRE-elided
+     * (or ranged-PRE) compute dispatch would otherwise re-read the previous
+     * job's stale uniform lines.  0 = fall back to the 2D-block barrier. */
+    uint32_t unif_span;     /* expanded uniform stream bytes, or 0         */
     uint32_t budget_ms;     /* completion wait budget; 0 = driver default  */
+    /* Tagged stat lane (V3D_G2D_TAG_*): steers the per-tag phase
+     * accumulators in v3d_g2d_stats_t only, never the dispatch itself. */
+    uint8_t  tag;           /* stat lane, 0 = untagged                     */
 } v3d_g2d_csd_job_t;
+
+/* Stat lanes for csd_job_t::tag: GEOM_XFORM / GEOM_RASTER are the two passes
+ * of the two-pass geometry rasterizer (v3d_3d.c draw_compute_geom), COMPUTE
+ * is the single-pass shadertoy compute draw. */
+enum {
+    V3D_G2D_TAG_NONE = 0,
+    V3D_G2D_TAG_GEOM_XFORM,
+    V3D_G2D_TAG_GEOM_RASTER,
+    V3D_G2D_TAG_COMPUTE,
+    V3D_G2D_TAG_N
+};
 
 int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags);
 
@@ -198,7 +229,10 @@ void v3d_g2d_op_end(void);
  * whole-IOVA walk and *_skip the PRE/POST-elided middle bands/tiles.
  * irq_waits counts dispatches that parked on the CSD_DONE interrupt,
  * irq_miss those of them that completed by the status latch without a
- * delivered interrupt (CSD_IRQ_MISS_MAX in a row retires the irq). */
+ * delivered interrupt (CSD_IRQ_MISS_MAX in a row retires the irq).
+ * tag_* are the same pre/exec/post accumulators broken out per job tag
+ * (lane 0 collects every untagged dispatch) so a multi-pass op can
+ * attribute its phases per pass. */
 typedef struct {
     uint64_t runs;
     uint64_t timeouts;
@@ -207,6 +241,10 @@ typedef struct {
     uint64_t pre_full, post_full;
     uint64_t pre_skip, post_skip;
     uint64_t irq_waits, irq_miss;
+    uint64_t tag_runs[V3D_G2D_TAG_N];
+    uint64_t tag_pre_ns[V3D_G2D_TAG_N];
+    uint64_t tag_exec_ns[V3D_G2D_TAG_N];
+    uint64_t tag_post_ns[V3D_G2D_TAG_N];
 } v3d_g2d_stats_t;
 
 /* Snapshot the counters (consistent: taken under the dispatch lock) and

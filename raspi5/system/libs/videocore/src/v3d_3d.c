@@ -46,6 +46,7 @@
 #include <ewoksys/dma.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
+#include <videocore/vc_g2d.h>
 #include "v3d_g2d.h"
 #include "v3d_3d.h"
 
@@ -415,6 +416,7 @@ typedef struct {
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
     uint32_t cs_is_geom;    /* 1 = gouraud geom rasterizer, 2 = textured geom */
+    uint32_t cs_geom_tpw;   /* raster triangles/workgroup: 0 = one wg per tri */
     /* second compute stage (cs2 = pass-1 vertex transform of the two-pass
      * geometry rasterizer).  cs2_qpu_words == 0 when absent.  Dispatched FIRST
      * (one invocation per vertex) writing the packed `vout` records the cs
@@ -1823,6 +1825,8 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.single_seg  = pr->cs_single_seg;
     job.dst_phy     = fb_iova;
     job.dst_span    = stride_bytes * h;
+    job.unif_span   = pr->cs_num_uniforms * 4u;
+    job.tag         = V3D_G2D_TAG_COMPUTE;
     /* a ray-marching effect at 640x480 legitimately runs for hundreds of ms;
      * give it a real budget instead of the 2D fail-fast default */
     job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
@@ -1849,11 +1853,18 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
  *     per vertex.  SSBO 0 = vout (8-float/32-byte records), 1 = positions
  *     (float vec3, 12-byte) or interleaved pos+uv (6-float) for the textured
  *     variant, 2 = normals (gouraud only).  dst = vout so its POST writeback
- *     cleans the records to DRAM for pass 2 to read.
+ *     cleans the records to DRAM for pass 2 to read; its PRE is ranged over
+ *     the vertex streams (the only ARM-written surfaces it reads).
  *   Pass 2 - cs (raster): ONE workgroup per triangle, local_size 8x8.  SSBO
  *     0 = fb, 1 = vout, 2 = depth (gouraud) / 3 = texture (textured).  dst = fb
- *     + aux = depth for the POST writeback; its PRE invalidate discards L2 so
- *     the vout reads come from the DRAM pass 1 just flushed.
+ *     + aux = depth for the POST writeback.  It runs with NO PRE: vout, fb
+ *     and depth are all GPU-owned (the fills and pass 1 just wrote them, the
+ *     previous frame's POST cleaned them); the textured variant keeps a
+ *     ranged PRE over the texture image, which the ARM wrote at upload.
+ *
+ * The frame's first draw also clears colour + depth on the GPU (two
+ * write-only fills with no maintenance of their own), replacing the
+ * client's per-frame CPU clear of both canvases through NOCACHE shm.
  *
  * The per-draw uniform blob is the concatenation [cs2/xform | cs/raster]; the
  * split is the program's cs2_uniform_blob_dwords. */
@@ -1863,7 +1874,8 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                              uint32_t pos_iova, uint32_t nrm_iova,
                              uint32_t depth_iova, uint32_t z_stride,
                              const uint32_t *unif, uint32_t num_uniforms,
-                             uint32_t tex_iova)
+                             uint32_t tex_iova, uint32_t tex_span,
+                             int first_frame, uint32_t clear_rgba)
 {
     v3d_g2d_csd_job_t job;
     uint32_t ssbo[4];
@@ -1896,8 +1908,36 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         return decline("geom: xform shared memory unsupported");
     if (split > num_uniforms)
         return decline("geom: uniform blob shorter than xform region");
+    /* The daemon-side frame clear fills tightly-packed rows only; a pitched
+     * colour or depth canvas would be left half-cleared, so decline it and
+     * the client keeps its own CPU clear (pgl_g3d always sends w*4). */
+    if (first_frame && (stride_bytes != w * 4u || z_stride != w * 4u))
+        return decline("geom: first_frame pitched strides");
 
     v3d_g2d_op_begin();
+
+    /* Frame clear on the GPU, before either pass: the client drops its
+     * per-frame CPU clear of colour+depth (~2.4 MB of NOCACHE writes) once
+     * this path has run, so the frame's first geom draw fills both canvases
+     * itself.  The fills are write-only and take no L2T maintenance of
+     * their own: pass 1's POST drains the write combiner before pass 2's
+     * depth atomics read, and pass 2's POST writes fb+depth back to DRAM.
+     * The geom fb layout is 0xAARRGGBB while clear_rgba is the back end's
+     * 0xAABBGGRR, so R and B swap. */
+    if (first_frame) {
+        uint32_t c = clear_rgba;
+        uint32_t px = (c & 0xFF000000u) | ((c & 0x000000FFu) << 16) |
+                      (c & 0x0000FF00u) | ((c & 0x00FF0000u) >> 16);
+
+        if (!gpu_fill_surface_m(fb_iova, NULL, (int32_t)w, (int32_t)h,
+                                0, 0, (int32_t)w, (int32_t)h, px, 0u) ||
+            !gpu_fill_surface_m(depth_iova, NULL, (int32_t)w, (int32_t)h,
+                                0, 0, (int32_t)w, (int32_t)h,
+                                0xFFFFFFFFu, 0u)) {
+            v3d_g2d_op_end();
+            return decline("geom: frame clear fill");
+        }
+    }
 
     /* ---- Pass 1: vertex transform -> vout ---------------------------- */
     ssbo[0] = _vout_p;
@@ -1933,6 +1973,25 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.single_seg  = pr->cs2_single_seg;
     job.dst_phy     = _vout_p;          /* POST writeback: vout -> DRAM */
     job.dst_span    = nverts * 32u;
+    job.unif_span   = pr->cs2_num_uniforms * 4u;
+    job.tag         = V3D_G2D_TAG_GEOM_XFORM;
+    /* Ranged PRE: the only ARM-written surfaces this pass reads are the
+     * vertex streams (vout is write-only here), so the hull of pos(+nrm)
+     * bounds the invalidate instead of the whole IOVA range. */
+    {
+        uint32_t lo = pos_iova;
+        uint32_t hi = pos_iova + nverts * (tex_iova != 0u ? 24u : 12u);
+
+        if (tex_iova == 0u && nrm_iova != 0u) {
+            uint32_t nlo = nrm_iova;
+            uint32_t nhi = nrm_iova + nverts * 12u;
+
+            if (nlo < lo) lo = nlo;
+            if (nhi > hi) hi = nhi;
+        }
+        job.src_phy  = lo;
+        job.src_span = hi - lo;
+    }
     job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
     rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
                                V3D_G2D_POLL_IRQ);
@@ -1963,7 +2022,21 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     memset(&job, 0, sizeof(job));
     job.code_iova   = pr->cs_qpu_iova;
     job.unif_iova   = _ccu_unif_p;
-    job.wg_count[0] = ntris;    /* one workgroup per triangle */
+    /* Raster grid: the legacy kernels map one workgroup to one triangle
+     * (cs_geom_tpw 0/1); the one-lane-per-triangle kernels (V4/V5) cover
+     * cs_geom_tpw triangles per workgroup, so the grid is ceil(ntris/tpw).
+     * The wide grid is the whole performance point: the CSD charges ~3us
+     * of fixed dispatch overhead PER WORKGROUP on this part (measured on
+     * device: 6400 workgroups cost ~19-20ms no matter what the kernel
+     * does), so ntris/256 workgroups is what makes the compute rasterizer
+     * fast.  An over-dispatching peer (tpw mismatch) still renders
+     * correctly through the kernel's uTriCount guard, just slowly. */
+    {
+        uint32_t tpw = pr->cs_geom_tpw;
+        if (tpw == 0u)
+            tpw = 1u;
+        job.wg_count[0] = (ntris + tpw - 1u) / tpw;
+    }
     job.wg_count[1] = 1u;
     job.wg_count[2] = 1u;
     job.wg_size     = pr->cs_local_size[0] * pr->cs_local_size[1];
@@ -1973,8 +2046,19 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.dst_span    = stride_bytes * h;
     job.aux_phy     = depth_iova;   /* atomicMin depth canvas writeback */
     job.aux_span    = z_stride * h;
+    job.unif_span   = pr->cs_num_uniforms * 4u;
+    job.tag         = V3D_G2D_TAG_GEOM_RASTER;
+    if (tex_iova != 0u) {
+        job.src_phy  = tex_iova;    /* ARM-written at upload: ranged PRE */
+        job.src_span = tex_span;
+    }
     job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
-    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
+    /* No PRE for the gouraud variant: every surface this pass touches
+     * (vout, fb, depth) is GPU-owned and coherent through the L2T - the
+     * fills and pass 1 just wrote them, and the previous frame's POST
+     * cleaned them.  The textured variant keeps the ranged texture PRE. */
+    rc = v3d_g2d_run_csd(&job, (tex_iova != 0u ? V3D_G2D_MAINT_PRE : 0u) |
+                               V3D_G2D_MAINT_POST | V3D_G2D_POLL_YIELD |
                                V3D_G2D_POLL_IRQ);
     v3d_g2d_op_end();
     if (rc != 0) {
@@ -2149,7 +2233,10 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                      stride_bytes, fmt, w, h, nverts,
                                      pos_iova, col_iova, z_iova, z_stride,
                                      unif, num_uniforms,
-                                     gtex ? ctex->ctex_iova[0] : 0u);
+                                     gtex ? ctex->ctex_iova[0] : 0u,
+                                     gtex ? ctex->ctex_stride[0] *
+                                            ctex->ctex_h[0] : 0u,
+                                     first_frame, clear_rgba);
         }
         return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
                             w, h, unif, num_uniforms, ctex);
@@ -2452,6 +2539,15 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
      * without its xform pass (or vice versa) cannot run, so decline it. */
     if (desc->cs_is_geom && (desc->cs_qpu_words == 0 || desc->cs2_qpu_words == 0))
         return V3D_3D_PROG_UNSUPPORTED;
+    /* cs_geom_tpw invariant: the one-lane-per-triangle raster kernels cover
+     * exactly one triangle per lane, so a nonzero tpw must equal the cs
+     * workgroup lane count - anything else would silently mis-cover the
+     * mesh (a too-wide grid drops triangles, a too-narrow one wastes the
+     * guard exits).  0 keeps the legacy one-workgroup-per-triangle grid. */
+    if (desc->cs_geom_tpw != 0u &&
+        desc->cs_geom_tpw != desc->cs_local_size[0] * desc->cs_local_size[1] *
+                             desc->cs_local_size[2])
+        return V3D_3D_PROG_UNSUPPORTED;
 
     /* reserve a free cache slot */
     for (i = 0; i < V3D_3D_MAX_PROGS; i++) {
@@ -2507,6 +2603,7 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         pr->cs_local_size[2] = desc->cs_local_size[2];
         pr->cs_shared_size  = desc->cs_shared_size;
         pr->cs_is_geom      = desc->cs_is_geom;
+        pr->cs_geom_tpw     = desc->cs_geom_tpw;
     }
 
     /* upload the optional second COMPUTE QPU (pass-1 vertex transform) */

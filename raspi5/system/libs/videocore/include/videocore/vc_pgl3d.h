@@ -317,6 +317,11 @@ typedef struct {
      * shadertoy full-frame route (grid covers the frame, SSBO 0 = fb).
      * 2 = the TEXTURED geometry rasterizer variant. */
     uint32_t cs_is_geom;
+    /* Raster-pass triangles-per-workgroup for geom programs (the blob's
+     * cs_geom_tpw byte): 0 = one workgroup per triangle; otherwise the grid
+     * is ceil(ntris/cs_geom_tpw) and must equal the cs workgroup lane count
+     * (the one-lane-per-triangle kernels cover exactly one tri per lane). */
+    uint32_t cs_geom_tpw;
     /* second compute stage (g2d blob VERSION 4): the VERTEX-TRANSFORM pass of
      * the two-pass geometry rasterizer (cs2_qpu_words == 0 means absent, i.e.
      * a single-pass or non-geom program).  cs2 runs FIRST (one invocation per

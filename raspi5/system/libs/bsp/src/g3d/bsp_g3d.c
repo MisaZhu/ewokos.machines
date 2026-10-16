@@ -330,6 +330,7 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
     req.cs_local_size[2] = h->cs_local_size[2];
     req.cs_shared_size  = h->cs_shared_size;
     req.cs_is_geom      = h->cs_is_geom;
+    req.cs_geom_tpw     = h->cs_geom_tpw;
 
     /* second compute stage (VERSION 4): the vertex-transform pass of the
      * two-pass geometry rasterizer; cs2_qpu_words == 0 means absent. */

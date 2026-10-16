@@ -1720,6 +1720,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     uint32_t seq0 = 0;
     uint32_t num_wgs, wgs_per_sg, batches_per_sg, whole_sgs, rem_wgs;
     uint32_t num_batches;
+    uint32_t tag;
     int use_irq, done;
     int ret;
     uint64_t t0, t1, t2;
@@ -1732,6 +1733,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
         job->wg_count[0] >= (1u << 16) || job->wg_count[1] >= (1u << 16) ||
         job->wg_count[2] >= (1u << 16))
         return -1;
+    tag = job->tag < V3D_G2D_TAG_N ? job->tag : 0u;
     /* A caller-supplied budget (heavy compiled compute shaders legitimately
      * run for hundreds of ms at 640x480) stretches both wait styles; 0 keeps
      * the 2D-op default so a wedged block still fails fast for the desktop. */
@@ -1767,16 +1769,48 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     g2d_run_lock();
     t0 = g2d_now_ns();
     _stats.runs++;
+    _stats.tag_runs[tag]++;
 
-    g2d_uniform_fresh();    /* stale-uniform guard, see above */
+    /* Uniform-visibility barrier scoped to the JOB's own uniform stream
+     * (job->unif_iova, job->unif_span): the QPU uniform fetch is served
+     * through the L2T/slice caches, and the block was just rewritten by
+     * the ARM through its NOCACHE mapping, so its stale lines must be
+     * dropped before the dispatch or the job re-reads the PREVIOUS job's
+     * uniforms.  This used to ride on the full-range PRE below as a side
+     * effect (compute jobs use _ccu_unif_p, a different buffer than the
+     * 2D-kernel _unif_p block g2d_uniform_fresh covers); with the PRE
+     * narrowed to the source extent the block needs its own ranged
+     * clean+invalidate. */
+    if (job->unif_span != 0) {
+        __asm__ __volatile__("dsb sy" ::: "memory");
+        g2d_invalidate_range(job->unif_iova, job->unif_iova + job->unif_span);
+    } else {
+        g2d_uniform_fresh();    /* stale-uniform guard, see above */
+    }
     if (flags & V3D_G2D_MAINT_PRE) {
-        g2d_invalidate_caches();
-        _stats.pre_full++;
+        /* Ranged PRE over the job's ARM-written source extent (a geom
+         * pass-1 vertex-stream hull, a geom-tex texture): the walk cost
+         * scales with the source span instead of the whole 4 GB IOVA
+         * space.  GPU-owned surfaces (vout/fb/depth) are absent from the
+         * extent on purpose - their lines are only dirtied by GPU writes
+         * and every writer's POST cleans them. */
+        if (job->src_phy != 0 && job->src_span != 0) {
+            uint64_t shi = (uint64_t)job->src_phy + job->src_span;
+
+            if (shi > (uint64_t)~0u)
+                shi = ~0u;
+            g2d_invalidate_range(job->src_phy, (uint32_t)shi);
+            _stats.pre_span += (uint32_t)shi - job->src_phy;
+        } else {
+            g2d_invalidate_caches();
+            _stats.pre_full++;
+        }
     } else {
         _stats.pre_skip++;
     }
     t1 = g2d_now_ns();
     _stats.pre_ns += t1 - t0;
+    _stats.tag_pre_ns[tag] += t1 - t0;
 
     /* mesa v3dx launch_grid encoding (V3D 7.1) */
     cfg[0] = job->wg_count[0] << V3D_CSD_CFG012_WG_COUNT_SHIFT;
@@ -1850,6 +1884,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     }
     t2 = g2d_now_ns();
     _stats.exec_ns += t2 - t1;
+    _stats.tag_exec_ns[tag] += t2 - t1;
     if (!done) {
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         slog("g2d: compute CSD timeout wg=%ux%ux%u size=%u batches=%u "
@@ -1891,7 +1926,11 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             g2d_flush_l2_range(job->aux_phy, (uint32_t)ahi);
             _stats.post_span += (uint32_t)ahi - job->aux_phy;
         }
-        _stats.post_ns += g2d_now_ns() - t2;
+        {
+            uint64_t t3 = g2d_now_ns();
+            _stats.post_ns += t3 - t2;
+            _stats.tag_post_ns[tag] += t3 - t2;
+        }
     } else {
         _stats.post_skip++;
     }
