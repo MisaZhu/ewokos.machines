@@ -90,9 +90,14 @@
 #define V3D_3D_CULL_FRONT_CW   4u
 #define V3D_3D_CULL_BOTH       5u
 
-/* Maximum vertices per single draw dispatch (the attribute buffers and the
- * binning pool are sized for this; larger draws are split by the caller). */
-#define V3D_3D_MAX_VERTS 4096u
+/* Maximum vertices per single draw dispatch (a pure bound check - the vertex
+ * data itself lives in the caller's GPU-addressed staging, and the control-list
+ * buffer is separately sized by V3D_3D_CL_MAX with its own length guard; larger
+ * draws are split by the caller).  Raised to 20480 to match G2D_PGL_MAX_VERTS /
+ * VC_PGL3D_MAX_VERTS so a whole rigid mesh can ride one dispatch.  The geometry
+ * compute route (teapot) does not consult this cap - it is gated by its own
+ * ntris < 2^16 workgroup limit. */
+#define V3D_3D_MAX_VERTS 20480u
 
 /* Built-in fixed-function fragment-shader ids.  Value-identical to the
  * VC_PGL3D_FS_* set exposed by vc_pgl3d.h and the G2D_PGL_FS_* protocol set.
@@ -336,6 +341,21 @@ typedef struct {
      * Geom programs dispatch grid (ntris,1,1) and take the draw's pos/col
      * (col carries normals) /z iovas as SSBOs 1/2/3. */
     uint32_t cs_is_geom;
+    /* second COMPUTE stage (VERSION 4): the VERTEX-TRANSFORM pass (pass 1) of
+     * the two-pass geometry rasterizer.  cs2_qpu_words == 0 means absent (a
+     * single-pass or non-geom program).  cs2 runs FIRST (one invocation per
+     * vertex), writing a packed per-vertex record into the daemon-allocated
+     * `vout` SSBO; cs then rasterises from vout (one workgroup per triangle).
+     * cs2_uniform_blob_dwords is the split of the per-draw uniform blob: the
+     * leading dwords belong to cs2, the remainder to cs. */
+    const uint32_t *cs2_qpu;            uint32_t cs2_qpu_words;
+    const uint32_t *cs2_unif_contents;
+    const uint32_t *cs2_unif_data;      uint32_t cs2_num_uniforms;
+    uint8_t  cs2_threads;
+    uint8_t  cs2_single_seg;
+    uint32_t cs2_local_size[3];
+    uint32_t cs2_shared_size;
+    uint32_t cs2_uniform_blob_dwords;
 } v3d_3d_prog_desc_t;
 
 /* Upload a compiled program: copy the VS/FS QPU words and the static uniform

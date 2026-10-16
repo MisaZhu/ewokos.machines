@@ -236,7 +236,9 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
               (uint64_t)h->fs_num_uniforms * 2u +
               (uint64_t)h->coord_num_uniforms * 2u +
               (uint64_t)h->cs_qpu_words +
-              (uint64_t)h->cs_num_uniforms * 2u) * 4u;
+              (uint64_t)h->cs_num_uniforms * 2u +
+              (uint64_t)h->cs2_qpu_words +
+              (uint64_t)h->cs2_num_uniforms * 2u) * 4u;
     if (expect != (uint64_t)h->payload_bytes) {
         slog("bsp_g3d: program payload %u != expect %u\n",
              h->payload_bytes, (uint32_t)expect);
@@ -273,6 +275,14 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
     req.cs_unif_contents = (const uint32_t*)(base + off);
     off += h->cs_num_uniforms * 4u;
     req.cs_unif_data = (const uint32_t*)(base + off);
+    off += h->cs_num_uniforms * 4u;
+    /* VERSION 4 second compute stage (cs2 = xform pass): QPU then uniform
+     * contents+data, appended after the cs sections. */
+    req.cs2_qpu = (const uint32_t*)(base + off);
+    off += h->cs2_qpu_words * 4u;
+    req.cs2_unif_contents = (const uint32_t*)(base + off);
+    off += h->cs2_num_uniforms * 4u;
+    req.cs2_unif_data = (const uint32_t*)(base + off);
 
     req.vs_qpu_words         = h->vs_qpu_words;
     req.vs_num_uniforms      = h->vs_num_uniforms;
@@ -320,6 +330,18 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
     req.cs_local_size[2] = h->cs_local_size[2];
     req.cs_shared_size  = h->cs_shared_size;
     req.cs_is_geom      = h->cs_is_geom;
+
+    /* second compute stage (VERSION 4): the vertex-transform pass of the
+     * two-pass geometry rasterizer; cs2_qpu_words == 0 means absent. */
+    req.cs2_qpu_words    = h->cs2_qpu_words;
+    req.cs2_num_uniforms = h->cs2_num_uniforms;
+    req.cs2_threads      = h->cs2_threads;
+    req.cs2_single_seg   = h->cs2_single_seg;
+    req.cs2_local_size[0] = h->cs2_local_size[0];
+    req.cs2_local_size[1] = h->cs2_local_size[1];
+    req.cs2_local_size[2] = h->cs2_local_size[2];
+    req.cs2_shared_size  = h->cs2_shared_size;
+    req.cs2_uniform_blob_dwords = h->cs2_uniform_blob_dwords;
 
     {
         int32_t r = vc_pgl3d_program(&req);

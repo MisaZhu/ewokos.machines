@@ -102,8 +102,12 @@ enum {
 };
 
 /* Maximum vertices per single draw dispatch (larger draws must be split by
- * the caller; a bigger count is declined). */
-#define VC_PGL3D_MAX_VERTS 4096u
+ * the caller; a bigger count is declined).  Raised to 20480 to match the
+ * g2dclient G2D_PGL_MAX_VERTS so a whole rigid mesh (e.g. the 19200-vertex
+ * Utah teapot) rides ONE dispatch: each dispatch pays a fixed whole-surface
+ * L2 clean+invalidate + CSD_DONE IRQ wait independent of triangle count, so
+ * batching is what lets the GPU path beat the CPU rasterizer. */
+#define VC_PGL3D_MAX_VERTS 20480u
 
 /* Maximum texture units a compiled FS may bind (iChannel0..iChannelN).
  * Mirrors G2D_PGL_MAX_TEX_UNITS on the client protocol side and
@@ -310,8 +314,24 @@ typedef struct {
     uint32_t cs_shared_size;
     /* 1 = cs is the fixed geometry rasterizer (grid = one workgroup per
      * triangle; draw pos/col/z iovas become SSBO bindings 1/2/3); 0 = the
-     * shadertoy full-frame route (grid covers the frame, SSBO 0 = fb). */
+     * shadertoy full-frame route (grid covers the frame, SSBO 0 = fb).
+     * 2 = the TEXTURED geometry rasterizer variant. */
     uint32_t cs_is_geom;
+    /* second compute stage (g2d blob VERSION 4): the VERTEX-TRANSFORM pass of
+     * the two-pass geometry rasterizer (cs2_qpu_words == 0 means absent, i.e.
+     * a single-pass or non-geom program).  cs2 runs FIRST (one invocation per
+     * vertex), writing a packed per-vertex record into the daemon-allocated
+     * `vout` SSBO; cs then rasterises from vout (one workgroup per triangle).
+     * cs2_uniform_blob_dwords is the split of the per-draw uniform blob: the
+     * leading dwords belong to cs2, the remainder to cs. */
+    const uint32_t *cs2_qpu;            uint32_t cs2_qpu_words;
+    const uint32_t *cs2_unif_contents;
+    const uint32_t *cs2_unif_data;      uint32_t cs2_num_uniforms;
+    uint8_t  cs2_threads;
+    uint8_t  cs2_single_seg;
+    uint32_t cs2_local_size[3];
+    uint32_t cs2_shared_size;
+    uint32_t cs2_uniform_blob_dwords;
 } vc_pgl3d_program_req_t;
 
 /* Upload a compiled program into GPU dma and cache it by handle.  Returns the
