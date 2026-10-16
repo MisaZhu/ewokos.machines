@@ -415,7 +415,7 @@ typedef struct {
     uint8_t  cs_threads, cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
-    uint32_t cs_is_geom;    /* 1 = gouraud geom rasterizer, 2 = textured geom */
+    uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced */
     uint32_t cs_geom_tpw;   /* raster triangles/workgroup: 0 = one wg per tri */
     /* second compute stage (cs2 = pass-1 vertex transform of the two-pass
      * geometry rasterizer).  cs2_qpu_words == 0 when absent.  Dispatched FIRST
@@ -1875,6 +1875,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                              uint32_t depth_iova, uint32_t z_stride,
                              const uint32_t *unif, uint32_t num_uniforms,
                              uint32_t tex_iova, uint32_t tex_span,
+                             uint32_t inst_iova, uint32_t inst_span, int is_inst,
                              int first_frame, uint32_t clear_rgba)
 {
     v3d_g2d_csd_job_t job;
@@ -1950,6 +1951,17 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
             v3d_g2d_op_end();
             return decline("geom: xform uniforms (tex)");
         }
+    } else if (is_inst) {
+        /* instanced xform: binding 2 = normals, binding 3 = the per-instance
+         * matrix SSBO (gears) the client refills every frame. */
+        ssbo[2] = nrm_iova;
+        ssbo[3] = inst_iova;
+        if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
+                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: xform uniforms (inst)");
+        }
     } else {
         ssbo[2] = nrm_iova;
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
@@ -1980,7 +1992,8 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
      * bounds the invalidate instead of the whole IOVA range. */
     {
         uint32_t lo = pos_iova;
-        uint32_t hi = pos_iova + nverts * (tex_iova != 0u ? 24u : 12u);
+        uint32_t hi = pos_iova + nverts * (tex_iova != 0u ? 24u :
+                                             (is_inst ? 16u : 12u));
 
         if (tex_iova == 0u && nrm_iova != 0u) {
             uint32_t nlo = nrm_iova;
@@ -1988,6 +2001,14 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
 
             if (nlo < lo) lo = nlo;
             if (nhi > hi) hi = nhi;
+        }
+        if (is_inst && inst_iova != 0u) {
+            /* the per-frame instance-matrix buffer is ARM-written, so it joins
+             * the PRE hull (drop any stale L2 lines from the previous frame). */
+            uint32_t ghi = inst_iova + inst_span;
+
+            if (inst_iova < lo) lo = inst_iova;
+            if (ghi > hi) hi = ghi;
         }
         job.src_phy  = lo;
         job.src_span = hi - lo;
@@ -2210,13 +2231,18 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
              * depth canvas ride the draw's own iovas.  cs_is_geom == 2 is the
              * TEXTURED kernel: pos_iova carries interleaved pos+uv (6-float
              * stride, nverts*24 bytes), col_iova is unused (zero canvas), and
-             * the texture image arrives as ctex unit 0 (linear uint32). */
+             * the texture image arrives as ctex unit 0 (linear uint32).
+             * cs_is_geom == 3 is the INSTANCED kernel (gears): pos_iova carries
+             * vec4 pos+instance-index (16-byte stride), col_iova the float3
+             * normals, and ctex unit 0 the per-frame instance-matrix SSBO. */
             int gtex = (_progs[prog_handle].cs_is_geom == 2);
+            int ginst = (_progs[prog_handle].cs_is_geom == 3);
+            uint32_t pstride = gtex ? 24u : (ginst ? 16u : 12u);
             if (mode != V3D_3D_MODE_TRIANGLES)
                 return decline("geom: mode not triangles");
             if (nverts == 0 || (nverts % 3u) != 0)
                 return decline("geom: nverts not multiple of 3");
-            if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * (gtex ? 24u : 12u)))
+            if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * pstride))
                 return decline("geom: pos iova");
             if (!gtex && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
                 return decline("geom: nrm iova");
@@ -2226,6 +2252,12 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                 !v3d_g2d_phy_valid(ctex->ctex_iova[0],
                                    (size_t)ctex->ctex_stride[0] * ctex->ctex_h[0])))
                 return decline("geom tex: tex iova");
+            if (ginst && (ctex == NULL || ctex->ctex_iova[0] == 0))
+                return decline("geom inst: no instance buffer bound");
+            if (ginst && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
+                !v3d_g2d_phy_valid(ctex->ctex_iova[0],
+                                   (size_t)ctex->ctex_stride[0] * ctex->ctex_h[0])))
+                return decline("geom inst: instance iova");
             if (z_iova == 0 ||
                 !v3d_g2d_phy_valid(z_iova, (size_t)z_stride * h))
                 return decline("geom: depth iova");
@@ -2236,7 +2268,10 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                      gtex ? ctex->ctex_iova[0] : 0u,
                                      gtex ? ctex->ctex_stride[0] *
                                             ctex->ctex_h[0] : 0u,
-                                     first_frame, clear_rgba);
+                                     ginst ? ctex->ctex_iova[0] : 0u,
+                                     ginst ? ctex->ctex_stride[0] *
+                                             ctex->ctex_h[0] : 0u,
+                                     ginst, first_frame, clear_rgba);
         }
         return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
                             w, h, unif, num_uniforms, ctex);
