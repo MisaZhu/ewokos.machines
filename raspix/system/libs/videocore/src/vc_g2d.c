@@ -72,6 +72,11 @@ uint32_t vc_g2d_clock_hz(void)
     return v3d_g2d_clock_hz();
 }
 
+uint32_t vc_g2d_version(void)
+{
+    return (uint32_t)v3d_g2d_ver();
+}
+
 int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
 {
     v3d_g2d_stats_t s;

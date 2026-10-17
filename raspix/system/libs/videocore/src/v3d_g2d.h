@@ -82,6 +82,69 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const void *src, size_t src_len,
                 void *dst, size_t dst_len);
 
+/*
+ * Generic CSD dispatch of a mesa-compiled COMPUTE shader (the soft3d
+ * compute-geometry route: v3d_3d.c stages the compiled QPU code and the
+ * expanded uniform stream in dma and references them by PHYSICAL address -
+ * raspix has no V3D MMU page table, unlike raspi5's IOVA model, so the
+ * code_iova/unif_iova/dst_phy/aux_phy/src_phy fields below are physical
+ * addresses here).  Neither the code nor the uniforms are staged by this
+ * call.  The CFG words follow mesa's v3dx launch_grid encoding: one
+ * supergroup per workgroup when wg_size is a multiple of 16; cfg[4] is
+ * NUM_BATCHES-1 on V3D 4.2 and the raw batch count on V3D 7.1 (IP rev>=6).
+ * dst/aux bound the surfaces the POST L2 writeback must cover (the geom
+ * rasterizer's atomicMin depth canvas is the aux surface); on raspix the
+ * maintenance walks the whole L2 so the ranges are validated for API
+ * compatibility but the walk is not range-scoped.  Same return contract as
+ * v3d_g2d_run: 0 done, 1 timeout, -1 fault / bad arguments / V3D 2.1.
+ */
+
+/* Run flags for v3d_g2d_run_csd.  PRE: pre-job clean+invalidate of the
+ * V3D L2T/slice caches so the QPU sees fresh DRAM data for the ARM-written
+ * source/uniform streams.  POST: post-job flush (drain the TMU write
+ * combiner and clean the L2T) so the job's writes - including the aux
+ * depth surface - reach DRAM before the CPU reads or re-clears them.
+ * POLL_YIELD parks the worker with usleep(500) between register polls for
+ * a dispatch predicted to outlast its spin budget; POLL_IRQ is accepted
+ * for API compatibility but raspix arms no CSD-done interrupt, so it is
+ * handled as a plain spin. */
+#define V3D_G2D_MAINT_PRE  (1u << 0)
+#define V3D_G2D_MAINT_POST (1u << 1)
+#define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
+#define V3D_G2D_POLL_YIELD (1u << 2)
+#define V3D_G2D_POLL_IRQ   (1u << 3)
+
+typedef struct {
+    uint32_t code_iova;     /* compiled compute QPU code (physical)      */
+    uint32_t unif_iova;     /* expanded uniform stream (physical)        */
+    uint32_t wg_count[3];   /* dispatch grid in workgroups               */
+    uint32_t wg_size;       /* local_size product, 1..256                */
+    uint8_t  threads;       /* prog_data threads: 1, 2 or 4              */
+    uint8_t  single_seg;    /* prog_data single_seg                      */
+    uint32_t dst_phy;       /* destination surface base (POST), or 0     */
+    uint32_t dst_span;      /* destination surface bytes, or 0           */
+    uint32_t aux_phy;       /* second GPU-written surface (POST), or 0   */
+    uint32_t aux_span;      /* aux surface bytes, or 0                   */
+    uint32_t src_phy;       /* PRE source extent base, or 0              */
+    uint32_t src_span;      /* PRE source extent bytes, or 0             */
+    uint32_t unif_span;     /* expanded uniform stream bytes, or 0       */
+    uint32_t budget_ms;     /* completion wait budget; 0 = driver default */
+    uint8_t  tag;           /* stat lane (V3D_G2D_TAG_*), 0 = untagged   */
+} v3d_g2d_csd_job_t;
+
+/* Stat lanes for csd_job_t::tag.  raspix's v3d_g2d_stats_t folds every
+ * compute dispatch into its single csd lane, so the tag is accepted for
+ * source compatibility with v3d_3d.c but does not select an accumulator. */
+enum {
+    V3D_G2D_TAG_NONE = 0,
+    V3D_G2D_TAG_GEOM_XFORM,
+    V3D_G2D_TAG_GEOM_RASTER,
+    V3D_G2D_TAG_COMPUTE,
+    V3D_G2D_TAG_N
+};
+
+int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags);
+
 /* V3D 4.2 fixed-function TLB clear probe.  Returns -2 when unsupported. */
 int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
                          uint32_t width, uint32_t height, uint32_t argb);

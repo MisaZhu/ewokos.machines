@@ -66,6 +66,12 @@ int vc_g2d_init(void);
 /* V3D clock rate in Hz confirmed during vc_g2d_init(), or 0 when unknown. */
 uint32_t vc_g2d_clock_hz(void);
 
+/* V3D architecture version x10 detected during vc_g2d_init() (21 = V3D 2.1
+   Pi3, 42 = V3D 4.2 Pi4, 71 = V3D 7.1 Pi5), or 0 when no V3D engine is
+   present.  raspix ships one binary across all three, so callers use this to
+   pick a generation-specific path at runtime. */
+uint32_t vc_g2d_version(void);
+
 /* Diagnostic command channel (devcmd /dev/g2d <args>): "stat" formats the
  * V3D per-dispatch phase counters into buf, "stat reset" also zeroes them.
  * Returns 0 with buf filled, -1 for an unknown command. */

@@ -59,6 +59,12 @@ int vc_g2d_init(void);
 /* V3D clock rate in Hz confirmed during vc_g2d_init(), or 0 when unknown. */
 uint32_t vc_g2d_clock_hz(void);
 
+/* V3D architecture version x10.  raspi5 is BCM2712 / VideoCore VII, always
+   V3D 7.1, so this is the constant 71; it exists so the machine-shared g2dd
+   GET_VERSION handler and the soft3d client's version query resolve uniformly
+   across boards (raspix reports 21/42/71 from the live IDENT). */
+uint32_t vc_g2d_version(void);
+
 /* Diagnostic command hook (devcmd /dev/g2d <args>): formats the reply
  * into buf and returns 0 when the command is one of ours, -1 otherwise.
  * "stat" reports the per-dispatch phase counters, "stat reset" also

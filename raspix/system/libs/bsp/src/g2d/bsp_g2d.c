@@ -46,6 +46,11 @@ uint32_t bsp_g2d_clock_hz(void)
     return vc_g2d_clock_hz();
 }
 
+uint32_t bsp_g2d_version(void)
+{
+    return vc_g2d_version();
+}
+
 /* devcmd /dev/g2d <args>: g2dd answers its own "stat" line and then hands
  * the arguments down here for the backend's share (the V3D per-dispatch
  * phase counters, see vc_g2d_cmd). */

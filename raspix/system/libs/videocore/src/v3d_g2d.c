@@ -3001,6 +3001,179 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     return ret;
 }
 
+/* Mesa-compiled compute dispatch (see v3d_g2d.h).  Same lock / CSD-queue
+ * drain / CFG write / CSD_DONE wait / L2 flush sequence as the 2D
+ * v3d_g2d_run_impl, minus the preloaded-kernel registry and uniform
+ * staging: the caller (v3d_3d.c) owns both the QPU code and the expanded
+ * uniform stream in dma and passes their PHYSICAL addresses (raspix has no
+ * V3D MMU page table).  The CSD queue-drain and stale-CSDDONE clear run
+ * unconditionally because a compiled compute job follows the desktop's 2D
+ * dispatches on the same block. */
+int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
+{
+    uint32_t csd_base, csd_done;
+    volatile uint32_t *csd;
+    uint32_t cfg[8] = { 0 };
+    uint32_t i, limit;
+    uint32_t num_wgs, wgs_per_sg, batches_per_sg, whole_sgs, rem_wgs;
+    uint32_t num_batches;
+    int done;
+    int ret = 0;
+    uint64_t t0, t1, t2, t3;
+
+    /* V3D 2.1 (Pi3/VC4) has no usable CSD compute engine. */
+    if (job == NULL || !_ok || _ver == 21)
+        return -1;
+    if (job->code_iova == 0 || job->unif_iova == 0 ||
+        job->wg_size == 0 || job->wg_size > 256u ||
+        job->wg_count[0] == 0 || job->wg_count[1] == 0 ||
+        job->wg_count[2] == 0 ||
+        job->wg_count[0] >= (1u << 16) || job->wg_count[1] >= (1u << 16) ||
+        job->wg_count[2] >= (1u << 16))
+        return -1;
+
+    csd_base = (_ver >= 71) ? CSD_CFG_BASE_V7 : CSD_CFG_BASE_OLD;
+    csd_done = (_ver >= 71) ? INT_CSDDONE_V7 : INT_CSDDONE_OLD;
+    csd = v3d_ctl() + (csd_base / 4);
+
+    /* mesa v3d_csd_choose_workgroups_per_supergroup: a workgroup whose
+     * size is a multiple of 16 fills whole batches on its own, so one
+     * workgroup per supergroup; otherwise pack up to 16 workgroups so the
+     * supergroup is a whole number of 16-lane batches. */
+    num_wgs = job->wg_count[0] * job->wg_count[1] * job->wg_count[2];
+    if ((job->wg_size % 16u) == 0u) {
+        wgs_per_sg = 1u;
+    } else {
+        wgs_per_sg = 16u;
+        while (wgs_per_sg > 1u && ((wgs_per_sg * job->wg_size) % 16u) != 0u)
+            wgs_per_sg--;
+        if (wgs_per_sg > num_wgs)
+            wgs_per_sg = num_wgs;
+    }
+    batches_per_sg = (wgs_per_sg * job->wg_size + 15u) / 16u;
+    whole_sgs = num_wgs / wgs_per_sg;
+    rem_wgs = num_wgs - whole_sgs * wgs_per_sg;
+    num_batches = batches_per_sg * whole_sgs +
+                  (rem_wgs * job->wg_size + 15u) / 16u;
+    if (num_batches == 0)
+        return -1;
+
+    g2d_run_lock();
+    t0 = g2d_profile_ticks();
+
+    /* Uniform + source visibility: the ARM wrote the uniform stream (and
+     * the geom pass-1 vertex streams) through a NOCACHE mapping and the
+     * QPU fetch is served through the L2T/slice caches, so drop the stale
+     * lines before the kick.  raspix has no separate ranged uniform
+     * barrier, so the slice/L2T invalidate always runs (MAINT_PRE is
+     * effectively always applied; the flag is accepted for API parity). */
+    g2d_dsb();
+    g2d_invalidate_caches();
+    t1 = g2d_profile_ticks();
+
+    /* mesa v3dx launch_grid encoding.  cfg[0..3]/cfg[5..7] are identical
+     * on V3D 4.2 and 7.1; only cfg[4] (NUM_BATCHES) differs: 4.2 counts
+     * minus one, 7.1 (IP rev >= 6) carries the raw batch count - the same
+     * convention the proven 2D path in v3d_g2d_run_impl uses. */
+    cfg[0] = job->wg_count[0] << 16;
+    cfg[1] = job->wg_count[1] << 16;
+    cfg[2] = job->wg_count[2] << 16;
+    cfg[3] = ((wgs_per_sg & 0xfu) << 8) |
+             ((batches_per_sg - 1u) << 12) |
+             ((job->wg_size & 0xffu) << 0);
+    cfg[4] = (_ver >= 71) ? num_batches : (num_batches - 1u);
+    cfg[5] = job->code_iova | CSD_CFG5_PROP_NANS;
+    if (job->single_seg)
+        cfg[5] |= CSD_CFG5_SINGLE_SEG;
+    if (job->threads == 4u)
+        cfg[5] |= CSD_CFG5_THREADING;
+    cfg[6] = job->unif_iova;
+    cfg[7] = 0;
+
+    /* Never queue behind a still-live previous operation, and make the
+     * completion-interrupt clear observable before CFG0 starts this one. */
+    for (i = 0; i < 2000000u; i++) {
+        uint32_t status = v3d_ctl()[CSD_STATUS_OFF / 4];
+        if (!(status & (CSD_STATUS_HAVE_QUEUED | CSD_STATUS_HAVE_CURRENT)))
+            break;
+    }
+    if (i == 2000000u) {
+        slog("g2d: compute CSD queue busy status=0x%x int=0x%x\r\n",
+             (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
+             (uint32_t)v3d_ctl()[INT_STS / 4]);
+        g2d_stats_add(&_stats.csd, g2d_profile_ticks() - t0, 0, 0, 1);
+        ret = 1;
+        goto out;
+    }
+    for (i = 0; i < 1024u; i++) {
+        v3d_ctl()[INT_CLR / 4] = csd_done;
+        g2d_dsb();
+        if (!(v3d_ctl()[INT_STS / 4] & csd_done))
+            break;
+    }
+    if (i == 1024u) {
+        slog("g2d: compute CSD stale completion status=0x%x int=0x%x\r\n",
+             (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
+             (uint32_t)v3d_ctl()[INT_STS / 4]);
+        g2d_stats_add(&_stats.csd, g2d_profile_ticks() - t0, 0, 0, 1);
+        ret = 1;
+        goto out;
+    }
+
+    for (i = 1; i <= (uint32_t)((_ver >= 71) ? 7 : 6); i++)
+        csd[i] = cfg[i];
+    g2d_dsb();
+    csd[0] = cfg[0];                /* sole CFG0 write starts the dispatch */
+    g2d_dsb();
+
+    /* Completion wait.  raspix arms no CSD-done interrupt, so POLL_IRQ is
+     * handled as a plain spin; POLL_YIELD parks the worker with usleep(500)
+     * between polls for a heavy compiled shader.  A caller budget_ms sets
+     * the yield slice count (2 slices/ms); the spin path keeps the 2D
+     * path's proven 2,000,000-iteration cap. */
+    if (flags & V3D_G2D_POLL_YIELD)
+        limit = job->budget_ms ? (job->budget_ms * 2u) : 4000u;
+    else
+        limit = 2000000u;
+    for (i = 0; i < limit; i++) {
+        if (v3d_ctl()[INT_STS / 4] & csd_done)
+            break;
+        if (flags & V3D_G2D_POLL_YIELD)
+            usleep(500);
+        else
+            g2d_dsb();
+    }
+    done = (i < limit);
+    t2 = g2d_profile_ticks();
+    if (!done) {
+        v3d_ctl()[INT_CLR / 4] = csd_done;
+        slog("g2d: compute CSD timeout wg=%ux%ux%u size=%u batches=%u "
+             "code=0x%x unif=0x%x status=0x%x int=0x%x\r\n",
+             job->wg_count[0], job->wg_count[1], job->wg_count[2],
+             job->wg_size, num_batches, job->code_iova, job->unif_iova,
+             (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
+             (uint32_t)v3d_ctl()[INT_STS / 4]);
+        g2d_stats_add(&_stats.csd, t1 - t0, t2 - t1, 0, 1);
+        ret = 1;
+        goto out;
+    }
+    v3d_ctl()[INT_CLR / 4] = csd_done;
+    g2d_dsb();
+
+    /* POST: drain the TMU write combiner and clean the whole L2T so the
+     * job's dst AND aux (depth) writes reach DRAM before the CPU reads or
+     * re-clears them.  raspix's flush is whole-L2, so it covers both
+     * ranges without a range-scoped walk. */
+    if (flags & V3D_G2D_MAINT_POST)
+        g2d_flush_l2();
+    t3 = g2d_profile_ticks();
+    g2d_stats_add(&_stats.csd, t1 - t0, t2 - t1, t3 - t2, 0);
+
+out:
+    g2d_run_unlock();
+    return ret;
+}
+
 /* ------------------------------------------------------------------ */
 /* VC4 (V3D 2.1) SRQ dispatch                                          */
 /* ------------------------------------------------------------------ */
