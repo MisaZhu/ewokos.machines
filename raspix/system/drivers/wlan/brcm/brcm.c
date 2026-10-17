@@ -224,6 +224,14 @@
 #define BRCMF_READFRAMES_BUDGET_MS 250U   /* one DPC readframes pass wall-clock cap */
 #define BRCMF_FW_LIVENESS_MS 30000U      /* firmware liveness watchdog (CONNECTED) */
 /*
+ * A join promoted to CONNECTED on a bare SET_SSID/ASSOC success (no LINK flag)
+ * must be confirmed by a real L2 LINK-up event or by inbound data within this
+ * window, else it is treated as a failed join and reset. Long enough that a
+ * genuine association always sees DHCP/broadcast traffic first, short enough to
+ * recover a wrong-password false-CONNECTED instead of sitting in it forever.
+ */
+#define BRCMF_JOIN_CONFIRM_MS 30000U
+/*
  * Full-chip recovery: the BCM43455 firmware intermittently fails to come
  * up (no DEVREADY after download, dead command path). Instead of dying
  * permanently the driver power-cycles WL_REG_ON, re-enumerates the SDIO
@@ -616,6 +624,7 @@ struct brcmf_dev{
     bool tx_queue_blocked;
     uint32_t manual_connect_until_ms;
     uint32_t state_since_ms;
+    bool link_rx_confirmed;      /* join confirmed by L2 LINK-up event or real data rx */
     uint32_t rxpending_since_ms;   /* when rxpending was set without frame reads */
     uint32_t last_rx_success_ms;   /* last successful SDIO frame read */
     uint32_t last_tx_success_ms;   /* last frame actually put on the air */
@@ -1202,6 +1211,7 @@ static void brcmf_reset_runtime_state(bool flush_queues)
     bus->rx_queue_blocked = false;
     bus->tx_queue_blocked = false;
     bus->rxpending_since_ms = 0;
+    bus->link_rx_confirmed = false;
     bus->last_rx_success_ms = kernel_tic_ms(0);
     bus->last_tx_success_ms = kernel_tic_ms(0);
     bus->sdio_cmd_fail_count = 0;
@@ -1209,7 +1219,7 @@ static void brcmf_reset_runtime_state(bool flush_queues)
         brcmf_flush_data_queues();
 }
 
-static void brcmf_mark_connected(void)
+static void brcmf_mark_connected(bool l2_confirmed)
 {
     if (!bus)
         return;
@@ -1222,6 +1232,12 @@ static void brcmf_mark_connected(void)
      * may take this path. */
     if (bus->state != CONNECTING && bus->state != CONNECTED)
         return;
+
+    /* A fresh join starts unconfirmed; a roam re-assert on an already live
+     * session must not downgrade a confirmation already earned by traffic.
+     * Only an L2 LINK-up event or real inbound data confirms the join. */
+    if (bus->state == CONNECTING || l2_confirmed)
+        bus->link_rx_confirmed = l2_confirmed;
 
     bus->state = CONNECTED;
     bus->last_error = 0;
@@ -3480,12 +3496,12 @@ void brcmf_rx_event( struct sk_buff *skb)
          * that event left a manual connect stuck in CONNECTING until
          * the 15s timeout with no visible result. mark_connected() is
          * state-gated, so stray successes outside a join are ignored. */
-        brcmf_mark_connected();
+        brcmf_mark_connected(false);
     }else if((event_type == BRCMF_E_LINK ||
               event_type == BRCMF_E_ROAM) &&
              event_status == BRCMF_E_STATUS_SUCCESS &&
              (emsg.flags & BRCMF_EVENT_MSG_LINK)){
-        brcmf_mark_connected();
+        brcmf_mark_connected(true);
     }else if((event_type == BRCMF_E_DEAUTH ||
               event_type == BRCMF_E_DEAUTH_IND ||
               event_type == BRCMF_E_DISASSOC ||
@@ -3578,6 +3594,7 @@ void brcmf_rx_frame(struct sk_buff *skb)
             brcmf_note_queue_drop("rx_queue", bus->rx_queue_drops, depth);
         }
         bus->rx_fail_count = 0;
+        bus->link_rx_confirmed = true;   /* real inbound data: join is genuine */
         brcmf_stat.rx_frames++;
         /*
          * Edge-trigger the reader wakeup instead of firing it per frame.
@@ -4962,6 +4979,27 @@ static void* brcm_worker_main(void* p) {
                            minute */
                         bus->last_rx_success_ms = now_ms;
                     }
+                }
+                /*
+                 * Join-confirmation watchdog. mark_connected() promotes on a
+                 * bare SET_SSID/ASSOC success (some firmwares omit the LINK
+                 * flag), so a wrong-password / failed-handshake join can land
+                 * in CONNECTED without ever associating. The liveness checks
+                 * above cannot catch this: last_rx_success_ms is refreshed by
+                 * credit/event frames from a live-but-unjoined firmware and the
+                 * clean-stall RSSI probe succeeds, so the driver would sit in a
+                 * false CONNECTED forever while netd churns on a link that never
+                 * came up. Require a real L2 LINK-up event or actual inbound
+                 * data to confirm the join within a bounded window; otherwise
+                 * treat it as a failed join and reset so scan/auto-connect
+                 * retries cleanly. LINK-flag joins and any confirmed link are
+                 * never touched.
+                 */
+                if (bus->state == CONNECTED && !bus->link_rx_confirmed &&
+                        (now_ms - bus->state_since_ms) > BRCMF_JOIN_CONFIRM_MS) {
+                    brcm_log("wlan: join unconfirmed after %u ms (no L2 link-up/data rx), resetting\n",
+                            now_ms - bus->state_since_ms);
+                    brcmf_mark_disconnected("join unconfirmed", BRCMF_E_LINK, 0, 0);
                 }
             }
 
