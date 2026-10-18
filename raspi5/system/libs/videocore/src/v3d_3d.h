@@ -335,11 +335,15 @@ typedef struct {
     uint8_t  cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
-    /* 1 = the compute stage is the fixed GEOMETRY rasterizer kernel
-     * (geom_raster_cs.h: one workgroup per triangle, SSBO bindings
-     * 0=fb 1=pos 2=nrm 3=depth) rather than a shadertoy full-frame effect.
-     * Geom programs dispatch grid (ntris,1,1) and take the draw's pos/col
-     * (col carries normals) /z iovas as SSBOs 1/2/3. */
+    /* Non-zero when the compute stage is one of the fixed two-pass GEOMETRY
+     * rasterizer kernels (geom_raster_cs.h) rather than a shadertoy full-frame
+     * effect: 1 = gouraud/colour (SSBO 0=fb 1=pos 2=nrm 3=depth), 2 = textured
+     * (1 = interleaved pos+uv, 3 = texture), 3 = instanced (gears), 4 = colour-
+     * modulated textured (imgui: 1 = interleaved pos+uv+rgba stride-10, 3 = the
+     * linear font atlas; the raster pass alpha-blends and clips via a uScissor
+     * uniform with no depth write, and vout grows to a 12-float record).  Geom
+     * programs dispatch grid (ceil(ntris/cs_geom_tpw),1,1) and take the draw's
+     * pos/col/z iovas as SSBOs. */
     uint32_t cs_is_geom;
     /* Raster-pass triangles-per-workgroup for geom programs: 0 = the legacy
      * one-workgroup-per-triangle grid; otherwise draw_compute_geom dispatches

@@ -846,6 +846,13 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
             int gtex = (_progs[prog_handle].cs_is_geom == 2);
             int ginst = (_progs[prog_handle].cs_is_geom == 3);
             uint32_t pstride = gtex ? 24u : (ginst ? 16u : 12u);
+            /* cs_is_geom == 4 (colour-modulated textured, imgui) is a raspi5
+             * V3D 7.1 kernel only; raspix has no matching two-pass raster, so
+             * decline it explicitly here rather than rely on the zero col
+             * canvas tripping the nrm check below - the client keeps its CPU
+             * path either way. */
+            if (_progs[prog_handle].cs_is_geom == 4)
+                return decline("geom: colour-modulated tex unsupported");
             if (mode != V3D_3D_MODE_TRIANGLES)
                 return decline("geom: mode not triangles");
             if (nverts == 0 || (nverts % 3u) != 0)

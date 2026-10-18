@@ -327,14 +327,17 @@ static uint32_t *_cfs_unif_va; static uint32_t _cfs_unif_p;/* compiled FS expand
 static uint32_t *_ccs_unif_va; static uint32_t _ccs_unif_p;/* compiled COORD expanded uniforms */
 static uint32_t *_ccu_unif_va; static uint32_t _ccu_unif_p;/* compiled COMPUTE expanded uniforms */
 static uint8_t  *_gen_va;     static uint32_t _gen_p;   /* generic tile list */
-/* Two-pass geometry rasterizer intermediate: `vout` holds one packed 8-float
- * (32-byte) record per vertex, written by the pass-1 vertex-transform kernel
- * and read by the pass-2 raster kernel.  Sized for V3D_3D_MAX_VERTS vertices;
- * a single process-lifetime buffer is safe because CSD dispatches are
- * serialized (v3d_g2d_op_begin) and each geom draw fully overwrites the
- * sub-range it consumes. */
+/* Two-pass geometry rasterizer intermediate: `vout` holds one packed record per
+ * vertex, written by the pass-1 vertex-transform kernel and read by the pass-2
+ * raster kernel.  The gouraud / textured / instanced variants pack 8 floats
+ * (32 bytes); the colour-modulated textured variant (cs_is_geom == 4, imgui)
+ * also carries a per-vertex colour, so its record is 12 floats (48 bytes).  The
+ * buffer is sized for the widest record so every variant fits.  Sized for
+ * V3D_3D_MAX_VERTS vertices; a single process-lifetime buffer is safe because
+ * CSD dispatches are serialized (v3d_g2d_op_begin) and each geom draw fully
+ * overwrites the sub-range it consumes. */
 static uint32_t *_vout_va;    static uint32_t _vout_p;
-#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * 32u)
+#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * 48u)
 
 /* WS4 compiled-shader sampler bindings: per-unit V3D71 TEXTURE_SHADER_STATE and
  * SAMPLER_STATE records.  A mesa-compiled FS that samples iChannelN emits a
@@ -415,7 +418,8 @@ typedef struct {
     uint8_t  cs_threads, cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
-    uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced */
+    uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced,
+                             * 4 = colour-modulated textured (imgui) */
     uint32_t cs_geom_tpw;   /* raster triangles/workgroup: 0 = one wg per tri */
     /* second compute stage (cs2 = pass-1 vertex transform of the two-pass
      * geometry rasterizer).  cs2_qpu_words == 0 when absent.  Dispatched FIRST
@@ -1876,7 +1880,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                              const uint32_t *unif, uint32_t num_uniforms,
                              uint32_t tex_iova, uint32_t tex_span,
                              uint32_t inst_iova, uint32_t inst_span, int is_inst,
-                             int first_frame, uint32_t clear_rgba)
+                             int is_texcol, int first_frame, uint32_t clear_rgba)
 {
     v3d_g2d_csd_job_t job;
     uint32_t ssbo[4];
@@ -1984,7 +1988,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.threads     = pr->cs2_threads;
     job.single_seg  = pr->cs2_single_seg;
     job.dst_phy     = _vout_p;          /* POST writeback: vout -> DRAM */
-    job.dst_span    = nverts * 32u;
+    job.dst_span    = nverts * (is_texcol ? 48u : 32u);
     job.unif_span   = pr->cs2_num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_GEOM_XFORM;
     /* Ranged PRE: the only ARM-written surfaces this pass reads are the
@@ -1992,8 +1996,9 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
      * bounds the invalidate instead of the whole IOVA range. */
     {
         uint32_t lo = pos_iova;
-        uint32_t hi = pos_iova + nverts * (tex_iova != 0u ? 24u :
-                                             (is_inst ? 16u : 12u));
+        uint32_t hi = pos_iova + nverts * (is_texcol ? 40u :
+                                             (tex_iova != 0u ? 24u :
+                                              (is_inst ? 16u : 12u)));
 
         if (tex_iova == 0u && nrm_iova != 0u) {
             uint32_t nlo = nrm_iova;
@@ -2234,21 +2239,30 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
              * the texture image arrives as ctex unit 0 (linear uint32).
              * cs_is_geom == 3 is the INSTANCED kernel (gears): pos_iova carries
              * vec4 pos+instance-index (16-byte stride), col_iova the float3
-             * normals, and ctex unit 0 the per-frame instance-matrix SSBO. */
+             * normals, and ctex unit 0 the per-frame instance-matrix SSBO.
+             * cs_is_geom == 4 is the COLOUR-MODULATED TEXTURED kernel (imgui):
+             * pos_iova carries interleaved pos+uv+rgba (10-float stride,
+             * nverts*40 bytes), col_iova is unused (zero canvas), ctex unit 0
+             * the linear font-atlas image; the raster kernel alpha-blends and
+             * clips (uScissor) with no depth write. */
             int gtex = (_progs[prog_handle].cs_is_geom == 2);
             int ginst = (_progs[prog_handle].cs_is_geom == 3);
-            uint32_t pstride = gtex ? 24u : (ginst ? 16u : 12u);
+            int gtc = (_progs[prog_handle].cs_is_geom == 4);
+            /* textured family (plain tex + colour-modulated tex): col unused,
+             * ctex[0] is the linear image the raster kernel indexes directly. */
+            int gtexc = gtex || gtc;
+            uint32_t pstride = gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u));
             if (mode != V3D_3D_MODE_TRIANGLES)
                 return decline("geom: mode not triangles");
             if (nverts == 0 || (nverts % 3u) != 0)
                 return decline("geom: nverts not multiple of 3");
             if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * pstride))
                 return decline("geom: pos iova");
-            if (!gtex && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
+            if (!gtexc && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
                 return decline("geom: nrm iova");
-            if (gtex && (ctex == NULL || ctex->ctex_iova[0] == 0))
+            if (gtexc && (ctex == NULL || ctex->ctex_iova[0] == 0))
                 return decline("geom tex: no texture bound");
-            if (gtex && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
+            if (gtexc && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
                 !v3d_g2d_phy_valid(ctex->ctex_iova[0],
                                    (size_t)ctex->ctex_stride[0] * ctex->ctex_h[0])))
                 return decline("geom tex: tex iova");
@@ -2265,13 +2279,13 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                      stride_bytes, fmt, w, h, nverts,
                                      pos_iova, col_iova, z_iova, z_stride,
                                      unif, num_uniforms,
-                                     gtex ? ctex->ctex_iova[0] : 0u,
-                                     gtex ? ctex->ctex_stride[0] *
-                                            ctex->ctex_h[0] : 0u,
+                                     gtexc ? ctex->ctex_iova[0] : 0u,
+                                     gtexc ? ctex->ctex_stride[0] *
+                                             ctex->ctex_h[0] : 0u,
                                      ginst ? ctex->ctex_iova[0] : 0u,
                                      ginst ? ctex->ctex_stride[0] *
                                              ctex->ctex_h[0] : 0u,
-                                     ginst, first_frame, clear_rgba);
+                                     ginst, gtc, first_frame, clear_rgba);
         }
         return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
                             w, h, unif, num_uniforms, ctex);
