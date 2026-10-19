@@ -1652,10 +1652,18 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     t2 = g2d_now_ns();
     _stats.exec_ns += t2 - t1;
     if (!done) {
+        int fault;
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
-        (void)g2d_mmu_check_fault(kern, nunifs, num_qpus);
-        /* A timeout is a real failure.  Do not reset the graphics domain
-         * and do not replay this possibly-live operation. */
+        fault = g2d_mmu_check_fault(kern, nunifs, num_qpus);
+        /* A plain timeout is a real failure but the job may still be live:
+         * do not reset the graphics domain and do not replay.  A FATAL MMU
+         * fault means the block is definitively broken (VA outside the
+         * mapped IOVA range, write to a read-only PTE, cap violation): try
+         * a block reset so later dispatches do not each burn the full CSD
+         * budget on a dead GPU.  v3d_g2d_recover latches _wedged when the
+         * reset fails or the per-boot cap is hit, so this cannot loop. */
+        if (fault != 0)
+            (void)v3d_g2d_recover("csd timeout + mmu fault");
         _stats.timeouts++;
         ret = 1;
         goto out;
@@ -1886,13 +1894,19 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     _stats.exec_ns += t2 - t1;
     _stats.tag_exec_ns[tag] += t2 - t1;
     if (!done) {
+        int fault;
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
         slog("g2d: compute CSD timeout wg=%ux%ux%u size=%u batches=%u "
              "code=0x%x unif=0x%x status=0x%x\r\n",
              job->wg_count[0], job->wg_count[1], job->wg_count[2],
              job->wg_size, num_batches, job->code_iova, job->unif_iova,
              (uint32_t)v3d_core()[CSD_STATUS / 4]);
-        (void)g2d_mmu_check_fault(-1, 0, (int)num_batches);
+        fault = g2d_mmu_check_fault(-1, 0, (int)num_batches);
+        /* See v3d_g2d_run: a fatal MMU fault means the block is broken, so
+         * attempt a reset (bounded by G2D_RECOVER_MAX, then wedged).  A
+         * plain timeout leaves the job possibly live - do not reset. */
+        if (fault != 0)
+            (void)v3d_g2d_recover("csd timeout + mmu fault");
         _stats.timeouts++;
         ret = 1;
         goto out;
