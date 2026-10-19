@@ -1133,7 +1133,7 @@ static int submit_render(volatile uint32_t *core, uint32_t start, uint32_t end)
 
 /* ------------------------------------------------------------------ */
 /* empty BCL (clear path): produces the per-tile lists the RCL branches  */
-/* to.  16px tiles to match build_clear_rcl.                             */
+/* to.  64px tiles to match build_clear_rcl and build_draw_bcl.          */
 /* ------------------------------------------------------------------ */
 static uint32_t build_bcl_empty(uint32_t w, uint32_t h)
 {
@@ -1143,7 +1143,14 @@ static uint32_t build_bcl_empty(uint32_t w, uint32_t h)
     off = cl_u8(off, 0x00);                     /* layers - 1 = 0 */
     off = cl_u8(off, 0x78);                     /* TILE_BINNING_MODE_CFG */
     off = cl_u8(off, (1u << 4) | (0u << 2));    /* block 128b, initial 64b (matches RCL 0x7E) */
-    off = cl_u8(off, (1u << 3) | (1u << 0));    /* log2 tile h/w = 1 (16px) */
+    /* 64px tiles (log2t=3), matching build_draw_bcl/build_draw_rcl.  The clear
+     * bin previously used 16px tiles (log2t=1): at 1280x800 that is 80x50=4000
+     * tiles, and the binner's per-tile allocation overran the 256 KiB pool
+     * (bpca pinned at base+0x40000, bpcs 0) so the bin flush never landed and
+     * v3d_3d_clear timed out -> pgl_g3d probe-clear failed -> GPU latched off
+     * for the whole session.  64px tiles cut it to 20x13=260 tiles, the same
+     * geometry the draw path already completes with. */
+    off = cl_u8(off, (3u << 3) | (3u << 0));    /* log2 tile h/w = 3 (64px) */
     off = cl_u8(off, 0x00);
     off = cl_u8(off, 0x00);
     off = cl_u16le(off, w - 1u);
@@ -1156,7 +1163,8 @@ static uint32_t build_bcl_empty(uint32_t w, uint32_t h)
 
 /* clear RCL: render-target config, an explicit global TLB clear (2x, the
  * GFXH-1742 workaround), then a per-tile store of the cleared tile buffer
- * to the framebuffer.  16px tiles. */
+ * to the framebuffer.  64px tiles (tile arg = 8<<log2t, log2t=3), matching
+ * build_bcl_empty's binning and build_draw_rcl. */
 static uint32_t build_clear_rcl(uint32_t fb_iova, uint32_t stride_bytes,
                                 uint32_t w, uint32_t h, uint32_t tile,
                                 uint32_t fmt, uint32_t rgba8, int rb_swap)
@@ -1164,7 +1172,7 @@ static uint32_t build_clear_rcl(uint32_t fb_iova, uint32_t stride_bytes,
     uint32_t off = 0;
     uint32_t tx = (w + tile - 1) / tile;
     uint32_t ty = (h + tile - 1) / tile;
-    uint32_t log2t = 1;             /* 16 px tiles */
+    uint32_t log2t = 3;             /* 64 px tiles (tile arg must be 8<<log2t) */
     uint32_t x, y, i;
 
     /* TILE_RENDERING_MODE_CFG_COMMON (0x79, sub_id 0) */
@@ -2183,8 +2191,10 @@ int v3d_3d_clear(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
     if (rc != 0)
         goto out;
 
-    /* render: clear via the explicit per-tile store */
-    len = build_clear_rcl(fb_iova, stride_bytes, w, h, 16, fmt, rgba8, rb_swap);
+    /* render: clear via the explicit per-tile store.  64px tiles to match the
+     * 64px binning above (build_bcl_empty) and build_draw_rcl; a 16px clear at
+     * 1280x800 overruns the 256 KiB binner pool and times out. */
+    len = build_clear_rcl(fb_iova, stride_bytes, w, h, 64, fmt, rgba8, rb_swap);
     if (len > V3D_3D_CL_MAX)
         goto out;
     rc = submit_render(core, _cl_p, _cl_p + len);
