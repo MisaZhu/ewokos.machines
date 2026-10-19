@@ -1796,6 +1796,12 @@ int v3d_g2d_init(void)
     sys_get_sys_info(&si);
     _is_bcm2711 = strstr(si.machine, "pi4") != NULL ||
                   strstr(si.machine, "cm4") != NULL;
+    /* g2d only supports Pi4/CM4 (BCM2711 V3D 4.2); older boards fall
+     * back to the CPU paths entirely (g2dd does not start). */
+    if (!_is_bcm2711) {
+        slog("g2d: %s not supported (Pi4/CM4 only)\r\n", si.machine);
+        return -1;
+    }
     _ram_alloc_base = si.allocable_phy_mem_base;
     _ram_alloc_top = si.allocable_phy_mem_top;
     _ram_dma_base = si.sys_dma.phy_base;
