@@ -590,7 +590,7 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
  *     writeback cleans the records to DRAM for pass 2 to read.
  *   Pass 2 - cs (raster): ceil(ntris/tpw) workgroups.  SSBO 0 = fb, 1 = vout,
  *     2 = depth (gouraud) / 3 = texture (textured).  dst = fb + aux = depth for
- *     the POST writeback (raspix's run_csd flushes the whole L2, covering both).
+ *     the POST writeback (ranged over both surfaces).
  *
  * The frame's first draw also clears colour + depth on the GPU (two write-only
  * fills), replacing the client's per-frame CPU clear of both canvases.
@@ -713,8 +713,8 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.unif_span   = pr->cs2_num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_GEOM_XFORM;
     /* Ranged PRE extent: the only ARM-written surfaces this pass reads are the
-     * vertex streams.  raspix's run_csd always runs a whole-L2 invalidate, so
-     * this hull is informational; it is filled for API parity. */
+     * vertex streams, so the hull of the present streams bounds run_csd's
+     * pre-job L2T walk (the uniform block is walked separately). */
     {
         uint32_t lo = pos_iova;
         uint32_t hi = pos_iova + nverts * (is_texcol ? 40u :
@@ -1164,6 +1164,11 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
     pr->coord_separate_segments = desc->coord_separate_segments;
 
     __asm__ __volatile__("dsb sy" ::: "memory");
+    /* The per-dispatch PRE is bounded to the uniform block and the job's
+     * source extent; the code blocks are not in it.  Drop whatever the
+     * caches still hold for these dma addresses (a freed program's
+     * instructions) once, here, so every later dispatch fetches this code. */
+    v3d_g2d_l2_invalidate_all();
     pr->used = 1;
     slog("v3d_3d: program %d uploaded (vs %uw @%u, fs %uw @%u, coord %uw @%u, unif %u/%u/%u)\r\n",
          slot, pr->vs_qpu_words, pr->vs_qpu_iova,

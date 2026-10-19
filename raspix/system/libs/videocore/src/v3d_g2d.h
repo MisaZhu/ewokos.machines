@@ -125,15 +125,20 @@ uint32_t v3d_g2d_spin_us(void);
  */
 
 /* Run flags for v3d_g2d_run_csd.  PRE: pre-job clean+invalidate of the
- * V3D L2T/slice caches so the QPU sees fresh DRAM data for the ARM-written
- * source/uniform streams.  POST: post-job flush (drain the TMU write
- * combiner and clean the L2T) so the job's writes - including the aux
- * depth surface - reach DRAM before the CPU reads or re-clears them.
- * POLL_YIELD parks the worker in usleep(500) slices from the first poll
- * (a dispatch predicted to outlast the spin window); the default wait
- * spins the spinus window first.  POLL_IRQ is accepted for API
- * compatibility but raspix arms no CSD-done interrupt, so it is handled
- * like the default wait.  budget_ms bounds the wait in wall-clock ms. */
+ * V3D L2T/slice caches over the job's ARM-written source extent
+ * (src_phy/src_span; whole-L2 when the extent is absent or the maint knob
+ * is off) so the QPU sees fresh DRAM data.  The uniform stream
+ * (unif_iova/unif_span) is always dropped from the caches, PRE or not.
+ * The compiled code is NOT part of the per-dispatch PRE: it is uploaded
+ * once per program and v3d_g2d_l2_invalidate_all() at upload drops any
+ * lines a previous occupant of the same dma block left behind.  POST:
+ * post-job flush (drain the TMU write combiner and clean the L2T) so the
+ * job's writes - including the aux depth surface - reach DRAM before the
+ * CPU reads or re-clears them.  POLL_YIELD / POLL_IRQ are accepted for
+ * API compatibility: every wait spins the spinus window first and parks
+ * in usleep(500) slices past it (an immediate park costs a whole
+ * scheduler tick, ~976us, even for a sub-100us transform pass).
+ * budget_ms bounds the wait in wall-clock ms. */
 #define V3D_G2D_MAINT_PRE  (1u << 0)
 #define V3D_G2D_MAINT_POST (1u << 1)
 #define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
@@ -158,9 +163,10 @@ typedef struct {
     uint8_t  tag;           /* stat lane (V3D_G2D_TAG_*), 0 = untagged   */
 } v3d_g2d_csd_job_t;
 
-/* Stat lanes for csd_job_t::tag.  raspix's v3d_g2d_stats_t folds every
- * compute dispatch into its single csd lane, so the tag is accepted for
- * source compatibility with v3d_3d.c but does not select an accumulator. */
+/* Stat lanes for csd_job_t::tag: every compute dispatch lands in the csd
+ * lane AND in the tag_* accumulator its tag names, so the stat line can
+ * split the geom passes (gx = pass-1 transform, gr = pass-2 raster) from
+ * the single-pass compute route (cs).  An out-of-range tag counts as NONE. */
 enum {
     V3D_G2D_TAG_NONE = 0,
     V3D_G2D_TAG_GEOM_XFORM,
@@ -198,6 +204,12 @@ typedef struct {
 
 void v3d_g2d_get_profile(v3d_g2d_profile_t *out);
 
+/* Whole-L2T + slice-cache clean+invalidate under the dispatch lock.  For
+ * the one-off ARM writes the per-dispatch ranged PRE does not describe:
+ * v3d_3d.c calls it after uploading a program's QPU code so a dma block
+ * reused from a freed program cannot serve the old instructions. */
+void v3d_g2d_l2_invalidate_all(void);
+
 /* Op bracket for multi-launch operations: holds the dispatch lock across
  * every v3d_g2d_run / v3d_g2d_run_vc4 / staging call of one op so another
  * worker's op cannot interleave between its batches (the lock is
@@ -215,9 +227,11 @@ void v3d_g2d_op_end(void);
  * flush after completion (CSD only; the SRQ launch flushes inside its
  * own wait and the TLB stores bypass the L2T).  pre_full/post_full count
  * the dispatches whose PRE/POST walked the WHOLE L2T (no physical extent
- * known, knob off, V3D 2.1, or the compiled-compute PRE); a healthy 2D
- * stream on V3D 4.2 shows both at 0.  parks counts the usleep(500)
- * slices the completion waits spent off the core past the spin window. */
+ * known, knob off, V3D 2.1); a healthy 2D or geom stream on V3D 4.2 shows
+ * both at 0 (the single-pass compute route keeps a full PRE: its texture
+ * set has no single extent).  parks counts the usleep(500) slices the
+ * completion waits spent off the core past the spin window.  The tag_*
+ * arrays split the compute dispatches by v3d_g2d_csd_job_t::tag. */
 typedef struct {
     uint64_t runs;
     uint64_t csd, srq, tlb;
@@ -225,6 +239,11 @@ typedef struct {
     uint64_t pre_ns, exec_ns, post_ns;
     uint64_t pre_full, post_full;
     uint64_t parks;
+    uint64_t tag_runs[V3D_G2D_TAG_N];
+    uint64_t tag_pre_ns[V3D_G2D_TAG_N];
+    uint64_t tag_exec_ns[V3D_G2D_TAG_N];
+    uint64_t tag_post_ns[V3D_G2D_TAG_N];
+    uint64_t tag_parks[V3D_G2D_TAG_N];
 } v3d_g2d_stats_t;
 
 /* Snapshot the counters (consistent: taken under the dispatch lock) and

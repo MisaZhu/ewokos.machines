@@ -131,6 +131,33 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
              (unsigned long long)s.parks,
              v3d_g2d_maint_ranged() ? "range" : "full",
              (unsigned)v3d_g2d_spin_us());
+    /* Tagged compute lanes (v3d_g2d_csd_job_t::tag): per-pass count, avg us
+     * pre/exec/post and parks, compact so the line fits g2dd's 256-byte
+     * devcmd buffer: " gx n838 p6 e120 o12 k0". */
+    {
+        static const char *const tnames[V3D_G2D_TAG_N] = { "--", "gx", "gr", "cs" };
+        size_t off = strlen(buf);
+        int i;
+
+        for (i = 1; i < (int)V3D_G2D_TAG_N; i++) {
+            uint64_t tr = s.tag_runs[i];
+            size_t room = off < len ? len - off : 0;
+            int w;
+
+            if (tr == 0)
+                continue;
+            w = snprintf(buf + off, room, " %s n%llu p%llu e%llu o%llu k%llu",
+                         tnames[i],
+                         (unsigned long long)tr,
+                         (unsigned long long)(s.tag_pre_ns[i] / tr / 1000u),
+                         (unsigned long long)(s.tag_exec_ns[i] / tr / 1000u),
+                         (unsigned long long)(s.tag_post_ns[i] / tr / 1000u),
+                         (unsigned long long)s.tag_parks[i]);
+            if (w <= 0 || (size_t)w >= room)
+                break;
+            off += (size_t)w;
+        }
+    }
     return 0;
 }
 
@@ -1222,7 +1249,6 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                       uint32_t dst_phys, uint32_t *argb_dst,
                       int32_t dst_w, int32_t dst_h, int rot)
 {
-    uint32_t u[18];
     uint32_t tu[14];
     int32_t L = (src_w + 15) >> 4;
     int32_t rows, ss, ds;
@@ -1301,6 +1327,52 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                                   dst_phys) == 0 ?
                GPU_DONE : GPU_FAILED;
     }
+    /* Packed fast paths exhausted: fall through to the generic strided
+     * kernel.  gpu_rot90_rect is the same dispatch with the row strides as
+     * free uniforms, so a packed surface (ss = src_w*4, ds = dst_w*4) is
+     * bit-identical to the old inline generic path. */
+    return gpu_rot90_rect(src_phys, argb_src, src_w, src_h, ss,
+                          dst_phys, argb_dst, dst_w, dst_h, ds, rot);
+}
+
+/* Strided right-angle rotation: the generic argb_rot90 kernel with the
+ * source/destination row pitches as uniforms.  The kernel reads and writes
+ * per lane (32-bit TMU accesses), so a sub-rect of a wider source (its
+ * base already offset to the rect's top-left) and a pitched destination
+ * (the scan-out) walk exactly like a packed surface.  argb_dst may be NULL
+ * for a raw physical destination with no kernel-visible VA - the driver
+ * then bounds nothing on the dst and flushes the whole L2 for visibility.
+ * Uniform contract is identical to gpu_rot90_surface's generic fallback. */
+int gpu_rot90_rect(uint32_t src_phys, uint32_t *argb_src,
+                   int32_t src_w, int32_t src_h, int32_t src_stride,
+                   uint32_t dst_phys, uint32_t *argb_dst,
+                   int32_t dst_w, int32_t dst_h, int32_t dst_stride, int rot)
+{
+    uint32_t u[18];
+    int32_t L = (src_w + 15) >> 4;
+    int32_t rows, ss, ds;
+    int nq;
+    int r90 = (rot == 90);
+    size_t src_span, dst_span;
+
+    /* V3D >= 4 kernel only: VC4 has no right-angle fast path (and its SRQ
+     * paths need a virtual dst), and any other angle goes through the
+     * generic affine map instead. */
+    if (v3d_g2d_ver() == 21 || (rot != 90 && rot != 270))
+        return GPU_UNSUPPORTED;
+    if (src_w < 16 || src_h < 4 || (!r90 && (src_w & 15) != 0))
+        return GPU_UNSUPPORTED;
+    if (dst_w != src_h || dst_h != src_w)
+        return GPU_UNSUPPORTED;              /* exact rotated size only */
+    if (src_stride < src_w * 4 || dst_stride < dst_w * 4 ||
+        (src_stride & 3) != 0 || (dst_stride & 3) != 0)
+        return GPU_UNSUPPORTED;
+    nq = g2d_fit_nq_rot90_block(v3d_g2d_num_qpus(), src_h, 4);
+    if (nq == 0)
+        return GPU_UNSUPPORTED;
+    rows = src_h / nq;
+    ss = src_stride;
+    ds = dst_stride;
     u[0] = src_phys;
     u[1] = dst_phys;
     u[2] = (uint32_t)((int64_t)rows * ss);
@@ -1325,9 +1397,16 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
     u[15] = (uint32_t)(r90 ? (int64_t)ds : -(int64_t)ds);
     u[16] = (uint32_t)(src_w - (L - 1) * 16); /* valid lanes in last group */
     u[17] = (uint32_t)(L - 1);
+    /* the physical extents this dispatch touches: with a stride the source
+     * sub-rect spans (src_h-1)*ss + src_w*4 and the pitched dst rect
+     * (dst_h-1)*ds + dst_w*4, not the packed w*h*4.  For packed strides
+     * these collapse to the packed sizes, so gpu_rot90_surface is
+     * unchanged. */
+    src_span = (size_t)(src_h - 1) * (size_t)ss + (size_t)src_w * 4u;
+    dst_span = (size_t)(dst_h - 1) * (size_t)ds + (size_t)dst_w * 4u;
     return v3d_g2d_run_ranged(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 18,
-                              nq, argb_src, (size_t)src_w * src_h * 4, src_phys,
-                              argb_dst, (size_t)dst_w * dst_h * 4, dst_phys) == 0 ?
+                              nq, argb_src, src_span, src_phys,
+                              argb_dst, dst_span, dst_phys) == 0 ?
            GPU_DONE : GPU_FAILED;
 }
 

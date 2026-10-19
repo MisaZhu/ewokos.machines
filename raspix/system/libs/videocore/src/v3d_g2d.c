@@ -152,6 +152,20 @@ static void g2d_stats_add(uint64_t *queue, uint64_t pre, uint64_t exec,
     _stats.post_ns += post;
 }
 
+/* Compute-dispatch lane split (v3d_g2d_csd_job_t::tag) on top of the csd
+ * lane g2d_stats_add already fed. */
+static void g2d_stats_tag_add(unsigned tag, uint64_t pre, uint64_t exec,
+                              uint64_t post, uint32_t parks)
+{
+    if (tag >= (unsigned)V3D_G2D_TAG_N)
+        tag = V3D_G2D_TAG_NONE;
+    _stats.tag_runs[tag]++;
+    _stats.tag_pre_ns[tag] += pre;
+    _stats.tag_exec_ns[tag] += exec;
+    _stats.tag_post_ns[tag] += post;
+    _stats.tag_parks[tag] += parks;
+}
+
 void v3d_g2d_stats_read(v3d_g2d_stats_t *out, int reset)
 {
     g2d_run_lock();
@@ -1262,6 +1276,16 @@ static uint32_t g2d_invalidate_caches(void)
     }
     g2d_dsb();
     return polls;
+}
+
+void v3d_g2d_l2_invalidate_all(void)
+{
+    if (!_ok)
+        return;
+    g2d_run_lock();
+    g2d_dsb();
+    g2d_invalidate_caches();
+    g2d_run_unlock();
 }
 
 /* ---- ranged V3D 4.x L2T maintenance ------------------------------------
@@ -3341,17 +3365,35 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     t0 = g2d_profile_ticks();
 
     /* Uniform + source visibility: the ARM wrote the uniform stream (and
-     * the geom pass-1 vertex streams) through a NOCACHE mapping and the
-     * QPU fetch is served through the L2T/slice caches, so drop the stale
-     * lines before the kick.  This path keeps the whole-L2 walk: the
-     * compiled code AND the uniform stream are rewritten by the caller per
-     * job and the job struct does not describe the code extent, so a
-     * bounded walk could leave stale instruction lines resident (the 2D
-     * path's kernels are preloaded once and never change, which is what
-     * makes its ranged PRE safe). */
+     * the geom pass-1 vertex streams / a texture) through NOCACHE mappings
+     * and the QPU fetch is served through the L2T/slice caches, so drop
+     * the stale lines before the kick - bounded like the 2D path.  The
+     * uniform block is always walked (a different block than the 2D
+     * _unif, so g2d_uniform_fresh does not cover it); the PRE source walk
+     * covers the extent the job describes, whole-L2 when it describes
+     * none (the compute route's texture set) or the knob is off.  The
+     * compiled code needs no per-dispatch walk: it is uploaded once per
+     * program and v3d_g2d_l2_invalidate_all at upload drops whatever a
+     * previous occupant of the dma block left in the caches. */
     g2d_dsb();
-    g2d_invalidate_caches();
-    _stats.pre_full++;
+    {
+        int full = (_maint_ranged == 0 || job->unif_span == 0);
+
+        if (!full)
+            g2d_invalidate_range(job->unif_iova,
+                                 g2d_span_end(job->unif_iova, job->unif_span));
+        if (flags & V3D_G2D_MAINT_PRE) {
+            if (!full && job->src_phy != 0 && job->src_span != 0)
+                g2d_invalidate_range(job->src_phy,
+                                     g2d_span_end(job->src_phy, job->src_span));
+            else
+                full = 1;
+        }
+        if (full) {
+            g2d_invalidate_caches();
+            _stats.pre_full++;
+        }
+    }
     t1 = g2d_profile_ticks();
 
     /* mesa v3dx launch_grid encoding.  cfg[0..3]/cfg[5..7] are identical
@@ -3409,14 +3451,13 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     csd[0] = cfg[0];                /* sole CFG0 write starts the dispatch */
     g2d_dsb();
 
-    /* Completion wait (g2d_wait_csd_done).  raspix arms no CSD-done
-     * interrupt, so POLL_IRQ is handled like the default: spin the
-     * _spin_us window, then park in usleep(500) slices.  POLL_YIELD (the
-     * caller predicted a heavy compiled shader) parks from the first
-     * poll.  A caller budget_ms bounds the wall-clock wait; otherwise the
-     * driver ceiling applies. */
-    done = g2d_wait_csd_done(csd_done,
-                             (flags & V3D_G2D_POLL_YIELD) ? 0u : _spin_us,
+    /* Completion wait (g2d_wait_csd_done): spin the _spin_us window, then
+     * park in usleep(500) slices.  POLL_YIELD / POLL_IRQ take the same
+     * path - raspix arms no CSD-done interrupt, and an immediate park
+     * charges a whole scheduler tick (~976us) to a transform pass that
+     * finishes in tens of microseconds.  A caller budget_ms bounds the
+     * wall-clock wait; otherwise the driver ceiling applies. */
+    done = g2d_wait_csd_done(csd_done, _spin_us,
                              job->budget_ms ? job->budget_ms * 1000u
                                             : G2D_WAIT_MAX_US,
                              &i, &parks);
@@ -3431,6 +3472,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
              (uint32_t)v3d_ctl()[CSD_STATUS_OFF / 4],
              (uint32_t)v3d_ctl()[INT_STS / 4]);
         g2d_stats_add(&_stats.csd, t1 - t0, t2 - t1, 0, 1);
+        g2d_stats_tag_add(job->tag, t1 - t0, t2 - t1, 0, parks);
         ret = 1;
         goto out;
     }
@@ -3458,6 +3500,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     }
     t3 = g2d_profile_ticks();
     g2d_stats_add(&_stats.csd, t1 - t0, t2 - t1, t3 - t2, 0);
+    g2d_stats_tag_add(job->tag, t1 - t0, t2 - t1, t3 - t2, parks);
 
 out:
     g2d_run_unlock();
