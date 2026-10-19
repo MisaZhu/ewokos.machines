@@ -75,12 +75,36 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
  * fields that describe them.  This wrapper keeps the ARM/V3D caches
  * coherent around the dispatch (nothing for NOCACHE dma canvases).
  * Returns 0 on success.
+ *
+ * v3d_g2d_run knows no physical extents, so its V3D L2T maintenance
+ * walks the WHOLE cache before and after the job.  v3d_g2d_run_ranged
+ * additionally takes the physical bases of the same two surfaces
+ * (src_phy/dst_phy, 0 when unknown) and bounds the walks to the uniform
+ * block plus those canvases - the per-dispatch fixed cost then scales
+ * with the surface size instead of the 4 GB tag space.  Every 2D caller
+ * holds those bases (it put them in the uniforms), so prefer the ranged
+ * entry; the plain one is the safe default for a caller without them.
+ * `devcmd /dev/g2d maint full` restores whole-L2 walks at runtime.
  */
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
                 void *dst, size_t dst_len);
+int v3d_g2d_run_ranged(const uint64_t *code, int nwords,
+                       const uint32_t *unifs, int nunifs,
+                       int num_qpus,
+                       const void *src, size_t src_len, uint32_t src_phy,
+                       void *dst, size_t dst_len, uint32_t dst_phy);
+
+/* Runtime policy knobs (devcmd /dev/g2d maint range|full, spinus <us>).
+ * maint_ranged: bounded L2T walks (default on) vs whole-L2 per dispatch.
+ * spin_us: wall-clock window the completion wait busy-polls before it
+ * parks in usleep(500) slices (default 1000; 0 parks immediately). */
+void v3d_g2d_set_maint_ranged(int on);
+int v3d_g2d_maint_ranged(void);
+void v3d_g2d_set_spin_us(uint32_t us);
+uint32_t v3d_g2d_spin_us(void);
 
 /*
  * Generic CSD dispatch of a mesa-compiled COMPUTE shader (the soft3d
@@ -93,9 +117,10 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
  * supergroup per workgroup when wg_size is a multiple of 16; cfg[4] is
  * NUM_BATCHES-1 on V3D 4.2 and the raw batch count on V3D 7.1 (IP rev>=6).
  * dst/aux bound the surfaces the POST L2 writeback must cover (the geom
- * rasterizer's atomicMin depth canvas is the aux surface); on raspix the
- * maintenance walks the whole L2 so the ranges are validated for API
- * compatibility but the walk is not range-scoped.  Same return contract as
+ * rasterizer's atomicMin depth canvas is the aux surface); the POST walk
+ * is bounded to them when both are given (whole-L2 otherwise).  The PRE
+ * walk stays whole-L2 on raspix: the compiled code is rewritten per job
+ * and the job does not describe its extent.  Same return contract as
  * v3d_g2d_run: 0 done, 1 timeout, -1 fault / bad arguments / V3D 2.1.
  */
 
@@ -104,10 +129,11 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
  * source/uniform streams.  POST: post-job flush (drain the TMU write
  * combiner and clean the L2T) so the job's writes - including the aux
  * depth surface - reach DRAM before the CPU reads or re-clears them.
- * POLL_YIELD parks the worker with usleep(500) between register polls for
- * a dispatch predicted to outlast its spin budget; POLL_IRQ is accepted
- * for API compatibility but raspix arms no CSD-done interrupt, so it is
- * handled as a plain spin. */
+ * POLL_YIELD parks the worker in usleep(500) slices from the first poll
+ * (a dispatch predicted to outlast the spin window); the default wait
+ * spins the spinus window first.  POLL_IRQ is accepted for API
+ * compatibility but raspix arms no CSD-done interrupt, so it is handled
+ * like the default wait.  budget_ms bounds the wait in wall-clock ms. */
 #define V3D_G2D_MAINT_PRE  (1u << 0)
 #define V3D_G2D_MAINT_POST (1u << 1)
 #define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
@@ -187,12 +213,18 @@ void v3d_g2d_op_end(void);
  * pre = staging + V3D cache invalidate up to the kick; exec = kick to
  * completion (a timeout counts its full poll budget); post = the L2
  * flush after completion (CSD only; the SRQ launch flushes inside its
- * own wait and the TLB stores bypass the L2T). */
+ * own wait and the TLB stores bypass the L2T).  pre_full/post_full count
+ * the dispatches whose PRE/POST walked the WHOLE L2T (no physical extent
+ * known, knob off, V3D 2.1, or the compiled-compute PRE); a healthy 2D
+ * stream on V3D 4.2 shows both at 0.  parks counts the usleep(500)
+ * slices the completion waits spent off the core past the spin window. */
 typedef struct {
     uint64_t runs;
     uint64_t csd, srq, tlb;
     uint64_t timeouts;
     uint64_t pre_ns, exec_ns, post_ns;
+    uint64_t pre_full, post_full;
+    uint64_t parks;
 } v3d_g2d_stats_t;
 
 /* Snapshot the counters (consistent: taken under the dispatch lock) and

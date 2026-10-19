@@ -48,5 +48,12 @@ extern const unsigned g2d_qpu_v42_gauss_v9_n;
  * array; rf58-62 stay untouched (the v42 constant prologue reserves them). */
 extern const uint64_t g2d_qpu_v42_argb_triangle[];
 extern const unsigned g2d_qpu_v42_argb_triangle_n;
+/* Constant-colour source-over fill: the fill colour is a uniform, so a
+ * pixel costs one dst TMU read + one write (argb_alpha over the 16x16
+ * _fill_src block paid a second read per pixel and could never take its
+ * 1:1 linear fast path).  Bit-exact with argb_alpha + opaque block
+ * (simulator/test_qpu_fill_alpha.c, 7.1 and 4.2 decoders). */
+extern const uint64_t g2d_qpu_v42_argb_fill_alpha[];
+extern const unsigned g2d_qpu_v42_argb_fill_alpha_n;
 
 #endif

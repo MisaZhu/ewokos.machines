@@ -38,7 +38,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <unistd.h>
-#include <ewoksys/spinlock.h>
+#include <pthread.h>
 #include <ewoksys/thread.h>
 #include <sysinfo.h>
 #include <ewoksys/sys.h>
@@ -65,10 +65,17 @@
  * covered automatically.  This is a correctness guard, not a
  * performance optimization: without it the g2dd service's fine-grained
  * locking (which no longer serializes bsp_g2d_* calls) would leave the
- * hardware dispatch unprotected against concurrent workers.  A TTAS
- * spinlock, not a pthread_mutex: videocore takes no kernel locks, and
- * the dispatch waits inside are busy polls, so a contending worker
- * spins (yield hint) for the remainder of the live job.
+ * hardware dispatch unprotected against concurrent workers.  A
+ * pthread_mutex (libewoksys futex style: the uncontended acquire is a
+ * userspace CAS with no syscall, a contender PARKS in the kernel until
+ * the holder's unlock wakes it) rather than the TTAS spinlock this
+ * started with: a 2D dispatch holds the lock for the whole GPU job
+ * (hundreds of microseconds to milliseconds), and a spinning contender
+ * burned a full core for that long on every overlap between two g2dd
+ * workers - CPU time the displayd compositor and the clients wanted.
+ * The holder itself no longer busy-polls either (see g2d_wait_csd_done),
+ * so nothing inside the critical section needs a spinner to make
+ * progress.
  *
  * The lock also covers the V3D 4.2 TLB render paths (render_clear /
  * render_copy share the CLE registers, the command-list staging and the
@@ -88,7 +95,7 @@
  * the IPC gap between ops (54 ms average wait measured on raspi5 for a
  * 4-band flush behind a benchmark stream).  With the bracket an op waits
  * at most one foreign op once. */
-static spinlock_t _v3d_run_lock = SPINLOCK_INIT;
+static pthread_mutex_t _v3d_run_lock = PTHREAD_MUTEX_INITIALIZER;
 /* owner/depth make the lock recursive for the op bracket.  Both are
  * written only by the holder; a non-holder's read sees -1 or a foreign
  * tid (tids are unique and the holder clears owner before the release
@@ -106,7 +113,7 @@ static void g2d_run_lock(void)
         _v3d_run_depth++;
         return;
     }
-    spin_lock(&_v3d_run_lock);
+    pthread_mutex_lock(&_v3d_run_lock);
     _v3d_run_owner = me;
     _v3d_run_depth = 1;
 }
@@ -116,7 +123,7 @@ static void g2d_run_unlock(void)
     if (--_v3d_run_depth != 0)
         return;
     _v3d_run_owner = -1;
-    spin_unlock(&_v3d_run_lock);
+    pthread_mutex_unlock(&_v3d_run_lock);
 }
 
 void v3d_g2d_op_begin(void)
@@ -153,6 +160,51 @@ void v3d_g2d_stats_read(v3d_g2d_stats_t *out, int reset)
     if (reset)
         memset(&_stats, 0, sizeof(_stats));
     g2d_run_unlock();
+}
+
+/* Runtime policy knobs (devcmd /dev/g2d maint|spinus, see vc_g2d_cmd).
+ * Both are read under _v3d_run_lock by the dispatch and written by the
+ * command path without it: a torn read is impossible for an aligned
+ * 32-bit store and either value is valid at any instant.
+ *
+ * _maint_ranged: 1 = per-dispatch V3D L2T maintenance bounded to the
+ * uniform block and the caller's src/dst canvases (g2d_invalidate_range /
+ * g2d_flush_l2_range), 0 = the original whole-L2 walks on every
+ * dispatch.  The ranged walks are the raspi5 driver's shipped scheme
+ * (hardware-verified there, `full 0` in its stat line); on V3D 4.2 they
+ * are only simulator/API-verified so far, hence the kill switch.
+ *
+ * _spin_us: wall-clock window the CSDDONE wait busy-polls before it
+ * starts parking in usleep(500) slices.  The typical desktop 2D job
+ * (a window-sized fill/blit) completes well inside a millisecond, so
+ * the window keeps those jobs free of a scheduler round trip while a
+ * long one (full-screen blur, big rotate) no longer pins a core. */
+static volatile uint32_t _maint_ranged = 1;
+static volatile uint32_t _spin_us = 1000;
+/* Wall-clock ceiling of one CSDDONE wait once parking: the previous
+ * 2,000,000-poll spin took roughly this long on BCM2711. */
+#define G2D_WAIT_MAX_US 500000u
+
+void v3d_g2d_set_maint_ranged(int on)
+{
+    _maint_ranged = on ? 1u : 0u;
+}
+
+int v3d_g2d_maint_ranged(void)
+{
+    return (int)_maint_ranged;
+}
+
+void v3d_g2d_set_spin_us(uint32_t us)
+{
+    if (us > G2D_WAIT_MAX_US)
+        us = G2D_WAIT_MAX_US;
+    _spin_us = us;
+}
+
+uint32_t v3d_g2d_spin_us(void)
+{
+    return _spin_us;
 }
 
 /* VC bus address alias for uncached access (not exported by mailbox.h;
@@ -705,7 +757,10 @@ static inline void g2d_dsb(void)
 #define KERN_GAUSS_H9 23
 #define KERN_GAUSS_V9 24
 #define KERN_TRIANGLE 25
-#define KERN_TOTAL 26
+/* Constant-colour source-over fill (V3D 4.2 only): replaces argb_alpha
+ * over the 16x16 _fill_src block for gpu_fill_alpha_surface. */
+#define KERN_FILL_ALPHA 26
+#define KERN_TOTAL 27
 /* Alpha has one immutable code address per exact output span.  VC4 does
  * not reliably observe either dynamic late-uniform VDW setups or code
  * replacement at an address already present in its instruction cache. */
@@ -1207,6 +1262,188 @@ static uint32_t g2d_invalidate_caches(void)
     }
     g2d_dsb();
     return polls;
+}
+
+/* ---- ranged V3D 4.x L2T maintenance ------------------------------------
+ * The two whole-L2 walks above cost the same whether the dispatch touched
+ * a 16x16 block or a full 1080p canvas: L2TFLSTA=0 / L2TFLEND=~0 makes
+ * the controller sweep the entire 4 GB tag space twice per dispatch
+ * (invalidate before, clean after).  The L2TFLSTA/L2TFLEND pair bounds a
+ * walk to [lo, hi) so its cost scales with the address span actually
+ * touched - the raspi5 driver's shipped scheme (hardware-verified there,
+ * `full 0` in its stat line).  Rules carried over from that port:
+ *   - the range registers are STATEFUL: program both on every walk and
+ *     never rely on a previous walk's setting (a narrowed range left
+ *     behind once made a later full flush miss the canvas's dirty lines);
+ *   - L2TFLEND rounding (hi + 63) & ~63 on hi == ~0u WRAPS to 0 and
+ *     programs an empty [0, 0) walk - clamp, never wrap (g2d_l2t_flend);
+ *   - the PRE walk must be mode 0 (clean + invalidate): mode 2 (clean
+ *     only) leaves the stale lines resident and the QPU re-reads the
+ *     previous dispatch's data.
+ * V3D 2.1 has no L2T at all (0x30 is INTCTL there); every ranged entry
+ * point below falls back to the whole-cache helpers on that generation. */
+static uint32_t g2d_l2t_flend(uint32_t hi)
+{
+    return (hi >= 0xFFFFFFC0u) ? ~0u : (hi + 63u) & ~63u;
+}
+
+/* Ranged pre-job clean+invalidate over [lo, hi) plus the slice caches.
+ * Returns the poll count like g2d_invalidate_caches. */
+static uint32_t g2d_invalidate_range(uint32_t lo, uint32_t hi)
+{
+    uint32_t i;
+
+    if (_ver == 21 || lo >= hi)
+        return g2d_invalidate_caches();
+    v3d_ctl()[CTL_L2TFLSTA / 4] = lo & ~63u;
+    v3d_ctl()[CTL_L2TFLEND / 4] = g2d_l2t_flend(hi);
+    v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 0) | (0u << 1);   /* L2TFLS | FLUSH */
+    /* GFXH-1897: a pending L2T flush must complete before any further
+     * L2TCACTL write or QPU traffic */
+    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++)
+        ;
+    v3d_ctl()[CTL_SLCACTL / 4] = 0x0F0F0F0Fu;  /* clear T1/T0/U/I slice caches */
+    g2d_dsb();
+    return i;
+}
+
+/* Ranged post-job writeback: drain the TMU write combiner (once per
+ * dispatch - the caller passes tmuwcf on the first range only), then
+ * clean (mode 2, lines stay resident) the L2T over [lo, hi). */
+static uint32_t g2d_flush_l2_range(uint32_t lo, uint32_t hi, int tmuwcf)
+{
+    uint32_t i, polls = 0;
+
+    if (_ver == 21 || lo >= hi)
+        return g2d_flush_l2();
+    if (tmuwcf) {
+        v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 8);           /* TMUWCF */
+        for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 8)); i++) {}
+        polls += i;
+    }
+    v3d_ctl()[CTL_L2TFLSTA / 4] = lo & ~63u;
+    v3d_ctl()[CTL_L2TFLEND / 4] = g2d_l2t_flend(hi);
+    v3d_ctl()[CTL_L2TCACTL / 4] = (1u << 0) | (2u << 1);   /* L2TFLS | CLEAN */
+    for (i = 0; i < 2000000 && (v3d_ctl()[CTL_L2TCACTL / 4] & (1u << 0)); i++) {}
+    polls += i;
+    g2d_dsb();
+    return polls;
+}
+
+/* End of a physical extent as a clamped 32-bit address (a canvas ending
+ * at the top of the 32-bit space must not wrap to a tiny range). */
+static uint32_t g2d_span_end(uint32_t lo, size_t len)
+{
+    uint64_t e = (uint64_t)lo + (uint64_t)len;
+
+    return (e > (uint64_t)~0u) ? ~0u : (uint32_t)e;
+}
+
+/* Uniform-visibility barrier: the QPU's uniform fetch is served through
+ * the L2T/slice caches, so the freshly written _unif block must be
+ * dropped from them before the kick or the dispatch re-runs the PREVIOUS
+ * dispatch's parameters (observed on raspi5 as every band re-rendering
+ * band 0).  A ranged mode-0 walk over the 4 KiB block costs microseconds. */
+static uint32_t g2d_uniform_fresh(void)
+{
+    g2d_dsb();                              /* _unif writes -> DRAM */
+    return g2d_invalidate_range(_unif_p, _unif_p + CSD_UNIF_WORDS * 4u);
+}
+
+/* Pre-job maintenance for a 2D dispatch over the caller's physical
+ * canvases.  Ranged (uniform block, then each present canvas - the two
+ * are usually far apart in physical memory, so separate bounded walks
+ * beat one hull spanning the gap) when the knob is on and at least one
+ * extent is known; the whole-L2 walk otherwise.  Returns the poll count
+ * and reports whether the full walk ran. */
+static uint32_t g2d_maint_pre(uint32_t src_phy, size_t src_len,
+                              uint32_t dst_phy, size_t dst_len, int *full)
+{
+    uint32_t polls;
+
+    *full = 0;
+    if (_ver < 41 || !_maint_ranged ||
+        ((src_phy == 0 || src_len == 0) && (dst_phy == 0 || dst_len == 0))) {
+        *full = 1;
+        return g2d_invalidate_caches();
+    }
+    polls = g2d_uniform_fresh();
+    if (src_phy != 0 && src_len != 0)
+        polls += g2d_invalidate_range(src_phy, g2d_span_end(src_phy, src_len));
+    if (dst_phy != 0 && dst_len != 0)
+        polls += g2d_invalidate_range(dst_phy, g2d_span_end(dst_phy, dst_len));
+    return polls;
+}
+
+/* Post-job writeback for a 2D dispatch: the destination canvas plus the
+ * scratch block every kernel's out-of-rect lanes and flush epilogue
+ * write (so no dirty line is left behind for a later full walk to
+ * surface at an unexpected time); whole-L2 clean when the destination
+ * extent is unknown or the knob is off. */
+static uint32_t g2d_maint_post(uint32_t dst_phy, size_t dst_len, int *full)
+{
+    uint32_t polls;
+
+    *full = 0;
+    if (_ver < 41 || !_maint_ranged || dst_phy == 0 || dst_len == 0) {
+        *full = 1;
+        return g2d_flush_l2();
+    }
+    polls = g2d_flush_l2_range(dst_phy, g2d_span_end(dst_phy, dst_len), 1);
+    polls += g2d_flush_l2_range(_scratch_p, _scratch_p + 4096u * 4u, 0);
+    return polls;
+}
+
+/* CSDDONE completion wait shared by the 2D and compiled-compute paths.
+ * Busy-polls INT_STS for `spin_us` of wall clock (the common
+ * sub-millisecond 2D job completes inside the window without a
+ * scheduler round trip), then parks in usleep(500) slices - 500 us is
+ * above libewoksys' 200 us busy-spin threshold, so the worker really
+ * leaves the core and comes back on the next ~976 us tick - until
+ * `max_us` of wall clock has passed.  Both budgets are wall-clock, not
+ * iteration counts: a parked iteration consumes a tick, a spun one a
+ * few hundred nanoseconds, so a count would mean nothing.  Without a
+ * fine clock (kernel_tic_nsec unavailable) the legacy 2,000,000-poll
+ * spin is kept.  Returns 1 when CSDDONE latched, 0 on timeout; *polls
+ * and *parks report the loop's shape for the profile/stat counters. */
+static int g2d_wait_csd_done(uint32_t csd_done, uint32_t spin_us,
+                             uint32_t max_us, uint32_t *polls, uint32_t *parks)
+{
+    uint64_t t0 = g2d_profile_ticks();
+    uint64_t spin_ns = (uint64_t)spin_us * 1000u;
+    uint64_t max_ns = (uint64_t)max_us * 1000u;
+    uint32_t i, p = 0;
+    int done = 0;
+
+    if (t0 == 0) {
+        for (i = 0; i < 2000000u; i++) {
+            if (v3d_ctl()[INT_STS / 4] & csd_done) {
+                done = 1;
+                break;
+            }
+        }
+        *polls = i;
+        *parks = 0;
+        return done;
+    }
+    for (i = 0;; i++) {
+        uint64_t el;
+
+        if (v3d_ctl()[INT_STS / 4] & csd_done) {
+            done = 1;
+            break;
+        }
+        el = g2d_profile_ticks() - t0;
+        if (el >= max_ns)
+            break;
+        if (el >= spin_ns) {
+            usleep(500);
+            p++;
+        }
+    }
+    *polls = i;
+    *parks = p;
+    return done;
 }
 
 /* V3D 4.2 fixed-function clear.  The packet order and the generic per-tile
@@ -1894,6 +2131,8 @@ int v3d_g2d_init(void)
         _ksrc_n[KERN_GAUSS_V9] = g2d_qpu_v42_gauss_v9_n;
         _ksrc[KERN_TRIANGLE] = g2d_qpu_v42_argb_triangle;
         _ksrc_n[KERN_TRIANGLE] = g2d_qpu_v42_argb_triangle_n;
+        _ksrc[KERN_FILL_ALPHA] = g2d_qpu_v42_argb_fill_alpha;
+        _ksrc_n[KERN_FILL_ALPHA] = g2d_qpu_v42_argb_fill_alpha_n;
     } else if (_ver >= 71) {
         _ksrc[KERN_FILL] = g2d_qpu_argb_fill;
         _ksrc_n[KERN_FILL] = g2d_qpu_argb_fill_n;
@@ -2778,15 +3017,15 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes)
 static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
                             const uint32_t *unifs, int nunifs,
                             int num_qpus,
-                            const void *src, size_t src_len,
-                            void *dst, size_t dst_len)
+                            const void *src, size_t src_len, uint32_t src_phy,
+                            void *dst, size_t dst_len, uint32_t dst_phy)
 {
     uint32_t csd_base = (_ver >= 71) ? CSD_CFG_BASE_V7 : CSD_CFG_BASE_OLD;
     uint32_t csd_done = (_ver >= 71) ? INT_CSDDONE_V7 : INT_CSDDONE_OLD;
     volatile uint32_t *csd = v3d_ctl() + (csd_base / 4);
     uint32_t cfg[8] = { 0 };
-    uint32_t i;
-    int kern = -1;
+    uint32_t i, parks = 0;
+    int kern = -1, full = 0;
     uint64_t t0, t_prepare, t_invalidate, t_execute, t_flush;
 
     memset(&_last_profile, 0, sizeof(_last_profile));
@@ -2831,6 +3070,8 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         kern = KERN_GAUSS_V9;
     else if (_ver == 42 && code == g2d_qpu_v42_argb_triangle)
         kern = KERN_TRIANGLE;
+    else if (_ver == 42 && code == g2d_qpu_v42_argb_fill_alpha)
+        kern = KERN_FILL_ALPHA;
     else
         return -1;
     if ((uint32_t)nwords > _ksrc_n[kern]
@@ -2855,7 +3096,20 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
      * epilogue (physical address - the QPU has no MMU) */
     _unif[nunifs] = _scratch_p;
     t_prepare = g2d_profile_ticks();
-    _last_profile.invalidate_polls = g2d_invalidate_caches();
+    /* PRE: bounded to the uniform block + the canvases this dispatch
+     * touches, but only when EVERY surface present has a known physical
+     * base - a surface given without one would otherwise be skipped by
+     * the bounded walk; then (and for the plain v3d_g2d_run entry, or
+     * the knob off) the whole-L2 walk runs.  The src/dst lengths are the
+     * virtual-canvas lengths the caller already passes. */
+    if ((src != NULL && src_len != 0 && src_phy == 0) ||
+        (dst != NULL && dst_len != 0 && dst_phy == 0))
+        src_phy = dst_phy = 0;          /* force the full walks */
+    _last_profile.invalidate_polls =
+        g2d_maint_pre(src ? src_phy : 0u, src_len,
+                      dst ? dst_phy : 0u, dst_len, &full);
+    if (full)
+        _stats.pre_full++;
     t_invalidate = g2d_profile_ticks();
 
     /* V3D 7.1: the exact config of the proven raspi5 path.  V3D 4.2:
@@ -2924,11 +3178,13 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
     g2d_dsb();
 
     /* Every production kernel waits for pending TMU writes and then
-     * uses the legal thread-end protocol, so CSDDONE is authoritative. */
-    for (i = 0; i < 2000000; i++)
-        if (v3d_ctl()[INT_STS / 4] & csd_done)
-            break;
-    if (i == 2000000) {
+     * uses the legal thread-end protocol, so CSDDONE is authoritative.
+     * Spin for the sub-millisecond common case, park past the window
+     * (see g2d_wait_csd_done) instead of pinning the core for a long
+     * blur/rotate. */
+    if (!g2d_wait_csd_done(csd_done, _spin_us, G2D_WAIT_MAX_US,
+                           &i, &parks)) {
+        _stats.parks += parks;
         if (_ver == 42)
             slog("g2d: V3D 4.2 CSD timeout cfg=%x,%x,%x,%x,%x,%x,%x "
                  "status=0x%x int=0x%x\r\n",
@@ -2963,6 +3219,7 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
     }
     t_execute = g2d_profile_ticks();
     _last_profile.execute_polls = i;
+    _stats.parks += parks;
     g2d_perf_stop(_last_profile.perf);
     if (_ver == 42) {
         static int logged;
@@ -2978,8 +3235,13 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
     v3d_ctl()[INT_CLR / 4] = csd_done;
     g2d_dsb();
 
-    /* GPU writes -> DRAM, then drop the ARM's stale destination lines */
-    _last_profile.flush_polls = g2d_flush_l2();
+    /* GPU writes -> DRAM (destination + scratch, or the whole L2T when
+     * the destination extent is unknown), then drop the ARM's stale
+     * destination lines */
+    _last_profile.flush_polls =
+        g2d_maint_post(dst ? dst_phy : 0u, dst_len, &full);
+    if (full)
+        _stats.post_full++;
     t_flush = g2d_profile_ticks();
     if (dst && dst_len)
         g2d_dsb();
@@ -2999,10 +3261,21 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
                 const void *src, size_t src_len,
                 void *dst, size_t dst_len)
 {
+    /* no physical extents known: whole-L2 maintenance (see run_impl) */
+    return v3d_g2d_run_ranged(code, nwords, unifs, nunifs, num_qpus,
+                              src, src_len, 0u, dst, dst_len, 0u);
+}
+
+int v3d_g2d_run_ranged(const uint64_t *code, int nwords,
+                       const uint32_t *unifs, int nunifs,
+                       int num_qpus,
+                       const void *src, size_t src_len, uint32_t src_phy,
+                       void *dst, size_t dst_len, uint32_t dst_phy)
+{
     int ret;
     g2d_run_lock();
     ret = v3d_g2d_run_impl(code, nwords, unifs, nunifs, num_qpus,
-                           src, src_len, dst, dst_len);
+                           src, src_len, src_phy, dst, dst_len, dst_phy);
     g2d_run_unlock();
     return ret;
 }
@@ -3020,7 +3293,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     uint32_t csd_base, csd_done;
     volatile uint32_t *csd;
     uint32_t cfg[8] = { 0 };
-    uint32_t i, limit;
+    uint32_t i, parks;
     uint32_t num_wgs, wgs_per_sg, batches_per_sg, whole_sgs, rem_wgs;
     uint32_t num_batches;
     int done;
@@ -3070,11 +3343,15 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     /* Uniform + source visibility: the ARM wrote the uniform stream (and
      * the geom pass-1 vertex streams) through a NOCACHE mapping and the
      * QPU fetch is served through the L2T/slice caches, so drop the stale
-     * lines before the kick.  raspix has no separate ranged uniform
-     * barrier, so the slice/L2T invalidate always runs (MAINT_PRE is
-     * effectively always applied; the flag is accepted for API parity). */
+     * lines before the kick.  This path keeps the whole-L2 walk: the
+     * compiled code AND the uniform stream are rewritten by the caller per
+     * job and the job struct does not describe the code extent, so a
+     * bounded walk could leave stale instruction lines resident (the 2D
+     * path's kernels are preloaded once and never change, which is what
+     * makes its ranged PRE safe). */
     g2d_dsb();
     g2d_invalidate_caches();
+    _stats.pre_full++;
     t1 = g2d_profile_ticks();
 
     /* mesa v3dx launch_grid encoding.  cfg[0..3]/cfg[5..7] are identical
@@ -3132,24 +3409,18 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     csd[0] = cfg[0];                /* sole CFG0 write starts the dispatch */
     g2d_dsb();
 
-    /* Completion wait.  raspix arms no CSD-done interrupt, so POLL_IRQ is
-     * handled as a plain spin; POLL_YIELD parks the worker with usleep(500)
-     * between polls for a heavy compiled shader.  A caller budget_ms sets
-     * the yield slice count (2 slices/ms); the spin path keeps the 2D
-     * path's proven 2,000,000-iteration cap. */
-    if (flags & V3D_G2D_POLL_YIELD)
-        limit = job->budget_ms ? (job->budget_ms * 2u) : 4000u;
-    else
-        limit = 2000000u;
-    for (i = 0; i < limit; i++) {
-        if (v3d_ctl()[INT_STS / 4] & csd_done)
-            break;
-        if (flags & V3D_G2D_POLL_YIELD)
-            usleep(500);
-        else
-            g2d_dsb();
-    }
-    done = (i < limit);
+    /* Completion wait (g2d_wait_csd_done).  raspix arms no CSD-done
+     * interrupt, so POLL_IRQ is handled like the default: spin the
+     * _spin_us window, then park in usleep(500) slices.  POLL_YIELD (the
+     * caller predicted a heavy compiled shader) parks from the first
+     * poll.  A caller budget_ms bounds the wall-clock wait; otherwise the
+     * driver ceiling applies. */
+    done = g2d_wait_csd_done(csd_done,
+                             (flags & V3D_G2D_POLL_YIELD) ? 0u : _spin_us,
+                             job->budget_ms ? job->budget_ms * 1000u
+                                            : G2D_WAIT_MAX_US,
+                             &i, &parks);
+    _stats.parks += parks;
     t2 = g2d_profile_ticks();
     if (!done) {
         v3d_ctl()[INT_CLR / 4] = csd_done;
@@ -3166,12 +3437,25 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     v3d_ctl()[INT_CLR / 4] = csd_done;
     g2d_dsb();
 
-    /* POST: drain the TMU write combiner and clean the whole L2T so the
-     * job's dst AND aux (depth) writes reach DRAM before the CPU reads or
-     * re-clears them.  raspix's flush is whole-L2, so it covers both
-     * ranges without a range-scoped walk. */
-    if (flags & V3D_G2D_MAINT_POST)
-        g2d_flush_l2();
+    /* POST: drain the TMU write combiner and clean the L2T so the job's
+     * dst AND aux (depth) writes reach DRAM before the CPU reads or
+     * re-clears them - bounded to the two surfaces the job describes,
+     * whole-L2 when it describes none (or the knob is off). */
+    if (flags & V3D_G2D_MAINT_POST) {
+        int ranged = _maint_ranged && job->dst_phy != 0 && job->dst_span != 0;
+
+        if (ranged) {
+            g2d_flush_l2_range(job->dst_phy,
+                               g2d_span_end(job->dst_phy, job->dst_span), 1);
+            if (job->aux_phy != 0 && job->aux_span != 0)
+                g2d_flush_l2_range(job->aux_phy,
+                                   g2d_span_end(job->aux_phy, job->aux_span),
+                                   0);
+        } else {
+            g2d_flush_l2();
+            _stats.post_full++;
+        }
+    }
     t3 = g2d_profile_ticks();
     g2d_stats_add(&_stats.csd, t1 - t0, t2 - t1, t3 - t2, 0);
 
