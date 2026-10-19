@@ -55,13 +55,16 @@
 /* ---- staging sizes ---------------------------------------------------- */
 #define V3D_3D_COMPUTE_BUDGET_MS 2000u     /* compiled compute draw wait    */
 
-/* Two-pass geometry rasterizer intermediate: `vout` holds one packed 8-float
- * (32-byte) record per vertex, written by the pass-1 vertex-transform kernel
- * and read by the pass-2 raster kernel.  Sized for V3D_3D_MAX_VERTS vertices;
- * a single process-lifetime buffer is safe because CSD dispatches are
- * serialized (v3d_g2d_op_begin) and each geom draw fully overwrites the
- * sub-range it consumes. */
-#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * 32u)
+/* Two-pass geometry rasterizer intermediate: `vout` holds one packed record per
+ * vertex, written by the pass-1 vertex-transform kernel and read by the pass-2
+ * raster kernel.  The gouraud / textured / instanced variants pack 8 floats
+ * (32 bytes); the colour-modulated textured variant (cs_is_geom == 4, imgui)
+ * also carries a per-vertex colour, so its record is 12 floats (48 bytes).  The
+ * buffer is sized for the widest record so every variant fits.  Sized for
+ * V3D_3D_MAX_VERTS vertices; a single process-lifetime buffer is safe because
+ * CSD dispatches are serialized (v3d_g2d_op_begin) and each geom draw fully
+ * overwrites the sub-range it consumes. */
+#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * 48u)
 
 /* WS4 compiled-shader sampler bindings: per-unit V3D71 TEXTURE_SHADER_STATE and
  * SAMPLER_STATE records, each in its own 32-byte slot (V3D_3D_TEXSTATE_SLOT) so
@@ -137,7 +140,8 @@ typedef struct {
     uint8_t  cs_threads, cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
-    uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced */
+    uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced,
+                             * 4 = colour-modulated textured (imgui) */
     uint32_t cs_geom_tpw;   /* raster triangles/workgroup: 0 = one wg per tri */
     /* second compute stage (cs2 = pass-1 vertex transform of the two-pass
      * geometry rasterizer).  cs2_qpu_words == 0 when absent.  Dispatched FIRST
@@ -601,7 +605,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                              const uint32_t *unif, uint32_t num_uniforms,
                              uint32_t tex_iova, uint32_t tex_span,
                              uint32_t inst_iova, uint32_t inst_span, int is_inst,
-                             int first_frame, uint32_t clear_rgba)
+                             int is_texcol, int first_frame, uint32_t clear_rgba)
 {
     v3d_g2d_csd_job_t job;
     uint32_t ssbo[4];
@@ -705,7 +709,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.threads     = pr->cs2_threads;
     job.single_seg  = pr->cs2_single_seg;
     job.dst_phy     = _vout_p;          /* POST writeback: vout -> DRAM */
-    job.dst_span    = nverts * 32u;
+    job.dst_span    = nverts * (is_texcol ? 48u : 32u);
     job.unif_span   = pr->cs2_num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_GEOM_XFORM;
     /* Ranged PRE extent: the only ARM-written surfaces this pass reads are the
@@ -713,8 +717,9 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
      * this hull is informational; it is filled for API parity. */
     {
         uint32_t lo = pos_iova;
-        uint32_t hi = pos_iova + nverts * (tex_iova != 0u ? 24u :
-                                             (is_inst ? 16u : 12u));
+        uint32_t hi = pos_iova + nverts * (is_texcol ? 40u :
+                                             (tex_iova != 0u ? 24u :
+                                              (is_inst ? 16u : 12u)));
 
         if (tex_iova == 0u && nrm_iova != 0u) {
             uint32_t nlo = nrm_iova;
@@ -798,15 +803,43 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     return V3D_3D_DONE;
 }
 
-/* Full-frame clear.  The V3D binner/render clear is NOT ported to raspix (only
- * the CSD compute route is), and the geometry rasterizer clears colour+depth
- * itself on its first_frame draw, so a standalone clear declines and the client
- * keeps its own CPU clear. */
+/* Full-frame colour clear through the 2D gpu_fill entry: V3D 4.2 routes a
+ * full-surface fill to the TLB render clear, Pi3/VC4 to the span filler, Pi5 to
+ * the CSD fill kernel.  The V3D binner/render RCL clear is NOT ported to raspix,
+ * but this clear is NOT optional - the client's pgl_g3d_init issues it as a
+ * mandatory bring-up probe and, if it declines, latches the whole GPU path off
+ * (_pgl_gpu_off, sticky) so every later draw silently falls back to the CPU.
+ * Declining here was why gears/teapot reported CPU on a healthy Pi4: the probe
+ * clear returned G2D_ERR_NOT_SUPPORTED and pgl_g3d_init aborted.  gpu_fill
+ * writes tightly-packed 32-bit pixels, so a pitched stride or a non-RGBA8
+ * format still declines (the client always sends w*4 / RGBA8).  The client
+ * colour is 0xAABBGGRR while the framebuffer is 0xAARRGGBB, so R and B swap
+ * exactly as the geometry rasterizer's first_frame clear does. */
 int v3d_3d_clear(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                  uint32_t w, uint32_t h, uint32_t rgba8, int rb_swap)
 {
-    (void)fb_iova; (void)stride_bytes; (void)fmt;
-    (void)w; (void)h; (void)rgba8; (void)rb_swap;
+    uint32_t px;
+    int gr;
+
+    if (!_ready)
+        return V3D_3D_UNSUPPORTED;
+    if (w == 0 || h == 0 || fb_iova == 0)
+        return V3D_3D_UNSUPPORTED;
+    if (fmt != V3D_3D_FMT_RGBA8 || stride_bytes != w * 4u)
+        return V3D_3D_UNSUPPORTED;
+    if (!v3d_g2d_phy_valid(fb_iova, (size_t)stride_bytes * h))
+        return V3D_3D_UNSUPPORTED;
+
+    px = rb_swap ? rgba8 :
+         ((rgba8 & 0xFF000000u) | ((rgba8 & 0x000000FFu) << 16) |
+          (rgba8 & 0x0000FF00u) | ((rgba8 & 0x00FF0000u) >> 16));
+
+    gr = gpu_fill(fb_iova, NULL, (int32_t)w, (int32_t)h,
+                  0, 0, (int32_t)w, (int32_t)h, px);
+    if (gr == GPU_DONE)
+        return V3D_3D_DONE;
+    if (gr == GPU_FAILED)
+        return V3D_3D_FAILED;
     return V3D_3D_UNSUPPORTED;
 }
 
@@ -842,28 +875,33 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
              * the TEXTURED kernel (pos carries interleaved pos+uv, the texture
              * image arrives as ctex unit 0); cs_is_geom == 3 is the INSTANCED
              * kernel (gears: pos carries vec4 pos+instance-index, col the
-             * float3 normals, ctex unit 0 the per-frame instance-matrix SSBO). */
+             * float3 normals, ctex unit 0 the per-frame instance-matrix SSBO);
+             * cs_is_geom == 4 is the COLOUR-MODULATED TEXTURED kernel (imgui):
+             * pos carries interleaved pos+uv+rgba (10-float stride, nverts*40
+             * bytes), col is unused (zero canvas), ctex unit 0 the linear
+             * font-atlas image; the raster kernel alpha-blends and clips
+             * (uScissor) with no depth write, and its vout record is 12 floats.
+             * The texcol route shares the textured two-pass raster, so it runs
+             * on V3D 4.2 (Pi4) exactly as on 7.1 (Pi5); Pi3 declines at
+             * v3d_3d_init (no CSD compute engine). */
             int gtex = (_progs[prog_handle].cs_is_geom == 2);
             int ginst = (_progs[prog_handle].cs_is_geom == 3);
-            uint32_t pstride = gtex ? 24u : (ginst ? 16u : 12u);
-            /* cs_is_geom == 4 (colour-modulated textured, imgui) is a raspi5
-             * V3D 7.1 kernel only; raspix has no matching two-pass raster, so
-             * decline it explicitly here rather than rely on the zero col
-             * canvas tripping the nrm check below - the client keeps its CPU
-             * path either way. */
-            if (_progs[prog_handle].cs_is_geom == 4)
-                return decline("geom: colour-modulated tex unsupported");
+            int gtc = (_progs[prog_handle].cs_is_geom == 4);
+            /* textured family (plain tex + colour-modulated tex): col unused,
+             * ctex[0] is the linear image the raster kernel indexes directly. */
+            int gtexc = gtex || gtc;
+            uint32_t pstride = gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u));
             if (mode != V3D_3D_MODE_TRIANGLES)
                 return decline("geom: mode not triangles");
             if (nverts == 0 || (nverts % 3u) != 0)
                 return decline("geom: nverts not multiple of 3");
             if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * pstride))
                 return decline("geom: pos phys");
-            if (!gtex && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
+            if (!gtexc && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
                 return decline("geom: nrm phys");
-            if (gtex && (ctex == NULL || ctex->ctex_iova[0] == 0))
+            if (gtexc && (ctex == NULL || ctex->ctex_iova[0] == 0))
                 return decline("geom tex: no texture bound");
-            if (gtex && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
+            if (gtexc && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
                 !v3d_g2d_phy_valid(ctex->ctex_iova[0],
                                    (size_t)ctex->ctex_stride[0] * ctex->ctex_h[0])))
                 return decline("geom tex: tex phys");
@@ -880,13 +918,13 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                      stride_bytes, fmt, w, h, nverts,
                                      pos_iova, col_iova, z_iova, z_stride,
                                      unif, num_uniforms,
-                                     gtex ? ctex->ctex_iova[0] : 0u,
-                                     gtex ? ctex->ctex_stride[0] *
-                                            ctex->ctex_h[0] : 0u,
+                                     gtexc ? ctex->ctex_iova[0] : 0u,
+                                     gtexc ? ctex->ctex_stride[0] *
+                                             ctex->ctex_h[0] : 0u,
                                      ginst ? ctex->ctex_iova[0] : 0u,
                                      ginst ? ctex->ctex_stride[0] *
                                              ctex->ctex_h[0] : 0u,
-                                     ginst, first_frame, clear_rgba);
+                                     ginst, gtc, first_frame, clear_rgba);
         }
         return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
                             w, h, unif, num_uniforms, ctex);
