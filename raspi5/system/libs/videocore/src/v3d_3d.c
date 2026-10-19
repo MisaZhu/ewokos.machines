@@ -2031,9 +2031,11 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                                V3D_G2D_POLL_IRQ);
     if (rc != 0) {
         v3d_g2d_op_end();
-        slog("v3d_3d: geom xform rc=%d nverts %u wg=%u thr=%u unif=%u\r\n",
+        slog("v3d_3d: geom xform rc=%d nverts %u wg=%u thr=%u unif=%u "
+             "ssbo[vout=%x pos=%x s2=%x s3=%x]\r\n",
              rc, nverts, job.wg_size, (uint32_t)pr->cs2_threads,
-             pr->cs2_num_uniforms);
+             pr->cs2_num_uniforms,
+             ssbo[0], ssbo[1], ssbo[2], ssbo[3]);
         return rc > 0 ? V3D_3D_TIMEOUT : V3D_3D_MMU_FAULT;
     }
 
@@ -2096,9 +2098,11 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                                V3D_G2D_POLL_IRQ);
     v3d_g2d_op_end();
     if (rc != 0) {
-        slog("v3d_3d: geom raster rc=%d tris %u wg=%u thr=%u unif=%u\r\n",
+        slog("v3d_3d: geom raster rc=%d tris %u wg=%u thr=%u unif=%u "
+             "ssbo[fb=%x vout=%x depth=%x tex=%x]\r\n",
              rc, ntris, job.wg_size,
-             (uint32_t)pr->cs_threads, pr->cs_num_uniforms);
+             (uint32_t)pr->cs_threads, pr->cs_num_uniforms,
+             ssbo[0], ssbo[1], ssbo[2], ssbo[3]);
         return rc > 0 ? V3D_3D_TIMEOUT : V3D_3D_MMU_FAULT;
     }
     return V3D_3D_DONE;
