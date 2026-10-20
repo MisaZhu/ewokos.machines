@@ -46,6 +46,7 @@
 #include <ewoksys/dma.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
+#include <videocore/vc_g2d.h>
 #include "v3d_g2d.h"
 #include "v3d_3d.h"
 
@@ -326,6 +327,17 @@ static uint32_t *_cfs_unif_va; static uint32_t _cfs_unif_p;/* compiled FS expand
 static uint32_t *_ccs_unif_va; static uint32_t _ccs_unif_p;/* compiled COORD expanded uniforms */
 static uint32_t *_ccu_unif_va; static uint32_t _ccu_unif_p;/* compiled COMPUTE expanded uniforms */
 static uint8_t  *_gen_va;     static uint32_t _gen_p;   /* generic tile list */
+/* Two-pass geometry rasterizer intermediate: `vout` holds one packed record per
+ * vertex, written by the pass-1 vertex-transform kernel and read by the pass-2
+ * raster kernel.  The gouraud / textured / instanced variants pack 8 floats
+ * (32 bytes); the colour-modulated textured variant (cs_is_geom == 4, imgui)
+ * also carries a per-vertex colour, so its record is 12 floats (48 bytes).  The
+ * buffer is sized for the widest record so every variant fits.  Sized for
+ * V3D_3D_MAX_VERTS vertices; a single process-lifetime buffer is safe because
+ * CSD dispatches are serialized (v3d_g2d_op_begin) and each geom draw fully
+ * overwrites the sub-range it consumes. */
+static uint32_t *_vout_va;    static uint32_t _vout_p;
+#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * 48u)
 
 /* WS4 compiled-shader sampler bindings: per-unit V3D71 TEXTURE_SHADER_STATE and
  * SAMPLER_STATE records.  A mesa-compiled FS that samples iChannelN emits a
@@ -406,7 +418,23 @@ typedef struct {
     uint8_t  cs_threads, cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
-    uint32_t cs_is_geom;    /* 1 = fixed geometry rasterizer (per-triangle grid) */
+    uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced,
+                             * 4 = colour-modulated textured (imgui) */
+    uint32_t cs_geom_tpw;   /* raster triangles/workgroup: 0 = one wg per tri */
+    /* second compute stage (cs2 = pass-1 vertex transform of the two-pass
+     * geometry rasterizer).  cs2_qpu_words == 0 when absent.  Dispatched FIRST
+     * (one invocation per vertex) writing the packed `vout` records the cs
+     * raster pass then reads.  cs2_uniform_blob_dwords splits the per-draw
+     * uniform blob: [0, cs2_uniform_blob_dwords) feeds cs2, the rest feeds cs. */
+    uint32_t cs2_qpu_iova;  uint32_t cs2_qpu_words;
+    ewokos_addr_t cs2_qpu_raw;
+    uint32_t cs2_num_uniforms;
+    uint32_t cs2_unif_contents[V3D_3D_PROG_MAX_UNIF];
+    uint32_t cs2_unif_data[V3D_3D_PROG_MAX_UNIF];
+    uint8_t  cs2_threads, cs2_single_seg;
+    uint32_t cs2_local_size[3];
+    uint32_t cs2_shared_size;
+    uint32_t cs2_uniform_blob_dwords;
 } v3d_3d_prog_t;
 
 static v3d_3d_prog_t _progs[V3D_3D_MAX_PROGS];
@@ -451,6 +479,7 @@ static void release_prog(v3d_3d_prog_t *pr)
     if (pr->fs_qpu_raw)    dma_free(0, pr->fs_qpu_raw);
     if (pr->coord_qpu_raw) dma_free(0, pr->coord_qpu_raw);
     if (pr->cs_qpu_raw)    dma_free(0, pr->cs_qpu_raw);
+    if (pr->cs2_qpu_raw)   dma_free(0, pr->cs2_qpu_raw);
     memset(pr, 0, sizeof(*pr));
 }
 
@@ -673,6 +702,11 @@ int v3d_3d_init(void)
     if (alloc_stage(V3D_3D_GEN_SIZE, &va, &iova) != 0)
         return V3D_3D_UNSUPPORTED;
     _gen_va = (uint8_t *)va; _gen_p = iova;
+
+    /* two-pass geometry rasterizer intermediate (see _vout_va above) */
+    if (alloc_stage(V3D_3D_VOUT_BYTES, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _vout_va = (uint32_t *)va; _vout_p = iova;
 
     /* WS4 compiled-shader sampler state records: 4 texture + 4 sampler records,
      * each in its own 32-byte slot (16-byte aligned so the TMU_CONFIG low bits
@@ -1099,7 +1133,7 @@ static int submit_render(volatile uint32_t *core, uint32_t start, uint32_t end)
 
 /* ------------------------------------------------------------------ */
 /* empty BCL (clear path): produces the per-tile lists the RCL branches  */
-/* to.  16px tiles to match build_clear_rcl.                             */
+/* to.  64px tiles to match build_clear_rcl and build_draw_bcl.          */
 /* ------------------------------------------------------------------ */
 static uint32_t build_bcl_empty(uint32_t w, uint32_t h)
 {
@@ -1109,7 +1143,14 @@ static uint32_t build_bcl_empty(uint32_t w, uint32_t h)
     off = cl_u8(off, 0x00);                     /* layers - 1 = 0 */
     off = cl_u8(off, 0x78);                     /* TILE_BINNING_MODE_CFG */
     off = cl_u8(off, (1u << 4) | (0u << 2));    /* block 128b, initial 64b (matches RCL 0x7E) */
-    off = cl_u8(off, (1u << 3) | (1u << 0));    /* log2 tile h/w = 1 (16px) */
+    /* 64px tiles (log2t=3), matching build_draw_bcl/build_draw_rcl.  The clear
+     * bin previously used 16px tiles (log2t=1): at 1280x800 that is 80x50=4000
+     * tiles, and the binner's per-tile allocation overran the 256 KiB pool
+     * (bpca pinned at base+0x40000, bpcs 0) so the bin flush never landed and
+     * v3d_3d_clear timed out -> pgl_g3d probe-clear failed -> GPU latched off
+     * for the whole session.  64px tiles cut it to 20x13=260 tiles, the same
+     * geometry the draw path already completes with. */
+    off = cl_u8(off, (3u << 3) | (3u << 0));    /* log2 tile h/w = 3 (64px) */
     off = cl_u8(off, 0x00);
     off = cl_u8(off, 0x00);
     off = cl_u16le(off, w - 1u);
@@ -1122,7 +1163,8 @@ static uint32_t build_bcl_empty(uint32_t w, uint32_t h)
 
 /* clear RCL: render-target config, an explicit global TLB clear (2x, the
  * GFXH-1742 workaround), then a per-tile store of the cleared tile buffer
- * to the framebuffer.  16px tiles. */
+ * to the framebuffer.  64px tiles (tile arg = 8<<log2t, log2t=3), matching
+ * build_bcl_empty's binning and build_draw_rcl. */
 static uint32_t build_clear_rcl(uint32_t fb_iova, uint32_t stride_bytes,
                                 uint32_t w, uint32_t h, uint32_t tile,
                                 uint32_t fmt, uint32_t rgba8, int rb_swap)
@@ -1130,7 +1172,7 @@ static uint32_t build_clear_rcl(uint32_t fb_iova, uint32_t stride_bytes,
     uint32_t off = 0;
     uint32_t tx = (w + tile - 1) / tile;
     uint32_t ty = (h + tile - 1) / tile;
-    uint32_t log2t = 1;             /* 16 px tiles */
+    uint32_t log2t = 3;             /* 64 px tiles (tile arg must be 8<<log2t) */
     uint32_t x, y, i;
 
     /* TILE_RENDERING_MODE_CFG_COMMON (0x79, sub_id 0) */
@@ -1795,6 +1837,8 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.single_seg  = pr->cs_single_seg;
     job.dst_phy     = fb_iova;
     job.dst_span    = stride_bytes * h;
+    job.unif_span   = pr->cs_num_uniforms * 4u;
+    job.tag         = V3D_G2D_TAG_COMPUTE;
     /* a ray-marching effect at 640x480 legitimately runs for hundreds of ms;
      * give it a real budget instead of the 2D fail-fast default */
     job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
@@ -1810,32 +1854,47 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     return V3D_3D_DONE;
 }
 
-/* Geometry compute route (geom_raster_cs.h): ONE workgroup per triangle,
- * local_size 8x8x1.  The kernel transforms/lights/rasterises the staged mesh
- * entirely in compute: SSBO binding 0 = fb (uint/pixel, AABBGGRR packed),
- * 1 = positions (float, 12-byte vec3), 2 = normals (same packing - the draw's
- * col_iova carries them), 3 = depth (uint/pixel 24-bit unorm, atomicMin).
- * The TEXTURED variant (cs_is_geom == 2, geom_raster_tex_cs_glsl) must fit
- * the same FOUR binding points V3D 7.1 compute exposes, so it re-slots them:
- * binding 1 = interleaved pos.xyz+uv.xy (6-float stride, the draw's pos_iova),
- * binding 2 = depth, binding 3 = texture image (a linear uint32 array passed
- * per-draw as tex_iova).  The client pre-clears fb and depth each frame; the
- * kernel's per-draw blob carries uMVP/uModelView/uNormalMat/uMaterial/
- * uLightEye/uShade/uViewportWH/uFbStride/uTriFirst/uTriCount (+ uTexW/uTexH).
- * The depth surface is a SECOND GPU-written range, so it rides the job's aux
- * POST writeback (v3d_g2d_csd_job_t): without it, dirty depth lines linger in
- * L2T and tear the next frame. */
+/* Geometry compute route (geom_raster_cs.h), TWO-PASS: vertex shading is
+ * hoisted out of the rasterizer so each vertex is transformed+lit exactly once
+ * instead of once per triangle-workgroup-invocation (a 64x ALU cut for the
+ * teapot).  Both passes are CSD dispatches under ONE op bracket (the dispatch
+ * lock is owner-recursive) so no other worker can interleave and clobber the
+ * shared `vout` intermediate between them.
+ *
+ *   Pass 1 - cs2 (xform): grid ceil(nverts/64) workgroups of 64, one invocation
+ *     per vertex.  SSBO 0 = vout (8-float/32-byte records), 1 = positions
+ *     (float vec3, 12-byte) or interleaved pos+uv (6-float) for the textured
+ *     variant, 2 = normals (gouraud only).  dst = vout so its POST writeback
+ *     cleans the records to DRAM for pass 2 to read; its PRE is ranged over
+ *     the vertex streams (the only ARM-written surfaces it reads).
+ *   Pass 2 - cs (raster): ONE workgroup per triangle, local_size 8x8.  SSBO
+ *     0 = fb, 1 = vout, 2 = depth (gouraud) / 3 = texture (textured).  dst = fb
+ *     + aux = depth for the POST writeback.  It runs with NO PRE: vout, fb
+ *     and depth are all GPU-owned (the fills and pass 1 just wrote them, the
+ *     previous frame's POST cleaned them); the textured variant keeps a
+ *     ranged PRE over the texture image, which the ARM wrote at upload.
+ *
+ * The frame's first draw also clears colour + depth on the GPU (two
+ * write-only fills with no maintenance of their own), replacing the
+ * client's per-frame CPU clear of both canvases through NOCACHE shm.
+ *
+ * The per-draw uniform blob is the concatenation [cs2/xform | cs/raster]; the
+ * split is the program's cs2_uniform_blob_dwords. */
 static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                              uint32_t stride_bytes, uint32_t fmt,
                              uint32_t w, uint32_t h, uint32_t nverts,
                              uint32_t pos_iova, uint32_t nrm_iova,
                              uint32_t depth_iova, uint32_t z_stride,
                              const uint32_t *unif, uint32_t num_uniforms,
-                             uint32_t tex_iova)
+                             uint32_t tex_iova, uint32_t tex_span,
+                             uint32_t inst_iova, uint32_t inst_span, int is_inst,
+                             int is_texcol, int first_frame, uint32_t clear_rgba)
 {
     v3d_g2d_csd_job_t job;
     uint32_t ssbo[4];
     uint32_t ntris = nverts / 3u;
+    uint32_t split = pr->cs2_uniform_blob_dwords;
+    uint32_t xwg;
     int rc;
 
     if (fmt != V3D_3D_FMT_RGBA8)
@@ -1846,38 +1905,174 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         return decline("geom: depth stride");
     if (ntris == 0 || ntris >= (1u << 16))
         return decline("geom: triangle count");
+    if (nverts > V3D_3D_MAX_VERTS)
+        return decline("geom: nverts > vout");
     if (pr->cs_local_size[0] == 0 || pr->cs_local_size[1] == 0 ||
         pr->cs_local_size[2] != 1u)
         return decline("geom: local_size");
     if (pr->cs_shared_size != 0)
         return decline("geom: shared memory unsupported");
-
-    /* SSBO layout: the textured kernel shares binding 1 between pos and uv
-       (interleaved) and moves depth to binding 2 so the texture image can
-       take binding 3; the gouraud kernel keeps pos/nrm/depth at 1/2/3. */
-    ssbo[0] = fb_iova;
-    ssbo[1] = pos_iova;
-    if (tex_iova != 0u) {
-        ssbo[2] = depth_iova;
-        ssbo[3] = tex_iova;
-    } else {
-        ssbo[2] = nrm_iova;
-        ssbo[3] = depth_iova;
-    }
+    /* pass 1 (cs2/xform) is mandatory on the two-pass geom route */
+    if (pr->cs2_qpu_words == 0 ||
+        pr->cs2_local_size[0] == 0 || pr->cs2_local_size[1] == 0 ||
+        pr->cs2_local_size[2] != 1u)
+        return decline("geom: xform stage missing");
+    if (pr->cs2_shared_size != 0)
+        return decline("geom: xform shared memory unsupported");
+    if (split > num_uniforms)
+        return decline("geom: uniform blob shorter than xform region");
+    /* The daemon-side frame clear fills tightly-packed rows only; a pitched
+     * colour or depth canvas would be left half-cleared, so decline it and
+     * the client keeps its own CPU clear (pgl_g3d always sends w*4). */
+    if (first_frame && (stride_bytes != w * 4u || z_stride != w * 4u))
+        return decline("geom: first_frame pitched strides");
 
     v3d_g2d_op_begin();
-    if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
-                        pr->cs_num_uniforms, unif, num_uniforms, NULL,
-                        0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u) != 0) {
+
+    /* Frame clear on the GPU, before either pass: the client drops its
+     * per-frame CPU clear of colour+depth (~2.4 MB of NOCACHE writes) once
+     * this path has run, so the frame's first geom draw fills both canvases
+     * itself.  The fills are write-only and take no L2T maintenance of
+     * their own: pass 1's POST drains the write combiner before pass 2's
+     * depth atomics read, and pass 2's POST writes fb+depth back to DRAM.
+     * The geom fb layout is 0xAARRGGBB while clear_rgba is the back end's
+     * 0xAABBGGRR, so R and B swap. */
+    if (first_frame) {
+        uint32_t c = clear_rgba;
+        uint32_t px = (c & 0xFF000000u) | ((c & 0x000000FFu) << 16) |
+                      (c & 0x0000FF00u) | ((c & 0x00FF0000u) >> 16);
+
+        if (!gpu_fill_surface_m(fb_iova, NULL, (int32_t)w, (int32_t)h,
+                                0, 0, (int32_t)w, (int32_t)h, px, 0u) ||
+            !gpu_fill_surface_m(depth_iova, NULL, (int32_t)w, (int32_t)h,
+                                0, 0, (int32_t)w, (int32_t)h,
+                                0xFFFFFFFFu, 0u)) {
+            v3d_g2d_op_end();
+            return decline("geom: frame clear fill");
+        }
+    }
+
+    /* ---- Pass 1: vertex transform -> vout ---------------------------- */
+    ssbo[0] = _vout_p;
+    ssbo[1] = pos_iova;
+    if (tex_iova != 0u) {
+        /* textured xform reads interleaved pos+uv from binding 1 only */
+        if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
+                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: xform uniforms (tex)");
+        }
+    } else if (is_inst) {
+        /* instanced xform: binding 2 = normals, binding 3 = the per-instance
+         * matrix SSBO (gears) the client refills every frame. */
+        ssbo[2] = nrm_iova;
+        ssbo[3] = inst_iova;
+        if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
+                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: xform uniforms (inst)");
+        }
+    } else {
+        ssbo[2] = nrm_iova;
+        if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
+                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 3u) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: xform uniforms");
+        }
+    }
+    __asm__ __volatile__("dsb sy" ::: "memory");
+
+    xwg = pr->cs2_local_size[0] * pr->cs2_local_size[1];
+    memset(&job, 0, sizeof(job));
+    job.code_iova   = pr->cs2_qpu_iova;
+    job.unif_iova   = _ccu_unif_p;
+    job.wg_count[0] = (nverts + xwg - 1u) / xwg;   /* one invocation per vertex */
+    job.wg_count[1] = 1u;
+    job.wg_count[2] = 1u;
+    job.wg_size     = xwg;
+    job.threads     = pr->cs2_threads;
+    job.single_seg  = pr->cs2_single_seg;
+    job.dst_phy     = _vout_p;          /* POST writeback: vout -> DRAM */
+    job.dst_span    = nverts * (is_texcol ? 48u : 32u);
+    job.unif_span   = pr->cs2_num_uniforms * 4u;
+    job.tag         = V3D_G2D_TAG_GEOM_XFORM;
+    /* Ranged PRE: the only ARM-written surfaces this pass reads are the
+     * vertex streams (vout is write-only here), so the hull of pos(+nrm)
+     * bounds the invalidate instead of the whole IOVA range. */
+    {
+        uint32_t lo = pos_iova;
+        uint32_t hi = pos_iova + nverts * (is_texcol ? 40u :
+                                             (tex_iova != 0u ? 24u :
+                                              (is_inst ? 16u : 12u)));
+
+        if (tex_iova == 0u && nrm_iova != 0u) {
+            uint32_t nlo = nrm_iova;
+            uint32_t nhi = nrm_iova + nverts * 12u;
+
+            if (nlo < lo) lo = nlo;
+            if (nhi > hi) hi = nhi;
+        }
+        if (is_inst && inst_iova != 0u) {
+            /* the per-frame instance-matrix buffer is ARM-written, so it joins
+             * the PRE hull (drop any stale L2 lines from the previous frame). */
+            uint32_t ghi = inst_iova + inst_span;
+
+            if (inst_iova < lo) lo = inst_iova;
+            if (ghi > hi) hi = ghi;
+        }
+        job.src_phy  = lo;
+        job.src_span = hi - lo;
+    }
+    job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
+    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
+                               V3D_G2D_POLL_IRQ);
+    if (rc != 0) {
         v3d_g2d_op_end();
-        return decline("geom: uniforms");
+        slog("v3d_3d: geom xform rc=%d nverts %u wg=%u thr=%u unif=%u "
+             "ssbo[vout=%x pos=%x s2=%x s3=%x]\r\n",
+             rc, nverts, job.wg_size, (uint32_t)pr->cs2_threads,
+             pr->cs2_num_uniforms,
+             ssbo[0], ssbo[1], ssbo[2], ssbo[3]);
+        return rc > 0 ? V3D_3D_TIMEOUT : V3D_3D_MMU_FAULT;
+    }
+
+    /* ---- Pass 2: rasterize from vout --------------------------------- */
+    ssbo[0] = fb_iova;
+    ssbo[1] = _vout_p;
+    ssbo[2] = depth_iova;
+    if (tex_iova != 0u)
+        ssbo[3] = tex_iova;
+    /* the raster kernel's uniforms live in the SECOND region of the blob */
+    if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+                        pr->cs_num_uniforms, unif + split, num_uniforms - split,
+                        NULL, 0.0f, 0.0f, 0.0f, 0.0f,
+                        ssbo, tex_iova != 0u ? 4u : 3u) != 0) {
+        v3d_g2d_op_end();
+        return decline("geom: raster uniforms");
     }
     __asm__ __volatile__("dsb sy" ::: "memory");
 
     memset(&job, 0, sizeof(job));
     job.code_iova   = pr->cs_qpu_iova;
     job.unif_iova   = _ccu_unif_p;
-    job.wg_count[0] = ntris;    /* one workgroup per triangle */
+    /* Raster grid: the legacy kernels map one workgroup to one triangle
+     * (cs_geom_tpw 0/1); the one-lane-per-triangle kernels (V4/V5) cover
+     * cs_geom_tpw triangles per workgroup, so the grid is ceil(ntris/tpw).
+     * The wide grid is the whole performance point: the CSD charges ~3us
+     * of fixed dispatch overhead PER WORKGROUP on this part (measured on
+     * device: 6400 workgroups cost ~19-20ms no matter what the kernel
+     * does), so ntris/256 workgroups is what makes the compute rasterizer
+     * fast.  An over-dispatching peer (tpw mismatch) still renders
+     * correctly through the kernel's uTriCount guard, just slowly. */
+    {
+        uint32_t tpw = pr->cs_geom_tpw;
+        if (tpw == 0u)
+            tpw = 1u;
+        job.wg_count[0] = (ntris + tpw - 1u) / tpw;
+    }
     job.wg_count[1] = 1u;
     job.wg_count[2] = 1u;
     job.wg_size     = pr->cs_local_size[0] * pr->cs_local_size[1];
@@ -1887,14 +2082,27 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.dst_span    = stride_bytes * h;
     job.aux_phy     = depth_iova;   /* atomicMin depth canvas writeback */
     job.aux_span    = z_stride * h;
+    job.unif_span   = pr->cs_num_uniforms * 4u;
+    job.tag         = V3D_G2D_TAG_GEOM_RASTER;
+    if (tex_iova != 0u) {
+        job.src_phy  = tex_iova;    /* ARM-written at upload: ranged PRE */
+        job.src_span = tex_span;
+    }
     job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
-    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
+    /* No PRE for the gouraud variant: every surface this pass touches
+     * (vout, fb, depth) is GPU-owned and coherent through the L2T - the
+     * fills and pass 1 just wrote them, and the previous frame's POST
+     * cleaned them.  The textured variant keeps the ranged texture PRE. */
+    rc = v3d_g2d_run_csd(&job, (tex_iova != 0u ? V3D_G2D_MAINT_PRE : 0u) |
+                               V3D_G2D_MAINT_POST | V3D_G2D_POLL_YIELD |
                                V3D_G2D_POLL_IRQ);
     v3d_g2d_op_end();
     if (rc != 0) {
-        slog("v3d_3d: geom draw rc=%d tris %u wg=%u thr=%u unif=%u\r\n",
+        slog("v3d_3d: geom raster rc=%d tris %u wg=%u thr=%u unif=%u "
+             "ssbo[fb=%x vout=%x depth=%x tex=%x]\r\n",
              rc, ntris, job.wg_size,
-             (uint32_t)pr->cs_threads, pr->cs_num_uniforms);
+             (uint32_t)pr->cs_threads, pr->cs_num_uniforms,
+             ssbo[0], ssbo[1], ssbo[2], ssbo[3]);
         return rc > 0 ? V3D_3D_TIMEOUT : V3D_3D_MMU_FAULT;
     }
     return V3D_3D_DONE;
@@ -1987,8 +2195,10 @@ int v3d_3d_clear(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
     if (rc != 0)
         goto out;
 
-    /* render: clear via the explicit per-tile store */
-    len = build_clear_rcl(fb_iova, stride_bytes, w, h, 16, fmt, rgba8, rb_swap);
+    /* render: clear via the explicit per-tile store.  64px tiles to match the
+     * 64px binning above (build_bcl_empty) and build_draw_rcl; a 16px clear at
+     * 1280x800 overruns the 256 KiB binner pool and times out. */
+    len = build_clear_rcl(fb_iova, stride_bytes, w, h, 64, fmt, rgba8, rb_swap);
     if (len > V3D_3D_CL_MAX)
         goto out;
     rc = submit_render(core, _cl_p, _cl_p + len);
@@ -2040,22 +2250,42 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
              * depth canvas ride the draw's own iovas.  cs_is_geom == 2 is the
              * TEXTURED kernel: pos_iova carries interleaved pos+uv (6-float
              * stride, nverts*24 bytes), col_iova is unused (zero canvas), and
-             * the texture image arrives as ctex unit 0 (linear uint32). */
+             * the texture image arrives as ctex unit 0 (linear uint32).
+             * cs_is_geom == 3 is the INSTANCED kernel (gears): pos_iova carries
+             * vec4 pos+instance-index (16-byte stride), col_iova the float3
+             * normals, and ctex unit 0 the per-frame instance-matrix SSBO.
+             * cs_is_geom == 4 is the COLOUR-MODULATED TEXTURED kernel (imgui):
+             * pos_iova carries interleaved pos+uv+rgba (10-float stride,
+             * nverts*40 bytes), col_iova is unused (zero canvas), ctex unit 0
+             * the linear font-atlas image; the raster kernel alpha-blends and
+             * clips (uScissor) with no depth write. */
             int gtex = (_progs[prog_handle].cs_is_geom == 2);
+            int ginst = (_progs[prog_handle].cs_is_geom == 3);
+            int gtc = (_progs[prog_handle].cs_is_geom == 4);
+            /* textured family (plain tex + colour-modulated tex): col unused,
+             * ctex[0] is the linear image the raster kernel indexes directly. */
+            int gtexc = gtex || gtc;
+            uint32_t pstride = gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u));
             if (mode != V3D_3D_MODE_TRIANGLES)
                 return decline("geom: mode not triangles");
             if (nverts == 0 || (nverts % 3u) != 0)
                 return decline("geom: nverts not multiple of 3");
-            if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * (gtex ? 24u : 12u)))
+            if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * pstride))
                 return decline("geom: pos iova");
-            if (!gtex && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
+            if (!gtexc && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
                 return decline("geom: nrm iova");
-            if (gtex && (ctex == NULL || ctex->ctex_iova[0] == 0))
+            if (gtexc && (ctex == NULL || ctex->ctex_iova[0] == 0))
                 return decline("geom tex: no texture bound");
-            if (gtex && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
+            if (gtexc && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
                 !v3d_g2d_phy_valid(ctex->ctex_iova[0],
                                    (size_t)ctex->ctex_stride[0] * ctex->ctex_h[0])))
                 return decline("geom tex: tex iova");
+            if (ginst && (ctex == NULL || ctex->ctex_iova[0] == 0))
+                return decline("geom inst: no instance buffer bound");
+            if (ginst && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
+                !v3d_g2d_phy_valid(ctex->ctex_iova[0],
+                                   (size_t)ctex->ctex_stride[0] * ctex->ctex_h[0])))
+                return decline("geom inst: instance iova");
             if (z_iova == 0 ||
                 !v3d_g2d_phy_valid(z_iova, (size_t)z_stride * h))
                 return decline("geom: depth iova");
@@ -2063,7 +2293,13 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                      stride_bytes, fmt, w, h, nverts,
                                      pos_iova, col_iova, z_iova, z_stride,
                                      unif, num_uniforms,
-                                     gtex ? ctex->ctex_iova[0] : 0u);
+                                     gtexc ? ctex->ctex_iova[0] : 0u,
+                                     gtexc ? ctex->ctex_stride[0] *
+                                             ctex->ctex_h[0] : 0u,
+                                     ginst ? ctex->ctex_iova[0] : 0u,
+                                     ginst ? ctex->ctex_stride[0] *
+                                             ctex->ctex_h[0] : 0u,
+                                     ginst, gtc, first_frame, clear_rgba);
         }
         return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
                             w, h, unif, num_uniforms, ctex);
@@ -2355,6 +2591,26 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
          (desc->cs_num_uniforms &&
           (desc->cs_unif_contents == NULL || desc->cs_unif_data == NULL))))
         return V3D_3D_PROG_UNSUPPORTED;
+    /* optional second compute stage (pass-1 vertex transform) */
+    if (desc->cs2_qpu_words != 0 &&
+        (desc->cs2_qpu == NULL || desc->cs2_qpu_words > V3D_3D_PROG_MAX_QPU ||
+         desc->cs2_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
+         (desc->cs2_num_uniforms &&
+          (desc->cs2_unif_contents == NULL || desc->cs2_unif_data == NULL))))
+        return V3D_3D_PROG_UNSUPPORTED;
+    /* a two-pass geom program must carry BOTH stages; a geom raster kernel
+     * without its xform pass (or vice versa) cannot run, so decline it. */
+    if (desc->cs_is_geom && (desc->cs_qpu_words == 0 || desc->cs2_qpu_words == 0))
+        return V3D_3D_PROG_UNSUPPORTED;
+    /* cs_geom_tpw invariant: the one-lane-per-triangle raster kernels cover
+     * exactly one triangle per lane, so a nonzero tpw must equal the cs
+     * workgroup lane count - anything else would silently mis-cover the
+     * mesh (a too-wide grid drops triangles, a too-narrow one wastes the
+     * guard exits).  0 keeps the legacy one-workgroup-per-triangle grid. */
+    if (desc->cs_geom_tpw != 0u &&
+        desc->cs_geom_tpw != desc->cs_local_size[0] * desc->cs_local_size[1] *
+                             desc->cs_local_size[2])
+        return V3D_3D_PROG_UNSUPPORTED;
 
     /* reserve a free cache slot */
     for (i = 0; i < V3D_3D_MAX_PROGS; i++) {
@@ -2410,6 +2666,30 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         pr->cs_local_size[2] = desc->cs_local_size[2];
         pr->cs_shared_size  = desc->cs_shared_size;
         pr->cs_is_geom      = desc->cs_is_geom;
+        pr->cs_geom_tpw     = desc->cs_geom_tpw;
+    }
+
+    /* upload the optional second COMPUTE QPU (pass-1 vertex transform) */
+    if (desc->cs2_qpu_words != 0) {
+        if (alloc_stage_raw(desc->cs2_qpu_words * 4u, &va, &iova, &pr->cs2_qpu_raw) != 0)
+            goto fail;
+        memcpy(va, desc->cs2_qpu, desc->cs2_qpu_words * 4u);
+        pr->cs2_qpu_iova  = iova;
+        pr->cs2_qpu_words = desc->cs2_qpu_words;
+        if (desc->cs2_num_uniforms) {
+            memcpy(pr->cs2_unif_contents, desc->cs2_unif_contents,
+                   desc->cs2_num_uniforms * 4u);
+            memcpy(pr->cs2_unif_data, desc->cs2_unif_data,
+                   desc->cs2_num_uniforms * 4u);
+        }
+        pr->cs2_num_uniforms = desc->cs2_num_uniforms;
+        pr->cs2_threads      = desc->cs2_threads;
+        pr->cs2_single_seg   = desc->cs2_single_seg;
+        pr->cs2_local_size[0] = desc->cs2_local_size[0];
+        pr->cs2_local_size[1] = desc->cs2_local_size[1];
+        pr->cs2_local_size[2] = desc->cs2_local_size[2];
+        pr->cs2_shared_size  = desc->cs2_shared_size;
+        pr->cs2_uniform_blob_dwords = desc->cs2_uniform_blob_dwords;
     }
 
     /* cache the uniform layout descriptors AND their per-slot args on the CPU.

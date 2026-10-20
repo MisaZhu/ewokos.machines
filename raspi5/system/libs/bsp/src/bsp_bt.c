@@ -35,7 +35,8 @@
 #define UARTA_DLL_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x00u)
 #define UARTA_IER_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x04u)
 #define UARTA_DLM_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x04u)
-#define UARTA_FCR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x08u)
+#define UARTA_IIR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x08u) /* read */
+#define UARTA_FCR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x08u) /* write */
 #define UARTA_LCR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x0cu)
 #define UARTA_MCR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x10u)
 #define UARTA_LSR_REG ((uintptr_t)_mmio_base + PI5_UARTA_OFF + 0x14u)
@@ -119,6 +120,35 @@ static int                 _bt_irq_on;      /* 0: poll only, 1: armed */
 static uint32_t            _bt_irq_miss_run;
 #define BT_RX_TOKEN ((ewokos_addr_t)(uintptr_t)&_bt_rx_seq)
 
+/* v3 forensics: the v2 RBR-race fix removed every main-context RBR read,
+   yet the desync signature (`other=<big> last_pkt=0x00`) persisted on
+   real hardware. Those counters localize the remaining source of 0x00
+   bytes: only the handler can push to the ring now, so if `zeros` grows
+   the BCM7271 is returning 0x00 from RBR with LSR.DR set (hardware
+   quirk), if `drops` grows the ring is overflowing (main is stalled),
+   if `irqs` stays low the kernel is not delivering INTID 308. All are
+   reported through bsp_bt_diag_str and land in every existing timeout
+   slog -- no new log spam, just richer tails on the lines we already
+   print. */
+static volatile uint32_t   _bt_irq_count;      /* handler entries */
+static volatile uint32_t   _bt_irq_bytes;      /* RBR reads total */
+static volatile uint32_t   _bt_irq_zeros;      /* RBR reads returning 0x00 */
+static volatile uint32_t   _bt_irq_drops;      /* ring-full push drops */
+static volatile uint32_t   _bt_irq_max_burst;  /* largest single drain */
+/* v4 IIR forensics: distribution of the interrupt-source register at
+   handler entry. Real RX traffic shows IIR=0x04 (data available) or
+   0x0c (character timeout). IIR=0x01 means the line fired with no
+   pending source (spurious), and 0x00/0x06 would indicate modem/line
+   status we did not enable. If the 0x00-byte source is spurious IRQ
+   delivery, `iir_none` or `iir_other` grows alongside `zeros`; if the
+   controller genuinely sends NUL bytes, IIR is 0x04/0x0c for every
+   one of them. */
+static volatile uint32_t   _bt_irq_iir_rx;     /* IIR 0x04: data available */
+static volatile uint32_t   _bt_irq_iir_to;     /* IIR 0x0c: char timeout */
+static volatile uint32_t   _bt_irq_iir_none;   /* IIR 0x01: nothing pending */
+static volatile uint32_t   _bt_irq_iir_other;  /* anything else */
+static volatile uint32_t   _bt_irq_iir_last;   /* last IIR value seen */
+
 static inline bool rx_ring_empty(void) {
     return _rx_head == _rx_tail;
 }
@@ -127,11 +157,13 @@ static inline bool rx_ring_empty(void) {
    (MCR AFE, set in pi5_bt_uart_init) keeps the CYW43455 from overrunning
    a drained ring under normal load, so overflow means the reader is
    stalled; dropping one byte is louder in the H4 framing than spinning
-   here would be (the handler cannot block). */
+   here would be (the handler cannot block). Drops are counted so the
+   diag tail can distinguish "ring overflowed" from "handler silent". */
 static inline void rx_ring_push(uint8_t b) {
     uint32_t h = _rx_head;
     uint32_t nh = (h + 1u) & BT_RX_RING_MASK;
     if (nh == _rx_tail) {
+        _bt_irq_drops++;
         return;
     }
     _rx_ring[h] = b;
@@ -152,14 +184,67 @@ static inline bool rx_ring_pop(uint8_t* b) {
 
 static void bt_uart_rx_irq(uint32_t irq, ewokos_addr_t data) {
     int32_t waiter;
+    uint32_t burst = 0;
+    uint32_t iir;
 
     (void)irq;
     (void)data;
+    _bt_irq_count++;
+
+    /* Standard 16550 interrupt arbitration: read IIR BEFORE touching
+       RBR. Bit 0 == 1 means "no interrupt pending" (spurious delivery,
+       e.g. a level line that dropped between GIC latch and handler
+       entry). Bits 3:1 identify the source; with IER=0x01 (ERBFI only)
+       the legitimate values are 0b010 (Received Data Available) and
+       0b110 (Character Timeout Indication, fires when the FIFO holds
+       data but no new byte arrived for 4 char times). Anything else
+       (modem status, line status, or "none") must NOT drain RBR --
+       reading RBR while the FIFO is empty returns 0x00 on this IP and
+       that spurious 0x00 was pushed into the ring, appearing to btd
+       as a valid H4 pkt_type=0 and desyncing the stream (log signature:
+       `hz` grows ~1:1 with `hirq` while `hd` stays 0). The BCM7271
+       datasheet calls this out too: always identify via IIR first. */
+    iir = get32(UARTA_IIR_REG) & 0xFFu;
+    _bt_irq_iir_last = iir;
+    if (iir & 0x01u) {
+        _bt_irq_iir_none++;
+        return;   /* spurious: no source pending, do not touch RBR */
+    }
+    switch (iir & 0x0Eu) {
+    case 0x04u:   /* Received Data Available */
+        _bt_irq_iir_rx++;
+        break;
+    case 0x0Cu:   /* Character Timeout Indication */
+        _bt_irq_iir_to++;
+        break;
+    default:      /* line status / modem status: not enabled, but if the
+                     line fires anyway, drain nothing and let the kernel
+                     EOI. Reading LSR/MSR here would clear the source
+                     silently and mask the fact that IER got mis-set. */
+        _bt_irq_iir_other++;
+        return;
+    }
+
     /* Drain every byte the 16550 has staged. Reading RBR is what pops a
        byte and drops LSR.DR, which is what deasserts the level line so
-       the kernel's EOI does not immediately re-fire the handler. */
+       the kernel's EOI does not immediately re-fire the handler.
+       The 0x00 tally now separates "controller really sent NUL" (legit
+       H4 payload bytes, common in gamepad idle reports) from "spurious
+       RBR read with DR set" -- the IIR gate above removes the second
+       class entirely, so any residual `hz` growth is genuine NULs. */
     while (get32(UARTA_LSR_REG) & UART_LSR_DR) {
-        rx_ring_push((uint8_t)(get32(UARTA_RBR_REG) & 0xFFu));
+        uint32_t raw = get32(UARTA_RBR_REG) & 0xFFu;
+        _bt_irq_bytes++;
+        if (raw == 0u) {
+            _bt_irq_zeros++;
+        }
+        rx_ring_push((uint8_t)raw);
+        if (++burst >= 512u) {
+            break;   /* runaway guard: never wedge the interrupt stack */
+        }
+    }
+    if (burst > _bt_irq_max_burst) {
+        _bt_irq_max_burst = burst;
     }
     _bt_rx_seq++;
     __asm__ __volatile__("dmb ish" ::: "memory");
@@ -191,7 +276,17 @@ static void bt_uart_irq_arm(void) {
     __asm__ __volatile__("dsb sy" ::: "memory");
     if (sys_interrupt_setup(BT_UARTA_IRQ, &_bt_uart_irq_handler) == 0) {
         _bt_irq_on = 1;
-        slog("bluetooth uarta irq %u armed\n", (uint32_t)BT_UARTA_IRQ);
+        /* v6 tag: fixes bsp_bt_recv wait-loop spin bug. The old code
+           accumulated `waited_us += slice` after proc_block_timeout(),
+           but if BT_RX_TOKEN was already latched, proc_block_timeout()
+           returned immediately and the loop spun through the budget in
+           ~8ms instead of parking for timeout_ms. This caused bt_recv_exact
+           to fail after ~8ms (not 120ms/500ms), losing partial bytes and
+           desyncing H4. Now uses kernel_tic_ms() for real elapsed time.
+           Combined with v5's 500ms follow-timeout (covers 8 bytes/sec
+           wire-rate collapse when gamepad is idle), the H4 stream should
+           stay aligned through le_conn_updated itv=12 transitions. */
+        slog("bluetooth uarta irq %u armed v6\n", (uint32_t)BT_UARTA_IRQ);
     }
     else {
         put32(UARTA_IER_REG, 0x00u);
@@ -392,8 +487,17 @@ int bsp_bt_send(uint8_t pkt_type, const uint8_t* data, size_t len) {
    usleep quantum. Bounded, so a stalled line never spins past the budget. */
 #define BT_UART_RX_SPIN_ITERS 2000u
 
-/* Bumped by every polled byte that arrived with LSR.DR set but no handler
-   delivery in front of it. Reaching BT_IRQ_MISS_MAX trips the fallback. */
+/* Observed a slice end with LSR.DR set but nothing in the ring. Do NOT
+   read RBR here: 16550 RBR reads destructively pop the FIFO, and the
+   handler may be about to preempt us and drain the same byte -- the
+   main-context read then returns 0x00 from an already-empty FIFO, which
+   bt_poll_once happily accepts as a pkt_type. That single race desyncs
+   the H4 stream (log signature: `other=<big> last_pkt=0x00` while
+   `evt/acl` counts stay small, and any bt_hci_command_sync in flight
+   times out on its Command_Complete). The safe form of the miss
+   detector is pure observation: count the slice, let the next slice
+   decide whether the handler ever ran. Reaching BT_IRQ_MISS_MAX trips
+   the fallback, which then owns RBR exclusively. */
 static void bt_irq_note_miss(void) {
     if (++_bt_irq_miss_run >= BT_IRQ_MISS_MAX) {
         bt_uart_irq_off("never delivered");
@@ -402,7 +506,7 @@ static void bt_irq_note_miss(void) {
 
 int bsp_bt_recv(uint32_t timeout_ms) {
     uint8_t b;
-    uint32_t waited_us = 0;
+    uint64_t start_ms;
     uint32_t budget_us = timeout_ms * 1000u;
 
     if (!_transport_up) {
@@ -416,16 +520,12 @@ int bsp_bt_recv(uint32_t timeout_ms) {
             return (int)b;
         }
         if (timeout_ms == 0) {
-            /* Probe the wire once: a byte sitting in LSR with the ring
-               empty means the handler missed an edge (should be
-               impossible on a level-triggered line, but a spurious
-               IER write from another path could clear the pending
-               state). Count it as a miss so the fallback eventually
-               trips. */
+            /* Opportunistic first-byte probe: the ring is the only
+               legal source while the handler owns RBR. A DR-set wire
+               with an empty ring just means the handler has not run
+               yet; do NOT read RBR here (see bt_irq_note_miss). */
             if (get32(UARTA_LSR_REG) & UART_LSR_DR) {
                 bt_irq_note_miss();
-                b = (uint8_t)(get32(UARTA_RBR_REG) & 0xFFu);
-                return (int)b;
             }
             return -1;
         }
@@ -434,24 +534,45 @@ int bsp_bt_recv(uint32_t timeout_ms) {
            (the same reason hid_keybd uses it), and the kernel's
            wake_pending latch makes the check-then-block sequence
            race-free against a handler that fires between the ring check
-           above and this call. */
-        while (waited_us < budget_us) {
-            uint32_t slice = budget_us - waited_us;
+           above and this call.
+
+           v6 FIX: measure REAL elapsed time with kernel_tic_ms(), not
+           assumed slice accumulation. The old code did `waited_us += slice`
+           after proc_block_timeout(), but if BT_RX_TOKEN was already
+           latched (handler woke us previously, ring already drained),
+           proc_block_timeout() returns IMMEDIATELY. The loop then spins
+           through budget_us/slice iterations in ~8ms instead of parking
+           for the full timeout_ms. This caused bt_recv_exact to return -1
+           after ~8ms instead of 120ms/500ms, losing partial pkt_type+hdr
+           bytes and desyncing the H4 stream. Real-hardware forensics:
+           123 timeout logs in waited=1000ms = 8ms per timeout, impossible
+           with 120ms+ per-byte budget unless the wait loop was spinning. */
+        start_ms = kernel_tic_ms(0);
+        for (;;) {
+            uint32_t elapsed_ms = (uint32_t)(kernel_tic_ms(0) - start_ms);
+            uint32_t slice;
+            if (elapsed_ms >= timeout_ms) {
+                break;   /* real timeout expired */
+            }
+            slice = (timeout_ms - elapsed_ms) * 1000u;
             if (slice > BT_IRQ_WAIT_SLICE_US) {
                 slice = BT_IRQ_WAIT_SLICE_US;
             }
             proc_block_timeout(BT_RX_TOKEN, slice);
-            waited_us += slice;
             if (rx_ring_pop(&b)) {
                 _bt_irq_miss_run = 0;
                 return (int)b;
             }
-            /* Slice elapsed with an empty ring: probe LSR to detect a
-               lost interrupt before waiting another slice. */
+            /* Slice elapsed with an empty ring: observe the wire only.
+               A DR set here means either (a) the byte landed between
+               the ring check and this read and the handler will run
+               momentarily, or (b) the handler is genuinely not being
+               delivered. Only a run of BT_IRQ_MISS_MAX consecutive
+               slice-end observations distinguishes (b), and even then
+               we hand RBR over to the polled path below rather than
+               read it here. */
             if (get32(UARTA_LSR_REG) & UART_LSR_DR) {
                 bt_irq_note_miss();
-                b = (uint8_t)(get32(UARTA_RBR_REG) & 0xFFu);
-                return (int)b;
             }
             if (!_bt_irq_on) {
                 /* fallback tripped mid-wait; drop into the polled path
@@ -463,15 +584,25 @@ int bsp_bt_recv(uint32_t timeout_ms) {
             return -1;   /* clean timeout, ring still empty */
         }
         /* fall through: IRQ was disabled while we were parked */
-        budget_us -= waited_us;
-        waited_us = 0;
+        budget_us -= (uint32_t)(kernel_tic_ms(0) - start_ms) * 1000u;
     }
 
-    /* ---- Polled fallback (unchanged semantics) ---- */
+    /* ---- Polled fallback ----
+       Only reached when _bt_irq_on == 0, i.e. the handler is guaranteed
+       stopped (bt_uart_irq_off masks IER and unregisters before we get
+       here), so main owns RBR exclusively. Drain any bytes the handler
+       pushed into the ring before it was stopped first -- otherwise a
+       fallback transition orphans them and the H4 stream desyncs from
+       the other side. */
+    if (rx_ring_pop(&b)) {
+        return (int)b;
+    }
     {
         uint32_t spin = 0;
+        uint64_t poll_start_ms = kernel_tic_ms(0);
         while (!(get32(UARTA_LSR_REG) & UART_LSR_DR)) {
-            if (waited_us >= budget_us) {
+            uint32_t poll_elapsed_us = (uint32_t)(kernel_tic_ms(0) - poll_start_ms) * 1000u;
+            if (poll_elapsed_us >= budget_us) {
                 return -1;
             }
             /* mid-packet follow byte is due within ~one wire byte-time:
@@ -485,15 +616,13 @@ int bsp_bt_recv(uint32_t timeout_ms) {
                 continue;
             }
             usleep(BT_UART_RX_POLL_US);
-            waited_us += BT_UART_RX_POLL_US;
         }
         return (int)(get32(UARTA_RBR_REG) & 0xFFu);
     }
 }
 
 int bsp_bt_wait_readable(uint32_t timeout_ms) {
-    uint32_t waited_us = 0;
-    uint32_t budget_us;
+    uint64_t start_ms;
 
     if (!_transport_up) {
         return -1;
@@ -507,34 +636,31 @@ int bsp_bt_wait_readable(uint32_t timeout_ms) {
         return 1;
     }
     if (timeout_ms == 0) {
-        /* One-shot probe of the wire too: a stale DR without a handler
-           delivery is a miss and should trip the fallback. */
+        /* Pure observation, no RBR read (see bt_irq_note_miss). */
         if (get32(UARTA_LSR_REG) & UART_LSR_DR) {
             bt_irq_note_miss();
-            return _bt_irq_on ? 1 : -1;
         }
-        return 0;
+        return _bt_irq_on ? 0 : -1;
     }
-    budget_us = timeout_ms * 1000u;
-    while (waited_us < budget_us) {
-        uint32_t slice = budget_us - waited_us;
+    /* v6 FIX: same spin-bug fix as bsp_bt_recv -- use real elapsed time
+       instead of assumed slice accumulation. */
+    start_ms = kernel_tic_ms(0);
+    for (;;) {
+        uint32_t elapsed_ms = (uint32_t)(kernel_tic_ms(0) - start_ms);
+        uint32_t slice;
+        if (elapsed_ms >= timeout_ms) {
+            break;
+        }
+        slice = (timeout_ms - elapsed_ms) * 1000u;
         if (slice > BT_IRQ_WAIT_SLICE_US) {
             slice = BT_IRQ_WAIT_SLICE_US;
         }
         proc_block_timeout(BT_RX_TOKEN, slice);
-        waited_us += slice;
         if (!rx_ring_empty()) {
             return 1;
         }
         if (get32(UARTA_LSR_REG) & UART_LSR_DR) {
-            /* Data on the wire but the handler never ran. Drain it into
-               the ring here so the caller's follow-up bsp_bt_recv(0) sees
-               it, then count the miss. */
-            while (get32(UARTA_LSR_REG) & UART_LSR_DR) {
-                rx_ring_push((uint8_t)(get32(UARTA_RBR_REG) & 0xFFu));
-            }
             bt_irq_note_miss();
-            return _bt_irq_on ? 1 : -1;
         }
         if (!_bt_irq_on) {
             return -1;
@@ -578,8 +704,17 @@ void bsp_bt_diag_str(char* buf, size_t size) {
         buf[0] = 0;
         return;
     }
-    snprintf(buf, size, "lsr=0x%02x msr=0x%02x irq=%d miss=%u ring=%u",
+    snprintf(buf, size,
+        "lsr=0x%02x msr=0x%02x irq=%d miss=%u ring=%u "
+        "hirq=%u hb=%u hz=%u hd=%u hmax=%u "
+        "iir rx=%u to=%u none=%u oth=%u last=0x%02x",
         get32(UARTA_LSR_REG) & 0xffu, get32(UARTA_MSR_REG) & 0xffu,
         _bt_irq_on, (unsigned)_bt_irq_miss_run,
-        (unsigned)((_rx_head - _rx_tail) & BT_RX_RING_MASK));
+        (unsigned)((_rx_head - _rx_tail) & BT_RX_RING_MASK),
+        (unsigned)_bt_irq_count, (unsigned)_bt_irq_bytes,
+        (unsigned)_bt_irq_zeros, (unsigned)_bt_irq_drops,
+        (unsigned)_bt_irq_max_burst,
+        (unsigned)_bt_irq_iir_rx, (unsigned)_bt_irq_iir_to,
+        (unsigned)_bt_irq_iir_none, (unsigned)_bt_irq_iir_other,
+        (unsigned)_bt_irq_iir_last);
 }

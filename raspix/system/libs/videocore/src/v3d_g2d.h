@@ -75,12 +75,107 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
  * fields that describe them.  This wrapper keeps the ARM/V3D caches
  * coherent around the dispatch (nothing for NOCACHE dma canvases).
  * Returns 0 on success.
+ *
+ * v3d_g2d_run knows no physical extents, so its V3D L2T maintenance
+ * walks the WHOLE cache before and after the job.  v3d_g2d_run_ranged
+ * additionally takes the physical bases of the same two surfaces
+ * (src_phy/dst_phy, 0 when unknown) and bounds the walks to the uniform
+ * block plus those canvases - the per-dispatch fixed cost then scales
+ * with the surface size instead of the 4 GB tag space.  Every 2D caller
+ * holds those bases (it put them in the uniforms), so prefer the ranged
+ * entry; the plain one is the safe default for a caller without them.
+ * `devcmd /dev/g2d maint full` restores whole-L2 walks at runtime.
  */
 int v3d_g2d_run(const uint64_t *code, int nwords,
                 const uint32_t *unifs, int nunifs,
                 int num_qpus,
                 const void *src, size_t src_len,
                 void *dst, size_t dst_len);
+int v3d_g2d_run_ranged(const uint64_t *code, int nwords,
+                       const uint32_t *unifs, int nunifs,
+                       int num_qpus,
+                       const void *src, size_t src_len, uint32_t src_phy,
+                       void *dst, size_t dst_len, uint32_t dst_phy);
+
+/* Runtime policy knobs (devcmd /dev/g2d maint range|full, spinus <us>).
+ * maint_ranged: bounded L2T walks (default on) vs whole-L2 per dispatch.
+ * spin_us: wall-clock window the completion wait busy-polls before it
+ * parks in usleep(500) slices (default 1000; 0 parks immediately). */
+void v3d_g2d_set_maint_ranged(int on);
+int v3d_g2d_maint_ranged(void);
+void v3d_g2d_set_spin_us(uint32_t us);
+uint32_t v3d_g2d_spin_us(void);
+
+/*
+ * Generic CSD dispatch of a mesa-compiled COMPUTE shader (the soft3d
+ * compute-geometry route: v3d_3d.c stages the compiled QPU code and the
+ * expanded uniform stream in dma and references them by PHYSICAL address -
+ * raspix has no V3D MMU page table, unlike raspi5's IOVA model, so the
+ * code_iova/unif_iova/dst_phy/aux_phy/src_phy fields below are physical
+ * addresses here).  Neither the code nor the uniforms are staged by this
+ * call.  The CFG words follow mesa's v3dx launch_grid encoding: one
+ * supergroup per workgroup when wg_size is a multiple of 16; cfg[4] is
+ * NUM_BATCHES-1 on V3D 4.2 and the raw batch count on V3D 7.1 (IP rev>=6).
+ * dst/aux bound the surfaces the POST L2 writeback must cover (the geom
+ * rasterizer's atomicMin depth canvas is the aux surface); the POST walk
+ * is bounded to them when both are given (whole-L2 otherwise).  The PRE
+ * walk stays whole-L2 on raspix: the compiled code is rewritten per job
+ * and the job does not describe its extent.  Same return contract as
+ * v3d_g2d_run: 0 done, 1 timeout, -1 fault / bad arguments / V3D 2.1.
+ */
+
+/* Run flags for v3d_g2d_run_csd.  PRE: pre-job clean+invalidate of the
+ * V3D L2T/slice caches over the job's ARM-written source extent
+ * (src_phy/src_span; whole-L2 when the extent is absent or the maint knob
+ * is off) so the QPU sees fresh DRAM data.  The uniform stream
+ * (unif_iova/unif_span) is always dropped from the caches, PRE or not.
+ * The compiled code is NOT part of the per-dispatch PRE: it is uploaded
+ * once per program and v3d_g2d_l2_invalidate_all() at upload drops any
+ * lines a previous occupant of the same dma block left behind.  POST:
+ * post-job flush (drain the TMU write combiner and clean the L2T) so the
+ * job's writes - including the aux depth surface - reach DRAM before the
+ * CPU reads or re-clears them.  POLL_YIELD / POLL_IRQ are accepted for
+ * API compatibility: every wait spins the spinus window first and parks
+ * in usleep(500) slices past it (an immediate park costs a whole
+ * scheduler tick, ~976us, even for a sub-100us transform pass).
+ * budget_ms bounds the wait in wall-clock ms. */
+#define V3D_G2D_MAINT_PRE  (1u << 0)
+#define V3D_G2D_MAINT_POST (1u << 1)
+#define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
+#define V3D_G2D_POLL_YIELD (1u << 2)
+#define V3D_G2D_POLL_IRQ   (1u << 3)
+
+typedef struct {
+    uint32_t code_iova;     /* compiled compute QPU code (physical)      */
+    uint32_t unif_iova;     /* expanded uniform stream (physical)        */
+    uint32_t wg_count[3];   /* dispatch grid in workgroups               */
+    uint32_t wg_size;       /* local_size product, 1..256                */
+    uint8_t  threads;       /* prog_data threads: 1, 2 or 4              */
+    uint8_t  single_seg;    /* prog_data single_seg                      */
+    uint32_t dst_phy;       /* destination surface base (POST), or 0     */
+    uint32_t dst_span;      /* destination surface bytes, or 0           */
+    uint32_t aux_phy;       /* second GPU-written surface (POST), or 0   */
+    uint32_t aux_span;      /* aux surface bytes, or 0                   */
+    uint32_t src_phy;       /* PRE source extent base, or 0              */
+    uint32_t src_span;      /* PRE source extent bytes, or 0             */
+    uint32_t unif_span;     /* expanded uniform stream bytes, or 0       */
+    uint32_t budget_ms;     /* completion wait budget; 0 = driver default */
+    uint8_t  tag;           /* stat lane (V3D_G2D_TAG_*), 0 = untagged   */
+} v3d_g2d_csd_job_t;
+
+/* Stat lanes for csd_job_t::tag: every compute dispatch lands in the csd
+ * lane AND in the tag_* accumulator its tag names, so the stat line can
+ * split the geom passes (gx = pass-1 transform, gr = pass-2 raster) from
+ * the single-pass compute route (cs).  An out-of-range tag counts as NONE. */
+enum {
+    V3D_G2D_TAG_NONE = 0,
+    V3D_G2D_TAG_GEOM_XFORM,
+    V3D_G2D_TAG_GEOM_RASTER,
+    V3D_G2D_TAG_COMPUTE,
+    V3D_G2D_TAG_N
+};
+
+int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags);
 
 /* V3D 4.2 fixed-function TLB clear probe.  Returns -2 when unsupported. */
 int v3d_g2d_render_clear(uint32_t dst_phys, uint32_t stride_bytes,
@@ -109,6 +204,12 @@ typedef struct {
 
 void v3d_g2d_get_profile(v3d_g2d_profile_t *out);
 
+/* Whole-L2T + slice-cache clean+invalidate under the dispatch lock.  For
+ * the one-off ARM writes the per-dispatch ranged PRE does not describe:
+ * v3d_3d.c calls it after uploading a program's QPU code so a dma block
+ * reused from a freed program cannot serve the old instructions. */
+void v3d_g2d_l2_invalidate_all(void);
+
 /* Op bracket for multi-launch operations: holds the dispatch lock across
  * every v3d_g2d_run / v3d_g2d_run_vc4 / staging call of one op so another
  * worker's op cannot interleave between its batches (the lock is
@@ -124,12 +225,25 @@ void v3d_g2d_op_end(void);
  * pre = staging + V3D cache invalidate up to the kick; exec = kick to
  * completion (a timeout counts its full poll budget); post = the L2
  * flush after completion (CSD only; the SRQ launch flushes inside its
- * own wait and the TLB stores bypass the L2T). */
+ * own wait and the TLB stores bypass the L2T).  pre_full/post_full count
+ * the dispatches whose PRE/POST walked the WHOLE L2T (no physical extent
+ * known, knob off, V3D 2.1); a healthy 2D or geom stream on V3D 4.2 shows
+ * both at 0 (the single-pass compute route keeps a full PRE: its texture
+ * set has no single extent).  parks counts the usleep(500) slices the
+ * completion waits spent off the core past the spin window.  The tag_*
+ * arrays split the compute dispatches by v3d_g2d_csd_job_t::tag. */
 typedef struct {
     uint64_t runs;
     uint64_t csd, srq, tlb;
     uint64_t timeouts;
     uint64_t pre_ns, exec_ns, post_ns;
+    uint64_t pre_full, post_full;
+    uint64_t parks;
+    uint64_t tag_runs[V3D_G2D_TAG_N];
+    uint64_t tag_pre_ns[V3D_G2D_TAG_N];
+    uint64_t tag_exec_ns[V3D_G2D_TAG_N];
+    uint64_t tag_post_ns[V3D_G2D_TAG_N];
+    uint64_t tag_parks[V3D_G2D_TAG_N];
 } v3d_g2d_stats_t;
 
 /* Snapshot the counters (consistent: taken under the dispatch lock) and

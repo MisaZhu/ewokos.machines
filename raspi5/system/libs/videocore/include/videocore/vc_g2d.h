@@ -59,6 +59,12 @@ int vc_g2d_init(void);
 /* V3D clock rate in Hz confirmed during vc_g2d_init(), or 0 when unknown. */
 uint32_t vc_g2d_clock_hz(void);
 
+/* V3D architecture version x10.  raspi5 is BCM2712 / VideoCore VII, always
+   V3D 7.1, so this is the constant 71; it exists so the machine-shared g2dd
+   GET_VERSION handler and the soft3d client's version query resolve uniformly
+   across boards (raspix reports 21/42/71 from the live IDENT). */
+uint32_t vc_g2d_version(void);
+
 /* Diagnostic command hook (devcmd /dev/g2d <args>): formats the reply
  * into buf and returns 0 when the command is one of ours, -1 otherwise.
  * "stat" reports the per-dispatch phase counters, "stat reset" also
@@ -119,6 +125,15 @@ int gpu_copy_eligible(uint32_t src_phys, int32_t src_w, int32_t src_h,
 int gpu_fill_surface(uint32_t phys, uint32_t *argb, int32_t w, int32_t h,
                      int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                      uint32_t color);
+
+/* gpu_fill_surface with the caller's V3D_G2D_MAINT_* bits: a write-only
+ * fill inside a larger GPU op bracket (the 3D geom frame clear) passes 0
+ * so no L2T walk wraps the dispatch - the fill never reads, and the op's
+ * later dispatches own the writeback ordering.  argb may be NULL (the
+ * daemon-side caller holds no VA for the surface). */
+int gpu_fill_surface_m(uint32_t phys, uint32_t *argb, int32_t w, int32_t h,
+                       int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                       uint32_t color, unsigned maint);
 
 /* Identity 1:1 copy of the src rect (csx,csy)+[rx,rx1) x [ry,ry1) into the
  * dst surface modelled surf_w pixels wide (argb_copy kernel).  dst_bytes is

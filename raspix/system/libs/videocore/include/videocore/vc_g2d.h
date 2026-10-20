@@ -66,6 +66,12 @@ int vc_g2d_init(void);
 /* V3D clock rate in Hz confirmed during vc_g2d_init(), or 0 when unknown. */
 uint32_t vc_g2d_clock_hz(void);
 
+/* V3D architecture version x10 detected during vc_g2d_init() (21 = V3D 2.1
+   Pi3, 42 = V3D 4.2 Pi4, 71 = V3D 7.1 Pi5), or 0 when no V3D engine is
+   present.  raspix ships one binary across all three, so callers use this to
+   pick a generation-specific path at runtime. */
+uint32_t vc_g2d_version(void);
+
 /* Diagnostic command channel (devcmd /dev/g2d <args>): "stat" formats the
  * V3D per-dispatch phase counters into buf, "stat reset" also zeroes them.
  * Returns 0 with buf filled, -1 for an unknown command. */
@@ -184,6 +190,25 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                       int32_t src_w, int32_t src_h,
                       uint32_t dst_phys, uint32_t *argb_dst,
                       int32_t dst_w, int32_t dst_h, int rot);
+
+/* Strided right-angle (rot == 90/270) rotation of a src_w x src_h source
+ * rect whose rows pitch by src_stride, into a dst_w x dst_h destination
+ * whose rows pitch by dst_stride.  gpu_rot90_surface is this with packed
+ * strides (src_w*4 / dst_w*4); bsp_g2d_rotate_phy uses it to rotate a
+ * sub-rect of a wider canvas straight into a pitched raw physical scan-out.
+ * The kernel reads and writes per lane, so both strides are free uniforms
+ * and argb_dst may be NULL (a physical destination with no kernel-visible
+ * VA - the dispatch then flushes the whole L2 for visibility).  Same
+ * generic argb_rot90 kernel and uniform contract as gpu_rot90_surface's
+ * fallback, hence identical results.  Returns GPU_DONE, GPU_UNSUPPORTED
+ * (declined before any write: VC4, a non right-angle, an inexact size
+ * swap, a bad stride, or a rect height that will not split into 4-row
+ * strips) or GPU_FAILED (a submitted dispatch errored/timed out - never
+ * replayed). */
+int gpu_rot90_rect(uint32_t src_phys, uint32_t *argb_src,
+                   int32_t src_w, int32_t src_h, int32_t src_stride,
+                   uint32_t dst_phys, uint32_t *argb_dst,
+                   int32_t dst_w, int32_t dst_h, int32_t dst_stride, int rot);
 
 /* In-place separable gaussian blur of the rect (rx,ry,rw,rh) of a w x h
  * ARGB8888 canvas at physical base `phys` / virtual `argb`, using `tmp`

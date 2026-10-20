@@ -103,6 +103,12 @@ uint32_t bsp_g2d_clock_hz(void) {
 	return 0;
 }
 
+/* the GE 2D engine is not a V3D core, so there is no V3D architecture
+ * version to report; callers treat 0 as "no V3D engine" */
+uint32_t bsp_g2d_version(void) {
+	return 0;
+}
+
 int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {
 	(void)argc; (void)argv; (void)buf; (void)len;
 	return -1;

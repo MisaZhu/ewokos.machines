@@ -4,5 +4,6 @@
     "#cursor": "none",
     "cursor": "touch",
     "logo": "/usr/system/icons/xlogo.png",
-    "gray_mode": 0
+    "gray_mode": 0,
+    "#fps_async": 1
 }

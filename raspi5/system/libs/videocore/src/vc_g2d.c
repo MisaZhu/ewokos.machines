@@ -109,6 +109,15 @@ uint32_t vc_g2d_clock_hz(void)
     return v3d_g2d_clock_hz();
 }
 
+/* raspi5 is BCM2712 / VideoCore VII, so the V3D architecture version x10 is the
+   constant 71 (V3D 7.1).  Unlike raspix there is no single-binary-across-chips
+   concern here, but the value is reported so the shared g2dd GET_VERSION path
+   and the soft3d client's version query behave identically on every board. */
+uint32_t vc_g2d_version(void)
+{
+    return 71u;
+}
+
 /* `stat` reports the dispatch phase counters, `stat reset` reports and
  * zeroes them.  Averages are per dispatch (not per request: a banded
  * or tiled op is several dispatches); spans are the average bytes of
@@ -210,6 +219,31 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
              (unsigned long long)s.irq_waits,
              (unsigned long long)s.irq_miss,
              _g2d_big_surface / 1024u, _g2d_band_bytes / 1024u);
+    /* Tagged lanes (v3d_g2d_csd_job_t::tag): per-pass avg us, compact so the
+     * whole line still fits the devcmd buffer: " gx n946 p12 e345 o67". */
+    {
+        static const char *const tnames[V3D_G2D_TAG_N] = { "--", "gx", "gr", "cs" };
+        size_t off = strlen(buf);
+        int i;
+
+        for (i = 1; i < (int)V3D_G2D_TAG_N; i++) {
+            uint64_t tr = s.tag_runs[i];
+            int n;
+
+            if (tr == 0)
+                continue;
+            n = snprintf(buf + off, off < len ? len - off : 0,
+                         " %s n%llu p%llu e%llu o%llu",
+                         tnames[i],
+                         (unsigned long long)tr,
+                         (unsigned long long)(s.tag_pre_ns[i] / tr / 1000u),
+                         (unsigned long long)(s.tag_exec_ns[i] / tr / 1000u),
+                         (unsigned long long)(s.tag_post_ns[i] / tr / 1000u));
+            if (n <= 0 || (size_t)n >= (off < len ? len - off : 0))
+                break;
+            off += (size_t)n;
+        }
+    }
     return 0;
 }
 
@@ -655,7 +689,7 @@ int gpu_map_fits(const g2d_map_t *m, int64_t w, int64_t h)
 static int gpu_fill4_surface(uint32_t phys, uint32_t *argb,
                              int32_t w, int32_t h,
                              int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                             uint32_t color)
+                             uint32_t color, unsigned maint)
 {
     uint32_t u[9];
     int32_t W4 = (x1 - x0) / 4;
@@ -683,7 +717,7 @@ static int gpu_fill4_surface(uint32_t phys, uint32_t *argb,
     u[6] = (uint32_t)rpq;
     u[7] = (uint32_t)(rpq * w * 4);
     /* u8 = scratch: v3d_g2d_run appends the scratch physical base */
-    flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
+    flags = g2d_poll_flags(maint,
                            (uint64_t)(x1 - x0) * (uint32_t)H,
                            G2D_1MS_FILL4_PIXELS, nq);
     mr.src_phy = 0;     mr.src_span = 0;    /* fill: no source */
@@ -785,11 +819,14 @@ int gpu_copy_eligible(uint32_t src_phys, int32_t src_w, int32_t src_h,
 }
 
 /* constant-color fill of a clipped dst rect (argb_fill kernel);
- * phys = physical base of the surface, argb = its virtual address */
-int gpu_fill_surface(uint32_t phys, uint32_t *argb,
-                     int32_t w, int32_t h,
-                     int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                     uint32_t color)
+ * phys = physical base of the surface, argb = its virtual address.
+ * `maint` carries the caller's V3D_G2D_MAINT_* bits: a write-only fill
+ * inside a larger GPU op bracket (the geom frame clear) passes 0 - the
+ * fill never reads, and the op's later dispatches own the writeback. */
+int gpu_fill_surface_m(uint32_t phys, uint32_t *argb,
+                       int32_t w, int32_t h,
+                       int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                       uint32_t color, unsigned maint)
 {
     uint32_t u[16];
     int32_t g0 = x0 >> 4;
@@ -820,7 +857,8 @@ int gpu_fill_surface(uint32_t phys, uint32_t *argb,
                  (int)w, (int)x0, (int)(x1 - x0), phys);
         }
         if (vec4)
-            return gpu_fill4_surface(phys, argb, w, h, x0, y0, x1, y1, color);
+            return gpu_fill4_surface(phys, argb, w, h, x0, y0, x1, y1,
+                                     color, maint);
     }
     /* One dispatch covers the whole surface.  The legal V3D thread-end
      * sequence retires every QPU cleanly, so no 16 KiB batching or dummy
@@ -845,7 +883,7 @@ int gpu_fill_surface(uint32_t phys, uint32_t *argb,
     u[13] = (uint32_t)(rows * (int32_t)w * 4);
     u[14] = v3d_g2d_scratch_phys();
     u[15] = 0u;
-    flags = g2d_poll_flags(V3D_G2D_MAINT_ALL,
+    flags = g2d_poll_flags(maint,
                            (uint64_t)L * 16u * (uint32_t)band_h,
                            G2D_1MS_FILL_PIXELS, nq);
     mr.src_phy = 0;     mr.src_span = 0;    /* fill: no source */
@@ -854,6 +892,16 @@ int gpu_fill_surface(uint32_t phys, uint32_t *argb,
                        nq, NULL, 0, argb,
                        (size_t)w * (size_t)h * 4u,
                        &mr, flags) == 0;
+}
+
+/* Standalone fill: full pre/post maintenance (the default contract). */
+int gpu_fill_surface(uint32_t phys, uint32_t *argb,
+                     int32_t w, int32_t h,
+                     int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                     uint32_t color)
+{
+    return gpu_fill_surface_m(phys, argb, w, h, x0, y0, x1, y1, color,
+                              V3D_G2D_MAINT_ALL);
 }
 
 /* affine blit of a clipped dst rect (argb_blit / argb_rotate kernel) */

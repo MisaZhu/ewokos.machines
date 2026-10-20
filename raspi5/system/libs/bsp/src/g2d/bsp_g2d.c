@@ -36,6 +36,12 @@ uint32_t bsp_g2d_clock_hz(void)
     return vc_g2d_clock_hz();
 }
 
+/* V3D architecture version x10 (raspi5 is always 71 = V3D 7.1) */
+uint32_t bsp_g2d_version(void)
+{
+    return vc_g2d_version();
+}
+
 int32_t bsp_g2d_cmd(int argc, char **argv, char *buf, uint32_t len)
 {
     return vc_g2d_cmd(argc, argv, buf, len);

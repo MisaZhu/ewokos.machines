@@ -54,8 +54,9 @@
 
 #include <videocore/vc_g2d.h>
 
-#include <ewoksys/spinlock.h>
+#include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ewoksys/dma.h"
@@ -72,6 +73,15 @@ uint32_t vc_g2d_clock_hz(void)
     return v3d_g2d_clock_hz();
 }
 
+uint32_t vc_g2d_version(void)
+{
+    return (uint32_t)v3d_g2d_ver();
+}
+
+/* devcmd /dev/g2d <args> (bsp_g2d_cmd hands them down):
+ *   stat [reset]        the V3D per-dispatch phase counters
+ *   maint [range|full]  show / set the L2T maintenance policy
+ *   spinus [<us>]       show / set the completion-wait spin window */
 int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
 {
     v3d_g2d_stats_t s;
@@ -79,6 +89,25 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
 
     if (argc <= 0 || argv == NULL || argv[0] == NULL || buf == NULL || len == 0)
         return -1;
+    if (strcmp(argv[0], "maint") == 0) {
+        if (argc > 1 && argv[1] != NULL) {
+            if (strcmp(argv[1], "range") == 0)
+                v3d_g2d_set_maint_ranged(1);
+            else if (strcmp(argv[1], "full") == 0)
+                v3d_g2d_set_maint_ranged(0);
+            else
+                return -1;
+        }
+        snprintf(buf, len, "v3d maint %s",
+                 v3d_g2d_maint_ranged() ? "range" : "full");
+        return 0;
+    }
+    if (strcmp(argv[0], "spinus") == 0) {
+        if (argc > 1 && argv[1] != NULL)
+            v3d_g2d_set_spin_us((uint32_t)strtoul(argv[1], NULL, 0));
+        snprintf(buf, len, "v3d spinus %u", (unsigned)v3d_g2d_spin_us());
+        return 0;
+    }
     if (strcmp(argv[0], "stat") != 0)
         return -1;
 
@@ -87,7 +116,8 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
     n = s.runs ? s.runs : 1;
     snprintf(buf, len,
              "v3d dispatch %llu (csd %llu srq %llu tlb %llu) timeout %llu"
-             " | avg us pre %llu exec %llu post %llu",
+             " | avg us pre %llu exec %llu post %llu"
+             " | full pre %llu post %llu | parks %llu | maint %s spinus %u",
              (unsigned long long)s.runs,
              (unsigned long long)s.csd,
              (unsigned long long)s.srq,
@@ -95,7 +125,39 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
              (unsigned long long)s.timeouts,
              (unsigned long long)(s.pre_ns / n / 1000u),
              (unsigned long long)(s.exec_ns / n / 1000u),
-             (unsigned long long)(s.post_ns / n / 1000u));
+             (unsigned long long)(s.post_ns / n / 1000u),
+             (unsigned long long)s.pre_full,
+             (unsigned long long)s.post_full,
+             (unsigned long long)s.parks,
+             v3d_g2d_maint_ranged() ? "range" : "full",
+             (unsigned)v3d_g2d_spin_us());
+    /* Tagged compute lanes (v3d_g2d_csd_job_t::tag): per-pass count, avg us
+     * pre/exec/post and parks, compact so the line fits g2dd's 256-byte
+     * devcmd buffer: " gx n838 p6 e120 o12 k0". */
+    {
+        static const char *const tnames[V3D_G2D_TAG_N] = { "--", "gx", "gr", "cs" };
+        size_t off = strlen(buf);
+        int i;
+
+        for (i = 1; i < (int)V3D_G2D_TAG_N; i++) {
+            uint64_t tr = s.tag_runs[i];
+            size_t room = off < len ? len - off : 0;
+            int w;
+
+            if (tr == 0)
+                continue;
+            w = snprintf(buf + off, room, " %s n%llu p%llu e%llu o%llu k%llu",
+                         tnames[i],
+                         (unsigned long long)tr,
+                         (unsigned long long)(s.tag_pre_ns[i] / tr / 1000u),
+                         (unsigned long long)(s.tag_exec_ns[i] / tr / 1000u),
+                         (unsigned long long)(s.tag_post_ns[i] / tr / 1000u),
+                         (unsigned long long)s.tag_parks[i]);
+            if (w <= 0 || (size_t)w >= room)
+                break;
+            off += (size_t)w;
+        }
+    }
     return 0;
 }
 
@@ -506,9 +568,9 @@ static int gpu_fill_surface(uint32_t phys, uint32_t *argb,
     u[13] = (uint32_t)(rows * (int32_t)w * 4);
     u[14] = v3d_g2d_scratch_phys();
     u[15] = 0u;
-    return v3d_g2d_run(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n, u, 16,
-                       nq, NULL, 0, argb,
-                       (size_t)w * (size_t)h * 4u) == 0 ?
+    return v3d_g2d_run_ranged(g2d_qpu_argb_fill, g2d_qpu_argb_fill_n, u, 16,
+                              nq, NULL, 0, 0u, argb,
+                              (size_t)w * (size_t)h * 4u, phys) == 0 ?
            GPU_DONE : GPU_FAILED;
 }
 
@@ -883,9 +945,9 @@ static int gpu_affine_surface(const uint64_t *kcode, int knwords,
         else if (no_clamp)
             u[25] = 2;       /* full-surface in-bounds scale */
     }
-    return v3d_g2d_run(kcode, knwords, u, 26,
-                       nq, argb_src, (size_t)src_w * src_h * 4,
-                       argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+    return v3d_g2d_run_ranged(kcode, knwords, u, 26,
+                              nq, argb_src, (size_t)src_w * src_h * 4, src_phys,
+                              argb_dst, (size_t)dst_w * dst_h * 4, dst_phys) == 0 ?
            GPU_DONE : GPU_FAILED;
 }
 
@@ -1187,7 +1249,6 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
                       uint32_t dst_phys, uint32_t *argb_dst,
                       int32_t dst_w, int32_t dst_h, int rot)
 {
-    uint32_t u[18];
     uint32_t tu[14];
     int32_t L = (src_w + 15) >> 4;
     int32_t rows, ss, ds;
@@ -1228,10 +1289,12 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
         tu[11] = v3d_g2d_scratch_phys();
         tu[12] = (uint32_t)nq;
         tu[13] = (uint32_t)ds;
-        return v3d_g2d_run(g2d_qpu_v42_argb_rot90_vpm,
-                           g2d_qpu_v42_argb_rot90_vpm_n, tu, 14,
-                           nq, argb_src, (size_t)src_w * src_h * 4,
-                           argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+        return v3d_g2d_run_ranged(g2d_qpu_v42_argb_rot90_vpm,
+                                  g2d_qpu_v42_argb_rot90_vpm_n, tu, 14,
+                                  nq, argb_src, (size_t)src_w * src_h * 4,
+                                  src_phys,
+                                  argb_dst, (size_t)dst_w * dst_h * 4,
+                                  dst_phys) == 0 ?
                GPU_DONE : GPU_FAILED;
     }
 #endif
@@ -1256,12 +1319,60 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
         tu[11] = v3d_g2d_scratch_phys();
         tu[12] = (uint32_t)nq;
         tu[13] = (uint32_t)ds;
-        return v3d_g2d_run(g2d_qpu_v42_argb_rot90_tile,
-                           g2d_qpu_v42_argb_rot90_tile_n, tu, 14,
-                           nq, argb_src, (size_t)src_w * src_h * 4,
-                           argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+        return v3d_g2d_run_ranged(g2d_qpu_v42_argb_rot90_tile,
+                                  g2d_qpu_v42_argb_rot90_tile_n, tu, 14,
+                                  nq, argb_src, (size_t)src_w * src_h * 4,
+                                  src_phys,
+                                  argb_dst, (size_t)dst_w * dst_h * 4,
+                                  dst_phys) == 0 ?
                GPU_DONE : GPU_FAILED;
     }
+    /* Packed fast paths exhausted: fall through to the generic strided
+     * kernel.  gpu_rot90_rect is the same dispatch with the row strides as
+     * free uniforms, so a packed surface (ss = src_w*4, ds = dst_w*4) is
+     * bit-identical to the old inline generic path. */
+    return gpu_rot90_rect(src_phys, argb_src, src_w, src_h, ss,
+                          dst_phys, argb_dst, dst_w, dst_h, ds, rot);
+}
+
+/* Strided right-angle rotation: the generic argb_rot90 kernel with the
+ * source/destination row pitches as uniforms.  The kernel reads and writes
+ * per lane (32-bit TMU accesses), so a sub-rect of a wider source (its
+ * base already offset to the rect's top-left) and a pitched destination
+ * (the scan-out) walk exactly like a packed surface.  argb_dst may be NULL
+ * for a raw physical destination with no kernel-visible VA - the driver
+ * then bounds nothing on the dst and flushes the whole L2 for visibility.
+ * Uniform contract is identical to gpu_rot90_surface's generic fallback. */
+int gpu_rot90_rect(uint32_t src_phys, uint32_t *argb_src,
+                   int32_t src_w, int32_t src_h, int32_t src_stride,
+                   uint32_t dst_phys, uint32_t *argb_dst,
+                   int32_t dst_w, int32_t dst_h, int32_t dst_stride, int rot)
+{
+    uint32_t u[18];
+    int32_t L = (src_w + 15) >> 4;
+    int32_t rows, ss, ds;
+    int nq;
+    int r90 = (rot == 90);
+    size_t src_span, dst_span;
+
+    /* V3D >= 4 kernel only: VC4 has no right-angle fast path (and its SRQ
+     * paths need a virtual dst), and any other angle goes through the
+     * generic affine map instead. */
+    if (v3d_g2d_ver() == 21 || (rot != 90 && rot != 270))
+        return GPU_UNSUPPORTED;
+    if (src_w < 16 || src_h < 4 || (!r90 && (src_w & 15) != 0))
+        return GPU_UNSUPPORTED;
+    if (dst_w != src_h || dst_h != src_w)
+        return GPU_UNSUPPORTED;              /* exact rotated size only */
+    if (src_stride < src_w * 4 || dst_stride < dst_w * 4 ||
+        (src_stride & 3) != 0 || (dst_stride & 3) != 0)
+        return GPU_UNSUPPORTED;
+    nq = g2d_fit_nq_rot90_block(v3d_g2d_num_qpus(), src_h, 4);
+    if (nq == 0)
+        return GPU_UNSUPPORTED;
+    rows = src_h / nq;
+    ss = src_stride;
+    ds = dst_stride;
     u[0] = src_phys;
     u[1] = dst_phys;
     u[2] = (uint32_t)((int64_t)rows * ss);
@@ -1286,9 +1397,16 @@ int gpu_rot90_surface(uint32_t src_phys, uint32_t *argb_src,
     u[15] = (uint32_t)(r90 ? (int64_t)ds : -(int64_t)ds);
     u[16] = (uint32_t)(src_w - (L - 1) * 16); /* valid lanes in last group */
     u[17] = (uint32_t)(L - 1);
-    return v3d_g2d_run(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 18,
-                       nq, argb_src, (size_t)src_w * src_h * 4,
-                       argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+    /* the physical extents this dispatch touches: with a stride the source
+     * sub-rect spans (src_h-1)*ss + src_w*4 and the pitched dst rect
+     * (dst_h-1)*ds + dst_w*4, not the packed w*h*4.  For packed strides
+     * these collapse to the packed sizes, so gpu_rot90_surface is
+     * unchanged. */
+    src_span = (size_t)(src_h - 1) * (size_t)ss + (size_t)src_w * 4u;
+    dst_span = (size_t)(dst_h - 1) * (size_t)ds + (size_t)dst_w * 4u;
+    return v3d_g2d_run_ranged(g2d_qpu_argb_rot90, g2d_qpu_argb_rot90_n, u, 18,
+                              nq, argb_src, src_span, src_phys,
+                              argb_dst, dst_span, dst_phys) == 0 ?
            GPU_DONE : GPU_FAILED;
 }
 
@@ -1505,9 +1623,9 @@ int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
     u[27] = (uint32_t)(full && src_w == dst_w && src_h == dst_h &&
                        m->pu == 32768 && m->cu == 0 &&
                        m->qv == 32768 && m->cv == 0);
-    return v3d_g2d_run(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 28,
-                       nq, argb_src, (size_t)src_w * src_h * 4,
-                       argb_dst, (size_t)dst_w * dst_h * 4) == 0 ?
+    return v3d_g2d_run_ranged(g2d_qpu_argb_alpha, g2d_qpu_argb_alpha_n, u, 28,
+                              nq, argb_src, (size_t)src_w * src_h * 4, src_phys,
+                              argb_dst, (size_t)dst_w * dst_h * 4, dst_phys) == 0 ?
            GPU_DONE : GPU_FAILED;
 }
 
@@ -1525,9 +1643,10 @@ int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
  * The block lives in the sys_dma window (NOCACHE on the ARM side, no
  * dcache work; a plain physical address, so the VC4 path can OR its bus
  * alias in like it does for every canvas).  The GPU side needs nothing
- * extra either: the CSD path runs g2d_invalidate_caches before every
- * dispatch, the VC4 loop evicts the system L3 (v3d_g2d_vc4_prepare_reads)
- * before reading its first row - both after the recolour below.
+ * extra either: the CSD path's pre-job L2T invalidate covers the block
+ * (it is the dispatch's src extent), the VC4 loop evicts the system L3
+ * (v3d_g2d_vc4_prepare_reads) before reading its first row - both after
+ * the recolour below.
  *
  * The block is single-instance: the recolour and the dispatch of one fill
  * run under _fill_alpha_lock so two workers' fills cannot interleave.
@@ -1541,7 +1660,7 @@ int gpu_alpha_surface(const g2d_map_t *m, uint8_t alpha,
 #define G2D_FILL_SRC_W 16
 #define G2D_FILL_SRC_H 16
 
-static spinlock_t _fill_alpha_lock = SPINLOCK_INIT;
+static pthread_mutex_t _fill_alpha_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t *_fill_src;          /* 16x16 ARGB block, virtual */
 static uint32_t _fill_src_phys;      /* its physical base, 0 until allocated */
 
@@ -1578,6 +1697,60 @@ static int gpu_fill_src_ready(void)
     return 1;
 }
 
+/* V3D 4.2: constant-colour source-over fill with the colour as a UNIFORM
+ * (g2d_qpu_v42_argb_fill_alpha).  Replaces the 16x16-block detour below
+ * on Pi 4: every pixel there paid a second TMU read of a value that never
+ * changes plus the per-pixel Q15 map, and because the block is never the
+ * destination's size the alpha kernel's exact 1:1 `loop_linear` prefetch
+ * pipeline was unreachable (its u27 was always 0).  Same band/row split
+ * and scratch convention as gpu_alpha_surface; proven bit-exact against
+ * argb_alpha + opaque block in simulator/test_qpu_fill_alpha.c. */
+static int gpu_fill_alpha_v42(uint32_t dst_phys, uint32_t *argb_dst,
+                              int32_t dst_w, int32_t dst_h,
+                              int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                              uint32_t src, uint8_t alpha)
+{
+    uint32_t u[17];
+    int32_t g0 = x0 >> 4;
+    int32_t g1 = (int32_t)(((uint32_t)x1 + 15u) >> 4);
+    int32_t L = g1 - g0;
+    int32_t band_h = y1 - y0;
+    int nq = v3d_g2d_num_qpus();
+    int32_t rows;
+    int full = ((dst_w & 15) == 0 &&
+                x0 == 0 && y0 == 0 && x1 == dst_w && y1 == dst_h);
+
+    if (dst_w <= 0 || dst_h <= 0 || x0 < 0 || y0 < 0 ||
+        x1 <= x0 || y1 <= y0 || x1 > dst_w || y1 > dst_h)
+        return GPU_UNSUPPORTED;
+    if (nq > band_h)
+        nq = band_h;
+    rows = g2d_qpu_rows(band_h, nq, dst_w * 4);
+    u[0] = src;
+    u[1] = alpha == 0xff ? 256u : (uint32_t)alpha;
+    u[2] = dst_phys + ((uint32_t)y0 * (uint32_t)dst_w +
+                       (uint32_t)g0 * 16u) * 4u;
+    u[3] = (uint32_t)(L - 1);
+    u[4] = (uint32_t)(y1 - 1);
+    u[5] = (uint32_t)(L * 64 - dst_w * 4);          /* jump: L*64 - stride */
+    u[6] = (uint32_t)x0;
+    u[7] = (uint32_t)x1;
+    u[8] = (uint32_t)y0;
+    u[9] = (uint32_t)y1;
+    u[10] = (uint32_t)rows;
+    u[11] = (uint32_t)(rows * (int32_t)dst_w * 4);  /* rows * stride (bytes) */
+    u[12] = v3d_g2d_scratch_phys();                 /* out-of-rect read/write target */
+    u[13] = 255u;
+    u[14] = 0x00ff00ffu;
+    u[15] = 0x00010001u;
+    u[16] = (uint32_t)full;
+    return v3d_g2d_run_ranged(g2d_qpu_v42_argb_fill_alpha,
+                              g2d_qpu_v42_argb_fill_alpha_n, u, 17,
+                              nq, NULL, 0, 0u, argb_dst,
+                              (size_t)dst_w * (size_t)dst_h * 4u, dst_phys) == 0 ?
+           GPU_DONE : GPU_FAILED;
+}
+
 int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
                            int32_t dst_w, int32_t dst_h,
                            int32_t x0, int32_t y0, int32_t x1, int32_t y1,
@@ -1590,11 +1763,14 @@ int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
 
     if (alpha == 0)
         return GPU_DONE;                 /* nothing to blend */
+    if (v3d_g2d_ver() == 42)
+        return gpu_fill_alpha_v42(dst_phys, argb_dst, dst_w, dst_h,
+                                  x0, y0, x1, y1, src, alpha);
     memset(&m, 0, sizeof(m));            /* every lane samples (0,0) */
 
-    spin_lock(&_fill_alpha_lock);
+    pthread_mutex_lock(&_fill_alpha_lock);
     if (!gpu_fill_src_ready()) {
-        spin_unlock(&_fill_alpha_lock);
+        pthread_mutex_unlock(&_fill_alpha_lock);
         return GPU_UNSUPPORTED;
     }
     for (i = 0; i < G2D_FILL_SRC_W * G2D_FILL_SRC_H; i++)
@@ -1603,7 +1779,7 @@ int gpu_fill_alpha_surface(uint32_t dst_phys, uint32_t *argb_dst,
                            G2D_FILL_SRC_W, G2D_FILL_SRC_H,
                            dst_phys, argb_dst, dst_w, dst_h,
                            x0, y0, x1, y1);
-    spin_unlock(&_fill_alpha_lock);
+    pthread_mutex_unlock(&_fill_alpha_lock);
     return gr;
 }
 
@@ -1716,10 +1892,12 @@ static int gpu_fill_triangle_surface(const int32_t e[9], uint32_t color,
     u[18] = v3d_g2d_scratch_phys();              /* out-of-shape lane sink */
     u[19] = 255u;
     u[20] = (uint32_t)(dst_w - 1 - X0);          /* Wlim1: px < dst_w clamp */
-    return v3d_g2d_run(g2d_qpu_v42_argb_triangle, g2d_qpu_v42_argb_triangle_n,
-                       u, 21, nq, NULL, 0,
-                       argb_dst + (size_t)y0 * dst_w,
-                       (size_t)band_h * (size_t)dst_w * 4) == 0 ?
+    return v3d_g2d_run_ranged(g2d_qpu_v42_argb_triangle,
+                              g2d_qpu_v42_argb_triangle_n,
+                              u, 21, nq, NULL, 0, 0u,
+                              argb_dst + (size_t)y0 * dst_w,
+                              (size_t)band_h * (size_t)dst_w * 4,
+                              dst_phys + (uint32_t)y0 * (uint32_t)dst_w * 4u) == 0 ?
            GPU_DONE : GPU_FAILED;
 }
 
@@ -1924,9 +2102,10 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         u[2] = pitch4;                       /* src row pitch   = canvas */
         u[6] = groups * 64u - tmp_pitch;     /* dst row wrap    = tmp */
         u[8] = (uint32_t)rows * tmp_pitch;   /* dst band stride = tmp */
-        rc = v3d_g2d_run(hcode, (int)hn, u, 9 + k, nq,
-                         (const uint8_t *)argb + src_off, (size_t)h * pitch4,
-                         tmp, tmp_need);
+        rc = v3d_g2d_run_ranged(hcode, (int)hn, u, 9 + k, nq,
+                                (const uint8_t *)argb + src_off,
+                                (size_t)h * pitch4, phys + (uint32_t)src_off,
+                                tmp, tmp_need, tmp_phys);
         if (rc != 0) {
             v3d_g2d_op_end();
             return GPU_FAILED;
@@ -1938,9 +2117,10 @@ int gpu_gaussian_blur_op(uint32_t phys, uint32_t *argb,
         u[2] = tmp_pitch;                    /* src row pitch   = tmp */
         u[6] = groups * 64u - pitch4;        /* dst row wrap    = canvas */
         u[8] = (uint32_t)rows * pitch4;      /* dst band stride = canvas */
-        rc = v3d_g2d_run(vcode, (int)vn, u, 9 + k, nq,
-                         tmp, tmp_need,
-                         (uint8_t *)argb + src_off, (size_t)h * pitch4);
+        rc = v3d_g2d_run_ranged(vcode, (int)vn, u, 9 + k, nq,
+                                tmp, tmp_need, tmp_phys,
+                                (uint8_t *)argb + src_off, (size_t)h * pitch4,
+                                phys + (uint32_t)src_off);
         if (rc != 0) {
             v3d_g2d_op_end();
             return GPU_FAILED;

@@ -316,6 +316,20 @@ int vc_pgl3d_program(const vc_pgl3d_program_req_t *req)
     d.cs_local_size[2] = req->cs_local_size[2];
     d.cs_shared_size   = req->cs_shared_size;
     d.cs_is_geom       = req->cs_is_geom;
+    d.cs_geom_tpw      = req->cs_geom_tpw;
+    /* second compute stage (VERSION 4): the vertex-transform pass */
+    d.cs2_qpu           = req->cs2_qpu;
+    d.cs2_qpu_words     = req->cs2_qpu_words;
+    d.cs2_unif_contents = req->cs2_unif_contents;
+    d.cs2_unif_data     = req->cs2_unif_data;
+    d.cs2_num_uniforms  = req->cs2_num_uniforms;
+    d.cs2_threads       = req->cs2_threads;
+    d.cs2_single_seg    = req->cs2_single_seg;
+    d.cs2_local_size[0] = req->cs2_local_size[0];
+    d.cs2_local_size[1] = req->cs2_local_size[1];
+    d.cs2_local_size[2] = req->cs2_local_size[2];
+    d.cs2_shared_size   = req->cs2_shared_size;
+    d.cs2_uniform_blob_dwords = req->cs2_uniform_blob_dwords;
 
     return v3d_3d_program(&d);
 }
