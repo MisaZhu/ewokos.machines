@@ -1,0 +1,7 @@
+# Build outputs for the Q8B machine (the machines submodule already ignores
+# *.o, *.d, kernel*.elf, root*.img and build*).
+/kernel/*.bin
+/kernel/boot/uefi/*.EFI
+/kernel/boot/uefi/*.elf
+/kernel/boot/uefi/test/out*/
+/system/build_aarch64/
