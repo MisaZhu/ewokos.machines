@@ -75,7 +75,7 @@ UEFI_CFLAGS += -ffreestanding -fno-stack-protector -fno-stack-check \
 	-O2 -Wall -Wextra -I$(UEFI_DIR)
 UEFI_LDFLAGS = -T $(UEFI_DIR)/linker.ld -e efi_main
 
-.PHONY: all efi payload asm run clean
+.PHONY: all efi payload asm run clean clean_uefi
 
 all: $(OS_IMG)
 
@@ -101,5 +101,12 @@ run:
 	@echo "on the ESP/TFTP root and boot it from the Q8B UEFI firmware."
 	@echo "QEMU has no sc8280xp machine model."
 
-clean:
+# The platform make.rule owns the `clean` recipe (kernel objects, dep files,
+# $(OS_IMG) and $(OS_ELF)).  Extend it with a prerequisite instead of defining
+# a clean recipe here: overriding it made `make clean` leave kernel.bin and
+# every kernel object behind, so the following `make` reported
+# "Nothing to be done for `all'".
+clean: clean_uefi
+
+clean_uefi:
 	rm -f $(UEFI_OBJS) $(UEFI_ELF) $(UEFI_EFI)
