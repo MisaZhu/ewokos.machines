@@ -1291,6 +1291,241 @@ static void __attribute__((noreturn)) jump_no_mmu(uint64_t entry) {
 
 
 /* ------------------------------------------------------------------ */
+/* PCIe inventory                                                     */
+/* ------------------------------------------------------------------ */
+
+/* Read one aligned dword of PCI configuration space through the root
+ * bridge's Pci.Read().  Address encoding is EFI_PCI_ADDRESS:
+ * bus[31:24], dev[23:16], func[15:8], reg[7:0]. */
+static int pci_cfg32(EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL* rb, uint8_t bus,
+        uint8_t dev, uint8_t fn, uint8_t reg, uint32_t* out) {
+    uint64_t addr = ((uint64_t)bus << 24) | ((uint64_t)dev << 16) |
+                    ((uint64_t)fn << 8) | (uint64_t)(reg & 0xfc);
+    *out = 0xffffffffu;
+    return EFI_ERROR(rb->Pci.Read(rb, 2 /* EfiPciWidthUint32 */, addr, 1,
+                out)) ? -1 : 0;
+}
+
+static void pci_dump_device(EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL* rb,
+        uint8_t bus, uint8_t dev, uint8_t fn) {
+    uint32_t vd, cls, cmd, hdr;
+    if (pci_cfg32(rb, bus, dev, fn, 0x00, &vd) != 0)
+        return;
+    if (vd == 0 || vd == 0xffffffffu)
+        return;
+    if (pci_cfg32(rb, bus, dev, fn, 0x08, &cls) != 0)
+        return;
+    if (pci_cfg32(rb, bus, dev, fn, 0x04, &cmd) != 0)
+        return;
+    if (pci_cfg32(rb, bus, dev, fn, 0x0c, &hdr) != 0)
+        return;
+
+    con_puts("[pci] ");
+    con_dec(bus);
+    con_puts(":");
+    con_dec(dev);
+    con_puts(".");
+    con_dec(fn);
+    con_puts(" id=");
+    con_hex(vd);
+    con_puts(" class=");
+    con_hex(cls >> 8);
+    con_puts(" cmd=");
+    con_hex(cmd & 0xffff);
+
+    if (((cls >> 8) & 0xffff) == 0x0604) {
+        uint32_t buses = 0;
+        pci_cfg32(rb, bus, dev, fn, 0x18, &buses);
+        con_puts(" buses=");
+        con_hex(buses);
+    } else {
+        uint32_t bar;
+        for (uint8_t i = 0; i < 6; i++) {
+            if (pci_cfg32(rb, bus, dev, fn, (uint8_t)(0x10 + i * 4), &bar) != 0)
+                break;
+            if (bar == 0 || bar == 0xffffffffu)
+                continue;
+            con_puts(" bar");
+            con_dec(i);
+            con_puts("=");
+            con_hex(bar);
+            if ((bar & 0x6) == 0x4) {   /* 64-bit MMIO BAR pair */
+                uint32_t hi;
+                if (pci_cfg32(rb, bus, dev, fn, (uint8_t)(0x14 + i * 4),
+                            &hi) == 0) {
+                    con_puts(":");
+                    con_hex(hi);
+                }
+                i++;                    /* skip the upper half */
+            }
+        }
+    }
+    con_puts("\n");
+}
+
+/* Per-device inventory through EFI_PCI_IO_PROTOCOL.  The Q8B firmware
+ * publishes this on every controller it enumerated even when the root
+ * bridge handles are not exposed. */
+static int pci_inventory_pciio(void) {
+    static const EFI_GUID io_guid = EFI_PCI_IO_PROTOCOL_GUID;
+    UINTN count = 0;
+    EFI_HANDLE* handles = 0;
+    EFI_STATUS st = gBS->LocateHandleBuffer(2 /* ByProtocol */,
+            (EFI_GUID*)&io_guid, 0, &count, &handles);
+    if (EFI_ERROR(st) || handles == 0 || count == 0) {
+        con_puts("[pci] no PCI I/O handles\n");
+        return 0;
+    }
+    con_puts("[pci] pciio devices=");
+    con_dec(count);
+    con_puts("\n");
+
+    for (UINTN i = 0; i < count; i++) {
+        EFI_PCI_IO_PROTOCOL* io = 0;
+        UINTN seg = 0, bus = 0, dev = 0, fn = 0;
+        uint32_t vd = 0, cls = 0, cmd = 0;
+        if (EFI_ERROR(gBS->HandleProtocol(handles[i], (EFI_GUID*)&io_guid,
+                        (void**)&io)) || io == 0 || io->GetLocation == 0)
+            continue;
+        if (EFI_ERROR(io->GetLocation(io, &seg, &bus, &dev, &fn)))
+            continue;
+        if (seg != 0 || bus > 0xff)
+            continue;
+        if (EFI_ERROR(io->Pci.Read(io, 2, 0x00, 1, &vd)) ||
+                vd == 0 || vd == 0xffffffffu)
+            continue;
+        io->Pci.Read(io, 2, 0x08, 1, &cls);
+        io->Pci.Read(io, 2, 0x04, 1, &cmd);
+
+        con_puts("[pci] ");
+        con_dec((uint64_t)seg);
+        con_puts(":");
+        con_dec((uint64_t)bus);
+        con_puts(":");
+        con_dec((uint64_t)dev);
+        con_puts(".");
+        con_dec((uint64_t)fn);
+        con_puts(" id=");
+        con_hex(vd);
+        con_puts(" class=");
+        con_hex(cls >> 8);
+        con_puts(" cmd=");
+        con_hex(cmd & 0xffff);
+
+        if (((cls >> 8) & 0xffff) == 0x0604) {
+            uint32_t buses = 0;
+            io->Pci.Read(io, 2, 0x18, 1, &buses);
+            con_puts(" buses=");
+            con_hex(buses);
+        } else {
+            for (uint8_t bi = 0; bi < 6; bi++) {
+                uint32_t bar = 0;
+                if (EFI_ERROR(io->Pci.Read(io, 2,
+                                (uint32_t)(0x10 + bi * 4), 1, &bar)))
+                    break;
+                if (bar == 0 || bar == 0xffffffffu)
+                    continue;
+                con_puts(" bar");
+                con_dec(bi);
+                con_puts("=");
+                con_hex(bar);
+                if ((bar & 0x6) == 0x4) {
+                    uint32_t hi = 0;
+                    if (!EFI_ERROR(io->Pci.Read(io, 2,
+                                    (uint32_t)(0x14 + bi * 4), 1, &hi))) {
+                        con_puts(":");
+                        con_hex(hi);
+                    }
+                    bi++;
+                }
+            }
+        }
+        con_puts("\n");
+    }
+    gBS->FreePool(handles);
+    return 1;
+}
+
+/* Enumerate every PCI root bridge the firmware published and print the
+ * devices behind it.  This runs before ExitBootServices, so it uses the
+ * firmware's own PCI configuration route (no raw ECAM pokes) and shows
+ * exactly which controllers the platform enabled for us. */
+static void pci_inventory(void) {
+    static const EFI_GUID rb_guid = EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL_GUID;
+
+    if (pci_inventory_pciio())
+        return;
+
+    UINTN count = 0;
+    EFI_HANDLE* handles = 0;
+    EFI_STATUS st = gBS->LocateHandleBuffer(2 /* ByProtocol */,
+            (EFI_GUID*)&rb_guid, 0, &count, &handles);
+    if (EFI_ERROR(st) || handles == 0 || count == 0) {
+        con_puts("[pci] no root bridge handles\n");
+        return;
+    }
+
+    con_puts("[pci] root bridges=");
+    con_dec(count);
+    con_puts("\n");
+
+    for (UINTN i = 0; i < count; i++) {
+        EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL* rb = 0;
+        if (EFI_ERROR(gBS->HandleProtocol(handles[i], (EFI_GUID*)&rb_guid,
+                        (void**)&rb)) || rb == 0)
+            continue;
+        con_puts("[pci] root");
+        con_dec(i);
+        con_puts(" seg=");
+        con_dec(rb->SegmentNumber);
+
+        /* The resource list fingerprints the root bridge: its MMIO windows
+         * mirror the SoC DTS ranges (pcie2a/3b/3a). */
+        if (rb->Configuration) {
+            void* resources = 0;
+            if (!EFI_ERROR(rb->Configuration(rb, &resources)) &&
+                    resources != 0) {
+                uint8_t* p = (uint8_t*)resources;
+                for (int guard = 0; guard < 16; guard++) {
+                    uint8_t desc = p[0];
+                    if (desc == 0x79)
+                        break;
+                    if (desc != 0x8a)
+                        break;
+                    EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR* d =
+                        (EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR*)p;
+                    con_puts(d->ResType == 2 ? " bus=" : " mem=");
+                    con_hex(d->AddrRangeMin);
+                    con_puts("..");
+                    con_hex(d->AddrRangeMax);
+                    p += d->Len + 3;
+                }
+            }
+        }
+        con_puts("\n");
+
+        for (uint8_t bus = 0; bus < 8; bus++) {
+            for (uint8_t dev = 0; dev < 32; dev++) {
+                uint32_t vd = 0;
+                if (pci_cfg32(rb, bus, dev, 0, 0x00, &vd) != 0)
+                    continue;
+                if (vd == 0 || vd == 0xffffffffu)
+                    continue;
+                pci_dump_device(rb, bus, dev, 0);
+                uint32_t hdr = 0;
+                if (pci_cfg32(rb, bus, dev, 0, 0x0c, &hdr) == 0 &&
+                        (hdr >> 16) & 0x80) {
+                    for (uint8_t fn = 1; fn < 8; fn++)
+                        pci_dump_device(rb, bus, dev, fn);
+                }
+            }
+        }
+    }
+    gBS->FreePool(handles);
+}
+
+
+/* ------------------------------------------------------------------ */
 /* EFI entry                                                          */
 /* ------------------------------------------------------------------ */
 uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
@@ -1412,6 +1647,9 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_dec(dtb_size);
         con_puts("\n");
     }
+
+    /* ---- PCIe inventory (before EBS, uses firmware config route) ---- */
+    pci_inventory();
 
     /* The bootinfo page is written after EBS too.  It sits just below the
      * kernel window and is not covered by the kernel reservation, so claim

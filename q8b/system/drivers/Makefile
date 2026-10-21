@@ -1,4 +1,4 @@
-BASIC_DIRS = uartd net sdprobe fand sdupdate
+BASIC_DIRS = uartd net sdprobe fand sdupdate espwrite nvprobe
 
 basic: $(BASIC_DIRS)
 

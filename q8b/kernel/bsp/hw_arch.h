@@ -123,6 +123,27 @@
 #define Q8B_PCIE3A_MEM64_SIZE    0x20000000ULL
 
 /*
+ * PCIe2a (M.2 M-key, Gen3 x4) and PCIe3b (M.2 M-key, Gen3 x2) are the two
+ * NVMe slots.  The firmware brings both controllers and link training up
+ * before ExitBootServices, so user space only needs the ECAM window (PCI
+ * config space) plus the outbound apertures that decode the assigned BARs.
+ * Ranges come from sc8280xp-radxa-dragon-q8b.dts (&pcie2a / &pcie3b).
+ */
+#define Q8B_PCIE2A_ECAM_PHY      0x500000000ULL
+#define Q8B_PCIE2A_ECAM_SIZE     0x10000000ULL
+#define Q8B_PCIE2A_MEM32_PHY     0x510000000ULL
+#define Q8B_PCIE2A_MEM32_SIZE    0x10000000ULL
+#define Q8B_PCIE2A_MEM64_PHY     0x520000000ULL
+#define Q8B_PCIE2A_MEM64_SIZE    0x0e0000000ULL
+
+#define Q8B_PCIE3B_ECAM_PHY      0x440000000ULL
+#define Q8B_PCIE3B_ECAM_SIZE     0x10000000ULL
+#define Q8B_PCIE3B_MEM32_PHY     0x450000000ULL
+#define Q8B_PCIE3B_MEM32_SIZE    0x10000000ULL
+#define Q8B_PCIE3B_MEM64_PHY     0x460000000ULL
+#define Q8B_PCIE3B_MEM64_SIZE    0x20000000ULL
+
+/*
  * bootinfo hand-off (stub -> kernel), resident at Q8B_BOOTINFO_PHYS.
  * Keep the layout in sync with boot/uefi/main.c.
  */

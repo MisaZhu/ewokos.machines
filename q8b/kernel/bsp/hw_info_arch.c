@@ -268,6 +268,28 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
             phy_top <= Q8B_PCIE3A_MEM64_PHY + Q8B_PCIE3A_MEM64_SIZE)
         return 0;
 
+    /* PCIe2a / PCIe3b: the two M.2 NVMe slots (config space + BAR
+     * apertures).  User-space nvmed discovers the controller through
+     * ECAM and maps the assigned BAR through these windows. */
+    if (phy_base >= Q8B_PCIE2A_ECAM_PHY &&
+            phy_top <= Q8B_PCIE2A_ECAM_PHY + Q8B_PCIE2A_ECAM_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE2A_MEM32_PHY &&
+            phy_top <= Q8B_PCIE2A_MEM32_PHY + Q8B_PCIE2A_MEM32_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE2A_MEM64_PHY &&
+            phy_top <= Q8B_PCIE2A_MEM64_PHY + Q8B_PCIE2A_MEM64_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE3B_ECAM_PHY &&
+            phy_top <= Q8B_PCIE3B_ECAM_PHY + Q8B_PCIE3B_ECAM_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE3B_MEM32_PHY &&
+            phy_top <= Q8B_PCIE3B_MEM32_PHY + Q8B_PCIE3B_MEM32_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE3B_MEM64_PHY &&
+            phy_top <= Q8B_PCIE3B_MEM64_PHY + Q8B_PCIE3B_MEM64_SIZE)
+        return 0;
+
 #ifndef Q8B_QEMU_TEST
     /* Firmware Command DB: user-space SDCC2 resolves the PM8350C SD-card
      * rails (ldoc6/ldoc9) itself during its own card probe. */
