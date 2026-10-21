@@ -125,6 +125,20 @@ void arch_vm(page_dir_entry_t* vm) {
             (uint32_t)Q8B_RSC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
     map_pages_size(vm, MMIO_BASE + Q8B_CMD_DB_WIN_OFF, Q8B_CMD_DB_WIN_PHY,
             (uint32_t)Q8B_CMD_DB_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+
+    /*
+     * Adreno 690 GPU complex (see hw_arch.h for the full physical layout
+     * and Linux DT provenance).  Mapped as device memory so user space can
+     * SYS_MEM_MAP the same window and drive GMU / CP / SMMU registers
+     * without going through the kernel for every poke.  The mapping is
+     * installed unconditionally: on a Q8B board the Adreno blocks are
+     * always present at these addresses; the driver layer is what
+     * decides whether to actually bring the GPU up.
+     */
+    map_pages_size(vm, MMIO_BASE + Q8B_GPU_WIN_OFF, Q8B_GPU_WIN_PHY,
+            (uint32_t)Q8B_GPU_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + Q8B_GPU_PDC_WIN_OFF, Q8B_GPU_PDC_WIN_PHY,
+            (uint32_t)Q8B_GPU_PDC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
 #endif
 
     if (q8b_ramdisk_size == 0)
@@ -273,6 +287,15 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
      * rails (ldoc6/ldoc9) itself during its own card probe. */
     if (phy_base >= Q8B_CMD_DB_WIN_PHY &&
             phy_top <= Q8B_CMD_DB_WIN_PHY + Q8B_CMD_DB_WIN_SIZE)
+        return 0;
+
+    /* Adreno 690 zap-shader reserved memory (DT gpu_mem node, no-map).
+     * The user-space Adreno driver loads a690_zap.mdt + segments here and
+     * triggers the zap-restore SMC.  kalloc_arch() already excludes the
+     * range via the UEFI memory map, but SYS_MEM_MAP still needs an
+     * explicit whitelist entry because it is inside DRAM. */
+    if (phy_base >= Q8B_GPU_ZAP_PHY &&
+            phy_top <= Q8B_GPU_ZAP_PHY + Q8B_GPU_ZAP_SIZE)
         return 0;
 #endif
 

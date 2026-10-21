@@ -5,6 +5,12 @@
 @/bin/ipcserv /drivers/nulld             /dev/null
 @/bin/ipcserv /drivers/logd              /dev/log
 
+# Adreno 690 GPU offload: g2dd only touches the GPU/GMU/SMMU MMIO when
+# ADRENO_ENABLE=1 is in its environment; bring-up result is reported in klog
+# ("q8b g2d: adreno bring-up ..."), failure falls back to CPU rendering.
+@export ADRENO_ENABLE=1
+@/bin/ipcserv /drivers/q8b/g2dd          /dev/g2d
+
 # PCIe3a/TC9563 Ethernet and DHCP network stack.
 @/bin/ipcserv /drivers/q8b/net           /dev/eth0
 @/bin/ipcserv /drivers/netd              /dev/net0 /dev/eth0

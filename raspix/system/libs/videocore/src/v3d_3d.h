@@ -266,10 +266,14 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
  * (never truncated) so the caller falls back to its CPU path.  MAX_QPU is in
  * 32-bit words (2 words per V3D 7.1 QPU instruction). */
 #define V3D_3D_MAX_PROGS       16u    /* simultaneously cached programs       */
-#define V3D_3D_PROG_MAX_QPU    8192u  /* QPU 32-bit words per stage (waterdrop's
-                                        * hoisted rain compiles to ~4948 cs /
-                                        * ~4798 fs words; 4096 declined it)      */
-#define V3D_3D_PROG_MAX_UNIF   768u   /* uniform-stream words per stage       */
+#define V3D_3D_PROG_MAX_QPU    32768u /* QPU 32-bit words per stage (wave's
+                                        * faithful ES310 ocean compiles to
+                                        * ~22930 cs words; matches raspi5).
+                                        * Costless to raise: QPU text is dma-
+                                        * allocated by ACTUAL word count.      */
+#define V3D_3D_PROG_MAX_UNIF   2048u  /* uniform-stream words per stage (wave
+                                        * cs embeds 1428; grows _progs[16]
+                                        * BSS to ~1.3 MB + 8 KB/stage dma)     */
 #define V3D_3D_PROG_MAX_ATTRS  64u    /* VS attribute / driver-location slots */
 #define V3D_3D_PROG_MAX_INPUTS 64u    /* FS input (varying) slots             */
 

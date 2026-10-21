@@ -99,6 +99,84 @@
 #define Q8B_CMD_DB_WIN_SIZE 0x00020000ULL
 #define Q8B_CMD_DB_WIN_OFF  0x05500000ULL
 
+/*
+ * Adreno 690 GPU complex (SC8280XP).
+ *
+ * Authoritative source: upstream Linux arch/arm64/boot/dts/qcom/sc8280xp.dtsi
+ * nodes gpu@3d00000 / gmu@3d6a000 / gpucc@3d90000 / adreno_smmu@3da0000
+ * (Bjorn Andersson, "arm64: dts: qcom: sc8280xp: Add GPU related nodes",
+ * merged in Linux 6.5).  Physical layout inside the 0x03d00000..0x03df0000
+ * span:
+ *
+ *   0x03d00000 +0x40000  gpu kgsl_3d0_reg_memory   (Adreno core registers)
+ *   0x03d61000 +0x00800  gpu cx_dbgc               (debug)
+ *   0x03d6a000 +0x34000  gmu                       (Graphics Management Unit)
+ *   0x03d90000 +0x09000  gpucc                     (GPU clock controller, alias inside gmu span)
+ *   0x03d9e000 +0x01000  gpu cx_mem
+ *   0x03da0000 +0x20000  adreno_smmu               (GPU SMMU-500)
+ *   0x03de0000 +0x10000  gmu rscc                  (RSCC for GMU AOP handshake)
+ *
+ * One 1MB virtual window at Q8B_GPU_WIN_OFF covers the whole span; the
+ * user-space Adreno driver sub-slices it by (phy - 0x03d00000).  The GMU
+ * PDC block sits outside this range at 0x0b290000 and gets its own 64KB
+ * window.
+ *
+ * Interrupts (GIC SPI, level-high, INTID = 32 + SPI):
+ *   gpu        SPI 300 -> INTID 332
+ *   gmu hfi    SPI 304 -> INTID 336
+ *   gmu        SPI 305 -> INTID 337
+ *   smmu glb   SPI 672, 673
+ *   smmu ctx   SPI 678..689
+ *
+ * Firmware files expected under /etc/firmware/adreno/ (loaded by the
+ * user-space Adreno driver, mirroring Linux drivers/gpu/drm/msm/adreno/
+ * adreno_device.c gpulist[] entry for revn=690):
+ *   a660_sqe.fw   - SQE/CP microcode (A690 reuses A660's)
+ *   a690_gmu.bin  - GMU firmware
+ *   a690_zap.mdt  - zap shader (TrustZone restore), MBN + segment .b0X
+ *   gmem = 4MB, address_space_size = 16GB, hw_apriv = true
+ *
+ * Reserved memory for the zap-shader load area (see sc8280xp-crd.dts /
+ * sc8280xp-lenovo-thinkpad-x13s.dts): 0x8bf00000 size 0x2000, no-map.
+ * kalloc_arch() filters this through the UEFI memory map, so we do not
+ * need a separate exclusion here; the constant is exposed for the
+ * user-space driver.
+ */
+#define Q8B_GPU_WIN_PHY     0x03d00000ULL
+#define Q8B_GPU_WIN_SIZE    (1*MB)
+#define Q8B_GPU_WIN_OFF     0x06000000ULL
+
+/* Sub-region physical bases (offsets from Q8B_GPU_WIN_PHY) */
+#define Q8B_GPU_CORE_PHY    0x03d00000ULL   /* kgsl_3d0_reg_memory */
+#define Q8B_GPU_CORE_SIZE   0x40000ULL
+#define Q8B_GPU_CX_DBGC_PHY 0x03d61000ULL
+#define Q8B_GPU_CX_MEM_PHY  0x03d9e000ULL
+#define Q8B_GMU_PHY         0x03d6a000ULL
+#define Q8B_GMU_SIZE        0x34000ULL
+#define Q8B_GPUCC_PHY       0x03d90000ULL
+#define Q8B_GPUCC_SIZE      0x9000ULL
+#define Q8B_GPU_SMMU_PHY    0x03da0000ULL
+#define Q8B_GPU_SMMU_SIZE   0x20000ULL
+#define Q8B_GMU_RSCC_PHY    0x03de0000ULL
+#define Q8B_GMU_RSCC_SIZE   0x10000ULL
+
+/* GMU PDC (outside the main GPU window). */
+#define Q8B_GPU_PDC_WIN_PHY 0x0b290000ULL
+#define Q8B_GPU_PDC_WIN_SIZE (64*KB)
+#define Q8B_GPU_PDC_WIN_OFF 0x06100000ULL
+
+/* Adreno IRQ lines (INTID = 32 + GIC SPI number) */
+#define Q8B_GPU_IRQ         332             /* SPI 300, level-high */
+#define Q8B_GMU_HFI_IRQ     336             /* SPI 304, level-high */
+#define Q8B_GMU_IRQ         337             /* SPI 305, level-high */
+#define Q8B_GPU_SMMU_GLBL0_IRQ 704          /* SPI 672 */
+#define Q8B_GPU_SMMU_GLBL1_IRQ 705          /* SPI 673 */
+#define Q8B_GPU_SMMU_CB0_IRQ 710            /* SPI 678 */
+
+/* Zap-shader reserved-memory window (see DT gpu_mem node). */
+#define Q8B_GPU_ZAP_PHY     0x8bf00000ULL
+#define Q8B_GPU_ZAP_SIZE    0x2000ULL
+
 #define Q8B_GIC_TIMER_IRQ   27             /* virtual timer PPI (CNTV) */
 #define Q8B_GIC_IPI_IRQ     0              /* SGI0 */
 

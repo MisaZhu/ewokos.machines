@@ -1,0 +1,145 @@
+#ifndef BSP_BSP_G2D_H
+#define BSP_BSP_G2D_H
+
+#include <stdint.h>
+#include <ewoksys/ewokdef.h>
+
+/*
+ * Q8B (Radxa Dragon Q8B / Qualcomm SC8280XP / Adreno 690) 2D backend.
+ *
+ * Present state: no Adreno driver.  Every op is dispatched to the shared
+ * aarch64 NEON software engine (system/platform/aarch64/src/g2d_arch.c),
+ * identical to machine.virt's contract.  The raw-physical scan-out ops
+ * (blt_phy / rotate_phy) decline with the sticky G2D_ERR_NOT_SUPPORTED
+ * because the CPU engine has no direct-physical path; displayd latches
+ * the capability off and keeps its own fb flush path (bsp_fb.c writes
+ * the UEFI GOP framebuffer directly).
+ *
+ * Adreno 690 GPU bring-up (GMU + CP ring + SMMU + a6xx shader path) is
+ * tracked separately; when it lands, the forwarders here switch from
+ * arch_g2d_* to the Adreno driver entry points, and the *_phy ops start
+ * returning G2D_OK.  The bsp_g2d_* ABI must stay identical across all
+ * machines (g2dd is shared code) — see raspi5's bsp_g2d.h for the
+ * canonical signature list.
+ */
+
+/* initialize the 2D engine before first use. safe to call multiple
+   times. returns 0 on success. */
+int32_t bsp_g2d_init(void);
+
+/* clock rate of the 2D engine in Hz, as confirmed during bsp_g2d_init()
+   (the hardware backend pins the GPU to its max rate at init and reads
+   back the actual rate). returns 0 when the platform has no such clock
+   (software backends) or the rate could not be confirmed. */
+uint32_t bsp_g2d_clock_hz(void);
+
+/* V3D architecture version x10 (21/42/71), or 0 when the platform has no
+   V3D engine.  Reported via the G2D_DEV_CNTL_GET_VERSION device control.
+   Q8B's Adreno 690 is not a V3D part; this stays 0 until an Adreno
+   version encoding is added to the shared g2dd protocol. */
+uint32_t bsp_g2d_version(void);
+
+/* backend diagnostics for `devcmd /dev/g2d <args>`: formats the reply
+   into buf and returns 0 when the backend recognises argv[0], -1 when it
+   does not (g2dd then answers nothing). this backend has no diagnostics
+   of its own and always returns -1. */
+int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len);
+
+/* contig/src_contig/dst_contig: != 0 when the buffer backing is
+   physically contiguous (contig shm slab or dma memory), required by
+   hardware 2d paths that work on physical addresses. *_phy carries the
+   resolved physical base of the buffer when contig, 0 otherwise. */
+int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
+
+/* translucent colour fill of a sub-rect, clipped to the buffer bounds:
+   source-over blend of color (its alpha byte is the blend alpha) onto
+   the rect, same blend math as bsp_g2d_blt_alpha. alpha == 0 is a no-op.
+   argb_phy/contig as for bsp_g2d_fill; this platform's fill runs on the
+   cpu and ignores them (exact per-pixel access, no alignment/contiguity
+   requirement). */
+int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
+
+/* solid/alpha filled triangle (x1,y1)-(x2,y2)-(x3,y3) rasterized into the
+   buffer with the same scanline fill as the software reference (sort-by-Y,
+   two-slope edge walk), each span clipped to the buffer bounds. color
+   carries the blend alpha in its high byte (0xff = opaque, 0 = no-op).
+   argb_phy/contig as for bsp_g2d_fill. returns the g2d result codes:
+   G2D_OK (0) when rasterized, G2D_ERR_NOT_SUPPORTED (-2, sticky) when the
+   back end has no triangle path - the caller then falls back to its own
+   in-process rasterizer. */
+int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+			int32_t x1, int32_t y1, int32_t x2, int32_t y2, int32_t x3, int32_t y3, uint32_t color);
+
+int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			int32_t dx, int32_t dy, int32_t dw, int32_t dh);
+
+/* 1:1 blit of a clipped rect into a RAW PHYSICAL destination (e.g. the
+   scan-out buffer): no dst virtual address exists in this process, the
+   2d engine writes the physical range directly. dst_pitch is the row
+   stride in bytes (>= dst_w*4, %4==0); [dst_phy, dst_phy+dst_size)
+   must be physically contiguous ram.
+   returns the g2d result codes (g2dclient/g2dclient.h), which g2dd
+   passes through to the client verbatim: G2D_ERR_FAILED (-1) when this
+   particular range could not be written, G2D_ERR_NOT_SUPPORTED (-2)
+   when the back end has no scan-out push at all - the caller then
+   stops asking and stays on its cpu flush path. */
+int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
+			uint32_t dst_pitch,
+			int32_t dx, int32_t dy, int32_t dw, int32_t dh);
+/* rotate a src rect (sx,sy,sw,sh) clockwise by degree (90/180/270 only)
+   straight into a RAW PHYSICAL destination (the scan-out buffer): the
+   rotated rect lands with its top-left at (dx,dy) of the dst_w x dst_h
+   surface; its size is the rotated (sw,sh). dst_pitch/dst_size as in
+   bsp_g2d_blt_phy. returns -1 when the geometry is not eligible for the
+   engine (nothing written) or the dispatch failed. */
+int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
+uint32_t dst_pitch,
+int32_t dx, int32_t dy, int32_t degree);
+
+
+int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			int32_t dx, int32_t dy, int32_t dw, int32_t dh, uint8_t alpha);
+
+int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h);
+
+/* smallest size able to hold src_w x src_h rotated clockwise by degree
+   (any angle). exact swap/keep for multiples of 90, rotated bounding
+   box otherwise. */
+int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
+			int32_t* dst_w, int32_t* dst_h);
+
+/* rotate the whole source surface clockwise by degree (any angle).
+   dst must be at least the size given by bsp_g2d_rotated_size(); for
+   angles other than 0/90/180/270 pixels outside the rotated content
+   become transparent.
+   in-place (argb_src == argb_dst) is only valid for 0/180. */
+int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree);
+
+/* whole-surface separable gaussian blur: delegated to the platform's
+   arch_g2d_* back end (the NEON software engine), which blurs in place
+   and allocates its own scratch, so tmp/tmp_phy/tmp_contig are unused.
+   radius is any positive value (g2dd pre-validates 2/4 and width %16);
+   returns 0 (G2D_OK). */
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
+			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
+			int32_t argb_w, int32_t argb_h,
+			int32_t rect_x, int32_t rect_y,
+			int32_t rect_w, int32_t rect_h,
+			int32_t radius);
+
+/* portablegl 3D (V3D) offload moved to bsp_g3d.h: bsp_g3d_init /
+   bsp_g3d_clear / bsp_g3d_draw.  It is no longer part of the g2d interface. */
+
+#endif

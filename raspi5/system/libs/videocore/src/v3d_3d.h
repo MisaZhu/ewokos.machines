@@ -266,8 +266,14 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
  * (never truncated) so the caller falls back to its CPU path.  MAX_QPU is in
  * 32-bit words (2 words per V3D 7.1 QPU instruction). */
 #define V3D_3D_MAX_PROGS       16u    /* simultaneously cached programs       */
-#define V3D_3D_PROG_MAX_QPU    4096u  /* QPU 32-bit words per stage           */
-#define V3D_3D_PROG_MAX_UNIF   512u   /* uniform-stream words per stage       */
+#define V3D_3D_PROG_MAX_QPU    32768u /* QPU 32-bit words per stage (wave's
+                                        * faithful ES310 ocean compiles to
+                                        * ~22930 cs words; 4096 declined it).
+                                        * Costless to raise: QPU text is dma-
+                                        * allocated by ACTUAL word count.      */
+#define V3D_3D_PROG_MAX_UNIF   2048u  /* uniform-stream words per stage (wave
+                                        * cs embeds 1428; grows _progs[16]
+                                        * BSS to ~1.3 MB + 8 KB/stage dma)     */
 #define V3D_3D_PROG_MAX_ATTRS  64u    /* VS attribute / driver-location slots */
 #define V3D_3D_PROG_MAX_INPUTS 64u    /* FS input (varying) slots             */
 
@@ -335,6 +341,10 @@ typedef struct {
     uint8_t  cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
+    uint32_t cs_spill_size;   /* bytes/thread of register-spill scratch (0 = none);
+                               * the daemon allocates qpu_count*4*this as a TMU-general
+                               * scratch DMA buffer and resolves QUNIFORM_SPILL_OFFSET /
+                               * QUNIFORM_SPILL_SIZE_PER_THREAD from it. */
     /* Non-zero when the compute stage is one of the fixed two-pass GEOMETRY
      * rasterizer kernels (geom_raster_cs.h) rather than a shadertoy full-frame
      * effect: 1 = gouraud/colour (SSBO 0=fb 1=pos 2=nrm 3=depth), 2 = textured

@@ -373,7 +373,7 @@ typedef struct {
     /* raw dma_alloc VAs of the four QPU code blocks (0 when absent) so
      * v3d_3d_program_free can hand them back; the IOVAs above point into the
      * page-rounded interior of these blocks and cannot be freed directly. */
-    ewokos_addr_t vs_qpu_raw, fs_qpu_raw, coord_qpu_raw, cs_qpu_raw;
+    ewokos_addr_t vs_qpu_raw, fs_qpu_raw, coord_qpu_raw, cs_qpu_raw, cs_spill_raw;
     /* GPU-resident static uniform value streams (dma IOVA); 0 when the stage
      * has no uniforms.  A per-draw buffer is patched from these at draw. */
     uint32_t vs_unif_iova;  uint32_t vs_num_uniforms;
@@ -418,6 +418,8 @@ typedef struct {
     uint8_t  cs_threads, cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
+    uint32_t cs_spill_size;   /* bytes/thread of register-spill scratch (0 = none) */
+    uint32_t cs_spill_iova;   /* scratch DMA base IOVA: the QUNIFORM_SPILL_OFFSET value */
     uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced,
                              * 4 = colour-modulated textured (imgui) */
     uint32_t cs_geom_tpw;   /* raster triangles/workgroup: 0 = one wg per tri */
@@ -479,6 +481,7 @@ static void release_prog(v3d_3d_prog_t *pr)
     if (pr->fs_qpu_raw)    dma_free(0, pr->fs_qpu_raw);
     if (pr->coord_qpu_raw) dma_free(0, pr->coord_qpu_raw);
     if (pr->cs_qpu_raw)    dma_free(0, pr->cs_qpu_raw);
+    if (pr->cs_spill_raw)  dma_free(0, pr->cs_spill_raw);
     if (pr->cs2_qpu_raw)   dma_free(0, pr->cs2_qpu_raw);
     memset(pr, 0, sizeof(*pr));
 }
@@ -1653,6 +1656,8 @@ static uint32_t build_draw_rcl(uint32_t fb_iova, uint32_t stride_bytes,
 #define QUNIFORM_TMU_CONFIG_P0     6u
 #define QUNIFORM_TMU_CONFIG_P1     7u
 #define QUNIFORM_SSBO_OFFSET       19u  /* data = SSBO binding; compute route */
+#define QUNIFORM_SPILL_OFFSET          31u  /* data = byte offset into the scratch BO */
+#define QUNIFORM_SPILL_SIZE_PER_THREAD 32u  /* value = bytes/thread of spill scratch */
 
 static uint32_t f32_bits(float f)
 {
@@ -1681,7 +1686,8 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
                            const v3d_3d_ctex_t *ctex,
                            float vp_xscale, float vp_yscale,
                            float vp_zscale, float vp_zoff,
-                           const uint32_t *ssbo_iova, uint32_t num_ssbo)
+                           const uint32_t *ssbo_iova, uint32_t num_ssbo,
+                           uint32_t spill_iova, uint32_t spill_size_per_thread)
 {
     uint32_t i;
     for (i = 0; i < num; i++) {
@@ -1764,6 +1770,29 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
             }
             out[i] = ssbo_iova[d];
             break;
+        case QUNIFORM_SPILL_OFFSET:
+            /* Register-spill scratch base.  v3d_setup_spill_base() addresses a
+             * thread's scratch as TIDX*SPILL_SIZE_PER_THREAD + (EIDX<<2) +
+             * SPILL_OFFSET, so this slot is the scratch DMA base IOVA plus the
+             * slot's byte offset (data, normally 0).  mesa sizes the BO
+             * qpu_count*4*spill_size for TIDX = (core<<6)|(qpu<<2)|thread; the
+             * daemon allocated it at program upload (cs_spill_iova).  Decline if
+             * the kernel spills but no scratch was staged. */
+            if (spill_iova == 0) {
+                slog("v3d_3d: unif slot %u SPILL_OFFSET but no scratch -> decline\r\n", i);
+                return -1;
+            }
+            out[i] = spill_iova + d;
+            break;
+        case QUNIFORM_SPILL_SIZE_PER_THREAD:
+            /* The per-thread scratch stride in bytes (== prog_data->spill_size),
+             * a plain integer (not float bits). */
+            if (spill_size_per_thread == 0) {
+                slog("v3d_3d: unif slot %u SPILL_SIZE_PER_THREAD 0 -> decline\r\n", i);
+                return -1;
+            }
+            out[i] = spill_size_per_thread;
+            break;
         default:
             /* UBO-addr / blend-constant / line-width / spill / ... : the
              * full-screen-quad shadertoy path never emits these, so decline
@@ -1786,8 +1815,8 @@ static int decline(const char *why)
 }
 
 /* Compute-route draw: the program's fragment stage was recompiled as a compute
- * kernel (v3d_compile_compute) whose SSBO binding 0 is the render target and
- * whose per-draw blob carries `v3d_cs_stride` (dwords per row) alongside the
+ * kernel (pglc_compile_compute) whose SSBO binding 0 is the render target and
+ * whose per-draw blob carries `pglc_cs_stride` (dwords per row) alongside the
  * effect's own uniforms.  One invocation per pixel: the grid is
  * ceil(w/lx) x ceil(h/ly) x 1 and the kernel clips x>=w / y>=h itself from
  * iResolution.  Serialized against the 2D CSD kernels by the dispatch lock
@@ -1820,7 +1849,8 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     }
     if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                         pr->cs_num_uniforms, unif, num_uniforms, ctex,
-                        0.0f, 0.0f, 0.0f, 0.0f, &fb_iova, 1u) != 0) {
+                        0.0f, 0.0f, 0.0f, 0.0f, &fb_iova, 1u,
+                        pr->cs_spill_iova, pr->cs_spill_size) != 0) {
         v3d_g2d_op_end();
         return decline("compute: uniforms");
     }
@@ -1959,7 +1989,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         /* textured xform reads interleaved pos+uv from binding 1 only */
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
                             pr->cs2_num_uniforms, unif, num_uniforms, NULL,
-                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u) != 0) {
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms (tex)");
         }
@@ -1970,7 +2000,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         ssbo[3] = inst_iova;
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
                             pr->cs2_num_uniforms, unif, num_uniforms, NULL,
-                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u) != 0) {
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms (inst)");
         }
@@ -1978,7 +2008,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         ssbo[2] = nrm_iova;
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
                             pr->cs2_num_uniforms, unif, num_uniforms, NULL,
-                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 3u) != 0) {
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 3u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms");
         }
@@ -2049,7 +2079,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                         pr->cs_num_uniforms, unif + split, num_uniforms - split,
                         NULL, 0.0f, 0.0f, 0.0f, 0.0f,
-                        ssbo, tex_iova != 0u ? 4u : 3u) != 0) {
+                        ssbo, tex_iova != 0u ? 4u : 3u, 0u, 0u) != 0) {
         v3d_g2d_op_end();
         return decline("geom: raster uniforms");
     }
@@ -2395,16 +2425,16 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
             return decline("ctex base not 64B aligned");
         if (expand_uniforms(_cvs_unif_va, pr->vs_unif_contents, pr->vs_unif_data,
                             pr->vs_num_uniforms, unif, num_uniforms, ctex,
-                            fx, fy, 0.5f, 0.5f, NULL, 0u) != 0)
+                            fx, fy, 0.5f, 0.5f, NULL, 0u, 0u, 0u) != 0)
             return decline("vs uniforms");
         if (expand_uniforms(_cfs_unif_va, pr->fs_unif_contents, pr->fs_unif_data,
                             pr->fs_num_uniforms, unif, num_uniforms, ctex,
-                            fx, fy, 0.5f, 0.5f, NULL, 0u) != 0)
+                            fx, fy, 0.5f, 0.5f, NULL, 0u, 0u, 0u) != 0)
             return decline("fs uniforms");
         if (expand_uniforms(_ccs_unif_va, pr->coord_unif_contents,
                             pr->coord_unif_data, pr->coord_num_uniforms,
                             unif, num_uniforms, ctex,
-                            fx, fy, 0.5f, 0.5f, NULL, 0u) != 0)
+                            fx, fy, 0.5f, 0.5f, NULL, 0u, 0u, 0u) != 0)
             return decline("coord uniforms");
         build_shader_record_compiled(pr->fs_qpu_iova, _cfs_unif_p,
                             pr->fs_threads, pr->fs_single_seg,
@@ -2665,8 +2695,28 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         pr->cs_local_size[1] = desc->cs_local_size[1];
         pr->cs_local_size[2] = desc->cs_local_size[2];
         pr->cs_shared_size  = desc->cs_shared_size;
+        pr->cs_spill_size   = desc->cs_spill_size;
         pr->cs_is_geom      = desc->cs_is_geom;
         pr->cs_geom_tpw     = desc->cs_geom_tpw;
+        /* Register-spill scratch: mesa's allocator spilled this kernel (it emits
+         * QUNIFORM_SPILL_OFFSET / _SIZE_PER_THREAD), addressing a thread's slot as
+         * TIDX*SPILL_SIZE_PER_THREAD + (EIDX<<2) + SPILL_OFFSET where TIDX =
+         * (core<<6)|(qpu<<2)|thread.  Size the BO exactly as mesa does -
+         * qpu_count*4*spill_size (4 threads/QPU) - and allocate it once here as DMA
+         * (MMU-mapped + phy-validated by alloc_stage_raw).  The kernel reaches it
+         * through TMU-general (L2T) ops, the same path as the SSBO framebuffer, so
+         * the per-dispatch V3D_G2D_MAINT_ALL full-range L2 clean+invalidate drops
+         * any stale scratch lines and the GPU-internal buffer needs no writeback.
+         * Without this the draw declines (unif type 32) to the CPU. */
+        if (desc->cs_spill_size != 0) {
+            uint32_t scratch = (uint32_t)v3d_g2d_num_qpus() * 4u *
+                               desc->cs_spill_size;
+            if (alloc_stage_raw(scratch, &va, &iova, &pr->cs_spill_raw) != 0) {
+                slog("v3d_3d: cs spill scratch %u bytes alloc failed\r\n", scratch);
+                goto fail;
+            }
+            pr->cs_spill_iova = iova;
+        }
     }
 
     /* upload the optional second COMPUTE QPU (pass-1 vertex transform) */
@@ -2764,10 +2814,11 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
          slot, pr->coord_vpm_output_size, pr->coord_vpm_input_size,
          pr->vs_vpm_output_size, pr->vs_vpm_input_size, pr->fs_num_inputs);
     if (pr->cs_qpu_words)
-        slog("v3d_3d: prog %d compute %uw @%u unif %u local %ux%ux%u thr %u seg %u\r\n",
+        slog("v3d_3d: prog %d compute %uw @%u unif %u local %ux%ux%u thr %u seg %u spill %u/%u\r\n",
              slot, pr->cs_qpu_words, pr->cs_qpu_iova, pr->cs_num_uniforms,
              pr->cs_local_size[0], pr->cs_local_size[1], pr->cs_local_size[2],
-             (uint32_t)pr->cs_threads, (uint32_t)pr->cs_single_seg);
+             (uint32_t)pr->cs_threads, (uint32_t)pr->cs_single_seg,
+             pr->cs_spill_size, pr->cs_spill_iova);
     return slot;
 
 fail:

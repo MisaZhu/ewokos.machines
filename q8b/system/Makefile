@@ -34,10 +34,11 @@ x: x_sys
 	@$(MAKE) final
 
 # Platform headers consumed by user-space drivers (GOP framebuffer and
-# RAM-disk hand-off layout).
+# RAM-disk hand-off layout, plus the Adreno 690 GPU physical-address map).
 platform_headers:
 	@mkdir -p $(BUILD_DIR)/include
 	@cp -p ../include/q8b_platform.h $(BUILD_DIR)/include/
+	@cp -p ../include/q8b_adreno.h $(BUILD_DIR)/include/
 
 basic_sys: kernel_heads ewok_heads platform_headers
 	rm -f $(BUILD_DIR)/lib/libbsp.a
@@ -52,8 +53,11 @@ network_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/network
 
 # Q8B uses the SC8280XP multi-port DWC3 core through the shared polled xHCI
-# stack. Keep Bluetooth/3D out until their board-specific transports land.
-GUI_DRIVERS = displaymand consoled fontd usbhostd hid_keybd hid_moused \
+# stack.  g2dd is the shared 2D/3D offload daemon; on q8b it links libbsp +
+# libadreno (BSP_LFLAGS) and forwards into the Adreno 690 A2D/CS back ends,
+# which stay behind the ADRENO_ENABLE=1 runtime opt-in set in etc/*/init.rd.
+# Keep Bluetooth out until its board-specific transport lands.
+GUI_DRIVERS = displaymand consoled fontd g2dd usbhostd hid_keybd hid_moused \
 	usbfat32fsd
 
 gui_sys: basic_sys

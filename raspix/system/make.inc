@@ -8,23 +8,28 @@ endif
 
 SYS_ROOT_DIR = ${ewokos}/system
 
-# raspix ships ONE image across Pi3(VC4 V3D 2.1)/Pi4(V3D 4.2)/Pi5(V3D 7.1), so it
-# has the same VideoCore V3D 3D-offload capability as raspi5: portablegl compiles
-# its GPU backend (pgl_g3d.o) and the on-device mesa GLSL->QPU compiler is built.
-# pgl_g3d queries the LIVE V3D version over the g2d dev-cntl channel at init and
-# declines to the CPU/NEON rasterizer when ver < 41 (Pi3/VC4, no CSD compute), so
-# enabling this on the shared binary is safe on every raspix board.
+# raspix ships ONE image across Pi3(VC4 V3D 2.1)/Pi4(V3D 4.2)/Pi5(V3D 7.1), but
+# its on-device v3dcompiler backend targets V3D 4.2 ONLY: portablegl compiles its
+# GPU backend (pgl_g3d.o) and the on-device mesa GLSL->QPU compiler is built for
+# the Pi4 CSD-compute route.  pgl_g3d queries the LIVE V3D version over the g2d
+# dev-cntl channel at init and declines to the CPU/NEON rasterizer whenever the
+# backend does not support it (pglc_version_supported: ver < 41 on Pi3/VC4, no
+# CSD compute; ver 71 on Pi5 -- use the raspi5 image for Pi5 GPU), so enabling
+# this on the shared binary is safe on every raspix board.
 export PGL_G3D=yes
 
-# The on-device mesa GLSL->QPU compiler (projects/soft3d/libs/gles/v3dcompiler) is
-# platform-independent; its EwokOS build config (mesa_config.h plus the assert.h/
-# syslog.h shims) lives in this machine's bsp g3d dir.  Export that dir so the
-# compiler Makefile can force-include the config and put the shims first on the
-# include path without the shared projects/ Makefile ever naming a board.  ':='
-# captures $(lastword $(MAKEFILE_LIST)) == make.inc at parse time (see the note in
+# portablegl's GPU backend compiles GLSL on-device through the backend-neutral
+# <pglcompiler.h> contract: the shared mesa GLSL->NIR frontend lives in
+# projects/soft3d/libs/gles/pglcompiler and never names a board, while the
+# NIR->ISA backend that implements the contract (here: mesa broadcom NIR->QPU +
+# the g2d_pgl_program_blob_t serializer) plus the EwokOS mesa build config
+# (port/mesa_config.h and the port/assert.h, port/syslog.h shims) live in this
+# machine's libs/v3dcompiler.  Export that dir so gles/Makefile can build the
+# backend and the frontend can force-include its port config.  ':=' captures
+# $(lastword $(MAKEFILE_LIST)) == make.inc at parse time (see the note in
 # projects/make.inc), so the path is absolute and survives the sub-make env pass.
-V3D_PORT_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))libs/bsp/src/g3d
-export V3D_PORT_DIR
+PGL_G3D_COMPILER_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))libs/v3dcompiler
+export PGL_G3D_COMPILER_DIR
 
 SDK_DIR= $(SYS_ROOT_DIR)/build_$(ARCH)/$(HW)
 LDFLAGS += -L $(SDK_DIR)/lib

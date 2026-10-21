@@ -312,6 +312,7 @@ typedef struct {
     uint8_t  cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
+    uint32_t cs_spill_size;   /* VERSION 5: bytes/thread of register-spill scratch (0 = none) */
     /* 1 = cs is the fixed geometry rasterizer (grid = one workgroup per
      * triangle; draw pos/col/z iovas become SSBO bindings 1/2/3); 0 = the
      * shadertoy full-frame route (grid covers the frame, SSBO 0 = fb).
