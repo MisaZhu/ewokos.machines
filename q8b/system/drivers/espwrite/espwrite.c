@@ -395,7 +395,7 @@ static void list_dir(fat32_t* fat, fat32_node_t* dir, const char* prefix) {
                 (kid.attr & FAT32_ATTR_DIRECTORY) ? 0 : kid.size);
         if ((kid.attr & FAT32_ATTR_DIRECTORY) && strcmp(kid.name, ".") != 0 &&
                 strcmp(kid.name, "..") != 0) {
-            char sub[256];
+            char sub[512];
             snprintf(sub, sizeof(sub), "%s%s/", prefix, kid.name);
             list_dir(fat, &kid, sub);
         }
