@@ -271,9 +271,15 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                         * ~22930 cs words; 4096 declined it).
                                         * Costless to raise: QPU text is dma-
                                         * allocated by ACTUAL word count.      */
-#define V3D_3D_PROG_MAX_UNIF   2048u  /* uniform-stream words per stage (wave
-                                        * cs embeds 1428; grows _progs[16]
-                                        * BSS to ~1.3 MB + 8 KB/stage dma)     */
+#define V3D_3D_PROG_MAX_UNIF   8192u  /* uniform-stream words per stage (wave
+                                        * cs embeds 1428; the faithful ED-209
+                                        * shadertoy raymarcher folds its many
+                                        * constants into fs 4278 / cs 4341, so
+                                        * 2048 declined it -> CPU fallback;
+                                        * 8192 keeps ~1.9x headroom.  Grows
+                                        * _progs[16] BSS to ~5 MB (10 inline
+                                        * MAX_UNIF arrays/slot) + 32 KB/stage
+                                        * dma; V3D has no hw cap near this).   */
 #define V3D_3D_PROG_MAX_ATTRS  64u    /* VS attribute / driver-location slots */
 #define V3D_3D_PROG_MAX_INPUTS 64u    /* FS input (varying) slots             */
 

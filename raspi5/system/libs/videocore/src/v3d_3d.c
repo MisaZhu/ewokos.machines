@@ -2702,14 +2702,19 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
          * QUNIFORM_SPILL_OFFSET / _SIZE_PER_THREAD), addressing a thread's slot as
          * TIDX*SPILL_SIZE_PER_THREAD + (EIDX<<2) + SPILL_OFFSET where TIDX =
          * (core<<6)|(qpu<<2)|thread.  Size the BO exactly as mesa does -
-         * qpu_count*4*spill_size (4 threads/QPU) - and allocate it once here as DMA
-         * (MMU-mapped + phy-validated by alloc_stage_raw).  The kernel reaches it
-         * through TMU-general (L2T) ops, the same path as the SSBO framebuffer, so
-         * the per-dispatch V3D_G2D_MAINT_ALL full-range L2 clean+invalidate drops
-         * any stale scratch lines and the GPU-internal buffer needs no writeback.
-         * Without this the draw declines (unif type 32) to the CPU. */
+         * TIDX packs as (core<<6)|(qpu<<2)|thread, so every slice reserves a
+         * 64-wide TIDX block no matter how many of its QPUs run; the scratch
+         * must therefore be slices*64*spill_size, not qpus*4*spill_size, or the
+         * non-zero cores' threads spill out of bounds (simple non-spilling
+         * shader regions still render fine while spilled ones tear).  Allocate
+         * it once here as DMA (MMU-mapped + phy-validated by alloc_stage_raw).
+         * The kernel reaches it through TMU-general (L2T) ops, the same path as
+         * the SSBO framebuffer, so the per-dispatch V3D_G2D_MAINT_ALL full-range
+         * L2 clean+invalidate drops any stale scratch lines and the
+         * GPU-internal buffer needs no writeback.  Without this the draw
+         * declines (unif type 32) to the CPU. */
         if (desc->cs_spill_size != 0) {
-            uint32_t scratch = (uint32_t)v3d_g2d_num_qpus() * 4u *
+            uint32_t scratch = (uint32_t)v3d_g2d_num_slices() * 64u *
                                desc->cs_spill_size;
             if (alloc_stage_raw(scratch, &va, &iova, &pr->cs_spill_raw) != 0) {
                 slog("v3d_3d: cs spill scratch %u bytes alloc failed\r\n", scratch);
