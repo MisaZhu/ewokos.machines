@@ -184,6 +184,12 @@ typedef struct {
     uint32_t ctex_h[V3D_3D_MAX_TEX_UNITS];
     uint8_t  ctex_tiling[V3D_3D_MAX_TEX_UNITS];
     uint8_t  ctex_ub_pad[V3D_3D_MAX_TEX_UNITS];
+    /* Cubemap / 2D-array: ctex_depth[i] is the layer count (0/1 = plain 2D,
+     * 6 = cubemap-as-2D-array); ctex_arrstride64[i] the per-layer tiled size
+     * in 64-byte units (the record's array_stride_64_byte_aligned).  Both 0
+     * for a plain 2D image, leaving its texture-state record byte-identical. */
+    uint8_t  ctex_depth[V3D_3D_MAX_TEX_UNITS];
+    uint32_t ctex_arrstride64[V3D_3D_MAX_TEX_UNITS];
 } v3d_3d_ctex_t;
 
 /* Allocate dma staging and validate the GPU is usable for the 3D path.

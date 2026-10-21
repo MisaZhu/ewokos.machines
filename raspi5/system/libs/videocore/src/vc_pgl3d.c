@@ -213,7 +213,8 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
     if (compiled) {
         uint32_t i;
         for (i = 0; i < VC_PGL3D_MAX_TEX_UNITS; i++) {
-            uint32_t stride_i, iova_i;
+            uint32_t stride_i, iova_i, depth_i;
+            size_t   map_bytes;
             if (req->ctex_phy[i] == 0)
                 continue;
             if (req->ctex_w[i] == 0 || req->ctex_h[i] == 0)
@@ -222,9 +223,18 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
                                            : req->ctex_w[i] * 4u;
             if (stride_i < req->ctex_w[i] * 4u)
                 return decline(1, "ctex stride");
-            iova_i = gpu_phys(req->ctex_phy[i],
-                              (size_t)stride_i * req->ctex_h[i],
-                              req->ctex_contig[i]);
+            /* A cubemap / 2D-array unit (ctex_depth > 1) stores its layers
+             * contiguously at ctex_stride64*64-byte spacing, so the physical
+             * range the GPU may touch spans depth*arrstride64*64 bytes, NOT
+             * the single-face stride*height a plain 2D image uses.  Validate
+             * the whole array so the IOVA mapping covers every face. */
+            depth_i = req->ctex_depth[i];
+            if (depth_i > 1 && req->ctex_arrstride64[i] > 0)
+                map_bytes = (size_t)depth_i *
+                            (size_t)req->ctex_arrstride64[i] * 64u;
+            else
+                map_bytes = (size_t)stride_i * req->ctex_h[i];
+            iova_i = gpu_phys(req->ctex_phy[i], map_bytes, req->ctex_contig[i]);
             if (iova_i == 0)
                 return decline(1, "ctex gpu_phys");
             ctex.ctex_iova[i]   = iova_i;
@@ -233,6 +243,8 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
             ctex.ctex_h[i]      = req->ctex_h[i];
             ctex.ctex_tiling[i] = req->ctex_tiling[i];
             ctex.ctex_ub_pad[i] = req->ctex_ub_pad[i];
+            ctex.ctex_depth[i]       = (uint8_t)depth_i;
+            ctex.ctex_arrstride64[i] = req->ctex_arrstride64[i];
             ctex_path = 1;
         }
     }

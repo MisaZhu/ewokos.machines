@@ -36,5 +36,17 @@ void sdhci_card_irq_arm(void);
 void sdhci_card_irq_off(const char* why);
 bool sdhci_card_irq_is_on(void);
 bool sdhci_card_irq_wait(uint32_t slice_us);
+
+/*
+ * Wake a worker parked in sdhci_card_irq_wait() immediately, without waiting
+ * for the slice timeout or a genuine card interrupt. The park was added to
+ * cut RX first-packet latency (DAT1 asserting fires the directed wake the
+ * moment inbound data lands); TX had no equivalent, so a lone outbound frame
+ * enqueued while the worker was idle-parked only reached the air on the next
+ * slice timeout or when the peer transmitted. This gives TX the same
+ * edge-driven wake. Best-effort: a no-op when the IRQ path is off or nobody
+ * is parked.
+ */
+void sdhci_card_irq_kick(void);
 bool sdhci_host_allows_high_speed(void);
 #endif

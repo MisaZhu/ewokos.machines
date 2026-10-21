@@ -26,6 +26,10 @@
 #include "common/v3d_device_info.h"
 #include "v3d_compiler.h"
 
+#include <stdarg.h>
+#include <time.h>
+#include <ewoksys/klog.h>
+
 #define ACC_INDEX     0
 #define ACC_COUNT     6
 
@@ -33,6 +37,33 @@
 #define IMPLICIT_RF_COUNT 1
 
 #define PHYS_COUNT 64
+
+/* Cap on spill/re-solve rounds inside v3d_register_allocate().  The batch-spill
+ * loop re-runs the (expensive) graph colouring after every victim batch; for a
+ * very high-pressure shader (the faithful city compute kernel) a batch can fail
+ * to lower peak pressure below the thread budget, so ra_allocate() keeps
+ * failing and the loop grinds for tens of seconds instead of returning
+ * "allocation failed" and letting the compile-strategy ladder advance to a
+ * narrower thread count that does fit.  Bailing after a bounded number of
+ * rounds reproduces the fast "RA fail" path and keeps compile time finite.
+ */
+#define V3D_RA_MAX_RESOLVE 96
+
+static double v3ct_now(void)
+{
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
+static void PRINTFLIKE(1, 2) v3ct_log(const char *fmt, ...)
+{
+        char buf[192];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        slog("v3ct: [%8.1f] %s\r\n", v3ct_now(), buf);
+}
 
 static uint8_t
 get_phys_index(const struct v3d_device_info *devinfo)
@@ -1682,7 +1713,13 @@ v3d_register_allocate(struct v3d_compile *c)
                 c->max_tmu_spills = UINT32_MAX;
 
         struct qpu_reg *temp_registers = NULL;
+        unsigned _ra_inner = 0;
         while (true) {
+                if (++_ra_inner > V3D_RA_MAX_RESOLVE) {
+                        v3ct_log("RA INNER BAIL iters=%u temps=%u spills=%u fills=%u",
+                                 _ra_inner, c->num_temps, c->spills, c->fills);
+                        goto spill_fail;
+                }
                 if (c->spill_size <
                     V3D_CHANNELS * sizeof(uint32_t) * force_register_spills) {
                         int node = v3d_choose_spill_node(c, false);
