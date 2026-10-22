@@ -10,5 +10,6 @@ int bsp_eth_pending_rx(void);
 int bsp_eth_can_write(void);
 int bsp_eth_read(void *buf, uint32_t size);
 int bsp_eth_write(const void *buf, uint32_t size);
+void bsp_eth_stats(char *buf, uint32_t size);
 
 #endif

@@ -1,8 +1,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include <bsp/bsp_eth.h>
+#include <ewoksys/ipc.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/proto.h>
@@ -13,6 +15,14 @@
 static vdevice_t *_net_dev;
 static int _rx_ready;
 static int _tx_ready;
+
+static char *net_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void *p) {
+    char *out = malloc(512);
+    (void)dev; (void)from_pid; (void)argc; (void)argv; (void)p;
+    if (out != NULL)
+        bsp_eth_stats(out, 512);
+    return out;
+}
 
 static int net_read(vdevice_t *dev, int fd, int from_pid, fsinfo_t *info,
         void *buf, int size, off_t offset, void *p) {
@@ -68,23 +78,29 @@ static uint32_t net_check_poll_events(vdevice_t *dev, int fd, int from_pid,
 static int net_loop_step(vdevice_t *dev, void *p) {
     int rx_ready;
     int tx_ready;
+    int events = 0;
 
     (void)dev; (void)p;
+    /* Single-task IPC upcalls interrupt and later resume this main context.
+     * A read/poll callback must not re-enter the ring/queue halfway through
+     * copying a frame or publishing a descriptor. A mutex would deadlock
+     * against the suspended main context; defer IPC delivery instead. */
+    ipc_disable();
     bsp_eth_poll();
     rx_ready = bsp_eth_pending_rx() > 0;
     tx_ready = bsp_eth_can_write() > 0;
     if (_net_dev != NULL) {
-        int events = 0;
-
         if (rx_ready && !_rx_ready)
             events |= VFS_EVT_RD;
         if (tx_ready && !_tx_ready)
             events |= VFS_EVT_WR;
-        if (events != 0)
-            vfs_wakeup(_net_dev->mnt_info.node, events);
     }
     _rx_ready = rx_ready;
     _tx_ready = tx_ready;
+    ipc_enable();
+    /* Wakeup calls into VFS: allow its callbacks before making that IPC. */
+    if (events != 0)
+        vfs_wakeup(_net_dev->mnt_info.node, events);
     usleep(10000);
     return 0;
 }
@@ -104,6 +120,7 @@ int main(int argc, char **argv) {
     dev.read = net_read;
     dev.write = net_write;
     dev.dev_cntl = net_dcntl;
+    dev.cmd = net_cmd;
     dev.check_poll_events = net_check_poll_events;
     dev.loop_step = net_loop_step;
     device_run(&dev, mnt_point, FS_TYPE_CHAR, 0666, false);

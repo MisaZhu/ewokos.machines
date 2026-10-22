@@ -43,7 +43,7 @@ SPI NOR EDK2 UEFI
 | **M.2 NVMe（PCIe2a x4）** | ✅ **用户态驱动实机验证，读 1.77 GiB/s** | 见下文「M.2 NVMe（PCIe2a，用户态驱动）」：ECAM 枚举 + BAR0 映射 + 轮询 admin/I/O 队列；Lexar 1TB SSD（126f:2263，NVMe 1.3，MDTS=6/256KB）。原始读 **1.77 GiB/s**（256MB，256KB×QD≥4），带拷贝的实用路径 **~1.2 GiB/s**；读取 MBR/分区表/EXFAT 引导扇区与真实盘上数据比对通过。 |
 | UFS 根盘 | ⏳ 未实现 | 后续接 UFS 3.1 |
 | USB xHCI / 键鼠 | ✅ 已实现（xhci + HID），实机枚举 | DWC3 xHCI @0x0a400000，轮询队列；键鼠 daemon 已接入 |
-| QPS615 双 2.5GbE | ✅ 已实现（TC956x/XGMAC3） | pcie3a + TC9563 交换机，实机 DHCP/ping/ssh 可用；批量传输稳定性待修 |
+| QPS615 双 2.5GbE | ✅ 已实现（TC956x/XGMAC3） | pcie3a + TC9563 交换机，PF0 实机 DHCP/ping/ssh 可用；已修复 RX 重入与队列满丢包，见 [网络回归](test/README.network.md) |
 | Adreno 690 / freedreno | ✅ 2D/API/显示集成实机通过 | 默认启动 g2dd；g2dtest 0 failure；完整桌面新启动流程待验收 |
 
 > 说明：QEMU 只能验证通用 AArch64 路径（UEFI → 内核 → 页表 → ext3 → init →
@@ -309,11 +309,11 @@ part2 `type=0xEF`（32MB ESP）。
   EXFAT/ESP，避免误改。
 - 根文件系统仍未切到 NVMe：后续可加 `nvmed` 块设备 daemon，或给 `sdfsd`
   增加 NVMe 后端（`libsd` 的 `sd_read_sectors` 已可替换）。
-- **批量 SSH 传输会造成网卡 RX 卡死**（`/drivers/q8b/net` 在 1500 字节
-  连续帧下停住，ping/ssh 全断，串口仍活）。实测用
-  `scp -l 300~500`（限速 37–62KB/s）+ 32KB 分片可稳定上传；串口控制台
-  （`tty0`，root/root）是可靠的备用命令通道。该问题与 NVMe 无关，待单独
-  修 `bsp_eth.c` 的 RX 环。
+- **批量 SSH 传输的 RX 卡死已修复**：主循环轮询期间延后 IPC upcall，避免
+  read/poll 回调重入并破坏 RX 环和收包队列；软件队列满时保留 DMA 完成帧，
+  待 read 腾出空间后交付。`devcmd /dev/eth0 stats` 可观察错误、背压和环指针。
+  不限速大文件校验及复现记录见 [网络回归](test/README.network.md)。串口控制台
+  （`tty0`，root/root）仍可用于独立观察网络负载期间的状态。
 
 ### 构建与运行
 
@@ -321,7 +321,7 @@ part2 `type=0xEF`（32MB ESP）。
 cd machines/q8b
 make -C system/libs/bsp            # 编 libbsp（含 nvme.c）
 make -C system/drivers/nvprobe     # 编 nvprobe
-# 上板：scp 到 /home（限速分片）后
+# 上板：使用 scp -O 上传到 /home 后
 /home/nvprobe scan        # 枚举 + 打开控制器 + identify
 /home/nvprobe gpt         # 读 MBR/GPT 与分区引导扇区（只读）
 /home/nvprobe bench 256   # 256MB 读吞吐（raw + copy）

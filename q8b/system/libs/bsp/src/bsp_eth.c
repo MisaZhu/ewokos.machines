@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <bsp/bsp_eth.h>
 #include <ewoksys/dma.h>
@@ -154,6 +155,7 @@
 #define DMA_RX_OWRQ_3       (3u << 24)
 #define DMA_RING_LEN_MASK   0x1fffu
 #define DMA_STATUS_FATAL    (1u << 12)
+#define DMA_STATUS_RX_UNAVAILABLE (1u << 7)
 
 #define DESC_OWN            (1u << 31)
 #define DESC_RX_CTXT        (1u << 30)
@@ -206,6 +208,9 @@ static uint32_t _rx_packets;
 static uint32_t _tx_packets;
 static uint32_t _rx_dropped;
 static uint32_t _last_dma_error;
+static uint32_t _rx_unavailable;
+static uint32_t _rx_errors;
+static uint32_t _rx_queue_full;
 
 static void log_frame_summary(const char *dir, uint32_t packet,
         const uint8_t *frame, uint32_t len) {
@@ -828,18 +833,23 @@ void bsp_eth_poll(void) {
         dma_barrier();
         if ((des3 & (DESC_RX_CTXT | DESC_RX_ES | DESC_RX_LD)) == DESC_RX_LD &&
                 len > 0 && len <= ETH_BUF_SIZE) {
-            if (_rxq_count < ETH_RXQ_SIZE) {
-                uint32_t slot = (_rxq_head + _rxq_count) % ETH_RXQ_SIZE;
-                memcpy(_rxq[slot].data, _rx_buf[i], len);
-                _rxq[slot].len = (uint16_t)len;
-                _rxq_count++;
-                _rx_packets++;
-                log_frame_summary("rx", _rx_packets, _rx_buf[i], len);
-            } else {
-                _rx_dropped++;
+            /* Keep a completed frame in the DMA ring until the IPC reader
+             * frees a software slot. Recycling it here used to discard whole
+             * bursts whenever poll() ran ahead of read(). Refilling later
+             * advances the tail and resumes an RBU-suspended DMA normally. */
+            if (_rxq_count == ETH_RXQ_SIZE) {
+                _rx_queue_full++;
+                break;
             }
+            uint32_t slot = (_rxq_head + _rxq_count) % ETH_RXQ_SIZE;
+            memcpy(_rxq[slot].data, _rx_buf[i], len);
+            _rxq[slot].len = (uint16_t)len;
+            _rxq_count++;
+            _rx_packets++;
+            log_frame_summary("rx", _rx_packets, _rx_buf[i], len);
         } else {
             _rx_dropped++;
+            _rx_errors++;
             if (_rx_dropped <= 4u)
                 klog("q8b eth: rx drop desc=%u st=%08x len=%u\n",
                         i, des3, len);
@@ -857,6 +867,8 @@ void bsp_eth_poll(void) {
 
     status = get32(_mac_base + DMA_CH0_STATUS);
     if (status != 0) {
+        if (status & DMA_STATUS_RX_UNAVAILABLE)
+            _rx_unavailable++;
         if ((status & DMA_STATUS_FATAL) && status != _last_dma_error) {
             _last_dma_error = status;
             klog("q8b eth: dma error status=%08x reb=%u txd=%08x:%08x rxd=%08x:%08x rxb=%08x:%08x\n",
@@ -874,6 +886,27 @@ void bsp_eth_poll(void) {
 
 int bsp_eth_pending_rx(void) {
     return _present ? (int)_rxq_count : 0;
+}
+
+void bsp_eth_stats(char *buf, uint32_t size) {
+    uint32_t owned = 0;
+    if (!_present) {
+        snprintf(buf, size, "not present\n");
+        return;
+    }
+    for (uint32_t i = 0; i < ETH_RING_SIZE; i++)
+        owned += (_rx_desc[i].des3 & DESC_OWN) != 0;
+    snprintf(buf, size,
+            "rx=%u tx=%u dropped=%u errors=%u backpressure=%u rbu=%u fatal=%08x\n"
+            "cons=%u queued=%u owned=%u next=%08x txprod=%u\n"
+            "status=%08x rxctl=%08x cur_rx=%08x tail=%08x ring=%08x\n",
+            _rx_packets, _tx_packets, _rx_dropped, _rx_errors,
+            _rx_queue_full, _rx_unavailable, _last_dma_error,
+            _rx_cons, _rxq_count, owned, _rx_desc[_rx_cons].des3, _tx_prod,
+            get32(_mac_base + DMA_CH0_STATUS),
+            get32(_mac_base + DMA_CH0_RX_CONTROL),
+            get32(_mac_base + 0x314cu),
+            get32(_mac_base + DMA_CH0_RX_TAIL), (uint32_t)_rx_desc_phy);
 }
 
 int bsp_eth_can_write(void) {
