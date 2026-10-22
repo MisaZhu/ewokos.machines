@@ -66,6 +66,19 @@ v3d_nir_options(void)
        * Pi5, so lower_fsat is unconditionally false and its emitted QPU is
        * byte-for-byte stable. */
       s_nir_options.lower_fsat = false;
+      /* Loop unrolling.  nir_to_vir.c's optimisation loop only runs
+       * nir_opt_loop_unroll when max_unroll_iterations > 0, and the memset
+       * above left it at 0, so EVERY counted loop reached the QPU as a real
+       * loop.  On V3D a loop iteration costs ~30 instructions of control
+       * flow on top of the body (execute-mask bookkeeping in the
+       * per-block-id register, the uniform bu.allna/bu.anyap pair and their
+       * 3 delay-slot nops each) - for the small fixed-trip loops shader
+       * ports are full of (3x3 / 5x5 neighbourhood scans, N-octave noise)
+       * that overhead is comparable to the body itself.  Upstream gallium
+       * v3d sets 16; keep parity.  nir_opt_loop_unroll still gates on body
+       * cost (trip_count * instr_cost <= 16 * LOOP_UNROLL_LIMIT) so the
+       * 60/90-step ray-march loops stay rolled. */
+      s_nir_options.max_unroll_iterations = 16;
       done = true;
    }
    return &s_nir_options;

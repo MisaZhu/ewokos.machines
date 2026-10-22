@@ -197,12 +197,21 @@ typedef struct {
      * returns whatever the driver leaves in the TMU config (safe black for
      * shaders that never sample it).  Images are RGBA8 in the V3D texture
      * memory layout named by ctex_tiling[i] (0 raster, 1 LT, 2/3 UBLINEAR,
-     * 4/5 UIF no-xor/xor; ctex_ub_pad[i] is the UIF level_0_ub_pad), contig
+     * 4/5 UIF no-xor/xor; ctex_ub_pad[i] is the UIF level_0_ub_pad in its
+     * low nibble, with the unit's TMU mag/min filter in the high nibble --
+     * VC_PGL3D_CTEX_FILTER_*, 0 = NEAREST so a client that never sets it
+     * keeps the historic fixed sampler), contig
      * or dma so the GPU can address them by physical base; ctex_stride[i] is
      * the allocated (padded) row pitch, 0 lets the driver derive
      * ctex_w[i] * 4.  Only meaningful when prog_handle >= 0.
      * Every field defaults to zero through the request memset, so existing
      * callers that never bind a texture are unaffected. */
+#define VC_PGL3D_CTEX_UB_PAD_MASK    0x0Fu
+#define VC_PGL3D_CTEX_FILTER_SHIFT   4u
+#define VC_PGL3D_CTEX_FILTER_NEAREST 0u
+#define VC_PGL3D_CTEX_FILTER_LINEAR  1u
+#define VC_PGL3D_CTEX_FILTER_OF(ub_pad) \
+    (((uint32_t)(ub_pad) >> VC_PGL3D_CTEX_FILTER_SHIFT) & 0x0Fu)
     ewokos_addr_t ctex_phy[VC_PGL3D_MAX_TEX_UNITS];
     uint8_t       ctex_contig[VC_PGL3D_MAX_TEX_UNITS];
     uint32_t      ctex_stride[VC_PGL3D_MAX_TEX_UNITS];

@@ -158,8 +158,8 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
  * V3D 7.1 binner is bypassed entirely).  Unlike v3d_g2d_run the code and the
  * expanded uniform stream are NOT staged here: both already live in dma
  * (v3d_3d.c's alloc_stage) and are referenced by IOVA.  The CFG words follow
- * mesa's v3dv/v3dx launch_grid encoding for V3D 7.1 (one supergroup per
- * workgroup when wg_size is a multiple of 16; cfg[4] is the batch count,
+ * mesa's v3dv/v3dx launch_grid encoding for V3D 7.1 (supergroup packing per
+ * v3d_g2d_set_csd_wgs_per_sg below; cfg[4] is the batch count,
  * not count-1, on IP rev >= 6).  dst_phy/dst_span bound the POST L2 writeback
  * (0 = whole-L2 walk).  Same return contract as v3d_g2d_run: 0 done, 1
  * timeout, -1 fault / bad arguments.
@@ -215,6 +215,18 @@ enum {
 };
 
 int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags);
+
+/* Supergroup packing for workgroups whose size is a multiple of 16
+ * (`devcmd /dev/g2d csdsg <N>`): N workgroups per supergroup, 1..16,
+ * clamped so the supergroup stays <= 4096 invocations.  Mesa stops at 1
+ * because the lanes are already full and a supergroup is also the TSY
+ * barrier domain, but no kernel this engine dispatches uses shared memory
+ * or barriers (v3d_3d.c declines cs_shared_size != 0), and on the Pi 5 the
+ * CSD front end feeds the QPUs per supergroup: the SAME grass 400x300
+ * frame (32x8 workgroups, 2 threads) runs 108 ms at 1 wg/sg, 86 at 2, 70
+ * at 4, 68 at 8 and 64 ms at 16.  Default 16; the knob stays for A/B. */
+void v3d_g2d_set_csd_wgs_per_sg(uint32_t n);
+uint32_t v3d_g2d_csd_wgs_per_sg(void);
 
 /* Op bracket for banded / tiled operations: holds the dispatch lock
  * across every v3d_g2d_run of one op so another worker's op cannot

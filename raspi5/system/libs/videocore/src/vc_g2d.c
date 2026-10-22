@@ -190,6 +190,17 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
     if (strcmp(argv[0], "irqus") == 0)
         return g2d_cmd_knob(argc, argv, buf, len, &_g2d_irq_budget_us, "irqus",
                             1u, "us");
+    /* `csdsg <N>`: workgroups per supergroup for 16-aligned compute
+     * workgroups (see v3d_g2d_set_csd_wgs_per_sg) */
+    if (strcmp(argv[0], "csdsg") == 0) {
+        uint32_t n = v3d_g2d_csd_wgs_per_sg();
+
+        if (g2d_cmd_knob(argc, argv, buf, len, &n, "csdsg", 1u, "") != 0)
+            return -1;
+        v3d_g2d_set_csd_wgs_per_sg(n);
+        snprintf(buf, len, "csdsg %u", v3d_g2d_csd_wgs_per_sg());
+        return 0;
+    }
     if (strcmp(argv[0], "stat") != 0)
         return -1;
 

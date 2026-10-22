@@ -35,6 +35,13 @@
 #define PROP_TAG_GET_MAX_VOLTAGE       0x00030005u
 #define PROP_TAG_GET_TEMPERATURE       0x00030006u
 #define PROP_TAG_GET_MAX_TEMPERATURE   0x0003000au
+/* firmware throttle status bitmask: bit0 under-voltage, bit1 arm freq
+   capped, bit2 currently throttled, bit3 soft temp limit; bits 16-19 the
+   same events since boot */
+#define PROP_TAG_GET_THROTTLED         0x00030046u
+/* the clock actually running vs GET_CLOCK_RATE's requested value - the
+   firmware may silently run a clock below its set rate */
+#define PROP_TAG_GET_CLOCK_MEASURED    0x00030047u
 
 #define MAX_CLOCKS                     32
 #define MAX_POWER_DOMAINS              11
@@ -90,6 +97,8 @@ typedef struct {
     uint32_t parent_id;
     bool have_current;
     uint32_t current_hz;
+    bool have_measured;
+    uint32_t measured_hz;
     bool have_max;
     uint32_t max_hz;
 } clock_info_t;
@@ -135,6 +144,10 @@ typedef struct {
         bool have_max;
         uint32_t max_mc;
     } temperature;
+    struct {
+        bool valid;
+        uint32_t flags;
+    } throttled;
     voltage_info_t voltages[MAX_VOLTAGES];
     int voltage_count;
     clock_info_t clocks[MAX_CLOCKS];
@@ -461,6 +474,11 @@ static void cpud_probe_snapshot(cpu_snapshot_t* snap) {
         next.temperature.max_mc = u32v;
     }
 
+    if(prop_query_u32(PROP_TAG_GET_THROTTLED, &u32v) == 0) {
+        next.throttled.valid = true;
+        next.throttled.flags = u32v;
+    }
+
     for(int i = 0; i < MAX_VOLTAGES; i++) {
         voltage_info_t* v = &next.voltages[i];
         if(prop_query_id_value(PROP_TAG_GET_VOLTAGE, v->id, &u32v) == 0) {
@@ -489,6 +507,11 @@ static void cpud_probe_snapshot(cpu_snapshot_t* snap) {
         if(prop_query_id_value(PROP_TAG_GET_CLOCK_RATE, c->id, &u32v) == 0) {
             c->have_current = true;
             c->current_hz = u32v;
+        }
+
+        if(prop_query_id_value(PROP_TAG_GET_CLOCK_MEASURED, c->id, &u32v) == 0) {
+            c->have_measured = true;
+            c->measured_hz = u32v;
         }
 
         if(prop_query_id_value(PROP_TAG_GET_MAX_CLOCK_RATE, c->id, &u32v) == 0) {
@@ -571,6 +594,18 @@ static char* cpud_snapshot_json(const cpu_snapshot_t* snap) {
         str_addf(s, ",\"max_millic\":%u", snap->temperature.max_mc);
     str_add(s, "},");
 
+    str_add(s, "\"throttled\":{");
+    str_addf(s, "\"available\":%s", bool_str(snap->throttled.valid));
+    if(snap->throttled.valid) {
+        str_addf(s, ",\"flags\":%u", snap->throttled.flags);
+        str_addf(s, ",\"under_voltage\":%s", bool_str((snap->throttled.flags & 0x1u) != 0));
+        str_addf(s, ",\"freq_capped\":%s", bool_str((snap->throttled.flags & 0x2u) != 0));
+        str_addf(s, ",\"throttled\":%s", bool_str((snap->throttled.flags & 0x4u) != 0));
+        str_addf(s, ",\"soft_temp_limit\":%s", bool_str((snap->throttled.flags & 0x8u) != 0));
+        str_addf(s, ",\"since_boot\":%u", (snap->throttled.flags >> 16) & 0xfu);
+    }
+    str_add(s, "},");
+
     str_add(s, "\"voltages\":[");
     for(int i = 0; i < snap->voltage_count; i++) {
         const voltage_info_t* v = &snap->voltages[i];
@@ -601,6 +636,9 @@ static char* cpud_snapshot_json(const cpu_snapshot_t* snap) {
         str_addf(s, ",\"current_available\":%s", bool_str(c->have_current));
         if(c->have_current)
             str_addf(s, ",\"current_hz\":%u", c->current_hz);
+        str_addf(s, ",\"measured_available\":%s", bool_str(c->have_measured));
+        if(c->have_measured)
+            str_addf(s, ",\"measured_hz\":%u", c->measured_hz);
         str_addf(s, ",\"max_available\":%s", bool_str(c->have_max));
         if(c->have_max)
             str_addf(s, ",\"max_hz\":%u", c->max_hz);
