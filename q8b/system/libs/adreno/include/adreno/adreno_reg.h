@@ -35,6 +35,12 @@ extern "C" {
 /* 64 KB PDC/RSCC sequencer window (phy 0x0b29_0000). */
 #define ADRENO_PDC_VA         (ADRENO_MMIO_VA_BASE + 0x00100000ULL)
 #define ADRENO_PDC_MAP_SIZE   0x00010000ULL
+/* 1 MB GCC window (phy 0x0010_0000): the GPU branch clocks that feed the
+   GPUCC RCGs (gcc_gpu_gpll0*, gcc_ddrss_gpu_axi*, gcc_gpu_memnoc_gfx*) live
+   here and are enabled by Linux's clock parent chain, which EwokOS has no
+   equivalent of.  Only 0x052000..0x07115c is touched. */
+#define ADRENO_GCC_VA         (ADRENO_MMIO_VA_BASE + 0x00200000ULL)
+#define ADRENO_GCC_MAP_SIZE   0x00100000ULL
 
 /* Byte offsets of each block inside the 1 MB core span, relative to
    Q8B_ADRENO_CORE_PHY (0x03d0_0000).  Word-index regs add (word*4). */
@@ -69,6 +75,12 @@ void     adreno_rscc_write(uint32_t word, uint32_t val);
 
 uint32_t adreno_pdc_read(uint32_t byte_off);
 void     adreno_pdc_write(uint32_t byte_off, uint32_t val);
+
+/* GCC (global clock controller) byte-offset accessors for the GPU-side
+   branch clocks.  Offsets are byte offsets from GCC base 0x0010_0000, as in
+   drivers/clk/qcom/gcc-sc8280xp.c. */
+uint32_t adreno_gcc_read(uint32_t byte_off);
+void     adreno_gcc_write(uint32_t byte_off, uint32_t val);
 
 /* Read-modify-write and polled wait, mirroring Linux gmu_rmw /
    gmu_poll_timeout (a6xx_gmu.c).  poll returns 0 when (*addr & mask) == val

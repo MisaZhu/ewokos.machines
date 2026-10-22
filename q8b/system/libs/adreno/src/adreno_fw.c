@@ -5,55 +5,89 @@
  *   - GMU block_header chain : a6xx_gmu.c:673-744  (a6xx_gmu_fw_load)
  *   - SQE raw microcode      : a6xx_gpu.c:1119-1146 (a6xx_ucode_load ->
  *                              adreno_fw_create_bo)
- *   - Zap split-ELF (MDT)    : adreno_gpu.c:30-192  (zap_shader_load_mdt ->
+ *   - Zap monolithic MBN    : adreno_gpu.c:30-192  (zap_shader_load_mdt ->
  *                              qcom_mdt_get_size / qcom_mdt_load)
  *
- * The GMU and SQE parsers below are direct transcriptions of the Linux
- * logic.  The zap MDT parser implements the standard Qualcomm split-ELF
- * layout (ELF32 header + program headers in the .mdt, segment bytes in
- * sibling .bNN files); the .bNN-to-phdr mapping and the total-footprint
- * arithmetic follow qcom_mdt_loader.c conventions and are flagged inline
- * where they should be cross-checked against that file on first hardware
- * bring-up.
+ * The zap parser in adreno_zap.c validates the board-selected ELF32 MBN,
+ * excludes hash segments from the executable footprint and packs metadata
+ * exactly as Linux mdt-loader.c expects. No firmware bytes are patched.
  *
  * File I/O uses vfs_readfile() (returns a malloc'd buffer).  All buffers
  * are owned by the returned struct and released by adreno_fw_free_*().
+ *
+ * The A690 uses the A660 images: fw[GMU] = "a660_gmu.bin",
+ * fw[SQE] = "a660_sqe.fw" (a6xx_catalog.c a690 entry).  There is no
+ * a690_gmu.bin in linux-firmware.  The loader deliberately accepts only the
+ * catalog name and pinned image size so a stale vendor alias cannot be used.
  */
 #include <adreno/adreno_fw.h>
 #include <q8b_adreno.h>
-#include <elf/elf.h>
 #include <ewoksys/vfs.h>
+#include <ewoksys/klog.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
-#define PT_LOAD 1u
-
-/* PF_* segment flags (ELF standard) */
-#define PF_X 0x1u
-#define PF_W 0x2u
-#define PF_R 0x4u
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-static int in_range(uint32_t addr, uint32_t base, uint32_t size)
-{
-	return (addr >= base) && (addr < base + size);
-}
+/*
+ * Firmware search order.  The Q8B rootfs installs the blobs under
+ * /etc/firmware/adreno/ (see firmware/adreno/README.md); the remaining
+ * entries keep the driver usable on a rootfs laid out like a Linux
+ * distribution, e.g. when the blobs are copied straight out of
+ * linux-firmware (/usr/lib/firmware/qcom/).
+ */
+static const char *const fw_dirs[] = {
+	Q8B_ADRENO_FW_DIR,
+	"/etc/firmware/qcom/",
+	"/usr/lib/firmware/qcom/",
+	"/usr/lib/firmware/",
+	"/etc/firmware/",
+};
 
-/* Build "<dir><name>" into buf.  Returns 0 on success, -1 if too long. */
-static int fw_path(char *buf, int bufsz, const char *name)
+/*
+ * Read the first readable "<dir><name>" over every candidate name/dir
+ * combination.  On success returns the owned buffer (caller frees) and
+ * stores the byte size, the file name and the full path that matched.
+ */
+static uint8_t *fw_read_first(const char *const *names, int nnames,
+		int *out_size, char *out_name, int name_sz,
+		char *out_path, int path_sz)
 {
-	int n = snprintf(buf, (size_t)bufsz, "%s%s", Q8B_ADRENO_FW_DIR, name);
-	if (n < 0 || n >= bufsz)
-		return -1;
-	return 0;
+	int d, n;
+
+	for (d = 0; d < (int)(sizeof(fw_dirs) / sizeof(fw_dirs[0])); d++) {
+		for (n = 0; n < nnames; n++) {
+			char path[160];
+			uint8_t *buf;
+			int size = 0;
+			int len = snprintf(path, sizeof(path), "%s%s",
+					fw_dirs[d], names[n]);
+
+			if (len < 0 || len >= (int)sizeof(path))
+				continue;
+			buf = vfs_readfile(path, &size);
+			if (buf && size > 0) {
+				*out_size = size;
+				if (out_name && name_sz > 0)
+					snprintf(out_name, (size_t)name_sz, "%s",
+							names[n]);
+				if (out_path && path_sz > 0)
+					snprintf(out_path, (size_t)path_sz, "%s",
+							path);
+				return buf;
+			}
+			if (buf)
+				free(buf);
+		}
+	}
+	return NULL;
 }
 
 /* ------------------------------------------------------------------ */
-/* GMU firmware (a690_gmu.bin)                                         */
+/* GMU firmware (a660_gmu.bin)                                         */
 /* ------------------------------------------------------------------ */
 
 /* On-disk block_header (a6xx_gmu.c:673-679).  Packed, little-endian. */
@@ -67,7 +101,9 @@ struct gmu_block_header {
 
 int adreno_fw_load_gmu(adreno_gmu_fw_t *out)
 {
-	char path[128];
+	static const char *const names[] = { Q8B_ADRENO_FW_GMU };
+	char path[160];
+	char name[64];
 	uint8_t *raw;
 	int raw_size = 0;
 	int nblocks = 0;
@@ -80,14 +116,16 @@ int adreno_fw_load_gmu(adreno_gmu_fw_t *out)
 		return -1;
 	memset(out, 0, sizeof(*out));
 
-	if (fw_path(path, sizeof(path), Q8B_ADRENO_FW_GMU) != 0)
-		return -1;
-
-	raw = vfs_readfile(path, &raw_size);
-	if (!raw || raw_size <= 0) {
-		if (raw)
-			free(raw);
+	raw = fw_read_first(names, 1,
+			&raw_size, name, sizeof(name), path, sizeof(path));
+	if (!raw) {
 		return -2;   /* missing/unreadable firmware */
+	}
+	if ((uint32_t)raw_size != Q8B_ADRENO_FW_GMU_SIZE) {
+		klog("adreno_fw: reject %s: size %d, expected %u\n", path,
+		     raw_size, Q8B_ADRENO_FW_GMU_SIZE);
+		free(raw);
+		return -4;
 	}
 
 	/* First pass: count blocks by walking the chain exactly as Linux does
@@ -139,6 +177,8 @@ int adreno_fw_load_gmu(adreno_gmu_fw_t *out)
 	out->raw_size   = raw_size;
 	out->blocks     = blocks;
 	out->num_blocks = i;
+	klog("adreno_fw: gmu image %s (%s, %d bytes, %d blocks)\n",
+			path, name, raw_size, i);
 	return 0;
 }
 
@@ -159,7 +199,8 @@ void adreno_fw_free_gmu(adreno_gmu_fw_t *fw)
 
 int adreno_fw_load_sqe(adreno_sqe_fw_t *out)
 {
-	char path[128];
+	static const char *const names[] = { Q8B_ADRENO_FW_SQE };
+	char path[160];
 	uint8_t *raw;
 	int raw_size = 0;
 
@@ -167,18 +208,19 @@ int adreno_fw_load_sqe(adreno_sqe_fw_t *out)
 		return -1;
 	memset(out, 0, sizeof(*out));
 
-	if (fw_path(path, sizeof(path), Q8B_ADRENO_FW_SQE) != 0)
-		return -1;
-
-	raw = vfs_readfile(path, &raw_size);
-	if (!raw || raw_size <= 0) {
-		if (raw)
-			free(raw);
+	raw = fw_read_first(names, 1, &raw_size, NULL, 0, path, sizeof(path));
+	if (!raw)
 		return -2;
+	if ((uint32_t)raw_size != Q8B_ADRENO_FW_SQE_SIZE) {
+		klog("adreno_fw: reject %s: size %d, expected %u\n", path,
+		     raw_size, Q8B_ADRENO_FW_SQE_SIZE);
+		free(raw);
+		return -3;
 	}
 
 	out->raw  = raw;
 	out->size = raw_size;
+	klog("adreno_fw: sqe microcode %s (%d bytes)\n", path, raw_size);
 	return 0;
 }
 
@@ -192,146 +234,40 @@ void adreno_fw_free_sqe(adreno_sqe_fw_t *fw)
 }
 
 /* ------------------------------------------------------------------ */
-/* Zap shader (a690_zap.mdt + a690_zap.bNN)                            */
+/* Board-selected signed zap shader (qcdxkmsuc8280.mbn)                */
 /* ------------------------------------------------------------------ */
 
 int adreno_fw_load_zap(adreno_zap_fw_t *out)
 {
-	char path[128];
-	uint8_t *mdt;
-	int mdt_size = 0;
-	const elf_header_t *ehdr;
-	const elf_program_header_t *phdr;
-	int i;
-	int nload = 0;
-	uint32_t base_paddr = 0xffffffffu;
-	uint32_t max_end = 0;
-	adreno_zap_seg_t *segs;
+	/* Board-selected monolithic MBN only. No generic/split zap fallback. */
+	static const char *const names[] = {
+		"sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn",
+		"qcdxkmsuc8280.mbn",
+	};
+	char path[160];
+	uint8_t *raw;
+	int size = 0, ret;
 
 	if (!out)
 		return -1;
 	memset(out, 0, sizeof(*out));
 
-	if (fw_path(path, sizeof(path), Q8B_ADRENO_FW_ZAP_MDT) != 0)
-		return -1;
-
-	mdt = vfs_readfile(path, &mdt_size);
-	if (!mdt || mdt_size < (int)sizeof(elf_header_t)) {
-		if (mdt)
-			free(mdt);
+	raw = fw_read_first(names, 2, &size, NULL, 0, path, sizeof(path));
+	if (!raw) {
+		/* Ephemeral PXE testing: same board-selected basename in /tmp. */
+		snprintf(path, sizeof(path), "/tmp/qcdxkmsuc8280.mbn");
+		raw = vfs_readfile(path, &size);
+	}
+	if (!raw)
 		return -2;
+	ret = size == 14392 ? adreno_fw_parse_zap(raw, (uint32_t)size, out) : -4;
+	free(raw);
+	if (ret) {
+		klog("adreno_fw: reject Q8B zap %s (%d bytes)\n", path, size);
+		return ret;
 	}
-
-	ehdr = (const elf_header_t *)mdt;
-	if (ehdr->ident.magic != ELF_MAGIC) {
-		free(mdt);
-		return -4;   /* not an ELF/MDT image */
-	}
-	if (ehdr->phentsize != sizeof(elf_program_header_t)) {
-		free(mdt);
-		return -4;
-	}
-	if ((int)ehdr->phoff + (int)ehdr->phnum * (int)ehdr->phentsize > mdt_size) {
-		free(mdt);
-		return -4;   /* phdr table runs past EOF */
-	}
-
-	phdr = (const elf_program_header_t *)(mdt + ehdr->phoff);
-
-	/* Count PT_LOAD segments and compute the footprint. */
-	for (i = 0; i < ehdr->phnum; i++) {
-		if (phdr[i].type != PT_LOAD)
-			continue;
-		nload++;
-		if (phdr[i].paddr < base_paddr)
-			base_paddr = phdr[i].paddr;
-	}
-	for (i = 0; i < ehdr->phnum; i++) {
-		uint32_t end;
-		if (phdr[i].type != PT_LOAD)
-			continue;
-		end = phdr[i].paddr + phdr[i].memsz;
-		if (end > max_end)
-			max_end = end;
-	}
-
-	segs = NULL;
-	if (nload > 0) {
-		segs = (adreno_zap_seg_t *)malloc(
-			(size_t)nload * sizeof(adreno_zap_seg_t));
-		if (!segs) {
-			free(mdt);
-			return -3;
-		}
-		memset(segs, 0, (size_t)nload * sizeof(adreno_zap_seg_t));
-	}
-
-	/*
-	 * Load each PT_LOAD segment's bytes from its sibling .bNN file.
-	 *
-	 * ASSUMPTION (cross-check vs drivers/soc/qcom/qcom_mdt_loader.c on
-	 * first hardware bring-up): the .bNN index equals the program-header
-	 * index i, formatted "%02d".  Qualcomm's split-ELF convention numbers
-	 * the segment files by phdr position; if the target firmware instead
-	 * numbers only successive PT_LOAD segments, switch `i` below for a
-	 * dedicated load counter.
-	 */
-	{
-		int s = 0;
-		for (i = 0; i < ehdr->phnum; i++) {
-			char segpath[160];
-			char segname[24];
-			uint8_t *segbuf;
-			int segsz = 0;
-
-			if (phdr[i].type != PT_LOAD)
-				continue;
-
-			segs[s].paddr  = phdr[i].paddr;
-			segs[s].memsz  = phdr[i].memsz;
-			segs[s].filesz = phdr[i].filesz;
-			segs[s].flags  = phdr[i].flags;
-
-			snprintf(segname, sizeof(segname),
-				 Q8B_ADRENO_FW_ZAP_FMT, i);
-			if (fw_path(segpath, sizeof(segpath), segname) == 0) {
-				segbuf = vfs_readfile(segpath, &segsz);
-				if (segbuf && segsz > 0) {
-					segs[s].seg_buf  = segbuf;
-					segs[s].seg_size = segsz;
-					segs[s].data     = segbuf;
-				} else if (segbuf) {
-					free(segbuf);
-				}
-			}
-			s++;
-		}
-	}
-
-	out->mdt        = mdt;
-	out->mdt_size   = mdt_size;
-	out->segs       = segs;
-	out->num_segs   = nload;
-	out->base_paddr = (base_paddr == 0xffffffffu) ? 0u : base_paddr;
-	/* qcom_mdt_get_size() equivalent: total footprint relative to base. */
-	out->total_size = (max_end > out->base_paddr) ?
-			  (max_end - out->base_paddr) : 0u;
+	klog("adreno_fw: Q8B signed zap %s (%d bytes, metadata=%u, "
+	     "payload=%u, region=%u)\n", path, size, out->metadata_size,
+	     out->segs[0].filesz, out->total_size);
 	return 0;
-}
-
-void adreno_fw_free_zap(adreno_zap_fw_t *fw)
-{
-	int i;
-	if (!fw)
-		return;
-	if (fw->segs) {
-		for (i = 0; i < fw->num_segs; i++) {
-			if (fw->segs[i].seg_buf)
-				free(fw->segs[i].seg_buf);
-		}
-		free(fw->segs);
-	}
-	if (fw->mdt)
-		free(fw->mdt);
-	memset(fw, 0, sizeof(*fw));
 }

@@ -104,8 +104,10 @@
 static int g_g3d_ready = 0;
 
 static int adreno_opted_in(void) {
-	const char* e = getenv("ADRENO_ENABLE");
-	return (e != NULL && e[0] == '1' && e[1] == '\0');
+	/* getenv("ADRENO_ENABLE") == "1" (init.rd) or an ADRENO_ENABLE=1 line in
+	   /tmp/adreno.cfg, so an ssh-based harness can trigger the bring-up
+	   without a shell. */
+	return adreno_flag("ADRENO_ENABLE");
 }
 
 /* Probe the Adreno 690 datapath once (idempotent + latched).  Returns 1

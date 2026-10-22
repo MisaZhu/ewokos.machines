@@ -139,6 +139,8 @@ void arch_vm(page_dir_entry_t* vm) {
             (uint32_t)Q8B_GPU_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
     map_pages_size(vm, MMIO_BASE + Q8B_GPU_PDC_WIN_OFF, Q8B_GPU_PDC_WIN_PHY,
             (uint32_t)Q8B_GPU_PDC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + Q8B_GPU_ZAP_WIN_OFF, Q8B_GPU_ZAP_PHY,
+            PAGE_SIZE, AP_RW_D, PTE_ATTR_NOCACHE);
 #endif
 
     if (q8b_ramdisk_size == 0)
@@ -166,7 +168,7 @@ int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
  */
 void kalloc_arch(void) {
     typedef struct { ewokos_addr_t base, top; } rng_t;
-    rng_t ex[Q8B_MAX_RESV + 3];
+    rng_t ex[Q8B_MAX_RESV + 4];
     uint32_t n = 0;
 
     ewokos_addr_t base = _sys_info.allocable_phy_mem_base;
@@ -188,6 +190,10 @@ void kalloc_arch(void) {
         ADD_EXCL(q8b_ramdisk_base, q8b_ramdisk_size);
     if (q8b_fb_size)
         ADD_EXCL(q8b_fb_base, q8b_fb_size);
+#ifndef Q8B_QEMU_TEST
+    /* Reserve the entire CPU page; never allocate its adjacent 8KB. */
+    ADD_EXCL(Q8B_GPU_ZAP_PHY, ALIGN_UP(Q8B_GPU_ZAP_SIZE, PAGE_SIZE));
+#endif
     if (_bi_valid) {
         for (uint32_t i = 0; i < _bi.resv_count &&
                 i < Q8B_MAX_RESV; i++)
@@ -282,6 +288,28 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
             phy_top <= Q8B_PCIE3A_MEM64_PHY + Q8B_PCIE3A_MEM64_SIZE)
         return 0;
 
+    /* PCIe2a / PCIe3b: the two M.2 NVMe slots (config space + BAR
+     * apertures).  User-space nvmed discovers the controller through
+     * ECAM and maps the assigned BAR through these windows. */
+    if (phy_base >= Q8B_PCIE2A_ECAM_PHY &&
+            phy_top <= Q8B_PCIE2A_ECAM_PHY + Q8B_PCIE2A_ECAM_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE2A_MEM32_PHY &&
+            phy_top <= Q8B_PCIE2A_MEM32_PHY + Q8B_PCIE2A_MEM32_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE2A_MEM64_PHY &&
+            phy_top <= Q8B_PCIE2A_MEM64_PHY + Q8B_PCIE2A_MEM64_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE3B_ECAM_PHY &&
+            phy_top <= Q8B_PCIE3B_ECAM_PHY + Q8B_PCIE3B_ECAM_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE3B_MEM32_PHY &&
+            phy_top <= Q8B_PCIE3B_MEM32_PHY + Q8B_PCIE3B_MEM32_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE3B_MEM64_PHY &&
+            phy_top <= Q8B_PCIE3B_MEM64_PHY + Q8B_PCIE3B_MEM64_SIZE)
+        return 0;
+
 #ifndef Q8B_QEMU_TEST
     /* Firmware Command DB: user-space SDCC2 resolves the PM8350C SD-card
      * rails (ldoc6/ldoc9) itself during its own card probe. */
@@ -289,14 +317,7 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
             phy_top <= Q8B_CMD_DB_WIN_PHY + Q8B_CMD_DB_WIN_SIZE)
         return 0;
 
-    /* Adreno 690 zap-shader reserved memory (DT gpu_mem node, no-map).
-     * The user-space Adreno driver loads a690_zap.mdt + segments here and
-     * triggers the zap-restore SMC.  kalloc_arch() already excludes the
-     * range via the UEFI memory map, but SYS_MEM_MAP still needs an
-     * explicit whitelist entry because it is inside DRAM. */
-    if (phy_base >= Q8B_GPU_ZAP_PHY &&
-            phy_top <= Q8B_GPU_ZAP_PHY + Q8B_GPU_ZAP_SIZE)
-        return 0;
+    /* zap staging is kernel-only through the restricted GPU PAS ABI. */
 #endif
 
     /* RAM-disk rootfs: user-space sdfsd maps it read/write. */

@@ -88,6 +88,12 @@ get_compiler(void)
    opts.bindless_fb_read_slot = -1;
 
    s_compiler = ir3_compiler_create(NULL, &s_a690_id, info, &opts);
+   /* This UMD binds SSBOs only as UAVs, not as texture views. ir3 otherwise
+    * turns reorderable/readonly SSBO reads into ISAM and allocates texture
+    * slots absent from adreno_prog_blob_t. Use the ordinary LDIB path for
+    * all SSBO reads until the wire contract also carries texture mappings. */
+   if (s_compiler)
+      s_compiler->has_isam_ssbo = false;
    return s_compiler;
 }
 
@@ -176,6 +182,14 @@ snapshot_variant(struct ir3_shader_variant *v, struct adreno_be_result *res,
    }
    if (v->binning || v->info.size == 0 || !v->bin) {
       snprintf(log, logsz, "adreno: ir3 produced no binary");
+      return false;
+   }
+   /* The wire contract carries UAV descriptors only. Readonly SSBO loads
+    * must not silently acquire texture slots that the daemon never binds. */
+   if (v->num_samp || v->image_mapping.num_tex) {
+      snprintf(log, logsz, "adreno: texture descriptors are not supported "
+               "(samplers %d, texture slots %u)", v->num_samp,
+               v->image_mapping.num_tex);
       return false;
    }
    if (cs->driver_params_ubo.idx != -1) {

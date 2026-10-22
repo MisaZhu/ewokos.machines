@@ -40,6 +40,13 @@
 /* --- Cache / bus configuration ---------------------------------------- */
 #define REG_A6XX_GMU_ICACHE_CONFIG                      0x00004c00
 #define REG_A6XX_GMU_DCACHE_CONFIG                      0x00004c01
+/* Undocumented cache power handshake used by the a660 GMU firmware's ITCM
+ * reset stub.  The firmware sees this block at 0x1807d000; host register
+ * offsets are GPU-relative 0x1f400.., hence GMU-relative 0x4c00... */
+#define REG_A6XX_GMU_CACHE_PWR_REQ_0                    0x00004c05
+#define REG_A6XX_GMU_CACHE_PWR_ACK_0                    0x00004c0a
+#define REG_A6XX_GMU_CACHE_PWR_REQ_1                    0x00004c04
+#define REG_A6XX_GMU_CACHE_PWR_ACK_1                    0x00004c09
 #define REG_A6XX_GMU_SYS_BUS_CONFIG                     0x00004c0f
 
 /* --- CM3 sysreset / boot / status ------------------------------------- */
@@ -48,6 +55,14 @@
 #define REG_A6XX_GMU_CM3_FW_BUSY                        0x0000501a
 #define REG_A6XX_GMU_CM3_FW_INIT_RESULT                 0x0000501c
 #define REG_A6XX_GMU_CM3_CFG                            0x0000502d
+
+/* --- Core firmware version (a6xx_gmu.xml GMU_CORE_FW_VERSION) ---------- */
+#define REG_A6XX_GMU_CORE_FW_VERSION                    0x000074fe
+#define A6XX_GMU_CORE_FW_VERSION_MAJOR__MASK            0xf0000000u
+#define A6XX_GMU_CORE_FW_VERSION_MAJOR__SHIFT           28
+#define A6XX_GMU_CORE_FW_VERSION_MINOR__MASK            0x0fff0000u
+#define A6XX_GMU_CORE_FW_VERSION_MINOR__SHIFT           16
+#define A6XX_GMU_CORE_FW_VERSION_STEP__MASK             0x0000ffffu
 
 /* --- Power counters ---------------------------------------------------- */
 #define REG_A6XX_GMU_CX_GMU_POWER_COUNTER_ENABLE        0x00005040

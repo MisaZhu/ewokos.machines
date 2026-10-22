@@ -1,0 +1,58 @@
+# Host-only shader preparation. Reuses the device source lists, with host
+# libc and separate objects; never installs into the EwokOS SDK.
+# Run from the selected frontend/backend source directory, passing PART,
+# FE_DIR and OUT. The frontend may be exported from the projects gitlink
+# without changing its checked-out revision.
+ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/../../..)
+BE_DIR := $(ROOT)/machines/q8b/system/libs/adrenocompiler
+ifeq ($(strip $(OUT)),)
+$(error set OUT to a separate absolute host build directory)
+endif
+ifeq ($(strip $(FE_DIR)),)
+$(error set FE_DIR to the matching pglcompiler source directory)
+endif
+override BUILD_DIR := $(OUT)
+override OBJDIR := $(OUT)/$(PART)
+override LIB := $(OUT)/lib$(PART).a
+override PROJS_ROOT_DIR := $(ROOT)/projects
+override PGL_G3D := yes
+override PGL_G3D_COMPILER_DIR := $(BE_DIR)
+override PGLC_FE_DIR := $(FE_DIR)
+ifeq ($(PART),frontend)
+include $(FE_DIR)/Makefile
+SRCS_C := $(filter-out $(EWOKOS_GLUE_C),$(SRCS_C))
+SRCS_C += mesa/src/util/u_process.c
+SRCS_CXX += mesa/src/util/u_qsort.cpp
+else ifeq ($(PART),backend)
+include $(BE_DIR)/Makefile
+else
+$(error set PART=frontend or PART=backend)
+endif
+
+CC := clang
+CXX := clang++
+AR := ar
+HOST_INC := -I$(FE_DIR)/include -I$(FE_DIR)/mesa/include \
+ -I$(FE_DIR)/mesa/src -I$(FE_DIR)/mesa/src/compiler \
+ -I$(FE_DIR)/mesa/src/compiler/glsl -I$(FE_DIR)/mesa/src/compiler/nir \
+ -I$(FE_DIR)/mesa/src/mesa -I$(FE_DIR)/mesa/src/mesa/main \
+ -I$(FE_DIR)/mesa/src/util -I$(BE_DIR) -I$(BE_DIR)/mesa/src \
+ -I$(BE_DIR)/mesa/src/freedreno -I$(BE_DIR)/mesa/src/freedreno/ir3 \
+ -I$(BE_DIR)/mesa/src/freedreno/common -I$(BE_DIR)/mesa/src/freedreno/isa \
+ -I$(BE_DIR)/mesa/src/freedreno/registers/gen \
+ -I$(BE_DIR)/mesa/src/freedreno/registers/adreno \
+ -I$(BE_DIR)/mesa/src/compiler/isaspec \
+ -I$(ROOT)/machines/q8b/system/libs/adreno/include
+CFLAGS := $(HOST_INC) -include $(ROOT)/machines/q8b/test/compiler_host_config.h -O1 -g -w -std=gnu11
+CXXFLAGS := $(HOST_INC) -include $(ROOT)/machines/q8b/test/compiler_host_config.h -O1 -g -w -std=gnu++17
+OBJS := $(SRCS_C:%.c=$(OBJDIR)/%.o) $(SRCS_CXX:%.cpp=$(OBJDIR)/%.o)
+$(LIB): $(OBJS)
+.DEFAULT_GOAL := all
+
+$(OUT)/compile_shader_host.o: $(ROOT)/machines/q8b/test/compile_shader_host.c \
+ $(ROOT)/machines/q8b/test/geom_test.h $(FE_DIR)/include/geom_raster_cs.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+shader-host: $(OUT)/compile_shader_host.o $(OUT)/libfrontend.a $(OUT)/libbackend.a
+	$(CXX) $^ -o $(OUT)/compile_shader_host
+.PHONY: shader-host

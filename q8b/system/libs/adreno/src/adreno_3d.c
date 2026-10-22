@@ -83,11 +83,10 @@
  *      (num_work_groups, local size, subgroup size) when the kernel reserved
  *      it; work_dim is 3 and base_group / workgroup_id are 0 (no indirect).
  *
- *   4. STATIC STATE ASSUMPTION.  turnip emits a large HLSQ/UCHE/TPC context and
- *      magic-register state (fd6 magic_regs, the raw_magic_regs list for A690)
- *      before any dispatch.  This back end emits only the CS registers the
- *      dispatch itself reads, relying on adreno_a6xx.c bring-up for the rest.  If
- *      a CS dispatch needs additional static state on A690 it must be added.
+ *   4. STATIC STATE. Each dispatch emits Mesa's A690 magic_raw table and
+ *      SP/TPL1/HLSQ compute context before loading shader state. This avoids
+ *      relying on a graphics context inherited from the bootloader. The
+ *      resulting compute path still requires hardware validation.
  *
  *   5. pvtmem BO SIZE.  total = num_sp_cores(8) * per_sp_size with
  *      per_sp = align(per_fiber * fibers_per_sp(4096), 4096).  For a non-spilling
@@ -121,6 +120,9 @@
 #include <ewoksys/klog.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include "../shaders/blit_blob.h"
+#include "../shaders/raster_blob.h"
 
 /* ------------------------------------------------------------------ */
 /* A690 (SC8280XP) device properties, from Mesa freedreno_devices.py    */
@@ -200,6 +202,54 @@ static void ib_pkt4(struct ib *b, uint32_t reg, uint32_t cnt) {
 
 static void ib_pkt7(struct ib *b, uint32_t opcode, uint32_t cnt) {
 	ib_w(b, ADRENO_PKT7(opcode, cnt));
+}
+
+/* Mesa fd6_emit_static_non_context_regs / tu6_init_hw, with the exact
+ * FD690 table in vendored freedreno_devices.h (__info18). On A690 the
+ * EOLM and linear-mipmap-in-blocks bits are disabled and absent below.
+ * Normal UMD state via PKT4; no privileged MMIO or firmware changes. */
+static void ib_cs_context(struct ib *b) {
+	static const struct { uint32_t reg, value; } state[] = {
+		{REG_A6XX_SP_UNKNOWN_AAF2, 0x00c00000},
+		{REG_A6XX_PC_MODE_CNTL, 0x1f},
+		{REG_A6XX_PC_POWER_CNTL, 7},
+		{REG_A6XX_VFD_POWER_CNTL, 7},
+		{REG_A6XX_TPL1_DBG_ECO_CNTL, 0x04c00000},
+		{REG_A6XX_GRAS_DBG_ECO_CNTL, 0},
+		{REG_A6XX_SP_CHICKEN_BITS, 0x00001400},
+		{REG_A6XX_SP_DBG_ECO_CNTL, 0x01200000},
+		{REG_A6XX_HLSQ_DBG_ECO_CNTL, 0},
+		{REG_A6XX_VPC_DBG_ECO_CNTL, 0x02000400},
+		{REG_A6XX_UCHE_UNKNOWN_0E12, 1},
+		{REG_A6XX_SP_NC_MODE_CNTL_2, 0},
+		{REG_A6XX_SP_PERFCTR_SHADER_MASK, 0x3f},
+		{REG_A6XX_TPL1_UNKNOWN_B605, 0x44},
+		{REG_A6XX_HLSQ_UNKNOWN_BE00, 0x80},
+		{REG_A6XX_HLSQ_UNKNOWN_BE01, 0},
+		{REG_A6XX_HLSQ_SHARED_CONSTS, 0},
+		{REG_A6XX_SP_GFX_USIZE, 0},
+		{REG_A6XX_SP_UNKNOWN_A9A8, 0},
+		/* fd6_program emit_shader_regs: constant demotion, ISAMMODE_GL,
+		 * no shared constants. XML: bit0 | (2 << 1). */
+		{REG_A6XX_SP_MODE_CNTL, 0x5},
+		/* GL | CLAMP_ROUND_TRUNCATE << 5 | datatype override.
+		 * A6XX has no CLAMP_DISABLE bit (that field is A8XX-only). */
+		{REG_A6XX_TPL1_MODE_CNTL, 0xa2},
+	};
+	ib_pkt7(b, CP_WAIT_FOR_IDLE, 0);
+	ib_pkt7(b, CP_EVENT_WRITE, 1);
+	ib_w(b, CACHE_INVALIDATE);
+	for (uint32_t i = 0; i < sizeof(state) / sizeof(state[0]); i++) {
+		ib_pkt4(b, state[i].reg, 1);
+		ib_w(b, state[i].value);
+	}
+	/* No retained draw groups: all compute state below is immediate. */
+	ib_pkt7(b, CP_SET_DRAW_STATE, 3);
+	ib_w(b, 1u << 18); /* DISABLE_ALL_GROUPS */
+	ib_w(b, 0);
+	ib_w(b, 0);
+	ib_pkt7(b, CP_SET_MODE, 1);
+	ib_w(b, 1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -519,14 +569,13 @@ static int g_leaked_desc = 0;
 
 /* Emit and submit one compute dispatch of kernel `ks` over grid[3]
    workgroups, binding the SSBO slots from `binds` (indexed by declared
-   binding) and feeding `unif[num_uniforms]` as UBO 0.  `barrier` prepends the
-   inter-dispatch flush (pass 2 of the geometry path).  Returns ADRENO_OK,
+   binding) and feeding `unif[num_uniforms]` as UBO 0. Every dispatch drains
+   and invalidates UCHE before loading state. Returns ADRENO_OK,
    ADRENO_E_DECLINED before anything reached the GPU, or the adreno_ring_submit
    result (TIMEOUT / FAULT / WEDGED). */
 static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
                             uint32_t nbinds, const uint32_t *unif,
-                            uint32_t num_uniforms, const uint32_t grid[3],
-                            int barrier) {
+                            uint32_t num_uniforms, const uint32_t grid[3]) {
 	const adreno_prog_kernel_t *k = &ks->k;
 	struct ib b;
 	adreno_bo_t desc_bo;
@@ -615,15 +664,9 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	pvt_lo = (uint32_t)(pvt_iova & 0xffffffffu);
 	pvt_hi = (uint32_t)(pvt_iova >> 32);
 
-	/* === inter-dispatch barrier (geometry pass 2): the previous dispatch
-	   already retired through the ring fence (CACHE_FLUSH_TS); drain the
-	   pipeline and invalidate UCHE before this one reads what it wrote,
-	   the way fd6_barrier_flush orders dependent launches === */
-	if (barrier) {
-		ib_pkt7(&b, CP_WAIT_FOR_IDLE, 0);
-		ib_pkt7(&b, CP_EVENT_WRITE, 1);
-		ib_w(&b, CACHE_INVALIDATE);
-	}
+	/* Previous jobs retired through CACHE_FLUSH_TS. Invalidate before
+	   fetching this shader, descriptors, uniforms or a previous pass's output. */
+	ib_cs_context(&b);
 
 	/* === dispatch prologue: enter the COMPUTE render mode === */
 	ib_pkt7(&b, CP_SET_MARKER, 1);
@@ -631,7 +674,8 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 
 	/* === 1. SP_UPDATE_CNTL(cs_state | cs_uav) === */
 	ib_pkt4(&b, REG_A6XX_SP_UPDATE_CNTL, 1);
-	ib_w(&b, A6XX_SP_UPDATE_CNTL_CS_STATE | A6XX_SP_UPDATE_CNTL_CS_UAV);
+	ib_w(&b, A6XX_SP_UPDATE_CNTL_CS_STATE | A6XX_SP_UPDATE_CNTL_CS_UAV |
+	         A6XX_SP_UPDATE_CNTL_CS_SHARED_CONST);
 
 	/* === 2. SP_CS_CONST_CONFIG(constlen,enabled) + SP_CS_CONFIG === */
 	ib_pkt4(&b, REG_A6XX_SP_CS_CONST_CONFIG, 1);
@@ -889,6 +933,167 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 }
 
 /* ------------------------------------------------------------------ */
+/* Exact nearest copy / straight-alpha source-over. This private program does
+   not consume any application handle. blit_blob.h comes from shaders/blit.comp
+   through the same GLSL/NIR/ir3 compiler as application programs. */
+static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                         int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+                         int endpoints, int alpha) {
+	static kern_slot_t kernel;
+	static int loaded;
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	bind_t binds[2];
+	uint32_t params[12], grid[3], shift = endpoints ? 15u : 0u;
+	uint32_t step_x, step_y;
+	int rc;
+	if (!adreno_3d_ready()) return ADRENO_E_DECLINED;
+	if (adreno_wedged()) return ADRENO_E_WEDGED;
+	if (alpha < -1 || alpha > 255 || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0 ||
+	    src_w > 16384 || src_h > 16384 || dst_w > 16384 || dst_h > 16384 ||
+	    sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 ||
+	    sx < 0 || sy < 0 || dx < 0 || dy < 0 ||
+	    sw > src_w || sh > src_h || dw > dst_w || dh > dst_h ||
+	    sx > src_w-sw || sy > src_h-sh || dx > dst_w-dw || dy > dst_h-dh ||
+	    !src_phy || !dst_phy || (src_phy & 63u) || (dst_phy & 63u))
+		return ADRENO_E_DECLINED;
+	binds[0].phy = src_phy; binds[0].bytes = (uint32_t)src_w*src_h*4u;
+	binds[1].phy = dst_phy; binds[1].bytes = (uint32_t)dst_w*dst_h*4u;
+	/* In-place resizing needs an intermediate; never let invocations race. */
+	if (src_phy < dst_phy + binds[1].bytes && dst_phy < src_phy + binds[0].bytes)
+		return ADRENO_E_DECLINED;
+	if (endpoints) {
+		step_x = dw <= 1 ? 0 : (((uint32_t)(sw-1)<<15)+(uint32_t)dw-2u)/(uint32_t)(dw-1);
+		step_y = dh <= 1 ? 0 : (((uint32_t)(sh-1)<<15)+(uint32_t)dh-2u)/(uint32_t)(dh-1);
+	} else {
+		step_x = sw;
+		step_y = sh;
+	}
+	params[0]=src_w; params[1]=dst_w; params[2]=sx; params[3]=sy;
+	params[4]=dx; params[5]=dy; params[6]=dw; params[7]=dh;
+	params[8]=step_x; params[9]=step_y; params[10]=shift; params[11]=0;
+	if (alpha >= 0) { params[10]=alpha; params[11]=1; }
+	grid[0]=((uint32_t)dw+7u)/8u; grid[1]=((uint32_t)dh+7u)/8u; grid[2]=1;
+	pthread_mutex_lock(&lock);
+	if (!loaded) {
+		const adreno_prog_blob_t *h = (const void *)q8b_2d_blob;
+		if (h->magic != ADRENO_PROG_MAGIC || h->version != ADRENO_PROG_VERSION ||
+		    q8b_2d_blob_len != sizeof(*h)+h->payload_bytes ||
+		    kern_validate(&h->kern[0]) || h->kern[0].uniform_blob_dwords != 12 ||
+		    h->kern[0].num_ssbo != 2 || h->kern[0].pvtmem_size != 0 ||
+		    h->kern[0].local_size[0] != 8 || h->kern[0].local_size[1] != 8 ||
+		    h->kern[0].local_size[2] != 1 ||
+		    kern_load(&kernel,&h->kern[0],q8b_2d_blob+sizeof(*h))) {
+			pthread_mutex_unlock(&lock);
+			return ADRENO_E_DECLINED;
+		}
+		loaded=1;
+	}
+	rc=emit_cs_dispatch(&kernel,binds,2,params,12,grid);
+	pthread_mutex_unlock(&lock);
+	return rc;
+}
+
+int adreno_compute_scale(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                         int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+                         int endpoints) {
+	return compute_blit(src_phy,src_w,src_h,sx,sy,sw,sh,
+		dst_phy,dst_w,dst_h,dx,dy,dw,dh,endpoints,-1);
+}
+
+int adreno_compute_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                         int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+                         uint8_t alpha) {
+	return compute_blit(src_phy,src_w,src_h,sx,sy,sw,sh,
+		dst_phy,dst_w,dst_h,dx,dy,dw,dh,0,alpha);
+}
+
+/* Solid source-over and inverse-mapped rotation use a separate ordinary
+   application kernel, preserving the validated scale/blend kernel. */
+static int compute_raster(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                          uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                          int32_t x, int32_t y, int32_t w, int32_t h,
+                          int32_t mode, uint32_t value, int32_t c, int32_t s) {
+	static kern_slot_t kernel;
+	static int loaded;
+	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+	bind_t binds[2];
+	uint32_t params[12], grid[3];
+	int rc;
+	if (!adreno_3d_ready()) return ADRENO_E_DECLINED;
+	if (adreno_wedged()) return ADRENO_E_WEDGED;
+	if (src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0 ||
+	    src_w > 16384 || src_h > 16384 || dst_w > 16384 || dst_h > 16384 ||
+	    x < 0 || y < 0 || w <= 0 || h <= 0 || w > dst_w || h > dst_h ||
+	    x > dst_w-w || y > dst_h-h ||
+	    !src_phy || !dst_phy || (src_phy & 63u) || (dst_phy & 63u) ||
+	    (mode != 0 && mode != 1) || c < -16384 || c > 16384 || s < -16384 || s > 16384)
+		return ADRENO_E_DECLINED;
+	binds[0].phy=src_phy; binds[0].bytes=(uint32_t)src_w*src_h*4u;
+	binds[1].phy=dst_phy; binds[1].bytes=(uint32_t)dst_w*dst_h*4u;
+	if (src_phy+binds[0].bytes < src_phy || dst_phy+binds[1].bytes < dst_phy)
+		return ADRENO_E_DECLINED;
+	/* Solid fill reads only its own destination pixel. Rotating overlapping
+	   allocations would race other invocations and must decline beforehand. */
+	if (mode == 1) {
+		int32_t rw, rh;
+		if (value >= 360 || x || y || w != dst_w || h != dst_h)
+			return ADRENO_E_DECLINED;
+		if (value % 90 == 0) {
+			rw=(value == 90 || value == 270)?src_h:src_w;
+			rh=(value == 90 || value == 270)?src_w:src_h;
+		} else {
+			uint32_t ac=c<0?-c:c, as=s<0?-s:s;
+			rw=((uint32_t)src_w*ac+(uint32_t)src_h*as+16383u)>>14;
+			rh=((uint32_t)src_w*as+(uint32_t)src_h*ac+16383u)>>14;
+		}
+		if (dst_w != rw || dst_h != rh ||
+		    (src_phy < dst_phy+binds[1].bytes && dst_phy < src_phy+binds[0].bytes))
+			return ADRENO_E_DECLINED;
+	}
+	params[0]=src_w; params[1]=dst_w; params[2]=src_w; params[3]=src_h;
+	params[4]=x; params[5]=y; params[6]=w; params[7]=h;
+	params[8]=mode; params[9]=value; params[10]=(uint32_t)c; params[11]=(uint32_t)s;
+	grid[0]=((uint32_t)w+7u)/8u; grid[1]=((uint32_t)h+7u)/8u; grid[2]=1;
+	pthread_mutex_lock(&lock);
+	if (!loaded) {
+		const adreno_prog_blob_t *hdr=(const void *)q8b_raster_blob;
+		if (hdr->magic != ADRENO_PROG_MAGIC || hdr->version != ADRENO_PROG_VERSION ||
+		    q8b_raster_blob_len != sizeof(*hdr)+hdr->payload_bytes ||
+		    kern_validate(&hdr->kern[0]) || hdr->kern[0].uniform_blob_dwords != 12 ||
+		    hdr->kern[0].num_ssbo != 2 || hdr->kern[0].pvtmem_size != 0 ||
+		    hdr->kern[0].local_size[0] != 8 || hdr->kern[0].local_size[1] != 8 ||
+		    hdr->kern[0].local_size[2] != 1 ||
+		    kern_load(&kernel,&hdr->kern[0],q8b_raster_blob+sizeof(*hdr))) {
+			pthread_mutex_unlock(&lock);
+			return ADRENO_E_DECLINED;
+		}
+		loaded=1;
+	}
+	rc=emit_cs_dispatch(&kernel,binds,2,params,12,grid);
+	pthread_mutex_unlock(&lock);
+	return rc;
+}
+
+int adreno_compute_fill_alpha(uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                             int32_t x, int32_t y, int32_t w, int32_t h,
+                             uint32_t color) {
+	return compute_raster(dst_phy,dst_w,dst_h,dst_phy,dst_w,dst_h,
+		x,y,w,h,0,color,0,0);
+}
+
+int adreno_compute_rotate(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                          uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                          int32_t degree, int32_t cos_q14, int32_t sin_q14) {
+	return compute_raster(src_phy,src_w,src_h,dst_phy,dst_w,dst_h,
+		0,0,dst_w,dst_h,1,(uint32_t)degree,cos_q14,sin_q14);
+}
+
 /* Two-pass geometry rasterizer (mirrors raspi5 draw_compute_geom).    */
 /* ------------------------------------------------------------------ */
 static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
@@ -991,7 +1196,7 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	grid[0] = (g->nverts + xwg - 1u) / xwg;   /* one invocation per vertex */
 	grid[1] = 1u;
 	grid[2] = 1u;
-	rc = emit_cs_dispatch(xf, binds, 4u, unif, split, grid, 0);
+	rc = emit_cs_dispatch(xf, binds, 4u, unif, split, grid);
 	if (rc != ADRENO_OK) {
 		klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
 		return rc;
@@ -1017,7 +1222,7 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	grid[1] = 1u;
 	grid[2] = 1u;
 	rc = emit_cs_dispatch(rs, binds, 4u, unif + split, num_uniforms - split,
-	                      grid, 1);
+	                      grid);
 	if (rc != ADRENO_OK)
 		klog("adreno_3d: geom raster rc=%d tris %u tpw=%u\n", rc, ntris, tpw);
 	return rc;
@@ -1070,5 +1275,5 @@ int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 	grid[0] = ((uint32_t)fb_w + s->kern[0].k.local_size[0] - 1u) / s->kern[0].k.local_size[0];
 	grid[1] = ((uint32_t)fb_h + s->kern[0].k.local_size[1] - 1u) / s->kern[0].k.local_size[1];
 	grid[2] = 1u;
-	return emit_cs_dispatch(&s->kern[0], binds, 1u, unif, num_uniforms, grid, 0);
+	return emit_cs_dispatch(&s->kern[0], binds, 1u, unif, num_uniforms, grid);
 }

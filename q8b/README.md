@@ -40,10 +40,11 @@ SPI NOR EDK2 UEFI
 | GOP 帧缓冲 | ✅ 已实现，QEMU headless 下未验证显示 | 由 stub 记录地址/分辨率/格式，fbdisplayd 直写 |
 | GUI 控制台 | ✅ 已构建（displaymand/consoled/fontd/fbdisplayd） | 无输入设备，先做显示；串口可登录 |
 | microSD 高速读写 | ✅ 完整验证 50MHz HS（ADMA2 多块 16MB/s） | SDCC2 **4-bit / 50MHz（SD High Speed）**：CMD6 切换函数 1（64 字节状态块）、GCC `0x0605`、HOST_CONTROL HS 位。控制器 `caps0=0x362dc8b2`：**ADMA2=1、SDMA=0**，所以旧 SDMA 路径必挂。用户态走 **ADMA2 多块**（`SDCC2_USE_ADMA=1`、`SDCC2_FORCE_SINGLE_BLOCK=0`），失败回退 PIO 单块；PIO 多块仍禁用（16 块静默错）。实机 SD 根盘 `sdprobe test`：32 块 16KB **16.1MB/s**，2/4/8/16/32 块 `cmp=0`，ADMA 写 4 块/回读/恢复通过；内核 init 仍走 PIO 单块。 |
+| **M.2 NVMe（PCIe2a x4）** | ✅ **用户态驱动实机验证，读 1.77 GiB/s** | 见下文「M.2 NVMe（PCIe2a，用户态驱动）」：ECAM 枚举 + BAR0 映射 + 轮询 admin/I/O 队列；Lexar 1TB SSD（126f:2263，NVMe 1.3，MDTS=6/256KB）。原始读 **1.77 GiB/s**（256MB，256KB×QD≥4），带拷贝的实用路径 **~1.2 GiB/s**；读取 MBR/分区表/EXFAT 引导扇区与真实盘上数据比对通过。 |
 | UFS 根盘 | ⏳ 未实现 | 后续接 UFS 3.1 |
-| USB xHCI / 键鼠 | ⏳ 未实现 | 需要 xHCI + HID，随后才能跑完整 X |
-| QPS615 双 2.5GbE | ⏳ 未实现 | PCIe + QPS615 驱动 |
-| Adreno 690 / freedreno | ⏳ 未实现 | 见 q8b 资料的 GPU 路线评估 |
+| USB xHCI / 键鼠 | ✅ 已实现（xhci + HID），实机枚举 | DWC3 xHCI @0x0a400000，轮询队列；键鼠 daemon 已接入 |
+| QPS615 双 2.5GbE | ✅ 已实现（TC956x/XGMAC3） | pcie3a + TC9563 交换机，实机 DHCP/ping/ssh 可用；批量传输稳定性待修 |
+| Adreno 690 / freedreno | ✅ 2D/API/显示集成实机通过 | 默认启动 g2dd；g2dtest 0 failure；完整桌面新启动流程待验收 |
 
 > 说明：QEMU 只能验证通用 AArch64 路径（UEFI → 内核 → 页表 → ext3 → init →
 > core/vfsd/sdfsd）。QCOM 专属的 GENI UART、GICv3、PSCI、UFS、PCIe、GOP 需要
@@ -120,7 +121,8 @@ make payload
 make -C machines/q8b/kernel            # 内核
 make -C machines/q8b/kernel efi        # UEFI 引导器（RAM disk）
 make -C machines/q8b/kernel efi SD_ROOTFS=1 FORCE_UART17=1  # 从 microSD ext3 启动
-make -C machines/q8b/system gui        # 用户态（basic + 图形控制台）
+make -C machines/q8b/system x          # 默认完整桌面，启动 g2dd 后启用渲染
+make -C machines/q8b/system gui        # 可选：basic + 图形控制台（同样启用 g2dd）
 make -C machines/q8b/system sd         # ext3 rootfs
 ```
 
@@ -229,6 +231,111 @@ fan 10       # level 10 = 100%
 真正的 CPU 温度/自动风扇曲线需要 **Radxa SVC（ADSP GLINK）** 的
 `cpu_temp_deci_c` / `pwm1` 接口，尚未接入。
 
+## M.2 NVMe（PCIe2a，用户态驱动）
+
+Q8B 有两个 M.2 M-key 槽：**pcie2a（Gen3 x4）** 与 **pcie3b（Gen3 x2）**。
+PCIe 控制器、链路训练、iATU 与 BAR 分配都由固件在 `ExitBootServices` 前
+完成；OS 侧只需要 ECAM 枚举 + BAR 映射 + 轮询 NVMe 队列，因此驱动完全位于
+用户态（与 `bsp_eth`/`xhci`/`sdcc2` 同一模型）。
+
+### 代码
+
+| 文件 | 作用 |
+| --- | --- |
+| `system/libs/bsp/include/bsp/nvme.h` | 公开 API：`q8b_pcie_scan` / `q8b_pcie_link` / `nvme_open` / `nvme_read` / `nvme_write` / `nvme_read_stream` |
+| `system/libs/bsp/src/nvme.c` | ECAM 枚举、BAR 翻译、admin/I/O 队列、identify、批量读流水线、128-bit 拷贝 |
+| `system/drivers/nvprobe/nvprobe.c` | 实机探针：`scan` / `gpt` / `bench [MB]` / `verify [MB]` |
+| `kernel/bsp/hw_arch.h` + `hw_info_arch.c` | `check_mem_map_arch()` 放行 pcie2a/3b 的 ECAM 与 BAR 窗口（`0x5_0000_0000` / `0x4_4000_0000`） |
+
+### 地址与窗口（sc8280xp-radxa-dragon-q8b.dts）
+
+| 槽 | ECAM（PCIe 配置空间） | 32-bit BAR 窗口（bus → CPU） | 64-bit BAR 窗口 |
+| --- | --- | --- | --- |
+| pcie2a | `0x5_0000_0000`（256MB） | `0x4000_0000` → `0x5_1000_0000` | `0x5_2000_0000` 恒等 |
+| pcie3b | `0x4_4000_0000`（256MB） | `0x4000_0000` → `0x4_5000_0000` | `0x4_6000_0000` 恒等 |
+
+用户态只映射总线 0–7（8MB ECAM）与 BAR0 的 16KB；BAR 值通过上表翻译成
+CPU 物理地址。pcie2a/3b 的 DTS 没有 `iommus`，SMMU 旁路，所以
+`sys_dma` 物理地址可以直接作为设备 DMA 地址（与 xHCI 相同）。
+
+### 实机结果（Lexar 1TB SSD，126f:2263，NVMe 1.3）
+
+```
+root port link: speed=3 width=x4      # 8GT/s ×4 = PCIe Gen3 x4
+  model   : Lexar 1TB SSD
+  serial  : J38227J000468
+  firmware: S0614B0
+  nsze    : 1953525168 blocks x 512 B = 953869 MiB
+  mdts    : 6 (max single transfer 256 KiB)
+```
+
+`nvprobe bench 256`（256MB，LBA 0 起顺序读）：
+
+| 方式 | 结果 |
+| --- | --- |
+| 原始读（数据留在 DMA arena，不拷贝） | **1772 MiB/s**（128KB/256KB，QD≥4）；QD1 约 1500–1700 MiB/s |
+| 带拷贝的实用路径（拷入 cached malloc 缓冲） | **~1220–1250 MiB/s** |
+| 数据一致性 | `nvprobe verify` QD1 与 QD32 两次读 **IDENTICAL** |
+
+`nvprobe gpt` 通过驱动读真实盘上数据：LBA0 是 MBR（`0xAA55`），
+part1 `type=0x07 lba=2048 sectors=1953457584`、引导扇区 `fs=EXFAT`，
+part2 `type=0xEF`（32MB ESP）。
+
+### 加速要点
+
+1. **队列基址必须 4KB 对齐**：NVMe spec 要求 ASQ/ACQ/IO SQ/CQ 基址 4KB
+   对齐。最初的紧凑布局（ACQ 在 ctrl+0x400）会让控制器收不到 admin 命令
+   （identify 永远超时，CSTS 却一直 RDY）。每个队列独占 4KB。
+2. **Identify Controller 的 NN 在 0x204**（不是 0x184）；SQES/CQES/MAXCMD
+   在 0x200。读错会得到 NN=0。
+3. **双缓冲读流水线**：两个 `depth` 批次的 arena 交替使用，前一批完成即
+   提交后一批，并在后一批 DMA 进行时把前一批拷出（拷贝与 I/O 重叠）。
+4. **128-bit 拷贝**：`sys_dma` 是 Normal Non-Cacheable，用 LDP/STP 128-bit
+   配对拷贝比 libc 的 8 字节 word memcpy 快约 2.4 倍，把带拷贝路径从
+   475 MiB/s 提到 ~1.2 GiB/s。
+5. **不要填满 SQ**：一次提交 `qsize` 条会让 tail 回到原值，门铃不再表示
+   新命令；批量深度保持 ≤ (qsize-1)/2。
+6. **完成可能是乱序的**：共享 CQ 上属于另一个在飞批次的 CQE 必须按 slot
+   计数保留，不能丢弃，否则会误判超时。
+
+### 限制与注意
+
+- **pcie3b 空槽不要预扫描**：槽位为空时固件会把对应 RC 下电，读它的 ECAM
+  触发外部 abort（内核 `SError swallowed`，随后该用户进程 data abort）。
+  `nvprobe` 默认只扫 pcie2a，只有显式 `scan3b` 才碰第二个槽。
+- 当前是**轮询**驱动（不开中断），单进程占用一个核；`nvme_read_stream`
+  的流水线需要调用者提供 DMA arena 大小内的 chunk×depth。
+- 写入路径（`nvme_write`）已实现但未做实盘写测试：盘上是别人的
+  EXFAT/ESP，避免误改。
+- 根文件系统仍未切到 NVMe：后续可加 `nvmed` 块设备 daemon，或给 `sdfsd`
+  增加 NVMe 后端（`libsd` 的 `sd_read_sectors` 已可替换）。
+- **批量 SSH 传输会造成网卡 RX 卡死**（`/drivers/q8b/net` 在 1500 字节
+  连续帧下停住，ping/ssh 全断，串口仍活）。实测用
+  `scp -l 300~500`（限速 37–62KB/s）+ 32KB 分片可稳定上传；串口控制台
+  （`tty0`，root/root）是可靠的备用命令通道。该问题与 NVMe 无关，待单独
+  修 `bsp_eth.c` 的 RX 环。
+
+### 构建与运行
+
+```bash
+cd machines/q8b
+make -C system/libs/bsp            # 编 libbsp（含 nvme.c）
+make -C system/drivers/nvprobe     # 编 nvprobe
+# 上板：scp 到 /home（限速分片）后
+/home/nvprobe scan        # 枚举 + 打开控制器 + identify
+/home/nvprobe gpt         # 读 MBR/GPT 与分区引导扇区（只读）
+/home/nvprobe bench 256   # 256MB 读吞吐（raw + copy）
+/home/nvprobe verify 64   # QD1 vs QD32 数据一致性
+```
+
+上传/维护辅助：`system/drivers/espwrite` 可在板子上直接读写 SD 卡的 FAT32
+ESP（`espwrite list|get|put|rm|boot`），用于更新 `BOOTAA64.EFI` /
+`KERNEL.BIN`，并用回读校验；`make -C system/drivers/espwrite` 构建。
+
+内核侧只需 `hw_arch.h`/`hw_info_arch.c` 的 pcie2a/3b 窗口放行；其余全部
+在用户态。内核改动通过 PXE TFTP 的 `KERNEL.BIN` 生效（loader 的
+`MTFTP_FIRST=1` 优先走网络）。
+
 ## PXE RAM-disk 测试（不刷 SD）
 
 `boot/uefi` 支持两种 loader：
@@ -294,6 +401,48 @@ make test-kernel   # 真实内核：UEFI -> 内核 -> ext3 -> core/vfsd/sdfsd
 把 RAM_BASE 改为 `0x40000000`、UART 改为 PL011、GIC 改为 GICv2；
 QCOM 专属驱动不上机不验证。
 
+## Adreno 690 bring-up
+
+GPU 驱动在 `system/libs/adreno/`（`libadreno.a`）。正常启动在
+`init.rd` 中直接设置 `ADRENO_ENABLE=1`，通过 `ipcserv` 启动唯一的
+`/drivers/q8b/g2dd /dev/g2d`，等待服务就绪后再启动显示服务和桌面。
+`gui` 与 `x` 的 `init.rd` 均包含这两条命令；顶层 `make rootfs` / `make payload` 默认构建 `x`。
+Graph 与显示库通过 g2dd 接口提交受支持的绘制与 GOP 拷贝；未实现的操作
+返回不支持，由客户端执行 CPU 回退。已提交任务的超时/故障会停止调用方并
+保留缓冲区，不能当作普通 CPU 回退。寄存器序列按 Linux v6.6/v6.12
+`drivers/gpu/drm/msm/adreno` 转写，寄存器偏移来自 Mesa `a6xx*.xml`。
+
+已实现并完成 2026-10-22 实机验证（细节见 `test/HANDOVER.md`）：
+
+| 阶段 | 内容 |
+|---|---|
+| 时钟 | GCC `gcc_gpu_gpll0*` / `ddrss_gpu_axi` / `gpu_memnoc_gfx`；GPUCC `cx_gdsc` 上电、`gmu_clk_src`（GPLL0_DIV/1.5=200 MHz）、`hub_clk_src`（GPLL0/3=200 MHz）及 CX 叶子 branch；`gx_gmu` 在 GX 上电后再开 |
+| SMMU | GPU/GMU 上下文、GPU 地址映射与缓存一致性，按 A690 stream 路由初始化 |
+| GMU | `a660_gmu.bin` 块链 → CM3 ITCM/DTCM/icache → `fw_start` → HFI 三队列（cmd/response/debug）→ perf/bw/core_fw/start → 初始 `GX_BW_PERF_VOTE` → 轮询 GX 电源状态 |
+| CP | ring + `a660_sqe.fw` 装载、官方签名 zap 经内核 SCM PAS 认证、安全模式退出、CP_MEM_WRITE 自检 |
+| 2D/compute | A2D fill/blit，普通 GLSL compute 实现精确 alpha、缩放与旋转；g2dtest 完整通过（0 failure） |
+| 显示 | Graph / g2dd / display IPC / fbdisplayd 到真实 720×720 GOP 的全帧与脏更新、桌面恢复逐像素通过 |
+
+固件：A690 使用 **A660 的固件镜像**（mainline `a6xx_catalog.c` 的 a690 条目：
+`fw[GMU]="a660_gmu.bin"`、`fw[SQE]="a660_sqe.fw"`；linux-firmware 中不存在
+`a690_gmu.bin`）。`firmware/adreno/` 内的三个文件由 `make basic` 安装到
+rootfs 的 `/etc/firmware/adreno/`，签名 zap 使用
+`sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn`；官方固件保持原样。
+`adreno_fw.c` 还会搜索
+`/etc/firmware/qcom/`、`/usr/lib/firmware/qcom/` 等兼容路径。
+
+**2026-10-21 首次上板结果**：GPUCC/SMMU GMU CB1 均就绪，但 GMU 固件加载返回
+`-2`——旧代码按 `a690_gmu.bin` 查找，该文件在 linux-firmware 中并不存在。
+本版修正为 `a660_gmu.bin`，同时补上 Linux 时钟父链里 EwokOS 缺失的两段：
+GCC 的 GPU GPLL0/NoC 分支，以及 CX GDSC 上电；GMU 启动后新增初始 DCVS vote
+与 GX 电源轮询。
+
+**当前边界**：GPU 初始化、签名 zap 认证及 2D/API/显示集成已实机通过。
+完整 `x` 桌面与默认启动镜像已编译打包，新启动顺序尚未上板验证。
+Gaussian、三角形及 raw physical 90/270 度旋转仍使用明确的客户端 CPU 回退；
+geometry/完整 3D 管线待后续实现。每次物理冷启动只初始化一次 GPU；正常
+启动已有 `/dev/g2d` 时，直接运行 `/bin/g2dtest`，不要再次启动测试 daemon。
+
 ## 下一步
 
 1. **上板验证**：串口日志、GOP 地址/分辨率、GICv3 redistributor affinity、
@@ -306,9 +455,14 @@ QCOM 专属驱动不上机不验证。
    UFS 3.1（`ufs_mem_hc`）仍待移植。
 3. **输入**：xHCI + HID 键鼠；随后启用 `xwin` 完整桌面。
 4. **网络**：PCIe + QPS615 双 2.5GbE；WiFi/BT M.2。
-5. **GPU**：按 `../q8b/freedreno项目调研与自研OS-GPU驱动可行性评估.md` 的路线，
-   先 soft3d，再 MSM/SMMU/GMU + freedreno/turnip。
-6. **调试增强**：EUD（BIOS 已有选项）作为中期 SWD 调试通道；PXE 直连 + 串口
+5. **NVMe 落地**：`nvprobe`/`libbsp nvme.c` 已验证控制器与 1.77 GiB/s 读；
+   下一步加 **`nvmed` 块设备 daemon**（或给 `sdfsd` 加 NVMe 后端），把
+   NVMe 分区作为可挂载根盘，并支持写入；同时修 `bsp_eth.c` 的 RX 环批量
+   传输卡死问题。
+6. **GPU**：2D/API/真实 GOP 集成已通过，默认启动 g2dd 的完整桌面镜像已构建；
+   下一步是冷启动验收默认桌面，再推进 geometry/3D。路线评估见
+   `../q8b/freedreno项目调研与自研OS-GPU驱动可行性评估.md`。
+7. **调试增强**：EUD（BIOS 已有选项）作为中期 SWD 调试通道；PXE 直连 + 串口
    已是当前最快迭代闭环。
 
 ## 相关文档

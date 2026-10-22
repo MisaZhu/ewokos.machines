@@ -8,11 +8,11 @@
  * in Linux 6.5) plus arch/arm64/boot/dts/qcom/sc8280xp-crd.dts /
  * sc8280xp-lenovo-thinkpad-x13s.dts reserved-memory node gpu_mem.
  *
- * A690 identity (Linux drivers/gpu/drm/msm/adreno/adreno_device.c gpulist
- * entry for revn=690):
- *   .rev = ADRENO_REV(6, 9, 0, ANY_ID)
+ * A690 identity (Linux drivers/gpu/drm/msm/adreno/a6xx_catalog.c a690
+ * entry, chip id 0x06090000):
+ *   .family            = ADRENO_6XX_GEN4
  *   .fw[ADRENO_FW_SQE] = "a660_sqe.fw"
- *   .fw[ADRENO_FW_GMU] = "a690_gmu.bin"
+ *   .fw[ADRENO_FW_GMU] = "a660_gmu.bin"
  *   .zapfw             = "a690_zap.mdt"
  *   .gmem              = SZ_4M
  *   .address_space_size= SZ_16G
@@ -58,17 +58,26 @@ extern "C" {
 #define Q8B_ADRENO_GPUCC_PHY   0x03d90000ULL
 #define Q8B_ADRENO_GPUCC_SIZE  0x00009000ULL
 
+/* Global clock controller (gcc @ 0x00100000).  Only the GPU branch clocks
+   are touched: gcc_gpu_gpll0_clk_src / gcc_gpu_gpll0_div_clk_src parent the
+   two GPUCC RCGs (0x052000 bits 15/16), and gcc_ddrss_gpu_axi_clk /
+   gcc_gpu_memnoc_gfx_clk (0x07115c / 0x071010) gate the GMU's memory path.
+   Linux turns these on through the clock parent chain, which EwokOS has no
+   equivalent of.  See drivers/clk/qcom/gcc-sc8280xp.c. */
+#define Q8B_GCC_PHY            0x00100000ULL
+#define Q8B_GCC_SIZE           0x00100000ULL
+
 /* Adreno SMMU-500 (translation for GPU + GMU + CB contexts) */
 #define Q8B_ADRENO_SMMU_PHY    0x03da0000ULL
 #define Q8B_ADRENO_SMMU_SIZE   0x00020000ULL
 
 /* Zap-shader reserved memory.  The DT gpu_mem node marks this no-map, so
    the UEFI memory map already excludes it from the kernel heap; user space
-   loads a690_zap.mdt + segments here before triggering the zap-restore
-   SMC.  Board variants use different firmware paths:
-     CRD                : qcom/sc8280xp/qcdxkmsuc8280.mbn
-     Lenovo ThinkPad X13s: qcom/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn
-   Q8B expects the CRD path under /etc/firmware/adreno/. */
+   loads the zap image here before triggering the zap-restore SMC.  The Q8B
+   DTS (sc8280xp-radxa-dragon-q8b.dts) reuses the X13s signing image
+   qcom/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn (the SoC is unfused, so the
+   X13s blob authenticates on this board too).  EwokOS looks for a copy under
+   /etc/firmware/adreno/, then /etc/firmware/qcom/ and /usr/lib/firmware/. */
 #define Q8B_ADRENO_ZAP_PHY     0x8bf00000ULL
 #define Q8B_ADRENO_ZAP_SIZE    0x00002000ULL
 
@@ -82,13 +91,13 @@ extern "C" {
 #define Q8B_ADRENO_SPI_SMMU_CB0 678   /* INTID 710: SMMU context bank 0 (GPU) */
 #define Q8B_ADRENO_SPI_SMMU_CB1 679   /* INTID 711: SMMU context bank 1 (GMU) */
 
-/* Firmware file names, rooted at /etc/firmware/adreno/ in the Q8B rootfs.
-   Names match Linux drivers/gpu/drm/msm/adreno/adreno_device.c gpulist[690]
-   exactly so the same files can be copied from linux-firmware or an
-   Android vendor image without renaming. */
+/* Firmware file names, installed under /etc/firmware/adreno/ in the Q8B
+	rootfs.  The A690 catalog entry requires these exact A660 images. */
 #define Q8B_ADRENO_FW_DIR       "/etc/firmware/adreno/"
 #define Q8B_ADRENO_FW_SQE       "a660_sqe.fw"       /* CP/SQE microcode */
-#define Q8B_ADRENO_FW_GMU       "a690_gmu.bin"      /* GMU firmware */
+#define Q8B_ADRENO_FW_GMU       "a660_gmu.bin"      /* GMU firmware (A690) */
+#define Q8B_ADRENO_FW_GMU_SIZE  55252u              /* linux-firmware v3.01.0B */
+#define Q8B_ADRENO_FW_SQE_SIZE  43292u              /* linux-firmware v1.12 */
 #define Q8B_ADRENO_FW_ZAP_MDT   "a690_zap.mdt"      /* zap shader MBN header */
 /* Zap shader segment files follow the standard MBN naming: a690_zap.b00,
    a690_zap.b01, ...  The count is encoded in the .mdt header. */

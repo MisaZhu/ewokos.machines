@@ -46,6 +46,11 @@ int adreno_reg_map(void) {
 	if (adreno_map_window(ADRENO_PDC_VA, Q8B_ADRENO_GMU_PDC_PHY,
 			(uint32_t)ADRENO_PDC_MAP_SIZE) != 0)
 		return -2;
+	/* GCC: the GPU branch clocks that parent the GPUCC RCGs (see
+	   gcc_gpu_clocks_enable in adreno_gpucc.c). */
+	if (adreno_map_window(ADRENO_GCC_VA, Q8B_GCC_PHY,
+			(uint32_t)ADRENO_GCC_MAP_SIZE) != 0)
+		return -3;
 	_mapped = 1;
 	return 0;
 }
@@ -102,6 +107,15 @@ uint32_t adreno_pdc_read(uint32_t byte_off) {
 
 void adreno_pdc_write(uint32_t byte_off, uint32_t val) {
 	put32(ADRENO_PDC_VA + byte_off, val);
+}
+
+/* --- GCC (global clock controller, 0x00100000): byte offsets --- */
+uint32_t adreno_gcc_read(uint32_t byte_off) {
+	return get32(ADRENO_GCC_VA + byte_off);
+}
+
+void adreno_gcc_write(uint32_t byte_off, uint32_t val) {
+	put32(ADRENO_GCC_VA + byte_off, val);
 }
 
 /* Read-modify-write with Linux gmu_rmw semantics: reg = (reg & ~mask) | val.

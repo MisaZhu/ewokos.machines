@@ -40,7 +40,25 @@ platform_headers:
 	@cp -p ../include/q8b_platform.h $(BUILD_DIR)/include/
 	@cp -p ../include/q8b_adreno.h $(BUILD_DIR)/include/
 
-basic_sys: kernel_heads ewok_heads platform_headers
+# Adreno 690 firmware (GMU / SQE / board-selected signed zap). Redistributable
+# Qualcomm blobs, see ../firmware/adreno/README.md.  Installed into the
+# rootfs as /etc/firmware/adreno/ for libadreno's vfs_readfile() loader.
+ADRENO_FW_SRC = $(MAKEINC_DIR)/../firmware/adreno
+firmware_install:
+	@if [ ! -f "$(ADRENO_FW_SRC)/a660_gmu.bin" ]; then \
+		echo "ERROR: $(ADRENO_FW_SRC)/a660_gmu.bin missing"; \
+		echo "       see machines/q8b/firmware/adreno/README.md"; \
+		exit 1; \
+	fi
+	@mkdir -p $(TARGET_DIR)/etc/firmware/adreno
+	@cp -p $(ADRENO_FW_SRC)/a660_gmu.bin $(ADRENO_FW_SRC)/a660_sqe.fw \
+		$(TARGET_DIR)/etc/firmware/adreno/
+	@cp -p $(ADRENO_FW_SRC)/LICENSE.qcom $(TARGET_DIR)/etc/firmware/adreno/
+	@mkdir -p $(TARGET_DIR)/etc/firmware/adreno/sc8280xp/LENOVO/21BX
+	@cp -p $(ADRENO_FW_SRC)/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn \
+		$(TARGET_DIR)/etc/firmware/adreno/sc8280xp/LENOVO/21BX/
+
+basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 	rm -f $(BUILD_DIR)/lib/libbsp.a
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
 	$(MAKE) -C libs
@@ -55,7 +73,7 @@ network_sys: basic_sys
 # Q8B uses the SC8280XP multi-port DWC3 core through the shared polled xHCI
 # stack.  g2dd is the shared 2D/3D offload daemon; on q8b it links libbsp +
 # libadreno (BSP_LFLAGS) and forwards into the Adreno 690 A2D/CS back ends,
-# which stay behind the ADRENO_ENABLE=1 runtime opt-in set in etc/*/init.rd.
+# enabled directly in each init.rd before any display/desktop clients start.
 # Keep Bluetooth out until its board-specific transport lands.
 GUI_DRIVERS = displaymand consoled fontd g2dd usbhostd hid_keybd hid_moused \
 	usbfat32fsd
@@ -98,7 +116,7 @@ endif
 SD = ../root_$(ARCH).img
 sd:
 	@if [ -z "$$(ls -A $(FINAL_DIR) 2>/dev/null)" ]; then \
-		echo "ERROR: $(FINAL_DIR) is empty -- run 'make basic' or 'make gui' first"; \
+		echo "ERROR: $(FINAL_DIR) is empty -- run 'make x', 'make gui' or 'make basic' first"; \
 		exit 1; \
 	fi
 	@echo "\n==== building ${FS} rootfs image ($(ROOTFS_MB) MB) ===="
@@ -108,4 +126,4 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 
-.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers clean sd
+.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers firmware_install clean sd
