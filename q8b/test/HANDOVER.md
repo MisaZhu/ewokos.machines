@@ -5,23 +5,38 @@
 User requested default system rendering through g2dd, compilation and commit.
 This authorizes the full `x` desktop build, superseding the earlier gui-only
 build restriction for this work. Both graphical-console and desktop init
-scripts now start UART first, then synchronously run shared `/etc/g2d.rd`.
-It sets `ADRENO_ENABLE=1` and starts one g2dd through `ipcserv`, whose
+scripts now start UART first, then directly set `ADRENO_ENABLE=1` and
+start one g2dd through `ipcserv` in each `init.rd`, whose
 readiness wait completes before display/Graph/desktop clients are launched.
 The top-level Q8B `rootfs` target now builds `system x` rather than `gui`.
 The official GMU/SQE and board-specific signed zap are packaged unchanged.
 
 Validation: `make -C machines/q8b/kernel`, `make -C machines/q8b/system x`
 and `make -C machines/q8b/system sd` succeeded. The 112 MiB ext3 image contains the xwin
-init, shared GPU startup script, desktop binaries, daemon and firmware.
-Built g2dd/g2dtest/fbdisplayd hashes match the hardware-tested artifacts in
-the following section. Build logs are `/tmp/q8b-default-g2dd-x-20261022.log`
-and `/tmp/q8b-default-g2dd-sd-20261022.log` on the host; the kernel log is
-`/tmp/q8b-default-g2dd-kernel-20261022.log`. The new default
+init with direct GPU startup, desktop binaries, daemon and firmware.
+The initial build's g2dd/g2dtest/fbdisplayd hashes matched the hardware-tested
+artifacts in the following section. After the direct-init revision, kernel,
+g2dtest and fbdisplayd remain identical. Relinked g2dd MD5 is now
+`1368f55562e809044b17e60809746349`: the firmware loader/parser functions
+changed link order; driver sources are unchanged. This relinked binary has
+not been run on the board. Current build logs are
+`/tmp/q8b-direct-init-x-20261022.log`,
+`/tmp/q8b-direct-init-sd-20261022.log` and
+`/tmp/q8b-direct-init-kernel-20261022.log` on the host. Image extraction
+verified the direct startup order, absence of `g2d.rd`, daemon/client bytes
+and all three unchanged official firmware files. The new default
 desktop boot has NOT been run on the board. No board daemon was replaced,
 no second GPU initialization was performed, and no PXE/storage was changed.
 On a normal new-image boot, run `/bin/g2dtest` against the existing
 `/dev/g2d`; never launch `/tmp/g2dd` in addition to the init-started daemon.
+
+User subsequently requested direct init commands and committing all Q8B
+GPU/NVMe changes onto `machines/main`. The separate `g2d.rd` was removed;
+the existing reviewed GPU/NVMe commit is incorporated into main, followed
+by the direct-init correction. ISO/Ventoy, x86 and local board helper
+changes remain in the worktree. The root repository's primary branch is
+named `master`; matching shared GPU code and the machines gitlink are
+committed there, completing its existing GPU/NVMe merge.
 
 ## Latest state (2026-10-22 20:12, g2dtest/API/display integration all PASS)
 

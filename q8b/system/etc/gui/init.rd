@@ -8,7 +8,8 @@
 @/bin/ipcserv /drivers/nulld             /dev/null
 
 @/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
-@/bin/shell /etc/g2d.rd
+@export ADRENO_ENABLE=1
+@/bin/ipcserv /drivers/q8b/g2dd          /dev/g2d
 #@/bin/ipcserv /drivers/q8b/fand          /dev/fan
 
 @/bin/ipcserv /drivers/displaymand

@@ -3,7 +3,8 @@
 Build the default desktop with `make -C machines/q8b/system x`, then package
 it with `make -C machines/q8b/system sd`; `make -C machines/q8b rootfs`
 does both. The optional `gui` target builds the graphical console instead.
-Both profiles start g2dd through `/etc/g2d.rd` before display/Graph clients.
+Both profiles set `ADRENO_ENABLE=1` and start g2dd directly in `init.rd`
+through `ipcserv`, before display/Graph clients.
 On a normal boot, use `/bin/g2dtest` against that daemon: do not launch a
 second g2dd. Full desktop compilation is now authorized by the user's
 request to enable default g2dd rendering and compile/commit the system.

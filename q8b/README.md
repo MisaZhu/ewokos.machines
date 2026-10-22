@@ -403,10 +403,10 @@ QCOM 专属驱动不上机不验证。
 
 ## Adreno 690 bring-up
 
-GPU 驱动在 `system/libs/adreno/`（`libadreno.a`）。正常启动由
-`/etc/g2d.rd` 设置 `ADRENO_ENABLE=1`，通过 `ipcserv` 启动唯一的
+GPU 驱动在 `system/libs/adreno/`（`libadreno.a`）。正常启动在
+`init.rd` 中直接设置 `ADRENO_ENABLE=1`，通过 `ipcserv` 启动唯一的
 `/drivers/q8b/g2dd /dev/g2d`，等待服务就绪后再启动显示服务和桌面。
-`gui` 与 `x` 共用此配置；顶层 `make rootfs` / `make payload` 默认构建 `x`。
+`gui` 与 `x` 的 `init.rd` 均包含这两条命令；顶层 `make rootfs` / `make payload` 默认构建 `x`。
 Graph 与显示库通过 g2dd 接口提交受支持的绘制与 GOP 拷贝；未实现的操作
 返回不支持，由客户端执行 CPU 回退。已提交任务的超时/故障会停止调用方并
 保留缓冲区，不能当作普通 CPU 回退。寄存器序列按 Linux v6.6/v6.12

@@ -8,7 +8,8 @@
 # Serial logging is available during GPU initialization. Wait for g2dd
 # before starting display/Graph clients so their first canvas can use it.
 @/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
-@/bin/shell /etc/g2d.rd
+@export ADRENO_ENABLE=1
+@/bin/ipcserv /drivers/q8b/g2dd          /dev/g2d
 
 # PCIe3a/TC9563 Ethernet and DHCP network stack.
 @/bin/ipcserv /drivers/q8b/net           /dev/eth0
