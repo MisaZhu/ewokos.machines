@@ -278,12 +278,12 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
  * (never truncated) so the caller falls back to its CPU path.  MAX_QPU is in
  * 32-bit words (2 words per V3D 7.1 QPU instruction). */
 #define V3D_3D_MAX_PROGS       16u    /* simultaneously cached programs       */
-#define V3D_3D_PROG_MAX_QPU    32768u /* QPU 32-bit words per stage (wave's
+#define V3D_3D_PROG_MAX_QPU    131072u /* QPU 32-bit words per stage (wave's
                                         * faithful ES310 ocean compiles to
                                         * ~22930 cs words; 4096 declined it).
                                         * Costless to raise: QPU text is dma-
                                         * allocated by ACTUAL word count.      */
-#define V3D_3D_PROG_MAX_UNIF   8192u  /* uniform-stream words per stage (wave
+#define V3D_3D_PROG_MAX_UNIF   16384u  /* uniform-stream words per stage (wave
                                         * cs embeds 1428; the faithful ED-209
                                         * shadertoy raymarcher folds its many
                                         * constants into fs 4278 / cs 4341, so
@@ -292,6 +292,10 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                         * _progs[16] BSS to ~5 MB (10 inline
                                         * MAX_UNIF arrays/slot) + 32 KB/stage
                                         * dma; V3D has no hw cap near this).   */
+/* Solar's unchanged shader needs 74016 QPU words and 10521 uniform entries.
+ * These bounds supersede the historical sizing notes above: the 16-slot
+ * uniform cache now occupies 10 MiB plus metadata, with 64 KiB DMA per stage.
+ * QPU storage remains allocated by actual word count; over-cap uploads decline. */
 #define V3D_3D_PROG_MAX_ATTRS  64u    /* VS attribute / driver-location slots */
 #define V3D_3D_PROG_MAX_INPUTS 64u    /* FS input (varying) slots             */
 

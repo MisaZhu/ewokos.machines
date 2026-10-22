@@ -194,7 +194,7 @@ void v3d_g2d_stats_read(v3d_g2d_stats_t *out, int reset)
  * the window keeps those jobs free of a scheduler round trip while a
  * long one (full-screen blur, big rotate) no longer pins a core. */
 static volatile uint32_t _maint_ranged = 1;
-static volatile uint32_t _spin_us = 1000;
+static volatile uint32_t _spin_us = 50;
 /* Wall-clock ceiling of one CSDDONE wait once parking: the previous
  * 2,000,000-poll spin took roughly this long on BCM2711. */
 #define G2D_WAIT_MAX_US 500000u

@@ -538,8 +538,17 @@ static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
                                  uint32_t tiling, uint32_t ub_pad,
                                  uint32_t depth, uint32_t arrstride64)
 {
-    uint32_t width  = w ? w - 1u : 0u;
-    uint32_t height = h ? h - 1u : 0u;
+    /* image_width/image_height are the TMU's uv->texel scale.  An on-device
+     * texel probe (macgl `probe` mode over a 4x512 LINEARTILE atlas) measured
+     * the effective scale as exactly 3 x 511 = (w-1) x (h-1) with a 100% fit
+     * over 5328 samples, i.e. this silicon uses the stored field DIRECTLY as
+     * the multiplier and does NOT add 1 the way the gallium "field = dim - 1"
+     * convention assumes.  Storing w-1/h-1 therefore mis-scaled every texture2D
+     * fetch in a compiled compute draw (col >= 2 and row >= h/2 landed on the
+     * neighbouring texel), corrupting lookup-table reads.  Store the true
+     * dimensions so floor(uv * dim) resolves the requested texel. */
+    uint32_t width  = w;
+    uint32_t height = h;
     uint32_t uif = (tiling == V3D_3D_TEX_TILING_UIF_NO_XOR ||
                     tiling == V3D_3D_TEX_TILING_UIF_XOR);
 
@@ -551,8 +560,8 @@ static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
      * image, layer_size/64 for a cubemap staged as a 6-layer array (mesa
      * lowers a samplerCube TMU fetch to a 2D-array + face-index sample). */
     rec_set_bits(rec,  33,  56, arrstride64); /* array_stride_64_byte_aligned */
-    rec_set_bits(rec,  58,  71, width);       /* image_width  = w - 1      */
-    rec_set_bits(rec,  72,  85, height);      /* image_height = h - 1      */
+    rec_set_bits(rec,  58,  71, width);       /* image_width  = w (TMU scale) */
+    rec_set_bits(rec,  72,  85, height);      /* image_height = h (TMU scale) */
     rec_set_bits(rec,  86,  99, depth ? depth - 1u : 0u); /* image_depth */
     rec_set_bits(rec, 100, 106, 4u);          /* texture_type = RGBA8      */
     rec_set_bits(rec, 107, 107, uif);         /* extended (level-0 fields) */

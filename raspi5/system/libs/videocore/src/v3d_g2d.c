@@ -1497,7 +1497,6 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
-    uint32_t poll_limit;
     uint32_t seq0 = 0;
     int use_irq, done;
     int kern = -1;
@@ -1511,8 +1510,6 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     /* POLL_IRQ rides on top of the caller's spin/pace choice: if the irq
      * is off or was retired between the caller's check and here, the
      * dispatch simply waits the way it would have without the flag. */
-    poll_limit = (flags & V3D_G2D_POLL_YIELD) ?
-                 CSD_POLL_YIELD_LIMIT : CSD_POLL_SPIN_LIMIT;
 
     /* select the preloaded kernel staging: no code is ever copied at
      * dispatch time - the CSD fetches the kernel straight from the dma
@@ -1665,19 +1662,20 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
         /* A long job polls once per scheduler frame (about 1 ms at
          * timer_freq=1024), with a 256-frame timeout comparable to the
          * short job's spin bound. */
-        for (i = 0; i < poll_limit; i++) {
-            if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
+        uint64_t start = g2d_now_ns();
+        for (;;) {
+            if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
+                done = 1;
                 break;
-            if (flags & V3D_G2D_POLL_YIELD)
-                usleep(500);    /* one scheduler frame (~976us tick): >200 so it
-                                 * parks instead of busy-spinning (libc spins for
-                                 * <=200us), <one tick so it wakes on the first
-                                 * decrement.  usleep(1000) would round up to two
-                                 * ticks; sched_yield() would not pace at all. */
+            }
+            uint64_t elapsed = g2d_now_ns() - start;
+            if (elapsed >= CSD_IRQ_WAIT_LIMIT_NS)
+                break;
+            if ((flags & V3D_G2D_POLL_YIELD) || elapsed >= 50000ull)
+                usleep(500);
             else
                 g2d_poll_hint();
         }
-        done = i < poll_limit;
     }
     t2 = g2d_now_ns();
     _stats.exec_ns += t2 - t1;
@@ -1754,7 +1752,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
         _v3d + ((V3D_CORE0_OFF + CSD_QUEUED_CFG0) / 4);
     uint32_t cfg[8] = { 0 };
     uint32_t i;
-    uint32_t poll_limit;
     uint32_t seq0 = 0;
     uint32_t num_wgs, wgs_per_sg, batches_per_sg, whole_sgs, rem_wgs;
     uint32_t num_batches;
@@ -1777,12 +1774,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
      * the 2D-op default so a wedged block still fails fast for the desktop. */
     budget_ns = job->budget_ms ? (uint64_t)job->budget_ms * 1000000ull
                                : CSD_IRQ_WAIT_LIMIT_NS;
-    if (!(flags & V3D_G2D_POLL_YIELD))
-        poll_limit = CSD_POLL_SPIN_LIMIT;
-    else if (job->budget_ms == 0)
-        poll_limit = CSD_POLL_YIELD_LIMIT;
-    else
-        poll_limit = (uint32_t)(budget_ns / 500000ull);   /* usleep(500) slices */
 
     /* mesa v3d_csd_choose_workgroups_per_supergroup, except for the
      * 16-aligned case: mesa stops at one workgroup per supergroup there
@@ -1916,15 +1907,20 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             _csd_irq_miss_run = 0;
         }
     } else {
-        for (i = 0; i < poll_limit; i++) {
-            if (v3d_core()[INT_STS / 4] & INT_CSD_DONE)
+        uint64_t start = g2d_now_ns();
+        for (;;) {
+            if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
+                done = 1;
                 break;
-            if (flags & V3D_G2D_POLL_YIELD)
+            }
+            uint64_t elapsed = g2d_now_ns() - start;
+            if (elapsed >= budget_ns)
+                break;
+            if ((flags & V3D_G2D_POLL_YIELD) || elapsed >= 50000ull)
                 usleep(500);
             else
                 g2d_poll_hint();
         }
-        done = i < poll_limit;
     }
     t2 = g2d_now_ns();
     _stats.exec_ns += t2 - t1;

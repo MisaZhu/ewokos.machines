@@ -45,6 +45,9 @@ v3d_nir_options(void)
       s_nir_options.float_mul_add32 = (nir_float_muladd_support)0;
       s_nir_options.has_fsub = true;   /* V3D emits fsub/isub natively */
       s_nir_options.has_isub = true;
+      /* Constant integer division can introduce imul_high/umul_high, which
+       * the V3D backend must expand through nir_lower_alu before emission. */
+      s_nir_options.lower_mul_high = true;
       s_nir_options.lower_fdiv = true;
       s_nir_options.lower_fsqrt = true;
       s_nir_options.lower_fpow = true;

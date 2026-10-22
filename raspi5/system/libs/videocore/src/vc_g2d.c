@@ -152,7 +152,7 @@ static uint32_t _g2d_band_bytes = 1024u * 1024u;
  * run lock and _fill_alpha_lock are pthread mutexes now (waiters park),
  * which removes that mechanism; 1 ms is the default again pending the
  * same g2dtest A/B (irqus 0 vs 1000: PERF us/frame, stat exec, miss). */
-static uint32_t _g2d_irq_budget_us = 1000u;
+static uint32_t _g2d_irq_budget_us = 50u;
 
 /* `big <KB>` / `band <KB>`: set (or with no value, show) the banding
  * threshold and the per-band budget in KiB; 0 KB threshold bands every
