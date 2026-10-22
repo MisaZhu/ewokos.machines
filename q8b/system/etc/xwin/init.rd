@@ -5,11 +5,10 @@
 @/bin/ipcserv /drivers/nulld             /dev/null
 @/bin/ipcserv /drivers/logd              /dev/log
 
-# Adreno 690 GPU offload: g2dd only touches the GPU/GMU/SMMU MMIO when
-# ADRENO_ENABLE=1 is in its environment; bring-up result is reported in klog
-# ("q8b g2d: adreno bring-up ..."), failure falls back to CPU rendering.
-@export ADRENO_ENABLE=1
-@/bin/ipcserv /drivers/q8b/g2dd          /dev/g2d
+# Serial logging is available during GPU initialization. Wait for g2dd
+# before starting display/Graph clients so their first canvas can use it.
+@/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
+@/bin/shell /etc/g2d.rd
 
 # PCIe3a/TC9563 Ethernet and DHCP network stack.
 @/bin/ipcserv /drivers/q8b/net           /dev/eth0
@@ -21,7 +20,6 @@
 @/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/hid0
 @/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/hid0
 
-@/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
 

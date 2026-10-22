@@ -52,10 +52,11 @@ typedef struct {
 	int      smmu_ready;      /* CB0 (GPU) identity map programmed       */
 	int      smmu_gmu_ready;/* CB1 (GMU) firmware map programmed         */
 	uint32_t pgshift;         /* 12 (4K) or 16 (64K), from GR0_ID1      */
-	uint32_t numpage;         /* global pages before CB0 (2 on MMU-500) */
+	uint32_t numpage;         /* global pages before CB0, from ID1      */
 	uint32_t num_cb;          /* context banks, from GR0_ID1.NUMCB      */
 	uint32_t cb0_page;        /* page index of CB0 = numpage + 0        */
 	adreno_bo_t pgtable;      /* CB0 LPAE stage-1 root (L1), identity   */
+	adreno_bo_t cb0_pt_pool;  /* CB0 L2/L3 tables for privileged pages */
 	adreno_bo_t gmu_pt_pool;  /* bump pool for CB1 L1/L2/L3 tables      */
 	adreno_bo_t gmu_pgtable;  /* CB1 LPAE stage-1 root (L1)             */
 	uint64_t ttbr0;           /* programmed CB0 TTBR0 value (PA | ASID) */
@@ -75,6 +76,7 @@ typedef struct {
 	int      wedged;          /* a submitted job never retired / faulted:
 	                             every later submit declines instantly   */
 	adreno_ring_t ring;
+	adreno_bo_t rptr_shadow;  /* privileged HW-written RB read pointer */
 
 	/* --- GPU core (adreno_a6xx.c) --- */
 	int      gpu_ready;       /* hw_init done, submissions accepted     */
@@ -90,6 +92,17 @@ typedef struct {
 /* The single process-wide device instance (adreno_a6xx.c owns it). */
 adreno_dev_t* adreno_dev(void);
 
+/* Runtime opt-in/config parser used by g2dd and fixed platform settings. */
+int adreno_flag(const char *name);
+int adreno_cfg_int(const char *name, int def);
+
+int  adreno_rpmh_interconnect_vote(void);
+int  adreno_rpmh_scm_vote(void);
+int  adreno_rpmh_arc_vote(const char *id, uint32_t level, uint32_t *vote);
+
+int  adreno_wdt_arm(unsigned seconds);
+void adreno_wdt_disable(void);
+
 /* Allocate a GPU-visible uncached buffer from the dma pool.  Returns 0 on
    success (bo->va/pa/size filled), negative on failure.  block_id 0 is the
    shared sys_dma pool the q8b BSP already uses (see xhci.c). */
@@ -98,6 +111,17 @@ void adreno_bo_free(adreno_bo_t *bo);
 
 /* --- module entry points (each in its own .c) --- */
 int adreno_gpucc_init(void);            /* GMU/hub clock enables (adreno_gpucc.c) */
+int adreno_gpucc_validate_runtime(void); /* verify vote-controlled NoC clocks */
+/* Enable GPU_CC_GX_GMU_CLK.  Must run only after GPU_SET OOB has made the GMU
+   power the GX rail; enabling it earlier leaves the branch halted because its
+   power domain is off. */
+int adreno_gpucc_gx_clk_enable(void);
+
+/* Vote the RPMh "gfx.lvl" power domain (the GPUCC's parent domain in the DT).
+   Must run before adreno_gpucc_init(): it mirrors gpucc-sc8280xp.c probe()'s
+   pm_runtime_get_sync() and is what brings the GPU NoC ports out of collapse.
+	Returns 0 when every required vote was accepted, negative otherwise. */
+int adreno_rpmh_gfx_vote(void);
 int adreno_smmu_init(adreno_dev_t *d);
 void adreno_smmu_dump_fault(adreno_dev_t *d);
 /* Program CB1 (the GMU context bank) with the firmware-fixed iova map for the
@@ -105,11 +129,14 @@ void adreno_smmu_dump_fault(adreno_dev_t *d);
    adreno_smmu_init() and after the GMU BOs are allocated. */
 int adreno_smmu_gmu_cb_init(adreno_dev_t *d);
 int adreno_gmu_init(adreno_dev_t *d);
+int adreno_gmu_gpu_set(void);
+void adreno_gmu_gpu_clear(void);
 int adreno_ring_init(adreno_dev_t *d);
 /* Program the CP engine onto the ring allocated by adreno_ring_init() and run
    the a6xx_cp_init() CP_ME_INIT handshake.  Must run AFTER adreno_a6xx.c has
    written CP_RB_BASE / CP_RB_CNTL / CP_SQE_INSTR_BASE / CP_SQE_CNTL=1. */
 int adreno_ring_cp_init(adreno_dev_t *d);
+int adreno_ring_exit_secure(adreno_dev_t *d);
 int adreno_a6xx_init(adreno_dev_t *d);   /* top-level: calls the above */
 
 /* Result codes shared by adreno_ring_submit and every adreno_2d_* /
@@ -156,6 +183,25 @@ int adreno_3d_init(void);
    engine.  There is no CPU path here.  See adreno_3d.c for the numbered
    hardware-validation gaps. */
 int adreno_3d_ready(void);
+
+/* Exact g2d nearest sampling. endpoints selects Q15 corner-preserving
+   SCALE_TO; zero selects exact rational cropped BLIT sampling. */
+int adreno_compute_scale(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                         int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+                         int endpoints);
+int adreno_compute_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                         int32_t dx, int32_t dy, int32_t dw, int32_t dh,
+                         uint8_t alpha);
+int adreno_compute_fill_alpha(uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                             int32_t x, int32_t y, int32_t w, int32_t h,
+                             uint32_t color);
+int adreno_compute_rotate(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                          uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                          int32_t degree, int32_t cos_q14, int32_t sin_q14);
 int adreno_3d_program_load(const void *blob, uint32_t size);
 int adreno_3d_program_free(int32_t handle);
 

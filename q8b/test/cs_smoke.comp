@@ -1,0 +1,12 @@
+#version 310 es
+precision highp int;
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(std430, binding=0) writeonly buffer Target { uint pixel[]; };
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    if (x >= 64u || y >= 64u) return;
+    pixel[y * 64u + x] = 0xff000000u |
+        (((3u*x + 7u*y) & 255u) << 16) |
+        (((5u*x + y) & 255u) << 8) | ((x + 11u*y) & 255u);
+}

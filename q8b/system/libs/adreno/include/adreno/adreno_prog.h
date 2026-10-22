@@ -83,10 +83,12 @@
  *   names the buffers (binding 0 = render target by convention, then the
  *   geometry rasterizer's pos/nrm/depth/tex/... buffers in request order).
  *
- * NOTHING HERE IS HARDWARE-VALIDATED ON SC8280XP (QEMU models no Adreno).  The
- * contract is a faithful transcription of the ir3_shader_variant fields turnip's
- * tu6_emit_cs_config / tu6_emit_xs / tu6_emit_xs_constants consume; the daemon
- * side reproduces that emit order.  See adreno_3d.c for the validation gaps.
+ * Q8B hardware tests on 2026-10-22 verified fullscreen compute SSBO writes,
+ * pushed per-draw uniforms, strided bounds and A2D/CS transitions through
+ * 720x720. This does not validate every field or shader feature (QEMU models
+ * no Adreno). The contract follows the ir3_shader_variant fields consumed by
+ * tu6_emit_cs_config / tu6_emit_xs / tu6_emit_xs_constants. See
+ * test/HANDOVER.md for exact tested artifacts and remaining gaps.
  */
 #ifndef ADRENO_PROG_H
 #define ADRENO_PROG_H

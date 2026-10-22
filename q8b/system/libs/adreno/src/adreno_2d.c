@@ -64,11 +64,12 @@
  *         ... CP_BLIT ...
  *         CP_WAIT_FOR_IDLE; CP_REG_RMW(RB_DBG_ECO_CNTL, and=~BIT24, or=0)
  *
- *   3. RB_CCU_CNTL is written as 0.  Mesa computes it from screen->config_sysmem
- *      (GMEM CCU color/depth offsets) which EwokOS does not have.  With no GMEM
- *      configured every offset field is 0 and both cache-size fields are
- *      CCU_CACHE_SIZE_FULL(0), matching Mesa's sysmem color_cache_size; the CCU
- *      only caches GMEM, so a pure-sysmem blit is unaffected regardless.
+ *   3. Sysmem A2D still uses the CCU, backed by GMEM.  Match Mesa's A690
+ *      config_sysmem: 8 CCUs, 64 KiB depth and 64 KiB color per CCU,
+ *      depth offset 0, color offset 0x80000, both full size.  Clean CCU
+ *      color/depth before invalidation and explicitly clean color after
+ *      CP_BLIT before the submission's UCHE fence.  Hardware validation
+ *      of this corrected cache sequence is pending.
  *
  *   4. Rotate is limited to 0 and 180 degrees.  Mesa only ever derives
  *      ROTATE_0 / HFLIP / VFLIP / 180 from source-vs-dest mirroring; there is
@@ -96,8 +97,8 @@
  *   7. adreno_2d_blur() is a bilinear scale-cascade (mip) blur, NOT a per-tap
  *      weighted gaussian.  The A2D has no convolution op (CP_BLIT is only
  *      FILL/COPY/SCALE) and no kernel-weight register, so an exact gaussian
- *      needs a compute/fragment shader (M3-blocked: no GLSL->a6xx ir3
- *      compiler in-tree).  It instead halves the rect L times into a scratch
+ *      needs a compute/fragment shader. The public Gaussian API declines
+ *      until that exact kernel exists. This private approximation halves the rect into a scratch
  *      mip chain with the documented bilinear FILTER on BLIT_OP_SCALE ("used
  *      for mipmap generation") and bilinear-upsamples the chain back, which
  *      converges to a gaussian by repeated 2-tap averaging (CLT).  This is a
@@ -131,12 +132,12 @@ int adreno_2d_ready(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Indirect-buffer builder.  A blit is at most 35 dwords (copy path);   */
-/* 64 gives comfortable headroom.  ib_w() is overflow-safe: if the      */
+/* Indirect-buffer builder. Cache events include timestamp addresses; */
+/* 128 leaves room for both paths. ib_w() is overflow-safe: if the      */
 /* buffer were ever too small the trailing CP_BLIT would be dropped and */
 /* the submit would simply do nothing rather than corrupt memory.       */
 /* ------------------------------------------------------------------ */
-#define IB_MAX 64u
+#define IB_MAX 128u
 
 struct ib {
 	uint32_t d[IB_MAX];
@@ -173,18 +174,42 @@ static void ib_pkt7(struct ib *b, uint32_t opcode, uint32_t cnt) {
 #define A2D_XY_MAX       0x3fff   /* 14-bit dest coord (inclusive max) */
 #define A2D_SRC_MAX      0x7fff   /* 15-bit src texture size           */
 
-/* Shared prologue: put the GPU in BLIT2DSCALE render mode and configure the
-   CCU for sysmem (no GMEM).  Mirrors fd6_blitter.cc emit_setup(): the
-   fd6_emit_flushes() CCU color/depth events are omitted (they resolve GMEM
-   caches we never populate). */
+/* Mesa fd6_event_write(A6XX): CCU clean events require a timestamp payload.
+   Use a separate word in the existing privileged scratch BO; this marker
+   is not the ring completion fence. The final fence orders the whole IB. */
+static void ib_ccu_clean(struct ib *b, uint32_t event) {
+	uint64_t marker = adreno_dev()->ring.scratch.iova + 16;
+	ib_pkt7(b, CP_EVENT_WRITE, 4);
+	ib_w(b, event | (1u << 30));  /* TIMESTAMP, no interrupt */
+	ib_w(b, (uint32_t)marker);
+	ib_w(b, (uint32_t)(marker >> 32));
+	ib_w(b, 0);
+}
+
+static void ib_event(struct ib *b, uint32_t event) {
+	ib_pkt7(b, CP_EVENT_WRITE, 1);
+	ib_w(b, event);
+}
+
+/* Mesa fd6_blitter.cc emit_setup() + fd6_gmem_cache.h config_sysmem.
+   A2D sysmem writes still pass through CCU; CACHE_FLUSH_TS alone is an
+   UCHE clean, not the required CCU color/depth clean. */
 static void ib_prologue(struct ib *b) {
+	ib_ccu_clean(b, PC_CCU_FLUSH_COLOR_TS);
+	ib_ccu_clean(b, PC_CCU_FLUSH_DEPTH_TS);
+	ib_event(b, PC_CCU_INVALIDATE_COLOR);
+	ib_event(b, PC_CCU_INVALIDATE_DEPTH);
+	ib_event(b, CACHE_INVALIDATE);
+
 	ib_pkt7(b, CP_SET_MARKER, 1);
 	ib_w(b, A6XX_SET_MARKER_BLIT2DSCALE);     /* RM6_BLIT2DSCALE, !uses_gmem */
 
 	ib_pkt7(b, CP_WAIT_FOR_IDLE, 0);          /* fd6_emit_gmem_cache_cntl() */
 
-	ib_pkt4(b, REG_A6XX_RB_CCU_CNTL, 1);      /* sysmem: all offsets/sizes 0 */
-	ib_w(b, 0);
+	ib_pkt4(b, REG_A6XX_RB_CCU_CNTL, 1);
+	/* A690: color follows 8 * 64 KiB depth cache. COLOR_OFFSET is
+	   shr12 in bits 23..31; depth offset/cache-size fields remain zero. */
+	ib_w(b, ((0x80000u >> 12) << 23));
 }
 
 /* Shared epilogue: trigger the blit.  emit_blit_fini() minus the cosmetic
@@ -192,6 +217,10 @@ static void ib_prologue(struct ib *b) {
 static void ib_blit_trigger(struct ib *b) {
 	ib_pkt7(b, CP_BLIT, 1);
 	ib_w(b, A6XX_BLIT_OP_SCALE);              /* CP_BLIT_0.OP = BLIT_OP_SCALE */
+	/* Make A2D's CCU writes visible to both CPU readback and a following
+	   texture fetch before adreno_ring_submit emits its UCHE fence. */
+	ib_ccu_clean(b, PC_CCU_FLUSH_COLOR_TS);
+	ib_pkt7(b, CP_WAIT_FOR_IDLE, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -295,7 +324,8 @@ int adreno_2d_fill(uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
 /* Copy / scale / rotate / blend core.  Follows emit_blit_texture_setup()*/
 /* + emit_blit_src() + emit_blit_dst() + emit_blit_fini().  Both surfaces*/
 /* are FMT6_8_8_8_8_UNORM linear; the src is sampled as a 2D texture     */
-/* (nearest for a 1:1 copy, bilinear when scaling).  degree is 0 or 180  */
+/* (nearest by default, explicitly linear for private mip blur).       */
+/* degree is 0 or 180                                                */
 /* only (gap #4).  pixel_cntl selects the RB_A2D_PIXEL_CNTL op: 0 =      */
 /* PIXEL_OP_DISABLED (straight overwrite, a copy), A2D_PIXEL_SRC_OVER =  */
 /* per-pixel source-over blend.  Returns 0 on success, negative on       */
@@ -305,10 +335,10 @@ static int a2d_copy_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
                    uint32_t src_pitch, int32_t sx, int32_t sy, int32_t sw,
                    int32_t sh, uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
                    uint32_t dst_pitch, int32_t dx, int32_t dy, int32_t dw,
-                   int32_t dh, int32_t degree, uint32_t pixel_cntl) {
+                   int32_t dh, int32_t degree, uint32_t pixel_cntl,
+                   uint32_t filter) {
 	struct ib b;
 	uint32_t blt_cntl, out_info, src_info, rotate;
-	uint32_t filter;
 	int ret;
 
 	if (!adreno_2d_ready())
@@ -342,9 +372,8 @@ static int a2d_copy_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	    (uint32_t)(dy + dh - 1) > A2D_XY_MAX)
 		return -1;
 
-	/* bilinear when scaling, nearest for a 1:1 copy (matches Mesa's
-	   info->filter == PIPE_TEX_FILTER_LINEAR choice for scaled blits). */
-	filter = (sw != dw || sh != dh) ? 1u : 0u;
+	/* The public g2d scale contract requires nearest sampling. Only the
+	   private mip-blur path explicitly requests linear filtering. */
 
 	/* --- control registers --- */
 	blt_cntl = A2D_BLT_ROTATE(rotate) |               /* solid_color = 0 */
@@ -430,7 +459,7 @@ int adreno_2d_copy(uint64_t src_phy, int32_t src_w, int32_t src_h,
                    int32_t dh, int32_t degree) {
 	return a2d_copy_blit(src_phy, src_w, src_h, src_pitch, sx, sy, sw, sh,
 	                     dst_phy, dst_w, dst_h, dst_pitch, dx, dy, dw, dh,
-	                     degree, 0);
+	                     degree, 0, 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -450,15 +479,15 @@ int adreno_2d_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
                     int32_t dh) {
 	return a2d_copy_blit(src_phy, src_w, src_h, src_pitch, sx, sy, sw, sh,
 	                     dst_phy, dst_w, dst_h, dst_pitch, dx, dy, dw, dh,
-	                     0, A2D_PIXEL_SRC_OVER);
+	                     0, A2D_PIXEL_SRC_OVER, 0);
 }
 
 /* ------------------------------------------------------------------ */
 /* Gaussian-style blur via a bilinear scale cascade (mip blur) - gap #7. */
 /*                                                                     */
 /* The A2D blitter has no convolution op and no kernel-weight register, */
-/* so an exact per-tap gaussian is not expressible (that needs a shader,*/
-/* M3-blocked on q8b).  It DOES have a bilinear FILTER on BLIT_OP_SCALE,*/
+/* so an exact per-tap gaussian needs a shader. This private mip helper */
+/* is not exposed through the public Gaussian API. The linear FILTER  */
 /* so the blur is built the way raspi's own GPU blur does it           */
 /* (downsample -> upsample, vc_g2d half-res path): halve the rect L    */
 /* times into a scratch mip chain, then bilinear-upsample the chain    */
@@ -539,7 +568,7 @@ int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
 			uint64_t d_phy = tmp_phy + lvl_off[i];
 			rc = a2d_copy_blit(s_phy, s_w, s_h, s_pitch, sx, sy, sw, sh,
 			                   d_phy, lvl_w[i], lvl_h[i], lvl_pitch[i],
-			                   0, 0, lvl_w[i], lvl_h[i], 0, 0);
+			                   0, 0, lvl_w[i], lvl_h[i], 0, 0, 1);
 			if (rc != ADRENO_OK)
 				return rc;
 			s_phy = d_phy; s_w = lvl_w[i]; s_h = lvl_h[i];
@@ -565,7 +594,7 @@ int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
 		rc = a2d_copy_blit(s_phy, lvl_w[i], lvl_h[i], lvl_pitch[i],
 		                   0, 0, lvl_w[i], lvl_h[i],
 		                   d_phy, d_w, d_h, d_pitch,
-		                   dx, dy, dw, dh, 0, 0);
+		                   dx, dy, dw, dh, 0, 0, 1);
 		if (rc != ADRENO_OK)
 			return rc;
 	}

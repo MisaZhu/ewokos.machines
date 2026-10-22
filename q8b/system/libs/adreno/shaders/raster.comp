@@ -1,0 +1,46 @@
+#version 310 es
+precision highp int;
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(std430, binding=0) readonly buffer Source { uint src[]; };
+layout(std430, binding=1) buffer Destination { uint dst[]; };
+uniform uvec4 uPitchShape;  /* src pitch, dst pitch, source width/height */
+uniform uvec4 uDestination; /* destination x/y/width/height */
+uniform ivec4 uOperation;   /* 0 solid source-over / 1 rotation; color/degree; Q14 cos/sin */
+void main() {
+    uvec2 xy=gl_GlobalInvocationID.xy;
+    if(any(greaterThanEqual(xy,uDestination.zw))) return;
+    uvec2 d=uDestination.xy+xy;
+    uint index=d.y*uPitchShape.y+d.x;
+    if(uOperation.x==0) {
+        uint color=uint(uOperation.y), a=color>>24;
+        if(a==0u) return;
+        if(a==255u) { dst[index]=color; return; }
+        uint old=dst[index], da=old>>24;
+        if(da==0u) { dst[index]=color; return; }
+        uvec3 rgb=uvec3(color&255u,(color>>8)&255u,(color>>16)&255u);
+        uvec3 bg=uvec3(old&255u,(old>>8)&255u,(old>>16)&255u);
+        uvec3 outRgb=(rgb*a+bg*(255u-a))/255u;
+        uint outA=da+(255u-da)*a/255u;
+        dst[index]=(outA<<24)|(outRgb.z<<16)|(outRgb.y<<8)|outRgb.x;
+        return;
+    }
+    ivec2 size=ivec2(uPitchShape.zw), p=ivec2(xy), s;
+    int degree=uOperation.y;
+    if(degree==0) s=p;
+    else if(degree==90) s=ivec2(p.y,size.y-1-p.x);
+    else if(degree==180) s=size-ivec2(1)-p;
+    else if(degree==270) s=ivec2(size.x-1-p.y,p.x);
+    else {
+        /* Exact CPU Q14 inverse mapping with its two floor shifts combined.
+           Doubled pixel centers avoid 64-bit products; all dimensions are
+           bounded to 16384 by the host, keeping the signed sums in range. */
+        ivec2 delta=2*p-(ivec2(uDestination.zw)-ivec2(1));
+        int c=uOperation.z, sn=uOperation.w;
+        s=ivec2((delta.x*c+delta.y*sn+size.x*16384)>>15,
+                (delta.y*c-delta.x*sn+size.y*16384)>>15);
+    }
+    uint color=0u;
+    if(all(greaterThanEqual(s,ivec2(0))) && all(lessThan(s,size)))
+        color=src[uint(s.y)*uPitchShape.x+uint(s.x)];
+    dst[index]=color;
+}

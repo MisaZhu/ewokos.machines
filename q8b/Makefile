@@ -30,7 +30,7 @@ stub: kernel
 	$(MAKE) -C $(KERNEL_DIR) efi SD_ROOTFS=$(SD_ROOTFS) MTFTP_FIRST=$(MTFTP_FIRST)
 
 rootfs:
-	$(MAKE) -C $(SYSTEM_DIR) gui
+	$(MAKE) -C $(SYSTEM_DIR) x
 	$(MAKE) -C $(SYSTEM_DIR) sd
 
 payload: stub rootfs

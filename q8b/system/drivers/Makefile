@@ -1,8 +1,8 @@
-BASIC_DIRS = uartd net sdprobe fand sdupdate
+BASIC_DIRS = uartd net sdprobe fand sdupdate espwrite nvprobe
 
 basic: $(BASIC_DIRS)
 
-GUI_DIRS = fbdisplayd
+GUI_DIRS = fbdisplayd gpupas gpusmoke gpushader
 
 gui: $(GUI_DIRS)
 

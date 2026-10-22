@@ -7,8 +7,8 @@
  *   - one kernel ringbuffer (RB0), 32 KB (MSM_GPU_RINGBUFFER_SZ, msm_gpu.h:311)
  *   - CP_RB_CNTL = MSM_GPU_RB_CNTL_DEFAULT (BUFSZ(ilog2(SZ/8)) |
  *     BLKSZ(ilog2(BLKSIZE/8))); A690 has hw_apriv so NO_UPDATE is NOT set and
- *     the hardware keeps CP_RB_RPTR live (a6xx_gpu.c:1399-1403).  We read that
- *     register for idle instead of programming an RPTR shadow.
+ *     the hardware writes a privileged RPTR shadow (a6xx_gpu.c:1102-1113,
+ *     1452-1463).  Idle and free-space checks read that shadow.
  *   - PKT7 (A6XX type-7) header: CP_TYPE7_PKT | count | parity(cnt) |
  *     opcode<<16 | parity(opcode)  (adreno_gpu.h OUT_PKT7, encoded by
  *     adreno_pm4.h ADRENO_PKT7).  The a3xx-style (7<<28)|(count&0x3fff)|
@@ -23,8 +23,9 @@
  *     (a6xx_gpu.c:1027-1049).
  *
  * CB0 (GPU) is identity-mapped by adreno_smmu_init(), so for every GPU-visible
- * buffer here bo.iova == bo.pa.  The dma pool is uncached, so the fence memory
- * the GPU writes is directly observable by the CPU without a cache flush.
+ * buffer here bo.iova == bo.pa.  On hw_apriv targets Linux maps the ring and
+ * RPTR shadow privileged; scratch and IB remain ordinary mappings.  The dma
+ * pool is uncached, so GPU writes are directly observable without a flush.
  *
  * CONCURRENCY: g2dd runs its dev_cntl handlers on concurrent ipc workers and
  * expects the back end to serialize GPU dispatch (g2dd.c header; raspi5 does
@@ -50,6 +51,7 @@
 #include <adreno/adreno_reg.h>
 #include <adreno/adreno_pm4.h>
 #include <adreno/a6xx_regs.h>
+#include <adreno/a6xx_gmu_regs.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
 #include <pthread.h>
@@ -120,10 +122,11 @@ static void rb_pkt7(adreno_ring_t *ring, uint32_t opcode, uint32_t cnt) {
 
 /* Free dwords before the write pointer would overrun the read pointer
    (adreno_gpu.c:951 ring_freewords). */
-static uint32_t ring_freewords(adreno_ring_t *ring) {
+static uint32_t ring_freewords(adreno_dev_t *d) {
+	adreno_ring_t *ring = &d->ring;
 	uint32_t size = ring->sizedwords;
 	uint32_t wptr = get_wptr(ring);
-	uint32_t rptr = gpu_read(REG_A6XX_CP_RB_RPTR) & (size - 1);
+	uint32_t rptr = ((volatile uint32_t *)d->rptr_shadow.va)[0] & (size - 1);
 	return (rptr + (size - 1) - wptr) % size;
 }
 
@@ -133,15 +136,16 @@ static void ring_flush(adreno_ring_t *ring) {
 	gpu_write(REG_A6XX_CP_RB_WPTR, get_wptr(ring));
 }
 
-/* Poll CP_RB_RPTR until the ring has fully drained (adreno_idle). */
+/* Poll the hardware RPTR shadow until the ring has drained (adreno_idle). */
 static int ring_wait_drained(adreno_dev_t *d) {
 	adreno_ring_t *ring = &d->ring;
 	uint32_t wptr = get_wptr(ring);
 	int i;
 	for (i = 0; i < RING_IDLE_TRIES; i++) {
-		uint32_t rptr = gpu_read(REG_A6XX_CP_RB_RPTR) & (ring->sizedwords - 1);
-		if (rptr == wptr) {
-			ring->rptr_gpu = rptr;
+		uint32_t shadow = ((volatile uint32_t *)d->rptr_shadow.va)[0] &
+			(ring->sizedwords - 1);
+		if (shadow == wptr) {
+			ring->rptr_gpu = shadow;
 			return 0;
 		}
 		proc_nsleep_precise(10000);
@@ -154,18 +158,66 @@ static int ring_wait_drained(adreno_dev_t *d) {
    CP_IB2(13) CP_IB1(14) CP_RB(15) CP_CACHE_FLUSH_TS(20) ATB_BUS_OVERFLOW(22)
    RBBM_HANG_DETECT(23) UCHE_OOB(24) UCHE_TRAP(25).  == 0x03d0e242. */
 #define A6XX_INT_MASK            0x03d0e242u
+#define A6XX_RBBM_STATUS_CP_AHB_BUSY_CX_MASTER (1u << 0)
+#define A6XX_RBBM_HANG_DETECT                 (1u << 23)
 #define A6XX_FAULT_MASK \
 	((1u << 1) | (1u << 6) | (1u << 9) | (1u << 13) | (1u << 14) | \
 	 (1u << 15) | (1u << 22) | (1u << 23) | (1u << 24) | (1u << 25))
 
+/* a6xx_idle(): consuming the ring is only the first half of completion.
+   Wait for GMU busy and RBBM busy to clear before checking hang status or
+   proceeding to the secure-mode transition. */
+static int cp_wait_idle(void) {
+	uint32_t busy = 0, status = 0, irq = 0;
+	int i;
+
+	klog("adreno_ring: CP idle check begin\n");
+	for (i = 0; i < RING_IDLE_TRIES; i++) {
+		busy = adreno_gmu_read(REG_A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS);
+		if (i == 0)
+			klog("adreno_ring: CP idle GMU busy=%08x\n", busy);
+		if (busy & A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS_GPUBUSYIGNAHB)
+			goto retry;
+		status = gpu_read(REG_A6XX_RBBM_STATUS);
+		if (i == 0)
+			klog("adreno_ring: CP idle RBBM status=%08x\n", status);
+		if (status & ~A6XX_RBBM_STATUS_CP_AHB_BUSY_CX_MASTER)
+			goto retry;
+		irq = gpu_read(REG_A6XX_RBBM_INT_0_STATUS);
+		if (!(irq & A6XX_RBBM_HANG_DETECT)) {
+			klog("adreno_ring: CP idle complete int0=%08x\n", irq);
+			return 0;
+		}
+	retry:
+		proc_nsleep_precise(10000);
+	}
+	klog("adreno_ring: CP idle timeout gmu=%08x rbbm=%08x int0=%08x\n",
+	     busy, status, irq);
+	return -1;
+}
+
 /* Return 0 if no latched GPU fault, negative and log the status otherwise. */
 static int ring_check_fault(adreno_dev_t *d) {
 	uint32_t status = gpu_read(REG_A6XX_RBBM_INT_0_STATUS) & A6XX_FAULT_MASK;
+	uint32_t cp_status;
 	if (status == 0)
 		return 0;
+	cp_status = gpu_read(REG_A6XX_CP_INTERRUPT_STATUS);
 	klog("adreno_ring: GPU fault status=%08x rbbm_status=%08x rptr=%08x wptr=%08x\n",
 	     status, gpu_read(REG_A6XX_RBBM_STATUS),
 	     gpu_read(REG_A6XX_CP_RB_RPTR), gpu_read(REG_A6XX_CP_RB_WPTR));
+	klog("adreno_ring: CP fault intr=%08x hw=%08x protect=%08x status1=%08x\n",
+	     cp_status, gpu_read(REG_A6XX_CP_HW_FAULT),
+	     gpu_read(REG_A6XX_CP_PROTECT_STATUS), gpu_read(REG_A6XX_CP_STATUS_1));
+	gpu_write(REG_A6XX_CP_SQE_STAT_ADDR, 1);
+	klog("adreno_ring: SQE stat1=%08x ib1=%08x:%08x rem=%08x "
+	     "ib2=%08x:%08x rem=%08x\n",
+	     gpu_read(REG_A6XX_CP_SQE_STAT_DATA),
+	     gpu_read(REG_A6XX_CP_IB1_BASE_HI), gpu_read(REG_A6XX_CP_IB1_BASE),
+	     gpu_read(REG_A6XX_CP_IB1_REM_SIZE),
+	     gpu_read(REG_A6XX_CP_IB2_BASE_HI), gpu_read(REG_A6XX_CP_IB2_BASE),
+	     gpu_read(REG_A6XX_CP_IB2_REM_SIZE));
+	adreno_smmu_dump_fault(d);
 	return -1;
 }
 
@@ -200,6 +252,16 @@ int adreno_ring_init(adreno_dev_t *d) {
 	}
 	ring->ib.iova = ring->ib.pa;
 
+	/* The hw_apriv RPTR shadow is allocated before CB0 initialization so its
+	   privileged PTE is present before the SMMU is enabled. */
+	if (!d->rptr_shadow.va || !d->rptr_shadow.iova) {
+		klog("adreno_ring: rptr shadow is not mapped\n");
+		adreno_bo_free(&ring->ib);
+		adreno_bo_free(&ring->scratch);
+		adreno_bo_free(&ring->bo);
+		return -4;
+	}
+
 	d->fence = 0;
 	return 0;
 }
@@ -211,9 +273,26 @@ int adreno_ring_init(adreno_dev_t *d) {
  */
 int adreno_ring_cp_init(adreno_dev_t *d) {
 	adreno_ring_t *ring = &d->ring;
+	volatile uint32_t *rb;
 
 	if (!ring->bo.va)
 		return -1;
+
+	rb = (volatile uint32_t*)ring->bo.va;
+	klog("adreno_ring: CP pre-init int0=%08x intr=%08x hw=%08x protect=%08x\n",
+	     gpu_read(REG_A6XX_RBBM_INT_0_STATUS),
+	     gpu_read(REG_A6XX_CP_INTERRUPT_STATUS),
+	     gpu_read(REG_A6XX_CP_HW_FAULT), gpu_read(REG_A6XX_CP_PROTECT_STATUS));
+	klog("adreno_ring: CP config sqe=%08x:%08x rb=%08x:%08x "
+	     "rptr=%08x:%08x shadow=%08x cntl=%08x sqectl=%08x apriv=%08x\n",
+	     gpu_read(REG_A6XX_CP_SQE_INSTR_BASE_HI),
+	     gpu_read(REG_A6XX_CP_SQE_INSTR_BASE),
+	     gpu_read(REG_A6XX_CP_RB_BASE_HI), gpu_read(REG_A6XX_CP_RB_BASE),
+	     gpu_read(REG_A6XX_CP_RB_RPTR_ADDR_HI),
+	     gpu_read(REG_A6XX_CP_RB_RPTR_ADDR),
+	     ((volatile uint32_t *)d->rptr_shadow.va)[0],
+	     gpu_read(REG_A6XX_CP_RB_CNTL), gpu_read(REG_A6XX_CP_SQE_CNTL),
+	     gpu_read(REG_A6XX_CP_APRIV_CNTL));
 
 	/* a6xx_cp_init(): CP_ME_INIT with 8 fixed dwords (a6xx_gpu.c:1027). */
 	rb_pkt7(ring, CP_ME_INIT, 8);
@@ -225,17 +304,52 @@ int adreno_ring_cp_init(adreno_dev_t *d) {
 	rb_emit(ring, 0x00000000);   /* no workarounds enabled             */
 	rb_emit(ring, 0x00000000);   /* pad rest with 0                    */
 	rb_emit(ring, 0x00000000);
+	klog("adreno_ring: CP_ME_INIT words %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+	     rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7], rb[8]);
 
 	ring_flush(ring);
+	/* Keep this marker independent of GX MMIO and the GPU-written shadow:
+	   a blocked read must not hide that the doorbell store returned. */
+	klog("adreno_ring: CP_ME_INIT doorbell store returned wptr=%08x\n",
+	     get_wptr(ring));
+	klog("adreno_ring: CP_ME_INIT doorbell posted wptr=%08x shadow=%08x\n",
+	     gpu_read(REG_A6XX_CP_RB_WPTR),
+	     ((volatile uint32_t *)d->rptr_shadow.va)[0]);
 	if (ring_wait_drained(d) != 0) {
 		klog("adreno_ring: CP_ME_INIT did not drain (rptr=%08x wptr=%08x)\n",
 		     gpu_read(REG_A6XX_CP_RB_RPTR), gpu_read(REG_A6XX_CP_RB_WPTR));
 		return -2;
 	}
+	klog("adreno_ring: CP_ME_INIT ring drained\n");
+	if (cp_wait_idle() != 0)
+		return -2;
+	klog("adreno_ring: CP_ME_INIT fault check begin\n");
 	if (ring_check_fault(d) != 0)
 		return -3;
 
 	d->cp_ready = 1;
+	klog("adreno_ring: CP_ME_INIT complete\n");
+	return 0;
+}
+
+/* Linux emits this directly on RB0 after zap authentication, before any
+ * ordinary IB submission or timestamp fence. */
+int adreno_ring_exit_secure(adreno_dev_t *d) {
+	int rc;
+	if (!d->cp_ready || !d->zap_done || d->wedged)
+		return ADRENO_E_DECLINED;
+	rb_pkt7(&d->ring, CP_SET_SECURE_MODE, 1);
+	rb_emit(&d->ring, 0);
+	ring_flush(&d->ring);
+	klog("adreno_ring: CP_SET_SECURE_MODE doorbell returned\n");
+	rc = ring_wait_drained(d);
+	if (!rc) rc = cp_wait_idle();
+	if (!rc) rc = ring_check_fault(d);
+	if (rc) {
+		ring_mark_wedged(d, "secure-mode transition failed");
+		return ADRENO_E_FAULT;
+	}
+	klog("adreno_ring: CP secure-mode exit complete\n");
 	return 0;
 }
 
@@ -268,7 +382,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	   its own wait - the GPU is already stuck, so this is a wedge, not a
 	   decline (the staging IB may still be in flight and must not be
 	   overwritten below). */
-	if (ring_freewords(ring) < 16) {
+	if (ring_freewords(d) < 16) {
 		if (ring_wait_drained(d) != 0) {
 			ring_mark_wedged(d, "ring did not drain before submit");
 			rc = ADRENO_E_TIMEOUT;

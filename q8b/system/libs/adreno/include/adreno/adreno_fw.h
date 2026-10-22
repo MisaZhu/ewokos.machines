@@ -5,7 +5,7 @@
  * on-disk formats and load semantics are taken verbatim from Linux v6.6
  * drivers/gpu/drm/msm/adreno:
  *
- *   1. GMU firmware  ("a690_gmu.bin")
+ *   1. GMU firmware  ("a660_gmu.bin")
  *      A flat list of `struct block_header` records (a6xx_gmu.c:673-744).
  *      Each record carries a target address and a word payload; the GMU
  *      boot code routes it to CM3 ITCM (0x0000_0000..0x0000_3fff),
@@ -22,21 +22,10 @@
  *      fetches it through REG_A6XX_CP_SQE_INSTR_BASE.  adreno_fw_load_sqe()
  *      simply returns the owned raw buffer + size.
  *
- *   3. Zap shader  ("a690_zap.mdt" + "a690_zap.bNN")
- *      Qualcomm split-ELF ("MBN/MDT") format: the .mdt file holds an ELF32
- *      header plus program headers but NO segment data; each PT_LOAD
- *      segment's bytes live in a sibling .bNN file (NN = phdr index).
- *      Linux loads them with qcom_mdt_get_size()/qcom_mdt_load() and then
- *      authenticates via qcom_scm_pas_auth_and_reset() (adreno_gpu.c:30-192).
- *      adreno_fw_load_zap() parses the .mdt, computes the total footprint
- *      and exposes each segment's paddr/memsz/filesz plus the owned .bNN
- *      buffer, so the caller can stage them into the reserved region at
- *      Q8B_ADRENO_ZAP_PHY.
- *
- *      NOTE: the zap path additionally requires a TrustZone SCM call
- *      (PAS auth-and-reset).  EwokOS q8b SCM/PAS support must be confirmed
- *      before the staged image can be authenticated; until then the loader
- *      only stages bytes and reports that the SCM step is outstanding.
+ *   3. Zap shader (Q8B DT: qcom/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn)
+ *      Monolithic ELF32 MBN with header, signed hash metadata and payload.
+ *      The loader returns packed metadata and validated relocatable payload
+ *      segments. The caller follows Linux qcom_mdt_load()/SCM PAS ordering.
  *
  * All loaders allocate through the EwokOS heap and must be released with
  * the matching adreno_fw_free_*().  File I/O goes through vfs_readfile().
@@ -51,7 +40,7 @@ extern "C" {
 #endif
 
 /* ------------------------------------------------------------------ */
-/* GMU firmware (a690_gmu.bin)                                         */
+/* GMU firmware (a660_gmu.bin)                                         */
 /* ------------------------------------------------------------------ */
 
 /* One `struct block_header` record from the GMU image.  Layout matches
@@ -72,7 +61,7 @@ typedef struct {
 	int               num_blocks;
 } adreno_gmu_fw_t;
 
-/* Load and parse a690_gmu.bin.  Returns 0 on success, negative errno on
+/* Load and parse a660_gmu.bin.  Returns 0 on success, negative errno on
    failure (file missing, truncated, or malformed block chain). */
 int  adreno_fw_load_gmu(adreno_gmu_fw_t *out);
 void adreno_fw_free_gmu(adreno_gmu_fw_t *fw);
@@ -98,28 +87,31 @@ int  adreno_fw_load_sqe(adreno_sqe_fw_t *out);
 void adreno_fw_free_sqe(adreno_sqe_fw_t *fw);
 
 /* ------------------------------------------------------------------ */
-/* Zap shader (a690_zap.mdt + a690_zap.bNN)                            */
+/* Board-selected signed zap shader (qcdxkmsuc8280.mbn)                */
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-	uint32_t       paddr;    /* physical addr (relative to region base) */
+	uint32_t       paddr;    /* ELF address; relocate by subtracting base_paddr */
 	uint32_t       memsz;    /* in-memory size                          */
-	uint32_t       filesz;   /* size present in the .bNN file           */
+	uint32_t       filesz;   /* payload bytes in the monolithic MBN    */
 	uint32_t       flags;    /* PF_X / PF_W / PF_R                      */
-	const uint8_t *data;     /* points into seg_bufs[i] (may be NULL)   */
-	uint8_t       *seg_buf;  /* owned .bNN buffer (may be NULL)         */
-	int            seg_size;
+	const uint8_t *data;     /* points into the owned MBN buffer       */
 } adreno_zap_seg_t;
 
 typedef struct {
-	uint8_t         *mdt;        /* owned .mdt buffer                   */
+	uint8_t         *mdt;        /* owned monolithic MBN buffer         */
 	int              mdt_size;
 	uint32_t         total_size; /* qcom_mdt_get_size() equivalent      */
 	uint32_t         base_paddr; /* lowest PT_LOAD p_paddr              */
 	adreno_zap_seg_t *segs;      /* owned PT_LOAD segment list          */
 	int              num_segs;
+	uint8_t         *metadata;   /* ELF header immediately followed by hashes */
+	uint32_t         metadata_size;
 } adreno_zap_fw_t;
 
+/* Pure ELF32 monolithic-MBN parser; owns copies on success, zero output on
+ * failure. Only relocatable images fitting Q8B's reserved region accepted. */
+int adreno_fw_parse_zap(const void *data, uint32_t size, adreno_zap_fw_t *out);
 int  adreno_fw_load_zap(adreno_zap_fw_t *out);
 void adreno_fw_free_zap(adreno_zap_fw_t *fw);
 

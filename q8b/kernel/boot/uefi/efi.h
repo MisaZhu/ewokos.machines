@@ -96,6 +96,8 @@ typedef struct {
     EFI_GUID_(0x5568e427,0x68fc,0x4f3d,0xac,0x74,0xca,0x55,0x52,0x31,0xcc,0x68)
 #define EFI_DTB_TABLE_GUID \
     EFI_GUID_(0xb1b621d5,0xf19c,0x41a5,0x83,0x0b,0xd9,0x15,0x2c,0x69,0xaa,0xe0)
+#define EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL_GUID \
+    EFI_GUID_(0x2f707ebb,0x4a1c,0x11d4,0x9a,0x38,0x00,0x90,0x27,0x3f,0xc1,0x4d)
 typedef char CHAR8;
 typedef void* EFI_EVENT;
 
@@ -313,6 +315,110 @@ struct EFI_SERIAL_IO_PROTOCOL_ {
 struct EFI_CONFIGURATION_TABLE_ {
     EFI_GUID VendorGuid;
     void* VendorTable;
+};
+
+/*
+ * PCI root bridge I/O protocol (UEFI spec 13.2).  Only the pieces needed to
+ * read PCI configuration space before ExitBootServices are modelled here;
+ * the function pointer order must match the spec exactly.
+ */
+typedef struct EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL_ EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL;
+
+typedef struct {
+    EFI_STATUS (*Read)(EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL* This, uint32_t Width,
+                       uint64_t Address, UINTN Count, void* Buffer);
+    EFI_STATUS (*Write)(EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL* This, uint32_t Width,
+                        uint64_t Address, UINTN Count, void* Buffer);
+} EFI_PCI_ROOT_BRIDGE_IO_ACCESS;
+
+typedef struct {
+    uint64_t ConfigSpaceBaseAddress;
+    uint32_t SegmentNumber;
+    uint32_t Supports;
+    uint32_t Attributes;
+    uint32_t ResourceBase;
+    uint32_t ResourceLength;
+} EFI_PCI_ROOT_BRIDGE_IO_CONFIGURATION;
+
+/* ACPI QWORD address space descriptor (large item, Desc 0x8A, Len 0x2B). */
+typedef struct {
+    uint8_t  Desc;
+    uint16_t Len;
+    uint8_t  ResType;
+    uint8_t  GenFlag;
+    uint8_t  SpecificFlag;
+    uint64_t AddrSpaceGranularity;
+    uint64_t AddrRangeMin;
+    uint64_t AddrRangeMax;
+    uint64_t AddrTranslationOffset;
+    uint64_t AddrLen;
+} __attribute__((packed)) EFI_ACPI_ADDRESS_SPACE_DESCRIPTOR;
+
+struct EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL_ {
+    EFI_HANDLE ParentHandle;
+    void* PollMem;
+    void* PollIo;
+    EFI_PCI_ROOT_BRIDGE_IO_ACCESS Mem;
+    EFI_PCI_ROOT_BRIDGE_IO_ACCESS Io;
+    EFI_PCI_ROOT_BRIDGE_IO_ACCESS Pci;
+    void* CopyMem;
+    void* Map;
+    void* Unmap;
+    void* AllocateBuffer;
+    void* FreeBuffer;
+    void* Flush;
+    void* GetAttributes;
+    void* SetAttributes;
+    /* UEFI spec: OUT VOID **Resources (ACPI resource descriptor list). */
+    EFI_STATUS (*Configuration)(EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL* This,
+                                void** Resources);
+    uint32_t SegmentNumber;
+};
+
+/*
+ * EFI_PCI_IO_PROTOCOL (UEFI spec 14.4).  Per-device config-space access
+ * after the firmware's PCI bus driver enumerated the controllers.
+ */
+#define EFI_PCI_IO_PROTOCOL_GUID \
+    EFI_GUID_(0x4cf5b200,0x68b8,0x4ca5,0x9e,0xec,0xb2,0x3e,0x3f,0xa9,0x8e,0x39)
+
+typedef struct EFI_PCI_IO_PROTOCOL_ EFI_PCI_IO_PROTOCOL;
+
+typedef struct {
+    EFI_STATUS (*Read)(EFI_PCI_IO_PROTOCOL* This, uint32_t Width,
+                       uint32_t Offset, UINTN Count, void* Buffer);
+    EFI_STATUS (*Write)(EFI_PCI_IO_PROTOCOL* This, uint32_t Width,
+                        uint32_t Offset, UINTN Count, void* Buffer);
+} EFI_PCI_IO_CONFIG_ACCESS;
+
+typedef struct {
+    EFI_STATUS (*Read)(EFI_PCI_IO_PROTOCOL* This, uint32_t Width,
+                       uint8_t BarIndex, uint64_t Offset, UINTN Count,
+                       void* Buffer);
+    EFI_STATUS (*Write)(EFI_PCI_IO_PROTOCOL* This, uint32_t Width,
+                        uint8_t BarIndex, uint64_t Offset, UINTN Count,
+                        void* Buffer);
+} EFI_PCI_IO_ACCESS;
+
+struct EFI_PCI_IO_PROTOCOL_ {
+    void* PollMem;
+    void* PollIo;
+    EFI_PCI_IO_ACCESS Mem;
+    EFI_PCI_IO_ACCESS Io;
+    EFI_PCI_IO_CONFIG_ACCESS Pci;
+    void* CopyMem;
+    void* Map;
+    void* Unmap;
+    void* AllocateBuffer;
+    void* FreeBuffer;
+    void* Flush;
+    EFI_STATUS (*GetLocation)(EFI_PCI_IO_PROTOCOL* This, UINTN* Segment,
+                              UINTN* Bus, UINTN* Device, UINTN* Function);
+    void* Attributes;
+    void* GetBarAttributes;
+    void* SetBarAttributes;
+    uint64_t RomSize;
+    void* RomImage;
 };
 
 struct EFI_BOOT_SERVICES_ {
