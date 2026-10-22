@@ -951,14 +951,22 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
     void *va;
     uint32_t iova, i;
     int slot = -1;
+    /* A FULL-SCREEN client program (shadertoy-style) arrives as a PURE-COMPUTE
+     * blob: the pgl_g3d gate compiles only the compute wrap and deliberately
+     * keeps an empty VS/FS/COORD triple.  raspix only ever runs the CSD compute
+     * route, so the raster stages are optional whenever a cs kernel is present. */
+    int cs_only = (desc != NULL && desc->cs_qpu_words != 0 &&
+                   desc->vs_qpu_words == 0 && desc->fs_qpu_words == 0 &&
+                   desc->coord_qpu_words == 0);
 
     if (!_ready || desc == NULL)
         return V3D_3D_PROG_UNSUPPORTED;
 
     /* validate the stage payloads against the cache caps (decline, never
-     * truncate, so an out-of-range program falls back to the CPU path) */
-    if (desc->vs_qpu == NULL || desc->vs_qpu_words == 0 ||
-        desc->vs_qpu_words > V3D_3D_PROG_MAX_QPU ||
+     * truncate, so an out-of-range program falls back to the CPU path).
+     * Emptiness alone is NOT a cap violation: a pure-compute program is
+     * legitimately empty in vs/fs/coord and is checked by cs_only below. */
+    if (desc->vs_qpu_words > V3D_3D_PROG_MAX_QPU ||
         desc->fs_qpu_words > V3D_3D_PROG_MAX_QPU ||
         desc->coord_qpu_words > V3D_3D_PROG_MAX_QPU ||
         desc->cs_qpu_words > V3D_3D_PROG_MAX_QPU ||
@@ -966,8 +974,10 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         desc->fs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
         desc->coord_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
         desc->cs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
-        desc->fs_num_inputs > V3D_3D_PROG_MAX_INPUTS) {
-        slog("v3d_3d: program over cap: qpu vs/fs/coord/cs %u/%u/%u/%u (max %u) "
+        desc->fs_num_inputs > V3D_3D_PROG_MAX_INPUTS ||
+        (!cs_only && (desc->vs_qpu_words == 0 || desc->fs_qpu_words == 0 ||
+                      desc->coord_qpu_words == 0))) {
+        slog("v3d_3d: program rejected: qpu vs/fs/coord/cs %u/%u/%u/%u (max %u) "
              "unif %u/%u/%u/%u (max %u) inputs %u (max %u)\r\n",
              desc->vs_qpu_words, desc->fs_qpu_words, desc->coord_qpu_words,
              desc->cs_qpu_words, V3D_3D_PROG_MAX_QPU,
@@ -976,17 +986,24 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
              V3D_3D_PROG_MAX_UNIF, desc->fs_num_inputs, V3D_3D_PROG_MAX_INPUTS);
         return V3D_3D_PROG_UNSUPPORTED;
     }
-    if (desc->vs_qpu == NULL || desc->vs_qpu_words == 0 ||
-        desc->vs_qpu_words > V3D_3D_PROG_MAX_QPU)
+    /* an all-empty program (no raster stages, no compute) can never draw */
+    if (desc->vs_qpu_words == 0 && desc->fs_qpu_words == 0 &&
+        desc->coord_qpu_words == 0 && desc->cs_qpu_words == 0)
         return V3D_3D_PROG_UNSUPPORTED;
-    if (desc->fs_qpu == NULL || desc->fs_qpu_words == 0 ||
-        desc->fs_qpu_words > V3D_3D_PROG_MAX_QPU)
-        return V3D_3D_PROG_UNSUPPORTED;
-    /* the coordinate (binning) shader is mandatory in the shared client blob:
-     * WS1 always emits it, so a blob without one is malformed/stale. */
-    if (desc->coord_qpu == NULL || desc->coord_qpu_words == 0 ||
-        desc->coord_qpu_words > V3D_3D_PROG_MAX_QPU)
-        return V3D_3D_PROG_UNSUPPORTED;
+    if (!cs_only) {
+        if (desc->vs_qpu == NULL || desc->vs_qpu_words == 0 ||
+            desc->vs_qpu_words > V3D_3D_PROG_MAX_QPU)
+            return V3D_3D_PROG_UNSUPPORTED;
+        if (desc->fs_qpu == NULL || desc->fs_qpu_words == 0 ||
+            desc->fs_qpu_words > V3D_3D_PROG_MAX_QPU)
+            return V3D_3D_PROG_UNSUPPORTED;
+        /* the coordinate (binning) shader is mandatory in the shared client
+         * blob's raster shape: WS1 always emits it, so a raster blob without
+         * one is malformed/stale.  Pure-compute programs never bin. */
+        if (desc->coord_qpu == NULL || desc->coord_qpu_words == 0 ||
+            desc->coord_qpu_words > V3D_3D_PROG_MAX_QPU)
+            return V3D_3D_PROG_UNSUPPORTED;
+    }
     if (desc->vs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
         desc->fs_num_uniforms > V3D_3D_PROG_MAX_UNIF ||
         desc->coord_num_uniforms > V3D_3D_PROG_MAX_UNIF)
@@ -1037,28 +1054,32 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
     pr = &_progs[slot];
     memset(pr, 0, sizeof(*pr));
 
-    /* upload the VS QPU code into GPU dma */
-    if (alloc_stage_raw(desc->vs_qpu_words * 4u, &va, &iova, &pr->vs_qpu_raw) != 0) {
-        slog("v3d_3d: program vs alloc_stage %u failed\r\n", desc->vs_qpu_words * 4u);
-        return -30;
+    /* upload the raster-stage QPU code into GPU dma.  A pure-compute program
+     * has no raster stages; its slot fields stay zeroed and the compute route
+     * never reads them. */
+    if (!cs_only) {
+        if (alloc_stage_raw(desc->vs_qpu_words * 4u, &va, &iova, &pr->vs_qpu_raw) != 0) {
+            slog("v3d_3d: program vs alloc_stage %u failed\r\n", desc->vs_qpu_words * 4u);
+            goto fail;
+        }
+        memcpy(va, desc->vs_qpu, desc->vs_qpu_words * 4u);
+        pr->vs_qpu_iova  = iova;
+        pr->vs_qpu_words = desc->vs_qpu_words;
+
+        /* upload the FS QPU code */
+        if (alloc_stage_raw(desc->fs_qpu_words * 4u, &va, &iova, &pr->fs_qpu_raw) != 0)
+            goto fail;
+        memcpy(va, desc->fs_qpu, desc->fs_qpu_words * 4u);
+        pr->fs_qpu_iova  = iova;
+        pr->fs_qpu_words = desc->fs_qpu_words;
+
+        /* upload the COORD (binning) QPU code */
+        if (alloc_stage_raw(desc->coord_qpu_words * 4u, &va, &iova, &pr->coord_qpu_raw) != 0)
+            goto fail;
+        memcpy(va, desc->coord_qpu, desc->coord_qpu_words * 4u);
+        pr->coord_qpu_iova  = iova;
+        pr->coord_qpu_words = desc->coord_qpu_words;
     }
-    memcpy(va, desc->vs_qpu, desc->vs_qpu_words * 4u);
-    pr->vs_qpu_iova  = iova;
-    pr->vs_qpu_words = desc->vs_qpu_words;
-
-    /* upload the FS QPU code */
-    if (alloc_stage_raw(desc->fs_qpu_words * 4u, &va, &iova, &pr->fs_qpu_raw) != 0)
-        goto fail;
-    memcpy(va, desc->fs_qpu, desc->fs_qpu_words * 4u);
-    pr->fs_qpu_iova  = iova;
-    pr->fs_qpu_words = desc->fs_qpu_words;
-
-    /* upload the COORD (binning) QPU code */
-    if (alloc_stage_raw(desc->coord_qpu_words * 4u, &va, &iova, &pr->coord_qpu_raw) != 0)
-        goto fail;
-    memcpy(va, desc->coord_qpu, desc->coord_qpu_words * 4u);
-    pr->coord_qpu_iova  = iova;
-    pr->coord_qpu_words = desc->coord_qpu_words;
 
     /* upload the optional COMPUTE QPU code */
     if (desc->cs_qpu_words != 0) {

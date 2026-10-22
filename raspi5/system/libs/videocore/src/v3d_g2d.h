@@ -45,6 +45,11 @@ uint32_t v3d_g2d_clock_hz(void);
  * hardware's slice and QPU counts. */
 int v3d_g2d_num_qpus(void);
 
+/* Number of QPU slices (cores). TIDX packs the core in bits 6+, so each
+ * slice reserves a 64-wide TIDX block; use this (not num_qpus) to size
+ * per-thread scratch such as the QPU register-spill buffer. */
+int v3d_g2d_num_slices(void);
+
 /* V3D IOVA of the TMU write-scratch surface the kernels use for out-of-rect
  * writes and the flush epilogue (feed it to uniforms). */
 uint32_t v3d_g2d_scratch_phys(void);

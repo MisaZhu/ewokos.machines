@@ -302,6 +302,7 @@ int v3d_g2d_wedged(void)
     return _wedged;
 }
 static int _num_qpus = 1;
+static int _num_slices = 1;
 static int _trailing_l2t_quirk = 0;
 static uint32_t _mmu_debug_info = 0;
 static uint32_t _mmu_va_width = 32;
@@ -1145,6 +1146,8 @@ int v3d_g2d_init(void)
         uint32_t detected = nslc * qpus_per_slice;
 
         _trailing_l2t_quirk = iprev == 10u;
+        if (nslc != 0 && nslc <= 16u)
+            _num_slices = (int)nslc;
         if (detected != 0 && detected <= 16u)
             _num_qpus = (int)detected;
         slog("g2d: V3D ident3=0x%x iprev=%u ident1=0x%x qpus=%u "
@@ -1229,6 +1232,15 @@ uint32_t v3d_g2d_clock_hz(void)
 int v3d_g2d_num_qpus(void)
 {
     return _num_qpus;
+}
+
+/* Number of QPU slices (cores). The CSD packs TIDX as
+ * (core<<6)|(qpu<<2)|thread, so each slice reserves a 64-wide TIDX
+ * block regardless of how many of its QPUs run; spill scratch must be
+ * sized by slices, not by qpus, or non-zero cores' threads land OOB. */
+int v3d_g2d_num_slices(void)
+{
+    return _num_slices;
 }
 
 uint32_t v3d_g2d_scratch_phys(void)

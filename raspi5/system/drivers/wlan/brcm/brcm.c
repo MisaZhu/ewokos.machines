@@ -5462,6 +5462,17 @@ int brcm_send(uint8_t *buf, int len){
         return 0;
     }
 
+    /*
+     * Capture whether the queue was empty before this push. An empty TX queue
+     * means the worker had nothing to service and has ramped into its idle
+     * park (sdhci_card_irq_wait), which until now was only broken early by a
+     * card interrupt - i.e. by inbound RX. A lone outbound frame enqueued at
+     * that moment (an SSH login prompt, the echo of a keystroke) therefore did
+     * not reach the air until the park slice elapsed or the peer happened to
+     * transmit, which is exactly the "output only shows up after I type" stall.
+     */
+    int was_empty = (queue_buffer_check(bus->tx_queue) == 0);
+
     ret = queue_buffer_push(bus->tx_queue, buf, len);
     if (ret <= 0) {
         bus->tx_queue_blocked = true;
@@ -5474,6 +5485,18 @@ int brcm_send(uint8_t *buf, int len){
     depth = queue_buffer_check(bus->tx_queue);
     if (depth >= BRCMF_TX_QUEUE_HIGH_WATERMARK)
         bus->tx_queue_blocked = true;
+
+    /*
+     * Give TX the same edge-driven wake RX already has: kick the parked worker
+     * so it drains this frame immediately instead of waiting out the idle
+     * slice. Coalescing on the empty->non-empty edge keeps a bulk burst at one
+     * kick (the first frame) rather than one wakeup syscall per frame - later
+     * frames in the burst find the queue non-empty and the worker already
+     * awake in its short STALL cadence.
+     */
+    if (was_empty)
+        sdhci_card_irq_kick();
+
     return ret;
 }
 

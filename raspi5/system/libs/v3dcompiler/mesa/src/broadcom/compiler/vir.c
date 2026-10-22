@@ -29,6 +29,31 @@
 #include "compiler/nir/nir_format_convert.h"
 #include "util/perf/cpu_trace.h"
 
+/* TEMPORARY compile-phase wall-clock probe (city faithful-port compile-time
+ * triage): emit ms-resolution records via slog -> /dev/log (the /tmp file sink
+ * does not persist on this raspi5 image) so ONE device run shows which backend
+ * phase (NIR lower / VIR / RA spill loop / QPU emit, and how many strategy
+ * attempts) actually burns the minutes.  Remove once the hotspot is fixed. */
+#include <time.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <ewoksys/klog.h>
+static double v3ct_now(void)
+{
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
+}
+static void PRINTFLIKE(1, 2) v3ct_log(const char *fmt, ...)
+{
+        char buf[192];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        slog("v3ct: [%8.1f] %s\r\n", v3ct_now(), buf);
+}
+
 int
 vir_get_nsrc(struct qinst *inst)
 {
@@ -1971,6 +1996,10 @@ intrinsic_try_skip_helpers(nir_intrinsic_instr *intr, UNUSED void *data)
 static void
 v3d_attempt_compile(struct v3d_compile *c)
 {
+        double _t0 = v3ct_now();
+        v3ct_log("attempt ENTER strat=%d probe=%d stage=%d",
+                 c->compile_strategy_idx, (int)c->probe_only,
+                 (int)c->s->info.stage);
         switch (c->s->info.stage) {
         case MESA_SHADER_VERTEX:
                 c->vs_key = (struct v3d_vs_key *) c->key;
@@ -2165,6 +2194,9 @@ v3d_attempt_compile(struct v3d_compile *c)
         NIR_PASS(_, c->s, nir_trivialize_registers);
 
         v3d_nir_to_vir(c);
+        v3ct_log("attempt EXIT  strat=%d probe=%d threads=%d pressure=%d ms=%.0f",
+                 c->compile_strategy_idx, (int)c->probe_only, c->threads,
+                 c->max_pressure, v3ct_now() - _t0);
 }
 
 uint32_t
@@ -2429,6 +2461,8 @@ compile_2t_strategies(const struct v3d_compiler *compiler,
                                debug_output_data, program_id, variant_id,
                                first);
 
+        v3ct_log("2t route first=%d pressure=%d %s", first, p0->max_pressure,
+                 p0->max_pressure <= V3D_PROBE_HEAVY_PRESSURE ? "LIGHT" : "HEAVY");
         if (p0->max_pressure <= V3D_PROBE_HEAVY_PRESSURE) {
                 /* Light register pressure: compile all 2-thread strategies
                  * assuming full RA loop is relatively cheap, choose the one
@@ -2923,8 +2957,19 @@ vir_optimize(struct v3d_compile *c)
         bool print_opt_debug = false;
         int pass = 1;
 
+        v3ct_log("vir_optimize ENTER");
         while (true) {
                 bool progress = false;
+
+                /* Oscillation guard: two VIR passes can undo each other
+                 * (copy_propagate vs dead_code), keeping `progress` true
+                 * forever and spinning the compile at 100% CPU.  Bound the
+                 * fixpoint the same way the NIR-level oscillation break does.
+                 */
+                if (pass > 64) {
+                        v3ct_log("VIR OPT CAP pass=%d", pass);
+                        break;
+                }
 
                 OPTPASS(vir_opt_copy_propagate);
                 OPTPASS(vir_opt_redundant_flags);
@@ -2939,6 +2984,7 @@ vir_optimize(struct v3d_compile *c)
 
                 pass++;
         }
+        v3ct_log("vir_optimize EXIT pass=%d", pass);
 }
 
 const char *

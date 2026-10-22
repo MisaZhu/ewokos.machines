@@ -210,6 +210,14 @@ typedef struct {
     uint32_t      ctex_h[VC_PGL3D_MAX_TEX_UNITS];
     uint8_t       ctex_tiling[VC_PGL3D_MAX_TEX_UNITS];
     uint8_t       ctex_ub_pad[VC_PGL3D_MAX_TEX_UNITS];
+    /* Cubemap / 2D-array staging: ctex_depth[i] is the array layer count
+     * (0/1 = plain single-layer 2D; 6 = a cubemap staged as a 6-layer 2D
+     * array, which is how mesa lowers a samplerCube TMU fetch) and
+     * ctex_arrstride64[i] the per-layer tiled size in 64-byte units.  When
+     * ctex_depth[i] > 1 the ctex_phy[i] buffer spans depth*arrstride64*64
+     * bytes and each face's image_width/height come from ctex_w/ctex_h. */
+    uint8_t       ctex_depth[VC_PGL3D_MAX_TEX_UNITS];
+    uint32_t      ctex_arrstride64[VC_PGL3D_MAX_TEX_UNITS];
 } vc_pgl3d_draw_req_t;
 
 /* Bring up the 3D pipeline on top of the CSD path's V3D init (idempotent):

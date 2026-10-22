@@ -1097,6 +1097,38 @@ bool sdhci_card_irq_wait(uint32_t slice_us)
     return false;
 }
 
+void sdhci_card_irq_kick(void)
+{
+    int32_t waiter;
+
+    /*
+     * Nothing to wake when the delivery-token park is not in use: the worker
+     * then paces itself with plain usleep slices and picks the frame up on
+     * its next loop. Bumping the sequence here would only mislead the miss
+     * watchdog, so bail out.
+     */
+    if (!_sdhci_card_irq_on)
+        return;
+
+    /*
+     * Mirror the tail of sdhci_card_irq_handler(): bump the delivery sequence
+     * so a worker already inside sdhci_card_irq_wait() observes the edge and
+     * returns, then fire the directed wake at whoever is parked. Same token,
+     * same ordering (seq store before the waiter load, both fenced) as the
+     * handler, so the waiter registration race is covered identically.
+     *
+     * A kick is indistinguishable from a genuine delivery to the waiter, which
+     * is exactly what we want: the worker loops, runs its DPC and drains the
+     * freshly-enqueued TX. If nobody is parked (waiter < 0) the seq bump is
+     * harmless - the next park re-baselines `before` from the current value.
+     */
+    _sdhci_card_seq++;
+    __asm__ __volatile__("dmb ish" ::: "memory");
+    waiter = _sdhci_card_waiter;
+    if (waiter >= 0)
+        proc_wakeup_by(waiter, SDHCI_CARD_TOKEN);
+}
+
 
 static void sdhci_transfer_pio(struct sdhci_host *host, struct mmc_data *data)
 {

@@ -184,6 +184,12 @@ typedef struct {
     uint32_t ctex_h[V3D_3D_MAX_TEX_UNITS];
     uint8_t  ctex_tiling[V3D_3D_MAX_TEX_UNITS];
     uint8_t  ctex_ub_pad[V3D_3D_MAX_TEX_UNITS];
+    /* Cubemap / 2D-array: ctex_depth[i] is the layer count (0/1 = plain 2D,
+     * 6 = cubemap-as-2D-array); ctex_arrstride64[i] the per-layer tiled size
+     * in 64-byte units (the record's array_stride_64_byte_aligned).  Both 0
+     * for a plain 2D image, leaving its texture-state record byte-identical. */
+    uint8_t  ctex_depth[V3D_3D_MAX_TEX_UNITS];
+    uint32_t ctex_arrstride64[V3D_3D_MAX_TEX_UNITS];
 } v3d_3d_ctex_t;
 
 /* Allocate dma staging and validate the GPU is usable for the 3D path.
@@ -271,9 +277,15 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                         * ~22930 cs words; 4096 declined it).
                                         * Costless to raise: QPU text is dma-
                                         * allocated by ACTUAL word count.      */
-#define V3D_3D_PROG_MAX_UNIF   2048u  /* uniform-stream words per stage (wave
-                                        * cs embeds 1428; grows _progs[16]
-                                        * BSS to ~1.3 MB + 8 KB/stage dma)     */
+#define V3D_3D_PROG_MAX_UNIF   8192u  /* uniform-stream words per stage (wave
+                                        * cs embeds 1428; the faithful ED-209
+                                        * shadertoy raymarcher folds its many
+                                        * constants into fs 4278 / cs 4341, so
+                                        * 2048 declined it -> CPU fallback;
+                                        * 8192 keeps ~1.9x headroom.  Grows
+                                        * _progs[16] BSS to ~5 MB (10 inline
+                                        * MAX_UNIF arrays/slot) + 32 KB/stage
+                                        * dma; V3D has no hw cap near this).   */
 #define V3D_3D_PROG_MAX_ATTRS  64u    /* VS attribute / driver-location slots */
 #define V3D_3D_PROG_MAX_INPUTS 64u    /* FS input (varying) slots             */
 
