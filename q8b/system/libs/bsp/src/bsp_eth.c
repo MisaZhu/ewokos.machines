@@ -168,7 +168,14 @@
 #define TC956X_HOST_ADDR_HI 0x10u
 #define ETH_RING_SIZE       32u
 #define ETH_BUF_SIZE        2048u
-#define ETH_RXQ_SIZE        32u
+/*
+ * A busy management VLAN can carry hundreds of ARP/broadcast frames per
+ * second.  The software queue must absorb a burst until netd's next read(),
+ * otherwise the unicast reply we actually need (ARP/ICMP) is queued behind
+ * the broadcasts and then discarded as "queue full".  128 slots cost
+ * 256 KiB and cover several seconds of storm.
+ */
+#define ETH_RXQ_SIZE        128u
 #define ETH_DESC_SIZE       16u
 
 #define TC956X_PHY_ADDR     0x1cu
