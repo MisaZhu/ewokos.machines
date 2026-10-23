@@ -64,6 +64,7 @@ basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 	$(MAKE) -C libs
 	$(MAKE) -C $(SYS_ROOT_DIR)/basic
 	$(MAKE) -C drivers basic
+	$(MAKE) -C bin
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/basic/. ${TARGET_DIR}/etc/
 
@@ -93,7 +94,7 @@ x_sys: gui_sys network_sys
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
 
-CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
+CLEAN_DIRS = libs drivers bin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
 	$(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/xwin
 clean:
 	@for dir in $(CLEAN_DIRS); do \
