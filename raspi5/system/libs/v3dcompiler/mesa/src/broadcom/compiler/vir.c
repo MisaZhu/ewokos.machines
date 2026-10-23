@@ -2304,14 +2304,14 @@ skip_compile_strategy(struct v3d_compile *c, uint32_t idx)
     * we never try to skip it.
     */
    case 3:
-          assert(c->threads < 4);
-          return false;
+         assert(c->threads < 4);
+         return false;
    /* TMU pipelining: skip if we didn't pipeline any TMU ops */
    case 4:
            return !c->pipelined_any_tmu;
-   /* Strategy 2 ("lower thread count") changes spilling behaviour and is
-    * handled by the max_tmu_spills guard above; strategy 5 (fallback
-    * scheduler) is the last resort and is never skipped.
+   /* Strategy 2 ("lower thread count") is handled by the max_tmu_spills
+    * guard above, and strategy 5 (fallback scheduler) is the last resort and
+    * is never skipped.
     */
    default:
            return false;
@@ -2689,9 +2689,7 @@ uint64_t *v3d_compile(const struct v3d_compiler *compiler,
                         break;
                 }
 
-                /* 4-thread strategy: no spilling allowed, so it either
-                 * succeeds with 0 spills or fails register allocation.
-                 */
+                /* 4-thread strategy. */
                 if (strat > 0) {
                         assert(c);
                         if (skip_compile_strategy(c, strat))
