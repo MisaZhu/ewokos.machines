@@ -81,7 +81,8 @@ uint32_t vc_g2d_version(void)
 /* devcmd /dev/g2d <args> (bsp_g2d_cmd hands them down):
  *   stat [reset]        the V3D per-dispatch phase counters
  *   maint [range|full]  show / set the L2T maintenance policy
- *   spinus [<us>]       show / set the completion-wait spin window */
+ *   spinus [<us>]       show / set the completion-wait spin window
+ *   csdsg [<N>]         show / set workgroups per supergroup (16-aligned) */
 int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
 {
     v3d_g2d_stats_t s;
@@ -106,6 +107,14 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
         if (argc > 1 && argv[1] != NULL)
             v3d_g2d_set_spin_us((uint32_t)strtoul(argv[1], NULL, 0));
         snprintf(buf, len, "v3d spinus %u", (unsigned)v3d_g2d_spin_us());
+        return 0;
+    }
+    /* `csdsg <N>`: workgroups per supergroup for 16-aligned compute
+     * workgroups (see v3d_g2d_set_csd_wgs_per_sg) */
+    if (strcmp(argv[0], "csdsg") == 0) {
+        if (argc > 1 && argv[1] != NULL)
+            v3d_g2d_set_csd_wgs_per_sg((uint32_t)strtoul(argv[1], NULL, 0));
+        snprintf(buf, len, "v3d csdsg %u", (unsigned)v3d_g2d_csd_wgs_per_sg());
         return 0;
     }
     if (strcmp(argv[0], "stat") != 0)

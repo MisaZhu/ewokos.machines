@@ -503,8 +503,8 @@ static void release_prog(v3d_3d_prog_t *pr)
 /* texture_type from enum V3D71_Texture_Data_Formats (=4), the swizzle     */
 /* values from common/v3d_util.c v3d_translate_pipe_swizzle (RED=2 ..      */
 /* ALPHA=5), and the 64-byte pixel-data alignment from the packet XML's    */
-/* address-field note.  All shadertoy textures are single-mip linear RGBA8 */
-/* sampled GL_NEAREST + GL_REPEAT.                                         */
+/* address-field note.  Textures are single-mip linear RGBA8, GL_REPEAT,   */
+/* with the mag/min filter chosen per unit by the client (ctex_filter).   */
 /* ------------------------------------------------------------------ */
 
 /* Set the little-endian bit field [lo..hi] (inclusive; bit 0 == rec[0] bit
@@ -538,8 +538,17 @@ static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
                                  uint32_t tiling, uint32_t ub_pad,
                                  uint32_t depth, uint32_t arrstride64)
 {
-    uint32_t width  = w ? w - 1u : 0u;
-    uint32_t height = h ? h - 1u : 0u;
+    /* image_width/image_height are the TMU's uv->texel scale.  An on-device
+     * texel probe (macgl `probe` mode over a 4x512 LINEARTILE atlas) measured
+     * the effective scale as exactly 3 x 511 = (w-1) x (h-1) with a 100% fit
+     * over 5328 samples, i.e. this silicon uses the stored field DIRECTLY as
+     * the multiplier and does NOT add 1 the way the gallium "field = dim - 1"
+     * convention assumes.  Storing w-1/h-1 therefore mis-scaled every texture2D
+     * fetch in a compiled compute draw (col >= 2 and row >= h/2 landed on the
+     * neighbouring texel), corrupting lookup-table reads.  Store the true
+     * dimensions so floor(uv * dim) resolves the requested texel. */
+    uint32_t width  = w;
+    uint32_t height = h;
     uint32_t uif = (tiling == V3D_3D_TEX_TILING_UIF_NO_XOR ||
                     tiling == V3D_3D_TEX_TILING_UIF_XOR);
 
@@ -551,8 +560,8 @@ static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
      * image, layer_size/64 for a cubemap staged as a 6-layer array (mesa
      * lowers a samplerCube TMU fetch to a 2D-array + face-index sample). */
     rec_set_bits(rec,  33,  56, arrstride64); /* array_stride_64_byte_aligned */
-    rec_set_bits(rec,  58,  71, width);       /* image_width  = w - 1      */
-    rec_set_bits(rec,  72,  85, height);      /* image_height = h - 1      */
+    rec_set_bits(rec,  58,  71, width);       /* image_width  = w (TMU scale) */
+    rec_set_bits(rec,  72,  85, height);      /* image_height = h (TMU scale) */
     rec_set_bits(rec,  86,  99, depth ? depth - 1u : 0u); /* image_depth */
     rec_set_bits(rec, 100, 106, 4u);          /* texture_type = RGBA8      */
     rec_set_bits(rec, 107, 107, uif);         /* extended (level-0 fields) */
@@ -572,14 +581,18 @@ static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
     /* chroma_offset_x/y, texture_base_pointer_cb/cr, pad = 0 (RGB, not YUV). */
 }
 
-/* Pack a GL_NEAREST + GL_REPEAT V3D71_SAMPLER_STATE (24 bytes): nearest
- * mag/min/mip filters, sRGB disabled, LOD clamped to level 0, REPEAT wrap on
- * all axes, no anisotropy, no border/depth-compare. */
-static void pack_sampler_state_nearest(uint8_t *rec)
+/* Pack a GL_REPEAT V3D71_SAMPLER_STATE (24 bytes) with the given mag/min
+ * filter (V3D_3D_TEX_FILTER_*): NEAREST sets the *_filter_nearest bits,
+ * LINEAR clears them so the TMU bilinearly blends the 2x2 footprint in
+ * hardware (one fetch instead of the four a shader does by hand).  mip filter
+ * stays nearest (single-level images, LOD clamped to 0), sRGB disabled,
+ * REPEAT wrap on all axes, no anisotropy, no border/depth-compare. */
+static void pack_sampler_state(uint8_t *rec, uint32_t filter)
 {
+    uint32_t nearest = (filter == V3D_3D_TEX_FILTER_LINEAR) ? 0u : 1u;
     memset(rec, 0, 24);
-    rec_set_bits(rec,  0,  0, 1u);   /* mag_filter_nearest        */
-    rec_set_bits(rec,  1,  1, 1u);   /* min_filter_nearest        */
+    rec_set_bits(rec,  0,  0, nearest);   /* mag_filter_nearest    */
+    rec_set_bits(rec,  1,  1, nearest);   /* min_filter_nearest    */
     rec_set_bits(rec,  2,  2, 1u);   /* mip_filter_nearest        */
     rec_set_bits(rec,  3,  3, 0u);   /* anisotropy_enable         */
     rec_set_bits(rec,  4,  6, 0u);   /* depth_compare_function    */
@@ -596,20 +609,22 @@ static void pack_sampler_state_nearest(uint8_t *rec)
     /* border_color_word_0..3 (64-191) = 0. */
 }
 
-/* Build the four identical sampler records once (the shadertoy textures all
- * use GL_NEAREST + GL_REPEAT). */
+/* Initial sampler records: NEAREST on every unit (what a draw with no ctex
+ * samples through, and the filter a client that never sets one gets). */
 static void build_sampler_records(void)
 {
     uint32_t u;
     for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++)
-        pack_sampler_state_nearest(_sampler_va + u * V3D_3D_TEXSTATE_SLOT);
+        pack_sampler_state(_sampler_va + u * V3D_3D_TEXSTATE_SLOT,
+                           V3D_3D_TEX_FILTER_NEAREST);
 }
 
-/* Rebuild the per-unit texture records from this draw's ctex bindings.  A
- * unit with ctex_iova == 0 stays unbound (zeroed record).  Returns 0 on
- * success, -1 if a bound unit's pixel data is not 64-byte aligned or is still
- * in raster layout (the TMU cannot sample it; the caller then declines to the
- * CPU path rather than sample a scrambled image). */
+/* Rebuild the per-unit texture AND sampler records from this draw's ctex
+ * bindings.  A unit with ctex_iova == 0 stays unbound (zeroed texture record,
+ * NEAREST sampler).  Returns 0 on success, -1 if a bound unit's pixel data is
+ * not 64-byte aligned or is still in raster layout (the TMU cannot sample it;
+ * the caller then declines to the CPU path rather than sample a scrambled
+ * image). */
 static int build_tex_state_records(const v3d_3d_ctex_t *ctex)
 {
     uint32_t u;
@@ -617,8 +632,10 @@ static int build_tex_state_records(const v3d_3d_ctex_t *ctex)
         return 0;
     for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++) {
         uint8_t *rec = _texstate_va + u * V3D_3D_TEXSTATE_SLOT;
+        uint8_t *srec = _sampler_va + u * V3D_3D_TEXSTATE_SLOT;
         if (ctex->ctex_iova[u] == 0) {
             memset(rec, 0, 24);
+            pack_sampler_state(srec, V3D_3D_TEX_FILTER_NEAREST);
             continue;
         }
         if ((ctex->ctex_iova[u] & 0x3Fu) != 0)
@@ -633,6 +650,7 @@ static int build_tex_state_records(const v3d_3d_ctex_t *ctex)
                              ctex->ctex_w[u], ctex->ctex_h[u],
                              ctex->ctex_tiling[u], ctex->ctex_ub_pad[u],
                              ctex->ctex_depth[u], ctex->ctex_arrstride64[u]);
+        pack_sampler_state(srec, ctex->ctex_filter[u]);
     }
     return 0;
 }

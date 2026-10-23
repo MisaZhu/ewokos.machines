@@ -242,7 +242,15 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
             ctex.ctex_w[i]      = req->ctex_w[i];
             ctex.ctex_h[i]      = req->ctex_h[i];
             ctex.ctex_tiling[i] = req->ctex_tiling[i];
-            ctex.ctex_ub_pad[i] = req->ctex_ub_pad[i];
+            /* ctex_ub_pad packs the UIF ub_pad (low nibble) with the unit's
+             * sampler filter (high nibble, VC_PGL3D_CTEX_FILTER_*) so the
+             * request layout stayed byte-identical for older clients. */
+            ctex.ctex_ub_pad[i] = (uint8_t)(req->ctex_ub_pad[i] &
+                                            VC_PGL3D_CTEX_UB_PAD_MASK);
+            ctex.ctex_filter[i] =
+                (VC_PGL3D_CTEX_FILTER_OF(req->ctex_ub_pad[i]) ==
+                 VC_PGL3D_CTEX_FILTER_LINEAR) ? V3D_3D_TEX_FILTER_LINEAR
+                                              : V3D_3D_TEX_FILTER_NEAREST;
             ctex.ctex_depth[i]       = (uint8_t)depth_i;
             ctex.ctex_arrstride64[i] = req->ctex_arrstride64[i];
             ctex_path = 1;

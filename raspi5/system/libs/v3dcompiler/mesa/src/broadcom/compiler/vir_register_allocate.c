@@ -48,6 +48,10 @@
  * rounds reproduces the fast "RA fail" path and keeps compile time finite.
  */
 #define V3D_RA_MAX_RESOLVE 96
+/* Keep earlier strategies cheap, but give the final fallback more room to
+ * converge. Solar reaches the 64-register budget after 219 spill rounds;
+ * stopping at 96 rejects it while pressure is still decreasing. */
+#define V3D_RA_MAX_FALLBACK_RESOLVE 256
 
 static double v3ct_now(void)
 {
@@ -1714,8 +1718,10 @@ v3d_register_allocate(struct v3d_compile *c)
 
         struct qpu_reg *temp_registers = NULL;
         unsigned _ra_inner = 0;
+        const unsigned max_resolve = c->fallback_scheduler ?
+                V3D_RA_MAX_FALLBACK_RESOLVE : V3D_RA_MAX_RESOLVE;
         while (true) {
-                if (++_ra_inner > V3D_RA_MAX_RESOLVE) {
+                if (++_ra_inner > max_resolve) {
                         v3ct_log("RA INNER BAIL iters=%u temps=%u spills=%u fills=%u",
                                  _ra_inner, c->num_temps, c->spills, c->fills);
                         goto spill_fail;

@@ -152,7 +152,7 @@ static uint32_t _g2d_band_bytes = 1024u * 1024u;
  * run lock and _fill_alpha_lock are pthread mutexes now (waiters park),
  * which removes that mechanism; 1 ms is the default again pending the
  * same g2dtest A/B (irqus 0 vs 1000: PERF us/frame, stat exec, miss). */
-static uint32_t _g2d_irq_budget_us = 1000u;
+static uint32_t _g2d_irq_budget_us = 50u;
 
 /* `big <KB>` / `band <KB>`: set (or with no value, show) the banding
  * threshold and the per-band budget in KiB; 0 KB threshold bands every
@@ -190,6 +190,17 @@ int vc_g2d_cmd(int argc, char **argv, char *buf, size_t len)
     if (strcmp(argv[0], "irqus") == 0)
         return g2d_cmd_knob(argc, argv, buf, len, &_g2d_irq_budget_us, "irqus",
                             1u, "us");
+    /* `csdsg <N>`: workgroups per supergroup for 16-aligned compute
+     * workgroups (see v3d_g2d_set_csd_wgs_per_sg) */
+    if (strcmp(argv[0], "csdsg") == 0) {
+        uint32_t n = v3d_g2d_csd_wgs_per_sg();
+
+        if (g2d_cmd_knob(argc, argv, buf, len, &n, "csdsg", 1u, "") != 0)
+            return -1;
+        v3d_g2d_set_csd_wgs_per_sg(n);
+        snprintf(buf, len, "csdsg %u", v3d_g2d_csd_wgs_per_sg());
+        return 0;
+    }
     if (strcmp(argv[0], "stat") != 0)
         return -1;
 
