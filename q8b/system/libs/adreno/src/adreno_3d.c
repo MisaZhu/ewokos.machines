@@ -669,7 +669,8 @@ static int g_leaked_desc = 0;
 /* Per-dispatch BO layout: [UAV descriptors: num_ssbo x 64 B][texture
    descriptors: num_samp x 64 B, 64-aligned (SP_CS_TEXMEMOBJ_BASE)][sampler
    descriptors: num_samp x 16 B (SP_CS_SAMPLER_BASE, 16-aligned)][dummy texel
-   scratch: 512 B zeroed, for unbound slots][UBO-0 copy of the kernel's uniform
+   scratch: 512 B zeroed -- defensive only, no longer referenced now that an
+   unbound sampled slot declines the draw][UBO-0 copy of the kernel's uniform
    region, 64-byte aligned, >= 64 B].  With num_samp == 0 the texture / sampler
    / dummy regions are all empty and the layout is byte-identical to before. */
 #define DESC_UBO_MIN_BYTES  64u
@@ -679,7 +680,8 @@ static int g_leaked_desc = 0;
    workgroups, binding the SSBO slots from `binds` (indexed by declared
    binding), the sampled-texture units from `tex[num_tex]` (indexed by ctex
    unit == texture_index; a slot the kernel reads but the request left unbound
-   samples a zeroed 1x1 dummy), and feeding `unif[num_uniforms]` as UBO 0.
+   DECLINES the draw to the CPU interpreter, which renders the identical
+   fullscreen quad), and feeding `unif[num_uniforms]` as UBO 0.
    Every dispatch drains and invalidates UCHE before loading state. Returns
    ADRENO_OK, ADRENO_E_DECLINED before anything reached the GPU, or the
    adreno_ring_submit result (TIMEOUT / FAULT / WEDGED). */
@@ -706,18 +708,24 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	if (grid[0] == 0 || grid[1] == 0 || grid[2] == 0)
 		return ADRENO_E_DECLINED;
 
-	/* --- sampled-texture eligibility: the kernel reads slots [0,num_samp);
-	   a bound slot must be a linear RGBA8 image the descriptor can address
-	   (32-byte-aligned base for the shr5 BASE_LO, in-range dims/stride).  An
-	   unbound slot is fine: it samples the zeroed dummy.  A genuinely
-	   unsupported bound slot declines to the CPU rather than risk a fault. --- */
+	/* --- sampled-texture eligibility: the kernel reads slots [0,num_samp).
+	   EVERY such slot must be bound to a linear RGBA8 image the descriptor
+	   can address (32-byte-aligned base for the shr5 BASE_LO, in-range
+	   dims/stride).  A slot the kernel samples but the client left unbound
+	   (its texture failed to stage: a non-REPEAT 2D wrap, an oversized
+	   cubemap allocation, etc.) DECLINES the draw to the CPU interpreter,
+	   which renders the identical fullscreen quad correctly.  Binding a
+	   zeroed dummy instead would sample (0,0,0,0) -- a silent black frame
+	   that never falls back -- so it is forbidden here.  This matches the
+	   shared client contract (pgl_g3d.c: "an unbound unit the FS references
+	   makes the back end decline the draw") and the raspi5 v3d back end. --- */
 	num_samp = k->num_samp;
 	if (num_samp > ADRENO_PROG_MAX_TEX)
 		return ADRENO_E_DECLINED;
 	for (i = 0; i < num_samp; i++) {
 		const adreno_3d_tex_t *t;
 		if (i >= num_tex || tex[i].phy == 0)
-			continue;                    /* unbound -> dummy below */
+			return ADRENO_E_DECLINED;    /* FS samples an unbound unit -> CPU */
 		t = &tex[i];
 		if (t->tiling != 0)                  /* q8b only uploads linear */
 			return ADRENO_E_DECLINED;
@@ -798,8 +806,10 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 		             bd->phy, bd->bytes / 4u);
 	}
 	/* Texture + sampler descriptors, one pair per slot the kernel reads.
-	   An unbound slot points at the zeroed dummy scratch so it samples
-	   (0,0,0,0) instead of faulting on a null base. */
+	   The eligibility guard above declined any unbound sampled slot, so
+	   every i in [0,num_samp) here has a real tex[i].phy and takes the
+	   bound branch; the zeroed-dummy else is defensive only (unreachable
+	   in practice, kept so a future num_tex/num_samp skew cannot fault). */
 	if (num_samp > 0) {
 		uint8_t *tex_base  = (uint8_t *)desc_bo.va + tex_off;
 		uint8_t *samp_base = (uint8_t *)desc_bo.va + samp_off;
