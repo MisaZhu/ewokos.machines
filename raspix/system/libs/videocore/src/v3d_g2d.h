@@ -106,6 +106,21 @@ int v3d_g2d_maint_ranged(void);
 void v3d_g2d_set_spin_us(uint32_t us);
 uint32_t v3d_g2d_spin_us(void);
 
+/* Supergroup packing for workgroups whose size is a multiple of 16
+ * (`devcmd /dev/g2d csdsg <N>`): N workgroups per supergroup, 1..16,
+ * clamped so the supergroup stays <= 4096 invocations.  Mesa stops at 1
+ * because the lanes are already full and a supergroup is also the TSY
+ * barrier domain, but no kernel this engine dispatches uses shared memory
+ * or barriers (v3d_3d.c declines cs_shared_size != 0 on all three routes),
+ * so packing is safe here - and the non-aligned branch below already packs
+ * up to 16 on V3D 4.2, so the cfg[3] encoding is exercised on this IP.  On
+ * the Pi 5 (V3D 7.1, identical cfg[3] layout) the SAME grass 400x300 frame
+ * (32x8 workgroups, 2 threads) runs 108 ms at 1 wg/sg, 86 at 2, 70 at 4, 68
+ * at 8 and 64 ms at 16; the Pi4 numbers are not yet A/B'd on hardware, so
+ * the knob stays to re-measure.  Default 16. */
+void v3d_g2d_set_csd_wgs_per_sg(uint32_t n);
+uint32_t v3d_g2d_csd_wgs_per_sg(void);
+
 /*
  * Generic CSD dispatch of a mesa-compiled COMPUTE shader (the soft3d
  * compute-geometry route: v3d_3d.c stages the compiled QPU code and the
@@ -113,8 +128,9 @@ uint32_t v3d_g2d_spin_us(void);
  * raspix has no V3D MMU page table, unlike raspi5's IOVA model, so the
  * code_iova/unif_iova/dst_phy/aux_phy/src_phy fields below are physical
  * addresses here).  Neither the code nor the uniforms are staged by this
- * call.  The CFG words follow mesa's v3dx launch_grid encoding: one
- * supergroup per workgroup when wg_size is a multiple of 16; cfg[4] is
+ * call.  The CFG words follow mesa's v3dx launch_grid encoding, except
+ * that 16-aligned workgroups pack supergroups per
+ * v3d_g2d_set_csd_wgs_per_sg below; cfg[4] is
  * NUM_BATCHES-1 on V3D 4.2 and the raw batch count on V3D 7.1 (IP rev>=6).
  * dst/aux bound the surfaces the POST L2 writeback must cover (the geom
  * rasterizer's atomicMin depth canvas is the aux surface); the POST walk

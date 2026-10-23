@@ -221,6 +221,24 @@ uint32_t v3d_g2d_spin_us(void)
     return _spin_us;
 }
 
+/* workgroups per supergroup for 16-aligned workgroups, see v3d_g2d.h;
+ * read once per dispatch, so a write only changes the next job */
+static uint32_t _csd_wgs_per_sg = 16u;
+
+void v3d_g2d_set_csd_wgs_per_sg(uint32_t n)
+{
+    if (n < 1u)
+        n = 1u;
+    else if (n > 16u)
+        n = 16u;
+    _csd_wgs_per_sg = n;
+}
+
+uint32_t v3d_g2d_csd_wgs_per_sg(void)
+{
+    return _csd_wgs_per_sg;
+}
+
 /* VC bus address alias for uncached access (not exported by mailbox.h;
  * the other bcm283x drivers carry the same local define). */
 #define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
@@ -3339,13 +3357,19 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     csd_done = (_ver >= 71) ? INT_CSDDONE_V7 : INT_CSDDONE_OLD;
     csd = v3d_ctl() + (csd_base / 4);
 
-    /* mesa v3d_csd_choose_workgroups_per_supergroup: a workgroup whose
-     * size is a multiple of 16 fills whole batches on its own, so one
-     * workgroup per supergroup; otherwise pack up to 16 workgroups so the
-     * supergroup is a whole number of 16-lane batches. */
+    /* mesa v3d_csd_choose_workgroups_per_supergroup, except for the
+     * 16-aligned case: mesa stops at one workgroup per supergroup there
+     * (lanes already full), while this engine packs _csd_wgs_per_sg of
+     * them (see v3d_g2d.h for why and the measurements).  Non-aligned
+     * sizes pack up to 16 workgroups so the supergroup is a whole number
+     * of 16-lane batches. */
     num_wgs = job->wg_count[0] * job->wg_count[1] * job->wg_count[2];
     if ((job->wg_size % 16u) == 0u) {
-        wgs_per_sg = 1u;
+        wgs_per_sg = _csd_wgs_per_sg;
+        while (wgs_per_sg > 1u && wgs_per_sg * job->wg_size > 4096u)
+            wgs_per_sg--;
+        if (wgs_per_sg > num_wgs)
+            wgs_per_sg = num_wgs;
     } else {
         wgs_per_sg = 16u;
         while (wgs_per_sg > 1u && ((wgs_per_sg * job->wg_size) % 16u) != 0u)
