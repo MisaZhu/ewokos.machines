@@ -26,6 +26,10 @@ extern "C" {
 
 #define ADRENO_PGLC_MAX_SSBO        8u
 #define ADRENO_PGLC_MAX_UBO_RANGES  8u
+#define ADRENO_PGLC_MAX_TEX         4u
+/* tex_type[] values (mirror ADRENO_PROG_TEX_*). */
+#define ADRENO_PGLC_TEX_2D          0u
+#define ADRENO_PGLC_TEX_CUBE        1u
 
 struct adreno_pglc_ubo_range {
    uint32_t src_byte;        /* byte offset into the per-draw uniform blob */
@@ -80,6 +84,18 @@ struct adreno_pglc_stage {
    /* UAV slot i (== linked SSBO block i) -> declared layout(binding). */
    uint32_t  num_ssbo;
    uint32_t  ssbo_binding[ADRENO_PGLC_MAX_SSBO];
+
+   /* Sampled textures/samplers (VERSION 4): num_samp 1:1 texture+sampler pairs
+    * the kernel reads with a bindful `sam`, and ADRENO_PGLC_TEX_2D / _CUBE per
+    * slot.  Following the a6xx bindful model (mesa fd6_emit_textures), the
+    * daemon builds the A6XX_TEX_CONST / A6XX_TEX_SAMP descriptor arrays into
+    * their own BOs pointed to by SP_CS_TEXMEMOBJ_BASE / SP_CS_SAMPLER_BASE
+    * (counts in SP_CS_CONFIG.NTEX/.NSAMP); they are NOT in the const file, so
+    * constlen is unaffected and tex_const_off is reserved (always 0).
+    * num_samp == 0 for procedural kernels (the daemon emits no texture state). */
+   uint32_t  num_samp;
+   uint32_t  tex_const_off;   /* reserved, always 0 (independent descriptor BOs) */
+   uint8_t   tex_type[ADRENO_PGLC_MAX_TEX];
 };
 
 #ifdef __cplusplus

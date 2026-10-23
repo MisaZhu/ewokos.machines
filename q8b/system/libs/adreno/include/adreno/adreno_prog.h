@@ -103,16 +103,29 @@ extern "C" {
    G2D_PGL_PROGRAM_MAGIC ('G','P','D','3') so a daemon never mistakes one for
    the other. */
 #define ADRENO_PROG_MAGIC     0x33444e41u
-#define ADRENO_PROG_VERSION   2u
+/* VERSION 4 adds the sampled-texture metadata (num_samp / tex_const_off /
+ * tex_type[]) to adreno_prog_kernel_t, growing the fixed blob header.  The
+ * app-side compiler (adrenocompiler) and the daemon (adreno) are always
+ * rebuilt together; the bumped version makes a half-updated pair reject the
+ * blob at the magic/version gate instead of misreading the new layout. */
+#define ADRENO_PROG_VERSION   4u
 /* Same wire layout; raster grid covers pixels, each owning its colour/depth.
  * A separate version makes old daemons reject the different dispatch shape. */
-#define ADRENO_PROG_PIXEL_VERSION 3u
+#define ADRENO_PROG_PIXEL_VERSION 5u
 
 /* Maximum storage-buffer bindings a compiled kernel may declare.  Sized for the
    portablegl fullscreen-compute set and the geometry rasterizer (render target
    + a handful of input buffers) with headroom; mirrors the small fixed
    descriptor count the daemon caches per program. */
 #define ADRENO_PROG_MAX_SSBO        8u
+
+/* Maximum sampled-texture units a compiled kernel may read.  Matches the
+   client's G2D_PGL_MAX_TEX_UNITS (4): the engine binds iChannel0..3 to ctex
+   units 0..3, and sampler slot i is fed by ctex unit i. */
+#define ADRENO_PROG_MAX_TEX         4u
+/* tex_type[] values: a plain 2D image vs a 6-face cubemap. */
+#define ADRENO_PROG_TEX_2D          0u
+#define ADRENO_PROG_TEX_CUBE        1u
 
 /* Maximum pushed UBO-0 ranges (IR3_MAX_UBO_PUSH_RANGES is 32 upstream; the
    per-draw uniform blobs here are a few dozen dwords, so 8 is ample and the
@@ -189,6 +202,21 @@ typedef struct {
 
 	/* --- per-draw uniform blob span (dwords) this kernel reads as UBO 0 --- */
 	uint32_t uniform_blob_dwords;
+
+	/* --- sampled textures / samplers (VERSION 4).  num_samp 1:1 texture +
+	   sampler pairs the kernel reads with a bindful `sam` (0 => purely
+	   procedural, the daemon emits no texture state).  Following the a6xx
+	   bindful model (mesa fd6_emit_textures), the daemon builds one 16-dword
+	   A6XX_TEX_CONST per slot into a dedicated texture-descriptor BO pointed
+	   to by SP_CS_TEXMEMOBJ_BASE, and one 4-dword A6XX_TEX_SAMP per slot into
+	   a sampler-descriptor BO pointed to by SP_CS_SAMPLER_BASE; the counts go
+	   in SP_CS_CONFIG.NTEX/.NSAMP.  The descriptors do NOT live in the const
+	   file, so CONSTLEN is unchanged.  tex_type[i] is ADRENO_PROG_TEX_2D /
+	   _CUBE.  Slot i is fed by ctex unit i.  tex_const_off is reserved (0). --- */
+	uint32_t num_samp;
+	uint32_t tex_const_off;      /* reserved, always 0 (see comment above)   */
+	uint8_t  tex_type[ADRENO_PROG_MAX_TEX];
+	uint8_t  reserved_tex[3];
 } adreno_prog_kernel_t;
 
 typedef struct {

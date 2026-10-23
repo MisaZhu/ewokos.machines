@@ -416,12 +416,37 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 		ks->per_sp_size =
 			align_up(ks->per_fiber_size * A690_FIBERS_PER_SP, 4096u);
 		total = (uint64_t)A690_NUM_SP_CORES * ks->per_sp_size;
-		if (total == 0 || total > 0xffffffffu ||
-		    adreno_bo_alloc(&ks->pvt_bo, (uint32_t)total) != 0)
+		if (total == 0 || total > 0xffffffffu) {
+			klog("adreno_3d: pvtmem total %llu B out of u32 range "
+			     "(pvtmem_size %u/fiber per_fiber %u per_sp %u)\n",
+			     (unsigned long long)total, k->pvtmem_size,
+			     ks->per_fiber_size, ks->per_sp_size);
 			goto fail;
+		}
+		if (adreno_bo_alloc(&ks->pvt_bo, (uint32_t)total) != 0) {
+			/* A spilling kernel needs ONE contiguous dma block of
+			   per_fiber * fibers_per_sp(4096) * num_sp_cores(8) ==
+			   per_fiber * 32768 bytes (512 B/fiber => 16 MB, 4 KB =>
+			   128 MB, the 16 KB cap => 512 MB).  dma_alloc is a
+			   first-fit slice of the kernel dma pool (kernel.conf
+			   dma_size), so a pool smaller than `total` fails HERE.
+			   This is exactly the silent failure that dropped the
+			   ocean kernel to the (un-scaled, ~0.1 FPS) CPU path and
+			   looked like a hang; log it loudly so a too-small pool
+			   is diagnosable instead of invisible. */
+			klog("adreno_3d: pvtmem BO alloc FAILED for total %llu B "
+			     "(pvtmem_size %u/fiber per_fiber %u per_sp %u) - "
+			     "kernel dma_size pool too small for this kernel\n",
+			     (unsigned long long)total, k->pvtmem_size,
+			     ks->per_fiber_size, ks->per_sp_size);
+			goto fail;
+		}
 		ks->pvt_bo.iova = ks->pvt_bo.pa;
-		if ((ks->pvt_bo.pa & 0x1fu) != 0)   /* tu6_emit_xs assert */
+		if ((ks->pvt_bo.pa & 0x1fu) != 0) {   /* tu6_emit_xs assert */
+			klog("adreno_3d: pvtmem BO pa %llx not 32-aligned\n",
+			     (unsigned long long)ks->pvt_bo.pa);
 			goto fail;
+		}
 	}
 	return 0;
 
@@ -568,6 +593,65 @@ static void build_memobj(uint32_t *desc, uint64_t base_iova, uint32_t elements) 
 }
 
 /* ------------------------------------------------------------------ */
+/* Build one 16-dword a6xx sampled-texture descriptor (the                */
+/* DESC_SINGLE_PLANE variant of A6XX_TEX_MEMOBJ) for a LINEAR RGBA8 image,  */
+/* mirroring fdl6_texture(TILE6_LINEAR, FMT6_8_8_8_8_UNORM).  `base` must be  */
+/* 32-byte aligned (BASE_LO is shr5); `stride`/`array_pitch` are in bytes     */
+/* (array_pitch is the per-layer size, internally shr12 by the macro).  A     */
+/* cube sets TYPE=A6XX_TEX_CUBE so the 6 faces are strided by array_pitch;    */
+/* DEPTH stays 1 (a single image / single cubemap).  Colour order follows the */
+/* same SWAP=WZYX + identity SWIZ convention the framebuffer/blit path uses;  */
+/* if the device shows red/blue swapped this is the single knob to flip.      */
+/* WIDTH/HEIGHT/DEPTH hold the RAW size (w, h, 1), not size-1, per            */
+/* a6xx_descriptors.xml + mesa fd6_emit_textures; a single 2D image and a     */
+/* single cubemap both use DEPTH=1 (TYPE=A6XX_TEX_CUBE implies the 6 faces,   */
+/* strided by array_pitch).  Only the colour SWAP/SWIZ above is a field the   */
+/* device bring-up may still need to flip (QEMU models no Adreno).            */
+/* ------------------------------------------------------------------ */
+static void build_tex_desc(uint32_t *desc, uint64_t base, uint32_t w, uint32_t h,
+                           uint32_t stride, uint32_t array_pitch, int cube) {
+	memset(desc, 0, A6XX_TEX_CONST_DWORDS * 4u);
+	desc[0] = A6XX_TEX_MEMOBJ_0_TILE_MODE(TILE6_LINEAR) |
+	          A6XX_TEX_MEMOBJ_0_SWAP(A3XX_COLOR_SWAP_WZYX) |
+	          A6XX_TEX_MEMOBJ_0_FMT(FMT6_8_8_8_8_UNORM) |
+	          A6XX_TEX_MEMOBJ_0_MIPLVLS(0) |
+	          A6XX_TEX_MEMOBJ_0_SWIZ_X(A6XX_TEX_SWIZ_X) |
+	          A6XX_TEX_MEMOBJ_0_SWIZ_Y(A6XX_TEX_SWIZ_Y) |
+	          A6XX_TEX_MEMOBJ_0_SWIZ_Z(A6XX_TEX_SWIZ_Z) |
+	          A6XX_TEX_MEMOBJ_0_SWIZ_W(A6XX_TEX_SWIZ_W);
+	desc[1] = A6XX_TEX_MEMOBJ_1_WIDTH(w & 0x7fffu) |
+	          A6XX_TEX_MEMOBJ_1_HEIGHT(h & 0x7fffu);
+	desc[2] = A6XX_TEX_MEMOBJ_2_PITCHALIGN(0) |
+	          A6XX_TEX_MEMOBJ_2_PITCH(stride & 0x3fffffu) |
+	          A6XX_TEX_MEMOBJ_2_TYPE(cube ? A6XX_TEX_CUBE : A6XX_TEX_2D);
+	desc[3] = A6XX_TEX_MEMOBJ_3_ARRAY_PITCH(array_pitch);
+	desc[4] = A6XX_TEX_MEMOBJ_4_BASE_LO(base);
+	desc[5] = A6XX_TEX_MEMOBJ_5_BASE_HI((uint32_t)(base >> 32)) |
+	          A6XX_TEX_MEMOBJ_5_DEPTH(1);
+	/* desc[6..15] stay 0 (single plane, one mip level, no flag buffer). */
+}
+
+/* ------------------------------------------------------------------ */
+/* Build one 4-dword a6xx_tex_samp sampler descriptor.  `linear` picks        */
+/* NEAREST vs LINEAR magnification / minification (from the ctex ub_pad high  */
+/* nibble, G2D_PGL_CTEX_FILTER_*); wrap is REPEAT on all axes (the client does */
+/* not convey a wrap mode).  Coords stay normalized, LOD pinned to level 0    */
+/* (the uploaded image has a single mip level).  dword2/dword3 stay 0.        */
+/* ------------------------------------------------------------------ */
+static void build_samp_desc(uint32_t *desc, int linear) {
+	uint32_t f = linear ? A6XX_TEX_LINEAR : A6XX_TEX_NEAREST;
+	memset(desc, 0, A6XX_TEX_SAMP_DWORDS * 4u);
+	desc[0] = A6XX_TEX_SAMP_0_XY_MAG(f) |
+	          A6XX_TEX_SAMP_0_XY_MIN(f) |
+	          A6XX_TEX_SAMP_0_WRAP_S(A6XX_TEX_REPEAT) |
+	          A6XX_TEX_SAMP_0_WRAP_T(A6XX_TEX_REPEAT) |
+	          A6XX_TEX_SAMP_0_WRAP_R(A6XX_TEX_REPEAT);
+	desc[1] = A6XX_TEX_SAMP_1_MAX_LOD(0) |
+	          A6XX_TEX_SAMP_1_MIN_LOD(0);
+	/* desc[2], desc[3] stay 0 (no reduction / border colour / aniso). */
+}
+
+/* ------------------------------------------------------------------ */
 /* One CS dispatch.                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -582,27 +666,36 @@ typedef struct {
    point, so this happens at most once per boot). */
 static int g_leaked_desc = 0;
 
-/* Per-dispatch BO layout: [UAV descriptors: num_ssbo x 64 B][UBO-0 copy of
-   the kernel's uniform region, 64-byte aligned, >= 64 B]. */
+/* Per-dispatch BO layout: [UAV descriptors: num_ssbo x 64 B][texture
+   descriptors: num_samp x 64 B, 64-aligned (SP_CS_TEXMEMOBJ_BASE)][sampler
+   descriptors: num_samp x 16 B (SP_CS_SAMPLER_BASE, 16-aligned)][dummy texel
+   scratch: 512 B zeroed, for unbound slots][UBO-0 copy of the kernel's uniform
+   region, 64-byte aligned, >= 64 B].  With num_samp == 0 the texture / sampler
+   / dummy regions are all empty and the layout is byte-identical to before. */
 #define DESC_UBO_MIN_BYTES  64u
+#define DESC_DUMMY_TEX_BYTES 512u   /* 6 cube faces x 64 B, zeroed -> samples 0 */
 
 /* Emit and submit one compute dispatch of kernel `ks` over grid[3]
    workgroups, binding the SSBO slots from `binds` (indexed by declared
-   binding) and feeding `unif[num_uniforms]` as UBO 0. Every dispatch drains
-   and invalidates UCHE before loading state. Returns ADRENO_OK,
-   ADRENO_E_DECLINED before anything reached the GPU, or the adreno_ring_submit
-   result (TIMEOUT / FAULT / WEDGED). */
+   binding), the sampled-texture units from `tex[num_tex]` (indexed by ctex
+   unit == texture_index; a slot the kernel reads but the request left unbound
+   samples a zeroed 1x1 dummy), and feeding `unif[num_uniforms]` as UBO 0.
+   Every dispatch drains and invalidates UCHE before loading state. Returns
+   ADRENO_OK, ADRENO_E_DECLINED before anything reached the GPU, or the
+   adreno_ring_submit result (TIMEOUT / FAULT / WEDGED). */
 static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
-                            uint32_t nbinds, const uint32_t *unif,
+                            uint32_t nbinds, const adreno_3d_tex_t *tex,
+                            uint32_t num_tex, const uint32_t *unif,
                             uint32_t num_uniforms, const uint32_t grid[3]) {
 	const adreno_prog_kernel_t *k = &ks->k;
 	struct ib b;
 	adreno_bo_t desc_bo;
 	uint32_t bin_iova_lo, bin_iova_hi, pvt_lo, pvt_hi;
-	uint64_t bin_iova, pvt_iova, ubo_iova;
+	uint64_t bin_iova, pvt_iova, ubo_iova, tex_iova, samp_iova, dummy_iova;
 	uint32_t thrsz, thrsz_cs, shared_size, cram, preload;
 	uint32_t gsx, gsy, gsz;
 	uint32_t desc_bytes, ubo_off, ubo_bytes, ubo_vec4s, ubo_region_dwords;
+	uint32_t num_samp, tex_off, samp_off, dummy_off;
 	uint32_t i;
 	int ret;
 
@@ -612,6 +705,43 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 		return ADRENO_E_DECLINED;
 	if (grid[0] == 0 || grid[1] == 0 || grid[2] == 0)
 		return ADRENO_E_DECLINED;
+
+	/* --- sampled-texture eligibility: the kernel reads slots [0,num_samp);
+	   a bound slot must be a linear RGBA8 image the descriptor can address
+	   (32-byte-aligned base for the shr5 BASE_LO, in-range dims/stride).  An
+	   unbound slot is fine: it samples the zeroed dummy.  A genuinely
+	   unsupported bound slot declines to the CPU rather than risk a fault. --- */
+	num_samp = k->num_samp;
+	if (num_samp > ADRENO_PROG_MAX_TEX)
+		return ADRENO_E_DECLINED;
+	for (i = 0; i < num_samp; i++) {
+		const adreno_3d_tex_t *t;
+		if (i >= num_tex || tex[i].phy == 0)
+			continue;                    /* unbound -> dummy below */
+		t = &tex[i];
+		if (t->tiling != 0)                  /* q8b only uploads linear */
+			return ADRENO_E_DECLINED;
+		if ((t->phy & 0x1fu) != 0)           /* BASE_LO is shr5 */
+			return ADRENO_E_DECLINED;
+		if (t->w == 0 || t->h == 0 || t->w > 0x7fffu || t->h > 0x7fffu)
+			return ADRENO_E_DECLINED;
+		if (t->stride == 0 || t->stride > 0x3fffffu)
+			return ADRENO_E_DECLINED;
+		if ((uint64_t)t->w * 4u > t->stride)    /* row must fit the pitch */
+			return ADRENO_E_DECLINED;
+		if (k->tex_type[i] == ADRENO_PROG_TEX_CUBE) {
+			/* A samplerCube slot must be fed a real cubemap (>= 6 layers at a
+			   4K-aligned per-layer stride): otherwise the 6 face reads stride
+			   past a single 2D allocation (out-of-bounds into neighbouring RAM,
+			   and past SMMU CB0's map a fault), or land misaligned (garbage).
+			   A fault here wedges the device permanently, so decline. */
+			uint64_t layer = (uint64_t)t->arrstride64 * 64u;
+			if (t->depth < 6u || t->arrstride64 == 0u ||
+			    (layer & 0xfffu) != 0 || layer > 0x7ffff000ull)
+				return ADRENO_E_DECLINED;   /* ARRAY_PITCH is a 23-bit shr12 field */
+		}
+	}
+
 	/* SP_CS_NDRANGE globalsize = local*groups must not wrap */
 	if ((uint64_t)grid[0] * k->local_size[0] > 0xffffffffu ||
 	    (uint64_t)grid[1] * k->local_size[1] > 0xffffffffu ||
@@ -643,11 +773,15 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	preload = k->instrlen < A690_INSTR_CACHE_SIZE ? k->instrlen
 	                                              : A690_INSTR_CACHE_SIZE;
 
-	/* --- per-dispatch BO: UAV descriptors + the UBO-0 uniform copy --- */
+	/* --- per-dispatch BO: UAV descriptors + texture/sampler descriptors +
+	   the zeroed dummy texel scratch + the UBO-0 uniform copy --- */
 	ubo_region_dwords = num_uniforms < k->uniform_blob_dwords ? num_uniforms
 	                                                          : k->uniform_blob_dwords;
 	desc_bytes = k->num_ssbo * A6XX_TEX_CONST_DWORDS * 4u;
-	ubo_off = align_up(desc_bytes, 64u);
+	tex_off   = align_up(desc_bytes, 64u);                       /* TEXMEMOBJ_BASE: 64-aligned */
+	samp_off  = tex_off + num_samp * A6XX_TEX_CONST_DWORDS * 4u; /* SAMPLER_BASE: 16-aligned   */
+	dummy_off = align_up(samp_off + num_samp * A6XX_TEX_SAMP_DWORDS * 4u, 64u);
+	ubo_off   = dummy_off + (num_samp ? DESC_DUMMY_TEX_BYTES : 0u);
 	ubo_bytes = align_up(k->uniform_blob_dwords * 4u, 16u);
 	if (ubo_bytes < DESC_UBO_MIN_BYTES)
 		ubo_bytes = DESC_UBO_MIN_BYTES;
@@ -662,6 +796,41 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 		const bind_t *bd = &binds[k->ssbo_binding[i]];
 		build_memobj((uint32_t *)desc_bo.va + i * A6XX_TEX_CONST_DWORDS,
 		             bd->phy, bd->bytes / 4u);
+	}
+	/* Texture + sampler descriptors, one pair per slot the kernel reads.
+	   An unbound slot points at the zeroed dummy scratch so it samples
+	   (0,0,0,0) instead of faulting on a null base. */
+	if (num_samp > 0) {
+		uint8_t *tex_base  = (uint8_t *)desc_bo.va + tex_off;
+		uint8_t *samp_base = (uint8_t *)desc_bo.va + samp_off;
+		dummy_iova = desc_bo.iova + dummy_off;
+		memset((uint8_t *)desc_bo.va + dummy_off, 0, DESC_DUMMY_TEX_BYTES);
+		tex_iova  = desc_bo.iova + tex_off;
+		samp_iova = desc_bo.iova + samp_off;
+		for (i = 0; i < num_samp; i++) {
+			uint32_t *td = (uint32_t *)(tex_base + i * A6XX_TEX_CONST_DWORDS * 4u);
+			uint32_t *sd = (uint32_t *)(samp_base + i * A6XX_TEX_SAMP_DWORDS * 4u);
+			int cube = (i < ADRENO_PROG_MAX_TEX &&
+			            k->tex_type[i] == ADRENO_PROG_TEX_CUBE);
+			int linear = 0;
+			if (i < num_tex && tex[i].phy != 0) {
+				const adreno_3d_tex_t *t = &tex[i];
+				uint32_t stride = t->stride;   /* non-zero: validated above */
+				/* cube: per-layer bytes from arrstride64 (validated: non-zero,
+				   4K-aligned, fits the 23-bit shr12 ARRAY_PITCH field); 2D: the
+				   single layer's size (ARRAY_PITCH is unused for one layer). */
+				uint32_t ap = cube ? (uint32_t)((uint64_t)t->arrstride64 * 64u)
+				                   : stride * t->h;
+				build_tex_desc(td, t->phy, t->w, t->h, stride, ap, cube);
+				linear = ((t->ub_pad >> 4) & 0xFu) == 1u;  /* G2D_PGL_CTEX_FILTER_LINEAR */
+			} else {
+				/* dummy: 1x1 (cube faces strided 64 B, all inside the scratch) */
+				build_tex_desc(td, dummy_iova, 1u, 1u, 4u, cube ? 64u : 4u, cube);
+			}
+			build_samp_desc(sd, linear);
+		}
+	} else {
+		tex_iova = samp_iova = dummy_iova = 0ull;
 	}
 	if (ubo_region_dwords > 0)
 		memcpy((uint8_t *)desc_bo.va + ubo_off, unif, ubo_region_dwords * 4u);
@@ -702,8 +871,8 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	         A6XX_SP_CS_CONST_CONFIG_ENABLED);
 	ib_pkt4(&b, REG_A6XX_SP_CS_CONFIG, 1);
 	ib_w(&b, A6XX_SP_CS_CONFIG_ENABLED |
-	         A6XX_SP_CS_CONFIG_NTEX(0) |
-	         A6XX_SP_CS_CONFIG_NSAMP(0) |
+	         A6XX_SP_CS_CONFIG_NTEX(num_samp) |
+	         A6XX_SP_CS_CONFIG_NSAMP(num_samp) |
 	         A6XX_SP_CS_CONFIG_NUAV(k->num_ssbo));   /* ir3_shader_num_uavs */
 
 	/* === 3. tu6_emit_xs(COMPUTE): CNTL_0 + program/pvtmem layout === */
@@ -869,6 +1038,38 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 		ib_w(&b, k->num_ssbo);
 	}
 
+	/* === 9b. sampled textures + samplers (fd6_emit_textures, bindful):
+	   sampler descriptors are preloaded ST6_SHADER / SB6_CS_TEX then pointed
+	   to by SP_CS_SAMPLER_BASE; texture descriptors ST6_CONSTANTS /
+	   SB6_CS_TEX then SP_CS_TEXMEMOBJ_BASE.  NUM_UNIT is the descriptor
+	   COUNT (not dwords); the counts already went to SP_CS_CONFIG.NTEX/.NSAMP
+	   in step 2. === */
+	if (num_samp > 0) {
+		ib_pkt7(&b, CP_LOAD_STATE6_FRAG, 3);
+		ib_w(&b, A6XX_CP_LOAD_STATE6_0_DST_OFF(0) |
+		         A6XX_CP_LOAD_STATE6_0_STATE_TYPE(A6XX_ST6_SHADER) |
+		         A6XX_CP_LOAD_STATE6_0_STATE_SRC(A6XX_SS6_INDIRECT) |
+		         A6XX_CP_LOAD_STATE6_0_STATE_BLOCK(A6XX_SB6_CS_TEX) |
+		         A6XX_CP_LOAD_STATE6_0_NUM_UNIT(num_samp));
+		ib_w(&b, (uint32_t)(samp_iova & 0xffffffffu));
+		ib_w(&b, (uint32_t)(samp_iova >> 32));
+		ib_pkt4(&b, REG_A6XX_SP_CS_SAMPLER_BASE_LO, 2);
+		ib_w(&b, (uint32_t)(samp_iova & 0xffffffffu));
+		ib_w(&b, (uint32_t)(samp_iova >> 32));
+
+		ib_pkt7(&b, CP_LOAD_STATE6_FRAG, 3);
+		ib_w(&b, A6XX_CP_LOAD_STATE6_0_DST_OFF(0) |
+		         A6XX_CP_LOAD_STATE6_0_STATE_TYPE(A6XX_ST6_CONSTANTS) |
+		         A6XX_CP_LOAD_STATE6_0_STATE_SRC(A6XX_SS6_INDIRECT) |
+		         A6XX_CP_LOAD_STATE6_0_STATE_BLOCK(A6XX_SB6_CS_TEX) |
+		         A6XX_CP_LOAD_STATE6_0_NUM_UNIT(num_samp));
+		ib_w(&b, (uint32_t)(tex_iova & 0xffffffffu));
+		ib_w(&b, (uint32_t)(tex_iova >> 32));
+		ib_pkt4(&b, REG_A6XX_SP_CS_TEXMEMOBJ_BASE, 2);
+		ib_w(&b, (uint32_t)(tex_iova & 0xffffffffu));
+		ib_w(&b, (uint32_t)(tex_iova >> 32));
+	}
+
 	/* === 10. SP_CS_CNTL_1 + HLSQ_CS_CTRL_REG1 (A690 has_lpac) === */
 	ib_pkt4(&b, REG_A6XX_SP_CS_CNTL_1, 1);
 	ib_w(&b, A6XX_SP_CS_CNTL_1_SHARED_SIZE(shared_size) |
@@ -1009,7 +1210,7 @@ static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 		}
 		loaded=1;
 	}
-	rc=emit_cs_dispatch(&kernel,binds,2,params,12,grid);
+	rc=emit_cs_dispatch(&kernel,binds,2,NULL,0,params,12,grid);
 	pthread_mutex_unlock(&lock);
 	return rc;
 }
@@ -1094,7 +1295,7 @@ static int compute_raster(uint64_t src_phy, int32_t src_w, int32_t src_h,
 		}
 		loaded=1;
 	}
-	rc=emit_cs_dispatch(&kernel,binds,2,params,12,grid);
+	rc=emit_cs_dispatch(&kernel,binds,2,NULL,0,params,12,grid);
 	pthread_mutex_unlock(&lock);
 	return rc;
 }
@@ -1222,7 +1423,7 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	grid[0] = (g->nverts + xwg - 1u) / xwg;   /* one invocation per vertex */
 	grid[1] = 1u;
 	grid[2] = 1u;
-	rc = emit_cs_dispatch(xf, binds, 4u, unif, split, grid);
+	rc = emit_cs_dispatch(xf, binds, 4u, NULL, 0, unif, split, grid);
 	if (rc != ADRENO_OK) {
 		klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
 		return rc;
@@ -1251,7 +1452,7 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		grid[0] = (w + rs->k.local_size[0] - 1u) / rs->k.local_size[0];
 		grid[1] = (h + rs->k.local_size[1] - 1u) / rs->k.local_size[1];
 	}
-	rc = emit_cs_dispatch(rs, binds, 4u, unif + split, num_uniforms - split,
+	rc = emit_cs_dispatch(rs, binds, 4u, NULL, 0, unif + split, num_uniforms - split,
 	                      grid);
 	if (rc != ADRENO_OK)
 		klog("adreno_3d: geom raster rc=%d tris %u tpw=%u\n", rc, ntris, tpw);
@@ -1268,6 +1469,7 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 static int draw_locked(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
                    uint32_t fb_stride, int32_t prog_handle,
                    const adreno_3d_geom_t *geom,
+                   const adreno_3d_tex_t *tex, uint32_t num_tex,
                    const uint32_t *unif, uint32_t num_uniforms) {
 	const prog_slot_t *s;
 	bind_t binds[1];
@@ -1294,20 +1496,24 @@ static int draw_locked(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 		return ADRENO_E_DECLINED;
 	if (unif == 0 && num_uniforms > 0)
 		return ADRENO_E_DECLINED;
+	if (tex == 0 && num_tex > 0)
+		return ADRENO_E_DECLINED;
 
 	if (s->is_geom)
 		return draw_geom(s, fb_phy, (uint32_t)fb_w, (uint32_t)fb_h, fb_stride,
 		                 geom, unif, num_uniforms);
 
-	/* --- fullscreen: only binding 0 (the framebuffer) can be supplied; a
-	   kernel declaring any further storage buffer is declined by
-	   emit_cs_dispatch's binding check. --- */
+	/* --- fullscreen: binding 0 (the framebuffer) is the only SSBO that can
+	   be supplied; a kernel declaring any further storage buffer is declined
+	   by emit_cs_dispatch's binding check.  Sampled textures ride `tex`
+	   (ctex unit i -> texture_index i); a slot the kernel reads but the
+	   request left unbound samples a zeroed dummy. --- */
 	binds[0].phy = fb_phy;
 	binds[0].bytes = fb_stride * (uint32_t)fb_h;
 	grid[0] = ((uint32_t)fb_w + s->kern[0].k.local_size[0] - 1u) / s->kern[0].k.local_size[0];
 	grid[1] = ((uint32_t)fb_h + s->kern[0].k.local_size[1] - 1u) / s->kern[0].k.local_size[1];
 	grid[2] = 1u;
-	return emit_cs_dispatch(&s->kern[0], binds, 1u, unif, num_uniforms, grid);
+	return emit_cs_dispatch(&s->kern[0], binds, 1u, tex, num_tex, unif, num_uniforms, grid);
 }
 
 int adreno_3d_program_load(const void *blob, uint32_t size) {
@@ -1327,10 +1533,11 @@ int adreno_3d_program_free(int32_t handle) {
 int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
                    uint32_t fb_stride, int32_t prog_handle,
                    const adreno_3d_geom_t *geom,
+                   const adreno_3d_tex_t *tex, uint32_t num_tex,
                    const uint32_t *unif, uint32_t num_uniforms) {
 	pthread_mutex_lock(&g_3d_lock);
 	int rc = draw_locked(fb_phy, fb_w, fb_h, fb_stride, prog_handle,
-	                     geom, unif, num_uniforms);
+	                     geom, tex, num_tex, unif, num_uniforms);
 	pthread_mutex_unlock(&g_3d_lock);
 	return rc;
 }

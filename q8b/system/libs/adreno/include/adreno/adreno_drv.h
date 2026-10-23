@@ -227,9 +227,31 @@ typedef struct {
 	uint32_t clear_rgba;   /* 0xAABBGGRR, portablegl byte order                 */
 } adreno_3d_geom_t;
 
+/* Sampled-texture units for the fullscreen (is_geom==0) path: one entry per
+   ctex unit the compiled program binds (unit i -> texture_index i).  All are
+   linear RGBA8 images uploaded by the client's adreno_texlayout.c, so `tiling`
+   is always 0 (PGLC_TEX_TILING_RASTER) and `phy` is the GPU-visible base.
+   `ub_pad`'s high nibble carries the filter (G2D_PGL_CTEX_FILTER_*: 0=NEAREST,
+   1=LINEAR).  For a cubemap `depth` is the layer count (6) and `arrstride64`
+   the per-layer size in 64-byte units (layer L lives at phy + L*arrstride64*64);
+   a plain 2D texture has depth<=1.  An entry with phy==0 is unbound and the
+   daemon substitutes a 1x1 dummy so the slot samples safely. */
+typedef struct {
+	uint64_t phy;
+	uint32_t stride;       /* row pitch, bytes                                  */
+	uint32_t w;            /* width, texels                                     */
+	uint32_t h;            /* height, texels                                    */
+	uint8_t  tiling;       /* 0 = linear raster (the only upload q8b produces)  */
+	uint8_t  ub_pad;       /* high nibble = G2D_PGL_CTEX_FILTER_*               */
+	uint8_t  depth;        /* cubemap layer count (6), else <=1                 */
+	uint8_t  reserved;
+	uint32_t arrstride64;  /* per-layer size in 64-byte units (cubemap)         */
+} adreno_3d_tex_t;
+
 int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
                    uint32_t fb_stride, int32_t prog_handle,
                    const adreno_3d_geom_t *geom,
+                   const adreno_3d_tex_t *tex, uint32_t num_tex,
                    const uint32_t *unif, uint32_t num_uniforms);
 
 /* A2D 2D-blitter back end (adreno_2d.c).  All surfaces are uint32 ARGB

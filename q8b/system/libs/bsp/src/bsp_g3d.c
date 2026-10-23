@@ -98,6 +98,7 @@
 #include <adreno/adreno_drv.h>
 #include <adreno/adreno_prog.h>    /* ADRENO_PROG_MAGIC, adreno_prog_blob_t */
 #include <stdlib.h>
+#include <string.h>
 #include <ewoksys/klog.h>
 
 /* capability latch: 0 = not probed, 1 = datapath ready, -1 = declined */
@@ -193,6 +194,8 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 		int32_t prog_handle, const void* unif, uint32_t num_uniforms,
 		const void* ctex) {
 	adreno_3d_geom_t g;
+	adreno_3d_tex_t atex[G2D_PGL_MAX_TEX_UNITS];
+	uint32_t num_tex = 0;
 	/* The compiled kernel carries its own depth / blend / cull / texture
 	   state (the fixed-function fs_id path does not exist on the CS back
 	   end), so those legacy fields are not consumed here; void-cast to
@@ -237,11 +240,31 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	g.ctex_h      = 0;
 	/* ctex is the caller's g2d_pgl_ctex_t (g2dd fills it when the client
 	   bound sampler-unit canvases; NULL from an older caller means no unit
-	   bound).  The geometry kernels sample unit 0 only (raspi5 parity). */
+	   bound).  Two consumers: the geometry kernels read unit 0 as an SSBO
+	   (g.ctex_*, raspi5 parity); a plain fullscreen kernel samples every
+	   bound unit through real a6xx texture+sampler descriptors, so all
+	   G2D_PGL_MAX_TEX_UNITS entries are forwarded (unit i -> texture_index
+	   i).  A unit that is unbound or non-contiguous is passed with phy == 0
+	   so the daemon samples a zeroed dummy rather than DMAing a scattered
+	   allocation. */
+	memset(atex, 0, sizeof(atex));
 	if (ctex) {
 		const g2d_pgl_ctex_t* c = (const g2d_pgl_ctex_t*)ctex;
+		uint32_t u;
+		for (u = 0; u < G2D_PGL_MAX_TEX_UNITS; u++) {
+			atex[u].phy        = (c->ctex_contig[u] && c->ctex_phy[u])
+			                        ? (uint64_t)c->ctex_phy[u] : 0;
+			atex[u].stride     = c->ctex_stride[u];
+			atex[u].w          = c->ctex_w[u];
+			atex[u].h          = c->ctex_h[u];
+			atex[u].tiling     = c->ctex_tiling[u];
+			atex[u].ub_pad     = c->ctex_ub_pad[u];
+			atex[u].depth      = c->ctex_depth[u];
+			atex[u].arrstride64 = c->ctex_arrstride64[u];
+		}
+		num_tex = G2D_PGL_MAX_TEX_UNITS;
 		/* These compute kernels read linear words, not V3D tiled images or
-		   layered textures. Leave incompatible bindings unresolved. */
+		   layered textures. Leave incompatible unit-0 bindings unresolved. */
 		if (c->ctex_contig[0] && c->ctex_phy[0] &&
 		    c->ctex_tiling[0] == 0 && c->ctex_depth[0] <= 1 &&
 		    c->ctex_w[0] <= 0xffffffffu / 4u) {
@@ -255,7 +278,7 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	g.clear_rgba  = clear_rgba;
 
 	return a3d_result(adreno_3d_draw(fb_phy, w, h, stride, prog_handle, &g,
-			(const uint32_t*)unif, num_uniforms));
+			atex, num_tex, (const uint32_t*)unif, num_uniforms));
 }
 
 int32_t bsp_g3d_program(const void* blob, uint32_t size) {

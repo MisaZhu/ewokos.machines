@@ -152,6 +152,35 @@ lower_uniform_to_ubo0(nir_builder *b, nir_intrinsic_instr *intr, void *data)
  * Variant snapshot
  * ------------------------------------------------------------------------- */
 
+/* Walk the (still-intact) pre-ir3 NIR for texture instructions and record, per
+ * sampler binding slot, whether it samples a 2D image or a cubemap.  The daemon
+ * needs this to build the right A6XX_TEX_CONST descriptor (TYPE 2D vs CUBE +
+ * the 6-layer array pitch).  Must run before ir3_shader_from_nir consumes the
+ * NIR and lowers the `sam` instructions away.  Slots default to 2D. */
+static void
+collect_sampler_types(nir_shader *nir, uint8_t *tex_type, uint32_t max_tex)
+{
+   memset(tex_type, ADRENO_PGLC_TEX_2D, max_tex);
+   if (!nir)
+      return;
+   nir_foreach_function(fn, nir) {
+      if (!fn->impl)
+         continue;
+      nir_foreach_block(block, fn->impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            unsigned idx = tex->sampler_index;
+            if (idx >= max_tex)
+               continue;
+            tex_type[idx] = (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE)
+                               ? ADRENO_PGLC_TEX_CUBE : ADRENO_PGLC_TEX_2D;
+         }
+      }
+   }
+}
+
 static bool
 copy_u32s(uint32_t **dst, const void *src, size_t bytes)
 {
@@ -170,7 +199,7 @@ copy_u32s(uint32_t **dst, const void *src, size_t bytes)
  * describing them. */
 static bool
 snapshot_variant(struct ir3_shader_variant *v, struct adreno_be_result *res,
-                 char *log, size_t logsz)
+                 const uint8_t *tex_type, char *log, size_t logsz)
 {
    const struct ir3_const_state *cs = ir3_const_state(v);
    struct adreno_pglc_stage *st = &res->st;
@@ -184,12 +213,19 @@ snapshot_variant(struct ir3_shader_variant *v, struct adreno_be_result *res,
       snprintf(log, logsz, "adreno: ir3 produced no binary");
       return false;
    }
-   /* The wire contract carries UAV descriptors only. Readonly SSBO loads
-    * must not silently acquire texture slots that the daemon never binds. */
-   if (v->num_samp || v->image_mapping.num_tex) {
-      snprintf(log, logsz, "adreno: texture descriptors are not supported "
-               "(samplers %d, texture slots %u)", v->num_samp,
-               v->image_mapping.num_tex);
+   /* Sampled textures (VERSION 4): the daemon binds up to ADRENO_PGLC_MAX_TEX
+    * ctex units and emits an A6XX_TEX_CONST + A6XX_TEX_SAMP descriptor per
+    * sampler, so a `sam`-using kernel is now supported.  Writable image /
+    * SSBO-as-texture slots (image_mapping) are still declined: the wire
+    * contract carries no image UAV descriptors. */
+   if (v->num_samp < 0 || (uint32_t)v->num_samp > ADRENO_PGLC_MAX_TEX) {
+      snprintf(log, logsz, "adreno: %d samplers exceed the blob's %u",
+               v->num_samp, ADRENO_PGLC_MAX_TEX);
+      return false;
+   }
+   if (v->image_mapping.num_tex) {
+      snprintf(log, logsz, "adreno: image / SSBO texture slots are not supported "
+               "(num_tex %u)", v->image_mapping.num_tex);
       return false;
    }
    if (cs->driver_params_ubo.idx != -1) {
@@ -295,6 +331,19 @@ snapshot_variant(struct ir3_shader_variant *v, struct adreno_be_result *res,
    for (uint32_t i = 0; i < st->num_ssbo; i++)
       st->ssbo_binding[i] = i;
 
+   /* Sampled textures (VERSION 4).  Following the a6xx bindful model (mesa
+    * fd6_emit_textures), the daemon builds one 16-dword A6XX_TEX_CONST per slot
+    * into a dedicated texture-descriptor BO (SP_CS_TEXMEMOBJ_BASE) and one
+    * 4-dword A6XX_TEX_SAMP per slot into a sampler BO (SP_CS_SAMPLER_BASE); the
+    * descriptors do not live in the const file, so CONSTLEN is unchanged and
+    * tex_const_off stays 0 (reserved).  num_samp is the 1:1 texture+sampler
+    * count (GLSL combined samplers: NTEX == NSAMP).  tex_type[] was collected
+    * from the pre-ir3 NIR (2D vs cube per sampler binding). */
+   st->num_samp = (uint32_t)(v->num_samp > 0 ? v->num_samp : 0);
+   st->tex_const_off = 0;
+   for (uint32_t i = 0; i < ADRENO_PGLC_MAX_TEX; i++)
+      st->tex_type[i] = tex_type[i];
+
    return true;
 }
 
@@ -310,6 +359,7 @@ adreno_be_compile_compute(nir_shader *cs_in, struct adreno_be_result *res,
    struct ir3_shader *shader = NULL;
    struct ir3_shader_variant *v = NULL;
    nir_shader *nir;
+   uint8_t tex_type[ADRENO_PGLC_MAX_TEX];
    bool ok = false;
 
    memset(res, 0, sizeof(*res));
@@ -356,6 +406,10 @@ adreno_be_compile_compute(nir_shader *cs_in, struct adreno_be_result *res,
    (void)nir_opt_constant_folding(nir);
    (void)nir_opt_dce(nir);
 
+   /* Record 2D-vs-cube per sampler binding while the texture instructions are
+    * still intact (ir3_finalize_nir / ir3_shader_from_nir lower them away). */
+   collect_sampler_types(nir, tex_type, ADRENO_PGLC_MAX_TEX);
+
    /* --- ir3 --- */
    struct ir3_shader_options sopts;
    memset(&sopts, 0, sizeof(sopts));
@@ -380,7 +434,7 @@ adreno_be_compile_compute(nir_shader *cs_in, struct adreno_be_result *res,
       goto out;
    }
 
-   ok = snapshot_variant(v, res, log, logsz);
+   ok = snapshot_variant(v, res, tex_type, log, logsz);
 
 out:
    if (v)

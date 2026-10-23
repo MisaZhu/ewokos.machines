@@ -1366,4 +1366,74 @@
 #define A6XX_TEX_MEMOBJ_2_STARTOFFSETTEXELS(v)   ((((uint32_t)(v)) & 0x3fu) << 16)
 #define A6XX_TEX_MEMOBJ_2_TYPE(t)                ((((uint32_t)(t)) & 0x7u) << 29)
 
+/* --- a6xx_tex_const SINGLE-PLANE sampled-texture words (the DESC_SINGLE_PLANE
+   variant of the same A6XX_TEX_MEMOBJ domain above).  Built like fdl6_texture()
+   for a linear (TILE6_LINEAR) RGBA8 2D / cube image; field bit positions are
+   transcribed verbatim from a6xx_descriptors.xml.  A texture descriptor is the
+   same 16 dwords as a MEMOBJ, only TYPE / PITCH / BASE / DEPTH / ARRAY_PITCH
+   differ.  NOTE (device bring-up): PITCH is the row stride in BYTES; BASE_LO is
+   shr5 (the base must be 32-byte aligned); ARRAY_PITCH is the per-layer size in
+   bytes shr12 (cube / 2D-array).  DEPTH is the count of the outermost array
+   dimension: 1 for a single 2D image and for a single cubemap (the 6 cube faces
+   are implied by TYPE=A6XX_TEX_CUBE and strided by ARRAY_PITCH), so this driver
+   always writes DEPTH=1. --- */
+#define A6XX_TEX_MEMOBJ_0_SRGB                   (1u << 2)
+#define A6XX_TEX_MEMOBJ_0_SAMPLES(v)             ((((uint32_t)(v)) & 0x3u) << 20)
+#define A6XX_TEX_MEMOBJ_2_PITCHALIGN(v)          ((((uint32_t)(v)) & 0xfu) << 0)   /* [0:3]   */
+#define A6XX_TEX_MEMOBJ_2_PITCH(v)               ((((uint32_t)(v)) & 0x3fffffu) << 7)/* [7:28]  */
+#define A6XX_TEX_MEMOBJ_3_ARRAY_PITCH(v)         ((((uint32_t)((v) >> 12)) & 0x7fffffu) << 0) /* [0:22] shr12 */
+#define A6XX_TEX_MEMOBJ_3_TILE_ALL               (1u << 27)
+#define A6XX_TEX_MEMOBJ_3_FLAG                   (1u << 28)
+#define A6XX_TEX_MEMOBJ_4_BASE_LO(v)             ((((uint32_t)((v) >> 5)) & 0x7ffffffu) << 5) /* [5:31] shr5 */
+#define A6XX_TEX_MEMOBJ_5_BASE_HI(v)             ((uint32_t)(v) & 0x1ffffu)          /* [0:16]  */
+#define A6XX_TEX_MEMOBJ_5_DEPTH(v)               ((((uint32_t)(v)) & 0x1fffu) << 17) /* [17:29] */
+
+/* enum a6xx_tex_type (a6xx_enums.xml).  A6XX_TEX_BUFFER (4) is defined above. */
+#define A6XX_TEX_1D                                              0x0u
+#define A6XX_TEX_2D                                              0x1u
+#define A6XX_TEX_CUBE                                            0x2u
+#define A6XX_TEX_3D                                              0x3u
+/* enum a6xx_tex_filter (a6xx_enums.xml): XY_MAG / XY_MIN magnification / min. */
+#define A6XX_TEX_NEAREST                                         0x0u
+#define A6XX_TEX_LINEAR                                          0x1u
+/* enum a6xx_tex_clamp (a6xx_enums.xml): WRAP_S / WRAP_T / WRAP_R. */
+#define A6XX_TEX_REPEAT                                          0x0u
+#define A6XX_TEX_CLAMP_TO_EDGE                                   0x1u
+#define A6XX_TEX_MIRROR_REPEAT                                   0x2u
+#define A6XX_TEX_CLAMP_TO_BORDER                                 0x3u
+#define A6XX_TEX_MIRROR_CLAMP                                    0x4u
+
+/* --- a6xx_tex_samp sampler descriptor words (A6XX_TEX_SAMP domain, 4 dwords =
+   16 bytes; a6xx_descriptors.xml).  Only the fields this driver sets are
+   encoded; dword2/dword3 stay 0 (no reduction / border colour / aniso). --- */
+#define A6XX_TEX_SAMP_DWORDS                                     4u
+#define A6XX_TEX_SAMP_0_MIPFILTER_LINEAR_NEAR                    (1u << 0)
+#define A6XX_TEX_SAMP_0_XY_MAG(v)              ((((uint32_t)(v)) & 0x3u) << 1)   /* [1:2]   */
+#define A6XX_TEX_SAMP_0_XY_MIN(v)              ((((uint32_t)(v)) & 0x3u) << 3)   /* [3:4]   */
+#define A6XX_TEX_SAMP_0_WRAP_S(v)              ((((uint32_t)(v)) & 0x7u) << 5)   /* [5:7]   */
+#define A6XX_TEX_SAMP_0_WRAP_T(v)              ((((uint32_t)(v)) & 0x7u) << 8)   /* [8:10]  */
+#define A6XX_TEX_SAMP_0_WRAP_R(v)              ((((uint32_t)(v)) & 0x7u) << 11)  /* [11:13] */
+#define A6XX_TEX_SAMP_1_CLAMPENABLE                            (1u << 0)
+#define A6XX_TEX_SAMP_1_UNNORM_COORDS                          (1u << 5)
+#define A6XX_TEX_SAMP_1_MIPFILTER_LINEAR_FAR                   (1u << 6)
+#define A6XX_TEX_SAMP_1_MAX_LOD(v)             ((((uint32_t)(v)) & 0xfffu) << 8)  /* [8:19] ufixed.8 */
+#define A6XX_TEX_SAMP_1_MIN_LOD(v)             ((((uint32_t)(v)) & 0xfffu) << 20) /* [20:31] ufixed.8 */
+
+/* --- CS texture / sampler descriptor-array base registers (a6xx.xml).  The
+   bindful a6xx model (docs.mesa3d.org/drivers/freedreno, "Bindless/Bindful
+   Descriptors"; mesa fd6_emit_textures): sampled-texture descriptors live in
+   their own BO, pointed to by SP_CS_TEXMEMOBJ_BASE (the renamed SP_CS_TEX_CONST)
+   and preloaded with CP_LOAD_STATE6_FRAG STATE_TYPE=ST6_CONSTANTS
+   STATE_BLOCK=SB6_CS_TEX; sampler descriptors live in their own BO, pointed to
+   by SP_CS_SAMPLER_BASE (the renamed SP_CS_TEX_SAMP) and preloaded with
+   STATE_TYPE=ST6_SHADER STATE_BLOCK=SB6_CS_TEX.  SP_CS_CONFIG.NTEX / .NSAMP
+   carry the counts.  Neither array is in the const file, so CONSTLEN is
+   unaffected. --- */
+/* _LO aliases the reg64 lo word (0xa9e2).  The hi word is already defined above
+   as REG_A6XX_SP_CS_SAMPLER_BASE_HI (0xa9e3) and must NOT be redefined here - a
+   prior self-referential `#define ..._HI ..._HI` was a latent build break (the
+   token would expand to itself and fail to compile wherever it was used).  The
+   daemon writes the lo/hi pair with one PKT4 count-2 from _LO. */
+#define REG_A6XX_SP_CS_SAMPLER_BASE_LO                           REG_A6XX_SP_CS_SAMPLER_BASE
+
 #endif /* ADRENO_A6XX_REGS_H */

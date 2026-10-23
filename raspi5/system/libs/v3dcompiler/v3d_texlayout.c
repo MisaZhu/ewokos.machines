@@ -154,3 +154,12 @@ void pglc_tex_store_2d(void *dst, const void *src, uint32_t src_stride,
    v3d_store_tiled_image(dst, layout->stride, (void *)src, src_stride,
                          mode, (int)cpp, layout->padded_h, &box);
 }
+
+/* The V3D TMU cannot sample a raster (row-major) image - level 0 must be in a
+   tiled layout (see the file header).  Returning false tells the shared client
+   (pgl_g3d.c) to leave a raster slot unbound, so a draw that would sample it
+   declines to the CPU path instead of reading a scrambled picture. */
+bool pglc_tex_sampler_reads_raster(void)
+{
+   return false;
+}

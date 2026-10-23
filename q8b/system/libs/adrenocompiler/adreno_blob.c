@@ -80,6 +80,14 @@ fill_kernel(adreno_prog_kernel_t *k, const struct pglc_stage *st,
 	for (uint32_t i = 0; i < k->num_ssbo; i++)
 		k->ssbo_binding[i] = b->ssbo_binding[i];
 	k->uniform_blob_dwords = st->uniform_blob_dwords;
+
+	/* Sampled textures (VERSION 4).  s_zero_stage leaves num_samp == 0, so a
+	 * stage with no backend snapshot serializes as a procedural kernel. */
+	k->num_samp = b->num_samp < ADRENO_PROG_MAX_TEX ? b->num_samp
+	                                                 : ADRENO_PROG_MAX_TEX;
+	k->tex_const_off = b->tex_const_off;
+	for (uint32_t i = 0; i < ADRENO_PROG_MAX_TEX; i++)
+		k->tex_type[i] = b->tex_type[i];
 }
 
 static uint32_t
