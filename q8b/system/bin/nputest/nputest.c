@@ -54,21 +54,6 @@ static int feq(float a, float b, float tol)
 	return d <= tol;
 }
 
-static uint64_t dt_size(Qnn_DataType_t dt)
-{
-	switch (dt) {
-	case QNN_DATATYPE_FLOAT32:
-	case QNN_DATATYPE_INT32:
-	case QNN_DATATYPE_UINT32:  return 4;
-	case QNN_DATATYPE_FLOAT16:
-	case QNN_DATATYPE_INT16:
-	case QNN_DATATYPE_UINT16:  return 2;
-	case QNN_DATATYPE_INT8:
-	case QNN_DATATYPE_UINT8:   return 1;
-	default:                   return 0;
-	}
-}
-
 static Qnn_ConfigParam_t cfg(const char *k, const char *v)
 {
 	Qnn_ConfigParam_t c;
