@@ -21,7 +21,7 @@
  *   - bsp_g2d_blt_alpha   -> exact straight-alpha compute blend
  *   - bsp_g2d_scale_to    -> exact Q15 nearest compute scale
  *   - bsp_g2d_rotate      -> A2D 0/180; compute other angles/packed pitches
- *   - bsp_g2d_gaussian_blur -> explicit decline (exact convolution pending)
+ *   - bsp_g2d_gaussian_blur -> fast bilinear downsample/upsample cascade
  *   - bsp_g2d_blt_phy     -> A2D copy into a raw physical scan-out dst
  *   - bsp_g2d_rotate_phy  -> A2D rotate into a raw physical dst, 0/180
  *
@@ -29,9 +29,9 @@
  *   - fill_triangle: the A2D has no triangle op, so it returns
  *     G2D_ERR_NOT_SUPPORTED (-2, sticky) and the client keeps its CPU engine
  *     (G2D_CAP_FILL_TRIANGLE is its own capability bit).
- *   - gaussian_blur declines -2: the private A2D mip approximation does not
- *     implement the protocol's Q16 Gaussian kernel. Clients use their own
- *     exact software path until a conformant compute kernel is available.
+ *   - gaussian_blur: packed pitches not divisible by 64, tiny rectangles,
+ *     overlapping buffers or insufficient scratch return FAILED. The fast
+ *     A2D approximation prioritizes throughput over CPU pixel equivalence.
  *   - raw physical rotate 90/270: the A2D destination convention is not
  *     validated; return FAILED without writes and let the client rotate.
  *     Canvas rotation uses an exact integer compute mapping instead.
@@ -304,20 +304,24 @@ int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_co
 			0, 0, src_w, src_h, degree));
 }
 
-/* Exact Q16 Gaussian needs a compute kernel. Decline without touching either
-   surface; the independent client capability bit preserves other GPU ops. */
+/* Fast Gaussian-style blur. Only the final upsample writes the canvas;
+   earlier safe declines permit the client to run its software blur. */
 int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
 			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
 			int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
-	(void)argb; (void)argb_phy; (void)contig;
-	(void)tmp; (void)tmp_phy; (void)tmp_contig;
-	(void)argb_w; (void)argb_h; (void)rect_x; (void)rect_y;
-	(void)rect_w; (void)rect_h; (void)radius;
-	/* A mip cascade is not the Q16 Gaussian promised by this API. */
-	return G2D_ERR_NOT_SUPPORTED;
+	(void)argb; (void)tmp;
+	if (!adreno_2d_available())
+		return G2D_ERR_NOT_SUPPORTED;
+	if (!gpu_buf_ok(argb_phy, contig) || !gpu_buf_ok(tmp_phy, tmp_contig) ||
+	    argb_w <= 0 || argb_h <= 0 || rect_w <= 0 || rect_h <= 0)
+		return G2D_ERR_FAILED;
+	return a2d_result(adreno_2d_blur(argb_phy, argb_w, argb_h,
+		(uint32_t)argb_w * 4u, rect_x, rect_y, rect_w, rect_h, radius,
+		tmp_phy, (uint64_t)(rect_h - 1) * (uint32_t)argb_w * 4u +
+		(uint32_t)rect_w * 4u));
 }
 
 /* PortableGL clear/program/compute dispatch live in bsp_g3d.c. */

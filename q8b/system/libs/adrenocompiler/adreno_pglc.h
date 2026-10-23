@@ -34,6 +34,7 @@ struct adreno_pglc_ubo_range {
 };
 
 struct adreno_pglc_stage {
+   bool      geom_pixel_owned; /* VERSION 3: raster grid covers pixels */
    uint32_t  instrlen;
    uint32_t  constlen;
    uint32_t  shared_size;

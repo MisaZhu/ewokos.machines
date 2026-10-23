@@ -16,10 +16,7 @@
 #define GUARD_BYTES 0x4000u
 
 static void retain_on_timeout(int ret) {
-    if(ret == G2D_ERR_TIMEOUT) {
-        printf("gpushader: retaining buffers until physical power cycle\n");
-        while(1) proc_nsleep_precise(1000000000);
-    }
+    g2d_quiesce_on_fault(ret);
 }
 
 static uint32_t pattern(unsigned x, unsigned y, unsigned seed) {
@@ -110,13 +107,14 @@ int main(int argc, char **argv) {
     g2d_canvas_t empty = {0};
     const unsigned count = W * H + GUARD_BYTES / 4;
 
-    if(argc == 3 && strcmp(argv[2], "--geometry") == 0)
-        return q8b_geometry_test(argv[1]);
+    if(argc == 3 && (strcmp(argv[2], "--geometry") == 0 ||
+                    strcmp(argv[2], "--geometry-batch") == 0))
+        return q8b_geometry_test(argv[1],strcmp(argv[2], "--geometry-batch") == 0);
     upload_only = argc == 3 && strcmp(argv[2], "--upload-only") == 0;
     uniforms = argc == 3 && strcmp(argv[2], "--uniforms") == 0;
     raster = argc == 3 && strcmp(argv[2], "--raster") == 0;
     if(argc < 2 || argc > 3 || (argc == 3 && !upload_only && !uniforms && !raster)) {
-        printf("usage: gpushader shader.bin [--upload-only|--uniforms|--raster|--geometry]\n");
+        printf("usage: gpushader shader.bin [--upload-only|--uniforms|--raster|--geometry|--geometry-batch]\n");
         return 1;
     }
     if(g2d_get_version(&version) || version != 690) {

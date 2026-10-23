@@ -10,6 +10,7 @@ TARGET = $(TARGET_DIR)/bin/gpusmoke
 SCANOUT = $(TARGET_DIR)/bin/g2dscanout
 PRESENT = $(TARGET_DIR)/bin/g2dpresent
 all: $(TARGET) $(SCANOUT) $(PRESENT)
+$(OBJS): api_tests.h blur_tests.h
 $(TARGET): $(OBJS) $(BUILD_DIR)/lib/libgraph.a $(BUILD_DIR)/lib/libg2dclient.a $(BUILD_DIR)/lib/libewoksys.a
 	$(LD) -Ttext=100 $(OBJS) -o $(TARGET) $(LDFLAGS) -lgraph -lg2dclient -lopenlibm $(EWOK_LIBC)
 $(SCANOUT): $(ARCH)/g2dscanout.o $(BUILD_DIR)/lib/libdisplayd.a $(BUILD_DIR)/lib/libgraph.a $(BUILD_DIR)/lib/libg2dclient.a $(BUILD_DIR)/lib/libewoksys.a

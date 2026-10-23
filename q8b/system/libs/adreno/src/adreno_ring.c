@@ -54,8 +54,10 @@
 #include <adreno/a6xx_gmu_regs.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
+#include <ewoksys/kernel_tic.h>
 #include <pthread.h>
 #include <string.h>
+#include <unistd.h>
 
 /* --- ring geometry (msm_gpu.h:310-316) --- */
 #define MSM_GPU_RINGBUFFER_SZ        0x8000u          /* SZ_32K            */
@@ -82,6 +84,8 @@
 
 /* Poll budget: each iteration sleeps ~10 us (proc_nsleep_precise). */
 #define RING_IDLE_TRIES              100000  /* ~1 s                     */
+#define RING_SUBMIT_TIMEOUT_MS       1000u
+#define RING_SUBMIT_SPINS            32u
 
 #define gpu_read(w)                  adreno_gpu_read(w)
 #define gpu_write(w, v)              adreno_gpu_write((w), (v))
@@ -95,10 +99,14 @@ static void ring_mark_wedged(adreno_dev_t *d, const char *why) {
 	if (d->wedged)
 		return;
 	d->wedged = 1;
+	/* Never probe GX MMIO after a completion timeout: if the fabric/GX is
+	   unresponsive, a diagnostic read can itself stall the CPU indefinitely.
+	   These DMA/CPU values remain observable without touching the dead unit. */
 	klog("adreno_ring: GPU WEDGED (%s) - all further submits decline; "
-	     "rbbm_status=%08x int0=%08x rptr=%08x wptr=%08x\n", why,
-	     gpu_read(REG_A6XX_RBBM_STATUS), gpu_read(REG_A6XX_RBBM_INT_0_STATUS),
-	     gpu_read(REG_A6XX_CP_RB_RPTR), gpu_read(REG_A6XX_CP_RB_WPTR));
+	     "shadow=%08x wptr=%08x fence=%u mem=%08x\n", why,
+	     d->rptr_shadow.va ? ((volatile uint32_t *)d->rptr_shadow.va)[0] : 0,
+	     d->ring.wptr, d->fence,
+	     d->ring.scratch.va ? ((volatile uint32_t *)d->ring.scratch.va)[0] : 0);
 }
 
 int adreno_wedged(void) {
@@ -149,6 +157,51 @@ static int ring_wait_drained(adreno_dev_t *d) {
 			return 0;
 		}
 		proc_nsleep_precise(10000);
+	}
+	return -1;
+}
+
+/* Runtime waits use one wall-clock budget for the entire submission. Counting
+   100000 tiny sleeps could keep a desktop request alive for many seconds if
+   each sleep was descheduled. Spin briefly for cheap blits, then park so a
+   stuck GPU cannot consume a CPU core for the full timeout. The completion
+   fence is the last event in the IB, so it is the fast completion authority;
+   RPTR is sampled once only after the fence lands (and remains the authority
+   for ring-space checks before the next submit). No GX MMIO poll. */
+static int ring_wait_submit(adreno_dev_t *d, uint64_t start,
+                           volatile uint32_t *fence_mem, uint32_t fence) {
+	adreno_ring_t *ring = &d->ring;
+	uint32_t target = get_wptr(ring);
+	for (uint32_t i = 0; i < RING_IDLE_TRIES; i++) {
+		if (fence_mem != NULL) {
+			/* CACHE_FLUSH_TS is emitted after the whole IB. Avoid an RPTR
+			   load on every poll; one final sample is enough to account for
+			   ring space before the next submission. */
+			if (fence_mem[0] == fence) {
+				uint32_t shadow = ((volatile uint32_t *)d->rptr_shadow.va)[0] &
+					(ring->sizedwords - 1);
+				ring->rptr_gpu = shadow;
+				return 0;
+			}
+		}
+		else {
+			uint32_t shadow = ((volatile uint32_t *)d->rptr_shadow.va)[0] &
+				(ring->sizedwords - 1);
+			if (shadow == target) {
+				ring->rptr_gpu = shadow;
+				return 0;
+			}
+		}
+		/* The timeout is a safety bound, not part of the normal fast path.
+		   Once parked, check every wake so a delayed scheduler cannot turn
+		   one long sleep into many extra timeout intervals. */
+		if (((i < RING_SUBMIT_SPINS) ? ((i & 31u) == 0) : true) &&
+				kernel_tic_ms(0) - start >= RING_SUBMIT_TIMEOUT_MS)
+			break;
+		if (i < RING_SUBMIT_SPINS)
+			proc_nsleep_precise(10000);
+		else
+			usleep(1000);
 	}
 	return -1;
 }
@@ -357,12 +410,14 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	adreno_ring_t *ring = &d->ring;
 	volatile uint32_t *fence_mem;
 	uint32_t fence;
-	int i, rc;
+	int rc;
+	uint64_t start;
 
 	if (cmds == 0 || dwords == 0)
 		return ADRENO_E_DECLINED;
 
 	pthread_mutex_lock(&g_submit_lock);
+	start = kernel_tic_ms(0);
 
 	if (d->wedged) {
 		rc = ADRENO_E_WEDGED;
@@ -372,7 +427,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 		rc = ADRENO_E_DECLINED;
 		goto out;
 	}
-	if (dwords * 4u > ring->ib.size) {
+	if (dwords > ring->ib.size / sizeof(uint32_t)) {
 		rc = ADRENO_E_DECLINED;
 		goto out;
 	}
@@ -383,7 +438,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	   decline (the staging IB may still be in flight and must not be
 	   overwritten below). */
 	if (ring_freewords(d) < 16) {
-		if (ring_wait_drained(d) != 0) {
+		if (ring_wait_submit(d, start, NULL, 0) != 0) {
 			ring_mark_wedged(d, "ring did not drain before submit");
 			rc = ADRENO_E_TIMEOUT;
 			goto out;
@@ -395,6 +450,8 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	adreno_wmb();
 
 	fence = ++d->fence;
+	if (fence == 0)
+		fence = ++d->fence; /* zero means not completed, including at wrap */
 	fence_mem = (volatile uint32_t*)ring->scratch.va;
 	fence_mem[0] = 0;
 	adreno_wmb();
@@ -414,26 +471,14 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 
 	ring_flush(ring);
 
-	/* Wait for the ring to drain, then for the fence dword to land.  From
-	   here on the job is the GPU's: any failure wedges the device. */
-	if (ring_wait_drained(d) != 0) {
-		klog("adreno_ring: submit fence %u did not drain (rptr=%08x wptr=%08x)\n",
-		     fence, gpu_read(REG_A6XX_CP_RB_RPTR), gpu_read(REG_A6XX_CP_RB_WPTR));
-		ring_check_fault(d);
-		ring_mark_wedged(d, "ring did not drain");
-		rc = ADRENO_E_TIMEOUT;
-		goto out;
-	}
-	for (i = 0; i < RING_IDLE_TRIES; i++) {
-		if (fence_mem[0] == fence)
-			break;
-		proc_nsleep_precise(10000);
-	}
-	if (fence_mem[0] != fence) {
-		klog("adreno_ring: fence %u never retired (mem=%08x)\n",
-		     fence, fence_mem[0]);
-		ring_check_fault(d);
-		ring_mark_wedged(d, "fence never retired");
+	/* Both RPTR and the fence must complete within the same wall deadline.
+	   From the doorbell onwards, a failure is terminal, never CPU replay. */
+	if (ring_wait_submit(d, start, fence_mem, fence) != 0) {
+		klog("adreno_ring: fence %u timeout after %ums (words=%u mem=%08x shadow=%08x wptr=%08x)\n",
+		     fence, (unsigned)(kernel_tic_ms(0) - start), dwords,
+		     fence_mem[0], ((volatile uint32_t *)d->rptr_shadow.va)[0],
+		     get_wptr(ring));
+		ring_mark_wedged(d, "submission deadline expired");
 		rc = ADRENO_E_TIMEOUT;
 		goto out;
 	}

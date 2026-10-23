@@ -197,6 +197,17 @@ pglc_program_free(struct pglc_program *res)
  * Graphics (binner) route
  * ------------------------------------------------------------------------- */
 extern "C" bool
+pglc_validate_glsl(const char *vert_src, const char *frag_src,
+                   char *log, uint32_t logsz)
+{
+   struct pglc_fe_shaders *sh = NULL;
+   bool ok = pglc_fe_compile_glsl(vert_src, frag_src, v3d_nir_options(),
+                                 &sh, log, logsz);
+   pglc_fe_shaders_free(sh);
+   return ok;
+}
+
+extern "C" bool
 pglc_compile_glsl(const char *vert_src, const char *frag_src,
                   struct pglc_program *res)
 {

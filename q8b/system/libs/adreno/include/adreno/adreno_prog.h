@@ -104,6 +104,9 @@ extern "C" {
    the other. */
 #define ADRENO_PROG_MAGIC     0x33444e41u
 #define ADRENO_PROG_VERSION   2u
+/* Same wire layout; raster grid covers pixels, each owning its colour/depth.
+ * A separate version makes old daemons reject the different dispatch shape. */
+#define ADRENO_PROG_PIXEL_VERSION 3u
 
 /* Maximum storage-buffer bindings a compiled kernel may declare.  Sized for the
    portablegl fullscreen-compute set and the geometry rasterizer (render target

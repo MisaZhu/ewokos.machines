@@ -420,6 +420,9 @@ static void test_tsens(void) {
 
 int main(int argc, char** argv) {
     const char* mount = argc > 1 ? argv[1] : "/dev/fan";
+    /* Bring-up isolation: keep cooling without probing either TSENS block.
+     * Some boot states hang on the first TM read even with TSENS_EN set. */
+    bool fixed = argc > 2 && strcmp(argv[2], "--fixed") == 0;
     vdevice_t dev;
 
     if (argc > 1 && strcmp(argv[1], "gpio-test") == 0) {
@@ -432,21 +435,26 @@ int main(int argc, char** argv) {
     }
 
     if (map_at(TLMM_VA, TLMM_PHY, TLMM_SIZE) != 0 ||
-            map_at(TSENS_VA, TSENS_TM_PHY, TSENS_SIZE) != 0 ||
-            map_at(TSENS_SROT_VA, TSENS_SROT_PHY, TSENS_SROT_SIZE) != 0) {
+            (!fixed && (map_at(TSENS_VA, TSENS_TM_PHY, TSENS_SIZE) != 0 ||
+            map_at(TSENS_SROT_VA, TSENS_SROT_PHY, TSENS_SROT_SIZE) != 0))) {
         klog("q8b fand: MMIO map failed; fan left off\n");
         return -1;
     }
     _tlmm = (volatile uint32_t*)(uintptr_t)TLMM_VA;
-    _tsens_tm = (volatile uint32_t*)(uintptr_t)TSENS_VA;
-    _tsens_srot = (volatile uint32_t*)(uintptr_t)TSENS_SROT_VA;
+    if (!fixed) {
+        _tsens_tm = (volatile uint32_t*)(uintptr_t)TSENS_VA;
+        _tsens_srot = (volatile uint32_t*)(uintptr_t)TSENS_SROT_VA;
+    }
     pthread_mutex_init(&_lock, NULL);
     fan_gpio_init();
-    if (tsens_init() == 0)
+    if (fixed) {
+        _automatic = false;
+        klog("q8b fand: fixed full duty; TSENS not mapped or accessed\n");
+    } else if (tsens_init() == 0)
         _tsens_ok = 1;
     else
         klog("q8b fand: no safe TSENS; fixed duty mode\n");
-    fan_set_duty_locked(FAN_DEFAULT_LEVEL * 100 / FAN_LEVEL_MAX);
+    fan_set_duty_locked(fixed ? FAN_SAFE_DUTY : FAN_DEFAULT_LEVEL * 100 / FAN_LEVEL_MAX);
     if (pthread_create(&_worker, NULL, fan_worker, NULL) != 0) {
         klog("q8b fand: worker create failed\n");
         fan_gpio_set(false);

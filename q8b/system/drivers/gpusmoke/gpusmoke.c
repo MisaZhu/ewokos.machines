@@ -5,6 +5,8 @@
 #include <graph/graph.h>
 #include <graph/graph_ex.h>
 #include <graph/graph_arch.h>
+#include <graph/graph_g2d.h>
+#include <ewoksys/kernel_tic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -178,7 +180,7 @@ int main(int argc, char **argv) {
     g2d_fill_req_t fill;
     g2d_blit_req_t blit;
     if(argc > 1 && !clear_only && !extended) {
-        printf("usage: gpusmoke [--clear|--extended|--apis|--api-raster|--api-scale|--api-physical|--api-alpha|--api-cpu-alpha|--api-integration]\n");
+        printf("usage: gpusmoke [--clear|--extended|--apis|--api-blur|--api-blur-stress|--api-raster|--api-scale|--api-physical|--api-alpha|--api-cpu-alpha|--api-integration]\n");
         return 1;
     }
     if(has_g2d() != 0 ||

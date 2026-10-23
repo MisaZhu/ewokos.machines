@@ -31,6 +31,7 @@
 #include "pglcompiler_frontend.h"
 #include "adreno_backend.h"
 #include "adreno_pglc.h"
+#include "adreno_geom_source.h"
 
 /* ---------------------------------------------------------------------------
  * Version gate
@@ -114,6 +115,17 @@ pglc_program_free(struct pglc_program *res)
 /* ---------------------------------------------------------------------------
  * Graphics route: not ported
  * ------------------------------------------------------------------------- */
+extern "C" bool
+pglc_validate_glsl(const char *vert_src, const char *frag_src,
+                   char *log, uint32_t logsz)
+{
+   struct pglc_fe_shaders *sh = NULL;
+   bool ok = pglc_fe_compile_glsl(vert_src, frag_src, adreno_be_nir_options(),
+                                 &sh, log, logsz);
+   pglc_fe_shaders_free(sh);
+   return ok;
+}
+
 extern "C" bool
 pglc_compile_glsl(const char *vert_src, const char *frag_src,
                   struct pglc_program *res)
@@ -248,5 +260,9 @@ pglc_compile_compute(const char *frag_src, struct pglc_program *res)
 extern "C" bool
 pglc_compile_compute_raw(const char *cs_src, struct pglc_program *res)
 {
-   return compile_compute_source(cs_src, res);
+   const char *specialized = adreno_geom_source(cs_src);
+   bool ok = compile_compute_source(specialized ? specialized : cs_src, res);
+   if (ok && specialized)
+      ((struct adreno_pglc_stage *)res->stage[PGLC_STAGE_COMPUTE].backend)->geom_pixel_owned = true;
+   return ok;
 }

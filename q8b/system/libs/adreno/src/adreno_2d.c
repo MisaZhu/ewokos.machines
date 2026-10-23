@@ -97,8 +97,9 @@
  *   7. adreno_2d_blur() is a bilinear scale-cascade (mip) blur, NOT a per-tap
  *      weighted gaussian.  The A2D has no convolution op (CP_BLIT is only
  *      FILL/COPY/SCALE) and no kernel-weight register, so an exact gaussian
- *      needs a compute/fragment shader. The public Gaussian API declines
- *      until that exact kernel exists. This private approximation halves the rect into a scratch
+ *      needs a compute/fragment shader. The public Gaussian API uses this
+ *      approximation for throughput, per the Q8B rendering policy. It
+ *      halves the rect into a scratch
  *      mip chain with the documented bilinear FILTER on BLIT_OP_SCALE ("used
  *      for mipmap generation") and bilinear-upsamples the chain back, which
  *      converges to a gaussian by repeated 2-tap averaging (CLT).  This is a
@@ -133,9 +134,8 @@ int adreno_2d_ready(void) {
 
 /* ------------------------------------------------------------------ */
 /* Indirect-buffer builder. Cache events include timestamp addresses; */
-/* 128 leaves room for both paths. ib_w() is overflow-safe: if the      */
-/* buffer were ever too small the trailing CP_BLIT would be dropped and */
-/* the submit would simply do nothing rather than corrupt memory.       */
+/* 128 leaves room for both paths. The builder counts overflow, and    */
+/* copy/batch dispatch refuses a truncated stream before submission.   */
 /* ------------------------------------------------------------------ */
 #define IB_MAX 128u
 
@@ -144,9 +144,18 @@ struct ib {
 	uint32_t n;
 };
 
+/* A complete six-level blur fits in the existing 4096-dword staging BO.
+   Build/validate it on the CPU before publishing any part to the GPU. */
+#define A2D_BLUR_MAX_LEVELS 6
+struct blur_ib {
+	uint32_t d[IB_MAX * 2 * A2D_BLUR_MAX_LEVELS];
+	uint32_t n;
+};
+
 static void ib_w(struct ib *b, uint32_t v) {
 	if (b->n < IB_MAX)
-		b->d[b->n++] = v;
+		b->d[b->n] = v;
+	b->n++;
 }
 
 /* PKT4: write `_cnt` consecutive registers starting at raw index `reg`. */
@@ -311,6 +320,8 @@ int adreno_2d_fill(uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
 
 	ib_blit_trigger(&b);
 
+	if (b.n > IB_MAX)
+		return ADRENO_E_DECLINED;
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
 	if (ret != ADRENO_OK) {
 		if (ret != ADRENO_E_WEDGED)   /* wedge itself is logged once by the ring */
@@ -336,7 +347,7 @@ static int a2d_copy_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
                    int32_t sh, uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
                    uint32_t dst_pitch, int32_t dx, int32_t dy, int32_t dw,
                    int32_t dh, int32_t degree, uint32_t pixel_cntl,
-                   uint32_t filter) {
+	                   uint32_t filter, struct blur_ib *batch) {
 	struct ib b;
 	uint32_t blt_cntl, out_info, src_info, rotate;
 	int ret;
@@ -442,6 +453,15 @@ static int a2d_copy_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 
 	ib_blit_trigger(&b);
 
+	if (b.n > IB_MAX)
+		return ADRENO_E_DECLINED;
+	if (batch != NULL) {
+		if (b.n > sizeof(batch->d)/sizeof(batch->d[0]) - batch->n)
+			return ADRENO_E_DECLINED;
+		for (uint32_t i = 0; i < b.n; i++)
+			batch->d[batch->n++] = b.d[i];
+		return ADRENO_OK;
+	}
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
 	if (ret != ADRENO_OK) {
 		if (ret != ADRENO_E_WEDGED)
@@ -459,7 +479,7 @@ int adreno_2d_copy(uint64_t src_phy, int32_t src_w, int32_t src_h,
                    int32_t dh, int32_t degree) {
 	return a2d_copy_blit(src_phy, src_w, src_h, src_pitch, sx, sy, sw, sh,
 	                     dst_phy, dst_w, dst_h, dst_pitch, dx, dy, dw, dh,
-	                     degree, 0, 0);
+	                     degree, 0, 0, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -479,16 +499,16 @@ int adreno_2d_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
                     int32_t dh) {
 	return a2d_copy_blit(src_phy, src_w, src_h, src_pitch, sx, sy, sw, sh,
 	                     dst_phy, dst_w, dst_h, dst_pitch, dx, dy, dw, dh,
-	                     0, A2D_PIXEL_SRC_OVER, 0);
+	                     0, A2D_PIXEL_SRC_OVER, 0, NULL);
 }
 
 /* ------------------------------------------------------------------ */
 /* Gaussian-style blur via a bilinear scale cascade (mip blur) - gap #7. */
 /*                                                                     */
 /* The A2D blitter has no convolution op and no kernel-weight register, */
-/* so an exact per-tap gaussian needs a shader. This private mip helper */
-/* is not exposed through the public Gaussian API. The linear FILTER  */
-/* so the blur is built the way raspi's own GPU blur does it           */
+/* so an exact per-tap gaussian needs a shader. Q8B prioritizes speed:  */
+/* this API uses the linear FILTER to build a downsample/upsample blur */
+/* similar to the raspi GPU's reduced-resolution path                 */
 /* (downsample -> upsample, vc_g2d half-res path): halve the rect L    */
 /* times into a scratch mip chain, then bilinear-upsample the chain    */
 /* back into the rect in place.  Repeated 2-tap averaging converges to */
@@ -498,12 +518,11 @@ int adreno_2d_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
 /* scratch: `tmp_limit` bytes at tmp_phy (64-aligned, contig).  The     */
 /* chain needs sum(align64(wi*4)*hi); the caller passes the g2dd-       */
 /* guaranteed tmp size ((h-1)*W*4 + w*4) so we can prove the layout     */
-/* fits without knowing tmp's real allocation.  Each level is a         */
-/* separate submit (adreno_ring_submit waits on its fence), so the      */
-/* chain is strictly ordered.  Returns 0 on success, negative on        */
+/* fits without knowing tmp's real allocation. The complete chain is  */
+/* one submit, with explicit inter-stage cache/idle barriers and one   */
+/* completion fence. Returns 0 on success, negative on                  */
 /* decline/failure.                                                    */
 /* ------------------------------------------------------------------ */
-#define A2D_BLUR_MAX_LEVELS 5
 
 static uint32_t a2d_align64(uint32_t v) { return (v + 63u) & ~63u; }
 
@@ -516,23 +535,25 @@ int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
 	uint32_t lvl_pitch[A2D_BLUR_MAX_LEVELS + 1];
 	uint64_t lvl_off[A2D_BLUR_MAX_LEVELS + 1];
 	int L, i, rc;
-	uint64_t off, need;
+	struct blur_ib batch = { .n = 0 };
+	uint64_t off, need, canvas_bytes;
 
 	if (!adreno_2d_ready())
-		return -1;
+		return ADRENO_E_DECLINED;
+	if (adreno_wedged())
+		return ADRENO_E_WEDGED;
 
 	/* --- eligibility: canvas + scratch GPU-visible, aligned, rect in-bounds --- */
 	if (canvas_phy == 0 || tmp_phy == 0)
 		return -1;
-	if (radius < 1 || w < 2 || h < 2 || W < 2 || H < 2)
+	if (radius < 1 || radius > 64 || w < 2 || h < 2 || W < 2 || H < 2 ||
+	    W > A2D_SRC_MAX || H > A2D_SRC_MAX)
 		return -1;
-	if (x < 0 || y < 0 || x + w > W || y + h > H)
+	if (x < 0 || y < 0 || w > W || h > H || x > W-w || y > H-h)
 		return -1;
 	if ((canvas_phy % A2D_DEST_ALIGN) || (tmp_phy % A2D_DEST_ALIGN))
 		return -1;
-	if ((canvas_pitch % A2D_PITCH_ALIGN) || canvas_pitch == 0)
-		return -1;
-	if ((uint32_t)W > A2D_SRC_MAX || (uint32_t)H > A2D_SRC_MAX)
+	if ((canvas_pitch % A2D_PITCH_ALIGN) || canvas_pitch < (uint32_t)W*4u)
 		return -1;
 	if ((uint32_t)(x + w - 1) > A2D_XY_MAX || (uint32_t)(y + h - 1) > A2D_XY_MAX)
 		return -1;
@@ -558,6 +579,10 @@ int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
 	need = off;
 	if (need == 0 || need > tmp_limit)
 		return -1;   /* scratch too small: decline, the client CPU-blurs */
+	canvas_bytes = (uint64_t)(H-1)*canvas_pitch + (uint32_t)W*4u;
+	if (canvas_phy + canvas_bytes < canvas_phy || tmp_phy + need < tmp_phy ||
+	    (canvas_phy < tmp_phy + need && tmp_phy < canvas_phy + canvas_bytes))
+		return ADRENO_E_DECLINED;
 
 	/* --- downsample: canvas rect -> level1 -> ... -> levelL --- */
 	{
@@ -568,7 +593,7 @@ int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
 			uint64_t d_phy = tmp_phy + lvl_off[i];
 			rc = a2d_copy_blit(s_phy, s_w, s_h, s_pitch, sx, sy, sw, sh,
 			                   d_phy, lvl_w[i], lvl_h[i], lvl_pitch[i],
-			                   0, 0, lvl_w[i], lvl_h[i], 0, 0, 1);
+			                   0, 0, lvl_w[i], lvl_h[i], 0, 0, 1, &batch);
 			if (rc != ADRENO_OK)
 				return rc;
 			s_phy = d_phy; s_w = lvl_w[i]; s_h = lvl_h[i];
@@ -594,10 +619,18 @@ int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
 		rc = a2d_copy_blit(s_phy, lvl_w[i], lvl_h[i], lvl_pitch[i],
 		                   0, 0, lvl_w[i], lvl_h[i],
 		                   d_phy, d_w, d_h, d_pitch,
-		                   dx, dy, dw, dh, 0, 0, 1);
+		                   dx, dy, dw, dh, 0, 0, 1, &batch);
 		if (rc != ADRENO_OK)
 			return rc;
 	}
 
-	return ADRENO_OK;
+	/* Keep the whole chain under the ring's single staging-buffer lock.
+	   Each stage still emits CCU clean + idle, followed by invalidate before
+	   the next texture read. One doorbell/fence replaces up to twelve CPU
+	   waits and prevents unrelated render state interleaving between mips. */
+	rc = adreno_ring_submit(adreno_dev(), batch.d, batch.n);
+	if (rc != ADRENO_OK && rc != ADRENO_E_WEDGED)
+		klog("adreno_2d: blur %dx%d r=%d levels=%d words=%u failed (%d)\n",
+		     w, h, radius, L, batch.n, rc);
+	return rc;
 }

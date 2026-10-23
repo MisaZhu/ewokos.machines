@@ -25,6 +25,8 @@ include ../../make.inc
 SYS_DIR=$(ewokos)/system
 include $(SYS_DIR)/platform/$(ARCH)/make.rule
 
+.DEFAULT_GOAL := all
+
 BUILD_DIR = $(SYS_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)
 
@@ -78,8 +80,8 @@ ADRENO_FORCEINC = -include $(PORT_DIR)/mesa_config.h
 
 # -w: mesa is vendored third-party code; -std=gnu11 / -std=gnu++17 appended
 # LAST override make.rule's -std=c99 / -std=c++14 (GCC honours the last -std).
-CFLAGS   := $(ADRENO_INC) $(ADRENO_FORCEINC) $(CFLAGS) -w -std=gnu11
-CXXFLAGS := $(ADRENO_INC) $(ADRENO_FORCEINC) $(CXXFLAGS) -w -std=gnu++17
+CFLAGS   := $(ADRENO_INC) $(ADRENO_FORCEINC) $(CFLAGS) -w -DNDEBUG -std=gnu11
+CXXFLAGS := $(ADRENO_INC) $(ADRENO_FORCEINC) $(CXXFLAGS) -w -DNDEBUG -std=gnu++17
 
 # === sources ================================================================
 FD = mesa/src/freedreno
@@ -121,6 +123,13 @@ SRCS_C   = $(IR3_C) $(ISA_C) $(COMMON_C) $(GLUE_C)
 SRCS_CXX = $(GLUE_CXX)
 
 OBJS = $(SRCS_C:%.c=$(OBJDIR)/%.o) $(SRCS_CXX:%.cpp=$(OBJDIR)/%.o)
+
+# NIR's debug ABI must match the frontend's -DNDEBUG target build.
+$(OBJS): Makefile
+
+$(OBJDIR)/adreno_pglc.o: adreno_geom_source.h $(PGLC_FE_DIR)/include/geom_raster_cs.h $(PGLC_FE_DIR)/include/pglcompiler.h
+$(OBJDIR)/adreno_pglc.o $(OBJDIR)/adreno_backend.o $(OBJDIR)/adreno_blob.o: adreno_pglc.h
+$(OBJDIR)/adreno_blob.o: ../adreno/include/adreno/adreno_prog.h
 
 .PHONY: all clean
 

@@ -155,7 +155,8 @@ int adreno_a6xx_init(adreno_dev_t *d);   /* top-level: calls the above */
    for its fence to retire.  Serialized by an internal parking lock: g2dd runs
    concurrent ipc workers and the IB staging buffer, ring write pointer and
    fence are shared, so submissions are strictly one at a time, including the
-   completion wait.  Returns one of the ADRENO_* codes above. */
+   completion wait. Runtime completion shares a 1 s wall-clock budget,
+   with a brief spin followed by parking. Returns one of the ADRENO_* codes. */
 int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords);
 /* Non-zero once a submitted job failed to retire or faulted (sticky). */
 int adreno_wedged(void);
@@ -265,16 +266,20 @@ int adreno_2d_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
    L times (L ~ log2(radius)) into a scratch mip chain with the documented
    bilinear FILTER on BLIT_OP_SCALE and upsamples it back into the rect - a
    real GPU blur that approximates, but does not bit-match, the reference
-   gaussian (see adreno_2d.c gap #7).  canvas_phy/W/H/canvas_pitch describe the
+   gaussian (see adreno_2d.c gap #7). Radius 1..64 selects up to six levels;
+   strength is quantized to powers of two and limited by the rect dimensions.
+   The complete chain uses one bounded IB/fence; per-stage clean/idle and
+   invalidation keep intermediate texture reads coherent.
+   canvas_phy/W/H/canvas_pitch describe the
    whole canvas (pitch 64-aligned); (x,y,w,h) is the clamped sub-rect;
    tmp_phy/tmp_limit are the 64-aligned contiguous scratch base and the byte
    budget the caller guarantees (g2dd: (h-1)*W*4 + w*4).  The canvas is written
    ONLY by the final upsample, so any earlier failure leaves it pristine.  Both
    surfaces are uint32 ARGB (FMT6_8_8_8_8_UNORM, linear).  Returns ADRENO_OK,
    ADRENO_E_DECLINED when the GPU is not up, the op is ineligible or the
-   scratch is too small (nothing submitted), or the submission's
+   scratch is too small (canvas unchanged; scratch may have been written), or the submission's
    ADRENO_E_TIMEOUT / ADRENO_E_FAULT / ADRENO_E_WEDGED - the caller maps those
-   to g2d result codes and the client falls back to its in-process engine.
+   to terminal g2d errors, retaining buffers without replay until cold boot.
    There is no CPU path here. */
 int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
                    uint32_t canvas_pitch, int32_t x, int32_t y, int32_t w,

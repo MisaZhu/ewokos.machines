@@ -270,12 +270,16 @@ typedef struct {
 typedef struct {
 	int          in_use;
 	uint8_t      is_geom;
+	uint8_t      pixel_owned;
 	uint16_t     geom_tpw;
 	uint32_t     cs2_uniform_blob_dwords;
 	kern_slot_t  kern[2];     /* [0] main / raster, [1] xform (geom only) */
 } prog_slot_t;
 
 static prog_slot_t g_progs[ADRENO_3D_MAX_PROGS];
+/* IPC workers may draw/upload concurrently. Protect program lifetime and the
+   shared vertex output across BOTH submissions, not only each ring submit. */
+static pthread_mutex_t g_3d_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* vout: allocated on the first geometry draw, kept for the process. */
 static adreno_bo_t g_vout;
@@ -318,6 +322,9 @@ static int kern_validate(const adreno_prog_kernel_t *k) {
 	if (k->local_size[0] > 1024u || k->local_size[1] > 1024u ||
 	    k->local_size[2] > 1024u)
 		return -1;   /* SP_CS_NDRANGE_0 fields are 10 bits (size - 1) */
+	if ((uint64_t)k->local_size[0] * k->local_size[1] * k->local_size[2] > 1024u ||
+	    k->shared_size > 32768u || k->uniform_blob_dwords > ADRENO_3D_IB_MAX)
+		return -1;
 	if (k->pvtmem_size > ADRENO_3D_MAX_PVTMEM_BYTES)
 		return -1;
 	if (k->constlen == 0 || k->constlen > 512u)
@@ -429,7 +436,7 @@ fail:
 /* is not up, the table is full, or a BO allocation failed.  A V3D-QPU    */
 /* blob (portablegl's default) fails the magic check and is declined.    */
 /* ------------------------------------------------------------------ */
-int adreno_3d_program_load(const void *blob, uint32_t size) {
+static int program_load_locked(const void *blob, uint32_t size) {
 	const adreno_prog_blob_t *h;
 	const uint8_t *payload;
 	prog_slot_t *s = 0;
@@ -438,11 +445,14 @@ int adreno_3d_program_load(const void *blob, uint32_t size) {
 
 	if (!adreno_3d_ready())
 		return -1;
+	if (adreno_wedged())
+		return ADRENO_E_WEDGED;
 	if (blob == 0 || size < sizeof(adreno_prog_blob_t))
 		return -1;
 
 	h = (const adreno_prog_blob_t *)blob;
-	if (h->magic != ADRENO_PROG_MAGIC || h->version != ADRENO_PROG_VERSION)
+	if (h->magic != ADRENO_PROG_MAGIC ||
+	    (h->version != ADRENO_PROG_VERSION && h->version != ADRENO_PROG_PIXEL_VERSION))
 		return -1;   /* not an Adreno blob (e.g. V3D-QPU) */
 
 	/* --- header geometry.  kern[0] is mandatory; kern[1] (xform) must be
@@ -452,11 +462,16 @@ int adreno_3d_program_load(const void *blob, uint32_t size) {
 	have_xform = (h->kern[1].binary_words != 0);
 	if (h->is_geom > 4u)
 		return -1;
+	if (h->reserved || (h->version == ADRENO_PROG_PIXEL_VERSION &&
+	    h->is_geom != 1u && h->is_geom != 2u))
+		return -1;
 	if (h->is_geom != 0 && !have_xform)
 		return -1;
 	if (h->is_geom == 0 && have_xform)
 		return -1;
 	if (have_xform && kern_validate(&h->kern[1]) != 0)
+		return -1;
+	if (have_xform && h->cs2_uniform_blob_dwords != h->kern[1].uniform_blob_dwords)
 		return -1;
 	/* The raster kernel maps `tri = gl_WorkGroupID.x * TPW + lane`, which is
 	   only complete when TPW equals the workgroup lane count; a mismatched
@@ -483,6 +498,7 @@ int adreno_3d_program_load(const void *blob, uint32_t size) {
 	s = &g_progs[slot];
 	memset(s, 0, sizeof(*s));
 	s->is_geom = h->is_geom;
+	s->pixel_owned = h->version == ADRENO_PROG_PIXEL_VERSION;
 	s->geom_tpw = h->geom_tpw;
 	s->cs2_uniform_blob_dwords = h->cs2_uniform_blob_dwords;
 
@@ -507,13 +523,16 @@ fail:
 /* Free a loaded program.  Returns 0 on success, negative on a bad       */
 /* handle.  Idempotent for an already-free slot.                        */
 /* ------------------------------------------------------------------ */
-int adreno_3d_program_free(int32_t handle) {
+static int program_free_locked(int32_t handle) {
 	prog_slot_t *s;
 	if (handle < 0 || handle >= ADRENO_3D_MAX_PROGS)
 		return -1;
 	s = &g_progs[handle];
 	if (!s->in_use)
 		return 0;
+	/* A failed dispatch may still fetch its shader/private storage. */
+	if (adreno_wedged())
+		return ADRENO_E_WEDGED;
 	kern_release(&s->kern[0]);
 	kern_release(&s->kern[1]);
 	memset(s, 0, sizeof(*s));
@@ -1133,15 +1152,22 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	if ((gtexc || ginst) &&
 	    (g->ctex_phy == 0 || (g->ctex_phy & 0x3fu) != 0 ||
 	     g->ctex_w == 0 || g->ctex_h == 0 ||
-	     g->ctex_stride < g->ctex_w * 4u || (g->ctex_stride & 3u) != 0))
+	     (uint64_t)g->ctex_w * 4u > g->ctex_stride ||
+	     (uint64_t)g->ctex_stride * g->ctex_h > 0xffffffffu ||
+	     (g->ctex_stride & 3u) != 0))
+		return ADRENO_E_DECLINED;
+	/* Texture shaders use ty*uTexW+tx; they do not carry a separate pitch. */
+	if (gtexc && (uint64_t)g->ctex_w * 4u != g->ctex_stride)
 		return ADRENO_E_DECLINED;
 	if (g->z_phy == 0 || (g->z_phy & 0x3fu) != 0)
 		return ADRENO_E_DECLINED;
-	if ((g->z_stride & 3u) != 0 || g->z_stride < w * 4u)
+	/* Shared raster shaders index colour and depth with uFbStride. */
+	if (g->z_stride != fb_stride)
 		return ADRENO_E_DECLINED;
 	if (rs->k.local_size[2] != 1u || xf->k.local_size[2] != 1u)
 		return ADRENO_E_DECLINED;
-	if (split > num_uniforms)
+	if (split > num_uniforms || num_uniforms - split < rs->k.uniform_blob_dwords ||
+	    num_uniforms - split > ADRENO_3D_IB_MAX || !unif)
 		return ADRENO_E_DECLINED;
 	/* The A2D frame clear fills whole rows with a 64-byte-aligned pitch; a
 	   pitched colour or depth canvas would be left half-cleared, so decline
@@ -1221,6 +1247,10 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	grid[0] = (ntris + tpw - 1u) / tpw;
 	grid[1] = 1u;
 	grid[2] = 1u;
+	if (s->pixel_owned) {
+		grid[0] = (w + rs->k.local_size[0] - 1u) / rs->k.local_size[0];
+		grid[1] = (h + rs->k.local_size[1] - 1u) / rs->k.local_size[1];
+	}
 	rc = emit_cs_dispatch(rs, binds, 4u, unif + split, num_uniforms - split,
 	                      grid);
 	if (rc != ADRENO_OK)
@@ -1235,7 +1265,7 @@ static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 /* ADRENO_OK, ADRENO_E_DECLINED before anything reached the GPU, or the   */
 /* adreno_ring_submit result (TIMEOUT / FAULT / WEDGED).                 */
 /* ------------------------------------------------------------------ */
-int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
+static int draw_locked(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
                    uint32_t fb_stride, int32_t prog_handle,
                    const adreno_3d_geom_t *geom,
                    const uint32_t *unif, uint32_t num_uniforms) {
@@ -1245,6 +1275,8 @@ int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 
 	if (!adreno_3d_ready())
 		return ADRENO_E_DECLINED;
+	if (adreno_wedged())
+		return ADRENO_E_WEDGED;
 	if (prog_handle < 0 || prog_handle >= ADRENO_3D_MAX_PROGS)
 		return ADRENO_E_DECLINED;
 	s = &g_progs[prog_handle];
@@ -1252,7 +1284,7 @@ int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 		return ADRENO_E_DECLINED;
 
 	/* --- eligibility: framebuffer GPU-visible, aligned, sane --- */
-	if (fb_phy == 0 || fb_w <= 0 || fb_h <= 0)
+	if (fb_phy == 0 || fb_w <= 0 || fb_h <= 0 || (uint64_t)fb_w * 4u > fb_stride)
 		return ADRENO_E_DECLINED;
 	if (fb_stride < (uint32_t)fb_w * 4u || (fb_stride & 3u) != 0)
 		return ADRENO_E_DECLINED;
@@ -1276,4 +1308,29 @@ int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 	grid[1] = ((uint32_t)fb_h + s->kern[0].k.local_size[1] - 1u) / s->kern[0].k.local_size[1];
 	grid[2] = 1u;
 	return emit_cs_dispatch(&s->kern[0], binds, 1u, unif, num_uniforms, grid);
+}
+
+int adreno_3d_program_load(const void *blob, uint32_t size) {
+	pthread_mutex_lock(&g_3d_lock);
+	int rc = program_load_locked(blob, size);
+	pthread_mutex_unlock(&g_3d_lock);
+	return rc;
+}
+
+int adreno_3d_program_free(int32_t handle) {
+	pthread_mutex_lock(&g_3d_lock);
+	int rc = program_free_locked(handle);
+	pthread_mutex_unlock(&g_3d_lock);
+	return rc;
+}
+
+int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
+                   uint32_t fb_stride, int32_t prog_handle,
+                   const adreno_3d_geom_t *geom,
+                   const uint32_t *unif, uint32_t num_uniforms) {
+	pthread_mutex_lock(&g_3d_lock);
+	int rc = draw_locked(fb_phy, fb_w, fb_h, fb_stride, prog_handle,
+	                     geom, unif, num_uniforms);
+	pthread_mutex_unlock(&g_3d_lock);
+	return rc;
 }

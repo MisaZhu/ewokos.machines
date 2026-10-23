@@ -157,6 +157,8 @@ int32_t bsp_g3d_clear(uint32_t* fb, ewokos_addr_t fb_phy, uint8_t contig,
 		int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
 		uint32_t color, int32_t rb_swap) {
 	(void)fb;
+	if (adreno_wedged())
+		return G2D_ERR_TIMEOUT;
 	/* The A2D fill path is wired for ARGB8888 (FMT6_8_8_8_8_UNORM) only;
 	   a BGR565 (or other) target declines so portablegl keeps its CPU
 	   clear.  fmt uses the G2D_PGL_* codes (g2dclient.h). */
@@ -199,6 +201,8 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	(void)depth_mask; (void)blend_en; (void)cull_en; (void)clear_z;
 	(void)ext; (void)tex;
 
+	if (adreno_wedged())
+		return G2D_ERR_TIMEOUT;
 	if (g3d_probe() != 1)
 		return G2D_ERR_NOT_SUPPORTED;
 	/* The CS back end binds the framebuffer as a linear R32_UINT buffer
@@ -236,9 +240,13 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	   bound).  The geometry kernels sample unit 0 only (raspi5 parity). */
 	if (ctex) {
 		const g2d_pgl_ctex_t* c = (const g2d_pgl_ctex_t*)ctex;
-		if (c->ctex_contig[0] && c->ctex_phy[0]) {
+		/* These compute kernels read linear words, not V3D tiled images or
+		   layered textures. Leave incompatible bindings unresolved. */
+		if (c->ctex_contig[0] && c->ctex_phy[0] &&
+		    c->ctex_tiling[0] == 0 && c->ctex_depth[0] <= 1 &&
+		    c->ctex_w[0] <= 0xffffffffu / 4u) {
 			g.ctex_phy    = (uint64_t)c->ctex_phy[0];
-			g.ctex_stride = c->ctex_stride[0];
+			g.ctex_stride = c->ctex_stride[0] ? c->ctex_stride[0] : c->ctex_w[0] * 4u;
 			g.ctex_w      = c->ctex_w[0];
 			g.ctex_h      = c->ctex_h[0];
 		}
@@ -253,6 +261,8 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 int32_t bsp_g3d_program(const void* blob, uint32_t size) {
 	const adreno_prog_blob_t* h;
 	int handle;
+	if (adreno_wedged())
+		return G2D_ERR_TIMEOUT;
 	if (g3d_probe() != 1)
 		return G2D_ERR_NOT_SUPPORTED;
 	if (blob == NULL || size < sizeof(adreno_prog_blob_t))
@@ -271,6 +281,8 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size) {
 }
 
 int32_t bsp_g3d_program_free(int32_t handle) {
+	if (adreno_wedged())
+		return G2D_ERR_TIMEOUT;
 	if (g3d_probe() != 1)
 		return G2D_ERR_NOT_SUPPORTED;
 	return adreno_3d_program_free(handle) == 0

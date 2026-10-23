@@ -134,6 +134,11 @@ uint32_t pglc_program_serialize(const struct pglc_program *main,
 	   (same meaning as the V3D blob's cs_is_geom / cs_geom_tpw). */
 	hdr.is_geom  = opts ? opts->geom_kind : 0;
 	hdr.geom_tpw = opts ? (uint16_t)opts->geom_tpw : 0;
+	if (cub->geom_pixel_owned) {
+		if (!xform || (hdr.is_geom != 1 && hdr.is_geom != 2))
+			return 0;
+		hdr.version = ADRENO_PROG_PIXEL_VERSION;
+	}
 	/* split point of the concatenated per-draw uniform blob: the xform
 	   region comes first. */
 	hdr.cs2_uniform_blob_dwords = xu->uniform_blob_dwords;

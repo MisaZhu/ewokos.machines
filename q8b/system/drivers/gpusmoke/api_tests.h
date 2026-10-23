@@ -195,13 +195,12 @@ static int api_cpu_alpha(surface_t *src, surface_t *dst, uint32_t *ref) {
     return 0;
 }
 
-static int api_basic(surface_t *src, surface_t *dst, surface_t *tmp,
+static int api_basic(surface_t *src, surface_t *dst,
                      uint32_t *ref) {
     g2d_fill_req_t fill;
     g2d_blit_req_t blit;
     g2d_triangle_req_t tri;
     g2d_rotate_req_t rot;
-    g2d_gaussian_blur_req_t blur;
     const unsigned n = dst->w*dst->h;
     api_reset(dst, 0xff204060u);
     memcpy(ref, dst->p, n*4);
@@ -260,15 +259,6 @@ static int api_basic(surface_t *src, surface_t *dst, surface_t *tmp,
         if(api_ret("rotate90/270 GPU", g2d_rotate(&rot), 0) ||
            api_pixels("rotate90/270 exact", dst, ref, 0)) return 1;
     }
-    for(int radius = 1; radius <= 6; radius++) {
-        if(radius == 5) continue;
-        g2d_gaussian_blur_req_init(&blur, dst->canvas, tmp->canvas,
-                                 g2d_rect(0,0,64,64), radius);
-        if(api_ret("exact Gaussian decline", g2d_gaussian_blur(&blur), -2) ||
-           api_pixels("Gaussian no-write", dst, ref, 0)) return 1;
-    }
-    uint32_t guard = GUARD;
-    if(surface_check("Gaussian scratch unchanged", tmp, solid, &guard)) return 1;
     /* A transient/sticky rejection of another operation must not disable fill. */
     g2d_fill_req_init(&fill, dst->canvas, g2d_rect(0,0,64,64), 0xff193b5du);
     for(unsigned i = 0; i < n; i++) ref[i] = fill.color;
@@ -373,6 +363,42 @@ static int api_scale(surface_t *src) {
     return surface_check("scale source unchanged",src,pattern,NULL);
 }
 
+/* Generic shared canvases keep their logical width. Use 64-byte-pitch backing
+ * canvases while retaining odd visible rectangles, so row padding and the
+ * common allocator path are both exercised. */
+static int api_blur_graph_caches(void) {
+    static const int canvas_w[]={320,528,128};
+    static const int visible_w[]={317,513,127};
+    static const int heights[]={64,43,128};
+    for(unsigned c=0;c<3;c++) {
+        int cw=canvas_w[c],w=visible_w[c],h=heights[c],bad=0;
+        graph_t *sharp=graph_new_shm(cw,h);
+        graph_t *frost=graph_new_shm(cw,h);
+        if(!sharp || !frost) {
+            graph_free(sharp); graph_free(frost); return 1;
+        }
+        if(!frost->shm_contig || ((frost->w*4) & 63)) bad=1;
+        for(int pass=0;pass<2 && !bad;pass++) {
+            uint32_t color=pass?0xffabcdefu:0x80123456u;
+            for(int i=0;i<cw*h;i++) sharp->buffer[i]=color;
+            for(int i=0;i<frost->w*h;i++) frost->buffer[i]=GUARD;
+            graph_blt(sharp,0,0,w,h,frost,0,0,w,h);
+            uint32_t before=0,after=0;
+            graph_g2d_blur_stats(&before,NULL,NULL,NULL,NULL,NULL);
+            graph_gaussian_blur(frost,0,0,w,h,4);
+            graph_g2d_blur_stats(&after,NULL,NULL,NULL,NULL,NULL);
+            bad=after!=before+1;
+            for(int y=0;y<h;y++) for(int x=0;x<frost->w;x++)
+                bad+=frost->buffer[y*frost->w+x]!=(x<w?color:GUARD);
+        }
+        printf("integration frost cache %dx%d pitch=%d: %s\n",
+               w,h,frost->w*4,bad?"FAIL":"PASS");
+        graph_free(sharp); graph_free(frost);
+        if(bad) return 1;
+    }
+    return 0;
+}
+
 /* Public graph entry points exercise actual client routing. CPU/arch outputs
  * are only references here; these checks are labelled integration, not GPU. */
 static int api_integration(void) {
@@ -411,14 +437,23 @@ static int api_integration(void) {
         graph_rotate_to(&source_ref,&gr,degree);
         if(api_pixels("integration graph rotation",&dst,ref,0)) goto fail;
     }
-    api_pattern(&dst,0); memcpy(ref,dst.p,128*128*4);
+    /* GPU approximation and CPU convolution share DC/alpha preservation,
+       while their non-constant pixel kernels intentionally differ. */
+    api_reset(&dst,0x80123456u); memcpy(ref,dst.p,128*128*4);
+    uint32_t blur_before=0,blur_after=0;
+    graph_g2d_blur_stats(&blur_before,NULL,NULL,NULL,NULL,NULL);
     graph_gaussian_blur(&gd,0,0,128,128,2);
     graph_gaussian_blur(&gr,0,0,128,128,2);
-    if(api_pixels("integration exact blur fallback",&dst,ref,0)) goto fail;
-    free(ref); g2d_shm_free(src.p); g2d_shm_free(dst.p); return 0;
+    graph_g2d_blur_stats(&blur_after,NULL,NULL,NULL,NULL,NULL);
+    if(blur_after!=blur_before+1 ||
+       api_pixels("integration accelerated blur DC",&dst,ref,0)) goto fail;
+    free(ref); g2d_shm_free(src.p); g2d_shm_free(dst.p);
+    return api_blur_graph_caches();
 fail:
     free(ref); g2d_shm_free(src.p); g2d_shm_free(dst.p); return 1;
 }
+
+#include "blur_tests.h"
 
 static int api_tests(const char *mode) {
     int all = strcmp(mode,"--apis") == 0;
@@ -428,20 +463,24 @@ static int api_tests(const char *mode) {
     int alpha = all || strcmp(mode,"--api-alpha") == 0;
     int cpu_alpha = all || strcmp(mode,"--api-cpu-alpha") == 0;
     int raster = all || strcmp(mode,"--api-raster") == 0;
+    int blur = all || strcmp(mode,"--api-blur") == 0;
+    int stress = strcmp(mode,"--api-blur-stress") == 0;
     surface_t src={0},dst={0},tmp={0};
     uint32_t *ref = NULL, version=0, hz=0;
     int bad=1;
-    if(!all && !scale && !physical && !integration && !alpha && !cpu_alpha && !raster) return 1;
+    if(!all && !scale && !physical && !integration && !alpha && !cpu_alpha && !raster && !blur && !stress) return 1;
     if(has_g2d() || api_ret("get_version",g2d_get_version(&version),0) ||
        version != 690 || api_ret("get_clock unknown",g2d_get_clock(&hz),-2) || hz != 0) return 1;
     printf("API device: version=%u clock=%u (0 means unknown)\n",version,hz);
+    if(stress) return api_blur_stress();
     if(surface_new(&src,64,64) || surface_new(&dst,64,64) ||
        surface_new(&tmp,64,64)) goto done;
     ref = malloc(64*64*4);
     if(!ref) goto done;
     if(cpu_alpha && api_cpu_alpha(&src,&dst,ref)) goto done;
     if(raster && (api_solid_alpha(&dst,ref) || api_rotations())) goto done;
-    if(all && api_basic(&src,&dst,&tmp,ref)) goto done;
+    if(all && api_basic(&src,&dst,ref)) goto done;
+    if(blur && api_blurs()) goto done;
     if(alpha && api_alpha(&src,&dst,ref)) goto done;
     if(physical && api_physical(&src)) goto done;
     if(integration && api_integration()) goto done;
