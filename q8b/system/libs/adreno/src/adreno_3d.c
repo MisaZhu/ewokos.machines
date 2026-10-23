@@ -829,6 +829,25 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 			}
 			build_samp_desc(sd, linear);
 		}
+		/* Device bring-up diagnostic: dump the first few textured
+		   bindings so a black-screen report can be matched against what
+		   the daemon actually bound (dummy vs real, cube geometry). */
+		{
+			static int g_tex_log = 3;
+			if (g_tex_log > 0) {
+				g_tex_log--;
+				for (i = 0; i < num_samp; i++) {
+					const adreno_3d_tex_t *t = (i < num_tex) ? &tex[i] : 0;
+					slog("adreno_3d: tex slot %u %s phy=%llx %ux%u stride=%u depth=%u arr64=%u tiling=%u ub=%x\n",
+					     i, (i < ADRENO_PROG_MAX_TEX &&
+					         k->tex_type[i] == ADRENO_PROG_TEX_CUBE) ? "cube" : "2d",
+					     (t && t->phy) ? (unsigned long long)t->phy : 0ull,
+					     t ? t->w : 0u, t ? t->h : 0u, t ? t->stride : 0u,
+					     t ? (uint32_t)t->depth : 0u, t ? t->arrstride64 : 0u,
+					     t ? (uint32_t)t->tiling : 0u, t ? (uint32_t)t->ub_pad : 0u);
+				}
+			}
+		}
 	} else {
 		tex_iova = samp_iova = dummy_iova = 0ull;
 	}
