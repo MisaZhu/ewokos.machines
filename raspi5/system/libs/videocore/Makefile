@@ -9,10 +9,11 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/platform/$(ARCH)/include/$(ARCH) \
+	-I $(SYS_DIR)/gui/libs/g2dclient/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
 LIB_VIDEOCORE_OBJS = $(ARCH)/src/vc_g2d.o $(ARCH)/src/v3d_g2d.o \
-	$(ARCH)/src/v3d_3d.o $(ARCH)/src/vc_pgl3d.o
+	$(ARCH)/src/v3d_3d.o $(ARCH)/src/vc_pgl3d.o $(ARCH)/src/vc_cl.o
 
 VIDEOCORE = $(TARGET_DIR)/lib/libvideocore.a
 

@@ -112,7 +112,7 @@ uint32_t vc_g2d_clock_hz(void)
 /* raspi5 is BCM2712 / VideoCore VII, so the V3D architecture version x10 is the
    constant 71 (V3D 7.1).  Unlike raspix there is no single-binary-across-chips
    concern here, but the value is reported so the shared g2dd GET_VERSION path
-   and the soft3d client's version query behave identically on every board. */
+   and the opengl client's version query behave identically on every board. */
 uint32_t vc_g2d_version(void)
 {
     return 71u;

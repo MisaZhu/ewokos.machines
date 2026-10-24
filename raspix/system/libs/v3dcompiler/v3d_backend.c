@@ -60,7 +60,7 @@ uint32_t v3d_be_quniform_ssbo_offset(void)
  *   clipper_xy_granularity = 256.0f, cle_readahead = 256  (the ver-42 case)
  *   max_render_targets / max_framebuffer_size = V3D_MAX_*(42) (4 / 4096)
  *   vpm_size       = the conservative 32768 baseline.  The V3D 4.2 route the
- *                    soft3d apps use is COMPUTE-only (CSD), and the compute
+ *                    opengl apps use is COMPUTE-only (CSD), and the compute
  *                    emit never reads vpm_size: it is touched solely by the
  *                    VS/binning VCM-cache sector math (vir.c
  *                    compute_vpm_size_in_sectors / the vpm_output_batches

@@ -326,6 +326,10 @@ static uint32_t *_cvs_unif_va; static uint32_t _cvs_unif_p;/* compiled VS expand
 static uint32_t *_cfs_unif_va; static uint32_t _cfs_unif_p;/* compiled FS expanded uniforms */
 static uint32_t *_ccs_unif_va; static uint32_t _ccs_unif_p;/* compiled COORD expanded uniforms */
 static uint32_t *_ccu_unif_va; static uint32_t _ccu_unif_p;/* compiled COMPUTE expanded uniforms */
+/* GPU-visible default-uniform storage for indirect ldunifa/TMU loads.  The
+ * client's blob is capped at PGL_G3D_MAX_UNIF (256 dwords). */
+#define V3D_3D_JOB_MAX_UNIF 256u
+static uint32_t *_job_unif_va; static uint32_t _job_unif_p;
 static uint8_t  *_gen_va;     static uint32_t _gen_p;   /* generic tile list */
 /* Two-pass geometry rasterizer intermediate: `vout` holds one packed record per
  * vertex, written by the pass-1 vertex-transform kernel and read by the pass-2
@@ -725,6 +729,10 @@ int v3d_3d_init(void)
     if (alloc_stage(V3D_3D_PROG_MAX_UNIF * 4u, &va, &iova) != 0)
         return V3D_3D_UNSUPPORTED;
     _ccu_unif_va = (uint32_t *)va; _ccu_unif_p = iova;
+
+    if (alloc_stage(V3D_3D_JOB_MAX_UNIF * 4u, &va, &iova) != 0)
+        return V3D_3D_UNSUPPORTED;
+    _job_unif_va = (uint32_t *)va; _job_unif_p = iova;
 
     if (alloc_stage(V3D_3D_GEN_SIZE, &va, &iova) != 0)
         return V3D_3D_UNSUPPORTED;
@@ -1679,6 +1687,7 @@ static uint32_t build_draw_rcl(uint32_t fb_iova, uint32_t stride_bytes,
 #define QUNIFORM_VIEWPORT_Z_SCALE  5u
 #define QUNIFORM_TMU_CONFIG_P0     6u
 #define QUNIFORM_TMU_CONFIG_P1     7u
+#define QUNIFORM_UBO_ADDR          16u  /* unit 0 = default uniform blob */
 #define QUNIFORM_SSBO_OFFSET       19u  /* data = SSBO binding; compute route */
 #define QUNIFORM_SPILL_OFFSET          31u  /* data = byte offset into the scratch BO */
 #define QUNIFORM_SPILL_SIZE_PER_THREAD 32u  /* value = bytes/thread of spill scratch */
@@ -1707,6 +1716,7 @@ static uint32_t f32_bits(float f)
 static int expand_uniforms(uint32_t *out, const uint32_t *contents,
                            const uint32_t *data, uint32_t num,
                            const uint32_t *job_unif, uint32_t num_job,
+                           uint32_t job_unif_iova,
                            const v3d_3d_ctex_t *ctex,
                            float vp_xscale, float vp_yscale,
                            float vp_zscale, float vp_zoff,
@@ -1728,7 +1738,28 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
                 return -1;                  /* per-draw GL uniform[d] */
             }
             out[i] = job_unif[d];
+            static int bricks_diag = 0;
+            if (d == 161u && job_unif_iova != 0 && bricks_diag++ < 2 && num_job >= 169u) {
+                slog("v3d_3d: bricks raw %x %x %x %x %x %x %x %x\r\n",
+                     job_unif[161], job_unif[162], job_unif[163], job_unif[164],
+                     job_unif[165], job_unif[166], job_unif[167], job_unif[168]);
+            }
             break;
+        case QUNIFORM_UBO_ADDR: {
+            /* Indirect default-uniform loads carry a byte offset in the low
+             * 24 bits and buffer index 0 in the high byte.  Real UBO units are
+             * not exposed by this GLES route. */
+            uint32_t unit = d >> 24;
+            uint32_t off = d & 0x00FFFFFFu;
+            if (unit != 0 || job_unif_iova == 0 || (off & 3u) != 0 ||
+                off / 4u >= num_job) {
+                slog("v3d_3d: unif slot %u UBO unit %u offset %u/%u -> decline\r\n",
+                     i, unit, off, num_job * 4u);
+                return -1;
+            }
+            out[i] = job_unif_iova + off;
+            break;
+        }
         /* Viewport uniforms are plain float32 (mesa cl_aligned_f): the
          * compiled VS/coord shader does nir_fmul(pos, load_viewport_x_scale)
          * then f2i32 to produce the Xs/Ys VPM words (v3d_nir_lower_io.c
@@ -1818,8 +1849,8 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
             out[i] = spill_size_per_thread;
             break;
         default:
-            /* UBO-addr / blend-constant / line-width / spill / ... : the
-             * full-screen-quad shadertoy path never emits these, so decline
+            /* Blend-constant / line-width / ... : the full-screen-quad
+             * shadertoy path never emits these, so decline
              * rather than guess an encoding.  Log the slot so a device run
              * names the missing QUNIFORM type instead of a bare -2. */
             slog("v3d_3d: unif slot %u type %u data 0x%x unhandled -> decline\r\n",
@@ -1867,13 +1898,20 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         return decline("compute: shared memory unsupported");
 
     v3d_g2d_op_begin();
+    if (num_uniforms > V3D_3D_JOB_MAX_UNIF ||
+        (num_uniforms != 0 && unif == NULL)) {
+        v3d_g2d_op_end();
+        return decline("compute: uniform blob");
+    }
+    if (num_uniforms != 0)
+        memcpy(_job_unif_va, unif, num_uniforms * 4u);
     if (build_tex_state_records(ctex) != 0) {
         v3d_g2d_op_end();
         return decline("compute: ctex base not 64B aligned");
     }
     if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
-                        pr->cs_num_uniforms, unif, num_uniforms, ctex,
-                        0.0f, 0.0f, 0.0f, 0.0f, &fb_iova, 1u,
+                        pr->cs_num_uniforms, unif, num_uniforms, _job_unif_p,
+                        ctex, 0.0f, 0.0f, 0.0f, 0.0f, &fb_iova, 1u,
                         pr->cs_spill_iova, pr->cs_spill_size) != 0) {
         v3d_g2d_op_end();
         return decline("compute: uniforms");
@@ -1892,6 +1930,8 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.dst_phy     = fb_iova;
     job.dst_span    = stride_bytes * h;
     job.unif_span   = pr->cs_num_uniforms * 4u;
+    job.src_phy     = _job_unif_p;       /* ARM-written indirect uniform data */
+    job.src_span    = num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_COMPUTE;
     /* a ray-marching effect at 640x480 legitimately runs for hundreds of ms;
      * give it a real budget instead of the 2D fail-fast default */
@@ -2012,7 +2052,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     if (tex_iova != 0u) {
         /* textured xform reads interleaved pos+uv from binding 1 only */
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
-                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            pr->cs2_num_uniforms, unif, num_uniforms, 0u, NULL,
                             0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms (tex)");
@@ -2023,7 +2063,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         ssbo[2] = nrm_iova;
         ssbo[3] = inst_iova;
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
-                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            pr->cs2_num_uniforms, unif, num_uniforms, 0u, NULL,
                             0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms (inst)");
@@ -2031,7 +2071,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     } else {
         ssbo[2] = nrm_iova;
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
-                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            pr->cs2_num_uniforms, unif, num_uniforms, 0u, NULL,
                             0.0f, 0.0f, 0.0f, 0.0f, ssbo, 3u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms");
@@ -2102,7 +2142,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     /* the raster kernel's uniforms live in the SECOND region of the blob */
     if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                         pr->cs_num_uniforms, unif + split, num_uniforms - split,
-                        NULL, 0.0f, 0.0f, 0.0f, 0.0f,
+                        0u, NULL, 0.0f, 0.0f, 0.0f, 0.0f,
                         ssbo, tex_iova != 0u ? 4u : 3u, 0u, 0u) != 0) {
         v3d_g2d_op_end();
         return decline("geom: raster uniforms");
@@ -2448,16 +2488,16 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
         if (build_tex_state_records(ctex) != 0)
             return decline("ctex base not 64B aligned");
         if (expand_uniforms(_cvs_unif_va, pr->vs_unif_contents, pr->vs_unif_data,
-                            pr->vs_num_uniforms, unif, num_uniforms, ctex,
+                            pr->vs_num_uniforms, unif, num_uniforms, 0u, ctex,
                             fx, fy, 0.5f, 0.5f, NULL, 0u, 0u, 0u) != 0)
             return decline("vs uniforms");
         if (expand_uniforms(_cfs_unif_va, pr->fs_unif_contents, pr->fs_unif_data,
-                            pr->fs_num_uniforms, unif, num_uniforms, ctex,
+                            pr->fs_num_uniforms, unif, num_uniforms, 0u, ctex,
                             fx, fy, 0.5f, 0.5f, NULL, 0u, 0u, 0u) != 0)
             return decline("fs uniforms");
         if (expand_uniforms(_ccs_unif_va, pr->coord_unif_contents,
                             pr->coord_unif_data, pr->coord_num_uniforms,
-                            unif, num_uniforms, ctex,
+                            unif, num_uniforms, 0u, ctex,
                             fx, fy, 0.5f, 0.5f, NULL, 0u, 0u, 0u) != 0)
             return decline("coord uniforms");
         build_shader_record_compiled(pr->fs_qpu_iova, _cfs_unif_p,
@@ -2898,4 +2938,92 @@ int v3d_3d_program_free(int prog_handle)
     release_prog(pr);
     slog("v3d_3d: program %d freed\r\n", prog_handle);
     return 0;
+}
+
+/* OpenCL compute dispatch (the vc_cl route): the generalisation of
+ * draw_compute above for an arbitrary CL kernel.  The program was uploaded as
+ * a pure-compute (cs-only) blob through v3d_3d_program, so its cs QPU, uniform
+ * layout, threads / single_seg and spill scratch are already cached in the
+ * handle's slot.  Where draw_compute hardcodes SSBO binding 0 = the frame
+ * buffer and derives the grid from the frame size, here the caller supplies the
+ * workgroup grid and the table of __global buffer SSBO IOVAs (binding order),
+ * which expand_uniforms resolves for every QUNIFORM_SSBO_OFFSET slot.  The
+ * expanded-uniform / job-uniform dma staging, the QUNIFORM interpreter, the op
+ * bracket and the CSD submission + L2 maintenance are reused verbatim, so a CL
+ * launch is the proven compute path with a caller-owned SSBO table. */
+int v3d_3d_cl_dispatch(int32_t prog_handle,
+                       const uint32_t wg_count[3], uint32_t wg_size,
+                       const uint32_t *ssbo_iova, uint32_t num_ssbo,
+                       const uint32_t *job_unif, uint32_t num_job_unif,
+                       uint32_t dst_phy, uint32_t dst_span)
+{
+    v3d_3d_prog_t *pr;
+    v3d_g2d_csd_job_t job;
+    int rc;
+
+    if (!_ready || prog_handle < 0 ||
+        (uint32_t)prog_handle >= V3D_3D_MAX_PROGS)
+        return V3D_3D_UNSUPPORTED;
+    pr = &_progs[prog_handle];
+    if (!pr->used || pr->cs_qpu_words == 0)
+        return V3D_3D_UNSUPPORTED;
+    /* the CSD has no shared-memory / barrier support in this route, so a
+     * kernel that asked for __local storage is declined to the CPU device. */
+    if (pr->cs_shared_size != 0)
+        return decline("cl: shared memory unsupported");
+    if (wg_size == 0 || wg_size > 256u)
+        return decline("cl: wg_size");
+    if (wg_count == NULL || wg_count[0] == 0)
+        return decline("cl: wg_count");
+
+    v3d_g2d_op_begin();
+    if (num_job_unif > V3D_3D_JOB_MAX_UNIF ||
+        (num_job_unif != 0 && job_unif == NULL)) {
+        v3d_g2d_op_end();
+        return decline("cl: uniform blob");
+    }
+    if (num_job_unif != 0)
+        memcpy(_job_unif_va, job_unif, num_job_unif * 4u);
+    /* expand the kernel's uniform stream: QUNIFORM_SSBO_OFFSET slots index the
+     * caller's ssbo_iova[] by binding, QUNIFORM_UNIFORM / UBO_ADDR slots read
+     * the packed scalar-arg blob, spill slots resolve from the cached scratch.
+     * No sampler state on the CL route (ctex NULL). */
+    if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+                        pr->cs_num_uniforms, job_unif, num_job_unif,
+                        _job_unif_p, NULL, 0.0f, 0.0f, 0.0f, 0.0f,
+                        ssbo_iova, num_ssbo,
+                        pr->cs_spill_iova, pr->cs_spill_size) != 0) {
+        v3d_g2d_op_end();
+        return decline("cl: uniforms");
+    }
+    __asm__ __volatile__("dsb sy" ::: "memory");
+
+    memset(&job, 0, sizeof(job));
+    job.code_iova   = pr->cs_qpu_iova;
+    job.unif_iova   = _ccu_unif_p;
+    job.wg_count[0] = wg_count[0];
+    job.wg_count[1] = wg_count[1];
+    job.wg_count[2] = wg_count[2];
+    job.wg_size     = wg_size;
+    job.threads     = pr->cs_threads;
+    job.single_seg  = pr->cs_single_seg;
+    /* POST writeback covers the hull of every argument buffer the kernel may
+     * write (dst_phy/dst_span, computed by vc_cl); 0 selects the full walk. */
+    job.dst_phy     = dst_phy;
+    job.dst_span    = dst_span;
+    job.unif_span   = pr->cs_num_uniforms * 4u;
+    job.src_phy     = _job_unif_p;       /* ARM-written scalar-arg blob */
+    job.src_span    = num_job_unif * 4u;
+    job.tag         = V3D_G2D_TAG_COMPUTE;
+    job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
+    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
+                               V3D_G2D_POLL_IRQ);
+    v3d_g2d_op_end();
+    if (rc != 0) {
+        slog("v3d_3d: cl dispatch rc=%d grid %ux%ux%u wg=%u thr=%u unif=%u ssbo=%u\r\n",
+             rc, job.wg_count[0], job.wg_count[1], job.wg_count[2], job.wg_size,
+             (uint32_t)pr->cs_threads, pr->cs_num_uniforms, num_ssbo);
+        return rc > 0 ? V3D_3D_TIMEOUT : V3D_3D_MMU_FAULT;
+    }
+    return V3D_3D_DONE;
 }

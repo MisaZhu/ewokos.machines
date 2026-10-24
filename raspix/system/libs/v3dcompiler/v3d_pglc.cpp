@@ -2,7 +2,7 @@
  * v3d_pglc.cpp - the VideoCore V3D implementation of the backend-neutral
  * pglcompiler.h contract (compile half).
  *
- * Drives the shared GLSL->NIR frontend (projects/soft3d/libs/gles/pglcompiler,
+ * Drives the shared GLSL->NIR frontend (projects/opengl/libs/gles/pglcompiler,
  * reached through pglcompiler_frontend.h) with V3D's nir_shader_compiler_options,
  * hands the linked NIR to the C backend bridge (v3d_backend.h: mesa
  * broadcom/compiler, NIR->QPU) and packs the result into the neutral

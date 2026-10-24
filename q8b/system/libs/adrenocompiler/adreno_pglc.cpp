@@ -2,7 +2,7 @@
  * adreno_pglc.cpp - the Adreno (q8b / A690) implementation of the
  * backend-neutral pglcompiler.h contract (compile half).
  *
- * Drives the shared GLSL->NIR frontend (projects/soft3d/libs/gles/pglcompiler,
+ * Drives the shared GLSL->NIR frontend (projects/opengl/libs/gles/pglcompiler,
  * reached through pglcompiler_frontend.h) with ir3's nir_shader_compiler_options,
  * hands the linked compute NIR to the C backend bridge (adreno_backend.h: mesa
  * freedreno/ir3, NIR->a6xx) and packs the result into the neutral pglc_stage:

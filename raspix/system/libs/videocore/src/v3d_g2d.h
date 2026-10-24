@@ -122,7 +122,7 @@ void v3d_g2d_set_csd_wgs_per_sg(uint32_t n);
 uint32_t v3d_g2d_csd_wgs_per_sg(void);
 
 /*
- * Generic CSD dispatch of a mesa-compiled COMPUTE shader (the soft3d
+ * Generic CSD dispatch of a mesa-compiled COMPUTE shader (the opengl
  * compute-geometry route: v3d_3d.c stages the compiled QPU code and the
  * expanded uniform stream in dma and references them by PHYSICAL address -
  * raspix has no V3D MMU page table, unlike raspi5's IOVA model, so the

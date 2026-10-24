@@ -5239,8 +5239,8 @@ v3d_nir_to_vir_finish(struct v3d_compile *c)
         while (true) {
                 double _rt0 = v3ct_now();
                 temp_registers = v3d_register_allocate(c);
-                v3ct_log("RA try=%d threads=%d ok=%d spills=%d ms=%.0f", _ra_try++,
-                         c->threads, temp_registers != NULL, c->spills,
+                v3ct_log("RA try=%d threads=%d ok=%d spills=%d fills=%d ms=%.0f", _ra_try++,
+                         c->threads, temp_registers != NULL, c->spills, c->fills,
                          v3ct_now() - _rt0);
                 if (temp_registers) {
                         assert(c->spills + c->fills <= c->max_tmu_spills);
