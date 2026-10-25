@@ -45,8 +45,12 @@ static inline uint64_t read_cntvct(void) {
 }
 
 void timer_enable_el0_cnt_access(void) {
-    uint64_t val = 0x3; /* EL0PCTEN | EL0VCTEN */
+    /* Preserve the event-stream controls used by WFE-based SMP waiters. */
+    uint64_t val;
+    __asm__ volatile("mrs %0, CNTKCTL_EL1" : "=r"(val) : : "memory");
+    val |= 0x3; /* EL0PCTEN | EL0VCTEN */
     __asm__ volatile("msr CNTKCTL_EL1, %0" :: "r"(val) : "memory");
+    __asm__ volatile("isb" ::: "memory");
 }
 
 void timer_init(void) {

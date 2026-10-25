@@ -133,11 +133,11 @@ ifeq ($(FS),)
 FS=ext3
 endif
 
-# The RAM-disk rootfs is loaded by the UEFI stub over TFTP/ESP.  112MB
-# fits the complete X userland while keeping PXE transfer time below the
-# firmware timeout seen with the 128MB image.
+# The complete staged X system, including installed apps/resources, exceeds
+# 240 MB. Leave room for ext3 metadata and updates; SD_ROOTFS boots read the
+# filesystem from SD rather than transferring this image through PXE.
 ifeq ($(ROOTFS_MB),)
-ROOTFS_MB=112
+ROOTFS_MB=320
 endif
 
 SD = ../root_$(ARCH).img

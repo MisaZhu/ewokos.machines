@@ -271,6 +271,8 @@ typedef struct {
 	uint32_t    *imm;         /* CPU copy of imm consts, or NULL     */
 	adreno_bo_t  bin_bo;      /* assembled binary (+ constant data)  */
 	adreno_bo_t  pvt_bo;      /* private (spill/stack) memory, if any */
+	adreno_bo_t  desc_bo;     /* reusable descriptors and UBO 0      */
+	uint32_t    *dispatch_ib; /* CPU command staging, ring copies it */
 	uint32_t     per_fiber_size;
 	uint32_t     per_sp_size;
 } kern_slot_t;
@@ -309,6 +311,8 @@ static void kern_release(kern_slot_t *ks) {
 	if (ks->imm) { free(ks->imm); ks->imm = 0; }
 	adreno_bo_free(&ks->bin_bo);
 	adreno_bo_free(&ks->pvt_bo);
+	adreno_bo_free(&ks->desc_bo);
+	free(ks->dispatch_ib);
 	memset(ks, 0, sizeof(*ks));
 }
 
@@ -669,12 +673,7 @@ typedef struct {
 	uint32_t bytes;
 } bind_t;
 
-/* A per-dispatch descriptor BO whose dispatch never retired.  The GPU may still
-   be reading it, so it is deliberately leaked (the device is wedged at that
-   point, so this happens at most once per boot). */
-static int g_leaked_desc = 0;
-
-/* Per-dispatch BO layout: [UAV descriptors: num_ssbo x 64 B][texture
+/* Per-kernel descriptor BO layout: [UAV descriptors: num_ssbo x 64 B][texture
    descriptors: num_samp x 64 B, 64-aligned (SP_CS_TEXMEMOBJ_BASE)][sampler
    descriptors: num_samp x 16 B (SP_CS_SAMPLER_BASE, 16-aligned)][dummy texel
    scratch: 512 B zeroed -- defensive only, no longer referenced now that an
@@ -693,7 +692,7 @@ static int g_leaked_desc = 0;
    Every dispatch drains and invalidates UCHE before loading state. Returns
    ADRENO_OK, ADRENO_E_DECLINED before anything reached the GPU, or the
    adreno_ring_submit result (TIMEOUT / FAULT / WEDGED). */
-static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
+static int emit_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
                             uint32_t nbinds, const adreno_3d_tex_t *tex,
                             uint32_t num_tex, const uint32_t *unif,
                             uint32_t num_uniforms, const uint32_t grid[3]) {
@@ -709,6 +708,11 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	uint32_t i;
 	int ret;
 
+	/* Callers hold this kernel's lifetime/dispatch lock through the fence.
+	 * A timed-out submission may still fetch its descriptors: never rewrite
+	 * them after the ring has latched the device wedged. */
+	if (adreno_wedged())
+		return ADRENO_E_WEDGED;
 	if (unif == 0 && num_uniforms > 0)
 		return ADRENO_E_DECLINED;
 	if (num_uniforms > ADRENO_3D_IB_MAX)   /* can never fit the IB anyway */
@@ -789,7 +793,7 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	preload = k->instrlen < A690_INSTR_CACHE_SIZE ? k->instrlen
 	                                              : A690_INSTR_CACHE_SIZE;
 
-	/* --- per-dispatch BO: UAV descriptors + texture/sampler descriptors +
+	/* --- reusable BO: UAV descriptors + texture/sampler descriptors +
 	   the zeroed dummy texel scratch + the UBO-0 uniform copy --- */
 	ubo_region_dwords = num_uniforms < k->uniform_blob_dwords ? num_uniforms
 	                                                          : k->uniform_blob_dwords;
@@ -801,13 +805,18 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	ubo_bytes = align_up(k->uniform_blob_dwords * 4u, 16u);
 	if (ubo_bytes < DESC_UBO_MIN_BYTES)
 		ubo_bytes = DESC_UBO_MIN_BYTES;
-	if (adreno_bo_alloc(&desc_bo, ubo_off + ubo_bytes) != 0)
-		return ADRENO_E_DECLINED;
-	desc_bo.iova = desc_bo.pa;
-	if ((desc_bo.pa & 0x3fu) != 0) {
-		adreno_bo_free(&desc_bo);
-		return ADRENO_E_DECLINED;
+	/* The kernel layout is immutable, so the allocation size never changes.
+	 * Synchronous fence retirement permits reuse on the next dispatch. */
+	if (ks->desc_bo.va == 0) {
+		if (adreno_bo_alloc(&ks->desc_bo, ubo_off + ubo_bytes) != 0)
+			return ADRENO_E_DECLINED;
+		ks->desc_bo.iova = ks->desc_bo.pa;
+		if ((ks->desc_bo.pa & 0x3fu) != 0) {
+			adreno_bo_free(&ks->desc_bo);
+			return ADRENO_E_DECLINED;
+		}
 	}
+	desc_bo = ks->desc_bo;
 	for (i = 0; i < k->num_ssbo; i++) {
 		const bind_t *bd = &binds[k->ssbo_binding[i]];
 		build_memobj((uint32_t *)desc_bo.va + i * A6XX_TEX_CONST_DWORDS,
@@ -869,15 +878,18 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	} else {
 		tex_iova = samp_iova = dummy_iova = 0ull;
 	}
+	/* Short uniform uploads must retain the fresh-allocation zero padding. */
+	memset((uint8_t *)desc_bo.va + ubo_off, 0, ubo_bytes);
 	if (ubo_region_dwords > 0)
 		memcpy((uint8_t *)desc_bo.va + ubo_off, unif, ubo_region_dwords * 4u);
 	ubo_iova = desc_bo.iova + ubo_off;
 	ubo_vec4s = ubo_bytes / 16u;
 
-	/* --- allocate the IB at the ring cap; ib_w counts past it --- */
-	b.d = (uint32_t *)malloc(ADRENO_3D_IB_MAX * 4u);
+	/* The ring copies these words before returning; retain CPU staging too. */
+	if (ks->dispatch_ib == 0)
+		ks->dispatch_ib = (uint32_t *)malloc(ADRENO_3D_IB_MAX * 4u);
+	b.d = ks->dispatch_ib;
 	if (b.d == 0) {
-		adreno_bo_free(&desc_bo);
 		return ADRENO_E_DECLINED;
 	}
 	b.n = 0; b.cap = ADRENO_3D_IB_MAX;
@@ -1164,27 +1176,16 @@ static int emit_cs_dispatch(const kern_slot_t *ks, const bind_t *binds,
 	ib_w(&b, grid[2]);
 
 	if (b.n > b.cap) {   /* did not fit the ring IB: nothing was submitted */
-		free(b.d);
-		adreno_bo_free(&desc_bo);
 		return ADRENO_E_DECLINED;
 	}
 
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
-	free(b.d);
-	if (ret == ADRENO_OK || ret == ADRENO_E_DECLINED || ret == ADRENO_E_WEDGED) {
-		/* OK: submit's fence retired.  DECLINED / WEDGED: nothing reached
-		   the GPU.  Either way the per-dispatch BO is ours to free. */
-		adreno_bo_free(&desc_bo);
+	if (ret == ADRENO_OK || ret == ADRENO_E_DECLINED || ret == ADRENO_E_WEDGED)
 		return ret;
-	}
 	/* TIMEOUT / FAULT: the dispatch was handed to the CP and never retired.
-	   desc_bo may still be referenced by the (hung) GPU, so it must not be
-	   returned to the allocator where the next user would see GPU writes. */
-	if (!g_leaked_desc) {
-		g_leaked_desc = 1;
-		klog("adreno_3d: leaking desc BO pa=%llx (%u B) after submit failure %d\n",
-		     (unsigned long long)desc_bo.pa, desc_bo.size, ret);
-	}
+	   Keep the pool pinned. Wedge guards prevent reuse and program release. */
+	klog("adreno_3d: retaining desc BO pa=%llx (%u B) after submit failure %d\n",
+	     (unsigned long long)desc_bo.pa, desc_bo.size, ret);
 	klog("adreno_3d: dispatch submit failed (%d)\n", ret);
 	return ret;
 }
@@ -1353,12 +1354,12 @@ int adreno_compute_rotate(uint64_t src_phy, int32_t src_w, int32_t src_h,
 
 /* Two-pass geometry rasterizer (mirrors raspi5 draw_compute_geom).    */
 /* ------------------------------------------------------------------ */
-static int draw_geom(const prog_slot_t *s, uint64_t fb_phy, uint32_t w,
+static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
                      uint32_t h, uint32_t fb_stride,
                      const adreno_3d_geom_t *g, const uint32_t *unif,
                      uint32_t num_uniforms) {
-	const kern_slot_t *xf = &s->kern[1];
-	const kern_slot_t *rs = &s->kern[0];
+	kern_slot_t *xf = &s->kern[1];
+	kern_slot_t *rs = &s->kern[0];
 	bind_t binds[ADRENO_3D_MAX_BINDINGS];
 	uint32_t grid[3];
 	uint32_t ntris, split = s->cs2_uniform_blob_dwords;
@@ -1508,7 +1509,7 @@ static int draw_locked(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
                    const adreno_3d_geom_t *geom,
                    const adreno_3d_tex_t *tex, uint32_t num_tex,
                    const uint32_t *unif, uint32_t num_uniforms) {
-	const prog_slot_t *s;
+	prog_slot_t *s;
 	bind_t binds[1];
 	uint32_t grid[3];
 
