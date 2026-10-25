@@ -115,7 +115,6 @@ gui_sys: basic_sys
 
 x_sys: gui_sys network_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/xwin
-	$(MAKE) -C $(EWOKOS_ROOT_DIR)/apps/nputest ARCH=$(ARCH) HW=$(HW)
 	# Remove the previous machine-bin install from incremental rootfs builds.
 	rm -f $(TARGET_DIR)/bin/npudemo $(FINAL_DIR)/bin/npudemo
 	@mkdir -p ${TARGET_DIR}/etc
