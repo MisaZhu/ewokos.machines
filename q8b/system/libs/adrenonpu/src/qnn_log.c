@@ -16,6 +16,9 @@ static void *g_cb_data;
 
 void qnn_log(uint32_t level, const char *fmt, ...)
 {
+	/* Callbacks may opt into protocol traces. The default system log stays
+	 * free of per-request diagnostics. */
+	if (!g_cb && level > QNN_LOG_LVL_INFO) return;
 	char msg[256];
 	va_list ap;
 

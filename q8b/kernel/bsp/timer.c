@@ -3,6 +3,7 @@
 #include <kernel/kernel.h>
 #include <mm/mmu.h>
 #include "hw_arch.h"
+#include <q8b_counter_usec.h>
 
 /*
  * ARM generic virtual timer (CNTV) as the EwokOS system tick.
@@ -11,7 +12,7 @@
  */
 
 static uint32_t _cntv_step;
-static uint32_t _cntv_us_div;
+static uint32_t _cntv_hz;
 
 void write_cntv_tval(uint32_t tval) {
     __asm__ volatile("msr CNTV_TVAL_EL0, %0" : : "r"(tval) : "memory");
@@ -51,9 +52,7 @@ void timer_enable_el0_cnt_access(void) {
 void timer_init(void) {
     timer_enable_el0_cnt_access();
     disable_cntv();
-    _cntv_us_div = read_cntfrq() / 1000000;
-    if (_cntv_us_div == 0)
-        _cntv_us_div = 1;
+    _cntv_hz = read_cntfrq();
     enable_cntv();
 }
 
@@ -70,11 +69,7 @@ void timer_set_interval(uint32_t id, uint32_t times_per_sec) {
 }
 
 uint64_t timer_read_sys_usec(void) {
-    if (_cntv_us_div == 0) {
-        uint32_t cntfrq = read_cntfrq();
-        _cntv_us_div = cntfrq / 1000000U;
-        if (_cntv_us_div == 0)
-            _cntv_us_div = 1;
-    }
-    return read_cntvct() / _cntv_us_div;
+    if (_cntv_hz == 0)
+        _cntv_hz = read_cntfrq();
+    return q8b_counter_usec(read_cntvct(), _cntv_hz);
 }

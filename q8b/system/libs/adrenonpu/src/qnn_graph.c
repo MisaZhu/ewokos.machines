@@ -133,6 +133,8 @@ qnn_node_obj_t *qnn_graph_node_append(qnn_graph_obj_t *g, const char *op_name,
 	n = &g->nodes[g->num_nodes];
 	memset(n, 0, sizeof(*n));
 	n->op_name = qnn_strdup_safe(op_name ? op_name : "");
+	if (!n->op_name)
+		return NULL;
 	n->op_kind = op_kind;
 	if (attrs)
 		n->attrs = *attrs;
@@ -145,8 +147,8 @@ qnn_node_obj_t *qnn_graph_node_append(qnn_graph_obj_t *g, const char *op_name,
 		}
 		for (i = 0; i < num_ins; i++) {
 			n->ins[i] = ins ? ins[i] : NULL;
-			if (ins[i])
-				qnn_graph_track_tensor(g, ins[i]);
+			if (n->ins[i] && qnn_graph_track_tensor(g, n->ins[i]) != QNN_SUCCESS)
+				goto fail;
 		}
 		n->num_ins = num_ins;
 	}
@@ -161,8 +163,8 @@ qnn_node_obj_t *qnn_graph_node_append(qnn_graph_obj_t *g, const char *op_name,
 		}
 		for (i = 0; i < num_outs; i++) {
 			n->outs[i] = outs ? outs[i] : NULL;
-			if (outs[i])
-				qnn_graph_track_tensor(g, outs[i]);
+			if (n->outs[i] && qnn_graph_track_tensor(g, n->outs[i]) != QNN_SUCCESS)
+				goto fail;
 		}
 		n->num_outs = num_outs;
 	}
@@ -170,6 +172,12 @@ qnn_node_obj_t *qnn_graph_node_append(qnn_graph_obj_t *g, const char *op_name,
 	/* A structural change invalidates any prior preparation. */
 	g->finalized = false;
 	return n;
+fail:
+	free(n->op_name);
+	free(n->ins);
+	free(n->outs);
+	memset(n, 0, sizeof(*n));
+	return NULL;
 }
 
 void qnn_graph_release_internals(qnn_graph_obj_t *g)
@@ -203,7 +211,7 @@ void qnn_graph_apply_tuning(qnn_graph_obj_t *g)
 	if (!g || !g->ctx || !g->ctx->backend)
 		return;
 	/* Push the current perf tier; a no-op vote when the cDSP is down. */
-	if (g->ctx->backend->npu_available)
+	if (!g->ctx->backend->native_mode && g->ctx->backend->npu_available)
 		qnn_htp_power_vote(g->ctx->backend, g->htp.perf_mode);
 }
 
@@ -217,7 +225,7 @@ Qnn_ErrorHandle_t QnnGraph_create(Qnn_ContextHandle_t ctx, const char *graphName
 		qnn_obj_from_handle(ctx, QNN_OBJ_CONTEXT);
 	qnn_graph_obj_t *g;
 
-	if (!c || !graph)
+	if (!c || !graph || (c->backend && c->backend->native_mode))
 		return QNN_ERROR;
 	g = qnn_graph_obj_create(c, graphName);
 	if (!g)
@@ -261,7 +269,7 @@ Qnn_ErrorHandle_t QnnGraph_addNode(Qnn_GraphHandle_t graph, const char *opName,
 	qnn_op_attrs_t attrs;
 	uint32_t i;
 
-	if (!g || !opName)
+	if (!g || !opName || g->native_graph)
 		return QNN_ERROR;
 	if (numIn > QNN_NODE_MAX_INPUTS || numOut > QNN_NODE_MAX_OUTPUTS)
 		return QNN_ERROR;
@@ -381,6 +389,19 @@ static qnn_tensor_obj_t *match_boundary(qnn_tensor_obj_t *const *list,
 
 /* Refresh the graph boundary tensors' data pointers from the caller-supplied
    execute arrays (matched by identity or name). */
+static void bind_data(qnn_tensor_obj_t *dst, const qnn_tensor_obj_t *src)
+{
+	/* Finalize may have allocated an owned output before the client binds
+	 * its execution buffer. Retire that allocation before taking a borrowed
+	 * alias; otherwise context free would free the client's buffer. */
+	if (dst->data != src->data) {
+		if (dst->data_owned) free(dst->data);
+		dst->data_owned = false;
+	}
+	dst->data = src->data;
+	dst->data_bytes = src->data_bytes;
+}
+
 static void bind_io(qnn_graph_obj_t *g, Qnn_TensorHandle_t *in, uint32_t nin,
                     Qnn_TensorHandle_t *out, uint32_t nout)
 {
@@ -396,8 +417,7 @@ static void bind_io(qnn_graph_obj_t *g, Qnn_TensorHandle_t *in, uint32_t nin,
 		m = match_boundary((qnn_tensor_obj_t *const *)g->graph_ins,
 		                  g->num_graph_ins, t);
 		if (m && m != t) {
-			m->data = t->data;
-			m->data_bytes = t->data_bytes;
+			bind_data(m, t);
 		}
 	}
 	for (i = 0; out && i < nout; i++) {
@@ -410,8 +430,7 @@ static void bind_io(qnn_graph_obj_t *g, Qnn_TensorHandle_t *in, uint32_t nin,
 		m = match_boundary((qnn_tensor_obj_t *const *)g->graph_outs,
 		                  g->num_graph_outs, t);
 		if (m && m != t) {
-			m->data = t->data;
-			m->data_bytes = t->data_bytes;
+			bind_data(m, t);
 		}
 	}
 }
@@ -428,6 +447,8 @@ static Qnn_ErrorHandle_t graph_run(qnn_graph_obj_t *g,
 
 	if (!g->finalized)
 		return QNN_ERROR;
+	if (g->ctx && g->ctx->backend && g->ctx->backend->native_mode)
+		return qnn_native_execute(g, in, nin, out, nout, prof);
 	bind_io(g, in, nin, out, nout);
 
 	/* Primary path: HTP dispatch to the cDSP over FastRPC. */
@@ -518,7 +539,11 @@ Qnn_ErrorHandle_t QnnGraph_getProperty(Qnn_GraphHandle_t graph,
 
 	if (!g || !key || !val)
 		return QNN_ERROR;
-	if (strcmp(key, "name") == 0)
+	if (strcmp(key, "execution_backend") == 0)
+		*val = g->native_graph ? "official-htp-native" : (g->htp_prepared ? "private-htp" : "cpu-reference");
+	else if (g->native_graph && !strncmp(key, "native.", 7))
+		return qnn_native_property(g, key, val);
+	else if (strcmp(key, "name") == 0)
 		*val = g->name ? g->name : "";
 	else if (strcmp(key, "num_nodes") == 0)
 		*val = qnn_fmt_static("%u", g->num_nodes);
@@ -546,7 +571,7 @@ Qnn_ErrorHandle_t QnnGraph_free(Qnn_GraphHandle_t graph)
 	qnn_context_obj_t *c;
 	uint32_t i;
 
-	if (!g)
+	if (!g || g->native_graph)
 		return QNN_ERROR;
 	c = g->ctx;
 	/* Detach from the owning context so QnnContext_free won't revisit it. */
@@ -569,3 +594,26 @@ Qnn_ErrorHandle_t QnnGraph_free(Qnn_GraphHandle_t graph)
 	qnn_obj_free(g);
 	return QNN_SUCCESS;
 }
+
+/* Returned tensor handles are borrowed from their owning context. */
+static Qnn_ErrorHandle_t graph_boundary_tensors(Qnn_GraphHandle_t graph,
+        Qnn_TensorHandle_t *tensors, uint32_t *count, bool output)
+{
+    qnn_graph_obj_t *g = qnn_obj_from_handle(graph, QNN_OBJ_GRAPH);
+    if (!g || !count) return QNN_ERROR;
+    uint32_t required = output ? g->num_graph_outs : g->num_graph_ins;
+    if (!tensors) { *count = required; return QNN_SUCCESS; }
+    uint32_t capacity = *count;
+    *count = required;
+    if (capacity < required) return QNN_ERROR;
+    qnn_tensor_obj_t **items = output ? g->graph_outs : g->graph_ins;
+    for (uint32_t i = 0; i < required; i++)
+        tensors[i] = (Qnn_TensorHandle_t)(uintptr_t)items[i];
+    return QNN_SUCCESS;
+}
+Qnn_ErrorHandle_t QnnGraph_getInputTensors(Qnn_GraphHandle_t g,
+        Qnn_TensorHandle_t *t, uint32_t *count)
+{ return graph_boundary_tensors(g, t, count, false); }
+Qnn_ErrorHandle_t QnnGraph_getOutputTensors(Qnn_GraphHandle_t g,
+        Qnn_TensorHandle_t *t, uint32_t *count)
+{ return graph_boundary_tensors(g, t, count, true); }

@@ -23,27 +23,37 @@
    truthful about the target SoC. */
 static void npu_probe(qnn_backend_obj_t *b)
 {
+	bool was_booted = npu_cdsp_booted();
 	int rc = npu_cdsp_probe();
 
 	b->soc_model = CDSP_SOC_SC8280XP;
 	b->dsp_arch = CDSP_ARCH_V68;
 	b->npu_probe_rc = rc;
 	b->npu_available = (rc == NPU_PROBE_OK);
+	b->cdsp_owned = (!was_booted || rc == NPU_PROBE_OK) && npu_cdsp_booted();
 	b->frpc_session = b->npu_available ? frpc_session_get() : 0u;
-	/* Opening the HTP skel object is part of a successful bring-up; if it
-	   declines the backend stays up on the CPU reference path. */
-	if (b->npu_available && qnn_htp_init(b) != 0) {
-		b->npu_available = 0;
-		b->npu_probe_rc = NPU_PROBE_RPC_FAILED;
-		b->frpc_session = 0u;
+	/* A compatible graph ABI is required in addition to a live transport. */
+	if (b->npu_available) {
+		int htp_rc = qnn_htp_init(b);
+
+		if (htp_rc != 0) {
+			/* Release the session and PAS image owned by this probe when
+			 * no compatible graph executor can use them. */
+			int stop_rc = npu_cdsp_shutdown();
+			b->cdsp_owned = stop_rc != 0;
+			b->npu_available = 0;
+			b->npu_probe_rc = htp_rc == QNN_HTP_INIT_ABI_UNAVAILABLE ?
+				NPU_PROBE_HTP_ABI_MISSING : NPU_PROBE_RPC_FAILED;
+			if (!stop_rc) b->frpc_session = 0u;
+		}
 	}
 	if (!b->npu_available)
 		qnn_log(QNN_LOG_LVL_WARN,
-		        "HTP backend: cDSP unavailable (rc=%d); graphs will "
-		        "run on the CPU reference executor\n", rc);
+		        "HTP backend: hardware execution unavailable (rc=%d); graphs will "
+		        "run on the CPU reference executor\n", b->npu_probe_rc);
 	else
 		qnn_log(QNN_LOG_LVL_INFO,
-		        "HTP backend: cDSP session %u up (soc=%u arch=0x%x)\n",
+		        "HTP backend: cDSP session %u up (soc=%u arch=v%u)\n",
 		        b->frpc_session, b->soc_model, b->dsp_arch);
 }
 
@@ -53,7 +63,7 @@ Qnn_ErrorHandle_t QnnBackend_create(const Qnn_ConfigParam_t *config,
 {
 	qnn_backend_obj_t *b;
 
-	if (!backend)
+	if (!backend || qnn_native_transport_owned())
 		return QNN_ERROR;
 	if (numConfig > 0 && !config)
 		return QNN_ERROR;
@@ -64,6 +74,7 @@ Qnn_ErrorHandle_t QnnBackend_create(const Qnn_ConfigParam_t *config,
 
 	if (qnn_cfg_store(b->config_keys, b->config_vals, &b->num_config,
 	                  config, numConfig, 8) != QNN_SUCCESS) {
+		qnn_cfg_free(b->config_keys, b->config_vals, &b->num_config);
 		qnn_obj_free(b);
 		return QNN_ERROR;
 	}
@@ -78,7 +89,24 @@ Qnn_ErrorHandle_t QnnBackend_create(const Qnn_ConfigParam_t *config,
 	                (1u << CDSP_NSP_CORES) - 1u);
 	b->htp_defaults.precision = QNN_HTP_PRECISION_DEFAULT;
 
-	npu_probe(b);
+	const char *execution = qnn_cfg_get(config, numConfig, "execution_backend");
+	if (execution && strcmp(execution, "htp_native") != 0) {
+		qnn_cfg_free(b->config_keys, b->config_vals, &b->num_config);
+		qnn_obj_free(b);
+		return QNN_ERROR;
+	}
+	b->native_mode = execution != NULL;
+	if (b->native_mode) for (uint32_t i = 0; i < numConfig; i++) {
+		if (!config[i].key || strcmp(config[i].key, "execution_backend")) {
+			qnn_cfg_free(b->config_keys, b->config_vals, &b->num_config);
+			qnn_obj_free(b); return QNN_ERROR;
+		}
+	}
+	if (b->native_mode) {
+		b->soc_model = CDSP_SOC_SC8280XP;
+		b->dsp_arch = CDSP_ARCH_V68;
+		b->npu_probe_rc = NPU_PROBE_HTP_ABI_MISSING;
+	} else npu_probe(b);
 
 	*backend = (Qnn_BackendHandle_t)(uintptr_t)b;
 	return QNN_SUCCESS;
@@ -92,20 +120,30 @@ Qnn_ErrorHandle_t QnnBackend_free(Qnn_BackendHandle_t backend)
 
 	if (!b)
 		return QNN_ERROR;
-	if (b->npu_available)
-		qnn_htp_deinit(b);
-	qnn_cfg_free(b->config_keys, b->config_vals, &b->num_config);
-	for (i = 0; i < b->num_op_packages; i++)
-		free(b->op_packages[i]);
-	/* Shared registered buffers outlive the backend only until here;
-	   the vendor stack invalidates mappings on backend teardown too. */
+	if (b->native_mode && (b->native_devices || qnn_native_backend_in_use(b))) return QNN_ERROR;
+	/* Keep the backend handle and its remaining ownership list retryable
+	 * when an AP mapping cannot be revoked. Do this before module/config
+	 * teardown so a failed buffer cleanup does not partially deinit them. */
 	while (b->shared) {
 		qnn_shared_buf_t *sb = b->shared;
 
+		if (qnn_shared_free_storage(sb) != QNN_SUCCESS)
+			return QNN_ERROR;
 		b->shared = sb->next;
-		qnn_shared_free_storage(sb);
 		free(sb);
 	}
+	if (b->native_mode && qnn_native_backend_close(b) != 0) return QNN_ERROR;
+	if (!b->native_mode && b->npu_available && qnn_htp_deinit(b) != 0)
+		return QNN_ERROR;
+	if (b->cdsp_owned || b->npu_available) {
+		/* Shared mappings must be released while the FastRPC session is
+		 * still alive.  Then stop the PAS image owned by this backend. */
+		if (npu_cdsp_shutdown() != 0) return QNN_ERROR;
+		b->cdsp_owned = 0;
+	}
+	qnn_cfg_free(b->config_keys, b->config_vals, &b->num_config);
+	for (i = 0; i < b->num_op_packages; i++)
+		free(b->op_packages[i]);
 	qnn_obj_free(b);
 	return QNN_SUCCESS;
 }
@@ -148,6 +186,7 @@ Qnn_ErrorHandle_t QnnBackend_getSupportedOperations(Qnn_BackendHandle_t backend,
 
 	if (!b || !ops || !numOps)
 		return QNN_ERROR;
+	if (b->native_mode) { *numOps = 0; return QNN_SUCCESS; }
 	for (i = 0; i < n && i < *numOps; i++)
 		ops[i] = table[i].name;
 	*numOps = n < *numOps ? n : *numOps;
@@ -164,7 +203,7 @@ Qnn_ErrorHandle_t QnnBackend_validateOpConfig(Qnn_BackendHandle_t backend,
 	const char *keys[16];
 	uint32_t i;
 
-	if (!b || !opName)
+	if (!b || !opName || b->native_mode)
 		return QNN_ERROR;
 	if (nCfg > 0 && !cfg)
 		return QNN_ERROR;
@@ -186,7 +225,7 @@ Qnn_ErrorHandle_t QnnOpPackage_register(Qnn_BackendHandle_t backend,
 	qnn_backend_obj_t *b = (qnn_backend_obj_t *)
 		qnn_obj_from_handle(backend, QNN_OBJ_BACKEND);
 
-	if (!b || !pkgPath || !*pkgPath)
+	if (!b || !pkgPath || !*pkgPath || b->native_mode)
 		return QNN_ERROR;
 	if (b->num_op_packages >= QNN_MAX_OP_PACKAGES)
 		return QNN_ERROR;
@@ -218,13 +257,15 @@ Qnn_ErrorHandle_t QnnProperty_hasCapability(Qnn_BackendHandle_t backend,
 	} else if (strcmp(cap, "npu.cdsp.available") == 0) {
 		*out = b->npu_available != 0;
 	} else if (strcmp(cap, "npu.cpu_reference") == 0) {
-		*out = true;
+		*out = !b->native_mode;
+	} else if (strcmp(cap, "npu.native_context") == 0) {
+		*out = b->native_mode;
 	} else if (strcmp(cap, "context_binary") == 0 ||
 	           strcmp(cap, "npu.context.serialize") == 0) {
 		*out = true;
 	} else if (strcmp(cap, "shared_buffer") == 0 ||
 	           strcmp(cap, "npu.mem.ion") == 0) {
-		*out = true;
+		*out = !b->native_mode;
 	} else if (strcmp(cap, "async_execution") == 0) {
 		*out = true;
 	} else if (strcmp(cap, "op_package_dl") == 0) {

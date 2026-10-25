@@ -28,6 +28,7 @@ LIB_ADRENONPU_OBJS = src/qnn_log.o \
 	src/qnn_backend.o \
 	src/qnn_device.o \
 	src/qnn_context.o \
+	src/qnn_native.o \
 	src/qnn_tensor.o \
 	src/qnn_graph.o \
 	src/qnn_mem.o \
@@ -35,8 +36,11 @@ LIB_ADRENONPU_OBJS = src/qnn_log.o \
 	src/qnn_profile.o \
 	src/qnn_htp_ext.o \
 	src/npu_fastrpc.o \
+	src/npu_listener.o \
 	src/npu_cdsp.o \
 	src/npu_htp.o \
+	src/npu_sdk.o \
+	src/npu_model.o \
 	src/npu_ref_exec.o
 
 ADRENONPU = $(TARGET_DIR)/lib/libadrenonpu.a

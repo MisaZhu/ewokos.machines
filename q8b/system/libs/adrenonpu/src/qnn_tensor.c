@@ -177,7 +177,7 @@ Qnn_ErrorHandle_t QnnTensor_createGraphTensor(Qnn_GraphHandle_t graph,
 		qnn_obj_from_handle(graph, QNN_OBJ_GRAPH);
 	qnn_tensor_obj_t *t;
 
-	if (!g || !tensor)
+	if (!g || !tensor || g->native_graph)
 		return QNN_ERROR;
 	t = qnn_tensor_create_common(g->ctx, g, name, tType, dType, shape, qp);
 	if (!t)

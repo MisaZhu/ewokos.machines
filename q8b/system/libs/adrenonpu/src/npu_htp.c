@@ -1,20 +1,18 @@
 /*
  * npu_htp.c - HTP graph dispatch to the cDSP over the FastRPC transport.
  *
- * This is the piece the vendor libQnnHtp.so implements against the closed
- * HTP skel: after the cDSP session is up (npu_cdsp.c) it resolves the HTP
- * skel object (remote_handle64_open on "file://libqnn_htp_v68_skel.so") and
- * marshals each finalized graph to it - prepare (structure -> opaque prepared
- * id), execute (id + I/O buffers), release.  The method ids and the packed
- * graph layout below are this port's skel ABI; the invoke framing rides
- * frpc_invoke() exactly as drivers/misc/fastrpc.c expects.
+ * The method ids and packed graph layout below are this port's experimental
+ * skel ABI, NOT the Qualcomm QAIRT ABI.  They require a matching DSP skel.
+ * There is currently no SDK-generated adapter for libQnnHtpV68Skel.so.
+ * Default builds decline before opening any skel; a development build may
+ * explicitly supply Q8B_HTP_PRIVATE_SKEL_URI for its matching private skel.
+ * Installing the official library alone must never enable this protocol.
  *
- * I/O tensors are passed through the transport's copy path (pa == 0), which
- * stages them in the invoke payload and copies outputs back - universally
- * correct.  The zero-copy path (registering tensor memory with QnnMem and
- * sending its PA) is the documented next optimization once the kernel
- * transport exists.  On the current kernel every entry point declines and the
- * caller (qnn_graph.c) runs the CPU reference executor instead.
+ * I/O tensors use a registered QnnMem DMA buffer directly when the tensor
+ * data pointer names one; otherwise the transport's copy path (pa == 0)
+ * stages them in the invoke payload and copies outputs back.  If the signed
+ * skel or an apps_smmu mapping is missing,
+ * the caller (qnn_graph.c) still runs the CPU reference executor.
  */
 #include <adrenonpu/qnn_core_internal.h>
 #include <adrenonpu/npu_cdsp.h>
@@ -32,6 +30,7 @@
 static qnn_htp_infra_t g_infra;
 static int g_infra_ready;
 static uint32_t g_skel_handle;
+static unsigned g_skel_epoch;
 
 const qnn_htp_infra_t *qnn_htp_get_infra(void)
 {
@@ -48,30 +47,47 @@ const qnn_htp_infra_t *qnn_htp_get_infra(void)
 
 int qnn_htp_init(qnn_backend_obj_t *b)
 {
+#ifdef Q8B_HTP_PRIVATE_SKEL_URI
 	uint32_t handle = 0;
 	int rc;
+#endif
 
 	if (!b || !b->npu_available || !b->frpc_session)
 		return -1;
 	(void)qnn_htp_get_infra();
-	rc = frpc_open(b->frpc_session, CDSP_HTP_SKEL_URI, &handle);
-	if (rc != 0) {
+#ifndef Q8B_HTP_PRIVATE_SKEL_URI
+	qnn_log(QNN_LOG_LVL_WARN,
+	        "htp: QAIRT V68 ABI adapter unavailable; private graph "
+	        "protocol disabled\n");
+	return QNN_HTP_INIT_ABI_UNAVAILABLE;
+#else
+	rc = frpc_open(b->frpc_session, Q8B_HTP_PRIVATE_SKEL_URI, &handle);
+	if (rc != 0 || !handle) {
 		qnn_log(QNN_LOG_LVL_WARN,
-		        "htp: skel open '%s' failed (rc=%d)\n",
-		        CDSP_HTP_SKEL_URI, rc);
+		        "htp: private skel open '%s' failed (rc=%d)\n",
+		        Q8B_HTP_PRIVATE_SKEL_URI, rc);
 		return -1;
 	}
 	g_skel_handle = handle;
+	g_skel_epoch = frpc_mapping_epoch();
 	qnn_log(QNN_LOG_LVL_INFO, "htp: skel handle %u on session %u\n",
 	        g_skel_handle, b->frpc_session);
 	return 0;
+#endif
 }
 
-void qnn_htp_deinit(qnn_backend_obj_t *b)
+int qnn_htp_deinit(qnn_backend_obj_t *b)
 {
-	if (b && b->frpc_session && g_skel_handle)
-		frpc_close(b->frpc_session, g_skel_handle);
+	int rc;
+	if (!g_skel_handle) return 0;
+	/* A successful CLOSE/STOP retired the remote object already. */
+	if (g_skel_epoch == frpc_mapping_epoch()) {
+		if (!b || !b->frpc_session) return Q8B_NPU_PAS_INVALID;
+		rc = frpc_close(b->frpc_session, g_skel_handle);
+		if (rc && g_skel_epoch == frpc_mapping_epoch()) return rc;
+	}
 	g_skel_handle = 0;
+	return 0;
 }
 
 int qnn_htp_power_vote(qnn_backend_obj_t *b, QnnHtp_PerfMode_t mode)
@@ -117,6 +133,45 @@ static void htp_pack_tensor(uint8_t *p, uint64_t *o, qnn_tensor_obj_t *t)
 		put_u32(p, o, t->dims[i]);
 }
 
+/* Bind a tensor to the zero-copy transport only while its QnnMem registration
+ * still owns a live private FRPC_MMAP reference.  A registration can remain
+ * CPU-usable after SMMU bring-up declines, so fall back to the copy form in
+ * that case and let graph_run() retain its normal CPU reference fallback. */
+static int htp_bind_tensor_buf(qnn_backend_obj_t *b, qnn_tensor_obj_t *t,
+                               bool is_out, frpc_rbuf_t *r)
+{
+	qnn_shared_buf_t *sb;
+	uintptr_t tensor, start, end;
+	uint64_t alloc_offset;
+
+	if (!b || !t || !t->data || !r || t->data_bytes > UINT32_MAX)
+		return -1;
+	memset(r, 0, sizeof(*r));
+	r->size = (uint32_t)t->data_bytes;
+	r->fd = -1;
+	if (t->data_bytes == 0)
+		return 0;
+	sb = qnn_shared_buf_find(b, t->data);
+	tensor = (uintptr_t)t->data;
+	start = sb ? (uintptr_t)sb->host : 0;
+	end = (sb && sb->size <= UINTPTR_MAX - start) ?
+		start + (uintptr_t)sb->size : 0;
+	if (sb && sb->devaddr && sb->pa && end && tensor >= start &&
+		tensor <= end && t->data_bytes <= end - tensor) {
+		alloc_offset = sb->offset + (uint64_t)(tensor - start);
+		if (alloc_offset > UINT32_MAX)
+			return -1;
+		r->pa = sb->pa;
+		r->offset = (uint32_t)alloc_offset;
+		/* The DSP writes directly into a registered output buffer. */
+		r->is_out = false;
+		return 0;
+	}
+	r->data = t->data;
+	r->is_out = is_out;
+	return 0;
+}
+
 static void htp_pack_graph(qnn_graph_obj_t *g, uint8_t *p)
 {
 	uint64_t o = 0;
@@ -159,6 +214,8 @@ int qnn_htp_prepare(qnn_graph_obj_t *g)
 		return -1;
 
 	sz = htp_pack_size(g);
+	if (sz == 0 || sz > UINT32_MAX)
+		return -1;
 	if (npu_buf_alloc(&desc, (uint32_t)sz) != 0)
 		return -1;
 	htp_pack_graph(g, (uint8_t *)desc.va);
@@ -178,8 +235,8 @@ int qnn_htp_prepare(qnn_graph_obj_t *g)
 	rbufs[1].fd = -1;
 	rbufs[1].is_out = true;
 
-	/* sc: method id in the attrs field, 1 return, 2 buffers. */
-	sc = frpc_scalar(HTP_M_PREPARE, 1u, 0u, 2u);
+	/* One input graph descriptor and one output prepared-graph id. */
+	sc = frpc_scalar(HTP_M_PREPARE, 1u, 1u);
 	rc = frpc_invoke(b->frpc_session, g_skel_handle, sc, rbufs, 2,
 	                 NULL, 0, &rv);
 	npu_buf_free(&desc);
@@ -201,6 +258,7 @@ int qnn_htp_execute(qnn_graph_obj_t *g, qnn_tensor_obj_t *const *ins,
 {
 	qnn_backend_obj_t *b;
 	frpc_rbuf_t rbufs[FRPC_MAX_RBUFS];
+	uint64_t prepared_arg;
 	uint32_t nr = 0;
 	uint32_t sc;
 	int32_t rv = 0;
@@ -212,13 +270,16 @@ int qnn_htp_execute(qnn_graph_obj_t *g, qnn_tensor_obj_t *const *ins,
 	b = g->ctx->backend;
 	if (!b || !b->npu_available || !g_skel_handle)
 		return -1;
+	if ((num_ins && !ins) || (num_outs && !outs))
+		return -1;
 	if (num_ins + num_outs + 1 > FRPC_MAX_RBUFS)
 		return -1;
 
 	memset(rbufs, 0, sizeof(rbufs));
 	/* buffer 0: the prepared-graph id (by value). */
+	prepared_arg = g->htp_prepared;
 	rbufs[nr].pa = 0;
-	rbufs[nr].data = &g->htp_prepared;
+	rbufs[nr].data = &prepared_arg;
 	rbufs[nr].size = 8;
 	rbufs[nr].fd = -1;
 	rbufs[nr].is_out = false;
@@ -226,29 +287,19 @@ int qnn_htp_execute(qnn_graph_obj_t *g, qnn_tensor_obj_t *const *ins,
 	for (i = 0; i < num_ins; i++) {
 		qnn_tensor_obj_t *t = ins[i];
 
-		if (!t || !t->data)
+		if (!t || htp_bind_tensor_buf(b, t, false, &rbufs[nr]) != 0)
 			return -1;
-		rbufs[nr].pa = 0;
-		rbufs[nr].data = t->data;
-		rbufs[nr].size = (uint32_t)t->data_bytes;
-		rbufs[nr].fd = -1;
-		rbufs[nr].is_out = false;
 		nr++;
 	}
 	for (i = 0; i < num_outs; i++) {
 		qnn_tensor_obj_t *t = outs[i];
 
-		if (!t || !t->data)
+		if (!t || htp_bind_tensor_buf(b, t, true, &rbufs[nr]) != 0)
 			return -1;
-		rbufs[nr].pa = 0;
-		rbufs[nr].data = t->data;
-		rbufs[nr].size = (uint32_t)t->data_bytes;
-		rbufs[nr].fd = -1;
-		rbufs[nr].is_out = true;   /* copied back by frpc_invoke */
 		nr++;
 	}
 
-	sc = frpc_scalar(HTP_M_EXECUTE, 1u, 0u, nr);
+	sc = frpc_scalar(HTP_M_EXECUTE, 1u + num_ins, num_outs);
 	rc = frpc_invoke(b->frpc_session, g_skel_handle, sc, rbufs, nr,
 	                 NULL, 0, &rv);
 	if (rc != 0 || rv != 0) {
@@ -264,6 +315,7 @@ void qnn_htp_graph_release(qnn_graph_obj_t *g)
 {
 	qnn_backend_obj_t *b;
 	frpc_rbuf_t rbuf;
+	uint64_t prepared_arg;
 	uint32_t sc;
 	int32_t rv = 0;
 
@@ -275,12 +327,13 @@ void qnn_htp_graph_release(qnn_graph_obj_t *g)
 		return;
 	}
 	memset(&rbuf, 0, sizeof(rbuf));
+	prepared_arg = g->htp_prepared;
 	rbuf.pa = 0;
-	rbuf.data = &g->htp_prepared;
+	rbuf.data = &prepared_arg;
 	rbuf.size = 8;
 	rbuf.fd = -1;
 	rbuf.is_out = false;
-	sc = frpc_scalar(HTP_M_RELEASE, 1u, 0u, 1u);
+	sc = frpc_scalar(HTP_M_RELEASE, 1u, 0u);
 	(void)frpc_invoke(b->frpc_session, g_skel_handle, sc, &rbuf, 1,
 	                  NULL, 0, &rv);
 	g->htp_prepared = 0;

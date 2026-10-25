@@ -9,6 +9,7 @@
 #include <mm/mmu.h>
 #include <kprintf.h>
 #include <q8b_gpu_pas.h>
+#include <q8b_npu.h>
 #include "hw_arch.h"
 #include "scm-probe.h"
 
@@ -56,6 +57,8 @@ static int owned_dma(ewokos_addr_t pa, ewokos_addr_t len) {
 
 ewokos_addr_t platform_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         ewokos_addr_t size) {
+    if((op & 0xffffff00ull) == Q8B_NPU_ABI_BASE)
+        return (ewokos_addr_t)platform_control_npu(op, arg, size);
 #ifdef Q8B_QEMU_TEST
     (void)op; (void)arg; (void)size;
     return Q8B_GPU_PAS_UNSUPPORTED;

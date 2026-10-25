@@ -10,7 +10,8 @@ ARCH_OBJS += $(BSP_DIR)/hw_info_arch.o \
 	$(BSP_DIR)/gic_v3.o \
 	$(BSP_DIR)/early_vectors.o
 
-ARCH_OBJS += $(BSP_DIR)/gpu_pas.o $(BSP_DIR)/scm-call.o
+ARCH_OBJS += $(BSP_DIR)/gpu_pas.o $(BSP_DIR)/npu_pas.o \
+	$(BSP_DIR)/npu_smmu.o $(BSP_DIR)/scm-call.o
 
 ifeq ($(SMP),yes)
 ARCH_OBJS += $(BSP_DIR)/ipi.o \

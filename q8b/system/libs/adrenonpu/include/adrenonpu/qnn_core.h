@@ -83,6 +83,13 @@ Qnn_ErrorHandle_t QnnInterface_getApiVersion(Qnn_Version_t* version);
 // ============================================================================
 Qnn_ErrorHandle_t QnnBackend_create(const Qnn_ConfigParam_t* config, uint32_t numConfig,
                                     Qnn_BackendHandle_t* backend);
+/* Local API extension: execution_backend="htp_native" loads official QAIRT
+ * opaque contexts through createFromBinary. DSP startup is deferred to load;
+ * there is no CPU fallback, online graph builder, or SDK binary-ABI promise.
+ * One native backend owns the process transport, with one live context.
+ * Free contexts before backend; failed unload/close keeps handles retryable. */
+/* Unmap/module-close/DSP-stop failure returns QNN_ERROR and retains the
+ * backend handle/config for retry. Earlier cleanup steps may have completed. */
 Qnn_ErrorHandle_t QnnBackend_free(Qnn_BackendHandle_t backend);
 Qnn_ErrorHandle_t QnnBackend_getApiVersion(Qnn_BackendHandle_t backend, Qnn_Version_t* ver);
 Qnn_ErrorHandle_t QnnBackend_getBuildId(Qnn_BackendHandle_t backend, const char** buildId);
@@ -152,6 +159,13 @@ Qnn_ErrorHandle_t QnnGraph_executeAsync(Qnn_GraphHandle_t graph,
                                         Qnn_ProfileHandle_t prof, Qnn_SignalHandle_t sig);
 Qnn_ErrorHandle_t QnnGraph_getProperty(Qnn_GraphHandle_t graph, const char* key, const char** val);
 Qnn_ErrorHandle_t QnnGraph_free(Qnn_GraphHandle_t graph);
+/* Borrowed context-owned boundary handles, valid until context free.
+ * NULL tensors queries the required count. Insufficient capacity returns
+ * QNN_ERROR and writes the required count without a partial array. */
+Qnn_ErrorHandle_t QnnGraph_getInputTensors(Qnn_GraphHandle_t graph,
+                                          Qnn_TensorHandle_t* tensors, uint32_t* count);
+Qnn_ErrorHandle_t QnnGraph_getOutputTensors(Qnn_GraphHandle_t graph,
+                                           Qnn_TensorHandle_t* tensors, uint32_t* count);
 
 // ============================================================================
 // QnnTensor.h
@@ -176,6 +190,8 @@ Qnn_ErrorHandle_t QnnTensor_getQuantParams(Qnn_TensorHandle_t tensor, Qnn_QuantP
 // QnnMem.h (ION/DMA fd memory registration)
 // ============================================================================
 Qnn_ErrorHandle_t QnnMem_register(Qnn_BackendHandle_t backend, int fd, uint64_t offset, uint64_t size, void** hostPtr);
+/* On device unmap failure the registration and its backing remain owned
+ * by the backend. Retry this call or backend cleanup after recovery. */
 Qnn_ErrorHandle_t QnnMem_unregister(Qnn_BackendHandle_t backend, void* hostPtr);
 Qnn_ErrorHandle_t QnnMem_getBufferFd(Qnn_BackendHandle_t backend, void* hostPtr, int* fd);
 
