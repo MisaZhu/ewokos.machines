@@ -109,10 +109,12 @@ uint32_t pglc_program_serialize(const struct pglc_program *main,
 	   matrices), 4 = colour-modulated textured (fb/interleaved pos+uv+colour/
 	   depth(unused)/tex, bilinear + blend + scissor). */
 	hdr.cs_is_geom       = opts ? opts->geom_kind : 0;
-	/* raster-pass workgroup geometry (rides the VERSION-3 reserved byte):
+	/* raster-pass workgroup geometry (VERSION 3, widened to uint16_t):
 	   0 = one workgroup per triangle; 64/256 = the V4/V5 one-lane-per-triangle
-	   kernels, so the daemon dispatches ceil(ntris/tpw) workgroups instead. */
-	hdr.cs_geom_tpw      = opts ? (uint8_t)opts->geom_tpw : 0;
+	   kernels, so the daemon dispatches ceil(ntris/tpw) workgroups instead.
+	   256 does not fit in a byte, so this MUST stay uint16_t (matching the
+	   wire field) or the V5 grid silently collapses to one-workgroup-per-tri. */
+	hdr.cs_geom_tpw      = opts ? (uint16_t)opts->geom_tpw : 0;
 	/* VERSION 4 second compute stage (cs2): the VERTEX-TRANSFORM pass of the
 	   two-pass geometry rasterizer (zero when absent - a single-pass or
 	   non-geom program).  cs2_uniform_blob_dwords is the xform region's span,
