@@ -4,6 +4,9 @@
 #include <g2d_arch.h>          /* arch_g2d_rotated_size: pure geometry helper */
 #include <ewoksys/klog.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /*
  * Q8B (Radxa Dragon Q8B / SC8280XP / Adreno 690) 2D dispatch layer.
@@ -142,7 +145,17 @@ uint32_t bsp_g2d_version(void) {
 }
 
 int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {
-	(void)argc; (void)argv; (void)buf; (void)len;
+	if (argc > 0 && argv && argv[0] && strcmp(argv[0], "trace") == 0) {
+		if (argc != 2 || !argv[1] || !argv[1][0])
+			return -1;
+		char *end;
+		unsigned long n = strtoul(argv[1], &end, 10);
+		if (*end || n > 256u)
+			return -1;
+		adreno_ring_trace((uint32_t)n);
+		snprintf(buf, len, "Adreno tracing next %lu submissions", n);
+		return 0;
+	}
 	return -1;   /* no backend diagnostics of our own */
 }
 

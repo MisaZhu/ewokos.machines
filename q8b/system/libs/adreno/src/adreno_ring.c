@@ -92,6 +92,26 @@
 
 /* One submit at a time, held across the completion wait (see header). */
 static pthread_mutex_t g_submit_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t g_trace_submissions;
+
+void adreno_ring_trace(uint32_t submissions) {
+	__atomic_store_n(&g_trace_submissions, submissions > 256u ? 256u : submissions,
+	                 __ATOMIC_RELAXED);
+}
+
+int adreno_ring_tracing(void) {
+	return __atomic_load_n(&g_trace_submissions, __ATOMIC_RELAXED) != 0;
+}
+
+static int ring_take_trace(void) {
+	uint32_t n = __atomic_load_n(&g_trace_submissions, __ATOMIC_RELAXED);
+	while (n != 0) {
+		if (__atomic_compare_exchange_n(&g_trace_submissions, &n, n - 1u, 0,
+		                              __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+			return 1;
+	}
+	return 0;
+}
 
 /* Latch the device wedged.  Logged once: a wedged GPU must not flood /dev/log
    with one line per declined op. */
@@ -412,6 +432,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	uint32_t fence;
 	int rc;
 	uint64_t start;
+	int trace = 0;
 
 	if (cmds == 0 || dwords == 0)
 		return ADRENO_E_DECLINED;
@@ -446,6 +467,10 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	}
 
 	/* Stage the caller's PM4 stream into the reusable IB buffer. */
+	trace = ring_take_trace();
+	if (trace)
+		klog("adreno_trace: begin next=%u words=%u shadow=%u wptr=%u\n",
+		     d->fence + 1u, dwords, ((volatile uint32_t *)d->rptr_shadow.va)[0], get_wptr(ring));
 	memcpy(ring->ib.va, cmds, dwords * 4u);
 	adreno_wmb();
 
@@ -469,7 +494,11 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	rb_emit(ring, (uint32_t)(ring->fence_iova >> 32));
 	rb_emit(ring, fence);
 
+	if (trace)
+		klog("adreno_trace: doorbell fence=%u wptr=%u\n", fence, get_wptr(ring));
 	ring_flush(ring);
+	if (trace)
+		klog("adreno_trace: wait fence=%u\n", fence);
 
 	/* Both RPTR and the fence must complete within the same wall deadline.
 	   From the doorbell onwards, a failure is terminal, never CPU replay. */
@@ -483,12 +512,17 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 		goto out;
 	}
 
+	if (trace)
+		klog("adreno_trace: retired fence=%u shadow=%u; check GX\n",
+		     fence, ((volatile uint32_t *)d->rptr_shadow.va)[0]);
 	if (ring_check_fault(d) != 0) {
 		ring_mark_wedged(d, "fault latched");
 		rc = ADRENO_E_FAULT;
 		goto out;
 	}
 	rc = ADRENO_OK;
+	if (trace)
+		klog("adreno_trace: checked fence=%u\n", fence);
 
 out:
 	pthread_mutex_unlock(&g_submit_lock);

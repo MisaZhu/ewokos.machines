@@ -158,6 +158,9 @@ int adreno_a6xx_init(adreno_dev_t *d);   /* top-level: calls the above */
    completion wait. Runtime completion shares a 1 s wall-clock budget,
    with a brief spin followed by parking. Returns one of the ADRENO_* codes. */
 int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords);
+/* Bounded runtime diagnostics, disabled by default. No GX MMIO reads. */
+void adreno_ring_trace(uint32_t submissions);
+int adreno_ring_tracing(void);
 /* Non-zero once a submitted job failed to retire or faulted (sticky). */
 int adreno_wedged(void);
 

@@ -1179,6 +1179,10 @@ static int emit_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 		return ADRENO_E_DECLINED;
 	}
 
+	if (adreno_ring_tracing())
+		klog("adreno_trace: CS bin=%llx desc=%llx grid=%ux%ux%u local=%ux%ux%u words=%u\n",
+		     (unsigned long long)ks->bin_bo.iova, (unsigned long long)desc_bo.iova,
+		     grid[0], grid[1], grid[2], k->local_size[0], k->local_size[1], k->local_size[2], b.n);
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
 	if (ret == ADRENO_OK || ret == ADRENO_E_DECLINED || ret == ADRENO_E_WEDGED)
 		return ret;

@@ -6,7 +6,9 @@
 #include <kstring.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <kprintf.h>
 #include "hw_arch.h"
+#include "memory_pool.h"
 #include "q8b_platform.h"
 
 uint64_t _core_base_offset = 0;
@@ -162,32 +164,21 @@ int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
     return 0;
 }
 
-/*
- * Add only ranges that the final UEFI memory map marks reclaimable. Q8B DRAM
- * has a firmware-owned hole between its two RAM banks, so treating the whole
- * ram_base..ram_top span as one free range corrupts that memory once the
- * allocator grows beyond the first bank.
- */
-void kalloc_arch(void) {
-    typedef struct { ewokos_addr_t base, top; } rng_t;
-    rng_t ex[Q8B_MAX_RESV + 4];
+/* Pools and the page allocator share every firmware/device exclusion. */
+static uint32_t memory_exclusions(q8b_mem_range_t* ex) {
     uint32_t n = 0;
-
-    ewokos_addr_t base = _sys_info.allocable_phy_mem_base;
-    ewokos_addr_t top = _sys_info.allocable_phy_mem_top;
-    if (top <= base)
-        return;
-
 #define ADD_EXCL(b, s) do { \
         ewokos_addr_t _b = (b); \
         ewokos_addr_t _s = (s); \
-        if (_s != 0 && n < (sizeof(ex)/sizeof(ex[0]))) { \
+        if (_s != 0 && n < (Q8B_MAX_RESV + 5)) { \
             ex[n].base = _b; \
-            ex[n].top = _b + _s; \
+            ex[n].top = _s > UINT64_MAX - _b ? UINT64_MAX : _b + _s; \
             n++; \
         } \
     } while (0)
 
+    ADD_EXCL(_sys_info.sys_dma.phy_base, _sys_info.sys_dma.size);
+    ADD_EXCL(_sys_info.shm_contig.phy_base, _sys_info.shm_contig.size);
     if (q8b_ramdisk_size)
         ADD_EXCL(q8b_ramdisk_base, q8b_ramdisk_size);
     if (q8b_fb_size)
@@ -202,9 +193,97 @@ void kalloc_arch(void) {
             ADD_EXCL(_bi.resv[i].base, _bi.resv[i].size);
     }
 
+#undef ADD_EXCL
+    return n;
+}
+
+static int32_t memory_map_valid(void) {
+    uint64_t bytes = (uint64_t)_bi.memmap_count * _bi.memmap_dsize;
+    return _bi_valid && _bi.resv_count <= Q8B_MAX_RESV &&
+            _bi.memmap_count != 0 &&
+            _bi.memmap_dsize >= sizeof(q8b_efi_memdesc_t) &&
+            (_bi.memmap_dsize & 7) == 0 && (_bi.memmap_addr & 7) == 0 &&
+            _bi.memmap_addr >= Q8B_BOOTINFO_PHYS + 0x1000 &&
+            _bi.memmap_addr < Q8B_BOOTINFO_PHYS + Q8B_BOOTINFO_SIZE &&
+            bytes <= Q8B_BOOTINFO_SIZE - 0x1000 &&
+            bytes <= Q8B_BOOTINFO_PHYS + Q8B_BOOTINFO_SIZE - _bi.memmap_addr;
+}
+
+static int32_t usable_descriptor(uint32_t m, uint64_t* base, uint64_t* top) {
+    const q8b_efi_memdesc_t* d = (const q8b_efi_memdesc_t*)P2V(
+            _bi.memmap_addr + (uint64_t)m * _bi.memmap_dsize);
+    if (!Q8B_MEM_USABLE(d->type) || !d->pages ||
+            d->pages > (UINT64_MAX - d->phys_start) / 4096ULL)
+        return 0;
+    *base = d->phys_start;
+    *top = *base + d->pages * 4096ULL;
+    return 1;
+}
+
+static uint64_t find_memory_pool(uint32_t size) {
+    q8b_mem_range_t ex[Q8B_MAX_RESV + 5];
+    uint32_t n = memory_exclusions(ex);
+    uint64_t best = 0;
+    uint64_t limit = _sys_info.allocable_phy_mem_top;
+    /* Keep both pools within the 32-bit physical reach of board devices. */
+    if (limit > (1ULL << 32))
+        limit = 1ULL << 32;
+    for (uint32_t m = 0; m < _bi.memmap_count; m++) {
+        uint64_t base, top;
+        if (!usable_descriptor(m, &base, &top))
+            continue;
+        /* UEFI splits physically continuous RAM by allocation/type. Join
+         * touching reclaimable descriptors before looking for a large pool;
+         * descriptor order is not guaranteed. Never bridge a physical gap. */
+        top = q8b_pool_extend(top, _bi.memmap_count, usable_descriptor);
+        if (base < _sys_info.allocable_phy_mem_base)
+            base = _sys_info.allocable_phy_mem_base;
+        if (top > limit)
+            top = limit;
+        uint64_t found = q8b_pool_candidate(base, top, size, PAGE_SIZE, ex, n);
+        if (found && (!best || found < best))
+            best = found;
+    }
+    return best;
+}
+
+int32_t arch_reserve_memory_pools(void) {
+#ifdef Q8B_QEMU_TEST
+    /* The QEMU direct-boot test has no UEFI handoff. */
+    if (!_bi_valid)
+        return 0;
+#endif
+    if (!memory_map_valid()) {
+        kout_str("q8b: invalid UEFI memory map; refusing unsafe memory pools\n");
+        halt();
+    }
+    _sys_info.sys_dma.phy_base = 0;
+    _sys_info.shm_contig.phy_base = 0;
+    _sys_info.sys_dma.phy_base = find_memory_pool(_sys_info.sys_dma.size);
+    if (_sys_info.shm_contig.size)
+        _sys_info.shm_contig.phy_base = find_memory_pool(_sys_info.shm_contig.size);
+    if (!_sys_info.sys_dma.phy_base ||
+            (_sys_info.shm_contig.size && !_sys_info.shm_contig.phy_base)) {
+        kout_str("q8b: no firmware-safe DMA32 memory pools\n");
+        halt();
+    }
+    _sys_info.shm_contig.v_base = 0;
+    kout_str("q8b: DMA/SHM pools reserved from final UEFI memory map\n");
+    return 1;
+}
+
+/* Only reclaim UEFI-approved RAM, excluding both reserved pools. */
+void kalloc_arch(void) {
+    q8b_mem_range_t ex[Q8B_MAX_RESV + 5];
+    uint32_t n = memory_exclusions(ex);
+    ewokos_addr_t base = _sys_info.allocable_phy_mem_base;
+    ewokos_addr_t top = _sys_info.allocable_phy_mem_top;
+    if (top <= base)
+        return;
+
     /* insertion sort by base */
     for (uint32_t i = 1; i < n; i++) {
-        rng_t key = ex[i];
+        q8b_mem_range_t key = ex[i];
         int32_t j = (int32_t)i - 1;
         while (j >= 0 && ex[j].base > key.base) {
             ex[j + 1] = ex[j];
@@ -213,14 +292,7 @@ void kalloc_arch(void) {
         ex[j + 1] = key;
     }
 
-    uint64_t map_bytes = (uint64_t)_bi.memmap_count * _bi.memmap_dsize;
-    int32_t map_valid = _bi_valid && _bi.memmap_count != 0 &&
-            _bi.memmap_dsize >= sizeof(q8b_efi_memdesc_t) &&
-            _bi.memmap_addr >= Q8B_BOOTINFO_PHYS + 0x1000 &&
-            _bi.memmap_addr < Q8B_BOOTINFO_PHYS + Q8B_BOOTINFO_SIZE &&
-            map_bytes <= Q8B_BOOTINFO_SIZE - 0x1000 &&
-            _bi.memmap_addr + map_bytes <=
-                Q8B_BOOTINFO_PHYS + Q8B_BOOTINFO_SIZE;
+    int32_t map_valid = memory_map_valid();
 
     uint32_t ranges = map_valid ? _bi.memmap_count : 1;
     for (uint32_t m = 0; m < ranges; m++) {
@@ -258,7 +330,6 @@ void kalloc_arch(void) {
         if (cur < range_top)
             kalloc_append(P2V(cur), P2V(range_top));
     }
-#undef ADD_EXCL
 }
 
 /*
