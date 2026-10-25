@@ -4800,7 +4800,33 @@ static void* brcm_worker_main(void* p) {
          */
         bool card_irq = sdhci_card_irq_pending();
         bool func0_irq = false;
-        bool run_dpc = busy || card_irq;
+        /*
+         * Flow-control recovery deadline.
+         *
+         * While bus->fcstate is latched, hardware flow control gates EVERY TX
+         * path: the DPC send loop, brcmf_tx_queue_should_block_writes() ->
+         * brcm_send(), and brcmf_worker_has_work() all report "no work", so
+         * busy is false and run_dpc collapses to card_irq || func0_irq. But
+         * fcstate is cleared ONLY by an intstatus read inside a DPC, and the
+         * BRCMF_DPC_INTR_POLL_MAX_MS re-read below is nested inside
+         * if(run_dpc) -- so it never fires in exactly this state. The
+         * FC-release edge (I_HMB_FC_CHANGE) is precisely the interrupt that
+         * can be missed while CARD_INT is masked between the handler and the
+         * next park, and a single lost one then wedged TX forever: sshd froze
+         * after the few-KB burst that first triggered flow control and only
+         * resumed when inbound traffic (a keystroke) rang the card IRQ. Every
+         * other stall here has a time-based watchdog (rxskip 200ms, the credit
+         * 500ms breakthrough, fw-liveness); fcstate was the only one without.
+         * Force a periodic intstatus re-read while flow-controlled so recovery
+         * is bounded to one idle slice. The ~500us control read is paid only
+         * during an active FC pause, never on the healthy idle path, and the
+         * ramp-to-10ms park below is unaffected (progress/pending_io stay
+         * false), so this cannot busy-spin.
+         */
+        bool fc_poll_due = bus->fcstate &&
+                (kernel_tic_ms(0) - brcmf_stat.last_intr_read_ms) >=
+                BRCMF_DPC_INTR_POLL_MAX_MS;
+        bool run_dpc = busy || card_irq || fc_poll_due;
 
         if (card_irq)
             brcmf_stat.cardirq_hits++;
@@ -4832,7 +4858,7 @@ static void* brcm_worker_main(void* p) {
              * is a few milliseconds of added latency rather than a wedged
              * bus.
              */
-            bool read_intr = card_irq || func0_irq || bus->rxpending;
+            bool read_intr = card_irq || func0_irq || bus->rxpending || fc_poll_due;
 
             if (!read_intr &&
                     (kernel_tic_ms(0) - brcmf_stat.last_intr_read_ms) >=
@@ -5326,6 +5352,16 @@ char* brcm_state_info(void)
     json_var_add(json_var, "rx_queue_depth", json_var_new_int(brcm_check_data()));
     json_var_add(json_var, "rx_queue_drops", json_var_new_int((int)bus->rx_queue_drops));
     json_var_add(json_var, "tx_queue_drops", json_var_new_int((int)bus->tx_queue_drops));
+    /*
+     * Hardware flow-control / TX-credit window. fcstate=1 means the firmware
+     * has paused host TX (I_HMB_FC_STATE); tx_seq/tx_max is the SDPCM credit
+     * window (tx_max - tx_seq frames may still be written). During a TX stall
+     * these separate a flow-control wedge (fcstate stuck at 1) from credit
+     * starvation (fcstate 0 with tx_max == tx_seq).
+     */
+    json_var_add(json_var, "fcstate", json_var_new_int(bus->fcstate ? 1 : 0));
+    json_var_add(json_var, "tx_seq", json_var_new_int((int)bus->tx_seq));
+    json_var_add(json_var, "tx_max", json_var_new_int((int)bus->tx_max));
     ret = json_var_to_cstr(json_var);
     json_var_unref(json_var);
     return ret;

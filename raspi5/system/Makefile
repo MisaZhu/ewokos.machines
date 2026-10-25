@@ -35,6 +35,7 @@ basic_sys: kernel_heads ewok_heads
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
 	$(MAKE) -C libs
 	$(MAKE) -C $(SYS_ROOT_DIR)/basic
+	$(MAKE) -C bin
 	$(MAKE) -C drivers basic
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/basic/. ${TARGET_DIR}/etc/
@@ -57,7 +58,7 @@ x_sys: gui_sys network_sys
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
 
-CLEAN_DIRS = libs drivers apps/xcpuinfo $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/basic
+CLEAN_DIRS = bin libs drivers apps/xcpuinfo $(SYS_ROOT_DIR)/xwin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/basic
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \

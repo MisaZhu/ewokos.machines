@@ -12,7 +12,7 @@
  *   (machines/q8b/system/libs/adrenocompiler: the pglcompiler.h contract
  *   implemented over the vendored mesa freedreno/ir3 tree, GLSL->NIR->ir3->
  *   a6xx; Adreno-specific code lives under the q8b machine, not in the shared
- *   projects/soft3d/libs/gles) and consumed DAEMON-SIDE by adreno_3d.c.
+ *   projects/opengl/libs/gles) and consumed DAEMON-SIDE by adreno_3d.c.
  *
  *   The per-kernel field names map 1:1 onto ir3_shader_variant so the app
  *   compiler (adrenocompiler/adreno_backend.c) is a straight dump, not a

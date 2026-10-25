@@ -416,4 +416,29 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc);
  * V3D_3D_PROG_UNSUPPORTED for an unknown / already-free handle. */
 int v3d_3d_program_free(int prog_handle);
 
+/* ------------------------------------------------------------------ */
+/* OpenCL compute dispatch (the vc_cl route).                            */
+/*                                                                       */
+/* A CL kernel is uploaded through v3d_3d_program as a pure-compute (cs    */
+/* only) program, exactly like the shadertoy compute route, and dispatched */
+/* here.  This generalises draw_compute: instead of one frame-buffer SSBO  */
+/* and a frame-derived grid, the caller supplies the workgroup grid        */
+/* (wg_count / wg_size) and the table of __global buffer SSBO IOVAs the    */
+/* kernel's QUNIFORM_SSBO_OFFSET slots index by binding.  The private      */
+/* QUNIFORM interpreter (expand_uniforms), the shared expanded-uniform /   */
+/* job-uniform dma staging and the CSD submission + cache maintenance are  */
+/* all reused verbatim, so a CL launch is byte-for-byte the proven compute */
+/* path with a caller-owned SSBO table.  `job_unif` (num_job_unif u32) is  */
+/* the packed scalar / __constant argument blob the QUNIFORM_UNIFORM and   */
+/* QUNIFORM_UBO_ADDR slots read; NULL when num_job_unif == 0.  dst_phy /   */
+/* dst_span bound the POST L2 writeback over the hull of every argument    */
+/* buffer the launch may write (0 = the full-range fallback walk).         */
+/* Returns a V3D_3D_* tri-state; a submitted launch is never replayed.     */
+/* ------------------------------------------------------------------ */
+int v3d_3d_cl_dispatch(int32_t prog_handle,
+                       const uint32_t wg_count[3], uint32_t wg_size,
+                       const uint32_t *ssbo_iova, uint32_t num_ssbo,
+                       const uint32_t *job_unif, uint32_t num_job_unif,
+                       uint32_t dst_phy, uint32_t dst_span);
+
 #endif /* V3D_3D_H */

@@ -490,7 +490,7 @@ v3d_be_compile_compute(nir_shader *cs,
        * printf() / nir_print_shader(nir, stdout), and `stdout` expands to
        * newlib's _impure_ptr->_stdout.  _impure_ptr is defined by NONE of the
        * EwokOS libc/gloss/ewoksys archives, and this backend is merged into
-       * libGLESv2.a and linked into soft3d APPS (which pull no BSP), so keeping
+       * libGLESv2.a and linked into opengl APPS (which pull no BSP), so keeping
        * that reference fails every app link with "undefined reference to
        * `_impure_ptr'".  The print path is dead at runtime (the
        * nir_debug_print_shader[] flags default all-false) and NIR_PASS' progress

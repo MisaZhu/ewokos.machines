@@ -101,7 +101,7 @@
  *      clears go through the A2D (adreno_2d_fill), itself fence-retired, before
  *      pass 1.  Whether anything else is needed on A690 is unvalidated.
  *
- *   7. GEOMETRY KERNEL I/O.  The kernels (projects/soft3d/.../geom_raster_cs.h)
+ *   7. GEOMETRY KERNEL I/O.  The kernels (projects/opengl/.../geom_raster_cs.h)
  *      read their texture through an SSBO as linear ARGB words and write the
  *      framebuffer as 0xAARRGGBB; the same convention as on V3D.  Nothing about
  *      the a6xx texture unit is used.

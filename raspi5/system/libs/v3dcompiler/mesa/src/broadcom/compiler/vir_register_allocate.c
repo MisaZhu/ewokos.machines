@@ -287,6 +287,7 @@ enum temp_spill_type {
         SPILL_TYPE_TMU
 };
 
+
 static enum temp_spill_type
 get_spill_type_for_temp(struct v3d_compile *c, int temp)
 {
@@ -316,7 +317,11 @@ v3d_choose_spill_node(struct v3d_compile *c, bool reuse_costs)
         if (reuse_costs)
                 return ra_get_best_spill_node(c->g);
 
-        const float tmu_scale = 10;
+        /* A TMU spill/fill sequence is substantially more expensive than
+         * rematerializing a uniform.  Weight it accordingly so high-pressure
+         * compute shaders prefer cheap rematerialization over scratch traffic.
+         */
+        const float tmu_scale = 30;
         float block_scale = 1.0;
         float spill_costs[c->num_temps];
         bool in_tmu_operation = false;

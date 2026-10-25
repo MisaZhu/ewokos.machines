@@ -112,7 +112,7 @@ uint32_t vc_g2d_clock_hz(void)
 /* raspi5 is BCM2712 / VideoCore VII, so the V3D architecture version x10 is the
    constant 71 (V3D 7.1).  Unlike raspix there is no single-binary-across-chips
    concern here, but the value is reported so the shared g2dd GET_VERSION path
-   and the soft3d client's version query behave identically on every board. */
+   and the opengl client's version query behave identically on every board. */
 uint32_t vc_g2d_version(void)
 {
     return 71u;
@@ -1641,6 +1641,21 @@ int gpu_scale_op(const g2d_map_t *m,
          * in-bounds), the same path the fractional upscale benches hit. */
         kcode = g2d_qpu_argb_scale_pow2;
         knwords = g2d_qpu_argb_scale_pow2_n;
+    } else if ((dst_w & 15) == 0 && m->qu == 0 && m->pv == 0 &&
+               dst_w >= src_w && dst_h >= src_h &&
+               (dst_w > src_w || dst_h > src_h) &&
+               (size_t)dst_w * dst_h * 4 <= G2D_BIG_SURFACE) {
+        /* Non-downscaling ROT_0 whole-surface scale: run the shared
+         * single-pass 4-tap bilinear kernel so the g2dd scale op and the
+         * render-scale upscale apply ONE identical smooth filter (the same
+         * Q15 map the nearest blit uses, just interpolated between the grid
+         * points instead of snapping to them).  Nearest leaves blocky
+         * staircase edges on upscale; the old nearest+gaussian softener cost
+         * extra dispatches and over-blurred.  Bilinear is one dispatch and
+         * needs no scratch drain.  Gated to the full-surface path because the
+         * kernel consumes the u16..u19 incremental-map constants. */
+        kcode = g2d_qpu_argb_scale_bilinear;
+        knwords = g2d_qpu_argb_scale_bilinear_n;
     }
     if ((size_t)dst_w * dst_h * 4 <= G2D_BIG_SURFACE)
         return gpu_affine_surface(kcode, knwords, m,

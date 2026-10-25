@@ -20,7 +20,7 @@ export PGL_G3D=yes
 
 # portablegl's GPU backend compiles GLSL on-device through the backend-neutral
 # <pglcompiler.h> contract: the shared mesa GLSL->NIR frontend lives in
-# projects/soft3d/libs/gles/pglcompiler and never names a board, while the
+# projects/opengl/libs/gles/pglcompiler and never names a board, while the
 # NIR->ISA backend that implements the contract (here: mesa broadcom NIR->QPU +
 # the g2d_pgl_program_blob_t serializer) plus the EwokOS mesa build config
 # (port/mesa_config.h and the port/assert.h, port/syslog.h shims) live in this

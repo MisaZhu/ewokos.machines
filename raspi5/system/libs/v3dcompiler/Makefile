@@ -10,12 +10,12 @@
 #
 # What is NOT here: the GLSL->NIR frontend (util/compiler/nir/glsl/...).  That
 # is shared by every PGL_G3D machine and lives in
-# projects/soft3d/libs/gles/pglcompiler; this Makefile reaches its headers
+# projects/opengl/libs/gles/pglcompiler; this Makefile reaches its headers
 # through PGLC_FE_DIR.
 #
 # Who builds it: NOT machines/<hw>/system/libs/Makefile.  It needs the staged
 # SDK (<g2dclient/g2dclient.h>) and the projects/ frontend sources, which only
-# exist at `make projs` time, so projects/soft3d/libs/gles/Makefile drives it:
+# exist at `make projs` time, so projects/opengl/libs/gles/Makefile drives it:
 #   $(MAKE) -C $(PGL_G3D_COMPILER_DIR) LIB=<.gles_priv/libpglcompiler_be.a> PGLC_FE_DIR=<pglcompiler>
 # and MRI-merges the result into libGLESv2.a.  PGL_G3D_COMPILER_DIR is this
 # directory, exported by ../../make.inc.
@@ -28,7 +28,7 @@ TARGET_DIR = $(BUILD_DIR)
 
 # Shared GLSL->NIR frontend (headers + vendored mesa core).  gles/Makefile
 # passes the absolute path; the default only serves a hand-run `make` here.
-PGLC_FE_DIR ?= $(ewokos)/projects/soft3d/libs/gles/pglcompiler
+PGLC_FE_DIR ?= $(ewokos)/projects/opengl/libs/gles/pglcompiler
 
 # Private intermediate: gles/Makefile folds it into libGLESv2.a, apps never
 # see it.
