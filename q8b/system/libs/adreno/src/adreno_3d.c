@@ -2,7 +2,7 @@
  * adreno_3d.c - Adreno 690 (SC8280XP / Q8B) a6xx compute-shader (CS) 3D back end.
  *
  * Implements the daemon side of the portablegl 3D offload for Q8B: it loads a
- * precompiled a6xx compute program (the adreno_prog.h VERSION 2 blob the APP
+ * precompiled a6xx compute program (the adreno_prog.h VERSION 6 blob the APP
  * side produces with the machine GPU compiler backend,
  * machines/q8b/system/libs/adrenocompiler over the vendored Mesa ir3) and
  * dispatches it through CP_EXEC_CS.  Two program shapes exist:
@@ -143,8 +143,11 @@ _Static_assert(Q8B_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
 #define A690_HAS_LPAC                1      /* a6xx_gen4 has_lpac           */
 #define A690_SUPPORTS_DOUBLE_THRSZ   1      /* a6xx_base supports_double_threadsize */
 
-/* Maximum resident programs (small fixed table; portablegl keeps a handful). */
-#define ADRENO_3D_MAX_PROGS          8
+/* Maximum resident programs (small fixed table; portablegl keeps a handful,
+   and the OpenCL / Vulkan-compute route (adreno_3d_cl_dispatch) SHARES this
+   table with the pgl programs - 16 matches raspi5's V3D_3D_PROG_MAX so the
+   two machines decline a program-table overflow at the same cache depth). */
+#define ADRENO_3D_MAX_PROGS          16
 
 /* CP ring IB staging is 4096 dwords (adreno_ring.c RING_IB_SIZE); a dispatch
    larger than that cannot be submitted. */
@@ -161,16 +164,15 @@ _Static_assert(Q8B_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
 #define ADRENO_3D_MAX_PVTMEM_BYTES   (16u * 1024u)
 
 /* Two-pass geometry rasterizer intermediate: `vout` holds one packed record
-   per vertex, written by pass 1 and read by pass 2.  The gouraud / textured /
-   instanced variants pack 8 floats (32 bytes); the colour-modulated textured
-   variant (is_geom == 4, imgui) also carries a per-vertex colour, 12 floats
-   (48 bytes).  Sized for the widest record and ADRENO_3D_MAX_VERTS vertices
-   (same budget as raspi5's V3D_3D_MAX_VERTS / V3D_3D_VOUT_BYTES); a single
-   process-lifetime buffer is safe because every draw is fence-retired before
-   the next one is built and each geom draw fully overwrites the sub-range it
-   consumes. */
+   per vertex, written by pass 1 and read by pass 2.  Legacy geometry records
+   are 8 or 12 floats.  Vulkan records have an 8-float harness header plus up
+   to 24 varying floats, matching raspi5's 32-float geometry-kind-5 capacity.
+   A single process-lifetime buffer is safe because draws are serialized and
+   fence-retired, and each draw overwrites the sub-range it consumes. */
 #define ADRENO_3D_MAX_VERTS          20480u
-#define ADRENO_3D_VOUT_BYTES         (ADRENO_3D_MAX_VERTS * 48u)
+#define ADRENO_3D_VK_VOUT_MAX_FLOATS 32u
+#define ADRENO_3D_VOUT_BYTES \
+	(ADRENO_3D_MAX_VERTS * ADRENO_3D_VK_VOUT_MAX_FLOATS * 4u)
 
 /* Buffers a dispatch may bind, indexed by the kernel's declared binding. */
 #define ADRENO_3D_MAX_BINDINGS       ADRENO_PROG_MAX_SSBO
@@ -283,6 +285,8 @@ typedef struct {
 	uint8_t      pixel_owned;
 	uint16_t     geom_tpw;
 	uint32_t     cs2_uniform_blob_dwords;
+	uint32_t     cs2_vout_stride;
+	uint32_t     vk_attr_stride;
 	kern_slot_t  kern[2];     /* [0] main / raster, [1] xform (geom only) */
 } prog_slot_t;
 
@@ -497,7 +501,7 @@ static int program_load_locked(const void *blob, uint32_t size) {
 	if (kern_validate(&h->kern[0]) != 0)
 		return -1;
 	have_xform = (h->kern[1].binary_words != 0);
-	if (h->is_geom > 4u)
+	if (h->is_geom > 5u)
 		return -1;
 	if (h->reserved || (h->version == ADRENO_PROG_PIXEL_VERSION &&
 	    h->is_geom != 1u && h->is_geom != 2u))
@@ -508,6 +512,26 @@ static int program_load_locked(const void *blob, uint32_t size) {
 		return -1;
 	if (have_xform && kern_validate(&h->kern[1]) != 0)
 		return -1;
+	/* geom_kind 5 is the fixed Vulkan-generated 8x8 transform + 16x16
+	   lane-per-triangle raster pair.  Validate its exact grid and stream
+	   geometry here so a malformed blob cannot overrun vout or render a
+	   partial triangle grid. */
+	if (h->is_geom == 5u) {
+		if (h->geom_tpw != 256u ||
+		    h->kern[0].local_size[0] != 16u ||
+		    h->kern[0].local_size[1] != 16u ||
+		    h->kern[0].local_size[2] != 1u ||
+		    h->kern[1].local_size[0] != 8u ||
+		    h->kern[1].local_size[1] != 8u ||
+		    h->kern[1].local_size[2] != 1u ||
+		    h->cs2_vout_stride < 8u ||
+		    h->cs2_vout_stride > ADRENO_3D_VK_VOUT_MAX_FLOATS ||
+		    (h->cs2_vout_stride & 3u) != 0 ||
+		    h->vk_attr_stride == 0u || h->vk_attr_stride > 64u)
+			return -1;
+	} else if (h->cs2_vout_stride != 0u || h->vk_attr_stride != 0u) {
+		return -1;
+	}
 	if (have_xform && h->cs2_uniform_blob_dwords != h->kern[1].uniform_blob_dwords)
 		return -1;
 	/* The raster kernel maps `tri = gl_WorkGroupID.x * TPW + lane`, which is
@@ -538,6 +562,8 @@ static int program_load_locked(const void *blob, uint32_t size) {
 	s->pixel_owned = h->version == ADRENO_PROG_PIXEL_VERSION;
 	s->geom_tpw = h->geom_tpw;
 	s->cs2_uniform_blob_dwords = h->cs2_uniform_blob_dwords;
+	s->cs2_vout_stride = h->cs2_vout_stride;
+	s->vk_attr_stride = h->vk_attr_stride;
 
 	if (kern_load(&s->kern[0], &h->kern[0], payload) != 0)
 		goto fail;
@@ -1360,8 +1386,9 @@ int adreno_compute_rotate(uint64_t src_phy, int32_t src_w, int32_t src_h,
 /* ------------------------------------------------------------------ */
 static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
                      uint32_t h, uint32_t fb_stride,
-                     const adreno_3d_geom_t *g, const uint32_t *unif,
-                     uint32_t num_uniforms) {
+                     const adreno_3d_geom_t *g,
+                     const adreno_3d_tex_t *tex, uint32_t num_tex,
+                     const uint32_t *unif, uint32_t num_uniforms) {
 	kern_slot_t *xf = &s->kern[1];
 	kern_slot_t *rs = &s->kern[0];
 	bind_t binds[ADRENO_3D_MAX_BINDINGS];
@@ -1369,6 +1396,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	uint32_t ntris, split = s->cs2_uniform_blob_dwords;
 	uint32_t xwg, tpw, pstride, rec;
 	int gtex = (s->is_geom == 2), ginst = (s->is_geom == 3), gtc = (s->is_geom == 4);
+	int gvk = (s->is_geom == 5);
 	int gtexc = gtex || gtc;   /* textured family: ctex unit 0 is the image */
 	int rc;
 
@@ -1377,9 +1405,11 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	/* is_geom == 2: pos carries interleaved pos+uv (6 floats); 3: vec4
 	   pos+instance index + float3 normals, ctex unit 0 = instance-matrix
 	   SSBO; 4: interleaved pos+uv+rgba (10 floats); 1: float3 pos + float3
-	   normals.  The vout record is 12 floats for kind 4, 8 otherwise. */
-	pstride = gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u));
-	rec = gtc ? 48u : 32u;
+	   normals.  Kind 5 instead uses the serialized Vulkan attribute/vout
+	   strides and samples fragment textures through the a6xx texture unit. */
+	pstride = gvk ? s->vk_attr_stride * 4u
+	              : (gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u)));
+	rec = gvk ? s->cs2_vout_stride * 4u : (gtc ? 48u : 32u);
 	ntris = g->nverts / 3u;
 
 	if (g->mode != 4u)   /* G2D_PGL_MODE_TRIANGLES */
@@ -1390,7 +1420,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		return ADRENO_E_DECLINED;
 	if (g->pos_phy == 0 || (g->pos_phy & 0x3fu) != 0)
 		return ADRENO_E_DECLINED;
-	if (!gtexc && (g->col_phy == 0 || (g->col_phy & 0x3fu) != 0))
+	if (!gtexc && !gvk && (g->col_phy == 0 || (g->col_phy & 0x3fu) != 0))
 		return ADRENO_E_DECLINED;
 	if ((gtexc || ginst) &&
 	    (g->ctex_phy == 0 || (g->ctex_phy & 0x3fu) != 0 ||
@@ -1451,7 +1481,8 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 
 	/* ---- Pass 1: vertex transform -> vout.  Bindings: 0 = vout, 1 = pos;
 	   gouraud 2 = normals; instanced 2 = normals, 3 = instance matrices;
-	   textured kinds read interleaved pos+uv from binding 1 only. ---- */
+	   textured and Vulkan kinds read their interleaved/flattened stream from
+	   binding 1 only. ---- */
 	memset(binds, 0, sizeof(binds));
 	binds[0].phy = g_vout.iova;   binds[0].bytes = g->nverts * rec;
 	binds[1].phy = g->pos_phy;    binds[1].bytes = g->nverts * pstride;
@@ -1465,15 +1496,16 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	grid[0] = (g->nverts + xwg - 1u) / xwg;   /* one invocation per vertex */
 	grid[1] = 1u;
 	grid[2] = 1u;
-	rc = emit_cs_dispatch(xf, binds, 4u, NULL, 0, unif, split, grid);
+	rc = emit_cs_dispatch(xf, binds, gvk ? 2u : 4u, NULL, 0, unif, split, grid);
 	if (rc != ADRENO_OK) {
 		klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
 		return rc;
 	}
 
 	/* ---- Pass 2: rasterize from vout.  Bindings: 0 = fb, 1 = vout,
-	   2 = depth; textured family 3 = texture image.  The raster kernel's
-	   uniforms live in the SECOND region of the blob. ---- */
+	   2 = depth; legacy textured kinds add 3 = texture image, while Vulkan
+	   fragment samplers use the texture descriptors in tex[].  The raster
+	   kernel's uniforms live in the SECOND region of the blob. ---- */
 	memset(binds, 0, sizeof(binds));
 	binds[0].phy = fb_phy;        binds[0].bytes = fb_stride * h;
 	binds[1].phy = g_vout.iova;   binds[1].bytes = g->nverts * rec;
@@ -1494,8 +1526,9 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		grid[0] = (w + rs->k.local_size[0] - 1u) / rs->k.local_size[0];
 		grid[1] = (h + rs->k.local_size[1] - 1u) / rs->k.local_size[1];
 	}
-	rc = emit_cs_dispatch(rs, binds, 4u, NULL, 0, unif + split, num_uniforms - split,
-	                      grid);
+	rc = emit_cs_dispatch(rs, binds, gvk ? 3u : 4u,
+	                      gvk ? tex : NULL, gvk ? num_tex : 0u,
+	                      unif + split, num_uniforms - split, grid);
 	if (rc != ADRENO_OK)
 		klog("adreno_3d: geom raster rc=%d tris %u tpw=%u\n", rc, ntris, tpw);
 	return rc;
@@ -1543,7 +1576,7 @@ static int draw_locked(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 
 	if (s->is_geom)
 		return draw_geom(s, fb_phy, (uint32_t)fb_w, (uint32_t)fb_h, fb_stride,
-		                 geom, unif, num_uniforms);
+		                 geom, tex, num_tex, unif, num_uniforms);
 
 	/* --- fullscreen: binding 0 (the framebuffer) is the only SSBO that can
 	   be supplied; a kernel declaring any further storage buffer is declined
@@ -1561,6 +1594,77 @@ static int draw_locked(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 int adreno_3d_program_load(const void *blob, uint32_t size) {
 	pthread_mutex_lock(&g_3d_lock);
 	int rc = program_load_locked(blob, size);
+	pthread_mutex_unlock(&g_3d_lock);
+	return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* OpenCL / Vulkan compute dispatch (the bsp_cl route): a pure-compute   */
+/* program (is_geom == 0, no framebuffer) over an explicit work-group    */
+/* grid, with the __global buffer arguments bound positionally (arg i -> */
+/* binding i, the contract the CL / SPIR-V transpilers emit) and the      */
+/* by-name packed scalar-argument blob fed as UBO 0.  The mirror of        */
+/* raspi5's v3d_3d_cl_dispatch; the submission itself is the same          */
+/* emit_cs_dispatch the fullscreen / geom routes run.                      */
+/* ------------------------------------------------------------------ */
+static int cl_dispatch_locked(int32_t prog_handle,
+                              const uint32_t wg_count[3], uint32_t wg_size,
+                              const uint64_t *arg_phy, const uint32_t *arg_size,
+                              uint32_t num_args,
+                              const uint32_t *unif, uint32_t num_uniforms) {
+	prog_slot_t *s;
+	const adreno_prog_kernel_t *k;
+	bind_t binds[ADRENO_3D_MAX_BINDINGS];
+	uint32_t i;
+
+	if (!adreno_3d_ready())
+		return ADRENO_E_DECLINED;
+	if (adreno_wedged())
+		return ADRENO_E_WEDGED;
+	if (prog_handle < 0 || prog_handle >= ADRENO_3D_MAX_PROGS)
+		return ADRENO_E_DECLINED;
+	s = &g_progs[prog_handle];
+	if (!s->in_use)
+		return ADRENO_E_DECLINED;
+	/* The two-pass geometry rasterizer kernels own their SSBO binding
+	   table and grid derivation (draw_geom); a CL launch must be a pure
+	   compute program.  Sticky: this blob can never dispatch here. */
+	if (s->is_geom)
+		return ADRENO_E_DECLINED;
+	k = &s->kern[0].k;
+	/* The work-group shape is baked into the compiled kernel; a launch
+	   whose local size product differs would run the wrong grid. */
+	if (wg_size == 0 ||
+	    wg_size != k->local_size[0] * k->local_size[1] * k->local_size[2])
+		return ADRENO_E_DECLINED;
+	if (num_args > ADRENO_3D_MAX_BINDINGS)
+		return ADRENO_E_DECLINED;
+	/* The a6xx kernel addresses more storage buffers than this back end's
+	   descriptor table carries: sticky (V3D's 4-binding CL gate twin). */
+	if (k->num_ssbo > ADRENO_3D_MAX_BINDINGS)
+		return ADRENO_E_DECLINED;
+
+	memset(binds, 0, sizeof(binds));
+	for (i = 0; i < num_args; i++) {
+		binds[i].phy = arg_phy ? arg_phy[i] : 0ull;
+		binds[i].bytes = arg_size ? arg_size[i] : 0u;
+	}
+	/* emit_cs_dispatch declines (nothing submitted) when a referenced
+	   slot is unbound, undersized or not 64-byte aligned (the MEMOBJ
+	   base alignment); the caller replays that launch on the CPU device. */
+	return emit_cs_dispatch(&s->kern[0], binds, num_args, NULL, 0,
+	                        unif, num_uniforms, wg_count);
+}
+
+int adreno_3d_cl_dispatch(int32_t prog_handle,
+                          const uint32_t wg_count[3], uint32_t wg_size,
+                          const uint64_t *arg_phy, const uint32_t *arg_size,
+                          uint32_t num_args,
+                          const uint32_t *unif, uint32_t num_uniforms) {
+	pthread_mutex_lock(&g_3d_lock);
+	int rc = cl_dispatch_locked(prog_handle, wg_count, wg_size,
+	                            arg_phy, arg_size, num_args,
+	                            unif, num_uniforms);
 	pthread_mutex_unlock(&g_3d_lock);
 	return rc;
 }

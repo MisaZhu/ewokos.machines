@@ -32,8 +32,9 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 # CPU inside the daemon (the client falls back in-process).  g2d_arch.o is
 # still linked for arch_g2d_rotated_size, a pure geometry helper.  bsp_g3d
 # draw/program still decline -2 (no GLSL->a6xx ir3 shader compiler in-tree).
-# The -I ../adreno/include points at the adreno SOURCE tree (not the installed
-# copy) because bsp builds before adreno in the libs phase.
+# The -I ../adreno/include points at the adreno SOURCE tree; adreno now builds
+# before bsp (see ../Makefile) so the installed copy exists too, but the source
+# include keeps bsp independent of the staging order.
 LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/sdcc2.o \
 	$(ARCH)/src/bsp_fb.o $(ARCH)/src/bsp_gpio.o \
 	$(ARCH)/src/xhci.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_eth.o \
@@ -43,8 +44,16 @@ LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/sdcc2.o \
 
 BSP = $(TARGET_DIR)/lib/libbsp.a
 
-$(BSP): $(LIB_BSP_OBJS)
-	$(AR) rcs $(BSP) $(LIB_BSP_OBJS)
+# Mirror raspi5's bsp/Makefile (which absorbs libarch_bcm2712.a): libbsp.a
+# archives libadreno.a as a member so the GPU backend travels with libbsp.
+# bsp_g2d/bsp_g3d/bsp_cl reference the adreno_* driver symbols; bundling the
+# archive here resolves them inside libbsp.a and -- crucially -- makes libbsp.a
+# rebuild whenever libadreno.a changes.  The shared g2dd daemon lists only
+# libbsp.a as a prerequisite, so Adreno freshness reaches it with no
+# machine-specific rule in the daemon's own Makefile.  -ladreno in BSP_LFLAGS
+# still links the standalone archive for other consumers.
+$(BSP): $(LIB_BSP_OBJS) $(BUILD_DIR)/lib/libadreno.a
+	$(AR) rcs $(BSP) $(LIB_BSP_OBJS) $(BUILD_DIR)/lib/libadreno.a
 	mkdir -p $(TARGET_DIR)/include
 	cp -r include/* $(TARGET_DIR)/include
 

@@ -40,7 +40,7 @@
  *                           <- ir3_find_sysval_regid(v, SYSTEM_VALUE_*)
  *     ssbo_binding[]      <- the declared layout(binding) of UAV slot i
  *
- * VERSION 2 LAYOUT: a fixed adreno_prog_blob_t header carrying up to TWO
+ * VERSION 6 LAYOUT: a fixed adreno_prog_blob_t header carrying up to TWO
  *   kernels (kern[0] = the main compute kernel: fullscreen effect or the
  *   geometry RASTER pass; kern[1] = the two-pass geometry rasterizer's vertex
  *   TRANSFORM pass; absent <=> binary_words == 0, with the other fields at
@@ -103,15 +103,15 @@ extern "C" {
    G2D_PGL_PROGRAM_MAGIC ('G','P','D','3') so a daemon never mistakes one for
    the other. */
 #define ADRENO_PROG_MAGIC     0x33444e41u
-/* VERSION 4 adds the sampled-texture metadata (num_samp / tex_const_off /
- * tex_type[]) to adreno_prog_kernel_t, growing the fixed blob header.  The
- * app-side compiler (adrenocompiler) and the daemon (adreno) are always
- * rebuilt together; the bumped version makes a half-updated pair reject the
- * blob at the magic/version gate instead of misreading the new layout. */
-#define ADRENO_PROG_VERSION   4u
+/* VERSION 4 added sampled-texture metadata (num_samp / tex_const_off /
+ * tex_type[]) to adreno_prog_kernel_t.  VERSION 6 adds the geom_kind-5
+ * per-vertex stream strides to the fixed blob header.  The app-side compiler
+ * (adrenocompiler) and daemon (adreno) are always rebuilt together; the bumped
+ * version makes a half-updated pair reject the blob instead of misreading it. */
+#define ADRENO_PROG_VERSION   6u
 /* Same wire layout; raster grid covers pixels, each owning its colour/depth.
  * A separate version makes old daemons reject the different dispatch shape. */
-#define ADRENO_PROG_PIXEL_VERSION 5u
+#define ADRENO_PROG_PIXEL_VERSION 7u
 
 /* Maximum storage-buffer bindings a compiled kernel may declare.  Sized for the
    portablegl fullscreen-compute set and the geometry rasterizer (render target
@@ -225,8 +225,8 @@ typedef struct {
 
 	/* geometry-rasterizer dispatch kind (pglc_blob_opts.geom_kind: 0 = plain
 	   fullscreen program, 1 = gouraud, 2 = textured, 3 = instanced,
-	   4 = colour-modulated textured) and the raster pass's triangles per
-	   workgroup (0 = one workgroup per triangle). */
+	   4 = colour-modulated textured, 5 = Vulkan user shader) and the raster
+	   pass's triangles per workgroup (0 = one workgroup per triangle). */
 	uint8_t  is_geom;
 	uint8_t  reserved;
 	uint16_t geom_tpw;
@@ -234,6 +234,12 @@ typedef struct {
 	/* split point of the concatenated per-draw uniform blob: the first
 	   cs2_uniform_blob_dwords dwords feed kern[1] (xform), the rest kern[0]. */
 	uint32_t cs2_uniform_blob_dwords;
+
+	/* geom_kind == 5 per-vertex stream strides in FLOATS: the xform output
+	   record size and the flattened Vulkan attribute input stride.  Both are
+	   zero for every other program kind. */
+	uint32_t cs2_vout_stride;
+	uint32_t vk_attr_stride;
 
 	adreno_prog_kernel_t kern[2]; /* [0] main / raster CS, [1] xform CS or 0 */
 

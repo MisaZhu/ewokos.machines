@@ -1855,12 +1855,30 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     budget_ns = job->budget_ms ? (uint64_t)job->budget_ms * 1000000ull
                                : CSD_IRQ_WAIT_LIMIT_NS;
 
-    /* Match mesa's canonical aligned-workgroup dispatch.  Packing several
-     * already-full workgroups into one supergroup does not improve lane
-     * occupancy and has not been validated for shaders using the SFU. */
+    /* Supergroup packing.  Two routes reach here with different needs:
+     *
+     *   - OpenCL (V3D_G2D_FAILURE_LOCAL) keeps mesa's canonical one-
+     *     workgroup-per-supergroup for aligned sizes: packing several
+     *     already-full workgroups into one supergroup has not been
+     *     validated for mesa compute shaders that use the SFU.
+     *   - The GLES/2D compute route's kernels are hand-derived, use no
+     *     shared memory / barriers, and were measured on Pi 5 to run
+     *     ~1.7x faster packed (grass 400x300: 108 ms at 1 wg/sg, 64 ms
+     *     at 16; see v3d_g2d.h and the _csd_wgs_per_sg knob).  The
+     *     OpenCL port dropped this packing for every caller, which is
+     *     what slowed the whole GLES pipeline; restore it for the
+     *     non-CL route only. */
     num_wgs = job->wg_count[0] * job->wg_count[1] * job->wg_count[2];
     if ((job->wg_size % 16u) == 0u) {
-        wgs_per_sg = 1u;
+        if (flags & V3D_G2D_FAILURE_LOCAL) {
+            wgs_per_sg = 1u;
+        } else {
+            wgs_per_sg = _csd_wgs_per_sg;
+            while (wgs_per_sg > 1u && wgs_per_sg * job->wg_size > 4096u)
+                wgs_per_sg--;
+            if (wgs_per_sg > num_wgs)
+                wgs_per_sg = num_wgs;
+        }
     } else {
         wgs_per_sg = 16u;
         while (wgs_per_sg > 1u && ((wgs_per_sg * job->wg_size) % 16u) != 0u)
@@ -1986,7 +2004,15 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             }
             if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
                 done = 1;
-                missed = 1;
+                /* Only a latch observed AFTER a real park counts as a lost
+                 * interrupt: during the pre-park accept-spin the handler has
+                 * not had a slice to run yet, so a short job's latch is a
+                 * normal in-flight delivery, not evidence the INTID/routing
+                 * is broken.  Counting it here let a stream of fast compute
+                 * jobs (OpenCL) trip CSD_IRQ_MISS_MAX and retire the SHARED
+                 * CSD_DONE irq for good, dropping every later GLES/2D
+                 * dispatch to the paced poll path. */
+                missed = waited;
                 break;
             }
             status = v3d_core()[CSD_STATUS / 4];
@@ -1996,9 +2022,13 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
                 /* Idle alone is not completion evidence: before the first busy
                  * observation it can mean that CFG0 has not been accepted yet.
                  * A busy->idle transition, or the retired-batch/current-job
-                 * signature after a real wait, is required without an irq. */
+                 * signature after a real wait, is required without an irq.
+                 * As with the latch above, a busy->idle caught inside the
+                 * accept-spin (waited == 0) is a fast completion the handler
+                 * simply had not been scheduled to report yet, so it must not
+                 * advance the shared irq-retirement counter. */
                 done = 1;
-                missed = 1;
+                missed = waited;
                 break;
             }
             if (!seen_busy && !waited && g2d_now_ns() < accept_until) {

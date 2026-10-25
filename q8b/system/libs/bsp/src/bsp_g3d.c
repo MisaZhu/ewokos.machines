@@ -26,7 +26,7 @@
  *
  *   bsp_g3d_program / program_free / draw forward into the a6xx COMPUTE
  *   back end (adreno_3d.c, libadreno): a program is a precompiled a6xx
- *   ir3 blob in the adreno_prog.h VERSION 2 format (ADRENO_PROG_MAGIC),
+ *   ir3 blob in the adreno_prog.h VERSION 6 format (ADRENO_PROG_MAGIC),
  *   produced app-side by machines/q8b/system/libs/adrenocompiler (the
  *   shared pglcompiler.h contract over the vendored mesa freedreno/ir3
  *   tree, GLSL->NIR->ir3->a6xx; this is what q8b's `export PGL_G3D=yes`
@@ -35,8 +35,9 @@
  *   Adreno, not the binner / fixed-function 3D pipeline:
  *     - a plain program (is_geom == 0) is one fullscreen kernel that
  *       writes the framebuffer one invocation per pixel;
- *     - a geometry program (is_geom 1..4: gouraud / textured / instanced /
- *       colour-modulated textured) is the same two-pass compute rasterizer
+ *     - a geometry program (is_geom 1..5: gouraud / textured / instanced /
+ *       colour-modulated textured / Vulkan user shader) is the same two-pass
+ *       compute rasterizer
  *       raspi5 runs on V3D (pglcompiler's geom kernels): pass 1 (kern[1])
  *       transforms every vertex into a GPU vout buffer, pass 2 (kern[0])
  *       rasterizes one triangle (or geom_tpw triangles) per workgroup into
@@ -144,6 +145,8 @@ static int32_t a3d_result(int rc) {
 		return G2D_OK;
 	if (rc == ADRENO_E_DECLINED)
 		return G2D_ERR_FAILED;
+	if (rc == ADRENO_E_FAULT)
+		return G2D_ERR_MMU_FAULT;
 	return G2D_ERR_TIMEOUT;
 }
 
