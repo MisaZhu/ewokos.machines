@@ -1,0 +1,41 @@
+# Run from libadreno: make -f shaders/Makefile.host
+# Reuses the device compiler's source lists with native libc and isolated objects.
+.DEFAULT_GOAL := all
+ROOT := $(abspath ../../../../..)
+FE := $(ROOT)/projects/soft3d/libs/gles/pglcompiler
+BE := $(abspath ../adrenocompiler)
+HERE := $(abspath shaders)
+OUT ?= /tmp/q8b-builtin-shaders
+HOST_CC ?= clang
+HOST_CXX ?= clang++
+HOST_AR ?= ar
+INC := -I$(FE)/include -I$(FE)/mesa/include -I$(FE)/mesa/src \
+ -I$(FE)/mesa/src/compiler -I$(FE)/mesa/src/compiler/glsl \
+ -I$(FE)/mesa/src/compiler/nir -I$(FE)/mesa/src/mesa \
+ -I$(FE)/mesa/src/mesa/main -I$(FE)/mesa/src/util \
+ -I$(BE) -I$(BE)/mesa/src -I$(BE)/mesa/src/freedreno \
+ -I$(BE)/mesa/src/freedreno/ir3 -I$(BE)/mesa/src/freedreno/common \
+ -I$(BE)/mesa/src/freedreno/isa -I$(BE)/mesa/src/freedreno/registers/gen \
+ -I$(BE)/mesa/src/freedreno/registers/adreno -I$(BE)/mesa/src/compiler/isaspec \
+ -I$(abspath include) -I$(ROOT)/system/basic/libc/libewoksys/ewoksys/include
+FLAGS := $(INC) -include $(HERE)/host_config.h -O2 -g -DNDEBUG -D_GNU_SOURCE -w -MMD -MP
+
+.PHONY: all compiler regenerate
+all: regenerate
+compiler:
+	$(MAKE) -C $(FE) -f Makefile -f $(HERE)/host_deps.mk HOST_SHADER_DIR=$(HERE) ARCH=aarch64 HW=q8b PGL_G3D=yes \
+	 PGL_G3D_COMPILER_DIR=$(BE) OBJDIR=$(OUT)/frontend \
+	 BUILD_DIR=$(OUT) LIB=$(OUT)/libfrontend.a EWOKOS_GLUE_C= \
+	 CC=$(HOST_CC) CXX=$(HOST_CXX) AR=$(HOST_AR) \
+	 CFLAGS='$(FLAGS) -std=gnu11' CXXFLAGS='$(FLAGS) -std=gnu++17'
+	$(MAKE) -C $(BE) -f Makefile -f $(HERE)/host_deps.mk HOST_SHADER_DIR=$(HERE) ARCH=aarch64 HW=q8b PGLC_FE_DIR=$(FE) \
+	 OBJDIR=$(OUT)/backend LIB=$(OUT)/libbackend.a \
+	 CC=$(HOST_CC) CXX=$(HOST_CXX) AR=$(HOST_AR) \
+	 CFLAGS='$(FLAGS) -std=gnu11' CXXFLAGS='$(FLAGS) -std=gnu++17'
+	$(HOST_CC) $(FLAGS) -std=gnu11 -c shaders/generate.c -o $(OUT)/generate.o
+	$(HOST_CC) $(FLAGS) -std=gnu11 -c shaders/host_support.c -o $(OUT)/host_support.o
+	$(HOST_CXX) $(OUT)/generate.o $(OUT)/host_support.o \
+	 $(OUT)/libbackend.a $(OUT)/libfrontend.a $(OUT)/libbackend.a -pthread -lm -o $(OUT)/generate
+regenerate: compiler
+	$(OUT)/generate blit shaders/blit.comp shaders/blit_blob.h
+	$(OUT)/generate raster shaders/raster.comp shaders/raster_blob.h
