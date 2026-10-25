@@ -254,6 +254,28 @@ int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
                    const adreno_3d_tex_t *tex, uint32_t num_tex,
                    const uint32_t *unif, uint32_t num_uniforms);
 
+/* OpenCL / Vulkan compute offload (the bsp_cl route, mirroring raspi5's
+   vc_cl -> v3d_3d_cl_dispatch).  Dispatches a pure-compute program loaded
+   through adreno_3d_program_load (is_geom == 0: the CL / Vulkan-compute blob
+   the app-side adrenocompiler serialized) over a wg_count[0] x [1] x [2]
+   work-group grid.  The __global buffer / SSBO arguments arrive as already-
+   resolved contig physical bases in binding order (arg i -> the GLSL
+   binding i the transpiler emitted; CB0 is identity-mapped so pa == iova,
+   zero copy), arg_size[i] giving each buffer's byte length (a 0 phy/size
+   marks an unused trailing slot); `unif` carries num_uniforms u32 of the
+   by-name packed scalar-argument uniform blob (UBO 0).  The work-group shape
+   is baked into the compiled kernel, so wg_size must equal the kernel's
+   local_size product.  Returns ADRENO_OK, ADRENO_E_DECLINED when the handle
+   is bad, the program is not a pure-compute one, the launch shape does not
+   match the kernel or an argument is not GPU-bindable (nothing submitted),
+   or ADRENO_E_TIMEOUT / ADRENO_E_FAULT / ADRENO_E_WEDGED from the
+   submission.  A submitted dispatch is never replayed. */
+int adreno_3d_cl_dispatch(int32_t prog_handle,
+                          const uint32_t wg_count[3], uint32_t wg_size,
+                          const uint64_t *arg_phy, const uint32_t *arg_size,
+                          uint32_t num_args,
+                          const uint32_t *unif, uint32_t num_uniforms);
+
 /* A2D 2D-blitter back end (adreno_2d.c).  All surfaces are uint32 ARGB
    (FMT6_8_8_8_8_UNORM, linear).  Physical addresses are the GPU-visible base
    (CB0 is identity-mapped so pa == iova); pitch is in bytes and must be

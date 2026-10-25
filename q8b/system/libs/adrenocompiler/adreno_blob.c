@@ -1,7 +1,7 @@
 /*
  * adreno_blob.c - Adreno implementation of pglc_program_serialize(): lays a
  * compiled pglc_program (+ optional xform program) out as the
- * adreno_prog_blob_t VERSION 2 wire format that the q8b g2dd daemon's
+ * adreno_prog_blob_t VERSION 6 wire format that the q8b g2dd daemon's
  * bsp_g3d_program() -> adreno_3d.c parses.
  *
  * kern[0] is the main program's COMPUTE stage (fullscreen effect or the
@@ -150,6 +150,10 @@ uint32_t pglc_program_serialize(const struct pglc_program *main,
 	/* split point of the concatenated per-draw uniform blob: the xform
 	   region comes first. */
 	hdr.cs2_uniform_blob_dwords = xu->uniform_blob_dwords;
+	/* Vulkan's generated geometry kernels use variable-width vertex records
+	   and a flattened attribute stream; every other geometry kind ignores these. */
+	hdr.cs2_vout_stride = (opts && hdr.is_geom == 5u) ? opts->vout_stride : 0;
+	hdr.vk_attr_stride  = (opts && hdr.is_geom == 5u) ? opts->attr_stride : 0;
 
 	fill_kernel(&hdr.kern[0], cu, cub);
 	fill_kernel(&hdr.kern[1], xu, xub);

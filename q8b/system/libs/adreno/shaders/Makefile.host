@@ -2,7 +2,7 @@
 # Reuses the device compiler's source lists with native libc and isolated objects.
 .DEFAULT_GOAL := all
 ROOT := $(abspath ../../../../..)
-FE := $(ROOT)/projects/soft3d/libs/gles/pglcompiler
+FE := $(ROOT)/projects/opengl/libs/gles/pglcompiler
 BE := $(abspath ../adrenocompiler)
 HERE := $(abspath shaders)
 OUT ?= /tmp/q8b-builtin-shaders
