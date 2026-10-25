@@ -106,6 +106,7 @@
 #define V3D_MMU_ADDR_LIMIT        (1ull << 32)
 /* ---- core registers ---- */
 #define CTL_L2CACTL  0x20u
+#define CTL_SLCACTL  0x24u
 #define CTL_L2TCACTL 0x30u
 #define CTL_IDENT1   0x04u
 
@@ -523,6 +524,18 @@ static uint32_t g2d_l2t_flend(uint32_t hi)
     return (hi >= 0xFFFFFFC0u) ? ~0u : (hi + 63u) & ~63u;
 }
 
+/* Clean the per-slice caches (SLCACTL): the four 4-bit fields are the
+ * instruction / uniform / TMU-data / TMU-varying cache CLEAR counts
+ * (ICC, UCC, TDCCS, TVCCS), i.e. this only drops read-side lines.  It
+ * never writes anything back, so it belongs on the PRE side (where a
+ * stale instruction/uniform/TMU-data line would be served to the new
+ * job) and not on the POST side. */
+static void g2d_clean_slc(void)
+{
+    v3d_core()[CTL_SLCACTL / 4] = 0x0F0F0F0Fu;
+    __asm__ __volatile__("dsb sy");
+}
+
 /* Ranged post-job flush: drain the TMU write combiner, then clean
  * (mode 2, lines stay resident) the L2T over [lo, hi).  Bounded like
  * g2d_invalidate_range; the range registers are programmed explicitly
@@ -574,8 +587,7 @@ static void g2d_invalidate_range(uint32_t lo, uint32_t hi)
      * L2TCACTL write or QPU traffic */
     for (i = 0; i < 2000000 && (v3d_core()[0x30 / 4] & (1u << 0)); i++)
         g2d_poll_hint();
-    v3d_core()[0x24 / 4] = 0x0F0F0F0Fu;             /* SLCACTL */
-    __asm__ __volatile__("dsb sy");
+    g2d_clean_slc();                                /* SLCACTL */
 }
 
 /* Flush the GPU texture L1/L2 caches so a reused canvas is not served
@@ -851,11 +863,18 @@ static int g2d_mmu_check_fault(int kern, int nunifs, int num_qpus)
                     (hub_int & HUB_INT_MMU_WRV) == 0) || bogus_write);
     /* The trailing request can occur after every dispatch.  Record each form
      * once instead of turning a successful benchmark into an unbounded
-     * kernel-log stream; fatal faults remain visible on every occurrence. */
+     * kernel-log stream; fatal faults remain visible on every occurrence.
+     * The two cases get deliberately different wording: the quirk is
+     * contained and expected, and labelling it a bare "MMU fault" sends the
+     * reader hunting for a buffer overrun that does not exist (the kernel
+     * named is merely whatever was running when the trailing request landed,
+     * not the culprit). */
     if (!recoverable ||
         (bogus_write ? !recoverable_write_reported : !recoverable_reported)) {
-        slog("g2d: V3D MMU fault kernel=%s ctl=0x%x id=0x%x(%s) "
+        slog("g2d: V3D MMU %s kernel=%s ctl=0x%x id=0x%x(%s) "
              "hub=0x%x vio_reg=0x%x va=0x%x%08x pte=0x%x action=%s\r\n",
+             recoverable ? "ip-rev10 trailing-L2T quirk (benign, once per form)"
+                         : "fault",
              (kern >= 0 && kern < KERN_N) ? names[kern] : "unknown",
              ctl, vio_id, client, hub_int, vio_reg, (uint32_t)(vio >> 32),
              (uint32_t)vio, pte,
@@ -1463,6 +1482,38 @@ void v3d_g2d_l2_invalidate_all(void)
     g2d_invalidate_caches();
 }
 
+/* Drop the GPU's cached copies of one freshly ARM-written dma block.
+ *
+ * A program upload memcpys new QPU into a dma buffer whose IOVA was just
+ * recycled from a freed program, and nothing else invalidates that range:
+ * the CSD dispatch's PRE walk is ranged over the uniform / source /
+ * destination hulls, so the code lines the PREVIOUS owner of the address
+ * left resident in the L2T survive it.  The slice instruction cache clear
+ * (SLCACTL ICC) is not enough - the refetch is served by the L2T behind
+ * it - so the QPU silently runs the old program: the dispatch completes
+ * normally, reports no fault, and the new kernel's stores never happen.
+ * Only the 3D bin/render submit path escaped this because it still calls
+ * v3d_g2d_l2_invalidate_all() (a full-range walk) before every job.
+ *
+ * The walk is bounded to the block, taken under the dispatch lock so it
+ * cannot interleave with an in-flight job's own L2T maintenance, and
+ * mode 0 (clean + invalidate) is safe here: the GPU only ever READS these
+ * blocks, so their lines are clean and nothing is written back over the
+ * fresh contents. */
+void v3d_g2d_invalidate_span(uint32_t iova, uint32_t bytes)
+{
+    uint64_t hi;
+
+    if (!_ok || iova == 0 || bytes == 0)
+        return;
+    hi = (uint64_t)iova + bytes;
+    if (hi > (uint64_t)~0u)
+        hi = ~0u;
+    g2d_run_lock();
+    g2d_invalidate_range(iova, (uint32_t)hi);
+    g2d_run_unlock();
+}
+
 /* phase accounting (see v3d_g2d_stats_t); written only under
  * _v3d_run_lock */
 static v3d_g2d_stats_t _stats;
@@ -1785,8 +1836,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     uint32_t num_batches;
     uint32_t tag;
     int use_irq, done, seen_busy;
-    int waited = 0, done_reason = 0;
-    int trace;
+    int waited = 0;
     int ret;
     uint64_t t0, t1, t2;
     uint64_t budget_ns;
@@ -1823,7 +1873,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     rem_wgs = num_wgs - whole_sgs * wgs_per_sg;
     num_batches = batches_per_sg * whole_sgs +
                   (rem_wgs * job->wg_size + 15u) / 16u;
-    trace = (flags & V3D_G2D_FAILURE_LOCAL) != 0 && num_wgs == 1u;
 
     g2d_run_lock();
     t0 = g2d_now_ns();
@@ -1933,12 +1982,10 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             uint32_t status;
             if (_csd_irq_seq != seq0) {
                 done = 1;
-                done_reason = 1;
                 break;
             }
             if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
                 done = 1;
-                done_reason = 2;
                 missed = 1;
                 break;
             }
@@ -1951,7 +1998,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
                  * A busy->idle transition, or the retired-batch/current-job
                  * signature after a real wait, is required without an irq. */
                 done = 1;
-                done_reason = seen_busy ? 3 : 7;
                 missed = 1;
                 break;
             }
@@ -1983,7 +2029,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             uint32_t status;
             if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
                 done = 1;
-                done_reason = 4;
                 break;
             }
             status = v3d_core()[CSD_STATUS / 4];
@@ -1991,7 +2036,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
                 seen_busy = 1;
             else if (seen_busy) {
                 done = 1;
-                done_reason = 5;
                 break;
             }
             uint64_t elapsed = g2d_now_ns() - start;
@@ -2017,7 +2061,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             slog("g2d: compute CSD_DONE missing; queue idle status=0x%x\r\n",
                  status);
             done = 1;
-            done_reason = 6;
         } else {
             slog("g2d: compute CSD timeout wg=%ux%ux%u size=%u batches=%u "
                  "code=0x%x unif=0x%x status=0x%x busy=%d waited=%d "
@@ -2039,18 +2082,6 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             goto out;
         }
     }
-    if (trace)
-        slog("g2d: CSDtiny done=%d reason=%d seq0=%u seq=%u int=0x%x "
-             "status=0x%x busy=%d waited=%d cfg3=0x%x cfg4=%u cfg5=0x%x "
-             "current4=0x%x current5=0x%x current6=0x%x id0=0x%x id1=0x%x\r\n",
-             done, done_reason, seq0, _csd_irq_seq,
-             v3d_core()[INT_STS / 4], v3d_core()[CSD_STATUS / 4],
-             seen_busy, waited, cfg[3], cfg[4], cfg[5],
-             (uint32_t)v3d_core()[CSD_CURRENT_CFG4 / 4],
-             (uint32_t)v3d_core()[CSD_CURRENT_CFG5 / 4],
-             (uint32_t)v3d_core()[CSD_CURRENT_CFG6 / 4],
-             (uint32_t)v3d_core()[CSD_CURRENT_ID0 / 4],
-             (uint32_t)v3d_core()[CSD_CURRENT_ID1 / 4]);
     v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
 
     if (flags & V3D_G2D_MAINT_POST) {

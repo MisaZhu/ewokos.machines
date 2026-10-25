@@ -223,8 +223,8 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
 
     h = (const g2d_pgl_program_blob_t*)blob;
     if (h->magic != G2D_PGL_PROGRAM_MAGIC ||
-        h->version != G2D_PGL_PROGRAM_VERSION) {
-        slog("bsp_g3d: program magic 0x%x version %u (want %u)\n",
+        h->version > G2D_PGL_PROGRAM_VERSION) {
+        slog("bsp_g3d: program magic 0x%x version %u (max %u)\n",
              h->magic, h->version, (uint32_t)G2D_PGL_PROGRAM_VERSION);
         return -21;
     }
@@ -346,6 +346,10 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
     req.cs2_local_size[2] = h->cs2_local_size[2];
     req.cs2_shared_size  = h->cs2_shared_size;
     req.cs2_uniform_blob_dwords = h->cs2_uniform_blob_dwords;
+
+    /* VERSION 6 geom_kind == 5 stream strides (floats); zero for other kinds. */
+    req.cs2_vout_stride = h->cs2_vout_stride;
+    req.vk_attr_stride  = h->vk_attr_stride;
 
     {
         int32_t r = vc_pgl3d_program(&req);

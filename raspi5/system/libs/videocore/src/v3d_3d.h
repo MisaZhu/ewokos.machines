@@ -401,6 +401,13 @@ typedef struct {
     uint32_t cs2_local_size[3];
     uint32_t cs2_shared_size;
     uint32_t cs2_uniform_blob_dwords;
+    /* VERSION 6 geom_kind == 5 (Vulkan user shader) per-vertex stream strides
+     * in FLOATS: cs2_vout_stride is the pass-1 vout record stride (the daemon
+     * sizes the pass-1 dst_span = nverts * cs2_vout_stride * 4), vk_attr_stride
+     * the attribute stream stride (the attr canvas is validated as
+     * nverts * vk_attr_stride * 4).  Zero / ignored for every other kind. */
+    uint32_t cs2_vout_stride;
+    uint32_t vk_attr_stride;
 } v3d_3d_prog_desc_t;
 
 /* Upload a compiled program: copy the VS/FS QPU words and the static uniform

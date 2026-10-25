@@ -478,6 +478,19 @@ static int alloc_stage(uint32_t size, void **va, uint32_t *iova)
     return alloc_stage_raw(size, va, iova, NULL);
 }
 
+/* Publish a just-memcpy'd dma block to the GPU.  The ARM writes dma through a
+ * NOCACHE mapping, so DRAM is already up to date once the store buffer drains;
+ * what is NOT up to date is the V3D L2T, which can still hold clean lines the
+ * previous owner of this recycled IOVA fetched (see v3d_g2d_invalidate_span).
+ * Skipping this made a freshly uploaded CL kernel silently execute the program
+ * that previously lived at the same address: the dispatch completed with no
+ * fault and no MMU error, but the new kernel's stores never happened. */
+static void publish_stage(uint32_t iova, uint32_t bytes)
+{
+    __asm__ __volatile__("dsb sy" ::: "memory");
+    v3d_g2d_invalidate_span(iova, bytes);
+}
+
 /* hand a program's QPU code blocks back to dma and clear the slot */
 static void release_prog(v3d_3d_prog_t *pr)
 {
@@ -1738,12 +1751,6 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
                 return -1;                  /* per-draw GL uniform[d] */
             }
             out[i] = job_unif[d];
-            static int bricks_diag = 0;
-            if (d == 161u && job_unif_iova != 0 && bricks_diag++ < 2 && num_job >= 169u) {
-                slog("v3d_3d: bricks raw %x %x %x %x %x %x %x %x\r\n",
-                     job_unif[161], job_unif[162], job_unif[163], job_unif[164],
-                     job_unif[165], job_unif[166], job_unif[167], job_unif[168]);
-            }
             break;
         case QUNIFORM_UBO_ADDR: {
             /* Indirect default-uniform loads carry a byte offset in the low
@@ -2743,6 +2750,7 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         memcpy(va, desc->vs_qpu, desc->vs_qpu_words * 4u);
         pr->vs_qpu_iova  = iova;
         pr->vs_qpu_words = desc->vs_qpu_words;
+        publish_stage(iova, desc->vs_qpu_words * 4u);
 
         /* upload the FS QPU code */
         if (alloc_stage_raw(desc->fs_qpu_words * 4u, &va, &iova, &pr->fs_qpu_raw) != 0)
@@ -2750,6 +2758,7 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         memcpy(va, desc->fs_qpu, desc->fs_qpu_words * 4u);
         pr->fs_qpu_iova  = iova;
         pr->fs_qpu_words = desc->fs_qpu_words;
+        publish_stage(iova, desc->fs_qpu_words * 4u);
 
         /* upload the COORD (binning) QPU code */
         if (alloc_stage_raw(desc->coord_qpu_words * 4u, &va, &iova, &pr->coord_qpu_raw) != 0)
@@ -2757,6 +2766,7 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         memcpy(va, desc->coord_qpu, desc->coord_qpu_words * 4u);
         pr->coord_qpu_iova  = iova;
         pr->coord_qpu_words = desc->coord_qpu_words;
+        publish_stage(iova, desc->coord_qpu_words * 4u);
     }
 
     /* upload the optional COMPUTE QPU code */
@@ -2766,6 +2776,7 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         memcpy(va, desc->cs_qpu, desc->cs_qpu_words * 4u);
         pr->cs_qpu_iova  = iova;
         pr->cs_qpu_words = desc->cs_qpu_words;
+        publish_stage(iova, desc->cs_qpu_words * 4u);
         if (desc->cs_num_uniforms) {
             memcpy(pr->cs_unif_contents, desc->cs_unif_contents,
                    desc->cs_num_uniforms * 4u);
@@ -2815,6 +2826,7 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         memcpy(va, desc->cs2_qpu, desc->cs2_qpu_words * 4u);
         pr->cs2_qpu_iova  = iova;
         pr->cs2_qpu_words = desc->cs2_qpu_words;
+        publish_stage(iova, desc->cs2_qpu_words * 4u);
         if (desc->cs2_num_uniforms) {
             memcpy(pr->cs2_unif_contents, desc->cs2_unif_contents,
                    desc->cs2_num_uniforms * 4u);
@@ -2894,20 +2906,6 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
 
     __asm__ __volatile__("dsb sy" ::: "memory");
     pr->used = 1;
-    slog("v3d_3d: program %d uploaded (vs %uw @%u, fs %uw @%u, coord %uw @%u, unif %u/%u/%u)\r\n",
-         slot, pr->vs_qpu_words, pr->vs_qpu_iova,
-         pr->fs_qpu_words, pr->fs_qpu_iova,
-         pr->coord_qpu_words, pr->coord_qpu_iova,
-         pr->vs_num_uniforms, pr->fs_num_uniforms, pr->coord_num_uniforms);
-    slog("v3d_3d: prog %d vpm coord out/in %u/%u vs out/in %u/%u fs_inputs %u\r\n",
-         slot, pr->coord_vpm_output_size, pr->coord_vpm_input_size,
-         pr->vs_vpm_output_size, pr->vs_vpm_input_size, pr->fs_num_inputs);
-    if (pr->cs_qpu_words)
-        slog("v3d_3d: prog %d compute %uw @%u unif %u local %ux%ux%u thr %u seg %u spill %u/%u\r\n",
-             slot, pr->cs_qpu_words, pr->cs_qpu_iova, pr->cs_num_uniforms,
-             pr->cs_local_size[0], pr->cs_local_size[1], pr->cs_local_size[2],
-             (uint32_t)pr->cs_threads, (uint32_t)pr->cs_single_seg,
-             pr->cs_spill_size, pr->cs_spill_iova);
     return slot;
 
 fail:
@@ -2936,7 +2934,6 @@ int v3d_3d_program_free(int prog_handle)
     pr->used = 0;
     __asm__ __volatile__("dsb sy" ::: "memory");
     release_prog(pr);
-    slog("v3d_3d: program %d freed\r\n", prog_handle);
     return 0;
 }
 
@@ -2995,16 +2992,6 @@ int v3d_3d_cl_dispatch(int32_t prog_handle,
                         pr->cs_spill_iova, pr->cs_spill_size) != 0) {
         v3d_g2d_op_end();
         return decline("cl: uniforms");
-    }
-    /* Keep tiny-store evidence without flooding the small kernel log ring. */
-    if (wg_count[0] == 1 && wg_count[1] == 1 && wg_count[2] == 1 &&
-        num_job_unif == 3 && num_ssbo == 1) {
-        slog("v3d_3d: CLtiny code=0x%x value=0x%x gsz=%u ssbo=0x%x "
-             "unif6=0x%x unif7=0x%x thr=%u\r\n",
-             pr->cs_qpu_iova, job_unif[0], job_unif[2], ssbo_iova[0],
-             pr->cs_num_uniforms > 6 ? _ccu_unif_va[6] : 0u,
-             pr->cs_num_uniforms > 7 ? _ccu_unif_va[7] : 0u,
-             (uint32_t)pr->cs_threads);
     }
     __asm__ __volatile__("dsb sy" ::: "memory");
 

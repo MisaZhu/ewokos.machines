@@ -330,6 +330,13 @@ volatile uint32_t *v3d_g2d_core_regs(void);  /* core0 window (CLE/PTB/CSD) */
 void v3d_g2d_l2_flush_all(void);             /* post-render writeback to DRAM */
 void v3d_g2d_l2_invalidate_all(void);        /* pre-submit stale-line drop */
 
+/* Ranged stale-line drop for one freshly ARM-written dma block (a program
+ * upload's QPU / descriptor copy).  The CSD dispatch's PRE walk is scoped to
+ * the job's uniform/source/destination hulls and never covers the code range,
+ * so a recycled IOVA would otherwise be served the previous owner's lines from
+ * the L2T.  Takes the dispatch lock; a no-op before init or on an empty span. */
+void v3d_g2d_invalidate_span(uint32_t iova, uint32_t bytes);
+
 /* Read-only V3D MMU fault probe for 3D bin/render timeout diagnostics.
  * Returns 1 when a fault bit is latched and fills the outputs with the MMU
  * control word, the violating IOVA, the faulting client id (CLE/PTB = the

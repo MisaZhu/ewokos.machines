@@ -126,6 +126,10 @@ uint32_t pglc_program_serialize(const struct pglc_program *main,
 	hdr.cs2_threads       = xub->threads;
 	hdr.cs2_single_seg    = xub->single_seg ? 1 : 0;
 	hdr.cs2_uniform_blob_dwords = xu->uniform_blob_dwords;
+	/* VERSION 6 geom_kind == 5 (Vulkan user shader) per-vertex stream
+	   strides, in floats; zero for every other kind. */
+	hdr.cs2_vout_stride = opts ? opts->vout_stride : 0;
+	hdr.vk_attr_stride  = opts ? opts->attr_stride : 0;
 
 	payload_bytes = (hdr.vs_qpu_words + hdr.fs_qpu_words + hdr.coord_qpu_words +
 	                 hdr.vs_num_uniforms * 2u + hdr.fs_num_uniforms * 2u +

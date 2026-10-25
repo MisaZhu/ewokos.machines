@@ -355,6 +355,11 @@ typedef struct {
     uint32_t cs2_local_size[3];
     uint32_t cs2_shared_size;
     uint32_t cs2_uniform_blob_dwords;
+    /* VERSION 6 geom_kind == 5 (Vulkan user shader) per-vertex stream strides
+     * in FLOATS: cs2_vout_stride is the pass-1 vout record stride, vk_attr_stride
+     * the attribute stream stride.  Zero / ignored for every other kind. */
+    uint32_t cs2_vout_stride;
+    uint32_t vk_attr_stride;
 } vc_pgl3d_program_req_t;
 
 /* Upload a compiled program into GPU dma and cache it by handle.  Returns the

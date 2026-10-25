@@ -1191,17 +1191,6 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
      * instructions) once, here, so every later dispatch fetches this code. */
     v3d_g2d_l2_invalidate_all();
     pr->used = 1;
-    slog("v3d_3d: program %d uploaded (vs %uw @%u, fs %uw @%u, coord %uw @%u, unif %u/%u/%u)\r\n",
-         slot, pr->vs_qpu_words, pr->vs_qpu_iova,
-         pr->fs_qpu_words, pr->fs_qpu_iova,
-         pr->coord_qpu_words, pr->coord_qpu_iova,
-         pr->vs_num_uniforms, pr->fs_num_uniforms, pr->coord_num_uniforms);
-    if (pr->cs_qpu_words)
-        slog("v3d_3d: prog %d compute %uw @%u unif %u local %ux%ux%u thr %u seg %u geom %u tpw %u\r\n",
-             slot, pr->cs_qpu_words, pr->cs_qpu_iova, pr->cs_num_uniforms,
-             pr->cs_local_size[0], pr->cs_local_size[1], pr->cs_local_size[2],
-             (uint32_t)pr->cs_threads, (uint32_t)pr->cs_single_seg,
-             pr->cs_is_geom, pr->cs_geom_tpw);
     return slot;
 
 fail:
@@ -1226,6 +1215,5 @@ int v3d_3d_program_free(int prog_handle)
     pr->used = 0;
     __asm__ __volatile__("dsb sy" ::: "memory");
     release_prog(pr);
-    slog("v3d_3d: program %d freed\r\n", prog_handle);
     return 0;
 }
