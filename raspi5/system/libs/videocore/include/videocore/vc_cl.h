@@ -24,8 +24,8 @@
  * Every entry point returns a DONE/FAILED/UNSUPPORTED tri-state (plus the
  * TIMEOUT/MMU_FAULT refinements of a submitted-but-failed launch).  A submitted
  * dispatch is NEVER replayed, so FAILED and UNSUPPORTED both mean "the caller
- * must run this kernel on its CPU device instead"; UNSUPPORTED is the sticky
- * one libOpenCL latches the whole GPU device off on.
+ * must run this kernel on its CPU device instead".  Neither result disables
+ * later GPU launches; unsupported shader constructs remain a per-kernel fallback.
  *
  * HARDWARE STATUS: the V3D 7.1 compute bring-up is shared with the proven
  * shadertoy CSD route, but the CL front end (GLSL-ES-3.10 compute -> mesa ->

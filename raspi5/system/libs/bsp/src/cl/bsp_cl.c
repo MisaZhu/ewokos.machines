@@ -43,7 +43,7 @@ static int cl_ensure(void)
  * DONE -> G2D_OK, FAILED -> G2D_ERR_FAILED (transient, replay on the CPU
  * device), TIMEOUT / MMU_FAULT -> their terminal g2d codes (the launch was
  * submitted, so it is never replayed), and UNSUPPORTED -> G2D_ERR_NOT_SUPPORTED
- * (sticky, libOpenCL latches the GPU device off).  Mirrors bsp_g3d's pgl3d_rc. */
+ * (CPU fallback for this kernel, without disabling later GPU work). */
 static int32_t cl_rc(int r)
 {
     switch (r) {

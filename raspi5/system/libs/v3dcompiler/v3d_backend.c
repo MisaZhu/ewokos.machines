@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ewoksys/klog.h>
 
 #include "util/ralloc.h"
 #include "util/u_memory.h"
@@ -97,8 +98,7 @@ static const struct v3d_device_info *const v3d_be_devinfo = &v3d71_devinfo;
 
 /* v3d_compile() invokes c->debug_output unconditionally on some paths (e.g. the
  * shader-db dump at the tail of v3d_compile), so a NULL callback would fault.
- * Provide a no-op sink; the GLSL/link diagnostics the caller sees come from the
- * frontend, not from here. */
+ * Keep verbose compiler diagnostics out of the small persistent device log. */
 static void
 v3d_be_debug_sink(const char *msg, void *data)
 {

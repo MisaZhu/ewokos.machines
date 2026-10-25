@@ -46,12 +46,7 @@ static double v3ct_now(void)
 }
 static void PRINTFLIKE(1, 2) v3ct_log(const char *fmt, ...)
 {
-        char buf[192];
-        va_list ap;
-        va_start(ap, fmt);
-        vsnprintf(buf, sizeof(buf), fmt, ap);
-        va_end(ap);
-        slog("v3ct: [%8.1f] %s\r\n", v3ct_now(), buf);
+        (void)fmt;
 }
 
 int

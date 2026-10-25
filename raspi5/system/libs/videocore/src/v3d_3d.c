@@ -2996,6 +2996,16 @@ int v3d_3d_cl_dispatch(int32_t prog_handle,
         v3d_g2d_op_end();
         return decline("cl: uniforms");
     }
+    /* Keep tiny-store evidence without flooding the small kernel log ring. */
+    if (wg_count[0] == 1 && wg_count[1] == 1 && wg_count[2] == 1 &&
+        num_job_unif == 3 && num_ssbo == 1) {
+        slog("v3d_3d: CLtiny code=0x%x value=0x%x gsz=%u ssbo=0x%x "
+             "unif6=0x%x unif7=0x%x thr=%u\r\n",
+             pr->cs_qpu_iova, job_unif[0], job_unif[2], ssbo_iova[0],
+             pr->cs_num_uniforms > 6 ? _ccu_unif_va[6] : 0u,
+             pr->cs_num_uniforms > 7 ? _ccu_unif_va[7] : 0u,
+             (uint32_t)pr->cs_threads);
+    }
     __asm__ __volatile__("dsb sy" ::: "memory");
 
     memset(&job, 0, sizeof(job));
@@ -3016,8 +3026,9 @@ int v3d_3d_cl_dispatch(int32_t prog_handle,
     job.src_span    = num_job_unif * 4u;
     job.tag         = V3D_G2D_TAG_COMPUTE;
     job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
-    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_POLL_YIELD |
-                               V3D_G2D_POLL_IRQ);
+    rc = v3d_g2d_run_csd(&job, V3D_G2D_MAINT_ALL | V3D_G2D_MAINT_ARGS |
+                               V3D_G2D_POLL_YIELD | V3D_G2D_POLL_IRQ |
+                               V3D_G2D_FAILURE_LOCAL);
     v3d_g2d_op_end();
     if (rc != 0) {
         slog("v3d_3d: cl dispatch rc=%d grid %ux%ux%u wg=%u thr=%u unif=%u ssbo=%u\r\n",

@@ -112,9 +112,18 @@
 /* CSD dispatch (core0 window) */
 #define CSD_QUEUED_CFG0 0x930u
 #define CSD_STATUS      0x900u
+#define CSD_STATUS_HAVE_QUEUED  (1u << 0)
+#define CSD_STATUS_HAVE_CURRENT (1u << 1)
+#define CSD_STATUS_NUM_ACTIVE   (3u << 2)
+#define CSD_STATUS_BUSY_MASK    (CSD_STATUS_HAVE_QUEUED | \
+                                 CSD_STATUS_HAVE_CURRENT | \
+                                 CSD_STATUS_NUM_ACTIVE)
+#define CSD_CURRENT_CFG4 0x968u
 #define CSD_CURRENT_CFG5 0x96cu
 #define CSD_CURRENT_CFG6 0x970u
 #define CSD_CURRENT_CFG7 0x974u
+#define CSD_CURRENT_ID0  0x978u
+#define CSD_CURRENT_ID1  0x97cu
 /* CSD CFG word layout (mesa broadcom/common/v3d_csd.h) used by the
  * compiled-compute dispatch; the 2D kernels keep py-videocore7's literal. */
 #define V3D_CSD_CFG012_WG_COUNT_SHIFT        16
@@ -156,6 +165,7 @@
  * stuck). */
 #define CSD_IRQ_WAIT_SLICE_US 1500u
 #define CSD_IRQ_WAIT_LIMIT_NS (256ull * 1000000ull)
+#define CSD_ACCEPT_SPIN_NS 50000ull
 #define CSD_IRQ_MISS_MAX 8u
 
 /* Raspberry Pi firmware property tags and clock ID. */
@@ -283,12 +293,6 @@ static int _ok = 0;
  * never answers, pegging the g2dd workers.  Once latched, all dispatch entry
  * points fail immediately so the g2d callers take their CPU fallback. */
 static int _wedged = 0;
-/* block resets performed by v3d_g2d_recover(); capped per boot so a client
- * that keeps re-submitting a hanging job cannot turn the GPU into a reset
- * loop - past the cap the block latches wedged for good. */
-static uint32_t _recoveries = 0;
-#define G2D_RECOVER_MAX 8u
-
 void v3d_g2d_mark_wedged(const char *why)
 {
     if (_wedged)
@@ -793,10 +797,11 @@ static int g2d_mmu_check_fault(int kern, int nunifs, int num_qpus)
     uint32_t ctl = hub[V3D_MMU_CTL / 4];
     uint32_t hub_int = hub[HUB_INT_STS / 4];
     uint32_t vio_reg, vio_id, client_id, pte = 0;
-    int recoverable;
+    int recoverable, bogus_write, outside_iova;
     uint64_t vio;
     const char *client;
     static int recoverable_reported;
+    static int recoverable_write_reported;
     static int fatal_detail_reported;
     static const char *const names[KERN_N] = {
         "fill", "blit", "alpha", "rotate", "scale2", "rot90",
@@ -829,29 +834,51 @@ static int g2d_mmu_check_fault(int kern, int nunifs, int num_qpus)
      *
      * Keep the MMU's invalid-PTE abort/redirect as the containment boundary.
      * Once CSD_DONE has arrived, only this exact IP-revision signature may
-     * continue to the mandatory L2 writeback below.  A write violation, cap
-     * fault, or a fault from any non-L2T client remains fatal. */
+     * continue to the mandatory L2 writeback below.  Both read and write
+     * forms occur at arbitrary unmapped VAs, including below 4GB; an invalid
+     * PTE contains either form.  Cap faults and non-L2T clients remain fatal. */
+    outside_iova = vio == 0 || vio >= V3D_MMU_ADDR_LIMIT;
+    bogus_write = pte == 0 &&
+                  (ctl & V3D_MMU_WRITE_FAULT) != 0 &&
+                  (hub_int & HUB_INT_MMU_WRV) != 0;
     recoverable = _trailing_l2t_quirk &&
                   client_id < 0x30u &&
                   (ctl & V3D_MMU_PT_INVALID_FAULT) != 0 &&
-                  (ctl & (V3D_MMU_WRITE_FAULT | V3D_MMU_CAP_FAULT)) == 0 &&
+                  (ctl & V3D_MMU_CAP_FAULT) == 0 &&
                   (hub_int & HUB_INT_MMU_PTI) != 0 &&
-                  (hub_int & (HUB_INT_MMU_WRV | HUB_INT_MMU_CAP)) == 0;
-    /* The trailing request can occur after every dispatch.  Record it once
-     * instead of turning a successful benchmark into an unbounded kernel-log
-     * stream; fatal faults remain visible on every occurrence. */
-    if (!recoverable || !recoverable_reported) {
+                  (hub_int & HUB_INT_MMU_CAP) == 0 &&
+                  (((ctl & V3D_MMU_WRITE_FAULT) == 0 &&
+                    (hub_int & HUB_INT_MMU_WRV) == 0) || bogus_write);
+    /* The trailing request can occur after every dispatch.  Record each form
+     * once instead of turning a successful benchmark into an unbounded
+     * kernel-log stream; fatal faults remain visible on every occurrence. */
+    if (!recoverable ||
+        (bogus_write ? !recoverable_write_reported : !recoverable_reported)) {
         slog("g2d: V3D MMU fault kernel=%s ctl=0x%x id=0x%x(%s) "
              "hub=0x%x vio_reg=0x%x va=0x%x%08x pte=0x%x action=%s\r\n",
              (kern >= 0 && kern < KERN_N) ? names[kern] : "unknown",
              ctl, vio_id, client, hub_int, vio_reg, (uint32_t)(vio >> 32),
              (uint32_t)vio, pte,
              recoverable ? "redirected-continue" : "fatal");
-        if (recoverable)
-            recoverable_reported = 1;
+        if (recoverable) {
+            if (bogus_write)
+                recoverable_write_reported = 1;
+            else
+                recoverable_reported = 1;
+        }
     }
     if (!recoverable && !fatal_detail_reported) {
         fatal_detail_reported = 1;
+        slog("g2d: fault decision quirk=%d client=%u width=%u outside=%d "
+             "write=%d pti=%d cap=%d hub_pti=%d hub_wrv=%d hub_cap=%d "
+             "bogus=%d\r\n",
+             _trailing_l2t_quirk, client_id, _mmu_va_width, outside_iova,
+             (ctl & V3D_MMU_WRITE_FAULT) != 0,
+             (ctl & V3D_MMU_PT_INVALID_FAULT) != 0,
+             (ctl & V3D_MMU_CAP_FAULT) != 0,
+             (hub_int & HUB_INT_MMU_PTI) != 0,
+             (hub_int & HUB_INT_MMU_WRV) != 0,
+             (hub_int & HUB_INT_MMU_CAP) != 0, bogus_write);
         slog("g2d: fault context nq=%u nunif=%u code=0x%x unif=0x%x "
              "scratch=0x%x u6=0x%x u14=0x%x\r\n",
              (uint32_t)num_qpus, (uint32_t)nunifs,
@@ -905,33 +932,6 @@ static int g2d_probe(void)
     uint32_t id0 = v3d_hub()[HUB_IDENT0 / 4];
 
     return (id0 == 0x42554856u) ? 1 : 0;        /* IDENT0 == "VHUB" */
-}
-
-/* Linux v3d_idle_axi(): ask the GMP to stop issuing AXI traffic and wait
- * for the outstanding read/write counts to drain before the block is reset
- * under a stuck job.  V3D 7.x core offsets: GMP_STATUS 0x600, GMP_CFG 0x604
- * (the 4.x 0x800/0x804 bank moved).  Returns -1 when the counts never
- * drain: resetting the block with AXI transactions in flight is the one
- * sequence that can hang the bus (and the whole system), so the caller
- * must then leave the block wedged instead of resetting it. */
-#define GMP_STATUS      0x600u
-#define GMP_CFG         0x604u
-#define GMP_CFG_STOP_REQ (1u << 1)
-#define GMP_STATUS_BUSY ((0x7Fu << 24) | (0x7Fu << 16) | (1u << 3))
-static int g2d_idle_axi(void)
-{
-    volatile uint32_t *core = v3d_core();
-    uint32_t i;
-
-    core[GMP_CFG / 4] = GMP_CFG_STOP_REQ;
-    __asm__ __volatile__("dsb sy");
-    for (i = 0; i < 2000000u; i++) {
-        if ((core[GMP_STATUS / 4] & GMP_STATUS_BUSY) == 0)
-            return 0;
-    }
-    slog("g2d: V3D GMP idle timeout st=0x%x\r\n",
-         (uint32_t)core[GMP_STATUS / 4]);
-    return -1;
 }
 
 /* Reset the V3D block via the PM power domain (assert/deassert
@@ -1037,6 +1037,60 @@ static void g2d_csd_irq_off(void)
     sys_interrupt_setup(V3D_CORE0_IRQ, NULL);
     slog("g2d: V3D CSD_DONE irq %u never delivered, back to polling\r\n",
          (uint32_t)V3D_CORE0_IRQ);
+}
+
+/* Serialize a new launch against the previous queue and completion latch.
+ * Otherwise an old CSD_DONE can satisfy the new job's immediate status check
+ * before its CFG0 write has started execution. */
+static int g2d_csd_prepare_launch(const char *owner)
+{
+    volatile uint32_t *core = v3d_core();
+    uint32_t i;
+
+    for (i = 0; i < CSD_POLL_SPIN_LIMIT; i++) {
+        uint32_t status = core[CSD_STATUS / 4];
+        if ((status & CSD_STATUS_BUSY_MASK) == 0)
+            break;
+        g2d_poll_hint();
+    }
+    if (i == CSD_POLL_SPIN_LIMIT) {
+        slog("g2d: %s CSD queue busy status=0x%x int=0x%x\r\n", owner,
+             (uint32_t)core[CSD_STATUS / 4], (uint32_t)core[INT_STS / 4]);
+        return -1;
+    }
+    if (core[INT_STS / 4] & INT_CSD_DONE) {
+        slog("g2d: %s clearing stale CSD_DONE status=0x%x int=0x%x\r\n",
+             owner, (uint32_t)core[CSD_STATUS / 4],
+             (uint32_t)core[INT_STS / 4]);
+    }
+    for (i = 0; i < 1024u; i++) {
+        core[INT_CLR / 4] = INT_CSD_DONE;
+        __asm__ __volatile__("dsb sy" ::: "memory");
+        if ((core[INT_STS / 4] & INT_CSD_DONE) == 0)
+            break;
+    }
+    if (i == 1024u) {
+        slog("g2d: %s stuck CSD_DONE status=0x%x int=0x%x\r\n", owner,
+             (uint32_t)core[CSD_STATUS / 4], (uint32_t)core[INT_STS / 4]);
+        return -1;
+    }
+    return 0;
+}
+
+/* CFG4 becomes ~0 after every batch has been issued.  Together with an
+ * empty/active-free queue and the current job's code/uniform identity this
+ * proves that this dispatch retired even when neither its interrupt nor a
+ * busy sample was observed (a short job can finish inside one wait slice). */
+static int g2d_csd_retired(const uint32_t cfg[8])
+{
+    volatile uint32_t *core = v3d_core();
+    uint32_t current5 = core[CSD_CURRENT_CFG5 / 4];
+    uint32_t mask = ~V3D_CSD_CFG5_PROPAGATE_NANS;
+
+    return (core[CSD_STATUS / 4] & CSD_STATUS_BUSY_MASK) == 0 &&
+           core[CSD_CURRENT_CFG4 / 4] == ~0u &&
+           (current5 & mask) == (cfg[5] & mask) &&
+           core[CSD_CURRENT_CFG6 / 4] == cfg[6];
 }
 
 int v3d_g2d_irq_enabled(void)
@@ -1174,56 +1228,16 @@ int v3d_g2d_ready(void)
     return _ok;
 }
 
-/* Full block reset after a 3D job stalled (bin/render flush never landed).
- * Mirrors Linux v3d_reset(): idle AXI -> SMS reset -> PM V3DRSTN cycle ->
- * re-install the MMU page table -> L2 enable -> interrupt masks back to the
- * daemon's quiescent state.  Caller holds the run lock, so nothing else is
- * dispatching while the registers are torn down.  Returns 0 when the block
- * identifies again and dispatch may continue, -1 when it is left wedged. */
+/* Permanently disable dispatch after a terminal job failure.  Runtime
+ * power/SMS/hub/GMP recovery writes are not safe on this SoC: they can
+ * stall AXI and take down g2dd itself.  The caller holds the run lock, and
+ * the wedged latch makes all later clients use their CPU fallback. */
 int v3d_g2d_recover(const char *why)
 {
-    volatile uint32_t *core;
-
     if (!_ok)
         return -1;
-    if (_recoveries >= G2D_RECOVER_MAX) {
-        v3d_g2d_mark_wedged(why);
-        return -1;
-    }
-    _recoveries++;
-    slog("g2d: V3D reset %u/%u (%s)\r\n", _recoveries, G2D_RECOVER_MAX,
-         why ? why : "?");
-
-    if (g2d_idle_axi() != 0) {
-        /* AXI still busy: a reset now could hang the bus - stay wedged */
-        _recoveries = G2D_RECOVER_MAX;
-        v3d_g2d_mark_wedged("reset: axi busy");
-        return -1;
-    }
-    g2d_sms_powerup();
-#if !G2D_SKIP_PM_RESET
-    g2d_pm_reset();
-#endif
-    core = v3d_core();
-    if (!g2d_probe()) {                /* hub IDENT0 "VHUB", as at init */
-        slog("g2d: V3D reset: hub does not identify after reset\r\n");
-        _recoveries = G2D_RECOVER_MAX;
-        v3d_g2d_mark_wedged("reset: no ident");
-        return -1;
-    }
-    if (g2d_mmu_program() != 0) {
-        slog("g2d: V3D reset: MMU reprogram failed\r\n");
-        _recoveries = G2D_RECOVER_MAX;
-        v3d_g2d_mark_wedged("reset: mmu");
-        return -1;
-    }
-    g2d_l2c_enable();
-    core[INT_MSK_SET / 4] = ~0u;      /* same quiescent state as csd_irq_init */
-    core[INT_CLR / 4] = ~0u;
-    __asm__ __volatile__("dsb sy");
-    _wedged = 0;
-    slog("g2d: V3D reset done: dispatch re-enabled\r\n");
-    return 0;
+    v3d_g2d_mark_wedged(why);
+    return -1;
 }
 
 /* V3D clock rate in Hz confirmed at init (0 when unknown/unsupported) */
@@ -1610,6 +1624,10 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     cfg[5] = _kcode_p[kern];    /* preloaded kernel's V3D IOVA */
     cfg[6] = _unif_p;
     cfg[7] = 0;
+    if (g2d_csd_prepare_launch("2D") != 0) {
+        ret = 1;
+        goto out;
+    }
     use_irq = (flags & V3D_G2D_POLL_IRQ) != 0 && _csd_irq_on;
     if (use_irq) {
         /* Publish the waiter before the line can rise: the handler reads
@@ -1621,7 +1639,9 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     }
     for (i = 1; i <= 7; i++)
         csd[i] = cfg[i];
+    __asm__ __volatile__("dsb sy" ::: "memory");
     csd[0] = cfg[0];            /* sole CFG0 write starts the dispatch */
+    __asm__ __volatile__("dsb sy" ::: "memory");
 
     /* Every production kernel waits for pending TMU writes and then uses
      * the legal thread-end protocol, so CSD_DONE is authoritative. */
@@ -1685,27 +1705,22 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     t2 = g2d_now_ns();
     _stats.exec_ns += t2 - t1;
     if (!done) {
-        int fault;
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
-        fault = g2d_mmu_check_fault(kern, nunifs, num_qpus);
-        /* A plain timeout is a real failure but the job may still be live:
-         * do not reset the graphics domain and do not replay.  A FATAL MMU
-         * fault means the block is definitively broken (VA outside the
-         * mapped IOVA range, write to a read-only PTE, cap violation): try
-         * a block reset so later dispatches do not each burn the full CSD
-         * budget on a dead GPU.  v3d_g2d_recover latches _wedged when the
-         * reset fails or the per-boot cap is hit, so this cannot loop. */
-        if (fault != 0)
-            (void)v3d_g2d_recover("csd timeout + mmu fault");
+        slog("g2d: 2D CSD timeout kern=%d status=0x%x int=0x%x "
+             "current5=0x%x current6=0x%x id0=0x%x id1=0x%x\r\n",
+             kern, (uint32_t)v3d_core()[CSD_STATUS / 4],
+             (uint32_t)v3d_core()[INT_STS / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_CFG5 / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_CFG6 / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_ID0 / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_ID1 / 4]);
+        (void)g2d_mmu_check_fault(kern, nunifs, num_qpus);
+        (void)v3d_g2d_recover("2D CSD timeout");
         _stats.timeouts++;
         ret = 1;
         goto out;
     }
     v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
-    if (g2d_mmu_check_fault(kern, nunifs, num_qpus) != 0) {
-        ret = -1;
-        goto out;
-    }
 
     /* POST: GPU writes -> DRAM, then drop the ARM's stale destination
      * lines.  Ranged when the caller supplied a destination extent:
@@ -1739,6 +1754,14 @@ int v3d_g2d_run(const uint64_t *code, int nwords,
     } else {
         _stats.post_skip++;
     }
+    /* CSD_DONE can precede the last TMU/L2T request.  Check only after the
+     * POST drain so a trailing fault is handled by this dispatch instead of
+     * remaining sticky and being blamed on the next display job. */
+    if (g2d_mmu_check_fault(kern, nunifs, num_qpus) != 0) {
+        v3d_g2d_mark_wedged("2D fatal MMU fault");
+        ret = -1;
+        goto out;
+    }
     ret = 0;
 out:
     g2d_run_unlock();
@@ -1761,7 +1784,9 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     uint32_t num_wgs, wgs_per_sg, batches_per_sg, whole_sgs, rem_wgs;
     uint32_t num_batches;
     uint32_t tag;
-    int use_irq, done;
+    int use_irq, done, seen_busy;
+    int waited = 0, done_reason = 0;
+    int trace;
     int ret;
     uint64_t t0, t1, t2;
     uint64_t budget_ns;
@@ -1780,19 +1805,12 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     budget_ns = job->budget_ms ? (uint64_t)job->budget_ms * 1000000ull
                                : CSD_IRQ_WAIT_LIMIT_NS;
 
-    /* mesa v3d_csd_choose_workgroups_per_supergroup, except for the
-     * 16-aligned case: mesa stops at one workgroup per supergroup there
-     * (lanes already full), while this engine packs _csd_wgs_per_sg of
-     * them (see v3d_g2d.h for why and the measurements).  Non-aligned
-     * sizes pack up to 16 workgroups so the supergroup is a whole number
-     * of 16-lane batches. */
+    /* Match mesa's canonical aligned-workgroup dispatch.  Packing several
+     * already-full workgroups into one supergroup does not improve lane
+     * occupancy and has not been validated for shaders using the SFU. */
     num_wgs = job->wg_count[0] * job->wg_count[1] * job->wg_count[2];
     if ((job->wg_size % 16u) == 0u) {
-        wgs_per_sg = _csd_wgs_per_sg;
-        while (wgs_per_sg > 1u && wgs_per_sg * job->wg_size > 4096u)
-            wgs_per_sg--;
-        if (wgs_per_sg > num_wgs)
-            wgs_per_sg = num_wgs;
+        wgs_per_sg = 1u;
     } else {
         wgs_per_sg = 16u;
         while (wgs_per_sg > 1u && ((wgs_per_sg * job->wg_size) % 16u) != 0u)
@@ -1805,6 +1823,7 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     rem_wgs = num_wgs - whole_sgs * wgs_per_sg;
     num_batches = batches_per_sg * whole_sgs +
                   (rem_wgs * job->wg_size + 15u) / 16u;
+    trace = (flags & V3D_G2D_FAILURE_LOCAL) != 0 && num_wgs == 1u;
 
     g2d_run_lock();
     t0 = g2d_now_ns();
@@ -1845,6 +1864,19 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
             g2d_invalidate_caches();
             _stats.pre_full++;
         }
+        if ((flags & V3D_G2D_MAINT_ARGS) != 0 &&
+            job->dst_phy != 0 && job->dst_span != 0) {
+            uint64_t dhi = (uint64_t)job->dst_phy + job->dst_span;
+
+            /* CL's dst hull covers every SSBO, including read-only inputs.
+             * Host NOCACHE writes do not evict older V3D L2T/slice lines,
+             * so reusing a physical buffer without this walk can read or
+             * write back data left by an earlier owner of that address. */
+            if (dhi > (uint64_t)~0u)
+                dhi = ~0u;
+            g2d_invalidate_range(job->dst_phy, (uint32_t)dhi);
+            _stats.pre_span += (uint32_t)dhi - job->dst_phy;
+        }
     } else {
         _stats.pre_skip++;
     }
@@ -1873,6 +1905,10 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
         cfg[5] |= V3D_CSD_CFG5_THREADING;
     cfg[6] = job->unif_iova;
     cfg[7] = 0;
+    if (g2d_csd_prepare_launch("compute") != 0) {
+        ret = 1;
+        goto out;
+    }
     use_irq = (flags & V3D_G2D_POLL_IRQ) != 0 && _csd_irq_on;
     if (use_irq) {
         seq0 = _csd_irq_seq;
@@ -1882,30 +1918,54 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     }
     for (i = 1; i <= 7; i++)
         csd[i] = cfg[i];
+    __asm__ __volatile__("dsb sy" ::: "memory");
     csd[0] = cfg[0];            /* sole CFG0 write starts the dispatch */
+    __asm__ __volatile__("dsb sy" ::: "memory");
 
     done = 0;
+    seen_busy = 0;
     if (use_irq) {
         uint64_t deadline = t1 + budget_ns;
+        uint64_t accept_until = g2d_now_ns() + CSD_ACCEPT_SPIN_NS;
         int missed = 0;
 
         for (;;) {
+            uint32_t status;
             if (_csd_irq_seq != seq0) {
                 done = 1;
-                break;
-            }
-            if (g2d_now_ns() >= deadline)
-                break;
-            proc_block_timeout(CSD_IRQ_TOKEN, CSD_IRQ_WAIT_SLICE_US);
-            if (_csd_irq_seq != seq0) {
-                done = 1;
+                done_reason = 1;
                 break;
             }
             if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
                 done = 1;
+                done_reason = 2;
                 missed = 1;
                 break;
             }
+            status = v3d_core()[CSD_STATUS / 4];
+            if (status & CSD_STATUS_BUSY_MASK)
+                seen_busy = 1;
+            else if (seen_busy || (waited && g2d_csd_retired(cfg))) {
+                /* Idle alone is not completion evidence: before the first busy
+                 * observation it can mean that CFG0 has not been accepted yet.
+                 * A busy->idle transition, or the retired-batch/current-job
+                 * signature after a real wait, is required without an irq. */
+                done = 1;
+                done_reason = seen_busy ? 3 : 7;
+                missed = 1;
+                break;
+            }
+            if (!seen_busy && !waited && g2d_now_ns() < accept_until) {
+                /* Do not sleep through the launch-acceptance edge.  A large
+                 * job would otherwise finish its first batches (or the whole
+                 * dispatch) before the first status sample after the slice. */
+                g2d_poll_hint();
+                continue;
+            }
+            if (g2d_now_ns() >= deadline)
+                break;
+            proc_block_timeout(CSD_IRQ_TOKEN, CSD_IRQ_WAIT_SLICE_US);
+            waited = 1;
         }
         _csd_irq_waiter = -1;
         v3d_core()[INT_MSK_SET / 4] = INT_CSD_DONE;
@@ -1920,8 +1980,18 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     } else {
         uint64_t start = g2d_now_ns();
         for (;;) {
+            uint32_t status;
             if (v3d_core()[INT_STS / 4] & INT_CSD_DONE) {
                 done = 1;
+                done_reason = 4;
+                break;
+            }
+            status = v3d_core()[CSD_STATUS / 4];
+            if (status & CSD_STATUS_BUSY_MASK)
+                seen_busy = 1;
+            else if (seen_busy) {
+                done = 1;
+                done_reason = 5;
                 break;
             }
             uint64_t elapsed = g2d_now_ns() - start;
@@ -1937,28 +2007,51 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
     _stats.exec_ns += t2 - t1;
     _stats.tag_exec_ns[tag] += t2 - t1;
     if (!done) {
-        int fault;
+        uint32_t status = v3d_core()[CSD_STATUS / 4];
         v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
-        slog("g2d: compute CSD timeout wg=%ux%ux%u size=%u batches=%u "
-             "code=0x%x unif=0x%x status=0x%x\r\n",
-             job->wg_count[0], job->wg_count[1], job->wg_count[2],
-             job->wg_size, num_batches, job->code_iova, job->unif_iova,
-             (uint32_t)v3d_core()[CSD_STATUS / 4]);
-        fault = g2d_mmu_check_fault(-1, 0, (int)num_batches);
-        /* See v3d_g2d_run: a fatal MMU fault means the block is broken, so
-         * attempt a reset (bounded by G2D_RECOVER_MAX, then wedged).  A
-         * plain timeout leaves the job possibly live - do not reset. */
-        if (fault != 0)
-            (void)v3d_g2d_recover("csd timeout + mmu fault");
-        _stats.timeouts++;
-        ret = 1;
-        goto out;
+        if ((status & CSD_STATUS_BUSY_MASK) == 0 &&
+            (seen_busy || g2d_csd_retired(cfg))) {
+            /* CSD_DONE is only a notification; busy->idle or the hardware's
+             * retired-batch/current-job signature is the completion authority
+             * when the IRQ was lost. */
+            slog("g2d: compute CSD_DONE missing; queue idle status=0x%x\r\n",
+                 status);
+            done = 1;
+            done_reason = 6;
+        } else {
+            slog("g2d: compute CSD timeout wg=%ux%ux%u size=%u batches=%u "
+                 "code=0x%x unif=0x%x status=0x%x busy=%d waited=%d "
+                 "current4=0x%x current5=0x%x current6=0x%x id0=0x%x id1=0x%x\r\n",
+                 job->wg_count[0], job->wg_count[1], job->wg_count[2],
+                 job->wg_size, num_batches, job->code_iova, job->unif_iova,
+                 status, seen_busy, waited,
+                 (uint32_t)v3d_core()[CSD_CURRENT_CFG4 / 4],
+                 (uint32_t)v3d_core()[CSD_CURRENT_CFG5 / 4],
+                 (uint32_t)v3d_core()[CSD_CURRENT_CFG6 / 4],
+                 (uint32_t)v3d_core()[CSD_CURRENT_ID0 / 4],
+                 (uint32_t)v3d_core()[CSD_CURRENT_ID1 / 4]);
+            (void)g2d_mmu_check_fault(-1, 0, (int)num_batches);
+            if ((flags & V3D_G2D_FAILURE_LOCAL) == 0 &&
+                (status & CSD_STATUS_BUSY_MASK) != 0)
+                (void)v3d_g2d_recover("compute CSD timeout");
+            _stats.timeouts++;
+            ret = 1;
+            goto out;
+        }
     }
+    if (trace)
+        slog("g2d: CSDtiny done=%d reason=%d seq0=%u seq=%u int=0x%x "
+             "status=0x%x busy=%d waited=%d cfg3=0x%x cfg4=%u cfg5=0x%x "
+             "current4=0x%x current5=0x%x current6=0x%x id0=0x%x id1=0x%x\r\n",
+             done, done_reason, seq0, _csd_irq_seq,
+             v3d_core()[INT_STS / 4], v3d_core()[CSD_STATUS / 4],
+             seen_busy, waited, cfg[3], cfg[4], cfg[5],
+             (uint32_t)v3d_core()[CSD_CURRENT_CFG4 / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_CFG5 / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_CFG6 / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_ID0 / 4],
+             (uint32_t)v3d_core()[CSD_CURRENT_ID1 / 4]);
     v3d_core()[INT_CLR / 4] = INT_CSD_DONE;
-    if (g2d_mmu_check_fault(-1, 0, (int)num_batches) != 0) {
-        ret = -1;
-        goto out;
-    }
 
     if (flags & V3D_G2D_MAINT_POST) {
         if (job->dst_phy != 0 && job->dst_span != 0) {
@@ -1990,6 +2083,14 @@ int v3d_g2d_run_csd(const v3d_g2d_csd_job_t *job, unsigned flags)
         }
     } else {
         _stats.post_skip++;
+    }
+    /* As above, the memory drain is part of completion: a delayed L2T fault
+     * must not leak into the next copy4/blit and wedge the whole daemon. */
+    if (g2d_mmu_check_fault(-1, 0, (int)num_batches) != 0) {
+        if ((flags & V3D_G2D_FAILURE_LOCAL) == 0)
+            v3d_g2d_mark_wedged("compute fatal MMU fault");
+        ret = -1;
+        goto out;
     }
     ret = 0;
 out:
