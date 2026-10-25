@@ -49,4 +49,9 @@ clean:
 	rm -f $(LIB_ADRENO_OBJS)
 	rm -f $(ADRENO)
 
-.PHONY: clean
+# Checked-in kernels keep ordinary/cross builds independent of the host
+# compiler. Regenerate with the current frontend, backend and wire protocol.
+builtin-shaders:
+	$(MAKE) -f shaders/Makefile.host
+
+.PHONY: clean builtin-shaders

@@ -124,6 +124,14 @@
 #include "../shaders/blit_blob.h"
 #include "../shaders/raster_blob.h"
 
+/* Fail the build when the wire protocol changes without regenerating the
+ * embedded programs. A2D bring-up alone cannot detect stale compute blobs. */
+_Static_assert(Q8B_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
+	Q8B_RASTER_BLOB_VERSION == ADRENO_PROG_VERSION &&
+	Q8B_2D_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t) &&
+	Q8B_RASTER_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t),
+	"stale built-in compute programs: run make builtin-shaders in libadreno");
+
 /* ------------------------------------------------------------------ */
 /* A690 (SC8280XP) device properties, from Mesa freedreno_devices.py    */
 /* GPUId(690).  These drive the pvtmem sizing, the threadsize selection */
