@@ -22,6 +22,9 @@ external power meter, so physical watts and joules have not been measured.
 Repeated PAS restart can still trigger an NSP watchdog. Its root cause is
 unresolved. A latched failure requires a board reset; successful shutdown
 alone does not prove that restarting a failed transport is safe.
+Extended convolution stress has also exposed a FastRPC response timeout that
+latched recovery-required. Performance results do not establish transport
+reliability; the demo evaluation records the failed attempt separately.
 
 The cleaned production candidate builds from the selected source files
 without local tools or vendor binaries in the source tree. Its hardware
@@ -31,6 +34,10 @@ with maximum errors of 1/1/3 U8 LSB; shutdown returned PAS state 0.
 Host regressions cover DMA pin ownership, FastRPC framing/lifetimes, opaque
 context handling and malformed model metadata under ASan/UBSan. These checks
 do not establish sustained PAS restart reliability.
+
+The minimal [npudemo](../system/bin/npudemo/README.md) client runs public native
+API regression before an optional correctness-gated benchmark. See the
+[demo evaluation](npu-demo-results.md) for measured workloads and timing scope.
 
 ## Build and runtime inputs
 
@@ -60,8 +67,8 @@ normal rootfs firmware-install phase. This file comes from
 `qcom/sc8280xp/qccdsp8280.mbn` in Radxa's firmware package; the exercised image
 has MD5 `aa794aee23732765ca1ab8a97c069adc`.
 
-Vendor firmware, SDK binaries, model data, benchmarks, test commands and
-experimental evidence are external to these production changes. Kernel
+Vendor firmware, SDK binaries, model data and extensive experimental evidence
+are not distributed with this port. Kernel
 protocol tracing is disabled by default; define `Q8B_NPU_DEBUG=1` for a
 diagnostic build. User-space DEBUG messages are delivered to an explicitly
 registered log callback and omitted from the default system log.
