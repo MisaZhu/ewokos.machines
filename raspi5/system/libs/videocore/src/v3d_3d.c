@@ -341,7 +341,15 @@ static uint8_t  *_gen_va;     static uint32_t _gen_p;   /* generic tile list */
  * CSD dispatches are serialized (v3d_g2d_op_begin) and each geom draw fully
  * overwrites the sub-range it consumes. */
 static uint32_t *_vout_va;    static uint32_t _vout_p;
-#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * 48u)
+/* geom_kind == 5 (Vulkan user shader) vout records carry the 8-float harness
+ * header (screen_x/y, z, iw + 4 reserved) plus the interpolated varyings, so a
+ * record can be wider than the 12-float imgui maximum.  Cap the record at 32
+ * floats (8 harness + up to 24 varying floats = 6 vec4); a program whose
+ * cs2_vout_stride exceeds this is declined at upload and falls back to the CPU
+ * rasterizer.  The single process-lifetime vout buffer is sized for this widest
+ * record so every kind fits. */
+#define V3D_3D_VK_VOUT_MAX_FLOATS 32u
+#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * (V3D_3D_VK_VOUT_MAX_FLOATS * 4u))
 
 /* WS4 compiled-shader sampler bindings: per-unit V3D71 TEXTURE_SHADER_STATE and
  * SAMPLER_STATE records.  A mesa-compiled FS that samples iChannelN emits a
@@ -441,6 +449,13 @@ typedef struct {
     uint32_t cs2_local_size[3];
     uint32_t cs2_shared_size;
     uint32_t cs2_uniform_blob_dwords;
+    /* geom_kind == 5 (Vulkan user shader) per-vertex stream strides in FLOATS:
+     * cs2_vout_stride is the pass-1 vout record stride (pass-1 dst_span =
+     * nverts * cs2_vout_stride * 4); vk_attr_stride the attribute-stream stride
+     * (the attr canvas is validated as nverts * vk_attr_stride * 4).  Both are
+     * zero for every other kind. */
+    uint32_t cs2_vout_stride;
+    uint32_t vk_attr_stride;
 } v3d_3d_prog_t;
 
 static v3d_3d_prog_t _progs[V3D_3D_MAX_PROGS];
@@ -1989,13 +2004,19 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                              const uint32_t *unif, uint32_t num_uniforms,
                              uint32_t tex_iova, uint32_t tex_span,
                              uint32_t inst_iova, uint32_t inst_span, int is_inst,
-                             int is_texcol, int first_frame, uint32_t clear_rgba)
+                             int is_texcol, int first_frame, uint32_t clear_rgba,
+                             const v3d_3d_ctex_t *vk_ctex)
 {
     v3d_g2d_csd_job_t job;
     uint32_t ssbo[4];
     uint32_t ntris = nverts / 3u;
     uint32_t split = pr->cs2_uniform_blob_dwords;
     uint32_t xwg;
+    /* geom_kind == 5 (Vulkan user shader): the attribute stream rides pos_iova
+     * as a single float stream (vk_attr_stride floats/vertex), the vout record
+     * stride is cs2_vout_stride floats, and any FS texture is sampled through
+     * the TMU (sampler2D uniforms resolved from vk_ctex) rather than an SSBO. */
+    int is_vk = (pr->cs_is_geom == 5u);
     int rc;
 
     if (fmt != V3D_3D_FMT_RGBA8)
@@ -2056,7 +2077,16 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     /* ---- Pass 1: vertex transform -> vout ---------------------------- */
     ssbo[0] = _vout_p;
     ssbo[1] = pos_iova;
-    if (tex_iova != 0u) {
+    if (is_vk) {
+        /* kind 5 xform: binding 0 = vout (write), binding 1 = the single
+         * attribute float stream (read).  No normal/instance/texture SSBOs. */
+        if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
+                            pr->cs2_num_uniforms, unif, num_uniforms, 0u, NULL,
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u, 0u, 0u) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: xform uniforms (vk)");
+        }
+    } else if (tex_iova != 0u) {
         /* textured xform reads interleaved pos+uv from binding 1 only */
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
                             pr->cs2_num_uniforms, unif, num_uniforms, 0u, NULL,
@@ -2097,7 +2127,8 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.threads     = pr->cs2_threads;
     job.single_seg  = pr->cs2_single_seg;
     job.dst_phy     = _vout_p;          /* POST writeback: vout -> DRAM */
-    job.dst_span    = nverts * (is_texcol ? 48u : 32u);
+    job.dst_span    = is_vk ? (nverts * pr->cs2_vout_stride * 4u)
+                            : (nverts * (is_texcol ? 48u : 32u));
     job.unif_span   = pr->cs2_num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_GEOM_XFORM;
     /* Ranged PRE: the only ARM-written surfaces this pass reads are the
@@ -2105,18 +2136,19 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
      * bounds the invalidate instead of the whole IOVA range. */
     {
         uint32_t lo = pos_iova;
-        uint32_t hi = pos_iova + nverts * (is_texcol ? 40u :
-                                             (tex_iova != 0u ? 24u :
-                                              (is_inst ? 16u : 12u)));
+        uint32_t hi = is_vk ? (pos_iova + nverts * pr->vk_attr_stride * 4u)
+                            : (pos_iova + nverts * (is_texcol ? 40u :
+                                                    (tex_iova != 0u ? 24u :
+                                                     (is_inst ? 16u : 12u))));
 
-        if (tex_iova == 0u && nrm_iova != 0u) {
+        if (!is_vk && tex_iova == 0u && nrm_iova != 0u) {
             uint32_t nlo = nrm_iova;
             uint32_t nhi = nrm_iova + nverts * 12u;
 
             if (nlo < lo) lo = nlo;
             if (nhi > hi) hi = nhi;
         }
-        if (is_inst && inst_iova != 0u) {
+        if (!is_vk && is_inst && inst_iova != 0u) {
             /* the per-frame instance-matrix buffer is ARM-written, so it joins
              * the PRE hull (drop any stale L2 lines from the previous frame). */
             uint32_t ghi = inst_iova + inst_span;
@@ -2147,7 +2179,24 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     if (tex_iova != 0u)
         ssbo[3] = tex_iova;
     /* the raster kernel's uniforms live in the SECOND region of the blob */
-    if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+    if (is_vk) {
+        /* kind 5 samples any FS texture through the TMU (sampler2D uniforms),
+         * not an SSBO, so the framebuffer/vout/depth triple is the whole SSBO
+         * table and ctex resolves the QUNIFORM_TMU_CONFIG pairs.  Rebuild the
+         * per-unit texture/sampler state records first (a bound unit with
+         * unaligned pixel data declines to the CPU). */
+        if (build_tex_state_records(vk_ctex) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: vk tex state");
+        }
+        if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+                            pr->cs_num_uniforms, unif + split, num_uniforms - split,
+                            0u, vk_ctex, 0.0f, 0.0f, 0.0f, 0.0f,
+                            ssbo, 3u, 0u, 0u) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: raster uniforms (vk)");
+        }
+    } else if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                         pr->cs_num_uniforms, unif + split, num_uniforms - split,
                         0u, NULL, 0.0f, 0.0f, 0.0f, 0.0f,
                         ssbo, tex_iova != 0u ? 4u : 3u, 0u, 0u) != 0) {
@@ -2185,7 +2234,28 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.aux_span    = z_stride * h;
     job.unif_span   = pr->cs_num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_GEOM_RASTER;
-    if (tex_iova != 0u) {
+    if (is_vk) {
+        /* TMU-sampled textures: range the PRE over the hull of every bound ctex
+         * unit so the GPU drops stale L2 lines over the client-written tiled
+         * image data (the same ranged-invalidate model the SSBO-texture geom
+         * path uses, extended to the multi-unit TMU table). */
+        if (vk_ctex != NULL) {
+            uint32_t u, lo = 0u, hi = 0u;
+            for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++) {
+                uint32_t base = vk_ctex->ctex_iova[u];
+                uint32_t end;
+                if (base == 0u)
+                    continue;
+                end = base + vk_ctex->ctex_stride[u] * vk_ctex->ctex_h[u];
+                if (lo == 0u || base < lo) lo = base;
+                if (end > hi) hi = end;
+            }
+            if (lo != 0u) {
+                job.src_phy  = lo;
+                job.src_span = hi - lo;
+            }
+        }
+    } else if (tex_iova != 0u) {
         job.src_phy  = tex_iova;    /* ARM-written at upload: ranged PRE */
         job.src_span = tex_span;
     }
@@ -2193,8 +2263,11 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     /* No PRE for the gouraud variant: every surface this pass touches
      * (vout, fb, depth) is GPU-owned and coherent through the L2T - the
      * fills and pass 1 just wrote them, and the previous frame's POST
-     * cleaned them.  The textured variant keeps the ranged texture PRE. */
-    rc = v3d_g2d_run_csd(&job, (tex_iova != 0u ? V3D_G2D_MAINT_PRE : 0u) |
+     * cleaned them.  The textured variants (SSBO tex, or kind 5 TMU tex)
+     * keep a ranged texture PRE so the GPU re-reads the client-written
+     * image data. */
+    rc = v3d_g2d_run_csd(&job, ((tex_iova != 0u || job.src_phy != 0u)
+                                    ? V3D_G2D_MAINT_PRE : 0u) |
                                V3D_G2D_MAINT_POST | V3D_G2D_POLL_YIELD |
                                V3D_G2D_POLL_IRQ);
     v3d_g2d_op_end();
@@ -2359,22 +2432,49 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
              * pos_iova carries interleaved pos+uv+rgba (10-float stride,
              * nverts*40 bytes), col_iova is unused (zero canvas), ctex unit 0
              * the linear font-atlas image; the raster kernel alpha-blends and
-             * clips (uScissor) with no depth write. */
+             * clips (uScissor) with no depth write.
+             * cs_is_geom == 5 is the VULKAN USER-SHADER kernel (VERSION 6): the
+             * two passes are generated from the app's VS/FS, pos_iova carries a
+             * single per-vertex attribute float stream (vk_attr_stride floats,
+             * nverts*vk_attr_stride*4 bytes), col_iova is unused, the vout
+             * record stride is cs2_vout_stride floats, and any FS texture is
+             * sampled through the TMU from ctex (never an SSBO). */
             int gtex = (_progs[prog_handle].cs_is_geom == 2);
             int ginst = (_progs[prog_handle].cs_is_geom == 3);
             int gtc = (_progs[prog_handle].cs_is_geom == 4);
+            int gvk = (_progs[prog_handle].cs_is_geom == 5);
             /* textured family (plain tex + colour-modulated tex): col unused,
              * ctex[0] is the linear image the raster kernel indexes directly. */
             int gtexc = gtex || gtc;
-            uint32_t pstride = gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u));
+            uint32_t pstride = gvk ? (_progs[prog_handle].vk_attr_stride * 4u)
+                                   : (gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u)));
             if (mode != V3D_3D_MODE_TRIANGLES)
                 return decline("geom: mode not triangles");
             if (nverts == 0 || (nverts % 3u) != 0)
                 return decline("geom: nverts not multiple of 3");
             if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * pstride))
                 return decline("geom: pos iova");
-            if (!gtexc && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
+            if (!gtexc && !gvk &&
+                !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
                 return decline("geom: nrm iova");
+            if (gvk) {
+                /* validate every bound TMU texture unit the FS may sample; an
+                 * unbound unit is fine (build_tex_state_records skips it and
+                 * expand_uniforms declines only if the kernel actually reads
+                 * it).  A bound unit with a bad span declines to the CPU. */
+                uint32_t u;
+                if (ctex != NULL) {
+                    for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++) {
+                        if (ctex->ctex_iova[u] == 0)
+                            continue;
+                        if (ctex->ctex_stride[u] < ctex->ctex_w[u] * 4u ||
+                            !v3d_g2d_phy_valid(ctex->ctex_iova[u],
+                                               (size_t)ctex->ctex_stride[u] *
+                                               ctex->ctex_h[u]))
+                            return decline("geom vk: tex iova");
+                    }
+                }
+            }
             if (gtexc && (ctex == NULL || ctex->ctex_iova[0] == 0))
                 return decline("geom tex: no texture bound");
             if (gtexc && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
@@ -2400,7 +2500,8 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                      ginst ? ctex->ctex_iova[0] : 0u,
                                      ginst ? ctex->ctex_stride[0] *
                                              ctex->ctex_h[0] : 0u,
-                                     ginst, gtc, first_frame, clear_rgba);
+                                     ginst, gtc, first_frame, clear_rgba,
+                                     gvk ? ctex : NULL);
         }
         return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
                             w, h, unif, num_uniforms, ctex);
@@ -2729,6 +2830,24 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
                              desc->cs_local_size[2])
         return V3D_3D_PROG_UNSUPPORTED;
 
+    /* geom_kind == 5 (Vulkan user shader) carries its own per-vertex stream
+     * strides in the VERSION-6 blob fields; both must be present and the vout
+     * record must fit the daemon's single vout buffer (V3D_3D_VK_VOUT_MAX_FLOATS).
+     * The record is at least the 8-float harness header; the attribute stream is
+     * capped at 64 floats/vertex (16 vec4 locations).  Anything out of range is
+     * declined so the draw falls back to the CPU rasterizer rather than
+     * overrunning vout or mis-striding the attr canvas. */
+    if (desc->cs_is_geom == 5u) {
+        if (desc->cs2_vout_stride < 8u ||
+            desc->cs2_vout_stride > V3D_3D_VK_VOUT_MAX_FLOATS ||
+            desc->vk_attr_stride == 0u || desc->vk_attr_stride > 64u) {
+            slog("v3d_3d: vk geom stride out of range (vout %u max %u, attr %u)\r\n",
+                 desc->cs2_vout_stride, V3D_3D_VK_VOUT_MAX_FLOATS,
+                 desc->vk_attr_stride);
+            return V3D_3D_PROG_UNSUPPORTED;
+        }
+    }
+
     /* reserve a free cache slot */
     for (i = 0; i < V3D_3D_MAX_PROGS; i++) {
         if (!_progs[i].used) { slot = (int)i; break; }
@@ -2841,6 +2960,8 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         pr->cs2_local_size[2] = desc->cs2_local_size[2];
         pr->cs2_shared_size  = desc->cs2_shared_size;
         pr->cs2_uniform_blob_dwords = desc->cs2_uniform_blob_dwords;
+        pr->cs2_vout_stride  = desc->cs2_vout_stride;
+        pr->vk_attr_stride   = desc->vk_attr_stride;
     }
 
     /* cache the uniform layout descriptors AND their per-slot args on the CPU.
