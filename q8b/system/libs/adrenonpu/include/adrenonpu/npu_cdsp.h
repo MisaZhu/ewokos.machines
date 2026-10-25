@@ -12,10 +12,9 @@
  *   - The SCM calls themselves ride the restricted Q8B kernel ABI
  *     (Q8B_NPU_PAS_* in npu_fastrpc.h), mirroring how machines/q8b/
  *     kernel/bsp/gpu_pas.c wraps qcom_scm_pas_* for the GPU zap today.
- *     The current kernel only implements GPU PAS id 13, so every op here
- *     declines with Q8B_NPU_PAS_UNSUPPORTED until a cDSP PAS service
- *     (PAS id from the DT "qcom,pas-id" of the cdsp remoteproc node) is
- *     added kernel-side.
+ *     The Q8B kernel implements the cDSP PAS door and returns a separate
+ *     FastRPC verdict until the GLINK service is ready.  Unsupported boards
+ *     still decline without touching firmware.
  *
  * Power/clock voting for execution (HAP_power DCVS v3 in the vendor stack)
  * rides the FastRPC PWR_VOTE op; see npu_htp.c.
@@ -30,23 +29,26 @@
 extern "C" {
 #endif
 
-/* SC8280XP identity (JTAG socinfo id 530; Hexagon V68 NSP, 2 cores,
-   512 KB VTCM per core - HTP v68 capability set). */
-#define CDSP_SOC_SC8280XP   530u
-#define CDSP_ARCH_V68       0x68u
+/* QAIRT 2.51 overview: SC8280X / 8cx Gen 3 has QNN socModel=37.
+ * QnnHtpDeviceConfigShared.h uses decimal arch=68.  Linux socinfo's
+ * hardware id 449 belongs to a different namespace. */
+#define CDSP_SOC_SC8280XP   37u
+#define CDSP_ARCH_V68       68u
 #define CDSP_NSP_CORES      2u
 #define CDSP_VTCM_KB        512u
 
-/* HTP skel URI resolved through remote_handle64_open.  v68 matches the
-   SC8280XP NSP; the vendor backend picks the same suffix from dsp_arch. */
-#define CDSP_HTP_SKEL_URI   "file://libqnn_htp_v68_skel.so"
-#define CDSP_HTP_SYS_URI    "file://libqnn_htp_v68_stubs.so"
+/* Official QAIRT filenames for SDK integration.  These names do not imply
+ * compatibility with npu_htp.c's private graph ABI.  The default backend
+ * cannot use them until an SDK-generated adapter is implemented. */
+#define CDSP_HTP_SKEL_URI          "file://libQnnHtpV68Skel.so"
+#define CDSP_HTP_SYS_URI           "file://libQnnHtpV68Stub.so"
 
 /* Firmware names + search path (rootfs layout mirrors /etc/firmware/adreno). */
-#define CDSP_FW_DIR         "/etc/firmware/npu/"
-#define CDSP_FW_MDT         "qcom/sc8280xp/LENOVO/21BX/cdsp.mbn"
-#define CDSP_FW_MDT_ALT     "cdsp.mbn"
-#define CDSP_FW_SEG_FMT     "cdsp.b%02u"
+#define CDSP_FW_DIR         "/etc/firmware/"
+#define CDSP_FW_MDT         "qccdsp8280.mbn"
+#define CDSP_FW_MDT_RADXA   "qcom/sc8280xp/qccdsp8280.mbn"
+#define CDSP_FW_MDT_ALT     "qcom/sc8280xp/LENOVO/21BX/qccdsp8280.mbn"
+#define CDSP_FW_SEG_FMT     "qccdsp8280.b%02u"
 
 /* Bring-up verdicts for npu_cdsp_probe(). */
 enum {
@@ -54,12 +56,30 @@ enum {
 	NPU_PROBE_NO_KERNEL_ABI,   /* SYS_PLATFORM_CTL rejects the NPU range */
 	NPU_PROBE_NO_FIRMWARE,     /* signed cDSP image not staged           */
 	NPU_PROBE_AUTH_FAILED,     /* TrustZone refused metadata/image       */
-	NPU_PROBE_RPC_FAILED       /* booted, but FastRPC session refused    */
+	NPU_PROBE_RPC_FAILED,      /* booted, but FastRPC session refused    */
+	NPU_PROBE_HTP_ABI_MISSING  /* no compatible HTP graph adapter       */
 };
 
 int  npu_cdsp_probe(void);      /* idempotent; returns NPU_PROBE_* */
+int  npu_cdsp_probe_unsigned(void); /* SDK unsigned DSP probes */
+/* Lifecycle diagnostic: boot/validate PAS without creating USER_PD. The
+ * caller owns shutdown even on failure. A subsequent session probe reuses
+ * this boot; an existing/cached session probe rejects boot-only mode. */
+int  npu_cdsp_boot_only(void);
+/* Lifecycle diagnostic: create unsigned USER_PD without registering a
+ * listener. Module loading needs the normal probe. Probe modes cannot be
+ * mixed within a live session; call shutdown before changing modes. */
+int  npu_cdsp_probe_session_unsigned(void);
+/* Same listener-free diagnostic with attrs=0: use fastrpc_shell[_3] when
+ * present, otherwise the firmware's default process image. */
+int  npu_cdsp_probe_session(void);
+/* Release only that diagnostic session, retaining PAS for another probe.
+ * On failure, ownership remains with shutdown. No live listener is allowed. */
+int  npu_cdsp_release_session_unsigned(void);
 bool npu_cdsp_booted(void);
-void npu_cdsp_shutdown(void);   /* best effort PAS stop */
+/* 0 means fully closed/stopped. Failure retains outstanding ownership for
+ * retry and rejects new probes until shutdown completes. */
+int  npu_cdsp_shutdown(void);
 
 /* dma-backed uncached buffer helpers (kernel sys_dma pool, block 0 - the
    same pool libadreno uses; see adreno_bo_alloc). */

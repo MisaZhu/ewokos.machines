@@ -18,7 +18,7 @@ Qnn_ErrorHandle_t QnnHtpContext_SetPerfConfig(QnnHtp_ContextHandle_t ctx,
 	qnn_context_obj_t *c = (qnn_context_obj_t *)
 		qnn_obj_from_handle(ctx, QNN_OBJ_CONTEXT);
 
-	if (!c)
+	if (!c || (c->backend && c->backend->native_mode))
 		return QNN_ERROR;
 	if ((unsigned)perfMode > (unsigned)QNN_HTP_PERF_MODE_TURBO)
 		return QNN_ERROR;
@@ -35,7 +35,7 @@ Qnn_ErrorHandle_t QnnHtpContext_SetVtcmLimit(QnnHtp_ContextHandle_t ctx,
 		qnn_obj_from_handle(ctx, QNN_OBJ_CONTEXT);
 	uint64_t cap = (uint64_t)CDSP_VTCM_KB * 1024u;
 
-	if (!c)
+	if (!c || (c->backend && c->backend->native_mode))
 		return QNN_ERROR;
 	/* Clamp to the physical VTCM of one NSP (512 KB on V68). */
 	if (vtcmLimitBytes > cap)
@@ -51,15 +51,11 @@ Qnn_ErrorHandle_t QnnHtpContext_RegisterSharedBuffer(QnnHtp_ContextHandle_t ctx,
 		qnn_obj_from_handle(ctx, QNN_OBJ_CONTEXT);
 	qnn_shared_buf_t *sb;
 
-	if (!c || !outHostPtr || size == 0)
+	if (!c || (c->backend && c->backend->native_mode) || !outHostPtr || size == 0)
 		return QNN_ERROR;
 	sb = qnn_shared_buf_alloc(c->backend, fd, offset, size);
 	if (!sb)
 		return QNN_ERROR;
-	/* Best effort: stage the region for cDSP access when a session is up.
-	   A decline here is not fatal - the CPU path uses the host mapping. */
-	if (c->backend && c->backend->npu_available && c->backend->frpc_session)
-		(void)frpc_mmap(c->backend->frpc_session, sb->pa, (uint32_t)size);
 	*outHostPtr = sb->host;
 	return QNN_SUCCESS;
 }
@@ -70,7 +66,7 @@ Qnn_ErrorHandle_t QnnHtpContext_SetConcurrentGroup(QnnHtp_ContextHandle_t ctx,
 	qnn_context_obj_t *c = (qnn_context_obj_t *)
 		qnn_obj_from_handle(ctx, QNN_OBJ_CONTEXT);
 
-	if (!c)
+	if (!c || (c->backend && c->backend->native_mode))
 		return QNN_ERROR;
 	c->htp.concurrent_group = groupId;
 	return QNN_SUCCESS;
@@ -82,7 +78,7 @@ Qnn_ErrorHandle_t QnnHtpGraph_SetPrecisionHint(QnnHtp_GraphHandle_t graph,
 	qnn_graph_obj_t *g = (qnn_graph_obj_t *)
 		qnn_obj_from_handle(graph, QNN_OBJ_GRAPH);
 
-	if (!g)
+	if (!g || g->native_graph)
 		return QNN_ERROR;
 	if ((unsigned)hint > (unsigned)QNN_HTP_PRECISION_STRICT)
 		return QNN_ERROR;
@@ -96,7 +92,7 @@ Qnn_ErrorHandle_t QnnHtpGraph_SetSkipDataFlush(QnnHtp_GraphHandle_t graph,
 	qnn_graph_obj_t *g = (qnn_graph_obj_t *)
 		qnn_obj_from_handle(graph, QNN_OBJ_GRAPH);
 
-	if (!g)
+	if (!g || g->native_graph)
 		return QNN_ERROR;
 	g->htp.skip_flush = skip;
 	return QNN_SUCCESS;
@@ -109,7 +105,7 @@ Qnn_ErrorHandle_t QnnHtpDevice_SetDspCoreMask(QnnHtp_DeviceHandle_t dev,
 		qnn_obj_from_handle(dev, QNN_OBJ_DEVICE);
 	uint32_t valid = (1u << CDSP_NSP_CORES) - 1u;
 
-	if (!d)
+	if (!d || (d->backend && d->backend->native_mode))
 		return QNN_ERROR;
 	if (coreMask == 0 || (coreMask & ~valid) != 0)
 		return QNN_ERROR;
@@ -123,7 +119,7 @@ Qnn_ErrorHandle_t QnnHtpProfile_EnableHwCounters(Qnn_ProfileHandle_t prof,
 	qnn_profile_obj_t *p = (qnn_profile_obj_t *)
 		qnn_obj_from_handle(prof, QNN_OBJ_PROFILE);
 
-	if (!p)
+	if (!p || (p->backend && p->backend->native_mode))
 		return QNN_ERROR;
 	p->hw_counters = enable;
 	/* Detailed level implies per-op timing is wanted alongside counters. */

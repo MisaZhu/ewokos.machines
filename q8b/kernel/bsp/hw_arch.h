@@ -24,6 +24,9 @@
 
 #define Q8B_MMIO_PHY        0x00000000ULL
 #define Q8B_MMIO_SIZE       (64*MB)
+#define Q8B_APPS_SMMU_PHY  0x15000000ULL
+#define Q8B_APPS_SMMU_SIZE  0x00100000ULL
+#define Q8B_APPS_SMMU_OFF   0x07000000ULL
 /* QEMU virt puts the GIC at 0x08000000 and PL011 at 0x09000000, beyond the
  * 64MB QCOM low window; map a second 32MB window at +64MB. */
 #define Q8B_UART17_PHY      0x09000000ULL
@@ -60,6 +63,9 @@
 /* Main low MMIO window (QUP/GENI, GCC, TLMM, TCSR, ...) */
 #define Q8B_MMIO_PHY        0x00000000ULL
 #define Q8B_MMIO_SIZE       (64*MB)
+#define Q8B_APPS_SMMU_PHY  0x15000000ULL
+#define Q8B_APPS_SMMU_SIZE  0x00100000ULL
+#define Q8B_APPS_SMMU_OFF   0x07000000ULL
 
 /* GENI debug UART (uart17 in sc8280xp.dtsi, 40-pin header TX/RX) */
 #define Q8B_UART17_PHY      0x00884000ULL

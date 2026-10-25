@@ -4,7 +4,7 @@
  * This is the role the vendor SDK's libQnnCpu.so plays: a portable software
  * implementation of the op package so a graph built through the QNN C API is
  * runnable without the cDSP.  qnn_graph.c uses it whenever the HTP transport
- * is unavailable (the situation on the current kernel) or as a fallback if an
+ * is unavailable or as a fallback if an
  * HTP execute declines.
  *
  * Conventions:

@@ -1,6 +1,8 @@
 /*
  * qnn_context.c - QnnContext_* implementation plus the "QNNB" v1 context
  * binary (de)serializer behind getBinary / createFromBinary / validateBinary.
+ * QNNB is this port's local format, not an official QAIRT V68 context. The
+ * latter uses the explicit htp_native mode through the npu_model adapter.
  *
  * The vendor HTP backend serializes a finalized context (its prepared graphs
  * and baked STATIC weights) into an opaque blob that a later process can load
@@ -136,7 +138,7 @@ static int br_need(br_t *r, uint64_t n)
 {
 	if (r->err)
 		return -1;
-	if (n > r->len || r->off + n > r->len) {
+	if (r->off > r->len || n > r->len - r->off) {
 		r->err = 1;
 		return -1;
 	}
@@ -201,7 +203,7 @@ static char *br_str(br_t *r)
 		return NULL;
 	}
 	q = br_bytes(r, n);
-	if (!q && n) {
+	if ((!q && n) || (n && memchr(q, '\0', n))) {
 		r->err = 1;
 		return NULL;
 	}
@@ -294,7 +296,7 @@ uint8_t *qnn_ctx_serialize(qnn_context_obj_t *c, uint64_t *out_size)
 	uint64_t total;
 	uint32_t i, j, k;
 
-	if (!c || !out_size)
+	if (!c || !out_size || (c->backend && c->backend->native_mode))
 		return NULL;
 	bw_init(&w);
 	bw_header(&w, c);
@@ -365,203 +367,187 @@ uint8_t *qnn_ctx_serialize(qnn_context_obj_t *c, uint64_t *out_size)
    it (pool[] maps this binary's tensor indices to live objects); when NULL the
    record is only validated.  Returns QNN_SUCCESS / QNN_ERROR. */
 static int ctx_walk_graph(br_t *r, qnn_context_obj_t *c,
-                          qnn_tensor_obj_t *const *pool, uint32_t npool)
+                          qnn_tensor_obj_t *const *pool,
+                          const uint8_t *types, uint32_t npool)
 {
 	char *gname = br_str(r);
 	qnn_graph_obj_t *g = NULL;
 	uint32_t nin, nout, nnodes, j, k;
+	qnn_htp_state_t h = {0};
+	uint32_t skip, finalized;
 
-	if (r->err) {
-		free(gname);
-		return QNN_ERROR;
-	}
+	if (r->err) { free(gname); return QNN_ERROR; }
 	if (c) {
 		g = qnn_graph_obj_create(c, gname);
-		if (!g) {
-			free(gname);
-			return QNN_ERROR;
-		}
+		if (!g) { free(gname); return QNN_ERROR; }
 	}
 	free(gname);
 
 	nin = br_u32(r);
+	if (nin > npool) r->err = 1;
 	for (j = 0; j < nin && !r->err; j++) {
 		uint32_t idx = br_u32(r);
-
-		if (c && idx < npool && pool[idx])
-			qnn_graph_add_boundary(g, pool[idx]);
+		if (r->err || idx >= npool ||
+		    (types[idx] != QNN_TENSOR_TYPE_APP_WRITE &&
+		     types[idx] != QNN_TENSOR_TYPE_READWRITE)) {
+			r->err = 1;
+			break;
+		}
+		if (c && qnn_graph_add_boundary(g, pool[idx]) != QNN_SUCCESS)
+			r->err = 1;
 	}
 	nout = br_u32(r);
+	if (nout > npool) r->err = 1;
 	for (j = 0; j < nout && !r->err; j++) {
 		uint32_t idx = br_u32(r);
-
-		if (c && idx < npool && pool[idx])
-			qnn_graph_add_boundary(g, pool[idx]);
+		if (r->err || idx >= npool ||
+		    (types[idx] != QNN_TENSOR_TYPE_APP_READ &&
+		     types[idx] != QNN_TENSOR_TYPE_READWRITE)) {
+			r->err = 1;
+			break;
+		}
+		if (c && qnn_graph_add_boundary(g, pool[idx]) != QNN_SUCCESS)
+			r->err = 1;
 	}
 
 	nnodes = br_u32(r);
 	for (j = 0; j < nnodes && !r->err; j++) {
 		char *op = br_str(r);
-		uint32_t kind = br_u32(r);
-		uint32_t nins = br_u32(r);
-		qnn_tensor_obj_t *ins[QNN_NODE_MAX_INPUTS];
-		uint32_t nouts;
-		qnn_tensor_obj_t *outs[QNN_NODE_MAX_OUTPUTS];
+		uint32_t kind = br_u32(r), nins = br_u32(r), nouts;
+		qnn_tensor_obj_t *ins[QNN_NODE_MAX_INPUTS] = {0};
+		qnn_tensor_obj_t *outs[QNN_NODE_MAX_OUTPUTS] = {0};
 		qnn_op_attrs_t attrs;
 		const uint8_t *ab;
+		const qnn_op_info_t *info = qnn_op_lookup(op);
 
-		memset(ins, 0, sizeof(ins));
-		memset(outs, 0, sizeof(outs));
-		memset(&attrs, 0, sizeof(attrs));
-		for (k = 0; k < nins && k < QNN_NODE_MAX_INPUTS && !r->err; k++) {
+		if (!info || kind != info->kind || nins < info->min_ins ||
+		    nins > info->max_ins || nins > QNN_NODE_MAX_INPUTS) r->err = 1;
+		for (k = 0; k < nins && !r->err; k++) {
 			uint32_t idx = br_u32(r);
-
-			ins[k] = (idx < npool) ? pool[idx] : NULL;
+			if (idx >= npool) r->err = 1;
+			else if (c) ins[k] = pool[idx];
 		}
-		for (; k < nins && !r->err; k++)   /* drain extras */
-			br_u32(r);
 		nouts = br_u32(r);
-		for (k = 0; k < nouts && k < QNN_NODE_MAX_OUTPUTS && !r->err; k++) {
+		if (info && (nouts < info->min_outs || nouts > info->max_outs ||
+		             nouts > QNN_NODE_MAX_OUTPUTS)) r->err = 1;
+		for (k = 0; k < nouts && !r->err; k++) {
 			uint32_t idx = br_u32(r);
-
-			outs[k] = (idx < npool) ? pool[idx] : NULL;
+			if (idx >= npool) r->err = 1;
+			else if (c) outs[k] = pool[idx];
 		}
-		for (; k < nouts && !r->err; k++)
-			br_u32(r);
 		ab = br_bytes(r, sizeof(attrs));
-		if (ab)
-			memcpy(&attrs, ab, sizeof(attrs));
-		if (r->err) {
+		if (ab) memcpy(&attrs, ab, sizeof(attrs));
+		if (r->err) { free(op); return QNN_ERROR; }
+		if (c && !qnn_graph_node_append(g, op, kind, &attrs, ins, nins, outs, nouts)) {
 			free(op);
 			return QNN_ERROR;
-		}
-		if (c && op) {
-			qnn_graph_node_append(g, op, kind, &attrs,
-			                      ins, nins > QNN_NODE_MAX_INPUTS ?
-			                      QNN_NODE_MAX_INPUTS : nins,
-			                      outs, nouts > QNN_NODE_MAX_OUTPUTS ?
-			                      QNN_NODE_MAX_OUTPUTS : nouts);
 		}
 		free(op);
 	}
 
-	/* per-graph htp state + finalized flag */
-	br_u32(r);   /* perf_mode */
-	br_u64(r);   /* vtcm_limit */
-	br_u32(r);   /* precision */
-	br_u32(r);   /* skip_flush */
-	br_u32(r);   /* finalized */
-	if (r->err)
-		return QNN_ERROR;
+	h.perf_mode = (QnnHtp_PerfMode_t)br_u32(r);
+	h.vtcm_limit = br_u64(r);
+	h.precision = (QnnHtp_PrecisionHint_t)br_u32(r);
+	skip = br_u32(r);
+	finalized = br_u32(r);
+	if ((unsigned)h.perf_mode > QNN_HTP_PERF_MODE_TURBO ||
+	    (unsigned)h.precision > QNN_HTP_PRECISION_STRICT || skip > 1 || finalized > 1)
+		r->err = 1;
+	if (r->err) return QNN_ERROR;
 	if (c && g) {
 		g->from_binary = true;
-		g->finalized = true;
+		g->htp.perf_mode = h.perf_mode;
+		g->htp.vtcm_limit = h.vtcm_limit;
+		g->htp.precision = h.precision;
+		g->htp.skip_flush = skip != 0;
+		g->finalized = finalized != 0;
 	}
 	return QNN_SUCCESS;
 }
 
-/* Append every tensor/graph described by one binary into context `c`.  When
-   `c` is NULL the buffer is only validated. */
+/* One parser enforces the same format on validation, single and list load.
+ * Materialization failures leave partial objects owned by the caller's
+ * context, which is destroyed before returning an error. */
 static int ctx_load(qnn_context_obj_t *c, const uint8_t *buf, uint64_t size)
 {
 	br_t r;
 	qnn_htp_state_t h;
-	uint32_t nt = 0, ng = 0, i;
+	uint32_t nt = 0, ng = 0, i, version, flags;
+	uint64_t total;
 	qnn_tensor_obj_t **pool = NULL;
+	uint8_t *types = NULL;
 
-	if (!buf || size < QNN_CTX_HDR_SIZE)
-		return QNN_ERROR;
-	if (buf[0] != QNN_CTX_MAGIC0 || buf[1] != QNN_CTX_MAGIC1 ||
-	    buf[2] != QNN_CTX_MAGIC2 || buf[3] != QNN_CTX_MAGIC3)
-		return QNN_ERROR;
-
+	if (!buf || size < QNN_CTX_HDR_SIZE || size > SIZE_MAX) return QNN_ERROR;
+	if (memcmp(buf, "QNNB", 4)) return QNN_ERROR;
+	memcpy(&version, buf + 4, 4);
+	memcpy(&flags, buf + 8, 4);
+	memcpy(&total, buf + QNN_CTX_TSZ_OFF, 8);
+	if (version != QNN_CTX_VERSION || flags != 0 || total != size) return QNN_ERROR;
 	br_init(&r, buf, size);
 	br_header(&r, &nt, &ng, &h);
-	if (r.err || nt > 0x100000u || ng > 0x10000u)
-		return QNN_ERROR;
-
+	if (r.err || nt > 0x100000u || ng > 0x10000u ||
+	    nt > (size - QNN_CTX_HDR_SIZE) / 32u ||
+	    ng > (size - QNN_CTX_HDR_SIZE) / 40u) return QNN_ERROR;
 	if (nt) {
-		pool = (qnn_tensor_obj_t **)calloc(nt, sizeof(*pool));
-		if (!pool)
-			return QNN_ERROR;
+		if (c) pool = (qnn_tensor_obj_t **)calloc(nt, sizeof(*pool));
+		types = (uint8_t *)calloc(nt, sizeof(*types));
+		if ((c && !pool) || !types) { free(pool); free(types); return QNN_ERROR; }
 	}
 	for (i = 0; i < nt && !r.err; i++) {
 		char *name = br_str(&r);
-		uint32_t ttype = br_u32(&r);
-		uint32_t dtype = br_u32(&r);
-		uint32_t rank = br_u32(&r);
-		uint32_t dims[8];
-		uint32_t d;
+		uint32_t ttype = br_u32(&r), dtype = br_u32(&r), rank = br_u32(&r);
+		uint32_t dims[8] = {0}, d;
 		float scale;
 		int32_t zp;
-		uint64_t data_bytes;
-
-		memset(dims, 0, sizeof(dims));
-		for (d = 0; d < rank && d < 8u && !r.err; d++)
+		uint64_t data_bytes, tensor_bytes = qnn_dtype_size((Qnn_DataType_t)dtype);
+		if (ttype > QNN_TENSOR_TYPE_READWRITE || !tensor_bytes || rank > 8u) r.err = 1;
+		for (d = 0; d < rank && !r.err; d++) {
 			dims[d] = br_u32(&r);
-		for (; d < rank && !r.err; d++)
-			br_u32(&r);
+			if (!dims[d] || tensor_bytes > SIZE_MAX / dims[d]) r.err = 1;
+			else tensor_bytes *= dims[d];
+		}
 		scale = br_f32(&r);
 		zp = (int32_t)br_u32(&r);
 		data_bytes = br_u64(&r);
-		if (r.err) {
-			free(name);
-			break;
-		}
-		if (c && name) {
-			Qnn_Shape_t shape;
-			Qnn_QuantParams_t qp;
-
-			shape.rank = rank > 8u ? 8u : rank;
-			shape.dims = dims;
-			qp.scale = scale;
-			qp.zeroPoint = zp;
+		if (data_bytes && (ttype != QNN_TENSOR_TYPE_STATIC || data_bytes != tensor_bytes))
+			r.err = 1;
+		if (r.err) { free(name); break; }
+		if (c) {
+			Qnn_Shape_t shape = {rank, dims};
+			Qnn_QuantParams_t qp = {scale, zp};
 			pool[i] = qnn_tensor_create_common(c, NULL, name,
-			                (Qnn_TensorType_t)ttype,
-			                (Qnn_DataType_t)dtype, &shape, &qp);
+			                (Qnn_TensorType_t)ttype, (Qnn_DataType_t)dtype, &shape, &qp);
+			if (!pool[i]) r.err = 1;
 		}
+		types[i] = (uint8_t)ttype;
 		free(name);
-		if (data_bytes > 0) {
+		if (data_bytes) {
 			const uint8_t *dp;
-
 			br_skip_pad(&r, 8);
 			dp = br_bytes(&r, data_bytes);
-			if (c && dp && pool[i] &&
-			    qnn_tensor_reserve_data(pool[i], data_bytes) ==
-			    QNN_SUCCESS)
-				memcpy(pool[i]->data, dp, (size_t)data_bytes);
+			if (c && !r.err) {
+				if (qnn_tensor_reserve_data(pool[i], data_bytes) != QNN_SUCCESS) r.err = 1;
+				else memcpy(pool[i]->data, dp, (size_t)data_bytes);
+			}
 		}
 	}
-	if (r.err) {
-		free(pool);
-		return QNN_ERROR;
-	}
-	if (c)
-		c->htp = h;
-
+	if (c && !r.err) c->htp = h;
 	for (i = 0; i < ng && !r.err; i++) {
-		if (ctx_walk_graph(&r, c, pool, nt) != QNN_SUCCESS)
-			break;
+		if (ctx_walk_graph(&r, c, pool, types, nt) != QNN_SUCCESS) r.err = 1;
 	}
 	free(pool);
-	return r.err ? QNN_ERROR : QNN_SUCCESS;
+	free(types);
+	if (c && !r.err) {
+		c->finalized = true;
+		for (i = 0; i < c->num_graphs; i++)
+			if (!c->graphs[i]->finalized) c->finalized = false;
+	}
+	return r.err || r.off != r.len ? QNN_ERROR : QNN_SUCCESS;
 }
 
 bool qnn_ctx_binary_validate(const uint8_t *buf, uint64_t size)
 {
-	if (ctx_load(NULL, buf, size) != QNN_SUCCESS)
-		return false;
-	/* total_size must equal the byte length we were handed. */
-	{
-		uint64_t total = 0;
-
-		if (size < QNN_CTX_TSZ_OFF + 8u)
-			return false;
-		memcpy(&total, buf + QNN_CTX_TSZ_OFF, 8);
-		if (total != size)
-			return false;
-	}
-	return true;
+	return ctx_load(NULL, buf, size) == QNN_SUCCESS;
 }
 
 qnn_context_obj_t *qnn_ctx_deserialize(qnn_backend_obj_t *b,
@@ -603,6 +589,7 @@ static qnn_context_obj_t *ctx_alloc_common(qnn_backend_obj_t *b,
 	c->htp = dev ? dev->htp : b->htp_defaults;
 	if (qnn_cfg_store(c->config_keys, c->config_vals, &c->num_config,
 	                  cfg, nCfg, 8) != QNN_SUCCESS) {
+		qnn_cfg_free(c->config_keys, c->config_vals, &c->num_config);
 		qnn_obj_free(c);
 		return NULL;
 	}
@@ -620,9 +607,9 @@ Qnn_ErrorHandle_t QnnContext_create(Qnn_BackendHandle_t backend,
 		qnn_obj_from_handle(dev, QNN_OBJ_DEVICE) : NULL;
 	qnn_context_obj_t *c;
 
-	if (!b || !ctx)
+	if (!b || !ctx || b->native_mode)
 		return QNN_ERROR;
-	if (dev && !d)
+	if (dev && (!d || d->backend != b))
 		return QNN_ERROR;
 	if (nCfg > 0 && !cfg)
 		return QNN_ERROR;
@@ -648,11 +635,24 @@ Qnn_ErrorHandle_t QnnContext_createFromBinary(Qnn_BackendHandle_t backend,
 		qnn_obj_from_handle(dev, QNN_OBJ_DEVICE) : NULL;
 	qnn_context_obj_t *c;
 
-	if (!b || !binBuf || !ctx)
+	if (!b || !binBuf || !ctx || (dev && (!d || d->backend != b)))
 		return QNN_ERROR;
 	if (nCfg > 0 && !cfg)
 		return QNN_ERROR;
 
+	if (b->native_mode) {
+		for (uint32_t i = 0; i < nCfg; i++)
+			if (!cfg[i].key || strcmp(cfg[i].key, "graph_name")) return QNN_ERROR;
+		c = ctx_alloc_common(b, d, cfg, nCfg);
+		if (!c) return QNN_ERROR;
+		const char *name = qnn_cfg_get(cfg, nCfg, "graph_name");
+		if (qnn_native_context_load(c, binBuf, binSize, name ? name : "")) {
+			QnnContext_free((Qnn_ContextHandle_t)(uintptr_t)c);
+			return QNN_ERROR;
+		}
+		*ctx = (Qnn_ContextHandle_t)(uintptr_t)c;
+		return QNN_SUCCESS;
+	}
 	c = qnn_ctx_deserialize(b, d, binBuf, binSize);
 	if (!c)
 		return QNN_ERROR;
@@ -674,8 +674,7 @@ Qnn_ErrorHandle_t QnnContext_createFromBinaryWithSignal(Qnn_BackendHandle_t back
 	Qnn_ErrorHandle_t rc = QnnContext_createFromBinary(backend, dev, binBuf,
 	                                   binSize, cfg, nCfg, ctx);
 
-	/* No cDSP offload path is available for context load, so the work is
-	   done inline; the signal is therefore already complete on return,
+	/* The synchronous load completes before this wrapper returns; the signal is therefore already complete on return,
 	   matching the vendor contract that the signal fires when load ends. */
 	qnn_signal_mark(sig, rc == QNN_SUCCESS ? 1 : 2);
 	return rc;
@@ -713,18 +712,23 @@ Qnn_ErrorHandle_t QnnContext_createFromBinaryListAsync(
 		qnn_signal_mark(sig, 2);
 		return QNN_ERROR;
 	}
-	if (dev && !d) {
+	if (dev && (!d || d->backend != b)) {
 		qnn_signal_mark(sig, 2);
 		return QNN_ERROR;
 	}
 
+	if (b->native_mode) {
+		if (numBin != 1) { qnn_signal_mark(sig, 2); return QNN_ERROR; }
+		return QnnContext_createFromBinaryWithSignal(backend, dev, binBufs[0],
+			binSizes[0], cfg, nCfg, sig, ctx);
+	}
 	c = ctx_alloc_common(b, d, cfg, nCfg);
 	if (!c) {
 		qnn_signal_mark(sig, 2);
 		return QNN_ERROR;
 	}
-	/* Merge every binary into one context, exactly like the vendor list
-	   load: all graphs share the merged tensor pool. */
+	/* This local list API merges each QNNB into one context. Tensor indices
+	 * stay relative to their source binary; it is not the QAIRT list ABI. */
 	for (i = 0; i < numBin; i++) {
 		if (!binBufs[i] ||
 		    ctx_load(c, binBufs[i], binSizes[i]) != QNN_SUCCESS) {
@@ -737,7 +741,6 @@ Qnn_ErrorHandle_t QnnContext_createFromBinaryListAsync(
 		qnn_signal_mark(sig, 2);
 		return QNN_ERROR;
 	}
-	c->finalized = true;
 	*ctx = (Qnn_ContextHandle_t)(uintptr_t)c;
 	qnn_signal_mark(sig, 1);
 	return QNN_SUCCESS;
@@ -756,9 +759,11 @@ Qnn_ErrorHandle_t QnnContext_finalize(Qnn_ContextHandle_t ctx)
 	for (i = 0; i < c->num_graphs; i++) {
 		qnn_graph_obj_t *g = c->graphs[i];
 
-		if (!g->finalized)
-			QnnGraph_finalize((Qnn_GraphHandle_t)(uintptr_t)g);
-		else if (c->backend && c->backend->npu_available)
+		if (!g->finalized) {
+			if (QnnGraph_finalize((Qnn_GraphHandle_t)(uintptr_t)g) != QNN_SUCCESS)
+				return QNN_ERROR;
+		}
+		else if (c->backend && !c->backend->native_mode && c->backend->npu_available)
 			qnn_htp_prepare(g);
 	}
 	c->finalized = true;
@@ -773,12 +778,14 @@ Qnn_ErrorHandle_t QnnContext_free(Qnn_ContextHandle_t ctx)
 
 	if (!c)
 		return QNN_ERROR;
+	if (c->backend && c->backend->native_mode && qnn_native_context_release(c))
+		return QNN_ERROR;
 	for (i = 0; i < c->num_graphs; i++) {
 		qnn_graph_obj_t *g = c->graphs[i];
 
 		if (!g)
 			continue;
-		if (c->backend && c->backend->npu_available)
+		if (c->backend && !c->backend->native_mode && c->backend->npu_available)
 			qnn_htp_graph_release(g);
 		if (g->ref)
 			qnn_ref_free(g->ref);
@@ -809,7 +816,7 @@ Qnn_ErrorHandle_t QnnContext_setConfig(Qnn_ContextHandle_t ctx,
 	qnn_context_obj_t *c = (qnn_context_obj_t *)
 		qnn_obj_from_handle(ctx, QNN_OBJ_CONTEXT);
 
-	if (!c)
+	if (!c || (c->backend && c->backend->native_mode))
 		return QNN_ERROR;
 	if (nCfg > 0 && !cfg)
 		return QNN_ERROR;
@@ -848,7 +855,9 @@ Qnn_ErrorHandle_t QnnContext_getProperty(Qnn_ContextHandle_t ctx,
 	else if (strcmp(key, "vtcm_limit") == 0)
 		*val = qnn_fmt_static("%llu",
 		              (unsigned long long)c->htp.vtcm_limit);
-	else if (strcmp(key, "binary.version") == 0)
+	else if (strcmp(key, "binary.format") == 0)
+		*val = c->native ? "official-opaque" : "QNNB";
+	else if (strcmp(key, "binary.version") == 0 && !c->native)
 		*val = qnn_fmt_static("%u", QNN_CTX_VERSION);
 	else
 		return QNN_ERROR;
@@ -865,6 +874,7 @@ Qnn_ErrorHandle_t QnnContext_getBinarySize(Qnn_ContextHandle_t ctx,
 
 	if (!c || !outSize)
 		return QNN_ERROR;
+	if (c->native) return qnn_native_binary(c, NULL, 0, outSize);
 	blob = qnn_ctx_serialize(c, &sz);
 	if (!blob)
 		return QNN_ERROR;
@@ -883,6 +893,7 @@ Qnn_ErrorHandle_t QnnContext_getBinary(Qnn_ContextHandle_t ctx, uint8_t *buf,
 
 	if (!c || !buf)
 		return QNN_ERROR;
+	if (c->native) return qnn_native_binary(c, buf, bufLen, &sz);
 	blob = qnn_ctx_serialize(c, &sz);
 	if (!blob)
 		return QNN_ERROR;
@@ -905,6 +916,8 @@ Qnn_ErrorHandle_t QnnContext_validateBinary(Qnn_BackendHandle_t backend,
 	(void)dev;
 	if (!b || !valid)
 		return QNN_ERROR;
+	*valid = false;
+	if (b->native_mode) return QNN_ERROR; /* SDK validation occurs during load. */
 	*valid = qnn_ctx_binary_validate(binBuf, binSize);
 	return QNN_SUCCESS;
 }

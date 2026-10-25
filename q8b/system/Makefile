@@ -44,6 +44,17 @@ platform_headers:
 # Qualcomm blobs, see ../firmware/adreno/README.md.  Installed into the
 # rootfs as /etc/firmware/adreno/ for libadreno's vfs_readfile() loader.
 ADRENO_FW_SRC = $(MAKEINC_DIR)/../firmware/adreno
+NPU_FW_SRC = $(MAKEINC_DIR)/../firmware/npu
+# Optional DSP runtime, built only when explicitly requested. External QAIRT
+# headers/libraries are build inputs and are never added to this repository.
+QAIRT_NATIVE_BUILD_DIR ?= $(BUILD_DIR)/qairt-native
+qairt_native_build:
+	$(MAKE) -C libs/adrenonpu/dsp QAIRT_SDK_ROOT="$(QAIRT_SDK_ROOT)" OUT="$(QAIRT_NATIVE_BUILD_DIR)"
+
+qairt_native_install: qairt_native_build
+	@mkdir -p "$(TARGET_DIR)/usr/lib/dsp"
+	cp "$(QAIRT_NATIVE_BUILD_DIR)/libq8b_npu.so" "$(TARGET_DIR)/usr/lib/dsp/"
+
 firmware_install:
 	@if [ ! -f "$(ADRENO_FW_SRC)/a660_gmu.bin" ]; then \
 		echo "ERROR: $(ADRENO_FW_SRC)/a660_gmu.bin missing"; \
@@ -57,6 +68,19 @@ firmware_install:
 	@mkdir -p $(TARGET_DIR)/etc/firmware/adreno/sc8280xp/LENOVO/21BX
 	@cp -p $(ADRENO_FW_SRC)/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn \
 		$(TARGET_DIR)/etc/firmware/adreno/sc8280xp/LENOVO/21BX/
+	@if [ ! -f "$(NPU_FW_SRC)/qccdsp8280.mbn" ]; then \
+		echo "ERROR: $(NPU_FW_SRC)/qccdsp8280.mbn missing"; \
+		echo "       see machines/q8b/docs/npu-mainline.md"; \
+		exit 1; \
+	fi
+	@mkdir -p $(TARGET_DIR)/etc/firmware/qcom/sc8280xp/LENOVO/21BX \
+		$(TARGET_DIR)/etc/firmware/qcom/sc8280xp
+	@cp -p $(NPU_FW_SRC)/qccdsp8280.mbn \
+		$(TARGET_DIR)/etc/firmware/qccdsp8280.mbn
+	@cp -p $(NPU_FW_SRC)/qccdsp8280.mbn \
+		$(TARGET_DIR)/etc/firmware/qcom/sc8280xp/LENOVO/21BX/
+	@cp -p $(NPU_FW_SRC)/qccdsp8280.mbn \
+		$(TARGET_DIR)/etc/firmware/qcom/sc8280xp/
 
 basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 	rm -f $(BUILD_DIR)/lib/libbsp.a
@@ -127,4 +151,4 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 
-.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers firmware_install clean sd
+.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers firmware_install qairt_native_build qairt_native_install clean sd

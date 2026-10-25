@@ -37,6 +37,7 @@
 #include <adreno/adreno_drv.h>
 #include <adreno/adreno_reg.h>
 #include <q8b_adreno.h>
+#include <q8b_rpmh_tcs.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
@@ -61,7 +62,8 @@
 #define RSC_PHY             0x18220000ULL
 #define RSC_SIZE            0x00010000u
 
-#define RPMH_TCS_OFF        0x0d00u
+#define RPMH_TCS_OFF        Q8B_RSC_TCS_OFFSET
+#define RPMH_IRQ_VA         (RSC_VA + RPMH_TCS_OFF)
 #define RPMH_TCS_STRIDE     672u
 #define RPMH_IRQ_ENABLE     0x00u
 #define RPMH_IRQ_STATUS     0x04u
@@ -283,14 +285,33 @@ static int rpmh_wr_sync(uint32_t tcs, uint32_t reg, uint32_t val)
 	return -1;
 }
 
-static void rpmh_finish(uint32_t tcs)
+static int rpmh_finish(uint32_t tcs)
 {
 	uint32_t control = rpmh_reg(tcs, rsc.control);
-	(void)rpmh_wr_sync(tcs, rsc.control, control & ~RPMH_AMC_TRIGGER);
-	(void)rpmh_wr_sync(tcs, rsc.control, 0);
-	(void)rpmh_wr_sync(tcs, rsc.cmd_enable, 0);
-	put32(RSC_VA + RPMH_IRQ_CLEAR, 1u << tcs);
+	if (rpmh_wr_sync(tcs, rsc.control, control & ~RPMH_AMC_TRIGGER) ||
+	    rpmh_wr_sync(tcs, rsc.control, 0) ||
+	    rpmh_wr_sync(tcs, rsc.cmd_enable, 0))
+		return -1;
+	put32(RPMH_IRQ_VA + RPMH_IRQ_CLEAR, 1u << tcs);
+	return 0;
 }
+
+static uint32_t rpmh_read32(void *context, uint32_t offset)
+{
+	(void)context;
+	return get32(RSC_VA + offset);
+}
+
+static void rpmh_relax(void *context)
+{
+	(void)context;
+	proc_nsleep_precise(1000);
+}
+
+/* A failed transaction must not be overwritten by another vote in this
+ * process. In particular, a timeout does not cancel an in-flight AMC. */
+static int rpmh_failed;
+static uint32_t rpmh_compl_without_irq;
 
 static int rpmh_write(uint32_t address, uint32_t data)
 {
@@ -298,8 +319,16 @@ static int rpmh_write(uint32_t address, uint32_t data)
 	const uint32_t irq_bit = 1u << tcs;
 	uint32_t control;
 	int i;
+	const q8b_rpmh_io_t io = {0, rpmh_read32, rpmh_relax};
+
+	if (rpmh_failed)
+		return -1;
 
 	control = rpmh_reg(tcs, rsc.control);
+	/* Other clients also use TCS0. Refuse an already active transaction;
+	 * this check is diagnostic, not a substitute for shared ownership. */
+	if (control & (RPMH_AMC_ENABLE | RPMH_AMC_TRIGGER))
+		goto fail;
 	control &= ~RPMH_AMC_TRIGGER;
 	if (rpmh_wr_sync(tcs, rsc.control, control) != 0)
 		goto fail;
@@ -309,9 +338,16 @@ static int rpmh_write(uint32_t address, uint32_t data)
 	if (rpmh_wr_sync(tcs, rsc.cmd_enable, 0) != 0)
 		goto fail;
 
-	put32(RSC_VA + RPMH_IRQ_CLEAR, irq_bit);
-	put32(RSC_VA + RPMH_IRQ_ENABLE,
-	      get32(RSC_VA + RPMH_IRQ_ENABLE) | irq_bit);
+	put32(RPMH_IRQ_VA + RPMH_IRQ_CLEAR, irq_bit);
+	for (i = 0; i < 100000; i++) {
+		if (!(get32(RPMH_IRQ_VA + RPMH_IRQ_STATUS) & irq_bit))
+			break;
+		proc_nsleep_precise(1000);
+	}
+	if (i == 100000)
+		goto fail;
+	put32(RPMH_IRQ_VA + RPMH_IRQ_ENABLE,
+	      get32(RPMH_IRQ_VA + RPMH_IRQ_ENABLE) | irq_bit);
 
 	put32(RSC_VA + rpmh_cmd(tcs, 0, rsc.cmd_msgid), RPMH_WRITE_RESP_MSGID);
 	put32(RSC_VA + rpmh_cmd(tcs, 0, rsc.cmd_addr), address);
@@ -324,31 +360,21 @@ static int rpmh_write(uint32_t address, uint32_t data)
 	put32(RSC_VA + RPMH_TCS_OFF + tcs * RPMH_TCS_STRIDE + rsc.control,
 	      RPMH_AMC_ENABLE | RPMH_AMC_TRIGGER);
 
-	for (i = 0; i < 1000000; i++) {
-		uint32_t irq = get32(RSC_VA + RPMH_IRQ_STATUS);
-		uint32_t cs = get32(RSC_VA + rpmh_cmd(tcs, 0, rsc.cmd_status));
-		if (irq & irq_bit) {
-			rpmh_finish(tcs);
-			return 0;
-		}
-		/* Some RSC revisions do not latch the TCS IRQ status for a
-		   fire-and-forget AMC write; CMD_STATUS.COMPL is authoritative. */
-		if (cs & RPMH_CMD_STATUS_COMPL) {
-			klog("adreno_rpmh: write completed (irq status=%x)\n", irq);
-			rpmh_finish(tcs);
-			return 0;
-		}
-		proc_nsleep_precise(1000);
+	if (q8b_rpmh_wait_irq(&io, rpmh_cmd(tcs, 0, rsc.cmd_status),
+			irq_bit, 1000000, &rpmh_compl_without_irq) == 0) {
+		if (rpmh_finish(tcs) != 0)
+			goto fail;
+		return 0;
 	}
 
 fail:
+	rpmh_failed = 1;
 	klog("adreno_rpmh: write addr=%x data=%x failed (ctrl=%x st=%x cmd=%x irq=%x en=%x)\n",
 	     address, data, rpmh_reg(tcs, rsc.control),
 	     rpmh_reg(tcs, rsc.status),
 	     get32(RSC_VA + rpmh_cmd(tcs, 0, rsc.cmd_status)),
-	     get32(RSC_VA + RPMH_IRQ_STATUS),
-	     get32(RSC_VA + RPMH_IRQ_ENABLE));
-	rpmh_finish(tcs);
+	     get32(RPMH_IRQ_VA + RPMH_IRQ_STATUS),
+	     get32(RPMH_IRQ_VA + RPMH_IRQ_ENABLE));
 	return -1;
 }
 

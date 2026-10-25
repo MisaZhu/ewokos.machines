@@ -125,6 +125,8 @@ void arch_vm(page_dir_entry_t* vm) {
             (uint32_t)Q8B_RSC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
     map_pages_size(vm, MMIO_BASE + Q8B_CMD_DB_WIN_OFF, Q8B_CMD_DB_WIN_PHY,
             (uint32_t)Q8B_CMD_DB_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + Q8B_APPS_SMMU_OFF, Q8B_APPS_SMMU_PHY,
+            (uint32_t)Q8B_APPS_SMMU_SIZE, AP_RW_D, PTE_ATTR_DEV);
 
     /*
      * Adreno 690 GPU complex (see hw_arch.h for the full physical layout

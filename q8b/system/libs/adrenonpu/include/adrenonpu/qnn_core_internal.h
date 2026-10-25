@@ -77,8 +77,13 @@ typedef struct qnn_shared_buf {
 	int      fd;
 	uint64_t offset;
 	uint64_t size;
-	void    *host;       /* dma-backed host mapping (zero-copy capable) */
-	uint64_t pa;         /* physical address, cDSP SMMU map target      */
+	void    *host;       /* exposed pointer at offset within allocation  */
+	void    *alloc_host; /* page-aligned DMA allocation base             */
+	uint64_t pa;         /* allocation-base PA, cDSP SMMU map target     */
+	uint32_t map_size;   /* rounded DMA mapping/allocation extent        */
+	uint64_t devaddr;    /* consolidated cDSP address, when mapped      */
+	uint32_t map_session;/* session owning devaddr                       */
+	unsigned map_epoch; /* successful CLOSE/STOP retires this reference */
 	uint32_t refcount;   /* shared across contexts, like an ion dma-buf */
 } qnn_shared_buf_t;
 
@@ -90,13 +95,17 @@ typedef struct qnn_backend_obj {
 	char    *op_packages[QNN_MAX_OP_PACKAGES];
 	uint32_t num_op_packages;
 	/* NPU session state (probed once per backend create). */
-	int      npu_available;      /* cDSP booted and FastRPC session up   */
+	int      npu_available;      /* cDSP session + compatible graph ABI */
+	int      cdsp_owned;         /* cleanup needed even after probe decline */
 	int      npu_probe_rc;       /* detailed bring-up result (0 = up)    */
 	uint32_t frpc_session;       /* FastRPC session id (npu_fastrpc.h)   */
-	uint32_t soc_model;          /* JTAG id, e.g. 530 = SC8280XP         */
-	uint32_t dsp_arch;           /* Hexagon ISA, V68 = 0x68              */
+	uint32_t soc_model;          /* QNN socModel, SC8280X = 37          */
+	uint32_t dsp_arch;           /* QnnHtpDevice_Arch_t, V68 = 68       */
 	qnn_htp_state_t htp_defaults;
 	qnn_shared_buf_t *shared;    /* registered QnnMem / shared buffers   */
+	bool native_mode;           /* explicit official opaque-context path */
+	uint32_t native_devices;
+	struct qnn_native_backend *native;
 } qnn_backend_obj_t;
 
 typedef struct qnn_device_obj {
@@ -157,6 +166,7 @@ struct qnn_graph_obj {
 	bool     finalized;
 	bool     from_binary;
 	qnn_ref_exec_t *ref;           /* CPU plan + intermediate buffers  */
+	bool native_graph;            /* official context: never CPU fallback */
 };
 
 struct qnn_context_obj {
@@ -174,6 +184,7 @@ struct qnn_context_obj {
 	uint32_t tensor_cap;
 	qnn_htp_state_t htp;
 	bool     finalized;
+	struct qnn_native_context *native;
 };
 
 typedef struct qnn_context_obj qnn_context_obj_t;
@@ -242,8 +253,9 @@ qnn_shared_buf_t *qnn_shared_buf_alloc(qnn_backend_obj_t *b, int fd,
                                        uint64_t offset, uint64_t size);
 int  qnn_shared_buf_free(qnn_backend_obj_t *b, void *host);
 qnn_shared_buf_t *qnn_shared_buf_find(qnn_backend_obj_t *b, void *host);
-/* Release the dma storage behind one entry (backend teardown path). */
-void qnn_shared_free_storage(qnn_shared_buf_t *sb);
+/* Failure retains the complete entry and DMA for retry; success also
+ * handles references retired by successful transport CLOSE/secure stop. */
+int qnn_shared_free_storage(qnn_shared_buf_t *sb);
 
 /* --- signals (qnn_signal.c) --- */
 void qnn_signal_mark(Qnn_SignalHandle_t sig, int state);
@@ -259,6 +271,19 @@ uint8_t *qnn_ctx_serialize(struct qnn_context_obj *c, uint64_t *out_size);
 struct qnn_context_obj *qnn_ctx_deserialize(qnn_backend_obj_t *b,
         qnn_device_obj_t *dev, const uint8_t *buf, uint64_t size);
 bool qnn_ctx_binary_validate(const uint8_t *buf, uint64_t size);
+
+/* Official opaque-context bridge. Local QNN C API, not the SDK binary ABI. */
+int qnn_native_context_load(qnn_context_obj_t *c, const void *binary,
+                           uint64_t size, const char *graph_name);
+int qnn_native_context_release(qnn_context_obj_t *c);
+int qnn_native_transport_owned(void);
+int qnn_native_backend_in_use(qnn_backend_obj_t *b);
+int qnn_native_backend_close(qnn_backend_obj_t *b);
+int qnn_native_execute(qnn_graph_obj_t *g, Qnn_TensorHandle_t *in, uint32_t nin,
+                       Qnn_TensorHandle_t *out, uint32_t nout, Qnn_ProfileHandle_t prof);
+int qnn_native_binary(qnn_context_obj_t *c, uint8_t *buf, uint64_t capacity,
+                      uint64_t *size);
+int qnn_native_property(qnn_graph_obj_t *g, const char *key, const char **value);
 
 /* --- graph internals (qnn_graph.c) --- */
 qnn_graph_obj_t *qnn_graph_obj_create(struct qnn_context_obj *c,
@@ -298,8 +323,9 @@ typedef struct {
 	uint64_t dma_mask_bits;
 } qnn_htp_infra_t;
 
-int  qnn_htp_init(qnn_backend_obj_t *b);   /* 0 = cDSP session up */
-void qnn_htp_deinit(qnn_backend_obj_t *b);
+#define QNN_HTP_INIT_ABI_UNAVAILABLE (-2)
+int  qnn_htp_init(qnn_backend_obj_t *b);   /* 0 = compatible skel ready */
+int  qnn_htp_deinit(qnn_backend_obj_t *b);
 const qnn_htp_infra_t *qnn_htp_get_infra(void);
 int  qnn_htp_prepare(qnn_graph_obj_t *g);
 int  qnn_htp_execute(qnn_graph_obj_t *g, qnn_tensor_obj_t *const *ins,
