@@ -126,6 +126,14 @@ typedef struct {
 #define V3D_G2D_MAINT_ALL  (V3D_G2D_MAINT_PRE | V3D_G2D_MAINT_POST)
 #define V3D_G2D_POLL_YIELD (1u << 2)
 #define V3D_G2D_POLL_IRQ   (1u << 3)
+/* OpenCL dispatches return a terminal error to their own API without latching
+ * the shared G2D/GLES engine off.  This never clears an existing wedge and
+ * does not replay or reset a submitted job. */
+#define V3D_G2D_FAILURE_LOCAL (1u << 4)
+/* OpenCL's dst hull covers every SSBO, not only written outputs.  PRE must
+ * invalidate it as well as the small scalar staging range because host writes
+ * through NOCACHE mappings do not remove stale V3D L2T/slice copies. */
+#define V3D_G2D_MAINT_ARGS  (1u << 5)
 
 /* 1 while the CSD_DONE interrupt is registered and delivering; 0 when
  * the kernel refused the irq at init or the driver retired it after
