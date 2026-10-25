@@ -1,7 +1,7 @@
 # Q8B npudemo evaluation, 2026-10-25
 
 The minimal public-API client and its metric definitions are documented in
-[npudemo](../system/bin/npudemo/README.md). Tests use the production native HTP
+[nputest / npudemo](../../../apps/nputest/README.md). Tests use the production native HTP
 adapter and official QAIRT 2.51.0.260929 V68 contexts, with CPU fallback disabled.
 No kernel or driver changes were made for these tests.
 
@@ -102,5 +102,7 @@ npudemo context.bin model input.bin expected.bin 8 1000 173408256
 npudemo context.bin model input.bin expected.bin 8 1000 693633024
 ```
 
-Vendor runtimes, models, raw corpora, conversion helpers and full experimental
-logs are external inputs/evidence and are not included in the minimal demo.
+Vendor runtimes, conversion helpers and full experimental logs remain external
+inputs/evidence. The migrated `apps/nputest/res` directory now bundles the CNN,
+56x56 and 112x112 contexts, source ONNX, validation inputs and references used
+by its graphical three-case suite.

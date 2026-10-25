@@ -35,8 +35,9 @@ Host regressions cover DMA pin ownership, FastRPC framing/lifetimes, opaque
 context handling and malformed model metadata under ASan/UBSan. These checks
 do not establish sustained PAS restart reliability.
 
-The minimal [npudemo](../system/bin/npudemo/README.md) client runs public native
-API regression before an optional correctness-gated benchmark. See the
+The [nputest application](../../../apps/nputest/README.md) now owns the minimal
+`npudemo` CLI and shared public native API regression/benchmark runner. Its
+graphical window runs three bundled cases using resources under `res/`. See the
 [demo evaluation](npu-demo-results.md) for measured workloads and timing scope.
 
 ## Build and runtime inputs
@@ -67,8 +68,9 @@ normal rootfs firmware-install phase. This file comes from
 `qcom/sc8280xp/qccdsp8280.mbn` in Radxa's firmware package; the exercised image
 has MD5 `aa794aee23732765ca1ab8a97c069adc`.
 
-Vendor firmware, SDK binaries, model data and extensive experimental evidence
-are not distributed with this port. Kernel
+Vendor firmware, SDK binaries and extensive experimental evidence
+are not distributed with this port. The standalone `apps/nputest/res` directory
+bundles the three demo models, validation inputs and reference outputs. Kernel
 protocol tracing is disabled by default; define `Q8B_NPU_DEBUG=1` for a
 diagnostic build. User-space DEBUG messages are delivered to an explicitly
 registered log callback and omitted from the default system log.
