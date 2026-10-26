@@ -83,6 +83,9 @@
 /* Staging sizes. */
 #define RING_SCRATCH_SIZE            4096u   /* fence dword lives at [0]  */
 #define RING_IB_SIZE                 (16u * 1024u)  /* 4096-dword IB max  */
+#define RING_GPU_SAMPLE_OFF          128u
+/* a6xx.xml RBBM_PERFCTR_CP[0], configured by adreno_a6xx.c. */
+#define RBBM_PERFCTR_CP_0            0x0400u
 
 /* Poll budget: each iteration sleeps ~10 us (proc_nsleep_precise). */
 #define RING_IDLE_TRIES              100000  /* ~1 s                     */
@@ -99,9 +102,11 @@ static uint32_t g_trace_submissions;
 /* Keep the 32 x 10us spin budget, then check each early timer wake. */
 static int g_wait_adaptive = 1;
 static int g_profile_enabled;
+static int g_gpu_profile_enabled;
 typedef struct {
 	uint64_t jobs, errors, lock_ns, stage_ns, wait_ns, check_ns, max_wait_ns;
 	uint64_t spins, parks, short_parks, spin_failures;
+	uint64_t gpu_jobs, gpu_ticks, cp_cycles;
 } submit_stats_t;
 static submit_stats_t g_stats;
 
@@ -123,6 +128,8 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 			g_wait_adaptive = value;
 		else if (strcmp(argv[1], "profile") == 0)
 			__atomic_store_n(&g_profile_enabled, value, __ATOMIC_RELAXED);
+		else if (strcmp(argv[1], "gpu") == 0)
+			g_gpu_profile_enabled = value;
 		else rc = -1;
 	}
 	else if (argc != 1) rc = -1;
@@ -130,7 +137,8 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 		uint64_t n = g_stats.jobs ? g_stats.jobs : 1;
 		snprintf(buf, len, "submit adaptive=%d profile=%d n=%llu err=%llu "
 		         "avg_us lock=%llu stage=%llu wait=%llu check=%llu max_wait=%llu "
-		         "spins=%llu parks=%llu short=%llu spin_fail=%llu",
+		         "spins=%llu parks=%llu short=%llu spin_fail=%llu "
+		         "gpu=%d gpu_n=%llu gpu_ns=%llu cp_khz=%llu",
 		         g_wait_adaptive, g_profile_enabled,
 		         (unsigned long long)g_stats.jobs, (unsigned long long)g_stats.errors,
 		         (unsigned long long)(g_stats.lock_ns/n/1000u),
@@ -140,7 +148,12 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 		         (unsigned long long)(g_stats.max_wait_ns/1000u),
 		         (unsigned long long)g_stats.spins, (unsigned long long)g_stats.parks,
 		         (unsigned long long)g_stats.short_parks,
-		         (unsigned long long)g_stats.spin_failures);
+		         (unsigned long long)g_stats.spin_failures,
+		         g_gpu_profile_enabled, (unsigned long long)g_stats.gpu_jobs,
+		         (unsigned long long)(g_stats.gpu_jobs ?
+		             g_stats.gpu_ticks * 10000u / 192u / g_stats.gpu_jobs : 0),
+		         (unsigned long long)(g_stats.gpu_ticks ?
+		             g_stats.cp_cycles * 19200u / g_stats.gpu_ticks : 0));
 	}
 	pthread_mutex_unlock(&g_submit_lock);
 	return rc;
@@ -501,6 +514,23 @@ int adreno_ring_exit_secure(adreno_dev_t *d) {
 	return 0;
 }
 
+/* Optional GPU-side samples. CP counter 0 is configured to ALWAYS_COUNT
+ * during hw_init; CP_ALWAYS_ON_COUNTER runs at the 19.2 MHz reference rate.
+ * Copy both as atomic 64-bit register pairs. Scratch[0] remains the fence;
+ * pairs at +128/+136 and +144/+152 belong to this submission until retirement.
+ * Keep clear of the A2D CCU marker at +16 and boot self-test at +64.
+ * No CPU GX reads are added, especially on a timeout. */
+static void ring_gpu_sample(adreno_ring_t *ring, uint32_t offset) {
+	const uint32_t regs[] = { REG_A6XX_CP_ALWAYS_ON_COUNTER, RBBM_PERFCTR_CP_0 };
+	for (uint32_t i = 0; i < 2u; i++) {
+		uint64_t dst = ring->scratch.iova + offset + i * 8u;
+		rb_pkt7(ring, CP_REG_TO_MEM, 3);
+		rb_emit(ring, regs[i] | (2u << 18) | (1u << 30));
+		rb_emit(ring, (uint32_t)dst);
+		rb_emit(ring, (uint32_t)(dst >> 32));
+	}
+}
+
 int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	adreno_ring_t *ring = &d->ring;
 	volatile uint32_t *fence_mem;
@@ -508,6 +538,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	int rc;
 	uint64_t start;
 	int trace = 0;
+	int gpu_profile;
 	int profile = __atomic_load_n(&g_profile_enabled, __ATOMIC_RELAXED);
 	submit_stats_t sample;
 	uint64_t entered = profile ? profile_ns() : 0;
@@ -517,6 +548,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 		return ADRENO_E_DECLINED;
 
 	pthread_mutex_lock(&g_submit_lock);
+	gpu_profile = g_gpu_profile_enabled;
 	profile = profile && g_profile_enabled;
 	if (profile) {
 		locked = profile_ns();
@@ -537,12 +569,13 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 		goto out;
 	}
 
-	/* Ensure room for: IB pkt(4) + fence event pkt(5) = 9 dwords.  A ring
+	/* IB/fence plus optional four register copies and WAIT_FOR_IDLE fit
+	   within 32 dwords. A ring
 	   that will not drain here means an EARLIER job is still running past
 	   its own wait - the GPU is already stuck, so this is a wedge, not a
 	   decline (the staging IB may still be in flight and must not be
 	   overwritten below). */
-	if (ring_freewords(d) < 16) {
+	if (ring_freewords(d) < 32) {
 		if (ring_wait_submit(d, start, NULL, 0, profile ? &sample : NULL) != 0) {
 			ring_mark_wedged(d, "ring did not drain before submit");
 			rc = ADRENO_E_TIMEOUT;
@@ -564,12 +597,21 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	fence_mem = (volatile uint32_t*)ring->scratch.va;
 	fence_mem[0] = 0;
 	adreno_wmb();
+	if (gpu_profile)
+		ring_gpu_sample(ring, RING_GPU_SAMPLE_OFF);
 
 	/* CP_INDIRECT_BUFFER_PFE (0x3f): iova_lo, iova_hi, dword count. */
 	rb_pkt7(ring, CP_INDIRECT_BUFFER, 3);
 	rb_emit(ring, (uint32_t)(ring->ib.iova & 0xffffffffu));
 	rb_emit(ring, (uint32_t)(ring->ib.iova >> 32));
 	rb_emit(ring, dwords);
+	if (gpu_profile) {
+		/* CP must observe shader completion before the ending sample.
+		 * This instrumentation is disabled by default. The normal fence
+		 * still owns cache visibility, timeout and buffer lifetime. */
+		rb_pkt7(ring, CP_WAIT_FOR_IDLE, 0);
+		ring_gpu_sample(ring, RING_GPU_SAMPLE_OFF + 16u);
+	}
 
 	/* CACHE_FLUSH_TS fence: writes `fence` to fence_iova when flushed. */
 	rb_pkt7(ring, CP_EVENT_WRITE, 4);
@@ -608,6 +650,20 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 		goto out;
 	}
 	rc = ADRENO_OK;
+	if (gpu_profile) {
+		volatile uint64_t *stamps = (volatile uint64_t *)
+			((uint8_t *)ring->scratch.va + RING_GPU_SAMPLE_OFF);
+		adreno_mb();
+		uint64_t ticks = stamps[2] - stamps[0];
+		uint64_t cycles = stamps[3] - stamps[1];
+		/* Reject missing/corrupt samples instead of presenting a bogus
+		 * frequency. The same one-second submission deadline bounds these. */
+		if (ticks && ticks <= 19200000u && cycles < 2000000000ull) {
+			g_stats.gpu_jobs++;
+			g_stats.gpu_ticks += ticks;
+			g_stats.cp_cycles += cycles;
+		}
+	}
 	if (trace)
 		klog("adreno_trace: checked fence=%u\n", fence);
 

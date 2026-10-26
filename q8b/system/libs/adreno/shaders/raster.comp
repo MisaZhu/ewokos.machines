@@ -1,6 +1,7 @@
 #version 310 es
 precision highp int;
-layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+/* Keep enough rows together for rotated source reads; 64x2 regresses them. */
+layout(local_size_x=16, local_size_y=8, local_size_z=1) in;
 layout(std430, binding=0) readonly buffer Source { uint src[]; };
 layout(std430, binding=1) buffer Destination { uint dst[]; };
 uniform uvec4 uPitchShape;  /* src pitch, dst pitch, source width/height */
@@ -19,8 +20,11 @@ void main() {
         if(da==0u) { dst[index]=color; return; }
         uvec3 rgb=uvec3(color&255u,(color>>8)&255u,(color>>16)&255u);
         uvec3 bg=uvec3(old&255u,(old>>8)&255u,(old>>16)&255u);
-        uvec3 outRgb=(rgb*a+bg*(255u-a))/255u;
-        uint outA=da+(255u-da)*a/255u;
+        /* Exact floor(v/255) for colour products bounded by 65025. */
+        uvec3 v=rgb*a+bg*(255u-a);
+        uvec3 outRgb=(v+1u+(v>>8))>>8;
+        uint av=(255u-da)*a;
+        uint outA=da+((av+1u+(av>>8))>>8);
         dst[index]=(outA<<24)|(outRgb.z<<16)|(outRgb.y<<8)|outRgb.x;
         return;
     }

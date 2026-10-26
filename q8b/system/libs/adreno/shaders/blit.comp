@@ -1,6 +1,7 @@
 #version 310 es
 precision highp int;
-layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+/* 128 invocations with contiguous rows improve A690 wave/memory utilization. */
+layout(local_size_x=64, local_size_y=2, local_size_z=1) in;
 layout(std430, binding=0) readonly buffer Source { uint src[]; };
 layout(std430, binding=1) buffer Destination { uint dst[]; };
 uniform uvec4 uPitchOrigin; /* src pitch, dst pitch, source x/y */
@@ -9,8 +10,10 @@ uniform uvec4 uStep;        /* increments/extents, shift/alpha, mode (0 copy, 1 
 void main() {
     uvec2 xy=gl_GlobalInvocationID.xy;
     if(any(greaterThanEqual(xy,uDestination.zw))) return;
-    uvec2 offset=uStep.w==0u && uStep.z!=0u ? ((xy*uStep.xy)>>uStep.z) :
-                                            (xy*uStep.xy)/uDestination.zw;
+    uvec2 offset;
+    if(uStep.w==0u && uStep.z!=0u) offset=(xy*uStep.xy)>>uStep.z;
+    else if(all(equal(uStep.xy,uDestination.zw))) offset=xy; /* common compositor copy */
+    else offset=(xy*uStep.xy)/uDestination.zw;
     uvec2 s=uPitchOrigin.zw+offset;
     uvec2 d=uDestination.xy+xy;
     uint c=src[s.y*uPitchOrigin.x+s.x];
@@ -26,7 +29,10 @@ void main() {
     if(da==0u) { dst[index]=(a<<24)|(c&0xffffffu); return; }
     uvec3 rgb=uvec3(c&255u,(c>>8)&255u,(c>>16)&255u);
     uvec3 bg=uvec3(old&255u,(old>>8)&255u,(old>>16)&255u);
-    uvec3 outRgb=(rgb*a+bg*(255u-a))/255u;
-    uint outA=da+(255u-da)*a/255u;
+    /* Exact floor(v/255) for the bounded 0..65025 colour products. */
+    uvec3 v=rgb*a+bg*(255u-a);
+    uvec3 outRgb=(v+1u+(v>>8))>>8;
+    uint av=(255u-da)*a;
+    uint outA=da+((av+1u+(av>>8))>>8);
     dst[index]=(outA<<24)|(outRgb.z<<16)|(outRgb.y<<8)|outRgb.x;
 }

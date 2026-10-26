@@ -1262,7 +1262,7 @@ static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	params[4]=dx; params[5]=dy; params[6]=dw; params[7]=dh;
 	params[8]=step_x; params[9]=step_y; params[10]=shift; params[11]=0;
 	if (alpha >= 0) { params[10]=alpha; params[11]=1; }
-	grid[0]=((uint32_t)dw+7u)/8u; grid[1]=((uint32_t)dh+7u)/8u; grid[2]=1;
+	grid[0]=((uint32_t)dw+63u)/64u; grid[1]=((uint32_t)dh+1u)/2u; grid[2]=1;
 	pthread_mutex_lock(&lock);
 	if (!loaded) {
 		const adreno_prog_blob_t *h = (const void *)q8b_2d_blob;
@@ -1270,7 +1270,7 @@ static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 		    q8b_2d_blob_len != sizeof(*h)+h->payload_bytes ||
 		    kern_validate(&h->kern[0]) || h->kern[0].uniform_blob_dwords != 12 ||
 		    h->kern[0].num_ssbo != 2 || h->kern[0].pvtmem_size != 0 ||
-		    h->kern[0].local_size[0] != 8 || h->kern[0].local_size[1] != 8 ||
+		    h->kern[0].local_size[0] != 64 || h->kern[0].local_size[1] != 2 ||
 		    h->kern[0].local_size[2] != 1 ||
 		    kern_load(&kernel,&h->kern[0],q8b_2d_blob+sizeof(*h))) {
 			pthread_mutex_unlock(&lock);
@@ -1347,7 +1347,7 @@ static int compute_raster(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	params[0]=src_w; params[1]=dst_w; params[2]=src_w; params[3]=src_h;
 	params[4]=x; params[5]=y; params[6]=w; params[7]=h;
 	params[8]=mode; params[9]=value; params[10]=(uint32_t)c; params[11]=(uint32_t)s;
-	grid[0]=((uint32_t)w+7u)/8u; grid[1]=((uint32_t)h+7u)/8u; grid[2]=1;
+	grid[0]=((uint32_t)w+15u)/16u; grid[1]=((uint32_t)h+7u)/8u; grid[2]=1;
 	pthread_mutex_lock(&lock);
 	if (!loaded) {
 		const adreno_prog_blob_t *hdr=(const void *)q8b_raster_blob;
@@ -1355,7 +1355,7 @@ static int compute_raster(uint64_t src_phy, int32_t src_w, int32_t src_h,
 		    q8b_raster_blob_len != sizeof(*hdr)+hdr->payload_bytes ||
 		    kern_validate(&hdr->kern[0]) || hdr->kern[0].uniform_blob_dwords != 12 ||
 		    hdr->kern[0].num_ssbo != 2 || hdr->kern[0].pvtmem_size != 0 ||
-		    hdr->kern[0].local_size[0] != 8 || hdr->kern[0].local_size[1] != 8 ||
+		    hdr->kern[0].local_size[0] != 16 || hdr->kern[0].local_size[1] != 8 ||
 		    hdr->kern[0].local_size[2] != 1 ||
 		    kern_load(&kernel,&hdr->kern[0],q8b_raster_blob+sizeof(*hdr))) {
 			pthread_mutex_unlock(&lock);

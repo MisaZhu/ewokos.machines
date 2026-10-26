@@ -161,7 +161,10 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords);
 /* Bounded runtime diagnostics, disabled by default. No GX MMIO reads. */
 void adreno_ring_trace(uint32_t submissions);
 int adreno_ring_tracing(void);
-/* Serialized submit statistics and bounded wait-policy diagnostics. */
+/* Serialized submit statistics and bounded wait-policy diagnostics.
+ * "submit gpu 1|0" enables optional CP timestamp/cycle copies around each IB;
+ * reports GPU execution ns and CP cycle/reference-clock ratio as cp_khz.
+ * GPU sampling defaults off and is independent of CPU phase profiling. */
 int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len);
 /* Non-zero once a submitted job failed to retire or faulted (sticky). */
 int adreno_wedged(void);

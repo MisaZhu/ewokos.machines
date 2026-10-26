@@ -54,7 +54,8 @@ int main(int argc, char **argv) {
     if (blob->version != ADRENO_PROG_VERSION || blob->magic != ADRENO_PROG_MAGIC ||
             bytes != sizeof(*blob) + blob->payload_bytes || k->uniform_blob_dwords != 12 ||
             k->num_ssbo != 2 || k->pvtmem_size || k->num_samp ||
-            k->local_size[0] != 8 || k->local_size[1] != 8 || k->local_size[2] != 1) {
+            k->local_size[0] != (blit ? 64u : 16u) ||
+            k->local_size[1] != (blit ? 2u : 8u) || k->local_size[2] != 1) {
         fprintf(stderr, "%s: incompatible built-in kernel\n", argv[2]);
         free(data); pglc_program_free(&program); return 1;
     }

@@ -22,3 +22,13 @@ wire protocol; changing just the version bytes cannot migrate an old header.
 
 The previous version-2 programs were rejected by the version-4 driver, causing
 transparent window composition to fall back to the CPU and block mouse input.
+
+The built-ins use 128 invocations per workgroup on A690: 64×2 for blit and
+16×8 for raster. The wider blit rows improve contiguous memory access; raster
+keeps more rows together because 90-degree rotation reads the source across
+rows. Hardware sweeps rejected applying 64×2 to rotation. Dispatch rounding
+and generator/loader validation must match the compiled dimensions.
+
+Colour products are bounded by 65025. `(v + 1 + (v >> 8)) >> 8` therefore
+implements exactly `floor(v / 255)`, preserving the CPU blend rounding.
+Same-size non-endpoint blits also skip the per-pixel coordinate division.
