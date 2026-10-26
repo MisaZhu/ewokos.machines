@@ -93,14 +93,13 @@
  *      kernel pvtmem_size == 0 and NO pvtmem BO is allocated (all PVT_MEM_*
  *      registers written 0), matching tu6_get_pvtmem_config's zero path.
  *
- *   6. TWO-PASS COHERENCY.  The geometry path submits pass 1 and pass 2 as two
- *      ring submissions: adreno_ring_submit's CACHE_FLUSH_TS fence retires
- *      pass 1 (UCHE flushed) before pass 2's IB is even built, and pass 2 opens
- *      with CP_WAIT_FOR_IDLE + CP_EVENT_WRITE(CACHE_INVALIDATE) the way
- *      fd6_barrier_flush orders dependent compute launches.  The first-frame
- *      clears go through the A2D (adreno_2d_fill), itself fence-retired, before
- *      pass 1.  Whether anything else is needed on A690 is unvalidated.
- *
+ *   6. TWO-PASS COHERENCY. Geometry dispatches are prepared in distinct
+ *      kernel-owned descriptor/UBO BOs and normally share one ring submission.
+ *      A CACHE_FLUSH_TS packet writes a separate scratch marker, followed by
+ *      CP_WAIT_REG_MEM; the raster prologue waits idle and invalidates UCHE.
+ *      The final ring fence still owns host completion and wedge handling.
+ *      Programs exceeding the combined IB capacity use two fence-retired
+ *      submissions. First-frame A2D clears precede either pass.
  *   7. GEOMETRY KERNEL I/O.  The kernels (projects/opengl/.../geom_raster_cs.h)
  *      read their texture through an SSBO as linear ARGB words and write the
  *      framebuffer as 0xAARRGGBB; the same convention as on V3D.  Nothing about
@@ -292,11 +291,20 @@ typedef struct {
 
 static prog_slot_t g_progs[ADRENO_3D_MAX_PROGS];
 /* IPC workers may draw/upload concurrently. Protect program lifetime and the
-   shared vertex output across BOTH submissions, not only each ring submit. */
+   shared vertex output through final retirement, not only each ring submit. */
 static pthread_mutex_t g_3d_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* vout: allocated on the first geometry draw, kept for the process. */
 static adreno_bo_t g_vout;
+
+/* Diagnostic A/B switch. Atomic only: ring_cmd holds the submit lock, while
+ * draws hold g_3d_lock before entering ring_submit (never invert those locks). */
+static int g_geom_batch = 1;
+int adreno_3d_geom_batch(int enabled) {
+	if (enabled == 0 || enabled == 1)
+		__atomic_store_n(&g_geom_batch, enabled, __ATOMIC_RELAXED);
+	return __atomic_load_n(&g_geom_batch, __ATOMIC_RELAXED);
+}
 
 static uint32_t align_up(uint32_t v, uint32_t a) {
 	return (v + (a - 1u)) & ~(a - 1u);
@@ -715,13 +723,14 @@ typedef struct {
    unit == texture_index; a slot the kernel reads but the request left unbound
    DECLINES the draw to the CPU interpreter, which renders the identical
    fullscreen quad), and feeding `unif[num_uniforms]` as UBO 0.
-   Every dispatch drains and invalidates UCHE before loading state. Returns
-   ADRENO_OK, ADRENO_E_DECLINED before anything reached the GPU, or the
-   adreno_ring_submit result (TIMEOUT / FAULT / WEDGED). */
-static int emit_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
+   Build commands and descriptors without submitting. The caller holds the
+   kernel lock through eventual fence retirement. Each stream opens with
+   idle + invalidate; dependent streams also need a cache-flush barrier. */
+static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
                             uint32_t nbinds, const adreno_3d_tex_t *tex,
                             uint32_t num_tex, const uint32_t *unif,
-                            uint32_t num_uniforms, const uint32_t grid[3]) {
+                            uint32_t num_uniforms, const uint32_t grid[3],
+                            struct ib *prepared) {
 	const adreno_prog_kernel_t *k = &ks->k;
 	struct ib b;
 	adreno_bo_t desc_bo;
@@ -732,7 +741,6 @@ static int emit_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 	uint32_t desc_bytes, ubo_off, ubo_bytes, ubo_vec4s, ubo_region_dwords;
 	uint32_t num_samp, tex_off, samp_off, dummy_off;
 	uint32_t i;
-	int ret;
 
 	/* Callers hold this kernel's lifetime/dispatch lock through the fence.
 	 * A timed-out submission may still fetch its descriptors: never rewrite
@@ -1209,15 +1217,48 @@ static int emit_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 		klog("adreno_trace: CS bin=%llx desc=%llx grid=%ux%ux%u local=%ux%ux%u words=%u\n",
 		     (unsigned long long)ks->bin_bo.iova, (unsigned long long)desc_bo.iova,
 		     grid[0], grid[1], grid[2], k->local_size[0], k->local_size[1], k->local_size[2], b.n);
-	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
-	if (ret == ADRENO_OK || ret == ADRENO_E_DECLINED || ret == ADRENO_E_WEDGED)
-		return ret;
-	/* TIMEOUT / FAULT: the dispatch was handed to the CP and never retired.
-	   Keep the pool pinned. Wedge guards prevent reuse and program release. */
-	klog("adreno_3d: retaining desc BO pa=%llx (%u B) after submit failure %d\n",
-	     (unsigned long long)desc_bo.pa, desc_bo.size, ret);
-	klog("adreno_3d: dispatch submit failed (%d)\n", ret);
-	return ret;
+	*prepared = b;
+	return ADRENO_OK;
+}
+
+/* Prepared descriptors/UBOs belong to different kernel slots. Both slots stay
+ * locked and pinned until the final fence retires; on failure wedge guards
+ * retain them, exactly as for a standalone dispatch. */
+static int emit_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
+                            uint32_t nbinds, const adreno_3d_tex_t *tex,
+                            uint32_t num_tex, const uint32_t *unif,
+                            uint32_t num_uniforms, const uint32_t grid[3]) {
+	struct ib b;
+	int rc = build_cs_dispatch(ks, binds, nbinds, tex, num_tex, unif,
+	                           num_uniforms, grid, &b);
+	if (rc != ADRENO_OK) return rc;
+	return adreno_ring_submit(adreno_dev(), b.d, b.n);
+}
+
+/* Preserve the standalone CACHE_FLUSH_TS -> wait -> invalidate ordering
+ * entirely on the GPU. Scratch +32 is distinct from the final fence (+0),
+ * CCU marker (+16), selftest (+64) and profiling stamps (+128..159).
+ * CP_WAIT_REG_MEM: WRITE_EQ=3 | POLL_MEMORY=(1<<4), from adreno_pm4.xml.
+ * The next dispatch retains its WFI + CACHE_INVALIDATE context prologue. */
+#define GEOM_BARRIER_WORDS 13u
+static void ib_geom_barrier(struct ib *b) {
+	adreno_ring_t *ring = &adreno_dev()->ring;
+	uint64_t addr = ring->scratch.iova + 32u;
+	*(volatile uint32_t *)((uint8_t *)ring->scratch.va + 32u) = 0;
+	adreno_wmb();
+	ib_pkt7(b, CP_WAIT_FOR_IDLE, 0);
+	ib_pkt7(b, CP_EVENT_WRITE, 4);
+	ib_w(b, CACHE_FLUSH_TS); /* write packet value 1, no timestamp or IRQ */
+	ib_w(b, (uint32_t)addr);
+	ib_w(b, (uint32_t)(addr >> 32));
+	ib_w(b, 1u);
+	ib_pkt7(b, CP_WAIT_REG_MEM, 6);
+	ib_w(b, 3u | (1u << 4));
+	ib_w(b, (uint32_t)addr);
+	ib_w(b, (uint32_t)(addr >> 32));
+	ib_w(b, 1u);
+	ib_w(b, 0xffffffffu);
+	ib_w(b, 16u);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1393,6 +1434,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	kern_slot_t *rs = &s->kern[0];
 	bind_t binds[ADRENO_3D_MAX_BINDINGS];
 	uint32_t grid[3];
+	struct ib xform_ib, raster_ib;
 	uint32_t ntris, split = s->cs2_uniform_blob_dwords;
 	uint32_t xwg, tpw, pstride, rec;
 	int gtex = (s->is_geom == 2), ginst = (s->is_geom == 3), gtc = (s->is_geom == 4);
@@ -1460,25 +1502,6 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		}
 	}
 
-	/* Frame clear on the GPU, before either pass: the client drops its
-	   per-frame CPU clear of colour+depth once this path has run, so the
-	   frame's first geom draw fills both canvases itself.  The geom fb
-	   layout is 0xAARRGGBB while clear_rgba is portablegl's 0xAABBGGRR, so
-	   R and B swap; depth clears to the atomicMin identity. */
-	if (g->first_frame) {
-		uint32_t c = g->clear_rgba;
-		uint32_t px = (c & 0xFF000000u) | ((c & 0x000000FFu) << 16) |
-		              (c & 0x0000FF00u) | ((c & 0x00FF0000u) >> 16);
-		rc = adreno_2d_fill(fb_phy, (int32_t)w, (int32_t)h, fb_stride,
-		                    0, 0, (int32_t)w, (int32_t)h, px, 0);
-		if (rc != ADRENO_OK)
-			return rc;
-		rc = adreno_2d_fill(g->z_phy, (int32_t)w, (int32_t)h, g->z_stride,
-		                    0, 0, (int32_t)w, (int32_t)h, 0xFFFFFFFFu, 0);
-		if (rc != ADRENO_OK)
-			return rc;
-	}
-
 	/* ---- Pass 1: vertex transform -> vout.  Bindings: 0 = vout, 1 = pos;
 	   gouraud 2 = normals; instanced 2 = normals, 3 = instance matrices;
 	   textured and Vulkan kinds read their interleaved/flattened stream from
@@ -1496,7 +1519,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	grid[0] = (g->nverts + xwg - 1u) / xwg;   /* one invocation per vertex */
 	grid[1] = 1u;
 	grid[2] = 1u;
-	rc = emit_cs_dispatch(xf, binds, gvk ? 2u : 4u, NULL, 0, unif, split, grid);
+	rc = build_cs_dispatch(xf, binds, gvk ? 2u : 4u, NULL, 0, unif, split, grid, &xform_ib);
 	if (rc != ADRENO_OK) {
 		klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
 		return rc;
@@ -1526,12 +1549,42 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		grid[0] = (w + rs->k.local_size[0] - 1u) / rs->k.local_size[0];
 		grid[1] = (h + rs->k.local_size[1] - 1u) / rs->k.local_size[1];
 	}
-	rc = emit_cs_dispatch(rs, binds, gvk ? 3u : 4u,
+	rc = build_cs_dispatch(rs, binds, gvk ? 3u : 4u,
 	                      gvk ? tex : NULL, gvk ? num_tex : 0u,
-	                      unif + split, num_uniforms - split, grid);
-	if (rc != ADRENO_OK)
-		klog("adreno_3d: geom raster rc=%d tris %u tpw=%u\n", rc, ntris, tpw);
-	return rc;
+	                      unif + split, num_uniforms - split, grid, &raster_ib);
+	if (rc != ADRENO_OK) return rc;
+
+	/* Frame clear on the GPU, before either pass: the client drops its
+	   per-frame CPU clear of colour+depth once this path has run, so the
+	   frame's first geom draw fills both canvases itself.  The geom fb
+	   layout is 0xAARRGGBB while clear_rgba is portablegl's 0xAABBGGRR, so
+	   R and B swap; depth clears to the atomicMin identity. */
+	if (g->first_frame) {
+		uint32_t c = g->clear_rgba;
+		uint32_t px = (c & 0xFF000000u) | ((c & 0x000000FFu) << 16) |
+		              (c & 0x0000FF00u) | ((c & 0x00FF0000u) >> 16);
+		rc = adreno_2d_fill(fb_phy, (int32_t)w, (int32_t)h, fb_stride,
+		                    0, 0, (int32_t)w, (int32_t)h, px, 0);
+		if (rc != ADRENO_OK)
+			return rc;
+		rc = adreno_2d_fill(g->z_phy, (int32_t)w, (int32_t)h, g->z_stride,
+		                    0, 0, (int32_t)w, (int32_t)h, 0xFFFFFFFFu, 0);
+		if (rc != ADRENO_OK)
+			return rc;
+	}
+
+	/* Very large constant uploads can make two individually valid dispatches
+	 * exceed the ring's IB cap. Keep the existing two-submit route for them. */
+	if (adreno_3d_geom_batch(-1) &&
+	    xform_ib.n + GEOM_BARRIER_WORDS + raster_ib.n <= xform_ib.cap) {
+		ib_geom_barrier(&xform_ib);
+		memcpy(xform_ib.d + xform_ib.n, raster_ib.d, raster_ib.n * 4u);
+		xform_ib.n += raster_ib.n;
+		return adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
+	}
+	rc = adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
+	if (rc != ADRENO_OK) return rc;
+	return adreno_ring_submit(adreno_dev(), raster_ib.d, raster_ib.n);
 }
 
 /* ------------------------------------------------------------------ */

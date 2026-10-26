@@ -14,17 +14,14 @@
 #define Q8B_GEOM_PIXEL_BODY \
 "precision highp float;\n" \
 "precision highp int;\n" \
-"#if Q8B_TEXTURE\n" \
-"layout(local_size_x=8,local_size_y=8) in;\n" \
-"#define Q8B_TILE_W 8\n" \
-"#define Q8B_TILE_H 8\n" \
-"#define Q8B_TILE_LANES 64\n" \
-"#else\n" \
-"layout(local_size_x=16,local_size_y=16) in;\n" \
+"#ifndef Q8B_TILE_W\n" \
 "#define Q8B_TILE_W 16\n" \
-"#define Q8B_TILE_H 16\n" \
-"#define Q8B_TILE_LANES 256\n" \
 "#endif\n" \
+"#ifndef Q8B_TILE_H\n" \
+"#define Q8B_TILE_H 16\n" \
+"#endif\n" \
+"#define Q8B_TILE_LANES (Q8B_TILE_W*Q8B_TILE_H)\n" \
+"layout(local_size_x=Q8B_TILE_W,local_size_y=Q8B_TILE_H) in;\n" \
 /* A larger shared candidate block reduces barrier/atomic phases for the
  * desktop mesh path (teapot is ~4k triangles at its normal tessellation),
  * while remaining well below the A690 workgroup shared-memory limit. */ \
@@ -51,6 +48,16 @@
 " return (p.x-a.x)*(b.y-a.y)-(p.y-a.y)*(b.x-a.x);\n" \
 "}\n" \
 "vec2 screen(int i) { return vec2(vout[i*8],vout[i*8+1]); }\n" \
+"#ifndef Q8B_TRI_CACHE\n" \
+"#define Q8B_TRI_CACHE (!Q8B_TEXTURE)\n" \
+"#endif\n" \
+"#if Q8B_TRI_CACHE\n" \
+"shared float q8b_tri_cache[64*24];\n" \
+"#define Q8B_VOUT q8b_tri_cache\n" \
+"#else\n" \
+"#define Q8B_VOUT vout\n" \
+"#endif\n" \
+"vec2 raster_screen(int i) { return vec2(Q8B_VOUT[i*8],Q8B_VOUT[i*8+1]); }\n" \
 "shared uint q8b_bin_count;\n" \
 "shared uint q8b_bin[Q8B_BIN_CHUNK];\n" \
 "bool touches_tile(int t, vec2 tile_lo, vec2 tile_hi) {\n" \
@@ -96,11 +103,23 @@
 "  }\n" \
 "#endif\n" \
 "  barrier();\n" \
+"#if Q8B_TRI_CACHE\n" \
+"  for(uint cb=0u;cb<nc;cb+=64u) {\n" \
+"   uint bn=min(64u,nc-cb);\n" \
+"   for(uint k=uint(lid);k<bn*24u;k+=uint(Q8B_TILE_LANES)) {\n" \
+"    int t=int(q8b_bin[cb+k/24u]);\n" \
+"    q8b_tri_cache[k]=vout[(uTriFirst+t)*24+int(k%24u)];\n" \
+"   }\n" \
+"   barrier();\n" \
+"   if(pixel_active) for(uint bi=0u;bi<bn;bi++) {\n" \
+"    int i0=int(bi)*3,i1=i0+1,i2=i0+2;\n" \
+"#else\n" \
 "  if(pixel_active) for(uint bi=0u;bi<nc;bi++) {\n" \
 "   int t=int(q8b_bin[bi]);\n" \
 "   int i0=(uTriFirst+t)*3,i1=i0+1,i2=i0+2;\n" \
-"   vec3 iw=vec3(vout[i0*8+3],vout[i1*8+3],vout[i2*8+3]);\n" \
-"   vec2 s0=screen(i0),s1=screen(i1),s2=screen(i2);\n" \
+"#endif\n" \
+"   vec3 iw=vec3(Q8B_VOUT[i0*8+3],Q8B_VOUT[i1*8+3],Q8B_VOUT[i2*8+3]);\n" \
+"   vec2 s0=raster_screen(i0),s1=raster_screen(i1),s2=raster_screen(i2);\n" \
 "   float area=edgef(s1,s2,s0);\n" \
 "   if(area==0.0) continue;\n" \
 "  vec3 e=vec3(edgef(s1,s2,p),edgef(s2,s0,p),edgef(s0,s1,p));\n" \
@@ -109,24 +128,24 @@
 "  float invw=dot(b,iw);\n" \
 "  if(invw<=0.0) continue;\n" \
 "  vec3 q=b*iw/invw;\n" \
-"  float z=dot(q,vec3(vout[i0*8+2],vout[i1*8+2],vout[i2*8+2]));\n" \
+"  float z=dot(q,vec3(Q8B_VOUT[i0*8+2],Q8B_VOUT[i1*8+2],Q8B_VOUT[i2*8+2]));\n" \
 "  uint d=uint(clamp(z,0.0,1.0)*16777215.0);\n" \
 "  if(d>=bestDepth) continue;\n" \
 "#if Q8B_TEXTURE\n" \
-"  vec2 uv=q.x*vec2(vout[i0*8+4],vout[i0*8+5])+\n" \
-"          q.y*vec2(vout[i1*8+4],vout[i1*8+5])+\n" \
-"          q.z*vec2(vout[i2*8+4],vout[i2*8+5]);\n" \
+"  vec2 uv=q.x*vec2(Q8B_VOUT[i0*8+4],Q8B_VOUT[i0*8+5])+\n" \
+"          q.y*vec2(Q8B_VOUT[i1*8+4],Q8B_VOUT[i1*8+5])+\n" \
+"          q.z*vec2(Q8B_VOUT[i2*8+4],Q8B_VOUT[i2*8+5]);\n" \
 "  int tx=clamp(int(uv.x*float(uTexW)),0,uTexW-1);\n" \
 "  int ty=clamp(int((1.0-uv.y)*float(uTexH)),0,uTexH-1);\n" \
 "  bestColor=tex[ty*uTexW+tx];\n" \
 "  bestDepth=d;\n" \
 "#else\n" \
-"  vec3 col=q.x*vec3(vout[i0*8+4],vout[i0*8+5],vout[i0*8+6])+\n" \
-"           q.y*vec3(vout[i1*8+4],vout[i1*8+5],vout[i1*8+6])+\n" \
-"           q.z*vec3(vout[i2*8+4],vout[i2*8+5],vout[i2*8+6]);\n" \
+"  vec3 col=q.x*vec3(Q8B_VOUT[i0*8+4],Q8B_VOUT[i0*8+5],Q8B_VOUT[i0*8+6])+\n" \
+"           q.y*vec3(Q8B_VOUT[i1*8+4],Q8B_VOUT[i1*8+5],Q8B_VOUT[i1*8+6])+\n" \
+"           q.z*vec3(Q8B_VOUT[i2*8+4],Q8B_VOUT[i2*8+5],Q8B_VOUT[i2*8+6]);\n" \
 "  col=clamp(col,0.0,1.0);\n" \
 "  if(uBlendMode!=0) {\n" \
-"   float a=clamp(dot(q,vec3(vout[i0*8+7],vout[i1*8+7],vout[i2*8+7])),0.0,1.0);\n" \
+"   float a=clamp(dot(q,vec3(Q8B_VOUT[i0*8+7],Q8B_VOUT[i1*8+7],Q8B_VOUT[i2*8+7])),0.0,1.0);\n" \
 "   vec3 dst=vec3(float((bestColor>>16)&255u),float((bestColor>>8)&255u),float(bestColor&255u))/255.0;\n" \
 "   col=uBlendMode==2?dst+col*a:col*a+dst*(1.0-a);\n" \
 "  }\n" \
@@ -136,6 +155,10 @@
 "#endif\n" \
 "   dirty=true;\n" \
 "  }\n" \
+"#if Q8B_TRI_CACHE\n" \
+"   barrier();\n" \
+"  }\n" \
+"#endif\n" \
 "  barrier();\n" \
 " }\n" \
 " if(pixel_active && dirty) { int idx=xy.y*uFbStride+xy.x; fb[idx]=bestColor;\n" \

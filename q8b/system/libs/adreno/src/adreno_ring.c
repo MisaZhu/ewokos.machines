@@ -130,16 +130,18 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 			__atomic_store_n(&g_profile_enabled, value, __ATOMIC_RELAXED);
 		else if (strcmp(argv[1], "gpu") == 0)
 			g_gpu_profile_enabled = value;
+		else if (strcmp(argv[1], "geom") == 0)
+			adreno_3d_geom_batch(value);
 		else rc = -1;
 	}
 	else if (argc != 1) rc = -1;
 	if (!rc) {
 		uint64_t n = g_stats.jobs ? g_stats.jobs : 1;
-		snprintf(buf, len, "submit adaptive=%d profile=%d n=%llu err=%llu "
+		snprintf(buf, len, "submit adaptive=%d profile=%d geom=%d n=%llu err=%llu "
 		         "avg_us lock=%llu stage=%llu wait=%llu check=%llu max_wait=%llu "
 		         "spins=%llu parks=%llu short=%llu spin_fail=%llu "
 		         "gpu=%d gpu_n=%llu gpu_ns=%llu cp_khz=%llu",
-		         g_wait_adaptive, g_profile_enabled,
+		         g_wait_adaptive, g_profile_enabled, adreno_3d_geom_batch(-1),
 		         (unsigned long long)g_stats.jobs, (unsigned long long)g_stats.errors,
 		         (unsigned long long)(g_stats.lock_ns/n/1000u),
 		         (unsigned long long)(g_stats.stage_ns/n/1000u),

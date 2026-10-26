@@ -192,6 +192,9 @@ int adreno_3d_init(void);
    engine.  There is no CPU path here.  See adreno_3d.c for the numbered
    hardware-validation gaps. */
 int adreno_3d_ready(void);
+/* Diagnostic submit A/B: 0 separate geometry passes, 1 batch (default),
+ * -1 query. Affects the next draw, never changes an in-flight submission. */
+int adreno_3d_geom_batch(int enabled);
 
 /* Exact g2d nearest sampling. endpoints selects Q15 corner-preserving
    SCALE_TO; zero selects exact rational cropped BLIT sampling. */
