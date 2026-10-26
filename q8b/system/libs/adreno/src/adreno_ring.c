@@ -55,7 +55,9 @@
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/kernel_tic.h>
+#include <ewoksys/syscall.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -93,6 +95,55 @@
 /* One submit at a time, held across the completion wait (see header). */
 static pthread_mutex_t g_submit_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t g_trace_submissions;
+/* Keep the 32 x 10us spin budget, then check at the next timer tick. */
+static int g_wait_adaptive = 1;
+static int g_profile_enabled;
+typedef struct {
+	uint64_t jobs, errors, lock_ns, stage_ns, wait_ns, check_ns, max_wait_ns;
+	uint64_t spins, parks, short_parks, spin_failures;
+} submit_stats_t;
+static submit_stats_t g_stats;
+
+static uint64_t profile_ns(void) {
+	uint64_t ns = 0;
+	kernel_tic_nsec(&ns);
+	return ns;
+}
+
+int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
+	int rc = 0;
+	pthread_mutex_lock(&g_submit_lock);
+	if (argc == 2 && strcmp(argv[1], "reset") == 0)
+		memset(&g_stats, 0, sizeof(g_stats));
+	else if (argc == 3 &&
+	         (strcmp(argv[2], "0") == 0 || strcmp(argv[2], "1") == 0)) {
+		int value = argv[2][0] == '1';
+		if (strcmp(argv[1], "wait") == 0)
+			g_wait_adaptive = value;
+		else if (strcmp(argv[1], "profile") == 0)
+			__atomic_store_n(&g_profile_enabled, value, __ATOMIC_RELAXED);
+		else rc = -1;
+	}
+	else if (argc != 1) rc = -1;
+	if (!rc) {
+		uint64_t n = g_stats.jobs ? g_stats.jobs : 1;
+		snprintf(buf, len, "submit adaptive=%d profile=%d n=%llu err=%llu "
+		         "avg_us lock=%llu stage=%llu wait=%llu check=%llu max_wait=%llu "
+		         "spins=%llu parks=%llu short=%llu spin_fail=%llu",
+		         g_wait_adaptive, g_profile_enabled,
+		         (unsigned long long)g_stats.jobs, (unsigned long long)g_stats.errors,
+		         (unsigned long long)(g_stats.lock_ns/n/1000u),
+		         (unsigned long long)(g_stats.stage_ns/n/1000u),
+		         (unsigned long long)(g_stats.wait_ns/n/1000u),
+		         (unsigned long long)(g_stats.check_ns/n/1000u),
+		         (unsigned long long)(g_stats.max_wait_ns/1000u),
+		         (unsigned long long)g_stats.spins, (unsigned long long)g_stats.parks,
+		         (unsigned long long)g_stats.short_parks,
+		         (unsigned long long)g_stats.spin_failures);
+	}
+	pthread_mutex_unlock(&g_submit_lock);
+	return rc;
+}
 
 void adreno_ring_trace(uint32_t submissions) {
 	__atomic_store_n(&g_trace_submissions, submissions > 256u ? 256u : submissions,
@@ -189,9 +240,12 @@ static int ring_wait_drained(adreno_dev_t *d) {
    RPTR is sampled once only after the fence lands (and remains the authority
    for ring-space checks before the next submit). No GX MMIO poll. */
 static int ring_wait_submit(adreno_dev_t *d, uint64_t start,
-                           volatile uint32_t *fence_mem, uint32_t fence) {
+                           volatile uint32_t *fence_mem, uint32_t fence,
+                           submit_stats_t *sample) {
 	adreno_ring_t *ring = &d->ring;
 	uint32_t target = get_wptr(ring);
+	uint32_t parks = 0;
+	uint32_t spins = 0;
 	for (uint32_t i = 0; i < RING_IDLE_TRIES; i++) {
 		if (fence_mem != NULL) {
 			/* CACHE_FLUSH_TS is emitted after the whole IB. Avoid an RPTR
@@ -215,13 +269,31 @@ static int ring_wait_submit(adreno_dev_t *d, uint64_t start,
 		/* The timeout is a safety bound, not part of the normal fast path.
 		   Once parked, check every wake so a delayed scheduler cannot turn
 		   one long sleep into many extra timeout intervals. */
-		if (((i < RING_SUBMIT_SPINS) ? ((i & 31u) == 0) : true) &&
+		if ((parks != 0 || (spins & 31u) == 0) &&
 				kernel_tic_ms(0) - start >= RING_SUBMIT_TIMEOUT_MS)
 			break;
-		if (i < RING_SUBMIT_SPINS)
-			proc_nsleep_precise(10000);
-		else
-			usleep(1000);
+		if (spins < RING_SUBMIT_SPINS) {
+			spins++;
+			int rc = proc_nsleep_precise(10000);
+			if (sample) {
+				sample->spins++;
+				sample->spin_failures += rc != 0;
+			}
+		}
+		else {
+			/* libc usleep(<=200) busy-waits. Use the syscall directly to
+			 * really park until the next tick; longer jobs keep 1ms backoff. */
+			int short_park = g_wait_adaptive && parks == 0;
+			parks++;
+			if (sample) {
+				sample->parks++;
+				sample->short_parks += short_park;
+			}
+			if (short_park)
+				syscall1(SYS_USLEEP, 1);
+			else
+				usleep(1000);
+		}
 	}
 	return -1;
 }
@@ -433,11 +505,20 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	int rc;
 	uint64_t start;
 	int trace = 0;
+	int profile = __atomic_load_n(&g_profile_enabled, __ATOMIC_RELAXED);
+	submit_stats_t sample;
+	uint64_t entered = profile ? profile_ns() : 0;
+	uint64_t locked = 0, posted = 0, retired = 0;
 
 	if (cmds == 0 || dwords == 0)
 		return ADRENO_E_DECLINED;
 
 	pthread_mutex_lock(&g_submit_lock);
+	profile = profile && g_profile_enabled;
+	if (profile) {
+		locked = profile_ns();
+		memset(&sample, 0, sizeof(sample));
+	}
 	start = kernel_tic_ms(0);
 
 	if (d->wedged) {
@@ -459,7 +540,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	   decline (the staging IB may still be in flight and must not be
 	   overwritten below). */
 	if (ring_freewords(d) < 16) {
-		if (ring_wait_submit(d, start, NULL, 0) != 0) {
+		if (ring_wait_submit(d, start, NULL, 0, profile ? &sample : NULL) != 0) {
 			ring_mark_wedged(d, "ring did not drain before submit");
 			rc = ADRENO_E_TIMEOUT;
 			goto out;
@@ -496,13 +577,16 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 
 	if (trace)
 		klog("adreno_trace: doorbell fence=%u wptr=%u\n", fence, get_wptr(ring));
+	if (profile) posted = profile_ns();
 	ring_flush(ring);
 	if (trace)
 		klog("adreno_trace: wait fence=%u\n", fence);
 
 	/* Both RPTR and the fence must complete within the same wall deadline.
 	   From the doorbell onwards, a failure is terminal, never CPU replay. */
-	if (ring_wait_submit(d, start, fence_mem, fence) != 0) {
+	int wait_rc = ring_wait_submit(d, start, fence_mem, fence, profile ? &sample : NULL);
+	if (profile) retired = profile_ns();
+	if (wait_rc != 0) {
 		klog("adreno_ring: fence %u timeout after %ums (words=%u mem=%08x shadow=%08x wptr=%08x)\n",
 		     fence, (unsigned)(kernel_tic_ms(0) - start), dwords,
 		     fence_mem[0], ((volatile uint32_t *)d->rptr_shadow.va)[0],
@@ -525,6 +609,21 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 		klog("adreno_trace: checked fence=%u\n", fence);
 
 out:
+	if (profile && posted != 0) {
+		uint64_t done = profile_ns();
+		g_stats.jobs++;
+		g_stats.errors += rc != ADRENO_OK;
+		g_stats.lock_ns += locked - entered;
+		g_stats.stage_ns += posted - locked;
+		g_stats.wait_ns += retired - posted;
+		g_stats.check_ns += done - retired;
+		if (retired - posted > g_stats.max_wait_ns)
+			g_stats.max_wait_ns = retired - posted;
+		g_stats.spins += sample.spins;
+		g_stats.parks += sample.parks;
+		g_stats.short_parks += sample.short_parks;
+		g_stats.spin_failures += sample.spin_failures;
+	}
 	pthread_mutex_unlock(&g_submit_lock);
 	return rc;
 }

@@ -145,6 +145,9 @@ uint32_t bsp_g2d_version(void) {
 }
 
 int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {
+	if (argc > 0 && argv && argv[0] &&
+	    (strcmp(argv[0], "submit") == 0 || strcmp(argv[0], "stat") == 0))
+		return adreno_ring_cmd(argc, argv, buf, len);
 	if (argc > 0 && argv && argv[0] && strcmp(argv[0], "trace") == 0) {
 		if (argc != 2 || !argv[1] || !argv[1][0])
 			return -1;
