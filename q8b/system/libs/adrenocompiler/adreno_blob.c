@@ -117,6 +117,16 @@ emit_kernel(uint8_t *base, uint32_t off, const adreno_prog_kernel_t *k,
 	return off;
 }
 
+/* Unlike V3D's bsp_g3d, bsp_cl_program_load validates only ADRENO_PROG_MAGIC,
+   so a client that persists a blob across launches cannot rely on the daemon to
+   reject a stale layout - it has to check this itself.  Both versions
+   pglc_program_serialize below can emit are folded into one number, so a change
+   to either invalidates every persisted record. */
+uint32_t pglc_blob_format_version(void)
+{
+	return (ADRENO_PROG_VERSION << 8) | ADRENO_PROG_PIXEL_VERSION;
+}
+
 uint32_t pglc_program_serialize(const struct pglc_program *main,
                                 const struct pglc_program *xform,
                                 const struct pglc_blob_opts *opts,
