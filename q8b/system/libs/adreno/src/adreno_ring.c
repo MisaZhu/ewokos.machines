@@ -88,6 +88,7 @@
 #define RING_IDLE_TRIES              100000  /* ~1 s                     */
 #define RING_SUBMIT_TIMEOUT_MS       1000u
 #define RING_SUBMIT_SPINS            32u
+#define RING_SUBMIT_SHORT_PARKS      8u
 
 #define gpu_read(w)                  adreno_gpu_read(w)
 #define gpu_write(w, v)              adreno_gpu_write((w), (v))
@@ -95,7 +96,7 @@
 /* One submit at a time, held across the completion wait (see header). */
 static pthread_mutex_t g_submit_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t g_trace_submissions;
-/* Keep the 32 x 10us spin budget, then check at the next timer tick. */
+/* Keep the 32 x 10us spin budget, then check each early timer wake. */
 static int g_wait_adaptive = 1;
 static int g_profile_enabled;
 typedef struct {
@@ -282,8 +283,10 @@ static int ring_wait_submit(adreno_dev_t *d, uint64_t start,
 		}
 		else {
 			/* libc usleep(<=200) busy-waits. Use the syscall directly to
-			 * really park until the next tick; longer jobs keep 1ms backoff. */
-			int short_park = g_wait_adaptive && parks == 0;
+			 * park at each early tick. One short park followed by 1ms can
+			 * skip the SECOND tick and delay medium/long blits. Bound the
+			 * early wakes, then keep the historical backoff for stuck jobs. */
+			int short_park = g_wait_adaptive && parks < RING_SUBMIT_SHORT_PARKS;
 			parks++;
 			if (sample) {
 				sample->parks++;
