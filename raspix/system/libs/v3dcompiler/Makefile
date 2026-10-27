@@ -65,8 +65,20 @@ V3D_FORCEINC = -include $(PORT_DIR)/mesa_config.h
 
 # -w: mesa is vendored third-party code; -std=gnu11 / -std=gnu++17 appended
 # LAST override make.rule's -std=c99 / -std=c++14 (GCC honours the last -std).
-CFLAGS   := $(V3D_INC) $(V3D_FORCEINC) $(CFLAGS) -w -std=gnu11
-CXXFLAGS := $(V3D_INC) $(V3D_FORCEINC) $(CXXFLAGS) -w -std=gnu++17
+# -DNDEBUG: MUST match the shared frontend (pglcompiler/Makefile).  This backend
+#     includes the FRONTEND's compiler/nir/nir.h (V3D_INC line -I.../nir), which
+#     under #ifndef NDEBUG declares nir_validate_*/nir_metadata_set_validation_flag
+#     as real externs and expands NIR_PASS()'s progress validation, and under
+#     NDEBUG swaps them for no-op inlines.  If the two halves disagree the
+#     backend's v3d_backend.o etc. emit calls to validator/debug symbols the
+#     (NDEBUG) frontend no longer compiles -> undefined-reference link failure
+#     (nir_debug, nir_validate_progress_*, nir_metadata_set_validation_flag,
+#     nir_debug_print_shader).  Building both as release also drops the
+#     debug-only validator that NULL-derefs (data-abort, fault=0x0) on large
+#     fullscreen shaders after the backend already emitted valid QPU.  No
+#     codegen change.
+CFLAGS   := $(V3D_INC) $(V3D_FORCEINC) $(CFLAGS) -w -DNDEBUG -std=gnu11
+CXXFLAGS := $(V3D_INC) $(V3D_FORCEINC) $(CXXFLAGS) -w -DNDEBUG -std=gnu++17
 
 # === sources ================================================================
 S = mesa/src
