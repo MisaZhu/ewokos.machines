@@ -512,7 +512,7 @@ static int program_load_locked(const void *blob, uint32_t size) {
 	if (h->is_geom > 5u)
 		return -1;
 	if (h->reserved || (h->version == ADRENO_PROG_PIXEL_VERSION &&
-	    h->is_geom != 1u && h->is_geom != 2u))
+	    h->is_geom != 1u && h->is_geom != 2u && h->is_geom != 5u))
 		return -1;
 	if (h->is_geom != 0 && !have_xform)
 		return -1;
@@ -1437,6 +1437,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	struct ib xform_ib, raster_ib;
 	uint32_t ntris, split = s->cs2_uniform_blob_dwords;
 	uint32_t xwg, tpw, pstride, rec;
+	uint32_t dispatch_w = w, dispatch_h = h;
 	int gtex = (s->is_geom == 2), ginst = (s->is_geom == 3), gtc = (s->is_geom == 4);
 	int gvk = (s->is_geom == 5);
 	int gtexc = gtex || gtc;   /* textured family: ctex unit 0 is the image */
@@ -1546,8 +1547,22 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	grid[1] = 1u;
 	grid[2] = 1u;
 	if (s->pixel_owned) {
-		grid[0] = (w + rs->k.local_size[0] - 1u) / rs->k.local_size[0];
-		grid[1] = (h + rs->k.local_size[1] - 1u) / rs->k.local_size[1];
+		/* Pixel-owned raster kernels normally launch one workgroup per screen
+		   tile.  The client can provide a conservative primitive bounding box;
+		   launch only that rectangle and let dispatchOffset map global IDs back
+		   to framebuffer coordinates.  Keep the full-frame fallback for older
+		   callers and reject malformed windows before touching the GPU. */
+		if (g->dispatch_w || g->dispatch_h || g->dispatch_x || g->dispatch_y) {
+			if (!g->dispatch_w || !g->dispatch_h ||
+			    g->dispatch_x >= w || g->dispatch_y >= h ||
+			    g->dispatch_w > w - g->dispatch_x ||
+			    g->dispatch_h > h - g->dispatch_y)
+				return ADRENO_E_DECLINED;
+			dispatch_w = g->dispatch_w;
+			dispatch_h = g->dispatch_h;
+		}
+		grid[0] = (dispatch_w + rs->k.local_size[0] - 1u) / rs->k.local_size[0];
+		grid[1] = (dispatch_h + rs->k.local_size[1] - 1u) / rs->k.local_size[1];
 	}
 	rc = build_cs_dispatch(rs, binds, gvk ? 3u : 4u,
 	                      gvk ? tex : NULL, gvk ? num_tex : 0u,

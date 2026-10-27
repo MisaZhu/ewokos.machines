@@ -33,6 +33,9 @@
 #include <adreno/adreno_fw.h>
 #include <adreno/a6xx_gmu_regs.h>
 #include <ewoksys/klog.h>
+
+/* Temporary bring-up visibility over the log daemon. */
+#define klog slog
 #include <ewoksys/proc.h>
 #include <stdlib.h>
 #include <string.h>
@@ -236,7 +239,15 @@ static int hfi_wait_for_ack(uint32_t id, uint32_t seqnum,
 	                      A6XX_GMU_GMU2HOST_INTR_INFO_MSGQ,
 	                      A6XX_GMU_GMU2HOST_INTR_INFO_MSGQ, 100000);
 	if (ret) {
-		klog("adreno_gmu: HFI ack timeout seq=%u\n", seqnum);
+		klog("adreno_gmu: HFI ack timeout seq=%u intr=%x ao=%x "
+		     "rx=%u/%u tx=%u/%u dbg=%u/%u dbg0=%x cm3=%x busy=%x\n", seqnum,
+		     adreno_gmu_read(REG_A6XX_GMU_GMU2HOST_INTR_INFO),
+		     adreno_gmu_read(REG_A6XX_GMU_AO_HOST_INTERRUPT_STATUS),
+		     q->header->read_index, q->header->write_index,
+		     q->header->rx_request, q->header->tx_request,
+		     0u, 0u, 0u,
+		     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_INIT_RESULT),
+		     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_BUSY));
 		return -1;
 	}
 	adreno_gmu_write(REG_A6XX_GMU_GMU2HOST_INTR_CLR,
@@ -274,8 +285,9 @@ static int hfi_wait_for_ack(uint32_t id, uint32_t seqnum,
 			continue;
 		}
 		klog("adreno_gmu: HFI response msg=%u seq=%u header=%x ret=%x "
-		     "error=%u size=%u\n", id, seqnum, resp.header, resp.ret_header,
-		     resp.error, HFI_HEADER_SIZE(resp.header));
+		     "error=%u size=%u payload=%x/%x/%x/%x\n", id, seqnum,
+		     resp.header, resp.ret_header, resp.error, HFI_HEADER_SIZE(resp.header),
+		     resp.payload[0], resp.payload[1], resp.payload[2], resp.payload[3]);
 		if (resp.error) {
 			klog("adreno_gmu: HFI msg seq=%u error=%u\n", seqnum, resp.error);
 			return -3;
@@ -348,9 +360,9 @@ static void hfi_init(adreno_dev_t *d) {
 	tbl->num_queues    = HFI_MAX_QUEUES;
 	tbl->active_queues = HFI_MAX_QUEUES;
 
-	/* Linux a6xx_gmu::queues has exactly two entries: command (id 0) at
-	   +4K and response (id 1, non-legacy) at +8K.  The separately allocated
-	   debug BO is passed later in HFI_H2F_MSG_INIT; it is not a third queue. */
+	/* Linux a6xx_gmu::queues uses command (id 0) and response (id 1),
+	   each in a dedicated 4K slot.  Keep the table identical to Linux:
+	   the A660 firmware's internal debug messages go to its log BO. */
 	hfi_queue_init(&g_queues[HFI_COMMAND_QUEUE], &hdrs[0],
 	               (uint32_t*)(base + 4096), d->gmu_hfi.iova + 4096,
 	               HFI_COMMAND_QUEUE);
@@ -392,6 +404,7 @@ static int hfi_send_perf_table(void) {
 		                         &msg.gx_votes[i].vote) != 0)
 			return -1;
 		msg.gx_votes[i].acd = 0xffffffffu;
+		/* Values here are already in the HFI kHz units (Linux's OPP Hz / 1000). */
 		msg.gx_votes[i].freq = gpu_freqs[i];
 		klog("adreno_gmu: GX perf[%u] freq=%u level=%u vote=%x\n",
 		     i, gpu_freqs[i], gpu_levels[i], msg.gx_votes[i].vote);
@@ -432,6 +445,7 @@ static int hfi_send_bw_table(void) {
 static int hfi_send_core_fw_start(void) {
 	struct hfi_msg_core_fw_start msg;
 	memset(&msg, 0, sizeof(msg));
+	msg.handle = 0;
 	return hfi_send_msg(HFI_H2F_MSG_CORE_FW_START, &msg, sizeof(msg), 0, 0);
 }
 

@@ -236,6 +236,14 @@ typedef struct {
 	uint32_t ctex_h;       /* unit 0 height, rows                               */
 	int      first_frame;  /* clear fb to clear_rgba + depth to ~0 first       */
 	uint32_t clear_rgba;   /* 0xAABBGGRR, portablegl byte order                 */
+	/* Optional pixel-owned launch window.  Zero width/height means the full
+	   framebuffer; otherwise the raster grid covers this top-left-origin
+	   rectangle and the shader's dispatchOffset uniform maps it back to the
+	   framebuffer coordinates. */
+	uint32_t dispatch_x;
+	uint32_t dispatch_y;
+	uint32_t dispatch_w;
+	uint32_t dispatch_h;
 } adreno_3d_geom_t;
 
 /* Sampled-texture units for the fullscreen (is_geom==0) path: one entry per

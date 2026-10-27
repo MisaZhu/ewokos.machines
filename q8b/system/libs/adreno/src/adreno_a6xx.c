@@ -48,6 +48,10 @@
 #include <string.h>
 #include <errno.h>
 
+/* Temporary bring-up visibility: route this file's stage diagnostics through
+ * the log daemon so they can be collected over SSH on Q8B. */
+#define klog slog
+
 /* --- array-base registers not emitted into a6xx_regs.h (Mesa a6xx.xml) --- */
 #define REG_A6XX_CP_PROTECT(n)            (0x00000850u + (n))  /* stride 1 */
 #define REG_A6XX_CP_PERFCTR_CP_SEL(n)     (0x000008d0u + (n))  /* stride 1 */

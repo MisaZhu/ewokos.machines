@@ -133,6 +133,8 @@ static int g3d_probe(void) {
 	g_g3d_ready = (rc == 0) ? 1 : -1;
 	klog("q8b g3d: adreno bring-up %s (rc=%d)\n",
 			(g_g3d_ready == 1) ? "OK" : "DECLINED", rc);
+	slog("q8b g3d: adreno bring-up %s (rc=%d)\n",
+			(g_g3d_ready == 1) ? "OK" : "DECLINED", rc);
 	return g_g3d_ready;
 }
 
@@ -153,6 +155,7 @@ static int32_t a3d_result(int rc) {
 int32_t bsp_g3d_init(void) {
 	/* 3D is optional: g2dd ignores this return value.  Probe (gated) so
 	   an opted-in board reports bring-up status; never fail init. */
+	slog("q8b g3d: init optin=%d\n", adreno_opted_in());
 	(void)g3d_probe();
 	return 0;
 }
@@ -205,7 +208,7 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	   keep the shared signature byte-identical across the seven machines. */
 	(void)fs_id; (void)color; (void)rb_swap; (void)depth_func;
 	(void)depth_mask; (void)blend_en; (void)cull_en; (void)clear_z;
-	(void)ext; (void)tex;
+	(void)tex;
 
 	if (adreno_wedged())
 		return G2D_ERR_TIMEOUT;
@@ -279,6 +282,17 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	}
 	g.first_frame = first_frame;
 	g.clear_rgba  = clear_rgba;
+	/* Optional conservative launch window for the pixel-owned compute raster.
+	   All-zero keeps the full-frame behavior for older callers. */
+	if (ext) {
+		const g2d_pgl_ext_t* e = (const g2d_pgl_ext_t*)ext;
+		g.dispatch_x = (uint32_t)e->dispatch_x;
+		g.dispatch_y = (uint32_t)e->dispatch_y;
+		g.dispatch_w = (uint32_t)e->dispatch_w;
+		g.dispatch_h = (uint32_t)e->dispatch_h;
+	} else {
+		g.dispatch_x = g.dispatch_y = g.dispatch_w = g.dispatch_h = 0;
+	}
 
 	return a3d_result(adreno_3d_draw(fb_phy, w, h, stride, prog_handle, &g,
 			atex, num_tex, (const uint32_t*)unif, num_uniforms));
