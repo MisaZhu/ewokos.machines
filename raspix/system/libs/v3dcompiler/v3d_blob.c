@@ -34,6 +34,14 @@ be_of(const struct pglc_stage *st)
 	return st->backend ? (const struct v3d_pglc_stage *)st->backend : &s_zero_stage;
 }
 
+/* bsp_g3d_program validates this field itself (it rejects a version above its
+   own), so a client-side blob cache that records it cannot outlive a wire
+   change. */
+uint32_t pglc_blob_format_version(void)
+{
+	return G2D_PGL_PROGRAM_VERSION;
+}
+
 uint32_t pglc_program_serialize(const struct pglc_program *main,
                                 const struct pglc_program *xform,
                                 const struct pglc_blob_opts *opts,
