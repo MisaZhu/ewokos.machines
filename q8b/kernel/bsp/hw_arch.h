@@ -200,6 +200,16 @@
 
 #endif
 
+/* PCIe4: M.2 E-key WLAN (SC8280XP domain 6), from the board DTS. */
+#define Q8B_PCIE4_DBI_PHY        0x30000000ULL
+#define Q8B_PCIE4_DBI_SIZE       0x00004000ULL
+#define Q8B_PCIE4_ECAM_PHY       0x400000000ULL
+#define Q8B_PCIE4_ECAM_SIZE      0x10000000ULL
+#define Q8B_PCIE4_MEM32_PHY      0x410000000ULL
+#define Q8B_PCIE4_MEM32_SIZE     0x10000000ULL
+#define Q8B_PCIE4_MEM64_PHY      0x420000000ULL
+#define Q8B_PCIE4_MEM64_SIZE     0x20000000ULL
+
 /* PCIe3a outbound apertures used by the on-board TC9563/QPS615 switch. */
 #define Q8B_PCIE3A_ECAM_PHY      0x480000000ULL
 #define Q8B_PCIE3A_ECAM_SIZE     0x10000000ULL

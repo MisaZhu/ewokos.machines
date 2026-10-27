@@ -348,6 +348,20 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
     if (phy_top <= 0x20000000ULL)
         return 0;
 
+    /* E-key Wi-Fi config space and assigned BAR apertures. */
+    if (phy_base >= Q8B_PCIE4_DBI_PHY &&
+            phy_top <= Q8B_PCIE4_DBI_PHY + Q8B_PCIE4_DBI_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE4_ECAM_PHY &&
+            phy_top <= Q8B_PCIE4_ECAM_PHY + Q8B_PCIE4_ECAM_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE4_MEM32_PHY &&
+            phy_top <= Q8B_PCIE4_MEM32_PHY + Q8B_PCIE4_MEM32_SIZE)
+        return 0;
+    if (phy_base >= Q8B_PCIE4_MEM64_PHY &&
+            phy_top <= Q8B_PCIE4_MEM64_PHY + Q8B_PCIE4_MEM64_SIZE)
+        return 0;
+
     /* Q8B PCIe3a ECAM and the two outbound memory windows. Keep these
      * explicit: allowing every address above 4GB would expose arbitrary
      * DRAM and unrelated devices through SYS_MEM_MAP. */

@@ -20,6 +20,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/basic/libs/openlibm/src \
 	-I $(SYS_DIR)/gui/libs/usb/include \
 	-I $(SYS_DIR)/gui/libs/hid/include \
+	-I $(SYS_DIR)/gui/libs/bt/include \
 	-I $(SYS_DIR)/gui/libs/graph/include \
 	-I $(SYS_DIR)/gui/libs/g2dclient/include \
 	-I $(MAKEINC_DIR)/../include \
@@ -38,6 +39,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/sdcc2.o \
 	$(ARCH)/src/bsp_fb.o $(ARCH)/src/bsp_gpio.o \
 	$(ARCH)/src/xhci.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_eth.o \
+	$(ARCH)/src/bsp_usbbt.o $(ARCH)/src/bsp_bt.o \
 	$(ARCH)/src/bsp_g2d.o $(ARCH)/src/bsp_g3d.o $(ARCH)/src/bsp_cl.o \
 	$(SYS_DIR)/platform/$(ARCH)/src/g2d_arch.o \
 	$(ARCH)/src/nvme.o

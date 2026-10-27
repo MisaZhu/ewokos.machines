@@ -280,6 +280,7 @@ int bsp_usb_init(void) {
 
 int bsp_usb_reinit(void) {
     int found = 0;
+    bsp_usb_bt_reset();
 
     (void)uhci_reinit();
     /* a re-init drops every device: the controllers forget all addresses
@@ -307,6 +308,7 @@ int bsp_usb_reinit(void) {
 }
 
 void bsp_usb_poll(void) {
+    bsp_usb_bt_poll();
     if (_msc_mount_pending) {
         _msc_mount_pending = false;
         msc_mount_spawn();
@@ -1104,21 +1106,4 @@ int bsp_usb_msc_cntl(vdevice_t* vdev, int from_pid, int cmd,
     default:
         return -1;
     }
-}
-
-/* Bluetooth HCI is a separate board milestone; keep the shared usbhostd
- * hooks total so ordinary composite devices can still enumerate. */
-int bsp_usb_bt_probe(bsp_usb_dev_t* dev, uint16_t vid, uint16_t pid,
-        const uint8_t* cfg, int cfg_len) {
-    (void)dev; (void)vid; (void)pid; (void)cfg; (void)cfg_len;
-    return -1;
-}
-
-void bsp_usb_bt_detach(bsp_usb_dev_t* dev) { (void)dev; }
-bool bsp_usb_bt_attached(bsp_usb_dev_t* dev) { (void)dev; return false; }
-
-int bsp_usb_bt_cntl(vdevice_t* vdev, int from_pid, int cmd,
-        proto_t* in, proto_t* out) {
-    (void)vdev; (void)from_pid; (void)cmd; (void)in; (void)out;
-    return -1;
 }
