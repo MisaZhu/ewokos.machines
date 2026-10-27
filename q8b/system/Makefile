@@ -101,7 +101,7 @@ network_sys: basic_sys
 # enabled directly in each init.rd before any display/desktop clients start.
 # Keep Bluetooth out until its board-specific transport lands.
 GUI_DRIVERS = displaymand consoled fontd g2dd usbhostd hid_keybd hid_moused \
-	usbfat32fsd
+	hid_touchd usbfat32fsd
 
 gui_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/gui mkdirs
