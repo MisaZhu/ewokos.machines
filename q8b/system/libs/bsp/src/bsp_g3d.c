@@ -266,6 +266,8 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 			atex[u].tiling     = c->ctex_tiling[u];
 			atex[u].ub_pad     = c->ctex_ub_pad[u];
 			atex[u].depth      = c->ctex_depth[u];
+			atex[u].levels     = c->ctex_levels[u];
+			atex[u].sampler    = c->ctex_sampler[u];
 			atex[u].arrstride64 = c->ctex_arrstride64[u];
 		}
 		num_tex = G2D_PGL_MAX_TEX_UNITS;

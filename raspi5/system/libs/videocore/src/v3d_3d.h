@@ -190,10 +190,12 @@ typedef struct {
      * for a plain 2D image, leaving its texture-state record byte-identical. */
     uint8_t  ctex_depth[V3D_3D_MAX_TEX_UNITS];
     uint32_t ctex_arrstride64[V3D_3D_MAX_TEX_UNITS];
-    /* Per-unit TMU mag/min filter (V3D_3D_TEX_FILTER_*): the sampler record
-     * for unit i is repacked each draw to match.  0 = NEAREST (the historic
-     * fixed sampler, what a client that never sets it gets). */
+    /* Complete mip count and independent mag/min/mip filters.  levels == 0
+     * is normalized to one by the request decoder. */
+    uint8_t  ctex_levels[V3D_3D_MAX_TEX_UNITS];
     uint8_t  ctex_filter[V3D_3D_MAX_TEX_UNITS];
+    uint8_t  ctex_min_filter[V3D_3D_MAX_TEX_UNITS];
+    uint8_t  ctex_mip_filter[V3D_3D_MAX_TEX_UNITS];
 } v3d_3d_ctex_t;
 #define V3D_3D_TEX_FILTER_NEAREST 0u
 #define V3D_3D_TEX_FILTER_LINEAR  1u

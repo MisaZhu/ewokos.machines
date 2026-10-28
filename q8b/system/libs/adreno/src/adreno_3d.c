@@ -678,17 +678,17 @@ static void build_tex_desc(uint32_t *desc, uint64_t base, uint32_t w, uint32_t h
 }
 
 /* ------------------------------------------------------------------ */
-/* Build one 4-dword a6xx_tex_samp sampler descriptor.  `linear` picks        */
-/* NEAREST vs LINEAR magnification / minification (from the ctex ub_pad high  */
-/* nibble, G2D_PGL_CTEX_FILTER_*); wrap is REPEAT on all axes (the client does */
-/* not convey a wrap mode).  Coords stay normalized, LOD pinned to level 0    */
-/* (the uploaded image has a single mip level).  dword2/dword3 stay 0.        */
+/* Build one 4-dword a6xx_tex_samp sampler descriptor.  Magnification and
+ * minification are independent; wrap is REPEAT on all axes (the client does
+ * not convey a wrap mode).  LOD stays pinned to level 0 because this backend
+ * declines multi-level descriptors until their layout is validated. */
 /* ------------------------------------------------------------------ */
-static void build_samp_desc(uint32_t *desc, int linear) {
-	uint32_t f = linear ? A6XX_TEX_LINEAR : A6XX_TEX_NEAREST;
+static void build_samp_desc(uint32_t *desc, int mag_linear, int min_linear) {
+	uint32_t mag = mag_linear ? A6XX_TEX_LINEAR : A6XX_TEX_NEAREST;
+	uint32_t min = min_linear ? A6XX_TEX_LINEAR : A6XX_TEX_NEAREST;
 	memset(desc, 0, A6XX_TEX_SAMP_DWORDS * 4u);
-	desc[0] = A6XX_TEX_SAMP_0_XY_MAG(f) |
-	          A6XX_TEX_SAMP_0_XY_MIN(f) |
+	desc[0] = A6XX_TEX_SAMP_0_XY_MAG(mag) |
+	          A6XX_TEX_SAMP_0_XY_MIN(min) |
 	          A6XX_TEX_SAMP_0_WRAP_S(A6XX_TEX_REPEAT) |
 	          A6XX_TEX_SAMP_0_WRAP_T(A6XX_TEX_REPEAT) |
 	          A6XX_TEX_SAMP_0_WRAP_R(A6XX_TEX_REPEAT);
@@ -774,6 +774,8 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 			return ADRENO_E_DECLINED;    /* FS samples an unbound unit -> CPU */
 		t = &tex[i];
 		if (t->tiling != 0)                  /* q8b only uploads linear */
+			return ADRENO_E_DECLINED;
+		if (t->levels > 1)                   /* multi-level layout not validated */
 			return ADRENO_E_DECLINED;
 		if ((t->phy & 0x1fu) != 0)           /* BASE_LO is shr5 */
 			return ADRENO_E_DECLINED;
@@ -873,7 +875,7 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 			uint32_t *sd = (uint32_t *)(samp_base + i * A6XX_TEX_SAMP_DWORDS * 4u);
 			int cube = (i < ADRENO_PROG_MAX_TEX &&
 			            k->tex_type[i] == ADRENO_PROG_TEX_CUBE);
-			int linear = 0;
+			int mag_linear = 0, min_linear = 0;
 			if (i < num_tex && tex[i].phy != 0) {
 				const adreno_3d_tex_t *t = &tex[i];
 				uint32_t stride = t->stride;   /* non-zero: validated above */
@@ -883,12 +885,18 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 				uint32_t ap = cube ? (uint32_t)((uint64_t)t->arrstride64 * 64u)
 				                   : stride * t->h;
 				build_tex_desc(td, t->phy, t->w, t->h, stride, ap, cube);
-				linear = ((t->ub_pad >> 4) & 0xFu) == 1u;  /* G2D_PGL_CTEX_FILTER_LINEAR */
+				if (t->levels != 0) {
+					mag_linear = (t->sampler & ADRENO_3D_TEX_SAMPLER_MAG_LINEAR) != 0;
+					min_linear = (t->sampler & ADRENO_3D_TEX_SAMPLER_MIN_LINEAR) != 0;
+				} else {
+					mag_linear = min_linear =
+						((t->ub_pad >> 4) & 0xFu) == 1u;
+				}
 			} else {
 				/* dummy: 1x1 (cube faces strided 64 B, all inside the scratch) */
 				build_tex_desc(td, dummy_iova, 1u, 1u, 4u, cube ? 64u : 4u, cube);
 			}
-			build_samp_desc(sd, linear);
+			build_samp_desc(sd, mag_linear, min_linear);
 		}
 		/* Device bring-up diagnostic: dump the first few textured
 		   bindings so a black-screen report can be matched against what

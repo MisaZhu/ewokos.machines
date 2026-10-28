@@ -212,6 +212,9 @@ typedef struct {
 #define VC_PGL3D_CTEX_FILTER_LINEAR  1u
 #define VC_PGL3D_CTEX_FILTER_OF(ub_pad) \
     (((uint32_t)(ub_pad) >> VC_PGL3D_CTEX_FILTER_SHIFT) & 0x0Fu)
+#define VC_PGL3D_CTEX_SAMPLER_MAG_LINEAR 0x01u
+#define VC_PGL3D_CTEX_SAMPLER_MIN_LINEAR 0x02u
+#define VC_PGL3D_CTEX_SAMPLER_MIP_LINEAR 0x04u
     ewokos_addr_t ctex_phy[VC_PGL3D_MAX_TEX_UNITS];
     uint8_t       ctex_contig[VC_PGL3D_MAX_TEX_UNITS];
     uint32_t      ctex_stride[VC_PGL3D_MAX_TEX_UNITS];
@@ -227,6 +230,10 @@ typedef struct {
      * bytes and each face's image_width/height come from ctex_w/ctex_h. */
     uint8_t       ctex_depth[VC_PGL3D_MAX_TEX_UNITS];
     uint32_t      ctex_arrstride64[VC_PGL3D_MAX_TEX_UNITS];
+    /* levels == 0 preserves the legacy single-level ub_pad filter encoding;
+     * otherwise levels is 1..15 and ctex_sampler carries MAG/MIN/MIP bits. */
+    uint8_t       ctex_levels[VC_PGL3D_MAX_TEX_UNITS];
+    uint8_t       ctex_sampler[VC_PGL3D_MAX_TEX_UNITS];
 } vc_pgl3d_draw_req_t;
 
 /* Bring up the 3D pipeline on top of the CSD path's V3D init (idempotent):

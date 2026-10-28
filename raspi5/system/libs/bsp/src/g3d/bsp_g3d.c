@@ -185,6 +185,8 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
         memcpy(req.ctex_ub_pad, c->ctex_ub_pad, sizeof(req.ctex_ub_pad));
         memcpy(req.ctex_depth,       c->ctex_depth,       sizeof(req.ctex_depth));
         memcpy(req.ctex_arrstride64, c->ctex_arrstride64, sizeof(req.ctex_arrstride64));
+        memcpy(req.ctex_levels,      c->ctex_levels,      sizeof(req.ctex_levels));
+        memcpy(req.ctex_sampler,     c->ctex_sampler,     sizeof(req.ctex_sampler));
     }
     return pgl3d_rc(vc_pgl3d_draw(&req));
 }

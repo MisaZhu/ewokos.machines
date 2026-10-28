@@ -124,6 +124,22 @@ bool pglc_tex_layout_2d(uint32_t w, uint32_t h, uint32_t cpp,
    return true;
 }
 
+bool pglc_tex_layout_mip_chain(uint32_t w, uint32_t h, uint32_t cpp,
+                               uint32_t last_level,
+                               struct pglc_tex_layout *out)
+{
+   /* This older daemon still emits a single-level sampler record.  Do not
+    * stage level 0 and pretend that a mipmapped texture is complete. */
+   if (last_level != 0)
+      return false;
+   return pglc_tex_layout_2d(w, h, cpp, out);
+}
+
+bool pglc_tex_sampler_cube_supported(void)
+{
+   return false;
+}
+
 void pglc_tex_store_2d(void *dst, const void *src, uint32_t src_stride,
                        uint32_t w, uint32_t h, uint32_t cpp,
                        const struct pglc_tex_layout *layout)

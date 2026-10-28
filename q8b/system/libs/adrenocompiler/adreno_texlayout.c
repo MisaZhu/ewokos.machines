@@ -21,12 +21,29 @@ bool pglc_tex_layout_2d(uint32_t w, uint32_t h, uint32_t cpp,
 {
    if (!out || w == 0 || h == 0 || cpp == 0)
       return false;
+   memset(out, 0, sizeof(*out));
    out->tiling   = PGLC_TEX_TILING_RASTER;
    out->ub_pad   = 0;
    out->padded_w = w;
    out->padded_h = h;
    out->stride   = w * cpp;
    out->size     = out->stride * h;
+   return true;
+}
+
+bool pglc_tex_layout_mip_chain(uint32_t w, uint32_t h, uint32_t cpp,
+                               uint32_t last_level,
+                               struct pglc_tex_layout *out)
+{
+   /* The a6xx descriptor layout for multiple levels is not validated yet.
+    * Single-level images remain native; mipmapped draws use the CPU sampler. */
+   if (last_level != 0)
+      return false;
+   return pglc_tex_layout_2d(w, h, cpp, out);
+}
+
+bool pglc_tex_sampler_cube_supported(void)
+{
    return true;
 }
 

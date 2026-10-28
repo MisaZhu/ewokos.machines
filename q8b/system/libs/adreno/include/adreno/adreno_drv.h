@@ -255,6 +255,9 @@ typedef struct {
    the per-layer size in 64-byte units (layer L lives at phy + L*arrstride64*64);
    a plain 2D texture has depth<=1.  An entry with phy==0 is unbound and the
    daemon substitutes a 1x1 dummy so the slot samples safely. */
+#define ADRENO_3D_TEX_SAMPLER_MAG_LINEAR 0x01u
+#define ADRENO_3D_TEX_SAMPLER_MIN_LINEAR 0x02u
+#define ADRENO_3D_TEX_SAMPLER_MIP_LINEAR 0x04u
 typedef struct {
 	uint64_t phy;
 	uint32_t stride;       /* row pitch, bytes                                  */
@@ -263,8 +266,9 @@ typedef struct {
 	uint8_t  tiling;       /* 0 = linear raster (the only upload q8b produces)  */
 	uint8_t  ub_pad;       /* high nibble = G2D_PGL_CTEX_FILTER_*               */
 	uint8_t  depth;        /* cubemap layer count (6), else <=1                 */
-	uint8_t  reserved;
-	uint32_t arrstride64;  /* per-layer size in 64-byte units (cubemap)         */
+	uint8_t  levels;       /* complete mip count; 0 = legacy single level       */
+	uint8_t  sampler;      /* G2D_PGL_CTEX_SAMPLER_* when levels != 0           */
+	uint32_t arrstride64;  /* per-layer mip-tree size in 64-byte units          */
 } adreno_3d_tex_t;
 
 int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,

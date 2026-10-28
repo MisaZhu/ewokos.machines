@@ -124,6 +124,64 @@ bool pglc_tex_layout_2d(uint32_t w, uint32_t h, uint32_t cpp,
    return true;
 }
 
+bool pglc_tex_layout_mip_chain(uint32_t w, uint32_t h, uint32_t cpp,
+                               uint32_t last_level,
+                               struct pglc_tex_layout *out)
+{
+   uint32_t utile_w = v3d_utile_width((int)cpp);
+   uint32_t utile_h = v3d_utile_height((int)cpp);
+   uint32_t uif_block_w = utile_w * 2;
+   uint32_t uif_block_h = utile_h * 2;
+   uint64_t offset = 0;
+   uint32_t page_align_offset;
+   int i;
+
+   if (out == NULL || w == 0 || h == 0 || last_level > 14)
+      return false;
+   if (last_level != 0 &&
+       ((w & (w - 1)) != 0 || (h & (h - 1)) != 0))
+      return false;
+
+   /* v3d_setup_slices(): levels are stored small-to-large.  Level 1 may
+    * reserve page alignment before level 0; all offsets then move together
+    * so level 0 itself starts on a 4K boundary. */
+   for (i = (int)last_level; i >= 0; --i) {
+      uint32_t lw = w >> i;
+      uint32_t lh = h >> i;
+      uint32_t slice_total;
+      if (lw == 0) lw = 1;
+      if (lh == 0) lh = 1;
+      if (!pglc_tex_layout_2d(lw, lh, cpp, &out[i]))
+         return false;
+      if (offset > UINT32_MAX)
+         return false;
+      out[i].offset = (uint32_t)offset;
+      slice_total = out[i].size;
+      if (i == 1 &&
+          out[i].padded_w > 4 * uif_block_w &&
+          out[i].padded_h > PAGE_CACHE_MINUS_1_5_UB_ROWS * uif_block_h)
+         slice_total = align(slice_total, V3D_UIFCFG_PAGE_SIZE);
+      offset += slice_total;
+   }
+   if (offset > UINT32_MAX)
+      return false;
+
+   page_align_offset = align(out[0].offset, V3D_UIFCFG_PAGE_SIZE) -
+                       out[0].offset;
+   if (page_align_offset != 0) {
+      if (offset + page_align_offset > UINT32_MAX)
+         return false;
+      for (i = 0; i <= (int)last_level; ++i)
+         out[i].offset += page_align_offset;
+   }
+   return true;
+}
+
+bool pglc_tex_sampler_cube_supported(void)
+{
+   return true;
+}
+
 void pglc_tex_store_2d(void *dst, const void *src, uint32_t src_stride,
                        uint32_t w, uint32_t h, uint32_t cpp,
                        const struct pglc_tex_layout *layout)

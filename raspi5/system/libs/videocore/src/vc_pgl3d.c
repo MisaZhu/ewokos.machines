@@ -213,7 +213,7 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
     if (compiled) {
         uint32_t i;
         for (i = 0; i < VC_PGL3D_MAX_TEX_UNITS; i++) {
-            uint32_t stride_i, iova_i, depth_i;
+            uint32_t stride_i, iova_i, depth_i, levels_i, layers_i, sampler_i;
             size_t   map_bytes;
             if (req->ctex_phy[i] == 0)
                 continue;
@@ -223,17 +223,43 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
                                            : req->ctex_w[i] * 4u;
             if (stride_i < req->ctex_w[i] * 4u)
                 return decline(1, "ctex stride");
-            /* A cubemap / 2D-array unit (ctex_depth > 1) stores its layers
-             * contiguously at ctex_stride64*64-byte spacing, so the physical
-             * range the GPU may touch spans depth*arrstride64*64 bytes, NOT
-             * the single-face stride*height a plain 2D image uses.  Validate
-             * the whole array so the IOVA mapping covers every face. */
             depth_i = req->ctex_depth[i];
-            if (depth_i > 1 && req->ctex_arrstride64[i] > 0)
-                map_bytes = (size_t)depth_i *
+            levels_i = req->ctex_levels[i];
+            if ((depth_i > 1 && depth_i != 6) || levels_i > 15)
+                return decline(1, "ctex depth/levels");
+            if (levels_i == 0) {
+                levels_i = 1;
+                sampler_i = 0;
+            } else {
+                sampler_i = req->ctex_sampler[i];
+            }
+            if (levels_i > 1) {
+                uint32_t lw = req->ctex_w[i], lh = req->ctex_h[i];
+                uint32_t full_levels = 1;
+                if (((lw & (lw - 1u)) != 0) || ((lh & (lh - 1u)) != 0))
+                    return decline(1, "ctex NPOT mip chain");
+                while (lw > 1 || lh > 1) {
+                    lw = lw > 1 ? lw / 2u : 1u;
+                    lh = lh > 1 ? lh / 2u : 1u;
+                    ++full_levels;
+                }
+                if (full_levels != levels_i || req->ctex_arrstride64[i] == 0)
+                    return decline(1, "ctex incomplete mip chain");
+            }
+            layers_i = depth_i ? depth_i : 1u;
+            /* A mip tree is larger than level 0's stride*height even for 2D.
+             * arrstride64 is the aligned size of one complete tree and also
+             * the distance between cube faces. */
+            if (req->ctex_arrstride64[i] != 0) {
+                map_bytes = (size_t)layers_i *
                             (size_t)req->ctex_arrstride64[i] * 64u;
-            else
+                if (map_bytes == 0 || map_bytes > 0xffffffffu)
+                    return decline(1, "ctex mip-tree span");
+            } else {
+                if (depth_i > 1 || levels_i > 1)
+                    return decline(1, "ctex missing layer stride");
                 map_bytes = (size_t)stride_i * req->ctex_h[i];
+            }
             iova_i = gpu_phys(req->ctex_phy[i], map_bytes, req->ctex_contig[i]);
             if (iova_i == 0)
                 return decline(1, "ctex gpu_phys");
@@ -242,16 +268,26 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
             ctex.ctex_w[i]      = req->ctex_w[i];
             ctex.ctex_h[i]      = req->ctex_h[i];
             ctex.ctex_tiling[i] = req->ctex_tiling[i];
-            /* ctex_ub_pad packs the UIF ub_pad (low nibble) with the unit's
-             * sampler filter (high nibble, VC_PGL3D_CTEX_FILTER_*) so the
-             * request layout stayed byte-identical for older clients. */
             ctex.ctex_ub_pad[i] = (uint8_t)(req->ctex_ub_pad[i] &
                                             VC_PGL3D_CTEX_UB_PAD_MASK);
-            ctex.ctex_filter[i] =
-                (VC_PGL3D_CTEX_FILTER_OF(req->ctex_ub_pad[i]) ==
-                 VC_PGL3D_CTEX_FILTER_LINEAR) ? V3D_3D_TEX_FILTER_LINEAR
-                                              : V3D_3D_TEX_FILTER_NEAREST;
+            if (req->ctex_levels[i] == 0) {
+                uint32_t legacy =
+                    (VC_PGL3D_CTEX_FILTER_OF(req->ctex_ub_pad[i]) ==
+                     VC_PGL3D_CTEX_FILTER_LINEAR) ? V3D_3D_TEX_FILTER_LINEAR
+                                                  : V3D_3D_TEX_FILTER_NEAREST;
+                ctex.ctex_filter[i] = (uint8_t)legacy;
+                ctex.ctex_min_filter[i] = (uint8_t)legacy;
+                ctex.ctex_mip_filter[i] = V3D_3D_TEX_FILTER_NEAREST;
+            } else {
+                ctex.ctex_filter[i] = (sampler_i & VC_PGL3D_CTEX_SAMPLER_MAG_LINEAR)
+                    ? V3D_3D_TEX_FILTER_LINEAR : V3D_3D_TEX_FILTER_NEAREST;
+                ctex.ctex_min_filter[i] = (sampler_i & VC_PGL3D_CTEX_SAMPLER_MIN_LINEAR)
+                    ? V3D_3D_TEX_FILTER_LINEAR : V3D_3D_TEX_FILTER_NEAREST;
+                ctex.ctex_mip_filter[i] = (sampler_i & VC_PGL3D_CTEX_SAMPLER_MIP_LINEAR)
+                    ? V3D_3D_TEX_FILTER_LINEAR : V3D_3D_TEX_FILTER_NEAREST;
+            }
             ctex.ctex_depth[i]       = (uint8_t)depth_i;
+            ctex.ctex_levels[i]      = (uint8_t)levels_i;
             ctex.ctex_arrstride64[i] = req->ctex_arrstride64[i];
             ctex_path = 1;
         }
