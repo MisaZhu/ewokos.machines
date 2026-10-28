@@ -18,6 +18,7 @@
 @/bin/ipcserv /drivers/q8b/usbhostd      /dev/hid0
 @/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/hid0
 @/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/hid0
+@/bin/ipcserv /drivers/q8b/hid_touchd    /dev/touch0 /dev/hid0
 
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
@@ -27,6 +28,7 @@
 @/bin/ipcserv /drivers/fontd
 
 @/bin/ipcserv /drivers/xserverd          /dev/x
+@/bin/bgrun /sbin/x/xtouch
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0
 @/bin/bgrun /sbin/x/xim_none /dev/keyb0
 @/bin/bgrun /bin/x/xsession misa
