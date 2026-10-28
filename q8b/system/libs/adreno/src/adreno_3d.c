@@ -520,14 +520,26 @@ static int program_load_locked(const void *blob, uint32_t size) {
 		return -1;
 	if (have_xform && kern_validate(&h->kern[1]) != 0)
 		return -1;
-	/* geom_kind 5 is the fixed Vulkan-generated 8x8 transform + 16x16
-	   lane-per-triangle raster pair.  Validate its exact grid and stream
-	   geometry here so a malformed blob cannot overrun vout or render a
-	   partial triangle grid. */
+	/* geom_kind 5 is the Vulkan-generated 8x8-transform raster pair, in
+	   either of the two shapes spirv_to_geom_kernels emits (raspi5's v3d
+	   loader accepts both; declining one here would silently drop that
+	   pipeline to the client's CPU rasterizer every frame):
+	     - ONE-LANE-PER-TRIANGLE (non-textured/gouraud FS): geom_tpw 256,
+	       16x16 raster, grid ceil(ntris/256);
+	     - COOPERATIVE (textured FS, e.g. vkteapot's ImGui overlay):
+	       geom_tpw 0, 8x8 raster, one workgroup per triangle whose 64
+	       lanes tile its bbox.
+	   Validate the exact grid and stream geometry of each shape so a
+	   malformed blob cannot overrun vout or render a partial triangle
+	   grid. */
 	if (h->is_geom == 5u) {
-		if (h->geom_tpw != 256u ||
-		    h->kern[0].local_size[0] != 16u ||
-		    h->kern[0].local_size[1] != 16u ||
+		int lane_per_tri = (h->geom_tpw == 256u &&
+		                    h->kern[0].local_size[0] == 16u &&
+		                    h->kern[0].local_size[1] == 16u);
+		int cooperative  = (h->geom_tpw == 0u &&
+		                    h->kern[0].local_size[0] == 8u &&
+		                    h->kern[0].local_size[1] == 8u);
+		if ((!lane_per_tri && !cooperative) ||
 		    h->kern[0].local_size[2] != 1u ||
 		    h->kern[1].local_size[0] != 8u ||
 		    h->kern[1].local_size[1] != 8u ||
