@@ -176,9 +176,11 @@ int adreno_3d_init(void);
 /* a6xx compute-shader (CS) 3D back end (adreno_3d.c).  Loads a precompiled
    Adreno program blob (adreno_prog.h VERSION 2, the a6xx ir3 contract - NOT
    the V3D-QPU g2d_pgl_program_blob_t) and dispatches it either as a fullscreen
-   compute kernel that writes the framebuffer (is_geom == 0) or as the two-pass
-   compute geometry rasterizer (is_geom != 0: kern[1] vertex transform into a
-   daemon-owned `vout` buffer, then kern[0] rasterizes from it).  Physical
+   compute kernel that writes the framebuffer (is_geom == 0), the two-pass
+   compute geometry rasterizer (is_geom 1..5: kern[1] vertex transform into a
+   daemon-owned `vout` buffer, then kern[0] rasterizes from it), or the
+   direct-stream rasterizer (is_geom == 6: kern[0] reads caller records
+   directly).  Physical
    addresses are the GPU-visible base (CB0 is identity-mapped so pa == iova);
    the framebuffer is uint32 (bound as a linear R32_UINT buffer view) with
    fb_stride the byte row pitch (multiple of 4, base 64-byte aligned).
