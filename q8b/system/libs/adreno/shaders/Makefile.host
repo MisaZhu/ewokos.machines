@@ -39,3 +39,11 @@ compiler:
 regenerate: compiler
 	$(OUT)/generate blit shaders/blit.comp shaders/blit_blob.h
 	$(OUT)/generate raster shaders/raster.comp shaders/raster_blob.h
+
+# Verify raw RW kernels retain the pixel dispatch contract for both kinds.
+.PHONY: test-rw-pixel
+test-rw-pixel: compiler
+	$(HOST_CC) $(INC) -O2 -UNDEBUG -c $(BE)/tests/rw_pixel_contract.c -o $(OUT)/rw_pixel_contract.o
+	$(HOST_CXX) $(OUT)/rw_pixel_contract.o $(OUT)/host_support.o \
+	 $(OUT)/libbackend.a $(OUT)/libfrontend.a -pthread -lm -o $(OUT)/rw_pixel_contract
+	$(OUT)/rw_pixel_contract

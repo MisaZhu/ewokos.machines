@@ -127,7 +127,7 @@ OBJS = $(SRCS_C:%.c=$(OBJDIR)/%.o) $(SRCS_CXX:%.cpp=$(OBJDIR)/%.o)
 # NIR's debug ABI must match the frontend's -DNDEBUG target build.
 $(OBJS): Makefile
 
-$(OBJDIR)/adreno_pglc.o: adreno_geom_source.h $(PGLC_FE_DIR)/include/geom_raster_cs.h $(PGLC_FE_DIR)/include/pglcompiler.h
+$(OBJDIR)/adreno_pglc.o: adreno_geom_source.h $(PGLC_FE_DIR)/include/geom_raster_cs.h $(PGLC_FE_DIR)/include/rw_raster_cs.h $(PGLC_FE_DIR)/include/pglcompiler.h
 $(OBJDIR)/adreno_pglc.o $(OBJDIR)/adreno_backend.o $(OBJDIR)/adreno_blob.o: adreno_pglc.h
 $(OBJDIR)/adreno_blob.o: ../adreno/include/adreno/adreno_prog.h $(PGLC_FE_DIR)/include/pglcompiler.h
 

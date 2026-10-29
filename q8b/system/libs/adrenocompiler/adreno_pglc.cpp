@@ -261,8 +261,13 @@ extern "C" bool
 pglc_compile_compute_raw(const char *cs_src, struct pglc_program *res)
 {
    const char *specialized = adreno_geom_source(cs_src);
+   /* RenderWare's raw raster kernel also owns one pixel per invocation.
+      The legacy triangle grid only covers a few rows of its dispatch box;
+      kind 5 still needs the pixel-grid contract even with an xform pass. */
+   bool pixel_owned = specialized != NULL ||
+                      (cs_src && !strcmp(cs_src, rw_raster_cs));
    bool ok = compile_compute_source(specialized ? specialized : cs_src, res);
-   if (ok && specialized)
+   if (ok && pixel_owned)
       ((struct adreno_pglc_stage *)res->stage[PGLC_STAGE_COMPUTE].backend)->geom_pixel_owned = true;
    return ok;
 }

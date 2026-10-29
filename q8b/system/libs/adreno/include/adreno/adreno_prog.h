@@ -225,7 +225,8 @@ typedef struct {
 
 	/* geometry-rasterizer dispatch kind (pglc_blob_opts.geom_kind: 0 = plain
 	   fullscreen program, 1 = gouraud, 2 = textured, 3 = instanced,
-	   4 = colour-modulated textured, 5 = Vulkan user shader) and the raster
+	   4 = colour-modulated textured, 5 = Vulkan user shader, 6 = direct vertex
+	   stream raster) and the raster
 	   pass's triangles per workgroup (0 = one workgroup per triangle). */
 	uint8_t  is_geom;
 	uint8_t  reserved;
@@ -235,8 +236,8 @@ typedef struct {
 	   cs2_uniform_blob_dwords dwords feed kern[1] (xform), the rest kern[0]. */
 	uint32_t cs2_uniform_blob_dwords;
 
-	/* geom_kind == 5 per-vertex stream strides in FLOATS: the xform output
-	   record size and the flattened Vulkan attribute input stride.  Both are
+	/* geom_kind == 5/6 per-vertex stream strides in FLOATS: the xform output
+	   record size and the flattened/direct attribute input stride. Both are
 	   zero for every other program kind. */
 	uint32_t cs2_vout_stride;
 	uint32_t vk_attr_stride;

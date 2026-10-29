@@ -9,12 +9,15 @@
  *
  *   is_geom == 0  fullscreen kernel: one invocation per pixel writes the
  *                 framebuffer (shadertoy-style effects).
- *   is_geom != 0  two-pass compute geometry rasterizer, the same kernels and
+ *   is_geom 1..5   two-pass compute geometry rasterizer, the same kernels and
  *                 SSBO binding tables raspi5's v3d_3d.c draw_compute_geom runs
  *                 on V3D: kern[1] (vertex TRANSFORM, one invocation per vertex)
  *                 writes packed records into a daemon-owned `vout` buffer, then
  *                 kern[0] (RASTER, ceil(ntris/tpw) workgroups) reads vout and
  *                 writes colour + atomicMin depth.
+ *   is_geom == 6   direct-stream rasterizer; kern[0] reads the caller's
+ *                 already transformed 20-float records and no kern[1] is
+ *                 loaded or dispatched.
  *
  * This is the sanctioned 3D route for Adreno - a CS COMPUTE dispatch, NOT the
  * binner / fixed-function 3D pipeline - because a compute kernel reproduces
@@ -509,18 +512,22 @@ static int program_load_locked(const void *blob, uint32_t size) {
 	if (kern_validate(&h->kern[0]) != 0)
 		return -1;
 	have_xform = (h->kern[1].binary_words != 0);
-	if (h->is_geom > 5u)
+	if (h->is_geom > 6u)
 		return -1;
 	if (h->reserved || (h->version == ADRENO_PROG_PIXEL_VERSION &&
-	    h->is_geom != 1u && h->is_geom != 2u && h->is_geom != 5u))
+	    h->is_geom != 1u && h->is_geom != 2u && h->is_geom != 5u &&
+	    h->is_geom != 6u))
 		return -1;
-	if (h->is_geom != 0 && !have_xform)
+	/* Kind 6 directly consumes the caller's 20-float records and has no
+	 * transform pass. */
+	if (h->is_geom != 0 && h->is_geom != 6u && !have_xform)
 		return -1;
 	if (h->is_geom == 0 && have_xform)
 		return -1;
 	if (have_xform && kern_validate(&h->kern[1]) != 0)
 		return -1;
-	/* geom_kind 5 is the Vulkan-generated 8x8-transform raster pair, in
+	/* geom_kind 5 is the Vulkan-generated transform/raster pair (the xform
+	   pass accepts either its legacy 8x8 shape or the equivalent 64x1 shape), in
 	   either of the two shapes spirv_to_geom_kernels emits (raspi5's v3d
 	   loader accepts both; declining one here would silently drop that
 	   pipeline to the client's CPU rasterizer every frame):
@@ -541,13 +548,20 @@ static int program_load_locked(const void *blob, uint32_t size) {
 		                    h->kern[0].local_size[1] == 8u);
 		if ((!lane_per_tri && !cooperative) ||
 		    h->kern[0].local_size[2] != 1u ||
-		    h->kern[1].local_size[0] != 8u ||
-		    h->kern[1].local_size[1] != 8u ||
+		    !((h->kern[1].local_size[0] == 8u &&
+		       h->kern[1].local_size[1] == 8u) ||
+		      (h->kern[1].local_size[0] == 64u &&
+		       h->kern[1].local_size[1] == 1u)) ||
 		    h->kern[1].local_size[2] != 1u ||
 		    h->cs2_vout_stride < 8u ||
 		    h->cs2_vout_stride > ADRENO_3D_VK_VOUT_MAX_FLOATS ||
 		    (h->cs2_vout_stride & 3u) != 0 ||
 		    h->vk_attr_stride == 0u || h->vk_attr_stride > 64u)
+			return -1;
+	} else if (h->is_geom == 6u) {
+		if (h->geom_tpw != 256u || h->kern[0].local_size[0] != 16u ||
+		    h->kern[0].local_size[1] != 16u || h->kern[0].local_size[2] != 1u ||
+		    h->cs2_vout_stride != 20u || h->vk_attr_stride != 20u || have_xform)
 			return -1;
 	} else if (h->cs2_vout_stride != 0u || h->vk_attr_stride != 0u) {
 		return -1;
@@ -1454,12 +1468,13 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	kern_slot_t *rs = &s->kern[0];
 	bind_t binds[ADRENO_3D_MAX_BINDINGS];
 	uint32_t grid[3];
-	struct ib xform_ib, raster_ib;
+	struct ib xform_ib = {0}, raster_ib = {0};
 	uint32_t ntris, split = s->cs2_uniform_blob_dwords;
 	uint32_t xwg, tpw, pstride, rec;
 	uint32_t dispatch_w = w, dispatch_h = h;
 	int gtex = (s->is_geom == 2), ginst = (s->is_geom == 3), gtc = (s->is_geom == 4);
-	int gvk = (s->is_geom == 5);
+	int gvk = (s->is_geom == 5 || s->is_geom == 6);
+	int gdirect = (s->is_geom == 6);
 	int gtexc = gtex || gtc;   /* textured family: ctex unit 0 is the image */
 	int rc;
 
@@ -1500,7 +1515,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	/* Shared raster shaders index colour and depth with uFbStride. */
 	if (g->z_stride != fb_stride)
 		return ADRENO_E_DECLINED;
-	if (rs->k.local_size[2] != 1u || xf->k.local_size[2] != 1u)
+	if (rs->k.local_size[2] != 1u || (!gdirect && xf->k.local_size[2] != 1u))
 		return ADRENO_E_DECLINED;
 	if (split > num_uniforms || num_uniforms - split < rs->k.uniform_blob_dwords ||
 	    num_uniforms - split > ADRENO_3D_IB_MAX || !unif)
@@ -1512,8 +1527,9 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	    (fb_stride != w * 4u || g->z_stride != w * 4u || (fb_stride & 0x3fu) != 0))
 		return ADRENO_E_DECLINED;
 
-	/* vout: process-lifetime intermediate, allocated on first use */
-	if (g_vout.va == 0) {
+	/* vout: process-lifetime intermediate, allocated on first use. Kind 6
+	 * binds the caller's attribute stream directly and skips this buffer. */
+	if (!gdirect && g_vout.va == 0) {
 		if (adreno_bo_alloc(&g_vout, ADRENO_3D_VOUT_BYTES) != 0)
 			return ADRENO_E_DECLINED;
 		g_vout.iova = g_vout.pa;
@@ -1528,22 +1544,24 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	   textured and Vulkan kinds read their interleaved/flattened stream from
 	   binding 1 only. ---- */
 	memset(binds, 0, sizeof(binds));
-	binds[0].phy = g_vout.iova;   binds[0].bytes = g->nverts * rec;
-	binds[1].phy = g->pos_phy;    binds[1].bytes = g->nverts * pstride;
-	if (!gtexc) {
-		binds[2].phy = g->col_phy; binds[2].bytes = g->nverts * 12u;
-	}
-	if (ginst) {
-		binds[3].phy = g->ctex_phy; binds[3].bytes = g->ctex_stride * g->ctex_h;
-	}
-	xwg = xf->k.local_size[0] * xf->k.local_size[1];
-	grid[0] = (g->nverts + xwg - 1u) / xwg;   /* one invocation per vertex */
-	grid[1] = 1u;
-	grid[2] = 1u;
-	rc = build_cs_dispatch(xf, binds, gvk ? 2u : 4u, NULL, 0, unif, split, grid, &xform_ib);
-	if (rc != ADRENO_OK) {
-		klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
-		return rc;
+	if (!gdirect) {
+		binds[0].phy = g_vout.iova;   binds[0].bytes = g->nverts * rec;
+		binds[1].phy = g->pos_phy;    binds[1].bytes = g->nverts * pstride;
+		if (!gtexc) {
+			binds[2].phy = g->col_phy; binds[2].bytes = g->nverts * 12u;
+		}
+		if (ginst) {
+			binds[3].phy = g->ctex_phy; binds[3].bytes = g->ctex_stride * g->ctex_h;
+		}
+		xwg = xf->k.local_size[0] * xf->k.local_size[1];
+		grid[0] = (g->nverts + xwg - 1u) / xwg;   /* one invocation per vertex */
+		grid[1] = 1u;
+		grid[2] = 1u;
+		rc = build_cs_dispatch(xf, binds, gvk ? 2u : 4u, NULL, 0, unif, split, grid, &xform_ib);
+		if (rc != ADRENO_OK) {
+			klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
+			return rc;
+		}
 	}
 
 	/* ---- Pass 2: rasterize from vout.  Bindings: 0 = fb, 1 = vout,
@@ -1552,7 +1570,8 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	   kernel's uniforms live in the SECOND region of the blob. ---- */
 	memset(binds, 0, sizeof(binds));
 	binds[0].phy = fb_phy;        binds[0].bytes = fb_stride * h;
-	binds[1].phy = g_vout.iova;   binds[1].bytes = g->nverts * rec;
+	binds[1].phy = gdirect ? g->pos_phy : g_vout.iova;
+	binds[1].bytes = g->nverts * (gdirect ? pstride : rec);
 	binds[2].phy = g->z_phy;      binds[2].bytes = g->z_stride * h;
 	if (gtexc) {
 		binds[3].phy = g->ctex_phy; binds[3].bytes = g->ctex_stride * g->ctex_h;
@@ -1610,15 +1629,17 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 
 	/* Very large constant uploads can make two individually valid dispatches
 	 * exceed the ring's IB cap. Keep the existing two-submit route for them. */
-	if (adreno_3d_geom_batch(-1) &&
+	if (!gdirect && adreno_3d_geom_batch(-1) &&
 	    xform_ib.n + GEOM_BARRIER_WORDS + raster_ib.n <= xform_ib.cap) {
 		ib_geom_barrier(&xform_ib);
 		memcpy(xform_ib.d + xform_ib.n, raster_ib.d, raster_ib.n * 4u);
 		xform_ib.n += raster_ib.n;
 		return adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
 	}
-	rc = adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
-	if (rc != ADRENO_OK) return rc;
+	if (!gdirect) {
+		rc = adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
+		if (rc != ADRENO_OK) return rc;
+	}
 	return adreno_ring_submit(adreno_dev(), raster_ib.d, raster_ib.n);
 }
 

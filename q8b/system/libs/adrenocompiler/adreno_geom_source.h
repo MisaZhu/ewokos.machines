@@ -3,13 +3,16 @@
  * Tile-local candidate binning uses shared atomics and barriers; framebuffer
  * colour/depth are still written by exactly one pixel invocation, so there
  * are no cross-workgroup colour/depth races or locks.
- * These replace ONLY exact known shared built-ins. Custom GLSL is unchanged.
- * VERSION 3 marks the pixel grid; older daemons reject it before submission.
+ * The built-in replacements are exact-match only. RenderWare's ordered
+ * raster source is also recognized as a pixel-owned kernel, but is compiled
+ * unchanged so its blend/depth contract remains intact. VERSION 3 marks the
+ * pixel grid; older daemons reject it before submission.
  */
 #ifndef ADRENO_GEOM_SOURCE_H
 #define ADRENO_GEOM_SOURCE_H
 #include <string.h>
 #include <geom_raster_cs.h>
+#include <rw_raster_cs.h>
 
 #define Q8B_GEOM_PIXEL_BODY \
 "precision highp float;\n" \

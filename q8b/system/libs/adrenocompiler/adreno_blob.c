@@ -153,17 +153,19 @@ uint32_t pglc_program_serialize(const struct pglc_program *main,
 	hdr.is_geom  = opts ? opts->geom_kind : 0;
 	hdr.geom_tpw = opts ? (uint16_t)opts->geom_tpw : 0;
 	if (cub->geom_pixel_owned) {
-		if (!xform || (hdr.is_geom != 1 && hdr.is_geom != 2 && hdr.is_geom != 5))
+		if ((!xform && hdr.is_geom != 6) || (xform && hdr.is_geom == 6) ||
+		    (hdr.is_geom != 1 && hdr.is_geom != 2 && hdr.is_geom != 5 &&
+		     hdr.is_geom != 6))
 			return 0;
 		hdr.version = ADRENO_PROG_PIXEL_VERSION;
 	}
 	/* split point of the concatenated per-draw uniform blob: the xform
 	   region comes first. */
-	hdr.cs2_uniform_blob_dwords = xu->uniform_blob_dwords;
+	hdr.cs2_uniform_blob_dwords = (hdr.is_geom == 6u) ? 0u : xu->uniform_blob_dwords;
 	/* Vulkan's generated geometry kernels use variable-width vertex records
 	   and a flattened attribute stream; every other geometry kind ignores these. */
-	hdr.cs2_vout_stride = (opts && hdr.is_geom == 5u) ? opts->vout_stride : 0;
-	hdr.vk_attr_stride  = (opts && hdr.is_geom == 5u) ? opts->attr_stride : 0;
+	hdr.cs2_vout_stride = (opts && (hdr.is_geom == 5u || hdr.is_geom == 6u)) ? opts->vout_stride : 0;
+	hdr.vk_attr_stride  = (opts && (hdr.is_geom == 5u || hdr.is_geom == 6u)) ? opts->attr_stride : 0;
 
 	fill_kernel(&hdr.kern[0], cu, cub);
 	fill_kernel(&hdr.kern[1], xu, xub);
