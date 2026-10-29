@@ -56,23 +56,19 @@
 #define V3D_3D_COMPUTE_BUDGET_MS 2000u     /* compiled compute draw wait    */
 
 /* Two-pass geometry rasterizer intermediate: `vout` holds one packed record per
- * vertex, written by the pass-1 vertex-transform kernel and read by the pass-2
- * raster kernel.  The gouraud / textured / instanced variants pack 8 floats
- * (32 bytes); the colour-modulated textured variant (cs_is_geom == 4, imgui)
- * also carries a per-vertex colour, so its record is 12 floats (48 bytes).  The
- * buffer is sized for the widest record so every variant fits.  Sized for
- * V3D_3D_MAX_VERTS vertices; a single process-lifetime buffer is safe because
- * CSD dispatches are serialized (v3d_g2d_op_begin) and each geom draw fully
- * overwrites the sub-range it consumes. */
-#define V3D_3D_VOUT_BYTES (V3D_3D_MAX_VERTS * 48u)
+ * vertex.  Legacy geometry records are 8 or 12 floats; Vulkan's generated
+ * records have an 8-float harness header plus up to 24 varying floats.  The
+ * buffer is sized for the widest supported record and draws are serialized, so
+ * each dispatch can safely reuse the sub-range it consumes. */
+#define V3D_3D_VK_VOUT_MAX_FLOATS 32u
+#define V3D_3D_VOUT_BYTES \
+    (V3D_3D_MAX_VERTS * V3D_3D_VK_VOUT_MAX_FLOATS * 4u)
 
-/* WS4 compiled-shader sampler bindings: per-unit V3D71 TEXTURE_SHADER_STATE and
- * SAMPLER_STATE records, each in its own 32-byte slot (V3D_3D_TEXSTATE_SLOT) so
- * the TMU_CONFIG low bits OR cleanly.  Only the single-pass draw_compute route
- * samples through the TMU; the geometry rasterizer reads its texture/instance
- * data as a raw SSBO and never builds these.  The encodings below are V3D 7.1
- * (the shadertoy route is a Pi5 target); a V3D 4.2 textured compute draw would
- * need the 4.2 record layout, which is out of scope for the geometry apps. */
+/* Compiled-shader sampler bindings: per-unit TEXTURE_SHADER_STATE and
+ * SAMPLER_STATE records, each in its own 32-byte slot so the TMU_CONFIG low
+ * bits OR cleanly.  The single-level RGBA8 fields used below have the same
+ * layout on V3D 4.2 and 7.1.  Legacy geometry textures remain raw SSBOs;
+ * Vulkan geom_kind 5 and the single-pass compute route sample through the TMU. */
 #define V3D_3D_TEXSTATE_SLOT 32u
 
 /* ---- dma staging (VA + physical), allocated once at init -------------- */
@@ -140,8 +136,11 @@ typedef struct {
     uint8_t  cs_threads, cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
-    uint32_t cs_is_geom;    /* 1 = gouraud geom, 2 = textured, 3 = instanced,
-                             * 4 = colour-modulated textured (imgui) */
+    uint32_t cs_spill_size;   /* bytes/thread of register-spill scratch */
+    uint32_t cs_spill_iova;   /* scratch physical base for QUNIFORM_SPILL_OFFSET */
+    ewokos_addr_t cs_spill_raw;
+    uint32_t cs_is_geom;    /* 1 = gouraud, 2 = textured, 3 = instanced,
+                             * 4 = colour-modulated textured, 5 = Vulkan */
     uint32_t cs_geom_tpw;   /* raster triangles/workgroup: 0 = one wg per tri */
     /* second compute stage (cs2 = pass-1 vertex transform of the two-pass
      * geometry rasterizer).  cs2_qpu_words == 0 when absent.  Dispatched FIRST
@@ -157,6 +156,9 @@ typedef struct {
     uint32_t cs2_local_size[3];
     uint32_t cs2_shared_size;
     uint32_t cs2_uniform_blob_dwords;
+    /* geom_kind == 5 per-vertex stream strides in FLOATS. */
+    uint32_t cs2_vout_stride;
+    uint32_t vk_attr_stride;
 } v3d_3d_prog_t;
 
 static v3d_3d_prog_t _progs[V3D_3D_MAX_PROGS];
@@ -201,6 +203,7 @@ static void release_prog(v3d_3d_prog_t *pr)
     if (pr->fs_qpu_raw)    dma_free(0, pr->fs_qpu_raw);
     if (pr->coord_qpu_raw) dma_free(0, pr->coord_qpu_raw);
     if (pr->cs_qpu_raw)    dma_free(0, pr->cs_qpu_raw);
+    if (pr->cs_spill_raw)  dma_free(0, pr->cs_spill_raw);
     if (pr->cs2_qpu_raw)   dma_free(0, pr->cs2_qpu_raw);
     memset(pr, 0, sizeof(*pr));
 }
@@ -224,8 +227,8 @@ static void rec_set_bits(uint8_t *rec, uint32_t lo, uint32_t hi, uint32_t val)
     }
 }
 
-/* Pack a single-level, non-array RGBA8 V3D71_TEXTURE_SHADER_STATE (24 bytes)
- * sampling the w x h image at base_iova (which must be 64-byte aligned). */
+/* Pack a single-level, non-array RGBA8 texture record (24 bytes).  These
+ * fields occupy the same bits in the V3D 4.2 and 7.1 record layouts. */
 static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
                                  uint32_t w, uint32_t h,
                                  uint32_t tiling, uint32_t ub_pad)
@@ -257,12 +260,12 @@ static void pack_tex_state_rgba8(uint8_t *rec, uint32_t base_iova,
     rec_set_bits(rec, 135, 135, 0u);          /* uif_xor_disable = 0       */
 }
 
-/* Pack a GL_NEAREST + GL_REPEAT V3D71_SAMPLER_STATE (24 bytes). */
-static void pack_sampler_state_nearest(uint8_t *rec)
+/* Pack a single-level GL_REPEAT sampler record (24 bytes). */
+static void pack_sampler_state(uint8_t *rec, int linear)
 {
     memset(rec, 0, 24);
-    rec_set_bits(rec,  0,  0, 1u);   /* mag_filter_nearest        */
-    rec_set_bits(rec,  1,  1, 1u);   /* min_filter_nearest        */
+    rec_set_bits(rec,  0,  0, linear ? 0u : 1u); /* mag_filter_nearest */
+    rec_set_bits(rec,  1,  1, linear ? 0u : 1u); /* min_filter_nearest */
     rec_set_bits(rec,  2,  2, 1u);   /* mip_filter_nearest        */
     rec_set_bits(rec,  3,  3, 0u);   /* anisotropy_enable         */
     rec_set_bits(rec,  4,  6, 0u);   /* depth_compare_function    */
@@ -283,13 +286,19 @@ static void build_sampler_records(void)
 {
     uint32_t u;
     for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++)
-        pack_sampler_state_nearest(_sampler_va + u * V3D_3D_TEXSTATE_SLOT);
+        pack_sampler_state(_sampler_va + u * V3D_3D_TEXSTATE_SLOT, 0);
 }
 
 /* Rebuild the per-unit texture records from this draw's ctex bindings.  A
  * unit with ctex_iova == 0 stays unbound (zeroed record).  Returns 0 on
  * success, -1 if a bound unit's pixel data is not 64-byte aligned or is still
  * in raster layout (the TMU cannot sample it; the caller then declines). */
+static uint32_t ctex_span(const v3d_3d_ctex_t *ctex, uint32_t u)
+{
+    uint64_t bytes = (uint64_t)ctex->ctex_stride[u] * ctex->ctex_h[u];
+    return (bytes == 0 || bytes > 0xffffffffu) ? 0u : (uint32_t)bytes;
+}
+
 static int build_tex_state_records(const v3d_3d_ctex_t *ctex)
 {
     uint32_t u;
@@ -297,11 +306,13 @@ static int build_tex_state_records(const v3d_3d_ctex_t *ctex)
         return 0;
     for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++) {
         uint8_t *rec = _texstate_va + u * V3D_3D_TEXSTATE_SLOT;
+        uint8_t *srec = _sampler_va + u * V3D_3D_TEXSTATE_SLOT;
         if (ctex->ctex_iova[u] == 0) {
             memset(rec, 0, 24);
+            pack_sampler_state(srec, 0);
             continue;
         }
-        if ((ctex->ctex_iova[u] & 0x3Fu) != 0)
+        if ((ctex->ctex_iova[u] & 0x3Fu) != 0 || ctex_span(ctex, u) == 0)
             return -1;
         if (ctex->ctex_tiling[u] == V3D_3D_TEX_TILING_RASTER ||
             ctex->ctex_tiling[u] > V3D_3D_TEX_TILING_UIF_XOR) {
@@ -312,6 +323,9 @@ static int build_tex_state_records(const v3d_3d_ctex_t *ctex)
         pack_tex_state_rgba8(rec, ctex->ctex_iova[u],
                              ctex->ctex_w[u], ctex->ctex_h[u],
                              ctex->ctex_tiling[u], ctex->ctex_ub_pad[u]);
+        /* vkclient packs the single-level mag/min filter in ub_pad's high
+         * nibble; the low nibble remains the UIF padding consumed above. */
+        pack_sampler_state(srec, (ctex->ctex_ub_pad[u] >> 4) != 0);
     }
     return 0;
 }
@@ -385,6 +399,8 @@ int v3d_3d_ready(void)
 #define QUNIFORM_TMU_CONFIG_P0     6u
 #define QUNIFORM_TMU_CONFIG_P1     7u
 #define QUNIFORM_SSBO_OFFSET       19u  /* data = SSBO binding; compute route */
+#define QUNIFORM_SPILL_OFFSET          31u
+#define QUNIFORM_SPILL_SIZE_PER_THREAD 32u
 
 static uint32_t f32_bits(float f)
 {
@@ -417,7 +433,8 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
                            const v3d_3d_ctex_t *ctex,
                            float vp_xscale, float vp_yscale,
                            float vp_zscale, float vp_zoff,
-                           const uint32_t *ssbo_iova, uint32_t num_ssbo)
+                           const uint32_t *ssbo_iova, uint32_t num_ssbo,
+                           uint32_t spill_iova, uint32_t spill_size_per_thread)
 {
     uint32_t i;
     for (i = 0; i < num; i++) {
@@ -448,21 +465,9 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
             out[i] = f32_bits(vp_zoff);
             break;
         case QUNIFORM_TMU_CONFIG_P0: {
+            /* data = (unit << 24) | low; OR the low flags into the packed
+             * texture-record address built for this draw. */
             uint32_t unit = d >> 24;
-            /* The single-pass compute route (draw_compute) samples through the
-             * TMU using the V3D71-encoded TEXTURE_SHADER_STATE / SAMPLER_STATE
-             * records built at init.  V3D 4.2 (Pi4) uses a different texture-
-             * state layout, so a TMU-sampling compute program cannot be bound
-             * correctly there: decline it and the client keeps its CPU
-             * rasterizer.  This gate never fires for the geometry rasterizer -
-             * its kernels read textures/instance data as raw SSBOs
-             * (QUNIFORM_SSBO_OFFSET), not the TMU - so the textured geom route
-             * (3ddemo, cs_is_geom==2) still runs on V3D 4.2. */
-            if (v3d_g2d_ver() < 71) {
-                slog("v3d_3d: unif slot %u TMU P0 on ver %d (<71) -> decline\r\n",
-                     i, v3d_g2d_ver());
-                return -1;
-            }
             if (ctex == NULL || unit >= V3D_3D_MAX_TEX_UNITS ||
                 ctex->ctex_iova[unit] == 0) {
                 slog("v3d_3d: unif slot %u TMU P0 unit %u unbound -> decline\r\n", i, unit);
@@ -473,11 +478,6 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
         }
         case QUNIFORM_TMU_CONFIG_P1: {
             uint32_t unit = d >> 24;
-            if (v3d_g2d_ver() < 71) {   /* see the P0 case: V3D71 records only */
-                slog("v3d_3d: unif slot %u TMU P1 on ver %d (<71) -> decline\r\n",
-                     i, v3d_g2d_ver());
-                return -1;
-            }
             if (ctex == NULL || unit >= V3D_3D_MAX_TEX_UNITS ||
                 ctex->ctex_iova[unit] == 0) {
                 slog("v3d_3d: unif slot %u TMU P1 unit %u unbound -> decline\r\n", i, unit);
@@ -496,6 +496,20 @@ static int expand_uniforms(uint32_t *out, const uint32_t *contents,
                 return -1;
             }
             out[i] = ssbo_iova[d];
+            break;
+        case QUNIFORM_SPILL_OFFSET:
+            if (spill_iova == 0) {
+                slog("v3d_3d: unif slot %u SPILL_OFFSET but no scratch -> decline\r\n", i);
+                return -1;
+            }
+            out[i] = spill_iova + d;
+            break;
+        case QUNIFORM_SPILL_SIZE_PER_THREAD:
+            if (spill_size_per_thread == 0) {
+                slog("v3d_3d: unif slot %u SPILL_SIZE_PER_THREAD 0 -> decline\r\n", i);
+                return -1;
+            }
+            out[i] = spill_size_per_thread;
             break;
         default:
             slog("v3d_3d: unif slot %u type %u data 0x%x unhandled -> decline\r\n",
@@ -545,7 +559,8 @@ static int draw_compute(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     }
     if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                         pr->cs_num_uniforms, unif, num_uniforms, ctex,
-                        0.0f, 0.0f, 0.0f, 0.0f, &fb_iova, 1u) != 0) {
+                        0.0f, 0.0f, 0.0f, 0.0f, &fb_iova, 1u,
+                        pr->cs_spill_iova, pr->cs_spill_size) != 0) {
         v3d_g2d_op_end();
         return decline("compute: uniforms");
     }
@@ -605,13 +620,17 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
                              const uint32_t *unif, uint32_t num_uniforms,
                              uint32_t tex_iova, uint32_t tex_span,
                              uint32_t inst_iova, uint32_t inst_span, int is_inst,
-                             int is_texcol, int first_frame, uint32_t clear_rgba)
+                             int is_texcol, int first_frame, uint32_t clear_rgba,
+                             const v3d_3d_ctex_t *vk_ctex)
 {
     v3d_g2d_csd_job_t job;
     uint32_t ssbo[4];
     uint32_t ntris = nverts / 3u;
     uint32_t split = pr->cs2_uniform_blob_dwords;
     uint32_t xwg;
+    /* Vulkan carries one attribute float stream and samples FS textures through
+     * the TMU rather than the legacy normal/texture SSBOs. */
+    int is_vk = (pr->cs_is_geom == 5u);
     int rc;
 
     if (fmt != V3D_3D_FMT_RGBA8)
@@ -668,11 +687,18 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     /* ---- Pass 1: vertex transform -> vout ---------------------------- */
     ssbo[0] = _vout_p;
     ssbo[1] = pos_iova;
-    if (tex_iova != 0u) {
+    if (is_vk) {
+        if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
+                            pr->cs2_num_uniforms, unif, num_uniforms, NULL,
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u, 0u, 0u) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: xform uniforms (vk)");
+        }
+    } else if (tex_iova != 0u) {
         /* textured xform reads interleaved pos+uv from binding 1 only */
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
                             pr->cs2_num_uniforms, unif, num_uniforms, NULL,
-                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u) != 0) {
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 2u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms (tex)");
         }
@@ -683,7 +709,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         ssbo[3] = inst_iova;
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
                             pr->cs2_num_uniforms, unif, num_uniforms, NULL,
-                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u) != 0) {
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 4u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms (inst)");
         }
@@ -691,7 +717,7 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         ssbo[2] = nrm_iova;
         if (expand_uniforms(_ccu_unif_va, pr->cs2_unif_contents, pr->cs2_unif_data,
                             pr->cs2_num_uniforms, unif, num_uniforms, NULL,
-                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 3u) != 0) {
+                            0.0f, 0.0f, 0.0f, 0.0f, ssbo, 3u, 0u, 0u) != 0) {
             v3d_g2d_op_end();
             return decline("geom: xform uniforms");
         }
@@ -709,7 +735,8 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.threads     = pr->cs2_threads;
     job.single_seg  = pr->cs2_single_seg;
     job.dst_phy     = _vout_p;          /* POST writeback: vout -> DRAM */
-    job.dst_span    = nverts * (is_texcol ? 48u : 32u);
+    job.dst_span    = is_vk ? (nverts * pr->cs2_vout_stride * 4u)
+                            : (nverts * (is_texcol ? 48u : 32u));
     job.unif_span   = pr->cs2_num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_GEOM_XFORM;
     /* Ranged PRE extent: the only ARM-written surfaces this pass reads are the
@@ -717,18 +744,19 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
      * pre-job L2T walk (the uniform block is walked separately). */
     {
         uint32_t lo = pos_iova;
-        uint32_t hi = pos_iova + nverts * (is_texcol ? 40u :
-                                             (tex_iova != 0u ? 24u :
-                                              (is_inst ? 16u : 12u)));
+        uint32_t hi = is_vk ? (pos_iova + nverts * pr->vk_attr_stride * 4u)
+                            : (pos_iova + nverts * (is_texcol ? 40u :
+                                                    (tex_iova != 0u ? 24u :
+                                                     (is_inst ? 16u : 12u))));
 
-        if (tex_iova == 0u && nrm_iova != 0u) {
+        if (!is_vk && tex_iova == 0u && nrm_iova != 0u) {
             uint32_t nlo = nrm_iova;
             uint32_t nhi = nrm_iova + nverts * 12u;
 
             if (nlo < lo) lo = nlo;
             if (nhi > hi) hi = nhi;
         }
-        if (is_inst && inst_iova != 0u) {
+        if (!is_vk && is_inst && inst_iova != 0u) {
             uint32_t ghi = inst_iova + inst_span;
 
             if (inst_iova < lo) lo = inst_iova;
@@ -754,10 +782,23 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     if (tex_iova != 0u)
         ssbo[3] = tex_iova;
     /* the raster kernel's uniforms live in the SECOND region of the blob */
-    if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+    if (is_vk) {
+        if (build_tex_state_records(vk_ctex) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: vk tex state");
+        }
+        if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
+                            pr->cs_num_uniforms, unif + split, num_uniforms - split,
+                            vk_ctex, 0.0f, 0.0f, 0.0f, 0.0f, ssbo, 3u,
+                            pr->cs_spill_iova, pr->cs_spill_size) != 0) {
+            v3d_g2d_op_end();
+            return decline("geom: raster uniforms (vk)");
+        }
+    } else if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                         pr->cs_num_uniforms, unif + split, num_uniforms - split,
                         NULL, 0.0f, 0.0f, 0.0f, 0.0f,
-                        ssbo, tex_iova != 0u ? 4u : 3u) != 0) {
+                        ssbo, tex_iova != 0u ? 4u : 3u,
+                        pr->cs_spill_iova, pr->cs_spill_size) != 0) {
         v3d_g2d_op_end();
         return decline("geom: raster uniforms");
     }
@@ -786,12 +827,31 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
     job.aux_span    = z_stride * h;
     job.unif_span   = pr->cs_num_uniforms * 4u;
     job.tag         = V3D_G2D_TAG_GEOM_RASTER;
-    if (tex_iova != 0u) {
+    if (is_vk) {
+        /* Invalidate the hull of all ARM-written tiled images before sampling. */
+        if (vk_ctex != NULL) {
+            uint32_t u, lo = 0u, hi = 0u;
+            for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++) {
+                uint32_t base = vk_ctex->ctex_iova[u];
+                uint32_t end;
+                if (base == 0u)
+                    continue;
+                end = base + ctex_span(vk_ctex, u);
+                if (lo == 0u || base < lo) lo = base;
+                if (end > hi) hi = end;
+            }
+            if (lo != 0u) {
+                job.src_phy  = lo;
+                job.src_span = hi - lo;
+            }
+        }
+    } else if (tex_iova != 0u) {
         job.src_phy  = tex_iova;    /* ARM-written at upload: ranged PRE */
         job.src_span = tex_span;
     }
     job.budget_ms   = V3D_3D_COMPUTE_BUDGET_MS;
-    rc = v3d_g2d_run_csd(&job, (tex_iova != 0u ? V3D_G2D_MAINT_PRE : 0u) |
+    rc = v3d_g2d_run_csd(&job, ((tex_iova != 0u || job.src_phy != 0u)
+                                    ? V3D_G2D_MAINT_PRE : 0u) |
                                V3D_G2D_MAINT_POST | V3D_G2D_POLL_YIELD);
     v3d_g2d_op_end();
     if (rc != 0) {
@@ -887,18 +947,34 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
             int gtex = (_progs[prog_handle].cs_is_geom == 2);
             int ginst = (_progs[prog_handle].cs_is_geom == 3);
             int gtc = (_progs[prog_handle].cs_is_geom == 4);
+            int gvk = (_progs[prog_handle].cs_is_geom == 5);
             /* textured family (plain tex + colour-modulated tex): col unused,
              * ctex[0] is the linear image the raster kernel indexes directly. */
             int gtexc = gtex || gtc;
-            uint32_t pstride = gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u));
+            uint32_t pstride = gvk ? (_progs[prog_handle].vk_attr_stride * 4u)
+                                   : (gtc ? 40u : (gtex ? 24u : (ginst ? 16u : 12u)));
             if (mode != V3D_3D_MODE_TRIANGLES)
                 return decline("geom: mode not triangles");
             if (nverts == 0 || (nverts % 3u) != 0)
                 return decline("geom: nverts not multiple of 3");
             if (!v3d_g2d_phy_valid(pos_iova, (size_t)nverts * pstride))
                 return decline("geom: pos phys");
-            if (!gtexc && !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
+            if (!gtexc && !gvk &&
+                !v3d_g2d_phy_valid(col_iova, (size_t)nverts * 12u))
                 return decline("geom: nrm phys");
+            if (gvk && ctex != NULL) {
+                uint32_t u;
+                for (u = 0; u < V3D_3D_MAX_TEX_UNITS; u++) {
+                    uint32_t span;
+                    if (ctex->ctex_iova[u] == 0)
+                        continue;
+                    span = ctex_span(ctex, u);
+                    if (ctex->ctex_stride[u] < ctex->ctex_w[u] * 4u ||
+                        span == 0 ||
+                        !v3d_g2d_phy_valid(ctex->ctex_iova[u], span))
+                        return decline("geom vk: tex phys");
+                }
+            }
             if (gtexc && (ctex == NULL || ctex->ctex_iova[0] == 0))
                 return decline("geom tex: no texture bound");
             if (gtexc && (ctex->ctex_stride[0] < ctex->ctex_w[0] * 4u ||
@@ -924,7 +1000,8 @@ int v3d_3d_draw(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
                                      ginst ? ctex->ctex_iova[0] : 0u,
                                      ginst ? ctex->ctex_stride[0] *
                                              ctex->ctex_h[0] : 0u,
-                                     ginst, gtc, first_frame, clear_rgba);
+                                     ginst, gtc, first_frame, clear_rgba,
+                                     gvk ? ctex : NULL);
         }
         return draw_compute(&_progs[prog_handle], fb_iova, stride_bytes, fmt,
                             w, h, unif, num_uniforms, ctex);
@@ -1045,6 +1122,19 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
                              desc->cs_local_size[2])
         return V3D_3D_PROG_UNSUPPORTED;
 
+    /* Vulkan's variable geometry interface must fit the daemon's vout buffer
+     * and the attribute canvas must have a real, bounded stride. */
+    if (desc->cs_is_geom == 5u) {
+        if (desc->cs2_vout_stride < 8u ||
+            desc->cs2_vout_stride > V3D_3D_VK_VOUT_MAX_FLOATS ||
+            desc->vk_attr_stride == 0u || desc->vk_attr_stride > 64u) {
+            slog("v3d_3d: vk geom stride out of range (vout %u max %u, attr %u)\r\n",
+                 desc->cs2_vout_stride, V3D_3D_VK_VOUT_MAX_FLOATS,
+                 desc->vk_attr_stride);
+            return V3D_3D_PROG_UNSUPPORTED;
+        }
+    }
+
     /* reserve a free cache slot */
     for (i = 0; i < V3D_3D_MAX_PROGS; i++) {
         if (!_progs[i].used) { slot = (int)i; break; }
@@ -1101,8 +1191,23 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         pr->cs_local_size[1] = desc->cs_local_size[1];
         pr->cs_local_size[2] = desc->cs_local_size[2];
         pr->cs_shared_size  = desc->cs_shared_size;
+        pr->cs_spill_size   = desc->cs_spill_size;
         pr->cs_is_geom      = desc->cs_is_geom;
         pr->cs_geom_tpw     = desc->cs_geom_tpw;
+        /* TIDX reserves 64 thread slots per four-QPU slice. */
+        if (desc->cs_spill_size != 0) {
+            uint32_t slices = (uint32_t)(v3d_g2d_num_qpus() + 3) / 4u;
+            uint64_t scratch64 = (uint64_t)slices * 64u * desc->cs_spill_size;
+            uint32_t scratch;
+            if (scratch64 == 0 || scratch64 > UINT32_MAX - 4095u)
+                goto fail;
+            scratch = (uint32_t)scratch64;
+            if (alloc_stage_raw(scratch, &va, &iova, &pr->cs_spill_raw) != 0) {
+                slog("v3d_3d: cs spill scratch %u bytes alloc failed\r\n", scratch);
+                goto fail;
+            }
+            pr->cs_spill_iova = iova;
+        }
     }
 
     /* upload the optional second COMPUTE QPU (pass-1 vertex transform) */
@@ -1126,6 +1231,8 @@ int v3d_3d_program(const v3d_3d_prog_desc_t *desc)
         pr->cs2_local_size[2] = desc->cs2_local_size[2];
         pr->cs2_shared_size  = desc->cs2_shared_size;
         pr->cs2_uniform_blob_dwords = desc->cs2_uniform_blob_dwords;
+        pr->cs2_vout_stride  = desc->cs2_vout_stride;
+        pr->vk_attr_stride   = desc->vk_attr_stride;
     }
 
     /* cache the uniform layout descriptors AND their per-slot args on the CPU */

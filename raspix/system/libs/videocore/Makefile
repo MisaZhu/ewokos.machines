@@ -20,11 +20,12 @@ CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 #         v3d_g2d_run_csd and declines every non-compute draw
 # vc_pgl3d: thin public bridge bsp_g3d -> v3d_3d (physical-base resolution
 #         via gpu_phys, eligibility gate, program upload/free)
-# g2d_qpu_kernels_v42: generated V3D 4.2 instruction streams (the VC4
+# g2d_qpu_*_v42: generated V3D 4.2 instruction streams (the VC4
 #         streams live in g2d_qpu_kernels.h and compile into v3d_g2d.o)
 LIB_VIDEOCORE_OBJS = $(ARCH)/src/vc_g2d.o $(ARCH)/src/v3d_g2d.o \
 	$(ARCH)/src/v3d_3d.o $(ARCH)/src/vc_pgl3d.o \
-	$(ARCH)/src/g2d_qpu_kernels_v42.o
+	$(ARCH)/src/g2d_qpu_kernels_v42.o \
+	$(ARCH)/src/g2d_qpu_triangle_v42.o
 
 VIDEOCORE = $(TARGET_DIR)/lib/libvideocore.a
 
