@@ -58,6 +58,7 @@
 #include <ewoksys/syscall.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -87,11 +88,28 @@
 /* a6xx.xml RBBM_PERFCTR_CP[0], configured by adreno_a6xx.c. */
 #define RBBM_PERFCTR_CP_0            0x0400u
 
-/* Poll budget: each iteration sleeps ~10 us (proc_nsleep_precise). */
+/* Poll budget: after the busy prologue each iteration sleeps ~10 us
+   (proc_nsleep_precise). */
 #define RING_IDLE_TRIES              100000  /* ~1 s                     */
 #define RING_SUBMIT_TIMEOUT_MS       1000u
 #define RING_SUBMIT_SPINS            32u
 #define RING_SUBMIT_SHORT_PARKS      8u
+/* Tight fence-poll prologue before the first 10us sleep.  A cheap blit or a
+   small geometry dispatch often retires in a few microseconds; committing to
+   proc_nsleep_precise(10000) on the first miss quantises every such wait to a
+   10us multiple.  Workloads that issue many small submissions per frame (re3
+   renders ~768 draws/frame) pay that floor on every draw.  Spin-read the
+   volatile fence a bounded number of times first so fast jobs are observed at
+   sub-microsecond granularity; the nsleep/park ladder and the wall-clock
+   timeout below are unchanged, so a stuck GPU still cannot pin a core.
+   The fence lives in the UNCACHED dma pool (see the file header), so each
+   spin-read is a full memory access (~tens of ns); the budget is kept small
+   so a job that does NOT retire inside the prologue burns only a few
+   microseconds of CPU before the normal sleep ladder takes over.  The ideal
+   count depends on the on-device per-dispatch gpu_ns and should be tuned
+   against it (devcmd /dev/g2d submit gpu 1).  It is the default for the
+   runtime-tunable g_wait_busy (devcmd /dev/g2d submit busy <n>). */
+#define RING_SUBMIT_BUSY_TRIES       64u
 
 #define gpu_read(w)                  adreno_gpu_read(w)
 #define gpu_write(w, v)              adreno_gpu_write((w), (v))
@@ -101,6 +119,10 @@ static pthread_mutex_t g_submit_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t g_trace_submissions;
 /* Keep the 32 x 10us spin budget, then check each early timer wake. */
 static int g_wait_adaptive = 1;
+/* Busy-poll prologue length; runtime-tunable (devcmd /dev/g2d submit busy <n>)
+   so the ideal value can be swept on-device without a rebuild.  Atomic only:
+   ring_wait_submit reads it while a submit is in flight. */
+static uint32_t g_wait_busy = RING_SUBMIT_BUSY_TRIES;
 static int g_profile_enabled;
 static int g_gpu_profile_enabled;
 typedef struct {
@@ -134,14 +156,23 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 			adreno_3d_geom_batch(value);
 		else rc = -1;
 	}
+	else if (argc == 3 && strcmp(argv[1], "busy") == 0) {
+		char *end;
+		unsigned long v = strtoul(argv[2], &end, 10);
+		if (end == argv[2] || *end || v > 1000000ul)
+			rc = -1;
+		else
+			__atomic_store_n(&g_wait_busy, (uint32_t)v, __ATOMIC_RELAXED);
+	}
 	else if (argc != 1) rc = -1;
 	if (!rc) {
 		uint64_t n = g_stats.jobs ? g_stats.jobs : 1;
-		snprintf(buf, len, "submit adaptive=%d profile=%d geom=%d n=%llu err=%llu "
+		snprintf(buf, len, "submit adaptive=%d profile=%d geom=%d busy=%u n=%llu err=%llu "
 		         "avg_us lock=%llu stage=%llu wait=%llu check=%llu max_wait=%llu "
 		         "spins=%llu parks=%llu short=%llu spin_fail=%llu "
 		         "gpu=%d gpu_n=%llu gpu_ns=%llu cp_khz=%llu",
 		         g_wait_adaptive, g_profile_enabled, adreno_3d_geom_batch(-1),
+		         (unsigned)__atomic_load_n(&g_wait_busy, __ATOMIC_RELAXED),
 		         (unsigned long long)g_stats.jobs, (unsigned long long)g_stats.errors,
 		         (unsigned long long)(g_stats.lock_ns/n/1000u),
 		         (unsigned long long)(g_stats.stage_ns/n/1000u),
@@ -262,6 +293,8 @@ static int ring_wait_submit(adreno_dev_t *d, uint64_t start,
 	uint32_t target = get_wptr(ring);
 	uint32_t parks = 0;
 	uint32_t spins = 0;
+	uint32_t busy = 0;
+	const uint32_t busy_tries = __atomic_load_n(&g_wait_busy, __ATOMIC_RELAXED);
 	for (uint32_t i = 0; i < RING_IDLE_TRIES; i++) {
 		if (fence_mem != NULL) {
 			/* CACHE_FLUSH_TS is emitted after the whole IB. Avoid an RPTR
@@ -281,6 +314,16 @@ static int ring_wait_submit(adreno_dev_t *d, uint64_t start,
 				ring->rptr_gpu = shadow;
 				return 0;
 			}
+		}
+		/* Busy prologue: re-poll the volatile fence without sleeping or
+		   reading the clock so a job that retires in a few microseconds is
+		   observed immediately instead of after a 10us sleep quantum.  The
+		   wall-clock timeout is deliberately not sampled here (a per-iteration
+		   kernel_tic_ms would defeat the tight loop); it is checked on every
+		   iteration once the prologue is exhausted and spins is still 0. */
+		if (busy < busy_tries) {
+			busy++;
+			continue;
 		}
 		/* The timeout is a safety bound, not part of the normal fast path.
 		   Once parked, check every wake so a delayed scheduler cannot turn
