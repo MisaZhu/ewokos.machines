@@ -1,8 +1,8 @@
 /*
  * Polled xHCI driver for the SC8280XP DWC3 host controllers (Dragon Q8B).
  * See xhci.h for the big picture. Everything here follows the xHCI 1.1
- * spec register/TRB layout; no DWC3 global registers are touched because
- * the firmware already left the cores in host mode.
+ * spec register/TRB layout; the BSP prepares the USB-C DWC3 host role before
+ * entering this controller layer.
  *
  * Concurrency model: single threaded, one in-flight TD per endpoint.
  * TDs are only written while their ring is idle (previous TD completed,
@@ -138,7 +138,7 @@
 
 /*
  * DMA pool: one big uncached sys_dma allocation carved into
- *  - a bump region for per-controller globals (never freed)
+ *  - separate bump regions for per-controller globals (reused after HCRST)
  *  - fixed 16KB per-device arenas (freed on detach)
  *
  * xHCI 1.2 4.11.5.1 requires that a TRB ring segment never cross a 64KB
@@ -154,6 +154,11 @@
 #define XHCI_RING_BOUNDARY  0x10000u
 #define XHCI_ARENA_SIZE     0x8000
 #define XHCI_ARENA_COUNT    16
+#define XHCI_HC_DMA_SIZE    0x20000u
+
+#if XHCI_MAX_CONTROLLERS * XHCI_HC_DMA_SIZE > XHCI_DMA_POOL_SIZE - XHCI_ARENA_COUNT * XHCI_ARENA_SIZE
+#error "xHCI controller DMA regions overlap the device arenas"
+#endif
 
 /* fixed offsets inside a device arena */
 #define ARENA_OFF_DEVCTX    0x0000 /* <= 2048 (csz 64 * 32 entries) */
@@ -165,6 +170,7 @@
 
 typedef struct {
     bool used;
+    xhci_hc_t* owner;
     uint8_t* virt;
     uint64_t bus;
     uint32_t bump;
@@ -173,10 +179,10 @@ typedef struct {
 static struct {
     uint8_t* virt;
     uint64_t bus;
-    uint32_t used;
 } _pool;
 
 static xhci_arena_t _arenas[XHCI_ARENA_COUNT];
+static uint32_t _hc_dma_used[XHCI_MAX_CONTROLLERS];
 
 static inline uint64_t now_ms(void) {
     return kernel_tic_ms(0);
@@ -234,38 +240,45 @@ int xhci_dma_init(void) {
             & (XHCI_RING_BOUNDARY - 1u));
     _pool.virt = (uint8_t*)(raw + pad);
     _pool.bus = (uint64_t)(phy + pad) + XHCI_DMA_BUS_OFFSET;
-    _pool.used = 0;
     memset(_pool.virt, 0, XHCI_DMA_POOL_SIZE);
     memset(_arenas, 0, sizeof(_arenas));
+    memset(_hc_dma_used, 0, sizeof(_hc_dma_used));
     klog("xhci: dma pool bus=%llx size=%u\n",
             (unsigned long long)_pool.bus, XHCI_DMA_POOL_SIZE);
     return 0;
 }
 
-/* The Q8B has one MP xHCI instance. Reusing its pool after HCRST avoids
- * leaking one megabyte plus every occupied device arena on each recovery. */
-static void xhci_dma_reset(void) {
-    _pool.used = 0;
-    memset(_pool.virt, 0, XHCI_DMA_POOL_SIZE);
-    memset(_arenas, 0, sizeof(_arenas));
+/* Only this controller has stopped DMA after its HCRST. Leave every other
+ * controller's command/event rings, scratchpads and device arenas intact. */
+static void xhci_dma_reset(xhci_hc_t* hc) {
+    _hc_dma_used[hc->id] = 0;
+    memset(_pool.virt + (uint32_t)hc->id * XHCI_HC_DMA_SIZE, 0,
+            XHCI_HC_DMA_SIZE);
+    for (int i = 0; i < XHCI_ARENA_COUNT; ++i) {
+        if (_arenas[i].owner == hc) {
+            _arenas[i].used = false;
+            _arenas[i].owner = NULL;
+        }
+    }
 }
 
-void* xhci_dma_alloc(uint32_t size, uint32_t align, uint64_t* bus) {
-    uint32_t off = (_pool.used + align - 1u) & ~(align - 1u);
-    /* keep the arena strip at the pool tail intact */
-    uint32_t limit = XHCI_DMA_POOL_SIZE - XHCI_ARENA_COUNT * XHCI_ARENA_SIZE;
-    if (off + size > limit) {
-        klog("xhci: dma pool exhausted (%u + %u > %u)\n", off, size, limit);
+static void* xhci_dma_alloc(xhci_hc_t* hc, uint32_t size, uint32_t align,
+        uint64_t* bus) {
+    uint32_t off = (_hc_dma_used[hc->id] + align - 1u) & ~(align - 1u);
+    if (off + size > XHCI_HC_DMA_SIZE) {
+        klog("xhci%d: dma region exhausted (%u + %u > %u)\n", hc->id,
+                off, size, XHCI_HC_DMA_SIZE);
         return NULL;
     }
-    _pool.used = off + size;
+    _hc_dma_used[hc->id] = off + size;
+    off += (uint32_t)hc->id * XHCI_HC_DMA_SIZE;
     if (bus != NULL) {
         *bus = _pool.bus + off;
     }
     return _pool.virt + off;
 }
 
-static xhci_arena_t* arena_take(void) {
+static xhci_arena_t* arena_take(xhci_hc_t* hc) {
     uint32_t strip = XHCI_DMA_POOL_SIZE - XHCI_ARENA_COUNT * XHCI_ARENA_SIZE;
     for (int i = 0; i < XHCI_ARENA_COUNT; ++i) {
         if (_arenas[i].used) {
@@ -273,6 +286,7 @@ static xhci_arena_t* arena_take(void) {
         }
         uint32_t off = strip + (uint32_t)i * XHCI_ARENA_SIZE;
         _arenas[i].used = true;
+        _arenas[i].owner = hc;
         _arenas[i].virt = _pool.virt + off;
         _arenas[i].bus = _pool.bus + off;
         _arenas[i].bump = ARENA_BUMP_START;
@@ -393,8 +407,9 @@ static void handle_xfer_event(xhci_hc_t* hc, uint32_t d0, uint32_t d1,
  * HSE (a bus fault while the controller was mastering DMA) and HCE (an
  * internal controller error) both stop the controller dead: xHCI 1.2 4.10.2.6
  * and 5.4.2 say the only way out is a full HCRST + re-init. Re-init is not
- * possible here because the DMA pool is a bump allocator with no free path, so
- * latch the failure and stop poking the hardware. Without this check every
+ * performed from the event loop; the BSP owns reinitialization of the USB
+ * policy and controller state. Latch the failure and stop poking the hardware.
+ * Without this check every
  * later command sits out its full timeout and the event ring reads back
  * garbage that would be mistaken for real completions.
  */
@@ -562,6 +577,8 @@ static int xhci_cmd(xhci_hc_t* hc, uint32_t d0, uint32_t d1, uint32_t d2,
 /* ---------------- controller init ---------------- */
 
 int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
+    if (id < 0 || id >= XHCI_MAX_CONTROLLERS)
+        return -1;
     memset(hc, 0, sizeof(*hc));
     hc->id = id;
     hc->base = cap_base;
@@ -612,12 +629,10 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
         usleep(100);
     }
 
-    /* HCRST has stopped every DMA engine, so the single-controller pool is
-       now safe to recycle for a clean software/controller state pair. */
-    xhci_dma_reset();
+    xhci_dma_reset(hc);
 
     /* DCBAA + scratchpad buffers */
-    hc->dcbaa = xhci_dma_alloc((hc->max_slots + 1) * 8, 64, &hc->dcbaa_phys);
+    hc->dcbaa = xhci_dma_alloc(hc, (hc->max_slots + 1) * 8, 64, &hc->dcbaa_phys);
     if (hc->dcbaa == NULL) {
         return -1;
     }
@@ -626,13 +641,13 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     uint32_t scratch_page_size = xhci_pick_page_size(hc->op);
     if (n_scratch > 0) {
         uint64_t arr_bus;
-        uint64_t* arr = xhci_dma_alloc(n_scratch * 8, 64, &arr_bus);
+        uint64_t* arr = xhci_dma_alloc(hc, n_scratch * 8, 64, &arr_bus);
         if (arr == NULL) {
             return -1;
         }
         for (uint32_t i = 0; i < n_scratch; ++i) {
             uint64_t page_bus;
-            if (xhci_dma_alloc(scratch_page_size, scratch_page_size, &page_bus) == NULL) {
+            if (xhci_dma_alloc(hc, scratch_page_size, scratch_page_size, &page_bus) == NULL) {
                 return -1;
             }
             arr[i] = page_bus;
@@ -641,10 +656,10 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     }
 
     /* command ring: aligned to its own size so it stays in one 64KB window */
-    hc->cmd = xhci_dma_alloc(RING_BYTES, RING_BYTES, &hc->cmd_phys);
+    hc->cmd = xhci_dma_alloc(hc, RING_BYTES, RING_BYTES, &hc->cmd_phys);
     /* event ring + single-entry ERST, same 64KB rule */
-    hc->evt = xhci_dma_alloc(EVT_BYTES, EVT_BYTES, &hc->evt_phys);
-    uint64_t* erst = xhci_dma_alloc(16, 64, &hc->erst_phys);
+    hc->evt = xhci_dma_alloc(hc, EVT_BYTES, EVT_BYTES, &hc->evt_phys);
+    uint64_t* erst = xhci_dma_alloc(hc, 16, 64, &hc->erst_phys);
     if (hc->cmd == NULL || hc->evt == NULL || erst == NULL) {
         return -1;
     }
@@ -823,7 +838,7 @@ int xhci_device_attach(xhci_hc_t* hc, int root_port, int speed,
         }
     }
 
-    xhci_arena_t* arena = arena_take();
+    xhci_arena_t* arena = arena_take(hc);
     if (arena == NULL) {
         klog("xhci%d: out of device arenas\n", hc->id);
         return -1;
@@ -1019,6 +1034,12 @@ static void ep_recover(xhci_dev_t* dev, uint32_t dci) {
         ep->in_flight = false;
         ep->done = false;
         ep->short_left = 0;
+        /* The command ring could not stop/reset this endpoint.  Its
+         * dequeue state is no longer trustworthy; posting another TD would
+         * only repeat the timeout and block the USB policy loop.  Leave the
+         * device present so the policy layer can observe the failed request
+         * and remove the dead device tree on its normal scan. */
+        ep->open = false;
         return;
     }
 
@@ -1032,6 +1053,7 @@ static void ep_recover(xhci_dev_t* dev, uint32_t dci) {
     if (code != CC_SUCCESS) {
         klog("xhci%d: set dequeue failed slot=%u dci=%u code=%d\n",
                 hc->id, dev->slot_id, dci, code);
+        ep->open = false;
     }
 }
 
@@ -1046,7 +1068,7 @@ int xhci_control_xfer(xhci_dev_t* dev, const usb_setup_pkt_t* setup,
     if (len > XHCI_CTRL_BUF_SIZE) {
         return -1;
     }
-    if (ep0->in_flight) {
+    if (!ep0->open || ep0->in_flight) {
         return -1; /* single outstanding control transfer */
     }
     if (len > 0 && !dir_in) {
@@ -1362,6 +1384,15 @@ int xhci_bulk_xfer(xhci_dev_t* dev, uint8_t ep_addr, void* data,
             klog("xhci%d: bulk %s failed slot=%u dci=%u code=%u\n",
                     dev->hc->id, dir_in ? "in" : "out", dev->slot_id,
                     dci, ep->comp_code);
+            /* A disconnect can race the transfer completion.  Do not submit
+             * STOP_EP/SET_TR_DEQ after the link is gone: those commands can
+             * wait for a slot that the controller has already lost. */
+            if (!xhci_port_connected(dev->hc, dev->root_port)) {
+                ep->in_flight = false;
+                ep->done = false;
+                ep->short_left = 0;
+                return -1;
+            }
             ep_recover(dev, dci);
             return -1;
         }

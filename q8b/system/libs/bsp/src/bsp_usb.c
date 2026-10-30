@@ -1,12 +1,14 @@
 /* SC8280XP USB host glue for the Dragon Q8B.
  *
- * Qualcomm firmware powers and calibrates the multi-port DWC3 core before
- * ExitBootServices.  The controller exposes a standard xHCI register file at
- * 0x0a400000; this layer takes it over, then reuses the shared EwokOS USB
- * enumeration, HID, hub and mass-storage policy.
+ * Qualcomm firmware powers and calibrates the DWC3 cores before
+ * ExitBootServices. Q8B has one multi-port USB host block plus two USB-C
+ * host blocks; each exposes a standard xHCI register file. This layer takes
+ * all of them over and reuses the shared EwokOS USB enumeration, HID, hub and
+ * mass-storage policy.
  */
 #include <bsp/bsp_usb.h>
 #include <bsp/xhci.h>
+#include <bsp/dwc3.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -21,11 +23,20 @@
 #include <ewoksys/usbmsc.h>
 
 #define BSP_USB_MAX_DEVS 16
-#define BSP_USB_NUM_XHC 1
+#define BSP_USB_NUM_XHC XHCI_MAX_CONTROLLERS
 #define BSP_USB_MAX_PORTS (BSP_USB_NUM_XHC * XHCI_MAX_PORTS)
 
-/* sc8280xp.dtsi usb_2_dwc3, used by the board's conventional USB ports. */
-#define Q8B_XHCI_PHY_BASE 0x0a400000ULL
+/* sc8280xp.dtsi DWC3 children:
+ *   usb_2_dwc3: 0x0a400000 (multi-port USB-A host block)
+ *   usb_0_dwc3: 0x0a600000 (USB-C connector 0)
+ *   usb_1_dwc3: 0x0a800000 (USB-C connector 1)
+ */
+static const ewokos_addr_t Q8B_XHCI_PHY_BASE[BSP_USB_NUM_XHC] = {
+    0x0a400000ULL, 0x0a600000ULL, 0x0a800000ULL
+};
+static const char* const Q8B_XHCI_NAME[BSP_USB_NUM_XHC] = {
+    "usb2-mp", "usb0-type-c", "usb1-type-c"
+};
 #define XHCI_BAR_VA_BASE  0x50000000ULL
 #define XHCI_BAR_MAP_SIZE 0x10000u
 
@@ -112,10 +123,15 @@ static bool _inited = false;
 static xhci_hc_t _xhcs[BSP_USB_NUM_XHC];
 static uint32_t _xhc_dev_count[BSP_USB_NUM_XHC];
 static bool _xhc_dirty[BSP_USB_NUM_XHC];
+static bool _xhc_mapped[BSP_USB_NUM_XHC];
+/* Keep flat root-port numbers stable if a controller fails at runtime.
+ * Otherwise losing usb2 would silently renumber devices on both USB-C cores. */
+static uint32_t _xhc_ports[BSP_USB_NUM_XHC];
 
 typedef struct {
     bool ready;
     bool claimed;
+    bool transport_failed;
     bsp_usb_dev_t* dev;
     uint8_t iface_num;
     uint8_t ep_in;   /* endpoint address (with USB_ENDPOINT_IN) */
@@ -132,12 +148,23 @@ typedef struct {
 
 static usb_msc_t _msc;
 /* set by msc_attach, serviced (fork) from bsp_usb_poll: the spawn must
-   wait until /dev/hid0 exists, but the first port scan that claims the
+   wait until /dev/usb0 exists, but the first port scan that claims the
    MSC device runs inside usbhostd main() BEFORE device_run() registers
    it — spawning there races the daemon registration and usbfat32fsd
-   dies with "usb dev /dev/hid0 not found" whenever it wins the CPU */
+   dies with "usb dev /dev/usb0 not found" whenever it wins the CPU */
 static bool _msc_mount_pending = false;
+static bool _msc_auto_mount = true;
 static void msc_mount_spawn(void);
+
+/* init disables this while probing a USB rootfs.  A second fat32fsd client
+   would reset the shared MSC transport underneath the root mount. */
+void bsp_usb_set_msc_auto_mount(bool enabled) {
+    _msc_auto_mount = enabled;
+    if (!enabled)
+        _msc_mount_pending = false;
+    else if (_msc.ready && _msc.child_pid <= 0)
+        _msc_mount_pending = true;
+}
 
 static inline uint32_t be32(const void* p) {
     const uint8_t* b = (const uint8_t*)p;
@@ -153,23 +180,22 @@ static inline void put_be32(void* p, uint32_t v) {
     b[3] = (uint8_t)v;
 }
 
-/* ---- xHCI glue: fixed SC8280XP controller, flat ports, speed codes ---- */
+/* ---- xHCI glue: SC8280XP controllers, flat ports, speed codes ---- */
 
 /* flat 1-based port -> xHCI controller + 1-based hc port; the xHCI range
    starts after all UHCI ports so existing UHCI port indices never move */
 static xhci_hc_t* flat_to_xhc(int port, int* hc_port) {
     int rel = port - uhci_port_count();
     for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
-        if (!_xhcs[i].present) {
-            continue;
-        }
-        if (rel >= 1 && rel <= (int)_xhcs[i].num_ports) {
+        if (rel >= 1 && rel <= (int)_xhc_ports[i]) {
+            if (!_xhcs[i].present)
+                return NULL;
             if (hc_port != NULL) {
                 *hc_port = rel;
             }
             return &_xhcs[i];
         }
-        rel -= (int)_xhcs[i].num_ports;
+        rel -= (int)_xhc_ports[i];
     }
     return NULL;
 }
@@ -186,9 +212,7 @@ static int xhci_hc_index(xhci_hc_t* hc) {
 static int xhci_port_count(void) {
     int count = 0;
     for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
-        if (_xhcs[i].present) {
-            count += (int)_xhcs[i].num_ports;
-        }
+        count += (int)_xhc_ports[i];
     }
     return count;
 }
@@ -230,32 +254,63 @@ static int speed_from_xhci(int speed) {
 }
 
 /*
- * Never fail hard: ipcserv blocks in ipc_wait_ready() until the daemon
- * registers its mount point, so degrading to "no xhci" is the only safe
- * path; every entry point below is gated on hc->present.
- *
- * UEFI has already enabled the GCC votes, power domain, HS PHYs and QMP PHYs.
- * Map the live xHCI aperture and take ownership with a normal HCRST.
+ * UEFI has already enabled the GCC votes, power domains, HS PHYs and QMP
+ * PHYs. Map each live xHCI aperture and take ownership with a normal HCRST.
+ * A controller that is not exposed by the current firmware is skipped; the
+ * other controllers remain available.
  */
-static int xhci_bring_up(void) {
+static int q8b_xhci_start(int i) {
+    ewokos_addr_t va = XHCI_BAR_VA_BASE +
+            (ewokos_addr_t)i * XHCI_BAR_MAP_SIZE;
     uint32_t cap;
+    uint32_t first_port = 1;
 
-    if (syscall3(SYS_MEM_MAP, XHCI_BAR_VA_BASE, Q8B_XHCI_PHY_BASE,
-            XHCI_BAR_MAP_SIZE) != XHCI_BAR_VA_BASE) {
-        klog("bsp_usb: q8b xhci map failed phy=%llx\n",
-                (unsigned long long)Q8B_XHCI_PHY_BASE);
-        return 0;
+    /* usb2 is the fixed host block; only the two USB-C cores are DRD. */
+    if (i != 0 && dwc3_host_prepare(i, va) != 0)
+        return -1;
+    cap = get32(va);
+    klog("bsp_usb: q8b xhci%d %s cap=%08x phy=%llx\n", i,
+            Q8B_XHCI_NAME[i], cap, (unsigned long long)Q8B_XHCI_PHY_BASE[i]);
+    if ((cap >> 16) < 0x0090u || (cap >> 16) == 0xffffu) {
+        klog("bsp_usb: q8b xhci%d unavailable\n", i);
+        return -1;
     }
-    cap = get32(XHCI_BAR_VA_BASE);
-    klog("bsp_usb: q8b xhci cap=%08x phy=%llx\n", cap,
-            (unsigned long long)Q8B_XHCI_PHY_BASE);
-    if ((cap >> 16) < 0x0090u || (cap >> 16) == 0xffffu)
-        return 0;
+    if (xhci_init(&_xhcs[i], i, va) != 0) {
+        klog("bsp_usb: q8b xhci%d init failed\n", i);
+        return -1;
+    }
+    _xhc_dirty[i] = true;
+    _xhc_ports[i] = _xhcs[i].num_ports;
+    for (int j = 0; j < i; ++j)
+        first_port += _xhc_ports[j];
+    klog("bsp_usb: xhci%d %s root ports=%u..%u\n", i, Q8B_XHCI_NAME[i],
+            first_port, first_port + _xhcs[i].num_ports - 1u);
+    return 0;
+}
+
+static int xhci_bring_up(void) {
+    int found = 0;
+
     if (xhci_dma_init() != 0) {
         klog("bsp_usb: xhci dma init failed\n");
         return 0;
     }
-    return xhci_init(&_xhcs[0], 0, XHCI_BAR_VA_BASE) == 0 ? 1 : 0;
+    for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
+        ewokos_addr_t va = XHCI_BAR_VA_BASE +
+                (ewokos_addr_t)i * XHCI_BAR_MAP_SIZE;
+
+        if (syscall3(SYS_MEM_MAP, va, Q8B_XHCI_PHY_BASE[i],
+                XHCI_BAR_MAP_SIZE) != va) {
+            klog("bsp_usb: q8b xhci%d map failed phy=%llx\n", i,
+                    (unsigned long long)Q8B_XHCI_PHY_BASE[i]);
+            continue;
+        }
+        _xhc_mapped[i] = true;
+        if (q8b_xhci_start(i) == 0) {
+            ++found;
+        }
+    }
+    return found;
 }
 
 /* ---- init / poll ---- */
@@ -270,6 +325,7 @@ int bsp_usb_init(void) {
     memset(_xhc_dev_count, 0, sizeof(_xhc_dev_count));
     memset(_xhc_dirty, 0, sizeof(_xhc_dirty));
     memset(_xhcs, 0, sizeof(_xhcs));
+    memset(_xhc_ports, 0, sizeof(_xhc_ports));
 
     xhci_bring_up(); /* degrades to zero controllers, never fails */
     if (uhci_port_count() == 0 && xhci_port_count() == 0) {
@@ -280,6 +336,15 @@ int bsp_usb_init(void) {
 
 int bsp_usb_reinit(void) {
     int found = 0;
+
+    /* A mounted USB rootfs shares this controller.  Reinitializing xHCI
+       drops its address, slot and endpoint state out from under sdfsd and
+       turns a secondary enumeration failure into a rootfs I/O failure. */
+    if (_msc.claimed && _msc.ready) {
+        klog("bsp_usb: xhci reinit skipped while MSC is active\n");
+        return -1;
+    }
+
     bsp_usb_bt_reset();
 
     (void)uhci_reinit();
@@ -291,13 +356,15 @@ int bsp_usb_reinit(void) {
     memset(_devs, 0, sizeof(_devs));
     memset(_prev_connected, 0, sizeof(_prev_connected));
     memset(_xhc_dev_count, 0, sizeof(_xhc_dev_count));
+    memset(_xhc_dirty, 0, sizeof(_xhc_dirty));
+    memset(_xhc_ports, 0, sizeof(_xhc_ports));
     memset(&_msc, 0, sizeof(_msc));
     _msc_mount_pending = false;
     for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
+        if (!_xhc_mapped[i])
+            continue;
         memset(&_xhcs[i], 0, sizeof(_xhcs[i]));
-        if (xhci_init(&_xhcs[i], i, XHCI_BAR_VA_BASE +
-                (uint32_t)i * XHCI_BAR_MAP_SIZE) == 0) {
-            _xhc_dirty[i] = true;
+        if (q8b_xhci_start(i) == 0) {
             found++;
         }
         else {
@@ -309,7 +376,7 @@ int bsp_usb_reinit(void) {
 
 void bsp_usb_poll(void) {
     bsp_usb_bt_poll();
-    if (_msc_mount_pending) {
+    if (_msc_mount_pending && _msc_auto_mount) {
         _msc_mount_pending = false;
         msc_mount_spawn();
     }
@@ -358,11 +425,9 @@ uint32_t bsp_usb_root_port_changes(void) {
     {
         int shift = count;
         for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
-            if (!_xhcs[i].present) {
-                continue;
-            }
-            changes |= xhci_port_take_changes(&_xhcs[i]) << shift;
-            shift += (int)_xhcs[i].num_ports;
+            if (_xhcs[i].present)
+                changes |= xhci_port_take_changes(&_xhcs[i]) << shift;
+            shift += (int)_xhc_ports[i];
         }
     }
     return changes;
@@ -735,24 +800,56 @@ static int msc_bulk_xfer(bool dir_in, uint8_t ep_addr, uint16_t mps,
             timeout_ms);
 }
 
+/* The USB daemon is single-threaded: a filesystem IPC request can occupy it
+ * while a transfer is timing out, so root-port disconnect processing cannot
+ * detach the MSC handle until this request returns.  Check the physical link
+ * here and let the normal scan remove the device on its next pass. */
+static bool msc_link_present(void) {
+    if (!_msc.claimed || _msc.dev == NULL || !_msc.dev->used) {
+        return false;
+    }
+    if (_msc.dev->on_xhci) {
+        return xhci_port_connected(_msc.dev->xdev.hc,
+                _msc.dev->xdev.root_port);
+    }
+    return uhci_port_connected(_msc.dev->root_flat);
+}
+
 /* bulk-only mass storage reset + endpoint unhalt, then resync toggles */
 static void msc_recover(void) {
     usb_setup_pkt_t setup;
+    int reset_ret;
+    int in_ret;
+    int out_ret;
+
+    if (!msc_link_present()) {
+        _msc.transport_failed = true;
+        _msc.ready = false;
+        return;
+    }
 
     memset(&setup, 0, sizeof(setup));
     setup.bmRequestType = USB_REQTYPE_CLASS_IFACE_OUT;
     setup.bRequest = 0xFF; /* bulk-only mass storage reset */
     setup.wIndex = _msc.iface_num;
-    (void)bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
+    reset_ret = bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
 
     memset(&setup, 0, sizeof(setup));
     setup.bmRequestType = USB_REQTYPE_STD_EP_OUT;
     setup.bRequest = USB_REQ_CLEAR_FEATURE;
     setup.wValue = USB_FEAT_ENDPOINT_HALT;
     setup.wIndex = _msc.ep_in;
-    (void)bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
+    in_ret = bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
     setup.wIndex = _msc.ep_out;
-    (void)bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
+    out_ret = bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
+
+    if (reset_ret != 0 || in_ret != 0 || out_ret != 0) {
+        klog("bsp_usb: msc recovery reset=%d clear_in=%d clear_out=%d\n",
+                reset_ret, in_ret, out_ret);
+        _msc.transport_failed = true;
+        _msc.ready = false;
+        return;
+    }
 
     _msc.toggle_in = 0;
     _msc.toggle_out = 0;
@@ -769,8 +866,11 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
     uint8_t* payload = NULL;
     uint32_t tag;
     int ret = -1;
+    const uint32_t lba = (cdb_len >= 10) ? be32(cdb + 2) : 0;
+    const uint32_t blocks = (cdb_len >= 10) ?
+            (((uint32_t)cdb[7] << 8) | cdb[8]) : 0;
 
-    if (!_msc.claimed || _msc.dev == NULL || cdb_len > 16) {
+    if (!_msc.claimed || _msc.transport_failed || _msc.dev == NULL || cdb_len > 16) {
         return -1;
     }
     if (data_len > 0) {
@@ -784,6 +884,11 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
     }
 
     for (int attempt = 0; attempt < 2; ++attempt) {
+        if (_msc.transport_failed || !msc_link_present()) {
+            _msc.transport_failed = true;
+            _msc.ready = false;
+            goto out;
+        }
         tag = ++_msc.tag;
         if (tag == 0) {
             tag = ++_msc.tag;
@@ -799,6 +904,13 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
 
         if (msc_bulk_xfer(false, _msc.ep_out, _msc.mps_out, &_msc.toggle_out,
                 &cbw, sizeof(cbw), MSC_CBW_TIMEOUT_MS) != (int)sizeof(cbw)) {
+            klog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d cbw out failed\n",
+                    cdb[0], lba, blocks, data_len, attempt + 1);
+            if (!msc_link_present()) {
+                _msc.transport_failed = true;
+                _msc.ready = false;
+                goto out;
+            }
             msc_recover();
             continue;
         }
@@ -810,6 +922,14 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
                     dir_in ? &_msc.toggle_in : &_msc.toggle_out,
                     payload, data_len, MSC_BULK_TIMEOUT_MS);
             if (xret != (int)data_len) {
+                klog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d data %s failed got=%d\n",
+                        cdb[0], lba, blocks, data_len, attempt + 1,
+                        dir_in ? "in" : "out", xret);
+                if (!msc_link_present()) {
+                    _msc.transport_failed = true;
+                    _msc.ready = false;
+                    goto out;
+                }
                 msc_recover();
                 continue;
             }
@@ -817,15 +937,33 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
 
         if (msc_bulk_xfer(true, _msc.ep_in, _msc.mps_in, &_msc.toggle_in,
                 &csw, sizeof(csw), MSC_BULK_TIMEOUT_MS) != (int)sizeof(csw)) {
+            klog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d csw in failed\n",
+                    cdb[0], lba, blocks, data_len, attempt + 1);
+            if (!msc_link_present()) {
+                _msc.transport_failed = true;
+                _msc.ready = false;
+                goto out;
+            }
             msc_recover();
             continue;
         }
 
         if (csw.dCSWSignature != USB_MSC_CSW_SIG || csw.dCSWTag != tag) {
+            klog("bsp_usb: msc op=%02x lba=%u blocks=%u bad csw sig=%08x tag=%u want=%u\n",
+                    cdb[0], lba, blocks, csw.dCSWSignature,
+                    csw.dCSWTag, tag);
+            if (!msc_link_present()) {
+                _msc.transport_failed = true;
+                _msc.ready = false;
+                goto out;
+            }
             msc_recover();
             continue;
         }
         if (csw.bCSWStatus != 0) {
+            klog("bsp_usb: msc op=%02x lba=%u blocks=%u status=%u residue=%u\n",
+                    cdb[0], lba, blocks, csw.bCSWStatus,
+                    csw.dCSWDataResidue);
             ret = -1;
             goto out;
         }
@@ -846,13 +984,6 @@ static int usb_msc_test_unit_ready(void) {
     memset(cdb, 0, sizeof(cdb));
     cdb[0] = SCSI_OPCODE_TEST_UNIT_READY;
     return usb_msc_command(cdb, 6, false, NULL, 0);
-}
-
-static int usb_msc_sync_cache(void) {
-    uint8_t cdb[10];
-    memset(cdb, 0, sizeof(cdb));
-    cdb[0] = SCSI_OPCODE_SYNC_CACHE10;
-    return usb_msc_command(cdb, 10, false, NULL, 0);
 }
 
 static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
@@ -931,7 +1062,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
 }
 
 /* fork the fat32fsd mount daemon for a claimed MSC device; called from
-   bsp_usb_poll with /dev/hid0 guaranteed registered */
+   bsp_usb_poll with /dev/usb0 guaranteed registered */
 static void msc_mount_spawn(void) {
     fsinfo_t mnt_info;
     if (vfs_get_by_name("/mnt/udisk0", &mnt_info) == 0) {
@@ -941,7 +1072,7 @@ static void msc_mount_spawn(void) {
     int pid = fork();
     if (pid == 0) {
         proc_detach();
-        if (proc_exec("/drivers/q8b/usbfat32fsd -u /dev/hid0 /mnt/udisk0") != 0) {
+        if (proc_exec("/drivers/q8b/usbfat32fsd -u /dev/usb0 /mnt/udisk0") != 0) {
             exit(-1);
         }
     }
@@ -1073,6 +1204,9 @@ int bsp_usb_msc_cntl(vdevice_t* vdev, int from_pid, int cmd,
     (void)from_pid;
 
     switch (cmd) {
+    case USBMSC_CMD_AUTOMOUNT:
+        bsp_usb_set_msc_auto_mount(proto_read_int(in) != 0);
+        return 0;
     case USBMSC_CMD_INFO:
         PF->addi(out, _msc.ready ? 1 : 0);
         PF->addi(out, _msc.sector_count);
@@ -1102,7 +1236,12 @@ int bsp_usb_msc_cntl(vdevice_t* vdev, int from_pid, int cmd,
         if (!_msc.ready) {
             return 0;
         }
-        return (usb_msc_sync_cache() == 0) ? 0 : -1;
+        /* Some Q8B USB MSC bridges accept the CBW for SYNCHRONIZE CACHE(10)
+         * but never return a CSW.  The resulting BOT recovery leaves the
+         * data endpoints unusable, so a later journal WRITE10/READ10 fails.
+         * USB writes are synchronous through this driver; leave flush as a
+         * successful no-op until a bridge-specific cache command is needed. */
+        return 0;
     default:
         return -1;
     }

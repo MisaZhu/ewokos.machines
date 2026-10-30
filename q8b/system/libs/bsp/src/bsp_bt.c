@@ -7,8 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 
-/* usbhostd's device node (the same /dev/hid0 the MSC client uses) */
-#define BT_USB_NODE "/dev/hid0"
+/* usbhostd's device node (the same /dev/usb0 the MSC client uses) */
+#define BT_USB_NODE "/dev/usb0"
 /* bytes pulled per USBHCI_CMD_RECV round-trip */
 #define BT_RECV_CHUNK 512
 

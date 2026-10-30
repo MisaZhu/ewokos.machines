@@ -15,8 +15,39 @@ uint64_t _core_base_offset = 0;
 
 uint64_t q8b_ramdisk_base = 0;
 uint64_t q8b_ramdisk_size = 0;
+uint32_t q8b_ramdisk_flags = 0;
 uint64_t q8b_fb_base = 0;
 uint64_t q8b_fb_size = 0;
+
+int32_t q8b_release_ramdisk(void) {
+    uint64_t base = q8b_ramdisk_base;
+    uint64_t size = q8b_ramdisk_size;
+    uint64_t end;
+    q8b_platform_data_t* pd;
+    if (size == 0 || (q8b_ramdisk_flags & Q8B_RD_FLAG_BOOT_ONLY) == 0)
+        return -1;
+
+    end = base + size;
+    if (end < base)
+        return -1;
+
+    /* All user processes drop their short-lived bootfs aliases in read_fs().
+     * Keep the physical pages reserved after hand-off.  init calls this from
+     * a live SMP system, while the Q8B page allocator has no global lock;
+     * appending this range to the free list here races concurrent kalloc_page
+     * users and can corrupt the allocator immediately after the release log.
+     * The range remains excluded by the UEFI reservation/ramdisk metadata,
+     * so retaining these 16 MiB is safe and deterministic. */
+    pd = (q8b_platform_data_t*)(void*)_sys_info.platform_data;
+    q8b_ramdisk_base = 0;
+    q8b_ramdisk_size = 0;
+    q8b_ramdisk_flags = 0;
+    pd->rd.phy_base = 0;
+    pd->rd.size = 0;
+    pd->rd.flags = 0;
+    q8b_dbg_puts("q8b: initramfs aliases released (pages reserved)\n");
+    return 0;
+}
 
 static q8b_bootinfo_t _bi;
 static int32_t _bi_valid = 0;
@@ -42,6 +73,7 @@ static void bootinfo_load(void) {
 
     q8b_ramdisk_base = _bi.rd_base;
     q8b_ramdisk_size = _bi.rd_size;
+    q8b_ramdisk_flags = _bi.rd_flags;
     q8b_fb_base = _bi.fb_addr;
     q8b_fb_size = (uint64_t)_bi.fb_pitch * _bi.fb_height;
     /* SYS_MEM_MAP maps whole pages; round up so the final partial page is
@@ -102,6 +134,8 @@ void sys_info_init_arch(void) {
     pd.fb.format = _bi.fb_format;
     pd.rd.phy_base = _bi.rd_base;
     pd.rd.size = (uint32_t)_bi.rd_size;
+    pd.rd.flags = _bi.rd_flags;
+    pd.rd.boot_source = _bi.boot_source;
     memcpy(_sys_info.platform_data, &pd,
             sizeof(pd) < PLATFORM_DATA_SIZE ? sizeof(pd) : PLATFORM_DATA_SIZE);
 

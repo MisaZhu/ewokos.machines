@@ -56,7 +56,11 @@ UEFI_ELF    = $(UEFI_DIR)/boot.elf
 UEFI_EFI    = $(UEFI_DIR)/BOOTAA64.EFI
 UEFI_SRCS   = $(UEFI_DIR)/main.c
 UEFI_OBJS   = $(patsubst $(UEFI_DIR)/%.c,$(UEFI_DIR)/%.o,$(UEFI_SRCS))
-MTFTP_FIRST ?= 1
+# The loader detects the device that launched BOOTAA64.EFI and gives that
+# source precedence.  Network remains the final fallback (MTFTP_FIRST is kept
+# as a compatibility knob for existing build scripts but no longer changes
+# the source ordering).
+MTFTP_FIRST ?= 0
 ifeq ($(KERNEL_ONLY),1)
 UEFI_CFLAGS += -DQ8B_KERNEL_ONLY
 endif

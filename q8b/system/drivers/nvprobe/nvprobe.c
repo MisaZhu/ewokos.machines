@@ -259,6 +259,15 @@ int main(int argc, char** argv) {
 				(20)));
 	printf("  mdts    : %u (max single transfer %u KiB)\n", info.mdts,
 			info.max_xfer / 1024);
+	{
+		uint64_t root_lba = 0, root_count = 0;
+		if (nvme_find_root_partition(&root_lba, &root_count) == 0)
+			printf("  rootfs  : lba=%llu blocks=%llu\n",
+					(unsigned long long)root_lba,
+					(unsigned long long)root_count);
+		else
+			printf("  rootfs  : no Linux partition found\n");
+	}
 
 	if (strcmp(mode, "scan") == 0) {
 		nvme_close();

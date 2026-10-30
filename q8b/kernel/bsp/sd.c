@@ -1382,14 +1382,42 @@ static void* rd_ptr(int32_t sector, uint32_t count) {
     return (void*)P2V(q8b_ramdisk_base + off);
 }
 
+/* Kernel boot reader hook used by kernel/lib/src/readfs.c.  The firmware
+ * image is a standalone ext3 filesystem, so its first filesystem block is
+ * also the first block of the image (there is no SD partition offset). */
+int32_t q8b_ramdisk_read_block(int32_t block, void* buf) {
+    static uint32_t block_sectors = 2U;
+    uint8_t* src;
+    if (block < 0 || buf == NULL || q8b_ramdisk_size == 0)
+        return -1;
+    if (block == 1 && block_sectors == 2U)
+        src = (uint8_t*)rd_ptr(2, 8U);
+    else
+        src = (uint8_t*)rd_ptr(block * (int32_t)block_sectors, block_sectors);
+    if (src == NULL)
+        return -1;
+    /* The reader's buffers are EXT3_MAX_BLOCK_SIZE bytes.  Copy a full
+     * maximum-sized block so the initial superblock probe can reveal the
+     * real block size; then use that size for subsequent calls. */
+    memcpy(buf, src, (block == 1 && block_sectors == 2U) ? 4096U :
+            block_sectors * 512U);
+    if (block == 1 && ((uint32_t)((uint8_t*)buf)[24] <= 2U))
+        block_sectors = 2U << ((uint32_t)((uint8_t*)buf)[24]);
+    return 0;
+}
+
 int32_t sd_init(void) {
 #ifndef Q8B_QEMU_TEST
-    /* With a firmware RAM disk the kernel does not need the card at all;
-     * user space owns the controller and runs the full probe itself. */
-    if (q8b_ramdisk_size == 0)
+    /* A boot-only initramfs still needs one early physical-card probe so
+     * user space can inherit the SDCC2 state after it switches rootfs.  A
+     * complete legacy ROOTFS.IMG remains independent of the card. */
+    if (q8b_ramdisk_size == 0 ||
+            (q8b_ramdisk_flags & Q8B_RD_FLAG_BOOT_ONLY) != 0)
         sdcc2_probe();
 #endif
-    if (q8b_ramdisk_size != 0 || _physical_sd_ready)
+    if ((q8b_ramdisk_size != 0 &&
+            (q8b_ramdisk_flags & Q8B_RD_FLAG_BOOT_ONLY) == 0) ||
+            _physical_sd_ready)
         return 0;
 
     /* Keep the failure actionable on boards where the normal banner only

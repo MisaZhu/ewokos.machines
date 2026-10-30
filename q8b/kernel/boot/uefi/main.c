@@ -5,10 +5,9 @@
  * PE32+ application (Boot From File / UEFI Shell / PXE).  We then:
  *
  *   1. locate the GOP framebuffer and record it for user space,
- *   2. load KERNEL.BIN and, for RAM-disk boots, ROOTFS.IMG either from a
+ *   2. load KERNEL.BIN and a small RAMFS.IMG bootstrap image either from a
  *      SimpleFileSystem volume (ESP/USB), EFI_LOAD_FILE (PXE TFTP), or a GRUB
- *      initrd exposed as EFI_LOAD_FILE2; SD_ROOTFS boots leave the rootfs
- *      empty so the kernel can read the ext3 partition through SDCC2,
+ *      initrd exposed as EFI_LOAD_FILE2; init then selects SD or USB rootfs,
  *   3. reserve and fill the kernel at Q8B_KERNEL_PHYS,
  *   4. collect the final UEFI memory map, ExitBootServices,
  *   5. publish the bootinfo page at Q8B_BOOTINFO_PHYS and jump to the kernel.
@@ -35,12 +34,20 @@
 #endif
 #define Q8B_KERNEL_RESERVE  (4ULL * 1024 * 1024)
 #define Q8B_KERNEL_MTFTP_MAX (4ULL * 1024 * 1024)
+#define Q8B_RAMFS_MTFTP_MAX (32ULL * 1024 * 1024)
 #define Q8B_ROOTFS_MTFTP_MAX (160ULL * 1024 * 1024)
 #define Q8B_BOOTINFO_SIZE   0x10000ULL
 #define Q8B_USABLE_LIMIT    (8ULL * 1024 * 1024 * 1024)
 
 #define Q8B_BOOTINFO_MAGIC   0x42385145u
 #define Q8B_BOOTINFO_VERSION 1
+#define Q8B_RD_FLAG_BOOT_ONLY (1u << 0)
+
+#define Q8B_BOOT_SOURCE_UNKNOWN 0u
+#define Q8B_BOOT_SOURCE_SD      1u
+#define Q8B_BOOT_SOURCE_USB     2u
+#define Q8B_BOOT_SOURCE_NVME    3u
+#define Q8B_BOOT_SOURCE_NET     4u
 
 #define Q8B_MAX_RESV 32
 
@@ -66,6 +73,8 @@ typedef struct {
 
     uint64_t rd_base;
     uint64_t rd_size;
+    uint32_t rd_flags;
+    uint32_t boot_source;
 
     uint64_t kernel_phys;
     uint64_t kernel_size;
@@ -89,6 +98,19 @@ static EFI_LOADED_IMAGE_PROTOCOL* gImageInfo;
 static int g_con_ok;
 static EFI_SERIAL_IO_PROTOCOL* g_serial;
 static int g_serial_mode;      /* 0=none, 1=EFI Serial I/O, 2=UART17 direct */
+static uint32_t g_boot_source = Q8B_BOOT_SOURCE_UNKNOWN;
+/* A small, dependency-free GOP console used while the loader is alive.  The
+ * kernel receives the same framebuffer through bootinfo, but it is useful to
+ * see whether UEFI reached the file-loading stages before ExitBootServices. */
+static volatile uint32_t* g_fb;
+static uint32_t g_fb_w, g_fb_h, g_fb_pitch, g_fb_format;
+static uint32_t g_fb_rmask, g_fb_gmask, g_fb_bmask;
+static int g_fb_debug;
+/* Keep the boot-only RAMFS outside the board's DMA32 window when possible.
+ * Q8B reserves large contiguous DMA/SHM pools below 4 GiB; placing a
+ * 16-MB initramfs in the middle of that range can fragment the only usable
+ * 768-MB interval and make pool reservation fail before init runs. */
+static int g_alloc_high;
 
 /* ------------------------------------------------------------------ */
 /* tiny freestanding runtime                                          */
@@ -294,6 +316,138 @@ static void con_dec(uint64_t v) {
 }
 
 /* ------------------------------------------------------------------ */
+/* tiny GOP debug console                                             */
+/* ------------------------------------------------------------------ */
+static uint32_t fb_mask_value(uint32_t value, uint32_t mask) {
+    uint32_t shift = 0;
+    uint32_t width = 0;
+    if (mask == 0)
+        return 0;
+    while (((mask >> shift) & 1u) == 0 && shift < 32)
+        shift++;
+    while (shift + width < 32 && ((mask >> (shift + width)) & 1u) != 0)
+        width++;
+    if (width >= 8)
+        return (value << shift) & mask;
+    return (((value * ((1u << width) - 1u)) / 255u) << shift) & mask;
+}
+
+static uint32_t fb_color(uint32_t rgb) {
+    uint32_t r = (rgb >> 16) & 0xffu;
+    uint32_t g = (rgb >> 8) & 0xffu;
+    uint32_t b = rgb & 0xffu;
+    if (g_fb_format == 0)       /* BGR 8:8:8:8 */
+        return (r << 16) | (g << 8) | b;
+    if (g_fb_format == 1)       /* RGB 8:8:8:8 */
+        return (b << 16) | (g << 8) | r;
+    return fb_mask_value(r, g_fb_rmask) |
+           fb_mask_value(g, g_fb_gmask) |
+           fb_mask_value(b, g_fb_bmask);
+}
+
+static void fb_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                    uint32_t rgb) {
+    if (!g_fb_debug || x >= g_fb_w || y >= g_fb_h)
+        return;
+    if (w > g_fb_w - x) w = g_fb_w - x;
+    if (h > g_fb_h - y) h = g_fb_h - y;
+    uint32_t pixel = fb_color(rgb);
+    for (uint32_t yy = 0; yy < h; yy++) {
+        volatile uint32_t* row = (volatile uint32_t*)((uint8_t*)g_fb +
+                (uint64_t)(y + yy) * g_fb_pitch + (uint64_t)x * 4);
+        for (uint32_t xx = 0; xx < w; xx++)
+            row[xx] = pixel;
+    }
+}
+
+static uint8_t fb_glyph_row(char c, uint32_t row) {
+    static const uint8_t alpha[26][7] = {
+        {0x0e,0x11,0x11,0x1f,0x11,0x11,0x11}, {0x1e,0x11,0x11,0x1e,0x11,0x11,0x1e},
+        {0x0f,0x10,0x10,0x10,0x10,0x10,0x0f}, {0x1e,0x11,0x11,0x11,0x11,0x11,0x1e},
+        {0x1f,0x10,0x10,0x1e,0x10,0x10,0x1f}, {0x1f,0x10,0x10,0x1e,0x10,0x10,0x10},
+        {0x0f,0x10,0x10,0x17,0x11,0x11,0x0f}, {0x11,0x11,0x11,0x1f,0x11,0x11,0x11},
+        {0x1f,0x04,0x04,0x04,0x04,0x04,0x1f}, {0x07,0x02,0x02,0x02,0x12,0x12,0x0c},
+        {0x11,0x12,0x14,0x18,0x14,0x12,0x11}, {0x10,0x10,0x10,0x10,0x10,0x10,0x1f},
+        {0x11,0x1b,0x15,0x15,0x11,0x11,0x11}, {0x11,0x19,0x15,0x13,0x11,0x11,0x11},
+        {0x0e,0x11,0x11,0x11,0x11,0x11,0x0e}, {0x1e,0x11,0x11,0x1e,0x10,0x10,0x10},
+        {0x0e,0x11,0x11,0x11,0x15,0x12,0x0d}, {0x1e,0x11,0x11,0x1e,0x14,0x12,0x11},
+        {0x0f,0x10,0x10,0x0e,0x01,0x01,0x1e}, {0x1f,0x04,0x04,0x04,0x04,0x04,0x04},
+        {0x11,0x11,0x11,0x11,0x11,0x11,0x0e}, {0x11,0x11,0x11,0x11,0x11,0x0a,0x04},
+        {0x11,0x11,0x11,0x15,0x15,0x1b,0x11}, {0x11,0x0a,0x04,0x04,0x0a,0x11,0x11},
+        {0x11,0x0a,0x04,0x04,0x04,0x04,0x04}, {0x1f,0x02,0x04,0x08,0x10,0x10,0x1f}
+    };
+    static const uint8_t digits[10][7] = {
+        {0x0e,0x11,0x13,0x15,0x19,0x11,0x0e}, {0x04,0x0c,0x04,0x04,0x04,0x04,0x0e},
+        {0x0e,0x11,0x01,0x02,0x04,0x08,0x1f}, {0x1e,0x01,0x01,0x0e,0x01,0x01,0x1e},
+        {0x02,0x06,0x0a,0x12,0x1f,0x02,0x02}, {0x1f,0x10,0x10,0x1e,0x01,0x01,0x1e},
+        {0x06,0x08,0x10,0x1e,0x11,0x11,0x0e}, {0x1f,0x01,0x02,0x04,0x08,0x08,0x08},
+        {0x0e,0x11,0x11,0x0e,0x11,0x11,0x0e}, {0x0e,0x11,0x11,0x0f,0x01,0x02,0x0c}
+    };
+    if (row >= 7)
+        return 0;
+    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    if (c >= 'A' && c <= 'Z') return alpha[(uint32_t)(c - 'A')][row];
+    if (c >= '0' && c <= '9') return digits[(uint32_t)(c - '0')][row];
+    if (c == '-') return row == 3 ? 0x1f : 0;
+    if (c == ':') return (row == 2 || row == 4) ? 0x04 : 0;
+    if (c == '.') return row == 6 ? 0x04 : 0;
+    if (c == '/') return (row == 1 || row == 2 || row == 3 || row == 4 || row == 5) ?
+            (uint8_t)(1u << (5u - row)) : 0;
+    if (c == '+') return row == 3 ? 0x1f : (row == 2 || row == 4 ? 0x04 : 0);
+    return 0;
+}
+
+static void fb_text(uint32_t x, uint32_t y, const char* text, uint32_t rgb) {
+    const uint32_t scale = 2;
+    uint32_t color = fb_color(rgb);
+    for (; *text; text++, x += 12 * scale / 2) {
+        char c = *text;
+        for (uint32_t gy = 0; gy < 7; gy++) {
+            uint8_t bits = fb_glyph_row(c, gy);
+            for (uint32_t gx = 0; gx < 5; gx++) {
+                if ((bits & (1u << (4u - gx))) == 0)
+                    continue;
+                for (uint32_t sy = 0; sy < scale; sy++) {
+                    volatile uint32_t* row = (volatile uint32_t*)((uint8_t*)g_fb +
+                            (uint64_t)(y + gy * scale + sy) * g_fb_pitch +
+                            (uint64_t)(x + gx * scale) * 4);
+                    for (uint32_t sx = 0; sx < scale; sx++)
+                        if (x + gx * scale + sx < g_fb_w &&
+                                y + gy * scale + sy < g_fb_h)
+                            row[sx] = color;
+                }
+            }
+        }
+    }
+}
+
+static void fb_debug_line(uint32_t row, const char* text) {
+    const uint32_t y = 18 + row * 20;
+    fb_fill(18, y, 760, 18, 0x101820);
+    fb_text(28, y + 2, text, row == 0 ? 0x70d7ff : 0xe8f1f5);
+}
+
+static void fb_debug_setup(uint64_t addr, uint32_t w, uint32_t h,
+                           uint32_t pitch, uint32_t format,
+                           const uint32_t* masks) {
+    g_fb = (volatile uint32_t*)(uintptr_t)addr;
+    g_fb_w = w;
+    g_fb_h = h;
+    g_fb_pitch = pitch;
+    g_fb_format = format;
+    g_fb_rmask = masks ? masks[0] : 0x00ff0000;
+    g_fb_gmask = masks ? masks[1] : 0x0000ff00;
+    g_fb_bmask = masks ? masks[2] : 0x000000ff;
+    g_fb_debug = addr != 0 && w >= 320 && h >= 120 && pitch >= w * 4;
+    if (!g_fb_debug)
+        return;
+    fb_fill(0, 0, w < 800 ? w : 800, h < 150 ? h : 150, 0x061018);
+    fb_debug_line(0, "EWOKOS Q8B UEFI");
+    fb_debug_line(1, "GOP READY");
+    fb_debug_line(2, "WAITING FOR KERNEL");
+}
+
+/* ------------------------------------------------------------------ */
 /* helpers                                                            */
 /* ------------------------------------------------------------------ */
 static int guid_eq(const EFI_GUID* a, const EFI_GUID* b) {
@@ -311,8 +465,33 @@ static EFI_PHYSICAL_ADDRESS alloc_pages_at(EFI_PHYSICAL_ADDRESS at, UINTN pages)
 
 static EFI_PHYSICAL_ADDRESS alloc_pages(UINTN pages) {
     EFI_PHYSICAL_ADDRESS p = 0;
-    EFI_STATUS st = gBS->AllocatePages(AllocateAnyPages, EfiLoaderData,
-            pages, &p);
+    int type = EfiLoaderData;
+    int mode = AllocateAnyPages;
+    if (g_alloc_high) {
+        /* AllocateAddress is deterministic on the Q8B firmware.  The
+         * 6-GiB slot is inside the second DRAM bank and outside DMA32; if a
+         * future firmware reserves it, fall back to AllocateMaxAddress. */
+        p = 0x180000000ULL;
+        EFI_STATUS high_st = gBS->AllocatePages(AllocateAddress, type,
+                pages, &p);
+        if (!EFI_ERROR(high_st))
+            return p;
+        /* A failed probe of an absent RAMFS can leave the firmware's
+         * conversion bookkeeping holding the first slot.  Try disjoint
+         * high-address slots before falling back below 4 GiB. */
+        p = 0x1a0000000ULL;
+        high_st = gBS->AllocatePages(AllocateAddress, type, pages, &p);
+        if (!EFI_ERROR(high_st))
+            return p;
+        p = 0x1c0000000ULL;
+        high_st = gBS->AllocatePages(AllocateAddress, type, pages, &p);
+        if (!EFI_ERROR(high_st))
+            return p;
+        p = (Q8B_RAM_BASE + Q8B_USABLE_LIMIT - EFI_PAGE_SIZE) &
+                ~(EFI_PAGE_SIZE - 1);
+        mode = AllocateMaxAddress;
+    }
+    EFI_STATUS st = gBS->AllocatePages(mode, type, pages, &p);
     if (EFI_ERROR(st))
         return 0;
     return p;
@@ -388,58 +567,148 @@ static FILEPATH_DEVICE_PATH* make_filepath(const char* path, CHAR16* storage,
     return fp;
 }
 
-/* SFS: read a file from every SimpleFileSystem volume we can find. */
+/* Device-path classification lets the loader preserve the source that
+ * launched BOOTAA64.EFI, then use the board's deterministic fallback order.
+ * A partition handle carries its complete parent path, so this works for an
+ * ESP on SD, USB, or NVMe without relying on controller-specific handles. */
+static uint32_t device_source(EFI_HANDLE handle) {
+    static EFI_GUID dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
+    EFI_DEVICE_PATH_PROTOCOL* dp = 0;
+    uint32_t source = Q8B_BOOT_SOURCE_UNKNOWN;
+    if (handle == 0 || EFI_ERROR(gBS->HandleProtocol(handle, &dp_guid,
+                    (void**)&dp)) || dp == 0)
+        return source;
+
+    for (int guard = 0; guard < 128 && dp->Length >= 4; guard++) {
+        if (dp->Type == 0x7f)
+            break;
+        if (dp->Type == 3) { /* messaging device path */
+            switch (dp->SubType) {
+            case 0x05: /* USB */
+                source = Q8B_BOOT_SOURCE_USB;
+                break;
+            case 0x17: /* NVMe */
+                source = Q8B_BOOT_SOURCE_NVME;
+                break;
+            case 0x1a: /* SD */
+                source = Q8B_BOOT_SOURCE_SD;
+                break;
+            case 0x0c: /* IPv4 */
+            case 0x0d: /* IPv6 */
+                source = Q8B_BOOT_SOURCE_NET;
+                break;
+            default:
+                break;
+            }
+        }
+        dp = (EFI_DEVICE_PATH_PROTOCOL*)((uint8_t*)dp + dp->Length);
+    }
+    return source;
+}
+
+static const char* source_name(uint32_t source) {
+    switch (source) {
+    case Q8B_BOOT_SOURCE_SD: return "sd";
+    case Q8B_BOOT_SOURCE_USB: return "usb";
+    case Q8B_BOOT_SOURCE_NVME: return "nvme";
+    case Q8B_BOOT_SOURCE_NET: return "net";
+    default: return "unknown";
+    }
+}
+
+static int source_rank(uint32_t source) {
+    switch (source) {
+    case Q8B_BOOT_SOURCE_SD: return 0;
+    case Q8B_BOOT_SOURCE_USB: return 1;
+    case Q8B_BOOT_SOURCE_NVME: return 2;
+    case Q8B_BOOT_SOURCE_UNKNOWN: return 3;
+    default: return 4;
+    }
+}
+
+static void* read_file_sfs_handle(EFI_HANDLE handle, const char* path,
+                                  uint64_t* out_size) {
+    static EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    CHAR16 wpath[256];
+    ascii_to_w(path, wpath, sizeof(wpath) / sizeof(wpath[0]));
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* sfs = 0;
+    if (handle == 0 || EFI_ERROR(gBS->HandleProtocol(handle, &sfs_guid,
+                    (void**)&sfs)) || sfs == 0)
+        return 0;
+    EFI_FILE_PROTOCOL* root = 0;
+    if (EFI_ERROR(sfs->OpenVolume(sfs, (void**)&root)) || root == 0)
+        return 0;
+    EFI_FILE_PROTOCOL* f = 0;
+    if (EFI_ERROR(root->Open(root, &f, wpath, EFI_FILE_MODE_READ, 0)) || f == 0)
+        return 0;
+
+    static EFI_GUID fi_guid = EFI_FILE_INFO_ID;
+    uint8_t info[256];
+    UINTN info_size = sizeof(info);
+    if (EFI_ERROR(f->GetInfo(f, &fi_guid, &info_size, info))) {
+        f->Close(f);
+        return 0;
+    }
+    uint64_t fsize = ((EFI_FILE_INFO_HEAD*)info)->FileSize;
+
+    /* The Q8B kernel uses 16KB pages; every physical range it maps through
+     * the page tables must be 16KB aligned, while UEFI only guarantees 4KB. */
+    UINTN pages = (fsize + 0x3FFF + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE;
+    EFI_PHYSICAL_ADDRESS buf = alloc_pages(pages);
+    if (buf == 0) {
+        f->Close(f);
+        return 0;
+    }
+    uint64_t abuf = (buf + 0x3FFF) & ~0x3FFFULL;
+    UINTN rsz = fsize;
+    EFI_STATUS st = f->Read(f, &rsz, (void*)(uintptr_t)abuf);
+    f->Close(f);
+    if (EFI_ERROR(st) || rsz != fsize)
+        return 0;
+    *out_size = fsize;
+    return (void*)(uintptr_t)abuf;
+}
+
+/* SFS: current image volume first, then SD -> USB -> NVMe -> unknown. */
 static void* read_file_sfs(const char* path, uint64_t* out_size) {
     static EFI_GUID sfs_guid = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
     UINTN n = 0;
     EFI_HANDLE* handles = 0;
-
     if (EFI_ERROR(gBS->LocateHandleBuffer(2, &sfs_guid, 0, &n, &handles)))
         return 0;
 
-    CHAR16 wpath[256];
-    ascii_to_w(path, wpath, sizeof(wpath) / sizeof(wpath[0]));
-
-    for (UINTN i = 0; i < n; i++) {
-        EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* sfs = 0;
-        if (EFI_ERROR(gBS->HandleProtocol(handles[i], &sfs_guid,
-                        (void**)&sfs)))
-            continue;
-        EFI_FILE_PROTOCOL* root = 0;
-        if (EFI_ERROR(sfs->OpenVolume(sfs, (void**)&root)))
-            continue;
-        EFI_FILE_PROTOCOL* f = 0;
-        if (EFI_ERROR(root->Open(root, &f, wpath, EFI_FILE_MODE_READ, 0)))
-            continue;
-
-        static EFI_GUID fi_guid = EFI_FILE_INFO_ID;
-        uint8_t info[256];
-        UINTN info_size = sizeof(info);
-        if (EFI_ERROR(f->GetInfo(f, &fi_guid, &info_size, info))) {
-            f->Close(f);
-            continue;
+    EFI_HANDLE current = gImageInfo ? gImageInfo->DeviceHandle : 0;
+    if (current != 0) {
+        void* p = read_file_sfs_handle(current, path, out_size);
+        if (p) {
+            con_puts("[uefi]   self SFS (");
+            con_puts(source_name(g_boot_source));
+            con_puts(") ok, ");
+            con_dec(*out_size);
+            con_puts(" bytes\n");
+            gBS->FreePool(handles);
+            return p;
         }
-        uint64_t fsize = ((EFI_FILE_INFO_HEAD*)info)->FileSize;
-
-        /* The Q8B kernel uses 16KB pages; every physical range it maps
-         * through the page tables must be 16KB aligned, but UEFI only
-         * guarantees 4KB page granularity.  Allocate one extra page and
-         * round the buffer up to 16KB. */
-        UINTN pages = (fsize + 0x3FFF + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE;
-        EFI_PHYSICAL_ADDRESS buf = alloc_pages(pages);
-        if (buf == 0) {
-            f->Close(f);
-            continue;
-        }
-        uint64_t abuf = (buf + 0x3FFF) & ~0x3FFFULL;
-        UINTN rsz = fsize;
-        EFI_STATUS st = f->Read(f, &rsz, (void*)(uintptr_t)abuf);
-        f->Close(f);
-        if (EFI_ERROR(st))
-            continue;
-        *out_size = fsize;
-        return (void*)(uintptr_t)abuf;
     }
+
+    for (int wanted = 0; wanted <= 3; wanted++) {
+        for (UINTN i = 0; i < n; i++) {
+            EFI_HANDLE h = handles[i];
+            if (h == current || source_rank(device_source(h)) != wanted)
+                continue;
+            void* p = read_file_sfs_handle(h, path, out_size);
+            if (p) {
+                con_puts("[uefi]   SFS ");
+                con_puts(source_name(device_source(h)));
+                con_puts(" ok, ");
+                con_dec(*out_size);
+                con_puts(" bytes\n");
+                gBS->FreePool(handles);
+                return p;
+            }
+        }
+    }
+    gBS->FreePool(handles);
     return 0;
 }
 
@@ -584,11 +853,17 @@ static const char* path_name(int which, int i) {
         case 1: return "\\KERNEL.BIN";
         case 2: return "\\EFI\\BOOT\\KERNEL.BIN";
         }
-    } else {                    /* rootfs */
+    } else if (which == 1) {    /* legacy full rootfs */
         switch (i) {
         case 0: return "\\q8b\\ROOTFS.IMG";
         case 1: return "\\ROOTFS.IMG";
         case 2: return "\\EFI\\BOOT\\ROOTFS.IMG";
+        }
+    } else {                    /* boot-only ramfs */
+        switch (i) {
+        case 0: return "\\q8b\\RAMFS.IMG";
+        case 1: return "\\RAMFS.IMG";
+        case 2: return "\\EFI\\BOOT\\RAMFS.IMG";
         }
     }
     return 0;
@@ -682,11 +957,17 @@ static const char* pxe_path_name(int which, int i) {
         case 1: return "KERNEL.BIN";
         case 2: return "EFI/BOOT/KERNEL.BIN";
         }
-    } else {
+    } else if (which == 1) {
         switch (i) {
         case 0: return "q8b/ROOTFS.IMG";
         case 1: return "ROOTFS.IMG";
         case 2: return "EFI/BOOT/ROOTFS.IMG";
+        }
+    } else {
+        switch (i) {
+        case 0: return "q8b/RAMFS.IMG";
+        case 1: return "RAMFS.IMG";
+        case 2: return "EFI/BOOT/RAMFS.IMG";
         }
     }
     return 0;
@@ -1029,99 +1310,30 @@ static void* read_file_pxe_udp(const char* path, uint64_t max_size,
 #endif
 }
 
-static void* read_first(int which, uint64_t* size) {
-#ifdef Q8B_MTFTP_FIRST
-    /* PXE-first build: fetch the kernel from TFTP before the local ESP so a
-     * kernel under test can be replaced without rewriting the SD card. */
-    /* Fast path: raw TFTP over PXE UDP (blksize + windowsize).  Falls back
-     * to the firmware's MTFTP4 if the server or firmware rejects it. */
+static void* read_network(int which, uint64_t* size) {
+    uint64_t max_size = which == 0 ? Q8B_KERNEL_MTFTP_MAX :
+            (which == 2 ? Q8B_RAMFS_MTFTP_MAX : Q8B_ROOTFS_MTFTP_MAX);
+
+    /* The optional fast UDP client is still the first network method, but
+     * network itself is now the last source unless the loader was started by
+     * PXE/HTTP. */
     {
-        const char* fp = pxe_path_name(which, 0);
-        if (fp != 0) {
-            void* p = read_file_pxe_udp(fp,
-                    which == 0 ? Q8B_KERNEL_MTFTP_MAX : Q8B_ROOTFS_MTFTP_MAX,
-                    size);
+        const char* ppath = pxe_path_name(which, 0);
+        if (ppath != 0) {
+            void* p = read_file_pxe_udp(ppath, max_size, size);
             if (p) {
-                con_puts("[uefi]   UDP TFTP first ok, ");
+                con_puts("[uefi]   UDP TFTP ok, ");
                 con_dec(*size);
                 con_puts(" bytes\n");
                 return p;
             }
         }
     }
-
     for (int i = 0; i < 3; i++) {
         const char* ppath = pxe_path_name(which, i);
         if (ppath == 0)
             break;
-        void* p = read_file_mtftp4(ppath,
-                which == 0 ? Q8B_KERNEL_MTFTP_MAX : Q8B_ROOTFS_MTFTP_MAX,
-                size);
-        if (p) {
-            con_puts("[uefi]   MTFTP4 first ok, ");
-            con_dec(*size);
-            con_puts(" bytes\n");
-            return p;
-        }
-    }
-
-    /* Some Q8B firmware exposes PXE only through EFI_LOAD_FILE or the
-     * legacy PXE base-code protocol, not MTFTP4.  Keep these network paths
-     * ahead of SFS as well; otherwise a stale SD kernel silently wins. */
-    for (int i = 0; i < 3; i++) {
-        const char* path = path_name(which, i);
-        if (path == 0)
-            break;
-        void* p = read_file_loadfile(path, size);
-        if (p) {
-            con_puts("[uefi]   PXE LoadFile first ok, ");
-            con_dec(*size);
-            con_puts(" bytes\n");
-            return p;
-        }
-        const char* ppath = pxe_path_name(which, i);
-        if (ppath) {
-            p = read_file_pxe(ppath, size);
-            if (p) {
-                con_puts("[uefi]   PXE Mtftp first ok, ");
-                con_dec(*size);
-                con_puts(" bytes\n");
-                return p;
-            }
-        }
-    }
-#endif
-    /* Phase 1: the local EFI system partition (SD ESP, USB ESP, QEMU test
-     * image).  This is the normal boot media: the board should load the
-     * kernel it carries without waiting for a TFTP timeout.  If the file is
-     * absent here, fall through to the network so a PXE update loop still
-     * works.  When updating over PXE, refresh KERNEL.BIN on the ESP too or
-     * temporarily remove it, otherwise the stale local copy wins. */
-    for (int i = 0; i < 3; i++) {
-        const char* path = path_name(which, i);
-        if (path == 0)
-            break;
-        con_puts("[uefi] try ");
-        con_puts(path);
-        con_puts("\n");
-        void* p = read_file_sfs(path, size);
-        if (p) {
-            con_puts("[uefi]   SFS ok, ");
-            con_dec(*size);
-            con_puts(" bytes\n");
-            return p;
-        }
-    }
-
-    /* Phase 2: network paths (MTFTP4).  Reached only when the EFI partition
-     * does not carry the file. */
-    for (int i = 0; i < 3; i++) {
-        const char* ppath = pxe_path_name(which, i);
-        if (ppath == 0)
-            break;
-        void* p = read_file_mtftp4(ppath,
-                which == 0 ? Q8B_KERNEL_MTFTP_MAX : Q8B_ROOTFS_MTFTP_MAX,
-                size);
+        void* p = read_file_mtftp4(ppath, max_size, size);
         if (p) {
             con_puts("[uefi]   MTFTP4 ok, ");
             con_dec(*size);
@@ -1129,8 +1341,6 @@ static void* read_first(int which, uint64_t* size) {
             return p;
         }
     }
-
-    /* Phase 3: legacy LoadFile / PXE-BC Mtftp fallbacks. */
     for (int i = 0; i < 3; i++) {
         const char* path = path_name(which, i);
         if (path == 0)
@@ -1152,6 +1362,42 @@ static void* read_first(int which, uint64_t* size) {
                 return p;
             }
         }
+    }
+    return 0;
+}
+
+static void* read_first(int which, uint64_t* size) {
+    con_puts("[uefi] source order: self=");
+    con_puts(source_name(g_boot_source));
+    con_puts(" -> sd -> usb -> nvme -> net\n");
+
+    /* A PXE/HTTP boot has no local ESP of its own.  Preserve that source's
+     * precedence, then fall through to local SFS volumes if the network
+     * object is absent. */
+    if (g_boot_source == Q8B_BOOT_SOURCE_NET) {
+        void* p = read_network(which, size);
+        if (p)
+            return p;
+    }
+
+    for (int i = 0; i < 3; i++) {
+        const char* path = path_name(which, i);
+        if (path == 0)
+            break;
+        con_puts("[uefi] try local ");
+        con_puts(path);
+        con_puts("\n");
+        void* p = read_file_sfs(path, size);
+        if (p)
+            return p;
+    }
+
+    /* The network backend is always the final fallback for local boots. */
+    if (g_boot_source != Q8B_BOOT_SOURCE_NET)
+    {
+        void* p = read_network(which, size);
+        if (p)
+            return p;
     }
     return 0;
 }
@@ -1581,6 +1827,21 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     if (EFI_ERROR(gBS->HandleProtocol(ImageHandle, (EFI_GUID*)&li_guid,
                     (void**)&gImageInfo)))
         gImageInfo = 0;
+    g_boot_source = gImageInfo ? device_source(gImageInfo->DeviceHandle) :
+            Q8B_BOOT_SOURCE_UNKNOWN;
+    if (g_boot_source == Q8B_BOOT_SOURCE_UNKNOWN && gImageInfo &&
+            gImageInfo->DeviceHandle) {
+        /* Some PXE implementations omit a network node from the device path
+         * but expose EFI_LOAD_FILE on the image device itself. */
+        static EFI_GUID lf_guid = EFI_LOAD_FILE_PROTOCOL_GUID;
+        void* lf = 0;
+        if (!EFI_ERROR(gBS->HandleProtocol(gImageInfo->DeviceHandle,
+                        &lf_guid, &lf)) && lf != 0)
+            g_boot_source = Q8B_BOOT_SOURCE_NET;
+    }
+    con_puts("[uefi] boot source=");
+    con_puts(source_name(g_boot_source));
+    con_puts("\n");
 
     /* ---- framebuffer ---- */
     EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = 0;
@@ -1619,6 +1880,11 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts(" @");
         con_hex(fb_addr);
         con_puts("\n");
+        fb_debug_setup(fb_addr, fb_w, fb_h, (uint32_t)fb_pitch,
+                fb_format, mi->PixelInformation);
+        fb_debug_line(2, "LOADING KERNEL");
+        fb_text(28, 78, "SRC ", 0xe8f1f5);
+        fb_text(76, 78, source_name(g_boot_source), 0xffd166);
     } else {
         con_puts("[uefi] no GOP (headless?)\n");
     }
@@ -1714,6 +1980,8 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts("[uefi] FATAL: kernel too large\n");
         halt_forever();
     }
+    fb_debug_line(2, "KERNEL OK");
+    fb_debug_line(3, "LOADING RAMFS");
 
 #if defined(Q8B_MTFTP_FIRST) && defined(Q8B_SD_ROOTFS)
     /* PXE supplied the kernel, so explicitly let UEFI touch the local ESP
@@ -1730,31 +1998,43 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 #endif
 
     void* rbuf = 0;
-#if defined(Q8B_SD_ROOTFS) || defined(Q8B_KERNEL_ONLY)
-    /* Physical-SD rootfs boot: do not allocate or fetch a RAM disk.  The
-     * kernel will initialize SDCC2 after ExitBootServices and select the
-     * supported ext2/3 GPT partition itself. */
-#ifdef Q8B_SD_ROOTFS
-    con_puts("[uefi] SD_ROOTFS: kernel will load rootfs from SDCC2\n");
-#else
-    con_puts("[uefi] KERNEL_ONLY: skipping ROOTFS.IMG\n");
+    uint32_t rd_flags = 0;
+    g_alloc_high = 1;
+    rbuf = read_first(2, &rsize);
+    g_alloc_high = 0;
+    if (rbuf != 0) {
+        rd_flags = Q8B_RD_FLAG_BOOT_ONLY;
+    }
+#if !defined(Q8B_SD_ROOTFS) && !defined(Q8B_KERNEL_ONLY)
+    if (rbuf == 0) {
+        /* Keep a complete PXE/ESP rootfs out of the low DMA32 area too.
+         * Besides preserving the contiguous device pools, this avoids a
+         * firmware memory-map split at the allocation boundary on Q8B. */
+        g_alloc_high = 1;
+        rbuf = read_first(1, &rsize);
+        g_alloc_high = 0;
+        if (rbuf == 0) {
+            con_puts("[uefi] rootfs not found, trying EFI LoadFile2 initrd\n");
+            rbuf = read_initrd_loadfile2(&rsize);
+        }
+    }
 #endif
+    if (rbuf == 0) {
+#if defined(Q8B_SD_ROOTFS) || defined(Q8B_KERNEL_ONLY)
+        con_puts("[uefi] no RAMFS.IMG; kernel-only SD fallback\n");
 #else
-    rbuf = read_first(1, &rsize);
-    if (rbuf == 0) {
-        con_puts("[uefi] rootfs not found, trying EFI LoadFile2 initrd\n");
-        rbuf = read_initrd_loadfile2(&rsize);
-    }
-    if (rbuf == 0) {
-        con_puts("[uefi] FATAL: ROOTFS.IMG not found\n");
+        con_puts("[uefi] FATAL: RAMFS.IMG/ROOTFS.IMG not found\n");
         halt_forever();
+#endif
     }
-    con_puts("[uefi] rootfs ");
+    if (rbuf != 0) {
+    con_puts(rd_flags ? "boot ramfs " : "rootfs ");
     con_dec(rsize / (1024 * 1024));
     con_puts(" MB @");
     con_hex((uint64_t)(uintptr_t)rbuf);
     con_puts("\n");
-#endif
+    fb_debug_line(3, rd_flags ? "RAMFS OK" : "ROOTFS OK");
+    }
 
     /* Ensure the fixed kernel window does not overlap the stub or the
      * already-loaded file buffers. */
@@ -1815,6 +2095,8 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     bi->fb_format = fb_format;
     bi->rd_base = (uint64_t)(uintptr_t)rbuf;
     bi->rd_size = rsize;
+    bi->rd_flags = rd_flags;
+    bi->boot_source = g_boot_source;
     bi->kernel_phys = Q8B_KERNEL_PHYS;
     bi->kernel_size = ksize;
     bi->memmap_addr = (uint64_t)(uintptr_t)map_dst;

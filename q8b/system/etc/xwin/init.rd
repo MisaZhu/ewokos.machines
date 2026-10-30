@@ -15,10 +15,11 @@
 @/bin/bgrun /sbin/sshd
 #@/bin/ipcserv /drivers/q8b/fand          /dev/fan
 
-@/bin/ipcserv /drivers/q8b/usbhostd      /dev/hid0
-@/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/hid0
-@/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/hid0
-@/bin/ipcserv /drivers/q8b/hid_touchd    /dev/touch0 /dev/hid0
+# init starts usbhostd in the boot RAMFS so it can probe a USB rootfs before
+# switching to this persistent root.  Do not start a second xHCI owner here.
+@/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/usb0
+@/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/usb0
+@/bin/ipcserv /drivers/q8b/hid_touchd    /dev/touch0 /dev/usb0
 
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0

@@ -11,6 +11,7 @@
 #include <q8b_gpu_pas.h>
 #include <q8b_npu.h>
 #include "hw_arch.h"
+#include "q8b_platform.h"
 #include "scm-probe.h"
 
 #ifndef Q8B_QEMU_TEST
@@ -57,6 +58,8 @@ static int owned_dma(ewokos_addr_t pa, ewokos_addr_t len) {
 
 ewokos_addr_t platform_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         ewokos_addr_t size) {
+    if(op == Q8B_PLATFORM_RAMFS_RELEASE && arg == 0 && size == 0)
+        return (ewokos_addr_t)q8b_release_ramdisk();
     if((op & 0xffffff00ull) == Q8B_NPU_ABI_BASE)
         return (ewokos_addr_t)platform_control_npu(op, arg, size);
 #ifdef Q8B_QEMU_TEST

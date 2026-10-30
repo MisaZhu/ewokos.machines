@@ -4,9 +4,9 @@
 /*
  * Polled xHCI host controller driver for the SC8280XP DWC3 host cores.
  *
- * The SC8280XP multi-port USB block exposes the standard xHCI register file
- * at 0x0a400000. Firmware brings its DWC3 wrapper, GCC clocks and PHYs up for
- * the UEFI USB stack; EwokOS takes ownership with HCRST and then runs polled.
+ * The SC8280XP USB blocks expose standard xHCI register files. Firmware brings
+ * each DWC3 wrapper, GCC clocks and PHYs up for the UEFI USB stack; EwokOS
+ * takes ownership with HCRST and then runs polled.
  *
  * The driver is fully polled: no interrupts are enabled, the caller drains
  * the event ring from its main loop. Unlike the old DWC2 code, interrupt-IN
@@ -24,6 +24,7 @@
 #include <ewoksys/ewokdef.h>
 #include <usb/usb_defs.h>
 
+#define XHCI_MAX_CONTROLLERS 3
 #define XHCI_MAX_PORTS      8
 #define XHCI_MAX_SLOTS      16
 #define XHCI_MAX_EPS        32   /* device context entries (DCI 0..31) */
@@ -88,7 +89,7 @@ struct xhci_hc {
 	 * poll loop stops burning time on a controller that will never answer.
 	 */
 	bool     failed;
-	int      id;            /* 0 or 1 */
+	int      id;            /* controller index */
 	ewokos_addr_t base;     /* capability register base (virtual) */
 	ewokos_addr_t op;       /* operational registers */
 	ewokos_addr_t rt;       /* runtime registers */
@@ -127,7 +128,6 @@ struct xhci_hc {
  * DMA pool. All "phys" values are controller-visible physical addresses.
  */
 int   xhci_dma_init(void);
-void* xhci_dma_alloc(uint32_t size, uint32_t align, uint64_t* bus);
 
 /* controller */
 int  xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base);

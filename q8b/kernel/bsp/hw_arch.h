@@ -281,8 +281,10 @@ typedef struct {
     uint32_t fb_format;        /* UEFI GOP PixelFormat (0=RGB,1=BGR,2=BitMask) */
     uint32_t _pad_fb;
 
-    uint64_t rd_base;          /* ROOTFS.IMG copied into RAM (0 = none) */
+    uint64_t rd_base;          /* RAMFS.IMG/ROOTFS.IMG copied into RAM */
     uint64_t rd_size;
+    uint32_t rd_flags;         /* Q8B_RD_FLAG_* */
+    uint32_t boot_source;      /* Q8B_BOOT_SOURCE_* */
 
     uint64_t kernel_phys;
     uint64_t kernel_size;
@@ -317,7 +319,9 @@ extern void gic_v3_send_sgi(int core, int irq);
 extern q8b_bootinfo_t* q8b_bootinfo(void);
 extern uint64_t q8b_ramdisk_base;
 extern uint64_t q8b_ramdisk_size;
+extern uint32_t q8b_ramdisk_flags;
 extern uint64_t q8b_fb_base;
 extern uint64_t q8b_fb_size;
+extern int32_t q8b_release_ramdisk(void);
 
 #endif

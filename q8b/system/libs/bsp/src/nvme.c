@@ -765,6 +765,141 @@ nvme_info_t* nvme_current(void) {
 	return _info.used ? &_info : NULL;
 }
 
+static uint32_t nvme_part_le32(const uint8_t* p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+			((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t nvme_part_le64(const uint8_t* p) {
+	uint64_t v = 0;
+	for (int i = 7; i >= 0; i--)
+		v = (v << 8) | p[i];
+	return v;
+}
+
+static int nvme_guid_is_rootfs(const uint8_t* guid) {
+	static const uint8_t linux_fs[16] = {
+		0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47,
+		0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4
+	};
+	static const uint8_t linux_root_x86_64[16] = {
+		0xe3, 0xbc, 0x68, 0x4f, 0xcd, 0xe8, 0xb1, 0x4d,
+		0x96, 0xe7, 0xfb, 0xca, 0xf9, 0x84, 0xb7, 0x09
+	};
+	static const uint8_t linux_root_arm64[16] = {
+		0x45, 0xb0, 0x21, 0xb9, 0xf0, 0x1d, 0xc3, 0x41,
+		0xaf, 0x44, 0x4c, 0x6f, 0x28, 0x0d, 0x3f, 0xae
+	};
+	static const uint8_t linux_root_generic[16] = {
+		0x40, 0x95, 0x47, 0x44, 0xf2, 0x97, 0xb2, 0x41,
+		0x9a, 0xf7, 0xd1, 0x31, 0xd5, 0xf0, 0x45, 0x8a
+	};
+	return memcmp(guid, linux_fs, sizeof(linux_fs)) == 0 ||
+		memcmp(guid, linux_root_x86_64, sizeof(linux_root_x86_64)) == 0 ||
+		memcmp(guid, linux_root_arm64, sizeof(linux_root_arm64)) == 0 ||
+		memcmp(guid, linux_root_generic, sizeof(linux_root_generic)) == 0;
+}
+
+int nvme_find_root_partition(uint64_t* start_lba, uint64_t* block_count) {
+	uint8_t* block;
+	uint32_t bs;
+	uint64_t start = 0;
+	uint64_t count = 0;
+	int found = 0;
+
+	if (!_c.opened || !_info.used || start_lba == NULL || block_count == NULL)
+		return -1;
+	bs = _info.block_size;
+	if (bs < 512 || bs > 4096 || (bs & (bs - 1)) != 0)
+		return -1;
+	block = (uint8_t*)malloc(bs);
+	if (block == NULL)
+		return -1;
+
+	/* GPT header is in namespace block 1. */
+	if (nvme_read(1, block, 1) == 1 &&
+			memcmp(block, "EFI PART", 8) == 0) {
+		uint64_t entry_lba = nvme_part_le64(block + 72);
+		uint32_t entry_count = nvme_part_le32(block + 80);
+		uint32_t entry_size = nvme_part_le32(block + 84);
+		uint64_t table_bytes;
+		if (entry_count != 0 && entry_count <= 4096 &&
+				entry_size >= 128 && entry_size <= 4096 &&
+				(entry_size & 7u) == 0 &&
+				(uint64_t)entry_count <= (~0ULL) / entry_size) {
+			table_bytes = (uint64_t)entry_count * entry_size;
+			uint64_t table_blocks = (table_bytes + bs - 1) / bs;
+			if (entry_lba < _info.nsze &&
+					table_blocks <= _info.nsze - entry_lba) {
+				uint64_t cached_lba = UINT64_MAX;
+				for (uint32_t i = 0; i < entry_count; i++) {
+					uint64_t off = (uint64_t)i * entry_size;
+					uint64_t lba = entry_lba + off / bs;
+					uint32_t in_block = (uint32_t)(off % bs);
+					const uint8_t* entry;
+					if (in_block + entry_size > bs)
+						continue;
+					if (lba != cached_lba) {
+						if (lba >= _info.nsze || nvme_read(lba, block, 1) != 1)
+							break;
+						cached_lba = lba;
+					}
+					entry = block + in_block;
+					if (!nvme_guid_is_rootfs(entry))
+						continue;
+					start = nvme_part_le64(entry + 32);
+					uint64_t last = nvme_part_le64(entry + 40);
+					if (start <= last && last < _info.nsze) {
+						count = last - start + 1;
+						found = 1;
+						break;
+					}
+				}
+			}
+		}
+	}
+
+	/* Protective/hybrid GPT without a Linux GUID, or a legacy MBR disk. */
+	if (!found && nvme_read(0, block, 1) == 1 &&
+			block[510] == 0x55 && block[511] == 0xaa) {
+		for (int i = 0; i < 4; i++) {
+			const uint8_t* e = block + 446 + i * 16;
+			if (e[4] != 0x83)
+				continue;
+			start = nvme_part_le32(e + 8);
+			count = nvme_part_le32(e + 12);
+			if (start != 0 && count != 0 && start + count <= _info.nsze) {
+				found = 1;
+				break;
+			}
+		}
+	}
+
+	/* A raw ext image has no partition table.  Detect its superblock so a
+	 * valid whole-device rootfs is distinguishable from a blank namespace. */
+	if (!found) {
+		uint16_t magic = 0;
+		if (bs >= 2048 && nvme_read(0, block, 1) == 1)
+			memcpy(&magic, block + 1024, sizeof(magic));
+		else if (bs == 1024 && nvme_read(1, block, 1) == 1)
+			memcpy(&magic, block, sizeof(magic));
+		else if (bs == 512 && nvme_read(2, block, 1) == 1)
+			memcpy(&magic, block + 56, sizeof(magic));
+		if (magic == 0xef53) {
+			start = 0;
+			count = _info.nsze;
+			found = 1;
+		}
+	}
+
+	free(block);
+	if (!found)
+		return -1;
+	*start_lba = start;
+	*block_count = count;
+	return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  PRP and single-command I/O                                         */
 /* ------------------------------------------------------------------ */

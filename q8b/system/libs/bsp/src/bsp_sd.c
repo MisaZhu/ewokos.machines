@@ -90,7 +90,8 @@ static int32_t storage_init(void) {
         return -1;
     pd = (const q8b_platform_data_t*)sysinfo.platform_data;
 
-    if (pd->rd.phy_base == 0 || pd->rd.size == 0)
+    if (pd->rd.phy_base == 0 || pd->rd.size == 0 ||
+            (pd->rd.flags & Q8B_RD_FLAG_BOOT_ONLY) != 0)
         return physical_init_from_kernel();
 
     ewokos_addr_t ret = syscall3(SYS_MEM_MAP, (ewokos_addr_t)Q8B_RD_VA,

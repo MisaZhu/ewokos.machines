@@ -79,6 +79,11 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev);
 int nvme_read(uint64_t lba, void* dst, uint32_t blocks);
 int nvme_write(uint64_t lba, const void* src, uint32_t blocks);
 
+/* Locate the Linux root filesystem partition in the currently opened
+ * namespace.  GPT Linux filesystem/root GUIDs and MBR type 0x83 are
+ * accepted; a raw ext filesystem image returns start_lba=0. */
+int nvme_find_root_partition(uint64_t* start_lba, uint64_t* block_count);
+
 /* Batched read: issue `depth` commands of `chunk` bytes starting at lba,
  * walk the whole range, optionally copying each chunk to dst.  When dst is
  * NULL the data stays in the DMA arena (raw link benchmark).  Returns the
