@@ -33,6 +33,7 @@ static struct {
     unsigned used, active, failed, count, configured, bad, completions;
     unsigned links, rx_buffers, tx_buffers;
     unsigned rx_packets,rx_delivered,rx_dropped,refilled,tx_packets,tx_done,tx_errors,tx_generation;
+    unsigned tx_batch,tx_pending;
     unsigned tx_cookie[256];
     unsigned rx_rate,tx_rate,rx_ht,rx_vht,tx_ht,tx_vht;
     uint8_t rx_owner[RX_COUNT];
@@ -47,7 +48,10 @@ static unsigned dp_reserve(unsigned bytes) {
 }
 static uint32_t *dp_words(unsigned off) { return (uint32_t *)(void *)(d.dma+off); }
 static unsigned dp_hw(const struct dp_ring *r) {
-    unsigned value=r->ptr ? wcn_soc_read(r->ptr+(r->dest ? 0 : 4)) :
+    /* SRNG setup programs HP/TP_ADDR for hardware writeback into our
+     * uncached DMA arena. Reading it avoids a PCIe MMIO round trip per
+     * packet; the WBM idle ring alone has no writeback address. */
+    unsigned value=r->id==104 ? wcn_soc_read(r->ptr+4) :
         *(volatile uint32_t *)(void *)(d.dma+r->hw_offset);
     dp_barrier();
     if (value>=r->entries*r->words || value%r->words) {
@@ -320,6 +324,13 @@ int wcn_dp_can_transmit(void) {
     for (unsigned i=0;i<256;i++) if (!d.tx_cookie[i]) return 1;
     return 0;
 }
+/* A VFS batch is serialized by the driver owner. Publish its accepted
+ * prefix once, including partial writes, before returning to the caller. */
+void wcn_dp_tx_batch_begin(void) { d.tx_batch=1; }
+void wcn_dp_tx_batch_end(void) {
+    if (d.tx_pending) dp_publish(dp_find(16));
+    d.tx_pending=d.tx_batch=0;
+}
 int wcn_dp_transmit(const void *frame,unsigned bytes,unsigned lmac) {
     if (!wcn_dp_ready() || !frame || bytes<24 || bytes>RX_BYTES || lmac>1) return -1;
     struct dp_ring *r=dp_find(16);
@@ -337,7 +348,9 @@ int wcn_dp_transmit(const void *frame,unsigned bytes,unsigned lmac) {
     /* Native Wi-Fi, peer-map v1 address-Y lookup, vdev0 metadata. */
     p[3]=(1u<<2)|(2u<<14)|(1u<<16); p[4]=bytes;
     p[5]=(1u<<21)|(lmac<<26);
-    d.tx_cookie[slot]=cookie; d.tx_packets++; dp_next(r); dp_publish(r);
+    d.tx_cookie[slot]=cookie; d.tx_packets++; dp_next(r);
+    if (d.tx_batch) d.tx_pending=1;
+    else dp_publish(r);
     return (int)cookie;
 }
 

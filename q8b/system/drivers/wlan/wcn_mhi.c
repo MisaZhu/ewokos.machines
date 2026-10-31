@@ -62,6 +62,7 @@ static struct {
     uint8_t *dma;
     uint8_t *rddm;
     uint64_t rddm_phys;
+    uint32_t register_window;
     uint32_t hw, subsystem, bhi, bhie, chdb, erdb, fw_size;
     uint32_t er_rp[2], er_wp[2], events, last_event, last_data;
     uint32_t link_cap, link_ctl;
@@ -83,22 +84,32 @@ static void write32(uint64_t addr, uint32_t value) {
     __asm__ volatile("dsb sy" ::: "memory");
 }
 static uint32_t reg(uint32_t off) { return read32(BAR_VA + off); }
-static void put(uint32_t off, uint32_t value) { write32(BAR_VA + off, value); }
+static void put(uint32_t off, uint32_t value) {
+    /* Direct window writes and SOC reset invalidate the cached selection. */
+    if (off == 0x310c || off == 0x3008) w.register_window = 0;
+    write32(BAR_VA + off, value);
+}
 static void put64(uint32_t off, uint64_t value) {
     put(off + 4, (uint32_t)(value >> 32));
     put(off, (uint32_t)value);
 }
-/* The upper device register space is selected through the 512-KiB window. */
+/* The single driver owner serializes register access. Like ath11k, only
+ * flush the PCIe window write when the selected 512-KiB region changes. */
+static void select_window(uint32_t off) {
+    uint32_t window = 0x40000000 | ((off >> 19) & 63);
+    if (window == w.register_window) return;
+    put(0x310c, window);
+    (void)reg(0x310c);
+    w.register_window = window;
+}
 static uint32_t soc_read(uint32_t off) {
     if (off < 0x80000) return reg(off);
-    put(0x310c, 0x40000000 | ((off >> 19) & 63));
-    (void)reg(0x310c);
+    select_window(off);
     return reg(0x80000 + (off & 0x7ffff));
 }
 static void soc_write(uint32_t off, uint32_t value) {
     if (off < 0x80000) { put(off, value); return; }
-    put(0x310c, 0x40000000 | ((off >> 19) & 63));
-    (void)reg(0x310c);
+    select_window(off);
     put(0x80000 + (off & 0x7ffff), value);
 }
 uint32_t wcn_soc_read(uint32_t off) { return soc_read(off); }
@@ -560,6 +571,7 @@ void wcn_stop(void) {
         put(0x38, reg(0x38) | 2);
         (void)wait_reg(0x38, 2, 0, 2000);
     }
+    w.register_window = 0;
     w.running = w.contexts_ready = w.ipcr_ready = 0;
     wcn_ce_release();
     wcn_dp_release();

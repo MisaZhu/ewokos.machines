@@ -55,13 +55,16 @@ int wcn_net_write(const void *buf,unsigned bytes) {
     if (!bytes) return 0;
     if (bytes<2) return -1;
     const uint8_t *p=buf;unsigned pos=0;
+    int malformed=0;
+    wcn_dp_tx_batch_begin();
     while (bytes-pos>=2) {
         unsigned len=p[pos]|((unsigned)p[pos+1]<<8);
-        if (len<14 || len>NET_FRAME || len>bytes-pos-2) return pos ? (int)pos:-1;
+        if (len<14 || len>NET_FRAME || len>bytes-pos-2) { malformed=1;break; }
         if (wcn_sta_network_send(p+pos+2,len)<0) break;
         pos+=len+2;n.transmitted++;
     }
-    return pos ? (int)pos:VFS_ERR_RETRY;
+    wcn_dp_tx_batch_end();
+    return pos ? (int)pos:malformed ? -1:VFS_ERR_RETRY;
 }
 void wcn_net_status(char *out,size_t size) {
     snprintf(out,size,"net_rx=%u net_tx=%u net_drop=%u net_pending=%u net_overflow=%u net_reads=%u net_batches=%u",n.received,n.transmitted,n.dropped,n.count,n.overflow,n.reads,n.batch_reads);

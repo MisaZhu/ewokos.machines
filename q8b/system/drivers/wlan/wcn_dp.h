@@ -11,6 +11,8 @@ struct wcn_rx_security {
 int wcn_dp_init(void);
 int wcn_dp_ready(void);
 int wcn_dp_can_transmit(void);
+void wcn_dp_tx_batch_begin(void);
+void wcn_dp_tx_batch_end(void);
 int wcn_dp_transmit(const void *frame,unsigned bytes,unsigned lmac);
 int wcn_dp_reorder(uint64_t queue,unsigned window,unsigned ssn);
 void wcn_dp_poll(void);
