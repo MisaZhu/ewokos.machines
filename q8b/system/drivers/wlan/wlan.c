@@ -15,6 +15,7 @@
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/vfs.h>
 #include <ewoksys/proto.h>
+#include <ewoksys/netdev.h>
 
 static int start_pending, stop_pending;
 static char connect_path[128];
@@ -96,8 +97,9 @@ static char *wlan_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void 
 }
 
 static int wlan_read(vdevice_t *dev,int fd,int pid,fsinfo_t *info,void *buf,int size,off_t off,void *p) {
-    (void)dev;(void)fd;(void)pid;(void)info;(void)off;(void)p;
-    return size<0 ? -1:wcn_net_read(buf,size);
+    (void)dev;(void)fd;(void)pid;(void)info;(void)p;
+    if (size<0) return -1;
+    return off==NETDEV_RX_BATCH_OFFSET ? wcn_net_read_batch(buf,size):wcn_net_read(buf,size);
 }
 static int wlan_write(vdevice_t *dev,int fd,int pid,fsinfo_t *info,const void *buf,int size,off_t off,void *p) {
     (void)dev;(void)fd;(void)pid;(void)info;(void)off;(void)p;
@@ -107,6 +109,7 @@ static int wlan_dcntl(vdevice_t *dev,int pid,int cmd,proto_t *in,proto_t *ret,vo
     (void)dev;(void)pid;(void)in;(void)p;
     if (!cmd) { uint8_t mac[6];wcn_wmi_mac(mac);PF->add(ret,mac,6); }
     else if (cmd==1) PF->addi(ret,wcn_net_pending());
+    else if (cmd==NETDEV_RX_BATCH_QUERY) PF->addi(ret,NETDEV_RX_BATCH_V1);
     return 0;
 }
 static uint32_t wlan_events(vdevice_t *dev,int fd,int pid,fsinfo_t *info,void *p) {
@@ -115,6 +118,8 @@ static uint32_t wlan_events(vdevice_t *dev,int fd,int pid,fsinfo_t *info,void *p
 }
 
 static int wlan_loop(vdevice_t *dev, void *p) {
+    static unsigned activity;
+    static uint64_t active_until;
     (void)dev; (void)p;
     /* IPC callbacks only queue requests; all controller work has one owner. */
     ipc_disable();
@@ -136,9 +141,14 @@ static int wlan_loop(vdevice_t *dev, void *p) {
     unsigned rd=wcn_net_pending()>0,wr=wcn_net_writable();
     unsigned events=(rd && !rx_ready ? VFS_EVT_RD:0)|(wr && !tx_ready ? VFS_EVT_WR:0);
     rx_ready=rd;tx_ready=wr;
+    unsigned current=wcn_net_activity();
+    uint64_t now=kernel_tic_ms(0);
+    if (current!=activity) { activity=current;active_until=now+100; }
     ipc_enable();
     if (events) vfs_wakeup(dev->mnt_info.node,events);
-    usleep(1000);
+    /* 1000us spans two 1024Hz timer ticks. Keep active traffic below one
+     * tick so completions and TCP ACKs do not wait an extra tick per burst. */
+    usleep(now<active_until ? 400:1000);
     return 0;
 }
 
