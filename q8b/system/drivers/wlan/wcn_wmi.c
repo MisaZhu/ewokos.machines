@@ -16,6 +16,7 @@
 static struct {
     unsigned service_ready, ext_ready, ext2_ready, init_sent, ready, failed, hw_mode_sent;
     unsigned chains, vht5, nss160, events, bad, memory_requests;
+    struct wcn_he_caps he5;
     unsigned vdev_sent, channels_sent, scan_pending, scan_active, scan_done;
     unsigned scan_id, scan_reason, scan_events, management_rx, ap_count;
     unsigned scan_cancelling, scan_timedout,country_state,country_seen,country_mask,country_sent;
@@ -52,6 +53,58 @@ static const unsigned scan_freqs[] = {
 static unsigned get16(const uint8_t *p) { return p[0] | ((unsigned)p[1] << 8); }
 static uint32_t get32(const uint8_t *p) { return get16(p) | ((uint32_t)get16(p+2) << 16); }
 static uint32_t tlv(unsigned tag, unsigned bytes) { return tag << 16 | bytes; }
+
+/* HE extension bodies exclude the extension ID. Validate variable MCS maps
+ * and PPE bits before exposing any capability to association. */
+static int he_capability(struct wcn_he_caps *cap,const uint8_t *p,unsigned n) {
+    memset(cap,0,sizeof(*cap));
+    if (n<21) return -1;
+    unsigned maps=4+((p[6]&8) ? 4:0)+((p[6]&16) ? 4:0),off=17+maps,ppe=0;
+    if (n<off) return -1;
+    if (p[12]&128) {
+        if (n==off) return -1;
+        unsigned ru=(p[off]>>3)&15;
+        if (!ru) return -1;
+        ppe=(7+6*((p[off]&7)+1)*__builtin_popcount(ru)+7)/8;
+        if (n-off<ppe) return -1;
+    }
+    memcpy(cap->mac,p,6);memcpy(cap->phy,p+6,11);
+    memset(cap->mcs,255,sizeof(cap->mcs));memcpy(cap->mcs,p+17,4);
+    unsigned pos=21;
+    if (p[6]&8) { memcpy(cap->mcs+4,p+pos,4);pos+=4; }
+    if (p[6]&16) memcpy(cap->mcs+8,p+pos,4);
+    if (ppe) memcpy(cap->ppe,p+off,ppe);
+    cap->present=1;return 0;
+}
+static int he_operation(const uint8_t *p,unsigned n) {
+    if (n<6) return -1;
+    unsigned flags=get32(p)&0xffffff,need=6;
+    if (flags&(1u<<14)) need+=3;
+    if (flags&(1u<<15)) need++;
+    if (flags&(1u<<17)) need+=5;
+    return n>=need ? 0:-1;
+}
+/* Return 1 only for a complete HE negotiation; 0 means absent and -1 invalid. */
+int wcn_wmi_parse_he(const uint8_t *ies,unsigned bytes,struct wcn_he_caps *cap,uint8_t operation[6]) {
+    unsigned seen=0;
+    memset(cap,0,sizeof(*cap));memset(operation,0,6);
+    for (unsigned pos=0;pos<bytes;) {
+        if (bytes-pos<2 || ies[pos+1]>bytes-pos-2) goto invalid;
+        unsigned len=ies[pos+1];const uint8_t *p=ies+pos+2;
+        if (ies[pos]==255 && len && p[0]==35) {
+            if ((seen&1) || he_capability(cap,p+1,len-1)) goto invalid;
+            seen|=1;
+        }
+        if (ies[pos]==255 && len && p[0]==36) {
+            if ((seen&2) || he_operation(p+1,len-1)) goto invalid;
+            memcpy(operation,p+1,6);seen|=2;
+        }
+        pos+=2+len;
+    }
+    return seen==3;
+invalid:
+    memset(cap,0,sizeof(*cap));memset(operation,0,6);return -1;
+}
 
 /* Optional persistent station address, provisioned outside the driver image.
  * Some modules report a generated firmware fallback address on every start. */
@@ -102,6 +155,7 @@ static void receive_management(const uint8_t *frame, unsigned length, unsigned m
     struct wcn_bss *b=&f.ap[index];
     b->capability=get16(frame+34); b->beacon_interval=get16(frame+32);
     b->rsn_len=b->rates_len=b->ht=b->vht=b->wmm=0;
+    b->he_operation=wcn_wmi_parse_he(frame+36,length-36,&b->he,b->he_op)==1;
     memset(b->ht_op,0,sizeof(b->ht_op));memset(b->vht_op,0,sizeof(b->vht_op));
     for (pos=36;pos<length;pos+=2+frame[pos+1]) {
         unsigned len=frame[pos+1], id=frame[pos];
@@ -163,6 +217,25 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
                 if (id==528 && length>=236 && get32(m)==1 && get32(m+4)==1 &&
                     !get32(m+8) && (get32(m+16)&2)) {
                     f.vht5=get32(m+64);f.nss160=0;
+                    memset(&f.he5,0,sizeof(f.he5));
+                    memcpy(f.he5.mac,m+72,4);memcpy(f.he5.mac+4,m+204,2);
+                    memcpy(f.he5.phy,m+100,11);
+                    memset(f.he5.mcs,255,sizeof(f.he5.mcs));memcpy(f.he5.mcs,m+76,4);
+                    if (f.he5.phy[0]&8) memcpy(f.he5.mcs+4,m+76,4);
+                    f.he5.present=get32(m+72) && (f.he5.phy[0]&4) &&
+                        (get16(m+76)&3)!=3 && (get16(m+78)&3)!=3;
+                    if (f.he5.phy[6]&128) {
+                        unsigned last=get32(m+152),ru=get32(m+156),bit=7;
+                        if (last>7 || !ru || ru>15) f.he5.present=0;
+                        else {
+                            f.he5.ppe[0]=last|(ru<<3);
+                            for (unsigned ss=0;ss<=last;ss++) for (unsigned r=0;r<4;r++) if (ru&(1u<<r)) {
+                                unsigned v=(get32(m+160+ss*4)>>(6*r))&63;
+                                v=((v>>3)&7)|((v&7)<<3);
+                                for (int j=5;j>=0;j--,bit++) f.he5.ppe[bit/8]|=((v>>j)&1)<<(bit%8);
+                            }
+                        }
+                    }
                     unsigned tx=__builtin_popcount(get32(m+80)),rx=__builtin_popcount(get32(m+84));
                     unsigned nss=tx<rx ? tx:rx,ratio=get32(m+232);
                     if (get32(m+56)==3 && nss && nss<=2 && (ratio&1)) {
@@ -422,6 +495,7 @@ int wcn_wmi_find_bss(const char *ssid,struct wcn_bss *bss) {
 unsigned wcn_wmi_chains(void) { return f.chains; }
 unsigned wcn_wmi_vht_caps(void) { return f.vht5; }
 unsigned wcn_wmi_nss160(void) { return f.nss160; }
+const struct wcn_he_caps *wcn_wmi_he_caps(void) { return &f.he5; }
 /* Standard and revised VHT Operation encodings for contiguous 160 MHz.
  * 80+80 and extended-NSS-only capability encodings remain unsupported. */
 unsigned wcn_wmi_bss_160_center(const struct wcn_bss *b) {
@@ -506,9 +580,9 @@ void wcn_wmi_scan_results(char *out, size_t size) {
     if (n<0 || (size_t)n>=size) return;
     unsigned pos=n;
     for (unsigned i=0;i<f.ap_count && pos<size;i++) {
-        n=snprintf(out+pos,size-pos,"%02x:%02x:%02x:%02x:%02x:%02x %u MHz %d dBm %s %s HT=%u VHT=%u WMM=%u cap=%08x op=%u/%u/%u\n",
+        n=snprintf(out+pos,size-pos,"%02x:%02x:%02x:%02x:%02x:%02x %u MHz %d dBm %s %s HT=%u VHT=%u HE=%u WMM=%u cap=%08x op=%u/%u/%u\n",
                    f.ap[i].bssid[0],f.ap[i].bssid[1],f.ap[i].bssid[2],f.ap[i].bssid[3],f.ap[i].bssid[4],f.ap[i].bssid[5],
-                   f.ap[i].mhz,f.ap[i].rssi,f.ap[i].privacy?"protected":"open",f.ap[i].ssid,f.ap[i].ht,f.ap[i].vht,f.ap[i].wmm,get32(f.ap[i].vht_cap),f.ap[i].vht_op[0],f.ap[i].vht_op[1],f.ap[i].vht_op[2]);
+                   f.ap[i].mhz,f.ap[i].rssi,f.ap[i].privacy?"protected":"open",f.ap[i].ssid,f.ap[i].ht,f.ap[i].vht,f.ap[i].he.present && f.ap[i].he_operation,f.ap[i].wmm,get32(f.ap[i].vht_cap),f.ap[i].vht_op[0],f.ap[i].vht_op[1],f.ap[i].vht_op[2]);
         if (n<0 || (size_t)n>=size-pos) return;
         pos+=n;
     }

@@ -33,8 +33,9 @@ static struct {
     uint8_t mac[6],rsn[22],rates[12];
     unsigned ba_delete,ba_state,ba_tid,ba_token,ba_window,ba_ssn,ba_timeout,ba_cookie,ba_status,ba_requests,ba_accepted;
     uint64_t ba_deadline;
-    unsigned rates_len,ht,vht,nss,width,center,phymode,ht_rates_len,max_width;
+    unsigned rates_len,ht,vht,he,nss,width,center,phymode,ht_rates_len,max_width,he_len,he_allowed;
     uint8_t ht_rates[16], ht_ie[26], vht_ie[12];
+    uint8_t he_ie[64];
     struct wcn_bss bss;
     const char *error;
 } s;
@@ -96,8 +97,75 @@ static int width_limit(void) {
     if (n==3 && !memcmp(value,"160",3)) return 160;
     return -1;
 }
+/* Optional PHY preference. VHT remains the compatibility default. */
+static int he_enabled(void) {
+    FILE *fp=fopen("/etc/wlan.phy","r");if (!fp) return 0;
+    char value[5]={0};unsigned n=fread(value,1,4,fp);int extra=fgetc(fp);fclose(fp);
+    if (extra!=EOF || !n) return -1;
+    if (value[n-1]=='\n') value[--n]=0;
+    if (n==2 && !memcmp(value,"he",2)) return 1;
+    if (n==3 && !memcmp(value,"vht",3)) return 0;
+    return -1;
+}
+
+static unsigned he_map(unsigned local,unsigned peer,unsigned nss,unsigned ldpc) {
+    unsigned out=0xffff;
+    for (unsigned i=0;i<nss;i++) {
+        unsigned a=(local>>(2*i))&3,b=(peer>>(2*i))&3;
+        if (a==3 || b==3) continue;
+        unsigned m=a<b ? a:b;
+        if (!ldpc && m>1) m=1; /* HE MCS 10/11 requires LDPC. */
+        out=(out&~(3u<<(2*i)))|(m<<(2*i));
+    }
+    return out;
+}
+static void select_he(void) {
+    const struct wcn_he_caps *hw=wcn_wmi_he_caps(),*ap=&s.bss.he;
+    s.he=s.he_len=0;memset(s.he_ie,0,sizeof(s.he_ie));
+    if (!s.he_allowed || !s.vht || !hw->present || !ap->present || !s.bss.he_operation) return;
+    if (s.bss.he_op[0]&8) return; /* TWT-required HE BSS is unsupported. */
+    if (s.width==160 && (!(hw->phy[0]&ap->phy[0]&8) || wcn_wmi_nss160()<s.nss)) return;
+    /* LDPC is mandatory at widths above 20 MHz. Optional features are
+     * advertised only when their receive path is supported locally. */
+    if (s.width>20 && !(hw->phy[1]&ap->phy[1]&32)) return;
+    if (s.width>=40 && !(hw->phy[0]&ap->phy[0]&4)) return;
+    unsigned count=s.width==160 ? 2:1,rx[2],tx[2];
+    for (unsigned i=0;i<count;i++) {
+        rx[i]=he_map(le16(hw->mcs+4*i),le16(ap->mcs+4*i+2),s.nss,hw->phy[1]&32);
+        tx[i]=he_map(le16(hw->mcs+4*i+2),le16(ap->mcs+4*i),s.nss,ap->phy[1]&32);
+        for (unsigned ss=0;ss<s.nss;ss++)
+            if (((rx[i]>>(2*ss))&3)==3 || ((tx[i]>>(2*ss))&3)==3) return;
+    }
+    unsigned basic=le16(s.bss.he_op+4);
+    for (unsigned i=0;i<count;i++) for (unsigned ss=0;ss<8;ss++) {
+        unsigned required=(basic>>(2*ss))&3,r=(rx[i]>>(2*ss))&3,t=(tx[i]>>(2*ss))&3;
+        if (required!=3 && (r==3 || t==3 || r<required || t<required)) return;
+    }
+    s.he_ie[0]=hw->mac[0]&1; /* Firmware handles HE control fields. */
+    s.he_ie[1]=hw->mac[1]&12; /* Trigger padding, no TWT/fragmentation offload. */
+    s.he_ie[3]=hw->mac[3]&2; /* Firmware operating-mode control. */
+    uint8_t *phy=s.he_ie+6;
+    phy[0]=s.width>=40 ? 4:0;if (s.width==160) phy[0]|=8;
+    phy[1]=hw->phy[1]&(16|32|64);phy[7]=hw->phy[7]&4;
+    phy[9]=hw->phy[9]&192;
+    unsigned off=17;
+    for (unsigned i=0;i<count;i++) { put16(s.he_ie+off,rx[i]);put16(s.he_ie+off+2,tx[i]);off+=4; }
+    if (hw->phy[6]&128) {
+        unsigned nss=(hw->ppe[0]&7)+1,ru=(hw->ppe[0]>>3)&15;
+        if (nss<s.nss || !ru) return;
+        unsigned bytes=(7+6*s.nss*__builtin_popcount(ru)+7)/8;
+        phy[6]|=128;memcpy(s.he_ie+off,hw->ppe,bytes);
+        s.he_ie[off]=(s.he_ie[off]&~7u)|(s.nss-1);
+        unsigned tail=(7+6*s.nss*__builtin_popcount(ru))%8;
+        if (tail) s.he_ie[off+bytes-1]&=(1u<<tail)-1;
+        off+=bytes;
+    }
+    s.he_len=off;s.he=1;
+    s.phymode=s.width==160 ? 20:s.width==80 ? 18:s.width==40 ? 17:16;
+}
 
 static void select_phy(void) {
+    s.he=s.he_len=0;
     unsigned limit=s.max_width ? s.max_width:160;
     s.nss=1;s.width=20;s.center=s.bss.mhz;s.phymode=s.bss.mhz<3000 ? 1:0;
     s.ht=s.bss.ht && s.bss.wmm && s.bss.ht_cap[3];
@@ -140,6 +208,12 @@ static void select_phy(void) {
         rx=(rx&~(3u<<(2*i)))|(b<<(2*i));tx=(tx&~(3u<<(2*i)))|(a<<(2*i));
     }
     put16(s.vht_ie+4,rx);put16(s.vht_ie+8,tx);
+    select_he();
+    /* REO queues reserve all three extensions for the HE 256-frame window. */
+    if (s.he) {
+        vcap=(vcap&~(7u<<23))|(wcn_wmi_vht_caps()&((7u<<23)|16));
+        memcpy(s.vht_ie,&vcap,4);
+    }
 }
 static unsigned phy_ies(uint8_t *out) {
     if (!s.ht) return 0;
@@ -147,16 +221,17 @@ static unsigned phy_ies(uint8_t *out) {
     memcpy(out,wmm,sizeof(wmm));unsigned n=sizeof(wmm);
     out[n++]=45;out[n++]=26;memcpy(out+n,s.ht_ie,26);n+=26;
     if (s.vht) { out[n++]=191;out[n++]=12;memcpy(out+n,s.vht_ie,12);n+=12; }
+    if (s.he) { out[n++]=255;out[n++]=s.he_len+1;out[n++]=35;memcpy(out+n,s.he_ie,s.he_len);n+=s.he_len; }
     return n;
 }
 
 int wcn_sta_associate(const char *ssid) {
     if (!ssid || !*ssid || strlen(ssid)>32 || s.state!=IDLE ||
         !wcn_wmi_station_available() || !wcn_dp_ready() || wcn_wmi_find_bss(ssid,&s.bss)) return -1;
-    int limit=width_limit();if (limit<0) return -1;
-    s.max_width=limit;
+    int limit=width_limit(),he=he_enabled();if (limit<0 || he<0) return -1;
+    s.max_width=limit;s.he_allowed=he;
     s.rates_len=s.ht_rates_len=0;
-    s.ht=s.vht=0;memset(s.ht_ie,0,sizeof(s.ht_ie));memset(s.vht_ie,0,sizeof(s.vht_ie));
+    s.ht=s.vht=s.he=s.he_len=0;memset(s.ht_ie,0,sizeof(s.ht_ie));memset(s.vht_ie,0,sizeof(s.vht_ie));
     int power=wcn_wmi_channel_power(s.bss.mhz);
     if (power<0 || !s.bss.privacy || select_rsn(s.bss.rsn,s.bss.rsn_len) || select_rates()) return -1;
     select_phy();
@@ -187,6 +262,10 @@ int wcn_sta_resume(void) {
     return 0;
 }
 static int configure(void) {
+    if (s.config==10) {
+        uint32_t p[]={0x5008,(95u<<16)|12,0,0x8003,le32(s.bss.he_op)};
+        return wcn_htc_wmi_send(p,sizeof(p));
+    }
     if (s.config==9) {
         uint32_t p[32]={0x500d,(199u<<16)|120,0};
         for (unsigned ac=0;ac<4;ac++) {
@@ -239,8 +318,10 @@ static int vdev_start(void) {
     memset(&p,0,sizeof(p)); p.command=0x5003; p.cmd.tlv_header=tlv(88,sizeof(p.cmd)-4);
     p.cmd.beacon_interval=s.bss.beacon_interval; p.cmd.dtim_period=1;
     p.cmd.preferred_tx_streams=p.cmd.preferred_rx_streams=s.nss;
+    if (s.he || (s.vht && (le32(s.vht_ie)&16))) p.cmd.flags|=8;
+    if (s.he) p.cmd.he_ops=le32(s.bss.he_op);
     p.ch.tlv_header=tlv(80,sizeof(p.ch)-4); p.ch.mhz=s.bss.mhz;p.ch.band_center_freq1=s.center;
-    p.ch.info=s.phymode|(s.ht ? 1u<<11:0)|(s.vht ? 1u<<12:0);
+    p.ch.info=s.phymode|(s.ht ? 1u<<11:0)|(s.vht ? 1u<<12:0)|(s.he ? 1u<<17:0);
     if (s.width==40 && s.center>s.bss.mhz) p.ch.info|=1u<<6;
     p.ch.reg_info_1=(s.power<<8)|(s.power<<16); p.ch.reg_info_2=s.power<<8;
     p.noa=tlv(18,0);
@@ -308,6 +389,25 @@ static int peer_assoc(void) {
             if (max>p->peer_max_mpdu) p->peer_max_mpdu=max;
         }
     }
+    if (s.he) {
+        p->peer_flags|=0x400|(s.bss.he.phy[1]&32 ? 0x10000:0);
+        p->peer_he_cap_info=le32(s.bss.he.mac);
+        p->peer_he_cap_info_ext=le16(s.bss.he.mac+4);
+        p->peer_he_ops=le32(s.bss.he_op)&0xffffff;
+        memcpy(p->peer_he_cap_phy,s.bss.he.phy,11);
+        p->peer_he_mcs=s.width==160 ? 2:1;
+        unsigned exp=(s.bss.he.mac[3]>>3)&3;
+        if (exp) p->peer_max_mpdu=(1u<<(20+exp))-1;
+        if (s.bss.he.phy[6]&128) {
+            const uint8_t *ppe=s.bss.he.ppe;unsigned bit=7,ru=(ppe[0]>>3)&15;
+            p->peer_ppet.numss_m1=ppe[0]&7;p->peer_ppet.ru_mask=ru;
+            for (unsigned ss=0;ss<=p->peer_ppet.numss_m1;ss++) for (unsigned r=0;r<4;r++) if (ru&(1u<<r)) {
+                unsigned v=0;
+                for (unsigned j=0;j<6;j++,bit++) v=(v>>1)|(((ppe[bit/8]>>(bit%8))&1)<<5);
+                p->peer_ppet.ppet16_ppet8_ru3_ru0[ss]|=v<<(6*r);
+            }
+        }
+    }
     unsigned off=4+sizeof(*p),n=(s.rates_len+3)&~3u,v=tlv(17,n);
     memcpy(packet+off,&v,4); off+=4;
     for (unsigned i=0;i<s.rates_len;i++) packet[off+i]=s.rates[i]&127;
@@ -316,7 +416,13 @@ static int peer_assoc(void) {
     struct wmi_vht_rate_set *vht=(void *)(packet+off); vht->tlv_header=tlv(102,sizeof(*vht)-4);
     if (s.vht) { vht->rx_mcs_set=le16(s.vht_ie+8);vht->tx_mcs_set=le16(s.vht_ie+4); }
     off+=sizeof(*vht);
-    v=tlv(18,0); memcpy(packet+off,&v,4); off+=4;
+    unsigned count=s.he ? (s.width==160 ? 2:1):0;
+    v=tlv(18,count*12); memcpy(packet+off,&v,4); off+=4;
+    for (unsigned i=0;i<count;i++) {
+        /* HE rate-set fields describe the AP's RX/TX capabilities. */
+        uint32_t rate[]={tlv(645,8),le16(s.he_ie+19+4*i),le16(s.he_ie+17+4*i)};
+        memcpy(packet+off,rate,sizeof(rate));off+=sizeof(rate);
+    }
     return wcn_htc_wmi_send(packet,off);
 }
 static void ba_poll(void) {
@@ -367,7 +473,7 @@ void wcn_sta_poll(void) {
     if (!wcn_wmi_ready() || !wcn_dp_ready()) { fail("controller-unavailable",0); return; }
     if (kernel_tic_ms(0)>=s.deadline) { fail("timeout",s.state); return; }
     switch (s.state) {
-    case CONFIG: if (!configure() && ++s.config==10) state(PEER); break;
+    case CONFIG: if (!configure() && ++s.config==(s.he ? 11u:10u)) state(PEER); break;
     case PEER: if (!peer_create()) state(PEER_WAIT); break;
     case PEER_WAIT: if (s.peer_mapped) state(ROUTE); break;
     case ROUTE: if (!route()) state(QUEUES); break;
@@ -415,7 +521,9 @@ void wcn_sta_management(const uint8_t *p,unsigned bytes,unsigned mhz) {
     if ((subtype==12 || subtype==10) && bytes>=26) { fail("AP-disconnected",le16(p+24)); return; }
     if (s.state==ASSOCIATED && s.ht && subtype==13 && bytes>=33 && p[24]==3 && p[25]==0 && !s.ba_state) {
         unsigned param=le16(p+27),window=param>>6;
-        s.ba_delete=0;s.ba_tid=(param>>2)&15;s.ba_token=p[26];s.ba_window=window && window<64 ? window:64;
+        unsigned maximum=s.he ? 256:64;
+        s.ba_delete=0;s.ba_tid=(param>>2)&15;s.ba_token=p[26];
+        s.ba_window=window && window<maximum ? window:maximum;
         s.ba_ssn=le16(p+31)>>4;s.ba_timeout=le16(p+29);s.ba_status=0;s.ba_requests++;
         s.ba_state=(param&2) ? 1:3;if (!(param&2)) s.ba_status=37;
         s.ba_deadline=kernel_tic_ms(0)+2000;
@@ -434,6 +542,13 @@ void wcn_sta_management(const uint8_t *p,unsigned bytes,unsigned mhz) {
         if (le16(p+26)) { fail("association-rejected",le16(p+26)); return; }
         s.aid=le16(p+28)&0x3fff;
         if (!s.aid || s.aid>2007) { fail("invalid-association-id",s.aid); return; }
+        if (s.he) {
+            int he=wcn_wmi_parse_he(p+30,bytes-30,&s.bss.he,s.bss.he_op);
+            if (he<0) { fail("invalid-HE-response",0);return; }
+            s.bss.he_operation=he;
+            s.phymode=s.width==160 ? 15:s.width==80 ? 10:s.width==40 ? 9:8;
+            select_he(); /* The AP may decline HE and accept the VHT fallback. */
+        }
         state(PEER_ASSOC);
     }
 }
@@ -457,8 +572,8 @@ void wcn_sta_release(void) {
     memset(&s,0,sizeof(s));
 }
 void wcn_sta_status(char *out,size_t size) {
-    snprintf(out,size,"station=%s error=%s status=%u mhz=%u peer=%u mapped=%u queues=%u aid=%u tx=%u done=%u tx_errors=%u rx=%u lmac=%u data_rx=%u eapol_rx=%u data_tx=%u network_ready=%u phy=%s width=%u nss=%u center=%u ba=%u/%u power=%u max_width=%u\n",
-             wcn_sta_link_ready()?"connected":names[s.state],s.error?s.error:"none",s.status,s.bss.mhz,s.peer,s.peer_mapped,s.queue,s.aid,s.tx,s.tx_done,s.tx_errors,s.rx,s.lmac,s.data_rx,s.eapol_rx,s.data_tx,wcn_sta_link_ready(),s.vht?"VHT":s.ht?"HT":"legacy",s.width,s.nss,s.center,s.ba_accepted,s.ba_requests,s.power,s.max_width);
+    snprintf(out,size,"station=%s error=%s status=%u mhz=%u peer=%u mapped=%u queues=%u aid=%u tx=%u done=%u tx_errors=%u rx=%u lmac=%u data_rx=%u eapol_rx=%u data_tx=%u network_ready=%u phy=%s width=%u nss=%u center=%u ba=%u/%u ba_window=%u power=%u max_width=%u\n",
+             wcn_sta_link_ready()?"connected":names[s.state],s.error?s.error:"none",s.status,s.bss.mhz,s.peer,s.peer_mapped,s.queue,s.aid,s.tx,s.tx_done,s.tx_errors,s.rx,s.lmac,s.data_rx,s.eapol_rx,s.data_tx,wcn_sta_link_ready(),s.he?"HE":s.vht?"VHT":s.ht?"HT":"legacy",s.width,s.nss,s.center,s.ba_accepted,s.ba_requests,s.ba_window,s.power,s.max_width);
     size_t n=strlen(out);
     if (n<size) wcn_wpa_status(out+n,size-n);
 }

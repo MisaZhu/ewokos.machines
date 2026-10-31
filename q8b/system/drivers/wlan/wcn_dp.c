@@ -35,7 +35,7 @@ static struct {
     unsigned rx_packets,rx_delivered,rx_dropped,refilled,tx_packets,tx_done,tx_errors,tx_generation;
     unsigned tx_batch,tx_pending;
     unsigned tx_cookie[256];
-    unsigned rx_rate,tx_rate,rx_ht,rx_vht,tx_ht,tx_vht;
+    unsigned rx_rate,tx_rate,rx_ht,rx_vht,rx_he,tx_ht,tx_vht,tx_he;
     uint8_t rx_owner[RX_COUNT];
     struct dp_ring rings[MAX_RINGS];
 } d;
@@ -242,6 +242,7 @@ static void dp_rx_buffer(unsigned id,unsigned deliver) {
         d.rx_rate=p[30];unsigned phy=(d.rx_rate>>8)&15;
         if (phy==2) d.rx_ht++;
         if (phy==3) d.rx_vht++;
+        if (phy==4) d.rx_he++;
         d.rx_delivered++; wcn_sta_data(b+392+pad,len,&sec);
     } else {
         d.rx_dropped++;
@@ -303,6 +304,7 @@ static int dp_complete(struct dp_ring *r,const uint32_t *p) {
             d.tx_rate=p[5];unsigned phy=(d.tx_rate>>3)&15;
             if (phy==2) d.tx_ht++;
             if (phy==3) d.tx_vht++;
+            if (phy==4) d.tx_he++;
         }
         wcn_wpa_tx_complete(cookie,success);
     } else if (r->id==9) {
@@ -311,7 +313,7 @@ static int dp_complete(struct dp_ring *r,const uint32_t *p) {
     return 0;
 }
 int wcn_dp_reorder(uint64_t queue,unsigned window,unsigned ssn) {
-    if (!wcn_dp_ready() || !queue || queue>>40 || !window || window>64 || ssn>4096) return -1;
+    if (!wcn_dp_ready() || !queue || queue>>40 || !window || window>256 || ssn>4096) return -1;
     struct dp_ring *r=dp_find(8);if (!dp_space(r)) return -1;
     uint32_t *p=dp_words(r->offset+r->index*40);unsigned id=r->index+1;
     memset(p,0,40);p[0]=(419u<<1)|(36u<<10);p[1]=id|(1u<<16);
@@ -388,9 +390,9 @@ void wcn_dp_status(char *out,size_t size) {
              d.rx_delivered,d.rx_packets,d.rx_dropped,d.refilled,d.tx_done,d.tx_packets,d.tx_errors);
 }
 void wcn_dp_rings(char *out,size_t size) {
-    int n=snprintf(out,size,"DP active=%u failed=%u bytes=%u\nPHY tx_type=%u tx_bw=%u tx_mcs=%u tx_gi=%u HT=%u VHT=%u rx_type=%u rx_bw=%u rx_mcs=%u rx_gi=%u HT=%u VHT=%u\n",
-                   d.active,d.failed,d.used,(d.tx_rate>>3)&15,20u<<((d.tx_rate>>1)&3),(d.tx_rate>>11)&15,(d.tx_rate>>9)&3,d.tx_ht,d.tx_vht,
-                   (d.rx_rate>>8)&15,20u<<((d.rx_rate>>19)&3),(d.rx_rate>>15)&15,(d.rx_rate>>13)&3,d.rx_ht,d.rx_vht);
+    int n=snprintf(out,size,"DP active=%u failed=%u bytes=%u\nPHY tx_type=%u tx_bw=%u tx_mcs=%u tx_gi=%u HT=%u VHT=%u HE=%u rx_type=%u rx_bw=%u rx_mcs=%u rx_gi=%u HT=%u VHT=%u HE=%u\n",
+                   d.active,d.failed,d.used,(d.tx_rate>>3)&15,20u<<((d.tx_rate>>1)&3),(d.tx_rate>>11)&15,(d.tx_rate>>9)&3,d.tx_ht,d.tx_vht,d.tx_he,
+                   (d.rx_rate>>8)&15,20u<<((d.rx_rate>>19)&3),(d.rx_rate>>15)&15,(d.rx_rate>>13)&3,d.rx_ht,d.rx_vht,d.rx_he);
     if (n<0 || (size_t)n>=size) return;
     size_t pos=n;
     for (unsigned i=0;i<d.count;i++) {
