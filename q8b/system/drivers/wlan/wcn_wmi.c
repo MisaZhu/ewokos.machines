@@ -14,11 +14,11 @@
 #include <string.h>
 
 static struct {
-    unsigned service_ready, ext_ready, ext2_ready, init_sent, ready, failed;
+    unsigned service_ready, ext_ready, ext2_ready, init_sent, ready, failed, hw_mode_sent;
     unsigned chains, events, bad, memory_requests;
     unsigned vdev_sent, channels_sent, scan_pending, scan_active, scan_done;
     unsigned scan_id, scan_reason, scan_events, management_rx, ap_count;
-    unsigned scan_cancelling, scan_timedout,country_state,country_seen,country_mask;
+    unsigned scan_cancelling, scan_timedout,country_state,country_seen,country_mask,country_sent;
     uint64_t country_deadline;
     uint8_t mac[6];
     uint64_t deadline;
@@ -243,7 +243,7 @@ static int send_vdev(void) {
     p.array=tlv(18,sizeof(p.streams));
     for (unsigned i=0;i<2;i++) {
         p.streams[i].tlv_header=tlv(411,sizeof(p.streams[i])-4);
-        p.streams[i].band=i+1;
+        p.streams[i].band=i; /* WMI chainmask bands: 2 GHz = 0, 5 GHz = 1. */
         p.streams[i].supported_tx_streams=p.streams[i].supported_rx_streams=f.chains;
     }
     return wcn_htc_wmi_send(&p,sizeof(p));
@@ -321,16 +321,27 @@ void wcn_wmi_poll(void) {
         f.failed=1; klog("wcn: WMI READY timeout\n");
     }
     if (!f.ready) return;
+    if (!f.hw_mode_sent) {
+        /* Set DBS before HTT installs RXDMA rings. Changing mode afterwards
+         * can discard the firmware's physical-MAC ring configuration. */
+        const uint32_t p[]={0x401e,(515u<<16)|12,0,1,0};
+        if (!wcn_htc_wmi_send(p,sizeof(p))) f.hw_mode_sent=1;
+        return;
+    }
     if (f.country_state==1) {
-        uint32_t p[]={0x3a001,(607u<<16)|8,1,(uint8_t)country[0]|((uint32_t)(uint8_t)country[1]<<8)};
-        if (wcn_htc_wmi_send(p,sizeof(p))) return;
-        f.country_seen=0;f.country_mask=(f.reg[0].valid ? 1:0)|(f.reg[1].valid ? 2:0);
+        f.country_seen=f.country_sent=0;f.country_mask=(f.reg[0].valid ? 1:0)|(f.reg[1].valid ? 2:0);
         if (!f.country_mask) f.country_mask=3;
         f.reg[0].valid=f.reg[1].valid=0;f.channels_sent=0;
         f.country_state=2;f.country_deadline=kernel_tic_ms(0)+8000;
         klog("wcn: country requested=%s\n",country);return;
     }
     if (f.country_state==2) {
+        /* The firmware updates only the addressed pdev, even in DBS mode. */
+        for (unsigned phy=0;phy<2;phy++) if ((f.country_mask & (1u<<phy)) && !(f.country_sent & (1u<<phy))) {
+            uint32_t p[]={0x3a001,(607u<<16)|8,phy+1,(uint8_t)country[0]|((uint32_t)(uint8_t)country[1]<<8)};
+            if (!wcn_htc_wmi_send(p,sizeof(p))) f.country_sent|=1u<<phy;
+            break;
+        }
         if ((f.country_seen&f.country_mask)==f.country_mask) { f.country_state=0;klog("wcn: country applied=%s\n",country); }
         else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;klog("wcn: country update timeout\n"); } return; }
     }
@@ -367,7 +378,7 @@ void wcn_wmi_status(char *out, size_t size) {
     snprintf(out,size,"wmi_ready=%u wmi_events=%u wmi_bad=%u wmi_failed=%u scan_active=%u aps=%u",
              f.ready,f.events,f.bad,f.failed,f.scan_active,f.ap_count);
 }
-int wcn_wmi_ready(void) { return f.ready && !f.failed; }
+int wcn_wmi_ready(void) { return f.ready && f.hw_mode_sent && !f.failed; }
 void wcn_wmi_mac(uint8_t mac[6]) { memcpy(mac,f.mac,6); }
 int wcn_wmi_find_bss(const char *ssid,struct wcn_bss *bss) {
     int found=-1,best=-1000;

@@ -162,11 +162,7 @@ int wcn_sta_resume(void) {
     return 0;
 }
 static int configure(void) {
-    if (!s.config) {
-        const uint32_t p[]={0x401e,(515u<<16)|12,0,1,0}; /* DBS, same mode as INIT. */
-        return wcn_htc_wmi_send(p,sizeof(p));
-    }
-    if (s.config==10) {
+    if (s.config==9) {
         uint32_t p[32]={0x500d,(199u<<16)|120,0};
         for (unsigned ac=0;ac<4;ac++) {
             const uint8_t *v=s.bss.wmm_ac+4*ac;uint32_t *q=p+3+7*ac;
@@ -178,7 +174,7 @@ static int configure(void) {
         return wcn_htc_wmi_send(p,sizeof(p));
     }
     const unsigned params[][2]={{48,1},{91,2},{34,s.nss},{1,2347},{2,2346},{18,10},{19,20},{20,s.ht},{28,!!(le16(s.ht_ie)&(32|64))}};
-    unsigned i=s.config-1;
+    unsigned i=s.config;
     uint32_t p[]={0x5008,(95u<<16)|12,0,params[i][0],params[i][1]};
     return wcn_htc_wmi_send(p,sizeof(p));
 }
@@ -345,7 +341,7 @@ void wcn_sta_poll(void) {
     if (!wcn_wmi_ready() || !wcn_dp_ready()) { fail("controller-unavailable",0); return; }
     if (kernel_tic_ms(0)>=s.deadline) { fail("timeout",s.state); return; }
     switch (s.state) {
-    case CONFIG: if (!configure() && ++s.config==11) state(PEER); break;
+    case CONFIG: if (!configure() && ++s.config==10) state(PEER); break;
     case PEER: if (!peer_create()) state(PEER_WAIT); break;
     case PEER_WAIT: if (s.peer_mapped) state(ROUTE); break;
     case ROUTE: if (!route()) state(QUEUES); break;
