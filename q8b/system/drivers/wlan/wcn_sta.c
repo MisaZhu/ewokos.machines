@@ -97,9 +97,9 @@ static int width_limit(void) {
     if (n==3 && !memcmp(value,"160",3)) return 160;
     return -1;
 }
-/* Optional PHY preference. VHT remains the compatibility default. */
+/* Prefer HE when supported; an explicit VHT preference remains available. */
 static int he_enabled(void) {
-    FILE *fp=fopen("/etc/wlan.phy","r");if (!fp) return 0;
+    FILE *fp=fopen("/etc/wlan.phy","r");if (!fp) return 1;
     char value[5]={0};unsigned n=fread(value,1,4,fp);int extra=fgetc(fp);fclose(fp);
     if (extra!=EOF || !n) return -1;
     if (value[n-1]=='\n') value[--n]=0;
