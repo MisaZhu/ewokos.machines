@@ -8,6 +8,8 @@
 #include "wcn_qmi.h"
 #include "wcn_ce.h"
 #include "wcn_wmi.h"
+#include "wcn_dp.h"
+#include "wcn_sta.h"
 #include <ewoksys/dma.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/sys.h>
@@ -448,6 +450,8 @@ void wcn_poll(void) {
     }
     wcn_qmi_poll();
     wcn_ce_poll();
+    wcn_dp_poll();
+    wcn_sta_poll();
 }
 
 int wcn_ipcr_send(const void *packet, unsigned bytes) {
@@ -558,6 +562,8 @@ void wcn_stop(void) {
     }
     w.running = w.contexts_ready = w.ipcr_ready = 0;
     wcn_ce_release();
+    wcn_dp_release();
+    wcn_sta_release();
     wcn_qmi_release();
     wcn_qmi_reset();
     if (w.link_cap) {
@@ -625,16 +631,17 @@ fail:
 }
 
 void wcn_status(char *out, size_t size) {
-    char qmi[288], ce_status[512];
+    char qmi[288], ce_status[512], dp[256];
     wcn_qmi_status(qmi, sizeof(qmi));
     wcn_ce_status(ce_status, sizeof(ce_status));
+    wcn_dp_status(dp,sizeof(dp));
     snprintf(out, size,
         "wcn6855 stage=%s attached=%d running=%d hw=%08x subsystem=%08x "
         "bar=%llx ee=%u mhi=%08x bhi=%08x error=%08x dma=%llx "
-        "events=%u last=%08x/%08x ipcr=%d rx=%u tx=%u %s %s network_ready=0\n",
+        "events=%u last=%08x/%08x ipcr=%d rx=%u tx=%u %s %s %s network_ready=%u\n",
         w.running && wcn_wmi_ready() ? "WMI-ready" : w.stage ? w.stage : "none", w.attached, w.running, w.hw, w.subsystem,
         (unsigned long long)w.bar_phys, w.attached ? ee() : 0,
         w.attached ? reg(0x48) : 0, w.attached ? reg(w.bhi + 0x2c) : 0,
         w.attached ? reg(w.bhi + 0x30) : 0, (unsigned long long)w.dma_phys,
-        w.events, w.last_event, w.last_data, w.ipcr_ready, w.rx_packets, w.tx_packets, qmi, ce_status);
+        w.events, w.last_event, w.last_data, w.ipcr_ready, w.rx_packets, w.tx_packets, qmi, ce_status, dp,wcn_sta_link_ready());
 }

@@ -4,6 +4,7 @@
 #include "wcn_htt.h"
 #include "wcn_htc.h"
 #include "wcn_wmi.h"
+#include "wcn_sta.h"
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@ void wcn_htt_receive(const void *data, unsigned bytes) {
     const uint8_t *p = data;
     if (bytes < 4) { t.bad++; return; }
     t.events++;
+    if (p[0]==3 && bytes>=12) wcn_sta_peer(p[1],p+4,p[2]|((unsigned)p[3]<<8),0);
     if (p[0] == 0) { /* HTT_T2H_MSG_TYPE_VERSION_CONF */
         if (!t.requested || t.ready || t.failed) { t.bad++; return; }
         t.major = p[2]; t.minor = p[1];

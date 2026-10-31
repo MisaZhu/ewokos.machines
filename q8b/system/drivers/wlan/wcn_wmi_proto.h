@@ -150,4 +150,156 @@ struct wmi_channel {
 	uint32_t reg_info_1;
 	uint32_t reg_info_2;
 };
+
+struct wmi_ssid {
+	uint32_t ssid_len;
+	uint32_t ssid[8];
+};
+
+struct wmi_vdev_start_request_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	uint32_t requestor_id;
+	uint32_t beacon_interval;
+	uint32_t dtim_period;
+	uint32_t flags;
+	struct wmi_ssid ssid;
+	uint32_t bcn_tx_rate;
+	uint32_t bcn_txpower;
+	uint32_t num_noa_descriptors;
+	uint32_t disable_hw_ack;
+	uint32_t preferred_tx_streams;
+	uint32_t preferred_rx_streams;
+	uint32_t he_ops;
+	uint32_t cac_duration_ms;
+	uint32_t regdomain;
+	uint32_t min_data_rate;
+	uint32_t mbssid_flags;
+	uint32_t mbssid_tx_vdev_id;
+};
+
+struct wmi_peer_create_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	struct wmi_mac_addr peer_macaddr;
+	uint32_t peer_type;
+};
+
+struct wmi_mgmt_send_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	uint32_t desc_id;
+	uint32_t chanfreq;
+	uint32_t paddr_lo;
+	uint32_t paddr_hi;
+	uint32_t frame_len;
+	uint32_t buf_len;
+	uint32_t tx_params_valid;
+
+	/* This TLV is followed by struct wmi_mgmt_frame */
+
+	/* Followed by struct wmi_mgmt_send_params */
+};
+
+struct wmi_vdev_up_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	uint32_t vdev_assoc_id;
+	struct wmi_mac_addr vdev_bssid;
+	struct wmi_mac_addr tx_vdev_bssid;
+	uint32_t nontx_profile_idx;
+	uint32_t nontx_profile_cnt;
+};
+
+struct wmi_peer_reorder_queue_setup_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	struct wmi_mac_addr peer_macaddr;
+	uint32_t tid;
+	uint32_t queue_ptr_lo;
+	uint32_t queue_ptr_hi;
+	uint32_t queue_no;
+	uint32_t ba_window_size_valid;
+	uint32_t ba_window_size;
+};
+
+struct wmi_peer_set_param_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	struct wmi_mac_addr peer_macaddr;
+	uint32_t param_id;
+	uint32_t param_value;
+};
+
+struct wmi_ppe_threshold { uint32_t numss_m1, ru_mask, ppet16_ppet8_ru3_ru0[8]; };
+
+struct  wmi_peer_assoc_complete_cmd {
+	uint32_t tlv_header;
+	struct wmi_mac_addr peer_macaddr;
+	uint32_t vdev_id;
+	uint32_t peer_new_assoc;
+	uint32_t peer_associd;
+	uint32_t peer_flags;
+	uint32_t peer_caps;
+	uint32_t peer_listen_intval;
+	uint32_t peer_ht_caps;
+	uint32_t peer_max_mpdu;
+	uint32_t peer_mpdu_density;
+	uint32_t peer_rate_caps;
+	uint32_t peer_nss;
+	uint32_t peer_vht_caps;
+	uint32_t peer_phymode;
+	uint32_t peer_ht_info[2];
+	uint32_t num_peer_legacy_rates;
+	uint32_t num_peer_ht_rates;
+	uint32_t peer_bw_rxnss_override;
+	struct  wmi_ppe_threshold peer_ppet;
+	uint32_t peer_he_cap_info;
+	uint32_t peer_he_ops;
+	uint32_t peer_he_cap_phy[3];
+	uint32_t peer_he_mcs;
+	uint32_t peer_he_cap_info_ext;
+	uint32_t peer_he_cap_info_internal;
+	uint32_t min_data_rate;
+	uint32_t peer_he_caps_6ghz;
+};
+
+struct wmi_vht_rate_set {
+	uint32_t tlv_header;
+	uint32_t rx_max_rate;
+	/* MCS at which the peer can transmit */
+	uint32_t rx_mcs_set;
+	uint32_t tx_max_rate;
+	/* MCS at which the peer can receive */
+	uint32_t tx_mcs_set;
+	uint32_t tx_max_mcs_nss;
+};
+
+struct wmi_key_seq_counter {
+	uint32_t key_seq_counter_l;
+	uint32_t key_seq_counter_h;
+};
+
+struct wmi_vdev_install_key_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	struct wmi_mac_addr peer_macaddr;
+	uint32_t key_idx;
+	uint32_t key_flags;
+	uint32_t key_cipher;
+	struct wmi_key_seq_counter key_rsc_counter;
+	struct wmi_key_seq_counter key_global_rsc_counter;
+	struct wmi_key_seq_counter key_tsc_counter;
+	uint8_t wpi_key_rsc_counter[16];
+	uint8_t wpi_key_tsc_counter[16];
+	uint32_t key_len;
+	uint32_t key_txmic_len;
+	uint32_t key_rxmic_len;
+	uint32_t is_group_key_id_valid;
+	uint32_t group_key_id;
+
+	/* Followed by key_data containing key followed by
+	 * tx mic and then rx mic
+	 */
+};
 #endif

@@ -19,7 +19,6 @@ static struct {
     uint64_t deadline;
 } h;
 static unsigned u16(const uint8_t *p) { return p[0] | ((unsigned)p[1] << 8); }
-static uint32_t u32(const uint8_t *p) { return u16(p) | ((uint32_t)u16(p+2) << 16); }
 
 static int send_htc(unsigned ep, unsigned pipe, const void *data, unsigned bytes) {
     uint8_t packet[2048];
@@ -70,7 +69,6 @@ void wcn_htc_receive(unsigned pipe, const void *data, unsigned bytes) {
         (tail && trailer(p+8+len-tail, tail))) { h.failed = 1; return; }
     p += 8; len -= tail;
     if (!len) return;
-    klog("wcn: HTC receive ce=%u ep=%u bytes=%u word=%08x\n", pipe, ep, len, len >= 4 ? u32(p) : 0);
     if (!ep) {
         if (len < 8) { h.failed = 1; return; }
         unsigned id = u16(p);

@@ -5,6 +5,8 @@
 #include "wcn_wmi.h"
 #include "wcn_wmi_proto.h"
 #include "wcn_htc.h"
+#include "wcn_dp.h"
+#include "wcn_sta.h"
 #include <ewoksys/klog.h>
 #include <ewoksys/kernel_tic.h>
 #include <stdint.h>
@@ -20,7 +22,11 @@ static struct {
     uint8_t mac[6];
     uint64_t deadline;
     uint64_t scan_deadline;
-    struct { uint8_t bssid[6]; char ssid[33]; unsigned mhz, privacy; int rssi; } ap[64];
+    struct wcn_bss ap[64];
+    struct {
+        unsigned count, valid;
+        struct { unsigned start,end,power,flags; } rule[32];
+    } reg[2];
 } f;
 static const unsigned scan_freqs[] = {
     2412,2417,2422,2427,2432,2437,2442,2447,2452,2457,2462,
@@ -30,6 +36,30 @@ static const unsigned scan_freqs[] = {
 static unsigned get16(const uint8_t *p) { return p[0] | ((unsigned)p[1] << 8); }
 static uint32_t get32(const uint8_t *p) { return get16(p) | ((uint32_t)get16(p+2) << 16); }
 static uint32_t tlv(unsigned tag, unsigned bytes) { return tag << 16 | bytes; }
+
+/* Optional persistent station address, provisioned outside the driver image.
+ * Some modules report a generated firmware fallback address on every start. */
+static int station_mac(uint8_t mac[6]) {
+    FILE *fp=fopen("/etc/wlan.mac","r");
+    if (!fp) return 0;
+    char text[20]={0};unsigned n=fread(text,1,sizeof(text)-1,fp);
+    int extra=fgetc(fp);fclose(fp);
+    if (extra!=EOF || (n!=17 && (n!=18 || text[17]!='\n'))) return -1;
+    uint8_t value[6];unsigned any=0;
+    for (unsigned i=0;i<6;i++) {
+        unsigned v=0;
+        for (unsigned j=0;j<2;j++) {
+            char c=text[i*3+j];unsigned x;
+            if (c>='0' && c<='9') x=c-'0';else if (c>='a' && c<='f') x=c-'a'+10;
+            else if (c>='A' && c<='F') x=c-'A'+10;else return -1;
+            v=v*16+x;
+        }
+        if (i<5 && text[i*3+2]!=':') return -1;
+        value[i]=v;any|=v;
+    }
+    if (!any || (value[0]&1)) return -1;
+    memcpy(mac,value,6);return 0;
+}
 
 static void receive_management(const uint8_t *frame, unsigned length, unsigned mhz, int rssi) {
     if (length < 36 || (frame[0] & 0x0c) || ((frame[0] >> 4) != 8 && (frame[0] >> 4) != 5)) return;
@@ -53,6 +83,16 @@ static void receive_management(const uint8_t *frame, unsigned length, unsigned m
         for (unsigned i=0;i<ssid_len;i++) f.ap[index].ssid[i]=ssid[i]>=32 && ssid[i]<127 ? ssid[i] : '.';
         f.ap[index].ssid[ssid_len]=0;
     }
+    struct wcn_bss *b=&f.ap[index];
+    b->capability=get16(frame+34); b->beacon_interval=get16(frame+32);
+    b->rsn_len=b->rates_len=0;
+    for (pos=36;pos<length;pos+=2+frame[pos+1]) {
+        unsigned len=frame[pos+1], id=frame[pos];
+        if (id==48) { b->rsn_len=len+2; memcpy(b->rsn,frame+pos,len+2); }
+        if ((id==1 || id==50) && len<=sizeof(b->rates)-b->rates_len) {
+            memcpy(b->rates+b->rates_len,frame+pos+2,len); b->rates_len+=len;
+        }
+    }
 }
 
 void wcn_wmi_receive(const void *packet, unsigned bytes) {
@@ -60,7 +100,6 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
     if (bytes < 4) { f.bad++; return; }
     unsigned event = get32(p) & 0xffffff;
     f.events++;
-    klog("wcn: WMI event=%x bytes=%u\n", event, bytes);
     /* Validate the entire TLV stream before publishing any state. */
     unsigned pos = 4;
     while (pos < bytes) {
@@ -68,6 +107,8 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
         pos += 4 + get16(p+pos);
     }
     const uint8_t *mgmt = NULL, *frame = NULL;
+    const uint8_t *reg = NULL, *rules = NULL;
+    unsigned rules_len=0;
     unsigned frame_len=0, mgmt_len=0;
     for (pos = 4; pos < bytes;) {
         unsigned len = get16(p+pos), tag = get16(p+pos+2);
@@ -84,6 +125,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             unsigned status=get32(v+32);
             if (status || (v[24]&1)) { f.failed=1; return; }
             memcpy(f.mac,v+24,6);
+            if (station_mac(f.mac)) { f.failed=1;return; }
             f.ready = 1;
             klog("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
                  f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5]);
@@ -102,10 +144,35 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
         }
         if (event==0x7001 && tag==44 && len>=68) { mgmt=v; mgmt_len=len; }
         if (event==0x7001 && tag==17) { frame=v; frame_len=len; }
+        if (event==0x3a001 && tag==609 && len>=56) reg=v;
+        if (event==0x3a001 && tag==18) { rules=v; rules_len=len; }
+        wcn_sta_event(event,tag,v,len);
         pos += len + 4;
+    }
+    if (reg && rules && !get32(reg) && get32(reg+4)<2) {
+        unsigned phy=get32(reg+4), count=get32(reg+48)+get32(reg+52);
+        if (count<=32 && count==rules_len/16 && !(rules_len%16)) {
+            unsigned valid=1;
+            for (unsigned i=0;i<count;i++)
+                if (get16(rules+i*16)!=12 || get16(rules+i*16+2)!=608) valid=0;
+            if (valid) {
+                f.reg[phy].count=count; f.reg[phy].valid=1;
+                for (unsigned i=0;i<count;i++) {
+                    const uint8_t *v=rules+i*16+4;
+                    f.reg[phy].rule[i].start=get16(v);
+                    f.reg[phy].rule[i].end=get16(v+2);
+                    f.reg[phy].rule[i].power=v[6];
+                    f.reg[phy].rule[i].flags=get16(v+8);
+                    klog("wcn: reg phy=%u %u-%u MHz power=%u flags=%x\n",phy,
+                         get16(v),get16(v+2),v[6],get16(v+8));
+                }
+                klog("wcn: reg country=%c%c phy=%u rules=%u\n",reg[8],reg[9],phy,count);
+            }
+        }
     }
     if (mgmt && frame && mgmt_len>=68 && !get32(mgmt+20) && get32(mgmt+16)<=frame_len) {
         f.management_rx++;
+        wcn_sta_management(frame,get32(mgmt+16),get32(mgmt+64));
         receive_management(frame,get32(mgmt+16),get32(mgmt+64),(int32_t)get32(mgmt+44));
     }
 }
@@ -212,6 +279,7 @@ static int send_init(void) {
 void wcn_wmi_poll(void) {
     if (f.failed) return;
     if (f.service_ready && f.ext_ready && f.ext2_ready && !f.init_sent) {
+        if (wcn_dp_init()) { f.failed=1; return; }
         if (send_init()) return;
         f.init_sent=1; f.deadline=kernel_tic_ms(0)+20000;
     }
@@ -245,13 +313,38 @@ void wcn_wmi_poll(void) {
     }
 }
 void wcn_wmi_reset(void) { memset(&f,0,sizeof(f)); }
+int wcn_wmi_station_available(void) {
+    return wcn_wmi_ready() && f.vdev_sent && !f.scan_pending && !f.scan_active && !f.scan_cancelling;
+}
 void wcn_wmi_status(char *out, size_t size) {
     snprintf(out,size,"wmi_ready=%u wmi_events=%u wmi_bad=%u wmi_failed=%u scan_active=%u aps=%u",
              f.ready,f.events,f.bad,f.failed,f.scan_active,f.ap_count);
 }
 int wcn_wmi_ready(void) { return f.ready && !f.failed; }
+void wcn_wmi_mac(uint8_t mac[6]) { memcpy(mac,f.mac,6); }
+int wcn_wmi_find_bss(const char *ssid,struct wcn_bss *bss) {
+    int found=-1;
+    for (unsigned i=0;i<f.ap_count;i++)
+        if (!strcmp(ssid,f.ap[i].ssid) && wcn_wmi_channel_power(f.ap[i].mhz)>=0 && (found<0 || f.ap[i].rssi>f.ap[found].rssi)) found=i;
+    if (found<0) return -1;
+    *bss=f.ap[found]; return 0;
+}
+int wcn_wmi_channel_power(unsigned mhz) {
+    int power=-1;
+    for (unsigned phy=0;phy<2;phy++) {
+        if (!f.reg[phy].valid) continue;
+        for (unsigned i=0;i<f.reg[phy].count;i++) {
+            if (mhz<10 || mhz-10<f.reg[phy].rule[i].start || mhz+10>f.reg[phy].rule[i].end) continue;
+            /* No active transmission on disabled/no-IR/radar/no-20MHz rules. */
+            if (f.reg[phy].rule[i].flags & (1|2|8|2048)) return -1;
+            unsigned limit=f.reg[phy].rule[i].power;
+            if (power<0 || limit<(unsigned)power) power=limit;
+        }
+    }
+    return power>30 ? 30 : power;
+}
 int wcn_wmi_scan(void) {
-    if (!wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
+    if (wcn_sta_busy() || !wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
     memset(f.ap,0,sizeof(f.ap)); f.ap_count=f.scan_done=f.scan_reason=f.scan_events=0;
     f.scan_id=(f.scan_id+1)&0xfff; if (!f.scan_id) f.scan_id=1;
     f.scan_pending=1; f.scan_timedout=0;
