@@ -139,7 +139,9 @@ int wcn_sta_associate(const char *ssid) {
     select_phy();
     power=wcn_wmi_channel_width_power(s.bss.mhz,s.center,s.width);
     if (power<0) return -1;
-    s.power=power>10 ? 10 : power;
+    /* Use the validated regulatory limit for the entire channel width.
+     * Firmware retains the calibrated board/hardware transmit limits. */
+    s.power=power;
     s.dma=(uint8_t *)dma_alloc(0,STA_DMA_BYTES);
     if (!s.dma) return -1;
     s.pa=dma_phy_addr(0,(ewokos_addr_t)s.dma);
@@ -431,8 +433,8 @@ void wcn_sta_release(void) {
     memset(&s,0,sizeof(s));
 }
 void wcn_sta_status(char *out,size_t size) {
-    snprintf(out,size,"station=%s error=%s status=%u mhz=%u peer=%u mapped=%u queues=%u aid=%u tx=%u done=%u tx_errors=%u rx=%u lmac=%u data_rx=%u eapol_rx=%u data_tx=%u network_ready=%u phy=%s width=%u nss=%u center=%u ba=%u/%u\n",
-             wcn_sta_link_ready()?"connected":names[s.state],s.error?s.error:"none",s.status,s.bss.mhz,s.peer,s.peer_mapped,s.queue,s.aid,s.tx,s.tx_done,s.tx_errors,s.rx,s.lmac,s.data_rx,s.eapol_rx,s.data_tx,wcn_sta_link_ready(),s.vht?"VHT":s.ht?"HT":"legacy",s.width,s.nss,s.center,s.ba_accepted,s.ba_requests);
+    snprintf(out,size,"station=%s error=%s status=%u mhz=%u peer=%u mapped=%u queues=%u aid=%u tx=%u done=%u tx_errors=%u rx=%u lmac=%u data_rx=%u eapol_rx=%u data_tx=%u network_ready=%u phy=%s width=%u nss=%u center=%u ba=%u/%u power=%u\n",
+             wcn_sta_link_ready()?"connected":names[s.state],s.error?s.error:"none",s.status,s.bss.mhz,s.peer,s.peer_mapped,s.queue,s.aid,s.tx,s.tx_done,s.tx_errors,s.rx,s.lmac,s.data_rx,s.eapol_rx,s.data_tx,wcn_sta_link_ready(),s.vht?"VHT":s.ht?"HT":"legacy",s.width,s.nss,s.center,s.ba_accepted,s.ba_requests,s.power);
     size_t n=strlen(out);
     if (n<size) wcn_wpa_status(out+n,size-n);
 }
