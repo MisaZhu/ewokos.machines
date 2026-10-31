@@ -33,7 +33,7 @@ static struct {
     uint8_t mac[6],rsn[22],rates[12];
     unsigned ba_delete,ba_state,ba_tid,ba_token,ba_window,ba_ssn,ba_timeout,ba_cookie,ba_status,ba_requests,ba_accepted;
     uint64_t ba_deadline;
-    unsigned rates_len,ht,vht,nss,width,center,phymode,ht_rates_len;
+    unsigned rates_len,ht,vht,nss,width,center,phymode,ht_rates_len,max_width;
     uint8_t ht_rates[16], ht_ie[26], vht_ie[12];
     struct wcn_bss bss;
     const char *error;
@@ -83,13 +83,28 @@ static int select_rates(void) {
     return s.rates_len ? 0 : -1;
 }
 
+/* Optional local bandwidth cap; 160 MHz is selected only with matching AP,
+ * firmware and regulatory capabilities. Reload on each association/recovery. */
+static int width_limit(void) {
+    FILE *fp=fopen("/etc/wlan.width","r");if (!fp) return 160;
+    char value[6]={0};unsigned n=fread(value,1,5,fp);int extra=fgetc(fp);fclose(fp);
+    if (extra!=EOF || !n) return -1;
+    if (value[n-1]=='\n') value[--n]=0;
+    if (n==2 && !memcmp(value,"20",2)) return 20;
+    if (n==2 && !memcmp(value,"40",2)) return 40;
+    if (n==2 && !memcmp(value,"80",2)) return 80;
+    if (n==3 && !memcmp(value,"160",3)) return 160;
+    return -1;
+}
+
 static void select_phy(void) {
+    unsigned limit=s.max_width ? s.max_width:160;
     s.nss=1;s.width=20;s.center=s.bss.mhz;s.phymode=s.bss.mhz<3000 ? 1:0;
     s.ht=s.bss.ht && s.bss.wmm && s.bss.ht_cap[3];
     if (!s.ht) return;
     s.nss=wcn_wmi_chains()>1 && s.bss.ht_cap[4] ? 2:1;
     unsigned cap=le16(s.bss.ht_cap);
-    if ((cap&2) && (s.bss.ht_op[1]&4)) {
+    if (limit>=40 && (cap&2) && (s.bss.ht_op[1]&4)) {
         unsigned secondary=s.bss.ht_op[1]&3;
         unsigned center=secondary==1 ? s.bss.mhz+10:secondary==3 ? s.bss.mhz-10:0;
         if (center && wcn_wmi_channel_width_power(s.bss.mhz,center,40)>=0) { s.width=40;s.center=center; }
@@ -97,12 +112,17 @@ static void select_phy(void) {
     s.vht=s.bss.vht && s.bss.mhz>3000 && (le16(s.bss.vht_cap+4)&3)!=3 && (le16(s.bss.vht_cap+8)&3)!=3;
     if (s.vht) {
         if (((le16(s.bss.vht_cap+4)>>2)&3)==3 || ((le16(s.bss.vht_cap+8)>>2)&3)==3) s.nss=1;
+        unsigned wide=wcn_wmi_bss_160_center(&s.bss);
         unsigned center=5000+5*s.bss.vht_op[1];
+        if (s.bss.vht_op[0]==2 && wide) center=s.bss.mhz>wide ? wide+40:wide-40;
         unsigned delta=s.bss.mhz>center ? s.bss.mhz-center:center-s.bss.mhz;
-        if (s.bss.vht_op[0]==1 && (delta==10 || delta==30) &&
+        if (limit>=80 && (s.bss.vht_op[0]==1 || (s.bss.vht_op[0]==2 && wide)) && (delta==10 || delta==30) &&
             wcn_wmi_channel_width_power(s.bss.mhz,center,80)>=0) { s.width=80;s.center=center; }
+        unsigned hw=(wcn_wmi_vht_caps()>>2)&3;
+        if (limit>=160 && wide && (hw==1 || hw==2) && wcn_wmi_nss160()>=s.nss &&
+            wcn_wmi_station_width_power(&s.bss,wide,160)>=0) { s.width=160;s.center=wide; }
     }
-    s.phymode=s.vht ? (s.width==80 ? 10:s.width==40 ? 9:8):
+    s.phymode=s.vht ? (s.width==160 ? 15:s.width==80 ? 10:s.width==40 ? 9:8):
         s.bss.mhz<3000 ? (s.width==40 ? 7:5):(s.width==40 ? 6:4);
     unsigned local=12|(cap&32); /* SMPS disabled, optional SGI20. */
     if (s.width>=40) local|=2|(cap&64);
@@ -111,7 +131,8 @@ static void select_phy(void) {
         s.ht_rates[s.ht_rates_len++]=i;s.ht_ie[3+i/8]|=1u<<(i%8);
     }
     s.ht_ie[15]=1; /* TX MCS defined, equal TX/RX sets. */
-    unsigned vcap=(3u<<23)|(s.width==80 ? le32(s.bss.vht_cap)&32:0);
+    unsigned vcap=(3u<<23)|(s.width>=80 ? le32(s.bss.vht_cap)&32:0);
+    if (s.width==160) vcap|=4|(wcn_wmi_vht_caps()&le32(s.bss.vht_cap)&64);
     memcpy(s.vht_ie,&vcap,4);
     unsigned rx=0xffff,tx=0xffff;
     for (unsigned i=0;i<s.nss;i++) {
@@ -132,12 +153,14 @@ static unsigned phy_ies(uint8_t *out) {
 int wcn_sta_associate(const char *ssid) {
     if (!ssid || !*ssid || strlen(ssid)>32 || s.state!=IDLE ||
         !wcn_wmi_station_available() || !wcn_dp_ready() || wcn_wmi_find_bss(ssid,&s.bss)) return -1;
+    int limit=width_limit();if (limit<0) return -1;
+    s.max_width=limit;
     s.rates_len=s.ht_rates_len=0;
     s.ht=s.vht=0;memset(s.ht_ie,0,sizeof(s.ht_ie));memset(s.vht_ie,0,sizeof(s.vht_ie));
     int power=wcn_wmi_channel_power(s.bss.mhz);
     if (power<0 || !s.bss.privacy || select_rsn(s.bss.rsn,s.bss.rsn_len) || select_rates()) return -1;
     select_phy();
-    power=wcn_wmi_channel_width_power(s.bss.mhz,s.center,s.width);
+    power=wcn_wmi_station_width_power(&s.bss,s.center,s.width);
     if (power<0) return -1;
     /* Use the validated regulatory limit for the entire channel width.
      * Firmware retains the calibrated board/hardware transmit limits. */
@@ -270,7 +293,8 @@ static int peer_assoc(void) {
     p->peer_phymode=s.phymode;p->num_peer_legacy_rates=s.rates_len;
     p->peer_nss=s.nss;
     if (s.ht) {
-        p->peer_flags|=2|0x1000|(s.width>=40 ? 0x2000:0)|(s.vht ? 0x02000000:0)|(s.width==80 ? 0x04000000:0);
+        p->peer_flags|=2|0x1000|(s.width>=40 ? 0x2000:0)|(s.vht ? 0x02000000:0)|(s.width==80 ? 0x04000000:0)|(s.width==160 ? 0x40000000:0);
+        if (s.width==160) p->peer_bw_rxnss_override=0x80000000u|(s.nss-1);
         p->peer_ht_caps=le16(s.bss.ht_cap);
         if (s.width==20) p->peer_ht_caps&=~(2|64);
         p->peer_max_mpdu=(1u<<(13+(s.bss.ht_cap[2]&3)))-1;
@@ -433,8 +457,8 @@ void wcn_sta_release(void) {
     memset(&s,0,sizeof(s));
 }
 void wcn_sta_status(char *out,size_t size) {
-    snprintf(out,size,"station=%s error=%s status=%u mhz=%u peer=%u mapped=%u queues=%u aid=%u tx=%u done=%u tx_errors=%u rx=%u lmac=%u data_rx=%u eapol_rx=%u data_tx=%u network_ready=%u phy=%s width=%u nss=%u center=%u ba=%u/%u power=%u\n",
-             wcn_sta_link_ready()?"connected":names[s.state],s.error?s.error:"none",s.status,s.bss.mhz,s.peer,s.peer_mapped,s.queue,s.aid,s.tx,s.tx_done,s.tx_errors,s.rx,s.lmac,s.data_rx,s.eapol_rx,s.data_tx,wcn_sta_link_ready(),s.vht?"VHT":s.ht?"HT":"legacy",s.width,s.nss,s.center,s.ba_accepted,s.ba_requests,s.power);
+    snprintf(out,size,"station=%s error=%s status=%u mhz=%u peer=%u mapped=%u queues=%u aid=%u tx=%u done=%u tx_errors=%u rx=%u lmac=%u data_rx=%u eapol_rx=%u data_tx=%u network_ready=%u phy=%s width=%u nss=%u center=%u ba=%u/%u power=%u max_width=%u\n",
+             wcn_sta_link_ready()?"connected":names[s.state],s.error?s.error:"none",s.status,s.bss.mhz,s.peer,s.peer_mapped,s.queue,s.aid,s.tx,s.tx_done,s.tx_errors,s.rx,s.lmac,s.data_rx,s.eapol_rx,s.data_tx,wcn_sta_link_ready(),s.vht?"VHT":s.ht?"HT":"legacy",s.width,s.nss,s.center,s.ba_accepted,s.ba_requests,s.power,s.max_width);
     size_t n=strlen(out);
     if (n<size) wcn_wpa_status(out+n,size-n);
 }

@@ -15,7 +15,7 @@
 
 static struct {
     unsigned service_ready, ext_ready, ext2_ready, init_sent, ready, failed, hw_mode_sent;
-    unsigned chains, events, bad, memory_requests;
+    unsigned chains, vht5, nss160, events, bad, memory_requests;
     unsigned vdev_sent, channels_sent, scan_pending, scan_active, scan_done;
     unsigned scan_id, scan_reason, scan_events, management_rx, ap_count;
     unsigned scan_cancelling, scan_timedout,country_state,country_seen,country_mask,country_sent;
@@ -25,7 +25,7 @@ static struct {
     uint64_t scan_deadline;
     struct wcn_bss ap[64];
     struct {
-        unsigned count, valid;
+        unsigned count, valid, max_bw5;
         struct { unsigned start,end,power,flags,bw; } rule[32];
     } reg[2];
 } f;
@@ -134,6 +134,13 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
     unsigned pos = 4;
     while (pos < bytes) {
         if (bytes - pos < 4 || get16(p+pos) > bytes - pos - 4) { f.bad++; f.failed=1; return; }
+        if (event==0x4009 && get16(p+pos+2)==18) {
+            unsigned end=pos+4+get16(p+pos);
+            for (unsigned off=pos+4;off<end;) {
+                if (end-off<4 || get16(p+off)>end-off-4) { f.bad++;f.failed=1;return; }
+                off+=4+get16(p+off);
+            }
+        }
         pos += 4 + get16(p+pos);
     }
     const uint8_t *mgmt = NULL, *frame = NULL;
@@ -148,6 +155,23 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             if (!f.chains || f.chains > 2 || f.memory_requests) { f.failed = 1; return; }
             f.service_ready = 1;
             klog("wcn: WMI service ready chains=%u memory_requests=%u build=%x\n", f.chains, f.memory_requests, get32(v));
+        }
+        if (event==0x4009 && tag==18) {
+            for (unsigned off=0;off<len;) {
+                unsigned length=get16(v+off),id=get16(v+off+2);const uint8_t *m=v+off+4;
+                /* Capabilities for the selected DBS mode, 5 GHz on LMAC0. */
+                if (id==528 && length>=236 && get32(m)==1 && get32(m+4)==1 &&
+                    !get32(m+8) && (get32(m+16)&2)) {
+                    f.vht5=get32(m+64);f.nss160=0;
+                    unsigned tx=__builtin_popcount(get32(m+80)),rx=__builtin_popcount(get32(m+84));
+                    unsigned nss=tx<rx ? tx:rx,ratio=get32(m+232);
+                    if (get32(m+56)==3 && nss && nss<=2 && (ratio&1)) {
+                        if (((ratio>>1)&15)==2) f.nss160=nss;
+                        else if (!((ratio>>1)&15)) f.nss160=nss/2;
+                    }
+                }
+                off+=4+length;
+            }
         }
         if (event == 0x4009 && tag == 428) f.ext_ready = 1;
         if (event == 0x4022 && tag == 820) f.ext2_ready = 1;
@@ -188,7 +212,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             for (unsigned i=0;i<count;i++)
                 if (get16(rules+i*16)!=12 || get16(rules+i*16+2)!=608) valid=0;
             if (valid) {
-                f.reg[phy].count=count; f.reg[phy].valid=1;
+                f.reg[phy].count=count; f.reg[phy].valid=1;f.reg[phy].max_bw5=get32(reg+44);
                 if (f.country_state==2 && reg[8]==(uint8_t)country[0] && reg[9]==(uint8_t)country[1]) f.country_seen|=1u<<phy;
                 for (unsigned i=0;i<count;i++) {
                     const uint8_t *v=rules+i*16+4;
@@ -385,14 +409,63 @@ int wcn_wmi_find_bss(const char *ssid,struct wcn_bss *bss) {
     for (unsigned i=0;i<f.ap_count;i++) {
         const struct wcn_bss *b=&f.ap[i];
         if (strcmp(ssid,b->ssid) || wcn_wmi_channel_power(b->mhz)<0) continue;
-        /* Prefer a usable 5 GHz VHT AP, but avoid weak-edge band steering. */
-        int score=b->rssi+(b->mhz>3000 && b->vht && b->wmm && b->rssi>=-72 ? 25:0);
+        /* Strong VHT has more capacity even beside a much louder 2.4 GHz
+         * BSS. Reduce the bias near the 5 GHz coverage edge. */
+        int bias=b->mhz>3000 && b->ht && b->vht && b->wmm && b->rssi>=-72 ?
+            (b->rssi>=-65 ? 40:25):0;
+        int score=b->rssi+bias;
         if (found<0 || score>best) { found=i;best=score; }
     }
     if (found<0) return -1;
     *bss=f.ap[found]; return 0;
 }
 unsigned wcn_wmi_chains(void) { return f.chains; }
+unsigned wcn_wmi_vht_caps(void) { return f.vht5; }
+unsigned wcn_wmi_nss160(void) { return f.nss160; }
+/* Standard and revised VHT Operation encodings for contiguous 160 MHz.
+ * 80+80 and extended-NSS-only capability encodings remain unsupported. */
+unsigned wcn_wmi_bss_160_center(const struct wcn_bss *b) {
+    unsigned cap=(get32(b->vht_cap)>>2)&3,channel=0;
+    if (!b->vht || b->mhz<5000 || (cap!=1 && cap!=2)) return 0;
+    if (b->vht_op[0]==2 && !b->vht_op[2]) channel=b->vht_op[1];
+    if (b->vht_op[0]==1 && b->vht_op[2] &&
+        (b->vht_op[1]+8u==b->vht_op[2] || b->vht_op[2]+8u==b->vht_op[1])) {
+        unsigned primary80=5000+5*b->vht_op[1];
+        unsigned delta=b->mhz>primary80 ? b->mhz-primary80:primary80-b->mhz;
+        if (delta==10 || delta==30) channel=b->vht_op[2];
+    }
+    if (channel!=50 && channel!=114 && channel!=163) return 0;
+    unsigned center=5000+5*channel,delta=b->mhz>center ? b->mhz-center:center-b->mhz;
+    return delta<=70 && delta%20==10 ? center:0;
+}
+int wcn_wmi_station_width_power(const struct wcn_bss *b,unsigned center,unsigned width) {
+    if (width!=160) return wcn_wmi_channel_width_power(b->mhz,center,width);
+    /* Only follow a discovered AP's complete 160 MHz channel. The primary
+     * must permit active station traffic. DFS on secondary subchannels is
+     * managed by the AP; this does not enable active scanning or AP mode. */
+    if (center!=wcn_wmi_bss_160_center(b) || wcn_wmi_channel_power(b->mhz)<0) return -1;
+    int power=-1;unsigned phys=0;
+    for (unsigned phy=0;phy<2;phy++) {
+        if (!f.reg[phy].valid) continue;
+        if (f.reg[phy].max_bw5<160) return -1;
+        phys++;
+        /* Adjacent 5 GHz rules use AUTO_BW in Linux ath11k/reg.c. Check
+         * complete coverage and the lowest power across all subchannels. */
+        for (unsigned mhz=center-70;mhz<=center+70;mhz+=20) {
+            unsigned covered=0;
+            for (unsigned i=0;i<f.reg[phy].count;i++) {
+                if (mhz-10<f.reg[phy].rule[i].start || mhz+10>f.reg[phy].rule[i].end) continue;
+                unsigned flags=f.reg[phy].rule[i].flags;
+                if (flags&(1|2|16|64|128|256|2048) || f.reg[phy].rule[i].bw<80) return -1;
+                unsigned limit=f.reg[phy].rule[i].power;
+                if (power<0 || limit<(unsigned)power) power=limit;
+                covered=1;
+            }
+            if (!covered) return -1;
+        }
+    }
+    return phys ? power:-1;
+}
 int wcn_wmi_scan_finished(void) { return f.scan_done && !f.scan_pending && !f.scan_active && !f.scan_cancelling; }
 int wcn_wmi_channel_power(unsigned mhz) { return wcn_wmi_channel_width_power(mhz,mhz,20); }
 int wcn_wmi_channel_width_power(unsigned mhz,unsigned center,unsigned width) {
@@ -433,9 +506,9 @@ void wcn_wmi_scan_results(char *out, size_t size) {
     if (n<0 || (size_t)n>=size) return;
     unsigned pos=n;
     for (unsigned i=0;i<f.ap_count && pos<size;i++) {
-        n=snprintf(out+pos,size-pos,"%02x:%02x:%02x:%02x:%02x:%02x %u MHz %d dBm %s %s HT=%u VHT=%u WMM=%u\n",
+        n=snprintf(out+pos,size-pos,"%02x:%02x:%02x:%02x:%02x:%02x %u MHz %d dBm %s %s HT=%u VHT=%u WMM=%u cap=%08x op=%u/%u/%u\n",
                    f.ap[i].bssid[0],f.ap[i].bssid[1],f.ap[i].bssid[2],f.ap[i].bssid[3],f.ap[i].bssid[4],f.ap[i].bssid[5],
-                   f.ap[i].mhz,f.ap[i].rssi,f.ap[i].privacy?"protected":"open",f.ap[i].ssid,f.ap[i].ht,f.ap[i].vht,f.ap[i].wmm);
+                   f.ap[i].mhz,f.ap[i].rssi,f.ap[i].privacy?"protected":"open",f.ap[i].ssid,f.ap[i].ht,f.ap[i].vht,f.ap[i].wmm,get32(f.ap[i].vht_cap),f.ap[i].vht_op[0],f.ap[i].vht_op[1],f.ap[i].vht_op[2]);
         if (n<0 || (size_t)n>=size-pos) return;
         pos+=n;
     }
