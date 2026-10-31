@@ -18,16 +18,32 @@ static struct {
     unsigned chains, events, bad, memory_requests;
     unsigned vdev_sent, channels_sent, scan_pending, scan_active, scan_done;
     unsigned scan_id, scan_reason, scan_events, management_rx, ap_count;
-    unsigned scan_cancelling, scan_timedout;
+    unsigned scan_cancelling, scan_timedout,country_state,country_seen,country_mask;
+    uint64_t country_deadline;
     uint8_t mac[6];
     uint64_t deadline;
     uint64_t scan_deadline;
     struct wcn_bss ap[64];
     struct {
         unsigned count, valid;
-        struct { unsigned start,end,power,flags; } rule[32];
+        struct { unsigned start,end,power,flags,bw; } rule[32];
     } reg[2];
 } f;
+/* Explicit local regulatory setting survives controller recovery. Default 00
+ * remains unchanged unless a country is provisioned or requested by root. */
+static char country[3];
+static int country_valid(const char *p) { return p && p[0]>='A' && p[0]<='Z' && p[1]>='A' && p[1]<='Z' && !p[2]; }
+static int country_load(void) {
+    FILE *fp=fopen("/etc/wlan.country","r");if (!fp) return 0;
+    char value[5]={0};unsigned n=fread(value,1,4,fp);int extra=fgetc(fp);fclose(fp);
+    if (extra!=EOF || (n!=2 && (n!=3 || value[2]!='\n'))) return -1;
+    value[2]=0;if (!country_valid(value)) return -1;
+    memcpy(country,value,3);return 0;
+}
+int wcn_wmi_country(const char *alpha2) {
+    if (!country_valid(alpha2) || !f.ready || f.failed || wcn_sta_busy() || f.scan_pending || f.scan_active || f.scan_cancelling || f.country_state) return -1;
+    memcpy(country,alpha2,3);f.country_state=1;return 0;
+}
 static const unsigned scan_freqs[] = {
     2412,2417,2422,2427,2432,2437,2442,2447,2452,2457,2462,
     5180,5200,5220,5240
@@ -85,9 +101,23 @@ static void receive_management(const uint8_t *frame, unsigned length, unsigned m
     }
     struct wcn_bss *b=&f.ap[index];
     b->capability=get16(frame+34); b->beacon_interval=get16(frame+32);
-    b->rsn_len=b->rates_len=0;
+    b->rsn_len=b->rates_len=b->ht=b->vht=b->wmm=0;
+    memset(b->ht_op,0,sizeof(b->ht_op));memset(b->vht_op,0,sizeof(b->vht_op));
     for (pos=36;pos<length;pos+=2+frame[pos+1]) {
         unsigned len=frame[pos+1], id=frame[pos];
+        if (id==45 && len==26) { memcpy(b->ht_cap,frame+pos+2,26);b->ht=1; }
+        if (id==61 && len==22) memcpy(b->ht_op,frame+pos+2,22);
+        if (id==191 && len==12) { memcpy(b->vht_cap,frame+pos+2,12);b->vht=1; }
+        if (id==192 && len==5) memcpy(b->vht_op,frame+pos+2,5);
+        if (id==221 && len==24 && !memcmp(frame+pos+2,"\x00\x50\xf2\x02\x01\x01",6)) {
+            unsigned seen=0;
+            for (unsigned ac=0;ac<4;ac++) {
+                const uint8_t *a=frame+pos+10+4*ac;unsigned n=(a[0]>>5)&3;
+                if ((seen&(1u<<n)) || !(a[0]&15) || (a[1]&15)>(a[1]>>4)) break;
+                seen|=1u<<n;memcpy(b->wmm_ac+4*n,a,4);
+            }
+            b->wmm=seen==15;
+        }
         if (id==48) { b->rsn_len=len+2; memcpy(b->rsn,frame+pos,len+2); }
         if ((id==1 || id==50) && len<=sizeof(b->rates)-b->rates_len) {
             memcpy(b->rates+b->rates_len,frame+pos+2,len); b->rates_len+=len;
@@ -127,6 +157,8 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             memcpy(f.mac,v+24,6);
             if (station_mac(f.mac)) { f.failed=1;return; }
             f.ready = 1;
+            if (country_load()) { f.failed=1;return; }
+            if (country[0]) f.country_state=1;
             klog("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
                  f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5]);
         }
@@ -157,11 +189,13 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
                 if (get16(rules+i*16)!=12 || get16(rules+i*16+2)!=608) valid=0;
             if (valid) {
                 f.reg[phy].count=count; f.reg[phy].valid=1;
+                if (f.country_state==2 && reg[8]==(uint8_t)country[0] && reg[9]==(uint8_t)country[1]) f.country_seen|=1u<<phy;
                 for (unsigned i=0;i<count;i++) {
                     const uint8_t *v=rules+i*16+4;
                     f.reg[phy].rule[i].start=get16(v);
                     f.reg[phy].rule[i].end=get16(v+2);
                     f.reg[phy].rule[i].power=v[6];
+                    f.reg[phy].rule[i].bw=get16(v+4);
                     f.reg[phy].rule[i].flags=get16(v+8);
                     klog("wcn: reg phy=%u %u-%u MHz power=%u flags=%x\n",phy,
                          get16(v),get16(v+2),v[6],get16(v+8));
@@ -287,6 +321,19 @@ void wcn_wmi_poll(void) {
         f.failed=1; klog("wcn: WMI READY timeout\n");
     }
     if (!f.ready) return;
+    if (f.country_state==1) {
+        uint32_t p[]={0x3a001,(607u<<16)|8,1,(uint8_t)country[0]|((uint32_t)(uint8_t)country[1]<<8)};
+        if (wcn_htc_wmi_send(p,sizeof(p))) return;
+        f.country_seen=0;f.country_mask=(f.reg[0].valid ? 1:0)|(f.reg[1].valid ? 2:0);
+        if (!f.country_mask) f.country_mask=3;
+        f.reg[0].valid=f.reg[1].valid=0;f.channels_sent=0;
+        f.country_state=2;f.country_deadline=kernel_tic_ms(0)+8000;
+        klog("wcn: country requested=%s\n",country);return;
+    }
+    if (f.country_state==2) {
+        if ((f.country_seen&f.country_mask)==f.country_mask) { f.country_state=0;klog("wcn: country applied=%s\n",country); }
+        else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;klog("wcn: country update timeout\n"); } return; }
+    }
     if (f.scan_pending) {
         if (kernel_tic_ms(0)>=f.scan_deadline) {
             f.scan_pending=0; f.scan_done=1; f.scan_reason=3;
@@ -314,7 +361,7 @@ void wcn_wmi_poll(void) {
 }
 void wcn_wmi_reset(void) { memset(&f,0,sizeof(f)); }
 int wcn_wmi_station_available(void) {
-    return wcn_wmi_ready() && f.vdev_sent && !f.scan_pending && !f.scan_active && !f.scan_cancelling;
+    return wcn_wmi_ready() && !f.country_state && f.vdev_sent && !f.scan_pending && !f.scan_active && !f.scan_cancelling;
 }
 void wcn_wmi_status(char *out, size_t size) {
     snprintf(out,size,"wmi_ready=%u wmi_events=%u wmi_bad=%u wmi_failed=%u scan_active=%u aps=%u",
@@ -323,20 +370,29 @@ void wcn_wmi_status(char *out, size_t size) {
 int wcn_wmi_ready(void) { return f.ready && !f.failed; }
 void wcn_wmi_mac(uint8_t mac[6]) { memcpy(mac,f.mac,6); }
 int wcn_wmi_find_bss(const char *ssid,struct wcn_bss *bss) {
-    int found=-1;
-    for (unsigned i=0;i<f.ap_count;i++)
-        if (!strcmp(ssid,f.ap[i].ssid) && wcn_wmi_channel_power(f.ap[i].mhz)>=0 && (found<0 || f.ap[i].rssi>f.ap[found].rssi)) found=i;
+    int found=-1,best=-1000;
+    for (unsigned i=0;i<f.ap_count;i++) {
+        const struct wcn_bss *b=&f.ap[i];
+        if (strcmp(ssid,b->ssid) || wcn_wmi_channel_power(b->mhz)<0) continue;
+        /* Prefer a usable 5 GHz VHT AP, but avoid weak-edge band steering. */
+        int score=b->rssi+(b->mhz>3000 && b->vht && b->wmm && b->rssi>=-72 ? 25:0);
+        if (found<0 || score>best) { found=i;best=score; }
+    }
     if (found<0) return -1;
     *bss=f.ap[found]; return 0;
 }
-int wcn_wmi_channel_power(unsigned mhz) {
+unsigned wcn_wmi_chains(void) { return f.chains; }
+int wcn_wmi_scan_finished(void) { return f.scan_done && !f.scan_pending && !f.scan_active && !f.scan_cancelling; }
+int wcn_wmi_channel_power(unsigned mhz) { return wcn_wmi_channel_width_power(mhz,mhz,20); }
+int wcn_wmi_channel_width_power(unsigned mhz,unsigned center,unsigned width) {
+    if ((width!=20 && width!=40 && width!=80) || center<width/2 || mhz+10>center+width/2 || mhz< center-width/2+10) return -1;
     int power=-1;
     for (unsigned phy=0;phy<2;phy++) {
         if (!f.reg[phy].valid) continue;
         for (unsigned i=0;i<f.reg[phy].count;i++) {
-            if (mhz<10 || mhz-10<f.reg[phy].rule[i].start || mhz+10>f.reg[phy].rule[i].end) continue;
+            if (center-width/2<f.reg[phy].rule[i].start || center+width/2>f.reg[phy].rule[i].end || width>f.reg[phy].rule[i].bw) continue;
             /* No active transmission on disabled/no-IR/radar/no-20MHz rules. */
-            if (f.reg[phy].rule[i].flags & (1|2|8|2048)) return -1;
+            if (f.reg[phy].rule[i].flags & (1|2|8|64|2048|(width>=40 ? 16:0)|(width>=80 ? 128:0))) return -1;
             unsigned limit=f.reg[phy].rule[i].power;
             if (power<0 || limit<(unsigned)power) power=limit;
         }
@@ -344,7 +400,7 @@ int wcn_wmi_channel_power(unsigned mhz) {
     return power>30 ? 30 : power;
 }
 int wcn_wmi_scan(void) {
-    if (wcn_sta_busy() || !wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
+    if (f.country_state || wcn_sta_busy() || !wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
     memset(f.ap,0,sizeof(f.ap)); f.ap_count=f.scan_done=f.scan_reason=f.scan_events=0;
     f.scan_id=(f.scan_id+1)&0xfff; if (!f.scan_id) f.scan_id=1;
     f.scan_pending=1; f.scan_timedout=0;
@@ -366,9 +422,9 @@ void wcn_wmi_scan_results(char *out, size_t size) {
     if (n<0 || (size_t)n>=size) return;
     unsigned pos=n;
     for (unsigned i=0;i<f.ap_count && pos<size;i++) {
-        n=snprintf(out+pos,size-pos,"%02x:%02x:%02x:%02x:%02x:%02x %u MHz %d dBm %s %s\n",
+        n=snprintf(out+pos,size-pos,"%02x:%02x:%02x:%02x:%02x:%02x %u MHz %d dBm %s %s HT=%u VHT=%u WMM=%u\n",
                    f.ap[i].bssid[0],f.ap[i].bssid[1],f.ap[i].bssid[2],f.ap[i].bssid[3],f.ap[i].bssid[4],f.ap[i].bssid[5],
-                   f.ap[i].mhz,f.ap[i].rssi,f.ap[i].privacy?"protected":"open",f.ap[i].ssid);
+                   f.ap[i].mhz,f.ap[i].rssi,f.ap[i].privacy?"protected":"open",f.ap[i].ssid,f.ap[i].ht,f.ap[i].vht,f.ap[i].wmm);
         if (n<0 || (size_t)n>=size-pos) return;
         pos+=n;
     }

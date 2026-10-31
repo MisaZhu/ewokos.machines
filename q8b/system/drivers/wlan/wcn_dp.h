@@ -5,13 +5,14 @@
 #include <stdint.h>
 struct wcn_rx_security {
     uint64_t pn;
-    unsigned valid,encrypted,group,key,tid;
+    unsigned valid,encrypted,group,key,tid,amsdu,first,last,sequence,number;
     uint8_t transmitter[6];
 };
 int wcn_dp_init(void);
 int wcn_dp_ready(void);
 int wcn_dp_can_transmit(void);
 int wcn_dp_transmit(const void *frame,unsigned bytes,unsigned lmac);
+int wcn_dp_reorder(uint64_t queue,unsigned window,unsigned ssn);
 void wcn_dp_poll(void);
 void wcn_dp_release(void);
 void wcn_dp_status(char *out, size_t size);

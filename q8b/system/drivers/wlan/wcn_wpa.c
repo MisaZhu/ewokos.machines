@@ -21,6 +21,7 @@ static struct {
     unsigned gtk_known;
     uint8_t gtk_tag[4][20];
     uint64_t rx_pn[5][17];
+    unsigned rx_amsdu[5][17],rx_sequence[5][17],rx_number[5][17];
     uint64_t deadline;
     uint8_t pmk[32],seed[32],ptk[48],anonce[32],snonce[32],replay1[8],replay3[8];
     uint8_t mac[6],bssid[6],ap_rsn[258],rsn[22],gtk[16],rsc[8];
@@ -28,6 +29,8 @@ static struct {
     uint8_t response2[121],response4[99];
     const char *error;
 } a;
+/* Volatile reconnect profile; never persist the passphrase or session keys. */
+static struct { char ssid[33];uint8_t pmk[32],seed[32];uint64_t generation; } profile;
 static unsigned be16(const uint8_t *p) { return ((unsigned)p[0]<<8)|p[1]; }
 static void putbe16(uint8_t *p,unsigned v) { p[0]=v>>8; p[1]=v; }
 static void erase(void *data,unsigned bytes) { volatile uint8_t *p=data;while(bytes--) *p++=0; }
@@ -134,8 +137,9 @@ invalid:
 int wcn_wpa_init(const char *ssid,const char *password,const uint8_t seed[32],
                  const uint8_t mac[6],const uint8_t bssid[6],const uint8_t *rsn,unsigned rsn_len,const uint8_t selected[22]) {
     wcn_wpa_reset();unsigned n=strlen(password);
-    if (n<8 || n>63 || rsn_len>sizeof(a.ap_rsn)) return -1;
+    if (!*ssid || strlen(ssid)>32 || n<8 || n>63 || rsn_len>sizeof(a.ap_rsn)) return -1;
     if (wc_PBKDF2(a.pmk,(const uint8_t *)password,n,(const uint8_t *)ssid,strlen(ssid),4096,32,WC_SHA)) { wcn_wpa_reset();return -1; }
+    wcn_wpa_forget();strcpy(profile.ssid,ssid);memcpy(profile.pmk,a.pmk,32);memcpy(profile.seed,seed,32);
     memcpy(a.seed,seed,32);memcpy(a.mac,mac,6);memcpy(a.bssid,bssid,6);
     memcpy(a.ap_rsn,rsn,rsn_len);a.ap_rsn_len=rsn_len;memcpy(a.rsn,selected,22);
     a.state=WAIT1;a.deadline=kernel_tic_ms(0)+20000;return 0;
@@ -246,6 +250,7 @@ void wcn_wpa_key_complete(unsigned index,unsigned group,unsigned status) {
             uint64_t pn=0;
             if (group) for (unsigned i=0;i<6;i++) pn|=(uint64_t)a.rsc[i]<<(i*8);
             for (unsigned i=0;i<17;i++) a.rx_pn[slot][i]=pn;
+            memset(a.rx_amsdu[slot],0,sizeof(a.rx_amsdu[slot]));
             a.rx_keys|=1u<<slot;
             a.state=a.state==PAIR_WAIT ? GROUP_SEND : SEND4;
         }
@@ -260,13 +265,43 @@ int wcn_wpa_ready(void) { return a.state==CONNECTED; }
 int wcn_wpa_failed(void) { return a.state==ERROR; }
 int wcn_wpa_established(void) { return a.established; }
 int wcn_wpa_accept_rx(unsigned group,unsigned key,unsigned tid,uint64_t pn) {
-    if (!wcn_wpa_ready() || group>1 || key>3 || (!group && key) || tid>16 || !pn || pn>>48) return 0;
+    return wcn_wpa_accept_msdu(group,key,tid,pn,0,1,1,0,0);
+}
+int wcn_wpa_accept_msdu(unsigned group,unsigned key,unsigned tid,uint64_t pn,unsigned amsdu,unsigned first,unsigned last,unsigned sequence,unsigned number) {
+    if (!wcn_wpa_ready() || group>1 || key>3 || (!group && key) || tid>16 || !pn || pn>>48 || sequence>4095 || number>255) return 0;
     unsigned slot=group ? key+1:0;
     if (!(a.rx_keys&(1u<<slot))) return 0;
-    if (pn<=a.rx_pn[slot][tid]) { a.replays++;return 0; }
-    a.rx_pn[slot][tid]=pn;return 1;
+    if (amsdu && !first) {
+        /* Same PN is valid only within the hardware-decapsulated MPDU that
+         * opened this TID. A new first subframe still requires a newer PN. */
+        if (a.rx_pn[slot][tid]!=pn || !a.rx_amsdu[slot][tid] || a.rx_sequence[slot][tid]!=sequence || number!=a.rx_number[slot][tid]+1) { a.replays++;return 0; }
+        a.rx_number[slot][tid]=number;
+        if (last) a.rx_amsdu[slot][tid]=0;
+        return 1;
+    }
+    if (pn<=a.rx_pn[slot][tid] || (amsdu && number)) { a.rx_amsdu[slot][tid]=0;a.replays++;return 0; }
+    a.rx_pn[slot][tid]=pn;a.rx_amsdu[slot][tid]=amsdu && !last;
+    a.rx_sequence[slot][tid]=sequence;a.rx_number[slot][tid]=number;return 1;
 }
 void wcn_wpa_reset(void) { erase(&a,sizeof(a)); }
+void wcn_wpa_forget(void) { erase(&profile,sizeof(profile)); }
+const char *wcn_wpa_profile_ssid(void) { return profile.ssid; }
+int wcn_wpa_restart(const uint8_t mac[6],const uint8_t bssid[6],const uint8_t *rsn,unsigned rsn_len,const uint8_t selected[22]) {
+    if (!profile.ssid[0] || rsn_len>sizeof(a.ap_rsn) || profile.generation==UINT64_MAX) return -1;
+    /* Ratchet before each attempt, even if an AP repeats its nonce/replay.
+     * Fresh session SNonces must not depend on the platform's weak RNG. */
+    uint8_t input[24]={0},next[32],hash[20];uint64_t gen=++profile.generation;
+    memcpy(input,"WCN reconnect",13);
+    for (unsigned i=0;i<8;i++) input[13+i]=gen>>(8*i);
+    if (hmac(profile.seed,32,input,sizeof(input),hash)) { erase(hash,sizeof(hash));return -1; }
+    memcpy(next,hash,20);input[23]=1;
+    if (hmac(profile.seed,32,input,sizeof(input),hash)) { erase(next,sizeof(next));erase(hash,sizeof(hash));return -1; }
+    memcpy(next+20,hash,12);memcpy(profile.seed,next,32);
+    wcn_wpa_reset();memcpy(a.pmk,profile.pmk,32);memcpy(a.seed,next,32);
+    memcpy(a.mac,mac,6);memcpy(a.bssid,bssid,6);memcpy(a.ap_rsn,rsn,rsn_len);a.ap_rsn_len=rsn_len;memcpy(a.rsn,selected,22);
+    a.state=WAIT1;a.deadline=kernel_tic_ms(0)+20000;
+    erase(next,sizeof(next));erase(hash,sizeof(hash));return 0;
+}
 void wcn_wpa_status(char *out,size_t size) {
     snprintf(out,size,"wpa=%s error=%s messages=%u bad=%u mic_errors=%u replays=%u",states[a.state],a.error?a.error:"none",a.messages,a.bad,a.mic_errors,a.replays);
 }

@@ -34,6 +34,7 @@ static struct {
     unsigned links, rx_buffers, tx_buffers;
     unsigned rx_packets,rx_delivered,rx_dropped,refilled,tx_packets,tx_done,tx_errors,tx_generation;
     unsigned tx_cookie[256];
+    unsigned rx_rate,tx_rate,rx_ht,rx_vht,tx_ht,tx_vht;
     uint8_t rx_owner[RX_COUNT];
     struct dp_ring rings[MAX_RINGS];
 } d;
@@ -223,6 +224,8 @@ static void dp_rx_buffer(unsigned id,unsigned deliver) {
         sec.pn=p[39]|((uint64_t)p[40]<<32);
         sec.encrypted=!!(p[47]&(1u<<18));sec.group=b[204]&1;sec.key=p[48]&3;
         sec.tid=(p[47]&(1u<<7)) ? (p[43]>>15)&15:16;
+        sec.amsdu=!!((p[47]&(1u<<7)) && (b[230]&128));sec.first=!!(p[11]&(1u<<28));sec.last=!!(p[11]&(1u<<29));
+        sec.sequence=p[47]>>20;sec.number=p[27]&255;
         memcpy(sec.transmitter,b+210,6);
         /* Require a validated CCMP PN and a successful hardware MIC/decrypt.
          * EAPOL without encryption is handled separately by the supplicant. */
@@ -231,7 +234,10 @@ static void dp_rx_buffer(unsigned id,unsigned deliver) {
          * must all be present before accepting decrypted station traffic. */
         sec.valid=(fc&0x470f)==0x4208 && (p[47]&0x24d)==0x24d && !(p[47]&(31u<<10)) &&
             ((p[43]>>2)&15)==6 && (p[61]&(1u<<18)) &&
-            !((p[23]>>10)&7) && !(p[40]&0xffff0000) && !p[41] && !p[42];
+            !(p[23]&((7u<<10)|(1u<<3))) && !(p[40]&0xffff0000) && !p[41] && !p[42];
+        d.rx_rate=p[30];unsigned phy=(d.rx_rate>>8)&15;
+        if (phy==2) d.rx_ht++;
+        if (phy==3) d.rx_vht++;
         d.rx_delivered++; wcn_sta_data(b+392+pad,len,&sec);
     } else {
         d.rx_dropped++;
@@ -289,9 +295,25 @@ static int dp_complete(struct dp_ring *r,const uint32_t *p) {
         unsigned src=p[2]&7;
         unsigned success=(src==0 && !((p[2]>>13)&15)) || (src==3 && !((p[2]>>9)&15));
         if (!success) d.tx_errors++;
+        if (src==0 && (p[5]&1)) {
+            d.tx_rate=p[5];unsigned phy=(d.tx_rate>>3)&15;
+            if (phy==2) d.tx_ht++;
+            if (phy==3) d.tx_vht++;
+        }
         wcn_wpa_tx_complete(cookie,success);
-    } else if (r->id!=9 && r->id!=25) return dp_fault("unhandled destination");
+    } else if (r->id==9) {
+        if (((p[0]>>1)&511)==153) wcn_sta_reorder_complete(p[1]&65535,(p[1]>>26)&3);
+    } else if (r->id!=25) return dp_fault("unhandled destination");
     return 0;
+}
+int wcn_dp_reorder(uint64_t queue,unsigned window,unsigned ssn) {
+    if (!wcn_dp_ready() || !queue || queue>>40 || !window || window>64 || ssn>4096) return -1;
+    struct dp_ring *r=dp_find(8);if (!dp_space(r)) return -1;
+    uint32_t *p=dp_words(r->offset+r->index*40);unsigned id=r->index+1;
+    memset(p,0,40);p[0]=(419u<<1)|(36u<<10);p[1]=id|(1u<<16);
+    p[2]=queue;p[3]=(queue>>32)|(1u<<18)|(ssn<4096 ? 1u<<26:0); /* BA window + optional SSN, no PN changes. */
+    p[5]=(window==1 ? 1:window-1)|(ssn<4096 ? ssn<<11:0);
+    dp_next(r);dp_publish(r);return id;
 }
 int wcn_dp_can_transmit(void) {
     if (!wcn_dp_ready() || !dp_space(dp_find(16))) return 0;
@@ -353,7 +375,9 @@ void wcn_dp_status(char *out,size_t size) {
              d.rx_delivered,d.rx_packets,d.rx_dropped,d.refilled,d.tx_done,d.tx_packets,d.tx_errors);
 }
 void wcn_dp_rings(char *out,size_t size) {
-    int n=snprintf(out,size,"DP active=%u failed=%u bytes=%u\n",d.active,d.failed,d.used);
+    int n=snprintf(out,size,"DP active=%u failed=%u bytes=%u\nPHY tx_type=%u tx_bw=%u tx_mcs=%u tx_gi=%u HT=%u VHT=%u rx_type=%u rx_bw=%u rx_mcs=%u rx_gi=%u HT=%u VHT=%u\n",
+                   d.active,d.failed,d.used,(d.tx_rate>>3)&15,20u<<((d.tx_rate>>1)&3),(d.tx_rate>>11)&15,(d.tx_rate>>9)&3,d.tx_ht,d.tx_vht,
+                   (d.rx_rate>>8)&15,20u<<((d.rx_rate>>19)&3),(d.rx_rate>>15)&15,(d.rx_rate>>13)&3,d.rx_ht,d.rx_vht);
     if (n<0 || (size_t)n>=size) return;
     size_t pos=n;
     for (unsigned i=0;i<d.count;i++) {
