@@ -99,6 +99,8 @@ basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
 	$(MAKE) -C libs
 	$(MAKE) -C $(SYS_ROOT_DIR)/basic
+	# WLAN's WPA2 handshake needs wolfCrypt headers and its static library.
+	$(MAKE) -C $(SYS_ROOT_DIR)/network/libs wolfssl
 	$(MAKE) -C drivers basic
 	$(MAKE) -C bin
 	@mkdir -p ${TARGET_DIR}/etc
