@@ -13,12 +13,14 @@
 @/bin/ipcserv /drivers/q8b/net           /dev/eth0
 @/bin/ipcserv /drivers/netd              /dev/net0 /dev/eth0
 @/bin/bgrun /sbin/sshd
+@/bin/ipcserv /drivers/q8b/wlan          /dev/wlan0 --start
 #@/bin/ipcserv /drivers/q8b/fand          /dev/fan
 
 @/bin/ipcserv /drivers/q8b/usbhostd      /dev/hid0
 @/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/hid0
 @/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/hid0
 @/bin/ipcserv /drivers/q8b/hid_touchd    /dev/touch0 /dev/hid0
+@/bin/ipcserv /drivers/q8b/btd           /dev/bt0
 
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0

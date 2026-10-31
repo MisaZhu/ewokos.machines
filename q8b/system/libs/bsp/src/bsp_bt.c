@@ -7,8 +7,8 @@
 #include <string.h>
 #include <unistd.h>
 
-/* usbhostd's device node (the same /dev/hid0 the MSC client uses) */
-#define BT_USB_NODE "/dev/hid0"
+/* Current boot RAMFS uses /dev/usb0; older Q8B images use /dev/hid0. */
+#define BT_USB_NODE "/dev/usb0"
 /* bytes pulled per USBHCI_CMD_RECV round-trip */
 #define BT_RECV_CHUNK 512
 
@@ -20,6 +20,9 @@ static int _rx_pos = 0; /* next unread byte */
 static int usb_pid(void) {
     if (_usb_pid < 0) {
         _usb_pid = dev_get_pid(BT_USB_NODE);
+        if (_usb_pid < 0) {
+            _usb_pid = dev_get_pid("/dev/hid0");
+        }
     }
     return _usb_pid;
 }

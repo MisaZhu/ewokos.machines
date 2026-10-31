@@ -45,6 +45,8 @@ platform_headers:
 # rootfs as /etc/firmware/adreno/ for libadreno's vfs_readfile() loader.
 ADRENO_FW_SRC = $(MAKEINC_DIR)/../firmware/adreno
 NPU_FW_SRC = $(MAKEINC_DIR)/../firmware/npu
+QCA_FW_SRC = $(MAKEINC_DIR)/../firmware/qca
+WLAN_FW_SRC = $(MAKEINC_DIR)/../firmware/ath11k
 # Optional DSP runtime, built only when explicitly requested. External QAIRT
 # headers/libraries are build inputs and are never added to this repository.
 QAIRT_NATIVE_BUILD_DIR ?= $(BUILD_DIR)/qairt-native
@@ -81,12 +83,24 @@ firmware_install:
 		$(TARGET_DIR)/etc/firmware/qcom/sc8280xp/LENOVO/21BX/
 	@cp -p $(NPU_FW_SRC)/qccdsp8280.mbn \
 		$(TARGET_DIR)/etc/firmware/qcom/sc8280xp/
+	@mkdir -p $(TARGET_DIR)/etc/firmware/qca
+	@cp -p $(QCA_FW_SRC)/rampatch_usb_00130201.bin \
+		$(QCA_FW_SRC)/nvm_usb_00130201_gf.bin $(QCA_FW_SRC)/NOTICE.qca \
+		$(QCA_FW_SRC)/LICENSE.QualcommAtheros_ath10k \
+		$(TARGET_DIR)/etc/firmware/qca/
+	@mkdir -p $(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1
+	@cp -p $(WLAN_FW_SRC)/WCN6855/hw2.1/* \
+		$(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1/
+	@cp -p $(WLAN_FW_SRC)/LICENSE.QualcommAtheros_ath10k \
+		$(TARGET_DIR)/etc/firmware/ath11k/
 
 basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 	rm -f $(BUILD_DIR)/lib/libbsp.a
 	mkdir -p $(TARGET_DIR)/drivers/$(HW)
 	$(MAKE) -C libs
 	$(MAKE) -C $(SYS_ROOT_DIR)/basic
+	# WLAN's WPA2 handshake needs wolfCrypt headers and its static library.
+	$(MAKE) -C $(SYS_ROOT_DIR)/network/libs wolfssl
 	$(MAKE) -C drivers basic
 	$(MAKE) -C bin
 	@mkdir -p ${TARGET_DIR}/etc
@@ -99,9 +113,8 @@ network_sys: basic_sys
 # stack.  g2dd is the shared 2D/3D offload daemon; on q8b it links libbsp +
 # libadreno (BSP_LFLAGS) and forwards into the Adreno 690 A2D/CS back ends,
 # enabled directly in each init.rd before any display/desktop clients start.
-# Keep Bluetooth out until its board-specific transport lands.
 GUI_DRIVERS = displaymand consoled fontd g2dd usbhostd hid_keybd hid_moused \
-	hid_touchd usbfat32fsd
+	hid_touchd usbfat32fsd btd
 
 gui_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/gui mkdirs
