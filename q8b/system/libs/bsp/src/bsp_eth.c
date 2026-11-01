@@ -32,13 +32,6 @@
 #define PCIE_MEM64_PHY      0x4a0000000ULL
 #define PCIE_MEM64_SIZE     0x20000000ULL
 
-#define PCIE3A_PARF_PHY     0x01c10000ULL
-#define PCIE3A_PARF_VA      0x52300000ULL
-#define PCIE3A_PARF_SIZE    0x00003000u
-#define PCIE3A_PARF_SID_OFF 0x00000234u
-#define PCIE3A_PARF_BDF_CFG 0x00002c00u
-#define PCIE3A_PARF_BDF_TAB 0x00002000u
-
 #define TC956X_BAR0_VA      0x52000000ULL
 #define TC956X_BAR2_VA      0x52100000ULL
 #define TC956X_BAR4_VA      0x52200000ULL
@@ -47,24 +40,19 @@
 #define TC956X_BAR4_SIZE    0x00080000u
 
 #define PCI_VENDOR_TOSHIBA  0x1179u
-#define PCI_DEVICE_TC9563   0x0623u
 #define PCI_DEVICE_ETH      0x0220u
 
 #define PCI_COMMAND         0x04u
 #define PCI_CLASS_REVISION  0x08u
 #define PCI_HEADER_TYPE     0x0eu
 #define PCI_BAR0            0x10u
-#define PCI_PRIMARY_BUS     0x18u
 #define PCI_CMD_MEMORY      0x0002u
 #define PCI_CMD_MASTER      0x0004u
 
 #define TC956X_RSCMNG_ID            0x00002000u
-#define TC956X_RSCMNG_RSC_ST        0x00002008u
 #define TC956X_RSCMNG_FN_TYPE       (1u << 16)
 #define TC956X_RSCMNG_VF_MASK       0x00000f00u
 #define TC956X_RSCMNG_PF_MASK       0x0000000fu
-#define TC956X_SRAM_MAC_ADDR        0x00047000u
-#define TC956X_SRAM_INIT_DONE       0x00047054u
 #define TC956X_MAC0_BASE            0x00040000u
 #define TC956X_MAC1_BASE            0x00048000u
 
@@ -79,10 +67,6 @@
 #define TC956X_ATR_SIZE_64G          ((36u - 1u) << 1)
 
 #define GMAC_VERSION        0x0110u
-#define GMAC_HW_FEATURE0    0x011cu
-#define GMAC_HW_FEATURE1    0x0120u
-#define GMAC_HW_FEATURE2    0x0124u
-#define GMAC_HW_FEATURE3    0x0128u
 #define GMAC_ADDR0_HIGH     0x0300u
 #define GMAC_ADDR0_LOW      0x0304u
 #define GMAC_TX_CONFIG      0x0000u
@@ -219,38 +203,6 @@ static uint32_t _rx_unavailable;
 static uint32_t _rx_errors;
 static uint32_t _rx_queue_full;
 
-static void log_frame_summary(const char *dir, uint32_t packet,
-        const uint8_t *frame, uint32_t len) {
-    uint16_t type;
-
-    if (packet > 16u || len < 14u)
-        return;
-    type = ((uint16_t)frame[12] << 8) | frame[13];
-    if (type == 0x0806u && len >= 42u) {
-        uint16_t op = ((uint16_t)frame[20] << 8) | frame[21];
-
-        klog("q8b eth: %s%u len=%u type=arp op=%u %u.%u.%u.%u -> %u.%u.%u.%u\n",
-                dir, packet, len, op,
-                frame[28], frame[29], frame[30], frame[31],
-                frame[38], frame[39], frame[40], frame[41]);
-    } else if (type == 0x0800u && len >= 34u) {
-        uint32_t ihl = (uint32_t)(frame[14] & 0x0fu) * 4u;
-        uint8_t proto = frame[23];
-        int icmp_type = -1;
-
-        if (proto == 1u && ihl >= 20u && len > 14u + ihl)
-            icmp_type = frame[14u + ihl];
-        klog("q8b eth: %s%u len=%u type=ipv4 proto=%u icmp=%d %u.%u.%u.%u -> %u.%u.%u.%u\n",
-                dir, packet, len, proto, icmp_type,
-                frame[26], frame[27], frame[28], frame[29],
-                frame[30], frame[31], frame[32], frame[33]);
-    } else {
-        klog("q8b eth: %s%u len=%u type=%04x dst=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                dir, packet, len, type, frame[0], frame[1], frame[2],
-                frame[3], frame[4], frame[5]);
-    }
-}
-
 static inline void reg_write32(ewokos_addr_t addr, uint32_t value) {
     put32(addr, value);
     __asm__ volatile("dsb sy" ::: "memory");
@@ -272,13 +224,6 @@ static void desc_set_addr(xgmac_desc_t *desc, uint64_t phy) {
 static void tc956x_config_host_tamap(void) {
     ewokos_addr_t table = TC956X_BAR0_VA + TC956X_ATR_SLV0_TABLE0;
 
-    klog("q8b eth: tamap0 before src=%08x:%08x trsl=%08x:%08x param=%08x\n",
-            get32(table + TC956X_ATR_SRC_ADDR_HI),
-            get32(table + TC956X_ATR_SRC_ADDR_LO),
-            get32(table + TC956X_ATR_TRSL_ADDR_HI),
-            get32(table + TC956X_ATR_TRSL_ADDR_LO),
-            get32(table + TC956X_ATR_TRSL_PARAM));
-
     /*
      * The XGMAC DMA presents host addresses in the 0x10_xxxxxxxx window.
      * Table 0 removes that routing bit and emits the low 36-bit address on
@@ -292,39 +237,6 @@ static void tc956x_config_host_tamap(void) {
     reg_write32(table + TC956X_ATR_SRC_ADDR_HI, TC956X_HOST_ADDR_HI);
     reg_write32(table + TC956X_ATR_SRC_ADDR_LO,
             TC956X_ATR_SIZE_64G | TC956X_ATR_IMPL);
-
-    klog("q8b eth: tamap0 host=%08x:%08x -> %08x:%08x param=%08x\n",
-            get32(table + TC956X_ATR_SRC_ADDR_HI),
-            get32(table + TC956X_ATR_SRC_ADDR_LO),
-            get32(table + TC956X_ATR_TRSL_ADDR_HI),
-            get32(table + TC956X_ATR_TRSL_ADDR_LO),
-            get32(table + TC956X_ATR_TRSL_PARAM));
-}
-
-static void tc956x_log_pcie_routing(void) {
-    ewokos_addr_t parf = PCIE3A_PARF_VA;
-    uint32_t entries = 0;
-
-    if (syscall3(SYS_MEM_MAP, parf, PCIE3A_PARF_PHY,
-            PCIE3A_PARF_SIZE) != parf) {
-        klog("q8b eth: pcie3a PARF map failed\n");
-    } else {
-        klog("q8b eth: pcie3a sid cfg=%08x off=%08x\n",
-                get32(parf + PCIE3A_PARF_BDF_CFG),
-                get32(parf + PCIE3A_PARF_SID_OFF));
-        for (uint32_t i = 0; i < 256u; i++) {
-            uint32_t value = get32(parf + PCIE3A_PARF_BDF_TAB + i * 4u);
-
-            if (value == 0)
-                continue;
-            if (entries < 16u)
-                klog("q8b eth: pcie3a sid[%u]=%08x bdf=%04x sidlo=%02x next=%02x\n",
-                        i, value, value >> 16, (value >> 8) & 0xffu,
-                        value & 0xffu);
-            entries++;
-        }
-        klog("q8b eth: pcie3a sid entries=%u\n", entries);
-    }
 }
 
 static bool mdio_wait_idle(ewokos_addr_t mac_base, uint32_t *status) {
@@ -400,18 +312,15 @@ static bool map_bar(const char *name, uint8_t bus, uint8_t dev, uint8_t fn,
     uint64_t phy = bar_to_cpu(bar);
 
     if (phy == 0 || (phy & 0xfffu) != 0) {
-        klog("q8b eth: %02x:%02x.%u %s bus=%llx not in outbound memory\n",
+        slog("q8b eth: %02x:%02x.%u %s bus=%llx not in outbound memory\n",
                 bus, dev, fn, name, (unsigned long long)bar);
         return false;
     }
     if (syscall3(SYS_MEM_MAP, va, (ewokos_addr_t)phy, size) != va) {
-        klog("q8b eth: %02x:%02x.%u %s map failed pa=%llx size=%x\n",
+        slog("q8b eth: %02x:%02x.%u %s map failed pa=%llx size=%x\n",
                 bus, dev, fn, name, (unsigned long long)phy, size);
         return false;
     }
-    klog("q8b eth: %02x:%02x.%u %s bus=%llx pa=%llx va=%llx size=%x\n",
-            bus, dev, fn, name, (unsigned long long)bar,
-            (unsigned long long)phy, (unsigned long long)va, size);
     return true;
 }
 
@@ -429,40 +338,21 @@ static uint64_t read_bar(uint8_t bus, uint8_t dev, uint8_t fn,
     return bar;
 }
 
-static void log_bars(uint8_t bus, uint8_t dev, uint8_t fn) {
-    for (uint8_t bar_index = 0; bar_index < 6; bar_index++) {
-        uint16_t reg = PCI_BAR0 + (uint16_t)bar_index * 4u;
-        uint32_t low = cfg_read32(bus, dev, fn, reg);
-
-        if (low != 0 && low != 0xffffffffu && !(low & 1u) &&
-                (low & 0x6u) == 0x4u && bar_index + 1u < 6u) {
-            uint32_t high = cfg_read32(bus, dev, fn, reg + 4u);
-            klog("q8b eth: %02x:%02x.%u BAR%u raw=%08x:%08x\n",
-                    bus, dev, fn, bar_index, high, low);
-            bar_index++;
-        } else {
-            klog("q8b eth: %02x:%02x.%u BAR%u raw=%08x\n",
-                    bus, dev, fn, bar_index, low);
-        }
-    }
-}
-
 static bool probe_tc956x_pf(uint8_t bus, uint8_t dev, uint8_t fn) {
     uint16_t command = cfg_read16(bus, dev, fn, PCI_COMMAND);
     uint64_t bar0, bar2, bar4;
-    uint32_t rsc_id, rsc_st, pf, mac_lo, mac_hi, version;
+    uint32_t rsc_id, pf, mac_lo, mac_hi, version;
     uint16_t phy_id1 = 0xffffu, phy_id2 = 0xffffu;
     ewokos_addr_t mac_base;
 
     command |= PCI_CMD_MEMORY | PCI_CMD_MASTER;
     cfg_write16(bus, dev, fn, PCI_COMMAND, command);
-    log_bars(bus, dev, fn);
 
     bar0 = read_bar(bus, dev, fn, 0);
     bar2 = read_bar(bus, dev, fn, 2);
     bar4 = read_bar(bus, dev, fn, 4);
     if (bar0 == 0 || bar2 == 0 || bar4 == 0) {
-        klog("q8b eth: %02x:%02x.%u missing TC956x BAR0/2/4\n",
+        slog("q8b eth: %02x:%02x.%u missing TC956x BAR0/2/4\n",
                 bus, dev, fn);
         return false;
     }
@@ -475,19 +365,15 @@ static bool probe_tc956x_pf(uint8_t bus, uint8_t dev, uint8_t fn) {
         return false;
 
     rsc_id = get32(TC956X_BAR0_VA + TC956X_RSCMNG_ID);
-    rsc_st = get32(TC956X_BAR0_VA + TC956X_RSCMNG_RSC_ST);
     pf = rsc_id & TC956X_RSCMNG_PF_MASK;
-    klog("q8b eth: %02x:%02x.%u rsc-id=%08x rsc-st=%08x pf=%u m3-init=%08x\n",
-            bus, dev, fn, rsc_id, rsc_st, pf,
-            get32(TC956X_BAR2_VA + TC956X_SRAM_INIT_DONE));
     if ((rsc_id & (TC956X_RSCMNG_FN_TYPE | TC956X_RSCMNG_VF_MASK)) != 0 ||
             pf > 1u) {
-        klog("q8b eth: %02x:%02x.%u unsupported resource-manager function\n",
+        slog("q8b eth: %02x:%02x.%u unsupported resource-manager function\n",
                 bus, dev, fn);
         return false;
     }
     if (pf != 0u) {
-        klog("q8b eth: %02x:%02x.%u PF%u left untouched; using PF0\n",
+        slog("q8b eth: %02x:%02x.%u PF%u left untouched; using PF0\n",
                 bus, dev, fn, pf);
         return false;
     }
@@ -504,24 +390,9 @@ static bool probe_tc956x_pf(uint8_t bus, uint8_t dev, uint8_t fn) {
     _mac[4] = (uint8_t)mac_hi;
     _mac[5] = (uint8_t)(mac_hi >> 8);
 
-    klog("q8b eth: PF%u XGMAC3 base=%llx ver=%08x feat=%08x/%08x/%08x/%08x\n",
-            pf, (unsigned long long)mac_base, version,
-            get32(mac_base + GMAC_HW_FEATURE0),
-            get32(mac_base + GMAC_HW_FEATURE1),
-            get32(mac_base + GMAC_HW_FEATURE2),
-            get32(mac_base + GMAC_HW_FEATURE3));
-    klog("q8b eth: PF%u mac-reg=%08x:%08x dma=%08x/%08x mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
-            pf, get32(mac_base + GMAC_ADDR0_HIGH),
-            get32(mac_base + GMAC_ADDR0_LOW), get32(mac_base + DMA_MODE),
-            get32(mac_base + DMA_SYS_BUS_MODE), _mac[0], _mac[1], _mac[2],
-            _mac[3], _mac[4], _mac[5]);
-
-    if (mdio_read_c22(mac_base, TC956X_PHY_ADDR, 2, &phy_id1) == 0 &&
-            mdio_read_c22(mac_base, TC956X_PHY_ADDR, 3, &phy_id2) == 0)
-        klog("q8b eth: PF%u mdio phy=%u id=%04x:%04x\n",
-                pf, TC956X_PHY_ADDR, phy_id1, phy_id2);
-    else
-        klog("q8b eth: PF%u mdio phy=%u timeout data=%08x\n",
+    if (mdio_read_c22(mac_base, TC956X_PHY_ADDR, 2, &phy_id1) != 0 ||
+            mdio_read_c22(mac_base, TC956X_PHY_ADDR, 3, &phy_id2) != 0)
+        slog("q8b eth: PF%u mdio phy=%u timeout data=%08x\n",
                 pf, TC956X_PHY_ADDR,
                 get32(mac_base + GMAC_MDIO_DATA));
 
@@ -561,11 +432,6 @@ static int tc956x_dma_alloc(void) {
         _rx_buf_phy[i] = phy + offset;
         offset += ETH_BUF_SIZE;
     }
-    klog("q8b eth: dma va=%llx pa=%llx size=%u txd=%llx rxd=%llx hi=%02x\n",
-            (unsigned long long)virt, (unsigned long long)phy, total,
-            (unsigned long long)_tx_desc_phy,
-            (unsigned long long)_rx_desc_phy,
-            tc956x_addr_hi(phy));
     return 0;
 }
 
@@ -592,23 +458,20 @@ static int tc956x_dma_reset(void) {
     for (uint32_t i = 0; i < 1000000u; i++) {
         value = get32(_mac_base + DMA_MODE);
         if ((value & DMA_MODE_SWR) == 0) {
-            klog("q8b eth: dma reset done mode=%08x->%08x polls=%u\n",
-                    before, value, i + 1u);
             return 0;
         }
     }
 
-    klog("q8b eth: dma reset timeout mode=%08x->%08x\n", before, value);
+    slog("q8b eth: dma reset timeout mode=%08x->%08x\n", before, value);
     return -1;
 }
 
 static int tc956x_start(void) {
     uint32_t value;
-    uint32_t packet_filter;
     uint16_t bmsr = 0xffffu, phy_status = 0xffffu;
 
     if (tc956x_dma_alloc() != 0) {
-        klog("q8b eth: DMA allocation failed\n");
+        slog("q8b eth: DMA allocation failed\n");
         return -1;
     }
 
@@ -693,11 +556,8 @@ static int tc956x_start(void) {
      * silently rejected.  Receive-all is intentional during bring-up: netd's
      * Ethernet layer still drops foreign unicast before the IP stack.
      */
-    packet_filter = get32(_mac_base + GMAC_PACKET_FILTER);
     reg_write32(_mac_base + GMAC_PACKET_FILTER,
             GMAC_FILTER_RA | GMAC_FILTER_PM | GMAC_FILTER_PR);
-    klog("q8b eth: packet filter=%08x->%08x\n", packet_filter,
-            get32(_mac_base + GMAC_PACKET_FILTER));
 
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 1, &bmsr);
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 1, &bmsr);
@@ -718,14 +578,6 @@ static int tc956x_start(void) {
     reg_write32(_mac_base + GMAC_TX_CONFIG,
             get32(_mac_base + GMAC_TX_CONFIG) | GMAC_TX_ENABLE);
 
-    klog("q8b eth: ch0 started phy-bmsr=%04x status=%04x mac=%08x/%08x mtl=%08x/%08x dma=%08x/%08x/%08x\n",
-            bmsr, phy_status, get32(_mac_base + GMAC_TX_CONFIG),
-            get32(_mac_base + GMAC_RX_CONFIG),
-            get32(_mac_base + MTL_TXQ0_OPMODE),
-            get32(_mac_base + MTL_RXQ0_OPMODE),
-            get32(_mac_base + DMA_CH0_TX_CONTROL),
-            get32(_mac_base + DMA_CH0_RX_CONTROL),
-            get32(_mac_base + DMA_CH0_STATUS));
     return 0;
 }
 
@@ -738,12 +590,10 @@ int bsp_eth_init(void) {
 
     if (syscall3(SYS_MEM_MAP, PCIE_ECAM_VA, PCIE_ECAM_PHY,
             PCIE_ECAM_MAP_SIZE) != PCIE_ECAM_VA) {
-        klog("q8b eth: ECAM map failed pa=%llx size=%u\n",
+        slog("q8b eth: ECAM map failed pa=%llx size=%u\n",
                 (unsigned long long)PCIE_ECAM_PHY, PCIE_ECAM_MAP_SIZE);
         return -1;
     }
-    klog("q8b eth: probing PCIe3a ECAM buses 0-%u\n", PCIE_ECAM_BUSES - 1u);
-    tc956x_log_pcie_routing();
 
     for (uint8_t bus = 0; bus < PCIE_ECAM_BUSES; bus++) {
         for (uint8_t dev = 0; dev < 32; dev++) {
@@ -760,11 +610,7 @@ int bsp_eth_init(void) {
                     continue;
                 uint32_t class_rev = cfg_read32(bus, dev, fn,
                         PCI_CLASS_REVISION);
-                uint32_t buses = cfg_read32(bus, dev, fn, PCI_PRIMARY_BUS);
                 uint16_t command = cfg_read16(bus, dev, fn, PCI_COMMAND);
-                klog("q8b eth: pci %02x:%02x.%u id=%04x:%04x class=%06x cmd=%04x buses=%06x\n",
-                        bus, dev, fn, vendor, device, class_rev >> 8,
-                        command, buses & 0xffffffu);
 
                 /*
                  * Linux enables bus mastering recursively on every upstream
@@ -778,16 +624,9 @@ int bsp_eth_init(void) {
 
                     if (enabled != command) {
                         cfg_write16(bus, dev, fn, PCI_COMMAND, enabled);
-                        klog("q8b eth: pci %02x:%02x.%u bridge cmd=%04x->%04x\n",
-                                bus, dev, fn, command,
-                                cfg_read16(bus, dev, fn, PCI_COMMAND));
                     }
                 }
 
-                if (vendor == PCI_VENDOR_TOSHIBA &&
-                        device == PCI_DEVICE_TC9563)
-                    klog("q8b eth: TC9563 switch present at %02x:%02x.%u\n",
-                            bus, dev, fn);
                 if (vendor == PCI_VENDOR_TOSHIBA &&
                         device == PCI_DEVICE_ETH && !found_mac) {
                     found_mac = true;
@@ -798,14 +637,14 @@ int bsp_eth_init(void) {
     }
 
     if (!found_mac)
-        klog("q8b eth: no 1179:0220 endpoint; firmware PCIe state absent\n");
+        slog("q8b eth: no 1179:0220 endpoint; firmware PCIe state absent\n");
     else if (!_present)
-        klog("q8b eth: endpoint found but TC956x PF0 validation failed\n");
+        slog("q8b eth: endpoint found but TC956x PF0 validation failed\n");
     else if (tc956x_start() != 0) {
-        klog("q8b eth: TC956x channel 0 start failed\n");
+        slog("q8b eth: TC956x channel 0 start failed\n");
         _present = false;
     } else
-        klog("q8b eth: TC956x XGMAC3 ready base=%llx mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+        slog("q8b eth: TC956x XGMAC3 ready base=%llx mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
                 (unsigned long long)_mac_base, _mac[0], _mac[1], _mac[2],
                 _mac[3], _mac[4], _mac[5]);
     return _present ? 0 : -1;
@@ -853,12 +692,11 @@ void bsp_eth_poll(void) {
             _rxq[slot].len = (uint16_t)len;
             _rxq_count++;
             _rx_packets++;
-            log_frame_summary("rx", _rx_packets, _rx_buf[i], len);
         } else {
             _rx_dropped++;
             _rx_errors++;
             if (_rx_dropped <= 4u)
-                klog("q8b eth: rx drop desc=%u st=%08x len=%u\n",
+                slog("q8b eth: rx drop desc=%u st=%08x len=%u\n",
                         i, des3, len);
         }
 
@@ -878,7 +716,7 @@ void bsp_eth_poll(void) {
             _rx_unavailable++;
         if ((status & DMA_STATUS_FATAL) && status != _last_dma_error) {
             _last_dma_error = status;
-            klog("q8b eth: dma error status=%08x reb=%u txd=%08x:%08x rxd=%08x:%08x rxb=%08x:%08x\n",
+            slog("q8b eth: dma error status=%08x reb=%u txd=%08x:%08x rxd=%08x:%08x rxb=%08x:%08x\n",
                     status, (status >> 19) & 7u,
                     get32(_mac_base + 0x3140u),
                     get32(_mac_base + 0x3144u),
@@ -960,6 +798,5 @@ int bsp_eth_write(const void *buf, uint32_t size) {
     reg_write32(_mac_base + DMA_CH0_TX_TAIL,
             (uint32_t)(_tx_desc_phy + _tx_prod * ETH_DESC_SIZE));
     _tx_packets++;
-    log_frame_summary("tx", _tx_packets, buf, size);
     return (int)size;
 }
