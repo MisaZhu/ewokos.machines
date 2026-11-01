@@ -27,6 +27,7 @@
 #define SE_GENI_M_CMD0            0x600
 #define SE_GENI_M_CMD_CTRL_REG    0x604
 #define SE_GENI_M_IRQ_STATUS      0x610
+#define SE_GENI_M_IRQ_EN          0x614
 #define SE_GENI_M_IRQ_CLEAR       0x618
 #define SE_GENI_STATUS            0x040
 #define GENI_FORCE_DEFAULT_REG    0x020
@@ -37,6 +38,9 @@
 #define SE_GENI_S_IRQ_STATUS      0x640
 #define SE_GENI_S_IRQ_EN          0x644
 #define SE_GENI_S_IRQ_CLEAR       0x648
+#define SE_GENI_SER_M_CLK         0x048
+#define SE_GENI_SER_S_CLK         0x04c
+#define SE_GENI_BYTE_GRAN         0x254
 #define SE_GENI_TX_FIFOn          0x700
 #define SE_GENI_RX_FIFOn          0x780
 #define SE_GENI_TX_FIFO_STATUS    0x800
@@ -145,7 +149,7 @@ static void geni_rx_stop(void) {
         /* Linux's console takeover uses an unconditional abort here.  A
          * successful cancel may retain bytes from the firmware transaction. */
         wr(SE_GENI_S_CMD_CTRL_REG, S_CMD_ABORT);
-        geni_poll(SE_GENI_S_CMD_CTRL_REG, S_CMD_ABORT, 0);
+        geni_poll(SE_GENI_STATUS, S_GENI_CMD_ACTIVE, 0);
     }
     wr(SE_GENI_S_IRQ_CLEAR, 0xffffffffu);
     wr(GENI_FORCE_DEFAULT_REG, 1);
@@ -176,11 +180,17 @@ static void geni_hw_init(void) {
 
     wr(SE_GSI_EVENT_EN, 0);
     wr(SE_GENI_DMA_MODE_EN, rd(SE_GENI_DMA_MODE_EN) & ~1u);
+    wr(SE_GENI_BYTE_GRAN, 0);
     wr(SE_GENI_M_IRQ_CLEAR, 0xffffffffu);
     wr(SE_GENI_S_IRQ_CLEAR, 0xffffffffu);
     wr(SE_DMA_TX_IRQ_CLEAR, 0xffffffffu);
     wr(SE_DMA_RX_IRQ_CLEAR, 0xffffffffu);
     wr(SE_IRQ_EN, 0xffffffffu);
+    /* The kernel's early UART setup enables the sequencer interrupt sources
+     * even though this daemon polls their status registers.  Without these
+     * enables, userland TX can wait forever for watermark/CMD_DONE after the
+     * daemon takes over a console left by firmware. */
+    wr(SE_GENI_M_IRQ_EN, 0x33c0007fu);
 
     wr(SE_GENI_RX_WATERMARK_REG, 2);
     wr(SE_GENI_RX_RFR_WATERMARK_REG, 30);
@@ -199,8 +209,11 @@ static void geni_rx_start(void) {
     wr(SE_UART_RX_PARITY_CFG, 0);
     wr(SE_UART_RX_WORD_LEN, 8);
     wr(SE_UART_RX_STALE_CNT, 40);
-    wr(SE_GENI_S_IRQ_EN, rd(SE_GENI_S_IRQ_EN) |
-            S_RX_FIFO_WATERMARK_EN | S_RX_FIFO_LAST_EN);
+    wr(SE_GENI_S_IRQ_EN, 0x03003e3fu);
+    /* ExitBootServices may leave the serializer gates disabled.  Re-enable
+     * both sequencer clocks just as q8b_early_uart_init() does. */
+    wr(SE_GENI_SER_M_CLK, rd(SE_GENI_SER_M_CLK) | 1u);
+    wr(SE_GENI_SER_S_CLK, rd(SE_GENI_SER_S_CLK) | 1u);
     wr(SE_GENI_S_CMD0, UART_START_READ << M_OPCODE_SHIFT);
 }
 
