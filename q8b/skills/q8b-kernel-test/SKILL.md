@@ -102,8 +102,8 @@ cp .../KERNEL_ENTRY.BIN .../KERNEL.BIN
 
 ```bash
 cd machines/q8b/kernel
-make efi KERNEL_ONLY=1 FORCE_UART17=1
-cp boot/uefi/BOOTAA64.EFI .../pxe/tftp/q8b/
+make -C ../efi efi KERNEL_ONLY=1 FORCE_UART17=1
+cp ../efi/BOOTAA64.EFI .../pxe/tftp/q8b/
 ```
 
 - `KERNEL_ONLY` 下 kernel 会在 `q8b: bootinfo` 后停住；要跑完整 init 需

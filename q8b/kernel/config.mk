@@ -3,7 +3,7 @@ ARCH        = aarch64
 ARCH_VER    = v8
 
 # The machine boots through its on-board EDK2 UEFI firmware (no U-Boot).
-# boot/uefi/BOOTAA64.EFI places the kernel at this physical address and
+# ../efi/BOOTAA64.EFI places the kernel at this physical address and
 # jumps to its first byte; the kernel is linked with .init at the same
 # physical address and with its high-half VMA offset by RAM_BASE.
 ifeq ($(TEST_QEMU),1)

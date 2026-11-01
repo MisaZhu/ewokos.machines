@@ -25,7 +25,7 @@ typedef struct {
 } q8b_fb_info_t;
 
 typedef struct {
-    uint32_t size;       /* RAMFS.IMG/ROOTFS.IMG size, 0 = no ramdisk */
+    uint32_t size;       /* INITRAMFS.IMG/ROOTFS.IMG size, 0 = no ramdisk */
     uint32_t flags;      /* Q8B_RD_FLAG_* */
     uint64_t phy_base;
     uint32_t boot_source; /* Q8B_BOOT_SOURCE_* */
@@ -35,7 +35,7 @@ typedef struct {
 #define Q8B_RD_FLAG_BOOT_ONLY  (1u << 0)
 #define Q8B_PLATFORM_RAMFS_RELEASE 0x51425201u
 
-/* Storage/network source that supplied BOOTAA64.EFI/KERNEL.BIN/RAMFS.IMG.
+/* Storage/network source that supplied BOOTAA64.EFI/KERNEL.BIN/INITRAMFS.IMG.
  * The value is firmware metadata only; init still probes each backend and
  * falls through when the corresponding persistent rootfs is unavailable. */
 #define Q8B_BOOT_SOURCE_UNKNOWN 0u

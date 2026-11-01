@@ -241,7 +241,7 @@
 
 /*
  * bootinfo hand-off (stub -> kernel), resident at Q8B_BOOTINFO_PHYS.
- * Keep the layout in sync with boot/uefi/main.c.
+ * Keep the layout in sync with ../efi/main.c.
  */
 #define Q8B_BOOTINFO_MAGIC   0x42385145u   /* "EQ8B" little-endian */
 #define Q8B_BOOTINFO_VERSION 1
@@ -281,7 +281,7 @@ typedef struct {
     uint32_t fb_format;        /* UEFI GOP PixelFormat (0=RGB,1=BGR,2=BitMask) */
     uint32_t _pad_fb;
 
-    uint64_t rd_base;          /* RAMFS.IMG/ROOTFS.IMG copied into RAM */
+    uint64_t rd_base;          /* INITRAMFS.IMG/ROOTFS.IMG copied into RAM */
     uint64_t rd_size;
     uint32_t rd_flags;         /* Q8B_RD_FLAG_* */
     uint32_t boot_source;      /* Q8B_BOOT_SOURCE_* */

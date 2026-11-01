@@ -43,15 +43,17 @@ root-port 扁平编号在一次控制器集合初始化后保持固定；一个�
 
 ```sh
 sh machines/q8b/system/libs/bsp/tests/run-typec.sh
-make -C machines/q8b/system ramfs
+make -C machines/q8b/kernel
+make -C machines/q8b/system
+make -C machines/q8b/efi
 ```
 
 寄存器/DMA 模拟测试执行真实的 DWC3、xHCI 和 BSP 代码，检查角色切换、
 设备停止超时、三个控制器的端口路由、控制器缺失、HCRST 超时、跨控制器
 DMA 隔离、scratchpad 对齐和运行期失败后的端口编号。测试通过不代表硬件验证。
 
-启动镜像是 `machines/q8b/ramfs_aarch64.img`（16 MB ext3），将其作为
-`RAMFS.IMG` 同步到当前启动存储。无需因此修改 bootloader 或 kernel。
+启动镜像是 `machines/q8b/efi/initramfs.img`（16 MB ext3），将其作为
+`INITRAMFS.IMG` 同步到当前启动存储，并使用同步构建的 bootloader。kernel 无需因文件名变化修改。
 镜像中的 `/drivers/q8b/usbhostd` 包含三个控制器及 Type-C handoff 实现。
 
 新实机日志应先出现两个 Type-C 控制器各自的 `dwc3N: ... role=...`、

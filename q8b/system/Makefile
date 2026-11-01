@@ -16,7 +16,7 @@ TARGET_DIR = $(BUILD_DIR)/rootfs
 # Q8B's normal rootfs is the complete graphical system, matching raspi5:
 # build the framebuffer stack and the xwin/window-manager stack by default.
 # The explicit `gui` target remains available for a console-only image.
-all: x ramfs
+all: x
 	@echo "all done."
 
 include $(SYS_ROOT_DIR)/platform/make.inc
@@ -133,38 +133,6 @@ x_sys: gui_sys network_sys
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
 
-# The UEFI loader carries this small ext3 image beside KERNEL.BIN.  It holds
-# the boot policy, init/core/vfsd, USB rootfs bootstrap drivers, and the
-# optional recovery network daemons; init switches to the persistent rootfs
-# before starting the normal profile.
-RAMFS_MB ?= 16
-RAMFS = ../ramfs_$(ARCH).img
-RAMFS_DIR = $(BUILD_DIR)/ramfs
-
-usb_boot_sys: network_sys
-	$(MAKE) -C $(SYS_ROOT_DIR)/gui/libs/hid
-	$(MAKE) -C $(SYS_ROOT_DIR)/gui/libs/usb
-	$(MAKE) -C $(SYS_ROOT_DIR)/gui/drivers/usbhostd
-	$(MAKE) -C $(SYS_ROOT_DIR)/gui/drivers/usbfat32fsd
-
-ramfs: usb_boot_sys
-	@echo "\n==== building boot ramfs image ($(RAMFS_MB) MB) ===="
-	rm -rf $(RAMFS_DIR)
-	mkdir -p $(RAMFS_DIR)/etc/kernel $(RAMFS_DIR)/sbin $(RAMFS_DIR)/drivers/q8b
-	mkdir -p $(RAMFS_DIR)/bin
-	cp -p $(TARGET_DIR)/etc/kernel/kernel.conf $(RAMFS_DIR)/etc/kernel/kernel.conf
-	cp -p $(TARGET_DIR)/sbin/init $(TARGET_DIR)/sbin/core $(TARGET_DIR)/sbin/vfsd \
-		$(TARGET_DIR)/sbin/sdfsd $(RAMFS_DIR)/sbin/
-	cp -p $(TARGET_DIR)/sbin/sshd $(TARGET_DIR)/sbin/sessiond $(RAMFS_DIR)/sbin/
-	cp -p $(TARGET_DIR)/bin/ipcserv $(RAMFS_DIR)/bin/
-	cp -p $(TARGET_DIR)/drivers/$(HW)/usbhostd $(TARGET_DIR)/drivers/$(HW)/usbfat32fsd $(RAMFS_DIR)/drivers/q8b/
-	cp -p $(TARGET_DIR)/drivers/$(HW)/net $(RAMFS_DIR)/drivers/q8b/
-	cp -p $(TARGET_DIR)/drivers/netd $(TARGET_DIR)/drivers/timerd $(TARGET_DIR)/drivers/piped $(RAMFS_DIR)/drivers/
-	dd if=/dev/zero of=$(RAMFS) bs=1k count=$(shell expr $(RAMFS_MB) \* 1024)
-	mke2fs -t ext3 -b 4096 -I 128 $(RAMFS)
-	cd $(RAMFS_DIR); find . -type f | e2cp -ap -G0 -O0 -d $(abspath $(RAMFS)):$(empty)/
-	@echo "==== $(RAMFS) created (boot-only) ===="
-
 CLEAN_DIRS = libs drivers bin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
 	$(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/xwin
 clean:
@@ -198,4 +166,4 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 
-.PHONY: all basic network gui x ramfs usb_boot_sys basic_sys network_sys gui_sys x_sys platform_headers firmware_install qairt_native_build qairt_native_install clean sd
+.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers firmware_install qairt_native_build qairt_native_install clean sd

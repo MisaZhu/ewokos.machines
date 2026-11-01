@@ -5,7 +5,7 @@
  * PE32+ application (Boot From File / UEFI Shell / PXE).  We then:
  *
  *   1. locate the GOP framebuffer and record it for user space,
- *   2. load KERNEL.BIN and a small RAMFS.IMG bootstrap image either from a
+ *   2. load KERNEL.BIN and a small INITRAMFS.IMG bootstrap image either from a
  *      SimpleFileSystem volume (ESP/USB), EFI_LOAD_FILE (PXE TFTP), or a GRUB
  *      initrd exposed as EFI_LOAD_FILE2; init then selects SD or USB rootfs,
  *   3. reserve and fill the kernel at Q8B_KERNEL_PHYS,
@@ -22,7 +22,7 @@
  * Q8B_QEMU_TEST builds the same loader for a QEMU virt smoke test: only
  * the DRAM base and the fixed bootinfo/kernel physical addresses change,
  * so the SFS -> ExitBootServices -> jump path can be exercised without a
- * board.  The mock payload is boot/uefi/test/mock_kernel.S. */
+ * board.  The mock payload is loader/test/mock_kernel.S. */
 #ifdef Q8B_QEMU_TEST
 #define Q8B_RAM_BASE        0x40000000ULL
 #define Q8B_KERNEL_PHYS     0x80080000ULL
@@ -34,7 +34,7 @@
 #endif
 #define Q8B_KERNEL_RESERVE  (4ULL * 1024 * 1024)
 #define Q8B_KERNEL_MTFTP_MAX (4ULL * 1024 * 1024)
-#define Q8B_RAMFS_MTFTP_MAX (32ULL * 1024 * 1024)
+#define Q8B_INITRAMFS_MTFTP_MAX (32ULL * 1024 * 1024)
 #define Q8B_ROOTFS_MTFTP_MAX (160ULL * 1024 * 1024)
 #define Q8B_BOOTINFO_SIZE   0x10000ULL
 #define Q8B_USABLE_LIMIT    (8ULL * 1024 * 1024 * 1024)
@@ -861,9 +861,9 @@ static const char* path_name(int which, int i) {
         }
     } else {                    /* boot-only ramfs */
         switch (i) {
-        case 0: return "\\q8b\\RAMFS.IMG";
-        case 1: return "\\RAMFS.IMG";
-        case 2: return "\\EFI\\BOOT\\RAMFS.IMG";
+        case 0: return "\\q8b\\INITRAMFS.IMG";
+        case 1: return "\\INITRAMFS.IMG";
+        case 2: return "\\EFI\\BOOT\\INITRAMFS.IMG";
         }
     }
     return 0;
@@ -965,9 +965,9 @@ static const char* pxe_path_name(int which, int i) {
         }
     } else {
         switch (i) {
-        case 0: return "q8b/RAMFS.IMG";
-        case 1: return "RAMFS.IMG";
-        case 2: return "EFI/BOOT/RAMFS.IMG";
+        case 0: return "q8b/INITRAMFS.IMG";
+        case 1: return "INITRAMFS.IMG";
+        case 2: return "EFI/BOOT/INITRAMFS.IMG";
         }
     }
     return 0;
@@ -1312,7 +1312,7 @@ static void* read_file_pxe_udp(const char* path, uint64_t max_size,
 
 static void* read_network(int which, uint64_t* size) {
     uint64_t max_size = which == 0 ? Q8B_KERNEL_MTFTP_MAX :
-            (which == 2 ? Q8B_RAMFS_MTFTP_MAX : Q8B_ROOTFS_MTFTP_MAX);
+            (which == 2 ? Q8B_INITRAMFS_MTFTP_MAX : Q8B_ROOTFS_MTFTP_MAX);
 
     /* The optional fast UDP client is still the first network method, but
      * network itself is now the last source unless the loader was started by
@@ -2021,9 +2021,9 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 #endif
     if (rbuf == 0) {
 #if defined(Q8B_SD_ROOTFS) || defined(Q8B_KERNEL_ONLY)
-        con_puts("[uefi] no RAMFS.IMG; kernel-only SD fallback\n");
+        con_puts("[uefi] no INITRAMFS.IMG; kernel-only SD fallback\n");
 #else
-        con_puts("[uefi] FATAL: RAMFS.IMG/ROOTFS.IMG not found\n");
+        con_puts("[uefi] FATAL: INITRAMFS.IMG/ROOTFS.IMG not found\n");
         halt_forever();
 #endif
     }

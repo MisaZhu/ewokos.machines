@@ -8,7 +8,7 @@
  *     KERNEL_BASE + (physical - RAM_BASE), which is what V2P/P2V expect.
  *
  * The UEFI stub copies the raw binary to LOAD_ADDRESS, so the value below
- * must match config.mk and boot/uefi/main.c.
+ * must match config.mk and ../efi/main.c.
  */
 ENTRY(__entry)
 
