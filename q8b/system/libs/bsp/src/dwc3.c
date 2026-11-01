@@ -29,12 +29,14 @@ int dwc3_host_prepare(int id, ewokos_addr_t base) {
     uint32_t gctl;
 
     if (ip != 0x5533u && ip != 0x3331u && ip != 0x3332u) {
-        klog("dwc3%d: invalid core id=%08x\n", id, snpsid);
+        klog("dwc3[%d]: invalid core id=%08x base=%llx\n", id, snpsid,
+                (unsigned long long)base);
         return -1;
     }
     gctl = get32(base + DWC3_GCTL);
-    klog("dwc3%d: id=%08x gctl=%08x role=%u\n", id, snpsid,
-            gctl, (gctl & GCTL_PRTCAP_MASK) >> 12);
+    klog("dwc3[%d]: base=%llx id=%08x gctl=%08x role=%u\n", id,
+            (unsigned long long)base, snpsid, gctl,
+            (gctl & GCTL_PRTCAP_MASK) >> 12);
 
     if ((gctl & GCTL_PRTCAP_MASK) != GCTL_PRTCAP_HOST) {
         /* Stop firmware gadget DMA before switching the DRD core. */
@@ -44,7 +46,7 @@ int dwc3_host_prepare(int id, ewokos_addr_t base) {
             put32(base + DWC3_DCTL, dctl & ~DCTL_RUN_STOP);
             while ((get32(base + DWC3_DSTS) & DSTS_DEVCTRLHLT) == 0) {
                 if (kernel_tic_ms(0) > deadline) {
-                    klog("dwc3%d: device halt timeout dsts=%08x\n", id,
+                    klog("dwc3[%d]: device halt timeout dsts=%08x\n", id,
                             get32(base + DWC3_DSTS));
                     return -1;
                 }
@@ -71,10 +73,10 @@ int dwc3_host_prepare(int id, ewokos_addr_t base) {
             (gctl & ~GCTL_PRTCAP_MASK) | GCTL_PRTCAP_HOST);
     gctl = get32(base + DWC3_GCTL);
     if ((gctl & GCTL_PRTCAP_MASK) != GCTL_PRTCAP_HOST) {
-        klog("dwc3%d: host mode not latched gctl=%08x\n", id, gctl);
+        klog("dwc3[%d]: host mode not latched gctl=%08x\n", id, gctl);
         return -1;
     }
-    klog("dwc3%d: host ready usb2phy=%08x usb3pipe=%08x\n", id,
+    klog("dwc3[%d]: host ready usb2phy=%08x usb3pipe=%08x\n", id,
             get32(base + DWC3_GUSB2PHYCFG),
             get32(base + DWC3_GUSB3PIPECTL));
     return 0;

@@ -1223,6 +1223,9 @@ int xhci_int_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
         return -1;
     }
     ep->open = true;
+    klog("xhci%d: int-in open slot=%u ep=%02x dci=%u mps=%u interval=%u exp=%u\n",
+            dev->hc->id, dev->slot_id, ep_addr, dci, mps, bInterval,
+            int_interval(dev->speed, bInterval));
     return 0;
 }
 
@@ -1268,9 +1271,19 @@ int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
             /* re-arm immediately: otherwise the next report waits a whole
                usbhostd loop cycle (~2ms quantized sleep) for a fresh TD */
             int_in_arm(dev, ep, dci);
+            if (n > 0) {
+                static uint32_t report_log_count;
+                if (report_log_count < 16) {
+                    klog("xhci%d: int-in report slot=%u ep=%02x len=%d\n",
+                            dev->hc->id, dev->slot_id, ep_addr, n);
+                    report_log_count++;
+                }
+            }
             return n;
         }
         /* STALL/error: recover the ring; caller decides on re-poll/drop */
+        klog("xhci%d: int-in completion error slot=%u ep=%02x code=%u\n",
+                dev->hc->id, dev->slot_id, ep_addr, ep->comp_code);
         ep_recover(dev, dci);
         return ep->comp_code == CC_STALL ? -2 : -1;
     }

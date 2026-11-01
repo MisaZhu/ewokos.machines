@@ -309,7 +309,12 @@ static int xhci_bring_up(void) {
         if (q8b_xhci_start(i) == 0) {
             ++found;
         }
+        else {
+            klog("bsp_usb: xhci%d %s not ready\n", i, Q8B_XHCI_NAME[i]);
+        }
     }
+    klog("bsp_usb: host bring-up complete controllers=%d/%d flat_ports=%d\n",
+            found, BSP_USB_NUM_XHC, xhci_port_count());
     return found;
 }
 
@@ -327,10 +332,12 @@ int bsp_usb_init(void) {
     memset(_xhcs, 0, sizeof(_xhcs));
     memset(_xhc_ports, 0, sizeof(_xhc_ports));
 
+    klog("bsp_usb: init begin controllers=%d\n", BSP_USB_NUM_XHC);
     xhci_bring_up(); /* degrades to zero controllers, never fails */
     if (uhci_port_count() == 0 && xhci_port_count() == 0) {
         klog("bsp_usb: no usb controller found, running without usb\n");
     }
+    klog("bsp_usb: init ready root_ports=%d\n", bsp_usb_root_port_count());
     return 0;
 }
 
@@ -441,8 +448,11 @@ int bsp_usb_root_port_reset(int port) {
     if (port >= 1 && port <= uhci_port_count()) {
         speed = uhci_reset_port(port - 1);
         if (speed < 0) {
+            klog("bsp_usb: root port=%d uhci reset failed\n", port);
             return -1;
         }
+        klog("bsp_usb: root port=%d uhci reset speed=%d\n", port,
+                speed == 0 ? BSP_USB_SPEED_LOW : BSP_USB_SPEED_FULL);
         return speed == 0 ? BSP_USB_SPEED_LOW : BSP_USB_SPEED_FULL;
     }
     hc = flat_to_xhc(port, &hc_port);
@@ -451,8 +461,12 @@ int bsp_usb_root_port_reset(int port) {
     }
     speed = xhci_port_reset(hc, hc_port);
     if (speed < 0) {
+        klog("bsp_usb: root port=%d xhci%d local=%d reset failed\n", port,
+                xhci_hc_index(hc), hc_port);
         return -1;
     }
+    klog("bsp_usb: root port=%d xhci%d local=%d reset speed=%d\n", port,
+            xhci_hc_index(hc), hc_port, speed_from_xhci(speed));
     return speed_from_xhci(speed);
 }
 
@@ -535,6 +549,9 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
                     root_port, speed);
             return NULL;
         }
+        klog("bsp_usb: xhci%d local=%d root=%d attached slot=%u speed=%d\n",
+                xhci_hc_index(hc), hc_port, root_port, dev->xdev.slot_id,
+                speed);
         dev->used = true;
         dev->on_xhci = true;
         {
