@@ -12,6 +12,10 @@ description: EwokOS Q8B 内核标准测试流程：MCP 常驻串口缓存、rebo
 - PXE：`en6`/`192.168.8.1`、dnsmasq、TFTP `q8b/BOOTAA64.EFI`（KERNEL_ONLY）。
 - EUD 9501 在位；板子原生 Type-C；40-pin USB-UART 已接。
 - 读取一律走缓存，不直接读 tty。
+- MCP 串口执行系统命令前，先确认已经进入 root shell；登录用户名 `root`、
+  密码 `root`。已有 root shell 时不重复登录，不向 UEFI 菜单发送 shell 命令。
+- SSH 连接失败时，先通过已登录的 MCP 串口执行 `/bin/ps`，确认 `/sbin/sshd`
+  是否运行，不直接认定整板挂死。复位后等待启动完成，不叠加复位。
 
 ## 0. 检查
 
