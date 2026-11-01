@@ -341,6 +341,7 @@ typedef struct {
     uint8_t  cs_single_seg;
     uint32_t cs_local_size[3];
     uint32_t cs_shared_size;
+    uint32_t cs_spill_size;   /* bytes/thread of register-spill scratch (0 = none) */
     /* Non-zero when the compute stage is one of the fixed two-pass GEOMETRY
      * rasterizer kernels (geom_raster_cs.h) rather than a shadertoy full-frame
      * effect: 1 = gouraud/colour (SSBO 0=fb 1=pos 2=nrm 3=depth), 2 = textured
@@ -376,6 +377,11 @@ typedef struct {
     uint32_t cs2_local_size[3];
     uint32_t cs2_shared_size;
     uint32_t cs2_uniform_blob_dwords;
+    /* VERSION 6 geom_kind == 5 (Vulkan user shader) per-vertex stream strides
+     * in FLOATS.  cs2_vout_stride sizes each vout record and vk_attr_stride
+     * sizes each attribute-stream record; zero / ignored for other kinds. */
+    uint32_t cs2_vout_stride;
+    uint32_t vk_attr_stride;
 } v3d_3d_prog_desc_t;
 
 /* Upload a compiled program: copy the VS/FS QPU words and the static uniform

@@ -59,17 +59,64 @@ int32_t bsp_g2d_cmd(int argc, char **argv, char *buf, uint32_t len)
     return vc_g2d_cmd(argc, argv, buf, (size_t)len);
 }
 
-/* blit into a raw physical destination (scan-out push): the hardware engine could write the physical range directly, but that fast path is not wired up on this platform yet, so decline and let the caller (displayd flush_g2d) fall back to its cpu flush path */
+/* blit into a raw physical destination (scan-out push): the V3D 4.2
+ * render-copy engine (v3d_g2d_render_copy, reached through the identity
+ * full-surface branch of gpu_blit_surface) moves a packed full frame
+ * straight into the live scan-out.  Its TLB raster stores BYPASS the
+ * TMU/L2T write path (see render_clear_locked's note in v3d_g2d.c), so
+ * they do not suffer the end-of-kernel store-drain that made the CSD
+ * argb_rot90/argb_blit kernels lose tail columns or noise the frame when
+ * they wrote this same non-cacheable memory - confirmed on the cwd686
+ * panel (display correct; `devcmd /dev/g2d stat` shows blit_phy at
+ * ~320-350us with the backend tlb lane incrementing, i.e. the dispatch
+ * really runs, and it is contention-neutral against the rotate).  The
+ * destination is a raw physical range with no kernel-visible VA, which
+ * the render pipeline addresses purely physically, so argb_dst is NULL.
+ *
+ * Only the exact identity, full-surface, packed shape the render engine
+ * accepts (dst_pitch == dst_w*4, src and dst the same size, whole frame)
+ * is taken; a partial dirty rect, a padded pitch or a scale is declined
+ * with -1 (this geometry only, no sticky latch) so displayd keeps its
+ * NEON copy for it.  The affine TMU kernel is NEVER allowed to fall
+ * through onto this scan-out.  VC4 (Pi3) has no render engine, so it
+ * latches the capability off (G2D_ERR_NOT_SUPPORTED) and displayd stops
+ * paying a declined round-trip every frame.  A submitted dispatch that
+ * fails is returned as -1 and never replayed. */
 int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
     			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
     			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
     			uint32_t dst_pitch,
     			int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
-    (void)argb_src; (void)src_phy; (void)src_contig; (void)src_w; (void)src_h;
-    (void)sx; (void)sy; (void)sw; (void)sh;
-    (void)dst_phy; (void)dst_size; (void)dst_w; (void)dst_h;
-    (void)dst_pitch;
-    (void)dx; (void)dy; (void)dw; (void)dh;
+    g2d_map_t m;
+    uint32_t src_phys, dst_phys;
+
+    /* VC4 (Pi3): no render-copy engine - latch the capability off. */
+    if (vc_g2d_version() < 41)
+        return G2D_ERR_NOT_SUPPORTED;
+
+    /* gate to the exact identity full-frame packed shape; anything else
+     * declines without latching so displayd falls back to its NEON copy
+     * for that geometry (and still asks on the next full-frame present). */
+    if (!argb_src || src_w <= 0 || src_h <= 0 || dst_size == 0 ||
+        dst_pitch != (uint32_t)dst_w * 4u ||
+        sx != 0 || sy != 0 || dx != 0 || dy != 0 ||
+        sw != src_w || sh != src_h || dw != dst_w || dh != dst_h ||
+        sw != dw || sh != dh)
+        return -1;
+    if ((uint64_t)(dst_h - 1) * dst_pitch + (uint64_t)dst_w * 4u > dst_size)
+        return -1;
+
+    src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
+    dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, 1);
+    if (!src_phys || !dst_phys)
+        return -1;
+
+    g2d_map_params(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
+                   G2D_BSP_MAP_ROT_0, &m);
+    if (gpu_blit_surface(&m, src_phys, argb_src, src_w, src_h,
+                         dst_phys, NULL, dst_w, dst_h,
+                         0, 0, dst_w, dst_h, 0) == GPU_DONE)
+        return 0;
     return -1;
     }
 
@@ -82,15 +129,14 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
  * (sticky G2D_ERR_NOT_SUPPORTED) and displayd keeps its own rotate +
  * flush path instead of paying a declined round-trip every frame.
  *
- * 90/270 take the strided argb_rot90 kernel (gpu_rot90_rect): the source
- * rect is addressed inside its canvas by src_w*4, the destination inside
- * the scan-out by dst_pitch, so crops and a pitched dst are free.  180,
- * and any 90/270 geometry the fast path refuses (rect height not
- * splittable into 4-row strips, 270 with width % 16 != 0), take the
- * affine blit through a rotate map - which models the source as a packed
- * sw x sh surface, so those need the rect to span full canvas rows
- * (sx == 0, sw == src_w).  Anything else is declined before any write
- * (-1); a submitted dispatch is never replayed.  No CPU fallback: the
+ * Neither argb_rot90 nor rot90_tile is valid for this physical scan-out:
+ * the former loses its final source-column groups and the latter corrupts
+ * the whole frame.  90-degree and 270-degree requests therefore report
+ * G2D_ERR_NOT_SUPPORTED before any write, latching displayd onto its
+ * temporary-canvas path without an IPC on every frame.  180 takes
+ * the affine blit through a rotate map, which models the
+ * source as packed rows and therefore requires sx == 0 && sw == src_w.
+ * A submitted dispatch is never replayed.  No CPU fallback here: the
  * caller runs its own rotate for a rect this declines. */
 int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
@@ -110,6 +156,8 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
 
     if (rot != 90 && rot != 180 && rot != 270)
         return -1;
+    if (rot == 90 || rot == 270)
+        return G2D_ERR_NOT_SUPPORTED;
     if (!argb_src || src_w <= 0 || src_h <= 0 || sw <= 0 || sh <= 0 ||
         sx < 0 || sy < 0 || sx > src_w - sw || sy > src_h - sh)
         return -1;
@@ -134,22 +182,8 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
     src_phys += (uint32_t)src_off;
     dst_phys += (uint32_t)dst_off;
 
-    if (rot == 90 || rot == 270) {
-        int gr = gpu_rot90_rect(src_phys,
-                                (uint32_t *)((uint8_t *)argb_src + src_off),
-                                sw, sh, src_w * 4,
-                                dst_phys, NULL, rw, rh,
-                                (int32_t)dst_pitch, rot);
-        if (gr == GPU_DONE)
-            return 0;
-        if (gr == GPU_FAILED)
-            return -1;   /* submitted: never replay on the affine path */
-        /* GPU_UNSUPPORTED: declined before any write, fall through */
-    }
-
-    /* affine fallback (180, or a 90/270 the fast path refused): the map
-     * models the source as a packed sw x sh surface, so the rect must span
-     * full canvas rows. */
+    /* affine 180: the map models the source as a packed sw x sh surface,
+     * so the rect must span full canvas rows. */
     if (sx != 0 || sw != src_w)
         return -1;
     surf_w = (int32_t)(dst_pitch / 4u);

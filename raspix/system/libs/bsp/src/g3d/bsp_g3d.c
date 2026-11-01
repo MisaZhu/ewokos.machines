@@ -331,6 +331,7 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
     req.cs_local_size[1] = h->cs_local_size[1];
     req.cs_local_size[2] = h->cs_local_size[2];
     req.cs_shared_size  = h->cs_shared_size;
+    req.cs_spill_size   = h->cs_spill_size;
     req.cs_is_geom      = h->cs_is_geom;
     req.cs_geom_tpw     = h->cs_geom_tpw;
 
@@ -345,6 +346,10 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size)
     req.cs2_local_size[2] = h->cs2_local_size[2];
     req.cs2_shared_size  = h->cs2_shared_size;
     req.cs2_uniform_blob_dwords = h->cs2_uniform_blob_dwords;
+
+    /* VERSION 6 geom_kind == 5 stream strides (floats); zero for other kinds. */
+    req.cs2_vout_stride = h->cs2_vout_stride;
+    req.vk_attr_stride  = h->vk_attr_stride;
 
     {
         int32_t r = vc_pgl3d_program(&req);
