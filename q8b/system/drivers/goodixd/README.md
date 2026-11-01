@@ -8,6 +8,12 @@
 - GPIO90 (1.8 V VDDIO) and GPIO56 (3.3 V AVDD);
 - 2560 x 1600 touch coordinates.
 
+TLMM at physical `0x0f100000` lies outside Q8B's 64 MiB low-MMIO
+window. The daemon maps its 3 MiB register range separately at virtual
+`0x50700000` and checks both mappings before accessing any registers.
+Panel probing is serialized and retries use exponential backoff from 250 ms
+to 30 s, so an absent or disconnected panel cannot keep the device loop busy.
+
 The daemon registers the existing EwokOS six-byte `/dev/touch0` protocol, so
 the normal `xtouch` client can consume it.  A TW220 graphical init profile
 should start:

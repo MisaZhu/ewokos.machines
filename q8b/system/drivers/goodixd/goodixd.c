@@ -17,7 +17,9 @@
 /* SC8280XP TW220: QUPv3 serial engine 6 (SPI22), TLMM GPIO controller. */
 #define SPI22_OFF                 0x00898000ULL
 #define GCC_OFF                   0x00100000ULL
-#define TLMM_OFF                  0x0f100000ULL
+#define TLMM_PHY                  0x0f100000ULL
+#define TLMM_VA                   0x50700000ULL
+#define TLMM_SIZE                 0x00300000U
 #define SPI22_SIZE                0x4000U
 #define GPIO_STRIDE               0x1000U
 #define GPIO_CTL(g)               ((uint32_t)(g) * GPIO_STRIDE)
@@ -98,6 +100,8 @@
 #define EVENT_HEAD_AND_TWO        (GOODIX_BERLIN_HEADER_SIZE + 16U + 2U)
 #define SPI_BUF_MAX               1100U
 #define TOUCH_QUEUE_SIZE          16U
+#define PROBE_RETRY_INITIAL_US   250000U
+#define PROBE_RETRY_MAX_US       30000000U
 
 typedef struct {
     uint16_t state;
@@ -115,6 +119,9 @@ static touch_record_t _queue[TOUCH_QUEUE_SIZE];
 static unsigned _queue_count;
 static bool _finger_down;
 static unsigned _fifo_depth = 16;
+static bool _probe_in_progress;
+static unsigned _probe_delay_us;
+static unsigned _probe_failures;
 
 static inline uint32_t rd(volatile uint8_t* base, uint32_t off) {
     return *(volatile uint32_t*)(base + off);
@@ -319,7 +326,7 @@ static int goodix_write(uint32_t address, const uint8_t* data, size_t len) {
     return spi_xfer(tx, rx, total);
 }
 
-static int goodix_probe(void) {
+static int goodix_probe_once(void) {
     uint8_t confirm[8], version[32], length_raw[2], info[1024];
     uint16_t length;
 
@@ -340,8 +347,25 @@ static int goodix_probe(void) {
     if (goodix_read(GOODIX_IC_INFO_ADDR, info, length) != 0 ||
             goodix_parse_ic_info(info, length, &_touch_addr) != 0)
         return -1;
-    klog("q8b goodixd: GT9916 touch_data=0x%08x\n", _touch_addr);
+    slog("q8b goodixd: GT9916 touch_data=0x%08x\n", _touch_addr);
     return 0;
+}
+
+/* Probe is called from the device loop, so make it safe if the loop is
+ * re-entered while a previous transaction is still unwinding.  More
+ * importantly, keep the retry policy outside the SPI transaction: a missing
+ * panel must not cause a full bus probe on every scheduler tick. */
+static int goodix_probe(void) {
+    int ret;
+
+    if (_ready)
+        return 0;
+    if (_probe_in_progress)
+        return -1;
+    _probe_in_progress = true;
+    ret = goodix_probe_once();
+    _probe_in_progress = false;
+    return ret;
 }
 
 static void queue_push(uint16_t state, uint16_t x, uint16_t y) {
@@ -436,16 +460,31 @@ static uint32_t touch_poll(vdevice_t* dev, int fd, int from_pid,
 }
 
 static int touch_loop(vdevice_t* dev, void* p) {
-    static unsigned retry;
     (void)p;
     if (!_ready) {
-        if ((retry++ % 1000U) == 0) {
-            if (goodix_probe() == 0)
-                _ready = true;
+        unsigned delay = _probe_delay_us;
+        if (delay != 0)
+            usleep(delay);
+        if (goodix_probe() == 0) {
+            _ready = true;
+            _probe_failures = 0;
+            _probe_delay_us = 0;
+        } else {
+            unsigned next;
+            _probe_failures++;
+            if (delay == 0)
+                next = PROBE_RETRY_INITIAL_US;
+            else if (delay >= PROBE_RETRY_MAX_US / 2U)
+                next = PROBE_RETRY_MAX_US;
             else
-                klog("q8b goodixd: GT9916 probe failed\n");
+                next = delay * 2U;
+            _probe_delay_us = next;
+            /* Keep diagnostics useful without logging once per retry. */
+            if (_probe_failures == 1 ||
+                    (_probe_failures & (_probe_failures - 1U)) == 0)
+                slog("q8b goodixd: GT9916 probe failed (retry %u us)\n",
+                        next);
         }
-        usleep(1000);
         return 0;
     }
     if (gpio_input(GPIO_IRQ) != 0) {
@@ -467,10 +506,21 @@ int main(int argc, char** argv) {
     _mmio = (volatile uint8_t*)(uintptr_t)info.mmio.v_base;
     mapped = syscall3(SYS_MEM_MAP, (ewokos_addr_t)info.mmio.v_base,
             (ewokos_addr_t)info.mmio.phy_base, (ewokos_addr_t)info.mmio.size);
-    if (mapped != (ewokos_addr_t)info.mmio.v_base)
+    if (mapped != (ewokos_addr_t)info.mmio.v_base) {
+        slog("q8b goodixd: low MMIO mapping failed\n");
         return -1;
+    }
+    /* TLMM is outside the 64MB low-MMIO window. Map it separately, as
+     * fand/sdprobe do; adding its physical address to _mmio faults on the
+     * first GPIO83 access at mmio.v_base + 0x0f153000. */
+    mapped = syscall3(SYS_MEM_MAP, (ewokos_addr_t)TLMM_VA,
+            (ewokos_addr_t)TLMM_PHY, (ewokos_addr_t)TLMM_SIZE);
+    if (mapped != (ewokos_addr_t)TLMM_VA) {
+        slog("q8b goodixd: TLMM mapping failed\n");
+        return -1;
+    }
     _spi = _mmio + SPI22_OFF;
-    _tlmm = _mmio + TLMM_OFF;
+    _tlmm = (volatile uint8_t*)(uintptr_t)TLMM_VA;
     _gcc = _mmio + GCC_OFF;
 
     /* TW220 DTS: qup22 is mux 2 on GPIO83/84 and mux 1 on GPIO85/86. */
