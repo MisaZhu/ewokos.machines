@@ -141,8 +141,6 @@ static int setup_msi(void) {
             uint32_t data = read32(w.cfg + cap + data_off);
             write32(w.cfg + cap + data_off, (data & 0xffff0000u) | 0x5743);
             write32(w.cfg + cap, (v & ~(7u << 20)) | (1u << 16));
-            klog("wcn: polled MSI cap=%x ctrl=%08x sink=%llx\n", cap,
-                 read32(w.cfg + cap), (unsigned long long)(w.dma_phys + MSI_OFFSET));
             return 0;
         }
         cap = (v >> 8) & 0xfc;
@@ -158,7 +156,7 @@ static int wait_reg(uint32_t off, uint32_t mask, uint32_t value, unsigned timeou
         if ((v & mask) == value) return 0;
         usleep(1000);
     } while (kernel_tic_ms(0) < end);
-    klog("wcn: timeout reg=%x value=%08x mask=%08x want=%08x ee=%u\n",
+    slog("wcn: timeout reg=%x value=%08x mask=%08x want=%08x ee=%u\n",
          off, reg(off), mask, value, ee());
     return -1;
 }
@@ -197,7 +195,7 @@ int wcn_attach(void) {
     else return -1;
     uint32_t command = read32(w.cfg + 4) & 0xffff;
     if (command & 4) {
-        klog("wcn: endpoint already bus-mastering; refusing second owner\n");
+        slog("wcn: endpoint already bus-mastering; refusing second owner\n");
         return -1;
     }
     write32(w.cfg + 4, command | 2);
@@ -208,8 +206,6 @@ int wcn_attach(void) {
     if (!offset_valid(w.bhi, 0xc8)) return -1;
     w.attached = 1;
     w.stage = "PBL";
-    klog("wcn: WCN6855 hw=%08x subsystem=%08x BAR=%llx BHI=%x ee=%u\n",
-         w.hw, w.subsystem, (unsigned long long)w.bar_phys, w.bhi, ee());
     return 0;
 }
 
@@ -223,8 +219,6 @@ static void software_reset(void) {
     soc_write(0x1e08228, 0xffffffff);
     soc_write(0x1f8031c, soc_read(0x1f8031c) & ~4u);
     put(0x360, 0); put(0x368, 0); put(0x394, 0); put(0x39c, 0);
-    klog("wcn: reset cookie=%08x warm=%08x cause=%08x\n",
-         soc_read(0x1f80500), soc_read(0x1f80504), soc_read(0x1f8060c));
     soc_write(0x1f80504, 0);
     usleep(10000);
     uint32_t reset = reg(0x3008);
@@ -239,7 +233,6 @@ static void software_reset(void) {
     put(0x38, 2);
     usleep(10000);
     w.bhi = reg(0x28);
-    klog("wcn: reset complete ctrl=%08x status=%08x ee=%u\n",reg(0x38),reg(0x48),ee());
     unsigned cap = read32(w.cfg + 0x34) & 0xfc;
     for (unsigned i = 0; i < 48 && cap >= 0x40; i++) {
         uint32_t v = read32(w.cfg + cap);
@@ -255,7 +248,7 @@ static void software_reset(void) {
 
 static int load_firmware(void) {
     int fd = open(FW_PATH, O_RDONLY);
-    if (fd < 0) { klog("wcn: missing %s\n", FW_PATH); return -1; }
+    if (fd < 0) { slog("wcn: missing %s\n", FW_PATH); return -1; }
     off_t size = lseek(fd, 0, SEEK_END);
     if (size < SBL_BYTES || size > FW_LIMIT || lseek(fd, 0, SEEK_SET) < 0) {
         close(fd); return -1;
@@ -278,8 +271,6 @@ static int load_firmware(void) {
     }
     close(fd);
     if (memcmp(w.dma + FW_OFFSET, "\177ELF", 4)) return -1;
-    klog("wcn: firmware bytes=%u DMA=%llx\n", w.fw_size,
-         (unsigned long long)w.dma_phys);
     sync_dma();
     return 0;
 }
@@ -316,8 +307,6 @@ static void capture_rddm(void) {
     uint64_t until = kernel_tic_ms(0) + 10000;
     while ((reg(w.bhie + 0x78) >> 30) != 2 && kernel_tic_ms(0) < until) usleep(1000);
     uint32_t status = reg(w.bhie + 0x78);
-    klog("wcn: RDDM status=%08x pa=%llx first=%08x\n", status,
-         (unsigned long long)w.rddm_phys, *(uint32_t *)w.rddm);
     if ((status >> 30) != 2) return;
     sync_dma();
     int fd = open("/tmp/wcn-rddm.bin", O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -329,7 +318,7 @@ static void capture_rddm(void) {
         pos += n;
     }
     close(fd);
-    klog("wcn: RDDM saved bytes=%u /tmp/wcn-rddm.bin\n", pos);
+    slog("wcn: RDDM saved bytes=%u /tmp/wcn-rddm.bin\n", pos);
 }
 
 static int setup_contexts(void) {
@@ -395,7 +384,7 @@ static void ipcr_event(const mhi_tre_t *event) {
     unsigned channel = event->info >> 24;
     if (channel != 20 && channel != 21) return;
     if (code != 2 && code != 4) {
-        klog("wcn: IPCR channel=%u completion error=%u\n", channel, code);
+        slog("wcn: IPCR channel=%u completion error=%u\n", channel, code);
         w.ipcr_ready = 0;
         w.stage = "IPCR-completion-error";
         return;
@@ -425,7 +414,7 @@ static void ipcr_event(const mhi_tre_t *event) {
 void wcn_poll(void) {
     if (!w.contexts_ready) return;
     if (reg(0x48) & 4) {
-        klog("wcn: MHI SYSERR ee=%u status=%08x error=%08x\n", ee(), reg(0x48), reg(w.bhi + 0x30));
+        slog("wcn: MHI SYSERR ee=%u status=%08x error=%08x\n", ee(), reg(0x48), reg(w.bhi + 0x30));
         capture_rddm();
         wcn_stop();
         w.stage = "MHI-SYSERR";
@@ -448,8 +437,6 @@ void wcn_poll(void) {
             memcpy(&event, w.dma + offsets[i] + w.er_rp[i] * 16, sizeof(event));
             w.events++; w.last_event = event.info; w.last_data = event.data;
             ipcr_event(&event);
-            klog("wcn: MHI event ring=%u ptr=%llx data=%08x info=%08x\n", i,
-                 (unsigned long long)event.ptr, event.data, event.info);
             w.er_rp[i] = (w.er_rp[i] + 1) % counts[i];
             w.er_wp[i] = (w.er_wp[i] + 1) % counts[i];
         }
@@ -503,8 +490,6 @@ static int start_channel(unsigned channel, unsigned ring) {
     while (w.cmd_done != index + 1 && kernel_tic_ms(0) < until) {
         wcn_poll(); usleep(1000);
     }
-    klog("wcn: IPCR start channel=%u done=%u code=%u state=%08x\n",
-         channel, w.cmd_done, w.cmd_code, ch->config);
     return w.cmd_done == index + 1 && w.cmd_code == 1 ? 0 : -1;
 }
 
@@ -552,7 +537,7 @@ static int download_amss(void) {
         if ((status >> 30) == 3 || (reg(0x48) & 4)) return -1;
         usleep(1000);
     } while (kernel_tic_ms(0) < until);
-    klog("wcn: BHIE timeout status=%08x ee=%u\n", reg(w.bhie + 0x44), ee());
+    slog("wcn: BHIE timeout status=%08x ee=%u\n", reg(w.bhie + 0x44), ee());
     return -1;
 }
 
@@ -600,42 +585,31 @@ int wcn_start(void) {
     put(w.bhi + 0x2c, 0);
     put64(w.bhi + 8, w.dma_phys + FW_OFFSET);
     put(w.bhi + 0x10, SBL_BYTES);
-    klog("wcn: BHI before doorbell addr=%08x:%08x size=%08x ctrl=%08x status=%08x\n",
-         reg(w.bhi + 0xc), reg(w.bhi + 8), reg(w.bhi + 0x10), reg(0x38), reg(0x48));
     /* PBL can retain its last doorbell across a software reset. */
     uint32_t old_seq = reg(w.bhi + 0x18) & 0x3fffffff;
     uint32_t seq = (uint32_t)kernel_tic_ms(0) & 0x3fffffff;
     if (!seq || seq == old_seq) seq = (old_seq + 1) & 0x3fffffff;
     if (!seq) seq = 1;
     put(w.bhi + 0x18, seq);
-    klog("wcn: BHI request addr=%08x:%08x size=%08x db=%08x old=%08x cmd=%04x ctrl=%08x\n",
-         reg(w.bhi + 0xc), reg(w.bhi + 8), reg(w.bhi + 0x10),
-         reg(w.bhi + 0x18), old_seq, read32(w.cfg + 4) & 0xffff, reg(0x38));
     if (wait_reg(w.bhi + 0x2c, 0xc0000000, 0x80000000, 20000)) goto fail;
-    klog("wcn: BHI accepted SBL, ee=%u status=%08x\n", ee(), reg(0x48));
     w.stage = "READY";
     if (wait_reg(0x38, 2, 0, 10000) || wait_reg(0x48, 1, 1, 10000) || setup_contexts()) goto fail;
     uint64_t until = kernel_tic_ms(0) + 10000;
     while (ee() == 0 && kernel_tic_ms(0) < until) { wcn_poll(); usleep(1000); }
     if (ee() != 1) goto fail;
-    klog("wcn: SBL running MHI=%08x BHIE=%x\n", reg(0x48), reg(0x2c));
     w.stage = "BHIE";
     if (download_amss()) goto fail;
     until = kernel_tic_ms(0) + 20000;
     while (ee() != 2 && kernel_tic_ms(0) < until) { wcn_poll(); usleep(1000); }
     if (ee() != 2) goto fail;
     w.stage = "AMSS";
-    klog("wcn: AMSS running; starting IPCR\n");
     w.stage = "IPCR";
     if (start_ipcr()) goto fail;
     w.stage = "QMI-discovery";
     return 0;
 fail:
-    klog("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x dbg=%08x/%08x/%08x\n",
-         w.stage, ee(), reg(0x48), reg(w.bhi + 0x2c), reg(w.bhi + 0x30),
-         reg(w.bhi + 0x34), reg(w.bhi + 0x38), reg(w.bhi + 0x3c));
-    klog("wcn: MSI sink=%08x PCI status=%08x\n",
-         *(volatile uint32_t *)(w.dma + MSI_OFFSET), read32(w.cfg + 4));
+    slog("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x\n",
+         w.stage, ee(), reg(0x48), reg(w.bhi + 0x2c), reg(w.bhi + 0x30));
     const char *failed = w.stage;
     wcn_stop();
     w.stage = failed;

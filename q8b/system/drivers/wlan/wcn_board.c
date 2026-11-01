@@ -70,10 +70,9 @@ uint8_t *wcn_board_data(unsigned chip, unsigned board, int regdb, unsigned *size
     if (entry) {
         result = malloc(*size);
         if (result) memcpy(result, entry, *size);
-        klog("wcn: %s selected for %s bytes=%u\n", regdb ? "regdb" : "BDF", name, *size);
     }
     free(file);
     if (!result && regdb) result = wcn_read_file(FW_DIR "regdb.bin", 256 * 1024, size);
-    if (!result) { *size = 0; klog("wcn: missing %s for %s\n", regdb ? "regdb" : "BDF", name); }
+    if (!result) { *size = 0; slog("wcn: missing %s for %s\n", regdb ? "regdb" : "BDF", name); }
     return result;
 }

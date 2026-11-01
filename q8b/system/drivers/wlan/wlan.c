@@ -19,6 +19,7 @@
 
 static int start_pending, stop_pending;
 static char connect_path[128];
+static unsigned connect_scan_pending;
 static unsigned rx_ready,tx_ready,reconnect_pending;
 enum { RETRY_IDLE,RETRY_DELAY,RETRY_BOOT,RETRY_SCAN,RETRY_CONNECT,RETRY_RESCAN };
 static struct { unsigned state,attempts,recovered,backoff;uint64_t deadline,stable; } retry;
@@ -27,7 +28,7 @@ static void retry_schedule(void) {
     unsigned delay=retry.backoff<5 ? 1u<<retry.backoff:30;
     if (retry.backoff<5) retry.backoff++;
     retry.deadline=kernel_tic_ms(0)+(uint64_t)delay*1000;
-    klog("wcn: reconnect scheduled in %u seconds\n",delay);
+    slog("wcn: reconnect scheduled in %u seconds\n",delay);
 }
 static void reconnect_poll(void) {
     if (!wcn_wpa_profile_ssid()[0]) return;
@@ -125,15 +126,32 @@ static int wlan_loop(vdevice_t *dev, void *p) {
     ipc_disable();
     if (stop_pending) {
         stop_pending = start_pending = reconnect_pending = 0;
+        memset(connect_path,0,sizeof(connect_path));
+        connect_scan_pending = 0;
         memset(&retry,0,sizeof(retry));wcn_wpa_forget();
         wcn_stop();
     } else if (start_pending) {
         start_pending = 0;
         (void)wcn_start();
     }
-    if (connect_path[0]) {
-        if (wcn_sta_connect_file(connect_path)) klog("wcn: connect request rejected\n");
-        memset(connect_path,0,sizeof(connect_path));
+    /* A startup profile is one-use and must only be consumed after the
+     * controller has finished booting and a fresh scan has populated the
+     * BSS table.  Calling wcn_sta_connect_file() earlier races WMI/DP setup
+     * and loses the request before the radio is usable. */
+    if (connect_path[0] && wcn_wmi_ready() && wcn_dp_ready()) {
+        if (!connect_scan_pending) {
+            if (!wcn_wmi_scan()) {
+                connect_scan_pending = 1;
+                slog("wcn: startup scan requested\n");
+            }
+        } else if (wcn_wmi_scan_finished()) {
+            if (wcn_sta_connect_file(connect_path))
+                slog("wcn: startup connect rejected\n");
+            else
+                slog("wcn: startup connect requested\n");
+            memset(connect_path,0,sizeof(connect_path));
+            connect_scan_pending = 0;
+        }
     }
     if (reconnect_pending) { reconnect_pending=0;retry_schedule(); }
     wcn_poll();
@@ -162,7 +180,14 @@ int main(int argc, char **argv) {
     dev.read=wlan_read;dev.write=wlan_write;dev.dev_cntl=wlan_dcntl;
     dev.check_poll_events=wlan_events;
     dev.loop_step = wlan_loop;
-    start_pending = argc > 2 && !strcmp(argv[2], "--start");
+    for (int i=2;i<argc;i++) {
+        if (!strcmp(argv[i], "--start")) {
+            start_pending = 1;
+        } else if (!strcmp(argv[i], "--connect") && i+1<argc &&
+                   strlen(argv[i+1])<sizeof(connect_path)) {
+            strcpy(connect_path,argv[++i]);
+        }
+    }
     device_run(&dev, node, FS_TYPE_CHAR, 0600, false);
     wcn_stop();
     return 0;

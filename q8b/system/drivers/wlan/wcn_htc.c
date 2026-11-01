@@ -41,7 +41,6 @@ static int connect_service(unsigned service) {
     uint32_t p[2] = {2 | (service << 16), service == 0x100 ? h.total_credits << 8 : 8};
     if (send_htc(0, 0, p, sizeof(p))) return -1;
     h.pending = service; h.deadline = kernel_tic_ms(0) + 5000;
-    klog("wcn: HTC connect service=%x\n", service);
     return 0;
 }
 
@@ -76,17 +75,15 @@ void wcn_htc_receive(unsigned pipe, const void *data, unsigned bytes) {
             h.total_credits = u16(p+2); h.credit_size = u16(p+4);
             if (!h.total_credits || h.total_credits > 255 || !h.credit_size) { h.failed = 1; return; }
             h.ready = 1;
-            klog("wcn: HTC READY credits=%u credit_size=%u endpoints=%u\n", h.total_credits, h.credit_size, p[6]);
         } else if (id == 3) {
             unsigned service = u16(p+2), eid = p[5], max_size = u16(p+6);
             if (service != h.pending || p[4] || !eid || eid >= 9 || !max_size) {
-                klog("wcn: HTC connect rejected service=%x status=%u ep=%u\n", service, p[4], eid);
+                slog("wcn: HTC connect rejected service=%x status=%u ep=%u\n", service, p[4], eid);
                 h.failed = 1; return;
             }
             h.pending = 0; h.max_size[eid] = max_size;
             if (service == 0x100) { h.wmi_ep = eid; h.credits[eid] = h.total_credits; }
             if (service == 0x300) h.htt_ep = eid;
-            klog("wcn: HTC service=%x endpoint=%u max=%u\n", service, eid, max_size);
         }
     } else if (ep == h.wmi_ep) {
         if (len < 4) { h.failed = 1; return; }
@@ -101,7 +98,7 @@ void wcn_htc_poll(void) {
     if (!h.ready || h.failed) return;
     if (h.setup) { wcn_wmi_poll(); wcn_htt_poll(); return; }
     if (h.pending) {
-        if (kernel_tic_ms(0) >= h.deadline) { h.failed = 1; klog("wcn: HTC service timeout=%x\n", h.pending); }
+        if (kernel_tic_ms(0) >= h.deadline) { h.failed = 1; slog("wcn: HTC service timeout=%x\n", h.pending); }
         return;
     }
     if (!h.htt_ep) { if (connect_service(0x300)) h.failed = 1; }
@@ -110,7 +107,6 @@ void wcn_htc_poll(void) {
         uint32_t p[3] = {5,0,0};
         if (send_htc(0, 0, p, sizeof(p))) { h.failed = 1; return; }
         h.setup = 1;
-        klog("wcn: HTC setup complete\n");
     }
 }
 int wcn_htc_wmi_send(const void *data, unsigned bytes) {

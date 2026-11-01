@@ -1,11 +1,9 @@
-# Q8B full window system on the UEFI GOP framebuffer.
-@/bin/ipcserv /drivers/timerd
 @/bin/ipcserv /drivers/piped             /dev/pipe0
-@/bin/ipcserv /drivers/ramfsd            /tmp
 @/bin/ipcserv /drivers/nulld             /dev/null
+@/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
+# Q8B full window system on the UEFI GOP framebuffer.
 @/bin/ipcserv /drivers/logd              /dev/log
 
-@/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
 @export ADRENO_ENABLE=1
 @/bin/ipcserv /drivers/q8b/g2dd          /dev/g2d
 
@@ -17,7 +15,7 @@
 # address arguments, so it starts its DHCP client automatically on /dev/wlan0.
 # Keep Wi-Fi on /dev/net1 so existing wired clients using /dev/net0 remain
 # compatible while applications can select the wireless default explicitly.
-@/bin/ipcserv /drivers/q8b/wlan          /dev/wlan0 --start
+@/bin/ipcserv /drivers/q8b/wlan          /dev/wlan0 --start --connect /etc/wlan.conf
 @/bin/ipcserv /drivers/netd              /dev/net1 /dev/wlan0
 @/bin/bgrun /sbin/sshd
 #@/bin/ipcserv /drivers/q8b/fand          /dev/fan

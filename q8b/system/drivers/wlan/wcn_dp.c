@@ -164,7 +164,6 @@ int wcn_dp_init(void) {
     /* Every hash maps to REO2SW1. The remaining rings are still valid. */
     wcn_soc_write(REO+0xc,0x11111111); wcn_soc_write(REO+0x10,0x11111111);
     d.active=1;
-    klog("wcn: DP rings=%u bytes=%u pa=%llx\n",d.count,d.used,(unsigned long long)d.pa);
     return 0;
 }
 
@@ -178,7 +177,6 @@ static int dp_configure(const struct dp_ring *r) {
     p[4]=hp; p[5]=hp>>32; p[6]=tp; p[7]=tp>>32;
     p[11]=r->dest ? r->words | (1u<<16) : 0; /* Keep remote HP updates running while polling. */
     if (wcn_htc_htt_send(p,sizeof(p))) return -1;
-    klog("wcn: HTT ring id=%u pdev=%u type=%u words=%u\n",r->id,r->pdev,r->htt_type,r->entries*r->words);
     return 0;
 }
 
@@ -187,7 +185,7 @@ static struct dp_ring *dp_find(unsigned id) {
     return NULL;
 }
 static int dp_fault(const char *why) {
-    d.bad++; d.failed=1; klog("wcn: DP invalid %s; stop/start required\n",why); return -1;
+    d.bad++; d.failed=1; slog("wcn: DP invalid %s; stop/start required\n",why); return -1;
 }
 static unsigned dp_space(struct dp_ring *r) {
     unsigned tail=dp_hw(r)/r->words;
@@ -246,7 +244,6 @@ static void dp_rx_buffer(unsigned id,unsigned deliver) {
         d.rx_delivered++; wcn_sta_data(b+392+pad,len,&sec);
     } else {
         d.rx_dropped++;
-        if (d.rx_dropped<=8) klog("wcn: RX drop len=%u pad=%u decap=%u attention=%x/%x deliver=%u\n",len,pad,decap,p[22],p[23],deliver);
     }
     d.rx_owner[id]=2;
 }

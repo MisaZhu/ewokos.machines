@@ -36,10 +36,21 @@ static char country[3];
 static int country_valid(const char *p) { return p && p[0]>='A' && p[0]<='Z' && p[1]>='A' && p[1]<='Z' && !p[2]; }
 static int country_load(void) {
     FILE *fp=fopen("/etc/wlan.country","r");if (!fp) return 0;
-    char value[5]={0};unsigned n=fread(value,1,4,fp);int extra=fgetc(fp);fclose(fp);
-    if (extra!=EOF || (n!=2 && (n!=3 || value[2]!='\n'))) return -1;
-    value[2]=0;if (!country_valid(value)) return -1;
-    memcpy(country,value,3);return 0;
+    /* Treat the file as a small text setting: accept the usual LF/CRLF and
+     * harmless trailing blank lines produced by editors. */
+    char value[16]={0};
+    unsigned n=fread(value,1,sizeof(value)-1,fp);
+    int extra=fgetc(fp);fclose(fp);
+    if (extra!=EOF) return -1;
+    unsigned begin=0,end=n;
+    while (begin<end && (value[begin]==' ' || value[begin]=='\t' ||
+                         value[begin]=='\r' || value[begin]=='\n')) begin++;
+    while (end>begin && (value[end-1]==' ' || value[end-1]=='\t' ||
+                         value[end-1]=='\r' || value[end-1]=='\n')) end--;
+    if (end-begin!=2) return -1;
+    char alpha[3]={value[begin],value[begin+1],0};
+    if (!country_valid(alpha)) return -1;
+    memcpy(country,alpha,3);return 0;
 }
 int wcn_wmi_country(const char *alpha2) {
     if (!country_valid(alpha2) || !f.ready || f.failed || wcn_sta_busy() || f.scan_pending || f.scan_active || f.scan_cancelling || f.country_state) return -1;
@@ -208,7 +219,6 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             f.chains = get32(v+36); f.memory_requests = get32(v+72);
             if (!f.chains || f.chains > 2 || f.memory_requests) { f.failed = 1; return; }
             f.service_ready = 1;
-            klog("wcn: WMI service ready chains=%u memory_requests=%u build=%x\n", f.chains, f.memory_requests, get32(v));
         }
         if (event==0x4009 && tag==18) {
             for (unsigned off=0;off<len;) {
@@ -256,7 +266,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             f.ready = 1;
             if (country_load()) { f.failed=1;return; }
             if (country[0]) f.country_state=1;
-            klog("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+            slog("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
                  f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5]);
         }
         if (event==0x3001 && tag==36 && len>=24 &&
@@ -264,7 +274,6 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             !get32(v+20) && (f.scan_active || f.scan_cancelling)) {
             unsigned type=get32(v), reason=get32(v+4);
             f.scan_events++;
-            klog("wcn: scan event=%x reason=%u frequency=%u\n",type,reason,get32(v+8));
             if (type & 1) f.scan_active=1;
             if (type & (2|0x40)) {
                 f.scan_active=f.scan_cancelling=0; f.scan_done=1;
@@ -294,10 +303,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
                     f.reg[phy].rule[i].power=v[6];
                     f.reg[phy].rule[i].bw=get16(v+4);
                     f.reg[phy].rule[i].flags=get16(v+8);
-                    klog("wcn: reg phy=%u %u-%u MHz power=%u flags=%x\n",phy,
-                         get16(v),get16(v+2),v[6],get16(v+8));
                 }
-                klog("wcn: reg country=%c%c phy=%u rules=%u\n",reg[8],reg[9],phy,count);
             }
         }
     }
@@ -366,7 +372,6 @@ static int send_scan(void) {
     for (unsigned i=0;i<SCAN_CHANNELS;i++) p.channels[i]=scan_freqs[i];
     p.ssids=p.bssids=tlv(19,0); p.ies=tlv(17,0);
     if (wcn_htc_wmi_send(&p,sizeof(p))) return -1;
-    klog("wcn: passive scan id=%x channels=%u\n",p.cmd.scan_id,(unsigned)SCAN_CHANNELS);
     return 0;
 }
 
@@ -393,7 +398,10 @@ static int send_init(void) {
     r->num_peer_keys=2; r->ast_skid_limit=16;
     r->tx_chain_mask = r->rx_chain_mask = (1u << f.chains)-1;
     r->rx_timeout_pri[0]=r->rx_timeout_pri[1]=r->rx_timeout_pri[2]=100;
-    r->rx_timeout_pri[3]=40; r->rx_decap_mode=1;
+    r->rx_timeout_pri[3]=40;
+    /* Keep the target-wide default in Native Wi-Fi mode.  The station vdev
+     * selects Ethernet-II explicitly after it is created. */
+    r->rx_decap_mode=1;
     r->scan_max_pending_req=4; r->bmiss_offload_max_vdev=3;
     r->roam_offload_max_vdev=3; r->roam_offload_max_ap_profiles=8;
     r->tx_dbg_log_size=1024; r->gtk_offload_max_vdev=2;
@@ -403,7 +411,6 @@ static int send_init(void) {
     r->num_wow_filters=22; r->use_pdev_id=1; r->flag1=1u << 5;
     r->flags2=1u << 9;
     if (wcn_htc_wmi_send(&p, sizeof(p))) return -1;
-    klog("wcn: WMI INIT sent bytes=%u\n", (unsigned)sizeof(p));
     return 0;
 }
 
@@ -415,7 +422,7 @@ void wcn_wmi_poll(void) {
         f.init_sent=1; f.deadline=kernel_tic_ms(0)+20000;
     }
     if (f.init_sent && !f.ready && kernel_tic_ms(0)>=f.deadline) {
-        f.failed=1; klog("wcn: WMI READY timeout\n");
+        f.failed=1; slog("wcn: WMI READY timeout\n");
     }
     if (!f.ready) return;
     if (!f.hw_mode_sent) {
@@ -430,7 +437,7 @@ void wcn_wmi_poll(void) {
         if (!f.country_mask) f.country_mask=3;
         f.reg[0].valid=f.reg[1].valid=0;f.channels_sent=0;
         f.country_state=2;f.country_deadline=kernel_tic_ms(0)+8000;
-        klog("wcn: country requested=%s\n",country);return;
+        return;
     }
     if (f.country_state==2) {
         /* The firmware updates only the addressed pdev, even in DBS mode. */
@@ -439,8 +446,8 @@ void wcn_wmi_poll(void) {
             if (!wcn_htc_wmi_send(p,sizeof(p))) f.country_sent|=1u<<phy;
             break;
         }
-        if ((f.country_seen&f.country_mask)==f.country_mask) { f.country_state=0;klog("wcn: country applied=%s\n",country); }
-        else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;klog("wcn: country update timeout\n"); } return; }
+        if ((f.country_seen&f.country_mask)==f.country_mask) { f.country_state=0;slog("wcn: country applied=%s\n",country); }
+        else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;slog("wcn: country update timeout\n"); } return; }
     }
     if (f.scan_pending) {
         if (kernel_tic_ms(0)>=f.scan_deadline) {
@@ -456,14 +463,14 @@ void wcn_wmi_poll(void) {
     if (f.scan_active && !f.scan_cancelling && kernel_tic_ms(0)>=f.scan_deadline) {
         f.scan_cancelling=1; f.scan_timedout=1;
         f.scan_deadline=kernel_tic_ms(0)+3000;
-        klog("wcn: passive scan timeout; requesting cancellation\n");
+        slog("wcn: passive scan timeout; requesting cancellation\n");
     }
     if (f.scan_cancelling) {
         if (f.scan_cancelling==1 && !send_scan_cancel()) f.scan_cancelling=2;
         if (kernel_tic_ms(0)>=f.scan_deadline) {
             /* Do not reuse a vdev while firmware may still be scanning. */
             f.failed=1;
-            klog("wcn: scan cancellation timeout; stop/start required\n");
+            slog("wcn: scan cancellation timeout; stop/start required\n");
         }
     }
 }

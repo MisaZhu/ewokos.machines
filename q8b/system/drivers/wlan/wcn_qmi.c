@@ -74,7 +74,6 @@ static int request(unsigned id, const void *payload, unsigned bytes) {
     if (send_packet(1, q.node, q.port, LOCAL_PORT, packet, bytes + 7)) return -1;
     q.pending = txn; q.pending_id = id;
     q.deadline = kernel_tic_ms(0) + 20000;
-    klog("wcn: QMI request id=%x txn=%u bytes=%u\n", id, txn, bytes);
     return 0;
 }
 
@@ -91,7 +90,6 @@ static int send_m3(void) {
     uint8_t p[18]; p[0] = 1; set16(p + 1, 8);
     set32(p + 3, m3_pa); set32(p + 7, m3_pa >> 32);
     p[11] = 2; set16(p + 12, 4); set32(p + 14, m3_size);
-    klog("wcn: M3 bytes=%u pa=%llx\n", m3_size, (unsigned long long)m3_pa);
     return request(0x3c, p, sizeof(p));
 }
 
@@ -118,7 +116,6 @@ static int begin_board_upload(int regdb) {
     if (!upload.data) return -1;
     upload.offset = upload.sequence = 0;
     upload.type = regdb ? 4 : (upload.size >= 4 && !memcmp(upload.data, "\177ELF", 4) ? 1 : 0);
-    klog("wcn: uploading %s type=%u bytes=%u\n", regdb ? "regdb" : "BDF", upload.type, upload.size);
     return upload_segment();
 }
 
@@ -154,7 +151,6 @@ static int respond_memory(const uint8_t *p, unsigned bytes) {
         if (bytes - pos < 9) return -1;
         sizes[i] = get32(p + pos); types[i] = get32(p + pos + 4);
         unsigned cfgs = p[pos + 8]; pos += 9;
-        klog("wcn: QMI requested segment=%u type=%u bytes=%u cfgs=%u\n", i, types[i], sizes[i], cfgs);
         /* The type is an opaque firmware tag (new releases also use 12/13).
          * Like ath11k, echo it while allocating ordinary host DDR. */
         if (!sizes[i] || sizes[i] > 32u * 1024 * 1024 || types[i] > 0x7fffffff || cfgs > 2)
@@ -190,8 +186,6 @@ static int respond_memory(const uint8_t *p, unsigned bytes) {
         uint8_t *seg = reply + 4 + i * 17;
         set32(seg, memory[i].pa); set32(seg + 4, memory[i].pa >> 32);
         set32(seg + 8, sizes[i]); set32(seg + 12, types[i]); seg[16] = 0;
-        klog("wcn: QMI memory type=%u bytes=%u pa=%llx\n", types[i], sizes[i],
-             (unsigned long long)memory[i].pa);
     }
     __asm__ volatile("dsb sy" ::: "memory");
     return request(0x36, reply, 4 + count * 17);
@@ -201,7 +195,6 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
     if (bytes < 7 || get16(p + 5) != bytes - 7) { q.malformed++; return; }
     unsigned id = get16(p + 3), txn = get16(p + 1);
     q.last_id = id;
-    klog("wcn: QMI receive type=%u id=%x txn=%u bytes=%u\n", p[0], id, txn, bytes);
     if (p[0] == 4) {
         if (id == 0x35) {
             q.memory_requests++;
@@ -209,7 +202,7 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
                 unsigned len = get16(p + i + 1);
                 if (len > bytes - i - 3) { q.malformed++; return; }
                 if (p[i] == 1 && respond_memory(p + i + 3, len))
-                    klog("wcn: QMI memory request rejected or allocation failed\n");
+                    slog("wcn: QMI memory request rejected or allocation failed\n");
                 i += 3 + len;
             }
         }
@@ -217,7 +210,7 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
             q.memory_ready = 1;
             if (!q.pending) (void)request(0x24, "", 0);
         }
-        if (id == 0x38) { q.firmware_ready = 1; klog("wcn: firmware initialization done; CE/HTC setup pending\n"); }
+        if (id == 0x38) { q.firmware_ready = 1;  }
         return;
     }
     if (p[0] != 2 || !q.pending || txn != q.pending || id != q.pending_id) return;
@@ -239,17 +232,16 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
     }
     if (!found) { q.malformed++; return; }
     q.pending = 0;
-    klog("wcn: QMI response id=%x result=%u error=%u\n", id, q.result, q.error);
+    if (q.result) slog("wcn: QMI response id=%x result=%u error=%u\n", id, q.result, q.error);
     if (q.result) { q.failed = 1; return; }
     if (id == 0x20) { q.registered = 1; host_capabilities(); }
     if (id == 0x34) q.host_cap = 1;
     if (id == 0x36 && q.memory_ready) (void)request(0x24, "", 0);
     if (id == 0x24) {
         q.target_cap = 1;
-        klog("wcn: QMI target chip=%x board=%x soc=%x firmware=%08x\n", q.chip, q.board, q.soc, q.fw);
         /* PCI devices already have their BAR; DEVICE_INFO is hybrid-bus only. */
         if (begin_board_upload(1) && begin_board_upload(0))
-            klog("wcn: board upload could not start\n");
+            slog("wcn: board upload could not start\n");
     }
     if (id == 0x25 && upload.data) {
         upload.offset += upload.chunk; upload.sequence++;
@@ -257,13 +249,12 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
             (void)upload_segment();
         } else {
             unsigned type = upload.type;
-            klog("wcn: board upload complete type=%u bytes=%u\n", type, upload.size);
             free(upload.data); memset(&upload, 0, sizeof(upload));
             if (type == 4) {
-                if (begin_board_upload(0)) klog("wcn: BDF upload could not start\n");
+                if (begin_board_upload(0)) slog("wcn: BDF upload could not start\n");
             } else {
                 q.bdf_ready = 1;
-                if (send_m3()) klog("wcn: M3 setup failed\n");
+                if (send_m3()) slog("wcn: M3 setup failed\n");
             }
         }
     }
@@ -295,12 +286,9 @@ void wcn_qmi_receive(const void *packet, unsigned bytes) {
         if (!q.hello) {
             q.hello = 1;
             (void)send_control(2, node, 0, 0);
-            klog("wcn: QRTR hello from node=%u\n", node);
         }
     } else if (type == 4 && dest_port == CTRL && size >= 20 && get32(body) == 4) {
         unsigned service = get32(body + 4), instance = get32(body + 8);
-        klog("wcn: QRTR service=%x instance=%x node=%u port=%u\n",
-             service, instance, get32(body + 12), get32(body + 16));
         if (service == 0x45 && (instance & 255) == 1 && !q.port) {
             q.node = get32(body + 12); q.port = get32(body + 16);
             register_indications();
@@ -353,7 +341,7 @@ void wcn_qmi_poll(void) {
     if (q.failed) return;
     if (q.pending) {
         if (kernel_tic_ms(0) >= q.deadline) {
-            klog("wcn: QMI timeout id=%x txn=%u\n", q.pending_id, q.pending);
+            slog("wcn: QMI timeout id=%x txn=%u\n", q.pending_id, q.pending);
             q.failed = 1;
         }
         return;

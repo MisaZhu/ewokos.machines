@@ -7,7 +7,6 @@
 #include "wcn_mhi.h"
 #include "wcn_htc.h"
 #include <ewoksys/dma.h>
-#include <ewoksys/klog.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -105,7 +104,6 @@ int wcn_ce_init(void) {
     }
     c.active = 1;
     wcn_htc_reset();
-    klog("wcn: CE initialized pa=%llx bytes=%u\n", (unsigned long long)c.pa, c.used);
     return 0;
 }
 

@@ -43,13 +43,13 @@ static unsigned le16(const uint8_t *p) { return p[0]|((unsigned)p[1]<<8); }
 static unsigned le32(const uint8_t *p) { return le16(p)|((uint32_t)le16(p+2)<<16); }
 static void put16(uint8_t *p,unsigned v) { p[0]=v; p[1]=v>>8; }
 static unsigned tlv(unsigned tag,unsigned bytes) { return tag<<16|bytes; }
+enum { WMI_VDEV_PARAM_RX_DECAP_TYPE=0x57, RX_DECAP_ETHERNET2=2 };
 static void state(unsigned value) {
     s.state=value; s.deadline=kernel_tic_ms(0)+8000;
-    klog("wcn: station %s\n",names[value]);
 }
 static void fail(const char *why,unsigned status) {
     s.error=why; s.status=status; state(FAILED);
-    klog("wcn: station failure=%s status=%u; recovery required\n",why,status);
+    slog("wcn: station failure=%s status=%u; recovery required\n",why,status);
 }
 /* Negotiate WPA2-PSK/CCMP only. Reject mandatory PMF and unsupported group ciphers. */
 static int select_rsn(const uint8_t *ie,unsigned bytes) {
@@ -248,8 +248,6 @@ int wcn_sta_associate(const char *ssid) {
     }
     memset(s.dma,0,STA_DMA_BYTES); wcn_wmi_mac(s.mac);
     state(CONFIG);
-    klog("wcn: station BSSID=%02x:%02x:%02x:%02x:%02x:%02x MHz=%u power=%u WPA2-PSK CCMP\n",
-         s.bss.bssid[0],s.bss.bssid[1],s.bss.bssid[2],s.bss.bssid[3],s.bss.bssid[4],s.bss.bssid[5],s.bss.mhz,s.power);
     return 0;
 }
 int wcn_sta_busy(void) { return s.state!=IDLE; }
@@ -280,6 +278,12 @@ static int configure(void) {
     const unsigned params[][2]={{48,1},{91,2},{34,s.nss},{1,2347},{2,2346},{18,10},{19,20},{20,s.ht},{28,!!(le16(s.ht_ie)&(32|64))}};
     unsigned i=s.config;
     uint32_t p[]={0x5008,(95u<<16)|12,0,params[i][0],params[i][1]};
+    return wcn_htc_wmi_send(p,sizeof(p));
+}
+static int configure_rx_decap(void) {
+    /* WCN6855 keeps the resource-wide default at Native Wi-Fi.  Select the
+     * Ethernet-II format only for this station vdev, matching the RX parser. */
+    uint32_t p[]={0x5008,(95u<<16)|12,0,WMI_VDEV_PARAM_RX_DECAP_TYPE,RX_DECAP_ETHERNET2};
     return wcn_htc_wmi_send(p,sizeof(p));
 }
 static int peer_create(void) {
@@ -473,7 +477,12 @@ void wcn_sta_poll(void) {
     if (!wcn_wmi_ready() || !wcn_dp_ready()) { fail("controller-unavailable",0); return; }
     if (kernel_tic_ms(0)>=s.deadline) { fail("timeout",s.state); return; }
     switch (s.state) {
-    case CONFIG: if (!configure() && ++s.config==(s.he ? 11u:10u)) state(PEER); break;
+    case CONFIG:
+        if (!configure() && ++s.config==(s.he ? 11u:10u)) {
+            if (configure_rx_decap()) fail("rx-decap-config",0);
+            else state(PEER);
+        }
+        break;
     case PEER: if (!peer_create()) state(PEER_WAIT); break;
     case PEER_WAIT: if (s.peer_mapped) state(ROUTE); break;
     case ROUTE: if (!route()) state(QUEUES); break;
@@ -497,7 +506,6 @@ void wcn_sta_event(unsigned event,unsigned tag,const uint8_t *p,unsigned bytes) 
         unsigned id=le32(p);
         for (unsigned i=0;i<FRAME_SLOTS;i++) if (id && s.pending[i]==id) {
             s.pending[i]=0; s.tx_done++; if (le32(p+4)) s.tx_errors++;
-            klog("wcn: management tx id=%u status=%u\n",id,le32(p+4));
         }
     }
     if (s.state==START_WAIT && event==0x5001 && tag==40 && bytes>=40 && !le32(p)) {
@@ -511,7 +519,6 @@ void wcn_sta_event(unsigned event,unsigned tag,const uint8_t *p,unsigned bytes) 
 void wcn_sta_peer(unsigned vdev,const uint8_t *mac,unsigned peer,unsigned hw_peer) {
     if ((s.state==PEER || s.state==PEER_WAIT) && !vdev && !memcmp(mac,s.bss.bssid,6)) {
         s.peer_mapped=1; s.peer=peer; s.hw_peer=hw_peer;
-        klog("wcn: AP peer mapped id=%u hw=%u\n",peer,hw_peer);
     }
 }
 void wcn_sta_management(const uint8_t *p,unsigned bytes,unsigned mhz) {
@@ -560,7 +567,6 @@ void wcn_sta_data(const uint8_t *frame,unsigned bytes,const struct wcn_rx_securi
         if (memcmp(frame+6,s.bss.bssid,6) || memcmp(frame,s.mac,6)) return;
         s.eapol_rx++;
         wcn_wpa_receive(frame+14,bytes-14);
-        klog("wcn: EAPOL received bytes=%u type=%u\n",bytes,bytes>15 ? frame[15]:255);
     } else if (security->valid && security->encrypted &&
                wcn_wpa_accept_msdu(security->group,security->key,security->tid,security->pn,security->amsdu,security->first,security->last,security->sequence,security->number))
         wcn_net_receive(frame,bytes);
@@ -624,13 +630,14 @@ static int hex_seed(const char *p,uint8_t seed[32]) {
 }
 int wcn_sta_connect_file(const char *path) {
     if (s.state!=IDLE || !wcn_wmi_station_available() || !wcn_dp_ready()) return -1;
-    /* Private one-use config: SSID, passphrase, 32-byte random seed in hex.
-     * Remove immediately after reading. Seed must come from a trusted CSPRNG. */
+    /* Read the SSID, passphrase and 32-byte random seed into private memory.
+     * Keep the root-owned file so the next boot can reconnect automatically;
+     * the passphrase and seed are still wiped from the temporary buffers. */
     FILE *fp=fopen(path,"r");if (!fp) return -1;
     char config[192];uint8_t seed[32];memset(config,0,sizeof(config));memset(seed,0,sizeof(seed));
     unsigned n=fread(config,1,sizeof(config)-1,fp);int extra=fgetc(fp);fclose(fp);
     int ret=-1;
-    if (unlink(path) || extra!=EOF || !n || memchr(config,0,n)) goto done;
+    if (extra!=EOF || !n || memchr(config,0,n)) goto done;
     char *ssid=config,*pass=strchr(ssid,'\n');if (!pass) goto done;*pass++=0;
     char *entropy=strchr(pass,'\n');if (!entropy) goto done;*entropy++=0;
     char *end=strchr(entropy,'\n');if (end) { *end++=0;if (*end) goto done; }

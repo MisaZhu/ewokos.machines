@@ -39,7 +39,7 @@ static unsigned equal(const uint8_t *p,const uint8_t *q,unsigned bytes) {
 }
 static void failed(const char *why) {
     a.error=why; a.state=ERROR; erase(a.pmk,sizeof(a.pmk)); erase(a.ptk,sizeof(a.ptk)); erase(a.gtk,sizeof(a.gtk)); erase(a.seed,sizeof(a.seed));
-    klog("wcn: WPA failed=%s\n",why);
+    slog("wcn: WPA failed=%s\n",why);
 }
 static int hmac(const uint8_t *key,unsigned key_len,const uint8_t *p,unsigned bytes,uint8_t out[20]) {
     Hmac ctx;
@@ -193,7 +193,7 @@ void wcn_wpa_receive(const uint8_t *p,unsigned bytes) {
         response(a.response2,0x010a,a.replay1,sizeof(a.response2));
         memcpy(a.response2+17,a.snonce,32);putbe16(a.response2+97,22);memcpy(a.response2+99,a.rsn,22);
         if (add_mic(a.response2,sizeof(a.response2))) { failed("message2-MIC");return; }
-        a.state=SEND2;klog("wcn: WPA message1 accepted\n");return;
+        a.state=SEND2;return;
     }
     if (info!=0x13ca || a.state<WAIT3 || be16(p+7)!=16 || !equal(p+17,a.anonce,32)) { a.bad++;return; }
     if (memcmp(p+9,a.replay1,8)<=0) { a.bad++;return; }
@@ -208,7 +208,7 @@ void wcn_wpa_receive(const uint8_t *p,unsigned bytes) {
     memcpy(a.replay3,p+9,8);memcpy(a.rsc,p+65,8);
     response(a.response4,0x030a,a.replay3,sizeof(a.response4));
     if (add_mic(a.response4,sizeof(a.response4))) { failed("message4-MIC");return; }
-    a.state=PAIR_SEND;klog("wcn: WPA message3 MIC verified\n");
+    a.state=PAIR_SEND;
 }
 void wcn_wpa_poll(void) {
     if (a.state==OFF || a.state==ERROR) return;
@@ -233,7 +233,7 @@ void wcn_wpa_poll(void) {
         if (ret>=0) { a.tx4=ret;a.state=TX4_WAIT; }
         break;
     case AUTHORIZE:
-        if (!wcn_sta_authorize()) { a.state=CONNECTED;a.established=1;erase(a.gtk,sizeof(a.gtk));erase(a.seed,sizeof(a.seed));erase(a.pmk,sizeof(a.pmk));klog("wcn: WPA2 connected\n"); }
+        if (!wcn_sta_authorize()) { a.state=CONNECTED;a.established=1;erase(a.gtk,sizeof(a.gtk));erase(a.seed,sizeof(a.seed));erase(a.pmk,sizeof(a.pmk));slog("wcn: WPA2 connected\n"); }
         break;
     default: break;
     }
