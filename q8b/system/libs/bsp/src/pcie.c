@@ -107,7 +107,13 @@
 #define PCI_PRIMARY_BUS         0x18u
 #define PCI_CAP_PTR              0x34u
 #define PCI_BAR0                0x10u
+#define PCI_CAP_ID_VPD          0x03u
 #define PCI_CAP_ID_EXP          0x10u
+#define PCI_EXT_CAP_ID_SERIAL   0x0003u
+#define PCI_VPD_ADDR             0x02u
+#define PCI_VPD_DATA             0x04u
+#define PCI_VPD_ADDR_F           0x8000u
+#define PCI_VPD_ADDR_MASK        0x7ffcu
 #define PCI_COMMAND_MEMORY      0x0002u
 #define PCI_COMMAND_MASTER      0x0004u
 
@@ -1034,6 +1040,8 @@ static int ekey_3v3_set(bool on) {
 	return 0;
 }
 
+static int radio_disable(void);
+
 static int prepare_ekey_power(void) {
 	int power_maps;
 	int layout;
@@ -1043,13 +1051,18 @@ static int prepare_ekey_power(void) {
 	 * PARF/PHY/DBI access.  Continuing with a presumed firmware state can
 	 * leave the endpoint partially powered and make the later ECAM read abort. */
 	klog("q8b pcie: PCIe4 Wi-Fi power preflight begin\n");
-	/* usbhostd may already own the combo module's USB Bluetooth function when
-	 * pcied starts.  Do not drop the shared E-key rail or assert the shared
-	 * W_DISABLE pins here: that resets the USB endpoint under xHCI and races
-	 * PCIe link training. PERST# is already asserted by the caller, so the
-	 * WLAN PCIe function is held in reset while we make the idempotent rail
-	 * votes below. A cold board has the rail off; a warm board keeps a live BT
-	 * function untouched. */
+	/* PERST# is already asserted by the caller. Force both active-low
+	 * W_DISABLE pins low and remove the E-key 3V3 rail before bringing the
+	 * endpoint back. This is required after a warm reset: PERST# alone does
+	 * not reset the WCN6855's internal PCIe state, and a stale endpoint can
+	 * remain in Detect even though the PHY reports signal. */
+	if (radio_disable() || ekey_3v3_set(false)) {
+		klog("q8b pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 off\n");
+		return -1;
+	}
+	/* Hold the module fully unpowered long enough to cross its POR/off
+	 * threshold before restoring the connector rail. */
+	usleep(100000);
 	if (ekey_3v3_set(true)) {
 		klog("q8b pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 on\n");
 		return -1;
@@ -1162,6 +1175,18 @@ static void configure_link_pins(void) {
 	update(clkreq, 0x3fu | BIT(9), 0x7u);
 }
 
+static int radio_disable(void) {
+	/* Assert both active-low W_DISABLE pins before removing 3.3 V. Latch the
+	 * low value first so the pad cannot briefly enable the module while its
+	 * firmware function is changed to GPIO output. */
+	for (unsigned pin = 133; pin <= 134; pin++) {
+		uintptr_t gpio = gpio_reg(pin);
+		update(gpio + 4, BIT(1), 0);
+		update(gpio, 0x3fu | BIT(9), 0x200u);
+	}
+	return 0;
+}
+
 static int radio_enable(void) {
 	/* GPIO133/134 are the board's active-low BT/WLAN disable pins.  Latch the
 	 * high value before switching each pad to output, as required by the TLMM
@@ -1207,13 +1232,33 @@ static int configure_outbound_atu(unsigned index, uint64_t cpu,
 	return configure_outbound_atu_at(DBI_VA, index, cpu, pci, size, type);
 }
 
-static uint8_t find_pcie_cap(ewokos_addr_t cfg) {
+static uint8_t find_cap(ewokos_addr_t cfg, uint8_t wanted) {
 	uint8_t cap = (uint8_t)(rd(cfg + PCI_CAP_PTR) & 0xfcu);
 	for (unsigned n = 0; n < 48 && cap >= 0x40; n++) {
 		uint32_t value = rd(cfg + cap);
-		if ((value & 0xffu) == PCI_CAP_ID_EXP)
+		if ((value & 0xffu) == wanted)
 			return cap;
 		cap = (uint8_t)((value >> 8) & 0xfcu);
+	}
+	return 0;
+}
+
+static uint8_t find_pcie_cap(ewokos_addr_t cfg) {
+	return find_cap(cfg, PCI_CAP_ID_EXP);
+}
+
+/* PCIe extended capabilities are safe to inspect only after ECAM is live.
+ * Device Serial Number is a read-only 64-bit value commonly backed by the
+ * endpoint's OTP, and remains useful when WLAN VPD/WMI calibration is absent. */
+static uint16_t find_ext_serial_cap(ewokos_addr_t cfg) {
+	unsigned off = 0x100;
+	for (unsigned n = 0; n < 64 && off; n++) {
+		uint32_t h = rd(cfg + off);
+		if (h == 0 || h == 0xffffffffu)
+			return 0;
+		if ((h & 0xffffu) == PCI_EXT_CAP_ID_SERIAL)
+			return (uint16_t)off;
+		off = (h >> 20) & 0xffcu;
 	}
 	return 0;
 }
@@ -1865,6 +1910,22 @@ static void fill_device(enum q8b_pcie_controller controller, unsigned bus,
 	}
 	uint8_t cap = find_pcie_cap(cfg_addr(controller, bus, device, function, 0));
 	out->pcie_cap = cap;
+	out->vpd_cap = find_cap(cfg_addr(controller, bus, device, function, 0),
+		PCI_CAP_ID_VPD);
+	if (out->vendor_id == Q8B_PCIE_WLAN_VENDOR_ID &&
+			out->device_id == Q8B_PCIE_WLAN_DEVICE_ID) {
+		ewokos_addr_t cfg = cfg_addr(controller, bus, device, function, 0);
+		uint16_t serial_cap = find_ext_serial_cap(cfg);
+		if (serial_cap) {
+			uint32_t lo = cfg32(controller, bus, device, function,
+					serial_cap + 4);
+			uint32_t hi = cfg32(controller, bus, device, function,
+					serial_cap + 8);
+			out->serial_number = lo | ((uint64_t)hi << 32);
+			out->serial_valid = out->serial_number != 0 &&
+					out->serial_number != UINT64_MAX;
+		}
+	}
 	if (cap) {
 		if (flags & Q8B_PCIE_DISABLE_ASPM)
 			cfg_write16(controller, bus, device, function, cap + 0x10,
@@ -1875,6 +1936,60 @@ static void fill_device(enum q8b_pcie_controller controller, unsigned bus,
 		out->link_speed = (uint8_t)(link & 0xfu);
 		out->link_width = (uint8_t)((link >> 4) & 0x3fu);
 	}
+}
+
+/* PCI VPD reads are owned by pcied.  The address register is a request
+ * mailbox: software writes an aligned offset, then waits for the firmware or
+ * endpoint to set bit 15 before reading the data register.  Keep the polling
+ * bounded; a missing/disabled VPD implementation must never hang boot. */
+static int cfg_vpd_read(enum q8b_pcie_controller controller, unsigned bus,
+		unsigned device, unsigned function, unsigned cap, unsigned offset,
+		uint32_t *value) {
+	if (!cap || !value || (offset & 3u) || offset > PCI_VPD_ADDR_MASK)
+		return -1;
+	cfg_write16(controller, bus, device, function, cap + PCI_VPD_ADDR,
+		(uint16_t)(offset & PCI_VPD_ADDR_MASK));
+	uint64_t deadline = kernel_tic_ms(0) + 100;
+	for (;;) {
+		if (cfg16(controller, bus, device, function,
+				cap + PCI_VPD_ADDR) & PCI_VPD_ADDR_F)
+			break;
+		if (kernel_tic_ms(0) >= deadline)
+			return -1;
+		usleep(1000);
+	}
+	*value = cfg32(controller, bus, device, function, cap + PCI_VPD_DATA);
+	return 0;
+}
+
+int q8b_pcie_read_vpd(const q8b_pcie_device_t *device, unsigned offset,
+		void *out, size_t bytes) {
+	if (!device || !out || !bytes || (offset & 3u) || (bytes & 3u) ||
+		device->controller > Q8B_PCIE4 ||
+		device->device > 31 || device->function > 7)
+		return -1;
+	if (device->controller == Q8B_PCIE4 && (!_pcie4_up ||
+			!_pcie4_wifi_powered))
+		return -1;
+	if (device->controller == Q8B_PCIE3A && !_pcie3a_up)
+		return -1;
+	if (!_ecam_va[device->controller] && ecam_map(
+			(enum q8b_pcie_controller)device->controller))
+		return -1;
+	ewokos_addr_t cfg = cfg_addr((enum q8b_pcie_controller)device->controller,
+			device->bus, device->device, device->function, 0);
+	uint8_t cap = find_cap(cfg, PCI_CAP_ID_VPD);
+	if (!cap)
+		return -2;
+	for (size_t pos = 0; pos < bytes; pos += 4) {
+		uint32_t value;
+		if (cfg_vpd_read((enum q8b_pcie_controller)device->controller,
+				device->bus, device->device, device->function, cap,
+				offset + (unsigned)pos, &value))
+			return -1;
+		memcpy((uint8_t *)out + pos, &value, sizeof(value));
+	}
+	return 0;
 }
 
 /* Cold-host resource assignment, analogous to Linux PCI sizing/setup-bus.

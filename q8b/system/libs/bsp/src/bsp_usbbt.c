@@ -241,10 +241,13 @@ int bsp_usb_bt_probe(bsp_usb_dev_t *dev,uint16_t vid,uint16_t pid,
         bsp_usb_bulk_open(dev,in,imps) || bsp_usb_bulk_open(dev,out,omps)) {
         memset(&bt,0,sizeof(bt)); return -1;
     }
-    bt.claimed=true; bt.busy=true;
-    bt.ready=qca_setup()==0;
-    bt.busy=false;
-    klog("q8b bt: claimed %04x:%04x ready=%d\n",vid,pid,bt.ready);
+    /* Do not run QCA DFU/HCI setup from usbhostd's enumeration path.  On Q8B
+     * the USB and PCIe functions share the E-key/radio power sequence, and
+     * pcied deliberately cold-cycles that rail before WCN startup.  btd's
+     * bsp_bt_init() gates USBHCI_CMD_SETUP on a valid WLAN MAC and performs
+     * qca_setup after the PCIe/WLAN owner has completed that sequence. */
+    bt.claimed=true; bt.busy=false; bt.ready=false;
+    klog("q8b bt: claimed %04x:%04x setup deferred until WLAN ready\n",vid,pid);
     return 0;
 }
 

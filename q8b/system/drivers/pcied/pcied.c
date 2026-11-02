@@ -12,6 +12,7 @@
 #include <ewoksys/proto.h>
 #include <ewoksys/sys.h>
 #include <ewoksys/vdevice.h>
+#include <stdint.h>
 #include <string.h>
 
 #define PCIE_MAX_DEVICES 32
@@ -19,6 +20,97 @@
 static q8b_pcie_device_t devices[PCIE_MAX_DEVICES];
 static int device_count;
 static ewokos_addr_t wlan_msi_sink;
+
+static int vpd_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static int log_vpd_mac_keyword(const uint8_t *vpd, size_t bytes,
+        uint8_t mac_out[6]) {
+    /* Several PCI VPD producers use the standard RO keyword "NA" for a
+     * network address. It is normally twelve ASCII hex digits, although a
+     * few cards store the six octets directly. */
+    for (size_t i = 0; i + 3 <= bytes; i++) {
+        if (vpd[i] != 'N' || vpd[i + 1] != 'A')
+            continue;
+        unsigned len = vpd[i + 2];
+        uint8_t mac[6];
+        if (len == 12 && i + 3 + len <= bytes) {
+            int valid = 1;
+            for (unsigned octet = 0; octet < 6; octet++) {
+                int hi = vpd_hex((char)vpd[i + 3 + octet * 2]);
+                int lo = vpd_hex((char)vpd[i + 3 + octet * 2 + 1]);
+                if (hi < 0 || lo < 0) { valid = 0; break; }
+                mac[octet] = (uint8_t)((hi << 4) | lo);
+            }
+            if (!valid) continue;
+        } else if (len == 6 && i + 3 + len <= bytes) {
+            memcpy(mac, vpd + i + 3, 6);
+        } else {
+            continue;
+        }
+        if ((mac[0] & 1u) || !(mac[0] | mac[1] | mac[2] | mac[3] |
+                mac[4] | mac[5]))
+            continue;
+        memcpy(mac_out, mac, 6);
+        klog("q8b pcied: WLAN PCI VPD NA MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        return 1;
+    }
+    return 0;
+}
+
+static int log_vpd_mac_strings(const uint8_t *vpd, size_t bytes,
+        uint8_t mac_out[6]) {
+    for (size_t i = 0; i + 17 <= bytes; i++) {
+        uint8_t mac[6];
+        int valid = 1;
+        for (unsigned octet = 0; octet < 6; octet++) {
+            int hi = vpd_hex((char)vpd[i + octet * 3]);
+            int lo = vpd_hex((char)vpd[i + octet * 3 + 1]);
+            if (hi < 0 || lo < 0 || (octet != 5 && vpd[i + octet * 3 + 2] != ':')) {
+                valid = 0;
+                break;
+            }
+            mac[octet] = (uint8_t)((hi << 4) | lo);
+        }
+        if (valid && (mac[0] & 1u) == 0 && (mac[0] | mac[1] | mac[2] |
+                mac[3] | mac[4] | mac[5])) {
+            klog("q8b pcied: WLAN PCI VPD MAC text=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            memcpy(mac_out, mac, 6);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void log_wlan_vpd(q8b_pcie_device_t *d) {
+    uint8_t vpd[256];
+	if (!q8b_pcie_is_wlan(d))
+		return;
+	int ret = q8b_pcie_read_vpd(d, 0, vpd, sizeof(vpd));
+	if (ret == -2) {
+		klog("q8b pcied: WLAN PCI VPD capability absent\n");
+		return;
+	}
+	if (ret) {
+		klog("q8b pcied: WLAN PCI VPD read failed=%d\n", ret);
+		return;
+	}
+    d->vpd_mac_valid = log_vpd_mac_keyword(vpd, sizeof(vpd), d->vpd_mac) ||
+        log_vpd_mac_strings(vpd, sizeof(vpd), d->vpd_mac);
+    klog("q8b pcied: WLAN PCI VPD[0..255]:\n");
+    for (unsigned off = 0; off < sizeof(vpd); off += 16) {
+		klog("q8b pcied:   %03x:", off);
+		for (unsigned i = 0; i < 16; i++)
+			klog(" %02x", vpd[off + i]);
+		klog("\n");
+	}
+}
 
 static int pcie_dcntl(vdevice_t *dev, int from_pid, int cmd,
         proto_t *in, proto_t *ret, void *p) {
@@ -149,8 +241,13 @@ int main(int argc, char **argv) {
         if (d->controller == Q8B_PCIE3A && d->vendor_id == 0x1179 &&
                 d->device_id == 0x0220)
             ethernet_pf++;
-        if (q8b_pcie_is_wlan(d))
+        if (q8b_pcie_is_wlan(d)) {
             wifi++;
+            if (d->serial_valid)
+                klog("q8b pcied: WLAN PCIe serial=%016llx\n",
+                        (unsigned long long)d->serial_number);
+        }
+        log_wlan_vpd(d);
     }
     klog("q8b pcied: snapshot ethernet_pf=%d wifi=%d\n",
             ethernet_pf, wifi);

@@ -53,6 +53,12 @@ typedef struct {
 	uint8_t  pcie_cap;          /* offset of PCIe capability, or zero */
 	uint8_t  link_speed;
 	uint8_t  link_width;
+	uint8_t  vpd_cap;           /* offset of VPD capability, or zero */
+	uint8_t  vpd_mac_valid;
+	uint8_t  vpd_mac[6];        /* decoded module address, when present */
+	uint8_t  serial_valid;      /* PCIe Device Serial Number capability */
+	uint8_t  _serial_pad[7];
+	uint64_t serial_number;     /* immutable endpoint serial, when present */
 } q8b_pcie_device_t;
 
 /* WCN6855 is sold on multiple E-key cards.  The PCI function identity stays
@@ -101,6 +107,14 @@ int q8b_pcie4_start_and_probe(q8b_pcie_device_t *out, size_t max,
 /* Map an assigned BAR into a caller-selected virtual address. */
 int q8b_pcie_map_bar(const q8b_pcie_device_t *device, unsigned bar,
 		uintptr_t virtual_address, uint32_t size);
+
+/* Read the endpoint's standard PCI VPD through the bus owner.  VPD is an
+ * optional capability; a negative return means that the capability is absent
+ * or the endpoint did not complete the bounded read.  Clients must never
+ * access ECAM directly because a VPD transaction temporarily writes the VPD
+ * address register and must be serialized with all other config accesses. */
+int q8b_pcie_read_vpd(const q8b_pcie_device_t *device, unsigned offset,
+		void *out, size_t bytes);
 
 /* Read-only client helpers for the independent pcied service. */
 int q8b_pcie_service_get_count(void);

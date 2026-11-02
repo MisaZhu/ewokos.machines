@@ -4,6 +4,31 @@ The Q8B `wlan` driver owns the WCN6855 (QCNFA765) PCIe endpoint. Since
 2026-11 its user interface matches the Raspberry Pi 5 `wland` driver, so the
 same desktop app, scripts and configuration work on both boards.
 
+Both QCNFA765 subsystem IDs (`17cb:0108` and `105b:e130`) use the
+device-specific WCN6855 hw2.1 `nfa765` image
+(`WLAN.HSP.1.1-04866.5-QCAHSPSWPL_V1_V2_SILICONZ_IOE-1`) for AMSS and M3.
+The generic image must not be substituted. Selecting `nfa765` is necessary
+for this card, but it does not by itself prove that a permanent MAC was
+exported: the current firmware can still return a `00:03:7f:*` WMI address.
+Other supported WCN6855 cards retain the common image. Linux ath11k selects
+the same `nfa765` subdirectory for its WCN6855 hw2.1 use-case firmware; the
+board and regulatory containers remain the shared WCN6855 `board-2.bin` and
+`regdb.bin` files.
+
+Some QCNFA765 firmware builds report a `00:03:7f:*` generated address when
+the module calibration does not provide its permanent address. The address
+source priority is WMI extra/module address, PCI VPD, and then a deterministic
+hardware identity fallback. `pcied` reads the endpoint's optional PCIe Device
+Serial Number capability and VPD; the serial is mixed with the immutable PCI
+function identity to derive a locally administered unicast address. This
+fallback is computed at every boot and does not depend on `/etc/wlan.mac`.
+When the endpoint has neither serial nor VPD, the PCI identity remains stable
+on one board but can collide between identical unprogrammed cards; only module
+OTP/NVM calibration can provide a globally unique address. `/etc/wlan.mac` is
+accepted only as a last-resort host override when no hardware identity is
+available. PCI reads stay in `pcied`, so the WLAN driver never changes PCI
+configuration state.
+
 | Item | raspi5 `wland` | Q8B `wlan` |
 |---|---|---|
 | Device node | `/dev/wl0` | `/dev/wl0` |

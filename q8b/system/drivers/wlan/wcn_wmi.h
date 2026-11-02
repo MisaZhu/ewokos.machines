@@ -42,6 +42,9 @@ void wcn_wmi_describe(const struct wcn_bss *bss, char *auth, size_t auth_len,
                       char *cipher, size_t cipher_len);
 const char *wcn_wmi_net_type(const struct wcn_bss *bss);
 void wcn_wmi_mac(uint8_t mac[6]);
+void wcn_wmi_set_permanent_mac(const uint8_t mac[6]);
+/* Stable board/module identity used only when firmware exposes no real MAC. */
+void wcn_wmi_set_hardware_seed(uint64_t seed);
 void wcn_wmi_reset(void);
 void wcn_wmi_receive(const void *data, unsigned bytes);
 void wcn_wmi_poll(void);

@@ -4,6 +4,7 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/usbhci.h>
 #include <ewoksys/kernel_tic.h>
+#include <ewoksys/proto.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -16,6 +17,37 @@ static int _usb_pid = -1;
 static uint8_t _rx[BT_RECV_CHUNK];
 static int _rx_len = 0; /* valid bytes in _rx */
 static int _rx_pos = 0; /* next unread byte */
+
+/* PCIe4 owns the combo module's shared power/reset sequence.  The WLAN
+ * daemon must finish WCN attach/start and publish a real MAC before btd asks
+ * usbhostd to set up the Bluetooth function; otherwise BT setup can race
+ * the WLAN cold power cycle and leave either endpoint in a half-reset state. */
+static int wlan_ready(void) {
+    int pid = dev_get_pid("/dev/wl0");
+    proto_t in, out;
+    int32_t size = 0;
+    const uint8_t *mac;
+    int ready = 0;
+
+    if (pid < 0)
+        return 0;
+    PF->init(&in);
+    PF->init(&out);
+    if (dev_cntl_by_pid(pid, 0, &in, &out) == 0) {
+        mac = (const uint8_t *)proto_read(&out, &size);
+        if (mac != NULL && size >= 6) {
+            for (int i = 0; i < 6; i++) {
+                if (mac[i] != 0 && mac[i] != 0xff) {
+                    ready = 1;
+                    break;
+                }
+            }
+        }
+    }
+    PF->clear(&in);
+    PF->clear(&out);
+    return ready;
+}
 
 static int usb_pid(void) {
     if (_usb_pid < 0) {
@@ -38,6 +70,13 @@ static int bt_cntl(int cmd, proto_t* in, proto_t* out) {
 
 int bsp_bt_init(bool recovery) {
     proto_t in, out;
+
+    if (!wlan_ready()) {
+        /* btd's normal retry loop calls us again every three seconds. Keep
+         * the shared USB Bluetooth function untouched until Wi-Fi has a
+         * valid controller identity and is past its cold-start sequence. */
+        return -1;
+    }
 
     if (recovery) {
         /* usbhostd may have been restarted; resolve again */

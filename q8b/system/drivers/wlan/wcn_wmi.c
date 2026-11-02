@@ -24,12 +24,18 @@ static struct {
     uint8_t mac[6];
     uint64_t deadline;
     uint64_t scan_deadline;
+    unsigned extra_mac_count, extra_mac_valid;
+    uint8_t extra_mac[6];
     struct wcn_bss ap[64];
     struct {
         unsigned count, valid, max_bw5;
         struct { unsigned start,end,power,flags,bw; } rule[32];
     } reg[2];
 } f;
+static uint8_t permanent_mac[6];
+static int permanent_mac_valid;
+static uint64_t hardware_seed;
+static int hardware_seed_valid;
 /* Explicit local regulatory setting survives controller recovery. Default 00
  * remains unchanged unless a country is provisioned or requested by root. */
 static char country[3];
@@ -121,7 +127,7 @@ invalid:
  * Some modules report a generated firmware fallback address on every start. */
 static int station_mac(uint8_t mac[6]) {
     FILE *fp=fopen("/etc/wlan.mac","r");
-    if (!fp) return 0;
+    if (!fp) return 0; /* no host override; keep the WMI value */
     char text[20]={0};unsigned n=fread(text,1,sizeof(text)-1,fp);
     int extra=fgetc(fp);fclose(fp);
     if (extra!=EOF || (n!=17 && (n!=18 || text[17]!='\n'))) return -1;
@@ -138,7 +144,43 @@ static int station_mac(uint8_t mac[6]) {
         value[i]=v;any|=v;
     }
     if (!any || (value[0]&1)) return -1;
-    memcpy(mac,value,6);return 0;
+    memcpy(mac,value,6);return 1;
+}
+
+void wcn_wmi_set_permanent_mac(const uint8_t mac[6]) {
+    if (mac) {
+        memcpy(permanent_mac, mac, sizeof(permanent_mac));
+        permanent_mac_valid = 1;
+    } else {
+        memset(permanent_mac, 0, sizeof(permanent_mac));
+        permanent_mac_valid = 0;
+    }
+}
+
+void wcn_wmi_set_hardware_seed(uint64_t seed) {
+    hardware_seed=seed;
+    hardware_seed_valid=seed != 0;
+}
+
+/* Qualcomm's fallback identity is recognizable by its test OUI.  It is
+ * valid enough for the firmware to boot, but it is regenerated on every cold
+ * start when the module/host has no provisioned permanent address. */
+static int generated_wmi_mac(const uint8_t mac[6]) {
+    return mac[0] == 0x00 && mac[1] == 0x03 && mac[2] == 0x7f;
+}
+
+static uint64_t mac_mix64(uint64_t x) {
+    x ^= x >> 30; x *= UINT64_C(0xbf58476d1ce4e5b9);
+    x ^= x >> 27; x *= UINT64_C(0x94d049bb133111eb);
+    return x ^ (x >> 31);
+}
+
+static void mac_from_hardware_seed(uint64_t seed, uint8_t mac[6]) {
+    uint64_t h=mac_mix64(seed ^ UINT64_C(0x51423842574c414e));
+    for (unsigned i=0;i<6;i++) mac[i]=(uint8_t)(h>>(i*8));
+    /* locally administered, unicast address; avoid Qualcomm's generated OUI */
+    mac[0]=(uint8_t)((mac[0]&0xfcu)|0x02u);
+    if (generated_wmi_mac(mac)) mac[0]^=0x04u;
 }
 
 static void receive_management(const uint8_t *frame, unsigned length, unsigned mhz, int rssi) {
@@ -216,6 +258,9 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
     const uint8_t *reg = NULL, *rules = NULL;
     unsigned rules_len=0;
     unsigned frame_len=0, mgmt_len=0;
+    unsigned ready_seen=0, ready_extra_count=0;
+    const uint8_t *ready_extra=NULL;
+    unsigned ready_extra_len=0;
     for (pos = 4; pos < bytes;) {
         unsigned len = get16(p+pos), tag = get16(p+pos+2);
         const uint8_t *v = p + pos + 4;
@@ -266,12 +311,17 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             unsigned status=get32(v+32);
             if (status || (v[24]&1)) { f.failed=1; return; }
             memcpy(f.mac,v+24,6);
-            if (station_mac(f.mac)) { f.failed=1;return; }
-            f.ready = 1;
-            if (country_load()) { f.failed=1;return; }
-            if (country[0]) f.country_state=1;
-            wcn_log("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                 f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5]);
+            /* The fixed READY structure is followed by num_extra_mac_addr
+             * at offset 40.  Keep this separate from the primary address so
+             * the array can be parsed regardless of TLV order. */
+            ready_seen=1;
+            ready_extra_count=len>=44 ? get32(v+40):0;
+        }
+        if (event == 2 && tag == 19 && !ready_extra) {
+            /* WMI_TAG_ARRAY_FIXED_STRUCT contains wmi_mac_addr entries,
+             * which are 8 bytes (6-byte MAC plus two reserved bytes). */
+            ready_extra=v;
+            ready_extra_len=len;
         }
         if (event==0x3001 && tag==36 && len>=24 &&
             get32(v+12)==0xa001 && get32(v+16)==(0xa000 | f.scan_id) &&
@@ -290,6 +340,66 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
         if (event==0x3a001 && tag==18) { rules=v; rules_len=len; }
         wcn_sta_event(event,tag,v,len);
         pos += len + 4;
+    }
+    if (event == 2 && ready_seen) {
+        unsigned count=ready_extra_count;
+        f.extra_mac_count=count;
+        f.extra_mac_valid=0;
+        memset(f.extra_mac,0,sizeof(f.extra_mac));
+        wcn_log("wcn: WMI READY extra_mac_count=%u\n",count);
+        if (count > 16) count=16;
+        if (count && (!ready_extra || ready_extra_len < count*8)) {
+            wcn_log("wcn: WMI READY extra MAC array malformed len=%u need=%u\n",
+                    ready_extra_len,count*8);
+            count=0;
+        }
+        for (unsigned i=0;i<count;i++) {
+            const uint8_t *mac=ready_extra+i*8;
+            wcn_log("wcn: WMI READY EXTRA MAC[%u]=%02x:%02x:%02x:%02x:%02x:%02x\n",
+                    i,mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
+            /* A generated 00:03:7f address is not a module identity.  Keep
+             * the first real address available as a WMI module fallback. */
+            unsigned any=0;
+            for (unsigned j=0;j<6;j++) any|=mac[j];
+            if (!f.extra_mac_valid && any && !(mac[0]&1) &&
+                !generated_wmi_mac(mac)) {
+                memcpy(f.extra_mac,mac,6);
+                f.extra_mac_valid=1;
+            }
+        }
+        int mac_override=0;
+        if (permanent_mac_valid) {
+            memcpy(f.mac,permanent_mac,sizeof(f.mac));
+            mac_override=2;
+        } else if (generated_wmi_mac(f.mac) && f.extra_mac_valid) {
+            memcpy(f.mac,f.extra_mac,sizeof(f.mac));
+            mac_override=3;
+        } else if (generated_wmi_mac(f.mac) && hardware_seed_valid) {
+            mac_from_hardware_seed(hardware_seed,f.mac);
+            mac_override=4;
+        } else if (generated_wmi_mac(f.mac)) {
+            /* Host provisioning is only a last resort.  A real address
+             * exposed by the module always wins over /etc/wlan.mac. */
+            mac_override=station_mac(f.mac);
+            if (mac_override < 0) { f.failed=1;return; }
+        }
+        f.ready=1;
+        if (country_load()) { f.failed=1;return; }
+        if (country[0]) f.country_state=1;
+        wcn_log("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+             f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5]);
+        if (mac_override == 2)
+            wcn_log("wcn: WLAN MAC source=PCI VPD module address\n");
+        else if (mac_override == 3)
+            wcn_log("wcn: WLAN MAC source=WMI extra module address\n");
+        else if (mac_override == 4)
+            wcn_log("wcn: WLAN MAC source=deterministic hardware identity seed\n");
+        else if (mac_override)
+            wcn_log("wcn: WLAN MAC source=/etc/wlan.mac override\n");
+        else if (generated_wmi_mac(f.mac))
+            wcn_log("wcn: WLAN MAC source=WMI generated fallback; provision /etc/wlan.mac\n");
+        else
+            wcn_log("wcn: WLAN MAC source=WMI firmware\n");
     }
     if (reg && rules && !get32(reg) && get32(reg+4)<2) {
         unsigned phy=get32(reg+4), count=get32(reg+48)+get32(reg+52);
@@ -483,8 +593,9 @@ int wcn_wmi_station_available(void) {
     return wcn_wmi_ready() && !f.country_state && f.vdev_sent && !f.scan_pending && !f.scan_active && !f.scan_cancelling;
 }
 void wcn_wmi_status(char *out, size_t size) {
-    snprintf(out,size,"wmi_ready=%u wmi_events=%u wmi_bad=%u wmi_failed=%u scan_active=%u aps=%u",
-             f.ready,f.events,f.bad,f.failed,f.scan_active,f.ap_count);
+    snprintf(out,size,"wmi_ready=%u wmi_events=%u wmi_bad=%u wmi_failed=%u scan_active=%u aps=%u extra_macs=%u extra_valid=%u",
+             f.ready,f.events,f.bad,f.failed,f.scan_active,f.ap_count,
+             f.extra_mac_count,f.extra_mac_valid);
 }
 int wcn_wmi_ready(void) { return f.ready && f.hw_mode_sent && !f.failed; }
 void wcn_wmi_mac(uint8_t mac[6]) { memcpy(mac,f.mac,6); }

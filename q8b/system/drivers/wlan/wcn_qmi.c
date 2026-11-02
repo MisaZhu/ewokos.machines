@@ -19,7 +19,10 @@
 #define MAX_SEGMENTS 16u
 static struct { void *va; uint64_t pa; uint32_t size, type; } memory[MAX_SEGMENTS];
 static unsigned memory_count;
-static struct { uint8_t *data; unsigned size, offset, sequence, chunk, type; } upload;
+static struct {
+    uint8_t *data;
+    unsigned size, offset, sequence, chunk, type, active;
+} upload;
 static void *m3_va;
 static uint64_t m3_pa;
 static unsigned m3_size;
@@ -29,6 +32,8 @@ static struct {
     unsigned hello, registered, host_cap, memory_requests;
     unsigned memory_ready, chip, board, soc, fw;
     unsigned target_cap, bdf_ready, m3_ready, firmware_ready;
+    unsigned num_macs, num_macs_valid, otp_valid, otp_version;
+    unsigned eeprom_valid, eeprom_timeout, eeprom_requested, eeprom_ready;
     unsigned ce_config, mode_ready, failed;
     uint64_t deadline;
 } q;
@@ -78,7 +83,7 @@ static int request(unsigned id, const void *payload, unsigned bytes) {
 }
 
 static int send_m3(void) {
-    uint8_t *file = wcn_read_file("/etc/firmware/ath11k/WCN6855/hw2.1/m3.bin", 1024 * 1024, &m3_size);
+    uint8_t *file = wcn_read_file(wcn_firmware_path("m3.bin"), 1024 * 1024, &m3_size);
     if (!file || m3_va) { free(file); return -1; }
     unsigned allocation = (m3_size + 0x3fff) & ~0x3fffu;
     m3_va = (void *)dma_alloc(0, allocation);
@@ -94,7 +99,11 @@ static int send_m3(void) {
 }
 
 static int upload_segment(void) {
-    if (!upload.data || upload.offset >= upload.size) return -1;
+    /* EEPROM calibration is read by the target from its OTP/module storage.
+     * The QMI request carries the file type and nominal filename length but
+     * deliberately has no data TLV (see ath11k_qmi_load_file_target_mem()). */
+    if (!upload.active || (upload.type != 3 && !upload.data) ||
+            upload.offset >= upload.size) return -1;
     uint8_t p[6400]; unsigned n = 0;
     unsigned remaining = upload.size - upload.offset;
     upload.chunk = remaining > 6144 ? 6144 : remaining;
@@ -102,10 +111,13 @@ static int upload_segment(void) {
     n += tlv(p + n, 0x10, q.board, 4);
     n += tlv(p + n, 0x11, remaining, 4);
     n += tlv(p + n, 0x12, upload.sequence, 4);
-    p[n] = 0x13; set16(p + n + 1, upload.chunk + 2);
-    set16(p + n + 3, upload.chunk);
-    memcpy(p + n + 5, upload.data + upload.offset, upload.chunk); n += upload.chunk + 5;
-    n += tlv(p + n, 0x14, upload.chunk == remaining, 1);
+    if (upload.type != 3) {
+        p[n] = 0x13; set16(p + n + 1, upload.chunk + 2);
+        set16(p + n + 3, upload.chunk);
+        memcpy(p + n + 5, upload.data + upload.offset, upload.chunk);
+        n += upload.chunk + 5;
+    }
+    n += tlv(p + n, 0x14, upload.type == 3 || upload.chunk == remaining, 1);
     n += tlv(p + n, 0x15, upload.type, 1);
     return request(0x25, p, n);
 }
@@ -114,8 +126,21 @@ static int begin_board_upload(int regdb) {
     if (upload.data) return -1;
     upload.data = wcn_board_data(q.chip, q.board, regdb, &upload.size);
     if (!upload.data) return -1;
-    upload.offset = upload.sequence = 0;
+    upload.offset = upload.sequence = 0; upload.active = 1;
     upload.type = regdb ? 4 : (upload.size >= 4 && !memcmp(upload.data, "\177ELF", 4) ? 1 : 0);
+    return upload_segment();
+}
+
+static int begin_eeprom_upload(void) {
+    /* Linux ath11k uses ATH11K_QMI_MAX_BDF_FILE_NAME_SIZE (16) as the
+     * nominal EEPROM request size.  The target ignores the absent data TLV
+     * and reads its calibration/identity from OTP or module EEPROM. */
+    memset(&upload, 0, sizeof(upload));
+    upload.size = 16;
+    upload.type = 3; /* ATH11K_QMI_FILE_TYPE_EEPROM */
+    upload.active = 1;
+    q.eeprom_requested = 1;
+    wcn_log("wcn: QMI EEPROM calibration request sent\n");
     return upload_segment();
 }
 
@@ -227,23 +252,50 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
             if (p[i] == 0x11 && len == 4) q.board = get32(p + i + 3);
             if (p[i] == 0x12 && len == 4) q.soc = get32(p + i + 3);
             if (p[i] == 0x13 && len >= 4) q.fw = get32(p + i + 3);
+            if (p[i] == 0x15 && len == 1) {
+                q.num_macs_valid = 1;
+                q.num_macs = p[i + 3];
+            }
+            if (p[i] == 0x18 && len == 4) {
+                q.otp_valid = 1;
+                q.otp_version = get32(p + i + 3);
+            }
+            if (p[i] == 0x19 && len == 4) {
+                q.eeprom_valid = 1;
+                q.eeprom_timeout = get32(p + i + 3);
+            }
         }
         i += 3 + len;
     }
     if (!found) { q.malformed++; return; }
     q.pending = 0;
-    if (q.result) wcn_log("wcn: QMI response id=%x result=%u error=%u\n", id, q.result, q.error);
-    if (q.result) { q.failed = 1; return; }
+    if (q.result) {
+        wcn_log("wcn: QMI response id=%x result=%u error=%u\n", id, q.result, q.error);
+        /* EEPROM is optional on some WCN6855 firmware revisions.  A
+         * rejected type=3 request must not prevent the normal BDF/M3 boot;
+         * continue with the WMI-provided address and expose the failure. */
+        if (id == 0x25 && upload.active && upload.type == 3) {
+            wcn_log("wcn: QMI EEPROM calibration unavailable; continuing without module MAC\n");
+            free(upload.data); memset(&upload, 0, sizeof(upload));
+            if (send_m3()) wcn_log("wcn: M3 setup failed after EEPROM rejection\n");
+            return;
+        }
+        q.failed = 1; return;
+    }
     if (id == 0x20) { q.registered = 1; host_capabilities(); }
     if (id == 0x34) q.host_cap = 1;
     if (id == 0x36 && q.memory_ready) (void)request(0x24, "", 0);
     if (id == 0x24) {
         q.target_cap = 1;
+        wcn_log("wcn: QMI cap chip=%x board=%x num_macs=%s%u otp=%s%08x eeprom_timeout=%s%u\n",
+                q.chip, q.board, q.num_macs_valid ? "" : "absent/", q.num_macs,
+                q.otp_valid ? "" : "absent/", q.otp_version,
+                q.eeprom_valid ? "" : "absent/", q.eeprom_timeout);
         /* PCI devices already have their BAR; DEVICE_INFO is hybrid-bus only. */
         if (begin_board_upload(1) && begin_board_upload(0))
             wcn_log("wcn: board upload could not start\n");
     }
-    if (id == 0x25 && upload.data) {
+    if (id == 0x25 && upload.active) {
         upload.offset += upload.chunk; upload.sequence++;
         if (upload.offset < upload.size) {
             (void)upload_segment();
@@ -252,9 +304,28 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
             free(upload.data); memset(&upload, 0, sizeof(upload));
             if (type == 4) {
                 if (begin_board_upload(0)) wcn_log("wcn: BDF upload could not start\n");
+            } else if (type == 3) {
+                q.eeprom_ready = 1;
+                wcn_log("wcn: QMI EEPROM calibration response result=success\n");
+                if (send_m3()) wcn_log("wcn: M3 setup failed after EEPROM calibration\n");
             } else {
                 q.bdf_ready = 1;
-                if (send_m3()) wcn_log("wcn: M3 setup failed\n");
+                /* Upstream skips this for the usual WCN6855 ELF BDF because
+                 * those targets normally do not advertise EEPROM data.  If
+                 * a module firmware explicitly advertises a non-zero EEPROM
+                 * timeout, honor that capability even with an ELF BDF: the
+                 * module's own calibration is the only acceptable source of
+                 * its permanent address. */
+                if (q.eeprom_valid && q.eeprom_timeout) {
+                    if (begin_eeprom_upload()) {
+                        wcn_log("wcn: QMI EEPROM calibration request could not start\n");
+                        memset(&upload, 0, sizeof(upload));
+                        if (send_m3()) wcn_log("wcn: M3 setup failed after EEPROM request setup\n");
+                    }
+                } else {
+                    wcn_log("wcn: QMI EEPROM calibration not advertised; using WMI MAC\n");
+                    if (send_m3()) wcn_log("wcn: M3 setup failed\n");
+                }
             }
         }
     }
@@ -358,8 +429,12 @@ void wcn_qmi_poll(void) {
     }
 }
 void wcn_qmi_status(char *out, size_t size) {
-    snprintf(out, size, "qmi=%u:%u registered=%u host_cap=%u mem_ready=%u chip=%x board=%x bdf=%u m3=%u fw_ready=%u cfg=%u mode=%u pending=%x malformed=%u qmi_failed=%u",
+    snprintf(out, size, "qmi=%u:%u registered=%u host_cap=%u mem_ready=%u chip=%x board=%x num_macs=%s%u otp=%s%08x eeprom_timeout=%s%u eeprom=%u/%u bdf=%u m3=%u fw_ready=%u cfg=%u mode=%u pending=%x malformed=%u qmi_failed=%u",
              q.node, q.port, q.registered, q.host_cap, q.memory_ready, q.chip, q.board,
+             q.num_macs_valid ? "" : "absent/", q.num_macs,
+             q.otp_valid ? "" : "absent/", q.otp_version,
+             q.eeprom_valid ? "" : "absent/", q.eeprom_timeout, q.eeprom_requested,
+             q.eeprom_ready,
              q.bdf_ready, q.m3_ready, q.firmware_ready, q.ce_config, q.mode_ready,
              q.pending ? q.pending_id : 0, q.malformed, q.failed);
 }

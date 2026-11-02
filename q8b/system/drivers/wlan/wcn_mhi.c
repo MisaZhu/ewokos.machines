@@ -5,9 +5,9 @@
  * polls event rings; MSI writes target a reserved noncached DMA word.
  * DMA memory belongs to this long-lived controller process. */
 #include "wcn_mhi.h"
+#include "wcn_wmi.h"
 #include "wcn_qmi.h"
 #include "wcn_ce.h"
-#include "wcn_wmi.h"
 #include "wcn_dp.h"
 #include "wcn_sta.h"
 #include <bsp/pcie.h>
@@ -26,7 +26,6 @@
 #define FW_OFFSET 0x10000u
 #define FW_LIMIT (6u * 1024u * 1024u)
 #define SBL_BYTES 0x80000u
-#define FW_PATH "/etc/firmware/ath11k/WCN6855/hw2.1/amss.bin"
 #define CTX_CHANNEL 0x0000u
 #define CTX_EVENT 0x1800u
 #define CTX_COMMAND 0x1900u
@@ -68,6 +67,25 @@ static struct {
     int attached, running, contexts_ready;
     const char *stage;
 } w;
+
+const char *wcn_firmware_path(const char *name) {
+    static char path[160];
+    /* Both subsystem IDs used by the QCNFA765 module identify the same
+     * WCN6855 hw2.1 product.  The 17cb:0108 form is what replacement
+     * cards report; using the generic image makes firmware fall back to a
+     * generated MAC instead of exposing the module's calibrated identity. */
+    const uint32_t nfa765_qcom =
+            ((uint32_t)Q8B_PCIE_WLAN_SUBSYS_QCOM_DID << 16) |
+            Q8B_PCIE_WLAN_SUBSYS_QCOM_VID;
+    const uint32_t nfa765_alt =
+            ((uint32_t)Q8B_PCIE_WLAN_SUBSYS_ALT_DID << 16) |
+            Q8B_PCIE_WLAN_SUBSYS_ALT_VID;
+    const char *dir = (w.subsystem == nfa765_qcom ||
+            w.subsystem == nfa765_alt) ? "nfa765/" : "";
+    snprintf(path, sizeof(path),
+            "/etc/firmware/ath11k/WCN6855/hw2.1/%s%s", dir, name);
+    return path;
+}
 
 static uint32_t read32(uint64_t addr) {
     uint32_t value = *(volatile uint32_t *)(ewokos_addr_t)addr;
@@ -161,7 +179,35 @@ int wcn_attach(void) {
         return -1;
     w.subsystem = ((uint32_t)w.pcie.subsystem_device << 16) |
             w.pcie.subsystem_vendor;
+    wcn_wmi_set_permanent_mac(w.pcie.vpd_mac_valid ? w.pcie.vpd_mac : NULL);
+    /* Keep the fallback identity stable without writing a host file.  Prefer
+     * the PCIe Device Serial Number (normally endpoint OTP); when absent,
+     * fold the immutable PCI function identity into the seed.  The latter is
+     * deterministic per board/card even though it cannot distinguish two
+     * identical unprogrammed cards. */
+    uint64_t seed = UINT64_C(0x9e3779b97f4a7c15);
+    seed ^= ((uint64_t)w.pcie.vendor_id << 48) |
+            ((uint64_t)w.pcie.device_id << 32) |
+            ((uint64_t)w.pcie.subsystem_vendor << 16) |
+            w.pcie.subsystem_device;
+    seed = seed * UINT64_C(0x100000001b3) ^ w.pcie.bar_phys[0];
+    seed = seed * UINT64_C(0x100000001b3) ^
+            (((uint64_t)w.pcie.bus << 24) |
+             ((uint64_t)w.pcie.device << 8) | w.pcie.function);
+    if (w.pcie.serial_valid) {
+        seed ^= w.pcie.serial_number;
+        wcn_log("wcn: fallback MAC seed source=PCIe Device Serial Number\n");
+    } else {
+        wcn_log("wcn: fallback MAC seed source=stable PCI identity\n");
+    }
+    if (!seed) seed = UINT64_C(1);
+    wcn_wmi_set_hardware_seed(seed);
     wcn_board_set_subsystem(w.pcie.subsystem_vendor, w.pcie.subsystem_device);
+    wcn_log("wcn: firmware profile=%s\n",
+            (w.subsystem == (((uint32_t)Q8B_PCIE_WLAN_SUBSYS_QCOM_DID << 16) |
+                    Q8B_PCIE_WLAN_SUBSYS_QCOM_VID) ||
+             w.subsystem == (((uint32_t)Q8B_PCIE_WLAN_SUBSYS_ALT_DID << 16) |
+                    Q8B_PCIE_WLAN_SUBSYS_ALT_VID)) ? "nfa765" : "common");
     w.bar_phys = w.pcie.bar_phys[0];
     if (q8b_pcie_map_bar(&w.pcie, 0, BAR_VA, BAR_SIZE)) return -1;
     w.hw = reg(0x224);
@@ -204,8 +250,9 @@ static int software_reset(void) {
 }
 
 static int load_firmware(void) {
-    int fd = open(FW_PATH, O_RDONLY);
-    if (fd < 0) { wcn_log("wcn: missing %s\n", FW_PATH); return -1; }
+    const char *path = wcn_firmware_path("amss.bin");
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { wcn_log("wcn: missing %s\n", path); return -1; }
     off_t size = lseek(fd, 0, SEEK_END);
     if (size < SBL_BYTES || size > FW_LIMIT || lseek(fd, 0, SEEK_SET) < 0) {
         close(fd); return -1;

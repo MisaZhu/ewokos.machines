@@ -89,8 +89,15 @@ firmware_install:
 		$(QCA_FW_SRC)/LICENSE.QualcommAtheros_ath10k \
 		$(TARGET_DIR)/etc/firmware/qca/
 	@mkdir -p $(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1
-	@cp -p $(WLAN_FW_SRC)/WCN6855/hw2.1/* \
+	@cp -p $(WLAN_FW_SRC)/WCN6855/hw2.1/Notice.txt \
+		$(WLAN_FW_SRC)/WCN6855/hw2.1/amss.bin \
+		$(WLAN_FW_SRC)/WCN6855/hw2.1/board-2.bin \
+		$(WLAN_FW_SRC)/WCN6855/hw2.1/m3.bin \
+		$(WLAN_FW_SRC)/WCN6855/hw2.1/regdb.bin \
 		$(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1/
+	@mkdir -p $(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765
+	@cp -p $(WLAN_FW_SRC)/WCN6855/hw2.1/nfa765/* \
+		$(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765/
 	@cp -p $(WLAN_FW_SRC)/LICENSE.QualcommAtheros_ath10k \
 		$(TARGET_DIR)/etc/firmware/ath11k/
 

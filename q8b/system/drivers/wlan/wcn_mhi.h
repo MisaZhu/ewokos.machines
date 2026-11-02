@@ -3,6 +3,10 @@
 #include <stddef.h>
 #include <stdint.h>
 int wcn_attach(void);
+/* Select the firmware file for the attached card.  Both PCI subsystem IDs
+ * used by QCNFA765 (17cb:0108 and 105b:e130) use its vendor-specific image;
+ * other supported WCN6855 cards retain the common image. */
+const char *wcn_firmware_path(const char *name);
 int wcn_start(void);
 int wcn_running(void);
 void wcn_poll(void);
