@@ -22,9 +22,11 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/sbin/switchroot \
 	$(SYSTEM_ROOT)/sbin/sshd $(SYSTEM_ROOT)/sbin/sessiond \
 	$(SYSTEM_ROOT)/bin/ipcserv $(SYSTEM_ROOT)/bin/shell \
+	$(SYSTEM_ROOT)/bin/pcieprobe \
 	$(SYSTEM_ROOT)/drivers/q8b/usbhostd \
 	$(SYSTEM_ROOT)/drivers/q8b/usbfat32fsd \
 	$(SYSTEM_ROOT)/drivers/q8b/net $(SYSTEM_ROOT)/drivers/q8b/uartd \
+	$(SYSTEM_ROOT)/drivers/q8b/pcied \
 	$(SYSTEM_ROOT)/drivers/netd $(SYSTEM_ROOT)/drivers/timerd \
 	$(SYSTEM_ROOT)/drivers/piped $(SYSTEM_ROOT)/drivers/ramfsd \
 	$(SYSTEM_ROOT)/drivers/nulld
@@ -95,11 +97,13 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/sbin/sshd" "$(SYSTEM_ROOT)/sbin/sessiond" \
 		"$(RAMFS_STAGING)/sbin/"
 	@cp -p "$(SYSTEM_ROOT)/bin/ipcserv" "$(SYSTEM_ROOT)/bin/shell" \
+		"$(SYSTEM_ROOT)/bin/pcieprobe" \
 		"$(RAMFS_STAGING)/bin/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/q8b/usbhostd" \
 		"$(SYSTEM_ROOT)/drivers/q8b/usbfat32fsd" \
 		"$(SYSTEM_ROOT)/drivers/q8b/net" \
-		"$(SYSTEM_ROOT)/drivers/q8b/uartd" "$(RAMFS_STAGING)/drivers/q8b/"
+		"$(SYSTEM_ROOT)/drivers/q8b/uartd" \
+		"$(SYSTEM_ROOT)/drivers/q8b/pcied" "$(RAMFS_STAGING)/drivers/q8b/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/netd" "$(SYSTEM_ROOT)/drivers/timerd" \
 		"$(SYSTEM_ROOT)/drivers/piped" "$(SYSTEM_ROOT)/drivers/ramfsd" \
 		"$(SYSTEM_ROOT)/drivers/nulld" "$(RAMFS_STAGING)/drivers/"

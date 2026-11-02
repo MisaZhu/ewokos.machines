@@ -1,4 +1,4 @@
-BASIC_DIRS = uartd net sdprobe fand sdupdate espwrite nvprobe goodixd wlan
+BASIC_DIRS = pcied uartd net sdprobe fand sdupdate espwrite nvprobe goodixd wlan
 
 basic: $(BASIC_DIRS)
 

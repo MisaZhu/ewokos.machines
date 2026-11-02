@@ -8,6 +8,8 @@
 @/bin/ipcserv /drivers/nulld             /dev/null
 
 @/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
+# The persistent root owns PCIe power, resources and the device snapshot.
+@/bin/ipcserv /drivers/q8b/pcied         /dev/pcie0
 @export ADRENO_ENABLE=1
 @/bin/ipcserv /drivers/q8b/g2dd          /dev/g2d
 #@/bin/ipcserv /drivers/q8b/fand          /dev/fan

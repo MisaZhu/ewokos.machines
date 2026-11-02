@@ -4,5 +4,6 @@
 #include <stdint.h>
 /* Returned buffers belong to the caller and must be freed. */
 uint8_t *wcn_read_file(const char *path, unsigned limit, unsigned *size);
+void wcn_board_set_subsystem(uint16_t vendor, uint16_t device);
 uint8_t *wcn_board_data(unsigned chip, unsigned board, int regdb, unsigned *size);
 #endif

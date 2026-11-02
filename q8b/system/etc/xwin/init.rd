@@ -1,6 +1,8 @@
 @/bin/ipcserv /drivers/piped             /dev/pipe0
 @/bin/ipcserv /drivers/nulld             /dev/null
 @/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
+# Start the PCIe host owner from the persistent root before endpoint drivers.
+@/bin/ipcserv /drivers/q8b/pcied         /dev/pcie0
 # Q8B full window system on the UEFI GOP framebuffer.
 @/bin/ipcserv /drivers/logd              /dev/log
 

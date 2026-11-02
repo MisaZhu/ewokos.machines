@@ -10,9 +10,8 @@
 #include "wcn_wmi.h"
 #include "wcn_dp.h"
 #include "wcn_sta.h"
+#include <bsp/pcie.h>
 #include <ewoksys/dma.h>
-#include <ewoksys/syscall.h>
-#include <ewoksys/sys.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/kernel_tic.h>
 #include <stdint.h>
@@ -21,10 +20,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define ECAM_VA 0x56000000ULL
 #define BAR_VA 0x57000000ULL
 #define BAR_SIZE 0x100000u
-#define PARF_VA 0x58000000ULL
 #define DMA_BYTES (8u * 1024u * 1024u)
 #define FW_OFFSET 0x10000u
 #define FW_LIMIT (6u * 1024u * 1024u)
@@ -39,7 +36,6 @@
 #define VECTOR_OFFSET 0x5000u
 #define RDDM_VECTOR 0x5200u
 #define RDDM_BYTES 0x420000u
-#define MSI_OFFSET 0xf000u
 #define RING_IPCR_TX 0x6000u
 #define RING_IPCR_RX 0x6400u
 #define IPCR_RX 0x600000u
@@ -58,15 +54,14 @@ typedef char context_wire_size[(sizeof(mhi_context_t) == 44) ? 1 : -1];
 typedef char tre_wire_size[(sizeof(mhi_tre_t) == 16) ? 1 : -1];
 
 static struct {
-    uint64_t cfg, bar_phys, dma_phys;
+    q8b_pcie_device_t pcie;
+    uint64_t bar_phys, dma_phys;
     uint8_t *dma;
     uint8_t *rddm;
     uint64_t rddm_phys;
     uint32_t register_window;
     uint32_t hw, subsystem, bhi, bhie, chdb, erdb, fw_size;
     uint32_t er_rp[2], er_wp[2], events, last_event, last_data;
-    uint32_t link_cap, link_ctl;
-    uint32_t msi_cap, msi_saved[4];
     unsigned cmd_wp, cmd_done, cmd_code;
     unsigned tx_rp, tx_wp, rx_rp, rx_wp, rx_packets, tx_packets;
     int ipcr_ready;
@@ -114,39 +109,12 @@ static void soc_write(uint32_t off, uint32_t value) {
 }
 uint32_t wcn_soc_read(uint32_t off) { return soc_read(off); }
 void wcn_soc_write(uint32_t off, uint32_t value) { soc_write(off, value); }
-static int map(uint64_t va, uint64_t pa, uint32_t size) {
-    return syscall3(SYS_MEM_MAP, va, pa, size) == va ? 0 : -1;
-}
 static int offset_valid(uint32_t offset, uint32_t bytes) {
     return offset && !(offset & 3) && offset <= BAR_SIZE - bytes;
 }
 static uint32_t ee(void) { return reg(w.bhi + 0x28); }
 static mhi_context_t *context(unsigned off) { return (mhi_context_t *)(w.dma + off); }
 static void sync_dma(void) { __asm__ volatile("dsb sy" ::: "memory"); }
-
-static int setup_msi(void) {
-    unsigned cap = read32(w.cfg + 0x34) & 0xfc;
-    for (unsigned i = 0; i < 48 && cap >= 0x40; i++) {
-        uint32_t v = read32(w.cfg + cap);
-        if ((v & 255) == 5) {
-            /* One message, polled via its DMA sink rather than a CPU IRQ.
-             * Keep the sink in the arena retained until DMA is disabled. */
-            w.msi_cap = cap;
-            for (unsigned j = 0; j < 4; j++) w.msi_saved[j] = read32(w.cfg + cap + j * 4);
-            int wide = !!(v & (1u << 23));
-            write32(w.cfg + cap, v & ~(1u << 16));
-            write32(w.cfg + cap + 4, (uint32_t)(w.dma_phys + MSI_OFFSET));
-            if (wide) write32(w.cfg + cap + 8, 0);
-            unsigned data_off = wide ? 12 : 8;
-            uint32_t data = read32(w.cfg + cap + data_off);
-            write32(w.cfg + cap + data_off, (data & 0xffff0000u) | 0x5743);
-            write32(w.cfg + cap, (v & ~(7u << 20)) | (1u << 16));
-            return 0;
-        }
-        cap = (v >> 8) & 0xfc;
-    }
-    return -1;
-}
 
 static int wait_reg(uint32_t off, uint32_t mask, uint32_t value, unsigned timeout) {
     uint64_t end = kernel_tic_ms(0) + timeout;
@@ -163,43 +131,38 @@ static int wait_reg(uint32_t off, uint32_t mask, uint32_t value, unsigned timeou
 
 int wcn_attach(void) {
     w.stage = "attach";
-    if (map(PARF_VA, 0x1c00000, 0x4000) ||
-            map(ECAM_VA, 0x400000000ULL, 0x200000)) return -1;
-    if (!(read32(PARF_VA + 0x1b0) & 0x100)) return -1;
-    if ((read32(ECAM_VA) & 0xffff) != 0x17cb) return -1;
-    unsigned cap = read32(ECAM_VA + 0x34) & 0xfc;
-    int link = 0;
-    for (unsigned i = 0; i < 48 && cap >= 0x40; i++) {
-        uint32_t v = read32(ECAM_VA + cap);
-        if ((v & 255) == 0x10) {
-            link = !!(read32(ECAM_VA + cap + 0x10) & (1u << 29));
+    /* pcied owns power, LTSSM, ECAM and PCI configuration.  Consume only its
+     * read-only snapshot; this driver never writes a PCI capability or the
+     * command register. */
+    int count = q8b_pcie_service_get_count();
+    int found = 0;
+    if (count < 0)
+        return -1;
+    if (count > 32)
+        count = 32;
+    for (int i = 0; i < count; i++) {
+        q8b_pcie_device_t device;
+        if (q8b_pcie_service_get_device((unsigned)i, &device))
+            return -1;
+        if (device.vendor_id == Q8B_PCIE_WLAN_VENDOR_ID &&
+                device.device_id == Q8B_PCIE_WLAN_DEVICE_ID &&
+                q8b_pcie_wlan_subsystem_supported(device.subsystem_vendor,
+                        device.subsystem_device)) {
+            w.pcie = device;
+            found = 1;
             break;
         }
-        cap = (v >> 8) & 0xfc;
     }
-    if (!link) return -1;
-    unsigned bus = (read32(ECAM_VA + 0x18) >> 8) & 255;
-    if (bus != 1) return -1;
-    w.cfg = ECAM_VA + (bus << 20);
-    if (read32(w.cfg) != 0x110317cb) return -1;
-    w.subsystem = read32(w.cfg + 0x2c);
-    if (w.subsystem != 0x010817cb) return -1;
-    uint32_t low = read32(w.cfg + 0x10);
-    if (low & 1) return -1;
-    uint64_t bar = low & ~15u;
-    if ((low & 6) == 4) bar |= (uint64_t)read32(w.cfg + 0x14) << 32;
-    if (bar >= 0x40000000ULL && bar <= 0x50000000ULL - BAR_SIZE)
-        w.bar_phys = 0x410000000ULL + bar - 0x40000000ULL;
-    else if (bar >= 0x420000000ULL && bar <= 0x440000000ULL - BAR_SIZE)
-        w.bar_phys = bar;
-    else return -1;
-    uint32_t command = read32(w.cfg + 4) & 0xffff;
-    if (command & 4) {
-        slog("wcn: endpoint already bus-mastering; refusing second owner\n");
+    if (!found ||
+            (w.pcie.command & (Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER)) !=
+            (Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER) ||
+            !w.pcie.bar_phys[0])
         return -1;
-    }
-    write32(w.cfg + 4, command | 2);
-    if (map(BAR_VA, w.bar_phys, BAR_SIZE)) return -1;
+    w.subsystem = ((uint32_t)w.pcie.subsystem_device << 16) |
+            w.pcie.subsystem_vendor;
+    wcn_board_set_subsystem(w.pcie.subsystem_vendor, w.pcie.subsystem_device);
+    w.bar_phys = w.pcie.bar_phys[0];
+    if (q8b_pcie_map_bar(&w.pcie, 0, BAR_VA, BAR_SIZE)) return -1;
     w.hw = reg(0x224);
     if (((w.hw >> 8) & 15) != 2 || (w.hw & 255) != 0x11) return -1;
     w.bhi = reg(0x28);
@@ -209,7 +172,7 @@ int wcn_attach(void) {
     return 0;
 }
 
-static void software_reset(void) {
+static int software_reset(void) {
     /* ath11k's power-on reset prevents stale hot-reset interrupts and the
      * warm-boot entry from sending SBL down an obsolete execution path. */
     usleep(100000);
@@ -227,23 +190,13 @@ static void software_reset(void) {
     put(0x3008, reset & ~1u);
     usleep(10000);
     put(0x310c, 0x40000000);
-    /* SOC reset has discarded all previous context pointers. Enable DMA
-     * before MHI reset so PBL can complete its SYSERR recovery. */
-    write32(w.cfg + 4, (read32(w.cfg + 4) & 0xffff) | 6);
+    /* SOC reset can clear bus mastering. Restore it before asking MHI/PBL
+     * to recover from SYSERR, as in the original working reset sequence. */
+    if (q8b_pcie_service_prepare_wlan_dma()) return -1;
     put(0x38, 2);
     usleep(10000);
     w.bhi = reg(0x28);
-    unsigned cap = read32(w.cfg + 0x34) & 0xfc;
-    for (unsigned i = 0; i < 48 && cap >= 0x40; i++) {
-        uint32_t v = read32(w.cfg + cap);
-        if ((v & 255) == 0x10) {
-            w.link_cap = cap;
-            w.link_ctl = read32(w.cfg + cap + 0x10) & 0xffff;
-            write32(w.cfg + cap + 0x10, w.link_ctl & ~3u);
-            break;
-        }
-        cap = (v >> 8) & 0xfc;
-    }
+    return 0;
 }
 
 static int load_firmware(void) {
@@ -543,15 +496,8 @@ static int download_amss(void) {
 
 void wcn_stop(void) {
     if (!w.attached) return;
-    /* Stop DMA before memory can be reused. Keep arena allocated for retries. */
-    write32(w.cfg + 4, (read32(w.cfg + 4) & 0xffff) & ~4u);
-    if (w.msi_cap) {
-        unsigned cap = w.msi_cap;
-        write32(w.cfg + cap, read32(w.cfg + cap) & ~(1u << 16));
-        for (unsigned j = 1; j < 4; j++) write32(w.cfg + cap + j * 4, w.msi_saved[j]);
-        write32(w.cfg + cap, w.msi_saved[0]);
-        w.msi_cap = 0;
-    }
+    /* Stop the endpoint engine before memory can be reused.  PCI command and
+     * link state remain owned by pcied for the lifetime of the bus. */
     if (w.running) {
         put(0x38, reg(0x38) | 2);
         (void)wait_reg(0x38, 2, 0, 2000);
@@ -563,10 +509,6 @@ void wcn_stop(void) {
     wcn_sta_release();
     wcn_qmi_release();
     wcn_qmi_reset();
-    if (w.link_cap) {
-        write32(w.cfg + w.link_cap + 0x10, w.link_ctl);
-        w.link_cap = 0;
-    }
     w.stage = "stopped";
 }
 
@@ -575,10 +517,12 @@ int wcn_start(void) {
     w.stage = "load-firmware";
     if (load_firmware()) { w.stage = "firmware-error"; return -1; }
     w.running = 1;
-    software_reset();
+    if (software_reset()) goto fail;
     /* Allow PBL to finish clearing its boot interface after SYSERR reset. */
     usleep(200000);
-    if (setup_msi()) goto fail;
+    /* SOC reset clears function configuration. Ask the host owner to restore
+     * DMA and its retained polling MSI sink; never map/write ECAM here. */
+    if (q8b_pcie_service_prepare_wlan_dma()) goto fail;
     if (prepare_rddm()) goto fail;
     w.stage = "BHI";
     put(w.bhi + 0x20, 0); /* BHI interrupt vector; completion is polled. */

@@ -2,52 +2,37 @@
  * Q8B on-board Ethernet discovery.
  *
  * The two 1179:0220 MACs sit behind the TC9563/QPS615 PCIe switch on
- * SC8280XP PCIe3a. Firmware already trains this hierarchy, as it does the
- * DWC3 hosts used by bsp_usb, so the first milestone deliberately preserves
- * that state: enumerate ECAM, enable memory/mastering on a discovered MAC,
- * and inspect its pre-assigned BARs. TC9563 uses BAR0 for bridge/resource
- * manager registers, BAR2 for SRAM, and BAR4 for the XGMAC3 SFR aperture.
- * PF0 DMA channel 0 is used as a small, fully-polled queue; firmware owns the
- * PCIe/XPCS/PHY bring-up and the driver deliberately leaves that state intact.
+ * SC8280XP PCIe3a. The independent pcied host owns PCIe3A power, reset,
+ * clocks, link and configuration; this endpoint layer consumes the immutable
+ * enumeration snapshot and inspects the pre-assigned BARs. TC9563 uses BAR0
+ * for bridge/resource manager registers, BAR2 for SRAM, and BAR4 for the
+ * XGMAC3 SFR aperture.
+ * PF0 DMA channel 0 is used as a small, fully-polled queue; the driver leaves
+ * PCIe/XPCS/PHY state intact.
  */
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <bsp/bsp_eth.h>
+#include <bsp/pcie.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/syscall.h>
-
-#define PCIE_ECAM_PHY       0x480000000ULL
-#define PCIE_ECAM_VA        0x51000000ULL
-#define PCIE_ECAM_BUSES     8u
-#define PCIE_ECAM_MAP_SIZE  (PCIE_ECAM_BUSES << 20)
-
-#define PCIE_MEM32_BUS      0x40000000ULL
-#define PCIE_MEM32_PHY      0x490000000ULL
-#define PCIE_MEM32_SIZE     0x10000000ULL
-#define PCIE_MEM64_PHY      0x4a0000000ULL
-#define PCIE_MEM64_SIZE     0x20000000ULL
+#include <ewoksys/kernel_tic.h>
 
 #define TC956X_BAR0_VA      0x52000000ULL
 #define TC956X_BAR2_VA      0x52100000ULL
 #define TC956X_BAR4_VA      0x52200000ULL
-#define TC956X_BAR0_SIZE    0x00010000u
+#define TC956X_BAR0_SIZE    0x00004000u
 #define TC956X_BAR2_SIZE    0x00080000u
 #define TC956X_BAR4_SIZE    0x00080000u
 
 #define PCI_VENDOR_TOSHIBA  0x1179u
 #define PCI_DEVICE_ETH      0x0220u
-
-#define PCI_COMMAND         0x04u
-#define PCI_CLASS_REVISION  0x08u
-#define PCI_HEADER_TYPE     0x0eu
-#define PCI_BAR0            0x10u
-#define PCI_CMD_MEMORY      0x0002u
-#define PCI_CMD_MASTER      0x0004u
 
 #define TC956X_RSCMNG_ID            0x00002000u
 #define TC956X_RSCMNG_FN_TYPE       (1u << 16)
@@ -273,114 +258,177 @@ static int mdio_read_c22(ewokos_addr_t mac_base, uint8_t phy,
     return 0;
 }
 
-static inline ewokos_addr_t cfg_addr(uint8_t bus, uint8_t dev,
-        uint8_t fn, uint16_t reg) {
-    return PCIE_ECAM_VA + ((ewokos_addr_t)bus << 20) +
-            ((ewokos_addr_t)dev << 15) + ((ewokos_addr_t)fn << 12) + reg;
+/* Q8B DTS: I2C12 GPIO0/1, BL24C16 at 0x50, MAC cells 0x9e/0xa4.
+ * Read only; preserve pin mux/direction/output state. No QUP clock accesses. */
+#define EEPROM_GPIO_VA 0x52300000ULL
+static ewokos_addr_t eeprom_pin(unsigned pin) { return EEPROM_GPIO_VA + pin * 0x1000u; }
+static void eeprom_line(unsigned pin, bool high) {
+    ewokos_addr_t p = eeprom_pin(pin);
+    uint32_t cfg = get32(p) & ~((0xfu << 2) | (1u << 9));
+    reg_write32(p + 4, get32(p + 4) & ~2u);
+    reg_write32(p, cfg | (high ? 0 : (1u << 9)));
+    usleep(4);
 }
-
-static inline uint32_t cfg_read32(uint8_t bus, uint8_t dev,
-        uint8_t fn, uint16_t reg) {
-    return get32(cfg_addr(bus, dev, fn, reg & ~3u));
+static int eeprom_clock(void) {
+    eeprom_line(1, true);
+    for (unsigned i = 0; i < 100; i++) {
+        if (get32(eeprom_pin(1) + 4) & 1) return 0;
+        usleep(2);
+    }
+    return -1;
 }
-
-static inline uint16_t cfg_read16(uint8_t bus, uint8_t dev,
-        uint8_t fn, uint16_t reg) {
-    volatile uint16_t *p = (volatile uint16_t *)(uintptr_t)
-            cfg_addr(bus, dev, fn, reg);
-    return *p;
-}
-
-static inline void cfg_write16(uint8_t bus, uint8_t dev,
-        uint8_t fn, uint16_t reg, uint16_t value) {
-    volatile uint16_t *p = (volatile uint16_t *)(uintptr_t)
-            cfg_addr(bus, dev, fn, reg);
-    *p = value;
-    __asm__ volatile("dsb sy" ::: "memory");
-}
-
-static uint64_t bar_to_cpu(uint64_t bar) {
-    if (bar >= PCIE_MEM32_BUS && bar < PCIE_MEM32_BUS + PCIE_MEM32_SIZE)
-        return PCIE_MEM32_PHY + (bar - PCIE_MEM32_BUS);
-    if (bar >= PCIE_MEM64_PHY && bar < PCIE_MEM64_PHY + PCIE_MEM64_SIZE)
-        return bar;
+static int eeprom_start(void) {
+    eeprom_line(0, true);
+    if (eeprom_clock()) return -1;
+    if (!(get32(eeprom_pin(0) + 4) & 1)) return -1;
+    eeprom_line(0, false);
+    eeprom_line(1, false);
     return 0;
 }
-
-static bool map_bar(const char *name, uint8_t bus, uint8_t dev, uint8_t fn,
-        uint64_t bar, ewokos_addr_t va, uint32_t size) {
-    uint64_t phy = bar_to_cpu(bar);
-
-    if (phy == 0 || (phy & 0xfffu) != 0) {
-        slog("q8b eth: %02x:%02x.%u %s bus=%llx not in outbound memory\n",
-                bus, dev, fn, name, (unsigned long long)bar);
-        return false;
+static int eeprom_bit(bool high) {
+    eeprom_line(0, high);
+    if (eeprom_clock()) return -1;
+    eeprom_line(1, false);
+    return 0;
+}
+static int eeprom_byte(uint8_t byte) {
+    for (unsigned i = 0; i < 8; i++)
+        if (eeprom_bit(byte & (0x80u >> i))) return -1;
+    eeprom_line(0, true);
+    if (eeprom_clock()) return -1;
+    int ack = !(get32(eeprom_pin(0) + 4) & 1);
+    eeprom_line(1, false);
+    return ack ? 0 : -1;
+}
+static bool valid_mac(const uint8_t mac[6]) {
+    uint8_t any = 0;
+    for (unsigned i = 0; i < 6; i++) any |= mac[i];
+    return any && !(mac[0] & 1);
+}
+static int tc956x_eeprom_mac(unsigned pf, uint8_t mac[6]) {
+    if (syscall3(SYS_MEM_MAP, EEPROM_GPIO_VA, 0x0f100000u, 0x4000) != EEPROM_GPIO_VA)
+        return -1;
+    uint32_t cfg[2], io[2];
+    int ret = -1;
+    for (unsigned p = 0; p < 2; p++) {
+        cfg[p] = get32(eeprom_pin(p));
+        io[p] = get32(eeprom_pin(p) + 4);
     }
-    if (syscall3(SYS_MEM_MAP, va, (ewokos_addr_t)phy, size) != va) {
-        slog("q8b eth: %02x:%02x.%u %s map failed pa=%llx size=%x\n",
-                bus, dev, fn, name, (unsigned long long)phy, size);
-        return false;
+    if (eeprom_start() || eeprom_byte(0xa0) ||
+            eeprom_byte(pf ? 0xa4 : 0x9e) || eeprom_start() || eeprom_byte(0xa1))
+        goto out;
+    for (unsigned i = 0; i < 6; i++) {
+        uint8_t value = 0;
+        eeprom_line(0, true);
+        for (unsigned bit = 0; bit < 8; bit++) {
+            if (eeprom_clock()) goto out;
+            value = (value << 1) | (get32(eeprom_pin(0) + 4) & 1);
+            eeprom_line(1, false);
+        }
+        mac[i] = value;
+        if (eeprom_bit(i == 5)) goto out; /* final byte NACK */
     }
-    return true;
+    ret = valid_mac(mac) ? 0 : -1;
+out:
+    eeprom_line(0, false);
+    (void)eeprom_clock();
+    eeprom_line(0, true); /* STOP */
+    for (unsigned p = 0; p < 2; p++) {
+        reg_write32(eeprom_pin(p) + 4, io[p] & 2u);
+        reg_write32(eeprom_pin(p), cfg[p]);
+    }
+    return ret;
 }
 
-static uint64_t read_bar(uint8_t bus, uint8_t dev, uint8_t fn,
-        uint8_t bar_index) {
-    uint16_t reg = PCI_BAR0 + (uint16_t)bar_index * 4u;
-    uint32_t low = cfg_read32(bus, dev, fn, reg);
-    uint64_t bar;
-
-    if (low == 0 || low == 0xffffffffu || (low & 1u))
-        return 0;
-    bar = (uint64_t)(low & ~0x0fu);
-    if ((low & 0x6u) == 0x4u && bar_index + 1u < 6u)
-        bar |= (uint64_t)cfg_read32(bus, dev, fn, reg + 4u) << 32;
-    return bar;
+/* The host cold-resets QPS615/TC9563. MAC/PCS clocks can no longer be
+ * assumed to survive from UEFI. Match dwmac-tc956x.c:mac_enable/pma_init,
+ * touching only the selected MAC's fields, never PCIe/switch clocks. */
+static bool tc956x_mac_power_on(unsigned pf, ewokos_addr_t mac_base) {
+    ewokos_addr_t clk = TC956X_BAR4_VA + (pf ? 0x100c : 0x1004);
+    ewokos_addr_t rst = TC956X_BAR4_VA + (pf ? 0x1010 : 0x1008);
+    ewokos_addr_t ctl = TC956X_BAR4_VA + (pf ? 0x1074 : 0x1070);
+    uint32_t clocks = (1u << 7) | (1u << 14) | (1u << 31);
+    uint32_t resets = (1u << 7) | (1u << 30) | (1u << 31);
+    uint32_t before_clk = get32(clk), before_rst = get32(rst);
+    klog("q8b eth: PF%u SFR clk=%08x rst=%08x emactl=%08x\n",
+            pf, before_clk, before_rst, get32(ctl));
+    if (before_clk == 0xffffffffu || before_rst == 0xffffffffu)
+        return false;
+    if ((before_clk & clocks) == clocks && !(before_rst & resets))
+        return true;
+    if (pf) clocks |= 1u << 15;
+    reg_write32(clk, before_clk | clocks);
+    uint32_t value = get32(ctl);
+    value = (value & ~0x7fu) | (1u << 8) | (1u << 4) | 4u;
+    reg_write32(ctl, value); /* SGMII, maximum 2500 Mbps, PHY clock */
+    reg_write32(rst, get32(rst) & ~(1u << 7));
+    reg_write32(rst, get32(rst) | (1u << 30));
+    ewokos_addr_t pma = mac_base + 0x4000;
+    reg_write32(pma + 0x1b8, 0);
+    for (unsigned i = 0; i < 5; i++) {
+        reg_write32(pma + 0x1080 + i * 0x14, 0);
+        reg_write32(pma + 0x1090 + i * 0x14, 0);
+        reg_write32(pma + 0x1888 + i * 8, (0xf7u << 9) | (1u << 8) | 4u);
+    }
+    reg_write32(rst, get32(rst) & ~(1u << 30));
+    for (unsigned i = 0; i < 10000; i++) {
+        if (get32(ctl) & (1u << 21)) {
+            reg_write32(rst, get32(rst) & ~(1u << 31));
+            klog("q8b eth: PF%u MAC/PMA clocks ready\n", pf);
+            return true;
+        }
+        usleep(100);
+    }
+    klog("q8b eth: PF%u PMA init timeout emactl=%08x\n", pf, get32(ctl));
+    return false;
 }
 
-static bool probe_tc956x_pf(uint8_t bus, uint8_t dev, uint8_t fn) {
-    uint16_t command = cfg_read16(bus, dev, fn, PCI_COMMAND);
-    uint64_t bar0, bar2, bar4;
+static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
+	uint64_t bar0, bar2, bar4;
     uint32_t rsc_id, pf, mac_lo, mac_hi, version;
     uint16_t phy_id1 = 0xffffu, phy_id2 = 0xffffu;
     ewokos_addr_t mac_base;
 
-    command |= PCI_CMD_MEMORY | PCI_CMD_MASTER;
-    cfg_write16(bus, dev, fn, PCI_COMMAND, command);
-
-    bar0 = read_bar(bus, dev, fn, 0);
-    bar2 = read_bar(bus, dev, fn, 2);
-    bar4 = read_bar(bus, dev, fn, 4);
+	if (!device)
+		return false;
+	bar0 = device->bar[0];
+	bar2 = device->bar[2];
+	bar4 = device->bar[4];
     if (bar0 == 0 || bar2 == 0 || bar4 == 0) {
         slog("q8b eth: %02x:%02x.%u missing TC956x BAR0/2/4\n",
-                bus, dev, fn);
+				device->bus, device->device, device->function);
         return false;
     }
-    if (!map_bar("BAR0", bus, dev, fn, bar0, TC956X_BAR0_VA,
-                TC956X_BAR0_SIZE) ||
-            !map_bar("BAR2", bus, dev, fn, bar2, TC956X_BAR2_VA,
-                TC956X_BAR2_SIZE) ||
-            !map_bar("BAR4", bus, dev, fn, bar4, TC956X_BAR4_VA,
-                TC956X_BAR4_SIZE))
+	if (q8b_pcie_map_bar(device, 0, TC956X_BAR0_VA, TC956X_BAR0_SIZE) ||
+			q8b_pcie_map_bar(device, 2, TC956X_BAR2_VA, TC956X_BAR2_SIZE) ||
+			q8b_pcie_map_bar(device, 4, TC956X_BAR4_VA, TC956X_BAR4_SIZE))
         return false;
 
+    klog("q8b eth: BAR maps ready; reading resource manager\n");
     rsc_id = get32(TC956X_BAR0_VA + TC956X_RSCMNG_ID);
+    klog("q8b eth: resource manager=%08x\n", rsc_id);
     pf = rsc_id & TC956X_RSCMNG_PF_MASK;
     if ((rsc_id & (TC956X_RSCMNG_FN_TYPE | TC956X_RSCMNG_VF_MASK)) != 0 ||
             pf > 1u) {
-        slog("q8b eth: %02x:%02x.%u unsupported resource-manager function\n",
-                bus, dev, fn);
+		slog("q8b eth: %02x:%02x.%u unsupported resource-manager function\n",
+				device->bus, device->device, device->function);
         return false;
     }
     if (pf != 0u) {
-        slog("q8b eth: %02x:%02x.%u PF%u left untouched; using PF0\n",
-                bus, dev, fn, pf);
+		slog("q8b eth: %02x:%02x.%u PF%u left untouched; using PF0\n",
+				device->bus, device->device, device->function, pf);
         return false;
     }
 
     mac_base = TC956X_BAR4_VA +
             (pf == 0u ? TC956X_MAC0_BASE : TC956X_MAC1_BASE);
+    if (!tc956x_mac_power_on(pf, mac_base))
+        return false;
     version = get32(mac_base + GMAC_VERSION);
+    slog("q8b eth: PF%u rsc=%08x chip=%08x clk=%08x rst=%08x macver=%08x\n",
+            pf, rsc_id, get32(TC956X_BAR4_VA),
+            get32(TC956X_BAR4_VA + 0x1004),
+            get32(TC956X_BAR4_VA + 0x1008), version);
     mac_lo = get32(mac_base + GMAC_ADDR0_LOW);
     mac_hi = get32(mac_base + GMAC_ADDR0_HIGH);
     _mac[0] = (uint8_t)mac_lo;
@@ -390,12 +438,17 @@ static bool probe_tc956x_pf(uint8_t bus, uint8_t dev, uint8_t fn) {
     _mac[4] = (uint8_t)mac_hi;
     _mac[5] = (uint8_t)(mac_hi >> 8);
 
+    if (!valid_mac(_mac) && tc956x_eeprom_mac(pf, _mac)) {
+        klog("q8b eth: invalid MAC and EEPROM read failed\n");
+        return false;
+    }
     if (mdio_read_c22(mac_base, TC956X_PHY_ADDR, 2, &phy_id1) != 0 ||
             mdio_read_c22(mac_base, TC956X_PHY_ADDR, 3, &phy_id2) != 0)
         slog("q8b eth: PF%u mdio phy=%u timeout data=%08x\n",
                 pf, TC956X_PHY_ADDR,
                 get32(mac_base + GMAC_MDIO_DATA));
 
+    klog("q8b eth: PF%u PHY id=%04x:%04x\n", pf, phy_id1, phy_id2);
     if (version == 0 || version == 0xffffffffu)
         return false;
     tc956x_config_host_tamap();
@@ -448,6 +501,86 @@ static uint32_t phy_speed_bits(uint16_t phy_status, uint32_t current) {
     if (speed == 1u)
         return GMAC_TX_SS_100;
     return GMAC_TX_SS_10;
+}
+
+static uint16_t tc956x_pcs_read(unsigned reg) {
+    ewokos_addr_t pcs = _mac_base + 0x3a00;
+    reg_write32(pcs + 0x3fc, (0x1f0000u | reg) >> 8);
+    return (uint16_t)get32(pcs + (reg & 0xff) * 4);
+}
+static void tc956x_pcs_write(unsigned reg, uint16_t value) {
+    ewokos_addr_t pcs = _mac_base + 0x3a00;
+    reg_write32(pcs + 0x3fc, (0x1f0000u | reg) >> 8);
+    reg_write32(pcs + (reg & 0xff) * 4, value);
+}
+static uint16_t _phy_mode = 0xffff;
+
+/* Q8B uses an external QCA8081 PHY. Follow the Linux fix_mac_speed and
+ * C37 SGMII PCS setup after PHY negotiation; 2500-Mbps startup settings
+ * cannot carry a subsequently negotiated 1000-Mbps link. */
+static int tc956x_fix_link(uint16_t phy) {
+    if (!(phy & (1u << 11))) return 0;
+    unsigned speed = (phy >> 7) & 7;
+    uint16_t mode = phy & (0x0380u | (1u << 13));
+    if (mode == _phy_mode) return 0;
+    unsigned select;
+    uint16_t bmcr = phy & (1u << 13) ? 0x100 : 0;
+    switch (speed) {
+    case 4: select = 4; bmcr |= 0x40; break;
+    case 2: select = 5; bmcr |= 0x40; break;
+    case 1: select = 6; bmcr |= 0x2000; break;
+    case 0: select = 7; break;
+    default: return -1;
+    }
+    ewokos_addr_t rst = TC956X_BAR4_VA + 0x1008;
+    ewokos_addr_t ctl = TC956X_BAR4_VA + 0x1070;
+    reg_write32(rst, get32(rst) | (1u << 30));
+    reg_write32(ctl, (get32(ctl) & ~0x7fu) | 0x110u | select);
+    ewokos_addr_t pma = _mac_base + 0x4000;
+    reg_write32(pma + 0x1b8, 0);
+    for (unsigned i = 0; i < 5; i++) {
+        reg_write32(pma + 0x1080 + i * 0x14, 0);
+        reg_write32(pma + 0x1090 + i * 0x14, 0);
+        reg_write32(pma + 0x1888 + i * 8, (0xf7u << 9) | 0x104u);
+    }
+    reg_write32(rst, get32(rst) & ~(1u << 30));
+    unsigned waited;
+    for (waited = 0; waited < 10000; waited++) {
+        if (get32(ctl) & (1u << 21)) break;
+        usleep(100);
+    }
+    if (waited == 10000) return -1;
+    if (_phy_mode == 0xffff) {
+        tc956x_pcs_write(0, 0x8000);
+        for (waited = 0; waited < 6000; waited++) {
+            if (!(tc956x_pcs_read(0) & 0x8000)) break;
+            usleep(100);
+        }
+        if (waited == 6000) return -1;
+    }
+    /* xpcs_config_operating_mode(): reset defaults to 10GBASE-R, which
+     * hides the MII MMD. Switch to the modal PCS type before accessing the
+     * C37 SGMII registers; zero readbacks before this are not valid state. */
+    ewokos_addr_t pcs = _mac_base + 0x3a00;
+    reg_write32(pcs + 0x3fc, 3u << 8);
+    if (get32(pcs + 8u * 4) & 1u)
+        reg_write32(pcs + 7u * 4, 4u);
+    if (tc956x_pcs_read(2) != 0x7996 || tc956x_pcs_read(3) != 0xced0)
+        return -1;
+    tc956x_pcs_write(0, tc956x_pcs_read(0) & ~0x1000u);
+    tc956x_pcs_write(0x8001, (tc956x_pcs_read(0x8001) & ~0xeu) | 4u);
+    tc956x_pcs_write(0x8000, (tc956x_pcs_read(0x8000) & ~0x204u) |
+            (speed == 4 ? 4u : 0));
+    tc956x_pcs_write(0, bmcr | (speed == 4 ? 0 : 0x1000u));
+    uint32_t tx = get32(_mac_base + GMAC_TX_CONFIG);
+    reg_write32(_mac_base + GMAC_TX_CONFIG,
+            (tx & ~GMAC_TX_SS_MASK) | phy_speed_bits(phy, tx));
+    _phy_mode = mode;
+    klog("q8b eth: PHY speed=%u duplex=%u PCS ctrl=%04x status=%04x an=%04x emactl=%08x\n",
+            speed == 4 ? 2500 : speed == 2 ? 1000 : speed == 1 ? 100 : 10,
+            !!(phy & (1u << 13)), tc956x_pcs_read(0), tc956x_pcs_read(1),
+            tc956x_pcs_read(0x8002), get32(ctl));
+    return 0;
 }
 
 static int tc956x_dma_reset(void) {
@@ -562,6 +695,10 @@ static int tc956x_start(void) {
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 1, &bmsr);
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 1, &bmsr);
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 0x11, &phy_status);
+    if (tc956x_fix_link(phy_status)) {
+        klog("q8b eth: PCS link configuration failed\n");
+        return -1;
+    }
     value = get32(_mac_base + GMAC_TX_CONFIG);
     value = (value & ~GMAC_TX_SS_MASK) |
             phy_speed_bits(phy_status, value) | GMAC_TX_JD;
@@ -583,58 +720,27 @@ static int tc956x_start(void) {
 
 int bsp_eth_init(void) {
     bool found_mac = false;
+	int count;
 
     if (_probed)
         return _present ? 0 : -1;
     _probed = true;
-
-    if (syscall3(SYS_MEM_MAP, PCIE_ECAM_VA, PCIE_ECAM_PHY,
-            PCIE_ECAM_MAP_SIZE) != PCIE_ECAM_VA) {
-        slog("q8b eth: ECAM map failed pa=%llx size=%u\n",
-                (unsigned long long)PCIE_ECAM_PHY, PCIE_ECAM_MAP_SIZE);
-        return -1;
-    }
-
-    for (uint8_t bus = 0; bus < PCIE_ECAM_BUSES; bus++) {
-        for (uint8_t dev = 0; dev < 32; dev++) {
-            uint32_t id0 = cfg_read32(bus, dev, 0, 0);
-            if ((id0 & 0xffffu) == 0xffffu || id0 == 0)
-                continue;
-            uint8_t max_fn = (cfg_read16(bus, dev, 0, PCI_HEADER_TYPE) &
-                    0x80u) ? 8u : 1u;
-            for (uint8_t fn = 0; fn < max_fn; fn++) {
-                uint32_t id = cfg_read32(bus, dev, fn, 0);
-                uint16_t vendor = (uint16_t)id;
-                uint16_t device = (uint16_t)(id >> 16);
-                if (vendor == 0xffffu || vendor == 0)
-                    continue;
-                uint32_t class_rev = cfg_read32(bus, dev, fn,
-                        PCI_CLASS_REVISION);
-                uint16_t command = cfg_read16(bus, dev, fn, PCI_COMMAND);
-
-                /*
-                 * Linux enables bus mastering recursively on every upstream
-                 * bridge before starting a PCI endpoint.  UEFI leaves the
-                 * Q8B root port and both TC9563 bridges at command 0x0003,
-                 * which blocks XGMAC DMA requests travelling upstream.
-                 */
-                if ((class_rev >> 8) == 0x060400u) {
-                    uint16_t enabled = command |
-                            PCI_CMD_MEMORY | PCI_CMD_MASTER;
-
-                    if (enabled != command) {
-                        cfg_write16(bus, dev, fn, PCI_COMMAND, enabled);
-                    }
-                }
-
-                if (vendor == PCI_VENDOR_TOSHIBA &&
-                        device == PCI_DEVICE_ETH && !found_mac) {
-                    found_mac = true;
-                    _present = probe_tc956x_pf(bus, dev, fn);
-                }
-            }
-        }
-    }
+	count = q8b_pcie_service_get_count();
+	if (count < 0) {
+		slog("q8b eth: PCIe service unavailable\n");
+		return -1;
+	}
+	for (int i = 0; i < count && !found_mac; i++) {
+		q8b_pcie_device_t device;
+		if (q8b_pcie_service_get_device((unsigned)i, &device) != 0)
+			continue;
+		if (device.controller != Q8B_PCIE3A ||
+				device.vendor_id != PCI_VENDOR_TOSHIBA ||
+				device.device_id != PCI_DEVICE_ETH)
+			continue;
+		found_mac = true;
+		_present = probe_tc956x_pf(&device);
+	}
 
     if (!found_mac)
         slog("q8b eth: no 1179:0220 endpoint; firmware PCIe state absent\n");
@@ -741,10 +847,16 @@ void bsp_eth_stats(char *buf, uint32_t size) {
     }
     for (uint32_t i = 0; i < ETH_RING_SIZE; i++)
         owned += (_rx_desc[i].des3 & DESC_OWN) != 0;
+    uint16_t phy = 0xffff, bmsr = 0xffff;
+    (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 1, &bmsr);
+    (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 0x11, &phy);
     snprintf(buf, size,
+            "phy=%04x bmsr=%04x txcfg=%08x pcs=%04x/%04x/%04x\n"
             "rx=%u tx=%u dropped=%u errors=%u backpressure=%u rbu=%u fatal=%08x\n"
             "cons=%u queued=%u owned=%u next=%08x txprod=%u\n"
             "status=%08x rxctl=%08x cur_rx=%08x tail=%08x ring=%08x\n",
+            phy, bmsr, get32(_mac_base + GMAC_TX_CONFIG),
+            tc956x_pcs_read(0), tc956x_pcs_read(1), tc956x_pcs_read(0x8002),
             _rx_packets, _tx_packets, _rx_dropped, _rx_errors,
             _rx_queue_full, _rx_unavailable, _last_dma_error,
             _rx_cons, _rxq_count, owned, _rx_desc[_rx_cons].des3, _tx_prod,

@@ -42,7 +42,8 @@ LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/sdcc2.o \
 	$(ARCH)/src/bsp_usbbt.o $(ARCH)/src/bsp_bt.o \
 	$(ARCH)/src/bsp_g2d.o $(ARCH)/src/bsp_g3d.o $(ARCH)/src/bsp_cl.o \
 	$(SYS_DIR)/platform/$(ARCH)/src/g2d_arch.o \
-	$(ARCH)/src/nvme.o
+	$(ARCH)/src/nvme.o \
+	$(ARCH)/src/pcie.o
 
 BSP = $(TARGET_DIR)/lib/libbsp.a
 

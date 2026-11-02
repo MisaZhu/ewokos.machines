@@ -8,8 +8,9 @@ OBJS = $(ARCH)/wlan.o $(ARCH)/wcn_mhi.o $(ARCH)/wcn_qmi.o $(ARCH)/wcn_board.o $(
 CFLAGS += -I $(BUILD_DIR)/include -DWOLFSSL_USER_SETTINGS
 LDFLAGS = -L $(BUILD_DIR)/lib
 
-$(TARGET): $(OBJS) $(BUILD_DIR)/lib/libewoksys.a $(BUILD_DIR)/lib/libwolfssl.a
-	$(LD) -Ttext=100 $(OBJS) -o $@ $(LDFLAGS) -lwolfssl $(EWOK_LIBC)
+$(TARGET): $(OBJS) $(BUILD_DIR)/lib/libewoksys.a $(BUILD_DIR)/lib/libwolfssl.a \
+		$(BUILD_DIR)/lib/libbsp.a
+	$(LD) -Ttext=100 $(OBJS) -o $@ $(LDFLAGS) -lwolfssl -lbsp $(EWOK_LIBC)
 
 clean:
 	rm -f $(OBJS) $(OBJS:.o=.d) $(TARGET)

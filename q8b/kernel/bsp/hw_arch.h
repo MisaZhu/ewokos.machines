@@ -210,6 +210,12 @@
 #define Q8B_PCIE4_MEM64_PHY      0x420000000ULL
 #define Q8B_PCIE4_MEM64_SIZE     0x20000000ULL
 
+/* PCIe3A: the on-board TC9563/QPS615 switch root port DBI window.  It is
+ * outside the legacy low-MMIO allowance, so expose only this exact page
+ * range to the user-space host-bus owner. */
+#define Q8B_PCIE3A_DBI_PHY       0x34000000ULL
+#define Q8B_PCIE3A_DBI_SIZE      0x00004000ULL
+
 /* PCIe3a outbound apertures used by the on-board TC9563/QPS615 switch. */
 #define Q8B_PCIE3A_ECAM_PHY      0x480000000ULL
 #define Q8B_PCIE3A_ECAM_SIZE     0x10000000ULL

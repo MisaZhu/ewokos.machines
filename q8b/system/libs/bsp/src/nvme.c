@@ -5,9 +5,12 @@
  *   - PCIe2a / PCIe3b controller clocks, resets, PHY, link training,
  *     outbound iATU windows and BAR assignment for the M.2 devices.
  *
- * This driver:
- *   - maps the root-complex ECAM window and walks the bus for an NVMe
- *     function (class 01h/08h/02h),
+ * This driver consumes the immutable enumeration snapshot published by
+ * /dev/pcie0 and then maps the assigned BAR.  It never touches ECAM or PCI
+ * command/link registers itself.
+ *
+ * The bus service:
+ *   - walks the root-complex ECAM for an NVMe function (class 01h/08h/02h),
  *   - translates the BAR value through the board DTS outbound apertures,
  *   - maps BAR0 and runs polled admin + I/O queue pairs.
  *
@@ -24,49 +27,14 @@
 #include <ewoksys/dma.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
-#include <ewoksys/syscall.h>
 #include <ewoksys/sys.h>
 #include <bsp/nvme.h>
+#include <bsp/pcie.h>
 
 #define nvme_dmb() __asm__ volatile("dmb sy" ::: "memory")
 
-/* ------------------------------------------------------------------ */
-/*  PCIe windows (see machines/q8b/kernel/bsp/hw_arch.h + board DTS)   */
-/* ------------------------------------------------------------------ */
-
-#define PCIE2A_ECAM_PHY   0x500000000ULL
-#define PCIE2A_MEM32_BUS  0x40000000ULL
-#define PCIE2A_MEM32_PHY  0x510000000ULL
-#define PCIE2A_MEM32_SIZE 0x10000000ULL
-#define PCIE2A_MEM64_PHY  0x520000000ULL
-#define PCIE2A_MEM64_SIZE 0x0e0000000ULL
-
-#define PCIE3B_ECAM_PHY   0x440000000ULL
-#define PCIE3B_MEM32_BUS  0x40000000ULL
-#define PCIE3B_MEM32_PHY  0x450000000ULL
-#define PCIE3B_MEM32_SIZE 0x10000000ULL
-#define PCIE3B_MEM64_PHY  0x460000000ULL
-#define PCIE3B_MEM64_SIZE 0x20000000ULL
-
-#define ECAM_BUSES        8u
-#define ECAM_MAP_SIZE     (ECAM_BUSES << 20)
-
-#define NVME_ECAM_VA(slot) (0x54000000ULL + (ewokos_addr_t)(slot) * 0x1000000ULL)
 #define NVME_BAR_VA(slot)  (0x54800000ULL + (ewokos_addr_t)(slot) * 0x1000000ULL)
 #define NVME_BAR_MAP_SIZE  0x4000u
-
-/* PCI config offsets */
-#define PCI_VENDOR_ID     0x00
-#define PCI_COMMAND       0x04
-#define PCI_CLASS_REV     0x08
-#define PCI_HEADER_TYPE   0x0c
-#define PCI_BAR0          0x10
-#define PCI_SECONDARY     0x19
-#define PCI_SUBORDINATE   0x1a
-#define PCI_LINK_STATUS   0x12   /* PCIe cap + 0x12: link status */
-
-#define PCI_COMMAND_MEMORY 0x0002
-#define PCI_COMMAND_MASTER 0x0004
 
 /* ------------------------------------------------------------------ */
 /*  NVMe register / command definitions                                */
@@ -218,170 +186,104 @@ static void nvme_cq_doorbell(uint16_t cqid, uint16_t head) {
 	put32((ewokos_addr_t)_c.bar + 0x1000u + ((2u * cqid + 1u) * stride), head);
 }
 
-/* ------------------------------------------------------------------ */
-/*  PCIe ECAM access                                                   */
-/* ------------------------------------------------------------------ */
+/* PCI configuration space is owned by pcied.  These helpers only consume the
+ * immutable snapshot and therefore cannot change link, command, or BAR state. */
+static enum q8b_pcie_controller controller_for_slot(int slot) {
+	return slot == NVME_SLOT_PCIE2A ? Q8B_PCIE2A : Q8B_PCIE3B;
+}
 
-static ewokos_addr_t _ecam_va;
-static int _ecam_slot = -1;
-
-static int ecam_map(int slot) {
-	if (_ecam_slot == slot && _ecam_va != 0)
-		return 0;
-	uint64_t base = (slot == NVME_SLOT_PCIE2A) ? PCIE2A_ECAM_PHY
-			: PCIE3B_ECAM_PHY;
-	ewokos_addr_t va = NVME_ECAM_VA(slot);
-	if (syscall3(SYS_MEM_MAP, va, (ewokos_addr_t)base,
-			(ewokos_addr_t)ECAM_MAP_SIZE) != va) {
-		klog("nvme: pcie%d%s ecam map failed\n", slot == 0 ? "2a" : "3b",
-				"");
+static int snapshot_slot(int slot, q8b_pcie_device_t *out, int max) {
+	int count;
+	int found = 0;
+	if (!out || max <= 0 || (slot != NVME_SLOT_PCIE2A &&
+			slot != NVME_SLOT_PCIE3B))
 		return -1;
+	count = q8b_pcie_service_get_count();
+	if (count < 0)
+		return count;
+	for (int i = 0; i < count && found < max; i++) {
+		q8b_pcie_device_t device;
+		if (q8b_pcie_service_get_device((unsigned)i, &device) != 0)
+			return -1;
+		if (device.controller != controller_for_slot(slot))
+			continue;
+		out[found++] = device;
 	}
-	_ecam_va = va;
-	_ecam_slot = slot;
-	return 0;
-}
-
-static uint32_t cfg_read32(int slot, int bus, int dev, int fn, uint32_t reg) {
-	uint32_t off = ((uint32_t)bus << 20) | ((uint32_t)dev << 15) |
-			((uint32_t)fn << 12) | (reg & 0xffcu);
-	return get32(_ecam_va + off);
-}
-
-static void cfg_write32(int slot, int bus, int dev, int fn, uint32_t reg,
-		uint32_t val) {
-	uint32_t off = ((uint32_t)bus << 20) | ((uint32_t)dev << 15) |
-			((uint32_t)fn << 12) | (reg & 0xffcu);
-	put32(_ecam_va + off, val);
-}
-
-static uint16_t cfg_read16(int slot, int bus, int dev, int fn, uint32_t reg) {
-	uint32_t v = cfg_read32(slot, bus, dev, fn, reg & ~3u);
-	return (uint16_t)(v >> ((reg & 2u) * 8u));
+	return found;
 }
 
 int q8b_pcie_link(int slot, int bus, int dev, int fn,
 		uint32_t* speed, uint32_t* width) {
-	if (ecam_map(slot) != 0)
+	q8b_pcie_device_t devices[32];
+	int count;
+	if (!speed || !width)
 		return -1;
-	uint32_t cap_ptr = cfg_read16(slot, bus, dev, fn, 0x34) & 0xffu;
-	for (int i = 0; i < 48 && cap_ptr >= 0x40; i++) {
-		uint32_t cap = cfg_read32(slot, bus, dev, fn, cap_ptr);
-		if ((cap & 0xffu) == 0x10u) {
-			/* dword at cap+0x10: [15:0]=Link Control,
-			 * [31:16]=Link Status (speed[3:0], width[9:4]). */
-			uint32_t status = cfg_read32(slot, bus, dev, fn,
-					cap_ptr + 0x10) >> 16;
-			*speed = status & 0xfu;
-			*width = (status >> 4) & 0x3fu;
-			return 0;
+	count = snapshot_slot(slot, devices, 32);
+	if (count < 0)
+		return count;
+	for (int i = 0; i < count; i++) {
+		if (devices[i].bus == (uint8_t)bus &&
+				devices[i].device == (uint8_t)dev &&
+				devices[i].function == (uint8_t)fn) {
+			*speed = devices[i].link_speed;
+			*width = devices[i].link_width;
+			return devices[i].pcie_cap ? 0 : -1;
 		}
-		cap_ptr = (cap >> 8) & 0xffu;
 	}
 	return -1;
 }
 
-/* Translate a device BAR value into the CPU physical address used by the
- * root complex outbound window.  Mirrors the &pcie2a / &pcie3b ranges in
- * sc8280xp-radxa-dragon-q8b.dts (and bsp_eth.c's pcie3a equivalents). */
-static uint64_t bar_to_phys(int slot, uint64_t bar) {
-	uint64_t bus32, phys32, size32, phys64;
-	if (slot == NVME_SLOT_PCIE2A) {
-		bus32 = PCIE2A_MEM32_BUS;
-		phys32 = PCIE2A_MEM32_PHY;
-		size32 = PCIE2A_MEM32_SIZE;
-		phys64 = PCIE2A_MEM64_PHY;
-	} else {
-		bus32 = PCIE3B_MEM32_BUS;
-		phys32 = PCIE3B_MEM32_PHY;
-		size32 = PCIE3B_MEM32_SIZE;
-		phys64 = PCIE3B_MEM64_PHY;
-	}
-	if (bar == 0 || bar == 0xffffffffu)
-		return 0;
-	if (bar >= bus32 && bar < bus32 + size32)
-		return phys32 + (bar - bus32);
-	/* 64-bit window is an identity mapping in the board DTS. */
-	if (bar >= phys64)
-		return bar;
-	return 0;
-}
-
 int q8b_pcie_scan(int slot, nvme_pci_dev_t* out, int max) {
+	q8b_pcie_device_t devices[32];
+	int count = snapshot_slot(slot, devices, 32);
 	int found = 0;
-
-	if (slot != NVME_SLOT_PCIE2A && slot != NVME_SLOT_PCIE3B)
-		return -1;
-	if (ecam_map(slot) != 0)
-		return -1;
-
-	/* Force memory decoding/bus mastering for the devices we find; the
-	 * firmware normally leaves both set, but never assume it. */
-	for (int bus = 0; bus < (int)ECAM_BUSES && found < max; bus++) {
-		for (int dev = 0; dev < 32 && found < max; dev++) {
-			for (int fn = 0; fn < 8 && found < max; fn++) {
-				uint16_t vid = cfg_read16(slot, bus, dev, fn,
-						PCI_VENDOR_ID);
-				if (vid == 0xffff || vid == 0)
-					continue;
-				uint32_t cls = cfg_read32(slot, bus, dev, fn,
-						PCI_CLASS_REV);
-				uint32_t hdr = cfg_read32(slot, bus, dev, fn,
-						PCI_HEADER_TYPE);
-				/* 24-bit class code: [31:8] of the 0x08 dword. */
-				uint32_t class_code = cls >> 8;
-				if (class_code == 0x010802u) {
-					uint16_t did = cfg_read16(slot, bus,
-							dev, fn, PCI_VENDOR_ID + 2);
-					uint32_t bar0 = cfg_read32(slot, bus,
-							dev, fn, PCI_BAR0);
-					bool is64 = (bar0 & 0x6u) == 0x4u;
-					uint64_t bus_bar = bar0 & 0xfffffff0u;
-					if (is64)
-						bus_bar |= ((uint64_t)cfg_read32(
-							slot, bus, dev, fn,
-							PCI_BAR0 + 4)) << 32;
-
-					uint16_t cmd = cfg_read16(slot, bus, dev,
-							fn, PCI_COMMAND);
-					uint16_t want = cmd | PCI_COMMAND_MEMORY |
-							PCI_COMMAND_MASTER;
-					if (want != cmd)
-						cfg_write32(slot, bus, dev, fn,
-							PCI_COMMAND,
-							(uint32_t)want);
-
-					nvme_pci_dev_t* d = &out[found];
-					memset(d, 0, sizeof(*d));
-					d->slot = slot;
-					d->bus = bus;
-					d->dev = dev;
-					d->fn = fn;
-					d->vid = vid;
-					d->did = did;
-					d->class_code = class_code;
-					d->bar0_bus = bus_bar;
-					d->bar0_phys = bar_to_phys(slot,
-							bus_bar);
-					d->bar0_size = NVME_BAR_MAP_SIZE;
-					d->bar0_64bit = is64;
-					d->command = cmd;
-					/* Link status lives in the root port
-					 * (bus 0 dev 0 fn 0) PCIe cap +0x12;
-					 * report the device's own slot status
-					 * as a fallback. */
-					d->link_status = cfg_read16(slot, bus,
-							dev, fn,
-							PCI_LINK_STATUS);
-					found++;
-				}
-				uint8_t htype = (uint8_t)((hdr >> 16) & 0xff);
-				if (fn == 0 && !(htype & 0x80))
-					break;
-			}
-		}
+	if (!out || max <= 0 || count < 0)
+		return count < 0 ? count : -1;
+	for (int i = 0; i < count && found < max; i++) {
+		q8b_pcie_device_t *src = &devices[i];
+		nvme_pci_dev_t *dst;
+		if (src->class_code != 0x010802u || !src->bar[0] ||
+				!src->bar_phys[0])
+			continue;
+		dst = &out[found++];
+		memset(dst, 0, sizeof(*dst));
+		dst->slot = slot;
+		dst->bus = src->bus;
+		dst->dev = src->device;
+		dst->fn = src->function;
+		dst->vid = src->vendor_id;
+		dst->did = src->device_id;
+		dst->class_code = src->class_code;
+		dst->bar0_bus = src->bar[0];
+		dst->bar0_phys = src->bar_phys[0];
+		dst->bar0_size = NVME_BAR_MAP_SIZE;
+		dst->bar0_64bit = (src->bar[0] >> 32) != 0;
+		dst->command = src->command;
+		dst->link_status = (uint16_t)(src->link_speed |
+				((uint16_t)src->link_width << 4));
 	}
 	return found;
+}
+
+static int service_device_for_nvme(const nvme_pci_dev_t *dev,
+		q8b_pcie_device_t *out) {
+	int count;
+	enum q8b_pcie_controller controller;
+	if (!dev || !out)
+		return -1;
+	controller = controller_for_slot(dev->slot);
+	count = q8b_pcie_service_get_count();
+	if (count < 0)
+		return count;
+	for (int i = 0; i < count; i++) {
+		if (q8b_pcie_service_get_device((unsigned)i, out) != 0)
+			return -1;
+		if (out->controller == controller && out->bus == (uint8_t)dev->bus &&
+				out->device == (uint8_t)dev->dev &&
+				out->function == (uint8_t)dev->fn)
+			return 0;
+	}
+	return -1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -631,6 +533,7 @@ static int nvme_dma_setup(void) {
 
 int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 	uint8_t idbuf[4096];
+	q8b_pcie_device_t pcie_device;
 
 	if (_c.opened)
 		return 0;
@@ -645,8 +548,9 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 	_c.bar_phys = dev->bar0_phys;
 	_c.opened = false;
 
-	if (syscall3(SYS_MEM_MAP, _c.bar, (ewokos_addr_t)_c.bar_phys,
-			(ewokos_addr_t)NVME_BAR_MAP_SIZE) != _c.bar) {
+	if (service_device_for_nvme(dev, &pcie_device) != 0 ||
+			q8b_pcie_map_bar(&pcie_device, 0, _c.bar,
+					NVME_BAR_MAP_SIZE) != 0) {
 		klog("nvme: BAR map failed pa=0x%llx\n",
 				(unsigned long long)_c.bar_phys);
 		return -1;

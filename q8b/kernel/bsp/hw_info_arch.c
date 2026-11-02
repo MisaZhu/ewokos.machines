@@ -386,6 +386,9 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
     if (phy_base >= Q8B_PCIE4_DBI_PHY &&
             phy_top <= Q8B_PCIE4_DBI_PHY + Q8B_PCIE4_DBI_SIZE)
         return 0;
+    if (phy_base >= Q8B_PCIE3A_DBI_PHY &&
+            phy_top <= Q8B_PCIE3A_DBI_PHY + Q8B_PCIE3A_DBI_SIZE)
+        return 0;
     if (phy_base >= Q8B_PCIE4_ECAM_PHY &&
             phy_top <= Q8B_PCIE4_ECAM_PHY + Q8B_PCIE4_ECAM_SIZE)
         return 0;
