@@ -10,15 +10,15 @@
 @/bin/ipcserv /drivers/q8b/g2dd          /dev/g2d
 
 # PCIe3a/TC9563 Ethernet and DHCP network stack.
-@/bin/ipcserv /drivers/q8b/net           /dev/eth0
-@/bin/ipcserv /drivers/netd              /dev/net0 /dev/eth0
+#@/bin/ipcserv /drivers/q8b/net           /dev/eth0
+#@/bin/ipcserv /drivers/netd              /dev/net0 /dev/eth0
 
 # Start QCNFA765 before its network stack.  The netd instance has no static
 # address arguments, so it starts its DHCP client automatically on /dev/wlan0.
 # Keep Wi-Fi on /dev/net1 so existing wired clients using /dev/net0 remain
 # compatible while applications can select the wireless default explicitly.
 @/bin/ipcserv /drivers/q8b/wlan          /dev/wlan0 --start --connect /etc/wlan.conf
-@/bin/ipcserv /drivers/netd              /dev/net1 /dev/wlan0
+@/bin/ipcserv /drivers/netd              /dev/net0 /dev/wlan0
 @/bin/bgrun /sbin/sshd
 #@/bin/ipcserv /drivers/q8b/fand          /dev/fan
 
