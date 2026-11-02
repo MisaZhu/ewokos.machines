@@ -4,6 +4,7 @@
 #include <stdint.h>
 int wcn_attach(void);
 int wcn_start(void);
+int wcn_running(void);
 void wcn_poll(void);
 void wcn_stop(void);
 void wcn_status(char *out, size_t size);

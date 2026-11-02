@@ -7,7 +7,7 @@
 #include "wcn_htc.h"
 #include "wcn_dp.h"
 #include "wcn_sta.h"
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <ewoksys/kernel_tic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -160,7 +160,11 @@ static void receive_management(const uint8_t *frame, unsigned length, unsigned m
     }
     f.ap[index].mhz=mhz; f.ap[index].rssi=rssi; f.ap[index].privacy=!!(frame[34]&0x10);
     if (ssid_len) {
-        for (unsigned i=0;i<ssid_len;i++) f.ap[index].ssid[i]=ssid[i]>=32 && ssid[i]<127 ? ssid[i] : '.';
+        /* Keep the scan cache printable and JSON-safe: the devcmd state/list
+         * replies embed these bytes and tinyjson does not escape quotes. */
+        for (unsigned i=0;i<ssid_len;i++)
+            f.ap[index].ssid[i]=(ssid[i]>=32 && ssid[i]<127 &&
+                ssid[i]!='"' && ssid[i]!='\\') ? ssid[i] : '.';
         f.ap[index].ssid[ssid_len]=0;
     }
     struct wcn_bss *b=&f.ap[index];
@@ -266,7 +270,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             f.ready = 1;
             if (country_load()) { f.failed=1;return; }
             if (country[0]) f.country_state=1;
-            slog("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+            wcn_log("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
                  f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5]);
         }
         if (event==0x3001 && tag==36 && len>=24 &&
@@ -422,7 +426,7 @@ void wcn_wmi_poll(void) {
         f.init_sent=1; f.deadline=kernel_tic_ms(0)+20000;
     }
     if (f.init_sent && !f.ready && kernel_tic_ms(0)>=f.deadline) {
-        f.failed=1; slog("wcn: WMI READY timeout\n");
+        f.failed=1; wcn_log("wcn: WMI READY timeout\n");
     }
     if (!f.ready) return;
     if (!f.hw_mode_sent) {
@@ -446,8 +450,8 @@ void wcn_wmi_poll(void) {
             if (!wcn_htc_wmi_send(p,sizeof(p))) f.country_sent|=1u<<phy;
             break;
         }
-        if ((f.country_seen&f.country_mask)==f.country_mask) { f.country_state=0;slog("wcn: country applied=%s\n",country); }
-        else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;slog("wcn: country update timeout\n"); } return; }
+        if ((f.country_seen&f.country_mask)==f.country_mask) { f.country_state=0;wcn_log("wcn: country applied=%s\n",country); }
+        else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;wcn_log("wcn: country update timeout\n"); } return; }
     }
     if (f.scan_pending) {
         if (kernel_tic_ms(0)>=f.scan_deadline) {
@@ -463,14 +467,14 @@ void wcn_wmi_poll(void) {
     if (f.scan_active && !f.scan_cancelling && kernel_tic_ms(0)>=f.scan_deadline) {
         f.scan_cancelling=1; f.scan_timedout=1;
         f.scan_deadline=kernel_tic_ms(0)+3000;
-        slog("wcn: passive scan timeout; requesting cancellation\n");
+        wcn_log("wcn: passive scan timeout; requesting cancellation\n");
     }
     if (f.scan_cancelling) {
         if (f.scan_cancelling==1 && !send_scan_cancel()) f.scan_cancelling=2;
         if (kernel_tic_ms(0)>=f.scan_deadline) {
             /* Do not reuse a vdev while firmware may still be scanning. */
             f.failed=1;
-            slog("wcn: scan cancellation timeout; stop/start required\n");
+            wcn_log("wcn: scan cancellation timeout; stop/start required\n");
         }
     }
 }
@@ -548,6 +552,114 @@ int wcn_wmi_station_width_power(const struct wcn_bss *b,unsigned center,unsigned
     return phys ? power:-1;
 }
 int wcn_wmi_scan_finished(void) { return f.scan_done && !f.scan_pending && !f.scan_active && !f.scan_cancelling; }
+int wcn_wmi_scanning(void) { return f.scan_pending || f.scan_active || f.scan_cancelling; }
+int wcn_wmi_failed(void) { return f.failed; }
+unsigned wcn_wmi_scan_count(void) { return f.ap_count; }
+const struct wcn_bss *wcn_wmi_scan_bss(unsigned index) {
+    return index < f.ap_count ? &f.ap[index] : NULL;
+}
+
+/* Decode the RSNE stored by receive_management() into the same short labels
+ * the pi5 driver publishes ("wpa2-psk"/"ccmp"/...), so the desktop wifi app
+ * renders both platforms identically. Only RSN (WPA2/WPA3) is examined: the
+ * firmware management frames retain no WPA1 vendor IE copy. */
+static void note_cipher(const uint8_t *s, int *ccmp, int *tkip, int *wep) {
+    if (s[0] != 0x00 || s[1] != 0x0f || s[2] != 0xac) return;
+    unsigned type = s[3];
+    if (type == 4) *ccmp = 1;
+    else if (type == 2) *tkip = 1;
+    else if (type == 1 || type == 5) *wep = 1;
+}
+
+static void note_akm(const uint8_t *s, int *psk, int *eap, int *sae, int *owe) {
+    if (s[0] != 0x00 || s[1] != 0x0f || s[2] != 0xac) return;
+    unsigned type = s[3];
+    if (type == 2 || type == 6) *psk = 1;
+    else if (type == 1 || type == 3) *eap = 1;
+    else if (type == 8 || type == 9) *sae = 1;
+    else if (type == 18) *owe = 1;
+}
+
+void wcn_wmi_describe(const struct wcn_bss *b, char *auth, size_t auth_len,
+                      char *cipher, size_t cipher_len) {
+    int ccmp = 0, tkip = 0, wep = 0, psk = 0, eap = 0, sae = 0, owe = 0;
+    int rsn = 0;
+
+    if (auth == NULL || auth_len == 0 || cipher == NULL || cipher_len == 0)
+        return;
+    auth[0] = cipher[0] = 0;
+    if (b == NULL) {
+        snprintf(auth, auth_len, "unknown");
+        snprintf(cipher, cipher_len, "unknown");
+        return;
+    }
+
+    if (b->rsn_len >= 10 && b->rsn[0] == 48 && b->rsn[1] + 2u <= b->rsn_len) {
+        const uint8_t *p = b->rsn + 2;
+        unsigned left = b->rsn[1];
+        /* version, then the group cipher suite */
+        if (left >= 6 && get16(p) == 1) {
+            rsn = 1;
+            note_cipher(p + 2, &ccmp, &tkip, &wep);
+            p += 6;
+            left -= 6;
+            /* pairwise cipher suite list, then the AKM suite list */
+            if (left >= 2) {
+                unsigned cnt = get16(p);
+                p += 2;
+                left -= 2;
+                for (unsigned i = 0; i < cnt && left >= 4; i++, p += 4, left -= 4)
+                    note_cipher(p, &ccmp, &tkip, &wep);
+                if (left >= 2) {
+                    cnt = get16(p);
+                    p += 2;
+                    left -= 2;
+                    for (unsigned i = 0; i < cnt && left >= 4; i++, p += 4, left -= 4)
+                        note_akm(p, &psk, &eap, &sae, &owe);
+                }
+            }
+        }
+    }
+
+    if (!b->privacy && !rsn)
+        snprintf(auth, auth_len, "open");
+    else if (sae || owe) {
+        if (sae)
+            snprintf(auth, auth_len, "wpa3-sae");
+        else
+            snprintf(auth, auth_len, "wpa3-owe");
+    } else if (rsn) {
+        if (psk && eap)
+            snprintf(auth, auth_len, "wpa2-psk/eap");
+        else if (psk)
+            snprintf(auth, auth_len, "wpa2-psk");
+        else if (eap)
+            snprintf(auth, auth_len, "wpa2-eap");
+        else
+            snprintf(auth, auth_len, "wpa2");
+    } else
+        snprintf(auth, auth_len, "wep");
+
+    if (ccmp && tkip)
+        snprintf(cipher, cipher_len, "ccmp/tkip");
+    else if (ccmp)
+        snprintf(cipher, cipher_len, "ccmp");
+    else if (tkip)
+        snprintf(cipher, cipher_len, "tkip");
+    else if (wep || (b->privacy && !rsn))
+        snprintf(cipher, cipher_len, "wep");
+    else if (!b->privacy)
+        snprintf(cipher, cipher_len, "none");
+    else
+        snprintf(cipher, cipher_len, "unknown");
+}
+
+const char *wcn_wmi_net_type(const struct wcn_bss *b) {
+    if (b == NULL) return "unknown";
+    if (b->capability & 0x0010) return "infra";
+    if (b->capability & 0x0002) return "adhoc";
+    return "unknown";
+}
 int wcn_wmi_channel_power(unsigned mhz) { return wcn_wmi_channel_width_power(mhz,mhz,20); }
 int wcn_wmi_channel_width_power(unsigned mhz,unsigned center,unsigned width) {
     if ((width!=20 && width!=40 && width!=80) || center<width/2 || mhz+10>center+width/2 || mhz< center-width/2+10) return -1;

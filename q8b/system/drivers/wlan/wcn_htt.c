@@ -6,7 +6,7 @@
 #include "wcn_wmi.h"
 #include "wcn_sta.h"
 #include <ewoksys/kernel_tic.h>
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -26,7 +26,7 @@ void wcn_htt_receive(const void *data, unsigned bytes) {
         t.major = p[2]; t.minor = p[1];
         if (t.major != 3) {
             t.failed = 1;
-            slog("wcn: unsupported HTT version=%u.%u\n", t.major, t.minor);
+            wcn_log("wcn: unsupported HTT version=%u.%u\n", t.major, t.minor);
             return;
         }
         t.ready = 1;
@@ -41,7 +41,7 @@ void wcn_htt_poll(void) {
         t.requested = 1; t.deadline = kernel_tic_ms(0) + 3000;
     } else if (kernel_tic_ms(0) >= t.deadline) {
         t.failed = 1;
-        slog("wcn: HTT version timeout\n");
+        wcn_log("wcn: HTT version timeout\n");
     }
 }
 

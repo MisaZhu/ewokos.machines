@@ -31,6 +31,16 @@ int wcn_wmi_parse_he(const uint8_t *ies,unsigned bytes,struct wcn_he_caps *cap,u
 unsigned wcn_wmi_bss_160_center(const struct wcn_bss *bss);
 int wcn_wmi_station_width_power(const struct wcn_bss *bss,unsigned center,unsigned width);
 int wcn_wmi_scan_finished(void);
+int wcn_wmi_scanning(void);
+int wcn_wmi_failed(void);
+/* Scan cache, in discovery order. Entries are only valid between a completed
+ * scan and the next wcn_wmi_scan(). */
+unsigned wcn_wmi_scan_count(void);
+const struct wcn_bss *wcn_wmi_scan_bss(unsigned index);
+/* pi5-compatible short labels for a BSS ("wpa2-psk", "ccmp", ...). */
+void wcn_wmi_describe(const struct wcn_bss *bss, char *auth, size_t auth_len,
+                      char *cipher, size_t cipher_len);
+const char *wcn_wmi_net_type(const struct wcn_bss *bss);
 void wcn_wmi_mac(uint8_t mac[6]);
 void wcn_wmi_reset(void);
 void wcn_wmi_receive(const void *data, unsigned bytes);

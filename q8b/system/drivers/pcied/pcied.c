@@ -89,14 +89,14 @@ int main(int argc, char **argv) {
     else
         klog("q8b pcied: PCIe4 power-on failed; PCIe4 ECAM will remain blocked\n");
 
-    /* PCIe3A carries the QPS615 switch and the two Ethernet functions.  It is
-     * powered and trained here before any ECAM walk; endpoint drivers only see
-     * the immutable snapshot published below. */
-    int pcie3a_ready = q8b_pcie_power_on(Q8B_PCIE3A, 3) == 0;
-    if (pcie3a_ready)
-        klog("q8b pcied: PCIe3A power-on complete, probing switch hierarchy\n");
-    else
-        klog("q8b pcied: PCIe3A power-on failed; Ethernet ECAM will remain blocked\n");
+    /* PCIe3A carries the optional QPS615/Ethernet hierarchy.  Do not power it
+     * while this service is establishing the WLAN snapshot: its reset/I2C
+     * sequence can block indefinitely when the switch is absent or held in
+     * reset, leaving /dev/pcie0 unpublished and preventing Wi-Fi from using a
+     * successfully trained PCIe4 link.  Ethernet has no active Q8B client in
+     * the current profile; a future Ethernet owner can request PCIe3A through
+     * a separate, bounded bring-up path. */
+    klog("q8b pcied: PCIe3A optional path deferred; WLAN snapshot isolated\n");
 
     /* PCIe4 is the boot-critical path: WLAN must be published before any
      * optional switch hierarchy is touched.  On the current Q8B firmware the

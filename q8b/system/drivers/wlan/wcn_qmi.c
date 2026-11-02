@@ -6,7 +6,7 @@
 #include "wcn_board.h"
 #include "wcn_ce.h"
 #include <ewoksys/kernel_tic.h>
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <ewoksys/dma.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -202,7 +202,7 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
                 unsigned len = get16(p + i + 1);
                 if (len > bytes - i - 3) { q.malformed++; return; }
                 if (p[i] == 1 && respond_memory(p + i + 3, len))
-                    slog("wcn: QMI memory request rejected or allocation failed\n");
+                    wcn_log("wcn: QMI memory request rejected or allocation failed\n");
                 i += 3 + len;
             }
         }
@@ -232,7 +232,7 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
     }
     if (!found) { q.malformed++; return; }
     q.pending = 0;
-    if (q.result) slog("wcn: QMI response id=%x result=%u error=%u\n", id, q.result, q.error);
+    if (q.result) wcn_log("wcn: QMI response id=%x result=%u error=%u\n", id, q.result, q.error);
     if (q.result) { q.failed = 1; return; }
     if (id == 0x20) { q.registered = 1; host_capabilities(); }
     if (id == 0x34) q.host_cap = 1;
@@ -241,7 +241,7 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
         q.target_cap = 1;
         /* PCI devices already have their BAR; DEVICE_INFO is hybrid-bus only. */
         if (begin_board_upload(1) && begin_board_upload(0))
-            slog("wcn: board upload could not start\n");
+            wcn_log("wcn: board upload could not start\n");
     }
     if (id == 0x25 && upload.data) {
         upload.offset += upload.chunk; upload.sequence++;
@@ -251,10 +251,10 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
             unsigned type = upload.type;
             free(upload.data); memset(&upload, 0, sizeof(upload));
             if (type == 4) {
-                if (begin_board_upload(0)) slog("wcn: BDF upload could not start\n");
+                if (begin_board_upload(0)) wcn_log("wcn: BDF upload could not start\n");
             } else {
                 q.bdf_ready = 1;
-                if (send_m3()) slog("wcn: M3 setup failed\n");
+                if (send_m3()) wcn_log("wcn: M3 setup failed\n");
             }
         }
     }
@@ -341,7 +341,7 @@ void wcn_qmi_poll(void) {
     if (q.failed) return;
     if (q.pending) {
         if (kernel_tic_ms(0) >= q.deadline) {
-            slog("wcn: QMI timeout id=%x txn=%u\n", q.pending_id, q.pending);
+            wcn_log("wcn: QMI timeout id=%x txn=%u\n", q.pending_id, q.pending);
             q.failed = 1;
         }
         return;

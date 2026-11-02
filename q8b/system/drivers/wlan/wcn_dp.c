@@ -9,7 +9,7 @@
 #include "wcn_sta.h"
 #include "wcn_wpa.h"
 #include <ewoksys/dma.h>
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -185,7 +185,7 @@ static struct dp_ring *dp_find(unsigned id) {
     return NULL;
 }
 static int dp_fault(const char *why) {
-    d.bad++; d.failed=1; slog("wcn: DP invalid %s; stop/start required\n",why); return -1;
+    d.bad++; d.failed=1; wcn_log("wcn: DP invalid %s; stop/start required\n",why); return -1;
 }
 static unsigned dp_space(struct dp_ring *r) {
     unsigned tail=dp_hw(r)/r->words;

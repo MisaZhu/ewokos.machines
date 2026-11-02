@@ -4,11 +4,17 @@
 #include <stdint.h>
 #include <stddef.h>
 struct wcn_rx_security;
+struct wcn_bss;
 int wcn_sta_associate(const char *ssid);
 int wcn_sta_busy(void);
 int wcn_sta_failed(void);
 int wcn_sta_resume(void);
-int wcn_sta_connect_file(const char *path);
+/* Scan-then-associate-with-WPA using a passphrase or 64-hex PMK. */
+int wcn_sta_join(const char *ssid,const char *credential);
+int wcn_sta_bss_supported(const struct wcn_bss *bss);
+const struct wcn_bss *wcn_sta_bss(void);
+const char *wcn_sta_ssid(void);
+const char *wcn_sta_error(void);
 int wcn_sta_eapol_send(const uint8_t *packet,unsigned bytes);
 int wcn_sta_install_key(unsigned index,unsigned group,const uint8_t key[16],const uint8_t *rsc);
 int wcn_sta_authorize(void);
