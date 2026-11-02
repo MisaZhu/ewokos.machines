@@ -1687,6 +1687,15 @@ static int draw_locked(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
 		return draw_geom(s, fb_phy, (uint32_t)fb_w, (uint32_t)fb_h, fb_stride,
 		                 geom, tex, num_tex, unif, num_uniforms);
 
+	/* A6xx linear surfaces address rows at 64-byte granularity: a misaligned
+	   fullscreen pitch does not decline gracefully, it wedges the device. The
+	   geom first-frame check above already enforces this; add the same guard
+	   for the fullscreen compute path so an app that resizes its window to an
+	   arbitrary width (stride = w*4 not 64B-aligned) gets a clean decline and
+	   CPU fallback instead of a permanent GPU hang. */
+	if ((fb_stride & 0x3fu) != 0)
+		return ADRENO_E_DECLINED;
+
 	/* --- fullscreen: binding 0 (the framebuffer) is the only SSBO that can
 	   be supplied; a kernel declaring any further storage buffer is declined
 	   by emit_cs_dispatch's binding check.  Sampled textures ride `tex`
