@@ -120,8 +120,11 @@ network_sys: basic_sys
 # stack.  g2dd is the shared 2D/3D offload daemon; on q8b it links libbsp +
 # libadreno (BSP_LFLAGS) and forwards into the Adreno 690 A2D/CS back ends,
 # enabled directly in each init.rd before any display/desktop clients start.
+# The bluetooth stack is the raspi5 one: the shared btd daemon over the
+# machine's bsp_bt transport, plus the shared hid_* subscribers in "bt" mode
+# (hid_joystickd included, so the desktop can use a gamepad over HOGP/HIDP).
 GUI_DRIVERS = displaymand consoled fontd g2dd usbhostd hid_keybd hid_moused \
-	hid_touchd usbfat32fsd btd
+	hid_touchd hid_joystickd usbfat32fsd btd
 
 gui_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/gui mkdirs
