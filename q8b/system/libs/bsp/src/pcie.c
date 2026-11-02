@@ -1034,8 +1034,6 @@ static int ekey_3v3_set(bool on) {
 	return 0;
 }
 
-static int radio_disable(void);
-
 static int prepare_ekey_power(void) {
 	int power_maps;
 	int layout;
@@ -1045,15 +1043,13 @@ static int prepare_ekey_power(void) {
 	 * PARF/PHY/DBI access.  Continuing with a presumed firmware state can
 	 * leave the endpoint partially powered and make the later ECAM read abort. */
 	klog("q8b pcie: PCIe4 Wi-Fi power preflight begin\n");
-	/* A warm reset can leave the fixed regulator and WCN state latched on.
-	 * Re-run the board power sequence instead of treating a high GPIO as proof
-	 * that the endpoint is in its POR state. PERST# is already asserted by the
-	 * caller, so the endpoint cannot observe this transition on PCIe. */
-	if (radio_disable() || ekey_3v3_set(false)) {
-		klog("q8b pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 off\n");
-		return -1;
-	}
-	usleep(100000);
+	/* usbhostd may already own the combo module's USB Bluetooth function when
+	 * pcied starts.  Do not drop the shared E-key rail or assert the shared
+	 * W_DISABLE pins here: that resets the USB endpoint under xHCI and races
+	 * PCIe link training. PERST# is already asserted by the caller, so the
+	 * WLAN PCIe function is held in reset while we make the idempotent rail
+	 * votes below. A cold board has the rail off; a warm board keeps a live BT
+	 * function untouched. */
 	if (ekey_3v3_set(true)) {
 		klog("q8b pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 on\n");
 		return -1;
@@ -1164,18 +1160,6 @@ static void configure_link_pins(void) {
 	uintptr_t clkreq = gpio_reg(140);
 	update(wake, 0x3fu | BIT(9), 0x3u);
 	update(clkreq, 0x3fu | BIT(9), 0x7u);
-}
-
-static int radio_disable(void) {
-	/* Assert both active-low W_DISABLE pins before removing 3.3 V. Latch the
-	 * low value first so the pad cannot briefly enable the module while its
-	 * firmware function is changed to GPIO output. */
-	for (unsigned pin = 133; pin <= 134; pin++) {
-		uintptr_t gpio = gpio_reg(pin);
-		update(gpio + 4, BIT(1), 0);
-		update(gpio, 0x3fu | BIT(9), 0x200u);
-	}
-	return 0;
 }
 
 static int radio_enable(void) {

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Select the board-2 container entry using the PCI and QMI identity. */
 #include "wcn_board.h"
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -138,7 +138,7 @@ uint8_t *wcn_board_data(unsigned chip, unsigned board, int regdb, unsigned *size
         entry = select_vendor_entry(file, bytes, pci_subsystem_vendor,
                 chip, board, 0, size);
         if (entry)
-            slog("wcn: BDF exact subsystem %04x:%04x missing; using vendor calibration fallback\n",
+            wcn_log("wcn: BDF exact subsystem %04x:%04x missing; using vendor calibration fallback\n",
                     pci_subsystem_vendor, pci_subsystem_device);
     }
     if (!entry && regdb && file) entry = select_entry(file, bytes, "bus=pci", 1, size);
@@ -149,6 +149,6 @@ uint8_t *wcn_board_data(unsigned chip, unsigned board, int regdb, unsigned *size
     }
     free(file);
     if (!result && regdb) result = wcn_read_file(FW_DIR "regdb.bin", 256 * 1024, size);
-    if (!result) { *size = 0; slog("wcn: missing %s for %s\n", regdb ? "regdb" : "BDF", name); }
+    if (!result) { *size = 0; wcn_log("wcn: missing %s for %s\n", regdb ? "regdb" : "BDF", name); }
     return result;
 }

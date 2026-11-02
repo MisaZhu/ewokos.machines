@@ -8,7 +8,7 @@
 #include <wolfssl/wolfcrypt/aes.h>
 #include <wolfssl/wolfcrypt/pwdbased.h>
 #include <ewoksys/kernel_tic.h>
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -39,7 +39,7 @@ static unsigned equal(const uint8_t *p,const uint8_t *q,unsigned bytes) {
 }
 static void failed(const char *why) {
     a.error=why; a.state=ERROR; erase(a.pmk,sizeof(a.pmk)); erase(a.ptk,sizeof(a.ptk)); erase(a.gtk,sizeof(a.gtk)); erase(a.seed,sizeof(a.seed));
-    slog("wcn: WPA failed=%s\n",why);
+    wcn_log("wcn: WPA failed=%s\n",why);
 }
 static int hmac(const uint8_t *key,unsigned key_len,const uint8_t *p,unsigned bytes,uint8_t out[20]) {
     Hmac ctx;
@@ -134,15 +134,29 @@ static int key_data(const uint8_t *p,unsigned bytes,unsigned require_rsn) {
 invalid:
     erase(data,sizeof(data));erase(gtk,sizeof(gtk));return -1;
 }
+/* Common session setup once a.pmk holds the pairwise master key. */
+static int begin(const char *ssid,const uint8_t seed[32],
+                 const uint8_t mac[6],const uint8_t bssid[6],const uint8_t *rsn,unsigned rsn_len,const uint8_t selected[22]) {
+    wcn_wpa_forget();strcpy(profile.ssid,ssid);memcpy(profile.pmk,a.pmk,32);memcpy(profile.seed,seed,32);
+    memcpy(a.seed,seed,32);memcpy(a.mac,mac,6);memcpy(a.bssid,bssid,6);
+    memcpy(a.ap_rsn,rsn,rsn_len);a.ap_rsn_len=rsn_len;memcpy(a.rsn,selected,22);
+    a.state=WAIT1;a.deadline=kernel_tic_ms(0)+20000;return 0;
+}
 int wcn_wpa_init(const char *ssid,const char *password,const uint8_t seed[32],
                  const uint8_t mac[6],const uint8_t bssid[6],const uint8_t *rsn,unsigned rsn_len,const uint8_t selected[22]) {
     wcn_wpa_reset();unsigned n=strlen(password);
     if (!*ssid || strlen(ssid)>32 || n<8 || n>63 || rsn_len>sizeof(a.ap_rsn)) return -1;
     if (wc_PBKDF2(a.pmk,(const uint8_t *)password,n,(const uint8_t *)ssid,strlen(ssid),4096,32,WC_SHA)) { wcn_wpa_reset();return -1; }
-    wcn_wpa_forget();strcpy(profile.ssid,ssid);memcpy(profile.pmk,a.pmk,32);memcpy(profile.seed,seed,32);
-    memcpy(a.seed,seed,32);memcpy(a.mac,mac,6);memcpy(a.bssid,bssid,6);
-    memcpy(a.ap_rsn,rsn,rsn_len);a.ap_rsn_len=rsn_len;memcpy(a.rsn,selected,22);
-    a.state=WAIT1;a.deadline=kernel_tic_ms(0)+20000;return 0;
+    return begin(ssid,seed,mac,bssid,rsn,rsn_len,selected);
+}
+/* pi5's network.json may carry a precomputed PMK ("pmk", 64 hex chars) and
+ * the station then skips PBKDF2 entirely, exactly like the pi5 driver. */
+int wcn_wpa_init_pmk(const char *ssid,const uint8_t pmk[32],const uint8_t seed[32],
+                     const uint8_t mac[6],const uint8_t bssid[6],const uint8_t *rsn,unsigned rsn_len,const uint8_t selected[22]) {
+    wcn_wpa_reset();
+    if (!*ssid || strlen(ssid)>32 || rsn_len>sizeof(a.ap_rsn)) return -1;
+    memcpy(a.pmk,pmk,32);
+    return begin(ssid,seed,mac,bssid,rsn,rsn_len,selected);
 }
 void wcn_wpa_receive(const uint8_t *p,unsigned bytes) {
     if (a.state==OFF || a.state==ERROR) return;
@@ -233,7 +247,7 @@ void wcn_wpa_poll(void) {
         if (ret>=0) { a.tx4=ret;a.state=TX4_WAIT; }
         break;
     case AUTHORIZE:
-        if (!wcn_sta_authorize()) { a.state=CONNECTED;a.established=1;erase(a.gtk,sizeof(a.gtk));erase(a.seed,sizeof(a.seed));erase(a.pmk,sizeof(a.pmk));slog("wcn: WPA2 connected\n"); }
+        if (!wcn_sta_authorize()) { a.state=CONNECTED;a.established=1;erase(a.gtk,sizeof(a.gtk));erase(a.seed,sizeof(a.seed));erase(a.pmk,sizeof(a.pmk));wcn_log("wcn: WPA2 connected\n"); }
         break;
     default: break;
     }

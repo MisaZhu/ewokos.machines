@@ -6,7 +6,7 @@
 #include "wcn_ce.h"
 #include "wcn_wmi.h"
 #include "wcn_htt.h"
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <ewoksys/kernel_tic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -78,7 +78,7 @@ void wcn_htc_receive(unsigned pipe, const void *data, unsigned bytes) {
         } else if (id == 3) {
             unsigned service = u16(p+2), eid = p[5], max_size = u16(p+6);
             if (service != h.pending || p[4] || !eid || eid >= 9 || !max_size) {
-                slog("wcn: HTC connect rejected service=%x status=%u ep=%u\n", service, p[4], eid);
+                wcn_log("wcn: HTC connect rejected service=%x status=%u ep=%u\n", service, p[4], eid);
                 h.failed = 1; return;
             }
             h.pending = 0; h.max_size[eid] = max_size;
@@ -98,7 +98,7 @@ void wcn_htc_poll(void) {
     if (!h.ready || h.failed) return;
     if (h.setup) { wcn_wmi_poll(); wcn_htt_poll(); return; }
     if (h.pending) {
-        if (kernel_tic_ms(0) >= h.deadline) { h.failed = 1; slog("wcn: HTC service timeout=%x\n", h.pending); }
+        if (kernel_tic_ms(0) >= h.deadline) { h.failed = 1; wcn_log("wcn: HTC service timeout=%x\n", h.pending); }
         return;
     }
     if (!h.htt_ep) { if (connect_service(0x300)) h.failed = 1; }

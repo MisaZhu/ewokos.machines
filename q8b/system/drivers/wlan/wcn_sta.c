@@ -8,9 +8,9 @@
 #include "wcn_wpa.h"
 #include "wcn_net.h"
 #include "wcn_htc.h"
+#include "wcn_util.h"
 #include <ewoksys/dma.h>
 #include <ewoksys/kernel_tic.h>
-#include <ewoksys/klog.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -49,7 +49,7 @@ static void state(unsigned value) {
 }
 static void fail(const char *why,unsigned status) {
     s.error=why; s.status=status; state(FAILED);
-    slog("wcn: station failure=%s status=%u; recovery required\n",why,status);
+    wcn_log("wcn: station failure=%s status=%u; recovery required\n",why,status);
 }
 /* Negotiate WPA2-PSK/CCMP only. Reject mandatory PMF and unsupported group ciphers. */
 static int select_rsn(const uint8_t *ie,unsigned bytes) {
@@ -614,42 +614,50 @@ int wcn_sta_authorize(void) {
     memcpy(p.cmd.peer_macaddr.addr,s.bss.bssid,6);p.cmd.param_id=3;p.cmd.param_value=1;
     return wcn_htc_wmi_send(&p,sizeof(p));
 }
-static int hex_seed(const char *p,uint8_t seed[32]) {
-    if (strlen(p)!=64) return -1;
-    for (unsigned i=0;i<32;i++) {
-        unsigned v=0;
-        for (unsigned j=0;j<2;j++) {
-            char c=p[i*2+j];unsigned n;
-            if (c>='0' && c<='9') n=c-'0';else if (c>='a' && c<='f') n=c-'a'+10;
-            else if (c>='A' && c<='F') n=c-'A'+10;else return -1;
-            v=v*16+n;
-        }
-        seed[i]=v;
+/* Join a network with either a passphrase (PBKDF2) or a precomputed PMK
+ * ("pmk" in network.json / a 64-hex credential). The caller must have a
+ * fresh scan cache so wcn_sta_associate() can resolve the BSS. */
+int wcn_sta_join(const char *ssid,const char *credential) {
+    if (ssid == NULL || ssid[0] == 0 || strlen(ssid) > 32 || credential == NULL) return -1;
+    if (s.state!=IDLE || !wcn_wmi_station_available() || !wcn_dp_ready()) return -1;
+    unsigned n=strlen(credential);
+    int pmk=(n==64 && wcn_hex_is(credential,64));
+    if (!pmk && (n<8 || n>63)) return -1;
+    if (wcn_sta_associate(ssid)) return -1;
+    uint8_t seed[32],key[32];
+    wcn_random_bytes(seed,sizeof(seed));
+    int ret;
+    if (pmk) {
+        if (wcn_hex_decode(credential,key,32)) { fail("WPA-initialization",0);return -1; }
+        ret=wcn_wpa_init_pmk(ssid,key,seed,s.mac,s.bss.bssid,s.bss.rsn,s.bss.rsn_len,s.rsn);
+        memset(key,0,sizeof(key));
+    } else {
+        ret=wcn_wpa_init(ssid,credential,seed,s.mac,s.bss.bssid,s.bss.rsn,s.bss.rsn_len,s.rsn);
     }
+    memset(seed,0,sizeof(seed));
+    if (ret) { fail("WPA-initialization",0);return -1; }
     return 0;
 }
-int wcn_sta_connect_file(const char *path) {
-    if (s.state!=IDLE || !wcn_wmi_station_available() || !wcn_dp_ready()) return -1;
-    /* Read the SSID, passphrase and 32-byte random seed into private memory.
-     * Keep the root-owned file so the next boot can reconnect automatically;
-     * the passphrase and seed are still wiped from the temporary buffers. */
-    FILE *fp=fopen(path,"r");if (!fp) return -1;
-    char config[192];uint8_t seed[32];memset(config,0,sizeof(config));memset(seed,0,sizeof(seed));
-    unsigned n=fread(config,1,sizeof(config)-1,fp);int extra=fgetc(fp);fclose(fp);
-    int ret=-1;
-    if (extra!=EOF || !n || memchr(config,0,n)) goto done;
-    char *ssid=config,*pass=strchr(ssid,'\n');if (!pass) goto done;*pass++=0;
-    char *entropy=strchr(pass,'\n');if (!entropy) goto done;*entropy++=0;
-    char *end=strchr(entropy,'\n');if (end) { *end++=0;if (*end) goto done; }
-    if (hex_seed(entropy,seed) || strlen(pass)<8 || strlen(pass)>63 || wcn_sta_associate(ssid)) goto done;
-    if (wcn_wpa_init(ssid,pass,seed,s.mac,s.bss.bssid,s.bss.rsn,s.bss.rsn_len,s.rsn)) {
-        fail("WPA-initialization",0);goto done;
-    }
-    ret=0;
-done:
-    { volatile uint8_t *v=(void *)config;for(unsigned i=0;i<sizeof(config);i++) v[i]=0;
-      v=seed;for(unsigned i=0;i<sizeof(seed);i++) v[i]=0; }
-    return ret;
+
+/* True when this BSS can actually be joined: protected and carrying the
+ * WPA2-PSK/CCMP RSN this supplicant implements. Used to skip configured
+ * networks that would only fail after a full scan/associate cycle. */
+int wcn_sta_bss_supported(const struct wcn_bss *bss) {
+    return bss != NULL && bss->privacy &&
+        !select_rsn(bss->rsn,bss->rsn_len) &&
+        wcn_wmi_channel_power(bss->mhz) >= 0;
+}
+
+/* Associated BSS, or NULL when the station is not associated (the struct is
+ * cleared by wcn_sta_release()). */
+const struct wcn_bss *wcn_sta_bss(void) {
+    return s.bss.ssid[0] ? &s.bss : NULL;
+}
+const char *wcn_sta_ssid(void) {
+    return s.bss.ssid;
+}
+const char *wcn_sta_error(void) {
+    return s.error ? s.error : "none";
 }
 
 int wcn_sta_link_ready(void) {

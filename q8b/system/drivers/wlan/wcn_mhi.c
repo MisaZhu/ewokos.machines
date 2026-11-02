@@ -12,7 +12,7 @@
 #include "wcn_sta.h"
 #include <bsp/pcie.h>
 #include <ewoksys/dma.h>
-#include <ewoksys/klog.h>
+#include "wcn_util.h"
 #include <ewoksys/kernel_tic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -124,13 +124,14 @@ static int wait_reg(uint32_t off, uint32_t mask, uint32_t value, unsigned timeou
         if ((v & mask) == value) return 0;
         usleep(1000);
     } while (kernel_tic_ms(0) < end);
-    slog("wcn: timeout reg=%x value=%08x mask=%08x want=%08x ee=%u\n",
+    wcn_log("wcn: timeout reg=%x value=%08x mask=%08x want=%08x ee=%u\n",
          off, reg(off), mask, value, ee());
     return -1;
 }
 
 int wcn_attach(void) {
     w.stage = "attach";
+    wcn_log("wcn: attach probing PCIe snapshot\n");
     /* pcied owns power, LTSSM, ECAM and PCI configuration.  Consume only its
      * read-only snapshot; this driver never writes a PCI capability or the
      * command register. */
@@ -169,6 +170,9 @@ int wcn_attach(void) {
     if (!offset_valid(w.bhi, 0xc8)) return -1;
     w.attached = 1;
     w.stage = "PBL";
+    wcn_log("wcn: attach ok vendor=%04x device=%04x sub=%04x:%04x bar=%llx\n",
+            w.pcie.vendor_id, w.pcie.device_id, w.pcie.subsystem_vendor,
+            w.pcie.subsystem_device, (unsigned long long)w.bar_phys);
     return 0;
 }
 
@@ -201,7 +205,7 @@ static int software_reset(void) {
 
 static int load_firmware(void) {
     int fd = open(FW_PATH, O_RDONLY);
-    if (fd < 0) { slog("wcn: missing %s\n", FW_PATH); return -1; }
+    if (fd < 0) { wcn_log("wcn: missing %s\n", FW_PATH); return -1; }
     off_t size = lseek(fd, 0, SEEK_END);
     if (size < SBL_BYTES || size > FW_LIMIT || lseek(fd, 0, SEEK_SET) < 0) {
         close(fd); return -1;
@@ -271,7 +275,7 @@ static void capture_rddm(void) {
         pos += n;
     }
     close(fd);
-    slog("wcn: RDDM saved bytes=%u /tmp/wcn-rddm.bin\n", pos);
+    wcn_log("wcn: RDDM saved bytes=%u /tmp/wcn-rddm.bin\n", pos);
 }
 
 static int setup_contexts(void) {
@@ -337,7 +341,7 @@ static void ipcr_event(const mhi_tre_t *event) {
     unsigned channel = event->info >> 24;
     if (channel != 20 && channel != 21) return;
     if (code != 2 && code != 4) {
-        slog("wcn: IPCR channel=%u completion error=%u\n", channel, code);
+        wcn_log("wcn: IPCR channel=%u completion error=%u\n", channel, code);
         w.ipcr_ready = 0;
         w.stage = "IPCR-completion-error";
         return;
@@ -367,7 +371,7 @@ static void ipcr_event(const mhi_tre_t *event) {
 void wcn_poll(void) {
     if (!w.contexts_ready) return;
     if (reg(0x48) & 4) {
-        slog("wcn: MHI SYSERR ee=%u status=%08x error=%08x\n", ee(), reg(0x48), reg(w.bhi + 0x30));
+        wcn_log("wcn: MHI SYSERR ee=%u status=%08x error=%08x\n", ee(), reg(0x48), reg(w.bhi + 0x30));
         capture_rddm();
         wcn_stop();
         w.stage = "MHI-SYSERR";
@@ -490,7 +494,7 @@ static int download_amss(void) {
         if ((status >> 30) == 3 || (reg(0x48) & 4)) return -1;
         usleep(1000);
     } while (kernel_tic_ms(0) < until);
-    slog("wcn: BHIE timeout status=%08x ee=%u\n", reg(w.bhie + 0x44), ee());
+    wcn_log("wcn: BHIE timeout status=%08x ee=%u\n", reg(w.bhie + 0x44), ee());
     return -1;
 }
 
@@ -514,9 +518,13 @@ void wcn_stop(void) {
 
 int wcn_start(void) {
     if (!w.attached || w.running) return -1;
+    wcn_log("wcn: start begin\n");
     w.stage = "load-firmware";
+    wcn_log("wcn: loading firmware\n");
     if (load_firmware()) { w.stage = "firmware-error"; return -1; }
+    wcn_log("wcn: firmware loaded bytes=%u\n", w.fw_size);
     w.running = 1;
+    wcn_log("wcn: software reset begin\n");
     if (software_reset()) goto fail;
     /* Allow PBL to finish clearing its boot interface after SYSERR reset. */
     usleep(200000);
@@ -524,6 +532,7 @@ int wcn_start(void) {
      * DMA and its retained polling MSI sink; never map/write ECAM here. */
     if (q8b_pcie_service_prepare_wlan_dma()) goto fail;
     if (prepare_rddm()) goto fail;
+    wcn_log("wcn: RDDM prepared\n");
     w.stage = "BHI";
     put(w.bhi + 0x20, 0); /* BHI interrupt vector; completion is polled. */
     put(w.bhi + 0x2c, 0);
@@ -536,29 +545,35 @@ int wcn_start(void) {
     if (!seq) seq = 1;
     put(w.bhi + 0x18, seq);
     if (wait_reg(w.bhi + 0x2c, 0xc0000000, 0x80000000, 20000)) goto fail;
+    wcn_log("wcn: BHI ready\n");
     w.stage = "READY";
     if (wait_reg(0x38, 2, 0, 10000) || wait_reg(0x48, 1, 1, 10000) || setup_contexts()) goto fail;
+    wcn_log("wcn: MHI contexts ready\n");
     uint64_t until = kernel_tic_ms(0) + 10000;
     while (ee() == 0 && kernel_tic_ms(0) < until) { wcn_poll(); usleep(1000); }
     if (ee() != 1) goto fail;
     w.stage = "BHIE";
+    wcn_log("wcn: downloading AMSS\n");
     if (download_amss()) goto fail;
     until = kernel_tic_ms(0) + 20000;
     while (ee() != 2 && kernel_tic_ms(0) < until) { wcn_poll(); usleep(1000); }
     if (ee() != 2) goto fail;
     w.stage = "AMSS";
     w.stage = "IPCR";
+    wcn_log("wcn: starting IPCR\n");
     if (start_ipcr()) goto fail;
     w.stage = "QMI-discovery";
     return 0;
 fail:
-    slog("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x\n",
+    wcn_log("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x\n",
          w.stage, ee(), reg(0x48), reg(w.bhi + 0x2c), reg(w.bhi + 0x30));
     const char *failed = w.stage;
     wcn_stop();
     w.stage = failed;
     return -1;
 }
+
+int wcn_running(void) { return w.running; }
 
 void wcn_status(char *out, size_t size) {
     char qmi[288], ce_status[512], dp[256];

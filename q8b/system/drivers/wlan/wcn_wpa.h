@@ -6,6 +6,10 @@
 int wcn_wpa_init(const char *ssid,const char *password,const uint8_t seed[32],
                  const uint8_t mac[6],const uint8_t bssid[6],
                  const uint8_t *rsn,unsigned rsn_len,const uint8_t selected_rsn[22]);
+/* Same as wcn_wpa_init() with a precomputed 32-byte PMK (network.json "pmk"). */
+int wcn_wpa_init_pmk(const char *ssid,const uint8_t pmk[32],const uint8_t seed[32],
+                     const uint8_t mac[6],const uint8_t bssid[6],
+                     const uint8_t *rsn,unsigned rsn_len,const uint8_t selected_rsn[22]);
 void wcn_wpa_receive(const uint8_t *packet,unsigned bytes);
 void wcn_wpa_poll(void);
 void wcn_wpa_tx_complete(unsigned cookie,unsigned success);
