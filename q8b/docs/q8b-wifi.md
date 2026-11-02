@@ -2,7 +2,9 @@
 
 The Q8B `wlan` driver owns the WCN6855 (QCNFA765) PCIe endpoint. Since
 2026-11 its user interface matches the Raspberry Pi 5 `wland` driver, so the
-same desktop app, scripts and configuration work on both boards.
+same desktop app, scripts and configuration work on both boards. The
+Bluetooth function of the same combo module is covered in
+[q8b-bluetooth.md](q8b-bluetooth.md).
 
 Both QCNFA765 subsystem IDs (`17cb:0108` and `105b:e130`) use the
 device-specific WCN6855 hw2.1 `nfa765` image
