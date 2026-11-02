@@ -26,7 +26,23 @@ bool pglc_tex_layout_2d(uint32_t w, uint32_t h, uint32_t cpp,
    out->ub_pad   = 0;
    out->padded_w = w;
    out->padded_h = h;
-   out->stride   = w * cpp;
+   /* Adreno accesses a TILE6_LINEAR surface at 64-byte row granularity (the
+    * same shr6 granularity the A2D pitch fields use, hence bsp_g2d's "w must
+    * be a multiple of 16" rule for a tightly packed w*4 pitch).  The texture
+    * unit addresses a sampled linear image by its row pitch, so a narrow image
+    * whose packed pitch is NOT a multiple of 64 -- e.g. macgl's 4-px-wide
+    * RGBA8 lookup atlas, pitch 16 -- is misaddressed: texels are fetched from
+    * the wrong rows, scrambling the decoded pattern while every fetched texel
+    * still carries a valid colour (so colour/background look right but the
+    * image content is garbled).  Pad the row pitch up to 64 so build_tex_desc's
+    * PITCH matches the physical layout; pglc_tex_store_2d already copies
+    * row-by-row into a stride wider than the source rows.  Images whose w*cpp
+    * is already a multiple of 64 are byte-identical to before, so wide sampled
+    * textures are unchanged.  This layout feeds only the compiled TMU-sampled
+    * upload (pgl_g3d_upload_texture_mips_tiled); the fixed-function TEX_MOD
+    * geometry path uploads through pgl_g3d_upload_texture with its own
+    * hard-coded w*4 pitch and is unaffected. */
+   out->stride   = (w * cpp + 63u) & ~63u;
    out->size     = out->stride * h;
    return true;
 }
