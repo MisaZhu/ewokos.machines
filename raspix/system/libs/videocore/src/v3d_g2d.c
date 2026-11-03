@@ -792,7 +792,10 @@ static inline void g2d_dsb(void)
 /* Constant-colour source-over fill (V3D 4.2 only): replaces argb_alpha
  * over the 16x16 _fill_src block for gpu_fill_alpha_surface. */
 #define KERN_FILL_ALPHA 26
-#define KERN_TOTAL 27
+/* Single-pass 4-tap bilinear upscale (V3D 4.2 only): the smooth zoom filter
+ * for gpu_scale_op, assembled from the same .qpu raspi5 ships. */
+#define KERN_SCALE_BILINEAR 27
+#define KERN_TOTAL 28
 /* Alpha has one immutable code address per exact output span.  VC4 does
  * not reliably observe either dynamic late-uniform VDW setups or code
  * replacement at an address already present in its instruction cache. */
@@ -2175,6 +2178,8 @@ int v3d_g2d_init(void)
         _ksrc_n[KERN_TRIANGLE] = g2d_qpu_v42_argb_triangle_n;
         _ksrc[KERN_FILL_ALPHA] = g2d_qpu_v42_argb_fill_alpha;
         _ksrc_n[KERN_FILL_ALPHA] = g2d_qpu_v42_argb_fill_alpha_n;
+        _ksrc[KERN_SCALE_BILINEAR] = g2d_qpu_v42_argb_scale_bilinear;
+        _ksrc_n[KERN_SCALE_BILINEAR] = g2d_qpu_v42_argb_scale_bilinear_n;
     } else if (_ver >= 71) {
         _ksrc[KERN_FILL] = g2d_qpu_argb_fill;
         _ksrc_n[KERN_FILL] = g2d_qpu_argb_fill_n;
@@ -3114,6 +3119,8 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         kern = KERN_TRIANGLE;
     else if (_ver == 42 && code == g2d_qpu_v42_argb_fill_alpha)
         kern = KERN_FILL_ALPHA;
+    else if (_ver == 42 && code == g2d_qpu_v42_argb_scale_bilinear)
+        kern = KERN_SCALE_BILINEAR;
     else
         return -1;
     if ((uint32_t)nwords > _ksrc_n[kern]

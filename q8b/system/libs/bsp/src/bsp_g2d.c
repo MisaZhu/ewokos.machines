@@ -25,7 +25,7 @@
  *   - bsp_g2d_scale_to    -> exact Q15 nearest compute scale
  *   - bsp_g2d_rotate      -> A2D 0/180; compute other angles/packed pitches
  *   - bsp_g2d_gaussian_blur -> fast bilinear downsample/upsample cascade
- *   - bsp_g2d_blt_phy     -> A2D copy into a raw physical scan-out dst
+ *   - bsp_g2d_blt_phy     -> A2D copy / compute scale into a raw physical scan-out dst
  *   - bsp_g2d_rotate_phy  -> A2D rotate into a raw physical dst, 0/180
  *
  * WHAT DECLINES, and why:
@@ -216,9 +216,12 @@ int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_conti
 			dx, dy, dw, dh, 0));
 }
 
-/* 1:1 copy of a clipped src rect into a RAW PHYSICAL scan-out destination
-   (no dst VA in this process).  Now GPU-backed: the A2D writes the physical
-   range directly.  dst_pitch is the explicit row stride (need not be w*4). */
+/* Copy (or scale) a clipped src rect into a RAW PHYSICAL scan-out
+   destination (no dst VA in this process).  GPU-backed: the A2D/compute
+   writes the physical range directly.  When sw!=dw or sh!=dh the compute
+   scale kernel is used: bilinear smoothing for upscales (the displayd zoom
+   path), nearest-neighbor otherwise.  dst_pitch is the explicit row
+   stride (need not be w*4). */
 int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
@@ -229,6 +232,13 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
 		return G2D_ERR_NOT_SUPPORTED;
 	if (!gpu_buf_ok(src_phy, src_contig) || dst_phy == 0)
 		return G2D_ERR_FAILED;
+	if (sw != dw || sh != dh) {
+		if (dw >= sw && dh >= sh)
+			return a2d_result(adreno_compute_scale_bilinear(src_phy, src_w, src_h,
+				sx, sy, sw, sh, dst_phy, dst_w, dst_h, dx, dy, dw, dh));
+		return a2d_result(adreno_compute_scale(src_phy, src_w, src_h,
+			sx, sy, sw, sh, dst_phy, dst_w, dst_h, dx, dy, dw, dh, 0));
+	}
 	return a2d_result(adreno_2d_copy(src_phy, src_w, src_h, (uint32_t)src_w * 4u,
 			sx, sy, sw, sh,
 			dst_phy, dst_w, dst_h, dst_pitch,

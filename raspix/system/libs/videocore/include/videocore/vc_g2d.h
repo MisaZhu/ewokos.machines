@@ -137,6 +137,16 @@ int gpu_blit_surface(const g2d_map_t *m,
                      int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                      int no_clamp);
 
+/* Whole-destination scale of the full src_w x src_h source through the
+ * caller's corner-preserving map m.  Pi4 (V3D 4.2) upscales run a smooth
+ * single-pass bilinear kernel; every other shape and Pi3/VC4 keep nearest
+ * sampling.  Returns GPU_DONE, GPU_UNSUPPORTED or GPU_FAILED. */
+int gpu_scale_op(const g2d_map_t *m,
+                 uint32_t src_phys, uint32_t *argb_src,
+                 int32_t src_w, int32_t src_h,
+                 uint32_t dst_phys, uint32_t *argb_dst,
+                 int32_t dst_w, int32_t dst_h);
+
 /* Source-over blend of the source through m into the clipped dst rect
  * [x0,x1) x [y0,y1) at a constant global alpha.  Deliberately has no
  * fallback path: blends are not idempotent, so a decline or a failure is

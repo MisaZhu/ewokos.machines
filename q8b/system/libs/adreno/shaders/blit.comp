@@ -6,18 +6,49 @@ layout(std430, binding=0) readonly buffer Source { uint src[]; };
 layout(std430, binding=1) buffer Destination { uint dst[]; };
 uniform uvec4 uPitchOrigin; /* src pitch, dst pitch, source x/y */
 uniform uvec4 uDestination; /* destination x/y/width/height */
-uniform uvec4 uStep;        /* increments/extents, shift/alpha, mode (0 copy, 1 blend) */
+uniform uvec4 uStep;        /* increments/extents, shift/alpha/src_h, mode
+                               (0 copy, 1 blend, 2 bilinear scale) */
+
+/* Q15 two-tap blend of two 0..255 channel values; exact, never overflows. */
+uint mix15(uint a, uint b, uint t) {
+    return ((a * (32768u - t)) + (b * t)) >> 15;
+}
+/* Bilinear interpolation of the s-th channel of four packed ARGB taps. */
+uint bilerp(uint c00, uint c01, uint c10, uint c11, uint du, uint dv, uint s) {
+    uint v0 = mix15((c00 >> s) & 255u, (c01 >> s) & 255u, du);
+    uint v1 = mix15((c10 >> s) & 255u, (c11 >> s) & 255u, du);
+    return mix15(v0, v1, dv);
+}
+
 void main() {
     uvec2 xy=gl_GlobalInvocationID.xy;
     if(any(greaterThanEqual(xy,uDestination.zw))) return;
+    uvec2 d=uDestination.xy+xy;
+    uint index=d.y*uPitchOrigin.y+d.x;
+    if(uStep.w==2u) {
+        /* Bilinear scale: uStep.xy are Q15 corner-preserving source
+           increments; uStep.z carries src height for the +1 tap clamp and
+           uPitchOrigin.x is the src pitch (== src width) for the x clamp. */
+        uint fu=xy.x*uStep.x, fv=xy.y*uStep.y;
+        uint x0=uPitchOrigin.z+(fu>>15), y0=uPitchOrigin.w+(fv>>15);
+        uint du=fu&0x7fffu, dv=fv&0x7fffu;
+        uint x1=min(x0+1u, uPitchOrigin.x-1u);
+        uint y1=min(y0+1u, uStep.z-1u);
+        uint p=uPitchOrigin.x;
+        uint c00=src[y0*p+x0], c01=src[y0*p+x1];
+        uint c10=src[y1*p+x0], c11=src[y1*p+x1];
+        dst[index]=bilerp(c00,c01,c10,c11,du,dv,0u)
+            |(bilerp(c00,c01,c10,c11,du,dv,8u)<<8)
+            |(bilerp(c00,c01,c10,c11,du,dv,16u)<<16)
+            |(bilerp(c00,c01,c10,c11,du,dv,24u)<<24);
+        return;
+    }
     uvec2 offset;
     if(uStep.w==0u && uStep.z!=0u) offset=(xy*uStep.xy)>>uStep.z;
     else if(all(equal(uStep.xy,uDestination.zw))) offset=xy; /* common compositor copy */
     else offset=(xy*uStep.xy)/uDestination.zw;
     uvec2 s=uPitchOrigin.zw+offset;
-    uvec2 d=uDestination.xy+xy;
     uint c=src[s.y*uPitchOrigin.x+s.x];
-    uint index=d.y*uPitchOrigin.y+d.x;
     if(uStep.w==0u) { dst[index]=c; return; }
     uint a=c>>24, global=uStep.z;
     if(a==0u || global==0u) return;

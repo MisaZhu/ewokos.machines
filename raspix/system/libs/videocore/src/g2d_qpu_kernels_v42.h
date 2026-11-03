@@ -22,6 +22,13 @@ extern const uint64_t g2d_qpu_v42_argb_alpha[];
 extern const unsigned g2d_qpu_v42_argb_alpha_n;
 extern const uint64_t g2d_qpu_v42_argb_scale_pow2[];
 extern const unsigned g2d_qpu_v42_argb_scale_pow2_n;
+/* Single-pass 4-tap bilinear upscale (V3D 4.2 / Pi 4 only).  Assembled from
+ * the same argb_scale_bilinear.qpu the V3D 7.1 / Pi 5 backend ships, so the
+ * displayd zoom applies one identical smooth filter on both.  Consumes the
+ * whole-surface incremental-map uniforms (u16..u19); selected only for a
+ * ROT_0 full-surface upscale. */
+extern const uint64_t g2d_qpu_v42_argb_scale_bilinear[];
+extern const unsigned g2d_qpu_v42_argb_scale_bilinear_n;
 extern const uint64_t g2d_qpu_v42_v42_store[];
 extern const unsigned g2d_qpu_v42_v42_store_n;
 /* separable gaussian blur passes: radius 1 -> h3/v3, 2 -> h5/v5, 3 -> h7/v7,

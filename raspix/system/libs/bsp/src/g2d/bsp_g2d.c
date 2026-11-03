@@ -73,15 +73,18 @@ int32_t bsp_g2d_cmd(int argc, char **argv, char *buf, uint32_t len)
  * destination is a raw physical range with no kernel-visible VA, which
  * the render pipeline addresses purely physically, so argb_dst is NULL.
  *
- * Only the exact identity, full-surface, packed shape the render engine
- * accepts (dst_pitch == dst_w*4, src and dst the same size, whole frame)
- * is taken; a partial dirty rect, a padded pitch or a scale is declined
- * with -1 (this geometry only, no sticky latch) so displayd keeps its
- * NEON copy for it.  The affine TMU kernel is NEVER allowed to fall
- * through onto this scan-out.  VC4 (Pi3) has no render engine, so it
- * latches the capability off (G2D_ERR_NOT_SUPPORTED) and displayd stops
- * paying a declined round-trip every frame.  A submitted dispatch that
- * fails is returned as -1 and never replayed. */
+ * Only the exact full-frame packed shape (dst_pitch == dst_w*4, whole
+ * frame) is taken.  An identity copy (src and dst the same size) rides the
+ * render engine; a whole-surface upscale (displayd's zoom) rides the CSD
+ * bilinear kernel through gpu_scale_op on Pi4 - the same non-cacheable
+ * scan-out store path bsp_g2d_rotate_phy's 180 blit already uses.  A
+ * partial dirty rect, a padded pitch, a downscale or a non-16-aligned dst
+ * is declined with -1 (this geometry only, no sticky latch) so displayd
+ * keeps its NEON copy/scale for it.  VC4 (Pi3) has neither render engine
+ * nor bilinear kernel, so it latches the capability off
+ * (G2D_ERR_NOT_SUPPORTED) and displayd stops paying a declined round-trip
+ * every frame.  A submitted dispatch that fails is returned as -1 and
+ * never replayed. */
 int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
     			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
     			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
@@ -94,14 +97,14 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
     if (vc_g2d_version() < 41)
         return G2D_ERR_NOT_SUPPORTED;
 
-    /* gate to the exact identity full-frame packed shape; anything else
-     * declines without latching so displayd falls back to its NEON copy
-     * for that geometry (and still asks on the next full-frame present). */
+    /* gate to the exact full-frame packed shape (identity copy or whole-
+     * surface zoom); anything else declines without latching so displayd
+     * falls back to its NEON copy/scale for that geometry (and still asks
+     * on the next full-frame present). */
     if (!argb_src || src_w <= 0 || src_h <= 0 || dst_size == 0 ||
         dst_pitch != (uint32_t)dst_w * 4u ||
         sx != 0 || sy != 0 || dx != 0 || dy != 0 ||
-        sw != src_w || sh != src_h || dw != dst_w || dh != dst_h ||
-        sw != dw || sh != dh)
+        sw != src_w || sh != src_h || dw != dst_w || dh != dst_h)
         return -1;
     if ((uint64_t)(dst_h - 1) * dst_pitch + (uint64_t)dst_w * 4u > dst_size)
         return -1;
@@ -110,6 +113,29 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
     dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, 1);
     if (!src_phys || !dst_phys)
         return -1;
+
+    if (sw != dw || sh != dh) {
+        /* Whole-surface zoom into the scan-out.  Pi4 (V3D 4.2) upscales run
+         * the smooth bilinear kernel through gpu_scale_op, driven by the same
+         * corner-preserving Q15 map the scale_to path uses (last dst pixel
+         * lands exactly on src-1).  A downscale, a non-16-aligned dst or Pi3
+         * (VC4, no bilinear kernel) declines so displayd keeps its CPU scale. */
+        if (vc_g2d_version() < 41 || dw < sw || dh < sh || (dst_w & 15) != 0)
+            return -1;
+        {
+            g2d_map_t sm;
+            sm.pu = (dst_w > 1) ? (int32_t)((((int64_t)(src_w - 1) << 15) +
+                                           dst_w - 2) / (dst_w - 1)) : 0;
+            sm.qu = 0; sm.cu = 0; sm.pv = 0;
+            sm.qv = (dst_h > 1) ? (int32_t)((((int64_t)(src_h - 1) << 15) +
+                                           dst_h - 2) / (dst_h - 1)) : 0;
+            sm.cv = 0;
+            if (gpu_scale_op(&sm, src_phys, argb_src, src_w, src_h,
+                             dst_phys, NULL, dst_w, dst_h) == GPU_DONE)
+                return 0;
+        }
+        return -1;
+    }
 
     g2d_map_params(0, 0, src_w, src_h, 0, 0, dst_w, dst_h,
                    G2D_BSP_MAP_ROT_0, &m);

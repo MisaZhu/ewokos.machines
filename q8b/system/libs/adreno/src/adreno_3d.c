@@ -1303,7 +1303,7 @@ static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
                          int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                          uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
                          int32_t dx, int32_t dy, int32_t dw, int32_t dh,
-                         int endpoints, int alpha) {
+                         int endpoints, int alpha, int bilinear) {
 	static kern_slot_t kernel;
 	static int loaded;
 	static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1326,7 +1326,7 @@ static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	/* In-place resizing needs an intermediate; never let invocations race. */
 	if (src_phy < dst_phy + binds[1].bytes && dst_phy < src_phy + binds[0].bytes)
 		return ADRENO_E_DECLINED;
-	if (endpoints) {
+	if (bilinear || endpoints) {
 		step_x = dw <= 1 ? 0 : (((uint32_t)(sw-1)<<15)+(uint32_t)dw-2u)/(uint32_t)(dw-1);
 		step_y = dh <= 1 ? 0 : (((uint32_t)(sh-1)<<15)+(uint32_t)dh-2u)/(uint32_t)(dh-1);
 	} else {
@@ -1337,6 +1337,7 @@ static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	params[4]=dx; params[5]=dy; params[6]=dw; params[7]=dh;
 	params[8]=step_x; params[9]=step_y; params[10]=shift; params[11]=0;
 	if (alpha >= 0) { params[10]=alpha; params[11]=1; }
+	else if (bilinear) { params[10]=(uint32_t)src_h; params[11]=2; }
 	grid[0]=((uint32_t)dw+63u)/64u; grid[1]=((uint32_t)dh+1u)/2u; grid[2]=1;
 	pthread_mutex_lock(&lock);
 	if (!loaded) {
@@ -1364,7 +1365,17 @@ int adreno_compute_scale(uint64_t src_phy, int32_t src_w, int32_t src_h,
                          int32_t dx, int32_t dy, int32_t dw, int32_t dh,
                          int endpoints) {
 	return compute_blit(src_phy,src_w,src_h,sx,sy,sw,sh,
-		dst_phy,dst_w,dst_h,dx,dy,dw,dh,endpoints,-1);
+		dst_phy,dst_w,dst_h,dx,dy,dw,dh,endpoints,-1,0);
+}
+
+/* Smooth zoom scale: same corner-preserving Q15 mapping as endpoints=1 but
+   the kernel interpolates the four neighbouring taps (mode 2). */
+int adreno_compute_scale_bilinear(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                         int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
+	return compute_blit(src_phy,src_w,src_h,sx,sy,sw,sh,
+		dst_phy,dst_w,dst_h,dx,dy,dw,dh,1,-1,1);
 }
 
 int adreno_compute_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
@@ -1373,7 +1384,7 @@ int adreno_compute_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
                          int32_t dx, int32_t dy, int32_t dw, int32_t dh,
                          uint8_t alpha) {
 	return compute_blit(src_phy,src_w,src_h,sx,sy,sw,sh,
-		dst_phy,dst_w,dst_h,dx,dy,dw,dh,0,alpha);
+		dst_phy,dst_w,dst_h,dx,dy,dw,dh,0,alpha,0);
 }
 
 /* Solid source-over and inverse-mapped rotation use a separate ordinary

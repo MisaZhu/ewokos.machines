@@ -151,6 +151,26 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
                                    csx, csy, rx, ry, rx + rw, ry + rh,
                                    (size_t)dst_h * dst_pitch) ? 0 : -1;
         }
+        /* Full-surface upscale with packed pitch: route through gpu_scale_op
+         * which selects the bilinear kernel for smooth zoom (displayd's
+         * flush_g2d_zoom is exactly this shape: sx=0,sy=0,sw=src_w,sh=src_h,
+         * dx=0,dy=0,dw=dst_w,dh=dst_h, pitch=dst_w*4). */
+        if ((sw != dw || sh != dh) && dw > sw && dh >= sh &&
+            sx == 0 && sy == 0 && sw == src_w && sh == src_h &&
+            dx == 0 && dy == 0 && dw == dst_w && dh == dst_h &&
+            dst_pitch == (uint32_t)dst_w * 4u) {
+            g2d_map_t sm;
+            sm.pu = (dst_w > 1) ? (int32_t)((((int64_t)(src_w - 1) << 15) +
+                                           dst_w - 2) / (dst_w - 1)) : 0;
+            sm.qu = 0; sm.cu = 0;
+            sm.pv = 0;
+            sm.qv = (dst_h > 1) ? (int32_t)((((int64_t)(src_h - 1) << 15) +
+                                           dst_h - 2) / (dst_h - 1)) : 0;
+            sm.cv = 0;
+            if (gpu_map_fits(&sm, ((int64_t)dst_w + 15) / 16 * 16, dst_h))
+                return gpu_scale_op(&sm, src_phys, argb_src, src_w, src_h,
+                                    dst_phys, NULL, dst_w, dst_h) ? 0 : -1;
+        }
         g2d_map_params(sx, sy, sw, sh, dx, dy, dw, dh, G2D_MAP_ROT_0, &m);
         if (gpu_map_fits(&m, ((int64_t)surf_w + 15) / 16 * 16, dst_h))
             /* the surface is modelled pitch/4 pixels wide so each row

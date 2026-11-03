@@ -1233,6 +1233,36 @@ int gpu_blit_surface(const g2d_map_t *m,
                               x0, y0, x1, y1, no_clamp);
 }
 
+/* Whole-destination scale through the caller's corner-preserving map.
+ * On Pi4 (V3D 4.2) a full-surface ROT_0 upscale runs the single-pass 4-tap
+ * bilinear kernel so displayd's zoom-to-scanout is smooth instead of blocky;
+ * every other shape - and Pi3/VC4, which has no bilinear kernel - keeps the
+ * nearest argb_blit.  The bilinear kernel consumes the whole-surface
+ * incremental-map uniforms, so it is selected only when the map is a pure
+ * upscale (qu == 0, pv == 0) onto a 16-aligned full destination.
+ * Returns the tri-state GPU_DONE / GPU_UNSUPPORTED / GPU_FAILED. */
+int gpu_scale_op(const g2d_map_t *m,
+                 uint32_t src_phys, uint32_t *argb_src,
+                 int32_t src_w, int32_t src_h,
+                 uint32_t dst_phys, uint32_t *argb_dst,
+                 int32_t dst_w, int32_t dst_h)
+{
+    const uint64_t *kcode = g2d_qpu_argb_blit;
+    int knwords = g2d_qpu_argb_blit_n;
+
+    if (m && v3d_g2d_ver() == 42 && (dst_w & 15) == 0 &&
+        m->qu == 0 && m->pv == 0 &&
+        dst_w >= src_w && dst_h >= src_h &&
+        (dst_w > src_w || dst_h > src_h)) {
+        kcode = g2d_qpu_v42_argb_scale_bilinear;
+        knwords = g2d_qpu_v42_argb_scale_bilinear_n;
+    }
+    return gpu_affine_surface(kcode, knwords, m,
+                              src_phys, argb_src, src_w, src_h,
+                              dst_phys, argb_dst, dst_w, dst_h,
+                              0, 0, dst_w, dst_h, 1);
+}
+
 /* The dedicated 90/270 kernel consumes four source rows per inner pass.
  * Choose the largest QPU count whose band height is an exact multiple of
  * four, so every QPU ends on a band boundary. */

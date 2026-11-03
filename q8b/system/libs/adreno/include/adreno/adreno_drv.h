@@ -205,6 +205,12 @@ int adreno_compute_scale(uint64_t src_phy, int32_t src_w, int32_t src_h,
                          uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
                          int32_t dx, int32_t dy, int32_t dw, int32_t dh,
                          int endpoints);
+/* Smooth (bilinear) variant of the corner-preserving Q15 scale, used for the
+   displayd zoom-to-scanout path where nearest sampling looks blocky. */
+int adreno_compute_scale_bilinear(uint64_t src_phy, int32_t src_w, int32_t src_h,
+                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
+                         uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
+                         int32_t dx, int32_t dy, int32_t dw, int32_t dh);
 int adreno_compute_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
                          int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                          uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
