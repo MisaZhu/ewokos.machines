@@ -24,13 +24,13 @@
 @/bin/ipcserv /drivers/raspix/usbhostd       /dev/hid0
 
 @/bin/splash -m "start /dev/usb_keyb" -p 30
-@/bin/ipcserv /drivers/raspix/hid_keybd      /dev/keyb0
+@/bin/ipcserv /drivers/raspix/hid_keybd      /dev/keyb0     /dev/hid0
 
 @/bin/splash -m "start /dev/usb_mouse" -p 40
-@/bin/ipcserv /drivers/raspix/hid_moused     /dev/mouse0
+@/bin/ipcserv /drivers/raspix/hid_moused     /dev/mouse0    /dev/hid0
 
 @/bin/splash -m "start /dev/usb_joystick" -p 43
-@/bin/ipcserv /drivers/raspix/hid_joystickd  /dev/joystick0
+@/bin/ipcserv /drivers/raspix/hid_joystickd  /dev/joystick0 /dev/hid0
 
 @/bin/splash -m "start /dev/vkeyb" -p 45
 @/bin/ipcserv /drivers/vkeybd                /dev/vkeyb /dev/keyb0
