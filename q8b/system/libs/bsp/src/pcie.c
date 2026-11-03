@@ -136,6 +136,24 @@
 #define LTSSM_STATE_MASK        0x3fu
 #define PCIE_LINK_TIMEOUT_MS    2000u
 
+/* PARF_LTSSM link-down flush recovery (mirrors pcie-qcom.c).  When the link
+ * drops, the controller latches FLUSH_MODE (bit 11) and holds the XMLH before
+ * Detect.  LTSSM_EN alone cannot start training while it is set: the flush
+ * must drain (FLUSH_COMPLETED in PARF_STATUS) and SW_CLEAR_FLUSH_MODE must be
+ * written before the state machine is allowed to enter Detect.  A warm reboot
+ * that leaves the GDSC/controller power domain on can carry a stale latch
+ * into the next boot, which makes a one-shot training failure sticky. */
+#define PARF_STATUS             0x230u
+#define FLUSH_COMPLETED         BIT(8)
+#define SW_CLEAR_FLUSH_MODE     BIT(10)
+#define FLUSH_MODE              BIT(11)
+
+/* Boot-critical PCIe4 (WLAN): retry the full bring-up so an intermittent
+ * training failure recovers in place instead of blocking ECAM for the whole
+ * session and forcing a reboot.  Each attempt re-runs the module power cycle,
+ * re-pulses PERST/PHY and clears a latched FLUSH_MODE. */
+#define PCIE4_TRAIN_ATTEMPTS    3u
+
 #define DBI_RO_WR_EN            0x8bcu
 #define DBI_ATU_BASE            0x1000u
 
@@ -1351,13 +1369,35 @@ static void configure_equalization(uintptr_t dbi, unsigned generation) {
 	update(dbi + DBI_RO_WR_EN, 1, 0);
 }
 
-static int start_pcie4(unsigned generation) {
+/* A latched link-down FLUSH_MODE holds the XMLH before Detect: setting
+ * LTSSM_EN alone cannot start training while bit 11 of PARF_LTSSM is set.
+ * Mirror qcom_pcie_reset_root_port(): wait for the flush to drain, then set
+ * SW_CLEAR_FLUSH_MODE and poll it off.  Safe to call only after the
+ * root-complex reset pulse has completed (the PARF slave is out of reset);
+ * at that point the stale state from a previous warm session is visible. */
+static int pcie4_clear_flush(void) {
+	if (!(rd(PARF_VA + PARF_LTSSM) & FLUSH_MODE))
+		return 0;
+	/* The flush drains the Q2A/AXI queues before the latch can be released.
+	 * During bring-up there is no subordinate traffic, so this is normally
+	 * immediate; a missing FLUSH_COMPLETED is not fatal, still try the clear. */
+	if (wait_bits(PARF_VA + PARF_STATUS, FLUSH_COMPLETED,
+			FLUSH_COMPLETED, 100))
+		klog("q8b pcie: PCIe4 flush drain not observed ltssm=%08x status=%08x\n",
+			rd(PARF_VA + PARF_LTSSM), rd(PARF_VA + PARF_STATUS));
+	update(PARF_VA + PARF_LTSSM, 0, SW_CLEAR_FLUSH_MODE);
+	if (wait_bits(PARF_VA + PARF_LTSSM, FLUSH_MODE, 0, 100)) {
+		klog("q8b pcie: PCIe4 FLUSH_MODE clear timeout ltssm=%08x\n",
+			rd(PARF_VA + PARF_LTSSM));
+		return -1;
+	}
+	klog("q8b pcie: PCIe4 stale FLUSH_MODE cleared\n");
+	return 0;
+}
+
+static int pcie4_bringup_attempt(unsigned generation) {
 	uint32_t gdsc;
 
-	if (generation < 1 || generation > 2 || map_controller_registers())
-		return -1;
-	if (_pcie4_up)
-		return 0;
 	/* A failed training attempt can leave the connector rails high.  Do not
 	 * let that stale level satisfy the endpoint-power precondition on a retry;
 	 * prepare_ekey_power() below performs a complete off/on cycle. */
@@ -1445,6 +1485,12 @@ static int start_pcie4(unsigned generation) {
 	update(GCC_VA + 0x6b000, 1, 0);
 	usleep(1000);
 	klog("q8b pcie: PCIe4 root complex reset complete, configuring PARF\n");
+	/* A warm reboot can inherit a latched link-down FLUSH_MODE from the
+	 * previous session because the controller power domain survives while the
+	 * GDSC stays on.  Clear it before any PARF/LTSSM work so training can
+	 * actually start; without this the failure is sticky across reboots. */
+	if (pcie4_clear_flush())
+		goto fail;
 	/* Core reset clears LTSSM.  Leave LTSSM untouched until the PHY and DBI
 	 * setup is complete; the mainline host driver only enables it at link start.
 	 * In particular, do not make LTSSM the first transaction to a reset PARF
@@ -1568,6 +1614,33 @@ fail:
 	_pcie4_up = false;
 	_pcie4_wifi_powered = false;
 	klog("q8b pcie: PCIe4 link training failed\n");
+	return -4;
+}
+
+static int start_pcie4(unsigned generation) {
+	if (generation < 1 || generation > 2 || map_controller_registers())
+		return -1;
+	if (_pcie4_up)
+		return 0;
+
+	/* Intermittent training failures are the norm on this board (stale
+	 * FLUSH_MODE from the previous warm session, or an endpoint that did not
+	 * leave POR in a trainable state).  Each retry re-runs the complete module
+	 * power cycle, re-pulses PERST/PHY and clears FLUSH, so a one-shot glitch
+	 * recovers in place instead of blocking ECAM for the whole boot. */
+	for (unsigned attempt = 1; attempt <= PCIE4_TRAIN_ATTEMPTS; attempt++) {
+		int rc = pcie4_bringup_attempt(generation);
+		if (rc == 0)
+			return 0;
+		if (attempt < PCIE4_TRAIN_ATTEMPTS) {
+			klog("q8b pcie: PCIe4 attempt %u/%u failed (rc=%d), retrying\n",
+				attempt, PCIE4_TRAIN_ATTEMPTS, rc);
+			/* Let the rails and the module settle before the next cycle. */
+			usleep(200000);
+		}
+	}
+	klog("q8b pcie: PCIe4 link training failed after %u attempts\n",
+		PCIE4_TRAIN_ATTEMPTS);
 	return -4;
 }
 
