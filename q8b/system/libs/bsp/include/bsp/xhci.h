@@ -8,8 +8,9 @@
  * each DWC3 wrapper, GCC clocks and PHYs up for the UEFI USB stack; EwokOS
  * takes ownership with HCRST and then runs polled.
  *
- * The driver is fully polled: no interrupts are enabled, the caller drains
- * the event ring from its main loop. Unlike the old DWC2 code, interrupt-IN
+ * The caller drains the event ring from its main loop. An optional controller
+ * IRQ is used only as a wakeup hint; ring ownership stays in the main thread
+ * and the bounded polling fallback remains active. Unlike the old DWC2 code, interrupt-IN
  * endpoints do not need software NAK pacing - the controller schedules the
  * periodic transactions in hardware and only posts a transfer event when a
  * TD actually completes.
@@ -133,6 +134,10 @@ void xhci_get_wait_stats(usbmsc_stats_t* stats);
 
 /* controller */
 int  xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base);
+/* Enable the xHCI interrupter after the platform has registered its IRQ
+   handler. The handler must only wake/mark the owner; event-ring draining is
+   still performed by xhci_process_events() in the owner thread. */
+void xhci_irq_enable(xhci_hc_t* hc);
 void xhci_process_events(xhci_hc_t* hc);
 
 /* root ports (1-based) */

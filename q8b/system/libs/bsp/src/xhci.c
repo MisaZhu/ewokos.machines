@@ -78,6 +78,8 @@
 
 /* runtime registers: interrupter 0 register set */
 #define XHCI_IR0_IMAN    0x20
+#define XHCI_IR0_IMAN_IE (1u << 1)
+#define XHCI_IR0_IMAN_IP (1u << 0) /* RW1C */
 #define XHCI_IR0_ERSTSZ  0x28
 #define XHCI_IR0_ERSTBA  0x30
 #define XHCI_IR0_ERDP    0x38
@@ -497,7 +499,20 @@ void xhci_process_events(xhci_hc_t* hc) {
     if (handled > 0) {
         w64(hc->rt + XHCI_IR0_ERDP,
                 (hc->evt_phys + (uint64_t)hc->evt_deq * 16u) | ERDP_EHB);
+        /* A level-like xHCI interrupter stays asserted until IP is cleared.
+         * Preserve IE while acknowledging the batch just drained. */
+        put32(hc->rt + XHCI_IR0_IMAN, XHCI_IR0_IMAN_IE | XHCI_IR0_IMAN_IP);
     }
+}
+
+void xhci_irq_enable(xhci_hc_t* hc) {
+    if (hc == NULL || !hc->present || hc->failed) {
+        return;
+    }
+    /* The platform registers the GIC handler before calling this function.
+     * Clear a stale pending edge and then enable only interrupter 0. */
+    put32(hc->rt + XHCI_IR0_IMAN, XHCI_IR0_IMAN_IE | XHCI_IR0_IMAN_IP);
+    xhci_dmb();
 }
 
 /* ---------------- commands ---------------- */
@@ -677,7 +692,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     put32(hc->rt + XHCI_IR0_ERSTSZ, 1);
     w64(hc->rt + XHCI_IR0_ERDP, hc->evt_phys | ERDP_EHB);
     w64(hc->rt + XHCI_IR0_ERSTBA, hc->erst_phys);
-    /* IMAN.IE stays 0: fully polled */
+    /* IMAN.IE is enabled by the Q8B glue after its user IRQ handler is ready. */
 
     put32(hc->op + XHCI_USBCMD, USBCMD_RUN);
     deadline = now_ms() + XHCI_RESET_TIMEOUT_MS;

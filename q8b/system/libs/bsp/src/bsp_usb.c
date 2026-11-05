@@ -17,6 +17,7 @@
 #include <ewoksys/vfs.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/syscall.h>
+#include <ewoksys/interrupt.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
@@ -127,6 +128,48 @@ static bool _xhc_mapped[BSP_USB_NUM_XHC];
 /* Keep flat root-port numbers stable if a controller fails at runtime.
  * Otherwise losing usb2 would silently renumber devices on both USB-C cores. */
 static uint32_t _xhc_ports[BSP_USB_NUM_XHC];
+
+/* SC8280XP DWC3 child interrupts from sc8280xp.dtsi. GIC_SPI is encoded as
+ * an SPI offset from 32, so the values delivered by the Q8B GIC are 165, 835
+ * and 842 respectively. The handler is deliberately only a wakeup hint: it
+ * never touches xHCI MMIO or event-ring state while the owner may be in a
+ * transfer. */
+static const uint32_t Q8B_XHCI_IRQ[BSP_USB_NUM_XHC] = { 165u, 835u, 842u };
+static interrupt_handler_t _xhc_irq_handlers[BSP_USB_NUM_XHC];
+static bool _xhc_irq_registered[BSP_USB_NUM_XHC];
+static volatile uint32_t _xhc_irq_pending;
+
+static void q8b_xhci_irq_handler(uint32_t interrupt, ewokos_addr_t data) {
+    unsigned index = (unsigned)data;
+    (void)interrupt;
+    if (index < BSP_USB_NUM_XHC) {
+        __atomic_fetch_or(&_xhc_irq_pending, 1u << index, __ATOMIC_RELEASE);
+    }
+}
+
+static unsigned q8b_xhci_irq_setup(void) {
+    unsigned enabled = 0;
+    for (unsigned i = 0; i < BSP_USB_NUM_XHC; ++i) {
+        if (!_xhcs[i].present || _xhc_irq_registered[i]) {
+            continue;
+        }
+        memset(&_xhc_irq_handlers[i], 0, sizeof(_xhc_irq_handlers[i]));
+        _xhc_irq_handlers[i].handler = q8b_xhci_irq_handler;
+        _xhc_irq_handlers[i].data = (ewokos_addr_t)i;
+        if (sys_interrupt_setup(Q8B_XHCI_IRQ[i], &_xhc_irq_handlers[i]) == 0) {
+            _xhc_irq_registered[i] = true;
+            xhci_irq_enable(&_xhcs[i]);
+            enabled++;
+            klog("bsp_usb: xhci%d irq=%u enabled (event-ring wakeup)\n",
+                    i, Q8B_XHCI_IRQ[i]);
+        }
+        else {
+            klog("bsp_usb: xhci%d irq=%u unavailable, polling fallback\n",
+                    i, Q8B_XHCI_IRQ[i]);
+        }
+    }
+    return enabled;
+}
 
 typedef struct {
     bool ready;
@@ -334,10 +377,12 @@ int bsp_usb_init(void) {
 
     klog("bsp_usb: init begin controllers=%d\n", BSP_USB_NUM_XHC);
     xhci_bring_up(); /* degrades to zero controllers, never fails */
+    unsigned irq_enabled = q8b_xhci_irq_setup();
     if (uhci_port_count() == 0 && xhci_port_count() == 0) {
         klog("bsp_usb: no usb controller found, running without usb\n");
     }
-    klog("bsp_usb: init ready root_ports=%d\n", bsp_usb_root_port_count());
+    klog("bsp_usb: init ready root_ports=%d xhci_irq=%u\n",
+            bsp_usb_root_port_count(), irq_enabled);
     return 0;
 }
 
@@ -372,6 +417,9 @@ int bsp_usb_reinit(void) {
             continue;
         memset(&_xhcs[i], 0, sizeof(_xhcs[i]));
         if (q8b_xhci_start(i) == 0) {
+            if (_xhc_irq_registered[i]) {
+                xhci_irq_enable(&_xhcs[i]);
+            }
             found++;
         }
         else {
@@ -382,13 +430,16 @@ int bsp_usb_reinit(void) {
 }
 
 void bsp_usb_poll(void) {
+    uint32_t irq_pending = __atomic_exchange_n(&_xhc_irq_pending, 0,
+            __ATOMIC_ACQUIRE);
     bsp_usb_bt_poll();
     if (_msc_mount_pending && _msc_auto_mount) {
         _msc_mount_pending = false;
         msc_mount_spawn();
     }
     for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
-        if (_xhcs[i].present && (_xhc_dev_count[i] > 0 || _xhc_dirty[i])) {
+        if (_xhcs[i].present && (_xhc_dev_count[i] > 0 || _xhc_dirty[i] ||
+                (irq_pending & (1u << i)))) {
             _xhc_dirty[i] = false;
             xhci_process_events(&_xhcs[i]);
         }
