@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <ewoksys/ewokdef.h>
 #include <usb/usb_defs.h>
+#include <ewoksys/usbmsc.h>
 
 #define XHCI_MAX_CONTROLLERS 3
 #define XHCI_MAX_PORTS      8
@@ -128,6 +129,7 @@ struct xhci_hc {
  * DMA pool. All "phys" values are controller-visible physical addresses.
  */
 int   xhci_dma_init(void);
+void xhci_get_wait_stats(usbmsc_stats_t* stats);
 
 /* controller */
 int  xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base);

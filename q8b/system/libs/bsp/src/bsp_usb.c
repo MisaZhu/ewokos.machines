@@ -876,6 +876,9 @@ static void msc_recover(void) {
 
 /* CBW -> optional data phase -> CSW. dir_in: data phase is IN.
    Returns 0 on CSW status "passed", -1 otherwise. */
+static usbmsc_stats_t _msc_stats;
+static uint32_t _msc_depth;
+
 static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
         void* data, uint32_t data_len) {
     usb_cbw_t cbw;
@@ -900,6 +903,12 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
         }
     }
 
+    uint64_t start = 0, end = 0;
+    kernel_tic_nsec(&start);
+    _msc_stats.commands++;
+    _msc_stats.bytes += data_len;
+    if (++_msc_depth > _msc_stats.max_depth)
+        _msc_stats.max_depth = _msc_depth;
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (_msc.transport_failed || !msc_link_present()) {
             _msc.transport_failed = true;
@@ -992,6 +1001,10 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
     }
 
 out:
+    kernel_tic_nsec(&end);
+    _msc_stats.service_us += (uint32_t)((end - start) / 1000);
+    _msc_stats.errors += ret != 0;
+    _msc_depth--;
     free(payload);
     return ret;
 }
@@ -1221,6 +1234,12 @@ int bsp_usb_msc_cntl(vdevice_t* vdev, int from_pid, int cmd,
     (void)from_pid;
 
     switch (cmd) {
+    case USBMSC_CMD_STATS: {
+        usbmsc_stats_t stats = _msc_stats;
+        xhci_get_wait_stats(&stats);
+        PF->add(out, &stats, sizeof(stats));
+        return 0;
+    }
     case USBMSC_CMD_AUTOMOUNT:
         bsp_usb_set_msc_auto_mount(proto_read_int(in) != 0);
         return 0;

@@ -14,6 +14,44 @@
 #include <stdlib.h>
 #include <string.h>
 
+static int stats_get(int pid, int cmd, void* stats, unsigned bytes) {
+    proto_t in, out;
+    PF->init(&in); PF->init(&out);
+    int rc = dev_cntl_by_pid(pid, cmd, &in, &out);
+    int32_t size = 0;
+    void* data = rc == 0 ? proto_read(&out, &size) : NULL;
+    if (data && size == (int32_t)bytes) memcpy(stats, data, bytes);
+    else { memset(stats, 0, bytes); rc = -1; }
+    PF->clear(&in); PF->clear(&out);
+    return rc;
+}
+static usbmsc_stats_t usb_before;
+static usbfs_stats_t fs_before;
+static int usb_pid = -1, fs_pid = -1;
+static void stats_begin(const char* file) {
+    fsinfo_t info;
+    if (!vfs_get_by_name("/dev/usb0", &info)) usb_pid = info.mount_pid;
+    if (file && !vfs_get_by_name(file, &info)) fs_pid = info.mount_pid;
+    stats_get(usb_pid, USBMSC_CMD_STATS, &usb_before, sizeof(usb_before));
+    stats_get(fs_pid, USBFS_CMD_STATS, &fs_before, sizeof(fs_before));
+}
+static void stats_end(void) {
+    usbmsc_stats_t u;
+    usbfs_stats_t f;
+    if (!stats_get(usb_pid, USBMSC_CMD_STATS, &u, sizeof(u))) {
+        printf("usb commands=%u bytes=%u service_us=%u errors=%u depth_max=%u waits=%u wait_us=%u pauses=%u\n",
+            u.commands-usb_before.commands, u.bytes-usb_before.bytes,
+            u.service_us-usb_before.service_us, u.errors-usb_before.errors, u.max_depth,
+            u.waits-usb_before.waits, u.wait_us-usb_before.wait_us, u.pauses-usb_before.pauses);
+    }
+    if (!stats_get(fs_pid, USBFS_CMD_STATS, &f, sizeof(f))) {
+        printf("fs readers=%u writers=%u read_wait_us=%u write_wait_us=%u max_read_wait_us=%u max_write_wait_us=%u io_calls=%u io_bytes=%u io_us=%u\n",
+            f.readers-fs_before.readers, f.writers-fs_before.writers,
+            f.read_wait_us-fs_before.read_wait_us, f.write_wait_us-fs_before.write_wait_us,
+            f.read_wait_max_us, f.write_wait_max_us,
+            f.io_calls-fs_before.io_calls, f.io_bytes-fs_before.io_bytes, f.io_us-fs_before.io_us);
+    }
+}
 static void digest(const void* data, uint32_t size) {
     uint8_t md5[16];
     md5_encode(data, size, md5);
@@ -42,11 +80,18 @@ static int raw_read(int pid, uint32_t lba, uint32_t count, uint32_t max, uint8_t
 }
 int main(int argc, char** argv) {
     setbuf(stdout, NULL);
+    if (argc == 2 && !strcmp(argv[1], "stats")) {
+        stats_begin("/");
+        memset(&usb_before, 0, sizeof(usb_before));
+        memset(&fs_before, 0, sizeof(fs_before));
+        stats_end(); return 0;
+    }
     if (argc == 5 && !strcmp(argv[1], "raw")) {
         fsinfo_t info;
         uint32_t lba = strtoul(argv[3], NULL, 0), count = strtoul(argv[4], NULL, 0);
         if (!count || count > 8192 || (uint64_t)lba + count > 0x100000000ULL ||
                 vfs_get_by_name(argv[2], &info)) return 2;
+        stats_begin(NULL);
         uint32_t size = count * 512u;
         uint8_t *single = malloc(size), *batch = malloc(size);
         if (!single || !batch) return 1;
@@ -55,9 +100,10 @@ int main(int argc, char** argv) {
         if (!rc) rc = memcmp(single, batch, size) != 0;
         printf("raw compare=%s md5=", rc ? "FAIL" : "PASS");
         if (!rc) digest(batch, size);
-        printf("\n"); free(single); free(batch); return rc;
+        printf("\n"); free(single); free(batch); stats_end(); return rc;
     }
     if (argc == 3 && !strcmp(argv[1], "file")) {
+        stats_begin(argv[2]);
         uint64_t start = kernel_tic_ms(0);
         struct stat st;
         int fd = open(argv[2], O_RDONLY);
@@ -78,7 +124,7 @@ int main(int argc, char** argv) {
         printf("file=%s bytes=%u/%u ms=%llu md5=", argv[2], done, size,
                 (unsigned long long)elapsed);
         if (done == size) digest(data, size);
-        printf("\n"); free(data); return done == size ? 0 : 1;
+        printf("\n"); free(data); stats_end(); return done == size ? 0 : 1;
     }
     printf("usage: usb-read-bench raw <device> <lba> <sectors> | file <path>\n");
     return 2;

@@ -979,8 +979,21 @@ int xhci_configure_hub(xhci_dev_t* dev, int num_ports) {
 /* ---------------- transfers ---------------- */
 
 /* wait for a specific endpoint's TD to complete, driving the event loop */
+static uint32_t _waits, _wait_us, _wait_pauses;
+
+void xhci_get_wait_stats(usbmsc_stats_t* stats) {
+    stats->waits = _waits;
+    stats->wait_us = _wait_us;
+    stats->pauses = _wait_pauses;
+}
+
 static int ep_wait(xhci_dev_t* dev, xhci_ep_t* ep, uint32_t timeout_ms) {
     uint64_t deadline = now_ms() + timeout_ms;
+    uint64_t start = 0, end = 0, poll_mark = 0;
+    kernel_tic_nsec(&start);
+    poll_mark = start;
+    _waits++;
+    int ret = 0;
     while (!ep->done) {
         xhci_process_events(dev->hc);
         if (ep->done) {
@@ -989,14 +1002,29 @@ static int ep_wait(xhci_dev_t* dev, xhci_ep_t* ep, uint32_t timeout_ms) {
         /* see xhci_cmd(): fatal errors without events are only visible
            through an explicit USBSTS check */
         if (hc_check_fatal(dev->hc)) {
-            return -1;
+            ret = -1;
+            break;
         }
         if (now_ms() > deadline) {
-            return -1;
+            ret = -1;
+            break;
         }
+        /* xHCI bulk completions normally arrive within a few tens of
+         * microseconds. Sleeping on the first miss adds a scheduler round
+         * trip to every CBW, DATA and CSW. Spin briefly, then retain the
+         * old bounded sleep for a stalled device so unplug/timeouts remain
+         * CPU-friendly. */
+        uint64_t now_ns = 0;
+        kernel_tic_nsec(&now_ns);
+        if (now_ns - poll_mark < 80000ULL)
+            continue;
+        _wait_pauses++;
         usleep(100);
+        poll_mark = now_ns;
     }
-    return 0;
+    kernel_tic_nsec(&end);
+    _wait_us += (uint32_t)((end - start) / 1000);
+    return ret;
 }
 
 /*
