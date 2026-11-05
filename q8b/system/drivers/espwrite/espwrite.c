@@ -1,9 +1,10 @@
 /*
- * espwrite - update files on the Q8B SD card EFI System Partition (FAT32).
+ * espwrite - update files on the Q8B SD/USB EFI System Partition (FAT32).
  *
  * The board boots BOOTAA64.EFI / KERNEL.BIN from the FAT32 ESP; the ext3
- * rootfs updater (sdupdate) cannot touch it.  This tool talks directly to
- * the user-space SDCC2 block backend at raw LBA level, locates the EFI
+ * rootfs updater (sdupdate) cannot touch it. This tool uses the user-space
+ * SDCC2 block backend by default, or the existing USB owner with -u. It
+ * locates the EFI
  * System Partition in the GPT, and uses the shared FAT32 library (the same
  * one behind usbfat32fsd) to read/write files there.
  *
@@ -12,10 +13,11 @@
  *   espwrite put <local-file> <name>
  *   espwrite rm <name>
  *   espwrite boot <kernel.bin> <BOOTAA64.EFI>
+ *   espwrite -u /dev/usb0 list|get|put|rm|boot ...
  *
  * Every put is read back and compared before it reports success.  The tool
- * must run to completion before the rootfs continues to use the card: the
- * SDCC2 probe re-initialises the bus, so reboot afterwards.
+ * uses the existing usbhostd in USB mode; the SDCC2 probe in default SD mode
+ * re-initialises the bus, so reboot afterwards in that mode.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -24,6 +26,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <ewoksys/vfs.h>
+#include <ewoksys/usbmsc.h>
 
 #include <bsp/bsp_sd.h>
 #include <sd/sd.h>
@@ -65,31 +69,66 @@ static const uint8_t _esp_type[16] = {
 
 static uint32_t _esp_start = 0;
 static uint32_t _esp_sectors = 0;
+static int _usb_pid = -1;
+
+/* Use the existing USB owner: opening the SD backend or creating another
+ * xHCI owner would disturb a live USB-root system. */
+static int usb_io(int write, int32_t sector, void* buf, uint32_t count) {
+    uint8_t* p = buf;
+    if (sector < 0 || (uint64_t)(uint32_t)sector + count > 0x80000000ULL)
+        return -1;
+    while (count != 0) {
+        uint32_t n = count > USBMSC_MAX_SECTORS ? USBMSC_MAX_SECTORS : count;
+        /* Preserve the conservative single-sector write path. */
+        if (write) n = 1;
+        proto_t in, out;
+        PF->init(&in)->addi(&in, sector)->addi(&in, n);
+        if (write) PF->add(&in, p, n * SECTOR_SIZE);
+        PF->init(&out);
+        int ret = dev_cntl_by_pid(_usb_pid,
+                write ? USBMSC_CMD_WRITE : USBMSC_CMD_READ, &in, &out);
+        if (ret == 0 && !write) {
+            int32_t len = 0;
+            void* data = proto_read(&out, &len);
+            if (data == NULL || len != (int32_t)(n * SECTOR_SIZE)) ret = -1;
+            else memcpy(p, data, len);
+        }
+        PF->clear(&in);
+        PF->clear(&out);
+        if (ret != 0) return -1;
+        sector += n;
+        count -= n;
+        p += n * SECTOR_SIZE;
+    }
+    return 0;
+}
 
 static int raw_read(int32_t sector, void* buf, uint32_t count) {
+    if (_usb_pid >= 0) return usb_io(0, sector, buf, count);
     return sd_read_sectors(sector, buf, count) ==
             (int32_t)(count * SECTOR_SIZE) ? 0 : -1;
 }
 
 static int raw_write(int32_t sector, const void* buf, uint32_t count) {
+    if (_usb_pid >= 0) return usb_io(1, sector, (void*)buf, count);
     return sd_write_sectors(sector, buf, count) ==
             (int32_t)(count * SECTOR_SIZE) ? 0 : -1;
 }
 
 static int fat_read_sector(int32_t sector, void* buf) {
-    if (sector < 0)
+    if (sector < 0 || (uint32_t)sector >= _esp_sectors)
         return -1;
     return raw_read((int32_t)_esp_start + sector, buf, 1);
 }
 
 static int fat_read_sectors(int32_t sector, void* buf, uint32_t count) {
-    if (sector < 0)
+    if (sector < 0 || (uint64_t)(uint32_t)sector + count > _esp_sectors)
         return -1;
     return raw_read((int32_t)_esp_start + sector, buf, count);
 }
 
 static int fat_write_sector(int32_t sector, const void* buf) {
-    if (sector < 0)
+    if (sector < 0 || (uint32_t)sector >= _esp_sectors)
         return -1;
     return raw_write((int32_t)_esp_start + sector, buf, 1);
 }
@@ -115,19 +154,21 @@ static int find_esp(void) {
         free(sector);
         return -1;
     }
-    table_bytes = hdr->entry_count * hdr->entry_size;
-    if (table_bytes > 512U * 1024U) {
+    uint64_t entry_bytes = (uint64_t)hdr->entry_count * hdr->entry_size;
+    if (entry_bytes > 512U * 1024U) {
         printf("espwrite: GPT table too large\n");
         free(sector);
         return -1;
     }
-    entries = (uint8_t*)malloc(table_bytes);
+    table_bytes = (uint32_t)entry_bytes;
+    uint32_t table_sectors = (table_bytes + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    entries = (uint8_t*)malloc(table_sectors * SECTOR_SIZE);
     if (entries == NULL) {
         free(sector);
         return -1;
     }
     if (raw_read((int32_t)hdr->entry_lba, entries,
-                (table_bytes + SECTOR_SIZE - 1) / SECTOR_SIZE) != 0) {
+                table_sectors) != 0) {
         printf("espwrite: GPT table read failed\n");
         free(entries);
         free(sector);
@@ -137,6 +178,8 @@ static int find_esp(void) {
     for (uint32_t i = 0; i < hdr->entry_count; i++) {
         gpt_entry_t* e = (gpt_entry_t*)(entries + i * hdr->entry_size);
         if (memcmp(e->type_guid, _esp_type, sizeof(_esp_type)) == 0) {
+            if (e->first_lba > e->last_lba || e->last_lba > 0x7fffffffULL)
+                break;
             _esp_start = (uint32_t)e->first_lba;
             _esp_sectors = (uint32_t)(e->last_lba - e->first_lba + 1);
             printf("espwrite: ESP partition %u lba=%u..%llu (%u MiB)\n",
@@ -425,11 +468,21 @@ int main(int argc, char** argv) {
     int ret = 1;
 
     setbuf(stdout, NULL);
+    if (argc >= 3 && strcmp(argv[1], "-u") == 0) {
+        fsinfo_t info;
+        if (vfs_get_by_name(argv[2], &info) != 0 || info.mount_pid < 0) {
+            printf("espwrite: USB device not found\n");
+            return 1;
+        }
+        _usb_pid = info.mount_pid;
+        argc -= 2;
+        argv += 2;
+    }
     if (argc < 2) {
-        printf("usage: espwrite list|get|put|rm|boot ...\n");
+        printf("usage: espwrite [-u /dev/usb0] list|get|put|rm|boot ...\n");
         return 1;
     }
-    if (bsp_sd_init_physical() != 0) {
+    if (_usb_pid < 0 && bsp_sd_init_physical() != 0) {
         printf("espwrite: user-space SD init failed\n");
         return 1;
     }
@@ -460,7 +513,7 @@ int main(int argc, char** argv) {
         if (ret == 0)
             ret = put_file(argv[3], "EFI/BOOT/BOOTAA64.EFI");
     } else {
-        printf("usage: espwrite list|get|put|rm|boot ...\n");
+        printf("usage: espwrite [-u /dev/usb0] list|get|put|rm|boot ...\n");
     }
     sd_quit();
     return ret ? 1 : 0;
