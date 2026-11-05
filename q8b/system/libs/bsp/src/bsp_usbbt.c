@@ -25,7 +25,7 @@ typedef struct {
 
 static struct {
     bsp_usb_dev_t *dev;
-    bool claimed, ready, busy;
+    bool claimed, ready, busy, setup_pending;
     uint16_t vid, pid;
     uint8_t ep_evt, ep_in, ep_out;
     uint32_t rom, patch, ram, dropped;
@@ -34,6 +34,8 @@ static struct {
     hci_frame_t evt, acl;
     char firmware[96];
 } bt;
+
+static int qca_setup(void);
 
 static uint16_t le16(const uint8_t *p) { return p[0] | ((uint16_t)p[1]<<8); }
 static uint32_t le32(const uint8_t *p) { return le16(p) | ((uint32_t)le16(p+2)<<16); }
@@ -73,6 +75,15 @@ static void frame_feed(hci_frame_t *f,const uint8_t *p,uint32_t n) {
 
 void bsp_usb_bt_poll(void) {
     uint8_t p[1024];
+    /* Firmware may live on a USB rootfs served by this same daemon.
+     * Run setup outside the USBHCI IPC handler, so filesystem reads can
+     * call back into the host's MSC handler instead of deadlocking. */
+    if (bt.claimed && bt.setup_pending && !bt.busy) {
+        bt.setup_pending=false;
+        bt.busy=true;
+        bt.ready=qca_setup()==0;
+        bt.busy=false;
+    }
     if (!bt.claimed || bt.busy || !bt.ready) return;
     for (int i=0;i<4;i++) {
         int n=bsp_usb_int_in_poll(bt.dev,bt.ep_evt,p,sizeof(p));
@@ -244,8 +255,8 @@ int bsp_usb_bt_probe(bsp_usb_dev_t *dev,uint16_t vid,uint16_t pid,
     /* Do not run QCA DFU/HCI setup from usbhostd's enumeration path.  On Q8B
      * the USB and PCIe functions share the E-key/radio power sequence, and
      * pcied deliberately cold-cycles that rail before WCN startup.  btd's
-     * bsp_bt_init() gates USBHCI_CMD_SETUP on a valid WLAN MAC and performs
-     * qca_setup after the PCIe/WLAN owner has completed that sequence. */
+     * bsp_bt_init() gates USBHCI_CMD_SETUP on a valid WLAN MAC; that queues
+     * setup for the host main loop after the PCIe/WLAN power sequence. */
     bt.claimed=true; bt.busy=false; bt.ready=false;
     klog("q8b bt: claimed %04x:%04x setup deferred until WLAN ready\n",vid,pid);
     return 0;
@@ -266,8 +277,8 @@ int bsp_usb_bt_cntl(vdevice_t *dev,int from_pid,int cmd,proto_t *in,proto_t *out
     case USBHCI_CMD_SETUP:
         if (!bt.claimed || bt.busy) return -1;
         if (bt.ready) return 0;
-        bt.busy=true; bt.ready=qca_setup()==0; bt.busy=false;
-        return bt.ready ? 0 : -1;
+        bt.setup_pending=true;
+        return -1; /* btd retries until the main loop completes setup. */
     case USBHCI_CMD_SEND: {
         if (!bt.ready) return -1;
         int type=proto_read_int(in); int32_t n=0;

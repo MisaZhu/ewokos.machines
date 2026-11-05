@@ -35,7 +35,7 @@ static struct {
     unsigned num_macs, num_macs_valid, otp_valid, otp_version;
     unsigned eeprom_valid, eeprom_timeout, eeprom_requested, eeprom_ready;
     unsigned ce_config, mode_ready, failed;
-    uint64_t deadline;
+    uint64_t deadline, progress_ms;
 } q;
 
 static uint16_t get16(const uint8_t *p) { return p[0] | ((uint16_t)p[1] << 8); }
@@ -78,7 +78,8 @@ static int request(unsigned id, const void *payload, unsigned bytes) {
     set16(packet + 5, bytes); memcpy(packet + 7, payload, bytes);
     if (send_packet(1, q.node, q.port, LOCAL_PORT, packet, bytes + 7)) return -1;
     q.pending = txn; q.pending_id = id;
-    q.deadline = kernel_tic_ms(0) + 20000;
+    q.progress_ms = kernel_tic_ms(0);
+    q.deadline = q.progress_ms + 20000;
     return 0;
 }
 
@@ -233,9 +234,10 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
         }
         if (id == 0x37) {
             q.memory_ready = 1;
+            q.progress_ms = kernel_tic_ms(0);
             if (!q.pending) (void)request(0x24, "", 0);
         }
-        if (id == 0x38) { q.firmware_ready = 1;  }
+        if (id == 0x38) { q.firmware_ready = 1; q.progress_ms = kernel_tic_ms(0); }
         return;
     }
     if (p[0] != 2 || !q.pending || txn != q.pending || id != q.pending_id) return;
@@ -282,6 +284,7 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
         }
         q.failed = 1; return;
     }
+    q.progress_ms = kernel_tic_ms(0);
     if (id == 0x20) { q.registered = 1; host_capabilities(); }
     if (id == 0x34) q.host_cap = 1;
     if (id == 0x36 && q.memory_ready) (void)request(0x24, "", 0);
@@ -371,6 +374,7 @@ void wcn_qmi_receive(const void *packet, unsigned bytes) {
 }
 
 void wcn_qmi_reset(void) { memset(&q, 0, sizeof(q)); }
+uint64_t wcn_qmi_progress_ms(void) { return q.progress_ms; }
 void wcn_qmi_release(void) {
     for (unsigned i = 0; i < memory_count; i++)
         if (memory[i].va) dma_free(0, (ewokos_addr_t)memory[i].va);

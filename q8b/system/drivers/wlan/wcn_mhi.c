@@ -12,6 +12,7 @@
 #include "wcn_sta.h"
 #include <bsp/pcie.h>
 #include <ewoksys/dma.h>
+#include <ewoksys/klog.h>
 #include "wcn_util.h"
 #include <ewoksys/kernel_tic.h>
 #include <stdint.h>
@@ -225,6 +226,10 @@ int wcn_attach(void) {
 static int software_reset(void) {
     /* ath11k's power-on reset prevents stale hot-reset interrupts and the
      * warm-boot entry from sending SBL down an obsolete execution path. */
+    /* A previous owner/failed attempt may have disabled PCI memory decode.
+     * Restore it through pcied before the first BAR access, not only after
+     * SOC reset. Otherwise all of the reset writes can be discarded. */
+    if (q8b_pcie_service_prepare_wlan_dma()) return -1;
     usleep(100000);
     soc_write(0x1e081b0, 0x111);
     soc_write(0x1e402bc, soc_read(0x1e402bc) | 0x10);
@@ -232,8 +237,17 @@ static int software_reset(void) {
     soc_write(0x1e08228, 0xffffffff);
     soc_write(0x1f8031c, soc_read(0x1f8031c) & ~4u);
     put(0x360, 0); put(0x368, 0); put(0x394, 0); put(0x39c, 0);
+    (void)soc_read(0x1f80500); /* Q6 cookie. */
+    (void)soc_read(0x1f80504);
+    usleep(10000);
     soc_write(0x1f80504, 0);
     usleep(10000);
+    (void)soc_read(0x1f80504);
+    /* WLAON_SOC_RESET_CAUSE is read-to-clear. This is part of ath11k's
+     * reset sequence, even when debug logging is disabled: leaving it set
+     * can send Q6 down the old warm-boot path. */
+    uint32_t cause = soc_read(0x1f8060c);
+    wcn_log("wcn: reset cause=%08x\n", cause);
     uint32_t reset = reg(0x3008);
     put(0x3008, reset | 1);
     usleep(10000);
@@ -246,6 +260,8 @@ static int software_reset(void) {
     put(0x38, 2);
     usleep(10000);
     w.bhi = reg(0x28);
+    wcn_log("wcn: reset complete ctrl=%08x status=%08x ee=%u\n",
+            reg(0x38), reg(0x48), ee());
     return 0;
 }
 
@@ -612,6 +628,9 @@ int wcn_start(void) {
     w.stage = "QMI-discovery";
     return 0;
 fail:
+    klog("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x BHIE=%08x\n",
+         w.stage, ee(), reg(0x48), reg(w.bhi + 0x2c), reg(w.bhi + 0x30),
+         offset_valid(w.bhie, 0x80) ? reg(w.bhie + 0x44) : 0);
     wcn_log("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x\n",
          w.stage, ee(), reg(0x48), reg(w.bhi + 0x2c), reg(w.bhi + 0x30));
     const char *failed = w.stage;

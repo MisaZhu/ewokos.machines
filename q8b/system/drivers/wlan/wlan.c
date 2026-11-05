@@ -24,6 +24,7 @@
 #include <tinyjson/tinyjson.h>
 
 #include "wcn_mhi.h"
+#include "wcn_qmi.h"
 #include "wcn_wmi.h"
 #include "wcn_dp.h"
 #include "wcn_sta.h"
@@ -194,6 +195,11 @@ static void link_poll(void) {
         link_boot(0);
         return;
     case LINK_BOOT: {
+        /* BDF/M3 reads can block on a busy USB root for over a minute.
+         * Give each successful QMI step time to finish the next step. */
+        uint64_t progress = wcn_qmi_progress_ms();
+        if (progress && progress + 45000 > ctl.deadline)
+            ctl.deadline = progress + 45000;
         if (now >= ctl.deadline) {
             link_backoff();
             return;
@@ -282,7 +288,7 @@ static void link_monitor(void) {
         link_backoff();
 }
 
-/* A successful wcn_start() must reach WMI+DP in bounded time. Without this a
+/* A successful wcn_start() must keep making progress toward WMI+DP. Without this a
  * firmware that never answers leaves the device dead until reboot, which is
  * exactly the failure the pi5 lifecycle thread covers. */
 static void health_poll(void) {
@@ -294,6 +300,9 @@ static void health_poll(void) {
     }
     if (ctl.state != LINK_IDLE)
         return;                 /* the restart ladder is already running */
+    uint64_t progress = wcn_qmi_progress_ms();
+    if (progress > unhealthy_since)
+        unhealthy_since = progress;
     if (!unhealthy_since) {
         unhealthy_since = now;
         return;
@@ -301,7 +310,7 @@ static void health_poll(void) {
     if (now - unhealthy_since < 60000)
         return;
     unhealthy_since = 0;
-    wcn_log("wcn: controller not ready for 60s; restarting\n");
+    wcn_log("wcn: controller made no boot progress for 60s; restarting\n");
     link_backoff();
 }
 
