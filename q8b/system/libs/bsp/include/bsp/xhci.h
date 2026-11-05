@@ -2,15 +2,17 @@
 #define __Q8B_XHCI_H
 
 /*
- * Polled xHCI host controller driver for the SC8280XP DWC3 host cores.
+ * IRQ-assisted xHCI host controller driver for the SC8280XP DWC3 host cores.
  *
  * The SC8280XP USB blocks expose standard xHCI register files. Firmware brings
  * each DWC3 wrapper, GCC clocks and PHYs up for the UEFI USB stack; EwokOS
- * takes ownership with HCRST and then runs polled.
+ * takes ownership with HCRST and then uses IRQ-assisted event draining with a
+ * bounded polling fallback.
  *
  * The caller drains the event ring from its main loop. An optional controller
  * IRQ is used only as a wakeup hint; ring ownership stays in the main thread
- * and the bounded polling fallback remains active. Unlike the old DWC2 code, interrupt-IN
+ * and the bounded polling fallback remains active. Unlike the old DWC2 code,
+ * interrupt-IN
  * endpoints do not need software NAK pacing - the controller schedules the
  * periodic transactions in hardware and only posts a transfer event when a
  * TD actually completes.
