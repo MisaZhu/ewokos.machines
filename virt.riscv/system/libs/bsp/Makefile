@@ -14,7 +14,7 @@ CFLAGS += -I $(SYS_DIR)/basic/libs/libc/ewoksys/include \
 	-I $(SYS_DIR)/gui/libs/bt/include \
 	-Iinclude -I $(TARGET_DIR)/include
 
-LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_bt.o
+LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_usb.o $(ARCH)/src/bsp_bt.o $(ARCH)/src/bsp_bootfs.o
 
 BSP = $(TARGET_DIR)/lib/libbsp.a
 
