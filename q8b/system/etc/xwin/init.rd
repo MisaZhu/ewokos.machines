@@ -28,17 +28,21 @@
 # switching to this persistent root.  Do not start a second xHCI owner here.
 @/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/usb0
 @/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/usb0
-@/bin/ipcserv /drivers/q8b/hid_touchd    /dev/touch0 /dev/usb0
+# TW220 uses the SPI-connected Goodix GT9916 controller.  Keep a single
+# owner of /dev/touch0; the USB HID daemon must stay disabled on this panel.
+#@/bin/ipcserv /drivers/q8b/hid_touchd    /dev/touch0 /dev/usb0
+@/bin/ipcserv /drivers/q8b/goodixd        /dev/touch0
+@/bin/ipcserv /drivers/q8b/hid_touchpadd /dev/touchpad0 /dev/usb0
 # btd may be launched concurrently by ipcserv, but the Q8B transport gates
 # USB Bluetooth setup until wlan has completed WCN startup and published MAC.
 # The device surface and the subscribers are the raspi5 ones: btd owns
 # /dev/bt0, xbt and devcmd use it, and the shared hid_* daemons register as
 # "bt" subscribers. Their nodes exist before a device is paired, so the X
 # input processes below can open them at boot.
-@/bin/ipcserv /drivers/q8b/btd           /dev/bt0
-@/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse1 /dev/bt0 bt
-@/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb1  /dev/bt0 bt
-@/bin/ipcserv /drivers/q8b/hid_joystickd /dev/js1    /dev/bt0 bt
+#@/bin/ipcserv /drivers/q8b/btd           /dev/bt0
+#@/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse1 /dev/bt0 bt
+#@/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb1  /dev/bt0 bt
+#@/bin/ipcserv /drivers/q8b/hid_joystickd /dev/js1    /dev/bt0 bt
 
 @/bin/ipcserv /sbin/sessiond
 @/bin/bgrun /bin/session -r -t /dev/tty0
@@ -48,7 +52,8 @@
 @/bin/ipcserv /drivers/fontd
 
 @/bin/ipcserv /drivers/xserverd          /dev/x
-@/bin/bgrun /sbin/x/xtouch
+@/bin/bgrun /sbin/x/xtouch -c /etc/x/xtouch-tw220.json /dev/touch0
+@/bin/bgrun /sbin/x/xtouch -m
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0
 @/bin/bgrun /sbin/x/xmouse /dev/mouse1
 @/bin/bgrun /sbin/x/xim_none /dev/keyb0

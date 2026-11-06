@@ -124,7 +124,7 @@ network_sys: basic_sys
 # machine's bsp_bt transport, plus the shared hid_* subscribers in "bt" mode
 # (hid_joystickd included, so the desktop can use a gamepad over HOGP/HIDP).
 GUI_DRIVERS = displaymand consoled fontd g2dd usbhostd hid_keybd hid_moused \
-	hid_touchd hid_joystickd usbfat32fsd btd
+	hid_touchd hid_touchpadd hid_joystickd usbfat32fsd btd
 
 gui_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/gui mkdirs
