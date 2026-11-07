@@ -374,14 +374,24 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
         } else if (generated_wmi_mac(f.mac) && f.extra_mac_valid) {
             memcpy(f.mac,f.extra_mac,sizeof(f.mac));
             mac_override=3;
-        } else if (generated_wmi_mac(f.mac) && hardware_seed_valid) {
-            mac_from_hardware_seed(hardware_seed,f.mac);
-            mac_override=4;
         } else if (generated_wmi_mac(f.mac)) {
-            /* Host provisioning is only a last resort.  A real address
-             * exposed by the module always wins over /etc/wlan.mac. */
-            mac_override=station_mac(f.mac);
-            if (mac_override < 0) { f.failed=1;return; }
+            /* Explicit /etc/wlan.mac provisioning wins over the automatic
+             * deterministic derivation.  Identical unprogrammed WCN6855
+             * endpoints fold only the PCI identity into the seed, so two
+             * boards can derive the same address and
+             * collide on one AP: association (management) succeeds, but the
+             * AP already holds an authorized 4-way session for that address
+             * and does not re-run the handshake, so the supplicant times
+             * out (WPA handshake-timeout).  A real module address exposed
+             * by the module above still wins over the host file. */
+            int override=station_mac(f.mac);
+            if (override < 0) { f.failed=1;return; }
+            if (override > 0) {
+                mac_override=5;
+            } else if (hardware_seed_valid) {
+                mac_from_hardware_seed(hardware_seed,f.mac);
+                mac_override=4;
+            }
         }
         f.ready=1;
         if (country_load()) { f.failed=1;return; }

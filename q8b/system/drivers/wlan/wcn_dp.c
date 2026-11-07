@@ -34,6 +34,7 @@ static struct {
     unsigned links, rx_buffers, tx_buffers;
     unsigned rx_packets,rx_delivered,rx_dropped,refilled,tx_packets,tx_done,tx_errors,tx_generation;
     unsigned tx_batch,tx_pending;
+    unsigned tx_last_source,tx_last_reason,tx_last_info,tx_last_rate,tx_last_count;
     unsigned tx_cookie[256];
     unsigned rx_rate,tx_rate,rx_ht,rx_vht,rx_he,tx_ht,tx_vht,tx_he;
     uint8_t rx_owner[RX_COUNT];
@@ -296,6 +297,14 @@ static int dp_complete(struct dp_ring *r,const uint32_t *p) {
         d.tx_cookie[slot]=0; d.tx_done++;
         unsigned src=p[2]&7;
         unsigned success=(src==0 && !((p[2]>>13)&15)) || (src==3 && !((p[2]>>9)&15));
+        d.tx_last_source=src; d.tx_last_info=p[2]; d.tx_last_rate=p[5];
+        d.tx_last_reason=src==0 ? (p[2]>>13)&15 : src==3 ? (p[2]>>9)&15 : 0;
+        d.tx_last_count=(p[3]>>24)&127;
+        /* Keep the initial EAPOL completion and a bounded sample of failures
+         * in the log; a recycled descriptor alone is not proof of an ACK. */
+        if (d.tx_done<=4 || (!success && d.tx_errors<4))
+            wcn_log("wcn: data TX complete cookie=%u source=%u reason=%u success=%u tx_count=%u info=%08x rate=%08x\n",
+                    cookie,src,d.tx_last_reason,success,d.tx_last_count,p[2],p[5]);
         if (!success) d.tx_errors++;
         if (src==0 && (p[5]&1)) {
             d.tx_rate=p[5];unsigned phy=(d.tx_rate>>3)&15;
@@ -382,9 +391,10 @@ void wcn_dp_release(void) {
     memset(&d,0,sizeof(d));
 }
 void wcn_dp_status(char *out,size_t size) {
-    snprintf(out,size,"dp=%u dp_cfg=%u/%u dp_failed=%u dp_bad=%u dp_completed=%u rx=%u/%u drop=%u refill=%u tx=%u/%u tx_errors=%u",
+    snprintf(out,size,"dp=%u dp_cfg=%u/%u dp_failed=%u dp_bad=%u dp_completed=%u rx=%u/%u drop=%u refill=%u tx=%u/%u tx_errors=%u tx_last_source=%u tx_last_reason=%u tx_last_count=%u tx_last_info=%08x tx_last_rate=%08x",
              d.active,d.configured,d.count,d.failed,d.bad,d.completions,
-             d.rx_delivered,d.rx_packets,d.rx_dropped,d.refilled,d.tx_done,d.tx_packets,d.tx_errors);
+             d.rx_delivered,d.rx_packets,d.rx_dropped,d.refilled,d.tx_done,d.tx_packets,d.tx_errors,
+             d.tx_last_source,d.tx_last_reason,d.tx_last_count,d.tx_last_info,d.tx_last_rate);
 }
 void wcn_dp_rings(char *out,size_t size) {
     int n=snprintf(out,size,"DP active=%u failed=%u bytes=%u\nPHY tx_type=%u tx_bw=%u tx_mcs=%u tx_gi=%u HT=%u VHT=%u HE=%u rx_type=%u rx_bw=%u rx_mcs=%u rx_gi=%u HT=%u VHT=%u HE=%u\n",
@@ -394,11 +404,11 @@ void wcn_dp_rings(char *out,size_t size) {
     size_t pos=n;
     for (unsigned i=0;i<d.count;i++) {
         struct dp_ring *r=&d.rings[i];
-        n=snprintf(out+pos,size-pos,"ring=%u %s entries=%u words=%u sw=%u hw=%u remote_hp=%u remote_tp=%u\n",
+        n=snprintf(out+pos,size-pos,"ring=%u %s entries=%u words=%u sw=%u hw=%u remote_hp=%u remote_tp=%u htt=%u/%u pdev=%u\n",
                    r->id,r->dest ? "dst" : "src",r->entries,r->words,r->index*r->words,
                    r->id==104 ? wcn_soc_read(r->ptr+4) : dp_hw(r),
                    *dp_words(r->dest ? r->hw_offset : r->sw_offset),
-                   *dp_words(r->dest ? r->sw_offset : r->hw_offset));
+                   *dp_words(r->dest ? r->sw_offset : r->hw_offset),r->htt_type,r->htt_id,r->pdev);
         if (n<0 || (size_t)n>=size-pos) break;
         pos+=n;
     }

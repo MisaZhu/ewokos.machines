@@ -1193,6 +1193,16 @@ static void configure_link_pins(void) {
 	update(clkreq, 0x3fu | BIT(9), 0x7u);
 }
 
+static unsigned radio_bt_power_ready(void) {
+	uintptr_t gpio = gpio_reg(132);
+	/* GPIO132 is the BT module's active-high power-complete input on Q8B,
+	 * TW220 and Gaokun.  Configure GPIO function 0 with a pull-down and keep
+	 * output-enable clear.  In particular, do not touch the output latch: this
+	 * line is driven by the BT module and is never an RF switch control. */
+	update(gpio, 0x3fu | BIT(9), 1u);
+	return (rd(gpio + 4) & BIT(0)) ? 1u : 0u;
+}
+
 static int radio_disable(void) {
 	/* Assert both active-low W_DISABLE pins before removing 3.3 V. Latch the
 	 * low value first so the pad cannot briefly enable the module while its
@@ -1208,19 +1218,24 @@ static int radio_disable(void) {
 static int radio_enable(void) {
 	/* GPIO133/134 are the board's active-low BT/WLAN disable pins.  Latch the
 	 * high value before switching each pad to output, as required by the TLMM
-	 * sequence used by the board firmware.  This is idempotent when firmware
-	 * has already enabled the module. */
+	 * sequence used by the board firmware. */
 	for (unsigned pin = 133; pin <= 134; pin++) {
 		uintptr_t gpio = gpio_reg(pin);
 		update(gpio + 4, 0, BIT(1));
 		update(gpio, 0x3fu | BIT(9), 0x200u);
 	}
+	/* GPIO132 is shared board wiring across all three platforms. It reports
+	 * BT module power completion; WLAN bring-up only observes it. */
+	radio_bt_power_ready();
 	usleep(100000);
 	for (unsigned pin = 133; pin <= 134; pin++) {
 		uintptr_t gpio = gpio_reg(pin);
 		if (!(rd(gpio + 4) & BIT(1)))
 			return -1;
 	}
+	klog("q8b pcie: radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
+		rd(gpio_reg(133) + 4), rd(gpio_reg(134) + 4),
+		radio_bt_power_ready(), rd(gpio_reg(132) + 4));
 	return 0;
 }
 
@@ -1469,9 +1484,9 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * the root-complex reset pulse has completed.
 	 */
 	klog("q8b pcie: PCIe4 PERST remains asserted before PARF access\n");
-	klog("q8b pcie: PCIe4 radios enabled GPIO133/134=%08x/%08x\n",
+	klog("q8b pcie: PCIe4 radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
 		rd(gpio_reg(133) + 4),
-		rd(gpio_reg(134) + 4));
+		rd(gpio_reg(134) + 4), radio_bt_power_ready(), rd(gpio_reg(132) + 4));
 	perst(false);
 	klog("q8b pcie: PCIe4 PERST asserted\n");
 	klog("q8b pcie: PCIe4 resetting root complex\n");

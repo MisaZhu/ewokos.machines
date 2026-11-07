@@ -7,6 +7,7 @@
 #include "wcn_mhi.h"
 #include "wcn_wmi.h"
 #include "wcn_qmi.h"
+#include "wcn_board.h"
 #include "wcn_ce.h"
 #include "wcn_dp.h"
 #include "wcn_sta.h"
@@ -71,8 +72,10 @@ static struct {
 
 const char *wcn_firmware_path(const char *name) {
     static char path[160];
-    /* Both subsystem IDs used by the QCNFA765 module identify the same
-     * WCN6855 hw2.1 product.  The 17cb:0108 form is what replacement
+    /* The QCNFA765 nfa765 payload is byte-identical in the linux-firmware
+     * hw2.0 and hw2.1 directories (AMSS/M3/regdb/board-2.bin). The endpoint
+     * revision is therefore accepted as hw2.0 or hw2.1 while this image tree
+     * keeps one canonical hw2.1 copy. The 17cb:0108 form is what replacement
      * cards report; using the generic image makes firmware fall back to a
      * generated MAC instead of exposing the module's calibrated identity. */
     const uint32_t nfa765_qcom =
@@ -183,15 +186,16 @@ int wcn_attach(void) {
     wcn_wmi_set_permanent_mac(w.pcie.vpd_mac_valid ? w.pcie.vpd_mac : NULL);
     /* Keep the fallback identity stable without writing a host file.  Prefer
      * the PCIe Device Serial Number (normally endpoint OTP); when absent,
-     * fold the immutable PCI function identity into the seed.  The latter is
-     * deterministic per board/card even though it cannot distinguish two
-     * identical unprogrammed cards. */
+     * fold the immutable PCI function identity into the seed.  Do not include
+     * BAR0: pcied may allocate a different BAR after a stop/start, and a BAR
+     * address is not hardware identity.  The PCI identity remains stable on
+     * one board/card even though it cannot distinguish two identical
+     * unprogrammed cards. */
     uint64_t seed = UINT64_C(0x9e3779b97f4a7c15);
     seed ^= ((uint64_t)w.pcie.vendor_id << 48) |
             ((uint64_t)w.pcie.device_id << 32) |
             ((uint64_t)w.pcie.subsystem_vendor << 16) |
             w.pcie.subsystem_device;
-    seed = seed * UINT64_C(0x100000001b3) ^ w.pcie.bar_phys[0];
     seed = seed * UINT64_C(0x100000001b3) ^
             (((uint64_t)w.pcie.bus << 24) |
              ((uint64_t)w.pcie.device << 8) | w.pcie.function);
@@ -210,11 +214,29 @@ int wcn_attach(void) {
              w.subsystem == (((uint32_t)Q8B_PCIE_WLAN_SUBSYS_ALT_DID << 16) |
                     Q8B_PCIE_WLAN_SUBSYS_ALT_VID)) ? "nfa765" : "common");
     w.bar_phys = w.pcie.bar_phys[0];
-    if (q8b_pcie_map_bar(&w.pcie, 0, BAR_VA, BAR_SIZE)) return -1;
+    if (q8b_pcie_map_bar(&w.pcie, 0, BAR_VA, BAR_SIZE)) {
+        wcn_log("wcn: attach failed: BAR0 map phys=%llx size=%x\n",
+                (unsigned long long)w.pcie.bar_phys[0], BAR_SIZE);
+        return -1;
+    }
     w.hw = reg(0x224);
-    if (((w.hw >> 8) & 15) != 2 || (w.hw & 255) != 0x11) return -1;
+    /* WCN6855 cards in the Q8B/TW220 population report both 2.0 (0x10)
+     * and 2.1 (0x11) silicon revisions. The firmware profile is selected
+     * from the PCI subsystem identity, so the low revision byte must not
+     * reject the otherwise valid 2.0 endpoint. */
+    unsigned hw_major = (w.hw >> 8) & 15;
+    unsigned hw_rev = w.hw & 255;
+    if (hw_major != 2 || (hw_rev != 0x10 && hw_rev != 0x11)) {
+        wcn_log("wcn: attach failed: unexpected HW=%08x (want WCN6855 hw2.0/2.1)\n", w.hw);
+        return -1;
+    }
+    wcn_log("wcn: silicon revision=hw2.%u firmware tree=hw2.1/nfa765\n",
+            hw_rev - 0x10);
     w.bhi = reg(0x28);
-    if (!offset_valid(w.bhi, 0xc8)) return -1;
+    if (!offset_valid(w.bhi, 0xc8)) {
+        wcn_log("wcn: attach failed: invalid BHI offset=%08x\n", w.bhi);
+        return -1;
+    }
     w.attached = 1;
     w.stage = "PBL";
     wcn_log("wcn: attach ok vendor=%04x device=%04x sub=%04x:%04x bar=%llx\n",
@@ -642,7 +664,7 @@ fail:
 int wcn_running(void) { return w.running; }
 
 void wcn_status(char *out, size_t size) {
-    char qmi[288], ce_status[512], dp[256];
+    char qmi[288], ce_status[512], dp[512];
     wcn_qmi_status(qmi, sizeof(qmi));
     wcn_ce_status(ce_status, sizeof(ce_status));
     wcn_dp_status(dp,sizeof(dp));

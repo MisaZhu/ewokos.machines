@@ -48,6 +48,19 @@ static void state(unsigned value) {
     s.state=value; s.deadline=kernel_tic_ms(0)+8000;
 }
 static void fail(const char *why,unsigned status) {
+    /* Recovery frees the station and DP state. Preserve the failed stage and
+     * management/data counters in the log before that evidence disappears. */
+    wcn_log("wcn: station context phase=%s mhz=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x aid=%u lmac=%u\n",
+            names[s.state],s.bss.mhz,s.bss.bssid[0],s.bss.bssid[1],s.bss.bssid[2],
+            s.bss.bssid[3],s.bss.bssid[4],s.bss.bssid[5],s.aid,s.lmac);
+    wcn_log("wcn: station counters mgmt_tx=%u done=%u errors=%u rx=%u data_tx=%u data_rx=%u eapol_rx=%u\n",
+            s.tx,s.tx_done,s.tx_errors,s.rx,s.data_tx,s.data_rx,s.eapol_rx);
+    char wpa_status[256];
+    wcn_wpa_status(wpa_status,sizeof(wpa_status));
+    wcn_log("wcn: station WPA %s\n",wpa_status);
+    char dp_status[512];
+    wcn_dp_status(dp_status,sizeof(dp_status));
+    wcn_log("wcn: station DP %s\n",dp_status);
     s.error=why; s.status=status; state(FAILED);
     wcn_log("wcn: station failure=%s status=%u; recovery required\n",why,status);
 }
@@ -247,6 +260,10 @@ int wcn_sta_associate(const char *ssid) {
         dma_free(0,(ewokos_addr_t)s.dma); s.dma=NULL; return -1;
     }
     memset(s.dma,0,STA_DMA_BYTES); wcn_wmi_mac(s.mac);
+    wcn_log("wcn: join bssid=%02x:%02x:%02x:%02x:%02x:%02x mhz=%u rssi=%d phy=%s width=%u nss=%u\n",
+            s.bss.bssid[0],s.bss.bssid[1],s.bss.bssid[2],s.bss.bssid[3],
+            s.bss.bssid[4],s.bss.bssid[5],s.bss.mhz,s.bss.rssi,
+            s.he?"HE":s.vht?"VHT":s.ht?"HT":"legacy",s.width,s.nss);
     state(CONFIG);
     return 0;
 }
@@ -505,13 +522,22 @@ void wcn_sta_event(unsigned event,unsigned tag,const uint8_t *p,unsigned bytes) 
     if (event==0x7006 && tag==423 && bytes>=20) {
         unsigned id=le32(p);
         for (unsigned i=0;i<FRAME_SLOTS;i++) if (id && s.pending[i]==id) {
+            unsigned subtype=s.dma[i*FRAME_BYTES]>>4;
+            if (subtype==11 || subtype==0 || le32(p+4))
+                wcn_log("wcn: mgmt TX subtype=%u desc=%u status=%u pdev=%u ack_rssi=%d\n",
+                        subtype,id,le32(p+4),le32(p+8),(int32_t)le32(p+16));
             s.pending[i]=0; s.tx_done++; if (le32(p+4)) s.tx_errors++;
         }
     }
     if (s.state==START_WAIT && event==0x5001 && tag==40 && bytes>=40 && !le32(p)) {
-        /* WCN6855 exposes one host pdev; firmware routes its physical MAC.
-         * The response union carries a target pdev ID, not a host LMAC index. */
+        /* WCN6855 is single_pdev_only in ath11k: both bands share host
+         * pdev index 0, which maps to TCL LMAC 0. The descriptor's LMAC
+         * selects the AST lookup namespace, not the physical channel/radio.
+         * The VDEV response union is a target pdev ID with use_pdev_id=1;
+         * neither that value nor a band-to-radio mapping is a TCL selector. */
         s.lmac=0;
+        wcn_log("wcn: vdev-start status=%u target_mac_pdev=%u tx_streams=%u rx_streams=%u lmac=%u\n",
+                le32(p+12),le32(p+24),le32(p+28),le32(p+32),s.lmac);
         if (le32(p+12)) fail("vdev-start-rejected",le32(p+12));
         else state(AUTH);
     }
@@ -522,9 +548,21 @@ void wcn_sta_peer(unsigned vdev,const uint8_t *mac,unsigned peer,unsigned hw_pee
     }
 }
 void wcn_sta_management(const uint8_t *p,unsigned bytes,unsigned mhz) {
-    if (s.state==IDLE || s.state==FAILED || bytes<24 || mhz!=s.bss.mhz ||
+    if (s.state==IDLE || s.state==FAILED || bytes<24 ||
         (p[0]&15) || memcmp(p+4,s.mac,6) || memcmp(p+10,s.bss.bssid,6) || memcmp(p+16,s.bss.bssid,6)) return;
-    unsigned subtype=p[0]>>4; s.rx++;
+    /* Record relevant responses even if the firmware reports an unexpected
+     * receive frequency, then retain the normal channel validation below. */
+    unsigned subtype=p[0]>>4;
+    if ((subtype==11 && bytes>=30) || (subtype==1 && bytes>=30) ||
+        ((subtype==10 || subtype==12) && bytes>=26)) {
+        unsigned code=subtype==11 ? le16(p+28):subtype==1 ? le16(p+26):le16(p+24);
+        wcn_log("wcn: mgmt RX subtype=%u phase=%s mhz=%u expected=%u code=%u seq=%u protected=%u\n",
+                subtype,names[s.state],mhz,s.bss.mhz,code,le16(p+22)>>4,!!(p[1]&64));
+        if (subtype==11)
+            wcn_log("wcn: auth RX algorithm=%u transaction=%u status=%u\n",le16(p+24),le16(p+26),code);
+    }
+    if (mhz!=s.bss.mhz) return;
+    s.rx++;
     if ((subtype==12 || subtype==10) && bytes>=26) { fail("AP-disconnected",le16(p+24)); return; }
     if (s.state==ASSOCIATED && s.ht && subtype==13 && bytes>=33 && p[24]==3 && p[25]==0 && !s.ba_state) {
         unsigned param=le16(p+27),window=param>>6;
