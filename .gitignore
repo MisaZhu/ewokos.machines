@@ -21,3 +21,13 @@ system/make.rule
 build*
 .xmake
 x86/kernel/boot/bootcfg.inc
+# generated machine trees / loopback artifacts (not source)
+releases/
+system/build_aarch64/
+kernel*.bin
+*.layout.json
+efi/initramfs.img
+efi/kernel.bin
+efi/boot.elf
+initramfs_aarch64.img
+gaokun3-usb.img

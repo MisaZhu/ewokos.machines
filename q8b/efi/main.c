@@ -187,7 +187,7 @@ static int uart_poll(uint32_t off, uint32_t mask, int set) {
 /* Drive one GENI UART17 TX command.  Returns 0 when the write completed
  * (M_CMD_DONE seen), -1 when the PE never advanced (abort + timeout).
  * Every device access stays bounded: on boards without a wired/clocked
- * UART17 (MateBook E Go, TW220 tablets) the polls simply time out. */
+ * UART17 (MateBook gaokun3, TW220 tablets) the polls simply time out. */
 static int uart17_putc(char c) {
     uart_wr(0x80c, 2);
     uart_wr(0x618, (1u << 0) | (1u << 5) | (1u << 30));
@@ -233,7 +233,7 @@ static void serial_init(void) {
     g_serial_mode = 0;
     g_uart17_ok = 0;
 #ifdef Q8B_NO_SERIAL
-    /* TEMP (E Go / TW220 bring-up): no serial console at all.  Skips the
+    /* TEMP (gaokun3 / TW220 bring-up): no serial console at all.  Skips the
      * EFI Serial I/O path, the UART17 TX probe and the post-EBS raw write,
      * so the loader never touches 0x884000 and the framebuffer console is
      * the only output.  Rebuild without NO_SERIAL to restore it. */
@@ -259,7 +259,7 @@ static void serial_init(void) {
         return;              /* no SetAttributes: BIOS already did it */
     }
     /* No EFI Serial I/O: only trust the Q8B GENI UART17 when the SE really
-     * completes a TX command.  Tablets (MateBook E Go, TW220) have no wired
+     * completes a TX command.  Tablets (MateBook gaokun3, TW220) have no wired
      * UART17 debug header: their QUP2 SE is idle and never answers, so
      * report "no serial" instead of silently poking 0x884000 all boot. */
     if (uart17_tx_probe() == 0) {
@@ -331,9 +331,9 @@ static void con_puts(const char* ascii) {
         return;
     }
 #ifndef Q8B_QEMU_TEST
-    /* Headless-tablet case (E Go / TW220 have no usable serial): once the
+    /* Headless-tablet case (gaokun3 / TW220 have no usable serial): once the
      * direct framebuffer console is live it owns the screen; keep ConOut
-     * only until then (same policy as the E Go loader). */
+     * only until then (same policy as the gaokun3 loader). */
     if (g_fb_debug)
         return;
 #endif
@@ -408,8 +408,8 @@ static uint32_t fb_color(uint32_t rgb) {
 /* Map an upright (logical) screen coordinate to a physical framebuffer
  * pixel.  g_fb_rot is the quarter-turn the panel scanout applies, so
  * logical (0,0) is the visible top-left corner on rotated tablets
- * (MateBook E Go / TW220 panels).  Same convention as the E Go loader's
- * ego_pixel_offset(); x/y are bounded by the logical g_fb_w/g_fb_h. */
+ * (MateBook gaokun3 / TW220 panels).  Same convention as the gaokun3 loader's
+ * gaokun3_pixel_offset(); x/y are bounded by the logical g_fb_w/g_fb_h. */
 static void fb_xy(uint32_t x, uint32_t y, uint32_t* px, uint32_t* py) {
     switch (g_fb_rot) {
     case 1: *px = g_fb_lay_w - 1 - y; *py = x; break;          /* 90 CW */
@@ -509,7 +509,7 @@ static void fb_text(uint32_t x, uint32_t y, const char* text, uint32_t rgb) {
 
 /* width/height/scanpx come from the GOP mode (pixels per scanline in
  * memory).  rot is the verified scanout rotation: 0 = as-reported Q8B,
- * 1/3 = portrait panels (E Go / TW220).  Logical console coordinates are
+ * 1/3 = portrait panels (gaokun3 / TW220).  Logical console coordinates are
  * upright and bounded by the derived g_fb_w/g_fb_h. */
 static void fb_debug_setup(uint64_t addr, uint32_t width, uint32_t height,
                            uint32_t scanpx, uint32_t format,
@@ -607,7 +607,7 @@ static void fb_body_puts(const char* s) {
 }
 
 /* ------------------------------------------------------------------ */
-/* robust GOP discovery (Q8B / MateBook E Go / Ntmer TW220)           */
+/* robust GOP discovery (Q8B / MateBook gaokun3 / Ntmer TW220)           */
 /* ------------------------------------------------------------------ */
 /* Resolution description handed from the loader to the fb console and
  * bootinfo.  width/height are the GOP-reported mode; rot is the verified
@@ -630,7 +630,7 @@ static EFI_MEMORY_DESCRIPTOR* g_memmap;
 static UINTN g_memmap_size;
 static UINTN g_memmap_dsize;
 
-/* Documented tablet framebuffer: both the E Go and the TW220 reserve
+/* Documented tablet framebuffer: both the gaokun3 and the TW220 reserve
  * [0xc6200000,0xc8600000) (36 MiB) for scanout, and their first GOP
  * reports FrameBufferBase == 0 (firmware proxy hides the address). */
 #define Q8B_RESV_FB_BASE  0xc6200000ULL
@@ -656,7 +656,7 @@ static int q8b_mapped_identity(uint64_t base, uint64_t size) {
 }
 
 /* Tablets hide the framebuffer address: the first GOP is a 2560x1600 BGR
- * 0xFA0000-byte proxy with FrameBufferBase == 0 (see machines/ego-probe). */
+ * 0xFA0000-byte proxy with FrameBufferBase == 0 (see machines/gaokun3-probe). */
 static int q8b_gop_tablet_signature(const EFI_GOP_MODE* m) {
     return m && m->Info && m->FrameBufferBase == 0 &&
            m->Info->HorizontalResolution == 2560 &&
@@ -848,7 +848,7 @@ static int q8b_gop_discover(struct q8b_fb* fb) {
     }
 
     /* 2) Console device's GOP: the tablet console works while the first
-     *    instance is a base-0 proxy (verified E Go behaviour). */
+     *    instance is a base-0 proxy (verified gaokun3 behaviour). */
     if (gST->ConsoleOutHandle) {
         gop = 0;
         status = gBS->HandleProtocol(gST->ConsoleOutHandle, (EFI_GUID*)&gop_guid,
@@ -968,7 +968,7 @@ static void fdt_model(uint64_t dtb, char* out, uint64_t cap) {
 }
 
 /* Product name from the firmware's SMBIOS Type-1 (System Information)
- * record: the canonical device model (e.g. "MateBook E Go", "TW220").
+ * record: the canonical device model (e.g. "MateBook gaokun3", "TW220").
  * Used when the firmware DTB has no /model. */
 static void smbios_product_name(char* out, uint64_t cap) {
     static const EFI_GUID smbios_guid = EFI_SMBIOS_PROTOCOL_GUID;
@@ -2398,7 +2398,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     con_puts("\n");
 
     /* ---- framebuffer: robust multi-platform GOP discovery ----
-     * Q8B: LocateProtocol GOP has a real base.  E Go / TW220: every GOP is
+     * Q8B: LocateProtocol GOP has a real base.  gaokun3 / TW220: every GOP is
      * a base-0 proxy, the linear FB is verified in the reserved 36-MiB
      * region at 0xc6200000 by two BLT patterns + rotation read-back. */
     uint64_t fb_addr = 0, fb_pitch = 0;

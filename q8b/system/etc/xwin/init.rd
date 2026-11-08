@@ -1,6 +1,6 @@
 # Q8B xwin profile.
 #
-# E Go / TW220 note: those panels have no wired UART17 debug port, so the
+# gaokun3 / TW220 note: those panels have no wired UART17 debug port, so the
 # serial console is disabled and the desktop owns the panel.  The optional
 # user-mode GOP console (consoled + /dev/console0) is disabled by default;
 # uncomment the consoled block below to get a boot log/shell on screen.
@@ -36,8 +36,14 @@
 # switching to this persistent root.  Do not start a second xHCI owner here.
 @/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/usb0
 @/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/usb0
-# TW220 Goodix Berlin 7986P touchscreen (GPIO SPI).
+# Touchscreen selection.  Default: TW220 uses the Goodix Berlin 7986P
+# (GPIO SPI).  The gaokun3 (gaokun3) panel is a Himax HX83121A on the same
+# q8b tree; on a gaokun machine uncomment the himaxd pair below and comment
+# the goodixd line.  Never start both: they drive the same pads.
+# TW220 only:
 @/bin/ipcserv /drivers/q8b/goodixd        /dev/touch0
+# gaokun (gaokun3) only:
+#@/bin/ipcserv /drivers/q8b/himaxd        /dev/touch0
 @/bin/ipcserv /drivers/q8b/hid_touchpadd /dev/touchpad0 /dev/usb0
 # btd may be launched concurrently by ipcserv, but the Q8B transport gates
 # USB Bluetooth setup until wlan has completed WCN startup and published MAC.
@@ -65,6 +71,9 @@
 
 @/bin/ipcserv /drivers/xserverd          /dev/x
 @/bin/bgrun /sbin/x/xtouch  /dev/touch0
+# gaokun (gaokun3) only: himaxd reports the same /dev/touch0 records, but the
+# panel orientation lives in /etc/x/xtouch-himax.json.
+#@/bin/bgrun /sbin/x/xtouch -c /etc/x/xtouch-himax.json /dev/touch0
 @/bin/bgrun /sbin/x/xtouch -m
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0
 @/bin/bgrun /sbin/x/xmouse /dev/mouse1

@@ -17,6 +17,57 @@ description: EwokOS Q8B 内核标准测试流程：MCP 常驻串口缓存、rebo
 - SSH 连接失败时，先通过已登录的 MCP 串口执行 `/bin/ps`，确认 `/sbin/sshd`
   是否运行，不直接认定整板挂死。复位后等待启动完成，不叠加复位。
 
+## 部署启动载荷（原 deploy.sh）
+
+`machines/q8b/deploy.sh` 已移除；部署按本节手工执行。下文的 `TFTP`/`.../`
+均指 PXE/TFTP 投放区 `/Users/tony/work/q8b/boot/tftp/q8b`（ewokos 旁边的
+`q8b/` 工作树，由 `q8b/boot/start.sh` 提供 TFTP 服务）。
+
+### 构建 EFI 载荷
+
+```bash
+make -C machines/q8b/kernel      # 内核 -> machines/q8b/kernel/kernel.bin
+make -C machines/q8b/system      # 系统 -> machines/q8b/system/build_aarch64
+make -C machines/q8b/efi         # 打包 -> efi/kernel.bin、efi/BOOTAA64.EFI、efi/initramfs.img
+```
+
+缺 `efi/` 三个产物时先跑 `make -C machines/q8b/efi`（旧 deploy.sh 同样会校验
+这三个文件后报错）。
+
+### 完整投放（PXE/TFTP）
+
+```bash
+TFTP=/Users/tony/work/q8b/boot/tftp/q8b
+mkdir -p "$TFTP"
+cp machines/q8b/efi/BOOTAA64.EFI  "$TFTP/BOOTAA64.EFI"
+cp machines/q8b/efi/kernel.bin    "$TFTP/KERNEL.BIN"
+cp machines/q8b/efi/initramfs.img "$TFTP/INITRAMFS.IMG"
+rm -f "$TFTP/ROOTFS.IMG"        # SD_ROOTFS=1（默认）: rootfs 留在 SD ext3 分区
+# SD_ROOTFS=0: cp machines/q8b/root_aarch64.img "$TFTP/ROOTFS.IMG"
+```
+
+EUD 开发服务有独立 TFTP 树（`/Users/tony/work/q8b/eud/pxe/tftp/q8b`），把同样
+三个文件镜像过去，保持两种 PXE 启动方式同步；不需要就跳过。
+
+### 只换 KERNEL.BIN（halt 测试 / 恢复真内核）
+
+```bash
+TFTP=/Users/tony/work/q8b/boot/tftp/q8b
+cp machines/q8b/test/halt_kernel.bin "$TFTP/KERNEL.BIN"  # 8B halt: wfi; b __entry @0x90080000
+cp "$TFTP/KERNEL_ENTRY.BIN" "$TFTP/KERNEL.BIN"           # 恢复真 kernel
+```
+
+### 启动方式与串口/BIOS
+
+- PXE：载荷放到 `q8b/boot/start.sh` 服务的 TFTP 根，DHCP bootfile 指向
+  `q8b/BOOTAA64.EFI`。**直接 PXE NBP 最可靠**（保留固件网络 LoadFile
+  handle）；GRUB chainload 可能可用。
+- SD_ROOTFS=1 时 loader 经 `EFI_LOAD_FILE`（TFTP）读 KERNEL.BIN/
+  INITRAMFS.IMG；持久 rootfs 由 init 切换后从 SD ext3 分区读取。
+- 串口：40-pin Pin6=GND、Pin8=TXD、Pin10=RXD，115200 8N1（**不要接 VCC**）。
+- BIOS：F2 → Debugging Settings → Synchronous Debug UART in UEFI = Enabled，
+  可看到 UEFI 阶段日志。
+
 ## 0. 检查
 
 ```text
@@ -38,10 +89,12 @@ MCP：
 ## 1. halt kernel 隔离（最小验证）
 
 ```bash
+# TFTP 投放区见上文『部署启动载荷』节
+TFTP=/Users/tony/work/q8b/boot/tftp/q8b
 # 保存真 kernel
-cp .../KERNEL.BIN .../KERNEL_ENTRY.BIN
+cp "$TFTP/KERNEL.BIN" "$TFTP/KERNEL_ENTRY.BIN"
 # 部署 8 字节 halt: wfi; b __entry @0x90080000
-cp machines/q8b/test/halt_kernel.bin .../KERNEL.BIN
+cp machines/q8b/test/halt_kernel.bin "$TFTP/KERNEL.BIN"
 ```
 
 执行 `reboot`/`boot`，预期串口：
@@ -78,7 +131,8 @@ eud> cap read since=2026-10-18T20:25:23
 ## 3. 恢复真 kernel
 
 ```bash
-cp .../KERNEL_ENTRY.BIN .../KERNEL.BIN
+TFTP=/Users/tony/work/q8b/boot/tftp/q8b   # 见『部署启动载荷』节
+cp "$TFTP/KERNEL_ENTRY.BIN" "$TFTP/KERNEL.BIN"
 ```
 
 ## 4. 内核第一个串口字符
@@ -107,7 +161,7 @@ cp .../KERNEL_ENTRY.BIN .../KERNEL.BIN
 ```bash
 cd machines/q8b/kernel
 make -C ../efi efi KERNEL_ONLY=1 FORCE_UART17=1
-cp ../efi/BOOTAA64.EFI .../pxe/tftp/q8b/
+cp ../efi/BOOTAA64.EFI "$TFTP/"   # $TFTP 见『部署启动载荷』节
 ```
 
 - `KERNEL_ONLY` 下 kernel 会在 `q8b: bootinfo` 后停住；要跑完整 init 需
@@ -140,9 +194,66 @@ cp ../efi/BOOTAA64.EFI .../pxe/tftp/q8b/
 - 旧 `900e` 设备未消失时不要立即判失败；以串口 `Sahara` 为 EDL 依据。
 - 真机 UEFI ConOut 与 serial 同一 UART；loader 真机只写 serial，避免重复。
 - `KERNEL.BIN` 是 halt 镜像时没有 kernel 输出是预期，不是失败。
-- 测试期间不要跑 `board_cycle.sh`/`make deploy`，它们会覆盖 `KERNEL.BIN`。
+- 测试期间不要跑 `board_cycle.sh` 或重新做完整部署，它们会覆盖
+  `KERNEL.BIN`；只按『部署启动载荷』节的单文件替换命令覆盖
+  （§1 halt / §3 恢复 已用）。
 - `[89C` 不是 kernel；它是 UEFI console 的 ANSI，常出现在 PXE 之前。
 - 不要假设 BIOS 的 UART17 初始化跨 EBS 保留；EBS 后 loader 裸写也不出字，
   kernel 需要自己初始化 QUP2/SE1/GCC（或让 UART 在 EBS 后保持可用）。
 - kernel 早期 TX 必须按 GENI 顺序：FIFO → TX_TRANS_LEN → M_CMD0 → 等 done，
   不能先等 done 再写 FIFO。
+- 板子跑飞/挂死/进 EDL 时，**直接再发一次 MCP `eud_board_reboot` 即可恢复**
+  （不需要手动断电）。SRST 报“仍检测到 900e/Sahara”或“未确认 UEFI/PXE”时
+  不要停，继续重发；EDL guard 会自动再拉，通常 1–2 次后 UEFI/PXE 就出现。
+  实测：CM3 release 挂死 → 900E → 重发 reboot → 30–60s 后 EwokOS 起来。
+
+## 6. EwokOS 用户态 GPU 驱动（g2dd）测试流程（已验证）
+
+EwokOS 起来后测 GPU 驱动。g2dd **不自动启动**，每次手工拉起。
+
+### 构建
+
+```bash
+make -C machines/q8b/system gui
+# 产物: machines/q8b/system/build_aarch64/drivers/q8b/g2dd
+```
+
+### 每次测试必须冷启动
+
+上一轮留下的 g2dd 会让下一次启动读到旧 GMU 状态并卡死板子。**每轮测试前先
+MCP `eud_board_reboot`，等 ping 通再跑。**
+
+### 部署（ssh，带重试）
+
+```bash
+python3 .tmp/mcp_call.py eud_board_reboot '{"method":"eud","wait":80}'
+# 200KB 二进制用限速 scp（-l 50 较稳）
+scp -O -l 50 g2dd root@192.168.8.50:/drivers/q8b/g2dd
+ssh root@192.168.8.50 /bin/md5 /drivers/q8b/g2dd   # 与本地 md5 比对
+```
+
+推荐 `deploy_retry.sh`：复位 → scp → md5，不一致/超时就重试（最多 5 次）。
+小配置文件直接普通 scp 即可。
+
+### 测试开关（/tmp/adreno.cfg）
+
+`NAME=1` 行表示布尔开关；`NAME=<数字>` 由 `adreno_cfg_int()` 读整数。
+改完 cfg 后 scp 到 `/tmp/adreno.cfg` 再启动 g2dd。
+
+### 串口启动 + 抓日志
+
+```text
+# 串口登录顺序（每步之间留间隔）
+\r → root\r → root\r → \n
+# 记录 T0，再启动
+/bin/ipcserv /drivers/q8b/g2dd /dev/g2d\n
+# MCP 抓 T0 之后的日志
+{"action":"read","since":"YYYY-MM-DD HH:MM:SS"}
+```
+
+### 验收点（通过则链路正常）
+
+- 串口出现 `dev: /drivers/q8b/g2dd` 与 `q8b g3d: ...` 驱动日志；
+- 日志带时间戳，可从 MCP 缓存完整回读；
+- 安全测试结束后板子仍能 ping 通（串口读回 `[OK]`）；
+- 挂死时 MCP `eud_board_reboot` 重发 1–2 次即可恢复。
