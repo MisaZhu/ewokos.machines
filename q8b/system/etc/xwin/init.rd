@@ -28,9 +28,7 @@
 # switching to this persistent root.  Do not start a second xHCI owner here.
 @/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb0  /dev/usb0
 @/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse0 /dev/usb0
-# TW220 uses the SPI-connected Goodix GT9916 controller.  Keep a single
-# owner of /dev/touch0; the USB HID daemon must stay disabled on this panel.
-#@/bin/ipcserv /drivers/q8b/hid_touchd    /dev/touch0 /dev/usb0
+# TW220 Goodix Berlin 7986P touchscreen (GPIO SPI).
 @/bin/ipcserv /drivers/q8b/goodixd        /dev/touch0
 @/bin/ipcserv /drivers/q8b/hid_touchpadd /dev/touchpad0 /dev/usb0
 # btd may be launched concurrently by ipcserv, but the Q8B transport gates

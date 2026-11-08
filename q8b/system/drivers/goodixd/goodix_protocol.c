@@ -36,12 +36,16 @@ int goodix_parse_ic_info(const uint8_t* data, size_t length,
 
     if (data == NULL || touch_data_addr == NULL || length < 2)
         return -1;
-    if (length < 2 + 20 + 10 + 4 + 2)
+    /* Keep these offsets identical to struct goodix_berlin_ic_info_version
+     * and struct goodix_berlin_ic_info_feature in the Linux driver.  The
+     * packed version structure is 16 bytes, not 20; using 20 shifts every
+     * variable parameter and makes a valid Berlin IC_INFO look invalid. */
+    if (length < 2 + 16 + 10 + 4 + 2)
         return -1;
     if (!goodix_checksum_valid(data, length))
         return -1;
 
-    off = 2 + 20 + 10 + 4;
+    off = 2 + 16 + 10 + 4;
     for (i = 0; i < 5; i++) {
         size_t bytes;
         uint8_t count;

@@ -2,6 +2,6 @@
     "x_max": 2560,
     "y_max": 1600,
     "x_rev": false,
-    "y_rev": false,
+    "y_rev": true,
     "xy_switch": false
 }

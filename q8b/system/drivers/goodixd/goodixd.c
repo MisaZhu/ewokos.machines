@@ -1,26 +1,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include <ewoksys/klog.h>
-#include <ewoksys/mmio.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
-#include <sysinfo.h>
 
 #include "goodix_protocol.h"
 
-/* SC8280XP TW220: QUPv3 serial engine 6 (SPI22), TLMM GPIO controller. */
-#define SPI22_OFF                 0x00898000ULL
-#define GCC_OFF                   0x00100000ULL
+/* SC8280XP TW220: GPIO mode-0 SPI on the board's QUP22 pins. */
 #define TLMM_PHY                  0x0f100000ULL
-#define TLMM_VA                   0x50700000ULL
+/* Dedicated TLMM slot, outside the GOP framebuffer and xHCI mappings. */
+#define TLMM_VA                   0x58200000ULL
 #define TLMM_SIZE                 0x00300000U
-#define SPI22_SIZE                0x4000U
 #define GPIO_STRIDE               0x1000U
 #define GPIO_CTL(g)               ((uint32_t)(g) * GPIO_STRIDE)
 #define GPIO_IO(g)                (GPIO_CTL(g) + 4U)
@@ -31,62 +26,11 @@
 #define GPIO_FUNC_MASK            (0xfU << 2)
 #define GPIO_DRV_MASK             (0x7U << 6)
 
-#define GENI_OUTPUT_CTRL          0x024U
-#define SE_GENI_CGC_CTRL          0x028U
-#define SE_GENI_STATUS            0x040U
-#define GENI_SER_M_CLK_CFG        0x048U
-#define SE_GENI_CLK_SEL           0x07cU
-#define SE_GENI_DMA_MODE_EN       0x258U
-#define SE_GENI_BYTE_GRAN         0x254U
-#define SE_SPI_CPHA               0x224U
-#define SE_SPI_LOOPBACK           0x22cU
-#define SE_SPI_CPOL               0x230U
-#define SE_SPI_DEMUX_OUTPUT_INV   0x24cU
-#define SE_SPI_DEMUX_SEL          0x250U
-#define SE_SPI_TRANS_CFG          0x25cU
-#define SE_SPI_WORD_LEN           0x268U
-#define SE_SPI_TX_TRANS_LEN       0x26cU
-#define SE_SPI_RX_TRANS_LEN       0x270U
-#define SE_GENI_M_CMD0            0x600U
-#define SE_GENI_M_CMD_CTRL_REG    0x604U
-#define SE_GENI_M_IRQ_STATUS      0x610U
-#define SE_GENI_M_IRQ_EN          0x614U
-#define SE_GENI_M_IRQ_CLEAR       0x618U
-#define SE_GENI_TX_FIFOn          0x700U
-#define SE_GENI_RX_FIFOn          0x780U
-#define SE_GENI_TX_FIFO_STATUS    0x800U
-#define SE_GENI_RX_FIFO_STATUS    0x804U
-#define SE_GENI_TX_WATERMARK_REG  0x80cU
-#define SE_GENI_RX_WATERMARK_REG  0x810U
-#define SE_GENI_RX_RFR_WATERMARK_REG 0x814U
-#define SE_GENI_TX_PACKING_CFG0   0x260U
-#define SE_GENI_TX_PACKING_CFG1   0x264U
-#define SE_GENI_RX_PACKING_CFG0   0x284U
-#define SE_GENI_RX_PACKING_CFG1   0x288U
-#define SE_GENI_M_CMD_ACTIVE      (1U << 0)
-#define M_CMD_DONE                (1U << 0)
-#define M_CMD_ERROR               ((1U << 1) | (1U << 2) | (1U << 3) | \
-                                   (1U << 24) | (1U << 25) | (1U << 26) | \
-                                   (1U << 27) | (1U << 28) | (1U << 29))
-#define M_TX_FIFO_WATERMARK       (1U << 30)
-#define M_RX_FIFO_WATERMARK       (1U << 26)
-#define M_RX_FIFO_LAST            (1U << 27)
-#define M_OPCODE_SHIFT            27U
-#define SPI_TX_RX                 7U
-#define RX_LAST                   (1U << 31)
-#define RX_LAST_VALID_MASK        (7U << 28)
-#define RX_LAST_VALID_SHIFT       28U
-#define FIFO_COUNT_MASK           0x01ffffffU
-#define FIFO_DEPTH_MASK           (0x3fU << 16)
-#define GCC_QUP2_CORE_ENABLE     0x52010U
-#define GCC_QUP2_S6_ENABLE       0x52018U
-#define GCC_QUP2_S6_CMD_RCGR     0x1e868U
-#define GCC_QUP2_S6_CFG_RCGR     (GCC_QUP2_S6_CMD_RCGR + 4U)
-
-#define GPIO_SPI_MISO             83U
-#define GPIO_SPI_MOSI             84U
-#define GPIO_SPI_CLK              85U
-#define GPIO_SPI_CS               86U
+/* Confirmed by AA echo, firmware checksum and IC_INFO on TW220. */
+#define GPIO_SPI_MISO             85U
+#define GPIO_SPI_MOSI             86U
+#define GPIO_SPI_CLK              83U
+#define GPIO_SPI_CS               84U
 #define GPIO_IRQ                  175U
 #define GPIO_RESET                99U
 #define GPIO_VDDIO                90U
@@ -109,19 +53,18 @@ typedef struct {
     uint16_t y;
 } touch_record_t;
 
-static volatile uint8_t* _mmio;
-static volatile uint8_t* _spi;
 static volatile uint8_t* _tlmm;
-static volatile uint8_t* _gcc;
 static uint32_t _touch_addr;
 static bool _ready;
 static touch_record_t _queue[TOUCH_QUEUE_SIZE];
 static unsigned _queue_count;
 static bool _finger_down;
-static unsigned _fifo_depth = 16;
+static uint16_t _finger_x;
+static uint16_t _finger_y;
 static bool _probe_in_progress;
-static unsigned _probe_delay_us;
+static unsigned _probe_delay_us = PROBE_RETRY_INITIAL_US;
 static unsigned _probe_failures;
+static const char* _probe_stage = "startup";
 
 static inline uint32_t rd(volatile uint8_t* base, uint32_t off) {
     return *(volatile uint32_t*)(base + off);
@@ -135,6 +78,97 @@ static void delay_us(unsigned usec) {
     usleep(usec);
 }
 
+/* SPMI v5 channels are always on. Waits are bounded; error bits 1..3
+ * indicate a denied, failed or dropped transaction. */
+static int spmi_wait(volatile uint8_t* channel) {
+    for (unsigned poll = 0; poll < 1000; poll++) {
+        uint32_t status = rd(channel, 8);
+        if (status & 1U)
+            return (status & 14U) ? -1 : 0;
+        delay_us(10);
+    }
+    return -1;
+}
+
+static int spmi_read(volatile uint8_t* observer, unsigned offset) {
+    /* Extended-read-long, one byte. */
+    wr(observer, 0, (1U << 27) | (offset << 4));
+    __asm__ volatile("dsb sy" ::: "memory");
+    if (spmi_wait(observer) != 0)
+        return -1;
+    return rd(observer, 0x18) & 0xffU;
+}
+
+/* PMC8280_1 GPIO1 (SID1, peripheral 0x8800) enables shared always-on VCC3B.
+ * ACPI TSC1/LPXC and the board DTS both require this supply. Preserve VIN,
+ * drive strength, pulls and master enable; never disable the shared rail. */
+static int enable_vcc3b(void) {
+    const uintptr_t core_va = 0x5a080000U;
+    const uintptr_t cfg_va = 0x5a0c0000U;
+    const uintptr_t obs_va = 0x5a100000U;
+    const uintptr_t physical[] = { 0x0c440000U, 0x0c40a000U, 0x0e600000U };
+    const uintptr_t virtual[] = { core_va, cfg_va, obs_va };
+    const unsigned sizes[] = { 0x4000U, 0x4000U, 0x10000U };
+    const unsigned offsets[] = { 0x04, 0x05, 0x40, 0x41, 0x44, 0x45, 0x46 };
+    int values[sizeof(offsets) / sizeof(offsets[0])];
+    for (unsigned i = 0; i < 3; i++) {
+        if (syscall3(SYS_MEM_MAP, virtual[i], physical[i], sizes[i]) != virtual[i])
+            return -1;
+    }
+    volatile uint8_t* core = (volatile uint8_t*)core_va;
+    volatile uint8_t* cfg = (volatile uint8_t*)cfg_va;
+    uint32_t version = rd(core, 0);
+    unsigned count = rd(core, 4) & 0x7ffU;
+    if (version < 0x50000000U || version >= 0x70000000U ||
+            count == 0 || count > 512U)
+        return -1;
+    int selected = -1;
+    for (unsigned i = 0; i < count; i++) {
+        uint32_t map = rd(core, 0x900U + 4U * i);
+        /* v5 APID map: SID/peripheral at bits 8..19; EE0 owns this pad. */
+        if (map && ((map >> 8) & 0xfffU) == 0x188U &&
+                (rd(cfg, 0x700U + 4U * i) & 7U) == 0) {
+            selected = (int)i;
+            break;
+        }
+    }
+    if (selected < 0)
+        return -1;
+    volatile uint8_t* obs = (volatile uint8_t*)(obs_va + (unsigned)selected * 0x80U);
+    for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
+        values[i] = spmi_read(obs, offsets[i]);
+        if (values[i] < 0)
+            return -1;
+    }
+    /* Only accept the verified LV pad and input/output-high configurations. */
+    if (values[0] != 0x10 || values[1] != 0x10 || values[3] != 0 ||
+            values[5] != 1 || values[6] != 0x80 ||
+            !((values[2] == 0 && values[4] == 0) ||
+              (values[2] == 1 && values[4] == 0x80)))
+        return -1;
+    if (values[2] == 1 && values[4] == 0x80)
+        return 0;
+    const uintptr_t rw_va = 0x5a140000U;
+    if (syscall3(SYS_MEM_MAP, rw_va,
+            0x0c600000U + (unsigned)selected * 0x10000U, 0x4000U) != rw_va)
+        return -1;
+    volatile uint8_t* rw_base = (volatile uint8_t*)rw_va;
+    const unsigned write_offsets[] = { 0x44, 0x40 };
+    const unsigned write_values[] = { 0x80, 1 };
+    for (unsigned i = 0; i < 2; i++) {
+        /* Latch constant high before enabling output; verify independently. */
+        wr(rw_base, 0x10, write_values[i]);
+        __asm__ volatile("dsb sy" ::: "memory");
+        wr(rw_base, 0, write_offsets[i] << 4);
+        __asm__ volatile("dsb sy" ::: "memory");
+        if (spmi_wait(rw_base) != 0 ||
+                spmi_read(obs, write_offsets[i]) != (int)write_values[i])
+            return -1;
+    }
+    delay_us(10000);
+    return 0;
+}
+
 static void gpio_config(unsigned gpio, unsigned function, unsigned pull,
         bool output, bool value) {
     uint32_t ctl = rd(_tlmm, GPIO_CTL(gpio));
@@ -142,212 +176,145 @@ static void gpio_config(unsigned gpio, unsigned function, unsigned pull,
     ctl |= (function & 0xfU) << 2;
     /* Drive-strength encoding is (mA / 2) - 1; zero selects the DTS's 2mA. */
     ctl |= pull & GPIO_PULL_MASK;
-    if (output)
-        ctl |= GPIO_OE;
-    wr(_tlmm, GPIO_CTL(gpio), ctl);
     if (output) {
+        /* Set the latch before enabling output, avoiding a stale-high pulse
+         * when firmware left reset or a rail-enable asserted. */
         uint32_t io = rd(_tlmm, GPIO_IO(gpio));
         if (value)
             io |= GPIO_OUT;
         else
             io &= ~GPIO_OUT;
         wr(_tlmm, GPIO_IO(gpio), io);
+        ctl |= GPIO_OE;
     }
+    wr(_tlmm, GPIO_CTL(gpio), ctl);
+    __asm__ volatile("dsb sy" ::: "memory");
+    (void)rd(_tlmm, GPIO_CTL(gpio));
 }
 
 static unsigned gpio_input(unsigned gpio) {
     return rd(_tlmm, GPIO_IO(gpio)) & GPIO_IN ? 1U : 0U;
 }
 
-static int poll_reg(uint32_t off, uint32_t mask, bool set) {
-    for (unsigned i = 0; i < 2000000U; i++) {
-        bool hit = (rd(_spi, off) & mask) != 0;
-        if (hit == set)
-            return 0;
-        if ((i & 0x3ffU) == 0)
-            usleep(1);
-    }
-    return -1;
+static void gpio_set_level(unsigned gpio, bool high) {
+    uint32_t io = rd(_tlmm, GPIO_IO(gpio));
+    if (high)
+        io |= GPIO_OUT;
+    else
+        io &= ~GPIO_OUT;
+    wr(_tlmm, GPIO_IO(gpio), io);
+    /* A counter-based delay does not drain posted MMIO writes. Complete
+     * this pad update before changing another pin or starting its hold time. */
+    __asm__ volatile("dsb sy" ::: "memory");
+    (void)rd(_tlmm, GPIO_IO(gpio));
 }
 
-static void spi_abort(void) {
-    if (rd(_spi, SE_GENI_STATUS) & SE_GENI_M_CMD_ACTIVE) {
-        wr(_spi, SE_GENI_M_CMD_CTRL_REG, 1U << 1);
-        (void)poll_reg(SE_GENI_STATUS, SE_GENI_M_CMD_ACTIVE, false);
-    }
-    wr(_spi, SE_GENI_M_IRQ_CLEAR, 0xffffffffU);
+/* Use only TLMM; accessing unprepared GCC/GENI can stall the system bus. */
+static void gpio_spi_prepare(void) {
+    gpio_config(GPIO_SPI_MISO, 0, 1, false, false);
+    gpio_config(GPIO_SPI_MOSI, 0, 1, true, false);
+    gpio_config(GPIO_SPI_CLK, 0, 1, true, false);
+    gpio_config(GPIO_SPI_CS, 0, 1, true, true);
 }
 
-static void spi_init(void) {
-    uint32_t v;
-
-    spi_abort();
-    v = rd(_spi, SE_GENI_CGC_CTRL);
-    wr(_spi, SE_GENI_CGC_CTRL, v | 0x7fU);
-    wr(_spi, GENI_OUTPUT_CTRL, 0x7fU);
-    wr(_spi, 0x020U, 1U);
-    wr(_spi, SE_GENI_DMA_MODE_EN, rd(_spi, SE_GENI_DMA_MODE_EN) & ~1U);
-    wr(_spi, 0xe18U, 0U);
-    wr(_spi, 0xe1cU, 0xffffffffU);
-    wr(_spi, SE_GENI_M_IRQ_EN, M_CMD_DONE | M_CMD_ERROR |
-            M_TX_FIFO_WATERMARK | M_RX_FIFO_WATERMARK | M_RX_FIFO_LAST);
-    wr(_spi, SE_GENI_M_IRQ_CLEAR, 0xffffffffU);
-    wr(_spi, SE_GENI_TX_PACKING_CFG0, 0x0004380eU);
-    wr(_spi, SE_GENI_TX_PACKING_CFG1, 0x000c3e0eU);
-    wr(_spi, SE_GENI_RX_PACKING_CFG0, 0x0004380eU);
-    wr(_spi, SE_GENI_RX_PACKING_CFG1, 0x000c3e0eU);
-    wr(_spi, SE_GENI_BYTE_GRAN, 0U);
-    wr(_spi, SE_SPI_WORD_LEN, 4U); /* 8 bits - GENI's four-bit minimum */
-    wr(_spi, SE_SPI_CPHA, 0U);
-    wr(_spi, SE_SPI_CPOL, 0U);
-    wr(_spi, SE_SPI_LOOPBACK, 0U);
-    wr(_spi, SE_SPI_DEMUX_SEL, 0U);
-    wr(_spi, SE_SPI_DEMUX_OUTPUT_INV, 0U);
-    wr(_spi, SE_SPI_TRANS_CFG, rd(_spi, SE_SPI_TRANS_CFG) & ~(1U << 1));
-    wr(_spi, SE_GENI_TX_WATERMARK_REG, 1U);
-    wr(_spi, SE_GENI_RX_WATERMARK_REG, 1U);
-    wr(_spi, SE_GENI_RX_RFR_WATERMARK_REG, 30U);
-
-    v = rd(_spi, 0xe24U);
-    _fifo_depth = (v & FIFO_DEPTH_MASK) >> 16;
-    if (_fifo_depth == 0 || _fifo_depth > 64)
-        _fifo_depth = 16;
-
-    /* Linux's gcc-sc8280xp selects the 19.2MHz TCXO for QUP2-S6.  GENI's
-     * SPI clock oversamples by two, so divider 4 gives 2.4MHz, below the
-     * TW220 panel's 3MHz maximum. */
-    wr(_spi, SE_GENI_CLK_SEL, 0U);
-    wr(_spi, GENI_SER_M_CLK_CFG, (4U << 4) | 1U);
+static uint8_t gpio_spi_byte(uint8_t tx, bool receive) {
+    uint8_t rx = 0;
+    for (unsigned bit = 0; bit < 8U; bit++) {
+        bool high = (tx & (uint8_t)(0x80U >> bit)) != 0;
+        gpio_set_level(GPIO_SPI_MOSI, high);
+        /* Keep GPIO SPI well below the 3 MHz limit and give the
+         * panel a real data setup/hold interval.  Back-to-back TLMM writes
+         * are otherwise too fast on some Q8B revisions. */
+        delay_us(1);
+        gpio_set_level(GPIO_SPI_CLK, true);
+        delay_us(1);
+        if (receive && gpio_input(GPIO_SPI_MISO))
+            rx |= (uint8_t)(0x80U >> bit);
+        gpio_set_level(GPIO_SPI_CLK, false);
+        delay_us(1);
+    }
+    return rx;
 }
 
-static void qup22_clock_enable(void) {
-    uint32_t v;
-
-    /* GCC definitions are from gcc-sc8280xp.c: QUPV3 wrap2 core/core-2x,
-     * M/S AHB and serial-engine S6 branch. */
-    v = rd(_gcc, GCC_QUP2_CORE_ENABLE);
-    v |= (1U << 0) | (1U << 1) | (1U << 2) | (1U << 3);
-    wr(_gcc, GCC_QUP2_CORE_ENABLE, v);
-    v = rd(_gcc, GCC_QUP2_S6_ENABLE);
-    wr(_gcc, GCC_QUP2_S6_ENABLE, v | (1U << 29));
-    wr(_gcc, GCC_QUP2_S6_CFG_RCGR, 1U); /* TCXO, divide-by-one */
-    wr(_gcc, GCC_QUP2_S6_CMD_RCGR, 1U); /* CMD_UPDATE */
-    for (unsigned i = 0; i < 1000U; i++) {
-        if ((rd(_gcc, GCC_QUP2_S6_CMD_RCGR) & 1U) == 0)
-            break;
-        usleep(1);
+static int spi_xfer(const uint8_t* tx, uint8_t* rx, size_t len,
+        bool receive) {
+    gpio_set_level(GPIO_SPI_CS, false);
+    delay_us(10);
+    for (size_t i = 0; i < len; i++) {
+        uint8_t value = gpio_spi_byte(tx[i], receive);
+        if (receive)
+            rx[i] = value;
     }
-}
-
-static void fifo_push(const uint8_t* tx, size_t len, size_t* sent) {
-    while (*sent < len) {
-        uint32_t used = rd(_spi, SE_GENI_TX_FIFO_STATUS) & FIFO_COUNT_MASK;
-        uint32_t room = _fifo_depth > used ? _fifo_depth - used : 0;
-        if (room == 0)
-            return;
-        while (room-- != 0 && *sent < len) {
-            uint32_t word = 0;
-            unsigned n = (unsigned)(len - *sent);
-            if (n > 4)
-                n = 4;
-            for (unsigned i = 0; i < n; i++)
-                word |= (uint32_t)tx[*sent + i] << (8U * i);
-            wr(_spi, SE_GENI_TX_FIFOn, word);
-            *sent += n;
-        }
-    }
-}
-
-static void fifo_pop(uint8_t* rx, size_t len, size_t* got) {
-    while (*got < len) {
-        uint32_t st = rd(_spi, SE_GENI_RX_FIFO_STATUS);
-        uint32_t words = st & FIFO_COUNT_MASK;
-        if (words == 0)
-            return;
-        while (words-- != 0 && *got < len) {
-            uint32_t word = rd(_spi, SE_GENI_RX_FIFOn);
-            unsigned n = (unsigned)(len - *got);
-            if (n > 4)
-                n = 4;
-            for (unsigned i = 0; i < n; i++)
-                rx[*got + i] = (uint8_t)(word >> (8U * i));
-            *got += n;
-        }
-    }
-}
-
-static int spi_xfer(const uint8_t* tx, uint8_t* rx, size_t len) {
-    size_t sent = 0, got = 0;
-    unsigned timeout = 0;
-
-    if (len == 0 || len > SPI_BUF_MAX)
-        return -1;
-    spi_abort();
-    wr(_spi, SE_GENI_M_IRQ_CLEAR, 0xffffffffU);
-    wr(_spi, SE_SPI_TX_TRANS_LEN, (uint32_t)len);
-    wr(_spi, SE_SPI_RX_TRANS_LEN, (uint32_t)len);
-    wr(_spi, SE_GENI_M_CMD0, SPI_TX_RX << M_OPCODE_SHIFT);
-    fifo_push(tx, len, &sent);
-
-    while (timeout++ < 2000000U) {
-        uint32_t irq = rd(_spi, SE_GENI_M_IRQ_STATUS);
-        fifo_pop(rx, len, &got);
-        fifo_push(tx, len, &sent);
-        if (irq & M_CMD_ERROR) {
-            spi_abort();
-            return -1;
-        }
-        if (irq & M_CMD_DONE)
-            break;
-        if ((timeout & 0x3ffU) == 0)
-            usleep(1);
-    }
-    fifo_pop(rx, len, &got);
-    wr(_spi, SE_GENI_M_IRQ_CLEAR, 0xffffffffU);
-    if (timeout >= 2000000U || sent != len || got != len)
-        return -1;
+    gpio_set_level(GPIO_SPI_CS, true);
+    /* Preserve a CS-high interval between consecutive register accesses. */
+    delay_us(10);
     return 0;
 }
 
 static int goodix_read(uint32_t address, uint8_t* data, size_t len) {
     uint8_t tx[SPI_BUF_MAX], rx[SPI_BUF_MAX];
     size_t total = goodix_build_read(address, len, tx, sizeof(tx));
-    if (total == 0 || spi_xfer(tx, rx, total) != 0)
+    if (total == 0 || spi_xfer(tx, rx, total, true) != 0)
         return -1;
     memcpy(data, rx + GOODIX_BERLIN_READ_PREFIX_LEN, len);
     return 0;
 }
 
 static int goodix_write(uint32_t address, const uint8_t* data, size_t len) {
-    uint8_t tx[SPI_BUF_MAX], rx[SPI_BUF_MAX];
+    uint8_t tx[SPI_BUF_MAX];
     size_t total = goodix_build_write(address, data, len, tx, sizeof(tx));
     if (total == 0)
         return -1;
-    return spi_xfer(tx, rx, total);
+    return spi_xfer(tx, NULL, total, false);
 }
 
 static int goodix_probe_once(void) {
     uint8_t confirm[8], version[32], length_raw[2], info[1024];
     uint16_t length;
+    int ret;
 
     memset(confirm, 0xaa, sizeof(confirm));
-    if (goodix_write(GOODIX_BOOTOPTION_ADDR, confirm, sizeof(confirm)) != 0 ||
-            goodix_read(GOODIX_BOOTOPTION_ADDR, version, sizeof(confirm)) != 0 ||
-            memcmp(confirm, version, sizeof(confirm)) != 0)
+    _probe_stage = "device-confirm-write";
+    ret = goodix_write(GOODIX_BOOTOPTION_ADDR, confirm, sizeof(confirm));
+    if (ret != 0)
+        return -1;
+    _probe_stage = "device-confirm-read";
+    ret = goodix_read(GOODIX_BOOTOPTION_ADDR, version, sizeof(confirm));
+    if (ret != 0)
+        return -1;
+    _probe_stage = "device-confirm-compare";
+    if (memcmp(confirm, version, sizeof(confirm)) != 0)
         return -1;
     delay_us(100000);
-    if (goodix_read(GOODIX_FW_VERSION_ADDR, version, 28) != 0 ||
-            !goodix_checksum_valid(version, 28))
+    _probe_stage = "firmware-version-read";
+    if (goodix_read(GOODIX_FW_VERSION_ADDR, version, 28) != 0)
         return -1;
+    _probe_stage = "firmware-version-checksum";
+    if (!goodix_checksum_valid(version, 28))
+        return -1;
+    _probe_stage = "ic-info-length-read";
     if (goodix_read(GOODIX_IC_INFO_ADDR, length_raw, sizeof(length_raw)) != 0)
         return -1;
     length = (uint16_t)length_raw[0] | ((uint16_t)length_raw[1] << 8);
     if (length < 2 || length >= sizeof(info))
         return -1;
-    if (goodix_read(GOODIX_IC_INFO_ADDR, info, length) != 0 ||
-            goodix_parse_ic_info(info, length, &_touch_addr) != 0)
+    _probe_stage = "ic-info-data-read";
+    if (goodix_read(GOODIX_IC_INFO_ADDR, info, length) != 0)
         return -1;
-    slog("q8b goodixd: GT9916 touch_data=0x%08x\n", _touch_addr);
+    _probe_stage = "ic-info-parse";
+    if (goodix_parse_ic_info(info, length, &_touch_addr) != 0)
+        return -1;
+    {
+        char rom_pid[7], patch_pid[9];
+        memcpy(rom_pid, version, 6);
+        rom_pid[6] = 0;
+        memcpy(patch_pid, version + 10, 8);
+        patch_pid[8] = 0;
+        slog("q8b goodixd: Berlin ready rom_pid=%s rom_vid=%02x%02x%02x "
+                "patch_pid=%s patch_vid=%02x%02x%02x%02x sensor=%u touch_data=%08x\n",
+                rom_pid, version[6], version[7], version[8], patch_pid,
+                version[18], version[19], version[20], version[21], version[23], _touch_addr);
+    }
     return 0;
 }
 
@@ -407,7 +374,10 @@ static void handle_event(vdevice_t* dev) {
         }
     }
     if (header.status & GOODIX_EVENT_TOUCH) {
-        if (!goodix_checksum_valid(raw + GOODIX_BERLIN_HEADER_SIZE,
+        /* Zero-contact release frames have a valid header but no contact
+         * payload/checksum. Bytes after the header can be stale. Match the
+         * vendor and Linux drivers: validate the payload only when n > 0. */
+        if (n > 0 && !goodix_checksum_valid(raw + GOODIX_BERLIN_HEADER_SIZE,
                 (size_t)n * GOODIX_BERLIN_TOUCH_SIZE + 2))
             goto clear;
         for (unsigned i = 0; i < n; i++) {
@@ -423,10 +393,15 @@ static void handle_event(vdevice_t* dev) {
         if (first != GOODIX_BERLIN_MAX_TOUCH &&
                 goodix_decode_touch(raw + GOODIX_BERLIN_HEADER_SIZE,
                 sizeof(raw) - GOODIX_BERLIN_HEADER_SIZE, first, &touch) == 0) {
+            _finger_x = touch.x;
+            _finger_y = touch.y;
             queue_push(1, touch.x, touch.y);
             _finger_down = true;
         } else if (_finger_down) {
-            queue_push(0, 0, 0);
+            /* A zero-contact frame has no coordinates. Preserve the last
+             * contact location: xtouch sends absolute UP coordinates, and
+             * xserverd only generates CLICK near the original DOWN point. */
+            queue_push(0, _finger_x, _finger_y);
             _finger_down = false;
         }
         if (_queue_count != 0)
@@ -482,8 +457,8 @@ static int touch_loop(vdevice_t* dev, void* p) {
             /* Keep diagnostics useful without logging once per retry. */
             if (_probe_failures == 1 ||
                     (_probe_failures & (_probe_failures - 1U)) == 0)
-                slog("q8b goodixd: GT9916 probe failed (retry %u us)\n",
-                        next);
+                slog("q8b goodixd: Berlin probe failed at %s (retry %u us)\n",
+                        _probe_stage, next);
         }
         return 0;
     }
@@ -497,46 +472,44 @@ static int touch_loop(vdevice_t* dev, void* p) {
 
 int main(int argc, char** argv) {
     const char* mount = argc > 1 ? argv[1] : "/dev/touch0";
-    sys_info_t info;
     vdevice_t dev;
-    ewokos_addr_t mapped;
 
-    if (sys_get_sys_info(&info) != 0)
-        return -1;
-    _mmio = (volatile uint8_t*)(uintptr_t)info.mmio.v_base;
-    mapped = syscall3(SYS_MEM_MAP, (ewokos_addr_t)info.mmio.v_base,
-            (ewokos_addr_t)info.mmio.phy_base, (ewokos_addr_t)info.mmio.size);
-    if (mapped != (ewokos_addr_t)info.mmio.v_base) {
-        slog("q8b goodixd: low MMIO mapping failed\n");
+    /* Validate arguments before mapping or changing any hardware. */
+    if (argc > 2 || mount[0] != '/') {
+        fprintf(stderr, "usage: goodixd [/dev/touch0]\n");
         return -1;
     }
-    /* TLMM is outside the 64MB low-MMIO window. Map it separately, as
-     * fand/sdprobe do; adding its physical address to _mmio faults on the
-     * first GPIO83 access at mmio.v_base + 0x0f153000. */
-    mapped = syscall3(SYS_MEM_MAP, (ewokos_addr_t)TLMM_VA,
-            (ewokos_addr_t)TLMM_PHY, (ewokos_addr_t)TLMM_SIZE);
-    if (mapped != (ewokos_addr_t)TLMM_VA) {
+    if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)TLMM_VA,
+            (ewokos_addr_t)TLMM_PHY, (ewokos_addr_t)TLMM_SIZE) != TLMM_VA) {
         slog("q8b goodixd: TLMM mapping failed\n");
         return -1;
     }
-    _spi = _mmio + SPI22_OFF;
     _tlmm = (volatile uint8_t*)(uintptr_t)TLMM_VA;
-    _gcc = _mmio + GCC_OFF;
+    if (enable_vcc3b() != 0) {
+        slog("q8b goodixd: VCC3B preparation failed; touch initialization stopped\n");
+        return -1;
+    }
 
-    /* TW220 DTS: qup22 is mux 2 on GPIO83/84 and mux 1 on GPIO85/86. */
-    gpio_config(GPIO_SPI_MISO, 2, 1, false, false);
-    gpio_config(GPIO_SPI_MOSI, 2, 1, false, false);
-    gpio_config(GPIO_SPI_CLK, 1, 1, false, false);
-    gpio_config(GPIO_SPI_CS, 1, 1, false, false);
+    gpio_config(GPIO_RESET, 0, 0, true, false);
+    gpio_spi_prepare();
     gpio_config(GPIO_IRQ, 0, 3, false, false);
-    gpio_config(GPIO_RESET, 0, 0, true, true);
-    gpio_config(GPIO_VDDIO, 0, 0, true, true);
-    gpio_config(GPIO_AVDD, 0, 0, true, true);
-    qup22_clock_enable();
-    spi_init();
+    /* Hold reset while cycling local rails. CS stays low while unpowered
+     * to avoid feeding the panel through its I/O pad. */
+    gpio_set_level(GPIO_SPI_CS, false);
+    gpio_config(GPIO_VDDIO, 0, 0, true, false);
+    gpio_config(GPIO_AVDD, 0, 0, true, false);
+    delay_us(1000);
+    gpio_set_level(GPIO_VDDIO, true);
+    delay_us(3000);
+    gpio_set_level(GPIO_AVDD, true);
+    delay_us(15000);
+    gpio_set_level(GPIO_SPI_CS, true);
+    delay_us(10);
+    gpio_set_level(GPIO_RESET, true);
+    delay_us(4000);
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.desc, "q8b_goodix_gt9916");
+    strcpy(dev.desc, "q8b_goodix_berlin");
     dev.read = touch_read;
     dev.check_poll_events = touch_poll;
     dev.loop_step = touch_loop;

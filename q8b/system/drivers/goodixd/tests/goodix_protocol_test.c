@@ -35,8 +35,8 @@ int main(void) {
 
     memset(buf, 0, sizeof(buf));
     put_le16(buf, 100);
-    /* Five variable arrays, then a 74-byte misc structure. */
-    size_t off = 2 + 20 + 10 + 4;
+    /* Five variable arrays, then the packed Berlin misc structure. */
+    size_t off = 2 + 16 + 10 + 4;
     for (unsigned i = 0; i < 5; i++)
         buf[off++] = 0;
     buf[off + 44] = 0x34;
