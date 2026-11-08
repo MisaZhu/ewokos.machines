@@ -50,7 +50,7 @@
 @/bin/ipcserv /drivers/fontd
 
 @/bin/ipcserv /drivers/xserverd          /dev/x
-@/bin/bgrun /sbin/x/xtouch -c /etc/x/xtouch-tw220.json /dev/touch0
+@/bin/bgrun /sbin/x/xtouch  /dev/touch0
 @/bin/bgrun /sbin/x/xtouch -m
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0
 @/bin/bgrun /sbin/x/xmouse /dev/mouse1
