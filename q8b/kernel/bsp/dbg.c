@@ -2,6 +2,27 @@
 #include <stdint.h>
 #include "hw_arch.h"
 
+#ifdef Q8B_NO_SERIAL
+/* TEMP: serial console disabled (E Go / TW220 bring-up).  Keep the debug API
+ * so callers link unchanged, but never touch the dead QUP2/SE1 UART17. */
+void q8b_dbg_putc(char c) { (void)c; }
+void q8b_dbg_write(const char* s, uint32_t size) { (void)s; (void)size; }
+void q8b_dbg_puts(const char* s) { (void)s; }
+void q8b_dbg_hex(uint64_t v) { (void)v; }
+void q8b_dbg_dec(uint64_t v) { (void)v; }
+#else
+
+/* Runtime decision from the loader's serial probe (bootinfo serial_flags
+ * bit0, copied into q8b_serial_on before the first kout).  The QEMU test
+ * build always keeps its PL011 console. */
+static int dbg_serial_on(void) {
+#ifdef Q8B_QEMU_TEST
+    return 1;
+#else
+    return q8b_serial_on;
+#endif
+}
+
 /*
  * Raw Qualcomm GENI (QUP SE) UART debug output for uart17.
  *
@@ -21,6 +42,8 @@
 #define PL011_TXFF (1u << 5)
 
 void q8b_dbg_putc(char c) {
+    if (!dbg_serial_on())
+        return;
     for (volatile uint32_t i = 0; i < 1000000; i++) {
         if (!(get32(PL011_FR) & PL011_TXFF))
             break;
@@ -29,6 +52,8 @@ void q8b_dbg_putc(char c) {
 }
 
 void q8b_dbg_puts(const char* s) {
+    if (!dbg_serial_on())
+        return;
     while (*s) {
         if (*s == '\n')
             q8b_dbg_putc('\r');
@@ -129,10 +154,14 @@ static void geni_send(const char* data, uint32_t count) {
 }
 
 void q8b_dbg_putc(char c) {
+    if (!dbg_serial_on())
+        return;
     geni_send(&c, 1);
 }
 
 void q8b_dbg_write(const char* s, uint32_t size) {
+    if (!dbg_serial_on())
+        return;
     char word[4];
     uint32_t count = 0;
 
@@ -156,6 +185,8 @@ void q8b_dbg_write(const char* s, uint32_t size) {
 
 void q8b_dbg_puts(const char* s) {
     uint32_t size = 0;
+    if (!dbg_serial_on())
+        return;
     while (s[size])
         size++;
     q8b_dbg_write(s, size);
@@ -182,3 +213,5 @@ void q8b_dbg_dec(uint64_t v) {
 }
 
 #endif /* Q8B_QEMU_TEST */
+
+#endif /* Q8B_NO_SERIAL */

@@ -12,6 +12,10 @@
 #include "q8b_platform.h"
 
 uint64_t _core_base_offset = 0;
+/* Kernel serial console decision, taken from the loader's serial probe
+ * (bootinfo serial_flags bit0).  Set in bootinfo_load() before the first
+ * kout; q8b_early_uart_init() reads the same bit straight from bootinfo. */
+int q8b_serial_on = 0;
 
 uint64_t q8b_ramdisk_base = 0;
 uint64_t q8b_ramdisk_size = 0;
@@ -71,6 +75,7 @@ static void bootinfo_load(void) {
     memcpy(&_bi, src, sizeof(_bi));
     _bi_valid = 1;
 
+    q8b_serial_on = (_bi.serial_flags & 1u) ? 1 : 0;
     q8b_ramdisk_base = _bi.rd_base;
     q8b_ramdisk_size = _bi.rd_size;
     q8b_ramdisk_flags = _bi.rd_flags;
@@ -88,7 +93,17 @@ void sys_info_init_arch(void) {
     memset(&_sys_info, 0, sizeof(sys_info_t));
     bootinfo_load();
 
-    strcpy(_sys_info.machine, "radxa-dragon-q8b");
+    /* Publish the real board model from the firmware DTB (handed over by the
+     * loader) so sysinfo shows the actual device; fall back to the board
+     * default when the firmware has no /model. */
+    if (_bi_valid && _bi.model[0] != 0) {
+        uint32_t i = 0;
+        for (; i + 1 < sizeof(_sys_info.machine) && _bi.model[i]; i++)
+            _sys_info.machine[i] = _bi.model[i];
+        _sys_info.machine[i] = 0;
+    } else {
+        strcpy(_sys_info.machine, "radxa-dragon-q8b");
+    }
     strcpy(_sys_info.arch, "aarch64");
 
     _sys_info.phy_offset = Q8B_RAM_BASE;
@@ -132,6 +147,9 @@ void sys_info_init_arch(void) {
     pd.fb.pitch = _bi.fb_pitch;
     pd.fb.bpp = _bi.fb_bpp;
     pd.fb.format = _bi.fb_format;
+    /* ABI v1: bootinfo _pad_fb carries the verified scanout rotation; pass it
+     * through so bsp_fb/displayd can render rotated portrait panels. */
+    pd.fb._pad = _bi._pad_fb;
     pd.rd.phy_base = _bi.rd_base;
     pd.rd.size = (uint32_t)_bi.rd_size;
     pd.rd.flags = _bi.rd_flags;

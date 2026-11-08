@@ -98,6 +98,8 @@ typedef struct {
     EFI_GUID_(0x5568e427,0x68fc,0x4f3d,0xac,0x74,0xca,0x55,0x52,0x31,0xcc,0x68)
 #define EFI_DTB_TABLE_GUID \
     EFI_GUID_(0xb1b621d5,0xf19c,0x41a5,0x83,0x0b,0xd9,0x15,0x2c,0x69,0xaa,0xe0)
+#define EFI_SMBIOS_PROTOCOL_GUID \
+    EFI_GUID_(0x03583ff6,0xcb36,0x4940,0x87,0x9b,0xb2,0xf6,0x3b,0x8b,0x4f,0x78)
 #define EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL_GUID \
     EFI_GUID_(0x2f707ebb,0x4a1c,0x11d4,0x9a,0x38,0x00,0x90,0x27,0x3f,0xc1,0x4d)
 typedef char CHAR8;
@@ -537,12 +539,28 @@ typedef struct {
     UINTN FrameBufferSize;
 } EFI_GOP_MODE;
 
-typedef struct {
+/* EFI_GRAPHICS_OUTPUT_PROTOCOL::Blt (UEFI spec 11.9).  Operation codes:
+ * 0=EfiBltVideoFill, 1=EfiBltVideoToBltBuffer, 2=EfiBltBufferToVideo,
+ * 3=EfiBltVideoToVideo.  Buffer pixels are 32-bit (EFI_GRAPHICS_OUTPUT_BLT_PIXEL). */
+#define EFI_GOP_BLT_VIDEO_FILL          0u
+#define EFI_GOP_BLT_VIDEO_TO_BLT_BUFFER 1u
+#define EFI_GOP_BLT_BUFFER_TO_VIDEO     2u
+#define EFI_GOP_BLT_VIDEO_TO_VIDEO      3u
+
+typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL_ EFI_GRAPHICS_OUTPUT_PROTOCOL;
+
+typedef EFI_STATUS (*EFI_GOP_BLT)(EFI_GRAPHICS_OUTPUT_PROTOCOL* This,
+                                  void* BltBuffer, uint32_t BltOperation,
+                                  UINTN SourceX, UINTN SourceY,
+                                  UINTN DestinationX, UINTN DestinationY,
+                                  UINTN Width, UINTN Height, UINTN Delta);
+
+struct EFI_GRAPHICS_OUTPUT_PROTOCOL_ {
     void* QueryMode;
     void* SetMode;
-    void* Blt;
+    EFI_GOP_BLT Blt;
     EFI_GOP_MODE* Mode;
-} EFI_GRAPHICS_OUTPUT_PROTOCOL;
+};
 
 typedef struct {
     uint32_t Revision;
@@ -571,6 +589,17 @@ typedef struct {
                            BOOLEAN BootPolicy, UINTN* BufferSize,
                            void* Buffer);
 } EFI_LOAD_FILE2_PROTOCOL;
+
+/* EFI_SMBIOS_PROTOCOL (UEFI 2.x 31.2): only GetNext is needed to read the
+ * Type-1 (System Information) record for the product name. */
+typedef struct EFI_SMBIOS_PROTOCOL_ EFI_SMBIOS_PROTOCOL;
+struct EFI_SMBIOS_PROTOCOL_ {
+    EFI_STATUS (*GetNext)(EFI_SMBIOS_PROTOCOL* This, uint8_t* Type,
+                          void** Record, EFI_HANDLE* ProducerHandle);
+    void* Add;
+    void* UpdateString;
+    void* Remove;
+};
 
 uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable);
 

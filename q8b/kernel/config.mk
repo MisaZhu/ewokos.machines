@@ -32,6 +32,12 @@ MACHINE = q8b_qemu
 KERNEL_VARIANT = _qemu
 else
 CFLAGS += -DQ8B_BOARD
+# TEMP: no serial console at all (E Go / TW220 bring-up).  Keeps the kernel
+# from touching UART17/GCC/TLMM and from spending the GENI TX poll timeouts.
+# Build with NO_SERIAL=1; a normal build restores the serial console.
+ifeq ($(NO_SERIAL),1)
+CFLAGS += -DQ8B_NO_SERIAL
+endif
 ifeq ($(SMP),)
 SMP=yes
 endif

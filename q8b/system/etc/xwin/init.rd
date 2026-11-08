@@ -1,6 +1,14 @@
+# Q8B xwin profile.
+#
+# E Go / TW220 note: those panels have no wired UART17 debug port, so the
+# serial console is disabled and the desktop owns the panel.  The optional
+# user-mode GOP console (consoled + /dev/console0) is disabled by default;
+# uncomment the consoled block below to get a boot log/shell on screen.
+# To get the UART17 /dev/tty0 console back (Q8B), uncomment the uartd line
+# and the tty0 session below and make sure serial is enabled in the kernel.
 @/bin/ipcserv /drivers/piped             /dev/pipe0
 @/bin/ipcserv /drivers/nulld             /dev/null
-@/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
+#@/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
 # Start the PCIe host owner from the persistent root before endpoint drivers.
 @/bin/ipcserv /drivers/q8b/pcied         /dev/pcie0
 # Q8B full window system on the UEFI GOP framebuffer.
@@ -43,11 +51,17 @@
 #@/bin/ipcserv /drivers/q8b/hid_joystickd /dev/js1    /dev/bt0 bt
 
 @/bin/ipcserv /sbin/sessiond
-@/bin/bgrun /bin/session -r -t /dev/tty0
+#@/bin/bgrun /bin/session -r -t /dev/tty0
 
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/q8b/fbdisplayd    /dev/disp0
 @/bin/ipcserv /drivers/fontd
+# User-mode GOP console disabled: the desktop owns the panel.
+# Uncomment these three lines (boards without a wired debug UART) to show the
+# boot log and a shell on screen through /dev/console0.
+#@/bin/ipcserv /drivers/consoled
+#@set_stdio /dev/console0
+#@/bin/bgrun /bin/session -r -t /dev/console0
 
 @/bin/ipcserv /drivers/xserverd          /dev/x
 @/bin/bgrun /sbin/x/xtouch  /dev/touch0

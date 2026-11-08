@@ -84,11 +84,15 @@ typedef struct {
     uint32_t memmap_dsize;
 
     uint32_t resv_count;
-    uint32_t _pad0;
+    uint32_t serial_flags;   /* bit0: kernel may use UART17; bit1: loader used EFI Serial I/O */
     q8b_resv_t resv[Q8B_MAX_RESV];
 
     uint64_t dtb_addr;
     uint64_t dtb_size;
+
+    /* Device model from the firmware DTB /model, handed to the kernel so it
+     * can publish the real board name in sys_info.machine (MACHINE_MAX). */
+    char model[32];
 } q8b_bootinfo_t;
 
 static EFI_SYSTEM_TABLE* gST;
@@ -98,12 +102,17 @@ static EFI_LOADED_IMAGE_PROTOCOL* gImageInfo;
 static int g_con_ok;
 static EFI_SERIAL_IO_PROTOCOL* g_serial;
 static int g_serial_mode;      /* 0=none, 1=EFI Serial I/O, 2=UART17 direct */
+static int g_uart17_ok;        /* raw UART17 TX probe completed a command */
 static uint32_t g_boot_source = Q8B_BOOT_SOURCE_UNKNOWN;
 /* A small, dependency-free GOP console used while the loader is alive.  The
  * kernel receives the same framebuffer through bootinfo, but it is useful to
  * see whether UEFI reached the file-loading stages before ExitBootServices. */
 static volatile uint32_t* g_fb;
-static uint32_t g_fb_w, g_fb_h, g_fb_pitch, g_fb_format;
+static uint32_t g_fb_w, g_fb_h;      /* logical (upright panel) resolution */
+static uint32_t g_fb_lay_w, g_fb_lay_h; /* memory layout columns/rows */
+static uint32_t g_fb_scanpx;         /* pixels per physical scanline */
+static uint32_t g_fb_rot;            /* scanout rotation, quarter turns 0..3 */
+static uint32_t g_fb_format;
 static uint32_t g_fb_rmask, g_fb_gmask, g_fb_bmask;
 static int g_fb_debug;
 /* Keep the boot-only RAMFS outside the board's DMA32 window when possible.
@@ -175,10 +184,11 @@ static int uart_poll(uint32_t off, uint32_t mask, int set) {
     return -1;
 }
 
-/* UEFI already brings up the QUP clock, TLMM pinmux and 115200 baud.
- * Only normalise the packet format and TX path, exactly like the kernel's
- * bsp/uart.c + bsp/dbg.c do after ExitBootServices. */
-static void uart17_putc(char c) {
+/* Drive one GENI UART17 TX command.  Returns 0 when the write completed
+ * (M_CMD_DONE seen), -1 when the PE never advanced (abort + timeout).
+ * Every device access stays bounded: on boards without a wired/clocked
+ * UART17 (MateBook E Go, TW220 tablets) the polls simply time out. */
+static int uart17_putc(char c) {
     uart_wr(0x80c, 2);
     uart_wr(0x618, (1u << 0) | (1u << 5) | (1u << 30));
     uart_wr(0x270, 1);
@@ -186,7 +196,7 @@ static void uart17_putc(char c) {
     if (uart_poll(0x610, 1u << 30, 1) != 0) {
         uart_wr(0x604, 1u << 1);
         uart_wr(0x618, 1u << 5);
-        return;
+        return -1;
     }
     /* BIOS 可能用 1 byte/word packing（0x260 == 0），原来的 c<<24 会
      * 只把 0x00 送进 TX FIFO，串口表现为空格/NUL。按实际 packing 选字节。 */
@@ -198,28 +208,64 @@ static void uart17_putc(char c) {
     if (uart_poll(0x610, 1u << 0, 1) != 0) {
         uart_wr(0x604, 1u << 1);
         uart_wr(0x618, 1u << 5);
+        return -1;
     }
     uart_wr(0x618, 1u << 0);
+    return 0;
+}
+
+/* One bounded TX probe.  0 = UART17 completes commands (Q8B wiring), -1 =
+ * the SE never answered (tablet without a wired UART17 debug header). */
+static int uart17_tx_probe(void) {
+    const char probe[] = "\r\n";
+    int n = 0;
+    for (const char* p = probe; *p; p++) {
+        if (uart17_putc(*p) != 0)
+            break;
+        n++;
+    }
+    return n > 0 ? 0 : -1;
 }
 #endif /* !Q8B_QEMU_TEST */
 
 static void serial_init(void) {
     g_serial = 0;
     g_serial_mode = 0;
+    g_uart17_ok = 0;
+#ifdef Q8B_NO_SERIAL
+    /* TEMP (E Go / TW220 bring-up): no serial console at all.  Skips the
+     * EFI Serial I/O path, the UART17 TX probe and the post-EBS raw write,
+     * so the loader never touches 0x884000 and the framebuffer console is
+     * the only output.  Rebuild without NO_SERIAL to restore it. */
+    return;
+#endif
 #ifndef Q8B_QEMU_TEST
     /* UEFI BIOS已经初始化好 UART17。loader 不再碰任何 UART 配置，
      * 只用 EFI Serial I/O 的 Write（或 UART17 的 TX 命令）输出字符串。 */
 #ifdef Q8B_SERIAL_FORCE_UART17
     g_serial_mode = 2;       /* raw TX only, no init */
+    g_uart17_ok = uart17_tx_probe() == 0;
     return;
 #endif
     static const EFI_GUID serial_guid = EFI_SERIAL_IO_PROTOCOL_GUID;
     if (!EFI_ERROR(gBS->LocateProtocol((EFI_GUID*)&serial_guid, 0,
                     (void**)&g_serial)) && g_serial) {
         g_serial_mode = 1;
+        /* On Q8B the firmware console IS the GENI debug UART (uart17); the
+         * kernel drives the same SE after ExitBootServices, so tell it the
+         * UART17 path is usable.  No extra probe: avoid disturbing the SE
+         * the firmware serial driver owns. */
+        g_uart17_ok = 1;
         return;              /* no SetAttributes: BIOS already did it */
     }
-    g_serial_mode = 2;       /* raw TX only, no init */
+    /* No EFI Serial I/O: only trust the Q8B GENI UART17 when the SE really
+     * completes a TX command.  Tablets (MateBook E Go, TW220) have no wired
+     * UART17 debug header: their QUP2 SE is idle and never answers, so
+     * report "no serial" instead of silently poking 0x884000 all boot. */
+    if (uart17_tx_probe() == 0) {
+        g_serial_mode = 2;       /* raw TX only, no init */
+        g_uart17_ok = 1;
+    }
 #endif
 }
 
@@ -268,7 +314,14 @@ static void con_puts(const char* ascii);
 static void con_hex(uint64_t v);
 static void con_dec(uint64_t v);
 
+static void fb_body_puts(const char* s);
+
 static void con_puts(const char* ascii) {
+    /* Mirror every console line onto the framebuffer body console when the
+     * direct display console is live (primary screen on tablets, which have
+     * no usable serial). */
+    if (g_fb_debug)
+        fb_body_puts(ascii);
     /* On the real board the UEFI ConOut is also wired to the same debug
      * UART, so writing both duplicates every line.  With a serial backend
      * (EFI Serial I/O or UART17 direct) use it exclusively; QEMU has no
@@ -277,6 +330,13 @@ static void con_puts(const char* ascii) {
         serial_write_ascii(ascii);
         return;
     }
+#ifndef Q8B_QEMU_TEST
+    /* Headless-tablet case (E Go / TW220 have no usable serial): once the
+     * direct framebuffer console is live it owns the screen; keep ConOut
+     * only until then (same policy as the E Go loader). */
+    if (g_fb_debug)
+        return;
+#endif
     if (!g_con_ok)
         return;
     CHAR16 w[256];
@@ -336,13 +396,35 @@ static uint32_t fb_color(uint32_t rgb) {
     uint32_t r = (rgb >> 16) & 0xffu;
     uint32_t g = (rgb >> 8) & 0xffu;
     uint32_t b = rgb & 0xffu;
-    if (g_fb_format == 0)       /* BGR 8:8:8:8 */
+    if (g_fb_format == 0)       /* PixelRedGreenBlueReserved: bytes R G B */
         return (r << 16) | (g << 8) | b;
-    if (g_fb_format == 1)       /* RGB 8:8:8:8 */
+    if (g_fb_format == 1)       /* PixelBlueGreenRedReserved: bytes B G R */
         return (b << 16) | (g << 8) | r;
     return fb_mask_value(r, g_fb_rmask) |
            fb_mask_value(g, g_fb_gmask) |
            fb_mask_value(b, g_fb_bmask);
+}
+
+/* Map an upright (logical) screen coordinate to a physical framebuffer
+ * pixel.  g_fb_rot is the quarter-turn the panel scanout applies, so
+ * logical (0,0) is the visible top-left corner on rotated tablets
+ * (MateBook E Go / TW220 panels).  Same convention as the E Go loader's
+ * ego_pixel_offset(); x/y are bounded by the logical g_fb_w/g_fb_h. */
+static void fb_xy(uint32_t x, uint32_t y, uint32_t* px, uint32_t* py) {
+    switch (g_fb_rot) {
+    case 1: *px = g_fb_lay_w - 1 - y; *py = x; break;          /* 90 CW */
+    case 2: *px = g_fb_lay_w - 1 - x; *py = g_fb_lay_h - 1 - y; break;
+    case 3: *px = y; *py = g_fb_lay_h - 1 - x; break;          /* 270 CW */
+    default: *px = x; *py = y; break;
+    }
+}
+
+static void fb_poke(uint32_t x, uint32_t y, uint32_t packed) {
+    uint32_t px, py;
+    fb_xy(x, y, &px, &py);
+    if (px >= g_fb_scanpx || py >= g_fb_lay_h)
+        return;
+    g_fb[(uint64_t)py * g_fb_scanpx + px] = packed;
 }
 
 static void fb_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
@@ -352,12 +434,19 @@ static void fb_fill(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
     if (w > g_fb_w - x) w = g_fb_w - x;
     if (h > g_fb_h - y) h = g_fb_h - y;
     uint32_t pixel = fb_color(rgb);
-    for (uint32_t yy = 0; yy < h; yy++) {
-        volatile uint32_t* row = (volatile uint32_t*)((uint8_t*)g_fb +
-                (uint64_t)(y + yy) * g_fb_pitch + (uint64_t)x * 4);
-        for (uint32_t xx = 0; xx < w; xx++)
-            row[xx] = pixel;
+    if (g_fb_rot == 0) {
+        /* unrotated fast path */
+        for (uint32_t yy = 0; yy < h; yy++) {
+            volatile uint32_t* row = (volatile uint32_t*)((uint8_t*)g_fb +
+                    (uint64_t)(y + yy) * g_fb_scanpx * 4 + (uint64_t)x * 4);
+            for (uint32_t xx = 0; xx < w; xx++)
+                row[xx] = pixel;
+        }
+        return;
     }
+    for (uint32_t yy = 0; yy < h; yy++)
+        for (uint32_t xx = 0; xx < w; xx++)
+            fb_poke(x + xx, y + yy, pixel);
 }
 
 static uint8_t fb_glyph_row(char c, uint32_t row) {
@@ -407,44 +496,508 @@ static void fb_text(uint32_t x, uint32_t y, const char* text, uint32_t rgb) {
             for (uint32_t gx = 0; gx < 5; gx++) {
                 if ((bits & (1u << (4u - gx))) == 0)
                     continue;
-                for (uint32_t sy = 0; sy < scale; sy++) {
-                    volatile uint32_t* row = (volatile uint32_t*)((uint8_t*)g_fb +
-                            (uint64_t)(y + gy * scale + sy) * g_fb_pitch +
-                            (uint64_t)(x + gx * scale) * 4);
+                for (uint32_t sy = 0; sy < scale; sy++)
                     for (uint32_t sx = 0; sx < scale; sx++)
                         if (x + gx * scale + sx < g_fb_w &&
                                 y + gy * scale + sy < g_fb_h)
-                            row[sx] = color;
-                }
+                            fb_poke(x + gx * scale + sx, y + gy * scale + sy,
+                                    color);
             }
         }
     }
 }
 
-static void fb_debug_line(uint32_t row, const char* text) {
-    const uint32_t y = 18 + row * 20;
-    fb_fill(18, y, 760, 18, 0x101820);
-    fb_text(28, y + 2, text, row == 0 ? 0x70d7ff : 0xe8f1f5);
-}
-
-static void fb_debug_setup(uint64_t addr, uint32_t w, uint32_t h,
-                           uint32_t pitch, uint32_t format,
-                           const uint32_t* masks) {
+/* width/height/scanpx come from the GOP mode (pixels per scanline in
+ * memory).  rot is the verified scanout rotation: 0 = as-reported Q8B,
+ * 1/3 = portrait panels (E Go / TW220).  Logical console coordinates are
+ * upright and bounded by the derived g_fb_w/g_fb_h. */
+static void fb_debug_setup(uint64_t addr, uint32_t width, uint32_t height,
+                           uint32_t scanpx, uint32_t format,
+                           const uint32_t* masks, uint32_t rot) {
     g_fb = (volatile uint32_t*)(uintptr_t)addr;
-    g_fb_w = w;
-    g_fb_h = h;
-    g_fb_pitch = pitch;
+    if (rot > 3)
+        rot = 0;
+    g_fb_rot = rot;
+    g_fb_lay_w = (rot & 1) ? height : width;      /* memory columns */
+    g_fb_lay_h = (rot & 1) ? width : height;      /* memory rows */
+    g_fb_scanpx = (rot & 1) ? height : scanpx;    /* px per scanline */
+    g_fb_w = (rot & 1) ? g_fb_lay_h : g_fb_lay_w; /* logical width */
+    g_fb_h = (rot & 1) ? g_fb_lay_w : g_fb_lay_h; /* logical height */
     g_fb_format = format;
     g_fb_rmask = masks ? masks[0] : 0x00ff0000;
     g_fb_gmask = masks ? masks[1] : 0x0000ff00;
     g_fb_bmask = masks ? masks[2] : 0x000000ff;
-    g_fb_debug = addr != 0 && w >= 320 && h >= 120 && pitch >= w * 4;
+    g_fb_debug = addr != 0 && g_fb_w >= 320 && g_fb_h >= 120 &&
+                 g_fb_scanpx >= g_fb_lay_w;
     if (!g_fb_debug)
         return;
-    fb_fill(0, 0, w < 800 ? w : 800, h < 150 ? h : 150, 0x061018);
-    fb_debug_line(0, "EWOKOS Q8B UEFI");
-    fb_debug_line(1, "GOP READY");
-    fb_debug_line(2, "WAITING FOR KERNEL");
+    /* Whole-screen reset: cover the firmware console's own text so it does
+     * not stay superimposed under the scrolling loader log. */
+    fb_fill(0, 0, g_fb_w, g_fb_h, 0x061018);
+}
+
+/* ------------------------------------------------------------------ */
+/* scrolling body console (mirror of con_puts on the framebuffer)     */
+/* ------------------------------------------------------------------ */
+/* The scrolling log is the only on-screen console: every con_puts line
+ * is rendered here, so tablets without a serial port still show the full
+ * loader log with no separate fixed-position status text. */
+#define FB_BODY_ROWS 16
+#define FB_BODY_COLS 78
+#define FB_BODY_X    8
+#define FB_BODY_Y    8u
+#define FB_BODY_PAD  18
+
+static char g_fb_body[FB_BODY_ROWS][FB_BODY_COLS + 1];
+static uint32_t g_fb_body_n;
+static char g_fb_cur[FB_BODY_COLS + 1];
+static uint32_t g_fb_cur_n;
+
+static void fb_body_push(const char* s) {
+    uint32_t n = 0;
+    if (g_fb_body_n == FB_BODY_ROWS) {
+        for (uint32_t r = 1; r < FB_BODY_ROWS; r++)
+            memcpy(g_fb_body[r - 1], g_fb_body[r], FB_BODY_COLS + 1);
+        g_fb_body_n = FB_BODY_ROWS - 1;
+    }
+    for (; *s && n < FB_BODY_COLS; s++)
+        g_fb_body[g_fb_body_n][n++] = *s;
+    g_fb_body[g_fb_body_n][n] = 0;
+    g_fb_body_n++;
+}
+
+static void fb_body_redraw(void) {
+    uint32_t w = g_fb_w > FB_BODY_X + FB_BODY_COLS * 12 + 8 ?
+                 FB_BODY_COLS * 12 : g_fb_w - FB_BODY_X - 8;
+    uint32_t h = g_fb_h > FB_BODY_Y + FB_BODY_ROWS * FB_BODY_PAD ?
+                 FB_BODY_ROWS * FB_BODY_PAD : g_fb_h - FB_BODY_Y;
+    if (w == 0 || h == 0)
+        return;
+    fb_fill(FB_BODY_X, FB_BODY_Y, w, h, 0x0a1018);
+    for (uint32_t r = 0; r < g_fb_body_n; r++)
+        fb_text(FB_BODY_X + 4, FB_BODY_Y + 2 + r * FB_BODY_PAD,
+                g_fb_body[r], 0xd8e4ee);
+}
+
+/* Accumulate characters across con_puts() calls; a line is committed to the
+ * scrolling ring when '\n' arrives (or when it exceeds the column width). */
+static void fb_body_puts(const char* s) {
+    int changed = 0;
+    for (; *s; s++) {
+        char c = *s;
+        if (c == '\n') {
+            g_fb_cur[g_fb_cur_n] = 0;
+            fb_body_push(g_fb_cur);
+            g_fb_cur_n = 0;
+            changed = 1;
+            continue;
+        }
+        if (c == '\r')
+            continue;
+        if (g_fb_cur_n >= FB_BODY_COLS) {
+            g_fb_cur[g_fb_cur_n] = 0;
+            fb_body_push(g_fb_cur);
+            g_fb_cur_n = 0;
+        }
+        g_fb_cur[g_fb_cur_n++] = c;
+        changed = 1;
+    }
+    if (changed)
+        fb_body_redraw();
+}
+
+/* ------------------------------------------------------------------ */
+/* robust GOP discovery (Q8B / MateBook E Go / Ntmer TW220)           */
+/* ------------------------------------------------------------------ */
+/* Resolution description handed from the loader to the fb console and
+ * bootinfo.  width/height are the GOP-reported mode; rot is the verified
+ * scanout rotation; scanpx is pixels per physical scanline. */
+struct q8b_fb {
+    uint64_t base;
+    uint32_t width, height;
+    uint32_t scanpx;
+    uint32_t format;
+    uint32_t rot;
+    uint32_t masks[4];
+};
+
+static int get_memory_map(void);
+
+/* Forward tentative declarations; the authoritative definitions live in the
+ * "bootinfo / memory map" section below (C allows repeated static tentative
+ * definitions to merge).  The reserved-FB probe reads the map before EBS. */
+static EFI_MEMORY_DESCRIPTOR* g_memmap;
+static UINTN g_memmap_size;
+static UINTN g_memmap_dsize;
+
+/* Documented tablet framebuffer: both the E Go and the TW220 reserve
+ * [0xc6200000,0xc8600000) (36 MiB) for scanout, and their first GOP
+ * reports FrameBufferBase == 0 (firmware proxy hides the address). */
+#define Q8B_RESV_FB_BASE  0xc6200000ULL
+#define Q8B_RESV_FB_SIZE  0x02400000ULL   /* 36 MiB */
+#define Q8B_RESV_FB_TILE  8u
+#define Q8B_RESV_FB_TX    48u
+#define Q8B_RESV_FB_TY    64u
+
+static int q8b_mapped_identity(uint64_t base, uint64_t size) {
+    uint64_t el;
+    __asm__ volatile("mrs %0, CurrentEL" : "=r"(el));
+    for (uint64_t p = base; p < base + size; p += 4096) {
+        uint64_t par;
+        if (el == 8)
+            __asm__ volatile("at s1e2r, %0; isb" :: "r"(p) : "memory");
+        else
+            __asm__ volatile("at s1e1r, %0; isb" :: "r"(p) : "memory");
+        __asm__ volatile("mrs %0, par_el1" : "=r"(par));
+        if ((par & 1) || ((par ^ p) & 0x000ffffffffff000ULL) != 0)
+            return 0;
+    }
+    return 1;
+}
+
+/* Tablets hide the framebuffer address: the first GOP is a 2560x1600 BGR
+ * 0xFA0000-byte proxy with FrameBufferBase == 0 (see machines/ego-probe). */
+static int q8b_gop_tablet_signature(const EFI_GOP_MODE* m) {
+    return m && m->Info && m->FrameBufferBase == 0 &&
+           m->Info->HorizontalResolution == 2560 &&
+           m->Info->VerticalResolution == 1600 &&
+           m->Info->PixelsPerScanLine == 2560 &&
+           m->Info->PixelFormat == 1 &&
+           m->FrameBufferSize == 0xfa0000;
+}
+
+static int q8b_same_pixels(const uint32_t* a, const uint32_t* b) {
+    for (unsigned i = 0; i < Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE; ++i)
+        if ((a[i] ^ b[i]) & 0xffffff)   /* ignore alpha */
+            return 0;
+    return 1;
+}
+
+/* Physical pixel offset for an upright (logical) tile coordinate on a
+ * layout of mem_w columns / mem_h rows / stride px per scanline. */
+static uint64_t q8b_fb_offset(uint32_t rot, uint32_t mem_w, uint32_t mem_h,
+                              uint32_t stride, uint32_t x, uint32_t y) {
+    uint32_t px, py;
+    switch (rot) {
+    case 1: px = mem_w - 1 - y; py = x; break;
+    case 2: px = mem_w - 1 - x; py = mem_h - 1 - y; break;
+    case 3: px = y; py = mem_h - 1 - x; break;
+    default: px = x; py = y; break;
+    }
+    return (uint64_t)py * stride + px;
+}
+
+static int q8b_resv_fb_memory_matches(uint32_t rot, uint32_t mem_w,
+                                      uint32_t mem_h, uint32_t stride,
+                                      const uint32_t* pattern) {
+    for (unsigned y = 0; y < Q8B_RESV_FB_TILE; ++y)
+        for (unsigned x = 0; x < Q8B_RESV_FB_TILE; ++x) {
+            uint64_t off = q8b_fb_offset(rot, mem_w, mem_h, stride,
+                                         Q8B_RESV_FB_TX + x, Q8B_RESV_FB_TY + y);
+            uint64_t p = Q8B_RESV_FB_BASE + off * 4;
+            /* The DPU wrote the tile: clean+invalidate the line so the CPU
+             * observes the scanout memory instead of a stale cached copy. */
+            __asm__ volatile("dc civac, %0; dsb sy" :: "r"(p) : "memory");
+            uint32_t actual = *(volatile uint32_t*)(uintptr_t)p;
+            if ((actual ^ pattern[y * Q8B_RESV_FB_TILE + x]) & 0xffffff)
+                return 0;
+        }
+    return 1;
+}
+
+
+static int q8b_gop_adopt(const EFI_GOP_MODE* m, struct q8b_fb* fb) {
+    if (!m || !m->Info || m->FrameBufferBase == 0)
+        return 0;
+    fb->base = m->FrameBufferBase;
+    fb->width = m->Info->HorizontalResolution;
+    fb->height = m->Info->VerticalResolution;
+    fb->scanpx = m->Info->PixelsPerScanLine;
+    fb->format = m->Info->PixelFormat;
+    fb->rot = 0;
+    fb->masks[0] = m->Info->PixelInformation[0];
+    fb->masks[1] = m->Info->PixelInformation[1];
+    fb->masks[2] = m->Info->PixelInformation[2];
+    fb->masks[3] = m->Info->PixelInformation[3];
+    return fb->base != 0 && fb->width >= 320 && fb->height >= 120 &&
+           fb->scanpx >= fb->width && fb->format <= 2;
+}
+
+/* Two-pattern BLT verification of the documented tablet reserved
+ * framebuffer, then rotation detection by physical read-back.  Never
+ * writes unknown memory: every write/restore goes through GOP Blt. */
+static int q8b_resv_fb_verify(EFI_GRAPHICS_OUTPUT_PROTOCOL* g,
+                              EFI_GOP_MODE* m, struct q8b_fb* fb) {
+    if (get_memory_map() != 0)
+        return 0;
+    int reserved = 0;
+    for (uint64_t off = 0; off < g_memmap_size; off += g_memmap_dsize) {
+        const EFI_MEMORY_DESCRIPTOR* d = (const void*)((uint8_t*)g_memmap + off);
+        if (d->Type == EfiReservedMemoryType &&
+            d->PhysicalStart == Q8B_RESV_FB_BASE &&
+            d->NumberOfPages * EFI_PAGE_SIZE == Q8B_RESV_FB_SIZE &&
+            !(d->Attribute & 0x2000))
+            reserved = 1;
+    }
+    if (!reserved)
+        return 0;
+
+    uint64_t bytes = (uint64_t)m->Info->HorizontalResolution *
+                     m->Info->VerticalResolution * 4;
+    if (Q8B_RESV_FB_BASE & 4095 || bytes == 0 || bytes > Q8B_RESV_FB_SIZE)
+        return 0;
+    if (!q8b_mapped_identity(Q8B_RESV_FB_BASE, bytes))
+        return 0;
+
+    uint32_t original[Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE];
+    uint32_t pattern[Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE];
+    uint32_t readback[Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE];
+    EFI_STATUS status = g->Blt(g, original, EFI_GOP_BLT_VIDEO_TO_BLT_BUFFER,
+                               Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
+                               0, 0, Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
+    if (EFI_ERROR(status))
+        return 0;
+    unsigned matches = 15;
+    for (unsigned pass = 0; pass < 2 && matches; ++pass) {
+        for (unsigned y = 0; y < Q8B_RESV_FB_TILE; ++y)
+            for (unsigned x = 0; x < Q8B_RESV_FB_TILE; ++x)
+                pattern[y * Q8B_RESV_FB_TILE + x] =
+                    ((31 + x * 23 + pass * 41) << 16) |
+                    ((47 + y * 19 + pass * 37) << 8) |
+                    (13 + x * 7 + y * 11 + pass * 53);
+        status = g->Blt(g, pattern, EFI_GOP_BLT_BUFFER_TO_VIDEO,
+                        0, 0, Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
+                        Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
+        if (EFI_ERROR(status)) {
+            matches = 0;
+            break;
+        }
+        gBS->Stall(20000);
+        status = g->Blt(g, readback, EFI_GOP_BLT_VIDEO_TO_BLT_BUFFER,
+                        Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
+                        0, 0, Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
+        if (EFI_ERROR(status) || !q8b_same_pixels(pattern, readback)) {
+            matches = 0;
+            break;
+        }
+        for (unsigned r = 0; r < 4; ++r) {
+            if (!(matches & (1u << r)))
+                continue;
+            uint32_t mem_w = (r & 1) ? m->Info->VerticalResolution
+                                     : m->Info->HorizontalResolution;
+            uint32_t mem_h = (r & 1) ? m->Info->HorizontalResolution
+                                     : m->Info->VerticalResolution;
+            uint32_t stride = (r & 1) ? m->Info->VerticalResolution
+                                      : m->Info->HorizontalResolution;
+            if (!q8b_resv_fb_memory_matches(r, mem_w, mem_h, stride, pattern))
+                matches &= ~(1u << r);
+        }
+    }
+    /* No console output between capture and restore: console scrolling can
+     * change the challenge tile.  Restore even after a failed test. */
+    status = g->Blt(g, original, EFI_GOP_BLT_BUFFER_TO_VIDEO,
+                    0, 0, Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
+                    Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
+    if (EFI_ERROR(status) || !matches || (matches & (matches - 1)))
+        return 0;
+
+    /* matches[r] only told us which scan-out mapping produced the pattern;
+     * it is used to derive the REAL buffer layout (columns x rows x stride),
+     * not to rotate anything.  The loader reports the raw physical geometry
+     * and leaves presentation rotation to user space. */
+    unsigned match_rot = 0;
+    for (unsigned r = 0; r < 4; ++r)
+        if (matches == (1u << r))
+            match_rot = r;
+    fb->base = Q8B_RESV_FB_BASE;
+    fb->scanpx = (match_rot & 1) ? m->Info->VerticalResolution
+                                 : m->Info->HorizontalResolution;
+    fb->width = fb->scanpx;                 /* physical columns  */
+    fb->height = (match_rot & 1) ? m->Info->HorizontalResolution
+                                 : m->Info->VerticalResolution; /* rows */
+    fb->rot = 0;                            /* no rotation applied */
+    fb->format = m->Info->PixelFormat;
+    fb->masks[0] = m->Info->PixelInformation[0];
+    fb->masks[1] = m->Info->PixelInformation[1];
+    fb->masks[2] = m->Info->PixelInformation[2];
+    fb->masks[3] = m->Info->PixelInformation[3];
+    return 1;
+}
+
+/* Find a usable linear framebuffer on Q8B (base != 0 GOP) and on the
+ * tablets (base-0 proxy, reserved FB verified via BLT).  Every GOP
+ * instance is logged so a platform that matches none of these still
+ * leaves a diagnostic trail. */
+static int q8b_gop_discover(struct q8b_fb* fb) {
+    static const EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
+    struct q8b_fb best;
+    int have_best = 0;
+    EFI_GRAPHICS_OUTPUT_PROTOCOL* tablet = 0;
+    memset(&best, 0, sizeof(best));
+
+    /* 1) LocateProtocol: cheapest; on Q8B this is the real GOP. */
+    EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = 0;
+    EFI_STATUS status = gBS->LocateProtocol((EFI_GUID*)&gop_guid, 0,
+                                            (void**)&gop);
+    if (!EFI_ERROR(status) && gop) {
+        if (q8b_gop_tablet_signature(gop->Mode)) {
+            tablet = gop;
+        } else if (q8b_gop_adopt(gop->Mode, &best)) {
+            have_best = 1;
+        }
+    }
+
+    /* 2) Console device's GOP: the tablet console works while the first
+     *    instance is a base-0 proxy (verified E Go behaviour). */
+    if (gST->ConsoleOutHandle) {
+        gop = 0;
+        status = gBS->HandleProtocol(gST->ConsoleOutHandle, (EFI_GUID*)&gop_guid,
+                                     (void**)&gop);
+        if (!EFI_ERROR(status) && gop) {
+            if (q8b_gop_tablet_signature(gop->Mode)) {
+                tablet = gop;
+            } else if (!have_best && q8b_gop_adopt(gop->Mode, &best)) {
+                have_best = 1;
+            }
+        }
+    }
+
+    /* 3) Enumerate every installed GOP instance. */
+    UINTN count = 0;
+    EFI_HANDLE* handles = 0;
+    status = gBS->LocateHandleBuffer(2 /* ByProtocol */, (EFI_GUID*)&gop_guid,
+                                     0, &count, &handles);
+    if (!EFI_ERROR(status) && handles && count) {
+        for (UINTN i = 0; i < count; i++) {
+            gop = 0;
+            if (EFI_ERROR(gBS->HandleProtocol(handles[i], (EFI_GUID*)&gop_guid,
+                                              (void**)&gop)) || !gop)
+                continue;
+            if (q8b_gop_tablet_signature(gop->Mode)) {
+                tablet = gop;
+            } else if (!have_best && q8b_gop_adopt(gop->Mode, &best)) {
+                have_best = 1;
+            }
+        }
+        gBS->FreePool(handles);
+    }
+
+    if (have_best) {
+        *fb = best;
+        return 1;
+    }
+    if (tablet && q8b_resv_fb_verify(tablet, tablet->Mode, fb))
+        return 1;
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* flat device-tree model string (platform identification)            */
+/* ------------------------------------------------------------------ */
+static uint32_t fdt_be32(const void* p) {
+    const uint8_t* b = (const uint8_t*)p;
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
+}
+
+static int fdt_str_eq(const char* a, const char* b) {
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
+/* Copy the root "/model" property from the firmware DTB if present. */
+static void fdt_model(uint64_t dtb, char* out, uint64_t cap) {
+    out[0] = 0;
+    if (!dtb || !cap)
+        return;
+    const uint8_t* f = (const uint8_t*)(uintptr_t)dtb;
+    if (fdt_be32(f) != 0xd00dfeed)
+        return;
+    uint32_t totalsize = fdt_be32(f + 4);
+    if (totalsize < 40 || totalsize > 16u * 1024 * 1024)
+        return;
+    uint32_t off_struct = fdt_be32(f + 8);
+    uint32_t off_str = fdt_be32(f + 12);
+    uint32_t size_str = fdt_be32(f + 32);
+    if (off_struct + 4 > totalsize || off_str > totalsize ||
+            size_str > totalsize || off_str + size_str > totalsize)
+        return;
+    const uint8_t* strblk = f + off_str;
+    const uint8_t* st = f + off_struct;
+    uint32_t p = 0;
+    while (p + 4 <= totalsize - off_struct) {
+        uint32_t tok = fdt_be32(st + p);
+        p += 4;
+        if (tok == 1) {                       /* FDT_BEGIN_NODE */
+            uint32_t q = p;
+            while (q + 1 < totalsize - off_struct && st[q] != 0)
+                q++;
+            p = q + 1;
+            p = (p + 3) & ~3u;
+        } else if (tok == 3) {                /* FDT_PROP */
+            if (p + 8 > totalsize - off_struct)
+                break;
+            uint32_t len = fdt_be32(st + p);
+            uint32_t nameoff = fdt_be32(st + p + 4);
+            uint64_t data = p + 8;
+            p = (uint32_t)(data + len);
+            p = (p + 3) & ~3u;
+            if (nameoff < size_str && strblk[nameoff] &&
+                    fdt_str_eq((const char*)(strblk + nameoff), "model")) {
+                uint64_t n = len;
+                if (n > 0 && st[data + n - 1] == 0)
+                    n--;
+                if (n >= cap)
+                    n = cap - 1;
+                memcpy(out, st + data, n);
+                out[n] = 0;
+                for (uint64_t i = 0; i < n; i++)
+                    if ((uint8_t)out[i] < 0x20 || (uint8_t)out[i] > 0x7e)
+                        out[i] = ' ';
+                return;
+            }
+        } else if (tok == 2) {                /* FDT_END_NODE */
+            continue;
+        } else {                              /* FDT_END / garbage */
+            break;
+        }
+    }
+}
+
+/* Product name from the firmware's SMBIOS Type-1 (System Information)
+ * record: the canonical device model (e.g. "MateBook E Go", "TW220").
+ * Used when the firmware DTB has no /model. */
+static void smbios_product_name(char* out, uint64_t cap) {
+    static const EFI_GUID smbios_guid = EFI_SMBIOS_PROTOCOL_GUID;
+    EFI_SMBIOS_PROTOCOL* smb = 0;
+    out[0] = 0;
+    if (EFI_ERROR(gBS->LocateProtocol((EFI_GUID*)&smbios_guid, 0,
+                    (void**)&smb)) || !smb || !smb->GetNext)
+        return;
+    uint8_t type = 1;              /* SMBIOS_TYPE_SYSTEM_INFORMATION */
+    void* rec = 0;
+    if (EFI_ERROR(smb->GetNext(smb, &type, &rec, 0)) || !rec)
+        return;
+    const uint8_t* r = (const uint8_t*)rec;
+    uint8_t len = r[1];
+    uint8_t idx = (len > 5) ? r[5] : 0;   /* Product Name string index */
+    if (idx == 0)
+        return;
+    const char* p = (const char*)(r + len);   /* SMBIOS string set */
+    for (uint8_t i = 1; i < idx && *p; i++) {
+        while (*p)
+            p++;
+        p++;
+    }
+    if (*p == 0)
+        return;
+    uint64_t n = 0;
+    for (; p[n] && n + 1 < cap; n++)
+        out[n] = ((uint8_t)p[n] < 0x20 || (uint8_t)p[n] > 0x7e) ? ' ' : p[n];
+    out[n] = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1775,7 +2328,6 @@ static void pci_inventory(void) {
 /* EFI entry                                                          */
 /* ------------------------------------------------------------------ */
 uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
-    static const EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
     static const EFI_GUID li_guid = EFI_LOADED_IMAGE_PROTOCOL_GUID;
     static const EFI_GUID dtb_guid = EFI_DTB_TABLE_GUID;
 
@@ -1786,8 +2338,10 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     serial_init();
     con_puts("[uefi] serial log: ");
     con_puts(g_serial_mode == 1 ? "EFI Serial I/O" :
-             g_serial_mode == 2 ? "UART17 direct" : "disabled");
-    con_puts("\n");
+             g_serial_mode == 2 ? (g_uart17_ok ? "UART17 direct (TX probe OK)"
+                                               : "UART17 direct (forced, TX probe failed)")
+                                  : "none (no EFI serial; UART17 silent)");
+    con_puts(g_uart17_ok ? "; kernel uart17: on\n" : "; kernel uart17: off\n");
 
     gBS->SetWatchdogTimer(0, 0, 0, 0);
 
@@ -1843,24 +2397,22 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     con_puts(source_name(g_boot_source));
     con_puts("\n");
 
-    /* ---- framebuffer ---- */
-    EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = 0;
+    /* ---- framebuffer: robust multi-platform GOP discovery ----
+     * Q8B: LocateProtocol GOP has a real base.  E Go / TW220: every GOP is
+     * a base-0 proxy, the linear FB is verified in the reserved 36-MiB
+     * region at 0xc6200000 by two BLT patterns + rotation read-back. */
     uint64_t fb_addr = 0, fb_pitch = 0;
-    uint32_t fb_w = 0, fb_h = 0, fb_bpp = 0, fb_format = 0;
-
-    if (!EFI_ERROR(gBS->LocateProtocol((EFI_GUID*)&gop_guid, 0,
-                    (void**)&gop)) && gop && gop->Mode && gop->Mode->Info) {
-        EFI_GOP_MODE_INFO* mi = gop->Mode->Info;
-        fb_addr = gop->Mode->FrameBufferBase;
-        fb_w = mi->HorizontalResolution;
-        fb_h = mi->VerticalResolution;
-        fb_pitch = (uint64_t)mi->PixelsPerScanLine * 4;
-        fb_bpp = 32;
-        fb_format = mi->PixelFormat;
-        if (mi->PixelFormat == 2) {
+    uint32_t fb_w = 0, fb_h = 0, fb_bpp = 32, fb_format = 0;
+    struct q8b_fb qfb;
+    if (q8b_gop_discover(&qfb)) {
+        fb_addr = qfb.base;
+        fb_w = qfb.width;
+        fb_h = qfb.height;
+        fb_pitch = (uint64_t)qfb.scanpx * 4;
+        fb_format = qfb.format;
+        if (fb_format == 2) {
             /* PixelBitMask: derive the depth from the mask widths. */
-            uint32_t mask = mi->PixelInformation[0] | mi->PixelInformation[1] |
-                            mi->PixelInformation[2];
+            uint32_t mask = qfb.masks[0] | qfb.masks[1] | qfb.masks[2];
             uint32_t bits = 0;
             while (mask) {
                 bits += mask & 1;
@@ -1869,7 +2421,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
             if (bits > 0 && bits <= 32)
                 fb_bpp = bits;
         }
-        con_puts("[uefi] gop ");
+        con_puts("[uefi] gop adopted ");
         con_dec(fb_w);
         con_puts("x");
         con_dec(fb_h);
@@ -1880,25 +2432,25 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts(" @");
         con_hex(fb_addr);
         con_puts("\n");
-        fb_debug_setup(fb_addr, fb_w, fb_h, (uint32_t)fb_pitch,
-                fb_format, mi->PixelInformation);
-        fb_debug_line(2, "LOADING KERNEL");
-        fb_text(28, 78, "SRC ", 0xe8f1f5);
-        fb_text(76, 78, source_name(g_boot_source), 0xffd166);
+        /* The debug console draws in the panel's real scan-out orientation
+         * (no rotation): the loader never rotates the screen. */
+        fb_debug_setup(fb_addr, fb_w, fb_h, qfb.scanpx, fb_format,
+                       qfb.masks, 0);
     } else {
-        con_puts("[uefi] no GOP (headless?)\n");
+        con_puts("[uefi] no usable linear framebuffer (serial-only)\n");
     }
 
     /* ---- device tree (informational for now) ---- */
     uint64_t dtb_addr = 0, dtb_size = 0;
+    char board_model[32] = {0};
     if (SystemTable->ConfigurationTable) {
         for (UINTN i = 0; i < SystemTable->NumberOfTableEntries; i++) {
             EFI_CONFIGURATION_TABLE* ct = &SystemTable->ConfigurationTable[i];
             if (guid_eq(&ct->VendorGuid, (EFI_GUID*)&dtb_guid)) {
                 dtb_addr = (uint64_t)(uintptr_t)ct->VendorTable;
                 if (dtb_addr) {
-                    uint32_t totalsize = *(volatile uint32_t*)(uintptr_t)
-                        (dtb_addr + 4);
+                    uint32_t totalsize = fdt_be32((const void*)(uintptr_t)
+                            (dtb_addr + 4));
                     if (totalsize > 0 && totalsize < 4 * 1024 * 1024)
                         dtb_size = totalsize;
                 }
@@ -1913,6 +2465,12 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_dec(dtb_size);
         con_puts("\n");
     }
+    fdt_model(dtb_addr, board_model, sizeof(board_model));
+    if (!board_model[0])
+        smbios_product_name(board_model, sizeof(board_model));
+    con_puts("[uefi] platform model: ");
+    con_puts(board_model[0] ? board_model : "unknown (no DTB model)");
+    con_puts("\n");
 
     /* ---- PCIe inventory (before EBS, uses firmware config route) ---- */
     pci_inventory();
@@ -1980,8 +2538,6 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts("[uefi] FATAL: kernel too large\n");
         halt_forever();
     }
-    fb_debug_line(2, "KERNEL OK");
-    fb_debug_line(3, "LOADING RAMFS");
 
 #if defined(Q8B_MTFTP_FIRST) && defined(Q8B_SD_ROOTFS)
     /* PXE supplied the kernel, so explicitly let UEFI touch the local ESP
@@ -2033,7 +2589,6 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     con_puts(" MB @");
     con_hex((uint64_t)(uintptr_t)rbuf);
     con_puts("\n");
-    fb_debug_line(3, rd_flags ? "RAMFS OK" : "ROOTFS OK");
     }
 
     /* Ensure the fixed kernel window does not overlap the stub or the
@@ -2088,11 +2643,20 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     bi->ram_base = Q8B_RAM_BASE;
     bi->ram_size = ram_size;
     bi->fb_addr = fb_addr;
+    /* Report the REAL scan-out geometry only: physical columns x rows, byte
+     * stride, bpp and pixel format.  No rotation is applied or advertised
+     * here; portrait-panel presentation rotation (displayd rotate) is a
+     * user-space policy decision. */
     bi->fb_width = fb_w;
     bi->fb_height = fb_h;
     bi->fb_pitch = (uint32_t)fb_pitch;
     bi->fb_bpp = fb_bpp;
     bi->fb_format = fb_format;
+    bi->_pad_fb = 0;   /* ABI v1 padding; reserved, no rotation reported */
+    /* Serial hand-off: the loader probed the concrete transport, the kernel
+     * decides at runtime whether to bring UART17 up and print diagnostics. */
+    bi->serial_flags = (g_uart17_ok ? 1u : 0u) |
+                       (g_serial_mode == 1 ? 2u : 0u);
     bi->rd_base = (uint64_t)(uintptr_t)rbuf;
     bi->rd_size = rsize;
     bi->rd_flags = rd_flags;
@@ -2104,6 +2668,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     bi->memmap_dsize = (uint32_t)g_memmap_dsize;
     bi->dtb_addr = dtb_addr;
     bi->dtb_size = dtb_size;
+    memcpy(bi->model, board_model, sizeof(bi->model));
     /* Record firmware-reserved ranges that fall inside the usable window so
      * the kernel allocator can punch them out. */
     uint32_t count = (uint32_t)(g_memmap_size / g_memmap_dsize);
@@ -2152,7 +2717,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     /* Jump to __entry at its physical link address with the MMU off.
      * x0 is unused: the bootinfo page has a fixed physical address. */
-#ifndef Q8B_QEMU_TEST
+#if !defined(Q8B_QEMU_TEST) && !defined(Q8B_NO_SERIAL)
     /* Post-EBS probe: bypass EFI Serial I/O and write UART17 TX directly.
      * If this line appears, the UART is alive at the kernel handoff; if not,
      * ExitBootServices/the UEFI serial driver stopped UART17. */

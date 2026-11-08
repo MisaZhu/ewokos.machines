@@ -74,8 +74,20 @@ int32_t uart_dev_init(uint32_t baud) {
 }
 
 int32_t uart_write(const void* data, uint32_t size) {
+#ifdef Q8B_NO_SERIAL
+    /* Forced silent build (E Go / TW220 bring-up). */
+    (void)data;
+    return (int32_t)size;
+#else
+    if (!q8b_serial_on) {
+        /* The loader's probe found no usable UART17 on this board: drop the
+         * console bytes instead of driving a dead SE with poll timeouts. */
+        (void)data;
+        return (int32_t)size;
+    }
     q8b_dbg_write((const char*)data, size);
     return (int32_t)size;
+#endif
 }
 
 #endif /* Q8B_QEMU_TEST */
@@ -246,6 +258,19 @@ static Q8B_EARLY_TEXT void q8b_uart17_pinmux(void) {
 }
 
 Q8B_EARLY_TEXT void q8b_early_uart_init(void) {
+#ifdef Q8B_NO_SERIAL
+    /* Forced silent build. */
+    return;
+#else
+    /* Runtime decision: this runs with the MMU off and before bss/globals,
+     * so read the physical bootinfo page directly.  Only touch QUP2/GCC/
+     * TLMM/UART17 when the loader proved that path works; on boards without
+     * a wired UART17 (E Go / TW220) the pokes are pure risk.
+     * q8b_early_watchdog_disable() still runs (board-independent). */
+    if ((*(const volatile uint32_t*)(uintptr_t)
+            (Q8B_BOOTINFO_PHYS + __builtin_offsetof(q8b_bootinfo_t,
+                    serial_flags)) & 1u) == 0)
+        return;
     volatile uint32_t* gcc = (volatile uint32_t*)(uintptr_t)Q8B_GCC_QUP2_ENABLE;
     *gcc |= (1u << 0) | (1u << 1) | (1u << 2) |
             (1u << 3) | (1u << 5);
@@ -271,5 +296,6 @@ Q8B_EARLY_TEXT void q8b_early_uart_init(void) {
     q8b_wr(Q8B_UART17_BASE, Q8B_SE_GENI_M_IRQ_CLEAR,
            (1u << 0) | (1u << 5) | (1u << 30));
 
+#endif /* !Q8B_NO_SERIAL */
 }
 #endif

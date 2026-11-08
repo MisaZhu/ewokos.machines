@@ -300,11 +300,14 @@ typedef struct {
     uint32_t memmap_dsize;
 
     uint32_t resv_count;
-    uint32_t _pad0;
+    uint32_t serial_flags;   /* bit0: UART17 usable; bit1: loader had EFI Serial I/O */
     q8b_resv_t resv[Q8B_MAX_RESV];
 
     uint64_t dtb_addr;
     uint64_t dtb_size;
+
+    /* Device model from the firmware DTB /model (MACHINE_MAX bytes). */
+    char model[32];
 } q8b_bootinfo_t;
 
 /* low-level debug console (bsp/dbg.c) */
@@ -322,6 +325,7 @@ extern uint32_t gic_v3_get_irq(void);
 extern void gic_v3_eoi(uint32_t irq);
 extern void gic_v3_send_sgi(int core, int irq);
 
+extern int q8b_serial_on;   /* bootinfo serial_flags bit0, set before any kout */
 extern q8b_bootinfo_t* q8b_bootinfo(void);
 extern uint64_t q8b_ramdisk_base;
 extern uint64_t q8b_ramdisk_size;

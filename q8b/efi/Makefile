@@ -53,6 +53,11 @@ endif
 ifeq ($(FORCE_UART17),1)
 LOADER_CFLAGS += -DQ8B_SERIAL_FORCE_UART17
 endif
+# TEMP: no serial console at all (E Go / TW220 bring-up).  The loader then
+# never touches UART17 and the GOP framebuffer console is the only output.
+ifeq ($(NO_SERIAL),1)
+LOADER_CFLAGS += -DQ8B_NO_SERIAL
+endif
 ifeq ($(MTFTP_FIRST),1)
 LOADER_CFLAGS += -DQ8B_MTFTP_FIRST
 endif
