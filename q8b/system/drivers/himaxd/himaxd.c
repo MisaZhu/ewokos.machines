@@ -41,6 +41,7 @@
 #include "hx_algo.h"
 
 extern himax_dev_t* himax_native_transport_open(void);
+extern himax_dev_t* himax_native_transport_reopen(void);
 
 /* Raw output space of the solver: grid columns map to 2560 px (60 cells),
  * grid rows to 1600 px (40 cells).  xtouch applies the final orientation
@@ -71,6 +72,9 @@ extern himax_dev_t* himax_native_transport_open(void);
  * once), then back off to the cap above so a dead panel is not polled hard.
  */
 #define PROBE_RETRY_FAST_TRIES    4U
+/* Probe failures after which the SPI transport is re-initialised.  Reached
+ * only on a boot-order race (see schedule_retry), not on a healthy panel. */
+#define BUS_RESTART_AFTER_FAILURES 3U
 /*
  * Sampling budget.  One frame costs ~16 ms of bit-bang on this panel, so the
  * CPU load is directly frame rate * read time.  80 ms keeps ~12 fps and
@@ -518,6 +522,21 @@ static void schedule_retry(void) {
     unsigned next;
 
     _probe_failures++;
+    /*
+     * The geni engine is configured once at start.  If the daemon won the race
+     * against the QUP clock/ICC votes on a cold boot, the engine never
+     * answered and every retry kept failing against the same dead setup - the
+     * touch screen simply never came back.  Re-open the transport after a few
+     * failures so a boot-order problem resolves itself instead of needing a
+     * manual daemon restart.
+     */
+    if (_probe_failures == BUS_RESTART_AFTER_FAILURES && _native_probe) {
+        if (himax_native_transport_reopen() != NULL)
+            slog("gaokun3 himaxd: SPI transport re-opened after %u probe "
+                    "failures\n", _probe_failures);
+        else
+            slog("gaokun3 himaxd: SPI transport re-open failed\n");
+    }
     if (delay == 0)
         next = PROBE_RETRY_INITIAL_US;
     else if (_probe_failures > PROBE_RETRY_FAST_TRIES)

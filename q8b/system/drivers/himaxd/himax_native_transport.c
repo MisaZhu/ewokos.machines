@@ -36,6 +36,25 @@ static void tlog(const char* fmt, ...) {
     fclose(f);
 }
 
+himax_dev_t* himax_native_transport_open(void);
+
+/*
+ * Re-initialise the SPI transport.
+ *
+ * The GENI engine is set up once, at daemon start.  If the daemon happens to
+ * start before the engine is ready to answer (a cold boot races the QUP clock
+ * and ICC votes), every subsequent transfer fails - spi-read-failed, bus errors
+ * climbing - and nothing in the retry path ever touched the engine again, so
+ * the driver stayed dead for the whole session.  Re-running open() gives the
+ * engine a clean setup; the pinmux and the IC are left alone.
+ */
+himax_dev_t* himax_native_transport_reopen(void) {
+    _opened = false;
+    memset(&_spi, 0, sizeof(_spi));
+    memset(&_fifo, 0, sizeof(_fifo));
+    return himax_native_transport_open();
+}
+
 himax_dev_t* himax_native_transport_open(void) {
     if (_opened)
         return himax_gpio_dev();
