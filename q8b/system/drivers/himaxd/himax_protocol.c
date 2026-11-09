@@ -167,6 +167,40 @@ int himax_interface_on(himax_dev_t* dev) {
     return -1;
 }
 
+/*
+ * Leave safe mode.
+ *
+ * himax_sense_off() writes the safe-mode password to PSW_LB, which parks the
+ * firmware where it still answers on the bus but stops sensing entirely: the
+ * event stack keeps returning records whose grid never changes, so a client
+ * sees frames arriving while no touch is ever detected.  Linux reverses it by
+ * writing 0x0000 to the same register after the firmware control word, and
+ * that is the step this driver was missing - it could enter safe mode but
+ * never leave it.
+ */
+int himax_leave_safe_mode(himax_dev_t* dev) {
+    uint8_t data[4] = { 0, 0, 0, 0 };
+    const uint8_t sw_reset[4] = { HIMAX_FW_STATE_RE_INIT, 0, 0, 0 };
+    const uint8_t leave[2] = {
+        (uint8_t)(HIMAX_AHB_CMD_LEAVE_SAFE_MODE & 0xffU),
+        (uint8_t)((HIMAX_AHB_CMD_LEAVE_SAFE_MODE >> 8) & 0xffU) };
+
+    dev->stage = "leave-safe-reset";
+    if (himax_reg_write(dev, HIMAX_REG_FW_CTRL, sw_reset, 4) != 0)
+        return -1;
+    wait_ms(dev, 10);
+    dev->stage = "leave-safe-write";
+    if (bus_write(dev, HIMAX_AHB_ADDR_PSW_LB, NULL, leave, 2) != 0)
+        return -1;
+    wait_ms(dev, 20);
+    dev->stage = "leave-safe-status";
+    if (himax_reg_read(dev, HIMAX_REG_FW_STATUS, data, 4) != 0)
+        return -1;
+    dev->stage = (data[0] == HIMAX_FW_STATE_SAFE_MODE) ?
+            "leave-safe-still" : "leave-safe-ok";
+    return (data[0] == HIMAX_FW_STATE_SAFE_MODE) ? -1 : 0;
+}
+
 int himax_sense_off(himax_dev_t* dev, bool check_fw) {
     uint8_t data[4] = { 0, 0, 0, 0 };
     const uint8_t go_safe_mode[4] = { HIMAX_FW_STATE_GO_SAFEMODE, 0, 0, 0 };
@@ -292,7 +326,8 @@ static int assign_sorting_mode(himax_dev_t* dev, const uint8_t* value) {
     return -1;
 }
 
-int himax_power_on_init(himax_dev_t* dev, bool raw_output) {
+static int power_on_init_impl(himax_dev_t* dev, bool raw_output,
+        bool wait_reload) {
     const uint8_t zero[4] = { 0, 0, 0, 0 };
     const uint8_t one[4] = { 1, 0, 0, 0 };
     const uint8_t raw_out[4] = { HIMAX_RAW_OUT_SELECT, 0, 0, 0 };
@@ -308,21 +343,41 @@ int himax_power_on_init(himax_dev_t* dev, bool raw_output) {
     dev->stage = "init-reload-status";
     if (himax_reg_write(dev, HIMAX_DSRAM_2ND_FLASH_RELOAD, zero, 4) != 0)
         return -1;
+    /* Writing the reload word starts the flash re-load; the fast native
+     * transport then races past sense_on before the firmware is ready.
+     * Give the boot sequence a settle window (GPIO timing provided this
+     * implicitly). */
+    wait_ms(dev, 2000);
     dev->stage = "init-sense-on";
     if (himax_sense_on(dev, false) != 0)
         return -1;
 
-    for (unsigned i = 0; i < 30; i++) {
-        dev->stage = "init-wait-fw-reload";
-        if (himax_reg_read(dev, HIMAX_DSRAM_2ND_FLASH_RELOAD, data, 4) != 0)
-            return -1;
-        if (le32(data) == HIMAX_DSRAM_FW_RELOAD_DONE) {
-            reloaded = true;
-            break;
+    /* Re-entrant: a device that already completed its fw reload (e.g. a
+     * second probe pass) reports DONE immediately and must not be forced to
+     * wait for a new reload that never comes. */
+    dev->stage = "init-reload-snapshot";
+    if (himax_reg_read(dev, HIMAX_DSRAM_2ND_FLASH_RELOAD, data, 4) != 0)
+        return -1;
+    if (wait_reload && le32(data) == HIMAX_DSRAM_FW_RELOAD_DONE) {
+        reloaded = true;
+    } else if (wait_reload) {
+        for (unsigned i = 0; i < 1200; i++) {
+            dev->stage = "init-wait-fw-reload";
+            if (himax_reg_read(dev, HIMAX_DSRAM_2ND_FLASH_RELOAD, data, 4) != 0)
+                return -1;
+            if (le32(data) == HIMAX_DSRAM_FW_RELOAD_DONE) {
+                reloaded = true;
+                break;
+            }
+            wait_ms(dev, 50);   /* reload can take longer than a minute */
         }
-        wait_ms(dev, 10);
     }
-    if (!reloaded) {
+    if (!wait_reload) {
+        /* Flash-policy devices never raise the 2nd-flash reload word; the
+         * daemon-side contract keeps the failing path, this probe path
+         * proceeds once sensing is on (frame reads verify the result). */
+        dev->stage = "init-reload-skip";
+    } else if (!reloaded) {
         dev->stage = "init-fw-reload-timeout";
         return -1;
     }
@@ -333,6 +388,16 @@ int himax_power_on_init(himax_dev_t* dev, bool raw_output) {
     }
     dev->stage = "init-ready";
     return 0;
+}
+
+int himax_power_on_init(himax_dev_t* dev, bool raw_output) {
+    return power_on_init_impl(dev, raw_output, true);
+}
+
+/* Same bring-up without the 2nd-flash reload wait; for flash-policy boards
+ * where the reload word never goes DONE.  Frame reads validate the result. */
+int himax_power_on_init_skip_reload(himax_dev_t* dev, bool raw_output) {
+    return power_on_init_impl(dev, raw_output, false);
 }
 
 int himax_probe(himax_dev_t* dev) {
@@ -353,6 +418,47 @@ int himax_probe_events(himax_dev_t* dev) {
     if (himax_disable_fw_reload(dev) != 0)
         return -1;
     return himax_power_on_init(dev, false);
+}
+
+/*
+ * Read a record with marker re-sync.
+ *
+ * The grid read is only HIMAX_FRAME_READ_BYTES long (header + capacitance
+ * grid), which is all the solver needs and ~6% shorter than the full stack.
+ * Because a read can be overtaken by the next panel update, the read is
+ * repeated until the sequence word at the end of the window matches the one
+ * at the start: that is the same signal the Linux driver relies on (it reads
+ * inside the record interrupt, where the window cannot be overtaken), turned
+ * into something a polled reader can check for itself.
+ */
+int himax_read_frame_synced(himax_dev_t* dev, uint8_t* stream,
+        size_t len, uint16_t* seq) {
+    if (!stream || len < HIMAX_STREAM_HEADER_BYTES ||
+            len > HIMAX_STREAM_BYTES)
+        return -1;
+    /*
+     * The event-stack port restarts at the record boundary on every open read,
+     * so the frame is read in full and the marker is checked at offset 0.
+     * A read that an update overtook comes back shifted (the marker appears
+     * somewhere in the middle instead of at the start); the caller retries.
+     */
+    dev->stage = "frame-read";
+    if (bus_read(dev, HIMAX_AHB_ADDR_EVENT_STACK, stream, len) != 0)
+        return -1;
+    if (himax_frame_seq(stream) == 0) {
+        dev->stage = "frame-no-marker";
+        return -1;
+    }
+    /*
+     * No second read to "confirm" the record: the event-stack port is a
+     * stream, so another read advances to the next record instead of
+     * re-reading this one.  The marker at offset 0 is the only alignment
+     * signal available, and himax_frame_valid() checks the grid.
+     */
+    if (seq)
+        *seq = himax_frame_seq(stream);
+    dev->stage = "frame-ok";
+    return 0;
 }
 
 bool himax_frame_valid(const uint8_t* stream) {
@@ -379,4 +485,12 @@ int himax_read_frame(himax_dev_t* dev, uint8_t* stream) {
      * shorter header+grid read broke that guarantee (measured ~78% rejects). */
     return bus_read(dev, HIMAX_AHB_ADDR_EVENT_STACK, stream,
             HIMAX_STREAM_BYTES);
+}
+
+
+/* Read `len` bytes from an AHB data port (event stack 0x30 or raw-data
+ * ports used in raw mode).  Same burst read as the frame path, so probes
+ * can scan for the live data source. */
+int himax_read_port(himax_dev_t* dev, uint8_t port, uint8_t* buf, size_t len) {
+    return bus_read(dev, port, buf, len);
 }

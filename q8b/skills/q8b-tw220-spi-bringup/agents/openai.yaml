@@ -1,0 +1,4 @@
+interface:
+  display_name: "Q8B/TW220 SPI Bring-up"
+  short_description: "安全排查 TW220 触摸与原生 SPI"
+  default_prompt: "使用 $q8b-tw220-spi-bringup，先静态分析并保持 GPIO 触摸路径可回滚，再按只读证据推进原生 SPI/GPI。"

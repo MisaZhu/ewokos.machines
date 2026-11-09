@@ -10,3 +10,7 @@
 /efi/build/
 /efi/test/out*/
 /system/build_aarch64/
+
+# himaxd host-test outputs
+/system/drivers/himaxd/bus.xfer
+/system/drivers/himaxd/tests/himax_*_test

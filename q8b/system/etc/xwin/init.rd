@@ -40,6 +40,8 @@
 # (GPIO SPI).  The gaokun3 (gaokun3) panel is a Himax HX83121A on the same
 # q8b tree; on a gaokun machine uncomment the himaxd pair below and comment
 # the goodixd line.  Never start both: they drive the same pads.
+# himaxd talks to the IC through the QUP0 SE6 GENI engine by default; pass
+# --gpio for the old bit-bang master when bringing the panel up by hand.
 # TW220 only:
 @/bin/ipcserv /drivers/q8b/goodixd        /dev/touch0
 # gaokun (gaokun3) only:

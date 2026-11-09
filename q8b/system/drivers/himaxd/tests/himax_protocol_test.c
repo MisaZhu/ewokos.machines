@@ -352,6 +352,22 @@ static void test_probe_reload_timeout(void) {
             dev.stage);
 }
 
+static void test_raw_init_skip_reload(void) {
+    himax_dev_t dev;
+
+    /* Flash-policy board: reload word stays at 0, but the skip variant must
+     * still finish raw bring-up and select raw output. */
+    ic_model_reset();
+    dev_init(&dev);
+    _ic.never_reload = true;
+    _ic.dsram_reload = 0;
+    CHECK(himax_power_on_init_skip_reload(&dev, true) == 0,
+            "skip-reload init must succeed");
+    CHECK(strcmp(dev.stage, "init-ready") == 0, "stage %s", dev.stage);
+    CHECK(_ic.dsram_raw_sel != 0, "raw output must be selected");
+    CHECK(_ic.fw_started, "sense on must have run");
+}
+
 static void test_frame_read(void) {
     himax_dev_t dev;
     static uint8_t stream[HIMAX_STREAM_BYTES];
@@ -431,6 +447,7 @@ int main(void) {
     test_chip_detect();
     test_probe_sequence();
     test_probe_reload_timeout();
+    test_raw_init_skip_reload();
     test_frame_read();
     test_bus_retry_and_error();
     test_frame_validation();

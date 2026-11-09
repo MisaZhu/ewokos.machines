@@ -51,6 +51,9 @@ static unsigned _yield_mode;
 
 static volatile uint8_t* _tlmm;
 static himax_dev_t _dev;
+/* Set when CS is driven as a plain GPIO (GENI transport): the CS pad must not
+ * be handed to the serial engine in that case. */
+
 static unsigned _half_period_us;
 
 /*
@@ -208,6 +211,38 @@ bool himax_gpio_open(void) {
 
 himax_dev_t* himax_gpio_dev(void) {
     return &_dev;
+}
+
+/* Native-transport pin setup: host-interface select low, IRQ input and
+ * reset released, but *not* the SPI pins (the GENI QUP0 SE6 controller owns
+ * gpio154-157 as qup6 function 1 and would conflict with bit-bang pins
+ * here).  The transport xfer must be swapped to the FIFO backend right
+ * after; reset/delay callbacks are the same as the bit-bang daemon. */
+bool himax_gpio_open_native_pins(void) {
+    _yield_mode = 0U;
+    if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)TLMM_VA,
+            (ewokos_addr_t)TLMM_PHY, (ewokos_addr_t)TLMM_SIZE) != TLMM_VA) {
+        slog("gaokun3 himax: TLMM mapping failed\n");
+        return false;
+    }
+    _tlmm = (volatile uint8_t*)(uintptr_t)TLMM_VA;
+    pin_config(GPIO_MODE, 0, 0, true, false);   /* gpio174 low = SPI */
+    pin_config(GPIO_IRQ, 0, 3, false, false);   /* gpio175 input */
+    pin_config(GPIO_RESET, 0, 0, true, true);   /* reset released */
+    /* All four pads are handed to the serial engine by q8b_spi_open(). */
+    _dev.bus.xfer = NULL;                        /* native backend sets it */
+    _dev.bus.ctx = NULL;
+    _dev.reset = hw_reset;
+    _dev.delay_us = hw_delay_us;
+    _dev.hw_ctx = NULL;
+    _dev.stage = "startup";
+    return true;
+}
+
+void himax_gpio_set_xfer(int (*xfer)(void*, const uint8_t*, uint8_t*, size_t),
+        void* ctx) {
+    _dev.bus.xfer = xfer ? xfer : gpio_spi_xfer;
+    _dev.bus.ctx = ctx;
 }
 
 bool himax_gpio_irq_asserted(void) {

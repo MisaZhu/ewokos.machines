@@ -16,6 +16,9 @@
  * leaves CS/CLK high with the IC in reset.  It must run before any probe.
  */
 bool himax_gpio_open(void);
+bool himax_gpio_open_native_pins(void);
+void himax_gpio_set_xfer(int (*xfer)(void*, const uint8_t*, uint8_t*, size_t),
+        void* ctx);
 himax_dev_t* himax_gpio_dev(void);
 
 /* True when the level-low interrupt line is asserted. */

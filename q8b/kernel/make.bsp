@@ -10,8 +10,11 @@ ARCH_OBJS += $(BSP_DIR)/hw_info_arch.o \
 	$(BSP_DIR)/gic_v3.o \
 	$(BSP_DIR)/early_vectors.o
 
+# apps_smmu / q8b_rpmh_batch: SMMU route + RPMh batch blueprints (unwired).
 ARCH_OBJS += $(BSP_DIR)/gpu_pas.o $(BSP_DIR)/npu_pas.o \
-	$(BSP_DIR)/npu_smmu.o $(BSP_DIR)/scm-call.o
+	$(BSP_DIR)/npu_smmu.o $(BSP_DIR)/scm-call.o \
+	$(BSP_DIR)/apps_smmu.o \
+	$(BSP_DIR)/q8b_rpmh_batch.o
 
 ifeq ($(SMP),yes)
 ARCH_OBJS += $(BSP_DIR)/ipi.o \

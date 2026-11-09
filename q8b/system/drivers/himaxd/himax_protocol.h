@@ -118,6 +118,9 @@ int himax_disable_fw_reload(himax_dev_t* dev);
  * stream (diagnostics / solver); false leaves the firmware's own processed
  * touch reports enabled, which is what the daemon uses. */
 int himax_power_on_init(himax_dev_t* dev, bool raw_output);
+/* Reverse himax_sense_off(): bring the firmware back into sensing mode. */
+int himax_leave_safe_mode(himax_dev_t* dev);
+int himax_power_on_init_skip_reload(himax_dev_t* dev, bool raw_output);
 
 /* Full probe: detect the IC, keep its own flash image, start in raw mode. */
 int himax_probe(himax_dev_t* dev);
@@ -128,6 +131,7 @@ int himax_probe_events(himax_dev_t* dev);
 /* Read one raw frame into a HIMAX_STREAM_BYTES buffer.  The grid starts at
  * stream + HIMAX_STREAM_HEADER_BYTES and is HIMAX_GRID_BYTES long. */
 int himax_read_frame(himax_dev_t* dev, uint8_t* stream);
+int himax_read_port(himax_dev_t* dev, uint8_t port, uint8_t* buf, size_t len);
 
 /*
  * The event-stack port is a stream: a read that starts while the panel is
@@ -142,5 +146,29 @@ int himax_read_frame(himax_dev_t* dev, uint8_t* stream);
 #define HIMAX_SANE_MIN_PERCENT    90U
 
 bool himax_frame_valid(const uint8_t* stream);
+
+/*
+ * Record counter.  A raw record is [0xa55a][u16 seq][grid...]; the sequence
+ * word changes on every panel update and is what tells a torn read from a
+ * good one when the grid itself looks plausible.  Returns the seq of a record
+ * whose marker is intact, or 0 when the marker is missing.
+ */
+static inline uint16_t himax_frame_seq(const uint8_t* stream) {
+    if (!stream || (uint16_t)(stream[0] | ((uint16_t)stream[1] << 8)) !=
+            HIMAX_STREAM_MARKER)
+        return 0;
+    return (uint16_t)(stream[2] | ((uint16_t)stream[3] << 8));
+}
+
+/*
+ * Read one record together with its sequence word, re-syncing on the record
+ * marker the way the Linux driver does: the event-stack port is a stream, so
+ * a read that starts mid-record returns a shifted slice.  The accepted record
+ * must carry the marker at offset 0 and the same sequence word at both ends
+ * of the read window, which rejects a read that was overtaken by a panel
+ * update.  Returns 0 and stores the sequence word, or -1.
+ */
+int himax_read_frame_synced(himax_dev_t* dev, uint8_t* stream,
+        size_t len, uint16_t* seq);
 
 #endif /* HIMAX_PROTOCOL_H */
