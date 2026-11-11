@@ -1,6 +1,6 @@
 ---
 name: q8b-kernel-test
-description: EwokOS Q8B 内核标准测试流程：MCP 常驻串口缓存、reboot -> PXE -> cap read、900e/EDL 判定、halt kernel 隔离、恢复真 kernel、内核第一个串口字符。
+description: EwokOS Q8B 内核标准测试流程：MCP 常驻串口缓存、pxe status 确定 TFTP 投放目录并按需拷贝调试产物、reboot -> PXE -> cap read、900e/EDL 判定、halt kernel 隔离、恢复真 kernel、内核第一个串口字符。
 ---
 
 # Q8B 内核标准测试流程
@@ -10,6 +10,8 @@ description: EwokOS Q8B 内核标准测试流程：MCP 常驻串口缓存、rebo
 - MCP 前台/socket 运行；串口常驻监控固定 `/dev/tty.usbserial-0035E5970`，
   输入带时间戳写入 `eud/logs/serial-cache.log`。
 - PXE：`en6`/`192.168.8.1`、dnsmasq、TFTP `q8b/BOOTAA64.EFI`（KERNEL_ONLY）。
+  TFTP 目录不固定：先 MCP `pxe_status`（控制台 `pxe`）看 `PXE 服务目录:` 行
+  确定当前 FTP 目录，调试产物按需拷入其下的 `q8b/`。
 - EUD 9501 在位；板子原生 Type-C；40-pin USB-UART 已接。
 - 读取一律走缓存，不直接读 tty。
 - MCP 串口执行系统命令前，先确认已经进入 root shell；登录用户名 `root`、
@@ -19,9 +21,13 @@ description: EwokOS Q8B 内核标准测试流程：MCP 常驻串口缓存、rebo
 
 ## 部署启动载荷（原 deploy.sh）
 
-`machines/q8b/deploy.sh` 已移除；部署按本节手工执行。下文的 `TFTP`/`.../`
-均指 PXE/TFTP 投放区 `/Users/tony/work/q8b/boot/tftp/q8b`（ewokos 旁边的
-`q8b/` 工作树，由 `q8b/boot/start.sh` 提供 TFTP 服务）。
+`machines/q8b/deploy.sh` 已移除；部署按本节手工执行。TFTP 投放目录不固定
+（可经 `eud/pxe/tftp-root.conf`/Web 改配），**不要写死路径**：每次部署前先
+MCP `pxe_status`（控制台 `pxe`），取输出 `PXE 服务目录:` 后的路径为
+`$TFTP_ROOT`，投放区即 `$TFTP_ROOT/q8b`（bootfile `q8b/BOOTAA64.EFI` 对应
+的子目录，下文统一记作 `$TFTP`）。输出若出现 `已配置新目录(重启 PXE 生效)`
+行，先重启 PXE 服务再取值。测试中需要新调的 kernel/EFI/initramfs 等调试
+产物，构建完成后按需拷进该投放区再 reboot 生效。
 
 ### 构建 EFI 载荷
 
@@ -37,7 +43,7 @@ make -C machines/q8b/efi         # 打包 -> efi/kernel.bin、efi/BOOTAA64.EFI�
 ### 完整投放（PXE/TFTP）
 
 ```bash
-TFTP=/Users/tony/work/q8b/boot/tftp/q8b
+TFTP="$TFTP_ROOT/q8b"   # $TFTP_ROOT = pxe_status 的『PXE 服务目录』
 mkdir -p "$TFTP"
 cp machines/q8b/efi/BOOTAA64.EFI  "$TFTP/BOOTAA64.EFI"
 cp machines/q8b/efi/kernel.bin    "$TFTP/KERNEL.BIN"
@@ -46,22 +52,23 @@ rm -f "$TFTP/ROOTFS.IMG"        # SD_ROOTFS=1（默认）: rootfs 留在 SD ext3
 # SD_ROOTFS=0: cp machines/q8b/root_aarch64.img "$TFTP/ROOTFS.IMG"
 ```
 
-EUD 开发服务有独立 TFTP 树（`/Users/tony/work/q8b/eud/pxe/tftp/q8b`），把同样
-三个文件镜像过去，保持两种 PXE 启动方式同步；不需要就跳过。
+主机上可有两套 TFTP 树（`q8b/boot/start.sh` 服务的 `boot/tftp` 与 EUD 开发
+服务的 `eud/pxe/tftp`）；`pxe status` 报告的是 EUD 服务的目录。哪套在实际
+服务就把产物投到哪套；两套都在用则同样三文件各自镜像，保持同步。
 
 ### 只换 KERNEL.BIN（halt 测试 / 恢复真内核）
 
 ```bash
-TFTP=/Users/tony/work/q8b/boot/tftp/q8b
+TFTP="$TFTP_ROOT/q8b"   # $TFTP_ROOT = pxe_status 的『PXE 服务目录』
 cp machines/q8b/test/halt_kernel.bin "$TFTP/KERNEL.BIN"  # 8B halt: wfi; b __entry @0x90080000
 cp "$TFTP/KERNEL_ENTRY.BIN" "$TFTP/KERNEL.BIN"           # 恢复真 kernel
 ```
 
 ### 启动方式与串口/BIOS
 
-- PXE：载荷放到 `q8b/boot/start.sh` 服务的 TFTP 根，DHCP bootfile 指向
-  `q8b/BOOTAA64.EFI`。**直接 PXE NBP 最可靠**（保留固件网络 LoadFile
-  handle）；GRUB chainload 可能可用。
+- PXE：载荷放到当前服务的 TFTP 根（`pxe status` 的 `PXE 服务目录`）下的
+  `q8b/`，DHCP bootfile 指向 `q8b/BOOTAA64.EFI`。**直接 PXE NBP 最可靠**
+  （保留固件网络 LoadFile handle）；GRUB chainload 可能可用。
 - SD_ROOTFS=1 时 loader 经 `EFI_LOAD_FILE`（TFTP）读 KERNEL.BIN/
   INITRAMFS.IMG；持久 rootfs 由 init 切换后从 SD ext3 分区读取。
 - 串口：40-pin Pin6=GND、Pin8=TXD、Pin10=RXD，115200 8N1（**不要接 VCC**）。
@@ -84,13 +91,14 @@ MCP：
 {"name":"pxe_status","arguments":{}}
 ```
 
-期望：9501 是；缓存监控运行；PXE 就绪。
+期望：9501 是；缓存监控运行；PXE 就绪。从 `pxe`/`pxe_status` 输出记下
+`PXE 服务目录:` 路径（`$TFTP_ROOT`），后续部署与调试产物投放都用它。
 
 ## 1. halt kernel 隔离（最小验证）
 
 ```bash
-# TFTP 投放区见上文『部署启动载荷』节
-TFTP=/Users/tony/work/q8b/boot/tftp/q8b
+# TFTP 投放区见上文『部署启动载荷』节（$TFTP_ROOT 来自 pxe status）
+TFTP="$TFTP_ROOT/q8b"
 # 保存真 kernel
 cp "$TFTP/KERNEL.BIN" "$TFTP/KERNEL_ENTRY.BIN"
 # 部署 8 字节 halt: wfi; b __entry @0x90080000
@@ -131,7 +139,7 @@ eud> cap read since=2026-10-18T20:25:23
 ## 3. 恢复真 kernel
 
 ```bash
-TFTP=/Users/tony/work/q8b/boot/tftp/q8b   # 见『部署启动载荷』节
+TFTP="$TFTP_ROOT/q8b"   # $TFTP_ROOT 来自 pxe status，见『部署启动载荷』节
 cp "$TFTP/KERNEL_ENTRY.BIN" "$TFTP/KERNEL.BIN"
 ```
 
@@ -257,3 +265,79 @@ ssh root@192.168.8.50 /bin/md5 /drivers/q8b/g2dd   # 与本地 md5 比对
 - 日志带时间戳，可从 MCP 缓存完整回读；
 - 安全测试结束后板子仍能 ping 通（串口读回 `[OK]`）；
 - 挂死时 MCP `eud_board_reboot` 重发 1–2 次即可恢复。
+
+## 7. WLAN（WCN6855/QCNFA765）调试流程
+
+驱动在 `machines/q8b/system/drivers/wlan/`，控制面走 `/dev/wl0` devcmd：
+`/bin/devcmd /dev/wl0 help|log|state|scan|list|connect <ssid> <passwd>`。
+`log` 是驱动环形缓冲（wcn_log，不走 klog），`station`/`rings` 输出 DP 细节。
+网络列表在 `/etc/wlan/network.json`（首条优先级最高，自动连接用它）。
+
+### 2.4G 无法连接（2026-11-11 已修复，附 5G 已知问题）
+
+- 症状：5G 正常，2.4G 永远连不上。实测卡点：auth/assoc 能过（固件
+  recovery 后），但 **WPA M1 永远收不到**，`handshake-timeout` 循环；
+  REO2SW0-3 恒为 0（数据面无帧到达）。
+- 根因：MAC2（2.4G）的 RXDMA buffer ring 固件侧包过滤**默认全禁**
+  （pass-nothing），2.4G 的 EAPOL/data 帧永远进不了 REO。扫描能看到
+  2.4G AP 是因为扫描期帧走 MAC1（共享 refill 环）。修复 = 发
+  HTT_H2T_MSG_TYPE_RX_RING_SELECTION_CFG (0xc)（`wcn_dp.c:
+  dp_rx_filter(0,2)`，DP setup 完成时发送，FP 全开 +
+  TLV=0x7BF）。**TLV 集必须是完整的 0x7BF**（含 ATTN/PPDU）：裁剪成
+  精简 MPDU/MSDU 集(0x1F) 会让 5G(HE160) 收发静默失效，2.4G 反而正常。
+- 排查教训（绕了弯路的部分）：
+  - 给 ring 144（RXDMA_HOST_BUF_RING pdev2）单独投缓冲**不是必需**
+    （共享 ring 128 两个 MAC 都用）；先加缓冲后加过滤是两次独立变更，
+    单变量二分才定位到过滤才是关键。
+  - 0xb001/tag48 不是 "beacon-loss"，是 **WMI_ROAM_EVENTID**（reason 2 =
+    BEACON_MISS 漫游触发）。把它当链路死亡 teardown 会误杀实际存活的
+    链路。当前驱动对该事件只记日志不断链。
+  - **AP/环境因素会造成假象**：路由器重配置（改 SSID/密码）窗口内 5G
+    HE160 关联后 M1 缺失、握手超时，与 0xc 无关（无 0xc 时同样失败）；
+    路由器稳定后同代码 5G 秒连。诊断时先确认 AP 侧状态再怀疑驱动。
+  - 5G(HE160) 偶发握手边缘竞态：曾有 attempts=9 才成功的记录；失败时
+    重试/recovery 循环最终会收敛。
+- `devcmd /dev/wl0 mac2filter on|off` 可强制切换 RXDMA 过滤（调试用，
+  默认 on）。
+- 验证（最终构建）：2.4G ch8 与 5G ch48(HE160) 同时可用，5G
+  data_rx=320/network_ready=1（DHCP 完成）、BA256 聚合激活，链路稳定。
+
+### WLAN MAC 地址（2026-11-11：不同模块/整板冲突已修复）
+
+- 替换卡（17cb:0108）出厂未编程：PCIe VPD 缺失、PCIe DSN 缺失、QMI
+  EEPROM 校准请求被固件拒绝（type=3 unsupported）、WMI extra MAC 是
+  Qualcomm 生成地址（00:03:7f 前缀，驱动已拒绝）。四条模块内永久 MAC
+  路径全部确认不可用。
+- 旧方案用 PCI 身份（vendor/subsystem 全行业相同 + BDF）做种子：两块
+  板上的同型号模块 BDF 相同 → 派生同一 MAC → 同 AP 上互相踢 4-way
+  （assoc 成功但握手超时）。
+- 新方案（`wcn_board.c: wcn_board_cpu_id()`）：读 QFPROM 板级唯一序列号
+  （PBL 启动日志 `Serial Number @ 0x00786134`，同页 0x786138=OEM id），
+  经 mmio_map_offset 映射 0x786000 页读取；serial+OEM 组成 64 位种子，
+  再混入低位的 PCI BDF（同一块板插两块 WLAN 卡时仍可区分）。QFPROM 读
+  不可用（全 0/全 F/映射失败）时回退旧 PCI 身份种子。
+- MAC 优先级不变：PCI VPD → WMI extra → /etc/wlan.mac → 派生种子。
+- 验证：新 MAC `2a:36:0d:bf:0b:1e`（旧 `2a:11:6a:28:97:4f`），跨重启
+  seed/MAC 完全一致；2.4G ch8 与 5G ch48 HE160 均用新 MAC 连接成功，
+  data_rx=144/network_ready=1。
+
+### self-root initramfs 测试法（不依赖 SD 卡）
+
+内核/驱动迭代用纯网络根最快：`make -C machines/q8b/efi initramfs` 默认
+`SELF_ROOT=1`（staged kernel.conf 改写 `rootfs=self`），init 停在 boot
+RAMFS，SD 永不挂载。initramfs 现内含 wlan/netd/sessiond/sshd/devcmd、
+nfa765 固件与 `/etc/wlan/network.json`（`SELF_ROOT=0` 恢复旧 SD 行为）。
+注意：
+
+- 串口救援台在 boot RAMFS profile（`etc/xwin/init.ramfs.rd` 的
+  uartd/sessiond/session），穿越 switchroot，登录 root/root。
+- self 模式下 `/etc/init.rd`（= `etc/xwin/init.self.rd`）拉起 wlan/netd；
+  若服务没起来，可串口手工 `/bin/ipcserv /drivers/q8b/wlan /dev/wl0
+  --start` + `/bin/ipcserv /drivers/netd /dev/net0 /dev/wl0`。
+- initramfs 内 bin 只有 ipcserv/shell/login/devcmd/session/bgrun，没有
+  ls/ps/ping/echo，命令要全路径且只能用现有工具。
+- **PXE 偶发 DHCP 失败会静默回退 SD 旧镜像**（日志特征：
+  `[uefi] boot source=unknown`、无 `>>Start PXE over IPv4`、init 打印
+  `rootfs policy=2`）；看到这些直接再 reboot 一次。
+- 会话恢复/断电后 MCP server 可能掉线：`nohup q8b/eud/server/start.sh`
+  重启（端口 8899）。
