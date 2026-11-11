@@ -1,4 +1,4 @@
-include ../../make.inc
+include ../../../../system/make.inc
 SYS_DIR=$(ewokos)/system
 include $(SYS_DIR)/platform/$(ARCH)/make.rule
 
@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 OBJS = $(ARCH)/goodixd.o $(ARCH)/goodix_protocol.o
-TARGET = $(TARGET_DIR)/drivers/q8b/goodixd
+TARGET = $(TARGET_DIR)/drivers/8gen3/goodixd
 
 $(TARGET): $(OBJS) $(SDK_DIR)/lib/libewoksys.a
 	@mkdir -p $(dir $@)

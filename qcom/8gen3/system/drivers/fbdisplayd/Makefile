@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 FBDISPLAYD_OBJS = $(ARCH)/fbdisplayd.o
-FBDISPLAYD = $(TARGET_DIR)/drivers/q8b/fbdisplayd
+FBDISPLAYD = $(TARGET_DIR)/drivers/8gen3/fbdisplayd
 
 $(FBDISPLAYD): $(FBDISPLAYD_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a \

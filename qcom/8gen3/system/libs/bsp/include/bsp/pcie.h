@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* The PCIe host is owned by /drivers/q8b/pcied.  Clients only query the
+/* The PCIe host is owned by /drivers/8gen3/pcied.  Clients only query the
  * immutable enumeration snapshot through this character device; they never
  * map ECAM or modify PCI configuration space themselves. */
 #define Q8B_PCIE_SERVICE_NODE "/dev/pcie0"

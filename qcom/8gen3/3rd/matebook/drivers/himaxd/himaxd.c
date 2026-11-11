@@ -1,7 +1,7 @@
 /*
  * himaxd - Huawei MateBook gaokun3 HX83121A touchscreen daemon.
  *
- * The TW220 Goodix path (drivers/q8b/goodixd) is a different IC and stays
+ * The TW220 Goodix path (drivers/8gen3/goodixd) is a different IC and stays
  * untouched; this daemon implements the Himax HX83121A that the gaokun3 panel
  * carries.  Both serve the same six-byte /dev/touch0 record contract, so the
  * existing xtouch client works unchanged.

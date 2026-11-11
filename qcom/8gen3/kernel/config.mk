@@ -19,16 +19,16 @@ endif
 
 # QEMU has no sc8280xp machine model; the name only produces a clear
 # error if someone tries `make run`.
-QEMU_MACHINE = q8b
+QEMU_MACHINE = 8gen3
 
 #----multi core(SMP)------
 # First hardware bring-up is single-core: `make SMP=no` produces
-# kernel_up.bin in its own object directory (q8b_up), so the SMP and UP
+# kernel_up.bin in its own object directory (8gen3_up), so the SMP and UP
 # objects can never be mixed by make's timestamp rules.
 ifeq ($(TEST_QEMU),1)
 SMP=no
 CFLAGS += -DQ8B_QEMU_TEST
-MACHINE = q8b_qemu
+MACHINE = 8gen3_qemu
 KERNEL_VARIANT = _qemu
 else
 CFLAGS += -DQ8B_BOARD
@@ -42,10 +42,10 @@ ifeq ($(SMP),)
 SMP=yes
 endif
 ifeq ($(SMP),no)
-MACHINE = q8b_up
+MACHINE = 8gen3_up
 KERNEL_VARIANT = _up
 else
-MACHINE = q8b
+MACHINE = 8gen3
 KERNEL_VARIANT =
 endif
 endif

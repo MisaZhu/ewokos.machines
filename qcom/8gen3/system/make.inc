@@ -1,11 +1,11 @@
-export HW=q8b
+export HW=8gen3
 export ARCH=aarch64
 export ARCH_VER=v8
 
 # Absolute path of this machine's system tree (for shared header lookups).
 MAKEINC_DIR := $(dir $(lastword $(MAKEFILE_LIST)))
 ifeq ($(ewokos),)
-ewokos := $(shell cd $(MAKEINC_DIR)/../../.. && pwd)
+ewokos := $(shell cd $(MAKEINC_DIR)/../../../.. && pwd)
 endif
 
 SYS_ROOT_DIR = ${ewokos}/system

@@ -2,7 +2,7 @@
 #
 # himaxd is the /dev/touch0 producer started by /etc/init.rd.  It reads the
 # raw-capacitance stream over the QUP0 SE6 GENI FIFO path (bus 60, SPI mode 3).
-include ../../make.inc
+include ../../../../system/make.inc
 SYS_DIR=$(ewokos)/system
 include $(SYS_DIR)/platform/$(ARCH)/make.rule
 
@@ -13,8 +13,8 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 COMMON_OBJS = $(ARCH)/himax_protocol.o $(ARCH)/himax_gpio.o $(ARCH)/hx_algo.o
-TARGET = $(TARGET_DIR)/drivers/q8b/himaxd
-NSPI = $(ewokos)/machines/q8b/system/libs/bsp/$(ARCH)/src/spi.o
+TARGET = $(TARGET_DIR)/drivers/8gen3/himaxd
+NSPI = $(ewokos)/machines/qcom/8gen3/system/libs/bsp/$(ARCH)/src/spi.o
 NATIVE_TRANS = $(ARCH)/himax_native_transport.o $(ARCH)/himax_fifo.o $(NSPI)
 
 all: $(TARGET)
@@ -25,7 +25,7 @@ $(TARGET): $(ARCH)/himaxd.o $(COMMON_OBJS) $(NATIVE_TRANS) $(BUILD_DIR)/lib/libe
 $(ARCH)/himax_native_transport.o: himax_native_transport.c himax_gpio.h \
 		native/himax_fifo.h
 	@mkdir -p $(ARCH)
-	$(CC) $(CFLAGS) -I . -I native -I $(ewokos)/machines/q8b/system/libs/bsp/include -c $< -o $@
+	$(CC) $(CFLAGS) -I . -I native -I $(ewokos)/machines/qcom/8gen3/system/libs/bsp/include -c $< -o $@
 
 $(ARCH)/himax_fifo.o: native/himax_fifo.c native/himax_fifo.h
 	@mkdir -p $(ARCH)

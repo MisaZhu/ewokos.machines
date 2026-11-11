@@ -1,4 +1,4 @@
-# machines/q8b/system/libs/adrenocompiler - the Adreno (a6xx / A690) GPU
+# machines/qcom/8gen3/system/libs/adrenocompiler - the Adreno (a6xx / A690) GPU
 # compiler BACKEND behind portablegl's backend-neutral <pglcompiler.h> contract.
 #
 # What is here: mesa's freedreno NIR->ir3->a6xx compiler (mesa/src/freedreno:

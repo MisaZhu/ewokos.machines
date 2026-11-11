@@ -1153,7 +1153,7 @@ static void msc_mount_spawn(void) {
     int pid = fork();
     if (pid == 0) {
         proc_detach();
-        if (proc_exec("/drivers/q8b/usbfat32fsd -u /dev/usb0 /mnt/udisk0") != 0) {
+        if (proc_exec("/drivers/8gen3/usbfat32fsd -u /dev/usb0 /mnt/udisk0") != 0) {
             exit(-1);
         }
     }

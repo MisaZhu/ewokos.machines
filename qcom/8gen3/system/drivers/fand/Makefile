@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 OBJS = $(ARCH)/fand.o
-TARGET = $(TARGET_DIR)/drivers/q8b/fand
+TARGET = $(TARGET_DIR)/drivers/8gen3/fand
 
 $(TARGET): $(OBJS) $(SDK_DIR)/lib/libewoksys.a
 	@mkdir -p $(dir $@)

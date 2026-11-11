@@ -8,7 +8,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 OBJS = $(ARCH)/pcied.o
-TARGET = $(TARGET_DIR)/drivers/q8b/pcied
+TARGET = $(TARGET_DIR)/drivers/8gen3/pcied
 
 $(TARGET): $(OBJS) $(SDK_DIR)/lib/libewoksys.a $(SDK_DIR)/lib/libbsp.a
 	@mkdir -p $(dir $@)

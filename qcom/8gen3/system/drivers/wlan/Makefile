@@ -4,7 +4,7 @@ include $(SYS_DIR)/platform/$(ARCH)/make.rule
 
 BUILD_DIR = $(SYS_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
-TARGET = $(TARGET_DIR)/drivers/q8b/wlan
+TARGET = $(TARGET_DIR)/drivers/8gen3/wlan
 OBJS = $(ARCH)/wlan.o $(ARCH)/wcn_mhi.o $(ARCH)/wcn_qmi.o $(ARCH)/wcn_board.o $(ARCH)/wcn_ce.o $(ARCH)/wcn_htc.o $(ARCH)/wcn_wmi.o $(ARCH)/wcn_htt.o $(ARCH)/wcn_dp.o $(ARCH)/wcn_sta.o $(ARCH)/wcn_wpa.o $(ARCH)/wcn_net.o $(ARCH)/wcn_util.o $(ARCH)/wcn_config.o
 CFLAGS += -I $(BUILD_DIR)/include -DWOLFSSL_USER_SETTINGS
 LDFLAGS = -L $(BUILD_DIR)/lib

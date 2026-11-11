@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 UARTD_OBJS = $(ARCH)/uartd.o
-UARTD = $(TARGET_DIR)/drivers/q8b/uartd
+UARTD = $(TARGET_DIR)/drivers/8gen3/uartd
 
 $(UARTD): $(UARTD_OBJS) \
 		$(SDK_DIR)/lib/libewoksys.a

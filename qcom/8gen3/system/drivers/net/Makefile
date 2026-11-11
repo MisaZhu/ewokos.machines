@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 NET_OBJS = $(ARCH)/net.o
-NET = $(TARGET_DIR)/drivers/q8b/net
+NET = $(TARGET_DIR)/drivers/8gen3/net
 
 $(NET): $(NET_OBJS) $(SDK_DIR)/lib/libewoksys.a $(SDK_DIR)/lib/libbsp.a
 	$(LD) -Ttext=100 $(NET_OBJS) -o $(NET) $(LDFLAGS) $(BSP_LFLAGS) $(EWOK_LIBC)

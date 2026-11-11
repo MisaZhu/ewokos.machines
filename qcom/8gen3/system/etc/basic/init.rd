@@ -1,7 +1,7 @@
-@/bin/ipcserv /drivers/q8b/uartd         /dev/tty0
+@/bin/ipcserv /drivers/8gen3/uartd         /dev/tty0
 # The persistent root owns PCIe power, resources and the device snapshot.
-@/bin/ipcserv /drivers/q8b/pcied         /dev/pcie0
-#@/bin/ipcserv /drivers/q8b/fand          /dev/fan
+@/bin/ipcserv /drivers/8gen3/pcied         /dev/pcie0
+#@/bin/ipcserv /drivers/8gen3/fand          /dev/fan
 @/bin/ipcserv /drivers/timerd
 @/bin/ipcserv /drivers/piped           /dev/pipe0
 @/bin/ipcserv /drivers/ramfsd          /tmp

@@ -17,7 +17,7 @@
  */
 #include "efi.h"
 
-/* Must match machines/q8b/kernel/config.mk, mkos.lds.S and bsp/hw_arch.h.
+/* Must match machines/qcom/8gen3/kernel/config.mk, mkos.lds.S and bsp/hw_arch.h.
  *
  * Q8B_QEMU_TEST builds the same loader for a QEMU virt smoke test: only
  * the DRAM base and the fixed bootinfo/kernel physical addresses change,

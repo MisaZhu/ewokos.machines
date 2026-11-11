@@ -34,11 +34,11 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/bin/login \
 	$(SYSTEM_ROOT)/bin/session \
 	$(SYSTEM_ROOT)/bin/bgrun \
-	$(SYSTEM_ROOT)/drivers/q8b/usbhostd \
-	$(SYSTEM_ROOT)/drivers/q8b/usbfat32fsd \
-	$(SYSTEM_ROOT)/drivers/q8b/net \
-	$(SYSTEM_ROOT)/drivers/q8b/uartd \
-	$(SYSTEM_ROOT)/drivers/q8b/pcied \
+	$(SYSTEM_ROOT)/drivers/8gen3/usbhostd \
+	$(SYSTEM_ROOT)/drivers/8gen3/usbfat32fsd \
+	$(SYSTEM_ROOT)/drivers/8gen3/net \
+	$(SYSTEM_ROOT)/drivers/8gen3/uartd \
+	$(SYSTEM_ROOT)/drivers/8gen3/pcied \
 	$(SYSTEM_ROOT)/drivers/timerd \
 	$(SYSTEM_ROOT)/drivers/piped $(SYSTEM_ROOT)/drivers/ramfsd \
 	$(SYSTEM_ROOT)/drivers/nulld
@@ -89,7 +89,7 @@ initramfs: $(INITRAMFS_IMAGE)
 $(KERNEL_IMAGE): FORCE
 	@if [ ! -f "$(KERNEL_INPUT)" ]; then \
 		echo "ERROR: missing $(KERNEL_INPUT)"; \
-		echo "       from the repository root, build the kernel first: make -C machines/q8b/kernel"; \
+		echo "       from the repository root, build the kernel first: make -C machines/qcom/8gen3/kernel"; \
 		exit 1; \
 	fi
 	cp -p "$(KERNEL_INPUT)" "$@"
@@ -98,12 +98,12 @@ $(INITRAMFS_IMAGE): FORCE
 	@missing=0; for f in $(SYSTEM_FILES); do \
 		if [ ! -f "$$f" ]; then echo "ERROR: missing system output $$f"; missing=1; fi; \
 	done; if [ $$missing -ne 0 ]; then \
-		echo "       from the repository root, build the system first: make -C machines/q8b/system"; \
+		echo "       from the repository root, build the system first: make -C machines/qcom/8gen3/system"; \
 		exit 1; \
 	fi
 	@rm -rf "$(RAMFS_STAGING)"
 	@mkdir -p "$(RAMFS_STAGING)/etc/kernel" "$(RAMFS_STAGING)/sbin" \
-		"$(RAMFS_STAGING)/drivers/q8b" "$(RAMFS_STAGING)/drivers" \
+		"$(RAMFS_STAGING)/drivers/8gen3" "$(RAMFS_STAGING)/drivers" \
 		"$(RAMFS_STAGING)/bin"
 	@cp -p "$(SYSTEM_ROOT)/etc/kernel/kernel.conf" "$(RAMFS_STAGING)/etc/kernel/"
 	@if [ "$(SELF_ROOT)" = 1 ]; then \
@@ -124,12 +124,12 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/bin/session" \
 		"$(SYSTEM_ROOT)/bin/bgrun" \
 		"$(RAMFS_STAGING)/bin/"
-	@cp -p "$(SYSTEM_ROOT)/drivers/q8b/usbhostd" \
-		"$(SYSTEM_ROOT)/drivers/q8b/usbfat32fsd" \
-		"$(SYSTEM_ROOT)/drivers/q8b/net" \
-		"$(SYSTEM_ROOT)/drivers/q8b/uartd" \
-		"$(SYSTEM_ROOT)/drivers/q8b/pcied" \
-		"$(RAMFS_STAGING)/drivers/q8b/"
+	@cp -p "$(SYSTEM_ROOT)/drivers/8gen3/usbhostd" \
+		"$(SYSTEM_ROOT)/drivers/8gen3/usbfat32fsd" \
+		"$(SYSTEM_ROOT)/drivers/8gen3/net" \
+		"$(SYSTEM_ROOT)/drivers/8gen3/uartd" \
+		"$(SYSTEM_ROOT)/drivers/8gen3/pcied" \
+		"$(RAMFS_STAGING)/drivers/8gen3/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/timerd" \
 		"$(SYSTEM_ROOT)/drivers/piped" "$(SYSTEM_ROOT)/drivers/ramfsd" \
 		"$(SYSTEM_ROOT)/drivers/nulld" "$(RAMFS_STAGING)/drivers/"

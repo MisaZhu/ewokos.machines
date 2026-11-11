@@ -60,7 +60,7 @@ qairt_native_install: qairt_native_build
 firmware_install:
 	@if [ ! -f "$(ADRENO_FW_SRC)/a660_gmu.bin" ]; then \
 		echo "ERROR: $(ADRENO_FW_SRC)/a660_gmu.bin missing"; \
-		echo "       see machines/q8b/firmware/adreno/README.md"; \
+		echo "       see machines/qcom/8gen3/firmware/adreno/README.md"; \
 		exit 1; \
 	fi
 	@mkdir -p $(TARGET_DIR)/etc/firmware/adreno
@@ -72,7 +72,7 @@ firmware_install:
 		$(TARGET_DIR)/etc/firmware/adreno/sc8280xp/LENOVO/21BX/
 	@if [ ! -f "$(NPU_FW_SRC)/qccdsp8280.mbn" ]; then \
 		echo "ERROR: $(NPU_FW_SRC)/qccdsp8280.mbn missing"; \
-		echo "       see machines/q8b/docs/npu-mainline.md"; \
+		echo "       see machines/qcom/8gen3/docs/npu-mainline.md"; \
 		exit 1; \
 	fi
 	@mkdir -p $(TARGET_DIR)/etc/firmware/qcom/sc8280xp/LENOVO/21BX \
