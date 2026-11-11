@@ -532,8 +532,9 @@ static void fb_debug_setup(uint64_t addr, uint32_t width, uint32_t height,
     if (!g_fb_debug)
         return;
     /* Whole-screen reset: cover the firmware console's own text so it does
-     * not stay superimposed under the scrolling loader log. */
-    fb_fill(0, 0, g_fb_w, g_fb_h, 0x061018);
+     * not stay superimposed under the scrolling loader log.  Pure black
+     * background for the loader output. */
+    fb_fill(0, 0, g_fb_w, g_fb_h, 0x000000);
 }
 
 /* ------------------------------------------------------------------ */
@@ -573,7 +574,7 @@ static void fb_body_redraw(void) {
                  FB_BODY_ROWS * FB_BODY_PAD : g_fb_h - FB_BODY_Y;
     if (w == 0 || h == 0)
         return;
-    fb_fill(FB_BODY_X, FB_BODY_Y, w, h, 0x0a1018);
+    fb_fill(FB_BODY_X, FB_BODY_Y, w, h, 0x000000);
     for (uint32_t r = 0; r < g_fb_body_n; r++)
         fb_text(FB_BODY_X + 4, FB_BODY_Y + 2 + r * FB_BODY_PAD,
                 g_fb_body[r], 0xd8e4ee);
