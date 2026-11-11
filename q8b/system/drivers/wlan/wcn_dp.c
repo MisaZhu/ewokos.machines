@@ -31,6 +31,7 @@ static struct {
     uint8_t *dma;
     uint64_t pa;
     unsigned used, active, failed, count, configured, bad, completions;
+    unsigned mac2_filter, rx_filter_sent;
     unsigned links, rx_buffers, tx_buffers;
     unsigned rx_packets,rx_delivered,rx_dropped,refilled,tx_packets,tx_done,tx_errors,tx_generation;
     unsigned tx_batch,tx_pending;
@@ -40,6 +41,10 @@ static struct {
     uint8_t rx_owner[RX_COUNT];
     struct dp_ring rings[MAX_RINGS];
 } d;
+/* Join-band request; survives wcn_dp_release. Default on: the MAC2 RXDMA
+ * filter is required for 2.4G receive; the devcmd mac2filter can clear it
+ * (5G-only debugging) until the next controller restart. */
+static unsigned mac2_filter_req = 1;
 static void dp_barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
 static unsigned dp_reserve(unsigned bytes) {
     /* Link descriptors require 128-byte physical alignment. */
@@ -201,6 +206,7 @@ static int dp_rx_id(const uint32_t *p) {
     return (int)id;
 }
 static void dp_refill(void) {
+    /* One shared refill ring feeds both MACs (as in ath11k wcn6855). */
     struct dp_ring *r=dp_find(128);
     unsigned space=dp_space(r),posted=0;
     if (!space) return;
@@ -362,6 +368,28 @@ int wcn_dp_transmit(const void *frame,unsigned bytes,unsigned lmac) {
     return (int)cookie;
 }
 
+static int dp_rx_filter(unsigned ring_id, unsigned pdev) {
+    /* HTT_H2T_MSG_TYPE_RX_RING_SELECTION_CFG: MAC2's RXDMA buffer-ring
+     * filter defaults to pass-nothing, so EAPOL/data never reach the host
+     * on 2.4G. ath11k-style station FP set. NOTE the TLV set must stay rich
+     * (0x7BF): trimming it to the compact MPDU/MSDU list silently breaks
+     * 5G (HE160) receive while 2.4G keeps working. */
+    uint32_t p[13]={0};
+    p[0]=0xc | (pdev<<8) | (ring_id<<16);
+    p[1]=RX_BYTES;
+    p[2]=0x09249249; /* mgmt FP: assoc/reassoc/probe/beacon/atim (0-9) */
+    p[3]=0x00009249; /* mgmt FP: disassoc/auth/deauth/action (10-15) */
+    p[4]=0x09249249; /* ctrl subtypes 0-9: FP */
+    p[5]=0x01249249; /* ctrl 10-15 FP + mcast/ucast/null data FP */
+    p[6]=0x000007BF; /* MPDU/MSDU start+end, packet, attention, PPDU TLVs */
+    int rc=wcn_htc_htt_send(p,sizeof(p));
+    wcn_log("wcn: DP RX filter ring=%u pdev=%u\n",ring_id,pdev);
+    return rc;
+}
+/* Record the joining band: the MAC2 RXDMA filter is firmware-global, so the
+ * DP-setup pass only opens it when the station targets 2.4G. */
+void wcn_dp_mac2_filter_req(int on) { mac2_filter_req = on ? 1 : 0; }
+
 void wcn_dp_poll(void) {
     if (!d.active || d.failed || !wcn_htt_ready()) return;
     /* Configure one ring per turn, retaining ownership until stop disables DMA. */
@@ -370,6 +398,14 @@ void wcn_dp_poll(void) {
         if (!r->reg && dp_configure(r)) return;
         d.configured++;
         if (!r->reg) return;
+    }
+    if (!d.rx_filter_sent) {
+        d.rx_filter_sent=1;
+        /* MAC2's RXDMA buffer-ring filter defaults to pass-nothing, so 2.4G
+         * EAPOL/data never reach the host. ath11k-exact station FP set; the
+         * TLV list below must stay rich (0x7BF) or 5G RX breaks. */
+        if (dp_rx_filter(0,2)) d.rx_filter_sent=0;
+        return;
     }
     unsigned budget=64;
     for (unsigned i=0;i<d.count && budget && !d.failed;i++) {

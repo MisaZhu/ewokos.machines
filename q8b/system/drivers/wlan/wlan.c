@@ -558,6 +558,7 @@ static char *wlan_help(void) {
         "stop|disconnect: tear the link down\n"
         "reconnect: rejoin the saved network\n"
         "country <AA>: set the regulatory country\n"
+        "mac2filter on|off: 2.4G-only RXDMA filter (firmware-global; on disables 5G RX)\n"
         "scan-stop: cancel a running scan\n"
         "scan-results: scan cache as text\n"
         "station: station/WPA state as text\n"
@@ -614,6 +615,17 @@ static char *wlan_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void 
         return copy_reply(wcn_wmi_country(argv[1]) ?
                 "country unavailable (idle controller required)\n" :
                 "country_pending\n");
+    if (argc == 2 && !strcmp(argv[0], "mac2filter")) {
+        /* Firmware-global MAC2 (2.4G) RXDMA filter.  Without it 2.4G
+         * EAPOL/data never reach the host; with it 5G receive is dead until
+         * the controller restarts.  Opt-in per session. */
+        int on = !strcmp(argv[1], "on");
+        wcn_dp_mac2_filter_req(on);
+        link_restart(0);
+        return copy_reply(on ?
+                "mac2filter on: 2.4G RX enabled, 5G RX disabled until off\n" :
+                "mac2filter off: 5G RX restored after restart\n");
+    }
     if (!strcmp(argv[0], "scan-stop"))
         return copy_reply(wcn_wmi_scan_cancel() ?
                 "no scan to cancel\n" : "scan_cancel_pending\n");

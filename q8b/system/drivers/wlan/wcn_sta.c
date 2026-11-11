@@ -516,7 +516,7 @@ void wcn_sta_event(unsigned event,unsigned tag,const uint8_t *p,unsigned bytes) 
     if (s.state==ASSOCIATED && event==0x6001 && tag==43 && bytes>=8 && !memcmp(p,s.bss.bssid,6))
         fail("peer-kickout",0);
     if (s.state==ASSOCIATED && event==0xb001 && tag==48 && bytes>=12 && !le32(p) && le32(p+4)==2)
-        fail("beacon-loss",0);
+        wcn_log("wcn: firmware roam BEACON_MISS report; keeping the link\n");
     if (event==0x5003 && tag==42 && bytes>=24 && !le32(p) && !memcmp(p+4,s.bss.bssid,6))
         wcn_wpa_key_complete(le32(p+12),le32(p+16),le32(p+20));
     if (event==0x7006 && tag==423 && bytes>=20) {
