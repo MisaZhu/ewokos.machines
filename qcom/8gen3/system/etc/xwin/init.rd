@@ -1,3 +1,6 @@
+@export TZ=CST-8
+@/bin/ipcserv /drivers/logd              /dev/log
+
 # Q8B xwin profile.
 #
 # gaokun3 / TW220 note: those panels have no wired UART17 debug port, so the
@@ -12,7 +15,6 @@
 # Start the PCIe host owner from the persistent root before endpoint drivers.
 @/bin/ipcserv /drivers/8gen3/pcied         /dev/pcie0
 # Q8B full window system on the UEFI GOP framebuffer.
-@/bin/ipcserv /drivers/logd              /dev/log
 
 @export ADRENO_ENABLE=1
 @/bin/ipcserv /drivers/8gen3/g2dd          /dev/g2d
@@ -29,6 +31,7 @@
 # address arguments, so it starts its DHCP client automatically on /dev/wl0.
 @/bin/ipcserv /drivers/8gen3/wlan          /dev/wl0 --start
 @/bin/ipcserv /drivers/netd              /dev/net0 /dev/wl0
+@/bin/ipcserv /drivers/timed
 @/bin/bgrun /sbin/sshd
 #@/bin/ipcserv /drivers/8gen3/fand          /dev/fan
 
