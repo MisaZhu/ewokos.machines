@@ -7,43 +7,36 @@
 KERNEL_INPUT = ../kernel/kernel.bin
 SYSTEM_ROOT = ../system/build_aarch64
 RAMFS_STAGING = build/initramfs
-# The wlan/net test payload (nfa765 amss + board-2/regdb) needs more than the
-# bare switchroot image did.
-INITRAMFS_MB ?= 24
-# SELF_ROOT=1 (default) rewrites rootfs=auto to rootfs=self in the staged
-# kernel.conf, so init keeps the boot RAMFS and never switchroots to SD.
-# Pass SELF_ROOT=0 to restore the previous SD/auto behaviour.
-SELF_ROOT ?= 1
+# Bootstrap-only image: just the drivers needed to find and read the rootfs
+# plus a serial rescue console.
+INITRAMFS_MB ?= 8
+# SELF_ROOT=1 rewrites rootfs=auto to rootfs=self in the staged kernel.conf,
+# so init keeps the boot RAMFS and never switchroots (maintenance mode; the
+# packed /etc/init.rd is the serial rescue console).  Default 0: normal boot
+# selects the persistent rootfs and switchroots to it.
+SELF_ROOT ?= 0
 
 KERNEL_IMAGE = kernel.bin
 INITRAMFS_IMAGE = initramfs.img
 
-INIT_RAMFS_SOURCE = $(SYSTEM_ROOT)/etc/init.ramfs.rd
-# Only executed while the boot RAMFS stays root (SELF_ROOT=1); an SD-root
-# boot replaces the root before /etc/init.rd is read.
-INIT_SOURCE = $(SYSTEM_ROOT)/etc/init.self.rd
+INIT_RAMFS_SOURCE = ../system/etc/xwin/init.ramfs.rd
+# No /etc/init.rd is packed: the boot RAMFS profile is bootstrap-only and
+# init starts the serial rescue console directly when the rootfs cannot be
+# mounted (see init.c rescue_shell).
 SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/etc/kernel/kernel.conf \
 	$(SYSTEM_ROOT)/etc/passwd $(SYSTEM_ROOT)/etc/group \
-	$(SYSTEM_ROOT)/etc/wlan/network.json \
-	$(SYSTEM_ROOT)/etc/wlan.country \
-	$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765/amss.bin \
-	$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765/m3.bin \
-	$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/board-2.bin \
-	$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/regdb.bin \
-	$(INIT_RAMFS_SOURCE) $(INIT_SOURCE) \
+	$(INIT_RAMFS_SOURCE) \
 	$(SYSTEM_ROOT)/sbin/init $(SYSTEM_ROOT)/sbin/core \
 	$(SYSTEM_ROOT)/sbin/vfsd $(SYSTEM_ROOT)/sbin/sdfsd \
 	$(SYSTEM_ROOT)/sbin/switchroot $(SYSTEM_ROOT)/sbin/sessiond \
-	$(SYSTEM_ROOT)/sbin/sshd \
 	$(SYSTEM_ROOT)/bin/ipcserv $(SYSTEM_ROOT)/bin/shell \
 	$(SYSTEM_ROOT)/bin/login \
-	$(SYSTEM_ROOT)/bin/devcmd $(SYSTEM_ROOT)/bin/session \
+	$(SYSTEM_ROOT)/bin/session \
 	$(SYSTEM_ROOT)/bin/bgrun \
 	$(SYSTEM_ROOT)/drivers/q8b/usbhostd \
 	$(SYSTEM_ROOT)/drivers/q8b/usbfat32fsd \
-	$(SYSTEM_ROOT)/drivers/q8b/wlan \
-	$(SYSTEM_ROOT)/drivers/netd \
+	$(SYSTEM_ROOT)/drivers/q8b/net \
 	$(SYSTEM_ROOT)/drivers/q8b/uartd \
 	$(SYSTEM_ROOT)/drivers/q8b/pcied \
 	$(SYSTEM_ROOT)/drivers/timerd \
@@ -111,47 +104,32 @@ $(INITRAMFS_IMAGE): FORCE
 	@rm -rf "$(RAMFS_STAGING)"
 	@mkdir -p "$(RAMFS_STAGING)/etc/kernel" "$(RAMFS_STAGING)/sbin" \
 		"$(RAMFS_STAGING)/drivers/q8b" "$(RAMFS_STAGING)/drivers" \
-		"$(RAMFS_STAGING)/bin" \
-		"$(RAMFS_STAGING)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765" \
-		"$(RAMFS_STAGING)/etc/wlan"
+		"$(RAMFS_STAGING)/bin"
 	@cp -p "$(SYSTEM_ROOT)/etc/kernel/kernel.conf" "$(RAMFS_STAGING)/etc/kernel/"
 	@if [ "$(SELF_ROOT)" = 1 ]; then \
 		sed -i '' -e 's/^rootfs[ 	]*=.*auto/rootfs = self/' \
 			"$(RAMFS_STAGING)/etc/kernel/kernel.conf"; \
 	fi
-	@cp -p "$(SYSTEM_ROOT)/etc/wlan/network.json" "$(RAMFS_STAGING)/etc/wlan/"
-	@cp -p "$(SYSTEM_ROOT)/etc/wlan.country" "$(RAMFS_STAGING)/etc/"
 	@cp -p "$(SYSTEM_ROOT)/etc/passwd" "$(SYSTEM_ROOT)/etc/group" \
 		"$(RAMFS_STAGING)/etc/"
 	@if [ -f "$(SYSTEM_ROOT)/etc/shadow" ]; then \
 		cp -p "$(SYSTEM_ROOT)/etc/shadow" "$(RAMFS_STAGING)/etc/"; fi
-	@cp -p "$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765/amss.bin" \
-		"$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765/m3.bin" \
-		"$(RAMFS_STAGING)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765/"
-	@cp -p "$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/board-2.bin" \
-		"$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/regdb.bin" \
-		"$(SYSTEM_ROOT)/etc/firmware/ath11k/WCN6855/hw2.1/m3.bin" \
-		"$(RAMFS_STAGING)/etc/firmware/ath11k/WCN6855/hw2.1/"
 	@cp -p "$(INIT_RAMFS_SOURCE)" "$(RAMFS_STAGING)/etc/init.ramfs.rd"
-	@cp -p "$(INIT_SOURCE)" "$(RAMFS_STAGING)/etc/init.rd"
 	@cp -p "$(SYSTEM_ROOT)/sbin/init" "$(SYSTEM_ROOT)/sbin/core" \
 		"$(SYSTEM_ROOT)/sbin/vfsd" "$(SYSTEM_ROOT)/sbin/sdfsd" \
 		"$(SYSTEM_ROOT)/sbin/switchroot" "$(SYSTEM_ROOT)/sbin/sessiond" \
-		"$(SYSTEM_ROOT)/sbin/sshd" \
 		"$(RAMFS_STAGING)/sbin/"
 	@cp -p "$(SYSTEM_ROOT)/bin/ipcserv" "$(SYSTEM_ROOT)/bin/shell" \
 		"$(SYSTEM_ROOT)/bin/login" \
-		"$(SYSTEM_ROOT)/bin/devcmd" "$(SYSTEM_ROOT)/bin/session" \
+		"$(SYSTEM_ROOT)/bin/session" \
 		"$(SYSTEM_ROOT)/bin/bgrun" \
 		"$(RAMFS_STAGING)/bin/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/q8b/usbhostd" \
 		"$(SYSTEM_ROOT)/drivers/q8b/usbfat32fsd" \
 		"$(SYSTEM_ROOT)/drivers/q8b/net" \
 		"$(SYSTEM_ROOT)/drivers/q8b/uartd" \
-		"$(SYSTEM_ROOT)/drivers/q8b/pcied" "$(SYSTEM_ROOT)/drivers/q8b/wlan" \
+		"$(SYSTEM_ROOT)/drivers/q8b/pcied" \
 		"$(RAMFS_STAGING)/drivers/q8b/"
-	@cp -p "$(SYSTEM_ROOT)/drivers/netd" "$(RAMFS_STAGING)/drivers/"
-	@cp -p "$(SYSTEM_ROOT)/drivers/logd" "$(RAMFS_STAGING)/drivers/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/timerd" \
 		"$(SYSTEM_ROOT)/drivers/piped" "$(SYSTEM_ROOT)/drivers/ramfsd" \
 		"$(SYSTEM_ROOT)/drivers/nulld" "$(RAMFS_STAGING)/drivers/"
