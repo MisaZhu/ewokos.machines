@@ -7,10 +7,29 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <ewoksys/mmio.h>
 
 #define FW_DIR "/etc/firmware/ath11k/WCN6855/hw2.1/"
 static uint16_t pci_subsystem_vendor = 0x17cb;
 static uint16_t pci_subsystem_device = 0x0108;
+
+/* SC8280XP QFPROM rows the PBL prints at boot: JTAG id @0x786130, device
+ * serial number @0x786134, OEM id @0x786138.  The serial is per-device and
+ * is the same value Linux exposes as /sys/devices/soc0/serial_number. */
+#define QFPROM_WIN_PHY   0x00786000u
+#define QFPROM_SERIALOff 0x134u
+#define QFPROM_OEMID_OFF 0x138u
+
+uint64_t wcn_board_cpu_id(void) {
+    ewokos_addr_t va = mmio_map_offset(QFPROM_WIN_PHY, 0x1000u);
+    if (!va) return 0;
+    volatile uint32_t *row = (volatile uint32_t *)(va + QFPROM_SERIALOff);
+    uint32_t serial = row[0];
+    uint32_t oem = row[1];
+    /* All-ones/zero means the fuse row is secure-blocked or unprogrammed. */
+    if (serial == 0 || serial == 0xffffffffu) return 0;
+    return ((uint64_t)oem << 32) | serial;
+}
 
 /* The PCI subsystem identity is shared by Q8B and TW220, while board-2.bin
  * carries chip-specific variants.  An explicit /etc/wlan.board remains an

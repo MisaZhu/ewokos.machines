@@ -184,26 +184,39 @@ int wcn_attach(void) {
     w.subsystem = ((uint32_t)w.pcie.subsystem_device << 16) |
             w.pcie.subsystem_vendor;
     wcn_wmi_set_permanent_mac(w.pcie.vpd_mac_valid ? w.pcie.vpd_mac : NULL);
-    /* Keep the fallback identity stable without writing a host file.  Prefer
-     * the PCIe Device Serial Number (normally endpoint OTP); when absent,
-     * fold the immutable PCI function identity into the seed.  Do not include
-     * BAR0: pcied may allocate a different BAR after a stop/start, and a BAR
-     * address is not hardware identity.  The PCI identity remains stable on
-     * one board/card even though it cannot distinguish two identical
-     * unprogrammed cards. */
-    uint64_t seed = UINT64_C(0x9e3779b97f4a7c15);
-    seed ^= ((uint64_t)w.pcie.vendor_id << 48) |
-            ((uint64_t)w.pcie.device_id << 32) |
-            ((uint64_t)w.pcie.subsystem_vendor << 16) |
-            w.pcie.subsystem_device;
-    seed = seed * UINT64_C(0x100000001b3) ^
-            (((uint64_t)w.pcie.bus << 24) |
-             ((uint64_t)w.pcie.device << 8) | w.pcie.function);
-    if (w.pcie.serial_valid) {
-        seed ^= w.pcie.serial_number;
-        wcn_log("wcn: fallback MAC seed source=PCIe Device Serial Number\n");
+    /* Keep the fallback identity stable without writing a host file.  The
+     * module itself (QCNFA765 replacement cards) ships unprogrammed: VPD,
+     * PCIe DSN and QMI OTP/EEPROM are all absent, so identical modules would
+     * otherwise derive colliding addresses from the PCI identity alone and
+     * kill each other's 4-way handshake on one AP.  Anchor the seed to the
+     * SoC serial number (QFPROM, per-device) instead: the address follows
+     * the board, not the module slot.  Prefer the PCIe Device Serial Number
+     * when a module does expose one, and fold the PCI function identity in
+     * as low-order seasoning so two WLAN devices on one board still differ.
+     * Do not include BAR0: pcied may allocate a different BAR after a
+     * stop/start, and a BAR address is not hardware identity. */
+    uint64_t seed = wcn_board_cpu_id();
+    if (seed) {
+        seed = seed * UINT64_C(0x100000001b3) ^
+                (((uint64_t)w.pcie.bus << 24) |
+                 ((uint64_t)w.pcie.device << 8) | w.pcie.function);
+        wcn_log("wcn: fallback MAC seed source=SoC serial (QFPROM) %08x %08x\n",
+                (unsigned)(seed >> 32), (unsigned)seed);
     } else {
-        wcn_log("wcn: fallback MAC seed source=stable PCI identity\n");
+        seed = UINT64_C(0x9e3779b97f4a7c15);
+        seed ^= ((uint64_t)w.pcie.vendor_id << 48) |
+                ((uint64_t)w.pcie.device_id << 32) |
+                ((uint64_t)w.pcie.subsystem_vendor << 16) |
+                w.pcie.subsystem_device;
+        seed = seed * UINT64_C(0x100000001b3) ^
+                (((uint64_t)w.pcie.bus << 24) |
+                 ((uint64_t)w.pcie.device << 8) | w.pcie.function);
+        if (w.pcie.serial_valid) {
+            seed ^= w.pcie.serial_number;
+            wcn_log("wcn: fallback MAC seed source=PCIe Device Serial Number\n");
+        } else {
+            wcn_log("wcn: fallback MAC seed source=stable PCI identity\n");
+        }
     }
     if (!seed) seed = UINT64_C(1);
     wcn_wmi_set_hardware_seed(seed);
