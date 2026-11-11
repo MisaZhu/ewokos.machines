@@ -1,0 +1,12 @@
+{
+    "network":[
+        {
+            "ssid": "X",
+            "passwd": "12345678"
+        },
+        {
+            "ssid": "M",
+            "passwd": "Rokid@2024"
+        }
+    ]
+}
