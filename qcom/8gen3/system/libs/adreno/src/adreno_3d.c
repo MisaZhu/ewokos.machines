@@ -1559,7 +1559,16 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		binds[0].phy = g_vout.iova;   binds[0].bytes = g->nverts * rec;
 		binds[1].phy = g->pos_phy;    binds[1].bytes = g->nverts * pstride;
 		if (!gtexc) {
-			binds[2].phy = g->col_phy; binds[2].bytes = g->nverts * 12u;
+			/* Binding 2 is the per-vertex colour stream.  The colour xform
+			 * kernel reads it at either the legacy rgb stride-3 (12 B/vert)
+			 * or, when the client stages the uColAlpha rgba layout, stride-4
+			 * (16 B/vert, alpha in element 3).  Size the descriptor at the
+			 * 16 B/vert ceiling: the stride-3 kernel's reads stay inside it
+			 * and inside the client's 3-float canvas, while the stride-4
+			 * kernel's alpha reads must not fall outside the descriptor
+			 * (A6XX clamps or zeroes them and the dot's alpha would vanish
+			 * for the last quarter of every dispatch). */
+			binds[2].phy = g->col_phy; binds[2].bytes = g->nverts * 16u;
 		}
 		if (ginst) {
 			binds[3].phy = g->ctex_phy; binds[3].bytes = g->ctex_stride * g->ctex_h;

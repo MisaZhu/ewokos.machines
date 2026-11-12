@@ -39,6 +39,11 @@
 "uniform int uFbStride;\n" \
 "uniform int uTriFirst;\n" \
 "uniform int uTriCount;\n" \
+"/* The client may launch only the primitives' bounding-box rectangle (the\n" \
+"   daemon shrinks the raster grid to that window); uDispatchOffset remaps\n" \
+"   the window-relative global IDs back to framebuffer coordinates.  Zero\n" \
+"   keeps the historic full-frame launch. */\n" \
+"uniform ivec2 uDispatchOffset;\n" \
 "#if Q8B_TEXTURE\n" \
 "uniform int uTexW;\n" \
 "uniform int uTexH;\n" \
@@ -78,10 +83,10 @@
 " return true;\n" \
 "}\n" \
 "void main() {\n" \
-" ivec2 xy=ivec2(gl_GlobalInvocationID.xy);\n" \
+" ivec2 xy=ivec2(gl_GlobalInvocationID.xy)+uDispatchOffset;\n" \
 " bool pixel_active=xy.x<int(uViewportWH.x)&&xy.y<int(uViewportWH.y);\n" \
 " int lid=int(gl_LocalInvocationID.y)*Q8B_TILE_W+int(gl_LocalInvocationID.x);\n" \
-" vec2 tile_lo=vec2(gl_WorkGroupID.xy)*vec2(float(Q8B_TILE_W),float(Q8B_TILE_H));\n" \
+" vec2 tile_lo=vec2(gl_WorkGroupID.xy)*vec2(float(Q8B_TILE_W),float(Q8B_TILE_H))+vec2(uDispatchOffset);\n" \
 " vec2 tile_hi=tile_lo+vec2(float(Q8B_TILE_W),float(Q8B_TILE_H));\n" \
 " uint bestDepth=0xffffffffu,bestColor=0u; bool dirty=false;\n" \
 " if(pixel_active) { int idx=xy.y*uFbStride+xy.x; bestDepth=depth[idx]; bestColor=fb[idx]; }\n" \

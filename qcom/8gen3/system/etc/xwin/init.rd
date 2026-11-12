@@ -47,6 +47,8 @@
 # --gpio for the old bit-bang master when bringing the panel up by hand.
 # TW220 only:
 @/bin/ipcserv /drivers/8gen3/goodixd        /dev/touch0
+# Battery status (charger PMIC + ADC7 VBAT_SNS over SPMI).
+@/bin/ipcserv /drivers/8gen3/powerd         /dev/power0
 # gaokun (gaokun3) only:
 #@/bin/ipcserv /drivers/8gen3/himaxd        /dev/touch0
 @/bin/ipcserv /drivers/8gen3/hid_touchpadd /dev/touchpad0 /dev/usb0
