@@ -6,10 +6,12 @@
  * consumed by statusbar's PowerInfo widget:
  *   byte0 = battery present, byte1 = charging, byte2 = capacity percent.
  *
- * The hardware side lives in power_pmu.c: SMB5 charger status plus an ADC7
- * VBAT_SNS voltage sample converted with the uConsole voltage curve.  If the
- * board turns out to have no charger PMIC (EC-managed battery) the device
- * still starts and simply reports [0,0,0], which hides the battery widget.
+ * The hardware side lives in power_pmu.c: read-only SMB5 charger status
+ * and fuel-gauge registers.  Real capacity on this Windows-on-ARM laptop
+ * comes from the ADSP firmware battery manager (PMIC GLINK battmgr, see
+ * battmgr_wire.h) once the ADSP bring-up lands.  If the board turns out to
+ * have no charger PMIC (EC-managed battery) the device still starts and
+ * simply reports [0,0,0], which hides the battery widget.
  */
 
 #include <stdbool.h>
@@ -72,18 +74,47 @@ static char* power_help(void) {
 
 static char* power_status(void) {
     char buf[224];
+    const char* src;
 
     /* A status query re-samples so the reply reflects the live PMIC. */
     (void)power_pmu_sample(&_sample);
+    switch (_sample.cap_src) {
+    case CAP_SRC_BATTMGR:
+        src = "battmgr (ADSP)";
+        break;
+    case CAP_SRC_CHARGER:
+        src = "charger full";
+        break;
+    case CAP_SRC_FG:
+        src = "fuel gauge";
+        break;
+    case CAP_SRC_REMEMBERED:
+        src = "last known";
+        break;
+    default:
+        src = "none";
+        break;
+    }
     if (_sample.vbat_valid) {
         snprintf(buf, sizeof(buf),
-                "battery=%s charging=%s capacity=%u%% "
+                "battery=%s charging=%s capacity=%u%% (%s) "
                 "voltage=%d.%03dV chg_state=%u batif=%02x "
                 "sid(chg=%d vbat=%d)\n",
                 _sample.battery ? "yes" : "no",
                 _sample.charging ? "yes" : "no",
-                (unsigned)_sample.capacity,
+                (unsigned)_sample.capacity, src,
                 _sample.voltage_mv / 1000, _sample.voltage_mv % 1000,
+                (unsigned)_sample.chgr_state, (unsigned)_sample.batif_sts,
+                _sample.charger_sid, _sample.vbat_sid);
+    } else if (_sample.capacity > 0) {
+        /* Charger-derived or remembered capacity with no voltage
+         * reading: the TW220's fuel gauge boots dormant. */
+        snprintf(buf, sizeof(buf),
+                "battery=%s charging=%s capacity=%u%% (%s) "
+                "chg_state=%u batif=%02x sid(chg=%d vbat=%d)\n",
+                _sample.battery ? "yes" : "no",
+                _sample.charging ? "yes" : "no",
+                (unsigned)_sample.capacity, src,
                 (unsigned)_sample.chgr_state, (unsigned)_sample.batif_sts,
                 _sample.charger_sid, _sample.vbat_sid);
     } else {
@@ -114,21 +145,18 @@ static char* power_dev_cmd(vdevice_t* dev, int from_pid, int argc,
 }
 
 /* Bring-up diagnostics.  Each stage prints directly to stdout so a hang
- * leaves the last completed stage visible on the wire.  Run from a shell:
+ * leaves the last completed stage visible on the wire.  All modes are
+ * strictly read-only - the driver has no SPMI write path (writes to the
+ * battery PMIC channels wedge the TW220 bus).  Run from a shell:
  *   /drivers/8gen3/powerd --dump    map summary (safe core-register reads)
  *   /drivers/8gen3/powerd --probe   + observer-read sweep
- *   /drivers/8gen3/powerd --adc     + raw VBAT_SNS conversion attempts
  *   /drivers/8gen3/powerd --sample  + one live sample
  *   /drivers/8gen3/powerd --mapall  full APID map listing
+ *   /drivers/8gen3/powerd --seed <chg_sid> <cap>
+ *                                   bootstrap /etc/powerd.state (no SPMI
+ *                                   access; run once at deployment)
  *   /drivers/8gen3/powerd --read <apid> <reg> <len> ...
- *                                   raw observer reads (read-only)
- *   /drivers/8gen3/powerd --write <apid> <reg> <val>
- *                                   one gated RW-window write (pre/post
- *                                   reads; pass the pre-read value back
- *                                   for a no-op write-back probe).
- *                                   WARNING: proven to wedge the TW220
- *                                   SPMI bus for FG/ADC battery channels -
- *                                   do not use except for diagnostics. */
+ *                                   raw observer reads (read-only) */
 static int dump_mode(const char* stage) {
     printf("powerd: SPMI init...\n");
     power_pmu_verbose(true);
@@ -137,10 +165,8 @@ static int dump_mode(const char* stage) {
         return -1;
     }
     power_pmu_dump_map();
-    if (strcmp(stage, "--probe") == 0 || strcmp(stage, "--adc") == 0)
+    if (strcmp(stage, "--probe") == 0)
         power_pmu_dump_probe();
-    if (strcmp(stage, "--adc") == 0)
-        power_pmu_dump_adc();
     if (strcmp(stage, "--sample") == 0)
         power_pmu_dump_sample();
     if (strcmp(stage, "--mapall") == 0)
@@ -163,43 +189,24 @@ static int read_mode(int n, const char* const* args) {
     return power_pmu_read(n, args);
 }
 
-/* --write <apid> <reg> <val> : one RW-window write with pre/post reads
- * and the kernel's EE0-ownership gate applied inside spmi_write.
- * Diagnostic only: writes to battery PMIC channels (FG/ADC) are proven
- * to wedge the TW220 SPMI bus and require a reboot to recover. */
-static int write_mode(int n, const char* const* args) {
-    if (n != 3) {
-        fprintf(stderr, "usage: powerd --write <apid> <reg> <val>\n");
-        return -1;
-    }
-    printf("powerd: SPMI init...\n");
-    power_pmu_verbose(true);
-    if (power_pmu_init() != 0) {
-        printf("powerd: SPMI init failed\n");
-        return -1;
-    }
-    return power_pmu_write_args(n, args);
-}
-
 int main(int argc, char** argv) {
     const char* mount = "/dev/power0";
 
     if (argc > 1 && strcmp(argv[1], "--read") == 0)
         return read_mode(argc - 2, (const char* const*)&argv[2]);
-    if (argc > 1 && strcmp(argv[1], "--write") == 0)
-        return write_mode(argc - 2, (const char* const*)&argv[2]);
+    if (argc > 1 && strcmp(argv[1], "--seed") == 0)
+        return power_pmu_seed_args(argc - 2, (const char* const*)&argv[2]);
     if (argc > 1 &&
             (strcmp(argv[1], "--dump") == 0 ||
              strcmp(argv[1], "--probe") == 0 ||
-             strcmp(argv[1], "--adc") == 0 ||
              strcmp(argv[1], "--sample") == 0 ||
              strcmp(argv[1], "--mapall") == 0))
         return dump_mode(argv[1]);
     if (argc > 2 || (argc == 2 && argv[1][0] != '/')) {
         fprintf(stderr, "usage: powerd [/dev/power0] | "
-                "--dump | --probe | --adc | --sample | --mapall | "
-                "--read <apid> <reg> <len> ... | "
-                "--write <apid> <reg> <val>\n");
+                "--dump | --probe | --sample | --mapall | "
+                "--seed <chg_sid> <cap> | "
+                "--read <apid> <reg> <len> ...\n");
         return -1;
     }
     if (argc == 2)

@@ -14,33 +14,46 @@
  *     IRQ-owner channel (PMIC_ARB_CHAN_IS_IRQ_OWNER_MASK).
  *   - channel ownership sits at cnfg+0x700+4*n, owner = low 3 bits
  *     (SPMI_OWNERSHIP_PERIPH2OWNER).  Observer reads are allowed on any
- *     EE-owned channel; only register writes need EE0 ownership.
- *   - OBS window: obsrvr + 0x10000*ee + 0x80*apid; RW window:
- *     0x10000*apid.  Status: bit0 done, bit1 transaction failed,
- *     bit2 denied, bit3 dropped.
+ *     EE-owned channel; this driver only ever observer-reads.
+ *   - OBS window: obsrvr + 0x10000*ee + 0x80*apid.  Status: bit0 done,
+ *     bit1 transaction failed, bit2 denied, bit3 dropped.
  *
- * Battery side: the PM8350B-class charger reports its charge state machine
- * in BATTERY_CHARGER_STATUS_1 (peripheral 0x15 register 0x06, bits[2:0];
- * standalone-SMB5 layout: peripheral 0x46; legacy fallback 0x10) and
- * battery presence in BATIF INT_RT_STS (peripheral 0x48 register 0x10 on
- * SID2, present = !(bit4|bit5); fallback: peripheral 0x12).  Reads only,
- * no charger configuration is written.
+ * Battery side: the charger reports its charge state machine in
+ * BATTERY_CHARGER_STATUS_1 (peripheral 0x15 register 0x06, bits[2:0];
+ * qpnp-smbcharger/PM660-family table: 0 TRICKLE, 1 PRE, 2 FULL, 3 FAST,
+ * 4 TERMINATE, 5 INHIBIT, 6 OVERVOLTAGE; fallback peripherals 0x46/0x10)
+ * and battery presence in BATIF INT_RT_STS (peripheral 0x48 register
+ * 0x10 on SID2, present = !(bit4|bit5); fallback: peripheral 0x12).
+ * Reads only, no charger configuration is written.  The board exposes
+ * several charger PMICs; enumerate() observer-reads each candidate's
+ * status register and picks the one with a non-zero state - the
+ * physically wired charger (SID10, apid 367/473 on the TW220) - instead
+ * of blindly taking the last map entry.
  *
  * Capacity and voltage come from the fuel gauge (peripheral 0x40 on SID1
  * or SID3): SOC_MONOTONIC (0x09, 16-bit, LSB 0.00390625 %) and
  * VOLTAGE_NOW (0x0A, millivolts).  The FG algorithm runs autonomously in
  * the PMIC, so this driver is fully read-only: observer reads only, no
- * register writes and no ADC conversions.  RW-window writes to the
- * battery PMIC peripherals are PROVEN to wedge the SPMI bus on the TW220:
- * a write-back-same probe to FG@SID1 (apid 82) and the earlier ADC5@SID8
- * write both froze the board (network/system dead, reboot required),
- * while goodixd's writes to GPIO@SID1 work - so the stall is specific to
- * the FG/ADC blocks in this firmware state.  Never issue RW-window
- * writes to battery PMIC channels (see powerd README).
+ * register writes and no ADC conversions.  The TW220 boots with the FG
+ * dormant (SOC/VOLT read 0x0000), so capacity falls back to the charger:
+ * FULL_CHARGE state reports 100%.
  *
- * Register map references follow the downstream qcom drivers
- * (qpnp-smb5-reg.h, qpnp-fg-gen4.c); ADC5 conversion code is retained
- * for the opt-in --adc diagnostic only, which must not be run.
+ * Unplugged, every 0x15 candidate reads state 0 and no read-only
+ * capacity source exists at all (register sweeps proved FG dormant,
+ * BCL/ADC idle), so the daemon persists the last known truth in
+ * /etc/powerd.state (persistent ext3 rootfs): enumerate() prefers the
+ * remembered charger SID when no candidate is active and sample()
+ * reports the remembered capacity instead of dropping to 0.  The file
+ * rewrites only when a live source reports a changed value.
+ * This driver is strictly READ-ONLY: it has no SPMI write path at all.
+ * RW-window writes to the battery PMIC peripherals are PROVEN to wedge
+ * the SPMI bus on the TW220: a write-back-same probe to FG@SID1 (apid 82)
+ * and the earlier ADC5@SID8 write both froze the board (network/system
+ * dead, power-cycle required), while goodixd's writes to GPIO@SID1 work -
+ * the stall is specific to the FG/ADC blocks in this firmware state.
+ * Real battery capacity is owned by the ADSP firmware battery manager
+ * (PMIC GLINK battmgr, see battmgr_wire.h); it is not reachable from
+ * these registers until the ADSP is booted.
  */
 
 #include <stdbool.h>
@@ -64,13 +77,8 @@
 #define SPMI_OBS_PHY       0x0e600000U
 #define SPMI_OBS_VA        0x5a100000U
 #define SPMI_OBS_SIZE      0x00010000U
-/* One RW window per APID: physical base + apid * 64K, 16K each.  A handful
- * of slots is enough - writes only ever target the ADC5 peripheral. */
-#define SPMI_RW_PHY_BASE   0x0c600000U
-#define SPMI_RW_VA_BASE    0x5a180000U
-#define SPMI_RW_STRIDE     0x00010000U
-#define SPMI_RW_SIZE       0x00004000U
-#define SPMI_RW_SLOTS      8U
+/* No RW window is mapped: this driver has no SPMI write path (writes to
+ * the battery PMIC channels wedge the bus on the TW220). */
 
 /* v5 APID map word: PPID = bits[8:19], IRQ-owner flag = bit 24. */
 #define APID_PPID_SHIFT    8U
@@ -83,8 +91,11 @@
 #define OWNER_REG(n)       (0x700U + 4U * (n))
 
 /* Peripherals of interest.  The TW220 map (probed on device) shows:
- *   - fg@4000 (0x40) on SID1 (apid 82) and SID3 (apid 179) - fuel gauge;
- *   - charger@1500 (0x15) on SID1 and SID3 - PM8350B-class charger;
+ *   - fg@4000 (0x40) on SID1 (apid 82) and SID3 (apid 179) - fuel gauge,
+ *     dormant at boot (SOC/VOLT read 0x0000);
+ *   - charger@1500 (0x15) on SIDs 1/3/6/8/10/12 - smbcharger-family
+ *     charger; only SID10 is live (apid 367 irq / 473 non-irq, status
+ *     0x02 = FULL_CHARGE while the adapter holds the pack full);
  *   - batif@4800 (0x48) on SID2 (apid 124) - battery interface, reads OK;
  *   - SMB5-style CHGR 0x46 / BATIF 0x12 and legacy 0x10 as fallbacks;
  *   - adc@3100 (0x31) on SIDs 6/8/10/12/0 and chg@3600 (0x36) everywhere.
@@ -99,9 +110,13 @@
 #define PERIPH_CHGR_1000   0x10U
 #define PERIPH_BATIF_1200  0x12U
 
-/* SMB5 CHGR / BATIF registers (smb5-reg.h). */
+/* CHGR / BATIF registers (smb5-reg.h / qpnp-smbcharger). */
 #define CHGR_STATUS1       0x06U  /* BATTERY_CHARGER_STATUS_1, bits[2:0] */
 #define CHGR_STATE_MASK    0x07U
+/* smbcharger-family charge state in CHGR_STATUS1 (see header comment).
+ * The TW220's live charger reads 0x02 = FULL_CHARGE while the adapter
+ * holds the pack full; the unwired charger PMICs read 0x00. */
+#define CHGR_STATE_FULL    2U
 #define BATIF_INT_RT_STS   0x10U
 /* Battery present = !(BAT_THERM_OR_ID_MISSING | BAT_TERMINAL_MISSING). */
 #define BATIF_MISSING_MASK 0x30U
@@ -115,43 +130,6 @@
 #define FG_SOC_MAX         25525U
 #define FG_VOLT_MIN_MV     2500U   /* plausibility: 1S cutoff .. 2S full */
 #define FG_VOLT_MAX_MV     9800U
-
-/* ADC5 (PMIC7 VADC) registers (qcom-spmi-adc5.c). */
-#define ADC_STATUS1        0x08U
-#define ADC_STATUS1_EOC    0x01U
-#define ADC_STATUS1_MASK   0x03U
-#define ADC_STATUS1_FAULT  0x80U
-#define ADC_APP_SID        0x40U
-#define ADC_DIG_PARAM      0x42U
-#define ADC_FAST_AVG       0x43U
-#define ADC_CH_SEL         0x44U
-#define ADC_DELAY_CTL      0x45U
-#define ADC_CONV_REQ       0x47U
-#define ADC_DATA0          0x50U
-#define ADC_DATA1          0x51U
-
-/* VBAT_SNS conversion setup, mirroring the downstream pm8350b DT:
- * cal-type absolute (2), decimation 340 (index 1), avg-samples 1,
- * hw-settle 200us. */
-#define ADC_DIG_CAL_SHIFT  4U
-#define ADC_DIG_DEC_SHIFT  2U
-#define ADC_DIG_ABS_CAL    (2U << ADC_DIG_CAL_SHIFT)
-#define ADC_DIG_DEC_340    (1U << ADC_DIG_DEC_SHIFT)
-#define ADC_DIG_MASK       0x3cU
-#define ADC_FAST_AVG_SAMPLES 0x01U
-#define ADC_FAST_AVG_MASK  0x07U
-#define ADC_CH_VBAT_SNS    0x8fU
-#define ADC_DELAY_200US    0x02U
-#define ADC_DELAY_MASK     0x0fU
-#define ADC_CONV_REQ_GO    0x80U
-
-#define ADC_DATA_INVALID   0x8000U
-#define ADC_FULL_SCALE_CODE 28900U  /* 0x70e4, adc5_data_pmic */
-#define ADC_VREF_UV        1875000U
-#define VBAT_PRESCALE_DEN  6U       /* VBAT_SNS pre-scaling 1/6 */
-
-/* EOC poll budget: decimation-340 conversions finish in well under 100ms. */
-#define ADC_POLL_MS        100U
 
 #define APID_ENTRY_MAX     512U
 #define ADC_CANDIDATE_MAX  8U
@@ -167,11 +145,6 @@ typedef struct {
 static volatile uint8_t* _core;
 static volatile uint8_t* _cfg;
 static volatile uint8_t* _obs;
-static struct {
-    uint32_t apid;
-    volatile uint8_t* va;
-} _rw_slots[SPMI_RW_SLOTS];
-static unsigned _rw_slot_count;
 
 static apid_entry_t _entries[APID_ENTRY_MAX];
 static unsigned _entry_count;
@@ -188,14 +161,25 @@ static int _fg_apids[4];
 static int _fg_sids[4];
 static unsigned _fg_count;
 static int _chgr_apid = -1, _chgr_sid = -1;    /* CHGR 0x15/0x46/0x10 */
+static int _chgr1500_apids[8];                 /* all 0x15 candidates */
+static int _chgr1500_sids[8];
+static int _chgr1500_states[8];                /* status1, -1 = no read */
+static unsigned _chgr1500_count;
 static int _batif_apid = -1, _batif_sid = -1;  /* BATIF 0x48 or 0x12 */
 static int _charger_sid = -1;       /* SID owning the charger/battery PMIC */
 static bool _mapped;
 
+/* Persisted daemon state (/etc/powerd.state, persistent ext3 rootfs):
+ * the wired charger SID and the last known capacity.  Both survive an
+ * unplugged reboot, where no live read-only source exists. */
+#define POWERD_STATE_PATH   "/etc/powerd.state"
+static int _stored_chgr_sid = -1;
+static uint8_t _stored_cap;
+static bool _stored_cap_valid;
+static bool _state_dirty;
+
 /* Diagnostics for --dump. */
 static uint32_t _last_arb_status;   /* arbiter status of the last wait */
-static const char* _adc_stage = "idle";
-static int _adc_status1 = -1;
 static bool _verbose;
 static unsigned _map_slots;         /* map slots actually scanned */
 
@@ -278,42 +262,107 @@ static int atou(const char* s, uint32_t* out) {
     return 0;
 }
 
-static volatile uint8_t* rw_window(uint32_t apid) {
-    for (unsigned i = 0; i < _rw_slot_count; i++) {
-        if (_rw_slots[i].apid == apid)
-            return _rw_slots[i].va;
+/* Prefix-decimal parser for token streams: parses the leading digits of
+ * s and stops at the first non-digit.  atou cannot be used here - it
+ * rejects the trailing newline/space that ends each token. */
+static int atou_prefix(const char* s, uint32_t* out) {
+    uint32_t v = 0;
+    bool any = false;
+
+    while (*s >= '0' && *s <= '9') {
+        any = true;
+        v = v * 10U + (uint32_t)(*s - '0');
+        s++;
     }
-    if (_rw_slot_count == SPMI_RW_SLOTS)
-        return NULL;
-    uint64_t va = SPMI_RW_VA_BASE +
-            (uint64_t)_rw_slot_count * SPMI_RW_STRIDE;
-    uint64_t pa = SPMI_RW_PHY_BASE + (uint64_t)apid * SPMI_RW_STRIDE;
-    if (map_at(va, pa, SPMI_RW_SIZE) != 0)
-        return NULL;
-    _rw_slots[_rw_slot_count].apid = apid;
-    _rw_slots[_rw_slot_count].va = (volatile uint8_t*)(uintptr_t)va;
-    return _rw_slots[_rw_slot_count++].va;
+    if (!any)
+        return -1;
+    *out = v;
+    return 0;
 }
 
-/* Register writes require EE0 ownership of the channel.  The kernel's
- * pmic_arb_offset_v5 refuses with -EPERM before touching hardware when
- * the channel's write owner is another EE, so mirror that gate here
- * instead of relying on the arbiter's undefined behavior. */
-static int spmi_write(uint32_t apid, unsigned offset, unsigned value) {
-    volatile uint8_t* rw;
+/* Load /etc/powerd.state ("chg_sid N" / "cap N" tokens) if present.
+ * Missing or malformed files simply leave the remembered values at
+ * their defaults - the daemon still starts and re-learns on the next
+ * live observation. */
+static void state_load(void) {
+    char buf[128];
+    FILE* f;
+    size_t n;
+    const char* p;
 
-    if (apid >= APID_MAP_SLOTS ||
-            (rd(_cfg, OWNER_REG(apid)) & 7U) != 0)
-        return -1;
-    rw = rw_window(apid);
-    if (rw == NULL)
-        return -1;
-    /* Latch data first, then issue the command (goodixd order). */
-    wr(rw, 0x10, value);
-    __asm__ volatile("dsb sy" ::: "memory");
-    wr(rw, 0, offset << 4);
-    __asm__ volatile("dsb sy" ::: "memory");
-    return spmi_wait(rw);
+    f = fopen(POWERD_STATE_PATH, "r");
+    if (f == NULL)
+        return;
+    n = fread(buf, 1U, sizeof(buf) - 1U, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    p = buf;
+    while (*p != '\0') {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+            p++;
+        if (strncmp(p, "chg_sid", 7U) == 0) {
+            uint32_t v;
+
+            p += 7;
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (atou_prefix(p, &v) == 0 && v < 16U)
+                _stored_chgr_sid = (int)v;
+            while (*p >= '0' && *p <= '9')
+                p++;
+        } else if (strncmp(p, "cap", 3U) == 0) {
+            uint32_t v;
+
+            p += 3;
+            while (*p == ' ' || *p == '\t')
+                p++;
+            if (atou_prefix(p, &v) == 0 && v <= 100U) {
+                _stored_cap = (uint8_t)v;
+                _stored_cap_valid = true;
+            }
+            while (*p >= '0' && *p <= '9')
+                p++;
+        } else {
+            /* Unknown token: skip to the next whitespace. */
+            while (*p != '\0' && *p != ' ' && *p != '\t' &&
+                    *p != '\n' && *p != '\r')
+                p++;
+        }
+    }
+}
+
+/* Rewrite /etc/powerd.state from the remembered values.  Called only
+ * when _state_dirty is set - sampling runs once per second and the file
+ * lives on eMMC, so writes happen on real changes only. */
+static void state_save(void) {
+    char buf[64];
+    size_t len = 0;
+    int w;
+    FILE* f;
+
+    if (_stored_chgr_sid >= 0) {
+        w = snprintf(buf + len, sizeof(buf) - len, "chg_sid %d\n",
+                _stored_chgr_sid);
+        if (w < 0 || (size_t)w >= sizeof(buf) - len)
+            return;
+        len += (size_t)w;
+    }
+    if (_stored_cap_valid) {
+        w = snprintf(buf + len, sizeof(buf) - len, "cap %u\n",
+                (unsigned)_stored_cap);
+        if (w < 0 || (size_t)w >= sizeof(buf) - len)
+            return;
+        len += (size_t)w;
+    }
+    if (len == 0U)
+        return;
+    f = fopen(POWERD_STATE_PATH, "w");
+    if (f == NULL)
+        return;
+    if (fwrite(buf, 1U, len, f) == len)
+        _state_dirty = false;
+    fclose(f);
 }
 
 static const char* arb_err_name(uint32_t status) {
@@ -337,7 +386,6 @@ static const char* arb_err_name(uint32_t status) {
 static int enumerate(void) {
     uint32_t version = rd(_core, 0);
     uint32_t features = rd(_core, 4) & 0x7ffU;
-    int chgr1500_apid = -1, chgr1500_sid = -1;
     int smb5_chgr_apid = -1, smb5_chgr_sid = -1;
     int chgr1000_apid = -1, chgr1000_sid = -1;
     int smb5_batif_apid = -1, smb5_batif_sid = -1;
@@ -356,6 +404,7 @@ static int enumerate(void) {
     memset(_sid_periphs, 0, sizeof(_sid_periphs));
     _adc_count = 0;
     _fg_count = 0;
+    _chgr1500_count = 0;
 
     for (uint32_t i = 0; i < _map_slots; i++) {
         uint32_t map = rd(_core, 0x900U + 4U * i);
@@ -383,16 +432,19 @@ static int enumerate(void) {
                     (map & APID_IRQ_OWNER) != 0;
             _entry_count++;
         }
-        /* ADC candidates: EE0-owned only (conversions need writes). */
+        /* ADC candidates: EE0-owned channels, recorded for the read-only
+         * --dump discovery listing only (no conversion path exists). */
         if (periph == PERIPH_ADC5 && ee == 0 &&
                 _adc_count < ADC_CANDIDATE_MAX) {
             _adc_apids[_adc_count] = (int)i;
             _adc_sids[_adc_count] = (int)sid;
             _adc_count++;
         }
-        if (ee == 0 && periph == PERIPH_CHGR_1500) {
-            chgr1500_apid = (int)i;
-            chgr1500_sid = (int)sid;
+        if (ee == 0 && periph == PERIPH_CHGR_1500 &&
+                _chgr1500_count < 8U) {
+            _chgr1500_apids[_chgr1500_count] = (int)i;
+            _chgr1500_sids[_chgr1500_count] = (int)sid;
+            _chgr1500_count++;
         }
         if (ee == 0 && periph == PERIPH_SMB5_CHGR) {
             smb5_chgr_apid = (int)i;
@@ -416,10 +468,49 @@ static int enumerate(void) {
             _fg_count++;
         }
     }
-    _chgr_apid = chgr1500_apid >= 0 ? chgr1500_apid :
-            (smb5_chgr_apid >= 0 ? smb5_chgr_apid : chgr1000_apid);
-    _chgr_sid = chgr1500_apid >= 0 ? chgr1500_sid :
-            (smb5_chgr_apid >= 0 ? smb5_chgr_sid : chgr1000_sid);
+    /* Several charger PMICs are on the bus, but only one is wired to the
+     * battery.  Observer-read each 0x15 candidate's status register and
+     * keep the first with a non-zero charge state (the live charger:
+     * SID10, apid 367/473 on the TW220); that SID is remembered in the
+     * state file. */
+    _chgr_apid = -1;
+    _chgr_sid = -1;
+    for (unsigned i = 0; i < _chgr1500_count; i++) {
+        int st = spmi_read((uint32_t)_chgr1500_apids[i], CHGR_STATUS1);
+
+        _chgr1500_states[i] = st >= 0 ? st & (int)CHGR_STATE_MASK : -1;
+        if (st >= 0 && (st & CHGR_STATE_MASK) != 0U) {
+            _chgr_apid = _chgr1500_apids[i];
+            _chgr_sid = _chgr1500_sids[i];
+            if (_chgr_sid != _stored_chgr_sid) {
+                _stored_chgr_sid = _chgr_sid;
+                _state_dirty = true;
+            }
+            break;
+        }
+    }
+    /* Unplugged, every candidate reads state 0, so nothing distinguishes
+     * the wired charger.  Prefer the SID remembered in the state file
+     * (persisted whenever a live charge state was observed) over the
+     * map-order fallback, which is boot-dependent on the TW220: the
+     * FEATURES register is unstable and can truncate the map scan. */
+    if (_chgr_apid < 0 && _stored_chgr_sid >= 0) {
+        for (unsigned i = 0; i < _chgr1500_count; i++) {
+            if (_chgr1500_sids[i] == _stored_chgr_sid) {
+                _chgr_apid = _chgr1500_apids[i];
+                _chgr_sid = _chgr1500_sids[i];
+                break;
+            }
+        }
+    }
+    if (_chgr_apid < 0 && _chgr1500_count > 0U) {
+        _chgr_apid = _chgr1500_apids[_chgr1500_count - 1];
+        _chgr_sid = _chgr1500_sids[_chgr1500_count - 1];
+    }
+    if (_chgr_apid < 0) {
+        _chgr_apid = smb5_chgr_apid >= 0 ? smb5_chgr_apid : chgr1000_apid;
+        _chgr_sid = smb5_chgr_apid >= 0 ? smb5_chgr_sid : chgr1000_sid;
+    }
     _batif_apid = smb5_batif_apid >= 0 ? smb5_batif_apid : batif1200_apid;
     _batif_sid = smb5_batif_apid >= 0 ? smb5_batif_sid : batif1200_sid;
     /* The charger SID hosts the battery interface (CHGR/BATIF). */
@@ -427,82 +518,10 @@ static int enumerate(void) {
     return 0;
 }
 
-/* One VBAT_SNS conversion on the given ADC channel and APP_SID.  Read-
- * modify-writes the config registers like the downstream driver so fields
- * owned by whoever else may use the ADC are preserved, and restores
- * APP_SID afterwards.  Progress is recorded for --dump. */
-static int adc7_convert(uint32_t apid, uint32_t sid, uint32_t* code_out) {
-    int old_sid;
-    uint8_t cfg[4];
-    uint32_t code = ADC_DATA_INVALID;
-
-    _adc_status1 = -1;
-    _adc_stage = "read-app-sid";
-    old_sid = spmi_read(apid, ADC_APP_SID);
-    _adc_stage = "read-cfg";
-    for (unsigned i = 0; i < 4; i++) {
-        int v = spmi_read(apid, ADC_DIG_PARAM + i);
-        if (v < 0)
-            return -1;
-        cfg[i] = (uint8_t)v;
-    }
-    cfg[0] = (uint8_t)((cfg[0] & ~ADC_DIG_MASK) |
-            ADC_DIG_ABS_CAL | ADC_DIG_DEC_340);
-    cfg[1] = (uint8_t)((cfg[1] & ~ADC_FAST_AVG_MASK) | ADC_FAST_AVG_SAMPLES);
-    cfg[2] = ADC_CH_VBAT_SNS;
-    cfg[3] = (uint8_t)((cfg[3] & ~ADC_DELAY_MASK) | ADC_DELAY_200US);
-
-    _adc_stage = "write-app-sid";
-    if (spmi_write(apid, ADC_APP_SID, sid) != 0)
-        goto out;
-    _adc_stage = "write-cfg";
-    for (unsigned i = 0; i < 4; i++) {
-        if (spmi_write(apid, ADC_DIG_PARAM + i, cfg[i]) != 0)
-            goto out;
-    }
-    _adc_stage = "conv-req";
-    if (spmi_write(apid, ADC_CONV_REQ, ADC_CONV_REQ_GO) != 0)
-        goto out;
-
-    _adc_stage = "poll-eoc";
-    for (unsigned poll = 0; poll < ADC_POLL_MS; poll++) {
-        int status = spmi_read(apid, ADC_STATUS1);
-        _adc_status1 = status;
-        if (status < 0 || (status & ADC_STATUS1_FAULT))
-            break;
-        if ((status & ADC_STATUS1_MASK) == ADC_STATUS1_EOC) {
-            _adc_stage = "read-data";
-            int lo = spmi_read(apid, ADC_DATA0);
-            int hi = spmi_read(apid, ADC_DATA1);
-            if (lo >= 0 && hi >= 0)
-                code = (uint32_t)lo | ((uint32_t)hi << 8);
-            break;
-        }
-        usleep(1000);
-    }
-out:
-    _adc_stage = "restore-app-sid";
-    if (old_sid >= 0)
-        (void)spmi_write(apid, ADC_APP_SID, (uint32_t)old_sid);
-    if (code >= ADC_DATA_INVALID || code == 0 ||
-            code > ADC_FULL_SCALE_CODE) {
-        if (code != ADC_DATA_INVALID)
-            _adc_stage = "bad-code";
-        return -1;
-    }
-    _adc_stage = "ok";
-    *code_out = code;
-    return 0;
-}
-
-static uint64_t code2uv(uint32_t code) {
-    return (uint64_t)code * ADC_VREF_UV * VBAT_PRESCALE_DEN /
-            ADC_FULL_SCALE_CODE;
-}
-
 int power_pmu_init(void) {
     if (_mapped)
         return 0;
+    state_load();
     VPRINTF("powerd: mapping core window\n");
     if (map_at(SPMI_CORE_VA, SPMI_CORE_PHY, SPMI_CORE_SIZE) != 0 ||
             map_at(SPMI_CFG_VA, SPMI_CFG_PHY, SPMI_CFG_SIZE) != 0 ||
@@ -514,13 +533,17 @@ int power_pmu_init(void) {
     _core = (volatile uint8_t*)(uintptr_t)SPMI_CORE_VA;
     _cfg = (volatile uint8_t*)(uintptr_t)SPMI_CFG_VA;
     _obs = (volatile uint8_t*)(uintptr_t)SPMI_OBS_VA;
-    _rw_slot_count = 0;
     VPRINTF("powerd: reading APID map\n");
     if (enumerate() != 0) {
         slog("q8b powerd: SPMI arbiter version check failed\n");
         VPRINTF("powerd: SPMI arbiter version check failed\n");
         return -1;
     }
+    /* A live charge state observed during enumeration updates the
+     * remembered charger SID; persist it right away so diagnostic modes
+     * (--dump/--sample) leave the state file current too. */
+    if (_state_dirty)
+        state_save();
     VPRINTF("powerd: map done, %u channels in %u slots\n",
             _entry_count, _map_slots);
     _mapped = true;
@@ -532,10 +555,46 @@ int power_pmu_init(void) {
     return 0;
 }
 
+/* Bootstrap /etc/powerd.state without any SPMI access.  Run once at
+ * deployment ("powerd --seed <chg_sid> <cap>"); the daemon picks the
+ * values up on its next start. */
+int power_pmu_seed(int sid, int cap) {
+    if (sid < 0 || sid > 15 || cap < 0 || cap > 100)
+        return -1;
+    _stored_chgr_sid = sid;
+    _stored_cap = (uint8_t)cap;
+    _stored_cap_valid = true;
+    _state_dirty = true;
+    state_save();
+    return _state_dirty ? -1 : 0;
+}
+
+/* "powerd --seed <chg_sid> <cap>": strict-decimal argv form. */
+int power_pmu_seed_args(int n, const char* const* args) {
+    uint32_t sid, cap;
+
+    if (n != 2 || atou(args[0], &sid) != 0 || atou(args[1], &cap) != 0) {
+        printf("seed: usage: powerd --seed <chg_sid> <cap> "
+                "(decimal)\n");
+        return -1;
+    }
+    if (sid > 15U || cap > 100U) {
+        printf("seed: bad values chg_sid=%u cap=%u\n", sid, cap);
+        return -1;
+    }
+    if (power_pmu_seed((int)sid, (int)cap) != 0) {
+        printf("seed: state write failed\n");
+        return -1;
+    }
+    printf("seed: wrote chg_sid=%u cap=%u%% to %s\n",
+            sid, cap, POWERD_STATE_PATH);
+    return 0;
+}
+
 /* Fully read-only sample: charger status + BATIF presence are single
  * observer reads, capacity and voltage come from the fuel gauge's ALG
- * registers.  No RW-window writes, no ADC conversions (the write path
- * froze the board during bring-up - see README). */
+ * registers.  The driver has no SPMI write path at all - writes to the
+ * battery PMIC channels froze the board during bring-up (see README). */
 int power_pmu_sample(power_sample_t* out) {
     memset(out, 0, sizeof(*out));
     out->charger_sid = -1;
@@ -550,8 +609,15 @@ int power_pmu_sample(power_sample_t* out) {
         int st = spmi_read((uint32_t)_chgr_apid, CHGR_STATUS1);
         if (st >= 0) {
             out->chgr_state = (uint32_t)st & CHGR_STATE_MASK;
-            /* TRICKLE/PRE/FULLON/TAPER mean current is flowing in. */
-            out->charging = out->chgr_state >= 1U && out->chgr_state <= 4U;
+            /* smbcharger table: PRE/FULL/FAST mean current is flowing
+             * in; the other states are idle/terminal/error. */
+            out->charging = out->chgr_state >= 1U && out->chgr_state <= 3U;
+            /* FULL_CHARGE: the charger holds the pack at full - the only
+             * read-only capacity source while the FG is dormant. */
+            if (out->chgr_state == CHGR_STATE_FULL) {
+                out->capacity = 100U;
+                out->cap_src = CAP_SRC_CHARGER;
+            }
         }
     }
     if (_batif_apid >= 0) {
@@ -575,12 +641,31 @@ int power_pmu_sample(power_sample_t* out) {
         out->capacity = (uint8_t)(soc * 100U / FG_SOC_MAX);
         if (out->capacity > 100U)
             out->capacity = 100U;
+        out->cap_src = CAP_SRC_FG;
         out->voltage_mv = (int)volt;
         out->vbat_code = (uint32_t)soc;
         out->vbat_sid = _fg_sids[i];
         out->vbat_valid = true;
         break;
     }
+    /* Persist live truth when it changed - sampling runs once per
+     * second and the state file lives on eMMC, so only real changes
+     * rewrite it. */
+    if ((out->cap_src == CAP_SRC_CHARGER || out->cap_src == CAP_SRC_FG) &&
+            (!_stored_cap_valid || _stored_cap != out->capacity)) {
+        _stored_cap = out->capacity;
+        _stored_cap_valid = true;
+        _state_dirty = true;
+    }
+    /* Charger idle + FG dormant: no live capacity source exists on the
+     * TW220 (proven by register sweeps), so report the last known
+     * capacity instead of dropping to 0. */
+    if (out->capacity == 0U && _stored_cap_valid) {
+        out->capacity = _stored_cap;
+        out->cap_src = CAP_SRC_REMEMBERED;
+    }
+    if (_state_dirty)
+        state_save();
     return 0;
 }
 
@@ -604,6 +689,18 @@ int power_pmu_dump_map(void) {
     for (unsigned i = 0; i < _adc_count; i++)
         printf(" %d(sid%d)", _adc_apids[i], _adc_sids[i]);
     printf("\n");
+    printf("chgr1500 candidates:");
+    for (unsigned i = 0; i < _chgr1500_count; i++)
+        printf(" %d(sid%d,st=%d)", _chgr1500_apids[i],
+                _chgr1500_sids[i], _chgr1500_states[i]);
+    printf("\n");
+    if (_stored_chgr_sid >= 0 || _stored_cap_valid) {
+        printf("state: chg_sid=%d cap=%u%%%s\n",
+                _stored_chgr_sid, (unsigned)_stored_cap,
+                _stored_cap_valid ? "" : " (no cap)");
+    } else {
+        printf("state: none\n");
+    }
 
     for (uint32_t sid = 0; sid < 16; sid++) {
         if (!(_sid_mask & (1U << sid)))
@@ -675,58 +772,7 @@ int power_pmu_dump_probe(void) {
     return 0;
 }
 
-/* Stage 3: raw VBAT_SNS conversion attempts per ADC channel (includes
- * RW-window register writes).  Each attempt is announced before it runs;
- * a bus-stalling access shows up as the last announcement line. */
-int power_pmu_dump_adc(void) {
-    uint32_t charger_sid_u;
-
-    if (!_mapped) {
-        printf("powerd: SPMI not mapped\n");
-        return -1;
-    }
-    if (_adc_count == 0) {
-        printf("adc: no EE0-owned ADC channels\n");
-        return 0;
-    }
-    charger_sid_u = _charger_sid >= 0 ? (uint32_t)_charger_sid : 0U;
-    for (unsigned i = 0; i < _adc_count; i++) {
-        uint32_t apid = (uint32_t)_adc_apids[i];
-        uint32_t sids_try[3];
-        unsigned sids_try_n = 0;
-
-        sids_try[sids_try_n++] = charger_sid_u;
-        if ((uint32_t)_adc_sids[i] != charger_sid_u)
-            sids_try[sids_try_n++] = (uint32_t)_adc_sids[i];
-        if (0U != charger_sid_u && 0U != (uint32_t)_adc_sids[i])
-            sids_try[sids_try_n++] = 0U;
-        for (unsigned s = 0; s < sids_try_n; s++) {
-            uint32_t code;
-            int rc;
-
-            printf("adc apid=%u sid=%u app_sid=%u: converting\n",
-                    apid, (unsigned)_adc_sids[i],
-                    (unsigned)sids_try[s]);
-            rc = adc7_convert(apid, sids_try[s], &code);
-            printf("adc apid=%u app_sid=%u: rc=%d stage=%s "
-                    "status1=%s%02x",
-                    apid, (unsigned)sids_try[s], rc, _adc_stage,
-                    _adc_status1 >= 0 ? "" : "?",
-                    _adc_status1 >= 0 ?
-                    (unsigned)_adc_status1 : 0);
-            if (rc == 0)
-                printf(" code=0x%04x uv=%u\n", (unsigned)code,
-                        (unsigned)code2uv(code));
-            else
-                printf("\n");
-            if (rc == 0)
-                break;
-        }
-    }
-    return 0;
-}
-
-/* Stage 4: one normal sample through the daemon path. */
+/* Stage 3: one normal sample through the daemon path. */
 int power_pmu_dump_sample(void) {
     power_sample_t s;
 
@@ -736,10 +782,10 @@ int power_pmu_dump_sample(void) {
     }
     printf("sample: reading\n");
     if (power_pmu_sample(&s) == 0) {
-        printf("sample: battery=%d charging=%d capacity=%u%% "
+        printf("sample: battery=%d charging=%d capacity=%u%% src=%u "
                 "voltage=%dmV vbat_code=0x%04x chgr_state=%u batif=%02x\n",
                 s.battery ? 1 : 0, s.charging ? 1 : 0, (unsigned)s.capacity,
-                s.voltage_mv, (unsigned)s.vbat_code,
+                (unsigned)s.cap_src, s.voltage_mv, (unsigned)s.vbat_code,
                 (unsigned)s.chgr_state, (unsigned)s.batif_sts);
     } else {
         printf("sample: pmu not mapped\n");
@@ -806,56 +852,6 @@ int power_pmu_read(int n, const char* const* args) {
                         apid, reg, (unsigned)_last_arb_status,
                         arb_err_name(_last_arb_status));
         }
-    }
-    return 0;
-}
-
-/* Raw write diagnostic: announce, pre-read, one RW-window write, post-read.
- * Every step is printed before the next hardware access so a bus-stalling
- * write self-identifies as the last printed line.  Pass the pre-read value
- * back as <val> to make it a no-op write-back probe; spmi_write applies the
- * EE0-ownership gate from the kernel before touching hardware. */
-int power_pmu_write_args(int n, const char* const* args) {
-    uint32_t apid, reg, val;
-    int pre;
-
-    if (n != 3 || atou(args[0], &apid) != 0 ||
-            atou(args[1], &reg) != 0 || atou(args[2], &val) != 0) {
-        printf("write: usage: powerd --write <apid> <reg> <val> "
-                "(decimal)\n");
-        return -1;
-    }
-    if (!_mapped) {
-        printf("write: SPMI not mapped\n");
-        return -1;
-    }
-    if (apid > 511U || reg > 255U || val > 255U) {
-        printf("write: bad args apid=%u reg=%u val=%u\n", apid, reg, val);
-        return -1;
-    }
-    printf("write apid=%u reg=0x%02x: pre-reading\n", apid, reg);
-    pre = spmi_read(apid, reg);
-    printf("write apid=%u reg=0x%02x: pre=%02x st=%08x %s\n",
-            apid, reg, pre < 0 ? 0 : (unsigned)pre & 0xff,
-            (unsigned)_last_arb_status,
-            arb_err_name(_last_arb_status));
-    printf("write apid=%u reg=0x%02x val=%02x: writing\n",
-            apid, reg, val);
-    if (spmi_write(apid, reg, val) != 0) {
-        printf("write apid=%u reg=0x%02x: st=%08x %s\n",
-                apid, reg, (unsigned)_last_arb_status,
-                arb_err_name(_last_arb_status));
-        return -1;
-    }
-    {
-        int post;
-
-        printf("write apid=%u reg=0x%02x: post-reading\n", apid, reg);
-        post = spmi_read(apid, reg);
-        printf("write apid=%u reg=0x%02x: post=%02x st=%08x %s\n",
-                apid, reg, post < 0 ? 0 : (unsigned)post & 0xff,
-                (unsigned)_last_arb_status,
-                arb_err_name(_last_arb_status));
     }
     return 0;
 }
