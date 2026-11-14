@@ -288,3 +288,13 @@ int bsp_nvme_init(void) {
         sd_enable_sector_buffer(0);
     return ret;
 }
+
+/*
+ * Flush the device's volatile write cache.  The BCM2712 driver completes
+ * every write synchronously and exposes no flush command yet, so this is
+ * the same no-op the libsd path had; journaled commits keep matching
+ * behaviour.
+ */
+int32_t bsp_nvme_flush(void) {
+    return 0;
+}

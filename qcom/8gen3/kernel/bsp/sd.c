@@ -1408,11 +1408,14 @@ int32_t q8b_ramdisk_read_block(int32_t block, void* buf) {
 
 int32_t sd_init(void) {
 #ifndef Q8B_QEMU_TEST
-    /* A boot-only initramfs still needs one early physical-card probe so
-     * user space can inherit the SDCC2 state after it switches rootfs.  A
-     * complete legacy ROOTFS.IMG remains independent of the card. */
-    if (q8b_ramdisk_size == 0 ||
-            (q8b_ramdisk_flags & Q8B_RD_FLAG_BOOT_ONLY) != 0)
+    /* TW220 has no physical SD slot: with a boot-only initramfs the early
+     * sdcc2_probe() here waited on a card that never appears and stalled
+     * the boot right before load_kernel_config().  Nothing on this path
+     * needs SD any more: kernel config and /sbin/init are read from the
+     * firmware ramdisk (q8b_ramdisk_read_block) and the rootfs switch is
+     * USB.  Only the legacy flow with no firmware ramdisk (a complete
+     * ROOTFS.IMG booted from the card) still probes the physical card. */
+    if (q8b_ramdisk_size == 0)
         sdcc2_probe();
 #endif
     if ((q8b_ramdisk_size != 0 &&
