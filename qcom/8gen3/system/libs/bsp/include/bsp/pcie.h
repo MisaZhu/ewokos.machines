@@ -15,9 +15,10 @@ enum {
 	Q8B_PCIE_CMD_PREPARE_WLAN_DMA = 0x50430003,
 };
 
-/* Controllers named by the SC8280XP Q8B board DTS.  PCIe3A (QPS615 Ethernet
- * switch) and PCIe4 (E-key WLAN) are brought up by the independent pcied
- * owner; PCIe2A/3B remain firmware-managed. */
+/* Controllers named by the SC8280XP Q8B board DTS.  PCIe2A is the TW220
+ * NVMe host; PCIe3A (QPS615 Ethernet switch) and PCIe4 (E-key WLAN) are
+ * brought up by the independent pcied owner.  PCIe3B remains firmware-
+ * managed until a second NVMe slot is present. */
 enum q8b_pcie_controller {
 	Q8B_PCIE2A = 0,
 	Q8B_PCIE3A = 1,

@@ -6,9 +6,11 @@
  * drivers, matters on EwokOS: there is no in-kernel PCI core or regulator /
  * clock framework to perform the host-controller transition for us.
  *
- * PCIe3A (the QPS615 Ethernet switch) and PCIe4 (the E-key WLAN module) are
- * started by this layer.  PCIe2A/3B remain firmware-prepared, but use the
- * same ECAM and BAR translation code when a client asks for a probe.
+ * PCIe2A (the TW220 NVMe slot), PCIe3A (the QPS615 Ethernet switch) and
+ * PCIe4 (the E-key WLAN module) are started by this layer.  PCIe2A is kept
+ * firmware-managed on Q8B, where the boot firmware already owns the M.2
+ * link; TW220 has the Linux-style host resources but requires us to perform
+ * the host transition explicitly.
  */
 #include <bsp/pcie.h>
 #include <bsp/pcie-qmp-v5.h>
@@ -31,6 +33,12 @@
 #define ARRAY_SIZE(a)           (sizeof(a) / sizeof((a)[0]))
 #define Q8B_PAGE_SIZE           0x4000u
 
+/* Step-by-step power sequencing log: off by default so the GOP boot
+ * console stays focused on results.  Flip to 1 while debugging a specific
+ * power-on sequence. */
+static int pcie_seq_verbose;
+#define PLOG(...) do { if (pcie_seq_verbose) klog(__VA_ARGS__); } while (0)
+
 #define PCIE4_PARF              0x01c00000ULL
 /* sc8280xp.dtsi: pcie4_phy is the QMP v5 block at 0x01c06000.  The
  * controller's 0x01c04000 range is reserved/ELBI space; mapping it as the
@@ -41,6 +49,9 @@
 #define PCIE4_ECAM              0x400000000ULL
 #define PCIE4_GPIO              0x0f180000ULL
 #define PCIE_GPIO_FIRST         128u
+#define PCIE2A_PARF             0x01c20000ULL
+#define PCIE2A_PHY              0x01c24000ULL
+#define PCIE2A_DBI              0x3c000000ULL
 #define PCIE3A_PARF             0x01c10000ULL
 #define PCIE3A_PHY              0x01c14000ULL
 #define PCIE3A_DBI              0x34000000ULL
@@ -88,17 +99,36 @@
 #define PARF3A_VA               0x5b000000ULL
 #define DBI3A_VA                0x5b004000ULL
 #define PHY3A_VA                0x5b008000ULL
+#define PARF2A_VA               0x5c000000ULL
+#define DBI2A_VA                0x5c004000ULL
+#define PHY2A_VA                0x5c008000ULL
 /* Four 16-MB controller slots: [0x61000000, 0x65000000).  The 0x60000000
  * window belongs to the bootfs/ramdisk aliases and 0x68000000 is reserved
  * by the Adreno MMIO client; never let ECAM overwrite either mapping. */
 #define ECAM_VA                 0x61000000ULL
-#define ECAM_MAP_SIZE           0x00800000u       /* buses 0..7 */
 
 #define PCIE4_MEM32_BUS         0x40000000ULL
 #define PCIE4_MEM32_PHY         0x410000000ULL
 #define PCIE4_MEM32_SIZE        0x10000000ULL
 #define PCIE4_MEM64_PHY         0x420000000ULL
 #define PCIE4_MEM64_SIZE        0x20000000ULL
+
+/* The PCIe2A host on this platform uses the Linux SC8280XP DT windows
+ * directly.  Keep the controller windows explicit and select them from the
+ * controller topology, never from the firmware machine string (which is not
+ * a reliable hardware identifier). */
+typedef struct {
+	uint64_t ecam;
+	uint64_t ecam_size;
+	uint64_t mem32_bus;
+	uint64_t mem32_phys;
+	uint64_t mem32_size;
+	uint64_t mem64_phys;
+	uint64_t mem64_size;
+} pcie_window_t;
+
+static int controller_window(enum q8b_pcie_controller controller,
+		pcie_window_t *out);
 
 #define PCI_VENDOR_ID           0x00u
 #define PCI_COMMAND             0x04u
@@ -129,6 +159,7 @@
 #define PARF_PHY_CTRL           0x40u
 #define PARF_MHI_RESET_CTRL     0x174u
 #define PARF_AXI_MSTR_WR_ADDR_HALT_V2 0x1a8u
+#define PARF_Q2A_FLUSH          0x1acu
 #define PARF_NO_SNOOP_OVERRIDE   0x3d4u
 
 #define LTSSM_ENABLE            BIT(8)
@@ -258,6 +289,7 @@
 static bool _maps_ready;
 static bool _pcie4_up;
 static bool _pcie3a_up;
+static bool _pcie2a_up;
 /* Endpoint power is a separate milestone from link-up.  Keep it explicit so
  * a failed training attempt can never fall through to ECAM, while a second
  * client call does not repeat the WCN power sequence on a live link. */
@@ -328,7 +360,7 @@ static int map_window(uintptr_t va, uint64_t pa, uint32_t size) {
 static int map_controller_registers(void) {
 	if (_maps_ready)
 		return 0;
-	klog("q8b pcie: mapping controller windows\n");
+	PLOG("q8b pcie: mapping controller windows\n");
 	/* Map every block before the first write.  This prevents a partially
 	 * powered controller when a stale kernel lacks one of the windows. */
 	if (map_window(GCC_VA, GCC_PHY, 0x100000)) {
@@ -367,6 +399,15 @@ static int map_controller_registers(void) {
 		klog("q8b pcie: DBI map failed\n");
 		return -1;
 	}
+	/* TW220 PCIe2A is a Linux-style non-ECAM DesignWare host.  Its DBI,
+	 * PARF and QMP resources are separate from the PCI config window; map all
+	 * three before touching the controller reset or iATU registers. */
+	if (map_window(PARF2A_VA, PCIE2A_PARF, 0x4000) ||
+			map_window(DBI2A_VA, PCIE2A_DBI, 0x4000) ||
+			map_window(PHY2A_VA, PCIE2A_PHY, 0x4000)) {
+		klog("q8b pcie: PCIe2A register map failed\n");
+		return -1;
+	}
 	if (map_window(PARF3A_VA, PCIE3A_PARF, 0x4000) ||
 			map_window(DBI3A_VA, PCIE3A_DBI, 0x4000) ||
 			map_window(PHY3A_VA, PCIE3A_PHY, 0x4000)) {
@@ -374,7 +415,7 @@ static int map_controller_registers(void) {
 		return -1;
 	}
 	_maps_ready = true;
-	klog("q8b pcie: controller windows mapped\n");
+	PLOG("q8b pcie: controller windows mapped\n");
 	return 0;
 }
 
@@ -540,7 +581,7 @@ static void i2c21_clock_enable(void) {
 static int i2c21_init(void) {
 	uint32_t v, hw;
 	i2c21_pins_init();
-	klog("q8b pcie: QPS615 I2C pins ctl81=%08x io81=%08x ctl82=%08x io82=%08x\n",
+	PLOG("q8b pcie: QPS615 I2C pins ctl81=%08x io81=%08x ctl82=%08x io82=%08x\n",
 		rd(TLMM_VA + 81u * 0x1000u), rd(TLMM_VA + 81u * 0x1000u + 4u),
 		rd(TLMM_VA + 82u * 0x1000u), rd(TLMM_VA + 82u * 0x1000u + 4u));
 	i2c21_clock_enable();
@@ -587,7 +628,7 @@ static int i2c21_init(void) {
 		GENI_M_GP_PROTO | GENI_M_GP_ARB | GENI_M_RX_WM | GENI_M_RX_LAST |
 		GENI_M_TX_WM | GENI_M_RX_FIFO_RD_ERR | GENI_M_RX_FIFO_WR_ERR |
 		GENI_M_TX_FIFO_RD_ERR | GENI_M_TX_FIFO_WR_ERR);
-	klog("q8b pcie: QPS615 I2C21 ready depth=%u hw=%08x fw=%08x if=%08x\n",
+	PLOG("q8b pcie: QPS615 I2C21 ready depth=%u hw=%08x fw=%08x if=%08x\n",
 		_i2c21_fifo_depth, hw, rd(I2C21_VA + 0x68u), rd(I2C21_VA + 0x64u));
 	return 0;
 }
@@ -640,14 +681,14 @@ static int i2c21_xfer(unsigned addr, bool read, bool stretch,
 	 * poller cannot reliably beat that edge. */
 	if (tx_len)
 		i2c21_fifo_push(tx, tx_len, &sent);
-	klog("q8b pcie: QPS615 I2C launch op=%u param=%08x txlen=%u pre_tx=%08x sent=%u wm=%08x\n",
+	PLOG("q8b pcie: QPS615 I2C launch op=%u param=%08x txlen=%u pre_tx=%08x sent=%u wm=%08x\n",
 		op, param, (unsigned)tx_len, rd(I2C21_VA + GENI_TX_FIFO_STATUS),
 		(unsigned)sent, rd(I2C21_VA + GENI_TX_WATERMARK));
 	wr(I2C21_VA + GENI_M_CMD0, (op << 27) | param);
 	/* Arm the request after M_CMD0, matching the kernel FIFO path while the
 	 * preloaded words cover the first sequencer cycle. */
 	wr(I2C21_VA + GENI_TX_WATERMARK, tx_len ? 1u : 0u);
-	klog("q8b pcie: QPS615 I2C command status=%08x irq=%08x tx=%08x cmd=%08x\n",
+	PLOG("q8b pcie: QPS615 I2C command status=%08x irq=%08x tx=%08x cmd=%08x\n",
 		rd(I2C21_VA + GENI_STATUS), rd(I2C21_VA + GENI_M_IRQ_STATUS),
 		rd(I2C21_VA + GENI_TX_FIFO_STATUS), rd(I2C21_VA + GENI_M_CMD0));
 	for (unsigned i = 0; i < 200000u; i++) {
@@ -768,7 +809,7 @@ static int qps615_power_configure(void) {
 	if (qps615_i2c_write(TC9563_RESET_GPIO, 0xcu))
 		return -1;
 	qps615_reset_gpio(false);
-	klog("q8b pcie: QPS615 power/reset configuration complete\n");
+	PLOG("q8b pcie: QPS615 power/reset configuration complete\n");
 	return 0;
 }
 
@@ -981,7 +1022,7 @@ static int rpmh_supply(const char *name, unsigned millivolts) {
 	if (rpmh_write(address, millivolts) || rpmh_write(address + 8, 7) ||
 			rpmh_write(address + 4, 1))
 		return -1;
-	klog("q8b pcie: RPMh rail %s=%umV enabled\n", name, millivolts);
+	PLOG("q8b pcie: RPMh rail %s=%umV enabled\n", name, millivolts);
 	return 0;
 }
 
@@ -1053,7 +1094,7 @@ static int ekey_3v3_set(bool on) {
 	if (on && spmi_byte((unsigned)apid, 0x46, enable | 0x80))
 		return -1;
 	usleep(on ? 3000 : 1000);
-	klog("q8b pcie: E-key 3V3 %s PMR735a APID=%d\n",
+	PLOG("q8b pcie: E-key 3V3 %s PMR735a APID=%d\n",
 		on ? "enabled" : "disabled", apid);
 	return 0;
 }
@@ -1103,7 +1144,7 @@ static int prepare_ekey_power(void) {
 		klog("q8b pcie: PCIe4 Wi-Fi power preflight failed: PHY rails\n");
 		return -1;
 	}
-	klog("q8b pcie: PHY rails ready\n");
+	PLOG("q8b pcie: PHY rails ready\n");
 	return 0;
 }
 
@@ -1182,6 +1223,37 @@ static void perst(bool deassert) {
 	update(gpio, 0x3fu | BIT(9), 0x200u);
 }
 
+/* TW220 PCIe2A pinctrl from the Linux DT:
+ *   gpio135: VCC3_SSD regulator enable, output high
+ *   gpio142: CLKREQ# alternate function 1, pull-up
+ *   gpio143: PERST#, active-low GPIO output
+ *   gpio145: WAKE#, GPIO input with pull-up
+ */
+static void pcie2a_perst(bool deassert) {
+	uintptr_t gpio = gpio_reg(143);
+	update(gpio + 4, BIT(1), deassert ? BIT(1) : 0);
+	/* TLMM drive-strength=<2> is encoded in bits 8:6. */
+	update(gpio, 0x3fu | (7u << 6) | BIT(9), 0x80u | 0x200u);
+}
+
+static void pcie2a_configure_pins(void) {
+	uintptr_t clkreq = gpio_reg(142);
+	uintptr_t wake = gpio_reg(145);
+	/* TLMM pull encoding is 0=none, 1=pulldown, 2=pullup, 3=keeper.
+	 * Linux's pcie2a-default-state therefore programs 0x6 (function 1,
+	 * pull-up) on CLKREQ# and 0x2 (GPIO input, pull-up) on WAKE#.  0x7/0x3
+	 * selects the keeper and leaves CLKREQ# without the required bias. */
+	update(clkreq, 0x3fu | (7u << 6) | BIT(9), 0x80u | 0x6u);
+	update(wake, 0x3fu | (7u << 6) | BIT(9), 0x80u | 0x2u);
+}
+
+static void pcie2a_nvme_regulator(bool on) {
+	uintptr_t gpio = gpio_reg(135);
+	/* Linux's fixed regulator has enable-active-high and pinctrl bias-disable. */
+	update(gpio + 4, BIT(1), on ? BIT(1) : 0);
+	update(gpio, 0x3fu | (7u << 6) | BIT(9), 0x80u | 0x200u);
+}
+
 static void configure_link_pins(void) {
 	/* Mirror the pcie4_default pinctrl state from the board DTS.  GPIO139 is
 	 * WLAN WAKE# (GPIO input with pull-up); GPIO140 is the CLKREQ# alternate
@@ -1233,7 +1305,7 @@ static int radio_enable(void) {
 		if (!(rd(gpio + 4) & BIT(1)))
 			return -1;
 	}
-	klog("q8b pcie: radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
+	PLOG("q8b pcie: radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
 		rd(gpio_reg(133) + 4), rd(gpio_reg(134) + 4),
 		radio_bt_power_ready(), rd(gpio_reg(132) + 4));
 	return 0;
@@ -1406,7 +1478,7 @@ static int pcie4_clear_flush(void) {
 			rd(PARF_VA + PARF_LTSSM));
 		return -1;
 	}
-	klog("q8b pcie: PCIe4 stale FLUSH_MODE cleared\n");
+	PLOG("q8b pcie: PCIe4 stale FLUSH_MODE cleared\n");
 	return 0;
 }
 
@@ -1417,13 +1489,13 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * let that stale level satisfy the endpoint-power precondition on a retry;
 	 * prepare_ekey_power() below performs a complete off/on cycle. */
 	_pcie4_wifi_powered = false;
-	klog("q8b pcie: PCIe4 maps ready, checking GCC power state\n");
+	PLOG("q8b pcie: PCIe4 maps ready, checking GCC power state\n");
 
 	/* Do not touch PARF, DBI or PHY until the GDSC and the config/AUX clocks
 	 * prove that the controller can accept an MMIO transaction.  TLMM GPIO and
 	 * RPMh are always-on power controls and are intentionally handled first. */
 	gdsc = rd(GCC_VA + 0x6b004);
-	klog("q8b pcie: PCIe4 GCC gdsc=0x%08x cfg=0x%08x aux=0x%08x rchng=0x%08x\n",
+	PLOG("q8b pcie: PCIe4 GCC gdsc=0x%08x cfg=0x%08x aux=0x%08x rchng=0x%08x\n",
 		gdsc, rd(GCC_VA + 0x6b024), rd(GCC_VA + 0x6b028),
 		rd(GCC_VA + 0x6b040));
 
@@ -1432,7 +1504,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * against a firmware handoff that left PERST# deasserted while LTSSM is
 	 * already down. */
 	configure_link_pins();
-	klog("q8b pcie: PCIe4 asserting PERST before Wi-Fi power\n");
+	PLOG("q8b pcie: PCIe4 asserting PERST before Wi-Fi power\n");
 	perst(false);
 
 	/* The endpoint's board power sequence is deliberately independent of the
@@ -1453,11 +1525,11 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * real probe gate rather than a GPIO observation. */
 	usleep(200000);
 	_pcie4_wifi_powered = true;
-	klog("q8b pcie: PCIe4 Wi-Fi power preflight complete, endpoint settled\n");
+	PLOG("q8b pcie: PCIe4 Wi-Fi power preflight complete, endpoint settled\n");
 
 	/* GDSC and the clocks must be ready before any PARF/PHY access.  This is
 	 * the ordering used by qcom_pcie_host_init + qmp_pcie_power_on. */
-	klog("q8b pcie: PCIe4 enabling GDSC/clocks\n");
+	PLOG("q8b pcie: PCIe4 enabling GDSC/clocks\n");
 	update(GCC_VA + 0x52128, BIT(6), 0);
 	if (wait_bits(GCC_VA + 0x6b004, BIT(31), BIT(31), 100))
 		return -3;
@@ -1474,7 +1546,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 			wait_bits(GCC_VA + 0x6b040, BIT(31), 0, 100) ||
 			wait_bits(GCC_VA + 0x8c030, BIT(31), 0, 100))
 		return -3;
-	klog("q8b pcie: PCIe4 GCC clocks ready\n");
+	PLOG("q8b pcie: PCIe4 GCC clocks ready\n");
 
 	/* PERST# has already been asserted before the endpoint power sequence.  Do
 	 * not probe PARF_LTSSM here.  On SC8280XP a controller which has just
@@ -1483,13 +1555,13 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * abort (and firmware promotes that abort to EL2).  Only touch PARF after
 	 * the root-complex reset pulse has completed.
 	 */
-	klog("q8b pcie: PCIe4 PERST remains asserted before PARF access\n");
-	klog("q8b pcie: PCIe4 radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
+	PLOG("q8b pcie: PCIe4 PERST remains asserted before PARF access\n");
+	PLOG("q8b pcie: PCIe4 radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
 		rd(gpio_reg(133) + 4),
 		rd(gpio_reg(134) + 4), radio_bt_power_ready(), rd(gpio_reg(132) + 4));
 	perst(false);
-	klog("q8b pcie: PCIe4 PERST asserted\n");
-	klog("q8b pcie: PCIe4 resetting root complex\n");
+	PLOG("q8b pcie: PCIe4 PERST asserted\n");
+	PLOG("q8b pcie: PCIe4 resetting root complex\n");
 	/* The mainline sc8280xp binding has two reset lines: the PCIe core and
 	 * link-down recovery.  Keep both in the same reset window so a stale
 	 * recovery transaction cannot reach PARF while it is being initialized. */
@@ -1499,7 +1571,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	update(GCC_VA + 0x6b300, 1, 0);
 	update(GCC_VA + 0x6b000, 1, 0);
 	usleep(1000);
-	klog("q8b pcie: PCIe4 root complex reset complete, configuring PARF\n");
+	PLOG("q8b pcie: PCIe4 root complex reset complete, configuring PARF\n");
 	/* A warm reboot can inherit a latched link-down FLUSH_MODE from the
 	 * previous session because the controller power domain survives while the
 	 * GDSC stays on.  Clear it before any PARF/LTSSM work so training can
@@ -1511,22 +1583,22 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * In particular, do not make LTSSM the first transaction to a reset PARF
 	 * slave. */
 	wr(PARF_VA + 0x1000, 4);
-	klog("q8b pcie: PCIe4 PARF device type set\n");
+	PLOG("q8b pcie: PCIe4 PARF device type set\n");
 	update(PARF_VA + PARF_PHY_CTRL, 1, 0);
-	klog("q8b pcie: PCIe4 PARF PHY control ready\n");
+	PLOG("q8b pcie: PCIe4 PARF PHY control ready\n");
 	wr(PARF_VA + 0x350, (uint32_t)PCIE4_DBI);
 	wr(PARF_VA + 0x354, 0);
 	wr(PARF_VA + 0x634, (uint32_t)(PCIE4_DBI + DBI_ATU_BASE));
 	wr(PARF_VA + 0x638, 0);
 	wr(PARF_VA + 0x358, 0);
 	wr(PARF_VA + 0x35c, 0x80000000u);
-	klog("q8b pcie: PCIe4 PARF DBI/ATU bases set\n");
+	PLOG("q8b pcie: PCIe4 PARF DBI/ATU bases set\n");
 	update(PARF_VA, BIT(29), 0);
 	update(PARF_VA + PARF_MHI_RESET_CTRL, 0, BIT(4));
 	update(PARF_VA + 0x20, BIT(5), 0);
 	update(PARF_VA + 0x1a8, 0, BIT(31));
 	wr(PARF_VA + 0x3d4, BIT(1) | BIT(3));
-	klog("q8b pcie: PCIe4 PARF configured, starting PHY reset\n");
+	PLOG("q8b pcie: PCIe4 PARF configured, starting PHY reset\n");
 
 	/* QMP v5 Gen3x1 sequence from phy-qcom-qmp-pcie.c. */
 	update(GCC_VA + 0x6b308, 0, 1);
@@ -1534,7 +1606,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	usleep(1000);
 	update(GCC_VA + 0x6b308, 1, 0);
 	usleep(1000);
-	klog("q8b pcie: PCIe4 PHY reset released\n");
+	PLOG("q8b pcie: PCIe4 PHY reset released\n");
 	/* qmp_pcie_offsets_v5: serdes=0, pcs=0x200, pcs_misc=0x600,
 	 * tx=0xe00, rx=0x1000.  q8b_pcie_phy_values are relative to the
 	 * pcie4_phy resource base (0x01c06000). */
@@ -1555,40 +1627,46 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	update(pcs, 1, 0);
 	update(pcs + 0x44, 0, BIT(0) | BIT(1));
 	usleep(1000);
-	klog("q8b pcie: PCIe4 waiting for PHY ready\n");
+	PLOG("q8b pcie: PCIe4 waiting for PHY ready\n");
 	if (wait_bits(pcs + 0x14, BIT(6), 0, 1000))
 		goto fail;
-	klog("q8b pcie: PCIe4 PHY ready, checking DBI\n");
+	PLOG("q8b pcie: PCIe4 PHY ready, checking DBI\n");
 
 	if (!find_pcie_cap(DBI_VA))
 		goto fail;
-	klog("q8b pcie: PCIe4 DBI ready, programming root port\n");
-	klog("q8b pcie: configuring root registers\n");
+	PLOG("q8b pcie: PCIe4 DBI ready, programming root port\n");
+	PLOG("q8b pcie: configuring root registers\n");
 	configure_root(generation);
 	configure_equalization(DBI_VA, generation);
-	klog("q8b pcie: root registers configured\n");
-	klog("q8b pcie: configuring outbound ATU\n");
-	if (configure_outbound_atu(0, 0x400100000ULL, 0, 0x100000, 4) ||
-			/* Bus 1 is the immediate child of the root port and uses CFG0.
-			 * Keep a CFG1 window for any subordinate bus as well; without it,
-			 * an ECAM walk past bus 1 is forwarded through the CFG0 window and
-			 * can mirror the same endpoint at every device number. */
-			configure_outbound_atu(1, 0x400200000ULL, 0, 0x600000, 5) ||
-			configure_outbound_atu(2, PCIE4_MEM32_PHY, PCIE4_MEM32_BUS,
-					PCIE4_MEM32_SIZE, 0) ||
-			configure_outbound_atu(3, PCIE4_MEM64_PHY, PCIE4_MEM64_PHY,
-					PCIE4_MEM64_SIZE, 0))
-		goto fail;
-	klog("q8b pcie: outbound ATU configured\n");
+	PLOG("q8b pcie: root registers configured\n");
+	PLOG("q8b pcie: configuring outbound ATU\n");
+	{
+		pcie_window_t p4w;
+		if (controller_window(Q8B_PCIE4, &p4w))
+			goto fail;
+		/* Bus 1 is the immediate child of the root port and uses CFG0.
+		 * TW220 exposes only that one downstream bus in its 1 MiB IO
+		 * window; Q8B has a separate CFG1 aperture for subordinate buses. */
+		if (configure_outbound_atu(0, p4w.ecam + 0x100000ULL, 0,
+				0x100000, 4) ||
+			configure_outbound_atu(1, p4w.ecam + 0x200000ULL, 0,
+					0x600000, 5) ||
+			configure_outbound_atu(2, p4w.mem32_phys, p4w.mem32_bus,
+					(uint32_t)p4w.mem32_size, 0) ||
+			configure_outbound_atu(3, p4w.mem64_phys, p4w.mem64_phys,
+					(uint32_t)p4w.mem64_size, 0))
+			goto fail;
+	}
+	PLOG("q8b pcie: outbound ATU configured\n");
 	/* PCIe PERST# must be low for at least 100 ms before release. */
 	usleep(100000);
-	klog("q8b pcie: releasing PERST\n");
+	PLOG("q8b pcie: releasing PERST\n");
 	perst(true);
-	klog("q8b pcie: PERST released\n");
+	PLOG("q8b pcie: PERST released\n");
 	usleep(100000);
-	klog("q8b pcie: enabling LTSSM\n");
+	PLOG("q8b pcie: enabling LTSSM\n");
 	update(PARF_VA + PARF_LTSSM, 0, LTSSM_ENABLE);
-	klog("q8b pcie: LTSSM enabled, waiting for link\n");
+	PLOG("q8b pcie: LTSSM enabled, waiting for link\n");
 	/* Link Status is a 16-bit field at capability+0x12.  The MMIO helper is
 	 * deliberately 32-bit only, so read the aligned Link Control/Status dword
 	 * at capability+0x10 and test DLL Active in its upper half. */
@@ -1597,7 +1675,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 		int link_wait = cap ? wait_bits(DBI_VA + cap + 0x10,
 				LINK_DLL_ACTIVE << 16, LINK_DLL_ACTIVE << 16,
 				PCIE_LINK_TIMEOUT_MS) : -1;
-		klog("q8b pcie: link wait complete cap=%02x result=%d\n",
+		PLOG("q8b pcie: link wait complete cap=%02x result=%d\n",
 			cap, link_wait);
 		if (!cap || link_wait) {
 			/* These are root/PHY/TLMM status reads only.  Do not walk ECAM or
@@ -1656,6 +1734,176 @@ static int start_pcie4(unsigned generation) {
 	}
 	klog("q8b pcie: PCIe4 link training failed after %u attempts\n",
 		PCIE4_TRAIN_ATTEMPTS);
+	return -4;
+}
+
+/* Linux describes TW220 PCIe2A as a normal qcom,pcie-sc8280xp host rather
+ * than a firmware-managed port.  Reproduce the 2.7.0 host transition here:
+ * enable VCC3_SSD, clocks and resets, initialize the Gen3x2 QMP path used by
+ * the installed NVMe drive, then route CFG0 through the 1 MiB config resource.
+ */
+static int start_pcie2a(unsigned generation) {
+	uintptr_t phy, pcs;
+	uint32_t handoff_id;
+
+	if (generation < 1 || generation > 3 || map_controller_registers())
+		return -1;
+	if (_pcie2a_up)
+		return 0;
+
+	/* UEFI/Linux normally leaves PCIe2A trained and the NVMe controller
+	 * powered.  Re-running the cold sequence on that live link is harmful:
+	 * it asserts PERST# and drops VCC3_SSD while the endpoint may still have
+	 * outstanding state, after which PCI config enumeration can succeed but
+	 * NVMe admin commands never complete.  Prefer the firmware handoff when
+	 * the root link and its existing CFG0 aperture are both usable. */
+	if (find_pcie_cap(DBI2A_VA) && root_link_up_at(DBI2A_VA)) {
+		if (!_ecam_va[Q8B_PCIE2A] &&
+				!map_window(ECAM_VA, 0x3c100000ULL, 0x00100000u))
+			_ecam_va[Q8B_PCIE2A] = ECAM_VA;
+		handoff_id = _ecam_va[Q8B_PCIE2A] ? rd(ECAM_VA) : 0xffffffffu;
+		if (handoff_id != 0xffffffffu && (uint16_t)handoff_id != 0) {
+			_pcie2a_up = true;
+			klog("q8b pcie: PCIe2A firmware handoff kept link up id=%08x\n",
+				handoff_id);
+			return 0;
+		}
+		/* A live root without a usable CFG0 target is not a complete handoff;
+		 * fall through to the bounded cold initialization below.  Keep the
+		 * mapping if it was installed; the cold path reprograms the same iATU. */
+	}
+
+	klog("q8b pcie: PCIe2A NVMe power-on begin\n");
+	pcie2a_configure_pins();
+	pcie2a_perst(false);
+	/* The Linux fixed regulator is GPIO135, active high, boot-on.  Cycle it
+	 * once so a warm EwokOS boot cannot inherit an endpoint stuck in reset. */
+	pcie2a_nvme_regulator(false);
+	usleep(10000);
+	pcie2a_nvme_regulator(true);
+	usleep(5000);
+
+	/* pcie_2a_gdsc and the clocks from gcc-sc8280xp.c. */
+	update(GCC_VA + 0x52128, BIT(2), 0);
+	if (wait_bits(GCC_VA + 0x9d004, BIT(31), BIT(31), 100))
+		goto fail;
+	update(GCC_VA + 0x9d004, 0, BIT(11));
+	if (rcg(0x9d064, 1) || rcg(0x9d044, 0x605))
+		goto fail;
+	update(GCC_VA + 0x52010, 0, BIT(10) | BIT(11) | BIT(12) |
+			BIT(13) | BIT(14) | BIT(15));
+	update(GCC_VA + 0x52018, 0, BIT(12) | BIT(22));
+	update(GCC_VA + 0x8c034, 0, BIT(0));
+	if (wait_bits(GCC_VA + 0x9d024, BIT(31), 0, 100) ||
+			wait_bits(GCC_VA + 0x9d028, BIT(31), 0, 100) ||
+			wait_bits(GCC_VA + 0x9d014, BIT(31), 0, 100) ||
+			wait_bits(GCC_VA + 0x9d030, BIT(31), 0, 100) ||
+			wait_bits(GCC_VA + 0x9d038, BIT(31), 0, 100) ||
+			wait_bits(GCC_VA + 0x9d040, BIT(31), 0, 100) ||
+			wait_bits(GCC_VA + 0x8c034, BIT(31), 0, 100))
+		goto fail;
+
+	/* Assert the PCIe core, link-down and QMP resets as Linux does before
+	 * enabling the clocks.  The no-CSR reset is released after the PHY table
+	 * has been written. */
+	wr(GCC_VA + 0x9d000, 1);
+	wr(GCC_VA + 0x9d13c, 1);
+	wr(GCC_VA + 0x9d144, 1);
+	wr(GCC_VA + 0x9d14c, 1);
+	usleep(1000);
+	wr(GCC_VA + 0x9d000, 0);
+	wr(GCC_VA + 0x9d13c, 0);
+	wr(GCC_VA + 0x9d144, 0);
+	usleep(1000);
+
+	wr(PARF2A_VA + PARF_DEVICE_TYPE, 4);
+	update(PARF2A_VA + PARF_PHY_CTRL, 1, 0);
+	update(PARF2A_VA + PARF_SYS_CTRL, 0,
+			BIT(13) | BIT(12) | BIT(10) | BIT(9) | BIT(6) |
+			BIT(4) | BIT(2) | BIT(1));
+	update(PARF2A_VA + PARF_MHI_RESET_CTRL, 0, BIT(4));
+	update(PARF2A_VA + PARF_AXI_MSTR_WR_ADDR_HALT_V2, 0, BIT(31));
+	wr(PARF2A_VA + PARF_Q2A_FLUSH, 0);
+
+	/* QMP v5 Gen3x2 RC table.  The same two lanes are the ones Linux reports
+	 * for the TW220 WDC SN520 (Gen3 x2); lanes 3/4 remain unused. */
+	phy = PHY2A_VA;
+	pcs = PHY2A_VA + 0x200;
+	update(pcs + 0x40, 0, BIT(0) | BIT(1));
+	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_serdes_values); i++)
+		wr(phy + q8b_pcie3a_serdes_values[i].offset,
+				q8b_pcie3a_serdes_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_tx_values); i++) {
+		wr(phy + q8b_pcie3a_tx_values[i].offset,
+				q8b_pcie3a_tx_values[i].value);
+		wr(phy + 0x800 + q8b_pcie3a_tx2_values[i].offset,
+				q8b_pcie3a_tx2_values[i].value);
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_rx_values); i++) {
+		wr(phy + q8b_pcie3a_rx_values[i].offset,
+				q8b_pcie3a_rx_values[i].value);
+		wr(phy + 0x800 + q8b_pcie3a_rx_values[i].offset,
+				q8b_pcie3a_rx_values[i].value);
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_pcs_values); i++)
+		wr(phy + q8b_pcie3a_pcs_values[i].offset,
+				q8b_pcie3a_pcs_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_pcs_misc_values); i++)
+		wr(phy + q8b_pcie3a_pcs_misc_values[i].offset,
+				q8b_pcie3a_pcs_misc_values[i].value);
+	update(GCC_VA + 0x9d05c, BIT(0) | BIT(1), 0);
+	update(GCC_VA + 0x52010, 0, BIT(14));
+	update(GCC_VA + 0x52018, 0, BIT(22));
+	wr(GCC_VA + 0x9d14c, 0);
+	update(pcs + 0x00, BIT(0), 0);
+	update(pcs + 0x44, 0, BIT(0) | BIT(1));
+	usleep(1000);
+	if (wait_bits(pcs + 0x14, BIT(6), 0, 10000)) {
+		klog("q8b pcie: PCIe2A PHY ready timeout status=%08x\n",
+			rd(pcs + 0x14));
+		goto fail;
+	}
+
+	if (!find_pcie_cap(DBI2A_VA))
+		goto fail;
+	configure_root_at(PARF2A_VA, DBI2A_VA, PCIE2A_DBI, generation, 1);
+	configure_equalization(DBI2A_VA, generation);
+	/* Linux's "config" resource is 0x3c100000.  CFG0 translates that CPU
+	 * window to PCI bus 1; 0x3c200000 is the separate IO range. */
+	if (configure_outbound_atu_at(DBI2A_VA, 0, 0x3c100000ULL,
+			0x00100000ULL, 0x00100000ULL, 4) ||
+			configure_outbound_atu_at(DBI2A_VA, 2, 0x3c300000ULL,
+			0x3c300000ULL, 0x01d00000ULL, 0))
+		goto fail;
+
+	/* PERST# must remain asserted while VCC3_SSD and the PHY settle. */
+	usleep(100000);
+	pcie2a_perst(true);
+	usleep(100000);
+	update(PARF2A_VA + PARF_LTSSM, 0, LTSSM_ENABLE);
+	klog("q8b pcie: PCIe2A LTSSM enabled, waiting for NVMe link\n");
+	{
+		uint8_t cap = find_pcie_cap(DBI2A_VA);
+		int result = cap ? wait_bits(DBI2A_VA + cap + 0x10,
+				LINK_DLL_ACTIVE << 16, LINK_DLL_ACTIVE << 16,
+				PCIE_LINK_TIMEOUT_MS) : -1;
+		if (!cap || result) {
+			klog("q8b pcie: PCIe2A link diagnostics ltssm=%08x phy=%08x "
+					"gpio135/142/143/145=%08x/%08x/%08x/%08x\n",
+				rd(PARF2A_VA + PARF_LTSSM), rd(pcs + 0x14),
+				rd(gpio_reg(135) + 4), rd(gpio_reg(142)),
+				rd(gpio_reg(143) + 4), rd(gpio_reg(145) + 4));
+			goto fail;
+		}
+	}
+	_pcie2a_up = true;
+	klog("q8b pcie: PCIe2A NVMe link up\n");
+	return 0;
+
+fail:
+	_pcie2a_up = false;
+	pcie2a_perst(false);
+	klog("q8b pcie: PCIe2A NVMe link training failed\n");
 	return -4;
 }
 
@@ -1871,36 +2119,55 @@ fail:
 	return -4;
 }
 
-static int controller_info(enum q8b_pcie_controller controller,
-		uint64_t *ecam, uint64_t *mem32, uint64_t *mem64) {
+static int controller_window(enum q8b_pcie_controller controller,
+		pcie_window_t *out) {
+	if (!out || controller > Q8B_PCIE4)
+		return -1;
+	memset(out, 0, sizeof(*out));
 	if (controller == Q8B_PCIE2A) {
-		*ecam = 0x500000000ULL; *mem32 = 0x510000000ULL;
-		*mem64 = 0x520000000ULL; return 0;
+		/* The TW220 DT has a separate 1 MiB config resource.  It is a
+		 * DesignWare CFG0 aperture, not an ECAM range: bus 0 is read from DBI
+		 * and the host iATU routes this window to bus 1.  0x3c200000 is the
+		 * unrelated IO range printed by Linux's host-bridge summary. */
+		static const pcie_window_t tw220[] = {
+			[Q8B_PCIE2A] = { 0x3c100000ULL, 0x00100000ULL,
+				0x3c300000ULL, 0x3c300000ULL, 0x01d00000ULL, 0, 0 },
+			[Q8B_PCIE3A] = { 0x34200000ULL, 0x00200000ULL,
+				0x34300000ULL, 0x34300000ULL, 0x01d00000ULL, 0, 0 },
+			[Q8B_PCIE3B] = { 0x32200000ULL, 0x00200000ULL,
+				0x32300000ULL, 0x32300000ULL, 0x01d00000ULL, 0, 0 },
+			[Q8B_PCIE4]  = { 0x30200000ULL, 0x00200000ULL,
+				0x30300000ULL, 0x30300000ULL, 0x01d00000ULL, 0, 0 },
+		};
+		*out = tw220[controller];
+		return 0;
 	}
 	if (controller == Q8B_PCIE3A) {
-		*ecam = 0x480000000ULL; *mem32 = 0x490000000ULL;
-		*mem64 = 0x4a0000000ULL; return 0;
+		*out = (pcie_window_t){ 0x480000000ULL, 0x10000000ULL,
+			0x40000000ULL, 0x490000000ULL, 0x10000000ULL,
+			0x4a0000000ULL, 0x20000000ULL };
+		return 0;
 	}
 	if (controller == Q8B_PCIE3B) {
-		*ecam = 0x440000000ULL; *mem32 = 0x450000000ULL;
-		*mem64 = 0x460000000ULL; return 0;
+		*out = (pcie_window_t){ 0x440000000ULL, 0x10000000ULL,
+			0x40000000ULL, 0x450000000ULL, 0x10000000ULL,
+			0x460000000ULL, 0x20000000ULL };
+		return 0;
 	}
-	if (controller == Q8B_PCIE4) {
-		*ecam = PCIE4_ECAM; *mem32 = PCIE4_MEM32_PHY;
-		*mem64 = PCIE4_MEM64_PHY; return 0;
-	}
-	return -1;
+	*out = (pcie_window_t){ PCIE4_ECAM, 0x10000000ULL,
+		PCIE4_MEM32_BUS, PCIE4_MEM32_PHY, PCIE4_MEM32_SIZE,
+		PCIE4_MEM64_PHY, PCIE4_MEM64_SIZE };
+	return 0;
 }
 
 static int ecam_map(enum q8b_pcie_controller controller) {
-	uint64_t ecam, m32, m64;
+	pcie_window_t w;
 	uintptr_t va = ECAM_VA + (uintptr_t)controller * 0x01000000ULL;
-	(void)m32; (void)m64;
-	if (controller_info(controller, &ecam, &m32, &m64))
+	if (controller_window(controller, &w))
 		return -1;
 	if (_ecam_va[controller])
 		return 0;
-	if (map_window(va, ecam, ECAM_MAP_SIZE))
+	if (map_window(va, w.ecam, (uint32_t)w.ecam_size))
 		return -1;
 	_ecam_va[controller] = va;
 	return 0;
@@ -1908,6 +2175,14 @@ static int ecam_map(enum q8b_pcie_controller controller) {
 
 static inline ewokos_addr_t cfg_addr(enum q8b_pcie_controller controller,
 		unsigned bus, unsigned device, unsigned function, unsigned reg) {
+	if (controller == Q8B_PCIE2A) {
+		/* Root bus config is the DBI window.  The single downstream bus is
+		 * selected in the CFG0 iATU programmed by start_pcie2a(), so its CPU
+		 * address is the fixed 1 MiB config resource base. */
+		if (bus == 0)
+			return DBI2A_VA + (reg & ~3u);
+		return _ecam_va[controller] + (reg & ~3u);
+	}
 	return _ecam_va[controller] + ((ewokos_addr_t)bus << 20) +
 			((ewokos_addr_t)device << 15) + ((ewokos_addr_t)function << 12) +
 			(reg & ~3u);
@@ -1940,15 +2215,13 @@ static void cfg_write32(enum q8b_pcie_controller controller, unsigned bus,
 }
 
 static uint64_t bar_to_phys(enum q8b_pcie_controller controller, uint64_t bar) {
-	uint64_t ecam, mem32, mem64, mem64_size;
-	(void)ecam;
-	if (controller_info(controller, &ecam, &mem32, &mem64))
+	pcie_window_t w;
+	if (controller_window(controller, &w))
 		return 0;
-	mem64_size = controller == Q8B_PCIE2A ? 0x0e0000000ULL :
-			0x20000000ULL;
-	if (bar >= PCIE4_MEM32_BUS && bar < PCIE4_MEM32_BUS + 0x10000000ULL)
-		return mem32 + (bar - PCIE4_MEM32_BUS);
-	if (bar >= mem64 && bar < mem64 + mem64_size)
+	if (bar >= w.mem32_bus && bar < w.mem32_bus + w.mem32_size)
+		return w.mem32_phys + (bar - w.mem32_bus);
+	if (w.mem64_size != 0 && bar >= w.mem64_phys &&
+			bar < w.mem64_phys + w.mem64_size)
 		return bar;
 	return 0;
 }
@@ -2093,7 +2366,10 @@ static uint64_t resource_align(uint64_t value, uint64_t alignment) {
 
 static int size_function_bars(q8b_pcie_device_t *d, uint32_t attr[6]) {
 	enum q8b_pcie_controller c = d->controller;
+	pcie_window_t w;
 	unsigned bars = (d->header_type & 0x7f) == 1 ? 2 : 6;
+	if (controller_window(c, &w))
+		return -1;
 	memset(d->bar, 0, sizeof(d->bar));
 	memset(d->bar_phys, 0, sizeof(d->bar_phys));
 	memset(d->bar_size, 0, sizeof(d->bar_size));
@@ -2129,7 +2405,7 @@ static int size_function_bars(q8b_pcie_device_t *d, uint32_t attr[6]) {
 		if (size) {
 			if ((low & 6) != 0 && !wide)
 				return -1;
-			if (size > PCIE4_MEM32_SIZE || (size & (size - 1)))
+			if (size > w.mem32_size || (size & (size - 1)))
 				return -1;
 			d->bar_size[i] = (uint32_t)size;
 			attr[i] = low & 0xf;
@@ -2146,7 +2422,11 @@ static int size_function_bars(q8b_pcie_device_t *d, uint32_t attr[6]) {
 static int plan_bus_resources(q8b_pcie_device_t *devices, int count,
 		unsigned bus, unsigned depth, uint64_t *next,
 		uint32_t windows[HOST_MAX_FUNCTIONS]) {
+	pcie_window_t w;
 	if (depth >= 8)
+		return -1;
+	if (count > 0 && controller_window(
+			(enum q8b_pcie_controller)devices[0].controller, &w))
 		return -1;
 	for (int i = 0; i < count; i++) {
 		q8b_pcie_device_t *d = &devices[i];
@@ -2157,7 +2437,7 @@ static int plan_bus_resources(q8b_pcie_device_t *devices, int count,
 			if (!size)
 				continue;
 			uint64_t addr = resource_align(*next, size);
-			if (addr + size > PCIE4_MEM32_BUS + PCIE4_MEM32_SIZE)
+			if (count > 0 && addr + size > w.mem32_bus + w.mem32_size)
 				return -1;
 			d->bar[bar] = addr;
 			d->bar_phys[bar] = bar_to_phys(d->controller, addr);
@@ -2184,7 +2464,7 @@ static int plan_bus_resources(q8b_pcie_device_t *devices, int count,
 				(uint32_t)(((begin >> 16) & 0xfff0) | ((*next - 1) & 0xfff00000)) :
 				0x0000fff0; /* base > limit: no child resources */
 	}
-	return *next <= PCIE4_MEM32_BUS + PCIE4_MEM32_SIZE ? 0 : -1;
+	return count == 0 || *next <= w.mem32_bus + w.mem32_size ? 0 : -1;
 }
 
 static int program_bridge_window(q8b_pcie_device_t *d, uint32_t window) {
@@ -2200,11 +2480,15 @@ static int program_bridge_window(q8b_pcie_device_t *d, uint32_t window) {
 
 static int assign_host_resources(enum q8b_pcie_controller c,
 		q8b_pcie_device_t *devices, int count, unsigned flags) {
+	pcie_window_t w;
 	uint32_t attr[HOST_MAX_FUNCTIONS][6] = {{0}};
 	uint32_t windows[HOST_MAX_FUNCTIONS] = {0};
-	uint64_t next = PCIE4_MEM32_BUS;
+	uint64_t next;
 	if (count > HOST_MAX_FUNCTIONS)
 		return -1;
+	if (controller_window(c, &w))
+		return -1;
+	next = w.mem32_bus;
 	/* All decode and DMA remain disabled until the whole plan is installed. */
 	for (int i = 0; i < count; i++) {
 		q8b_pcie_device_t *d = &devices[i];
@@ -2242,7 +2526,7 @@ static int assign_host_resources(enum q8b_pcie_controller c,
 	}
 	/* DBI is the real root port; ECAM bus 0 is not its alias on Q8B. */
 	uintptr_t dbi = c == Q8B_PCIE3A ? DBI3A_VA : DBI_VA;
-	wr(dbi + 0x20, next > PCIE4_MEM32_BUS ?
+	wr(dbi + 0x20, next > w.mem32_bus ?
 			0x4000u | ((uint32_t)(next - 1) & 0xfff00000u) : 0x0000fff0u);
 	wr(dbi + 0x24, 0x0000fff0u);
 	wr(dbi + 0x28, 0);
@@ -2260,7 +2544,7 @@ static int assign_host_resources(enum q8b_pcie_controller c,
 		d->command = cfg16(c, d->bus, d->device, d->function, PCI_COMMAND);
 	}
 	klog("q8b pcie: controller %u resources ready bus=%llx..%llx\n",
-			c, (unsigned long long)PCIE4_MEM32_BUS, (unsigned long long)next);
+			c, (unsigned long long)w.mem32_bus, (unsigned long long)next);
 	return 0;
 }
 
@@ -2314,6 +2598,12 @@ static void probe_bus_range(enum q8b_pcie_controller controller,
 		*first = 0;
 		*last = 7;
 	}
+	/* TW220's firmware config aperture contains bus 0 and its direct
+	 * endpoint bus 1 only.  Do not turn a stale subordinate-bus value into
+	 * accesses past the 2 MiB mapping, where the next physical window is BAR
+	 * memory rather than configuration space. */
+	if (controller == Q8B_PCIE2A && *last > 1)
+		*last = 1;
 }
 
 /* QPS615 is a PCIe switch whose firmware leaves the bridge bus-number
@@ -2373,6 +2663,8 @@ static int configure_qps615_hierarchy(void) {
 
 int q8b_pcie_power_on(enum q8b_pcie_controller controller,
 		unsigned max_generation) {
+	if (controller == Q8B_PCIE2A)
+		return start_pcie2a(max_generation);
 	if (controller == Q8B_PCIE3A)
 		return start_pcie3a(max_generation);
 	if (controller == Q8B_PCIE4)
@@ -2384,9 +2676,16 @@ int q8b_pcie_probe(enum q8b_pcie_controller controller,
 		q8b_pcie_device_t *out, size_t max, unsigned flags) {
 	if (!out || !max || controller > Q8B_PCIE4 || map_controller_registers())
 		return -1;
-	if ((controller == Q8B_PCIE3A || controller == Q8B_PCIE4) &&
+	if ((controller == Q8B_PCIE2A ||
+			controller == Q8B_PCIE3A || controller == Q8B_PCIE4) &&
 			(flags & Q8B_PCIE_POWER_ON) &&
 			q8b_pcie_power_on(controller, 2))
+		return -1;
+	/* PCIe2A may arrive without the legacy POWER_ON flag.  It is the Linux
+	 * style host used by the NVMe endpoint, so bring it up before the first
+	 * config-space scan. */
+	if (controller == Q8B_PCIE2A && !_pcie2a_up &&
+			q8b_pcie_power_on(controller, 3))
 		return -1;
 	if (controller == Q8B_PCIE3A && !_pcie3a_up) {
 		klog("q8b pcie: PCIe3A ECAM refused before link completion\n");
@@ -2406,6 +2705,9 @@ int q8b_pcie_probe(enum q8b_pcie_controller controller,
 		return -1;
 	if (controller == Q8B_PCIE4 && !root_link_up())
 		return -2;
+	if (controller == Q8B_PCIE2A &&
+			!root_link_up_at(DBI2A_VA))
+		return -2;
 	if (controller == Q8B_PCIE3A && !root_link_up_at(DBI3A_VA))
 		return -2;
 	if (controller == Q8B_PCIE3A && configure_qps615_hierarchy()) {
@@ -2421,7 +2723,8 @@ int q8b_pcie_probe(enum q8b_pcie_controller controller,
 	klog("q8b pcie: controller %u ECAM bus range %u..%u\n",
 			(unsigned)controller, first_bus, last_bus);
 	for (unsigned bus = first_bus; bus <= last_bus && (size_t)found < max; bus++) {
-		unsigned device_limit = controller == Q8B_PCIE4 ? 1 : 32;
+		unsigned device_limit = (controller == Q8B_PCIE4 ||
+				controller == Q8B_PCIE2A) ? 1 : 32;
 		for (unsigned device = 0; device < device_limit && (size_t)found < max; device++) {
 			for (unsigned function = 0; function < 8 && (size_t)found < max;
 					function++) {
@@ -2457,24 +2760,20 @@ int q8b_pcie4_start_and_probe(q8b_pcie_device_t *out, size_t max,
 
 int q8b_pcie_map_bar(const q8b_pcie_device_t *device, unsigned bar,
 		uintptr_t virtual_address, uint32_t size) {
-	uint64_t ecam, mem32, mem64;
+	pcie_window_t w;
 	uint64_t aperture;
 	if (!device || bar >= 6 || !size || !device->bar_phys[bar] ||
 			device->controller > Q8B_PCIE4 ||
-			controller_info((enum q8b_pcie_controller)device->controller,
-					&ecam, &mem32, &mem64))
+			controller_window((enum q8b_pcie_controller)device->controller, &w))
 		return -1;
-	if (device->bar[bar] >= PCIE4_MEM32_BUS &&
-			device->bar[bar] < PCIE4_MEM32_BUS + 0x10000000ULL)
-		aperture = 0x10000000ULL -
-				(device->bar[bar] - PCIE4_MEM32_BUS);
+	if (device->bar[bar] >= w.mem32_bus &&
+			device->bar[bar] < w.mem32_bus + w.mem32_size)
+		aperture = w.mem32_size - (device->bar[bar] - w.mem32_bus);
 	else {
-		uint64_t mem64_size = device->controller == Q8B_PCIE2A ?
-				0x0e0000000ULL : 0x20000000ULL;
-		if (device->bar[bar] < mem64 ||
-				device->bar[bar] >= mem64 + mem64_size)
+		if (w.mem64_size == 0 || device->bar[bar] < w.mem64_phys ||
+				device->bar[bar] >= w.mem64_phys + w.mem64_size)
 			return -1;
-		aperture = mem64_size - (device->bar[bar] - mem64);
+		aperture = w.mem64_size - (device->bar[bar] - w.mem64_phys);
 	}
 	if ((device->bar_size[bar] && size > device->bar_size[bar]) ||
 			(uint64_t)size > aperture)

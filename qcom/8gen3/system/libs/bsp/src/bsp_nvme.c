@@ -8,6 +8,7 @@
  */
 #include <bsp/bsp_nvme.h>
 #include <bsp/nvme.h>
+#include <ewoksys/klog.h>
 #include <pthread.h>
 #include <string.h>
 
@@ -30,19 +31,40 @@ int bsp_nvme_init(void) {
 	 * uses on real hardware). */
 	pthread_mutex_lock(&_nvme_lock);
 	found = q8b_pcie_scan(NVME_SLOT_PCIE2A, &dev, 1);
+	klog("bsp_nvme: pcie2a scan=%d\n", found);
 	if (found <= 0)
 		found = q8b_pcie_scan(NVME_SLOT_PCIE3B, &dev, 1);
+	if (found > 0)
+		klog("bsp_nvme: selected slot=%d %02x:%02x.%x %04x:%04x "
+				"bar=%llx phys=%llx cmd=%04x\n", dev.slot, dev.bus,
+				dev.dev, dev.fn, dev.vid, dev.did,
+				(unsigned long long)dev.bar0_bus,
+				(unsigned long long)dev.bar0_phys, dev.command);
 	if (found <= 0) {
 		pthread_mutex_unlock(&_nvme_lock);
 		return -1;
 	}
 
 	if (nvme_open(&info, &dev) != 0) {
+		klog("bsp_nvme: nvme_open failed slot=%d %02x:%02x.%x\n",
+				dev.slot, dev.bus, dev.dev, dev.fn);
 		pthread_mutex_unlock(&_nvme_lock);
 		return -1;
 	}
 	pthread_mutex_unlock(&_nvme_lock);
 	return 0;
+}
+
+int bsp_nvme_last_init_stage(void) {
+	return nvme_last_init_stage();
+}
+
+uint32_t bsp_nvme_last_cc(void) {
+	return nvme_last_cc();
+}
+
+uint32_t bsp_nvme_last_csts(void) {
+	return nvme_last_csts();
 }
 
 int32_t bsp_nvme_read(uint64_t start_lba, void *buf, uint32_t count) {

@@ -1,6 +1,8 @@
 #ifndef BSP_NVME_H
 #define BSP_NVME_H
 
+#define BSP_NVME_HAS_INIT_DIAGNOSTICS 1
+
 #include <stdint.h>
 
 /*
@@ -19,6 +21,12 @@
  * Returns 0 on success, negative on error.
  */
 int bsp_nvme_init(void);
+
+/* Diagnostic checkpoint retained when the target only exposes the final
+ * sdfsd error line. */
+int bsp_nvme_last_init_stage(void);
+uint32_t bsp_nvme_last_cc(void);
+uint32_t bsp_nvme_last_csts(void);
 
 /*
  * Read blocks from NVMe storage into buf.

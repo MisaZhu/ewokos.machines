@@ -212,20 +212,25 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* PCIe2A/3B remain firmware-managed on Q8B.  PCIe3A is deliberately
-     * deferred until its ECAM mapping has a dedicated validation path; a
-     * broken optional switch must never prevent the independent WLAN service
-     * from coming up.  The Ethernet endpoint can be re-enabled once that
-     * controller-specific mapping check is available. */
+    /* PCIe2A is the TW220 NVMe host and is scanned here.  PCIe3B remains
+     * firmware-managed until a second NVMe slot is present.  PCIe3A is
+     * deliberately deferred until its ECAM mapping has a dedicated
+     * validation path; a broken optional switch must never prevent the
+     * independent WLAN service from coming up. */
     for (enum q8b_pcie_controller controller = Q8B_PCIE2A;
             controller < Q8B_PCIE3A && device_count < PCIE_MAX_DEVICES;
             controller++) {
+        klog("q8b pcied: probing controller %u (NVMe slots)\n",
+                (unsigned)controller);
         int n = q8b_pcie_probe(controller, devices + device_count,
                 PCIE_MAX_DEVICES - (size_t)device_count,
                 Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER |
                 Q8B_PCIE_DISABLE_ASPM);
         if (n > 0)
             device_count += n;
+        else if (n == 0)
+            klog("q8b pcied: controller %u probe found no device\n",
+                    (unsigned)controller);
         else if (n < 0)
             klog("q8b pcied: controller %u ECAM unavailable\n", controller);
     }

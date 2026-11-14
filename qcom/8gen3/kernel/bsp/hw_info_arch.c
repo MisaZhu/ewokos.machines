@@ -400,6 +400,48 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
     if (phy_top <= 0x20000000ULL)
         return 0;
 
+    /* PCIe2A's DesignWare DBI and CFG0 apertures are fixed SC8280XP MMIO
+     * resources on TW220.  The PCIe service pre-maps the DBI before it can
+     * complete the model-specific controller selection, so these two small
+     * windows must be accepted independently of the DT model string. */
+    if ((phy_base >= TW220_PCIE2A_DBI_PHY &&
+                phy_top <= TW220_PCIE2A_DBI_PHY +
+                TW220_PCIE2A_DBI_SIZE) ||
+            (phy_base >= TW220_PCIE2A_CFG_PHY &&
+                phy_top <= TW220_PCIE2A_CFG_PHY +
+                TW220_PCIE2A_CFG_SIZE) ||
+            (phy_base >= TW220_PCIE2A_MEM32_PHY &&
+                phy_top <= TW220_PCIE2A_MEM32_PHY +
+                TW220_PCIE2A_MEM32_SIZE))
+        return 0;
+
+    /* The BIOS model string is not a hardware selector.  Firmware on TW220
+     * revisions reports several unrelated Q8B/TW220 names, so accept the
+     * fixed SC8280XP PCIe resource apertures by address and let the PCIe
+     * topology/probe decide which controller is actually present. */
+    if ((phy_base >= TW220_PCIE2A_ECAM_PHY &&
+                phy_top <= TW220_PCIE2A_ECAM_PHY +
+                TW220_PCIE2A_ECAM_SIZE) ||
+            (phy_base >= TW220_PCIE3A_ECAM_PHY &&
+                phy_top <= TW220_PCIE3A_ECAM_PHY +
+                TW220_PCIE2A_ECAM_SIZE) ||
+            (phy_base >= TW220_PCIE3A_MEM32_PHY &&
+                phy_top <= TW220_PCIE3A_MEM32_PHY +
+                TW220_PCIE2A_MEM32_SIZE) ||
+            (phy_base >= TW220_PCIE3B_ECAM_PHY &&
+                phy_top <= TW220_PCIE3B_ECAM_PHY +
+                TW220_PCIE2A_ECAM_SIZE) ||
+            (phy_base >= TW220_PCIE3B_MEM32_PHY &&
+                phy_top <= TW220_PCIE3B_MEM32_PHY +
+                TW220_PCIE2A_MEM32_SIZE) ||
+            (phy_base >= TW220_PCIE4_ECAM_PHY &&
+                phy_top <= TW220_PCIE4_ECAM_PHY +
+                TW220_PCIE2A_ECAM_SIZE) ||
+            (phy_base >= TW220_PCIE4_MEM32_PHY &&
+                phy_top <= TW220_PCIE4_MEM32_PHY +
+                TW220_PCIE2A_MEM32_SIZE))
+        return 0;
+
     /* E-key Wi-Fi config space and assigned BAR apertures. */
     if (phy_base >= Q8B_PCIE4_DBI_PHY &&
             phy_top <= Q8B_PCIE4_DBI_PHY + Q8B_PCIE4_DBI_SIZE)

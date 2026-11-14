@@ -155,6 +155,20 @@ static struct {
 } _c;
 
 static nvme_info_t _info;
+static int _last_init_stage;
+static uint32_t _last_cc;
+static uint32_t _last_csts;
+
+enum {
+	NVME_INIT_STAGE_NONE = 0,
+	NVME_INIT_STAGE_BAR = 1,
+	NVME_INIT_STAGE_CAP = 2,
+	NVME_INIT_STAGE_DMA = 3,
+	NVME_INIT_STAGE_CONTROLLER = 4,
+	NVME_INIT_STAGE_IDENTIFY_CONTROLLER = 5,
+	NVME_INIT_STAGE_IDENTIFY_NAMESPACE = 6,
+	NVME_INIT_STAGE_IO_QUEUES = 7,
+};
 
 /* ------------------------------------------------------------------ */
 /*  MMIO helpers                                                       */
@@ -174,6 +188,47 @@ static inline uint64_t nvme_rd64(uint32_t off) {
 static inline void nvme_wr64(uint32_t off, uint64_t v) {
 	nvme_wr32(off, (uint32_t)v);
 	nvme_wr32(off + 4, (uint32_t)(v >> 32));
+}
+
+static int nvme_dma_range_ok(const char *name, uint8_t *va,
+		uint64_t pa, uint32_t size) {
+	uint64_t end;
+	if (!va || !pa || !size || (pa & 0xfffu) != 0 ||
+			(pa >> 32) != 0 || pa + size < pa || pa + size > 0x100000000ULL) {
+		klog("nvme: invalid DMA %s va=%p pa=0x%llx size=0x%x\n", name,
+			va, (unsigned long long)pa, size);
+		return -1;
+	}
+	end = pa + size;
+	klog("nvme: DMA %s va=%p pa=0x%llx..0x%llx\n", name, va,
+		(unsigned long long)pa, (unsigned long long)(end - 1));
+	return 0;
+}
+
+static int nvme_wr32_verify(uint32_t off, uint32_t value, const char *name) {
+	uint32_t actual;
+	nvme_wr32(off, value);
+	nvme_dmb();
+	actual = nvme_rd32(off);
+	if (actual != value) {
+		klog("nvme: %s write/readback mismatch want=0x%08x got=0x%08x\n",
+			name, value, actual);
+		return -1;
+	}
+	return 0;
+}
+
+static int nvme_wr64_verify(uint32_t off, uint64_t value, const char *name) {
+	uint64_t actual;
+	nvme_wr64(off, value);
+	nvme_dmb();
+	actual = nvme_rd64(off);
+	if (actual != value) {
+		klog("nvme: %s write/readback mismatch want=0x%llx got=0x%llx\n",
+			name, (unsigned long long)value, (unsigned long long)actual);
+		return -1;
+	}
+	return 0;
 }
 
 static void nvme_sq_doorbell(uint16_t sqid, uint16_t tail) {
@@ -306,6 +361,16 @@ static int nvme_wait_ready(bool expected, uint32_t timeout_ms) {
 	return -1;
 }
 
+static void nvme_log_state(const char *where) {
+	klog("nvme: %s CAP=0x%llx CC=0x%08x CSTS=0x%08x "
+			"AQA=0x%08x ASQ=0x%llx ACQ=0x%llx\n", where,
+			(unsigned long long)nvme_rd64(NVME_REG_CAP),
+			nvme_rd32(NVME_REG_CC), nvme_rd32(NVME_REG_CSTS),
+			nvme_rd32(NVME_REG_AQA),
+			(unsigned long long)nvme_rd64(NVME_REG_ASQ),
+			(unsigned long long)nvme_rd64(NVME_REG_ACQ));
+}
+
 static int nvme_submit(nvme_sqe_t* sq, uint16_t* tail, nvme_cqe_t* cq,
 		uint16_t* head, uint8_t* phase, uint16_t qid, uint16_t qsize,
 		uint32_t timeout_ms) {
@@ -393,7 +458,16 @@ static int nvme_controller_init(void) {
 		mps = mpsmin;
 	if (mps > mpsmax)
 		mps = mpsmax;
-	if (mps != 0) {
+	klog("nvme: caps mqes=%u dstrd=%u mps=%u..%u to=%u nssrs=%u\n",
+			_c.mqes, _c.dstrd, mpsmin, mpsmax,
+			(unsigned)((cap >> NVME_CAP_TO_SHIFT) & 0xffu),
+			(unsigned)((cap >> 36) & 1u));
+	if (_c.dstrd > 7 || _c.mqes + 1u < NVME_ADMIN_QSIZE) {
+		klog("nvme: invalid queue capability dstrd=%u mqes=%u\n",
+				_c.dstrd, _c.mqes);
+		return -1;
+	}
+	if (mpsmin > mpsmax || mps != 0) {
 		/* 16K kernel pages + controller minimum > 4K: our PRP page size
 		 * assumption would need to follow; reject for now instead of
 		 * corrupting memory. */
@@ -404,6 +478,19 @@ static int nvme_controller_init(void) {
 	uint32_t csts = nvme_rd32(NVME_REG_CSTS);
 	uint32_t cc0 = nvme_rd32(NVME_REG_CC);
 	klog("nvme: initial CC=0x%08x CSTS=0x%08x\n", cc0, csts);
+	if (csts & NVME_CSTS_CFS) {
+		klog("nvme: controller fatal status before enable, resetting\n");
+		if ((cap >> 36) & 1u) {
+			nvme_wr32(0x20, 0x4e564d65u);
+			nvme_dmb();
+			usleep(100000);
+		}
+		csts = nvme_rd32(NVME_REG_CSTS);
+		cc0 = nvme_rd32(NVME_REG_CC);
+		klog("nvme: post-fatal-reset CC=0x%08x CSTS=0x%08x\n", cc0, csts);
+		if (csts & NVME_CSTS_CFS)
+			return -1;
+	}
 	if (csts & NVME_CSTS_RDY) {
 		nvme_wr32(NVME_REG_CC, cc0 & ~NVME_CC_EN);
 		nvme_dmb();
@@ -426,6 +513,11 @@ static int nvme_controller_init(void) {
 		klog("nvme: disabled, CSTS=0x%08x\n",
 				nvme_rd32(NVME_REG_CSTS));
 	}
+	/* Do not issue NSSR here.  On the TW220 WDC SN520, CAP.NSSRS is set,
+	 * but writing NSSR after the firmware handoff makes the PCIe BAR read back
+	 * as 0xffffffff and loses the controller MMIO window.  The preceding
+	 * CC.EN=0 transition already clears RDY and is sufficient before replacing
+	 * the firmware admin queue addresses. */
 
 	/* Mask every interrupt: this driver polls. */
 	nvme_wr32(NVME_REG_INTMS, 0xffffffffu);
@@ -433,9 +525,11 @@ static int nvme_controller_init(void) {
 
 	uint32_t aqa = ((NVME_ADMIN_QSIZE - 1u) << 16) |
 			(NVME_ADMIN_QSIZE - 1u);
-	nvme_wr32(NVME_REG_AQA, aqa);
-	nvme_wr64(NVME_REG_ASQ, _c.ctrl_phys + 0x0000);
-	nvme_wr64(NVME_REG_ACQ, _c.ctrl_phys + 0x1000);
+	if (nvme_wr32_verify(NVME_REG_AQA, aqa, "AQA") ||
+			nvme_wr64_verify(NVME_REG_ASQ, _c.ctrl_phys + 0x0000, "ASQ") ||
+			nvme_wr64_verify(NVME_REG_ACQ, _c.ctrl_phys + 0x1000, "ACQ"))
+		return -1;
+	nvme_log_state("admin queues programmed");
 
 	nvme_wr32(NVME_REG_CC, 0);
 	nvme_dmb();
@@ -446,17 +540,16 @@ static int nvme_controller_init(void) {
 		(mps << NVME_CC_MPS_SHIFT) |
 		(6u << NVME_CC_IOSQES_SHIFT) |
 		(4u << NVME_CC_IOCQES_SHIFT);
-	nvme_wr32(NVME_REG_CC, cc);
-	nvme_dmb();
+	if (nvme_wr32_verify(NVME_REG_CC, cc, "CC"))
+		return -1;
 	klog("nvme: enabling CC=0x%08x ASQ=0x%llx ACQ=0x%llx\n", cc,
 			(unsigned long long)(_c.ctrl_phys),
 			(unsigned long long)(_c.ctrl_phys + 0x1000));
 	if (nvme_wait_ready(true, 60000) != 0) {
-		klog("nvme: controller not ready (CSTS=0x%08x)\n",
-				nvme_rd32(NVME_REG_CSTS));
+		nvme_log_state("controller enable failed");
 		return -1;
 	}
-	klog("nvme: ready CSTS=0x%08x\n", nvme_rd32(NVME_REG_CSTS));
+	nvme_log_state("controller ready");
 	return 0;
 }
 
@@ -514,6 +607,10 @@ static int nvme_dma_setup(void) {
 			(unsigned long long)_c.ctrl_phys,
 			(unsigned long long)_c.prp_phys,
 			(unsigned long long)_c.data_phys);
+	if (nvme_dma_range_ok("ctrl", _c.ctrl, _c.ctrl_phys, NVME_CTRL_SIZE) ||
+			nvme_dma_range_ok("prp", _c.prp, _c.prp_phys, NVME_PRP_SIZE) ||
+			nvme_dma_range_ok("data", _c.data, _c.data_phys, NVME_DATA_SIZE))
+		return -1;
 	memset(_c.ctrl, 0, NVME_CTRL_SIZE);
 
 	_c.asq = (nvme_sqe_t*)(_c.ctrl + 0x0000);
@@ -537,6 +634,9 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 
 	if (_c.opened)
 		return 0;
+	_last_init_stage = NVME_INIT_STAGE_BAR;
+	_last_cc = 0;
+	_last_csts = 0;
 	if (dev == NULL || dev->bar0_phys == 0) {
 		klog("nvme: no BAR for device\n");
 		return -1;
@@ -555,6 +655,13 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 				(unsigned long long)_c.bar_phys);
 		return -1;
 	}
+	_last_init_stage = NVME_INIT_STAGE_CAP;
+	klog("nvme: BAR ready bus=0x%llx phys=0x%llx va=0x%llx "
+			"size=0x%x cmd=0x%04x\n",
+			(unsigned long long)dev->bar0_bus,
+			(unsigned long long)dev->bar0_phys,
+			(unsigned long long)_c.bar, NVME_BAR_MAP_SIZE,
+			pcie_device.command);
 
 	/* Sanity: CAP must have a sane doorbell stride and MQES. */
 	uint64_t cap = nvme_rd64(NVME_REG_CAP);
@@ -566,12 +673,25 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 			(unsigned long long)cap, nvme_rd32(NVME_REG_VS),
 			dev->slot, dev->bus, dev->dev, dev->fn);
 
-	if (nvme_dma_setup() != 0)
+	if (nvme_dma_setup() != 0) {
+		_last_init_stage = NVME_INIT_STAGE_DMA;
+		klog("nvme: init stage=dma_setup failed\n");
 		return -1;
-	if (nvme_controller_init() != 0)
+	}
+	_last_init_stage = NVME_INIT_STAGE_CONTROLLER;
+	if (nvme_controller_init() != 0) {
+		_last_cc = nvme_rd32(NVME_REG_CC);
+		_last_csts = nvme_rd32(NVME_REG_CSTS);
+		klog("nvme: init stage=controller failed\n");
 		return -1;
-	if (nvme_admin_identify(0, NVME_IDENTIFY_CTRL, idbuf, sizeof(idbuf)) != 0)
+	}
+	_last_init_stage = NVME_INIT_STAGE_IDENTIFY_CONTROLLER;
+	if (nvme_admin_identify(0, NVME_IDENTIFY_CTRL, idbuf, sizeof(idbuf)) != 0) {
+		_last_cc = nvme_rd32(NVME_REG_CC);
+		_last_csts = nvme_rd32(NVME_REG_CSTS);
+		klog("nvme: init stage=identify-controller failed\n");
 		return -1;
+	}
 
 	/* NN is a 32-bit field at 0x204 (SQES/CQES/MAXCMD sit at 0x200). */
 	uint32_t nn = (uint32_t)idbuf[0x204] | ((uint32_t)idbuf[0x205] << 8) |
@@ -595,8 +715,13 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 		klog("nvme: controller reports no namespaces\n");
 		return -1;
 	}
-	if (nvme_admin_identify(1, NVME_IDENTIFY_NS, idbuf, sizeof(idbuf)) != 0)
+	if (nvme_admin_identify(1, NVME_IDENTIFY_NS, idbuf, sizeof(idbuf)) != 0) {
+		_last_init_stage = NVME_INIT_STAGE_IDENTIFY_NAMESPACE;
+		_last_cc = nvme_rd32(NVME_REG_CC);
+		_last_csts = nvme_rd32(NVME_REG_CSTS);
+		klog("nvme: init stage=identify-namespace failed\n");
 		return -1;
+	}
 
 	uint64_t nsze = 0;
 	for (int i = 7; i >= 0; i--)
@@ -634,8 +759,13 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 		max_xfer = NVME_MAX_XFER;
 	_info.max_xfer = max_xfer;
 
-	if (nvme_create_io_queues() != 0)
+	if (nvme_create_io_queues() != 0) {
+		_last_init_stage = NVME_INIT_STAGE_IO_QUEUES;
+		_last_cc = nvme_rd32(NVME_REG_CC);
+		_last_csts = nvme_rd32(NVME_REG_CSTS);
+		klog("nvme: init stage=io-queues failed\n");
 		return -1;
+	}
 
 	_c.opened = true;
 	if (info)
@@ -644,6 +774,18 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 			_info.model, (unsigned long long)nsze, _info.block_size,
 			_info.max_xfer, NVME_IO_QSIZE);
 	return 0;
+}
+
+int nvme_last_init_stage(void) {
+	return _last_init_stage;
+}
+
+uint32_t nvme_last_cc(void) {
+	return _last_cc;
+}
+
+uint32_t nvme_last_csts(void) {
+	return _last_csts;
 }
 
 void nvme_close(void) {

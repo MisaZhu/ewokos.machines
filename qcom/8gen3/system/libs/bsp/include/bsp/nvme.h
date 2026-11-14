@@ -100,6 +100,13 @@ void nvme_close(void);
 
 extern nvme_info_t* nvme_current(void);
 
+/* Last initialisation checkpoint, retained for boards whose console only
+ * shows the final sdfsd error line.  Values are stable until the next
+ * nvme_open() attempt. */
+int nvme_last_init_stage(void);
+uint32_t nvme_last_cc(void);
+uint32_t nvme_last_csts(void);
+
 #ifdef __cplusplus
 }
 #endif
