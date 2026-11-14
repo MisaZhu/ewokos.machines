@@ -584,3 +584,13 @@ uint64_t bsp_nvme_get_block_count(void) {
 uint32_t bsp_nvme_get_block_size(void) {
     return 1u << _nv.lba_shift;
 }
+
+/*
+ * Flush the device's volatile write cache.  The polled x86 queue completes
+ * every write synchronously and exposes no flush command yet, so this is
+ * the same no-op the libsd path had; journaled commits keep matching
+ * behaviour.
+ */
+int32_t bsp_nvme_flush(void) {
+    return 0;
+}

@@ -91,6 +91,10 @@ int nvme_find_root_partition(uint64_t* start_lba, uint64_t* block_count);
 int nvme_read_stream(uint64_t lba, void* dst, uint64_t bytes,
 		uint32_t chunk, uint32_t depth, bool copy_out);
 
+/* Flush the controller's volatile write cache (durability barrier for
+ * journaled filesystem commit paths).  Returns 0 on success. */
+int nvme_flush(void);
+
 /* Close the controller and release DMA memory. */
 void nvme_close(void);
 

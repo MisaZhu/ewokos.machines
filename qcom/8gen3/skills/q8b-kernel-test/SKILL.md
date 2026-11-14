@@ -341,3 +341,30 @@ nfa765 固件与 `/etc/wlan/network.json`（`SELF_ROOT=0` 恢复旧 SD 行为）
   `rootfs policy=2`）；看到这些直接再 reboot 一次。
 - 会话恢复/断电后 MCP server 可能掉线：`nohup q8b/eud/server/start.sh`
   重启（端口 8899）。
+
+### NVMe ext3 rootfs 启动（2026-11-14 已验证）
+
+TW220(M.2 pcie2a, WDC SN520 256G) 已跑通 initramfs 直接挂 NVMe 第一个
+ext3 分区(p3)为 rootfs:kernel.conf `rootfs = nvme` → init 走
+`/sbin/sdfsd -n /`（块后端在机器 libbsp 的 bsp_nvme，枚举消费
+/dev/pcie0 快照，pcied 须先启动——init 流程已保证）。
+
+- **p3 必须用 `-I 128` 建 fs**：`mkfs.ext3 -b 4096 -I 128`。ext3 库对
+  256-byte inode 的 fs 有 inode 寻址/分配错位 bug（低 inode 号文件正常、
+  高 inode 号文件映射全垃圾 → 启动卡死+逐次写坏 journal inode #8）。
+  症状：串口 `sdfsd: nvme rd fsb=<野块号> FAILED` 循环、debugfs
+  "Ext2 inode is not a directory"、mount 报 bad extra_isize。修复 fs：
+  Linux 下 e2fsck -f + `tune2fs -O ^has_journal; tune2fs -O has_journal`
+  重建 journal，或直接重格+重放 tar。
+- NVMe 块后端在 8gen3 libbsp 内部串行化（单 DMA arena）；sdfsd 经
+  `rootfs_flush()` 下发 NVMe FLUSH，未净复位后 fs 保持 clean（Linux
+  dumpe2fs 验证过）。sdfsd 带块级 trace（SDFSD_NVME_TRACE），卡 IO 时
+  最后一行 `nvme rd/wr` 即挂点。
+- 进 Linux 更新 rootfs 的标准动作：`pxe_control stop` → `eud_board_reboot`
+  → 板子自动从 NVMe 引导 Ubuntu(192.168.5.64, tw220/tw220) 并连 WiFi。
+  完整重刷：tar build_aarch64 全树 → scp → mount p3 → rm 旧内容 →
+  tar -xf → chown root:root → sync umount。注意远程 sh -c 里
+  `cd /mnt/ewokos` 会让结尾 umount busy，脚本里 cd 走再 umount。
+- WLAN 注意：EwokOS 用 rootfs 的 `/etc/wlan/network.json`（首条优先），
+  与 Ubuntu 的 NetworkManager 独立。TW220 本板 wcn 固件加载
+  `wcn: failed stage=IPCR` 反复，尚在排查（与 rootfs 通道无关）。

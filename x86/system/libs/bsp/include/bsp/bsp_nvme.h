@@ -15,4 +15,12 @@ int32_t bsp_nvme_write(uint64_t start_lba, const void *buf, uint32_t count);
 uint64_t bsp_nvme_get_block_count(void);
 uint32_t bsp_nvme_get_block_size(void);
 
+/*
+ * Flush the device's volatile write cache (durability barrier for
+ * journaled filesystem commits).  Returns 0 on success.  A backend
+ * without a flush command returns 0 (same behaviour as the libsd path
+ * with no flush callback).
+ */
+int32_t bsp_nvme_flush(void);
+
 #endif

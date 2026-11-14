@@ -849,6 +849,25 @@ static int nvme_io_single(uint8_t opcode, uint64_t lba, uint32_t bytes,
 			&_c.iocq_phase, NVME_IO_SQID, NVME_IO_QSIZE, 5000);
 }
 
+/* Flush the volatile write cache.  Journaled filesystems call this at
+ * every commit: without it the drive may hold acknowledged writes in its
+ * cache and lose or reorder them across reset, leaving the journal
+ * replaying an inconsistent tail (observed: directory entries written by
+ * prepare_persistent_profiles vanished after an EUD reset). */
+int nvme_flush(void) {
+	nvme_sqe_t* sqe;
+
+	if (!_c.opened || !_info.used)
+		return -1;
+	sqe = &_c.iosq[_c.iosq_tail];
+	memset(sqe, 0, sizeof(*sqe));
+	sqe->opcode = NVME_NVM_FLUSH;
+	sqe->cid = _c.cid++;
+	sqe->nsid = 1;
+	return nvme_submit(_c.iosq, &_c.iosq_tail, _c.iocq, &_c.iocq_head,
+			&_c.iocq_phase, NVME_IO_SQID, NVME_IO_QSIZE, 5000);
+}
+
 int nvme_read(uint64_t lba, void* dst, uint32_t blocks) {
 	uint32_t bs = _info.block_size;
 	uint64_t bytes = (uint64_t)blocks * bs;
