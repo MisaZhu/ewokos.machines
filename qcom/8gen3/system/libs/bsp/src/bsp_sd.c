@@ -24,6 +24,8 @@ static uint8_t* _rd_va = NULL;
 static uint32_t _rd_size = 0;
 static int32_t _physical_sd = 0;
 
+static int32_t physical_init_probe(void);
+
 static int32_t physical_init_from_kernel(void) {
     sys_info_t sysinfo;
     const q8b_platform_data_t* pd;
@@ -39,6 +41,17 @@ static int32_t physical_init_from_kernel(void) {
      * space started.  Reuse that result; every runtime read/write is still
      * issued by this process through sdcc2.c. */
     stage = pd->sd.state & 0xffffU;
+    if (pd->sd.state == 0U) {
+        /* The kernel never probed: with a boot-only initramfs sd_init()
+         * skips sdcc2_probe entirely, so there is no published
+         * identification to inherit and the SD rootfs backend would fail
+         * even with a card in the slot.  Run the full user-space identify
+         * -- the same sequence the maintenance tools (sdprobe/sdupdate/
+         * sdinstall) use.  A kernel-probed failure (fail bit set) still
+         * returns -1: the kernel already retried the sequence three times,
+         * and re-probing would only slow card-less boots. */
+        return physical_init_probe();
+    }
     if ((pd->sd.state & 0xffff0000U) != 0x53440000U ||
             (stage & 0x8000U) != 0 || stage < 20U)
         return -1;
@@ -79,8 +92,10 @@ static int32_t physical_init_probe(void) {
  * calls it again in each forked child): SYS_MEM_MAP windows belong to one
  * address space and are not inherited across fork, so both branches below
  * must build the mapping again rather than assume the parent already did.
- * Neither branch re-runs card identification: the physical path adopts the
- * kernel's published SDCC2 state (sdcc2_inherit) and only re-maps registers.
+ * The physical branch adopts the kernel's published SDCC2 state
+ * (sdcc2_inherit) and only re-maps registers; it runs a full user-space
+ * identification only when the kernel published none at all (boot-only
+ * initramfs boot).
  */
 static int32_t storage_init(void) {
     sys_info_t sysinfo;
