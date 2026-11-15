@@ -2233,6 +2233,16 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
     (void)op; (void)arg; (void)size;
     return Q8B_NPU_PAS_UNSUPPORTED;
 #else
+    if(op == Q8B_NPU_SYS_OFF) {
+        uint64_t regs[8] = { 0x84000008ull, 0, 0, 0, 0, 0, 0, 0 };
+        printf("q8b npu: PSCI SYSTEM_OFF\n");
+        __asm__ volatile("dsb sy" ::: "memory");
+        q8b_scm_smc(regs);
+        printf("q8b npu: PSCI poweroff returned a0=%llx\n",
+                (unsigned long long)regs[0]);
+        return Q8B_NPU_PAS_FAILED;
+    }
+
     if(op == Q8B_NPU_SYS_RESET) {
         uint64_t regs[8] = { 0x84000009ull, 0, 0, 0, 0, 0, 0, 0 };
         printf("q8b npu: PSCI SYSTEM_RESET\n");

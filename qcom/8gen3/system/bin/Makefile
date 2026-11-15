@@ -1,6 +1,6 @@
 # Machine-local user binaries for q8b.  Each subdir has its own Makefile that
 # links against the SDK libs staged by the basic_sys phase.
-all: nputest pcieprobe reboot
+all: nputest pcieprobe reboot shutdown
 	@echo "bin done."
 
 nputest:
@@ -12,9 +12,13 @@ pcieprobe:
 reboot:
 	@$(MAKE) -C reboot
 
+shutdown:
+	@$(MAKE) -C shutdown
+
 clean:
 	@$(MAKE) -C nputest clean
 	@$(MAKE) -C pcieprobe clean
 	@$(MAKE) -C reboot clean
+	@$(MAKE) -C shutdown clean
 
-.PHONY: all nputest pcieprobe reboot clean
+.PHONY: all nputest pcieprobe reboot shutdown clean

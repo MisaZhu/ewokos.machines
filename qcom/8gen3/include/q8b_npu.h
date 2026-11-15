@@ -36,6 +36,7 @@
 #define Q8B_NPU_FRPC_PWR   (Q8B_NPU_ABI_BASE + 0x15u) /* session/level, 0 */
 #define Q8B_NPU_SMMU_READ_ID (Q8B_NPU_ABI_BASE + 0x16u) /* explicit ID offset, 0 */
 #define Q8B_NPU_SMMU_CHECK (Q8B_NPU_ABI_BASE + 0x17u) /* context setup/teardown, 0, 0 */
+#define Q8B_NPU_SYS_OFF    (Q8B_NPU_ABI_BASE + 0x7eu) /* PSCI SYSTEM_OFF */
 #define Q8B_NPU_SYS_RESET  (Q8B_NPU_ABI_BASE + 0x7fu) /* PSCI SYSTEM_RESET */
 
 /* Nonblocking calls retain owned DMA until POLL consumes the response or
