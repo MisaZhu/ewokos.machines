@@ -16,6 +16,8 @@
 @/bin/ipcserv /drivers/8gen3/pcied         /dev/pcie0
 # Q8B full window system on the UEFI GOP framebuffer.
 
+@/bin/bgrun /sbin/sudod
+
 @export ADRENO_ENABLE=1
 @/bin/ipcserv /drivers/8gen3/g2dd          /dev/g2d
 
@@ -86,5 +88,5 @@
 @/bin/bgrun /sbin/x/xmouse /dev/mouse1
 @/bin/bgrun /sbin/x/xim_none /dev/keyb0
 @/bin/bgrun /sbin/x/xim_none /dev/keyb1
-@/bin/bgrun /sbin/x/xim_none /dev/js1
+@/bin/bgrun /sbin/x/xim_vkey &
 @/bin/bgrun /bin/x/xsession misa
