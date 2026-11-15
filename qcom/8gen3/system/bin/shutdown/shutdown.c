@@ -1,16 +1,19 @@
 /* Q8B board power-off entry point used by the MCP serial console. */
-#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-#include <ewoksys/syscall.h>
-#include <q8b_npu.h>
+#include <ewoksys/vdevice.h>
 
 int main(int argc, char **argv) {
 	(void)argc;
 	(void)argv;
-	printf("q8b shutdown: requesting PSCI SYSTEM_OFF\n");
-	/* The platform handler does not return on a functioning PSCI path. */
-	uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_SYS_OFF, 0, 0);
-	printf("q8b shutdown: poweroff returned %llu\n", (unsigned long long)ret);
+	printf("q8b shutdown: requesting SYSTEM_OFF via /dev/power0\n");
+	char* ret = dev_cmd("/dev/power0", "shutdown");
+	if (ret == NULL) {
+		printf("q8b shutdown: no reply from powerd\n");
+		return 1;
+	}
+	printf("%s", ret);
+	free(ret);
 	return 1;
 }

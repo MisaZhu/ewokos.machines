@@ -6,7 +6,7 @@ BUILD_DIR = $(SYS_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
 LDFLAGS = -L $(BUILD_DIR)/lib
-CFLAGS += -I $(BUILD_DIR)/include
+CFLAGS += -I $(BUILD_DIR)/include -I ../../../include
 
 OBJS = $(ARCH)/powerd.o $(ARCH)/power_pmu.o
 TARGET = $(TARGET_DIR)/drivers/8gen3/powerd

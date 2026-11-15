@@ -22,7 +22,11 @@
 #include <unistd.h>
 
 #include <ewoksys/klog.h>
+#include <ewoksys/proc.h>
+#include <ewoksys/syscall.h>
 #include <ewoksys/vdevice.h>
+
+#include <q8b_npu.h>
 
 #include "power_pmu.h"
 
@@ -68,8 +72,10 @@ static char* dup_text(const char* text) {
 static char* power_help(void) {
     return dup_text(
         "usage: dev.cmd /dev/power0 <cmd>\n"
-        "  help     show this help\n"
-        "  status   re-sample and show battery/charging/capacity/voltage\n");
+        "  help      show this help\n"
+        "  status    re-sample and show battery/charging/capacity/voltage\n"
+        "  reboot    request PSCI SYSTEM_RESET\n"
+        "  shutdown  request PSCI SYSTEM_OFF\n");
 }
 
 static char* power_status(void) {
@@ -129,10 +135,34 @@ static char* power_status(void) {
     return dup_text(buf);
 }
 
+static char* power_reboot(void) {
+    uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_SYS_RESET, 0, 0);
+    /* A functioning PSCI path never returns. */
+    char buf[64];
+    snprintf(buf, sizeof(buf), "reboot returned %llu\n",
+            (unsigned long long)ret);
+    return dup_text(buf);
+}
+
+static char* power_shutdown(void) {
+    uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_SYS_OFF, 0, 0);
+    /* A functioning PSCI path never returns. */
+    char buf[64];
+    snprintf(buf, sizeof(buf), "shutdown returned %llu\n",
+            (unsigned long long)ret);
+    return dup_text(buf);
+}
+
+static bool power_caller_is_root(int from_pid) {
+    procinfo_t pinfo;
+    if (proc_info(from_pid, &pinfo) != 0)
+        return false;
+    return pinfo.uid == 0;
+}
+
 static char* power_dev_cmd(vdevice_t* dev, int from_pid, int argc,
         char** argv, void* p) {
     (void)dev;
-    (void)from_pid;
     (void)p;
 
     if (argc <= 0 || argv == NULL || argv[0] == NULL)
@@ -141,6 +171,16 @@ static char* power_dev_cmd(vdevice_t* dev, int from_pid, int argc,
         return power_help();
     if (strcmp(argv[0], "status") == 0)
         return power_status();
+    if (strcmp(argv[0], "reboot") == 0) {
+        if (!power_caller_is_root(from_pid))
+            return dup_text("reboot: permission denied\n");
+        return power_reboot();
+    }
+    if (strcmp(argv[0], "shutdown") == 0) {
+        if (!power_caller_is_root(from_pid))
+            return dup_text("shutdown: permission denied\n");
+        return power_shutdown();
+    }
     return NULL;
 }
 
