@@ -24,7 +24,8 @@ static inline int q8b_mdt_validate_loads(uint32_t image_size,
         const q8b_mdt_phdr *p = &ph[i];
         if (!q8b_mdt_loadable(p)) continue;
         if (p->p_filesz > p->p_memsz || p->p_paddr < base ||
-                (uint64_t)p->p_offset + p->p_filesz > image_size ||
+                (p->p_filesz &&
+                 (uint64_t)p->p_offset + p->p_filesz > image_size) ||
                 (uint64_t)p->p_paddr - base + p->p_memsz > capacity)
             return -1;
         loads++;

@@ -47,6 +47,7 @@ ADRENO_FW_SRC = $(MAKEINC_DIR)/../firmware/adreno
 NPU_FW_SRC = $(MAKEINC_DIR)/../firmware/npu
 QCA_FW_SRC = $(MAKEINC_DIR)/../firmware/qca
 WLAN_FW_SRC = $(MAKEINC_DIR)/../firmware/ath11k
+ADSP_FW_SRC = $(MAKEINC_DIR)/../firmware/adsp
 # Optional DSP runtime, built only when explicitly requested. External QAIRT
 # headers/libraries are build inputs and are never added to this repository.
 QAIRT_NATIVE_BUILD_DIR ?= $(BUILD_DIR)/qairt-native
@@ -100,6 +101,17 @@ firmware_install:
 		$(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1/nfa765/
 	@cp -p $(WLAN_FW_SRC)/LICENSE.QualcommAtheros_ath10k \
 		$(TARGET_DIR)/etc/firmware/ath11k/
+	@if [ ! -f "$(ADSP_FW_SRC)/qcadsp8280.mbn" ]; then \
+		echo "ERROR: $(ADSP_FW_SRC)/qcadsp8280.mbn missing"; \
+		echo "       see machines/qcom/8gen3/firmware/adsp/README.md"; \
+		exit 1; \
+	fi
+	@cp -p $(ADSP_FW_SRC)/qcadsp8280.mbn \
+		$(TARGET_DIR)/etc/firmware/qcadsp8280.mbn
+	@mkdir -p $(TARGET_DIR)/etc/firmware/adsp
+	@cp -p $(ADSP_FW_SRC)/RADS.bin $(ADSP_FW_SRC)/adspr.jsn \
+		$(ADSP_FW_SRC)/adspua.jsn $(ADSP_FW_SRC)/battmgr.jsn \
+		$(ADSP_FW_SRC)/cdspr.jsn $(TARGET_DIR)/etc/firmware/adsp/
 
 basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 	rm -f $(BUILD_DIR)/lib/libbsp.a

@@ -1825,12 +1825,17 @@ static int npu_frpc_map(uint64_t arg, uint32_t size, uint64_t *devaddr) {
  * it.  Completion may have reached AP while DSP shared writes are pending;
  * the consumer's ordering barrier precedes dropping these registrations. */
 static int npu_frpc_map_in_flight(const npu_frpc_map_t *m) {
+#ifdef Q8B_QEMU_TEST
+    (void)m;
+    return 0;
+#else
     unsigned index = (unsigned)(m - npu_frpc_maps);
     for (unsigned j = 0; j < NPU_FRPC_PENDING_MAX; j++) {
         npu_frpc_pending_t *p = &npu_glink.pending[j];
         if (p->ctx && (p->maps & (1ull << index))) return 1;
     }
     return 0;
+#endif
 }
 
 static int npu_frpc_unmap(uint64_t devaddr, uint32_t size) {
@@ -2155,6 +2160,11 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
 }
 
 static int npu_frpc_poll(ewokos_addr_t pa, uint32_t size) {
+#ifdef Q8B_QEMU_TEST
+    (void)pa;
+    (void)size;
+    return Q8B_NPU_PAS_UNSUPPORTED;
+#else
     if (!booted || !npu_frpc_session)
         return Q8B_NPU_PAS_UNSUPPORTED;
     if (!owned_dma(pa, size, NPU_MAX_FW, 0))
@@ -2185,6 +2195,7 @@ static int npu_frpc_poll(ewokos_addr_t pa, uint32_t size) {
         return 0;
     }
     return Q8B_NPU_PAS_INVALID;
+#endif
 }
 
 static int npu_pas_prepare(void) {

@@ -65,6 +65,8 @@
 #include <ewoksys/klog.h>
 #include <ewoksys/syscall.h>
 
+#include <q8b_adsp_pas.h>
+
 #include "power_pmu.h"
 
 /* SPMI arbiter windows (addresses proven by goodixd on the TW220). */
@@ -600,8 +602,31 @@ int power_pmu_sample(power_sample_t* out) {
     out->charger_sid = -1;
     out->vbat_sid = -1;
     out->voltage_mv = -1;
-    if (!_mapped)
-        return -1;
+
+    /* Preferred capacity source: the ADSP firmware battery manager (real
+     * SOC), reached through the kernel platform-control door.  It is
+     * independent of the SPMI windows below and wins over every SPMI
+     * capacity/charging/presence estimate. */
+    bool bm_ok = false;
+    uint8_t bm_cap = 0;
+    bool bm_charging = false, bm_present = false;
+    int64_t ret = (int64_t)syscall3(SYS_PLATFORM_CTL,
+            Q8B_ADSP_BATTMGR_CAPACITY, 0, 0);
+    if (ret >= 0) {
+        bm_cap = (uint8_t)(ret & Q8B_ADSP_BATT_CAP_MASK);
+        bm_charging = (ret & Q8B_ADSP_BATT_CHARGING) != 0;
+        bm_present = (ret & Q8B_ADSP_BATT_PRESENT) != 0;
+        bm_ok = true;
+    }
+    if (!_mapped) {
+        if (!bm_ok)
+            return -1;
+        out->capacity = bm_cap;
+        out->charging = bm_charging;
+        out->battery = bm_present;
+        out->cap_src = CAP_SRC_BATTMGR;
+        return 0;
+    }
 
     out->charger_sid = _charger_sid;
 
@@ -609,14 +634,16 @@ int power_pmu_sample(power_sample_t* out) {
         int st = spmi_read((uint32_t)_chgr_apid, CHGR_STATUS1);
         if (st >= 0) {
             out->chgr_state = (uint32_t)st & CHGR_STATE_MASK;
-            /* smbcharger table: PRE/FULL/FAST mean current is flowing
-             * in; the other states are idle/terminal/error. */
-            out->charging = out->chgr_state >= 1U && out->chgr_state <= 3U;
-            /* FULL_CHARGE: the charger holds the pack at full - the only
-             * read-only capacity source while the FG is dormant. */
-            if (out->chgr_state == CHGR_STATE_FULL) {
-                out->capacity = 100U;
-                out->cap_src = CAP_SRC_CHARGER;
+            if (!bm_ok) {
+                /* smbcharger table: PRE/FULL/FAST mean current is flowing
+                 * in; the other states are idle/terminal/error. */
+                out->charging = out->chgr_state >= 1U && out->chgr_state <= 3U;
+                /* FULL_CHARGE: the charger holds the pack at full - the only
+                 * read-only capacity source while the FG is dormant. */
+                if (out->chgr_state == CHGR_STATE_FULL) {
+                    out->capacity = 100U;
+                    out->cap_src = CAP_SRC_CHARGER;
+                }
             }
         }
     }
@@ -624,7 +651,8 @@ int power_pmu_sample(power_sample_t* out) {
         int sts = spmi_read((uint32_t)_batif_apid, BATIF_INT_RT_STS);
         if (sts >= 0) {
             out->batif_sts = (uint32_t)sts;
-            out->battery = ((uint32_t)sts & BATIF_MISSING_MASK) == 0;
+            if (!bm_ok)
+                out->battery = ((uint32_t)sts & BATIF_MISSING_MASK) == 0;
         }
     }
     for (unsigned i = 0; i < _fg_count; i++) {
@@ -637,11 +665,13 @@ int power_pmu_sample(power_sample_t* out) {
             continue;
         if (volt < FG_VOLT_MIN_MV || volt > FG_VOLT_MAX_MV)
             continue;
-        /* SOC_MONOTONIC: LSB 0.00390625 %, full = 25525. */
-        out->capacity = (uint8_t)(soc * 100U / FG_SOC_MAX);
-        if (out->capacity > 100U)
-            out->capacity = 100U;
-        out->cap_src = CAP_SRC_FG;
+        if (!bm_ok) {
+            /* SOC_MONOTONIC: LSB 0.00390625 %, full = 25525. */
+            out->capacity = (uint8_t)(soc * 100U / FG_SOC_MAX);
+            if (out->capacity > 100U)
+                out->capacity = 100U;
+            out->cap_src = CAP_SRC_FG;
+        }
         out->voltage_mv = (int)volt;
         out->vbat_code = (uint32_t)soc;
         out->vbat_sid = _fg_sids[i];
@@ -650,8 +680,9 @@ int power_pmu_sample(power_sample_t* out) {
     }
     /* Persist live truth when it changed - sampling runs once per
      * second and the state file lives on eMMC, so only real changes
-     * rewrite it. */
-    if ((out->cap_src == CAP_SRC_CHARGER || out->cap_src == CAP_SRC_FG) &&
+     * rewrite it.  (battmgr is authoritative and never persisted.) */
+    if (!bm_ok &&
+            (out->cap_src == CAP_SRC_CHARGER || out->cap_src == CAP_SRC_FG) &&
             (!_stored_cap_valid || _stored_cap != out->capacity)) {
         _stored_cap = out->capacity;
         _stored_cap_valid = true;
@@ -660,9 +691,18 @@ int power_pmu_sample(power_sample_t* out) {
     /* Charger idle + FG dormant: no live capacity source exists on the
      * TW220 (proven by register sweeps), so report the last known
      * capacity instead of dropping to 0. */
-    if (out->capacity == 0U && _stored_cap_valid) {
+    if (!bm_ok && out->capacity == 0U && _stored_cap_valid) {
         out->capacity = _stored_cap;
         out->cap_src = CAP_SRC_REMEMBERED;
+    }
+    /* battmgr wins over all SPMI-derived capacity/charging/presence, but
+     * keeps the SPMI diagnostics (charger_sid / chgr_state / batif_sts /
+     * voltage_mv) that the status string reports. */
+    if (bm_ok) {
+        out->capacity = bm_cap;
+        out->charging = bm_charging;
+        out->battery = bm_present;
+        out->cap_src = CAP_SRC_BATTMGR;
     }
     if (_state_dirty)
         state_save();

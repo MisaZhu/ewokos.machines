@@ -50,6 +50,9 @@
 # TW220 only:
 @/bin/ipcserv /drivers/8gen3/goodixd        /dev/touch0
 # Battery status (charger PMIC + ADC7 VBAT_SNS over SPMI).
+# Boot the ADSP first: the battery manager (PMIC GLINK battmgr) lives on the
+# ADSP and is unreachable until PAS auth + SMP2P/GLINK transport are up.
+@/bin/adspas
 @/bin/ipcserv /drivers/8gen3/powerd         /dev/power0
 # gaokun (gaokun3) only:
 #@/bin/ipcserv /drivers/8gen3/himaxd        /dev/touch0
