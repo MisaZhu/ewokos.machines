@@ -38,7 +38,7 @@ static int g_cl_ready = 0;
 static int cl_ensure(void) {
 	if (g_cl_ready == 1 && adreno_wedged()) {
 		g_cl_ready = -1;
-		klog("q8b cl: Adreno wedged - CL offload disabled for this session\n");
+		slog("q8b cl: Adreno wedged - CL offload disabled for this session\n");
 	}
 	if (g_cl_ready != 0)
 		return g_cl_ready == 1;
@@ -47,7 +47,7 @@ static int cl_ensure(void) {
 		return 0;
 	}
 	g_cl_ready = (adreno_3d_init() == 0) ? 1 : -1;
-	klog("q8b cl: adreno compute bring-up %s\n",
+	slog("q8b cl: adreno compute bring-up %s\n",
 	     (g_cl_ready == 1) ? "OK" : "DECLINED");
 	return g_cl_ready == 1;
 }

@@ -320,7 +320,7 @@ int iwlm_trans_load_pnvm(struct iwlm_dev *d)
             cpu_to_le64(t->pnvm_data[0].pa);
         ps->ctrl_cfg.pnvm_cfg.pnvm_size = cpu_to_le32(total);
     }
-    klog("iwlm: pnvm ver %08x, %d chunks, %u bytes\n",
+    slog("iwlm: pnvm ver %08x, %d chunks, %u bytes\n",
          fw->pnvm_version, fw->pnvm_n_chunks, total);
     return 0;
 }
@@ -334,7 +334,7 @@ int iwlm_trans_start_fw(struct iwlm_dev *d)
 
     ret = iwlm_prepare_card_hw(d);
     if (ret) {
-        klog("iwlm: prepare_card_hw failed\n");
+        slog("iwlm: prepare_card_hw failed\n");
         return ret;
     }
 
@@ -350,7 +350,7 @@ int iwlm_trans_start_fw(struct iwlm_dev *d)
     /* gen2 nic init */
     ret = iwlm_apm_init(d);
     if (ret) {
-        klog("iwlm: apm init failed\n");
+        slog("iwlm: apm init failed\n");
         return ret;
     }
     if (rxq_init(d) || txq_init(d, &t->cmdq, IWLM_CMDQ_ID, IWLM_CMDQ_SIZE))
@@ -361,7 +361,7 @@ int iwlm_trans_start_fw(struct iwlm_dev *d)
 
     ret = ctxt_info_init(d);
     if (ret) {
-        klog("iwlm: ctxt info failed %d\n", ret);
+        slog("iwlm: ctxt info failed %d\n", ret);
         return ret;
     }
 
@@ -387,7 +387,7 @@ int iwlm_trans_start_fw(struct iwlm_dev *d)
             return 0;
         usleep(1000);
     }
-    klog("iwlm: timeout waiting for alive\n");
+    slog("iwlm: timeout waiting for alive\n");
     return -2;
 }
 

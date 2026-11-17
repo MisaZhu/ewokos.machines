@@ -120,7 +120,7 @@ static volatile uint8_t *map_bar(ewokos_addr_t phy, uint32_t size) {
      * 避开内核设备窗口(0xA0000000+)/sys_dma(0xA8000000+)/fb(0xB8000000) */
     ewokos_addr_t va = 0x50000000;
     ewokos_addr_t ret = syscall3(SYS_MEM_MAP, va, phy, size);
-    klog("ahci: map bar phy=%llx va=%llx ret=%llx\n",
+    slog("ahci: map bar phy=%llx va=%llx ret=%llx\n",
          (unsigned long long)phy, (unsigned long long)va, (unsigned long long)ret);
     if (ret != va) {
         return NULL;
@@ -188,9 +188,9 @@ static int32_t ahci_submit(uint8_t cmd, uint64_t lba, uint16_t count,
             cmd_hdr_t *dh = (cmd_hdr_t *)_dma_pool;
             *preg(_ahci_port, P_IS) = 0xFFFFFFFF;
             if (tfd & 0x01) {
-                klog("ahci: cmd %x ERR tfd=%x prdbc=%u\n", cmd, tfd, dh->prdbc);
+                slog("ahci: cmd %x ERR tfd=%x prdbc=%u\n", cmd, tfd, dh->prdbc);
             } else if (_ahci_diag) {
-                klog("ahci: cmd %x ok tfd=%x prdbc=%u data0=%02x%02x\n",
+                slog("ahci: cmd %x ok tfd=%x prdbc=%u data0=%02x%02x\n",
                      cmd, tfd, dh->prdbc,
                      _dma_pool[BUF_OFF + 1], _dma_pool[BUF_OFF]);
             }
@@ -199,16 +199,16 @@ static int32_t ahci_submit(uint8_t cmd, uint64_t lba, uint16_t count,
     }
 
     /* 超时: 诊断并复位端口 */
-    klog("ahci: cmd=%x lba=%llu timeout CI=%x TFD=%x CMD=%x IS=%x SIG=%x\n",
+    slog("ahci: cmd=%x lba=%llu timeout CI=%x TFD=%x CMD=%x IS=%x SIG=%x\n",
          cmd, (unsigned long long)lba, *preg(_ahci_port, P_CI),
          *preg(_ahci_port, P_TFD), *preg(_ahci_port, P_CMD),
          *preg(_ahci_port, P_IS), *preg(_ahci_port, 0x24));
-    klog("ahci: cfis %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+    slog("ahci: cfis %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
          ct[0], ct[1], ct[2], ct[3], ct[4], ct[5], ct[6], ct[7],
          ct[8], ct[9], ct[10], ct[11], ct[12], ct[13], ct[14], ct[15]);
     {
         volatile uint32_t *h32 = (volatile uint32_t *)clb;
-        klog("ahci: hdr %08x %08x %08x %08x prdt=%08x %08x\n",
+        slog("ahci: hdr %08x %08x %08x %08x prdt=%08x %08x\n",
              h32[0], h32[1], h32[2], h32[3], prdt[0].dba, prdt[0].dbc_i);
     }
     uint32_t c = *preg(_ahci_port, P_CMD);
@@ -353,7 +353,7 @@ static int32_t bsp_ahci_controller_init(void) {
     if (!found) {
         return -1;
     }
-    klog("ahci: ahci found at %x:%x.%x abar mapped\n",
+    slog("ahci: ahci found at %x:%x.%x abar mapped\n",
          found_bus, found_dev, found_fn);
 
     /* HBA 复位 + AHCI 使能。
@@ -390,16 +390,16 @@ static int32_t bsp_ahci_controller_init(void) {
     _dma_pool = raw + bump;
     _dma_pool_phys = raw_phys + bump;
     memset(_dma_pool, 0, DMA_POOL_SIZE);
-    klog("ahci: dma pool phys=%llx\n", (unsigned long long)_dma_pool_phys);
+    slog("ahci: dma pool phys=%llx\n", (unsigned long long)_dma_pool_phys);
 
     /* 找已连接设备的端口 */
     uint32_t pi = *(volatile uint32_t *)(_abar + HBA_PI);
-    klog("ahci: pi=%x ghc=%x\n", pi, *(volatile uint32_t *)(_abar + HBA_GHC));
+    slog("ahci: pi=%x ghc=%x\n", pi, *(volatile uint32_t *)(_abar + HBA_GHC));
     for (uint8_t p = 0; p < 32; p++) {
         if (!(pi & (1u << p))) {
             continue;
         }
-        klog("ahci: port %u ssts=%x\n", p, *preg(p, P_SSTS));
+        slog("ahci: port %u ssts=%x\n", p, *preg(p, P_SSTS));
         if ((*preg(p, P_SSTS) & SSTS_DET) != SSTS_DEV_PRESENT) {
             continue;
         }
@@ -422,11 +422,11 @@ static int32_t bsp_ahci_controller_init(void) {
         }
         _ahci_port = p;
         int32_t idrc = ahci_identify();
-        klog("ahci: port %u identify rc=%d sectors=%llu\n", p, idrc,
+        slog("ahci: port %u identify rc=%d sectors=%llu\n", p, idrc,
              (unsigned long long)_block_count);
         if (idrc == 0) {
             _ahci_ready = 1;
-            klog("ahci: port %u ready, %llu sectors (%llu MB)\n", p,
+            slog("ahci: port %u ready, %llu sectors (%llu MB)\n", p,
                  (unsigned long long)_block_count,
                  (unsigned long long)(_block_count * 512 / (1024 * 1024)));
             return 0;

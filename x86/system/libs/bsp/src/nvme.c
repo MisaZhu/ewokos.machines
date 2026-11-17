@@ -183,7 +183,7 @@ static int admin_submit(nvme_cmd_t *cmd, uint16_t *status_out) {
 #if NVME_CQE_DEBUG
     {
         const uint32_t *w = (const uint32_t *)cmd;
-        klog("nvmefsd: submit cid=%u op=%x w10=%x w11=%x w12=%x w13=%x\n",
+        slog("nvmefsd: submit cid=%u op=%x w10=%x w11=%x w12=%x w13=%x\n",
              cmd->cid, cmd->opcode, w[10], w[11], w[12], w[13]);
     }
 #endif
@@ -205,7 +205,7 @@ static int admin_submit(nvme_cmd_t *cmd, uint16_t *status_out) {
             uint16_t st = (e->dw3 >> 17) & 0x7FFF;
             uint32_t cid = e->dw3 & 0xFFFF;
 #if NVME_CQE_DEBUG
-            klog("nvmefsd: cqe dw2=%x dw3=%x st=%x cid=%u\n",
+            slog("nvmefsd: cqe dw2=%x dw3=%x st=%x cid=%u\n",
                  e->dw2, e->dw3, st, cid);
 #endif
             _nv.acq_head = (_nv.acq_head + 1) % ACQ_SIZE;
@@ -220,7 +220,7 @@ static int admin_submit(nvme_cmd_t *cmd, uint16_t *status_out) {
             return st ? -1 : 0;
         }
     }
-    klog("nvmefsd: admin cmd %x timeout csts=%x cc=%x cq_dw3=%x\n",
+    slog("nvmefsd: admin cmd %x timeout csts=%x cc=%x cq_dw3=%x\n",
          cmd->opcode, nvreg_read(NVME_CSTS), nvreg_read(NVME_CC),
          cq[_nv.acq_head].dw3);
     return -1;
@@ -247,7 +247,7 @@ static int io_submit(nvme_cmd_t *cmd) {
             }
             cq_doorbell(1, _nv.iocq_head);
 #if NVME_CQE_DEBUG
-            klog("nvmefsd: io cqe dw2=%x dw3=%x st=%x\n", e->dw2, e->dw3, st);
+            slog("nvmefsd: io cqe dw2=%x dw3=%x st=%x\n", e->dw2, e->dw3, st);
 #endif
             return st ? -1 : 0;
         }
@@ -255,7 +255,7 @@ static int io_submit(nvme_cmd_t *cmd) {
             usleep(500);
         }
     }
-    klog("nvmefsd: io cmd %x cid=%u timeout\n", cmd->opcode, cmd->cid);
+    slog("nvmefsd: io cmd %x cid=%u timeout\n", cmd->opcode, cmd->cid);
     return -1;
 }
 
@@ -295,7 +295,7 @@ static int nvme_rw_blocks(uint64_t lba, uint32_t count, void *buf, bool write) {
         if (_diag_reads < 3) {
             _diag_reads++;
             const uint32_t *w = (const uint32_t *)buf;
-            klog("nvmefsd: read lba=%llu n=%u d0..3=%x %x %x %x\n",
+            slog("nvmefsd: read lba=%llu n=%u d0..3=%x %x %x %x\n",
                  (unsigned long long)lba, count, w[0], w[1], w[2], w[3]);
         }
 #endif
@@ -359,7 +359,7 @@ static int32_t bsp_nvme_controller_init(void) {
         }
     }
     if (bar_lo == 0 || (bar_lo & 0x1)) {
-        klog("nvmefsd: no NVMe controller found\n");
+        slog("nvmefsd: no NVMe controller found\n");
         return -1;
     }
     ewokos_addr_t bar = ((ewokos_addr_t)(bar_hi & ~0xFUL) << 32) | (bar_lo & ~0xFUL);
@@ -369,7 +369,7 @@ static int32_t bsp_nvme_controller_init(void) {
     _nv.regs = (volatile uint8_t *)NVME_BAR_VA;
     {
         ewokos_addr_t ret = syscall3(SYS_MEM_MAP, NVME_BAR_VA, bar, 0x4000);
-        klog("nvmefsd: map bar0 phy=%llx va=%llx ret=%llx\n",
+        slog("nvmefsd: map bar0 phy=%llx va=%llx ret=%llx\n",
              (unsigned long long)bar, (unsigned long long)NVME_BAR_VA,
              (unsigned long long)ret);
         if (ret != (ewokos_addr_t)NVME_BAR_VA) {
@@ -388,7 +388,7 @@ static int32_t bsp_nvme_controller_init(void) {
     uint32_t qmem_size = qmem_page * 4 + 16384 + 4096;
     uint8_t *raw = (uint8_t *)dma_alloc(0, qmem_size);
     if (raw == NULL) {
-        klog("nvmefsd: dma alloc failed\n");
+        slog("nvmefsd: dma alloc failed\n");
         return -1;
     }
     ewokos_addr_t raw_phys = dma_phy_addr(0, (ewokos_addr_t)raw);
@@ -396,7 +396,7 @@ static int32_t bsp_nvme_controller_init(void) {
     _nv.qmem = raw + bump;
     _nv.qmem_phys = raw_phys + bump;
     memset(_nv.qmem, 0, qmem_size - bump);
-    klog("nvmefsd: qmem va=%p phys=%llx page=%u\n", _nv.qmem,
+    slog("nvmefsd: qmem va=%p phys=%llx page=%u\n", _nv.qmem,
          (unsigned long long)_nv.qmem_phys, qmem_page);
     _nv.asq = (nvme_cmd_t *)(_nv.qmem + ASQ_OFF);
     _nv.acq = (nvme_cq_entry_t *)(_nv.qmem + ACQ_OFF);
@@ -414,7 +414,7 @@ static int32_t bsp_nvme_controller_init(void) {
     nvreg_write64(NVME_ASQ, _nv.qmem_phys + ASQ_OFF);
     nvreg_write64(NVME_ACQ, _nv.qmem_phys + ACQ_OFF);
     nvreg_write(NVME_CC, CC_EN | CC_IOSQES | CC_IOCQES);
-    klog("nvmefsd: cc written, aqa=%x asq=%llx acq=%llx\n",
+    slog("nvmefsd: cc written, aqa=%x asq=%llx acq=%llx\n",
          nvreg_read(NVME_AQA), (unsigned long long)nvreg_read64(NVME_ASQ),
          (unsigned long long)nvreg_read64(NVME_ACQ));
     {
@@ -433,7 +433,7 @@ static int32_t bsp_nvme_controller_init(void) {
             }
         }
         if (!(csts & CSTS_RDY)) {
-            klog("nvmefsd: controller enable timeout csts=%x\n", csts);
+            slog("nvmefsd: controller enable timeout csts=%x\n", csts);
             return -1;
         }
     }
@@ -448,10 +448,10 @@ static int32_t bsp_nvme_controller_init(void) {
         c.cdw10 = 1;
         st = 0;
         if (admin_submit(&c, &st) != 0) {
-            klog("nvmefsd: identify ctrl failed st=%x\n", st);
+            slog("nvmefsd: identify ctrl failed st=%x\n", st);
             return -1;
         }
-        klog("nvmefsd: identify ctrl ok\n");
+        slog("nvmefsd: identify ctrl ok\n");
     }
 
     /* ---- IDENTIFY namespace 1 (CNS=0): NSZE/LBAF ---- */
@@ -468,7 +468,7 @@ static int32_t bsp_nvme_controller_init(void) {
         __asm__ volatile("mfence" ::: "memory");
         st = 0;
         if (admin_submit(&c, &st) != 0) {
-            klog("nvmefsd: identify ns failed st=%x\n", st);
+            slog("nvmefsd: identify ns failed st=%x\n", st);
             return -1;
         }
         _nv.nsze = id[0] | ((uint64_t)id[1] << 32);   /* NSZE @bytes 0..7 */
@@ -480,10 +480,10 @@ static int32_t bsp_nvme_controller_init(void) {
             /* 观测到部分固件/QEMU 版本的 identify-ns 数据布局偏差,
              * 512B 是唯一受支持的 LBA 大小, 直接按 512 继续 */
             if (_nv.nsze == 0) {
-                klog("nvmefsd: no namespace capacity, give up\n");
+                slog("nvmefsd: no namespace capacity, give up\n");
                 return -1;
             }
-            klog("nvmefsd: lbaf parse failed, assume 512B LBA\n");
+            slog("nvmefsd: lbaf parse failed, assume 512B LBA\n");
         }
         _nv.lba_shift = 9;
     }
@@ -500,7 +500,7 @@ static int32_t bsp_nvme_controller_init(void) {
         c.cdw11 = 1u;                         /* flags: PC=1(bit0), IEN=0(bit1); vector=0 */
         st = 0;
         if (admin_submit(&c, &st) != 0) {
-            klog("nvmefsd: create io cq failed st=%x\n", st);
+            slog("nvmefsd: create io cq failed st=%x\n", st);
             return -1;
         }
         memset(&c, 0, sizeof(c));
@@ -510,7 +510,7 @@ static int32_t bsp_nvme_controller_init(void) {
         c.cdw10 = 1u | ((uint32_t)(IOQ_SIZE - 1) << 16);   /* SQID=1, size-1 */
         c.cdw11 = 1u | (1u << 16);            /* flags: PC=1; 关联 CQID=1 */
         if (admin_submit(&c, &st) != 0) {
-            klog("nvmefsd: create io sq failed st=%x\n", st);
+            slog("nvmefsd: create io sq failed st=%x\n", st);
             return -1;
         }
     }
@@ -532,13 +532,13 @@ static int32_t bsp_nvme_controller_init(void) {
                 _nv.iocq_phase ^= 1;
             }
             cq_doorbell(1, _nv.iocq_head);
-            klog("nvmefsd: warm-up done (drained)\n");
+            slog("nvmefsd: warm-up done (drained)\n");
             break;
         }
     }
 
     _nv.ready = true;
-    klog("nvmefsd: nvme ready, nsze=%llu blocks (%llu MB), lba=%u\n",
+    slog("nvmefsd: nvme ready, nsze=%llu blocks (%llu MB), lba=%u\n",
          (unsigned long long)_nv.nsze,
          (unsigned long long)(_nv.nsze >> (20 - _nv.lba_shift)),
          1u << _nv.lba_shift);

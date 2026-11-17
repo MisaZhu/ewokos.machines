@@ -203,7 +203,7 @@ static int i2c_init_impl(int bus, const uint8_t *pins) {
             (ewokos_addr_t)sysinfo.mmio.phy_base,
             (ewokos_addr_t)sysinfo.mmio.size);
     if (main_mapped != sysinfo.mmio.v_base) {
-        klog("i2c-rp1: main map failed got=%p expected=%p\n",
+        slog("i2c-rp1: main map failed got=%p expected=%p\n",
             (void *)main_mapped, (void *)sysinfo.mmio.v_base);
         return BCM2712_I2C_ERR_MAIN_MAP;
     }
@@ -213,7 +213,7 @@ static int i2c_init_impl(int bus, const uint8_t *pins) {
             PI5_RP1_PHY,
             PI5_RP1_WIN_SIZE);
     if (rp1_mapped != rp1_vbase) {
-        klog("i2c-rp1: RP1 map failed got=%p expected=%p\n",
+        slog("i2c-rp1: RP1 map failed got=%p expected=%p\n",
             (void *)rp1_mapped, (void *)rp1_vbase);
         return BCM2712_I2C_ERR_RP1_MAP;
     }
@@ -242,12 +242,12 @@ static int i2c_init_impl(int bus, const uint8_t *pins) {
 
     uint32_t comp_type = get32(base + IC_COMP_TYPE);
     if (comp_type != IC_COMP_TYPE_VALUE) {
-        klog("i2c-rp1: bus=%d base=%p bad COMP_TYPE=%08x expected=%08x\n",
+        slog("i2c-rp1: bus=%d base=%p bad COMP_TYPE=%08x expected=%08x\n",
             bus, (void *)base, comp_type, IC_COMP_TYPE_VALUE);
         return BCM2712_I2C_ERR_COMP_TYPE;
     }
     if (i2c_set_enable(base, 0) != 0) {
-        klog("i2c-rp1: bus=%d disable timeout enable=%08x enable_status=%08x status=%08x\n",
+        slog("i2c-rp1: bus=%d disable timeout enable=%08x enable_status=%08x status=%08x\n",
             bus, get32(base + IC_ENABLE), get32(base + IC_ENABLE_STATUS),
             get32(base + IC_STATUS));
         return BCM2712_I2C_ERR_DISABLE;

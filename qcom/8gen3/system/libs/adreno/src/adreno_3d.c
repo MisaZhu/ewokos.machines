@@ -415,7 +415,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 		goto fail;
 	ks->bin_bo.iova = ks->bin_bo.pa;   /* CB0 identity map */
 	if ((ks->bin_bo.pa & 0x7fu) != 0) {
-		klog("adreno_3d: bin iova %llx not 128-aligned\n",
+		slog("adreno_3d: bin iova %llx not 128-aligned\n",
 		     (unsigned long long)ks->bin_bo.pa);
 		goto fail;
 	}
@@ -444,7 +444,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 			align_up(ks->per_fiber_size * A690_FIBERS_PER_SP, 4096u);
 		total = (uint64_t)A690_NUM_SP_CORES * ks->per_sp_size;
 		if (total == 0 || total > 0xffffffffu) {
-			klog("adreno_3d: pvtmem total %llu B out of u32 range "
+			slog("adreno_3d: pvtmem total %llu B out of u32 range "
 			     "(pvtmem_size %u/fiber per_fiber %u per_sp %u)\n",
 			     (unsigned long long)total, k->pvtmem_size,
 			     ks->per_fiber_size, ks->per_sp_size);
@@ -461,7 +461,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 			   ocean kernel to the (un-scaled, ~0.1 FPS) CPU path and
 			   looked like a hang; log it loudly so a too-small pool
 			   is diagnosable instead of invisible. */
-			klog("adreno_3d: pvtmem BO alloc FAILED for total %llu B "
+			slog("adreno_3d: pvtmem BO alloc FAILED for total %llu B "
 			     "(pvtmem_size %u/fiber per_fiber %u per_sp %u) - "
 			     "kernel dma_size pool too small for this kernel\n",
 			     (unsigned long long)total, k->pvtmem_size,
@@ -470,7 +470,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 		}
 		ks->pvt_bo.iova = ks->pvt_bo.pa;
 		if ((ks->pvt_bo.pa & 0x1fu) != 0) {   /* tu6_emit_xs assert */
-			klog("adreno_3d: pvtmem BO pa %llx not 32-aligned\n",
+			slog("adreno_3d: pvtmem BO pa %llx not 32-aligned\n",
 			     (unsigned long long)ks->pvt_bo.pa);
 			goto fail;
 		}
@@ -1248,7 +1248,7 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 	}
 
 	if (adreno_ring_tracing())
-		klog("adreno_trace: CS bin=%llx desc=%llx grid=%ux%ux%u local=%ux%ux%u words=%u\n",
+		slog("adreno_trace: CS bin=%llx desc=%llx grid=%ux%ux%u local=%ux%ux%u words=%u\n",
 		     (unsigned long long)ks->bin_bo.iova, (unsigned long long)desc_bo.iova,
 		     grid[0], grid[1], grid[2], k->local_size[0], k->local_size[1], k->local_size[2], b.n);
 	*prepared = b;
@@ -1579,7 +1579,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		grid[2] = 1u;
 		rc = build_cs_dispatch(xf, binds, gvk ? 2u : 4u, NULL, 0, unif, split, grid, &xform_ib);
 		if (rc != ADRENO_OK) {
-			klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
+			slog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
 			return rc;
 		}
 	}

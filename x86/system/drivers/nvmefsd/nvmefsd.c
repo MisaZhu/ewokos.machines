@@ -370,16 +370,16 @@ static void nvmefsd_log_fs_info(const ext3_t *ext3) {
             i >= 0 && (volume[i] == 0 || volume[i] == ' '); i--)
         volume[i] = 0;
 
-    klog("nvmefsd: NVMe blocks=%llu block_size=%u capacity=%llu MiB\n",
+    slog("nvmefsd: NVMe blocks=%llu block_size=%u capacity=%llu MiB\n",
         (unsigned long long)nvme_blocks, nvme_block_size,
         (unsigned long long)((nvme_blocks * nvme_block_size) >> 20));
-    klog("nvmefsd: %s volume='%s' block_size=%u blocks=%u free=%u "
+    slog("nvmefsd: %s volume='%s' block_size=%u blocks=%u free=%u "
         "capacity=%llu MiB free=%llu MiB\n",
         ext3_has_journal(ext3) ? "ext3" : "ext2",
         volume[0] != 0 ? volume : "<none>", block_size,
         ext3->super.s_blocks_count, ext3->super.s_free_blocks_count,
         (unsigned long long)total_mib, (unsigned long long)free_mib);
-    klog("nvmefsd: inodes=%u free_inodes=%u groups=%d "
+    slog("nvmefsd: inodes=%u free_inodes=%u groups=%d "
         "state=0x%04x revision=%u\n",
         ext3->super.s_inodes_count, ext3->super.s_free_inodes_count,
         ext3->group_num, ext3->super.s_state, ext3->super.s_rev_level);
@@ -393,16 +393,16 @@ int main(int argc, char **argv) {
 
     ret = bsp_nvme_init();
     if(ret != 0) {
-        klog("nvmefsd: NVMe init failed (err=%d)\n", ret);
+        slog("nvmefsd: NVMe init failed (err=%d)\n", ret);
         return ret;
     }
     ret = ext3_init_ex2(&ext3, sd_read, nvme_read_blocks, sd_write,
             nvme_write_blocks, sd_flush, NVME_FS_BUFFER_SIZE);
     if(ret != 0) {
         if(ret == EXT3_ERR_JOURNAL)
-            klog("nvmefsd: ext3 journal unusable, run e2fsck! (err=%d)\n", ret);
+            slog("nvmefsd: ext3 journal unusable, run e2fsck! (err=%d)\n", ret);
         else
-            klog("nvmefsd: no supported ext2/ext3 filesystem (err=%d)\n", ret);
+            slog("nvmefsd: no supported ext2/ext3 filesystem (err=%d)\n", ret);
         sd_quit();
         return ret;
     }
@@ -424,7 +424,7 @@ int main(int argc, char **argv) {
 
     ret = device_run(&dev, mount_point, FS_TYPE_DIR, 0777, false);
     if(ret != 0)
-        klog("nvmefsd: mount at %s failed (err=%d)\n", mount_point, ret);
+        slog("nvmefsd: mount at %s failed (err=%d)\n", mount_point, ret);
     ext3_quit(&ext3);
     sd_quit();
     return ret;

@@ -350,7 +350,7 @@ static bool tc956x_mac_power_on(unsigned pf, ewokos_addr_t mac_base) {
     uint32_t clocks = (1u << 7) | (1u << 14) | (1u << 31);
     uint32_t resets = (1u << 7) | (1u << 30) | (1u << 31);
     uint32_t before_clk = get32(clk), before_rst = get32(rst);
-    klog("q8b eth: PF%u SFR clk=%08x rst=%08x emactl=%08x\n",
+    slog("q8b eth: PF%u SFR clk=%08x rst=%08x emactl=%08x\n",
             pf, before_clk, before_rst, get32(ctl));
     if (before_clk == 0xffffffffu || before_rst == 0xffffffffu)
         return false;
@@ -374,12 +374,12 @@ static bool tc956x_mac_power_on(unsigned pf, ewokos_addr_t mac_base) {
     for (unsigned i = 0; i < 10000; i++) {
         if (get32(ctl) & (1u << 21)) {
             reg_write32(rst, get32(rst) & ~(1u << 31));
-            klog("q8b eth: PF%u MAC/PMA clocks ready\n", pf);
+            slog("q8b eth: PF%u MAC/PMA clocks ready\n", pf);
             return true;
         }
         usleep(100);
     }
-    klog("q8b eth: PF%u PMA init timeout emactl=%08x\n", pf, get32(ctl));
+    slog("q8b eth: PF%u PMA init timeout emactl=%08x\n", pf, get32(ctl));
     return false;
 }
 
@@ -404,9 +404,9 @@ static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
 			q8b_pcie_map_bar(device, 4, TC956X_BAR4_VA, TC956X_BAR4_SIZE))
         return false;
 
-    klog("q8b eth: BAR maps ready; reading resource manager\n");
+    slog("q8b eth: BAR maps ready; reading resource manager\n");
     rsc_id = get32(TC956X_BAR0_VA + TC956X_RSCMNG_ID);
-    klog("q8b eth: resource manager=%08x\n", rsc_id);
+    slog("q8b eth: resource manager=%08x\n", rsc_id);
     pf = rsc_id & TC956X_RSCMNG_PF_MASK;
     if ((rsc_id & (TC956X_RSCMNG_FN_TYPE | TC956X_RSCMNG_VF_MASK)) != 0 ||
             pf > 1u) {
@@ -439,7 +439,7 @@ static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
     _mac[5] = (uint8_t)(mac_hi >> 8);
 
     if (!valid_mac(_mac) && tc956x_eeprom_mac(pf, _mac)) {
-        klog("q8b eth: invalid MAC and EEPROM read failed\n");
+        slog("q8b eth: invalid MAC and EEPROM read failed\n");
         return false;
     }
     if (mdio_read_c22(mac_base, TC956X_PHY_ADDR, 2, &phy_id1) != 0 ||
@@ -448,7 +448,7 @@ static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
                 pf, TC956X_PHY_ADDR,
                 get32(mac_base + GMAC_MDIO_DATA));
 
-    klog("q8b eth: PF%u PHY id=%04x:%04x\n", pf, phy_id1, phy_id2);
+    slog("q8b eth: PF%u PHY id=%04x:%04x\n", pf, phy_id1, phy_id2);
     if (version == 0 || version == 0xffffffffu)
         return false;
     tc956x_config_host_tamap();
@@ -576,7 +576,7 @@ static int tc956x_fix_link(uint16_t phy) {
     reg_write32(_mac_base + GMAC_TX_CONFIG,
             (tx & ~GMAC_TX_SS_MASK) | phy_speed_bits(phy, tx));
     _phy_mode = mode;
-    klog("q8b eth: PHY speed=%u duplex=%u PCS ctrl=%04x status=%04x an=%04x emactl=%08x\n",
+    slog("q8b eth: PHY speed=%u duplex=%u PCS ctrl=%04x status=%04x an=%04x emactl=%08x\n",
             speed == 4 ? 2500 : speed == 2 ? 1000 : speed == 1 ? 100 : 10,
             !!(phy & (1u << 13)), tc956x_pcs_read(0), tc956x_pcs_read(1),
             tc956x_pcs_read(0x8002), get32(ctl));
@@ -696,7 +696,7 @@ static int tc956x_start(void) {
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 1, &bmsr);
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 0x11, &phy_status);
     if (tc956x_fix_link(phy_status)) {
-        klog("q8b eth: PCS link configuration failed\n");
+        slog("q8b eth: PCS link configuration failed\n");
         return -1;
     }
     value = get32(_mac_base + GMAC_TX_CONFIG);

@@ -29,7 +29,7 @@ disp_info_t* bsp_get_fbinfo(void) {
 int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     sys_info_t sysinfo;
     if (sys_get_sys_info(&sysinfo) != 0) {
-        klog("q8b fb: SYS_GET_SYS_INFO failed\n");
+        slog("q8b fb: SYS_GET_SYS_INFO failed\n");
         return -1;
     }
 
@@ -38,7 +38,7 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 
     if (pd->fb.phy_base == 0 || pd->fb.width == 0 || pd->fb.height == 0 ||
             pd->fb.pitch == 0) {
-        klog("q8b fb: invalid GOP handoff base=0x%llx %ux%u pitch=%u\n",
+        slog("q8b fb: invalid GOP handoff base=0x%llx %ux%u pitch=%u\n",
                 (unsigned long long)pd->fb.phy_base, pd->fb.width,
                 pd->fb.height, pd->fb.pitch);
         return -1;
@@ -47,7 +47,7 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     uint64_t bytes64 = (uint64_t)pd->fb.pitch * pd->fb.height;
     uint64_t map_bytes64 = (bytes64 + 4095u) & ~4095ULL;
     if (bytes64 == 0 || map_bytes64 > UINT32_MAX) {
-        klog("q8b fb: GOP mapping too large: %llu bytes\n",
+        slog("q8b fb: GOP mapping too large: %llu bytes\n",
                 (unsigned long long)bytes64);
         return -1;
     }
@@ -72,7 +72,7 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
                 (ewokos_addr_t)pd->fb.phy_base,
                 (ewokos_addr_t)bytes_max);
     if (mapped != (ewokos_addr_t)Q8B_FB_VA) {
-        klog("q8b fb: SYS_MEM_MAP failed pa=0x%llx va=0x%llx size=%u ret=0x%llx\n",
+        slog("q8b fb: SYS_MEM_MAP failed pa=0x%llx va=0x%llx size=%u ret=0x%llx\n",
                 (unsigned long long)pd->fb.phy_base,
                 (unsigned long long)Q8B_FB_VA, bytes_max,
                 (unsigned long long)mapped);
@@ -80,7 +80,7 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
         return -1;
     }
 
-    klog("q8b fb: mapped pa=0x%llx va=0x%llx %ux%u bpp=%u pitch=%u format=%u size=%u\n",
+    slog("q8b fb: mapped pa=0x%llx va=0x%llx %ux%u bpp=%u pitch=%u format=%u size=%u\n",
             (unsigned long long)pd->fb.phy_base,
             (unsigned long long)Q8B_FB_VA, pd->fb.width, pd->fb.height,
             pd->fb.bpp, pd->fb.pitch, pd->fb.format, bytes);

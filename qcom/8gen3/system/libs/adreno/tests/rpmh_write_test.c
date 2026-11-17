@@ -39,7 +39,7 @@ static void test_write(uint64_t address, uint32_t value) {
     if (off == 0xd14 && (value & (1u << 24))) triggered = 1;
 }
 int proc_nsleep_precise(uint64_t ns) { (void)ns; return 0; }
-void klog(const char *format, ...) { (void)format; }
+void slog(const char *format, ...) { (void)format; }
 ewokos_addr_t syscall3_raw(int op, ewokos_addr_t a, ewokos_addr_t b,
         ewokos_addr_t c) { (void)op; (void)b; (void)c; return a; }
 static void reset_bus(void) {

@@ -99,7 +99,7 @@ static inline void lcd_set_buffer(uint16_t w, uint16_t h, uint16_t rot) {
     lcd_write_command(0x36);
     lcd_write_data(mod);
     /* #region debug-point gnpe-ili9341-madctl-probe */
-    klog("ili9341: set_buffer w=%u h=%u rot=%u madctl=%02x\n",
+    slog("ili9341: set_buffer w=%u h=%u rot=%u madctl=%02x\n",
             (unsigned int)w, (unsigned int)h, (unsigned int)rot, mod);
     /* #endregion debug-point gnpe-ili9341-madctl-probe */
 
@@ -218,7 +218,7 @@ void ili9341_flush(const void* buf, uint32_t size) {
 
     if(size < LCD_WIDTH * LCD_HEIGHT * 4) {
         /* #region debug-point gnpe-ili9341-madctl-probe */
-        klog("ili9341: flush skipped size=%u expect=%u has_buf=%d\n",
+        slog("ili9341: flush skipped size=%u expect=%u has_buf=%d\n",
                 (unsigned int)size,
                 (unsigned int)(LCD_WIDTH * LCD_HEIGHT * 4),
                 1);
@@ -303,7 +303,7 @@ void ili9341_flush(const void* buf, uint32_t size) {
     total_area = (uint32_t)LCD_WIDTH * LCD_HEIGHT;
     /* #region debug-point gnpe-ili9341-madctl-probe */
     if (sz > 0) {
-        klog("ili9341: flush ok size=%u first_argb=%08x first_rgb565=%04x rot=%u inv=%u\n",
+        slog("ili9341: flush ok size=%u first_argb=%08x first_rgb565=%04x rot=%u inv=%u\n",
                 (unsigned int)size,
                 src[0],
                 _lcd_buffer[0],
@@ -367,7 +367,7 @@ void ili9341_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
     _dbg_rot = rot;
     _dbg_inversion = inversion;
     /* #region debug-point gnpe-ili9341-madctl-probe */
-    klog("ili9341: init w=%u h=%u rot=%u inv=%u dc=%d cs=%d rst=%d bl=%d div=%d\n",
+    slog("ili9341: init w=%u h=%u rot=%u inv=%u dc=%d cs=%d rst=%d bl=%d div=%d\n",
             (unsigned int)w, (unsigned int)h, (unsigned int)rot, (unsigned int)inversion,
             pin_dc, pin_cs, pin_rst, pin_bl, cdiv);
     /* #endregion debug-point gnpe-ili9341-madctl-probe */
@@ -507,7 +507,7 @@ void ili9341_init(uint16_t w, uint16_t h, uint16_t rot, uint16_t inversion,
         lcd_write_command(0x21);
     }
     /* #region debug-point gnpe-ili9341-madctl-probe */
-    klog("ili9341: display on rot=%u inv=%u width=%u height=%u\n",
+    slog("ili9341: display on rot=%u inv=%u width=%u height=%u\n",
             (unsigned int)rot, (unsigned int)inversion,
             (unsigned int)LCD_WIDTH, (unsigned int)LCD_HEIGHT);
     /* #endregion debug-point gnpe-ili9341-madctl-probe */

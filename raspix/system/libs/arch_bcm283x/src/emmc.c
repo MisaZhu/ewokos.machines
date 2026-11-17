@@ -155,7 +155,7 @@ static inline int32_t sd_status(uint32_t mask) {
     }
 
     // if(cnt <= 0 || (*EMMC_INTERRUPT & INT_ERROR_MASK)){
-    // 	klog("%d: %08x %08x\n",cnt, *EMMC_STATUS, *EMMC_INTERRUPT);	
+    // 	slog("%d: %08x %08x\n",cnt, *EMMC_STATUS, *EMMC_INTERRUPT);	
     // }
     return (cnt <= 0 || (*EMMC_INTERRUPT & INT_ERROR_MASK)) ? SD_ERROR : SD_OK;
 }

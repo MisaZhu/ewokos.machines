@@ -213,7 +213,7 @@ int adreno_rpmh_arc_vote(const char *id, uint32_t level, uint32_t *vote)
 		}
 	}
 	if (i == pri_count) {
-		klog("adreno_rpmh: %s has no ARC level >= %u\n", id, level);
+		slog("adreno_rpmh: %s has no ARC level >= %u\n", id, level);
 		return -5;
 	}
 
@@ -253,7 +253,7 @@ static void rsc_detect(void)
 		rsc.cmd_status = 0x40u;
 		rsc.cmd_stride = 24u;
 	}
-	klog("adreno_rpmh: rsc id=%x v%d.%d layout=%s\n",
+	slog("adreno_rpmh: rsc id=%x v%d.%d layout=%s\n",
 	     id, rsc.major, rsc.minor, major >= 3 ? "3.0" : "2.7");
 }
 
@@ -369,7 +369,7 @@ static int rpmh_write(uint32_t address, uint32_t data)
 
 fail:
 	rpmh_failed = 1;
-	klog("adreno_rpmh: write addr=%x data=%x failed (ctrl=%x st=%x cmd=%x irq=%x en=%x)\n",
+	slog("adreno_rpmh: write addr=%x data=%x failed (ctrl=%x st=%x cmd=%x irq=%x en=%x)\n",
 	     address, data, rpmh_reg(tcs, rsc.control),
 	     rpmh_reg(tcs, rsc.status),
 	     get32(RSC_VA + rpmh_cmd(tcs, 0, rsc.cmd_status)),
@@ -390,7 +390,7 @@ static int rpmh_vote_pd(const char *name)
 	int corner;
 
 	if (cmd_db_find(name, &addr, &aux_off, &aux_len) != 0 || addr == 0) {
-		klog("adreno_rpmh: %s not found in cmd-db\n", name);
+		slog("adreno_rpmh: %s not found in cmd-db\n", name);
 		return -2;
 	}
 
@@ -409,10 +409,10 @@ static int rpmh_vote_pd(const char *name)
 
 	corner = (int)count - 1;
 
-	klog("adreno_rpmh: %s addr=%x levels=%u corner=%d\n",
+	slog("adreno_rpmh: %s addr=%x levels=%u corner=%d\n",
 	     name, addr, count, corner);
 	if (n > 0) {
-		klog("adreno_rpmh: %s levels %u %u %u %u %u %u %u %u\n", name,
+		slog("adreno_rpmh: %s levels %u %u %u %u %u %u %u %u\n", name,
 		     n > 0 ? cd16(aux_off + 0) : 0,
 		     n > 1 ? cd16(aux_off + 2) : 0,
 		     n > 2 ? cd16(aux_off + 4) : 0,
@@ -423,7 +423,7 @@ static int rpmh_vote_pd(const char *name)
 		     n > 7 ? cd16(aux_off + 14) : 0);
 	}
 	if (n > 8) {
-		klog("adreno_rpmh: %s levels %u %u %u %u %u %u %u %u\n", name,
+		slog("adreno_rpmh: %s levels %u %u %u %u %u %u %u %u\n", name,
 		     n > 8 ? cd16(aux_off + 16) : 0,
 		     n > 9 ? cd16(aux_off + 18) : 0,
 		     n > 10 ? cd16(aux_off + 20) : 0,
@@ -436,7 +436,7 @@ static int rpmh_vote_pd(const char *name)
 
 	if (rpmh_write(addr, (uint32_t)corner) != 0)
 		return -3;
-	klog("adreno_rpmh: %s voted corner %d\n", name, corner);
+	slog("adreno_rpmh: %s voted corner %d\n", name, corner);
 	return 0;
 }
 
@@ -465,7 +465,7 @@ static int rpmh_bcm_peak(const char *name, uint32_t peak_kbps,
 
 	if (cmd_db_find(name, &addr, &aux_off, &aux_len) != 0 || addr == 0 ||
 	    aux_len < 8u || buswidth == 0) {
-		klog("adreno_rpmh: bcm %s missing/invalid in cmd-db\n", name);
+		slog("adreno_rpmh: bcm %s missing/invalid in cmd-db\n", name);
 		return -2;
 	}
 	unit = cd32(aux_off);
@@ -482,7 +482,7 @@ static int rpmh_bcm_peak(const char *name, uint32_t peak_kbps,
 	vote = scaled > BCM_TCS_VOTE_MASK ? BCM_TCS_VOTE_MASK : (uint32_t)scaled;
 	data = BCM_TCS_COMMIT | BCM_TCS_VALID | vote;
 
-	klog("adreno_rpmh: bcm %s addr=%x unit=%u width=%u vcd=%u peak=%u vote=%x\n",
+	slog("adreno_rpmh: bcm %s addr=%x unit=%u width=%u vcd=%u peak=%u vote=%x\n",
 	     name, addr, unit, width, cd8(aux_off + 6u), peak_kbps, data);
 	return rpmh_write(addr, data);
 }
@@ -494,10 +494,10 @@ static int rpmh_bcm_acv_enable(void)
 	uint32_t data = BCM_TCS_COMMIT | BCM_TCS_VALID | (1u << 3);
 
 	if (cmd_db_find("ACV", &addr, &aux_off, &aux_len) != 0 || addr == 0) {
-		klog("adreno_rpmh: bcm ACV not found in cmd-db\n");
+		slog("adreno_rpmh: bcm ACV not found in cmd-db\n");
 		return -2;
 	}
-	klog("adreno_rpmh: bcm ACV addr=%x vcd=%u vote=%x\n",
+	slog("adreno_rpmh: bcm ACV addr=%x vcd=%u vote=%x\n",
 	     addr, aux_len >= 7u ? cd8(aux_off + 6u) : 0, data);
 	return rpmh_write(addr, data);
 }
@@ -554,7 +554,7 @@ int adreno_rpmh_gfx_vote(void)
 	int rc = 0;
 
 	if (rpmh_map() != 0) {
-		klog("adreno_rpmh: cmd-db/RSC window map failed\n");
+		slog("adreno_rpmh: cmd-db/RSC window map failed\n");
 		return -1;
 	}
 	rsc_detect();

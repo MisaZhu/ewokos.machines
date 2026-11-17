@@ -243,7 +243,7 @@ static void light_refresh(void) {
     /* make sure the previous frame was latched (MOSI low > 280us) */
     usleep(WS_RESET_US);
     if(bcm2712_spi_transfer(0, _spi_buf, NULL, WS_SPI_BYTES(_led_num)) != 0)
-        klog("spilightd: spi transfer failed\n");
+        slog("spilightd: spi transfer failed\n");
 }
 
 static bool mode_is_animated(int mode) {
@@ -552,11 +552,11 @@ int main(int argc, char** argv) {
      * CE0/CE1 just stay deasserted; only MOSI matters here.
      */
     if(bcm2712_spi_init(0) != 0) {
-        klog("spilightd: spi0 init failed\n");
+        slog("spilightd: spi0 init failed\n");
         return -1;
     }
     if(bcm2712_spi_set_div(0, WS_SPI_DIV) != 0) {
-        klog("spilightd: spi0 set div failed\n");
+        slog("spilightd: spi0 set div failed\n");
         return -1;
     }
 

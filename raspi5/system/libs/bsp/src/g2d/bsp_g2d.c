@@ -478,7 +478,7 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
         scratch_phys = gpu_phys(tmp_phy, tmp_need, tmp_contig);
     }
     if (!phys || !scratch_phys) {
-        klog("g2d blur: surface not GPU-visible (phys=%08x scratch=%08x "
+        slog("g2d blur: surface not GPU-visible (phys=%08x scratch=%08x "
              "contig=%u/%u w=%d h=%d r=%d)\n",
              phys, scratch_phys, contig, tmp_contig, argb_w, argb_h,
              radius);
@@ -538,7 +538,7 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
                         gpu_scale_op(&m, scratch_phys, tmp, hw, hh,
                                      phys, argb, argb_w, argb_h))
                         return 0;
-                    klog("g2d blur: half-res upsample failed (w=%d h=%d r=%d)\n",
+                    slog("g2d blur: half-res upsample failed (w=%d h=%d r=%d)\n",
                          argb_w, argb_h, radius);
                     return -1;
                 }
@@ -557,7 +557,7 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
         if (rc == 0)
             return 0;
         // rc: 1 = CSD poll timeout, -1 = fault/gate inside the op
-        klog("g2d blur: dispatch failed rc=%d (w=%d h=%d rect %d,%d %dx%d "
+        slog("g2d blur: dispatch failed rc=%d (w=%d h=%d rect %d,%d %dx%d "
              "r=%d)\n", rc, argb_w, argb_h,
              rect_x, rect_y, rect_w, rect_h, radius);
         return -1;

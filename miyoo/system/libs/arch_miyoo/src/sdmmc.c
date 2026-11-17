@@ -30,12 +30,12 @@
 #include "sdmmc.h"
 
 
-#define prtstring(s)	klog(s)
-#define prtUInt(v) 		klog("%u", v)
-#define prtU8(v)		klog("0x%02X", v)
-#define prtU8Hex(v)		klog("0x%02X", v)
-#define prtU16Hex(v)	klog("0x%04X", v)
-#define prtU32Hex(v)	klog("0x%08X", v)
+#define prtstring(s)	slog(s)
+#define prtUInt(v) 		slog("%u", v)
+#define prtU8(v)		slog("0x%02X", v)
+#define prtU8Hex(v)		slog("0x%02X", v)
+#define prtU16Hex(v)	slog("0x%04X", v)
+#define prtU32Hex(v)	slog("0x%08X", v)
 
 static inline void __attribute__((optimize("O0"))) delay(uint32_t count) {
     uint32_t c = count*100;
@@ -222,10 +222,10 @@ static RetEmType _REG_ClearSDSTS(IPEmType eIP, uint8_t u8Retry)
 #if(EN_BIND_CARD_INT)
 void Hal_CARD_INT_ClearMIEEvent(IPEmType eIP)
 {
-    //klog("MIE EVENT: 0x%08x\r\n", CARD_REG(A_MIE_EVENT_REG(eIP)));
+    //slog("MIE EVENT: 0x%08x\r\n", CARD_REG(A_MIE_EVENT_REG(eIP)));
     if(CARD_REG(A_MIE_EVENT_REG(eIP)) & (1<<3))
     {
-        klog("[MIE] SDIO INT\r\n");
+        slog("[MIE] SDIO INT\r\n");
         CARD_REG_SETBIT(A_MIE_EVENT_REG(eIP), (1<<0));
     }
 }
@@ -626,7 +626,7 @@ void Hal_SDMMC_SetSDIOIntDet(IPEmType eIP, bool bEnable)
         {
             //CARD_REG_SETBIT(A_TEST_MODE_REG(eIP), (u8DGMode<<1));
 #if(EN_BIND_CARD_INT)
-            //klog("[MIE] ENABLE SDIO INT\r\n");
+            //slog("[MIE] ENABLE SDIO INT\r\n");
             CARD_REG_SETBIT(A_SDIO_DET_ON(eIP), (1<<0));
 #endif
         }
@@ -1275,6 +1275,6 @@ uint32_t Hal_CARD_TransMIUAddr(uint32_t u32Addr)
     {
         return u32Addr - 0x20000000;
     }
-    klog("Invalid addr :%X\n", u32Addr);
+    slog("Invalid addr :%X\n", u32Addr);
     return u32Addr;
 }

@@ -45,7 +45,7 @@ static int dwmci_fifo_ready(struct dwmci_host *host, uint32_t bit, uint32_t *len
     }
 
     if (!timeout) {
-        klog("%s: FIFO underflow timeout\n", __func__);
+        slog("%s: FIFO underflow timeout\n", __func__);
         return -ETIMEDOUT;
     }
     return 0;
@@ -86,7 +86,7 @@ static int dwmci_data_transfer(struct dwmci_host *host, struct mmc_data *data)
         mask = dwmci_readl(host, DWMCI_RINTSTS);
         /* Error during data transfer. */
         if (mask & (DWMCI_DATA_ERR | DWMCI_DATA_TOUT)) {
-            klog("%s: DATA ERROR %08x!\n", __func__, mask);
+            slog("%s: DATA ERROR %08x!\n", __func__, mask);
             ret = -EINVAL;
             break;
         }
@@ -143,7 +143,7 @@ static int dwmci_data_transfer(struct dwmci_host *host, struct mmc_data *data)
 
         /* Check for timeout. */
         if (!timeout--) {
-            //klog("%s: Timeout waiting for data!\n",
+            //slog("%s: Timeout waiting for data!\n",
             //      __func__);
             ret = -ETIMEDOUT;
             break;
@@ -168,7 +168,7 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
     TRACE();
     while (dwmci_readl(host, DWMCI_STATUS) & DWMCI_BUSY) {
         if (!timeout--) {
-            klog("%s: Timeout on data busy\n", __func__);
+            slog("%s: Timeout on data busy\n", __func__);
             return -ETIMEDOUT;
         }
         TRACE();
@@ -212,7 +212,7 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
 
     flags |= (cmd->cmdidx | DWMCI_CMD_START | DWMCI_CMD_USE_HOLD_REG);
 
-    //klog("MMC CMD%d ",cmd->cmdidx);
+    //slog("MMC CMD%d ",cmd->cmdidx);
 
     dwmci_writel(host, DWMCI_CMD, flags);
 
@@ -226,7 +226,7 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
     }
 
     if (i == retry) {
-        klog("%s: Timeout.\n", __func__);
+        slog("%s: Timeout.\n", __func__);
         return -ETIMEDOUT;
     }
 
@@ -236,17 +236,17 @@ static int dwmci_send_cmd(struct dwmci_host *host, struct mmc_cmd *cmd, struct m
          * will splat here when they receive CMD55 as they do
          * not support this command and that is exactly the way
          * to tell them apart from SD cards. Thus, this output
-         * below shall be klog(). eMMC cards also do not favor
+         * below shall be slog(). eMMC cards also do not favor
          * CMD8, please keep that in mind.
          */
-        klog("%s: Response Timeout.\n", __func__);
+        slog("%s: Response Timeout.\n", __func__);
         return -ETIMEDOUT;
     } else if (mask & DWMCI_INTMSK_RE) {
-        klog("%s: Response Error.\n", __func__);
+        slog("%s: Response Error.\n", __func__);
         return -EIO;
     } else if ((cmd->resp_type & MMC_RSP_CRC) &&
            (mask & DWMCI_INTMSK_RCRC)) {
-        klog("%s: Response CRC Error.\n", __func__);
+        slog("%s: Response CRC Error.\n", __func__);
         return -EIO;
     }
 

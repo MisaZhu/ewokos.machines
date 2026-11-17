@@ -119,11 +119,11 @@ static int do_scan(void)
     }
     iwlm->state = IWLM_STATE_FW_LOADED;
     if (!iwlm->scan_done) {
-        klog("iwlm: scan timed out\n");
+        slog("iwlm: scan timed out\n");
         return -2;
     }
     scan_ready = true;
-    klog("iwlm: scan done, %d APs\n", iwlm->n_aps);
+    slog("iwlm: scan done, %d APs\n", iwlm->n_aps);
     return 0;
 }
 
@@ -182,7 +182,7 @@ static void auto_connect_step(void)
             cred = config_get_passwd(idx);
         if (!cred || !ap_in_scan(ssid))
             continue;
-        klog("iwlm: auto-connect %s\n", ssid);
+        slog("iwlm: auto-connect %s\n", ssid);
         if (do_connect(ssid, cred) == 0)
             return;
     }
@@ -480,28 +480,28 @@ static int net_mounted(vdevice_t *dev, ewokos_addr_t node, void *p)
 
     ret = iwlm_pcie_probe(iwlm);
     if (ret) {
-        klog("iwlm: no supported Intel WLAN device (%d)\n", ret);
+        slog("iwlm: no supported Intel WLAN device (%d)\n", ret);
         init_error = ret;
         return -1;
     }
-    klog("iwlm: %s (%02x:%02x.%x) hw rev %x rf %x\n", iwlm->cfg->name,
+    slog("iwlm: %s (%02x:%02x.%x) hw rev %x rf %x\n", iwlm->cfg->name,
          iwlm->bus, iwlm->slot, iwlm->fn, iwlm->hw_rev, iwlm->hw_rf_id);
 
     ret = iwlm_fw_find_and_load(iwlm, WLAN_FW_DIR);
     if (ret) {
-        klog("iwlm: firmware load failed %d\n", ret);
+        slog("iwlm: firmware load failed %d\n", ret);
         init_error = ret;
         return -1;
     }
     ret = iwlm_trans_start_fw(iwlm);
     if (ret) {
-        klog("iwlm: firmware start failed %d\n", ret);
+        slog("iwlm: firmware start failed %d\n", ret);
         init_error = ret;
         return -1;
     }
     ret = iwlm_mvm_up(iwlm);
     if (ret) {
-        klog("iwlm: mvm up failed %d\n", ret);
+        slog("iwlm: mvm up failed %d\n", ret);
         init_error = ret;
         return -1;
     }
@@ -517,7 +517,7 @@ static int net_mounted(vdevice_t *dev, ewokos_addr_t node, void *p)
 
     ret = pthread_create(&worker_tid, NULL, wlan_worker, NULL);
     if (ret) {
-        klog("iwlm: pthread_create failed %d\n", ret);
+        slog("iwlm: pthread_create failed %d\n", ret);
         init_error = -ret;
         return -1;
     }

@@ -985,7 +985,7 @@ int connect(const char*ssid, const char* pmk)
     /* enable firmware supplicant for this interface */
     err = brcmf_fil_iovar_int_set(0, "sup_wpa", 1);
     if (err < 0) {
-        klog("failed to enable fw supplicant\n");
+        slog("failed to enable fw supplicant\n");
         goto done;
     }
 

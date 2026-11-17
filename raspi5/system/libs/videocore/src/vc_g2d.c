@@ -1414,7 +1414,7 @@ static int gpu_fill_src_ready(void)
         return 0;
     p = dma_phy_addr(0, v);
     if (gpu_phys(p, bytes, 1) == 0) {
-        klog("g2d fill_alpha: source block not GPU-visible (phy=%llx)\n",
+        slog("g2d fill_alpha: source block not GPU-visible (phy=%llx)\n",
              (unsigned long long)p);
         return 0;
     }

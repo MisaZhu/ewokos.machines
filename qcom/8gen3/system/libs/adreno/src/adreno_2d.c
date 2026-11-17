@@ -325,7 +325,7 @@ int adreno_2d_fill(uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
 	if (ret != ADRENO_OK) {
 		if (ret != ADRENO_E_WEDGED)   /* wedge itself is logged once by the ring */
-			klog("adreno_2d: fill submit failed (%d)\n", ret);
+			slog("adreno_2d: fill submit failed (%d)\n", ret);
 		return ret;
 	}
 	return ADRENO_OK;
@@ -465,7 +465,7 @@ static int a2d_copy_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
 	if (ret != ADRENO_OK) {
 		if (ret != ADRENO_E_WEDGED)
-			klog("adreno_2d: copy submit failed (%d)\n", ret);
+			slog("adreno_2d: copy submit failed (%d)\n", ret);
 		return ret;
 	}
 	return ADRENO_OK;
@@ -630,7 +630,7 @@ int adreno_2d_blur(uint64_t canvas_phy, int32_t W, int32_t H,
 	   waits and prevents unrelated render state interleaving between mips. */
 	rc = adreno_ring_submit(adreno_dev(), batch.d, batch.n);
 	if (rc != ADRENO_OK && rc != ADRENO_E_WEDGED)
-		klog("adreno_2d: blur %dx%d r=%d levels=%d words=%u failed (%d)\n",
+		slog("adreno_2d: blur %dx%d r=%d levels=%d words=%u failed (%d)\n",
 		     w, h, radius, L, batch.n, rc);
 	return rc;
 }

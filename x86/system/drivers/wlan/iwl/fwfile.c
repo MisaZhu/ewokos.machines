@@ -337,12 +337,12 @@ int iwlm_fw_pnvm_handshake(struct iwlm_dev *d)
         return 0;
 
     if (!fw->pnvm) {
-        klog("iwlm: pnvm file missing but sku %08x:%08x:%08x\n",
+        slog("iwlm: pnvm file missing but sku %08x:%08x:%08x\n",
              t->sku_id[0], t->sku_id[1], t->sku_id[2]);
         return -1;
     }
     if (pnvm_parse(d)) {
-        klog("iwlm: no pnvm section for sku %08x:%08x:%08x hw %x/%x\n",
+        slog("iwlm: no pnvm section for sku %08x:%08x:%08x hw %x/%x\n",
              t->sku_id[0], t->sku_id[1], t->sku_id[2],
              CSR_HW_REV_TYPE(d->hw_rev), CSR_HW_RFID_TYPE(d->hw_rf_id));
         return -2;
@@ -360,7 +360,7 @@ int iwlm_fw_pnvm_handshake(struct iwlm_dev *d)
             return 0;
         usleep(1000);
     }
-    klog("iwlm: pnvm handshake timeout\n");
+    slog("iwlm: pnvm handshake timeout\n");
     return -4;
 }
 
@@ -382,17 +382,17 @@ int iwlm_fw_find_and_load(struct iwlm_dev *d, const char *dir)
         if (iwlm_fw_load(d, path))
             continue;
         d->fw.api_ver = ver;
-        klog("iwlm: fw %s-%d: %s lmac %d umac %d paging %d iml %d\n",
+        slog("iwlm: fw %s-%d: %s lmac %d umac %d paging %d iml %d\n",
              d->cfg->fw_pre, ver, d->fw.ver_str,
              d->fw.lmac_cnt, d->fw.umac_cnt, d->fw.paging_cnt,
              (int)d->fw.iml_size);
 
         snprintf(path, sizeof(path), "%s/%s.pnvm", dir, d->cfg->fw_pre);
         if (pnvm_read_file(&d->fw, path))
-            klog("iwlm: %s.pnvm not found\n", d->cfg->fw_pre);
+            slog("iwlm: %s.pnvm not found\n", d->cfg->fw_pre);
         return 0;
     }
-    klog("iwlm: no firmware for %s api %d..%d in %s\n",
+    slog("iwlm: no firmware for %s api %d..%d in %s\n",
          d->cfg->fw_pre, d->cfg->api_min, d->cfg->api_max, dir);
     return -1;
 }

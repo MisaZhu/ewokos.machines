@@ -122,7 +122,7 @@ int adreno_fw_load_gmu(adreno_gmu_fw_t *out)
 		return -2;   /* missing/unreadable firmware */
 	}
 	if ((uint32_t)raw_size != Q8B_ADRENO_FW_GMU_SIZE) {
-		klog("adreno_fw: reject %s: size %d, expected %u\n", path,
+		slog("adreno_fw: reject %s: size %d, expected %u\n", path,
 		     raw_size, Q8B_ADRENO_FW_GMU_SIZE);
 		free(raw);
 		return -4;
@@ -177,7 +177,7 @@ int adreno_fw_load_gmu(adreno_gmu_fw_t *out)
 	out->raw_size   = raw_size;
 	out->blocks     = blocks;
 	out->num_blocks = i;
-	klog("adreno_fw: gmu image %s (%s, %d bytes, %d blocks)\n",
+	slog("adreno_fw: gmu image %s (%s, %d bytes, %d blocks)\n",
 			path, name, raw_size, i);
 	return 0;
 }
@@ -212,7 +212,7 @@ int adreno_fw_load_sqe(adreno_sqe_fw_t *out)
 	if (!raw)
 		return -2;
 	if ((uint32_t)raw_size != Q8B_ADRENO_FW_SQE_SIZE) {
-		klog("adreno_fw: reject %s: size %d, expected %u\n", path,
+		slog("adreno_fw: reject %s: size %d, expected %u\n", path,
 		     raw_size, Q8B_ADRENO_FW_SQE_SIZE);
 		free(raw);
 		return -3;
@@ -220,7 +220,7 @@ int adreno_fw_load_sqe(adreno_sqe_fw_t *out)
 
 	out->raw  = raw;
 	out->size = raw_size;
-	klog("adreno_fw: sqe microcode %s (%d bytes)\n", path, raw_size);
+	slog("adreno_fw: sqe microcode %s (%d bytes)\n", path, raw_size);
 	return 0;
 }
 
@@ -263,10 +263,10 @@ int adreno_fw_load_zap(adreno_zap_fw_t *out)
 	ret = size == 14392 ? adreno_fw_parse_zap(raw, (uint32_t)size, out) : -4;
 	free(raw);
 	if (ret) {
-		klog("adreno_fw: reject Q8B zap %s (%d bytes)\n", path, size);
+		slog("adreno_fw: reject Q8B zap %s (%d bytes)\n", path, size);
 		return ret;
 	}
-	klog("adreno_fw: Q8B signed zap %s (%d bytes, metadata=%u, "
+	slog("adreno_fw: Q8B signed zap %s (%d bytes, metadata=%u, "
 	     "payload=%u, region=%u)\n", path, size, out->metadata_size,
 	     out->segs[0].filesz, out->total_size);
 	return 0;

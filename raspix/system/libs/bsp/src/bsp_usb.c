@@ -707,11 +707,11 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     cdb[4] = sizeof(inquiry);
     memset(inquiry, 0, sizeof(inquiry));
     if (usb_msc_command(cdb, 6, true, inquiry, sizeof(inquiry)) != 0) {
-        klog("bsp_usb: msc inquiry_failed addr=%u\n", dev->addr);
+        slog("bsp_usb: msc inquiry_failed addr=%u\n", dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
-    klog("bsp_usb: msc inquiry addr=%u type=%02x vendor=%.8s product=%.16s\n",
+    slog("bsp_usb: msc inquiry addr=%u type=%02x vendor=%.8s product=%.16s\n",
             dev->addr, inquiry[0], (const char*)(inquiry + 8),
             (const char*)(inquiry + 16));
 
@@ -726,7 +726,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
             usleep(100000);
         }
         if (ready != 0) {
-            klog("bsp_usb: msc not_ready addr=%u\n", dev->addr);
+            slog("bsp_usb: msc not_ready addr=%u\n", dev->addr);
             memset(&_msc, 0, sizeof(_msc));
             return -1;
         }
@@ -736,7 +736,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     cdb[0] = SCSI_OPCODE_READ_CAPACITY10;
     memset(capacity, 0, sizeof(capacity));
     if (usb_msc_command(cdb, 10, true, capacity, sizeof(capacity)) != 0) {
-        klog("bsp_usb: msc read_capacity_failed addr=%u\n", dev->addr);
+        slog("bsp_usb: msc read_capacity_failed addr=%u\n", dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
@@ -744,13 +744,13 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     _msc.sector_count = be32(capacity) + 1u;
     _msc.sector_size = be32(capacity + 4);
     if (_msc.sector_size != USB_MSC_SECTOR_SIZE) {
-        klog("bsp_usb: msc unsupported_sector_size=%u addr=%u\n",
+        slog("bsp_usb: msc unsupported_sector_size=%u addr=%u\n",
                 _msc.sector_size, dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
     _msc.ready = true;
-    klog("bsp_usb: msc attached addr=%u sectors=%u size=%u\n",
+    slog("bsp_usb: msc attached addr=%u sectors=%u size=%u\n",
             dev->addr, _msc.sector_count, _msc.sector_size);
 
     /* auto-mount the FAT32 volume: spawn a fat32fsd bound to this device.
@@ -759,7 +759,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     {
         fsinfo_t mnt_info;
         if (vfs_get_by_name("/mnt/udisk0", &mnt_info) == 0) {
-            klog("bsp_usb: msc mount busy, /mnt/udisk0 still mounted\n");
+            slog("bsp_usb: msc mount busy, /mnt/udisk0 still mounted\n");
         }
         else {
             int pid = fork();
@@ -771,10 +771,10 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
             }
             else if (pid > 0) {
                 _msc.child_pid = pid;
-                klog("bsp_usb: msc mounting /mnt/udisk0 pid=%d\n", pid);
+                slog("bsp_usb: msc mounting /mnt/udisk0 pid=%d\n", pid);
             }
             else {
-                klog("bsp_usb: msc mount_fork_failed\n");
+                slog("bsp_usb: msc mount_fork_failed\n");
             }
         }
     }
@@ -836,7 +836,7 @@ int bsp_usb_msc_probe(bsp_usb_dev_t* dev, const uint8_t* cfg, int cfg_len) {
     if (msc_iface == NULL || ep_in == 0 || ep_out == 0) {
         return -1;
     }
-    klog("bsp_usb: msc found addr=%u iface=%u subclass=%u ep_in=%02x ep_out=%02x\n",
+    slog("bsp_usb: msc found addr=%u iface=%u subclass=%u ep_in=%02x ep_out=%02x\n",
             dev->addr, msc_iface->bInterfaceNumber, msc_iface->bInterfaceSubClass,
             ep_in, ep_out);
     return msc_attach(dev, msc_iface->bInterfaceNumber,
@@ -849,7 +849,7 @@ void bsp_usb_msc_detach(bsp_usb_dev_t* dev) {
     if (!_msc.claimed || _msc.dev != dev) {
         return;
     }
-    klog("bsp_usb: msc detached addr=%u\n", _msc.dev->addr);
+    slog("bsp_usb: msc detached addr=%u\n", _msc.dev->addr);
     if (_msc.child_pid > 0) {
         /* fire-and-forget: the device is already gone, the daemon only
            needs the hint to unmount and exit */

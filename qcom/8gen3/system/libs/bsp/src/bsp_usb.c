@@ -160,11 +160,11 @@ static unsigned q8b_xhci_irq_setup(void) {
             _xhc_irq_registered[i] = true;
             xhci_irq_enable(&_xhcs[i]);
             enabled++;
-            klog("bsp_usb: xhci%d irq=%u enabled (event-ring wakeup)\n",
+            slog("bsp_usb: xhci%d irq=%u enabled (event-ring wakeup)\n",
                     i, Q8B_XHCI_IRQ[i]);
         }
         else {
-            klog("bsp_usb: xhci%d irq=%u unavailable, polling fallback\n",
+            slog("bsp_usb: xhci%d irq=%u unavailable, polling fallback\n",
                     i, Q8B_XHCI_IRQ[i]);
         }
     }
@@ -312,21 +312,21 @@ static int q8b_xhci_start(int i) {
     if (i != 0 && dwc3_host_prepare(i, va) != 0)
         return -1;
     cap = get32(va);
-    klog("bsp_usb: q8b xhci%d %s cap=%08x phy=%llx\n", i,
+    slog("bsp_usb: q8b xhci%d %s cap=%08x phy=%llx\n", i,
             Q8B_XHCI_NAME[i], cap, (unsigned long long)Q8B_XHCI_PHY_BASE[i]);
     if ((cap >> 16) < 0x0090u || (cap >> 16) == 0xffffu) {
-        klog("bsp_usb: q8b xhci%d unavailable\n", i);
+        slog("bsp_usb: q8b xhci%d unavailable\n", i);
         return -1;
     }
     if (xhci_init(&_xhcs[i], i, va) != 0) {
-        klog("bsp_usb: q8b xhci%d init failed\n", i);
+        slog("bsp_usb: q8b xhci%d init failed\n", i);
         return -1;
     }
     _xhc_dirty[i] = true;
     _xhc_ports[i] = _xhcs[i].num_ports;
     for (int j = 0; j < i; ++j)
         first_port += _xhc_ports[j];
-    klog("bsp_usb: xhci%d %s root ports=%u..%u\n", i, Q8B_XHCI_NAME[i],
+    slog("bsp_usb: xhci%d %s root ports=%u..%u\n", i, Q8B_XHCI_NAME[i],
             first_port, first_port + _xhcs[i].num_ports - 1u);
     return 0;
 }
@@ -335,7 +335,7 @@ static int xhci_bring_up(void) {
     int found = 0;
 
     if (xhci_dma_init() != 0) {
-        klog("bsp_usb: xhci dma init failed\n");
+        slog("bsp_usb: xhci dma init failed\n");
         return 0;
     }
     for (int i = 0; i < BSP_USB_NUM_XHC; ++i) {
@@ -344,7 +344,7 @@ static int xhci_bring_up(void) {
 
         if (syscall3(SYS_MEM_MAP, va, Q8B_XHCI_PHY_BASE[i],
                 XHCI_BAR_MAP_SIZE) != va) {
-            klog("bsp_usb: q8b xhci%d map failed phy=%llx\n", i,
+            slog("bsp_usb: q8b xhci%d map failed phy=%llx\n", i,
                     (unsigned long long)Q8B_XHCI_PHY_BASE[i]);
             continue;
         }
@@ -353,10 +353,10 @@ static int xhci_bring_up(void) {
             ++found;
         }
         else {
-            klog("bsp_usb: xhci%d %s not ready\n", i, Q8B_XHCI_NAME[i]);
+            slog("bsp_usb: xhci%d %s not ready\n", i, Q8B_XHCI_NAME[i]);
         }
     }
-    klog("bsp_usb: host bring-up complete controllers=%d/%d flat_ports=%d\n",
+    slog("bsp_usb: host bring-up complete controllers=%d/%d flat_ports=%d\n",
             found, BSP_USB_NUM_XHC, xhci_port_count());
     return found;
 }
@@ -375,13 +375,13 @@ int bsp_usb_init(void) {
     memset(_xhcs, 0, sizeof(_xhcs));
     memset(_xhc_ports, 0, sizeof(_xhc_ports));
 
-    klog("bsp_usb: init begin controllers=%d\n", BSP_USB_NUM_XHC);
+    slog("bsp_usb: init begin controllers=%d\n", BSP_USB_NUM_XHC);
     xhci_bring_up(); /* degrades to zero controllers, never fails */
     unsigned irq_enabled = q8b_xhci_irq_setup();
     if (uhci_port_count() == 0 && xhci_port_count() == 0) {
-        klog("bsp_usb: no usb controller found, running without usb\n");
+        slog("bsp_usb: no usb controller found, running without usb\n");
     }
-    klog("bsp_usb: init ready root_ports=%d xhci_irq=%u\n",
+    slog("bsp_usb: init ready root_ports=%d xhci_irq=%u\n",
             bsp_usb_root_port_count(), irq_enabled);
     return 0;
 }
@@ -393,7 +393,7 @@ int bsp_usb_reinit(void) {
        drops its address, slot and endpoint state out from under sdfsd and
        turns a secondary enumeration failure into a rootfs I/O failure. */
     if (_msc.claimed && _msc.ready) {
-        klog("bsp_usb: xhci reinit skipped while MSC is active\n");
+        slog("bsp_usb: xhci reinit skipped while MSC is active\n");
         return -1;
     }
 
@@ -423,7 +423,7 @@ int bsp_usb_reinit(void) {
             found++;
         }
         else {
-            klog("bsp_usb: xhci%d reinit failed\n", i);
+            slog("bsp_usb: xhci%d reinit failed\n", i);
         }
     }
     return (found > 0 || uhci_port_count() > 0) ? 0 : -1;
@@ -499,10 +499,10 @@ int bsp_usb_root_port_reset(int port) {
     if (port >= 1 && port <= uhci_port_count()) {
         speed = uhci_reset_port(port - 1);
         if (speed < 0) {
-            klog("bsp_usb: root port=%d uhci reset failed\n", port);
+            slog("bsp_usb: root port=%d uhci reset failed\n", port);
             return -1;
         }
-        klog("bsp_usb: root port=%d uhci reset speed=%d\n", port,
+        slog("bsp_usb: root port=%d uhci reset speed=%d\n", port,
                 speed == 0 ? BSP_USB_SPEED_LOW : BSP_USB_SPEED_FULL);
         return speed == 0 ? BSP_USB_SPEED_LOW : BSP_USB_SPEED_FULL;
     }
@@ -512,11 +512,11 @@ int bsp_usb_root_port_reset(int port) {
     }
     speed = xhci_port_reset(hc, hc_port);
     if (speed < 0) {
-        klog("bsp_usb: root port=%d xhci%d local=%d reset failed\n", port,
+        slog("bsp_usb: root port=%d xhci%d local=%d reset failed\n", port,
                 xhci_hc_index(hc), hc_port);
         return -1;
     }
-    klog("bsp_usb: root port=%d xhci%d local=%d reset speed=%d\n", port,
+    slog("bsp_usb: root port=%d xhci%d local=%d reset speed=%d\n", port,
             xhci_hc_index(hc), hc_port, speed_from_xhci(speed));
     return speed_from_xhci(speed);
 }
@@ -596,11 +596,11 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
         if (xhci_device_attach(hc, hc_port, speed_to_xhci(speed),
                 parent_hub != NULL ? &parent_hub->xdev : NULL, hub_port,
                 &dev->xdev) != 0) {
-            klog("bsp_usb: xhci attach failed port=%d speed=%d\n",
+            slog("bsp_usb: xhci attach failed port=%d speed=%d\n",
                     root_port, speed);
             return NULL;
         }
-        klog("bsp_usb: xhci%d local=%d root=%d attached slot=%u speed=%d\n",
+        slog("bsp_usb: xhci%d local=%d root=%d attached slot=%u speed=%d\n",
                 xhci_hc_index(hc), hc_port, root_port, dev->xdev.slot_id,
                 speed);
         dev->used = true;
@@ -624,7 +624,7 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     setup.wValue = addr;
     if (uhci_control_xfer(flat, speed == BSP_USB_SPEED_LOW, 0, 8,
             &setup, NULL, false) < 0) {
-        klog("bsp_usb: uhci set_address failed flat=%d speed=%d\n", flat, speed);
+        slog("bsp_usb: uhci set_address failed flat=%d speed=%d\n", flat, speed);
         return NULL;
     }
     usleep(10000); /* USB spec: new address is valid after 2ms */
@@ -912,7 +912,7 @@ static void msc_recover(void) {
     out_ret = bsp_usb_control_xfer(_msc.dev, &setup, NULL, false);
 
     if (reset_ret != 0 || in_ret != 0 || out_ret != 0) {
-        klog("bsp_usb: msc recovery reset=%d clear_in=%d clear_out=%d\n",
+        slog("bsp_usb: msc recovery reset=%d clear_in=%d clear_out=%d\n",
                 reset_ret, in_ret, out_ret);
         _msc.transport_failed = true;
         _msc.ready = false;
@@ -981,7 +981,7 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
 
         if (msc_bulk_xfer(false, _msc.ep_out, _msc.mps_out, &_msc.toggle_out,
                 &cbw, sizeof(cbw), MSC_CBW_TIMEOUT_MS) != (int)sizeof(cbw)) {
-            klog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d cbw out failed\n",
+            slog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d cbw out failed\n",
                     cdb[0], lba, blocks, data_len, attempt + 1);
             if (!msc_link_present()) {
                 _msc.transport_failed = true;
@@ -999,7 +999,7 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
                     dir_in ? &_msc.toggle_in : &_msc.toggle_out,
                     payload, data_len, MSC_BULK_TIMEOUT_MS);
             if (xret != (int)data_len) {
-                klog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d data %s failed got=%d\n",
+                slog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d data %s failed got=%d\n",
                         cdb[0], lba, blocks, data_len, attempt + 1,
                         dir_in ? "in" : "out", xret);
                 if (!msc_link_present()) {
@@ -1014,7 +1014,7 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
 
         if (msc_bulk_xfer(true, _msc.ep_in, _msc.mps_in, &_msc.toggle_in,
                 &csw, sizeof(csw), MSC_BULK_TIMEOUT_MS) != (int)sizeof(csw)) {
-            klog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d csw in failed\n",
+            slog("bsp_usb: msc op=%02x lba=%u blocks=%u len=%u attempt=%d csw in failed\n",
                     cdb[0], lba, blocks, data_len, attempt + 1);
             if (!msc_link_present()) {
                 _msc.transport_failed = true;
@@ -1026,7 +1026,7 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
         }
 
         if (csw.dCSWSignature != USB_MSC_CSW_SIG || csw.dCSWTag != tag) {
-            klog("bsp_usb: msc op=%02x lba=%u blocks=%u bad csw sig=%08x tag=%u want=%u\n",
+            slog("bsp_usb: msc op=%02x lba=%u blocks=%u bad csw sig=%08x tag=%u want=%u\n",
                     cdb[0], lba, blocks, csw.dCSWSignature,
                     csw.dCSWTag, tag);
             if (!msc_link_present()) {
@@ -1038,7 +1038,7 @@ static int usb_msc_command(const uint8_t* cdb, uint8_t cdb_len, bool dir_in,
             continue;
         }
         if (csw.bCSWStatus != 0) {
-            klog("bsp_usb: msc op=%02x lba=%u blocks=%u status=%u residue=%u\n",
+            slog("bsp_usb: msc op=%02x lba=%u blocks=%u status=%u residue=%u\n",
                     cdb[0], lba, blocks, csw.bCSWStatus,
                     csw.dCSWDataResidue);
             ret = -1;
@@ -1085,7 +1085,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
 
     if (bsp_usb_bulk_open(dev, ep_in, _msc.mps_in) != 0 ||
             bsp_usb_bulk_open(dev, ep_out, _msc.mps_out) != 0) {
-        klog("bsp_usb: msc endpoint setup failed in=%02x out=%02x\n",
+        slog("bsp_usb: msc endpoint setup failed in=%02x out=%02x\n",
                 ep_in, ep_out);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
@@ -1096,7 +1096,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     cdb[4] = sizeof(inquiry);
     memset(inquiry, 0, sizeof(inquiry));
     if (usb_msc_command(cdb, 6, true, inquiry, sizeof(inquiry)) != 0) {
-        klog("bsp_usb: msc inquiry_failed addr=%u\n", dev->addr);
+        slog("bsp_usb: msc inquiry_failed addr=%u\n", dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
@@ -1111,7 +1111,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
             usleep(100000);
         }
         if (ready != 0) {
-            klog("bsp_usb: msc not_ready addr=%u\n", dev->addr);
+            slog("bsp_usb: msc not_ready addr=%u\n", dev->addr);
             memset(&_msc, 0, sizeof(_msc));
             return -1;
         }
@@ -1121,7 +1121,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     cdb[0] = SCSI_OPCODE_READ_CAPACITY10;
     memset(capacity, 0, sizeof(capacity));
     if (usb_msc_command(cdb, 10, true, capacity, sizeof(capacity)) != 0) {
-        klog("bsp_usb: msc read_capacity_failed addr=%u\n", dev->addr);
+        slog("bsp_usb: msc read_capacity_failed addr=%u\n", dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
@@ -1129,7 +1129,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     _msc.sector_count = be32(capacity) + 1u;
     _msc.sector_size = be32(capacity + 4);
     if (_msc.sector_size != USB_MSC_SECTOR_SIZE) {
-        klog("bsp_usb: msc unsupported_sector_size=%u addr=%u\n",
+        slog("bsp_usb: msc unsupported_sector_size=%u addr=%u\n",
                 _msc.sector_size, dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
@@ -1147,7 +1147,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
 static void msc_mount_spawn(void) {
     fsinfo_t mnt_info;
     if (vfs_get_by_name("/mnt/udisk0", &mnt_info) == 0) {
-        klog("bsp_usb: msc mount busy, /mnt/udisk0 still mounted\n");
+        slog("bsp_usb: msc mount busy, /mnt/udisk0 still mounted\n");
         return;
     }
     int pid = fork();
@@ -1161,7 +1161,7 @@ static void msc_mount_spawn(void) {
         _msc.child_pid = pid;
     }
     else {
-        klog("bsp_usb: msc mount_fork_failed\n");
+        slog("bsp_usb: msc mount_fork_failed\n");
     }
 }
 

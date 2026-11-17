@@ -74,7 +74,7 @@ static int fake_usleep(useconds_t us) {
     return 0;
 }
 uint64_t kernel_tic_ms(int zone) { (void)zone; return elapsed_ms; }
-void klog(const char* fmt, ...) { (void)fmt; }
+void slog(const char* fmt, ...) { (void)fmt; }
 ewokos_addr_t dma_alloc(int32_t block, uint32_t size) {
     (void)block;
     assert(size == sizeof(dma_memory));

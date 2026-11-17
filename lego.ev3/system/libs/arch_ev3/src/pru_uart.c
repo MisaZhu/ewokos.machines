@@ -573,7 +573,7 @@ int ev3_pru_uart_init_subsystem(void){
     /* No firmware dropped in yet (see pru_suart_fw.h): leave ports 3/4 inert
      * rather than loading garbage into PRU0. */
     if(ev3_pru_suart_fw_len == 0){
-        klog("ev3 pru_uart: PRU_SUART_Emulation.bin absent; ports 3/4 UART off\n");
+        slog("ev3 pru_uart: PRU_SUART_Emulation.bin absent; ports 3/4 UART off\n");
         return -1;
     }
 

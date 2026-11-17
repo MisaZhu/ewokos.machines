@@ -78,7 +78,7 @@ int  do_flush(const void* buf, uint32_t size) {
 void lcd_init_variant(uint32_t w, uint32_t h, uint32_t div, const lcd_probe_t* cfg) {
     LCD_MODE = cfg->mode;
     /* #region debug-point gnpe-lcdhat24-init-probe */
-    klog("lcdhat24: init %s w=%u h=%u div=%u dc=%d cs=%d rst=%d bl=%d rot=%d inv=%d mode=%d\n",
+    slog("lcdhat24: init %s w=%u h=%u div=%u dc=%d cs=%d rst=%d bl=%d rot=%d inv=%d mode=%d\n",
             cfg->name,
             (unsigned int)w, (unsigned int)h, (unsigned int)div,
             cfg->lcd_dc, cfg->lcd_cs, cfg->lcd_rst, cfg->lcd_bl,

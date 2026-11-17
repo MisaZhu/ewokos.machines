@@ -656,7 +656,7 @@ static int intel_download_image(const intel_ver_t* ver, const uint8_t* fw,
     uint32_t evt_len = 0;
 
     if (fw_len < INTEL_RSA_HEADER_LEN + 16u) {
-        klog("bsp_usb: bt fw too small %u bytes\n", fw_len);
+        slog("bsp_usb: bt fw too small %u bytes\n", fw_len);
         return -1;
     }
     css_ver = le32(fw + INTEL_CSS_VER_OFFSET);
@@ -664,7 +664,7 @@ static int intel_download_image(const intel_ver_t* ver, const uint8_t* fw,
     /* header selection by hardware variant / secure boot engine
        (btintel_download_fw_tlv) */
     if (css_ver != INTEL_CSS_VER_RSA && css_ver != INTEL_CSS_VER_HYBRID) {
-        klog("bsp_usb: bt fw bad css ver 0x%x\n", css_ver);
+        slog("bsp_usb: bt fw bad css ver 0x%x\n", css_ver);
         return -1;
     }
     if (hw >= 0x17 && css_ver == INTEL_CSS_VER_RSA) {
@@ -672,7 +672,7 @@ static int intel_download_image(const intel_ver_t* ver, const uint8_t* fw,
                 fw[INTEL_ECDSA_OFFSET] != 0x06 ||
                 le32(fw + INTEL_ECDSA_OFFSET + INTEL_CSS_VER_OFFSET) !=
                 INTEL_CSS_VER_ECDSA) {
-            klog("bsp_usb: bt fw bad ecdsa header\n");
+            slog("bsp_usb: bt fw bad ecdsa header\n");
             return -1;
         }
         payload_off = INTEL_ECDSA_OFFSET + INTEL_ECDSA_HEADER_LEN;
@@ -709,18 +709,18 @@ static int intel_download_image(const intel_ver_t* ver, const uint8_t* fw,
     }
 
     if (intel_download_payload(fw, fw_len, payload_off) != 0) {
-        klog("bsp_usb: bt fw payload send failed\n");
+        slog("bsp_usb: bt fw payload send failed\n");
         return -1;
     }
 
     /* the bootloader reports the download result with a vendor event */
     if (evt_wait(0, INTEL_EVT_SECURE_SEND_RESULT,
             evt, sizeof(evt), &evt_len, BT_DOWNLOAD_TIMEOUT_MS) != 0) {
-        klog("bsp_usb: bt fw download result timeout\n");
+        slog("bsp_usb: bt fw download result timeout\n");
         return -1;
     }
     if (evt_len < 4 || evt[1] != 0) {
-        klog("bsp_usb: bt fw download rejected result=%u\n",
+        slog("bsp_usb: bt fw download rejected result=%u\n",
                 evt_len >= 2 ? evt[1] : 0xff);
         return -1;
     }
@@ -749,7 +749,7 @@ static int intel_boot(uint32_t boot_param) {
     }
     if (evt_wait(0, INTEL_EVT_BOOTUP, evt, sizeof(evt), &evt_len,
             BT_BOOTUP_TIMEOUT_MS) != 0) {
-        klog("bsp_usb: bt bootup event timeout\n");
+        slog("bsp_usb: bt bootup event timeout\n");
         return -1;
     }
     return 0;
@@ -831,7 +831,7 @@ static void intel_load_ddc(const intel_ver_t* ver) {
         uint32_t evt_len = 0;
         if (bt_hci_cmd_sync(INTEL_OP_WRITE_DDC, fw + pos, (uint8_t)plen,
                 evt, sizeof(evt), &evt_len, BT_CMD_TIMEOUT_MS) != 0) {
-            klog("bsp_usb: bt ddc write failed off=%u\n", pos);
+            slog("bsp_usb: bt ddc write failed off=%u\n", pos);
             break;
         }
         pos += plen;
@@ -865,20 +865,20 @@ static int intel_setup(void) {
     _bt.bootloader = true;
 
     if (intel_read_version(&_bt.ver) != 0) {
-        klog("bsp_usb: bt read version failed vid=%04x pid=%04x\n",
+        slog("bsp_usb: bt read version failed vid=%04x pid=%04x\n",
                 _bt.vid, _bt.pid);
         return -1;
     }
     intel_ver_t* ver = &_bt.ver;
 
     if (INTEL_HW_PLATFORM(ver->cnvi_bt) != 0x37) {
-        klog("bsp_usb: bt unsupported platform 0x%x\n",
+        slog("bsp_usb: bt unsupported platform 0x%x\n",
                 INTEL_HW_PLATFORM(ver->cnvi_bt));
         return -1;
     }
     uint8_t hw = INTEL_HW_VARIANT(ver->cnvi_bt);
     if (hw < 0x17 || hw > 0x22) {
-        klog("bsp_usb: bt unsupported hw variant 0x%x\n", hw);
+        slog("bsp_usb: bt unsupported hw variant 0x%x\n", hw);
         return -1;
     }
     if (ver->img_type == INTEL_IMG_OP) {
@@ -887,7 +887,7 @@ static int intel_setup(void) {
         return 0;
     }
     if (ver->limited_cce != 0) {
-        klog("bsp_usb: bt limited cce unsupported\n");
+        slog("bsp_usb: bt limited cce unsupported\n");
         return -1;
     }
 
@@ -902,7 +902,7 @@ static int intel_setup(void) {
         intel_fw_name(ver, "sfi", _bt.fw_name, sizeof(_bt.fw_name));
         uint8_t* fw = bt_load_file(_bt.fw_name, INTEL_FW_MAX, &fw_len);
         if (fw == NULL) {
-            klog("bsp_usb: bt firmware %s%s missing\n",
+            slog("bsp_usb: bt firmware %s%s missing\n",
                     INTEL_FW_DIR, _bt.fw_name);
             return -1;
         }
@@ -921,7 +921,7 @@ static int intel_setup(void) {
             break;
         }
         if (ver->img_type != INTEL_IMG_IML) {
-            klog("bsp_usb: bt unexpected img=%u after boot\n", ver->img_type);
+            slog("bsp_usb: bt unexpected img=%u after boot\n", ver->img_type);
             return -1;
         }
         /* IML running: second pass downloads the operational image */
@@ -1017,7 +1017,7 @@ int bsp_usb_bt_probe(bsp_usb_dev_t* dev, uint16_t vid, uint16_t pid,
     if (bsp_usb_int_in_open(dev, ep_evt, mps_evt, interval) != 0 ||
             bsp_usb_bulk_open(dev, ep_in, mps_in) != 0 ||
             bsp_usb_bulk_open(dev, ep_out, mps_out) != 0) {
-        klog("bsp_usb: bt endpoint open failed\n");
+        slog("bsp_usb: bt endpoint open failed\n");
         return -1;
     }
 
@@ -1050,7 +1050,7 @@ bool bsp_usb_bt_attached(bsp_usb_dev_t* dev) {
    re-armed by the next probe) */
 void bsp_usb_bt_reset(void) {
     if (_bt.claimed) {
-        klog("bsp_usb: bt dropped on usb reinit\n");
+        slog("bsp_usb: bt dropped on usb reinit\n");
     }
     memset(&_bt, 0, sizeof(_bt));
 }

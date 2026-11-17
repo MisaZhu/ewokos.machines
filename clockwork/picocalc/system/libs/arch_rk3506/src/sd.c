@@ -119,7 +119,7 @@ static void rk3506_sd_update_clock(void) {
         if((dwmci_readl(&dwc_host, DWMCI_CMD) & DWMCI_CMD_START) == 0U)
             return;
     }
-    klog("rk3506_sd: update clock timeout\n");
+    slog("rk3506_sd: update clock timeout\n");
 }
 
 static void rk3506_sd_setup_host(void) {
@@ -236,7 +236,7 @@ int32_t rk3506_sd_write_sector(int32_t sector, const void* buf) {
                                 rk3506_sd_note_success();
                                 return 0;
                         }
-                        klog("rk3506_sd: write verify mismatch sec %d\n", sector);
+                        slog("rk3506_sd: write verify mismatch sec %d\n", sector);
                 }
                 rk3506_sd_note_chunk_error();
                 rk3506_sd_recover();
