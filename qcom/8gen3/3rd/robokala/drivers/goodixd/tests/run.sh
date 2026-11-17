@@ -4,4 +4,7 @@ cd "$(dirname "$0")"
 cc -std=c99 -Wall -Wextra -Werror -I.. \
   ../goodix_protocol.c goodix_protocol_test.c -o goodix_protocol_test
 ./goodix_protocol_test
-rm -f goodix_protocol_test
+cc -std=c99 -Wall -Wextra -Werror -I.. \
+  ../goodix_gesture.c gesture_test.c -o gesture_test
+./gesture_test
+rm -f goodix_protocol_test gesture_test

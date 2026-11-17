@@ -5,10 +5,12 @@
 #include <unistd.h>
 
 #include <ewoksys/klog.h>
+#include <ewoksys/kernel_tic.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 
+#include "goodix_gesture.h"
 #include "goodix_protocol.h"
 
 /* SC8280XP TW220: GPIO mode-0 SPI on the board's QUP22 pins. */
@@ -47,6 +49,15 @@
 #define PROBE_RETRY_INITIAL_US   250000U
 #define PROBE_RETRY_MAX_US       30000000U
 
+/* Record stream consumed by xtouch: three uint16_t fields.
+ *
+ * state 0 ..... left button up
+ * state 1 ..... left button down (first frame) or drag/move continuation
+ * state 2/3 ... right button down/up (two-finger tap)
+ * state 4/5 ... one wheel notch: scroll up / scroll down (two-finger swipe)
+ *
+ * x/y are raw panel coordinates; for gesture records they are the midpoint
+ * of the two contacts. */
 typedef struct {
     uint16_t state;
     uint16_t x;
@@ -58,9 +69,6 @@ static uint32_t _touch_addr;
 static bool _ready;
 static touch_record_t _queue[TOUCH_QUEUE_SIZE];
 static unsigned _queue_count;
-static bool _finger_down;
-static uint16_t _finger_x;
-static uint16_t _finger_y;
 static bool _probe_in_progress;
 static unsigned _probe_delay_us = PROBE_RETRY_INITIAL_US;
 static unsigned _probe_failures;
@@ -344,11 +352,39 @@ static void queue_push(uint16_t state, uint16_t x, uint16_t y) {
     _queue_count++;
 }
 
+static void gesture_emit(gesture_evt_t evt, uint16_t x, uint16_t y) {
+    uint16_t state;
+
+    switch (evt) {
+    case GESTURE_EVT_LEFT_DOWN:
+        state = 1;
+        break;
+    case GESTURE_EVT_LEFT_UP:
+        state = 0;
+        break;
+    case GESTURE_EVT_RIGHT_DOWN:
+        state = 2;
+        break;
+    case GESTURE_EVT_RIGHT_UP:
+        state = 3;
+        break;
+    case GESTURE_EVT_SCROLL_UP:
+        state = 4;
+        break;
+    case GESTURE_EVT_SCROLL_DOWN:
+        state = 5;
+        break;
+    default:
+        return;
+    }
+    queue_push(state, x, y);
+}
+
 static void handle_event(vdevice_t* dev) {
     uint8_t raw[EVENT_HEAD_AND_TWO + (GOODIX_BERLIN_MAX_TOUCH - 2) * 8];
     goodix_event_header_t header;
     goodix_touch_t touch;
-    unsigned first = GOODIX_BERLIN_MAX_TOUCH;
+    gesture_frame_t frame;
     unsigned n;
 
     memset(raw, 0, sizeof(raw));
@@ -380,30 +416,27 @@ static void handle_event(vdevice_t* dev) {
         if (n > 0 && !goodix_checksum_valid(raw + GOODIX_BERLIN_HEADER_SIZE,
                 (size_t)n * GOODIX_BERLIN_TOUCH_SIZE + 2))
             goto clear;
-        for (unsigned i = 0; i < n; i++) {
+        /* Berlin frames carry exactly the active contacts; an entry that
+         * stops appearing has been lifted. Filter to finger contacts (the
+         * low nibble is the point type: 1/3 are stylus) and feed the
+         * gesture engine. */
+        frame.count = 0;
+        for (unsigned i = 0; i < n && frame.count < GESTURE_MAX_TOUCH; i++) {
             if (goodix_decode_touch(raw + GOODIX_BERLIN_HEADER_SIZE,
                     sizeof(raw) - GOODIX_BERLIN_HEADER_SIZE, i, &touch) == 0 &&
                     (touch.status & 0x0fU) != 1U &&
                     (touch.status & 0x0fU) != 3U &&
                     (touch.status >> 4) < GOODIX_BERLIN_MAX_TOUCH) {
-                first = i;
-                break;
+                frame.contacts[frame.count].id = touch.status >> 4;
+                frame.contacts[frame.count].x = touch.x;
+                frame.contacts[frame.count].y = touch.y;
+                frame.count++;
             }
         }
-        if (first != GOODIX_BERLIN_MAX_TOUCH &&
-                goodix_decode_touch(raw + GOODIX_BERLIN_HEADER_SIZE,
-                sizeof(raw) - GOODIX_BERLIN_HEADER_SIZE, first, &touch) == 0) {
-            _finger_x = touch.x;
-            _finger_y = touch.y;
-            queue_push(1, touch.x, touch.y);
-            _finger_down = true;
-        } else if (_finger_down) {
-            /* A zero-contact frame has no coordinates. Preserve the last
-             * contact location: xtouch sends absolute UP coordinates, and
-             * xserverd only generates CLICK near the original DOWN point. */
-            queue_push(0, _finger_x, _finger_y);
-            _finger_down = false;
-        }
+        /* A frame with contacts but zero finger entries is a stylus-only
+         * frame: no finger state change, do not feed an empty frame. */
+        if (frame.count != 0 || n == 0)
+            gesture_process(&frame, kernel_tic_ms(0), gesture_emit);
         if (_queue_count != 0)
             vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     }
@@ -462,6 +495,12 @@ static int touch_loop(vdevice_t* dev, void* p) {
         }
         return 0;
     }
+    /* Time-driven gesture transitions (pending press commits as a left
+     * hold after GESTURE_PENDING_MS) run every loop pass, not only when
+     * the panel raises IRQ. */
+    gesture_tick(kernel_tic_ms(0), gesture_emit);
+    if (_queue_count != 0)
+        vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     if (gpio_input(GPIO_IRQ) != 0) {
         usleep(2000);
         return 0;
