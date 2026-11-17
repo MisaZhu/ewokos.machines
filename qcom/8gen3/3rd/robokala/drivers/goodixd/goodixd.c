@@ -423,15 +423,16 @@ static void handle_event(vdevice_t* dev) {
         frame.count = 0;
         for (unsigned i = 0; i < n && frame.count < GESTURE_MAX_TOUCH; i++) {
             if (goodix_decode_touch(raw + GOODIX_BERLIN_HEADER_SIZE,
-                    sizeof(raw) - GOODIX_BERLIN_HEADER_SIZE, i, &touch) == 0 &&
-                    (touch.status & 0x0fU) != 1U &&
-                    (touch.status & 0x0fU) != 3U &&
-                    (touch.status >> 4) < GOODIX_BERLIN_MAX_TOUCH) {
-                frame.contacts[frame.count].id = touch.status >> 4;
-                frame.contacts[frame.count].x = touch.x;
-                frame.contacts[frame.count].y = touch.y;
-                frame.count++;
-            }
+                    sizeof(raw) - GOODIX_BERLIN_HEADER_SIZE, i, &touch) != 0)
+                continue;
+            if ((touch.status & 0x0fU) == 1U ||
+                    (touch.status & 0x0fU) == 3U ||
+                    (touch.status >> 4) >= GOODIX_BERLIN_MAX_TOUCH)
+                continue;
+            frame.contacts[frame.count].id = touch.status >> 4;
+            frame.contacts[frame.count].x = touch.x;
+            frame.contacts[frame.count].y = touch.y;
+            frame.count++;
         }
         /* A frame with contacts but zero finger entries is a stylus-only
          * frame: no finger state change, do not feed an empty frame. */

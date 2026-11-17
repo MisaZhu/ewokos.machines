@@ -9,7 +9,7 @@ LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
 OBJS = $(ARCH)/goodixd.o $(ARCH)/goodix_protocol.o $(ARCH)/goodix_gesture.o
-TARGET = $(TARGET_DIR)/drivers/8gen3/goodixd
+TARGET = $(TARGET_DIR)/drivers/robokala/goodixd
 
 $(TARGET): $(OBJS) $(SDK_DIR)/lib/libewoksys.a
 	@mkdir -p $(dir $@)

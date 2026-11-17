@@ -18,8 +18,17 @@
 
 /* Single finger is held this long before LEFT down is committed (a second
  * finger landing inside the window turns the press into a two-finger
- * gesture instead of a left click). */
-#define GESTURE_PENDING_MS 100U
+ * gesture instead of a left click).
+ *
+ * This window must comfortably exceed the landing skew between the two
+ * fingers of a two-finger tap/swipe: they rarely land in the same panel
+ * frame, and if the first finger commits LEFT_DOWN (hold) before the second
+ * arrives, the gesture emits a phantom left click -- and jumps the cursor
+ * for a swipe -- ahead of the right click / scroll.  250 ms covers normal
+ * finger landing skew; a quick lift is still a click and movement past the
+ * tap radius still commits a drag immediately, so single-finger tap/drag
+ * latency is unchanged (only stationary hold-to-drag waits a bit longer). */
+#define GESTURE_PENDING_MS 250U
 
 /* Raw-panel pixels.  A single finger past this commits a drag; a two-finger
  * midpoint displaced more than this cancels the right click. */

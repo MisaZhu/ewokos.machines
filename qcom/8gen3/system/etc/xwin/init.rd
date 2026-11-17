@@ -48,14 +48,14 @@
 # himaxd talks to the IC through the QUP0 SE6 GENI engine by default; pass
 # --gpio for the old bit-bang master when bringing the panel up by hand.
 # TW220 only:
-@/bin/ipcserv /drivers/8gen3/goodixd        /dev/touch0
+@/bin/ipcserv /drivers/robokala/goodixd        /dev/touch0
 # Battery status (charger PMIC + ADC7 VBAT_SNS over SPMI).
 # Boot the ADSP first: the battery manager (PMIC GLINK battmgr) lives on the
 # ADSP and is unreachable until PAS auth + SMP2P/GLINK transport are up.
 @/bin/adspas
 @/bin/ipcserv /drivers/8gen3/powerd         /dev/power0
 # gaokun (gaokun3) only:
-#@/bin/ipcserv /drivers/8gen3/himaxd        /dev/touch0
+#@/bin/ipcserv /drivers/matebook/himaxd        /dev/touch0
 @/bin/ipcserv /drivers/8gen3/hid_touchpadd /dev/touchpad0 /dev/usb0
 # btd may be launched concurrently by ipcserv, but the Q8B transport gates
 # USB Bluetooth setup until wlan has completed WCN startup and published MAC.
