@@ -1,8 +1,9 @@
 # powerd - TW220 battery status daemon
 
-Battery charging/capacity status for the Robo & Kala TW220 (Qualcomm
-SC8280XP), modeled on the uConsole powerd.  It serves `/dev/power0` with the
-same 3-byte protocol statusbar's PowerInfo widget already consumes:
+Battery charging/capacity status and power-key handling for the Robo & Kala
+TW220 (Qualcomm SC8280XP), modeled on the uConsole powerd.  It serves
+`/dev/power0` with the same 3-byte protocol statusbar's PowerInfo widget
+already consumes:
 
 ```
 byte0 = battery present, byte1 = charging, byte2 = capacity percent
@@ -97,6 +98,46 @@ once at deployment with the known ground truth:
 /drivers/8gen3/powerd --seed <chg_sid> <cap>
 ```
 
+## Power key: short press sleep/wake, 3 s hold power off
+
+The power key is read exactly the way mainline Linux reads it on this
+board (`pm8941-pwrkey.c`, the driver behind Linux's working power button):
+the PMIC PON peripheral's debounced KPDPWR real-time status bit in
+`PON_INT_RT_STS` (base + 0x10) - bit 7 on gen3 PONs (pmk8350), bit 0 on
+gen1/gen2.  Everything stays observer-read-only, like the battery path:
+no PON interrupt, debounce or reset configuration is written.
+
+Discovery (runtime, never hardcoded - the APID map shifts between boots):
+
+- candidates: EE0 channels at peripheral `0x13` (gen3 HLOS `pon@1300`)
+  and `0x08` (`pon@800`, gen1/gen2 and the gen3 PBS side);
+- each candidate is verified by `PERPH_TYPE` (0x04) == 0x01 and its
+  `PERPH_SUBTYPE` (0x05); secondary PONs (subtypes 2/5, RESIN-only) are
+  not power-key candidates;
+- preference: gen3 HLOS (subtype 9) > gen2 primary (4) > primary (1) >
+  gen3 PBS (8) > 1REG (3).  On SC8280XP-class boards the wired key is the
+  pmk8350 gen3 HLOS PON, which is what Linux's DT enables;
+- a candidate that reads "pressed" before any press is an unwired/floating
+  KPDPWR input and is skipped (the board has several PMICs but one key).
+
+Behavior:
+
+- **short press** (held 100 ms .. 3 s, released): toggles display sleep.
+  powerd sends `sleep` / `wake` to `/dev/x`; xserverd blanks the scan-out,
+  pauses compositing and drops input while asleep, and does a full
+  repaint on wake.  Sleep is panel-off + paused GUI, NOT suspend-to-RAM:
+  this WoA firmware exposes no PSCI SYSTEM_SUSPEND door, so the SoC keeps
+  running.  powerd polls the key independently of xserverd, so the key
+  always wakes the screen again.
+- **hold 3 s**: `sync()` + PSCI SYSTEM_OFF - the same path as the
+  `shutdown` dev command and `/bin/shutdown`.  Fires while held (no
+  release needed), also while asleep.  The PMIC's own hardware long-press
+  force-off (firmware-configured, longer) remains the backstop.
+- the daemon loop ticks every 50 ms for key timing; the battery sample
+  keeps its 1 s period.  A press already down at daemon start (the boot
+  press) is ignored until released.  `status` reports `key=` and
+  `sleeping=`.
+
 ## Bring-up verification
 
 Run on the device (all safe, read-only):
@@ -105,8 +146,15 @@ Run on the device (all safe, read-only):
 /drivers/8gen3/powerd --dump
 /drivers/8gen3/powerd --probe
 /drivers/8gen3/powerd --read <apid> <reg> <len> ...
+/drivers/8gen3/powerd --key 20
 dev.cmd /dev/power0 status
 ```
+
+`--dump` lists the PON candidates and the selected key (apid/sid/subtype);
+`--key [seconds]` is a live read-only monitor printing every down/up
+transition - press and release the power key during the window to verify
+the right PON was picked.  `devcmd /dev/x sleep` / `devcmd /dev/x wake`
+test the display-sleep path without the key.
 
 Expected on the TW220: plugged -> `capacity=100% (charger full)` with
 `charging=yes`, unplugged -> `capacity=100% (last known)` with
@@ -116,7 +164,7 @@ Expected on the TW220: plugged -> `capacity=100% (charger full)` with
 
 - The APID map is reprogrammed by boot firmware per boot; always enumerate
   at runtime, never hardcode apids.
-- Sampling period is 1s.  `--dump` and the `status` command re-sample
-  synchronously.
+- Battery sampling period is 1 s; the power key is polled every 50 ms.
+  `--dump` and the `status` command re-sample synchronously.
 - The TW220 battery is a 2S pack; the FG VOLTAGE_NOW plausibility window
   (2500..9800 mV) accepts it.

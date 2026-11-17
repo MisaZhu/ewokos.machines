@@ -81,6 +81,23 @@ void power_pmu_verbose(bool on);
  * -1 otherwise (out is still fully initialized in that case). */
 int power_pmu_sample(power_sample_t* out);
 
+/* Power key (PON KPDPWR), read-only like everything else in this driver.
+ * The key state is the debounced real-time status bit of the PMIC PON
+ * peripheral's INT_RT_STS register - the same signal mainline Linux's
+ * pm8941-pwrkey driver reports as KEY_POWER (bit 0 on PON gen1/gen2,
+ * bit 7 on gen3 / pmk8350).  The PON peripheral is discovered from the
+ * APID map at init (pon@1300 HLOS / pon@800 legacy-PBS, peripheral type
+ * 0x01); a candidate that reads "pressed" before any press is treated as
+ * unwired/floating and skipped.
+ *
+ * power_pmu_key_state: 1 = key down, 0 = key up, -1 = no usable PON or
+ * the read failed (callers must keep their previous state on -1). */
+int power_pmu_key_state(void);
+
+/* Discovery result for diagnostics: selected PON apid/sid/subtype.
+ * Returns 0 when a power key was selected, -1 otherwise (outs untouched). */
+int power_pmu_key_info(int* apid, int* sid, int* subtype);
+
 /* Staged diagnostics for --dump bring-up (each prints directly to stdout
  * so a hang leaves the last completed stage visible on the wire):
  *  dump_map    - version, channel counts, per-SID peripheral bitmaps;
