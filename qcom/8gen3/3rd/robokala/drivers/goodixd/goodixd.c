@@ -50,6 +50,13 @@
  * active slots are released after this idle window. Well above the panel
  * report cadence while touched, short enough to feel instant. */
 #define MT_IDLE_RELEASE_MS        80U
+/* Release debounce: the Berlin panel occasionally drops a contact for a
+ * frame or two while the finger is still down. Emitting that lift right
+ * away turns the flicker into a release+re-press pair, which downstream
+ * becomes a phantom tap (the on-screen keyboard kept typing letters after
+ * dismiss). A release goes out only after the contact stayed absent for
+ * this whole window; one that returns inside it remains pressed. */
+#define MT_RELEASE_GRACE_MS       40U
 #define PROBE_RETRY_INITIAL_US   250000U
 #define PROBE_RETRY_MAX_US       30000000U
 
@@ -89,6 +96,7 @@ typedef struct {
     bool active;
     uint16_t x;
     uint16_t y;
+    uint64_t absent_ms; /* first frame missing this contact, 0 = present */
 } mt_slot_t;
 
 static volatile uint8_t* _tlmm;
@@ -98,7 +106,6 @@ static touch_record_t _queue[TOUCH_QUEUE_SIZE];
 static unsigned _queue_count;
 static mt_slot_t _mt_slots[GOODIX_BERLIN_MAX_TOUCH];
 static uint64_t _mt_last_frame_ms;  /* last TOUCH-event frame arrival */
-static int _mt_last_count = -1;     /* finger count of the previous frame */
 static bool _probe_in_progress;
 static unsigned _probe_delay_us = PROBE_RETRY_INITIAL_US;
 static unsigned _probe_failures;
@@ -386,13 +393,14 @@ static void queue_push(uint16_t state, uint16_t x, uint16_t y) {
  * queue the whole edge frame atomically: if the queue cannot hold header +
  * every record, nothing is pushed and the slot table stays untouched, so
  * the next panel frame re-derives the same edges. A frame with no change
- * at all (stationary fingers) emits nothing. Frames carrying a release
- * are the exception: they must go out even on a full queue (see below). */
+ * at all (stationary fingers) emits nothing. Releases are debounced through
+ * MT_RELEASE_GRACE_MS and, once due, must go out even on a full queue. */
 static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
     touch_record_t recs[1 + GOODIX_BERLIN_MAX_TOUCH * 2];
     unsigned count = 0;
     bool seen[GOODIX_BERLIN_MAX_TOUCH];
     bool changed = false;
+    uint64_t now = kernel_tic_ms(0);
 
     memset(seen, 0, sizeof(seen));
     for (unsigned i = 0; i < n; i++) {
@@ -418,14 +426,22 @@ static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
         count++;
     }
     for (unsigned id = 0; id < GOODIX_BERLIN_MAX_TOUCH; id++) {
-        if (_mt_slots[id].active && !seen[id]) {
-            recs[count].state = (uint16_t)(TOUCH_MT_FRAME |
-                    (TOUCH_ACT_RELEASE << 8) | id);
-            recs[count].x = _mt_slots[id].x;
-            recs[count].y = _mt_slots[id].y;
-            count++;
-            changed = true;
+        if (!_mt_slots[id].active || seen[id])
+            continue;
+        if (_mt_slots[id].absent_ms == 0) {
+            _mt_slots[id].absent_ms = now; /* start the grace window */
+            continue;
         }
+        if (now - _mt_slots[id].absent_ms < MT_RELEASE_GRACE_MS)
+            continue;
+        recs[count].state = (uint16_t)(TOUCH_MT_FRAME |
+                (TOUCH_ACT_RELEASE << 8) | id);
+        recs[count].x = _mt_slots[id].x;
+        recs[count].y = _mt_slots[id].y;
+        count++;
+        changed = true;
+        _mt_slots[id].active = false;
+        _mt_slots[id].absent_ms = 0;
     }
     if (!changed || count == 0)
         return;
@@ -454,10 +470,13 @@ static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
     queue_push(TOUCH_MT_FRAME, (uint16_t)count, 0);
     for (unsigned i = 0; i < count; i++)
         queue_push(recs[i].state, recs[i].x, recs[i].y);
-    /* commit the emitted set only after the frame is fully queued */
+    /* commit the emitted set only after the frame is fully queued. A slot
+     * inside its release grace window keeps active=true (and its last
+     * position) so a returning contact continues instead of re-pressing. */
     for (unsigned id = 0; id < GOODIX_BERLIN_MAX_TOUCH; id++) {
         if (seen[id]) {
             _mt_slots[id].active = true;
+            _mt_slots[id].absent_ms = 0;
             for (unsigned i = 0; i < n; i++) {
                 if ((contacts[i].status >> 4) == id) {
                     _mt_slots[id].x = contacts[i].x;
@@ -465,8 +484,6 @@ static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
                     break;
                 }
             }
-        } else {
-            _mt_slots[id].active = false;
         }
     }
 }
@@ -528,7 +545,6 @@ static void handle_event(vdevice_t* dev) {
         if (count != 0 || n == 0)
             mt_emit_frame(contacts, count);
         _mt_last_frame_ms = kernel_tic_ms(0);
-        _mt_last_count = (int)count;
         if (_queue_count != 0)
             vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     }
@@ -594,11 +610,14 @@ static int touch_loop(vdevice_t* dev, void* p) {
     if (gpio_input(GPIO_IRQ) != 0) {
         /* Panel idle: if contacts are still marked active but no frame
          * arrived for the idle window, the final zero-contact frame was
-         * missed. Emit the release frame so downstream state clears. */
-        if (_mt_last_count > 0 &&
-                kernel_tic_ms(0) - _mt_last_frame_ms >= MT_IDLE_RELEASE_MS) {
-            mt_emit_frame(NULL, 0);
-            _mt_last_count = 0;
+         * missed. Feed empty frames through the same debounce path until
+         * every slot releases (a no-op once none is active). */
+        if (kernel_tic_ms(0) - _mt_last_frame_ms >= MT_IDLE_RELEASE_MS) {
+            bool any_active = false;
+            for (unsigned id = 0; id < GOODIX_BERLIN_MAX_TOUCH; id++)
+                any_active |= _mt_slots[id].active;
+            if (any_active)
+                mt_emit_frame(NULL, 0);
         }
         usleep(2000);
         return 0;
