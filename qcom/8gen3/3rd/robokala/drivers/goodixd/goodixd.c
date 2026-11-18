@@ -97,6 +97,7 @@ typedef struct {
     uint16_t x;
     uint16_t y;
     uint64_t absent_ms; /* first frame missing this contact, 0 = present */
+    bool repress;       /* released this frame on a grace return; re-press next */
 } mt_slot_t;
 
 static volatile uint8_t* _tlmm;
@@ -411,6 +412,24 @@ static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
         uint16_t x = contacts[i].x;
         uint16_t y = contacts[i].y;
         unsigned act;
+        if (_mt_slots[id].active && _mt_slots[id].absent_ms != 0) {
+            /* Contact returned inside its release grace: a fast re-tap, not
+             * a continuous hold. Flush the pending RELEASE now (old position)
+             * and stay inactive so the next frame emits a fresh PRESS. Merging
+             * the return into a MOVE used to hide the second tap of a quick
+             * double-press from downstream (the keyboard dropped it). The
+             * grace still debounces a genuine lift that never returns. */
+            recs[count].state = (uint16_t)(TOUCH_MT_FRAME |
+                    (TOUCH_ACT_RELEASE << 8) | id);
+            recs[count].x = _mt_slots[id].x;
+            recs[count].y = _mt_slots[id].y;
+            count++;
+            changed = true;
+            _mt_slots[id].active = false;
+            _mt_slots[id].absent_ms = 0;
+            _mt_slots[id].repress = true;
+            continue;
+        }
         if (!_mt_slots[id].active) {
             act = TOUCH_ACT_PRESS;
             changed = true;
@@ -472,9 +491,17 @@ static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
         queue_push(recs[i].state, recs[i].x, recs[i].y);
     /* commit the emitted set only after the frame is fully queued. A slot
      * inside its release grace window keeps active=true (and its last
-     * position) so a returning contact continues instead of re-pressing. */
+     * position) while the contact stays absent; a contact that RETURNS
+     * flushes a RELEASE and re-presses next frame so fast re-taps are not
+     * merged into a continuous move. */
     for (unsigned id = 0; id < GOODIX_BERLIN_MAX_TOUCH; id++) {
         if (seen[id]) {
+            if (_mt_slots[id].repress) {
+                /* just flushed a grace-return RELEASE: leave the slot inactive
+                 * so the next frame derives a fresh PRESS for the re-tap */
+                _mt_slots[id].repress = false;
+                continue;
+            }
             _mt_slots[id].active = true;
             _mt_slots[id].absent_ms = 0;
             for (unsigned i = 0; i < n; i++) {
