@@ -370,6 +370,8 @@ GT911_Status_t GT911_ReadTouch(TouchCordinate_t *cordinate, uint8_t *number_of_c
     uint8_t StatusRegister;
     GT911_Status_t Result = GT911_NotResponse;
 
+    *number_of_cordinate = 0;
+    /* one bulk read covers status + point 0's track id and coordinates */
     Result = GT911_I2C_ReadReg(gt911_addr, GOODIX_READ_COORD_ADDR,
             RxBuffer, GT911_FIRST_POINT_READ_LEN);
     if (Result != GT911_OK) {
@@ -379,15 +381,27 @@ GT911_Status_t GT911_ReadTouch(TouchCordinate_t *cordinate, uint8_t *number_of_c
     StatusRegister = RxBuffer[0];
     if ((StatusRegister & 0x80) != 0) {
         uint8_t point_count = StatusRegister & 0x0F;
+        if (point_count > GT911_MAX_TOUCH_POINTS)
+            point_count = GT911_MAX_TOUCH_POINTS;
         *number_of_cordinate = point_count;
-        if (point_count > GT911_MAX_TOUCH_POINTS) {
-            GT911_SetStatus(0);
-            return GT911_Error;
-        }
 
-        if (*number_of_cordinate != 0) {
-            cordinate[0].x = (RxBuffer[3] << 8) + RxBuffer[2];
-            cordinate[0].y = (RxBuffer[5] << 8) + RxBuffer[4];
+        if (point_count != 0) {
+            cordinate[0].id = RxBuffer[1] & 0x0F;
+            cordinate[0].x = (uint16_t)((RxBuffer[3] << 8) | RxBuffer[2]);
+            cordinate[0].y = (uint16_t)((RxBuffer[5] << 8) | RxBuffer[4]);
+        }
+        /* remaining points: track id byte + 6 coordinate/size bytes each */
+        for (uint8_t i = 1; i < point_count; i++) {
+            Result = GT911_I2C_ReadReg(gt911_addr,
+                    GOODIX_POINT1_TRACK_ADDR + (i * 8), RxBuffer, 7);
+            if (Result != GT911_OK) {
+                *number_of_cordinate = i;
+                GT911_SetStatus(0);
+                return Result;
+            }
+            cordinate[i].id = RxBuffer[0] & 0x0F;
+            cordinate[i].x = (uint16_t)((RxBuffer[2] << 8) | RxBuffer[1]);
+            cordinate[i].y = (uint16_t)((RxBuffer[4] << 8) | RxBuffer[3]);
         }
         GT911_SetStatus(0);
     }

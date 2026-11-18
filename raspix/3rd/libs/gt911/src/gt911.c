@@ -242,17 +242,19 @@ GT911_Status_t GT911_ReadTouch(TouchCordinate_t *cordinate, uint8_t *number_of_c
     }
 
     *number_of_cordinate = StatusRegister & 0x0F;
+    if (*number_of_cordinate > GOODIX_MAX_POINTS)
+        *number_of_cordinate = GOODIX_MAX_POINTS;
     if (*number_of_cordinate != 0) {
         for (uint8_t i = 0; i < *number_of_cordinate; i++) {
-                                Result = GT911_I2C_ReadReg(gt911_addr,
-                                                GOODIX_POINT1_X_ADDR + (i * 8),
-                                                RxBuffer, 6);
-                                if (Result != GT911_OK)
-                                        return Result;
-            cordinate[i].x = RxBuffer[0];
-            cordinate[i].x = (RxBuffer[1] << 8) + cordinate[i].x;
-            cordinate[i].y = RxBuffer[2];
-            cordinate[i].y = (RxBuffer[3] << 8) + cordinate[i].y;
+            /* track id byte + 6 coordinate/size bytes per point slot */
+            Result = GT911_I2C_ReadReg(gt911_addr,
+                            GOODIX_POINT1_TRACK_ADDR + (i * 8),
+                            RxBuffer, 7);
+            if (Result != GT911_OK)
+                return Result;
+            cordinate[i].id = RxBuffer[0] & 0x0F;
+            cordinate[i].x = (uint16_t)((RxBuffer[2] << 8) | RxBuffer[1]);
+            cordinate[i].y = (uint16_t)((RxBuffer[4] << 8) | RxBuffer[3]);
         }
     }
     GT911_SetStatus(0);
