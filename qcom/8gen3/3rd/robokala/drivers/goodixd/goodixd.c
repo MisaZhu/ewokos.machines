@@ -60,7 +60,10 @@
  * per contact edge of the frame. Berlin frames carry exactly the active
  * contacts, so the driver diffs against the last EMITTED contact set and
  * synthesizes press/move/release edges; a dropped frame (queue full) is
- * re-derived from that same set on the next panel frame, no edge is lost.
+ * re-derived from that same set on the next panel frame - except a frame
+ * carrying releases, which is never dropped: after the last finger lifts
+ * the panel sends nothing more, so its room is made by evicting the oldest
+ * queued records.
  *   state TOUCH_MT_FRAME ........ header: x = record count, y = 0
  *   state TOUCH_MT_FRAME | (act << 8) | id ... contact record, act is
  *     TOUCH_ACT_PRESS/MOVE/RELEASE, id 0..9; x/y are raw panel coordinates
@@ -376,7 +379,8 @@ static void queue_push(uint16_t state, uint16_t x, uint16_t y) {
  * queue the whole edge frame atomically: if the queue cannot hold header +
  * every record, nothing is pushed and the slot table stays untouched, so
  * the next panel frame re-derives the same edges. A frame with no change
- * at all (stationary fingers) emits nothing. */
+ * at all (stationary fingers) emits nothing. Frames carrying a release
+ * are the exception: they must go out even on a full queue (see below). */
 static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
     touch_record_t recs[1 + GOODIX_BERLIN_MAX_TOUCH * 2];
     unsigned count = 0;
@@ -418,8 +422,28 @@ static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
     }
     if (!changed || count == 0)
         return;
-    if (_queue_count + 1 + count > TOUCH_QUEUE_SIZE)
-        return;
+    if (_queue_count + 1 + count > TOUCH_QUEUE_SIZE) {
+        /* A release must never be lost: once the last finger lifts the
+         * panel sends no further frame, so a dropped release frame is
+         * never re-derived and the contact stays pressed forever
+         * downstream (the visualizer's circle never erases). Make room
+         * by evicting the oldest queued records - stale move edges whose
+         * positions the release frame supersedes anyway. Frames without
+         * a release keep the drop-and-re-derive policy. */
+        bool has_release = false;
+        for (unsigned i = 0; i < count; i++) {
+            if (((recs[i].state >> 8) & 0x3U) == TOUCH_ACT_RELEASE) {
+                has_release = true;
+                break;
+            }
+        }
+        if (!has_release)
+            return;
+        unsigned drop = _queue_count + 1 + count - TOUCH_QUEUE_SIZE;
+        memmove(&_queue[0], &_queue[drop],
+                (_queue_count - drop) * sizeof(_queue[0]));
+        _queue_count -= drop;
+    }
     queue_push(TOUCH_MT_FRAME, (uint16_t)count, 0);
     for (unsigned i = 0; i < count; i++)
         queue_push(recs[i].state, recs[i].x, recs[i].y);
