@@ -33,25 +33,6 @@
 #include "common/v3d_device_info.h"
 #include "v3d_compiler.h"
 
-/* TEMPORARY compile-phase wall-clock probe, twin of the one in vir.c: emit via
- * slog -> /dev/log (the /tmp sink does not persist on this image) so the RA
- * spill loop and QPU emit interleave with the strategy attempts in one
- * timeline.  Remove once the compile-time hotspot is fixed. */
-#include <time.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <ewoksys/klog.h>
-static double v3ct_now(void)
-{
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
-}
-static void PRINTFLIKE(1, 2) v3ct_log(const char *fmt, ...)
-{
-        (void)fmt;
-}
-
 /* We don't do any address packing. */
 #define __gen_user_data void
 #define __gen_address_type uint32_t
@@ -2237,7 +2218,6 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
         bool progress;
         int _opt_iter = 0;
 
-        v3ct_log("nir_optimize ENTER");
         do {
                 /* Oscillation guard: the scalarize<->vectorize and
                  * unroll<->dce pass pairs can undo each other, keeping
@@ -2246,7 +2226,6 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
                  * way the frontend and VIR-level oscillation breaks do.
                  */
                 if (++_opt_iter > 32) {
-                        v3ct_log("NIR OPT CAP iter=%d", _opt_iter);
                         break;
                 }
                 progress = false;
@@ -2366,7 +2345,6 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
                        progress |= local_progress;
                 }
         } while (progress);
-        v3ct_log("nir_optimize EXIT iter=%d", _opt_iter);
 
         NIR_PASS(progress, s, nir_lower_undef_to_zero, NULL);
 
@@ -5230,13 +5208,8 @@ v3d_nir_to_vir_finish(struct v3d_compile *c)
          */
         int min_threads = 2;
         struct qpu_reg *temp_registers;
-        int _ra_try = 0;
         while (true) {
-                double _rt0 = v3ct_now();
                 temp_registers = v3d_register_allocate(c);
-                v3ct_log("RA try=%d threads=%d ok=%d spills=%d fills=%d ms=%.0f", _ra_try++,
-                         c->threads, temp_registers != NULL, c->spills, c->fills,
-                         v3ct_now() - _rt0);
                 if (temp_registers) {
                         assert(c->spills + c->fills <= c->max_tmu_spills);
                         break;
@@ -5288,10 +5261,5 @@ v3d_nir_to_vir_finish(struct v3d_compile *c)
                 vir_dumpi(c);
         }
 
-        {
-                double _qt0 = v3ct_now();
-                v3d_vir_to_qpu(c, temp_registers);
-                v3ct_log("vir_to_qpu ms=%.0f inst=%d",
-                         v3ct_now() - _qt0, c->qpu_inst_count);
-        }
+        v3d_vir_to_qpu(c, temp_registers);
 }

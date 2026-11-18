@@ -304,8 +304,6 @@ static adreno_bo_t g_vout;
 /* Diagnostic A/B switch. Atomic only: ring_cmd holds the submit lock, while
  * draws hold g_3d_lock before entering ring_submit (never invert those locks). */
 static int g_geom_batch = 1;
-/* PERF probe: batch-vs-fallback tally for the two-pass geom submit. */
-static uint32_t g_gb_batch, g_gb_fallback, g_gb_xn, g_gb_rn;
 int adreno_3d_geom_batch(int enabled) {
 	if (enabled == 0 || enabled == 1)
 		__atomic_store_n(&g_geom_batch, enabled, __ATOMIC_RELAXED);
@@ -926,25 +924,6 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 				build_tex_desc(td, dummy_iova, 1u, 1u, 4u, cube ? 64u : 4u, cube);
 			}
 			build_samp_desc(sd, mag_linear, min_linear);
-		}
-		/* Device bring-up diagnostic: dump the first few textured
-		   bindings so a black-screen report can be matched against what
-		   the daemon actually bound (dummy vs real, cube geometry). */
-		{
-			static int g_tex_log = 3;
-			if (g_tex_log > 0) {
-				g_tex_log--;
-				for (i = 0; i < num_samp; i++) {
-					const adreno_3d_tex_t *t = (i < num_tex) ? &tex[i] : 0;
-					slog("adreno_3d: tex slot %u %s phy=%llx %ux%u stride=%u depth=%u arr64=%u tiling=%u ub=%x\n",
-					     i, (i < ADRENO_PROG_MAX_TEX &&
-					         k->tex_type[i] == ADRENO_PROG_TEX_CUBE) ? "cube" : "2d",
-					     (t && t->phy) ? (unsigned long long)t->phy : 0ull,
-					     t ? t->w : 0u, t ? t->h : 0u, t ? t->stride : 0u,
-					     t ? (uint32_t)t->depth : 0u, t ? t->arrstride64 : 0u,
-					     t ? (uint32_t)t->tiling : 0u, t ? (uint32_t)t->ub_pad : 0u);
-				}
-			}
 		}
 	} else {
 		tex_iova = samp_iova = dummy_iova = 0ull;
@@ -1654,28 +1633,12 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	 * exceed the ring's IB cap. Keep the existing two-submit route for them. */
 	if (!gdirect && adreno_3d_geom_batch(-1) &&
 	    xform_ib.n + GEOM_BARRIER_WORDS + raster_ib.n <= xform_ib.cap) {
-		g_gb_batch++;
-		{
-			static uint32_t gb_tic;
-			uint32_t now;
-			kernel_tic32(NULL, NULL, &now);
-			if (now - gb_tic >= 1000000) {
-				gb_tic = now;
-				slog("adreno_3d: PERF geom batch=%u fallback=%u xn=%u rn=%u\n",
-				     g_gb_batch, g_gb_fallback, g_gb_xn, g_gb_rn);
-			}
-		}
 		ib_geom_barrier(&xform_ib);
 		memcpy(xform_ib.d + xform_ib.n, raster_ib.d, raster_ib.n * 4u);
 		xform_ib.n += raster_ib.n;
 		return adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
 	}
 	if (!gdirect) {
-		g_gb_fallback++;
-		g_gb_xn = xform_ib.n; g_gb_rn = raster_ib.n;
-		if (g_gb_fallback == 1)
-			slog("adreno_3d: PERF batch fallback xn=%u rn=%u cap=%u nv=%u\n",
-			     xform_ib.n, raster_ib.n, xform_ib.cap, g->nverts);
 		rc = adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
 		if (rc != ADRENO_OK) return rc;
 	}

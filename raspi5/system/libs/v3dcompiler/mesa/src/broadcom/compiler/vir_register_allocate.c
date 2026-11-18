@@ -26,10 +26,6 @@
 #include "common/v3d_device_info.h"
 #include "v3d_compiler.h"
 
-#include <stdarg.h>
-#include <time.h>
-#include <ewoksys/klog.h>
-
 #define ACC_INDEX     0
 #define ACC_COUNT     6
 
@@ -52,17 +48,6 @@
  * converge. Solar reaches the 64-register budget after 219 spill rounds;
  * stopping at 96 rejects it while pressure is still decreasing. */
 #define V3D_RA_MAX_FALLBACK_RESOLVE 256
-
-static double v3ct_now(void)
-{
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
-}
-static void PRINTFLIKE(1, 2) v3ct_log(const char *fmt, ...)
-{
-        (void)fmt;
-}
 
 static uint8_t
 get_phys_index(const struct v3d_device_info *devinfo)
@@ -1722,8 +1707,6 @@ v3d_register_allocate(struct v3d_compile *c)
                 V3D_RA_MAX_FALLBACK_RESOLVE : V3D_RA_MAX_RESOLVE;
         while (true) {
                 if (++_ra_inner > max_resolve) {
-                        v3ct_log("RA INNER BAIL iters=%u temps=%u spills=%u fills=%u",
-                                 _ra_inner, c->num_temps, c->spills, c->fills);
                         goto spill_fail;
                 }
                 if (c->spill_size <

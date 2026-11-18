@@ -260,20 +260,14 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	(void)d;
 
 	/* Clear GBIF halt in case GX was not collapsed (a650 family, has_gbif). */
-	slog("adreno_a6xx: hw_init stage 01 begin\n");
 	gpu_write(REG_A6XX_GBIF_HALT, 0);
-	slog("adreno_a6xx: hw_init stage 02 GBIF_HALT=%08x\n",
-	     gpu_read(REG_A6XX_GBIF_HALT));
 	gpu_write(REG_A6XX_RBBM_GBIF_HALT, 0);
-	slog("adreno_a6xx: hw_init stage 03 RBBM_GBIF_HALT=%08x\n",
-	     gpu_read(REG_A6XX_RBBM_GBIF_HALT));
 
 	gpu_write(REG_A6XX_RBBM_SECVID_TSB_CNTL, 0);
 
 	/* Disable the trusted memory range (no secure rendering). */
 	gpu_write64(REG_A6XX_RBBM_SECVID_TSB_TRUSTED_BASE, 0x0ull);
 	gpu_write(REG_A6XX_RBBM_SECVID_TSB_TRUSTED_SIZE, 0x0);
-	slog("adreno_a6xx: hw_init stage 04 SECVID\n");
 
 	/* 64-bit addressing for every block. */
 	gpu_write(REG_A6XX_CP_ADDR_MODE_CNTL, 0x1);
@@ -288,10 +282,8 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_SP_ADDR_MODE_CNTL, 0x1);
 	gpu_write(REG_A6XX_TPL1_ADDR_MODE_CNTL, 0x1);
 	gpu_write(REG_A6XX_RBBM_SECVID_TSB_ADDR_MODE_CNTL, 0x1);
-	slog("adreno_a6xx: hw_init stage 05 address-mode\n");
 
 	a6xx_set_hwcg(d, 1);
-	slog("adreno_a6xx: hw_init stage 06 HWCG\n");
 
 	/* VBIF/GBIF QoS (a650 family). */
 	gpu_write(REG_A6XX_GBIF_QSB_SIDE(0), 0x00071620);
@@ -299,7 +291,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_GBIF_QSB_SIDE(2), 0x00071620);
 	gpu_write(REG_A6XX_GBIF_QSB_SIDE(3), 0x00071620);
 	gpu_write(REG_A6XX_RBBM_GBIF_CLIENT_QOS_CNTL, 0x3);
-	slog("adreno_a6xx: hw_init stage 07 GBIF-QoS\n");
 
 	gpu_write(REG_A6XX_RBBM_PERFCTR_GPU_BUSY_MASKED, 0xffffffff);
 
@@ -312,7 +303,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 
 	gpu_write(REG_A6XX_UCHE_FILTER_CNTL, 0x804);
 	gpu_write(REG_A6XX_UCHE_CACHE_WAYS, 0x4);
-	slog("adreno_a6xx: hw_init stage 08 UCHE\n");
 
 	/* CP ROQ thresholds (a640/a650 family). */
 	gpu_write(REG_A6XX_CP_ROQ_THRESHOLDS_2, 0x02000140);
@@ -332,7 +322,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_CP_PERFCTR_CP_SEL(0), PERF_CP_ALWAYS_COUNT);
 
 	a6xx_set_ubwc_config();
-	slog("adreno_a6xx: hw_init stage 09 CP-UBWC\n");
 
 	/* A690 catalog hang-detect period. */
 	gpu_write(REG_A6XX_RBBM_INTERFACE_HANG_INT_CNTL, (1u << 30) | 0x4fffff);
@@ -345,16 +334,13 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_TPL1_BICUBIC_WEIGHTS(2), 0x3fa0ebee);
 	gpu_write(REG_A6XX_TPL1_BICUBIC_WEIGHTS(3), 0x3f5193ed);
 	gpu_write(REG_A6XX_TPL1_BICUBIC_WEIGHTS(4), 0x3f0243f0);
-	slog("adreno_a6xx: hw_init stage 10 fault-prefetch-bicubic\n");
 
 	/* CX GMU busy counter + power counter (GMU aperture). */
 	gmu_write(REG_A6XX_GPU_GMU_AO_GPU_CX_BUSY_MASK, 0xff000000);
 	gmu_rmw(REG_A6XX_GMU_CX_GMU_POWER_COUNTER_SELECT_0, 0xff, (1u << 5));
 	gmu_write(REG_A6XX_GMU_CX_GMU_POWER_COUNTER_ENABLE, 1);
-	slog("adreno_a6xx: hw_init stage 11 GMU-counters\n");
 
 	a6xx_set_cp_protect();
-	slog("adreno_a6xx: hw_init stage 12 CP-protect\n");
 
 	/* A690 catalog chicken bits. */
 	gpu_write(REG_A6XX_CP_CHICKEN_DBG, 0x00028801);
@@ -366,7 +352,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	          (1u << 6) | (1u << 5) | (1u << 3) | (1u << 2) | (1u << 1));
 
 	gpu_write(REG_A6XX_RBBM_INT_0_MASK, A6XX_INT_MASK);
-	slog("adreno_a6xx: hw_init stage 13 complete\n");
 }
 
 /* ------------------------------------------------------------------ */
