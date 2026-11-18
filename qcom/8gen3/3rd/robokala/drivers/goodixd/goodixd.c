@@ -10,7 +10,6 @@
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 
-#include "goodix_gesture.h"
 #include "goodix_protocol.h"
 
 /* SC8280XP TW220: GPIO mode-0 SPI on the board's QUP22 pins. */
@@ -45,30 +44,51 @@
 #define GOODIX_REQUEST_RESET      3U
 #define EVENT_HEAD_AND_TWO        (GOODIX_BERLIN_HEADER_SIZE + 16U + 2U)
 #define SPI_BUF_MAX               1100U
-#define TOUCH_QUEUE_SIZE          16U
+#define TOUCH_QUEUE_SIZE          64U
 #define PROBE_RETRY_INITIAL_US   250000U
 #define PROBE_RETRY_MAX_US       30000000U
 
 /* Record stream consumed by xtouch: three uint16_t fields.
  *
- * state 0 ..... left button up
- * state 1 ..... left button down (first frame) or drag/move continuation
- * state 2/3 ... right button down/up (two-finger tap)
- * state 4/5 ... one wheel notch: scroll up / scroll down (two-finger swipe)
+ * Legacy single-pointer records (hid_touchd compatible):
+ *   state 0 ..... left button up
+ *   state 1 ..... left button down (first frame) or drag/move continuation
+ *   state 2/3 ... right button down/up
+ *   state 4/5 ... one wheel notch: scroll up / scroll down
  *
- * x/y are raw panel coordinates; for gesture records they are the midpoint
- * of the two contacts. */
+ * Multi-touch frame records (this driver): a header followed by one record
+ * per contact edge of the frame. Berlin frames carry exactly the active
+ * contacts, so the driver diffs against the last EMITTED contact set and
+ * synthesizes press/move/release edges; a dropped frame (queue full) is
+ * re-derived from that same set on the next panel frame, no edge is lost.
+ *   state TOUCH_MT_FRAME ........ header: x = record count, y = 0
+ *   state TOUCH_MT_FRAME | (act << 8) | id ... contact record, act is
+ *     TOUCH_ACT_PRESS/MOVE/RELEASE, id 0..9; x/y are raw panel coordinates
+ *     (a release carries the contact's last known position). */
+#define TOUCH_MT_FRAME            0x8000U
+#define TOUCH_ACT_PRESS           1U
+#define TOUCH_ACT_MOVE            2U
+#define TOUCH_ACT_RELEASE         3U
+
 typedef struct {
     uint16_t state;
     uint16_t x;
     uint16_t y;
 } touch_record_t;
 
+/* last emitted contact set, indexed by the panel's touch id */
+typedef struct {
+    bool active;
+    uint16_t x;
+    uint16_t y;
+} mt_slot_t;
+
 static volatile uint8_t* _tlmm;
 static uint32_t _touch_addr;
 static bool _ready;
 static touch_record_t _queue[TOUCH_QUEUE_SIZE];
 static unsigned _queue_count;
+static mt_slot_t _mt_slots[GOODIX_BERLIN_MAX_TOUCH];
 static bool _probe_in_progress;
 static unsigned _probe_delay_us = PROBE_RETRY_INITIAL_US;
 static unsigned _probe_failures;
@@ -352,39 +372,79 @@ static void queue_push(uint16_t state, uint16_t x, uint16_t y) {
     _queue_count++;
 }
 
-static void gesture_emit(gesture_evt_t evt, uint16_t x, uint16_t y) {
-    uint16_t state;
+/* Diff one decoded finger frame against the last emitted contact set and
+ * queue the whole edge frame atomically: if the queue cannot hold header +
+ * every record, nothing is pushed and the slot table stays untouched, so
+ * the next panel frame re-derives the same edges. A frame with no change
+ * at all (stationary fingers) emits nothing. */
+static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
+    touch_record_t recs[1 + GOODIX_BERLIN_MAX_TOUCH * 2];
+    unsigned count = 0;
+    bool seen[GOODIX_BERLIN_MAX_TOUCH];
+    bool changed = false;
 
-    switch (evt) {
-    case GESTURE_EVT_LEFT_DOWN:
-        state = 1;
-        break;
-    case GESTURE_EVT_LEFT_UP:
-        state = 0;
-        break;
-    case GESTURE_EVT_RIGHT_DOWN:
-        state = 2;
-        break;
-    case GESTURE_EVT_RIGHT_UP:
-        state = 3;
-        break;
-    case GESTURE_EVT_SCROLL_UP:
-        state = 4;
-        break;
-    case GESTURE_EVT_SCROLL_DOWN:
-        state = 5;
-        break;
-    default:
-        return;
+    memset(seen, 0, sizeof(seen));
+    for (unsigned i = 0; i < n; i++) {
+        unsigned id = contacts[i].status >> 4;
+        if (id >= GOODIX_BERLIN_MAX_TOUCH || seen[id])
+            continue;
+        seen[id] = true;
+        uint16_t x = contacts[i].x;
+        uint16_t y = contacts[i].y;
+        unsigned act;
+        if (!_mt_slots[id].active) {
+            act = TOUCH_ACT_PRESS;
+            changed = true;
+        } else if (_mt_slots[id].x != x || _mt_slots[id].y != y) {
+            act = TOUCH_ACT_MOVE;
+            changed = true;
+        } else {
+            continue; /* unchanged contact carries no edge */
+        }
+        recs[count].state = (uint16_t)(TOUCH_MT_FRAME | (act << 8) | id);
+        recs[count].x = x;
+        recs[count].y = y;
+        count++;
     }
-    queue_push(state, x, y);
+    for (unsigned id = 0; id < GOODIX_BERLIN_MAX_TOUCH; id++) {
+        if (_mt_slots[id].active && !seen[id]) {
+            recs[count].state = (uint16_t)(TOUCH_MT_FRAME |
+                    (TOUCH_ACT_RELEASE << 8) | id);
+            recs[count].x = _mt_slots[id].x;
+            recs[count].y = _mt_slots[id].y;
+            count++;
+            changed = true;
+        }
+    }
+    if (!changed || count == 0)
+        return;
+    if (_queue_count + 1 + count > TOUCH_QUEUE_SIZE)
+        return;
+    queue_push(TOUCH_MT_FRAME, (uint16_t)count, 0);
+    for (unsigned i = 0; i < count; i++)
+        queue_push(recs[i].state, recs[i].x, recs[i].y);
+    /* commit the emitted set only after the frame is fully queued */
+    for (unsigned id = 0; id < GOODIX_BERLIN_MAX_TOUCH; id++) {
+        if (seen[id]) {
+            _mt_slots[id].active = true;
+            for (unsigned i = 0; i < n; i++) {
+                if ((contacts[i].status >> 4) == id) {
+                    _mt_slots[id].x = contacts[i].x;
+                    _mt_slots[id].y = contacts[i].y;
+                    break;
+                }
+            }
+        } else {
+            _mt_slots[id].active = false;
+        }
+    }
 }
 
 static void handle_event(vdevice_t* dev) {
     uint8_t raw[EVENT_HEAD_AND_TWO + (GOODIX_BERLIN_MAX_TOUCH - 2) * 8];
     goodix_event_header_t header;
+    goodix_touch_t contacts[GOODIX_BERLIN_MAX_TOUCH];
     goodix_touch_t touch;
-    gesture_frame_t frame;
     unsigned n;
 
     memset(raw, 0, sizeof(raw));
@@ -418,10 +478,10 @@ static void handle_event(vdevice_t* dev) {
             goto clear;
         /* Berlin frames carry exactly the active contacts; an entry that
          * stops appearing has been lifted. Filter to finger contacts (the
-         * low nibble is the point type: 1/3 are stylus) and feed the
-         * gesture engine. */
-        frame.count = 0;
-        for (unsigned i = 0; i < n && frame.count < GESTURE_MAX_TOUCH; i++) {
+         * low nibble is the point type: 1/3 are stylus) and emit the raw
+         * multi-touch edge frame; gesture policy lives in xtouch/xserverd. */
+        unsigned count = 0;
+        for (unsigned i = 0; i < n && count < GOODIX_BERLIN_MAX_TOUCH; i++) {
             if (goodix_decode_touch(raw + GOODIX_BERLIN_HEADER_SIZE,
                     sizeof(raw) - GOODIX_BERLIN_HEADER_SIZE, i, &touch) != 0)
                 continue;
@@ -429,15 +489,13 @@ static void handle_event(vdevice_t* dev) {
                     (touch.status & 0x0fU) == 3U ||
                     (touch.status >> 4) >= GOODIX_BERLIN_MAX_TOUCH)
                 continue;
-            frame.contacts[frame.count].id = touch.status >> 4;
-            frame.contacts[frame.count].x = touch.x;
-            frame.contacts[frame.count].y = touch.y;
-            frame.count++;
+            contacts[count++] = touch;
         }
         /* A frame with contacts but zero finger entries is a stylus-only
-         * frame: no finger state change, do not feed an empty frame. */
-        if (frame.count != 0 || n == 0)
-            gesture_process(&frame, kernel_tic_ms(0), gesture_emit);
+         * frame: no finger state change, do not diff an empty set against
+         * the active fingers (that would release them all). */
+        if (count != 0 || n == 0)
+            mt_emit_frame(contacts, count);
         if (_queue_count != 0)
             vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     }
@@ -496,10 +554,8 @@ static int touch_loop(vdevice_t* dev, void* p) {
         }
         return 0;
     }
-    /* Time-driven gesture transitions (pending press commits as a left
-     * hold after GESTURE_PENDING_MS) run every loop pass, not only when
-     * the panel raises IRQ. */
-    gesture_tick(kernel_tic_ms(0), gesture_emit);
+    /* Raw multi-touch frames need no time-driven transitions here: the
+     * gesture policy that consumes them runs in xtouch/xserverd. */
     if (_queue_count != 0)
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     if (gpio_input(GPIO_IRQ) != 0) {

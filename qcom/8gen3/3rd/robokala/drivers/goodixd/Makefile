@@ -8,22 +8,18 @@ TARGET_DIR = ../../build
 LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
-OBJS = $(ARCH)/goodixd.o $(ARCH)/goodix_protocol.o $(ARCH)/goodix_gesture.o
+OBJS = $(ARCH)/goodixd.o $(ARCH)/goodix_protocol.o
 TARGET = $(TARGET_DIR)/drivers/robokala/goodixd
 
 $(TARGET): $(OBJS) $(SDK_DIR)/lib/libewoksys.a
 	@mkdir -p $(dir $@)
 	$(LD) -Ttext=100 $(OBJS) -o $(TARGET) $(LDFLAGS) $(EWOK_LIBC)
 
-$(ARCH)/goodixd.o: goodixd.c goodix_protocol.h goodix_gesture.h
+$(ARCH)/goodixd.o: goodixd.c goodix_protocol.h
 	@mkdir -p $(ARCH)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(ARCH)/goodix_protocol.o: goodix_protocol.c goodix_protocol.h
-	@mkdir -p $(ARCH)
-	$(CC) $(CFLAGS) -c $< -o $@
-
-$(ARCH)/goodix_gesture.o: goodix_gesture.c goodix_gesture.h
 	@mkdir -p $(ARCH)
 	$(CC) $(CFLAGS) -c $< -o $@
 
