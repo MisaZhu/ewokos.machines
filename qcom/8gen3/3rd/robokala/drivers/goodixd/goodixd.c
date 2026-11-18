@@ -45,6 +45,11 @@
 #define EVENT_HEAD_AND_TWO        (GOODIX_BERLIN_HEADER_SIZE + 16U + 2U)
 #define SPI_BUF_MAX               1100U
 #define TOUCH_QUEUE_SIZE          64U
+/* Safety net for a lift the panel never reports: the Berlin panel normally
+ * ends a touch with a zero-contact frame, but if that frame is missed the
+ * active slots are released after this idle window. Well above the panel
+ * report cadence while touched, short enough to feel instant. */
+#define MT_IDLE_RELEASE_MS        80U
 #define PROBE_RETRY_INITIAL_US   250000U
 #define PROBE_RETRY_MAX_US       30000000U
 
@@ -92,6 +97,8 @@ static bool _ready;
 static touch_record_t _queue[TOUCH_QUEUE_SIZE];
 static unsigned _queue_count;
 static mt_slot_t _mt_slots[GOODIX_BERLIN_MAX_TOUCH];
+static uint64_t _mt_last_frame_ms;  /* last TOUCH-event frame arrival */
+static int _mt_last_count = -1;     /* finger count of the previous frame */
 static bool _probe_in_progress;
 static unsigned _probe_delay_us = PROBE_RETRY_INITIAL_US;
 static unsigned _probe_failures;
@@ -520,6 +527,8 @@ static void handle_event(vdevice_t* dev) {
          * the active fingers (that would release them all). */
         if (count != 0 || n == 0)
             mt_emit_frame(contacts, count);
+        _mt_last_frame_ms = kernel_tic_ms(0);
+        _mt_last_count = (int)count;
         if (_queue_count != 0)
             vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     }
@@ -583,6 +592,14 @@ static int touch_loop(vdevice_t* dev, void* p) {
     if (_queue_count != 0)
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
     if (gpio_input(GPIO_IRQ) != 0) {
+        /* Panel idle: if contacts are still marked active but no frame
+         * arrived for the idle window, the final zero-contact frame was
+         * missed. Emit the release frame so downstream state clears. */
+        if (_mt_last_count > 0 &&
+                kernel_tic_ms(0) - _mt_last_frame_ms >= MT_IDLE_RELEASE_MS) {
+            mt_emit_frame(NULL, 0);
+            _mt_last_count = 0;
+        }
         usleep(2000);
         return 0;
     }

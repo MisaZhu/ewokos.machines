@@ -120,6 +120,7 @@
 #include <adreno/a6xx_regs.h>
 #include <adreno/adreno_prog.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/kernel_tic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -171,7 +172,7 @@ _Static_assert(Q8B_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
    to 24 varying floats, matching raspi5's 32-float geometry-kind-5 capacity.
    A single process-lifetime buffer is safe because draws are serialized and
    fence-retired, and each draw overwrites the sub-range it consumes. */
-#define ADRENO_3D_MAX_VERTS          20480u
+#define ADRENO_3D_MAX_VERTS          32768u
 #define ADRENO_3D_VK_VOUT_MAX_FLOATS 32u
 #define ADRENO_3D_VOUT_BYTES \
 	(ADRENO_3D_MAX_VERTS * ADRENO_3D_VK_VOUT_MAX_FLOATS * 4u)
@@ -303,6 +304,8 @@ static adreno_bo_t g_vout;
 /* Diagnostic A/B switch. Atomic only: ring_cmd holds the submit lock, while
  * draws hold g_3d_lock before entering ring_submit (never invert those locks). */
 static int g_geom_batch = 1;
+/* PERF probe: batch-vs-fallback tally for the two-pass geom submit. */
+static uint32_t g_gb_batch, g_gb_fallback, g_gb_xn, g_gb_rn;
 int adreno_3d_geom_batch(int enabled) {
 	if (enabled == 0 || enabled == 1)
 		__atomic_store_n(&g_geom_batch, enabled, __ATOMIC_RELAXED);
@@ -1651,12 +1654,28 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	 * exceed the ring's IB cap. Keep the existing two-submit route for them. */
 	if (!gdirect && adreno_3d_geom_batch(-1) &&
 	    xform_ib.n + GEOM_BARRIER_WORDS + raster_ib.n <= xform_ib.cap) {
+		g_gb_batch++;
+		{
+			static uint32_t gb_tic;
+			uint32_t now;
+			kernel_tic32(NULL, NULL, &now);
+			if (now - gb_tic >= 1000000) {
+				gb_tic = now;
+				slog("adreno_3d: PERF geom batch=%u fallback=%u xn=%u rn=%u\n",
+				     g_gb_batch, g_gb_fallback, g_gb_xn, g_gb_rn);
+			}
+		}
 		ib_geom_barrier(&xform_ib);
 		memcpy(xform_ib.d + xform_ib.n, raster_ib.d, raster_ib.n * 4u);
 		xform_ib.n += raster_ib.n;
 		return adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
 	}
 	if (!gdirect) {
+		g_gb_fallback++;
+		g_gb_xn = xform_ib.n; g_gb_rn = raster_ib.n;
+		if (g_gb_fallback == 1)
+			slog("adreno_3d: PERF batch fallback xn=%u rn=%u cap=%u nv=%u\n",
+			     xform_ib.n, raster_ib.n, xform_ib.cap, g->nverts);
 		rc = adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
 		if (rc != ADRENO_OK) return rc;
 	}
