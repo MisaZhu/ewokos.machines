@@ -403,7 +403,6 @@ static int gpu_pas_call(uint32_t op, uint64_t arg, uint32_t size) {
 			break;
 		usleep(30000); /* Linux: 30 ms, at most 20 retries; outside kernel lock */
 	} while (++retry <= 20);
-	slog("adreno_a6xx: PAS op=%08x ret=%d\n", op, ret);
 	return ret;
 }
 
@@ -443,7 +442,6 @@ static int a6xx_exit_secure(adreno_dev_t *d) {
 	ret = gpu_pas_call(Q8B_GPU_PAS_AUTH, 0, 0);
 	if (ret) goto out;
 	d->zap_done = 1;
-	slog("adreno_a6xx: official signed zap authenticated\n");
 	ret = adreno_ring_exit_secure(d);
 out:
 	/* Kernel owns a separate coherent metadata copy until authentication
@@ -493,7 +491,6 @@ static int a6xx_selftest(adreno_dev_t *d) {
 		     mem[0], mem[1], mem[2], mem[3]);
 		return -1;
 	}
-	slog("adreno_a6xx: CP datapath selftest OK\n");
 	return 0;
 }
 
@@ -609,7 +606,6 @@ int adreno_a6xx_init(adreno_dev_t *d) {
 
 	adreno_gmu_gpu_clear();
 	d->init_rc = 0;
-	slog("adreno_a6xx: Adreno 690 bring-up complete\n");
 	return 0;
 }
 

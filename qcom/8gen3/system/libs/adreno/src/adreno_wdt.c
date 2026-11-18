@@ -59,7 +59,6 @@ int adreno_wdt_arm(unsigned seconds)
 	put32(WDT_VA + WDT_BARK, bark);
 	put32(WDT_VA + WDT_BITE, bite);
 	put32(WDT_VA + WDT_EN, 1);
-	slog("adreno_wdt: armed %us (bite=%u)\n", seconds, bite);
 	return 0;
 }
 

@@ -253,8 +253,6 @@ static void rsc_detect(void)
 		rsc.cmd_status = 0x40u;
 		rsc.cmd_stride = 24u;
 	}
-	slog("adreno_rpmh: rsc id=%x v%d.%d layout=%s\n",
-	     id, rsc.major, rsc.minor, major >= 3 ? "3.0" : "2.7");
 }
 
 static uint32_t rpmh_reg(uint32_t tcs, uint32_t reg)
@@ -409,34 +407,8 @@ static int rpmh_vote_pd(const char *name)
 
 	corner = (int)count - 1;
 
-	slog("adreno_rpmh: %s addr=%x levels=%u corner=%d\n",
-	     name, addr, count, corner);
-	if (n > 0) {
-		slog("adreno_rpmh: %s levels %u %u %u %u %u %u %u %u\n", name,
-		     n > 0 ? cd16(aux_off + 0) : 0,
-		     n > 1 ? cd16(aux_off + 2) : 0,
-		     n > 2 ? cd16(aux_off + 4) : 0,
-		     n > 3 ? cd16(aux_off + 6) : 0,
-		     n > 4 ? cd16(aux_off + 8) : 0,
-		     n > 5 ? cd16(aux_off + 10) : 0,
-		     n > 6 ? cd16(aux_off + 12) : 0,
-		     n > 7 ? cd16(aux_off + 14) : 0);
-	}
-	if (n > 8) {
-		slog("adreno_rpmh: %s levels %u %u %u %u %u %u %u %u\n", name,
-		     n > 8 ? cd16(aux_off + 16) : 0,
-		     n > 9 ? cd16(aux_off + 18) : 0,
-		     n > 10 ? cd16(aux_off + 20) : 0,
-		     n > 11 ? cd16(aux_off + 22) : 0,
-		     n > 12 ? cd16(aux_off + 24) : 0,
-		     n > 13 ? cd16(aux_off + 26) : 0,
-		     n > 14 ? cd16(aux_off + 28) : 0,
-		     n > 15 ? cd16(aux_off + 30) : 0);
-	}
-
 	if (rpmh_write(addr, (uint32_t)corner) != 0)
 		return -3;
-	slog("adreno_rpmh: %s voted corner %d\n", name, corner);
 	return 0;
 }
 
@@ -482,8 +454,6 @@ static int rpmh_bcm_peak(const char *name, uint32_t peak_kbps,
 	vote = scaled > BCM_TCS_VOTE_MASK ? BCM_TCS_VOTE_MASK : (uint32_t)scaled;
 	data = BCM_TCS_COMMIT | BCM_TCS_VALID | vote;
 
-	slog("adreno_rpmh: bcm %s addr=%x unit=%u width=%u vcd=%u peak=%u vote=%x\n",
-	     name, addr, unit, width, cd8(aux_off + 6u), peak_kbps, data);
 	return rpmh_write(addr, data);
 }
 
@@ -497,8 +467,6 @@ static int rpmh_bcm_acv_enable(void)
 		slog("adreno_rpmh: bcm ACV not found in cmd-db\n");
 		return -2;
 	}
-	slog("adreno_rpmh: bcm ACV addr=%x vcd=%u vote=%x\n",
-	     addr, aux_len >= 7u ? cd8(aux_off + 6u) : 0, data);
 	return rpmh_write(addr, data);
 }
 
