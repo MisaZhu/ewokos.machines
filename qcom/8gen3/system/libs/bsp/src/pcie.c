@@ -1712,7 +1712,7 @@ fail:
 	 * module electrically off instead of inheriting a half-powered endpoint. */
 	if (ekey_rc)
 		ekey_rc = ekey_3v3_set(false);
-	klog("q8b pcie: PCIe4 failure cleanup radio=%d ekey=%d\n",
+	slog("q8b pcie: PCIe4 failure cleanup radio=%d ekey=%d\n",
 		radio_rc, ekey_rc);
 	/* A failed link may leave the subordinate DBI/PHY slave quiesced.  Do not
 	 * probe or reset those windows here: an error-status read can become an
