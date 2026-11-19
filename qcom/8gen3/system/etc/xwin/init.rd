@@ -41,22 +41,8 @@
 # switching to this persistent root.  Do not start a second xHCI owner here.
 @/bin/ipcserv /drivers/8gen3/hid_keybd     /dev/keyb0  /dev/usb0
 @/bin/ipcserv /drivers/8gen3/hid_moused    /dev/mouse0 /dev/usb0
-# Touchscreen selection.  Default: TW220 uses the Goodix Berlin 7986P
-# (GPIO SPI).  The gaokun3 (gaokun3) panel is a Himax HX83121A on the same
-# q8b tree; on a gaokun machine uncomment the himaxd pair below and comment
-# the goodixd line.  Never start both: they drive the same pads.
-# himaxd talks to the IC through the QUP0 SE6 GENI engine by default; pass
-# --gpio for the old bit-bang master when bringing the panel up by hand.
-# TW220 only:
-@/bin/ipcserv /drivers/robokala/goodixd        /dev/touch0
-# Battery status (charger PMIC + ADC7 VBAT_SNS over SPMI).
-# Boot the ADSP first: the battery manager (PMIC GLINK battmgr) lives on the
-# ADSP and is unreachable until PAS auth + SMP2P/GLINK transport are up.
-@/bin/adspas
-@/bin/ipcserv /drivers/8gen3/powerd         /dev/power0
-# gaokun (gaokun3) only:
-#@/bin/ipcserv /drivers/matebook/himaxd        /dev/touch0
 @/bin/ipcserv /drivers/8gen3/hid_touchpadd /dev/touchpad0 /dev/usb0
+
 # btd may be launched concurrently by ipcserv, but the Q8B transport gates
 # USB Bluetooth setup until wlan has completed WCN startup and published MAC.
 # The device surface and the subscribers are the raspi5 ones: btd owns
