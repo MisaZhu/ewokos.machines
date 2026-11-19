@@ -125,13 +125,16 @@
 #include <pthread.h>
 #include "../shaders/blit_blob.h"
 #include "../shaders/raster_blob.h"
+#include "../shaders/bin_blob.h"
 
 /* Fail the build when the wire protocol changes without regenerating the
  * embedded programs. A2D bring-up alone cannot detect stale compute blobs. */
 _Static_assert(Q8B_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
 	Q8B_RASTER_BLOB_VERSION == ADRENO_PROG_VERSION &&
+	Q8B_BIN_BLOB_VERSION == ADRENO_PROG_VERSION &&
 	Q8B_2D_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t) &&
-	Q8B_RASTER_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t),
+	Q8B_RASTER_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t) &&
+	Q8B_BIN_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t),
 	"stale built-in compute programs: run make builtin-shaders in libadreno");
 
 /* ------------------------------------------------------------------ */
@@ -171,13 +174,24 @@ _Static_assert(Q8B_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
    to 24 varying floats, matching raspi5's 32-float geometry-kind-5 capacity.
    A single process-lifetime buffer is safe because draws are serialized and
    fence-retired, and each draw overwrites the sub-range it consumes. */
-#define ADRENO_3D_MAX_VERTS          20480u
+#define ADRENO_3D_MAX_VERTS          32768u
 #define ADRENO_3D_VK_VOUT_MAX_FLOATS 32u
 #define ADRENO_3D_VOUT_BYTES \
 	(ADRENO_3D_MAX_VERTS * ADRENO_3D_VK_VOUT_MAX_FLOATS * 4u)
 
 /* Buffers a dispatch may bind, indexed by the kernel's declared binding. */
 #define ADRENO_3D_MAX_BINDINGS       ADRENO_PROG_MAX_SSBO
+
+/* VERSION 8 coarse-bin prepass (shaders/bin.comp): each 64x64-pixel cell
+   holds [count][list CAP] uints.  CAP equals the raster's shared-bin chunk
+   so count > CAP is exactly the overflow/full-scan condition.  The buffer
+   covers up to 1024 cells (a 2048x2048 framebuffer); larger cell grids
+   decline binning for that draw and the raster full-scans. */
+#define ADRENO_3D_BIN_CAP            2048u
+#define ADRENO_3D_BIN_STRIDE         (ADRENO_3D_BIN_CAP + 1u)
+#define ADRENO_3D_BIN_MAX_CELLS      1024u
+#define ADRENO_3D_BIN_BYTES \
+	(ADRENO_3D_BIN_MAX_CELLS * ADRENO_3D_BIN_STRIDE * 4u)
 
 /* ------------------------------------------------------------------ */
 /* Capability latch (mirrors adreno_2d_ready).                        */
@@ -285,6 +299,7 @@ typedef struct {
 	int          in_use;
 	uint8_t      is_geom;
 	uint8_t      pixel_owned;
+	uint8_t      binning;     /* VERSION 8 raster: consumes the coarse-bin list */
 	uint16_t     geom_tpw;
 	uint32_t     cs2_uniform_blob_dwords;
 	uint32_t     cs2_vout_stride;
@@ -300,6 +315,10 @@ static pthread_mutex_t g_3d_lock = PTHREAD_MUTEX_INITIALIZER;
 /* vout: allocated on the first geometry draw, kept for the process. */
 static adreno_bo_t g_vout;
 
+/* Coarse-bin lists for the VERSION 8 raster: allocated on the first binned
+   draw, kept for the process (same serialization argument as vout). */
+static adreno_bo_t g_binbo;
+
 /* Diagnostic A/B switch. Atomic only: ring_cmd holds the submit lock, while
  * draws hold g_3d_lock before entering ring_submit (never invert those locks). */
 static int g_geom_batch = 1;
@@ -307,6 +326,16 @@ int adreno_3d_geom_batch(int enabled) {
 	if (enabled == 0 || enabled == 1)
 		__atomic_store_n(&g_geom_batch, enabled, __ATOMIC_RELAXED);
 	return __atomic_load_n(&g_geom_batch, __ATOMIC_RELAXED);
+}
+
+/* Diagnostic A/B switch for the coarse-bin prepass (VERSION 8 rasters only).
+   Off: the daemon seeds every cell count with the overflow marker and the
+   raster falls back to its full triangle scan, exactly the VERSION 7 cost. */
+static int g_geom_bin = 1;
+int adreno_3d_geom_bin(int enabled) {
+	if (enabled == 0 || enabled == 1)
+		__atomic_store_n(&g_geom_bin, enabled, __ATOMIC_RELAXED);
+	return __atomic_load_n(&g_geom_bin, __ATOMIC_RELAXED);
 }
 
 static uint32_t align_up(uint32_t v, uint32_t a) {
@@ -415,7 +444,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 		goto fail;
 	ks->bin_bo.iova = ks->bin_bo.pa;   /* CB0 identity map */
 	if ((ks->bin_bo.pa & 0x7fu) != 0) {
-		klog("adreno_3d: bin iova %llx not 128-aligned\n",
+		slog("adreno_3d: bin iova %llx not 128-aligned\n",
 		     (unsigned long long)ks->bin_bo.pa);
 		goto fail;
 	}
@@ -444,7 +473,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 			align_up(ks->per_fiber_size * A690_FIBERS_PER_SP, 4096u);
 		total = (uint64_t)A690_NUM_SP_CORES * ks->per_sp_size;
 		if (total == 0 || total > 0xffffffffu) {
-			klog("adreno_3d: pvtmem total %llu B out of u32 range "
+			slog("adreno_3d: pvtmem total %llu B out of u32 range "
 			     "(pvtmem_size %u/fiber per_fiber %u per_sp %u)\n",
 			     (unsigned long long)total, k->pvtmem_size,
 			     ks->per_fiber_size, ks->per_sp_size);
@@ -461,7 +490,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 			   ocean kernel to the (un-scaled, ~0.1 FPS) CPU path and
 			   looked like a hang; log it loudly so a too-small pool
 			   is diagnosable instead of invisible. */
-			klog("adreno_3d: pvtmem BO alloc FAILED for total %llu B "
+			slog("adreno_3d: pvtmem BO alloc FAILED for total %llu B "
 			     "(pvtmem_size %u/fiber per_fiber %u per_sp %u) - "
 			     "kernel dma_size pool too small for this kernel\n",
 			     (unsigned long long)total, k->pvtmem_size,
@@ -470,7 +499,7 @@ static int kern_load(kern_slot_t *ks, const adreno_prog_kernel_t *k,
 		}
 		ks->pvt_bo.iova = ks->pvt_bo.pa;
 		if ((ks->pvt_bo.pa & 0x1fu) != 0) {   /* tu6_emit_xs assert */
-			klog("adreno_3d: pvtmem BO pa %llx not 32-aligned\n",
+			slog("adreno_3d: pvtmem BO pa %llx not 32-aligned\n",
 			     (unsigned long long)ks->pvt_bo.pa);
 			goto fail;
 		}
@@ -504,7 +533,9 @@ static int program_load_locked(const void *blob, uint32_t size) {
 
 	h = (const adreno_prog_blob_t *)blob;
 	if (h->magic != ADRENO_PROG_MAGIC ||
-	    (h->version != ADRENO_PROG_VERSION && h->version != ADRENO_PROG_PIXEL_VERSION))
+	    (h->version != ADRENO_PROG_VERSION &&
+	     h->version != ADRENO_PROG_PIXEL_VERSION &&
+	     h->version != ADRENO_PROG_PIXEL_VERSION_NOBIN))
 		return -1;   /* not an Adreno blob (e.g. V3D-QPU) */
 
 	/* --- header geometry.  kern[0] is mandatory; kern[1] (xform) must be
@@ -514,9 +545,17 @@ static int program_load_locked(const void *blob, uint32_t size) {
 	have_xform = (h->kern[1].binary_words != 0);
 	if (h->is_geom > 6u)
 		return -1;
-	if (h->reserved || (h->version == ADRENO_PROG_PIXEL_VERSION &&
-	    h->is_geom != 1u && h->is_geom != 2u && h->is_geom != 5u &&
-	    h->is_geom != 6u))
+	if (h->reserved ||
+	    ((h->version == ADRENO_PROG_PIXEL_VERSION ||
+	      h->version == ADRENO_PROG_PIXEL_VERSION_NOBIN) &&
+	     h->is_geom != 1u && h->is_geom != 2u && h->is_geom != 5u &&
+	     h->is_geom != 6u))
+		return -1;
+	/* Only the specialized colour/textured rasters carry the coarse-bin
+	 * prepass contract (bin SSBO + uBinCells); a VERSION 8 blob of any other
+	 * kind is malformed. */
+	if (h->version == ADRENO_PROG_PIXEL_VERSION &&
+	    h->is_geom != 1u && h->is_geom != 2u)
 		return -1;
 	/* Kind 6 directly consumes the caller's 20-float records and has no
 	 * transform pass. */
@@ -593,7 +632,9 @@ static int program_load_locked(const void *blob, uint32_t size) {
 	s = &g_progs[slot];
 	memset(s, 0, sizeof(*s));
 	s->is_geom = h->is_geom;
-	s->pixel_owned = h->version == ADRENO_PROG_PIXEL_VERSION;
+	s->pixel_owned = (h->version == ADRENO_PROG_PIXEL_VERSION ||
+	                  h->version == ADRENO_PROG_PIXEL_VERSION_NOBIN);
+	s->binning = (h->version == ADRENO_PROG_PIXEL_VERSION);
 	s->geom_tpw = h->geom_tpw;
 	s->cs2_uniform_blob_dwords = h->cs2_uniform_blob_dwords;
 	s->cs2_vout_stride = h->cs2_vout_stride;
@@ -924,25 +965,6 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 			}
 			build_samp_desc(sd, mag_linear, min_linear);
 		}
-		/* Device bring-up diagnostic: dump the first few textured
-		   bindings so a black-screen report can be matched against what
-		   the daemon actually bound (dummy vs real, cube geometry). */
-		{
-			static int g_tex_log = 3;
-			if (g_tex_log > 0) {
-				g_tex_log--;
-				for (i = 0; i < num_samp; i++) {
-					const adreno_3d_tex_t *t = (i < num_tex) ? &tex[i] : 0;
-					slog("adreno_3d: tex slot %u %s phy=%llx %ux%u stride=%u depth=%u arr64=%u tiling=%u ub=%x\n",
-					     i, (i < ADRENO_PROG_MAX_TEX &&
-					         k->tex_type[i] == ADRENO_PROG_TEX_CUBE) ? "cube" : "2d",
-					     (t && t->phy) ? (unsigned long long)t->phy : 0ull,
-					     t ? t->w : 0u, t ? t->h : 0u, t ? t->stride : 0u,
-					     t ? (uint32_t)t->depth : 0u, t ? t->arrstride64 : 0u,
-					     t ? (uint32_t)t->tiling : 0u, t ? (uint32_t)t->ub_pad : 0u);
-				}
-			}
-		}
 	} else {
 		tex_iova = samp_iova = dummy_iova = 0ull;
 	}
@@ -1248,7 +1270,7 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 	}
 
 	if (adreno_ring_tracing())
-		klog("adreno_trace: CS bin=%llx desc=%llx grid=%ux%ux%u local=%ux%ux%u words=%u\n",
+		slog("adreno_trace: CS bin=%llx desc=%llx grid=%ux%ux%u local=%ux%ux%u words=%u\n",
 		     (unsigned long long)ks->bin_bo.iova, (unsigned long long)desc_bo.iova,
 		     grid[0], grid[1], grid[2], k->local_size[0], k->local_size[1], k->local_size[2], b.n);
 	*prepared = b;
@@ -1293,6 +1315,28 @@ static void ib_geom_barrier(struct ib *b) {
 	ib_w(b, 1u);
 	ib_w(b, 0xffffffffu);
 	ib_w(b, 16u);
+}
+
+/* Built-in coarse-bin prepass (shaders/bin.comp), the VERSION 8 geometry
+   raster's triangle-to-cell bucketing pass.  Loaded lazily under g_3d_lock
+   on the first binned draw; consumes no program-table slot, exactly like
+   compute_blit's private kernel (but draw_geom already serializes loads). */
+static kern_slot_t *bin_kernel_locked(void) {
+	static kern_slot_t kernel;
+	static int loaded;
+	if (!loaded) {
+		const adreno_prog_blob_t *h = (const void *)q8b_bin_blob;
+		if (h->magic != ADRENO_PROG_MAGIC || h->version != ADRENO_PROG_VERSION ||
+		    q8b_bin_blob_len != sizeof(*h) + h->payload_bytes ||
+		    kern_validate(&h->kern[0]) || h->kern[0].uniform_blob_dwords != 12 ||
+		    h->kern[0].num_ssbo != 2 || h->kern[0].pvtmem_size != 0 ||
+		    h->kern[0].local_size[0] != 64 || h->kern[0].local_size[1] != 1 ||
+		    h->kern[0].local_size[2] != 1 ||
+		    kern_load(&kernel, &h->kern[0], q8b_bin_blob + sizeof(*h)))
+			return NULL;
+		loaded = 1;
+	}
+	return &kernel;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1479,10 +1523,12 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	kern_slot_t *rs = &s->kern[0];
 	bind_t binds[ADRENO_3D_MAX_BINDINGS];
 	uint32_t grid[3];
-	struct ib xform_ib = {0}, raster_ib = {0};
+	struct ib xform_ib = {0}, bin_ib = {0}, raster_ib = {0};
 	uint32_t ntris, split = s->cs2_uniform_blob_dwords;
 	uint32_t xwg, tpw, pstride, rec;
 	uint32_t dispatch_w = w, dispatch_h = h;
+	uint32_t cx = 0, cy = 0, ncells = 0;
+	int bin_enabled = 0;
 	int gtex = (s->is_geom == 2), ginst = (s->is_geom == 3), gtc = (s->is_geom == 4);
 	int gvk = (s->is_geom == 5 || s->is_geom == 6);
 	int gdirect = (s->is_geom == 6);
@@ -1550,6 +1596,45 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		}
 	}
 
+	/* ---- Coarse-bin eligibility (VERSION 8 rasters only).  The client
+	   patches uBinCells to ceil(w/64) x ceil(h/64) of the FULL framebuffer,
+	   so the cell grid must fit the bin buffer even when the draw dispatches
+	   a sub-rectangle.  When binning is off (switch or oversized grid) every
+	   reachable count is seeded with the overflow marker and the raster
+	   full-scans; the bin SSBO stays bound either way. ---- */
+	if (s->binning && !gdirect) {
+		cx = (w + 63u) / 64u;
+		cy = (h + 63u) / 64u;
+		ncells = cx * cy;
+		if (g_binbo.va == 0) {
+			if (adreno_bo_alloc(&g_binbo, ADRENO_3D_BIN_BYTES) != 0)
+				return ADRENO_E_DECLINED;
+			g_binbo.iova = g_binbo.pa;
+			if ((g_binbo.pa & 0x3fu) != 0) {
+				adreno_bo_free(&g_binbo);
+				return ADRENO_E_DECLINED;
+			}
+			/* Whole-buffer overflow seed: a cell index past the descriptor
+			 * either zeroes (count 0 -> full scan) or clamps to the last
+			 * dword (0xffffffff -> overflow -> full scan). */
+			memset(g_binbo.va, 0xff, ADRENO_3D_BIN_BYTES);
+		}
+		bin_enabled = adreno_3d_geom_bin(-1) && ncells <= ADRENO_3D_BIN_MAX_CELLS;
+		if (bin_enabled) {
+			/* Only the counts need clearing; the bin pass's CACHE_INVALIDATE
+			 * prologue makes this CPU write visible to the GPU. */
+			uint32_t *counts = (uint32_t *)g_binbo.va;
+			for (uint32_t c = 0; c < ncells; c++)
+				counts[c * ADRENO_3D_BIN_STRIDE] = 0;
+		} else if (ncells <= ADRENO_3D_BIN_MAX_CELLS) {
+			uint32_t *counts = (uint32_t *)g_binbo.va;
+			for (uint32_t c = 0; c < ncells; c++)
+				counts[c * ADRENO_3D_BIN_STRIDE] = 0xffffffffu;
+		} else {
+			memset(g_binbo.va, 0xff, ADRENO_3D_BIN_BYTES);
+		}
+	}
+
 	/* ---- Pass 1: vertex transform -> vout.  Bindings: 0 = vout, 1 = pos;
 	   gouraud 2 = normals; instanced 2 = normals, 3 = instance matrices;
 	   textured and Vulkan kinds read their interleaved/flattened stream from
@@ -1579,15 +1664,43 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		grid[2] = 1u;
 		rc = build_cs_dispatch(xf, binds, gvk ? 2u : 4u, NULL, 0, unif, split, grid, &xform_ib);
 		if (rc != ADRENO_OK) {
-			klog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
+			slog("adreno_3d: geom xform rc=%d nverts %u wg=%u\n", rc, g->nverts, xwg);
+			return rc;
+		}
+	}
+
+	/* ---- Pass 1b: coarse binning, vout -> per-cell triangle lists.  One
+	   invocation per triangle appends its relative index to every 64x64 cell
+	   its bbox covers; overflow keeps the count growing past CAP so the
+	   raster tile falls back to the full scan. ---- */
+	if (bin_enabled) {
+		kern_slot_t *bk = bin_kernel_locked();
+		uint32_t bparams[12];
+		if (bk == NULL)
+			return ADRENO_E_DECLINED;
+		memset(binds, 0, sizeof(binds));
+		binds[0].phy = g_vout.iova;  binds[0].bytes = g->nverts * rec;
+		binds[1].phy = g_binbo.iova; binds[1].bytes = ADRENO_3D_BIN_BYTES;
+		bparams[0] = ntris; bparams[1] = w; bparams[2] = h; bparams[3] = 0;
+		bparams[4] = cx; bparams[5] = cy; bparams[6] = 0; bparams[7] = 0;
+		bparams[8] = ADRENO_3D_BIN_STRIDE; bparams[9] = ADRENO_3D_BIN_CAP;
+		bparams[10] = rec / 4u; bparams[11] = 0;
+		grid[0] = (ntris + 63u) / 64u;
+		grid[1] = 1u;
+		grid[2] = 1u;
+		rc = build_cs_dispatch(bk, binds, 2u, NULL, 0, bparams, 12u, grid, &bin_ib);
+		if (rc != ADRENO_OK) {
+			slog("adreno_3d: geom bin rc=%d ntris %u cells %u\n", rc, ntris, ncells);
 			return rc;
 		}
 	}
 
 	/* ---- Pass 2: rasterize from vout.  Bindings: 0 = fb, 1 = vout,
 	   2 = depth; legacy textured kinds add 3 = texture image, while Vulkan
-	   fragment samplers use the texture descriptors in tex[].  The raster
-	   kernel's uniforms live in the SECOND region of the blob. ---- */
+	   fragment samplers use the texture descriptors in tex[].  VERSION 8
+	   rasters add the coarse-bin list last (colour binding 3, textured
+	   binding 4).  The raster kernel's uniforms live in the SECOND region
+	   of the blob. ---- */
 	memset(binds, 0, sizeof(binds));
 	binds[0].phy = fb_phy;        binds[0].bytes = fb_stride * h;
 	binds[1].phy = gdirect ? g->pos_phy : g_vout.iova;
@@ -1595,6 +1708,10 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	binds[2].phy = g->z_phy;      binds[2].bytes = g->z_stride * h;
 	if (gtexc) {
 		binds[3].phy = g->ctex_phy; binds[3].bytes = g->ctex_stride * g->ctex_h;
+	}
+	if (s->binning) {
+		binds[gtexc ? 4 : 3].phy = g_binbo.iova;
+		binds[gtexc ? 4 : 3].bytes = ADRENO_3D_BIN_BYTES;
 	}
 	/* Raster grid: tpw 0 = one workgroup per triangle (legacy kernels);
 	   the lane-per-triangle kernels cover geom_tpw triangles per workgroup
@@ -1623,7 +1740,7 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 		grid[0] = (dispatch_w + rs->k.local_size[0] - 1u) / rs->k.local_size[0];
 		grid[1] = (dispatch_h + rs->k.local_size[1] - 1u) / rs->k.local_size[1];
 	}
-	rc = build_cs_dispatch(rs, binds, gvk ? 3u : 4u,
+	rc = build_cs_dispatch(rs, binds, gvk ? 3u : (s->binning ? (gtexc ? 5u : 4u) : 4u),
 	                      gvk ? tex : NULL, gvk ? num_tex : 0u,
 	                      unif + split, num_uniforms - split, grid, &raster_ib);
 	if (rc != ADRENO_OK) return rc;
@@ -1647,11 +1764,17 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 			return rc;
 	}
 
-	/* Very large constant uploads can make two individually valid dispatches
-	 * exceed the ring's IB cap. Keep the existing two-submit route for them. */
+	/* Very large constant uploads can make individually valid dispatches
+	 * exceed the ring's IB cap. Keep the multi-submit route for them. */
 	if (!gdirect && adreno_3d_geom_batch(-1) &&
-	    xform_ib.n + GEOM_BARRIER_WORDS + raster_ib.n <= xform_ib.cap) {
+	    xform_ib.n + bin_ib.n + raster_ib.n +
+	    (bin_ib.n ? 2u : 1u) * GEOM_BARRIER_WORDS <= xform_ib.cap) {
 		ib_geom_barrier(&xform_ib);
+		if (bin_ib.n) {
+			memcpy(xform_ib.d + xform_ib.n, bin_ib.d, bin_ib.n * 4u);
+			xform_ib.n += bin_ib.n;
+			ib_geom_barrier(&xform_ib);
+		}
 		memcpy(xform_ib.d + xform_ib.n, raster_ib.d, raster_ib.n * 4u);
 		xform_ib.n += raster_ib.n;
 		return adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
@@ -1659,6 +1782,10 @@ static int draw_geom(prog_slot_t *s, uint64_t fb_phy, uint32_t w,
 	if (!gdirect) {
 		rc = adreno_ring_submit(adreno_dev(), xform_ib.d, xform_ib.n);
 		if (rc != ADRENO_OK) return rc;
+		if (bin_ib.n) {
+			rc = adreno_ring_submit(adreno_dev(), bin_ib.d, bin_ib.n);
+			if (rc != ADRENO_OK) return rc;
+		}
 	}
 	return adreno_ring_submit(adreno_dev(), raster_ib.d, raster_ib.n);
 }

@@ -395,7 +395,7 @@ int main(int argc, char** argv) {
             _mmio_base + PI5_RP1_WIN_OFF,
             PI5_RP1_PHY,
             PI5_RP1_WIN_SIZE) != _mmio_base + PI5_RP1_WIN_OFF) {
-        klog("fand: map RP1 window failed\n");
+        slog("fand: map RP1 window failed\n");
         return -1;
     }
 
@@ -409,7 +409,7 @@ int main(int argc, char** argv) {
      * link up it only (re)confirms the BARs.
      */
     if (bcm2712_rp1_init() != 0)
-        klog("fand: RP1 link not ready, fan may not respond\n");
+        slog("fand: RP1 link not ready, fan may not respond\n");
 
     fan_hw_init();
     fan_set_level(FAN_LEVEL_DEFAULT);

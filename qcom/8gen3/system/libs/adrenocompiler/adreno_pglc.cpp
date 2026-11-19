@@ -267,7 +267,13 @@ pglc_compile_compute_raw(const char *cs_src, struct pglc_program *res)
    bool pixel_owned = specialized != NULL ||
                       (cs_src && !strcmp(cs_src, rw_raster_cs));
    bool ok = compile_compute_source(specialized ? specialized : cs_src, res);
-   if (ok && pixel_owned)
-      ((struct adreno_pglc_stage *)res->stage[PGLC_STAGE_COMPUTE].backend)->geom_pixel_owned = true;
+   if (ok && pixel_owned) {
+      struct adreno_pglc_stage *be =
+         (struct adreno_pglc_stage *)res->stage[PGLC_STAGE_COMPUTE].backend;
+      be->geom_pixel_owned = true;
+      /* Only the specialized replacements carry the coarse-bin SSBO +
+         uBinCells; the RW raw kernel keeps the VERSION 7 contract. */
+      be->geom_binning = specialized != NULL;
+   }
    return ok;
 }

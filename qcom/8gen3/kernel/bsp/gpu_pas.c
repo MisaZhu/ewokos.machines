@@ -10,6 +10,7 @@
 #include <kprintf.h>
 #include <q8b_gpu_pas.h>
 #include <q8b_npu.h>
+#include <q8b_adsp_pas.h>
 #include "hw_arch.h"
 #include "q8b_platform.h"
 #include "scm-probe.h"
@@ -62,6 +63,8 @@ ewokos_addr_t platform_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         return (ewokos_addr_t)q8b_release_ramdisk();
     if((op & 0xffffff00ull) == Q8B_NPU_ABI_BASE)
         return (ewokos_addr_t)platform_control_npu(op, arg, size);
+    if((op & 0xffffff00ull) == Q8B_ADSP_ABI_BASE)
+        return (ewokos_addr_t)platform_control_adsp(op, arg, size);
 #ifdef Q8B_QEMU_TEST
     (void)op; (void)arg; (void)size;
     return Q8B_GPU_PAS_UNSUPPORTED;

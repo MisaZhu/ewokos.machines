@@ -261,13 +261,13 @@ static uint32_t xhci_pick_page_size(ewokos_addr_t op_base) {
 int xhci_dma_init(void) {
     ewokos_addr_t raw = dma_alloc(0, XHCI_DMA_POOL_SIZE + XHCI_RING_BOUNDARY);
     if (raw == 0) {
-        klog("xhci: dma pool alloc failed (%u bytes)\n",
+        slog("xhci: dma pool alloc failed (%u bytes)\n",
                 XHCI_DMA_POOL_SIZE + XHCI_RING_BOUNDARY);
         return -1;
     }
     ewokos_addr_t phy = dma_phy_addr(0, raw);
     if (phy == 0) {
-        klog("xhci: dma pool phy addr failed\n");
+        slog("xhci: dma pool phy addr failed\n");
         return -1;
     }
     uint32_t pad = (uint32_t)((XHCI_RING_BOUNDARY - (phy & (XHCI_RING_BOUNDARY - 1u)))
@@ -275,7 +275,7 @@ int xhci_dma_init(void) {
     ewokos_addr_t pool_phy = phy + pad;
     if (syscall3(SYS_MEM_MAP, XHCI_POOL_VA, pool_phy,
             XHCI_DMA_POOL_SIZE) != XHCI_POOL_VA) {
-        klog("xhci: pool map va=%lx failed\n", (unsigned long)XHCI_POOL_VA);
+        slog("xhci: pool map va=%lx failed\n", (unsigned long)XHCI_POOL_VA);
         return -1;
     }
     _pool.virt = (uint8_t*)XHCI_POOL_VA;
@@ -291,7 +291,7 @@ void* xhci_dma_alloc(uint32_t size, uint32_t align, uint64_t* bus) {
     /* keep the arena strip at the pool tail intact */
     uint32_t limit = XHCI_DMA_POOL_SIZE - XHCI_ARENA_COUNT * XHCI_ARENA_SIZE;
     if (off + size > limit) {
-        klog("xhci: dma pool exhausted (%u + %u > %u)\n", off, size, limit);
+        slog("xhci: dma pool exhausted (%u + %u > %u)\n", off, size, limit);
         return NULL;
     }
     _pool.used = off + size;
@@ -454,7 +454,7 @@ static bool hc_check_fatal(xhci_hc_t* hc) {
     if ((sts & USBSTS_HSE) != 0) {
         put32(hc->op + XHCI_USBSTS, USBSTS_HSE); /* RW1C, ack it once */
     }
-    klog("xhci%d: fatal controller error usbsts=%08x, disabling\n",
+    slog("xhci%d: fatal controller error usbsts=%08x, disabling\n",
             hc->id, sts);
     hc->failed = true;
     hc->present = false;
@@ -545,7 +545,7 @@ static void cmd_abort(xhci_hc_t* hc) {
     deadline = now_ms() + XHCI_CMD_ABORT_TIMEOUT_MS;
     while ((get32(hc->op + XHCI_CRCR) & CRCR_CRR) != 0) {
         if (now_ms() > deadline) {
-            klog("xhci%d: command abort timeout, controller wedged\n", hc->id);
+            slog("xhci%d: command abort timeout, controller wedged\n", hc->id);
             hc->failed = true;
             hc->present = false;
             return;
@@ -586,7 +586,7 @@ static int xhci_cmd(xhci_hc_t* hc, uint32_t d0, uint32_t d1, uint32_t d2,
             return -1;
         }
         if (now_ms() > deadline) {
-            klog("xhci%d: cmd type=%u timeout\n", hc->id, TRB_GET_TYPE(d3));
+            slog("xhci%d: cmd type=%u timeout\n", hc->id, TRB_GET_TYPE(d3));
             cmd_abort(hc);
             return -1;
         }
@@ -634,7 +634,7 @@ static void xhci_bios_handoff(ewokos_addr_t cap_base) {
             uint64_t deadline = now_ms() + XHCI_LEGSUP_TIMEOUT_MS;
             while ((get32(cap) & XHCI_LEGSUP_BIOS_OWNED) != 0) {
                 if (now_ms() > deadline) {
-                    klog("xhci: BIOS handoff timeout, forcing ownership\n");
+                    slog("xhci: BIOS handoff timeout, forcing ownership\n");
                     put32(cap, XHCI_LEGSUP_OS_OWNED | XHCI_LEGSUP_BIOS_OWNED);
                     break;
                 }
@@ -657,7 +657,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     uint32_t cap = get32(cap_base);
     uint16_t version = (uint16_t)(cap >> 16);
     if (version < 0x0090 || version == 0xffff) {
-        klog("xhci%d: no controller (HCIVERSION=%04x)\n", id, version);
+        slog("xhci%d: no controller (HCIVERSION=%04x)\n", id, version);
         return -1;
     }
     hc->op = cap_base + (cap & 0xffu);
@@ -684,7 +684,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     put32(hc->op + XHCI_USBCMD, get32(hc->op + XHCI_USBCMD) & ~USBCMD_RUN);
     while ((get32(hc->op + XHCI_USBSTS) & USBSTS_HCH) == 0) {
         if (now_ms() > deadline) {
-            klog("xhci%d: halt timeout (cmd=%08x sts=%08x)\n", id,
+            slog("xhci%d: halt timeout (cmd=%08x sts=%08x)\n", id,
                     get32(hc->op + XHCI_USBCMD), get32(hc->op + XHCI_USBSTS));
             return -1;
         }
@@ -695,7 +695,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     while ((get32(hc->op + XHCI_USBCMD) & USBCMD_HCRST) != 0 ||
             (get32(hc->op + XHCI_USBSTS) & USBSTS_CNR) != 0) {
         if (now_ms() > deadline) {
-            klog("xhci%d: HCRST timeout\n", id);
+            slog("xhci%d: HCRST timeout\n", id);
             return -1;
         }
         usleep(100);
@@ -753,7 +753,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     deadline = now_ms() + XHCI_RESET_TIMEOUT_MS;
     while ((get32(hc->op + XHCI_USBSTS) & USBSTS_HCH) != 0) {
         if (now_ms() > deadline) {
-            klog("xhci%d: run timeout\n", id);
+            slog("xhci%d: run timeout\n", id);
             return -1;
         }
         usleep(100);
@@ -900,14 +900,14 @@ int xhci_device_attach(xhci_hc_t* hc, int root_port, int speed,
 
     xhci_arena_t* arena = arena_take();
     if (arena == NULL) {
-        klog("xhci%d: out of device arenas\n", hc->id);
+        slog("xhci%d: out of device arenas\n", hc->id);
         return -1;
     }
 
     uint8_t slot_id = 0;
     int code = xhci_cmd(hc, 0, 0, 0, TRB_TYPE(TRB_ENABLE_SLOT), &slot_id);
     if (code != CC_SUCCESS || slot_id == 0 || slot_id > hc->max_slots) {
-        klog("xhci%d: enable slot failed code=%d slot=%u\n",
+        slog("xhci%d: enable slot failed code=%d slot=%u\n",
                 hc->id, code, slot_id);
         arena_free(arena);
         return -1;
@@ -960,7 +960,7 @@ int xhci_device_attach(xhci_hc_t* hc, int root_port, int speed,
             (uint32_t)(dev->in_ctx_phys >> 32), 0,
             TRB_TYPE(TRB_ADDR_DEV) | ((uint32_t)slot_id << 24), NULL);
     if (code != CC_SUCCESS) {
-        klog("xhci%d: address device slot=%u failed code=%d\n",
+        slog("xhci%d: address device slot=%u failed code=%d\n",
                 hc->id, slot_id, code);
         xhci_device_detach(dev);
         return -1;
@@ -1138,7 +1138,7 @@ int xhci_control_xfer(xhci_dev_t* dev, const usb_setup_pkt_t* setup,
     ring_doorbell(dev->hc, dev->slot_id, 1);
 
     if (ep_wait(dev, ep0, XHCI_CTRL_TIMEOUT_MS) != 0) {
-        klog("xhci%d: ctrl timeout slot=%u req=%02x/%02x\n", dev->hc->id,
+        slog("xhci%d: ctrl timeout slot=%u req=%02x/%02x\n", dev->hc->id,
                 dev->slot_id, setup->bmRequestType, setup->bRequest);
         ep_recover(dev, 1);
         return -1;
@@ -1210,7 +1210,7 @@ int xhci_int_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
     uint32_t buf_size = (mps + 63u) & ~63u;
     ep->data = arena_alloc(arena, buf_size, 64, &ep->data_phys);
     if (ep->ring == NULL || ep->data == NULL) {
-        klog("xhci%d: arena full for slot=%u ep=%02x\n",
+        slog("xhci%d: arena full for slot=%u ep=%02x\n",
                 dev->hc->id, dev->slot_id, ep_addr);
         return -1;
     }
@@ -1249,7 +1249,7 @@ int xhci_int_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
             (uint32_t)(dev->in_ctx_phys >> 32), 0,
             TRB_TYPE(TRB_CONFIG_EP) | ((uint32_t)dev->slot_id << 24), NULL);
     if (code != CC_SUCCESS) {
-        klog("xhci%d: config ep slot=%u dci=%u failed code=%d\n",
+        slog("xhci%d: config ep slot=%u dci=%u failed code=%d\n",
                 dev->hc->id, dev->slot_id, dci, code);
         return -1;
     }
@@ -1336,7 +1336,7 @@ int xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
            window is lost, but with a 30s threshold on a healthy endpoint
            (pure idle) this costs nothing, and from any wedged/toggle-
            desynced state the endpoint converges instead of wire-locking. */
-        klog("xhci%d: int-in ep slot=%u dci=%u idle-wedged %ums, resync\n",
+        slog("xhci%d: int-in ep slot=%u dci=%u idle-wedged %ums, resync\n",
                 dev->hc->id, dev->slot_id, dci,
                 (uint32_t)(now_ms() - ep->armed_ms));
         ep_recover(dev, dci);
@@ -1387,7 +1387,7 @@ int xhci_bulk_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps) {
             : XHCI_BULK_OUT_BUF;
     ep->data = arena_alloc(arena, buf_size, 64, &ep->data_phys);
     if (ep->ring == NULL || ep->data == NULL) {
-        klog("xhci%d: arena full for slot=%u bulk ep=%02x\n",
+        slog("xhci%d: arena full for slot=%u bulk ep=%02x\n",
                 dev->hc->id, dev->slot_id, ep_addr);
         return -1;
     }
@@ -1420,7 +1420,7 @@ int xhci_bulk_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps) {
             (uint32_t)(dev->in_ctx_phys >> 32), 0,
             TRB_TYPE(TRB_CONFIG_EP) | ((uint32_t)dev->slot_id << 24), NULL);
     if (code != CC_SUCCESS) {
-        klog("xhci%d: config bulk ep slot=%u dci=%u failed code=%d\n",
+        slog("xhci%d: config bulk ep slot=%u dci=%u failed code=%d\n",
                 dev->hc->id, dev->slot_id, dci, code);
         return -1;
     }
@@ -1459,7 +1459,7 @@ int xhci_bulk_out_xfer(xhci_dev_t* dev, uint8_t ep_addr,
         ring_doorbell(dev->hc, dev->slot_id, dci);
 
         if (ep_wait(dev, ep, timeout_ms) != 0) {
-            klog("xhci%d: bulk out timeout slot=%u dci=%u\n",
+            slog("xhci%d: bulk out timeout slot=%u dci=%u\n",
                     dev->hc->id, dev->slot_id, dci);
             ep_recover(dev, dci);
             return -1;

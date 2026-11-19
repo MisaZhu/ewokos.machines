@@ -278,7 +278,7 @@ void test(void) {
     
     /*// Allocate GPU memory for the source image
     uint32_t src_handle = allocate_gpu_memory(200 * 200 * 4, 16, 0xC); // cacheable memory
-    klog("src handle: %x", src_handle);
+    slog("src handle: %x", src_handle);
     if (!src_handle) {
         while (1);
     }
@@ -289,11 +289,11 @@ void test(void) {
         free_gpu_memory(src_handle);
         while (1);
     }
-    klog("src_phys_addr: %x", src_phys_addr);
+    slog("src_phys_addr: %x", src_phys_addr);
     
     // Get a CPU-accessible address
     uint32_t* src_cpu_addr = (uint32_t*)(src_phys_addr + 0xC0000000);
-    klog("src_cpu_addr: %x", src_cpu_addr);
+    slog("src_cpu_addr: %x", src_cpu_addr);
     
     // Create a simple test pattern (a red circle with an alpha gradient)
     for (int y = 0; y < 200; y++) {
@@ -409,7 +409,7 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_in
 
     fb_build_request(req, mode->width, mode->height, mode->depth);
     if (mailbox_property_call_with_fallback(req, &alias_used) != 0) {
-        klog("fb_init: mailbox timeout/failed %ux%ux%u\n",
+        slog("fb_init: mailbox timeout/failed %ux%ux%u\n",
                 mode->width, mode->height, mode->depth);
         dma_free(0, (ewokos_addr_t)req);
         return -1;
@@ -428,14 +428,14 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_in
     dma_free(0, (ewokos_addr_t)req);
 
     if ((resp_w == 0) || (resp_h == 0) || (resp_phy == 0) || (resp_size == 0)) {
-        klog("fb_init: bad reply %ux%ux%u alias=%x => w=%u h=%u phy=%x size=%u pitch=%u\n",
+        slog("fb_init: bad reply %ux%ux%u alias=%x => w=%u h=%u phy=%x size=%u pitch=%u\n",
                 mode->width, mode->height, mode->depth, alias_used,
                 resp_w, resp_h, resp_phy, resp_size, resp_pitch);
         return -1;
     }
 
     if (resp_dep != 16 && resp_dep != 32) {
-        klog("fb_init: unsupported depth %u for %ux%ux%u\n",
+        slog("fb_init: unsupported depth %u for %ux%ux%u\n",
                 resp_dep, mode->width, mode->height, mode->depth);
         return -1;
     }
@@ -463,7 +463,7 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_in
             (ewokos_addr_t)(info->pointer - resp_phy_page_off),
             (ewokos_addr_t)resp_phy_page,
             (ewokos_addr_t)info->size_max) == 0) {
-        klog("fb_init: mem_map failed %ux%ux%u alias=%x v=%x phy=%x size=%u\n",
+        slog("fb_init: mem_map failed %ux%ux%u alias=%x v=%x phy=%x size=%u\n",
                 mode->width, mode->height, mode->depth, alias_used,
                 (uint32_t)(info->pointer - resp_phy_page_off), resp_phy_page, info->size_max);
         memset(info, 0, sizeof(disp_info_t));
@@ -510,13 +510,13 @@ int32_t bcm283x_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
             continue;
         }
         if (fb_try_mode(&sysinfo, &fallbacks[i], &_fb_info) == 0) {
-            klog("fb_init: fallback %ux%ux%u -> %ux%ux%u\n",
+            slog("fb_init: fallback %ux%ux%u -> %ux%ux%u\n",
                     requested.width, requested.height, requested.depth,
                     fallbacks[i].width, fallbacks[i].height, fallbacks[i].depth);
             return 0;
         }
     }
-    klog("fb_init: all modes failed, last requested %ux%ux%u\n", w, h, dep);
+    slog("fb_init: all modes failed, last requested %ux%ux%u\n", w, h, dep);
     return -1;
 }
 

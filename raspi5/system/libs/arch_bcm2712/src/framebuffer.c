@@ -237,11 +237,11 @@ static int fb_adopt(const sys_info_t *sysinfo,
     ewokos_addr_t phy_page;
 
     if ((w == 0) || (h == 0) || (phy == 0) || (size == 0)) {
-        klog("fb: adopt bad base w=%u h=%u phy=%x size=%u\n", w, h, phy, size);
+        slog("fb: adopt bad base w=%u h=%u phy=%x size=%u\n", w, h, phy, size);
         return -1;
     }
     if (dep != 16 && dep != 32) {
-        klog("fb: adopt bad depth %u\n", dep);
+        slog("fb: adopt bad depth %u\n", dep);
         return -1;
     }
 
@@ -268,7 +268,7 @@ static int fb_adopt(const sys_info_t *sysinfo,
             (ewokos_addr_t)(info->pointer - phy_page_off),
             (ewokos_addr_t)phy_page,
             (ewokos_addr_t)info->size_max) == 0) {
-        klog("fb: mem_map fail v=%x phy=%x size=%u\n",
+        slog("fb: mem_map fail v=%x phy=%x size=%u\n",
                 (uint32_t)(info->pointer - phy_page_off), (uint32_t)phy_page, info->size_max);
         memset(info, 0, sizeof(disp_info_t));
         return -1;
@@ -619,7 +619,7 @@ static int fb_try_mode(const sys_info_t *sysinfo,
     fb_init_tags_init(&t, mode->width, mode->height, mode->depth);
 
     if (mailbox_get_tags(&t, sizeof(t)) != 0) {
-        klog("fb: prop call failed %ux%ux%u\n",
+        slog("fb: prop call failed %ux%ux%u\n",
                 mode->width, mode->height, mode->depth);
         return -1;
     }
@@ -643,13 +643,13 @@ static int fb_try_mode(const sys_info_t *sysinfo,
      */
     uint32_t actual_bpp = fb_depth_from_pitch(w, pitch);
     if (actual_bpp != 0 && actual_bpp != dep) {
-        klog("fb: prop depth %u overridden by pitch %u -> %u bpp\n",
+        slog("fb: prop depth %u overridden by pitch %u -> %u bpp\n",
                 dep, pitch, actual_bpp);
         dep = actual_bpp;
     }
 
     if (fb_adopt(sysinfo, w, h, vw, vh, dep, xoff, yoff, phy, size, pitch, info) != 0) {
-        klog("fb: alloc rejected %ux%ux%u "
+        slog("fb: alloc rejected %ux%ux%u "
                 "w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
                 mode->width, mode->height, mode->depth,
                 w, h, dep, phy, size, pitch);
@@ -668,7 +668,7 @@ static int fb_query_existing(const sys_info_t *sysinfo, disp_info_t *info) {
     fb_query_tags_init(&t);
 
     if (mailbox_get_tags(&t, sizeof(t)) != 0) {
-        klog("fb: query prop call failed\n");
+        slog("fb: query prop call failed\n");
         return -1;
     }
 
@@ -689,13 +689,13 @@ static int fb_query_existing(const sys_info_t *sysinfo, disp_info_t *info) {
      */
     uint32_t actual_bpp = fb_depth_from_pitch(w, pitch);
     if (actual_bpp != 0 && actual_bpp != dep) {
-        klog("fb: query depth %u overridden by pitch %u -> %u bpp\n",
+        slog("fb: query depth %u overridden by pitch %u -> %u bpp\n",
                 dep, pitch, actual_bpp);
         dep = actual_bpp;
     }
 
     if (fb_adopt(sysinfo, w, h, vw, vh, dep, xoff, yoff, phy, size, pitch, info) != 0) {
-        klog("fb: no boot fb w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
+        slog("fb: no boot fb w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
                 w, h, dep, phy, size, pitch);
         return -1;
     }
@@ -743,7 +743,7 @@ static int fb_channel1_init(const sys_info_t *sysinfo,
     mailbox_msg.channel = FRAMEBUFFER_CHANNEL;
 
     if (bcm2712_mailbox_call_timeout(&mailbox_msg, 0) != 0) {
-        klog("fb: ch1 timeout %ux%ux%u\n",
+        slog("fb: ch1 timeout %ux%ux%u\n",
                 mode->width, mode->height, mode->depth);
         dma_free(0, (ewokos_addr_t)msg);
         return -1;
@@ -764,7 +764,7 @@ static int fb_channel1_init(const sys_info_t *sysinfo,
      */
     uint32_t actual_bpp = fb_depth_from_pitch(w, pitch);
     if (actual_bpp != 0 && actual_bpp != dep) {
-        klog("fb: ch1 depth %u overridden by pitch %u -> %u bpp\n",
+        slog("fb: ch1 depth %u overridden by pitch %u -> %u bpp\n",
                 dep, pitch, actual_bpp);
         dep = actual_bpp;
     }
@@ -772,7 +772,7 @@ static int fb_channel1_init(const sys_info_t *sysinfo,
     dma_free(0, (ewokos_addr_t)msg);
 
     if (fb_adopt(sysinfo, w, h, vw, vh, dep, 0, 0, phy, size, pitch, info) != 0) {
-        klog("fb: ch1 rejected %ux%ux%u w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
+        slog("fb: ch1 rejected %ux%ux%u w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",
                 mode->width, mode->height, mode->depth,
                 w, h, dep, phy, size, pitch);
         return -1;
@@ -829,15 +829,15 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
     syscall1(SYS_GET_SYS_INFO, (ewokos_addr_t)&sysinfo);
 
     if (bcm2712_mailbox_init() == 0) {
-        klog("fb_init: mmio map failed\n");
+        slog("fb_init: mmio map failed\n");
         return -1;
     }
 
     if (fb_get_num_displays(&displays) == 0) {
-        klog("fb_init: displays=%u\n", displays);
+        slog("fb_init: displays=%u\n", displays);
     }
     if (fb_select_display(0) != 0) {
-        klog("fb_init: select display0 failed\n");
+        slog("fb_init: select display0 failed\n");
     }
 
     /* Validate / auto-detect resolution */
@@ -847,7 +847,7 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
 
     if (fb_get_preferred_hdmi_mode(dep, &preferred_mode) == 0) {
         preferred_mode_valid = 1;
-        klog("fb_init: edid preferred %ux%u@%u pclk=%u\n",
+        slog("fb_init: edid preferred %ux%u@%u pclk=%u\n",
                 preferred_mode.width, preferred_mode.height,
                 preferred_mode.depth, preferred_mode.pixel_clock_hz);
     }
@@ -859,7 +859,7 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
      * them through the native HDMI path.
      */
     if (auto_mode && fb_query_existing(&sysinfo, &_fb_info) == 0) {
-        klog("fb_init: using firmware boot framebuffer %ux%u@%u\n",
+        slog("fb_init: using firmware boot framebuffer %ux%u@%u\n",
                 _fb_info.width, _fb_info.height, _fb_info.depth);
         goto done;
     }
@@ -868,13 +868,13 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
         if (preferred_mode_valid) {
             w = preferred_mode.width;
             h = preferred_mode.height;
-            klog("fb_init: using edid preferred %ux%u\n", w, h);
+            slog("fb_init: using edid preferred %ux%u\n", w, h);
         } else {
             uint32_t det_w = 0, det_h = 0;
             if (fb_get_display_dimensions(&det_w, &det_h) == 0) {
                 w = det_w;
                 h = det_h;
-                klog("fb_init: detected display %ux%u\n", w, h);
+                slog("fb_init: detected display %ux%u\n", w, h);
             } else {
                 w = (w == 0) ? 1024 : w;
                 h = (h == 0) ? 768  : h;
@@ -898,7 +898,7 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
         if (bcm2712_native_hdmi_init_mode(&sysinfo, &preferred_mode, &_fb_info) == 0) {
             goto done;
         }
-        klog("fb_init: native hdmi0 edid path failed\n");
+        slog("fb_init: native hdmi0 edid path failed\n");
     }
 
     {
@@ -911,26 +911,26 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
          */
         bcm2712_hdmi_mode_t cea_mode;
         if (bcm2712_native_hdmi_cea_mode(w, h, dep, 60, &cea_mode) == 0) {
-            klog("fb_init: cea %ux%u@%u pclk=%u\n",
+            slog("fb_init: cea %ux%u@%u pclk=%u\n",
                     cea_mode.width, cea_mode.height,
                     cea_mode.depth, cea_mode.pixel_clock_hz);
             if (bcm2712_native_hdmi_init_mode(&sysinfo, &cea_mode, &_fb_info) == 0) {
                 goto done;
             }
-            klog("fb_init: native hdmi0 cea path failed\n");
+            slog("fb_init: native hdmi0 cea path failed\n");
         }
     }
 
     {
         bcm2712_hdmi_mode_t cvt_mode;
         if (bcm2712_native_hdmi_cvt_mode(w, h, dep, 60, &cvt_mode) == 0) {
-            klog("fb_init: cvt %ux%u@%u pclk=%u\n",
+            slog("fb_init: cvt %ux%u@%u pclk=%u\n",
                     cvt_mode.width, cvt_mode.height,
                     cvt_mode.depth, cvt_mode.pixel_clock_hz);
             if (bcm2712_native_hdmi_init_mode(&sysinfo, &cvt_mode, &_fb_info) == 0) {
                 goto done;
             }
-            klog("fb_init: native hdmi0 cvt path failed\n");
+            slog("fb_init: native hdmi0 cvt path failed\n");
         }
     }
 
@@ -961,11 +961,11 @@ int32_t bcm2712_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
                 memset(&_fb_info, 0, sizeof(_fb_info));
         }
 
-        klog("fb_init: all modes failed\n");
+        slog("fb_init: all modes failed\n");
         return -1;
 
 done:
-        klog("fb_init: %ux%u@%u pitch=%u phy=%x size=%u\n",
+        slog("fb_init: %ux%u@%u pitch=%u phy=%x size=%u\n",
                         _fb_info.width, _fb_info.height, _fb_info.depth,
                         _fb_info.pitch, _fb_info.phy_base, _fb_info.size);
         return 0;
@@ -989,10 +989,10 @@ int32_t bcm2712_fb_init_dpi(uint32_t w, uint32_t h, uint32_t dep,
 
     if (bcm2712_rp1_dpi_init(&sysinfo, w, h, dep, timing, &_fb_info) != 0) {
         memset(&_fb_info, 0, sizeof(disp_info_t));
-        klog("fb_init_dpi: rp1 dpi failed %ux%u@%u\n", w, h, dep);
+        slog("fb_init_dpi: rp1 dpi failed %ux%u@%u\n", w, h, dep);
         return -1;
     }
-    klog("fb_init_dpi: %ux%u@%u pitch=%u phy=%x size=%u\n",
+    slog("fb_init_dpi: %ux%u@%u pitch=%u phy=%x size=%u\n",
             _fb_info.width, _fb_info.height, _fb_info.depth,
             _fb_info.pitch, _fb_info.phy_base, _fb_info.size);
     return 0;

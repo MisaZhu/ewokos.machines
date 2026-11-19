@@ -154,6 +154,8 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 			g_gpu_profile_enabled = value;
 		else if (strcmp(argv[1], "geom") == 0)
 			adreno_3d_geom_batch(value);
+		else if (strcmp(argv[1], "bin") == 0)
+			adreno_3d_geom_bin(value);
 		else rc = -1;
 	}
 	else if (argc == 3 && strcmp(argv[1], "busy") == 0) {
@@ -167,11 +169,12 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 	else if (argc != 1) rc = -1;
 	if (!rc) {
 		uint64_t n = g_stats.jobs ? g_stats.jobs : 1;
-		snprintf(buf, len, "submit adaptive=%d profile=%d geom=%d busy=%u n=%llu err=%llu "
+		snprintf(buf, len, "submit adaptive=%d profile=%d geom=%d bin=%d busy=%u n=%llu err=%llu "
 		         "avg_us lock=%llu stage=%llu wait=%llu check=%llu max_wait=%llu "
 		         "spins=%llu parks=%llu short=%llu spin_fail=%llu "
 		         "gpu=%d gpu_n=%llu gpu_ns=%llu cp_khz=%llu",
 		         g_wait_adaptive, g_profile_enabled, adreno_3d_geom_batch(-1),
+		         adreno_3d_geom_bin(-1),
 		         (unsigned)__atomic_load_n(&g_wait_busy, __ATOMIC_RELAXED),
 		         (unsigned long long)g_stats.jobs, (unsigned long long)g_stats.errors,
 		         (unsigned long long)(g_stats.lock_ns/n/1000u),
@@ -220,7 +223,7 @@ static void ring_mark_wedged(adreno_dev_t *d, const char *why) {
 	/* Never probe GX MMIO after a completion timeout: if the fabric/GX is
 	   unresponsive, a diagnostic read can itself stall the CPU indefinitely.
 	   These DMA/CPU values remain observable without touching the dead unit. */
-	klog("adreno_ring: GPU WEDGED (%s) - all further submits decline; "
+	slog("adreno_ring: GPU WEDGED (%s) - all further submits decline; "
 	     "shadow=%08x wptr=%08x fence=%u mem=%08x\n", why,
 	     d->rptr_shadow.va ? ((volatile uint32_t *)d->rptr_shadow.va)[0] : 0,
 	     d->ring.wptr, d->fence,
@@ -377,27 +380,20 @@ static int cp_wait_idle(void) {
 	uint32_t busy = 0, status = 0, irq = 0;
 	int i;
 
-	klog("adreno_ring: CP idle check begin\n");
 	for (i = 0; i < RING_IDLE_TRIES; i++) {
 		busy = adreno_gmu_read(REG_A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS);
-		if (i == 0)
-			klog("adreno_ring: CP idle GMU busy=%08x\n", busy);
 		if (busy & A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS_GPUBUSYIGNAHB)
 			goto retry;
 		status = gpu_read(REG_A6XX_RBBM_STATUS);
-		if (i == 0)
-			klog("adreno_ring: CP idle RBBM status=%08x\n", status);
 		if (status & ~A6XX_RBBM_STATUS_CP_AHB_BUSY_CX_MASTER)
 			goto retry;
 		irq = gpu_read(REG_A6XX_RBBM_INT_0_STATUS);
-		if (!(irq & A6XX_RBBM_HANG_DETECT)) {
-			klog("adreno_ring: CP idle complete int0=%08x\n", irq);
+		if (!(irq & A6XX_RBBM_HANG_DETECT))
 			return 0;
-		}
 	retry:
 		proc_nsleep_precise(10000);
 	}
-	klog("adreno_ring: CP idle timeout gmu=%08x rbbm=%08x int0=%08x\n",
+	slog("adreno_ring: CP idle timeout gmu=%08x rbbm=%08x int0=%08x\n",
 	     busy, status, irq);
 	return -1;
 }
@@ -409,14 +405,14 @@ static int ring_check_fault(adreno_dev_t *d) {
 	if (status == 0)
 		return 0;
 	cp_status = gpu_read(REG_A6XX_CP_INTERRUPT_STATUS);
-	klog("adreno_ring: GPU fault status=%08x rbbm_status=%08x rptr=%08x wptr=%08x\n",
+	slog("adreno_ring: GPU fault status=%08x rbbm_status=%08x rptr=%08x wptr=%08x\n",
 	     status, gpu_read(REG_A6XX_RBBM_STATUS),
 	     gpu_read(REG_A6XX_CP_RB_RPTR), gpu_read(REG_A6XX_CP_RB_WPTR));
-	klog("adreno_ring: CP fault intr=%08x hw=%08x protect=%08x status1=%08x\n",
+	slog("adreno_ring: CP fault intr=%08x hw=%08x protect=%08x status1=%08x\n",
 	     cp_status, gpu_read(REG_A6XX_CP_HW_FAULT),
 	     gpu_read(REG_A6XX_CP_PROTECT_STATUS), gpu_read(REG_A6XX_CP_STATUS_1));
 	gpu_write(REG_A6XX_CP_SQE_STAT_ADDR, 1);
-	klog("adreno_ring: SQE stat1=%08x ib1=%08x:%08x rem=%08x "
+	slog("adreno_ring: SQE stat1=%08x ib1=%08x:%08x rem=%08x "
 	     "ib2=%08x:%08x rem=%08x\n",
 	     gpu_read(REG_A6XX_CP_SQE_STAT_DATA),
 	     gpu_read(REG_A6XX_CP_IB1_BASE_HI), gpu_read(REG_A6XX_CP_IB1_BASE),
@@ -434,7 +430,7 @@ int adreno_ring_init(adreno_dev_t *d) {
 		return 0;
 
 	if (adreno_bo_alloc(&ring->bo, MSM_GPU_RINGBUFFER_SZ) != 0) {
-		klog("adreno_ring: ring bo alloc failed\n");
+		slog("adreno_ring: ring bo alloc failed\n");
 		return -1;
 	}
 	ring->bo.iova = ring->bo.pa;      /* CB0 identity map */
@@ -443,7 +439,7 @@ int adreno_ring_init(adreno_dev_t *d) {
 	ring->rptr_gpu = 0;
 
 	if (adreno_bo_alloc(&ring->scratch, RING_SCRATCH_SIZE) != 0) {
-		klog("adreno_ring: scratch bo alloc failed\n");
+		slog("adreno_ring: scratch bo alloc failed\n");
 		adreno_bo_free(&ring->bo);
 		return -2;
 	}
@@ -451,7 +447,7 @@ int adreno_ring_init(adreno_dev_t *d) {
 	ring->fence_iova = ring->scratch.iova;   /* fence dword at offset 0 */
 
 	if (adreno_bo_alloc(&ring->ib, RING_IB_SIZE) != 0) {
-		klog("adreno_ring: ib bo alloc failed\n");
+		slog("adreno_ring: ib bo alloc failed\n");
 		adreno_bo_free(&ring->scratch);
 		adreno_bo_free(&ring->bo);
 		return -3;
@@ -461,7 +457,7 @@ int adreno_ring_init(adreno_dev_t *d) {
 	/* The hw_apriv RPTR shadow is allocated before CB0 initialization so its
 	   privileged PTE is present before the SMMU is enabled. */
 	if (!d->rptr_shadow.va || !d->rptr_shadow.iova) {
-		klog("adreno_ring: rptr shadow is not mapped\n");
+		slog("adreno_ring: rptr shadow is not mapped\n");
 		adreno_bo_free(&ring->ib);
 		adreno_bo_free(&ring->scratch);
 		adreno_bo_free(&ring->bo);
@@ -485,20 +481,6 @@ int adreno_ring_cp_init(adreno_dev_t *d) {
 		return -1;
 
 	rb = (volatile uint32_t*)ring->bo.va;
-	klog("adreno_ring: CP pre-init int0=%08x intr=%08x hw=%08x protect=%08x\n",
-	     gpu_read(REG_A6XX_RBBM_INT_0_STATUS),
-	     gpu_read(REG_A6XX_CP_INTERRUPT_STATUS),
-	     gpu_read(REG_A6XX_CP_HW_FAULT), gpu_read(REG_A6XX_CP_PROTECT_STATUS));
-	klog("adreno_ring: CP config sqe=%08x:%08x rb=%08x:%08x "
-	     "rptr=%08x:%08x shadow=%08x cntl=%08x sqectl=%08x apriv=%08x\n",
-	     gpu_read(REG_A6XX_CP_SQE_INSTR_BASE_HI),
-	     gpu_read(REG_A6XX_CP_SQE_INSTR_BASE),
-	     gpu_read(REG_A6XX_CP_RB_BASE_HI), gpu_read(REG_A6XX_CP_RB_BASE),
-	     gpu_read(REG_A6XX_CP_RB_RPTR_ADDR_HI),
-	     gpu_read(REG_A6XX_CP_RB_RPTR_ADDR),
-	     ((volatile uint32_t *)d->rptr_shadow.va)[0],
-	     gpu_read(REG_A6XX_CP_RB_CNTL), gpu_read(REG_A6XX_CP_SQE_CNTL),
-	     gpu_read(REG_A6XX_CP_APRIV_CNTL));
 
 	/* a6xx_cp_init(): CP_ME_INIT with 8 fixed dwords (a6xx_gpu.c:1027). */
 	rb_pkt7(ring, CP_ME_INIT, 8);
@@ -510,31 +492,19 @@ int adreno_ring_cp_init(adreno_dev_t *d) {
 	rb_emit(ring, 0x00000000);   /* no workarounds enabled             */
 	rb_emit(ring, 0x00000000);   /* pad rest with 0                    */
 	rb_emit(ring, 0x00000000);
-	klog("adreno_ring: CP_ME_INIT words %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
-	     rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7], rb[8]);
 
 	ring_flush(ring);
-	/* Keep this marker independent of GX MMIO and the GPU-written shadow:
-	   a blocked read must not hide that the doorbell store returned. */
-	klog("adreno_ring: CP_ME_INIT doorbell store returned wptr=%08x\n",
-	     get_wptr(ring));
-	klog("adreno_ring: CP_ME_INIT doorbell posted wptr=%08x shadow=%08x\n",
-	     gpu_read(REG_A6XX_CP_RB_WPTR),
-	     ((volatile uint32_t *)d->rptr_shadow.va)[0]);
 	if (ring_wait_drained(d) != 0) {
-		klog("adreno_ring: CP_ME_INIT did not drain (rptr=%08x wptr=%08x)\n",
+		slog("adreno_ring: CP_ME_INIT did not drain (rptr=%08x wptr=%08x)\n",
 		     gpu_read(REG_A6XX_CP_RB_RPTR), gpu_read(REG_A6XX_CP_RB_WPTR));
 		return -2;
 	}
-	klog("adreno_ring: CP_ME_INIT ring drained\n");
 	if (cp_wait_idle() != 0)
 		return -2;
-	klog("adreno_ring: CP_ME_INIT fault check begin\n");
 	if (ring_check_fault(d) != 0)
 		return -3;
 
 	d->cp_ready = 1;
-	klog("adreno_ring: CP_ME_INIT complete\n");
 	return 0;
 }
 
@@ -547,7 +517,6 @@ int adreno_ring_exit_secure(adreno_dev_t *d) {
 	rb_pkt7(&d->ring, CP_SET_SECURE_MODE, 1);
 	rb_emit(&d->ring, 0);
 	ring_flush(&d->ring);
-	klog("adreno_ring: CP_SET_SECURE_MODE doorbell returned\n");
 	rc = ring_wait_drained(d);
 	if (!rc) rc = cp_wait_idle();
 	if (!rc) rc = ring_check_fault(d);
@@ -555,7 +524,6 @@ int adreno_ring_exit_secure(adreno_dev_t *d) {
 		ring_mark_wedged(d, "secure-mode transition failed");
 		return ADRENO_E_FAULT;
 	}
-	klog("adreno_ring: CP secure-mode exit complete\n");
 	return 0;
 }
 
@@ -631,7 +599,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	/* Stage the caller's PM4 stream into the reusable IB buffer. */
 	trace = ring_take_trace();
 	if (trace)
-		klog("adreno_trace: begin next=%u words=%u shadow=%u wptr=%u\n",
+		slog("adreno_trace: begin next=%u words=%u shadow=%u wptr=%u\n",
 		     d->fence + 1u, dwords, ((volatile uint32_t *)d->rptr_shadow.va)[0], get_wptr(ring));
 	memcpy(ring->ib.va, cmds, dwords * 4u);
 	adreno_wmb();
@@ -666,18 +634,18 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	rb_emit(ring, fence);
 
 	if (trace)
-		klog("adreno_trace: doorbell fence=%u wptr=%u\n", fence, get_wptr(ring));
+		slog("adreno_trace: doorbell fence=%u wptr=%u\n", fence, get_wptr(ring));
 	if (profile) posted = profile_ns();
 	ring_flush(ring);
 	if (trace)
-		klog("adreno_trace: wait fence=%u\n", fence);
+		slog("adreno_trace: wait fence=%u\n", fence);
 
 	/* Both RPTR and the fence must complete within the same wall deadline.
 	   From the doorbell onwards, a failure is terminal, never CPU replay. */
 	int wait_rc = ring_wait_submit(d, start, fence_mem, fence, profile ? &sample : NULL);
 	if (profile) retired = profile_ns();
 	if (wait_rc != 0) {
-		klog("adreno_ring: fence %u timeout after %ums (words=%u mem=%08x shadow=%08x wptr=%08x)\n",
+		slog("adreno_ring: fence %u timeout after %ums (words=%u mem=%08x shadow=%08x wptr=%08x)\n",
 		     fence, (unsigned)(kernel_tic_ms(0) - start), dwords,
 		     fence_mem[0], ((volatile uint32_t *)d->rptr_shadow.va)[0],
 		     get_wptr(ring));
@@ -687,7 +655,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 	}
 
 	if (trace)
-		klog("adreno_trace: retired fence=%u shadow=%u; check GX\n",
+		slog("adreno_trace: retired fence=%u shadow=%u; check GX\n",
 		     fence, ((volatile uint32_t *)d->rptr_shadow.va)[0]);
 	if (ring_check_fault(d) != 0) {
 		ring_mark_wedged(d, "fault latched");
@@ -710,7 +678,7 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 		}
 	}
 	if (trace)
-		klog("adreno_trace: checked fence=%u\n", fence);
+		slog("adreno_trace: checked fence=%u\n", fence);
 
 out:
 	if (profile && posted != 0) {

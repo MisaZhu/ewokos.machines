@@ -249,10 +249,10 @@ static void set_tc_qos(ewokos_addr_t host) {
     if (!tc_qos_ok(host)) {
         tc_qos_program(host);
         if (!tc_qos_ok(host))
-            klog("rp1-pcie: QoS map did not stick, display fetch runs at "
+            slog("rp1-pcie: QoS map did not stick, display fetch runs at "
                 "default priority\n");
     }
-    klog("rp1-pcie: qos map=%08x/%08x ctrl1=%08x axi=%08x vdm=%08x\n",
+    slog("rp1-pcie: qos map=%08x/%08x ctrl1=%08x axi=%08x vdm=%08x\n",
         get32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_LO),
         get32(host + PCIE_MISC_VDM_PRIORITY_TO_QOS_MAP_HI),
         get32(host + PCIE_MISC_CTRL_1),
@@ -298,7 +298,7 @@ static void lock_link_state(ewokos_addr_t host) {
      * speed and gates its reference clock whenever the link looks idle,
      * and makes every later I2C MMIO access and display fetch pay the
      * wakeup latency */
-    klog("rp1-pcie: link gen%u x%u lnkcap=%08x lnkctl=%04x -> pinning PM off\n",
+    slog("rp1-pcie: link gen%u x%u lnkcap=%08x lnkctl=%04x -> pinning PM off\n",
         lnksta & 0xfu, (lnksta >> 4) & 0x3fu, lnkcap0, lnkctl0);
 
     put32(host + BRCM_PCIE_CAP_REGS + PCI_EXP_LNKCAP,
@@ -410,7 +410,7 @@ int bcm2712_rp1_init(void) {
         return 0;
 
     if (get_runtime_page_size(&page_size) != 0) {
-        klog("rp1-pcie: failed to get runtime page size\n");
+        slog("rp1-pcie: failed to get runtime page size\n");
         return -1;
     }
 
@@ -422,14 +422,14 @@ int bcm2712_rp1_init(void) {
     if (map_page_window(host, PI5_PCIE2_PHY, PI5_PCIE2_WIN_SIZE) != 0 ||
         map_subpage_window(reset, PI5_RESET_PAGE_PHY, page_size, &reset) != 0 ||
         map_subpage_window(rescal, PI5_RESCAL_PAGE_PHY, page_size, &rescal) != 0) {
-        klog("rp1-pcie: control window mapping failed\n");
+        slog("rp1-pcie: control window mapping failed\n");
         return -1;
     }
 
     if (!link_up(host)) {
         int ret = train_link(host, reset, rescal);
         if (ret) {
-            klog("rp1-pcie: link training failed step=%d status=%08x\n",
+            slog("rp1-pcie: link training failed step=%d status=%08x\n",
                 ret, get32(host + PCIE_MISC_PCIE_STATUS));
             return -2;
         }
@@ -456,7 +456,7 @@ int bcm2712_rp1_init(void) {
     ewokos_addr_t rp1_cfg = host + PCIE_EXT_CFG_DATA;
     uint32_t id = get32(rp1_cfg);
     if (id == 0xffffffff || id == 0xdeaddead) {
-        klog("rp1-pcie: configuration space unavailable id=%08x\n", id);
+        slog("rp1-pcie: configuration space unavailable id=%08x\n", id);
         return -3;
     }
     lock_endpoint_state(rp1_cfg);

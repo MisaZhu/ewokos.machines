@@ -1,0 +1,56 @@
+#version 310 es
+precision highp float;
+precision highp int;
+/* Coarse-bin prepass for the VERSION 8 pixel-owned geometry rasterizers.
+   One invocation per triangle: read the xform pass's screen-space records,
+   reject the same degenerate/near-clipped shapes the raster's touches_tile
+   rejects, and append the triangle's RELATIVE index (raster adds uTriFirst)
+   to every 64x64-pixel cell its bounding box covers.  Each cell record is
+   [count][list CAP] uints; count > CAP means overflow and the raster tile
+   falls back to its full triangle scan.  The daemon seeds every count with
+   0 before this pass (0xffffffff when binning is disabled, which the raster
+   reads as overflow).  Shifts/masks only: no integer division on this GPU. */
+layout(local_size_x=64, local_size_y=1, local_size_z=1) in;
+layout(std430, binding=0) readonly buffer BinVout { float vout[]; };
+layout(std430, binding=1) buffer BinOut { uint bin[]; };
+uniform uvec4 uTriViewport; /* triangle count, viewport w/h, unused */
+uniform uvec4 uBinCells;    /* cell grid extents x/y, unused, unused */
+uniform uvec4 uBinLayout;   /* record stride (CAP+1), list capacity CAP,
+                               vout record stride in floats (8 legacy,
+                               cs2_vout_stride for kind 5), unused */
+
+float edgef(vec2 a, vec2 b, vec2 p) {
+    return (p.x-a.x)*(b.y-a.y)-(p.y-a.y)*(b.x-a.x);
+}
+
+void main() {
+    uint t=gl_GlobalInvocationID.x;
+    if(t>=uTriViewport.x) return;
+    uint rs=uBinLayout.z;
+    uint i0=t*3u*rs, i1=i0+rs, i2=i1+rs;
+    vec3 iw=vec3(vout[i0+3u],vout[i1+3u],vout[i2+3u]);
+    if(any(lessThanEqual(iw,vec3(0.0)))) return;
+    vec2 s0=vec2(vout[i0],vout[i0+1u]);
+    vec2 s1=vec2(vout[i1],vout[i1+1u]);
+    vec2 s2=vec2(vout[i2],vout[i2+1u]);
+    if(edgef(s1,s2,s0)==0.0) return;
+    vec2 lo=min(s0,min(s1,s2)), hi=max(s0,max(s1,s2));
+    /* Clamp to the viewport so off-screen extents never reach past the
+       cell grid (the raster additionally guards its own cell index). */
+    lo=max(lo,vec2(0.0));
+    hi=min(hi,vec2(uTriViewport.yz)-vec2(1.0));
+    if(hi.x<lo.x||hi.y<lo.y) return;
+    uint cx0=uint(lo.x)>>6, cy0=uint(lo.y)>>6;
+    uint cx1=min(uint(hi.x)>>6,uBinCells.x-1u);
+    uint cy1=min(uint(hi.y)>>6,uBinCells.y-1u);
+    uint stride=uBinLayout.x, cap=uBinLayout.y;
+    for(uint cy=cy0;cy<=cy1;cy++) {
+        for(uint cx=cx0;cx<=cx1;cx++) {
+            uint base=(cy*uBinCells.x+cx)*stride;
+            uint s=atomicAdd(bin[base],1u);
+            if(s<cap) bin[base+1u+s]=t;
+            /* s >= cap: count keeps growing past CAP, which the raster
+               reads as overflow -> full scan, so nothing is lost. */
+        }
+    }
+}

@@ -260,20 +260,14 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	(void)d;
 
 	/* Clear GBIF halt in case GX was not collapsed (a650 family, has_gbif). */
-	klog("adreno_a6xx: hw_init stage 01 begin\n");
 	gpu_write(REG_A6XX_GBIF_HALT, 0);
-	klog("adreno_a6xx: hw_init stage 02 GBIF_HALT=%08x\n",
-	     gpu_read(REG_A6XX_GBIF_HALT));
 	gpu_write(REG_A6XX_RBBM_GBIF_HALT, 0);
-	klog("adreno_a6xx: hw_init stage 03 RBBM_GBIF_HALT=%08x\n",
-	     gpu_read(REG_A6XX_RBBM_GBIF_HALT));
 
 	gpu_write(REG_A6XX_RBBM_SECVID_TSB_CNTL, 0);
 
 	/* Disable the trusted memory range (no secure rendering). */
 	gpu_write64(REG_A6XX_RBBM_SECVID_TSB_TRUSTED_BASE, 0x0ull);
 	gpu_write(REG_A6XX_RBBM_SECVID_TSB_TRUSTED_SIZE, 0x0);
-	klog("adreno_a6xx: hw_init stage 04 SECVID\n");
 
 	/* 64-bit addressing for every block. */
 	gpu_write(REG_A6XX_CP_ADDR_MODE_CNTL, 0x1);
@@ -288,10 +282,8 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_SP_ADDR_MODE_CNTL, 0x1);
 	gpu_write(REG_A6XX_TPL1_ADDR_MODE_CNTL, 0x1);
 	gpu_write(REG_A6XX_RBBM_SECVID_TSB_ADDR_MODE_CNTL, 0x1);
-	klog("adreno_a6xx: hw_init stage 05 address-mode\n");
 
 	a6xx_set_hwcg(d, 1);
-	klog("adreno_a6xx: hw_init stage 06 HWCG\n");
 
 	/* VBIF/GBIF QoS (a650 family). */
 	gpu_write(REG_A6XX_GBIF_QSB_SIDE(0), 0x00071620);
@@ -299,7 +291,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_GBIF_QSB_SIDE(2), 0x00071620);
 	gpu_write(REG_A6XX_GBIF_QSB_SIDE(3), 0x00071620);
 	gpu_write(REG_A6XX_RBBM_GBIF_CLIENT_QOS_CNTL, 0x3);
-	klog("adreno_a6xx: hw_init stage 07 GBIF-QoS\n");
 
 	gpu_write(REG_A6XX_RBBM_PERFCTR_GPU_BUSY_MASKED, 0xffffffff);
 
@@ -312,7 +303,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 
 	gpu_write(REG_A6XX_UCHE_FILTER_CNTL, 0x804);
 	gpu_write(REG_A6XX_UCHE_CACHE_WAYS, 0x4);
-	klog("adreno_a6xx: hw_init stage 08 UCHE\n");
 
 	/* CP ROQ thresholds (a640/a650 family). */
 	gpu_write(REG_A6XX_CP_ROQ_THRESHOLDS_2, 0x02000140);
@@ -332,7 +322,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_CP_PERFCTR_CP_SEL(0), PERF_CP_ALWAYS_COUNT);
 
 	a6xx_set_ubwc_config();
-	klog("adreno_a6xx: hw_init stage 09 CP-UBWC\n");
 
 	/* A690 catalog hang-detect period. */
 	gpu_write(REG_A6XX_RBBM_INTERFACE_HANG_INT_CNTL, (1u << 30) | 0x4fffff);
@@ -345,16 +334,13 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	gpu_write(REG_A6XX_TPL1_BICUBIC_WEIGHTS(2), 0x3fa0ebee);
 	gpu_write(REG_A6XX_TPL1_BICUBIC_WEIGHTS(3), 0x3f5193ed);
 	gpu_write(REG_A6XX_TPL1_BICUBIC_WEIGHTS(4), 0x3f0243f0);
-	klog("adreno_a6xx: hw_init stage 10 fault-prefetch-bicubic\n");
 
 	/* CX GMU busy counter + power counter (GMU aperture). */
 	gmu_write(REG_A6XX_GPU_GMU_AO_GPU_CX_BUSY_MASK, 0xff000000);
 	gmu_rmw(REG_A6XX_GMU_CX_GMU_POWER_COUNTER_SELECT_0, 0xff, (1u << 5));
 	gmu_write(REG_A6XX_GMU_CX_GMU_POWER_COUNTER_ENABLE, 1);
-	klog("adreno_a6xx: hw_init stage 11 GMU-counters\n");
 
 	a6xx_set_cp_protect();
-	klog("adreno_a6xx: hw_init stage 12 CP-protect\n");
 
 	/* A690 catalog chicken bits. */
 	gpu_write(REG_A6XX_CP_CHICKEN_DBG, 0x00028801);
@@ -366,7 +352,6 @@ static void a6xx_hw_init(adreno_dev_t *d) {
 	          (1u << 6) | (1u << 5) | (1u << 3) | (1u << 2) | (1u << 1));
 
 	gpu_write(REG_A6XX_RBBM_INT_0_MASK, A6XX_INT_MASK);
-	klog("adreno_a6xx: hw_init stage 13 complete\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -381,7 +366,7 @@ static int a6xx_sqe_load(adreno_dev_t *d) {
 
 	ret = adreno_fw_load_sqe(&fw);
 	if (ret != 0) {
-		klog("adreno_a6xx: SQE firmware load failed (%d)\n", ret);
+		slog("adreno_a6xx: SQE firmware load failed (%d)\n", ret);
 		return ret;
 	}
 	/* The on-disk SQE image carries a 4-byte version header ahead of the
@@ -418,7 +403,6 @@ static int gpu_pas_call(uint32_t op, uint64_t arg, uint32_t size) {
 			break;
 		usleep(30000); /* Linux: 30 ms, at most 20 retries; outside kernel lock */
 	} while (++retry <= 20);
-	klog("adreno_a6xx: PAS op=%08x ret=%d\n", op, ret);
 	return ret;
 }
 
@@ -428,7 +412,7 @@ static int a6xx_exit_secure(adreno_dev_t *d) {
 	int ret, i;
 	ret = gpu_pas_call(Q8B_GPU_PAS_QUERY, 0, 0);
 	if ((uint32_t)ret != Q8B_GPU_PAS_ABI) {
-		klog("adreno_a6xx: compatible Q8B SCM PAS service unavailable\n");
+		slog("adreno_a6xx: compatible Q8B SCM PAS service unavailable\n");
 		return -ENOSYS;
 	}
 	ret = adreno_fw_load_zap(&fw);
@@ -446,7 +430,7 @@ static int a6xx_exit_secure(adreno_dev_t *d) {
 	adreno_wmb();
 	ret = adreno_rpmh_scm_vote();
 	if (ret) {
-		klog("adreno_a6xx: SCM interconnect vote failed\n");
+		slog("adreno_a6xx: SCM interconnect vote failed\n");
 		goto out;
 	}
 	ret = gpu_pas_call(Q8B_GPU_PAS_INIT, metadata.pa, fw.metadata_size);
@@ -458,7 +442,6 @@ static int a6xx_exit_secure(adreno_dev_t *d) {
 	ret = gpu_pas_call(Q8B_GPU_PAS_AUTH, 0, 0);
 	if (ret) goto out;
 	d->zap_done = 1;
-	klog("adreno_a6xx: official signed zap authenticated\n");
 	ret = adreno_ring_exit_secure(d);
 out:
 	/* Kernel owns a separate coherent metadata copy until authentication
@@ -499,16 +482,15 @@ static int a6xx_selftest(adreno_dev_t *d) {
 
 	ret = adreno_ring_submit(d, cmds, 7);
 	if (ret != 0) {
-		klog("adreno_a6xx: selftest submit failed (%d)\n", ret);
+		slog("adreno_a6xx: selftest submit failed (%d)\n", ret);
 		return ret;
 	}
 	if (mem[0] != SELFTEST_MAGIC0 || mem[1] != SELFTEST_MAGIC1 ||
 	    mem[2] != SELFTEST_MAGIC2 || mem[3] != SELFTEST_MAGIC3) {
-		klog("adreno_a6xx: selftest readback mismatch %08x %08x %08x %08x\n",
+		slog("adreno_a6xx: selftest readback mismatch %08x %08x %08x %08x\n",
 		     mem[0], mem[1], mem[2], mem[3]);
 		return -1;
 	}
-	klog("adreno_a6xx: CP datapath selftest OK\n");
 	return 0;
 }
 
@@ -533,51 +515,51 @@ int adreno_a6xx_init(adreno_dev_t *d) {
 	d->init_tried = 1;
 
 	ret = adreno_reg_map();
-	if (ret) { klog("adreno_a6xx: reg map failed (%d)\n", ret); d->init_rc = ret; return ret; }
+	if (ret) { slog("adreno_a6xx: reg map failed (%d)\n", ret); d->init_rc = ret; return ret; }
 
 	/* Power the GPUCC parent RPMh domains before touching its registers. */
 	ret = adreno_rpmh_gfx_vote();
 	if (ret) {
-		klog("adreno_a6xx: RPMh GPU power vote failed (%d)\n", ret);
+		slog("adreno_a6xx: RPMh GPU power vote failed (%d)\n", ret);
 		d->init_rc = ret;
 		return ret;
 	}
 
 	ret = adreno_gpucc_init();
-	if (ret) { klog("adreno_a6xx: gpucc init failed (%d)\n", ret); d->init_rc = ret; return ret; }
+	if (ret) { slog("adreno_a6xx: gpucc init failed (%d)\n", ret); d->init_rc = ret; return ret; }
 
 	/* Linux allocates the hw_apriv RPTR shadow before attaching GPU BOs to
 	   the IOMMU domain.  Do the same here so CB0 can be built once, with the
 	   privileged page already present, before translation is enabled. */
 	ret = adreno_bo_alloc(&d->rptr_shadow, 4096u);
 	if (ret) {
-		klog("adreno_a6xx: rptr shadow alloc failed (%d)\n", ret);
+		slog("adreno_a6xx: rptr shadow alloc failed (%d)\n", ret);
 		d->init_rc = ret;
 		return ret;
 	}
 	d->rptr_shadow.iova = d->rptr_shadow.pa;
 	ret = adreno_ring_init(d);
 	if (ret) {
-		klog("adreno_a6xx: ring allocation failed (%d)\n", ret);
+		slog("adreno_a6xx: ring allocation failed (%d)\n", ret);
 		d->init_rc = ret;
 		return ret;
 	}
 
 	ret = adreno_smmu_init(d);
-	if (ret) { klog("adreno_a6xx: smmu CB0 init failed (%d)\n", ret); d->init_rc = ret; return ret; }
+	if (ret) { slog("adreno_a6xx: smmu CB0 init failed (%d)\n", ret); d->init_rc = ret; return ret; }
 	d->smmu_ready = 1;
 
 	ret = adreno_gmu_init(d);
-	if (ret) { klog("adreno_a6xx: gmu init failed (%d)\n", ret); d->init_rc = ret; return ret; }
+	if (ret) { slog("adreno_a6xx: gmu init failed (%d)\n", ret); d->init_rc = ret; return ret; }
 
 	ret = a6xx_sqe_load(d);
-	if (ret) { klog("adreno_a6xx: sqe load failed (%d)\n", ret); d->init_rc = ret; return ret; }
+	if (ret) { slog("adreno_a6xx: sqe load failed (%d)\n", ret); d->init_rc = ret; return ret; }
 
 	/* Linux hw_init() begins by asking the non-legacy GMU to keep GX on for
 	   all host register accesses, and clears the OOB request on exit. */
 	ret = adreno_gmu_gpu_set();
 	if (ret) {
-		klog("adreno_a6xx: GPU_SET OOB failed (%d)\n", ret);
+		slog("adreno_a6xx: GPU_SET OOB failed (%d)\n", ret);
 		d->init_rc = ret;
 		return ret;
 	}
@@ -595,7 +577,7 @@ int adreno_a6xx_init(adreno_dev_t *d) {
 
 	ret = adreno_ring_cp_init(d);
 	if (ret) {
-		klog("adreno_a6xx: cp init failed (%d)\n", ret);
+		slog("adreno_a6xx: cp init failed (%d)\n", ret);
 		adreno_gmu_gpu_clear();
 		d->init_rc = ret;
 		return ret;
@@ -603,7 +585,7 @@ int adreno_a6xx_init(adreno_dev_t *d) {
 
 	ret = a6xx_exit_secure(d);
 	if (ret) {
-		klog("adreno_a6xx: secure-mode exit failed (%d)\n", ret);
+		slog("adreno_a6xx: secure-mode exit failed (%d)\n", ret);
 		d->cp_ready = 0;
 		adreno_gmu_gpu_clear();
 		d->init_rc = ret;
@@ -615,7 +597,7 @@ int adreno_a6xx_init(adreno_dev_t *d) {
 	ret = a6xx_selftest(d);
 	if (ret) {
 		/* The datapath did not come up; decline so callers fall back. */
-		klog("adreno_a6xx: selftest failed (%d) - declining GPU path\n", ret);
+		slog("adreno_a6xx: selftest failed (%d) - declining GPU path\n", ret);
 		d->gpu_ready = 0;
 		adreno_gmu_gpu_clear();
 		d->init_rc = ret;
@@ -624,7 +606,6 @@ int adreno_a6xx_init(adreno_dev_t *d) {
 
 	adreno_gmu_gpu_clear();
 	d->init_rc = 0;
-	klog("adreno_a6xx: Adreno 690 bring-up complete\n");
 	return 0;
 }
 

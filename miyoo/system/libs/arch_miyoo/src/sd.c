@@ -151,7 +151,7 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
     volatile uint8_t *cmd_buf = pu8Buf;
     uint32_t dma_addr = miyoo_sd_dma_addr(pu8Buf);
 
-    //klog("_[sdmmc_%u] CMD_%u (0x%08X)__(TB: %u)(BSz: %u)", u8Slot, u8Cmd, u32Arg, u16BlkCnt, u16BlkSize);
+    //slog("_[sdmmc_%u] CMD_%u (0x%08X)__(TB: %u)(BSz: %u)", u8Slot, u8Cmd, u32Arg, u16BlkCnt, u16BlkSize);
 
     if( (u8Cmd == 24) || (u8Cmd==25))
         eCmdType = EV_CMDWRITE;
@@ -179,7 +179,7 @@ static RspStruct *_SDMMC_DATAReq(uint8_t u8Slot, uint8_t u8Cmd, uint32_t u32Arg,
     Hal_SDMMC_SendCmdAndWaitProcess(eIP, eTransType, eCmdType, EV_R1, bCloseClock);
     eRspSt = Hal_SDMMC_GetRspToken(eIP);
 
-    //klog("=> (Err: 0x%04X)\n", (uint16_t)eRspSt->eErrCode);
+    //slog("=> (Err: 0x%04X)\n", (uint16_t)eRspSt->eErrCode);
     return eRspSt;
 
 
@@ -254,7 +254,7 @@ int32_t miyoo_sd_init(void) {
             return -1;
     }
     else if(hs > 0) {
-        klog("miyoo_sd: HS sampling enabled, SD clock unchanged\n");
+        slog("miyoo_sd: HS sampling enabled, SD clock unchanged\n");
     }
     return 0;
 }

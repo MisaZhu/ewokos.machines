@@ -110,8 +110,13 @@ extern "C" {
  * version makes a half-updated pair reject the blob instead of misreading it. */
 #define ADRENO_PROG_VERSION   6u
 /* Same wire layout; raster grid covers pixels, each owning its colour/depth.
- * A separate version makes old daemons reject the different dispatch shape. */
-#define ADRENO_PROG_PIXEL_VERSION 7u
+ * A separate version makes old daemons reject the different dispatch shape.
+ * VERSION 8 additionally declares the coarse-bin SSBO + uBinCells uniform on
+ * the specialized pixel kernels: the daemon runs a binning prepass between
+ * xform and raster and each tile scans only its 64x64 cell's triangle list.
+ * RenderWare's raw pixel kernel stays VERSION 7 (no bin binding). */
+#define ADRENO_PROG_PIXEL_VERSION 8u
+#define ADRENO_PROG_PIXEL_VERSION_NOBIN 7u
 
 /* Maximum storage-buffer bindings a compiled kernel may declare.  Sized for the
    portablegl fullscreen-compute set and the geometry rasterizer (render target

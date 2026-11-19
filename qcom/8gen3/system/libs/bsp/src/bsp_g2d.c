@@ -91,11 +91,11 @@ static int adreno_2d_available(void) {
 	if (g_g2d_avail == 0) {
 		g_g2d_avail = (adreno_opted_in() && adreno_2d_ready()) ? 1 : -1;
 		if (g_g2d_avail == 1)
-			klog("q8b g2d: Adreno A2D blitter available\n");
+			slog("q8b g2d: Adreno A2D blitter available\n");
 	}
 	if (g_g2d_avail == 1 && adreno_wedged()) {
 		g_g2d_avail = -1;
-		klog("q8b g2d: Adreno wedged - 2D offload disabled for this session\n");
+		slog("q8b g2d: Adreno wedged - 2D offload disabled for this session\n");
 	}
 	return g_g2d_avail == 1;
 }

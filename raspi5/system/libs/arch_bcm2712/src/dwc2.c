@@ -282,13 +282,13 @@ static int dwc2_map_windows(void) {
         return 0;
     }
     if (mmio_map() == 0) {
-        klog("dwc2: main mmio map failed\n");
+        slog("dwc2: main mmio map failed\n");
         return -1;
     }
     base = _mmio_base + PI5_USB_DWC2_WIN_OFF;
     if (syscall3(SYS_MEM_MAP, base, PI5_USB_DWC2_PHY,
             PI5_USB_DWC2_WIN_SIZE) != base) {
-        klog("dwc2: usb2 window map failed\n");
+        slog("dwc2: usb2 window map failed\n");
         return -1;
     }
     _usb_base = base;
@@ -330,12 +330,12 @@ static int dma_pool_init(void) {
     _dma_pool.used = 0;
     _dma_pool.virt = dma_alloc(0, _dma_pool.size);
     if (_dma_pool.virt == 0) {
-        klog("dwc2: dma alloc_failed size=%u\n", _dma_pool.size);
+        slog("dwc2: dma alloc_failed size=%u\n", _dma_pool.size);
         return -1;
     }
     phy = dma_phy_addr(0, _dma_pool.virt);
     if (phy == 0 || phy > 0xFFFFFFFFull) {
-        klog("dwc2: dma pool outside 32bit window\n");
+        slog("dwc2: dma pool outside 32bit window\n");
         return -1;
     }
     _dma_pool.phys = (uint32_t)phy;
@@ -433,7 +433,7 @@ static int dwc2_power_on_core(void) {
         (void)bcm2712_set_power_state(ids[i]);
         usleep(20000);
         if (dwc2_core_present()) {
-            klog("dwc2: core alive after power id %u, gsnpsid=0x%08x\n",
+            slog("dwc2: core alive after power id %u, gsnpsid=0x%08x\n",
                     ids[i], usb_readl(DWC_REG_GSNPSID));
             return 0;
         }
@@ -598,7 +598,7 @@ static void dwc_program_fifos(void) {
     if (have != 0 && want > have) {
         uint32_t new_rx = (uint32_t)(((uint64_t)rx * have) / want);
         uint32_t new_nptx = (uint32_t)(((uint64_t)nptx * have) / want);
-        klog("dwc2: fifo ram %u words < %u, scaling rx=%u nptx=%u\n",
+        slog("dwc2: fifo ram %u words < %u, scaling rx=%u nptx=%u\n",
                 have, want, new_rx, new_nptx);
         rx = new_rx;
         nptx = new_nptx;
@@ -771,14 +771,14 @@ static int dwc_host_init(void) {
        any host register is programmed */
     while ((usb_readl(DWC_REG_GINTSTS) & DWC_GINTSTS_CURMODE_HOST) == 0) {
         if (waited_ms++ >= 100u) {
-            klog("dwc2: core never reached host mode\n");
+            slog("dwc2: core never reached host mode\n");
             return -1;
         }
         usleep(1000);
     }
 
     if (dwc_core_soft_reset() != 0) {
-        klog("dwc2: host init soft_reset_failed\n");
+        slog("dwc2: host init soft_reset_failed\n");
         return -1;
     }
 
@@ -806,7 +806,7 @@ static int dwc_host_init(void) {
     reg &= ~DWC_GOTGCTL_HSTSETHNPEN;
     usb_writel(DWC_REG_GOTGCTL, reg);
     if (dwc_host_halt_all_channels() != 0) {
-        klog("dwc2: host init halt_all_channels_failed\n");
+        slog("dwc2: host init halt_all_channels_failed\n");
         return -1;
     }
     usb_writel(DWC_REG_HAINTMSK, 0);
@@ -832,13 +832,13 @@ int dwc2_init(void) {
     if (dwc2_power_on_core() != 0) {
         /* a plain Pi 5 does not wire the SoC USB2 pins out; the caller
            degrades to "no dwc2 port" and keeps running on the RP1 xHCI */
-        klog("dwc2: core not present (gsnpsid=0x%08x)\n",
+        slog("dwc2: core not present (gsnpsid=0x%08x)\n",
                 usb_readl(DWC_REG_GSNPSID));
         return -1;
     }
     if ((usb_readl(DWC_REG_GSNPSID) & DWC_GSNPSID_MAGIC_MASK) !=
             DWC_GSNPSID_OTG_MAGIC) {
-        klog("dwc2: unexpected gsnpsid=0x%08x\n",
+        slog("dwc2: unexpected gsnpsid=0x%08x\n",
                 usb_readl(DWC_REG_GSNPSID));
     }
     if (dma_pool_init() != 0) {
@@ -848,7 +848,7 @@ int dwc2_init(void) {
         return -1;
     }
     _ready = true;
-    klog("dwc2: host up, %u channels, gsnpsid=0x%08x ghwcfg2=0x%08x\n",
+    slog("dwc2: host up, %u channels, gsnpsid=0x%08x ghwcfg2=0x%08x\n",
             _num_host_channels, usb_readl(DWC_REG_GSNPSID),
             usb_readl(DWC_REG_GHWCFG2));
     return 0;

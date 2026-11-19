@@ -753,7 +753,7 @@ void lcd_init(uint32_t w, uint32_t h, uint32_t rot, uint32_t spi_div, uint32_t s
          "clear %u; busy ever high: %u\n",
          _diag_hwrst_ms, _diag_swrst_ms, _diag_aw46_ms, _diag_aw47_ms,
          _busy_last_ms, _busy_seen_high);
-    klog("epaper3.7d: core %u Hz, CDIV %u (SCLK %u Hz); busy ms: hwrst %u, "
+    slog("epaper3.7d: core %u Hz, CDIV %u (SCLK %u Hz); busy ms: hwrst %u, "
          "swrst %u, 0x46 %u, 0x47 %u, clear %u; busy ever high: %u\n",
          core_hz, spi_div, core_hz / spi_div,
          _diag_hwrst_ms, _diag_swrst_ms, _diag_aw46_ms, _diag_aw47_ms,

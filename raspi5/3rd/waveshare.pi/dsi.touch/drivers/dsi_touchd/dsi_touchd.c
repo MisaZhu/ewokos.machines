@@ -38,8 +38,11 @@
  *     (regs 0x94/0x95), which this daemon walks up before probing;
  *   FT5x06 at 0x38, 8-bit registers.
  *
- * Events are served as 6-byte records {state, x, y}, same ABI as the
- * raspix dsi_touchd.
+ * Events are served as 6-byte records {state, x, y} on the same stream
+ * contract as q8b goodixd: tagged multi-touch frames (header + contact
+ * edges), diffed against the last emitted contact set. xtouch maps them
+ * to screen coordinates and passes them to xserverd as XEVT_TOUCH_MT;
+ * gesture policy and single-finger mouse compatibility live there.
  */
 
 #define TP_POLL_MIN_US           8000u
@@ -64,14 +67,24 @@
  * video stream never touches I2C, so this costs the display nothing. */
 #define TP_STD_HZ               100000u
 #define TP_FAST_HZ              400000u
-#define TP_RELEASE_DELAY_MS        20
+/* Safety net for a lift the controller never reports: both controllers
+ * normally end a touch with a zero-contact frame, but if that frame is
+ * missed (GT911 ready flag never re-raises, FPC noise) the active slots
+ * are released after this idle window. */
 #define TP_RELEASE_TIMEOUT_MS      80
+/* Release debounce: a contact that vanishes for a frame or two while the
+ * finger is still down must not turn into a release+re-press pair (a
+ * phantom tap downstream). A release goes out only after the contact
+ * stayed absent for this whole window; one that returns inside it
+ * remains pressed. Same policy as q8b goodixd. */
+#define TP_RELEASE_GRACE_MS        40
 #define TP_INIT_RETRY_MS         1000
 #define TP_I2C_FAIL_MAX            20
 #define TP_I2C_RETRY_MAX            3
 #define TP_I2C_SPLIT_DELAY_US      100u
-#define TP_TOUCH_CACHE_SIZE        32u
-#define TP_RELEASE_MISS_MAX         3u
+/* one MT frame can carry header + press/move + release per contact;
+ * keep room for several frames so a slow reader never starves edges */
+#define TP_TOUCH_CACHE_SIZE        64u
 
 #define GOODIX_ADDR_PRIMARY      0x14
 #define GOODIX_ADDR_FALLBACK     0x5d
@@ -81,7 +94,7 @@
 #define GOODIX_REG_COMMAND      0x8040
 #define GOODIX_REG_ID           0x8140
 #define GOODIX_REG_STATUS       0x814e
-#define GOODIX_REG_POINT1       0x8150
+#define GOODIX_REG_TRACK1       0x814f
 #define GOODIX_POINT_SIZE             8
 #define GOODIX_READY_FLAG       0x80
 #define GOODIX_MAX_POINTS             5
@@ -101,6 +114,26 @@
 #define FT5X06_EVENT_DOWN         0x00
 #define FT5X06_EVENT_UP           0x01
 #define FT5X06_EVENT_CONTACT      0x02
+
+/* Multi-touch frame records on the 6-byte stream (q8b goodixd protocol,
+ * consumed by xtouch's absolute mode):
+ *   state TOUCH_MT_FRAME ........ header: x = record count, y = 0
+ *   state TOUCH_MT_FRAME | (act << 8) | id ... contact edge, act is
+ *     TOUCH_ACT_PRESS/MOVE/RELEASE, id 0..9 (xserverd's X_TOUCH_MAX);
+ *     x/y are raw panel coordinates (a release carries the contact's
+ *     last known position).
+ * Both controllers report exactly the active contacts per frame, so the
+ * driver diffs against the last EMITTED contact set and synthesizes
+ * press/move/release edges; a dropped frame (queue full) is re-derived
+ * from that same set on the next controller frame - except a frame
+ * carrying releases, which is never dropped: after the last finger
+ * lifts the controller may send nothing more, so its room is made by
+ * evicting the oldest queued records. */
+#define TOUCH_MT_FRAME          0x8000u
+#define TOUCH_ACT_PRESS              1u
+#define TOUCH_ACT_MOVE               2u
+#define TOUCH_ACT_RELEASE            3u
+#define MT_MAX_CONTACTS              10u
 
 #define WAVESHARE_REG_TP           0x94
 #define WAVESHARE_REG_LCD          0x95
@@ -149,9 +182,18 @@ typedef enum {
 } tp_status_t;
 
 typedef struct {
+	uint8_t id;	/* controller contact id: GT911 track id / FT5x06 touch id */
 	uint16_t x;
 	uint16_t y;
 } tp_point_t;
+
+/* last emitted contact set, indexed by the controller's contact id */
+typedef struct {
+	bool active;
+	uint16_t x;
+	uint16_t y;
+	uint64_t absent_ms; /* first frame missing this contact, 0 = present */
+} mt_slot_t;
 
 typedef struct {
 	int32_t bus;	/* RP1 DW_apb_i2c controller index */
@@ -174,10 +216,9 @@ static const dsi_i2c_bus_t dsi_i2c_buses[] = {
 	{DSI_I2C_BUS_DIP1, DSI_I2C1_SDA,    DSI_I2C1_SCL,    "i2c1-header", TP_FAST_HZ},
 };
 
-static bool press = false;
-static tp_point_t point[GOODIX_MAX_POINTS];
+static tp_point_t point[GOODIX_MAX_POINTS > FT5X06_MAX_POINTS ?
+	GOODIX_MAX_POINTS : FT5X06_MAX_POINTS];
 static uint8_t point_nr = 0;
-static uint64_t last_ts = 0;
 static uint16_t touch_data[TP_TOUCH_CACHE_SIZE][3];
 static uint32_t touch_data_read = 0;
 static uint32_t touch_data_write = 0;
@@ -186,11 +227,9 @@ static uint32_t poll_sleep_us = TP_POLL_MIN_US;
 static uint32_t i2c_fail_count = 0;
 static uint64_t tp_retry_ts = 0;
 static uint32_t tp_retry_count = 0;
-static bool touch_release_hint = false;
-static bool last_emit_valid = false;
-static uint16_t last_emit_state = 0;
-static uint16_t last_emit_x = 0;
-static uint16_t last_emit_y = 0;
+static mt_slot_t mt_slots[MT_MAX_CONTACTS];
+static uint64_t mt_last_frame_ms = 0; /* last decoded controller frame */
+static bool mt_zero_frame = true;     /* that frame carried zero contacts */
 static uint8_t touch_addr = GOODIX_ADDR_PRIMARY;
 static touch_kind_t touch_kind = TOUCH_KIND_NONE;
 static const dsi_i2c_bus_t* active_bus = NULL;
@@ -218,30 +257,153 @@ static void touch_push(uint16_t state, uint16_t x, uint16_t y) {
 	touch_data_write++;
 }
 
-static bool touch_emit(uint16_t state, uint16_t x, uint16_t y) {
-	if (last_emit_valid &&
-			last_emit_state == state &&
-			last_emit_x == x &&
-			last_emit_y == y)
-		return false;
+static bool mt_any_active(void) {
+	uint32_t id;
 
-	touch_push(state, x, y);
-	last_emit_valid = true;
-	last_emit_state = state;
-	last_emit_x = x;
-	last_emit_y = y;
+	for (id = 0; id < MT_MAX_CONTACTS; id++) {
+		if (mt_slots[id].active)
+			return true;
+	}
+	return false;
+}
+
+/* Diff one decoded controller frame against the last emitted contact set
+ * and queue the whole edge frame atomically: if the queue cannot hold
+ * header + every record, nothing is pushed and the slot table stays
+ * untouched, so the next controller frame re-derives the same edges. A
+ * frame with no change at all (stationary fingers) emits nothing.
+ * Releases are debounced through TP_RELEASE_GRACE_MS and, once due, must
+ * go out even on a full queue. Returns true when a frame was queued. */
+static bool mt_emit_frame(const tp_point_t* pts, uint8_t n) {
+	uint16_t recs[MT_MAX_CONTACTS * 2][3];
+	uint32_t count = 0;
+	bool seen[MT_MAX_CONTACTS];
+	bool changed = false;
+	uint64_t now = kernel_tic_ms(0);
+	uint32_t i;
+	uint32_t id;
+
+	memset(seen, 0, sizeof(seen));
+	for (i = 0; i < n; i++) {
+		uint16_t x = pts[i].x;
+		uint16_t y = pts[i].y;
+		uint32_t act;
+
+		id = pts[i].id;
+		if (id >= MT_MAX_CONTACTS || seen[id])
+			continue;
+		seen[id] = true;
+		if (!mt_slots[id].active) {
+			act = TOUCH_ACT_PRESS;
+			changed = true;
+		}
+		else if (mt_slots[id].x != x || mt_slots[id].y != y) {
+			act = TOUCH_ACT_MOVE;
+			changed = true;
+		}
+		else {
+			continue; /* unchanged contact carries no edge */
+		}
+		recs[count][0] = (uint16_t)(TOUCH_MT_FRAME | (act << 8) | id);
+		recs[count][1] = x;
+		recs[count][2] = y;
+		count++;
+	}
+	for (id = 0; id < MT_MAX_CONTACTS; id++) {
+		if (!mt_slots[id].active || seen[id])
+			continue;
+		if (mt_slots[id].absent_ms == 0) {
+			mt_slots[id].absent_ms = now; /* start the grace window */
+			continue;
+		}
+		if (now - mt_slots[id].absent_ms < TP_RELEASE_GRACE_MS)
+			continue;
+		recs[count][0] = (uint16_t)(TOUCH_MT_FRAME |
+				(TOUCH_ACT_RELEASE << 8) | id);
+		recs[count][1] = mt_slots[id].x;
+		recs[count][2] = mt_slots[id].y;
+		count++;
+		changed = true;
+		mt_slots[id].active = false;
+		mt_slots[id].absent_ms = 0;
+	}
+	if (!changed || count == 0)
+		return false;
+	if ((touch_data_write - touch_data_read) + 1 + count > TP_TOUCH_CACHE_SIZE) {
+		/* A release must never be lost: once the last finger lifts the
+		 * controller may send no further frame, so a dropped release
+		 * frame is never re-derived and the contact stays pressed
+		 * forever downstream. Make room by evicting the oldest queued
+		 * records - stale move edges whose positions the release frame
+		 * supersedes anyway. Frames without a release keep the
+		 * drop-and-re-derive policy. */
+		bool has_release = false;
+		uint32_t drop;
+
+		for (i = 0; i < count; i++) {
+			if (((recs[i][0] >> 8) & 0x3u) == TOUCH_ACT_RELEASE) {
+				has_release = true;
+				break;
+			}
+		}
+		if (!has_release)
+			return false;
+		drop = (touch_data_write - touch_data_read) + 1 + count -
+			TP_TOUCH_CACHE_SIZE;
+		touch_data_read += drop;
+	}
+	touch_push(TOUCH_MT_FRAME, (uint16_t)count, 0);
+	for (i = 0; i < count; i++)
+		touch_push(recs[i][0], recs[i][1], recs[i][2]);
+	/* commit the emitted set only after the frame is fully queued. A
+	 * slot inside its release grace window keeps active=true (and its
+	 * last position) so a returning contact continues instead of
+	 * re-pressing. */
+	for (id = 0; id < MT_MAX_CONTACTS; id++) {
+		if (!seen[id])
+			continue;
+		mt_slots[id].active = true;
+		mt_slots[id].absent_ms = 0;
+		for (i = 0; i < n; i++) {
+			if (pts[i].id == id) {
+				mt_slots[id].x = pts[i].x;
+				mt_slots[id].y = pts[i].y;
+				break;
+			}
+		}
+	}
 	return true;
 }
 
-static bool touch_release_if_pressed(void) {
-	bool emitted;
+/* Link lost / controller reset: every active contact's lift will never
+ * be reported, so release all slots immediately (no grace) and make
+ * room in the queue the same way a due release frame does. */
+static bool mt_release_all(void) {
+	uint16_t recs[MT_MAX_CONTACTS][3];
+	uint32_t count = 0;
+	uint32_t id;
+	uint32_t i;
 
-	if (!press)
+	for (id = 0; id < MT_MAX_CONTACTS; id++) {
+		if (!mt_slots[id].active)
+			continue;
+		recs[count][0] = (uint16_t)(TOUCH_MT_FRAME |
+				(TOUCH_ACT_RELEASE << 8) | id);
+		recs[count][1] = mt_slots[id].x;
+		recs[count][2] = mt_slots[id].y;
+		count++;
+		mt_slots[id].active = false;
+		mt_slots[id].absent_ms = 0;
+	}
+	if (count == 0)
 		return false;
-
-	press = false;
-	emitted = touch_emit(0, point[0].x, point[0].y);
-	return emitted;
+	if ((touch_data_write - touch_data_read) + 1 + count > TP_TOUCH_CACHE_SIZE)
+		touch_data_read += (touch_data_write - touch_data_read) + 1 + count -
+			TP_TOUCH_CACHE_SIZE;
+	touch_push(TOUCH_MT_FRAME, (uint16_t)count, 0);
+	for (i = 0; i < count; i++)
+		touch_push(recs[i][0], recs[i][1], recs[i][2]);
+	return true;
 }
 
 static int32_t dsi_i2c_select(const dsi_i2c_bus_t* bus) {
@@ -748,7 +910,7 @@ static tp_status_t goodix_init(void) {
 
 static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 	uint8_t status;
-	uint8_t buf[GOODIX_POINT_SIZE * GOODIX_MAX_POINTS];
+	uint8_t buf[GOODIX_POINT_SIZE * GOODIX_MAX_POINTS + 1];
 	uint8_t i;
 
 	if (goodix_read_reg(GOODIX_REG_STATUS, &status, 1) != TP_OK)
@@ -766,13 +928,19 @@ static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 	 * a start/stop on the wire and a controller disable/enable cycle
 	 * over PCIe MMIO — with five points that is five times the bus and
 	 * link load of a single burst, for the same coordinate bytes.
+	 *
+	 * Each record is led by its track id (0x814f + i*8, stable across
+	 * the contact's life), then x/y low-high pairs — the same layout
+	 * the Linux goodix driver parses. Start the burst one byte before
+	 * the first coordinate block so every record's id comes with it.
 	 */
 	if (*nr > 0 &&
-			goodix_read_reg(GOODIX_REG_POINT1, buf,
-				(uint16_t)(*nr * GOODIX_POINT_SIZE)) != TP_OK)
+			goodix_read_reg(GOODIX_REG_TRACK1, buf,
+				(uint16_t)(*nr * GOODIX_POINT_SIZE + 1)) != TP_OK)
 		return TP_NOT_RESPONSE;
 	for (i = 0; i < *nr; i++) {
-		const uint8_t* p = buf + i * GOODIX_POINT_SIZE;
+		const uint8_t* p = buf + 1 + i * GOODIX_POINT_SIZE;
+		pts[i].id = (uint8_t)(buf[i * GOODIX_POINT_SIZE] & 0x0f);
 		pts[i].x = (uint16_t)((p[1] << 8) | p[0]);
 		pts[i].y = (uint16_t)((p[3] << 8) | p[2]);
 	}
@@ -780,9 +948,9 @@ static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 	/*
 	 * The buffer-status clear must not be fire-and-forget: if it is
 	 * lost, the GT911 keeps the ready flag raised with the same stale
-	 * coordinates and never refreshes, and the emit dedup then swallows
-	 * the repeated reports silently — the touch looks frozen from then
-	 * on. Retry the clear, and report a persistent failure so the poll
+	 * coordinates and never refreshes, and the slot diff then sees no
+	 * change and emits nothing — the touch looks frozen from then on.
+	 * Retry the clear, and report a persistent failure so the poll
 	 * loop's recovery path can kick in.
 	 */
 	status = 0;
@@ -796,12 +964,13 @@ static tp_status_t goodix_read_touch(tp_point_t* pts, uint8_t* nr) {
 
 static tp_status_t ft5x06_read_touch(tp_point_t* pts, uint8_t* nr) {
 	uint8_t buf[5];
-	/* drain target for P2..Pn when more than one finger is reported */
-	uint8_t dump[FT5X06_POINT_SIZE * (FT5X06_MAX_POINTS - 1)];
+	/* P2..Pn records when more than one finger is reported */
+	uint8_t rest[FT5X06_POINT_SIZE * (FT5X06_MAX_POINTS - 1)];
 	uint8_t count;
 	uint8_t event;
+	uint8_t i;
 
-	touch_release_hint = false;
+	*nr = 0;
 
 	if (dsi_i2c_read_regs8_retry(FT5X06_ADDR, FT5X06_REG_TD_STATUS,
 			buf, sizeof(buf)) != 0) {
@@ -818,44 +987,50 @@ static tp_status_t ft5x06_read_touch(tp_point_t* pts, uint8_t* nr) {
 	 * all-ones (controller mid-boot or a NAK'd read), not a real
 	 * 15-touch report — drop it instead of parsing phantom points.
 	 */
-	if (buf[0] == 0xff) {
-		*nr = 0;
+	if (buf[0] == 0xff)
 		return TP_NO_DATA;
-	}
 
 	count = (uint8_t)(buf[0] & 0x0f);
 	if (count > FT5X06_MAX_POINTS)
 		count = FT5X06_MAX_POINTS;
-	if (count == 0) {
-		*nr = 0;
+	if (count == 0)
 		return TP_OK;
-	}
 
 	/*
-	 * Multi-touch: report only the first point (single-touch service),
-	 * but consume every reported point register. This controller
+	 * Every reported point register must be consumed: this controller
 	 * latches its report frame while extra points sit unread —
 	 * TD_STATUS freezes at count>=2, P1 repeats forever, the release
-	 * never arrives and the touch service dies. Draining P2..Pn
-	 * clears the frame so the controller keeps serving.
+	 * never arrives and the touch service dies. Read P2..Pn in one
+	 * burst and parse them alongside P1.
 	 */
 	if (count > 1) {
 		if (dsi_i2c_read_regs8_retry(FT5X06_ADDR, FT5X06_REG_P2_XH,
-				dump, (uint16_t)((count - 1) * FT5X06_POINT_SIZE)) != 0)
+				rest, (uint16_t)((count - 1) * FT5X06_POINT_SIZE)) != 0)
 			return TP_NOT_RESPONSE;
 	}
 
+	/* P1: XH = event<<6 | x-high, YH = touch-id<<4 | y-high */
 	event = (uint8_t)(buf[1] >> 6);
-	if (event != FT5X06_EVENT_DOWN && event != FT5X06_EVENT_CONTACT) {
-		*nr = 0;
-		if (event == FT5X06_EVENT_UP)
-			touch_release_hint = true;
-		return event == FT5X06_EVENT_UP ? TP_OK : TP_NO_DATA;
+	if (event == FT5X06_EVENT_DOWN || event == FT5X06_EVENT_CONTACT) {
+		pts[*nr].id = (uint8_t)((buf[3] >> 4) & 0x0f);
+		pts[*nr].x = (uint16_t)(((uint16_t)(buf[1] & 0x0f) << 8) | buf[2]);
+		pts[*nr].y = (uint16_t)(((uint16_t)(buf[3] & 0x0f) << 8) | buf[4]);
+		(*nr)++;
 	}
+	/* P2..Pn: same 6-byte record shape. UP/reserved entries are lifts,
+	 * not active contacts — leaving them out of the set lets the slot
+	 * diff release them through the grace window. */
+	for (i = 1; i < count; i++) {
+		const uint8_t* p = rest + (i - 1) * FT5X06_POINT_SIZE;
 
-	pts[0].x = (uint16_t)(((uint16_t)(buf[1] & 0x0f) << 8) | buf[2]);
-	pts[0].y = (uint16_t)(((uint16_t)(buf[3] & 0x0f) << 8) | buf[4]);
-	*nr = 1;
+		event = (uint8_t)(p[0] >> 6);
+		if (event != FT5X06_EVENT_DOWN && event != FT5X06_EVENT_CONTACT)
+			continue;
+		pts[*nr].id = (uint8_t)((p[2] >> 4) & 0x0f);
+		pts[*nr].x = (uint16_t)(((uint16_t)(p[0] & 0x0f) << 8) | p[1]);
+		pts[*nr].y = (uint16_t)(((uint16_t)(p[2] & 0x0f) << 8) | p[3]);
+		(*nr)++;
+	}
 	return TP_OK;
 }
 
@@ -911,6 +1086,11 @@ static int tp_loop(vdevice_t* dev, void* p) {
 				tp_ready = true;
 				i2c_fail_count = 0;
 				poll_sleep_us = TP_POLL_MIN_US;
+				/* the controller may have been power-cycled by the
+				 * probe: start from an empty contact set */
+				memset(mt_slots, 0, sizeof(mt_slots));
+				mt_last_frame_ms = now_ms;
+				mt_zero_frame = true;
 				slog("dsi_touchd: touch on bus=%s addr=0x%02x kind=%s %ukHz\n",
 						active_bus == NULL ? "?" : active_bus->name,
 						touch_addr,
@@ -934,7 +1114,6 @@ static int tp_loop(vdevice_t* dev, void* p) {
 	}
 
 	point_nr = 0;
-	touch_release_hint = false;
 	ret = tp_read_touch(point, &point_nr);
 
 	if (ret == TP_NOT_RESPONSE) {
@@ -957,7 +1136,7 @@ static int tp_loop(vdevice_t* dev, void* p) {
 		i2c_fail_count++;
 		if (i2c_fail_count >= TP_I2C_FAIL_MAX) {
 			i2c_fail_count = 0;
-			need_wakeup = touch_release_if_pressed() || need_wakeup;
+			need_wakeup = mt_release_all() || need_wakeup;
 			/* a transfer that died mid-byte can leave the slave
 			 * holding SDA low, wedging every later transfer; clock
 			 * the bus clear before re-probing (the re-select inside
@@ -975,17 +1154,25 @@ static int tp_loop(vdevice_t* dev, void* p) {
 		i2c_fail_count = 0;
 	}
 
-	if (press && touch_release_hint) {
-		need_wakeup = touch_release_if_pressed() || need_wakeup;
+	if (ret == TP_OK) {
+		/* a decoded frame (even zero contacts) is the controller's
+		 * current truth: diff it against the emitted set */
+		mt_last_frame_ms = now_ms;
+		mt_zero_frame = (point_nr == 0);
+		if (mt_emit_frame(point, point_nr))
+			need_wakeup = true;
 	}
-	else if ((ret == TP_OK && !point_nr) || ret == TP_NO_DATA || ret == TP_NOT_RESPONSE) {
-		if (press && (now_ms - last_ts) > TP_RELEASE_TIMEOUT_MS)
-			need_wakeup = touch_release_if_pressed() || need_wakeup;
-	}
-	else if (ret == TP_OK && point_nr) {
-		last_ts = now_ms;
-		press = true;
-		if (touch_emit((uint16_t)press, point[0].x, point[0].y))
+
+	/* Advance the release grace window while contacts are still marked
+	 * active but no contact frame carries them: after an explicit
+	 * zero-contact frame feed empty diffs every tick (the controller
+	 * sends nothing more once the last finger lifts); after a missed
+	 * final frame wait out the idle window first, then do the same.
+	 * A no-op once no slot is active. */
+	if (mt_any_active() &&
+			(mt_zero_frame ||
+			 now_ms - mt_last_frame_ms >= TP_RELEASE_TIMEOUT_MS)) {
+		if (mt_emit_frame(NULL, 0))
 			need_wakeup = true;
 	}
 
@@ -993,7 +1180,7 @@ static int tp_loop(vdevice_t* dev, void* p) {
 		poll_sleep_us = TP_POLL_MIN_US;
 		vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 	}
-	else if (press) {
+	else if (mt_any_active()) {
 		poll_sleep_us = TP_POLL_MIN_US;
 	}
 	else if (poll_sleep_us < TP_POLL_MAX_US) {

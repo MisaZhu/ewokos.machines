@@ -34,7 +34,7 @@ static int no_sleep(useconds_t us) { (void)us; return 0; }
 static void set16(uint8_t *p, unsigned v) { p[0]=v;p[1]=v>>8; }
 static void set32(uint8_t *p, unsigned v) { set16(p,v);set16(p+2,v>>16); }
 uint64_t kernel_tic_ms(int unused) { static uint64_t t; (void)unused;return ++t; }
-void klog(const char *format, ...) { (void)format; }
+void slog(const char *format, ...) { (void)format; }
 int bsp_usb_control_xfer(bsp_usb_dev_t *d, usb_setup_pkt_t *s, void *buf, bool input) {
     (void)d; (void)input; assert(!in_handler); usb_calls++;
     uint8_t *p=buf;

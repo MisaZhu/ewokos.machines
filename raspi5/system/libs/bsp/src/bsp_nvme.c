@@ -127,7 +127,7 @@ static int bsp_nvme_controller_init(void) {
     if (ret != 0)
         return ret;
     if ((1U << _nvme_ctrl.lba_shift) != SECTOR_SIZE) {
-        klog("nvmefsd: unsupported NVMe block size %u (expected %u)\n",
+        slog("nvmefsd: unsupported NVMe block size %u (expected %u)\n",
              1U << _nvme_ctrl.lba_shift, SECTOR_SIZE);
         nvme_shutdown(&_nvme_ctrl);
         return -1;

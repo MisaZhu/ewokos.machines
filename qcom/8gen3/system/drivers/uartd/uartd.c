@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
             (ewokos_addr_t)sysinfo.mmio.phy_base,
             (ewokos_addr_t)sysinfo.mmio.size);
     if (mapped != (ewokos_addr_t)sysinfo.mmio.v_base) {
-        klog("q8b uartd: MMIO map failed\n");
+        slog("q8b uartd: MMIO map failed\n");
         return -1;
     }
 

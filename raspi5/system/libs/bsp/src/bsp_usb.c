@@ -200,15 +200,15 @@ static int xhci_bring_up(void) {
             _mmio_base + PI5_RP1_WIN_OFF,
             PI5_RP1_PHY,
             PI5_RP1_WIN_SIZE) == 0) {
-        klog("bsp_usb: rp1 window map failed, no xhci\n");
+        slog("bsp_usb: rp1 window map failed, no xhci\n");
         return 0;
     }
     if (bcm2712_rp1_init() != 0) {
-        klog("bsp_usb: rp1 pcie init failed, no xhci\n");
+        slog("bsp_usb: rp1 pcie init failed, no xhci\n");
         return 0;
     }
     if (xhci_dma_init() != 0) {
-        klog("bsp_usb: xhci dma init failed, no xhci\n");
+        slog("bsp_usb: xhci dma init failed, no xhci\n");
         return 0;
     }
     if (xhci_init(&_hcs[0], 0, _mmio_base + RP1_XHCI0_OFF) == 0) {
@@ -242,7 +242,7 @@ int bsp_usb_init(void) {
             (ewokos_addr_t)sysinfo.mmio.v_base,
             (ewokos_addr_t)sysinfo.mmio.phy_base,
             (ewokos_addr_t)sysinfo.mmio.size) != sysinfo.mmio.v_base) {
-        klog("bsp_usb: main mmio map failed, running without usb\n");
+        slog("bsp_usb: main mmio map failed, running without usb\n");
         return 0;
     }
 
@@ -265,7 +265,7 @@ int bsp_usb_init(void) {
     }
 
     if (found == 0) {
-        klog("bsp_usb: no usb controller found, running without usb\n");
+        slog("bsp_usb: no usb controller found, running without usb\n");
     }
     return 0;
 }
@@ -310,11 +310,11 @@ int bsp_usb_reinit(void) {
             found++;
         }
         else {
-            klog("bsp_usb: dwc2 core reinit failed\n");
+            slog("bsp_usb: dwc2 core reinit failed\n");
         }
     }
     if (found == 0) {
-        klog("bsp_usb: reinit found no usb controller\n");
+        slog("bsp_usb: reinit found no usb controller\n");
         return -1;
     }
     return 0;
@@ -389,7 +389,7 @@ static int dwc2_port_reset(void) {
     if (speed < 0) {
         _dwc2_reset_fail_streak++;
         if (_dwc2_reset_fail_streak >= BSP_USB_RESET_FAIL_REINIT) {
-            klog("bsp_usb: dwc2 core reinit after %u failed resets\n",
+            slog("bsp_usb: dwc2 core reinit after %u failed resets\n",
                     _dwc2_reset_fail_streak);
             _dwc2_reset_fail_streak = 0;
             (void)dwc2_reinit();
@@ -467,7 +467,7 @@ static int dwc2_device_attach(bsp_usb_dev_t* dev, int speed) {
            core too: flipping FSLSSUPP while the port is still enabled in
            HS mode wedges the port-enable state machine. */
         if (_dwc2_pending_hs && !_dwc2_fs_only && dwc2_last_xfer_txerr()) {
-            klog("bsp_usb: dwc2 hs data path dead (pure txerr), force fs-only mode\n");
+            slog("bsp_usb: dwc2 hs data path dead (pure txerr), force fs-only mode\n");
             _dwc2_fs_only = true;
             dwc2_force_fs_only(true);
             (void)dwc2_reinit();

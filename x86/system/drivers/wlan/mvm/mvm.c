@@ -107,10 +107,10 @@ static void handle_alive(struct iwlm_dev *d, const struct iwl_rx_packet *pkt,
         t->sku_id[0] = get_unaligned_le32(p + ALIVE_SKU_OFS);
         t->sku_id[1] = get_unaligned_le32(p + ALIVE_SKU_OFS + 4);
         t->sku_id[2] = get_unaligned_le32(p + ALIVE_SKU_OFS + 8);
-        klog("iwlm: alive, sku %08x:%08x:%08x\n",
+        slog("iwlm: alive, sku %08x:%08x:%08x\n",
              t->sku_id[0], t->sku_id[1], t->sku_id[2]);
     } else {
-        klog("iwlm: alive (no sku)\n");
+        slog("iwlm: alive (no sku)\n");
     }
     t->alive = 1;
 }
@@ -216,10 +216,10 @@ int iwlm_mvm_up(struct iwlm_dev *d)
 
     read_mac_addr(d);
     if (!mac_valid(d->mac)) {
-        klog("iwlm: no valid MAC address\n");
+        slog("iwlm: no valid MAC address\n");
         return -1;
     }
-    klog("iwlm: MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+    slog("iwlm: MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
          d->mac[0], d->mac[1], d->mac[2], d->mac[3], d->mac[4], d->mac[5]);
 
     /*
@@ -229,7 +229,7 @@ int iwlm_mvm_up(struct iwlm_dev *d)
      */
     ret = iwlm_fw_pnvm_handshake(d);
     if (ret) {
-        klog("iwlm: pnvm handshake failed %d\n", ret);
+        slog("iwlm: pnvm handshake failed %d\n", ret);
         return ret;
     }
 
@@ -238,7 +238,7 @@ int iwlm_mvm_up(struct iwlm_dev *d)
     ret = iwlm_trans_send_cmd_pdu(d, LEGACY_GROUP, TX_ANT_CONFIGURATION_CMD,
                                   &ant, sizeof(ant));
     if (ret) {
-        klog("iwlm: TX_ANT_CFG failed %d\n", ret);
+        slog("iwlm: TX_ANT_CFG failed %d\n", ret);
         return ret;
     }
 
@@ -248,7 +248,7 @@ int iwlm_mvm_up(struct iwlm_dev *d)
     ret = iwlm_trans_send_cmd_pdu(d, LEGACY_GROUP, BT_CONFIG,
                                   &bt, sizeof(bt));
     if (ret) {
-        klog("iwlm: BT_CONFIG failed %d\n", ret);
+        slog("iwlm: BT_CONFIG failed %d\n", ret);
         return ret;
     }
 
@@ -261,7 +261,7 @@ int iwlm_mvm_up(struct iwlm_dev *d)
         ret = iwlm_trans_send_cmd_pdu(d, DATA_PATH_GROUP, DQA_ENABLE_CMD,
                                       &dqa, sizeof(dqa));
         if (ret) {
-            klog("iwlm: DQA enable failed %d\n", ret);
+            slog("iwlm: DQA enable failed %d\n", ret);
             return ret;
         }
     }
@@ -270,7 +270,7 @@ int iwlm_mvm_up(struct iwlm_dev *d)
     if (!iwlm_has_new_station_api(d)) {
         ret = iwlm_mvm_add_aux_sta(d);
         if (ret) {
-            klog("iwlm: add aux sta failed %d\n", ret);
+            slog("iwlm: add aux sta failed %d\n", ret);
             return ret;
         }
     }
@@ -280,7 +280,7 @@ int iwlm_mvm_up(struct iwlm_dev *d)
     ret = iwlm_trans_send_cmd_pdu(d, LEGACY_GROUP, POWER_TABLE_CMD,
                                   &pw, sizeof(pw));
     if (ret) {
-        klog("iwlm: POWER_TABLE failed %d\n", ret);
+        slog("iwlm: POWER_TABLE failed %d\n", ret);
         return ret;
     }
 
@@ -288,7 +288,7 @@ int iwlm_mvm_up(struct iwlm_dev *d)
     if (iwlm_fw_has_capa(d, IWL_UCODE_TLV_CAPA_UMAC_SCAN)) {
         ret = iwlm_scan_config_send(d);
         if (ret) {
-            klog("iwlm: SCAN_CFG failed %d\n", ret);
+            slog("iwlm: SCAN_CFG failed %d\n", ret);
             return ret;
         }
     }

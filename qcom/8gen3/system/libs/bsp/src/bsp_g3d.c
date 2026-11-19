@@ -121,7 +121,7 @@ static int g3d_probe(void) {
 	if(g_g3d_ready == 1 && adreno_wedged()) {
 		/* a submitted job never retired: demote for the rest of the session */
 		g_g3d_ready = -1;
-		klog("q8b g3d: Adreno wedged - 3D offload disabled for this session\n");
+		slog("q8b g3d: Adreno wedged - 3D offload disabled for this session\n");
 	}
 	if(g_g3d_ready != 0)
 		return g_g3d_ready;
@@ -131,7 +131,7 @@ static int g3d_probe(void) {
 	}
 	int rc = adreno_3d_init();
 	g_g3d_ready = (rc == 0) ? 1 : -1;
-	klog("q8b g3d: adreno bring-up %s (rc=%d)\n",
+	slog("q8b g3d: adreno bring-up %s (rc=%d)\n",
 			(g_g3d_ready == 1) ? "OK" : "DECLINED", rc);
 	slog("q8b g3d: adreno bring-up %s (rc=%d)\n",
 			(g_g3d_ready == 1) ? "OK" : "DECLINED", rc);

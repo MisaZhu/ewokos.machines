@@ -10,6 +10,10 @@ cc -std=c99 -Wall -Wextra -Werror -I.. \
   ../hx_algo.c hx_algo_test.c -o hx_algo_test
 ./hx_algo_test
 rm -f hx_algo_test
+cc -std=c99 -Wall -Wextra -Werror -I.. \
+  ../himax_mt.c ../hx_algo.c himax_mt_test.c -o himax_mt_test
+./himax_mt_test
+rm -f himax_mt_test
 cc -std=c99 -Wall -Wextra -Werror \
   -I.. -I ../../../libs/bsp/include \
   ../himax_protocol.c ../native/himax_native_spi.c himax_native_test.c \

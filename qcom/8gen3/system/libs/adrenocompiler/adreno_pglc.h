@@ -39,6 +39,9 @@ struct adreno_pglc_ubo_range {
 
 struct adreno_pglc_stage {
    bool      geom_pixel_owned; /* VERSION 3: raster grid covers pixels */
+   bool      geom_binning;     /* VERSION 8: specialized pixel kernel carries
+                                  the coarse-bin SSBO + uBinCells (the daemon
+                                  runs a binning prepass); RW raw stays 7 */
    uint32_t  instrlen;
    uint32_t  constlen;
    uint32_t  shared_size;

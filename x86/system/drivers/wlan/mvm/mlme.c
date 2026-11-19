@@ -567,27 +567,27 @@ void iwlm_mlme_rx_eapol(struct iwlm_dev *d, const u8 *payload, u32 len)
         if (!(ki & KI_SECURE) || !(ki & KI_ENCRYPTED))
             return;
         if (!eapol_mic_ok(d, f, 99 + kdlen)) {
-            klog("iwlm: eapol msg3 mic mismatch\n");
+            slog("iwlm: eapol msg3 mic mismatch\n");
             return;
         }
         if (eapol_extract_gtk(d, kdata, kdlen, &gtk_id)) {
-            klog("iwlm: no gtk in msg3\n");
+            slog("iwlm: no gtk in msg3\n");
             return;
         }
         eapol_send_resp(d, 0x030a, replay, zero_nonce, NULL, 0);
         if (sec_key_add(d, 0, IWL_SEC_KEY_FLAG_CIPHER_CCMP, d->ptk + 32)) {
-            klog("iwlm: ptk install failed\n");
+            slog("iwlm: ptk install failed\n");
             return;
         }
         d->pairwise_key_set = true;
         if (sec_key_add(d, gtk_id, IWL_SEC_KEY_FLAG_CIPHER_CCMP |
                                    IWL_SEC_KEY_FLAG_MCAST_KEY, d->gtk)) {
-            klog("iwlm: gtk install failed\n");
+            slog("iwlm: gtk install failed\n");
             return;
         }
         d->eapol_msg = 0;
         d->state = IWLM_STATE_CONNECTED;
-        klog("iwlm: connected\n");
+        slog("iwlm: connected\n");
         return;
     }
 
@@ -641,7 +641,7 @@ void iwlm_mlme_rx_mgmt(struct iwlm_dev *d, const u8 *frame, u32 len)
     case FC_MGMT_DISASSOC:
         if (!memcmp(frame + 16, d->cur_ap.bssid, 6) &&
             d->state >= IWLM_STATE_AUTHENTICATING) {
-            klog("iwlm: disconnected by AP\n");
+            slog("iwlm: disconnected by AP\n");
             d->state = IWLM_STATE_FW_LOADED;
         }
         break;
@@ -704,11 +704,11 @@ int iwlm_mvm_connect(struct iwlm_dev *d, const char *ssid, const char *pass)
         return -1;
     ap = find_ap(d, ssid);
     if (!ap) {
-        klog("iwlm: %s not found (or not WPA2-PSK/CCMP)\n", ssid);
+        slog("iwlm: %s not found (or not WPA2-PSK/CCMP)\n", ssid);
         return -2;
     }
     d->cur_ap = *ap;
-    klog("iwlm: connecting to %s ch %d rssi %d\n",
+    slog("iwlm: connecting to %s ch %d rssi %d\n",
          ap->ssid, ap->channel, ap->rssi);
 
     /* PMK first: the 4096-round PBKDF2 takes a while on this cpu */
@@ -723,29 +723,29 @@ int iwlm_mvm_connect(struct iwlm_dev *d, const char *ssid, const char *pass)
     d->mac_id = 0;
     ret = phy_ctxt_apply(d, FW_CTXT_ACTION_ADD);
     if (ret) {
-        klog("iwlm: phy ctxt failed %d\n", ret);
+        slog("iwlm: phy ctxt failed %d\n", ret);
         return -3;
     }
     ret = mac_ctx_apply(d, FW_CTXT_ACTION_ADD, false);
     if (ret) {
-        klog("iwlm: mac ctxt failed %d\n", ret);
+        slog("iwlm: mac ctxt failed %d\n", ret);
         return -4;
     }
     ret = binding_apply(d, FW_CTXT_ACTION_ADD);
     if (ret) {
-        klog("iwlm: binding failed %d\n", ret);
+        slog("iwlm: binding failed %d\n", ret);
         return -5;
     }
 
     /* the AP station must exist before any frame is sent through it */
     ret = ap_sta_add(d);
     if (ret) {
-        klog("iwlm: add ap sta failed %d\n", ret);
+        slog("iwlm: add ap sta failed %d\n", ret);
         return -6;
     }
     ret = iwlm_trans_txq_alloc(d, BIT(AP_STA_ID), 0, 256);
     if (ret < 0) {
-        klog("iwlm: data queue alloc failed %d\n", ret);
+        slog("iwlm: data queue alloc failed %d\n", ret);
         return -7;
     }
 
@@ -766,7 +766,7 @@ int iwlm_mvm_connect(struct iwlm_dev *d, const char *ssid, const char *pass)
         goto fail;
 
     if (wait_state(d, IWLM_STATE_CONNECTED, 10000)) {
-        klog("iwlm: 4-way handshake timed out\n");
+        slog("iwlm: 4-way handshake timed out\n");
         goto fail;
     }
     return 0;

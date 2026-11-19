@@ -31,12 +31,15 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <ewoksys/ipc.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/vdevice.h>
 #include <ewoksys/vfs.h>
 
 #include "himax_gpio.h"
+#include "himax_mt.h"
+#include "himax_mt_tracks.h"
 #include "himax_protocol.h"
 #include "hx_algo.h"
 
@@ -49,7 +52,6 @@ extern himax_dev_t* himax_native_transport_reopen(void);
 #define TOUCH_X_MAX               2560U
 #define TOUCH_Y_MAX               1600U
 
-#define TOUCH_QUEUE_SIZE          16U
 /* First retry is quick; the cap below bounds the worst case. */
 #define PROBE_RETRY_INITIAL_US    50000U
 /*
@@ -126,23 +128,13 @@ extern himax_dev_t* himax_native_transport_reopen(void);
 static unsigned _silent_rounds;
 static unsigned _torn_reads;
 
-typedef struct {
-    uint16_t state;
-    uint16_t x;
-    uint16_t y;
-} touch_record_t;
-
 static himax_dev_t* _himax;
 static struct hx_algo _algo;
 static uint8_t _stream[HIMAX_STREAM_BYTES];
 static struct input_mt_pos _pos[HIMAX_MAX_TOUCH];
 
 static bool _ready;
-static touch_record_t _queue[TOUCH_QUEUE_SIZE];
-static unsigned _queue_count;
-static bool _finger_down;
-static uint16_t _finger_x;
-static uint16_t _finger_y;
+static himax_mt_t _mt;
 static unsigned _probe_delay_us = PROBE_RETRY_INITIAL_US;
 static unsigned _probe_failures;
 static uint64_t _last_frame_ms;
@@ -155,8 +147,6 @@ static unsigned _invalid_frames;
 static uint16_t _last_seq;
 static unsigned _duplicate_frames;
 static unsigned _contacts_seen;
-static unsigned _presses;
-static unsigned _releases;
 static unsigned _skipped_pulse;
 static unsigned _frame_budget_ms = FRAME_BUDGET_MS;
 static uint64_t _loop_busy_us;
@@ -189,50 +179,41 @@ static void heart(void) {
     }
 }
 
-static unsigned _queue_drops;
-
 /*
- * Queue a position, discarding the OLDEST one when full.
+ * Queue the edge frame that takes the client to this contact set.
  *
- * Dropping the newest (the previous behaviour) is what made a slow client see
- * a freeze followed by a catch-up: the queue filled with the last 16 positions
- * the finger had already left, the client then had to replay all of them in
- * order before it could draw where the finger actually was now, so the cursor
- * lagged by however far behind the queue had drifted.  A touch stream is only
- * useful at its leading edge: when we cannot keep every sample, the newest
- * position is the one worth having.
+ * When the client is slow the queue does not replay every position the
+ * fingers have already left - that is what made a slow client see a freeze
+ * followed by a catch-up.  himax_mt drops the frames nobody has started to
+ * read and re-derives the frames from the contacts the client holds to
+ * where they are now, so no contact is left stuck down or taken for another.
+ *
+ * Sampling loop only.  touch_read() is an IPC handler: the kernel runs it
+ * over this loop wherever the loop happens to be, and a pop in the middle of
+ * an update would rebuild the queue from a contact set that is already
+ * stale.  So IPC is held off for the update - and for nothing else: the
+ * trace below writes a file and the system log and must stay outside.
+ * (Never call this from a handler; ipc_disable() does not return there.)
  */
-static void queue_push(uint16_t state, uint16_t x, uint16_t y) {
-    if (_queue_count == TOUCH_QUEUE_SIZE) {
-        /* Full: forget the oldest sample and keep the newest. */
-        memmove(&_queue[0], &_queue[1],
-                (_queue_count - 1) * sizeof(_queue[0]));
-        _queue_count--;
-        _queue_drops++;
-    }
-    _queue[_queue_count].state = state;
-    _queue[_queue_count].x = x;
-    _queue[_queue_count].y = y;
-    _queue_count++;
-    if (_trace_events) {
-        trace_f(_trace_fp, "touch state=%u x=%u y=%u\n", state, x, y);
-        slog("gaokun3 himaxd: touch state=%u x=%u y=%u\n", state, x, y);
+static void publish_contacts(const himax_mt_contact_t* cur) {
+    himax_mt_record_t queued[HIMAX_MT_UPDATE_MAX];
+    unsigned n;
+
+    ipc_disable();
+    n = himax_mt_update(&_mt, cur, queued);
+    ipc_enable();
+
+    if (!_trace_events)
+        return;
+    for (unsigned i = 0; i < n; i++) {
+        const himax_mt_record_t* rec = &queued[i];
+        trace_f(_trace_fp, "touch state=%04x x=%u y=%u\n",
+                rec->state, rec->x, rec->y);
+        slog("gaokun3 himaxd: touch state=%04x x=%u y=%u\n",
+                rec->state, rec->x, rec->y);
     }
 }
 
-static unsigned clamp_u16(int value, unsigned limit) {
-    if (value < 0)
-        return 0;
-    if ((unsigned)value > limit)
-        return limit;
-    return (unsigned)value;
-}
-
-/*
- * Feed one raw frame through the ported pipeline and publish the primary
- * contact.  The /dev/touch0 contract carries a single contact, matching the
- * TW220 driver; further fingers are solved and tracked but not reported.
- */
 /*
  * The raw-report selector can be lost while the daemon is sampling.
  *
@@ -267,6 +248,12 @@ static void keep_raw_out_sel(void) {
 static uint16_t _raw_min, _raw_max, _raw_first;
 static unsigned _raw_above_threshold;
 
+/*
+ * Feed one raw frame through the ported pipeline and publish every stable
+ * contact as a multi-touch edge frame, the stream the TW220 driver emits.
+ * xserverd turns a lone finger back into mouse events, so nothing here
+ * decides what a touch means.
+ */
 static void process_frame(vdevice_t* dev) {
     const uint16_t* raw = (const uint16_t*)(_stream + HIMAX_STREAM_HEADER_BYTES);
     int count;
@@ -307,32 +294,15 @@ static void process_frame(vdevice_t* dev) {
     }
 
     if (report_on) {
-        int first = -1;
-        for (int i = 0; i < HIMAX_MAX_TOUCH; i++) {
-            if (_algo.tracks[i].active && _algo.tracks[i].debounce == 0) {
-                first = i;
-                break;
-            }
-        }
-        if (first >= 0) {
-            _finger_x = (uint16_t)clamp_u16(_algo.tracks[first].x,
-                    TOUCH_X_MAX - 1U);
-            _finger_y = (uint16_t)clamp_u16(_algo.tracks[first].y,
-                    TOUCH_Y_MAX - 1U);
-            queue_push(1, _finger_x, _finger_y);
-            _contacts_seen++;
-            if (!_finger_down)
-                _presses++;
-            _finger_down = true;
-        } else if (_finger_down) {
-            /* Keep the last contact position: xtouch/xserverd only turn a
-             * release into a click near the original press point. */
-            queue_push(0, _finger_x, _finger_y);
-            _finger_down = false;
-            _releases++;
-        }
+        himax_mt_contact_t cur[HIMAX_MT_MAX_CONTACTS];
+
+        _contacts_seen += himax_mt_from_tracks(_algo.tracks, cur,
+                TOUCH_X_MAX - 1U, TOUCH_Y_MAX - 1U);
+        /* A lifted contact is released at its last position: xserverd only
+         * turns a release into a click near the original press point. */
+        publish_contacts(cur);
     }
-    if (_queue_count != 0)
+    if (_mt.count != 0)
         vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
 }
 
@@ -350,8 +320,8 @@ static void write_status(void) {
             "contacts %u presses %u releases %u skipped_pulse %u "
             "duplicates %u torn %u fps %u busy_pct %u\n",
             (unsigned long long)kernel_tic_ms(0), _frames, _invalid_frames,
-            _ready ? 1U : 0U, _queue_count, _contacts_seen, _presses,
-            _releases, _skipped_pulse, _duplicate_frames, _torn_reads,
+            _ready ? 1U : 0U, _mt.count, _contacts_seen, _mt.presses,
+            _mt.releases, _skipped_pulse, _duplicate_frames, _torn_reads,
             _loop_start_ms ? (unsigned)(_frames * 1000ULL /
                     (kernel_tic_ms(0) - _loop_start_ms)) : 0U,
             _loop_busy_us ? (unsigned)(_loop_busy_us * 100ULL /
@@ -568,6 +538,9 @@ static void recover_ic(void) {
     _algo.touch_active = false;
     _algo.touch_start_frames = 0;
     memset(_algo.tracks, 0, sizeof(_algo.tracks));
+    /* The tracks are gone with the reset: lift what was down instead of
+     * leaving it pressed downstream for the whole bring-up. */
+    publish_contacts(NULL);
     _read_failures++;
     _recoveries++;
     /* The selector is re-asserted by the bring-up; force the next probe to
@@ -593,15 +566,11 @@ static void recover_ic(void) {
 
 static int touch_read(vdevice_t* dev, int fd, int from_pid, fsinfo_t* node,
         void* buf, int size, off_t offset, void* p) {
-    touch_record_t* out;
     (void)dev; (void)fd; (void)from_pid; (void)node; (void)offset; (void)p;
-    if (size < (int)sizeof(touch_record_t) || _queue_count == 0)
+    if (size < (int)sizeof(himax_mt_record_t) ||
+            !himax_mt_pop(&_mt, (himax_mt_record_t*)buf))
         return VFS_ERR_RETRY;
-    out = (touch_record_t*)buf;
-    *out = _queue[0];
-    memmove(&_queue[0], &_queue[1], (_queue_count - 1) * sizeof(_queue[0]));
-    _queue_count--;
-    return sizeof(*out);
+    return sizeof(himax_mt_record_t);
 }
 
 
@@ -650,8 +619,8 @@ static char* touch_cmd(vdevice_t* dev, int from_pid, int argc, char** argv,
             "contacts %u presses %u releases %u drops %u duplicates %u torn %u "
             "raw_min %u raw_max %u raw0 %u above_thr %u fps %u busy_pct %u",
             (unsigned long long)kernel_tic_ms(0), _frames, _invalid_frames,
-            _ready ? 1U : 0U, _queue_count, _contacts_seen, _presses,
-            _releases, _queue_drops, _duplicate_frames, _torn_reads,
+            _ready ? 1U : 0U, _mt.count, _contacts_seen, _mt.presses,
+            _mt.releases, _mt.drops, _duplicate_frames, _torn_reads,
             _raw_min, _raw_max, _raw_first, _raw_above_threshold,
             _loop_start_ms ? (unsigned)(_frames * 1000ULL /
                     (kernel_tic_ms(0) - _loop_start_ms)) : 0U,
@@ -673,7 +642,7 @@ static uint32_t touch_poll(vdevice_t* dev, int fd, int from_pid,
      * published on demand instead - see touch_dev_cntl() ("devcmd ... status"), which is
      * driven by a separate diagnostic client, never by the touch client.
      */
-    return _queue_count != 0 ? VFS_EVT_RD : 0;
+    return _mt.count != 0 ? VFS_EVT_RD : 0;
 }
 
 static int touch_loop(vdevice_t* dev, void* p) {
@@ -781,6 +750,8 @@ static int touch_loop(vdevice_t* dev, void* p) {
     } else if (++_silent_rounds >= DEAD_ROUNDS_RECOVER) {
         _silent_rounds = 0;
         recover_ic();
+        if (_mt.count != 0)
+            vfs_wakeup(dev->mnt_info.node, VFS_EVT_RD);
         return 0;
     }
     /* Publish the counters on a fixed cadence whether or not the last record
@@ -874,6 +845,7 @@ int main(int argc, char** argv) {
     _himax = himax_gpio_dev();
     trace_f(_trace_fp, "pid=%u transport=%s\n",
             (unsigned)getpid(), native ? "native-spi" : "gpio");
+    himax_mt_init(&_mt);
     memset(&_algo, 0, sizeof(_algo));
     hx_algo_init_defaults(&_algo);
     /*

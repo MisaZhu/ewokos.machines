@@ -353,7 +353,7 @@ static int sdhci_sdma_init(void)
     ewokos_addr_t v = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
     if (v == 0) {
         _sdma_unavailable = true;
-        klog("sdhci: dma_alloc(%u) failed, staying on PIO\n",
+        slog("sdhci: dma_alloc(%u) failed, staying on PIO\n",
                 (unsigned)SDHCI_SDMA_BOUNCE_SIZE);
         return -1;
     }
@@ -365,7 +365,7 @@ static int sdhci_sdma_init(void)
     if (phys == 0 || phys > SDHCI_BUS_ADDR_MASK) {
         dma_free(0, v);
         _sdma_unavailable = true;
-        klog("sdhci: SDMA bounce phys 0x%x outside 1GB legacy window, staying on PIO\n",
+        slog("sdhci: SDMA bounce phys 0x%x outside 1GB legacy window, staying on PIO\n",
                 phys);
         return -1;
     }
@@ -888,7 +888,7 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *da
         if (stat & SDHCI_INT_ERROR) {
             if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
                 host->flags &= ~USE_SDMA;
-                klog("sdhci: SDMA error status=0x%x, %u consecutive fails -> PIO\n",
+                slog("sdhci: SDMA error status=0x%x, %u consecutive fails -> PIO\n",
                         stat, _sdma_fail_streak);
             }
             return -EIO;
@@ -905,7 +905,7 @@ static int sdhci_transfer_data_sdma(struct sdhci_host *host, struct mmc_data *da
         if (get_timer(start) > SDHCI_SDMA_TIMEOUT_MS) {
             if (++_sdma_fail_streak >= SDHCI_SDMA_FAIL_LIMIT) {
                 host->flags &= ~USE_SDMA;
-                klog("sdhci: SDMA timeout status=0x%x, %u consecutive fails -> PIO\n",
+                slog("sdhci: SDMA timeout status=0x%x, %u consecutive fails -> PIO\n",
                         stat, _sdma_fail_streak);
             }
             return -ETIMEDOUT;
@@ -1028,7 +1028,7 @@ static int sdhci_send_command(struct mmc_cmd *cmd, struct mmc_data *data)
 
         if (!_sdma_path_logged) {
             _sdma_path_logged = true;
-            klog("sdhci: first data xfer path=%s trans_bytes=%d\n",
+            slog("sdhci: first data xfer path=%s trans_bytes=%d\n",
                     use_sdma ? "SDMA" : "PIO", trans_bytes);
         }
 
@@ -1185,7 +1185,7 @@ struct bus_ops* bcm2711_sdhci_init(void)
      * SDHCI_SDMA_FAIL_LIMIT consecutive failures.
      */
     _host.flags |= USE_SDMA;
-    klog("sdhci: USE_SDMA forced on (bcm2711 legacy 0xC0000000 bus alias)\n");
+    slog("sdhci: USE_SDMA forced on (bcm2711 legacy 0xC0000000 bus alias)\n");
 #else
     /* Kill switch: pin the data phase to the proven PIO path. */
     _host.flags &= ~USE_SDMA;

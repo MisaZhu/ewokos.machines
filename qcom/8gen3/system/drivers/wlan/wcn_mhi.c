@@ -702,7 +702,7 @@ int wcn_start(void) {
     w.stage = "QMI-discovery";
     return 0;
 fail:
-    klog("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x BHIE=%08x\n",
+    slog("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x BHIE=%08x\n",
          w.stage, ee(), reg(0x48), reg(w.bhi + 0x2c), reg(w.bhi + 0x30),
          offset_valid(w.bhie, 0x80) ? reg(w.bhie + 0x44) : 0);
     wcn_log("wcn: failed stage=%s ee=%u MHI=%08x BHI=%08x err=%08x\n",

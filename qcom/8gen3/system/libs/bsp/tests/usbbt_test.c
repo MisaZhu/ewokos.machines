@@ -72,7 +72,7 @@ static ssize_t fake_read(int fd,void *p,size_t n) {
 static int fake_close(int fd) { assert(fd==7); return 0; }
 static int fake_usleep(useconds_t us) { now+=(us+999)/1000; return 0; }
 uint64_t kernel_tic_ms(int zone) { (void)zone; return now; }
-void klog(const char *fmt,...) { (void)fmt; }
+void slog(const char *fmt,...) { (void)fmt; }
 bool bsp_usb_xhci_owned(bsp_usb_dev_t *dev) { return dev!=NULL; }
 int bsp_usb_int_in_open(bsp_usb_dev_t *d,uint8_t ep,uint16_t mps,uint8_t iv) {
     (void)d; (void)ep; (void)mps; (void)iv; return 0;

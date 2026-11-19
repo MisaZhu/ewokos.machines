@@ -125,7 +125,7 @@ int bcm283x_auxspi_init(int ch)
     (void)ch;
 
     if(ch == 0){
-        klog("bcm283x_auxspi_init\n");
+        slog("bcm283x_auxspi_init\n");
         bcm283x_gpio_config(SPI1_SCLK, GPIO_FUNC_ALTF4);
         bcm283x_gpio_config(SPI1_MOSI, GPIO_FUNC_ALTF4);
         bcm283x_gpio_config(SPI1_MISO, GPIO_FUNC_ALTF4);
@@ -157,7 +157,7 @@ void bcm283x_auxspi_write16(uint16_t data)
     uint32_t retry = AUXSPI_STALL_TIMEOUT;
     while ((READ32(BCM2835_AUX_SPI_STAT) & BCM2835_AUX_SPI_STAT_TX_FULL) && --retry > 0);
     if (retry == 0) {
-        klog("bcm283x_auxspi_write16: TX FIFO stuck, aborting\n");
+        slog("bcm283x_auxspi_write16: TX FIFO stuck, aborting\n");
         return;
     }
 
@@ -256,7 +256,7 @@ void bcm283x_auxspi_transfer(uint8_t *tx, uint8_t *rx, uint32_t len) {
           (dead clock, peripheral not enabled...), never hang the caller*/
         if (tx_len == prev_tx && rx_len == prev_rx) {
             if (++stall >= AUXSPI_STALL_TIMEOUT) {
-                klog("bcm283x_auxspi_transfer: stall timeout, aborting\n");
+                slog("bcm283x_auxspi_transfer: stall timeout, aborting\n");
                 return;
             }
         } else {

@@ -56,7 +56,7 @@ static int log_vpd_mac_keyword(const uint8_t *vpd, size_t bytes,
                 mac[4] | mac[5]))
             continue;
         memcpy(mac_out, mac, 6);
-        klog("q8b pcied: WLAN PCI VPD NA MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+        slog("q8b pcied: WLAN PCI VPD NA MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         return 1;
     }
@@ -79,7 +79,7 @@ static int log_vpd_mac_strings(const uint8_t *vpd, size_t bytes,
         }
         if (valid && (mac[0] & 1u) == 0 && (mac[0] | mac[1] | mac[2] |
                 mac[3] | mac[4] | mac[5])) {
-            klog("q8b pcied: WLAN PCI VPD MAC text=%02x:%02x:%02x:%02x:%02x:%02x\n",
+            slog("q8b pcied: WLAN PCI VPD MAC text=%02x:%02x:%02x:%02x:%02x:%02x\n",
                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
             memcpy(mac_out, mac, 6);
             return 1;
@@ -94,21 +94,21 @@ static void log_wlan_vpd(q8b_pcie_device_t *d) {
 		return;
 	int ret = q8b_pcie_read_vpd(d, 0, vpd, sizeof(vpd));
 	if (ret == -2) {
-		klog("q8b pcied: WLAN PCI VPD capability absent\n");
+		slog("q8b pcied: WLAN PCI VPD capability absent\n");
 		return;
 	}
 	if (ret) {
-		klog("q8b pcied: WLAN PCI VPD read failed=%d\n", ret);
+		slog("q8b pcied: WLAN PCI VPD read failed=%d\n", ret);
 		return;
 	}
     d->vpd_mac_valid = log_vpd_mac_keyword(vpd, sizeof(vpd), d->vpd_mac) ||
         log_vpd_mac_strings(vpd, sizeof(vpd), d->vpd_mac);
-    klog("q8b pcied: WLAN PCI VPD[0..255]:\n");
+    slog("q8b pcied: WLAN PCI VPD[0..255]:\n");
     for (unsigned off = 0; off < sizeof(vpd); off += 16) {
-		klog("q8b pcied:   %03x:", off);
+		slog("q8b pcied:   %03x:", off);
 		for (unsigned i = 0; i < 16; i++)
-			klog(" %02x", vpd[off + i]);
-		klog("\n");
+			slog(" %02x", vpd[off + i]);
+		slog("\n");
 	}
 }
 
@@ -163,11 +163,11 @@ int main(int argc, char **argv) {
      * pcied again must not reset a live WCN6855 link or publish a second
      * snapshot. */
     if (dev_get_pid(node) >= 0) {
-        klog("q8b pcied: %s already owned, skipping duplicate power-on\n", node);
+        slog("q8b pcied: %s already owned, skipping duplicate power-on\n", node);
         return 0;
     }
 
-    klog("q8b pcied: start, entering PCIe3A/PCIe4 power-on/probe\n");
+    slog("q8b pcied: start, entering PCIe3A/PCIe4 power-on/probe\n");
 
     /* The WCN6855 is invisible until the E-key rail, radio enables, PHY rails,
      * root complex and link are brought up.  Do this before any ECAM walk so
@@ -177,9 +177,9 @@ int main(int argc, char **argv) {
      * link training did not complete. */
     int pcie4_ready = q8b_pcie_power_on(Q8B_PCIE4, 2) == 0;
     if (pcie4_ready)
-        klog("q8b pcied: PCIe4 power-on complete, probing ECAM after endpoint power\n");
+        slog("q8b pcied: PCIe4 power-on complete, probing ECAM after endpoint power\n");
     else
-        klog("q8b pcied: PCIe4 power-on failed; PCIe4 ECAM will remain blocked\n");
+        slog("q8b pcied: PCIe4 power-on failed; PCIe4 ECAM will remain blocked\n");
 
     /* PCIe3A carries the optional QPS615/Ethernet hierarchy.  Do not power it
      * while this service is establishing the WLAN snapshot: its reset/I2C
@@ -188,7 +188,7 @@ int main(int argc, char **argv) {
      * successfully trained PCIe4 link.  Ethernet has no active Q8B client in
      * the current profile; a future Ethernet owner can request PCIe3A through
      * a separate, bounded bring-up path. */
-    klog("q8b pcied: PCIe3A optional path deferred; WLAN snapshot isolated\n");
+    slog("q8b pcied: PCIe3A optional path deferred; WLAN snapshot isolated\n");
 
     /* PCIe4 is the boot-critical path: WLAN must be published before any
      * optional switch hierarchy is touched.  On the current Q8B firmware the
@@ -204,11 +204,11 @@ int main(int argc, char **argv) {
                     Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER |
                     Q8B_PCIE_DISABLE_ASPM | Q8B_PCIE_ASSIGN_RESOURCES);
         if (n < 0)
-            klog("q8b pcied: PCIe4 probe failed; retaining %d firmware device(s)\n",
+            slog("q8b pcied: PCIe4 probe failed; retaining %d firmware device(s)\n",
                     device_count);
         else {
             device_count += n;
-            klog("q8b pcied: PCIe4 probe complete, appended %d device(s)\n", n);
+            slog("q8b pcied: PCIe4 probe complete, appended %d device(s)\n", n);
         }
     }
 
@@ -220,7 +220,7 @@ int main(int argc, char **argv) {
     for (enum q8b_pcie_controller controller = Q8B_PCIE2A;
             controller < Q8B_PCIE3A && device_count < PCIE_MAX_DEVICES;
             controller++) {
-        klog("q8b pcied: probing controller %u (NVMe slots)\n",
+        slog("q8b pcied: probing controller %u (NVMe slots)\n",
                 (unsigned)controller);
         int n = q8b_pcie_probe(controller, devices + device_count,
                 PCIE_MAX_DEVICES - (size_t)device_count,
@@ -229,17 +229,17 @@ int main(int argc, char **argv) {
         if (n > 0)
             device_count += n;
         else if (n == 0)
-            klog("q8b pcied: controller %u probe found no device\n",
+            slog("q8b pcied: controller %u probe found no device\n",
                     (unsigned)controller);
         else if (n < 0)
-            klog("q8b pcied: controller %u ECAM unavailable\n", controller);
+            slog("q8b pcied: controller %u ECAM unavailable\n", controller);
     }
     /* Keep the final immutable snapshot visible on the serial console while
      * validating the host service, including firmware-managed controllers
      * when PCIe4 link training is unavailable. */
     for (int i = 0; i < device_count; i++) {
         q8b_pcie_device_t *d = &devices[i];
-        klog("q8b pcied: fn[%d] pcie%u %02x:%02x.%u %04x:%04x class=%06x sub=%04x:%04x\n",
+        slog("q8b pcied: fn[%d] pcie%u %02x:%02x.%u %04x:%04x class=%06x sub=%04x:%04x\n",
                 i, d->controller, d->bus, d->device, d->function,
                 d->vendor_id, d->device_id, d->class_code,
                 d->subsystem_vendor, d->subsystem_device);
@@ -249,14 +249,14 @@ int main(int argc, char **argv) {
         if (q8b_pcie_is_wlan(d)) {
             wifi++;
             if (d->serial_valid)
-                klog("q8b pcied: WLAN PCIe serial=%016llx\n",
+                slog("q8b pcied: WLAN PCIe serial=%016llx\n",
                         (unsigned long long)d->serial_number);
         }
         log_wlan_vpd(d);
     }
-    klog("q8b pcied: snapshot ethernet_pf=%d wifi=%d\n",
+    slog("q8b pcied: snapshot ethernet_pf=%d wifi=%d\n",
             ethernet_pf, wifi);
-    klog("q8b pcied: host service ready, %d device(s)\n", device_count);
+    slog("q8b pcied: host service ready, %d device(s)\n", device_count);
 
     memset(&dev, 0, sizeof(dev));
     strcpy(dev.desc, "Q8B PCIe host bus");

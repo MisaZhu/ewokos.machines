@@ -293,19 +293,19 @@ static int mouse_init(void) {
         cfg |= I8042_CFG_AUX_IRQ;
         cfg &= ~I8042_CFG_AUX_CLK_DISABLE;
         if (i8042_write_cfg(cfg) != 0) {
-            klog("moused: write cfg fail\n");
+            slog("moused: write cfg fail\n");
             have_cfg = false;
         }
     }
     else {
-        klog("moused: read cfg skip\n");
+        slog("moused: read cfg skip\n");
     }
     if (i8042_write_cmd(I8042_CMD_ENABLE_AUX) != 0) {
-        klog("moused: enable aux fail\n");
+        slog("moused: enable aux fail\n");
         return -1;
     }
     if (ps2_mouse_write(PS2_CMD_SET_DEFAULT) != 0) {
-        klog("moused: set default fail\n");
+        slog("moused: set default fail\n");
         return -1;
     }
 
@@ -321,14 +321,14 @@ static int mouse_init(void) {
     }
 
     if (ps2_mouse_write(PS2_CMD_ENABLE_REPORT) != 0) {
-        klog("moused: enable report fail\n");
+        slog("moused: enable report fail\n");
         return -1;
     }
 
     if (!have_cfg) {
         /* Some QEMU setups do not expose the controller config byte to userland. */
         _polling_mode = true;
-        klog("moused: run without cfg byte\n");
+        slog("moused: run without cfg byte\n");
     }
     else {
         _polling_mode = false;
@@ -385,7 +385,7 @@ int main(int argc, char** argv) {
     const char* mnt_point = argc > 1 ? argv[1] : "/dev/mouse0";
 
     if (mouse_init() != 0) {
-        klog("moused: init failed\n");
+        slog("moused: init failed\n");
         return -1;
     }
 

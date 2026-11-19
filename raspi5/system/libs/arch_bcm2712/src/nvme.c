@@ -294,7 +294,7 @@ static int pcie_find_nvme(uint32_t *out_bus, uint32_t *out_dev,
         }
     }
 
-    klog("nvme: no NVMe controller found on PCIe bus\n");
+    slog("nvme: no NVMe controller found on PCIe bus\n");
     return -NVME_ENODEV;
 }
 
@@ -483,7 +483,7 @@ static int nvme_submit_and_wait(nvme_ctrl_t *ctrl,
             break;
 
         if (ms >= timeout_ms) {
-            klog("nvme: command timeout sqid=%u opcode=0x%02x "
+            slog("nvme: command timeout sqid=%u opcode=0x%02x "
                  "cid=%u cq_head=%u\n",
                  sqid, opcode, cid, *cq_head);
             return -NVME_ETIMEDOUT;
@@ -507,7 +507,7 @@ static int nvme_submit_and_wait(nvme_ctrl_t *ctrl,
     if (status_field != 0) {
         uint8_t sc = status_field & 0xFFU;
         uint8_t sct = (status_field >> 8) & 0x7U;
-        klog("nvme: command failed sqid=%u opcode=0x%02x cid=%u "
+        slog("nvme: command failed sqid=%u opcode=0x%02x cid=%u "
              "cqe_sqid=%u cqe_cid=%u status=0x%04x "
              "sct=%u sc=0x%02x dnr=%u dw0=0x%08x\n",
              sqid, opcode, cid, rsp.sq_id, rsp.cid, rsp.status,
@@ -584,7 +584,7 @@ static int nvme_controller_init(nvme_ctrl_t *ctrl)
 
     if (nvme_wait_ready(ctrl, true, 60000) != 0) {
         uint32_t csts = nvme_reg_read32(ctrl, NVME_REG_CSTS);
-        klog("nvme: controller failed to become ready "
+        slog("nvme: controller failed to become ready "
              "(last CSTS=0x%08x)\n", csts);
         return -NVME_ETIMEDOUT;
     }
@@ -759,7 +759,7 @@ int nvme_init(nvme_ctrl_t *ctrl, void *bar0)
     return 0;
 
 err_disable:
-    klog("nvme: init failed at step %d, shutting down\n", ret);
+    slog("nvme: init failed at step %d, shutting down\n", ret);
     nvme_shutdown(ctrl);
 err_free:
     dma_free(0, (ewokos_addr_t)ctrl->dma_buf);
@@ -1108,7 +1108,7 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
     ewokos_addr_t mapped;
     mapped = syscall3(SYS_MEM_MAP, rctl_va_base, rctl_phy_base, pgsz);
     if (mapped != rctl_va_base) {
-        klog("nvme: SYS_MEM_MAP reset page failed "
+        slog("nvme: SYS_MEM_MAP reset page failed "
              "(va=0x%llx got 0x%llx)\n",
              (unsigned long long)rctl_va_base,
              (unsigned long long)mapped);
@@ -1124,7 +1124,7 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
 
     /* Safety: sub-page offsets must be equal (rp1.c asserts this) */
     if ((rscal_va - rscal_va_base) != (rscal_phy - rscal_phy_base)) {
-        klog("nvme: rescal sub-page offset mismatch "
+        slog("nvme: rescal sub-page offset mismatch "
              "(va_off=0x%llx phy_off=0x%llx)\n",
              (unsigned long long)(rscal_va - rscal_va_base),
              (unsigned long long)(rscal_phy - rscal_phy_base));
@@ -1133,7 +1133,7 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
 
     mapped = syscall3(SYS_MEM_MAP, rscal_va_base, rscal_phy_base, pgsz);
     if (mapped != rscal_va_base) {
-        klog("nvme: SYS_MEM_MAP rescal page failed "
+        slog("nvme: SYS_MEM_MAP rescal page failed "
              "(va=0x%llx got 0x%llx)\n",
              (unsigned long long)rscal_va_base,
              (unsigned long long)mapped);
@@ -1147,7 +1147,7 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
     mapped = syscall3(SYS_MEM_MAP, host_va, PI5_PCIE1_PHY,
               PI5_PCIE1_WIN_SIZE);
     if (mapped != host_va) {
-        klog("nvme: SYS_MEM_MAP pcie1 host window failed "
+        slog("nvme: SYS_MEM_MAP pcie1 host window failed "
              "(va=0x%llx got 0x%llx)\n",
              (unsigned long long)host_va,
              (unsigned long long)mapped);
@@ -1158,7 +1158,7 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
     /* --- 3.  Train pcie1 link (idempotent — skips if already up) --- */
     ret = pcie1_train_link(pcie_host_va, rctl_va, rscal_va);
     if (ret != 0) {
-        klog("nvme: pcie1 link training failed (err=%d)\n", ret);
+        slog("nvme: pcie1 link training failed (err=%d)\n", ret);
         return -NVME_ENODEV;
     }
 
@@ -1201,7 +1201,7 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
               PI5_PCIE1_MEM_WIN_PHY,
               64 * 1024);
     if (mapped != bar0_win_va) {
-        klog("nvme: SYS_MEM_MAP BAR0 failed "
+        slog("nvme: SYS_MEM_MAP BAR0 failed "
              "(va=0x%llx got 0x%llx)\n",
              (unsigned long long)bar0_win_va,
              (unsigned long long)mapped);
@@ -1211,6 +1211,6 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
     /* --- 8.  Initialise the NVMe controller via BAR0 --- */
     ret = nvme_init(ctrl, (void *)bar0_win_va);
     if (ret == 0)
-        klog("nvme: initialisation complete, ready for I/O\n");
+        slog("nvme: initialisation complete, ready for I/O\n");
     return ret;
 }

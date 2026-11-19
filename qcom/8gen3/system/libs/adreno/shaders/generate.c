@@ -6,11 +6,13 @@
 #include "pglcompiler.h"
 
 int main(int argc, char **argv) {
-    if (argc != 4 || (strcmp(argv[1], "blit") && strcmp(argv[1], "raster"))) {
-        fprintf(stderr, "usage: %s blit|raster input.comp output.h\n", argv[0]);
+    if (argc != 4 || (strcmp(argv[1], "blit") && strcmp(argv[1], "raster") &&
+                      strcmp(argv[1], "bin"))) {
+        fprintf(stderr, "usage: %s blit|raster|bin input.comp output.h\n", argv[0]);
         return 1;
     }
     int blit = !strcmp(argv[1], "blit");
+    int bin = !strcmp(argv[1], "bin");
     FILE *in = fopen(argv[2], "rb");
     if (!in) { perror(argv[2]); return 1; }
     fseek(in, 0, SEEK_END);
@@ -30,8 +32,9 @@ int main(int argc, char **argv) {
     }
     free(source);
     const struct pglc_stage *stage = &program.stage[PGLC_STAGE_COMPUTE];
-    const char *names[3] = {blit ? "uPitchOrigin" : "uPitchShape", "uDestination",
-        blit ? "uStep" : "uOperation"};
+    const char *names[3] = {bin ? "uTriViewport" : (blit ? "uPitchOrigin" : "uPitchShape"),
+        bin ? "uBinCells" : "uDestination",
+        bin ? "uBinLayout" : (blit ? "uStep" : "uOperation")};
     /* Driver packs twelve words in this exact order, independent of names. */
     int uniforms_ok = stage->num_uniform_bindings == 3;
     for (unsigned i = 0; i < 3; ++i) {
@@ -54,15 +57,15 @@ int main(int argc, char **argv) {
     if (blob->version != ADRENO_PROG_VERSION || blob->magic != ADRENO_PROG_MAGIC ||
             bytes != sizeof(*blob) + blob->payload_bytes || k->uniform_blob_dwords != 12 ||
             k->num_ssbo != 2 || k->pvtmem_size || k->num_samp ||
-            k->local_size[0] != (blit ? 64u : 16u) ||
-            k->local_size[1] != (blit ? 2u : 8u) || k->local_size[2] != 1) {
+            k->local_size[0] != (blit ? 64u : (bin ? 64u : 16u)) ||
+            k->local_size[1] != (blit ? 2u : (bin ? 1u : 8u)) || k->local_size[2] != 1) {
         fprintf(stderr, "%s: incompatible built-in kernel\n", argv[2]);
         free(data); pglc_program_free(&program); return 1;
     }
     FILE *out = fopen(argv[3], "w");
     if (!out) { perror(argv[3]); free(data); pglc_program_free(&program); return 1; }
-    const char *symbol = blit ? "q8b_2d_blob" : "q8b_raster_blob";
-    const char *prefix = blit ? "Q8B_2D_BLOB" : "Q8B_RASTER_BLOB";
+    const char *symbol = blit ? "q8b_2d_blob" : (bin ? "q8b_bin_blob" : "q8b_raster_blob");
+    const char *prefix = blit ? "Q8B_2D_BLOB" : (bin ? "Q8B_BIN_BLOB" : "Q8B_RASTER_BLOB");
     fprintf(out, "/* Generated from %s.comp; make builtin-shaders in libadreno. */\n", argv[1]);
     fprintf(out, "#define %s_VERSION %uu\n#define %s_HEADER_BYTES %zuu\n", prefix, blob->version, prefix, sizeof(*blob));
     fprintf(out, "static const unsigned char %s[] __attribute__((aligned(8))) = {\n", symbol);

@@ -399,7 +399,7 @@ int main(int argc, char** argv) {
     bcm2712_gpio_pull(_gpio_pwr, GPIO_PULL_UP);
 
     if(bcm2712_i2c_init(PMU_I2C_BUS) != 0) {
-        klog("powerd: i2c%d init failed\n", PMU_I2C_BUS);
+        slog("powerd: i2c%d init failed\n", PMU_I2C_BUS);
         return -1;
     }
     /*
@@ -425,7 +425,7 @@ int main(int argc, char** argv) {
             bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x36,
                     (uint8_t)((pek_key & ~0x3) | 0x3));
         else
-            klog("powerd: no AXP223 answer on i2c%d addr 0x%02x\n",
+            slog("powerd: no AXP223 answer on i2c%d addr 0x%02x\n",
                     PMU_I2C_BUS, PMU_I2C_ADDR);
     }
     bcm2712_i2c_putb(PMU_I2C_BUS, PMU_I2C_ADDR, 0x42, 0x3);

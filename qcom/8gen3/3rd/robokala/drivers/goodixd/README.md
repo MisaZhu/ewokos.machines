@@ -55,12 +55,30 @@ Only `goodixd` owns `/dev/touch0`; the USB touchpad has a separate daemon and
 node. The absolute touchscreen configuration uses `y_rev: true`, verified
 against the display orientation. The `-m` client handles the separate touchpad.
 
-Records contain three `uint16_t` fields: state (1 pressed, 0 released), X and
-Y. The driver reports one contact. Zero-contact release frames have a valid
-header but no payload checksum; stale bytes after their header are ignored.
-Release retains the last contact coordinates so `xtouch`/`xserverd` can
-recognize clicks. Header and nonempty contact payload checksums remain required.
-Normal operation does not log touch coordinates or register dumps.
+Records contain three `uint16_t` fields: state, X and Y in raw panel
+coordinates. Berlin frames carry exactly the active contacts (a contact
+that stops appearing has been lifted); stylus point types are filtered.
+A gesture state machine (`goodix_gesture.c`, host-tested) turns the
+multi-contact stream into single-finger records plus two gestures:
+
+| state | meaning |
+| --- | --- |
+| 0 / 1 | left button up / down (1 also continues a drag) |
+| 2 / 3 | right button down / up: two-finger tap, at the contact midpoint |
+| 4 / 5 | one wheel notch: scroll up / down, from two-finger vertical swipes |
+
+A single finger stays "pending" until it moves past 50 raw pixels (left
+down + drag), is held 100 ms (left down + hold) or lifts (a click), so a
+second finger landing inside that window produces a right click instead
+of a phantom left click. Two-finger midpoint travel is quantized into
+direction-only notches (25 raw pixels each); a release without scrolling
+and within the tap radius is the right click, and the finger left behind
+by staggered lifts is suppressed until every finger lifts. `xtouch`
+translates states 2/3 into right-button events and 4/5 into wheel events
+for the X server. Zero-contact release frames have a valid header but no
+payload checksum; stale bytes after their header are ignored. Header and
+nonempty contact payload checksums remain required. Normal operation does
+not log touch coordinates or register dumps.
 
 ## Validation
 
@@ -69,7 +87,9 @@ make -C machines/q8b/system/drivers goodixd -j4
 sh machines/q8b/system/drivers/goodixd/tests/run.sh
 ```
 
-Host tests cover SPI framing, checksums, packed IC_INFO and contact decoding.
+Host tests cover SPI framing, checksums, packed IC_INFO, contact decoding
+and the gesture state machine (tap, hold, drag, right-click and scroll
+sequences).
 On TW220, firmware ROM PID `BERLIN`, patch PID `7986P` and touch-data address
 `0x00010274` were read successfully. The user verified movement, Y direction,
 selection and activation with both release fixes applied. Cold-boot validation

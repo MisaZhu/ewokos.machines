@@ -47,7 +47,7 @@ static void *check_reads(void *arg) {
         free(buf);
         int bad = strcmp(hex, w->expected) != 0;
         w->failed += bad;
-        klog("usb-read-check: worker=%d round=%d %s md5=%s bytes=%u/%u\n",
+        slog("usb-read-check: worker=%d round=%d %s md5=%s bytes=%u/%u\n",
                 w->id, round + 1, bad ? "FAIL" : "PASS", hex,
                 (unsigned)done, (unsigned)size);
     }
@@ -72,10 +72,10 @@ int main(int argc, char **argv) {
             ready = access(argv[1], R_OK) == 0 && access(argv[3], R_OK) == 0;
             if (!ready) usleep(1000000);
         }
-        if (!ready) { klog("usb-read-check: FAIL root timeout\n"); return 1; }
+        if (!ready) { slog("usb-read-check: FAIL root timeout\n"); return 1; }
         usleep(35000000);
     }
-    klog("usb-read-check: begin rounds=%d\n", rounds);
+    slog("usb-read-check: begin rounds=%d\n", rounds);
     setbuf(stdout, NULL);
     pthread_t threads[4];
     worker_t workers[4];
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
         pthread_join(threads[i], NULL);
         failures += workers[i].failed;
     }
-    klog("usb-read-check: %s workers=%d checks=%d failures=%d\n",
+    slog("usb-read-check: %s workers=%d checks=%d failures=%d\n",
             failures ? "FAIL" : "PASS", started, started * rounds, failures);
     return failures ? 1 : 0;
 }

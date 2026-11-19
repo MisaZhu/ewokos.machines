@@ -561,7 +561,7 @@ static int audio_start_ring_locked(void) {
             rp1_audio_slot_frames() != SOUND_RING_SLOT_FRAMES) {
         ret = rp1_audio_setup_ring(SOUND_RING_SLOTS, SOUND_RING_SLOT_FRAMES);
         if (ret != RP1_AUDIO_ERR_NONE) {
-            klog("soundpwm: rp1 ring setup failed %d\n", ret);
+            slog("soundpwm: rp1 ring setup failed %d\n", ret);
             return -1;
         }
     }
@@ -580,7 +580,7 @@ static int audio_start_ring_locked(void) {
 
     ret = rp1_audio_start();
     if (ret != RP1_AUDIO_ERR_NONE) {
-        klog("soundpwm: rp1 start failed %d\n", ret);
+        slog("soundpwm: rp1 start failed %d\n", ret);
         rp1_audio_teardown_ring();
         return -1;
     }
@@ -1170,7 +1170,7 @@ int main(int argc, char** argv) {
 
     _mmio_base = mmio_map();
     if (_mmio_base == 0) {
-        klog("soundpwm: mmio map failed\n");
+        slog("soundpwm: mmio map failed\n");
         return -1;
     }
 
@@ -1184,7 +1184,7 @@ int main(int argc, char** argv) {
      */
     ret = rp1_audio_init(0);
     if (ret != RP1_AUDIO_ERR_NONE) {
-        klog("soundpwm: rp1 audio init failed %d\n", ret);
+        slog("soundpwm: rp1 audio init failed %d\n", ret);
         return -1;
     }
     audio_update_amp_state();

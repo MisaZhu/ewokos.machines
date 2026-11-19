@@ -234,7 +234,7 @@ static int dma_pool_init(void) {
     _dma_pool.used = 0;
     _dma_pool.virt = dma_alloc(0, _dma_pool.size);
     if (_dma_pool.virt == 0) {
-        klog("dwc2: dma alloc_failed size=%u\n", _dma_pool.size);
+        slog("dwc2: dma alloc_failed size=%u\n", _dma_pool.size);
         return -1;
     }
     _dma_pool.phys = dma_phy_addr(0, _dma_pool.virt);
@@ -605,7 +605,7 @@ static int dwc_host_init(void) {
     uint32_t reg;
 
     if (bcm2835_power_on_usb() != 0) {
-        klog("dwc2: host init power_on_failed\n");
+        slog("dwc2: host init power_on_failed\n");
         return -1;
     }
     usleep(20000);
@@ -629,7 +629,7 @@ static int dwc_host_init(void) {
     usleep(50000);
 
     if (dwc_core_soft_reset() != 0) {
-        klog("dwc2: host init soft_reset_failed\n");
+        slog("dwc2: host init soft_reset_failed\n");
         return -1;
     }
 
@@ -660,7 +660,7 @@ static int dwc_host_init(void) {
     reg &= ~DWC_GOTGCTL_HSTSETHNPEN;
     usb_writel(DWC_REG_GOTGCTL, reg);
     if (dwc_host_halt_all_channels() != 0) {
-        klog("dwc2: host init halt_all_channels_failed\n");
+        slog("dwc2: host init halt_all_channels_failed\n");
         return -1;
     }
     usb_writel(DWC_REG_HAINTMSK, 0);

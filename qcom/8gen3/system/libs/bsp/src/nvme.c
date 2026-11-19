@@ -195,12 +195,12 @@ static int nvme_dma_range_ok(const char *name, uint8_t *va,
 	uint64_t end;
 	if (!va || !pa || !size || (pa & 0xfffu) != 0 ||
 			(pa >> 32) != 0 || pa + size < pa || pa + size > 0x100000000ULL) {
-		klog("nvme: invalid DMA %s va=%p pa=0x%llx size=0x%x\n", name,
+		slog("nvme: invalid DMA %s va=%p pa=0x%llx size=0x%x\n", name,
 			va, (unsigned long long)pa, size);
 		return -1;
 	}
 	end = pa + size;
-	klog("nvme: DMA %s va=%p pa=0x%llx..0x%llx\n", name, va,
+	slog("nvme: DMA %s va=%p pa=0x%llx..0x%llx\n", name, va,
 		(unsigned long long)pa, (unsigned long long)(end - 1));
 	return 0;
 }
@@ -211,7 +211,7 @@ static int nvme_wr32_verify(uint32_t off, uint32_t value, const char *name) {
 	nvme_dmb();
 	actual = nvme_rd32(off);
 	if (actual != value) {
-		klog("nvme: %s write/readback mismatch want=0x%08x got=0x%08x\n",
+		slog("nvme: %s write/readback mismatch want=0x%08x got=0x%08x\n",
 			name, value, actual);
 		return -1;
 	}
@@ -224,7 +224,7 @@ static int nvme_wr64_verify(uint32_t off, uint64_t value, const char *name) {
 	nvme_dmb();
 	actual = nvme_rd64(off);
 	if (actual != value) {
-		klog("nvme: %s write/readback mismatch want=0x%llx got=0x%llx\n",
+		slog("nvme: %s write/readback mismatch want=0x%llx got=0x%llx\n",
 			name, (unsigned long long)value, (unsigned long long)actual);
 		return -1;
 	}
@@ -362,7 +362,7 @@ static int nvme_wait_ready(bool expected, uint32_t timeout_ms) {
 }
 
 static void nvme_log_state(const char *where) {
-	klog("nvme: %s CAP=0x%llx CC=0x%08x CSTS=0x%08x "
+	slog("nvme: %s CAP=0x%llx CC=0x%08x CSTS=0x%08x "
 			"AQA=0x%08x ASQ=0x%llx ACQ=0x%llx\n", where,
 			(unsigned long long)nvme_rd64(NVME_REG_CAP),
 			nvme_rd32(NVME_REG_CC), nvme_rd32(NVME_REG_CSTS),
@@ -402,7 +402,7 @@ static int nvme_submit(nvme_sqe_t* sq, uint16_t* tail, nvme_cqe_t* cq,
 			nvme_dmb();
 			nvme_cq_doorbell(qid, h);
 			if (status != 0) {
-				klog("nvme: cmd 0x%02x cid=%u status=0x%04x\n",
+				slog("nvme: cmd 0x%02x cid=%u status=0x%04x\n",
 						opcode, cid, status);
 				return -1;
 			}
@@ -410,7 +410,7 @@ static int nvme_submit(nvme_sqe_t* sq, uint16_t* tail, nvme_cqe_t* cq,
 		}
 		if ((spins & 0xfffffu) == 0 &&
 				kernel_tic_ms(0) - start > timeout_ms) {
-			klog("nvme: cmd 0x%02x cid=%u timeout CSTS=0x%08x "
+			slog("nvme: cmd 0x%02x cid=%u timeout CSTS=0x%08x "
 					"sq_tail=%u\n", opcode, cid,
 					nvme_rd32(NVME_REG_CSTS), *tail);
 			return -1;
@@ -458,12 +458,12 @@ static int nvme_controller_init(void) {
 		mps = mpsmin;
 	if (mps > mpsmax)
 		mps = mpsmax;
-	klog("nvme: caps mqes=%u dstrd=%u mps=%u..%u to=%u nssrs=%u\n",
+	slog("nvme: caps mqes=%u dstrd=%u mps=%u..%u to=%u nssrs=%u\n",
 			_c.mqes, _c.dstrd, mpsmin, mpsmax,
 			(unsigned)((cap >> NVME_CAP_TO_SHIFT) & 0xffu),
 			(unsigned)((cap >> 36) & 1u));
 	if (_c.dstrd > 7 || _c.mqes + 1u < NVME_ADMIN_QSIZE) {
-		klog("nvme: invalid queue capability dstrd=%u mqes=%u\n",
+		slog("nvme: invalid queue capability dstrd=%u mqes=%u\n",
 				_c.dstrd, _c.mqes);
 		return -1;
 	}
@@ -471,15 +471,15 @@ static int nvme_controller_init(void) {
 		/* 16K kernel pages + controller minimum > 4K: our PRP page size
 		 * assumption would need to follow; reject for now instead of
 		 * corrupting memory. */
-		klog("nvme: unsupported MPS %u\n", mps);
+		slog("nvme: unsupported MPS %u\n", mps);
 		return -1;
 	}
 
 	uint32_t csts = nvme_rd32(NVME_REG_CSTS);
 	uint32_t cc0 = nvme_rd32(NVME_REG_CC);
-	klog("nvme: initial CC=0x%08x CSTS=0x%08x\n", cc0, csts);
+	slog("nvme: initial CC=0x%08x CSTS=0x%08x\n", cc0, csts);
 	if (csts & NVME_CSTS_CFS) {
-		klog("nvme: controller fatal status before enable, resetting\n");
+		slog("nvme: controller fatal status before enable, resetting\n");
 		if ((cap >> 36) & 1u) {
 			nvme_wr32(0x20, 0x4e564d65u);
 			nvme_dmb();
@@ -487,7 +487,7 @@ static int nvme_controller_init(void) {
 		}
 		csts = nvme_rd32(NVME_REG_CSTS);
 		cc0 = nvme_rd32(NVME_REG_CC);
-		klog("nvme: post-fatal-reset CC=0x%08x CSTS=0x%08x\n", cc0, csts);
+		slog("nvme: post-fatal-reset CC=0x%08x CSTS=0x%08x\n", cc0, csts);
 		if (csts & NVME_CSTS_CFS)
 			return -1;
 	}
@@ -495,22 +495,22 @@ static int nvme_controller_init(void) {
 		nvme_wr32(NVME_REG_CC, cc0 & ~NVME_CC_EN);
 		nvme_dmb();
 		if (nvme_wait_ready(false, 10000) != 0) {
-			klog("nvme: disable did not clear RDY, NSSR reset\n");
+			slog("nvme: disable did not clear RDY, NSSR reset\n");
 			/* CAP.NSSRS (bit 36): NVM subsystem reset via NSSR
 			 * register (0x20) magic 0x4e564d65. */
 			if ((cap >> 36) & 1u) {
 				nvme_wr32(0x20, 0x4e564d65u);
 				nvme_dmb();
 				usleep(100000);
-				klog("nvme: after NSSR CSTS=0x%08x\n",
+				slog("nvme: after NSSR CSTS=0x%08x\n",
 						nvme_rd32(NVME_REG_CSTS));
 			}
 			if (nvme_wait_ready(false, 5000) != 0) {
-				klog("nvme: controller stuck enabled\n");
+				slog("nvme: controller stuck enabled\n");
 				return -1;
 			}
 		}
-		klog("nvme: disabled, CSTS=0x%08x\n",
+		slog("nvme: disabled, CSTS=0x%08x\n",
 				nvme_rd32(NVME_REG_CSTS));
 	}
 	/* Do not issue NSSR here.  On the TW220 WDC SN520, CAP.NSSRS is set,
@@ -542,7 +542,7 @@ static int nvme_controller_init(void) {
 		(4u << NVME_CC_IOCQES_SHIFT);
 	if (nvme_wr32_verify(NVME_REG_CC, cc, "CC"))
 		return -1;
-	klog("nvme: enabling CC=0x%08x ASQ=0x%llx ACQ=0x%llx\n", cc,
+	slog("nvme: enabling CC=0x%08x ASQ=0x%llx ACQ=0x%llx\n", cc,
 			(unsigned long long)(_c.ctrl_phys),
 			(unsigned long long)(_c.ctrl_phys + 0x1000));
 	if (nvme_wait_ready(true, 60000) != 0) {
@@ -563,7 +563,7 @@ static int nvme_create_io_queues(void) {
 	sqe.cdw10 = NVME_FEAT_NUM_QUEUES;
 	sqe.cdw11 = 0;
 	if (nvme_admin(&sqe) != 0) {
-		klog("nvme: set num queues failed\n");
+		slog("nvme: set num queues failed\n");
 		return -1;
 	}
 
@@ -574,7 +574,7 @@ static int nvme_create_io_queues(void) {
 	sqe.cdw10 = ((NVME_IO_QSIZE - 1u) << 16) | NVME_IO_CQID;
 	sqe.cdw11 = 1u;                    /* PC=1, IEN=0 (polled) */
 	if (nvme_admin(&sqe) != 0) {
-		klog("nvme: create io cq failed\n");
+		slog("nvme: create io cq failed\n");
 		return -1;
 	}
 
@@ -585,7 +585,7 @@ static int nvme_create_io_queues(void) {
 	sqe.cdw10 = ((NVME_IO_QSIZE - 1u) << 16) | NVME_IO_SQID;
 	sqe.cdw11 = 1u | ((uint32_t)NVME_IO_CQID << 16);
 	if (nvme_admin(&sqe) != 0) {
-		klog("nvme: create io sq failed\n");
+		slog("nvme: create io sq failed\n");
 		return -1;
 	}
 	return 0;
@@ -596,14 +596,14 @@ static int nvme_dma_setup(void) {
 	_c.prp = (uint8_t*)dma_alloc(0, NVME_PRP_SIZE);
 	_c.data = (uint8_t*)dma_alloc(0, NVME_DATA_SIZE);
 	if (_c.ctrl == NULL || _c.prp == NULL || _c.data == NULL) {
-		klog("nvme: dma alloc failed (ctrl=%p prp=%p data=%p)\n",
+		slog("nvme: dma alloc failed (ctrl=%p prp=%p data=%p)\n",
 				_c.ctrl, _c.prp, _c.data);
 		return -1;
 	}
 	_c.ctrl_phys = dma_phy_addr(0, (ewokos_addr_t)_c.ctrl);
 	_c.prp_phys = dma_phy_addr(0, (ewokos_addr_t)_c.prp);
 	_c.data_phys = dma_phy_addr(0, (ewokos_addr_t)_c.data);
-	klog("nvme: dma ctrl=0x%llx prp=0x%llx data=0x%llx\n",
+	slog("nvme: dma ctrl=0x%llx prp=0x%llx data=0x%llx\n",
 			(unsigned long long)_c.ctrl_phys,
 			(unsigned long long)_c.prp_phys,
 			(unsigned long long)_c.data_phys);
@@ -638,7 +638,7 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 	_last_cc = 0;
 	_last_csts = 0;
 	if (dev == NULL || dev->bar0_phys == 0) {
-		klog("nvme: no BAR for device\n");
+		slog("nvme: no BAR for device\n");
 		return -1;
 	}
 
@@ -651,12 +651,12 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 	if (service_device_for_nvme(dev, &pcie_device) != 0 ||
 			q8b_pcie_map_bar(&pcie_device, 0, _c.bar,
 					NVME_BAR_MAP_SIZE) != 0) {
-		klog("nvme: BAR map failed pa=0x%llx\n",
+		slog("nvme: BAR map failed pa=0x%llx\n",
 				(unsigned long long)_c.bar_phys);
 		return -1;
 	}
 	_last_init_stage = NVME_INIT_STAGE_CAP;
-	klog("nvme: BAR ready bus=0x%llx phys=0x%llx va=0x%llx "
+	slog("nvme: BAR ready bus=0x%llx phys=0x%llx va=0x%llx "
 			"size=0x%x cmd=0x%04x\n",
 			(unsigned long long)dev->bar0_bus,
 			(unsigned long long)dev->bar0_phys,
@@ -666,30 +666,30 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 	/* Sanity: CAP must have a sane doorbell stride and MQES. */
 	uint64_t cap = nvme_rd64(NVME_REG_CAP);
 	if (cap == 0 || cap == ~0ull) {
-		klog("nvme: bad CAP=0x%llx\n", (unsigned long long)cap);
+		slog("nvme: bad CAP=0x%llx\n", (unsigned long long)cap);
 		return -1;
 	}
-	klog("nvme: CAP=0x%llx VS=0x%08x slot=%d %d:%d.%d\n",
+	slog("nvme: CAP=0x%llx VS=0x%08x slot=%d %d:%d.%d\n",
 			(unsigned long long)cap, nvme_rd32(NVME_REG_VS),
 			dev->slot, dev->bus, dev->dev, dev->fn);
 
 	if (nvme_dma_setup() != 0) {
 		_last_init_stage = NVME_INIT_STAGE_DMA;
-		klog("nvme: init stage=dma_setup failed\n");
+		slog("nvme: init stage=dma_setup failed\n");
 		return -1;
 	}
 	_last_init_stage = NVME_INIT_STAGE_CONTROLLER;
 	if (nvme_controller_init() != 0) {
 		_last_cc = nvme_rd32(NVME_REG_CC);
 		_last_csts = nvme_rd32(NVME_REG_CSTS);
-		klog("nvme: init stage=controller failed\n");
+		slog("nvme: init stage=controller failed\n");
 		return -1;
 	}
 	_last_init_stage = NVME_INIT_STAGE_IDENTIFY_CONTROLLER;
 	if (nvme_admin_identify(0, NVME_IDENTIFY_CTRL, idbuf, sizeof(idbuf)) != 0) {
 		_last_cc = nvme_rd32(NVME_REG_CC);
 		_last_csts = nvme_rd32(NVME_REG_CSTS);
-		klog("nvme: init stage=identify-controller failed\n");
+		slog("nvme: init stage=identify-controller failed\n");
 		return -1;
 	}
 
@@ -712,14 +712,14 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 		_info.serial[i] = 0;
 
 	if (nn == 0) {
-		klog("nvme: controller reports no namespaces\n");
+		slog("nvme: controller reports no namespaces\n");
 		return -1;
 	}
 	if (nvme_admin_identify(1, NVME_IDENTIFY_NS, idbuf, sizeof(idbuf)) != 0) {
 		_last_init_stage = NVME_INIT_STAGE_IDENTIFY_NAMESPACE;
 		_last_cc = nvme_rd32(NVME_REG_CC);
 		_last_csts = nvme_rd32(NVME_REG_CSTS);
-		klog("nvme: init stage=identify-namespace failed\n");
+		slog("nvme: init stage=identify-namespace failed\n");
 		return -1;
 	}
 
@@ -763,14 +763,14 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 		_last_init_stage = NVME_INIT_STAGE_IO_QUEUES;
 		_last_cc = nvme_rd32(NVME_REG_CC);
 		_last_csts = nvme_rd32(NVME_REG_CSTS);
-		klog("nvme: init stage=io-queues failed\n");
+		slog("nvme: init stage=io-queues failed\n");
 		return -1;
 	}
 
 	_c.opened = true;
 	if (info)
 		*info = _info;
-	klog("nvme: ready %s nsze=%llu bs=%u max_xfer=%u qd=%u\n",
+	slog("nvme: ready %s nsze=%llu bs=%u max_xfer=%u qd=%u\n",
 			_info.model, (unsigned long long)nsze, _info.block_size,
 			_info.max_xfer, NVME_IO_QSIZE);
 	return 0;
@@ -1178,7 +1178,7 @@ static int nvme_batch_reap(uint32_t slot, uint32_t count) {
 			_c.iocq_head = h;
 			_c.slot_seen[(cid >> 8) & 1u]++;
 			if (status != 0) {
-				klog("nvme: read status=0x%04x cid=%u\n",
+				slog("nvme: read status=0x%04x cid=%u\n",
 						status, cid);
 				nvme_cq_doorbell(NVME_IO_SQID, h);
 				return -1;
@@ -1187,7 +1187,7 @@ static int nvme_batch_reap(uint32_t slot, uint32_t count) {
 		}
 		if ((++spins & 0xfffffu) == 0 &&
 				kernel_tic_ms(0) - start > 5000) {
-			klog("nvme: batch timeout slot=%u seen=%u/%u\n",
+			slog("nvme: batch timeout slot=%u seen=%u/%u\n",
 					slot, _c.slot_seen[slot], count);
 			return -1;
 		}

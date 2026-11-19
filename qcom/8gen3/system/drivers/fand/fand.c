@@ -131,7 +131,7 @@ static int tsens_init(void) {
     ver = srot_read(SROT_VER);
     ctrl = srot_read(SROT_CTRL);
     period = srot_read(SROT_PERIOD);
-    klog("q8b fand: srot ver=%08x ctrl=%08x period=%08x\n",
+    slog("q8b fand: srot ver=%08x ctrl=%08x period=%08x\n",
             (unsigned)ver, (unsigned)ctrl, (unsigned)period);
     if (ver == 0U || ver == 0xffffffffU)
         return -1;
@@ -140,7 +140,7 @@ static int tsens_init(void) {
         /* AOP did not enable TSENS.  Writing SROT or touching the TM block
          * in this state hangs the interconnect (verified on Q8B), so stay
          * strictly read-only and let the caller use a safe fixed duty. */
-        klog("q8b fand: tsens disabled by AOP; fixed duty, TM untouched\n");
+        slog("q8b fand: tsens disabled by AOP; fixed duty, TM untouched\n");
         return -1;
     }
 
@@ -149,7 +149,7 @@ static int tsens_init(void) {
             break;
         usleep(1000);
     }
-    klog("q8b fand: trdy=%08x\n",
+    slog("q8b fand: trdy=%08x\n",
             (unsigned)_tsens_tm[TSENS_TRDY / sizeof(uint32_t)]);
     return 0;
 }
@@ -379,43 +379,43 @@ static int fan_dcntl(vdevice_t* dev, int from_pid, int cmd, proto_t* in,
 
 static void test_gpio(void) {
     if (map_at(TLMM_VA, TLMM_PHY, TLMM_SIZE) != 0) {
-        klog("q8b fand: gpio map failed\n");
+        slog("q8b fand: gpio map failed\n");
         return;
     }
     _tlmm = (volatile uint32_t*)(uintptr_t)TLMM_VA;
-    klog("q8b fand: gpio init\n");
+    slog("q8b fand: gpio init\n");
     fan_gpio_init();
     for (int i = 0; i < 6; i++) {
-        klog("q8b fand: gpio on %d\n", i);
+        slog("q8b fand: gpio on %d\n", i);
         fan_gpio_set(true);
         usleep(300000);
-        klog("q8b fand: gpio off %d\n", i);
+        slog("q8b fand: gpio off %d\n", i);
         fan_gpio_set(false);
         usleep(300000);
     }
-    klog("q8b fand: gpio test done\n");
+    slog("q8b fand: gpio test done\n");
 }
 
 static void test_tsens(void) {
     if (map_at(TSENS_VA, TSENS_TM_PHY, TSENS_SIZE) != 0 ||
             map_at(TSENS_SROT_VA, TSENS_SROT_PHY, TSENS_SROT_SIZE) != 0) {
-        klog("q8b fand: tsens map failed\n");
+        slog("q8b fand: tsens map failed\n");
         return;
     }
     _tsens_tm = (volatile uint32_t*)(uintptr_t)TSENS_VA;
     _tsens_srot = (volatile uint32_t*)(uintptr_t)TSENS_SROT_VA;
-    klog("q8b fand: tsens test start (read-only)\n");
+    slog("q8b fand: tsens test start (read-only)\n");
     if (tsens_init() != 0) {
-        klog("q8b fand: tsens unavailable; TM not touched\n");
+        slog("q8b fand: tsens unavailable; TM not touched\n");
         return;
     }
     for (uint32_t sensor = 1; sensor <= 9; sensor++) {
         uint32_t st = _tsens_tm[(TSENS_STATUS + sensor * 4U) /
                 sizeof(uint32_t)];
-        klog("q8b fand: sensor %u status=%08x\n", (unsigned)sensor,
+        slog("q8b fand: sensor %u status=%08x\n", (unsigned)sensor,
                 (unsigned)st);
     }
-    klog("q8b fand: tsens test done\n");
+    slog("q8b fand: tsens test done\n");
 }
 
 int main(int argc, char** argv) {
@@ -437,7 +437,7 @@ int main(int argc, char** argv) {
     if (map_at(TLMM_VA, TLMM_PHY, TLMM_SIZE) != 0 ||
             (!fixed && (map_at(TSENS_VA, TSENS_TM_PHY, TSENS_SIZE) != 0 ||
             map_at(TSENS_SROT_VA, TSENS_SROT_PHY, TSENS_SROT_SIZE) != 0))) {
-        klog("q8b fand: MMIO map failed; fan left off\n");
+        slog("q8b fand: MMIO map failed; fan left off\n");
         return -1;
     }
     _tlmm = (volatile uint32_t*)(uintptr_t)TLMM_VA;
@@ -449,14 +449,14 @@ int main(int argc, char** argv) {
     fan_gpio_init();
     if (fixed) {
         _automatic = false;
-        klog("q8b fand: fixed full duty; TSENS not mapped or accessed\n");
+        slog("q8b fand: fixed full duty; TSENS not mapped or accessed\n");
     } else if (tsens_init() == 0)
         _tsens_ok = 1;
     else
-        klog("q8b fand: no safe TSENS; fixed duty mode\n");
+        slog("q8b fand: no safe TSENS; fixed duty mode\n");
     fan_set_duty_locked(fixed ? FAN_SAFE_DUTY : FAN_DEFAULT_LEVEL * 100 / FAN_LEVEL_MAX);
     if (pthread_create(&_worker, NULL, fan_worker, NULL) != 0) {
-        klog("q8b fand: worker create failed\n");
+        slog("q8b fand: worker create failed\n");
         fan_gpio_set(false);
         return -1;
     }

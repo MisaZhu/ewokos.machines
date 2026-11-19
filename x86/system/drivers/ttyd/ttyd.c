@@ -215,7 +215,7 @@ static int tty_loop(vdevice_t* dev, void* p) {
     /* 丢弃统计 1Hz 上报 (只在有丢弃时输出): 真机据此确认 TX 洪水来源 */
     if (_tx_dropped != _tx_drop_reported) {
         _tx_drop_reported = _tx_dropped;
-        klog("ttyd: tx dropped %u chars total (serial slower than write stream)\n",
+        slog("ttyd: tx dropped %u chars total (serial slower than write stream)\n",
                 _tx_dropped);
     }
     /*

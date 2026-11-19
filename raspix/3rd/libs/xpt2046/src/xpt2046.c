@@ -17,7 +17,7 @@ static int32_t _x, _y;
 static void TP_init(void) {
     _down = false;
     _x = _y = 0;
-    //klog("tp_init\n");
+    //slog("tp_init\n");
     bsp_spi_set_div(SPI_DIV);
     bsp_spi_select(SPI_SELECT_0);
 
@@ -25,7 +25,7 @@ static void TP_init(void) {
     bsp_gpio_config(TP_IRQ, GPIO_FUNC_INPUT);
     bsp_gpio_pull(TP_IRQ, GPIO_PULL_UP);
     bsp_gpio_write(TP_CS, 1); // prevent blockage of the SPI bus
-    //klog("tp_init done\n");
+    //slog("tp_init done\n");
 }
 
 static inline uint16_t bsp_spi_transfer16(uint16_t data) {

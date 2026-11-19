@@ -33,7 +33,7 @@ int iwlm_scan_config_send(struct iwlm_dev *d)
     struct iwl_scan_config cfg;
 
     if (!iwlm_fw_has_api(d, IWL_UCODE_TLV_API_REDUCED_SCAN_CONFIG)) {
-        klog("iwlm: no REDUCED_SCAN_CONFIG api, SCAN_CFG skipped\n");
+        slog("iwlm: no REDUCED_SCAN_CONFIG api, SCAN_CFG skipped\n");
         return 0;
     }
 
@@ -107,7 +107,7 @@ int iwlm_mvm_scan_start(struct iwlm_dev *d)
     int ret;
 
     if (ver < 14) {
-        klog("iwlm: scan: fw cmd ver %u unsupported (need >= 14)\n", ver);
+        slog("iwlm: scan: fw cmd ver %u unsupported (need >= 14)\n", ver);
         return -1;
     }
 
@@ -166,7 +166,7 @@ int iwlm_mvm_scan_start(struct iwlm_dev *d)
 
     ret = iwlm_trans_send_cmd_pdu(d, 0, SCAN_REQ_UMAC, &req, sizeof(req));
     if (ret) {
-        klog("iwlm: SCAN_REQ_UMAC failed (%d)\n", ret);
+        slog("iwlm: SCAN_REQ_UMAC failed (%d)\n", ret);
         return ret;
     }
     d->state = IWLM_STATE_SCANNING;

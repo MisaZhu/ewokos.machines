@@ -44,17 +44,17 @@ int wiringPiSPIDataRW(int channel, uint8_t *data, int size){
 }
 
 int wiringPiI2CWriteReg8(int fd, uint8_t addr, uint8_t val){
-    klog("not support\n");
+    slog("not support\n");
     return -1;
 }
 
 uint8_t wiringPiI2CReadReg8(int fd, uint8_t addr){
-    klog("not support\n");
+    slog("not support\n");
     return -1;
 }
 
 int wiringPiI2CSetup(uint8_t addr){
-    klog("not support\n");
+    slog("not support\n");
     return -1;
 }
 

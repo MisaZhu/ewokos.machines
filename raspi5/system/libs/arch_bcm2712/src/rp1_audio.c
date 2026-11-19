@@ -364,7 +364,7 @@ static int pll_audio_core_enable(void) {
             return RP1_AUDIO_ERR_NONE;
         usleep(PLL_LOCK_POLL_US);
     }
-    klog("rp1-audio: PLL_AUDIO_CORE never locked cs=%08x pwr=%08x int=%u frac=%u\n",
+    slog("rp1-audio: PLL_AUDIO_CORE never locked cs=%08x pwr=%08x int=%u frac=%u\n",
             clk_get32(PLL_AUDIO_CS), clk_get32(PLL_AUDIO_PWR),
             clk_get32(PLL_AUDIO_FBDIV_INT), clk_get32(PLL_AUDIO_FBDIV_FRAC));
     return RP1_AUDIO_ERR_CLOCK;
@@ -376,7 +376,7 @@ static void pll_audio_sec_enable(void) {
     if (!(sec & PLL_SEC_IMPL)) {
         /* rp1_pll_divider_on() only WARNs here; the SEC output may still be
            wired up by the RP1 firmware, so carry on */
-        klog("rp1-audio: PLL_AUDIO_SEC impl bit clear ctrl=%08x\n", sec);
+        slog("rp1-audio: PLL_AUDIO_SEC impl bit clear ctrl=%08x\n", sec);
     }
     sec = (sec & ~PLL_SEC_DIV_MASK) |
             FIELD(PLL_AUDIO_SEC_DIV_VAL, PLL_SEC_DIV_MASK, PLL_SEC_DIV_SHIFT);
@@ -542,7 +542,7 @@ static int dmac_hw_init(void) {
             break;
     }
     if (n >= DMAC_RESET_POLL_MAX) {
-        klog("rp1-audio: DMAC failed to reset\n");
+        slog("rp1-audio: DMAC failed to reset\n");
         return RP1_AUDIO_ERR_DMA_RST;
     }
 
@@ -602,13 +602,13 @@ static int audio_map_windows(void) {
     if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)sysinfo.mmio.v_base,
             (ewokos_addr_t)sysinfo.mmio.phy_base,
             (ewokos_addr_t)sysinfo.mmio.size) != sysinfo.mmio.v_base) {
-        klog("rp1-audio: main MMIO map failed\n");
+        slog("rp1-audio: main MMIO map failed\n");
         return RP1_AUDIO_ERR_MAP;
     }
     ewokos_addr_t rp1_vbase = _mmio_base + PI5_RP1_WIN_OFF;
     if (syscall3(SYS_MEM_MAP, rp1_vbase, PI5_RP1_PHY, PI5_RP1_WIN_SIZE)
             != rp1_vbase) {
-        klog("rp1-audio: RP1 window map failed\n");
+        slog("rp1-audio: RP1 window map failed\n");
         return RP1_AUDIO_ERR_MAP;
     }
 
@@ -632,7 +632,7 @@ int rp1_audio_init(uint32_t flags) {
     /* RP1's BARs and the PCIe2 link must be live before any of this reads */
     ret = bcm2712_rp1_init();
     if (ret != 0) {
-        klog("rp1-audio: rp1 pcie init failed ret=%d\n", ret);
+        slog("rp1-audio: rp1 pcie init failed ret=%d\n", ret);
         return RP1_AUDIO_ERR_RP1;
     }
 
@@ -680,12 +680,12 @@ int rp1_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     /* over-allocate one alignment unit, dma_alloc() only guarantees a page */
     ewokos_addr_t raw = dma_alloc(0, total + RP1_LLI_ALIGN);
     if (raw == 0) {
-        klog("rp1-audio: ring dma_alloc(%u) failed\n", total + RP1_LLI_ALIGN);
+        slog("rp1-audio: ring dma_alloc(%u) failed\n", total + RP1_LLI_ALIGN);
         return RP1_AUDIO_ERR_DMA_MEM;
     }
     ewokos_addr_t phy = dma_phy_addr(0, raw);
     if (phy == 0) {
-        klog("rp1-audio: ring dma_phy_addr failed\n");
+        slog("rp1-audio: ring dma_phy_addr failed\n");
         dma_free(0, raw);
         return RP1_AUDIO_ERR_DMA_MEM;
     }
@@ -707,7 +707,7 @@ int rp1_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     dmac_build_ctl(_slots_bus, buf_bytes / slots);
     /* snps,block-size is 0x40000 for every channel */
     if (_lli_block_ts == 0 || _lli_block_ts > 0x40000u) {
-        klog("rp1-audio: slot block_ts %u out of range\n", _lli_block_ts);
+        slog("rp1-audio: slot block_ts %u out of range\n", _lli_block_ts);
         rp1_audio_teardown_ring();
         return RP1_AUDIO_ERR_PARAM;
     }
@@ -797,7 +797,7 @@ int rp1_audio_start(void) {
     dmac_chan_enable(AUDIO_DMA_CHANNEL);
     _running = dmac_chan_enabled(AUDIO_DMA_CHANNEL);
     if (!_running) {
-        klog("rp1-audio: channel %u refused to start chen=%08x\n",
+        slog("rp1-audio: channel %u refused to start chen=%08x\n",
                 AUDIO_DMA_CHANNEL, dmac_get32(DMAC_CHEN));
         return RP1_AUDIO_ERR_STATE;
     }
@@ -820,7 +820,7 @@ void rp1_audio_stop(void) {
             usleep(DMAC_STOP_POLL_US);
         }
         if (dmac_chan_enabled(AUDIO_DMA_CHANNEL))
-            klog("rp1-audio: channel %u failed to stop chen=%08x status=%08x\n",
+            slog("rp1-audio: channel %u failed to stop chen=%08x status=%08x\n",
                     AUDIO_DMA_CHANNEL, dmac_get32(DMAC_CHEN),
                     get32(dmac_chan_base(AUDIO_DMA_CHANNEL) + CH_STATUS));
     }

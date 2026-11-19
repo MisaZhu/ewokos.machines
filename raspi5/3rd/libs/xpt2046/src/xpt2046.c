@@ -19,7 +19,7 @@ static int32_t _x, _y;
 static void TP_init(void) {
     _down = false;
     _x = _y = 0;
-    //klog("tp_init\n");
+    //slog("tp_init\n");
     bsp_spi_set_div(SPI_DIV);
     if(SPI_SELECT_LINE >= 0) {
         bsp_spi_select(SPI_SELECT_LINE);
@@ -33,7 +33,7 @@ static void TP_init(void) {
     if(SPI_SELECT_LINE < 0) {
         bsp_gpio_write(TP_CS, 1); // prevent blockage of the SPI bus
     }
-    //klog("tp_init done\n");
+    //slog("tp_init done\n");
 }
 
 static inline uint16_t bsp_spi_transfer16(uint16_t data) {
@@ -100,7 +100,7 @@ int xpt2046_read(uint16_t* press,  uint16_t* x, uint16_t* y) {
         _x = *x;
         _y = *y;
         /* per-sample log floods the console under the 100Hz sampler loop
-        klog("tp: x=%d, y=%d\n", _x, _y);
+        slog("tp: x=%d, y=%d\n", _x, _y);
         */
     }
     else {  //release

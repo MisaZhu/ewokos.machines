@@ -264,7 +264,7 @@ static int xhci_bring_up(void) {
     int found = 0;
 
     if (xhci_dma_init() != 0) {
-        klog("bsp_usb: xhci dma init failed, no xhci\n");
+        slog("bsp_usb: xhci dma init failed, no xhci\n");
         return 0;
     }
 
@@ -315,7 +315,7 @@ static int xhci_bring_up(void) {
                 va = XHCI_BAR_VA_BASE + (uint32_t)found * XHCI_BAR_MAP_SIZE;
                 if (syscall3(SYS_MEM_MAP, va, (ewokos_addr_t)bar,
                         XHCI_BAR_MAP_SIZE) != va) {
-                    klog("bsp_usb: xhci %02x:%02x.%x map bar %llx failed\n",
+                    slog("bsp_usb: xhci %02x:%02x.%x map bar %llx failed\n",
                             bus, dev, func, (unsigned long long)bar);
                     continue;
                 }
@@ -343,12 +343,12 @@ int bsp_usb_init(void) {
 
     uhci_init(); /* degrades to zero ports, never fails */
     if (uhci_port_count() == 0) {
-        klog("bsp_usb: no uhci controller found\n");
+        slog("bsp_usb: no uhci controller found\n");
     }
 
     xhci_bring_up(); /* degrades to zero controllers, never fails */
     if (uhci_port_count() == 0 && xhci_port_count() == 0) {
-        klog("bsp_usb: no usb controller found, running without usb\n");
+        slog("bsp_usb: no usb controller found, running without usb\n");
     }
     return 0;
 }
@@ -375,7 +375,7 @@ int bsp_usb_reinit(void) {
                 _xhc_dirty[i] = true;
             }
             else if (was) {
-                klog("bsp_usb: xhci%d reinit failed\n", i);
+                slog("bsp_usb: xhci%d reinit failed\n", i);
             }
         }
     }
@@ -543,7 +543,7 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
         if (xhci_device_attach(hc, hc_port, speed_to_xhci(speed),
                 parent_hub != NULL ? &parent_hub->xdev : NULL, hub_port,
                 &dev->xdev) != 0) {
-            klog("bsp_usb: xhci attach failed port=%d speed=%d\n",
+            slog("bsp_usb: xhci attach failed port=%d speed=%d\n",
                     root_port, speed);
             return NULL;
         }
@@ -568,7 +568,7 @@ bsp_usb_dev_t* bsp_usb_device_attach(int root_port, int speed,
     setup.wValue = addr;
     if (uhci_control_xfer(flat, speed == BSP_USB_SPEED_LOW, 0, 8,
             &setup, NULL, false) < 0) {
-        klog("bsp_usb: uhci set_address failed flat=%d speed=%d\n", flat, speed);
+        slog("bsp_usb: uhci set_address failed flat=%d speed=%d\n", flat, speed);
         return NULL;
     }
     usleep(10000); /* USB spec: new address is valid after 2ms */
@@ -954,7 +954,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     cdb[4] = sizeof(inquiry);
     memset(inquiry, 0, sizeof(inquiry));
     if (usb_msc_command(cdb, 6, true, inquiry, sizeof(inquiry)) != 0) {
-        klog("bsp_usb: msc inquiry_failed addr=%u\n", dev->addr);
+        slog("bsp_usb: msc inquiry_failed addr=%u\n", dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
@@ -969,7 +969,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
             usleep(100000);
         }
         if (ready != 0) {
-            klog("bsp_usb: msc not_ready addr=%u\n", dev->addr);
+            slog("bsp_usb: msc not_ready addr=%u\n", dev->addr);
             memset(&_msc, 0, sizeof(_msc));
             return -1;
         }
@@ -979,7 +979,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     cdb[0] = SCSI_OPCODE_READ_CAPACITY10;
     memset(capacity, 0, sizeof(capacity));
     if (usb_msc_command(cdb, 10, true, capacity, sizeof(capacity)) != 0) {
-        klog("bsp_usb: msc read_capacity_failed addr=%u\n", dev->addr);
+        slog("bsp_usb: msc read_capacity_failed addr=%u\n", dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
     }
@@ -987,7 +987,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
     _msc.sector_count = be32(capacity) + 1u;
     _msc.sector_size = be32(capacity + 4);
     if (_msc.sector_size != USB_MSC_SECTOR_SIZE) {
-        klog("bsp_usb: msc unsupported_sector_size=%u addr=%u\n",
+        slog("bsp_usb: msc unsupported_sector_size=%u addr=%u\n",
                 _msc.sector_size, dev->addr);
         memset(&_msc, 0, sizeof(_msc));
         return -1;
@@ -1005,7 +1005,7 @@ static int msc_attach(bsp_usb_dev_t* dev, uint8_t iface_num,
 static void msc_mount_spawn(void) {
     fsinfo_t mnt_info;
     if (vfs_get_by_name("/mnt/udisk0", &mnt_info) == 0) {
-        klog("bsp_usb: msc mount busy, /mnt/udisk0 still mounted\n");
+        slog("bsp_usb: msc mount busy, /mnt/udisk0 still mounted\n");
         return;
     }
     int pid = fork();
@@ -1019,7 +1019,7 @@ static void msc_mount_spawn(void) {
         _msc.child_pid = pid;
     }
     else {
-        klog("bsp_usb: msc mount_fork_failed\n");
+        slog("bsp_usb: msc mount_fork_failed\n");
     }
 }
 

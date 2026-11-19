@@ -18,9 +18,9 @@ extern struct bus_ops* bcm2711_sdhci_init(void);
 
 int mmc_send_cmd(struct mmc *mmc, struct mmc_cmd *cmd, struct mmc_data *data){
     (void)mmc;
-    //klog("cmd %d arg: %x\n", cmd->cmdidx, cmd->cmdarg);
+    //slog("cmd %d arg: %x\n", cmd->cmdidx, cmd->cmdarg);
     int ret = mmc->ops->send_command(cmd, data); 
-    //klog("ret:%d resp:%x %x %x %x\n", ret, cmd->response[0], cmd->response[1], cmd->response[2], cmd->response[3]);
+    //slog("ret:%d resp:%x %x %x %x\n", ret, cmd->response[0], cmd->response[1], cmd->response[2], cmd->response[3]);
     return ret;
 }
 
@@ -306,7 +306,7 @@ retry:
     if (err == -ETIMEDOUT) {
         err = mmc_send_op_cond(mmc);
         if (err) {
-            klog("Card did not respond to voltage select! : %d\n", err);
+            slog("Card did not respond to voltage select! : %d\n", err);
             return -EOPNOTSUPP;
         }
     }
@@ -470,13 +470,13 @@ static int mmc_switch(struct mmc *mmc, int mode)
         return ret;
 
     if(!(buf[13] & mode_bit)){
-        klog("mmc_switch: mode %d failed\n", mode);
+        slog("mmc_switch: mode %d failed\n", mode);
         return -EINVAL;
     }
 
     if((buf[16] & 0xf) == mode){
         mmc->selected_mode = target_mode;
-        klog("mmc_switch: mode %d success\n", mode);
+        slog("mmc_switch: mode %d success\n", mode);
         return 0;
     }
 
@@ -491,7 +491,7 @@ do_retry:
     cmd.cmdarg = mode | (0x1 << 31)| 0xfffff0;
     ret = mmc_send_cmd(mmc, &cmd, &data);
     if(ret){
-        klog("mmc_switch:  failed\n");
+        slog("mmc_switch:  failed\n");
         return -EINVAL;
     }	
 
@@ -502,7 +502,7 @@ do_retry:
     }
 
     if((buf[16] & 0xf) == 0xf){
-        klog("mmc_switch: mode %d error\n", mode);
+        slog("mmc_switch: mode %d error\n", mode);
         return -EINVAL;
     }
     if(retry-- > 0)	
@@ -625,7 +625,7 @@ static int mmc_startup(struct mmc *mmc)
         cmd.cmdarg = (mmc->dsr & 0xffff) << 16;
         cmd.resp_type = MMC_RSP_NONE;
         if (mmc_send_cmd(mmc, &cmd, NULL))
-            klog("MMC: SET_DSR failed\n");
+            slog("MMC: SET_DSR failed\n");
     }
 
     /* Select the card, and put it into Transfer Mode */
@@ -695,7 +695,7 @@ int mmc_init(int pi4){
     if (pi4) {
         ret = mmc_switch(&_mmc, UHS_SDR25);
         if(ret) {
-            klog("mmc_init: keep legacy timing, switch to SDR25 failed: %d\n", ret);
+            slog("mmc_init: keep legacy timing, switch to SDR25 failed: %d\n", ret);
             ret = 0;
         }
     }
@@ -739,11 +739,11 @@ retry_read:
         mmc_send_cmd(&_mmc, &stop, NULL);
         mmc_poll_for_busy(&_mmc, 5000);
         if (--retries > 0) {
-            klog("mmc_read: sec %u cnt %u failed, retrying (%d left)\n",
+            slog("mmc_read: sec %u cnt %u failed, retrying (%d left)\n",
                  start, blkcnt, retries);
             goto retry_read;
         }
-        klog("mmc_read: FAILED for good (sec %u cnt %u)\n", start, blkcnt);
+        slog("mmc_read: FAILED for good (sec %u cnt %u)\n", start, blkcnt);
         return 0;
     }
 
@@ -807,7 +807,7 @@ uint32_t mmc_erase_blocks(struct mmc *mmc, uint32_t start, uint32_t blkcnt)
     return 0;
 
 err_out:
-    klog("mmc erase failed\n");
+    slog("mmc erase failed\n");
     return err;
 }
 
@@ -841,7 +841,7 @@ retry_write:
     data.flags = MMC_DATA_WRITE;
 
     if (mmc_send_cmd(&_mmc, &cmd, &data)) {
-        klog("mmc_write: data phase FAILED (sec %u, resp0 0x%x)\n",
+        slog("mmc_write: data phase FAILED (sec %u, resp0 0x%x)\n",
                 start, cmd.response[0]);
         /* Per the SD spec error recovery sequence: a failed write data
          * phase can leave the card in the rcv/data state, where it will
@@ -860,7 +860,7 @@ retry_write:
          * default-speed (always-safe) timing and retry once. */
         if (!downgraded && _mmc.selected_mode == UHS_SDR25) {
             downgraded = 1;
-            klog("mmc_write: HS failed, falling back to 25MHz\n");
+            slog("mmc_write: HS failed, falling back to 25MHz\n");
             _mmc.clock = 25000000;
             _mmc.selected_mode = MMC_LEGACY;
             if (_mmc.ops->set_ios(&_mmc) == 0) {
@@ -868,7 +868,7 @@ retry_write:
                 goto retry_write;
             }
         }
-        klog("mmc_write: FAILED for good (sec %u)\n", start);
+        slog("mmc_write: FAILED for good (sec %u)\n", start);
         return 0;
     }
 
@@ -880,7 +880,7 @@ retry_write:
         cmd.cmdarg = 0;
         cmd.resp_type = MMC_RSP_R1b;
         if (mmc_send_cmd(&_mmc, &cmd, NULL)) {
-            klog("mmc fail to send stop cmd\n");
+            slog("mmc fail to send stop cmd\n");
             return 0;
         }
     }
@@ -889,7 +889,7 @@ retry_write:
     int res = mmc_poll_for_busy(&_mmc, timeout_ms);
 
     if(res) {
-        klog("mmc_write: poll busy after write FAILED (sec %u, ret %d)\n", start, res);
+        slog("mmc_write: poll busy after write FAILED (sec %u, ret %d)\n", start, res);
         return 0;
     }
 
