@@ -129,8 +129,6 @@ typedef struct {
 	uint64_t jobs, errors, lock_ns, stage_ns, wait_ns, check_ns, max_wait_ns;
 	uint64_t spins, parks, short_parks, spin_failures;
 	uint64_t gpu_jobs, gpu_ticks, cp_cycles;
-	/* PERF probe: big-IB bucket (geom dispatches, dwords > 512). */
-	uint64_t big_jobs, big_lock_ns, big_wait_ns, big_gpu_jobs, big_gpu_ticks;
 } submit_stats_t;
 static submit_stats_t g_stats;
 
@@ -156,6 +154,8 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 			g_gpu_profile_enabled = value;
 		else if (strcmp(argv[1], "geom") == 0)
 			adreno_3d_geom_batch(value);
+		else if (strcmp(argv[1], "bin") == 0)
+			adreno_3d_geom_bin(value);
 		else rc = -1;
 	}
 	else if (argc == 3 && strcmp(argv[1], "busy") == 0) {
@@ -169,12 +169,12 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 	else if (argc != 1) rc = -1;
 	if (!rc) {
 		uint64_t n = g_stats.jobs ? g_stats.jobs : 1;
-		snprintf(buf, len, "submit adaptive=%d profile=%d geom=%d busy=%u n=%llu err=%llu "
+		snprintf(buf, len, "submit adaptive=%d profile=%d geom=%d bin=%d busy=%u n=%llu err=%llu "
 		         "avg_us lock=%llu stage=%llu wait=%llu check=%llu max_wait=%llu "
 		         "spins=%llu parks=%llu short=%llu spin_fail=%llu "
-		         "gpu=%d gpu_n=%llu gpu_ns=%llu cp_khz=%llu "
-		         "big_n=%llu big_lock=%llu big_wait=%llu big_gpu_n=%llu big_gpu_ns=%llu",
+		         "gpu=%d gpu_n=%llu gpu_ns=%llu cp_khz=%llu",
 		         g_wait_adaptive, g_profile_enabled, adreno_3d_geom_batch(-1),
+		         adreno_3d_geom_bin(-1),
 		         (unsigned)__atomic_load_n(&g_wait_busy, __ATOMIC_RELAXED),
 		         (unsigned long long)g_stats.jobs, (unsigned long long)g_stats.errors,
 		         (unsigned long long)(g_stats.lock_ns/n/1000u),
@@ -189,15 +189,7 @@ int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len) {
 		         (unsigned long long)(g_stats.gpu_jobs ?
 		             g_stats.gpu_ticks * 10000u / 192u / g_stats.gpu_jobs : 0),
 		         (unsigned long long)(g_stats.gpu_ticks ?
-		             g_stats.cp_cycles * 19200u / g_stats.gpu_ticks : 0),
-		         (unsigned long long)g_stats.big_jobs,
-		         (unsigned long long)(g_stats.big_jobs ?
-		             g_stats.big_lock_ns / g_stats.big_jobs / 1000u : 0),
-		         (unsigned long long)(g_stats.big_jobs ?
-		             g_stats.big_wait_ns / g_stats.big_jobs / 1000u : 0),
-		         (unsigned long long)g_stats.big_gpu_jobs,
-		         (unsigned long long)(g_stats.big_gpu_jobs ?
-		             g_stats.big_gpu_ticks * 10000u / 192u / g_stats.big_gpu_jobs : 0));
+		             g_stats.cp_cycles * 19200u / g_stats.gpu_ticks : 0));
 	}
 	pthread_mutex_unlock(&g_submit_lock);
 	return rc;
@@ -718,10 +710,6 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 			g_stats.gpu_jobs++;
 			g_stats.gpu_ticks += ticks;
 			g_stats.cp_cycles += cycles;
-			if (dwords > 512u) {
-				g_stats.big_gpu_jobs++;
-				g_stats.big_gpu_ticks += ticks;
-			}
 		}
 	}
 	if (trace)
@@ -742,11 +730,6 @@ out:
 		g_stats.parks += sample.parks;
 		g_stats.short_parks += sample.short_parks;
 		g_stats.spin_failures += sample.spin_failures;
-		if (dwords > 512u) {
-			g_stats.big_jobs++;
-			g_stats.big_lock_ns += locked - entered;
-			g_stats.big_wait_ns += retired - posted;
-		}
 	}
 	pthread_mutex_unlock(&g_submit_lock);
 	return rc;

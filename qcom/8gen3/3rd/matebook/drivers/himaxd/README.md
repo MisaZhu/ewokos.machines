@@ -168,11 +168,31 @@ Both axes are inverted relative to the desktop, so the installed config is
 ## Reporting
 
 `/dev/touch0` records are `{uint16 state, uint16 x, uint16 y}`, three fields,
-one contact, exactly like the TW220 driver. The solver tracks up to ten
-contacts but only the first stable one is reported; the existing contract and
-`xtouch` client have no multi-contact frame. A release keeps the last contact
-coordinates so `xtouch`/`xserverd` can still synthesise a click at the press
-point.
+the stream the TW220 driver emits. Every stable contact the solver tracks (up
+to ten) is reported as a multi-touch edge frame: a header followed by one
+record per contact that changed.
+
+| `state` | Meaning |
+| --- | --- |
+| `0x8000` | frame header, `x` = number of contact records that follow |
+| `0x8000 \| (act << 8) \| id` | contact edge: `act` 1 press, 2 move, 3 release; `id` 0..9 is the tracker slot |
+
+A contact that did not move sends nothing, and a release carries the contact's
+last coordinates so `xserverd` can still synthesise a click at the press
+point. No gesture policy runs in the driver: `xtouch` maps the frames to the
+screen and `xserverd` routes them, turning a lone finger back into mouse
+events.
+
+The queue holds 32 records. When the client falls behind, the frames it has
+not started to read are dropped and the stream is re-derived from the contacts
+it holds to where they are now (`drops` in `devcmd /dev/touch0 status` counts
+these). What happened in the dropped frames is gone - a whole tap can be -
+but the client always ends up with the current contacts: nothing stays
+pressed, and a slot that changed fingers in between is released before it is
+pressed again, never reported as one contact that jumped. The frame the client
+is in the middle of is delivered whole. The logic is in `himax_mt.c`, the
+tracker glue in `himax_mt_tracks.h`; both are covered by
+`tests/himax_mt_test.c`.
 
 Startup order in `/etc/init.rd`:
 

@@ -197,6 +197,9 @@ int adreno_3d_ready(void);
 /* Diagnostic submit A/B: 0 separate geometry passes, 1 batch (default),
  * -1 query. Affects the next draw, never changes an in-flight submission. */
 int adreno_3d_geom_batch(int enabled);
+/* Diagnostic A/B for the VERSION 8 coarse-bin prepass: 0 full triangle scan
+ * (counts seeded with the overflow marker), 1 binning (default), -1 query. */
+int adreno_3d_geom_bin(int enabled);
 
 /* Exact g2d nearest sampling. endpoints selects Q15 corner-preserving
    SCALE_TO; zero selects exact rational cropped BLIT sampling. */

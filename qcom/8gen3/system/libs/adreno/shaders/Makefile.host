@@ -1,7 +1,7 @@
 # Run from libadreno: make -f shaders/Makefile.host
 # Reuses the device compiler's source lists with native libc and isolated objects.
 .DEFAULT_GOAL := all
-ROOT := $(abspath ../../../../..)
+ROOT := $(abspath ../../../../../..)
 FE := $(ROOT)/projects/opengl/libs/gles/pglcompiler
 BE := $(abspath ../adrenocompiler)
 HERE := $(abspath shaders)
@@ -39,6 +39,7 @@ compiler:
 regenerate: compiler
 	$(OUT)/generate blit shaders/blit.comp shaders/blit_blob.h
 	$(OUT)/generate raster shaders/raster.comp shaders/raster_blob.h
+	$(OUT)/generate bin shaders/bin.comp shaders/bin_blob.h
 
 # Verify raw RW kernels retain the pixel dispatch contract for both kinds.
 .PHONY: test-rw-pixel

@@ -157,7 +157,8 @@ uint32_t pglc_program_serialize(const struct pglc_program *main,
 		    (hdr.is_geom != 1 && hdr.is_geom != 2 && hdr.is_geom != 5 &&
 		     hdr.is_geom != 6))
 			return 0;
-		hdr.version = ADRENO_PROG_PIXEL_VERSION;
+		hdr.version = cub->geom_binning ? ADRENO_PROG_PIXEL_VERSION
+		                                : ADRENO_PROG_PIXEL_VERSION_NOBIN;
 	}
 	/* split point of the concatenated per-draw uniform blob: the xform
 	   region comes first. */

@@ -23,8 +23,10 @@ int main(void)
         adreno_prog_blob_t *blob = malloc(bytes);
         assert(blob);
         assert(pglc_program_serialize(&raster, xf, &opts, blob, bytes) == bytes);
-        /* A legacy blob silently launches a triangle grid for a pixel kernel. */
-        assert(blob->version == ADRENO_PROG_PIXEL_VERSION);
+        /* A legacy blob silently launches a triangle grid for a pixel kernel.
+           RW raw keeps the no-bin VERSION 7 (only the specialized replacements
+           carry the coarse-bin SSBO and bump to VERSION 8). */
+        assert(blob->version == ADRENO_PROG_PIXEL_VERSION_NOBIN);
         assert(blob->is_geom == kind);
         assert(blob->kern[0].local_size[0] == 16);
         assert(blob->kern[0].local_size[1] == 16);

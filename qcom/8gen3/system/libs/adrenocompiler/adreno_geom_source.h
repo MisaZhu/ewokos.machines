@@ -7,6 +7,14 @@
  * raster source is also recognized as a pixel-owned kernel, but is compiled
  * unchanged so its blend/depth contract remains intact. VERSION 3 marks the
  * pixel grid; older daemons reject it before submission.
+ *
+ * VERSION 8 adds a COARSE-BIN prepass contract: the daemon dispatches a
+ * built-in binning kernel between xform and raster that appends each
+ * triangle to every 64x64-pixel cell its bbox covers (bin SSBO below, one
+ * [count][list] record per cell).  Each 16x16 tile lies wholly inside one
+ * cell, so the tile scans only that cell's list instead of every triangle;
+ * uBinCells == 0, an out-of-grid cell, or a count past Q8B_BIN_CHUNK (list
+ * overflow / binning disabled) falls back to the historic full scan.
  */
 #ifndef ADRENO_GEOM_SOURCE_H
 #define ADRENO_GEOM_SOURCE_H
@@ -34,11 +42,17 @@
 "layout(std430,binding=2) buffer PglCsDepth { uint depth[]; };\n" \
 "#if Q8B_TEXTURE\n" \
 "layout(std430,binding=3) buffer PglCsTex { uint tex[]; };\n" \
+"layout(std430,binding=4) buffer PglCsBin { uint bin[]; };\n" \
+"#else\n" \
+"layout(std430,binding=3) buffer PglCsBin { uint bin[]; };\n" \
 "#endif\n" \
 "uniform vec2 uViewportWH;\n" \
 "uniform int uFbStride;\n" \
 "uniform int uTriFirst;\n" \
 "uniform int uTriCount;\n" \
+"/* Coarse-bin grid extents (ceil(viewport/64)); 0 = no binning prepass ran\n" \
+"   (old client or disabled) and every tile takes the full-scan path. */\n" \
+"uniform ivec2 uBinCells;\n" \
 "/* The client may launch only the primitives' bounding-box rectangle (the\n" \
 "   daemon shrinks the raster grid to that window); uDispatchOffset remaps\n" \
 "   the window-relative global IDs back to framebuffer coordinates.  Zero\n" \
@@ -91,11 +105,31 @@
 " uint bestDepth=0xffffffffu,bestColor=0u; bool dirty=false;\n" \
 " if(pixel_active) { int idx=xy.y*uFbStride+xy.x; bestDepth=depth[idx]; bestColor=fb[idx]; }\n" \
 " vec2 p=vec2(xy)+vec2(0.5);\n" \
-" for(int chunk=0;chunk<uTriCount;chunk+=Q8B_BIN_CHUNK) {\n" \
+" /* Coarse-bin candidate source: this tile's 64x64 cell list when the\n" \
+"    prepass filled it, else the full triangle range.  A 16x16 tile never\n" \
+"    straddles a 64-pixel cell boundary, so the tile origin picks the cell.\n" \
+"    count > Q8B_BIN_CHUNK means the list overflowed (or binning is off:\n" \
+"    the daemon seeds counts with 0xffffffff) -> full scan keeps every\n" \
+"    triangle visible.  Shifts only: no integer division on this GPU. */\n" \
+" int ncand=uTriCount;\n" \
+" uint bin_base=0u;\n" \
+" bool use_bin=false;\n" \
+" if(uBinCells.x>0&&uBinCells.y>0) {\n" \
+"  ivec2 cell=ivec2(tile_lo)>>6;\n" \
+"  if(cell.x<uBinCells.x&&cell.y<uBinCells.y) {\n" \
+"   uint cc=bin[uint(cell.y*uBinCells.x+cell.x)*(uint(Q8B_BIN_CHUNK)+1u)];\n" \
+"   if(cc>0u&&cc<=uint(Q8B_BIN_CHUNK)) {\n" \
+"    use_bin=true; ncand=int(cc);\n" \
+"    bin_base=uint(cell.y*uBinCells.x+cell.x)*(uint(Q8B_BIN_CHUNK)+1u)+1u;\n" \
+"   }\n" \
+"  }\n" \
+" }\n" \
+" for(int chunk=0;chunk<ncand;chunk+=Q8B_BIN_CHUNK) {\n" \
 "  if(lid==0) q8b_bin_count=0u;\n" \
 "  barrier();\n" \
-"  for(int t=chunk+lid;t<min(chunk+Q8B_BIN_CHUNK,uTriCount);t+=Q8B_TILE_LANES) {\n" \
-"   if(touches_tile(t,tile_lo,tile_hi)) { uint s=atomicAdd(q8b_bin_count,1u); q8b_bin[s]=uint(t); }\n" \
+"  for(int t=chunk+lid;t<min(chunk+Q8B_BIN_CHUNK,ncand);t+=Q8B_TILE_LANES) {\n" \
+"   int tri=use_bin?int(bin[bin_base+uint(t)]):t;\n" \
+"   if(touches_tile(tri,tile_lo,tile_hi)) { uint s=atomicAdd(q8b_bin_count,1u); q8b_bin[s]=uint(tri); }\n" \
 "  }\n" \
 "  barrier();\n" \
 "  uint nc=min(q8b_bin_count,uint(Q8B_BIN_CHUNK));\n" \

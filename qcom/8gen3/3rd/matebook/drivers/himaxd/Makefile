@@ -12,7 +12,8 @@ TARGET_DIR = ../../build
 LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
-COMMON_OBJS = $(ARCH)/himax_protocol.o $(ARCH)/himax_gpio.o $(ARCH)/hx_algo.o
+COMMON_OBJS = $(ARCH)/himax_protocol.o $(ARCH)/himax_gpio.o $(ARCH)/hx_algo.o \
+		$(ARCH)/himax_mt.o
 TARGET = $(TARGET_DIR)/drivers/matebook/himaxd
 NSPI = $(ewokos)/machines/qcom/8gen3/system/libs/bsp/$(ARCH)/src/spi.o
 NATIVE_TRANS = $(ARCH)/himax_native_transport.o $(ARCH)/himax_fifo.o $(NSPI)

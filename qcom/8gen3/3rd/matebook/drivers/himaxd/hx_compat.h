@@ -45,8 +45,8 @@ static inline u16 le16_to_cpup(const u16* p) {
 
 /*
  * One detected contact in output space.  The Linux driver fills an
- * input_mt_pos array; the EwokOS daemon only consumes the primary contact,
- * but the array keeps the ported code identical to its source.
+ * input_mt_pos array, and keeping it keeps the ported code identical to its
+ * source.
  */
 struct input_mt_pos {
     s32 x;
