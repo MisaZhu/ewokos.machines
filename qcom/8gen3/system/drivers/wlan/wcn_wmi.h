@@ -54,5 +54,11 @@ int wcn_wmi_country(const char *alpha2);
 int wcn_wmi_scan_cancel(void);
 void wcn_wmi_scan_results(char *out, size_t size);
 int wcn_wmi_ready(void);
+unsigned wcn_wmi_events(void);
+unsigned wcn_wmi_management(void);
+/* READY + DBS mode + the per-pdev country update have all been applied. Data
+ * path rings must not be installed before that, or the firmware's own radio
+ * reconfiguration can discard them. */
+int wcn_wmi_radio_settled(void);
 int wcn_wmi_station_available(void);
 #endif

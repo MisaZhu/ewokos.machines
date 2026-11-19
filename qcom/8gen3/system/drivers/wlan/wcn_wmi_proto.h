@@ -223,6 +223,21 @@ struct wmi_peer_reorder_queue_setup_cmd {
 	uint32_t ba_window_size;
 };
 
+/* WMI_GRP_STA_PS (0x9): ath11k sends these to keep a station out of power
+ * save; a WCN that parks itself after inactivity makes the AP buffer (and
+ * eventually drop) downlink frames for a station it believes is asleep. */
+struct wmi_sta_powersave_mode_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	uint32_t sta_ps_mode;
+};
+struct wmi_sta_powersave_param_cmd {
+	uint32_t tlv_header;
+	uint32_t vdev_id;
+	uint32_t param;
+	uint32_t value;
+};
+
 struct wmi_peer_set_param_cmd {
 	uint32_t tlv_header;
 	uint32_t vdev_id;

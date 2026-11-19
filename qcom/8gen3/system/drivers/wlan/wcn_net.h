@@ -12,4 +12,5 @@ int wcn_net_read_batch(void *buf,unsigned bytes);
 unsigned wcn_net_activity(void);
 int wcn_net_write(const void *buf,unsigned bytes);
 void wcn_net_status(char *out,size_t size);
+void wcn_net_beat(char *out,size_t size);
 #endif

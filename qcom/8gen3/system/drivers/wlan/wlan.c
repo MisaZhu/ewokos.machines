@@ -61,7 +61,7 @@ static unsigned joined_save;
 /* ---- link controller ---- */
 enum { LINK_IDLE, LINK_RESTART, LINK_BOOT, LINK_CONNECT };
 static struct {
-    unsigned state, attempts, recovered, backoff, scanning;
+    unsigned state, attempts, recovered, backoff, scanning, probed;
     uint64_t deadline, wait_until, scan_deadline, stable;
 } ctl;
 
@@ -81,6 +81,22 @@ static int log_due(uint64_t *stamp, uint64_t now, uint64_t ms) {
         return 0;
     *stamp = now | 1;
     return 1;
+}
+
+/* Link-state snapshot on the persistent rootfs. The station line already
+ * carries the 802.11 side (band, bssid, tx/rx, data_rx, eapol_rx) and the
+ * wpa= error= messages= counters, so one line separates "M1 never reached
+ * the host" from "M2/M3 lost" after a reboot, without a serial console. */
+static void diag_snapshot(const char *tag) {
+    char sta[640];
+    char dp[1200];
+    char hw[240];
+
+    wcn_sta_status(sta, sizeof(sta));
+    wcn_dp_status(dp, sizeof(dp));
+    wcn_dp_hw_state(hw, sizeof(hw));
+    wcn_diag("%s ssid=%s %s | %s | %s\n",
+            tag, joined.ssid[0] ? joined.ssid : req.ssid[0] ? req.ssid : "-", sta, dp, hw);
 }
 
 static void link_restart(uint64_t delay_ms) {
@@ -122,6 +138,7 @@ static int request_connect(const char *ssid, const char *cred, unsigned save) {
     req_valid = 1;
     req_attempts = 0;
     wcn_log("wcn: connect request ssid=%s save=%u\n", ssid, save);
+    diag_snapshot("connect-request");
 
     /* A different network cannot be joined while the old link/state machine
      * is live: power-cycle the controller first, like the retry path does. */
@@ -147,8 +164,14 @@ static int link_join(void) {
         req_valid = 0;
         return 0;
     }
-    if (wcn_wpa_profile_ssid()[0])
+    if (wcn_wpa_profile_ssid()[0]) {
+        /* Record which network the resume is joining: the profile path used to
+         * leave joined empty, so every link-ready line logged ssid=- even
+         * though the link had come up on a configured network. */
+        if (!joined.ssid[0])
+            strncpy(joined.ssid, wcn_wpa_profile_ssid(), sizeof(joined.ssid) - 1);
         return wcn_sta_resume();
+    }
     return -1;
 }
 
@@ -161,6 +184,7 @@ static void link_join_failed(void) {
         if (req_attempts >= 3) {
             wcn_log("wcn: connect failed ssid=%s (not found or unsupported security)\n",
                     req.ssid);
+            diag_snapshot("join-failed");
             memset(&req, 0, sizeof(req));
             req_valid = req_attempts = 0;
             if (wcn_sta_busy()) {
@@ -228,6 +252,19 @@ static void link_poll(void) {
         if (!wcn_wmi_scan_finished())
             return;
         ctl.scanning = 0;
+        /* An empty RX ring before association is normal: until a vdev exists
+         * the firmware keeps beacons and everything else internal, so this
+         * check cannot condemn the attempt (it used to abort every attempt
+         * after the first and leave the boot with no join at all). Record it
+         * once and join; the post-association grace window in wcn_sta.c is
+         * what decides whether the data path is really dead. */
+        if (!wcn_dp_rx_alive() && !ctl.probed) {
+            char pr[400];
+            ctl.probed = 1;
+            wcn_dp_rx_probe(pr, sizeof(pr));
+            wcn_diag("rx-dead-phase=scan action=proceed\n");
+            wcn_diag("rx-probe | %s\n", pr);
+        }
         if (!link_join()) {
             ctl.state = LINK_CONNECT;
             ctl.deadline = now + 35000;
@@ -248,18 +285,26 @@ static void link_poll(void) {
             ctl.state = LINK_IDLE;
             ctl.recovered++;
             ctl.stable = now;
+            ctl.backoff = 0;
             if (joined_save) {
                 wcn_config_save(joined.ssid, joined.cred);
                 joined_save = 0;
             }
-            memset(&joined, 0, sizeof(joined));
             wcn_log("wcn: link ready (attempts=%u recovered=%u)\n",
                     ctl.attempts, ctl.recovered);
+            diag_snapshot("link-ready");
+            memset(&joined, 0, sizeof(joined));
             return;
         }
         if (now >= ctl.deadline || wcn_sta_failed() ||
-                !wcn_wmi_ready() || !wcn_dp_ready())
+                !wcn_wmi_ready() || !wcn_dp_ready()) {
+            diag_snapshot("connect-fail");
+            /* Every failure here (dead RX, no M1, a rejected handshake) is
+             * transient on this module: the same configuration connects on the
+             * next bring-up. Never blacklist an ssid, or one bad attempt takes
+             * the whole radio offline until the board is power-cycled. */
             link_backoff();
+        }
         return;
     default:
         ctl.state = LINK_IDLE;
@@ -280,12 +325,29 @@ static void link_monitor(void) {
             ctl.backoff = 0;
             ctl.stable = now;
         }
+        /* Heartbeat while the link is up. A stall keeps the station associated
+         * and blocks the very ssh session that would report it, so the data
+         * path counters have to be recorded as the stall happens. */
+        static uint64_t beat_ms;
+        if (now - beat_ms >= 10000) {
+            beat_ms = now;
+            char beat[520];
+            wcn_dp_beat(beat, sizeof(beat));
+            wcn_diag("%s\n", beat);
+        }
         return;
     }
     if (!wcn_wpa_profile_ssid()[0] && !req_valid)
         return;
-    if (wcn_sta_failed() || !wcn_wmi_ready() || !wcn_dp_ready())
+    if (wcn_sta_failed() || !wcn_wmi_ready() || !wcn_dp_ready()) {
+        /* Name the trigger in the persistent diag log: an AP deauth and a
+         * controller restart look identical to the user but need completely
+         * different fixes. */
+        wcn_diag("link-lost reason=%s sta_failed=%u wmi=%u dp=%u\n",
+                 wcn_sta_failed() ? "sta" : !wcn_wmi_ready() ? "wmi" : "dp",
+                 wcn_sta_failed(), wcn_wmi_ready(), wcn_dp_ready());
         link_backoff();
+    }
 }
 
 /* A successful wcn_start() must keep making progress toward WMI+DP. Without this a
@@ -328,11 +390,39 @@ static int config_any_usable(void) {
 /* Config-driven auto-connect: scan, then join the highest-priority configured
  * network that is visible and WPA2-capable. Runs only until the first join;
  * afterwards the WPA profile drives reconnects. */
+/* Diagnostic knobs: /etc/wlan.ssid pins auto-connect to one configured
+ * network, /etc/wlan.avoid skips a comma-separated list of them. Both default
+ * to absent, so behaviour is unchanged unless a file exists. */
+static void knob_text(const char *path,char *out,unsigned len) {
+    FILE *fp=fopen(path,"r");
+    out[0]=0;
+    if (!fp) return;
+    size_t n=fread(out,1,len-1,fp); out[n]=0; fclose(fp);
+    char *p=strpbrk(out,"\r\n"); if (p) *p=0;
+}
+static int ssid_listed(const char *list,const char *ssid) {
+    size_t n=strlen(ssid); const char *p=list;
+    if (!n) return 0;
+    while (*p) {
+        const char *e=strchr(p,','); size_t m=e?(size_t)(e-p):strlen(p);
+        if (m==n && !memcmp(p,ssid,n)) return 1;
+        if (!e) break;
+        p=e+1;
+    }
+    return 0;
+}
+
 static void auto_connect_poll(void) {
     uint64_t now = kernel_tic_ms(0);
     int best = -1, best_pri = 0;
 
     if (ctl.state != LINK_IDLE || req_valid || wcn_wpa_profile_ssid()[0])
+        return;
+    /* Auto-connect exists to establish a link, not to re-establish one that is
+     * already up. A successful join leaves ctl.state at LINK_IDLE, so without
+     * this guard the auto-connect timer keeps firing on a live link and
+     * request_connect() power-cycles the controller underneath it. */
+    if (wcn_sta_link_ready())
         return;
     if (!config_any_usable())
         return;
@@ -368,12 +458,20 @@ static void auto_connect_poll(void) {
         return;
     auto_scanning = 0;
 
+    char pin[64], avoid[128];
+    knob_text("/etc/wlan.ssid", pin, sizeof(pin));
+    knob_text("/etc/wlan.avoid", avoid, sizeof(avoid));
+
     for (int i = 0; i < wcn_config_count(); i++) {
         const char *ssid = wcn_config_ssid(i);
         const char *cred = wcn_config_credential(i);
         struct wcn_bss bss;
 
         if (ssid == NULL || ssid[0] == 0 || cred == NULL)
+            continue;
+        if (pin[0] && strcmp(ssid, pin))
+            continue;
+        if (avoid[0] && ssid_listed(avoid, ssid))
             continue;
         if (wcn_wmi_find_bss(ssid, &bss))
             continue;           /* not visible */
@@ -837,6 +935,10 @@ int main(int argc, char **argv) {
     vdevice_t dev;
 
     wcn_log("wcn: main begin node=%s argc=%d\n", node, argc);
+    /* Continue the persistent diagnostic file and fence this boot from the
+     * previous one: /etc/wlan-diag.log is the only trace that survives without
+     * a serial console, and the failing boot is usually read after a reboot. */
+    wcn_diag_session(node, argc);
     if (dev_get_pid(node) >= 0) {
         wcn_log("wcn: node already owned\n");
         return -1;

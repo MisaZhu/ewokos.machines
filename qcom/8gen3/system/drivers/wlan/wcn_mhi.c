@@ -11,6 +11,8 @@
 #include "wcn_ce.h"
 #include "wcn_dp.h"
 #include "wcn_sta.h"
+#include "wcn_wpa.h"
+#include "wcn_net.h"
 #include <bsp/pcie.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
@@ -376,6 +378,42 @@ static void capture_rddm(void) {
     wcn_log("wcn: RDDM saved bytes=%u /tmp/wcn-rddm.bin\n", pos);
 }
 
+/* The recovery path releases these counters and rings. Keep the host-side
+ * state beside the RDDM before stop, even when no SSH client is connected.
+ * Reading DMA writebacks must not touch the failed endpoint or mark DP bad. */
+static void capture_crash_state(void) {
+    static char text[8192];
+    int fd=open("/tmp/wcn-crash-state.txt",O_WRONLY|O_CREAT|O_TRUNC,0600);
+    if (fd<0) { wcn_log("wcn: cannot open crash-state snapshot\n");return; }
+    unsigned total=0,failed=0;
+    for (unsigned part=0;part<6 && !failed;part++) {
+        text[0]=0;
+        switch (part) {
+        case 0:
+            snprintf(text,sizeof(text),"uptime_ms=%u stage=%s ee=%u mhi=%08x bhi_error=%08x\n",
+                     (unsigned)kernel_tic_ms(0),w.stage?w.stage:"none",ee(),reg(0x48),reg(w.bhi+0x30));
+            break;
+        case 1: wcn_sta_status(text,sizeof(text));break;
+        case 2: wcn_wpa_status(text,sizeof(text));break;
+        case 3: wcn_dp_status(text,sizeof(text));break;
+        case 4: wcn_net_status(text,sizeof(text));break;
+        case 5: wcn_dp_crash_rings(text,sizeof(text));break;
+        }
+        unsigned bytes=strlen(text),pos=0;
+        /* Each section ends with one newline, including status formatters
+         * that do not append one themselves. */
+        if (bytes && text[bytes-1]!='\n' && bytes<sizeof(text)-1) text[bytes++]='\n';
+        while (pos<bytes) {
+            int n=write(fd,text+pos,bytes-pos);
+            if (n<=0) { failed=1;break; }
+            pos+=(unsigned)n;total+=(unsigned)n;
+        }
+    }
+    if (close(fd)) failed=1;
+    wcn_log("wcn: crash-state %s bytes=%u /tmp/wcn-crash-state.txt\n",
+            failed?"incomplete":"saved",total);
+}
+
 static int setup_contexts(void) {
     w.chdb = reg(0x18); w.erdb = reg(0x20);
     if (!offset_valid(w.chdb, 128 * 8) || !offset_valid(w.erdb, 16)) return -1;
@@ -470,6 +508,7 @@ void wcn_poll(void) {
     if (!w.contexts_ready) return;
     if (reg(0x48) & 4) {
         wcn_log("wcn: MHI SYSERR ee=%u status=%08x error=%08x\n", ee(), reg(0x48), reg(w.bhi + 0x30));
+        capture_crash_state();
         capture_rddm();
         wcn_stop();
         w.stage = "MHI-SYSERR";

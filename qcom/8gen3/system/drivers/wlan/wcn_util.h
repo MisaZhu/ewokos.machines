@@ -18,6 +18,24 @@ void wcn_log(const char *format, ...);
 /* Copy of the ring, NUL terminated, caller frees. NULL only on OOM. */
 char *wcn_log_get(void);
 
+/* Diagnostics that must survive the session. wcn_log() output only goes to
+ * /dev/log and the serial console, so a failed 4-way handshake leaves no
+ * trace once the console is detached. wcn_diag() also appends the line to
+ * /etc/wlan-diag.log (bounded to the newest 32 KiB, i.e. several boots) so the
+ * failure context can be read back later from the persistent rootfs. It never
+ * fails the caller: an absent or unwritable file is ignored. */
+#if defined(__GNUC__)
+void wcn_diag(const char *format, ...) __attribute__((format(printf, 1, 2)));
+#else
+void wcn_diag(const char *format, ...);
+#endif
+
+/* Start an isolated diag session: continues the existing file, fences the
+ * previous (uncleanly stopped) session and prefixes every later line with the
+ * session id, so records from different boots never blend together. Call once
+ * at driver start. */
+void wcn_diag_session(const char *node, int argc);
+
 /* Fresh session entropy. The WPA supplicant uses it for SNonce derivation;
  * there is no /dev/urandom on this platform, so the kernel tick is mixed
  * into the libc PRNG (same source netd uses for TCP ISNs). */

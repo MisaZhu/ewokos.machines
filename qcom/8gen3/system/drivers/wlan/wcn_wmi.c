@@ -21,6 +21,9 @@ static struct {
     unsigned scan_id, scan_reason, scan_events, management_rx, ap_count;
     unsigned scan_cancelling, scan_timedout,country_state,country_seen,country_mask,country_sent;
     uint64_t country_deadline;
+    /* Last time the radio was reconfigured (READY / hw-mode / country applied);
+     * the data path waits WCN_RADIO_SETTLE_MS past it. */
+    uint64_t radio_ms;
     uint8_t mac[6];
     uint64_t deadline;
     uint64_t scan_deadline;
@@ -67,6 +70,9 @@ static const unsigned scan_freqs[] = {
     5180,5200,5220,5240
 };
 #define SCAN_CHANNELS (sizeof(scan_freqs)/sizeof(scan_freqs[0]))
+/* Quiet period between the last radio reconfiguration and the RXDMA/REO ring
+ * install. Firmware-owned rings installed earlier are accepted and never armed. */
+#define WCN_RADIO_SETTLE_MS 1500u
 static unsigned get16(const uint8_t *p) { return p[0] | ((unsigned)p[1] << 8); }
 static uint32_t get32(const uint8_t *p) { return get16(p) | ((uint32_t)get16(p+2) << 16); }
 static uint32_t tlv(unsigned tag, unsigned bytes) { return tag << 16 | bytes; }
@@ -244,15 +250,44 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
     /* Validate the entire TLV stream before publishing any state. */
     unsigned pos = 4;
     while (pos < bytes) {
-        if (bytes - pos < 4 || get16(p+pos) > bytes - pos - 4) { f.bad++; f.failed=1; return; }
+        /* One event with a length the parser cannot walk must not condemn the
+         * whole control plane: the firmware emits event types we do not model,
+         * and taking that as fatal restarted the entire controller (~5s of
+         * silence per hit). Skip the event and name it in the log instead. */
+        if (bytes - pos < 4 || get16(p+pos) > bytes - pos - 4) {
+            f.bad++;
+            if (f.bad<=4) wcn_diag("wmi-skip event=%x len=%u pos=%u\n",event,bytes,pos);
+            return;
+        }
         if (event==0x4009 && get16(p+pos+2)==18) {
             unsigned end=pos+4+get16(p+pos);
             for (unsigned off=pos+4;off<end;) {
-                if (end-off<4 || get16(p+off)>end-off-4) { f.bad++;f.failed=1;return; }
+                if (end-off<4 || get16(p+off)>end-off-4) { f.bad++;return; }
                 off+=4+get16(p+off);
             }
         }
         pos += 4 + get16(p+pos);
+    }
+    /* Evidence first: the firmware narrates its own state through events we
+     * do not model (peer PS state change, beacon loss, channel switch...). Log
+     * the shape of every event id seen for the first time, bounded, so a link
+     * that dies silently still leaves the firmware's side of the story. */
+    {
+        static uint16_t known[32];
+        static unsigned known_count;
+        unsigned seen=0;
+        for (unsigned i=0;i<known_count;i++) if (known[i]==event) seen=1;
+        if (!seen && known_count<32) {
+            known[known_count++]=(uint16_t)event;
+            char tags[96]; unsigned used=0; tags[0]=0;
+            for (unsigned q=4;q<bytes && used+12<sizeof(tags);) {
+                unsigned l2=get16(p+q), t2=get16(p+q+2);
+                used+=snprintf(tags+used,sizeof(tags)-used," %x/%u",t2,l2);
+                if (l2+4>bytes-q) break;
+                q+=4+l2;
+            }
+            wcn_diag("wmi-event id=%x len=%u tags:%s\n",event,bytes,tags);
+        }
     }
     const uint8_t *mgmt = NULL, *frame = NULL;
     const uint8_t *reg = NULL, *rules = NULL;
@@ -394,6 +429,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             }
         }
         f.ready=1;
+        f.radio_ms=kernel_tic_ms(0);
         if (country_load()) { f.failed=1;return; }
         if (country[0]) f.country_state=1;
         wcn_log("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -410,6 +446,13 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             wcn_log("wcn: WLAN MAC source=WMI generated fallback; provision /etc/wlan.mac\n");
         else
             wcn_log("wcn: WLAN MAC source=WMI firmware\n");
+        /* Persist which address the AP will see: a shared/derived MAC shows
+         * up here as override=0/4 and is the first thing to rule out when the
+         * 4-way never completes. */
+        wcn_diag("wmi-ready mac=%02x:%02x:%02x:%02x:%02x:%02x override=%d seed=%u country=%c%c\n",
+                f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5],mac_override,
+                hardware_seed_valid ? 1u : 0u,country[0]?country[0]:'-',
+                country[1]?country[1]:'-');
     }
     if (reg && rules && !get32(reg) && get32(reg+4)<2) {
         unsigned phy=get32(reg+4), count=get32(reg+48)+get32(reg+52);
@@ -553,7 +596,11 @@ void wcn_wmi_poll(void) {
         /* Set DBS before HTT installs RXDMA rings. Changing mode afterwards
          * can discard the firmware's physical-MAC ring configuration. */
         const uint32_t p[]={0x401e,(515u<<16)|12,0,1,0};
-        if (!wcn_htc_wmi_send(p,sizeof(p))) f.hw_mode_sent=1;
+        if (!wcn_htc_wmi_send(p,sizeof(p))) {
+            f.hw_mode_sent=1;
+            f.radio_ms=kernel_tic_ms(0);
+            wcn_diag("hw-mode sent\n");
+        }
         return;
     }
     if (f.country_state==1) {
@@ -570,7 +617,12 @@ void wcn_wmi_poll(void) {
             if (!wcn_htc_wmi_send(p,sizeof(p))) f.country_sent|=1u<<phy;
             break;
         }
-        if ((f.country_seen&f.country_mask)==f.country_mask) { f.country_state=0;wcn_log("wcn: country applied=%s\n",country); }
+        if ((f.country_seen&f.country_mask)==f.country_mask) {
+            f.country_state=0;
+            f.radio_ms=kernel_tic_ms(0);
+            wcn_log("wcn: country applied=%s\n",country);
+            wcn_diag("country applied=%s mask=%u\n",country,f.country_mask);
+        }
         else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;wcn_log("wcn: country update timeout\n"); } return; }
     }
     if (f.scan_pending) {
@@ -608,12 +660,68 @@ void wcn_wmi_status(char *out, size_t size) {
              f.extra_mac_count,f.extra_mac_valid);
 }
 int wcn_wmi_ready(void) { return f.ready && f.hw_mode_sent && !f.failed; }
+unsigned wcn_wmi_events(void) { return f.events; }
+unsigned wcn_wmi_management(void) { return f.management_rx; }
+int wcn_wmi_radio_settled(void) {
+    /* The delay is opt-in (/etc/wlan.settle holds a millisecond value). The
+     * historical bring-up that did receive frames installed the rings
+     * immediately after WMI READY, so the gate must be off unless asked for. */
+    FILE *fp=fopen("/etc/wlan.settle","r");
+    if (!fp) return 1;
+    fclose(fp);
+    if (!(f.ready && f.hw_mode_sent && !f.failed && !f.country_state)) return 0;
+    /* The firmware keeps initialising its own RXDMA/REO blocks for a while
+     * after WMI READY. Rings installed inside that window are acknowledged
+     * (rings=22/22, rc=0) and never armed: the RX buffer ring is never
+     * consumed again for the rest of the boot, so no frame ever reaches the
+     * host and every handshake ends in handshake-timeout. Measured: the whole
+     * install sequence went out 41 ms after READY in the failing boots, and
+     * only a bring-up that ran later ever received. Let the radio go quiet. */
+    if (f.radio_ms && kernel_tic_ms(0) < f.radio_ms + WCN_RADIO_SETTLE_MS) return 0;
+    return 1;
+}
 void wcn_wmi_mac(uint8_t mac[6]) { memcpy(mac,f.mac,6); }
+/* Band preference for BSS selection: "2g"/"2.4" keeps the join on 2.4 GHz,
+ * "5g"/"5" on 5 GHz, anything else (or no file) uses the RSSI rules below.
+ * Purely a selection knob, so the split can be A/B'd without a rebuild. */
+static int band_pref(void) {
+    FILE *fp=fopen("/etc/wlan.band","r");
+    char v[8]={0};unsigned n;
+    if (!fp) return 0;
+    n=fread(v,1,7,fp);fclose(fp);
+    if (n && v[0]=='2') return 1;
+    if (n && v[0]=='5') return 2;
+    return 0;
+}
+
+/* A 5 GHz BSS this weak cannot hold the wide HE link the join asks for: auth and
+ * assoc still get through at low MCS, so the association "succeeds", while the
+ * EAPOL/data frames fail FCS and never reach host memory - measured as
+ * rxfill=0 with wpa failed=handshake-timeout on a BSS that scans at -75 dBm
+ * while its 2.4 GHz sibling is at -7 dBm. Skipping these is what keeps the
+ * station on the band that actually delivers frames. */
+#define WCN_WEAK_5G_DBM (-68)
+
 int wcn_wmi_find_bss(const char *ssid,struct wcn_bss *bss) {
-    int found=-1,best=-1000;
+    int found=-1,best=-1000,logged=0;
+    int band=band_pref();
     for (unsigned i=0;i<f.ap_count;i++) {
         const struct wcn_bss *b=&f.ap[i];
-        if (strcmp(ssid,b->ssid) || wcn_wmi_channel_power(b->mhz)<0) continue;
+        int power;
+        if (strcmp(ssid,b->ssid)) continue;
+        power=wcn_wmi_channel_power(b->mhz);
+        /* Every candidate goes into the persistent log: which BSS was visible,
+         * at what level, and whether this driver could use it. */
+        if (!logged)
+            wcn_diag("scan-bss ssid=%s bssid=%02x:%02x:%02x:%02x:%02x:%02x mhz=%u rssi=%d "
+                     "ht=%u vht=%u wmm=%u privacy=%u power=%d weak5g=%u\n",
+                     b->ssid,b->bssid[0],b->bssid[1],b->bssid[2],b->bssid[3],b->bssid[4],
+                     b->bssid[5],b->mhz,b->rssi,b->ht,b->vht,b->wmm,b->privacy,power,
+                     (unsigned)(b->mhz>3000 && b->rssi<WCN_WEAK_5G_DBM));
+        if (band==1 && b->mhz>3000) continue;
+        if (band==2 && b->mhz<3000) continue;
+        if (power<0) continue;
+        if (b->mhz>3000 && b->rssi<WCN_WEAK_5G_DBM) continue;
         /* Strong VHT has more capacity even beside a much louder 2.4 GHz
          * BSS. Reduce the bias near the 5 GHz coverage edge. */
         int bias=b->mhz>3000 && b->ht && b->vht && b->wmm && b->rssi>=-72 ?
@@ -622,7 +730,12 @@ int wcn_wmi_find_bss(const char *ssid,struct wcn_bss *bss) {
         if (found<0 || score>best) { found=i;best=score; }
     }
     if (found<0) return -1;
-    *bss=f.ap[found]; return 0;
+    logged=1;
+    *bss=f.ap[found];
+    wcn_diag("bss-pick bssid=%02x:%02x:%02x:%02x:%02x:%02x mhz=%u rssi=%d band=%d\n",
+             bss->bssid[0],bss->bssid[1],bss->bssid[2],bss->bssid[3],bss->bssid[4],
+             bss->bssid[5],bss->mhz,bss->rssi,band);
+    return 0;
 }
 unsigned wcn_wmi_chains(void) { return f.chains; }
 unsigned wcn_wmi_vht_caps(void) { return f.vht5; }

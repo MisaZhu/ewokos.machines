@@ -3,10 +3,12 @@
 #include <ewoksys/klog.h>
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/basic_math.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Ring size: each devcmd reply is capped at 8192 bytes by the vdevice
  * proto, and the pi5 driver keeps 4 KiB of history, so match it. */
@@ -53,6 +55,149 @@ void wcn_log(const char *format, ...) {
     /* /dev/log keeps the serial/history copy; slog() did the same. */
     sout(line, (uint32_t)used);
     log_append(line, (unsigned)used);
+}
+
+/* ---- persistent link diagnostics -------------------------------------------
+ * Written to the same persistent rootfs the wifi app stores network.json in,
+ * so "ssh + cat" replaces a serial console for post-mortem analysis.
+ *
+ * The file survives reboots on purpose: the interesting record is usually the
+ * failing boot, and it is read later from the other OS. The previous version
+ * truncated on start, which erased exactly that evidence (and made a boot that
+ * never connects look identical to one that was never tried). Records are now
+ * append-only, fenced per boot by an explicit session header plus a per-line
+ * session id, so lines from different boots can never be confused even after
+ * the oldest history is trimmed. */
+#define WCN_DIAG_PATH  "/etc/wlan-diag.log"
+#define WCN_DIAG_SEQ   "/etc/wlan-diag.seq"
+#define WCN_DIAG_BYTES (32u * 1024)     /* ~250 lines: several boots of history */
+#define WCN_DIAG_LINE  760u
+
+static char diag_ring[WCN_DIAG_BYTES];
+static unsigned diag_len, diag_seq;
+
+/* Append to the in-memory mirror, trimming the oldest whole lines when full.
+ * Every session header therefore starts on a clean line. */
+static void diag_push(const char *s, unsigned bytes) {
+    if (!bytes || bytes >= WCN_DIAG_BYTES) return;
+    if (diag_len + bytes > WCN_DIAG_BYTES - 1) {
+        unsigned drop = diag_len + bytes - (WCN_DIAG_BYTES - 1);
+        if (drop > diag_len) drop = diag_len;
+        while (drop < diag_len && diag_ring[drop] != '\n') drop++;
+        if (drop < diag_len) drop++;
+        memmove(diag_ring, diag_ring + drop, diag_len - drop);
+        diag_len -= drop;
+    }
+    memcpy(diag_ring + diag_len, s, bytes);
+    diag_len += bytes;
+    diag_ring[diag_len] = 0;
+}
+
+static void diag_flush(void) {
+    int fd = open(WCN_DIAG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    int wr = write(fd, diag_ring, (int)diag_len);
+    close(fd);
+    (void)wr;
+}
+
+/* Load the history of earlier boots into the mirror without touching the file
+ * yet: flushing while the read descriptor is still open would truncate it
+ * underneath us. */
+static void diag_seed(void) {
+    char chunk[512];
+    int fd = open(WCN_DIAG_PATH, O_RDONLY);
+    int n;
+
+    diag_len = 0;
+    diag_ring[0] = 0;
+    if (fd < 0) return;
+    while ((n = read(fd, chunk, sizeof(chunk))) > 0)
+        diag_push(chunk, (unsigned)n);
+    close(fd);
+}
+
+static unsigned diag_read_seq(void) {
+    char buf[16];
+    int n, value = 0;
+
+    int fd = open(WCN_DIAG_SEQ, O_RDONLY);
+    if (fd < 0) return 0;
+    memset(buf, 0, sizeof(buf));
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    for (int i = 0; i < n && buf[i] >= '0' && buf[i] <= '9'; i++)
+        value = value * 10 + (buf[i] - '0');
+    return (unsigned)value;
+}
+
+static void diag_write_seq(unsigned value) {
+    char buf[16];
+    int n;
+
+    int fd = open(WCN_DIAG_SEQ, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return;
+    n = snprintf(buf, sizeof(buf), "%u\n", value);
+    if (n > 0) {
+        int wr = write(fd, buf, (unsigned)n);
+        (void)wr;
+    }
+    close(fd);
+}
+
+/* Open a new isolated session: continuing the file, not replacing it. */
+void wcn_diag_session(const char *node, int argc) {
+    char line[WCN_DIAG_LINE];
+    unsigned prev = diag_read_seq();
+    unsigned had_history;
+    int n;
+
+    diag_seq = prev + 1;
+    diag_write_seq(diag_seq);
+    diag_seed();
+    had_history = diag_len > 0;
+    if (had_history) {
+        if (prev)
+            n = snprintf(line, sizeof(line),
+                    "----- session #%u ended without a clean stop -----\n", prev);
+        else
+            n = snprintf(line, sizeof(line),
+                    "----- previous session (unknown id) ended without a clean stop -----\n");
+        if (n > 0) diag_push(line, (unsigned)n);
+    }
+    n = snprintf(line, sizeof(line), "===== session #%u begin node=%s argc=%d =====\n",
+            diag_seq, node ? node : "-", argc);
+    if (n > 0) diag_push(line, (unsigned)n);
+    diag_flush();
+}
+
+void wcn_diag(const char *format, ...) {
+    char line[WCN_DIAG_LINE];
+    int used = snprintf(line, sizeof(line), "#%u|%u|", diag_seq, (unsigned)kernel_tic_ms(0));
+    va_list ap;
+
+    if (used < 0) return;
+    if (used > (int)sizeof(line) - 1) used = (int)sizeof(line) - 1;
+    va_start(ap, format);
+    int add = vsnprintf(line + used, sizeof(line) - (size_t)used, format, ap);
+    va_end(ap);
+    if (add > 0) {
+        int room = (int)sizeof(line) - used - 1;
+        if (add > room) add = room;
+        used += add;
+    }
+    /* Keep markers and records on separate lines even if a caller forgets. */
+    if (used > 0 && line[used - 1] != '\n' && used < (int)sizeof(line) - 1) {
+        line[used++] = '\n';
+        line[used] = 0;
+    }
+    /* The per-line buffer is smaller than the mirror, so a single call can
+     * never exceed it; clamp defensively before appending. */
+    unsigned bytes = (unsigned)used;
+    if (bytes > sizeof(line) - 1) bytes = (unsigned)(sizeof(line) - 1);
+    diag_push(line, bytes);
+    diag_flush();
 }
 
 char *wcn_log_get(void) {

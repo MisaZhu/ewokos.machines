@@ -12,6 +12,10 @@
 #define NET_FRAME NETDEV_FRAME_MAX
 static struct {
     unsigned head,tail,count,received,transmitted,dropped,overflow,reads,batch_reads;
+    /* Classify what the air actually hands us: a link that looks alive but
+     * answers nothing is either not receiving our traffic (downlink) or not
+     * getting its answers across (uplink), and the counters say which. */
+    unsigned seen,bcast,mcast,unicast_us,arp_req,arp_rsp,icmp_req,ipv4,other;
     uint16_t size[NET_SLOTS];
     uint8_t frame[NET_SLOTS][NET_FRAME];
 } n;
@@ -19,6 +23,16 @@ void wcn_net_reset(void) { memset(&n,0,sizeof(n)); }
 void wcn_net_receive(const uint8_t *frame,unsigned bytes) {
     if (!wcn_sta_link_ready()) return;
     uint8_t mac[6];wcn_wmi_mac(mac);
+    if (bytes>=14) {
+        n.seen++;
+        if (frame[0]&1) { if (!memcmp(frame, (const uint8_t[]){0xff,0xff,0xff,0xff,0xff,0xff}, 6)) n.bcast++; else n.mcast++; }
+        else if (!memcmp(frame,mac,6)) n.unicast_us++;
+        unsigned eth=((unsigned)frame[12]<<8)|frame[13]; /* big-endian ethertype */
+        if (eth==0x0806) { if (bytes>=22 && ((frame[20]<<8)|frame[21])==1) n.arp_req++; else n.arp_rsp++; }
+        else if (eth==0x0800) { n.ipv4++;
+            if (bytes>=36 && frame[23]==1 && frame[34]==8) n.icmp_req++; }
+        else n.other++;
+    }
     if (bytes<14 || bytes>NET_FRAME || (!(frame[0]&1) && memcmp(frame,mac,6))) { n.dropped++;return; }
     if (n.count==NET_SLOTS) { n.dropped++;n.overflow++;return; }
     memcpy(n.frame[n.tail],frame,bytes);n.size[n.tail]=bytes;
@@ -65,6 +79,11 @@ int wcn_net_write(const void *buf,unsigned bytes) {
     }
     wcn_dp_tx_batch_end();
     return pos ? (int)pos:malformed ? -1:VFS_ERR_RETRY;
+}
+void wcn_net_beat(char *out,size_t size) {
+    snprintf(out,size,"net seen=%u bcast=%u mcast=%u uni=%u arp_req=%u arp_rsp=%u icmp_req=%u ipv4=%u other=%u q=%u qdrop=%u qovf=%u tx=%u",
+             n.seen,n.bcast,n.mcast,n.unicast_us,n.arp_req,n.arp_rsp,n.icmp_req,n.ipv4,n.other,
+             n.count,n.dropped,n.overflow,n.transmitted);
 }
 void wcn_net_status(char *out,size_t size) {
     snprintf(out,size,"net_rx=%u net_tx=%u net_drop=%u net_pending=%u net_overflow=%u net_reads=%u net_batches=%u",n.received,n.transmitted,n.dropped,n.count,n.overflow,n.reads,n.batch_reads);

@@ -26,10 +26,10 @@ static const char *const names[]={"idle","configure","peer-create","peer-wait","
     "peer-assoc","vdev-up","associated-awaiting-wpa","failed"};
 static struct {
     unsigned state,config,queue,peer_mapped,peer,hw_peer,aid,seq,desc;
-    unsigned tx,tx_done,tx_errors,rx,status,power,lmac,data_rx,eapol_rx,data_tx;
+    unsigned tx,tx_done,tx_errors,rx,status,power,lmac,data_rx,eapol_rx,data_tx,rx_base;
     unsigned pending[FRAME_SLOTS];
     uint8_t *dma;
-    uint64_t pa,deadline;
+    uint64_t pa,deadline,rx_grace;
     uint8_t mac[6],rsn[22],rates[12];
     unsigned ba_delete,ba_state,ba_tid,ba_token,ba_window,ba_ssn,ba_timeout,ba_cookie,ba_status,ba_requests,ba_accepted;
     uint64_t ba_deadline;
@@ -50,6 +50,10 @@ static void state(unsigned value) {
 static void fail(const char *why,unsigned status) {
     /* Recovery frees the station and DP state. Preserve the failed stage and
      * management/data counters in the log before that evidence disappears. */
+    /* Also keep it across reboots: a link that drops takes the ssh session with
+     * it, so the driver ring buffer - the only place the reason used to land -
+     * could never be read afterwards. */
+    wcn_diag("station-fail why=%s status=%u phase=%s\n",why,status,names[s.state]);
     wcn_log("wcn: station context phase=%s mhz=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x aid=%u lmac=%u\n",
             names[s.state],s.bss.mhz,s.bss.bssid[0],s.bss.bssid[1],s.bss.bssid[2],
             s.bss.bssid[3],s.bss.bssid[4],s.bss.bssid[5],s.aid,s.lmac);
@@ -316,6 +320,18 @@ static int route(void) {
     p.cmd.param_id=0x13; p.cmd.param_value=3; /* RX hash enabled, REO2SW1. */
     return wcn_htc_wmi_send(&p,sizeof(p));
 }
+/* The firmware keeps its own copy of the BA window per peer/TID; it has to be
+ * told again whenever the REO queue's window changes (ath11k
+ * ath11k_peer_rx_tid_setup / ath11k_dp_rx_ampdu_stop). */
+static int reorder_queue(unsigned tid,unsigned window) {
+    struct { uint32_t command; struct wmi_peer_reorder_queue_setup_cmd cmd; } p;
+    memset(&p,0,sizeof(p)); p.command=0x6013; p.cmd.tlv_header=tlv(549,sizeof(p.cmd)-4);
+    memcpy(p.cmd.peer_macaddr.addr,s.bss.bssid,6);
+    uint64_t pa=s.pa+QUEUE_BASE+tid*512;
+    p.cmd.tid=p.cmd.queue_no=tid; p.cmd.queue_ptr_lo=pa; p.cmd.queue_ptr_hi=pa>>32;
+    p.cmd.ba_window_size_valid=1; p.cmd.ba_window_size=window;
+    return wcn_htc_wmi_send(&p,sizeof(p));
+}
 static int queue_setup(void) {
     unsigned tid=s.queue;
     uint32_t *q=(uint32_t *)(void *)(s.dma+QUEUE_BASE+tid*512);
@@ -326,13 +342,7 @@ static int queue_setup(void) {
         if (tid!=16) for (unsigned i=0;i<3;i++) q[32+i*32]=4|(9<<4);
     }
     __asm__ volatile("dsb sy" ::: "memory");
-    struct { uint32_t command; struct wmi_peer_reorder_queue_setup_cmd cmd; } p;
-    memset(&p,0,sizeof(p)); p.command=0x6013; p.cmd.tlv_header=tlv(549,sizeof(p.cmd)-4);
-    memcpy(p.cmd.peer_macaddr.addr,s.bss.bssid,6);
-    uint64_t pa=s.pa+QUEUE_BASE+tid*512;
-    p.cmd.tid=p.cmd.queue_no=tid; p.cmd.queue_ptr_lo=pa; p.cmd.queue_ptr_hi=pa>>32;
-    p.cmd.ba_window_size_valid=1; p.cmd.ba_window_size=1;
-    return wcn_htc_wmi_send(&p,sizeof(p));
+    return reorder_queue(tid,1);
 }
 static int vdev_start(void) {
     struct { uint32_t command; struct wmi_vdev_start_request_cmd cmd; struct wmi_channel ch; uint32_t noa; } p;
@@ -453,7 +463,12 @@ static void ba_poll(void) {
         int id=wcn_dp_reorder(s.pa+QUEUE_BASE+s.ba_tid*512,s.ba_window,s.ba_ssn);
         if (id>=0) { s.ba_cookie=id;s.ba_state=2; }return;
     }
-    if (s.ba_state!=3) return;
+    if (s.ba_state==3) {
+        if (!s.ba_status && reorder_queue(s.ba_tid,s.ba_window)) return;
+        if (s.ba_delete) { s.ba_delete=0;s.ba_state=0;return; }
+        s.ba_state=4;
+    }
+    if (s.ba_state!=4) return;
     unsigned slot;for (slot=0;slot<FRAME_SLOTS;slot++) if (!s.pending[slot]) break;
     if (slot==FRAME_SLOTS) return;
     uint8_t *f=s.dma+slot*FRAME_BYTES;memset(f,0,FRAME_BYTES);f[0]=0xd0;
@@ -465,7 +480,6 @@ static void ba_poll(void) {
 }
 void wcn_sta_reorder_complete(unsigned cookie,unsigned status) {
     if (s.ba_state!=2 || cookie!=s.ba_cookie) return;
-    if (s.ba_delete) { s.ba_delete=0;s.ba_state=0;return; }
     s.ba_status=status ? 37:0;s.ba_state=3;
 }
 static int vdev_up(void) {
@@ -477,6 +491,12 @@ static int vdev_up(void) {
 void wcn_sta_poll(void) {
     if (s.state==ASSOCIATED) {
         if (!wcn_dp_ready() || !wcn_wmi_ready()) { fail("controller-unavailable",0);return; }
+        /* Declared dead only after the grace period and with no completion
+         * since the vdev came up: an empty ring 20 ms after association means
+         * nothing (the reference AP lands its first frame at +50 ms). */
+        if (wcn_dp_rx_frames()==s.rx_base && kernel_tic_ms(0)>=s.rx_grace) {
+            fail("rx-dead",0); return;
+        }
         ba_poll();
         if (s.state==FAILED) return;
         wcn_wpa_poll();
@@ -508,7 +528,19 @@ void wcn_sta_poll(void) {
     case AUTH: if (!management(0)) state(AUTH_WAIT); break;
     case ASSOC: if (!management(1)) state(ASSOC_WAIT); break;
     case PEER_ASSOC: if (!peer_assoc()) state(UP); break;
-    case UP: if (!vdev_up()) state(ASSOCIATED); break;
+    case UP:
+        if (!vdev_up()) {
+            /* Give the AP a real chance to send M1: the working reference AP
+             * delivers its first frame ~50 ms after vdev-start, but an AP that
+             * waits for its own retry timer can take several hundred ms. Judging
+             * the RX path at +20 ms failed connections that were about to
+             * succeed, so an attempt is only declared dead after a grace
+             * period with no new completion at all. */
+            s.rx_base = wcn_dp_rx_frames();
+            s.rx_grace = kernel_tic_ms(0) + 1200;
+            state(ASSOCIATED);
+        }
+        break;
     default: break;
     }
 }
@@ -538,6 +570,8 @@ void wcn_sta_event(unsigned event,unsigned tag,const uint8_t *p,unsigned bytes) 
         s.lmac=0;
         wcn_log("wcn: vdev-start status=%u target_mac_pdev=%u tx_streams=%u rx_streams=%u lmac=%u\n",
                 le32(p+12),le32(p+24),le32(p+28),le32(p+32),s.lmac);
+        wcn_diag("vdev-start target_mac_pdev=%u tx_streams=%u rx_streams=%u\n",
+                le32(p+24),le32(p+28),le32(p+32));
         if (le32(p+12)) fail("vdev-start-rejected",le32(p+12));
         else state(AUTH);
     }
@@ -570,7 +604,7 @@ void wcn_sta_management(const uint8_t *p,unsigned bytes,unsigned mhz) {
         s.ba_delete=0;s.ba_tid=(param>>2)&15;s.ba_token=p[26];
         s.ba_window=window && window<maximum ? window:maximum;
         s.ba_ssn=le16(p+31)>>4;s.ba_timeout=le16(p+29);s.ba_status=0;s.ba_requests++;
-        s.ba_state=(param&2) ? 1:3;if (!(param&2)) s.ba_status=37;
+        s.ba_state=(param&2) ? 1:4;if (!(param&2)) s.ba_status=37;
         s.ba_deadline=kernel_tic_ms(0)+2000;
     }
     if (s.state==ASSOCIATED && s.ht && subtype==13 && bytes>=30 && p[24]==3 && p[25]==2 && !s.ba_state) {
@@ -646,11 +680,36 @@ int wcn_sta_install_key(unsigned index,unsigned group,const uint8_t key[16],cons
     volatile uint8_t *v=(void *)&p;for (unsigned i=0;i<sizeof(p);i++) v[i]=0;
     return ret;
 }
+/* Keep the station out of power save. The WCN firmware parks itself after a
+ * few idle seconds and the AP then holds downlink frames for a station it
+ * thinks is asleep, so isolated traffic (ssh, ping) goes missing while a busy
+ * stream keeps the radio awake. Tags/command ids follow ath11k: WMI_GRP_STA_PS
+ * first command 0x9001, TLV tag 108 (Linux 112, our table is -4). */
+static int sta_ps_off(void) {
+    struct { uint32_t command; struct wmi_sta_powersave_mode_cmd cmd; } p;
+    memset(&p,0,sizeof(p)); p.command=0x9001; p.cmd.tlv_header=tlv(108,sizeof(p.cmd)-4);
+    p.cmd.vdev_id=0; p.cmd.sta_ps_mode=0; /* WMI_STA_PS_MODE_DISABLED */
+    int ret=wcn_htc_wmi_send(&p,sizeof(p));
+    if (ret) wcn_diag("sta-ps disable failed ret=%d\n",ret);
+    return ret;
+}
+static int sta_ps_param(unsigned param,unsigned value) {
+    struct { uint32_t command; struct wmi_sta_powersave_param_cmd cmd; } p;
+    memset(&p,0,sizeof(p)); p.command=0x9002; p.cmd.tlv_header=tlv(109,sizeof(p.cmd)-4);
+    p.cmd.vdev_id=0; p.cmd.param=param; p.cmd.value=value;
+    return wcn_htc_wmi_send(&p,sizeof(p));
+}
 int wcn_sta_authorize(void) {
     struct { uint32_t command; struct wmi_peer_set_param_cmd cmd; } p;
     memset(&p,0,sizeof(p));p.command=0x6004;p.cmd.tlv_header=tlv(100,sizeof(p.cmd)-4);
     memcpy(p.cmd.peer_macaddr.addr,s.bss.bssid,6);p.cmd.param_id=3;p.cmd.param_value=1;
-    return wcn_htc_wmi_send(&p,sizeof(p));
+    int ret=wcn_htc_wmi_send(&p,sizeof(p));
+    if (!ret) {
+        int ps=sta_ps_off();
+        sta_ps_param(4,0); /* WMI_STA_PS_PARAM_UAPSD: no wakeup scheduling */
+        wcn_diag("sta-ps mode=disabled ret=%d\n",ps);
+    }
+    return ret;
 }
 /* Join a network with either a passphrase (PBKDF2) or a precomputed PMK
  * ("pmk" in network.json / a 64-hex credential). The caller must have a

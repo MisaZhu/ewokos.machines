@@ -7,10 +7,13 @@
 #include "wcn_htc.h"
 #include "wcn_htt.h"
 #include "wcn_sta.h"
+#include "wcn_wmi.h"
+#include "wcn_net.h"
 #include "wcn_wpa.h"
 #include <ewoksys/dma.h>
 #include "wcn_util.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -19,7 +22,12 @@
 #define REO 0xa38000u
 #define TCL 0xa44000u
 #define LINK_COUNT 4096u
-#define RX_COUNT 1024u
+/* ath11k sizing (DP_RXDMA_BUF_RING_SIZE): the firmware drains the shared refill
+ * ring into one 1024-entry RX ring per MAC, so up to 2*1023 buffers sit in the
+ * MAC rings on top of whatever is still queued here. Every one of them has to
+ * be a distinct buffer. */
+#define RX_RING 4096u
+#define RX_COUNT (RX_RING - 1u)
 #define RX_BYTES 2048u
 #define MAX_RINGS 24u
 
@@ -33,18 +41,33 @@ static struct {
     unsigned used, active, failed, count, configured, bad, completions;
     unsigned mac2_filter, rx_filter_sent;
     unsigned links, rx_buffers, tx_buffers;
-    unsigned rx_packets,rx_delivered,rx_dropped,refilled,tx_packets,tx_done,tx_errors,tx_generation;
-    unsigned tx_batch,tx_pending;
+    unsigned rx_packets,rx_delivered,rx_dropped,rx_stale,refilled,tx_packets,tx_done,tx_errors,tx_generation;
+    unsigned tx_batch,tx_pending, tx_block_space,tx_block_slot;
     unsigned tx_last_source,tx_last_reason,tx_last_info,tx_last_rate,tx_last_count;
     unsigned tx_cookie[256];
     unsigned rx_rate,tx_rate,rx_ht,rx_vht,rx_he,tx_ht,tx_vht,tx_he;
-    uint8_t rx_owner[RX_COUNT];
+    uint8_t rx_owner[RX_COUNT+1u];
+    uint16_t rx_free[RX_COUNT];
+    unsigned rx_free_count;
     struct dp_ring rings[MAX_RINGS];
 } d;
 /* Join-band request; survives wcn_dp_release. Default on: the MAC2 RXDMA
  * filter is required for 2.4G receive; the devcmd mac2filter can clear it
  * (5G-only debugging) until the next controller restart. */
 static unsigned mac2_filter_req = 1;
+/* Receive buffer manager id written into every posted RX buffer. 4 is
+ * HAL_RX_BUF_RBM_SW1_BM, the ath11k hw_params value for WCN6855.
+ * /etc/wlan.rbm overrides it for A/B tests without a rebuild. */
+static unsigned dp_rbm(void) {
+    static int cached=-1;
+    if (cached<0) {
+        unsigned v=0; cached=4;
+        FILE *fp=fopen("/etc/wlan.rbm","r");
+        if (fp) { if (fscanf(fp,"%u",&v)==1 && v>=1 && v<=7) cached=(int)v; fclose(fp); }
+        wcn_log("wcn: RX buffer manager id=%u\n",(unsigned)cached);
+    }
+    return (unsigned)cached;
+}
 static void dp_barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
 static unsigned dp_reserve(unsigned bytes) {
     /* Link descriptors require 128-byte physical alignment. */
@@ -111,6 +134,21 @@ static int dp_lmac(unsigned id,unsigned entries,unsigned words,unsigned dest,
     r->htt_type=type; r->htt_id=htt_id; r->pdev=pdev; return 0;
 }
 
+/* REO/RXDMA arming. The HTT ring configuration only describes where the rings
+ * live; the hardware still has to be told to consume them. The firmware
+ * re-initialises this block whenever it reworks the MAC (DBS switch, vdev
+ * restart, roam recovery), and a wiped arming shows up as "RXDMA never fetched
+ * a single RX descriptor" - every RX buffer stays unconsumed, so no frame can
+ * reach the host and the 4-way handshake times out. */
+static void dp_arm_hw(void) {
+    wcn_soc_write(REO,wcn_soc_read(REO)|12);
+    wcn_soc_write(REO+0x630,wcn_soc_read(REO+0x630)&~(15u<<17));
+    for (unsigned i=0;i<4;i++) wcn_soc_write(REO+0x5bc+i*4,100000);
+    /* Every hash maps to REO2SW1. The remaining rings are still valid. */
+    wcn_soc_write(REO+0xc,0x11111111); wcn_soc_write(REO+0x10,0x11111111);
+    dp_barrier();
+}
+
 int wcn_dp_init(void) {
     if (d.active) return d.failed ? -1 : 0;
     if (d.dma) return -1;
@@ -132,7 +170,7 @@ int wcn_dp_init(void) {
         dp_local(9,REO,0x55c,0x3078,128,26,1)) return -1;
     for (unsigned i=0;i<4;i++)
         if (dp_local(i,REO,0x244+i*0x58,0x3030+i*8,512,16,1)) return -1;
-    if (dp_lmac(128,RX_COUNT,2,0,2,5,0)) return -1;
+    if (dp_lmac(128,RX_RING,2,0,2,5,0)) return -1;
     for (unsigned i=0;i<2;i++) {
         /* WCN6855 has 15 IDs per LMAC. FW fills each MAC's RX buffer ring. */
         if (dp_lmac(129+i*15,1024,2,0,1,0,i+1) ||
@@ -140,10 +178,11 @@ int wcn_dp_init(void) {
             dp_lmac(132+i*15,128,2,0,1,1,i+1)) return -1;
     }
     d.links=dp_reserve(LINK_COUNT*128);
-    d.rx_buffers=dp_reserve((RX_COUNT-1)*RX_BYTES);
+    d.rx_buffers=dp_reserve(RX_COUNT*RX_BYTES);
     d.tx_buffers=dp_reserve(256*RX_BYTES);
     if (!d.links || !d.rx_buffers || !d.tx_buffers) return -1;
-    for (unsigned i=1;i<RX_COUNT;i++) d.rx_owner[i]=2;
+    for (unsigned i=0;i<RX_COUNT;i++) { d.rx_free[i]=RX_COUNT-i; d.rx_owner[i+1]=2; }
+    d.rx_free_count=RX_COUNT;
     for (unsigned j=0;j<d.count;j++) {
         struct dp_ring *r=&d.rings[j];
         if (r->id==104) {
@@ -164,11 +203,7 @@ int wcn_dp_init(void) {
             for (unsigned i=0;i<r->entries;i++) dp_words(r->offset+i*40)[1]=i+1;
         }
     }
-    wcn_soc_write(REO,wcn_soc_read(REO)|12);
-    wcn_soc_write(REO+0x630,wcn_soc_read(REO+0x630)&~(15u<<17));
-    for (unsigned i=0;i<4;i++) wcn_soc_write(REO+0x5bc+i*4,100000);
-    /* Every hash maps to REO2SW1. The remaining rings are still valid. */
-    wcn_soc_write(REO+0xc,0x11111111); wcn_soc_write(REO+0x10,0x11111111);
+    dp_arm_hw();
     d.active=1;
     return 0;
 }
@@ -191,7 +226,11 @@ static struct dp_ring *dp_find(unsigned id) {
     return NULL;
 }
 static int dp_fault(const char *why) {
-    d.bad++; d.failed=1; wcn_log("wcn: DP invalid %s; stop/start required\n",why); return -1;
+    d.bad++; d.failed=1; wcn_log("wcn: DP invalid %s; stop/start required\n",why);
+    /* Persist the reason: the restart ladder the fault triggers takes the ssh
+     * session down before the ring log can be read. */
+    wcn_diag("dp-fault why=%s stale=%u rx=%u/%u\n",why,d.rx_stale,d.rx_delivered,d.rx_packets);
+    return -1;
 }
 static unsigned dp_space(struct dp_ring *r) {
     unsigned tail=dp_hw(r)/r->words;
@@ -199,24 +238,35 @@ static unsigned dp_space(struct dp_ring *r) {
 }
 static void dp_next(struct dp_ring *r) { r->index=(r->index+1)%r->entries; }
 static uint64_t dp_address(const uint32_t *p) { return p[0]|((uint64_t)(p[1]&255)<<32); }
+/* Returns the buffer id, 0 for a completion of a buffer the host already holds
+ * (counted in rx_stale, skipped), and -1 for a descriptor that cannot belong to
+ * this pool at all. Every buffer is posted exactly once per ownership cycle, so
+ * rx_stale staying at 0 is the proof that the pool accounting matches the
+ * firmware's. */
 static int dp_rx_id(const uint32_t *p) {
     unsigned id=p[1]>>11;
-    if (!id || id>=RX_COUNT || dp_address(p)!=d.pa+d.rx_buffers+(id-1)*RX_BYTES ||
-        d.rx_owner[id]!=1) return dp_fault("RX address/cookie/owner");
+    if (!id || id>RX_COUNT || dp_address(p)!=d.pa+d.rx_buffers+(id-1)*RX_BYTES)
+        return dp_fault("RX address/cookie");
+    if (d.rx_owner[id]!=1) {
+        d.rx_stale++; d.rx_dropped++;
+        if (d.rx_stale<=4)
+            wcn_log("wcn: stale RX completion cookie=%u (buffer not posted); skipped\n",id);
+        return 0;
+    }
     return (int)id;
 }
+/* One shared refill ring feeds both MACs (as in ath11k wcn6855). Only buffers
+ * the host got back are posted again: a buffer the firmware still holds in a
+ * MAC ring must never be offered a second time. */
 static void dp_refill(void) {
-    /* One shared refill ring feeds both MACs (as in ath11k wcn6855). */
     struct dp_ring *r=dp_find(128);
     unsigned space=dp_space(r),posted=0;
-    if (!space) return;
-    for (unsigned i=1;i<RX_COUNT && space;i++) if (d.rx_owner[i]==2) {
-        unsigned off=d.rx_buffers+(i-1)*RX_BYTES;
-        memset(d.dma+off,0,RX_BYTES);
-        uint64_t pa=d.pa+off;
+    while (space-- && d.rx_free_count) {
+        unsigned i=d.rx_free[--d.rx_free_count];
+        uint64_t pa=d.pa+d.rx_buffers+(i-1)*RX_BYTES;
         uint32_t *p=dp_words(r->offset+r->index*8);
-        p[0]=pa; p[1]=(pa>>32)|(4u<<8)|(i<<11);
-        d.rx_owner[i]=1; dp_next(r); space--; posted++;
+        p[0]=(uint32_t)pa; p[1]=((uint32_t)(pa>>32)&255u)|(dp_rbm()<<8)|(i<<11);
+        d.rx_owner[i]=1; dp_next(r); posted++;
     }
     if (posted) { dp_publish(r); d.refilled+=posted; }
 }
@@ -227,6 +277,14 @@ static void dp_rx_buffer(unsigned id,unsigned deliver) {
     /* WCN6855 RX descriptor is 392 bytes, per Linux rx_desc.h. */
     unsigned len=p[26]&0x3fff,pad=(p[11]>>26)&3,decap=(p[27]>>8)&3;
     unsigned err=p[22]&((1u<<12)|(1u<<13)|(1u<<16)|(1u<<17)|(1u<<26)|(1u<<27)|(15u<<28));
+    /* Frame-level trace of the first completions of a session: the differ-
+     * ence between an AP that completes a handshake and one that never sends
+     * M1 is visible here (a working AP writes descriptors, a silent one does
+     * not reach this function at all). */
+    if (d.rx_packets<=12)
+        wcn_diag("rx-frame n=%u len=%u pad=%u decap=%u deliver=%u err=%08x d23=%08x d11=%08x fc=%04x tid=%u rate=%08x\n",
+                 d.rx_packets,len,pad,decap,deliver,err,p[23],p[11],
+                 (unsigned)(b[200]|((unsigned)b[201]<<8)),(p[47]&(1u<<7))?(p[43]>>15)&15:16,p[30]);
     if (deliver && (p[23]>>31) && !err && len>=14 && len<=RX_BYTES-392-pad && decap==2) {
         struct wcn_rx_security sec;
         memset(&sec,0,sizeof(sec));
@@ -252,7 +310,9 @@ static void dp_rx_buffer(unsigned id,unsigned deliver) {
     } else {
         d.rx_dropped++;
     }
-    d.rx_owner[id]=2;
+    /* Cleared before reuse so a stale msdu_done can never pass for a new frame. */
+    memset(d.dma+d.rx_buffers+(id-1)*RX_BYTES,0,RX_BYTES);
+    d.rx_owner[id]=2; d.rx_free[d.rx_free_count++]=id;
 }
 /* Validate a complete bounded link chain before returning any child buffers. */
 static int dp_link_drop(const uint32_t *entry) {
@@ -269,6 +329,7 @@ static int dp_link_drop(const uint32_t *entry) {
             const uint32_t *buf=q+8+j*4;
             if (!dp_address(buf)) continue;
             int id=dp_rx_id(buf); if (id<0) return -1;
+            if (!id) continue;
             for (unsigned k=0;k<nids;k++) if (ids[k]==(unsigned)id) return dp_fault("duplicate RX link buffer");
             ids[nids++]=id;
         }
@@ -289,12 +350,14 @@ static int dp_complete(struct dp_ring *r,const uint32_t *p) {
     if (r->id<=4) {
         if (p[7]&(1u<<8)) return dp_link_drop(p);
         int id=dp_rx_id(p); if (id<0) return -1;
+        if (!id) return 0;
         dp_rx_buffer(id,((p[7]>>9)&3)==1 && !(p[4]&((1u<<2)|(1u<<22))));
     } else if (r->id==133 || r->id==148) return dp_link_drop(p);
     else if (r->id==109) {
         if (((p[2]>>6)&7)==1) return dp_link_drop(p);
         if (((p[2]>>6)&7)!=0) return dp_fault("WBM RX descriptor type");
         int id=dp_rx_id(p); if (id<0) return -1;
+        if (!id) return 0;
         dp_rx_buffer(id,0);
     } else if (r->id==106) {
         unsigned cookie=p[1]>>11,slot=cookie&255;
@@ -312,6 +375,15 @@ static int dp_complete(struct dp_ring *r,const uint32_t *p) {
             wcn_log("wcn: data TX complete cookie=%u source=%u reason=%u success=%u tx_count=%u info=%08x rate=%08x\n",
                     cookie,src,d.tx_last_reason,success,d.tx_last_count,p[2],p[5]);
         if (!success) d.tx_errors++;
+        /* Sample the completion stream: a link that stops being bridged still
+         * completes descriptors, and only tx_count/success say whether the AP
+         * actually answered the frame. Bounded, so the diag file stays readable. */
+        static unsigned sampled;
+        if (d.tx_done%64u==0 && sampled<48) {
+            sampled++;
+            wcn_diag("tx-sample n=%u success=%u source=%u reason=%u tx_count=%u info=%08x rate=%08x\n",
+                     d.tx_done,success,src,d.tx_last_reason,d.tx_last_count,p[2],p[5]);
+        }
         if (src==0 && (p[5]&1)) {
             d.tx_rate=p[5];unsigned phy=(d.tx_rate>>3)&15;
             if (phy==2) d.tx_ht++;
@@ -348,10 +420,22 @@ void wcn_dp_tx_batch_end(void) {
 int wcn_dp_transmit(const void *frame,unsigned bytes,unsigned lmac) {
     if (!wcn_dp_ready() || !frame || bytes<24 || bytes>RX_BYTES || lmac>1) return -1;
     struct dp_ring *r=dp_find(16);
-    if (!dp_space(r)) return -1;
+    /* Both of these used to drop the frame silently, which reads as a dead
+     * uplink with no trace at all. */
+    if (!dp_space(r)) {
+        d.tx_block_space++;
+        if (d.tx_block_space<=4)
+            wcn_log("wcn: TX blocked: ring full hw=%u idx=%u\n",dp_hw(r),r->index);
+        return -1;
+    }
     unsigned slot;
     for (slot=0;slot<256;slot++) if (!d.tx_cookie[slot]) break;
-    if (slot==256) return -1;
+    if (slot==256) {
+        d.tx_block_slot++;
+        if (d.tx_block_slot<=4)
+            wcn_log("wcn: TX blocked: no free cookie slot (completions missing)\n");
+        return -1;
+    }
     d.tx_generation=(d.tx_generation+1)&8191; if (!d.tx_generation) d.tx_generation=1;
     unsigned cookie=(d.tx_generation<<8)|slot;
     unsigned off=d.tx_buffers+slot*RX_BYTES;
@@ -384,14 +468,48 @@ static int dp_rx_filter(unsigned ring_id, unsigned pdev) {
     p[6]=0x000007BF; /* MPDU/MSDU start+end, packet, attention, PPDU TLVs */
     int rc=wcn_htc_htt_send(p,sizeof(p));
     wcn_log("wcn: DP RX filter ring=%u pdev=%u\n",ring_id,pdev);
+    /* rc != 0 keeps rx_filter_sent cleared and the message is retried; make
+     * that visible, because without this filter MAC2 delivers no data frame
+     * and every 4-way handshake ends in handshake-timeout. */
+    wcn_diag("dp-rx-filter ring=%u pdev=%u tlv=%08x rc=%d rings=%u/%u\n",
+            ring_id,pdev,p[6],rc,d.configured,d.count);
     return rc;
 }
 /* Record the joining band: the MAC2 RXDMA filter is firmware-global, so the
  * DP-setup pass only opens it when the station targets 2.4G. */
 void wcn_dp_mac2_filter_req(int on) { mac2_filter_req = on ? 1 : 0; }
 
+/* Which MAC's RX ring-selection filter to open. Each MAC's RXDMA buffer-ring
+ * filter defaults to pass-nothing until its own selection config is installed,
+ * so a 5G association that lands on MAC1 receives *nothing* while only MAC2
+ * (the 2.4G path, opened by the 2.4G fix) is configured. The set is read from
+ * /etc/wlan.filter ("1", "2" or "12") so the split can be A/B'd without a
+ * rebuild; default opens both. */
+static unsigned dp_filter_mask(void) {
+    char value[16];
+    unsigned n, mask = 0;
+    FILE *fp = fopen("/etc/wlan.filter", "r");
+
+    if (!fp) return 3;
+    memset(value, 0, sizeof(value));
+    n = fread(value, 1, sizeof(value) - 1, fp);
+    fclose(fp);
+    for (unsigned i = 0; i < n; i++) {
+        if (value[i] == '1') mask |= 1;
+        if (value[i] == '2') mask |= 2;
+    }
+    return mask ? mask : 3;
+}
+
+static int dp_rx_filter(unsigned ring_id, unsigned pdev);
+
 void wcn_dp_poll(void) {
     if (!d.active || d.failed || !wcn_htt_ready()) return;
+    /* Install rings only after READY, the DBS mode and the per-pdev country
+     * update have been applied. Each of those reconfigures the radio, and the
+     * firmware silently drops ring/FP state installed before it settles
+     * (wcn_wmi.c: "Set DBS before HTT installs RXDMA rings"). */
+    if (!wcn_wmi_radio_settled()) return;
     /* Configure one ring per turn, retaining ownership until stop disables DMA. */
     while (d.configured<d.count) {
         struct dp_ring *r=&d.rings[d.configured];
@@ -400,11 +518,17 @@ void wcn_dp_poll(void) {
         if (!r->reg) return;
     }
     if (!d.rx_filter_sent) {
+        unsigned mask = dp_filter_mask();
         d.rx_filter_sent=1;
-        /* MAC2's RXDMA buffer-ring filter defaults to pass-nothing, so 2.4G
-         * EAPOL/data never reach the host. ath11k-exact station FP set; the
-         * TLV list below must stay rich (0x7BF) or 5G RX breaks. */
-        if (dp_rx_filter(0,2)) d.rx_filter_sent=0;
+        /* Both MACs' RXDMA buffer-ring filters default to pass-nothing, so the
+         * band that lands on an unopened MAC receives nothing at all: 2.4G
+         * needed MAC2's, and a 5G association on MAC1 needs MAC1's. MAC1 goes
+         * first so MAC2 stays the last-installed one if firmware keeps a
+         * single selection slot. ath11k-exact station FP set; the TLV list
+         * must stay rich (0x7BF) or 5G RX breaks. */
+        wcn_diag("dp-filter-set mask=%u\n", mask);
+        if ((mask & 1) && dp_rx_filter(0,1)) d.rx_filter_sent=0;
+        if (d.rx_filter_sent && (mask & 2) && dp_rx_filter(0,2)) d.rx_filter_sent=0;
         return;
     }
     unsigned budget=64;
@@ -422,14 +546,97 @@ void wcn_dp_poll(void) {
     if (!d.failed) dp_refill();
 }
 int wcn_dp_ready(void) { return d.active && !d.failed && d.configured==d.count; }
+/* A programmed ring proves nothing. The bring-up can complete with
+ * dp_cfg=22/22, dp_failed=0 and rx=0/0 forever, because the firmware never
+ * writes a completion into the RXDMA ring. Management frames still flow
+ * (they arrive as WMI events), so the only visible symptom is a 4-way
+ * handshake where M1 never reaches the host. */
+int wcn_dp_rx_alive(void) { return d.active && !d.failed && d.rx_packets>0; }
+unsigned wcn_dp_rx_frames(void) { return d.rx_packets; }
+unsigned wcn_dp_completions(void) { return d.completions; }
+unsigned wcn_dp_tx_errors(void) { return d.tx_errors; }
+unsigned wcn_dp_tx_packets(void) { return d.tx_packets; }
+/* Proof of where RX actually stops: the RX buffer ring's firmware-written HP
+ * stays put (and refilled stays at its initial value) when RXDMA never fetched
+ * a descriptor, while a live receive path advances both. */
+static unsigned dp_raw_hw(const struct dp_ring *r) {
+    unsigned value = r->id == 104 ? wcn_soc_read(r->ptr + 4) :
+        *(volatile uint32_t *)(void *)(d.dma + r->hw_offset);
+    dp_barrier();
+    return value;
+}
+
+/* RXDMA can consume every posted descriptor and still return no completion.
+ * Reading the buffers themselves is the only direct way to tell "frames did
+ * arrive and the completion path lost them" from "the engine only prefetched
+ * descriptors and no frame was ever written". Buffers are memset at alloc, so
+ * any non-zero word means the firmware wrote something into it. */
+void wcn_dp_rx_probe(char *out, unsigned size) {
+    struct dp_ring *r = dp_find(128);
+    unsigned filled = 0, sample = 0, words[6] = {0};
+    char rings[16 * 26 + 4];
+    unsigned used = 0;
+
+    if (out == NULL || !size) return;
+    for (unsigned i = 1; i <= RX_COUNT; i++) {
+        const uint32_t *p = dp_words(d.rx_buffers + (i - 1) * RX_BYTES);
+        unsigned j, nz = 0;
+        /* 128 words = 512 bytes: covers the 392-byte RX descriptor and the
+         * first bytes of any payload the hardware decapsulated. */
+        for (j = 0; j < 128; j++) if (p[j]) { nz = 1; break; }
+        if (!nz) continue;
+        if (!filled && sample == 0) {
+            sample = i;
+            for (j = 0; j < 6; j++) words[j] = p[j];
+        }
+        filled++;
+    }
+    rings[0] = 0;
+    static const unsigned ids[] = {0, 1, 2, 3, 129, 132, 133, 144, 147, 148};
+    for (unsigned k = 0; k < sizeof(ids) / sizeof(ids[0]); k++) {
+        struct dp_ring *q = dp_find(ids[k]);
+        if (q == NULL || used >= sizeof(rings) - 30) continue;
+        used += (unsigned)snprintf(rings + used, sizeof(rings) - used, "%u:%u/%u ",
+                ids[k], dp_raw_hw(q), q->index * q->words);
+    }
+    snprintf(out, size,
+            "rxfill=%u rxsample=%u rxd=%08x/%08x/%08x/%08x rx_hp=%u rx_idx=%u rings=[%s]",
+            filled, sample, words[0], words[1], words[2], words[3],
+            r ? dp_raw_hw(r) : 0u, r ? r->index * r->words : 0u, rings);
+}
+
+void wcn_dp_hw_state(char *out, unsigned size) {
+    struct dp_ring *r = dp_find(128);
+    if (out == NULL || !size) return;
+    snprintf(out, size,
+            "reo=%08x reo_c=%08x reo630=%08x rx_hp=%u rx_tp=%u rx_words=%u refill=%u hw=%u/%u",
+            wcn_soc_read(REO), wcn_soc_read(REO+0xc), wcn_soc_read(REO+0x630),
+            r ? dp_hw(r) : 0u, r ? r->index : 0u, r ? r->words : 0u,
+            d.refilled, d.configured, d.count);
+}
 void wcn_dp_release(void) {
     if (d.dma) dma_free(0,(ewokos_addr_t)d.dma);
     memset(&d,0,sizeof(d));
 }
+/* One compact line per call, written to the persistent diag by the link
+ * thread. A Wi-Fi stall takes the ssh session down with it, so the counters
+ * that would identify the stall can never be sampled while it is happening -
+ * they have to be recorded as it goes. */
+void wcn_dp_beat(char *out,size_t size) {
+    struct dp_ring *tx=dp_find(16), *rx=dp_find(128);
+    snprintf(out,size,"beat rx=%u/%u drop=%u stale=%u tx=%u done=%u err=%u txfull=%u txslots=%u refill=%u pend=%u txspace=%u txhw=%u txidx=%u rxhw=%u rxidx=%u rxfree=%u",
+             d.rx_delivered,d.rx_packets,d.rx_dropped,d.rx_stale,
+             d.tx_packets,d.tx_done,d.tx_errors,d.tx_block_space,d.tx_block_slot,d.refilled,d.tx_pending,
+             tx?(unsigned)dp_space(tx):0,tx?dp_hw(tx):0,tx?tx->index:0,rx?dp_hw(rx):0,rx?rx->index:0,d.rx_free_count);
+    snprintf(out+strlen(out),size-strlen(out)," mgmt=%u wev=%u",
+             wcn_wmi_management(),wcn_wmi_events());
+    char net[220]; wcn_net_beat(net,sizeof(net));
+    size_t used=strlen(out); if (used<size) snprintf(out+used,size-used," %s",net);
+}
 void wcn_dp_status(char *out,size_t size) {
-    snprintf(out,size,"dp=%u dp_cfg=%u/%u dp_failed=%u dp_bad=%u dp_completed=%u rx=%u/%u drop=%u refill=%u tx=%u/%u tx_errors=%u tx_last_source=%u tx_last_reason=%u tx_last_count=%u tx_last_info=%08x tx_last_rate=%08x",
+    snprintf(out,size,"dp=%u dp_cfg=%u/%u dp_failed=%u dp_bad=%u dp_completed=%u rx=%u/%u drop=%u stale=%u refill=%u rxfree=%u tx=%u/%u tx_errors=%u tx_last_source=%u tx_last_reason=%u tx_last_count=%u tx_last_info=%08x tx_last_rate=%08x",
              d.active,d.configured,d.count,d.failed,d.bad,d.completions,
-             d.rx_delivered,d.rx_packets,d.rx_dropped,d.refilled,d.tx_done,d.tx_packets,d.tx_errors,
+             d.rx_delivered,d.rx_packets,d.rx_dropped,d.rx_stale,d.refilled,d.rx_free_count,d.tx_done,d.tx_packets,d.tx_errors,
              d.tx_last_source,d.tx_last_reason,d.tx_last_count,d.tx_last_info,d.tx_last_rate);
 }
 void wcn_dp_rings(char *out,size_t size) {
@@ -448,4 +655,11 @@ void wcn_dp_rings(char *out,size_t size) {
         if (n<0 || (size_t)n>=size-pos) break;
         pos+=n;
     }
+}
+
+/* Crash collection is called after the DMA engine has stopped.  The
+ * investigation branch predates this entry point, so keep the same ring
+ * formatter available to the persistent MHI crash snapshot path. */
+void wcn_dp_crash_rings(char *out,size_t size) {
+    wcn_dp_rings(out,size);
 }
