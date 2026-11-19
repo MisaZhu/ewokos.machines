@@ -1700,6 +1700,20 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	return 0;
 
 fail:
+	/* Return the combo module to a defined off state before the next warm reset.
+	 * UEFI re-enumerates the WLAN port before EwokOS starts; leaving PERST#
+	 * released with W_DISABLE# high after a failed training attempt can make
+	 * that next UEFI pass lose the endpoint entirely (Port 6 link-down). */
+	perst(false);
+	int radio_rc = radio_disable();
+	int ekey_rc = ekey_3v3_set(false);
+	/* A failed training attempt can leave the SPMI transaction engine busy.
+	 * Retry the board rail edge once so a following warm reset sees the WLAN
+	 * module electrically off instead of inheriting a half-powered endpoint. */
+	if (ekey_rc)
+		ekey_rc = ekey_3v3_set(false);
+	klog("q8b pcie: PCIe4 failure cleanup radio=%d ekey=%d\n",
+		radio_rc, ekey_rc);
 	/* A failed link may leave the subordinate DBI/PHY slave quiesced.  Do not
 	 * probe or reset those windows here: an error-status read can become an
 	 * asynchronous external abort and promote to EL2.  The next boot or an
