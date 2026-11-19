@@ -136,7 +136,6 @@ static void gcc_set(uint32_t byteoff, uint32_t mask) {
 }
 
 static int gcc_gpu_clocks_enable(void) {
-	uint32_t before = adreno_gcc_read(GCC_GPU_GPLL0_BRANCH);
 	uint32_t after;
 
 	/* gcc_gpu_gpll0_clk_src / gcc_gpu_gpll0_div_clk_src: BRANCH_HALT_DELAY,
@@ -154,11 +153,6 @@ static int gcc_gpu_clocks_enable(void) {
 	proc_nsleep_precise(10000);
 
 	after = adreno_gcc_read(GCC_GPU_GPLL0_BRANCH);
-	slog("adreno_gpucc: gcc gpu branches %x -> %x (axi=%x memnoc=%x dvm=%x)\n",
-			before, after,
-			adreno_gcc_read(GCC_DDRSS_GPU_AXI_CLK),
-			adreno_gcc_read(GCC_GPU_MEMNOC_GFX_CLK),
-			adreno_gcc_read(GCC_GPU_SNOC_DVM_GFX_CLK));
 
 	if (!(after & GCC_GPU_GPLL0_EN))
 		return -1;
@@ -194,8 +188,6 @@ static int cx_gdsc_power_on(void) {
 	            GDSC_RETAIN_MEM | GDSC_RETAIN_PERIPH);
 	proc_nsleep_precise(1000);
 	cc_set_bits(GPUCC_CX_GDSCR, GDSC_RETAIN_FF, GDSC_RETAIN_FF);
-	slog("adreno_gpucc: cx_gdsc on, gdscr=%x hw=%x\n",
-	     cc_read(GPUCC_CX_GDSCR), cc_read(GPUCC_CX_GDSC_HW_CTRL));
 	return 0;
 }
 
@@ -289,20 +281,6 @@ int adreno_gpucc_init(void) {
 
 	adreno_mb();
 
-	/* One line with the state that matters if a later GMU poll times out. */
-	slog("adreno_gpucc: gmu_clk_src=%x/%x hub_clk_src=%x/%x cx_gdsc=%x hw=%x\n",
-			cc_read(GPUCC_GMU_CLK_SRC_CMD), cc_read(GPUCC_GMU_CLK_SRC_CFG),
-			cc_read(GPUCC_HUB_CLK_SRC_CMD), cc_read(GPUCC_HUB_CLK_SRC_CFG),
-			cc_read(GPUCC_CX_GDSCR), cc_read(GPUCC_CX_GDSC_HW_CTRL));
-	slog("adreno_gpucc: leaves cxo=%x ahb=%x hub_aon=%x hub_int=%x "
-	     "cx_gmu=%x smmu=%x cb=%x div=%x/%x\n",
-	     cc_read(GPUCC_CXO_CLK), cc_read(GPUCC_AHB_CLK),
-	     cc_read(GPUCC_HUB_AON_CLK), cc_read(GPUCC_HUB_CX_INT_CLK),
-	     cc_read(GPUCC_CX_GMU_CLK), cc_read(GPUCC_HLOS1_VOTE_SMMU),
-	     cc_read(GPUCC_CB_CLK_ALWAYS_ON),
-	     cc_read(0x11bcu), cc_read(0x11c0u));
-	slog("adreno_gpucc: clocks enabled (gmu/hub 200 MHz, cx_gdsc %s)\n",
-			(cc_read(GPUCC_CX_GDSC_HW_CTRL) & GDSC_PWR_ON) ? "on" : "OFF");
 	return 0;
 }
 

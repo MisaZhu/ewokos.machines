@@ -57,8 +57,12 @@
 
 #define GOODIX_READ_COORD_ADDR  0x814E
 
+/* point records start one byte before the X register: the track id
+ * precedes the 6 coordinate/size bytes of each 8-byte point slot */
+#define GOODIX_POINT1_TRACK_ADDR 0x814F
 #define GOODIX_POINT1_X_ADDR 	0x8150
 #define GOODIX_POINT1_Y_ADDR 	0x8152
+#define GOODIX_MAX_POINTS       5
 
 
 /* Commands for REG_COMMAND */
@@ -95,6 +99,7 @@ typedef struct{
 }GT911_Config_t;
 
 typedef struct{
+	uint8_t id;   /* controller track id, stable for a contact's lifetime */
 	uint16_t x;
 	uint16_t y;
 }TouchCordinate_t;

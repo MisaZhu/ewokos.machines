@@ -380,23 +380,16 @@ static int cp_wait_idle(void) {
 	uint32_t busy = 0, status = 0, irq = 0;
 	int i;
 
-	slog("adreno_ring: CP idle check begin\n");
 	for (i = 0; i < RING_IDLE_TRIES; i++) {
 		busy = adreno_gmu_read(REG_A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS);
-		if (i == 0)
-			slog("adreno_ring: CP idle GMU busy=%08x\n", busy);
 		if (busy & A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS_GPUBUSYIGNAHB)
 			goto retry;
 		status = gpu_read(REG_A6XX_RBBM_STATUS);
-		if (i == 0)
-			slog("adreno_ring: CP idle RBBM status=%08x\n", status);
 		if (status & ~A6XX_RBBM_STATUS_CP_AHB_BUSY_CX_MASTER)
 			goto retry;
 		irq = gpu_read(REG_A6XX_RBBM_INT_0_STATUS);
-		if (!(irq & A6XX_RBBM_HANG_DETECT)) {
-			slog("adreno_ring: CP idle complete int0=%08x\n", irq);
+		if (!(irq & A6XX_RBBM_HANG_DETECT))
 			return 0;
-		}
 	retry:
 		proc_nsleep_precise(10000);
 	}
@@ -488,20 +481,6 @@ int adreno_ring_cp_init(adreno_dev_t *d) {
 		return -1;
 
 	rb = (volatile uint32_t*)ring->bo.va;
-	slog("adreno_ring: CP pre-init int0=%08x intr=%08x hw=%08x protect=%08x\n",
-	     gpu_read(REG_A6XX_RBBM_INT_0_STATUS),
-	     gpu_read(REG_A6XX_CP_INTERRUPT_STATUS),
-	     gpu_read(REG_A6XX_CP_HW_FAULT), gpu_read(REG_A6XX_CP_PROTECT_STATUS));
-	slog("adreno_ring: CP config sqe=%08x:%08x rb=%08x:%08x "
-	     "rptr=%08x:%08x shadow=%08x cntl=%08x sqectl=%08x apriv=%08x\n",
-	     gpu_read(REG_A6XX_CP_SQE_INSTR_BASE_HI),
-	     gpu_read(REG_A6XX_CP_SQE_INSTR_BASE),
-	     gpu_read(REG_A6XX_CP_RB_BASE_HI), gpu_read(REG_A6XX_CP_RB_BASE),
-	     gpu_read(REG_A6XX_CP_RB_RPTR_ADDR_HI),
-	     gpu_read(REG_A6XX_CP_RB_RPTR_ADDR),
-	     ((volatile uint32_t *)d->rptr_shadow.va)[0],
-	     gpu_read(REG_A6XX_CP_RB_CNTL), gpu_read(REG_A6XX_CP_SQE_CNTL),
-	     gpu_read(REG_A6XX_CP_APRIV_CNTL));
 
 	/* a6xx_cp_init(): CP_ME_INIT with 8 fixed dwords (a6xx_gpu.c:1027). */
 	rb_pkt7(ring, CP_ME_INIT, 8);
@@ -513,31 +492,19 @@ int adreno_ring_cp_init(adreno_dev_t *d) {
 	rb_emit(ring, 0x00000000);   /* no workarounds enabled             */
 	rb_emit(ring, 0x00000000);   /* pad rest with 0                    */
 	rb_emit(ring, 0x00000000);
-	slog("adreno_ring: CP_ME_INIT words %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
-	     rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7], rb[8]);
 
 	ring_flush(ring);
-	/* Keep this marker independent of GX MMIO and the GPU-written shadow:
-	   a blocked read must not hide that the doorbell store returned. */
-	slog("adreno_ring: CP_ME_INIT doorbell store returned wptr=%08x\n",
-	     get_wptr(ring));
-	slog("adreno_ring: CP_ME_INIT doorbell posted wptr=%08x shadow=%08x\n",
-	     gpu_read(REG_A6XX_CP_RB_WPTR),
-	     ((volatile uint32_t *)d->rptr_shadow.va)[0]);
 	if (ring_wait_drained(d) != 0) {
 		slog("adreno_ring: CP_ME_INIT did not drain (rptr=%08x wptr=%08x)\n",
 		     gpu_read(REG_A6XX_CP_RB_RPTR), gpu_read(REG_A6XX_CP_RB_WPTR));
 		return -2;
 	}
-	slog("adreno_ring: CP_ME_INIT ring drained\n");
 	if (cp_wait_idle() != 0)
 		return -2;
-	slog("adreno_ring: CP_ME_INIT fault check begin\n");
 	if (ring_check_fault(d) != 0)
 		return -3;
 
 	d->cp_ready = 1;
-	slog("adreno_ring: CP_ME_INIT complete\n");
 	return 0;
 }
 
@@ -550,7 +517,6 @@ int adreno_ring_exit_secure(adreno_dev_t *d) {
 	rb_pkt7(&d->ring, CP_SET_SECURE_MODE, 1);
 	rb_emit(&d->ring, 0);
 	ring_flush(&d->ring);
-	slog("adreno_ring: CP_SET_SECURE_MODE doorbell returned\n");
 	rc = ring_wait_drained(d);
 	if (!rc) rc = cp_wait_idle();
 	if (!rc) rc = ring_check_fault(d);
@@ -558,7 +524,6 @@ int adreno_ring_exit_secure(adreno_dev_t *d) {
 		ring_mark_wedged(d, "secure-mode transition failed");
 		return ADRENO_E_FAULT;
 	}
-	slog("adreno_ring: CP secure-mode exit complete\n");
 	return 0;
 }
 

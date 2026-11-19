@@ -284,10 +284,6 @@ static int hfi_wait_for_ack(uint32_t id, uint32_t seqnum,
 			     resp.ret_header, resp.error);
 			continue;
 		}
-		slog("adreno_gmu: HFI response msg=%u seq=%u header=%x ret=%x "
-		     "error=%u size=%u payload=%x/%x/%x/%x\n", id, seqnum,
-		     resp.header, resp.ret_header, resp.error, HFI_HEADER_SIZE(resp.header),
-		     resp.payload[0], resp.payload[1], resp.payload[2], resp.payload[3]);
 		if (resp.error) {
 			slog("adreno_gmu: HFI msg seq=%u error=%u\n", seqnum, resp.error);
 			return -3;
@@ -371,9 +367,6 @@ static void hfi_init(adreno_dev_t *d) {
 	               HFI_RESPONSE_QUEUE);
 	g_seqnum = 0;
 	adreno_wmb();
-	slog("adreno_gmu: HFI qtbl iova=%llx size=%u queues=%u qhdr=%u/%u\n",
-	     (unsigned long long)d->gmu_hfi.iova, tbl->size, tbl->num_queues,
-	     tbl->qhdr0_offset, tbl->qhdr_size);
 }
 
 /* ------------------------------------------------------------------ */
@@ -406,8 +399,6 @@ static int hfi_send_perf_table(void) {
 		msg.gx_votes[i].acd = 0xffffffffu;
 		/* Values here are already in the HFI kHz units (Linux's OPP Hz / 1000). */
 		msg.gx_votes[i].freq = gpu_freqs[i];
-		slog("adreno_gmu: GX perf[%u] freq=%u level=%u vote=%x\n",
-		     i, gpu_freqs[i], gpu_levels[i], msg.gx_votes[i].vote);
 	}
 
 	for (i = 0; i < HFI_GMU_LEVELS; i++) {
@@ -415,8 +406,6 @@ static int hfi_send_perf_table(void) {
 		                         &msg.cx_votes[i].vote) != 0)
 			return -2;
 		msg.cx_votes[i].freq = gmu_freqs[i];
-		slog("adreno_gmu: CX perf[%u] freq=%u level=%u vote=%x\n",
-		     i, gmu_freqs[i], gmu_levels[i], msg.cx_votes[i].vote);
 	}
 	return hfi_send_msg(HFI_H2F_MSG_PERF_TABLE, &msg, sizeof(msg), 0, 0);
 }
@@ -520,9 +509,6 @@ static int rpmh_start(void) {
 	}
 	adreno_gmu_write(REG_A6XX_GMU_RSCC_CONTROL_REQ, 0);
 	adreno_wmb();
-	slog("adreno_gmu: RSC awake ack=%x busy=%x\n",
-	     adreno_gmu_read(REG_A6XX_GMU_RSCC_CONTROL_ACK),
-	     adreno_rscc_read(REG_A6XX_RSCC_SEQ_BUSY_DRV0));
 	return 0;
 }
 
@@ -540,10 +526,6 @@ static int rpmh_stop(void) {
 	}
 	adreno_gmu_write(REG_A6XX_GMU_RSCC_CONTROL_REQ, 0);
 	adreno_wmb();
-	slog("adreno_gmu: RSC parked status=%x ack=%x busy=%x\n",
-	     adreno_rscc_read(REG_A6XX_GPU_RSCC_RSC_STATUS0_DRV0),
-	     adreno_gmu_read(REG_A6XX_GMU_RSCC_CONTROL_ACK),
-	     adreno_rscc_read(REG_A6XX_RSCC_SEQ_BUSY_DRV0));
 	return 0;
 }
 
@@ -598,14 +580,6 @@ static void power_config(void) {
 		A6XX_GMU_RPMH_CTRL_MX_VOTE_ENABLE |
 		A6XX_GMU_RPMH_CTRL_CX_VOTE_ENABLE |
 		A6XX_GMU_RPMH_CTRL_GFX_VOTE_ENABLE);
-	slog("adreno_gmu: RPMH_CTRL readback=%x (want bits 0x%x)\n",
-	     adreno_gmu_read(REG_A6XX_GMU_RPMH_CTRL),
-	     A6XX_GMU_RPMH_CTRL_RPMH_INTERFACE_ENABLE |
-	     A6XX_GMU_RPMH_CTRL_LLC_VOTE_ENABLE |
-	     A6XX_GMU_RPMH_CTRL_DDR_VOTE_ENABLE |
-	     A6XX_GMU_RPMH_CTRL_MX_VOTE_ENABLE |
-	     A6XX_GMU_RPMH_CTRL_CX_VOTE_ENABLE |
-	     A6XX_GMU_RPMH_CTRL_GFX_VOTE_ENABLE);
 }
 
 /* ------------------------------------------------------------------ */
@@ -658,35 +632,18 @@ static int gmu_fw_load(adreno_dev_t *d) {
 		}
 		if (b->size == 0)
 			continue;
-		/* Progress before each block: if the SoC resets on an ITCM/DTCM
-		   MMIO write the last line names the exact block. */
 		if (in_range(b->addr, ADRENO_GMU_ITCM_BASE, ADRENO_GMU_TCM_SIZE)) {
 			uint32_t off = (b->addr - ADRENO_GMU_ITCM_BASE) >> 2;
-			slog("adreno_gmu: fw[%d] itcm addr=%x size=%u reg=%x\n",
-			     i, b->addr, b->size, REG_A6XX_GMU_CM3_ITCM_START + off);
 			gmu_write_bulk(REG_A6XX_GMU_CM3_ITCM_START + off, b->data, b->size);
 		} else if (in_range(b->addr, ADRENO_GMU_DTCM_BASE, ADRENO_GMU_TCM_SIZE)) {
 			uint32_t off = (b->addr - ADRENO_GMU_DTCM_BASE) >> 2;
-			slog("adreno_gmu: fw[%d] dtcm addr=%x size=%u reg=%x\n",
-			     i, b->addr, b->size, REG_A6XX_GMU_CM3_DTCM_START + off);
 			gmu_write_bulk(REG_A6XX_GMU_CM3_DTCM_START + off, b->data, b->size);
-		} else if (fw_block_mem(&d->gmu_icache, b)) {
-			slog("adreno_gmu: fw[%d] icache addr=%x size=%u\n",
-			     i, b->addr, b->size);
-		} else if (fw_block_mem(&d->gmu_dummy, b)) {
-			slog("adreno_gmu: fw[%d] dummy addr=%x size=%u\n",
-			     i, b->addr, b->size);
-		} else {
+		} else if (!fw_block_mem(&d->gmu_icache, b) &&
+		           !fw_block_mem(&d->gmu_dummy, b)) {
 			slog("adreno_gmu: fw[%d] unmatched addr=%x size=%u\n",
 			     i, b->addr, b->size);
 		}
 	}
-	/* Read back the CM3 SRAM: ITCM[0] is the first firmware word
-	   (0x10007f80 in a660_gmu.bin) and DTCM+0xff8 holds 0x3001000a,
-	   which gmu_start() also uses to pick the init-result mask. */
-	slog("adreno_gmu: fw blocks loaded (itcm0=%x dtcm_ff8=%x)\n",
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_ITCM_START),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_DTCM_START + 0xff8));
 	adreno_fw_free_gmu(&fw);
 
 	return 0;
@@ -710,43 +667,11 @@ static int gmu_start(adreno_dev_t *d) {
 
 	/* Match a6xx_gmu_start() exactly.  The firmware is copied verbatim and the
 	   host does not perform or bypass the CM3's internal cache handshake. */
-	slog("adreno_gmu: CM3 start (dtcm+ff8=%x mask=%x want=%x ao=%x)\n",
-	     val, mask, reset_val,
-	     adreno_gmu_read(REG_A6XX_GMU_AO_HOST_INTERRUPT_STATUS));
 	adreno_gmu_write(REG_A6XX_GMU_CM3_SYSRESET, 1);
 	adreno_gmu_write(REG_A6XX_GPU_GMU_CX_GMU_PWR_COL_CP_RESP, 0);
-	slog("adreno_gmu: pre-rel sysreset=%x bootcfg=%x cm3cfg=%x gen7=%x "
-	     "qtbl=%x/%x sfr=%x cpmsg=%x init=%x busy=%x "
-	     "rsc=%x/%x cache=%x/%x,%x/%x ao=%x\n",
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_SYSRESET),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_BOOT_CONFIG),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_CFG),
-	     adreno_gmu_read(REG_A6XX_GMU_GENERAL_7),
-	     adreno_gmu_read(REG_A6XX_GMU_HFI_QTBL_INFO),
-	     adreno_gmu_read(REG_A6XX_GMU_HFI_QTBL_ADDR),
-	     adreno_gmu_read(REG_A6XX_GMU_HFI_SFR_ADDR),
-	     adreno_gmu_read(REG_A6XX_GPU_GMU_CX_GMU_PWR_COL_CP_MSG),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_INIT_RESULT),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_BUSY),
-	     adreno_gmu_read(REG_A6XX_GMU_RSCC_CONTROL_ACK),
-	     adreno_rscc_read(REG_A6XX_RSCC_SEQ_BUSY_DRV0),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_REQ_0),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_ACK_0),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_REQ_1),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_ACK_1),
-	     adreno_gmu_read(REG_A6XX_GMU_AO_HOST_INTERRUPT_STATUS));
 	adreno_gmu_write(REG_A6XX_GMU_CM3_SYSRESET, 0);
 
 	ret = adreno_gmu_poll(REG_A6XX_GMU_CM3_FW_INIT_RESULT, mask, reset_val, 10000);
-	slog("adreno_gmu: post-rel init=%x busy=%x ao=%x hfi=%x cache=%x/%x,%x/%x\n",
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_INIT_RESULT),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_BUSY),
-	     adreno_gmu_read(REG_A6XX_GMU_AO_HOST_INTERRUPT_STATUS),
-	     adreno_gmu_read(REG_A6XX_GMU_GMU2HOST_INTR_INFO),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_REQ_0),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_ACK_0),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_REQ_1),
-	     adreno_gmu_read(REG_A6XX_GMU_CACHE_PWR_ACK_1));
 	if (ret) {
 		slog("adreno_gmu: GMU firmware init timed out (result=%x)\n",
 		     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_INIT_RESULT));
@@ -771,17 +696,6 @@ static int gmu_fw_start(adreno_dev_t *d) {
 	uint32_t chipid;
 	int ret;
 
-	/* Bootloader/UEFI leftover state, read before we write anything. */
-	slog("adreno_gmu: pre-init g7=%x init=%x sysreset=%x cm3cfg=%x busy=%x "
-	     "qtbl=%x/%x\n",
-	     adreno_gmu_read(REG_A6XX_GMU_GENERAL_7),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_INIT_RESULT),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_SYSRESET),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_CFG),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_BUSY),
-	     adreno_gmu_read(REG_A6XX_GMU_HFI_QTBL_INFO),
-	     adreno_gmu_read(REG_A6XX_GMU_HFI_QTBL_ADDR));
-
 	/* a650 family: FAL interface wake. */
 	adreno_gmu_write(REG_A6XX_GPU_GMU_CX_GMU_CX_FALNEXT_INTF, 1);
 	adreno_gmu_write(REG_A6XX_GPU_GMU_CX_GMU_CX_FAL_INTF, 1);
@@ -791,16 +705,9 @@ static int gmu_fw_start(adreno_dev_t *d) {
 
 	if ((ret = rpmh_start()) != 0)
 		return ret;
-	/* Do not touch CM3 SRAM unless the powered/clocked GMU aperture reads back. */
-	slog("adreno_gmu: stage rpmh up, gmu probe g7=%x busy=%x hfi=%x\n",
-	     adreno_gmu_read(REG_A6XX_GMU_GENERAL_7),
-	     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_BUSY),
-	     adreno_gmu_read(REG_A6XX_GMU_HFI_CTRL_STATUS));
 	if ((ret = gmu_fw_load(d)) != 0)
 		return ret;
 
-	slog("adreno_gmu: stage boot_config (qtbl=%llx)\n",
-	     (unsigned long long)d->gmu_hfi.iova);
 	adreno_gmu_write(REG_A6XX_GMU_CM3_FW_INIT_RESULT, 0);
 	adreno_gmu_write(REG_A6XX_GMU_CM3_BOOT_CONFIG, 0x02);
 
@@ -822,19 +729,9 @@ static int gmu_fw_start(adreno_dev_t *d) {
 	                 (uint32_t)d->gmu_log.iova | (d->gmu_log.size / 4096u - 1u));
 
 	power_config();
-	slog("adreno_gmu: stage power_config done\n");
 
 	if ((ret = gmu_start(d)) != 0)
 		return ret;
-
-	{
-		uint32_t ver = adreno_gmu_read(REG_A6XX_GMU_CORE_FW_VERSION);
-		slog("adreno_gmu: CM3 up, fw_init=%x firmware v%u.%u.%u\n",
-		     adreno_gmu_read(REG_A6XX_GMU_CM3_FW_INIT_RESULT),
-		     (ver & A6XX_GMU_CORE_FW_VERSION_MAJOR__MASK) >> 28,
-		     (ver & A6XX_GMU_CORE_FW_VERSION_MINOR__MASK) >> 16,
-		     ver & A6XX_GMU_CORE_FW_VERSION_STEP__MASK);
-	}
 
 	/* SPTPRAC intentionally skipped (see header note). */
 
@@ -864,28 +761,6 @@ static int gmu_wait_gx_on(void) {
 	return -1;
 }
 
-static void gmu_dump_dcvs_state(const char *tag) {
-	slog("adreno_gmu: DCVS %s boot=%x gx=%x mx=%x ack=%x perf=%x bw=%x "
-	     "ret=%x\n", tag,
-	     adreno_gmu_read(REG_A6XX_GMU_BOOT_SLUMBER_OPTION),
-	     adreno_gmu_read(REG_A6XX_GMU_GX_VOTE_IDX),
-	     adreno_gmu_read(REG_A6XX_GMU_MX_VOTE_IDX),
-	     adreno_gmu_read(REG_A6XX_GMU_DCVS_ACK_OPTION),
-	     adreno_gmu_read(REG_A6XX_GMU_DCVS_PERF_SETTING),
-	     adreno_gmu_read(REG_A6XX_GMU_DCVS_BW_SETTING),
-	     adreno_gmu_read(REG_A6XX_GMU_DCVS_RETURN));
-	slog("adreno_gmu: DCVS %s rpmh=%x power=%x gxstat=%x hfi=%x "
-	     "tcs=%x/%x/%x/%x\n", tag,
-	     adreno_gmu_read(REG_A6XX_GMU_RPMH_CTRL),
-	     adreno_gmu_read(REG_A6XX_GPU_GMU_CX_GMU_RPMH_POWER_STATE),
-	     adreno_gmu_read(REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS),
-	     adreno_gmu_read(REG_A6XX_GMU_GMU2HOST_INTR_INFO),
-	     adreno_rscc_read(REG_A6XX_RSCC_TCS0_DRV0_STATUS),
-	     adreno_rscc_read(REG_A6XX_RSCC_TCS1_DRV0_STATUS),
-	     adreno_rscc_read(REG_A6XX_RSCC_TCS2_DRV0_STATUS),
-	     adreno_rscc_read(REG_A6XX_RSCC_TCS3_DRV0_STATUS));
-}
-
 /* a6xx_gmu_set_oob(GMU_OOB_GPU_SET), non-legacy bit assignments.  This is
    the first step of Linux hw_init(): it asks the GMU to keep GX powered while
    the host programs GPU registers. */
@@ -895,7 +770,6 @@ int adreno_gmu_gpu_set(void) {
 	uint32_t info;
 	int ret;
 
-	gmu_dump_dcvs_state("before-gpu-oob");
 	adreno_gmu_write(REG_A6XX_GMU_HOST2GMU_INTR_SET, request);
 	ret = adreno_gmu_poll(REG_A6XX_GMU_GMU2HOST_INTR_INFO,
 	                      ack, ack, 10000);
@@ -906,11 +780,8 @@ int adreno_gmu_gpu_set(void) {
 		     info, adreno_gmu_read(REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS));
 		return -1;
 	}
-	slog("adreno_gmu: GPU_SET OOB ack info=%x gxstat=%x\n", info,
-	     adreno_gmu_read(REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS));
 
 	if (gmu_wait_gx_on() != 0) {
-		gmu_dump_dcvs_state("after-gpu-oob-gx-timeout");
 		adreno_gmu_gpu_clear();
 		return -2;
 	}
@@ -919,7 +790,6 @@ int adreno_gmu_gpu_set(void) {
 		adreno_gmu_gpu_clear();
 		return -3;
 	}
-	gmu_dump_dcvs_state("after-gpu-oob");
 	return 0;
 }
 
@@ -927,7 +797,6 @@ int adreno_gmu_gpu_set(void) {
 void adreno_gmu_gpu_clear(void) {
 	adreno_gmu_write(REG_A6XX_GMU_HOST2GMU_INTR_SET, 1u << 31);
 	adreno_wmb();
-	slog("adreno_gmu: GPU_SET OOB cleared\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -982,16 +851,13 @@ int adreno_gmu_init(adreno_dev_t *d) {
 	/* Linux sets current_perf_index to nr_gpu_freqs - 1, then issues this
 	   blocking DCVS request after HFI start.  GX may remain collapsed here;
 	   Linux's following hw_init() starts with GPU_SET OOB. */
-	gmu_dump_dcvs_state("before-initial-vote");
 	ret = hfi_send_gx_bw_perf_vote(HFI_INITIAL_PERF_INDEX, 0);
 	if (ret) {
 		slog("adreno_gmu: initial perf vote failed (%d)\n", ret);
 		rpmh_stop();
 		return ret;
 	}
-	gmu_dump_dcvs_state("after-initial-vote-ack");
 
 	d->gmu_booted = 1;
-	slog("adreno_gmu: GMU cold boot complete\n");
 	return 0;
 }
