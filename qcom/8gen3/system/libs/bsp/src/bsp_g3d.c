@@ -330,3 +330,18 @@ int32_t bsp_g3d_program_free(int32_t handle) {
 	return adreno_3d_program_free(handle) == 0
 			? G2D_OK : G2D_ERR_NOT_SUPPORTED;
 }
+
+/* Sleep/wake power hint from g2dd's dev.cmd (powerd fan-out).  sleep=1
+   enables GMU inter-frame power collapse so the GX rail drops while the
+   compositor is paused; sleep=0 restores the ACTIVE config.  Declines -2
+   when the Adreno datapath never came up (not opted in / bring-up failed),
+   so machines without the GPU and un-probed boards are unaffected.  This
+   is the only bsp_g3d entry not mirrored on the other machines: g2dd
+   references it through a weak symbol. */
+int32_t bsp_g3d_sleep(int32_t sleep) {
+	if (g3d_probe() != 1)
+		return G2D_ERR_NOT_SUPPORTED;
+	uint32_t ctrl = adreno_gmu_ifpc_set(sleep ? 1 : 0);
+	slog("q8b g3d: IFPC %s (ctrl=0x%08x)\n", sleep ? "on" : "off", ctrl);
+	return G2D_OK;
+}

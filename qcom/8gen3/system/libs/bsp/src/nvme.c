@@ -19,6 +19,7 @@
  */
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -374,7 +375,7 @@ static void nvme_log_state(const char *where) {
 
 static int nvme_submit(nvme_sqe_t* sq, uint16_t* tail, nvme_cqe_t* cq,
 		uint16_t* head, uint8_t* phase, uint16_t qid, uint16_t qsize,
-		uint32_t timeout_ms) {
+		uint32_t timeout_ms, uint32_t* result) {
 	uint16_t t = *tail;
 	uint16_t cid = sq[t].cid;
 	uint8_t opcode = sq[t].opcode;
@@ -394,6 +395,8 @@ static int nvme_submit(nvme_sqe_t* sq, uint16_t* tail, nvme_cqe_t* cq,
 		nvme_cqe_t* rsp = &cq[*head];
 		if ((rsp->status & NVME_CQE_PHASE) == *phase) {
 			uint16_t status = (rsp->status & NVME_CQE_STATUS_MASK) >> 1;
+			if (result != NULL)
+				*result = (uint32_t)rsp->result;
 			uint16_t h = (uint16_t)(*head + 1);
 			if (h >= qsize) {
 				h = 0;
@@ -422,7 +425,14 @@ static int nvme_submit(nvme_sqe_t* sq, uint16_t* tail, nvme_cqe_t* cq,
 static int nvme_admin(nvme_sqe_t* sqe) {
 	memcpy(&_c.asq[_c.asq_tail], sqe, sizeof(*sqe));
 	return nvme_submit(_c.asq, &_c.asq_tail, _c.acq, &_c.acq_head,
-			&_c.acq_phase, NVME_ADMIN_SQID, NVME_ADMIN_QSIZE, 5000);
+			&_c.acq_phase, NVME_ADMIN_SQID, NVME_ADMIN_QSIZE, 5000, NULL);
+}
+
+/* Admin command that captures the completion's cdw0 (Get Features). */
+static int nvme_admin_result(nvme_sqe_t* sqe, uint32_t* result) {
+	memcpy(&_c.asq[_c.asq_tail], sqe, sizeof(*sqe));
+	return nvme_submit(_c.asq, &_c.asq_tail, _c.acq, &_c.acq_head,
+			&_c.acq_phase, NVME_ADMIN_SQID, NVME_ADMIN_QSIZE, 5000, result);
 }
 
 static int nvme_admin_identify(uint32_t nsid, uint32_t cns, void* out,
@@ -458,14 +468,32 @@ static int nvme_admin_identify(uint32_t nsid, uint32_t cns, void* out,
 
 /* Same latency budget Linux applies by default
  * (nvme_core.default_ps_max_latency_us=100000): a slower exit would
- * stall the polled rootfs I/O path noticeably after an idle period. */
-#define NVME_APST_MAX_LAT_US 100000u
-/* Idle time before PS0 drops to the chosen state.  Short enough that a
- * machine with the display asleep (powerd lid/key sleep keeps the SoC
- * running) spends nearly all of its dark time in the low state, long
- * enough that a burst of filesystem writes is not chopped up by state
- * transitions. */
-#define NVME_APST_IDLE_MS 1000u
+ * stall the polled rootfs I/O path noticeably after an idle period.
+ * The tiers below mirror Linux nvme_configure_apst(): a fast primary
+ * target (round-trip <= 15 ms) entered after 100 ms idle, and a deeper
+ * secondary target (<= 100 ms) entered after 2000 ms idle. */
+#define NVME_APST_MAX_LAT_US      100000u
+#define NVME_APST_PRIMARY_LAT_US  15000u
+#define NVME_APST_IDLE_MS         100u    /* operational -> primary idle */
+#define NVME_APST_SECOND_IDLE_MS  2000u   /* primary -> secondary idle */
+
+/* APST configuration outcome, retained for the sdfsd `apst` dev.cmd query.
+ * nvme_apst_enable() runs before vfsd/logd exist, so its slog lines are
+ * never observable on a board without a kernel console (TW220); the query
+ * is the verification path. */
+#define APST_NONE        0   /* nvme_open has not run yet */
+#define APST_ENABLED     1   /* Set Features accepted */
+#define APST_UNSUPPORTED 2   /* controller APSTA bit clear */
+#define APST_NO_STATE    3   /* no state inside the latency budget */
+#define APST_SET_FAILED  4   /* Set Features command failed */
+static struct {
+	int      state;
+	int      target;        /* deepest (secondary) target power state */
+	int      primary;       /* fast (primary) target power state */
+	uint32_t lat_us, power_mw;
+	uint32_t feat;          /* Get Features cdw0 readback */
+	bool     verified;      /* readback APSTE bit set */
+} _apst;
 
 static uint16_t nvme_id_le16(const uint8_t* p) {
 	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
@@ -478,49 +506,84 @@ static uint32_t nvme_id_le32(const uint8_t* p) {
 
 /* Without APST the controller sits in PS0 forever - the TW220's BG5
  * burns its full idle power there even while powerd has the display
- * asleep.  Program the autonomous transition PS0 -> deepest acceptable
- * non-operational state; the controller returns to an operational state
- * on its own when the next command arrives, so the polled block path
- * needs no wake hook.  Best-effort: a controller without APST (or with
- * no state inside the latency budget) keeps the old always-PS0 behavior. */
+ * asleep.  Program the autonomous transition table the same way Linux
+ * nvme_configure_apst() does: every operational state drops to a fast
+ * primary non-operational state after a short idle, and that state drops
+ * further to the deepest acceptable state after a longer idle.  The
+ * controller returns to an operational state on its own when the next
+ * command arrives, so the polled block path needs no wake hook.
+ * Best-effort: a controller without APST (or with no state inside the
+ * latency budget) keeps the old always-PS0 behavior. */
 static void nvme_apst_enable(const uint8_t* id) {
+	memset(&_apst, 0, sizeof(_apst));
 	if (!(id[NVME_ID_APSTA] & 1u)) {
+		_apst.state = APST_UNSUPPORTED;
 		slog("nvme: apst unsupported, disk stays in PS0\n");
 		return;
 	}
 	uint8_t npss = id[NVME_ID_NPSS];
-	int target = -1;
+	if (npss > 31)
+		npss = 31;
+
+	/* Pick the deepest non-operational state in each latency tier.
+	 * Descriptors are ordered by decreasing power, so the last match in
+	 * a tier is its deepest state.  Exit latency must fit the overall
+	 * budget; the tier is chosen by the round-trip (entry+exit) latency. */
+	int primary = -1, secondary = -1;
 	uint32_t lat_us = 0, power_mw = 0;
-	for (int ps = 1; ps <= (int)npss && ps < 32; ps++) {
+	for (int ps = 1; ps <= (int)npss; ps++) {
 		const uint8_t* psd = id + NVME_ID_PSD + ps * 32;
 		if (!(psd[3] & NVME_PSD_NOPS))
 			continue;
-		uint32_t lat = nvme_id_le32(psd + 4) + nvme_id_le32(psd + 8);
-		if (lat > NVME_APST_MAX_LAT_US)
+		uint32_t en = nvme_id_le32(psd + 4);
+		uint32_t ex = nvme_id_le32(psd + 8);
+		if (ex > NVME_APST_MAX_LAT_US)
 			continue;
-		/* Descriptors are ordered by decreasing power: keep the last
-		 * (deepest) state that fits the latency budget. */
-		target = ps;
-		lat_us = lat;
-		uint16_t mp = nvme_id_le16(psd);
-		power_mw = (psd[3] & NVME_PSD_MPS) ? mp / 10u : mp * 10u;
+		uint32_t total = en + ex;
+		if (total <= NVME_APST_PRIMARY_LAT_US)
+			primary = ps;
+		if (total <= NVME_APST_MAX_LAT_US) {
+			secondary = ps;
+			lat_us = total;
+			uint16_t mp = nvme_id_le16(psd);
+			power_mw = (psd[3] & NVME_PSD_MPS) ? mp / 10u : mp * 10u;
+		}
 	}
-	if (target < 0) {
+	if (secondary < 0) {
+		_apst.state = APST_NO_STATE;
 		slog("nvme: no apst state within %u us latency budget\n",
 				(unsigned)NVME_APST_MAX_LAT_US);
 		return;
 	}
+	if (primary < 0)
+		primary = secondary;   /* no fast tier: go straight to the deepest */
 
-	/* APST data structure: 32 64-bit entries indexed by the current
-	 * power state, bits 4:0 = target state, bits 39:8 = idle time in ms.
-	 * PS0 is the only operational state, so one entry is enough.  Reuse
-	 * the 4K identify scratch - the controller identify is already
-	 * copied out and the next identify re-zeroes it. */
+	/* APST data structure: 32 64-bit entries indexed by the current power
+	 * state.  Per the NVMe base spec (and Linux nvme_configure_apst):
+	 * bits 7:3 = target power state, bits 39:8 = idle time in ms, the low
+	 * 3 bits are reserved and MUST be zero - placing the target in bits
+	 * 4:0 sets reserved bits and the controller rejects the command with
+	 * "Invalid Field in Command".  Operational states -> primary after
+	 * 100 ms; the primary non-op state -> secondary after 2000 ms; the
+	 * deepest state has no transition (entry 0).  Reuse the 4K identify
+	 * scratch - the controller identify is already copied out and the
+	 * next identify re-zeroes it. */
 	uint8_t* buf = _c.ctrl + 0x4000;
 	memset(buf, 0, 4096);
-	uint64_t entry = ((uint64_t)NVME_APST_IDLE_MS << 8) | (uint64_t)target;
-	for (int i = 0; i < 8; i++)
-		buf[i] = (uint8_t)(entry >> (i * 8));
+	for (int ps = 0; ps <= (int)npss; ps++) {
+		const uint8_t* psd = id + NVME_ID_PSD + ps * 32;
+		int nops = (psd[3] & NVME_PSD_NOPS) != 0;
+		uint64_t entry = 0;
+		if (!nops) {
+			entry = ((uint64_t)NVME_APST_IDLE_MS << 8) |
+					((uint64_t)primary << 3);
+		} else if (ps == primary && secondary != primary) {
+			entry = ((uint64_t)NVME_APST_SECOND_IDLE_MS << 8) |
+					((uint64_t)secondary << 3);
+		}
+		for (int i = 0; i < 8; i++)
+			buf[ps * 8 + i] = (uint8_t)(entry >> (i * 8));
+	}
 
 	nvme_sqe_t sqe;
 	memset(&sqe, 0, sizeof(sqe));
@@ -530,12 +593,86 @@ static void nvme_apst_enable(const uint8_t* id) {
 	sqe.cdw10 = NVME_FEAT_APST;
 	sqe.cdw11 = 1u;                 /* APSTE: enable */
 	if (nvme_admin(&sqe) != 0) {
+		_apst.state = APST_SET_FAILED;
+		_apst.target = secondary;
+		_apst.primary = primary;
 		slog("nvme: apst enable failed, disk stays in PS0\n");
 		return;
 	}
-	slog("nvme: apst PS0->PS%d after %u ms idle (%u mW, lat=%u us)\n",
-			target, (unsigned)NVME_APST_IDLE_MS,
+	_apst.state = APST_ENABLED;
+	_apst.target = secondary;
+	_apst.primary = primary;
+	_apst.lat_us = lat_us;
+	_apst.power_mw = power_mw;
+
+	/* Read the feature back (Get Features cdw0 bit0 = APSTE) so the report
+	 * can say the controller confirmed the configuration, not just that
+	 * the command was sent.  Same 4K scratch; the namespace identify that
+	 * follows re-zeroes it. */
+	memset(&sqe, 0, sizeof(sqe));
+	sqe.opcode = NVME_ADMIN_GET_FEATURES;
+	sqe.cid = _c.cid++;
+	sqe.prp1 = _c.ctrl_phys + 0x4000;
+	sqe.cdw10 = NVME_FEAT_APST;
+	uint32_t feat = 0;
+	if (nvme_admin_result(&sqe, &feat) == 0) {
+		_apst.feat = feat;
+		_apst.verified = (feat & 1u) != 0;
+	}
+	slog("nvme: apst op->PS%d(%ums) PS%d->PS%d(%ums) %umW lat=%uus\n",
+			primary, (unsigned)NVME_APST_IDLE_MS,
+			primary, secondary, (unsigned)NVME_APST_SECOND_IDLE_MS,
 			(unsigned)power_mw, (unsigned)lat_us);
+}
+
+/* Format the retained APST outcome into buf. */
+static void apst_report(char* buf, size_t n) {
+	switch (_apst.state) {
+	case APST_ENABLED:
+		snprintf(buf, n,
+				"apst: enabled op->PS%d idle=%ums, PS%d->PS%d idle=%ums "
+				"%umW lat=%uus readback=0x%08x %s\n",
+				_apst.primary, (unsigned)NVME_APST_IDLE_MS,
+				_apst.primary, _apst.target,
+				(unsigned)NVME_APST_SECOND_IDLE_MS,
+				(unsigned)_apst.power_mw, (unsigned)_apst.lat_us,
+				(unsigned)_apst.feat,
+				_apst.verified ? "verified" : "unverified");
+		break;
+	case APST_UNSUPPORTED:
+		snprintf(buf, n, "apst: unsupported, disk stays in PS0\n");
+		break;
+	case APST_NO_STATE:
+		snprintf(buf, n, "apst: no state within %u us latency budget\n",
+				(unsigned)NVME_APST_MAX_LAT_US);
+		break;
+	case APST_SET_FAILED:
+		snprintf(buf, n,
+				"apst: set-features failed (target PS%d), disk stays in PS0\n",
+				_apst.target);
+		break;
+	default:
+		snprintf(buf, n, "apst: not initialized\n");
+		break;
+	}
+}
+
+/* sdfsd dev.cmd hook (weak extern in the shared sdfsd): `devcmd / apst`.
+ * malloc'd reply, NULL for unknown commands - the vdevice cmd contract.
+ * Reports the boot-time APST outcome plus the Get Features readback; this
+ * is the verification channel on the console-less TW220 where the
+ * nvme_apst_enable() slog (run before vfsd/logd exist) is unobservable. */
+char* bsp_sdfsd_cmd(int argc, char** argv) {
+	if (argc <= 0 || argv == NULL || argv[0] == NULL)
+		return NULL;
+	if (strcmp(argv[0], "help") == 0)
+		return strdup("sdfsd bsp commands: apst\n");
+	if (strcmp(argv[0], "apst") != 0)
+		return NULL;
+
+	char buf[192];
+	apst_report(buf, sizeof(buf));
+	return strdup(buf);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1086,7 +1223,7 @@ static int nvme_io_single(uint8_t opcode, uint64_t lba, uint32_t bytes,
 	sqe->cdw12 = blocks - 1u;
 
 	return nvme_submit(_c.iosq, &_c.iosq_tail, _c.iocq, &_c.iocq_head,
-			&_c.iocq_phase, NVME_IO_SQID, NVME_IO_QSIZE, 5000);
+			&_c.iocq_phase, NVME_IO_SQID, NVME_IO_QSIZE, 5000, NULL);
 }
 
 /* Flush the volatile write cache.  Journaled filesystems call this at
@@ -1105,7 +1242,7 @@ int nvme_flush(void) {
 	sqe->cid = _c.cid++;
 	sqe->nsid = 1;
 	return nvme_submit(_c.iosq, &_c.iosq_tail, _c.iocq, &_c.iocq_head,
-			&_c.iocq_phase, NVME_IO_SQID, NVME_IO_QSIZE, 5000);
+			&_c.iocq_phase, NVME_IO_SQID, NVME_IO_QSIZE, 5000, NULL);
 }
 
 int nvme_read(uint64_t lba, void* dst, uint32_t blocks) {

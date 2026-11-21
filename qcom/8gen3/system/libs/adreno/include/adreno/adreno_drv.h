@@ -131,6 +131,10 @@ int adreno_smmu_gmu_cb_init(adreno_dev_t *d);
 int adreno_gmu_init(adreno_dev_t *d);
 int adreno_gmu_gpu_set(void);
 void adreno_gmu_gpu_clear(void);
+/* Sleep-only inter-frame power collapse toggle (see adreno_gmu.c).  enable=1
+   lets the GMU collapse GX between frames; enable=0 restores the ACTIVE
+   config.  Returns the PWR_COL_INTER_FRAME_CTRL value written. */
+uint32_t adreno_gmu_ifpc_set(int enable);
 int adreno_ring_init(adreno_dev_t *d);
 /* Program the CP engine onto the ring allocated by adreno_ring_init() and run
    the a6xx_cp_init() CP_ME_INIT handshake.  Must run AFTER adreno_a6xx.c has

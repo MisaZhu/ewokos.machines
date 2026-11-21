@@ -21,12 +21,16 @@
  *    it wakes it again.
  *
  * The key and the lid are polled on a 50 ms tick, the battery once a
- * second on the same tick.  Sleep here is panel-off plus a paused
- * compositor/input path - this WoA firmware has no suspend-to-RAM door,
- * so the SoC keeps running while the screen is dark.  Both wake sources
- * are polled independently of xserverd, so they always wake; they share
- * one sleep state, so a power-key press can wake a lid-closed device
- * and only a real lid transition changes the state afterwards.
+ * second on the same tick.  Sleep fans out best-effort to the whole board:
+ * xserverd pauses compositing/input, the AMOLED panel enters DSI sleep-in,
+ * the GPU drops into GMU IFPC, Wi-Fi enables STA power-save (link kept),
+ * the touch IC is powered off, and the secondary CPU cores park via PSCI
+ * CPU_SUSPEND.  There is no suspend-to-RAM door on this WoA firmware, so
+ * core 0 keeps running the tick and the polled wake sources while the
+ * screen is dark.  Both wake sources are polled independently of xserverd,
+ * so they always wake; they share one sleep state, so a power-key press can
+ * wake a lid-closed device and only a real lid transition changes the state
+ * afterwards.
  *
  * dev commands: help / status / reboot / shutdown (the last two
  * root-gated PSCI requests).  Bring-up modes: --dump/--probe/--sample/
@@ -39,6 +43,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <ewoksys/klog.h>
@@ -79,6 +85,15 @@ static bool _key_down;
 static bool _key_ignore;
 static uint64_t _key_down_ms;
 static bool _sleeping;
+static bool _cpu_sleep;   /* kernel secondary-core PSCI CPU_SUSPEND gate */
+/* PSCI secondary-core power-down is OPT-IN.  powerd polls the hall sensor
+ * and the power key (register reads, not interrupts), so a core parked in
+ * CPU_SUSPEND has no lid-open IRQ to wake it: the wake fan-out can deadlock
+ * (screen lit, input dead, no wake trace).  The sleep fan-out therefore
+ * leaves cores online (WFI idle) unless the operator explicitly arms suspend
+ * with `cpusleep on`.  The flag persists across lid cycles so `cpusleep off`
+ * stays disarmed until explicitly re-armed, not re-overridden by each sleep. */
+static bool _cpu_sleep_armed;
 
 /* Lid (hall sensor) state machine.  _lid_closed is the last debounced
  * state; a level that differs from it must persist for LID_DEBOUNCE_MS
@@ -90,25 +105,122 @@ static bool _lid_closed;
 static bool _lid_pending;
 static uint64_t _lid_pending_ms;
 
-/* Drive the display sleep state through xserverd's "sleep"/"wake" dev
- * commands.  xserverd blanks the panel and pauses compositing/input on
- * "sleep", and repaints everything on "wake".  powerd keeps its own
- * state so the toggle still works when the X server is not up (headless
- * boot) - the command is best-effort.  Shared by the power key and the
- * lid so the two sources never fight over _sleeping. */
+/* Drive the whole-board sleep state.  "sleep" stops compositing (black
+ * frame) and then parks each subsystem independently: the AMOLED panel
+ * (DSI sleep-in), the GPU (GMU IFPC), Wi-Fi (STA power-save, link kept),
+ * the touch IC (rails off) and finally the secondary CPU cores (PSCI
+ * CPU_SUSPEND).  "wake" lights the display first (panel + compositor),
+ * then restores the GPU, touch and Wi-Fi.  Every leg is
+ * best-effort: a missing or unresponsive node is logged and never blocks
+ * the others, so one failing subsystem cannot wedge the sleep/wake path.
+ * powerd keeps its own state so the toggle still works when the X server
+ * is not up (headless boot).  Shared by the power key and the lid so the
+ * two sources never fight over _sleeping. */
+/* Persistent sleep/wake trace.  /dev/log is a RAM ring that drains on read
+ * and vanishes on reboot, so a slow-wake report cannot be diagnosed after
+ * the fact.  Each transition is accumulated here and flushed ONCE to
+ * /tmp/powerd.log (a real ext3 file, survives reboot, readable from the
+ * host) AFTER the fan-out completes - so file I/O never delays the display
+ * legs.  Every line carries the kernel-tic millisecond clock. */
+static char _trace[1536];
+static size_t _trace_len;
+
+static void power_trace(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    char line[256];
+    int n = vsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    if (n <= 0)
+        return;
+    slog("q8b powerd: %s", line);
+    if (_trace_len < sizeof(_trace) - 1) {
+        size_t cpy = (size_t)n;
+        if (cpy > sizeof(_trace) - 1 - _trace_len)
+            cpy = sizeof(_trace) - 1 - _trace_len;
+        memcpy(_trace + _trace_len, line, cpy);
+        _trace_len += cpy;
+        _trace[_trace_len] = '\0';
+    }
+}
+
+static void power_trace_flush(void) {
+    if (_trace_len == 0)
+        return;
+    int fd = open("/tmp/powerd.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0)
+        return;
+    (void)write(fd, _trace, _trace_len);
+    fsync(fd);
+    close(fd);
+}
+
+static void power_send_cmd(const char* node, const char* cmd, const char* why) {
+    uint64_t t0 = kernel_tic_ms(0);
+    char* ret = dev_cmd(node, cmd);
+    unsigned ms = (unsigned)(kernel_tic_ms(0) - t0);
+    if (ret == NULL) {
+        power_trace("%s %s: no reply from %s (%u ms)\n", why, cmd, node, ms);
+        return;
+    }
+    size_t len = strlen(ret);
+    while (len > 0 && (ret[len - 1] == '\n' || ret[len - 1] == '\r'))
+        ret[--len] = '\0';
+    power_trace("%s %s %s: %u ms (%s)\n", why, cmd, node, ms, ret);
+    free(ret);
+}
+
+static void power_cpu_sleep(bool sleep, const char* why) {
+    uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_CPU_SLEEP,
+            sleep ? 1 : 0, 0);
+    _cpu_sleep = sleep;
+    power_trace("%s cpu_sleep=%d rc=%llu\n", why, sleep ? 1 : 0,
+            (unsigned long long)ret);
+}
+
 static void power_set_sleep(bool sleep, const char* why) {
     const char* cmd = sleep ? "sleep" : "wake";
-    char* ret;
 
     if (sleep == _sleeping)
         return;
-    ret = dev_cmd("/dev/x", cmd);
+    _trace_len = 0;
+    power_trace("=== %s -> %s (t=%llu ms) ===\n", why, cmd,
+            (unsigned long long)kernel_tic_ms(0));
+    if (sleep) {
+        power_send_cmd("/dev/x", cmd, why);
+        power_send_cmd("/dev/disp0", cmd, why);
+        power_send_cmd("/dev/g2d", cmd, why);
+        power_send_cmd("/dev/wl0", cmd, why);
+        power_send_cmd("/dev/touch0", cmd, why);
+        /* Only park secondary cores when explicitly armed; otherwise the
+         * polled lid/key wake path can deadlock on a parked core. */
+        if (_cpu_sleep_armed)
+            power_cpu_sleep(true, why);
+    } else {
+        /* Wake the display FIRST: the panel and the compositor are the only
+         * legs the user sees, so they must never queue behind a slow
+         * subsystem (every dev_cmd is a blocking IPC with a 10 s kernel
+         * timeout).  cpu_sleep(false) also kicks every parked secondary
+         * core awake in the kernel, so the fan-out IPCs below reach running
+         * cores.  The GPU IFPC bit is cleared after the first repaint: GX
+         * restore on that submit is GMU-firmware-autonomous by design. */
+        if (_cpu_sleep)
+            power_cpu_sleep(false, why);
+        power_send_cmd("/dev/disp0", cmd, why);
+        power_send_cmd("/dev/x", cmd, why);
+        power_send_cmd("/dev/g2d", cmd, why);
+        power_send_cmd("/dev/touch0", cmd, why);
+        power_send_cmd("/dev/wl0", cmd, why);
+    }
     _sleeping = sleep;
-    if (ret == NULL)
-        slog("q8b powerd: %s %s: no reply from /dev/x\n", why, cmd);
-    else
-        free(ret);
-    slog("q8b powerd: %s -> %s\n", why, cmd);
+    /* Record the kernel resume mask, then persist the whole transition.
+     * Done last so the display is already lit before any disk write. */
+    uint64_t resumed = syscall3(SYS_PLATFORM_CTL,
+            Q8B_NPU_CPU_SLEEP_STATS, 0, 0);
+    power_trace("done sleeping=%d cpu_resumed=0x%02x (t=%llu ms)\n",
+            sleep ? 1 : 0, (unsigned)(resumed & 0xffu),
+            (unsigned long long)kernel_tic_ms(0));
+    power_trace_flush();
 }
 
 /* Short press: toggle display sleep. */
@@ -243,6 +355,10 @@ static char* power_help(void) {
         "  status    re-sample and show battery + key / lid / sleep state\n"
         "  reboot    request PSCI SYSTEM_RESET (root only)\n"
         "  shutdown  request PSCI SYSTEM_OFF (root only)\n"
+        "  cpusleep on|off  arm+gate kernel secondary-core PSCI suspend (root)\n"
+        "  trace     show the last sleep/wake transition (also /tmp/powerd.log)\n"
+        "sleep/wake fans out to /dev/x, /dev/disp0, /dev/g2d, /dev/wl0,\n"
+        "  /dev/touch0 and the kernel CPU-sleep gate (best-effort)\n"
         "power key: short press toggles display sleep/wake,\n"
         "           hold 3s requests PSCI SYSTEM_OFF\n"
         "keyboard lid: closed (hall sensor) sleeps the display,\n"
@@ -306,12 +422,28 @@ static char* power_status(void) {
                 (unsigned)_sample.chgr_state, (unsigned)_sample.batif_sts,
                 _sample.charger_sid, _sample.vbat_sid);
     }
-    if (off > 0 && (size_t)off < sizeof(buf))
+    if (off > 0 && (size_t)off < sizeof(buf)) {
+        /* Kernel-side proof of PSCI CPU_SUSPEND: bit N set = core N has
+         * completed at least one suspend/resume cycle.  TW220 has no wired
+         * kernel console, so the once-per-core kernel printf is invisible;
+         * this mask is the observable verification hook.  >0xff means the
+         * op is unsupported (non-SMP kernel) or the caller lacks root. */
+        uint64_t resumed = syscall3(SYS_PLATFORM_CTL,
+                Q8B_NPU_CPU_SLEEP_STATS, 0, 0);
+        char resumed_txt[16];
+        if (resumed <= 0xffu)
+            snprintf(resumed_txt, sizeof(resumed_txt), "0x%02x",
+                    (unsigned)resumed);
+        else
+            snprintf(resumed_txt, sizeof(resumed_txt), "n/a");
         snprintf(buf + off, sizeof(buf) - (size_t)off,
-                "key=%s lid=%s sleeping=%s\n",
+                "key=%s lid=%s sleeping=%s cpu_sleep=%s cpu_resumed=%s\n",
                 k < 0 ? "none" : (k ? "down" : "up"),
                 lid < 0 ? "none" : (lid ? "closed" : "open"),
-                _sleeping ? "yes" : "no");
+                _sleeping ? "yes" : "no",
+                _cpu_sleep ? "yes" : "no",
+                resumed_txt);
+    }
     return dup_text(buf);
 }
 
@@ -364,6 +496,25 @@ static char* power_dev_cmd(vdevice_t* dev, int from_pid, int argc,
             return dup_text("shutdown: permission denied\n");
         return power_shutdown();
     }
+    /* Opt-in arm/disarm for the kernel secondary-core PSCI CPU_SUSPEND
+     * (default off; see _cpu_sleep_armed).  `cpusleep on` arms suspend for
+     * subsequent sleep cycles, `cpusleep off` disarms it.  Does not itself
+     * sleep/wake the display. */
+    if (strcmp(argv[0], "cpusleep") == 0) {
+        if (!power_caller_is_root(from_pid))
+            return dup_text("cpusleep: permission denied\n");
+        if (argc < 2)
+            return dup_text("usage: cpusleep on|off\n");
+        int on = strcmp(argv[1], "on") == 0;
+        _cpu_sleep_armed = on;
+        _trace_len = 0;
+        power_cpu_sleep(on, "devcmd cpusleep");
+        power_trace_flush();
+        return dup_text(on ? "cpu_sleep armed + enabled\n"
+                           : "cpu_sleep disarmed + disabled\n");
+    }
+    if (strcmp(argv[0], "trace") == 0)
+        return dup_text(_trace_len ? _trace : "(no sleep/wake transition yet)\n");
     return NULL;
 }
 

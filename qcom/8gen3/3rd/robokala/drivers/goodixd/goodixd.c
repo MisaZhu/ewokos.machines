@@ -103,6 +103,7 @@ typedef struct {
 static volatile uint8_t* _tlmm;
 static uint32_t _touch_addr;
 static bool _ready;
+static bool _sleeping;   /* powerd sleep: IC powered off, polling gated */
 static touch_record_t _queue[TOUCH_QUEUE_SIZE];
 static unsigned _queue_count;
 static mt_slot_t _mt_slots[GOODIX_BERLIN_MAX_TOUCH];
@@ -515,6 +516,41 @@ static void mt_emit_frame(const goodix_touch_t* contacts, unsigned n) {
     }
 }
 
+/* Sleep is about to cut power to the IC: any finger still marked pressed
+ * must be lifted now, or downstream keeps a stuck contact through the
+ * whole sleep. Force a release for every active slot, bypassing the grace
+ * window, and make room by evicting stale queued edges (releases never
+ * drop, same rule as mt_emit_frame). */
+static void mt_release_all(void) {
+    touch_record_t recs[GOODIX_BERLIN_MAX_TOUCH];
+    unsigned count = 0;
+    for (unsigned id = 0; id < GOODIX_BERLIN_MAX_TOUCH; id++) {
+        if (!_mt_slots[id].active)
+            continue;
+        recs[count].state = (uint16_t)(TOUCH_MT_FRAME |
+                (TOUCH_ACT_RELEASE << 8) | id);
+        recs[count].x = _mt_slots[id].x;
+        recs[count].y = _mt_slots[id].y;
+        count++;
+        _mt_slots[id].active = false;
+        _mt_slots[id].absent_ms = 0;
+        _mt_slots[id].repress = false;
+    }
+    if (count == 0)
+        return;
+    if (_queue_count + 1 + count > TOUCH_QUEUE_SIZE) {
+        unsigned drop = _queue_count + 1 + count - TOUCH_QUEUE_SIZE;
+        if (drop > _queue_count)
+            drop = _queue_count;
+        memmove(&_queue[0], &_queue[drop],
+                (_queue_count - drop) * sizeof(_queue[0]));
+        _queue_count -= drop;
+    }
+    queue_push(TOUCH_MT_FRAME, (uint16_t)count, 0);
+    for (unsigned i = 0; i < count; i++)
+        queue_push(recs[i].state, recs[i].x, recs[i].y);
+}
+
 static void handle_event(vdevice_t* dev) {
     uint8_t raw[EVENT_HEAD_AND_TWO + (GOODIX_BERLIN_MAX_TOUCH - 2) * 8];
     goodix_event_header_t header;
@@ -602,8 +638,71 @@ static uint32_t touch_poll(vdevice_t* dev, int fd, int from_pid,
     return _queue_count != 0 ? VFS_EVT_RD : 0;
 }
 
+/* Linux goodix_berlin suspend powers the IC off via reset; this driver
+ * also owns the local rails, so cut them all. CS stays low while unpowered
+ * to avoid feeding the panel through its I/O pad (same rule as boot). */
+static void goodix_power_off(void) {
+    gpio_set_level(GPIO_RESET, false);
+    delay_us(2000);
+    gpio_set_level(GPIO_SPI_CS, false);
+    gpio_set_level(GPIO_AVDD, false);
+    gpio_set_level(GPIO_VDDIO, false);
+}
+
+/* Replay the boot power-on sequence; touch_loop re-probes afterwards. */
+static void goodix_power_on(void) {
+    gpio_set_level(GPIO_VDDIO, true);
+    delay_us(3000);
+    gpio_set_level(GPIO_AVDD, true);
+    delay_us(15000);
+    gpio_set_level(GPIO_SPI_CS, true);
+    delay_us(10);
+    gpio_set_level(GPIO_RESET, true);
+    delay_us(4000);
+}
+
+static char* goodix_cmd(vdevice_t* dev, int from_pid, int argc,
+        char** argv, void* p) {
+    (void)dev; (void)from_pid; (void)p;
+    if (argc <= 0 || argv == NULL || argv[0] == NULL)
+        return NULL;
+    if (strcmp(argv[0], "help") == 0)
+        return strdup("goodixd commands: help / sleep / wake / state\n");
+    if (strcmp(argv[0], "sleep") == 0) {
+        if (!_sleeping) {
+            mt_release_all();
+            goodix_power_off();
+            _sleeping = true;
+            _ready = false;
+            slog("q8b goodixd: sleep (IC powered off)\n");
+        }
+        return strdup("sleeping\n");
+    }
+    if (strcmp(argv[0], "wake") == 0) {
+        if (_sleeping) {
+            goodix_power_on();
+            _sleeping = false;
+            _probe_delay_us = 0;
+            _probe_failures = 0;
+            slog("q8b goodixd: wake (re-probe)\n");
+        }
+        return strdup("awake\n");
+    }
+    if (strcmp(argv[0], "state") == 0) {
+        char buf[96];
+        snprintf(buf, sizeof(buf), "ready=%s sleeping=%s queued=%u\n",
+                _ready ? "yes" : "no", _sleeping ? "yes" : "no", _queue_count);
+        return strdup(buf);
+    }
+    return NULL;
+}
+
 static int touch_loop(vdevice_t* dev, void* p) {
     (void)p;
+    if (_sleeping) {
+        usleep(50000);
+        return 0;
+    }
     if (!_ready) {
         unsigned delay = _probe_delay_us;
         if (delay != 0)
@@ -696,5 +795,6 @@ int main(int argc, char** argv) {
     dev.read = touch_read;
     dev.check_poll_events = touch_poll;
     dev.loop_step = touch_loop;
+    dev.cmd = goodix_cmd;
     return device_run(&dev, mount, FS_TYPE_CHAR, 0444, false);
 }

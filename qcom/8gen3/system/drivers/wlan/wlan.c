@@ -661,6 +661,7 @@ static char *wlan_help(void) {
         "scan-results: scan cache as text\n"
         "station: station/WPA state as text\n"
         "associate <ssid>: associate without a supplicant\n"
+        "sleep|wake: station power save on/off (powerd; stays associated)\n"
         "rings: data-path ring counters\n");
 }
 
@@ -708,6 +709,16 @@ static char *wlan_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void 
     if (!strcmp(argv[0], "stop") || !strcmp(argv[0], "disconnect")) {
         stop_pending = 1;
         return copy_reply("stop_pending\n");
+    }
+    /* powerd sleep/wake fan-out: toggle WMI station power save. The link
+     * stays associated; sleep lets the radio park between DTIM beacons,
+     * wake returns it to always-awake. No-op when not associated. */
+    if (!strcmp(argv[0], "sleep") || !strcmp(argv[0], "wake")) {
+        int on = !strcmp(argv[0], "sleep");
+        int rc = wcn_sta_ps_set(on);
+        if (rc)
+            return format_reply("sta-ps %s failed: %d", on ? "on" : "off", rc);
+        return copy_reply(on ? "sta-ps enabled\n" : "sta-ps disabled\n");
     }
     if (argc == 2 && !strcmp(argv[0], "country"))
         return copy_reply(wcn_wmi_country(argv[1]) ?

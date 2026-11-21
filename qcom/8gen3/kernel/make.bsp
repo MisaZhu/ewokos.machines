@@ -19,5 +19,7 @@ ARCH_OBJS += $(BSP_DIR)/gpu_pas.o $(BSP_DIR)/npu_pas.o \
 ifeq ($(SMP),yes)
 ARCH_OBJS += $(BSP_DIR)/ipi.o \
 	$(BSP_DIR)/core.o \
-	$(BSP_DIR)/smccc-call.o
+	$(BSP_DIR)/smccc-call.o \
+	$(BSP_DIR)/cpu_sleep.o \
+	$(BSP_DIR)/cpu_sleep_a.o
 endif

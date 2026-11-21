@@ -18,6 +18,7 @@ const char *wcn_sta_error(void);
 int wcn_sta_eapol_send(const uint8_t *packet,unsigned bytes);
 int wcn_sta_install_key(unsigned index,unsigned group,const uint8_t key[16],const uint8_t *rsc);
 int wcn_sta_authorize(void);
+int wcn_sta_ps_set(int enable); /* powerd sleep/wake: WMI STA power save on/off */
 int wcn_sta_link_ready(void);
 int wcn_sta_network_send(const uint8_t *frame,unsigned bytes);
 void wcn_sta_poll(void);
