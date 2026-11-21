@@ -242,16 +242,70 @@ static void set_stage(const char* s) {
     bt.stage[sizeof(bt.stage) - 1] = 0;
 }
 
-/* Persistent bring-up log: sdfsd only commits the inode on fsync, and
- * /dev/log drains on read, so each line is fprintf + fsync'd immediately. */
+/* Persistent bring-up log, handler-safe: bt_log also runs from dev.cmd IPC
+ * interrupt context (rx_feed via bt_poll_once inside a scan handler), where
+ * fopen/fwrite to /tmp is a nested IPC into vfsd that can circular-park and
+ * wedge the whole board. Lines therefore land in a pure-memory ring; only
+ * bsp_bt_trace_drain(), called from btd's main loop, touches the file.
+ * sdfsd only commits the inode on fsync, so the drain fsyncs each batch. */
+#define TR_RING_SZ 8192
+static char tr_ring[TR_RING_SZ];
+static volatile unsigned tr_head, tr_tail;
+
+static void tr_push(const char* s, unsigned n) {
+    /* one raw attempt, never the libc ipc_disable() retry loop: from a
+       handler the kernel refuses (a request is being served) and the
+       wrapper would spin forever. Loop context holds the guard so no
+       handler can interleave a line; handler context pushes directly -
+       the loop only pushes while holding the guard, which would have
+       blocked this handler, so it cannot be mid-line. */
+    bool guarded = (syscall0(SYS_IPC_DISABLE) == 0);
+    for (unsigned i = 0; i < n; ++i) {
+        unsigned next = (tr_head + 1) & (TR_RING_SZ - 1);
+        if (next == tr_tail)
+            break; /* ring full: drop the remainder of this line */
+        tr_ring[tr_head] = s[i];
+        tr_head = next;
+    }
+    if (guarded)
+        syscall0(SYS_IPC_ENABLE);
+}
+
 static void bt_log(const char* fmt, ...) {
-    FILE* f = fopen("/tmp/bt0.log", "a");
-    if (f == NULL)
+    char buf[192];
+    int n = snprintf(buf, sizeof(buf), "[%u] ", (unsigned)kernel_tic_ms(0));
+    if (n < 0)
         return;
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
+    int m = vsnprintf(buf + n, sizeof(buf) - (unsigned)n, fmt, ap);
     va_end(ap);
+    if (m < 0)
+        return;
+    unsigned total = (unsigned)n + (unsigned)m;
+    if (total > sizeof(buf))
+        total = sizeof(buf);
+    tr_push(buf, total);
+}
+
+void bsp_bt_trace_drain(void) {
+    if (tr_head == tr_tail)
+        return;
+    /* main-loop only: take the IPC guard so a handler cannot push while
+       the batch is copied out; a refusal means handler context - skip */
+    if (syscall0(SYS_IPC_DISABLE) != 0)
+        return;
+    char out[1024];
+    unsigned k = 0;
+    while (tr_tail != tr_head && k < sizeof(out)) {
+        out[k++] = tr_ring[tr_tail];
+        tr_tail = (tr_tail + 1) & (TR_RING_SZ - 1);
+    }
+    syscall0(SYS_IPC_ENABLE);
+    FILE* f = fopen("/tmp/bt0.log", "a");
+    if (f == NULL)
+        return;
+    fwrite(out, 1, k, f);
     fsync(fileno(f));
     fclose(f);
 }
@@ -524,7 +578,7 @@ static unsigned ev_len;
 
 static int trace_watch_op(uint16_t op) {
     switch (op) {
-    case 0x200C: case 0x2041: /* LE set/ext scan enable */
+    case 0x200C: case 0x2042: /* LE set/ext scan enable */
     case 0x200D: case 0x2043: /* LE create/ext create connection */
     case 0x200E:              /* LE create connection cancel */
     case 0x0405: case 0x0402: /* classic create conn / inquiry cancel */
@@ -637,8 +691,16 @@ static void rx_feed(uint8_t b) {
         }
         bt.fleft = payload;
         bt.fstate = payload ? 2 : 0;
-        if (bt.ftype == 4)
-            ev_len = 0;
+        if (bt.ftype == 4) {
+            /* trace_event expects the full H4 event (code, plen, params):
+               seed the header here, otherwise the trace decodes the first
+               parameter byte as the event code and logs nothing. */
+            ev_buf[0] = bt.hdr[0];
+            ev_buf[1] = bt.hdr[1];
+            ev_len = 2;
+            if (bt.fstate == 0)
+                trace_event(ev_buf, ev_len);
+        }
         return;
     }
     if (bt.ftype == 4 && ev_len < sizeof(ev_buf))
@@ -1177,7 +1239,12 @@ int bsp_bt_init(bool recovery) {
     bt.ctrl_awake = 1;
     ring_reset();
     set_stage("baud-115200");
-    bt.warm_baud = bt.baud; /* remember where a warm controller may sit */
+    /* A fresh process has no memory of the previous session's baud: a
+     * controller left patched by a killed daemon sits at OPER_BAUD with
+     * IBS on, so the 115200 cold probe can never answer. Always offer the
+     * operating baud as the warm fallback (harmless on a true cold boot,
+     * where the cold probe succeeds first). */
+    bt.warm_baud = bt.baud > 115200U ? bt.baud : OPER_BAUD;
     if (set_baud(115200U) != 0)
         return -1;
     if (qca_setup() != 0) {
@@ -1214,7 +1281,7 @@ int bsp_bt_send(uint8_t pkt_type, const uint8_t* data, size_t len) {
             bt_log("bt: tx create_conn type=%u\n", data[8]);
         else if (op == 0x2043 && len >= 6)
             bt_log("bt: tx ext_create_conn type=%u\n", data[5]);
-        else if ((op == 0x200C || op == 0x2041) && len >= 4 && data[3] == 0)
+        else if ((op == 0x200C || op == 0x2042) && len >= 4 && data[3] == 0)
             bt_log("bt: tx scan_disable op=%04x\n", op);
         else if (op == 0x200E || op == 0x0402)
             bt_log("bt: tx cancel op=%04x\n", op);
@@ -1223,9 +1290,16 @@ int bsp_bt_send(uint8_t pkt_type, const uint8_t* data, size_t len) {
         bt_log("bt: tx wake timeout\n");
         return -1;
     }
-    if (tx_byte(pkt_type) != 0)
+    if (tx_byte(pkt_type) != 0) {
+        bt_log("bt: tx type-byte fail\n");
         return -1;
-    return uart_tx(data, (unsigned)len);
+    }
+    if (uart_tx(data, (unsigned)len) != 0) {
+        bt_log("bt: tx payload fail m=%08x s=%08x st=%08x\n",
+                bt.last_m_irq, bt.last_s_irq, bt.last_status);
+        return -1;
+    }
+    return 0;
 }
 
 int bsp_bt_recv(uint32_t timeout_ms) {
