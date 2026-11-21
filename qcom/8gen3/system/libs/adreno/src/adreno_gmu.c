@@ -582,6 +582,28 @@ static void power_config(void) {
 		A6XX_GMU_RPMH_CTRL_GFX_VOTE_ENABLE);
 }
 
+/* Inter-frame power collapse, driven by powerd's sleep/wake fan-out.
+   Linux runs a690 with idle_level=ACTIVE (no a6xx catalog entry sets
+   ADRENO_QUIRK_IFPC), so this is experimental and sleep-only: enable lets
+   the GMU firmware collapse the GX rail between frames (300 us main +
+   0.5 us short hysteresis, GMU_PWR_COL_HYST in a6xx_gmu.c); disable clears
+   the bits back to the exact ACTIVE config power_config() leaves.  GX
+   restore on the next submit is firmware-autonomous; the RSC/PDC sleep
+   handshake rpmh_init() programmed is what makes the collapse reversible.
+   SPTPRAC stays intentionally skipped.  Returns the CTRL value written. */
+uint32_t adreno_gmu_ifpc_set(int enable) {
+	if (enable) {
+		adreno_gmu_write(REG_A6XX_GMU_PWR_COL_INTER_FRAME_HYST, 0x000a1680u);
+		return adreno_gmu_rmw(REG_A6XX_GMU_PWR_COL_INTER_FRAME_CTRL, 0,
+			A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_IFPC_ENABLE |
+			A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_HM_POWER_COLLAPSE_ENABLE);
+	}
+	return adreno_gmu_rmw(REG_A6XX_GMU_PWR_COL_INTER_FRAME_CTRL,
+		A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_IFPC_ENABLE |
+		A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_HM_POWER_COLLAPSE_ENABLE |
+		A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_SPTPRAC_POWER_CONTROL_ENABLE, 0);
+}
+
 /* ------------------------------------------------------------------ */
 /* Firmware load (a6xx_gmu.c:690-744).                                  */
 /* ------------------------------------------------------------------ */

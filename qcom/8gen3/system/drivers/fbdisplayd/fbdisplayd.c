@@ -12,6 +12,7 @@
 #include <ewoksys/syscall.h>
 #include <ewoksys/klog.h>
 #include <q8b_platform.h>
+#include "dsi_panel.h"
 
 /* UEFI GOP PixelFormat 0 = RGB, 1 = BGR, 2 = BitMask.  EwokOS graph
  * buffers are native ARGB (little-endian bytes B,G,R,A), so an RGB GOP
@@ -167,6 +168,9 @@ int main(int argc, char** argv) {
     fbdisplayd.flush = flush;
     fbdisplayd.init = init;
     fbdisplayd.get_info = get_info;
+    /* Panel-side power knobs (DCS sleep-in/out over the DSI command DMA
+       engine) ride dev.cmd; powerd drives them on the TW220. */
+    fbdisplayd_set_dev_cmd(dsi_panel_dev_cmd);
     /* No flush-rect hook on x86: partial dirty-rect pushes into the UC-
        mapped scan-out leave the bottom-anchored regions (statusbar, dock
        label strip) showing stale pixels. Always do a full-frame flush so

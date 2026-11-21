@@ -93,6 +93,7 @@
 #define NVME_IDENTIFY_NSLIST 0x02
 
 #define NVME_FEAT_NUM_QUEUES 0x07
+#define NVME_FEAT_APST       0x0c
 
 typedef struct {
 	uint8_t  opcode;
@@ -444,6 +445,100 @@ static int nvme_admin_identify(uint32_t nsid, uint32_t cns, void* out,
 }
 
 /* ------------------------------------------------------------------ */
+/*  Autonomous power state transition                                  */
+/* ------------------------------------------------------------------ */
+
+/* Identify-controller fields and power state descriptors (NVMe base
+ * spec, identify controller data structure). */
+#define NVME_ID_NPSS   263        /* number of power states - 1 */
+#define NVME_ID_APSTA  265        /* bit0: APST supported */
+#define NVME_ID_PSD    2048       /* 32-byte descriptor per state */
+#define NVME_PSD_MPS   (1u << 0)  /* max power in 0.1 mW units */
+#define NVME_PSD_NOPS  (1u << 1)  /* non-operational state */
+
+/* Same latency budget Linux applies by default
+ * (nvme_core.default_ps_max_latency_us=100000): a slower exit would
+ * stall the polled rootfs I/O path noticeably after an idle period. */
+#define NVME_APST_MAX_LAT_US 100000u
+/* Idle time before PS0 drops to the chosen state.  Short enough that a
+ * machine with the display asleep (powerd lid/key sleep keeps the SoC
+ * running) spends nearly all of its dark time in the low state, long
+ * enough that a burst of filesystem writes is not chopped up by state
+ * transitions. */
+#define NVME_APST_IDLE_MS 1000u
+
+static uint16_t nvme_id_le16(const uint8_t* p) {
+	return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+static uint32_t nvme_id_le32(const uint8_t* p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+			((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* Without APST the controller sits in PS0 forever - the TW220's BG5
+ * burns its full idle power there even while powerd has the display
+ * asleep.  Program the autonomous transition PS0 -> deepest acceptable
+ * non-operational state; the controller returns to an operational state
+ * on its own when the next command arrives, so the polled block path
+ * needs no wake hook.  Best-effort: a controller without APST (or with
+ * no state inside the latency budget) keeps the old always-PS0 behavior. */
+static void nvme_apst_enable(const uint8_t* id) {
+	if (!(id[NVME_ID_APSTA] & 1u)) {
+		slog("nvme: apst unsupported, disk stays in PS0\n");
+		return;
+	}
+	uint8_t npss = id[NVME_ID_NPSS];
+	int target = -1;
+	uint32_t lat_us = 0, power_mw = 0;
+	for (int ps = 1; ps <= (int)npss && ps < 32; ps++) {
+		const uint8_t* psd = id + NVME_ID_PSD + ps * 32;
+		if (!(psd[3] & NVME_PSD_NOPS))
+			continue;
+		uint32_t lat = nvme_id_le32(psd + 4) + nvme_id_le32(psd + 8);
+		if (lat > NVME_APST_MAX_LAT_US)
+			continue;
+		/* Descriptors are ordered by decreasing power: keep the last
+		 * (deepest) state that fits the latency budget. */
+		target = ps;
+		lat_us = lat;
+		uint16_t mp = nvme_id_le16(psd);
+		power_mw = (psd[3] & NVME_PSD_MPS) ? mp / 10u : mp * 10u;
+	}
+	if (target < 0) {
+		slog("nvme: no apst state within %u us latency budget\n",
+				(unsigned)NVME_APST_MAX_LAT_US);
+		return;
+	}
+
+	/* APST data structure: 32 64-bit entries indexed by the current
+	 * power state, bits 4:0 = target state, bits 39:8 = idle time in ms.
+	 * PS0 is the only operational state, so one entry is enough.  Reuse
+	 * the 4K identify scratch - the controller identify is already
+	 * copied out and the next identify re-zeroes it. */
+	uint8_t* buf = _c.ctrl + 0x4000;
+	memset(buf, 0, 4096);
+	uint64_t entry = ((uint64_t)NVME_APST_IDLE_MS << 8) | (uint64_t)target;
+	for (int i = 0; i < 8; i++)
+		buf[i] = (uint8_t)(entry >> (i * 8));
+
+	nvme_sqe_t sqe;
+	memset(&sqe, 0, sizeof(sqe));
+	sqe.opcode = NVME_ADMIN_SET_FEATURES;
+	sqe.cid = _c.cid++;
+	sqe.prp1 = _c.ctrl_phys + 0x4000;
+	sqe.cdw10 = NVME_FEAT_APST;
+	sqe.cdw11 = 1u;                 /* APSTE: enable */
+	if (nvme_admin(&sqe) != 0) {
+		slog("nvme: apst enable failed, disk stays in PS0\n");
+		return;
+	}
+	slog("nvme: apst PS0->PS%d after %u ms idle (%u mW, lat=%u us)\n",
+			target, (unsigned)NVME_APST_IDLE_MS,
+			(unsigned)power_mw, (unsigned)lat_us);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Controller init                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -715,6 +810,9 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 		slog("nvme: controller reports no namespaces\n");
 		return -1;
 	}
+	/* idbuf still holds the controller identify here; the namespace
+	 * identify below reuses both it and the DMA scratch. */
+	nvme_apst_enable(idbuf);
 	if (nvme_admin_identify(1, NVME_IDENTIFY_NS, idbuf, sizeof(idbuf)) != 0) {
 		_last_init_stage = NVME_INIT_STAGE_IDENTIFY_NAMESPACE;
 		_last_cc = nvme_rd32(NVME_REG_CC);
