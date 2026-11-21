@@ -41,6 +41,7 @@ SECTIONS
 		*(.bootvec)
 	} : init
 	. = . + 0x4000;
+	. = ALIGN(16);
 	_svc_start_stack = .;
 	_init_end = ALIGN(page_align_size);
 

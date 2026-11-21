@@ -53,17 +53,13 @@ void start_core(uint32_t core_id) {
     flush_dcache();
     arm_smccc_smc(PSCI_CPU_ON_AARCH64, target_mpidr,
             (uint64_t)__entry, 0, 0, 0, 0, 0, &res);
-    orin_dbg_puts("orin: PSCI CPU_ON core ");
-    orin_dbg_dec(core_id);
-    orin_dbg_puts(" mpidr=");
-    orin_dbg_hex(target_mpidr);
     if (res.a0 != 0) {
+        orin_dbg_puts("orin: CPU_ON core ");
+        orin_dbg_dec(core_id);
         orin_dbg_puts(" failed: ");
         orin_dbg_hex(res.a0);
-    } else {
-        orin_dbg_puts(" ok");
+        orin_dbg_puts("\n");
     }
-    orin_dbg_puts("\n");
 }
 
 #endif
