@@ -13,14 +13,17 @@ INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
-# Bring-up port: console-only basic system (serial shell on the boot RAMFS).
-# No GUI/network stacks and no persistent-disk drivers yet.
-all: basic
+# Bring-up port: console-only basic system (serial shell on the boot RAMFS)
+# plus the shared USB host stack (xHCI + usbhostd + HID + MSC FAT32).
+all: basic usb
 	@echo "all done."
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
-basic: basic_sys
+# Strict order: basic_sys -> usb -> final.  `final` copies the build rootfs
+# into the tree the efi packer reads; running it in parallel with the usb
+# installs once captured a mid-relink (0-byte) usbhostd.
+basic: usb
 	@$(MAKE) final
 
 # Platform headers consumed by user-space: the shared boot hand-off layout
@@ -42,6 +45,15 @@ basic_sys: kernel_heads ewok_heads platform_headers
 	$(MAKE) -C $(SYS_ROOT_DIR)/network/drivers/netd
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/basic/. ${TARGET_DIR}/etc/
+
+# Shared USB host stack on the machine bsp_usb contract: usbhostd does
+# enumeration/hub/HID fan-out, hid_keybd/hid_moused consume reports,
+# usbfat32fsd mounts a claimed MSC stick at /mnt/udisk0.
+USB_DRIVERS = usbhostd hid_keybd hid_moused usbfat32fsd
+usb: basic_sys
+	$(MAKE) -C $(SYS_ROOT_DIR)/gui/libs/usb
+	$(MAKE) -C $(SYS_ROOT_DIR)/gui/libs/hid
+	for d in $(USB_DRIVERS); do $(MAKE) -C $(SYS_ROOT_DIR)/gui/drivers/$$d || exit 1; done
 
 CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/basic
 clean:
@@ -73,4 +85,4 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 
-.PHONY: all basic basic_sys platform_headers clean sd
+.PHONY: all basic basic_sys usb platform_headers clean sd

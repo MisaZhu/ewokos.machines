@@ -18,7 +18,4 @@
 /* Returns xHCI capability-base VA, or 0 on failure. */
 uint64_t bsp_xusb_init(void);
 
-/* Read a root-port PORTSC (1-based port).  Returns 0xffffffff if not up. */
-uint32_t bsp_xusb_portsc(int port);
-
 #endif

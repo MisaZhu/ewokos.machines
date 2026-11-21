@@ -8,16 +8,20 @@ TARGET_DIR = $(BUILD_DIR)
 LDFLAGS = -L $(TARGET_DIR)/lib
 
 # libsd headers come from the source tree: bsp builds in the libs phase,
-# before basic installs the sd library headers.
+# before basic installs the sd library headers.  Same for the shared USB
+# contract headers (gui/libs/usb), which the gui phase installs later.
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/basic/libs/sd/include \
+	-I $(SYS_DIR)/gui/libs/usb/include \
+	-I $(SYS_DIR)/gui/libs/hid/include \
 	-I $(MAKEINC_DIR)/../include \
 	-I include -I $(TARGET_DIR)/include
 
 LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_bootfs.o \
 	$(ARCH)/src/bsp_gpio.o $(ARCH)/src/bsp_pcie.o $(ARCH)/src/bsp_eth.o \
 	$(ARCH)/src/bsp_bpmp.o $(ARCH)/src/bsp_i2c.o $(ARCH)/src/bsp_sdmmc.o \
-	$(ARCH)/src/bsp_xusb.o $(ARCH)/src/bsp_wdt.o
+	$(ARCH)/src/bsp_xusb.o $(ARCH)/src/xhci.o $(ARCH)/src/bsp_usb.o \
+	$(ARCH)/src/bsp_wdt.o
 
 BSP = $(TARGET_DIR)/lib/libbsp.a
 

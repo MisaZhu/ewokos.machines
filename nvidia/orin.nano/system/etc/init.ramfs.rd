@@ -28,3 +28,9 @@
 # SD init sequence and dumps sector 0.  One-shot; progress/result land on the
 # serial console via klog.  Recover with the Pico GPIO hardware reset.
 @/drivers/orin.nano/sdprobe
+# XUSB host: shared usbhostd (enumeration/hub/HID/MSC) over the machine
+# bsp_usb contract; hid_keybd/hid_moused consume HID reports.  MSC sticks
+# auto-mount at /mnt/udisk0 via usbfat32fsd.
+@/bin/ipcserv /drivers/orin.nano/usbhostd  /dev/usb0
+@/bin/ipcserv /drivers/orin.nano/hid_keybd /dev/keyb0 /dev/usb0
+@/bin/ipcserv /drivers/orin.nano/hid_moused /dev/mouse0 /dev/usb0

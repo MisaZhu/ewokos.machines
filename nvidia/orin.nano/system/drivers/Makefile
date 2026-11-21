@@ -1,4 +1,4 @@
-BASIC_DIRS = uartd net pcied i2cd orinmon gpiod sdprobe usbhostd bpmpdiag
+BASIC_DIRS = uartd net pcied i2cd orinmon gpiod sdprobe bpmpdiag
 
 basic: $(BASIC_DIRS)
 
