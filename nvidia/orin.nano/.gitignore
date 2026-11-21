@@ -1,0 +1,7 @@
+# Build outputs (PXE serving dir artifacts, not source)
+efi/BOOTAA64.EFI
+efi/boot.elf
+efi/initramfs.img
+efi/kernel.bin
+efi/.wdt_flag
+test/__pycache__/
