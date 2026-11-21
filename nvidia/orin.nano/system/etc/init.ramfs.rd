@@ -24,3 +24,7 @@
 # Pico GPIO hardware reset.  MAC confirmed up, so netd (DHCP) now starts too.
 @/bin/ipcserv /drivers/orin.nano/net     /dev/eth0
 @/bin/ipcserv /drivers/netd              /dev/net0 /dev/eth0
+# microSD (SDMMC1) bring-up probe: cold-owns the controller via BPMP, runs the
+# SD init sequence and dumps sector 0.  One-shot; progress/result land on the
+# serial console via klog.  Recover with the Pico GPIO hardware reset.
+@/drivers/orin.nano/sdprobe

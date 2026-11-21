@@ -32,11 +32,34 @@
 #define SD_INT_STATUS   0x30
 #define SD_INT_ENABLE   0x34
 #define SD_CAPS         0x40
-/* Tegra vendor registers */
+/* Tegra vendor registers (defs from upstream sdhci-tegra.c) */
 #define SD_TEGRA_CLOCK_CTRL   0x100
 #define SD_TEGRA_MISC_CTRL    0x120
+#define SD_TEGRA_PADCTRL      0x1e0
 #define SD_TEGRA_AUTOCAL_CFG  0x1e4
 #define SD_TEGRA_AUTOCAL_STAT 0x1ec
+#define SD_HOST_VERSION       0xfe
+
+#define SD_TAP_MASK           0x00ff0000u
+#define SD_TAP_SHIFT          16
+#define SD_TRIM_MASK          0x1f000000u
+#define SD_TRIM_SHIFT         24
+#define SD_SPI_MODE_CLKEN_OVR (1u << 2)
+
+#define SD_MISC_SDR104        0x8u
+#define SD_MISC_SDR50         0x10u
+#define SD_MISC_SPEC300       0x20u
+#define SD_MISC_DDR50         0x200u
+
+#define SD_PADCTRL_VREF_MASK  0x0000000fu
+#define SD_PADCTRL_VREF_VAL   0x7u
+#define SD_PADCTRL_E_PWRD     (1u << 31)
+#define SD_PADCTRL_DRVUPDN_MASK 0x07fff000u
+
+#define SD_AUTOCAL_START      (1u << 31)
+#define SD_AUTOCAL_ENABLE     (1u << 29)
+#define SD_AUTOCAL_PDPU_MASK  0x0000ffffu
+#define SD_AUTOCAL_ACTIVE     (1u << 31)
 
 #define INT_CMD_COMPLETE  (1u << 0)
 #define INT_XFER_COMPLETE (1u << 1)
@@ -56,6 +79,7 @@ static int _ready;
 static int _sdhc;            /* 1 = SDHC/SDXC (block addressing) */
 static uint64_t _sectors;
 static uint16_t _rca;
+static uint32_t _err_st;     /* last INT_STATUS seen by a failing sd_wait */
 
 static inline uint32_t rd32(uint32_t off) {
     return *(volatile uint32_t*)(_sd + off);
@@ -85,12 +109,14 @@ static int sd_wait(uint32_t want) {
     for (uint32_t i = 0; i < 2000000u; i++) {
         uint32_t st = rd16(SD_INT_STATUS);
         if (st & INT_ERROR) {
+            _err_st = st;
             sd_clear_int();
             return -1;
         }
         if (st & want)
             return 0;
     }
+    _err_st = rd16(SD_INT_STATUS);
     sd_clear_int();
     return -1;
 }
@@ -133,6 +159,54 @@ static void sd_set_clock(uint32_t hz) {
     wr16(SD_CLOCK, clk | 0x04);                    /* SD clock enable */
 }
 
+static void sd_delay_us(uint32_t n) {
+    for (volatile uint32_t i = 0; i < n * 500u; i++) { }
+}
+
+/* Pad drive-strength auto-calibration (upstream tegra_sdhci_pad_autocalib,
+ * 3.3V legacy path).  Gate the card clock, power the cal pad, ENABLE|START,
+ * wait STATUS.ACTIVE to clear; on timeout fall back to fixed drive strength. */
+static void sd_pad_autocal(void) {
+    uint32_t cfg = rd32(SD_TEGRA_AUTOCAL_CFG);
+    cfg &= ~SD_AUTOCAL_PDPU_MASK;                  /* PDPU offset 0 (no DT trim) */
+    wr32(SD_TEGRA_AUTOCAL_CFG, cfg);
+
+    uint16_t clk = rd16(SD_CLOCK);
+    int card_en = (clk & 0x04) != 0;
+    wr16(SD_CLOCK, clk & ~0x04);                   /* gate card clock */
+
+    uint32_t pad = rd32(SD_TEGRA_PADCTRL);
+    wr32(SD_TEGRA_PADCTRL, pad | SD_PADCTRL_E_PWRD);  /* power cal pad */
+    sd_delay_us(2);
+
+    cfg = rd32(SD_TEGRA_AUTOCAL_CFG);
+    wr32(SD_TEGRA_AUTOCAL_CFG, cfg | SD_AUTOCAL_ENABLE | SD_AUTOCAL_START);
+    sd_delay_us(2);
+
+    int done = 0;
+    for (uint32_t i = 0; i < 100000u; i++) {       /* ~10ms bounded */
+        if ((rd32(SD_TEGRA_AUTOCAL_STAT) & SD_AUTOCAL_ACTIVE) == 0) {
+            done = 1;
+            break;
+        }
+    }
+    uint32_t stat = rd32(SD_TEGRA_AUTOCAL_STAT);
+
+    pad = rd32(SD_TEGRA_PADCTRL);
+    wr32(SD_TEGRA_PADCTRL, pad & ~SD_PADCTRL_E_PWRD);  /* cal pad off */
+    if (card_en)
+        wr16(SD_CLOCK, rd16(SD_CLOCK) | 0x04);     /* restore card clock */
+
+    if (!done) {
+        cfg = rd32(SD_TEGRA_AUTOCAL_CFG);
+        wr32(SD_TEGRA_AUTOCAL_CFG, cfg & ~SD_AUTOCAL_ENABLE);
+        pad = rd32(SD_TEGRA_PADCTRL);
+        wr32(SD_TEGRA_PADCTRL, pad & ~SD_PADCTRL_DRVUPDN_MASK);  /* fixed drv */
+    }
+    klog("orin sdmmc: pad autocal %s stat=%08x cfg=%08x\n",
+            done ? "ok" : "TIMEOUT(fixed drv)", stat, rd32(SD_TEGRA_AUTOCAL_CFG));
+}
+
 static int sd_data_xfer(int write, uint32_t addr, void* buf) {
     sd_clear_int();
     wr16(SD_BLK_SIZE, 512);
@@ -140,11 +214,16 @@ static int sd_data_xfer(int write, uint32_t addr, void* buf) {
     wr16(SD_XFER_MODE, write ? 0x00 : 0x10);       /* PIO, direction */
     wr32(SD_ARG, addr);
     wr16(SD_CMD, cmd_reg(write ? 24 : 17, RESP_48, 1, 1, 1));
-    if (sd_wait(INT_CMD_COMPLETE) != 0)
+    if (sd_wait(INT_CMD_COMPLETE) != 0) {
+        klog("orin sdmmc: cmd%d cmd-complete fail st=%04x\n",
+                write ? 24 : 17, _err_st);
         return -1;
+    }
     if (write) {
-        if (sd_wait(INT_BUF_WR_READY) != 0)
+        if (sd_wait(INT_BUF_WR_READY) != 0) {
+            klog("orin sdmmc: cmd24 buf-wr-ready fail st=%04x\n", _err_st);
             return -1;
+        }
         const uint8_t* p = (const uint8_t*)buf;
         for (uint32_t i = 0; i < 512; i += 4) {
             uint32_t w = (uint32_t)p[i] | ((uint32_t)p[i+1] << 8) |
@@ -152,8 +231,10 @@ static int sd_data_xfer(int write, uint32_t addr, void* buf) {
             wr32(SD_BUF_DATA, w);
         }
     } else {
-        if (sd_wait(INT_BUF_RD_READY) != 0)
+        if (sd_wait(INT_BUF_RD_READY) != 0) {
+            klog("orin sdmmc: cmd17 buf-rd-ready fail st=%04x\n", _err_st);
             return -1;
+        }
         uint8_t* p = (uint8_t*)buf;
         for (uint32_t i = 0; i < 512; i += 4) {
             uint32_t w = rd32(SD_BUF_DATA);
@@ -161,8 +242,11 @@ static int sd_data_xfer(int write, uint32_t addr, void* buf) {
             p[i+2] = (uint8_t)(w >> 16); p[i+3] = (uint8_t)(w >> 24);
         }
     }
-    if (sd_wait(INT_XFER_COMPLETE) != 0)
+    if (sd_wait(INT_XFER_COMPLETE) != 0) {
+        klog("orin sdmmc: cmd%d xfer-complete fail st=%04x\n",
+                write ? 24 : 17, _err_st);
         return -1;
+    }
     sd_clear_int();
     return 0;
 }
@@ -191,50 +275,79 @@ int bsp_sdmmc_init(void) {
     if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)SDMMC_VA,
                 (ewokos_addr_t)ORIN_SDMMC1_PHY,
                 (ewokos_addr_t)ORIN_SDMMC1_SIZE) != (ewokos_addr_t)SDMMC_VA) {
-        slog("orin sdmmc: register map failed\n");
+        klog("orin sdmmc: register map failed\n");
         return -1;
     }
     _sd = (volatile uint8_t*)(uintptr_t)SDMMC_VA;
+    klog("orin sdmmc: regs mapped\n");
 
-    if (bsp_bpmp_init() != 0)
+    if (bsp_bpmp_init() != 0) {
+        klog("orin sdmmc: bpmp init failed\n");
         return -1;
+    }
     bsp_bpmp_reset_assert(ORIN_SDMMC1_RESET);
     bsp_bpmp_reset_deassert(ORIN_SDMMC1_RESET);
     bsp_bpmp_clk_set_rate(ORIN_SDMMC1_CLK, 204000000u);
     bsp_bpmp_clk_enable(ORIN_SDMMC1_CLK);
     bsp_bpmp_clk_set_rate(ORIN_SDMMC1_TMCLK, 12000000u);
     bsp_bpmp_clk_enable(ORIN_SDMMC1_TMCLK);
+    klog("orin sdmmc: bpmp clk/reset done\n");
 
     if (!bsp_sdmmc_present()) {
-        slog("orin sdmmc: no card detected (G7)\n");
+        klog("orin sdmmc: no card detected (G7)\n");
         return -1;
     }
+    klog("orin sdmmc: card present\n");
 
     /* Full software reset. */
     wr8(SD_SW_RESET, 0x01);
+    int rst_done = 0;
     for (uint32_t i = 0; i < 100000u; i++)
-        if ((rd8(SD_SW_RESET) & 0x01) == 0) break;
+        if ((rd8(SD_SW_RESET) & 0x01) == 0) { rst_done = 1; break; }
+    klog("orin sdmmc: sw reset %s caps=%08x present=%08x ver=%04x\n",
+            rst_done ? "done" : "STUCK", rd32(SD_CAPS), rd32(SD_PRESENT),
+            rd16(SD_HOST_VERSION));
 
-    /* Tegra vendor: default tap/trim, enable SPEC300, run auto-cal. */
-    wr32(SD_TEGRA_CLOCK_CTRL, (14u << 16) | (8u << 24));
-    wr32(SD_TEGRA_MISC_CTRL, rd32(SD_TEGRA_MISC_CTRL) | 0x1u);
-    wr32(SD_TEGRA_AUTOCAL_CFG, rd32(SD_TEGRA_AUTOCAL_CFG) | 0x1u);
-    for (uint32_t i = 0; i < 100000u; i++)
-        if (rd32(SD_TEGRA_AUTOCAL_STAT) & 0x1u) break;
+    /* Tegra vendor reset setup (upstream tegra_sdhci_reset, RESET_ALL):
+     * default tap/trim (0 = no DT), clear UHS mode bits for legacy bring-up,
+     * and set the pad-calibration reference voltage (HAS_PADCALIB VREF=0x7).
+     * Tegra234 derives spec v3 from the version register, not the vendor bit. */
+    uint32_t clk_ctrl = rd32(SD_TEGRA_CLOCK_CTRL);
+    clk_ctrl &= ~(SD_TAP_MASK | SD_TRIM_MASK | SD_SPI_MODE_CLKEN_OVR);
+    wr32(SD_TEGRA_CLOCK_CTRL, clk_ctrl);
 
-    wr16(SD_INT_ENABLE, 0);
+    uint32_t misc = rd32(SD_TEGRA_MISC_CTRL);
+    misc &= ~(SD_MISC_SPEC300 | SD_MISC_SDR50 | SD_MISC_DDR50 | SD_MISC_SDR104);
+    wr32(SD_TEGRA_MISC_CTRL, misc);
+
+    uint32_t pad = rd32(SD_TEGRA_PADCTRL);
+    pad = (pad & ~SD_PADCTRL_VREF_MASK) | SD_PADCTRL_VREF_VAL;
+    wr32(SD_TEGRA_PADCTRL, pad);
+    klog("orin sdmmc: vendor clk_ctrl=%08x misc=%08x pad=%08x\n",
+            rd32(SD_TEGRA_CLOCK_CTRL), rd32(SD_TEGRA_MISC_CTRL),
+            rd32(SD_TEGRA_PADCTRL));
+
+    wr16(SD_INT_ENABLE, 0xffff);         /* normal int status enable */
+    wr16(SD_INT_ENABLE + 2, 0xffff);     /* error int status enable */
     wr8(SD_POWER, 0x0f);                 /* 3.3V, bus power on */
     sd_set_clock(400000);                /* 400kHz init clock */
+    klog("orin sdmmc: clk=%04x power=%02x\n", rd16(SD_CLOCK), rd8(SD_POWER));
+
+    sd_pad_autocal();                    /* calibrate pad drive strength */
+    klog("orin sdmmc: begin card init\n");
 
     /* CMD0 -> idle */
     if (sd_cmd(0, 0, RESP_NONE, 0, 0, NULL) != 0) {
-        slog("orin sdmmc: CMD0 failed\n");
+        klog("orin sdmmc: CMD0 failed st=%04x err=%04x present=%08x cmd=%04x clk=%04x\n",
+                _err_st, rd16(SD_INT_STATUS + 2), rd32(SD_PRESENT),
+                rd16(SD_CMD), rd16(SD_CLOCK));
         return -1;
     }
     /* CMD8 -> voltage check (SDHC/SDXC capable cards echo 0x1AA) */
     uint32_t r7 = 0;
     int v2 = (sd_cmd(8, 0x1aa, RESP_48, 1, 1, &r7) == 0 &&
             (r7 & 0xfff) == 0x1aa);
+    klog("orin sdmmc: CMD8 r7=%08x v2=%d\n", r7, v2);
     /* ACMD41 -> send op cond, poll busy (HCS if v2) */
     uint32_t ocr = 0;
     int ok = 0;
@@ -246,19 +359,33 @@ int bsp_sdmmc_init(void) {
         if (ocr & 0x80000000u) { ok = 1; break; }
     }
     if (!ok) {
-        slog("orin sdmmc: ACMD41 timeout ocr=%08x\n", ocr);
+        klog("orin sdmmc: ACMD41 timeout ocr=%08x\n", ocr);
         return -1;
     }
     _sdhc = v2 && (ocr & 0x40000000u);   /* CCS -> block addressing */
+    klog("orin sdmmc: ACMD41 ok ocr=%08x sdhc=%d\n", ocr, _sdhc);
 
     uint32_t cid[4];
-    if (sd_cmd(2, 0, RESP_136, 0, 0, cid) != 0) return -1;   /* ALL_SEND_CID */
+    if (sd_cmd(2, 0, RESP_136, 0, 0, cid) != 0) {
+        klog("orin sdmmc: CMD2 (CID) failed st=%04x\n", _err_st);
+        return -1;
+    }
     uint32_t r6 = 0;
-    if (sd_cmd(3, 0, RESP_48, 1, 1, &r6) != 0) return -1;     /* SEND_REL_ADDR */
+    if (sd_cmd(3, 0, RESP_48, 1, 1, &r6) != 0) {
+        klog("orin sdmmc: CMD3 (RCA) failed st=%04x\n", _err_st);
+        return -1;
+    }
     _rca = (uint16_t)(r6 >> 16);
     uint32_t csd[4];
-    if (sd_cmd(9, (uint32_t)_rca << 16, RESP_136, 0, 0, csd) != 0) return -1;
-    if (sd_cmd(7, (uint32_t)_rca << 16, RESP_48B, 1, 1, NULL) != 0) return -1;
+    if (sd_cmd(9, (uint32_t)_rca << 16, RESP_136, 0, 0, csd) != 0) {
+        klog("orin sdmmc: CMD9 (CSD) failed st=%04x\n", _err_st);
+        return -1;
+    }
+    if (sd_cmd(7, (uint32_t)_rca << 16, RESP_48B, 1, 1, NULL) != 0) {
+        klog("orin sdmmc: CMD7 (select) failed st=%04x\n", _err_st);
+        return -1;
+    }
+    klog("orin sdmmc: card selected rca=%04x\n", _rca);
 
     /* Capacity from CSD. */
     if ((csd[0] >> 30) == 1) {           /* CSD v2 (SDHC/SDXC) */
@@ -276,7 +403,7 @@ int bsp_sdmmc_init(void) {
     sd_set_clock(25000000);              /* 25MHz operational clock */
 
     _ready = 1;
-    slog("orin sdmmc: card ready %s, %llu MB, rca=%04x\n",
+    klog("orin sdmmc: card ready %s, %llu MB, rca=%04x\n",
             _sdhc ? "SDHC/SDXC" : "SDSC",
             (unsigned long long)(_sectors / 2048u), _rca);
     return 0;
