@@ -85,9 +85,11 @@ firmware_install:
 	@cp -p $(NPU_FW_SRC)/qccdsp8280.mbn \
 		$(TARGET_DIR)/etc/firmware/qcom/sc8280xp/
 	@mkdir -p $(TARGET_DIR)/etc/firmware/qca
-	@cp -p $(QCA_FW_SRC)/rampatch_usb_00130201.bin \
-		$(QCA_FW_SRC)/nvm_usb_00130201_gf.bin $(QCA_FW_SRC)/NOTICE.qca \
+	@cp -p $(QCA_FW_SRC)/NOTICE.qca \
 		$(QCA_FW_SRC)/LICENSE.QualcommAtheros_ath10k \
+		$(TARGET_DIR)/etc/firmware/qca/
+	@cp -p $(QCA_FW_SRC)/hpbtfw21.tlv $(QCA_FW_SRC)/wcnhpbtfw21.tlv \
+		$(QCA_FW_SRC)/hpnv21.bin $(QCA_FW_SRC)/wcnhpnv21.bin \
 		$(TARGET_DIR)/etc/firmware/qca/
 	@mkdir -p $(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1
 	@cp -p $(WLAN_FW_SRC)/WCN6855/hw2.1/Notice.txt \

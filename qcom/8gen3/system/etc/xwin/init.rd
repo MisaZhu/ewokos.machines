@@ -44,15 +44,15 @@
 @/bin/ipcserv /drivers/8gen3/hid_touchpadd /dev/touchpad0 /dev/usb0
 
 # btd may be launched concurrently by ipcserv, but the Q8B transport gates
-# USB Bluetooth setup until wlan has completed WCN startup and published MAC.
+# UART Bluetooth setup until wlan has completed WCN startup and published MAC.
 # The device surface and the subscribers are the raspi5 ones: btd owns
 # /dev/bt0, xbt and devcmd use it, and the shared hid_* daemons register as
 # "bt" subscribers. Their nodes exist before a device is paired, so the X
 # input processes below can open them at boot.
-#@/bin/ipcserv /drivers/8gen3/btd           /dev/bt0
-#@/bin/ipcserv /drivers/8gen3/hid_moused    /dev/mouse1 /dev/bt0 bt
-#@/bin/ipcserv /drivers/8gen3/hid_keybd     /dev/keyb1  /dev/bt0 bt
-#@/bin/ipcserv /drivers/8gen3/hid_joystickd /dev/js1    /dev/bt0 bt
+@/bin/ipcserv /drivers/8gen3/btd           /dev/bt0
+@/bin/ipcserv /drivers/8gen3/hid_moused    /dev/mouse1 /dev/bt0 bt
+@/bin/ipcserv /drivers/8gen3/hid_keybd     /dev/keyb1  /dev/bt0 bt
+@/bin/ipcserv /drivers/8gen3/hid_joystickd /dev/js1    /dev/bt0 bt
 
 @/bin/ipcserv /sbin/sessiond
 #@/bin/bgrun /bin/session -r -t /dev/tty0

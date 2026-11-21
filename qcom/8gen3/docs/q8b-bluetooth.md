@@ -1,17 +1,19 @@
 # Q8B Bluetooth interface (raspi5-compatible)
 
-The QCNFA765 is a combo module: Wi-Fi is a PCIe function (owned by `wlan`)
-and Bluetooth is a USB function (claimed by `usbhostd`). The Bluetooth
-*daemon*, HID stack and desktop tools are the raspi5 ones and are shared
-unchanged; only the HCI transport in `libbsp` and the USB firmware download
-are Q8B code.
+The WCN6855 combo module on the TW220 carries Wi-Fi on PCIe (owned by
+`wlan`) and Bluetooth on a GENI UART, **not** USB: Linux binds the same
+port as `serial@988000` (QUP0 SE2) with `hci_uart_qca` and
+`qcom,wcn6855-bt`, and no QCA USB device enumerates on this machine. The
+Bluetooth *daemon*, HID stack and desktop tools are the raspi5 ones and
+are shared unchanged; only the HCI transport in `libbsp`
+(`8gen3/system/libs/bsp/src/bsp_bt.c`) is Q8B code.
 
 | Item | raspi5 | Q8B |
 |---|---|---|
 | Device node | `/dev/bt0` (0666) | same |
-| Daemon | `system/gui/drivers/btd` | same source, `HW=q8b` build |
-| HCI transport | 16550 UART + `BT_ON` | USB bulk/interrupt through `usbhostd` |
-| Firmware | CYW43455 patchram downloaded by `btd` | QCA DFU + HCI reset in `usbhostd` before `btd` sees the stream |
+| Daemon | `system/gui/drivers/btd` | same source, `HW=8gen3` build |
+| HCI transport | 16550 UART + `BT_ON` | GENI UART QUP0 SE2, FIFO mode, HW CTS/RTS |
+| Firmware | CYW43455 patchram downloaded by `btd` | QCA serial DFU (TLV EDL) inside `bsp_bt_init` |
 | Transport contract | `bt/bsp_bt.h` | same header, same seven hooks |
 | Event-driven RX | `bsp_bt_wait_readable` returns 1/0 from the UART IRQ | returns -1; `btd` keeps its history polling cadence |
 | Upper tools | `xbt`, `hid_moused`/`hid_keybd`/`hid_joystickd` in `bt` mode | same binaries and arguments |
@@ -49,10 +51,10 @@ subscriber channel: `hid_moused`, `hid_keybd` and `hid_joystickd` open it in
 consume both the USB and the Bluetooth HID nodes:
 
 ```
-@/bin/ipcserv /drivers/q8b/btd           /dev/bt0
-@/bin/ipcserv /drivers/q8b/hid_moused    /dev/mouse1 /dev/bt0 bt
-@/bin/ipcserv /drivers/q8b/hid_keybd     /dev/keyb1  /dev/bt0 bt
-@/bin/ipcserv /drivers/q8b/hid_joystickd /dev/js1    /dev/bt0 bt
+@/bin/ipcserv /drivers/8gen3/btd           /dev/bt0
+@/bin/ipcserv /drivers/8gen3/hid_moused    /dev/mouse1 /dev/bt0 bt
+@/bin/ipcserv /drivers/8gen3/hid_keybd     /dev/keyb1  /dev/bt0 bt
+@/bin/ipcserv /drivers/8gen3/hid_joystickd /dev/js1    /dev/bt0 bt
 ...
 @/bin/bgrun /sbin/x/xmouse /dev/mouse0
 @/bin/bgrun /sbin/x/xmouse /dev/mouse1
@@ -63,38 +65,76 @@ consume both the USB and the Bluetooth HID nodes:
 
 The subscriber nodes exist before a device is paired, so the X input
 processes open them at boot and simply stay idle until a BT keyboard, mouse
-or gamepad connects. USB input (`mouse0`/`keyb0`) remains wired in parallel;
-raspi5 instead routes X exclusively to `mouse1`/`keyb1`. Because two pointer
-devices now feed one server, `xmouse` encodes a wheel event relative with a
-zero delta instead of re-sending its own last position, so scrolling never
-moves the cursor (or routes to the wrong window) when the other mouse or the
-touch panel was the last one to move it.
+or gamepad connects. USB input (`mouse0`/`keyb0`) remains wired in parallel.
+
+## UART bring-up
+
+`bsp_bt_init()` mirrors `drivers/bluetooth/hci_qca.c` + `btqca.c`:
+
+1. **Clocks/pins.** OR-vote the GCC QUP0 wrapper clocks (vote `0x52008`
+   bits 6/7/8/9/12, never reset shared votes), program the S2 RCG2 M/N/D
+   from GPLL0_OUT_EVEN (300 MHz) and the SE serializer divider, and mux
+   TLMM gpio121-124 to qup2 (CTS keeper, RX pull-up, TX/RTS 2 mA output).
+   UEFI already loaded the SE firmware; the driver checks the UART
+   protocol revision and fails safely instead of loading it.
+2. **Probe at 115200 8N1 + HW flow control**, read the EDL version
+   (WCN6855 answers vendor commands inside Command Complete).
+3. **Baud switch** to 3.2 M (vendor `0xFC48`, code 17). The M/N values give
+   an exact 51.2 MHz root; Linux's clock table cannot hit it and settles
+   for 3.125 Mbaud, so this transport is slightly more accurate.
+4. **DFU**: rampatch TLV (`hpbtfw21.tlv`, `wcn*` name tried first), board
+   id, then the board-specific NVM (`hpnv21.b<bid>`, `.bin` fallback) with
+   the HCI tag patched for IBS + operating baud and the deep-sleep tag
+   enabled. Segments are <=243 bytes; the patch download mode skips
+   per-segment acks, NVM acks every segment.
+5. **Finish**: disable SoC logging, `HCI_Reset`, write the BD address
+   (the DT `local-bd-address` always wins, byte order reversed on the
+   wire — exactly like Linux `qca_set_bdaddr`; the generic NVM tag 2 is
+   the placeholder `ad:5a:00:00:00:00` and would break pairing).
+6. **IBS in-band sleep** turns on: `0xFE`/`0xFD`/`0xFC` are intercepted at
+   H4 frame boundaries only, the controller's `WAKE_IND` is acknowledged
+   immediately, and every host TX while asleep runs the bounded
+   `WAKE_IND`/`WAKE_ACK` handshake first.
+
+Firmware lives in `/etc/firmware/qca/` (installed by
+`8gen3/system/Makefile` from `8gen3/firmware/qca/`, decompressed from the
+host `linux-firmware` `.zst` set). Only the blobs this board actually
+loads are kept: `wcnhpbtfw21.tlv` + `wcnhpnv21.bin` (plus the non-`wcn`
+name fallbacks) — the TW220 reports ROM `0201`, soc `400c0210` (non-`g`)
+and board id `0000`, so all `.b<bid>` board variants, `g` variants and
+the dead-path USB blobs were pruned. Bring-up progress is logged line by line
+to `/tmp/bt0.log` (fsync per line so sdfsd commits the inode); the live
+register/counter snapshot is available through `bsp_bt_diag_str`.
 
 ## Platform notes
 
-- **Coexistence gate.** The USB and PCIe functions share the module's E-key
-  rail, and `pcied` cold-cycles it before WCN startup. `bsp_bt_init()` in
-  `q8b/system/libs/bsp/src/bsp_bt.c` therefore returns -1 until `wlan` has
-  published a valid MAC; `btd` retries every three seconds and then runs the
-  deferred QCA setup. `usbhostd` claims the USB interface at enumeration but
-  does not download firmware from its probe path.
-- **No rail power-down.** `bsp_bt_power_off()` (the `close` verb) only drops
-  the HCI session; the 3.3 V rail is shared with Wi-Fi and must stay up. A
-  later `open` re-runs the HCI bring-up without a rail power cycle. This is
-  the one contract hook whose Q8B behaviour differs from the raspi5 UART
-  transport (which pulls `BT_ON` low).
-- **Firmware.** `bsp_bt_firmware()` returns no image on Q8B, so `btd`'s
-  Broadcom patchram path is skipped. `bsp_usbbt.c` performs the vendor DFU
-  (`rampatch_usb_*.bin`, `nvm_usb_*.bin` from `/etc/firmware/qca/`) and an
-  HCI reset before the stream is exposed.
+- **Coexistence gate.** The UART and PCIe functions share the module's
+  power/reset sequence, and `pcied` cold-cycles the rail before WCN
+  startup. `bsp_bt_init()` therefore returns -1 until `wlan` has published
+  a valid MAC; `btd` retries every three seconds.
+- **No rail power-down.** `bsp_bt_power_off()` (the `close` verb) sends the
+  QCA pre-shutdown command and drops the HCI session; the rail is shared
+  with Wi-Fi and stays up. A later `open` re-runs bring-up: the probe
+  remembers the previous baud, blind-wakes a possibly sleeping warm
+  controller, commands it back to 115200 and repeats the full DFU.
+- **Firmware hook.** `bsp_bt_firmware()` returns no image, so `btd`'s
+  Broadcom patchram path is skipped; all QCA DFU happens inside the
+  transport. The legacy USB client `bsp_usbbt.c` stays in the tree (with
+  its host tests) but is not wired into this machine's build.
 - **LE/HOGP vs classic HIDP**, bonding, discovery and the HID report
   translation all live in the shared daemon, so behaviour matches raspi5.
 
 ## Verification
 
-- `machines/q8b/system/libs/bsp/tests/run-usbbt.sh` builds and runs the USB
-  transport and `bsp_bt` client host tests (framing, DFU validation, firmware
-  selection, HCI reset, ACL bounds, receive timeout/flush); both pass.
-- `btd` and `hid_joystickd` were cross-built for `HW=q8b` against
-  `system/build_aarch64/q8b/lib` (`libhid`, `libbsp`, `libewoksys`) to confirm
-  the shared sources and the new build entry link on this machine.
+- `8gen3/system/libs/bsp/tests/run-btuart.sh` builds the real `bsp_bt.c`
+  against a GENI SE2 register model and a WCN6855 controller emulation
+  (EDL-over-CC, TLV ack modes, baud switch, IBS sleep/wake) under
+  ASan/UBSan: cold init, register/pinmux/clock values, DFU byte integrity,
+  NVM tag patching, BD address order, steady-state TX/RX, spontaneous
+  controller wake, mid-frame IBS-byte transparency, ring overrun, flush,
+  power-off + warm recovery, and the failure paths (wlan gate, mapping,
+  SE protocol, missing/corrupt firmware).
+- `run-usbbt.sh` still passes for the legacy USB client and the `bsp_bt`
+  client contract tests.
+- `btd` links `libbsp.a` statically, so only the `btd` binary needs
+  redeploying after transport changes (plus firmware and `init.rd`).
