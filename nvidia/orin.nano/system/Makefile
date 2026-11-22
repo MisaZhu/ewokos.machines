@@ -55,7 +55,43 @@ usb: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/gui/libs/hid
 	for d in $(USB_DRIVERS); do $(MAKE) -C $(SYS_ROOT_DIR)/gui/drivers/$$d || exit 1; done
 
-CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/basic
+# Minimal framebuffer GUI on the working linear scan-out FB: the shared
+# display server (displayd, CPU rendering -- no GPU/g2dd on Orin) driven by
+# the machine fbdisplayd, plus the display manager, font and console daemons
+# and a graphical console session.  USB HID input comes from the usb target.
+# `make gui` stages the full rootfs; ../efi packs the GUI profile + assets.
+GUI_DRIVERS = displaymand consoled fontd
+gui: gui_sys
+	@$(MAKE) final
+
+gui_sys: usb
+	$(MAKE) -C $(SYS_ROOT_DIR)/gui mkdirs
+	$(MAKE) -C $(SYS_ROOT_DIR)/gui/libs
+	$(MAKE) -C $(SYS_ROOT_DIR)/gui/bin
+	$(MAKE) -C $(SYS_ROOT_DIR)/gui/sbin
+	for d in $(GUI_DRIVERS); do $(MAKE) -C $(SYS_ROOT_DIR)/gui/drivers/$$d || exit 1; done
+	$(MAKE) -C drivers gui
+	@mkdir -p ${TARGET_DIR}/etc
+	@cp -Rp etc/gui/. ${TARGET_DIR}/etc/
+
+# Full xwin desktop on the CPU-rendered framebuffer: the shared X server
+# (xserverd /dev/x), the misawm window manager session, statusbar/xlauncher,
+# and USB keyboard/mouse input (xim_none/xmouse).  No GPU/g2dd, touch, wlan,
+# btd or audio on Orin -- the desktop is pure CPU blit over fbdisplayd.
+# `make x` stages the full rootfs; ../efi packs the X profile + assets.
+x: x_sys
+	@$(MAKE) final
+
+x_sys: gui_sys
+	# libsocket: the shared socket API over netd (Orin runs netd/DHCP on
+	# /dev/eth0).  Only the xwin xcores/xprocs apps link it; build just this
+	# lib, not the full network stack (wolfssl/sshd/etc. are not needed).
+	$(MAKE) -C $(SYS_ROOT_DIR)/network/libs/socket
+	$(MAKE) -C $(SYS_ROOT_DIR)/xwin
+	@mkdir -p ${TARGET_DIR}/etc
+	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
+
+CLEAN_DIRS = libs drivers $(SYS_ROOT_DIR)/basic $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/xwin
 clean:
 	@for dir in $(CLEAN_DIRS); do \
 		$(MAKE) -C $$dir clean; \
@@ -85,4 +121,4 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 
-.PHONY: all basic basic_sys usb platform_headers clean sd
+.PHONY: all basic basic_sys usb gui gui_sys x x_sys platform_headers clean sd

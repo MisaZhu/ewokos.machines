@@ -1,0 +1,178 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdint.h>
+#include <displayd/displayd.h>
+#include <graph/graph.h>
+#include <graph/graph_png.h>
+#include <bsp/bsp_fb.h>
+#include <sysinfo.h>
+#include <ewoksys/sys.h>
+#include <ewoksys/syscall.h>
+#include <ewoksys/klog.h>
+#include <q8b_platform.h>
+
+/* UEFI GOP PixelFormat 0 = RGB, 1 = BGR, 2 = BitMask.  EwokOS graph
+ * buffers are native ARGB (little-endian bytes B,G,R,A), so an RGB GOP
+ * scan-out needs a red/blue swap. */
+static int _swap_rb = 0;
+
+static inline uint32_t swap_rb(uint32_t c) {
+    return (c & 0xff00ff00u) | ((c & 0xffu) << 16) | ((c >> 16) & 0xffu);
+}
+
+static void blt16(uint32_t* src, uint16_t* dst, uint32_t w, uint32_t h) {
+    uint32_t sz = w * h;
+
+    for (uint32_t i = 0; i < sz; ++i) {
+        uint32_t s = src[i];
+        uint8_t r = (s >> 16) & 0xff;
+        uint8_t g = (s >> 8) & 0xff;
+        uint8_t b = s & 0xff;
+        dst[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+    }
+}
+
+static uint32_t blt32(const disp_info_t* fbinfo, const graph_t* g) {
+    uint32_t bytes_per_pixel = fbinfo->depth / 8;
+    uint8_t* dst = (uint8_t*)(uintptr_t)(fbinfo->pointer +
+            fbinfo->yoffset * fbinfo->pitch +
+            fbinfo->xoffset * bytes_per_pixel);
+    const uint32_t* src = g->buffer;
+    uint32_t row_bytes = (uint32_t)g->w * bytes_per_pixel;
+    uint32_t total_bytes = (uint32_t)g->h * row_bytes;
+
+    if (!_swap_rb && fbinfo->pitch == row_bytes) {
+        memcpy(dst, src, total_bytes);
+        return total_bytes;
+    }
+
+    for (int32_t y = 0; y < g->h; ++y) {
+        uint8_t* dst_row = dst + y * fbinfo->pitch;
+        const uint32_t* src_row = src + y * g->w;
+        if (!_swap_rb) {
+            memcpy(dst_row, src_row, row_bytes);
+        } else {
+            for (int32_t x = 0; x < g->w; ++x)
+                ((uint32_t*)dst_row)[x] = swap_rb(src_row[x]);
+        }
+    }
+    return total_bytes;
+}
+
+static uint32_t blt16_pitch(const disp_info_t* fbinfo, const graph_t* g) {
+    uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
+            fbinfo->yoffset * fbinfo->pitch +
+            fbinfo->xoffset * 2;
+    const uint32_t* src = g->buffer;
+
+    for (int32_t y = 0; y < g->h; ++y) {
+        blt16((uint32_t*)(src + y * g->w),
+                (uint16_t*)(dst_base + y * fbinfo->pitch),
+                g->w, 1);
+    }
+    return g->w * g->h * 2;
+}
+
+/* 24bpp (真机 GOP 常见): 源 32bpp ARGB 小端内存序 B,G,R,A —— 逐像素
+ * 拷前 3 字节, 字节序与固件帧缓冲一致, 无需换算 */
+static uint32_t blt24_pitch(const disp_info_t* fbinfo, const graph_t* g) {
+    uint8_t* dst_base = (uint8_t*)(uintptr_t)fbinfo->pointer +
+            fbinfo->yoffset * fbinfo->pitch +
+            fbinfo->xoffset * 3;
+    const uint32_t* src = g->buffer;
+
+    for (int32_t y = 0; y < g->h; ++y) {
+        uint8_t* dst = dst_base + y * fbinfo->pitch;
+        const uint32_t* s = src + y * g->w;
+        for (int32_t x = 0; x < g->w; ++x) {
+            uint32_t c = _swap_rb ? swap_rb(s[x]) : s[x];
+            dst[x * 3 + 0] = (uint8_t)c;
+            dst[x * 3 + 1] = (uint8_t)(c >> 8);
+            dst[x * 3 + 2] = (uint8_t)(c >> 16);
+        }
+    }
+    return (uint32_t)g->w * g->h * 3;
+}
+
+static uint32_t flush(const disp_info_t* fbinfo, const graph_t* g) {
+    if (fbinfo->depth != 32 && fbinfo->depth != 24 && fbinfo->depth != 16) {
+        return 0;
+    }
+
+    uint32_t written;
+    if (fbinfo->depth == 24)
+        written = blt24_pitch(fbinfo, g);
+    else if (fbinfo->depth == 16)
+        written = blt16_pitch(fbinfo, g);
+    else if ((uintptr_t)fbinfo->pointer != (uintptr_t)g->buffer)
+        written = blt32(fbinfo, g);
+    else
+        written = g->w * g->h * 4;
+
+    return written;
+}
+
+static disp_info_t* get_info(void) {
+    return bsp_get_fbinfo();
+}
+
+static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
+    int32_t r = bsp_fb_init(w, h, dep);
+    if (r != 0)
+        return r;
+
+    sys_info_t sysinfo;
+    if (sys_get_sys_info(&sysinfo) != 0)
+        return -1;
+    const q8b_platform_data_t* pd =
+        (const q8b_platform_data_t*)sysinfo.platform_data;
+    _swap_rb = (pd->fb.format == 0);   /* PixelRedGreenBlue... */
+    return 0;
+}
+
+static const char* _conf_file = "";
+static int _display_index = 0;
+static int doargs(int argc, char* argv[]) {
+    int c = 0;
+
+    while(c != -1) {
+        c = getopt(argc, argv, "c:i:");
+        if(c == -1)
+            break;
+
+        switch(c) {
+        case 'c':
+            _conf_file = optarg;
+            break;
+        case 'i':
+            _display_index = atoi(optarg);
+            break;
+        default:
+            c = -1;
+            break;
+        }
+    }
+    return optind;
+}
+
+int main(int argc, char** argv) {
+    displayd_t fbdisplayd;
+    int opti = doargs(argc, argv);
+    const char* mnt_point = (opti < argc && opti >= 0) ? argv[opti] : "/dev/disp0";
+
+    memset(&fbdisplayd, 0, sizeof(fbdisplayd));
+    fbdisplayd.splash = NULL;
+    fbdisplayd.flush = flush;
+    fbdisplayd.init = init;
+    fbdisplayd.get_info = get_info;
+    /* No flush-rect hook on x86: partial dirty-rect pushes into the UC-
+       mapped scan-out leave the bottom-anchored regions (statusbar, dock
+       label strip) showing stale pixels. Always do a full-frame flush so
+       the whole panel is rewritten every repaint. */
+
+    int ret = fbdisplayd_run(&fbdisplayd, mnt_point, 1024, 768,
+            _conf_file, _display_index);
+    return ret;
+}

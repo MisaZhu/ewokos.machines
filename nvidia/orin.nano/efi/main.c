@@ -260,6 +260,55 @@ static void con_dec(uint64_t v) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Linear scan-out FB handoff from the closed display provider         */
+/*                                                                     */
+/* The BltOnly GOP hides FrameBufferBase (=0), but the closed display  */
+/* provider (GUID fe47349a-7f0d-4641-822b-34baa28ecdd0) iface[+96]     */
+/* holds the real LINEAR scan-out FB phys: the GOP Blt BufferToVideo   */
+/* engine writes it per-pixel (linear y*pitch+x*4 -- confirmed in the  */
+/* provider disasm and empirically via VideoFill readback).  UEFI      */
+/* programs the scan-out and it survives ExitBootServices, so the      */
+/* kernel maps this FB and writes pixels directly: no Blt shim, no DCE */
+/* RPC, no display MMIO (all firewalled on T234).  The FB sits in a    */
+/* hidden carveout (a UEFI memory-map hole), so the kernel reserves it */
+/* via the fb handoff and maps it Normal-Non-Cacheable.                */
+/* ------------------------------------------------------------------ */
+static int plausible_ptr(uint64_t p) {
+    return p >= 0x80000000ULL && p < 0x300000000ULL;
+}
+
+static uint64_t g_prov_fb_phys;
+static uint32_t g_prov_fb_w, g_prov_fb_h, g_prov_fb_pitch;
+
+static void read_provider_fb(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
+    if (!gop || !plausible_ptr((uint64_t)(uintptr_t)gop))
+        return;
+    /* NvGop instance: [This+40] = provider iface, [iface+96] = FB phys. */
+    uint64_t iface = *(uint64_t*)((uint8_t*)gop + 40);
+    if (!plausible_ptr(iface))
+        return;
+    uint64_t fb = *(uint64_t*)(iface + 96);
+    if (!plausible_ptr(fb))
+        return;
+    g_prov_fb_phys = fb;
+    if (gop->Mode && gop->Mode->Info) {
+        EFI_GOP_MODE_INFO* mi = gop->Mode->Info;
+        g_prov_fb_w = mi->HorizontalResolution;
+        g_prov_fb_h = mi->VerticalResolution;
+        g_prov_fb_pitch = mi->PixelsPerScanLine * 4;
+    }
+    con_puts("[prov] linear scan-out fb=");
+    con_hex(g_prov_fb_phys);
+    con_puts(" ");
+    con_dec(g_prov_fb_w);
+    con_puts("x");
+    con_dec(g_prov_fb_h);
+    con_puts(" pitch=");
+    con_dec(g_prov_fb_pitch);
+    con_puts("\n");
+}
+
+/* ------------------------------------------------------------------ */
 /* firmware DTB / SMBIOS model                                        */
 /* ------------------------------------------------------------------ */
 static uint32_t fdt_be32(const void* p) {
@@ -329,6 +378,308 @@ static void fdt_model(uint64_t dtb, char* out, uint64_t cap) {
             }
         } else if (tok == 2) {                /* FDT_END_NODE */
             continue;
+        } else {                              /* FDT_END / garbage */
+            break;
+        }
+    }
+}
+
+static int fdt_str_prefix(const char* s, const char* pre) {
+    while (*pre) {
+        if (*s != *pre)
+            return 0;
+        s++;
+        pre++;
+    }
+    return 1;
+}
+
+/* Linear framebuffer handed off via a /simple-framebuffer DT node (the
+ * "simplefb" method; NVIDIA UEFI uses either this or efifb/GOP).  Decodes
+ * reg/width/height/stride/format into the same fields the GOP path fills. */
+typedef struct {
+    uint64_t addr, size;
+    uint32_t width, height, stride;
+    uint32_t bpp, format;   /* format: 0=RGB memory order, 1=BGR */
+    int found;
+} simplefb_t;
+
+static void fdt_simplefb(uint64_t dtb, simplefb_t* fb) {
+    fb->addr = fb->size = 0;
+    fb->width = fb->height = fb->stride = 0;
+    fb->bpp = 32;
+    fb->format = 1;
+    fb->found = 0;
+    if (!dtb)
+        return;
+    const uint8_t* f = (const uint8_t*)(uintptr_t)dtb;
+    if (fdt_be32(f) != 0xd00dfeed)
+        return;
+    uint32_t totalsize = fdt_be32(f + 4);
+    if (totalsize < 40 || totalsize > 16u * 1024 * 1024)
+        return;
+    uint32_t off_struct = fdt_be32(f + 8);
+    uint32_t off_str = fdt_be32(f + 12);
+    uint32_t size_str = fdt_be32(f + 32);
+    if (off_struct + 4 > totalsize || off_str > totalsize ||
+            size_str > totalsize || off_str + size_str > totalsize)
+        return;
+    const uint8_t* strblk = f + off_str;
+    const uint8_t* st = f + off_struct;
+    uint32_t p = 0;
+    int depth = 0, target = -1;
+    char namebuf[48];
+    while (p + 4 <= totalsize - off_struct) {
+        uint32_t tok = fdt_be32(st + p);
+        p += 4;
+        if (tok == 1) {                       /* FDT_BEGIN_NODE */
+            uint32_t q = p;
+            while (q + 1 < totalsize - off_struct && st[q] != 0)
+                q++;
+            uint32_t nlen = q - p;
+            if (nlen >= sizeof(namebuf))
+                nlen = sizeof(namebuf) - 1;
+            memcpy(namebuf, st + p, nlen);
+            namebuf[nlen] = 0;
+            p = (q + 1 + 3) & ~3u;
+            depth++;
+            if (target < 0 &&
+                    (fdt_str_prefix(namebuf, "simple-framebuffer") ||
+                     fdt_str_prefix(namebuf, "framebuffer")))
+                target = depth;
+        } else if (tok == 3) {                /* FDT_PROP */
+            if (p + 8 > totalsize - off_struct)
+                break;
+            uint32_t len = fdt_be32(st + p);
+            uint32_t nameoff = fdt_be32(st + p + 4);
+            uint64_t data = p + 8;
+            p = (uint32_t)(data + len);
+            p = (p + 3) & ~3u;
+            if (target < 0 || depth != target || nameoff >= size_str ||
+                    !strblk[nameoff])
+                continue;
+            const char* pn = (const char*)(strblk + nameoff);
+            const uint8_t* pd = st + data;
+            if (fdt_str_eq(pn, "reg")) {
+                if (len >= 16) {
+                    fb->addr = ((uint64_t)fdt_be32(pd) << 32) | fdt_be32(pd + 4);
+                    fb->size = ((uint64_t)fdt_be32(pd + 8) << 32) |
+                            fdt_be32(pd + 12);
+                } else if (len >= 8) {
+                    fb->addr = fdt_be32(pd);
+                    fb->size = fdt_be32(pd + 4);
+                }
+            } else if (fdt_str_eq(pn, "width") && len >= 4) {
+                fb->width = fdt_be32(pd);
+            } else if (fdt_str_eq(pn, "height") && len >= 4) {
+                fb->height = fdt_be32(pd);
+            } else if (fdt_str_eq(pn, "stride") && len >= 4) {
+                fb->stride = fdt_be32(pd);
+            } else if (fdt_str_eq(pn, "format")) {
+                char fmt[24];
+                uint32_t n = len;
+                if (n > 0 && pd[n - 1] == 0)
+                    n--;
+                if (n >= sizeof(fmt))
+                    n = sizeof(fmt) - 1;
+                memcpy(fmt, pd, n);
+                fmt[n] = 0;
+                if (fdt_str_prefix(fmt, "r5g6b5")) {
+                    fb->bpp = 16;
+                    fb->format = 0;
+                } else {
+                    int ri = -1, bi = -1;
+                    for (uint32_t i = 0; i < n; i++) {
+                        if (fmt[i] == 'r' && ri < 0) ri = (int)i;
+                        if (fmt[i] == 'b' && bi < 0) bi = (int)i;
+                    }
+                    fb->bpp = (fmt[0] == 'x' || fmt[0] == 'a') ? 32 : 24;
+                    /* component listed first = higher bits = later byte in
+                     * little-endian memory: r-before-b -> B,G,R (format 1). */
+                    if (ri >= 0 && bi >= 0)
+                        fb->format = (ri < bi) ? 1 : 0;
+                }
+            }
+        } else if (tok == 2) {                /* FDT_END_NODE */
+            if (target >= 0 && depth == target) {
+                fb->found = (fb->addr != 0 && fb->width != 0 &&
+                        fb->height != 0);
+                return;
+            }
+            depth--;
+        } else {                              /* FDT_END / garbage */
+            break;
+        }
+    }
+}
+
+static int fdt_str_has(const char* s, const char* sub) {
+    for (; *s; s++) {
+        const char* a = s;
+        const char* b = sub;
+        while (*a && *b && *a == *b) {
+            a++;
+            b++;
+        }
+        if (!*b)
+            return 1;
+    }
+    return 0;
+}
+
+/* Diagnostic: print DTB node names related to display/framebuffer handoff so
+ * a non-standard scan-out node (or reserved-memory FB carveout) is visible. */
+static void fdt_dump_display(uint64_t dtb) {
+    if (!dtb)
+        return;
+    const uint8_t* f = (const uint8_t*)(uintptr_t)dtb;
+    if (fdt_be32(f) != 0xd00dfeed)
+        return;
+    uint32_t totalsize = fdt_be32(f + 4);
+    if (totalsize < 40 || totalsize > 16u * 1024 * 1024)
+        return;
+    uint32_t off_struct = fdt_be32(f + 8);
+    if (off_struct + 4 > totalsize)
+        return;
+    const uint8_t* st = f + off_struct;
+    uint32_t p = 0;
+    char namebuf[64];
+    while (p + 4 <= totalsize - off_struct) {
+        uint32_t tok = fdt_be32(st + p);
+        p += 4;
+        if (tok == 1) {                       /* FDT_BEGIN_NODE */
+            uint32_t q = p;
+            while (q + 1 < totalsize - off_struct && st[q] != 0)
+                q++;
+            uint32_t nlen = q - p;
+            if (nlen >= sizeof(namebuf))
+                nlen = sizeof(namebuf) - 1;
+            memcpy(namebuf, st + p, nlen);
+            namebuf[nlen] = 0;
+            p = (q + 1 + 3) & ~3u;
+            if (namebuf[0] && (fdt_str_has(namebuf, "framebuffer") ||
+                    fdt_str_has(namebuf, "display") ||
+                    fdt_str_has(namebuf, "host1x") ||
+                    fdt_str_has(namebuf, "reserved-memory") ||
+                    fdt_str_has(namebuf, "hdmi") ||
+                    fdt_str_has(namebuf, "sor@") ||
+                    fdt_str_has(namebuf, "dpaux"))) {
+                con_puts("[uefi] dt node: ");
+                con_puts(namebuf);
+                con_puts("\n");
+            }
+        } else if (tok == 3) {                /* FDT_PROP */
+            if (p + 8 > totalsize - off_struct)
+                break;
+            uint32_t len = fdt_be32(st + p);
+            p = (uint32_t)(p + 8 + len);
+            p = (p + 3) & ~3u;
+        } else if (tok == 2) {                /* FDT_END_NODE */
+            continue;
+        } else {
+            break;
+        }
+    }
+}
+
+/* Diagnostic: dump every /reserved-memory child carveout (name + reg base/size).
+ * Reads ONLY the DTB blob (loader-owned), never the carveout DRAM itself, so it
+ * cannot abort on a protected region.  The display early-boot FB carveout shows
+ * up here with its physical base, which is what the kernel fb driver needs. */
+static void fdt_dump_reserved(uint64_t dtb) {
+    if (!dtb)
+        return;
+    const uint8_t* f = (const uint8_t*)(uintptr_t)dtb;
+    if (fdt_be32(f) != 0xd00dfeed)
+        return;
+    uint32_t totalsize = fdt_be32(f + 4);
+    if (totalsize < 40 || totalsize > 16u * 1024 * 1024)
+        return;
+    uint32_t off_struct = fdt_be32(f + 8);
+    uint32_t off_str = fdt_be32(f + 12);
+    uint32_t size_str = fdt_be32(f + 32);
+    if (off_struct + 4 > totalsize || off_str > totalsize ||
+            size_str > totalsize || off_str + size_str > totalsize)
+        return;
+    const uint8_t* strblk = f + off_str;
+    const uint8_t* st = f + off_struct;
+    uint32_t p = 0;
+    int depth = 0, rm_depth = -1;
+    uint32_t ac = 2, sc = 2;
+    char namebuf[64], cur[64];
+    cur[0] = 0;
+    while (p + 4 <= totalsize - off_struct) {
+        uint32_t tok = fdt_be32(st + p);
+        p += 4;
+        if (tok == 1) {                       /* FDT_BEGIN_NODE */
+            uint32_t q = p;
+            while (q + 1 < totalsize - off_struct && st[q] != 0)
+                q++;
+            uint32_t nlen = q - p;
+            if (nlen >= sizeof(namebuf))
+                nlen = sizeof(namebuf) - 1;
+            memcpy(namebuf, st + p, nlen);
+            namebuf[nlen] = 0;
+            p = (q + 1 + 3) & ~3u;
+            depth++;
+            if (rm_depth < 0 && fdt_str_eq(namebuf, "reserved-memory")) {
+                rm_depth = depth;
+                ac = sc = 2;
+                con_puts("[uefi] rsv node\n");
+            } else if (rm_depth >= 0 && depth == rm_depth + 1) {
+                memcpy(cur, namebuf, sizeof(cur));
+                con_puts("[uefi] rsv child ");
+                con_puts(cur);
+                con_puts("\n");
+            }
+        } else if (tok == 3) {                /* FDT_PROP */
+            if (p + 8 > totalsize - off_struct)
+                break;
+            uint32_t len = fdt_be32(st + p);
+            uint32_t nameoff = fdt_be32(st + p + 4);
+            uint64_t data = p + 8;
+            p = (uint32_t)(data + len);
+            p = (p + 3) & ~3u;
+            if (rm_depth < 0 || nameoff >= size_str || !strblk[nameoff])
+                continue;
+            const char* pn = (const char*)(strblk + nameoff);
+            const uint8_t* pd = st + data;
+            if (depth == rm_depth) {
+                if (fdt_str_eq(pn, "#address-cells") && len >= 4)
+                    ac = fdt_be32(pd);
+                else if (fdt_str_eq(pn, "#size-cells") && len >= 4)
+                    sc = fdt_be32(pd);
+            } else if (depth == rm_depth + 1 && fdt_str_eq(pn, "reg")) {
+                if (ac < 1 || ac > 2 || sc < 1 || sc > 2 ||
+                        len < (ac + sc) * 4)
+                    continue;
+                uint64_t base = 0, size = 0;
+                for (uint32_t i = 0; i < ac; i++)
+                    base = (base << 32) | fdt_be32(pd + i * 4);
+                for (uint32_t i = 0; i < sc; i++)
+                    size = (size << 32) | fdt_be32(pd + (ac + i) * 4);
+                con_puts("[uefi] rsv ");
+                con_puts(cur);
+                con_puts(" base=");
+                con_hex(base);
+                con_puts(" size=");
+                con_hex(size);
+                con_puts("\n");
+            } else if (depth == rm_depth + 1 && fdt_str_eq(pn, "size") &&
+                    len >= sc * 4) {
+                uint64_t size = 0;
+                for (uint32_t i = 0; i < sc && i < 2; i++)
+                    size = (size << 32) | fdt_be32(pd + i * 4);
+                con_puts("[uefi] rsv ");
+                con_puts(cur);
+                con_puts(" size=");
+                con_hex(size);
+                con_puts(" (dynamic)\n");
+            }
+        } else if (tok == 2) {                /* FDT_END_NODE */
+            if (rm_depth >= 0 && depth <= rm_depth)
+                rm_depth = -1;
+            depth--;
         } else {                              /* FDT_END / garbage */
             break;
         }
@@ -789,7 +1140,7 @@ static void* read_first(int which, uint64_t* size) {
     }
     /* No local filesystem (PXE boot): fetch over TFTP from the PXE server. */
     uint64_t max_size = (which == 0) ? (4ULL * 1024 * 1024)
-                                     : (32ULL * 1024 * 1024);
+                                     : (64ULL * 1024 * 1024);
     for (int i = 0; pxe_path_name(which, i); i++) {
         const char* path = pxe_path_name(which, i);
         con_puts("[uefi] try net ");
@@ -1028,8 +1379,122 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     uint64_t fb_addr = 0, fb_pitch = 0;
     uint32_t fb_w = 0, fb_h = 0, fb_bpp = 32, fb_format = 0;
     EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = 0;
-    if (!EFI_ERROR(gBS->LocateProtocol((EFI_GUID*)&gop_guid, 0,
-                    (void**)&gop)) && gop && gop->Mode && gop->Mode->Info &&
+    EFI_GRAPHICS_OUTPUT_PROTOCOL* gop_list[4];
+    UINTN gop_count = 0;
+    EFI_STATUS gop_st = gBS->LocateProtocol((EFI_GUID*)&gop_guid, 0,
+            (void**)&gop);
+    con_puts("[uefi] gop LocateProtocol st=");
+    con_hex((uint64_t)gop_st);
+    con_puts(" gop=");
+    con_hex((uint64_t)(uintptr_t)gop);
+    con_puts("\n");
+    /* Enumerate ALL GOP handles.  edk2-nvidia can install a BltOnly proxy GOP
+     * (fmt=3, fbbase=0) on one handle and a real linear-FB display GOP on
+     * another; LocateProtocol returns only the first.  Switch to the first
+     * handle that exposes a linear framebuffer so the adopt path below uses
+     * it.  Read-only: HandleProtocol + Mode inspection, no SetMode. */
+    {
+        UINTN nh = 0;
+        EFI_HANDLE* hb = 0;
+        EFI_STATUS hs = gBS->LocateHandleBuffer(2 /* ByProtocol */,
+                (EFI_GUID*)&gop_guid, 0, &nh, &hb);
+        con_puts("[uefi] gop handles st=");
+        con_hex((uint64_t)hs);
+        con_puts(" n=");
+        con_dec((uint32_t)nh);
+        con_puts("\n");
+        if (!EFI_ERROR(hs) && hb) {
+            for (UINTN i = 0; i < nh; i++) {
+                EFI_GRAPHICS_OUTPUT_PROTOCOL* g = 0;
+                if (EFI_ERROR(gBS->HandleProtocol(hb[i],
+                        (EFI_GUID*)&gop_guid, (void**)&g)) || !g || !g->Mode)
+                    continue;
+                EFI_GOP_MODE* gm = g->Mode;
+                if (gop_count < 4)
+                    gop_list[gop_count++] = g;
+                con_puts("[uefi] gop[");
+                con_dec((uint32_t)i);
+                con_puts("] max=");
+                con_dec(gm->MaxMode);
+                con_puts(" cur=");
+                con_dec(gm->Mode);
+                con_puts(" fbbase=");
+                con_hex((uint64_t)gm->FrameBufferBase);
+                con_puts(" fbsize=");
+                con_hex((uint64_t)gm->FrameBufferSize);
+                if (gm->Info) {
+                    con_puts(" ");
+                    con_dec(gm->Info->HorizontalResolution);
+                    con_puts("x");
+                    con_dec(gm->Info->VerticalResolution);
+                    con_puts(" fmt=");
+                    con_dec(gm->Info->PixelFormat);
+                    con_puts(" ppsl=");
+                    con_dec(gm->Info->PixelsPerScanLine);
+                }
+                con_puts("\n");
+                if (fb_addr == 0 && gm->Info &&
+                        gm->FrameBufferBase != 0 && gm->FrameBufferSize != 0 &&
+                        gm->Info->PixelFormat <= 2)
+                    gop = g;
+            }
+            gBS->FreePool(hb);
+        }
+    }
+    if (!EFI_ERROR(gop_st) && gop && gop->Mode) {
+        EFI_GOP_MODE* gm = gop->Mode;
+        con_puts("[uefi] gop Mode max=");
+        con_dec(gm->MaxMode);
+        con_puts(" cur=");
+        con_dec(gm->Mode);
+        con_puts(" fbbase=");
+        con_hex((uint64_t)gm->FrameBufferBase);
+        con_puts(" fbsize=");
+        con_hex((uint64_t)gm->FrameBufferSize);
+        con_puts("\n");
+        if (gm->Info) {
+            con_puts("[uefi] gop info ");
+            con_dec(gm->Info->HorizontalResolution);
+            con_puts("x");
+            con_dec(gm->Info->VerticalResolution);
+            con_puts(" fmt=");
+            con_dec(gm->Info->PixelFormat);
+            con_puts(" ppsl=");
+            con_dec(gm->Info->PixelsPerScanLine);
+            con_puts("\n");
+        }
+    }
+    /* Enumerate every GOP mode (read-only QueryMode).  A headless firmware
+     * often exposes only a BltOnly proxy (fmt=3, fbbase=0) as mode 0 while a
+     * linear-FB mode (fmt<=2) may exist elsewhere; this reveals which. */
+    if (!EFI_ERROR(gop_st) && gop && gop->Mode && gop->QueryMode) {
+        uint32_t max = gop->Mode->MaxMode;
+        if (max > 16) max = 16;
+        for (uint32_t m = 0; m < max; m++) {
+            EFI_GOP_MODE_INFO* mi = 0;
+            UINTN misz = 0;
+            EFI_STATUS qs = gop->QueryMode(gop, m, &misz, &mi);
+            con_puts("[uefi] gop mode ");
+            con_dec(m);
+            if (EFI_ERROR(qs) || !mi) {
+                con_puts(" query st=");
+                con_hex((uint64_t)qs);
+                con_puts("\n");
+                continue;
+            }
+            con_puts(": ");
+            con_dec(mi->HorizontalResolution);
+            con_puts("x");
+            con_dec(mi->VerticalResolution);
+            con_puts(" fmt=");
+            con_dec(mi->PixelFormat);
+            con_puts(" ppsl=");
+            con_dec(mi->PixelsPerScanLine);
+            con_puts("\n");
+            gBS->FreePool(mi);
+        }
+    }
+    if (!EFI_ERROR(gop_st) && gop && gop->Mode && gop->Mode->Info &&
             gop->Mode->FrameBufferBase != 0 &&
             gop->Mode->FrameBufferSize != 0 &&
             gop->Mode->Info->PixelFormat <= 2) {
@@ -1064,6 +1529,10 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts("[uefi] no usable linear framebuffer (serial-only)\n");
     }
 
+    /* Read the real linear scan-out FB phys from the closed display provider
+     * iface (pre-EBS); published to the kernel via the fb handoff below. */
+    read_provider_fb(gop);
+
     /* ---- firmware device tree: record it and extract /model ---- */
     uint64_t dtb_addr = 0, dtb_size = 0;
     char board_model[32] = {0};
@@ -1095,6 +1564,43 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     con_puts("[uefi] platform model: ");
     con_puts(board_model[0] ? board_model : "unknown (no DTB model)");
     con_puts("\n");
+    fdt_dump_display(dtb_addr);
+    fdt_dump_reserved(dtb_addr);
+
+    /* simplefb fallback: when GOP exposes no linear framebuffer, NVIDIA UEFI
+     * may hand off via a /simple-framebuffer DT node instead (the "simplefb"
+     * method).  Fill the same bootinfo fb fields so the kernel/bsp path is
+     * identical regardless of which handoff method the firmware chose. */
+    if (fb_addr == 0 && dtb_addr) {
+        simplefb_t sfb;
+        fdt_simplefb(dtb_addr, &sfb);
+        if (sfb.found) {
+            fb_addr = sfb.addr;
+            fb_w = sfb.width;
+            fb_h = sfb.height;
+            fb_bpp = sfb.bpp;
+            fb_format = sfb.format;
+            fb_pitch = sfb.stride ? sfb.stride :
+                    (uint64_t)sfb.width * (sfb.bpp / 8u);
+            con_puts("[uefi] simplefb adopted ");
+            con_dec(fb_w);
+            con_puts("x");
+            con_dec(fb_h);
+            con_puts(" bpp=");
+            con_dec(fb_bpp);
+            con_puts(" fmt=");
+            con_dec(fb_format);
+            con_puts(" pitch=");
+            con_dec(fb_pitch);
+            con_puts(" @");
+            con_hex(fb_addr);
+            con_puts(" size=");
+            con_hex(sfb.size);
+            con_puts("\n");
+        } else {
+            con_puts("[uefi] no simple-framebuffer DT node\n");
+        }
+    }
 
     /* The bootinfo page is written after EBS too.  It sits just below the
      * kernel window and is not covered by the kernel reservation, so claim
@@ -1194,6 +1700,83 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     uint64_t ram_size = memory_ram_size();
 
+    /* Precise linear FB handoff from the closed display provider: iface[+96]
+     * is the exact scan-out FB phys the Blt engine writes per-pixel (linear,
+     * confirmed in disasm).  This replaces the carveout-size guess below,
+     * which previously mis-picked the block-linear FBPT carveout. */
+    if (fb_addr == 0 && g_prov_fb_phys != 0 && g_prov_fb_w && g_prov_fb_h) {
+        fb_addr = g_prov_fb_phys;
+        fb_w = g_prov_fb_w;
+        fb_h = g_prov_fb_h;
+        fb_pitch = g_prov_fb_pitch ? g_prov_fb_pitch : (uint64_t)g_prov_fb_w * 4;
+        fb_bpp = 32;
+        fb_format = 1;   /* provider Blt buffer is B,G,R,X in memory */
+        con_puts("[uefi] fb from provider iface @");
+        con_hex(fb_addr);
+        con_puts(" ");
+        con_dec(fb_w);
+        con_puts("x");
+        con_dec(fb_h);
+        con_puts(" pitch=");
+        con_dec(fb_pitch);
+        con_puts(" (linear scan-out, precise)\n");
+    }
+
+    /* BltOnly GOP handoff: the firmware exposes no linear FB (FrameBufferBase
+     * =0) and no /simple-framebuffer node, but it scans out a hidden display
+     * carveout (Tegra234 CARVEOUT_DISP_EARLY_BOOT_FB, ~34 MB).  That carveout
+     * appears in the UEFI memory map as a reserved (type 0) region.  Select the
+     * reserved region sized 32..36 MiB as the FB candidate and hand its base to
+     * the kernel; fbprobe reads back the Blt-drawn bars to confirm the base.
+     * Geometry comes from the primary GOP mode.  Only the DTB/memory-map are
+     * read here -- never the carveout DRAM itself (a protected read hung the
+     * loader, which has no exception handler). */
+    if (fb_addr == 0 && gop_count > 0 && gop_list[0]->Mode &&
+            gop_list[0]->Mode->Info) {
+        EFI_GOP_MODE_INFO* info = gop_list[0]->Mode->Info;
+        uint32_t gw = info->HorizontalResolution;
+        uint32_t gh = info->VerticalResolution;
+        uint64_t gpitch = (uint64_t)info->PixelsPerScanLine * 4;
+        uint64_t best = 0, best_sz = 0;
+        /* CARVEOUT_DISP_EARLY_BOOT_FB is ~33 MiB.  Bound the candidate to a
+         * 32..40 MiB band: the previous "largest reserved region" rule wrongly
+         * picked a 64 MiB carveout (0x27c000000) that carries no DCDT header.
+         * The display early-FB carveout (0x25be90000, 0x2160000) sits in-band. */
+        uint64_t lo = 32ULL * 1024 * 1024;
+        uint64_t hi = 40ULL * 1024 * 1024;
+        uint32_t mc = (uint32_t)(g_memmap_size / g_memmap_dsize);
+        for (uint32_t i = 0; i < mc; i++) {
+            EFI_MEMORY_DESCRIPTOR* d = (EFI_MEMORY_DESCRIPTOR*)
+                ((uint8_t*)g_memmap + i * g_memmap_dsize);
+            uint64_t sz = d->NumberOfPages * EFI_PAGE_SIZE;
+            if (d->Type != 0 || sz < lo || sz > hi)
+                continue;
+            if (sz > best_sz) {
+                best_sz = sz;
+                best = d->PhysicalStart;
+            }
+        }
+        if (best != 0) {
+            fb_addr = best;
+            fb_w = gw;
+            fb_h = gh;
+            fb_pitch = gpitch;
+            fb_bpp = 32;
+            fb_format = 1;   /* GOP Blt buffer is B,G,R in memory */
+            con_puts("[uefi] fb carveout candidate @");
+            con_hex(fb_addr);
+            con_puts(" size=");
+            con_hex(best_sz);
+            con_puts(" ");
+            con_dec(fb_w);
+            con_puts("x");
+            con_dec(fb_h);
+            con_puts(" pitch=");
+            con_dec(fb_pitch);
+            con_puts(" (BltOnly handoff, verify via readback)\n");
+        }
+    }
+
     /* Copy the final memory map into the bootinfo page (physical memory). */
     orin_bootinfo_t* bi = (orin_bootinfo_t*)(uintptr_t)ORIN_BOOTINFO_PHYS;
     uint8_t* map_dst = (uint8_t*)(uintptr_t)(ORIN_BOOTINFO_PHYS + 0x1000);
@@ -1270,6 +1853,23 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     con_puts(" MB, resv ");
     con_dec(bi->resv_count);
     con_puts(" regions\n");
+    /* Diagnostic: dump every UEFI memory descriptor (type/start/size) so a
+     * firmware scan-out framebuffer carveout can be located when GOP exposes
+     * no linear FB.  type: 0=reserved 4=BSdata 6=RTdata 7=conventional
+     * 9=ACPIreclaim 10=ACPINVS 11=MMIO. */
+    for (uint32_t i = 0; i < count; i++) {
+        EFI_MEMORY_DESCRIPTOR* d =
+            (EFI_MEMORY_DESCRIPTOR*)((uint8_t*)g_memmap + i * g_memmap_dsize);
+        con_puts("[uefi] mm ");
+        con_dec(i);
+        con_puts(" t=");
+        con_dec(d->Type);
+        con_puts(" @");
+        con_hex(d->PhysicalStart);
+        con_puts(" +");
+        con_hex(d->NumberOfPages * EFI_PAGE_SIZE);
+        con_puts("\n");
+    }
 
     con_puts("[uefi] handoff trampoline @");
     con_hex(ORIN_KERNEL_PHYS + ORIN_TRAMP_OFF);
@@ -1281,6 +1881,11 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     cache_clean((void*)(uintptr_t)ORIN_BOOTINFO_PHYS, ORIN_BOOTINFO_SIZE);
     cache_clean((void*)(uintptr_t)rbuf, rsize);
     cache_sync_icache();
+
+    /* Display handoff: the kernel maps the provider's linear scan-out FB
+     * (read_provider_fb above) and writes pixels directly.  The loader never
+     * touches NVDisplay/DCE registers — they are CPU-firewalled on T234 and a
+     * pre-EBS read without the clock enable raises an SError and boot-loops. */
 
     /* ---- ExitBootServices; from here on only the MMU-off jump remains ---- */
     EFI_STATUS ebs_st = gBS->ExitBootServices(ImageHandle, g_memmap_key);

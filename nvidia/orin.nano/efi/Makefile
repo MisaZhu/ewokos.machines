@@ -52,6 +52,7 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/drivers/orin.nano/hid_moused \
 	$(SYSTEM_ROOT)/drivers/orin.nano/usbfat32fsd \
 	$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag \
+	$(SYSTEM_ROOT)/drivers/orin.nano/fbprobe \
 	$(SYSTEM_ROOT)/drivers/netd \
 	$(SYSTEM_ROOT)/drivers/timerd \
 	$(SYSTEM_ROOT)/drivers/piped $(SYSTEM_ROOT)/drivers/ramfsd \
@@ -64,6 +65,31 @@ DEBUG_TOOLS = mmio sysinfo svcinfo devcmd ps top dump elfinfo \
 	cat ls echo grep find head more wc df mount \
 	uname pwd rm mkdir cp kill killall sleep date clear vi md5sum test reboot
 SYSTEM_FILES += $(addprefix $(SYSTEM_ROOT)/bin/,$(DEBUG_TOOLS))
+
+# GUI=1 packs the framebuffer GUI: the display stack (displaymand/fbdisplayd/
+# fontd/consoled), the self-root GUI profile (/etc/init.rd, which init runs
+# straight from the RAMFS) and the font/splash assets.  Build the system with
+# `make gui` first.  Default 0 keeps the console-only bring-up image.
+GUI ?= 0
+ifeq ($(GUI),1)
+SYSTEM_FILES += \
+	$(SYSTEM_ROOT)/etc/init.rd \
+	$(SYSTEM_ROOT)/drivers/displaymand \
+	$(SYSTEM_ROOT)/drivers/fontd \
+	$(SYSTEM_ROOT)/drivers/consoled \
+	$(SYSTEM_ROOT)/drivers/orin.nano/fbdisplayd \
+	$(SYSTEM_ROOT)/usr/system/fonts/system.ttf \
+	$(SYSTEM_ROOT)/usr/system/fonts.json \
+	$(SYSTEM_ROOT)/usr/system/icons/64bits.png
+endif
+
+# X=1 packs the full xwin desktop: instead of the explicit bring-up file list,
+# the ENTIRE built rootfs (basic + usb + gui + xwin + assets) is staged, so
+# every desktop binary, theme, icon and font is present without enumerating
+# the xwin asset closure by hand.  Build the system with `make x` first.
+# Bulky app-only data Orin cannot use is trimmed (see the recipe).  X=1
+# supersedes GUI=1 (the whole rootfs already contains the GUI stack).
+X ?= 0
 
 CC = aarch64-none-elf-gcc
 LD = aarch64-none-elf-ld
@@ -98,6 +124,37 @@ $(KERNEL_IMAGE): FORCE
 	fi
 	cp -p "$(KERNEL_INPUT)" "$@"
 
+ifeq ($(X),1)
+# Full xwin desktop image: stage the whole built rootfs, then trim the bulky
+# app-only data Orin cannot use -- no audio (data/sounds, usr/system/sounds),
+# no books/games (data/), and the 10MB Chinese font system-cn.ttf (fontd loads
+# fonts lazily on request, so dropping it only affects clients that ask for
+# Chinese glyphs; the desktop uses the "system" font).  The ext3 image is sized
+# to the trimmed content + 8MB margin (journal + metadata).
+$(INITRAMFS_IMAGE): FORCE
+	@rm -rf "$(RAMFS_STAGING)"
+	@mkdir -p "$(RAMFS_STAGING)"
+	@cp -Rp "$(SYSTEM_ROOT)/." "$(RAMFS_STAGING)/"
+	@rm -rf "$(RAMFS_STAGING)/data" "$(RAMFS_STAGING)/usr/system/sounds"
+	@rm -f "$(RAMFS_STAGING)/usr/system/fonts/system-cn.ttf"
+	@mkdir -p "$(RAMFS_STAGING)/home/misa" "$(RAMFS_STAGING)/home/root"
+	# init.ramfs.rd is a machine etc SOURCE (not a build output), so the
+	# whole-rootfs cp above does not carry it.  It is the boot bootstrap
+	# (timerd/ramfsd/piped/nulld + USB HID + net) that init runs BEFORE the
+	# self-root UI profile -- without it the desktop has no timers, /tmp or
+	# keyboard/mouse.  Copy it explicitly, like the bring-up recipe does.
+	@cp -p "$(INIT_RAMFS_SOURCE)" "$(RAMFS_STAGING)/etc/init.ramfs.rd"
+	@sed -i '' -E 's/^[[:space:]]*rootfs[[:space:]]*=[[:space:]]*[A-Za-z]+.*/rootfs = self/' \
+		"$(RAMFS_STAGING)/etc/kernel/kernel.conf"
+	@grep -q '^rootfs = self' "$(RAMFS_STAGING)/etc/kernel/kernel.conf" || { \
+		echo "ERROR: failed to force rootfs=self in kernel.conf"; exit 1; }
+	@mb=$$(du -sm "$(RAMFS_STAGING)" | cut -f1); mb=$$((mb + 8)); \
+	 echo "==== staging full xwin rootfs ($${mb} MB) ===="; \
+	 dd if=/dev/zero of="$@" bs=1k count=$$((mb * 1024)); \
+	 mke2fs -t ext3 -b 4096 -I 128 -J size=4 "$@"; \
+	 cd "$(RAMFS_STAGING)" && find . -type f | e2cp -ap -G0 -O0 -d "$(abspath $@):$(empty)/"
+	@echo "==== $@ created (full xwin desktop rootfs) ===="
+else
 $(INITRAMFS_IMAGE): FORCE
 	@missing=0; for f in $(SYSTEM_FILES); do \
 		if [ ! -f "$$f" ]; then echo "ERROR: missing system output $$f"; missing=1; fi; \
@@ -143,15 +200,33 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/drivers/orin.nano/hid_moused" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/usbfat32fsd" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/fbprobe" \
 		"$(RAMFS_STAGING)/drivers/orin.nano/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/netd" \
 		"$(SYSTEM_ROOT)/drivers/timerd" \
 		"$(SYSTEM_ROOT)/drivers/piped" "$(SYSTEM_ROOT)/drivers/ramfsd" \
 		"$(SYSTEM_ROOT)/drivers/nulld" "$(RAMFS_STAGING)/drivers/"
+	@if [ "$(GUI)" = 1 ]; then \
+		mkdir -p "$(RAMFS_STAGING)/usr/system/fonts" \
+			"$(RAMFS_STAGING)/usr/system/icons"; \
+		cp -p "$(SYSTEM_ROOT)/etc/init.rd" "$(RAMFS_STAGING)/etc/"; \
+		cp -p "$(SYSTEM_ROOT)/drivers/displaymand" \
+			"$(SYSTEM_ROOT)/drivers/fontd" \
+			"$(SYSTEM_ROOT)/drivers/consoled" "$(RAMFS_STAGING)/drivers/"; \
+		cp -p "$(SYSTEM_ROOT)/drivers/orin.nano/fbdisplayd" \
+			"$(RAMFS_STAGING)/drivers/orin.nano/"; \
+		cp -p "$(SYSTEM_ROOT)/usr/system/fonts/system.ttf" \
+			"$(RAMFS_STAGING)/usr/system/fonts/"; \
+		cp -p "$(SYSTEM_ROOT)/usr/system/fonts.json" \
+			"$(RAMFS_STAGING)/usr/system/"; \
+		cp -p "$(SYSTEM_ROOT)/usr/system/icons/64bits.png" \
+			"$(RAMFS_STAGING)/usr/system/icons/"; \
+	fi
 	@dd if=/dev/zero of="$@" bs=1k count=$$(expr $(INITRAMFS_MB) \* 1024)
 	@mke2fs -t ext3 -b 4096 -I 128 -J size=4 "$@"
 	@cd "$(RAMFS_STAGING)" && find . -type f | e2cp -ap -G0 -O0 -d "$(abspath $@):$(empty)/"
 	@echo "==== $@ created from prebuilt kernel/system outputs ===="
+endif
 
 $(LOADER_EFI): $(LOADER_ELF) mkpefi.py
 	python3 mkpefi.py $(LOADER_ELF) $(LOADER_EFI) 10

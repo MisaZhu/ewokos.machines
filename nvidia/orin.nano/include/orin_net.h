@@ -49,6 +49,30 @@
 #define ORIN_HSP_MASTER_BPMP    19u   /* CCPLEX PENDING/ENABLE bit for BPMP */
 #define ORIN_HSP_INT_DIMENSIONING 0x380u
 
+/* Tegra234 NVDisplay (NISO display@13800000).  The register map is SPARSE:
+ * FE +0 reads cleanly but +4 is a register HOLE (decode SError), NOT a bus
+ * firewall -- known-valid FE offsets (0x2200 CMGR, 0x30000 SW_SYS_CAP) read
+ * fine with the panel already active.  Span 0x700000 covers the FE block plus
+ * the NV_PDISP head/window region (0x610000..0x6f1fff).  Window assembly block
+ * = 0x690000 + win*0x400 (offsets RE'd from nvgop-chips-platform.efi).  Only
+ * firmware-validated offsets may be probed -- blind reads of holes = SError. */
+#define ORIN_NVDISPLAY_PHY      0x13800000ULL
+#define ORIN_NVDISPLAY_SIZE     0x00700000ULL
+/* DCE (Display Control Engine) aperture, dt-bindings: dce@d800000 0x800000.
+ * T234 modeset is DCE-mediated; probe to confirm the closed GOP register base. */
+#define ORIN_DCE_PHY            0x0d800000ULL
+#define ORIN_DCE_SIZE           0x00800000ULL
+/* BPMP clock IDs (dt-bindings/clock/tegra234-clock.h). */
+#define ORIN_DISP_CLK_HUB       84u   /* NVDISPLAYHUB */
+#define ORIN_DISP_CLK_DISP      85u   /* DISPCLK */
+#define ORIN_DISP_CLK_P0        86u   /* NVDISPLAY_P0 (head0 RG) */
+#define ORIN_DISP_CLK_P1        87u   /* NVDISPLAY_P1 (head1 RG) */
+#define ORIN_DISP_CLK_DSC       88u   /* DSC */
+/* BPMP reset ID (dt-bindings/reset/tegra234-reset.h). */
+#define ORIN_DISP_RESET         16u   /* NVDISPLAY */
+/* BPMP power domain (dt-bindings/power/tegra234-powergate.h). */
+#define ORIN_DISP_PG            3u    /* DISP */
+
 /* BPMP IVC shared SRAM (sysram@40000000); map non-cacheable. */
 #define ORIN_BPMP_TX_PHY        0x40070000ULL
 #define ORIN_BPMP_RX_PHY        0x40071000ULL

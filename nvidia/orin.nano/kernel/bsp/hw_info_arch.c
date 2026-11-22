@@ -425,6 +425,19 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
             phy_top <= ORIN_BPMP_RX_PHY + ORIN_BPMP_SRAM_SIZE)
         return 0;
 
+    /* NVDisplay register block (full-stack display path).  User space enables
+     * the display clocks via BPMP, then programs head/window registers. */
+    if (phy_base >= ORIN_NVDISPLAY_PHY &&
+            phy_top <= ORIN_NVDISPLAY_PHY + ORIN_NVDISPLAY_SIZE)
+        return 0;
+
+    /* DCE (Display Control Engine) aperture.  T234 modeset is DCE-mediated;
+     * the closed GOP reads head/window regs relative to this base.  Read-only
+     * probe to confirm the GOP register base. */
+    if (phy_base >= ORIN_DCE_PHY &&
+            phy_top <= ORIN_DCE_PHY + ORIN_DCE_SIZE)
+        return 0;
+
     /* PCIe C1 (M.2 Key-E) RC windows + ECAM enumeration sub-range. */
     if (phy_base >= ORIN_PCIE_C1_APPL_PHY &&
             phy_top <= ORIN_PCIE_C1_APPL_PHY + 0x20000)

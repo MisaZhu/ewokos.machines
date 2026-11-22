@@ -555,9 +555,15 @@ typedef EFI_STATUS (*EFI_GOP_BLT)(EFI_GRAPHICS_OUTPUT_PROTOCOL* This,
                                   UINTN DestinationX, UINTN DestinationY,
                                   UINTN Width, UINTN Height, UINTN Delta);
 
+typedef EFI_STATUS (*EFI_GOP_QUERY_MODE)(EFI_GRAPHICS_OUTPUT_PROTOCOL* This,
+                                         uint32_t ModeNumber, UINTN* SizeOfInfo,
+                                         EFI_GOP_MODE_INFO** Info);
+typedef EFI_STATUS (*EFI_GOP_SET_MODE)(EFI_GRAPHICS_OUTPUT_PROTOCOL* This,
+                                       uint32_t ModeNumber);
+
 struct EFI_GRAPHICS_OUTPUT_PROTOCOL_ {
-    void* QueryMode;
-    void* SetMode;
+    EFI_GOP_QUERY_MODE QueryMode;
+    EFI_GOP_SET_MODE SetMode;
     EFI_GOP_BLT Blt;
     EFI_GOP_MODE* Mode;
 };
