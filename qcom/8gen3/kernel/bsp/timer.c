@@ -3,6 +3,7 @@
 #include <kernel/kernel.h>
 #include <mm/mmu.h>
 #include "hw_arch.h"
+#include "cpu_sleep.h"
 #include <q8b_counter_usec.h>
 
 /*
@@ -63,6 +64,10 @@ void timer_init(void) {
 void timer_clear_interrupt(uint32_t id) {
     (void)id;
     write_cntv_tval(_cntv_step);
+#ifdef KERNEL_SMP
+    /* Core-0 tick, kernel lock held. */
+    q8b_cpu_sleep_tick();
+#endif
 }
 
 void timer_set_interval(uint32_t id, uint32_t times_per_sec) {

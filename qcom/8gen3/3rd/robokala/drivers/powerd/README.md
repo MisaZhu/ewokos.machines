@@ -38,20 +38,26 @@ the tick and the polled wake sources while the screen is dark.
 Sleep parks each subsystem best-effort, in order: `/dev/x` (compositor
 pause), `/dev/disp0` (DSI sleep-in), `/dev/g2d` (GPU), `/dev/wl0` (Wi-Fi
 STA power-save, link kept), `/dev/touch0` (rails off), and LAST the
-kernel secondary-core gate — every IPC leg has completed before any core
-is allowed to power down.
+kernel secondary-core gate — it opens once the fan-out has gone quiet.
 
-- **CPU**: cores 1..7 park via PSCI CPU_SUSPEND (aff0 power-down) while
-  asleep; core 0 never suspends.  Armed BY DEFAULT.  `cpusleep off` is
-  the escape hatch (disarms + kicks every parked core back to plain WFI
-  idle); `cpusleep on` re-arms.  Wake reliability is three-layered:
-  1. the disable gate kicks every secondary core (IPI) BEFORE any wake
-     IPC goes out;
-  2. a wake leg that hits the 10 s IPC timeout is re-kicked and retried
-     once;
-  3. after wake the kernel resume mask (`Q8B_NPU_CPU_SLEEP_STATS`) must
-     cover all secondaries (`0xfe`); a hole triggers another kick and is
-     logged as `MISSING=0x..` in the trace.
+- **CPU**: on by default.  While the board is asleep, cores 1..7 power
+  down via PSCI CPU_SUSPEND (core-level state `0x40000004`, the one
+  Linux's cpuidle uses on this board) whenever they are idle.
+  `cpusleep off` disarms it until `cpusleep on` or the next boot, leaving
+  every core in plain WFI idle.  A powered-down core wakes on the same
+  interrupts as a core in WFI, so nothing else about sleep/wake changes;
+  core 0 never suspends and keeps the tick and the polled key/lid.
+  - The kernel resumes a core on the kernel page table (the only one that
+    identity-maps the resume trampoline) and then switches back to the
+    table the core was idling on.  The earlier version resumed on the idle
+    process's own table, which has no such mapping, so a core that really
+    powered down could not come back.
+  - `status` shows `cpu_resumed=`, the mask of cores that have completed
+    at least one real power-down/resume cycle since boot (`0xfe` = all
+    seven secondaries).
+  - On wake the gate closes first (the kernel IPIs every secondary), a
+    wake leg that hits the 10 s IPC timeout is re-kicked and retried once,
+    and a core still down after the fan-out is re-kicked.
 - **GPU**: `sleep` to `/dev/g2d` quiesces the CP ring, drops the DCVS
   vote to the lowest perf level over the GMU HFI channel (the firmware
   lowers its DDR/LLC/GFX RPMh votes to match) and enables inter-frame
@@ -61,10 +67,6 @@ is allowed to power down.
   selftest; a failed selftest latches the GPU wedged (fail-fast, clients
   stay on CPU until reboot).  The GMU itself stays resident on CX — no
   power-domain reset is involved.
-
-Every transition is traced to `/tmp/powerd.log` (survives reboot) with
-per-leg timings and the final `cpu_resumed` mask; `dev.cmd /dev/power0
-trace` shows the last one.
 
 ## Battery: hardware paths (verified on device)
 
@@ -208,12 +210,12 @@ PMIC the battery protocol reports [0,0,0], which hides the widget.
 ## Commands and bring-up verification
 
 ```
-dev.cmd /dev/power0 status    # battery line + key= lid= sleeping=
+dev.cmd /dev/power0 status    # battery line + key= lid= sleeping= cpu_resumed=
 dev.cmd /dev/power0 help
 dev.cmd /dev/power0 reboot    # root only: PSCI SYSTEM_RESET
 dev.cmd /dev/power0 shutdown  # root only: PSCI SYSTEM_OFF
-dev.cmd /dev/power0 cpusleep off  # root only: disarm PSCI suspend (WFI idle)
-dev.cmd /dev/power0 trace     # last sleep/wake transition (also /tmp/powerd.log)
+dev.cmd /dev/power0 cpusleep off # root only: disarm core power-down (WFI idle) until re-armed or reboot
+dev.cmd /dev/power0 cpusleep on  # root only: re-arm (the default)
 dev.cmd /dev/power0 sleep     # root only: manual full sleep cycle (key/lid path)
 dev.cmd /dev/power0 wake      # root only: manual full wake cycle
 dev.cmd /dev/power0 gpusleep  # root only: GPU-only hint (no display/CPU fan-out)
