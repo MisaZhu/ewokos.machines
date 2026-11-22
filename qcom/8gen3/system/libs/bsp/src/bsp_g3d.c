@@ -332,16 +332,20 @@ int32_t bsp_g3d_program_free(int32_t handle) {
 }
 
 /* Sleep/wake power hint from g2dd's dev.cmd (powerd fan-out).  sleep=1
+   quiesces the ring, drops the DCVS vote to the lowest perf level and
    enables GMU inter-frame power collapse so the GX rail drops while the
-   compositor is paused; sleep=0 restores the ACTIVE config.  Declines -2
-   when the Adreno datapath never came up (not opted in / bring-up failed),
-   so machines without the GPU and un-probed boards are unaffected.  This
-   is the only bsp_g3d entry not mirrored on the other machines: g2dd
-   references it through a weak symbol. */
+   compositor is paused; sleep=0 restores the boot vote + ACTIVE config and
+   re-runs the datapath selftest (a failure latches the GPU wedged).  While
+   asleep, submissions decline before touching the GPU so clients replay on
+   the CPU.  Declines -2 when the Adreno datapath never came up (not opted
+   in / bring-up failed), so machines without the GPU and un-probed boards
+   are unaffected.  This is the only bsp_g3d entry not mirrored on the other
+   machines: g2dd references it through a weak symbol. */
 int32_t bsp_g3d_sleep(int32_t sleep) {
 	if (g3d_probe() != 1)
 		return G2D_ERR_NOT_SUPPORTED;
-	uint32_t ctrl = adreno_gmu_ifpc_set(sleep ? 1 : 0);
-	slog("q8b g3d: IFPC %s (ctrl=0x%08x)\n", sleep ? "on" : "off", ctrl);
-	return G2D_OK;
+	int rc = sleep ? adreno_gpu_pm_sleep(adreno_dev())
+	               : adreno_gpu_pm_wake(adreno_dev());
+	slog("q8b g3d: GPU %s (rc=%d)\n", sleep ? "sleep" : "wake", rc);
+	return rc == 0 ? G2D_OK : G2D_ERR_FAILED;
 }

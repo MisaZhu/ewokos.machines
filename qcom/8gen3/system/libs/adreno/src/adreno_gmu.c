@@ -455,6 +455,22 @@ static int hfi_send_gx_bw_perf_vote(uint32_t freq_index, uint32_t bw_index) {
 	return hfi_send_msg(HFI_H2F_MSG_GX_BW_PERF_VOTE, &msg, sizeof(msg), 0, 0);
 }
 
+/* Sleep/wake DCVS votes (powerd fan-out via adreno_gpu_pm_*).  Same blocking
+   HFI message as the boot vote, only the perf-table index differs: level 0
+   is the lowest GX corner (freq 0 / vote 0 in hfi_send_perf_table), which is
+   what Linux devfreq votes when idle - the GMU firmware then lowers its own
+   DDR/LLC/GFX RPMh votes to match.  restore re-issues the exact boot vote.
+   The host-side interconnect/SCM votes are deliberately kept: the GMU stays
+   resident on CX and fetching from DRAM, so collapsing its NoC path while it
+   is alive is not a valid power state here. */
+int adreno_gmu_perf_low(void) {
+	return hfi_send_gx_bw_perf_vote(0, 0);
+}
+
+int adreno_gmu_perf_restore(void) {
+	return hfi_send_gx_bw_perf_vote(HFI_INITIAL_PERF_INDEX, 0);
+}
+
 /* a6xx_hfi_start() non-legacy path. */
 static int hfi_start_msgs(void) {
 	int ret;

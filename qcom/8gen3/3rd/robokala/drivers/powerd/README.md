@@ -30,8 +30,41 @@ The key and the lid are polled on a 50 ms tick, the battery once per
 second on the same tick, independently of xserverd, so they always wake
 the screen again.  Sleep is panel-off + paused compositor/input
 (`sleep`/`wake` dev commands to `/dev/x`), NOT suspend-to-RAM: this WoA
-firmware exposes no PSCI SYSTEM_SUSPEND door, so the SoC keeps running
-while the screen is dark.
+firmware exposes no PSCI SYSTEM_SUSPEND door, so core 0 keeps running
+the tick and the polled wake sources while the screen is dark.
+
+## Sleep fan-out: CPU and GPU power-down
+
+Sleep parks each subsystem best-effort, in order: `/dev/x` (compositor
+pause), `/dev/disp0` (DSI sleep-in), `/dev/g2d` (GPU), `/dev/wl0` (Wi-Fi
+STA power-save, link kept), `/dev/touch0` (rails off), and LAST the
+kernel secondary-core gate — every IPC leg has completed before any core
+is allowed to power down.
+
+- **CPU**: cores 1..7 park via PSCI CPU_SUSPEND (aff0 power-down) while
+  asleep; core 0 never suspends.  Armed BY DEFAULT.  `cpusleep off` is
+  the escape hatch (disarms + kicks every parked core back to plain WFI
+  idle); `cpusleep on` re-arms.  Wake reliability is three-layered:
+  1. the disable gate kicks every secondary core (IPI) BEFORE any wake
+     IPC goes out;
+  2. a wake leg that hits the 10 s IPC timeout is re-kicked and retried
+     once;
+  3. after wake the kernel resume mask (`Q8B_NPU_CPU_SLEEP_STATS`) must
+     cover all secondaries (`0xfe`); a hole triggers another kick and is
+     logged as `MISSING=0x..` in the trace.
+- **GPU**: `sleep` to `/dev/g2d` quiesces the CP ring, drops the DCVS
+  vote to the lowest perf level over the GMU HFI channel (the firmware
+  lowers its DDR/LLC/GFX RPMh votes to match) and enables inter-frame
+  power collapse so the GX rail drops.  While asleep, GPU submissions
+  decline before touching the hardware and clients replay on the CPU.
+  `wake` restores the boot vote, clears IFPC and re-runs the datapath
+  selftest; a failed selftest latches the GPU wedged (fail-fast, clients
+  stay on CPU until reboot).  The GMU itself stays resident on CX — no
+  power-domain reset is involved.
+
+Every transition is traced to `/tmp/powerd.log` (survives reboot) with
+per-leg timings and the final `cpu_resumed` mask; `dev.cmd /dev/power0
+trace` shows the last one.
 
 ## Battery: hardware paths (verified on device)
 
@@ -179,6 +212,12 @@ dev.cmd /dev/power0 status    # battery line + key= lid= sleeping=
 dev.cmd /dev/power0 help
 dev.cmd /dev/power0 reboot    # root only: PSCI SYSTEM_RESET
 dev.cmd /dev/power0 shutdown  # root only: PSCI SYSTEM_OFF
+dev.cmd /dev/power0 cpusleep off  # root only: disarm PSCI suspend (WFI idle)
+dev.cmd /dev/power0 trace     # last sleep/wake transition (also /tmp/powerd.log)
+dev.cmd /dev/power0 sleep     # root only: manual full sleep cycle (key/lid path)
+dev.cmd /dev/power0 wake      # root only: manual full wake cycle
+dev.cmd /dev/power0 gpusleep  # root only: GPU-only hint (no display/CPU fan-out)
+dev.cmd /dev/power0 gpuwake   # root only: GPU-only wake + selftest
 /drivers/robokala/powerd --dump     # SPMI map summary (read-only)
 /drivers/robokala/powerd --probe    # + observer-read sweep
 /drivers/robokala/powerd --sample   # + one live battery sample

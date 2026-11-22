@@ -234,6 +234,39 @@ int adreno_wedged(void) {
 	return adreno_dev()->wedged;
 }
 
+void adreno_mark_wedged(const char *why) {
+	ring_mark_wedged(adreno_dev(), why);
+}
+
+static int ring_wait_drained(adreno_dev_t *d);
+
+/* PM submission isolation (powerd sleep/wake fan-out, see adreno_gpu_pm_*).
+   The drain check runs under the submit lock, so no submission can be in
+   flight from this process; a ring that still will not drain means an
+   earlier job is stuck - decline without touching any power state. */
+int adreno_ring_pm_enter(adreno_dev_t *d) {
+	int rc = 0;
+	pthread_mutex_lock(&g_submit_lock);
+	if (d->wedged || !d->cp_ready)
+		rc = ADRENO_E_DECLINED;
+	else if (ring_wait_drained(d) != 0) {
+		slog("adreno_ring: PM sleep declined, ring not drained "
+		     "(shadow=%08x wptr=%08x)\n",
+		     ((volatile uint32_t *)d->rptr_shadow.va)[0], d->ring.wptr);
+		rc = ADRENO_E_DECLINED;
+	}
+	else
+		d->gpu_sleeping = 1;
+	pthread_mutex_unlock(&g_submit_lock);
+	return rc;
+}
+
+void adreno_ring_pm_exit(adreno_dev_t *d) {
+	pthread_mutex_lock(&g_submit_lock);
+	d->gpu_sleeping = 0;
+	pthread_mutex_unlock(&g_submit_lock);
+}
+
 /* --- ring emit (OUT_RING / OUT_PKT7 equivalents) --- */
 static uint32_t get_wptr(adreno_ring_t *ring) {
 	return ring->wptr & (ring->sizedwords - 1);
@@ -571,6 +604,13 @@ int adreno_ring_submit(adreno_dev_t *d, const uint32_t *cmds, uint32_t dwords) {
 
 	if (d->wedged) {
 		rc = ADRENO_E_WEDGED;
+		goto out;
+	}
+	/* PM hint active (powerd sleep): nothing may reach the GPU while the
+	   DCVS vote is at level 0 and IFPC is collapsing GX.  Declined before
+	   any GPU write, so the client's CPU replay is safe. */
+	if (d->gpu_sleeping) {
+		rc = ADRENO_E_DECLINED;
 		goto out;
 	}
 	if (!d->cp_ready || !ring->ib.va) {

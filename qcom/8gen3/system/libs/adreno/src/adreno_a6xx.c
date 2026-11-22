@@ -503,6 +503,70 @@ adreno_dev_t* adreno_dev(void) {
 	return &g_dev;
 }
 
+/* ------------------------------------------------------------------ */
+/* Sleep/wake PM hint (powerd fan-out -> g2dd dev.cmd -> bsp_g3d_sleep). */
+/*                                                                     */
+/* sleep: quiesce the ring, drop the DCVS vote to perf-table level 0   */
+/* (the GMU firmware lowers its DDR/LLC/GFX votes to match), then let  */
+/* IFPC collapse GX between frames.  wake: restore the exact boot      */
+/* vote, clear IFPC back to the ACTIVE config, and prove the datapath  */
+/* with the same CP_MEM_WRITE selftest bring-up uses.  GX restore on   */
+/* that submit is GMU-firmware-autonomous; a failed selftest latches   */
+/* the device wedged like any other post-submit failure (fail-fast,    */
+/* no validated a6xx reset sequence exists in this port).              */
+/* ------------------------------------------------------------------ */
+int adreno_gpu_pm_sleep(adreno_dev_t *d) {
+	int ret;
+
+	if (!d->gpu_ready || d->wedged)
+		return ADRENO_E_DECLINED;
+	if (d->gpu_sleeping)
+		return ADRENO_OK;
+
+	ret = adreno_ring_pm_enter(d);
+	if (ret != 0)
+		return ret;
+
+	ret = adreno_gmu_perf_low();
+	if (ret != 0) {
+		slog("adreno_a6xx: PM sleep DCVS low vote failed (%d)\n", ret);
+		adreno_ring_pm_exit(d);
+		return ADRENO_E_DECLINED;
+	}
+	adreno_gmu_ifpc_set(1);
+	return ADRENO_OK;
+}
+
+int adreno_gpu_pm_wake(adreno_dev_t *d) {
+	int ret;
+
+	if (!d->gpu_ready || d->wedged)
+		return ADRENO_E_DECLINED;
+	if (!d->gpu_sleeping)
+		return ADRENO_OK;
+
+	ret = adreno_gmu_perf_restore();
+	if (ret != 0) {
+		/* Stay asleep (submits keep declining, CPU replay stays safe);
+		   a later wake command can retry the vote. */
+		slog("adreno_a6xx: PM wake DCVS restore failed (%d)\n", ret);
+		return ADRENO_E_DECLINED;
+	}
+	adreno_gmu_ifpc_set(0);
+	adreno_ring_pm_exit(d);
+
+	ret = a6xx_selftest(d);
+	if (ret != 0) {
+		slog("adreno_a6xx: PM wake selftest failed (%d) - declining GPU path\n",
+		     ret);
+		d->gpu_ready = 0;
+		adreno_gmu_gpu_clear();
+		adreno_mark_wedged("PM wake selftest failed");
+		return ret;
+	}
+	return ADRENO_OK;
+}
+
 /* CP_RB_CNTL default (see adreno_ring.c): BUFSZ(12) | BLKSZ(2) = 0x20c.
    A690 is hw_apriv so NO_UPDATE stays clear. */
 #define A6XX_CP_RB_CNTL_DEFAULT  0x0000020cu

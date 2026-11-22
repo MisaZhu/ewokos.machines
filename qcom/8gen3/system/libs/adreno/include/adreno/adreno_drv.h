@@ -75,6 +75,8 @@ typedef struct {
 	int      cp_ready;
 	int      wedged;          /* a submitted job never retired / faulted:
 	                             every later submit declines instantly   */
+	int      gpu_sleeping;    /* PM hint active: submits decline (nothing
+	                             reached the GPU, CPU replay is safe)    */
 	adreno_ring_t ring;
 	adreno_bo_t rptr_shadow;  /* privileged HW-written RB read pointer */
 
@@ -135,6 +137,24 @@ void adreno_gmu_gpu_clear(void);
    lets the GMU collapse GX between frames; enable=0 restores the ACTIVE
    config.  Returns the PWR_COL_INTER_FRAME_CTRL value written. */
 uint32_t adreno_gmu_ifpc_set(int enable);
+/* DCVS performance vote over the same blocking HFI channel the boot vote
+   uses (a6xx_hfi_set_freq).  perf_low selects perf-table level 0 (the lowest
+   GX corner; the GMU firmware lowers its DDR/LLC/GFX RPMh votes to match,
+   Linux devfreq's idle vote); perf_restore re-issues the exact boot vote
+   (HFI_INITIAL_PERF_INDEX).  Return 0 on firmware ack, negative on HFI
+   timeout/error.  Only valid while the GMU is booted. */
+int adreno_gmu_perf_low(void);
+int adreno_gmu_perf_restore(void);
+/* Whole-device PM hint orchestration (adreno_a6xx.c), driven by powerd's
+   sleep/wake fan-out through bsp_g3d_sleep.  sleep: quiesce the ring, drop
+   the DCVS vote to level 0, enable IFPC.  wake: restore the boot vote,
+   disable IFPC, re-run the datapath selftest; a failed selftest latches the
+   device wedged (fail-fast, no speculative reset).  Both decline
+   (ADRENO_E_DECLINED) when the GPU never came up or is already wedged.
+   While asleep every adreno_ring_submit declines before touching the GPU,
+   so clients replay on the CPU per the shared result contract. */
+int adreno_gpu_pm_sleep(adreno_dev_t *d);
+int adreno_gpu_pm_wake(adreno_dev_t *d);
 int adreno_ring_init(adreno_dev_t *d);
 /* Program the CP engine onto the ring allocated by adreno_ring_init() and run
    the a6xx_cp_init() CP_ME_INIT handshake.  Must run AFTER adreno_a6xx.c has
@@ -172,6 +192,17 @@ int adreno_ring_tracing(void);
 int adreno_ring_cmd(int argc, char **argv, char *buf, uint32_t len);
 /* Non-zero once a submitted job failed to retire or faulted (sticky). */
 int adreno_wedged(void);
+/* Latch the device wedged from outside the ring (PM wake selftest failure).
+   Same fail-fast contract as an internal submission failure: logged once,
+   every later submit declines. */
+void adreno_mark_wedged(const char *why);
+/* PM submission isolation (adreno_ring.c).  pm_enter takes the submit lock,
+   verifies the ring has drained (an in-flight job means the GPU is busy or
+   stuck - decline without touching any power state) and sets gpu_sleeping;
+   pm_exit clears it.  While set, adreno_ring_submit returns
+   ADRENO_E_DECLINED before any GPU write. */
+int adreno_ring_pm_enter(adreno_dev_t *d);
+void adreno_ring_pm_exit(adreno_dev_t *d);
 
 /* Top-level 2D / 3D entry points consumed by bsp_g2d.c / bsp_g3d.c. */
 int adreno_2d_init(void);

@@ -86,14 +86,14 @@ static bool _key_ignore;
 static uint64_t _key_down_ms;
 static bool _sleeping;
 static bool _cpu_sleep;   /* kernel secondary-core PSCI CPU_SUSPEND gate */
-/* PSCI secondary-core power-down is OPT-IN.  powerd polls the hall sensor
- * and the power key (register reads, not interrupts), so a core parked in
- * CPU_SUSPEND has no lid-open IRQ to wake it: the wake fan-out can deadlock
- * (screen lit, input dead, no wake trace).  The sleep fan-out therefore
- * leaves cores online (WFI idle) unless the operator explicitly arms suspend
- * with `cpusleep on`.  The flag persists across lid cycles so `cpusleep off`
- * stays disarmed until explicitly re-armed, not re-overridden by each sleep. */
-static bool _cpu_sleep_armed;
+/* PSCI secondary-core power-down is armed BY DEFAULT: the wake fan-out is
+ * deadlock-proof (the kernel kick in cpu_sleep(false) runs before any wake
+ * IPC, a timed-out leg is kicked and retried once, and the resume mask is
+ * verified after every wake).  `cpusleep off` remains the escape hatch: it
+ * disarms suspend and kicks every parked core back to plain WFI idle.  The
+ * flag persists across lid cycles so `cpusleep off` stays disarmed until
+ * explicitly re-armed, not re-overridden by each sleep. */
+static bool _cpu_sleep_armed = true;
 
 /* Lid (hall sensor) state machine.  _lid_closed is the last debounced
  * state; a level that differs from it must persist for LID_DEBOUNCE_MS
@@ -155,19 +155,20 @@ static void power_trace_flush(void) {
     close(fd);
 }
 
-static void power_send_cmd(const char* node, const char* cmd, const char* why) {
+static int power_send_cmd(const char* node, const char* cmd, const char* why) {
     uint64_t t0 = kernel_tic_ms(0);
     char* ret = dev_cmd(node, cmd);
     unsigned ms = (unsigned)(kernel_tic_ms(0) - t0);
     if (ret == NULL) {
         power_trace("%s %s: no reply from %s (%u ms)\n", why, cmd, node, ms);
-        return;
+        return 0;
     }
     size_t len = strlen(ret);
     while (len > 0 && (ret[len - 1] == '\n' || ret[len - 1] == '\r'))
         ret[--len] = '\0';
     power_trace("%s %s %s: %u ms (%s)\n", why, cmd, node, ms, ret);
     free(ret);
+    return 1;
 }
 
 static void power_cpu_sleep(bool sleep, const char* why) {
@@ -178,8 +179,32 @@ static void power_cpu_sleep(bool sleep, const char* why) {
             (unsigned long long)ret);
 }
 
+/* Re-issue the disable gate without touching _cpu_sleep: the kernel side
+ * kicks every secondary core out of PSCI power-down (IPI), which is the
+ * recovery move for a wake leg that timed out or a resume mask with holes. */
+static void power_cpu_kick(const char* why) {
+    uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_CPU_SLEEP, 0, 0);
+    power_trace("%s cpu kick rc=%llu\n", why, (unsigned long long)ret);
+}
+
+/* Wake-only leg: a NULL reply means the 10 s kernel IPC timeout expired,
+ * which on a parked-core board points at a missed wake edge.  Kick every
+ * core again and retry the leg ONCE; a second failure is logged and the
+ * remaining legs still run (best-effort, one slow node cannot wedge wake). */
+static void power_send_cmd_wake(const char* node, const char* why) {
+    if (power_send_cmd(node, "wake", why))
+        return;
+    power_cpu_kick(why);
+    power_send_cmd(node, "wake", why);
+}
+
+/* SC8280XP has 8 cores; core 0 never suspends, so after a sleep cycle with
+ * parked secondaries the kernel resume mask must cover bits 1..7. */
+#define POWER_CPU_RESUME_EXPECTED 0xfeu
+
 static void power_set_sleep(bool sleep, const char* why) {
     const char* cmd = sleep ? "sleep" : "wake";
+    bool parked = false;
 
     if (sleep == _sleeping)
         return;
@@ -192,8 +217,9 @@ static void power_set_sleep(bool sleep, const char* why) {
         power_send_cmd("/dev/g2d", cmd, why);
         power_send_cmd("/dev/wl0", cmd, why);
         power_send_cmd("/dev/touch0", cmd, why);
-        /* Only park secondary cores when explicitly armed; otherwise the
-         * polled lid/key wake path can deadlock on a parked core. */
+        /* Park secondary cores LAST: every IPC leg above has completed, so
+         * no daemon is left waiting on a core that is about to power down.
+         * Disarmed (`cpusleep off`) leaves them in plain WFI idle. */
         if (_cpu_sleep_armed)
             power_cpu_sleep(true, why);
     } else {
@@ -201,22 +227,38 @@ static void power_set_sleep(bool sleep, const char* why) {
          * legs the user sees, so they must never queue behind a slow
          * subsystem (every dev_cmd is a blocking IPC with a 10 s kernel
          * timeout).  cpu_sleep(false) also kicks every parked secondary
-         * core awake in the kernel, so the fan-out IPCs below reach running
-         * cores.  The GPU IFPC bit is cleared after the first repaint: GX
-         * restore on that submit is GMU-firmware-autonomous by design. */
+         * core awake in the kernel BEFORE any wake IPC goes out; each leg
+         * additionally retries once after a re-kick if it times out.  The
+         * GPU wake restores the DCVS vote and proves the datapath with a
+         * selftest inside g2dd. */
+        parked = _cpu_sleep;
         if (_cpu_sleep)
             power_cpu_sleep(false, why);
-        power_send_cmd("/dev/disp0", cmd, why);
-        power_send_cmd("/dev/x", cmd, why);
-        power_send_cmd("/dev/g2d", cmd, why);
-        power_send_cmd("/dev/touch0", cmd, why);
-        power_send_cmd("/dev/wl0", cmd, why);
+        power_send_cmd_wake("/dev/disp0", why);
+        power_send_cmd_wake("/dev/x", why);
+        power_send_cmd_wake("/dev/g2d", why);
+        power_send_cmd_wake("/dev/touch0", why);
+        power_send_cmd_wake("/dev/wl0", why);
     }
     _sleeping = sleep;
     /* Record the kernel resume mask, then persist the whole transition.
      * Done last so the display is already lit before any disk write. */
     uint64_t resumed = syscall3(SYS_PLATFORM_CTL,
             Q8B_NPU_CPU_SLEEP_STATS, 0, 0);
+    /* After a parked sleep, every secondary core must have completed a
+     * suspend/resume cycle.  A hole means a core never came back (or never
+     * parked because it stayed busy): re-kick and re-read so the trace
+     * shows the final state.  >0xff = op unsupported (non-SMP kernel). */
+    if (!sleep && parked && resumed <= 0xffu) {
+        unsigned missing = POWER_CPU_RESUME_EXPECTED & ~(unsigned)resumed;
+        if (missing != 0) {
+            power_trace("wake cpu_resumed=0x%02x MISSING=0x%02x - re-kick\n",
+                    (unsigned)resumed, missing);
+            power_cpu_kick(why);
+            resumed = syscall3(SYS_PLATFORM_CTL,
+                    Q8B_NPU_CPU_SLEEP_STATS, 0, 0);
+        }
+    }
     power_trace("done sleeping=%d cpu_resumed=0x%02x (t=%llu ms)\n",
             sleep ? 1 : 0, (unsigned)(resumed & 0xffu),
             (unsigned long long)kernel_tic_ms(0));
@@ -355,8 +397,11 @@ static char* power_help(void) {
         "  status    re-sample and show battery + key / lid / sleep state\n"
         "  reboot    request PSCI SYSTEM_RESET (root only)\n"
         "  shutdown  request PSCI SYSTEM_OFF (root only)\n"
-        "  cpusleep on|off  arm+gate kernel secondary-core PSCI suspend (root)\n"
+        "  cpusleep on|off  arm/disarm kernel secondary-core PSCI suspend\n"
+        "                   (armed by default; off = escape hatch to WFI)\n"
         "  trace     show the last sleep/wake transition (also /tmp/powerd.log)\n"
+        "  sleep|wake       manual full sleep/wake cycle (root only)\n"
+        "  gpusleep|gpuwake GPU-only power hint to g2dd (root only)\n"
         "sleep/wake fans out to /dev/x, /dev/disp0, /dev/g2d, /dev/wl0,\n"
         "  /dev/touch0 and the kernel CPU-sleep gate (best-effort)\n"
         "power key: short press toggles display sleep/wake,\n"
@@ -496,9 +541,10 @@ static char* power_dev_cmd(vdevice_t* dev, int from_pid, int argc,
             return dup_text("shutdown: permission denied\n");
         return power_shutdown();
     }
-    /* Opt-in arm/disarm for the kernel secondary-core PSCI CPU_SUSPEND
-     * (default off; see _cpu_sleep_armed).  `cpusleep on` arms suspend for
-     * subsequent sleep cycles, `cpusleep off` disarms it.  Does not itself
+    /* Arm/disarm for the kernel secondary-core PSCI CPU_SUSPEND (armed by
+     * default; see _cpu_sleep_armed).  `cpusleep off` is the escape hatch:
+     * it disarms suspend for subsequent sleep cycles and kicks every parked
+     * core back to WFI; `cpusleep on` re-arms it.  Does not itself
      * sleep/wake the display. */
     if (strcmp(argv[0], "cpusleep") == 0) {
         if (!power_caller_is_root(from_pid))
@@ -515,6 +561,27 @@ static char* power_dev_cmd(vdevice_t* dev, int from_pid, int argc,
     }
     if (strcmp(argv[0], "trace") == 0)
         return dup_text(_trace_len ? _trace : "(no sleep/wake transition yet)\n");
+    /* Manual sleep/wake over the SAME power_set_sleep path the power key
+     * and lid use, so an ssh harness can run full cycles without physical
+     * access.  gpusleep/gpuwake only forward the GPU power hint to g2dd
+     * (GPU-only isolation testing; no display/CPU fan-out). */
+    if (strcmp(argv[0], "sleep") == 0 || strcmp(argv[0], "wake") == 0) {
+        if (!power_caller_is_root(from_pid))
+            return dup_text("sleep/wake: permission denied\n");
+        int want = strcmp(argv[0], "sleep") == 0;
+        power_set_sleep(want, "devcmd");
+        return dup_text(_sleeping ? "sleeping\n" : "awake\n");
+    }
+    if (strcmp(argv[0], "gpusleep") == 0 || strcmp(argv[0], "gpuwake") == 0) {
+        if (!power_caller_is_root(from_pid))
+            return dup_text("gpusleep/gpuwake: permission denied\n");
+        const char* gcmd = strcmp(argv[0], "gpusleep") == 0 ? "sleep" : "wake";
+        char* r = dev_cmd("/dev/g2d", gcmd);
+        char* out = dup_text(r != NULL ? r : "g2d: no reply\n");
+        if (r != NULL)
+            free(r);
+        return out;
+    }
     return NULL;
 }
 
