@@ -82,4 +82,10 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size);
    every machine without a 3D back end. */
 int32_t bsp_g3d_program_free(int32_t handle);
 
+/* Sleep/wake power hint (Q8B only): sleep=1 enables GMU inter-frame power
+   collapse, sleep=0 restores the ACTIVE config.  Returns G2D_OK, or -2 when
+   the Adreno datapath is not up.  g2dd calls this through a weak symbol, so
+   the other machines' bsp_g3d need not provide it. */
+int32_t bsp_g3d_sleep(int32_t sleep);
+
 #endif

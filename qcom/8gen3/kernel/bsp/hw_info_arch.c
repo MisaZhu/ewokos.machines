@@ -170,6 +170,19 @@ void arch_vm(page_dir_entry_t* vm) {
     map_pages_size(vm, MMIO_BASE + Q8B_GIC_WIN_OFF, Q8B_GIC_WIN_PHY,
             (uint32_t)Q8B_GIC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
 
+#if defined(KERNEL_SMP) && !defined(Q8B_QEMU_TEST)
+    /* Identity-map the PSCI CPU_SUSPEND resume trampoline page (PA == VA).
+     * PSCI returns with the MMU off at the trampoline PA; it re-enables the
+     * MMU while still fetching at that address, so the page must be valid as
+     * both PA and VA.  The trampoline is 64K-aligned and fits one page. */
+    {
+        extern char q8b_cpu_resume_asm[];
+        ewokos_addr_t tramp_pa = V2P((ewokos_addr_t)q8b_cpu_resume_asm);
+        map_pages_size(vm, tramp_pa, tramp_pa, PAGE_SIZE,
+                AP_RW_D, PTE_ATTR_WRBACK);
+    }
+#endif
+
 #ifndef Q8B_QEMU_TEST
     map_pages_size(vm, MMIO_BASE + Q8B_SDCC_WIN_OFF, Q8B_SDCC_WIN_PHY,
             (uint32_t)Q8B_SDCC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);

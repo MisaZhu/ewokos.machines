@@ -455,6 +455,22 @@ static int hfi_send_gx_bw_perf_vote(uint32_t freq_index, uint32_t bw_index) {
 	return hfi_send_msg(HFI_H2F_MSG_GX_BW_PERF_VOTE, &msg, sizeof(msg), 0, 0);
 }
 
+/* Sleep/wake DCVS votes (powerd fan-out via adreno_gpu_pm_*).  Same blocking
+   HFI message as the boot vote, only the perf-table index differs: level 0
+   is the lowest GX corner (freq 0 / vote 0 in hfi_send_perf_table), which is
+   what Linux devfreq votes when idle - the GMU firmware then lowers its own
+   DDR/LLC/GFX RPMh votes to match.  restore re-issues the exact boot vote.
+   The host-side interconnect/SCM votes are deliberately kept: the GMU stays
+   resident on CX and fetching from DRAM, so collapsing its NoC path while it
+   is alive is not a valid power state here. */
+int adreno_gmu_perf_low(void) {
+	return hfi_send_gx_bw_perf_vote(0, 0);
+}
+
+int adreno_gmu_perf_restore(void) {
+	return hfi_send_gx_bw_perf_vote(HFI_INITIAL_PERF_INDEX, 0);
+}
+
 /* a6xx_hfi_start() non-legacy path. */
 static int hfi_start_msgs(void) {
 	int ret;
@@ -580,6 +596,28 @@ static void power_config(void) {
 		A6XX_GMU_RPMH_CTRL_MX_VOTE_ENABLE |
 		A6XX_GMU_RPMH_CTRL_CX_VOTE_ENABLE |
 		A6XX_GMU_RPMH_CTRL_GFX_VOTE_ENABLE);
+}
+
+/* Inter-frame power collapse, driven by powerd's sleep/wake fan-out.
+   Linux runs a690 with idle_level=ACTIVE (no a6xx catalog entry sets
+   ADRENO_QUIRK_IFPC), so this is experimental and sleep-only: enable lets
+   the GMU firmware collapse the GX rail between frames (300 us main +
+   0.5 us short hysteresis, GMU_PWR_COL_HYST in a6xx_gmu.c); disable clears
+   the bits back to the exact ACTIVE config power_config() leaves.  GX
+   restore on the next submit is firmware-autonomous; the RSC/PDC sleep
+   handshake rpmh_init() programmed is what makes the collapse reversible.
+   SPTPRAC stays intentionally skipped.  Returns the CTRL value written. */
+uint32_t adreno_gmu_ifpc_set(int enable) {
+	if (enable) {
+		adreno_gmu_write(REG_A6XX_GMU_PWR_COL_INTER_FRAME_HYST, 0x000a1680u);
+		return adreno_gmu_rmw(REG_A6XX_GMU_PWR_COL_INTER_FRAME_CTRL, 0,
+			A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_IFPC_ENABLE |
+			A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_HM_POWER_COLLAPSE_ENABLE);
+	}
+	return adreno_gmu_rmw(REG_A6XX_GMU_PWR_COL_INTER_FRAME_CTRL,
+		A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_IFPC_ENABLE |
+		A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_HM_POWER_COLLAPSE_ENABLE |
+		A6XX_GMU_PWR_COL_INTER_FRAME_CTRL_SPTPRAC_POWER_CONTROL_ENABLE, 0);
 }
 
 /* ------------------------------------------------------------------ */

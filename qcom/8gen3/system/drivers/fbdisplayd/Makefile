@@ -8,7 +8,7 @@ TARGET_DIR = $(BUILD_DIR)/rootfs
 LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
-FBDISPLAYD_OBJS = $(ARCH)/fbdisplayd.o
+FBDISPLAYD_OBJS = $(ARCH)/fbdisplayd.o $(ARCH)/dsi_panel.o
 FBDISPLAYD = $(TARGET_DIR)/drivers/8gen3/fbdisplayd
 
 $(FBDISPLAYD): $(FBDISPLAYD_OBJS) \

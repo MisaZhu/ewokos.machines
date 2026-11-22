@@ -21,16 +21,16 @@ all: x
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
-basic: basic_sys
+basic: basic_sys apps
 	@$(MAKE) final
 
-network: network_sys
+network: network_sys apps
 	@$(MAKE) final
 
-gui: gui_sys
+gui: gui_sys apps
 	@$(MAKE) final
 
-x: x_sys
+x: x_sys apps
 	@$(MAKE) final
 
 # Platform headers consumed by user-space drivers (GOP framebuffer and
@@ -85,9 +85,11 @@ firmware_install:
 	@cp -p $(NPU_FW_SRC)/qccdsp8280.mbn \
 		$(TARGET_DIR)/etc/firmware/qcom/sc8280xp/
 	@mkdir -p $(TARGET_DIR)/etc/firmware/qca
-	@cp -p $(QCA_FW_SRC)/rampatch_usb_00130201.bin \
-		$(QCA_FW_SRC)/nvm_usb_00130201_gf.bin $(QCA_FW_SRC)/NOTICE.qca \
+	@cp -p $(QCA_FW_SRC)/NOTICE.qca \
 		$(QCA_FW_SRC)/LICENSE.QualcommAtheros_ath10k \
+		$(TARGET_DIR)/etc/firmware/qca/
+	@cp -p $(QCA_FW_SRC)/hpbtfw21.tlv $(QCA_FW_SRC)/wcnhpbtfw21.tlv \
+		$(QCA_FW_SRC)/hpnv21.bin $(QCA_FW_SRC)/wcnhpnv21.bin \
 		$(TARGET_DIR)/etc/firmware/qca/
 	@mkdir -p $(TARGET_DIR)/etc/firmware/ath11k/WCN6855/hw2.1
 	@cp -p $(WLAN_FW_SRC)/WCN6855/hw2.1/Notice.txt \
@@ -128,6 +130,12 @@ basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 network_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/network
 
+# Machine-local apps (qnndemo links libadrenonpu from the machine libs phase).
+# All its link inputs land in basic_sys, so it can build right after it; the
+# profile targets above run it before `final` stages rootfs into FINAL_DIR.
+apps: basic_sys
+	@$(MAKE) -C apps
+
 # Q8B uses the SC8280XP multi-port DWC3 core through the shared polled xHCI
 # stack.  g2dd is the shared 2D/3D offload daemon; on q8b it links libbsp +
 # libadreno (BSP_LFLAGS) and forwards into the Adreno 690 A2D/CS back ends,
@@ -155,7 +163,7 @@ x_sys: gui_sys network_sys
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
 
-CLEAN_DIRS = libs drivers bin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
+CLEAN_DIRS = libs drivers bin apps $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
 	$(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/xwin
 clean:
 	@for dir in $(CLEAN_DIRS); do \
@@ -188,4 +196,4 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 
-.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers firmware_install qairt_native_build qairt_native_install clean sd
+.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys apps platform_headers firmware_install qairt_native_build qairt_native_install clean sd

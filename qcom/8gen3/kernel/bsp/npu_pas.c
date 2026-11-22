@@ -2264,6 +2264,26 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
         return Q8B_NPU_PAS_FAILED;
     }
 
+    if(op == Q8B_NPU_CPU_SLEEP) {
+#ifdef KERNEL_SMP
+        extern void q8b_cpu_sleep_enable(int on);
+        q8b_cpu_sleep_enable(arg ? 1 : 0);
+        return 0;
+#else
+        (void)arg;
+        return Q8B_NPU_PAS_UNSUPPORTED;
+#endif
+    }
+
+    if(op == Q8B_NPU_CPU_SLEEP_STATS) {
+#ifdef KERNEL_SMP
+        extern uint32_t q8b_cpu_sleep_resumed_mask(void);
+        return q8b_cpu_sleep_resumed_mask();
+#else
+        return Q8B_NPU_PAS_UNSUPPORTED;
+#endif
+    }
+
     if(op == Q8B_NPU_PAS_QUERY) {
         if(arg || size) return Q8B_NPU_PAS_INVALID;
         if(!probed) {

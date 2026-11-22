@@ -680,17 +680,20 @@ int wcn_sta_install_key(unsigned index,unsigned group,const uint8_t key[16],cons
     volatile uint8_t *v=(void *)&p;for (unsigned i=0;i<sizeof(p);i++) v[i]=0;
     return ret;
 }
-/* Keep the station out of power save. The WCN firmware parks itself after a
- * few idle seconds and the AP then holds downlink frames for a station it
- * thinks is asleep, so isolated traffic (ssh, ping) goes missing while a busy
- * stream keeps the radio awake. Tags/command ids follow ath11k: WMI_GRP_STA_PS
- * first command 0x9001, TLV tag 108 (Linux 112, our table is -4). */
-static int sta_ps_off(void) {
+/* Station power save. The WCN firmware parks itself after a few idle seconds
+ * even with PS disabled, and the AP then holds downlink frames for a station
+ * it thinks is asleep, so isolated traffic (ssh, ping) goes missing while a
+ * busy stream keeps the radio awake. Explicit WMI PS mode=1 makes the protocol
+ * proper (station wakes at DTIM, AP buffers + station polls), which is what
+ * powerd's sleep path uses to stay connected while saving power; wake sends
+ * mode=0 back to the always-awake config. Tags/command ids follow ath11k:
+ * WMI_GRP_STA_PS first command 0x9001, TLV tag 108 (Linux 112, our table -4). */
+static int sta_ps_mode(int mode) {
     struct { uint32_t command; struct wmi_sta_powersave_mode_cmd cmd; } p;
     memset(&p,0,sizeof(p)); p.command=0x9001; p.cmd.tlv_header=tlv(108,sizeof(p.cmd)-4);
-    p.cmd.vdev_id=0; p.cmd.sta_ps_mode=0; /* WMI_STA_PS_MODE_DISABLED */
+    p.cmd.vdev_id=0; p.cmd.sta_ps_mode=mode; /* 0=DISABLED 1=ENABLED */
     int ret=wcn_htc_wmi_send(&p,sizeof(p));
-    if (ret) wcn_diag("sta-ps disable failed ret=%d\n",ret);
+    if (ret) wcn_diag("sta-ps mode=%d failed ret=%d\n",mode,ret);
     return ret;
 }
 static int sta_ps_param(unsigned param,unsigned value) {
@@ -699,13 +702,22 @@ static int sta_ps_param(unsigned param,unsigned value) {
     p.cmd.vdev_id=0; p.cmd.param=param; p.cmd.value=value;
     return wcn_htc_wmi_send(&p,sizeof(p));
 }
+/* powerd sleep/wake hook: enable PS on sleep, disable on wake. A no-op success
+ * when not associated (nothing to save); the link-watch ladder re-authorizes
+ * (mode=0) on any reconnect, so a dropped link recovers awake. */
+int wcn_sta_ps_set(int enable) {
+    if (s.state!=ASSOCIATED) return 0;
+    int ret=sta_ps_mode(enable?1:0);
+    wcn_diag("sta-ps mode=%s ret=%d\n",enable?"enabled":"disabled",ret);
+    return ret;
+}
 int wcn_sta_authorize(void) {
     struct { uint32_t command; struct wmi_peer_set_param_cmd cmd; } p;
     memset(&p,0,sizeof(p));p.command=0x6004;p.cmd.tlv_header=tlv(100,sizeof(p.cmd)-4);
     memcpy(p.cmd.peer_macaddr.addr,s.bss.bssid,6);p.cmd.param_id=3;p.cmd.param_value=1;
     int ret=wcn_htc_wmi_send(&p,sizeof(p));
     if (!ret) {
-        int ps=sta_ps_off();
+        int ps=sta_ps_mode(0);
         sta_ps_param(4,0); /* WMI_STA_PS_PARAM_UAPSD: no wakeup scheduling */
         wcn_diag("sta-ps mode=disabled ret=%d\n",ps);
     }

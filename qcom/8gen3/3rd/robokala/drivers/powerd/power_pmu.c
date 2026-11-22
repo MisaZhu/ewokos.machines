@@ -55,10 +55,7 @@
  * (PMIC GLINK battmgr, see battmgr_wire.h); it is not reachable from
  * these registers until the ADSP is booted.
  *
- * The power key is read the same read-only way: the PON peripheral's
- * debounced KPDPWR real-time status bit (PON_INT_RT_STS), exactly the
- * signal mainline Linux's pm8941-pwrkey driver reports as KEY_POWER.
- * No PON interrupt or debounce configuration is written.
+ * The PON power key lives in power_key.c next to this file, not here.
  */
 
 #include <stdbool.h>
@@ -74,7 +71,10 @@
 
 #include "power_pmu.h"
 
-/* SPMI arbiter windows (addresses proven by goodixd on the TW220). */
+/* SPMI arbiter windows (addresses proven by goodixd on the TW220).
+ * power_key.c maps the same slots in this process; SYS_MEM_MAP on an
+ * already-mapped VA/PA pair just rewrites the same PTEs, so whichever
+ * module initializes first owns the mapping and the second is a no-op. */
 #define SPMI_CORE_PHY      0x0c440000U
 #define SPMI_CORE_VA       0x5a080000U
 #define SPMI_CORE_SIZE     0x00004000U
@@ -138,30 +138,6 @@
 #define FG_VOLT_MIN_MV     2500U   /* plausibility: 1S cutoff .. 2S full */
 #define FG_VOLT_MAX_MV     9800U
 
-/* Power key: the PMIC PON (power-on) peripheral, read-only.  Register
- * layout and status bits follow mainline Linux pm8941-pwrkey.c: the
- * debounced KPDPWR real-time status lives in PON_INT_RT_STS (0x10),
- * bit 0 on gen1/gen2 PONs and bit 7 on gen3 (pmk8350, the SC8280XP
- * companion PMIC).  Peripheral type 0x04 == 0x01 identifies a PON;
- * subtype 0x05 tells the generation.  PON bases: gen3 HLOS pon@1300
- * (peripheral 0x13), gen3 PBS / gen1/gen2 pon@800 (peripheral 0x08). */
-#define PERIPH_PON_HLOS    0x13U
-#define PERIPH_PON_PBS     0x08U
-#define PON_PERPH_TYPE     0x04U
-#define PON_PERPH_SUBTYPE  0x05U
-#define PON_TYPE_PON       0x01U
-#define PON_INT_RT_STS     0x10U
-#define PON_SUBTYPE_PRIMARY        0x01U
-#define PON_SUBTYPE_SECONDARY      0x02U
-#define PON_SUBTYPE_1REG           0x03U
-#define PON_SUBTYPE_GEN2_PRIMARY   0x04U
-#define PON_SUBTYPE_GEN2_SECONDARY 0x05U
-#define PON_SUBTYPE_GEN3_PBS       0x08U
-#define PON_SUBTYPE_GEN3_HLOS      0x09U
-#define PON_KPDPWR_N_SET       0x01U  /* gen1/gen2 RT_STS bit 0 */
-#define PON_GEN3_KPDPWR_N_SET  0x80U  /* gen3 RT_STS bit 7 */
-#define PON_CANDIDATE_MAX  12U
-
 #define APID_ENTRY_MAX     512U
 #define ADC_CANDIDATE_MAX  8U
 
@@ -199,15 +175,6 @@ static unsigned _chgr1500_count;
 static int _batif_apid = -1, _batif_sid = -1;  /* BATIF 0x48 or 0x12 */
 static int _charger_sid = -1;       /* SID owning the charger/battery PMIC */
 static bool _mapped;
-
-/* PON power-key discovery: every pon@1300/pon@800 candidate from the map,
- * then the one selected by pon_select() (-1 = no usable power key). */
-static int _pon_cand_apids[PON_CANDIDATE_MAX];
-static int _pon_cand_sids[PON_CANDIDATE_MAX];
-static unsigned _pon_cand_count;
-static int _pon_apid = -1, _pon_sid = -1;
-static uint32_t _pon_subtype;
-static uint32_t _pon_kpdpwr_mask;
 
 /* Persisted daemon state (/etc/powerd.state, persistent ext3 rootfs):
  * the wired charger SID and the last known capacity.  Both survive an
@@ -417,69 +384,6 @@ static const char* arb_err_name(uint32_t status) {
     return "ok";
 }
 
-/* Rank PON subtypes for power-key selection: the HLOS side of a gen3 PON
- * (pmk8350 pon@1300) is where Linux wires KEY_POWER on SC8280XP-class
- * boards, so it wins over every legacy layout.  Secondary PONs (subtypes
- * 2/5) carry only RESIN, no KPDPWR - they are not candidates at all. */
-static int pon_rank(uint32_t subtype) {
-    switch (subtype) {
-    case PON_SUBTYPE_GEN3_HLOS:      return 0;
-    case PON_SUBTYPE_GEN2_PRIMARY:   return 1;
-    case PON_SUBTYPE_PRIMARY:        return 2;
-    case PON_SUBTYPE_GEN3_PBS:       return 3;
-    case PON_SUBTYPE_1REG:           return 4;
-    default:                         return -1;
-    }
-}
-
-/* Observer-read every PON candidate's type/subtype/RT_STS and keep the
- * best-ranked one that answers and reads RELEASED.  A candidate stuck
- * "pressed" before any press is an unwired/floating KPDPWR input (the
- * board has several PMICs but only one power key) - skipping it is the
- * read-only equivalent of the uConsole powerd discarding the boot-press
- * latch.  All reads are observer reads: no PON configuration is written. */
-static void pon_select(void) {
-    int best_rank = 99;
-
-    _pon_apid = -1;
-    _pon_sid = -1;
-    _pon_subtype = 0;
-    _pon_kpdpwr_mask = 0;
-    for (unsigned i = 0; i < _pon_cand_count; i++) {
-        uint32_t apid = (uint32_t)_pon_cand_apids[i];
-        int type = spmi_read(apid, PON_PERPH_TYPE);
-        int subtype = spmi_read(apid, PON_PERPH_SUBTYPE);
-        int rank;
-        int sts;
-        uint32_t mask;
-
-        if (type < 0 || (uint32_t)type != PON_TYPE_PON || subtype < 0)
-            continue;
-        rank = pon_rank((uint32_t)subtype);
-        if (rank < 0 || rank >= best_rank)
-            continue;
-        mask = ((uint32_t)subtype == PON_SUBTYPE_GEN3_PBS ||
-                (uint32_t)subtype == PON_SUBTYPE_GEN3_HLOS) ?
-                PON_GEN3_KPDPWR_N_SET : PON_KPDPWR_N_SET;
-        sts = spmi_read(apid, PON_INT_RT_STS);
-        if (sts < 0) {
-            VPRINTF("powerd: pon apid=%u sid=%d subtype=%d read failed\n",
-                    apid, _pon_cand_sids[i], subtype);
-            continue;
-        }
-        if ((uint32_t)sts & mask) {
-            VPRINTF("powerd: pon apid=%u sid=%d subtype=%d stuck pressed, "
-                    "skipped\n", apid, _pon_cand_sids[i], subtype);
-            continue;
-        }
-        best_rank = rank;
-        _pon_apid = (int)apid;
-        _pon_sid = _pon_cand_sids[i];
-        _pon_subtype = (uint32_t)subtype;
-        _pon_kpdpwr_mask = mask;
-    }
-}
-
 /* Walk the APID map once: record every channel with its owner and build
  * the per-SID peripheral bitmap, then locate what this driver needs.
  * The scan runs over all 512 slots; the FEATURES register (core+4) is
@@ -508,7 +412,6 @@ static int enumerate(void) {
     _adc_count = 0;
     _fg_count = 0;
     _chgr1500_count = 0;
-    _pon_cand_count = 0;
 
     for (uint32_t i = 0; i < _map_slots; i++) {
         uint32_t map = rd(_core, 0x900U + 4U * i);
@@ -571,15 +474,6 @@ static int enumerate(void) {
             _fg_sids[_fg_count] = (int)sid;
             _fg_count++;
         }
-        /* PON candidates: gen3 HLOS pon@1300 and legacy/PBS pon@800.
-         * pon_select() verifies type/subtype after the scan. */
-        if (ee == 0 && (periph == PERIPH_PON_HLOS ||
-                periph == PERIPH_PON_PBS) &&
-                _pon_cand_count < PON_CANDIDATE_MAX) {
-            _pon_cand_apids[_pon_cand_count] = (int)i;
-            _pon_cand_sids[_pon_cand_count] = (int)sid;
-            _pon_cand_count++;
-        }
     }
     /* Several charger PMICs are on the bus, but only one is wired to the
      * battery.  Observer-read each 0x15 candidate's status register and
@@ -628,7 +522,6 @@ static int enumerate(void) {
     _batif_sid = smb5_batif_apid >= 0 ? smb5_batif_sid : batif1200_sid;
     /* The charger SID hosts the battery interface (CHGR/BATIF). */
     _charger_sid = _chgr_sid >= 0 ? _chgr_sid : _batif_sid;
-    pon_select();
     return 0;
 }
 
@@ -666,11 +559,6 @@ int power_pmu_init(void) {
             _chgr_apid >= 0 ? "found" : "none",
             _batif_apid >= 0 ? "found" : "none",
             _adc_count, _charger_sid, (unsigned)_sid_mask);
-    if (_pon_apid >= 0)
-        slog("q8b powerd: power key pon apid=%d sid=%d subtype=%u\n",
-                _pon_apid, _pon_sid, (unsigned)_pon_subtype);
-    else
-        slog("q8b powerd: no usable PON power key found\n");
     return 0;
 }
 
@@ -826,33 +714,6 @@ int power_pmu_sample(power_sample_t* out) {
     return 0;
 }
 
-/* Live power-key state: one observer read of the selected PON's
- * INT_RT_STS.  -1 means "unknown" (no PON selected or the read failed);
- * the caller must keep its previous key state in that case, never treat
- * it as a release. */
-int power_pmu_key_state(void) {
-    int sts;
-
-    if (!_mapped || _pon_apid < 0)
-        return -1;
-    sts = spmi_read((uint32_t)_pon_apid, PON_INT_RT_STS);
-    if (sts < 0)
-        return -1;
-    return ((uint32_t)sts & _pon_kpdpwr_mask) != 0 ? 1 : 0;
-}
-
-int power_pmu_key_info(int* apid, int* sid, int* subtype) {
-    if (_pon_apid < 0)
-        return -1;
-    if (apid != NULL)
-        *apid = _pon_apid;
-    if (sid != NULL)
-        *sid = _pon_sid;
-    if (subtype != NULL)
-        *subtype = (int)_pon_subtype;
-    return 0;
-}
-
 /* Stage 1: map summary - pure core-register reads and in-memory state,
  * proven safe on the TW220. */
 int power_pmu_dump_map(void) {
@@ -878,15 +739,6 @@ int power_pmu_dump_map(void) {
         printf(" %d(sid%d,st=%d)", _chgr1500_apids[i],
                 _chgr1500_sids[i], _chgr1500_states[i]);
     printf("\n");
-    printf("pon candidates:");
-    for (unsigned i = 0; i < _pon_cand_count; i++)
-        printf(" %d(sid%d)", _pon_cand_apids[i], _pon_cand_sids[i]);
-    if (_pon_apid >= 0)
-        printf(" | key: apid=%d sid=%d subtype=%u mask=%02x sts=%d\n",
-                _pon_apid, _pon_sid, (unsigned)_pon_subtype,
-                (unsigned)_pon_kpdpwr_mask, power_pmu_key_state());
-    else
-        printf(" | key: none\n");
     if (_stored_chgr_sid >= 0 || _stored_cap_valid) {
         printf("state: chg_sid=%d cap=%u%%%s\n",
                 _stored_chgr_sid, (unsigned)_stored_cap,

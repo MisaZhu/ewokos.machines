@@ -107,6 +107,12 @@ int nvme_last_init_stage(void);
 uint32_t nvme_last_cc(void);
 uint32_t nvme_last_csts(void);
 
+/* Machine dev.cmd hook for the shared sdfsd (weak there): `devcmd / apst`
+ * reports the autonomous power state transition configuration, which is
+ * programmed before vfsd/logd exist and otherwise unobservable on boards
+ * without a kernel console.  malloc'd reply, NULL for unknown commands. */
+char* bsp_sdfsd_cmd(int argc, char** argv);
+
 #ifdef __cplusplus
 }
 #endif

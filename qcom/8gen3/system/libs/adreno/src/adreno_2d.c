@@ -324,7 +324,10 @@ int adreno_2d_fill(uint64_t dst_phy, int32_t dst_w, int32_t dst_h,
 		return ADRENO_E_DECLINED;
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
 	if (ret != ADRENO_OK) {
-		if (ret != ADRENO_E_WEDGED)   /* wedge itself is logged once by the ring */
+		/* wedge itself is logged once by the ring; a decline while
+		   GPU-sleeping is the designed CPU-fallback gate, not a failure */
+		if (ret != ADRENO_E_WEDGED &&
+		    !(ret == ADRENO_E_DECLINED && adreno_dev()->gpu_sleeping))
 			slog("adreno_2d: fill submit failed (%d)\n", ret);
 		return ret;
 	}
@@ -464,7 +467,8 @@ static int a2d_copy_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	}
 	ret = adreno_ring_submit(adreno_dev(), b.d, b.n);
 	if (ret != ADRENO_OK) {
-		if (ret != ADRENO_E_WEDGED)
+		if (ret != ADRENO_E_WEDGED &&
+		    !(ret == ADRENO_E_DECLINED && adreno_dev()->gpu_sleeping))
 			slog("adreno_2d: copy submit failed (%d)\n", ret);
 		return ret;
 	}
