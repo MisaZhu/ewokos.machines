@@ -8,8 +8,8 @@ TARGET_DIR = $(BUILD_DIR)/rootfs
 LDFLAGS = -L $(BUILD_DIR)/lib
 CFLAGS += -I $(BUILD_DIR)/include
 
-OBJS = $(ARCH)/fbprobe.o
-BIN = $(TARGET_DIR)/drivers/$(HW)/fbprobe
+OBJS = $(ARCH)/fand.o
+BIN = $(TARGET_DIR)/drivers/$(HW)/fand
 
 $(BIN): $(OBJS) $(SDK_DIR)/lib/libewoksys.a $(SDK_DIR)/lib/libbsp.a
 	$(LD) -Ttext=100 $(OBJS) -o $(BIN) $(LDFLAGS) $(BSP_LFLAGS) $(EWOK_LIBC)

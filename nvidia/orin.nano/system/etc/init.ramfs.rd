@@ -28,14 +28,10 @@
 # SD init sequence and dumps sector 0.  One-shot; progress/result land on the
 # serial console via klog.  Recover with the Pico GPIO hardware reset.
 @/drivers/orin.nano/sdprobe
-# Framebuffer bring-up probe: maps the UEFI GOP scan-out (platform_data.fb) and
-# draws color bars.  One-shot; result lands on the serial console via klog.
-# Headless boots have no GOP -> reports it cleanly.  Attach HDMI/DP for GOP.
-@/drivers/orin.nano/fbprobe
-@/drivers/orin.nano/bpmpdiag disp
-# DCE aperture probe DISABLED: DCE@0xd800000 rejects CCPLEX reads (SERR=0x12
-# slave error → EL3 SError at +0x0).  DCE MMIO is firewalled from the CPU.
-# @/drivers/orin.nano/bpmpdiag dce
+# Fan control: BPMP TJ_MAX temperature -> hardware PWM3 (clock/reset owned
+# via BPMP before any MMIO).  Auto policy = NVIDIA tj-thermal trips;
+# /dev/fan accepts status/auto/manual/run/duty commands.
+@/bin/ipcserv /drivers/orin.nano/fand /dev/fan
 # XUSB host: shared usbhostd (enumeration/hub/HID/MSC) over the machine
 # bsp_usb contract; hid_keybd/hid_moused consume HID reports.  MSC sticks
 # auto-mount at /mnt/udisk0 via usbfat32fsd.

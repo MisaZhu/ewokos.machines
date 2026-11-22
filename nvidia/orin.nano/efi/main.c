@@ -156,17 +156,6 @@ static int uartc_putc(char c) {
     return -1;
 }
 
-/* Bounded UARTC probe.  An unclocked AON UART reads back 0x00 or 0xFF on
- * every register; a live 16550 idles with THRE|TSR set (LSR 0x60). */
-static int __attribute__((unused)) uartc_probe(void) {
-    uint32_t lsr = uart_rd(UART_LSR);
-    if (lsr == 0 || lsr == 0xFFFFFFFFu)
-        return -1;
-    if (uartc_putc('\r') != 0 || uartc_putc('\n') != 0)
-        return -1;
-    return 0;
-}
-
 static void serial_init(void) {
     g_serial = 0;
     g_serial_mode = 0;          /* loader console = UEFI ConOut (safe, visible) */
@@ -297,15 +286,6 @@ static void read_provider_fb(EFI_GRAPHICS_OUTPUT_PROTOCOL* gop) {
         g_prov_fb_h = mi->VerticalResolution;
         g_prov_fb_pitch = mi->PixelsPerScanLine * 4;
     }
-    con_puts("[prov] linear scan-out fb=");
-    con_hex(g_prov_fb_phys);
-    con_puts(" ");
-    con_dec(g_prov_fb_w);
-    con_puts("x");
-    con_dec(g_prov_fb_h);
-    con_puts(" pitch=");
-    con_dec(g_prov_fb_pitch);
-    con_puts("\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -506,179 +486,6 @@ static void fdt_simplefb(uint64_t dtb, simplefb_t* fb) {
                         fb->height != 0);
                 return;
             }
-            depth--;
-        } else {                              /* FDT_END / garbage */
-            break;
-        }
-    }
-}
-
-static int fdt_str_has(const char* s, const char* sub) {
-    for (; *s; s++) {
-        const char* a = s;
-        const char* b = sub;
-        while (*a && *b && *a == *b) {
-            a++;
-            b++;
-        }
-        if (!*b)
-            return 1;
-    }
-    return 0;
-}
-
-/* Diagnostic: print DTB node names related to display/framebuffer handoff so
- * a non-standard scan-out node (or reserved-memory FB carveout) is visible. */
-static void fdt_dump_display(uint64_t dtb) {
-    if (!dtb)
-        return;
-    const uint8_t* f = (const uint8_t*)(uintptr_t)dtb;
-    if (fdt_be32(f) != 0xd00dfeed)
-        return;
-    uint32_t totalsize = fdt_be32(f + 4);
-    if (totalsize < 40 || totalsize > 16u * 1024 * 1024)
-        return;
-    uint32_t off_struct = fdt_be32(f + 8);
-    if (off_struct + 4 > totalsize)
-        return;
-    const uint8_t* st = f + off_struct;
-    uint32_t p = 0;
-    char namebuf[64];
-    while (p + 4 <= totalsize - off_struct) {
-        uint32_t tok = fdt_be32(st + p);
-        p += 4;
-        if (tok == 1) {                       /* FDT_BEGIN_NODE */
-            uint32_t q = p;
-            while (q + 1 < totalsize - off_struct && st[q] != 0)
-                q++;
-            uint32_t nlen = q - p;
-            if (nlen >= sizeof(namebuf))
-                nlen = sizeof(namebuf) - 1;
-            memcpy(namebuf, st + p, nlen);
-            namebuf[nlen] = 0;
-            p = (q + 1 + 3) & ~3u;
-            if (namebuf[0] && (fdt_str_has(namebuf, "framebuffer") ||
-                    fdt_str_has(namebuf, "display") ||
-                    fdt_str_has(namebuf, "host1x") ||
-                    fdt_str_has(namebuf, "reserved-memory") ||
-                    fdt_str_has(namebuf, "hdmi") ||
-                    fdt_str_has(namebuf, "sor@") ||
-                    fdt_str_has(namebuf, "dpaux"))) {
-                con_puts("[uefi] dt node: ");
-                con_puts(namebuf);
-                con_puts("\n");
-            }
-        } else if (tok == 3) {                /* FDT_PROP */
-            if (p + 8 > totalsize - off_struct)
-                break;
-            uint32_t len = fdt_be32(st + p);
-            p = (uint32_t)(p + 8 + len);
-            p = (p + 3) & ~3u;
-        } else if (tok == 2) {                /* FDT_END_NODE */
-            continue;
-        } else {
-            break;
-        }
-    }
-}
-
-/* Diagnostic: dump every /reserved-memory child carveout (name + reg base/size).
- * Reads ONLY the DTB blob (loader-owned), never the carveout DRAM itself, so it
- * cannot abort on a protected region.  The display early-boot FB carveout shows
- * up here with its physical base, which is what the kernel fb driver needs. */
-static void fdt_dump_reserved(uint64_t dtb) {
-    if (!dtb)
-        return;
-    const uint8_t* f = (const uint8_t*)(uintptr_t)dtb;
-    if (fdt_be32(f) != 0xd00dfeed)
-        return;
-    uint32_t totalsize = fdt_be32(f + 4);
-    if (totalsize < 40 || totalsize > 16u * 1024 * 1024)
-        return;
-    uint32_t off_struct = fdt_be32(f + 8);
-    uint32_t off_str = fdt_be32(f + 12);
-    uint32_t size_str = fdt_be32(f + 32);
-    if (off_struct + 4 > totalsize || off_str > totalsize ||
-            size_str > totalsize || off_str + size_str > totalsize)
-        return;
-    const uint8_t* strblk = f + off_str;
-    const uint8_t* st = f + off_struct;
-    uint32_t p = 0;
-    int depth = 0, rm_depth = -1;
-    uint32_t ac = 2, sc = 2;
-    char namebuf[64], cur[64];
-    cur[0] = 0;
-    while (p + 4 <= totalsize - off_struct) {
-        uint32_t tok = fdt_be32(st + p);
-        p += 4;
-        if (tok == 1) {                       /* FDT_BEGIN_NODE */
-            uint32_t q = p;
-            while (q + 1 < totalsize - off_struct && st[q] != 0)
-                q++;
-            uint32_t nlen = q - p;
-            if (nlen >= sizeof(namebuf))
-                nlen = sizeof(namebuf) - 1;
-            memcpy(namebuf, st + p, nlen);
-            namebuf[nlen] = 0;
-            p = (q + 1 + 3) & ~3u;
-            depth++;
-            if (rm_depth < 0 && fdt_str_eq(namebuf, "reserved-memory")) {
-                rm_depth = depth;
-                ac = sc = 2;
-                con_puts("[uefi] rsv node\n");
-            } else if (rm_depth >= 0 && depth == rm_depth + 1) {
-                memcpy(cur, namebuf, sizeof(cur));
-                con_puts("[uefi] rsv child ");
-                con_puts(cur);
-                con_puts("\n");
-            }
-        } else if (tok == 3) {                /* FDT_PROP */
-            if (p + 8 > totalsize - off_struct)
-                break;
-            uint32_t len = fdt_be32(st + p);
-            uint32_t nameoff = fdt_be32(st + p + 4);
-            uint64_t data = p + 8;
-            p = (uint32_t)(data + len);
-            p = (p + 3) & ~3u;
-            if (rm_depth < 0 || nameoff >= size_str || !strblk[nameoff])
-                continue;
-            const char* pn = (const char*)(strblk + nameoff);
-            const uint8_t* pd = st + data;
-            if (depth == rm_depth) {
-                if (fdt_str_eq(pn, "#address-cells") && len >= 4)
-                    ac = fdt_be32(pd);
-                else if (fdt_str_eq(pn, "#size-cells") && len >= 4)
-                    sc = fdt_be32(pd);
-            } else if (depth == rm_depth + 1 && fdt_str_eq(pn, "reg")) {
-                if (ac < 1 || ac > 2 || sc < 1 || sc > 2 ||
-                        len < (ac + sc) * 4)
-                    continue;
-                uint64_t base = 0, size = 0;
-                for (uint32_t i = 0; i < ac; i++)
-                    base = (base << 32) | fdt_be32(pd + i * 4);
-                for (uint32_t i = 0; i < sc; i++)
-                    size = (size << 32) | fdt_be32(pd + (ac + i) * 4);
-                con_puts("[uefi] rsv ");
-                con_puts(cur);
-                con_puts(" base=");
-                con_hex(base);
-                con_puts(" size=");
-                con_hex(size);
-                con_puts("\n");
-            } else if (depth == rm_depth + 1 && fdt_str_eq(pn, "size") &&
-                    len >= sc * 4) {
-                uint64_t size = 0;
-                for (uint32_t i = 0; i < sc && i < 2; i++)
-                    size = (size << 32) | fdt_be32(pd + i * 4);
-                con_puts("[uefi] rsv ");
-                con_puts(cur);
-                con_puts(" size=");
-                con_hex(size);
-                con_puts(" (dynamic)\n");
-            }
-        } else if (tok == 2) {                /* FDT_END_NODE */
-            if (rm_depth >= 0 && depth <= rm_depth)
-                rm_depth = -1;
             depth--;
         } else {                              /* FDT_END / garbage */
             break;
@@ -1564,8 +1371,6 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     con_puts("[uefi] platform model: ");
     con_puts(board_model[0] ? board_model : "unknown (no DTB model)");
     con_puts("\n");
-    fdt_dump_display(dtb_addr);
-    fdt_dump_reserved(dtb_addr);
 
     /* simplefb fallback: when GOP exposes no linear framebuffer, NVIDIA UEFI
      * may hand off via a /simple-framebuffer DT node instead (the "simplefb"
@@ -1696,7 +1501,6 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts("[uefi] FATAL: GetMemoryMap failed\n");
         halt_forever();
     }
-    con_puts("[uefi] dbg: memmap ok\n");
 
     uint64_t ram_size = memory_ram_size();
 
@@ -1720,61 +1524,6 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts(" pitch=");
         con_dec(fb_pitch);
         con_puts(" (linear scan-out, precise)\n");
-    }
-
-    /* BltOnly GOP handoff: the firmware exposes no linear FB (FrameBufferBase
-     * =0) and no /simple-framebuffer node, but it scans out a hidden display
-     * carveout (Tegra234 CARVEOUT_DISP_EARLY_BOOT_FB, ~34 MB).  That carveout
-     * appears in the UEFI memory map as a reserved (type 0) region.  Select the
-     * reserved region sized 32..36 MiB as the FB candidate and hand its base to
-     * the kernel; fbprobe reads back the Blt-drawn bars to confirm the base.
-     * Geometry comes from the primary GOP mode.  Only the DTB/memory-map are
-     * read here -- never the carveout DRAM itself (a protected read hung the
-     * loader, which has no exception handler). */
-    if (fb_addr == 0 && gop_count > 0 && gop_list[0]->Mode &&
-            gop_list[0]->Mode->Info) {
-        EFI_GOP_MODE_INFO* info = gop_list[0]->Mode->Info;
-        uint32_t gw = info->HorizontalResolution;
-        uint32_t gh = info->VerticalResolution;
-        uint64_t gpitch = (uint64_t)info->PixelsPerScanLine * 4;
-        uint64_t best = 0, best_sz = 0;
-        /* CARVEOUT_DISP_EARLY_BOOT_FB is ~33 MiB.  Bound the candidate to a
-         * 32..40 MiB band: the previous "largest reserved region" rule wrongly
-         * picked a 64 MiB carveout (0x27c000000) that carries no DCDT header.
-         * The display early-FB carveout (0x25be90000, 0x2160000) sits in-band. */
-        uint64_t lo = 32ULL * 1024 * 1024;
-        uint64_t hi = 40ULL * 1024 * 1024;
-        uint32_t mc = (uint32_t)(g_memmap_size / g_memmap_dsize);
-        for (uint32_t i = 0; i < mc; i++) {
-            EFI_MEMORY_DESCRIPTOR* d = (EFI_MEMORY_DESCRIPTOR*)
-                ((uint8_t*)g_memmap + i * g_memmap_dsize);
-            uint64_t sz = d->NumberOfPages * EFI_PAGE_SIZE;
-            if (d->Type != 0 || sz < lo || sz > hi)
-                continue;
-            if (sz > best_sz) {
-                best_sz = sz;
-                best = d->PhysicalStart;
-            }
-        }
-        if (best != 0) {
-            fb_addr = best;
-            fb_w = gw;
-            fb_h = gh;
-            fb_pitch = gpitch;
-            fb_bpp = 32;
-            fb_format = 1;   /* GOP Blt buffer is B,G,R in memory */
-            con_puts("[uefi] fb carveout candidate @");
-            con_hex(fb_addr);
-            con_puts(" size=");
-            con_hex(best_sz);
-            con_puts(" ");
-            con_dec(fb_w);
-            con_puts("x");
-            con_dec(fb_h);
-            con_puts(" pitch=");
-            con_dec(fb_pitch);
-            con_puts(" (BltOnly handoff, verify via readback)\n");
-        }
     }
 
     /* Copy the final memory map into the bootinfo page (physical memory). */
@@ -1853,23 +1602,6 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     con_puts(" MB, resv ");
     con_dec(bi->resv_count);
     con_puts(" regions\n");
-    /* Diagnostic: dump every UEFI memory descriptor (type/start/size) so a
-     * firmware scan-out framebuffer carveout can be located when GOP exposes
-     * no linear FB.  type: 0=reserved 4=BSdata 6=RTdata 7=conventional
-     * 9=ACPIreclaim 10=ACPINVS 11=MMIO. */
-    for (uint32_t i = 0; i < count; i++) {
-        EFI_MEMORY_DESCRIPTOR* d =
-            (EFI_MEMORY_DESCRIPTOR*)((uint8_t*)g_memmap + i * g_memmap_dsize);
-        con_puts("[uefi] mm ");
-        con_dec(i);
-        con_puts(" t=");
-        con_dec(d->Type);
-        con_puts(" @");
-        con_hex(d->PhysicalStart);
-        con_puts(" +");
-        con_hex(d->NumberOfPages * EFI_PAGE_SIZE);
-        con_puts("\n");
-    }
 
     con_puts("[uefi] handoff trampoline @");
     con_hex(ORIN_KERNEL_PHYS + ORIN_TRAMP_OFF);

@@ -95,13 +95,34 @@
 #define ORIN_MRQ_PG             66u
 #define ORIN_MRQ_RESET          20u
 #define ORIN_MRQ_CLK            22u
+#define ORIN_MRQ_THERMAL        27u
 #define ORIN_MRQ_UPHY           69u
 #define ORIN_MRQ_FLAG_DO_ACK    0x01u
 #define ORIN_MRQ_FLAG_RING_DB   0x02u
 /* CLK subcommands */
+#define ORIN_CLK_GET_RATE       1u
 #define ORIN_CLK_SET_RATE       2u
+#define ORIN_CLK_ROUND_RATE     3u
+#define ORIN_CLK_SET_PARENT     5u
+#define ORIN_CLK_IS_ENABLED     6u
 #define ORIN_CLK_ENABLE         7u
 #define ORIN_CLK_DISABLE        8u
+/* THERMAL subcommands (mrq_thermal_host_to_bpmp_cmd) */
+#define ORIN_THERMAL_QUERY_ABI  0u
+#define ORIN_THERMAL_GET_TEMP   1u   /* req {u32 type, u32 zone}, resp i32 mC */
+#define ORIN_THERMAL_GET_NUM_ZONES 3u /* req {u32 type}, resp u32 num */
+#define ORIN_THERMAL_GET_THERMTRIP 4u /* req {u32 type, u32 zone}, resp i32 mC */
+/* Thermal zone IDs (dt-bindings/thermal/tegra234-bpmp-thermal.h). */
+#define ORIN_THERM_ZONE_CPU     0u
+#define ORIN_THERM_ZONE_GPU     1u
+#define ORIN_THERM_ZONE_CV0     2u
+#define ORIN_THERM_ZONE_CV1     3u
+#define ORIN_THERM_ZONE_CV2     4u
+#define ORIN_THERM_ZONE_SOC0    5u
+#define ORIN_THERM_ZONE_SOC1    6u
+#define ORIN_THERM_ZONE_SOC2    7u
+#define ORIN_THERM_ZONE_TJ_MAX  8u
+#define ORIN_THERM_ZONE_COUNT   9u
 /* RESET subcommands */
 #define ORIN_RESET_ASSERT       1u
 #define ORIN_RESET_DEASSERT     2u
@@ -185,6 +206,18 @@
 #define ORIN_SDMMC1_RESET       82u
 /* Card detect = main GPIO port G pin 7 (active low). */
 #define ORIN_SD_CD_GPIO         (6u * 8u + 7u)
+
+/* PWM3 (pwm@32a0000) -- devkit fan (pwm-fan, pwms=<&pwm3 0 45334>).
+ * T234 uses the tegra186 PWM model: 1 channel, regs at base + hwpwm*16,
+ * CSR: enable bit31, duty ticks [23:16] (depth 256), prescaler [12:0].
+ * The fan clock must be BPMP-enabled BEFORE any register access
+ * (unclocked peripheral MMIO -> EL3 SError on this board). */
+#define ORIN_PWM3_PHY           0x032a0000ULL
+#define ORIN_PWM3_SIZE          0x10000u
+#define ORIN_PWM3_CLK           107u  /* TEGRA234_CLK_PWM3 */
+#define ORIN_PWM3_RESET         70u   /* TEGRA234_RESET_PWM3 */
+#define ORIN_CLK_PLLP_OUT0      102u  /* assigned-clock-parent in dtsi */
+#define ORIN_FAN_PWM_PERIOD_NS  45334u /* ~22kHz, board dtsi */
 
 /* USB xHCI host (usb@3610000) + padctl. */
 #define ORIN_XUSB_HCD_PHY       0x03610000ULL

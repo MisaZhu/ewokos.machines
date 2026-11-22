@@ -52,7 +52,7 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/drivers/orin.nano/hid_moused \
 	$(SYSTEM_ROOT)/drivers/orin.nano/usbfat32fsd \
 	$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag \
-	$(SYSTEM_ROOT)/drivers/orin.nano/fbprobe \
+	$(SYSTEM_ROOT)/drivers/orin.nano/fand \
 	$(SYSTEM_ROOT)/drivers/netd \
 	$(SYSTEM_ROOT)/drivers/timerd \
 	$(SYSTEM_ROOT)/drivers/piped $(SYSTEM_ROOT)/drivers/ramfsd \
@@ -200,7 +200,7 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/drivers/orin.nano/hid_moused" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/usbfat32fsd" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag" \
-		"$(SYSTEM_ROOT)/drivers/orin.nano/fbprobe" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/fand" \
 		"$(RAMFS_STAGING)/drivers/orin.nano/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/netd" \
 		"$(SYSTEM_ROOT)/drivers/timerd" \

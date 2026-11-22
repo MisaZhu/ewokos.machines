@@ -303,6 +303,40 @@ int bsp_bpmp_clk_enable(uint32_t clk_id) {
     return bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), NULL, 0);
 }
 
+int bsp_bpmp_clk_get_rate(uint32_t clk_id, uint64_t* rate) {
+    uint32_t req = (ORIN_CLK_GET_RATE << 24) | (clk_id & 0xffffffu);
+    int64_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && rate)
+        *rate = (uint64_t)resp;
+    return r;
+}
+
+int bsp_bpmp_clk_round_rate(uint32_t clk_id, uint64_t rate, uint64_t* got) {
+    struct {
+        uint32_t cmd_and_id;
+        uint32_t unused;
+        uint64_t rate;
+    } __attribute__((packed)) req;
+    req.cmd_and_id = (ORIN_CLK_ROUND_RATE << 24) | (clk_id & 0xffffffu);
+    req.unused = 0;
+    req.rate = rate;
+    int64_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && got)
+        *got = (uint64_t)resp;
+    return r;
+}
+
+int bsp_bpmp_clk_is_enabled(uint32_t clk_id, int32_t* state) {
+    uint32_t req = (ORIN_CLK_IS_ENABLED << 24) | (clk_id & 0xffffffu);
+    int32_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && state)
+        *state = resp;
+    return r;
+}
+
 int bsp_bpmp_clk_set_rate(uint32_t clk_id, uint64_t rate) {
     struct {
         uint32_t cmd_and_id;
@@ -313,6 +347,17 @@ int bsp_bpmp_clk_set_rate(uint32_t clk_id, uint64_t rate) {
     req.unused = 0;
     req.rate = rate;
     return bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), NULL, 0);
+}
+
+int bsp_bpmp_clk_set_parent(uint32_t clk_id, uint32_t parent_id) {
+    struct {
+        uint32_t cmd_and_id;
+        uint32_t parent_id;
+    } __attribute__((packed)) req;
+    req.cmd_and_id = (ORIN_CLK_SET_PARENT << 24) | (clk_id & 0xffffffu);
+    req.parent_id = parent_id;
+    uint32_t resp = 0;
+    return bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), &resp, sizeof(resp));
 }
 
 static int bpmp_reset(uint32_t cmd, uint32_t reset_id) {
@@ -374,4 +419,39 @@ int bsp_bpmp_uphy_ctrl_state(uint32_t controller, uint32_t enable) {
         0, ORIN_UPHY_CTRL_STATE, (uint8_t)controller, (uint8_t)enable
     };
     return bpmp_xfer(ORIN_MRQ_UPHY, &req, sizeof(req), NULL, 0);
+}
+
+/* MRQ_THERMAL: request {u32 type; u32 zone} packed (zone omitted for
+ * GET_NUM_ZONES); response payload is a single 32-bit value. */
+int bsp_bpmp_thermal_num_zones(uint32_t* num) {
+    uint32_t req = ORIN_THERMAL_GET_NUM_ZONES;
+    uint32_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_THERMAL, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && num)
+        *num = resp;
+    return r;
+}
+
+int bsp_bpmp_thermal_get_temp(uint32_t zone, int32_t* temp_mc) {
+    struct {
+        uint32_t type;
+        uint32_t zone;
+    } __attribute__((packed)) req = { ORIN_THERMAL_GET_TEMP, zone };
+    int32_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_THERMAL, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && temp_mc)
+        *temp_mc = resp;
+    return r;
+}
+
+int bsp_bpmp_thermal_get_thermtrip(uint32_t zone, int32_t* temp_mc) {
+    struct {
+        uint32_t type;
+        uint32_t zone;
+    } __attribute__((packed)) req = { ORIN_THERMAL_GET_THERMTRIP, zone };
+    int32_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_THERMAL, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && temp_mc)
+        *temp_mc = resp;
+    return r;
 }

@@ -10,7 +10,7 @@
 /*
  * Orin Nano framebuffer: the UEFI firmware (GOP) has already programmed the
  * scan-out when a display is attached.  We only map it into this process and
- * report its geometry; the caller (fbprobe / fbdisplayd) does pixel writes.
+ * report its geometry; the caller (fbdisplayd) does pixel writes.
  *
  * The kernel reserves the GOP range out of its heap and lets SYS_MEM_MAP map
  * it (Normal Non-Cacheable), so writes reach DRAM without cache aliasing.
