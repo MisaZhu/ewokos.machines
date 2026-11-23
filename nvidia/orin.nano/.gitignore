@@ -2,6 +2,8 @@
 efi/BOOTAA64.EFI
 efi/boot.elf
 efi/initramfs.img
+efi/initramfs.img.lz4
 efi/kernel.bin
 efi/.wdt_flag
+efi/__pycache__/
 test/__pycache__/

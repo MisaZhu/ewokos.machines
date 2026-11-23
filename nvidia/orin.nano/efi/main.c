@@ -814,12 +814,14 @@ static const char* pxe_path_name(int which, int i) {
         default: return 0;
         }
     }
-    switch (i) {
-    case 0: return "orin/INITRAMFS.IMG";
-    case 1: return "INITRAMFS.IMG";
-    case 2: return "initramfs.img";
-    case 3: return "orin/initramfs.img";
-    case 4: return "EFI/BOOT/INITRAMFS.IMG";
+    switch (i) {                /* boot ramfs (compressed candidates first) */
+    case 0: return "initramfs.img.lz4";
+    case 1: return "INITRAMFS.IMG.LZ4";
+    case 2: return "orin/INITRAMFS.IMG";
+    case 3: return "INITRAMFS.IMG";
+    case 4: return "initramfs.img";
+    case 5: return "orin/initramfs.img";
+    case 6: return "EFI/BOOT/INITRAMFS.IMG";
     default: return 0;
     }
 }
@@ -827,6 +829,8 @@ static const char* pxe_path_name(int which, int i) {
 /* Independent TFTP client via EFI_MTFTP4_PROTOCOL.  Configures its own
  * network (station/server IP) so it does not depend on the PXE session state
  * that the PXE base-code Mtftp uses (which returned EFI_TFTP_ERROR here). */
+static uint64_t arch_timer_ms(void);
+
 static void* read_file_mtftp4(const char* path, uint64_t max_size,
         uint64_t* out_size) {
     static EFI_GUID mt_guid = EFI_MTFTP4_PROTOCOL_GUID;
@@ -874,6 +878,7 @@ static void* read_file_mtftp4(const char* path, uint64_t max_size,
     tok.Buffer = (void*)(uintptr_t)abuf;
     tok.OptionCount = 0;
     tok.OptionList = 0;
+    uint64_t t0 = arch_timer_ms();
     st = mt->ReadFile(mt, &tok);
     con_puts("[uefi] mtftp4 read ");
     con_puts(path);
@@ -883,11 +888,262 @@ static void* read_file_mtftp4(const char* path, uint64_t max_size,
     con_hex(tok.Status);
     con_puts(" n=");
     con_dec(tok.BufferSize);
+    con_puts(" ms=");
+    con_dec(arch_timer_ms() - t0);
     con_puts("\n");
     if (EFI_ERROR(tok.Status) || tok.BufferSize == 0)
         return 0;
     *out_size = tok.BufferSize;
     return (void*)(uintptr_t)abuf;
+}
+
+/* ------------------------------------------------------------------ */
+/* HTTP download via EFI_HTTP_PROTOCOL (firmware HttpDxe)              */
+/*                                                                     */
+/* TCP streams the file instead of TFTP's 512-byte lockstep blocks,    */
+/* which cost ~50s per 16MB on this rig.  Same static station config   */
+/* as MTFTP4 (192.168.8.42/24, server 192.168.8.1:80 serves the TFTP   */
+/* root over HTTP too).  Falls back to MTFTP4 on any failure.          */
+/* ------------------------------------------------------------------ */
+static int g_http_dead;   /* connection-level failure: skip HTTP this boot */
+
+static uint64_t arch_timer_ms(void) {
+    uint64_t cnt, frq;
+    __asm__ volatile("mrs %0, cntpct_el0" : "=r"(cnt));
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frq));
+    return frq ? cnt / (frq / 1000) : 0;
+}
+
+static void http_notify(EFI_EVENT ev, void* ctx) {
+    (void)ev;
+    (void)ctx;
+}
+
+/* Poll until the token leaves EFI_NOT_READY (the HttpDxe worker signals
+ * completion from a DPC; Poll drives the underlying TCP/SNP). */
+static int http_wait(EFI_HTTP_PROTOCOL* http, EFI_HTTP_TOKEN* tok,
+        uint64_t timeout_ms) {
+    uint64_t t0 = arch_timer_ms();
+    while (tok->Status == EFI_NOT_READY) {
+        if (arch_timer_ms() - t0 > timeout_ms)
+            return -1;
+        http->Poll(http);
+        gBS->Stall(1000);
+    }
+    return EFI_ERROR(tok->Status) ? -1 : 0;
+}
+
+static int ascii_ieq(const char* a, const char* b) {
+    for (; *a && *b; a++, b++) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z')
+            ca = (char)(ca + ('a' - 'A'));
+        if (cb >= 'A' && cb <= 'Z')
+            cb = (char)(cb + ('a' - 'A'));
+        if (ca != cb)
+            return 0;
+    }
+    return *a == *b;
+}
+
+static uint64_t ascii_dec(const char* s) {
+    uint64_t v = 0;
+    for (; *s >= '0' && *s <= '9'; s++)
+        v = v * 10 + (uint64_t)(*s - '0');
+    return v;
+}
+
+static void* http_get(EFI_HTTP_PROTOCOL* http, const char* path,
+        uint64_t max_size, uint64_t* out_size) {
+    EFI_HTTPv4_ACCESS_POINT ap;
+    memset(&ap, 0, sizeof(ap));
+    ap.LocalAddress.Addr[0] = 192; ap.LocalAddress.Addr[1] = 168;
+    ap.LocalAddress.Addr[2] = 8;   ap.LocalAddress.Addr[3] = 42;
+    ap.LocalSubnet.Addr[0] = 255;  ap.LocalSubnet.Addr[1] = 255;
+    ap.LocalSubnet.Addr[2] = 255;  ap.LocalSubnet.Addr[3] = 0;
+    EFI_HTTP_CONFIG_DATA cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.HttpVersion = 1;            /* HTTP/1.1 */
+    cfg.TimeOutMillisec = 10000;
+    cfg.AccessPoint.IPv4Node = &ap;
+    EFI_STATUS st = http->Configure(http, &cfg);
+    if (EFI_ERROR(st)) {
+        con_puts("[uefi] http configure st=");
+        con_hex(st);
+        con_puts("\n");
+        g_http_dead = 1;
+        return 0;
+    }
+
+    EFI_CREATE_EVENT_FN create_event = (EFI_CREATE_EVENT_FN)gBS->CreateEvent;
+    EFI_CLOSE_EVENT_FN close_event = (EFI_CLOSE_EVENT_FN)gBS->CloseEvent;
+    EFI_EVENT ev = 0;
+    if (EFI_ERROR(create_event(EVT_NOTIFY_SIGNAL, TPL_CALLBACK,
+                    (void*)http_notify, 0, &ev))) {
+        g_http_dead = 1;
+        return 0;
+    }
+
+    void* result = 0;
+    EFI_PHYSICAL_ADDRESS buf = 0;
+    UINTN pages = 0;
+
+    char url[192];
+    const char* pre = "http://192.168.8.1/";
+    uint64_t off = 0;
+    for (; pre[off]; off++)
+        url[off] = pre[off];
+    for (uint64_t j = 0; path[j] && off + 1 < sizeof(url); j++)
+        url[off++] = path[j];
+    url[off] = 0;
+    CHAR16 wurl[192];
+    ascii_to_w(url, wurl, sizeof(wurl) / sizeof(wurl[0]));
+
+    EFI_HTTP_REQUEST_DATA req;
+    req.Method = 0;                 /* HttpMethodGet */
+    req.Url = wurl;
+    EFI_HTTP_HEADER hdr;
+    hdr.FieldName = (CHAR8*)"Host";
+    hdr.FieldValue = (CHAR8*)"192.168.8.1";
+    EFI_HTTP_MESSAGE msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.Data.Request = &req;
+    msg.HeaderCount = 1;
+    msg.Headers = &hdr;
+    EFI_HTTP_TOKEN tok;
+    tok.Event = ev;
+    tok.Status = EFI_NOT_READY;
+    tok.Message = &msg;
+
+    uint64_t t0 = arch_timer_ms();
+    st = http->Request(http, &tok);
+    if (EFI_ERROR(st) || http_wait(http, &tok, 10000)) {
+        con_puts("[uefi] http request ");
+        con_puts(path);
+        con_puts(" failed st=");
+        con_hex(st);
+        con_puts("\n");
+        http->Cancel(http, 0);
+        g_http_dead = 1;
+        goto out;
+    }
+
+    /* First Response delivers the status line + headers (driver-allocated
+     * Headers array, caller frees); body bytes may already be cached. */
+    EFI_HTTP_RESPONSE_DATA resp;
+    memset(&resp, 0, sizeof(resp));
+    memset(&msg, 0, sizeof(msg));
+    msg.Data.Response = &resp;
+    tok.Status = EFI_NOT_READY;
+    st = http->Response(http, &tok);
+    int wr = http_wait(http, &tok, 10000);
+    uint64_t clen = 0;
+    for (UINTN h = 0; h < msg.HeaderCount; h++) {
+        if (ascii_ieq(msg.Headers[h].FieldName, "Content-Length"))
+            clen = ascii_dec(msg.Headers[h].FieldValue);
+    }
+    if (msg.Headers)
+        gBS->FreePool(msg.Headers);
+    if (wr != 0 || resp.StatusCode != 3 /* 200 OK */) {
+        con_puts("[uefi] http ");
+        con_puts(path);
+        con_puts(" status=");
+        con_dec(resp.StatusCode);
+        con_puts(" st=");
+        con_hex(tok.Status);
+        con_puts("\n");
+        /* No status at all = connect/timeout failure; a real HTTP error
+         * (e.g. 404) only means this candidate path is missing. */
+        if (resp.StatusCode == 0)
+            g_http_dead = 1;
+        goto out;
+    }
+    if (clen == 0 || clen > max_size) {
+        con_puts("[uefi] http bad length ");
+        con_dec(clen);
+        con_puts("\n");
+        goto out;
+    }
+
+    pages = (UINTN)((clen + 0x3FFF + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE);
+    buf = alloc_pages(pages);
+    if (buf == 0)
+        goto out;
+    uint64_t abuf = (buf + 0x3FFF) & ~0x3FFFULL;
+    uint64_t got = 0;
+    while (got < clen) {
+        uint64_t chunk = clen - got;
+        if (chunk > 256 * 1024)
+            chunk = 256 * 1024;
+        memset(&msg, 0, sizeof(msg));
+        msg.Body = (void*)(uintptr_t)(abuf + got);
+        msg.BodyLength = (UINTN)chunk;
+        tok.Status = EFI_NOT_READY;
+        st = http->Response(http, &tok);
+        if (EFI_ERROR(st) || http_wait(http, &tok, 15000)) {
+            con_puts("[uefi] http body st=");
+            con_hex(tok.Status);
+            con_puts(" got=");
+            con_dec(got);
+            con_puts("\n");
+            break;
+        }
+        if (msg.BodyLength == 0)
+            break;                  /* server closed the connection */
+        got += msg.BodyLength;
+    }
+    if (got != clen) {
+        gBS->FreePages(buf, pages);
+        buf = 0;
+        g_http_dead = 1;
+        goto out;
+    }
+    *out_size = clen;
+    result = (void*)(uintptr_t)abuf;
+    con_puts("[uefi] http read ");
+    con_puts(path);
+    con_puts(" n=");
+    con_dec(clen);
+    con_puts(" ms=");
+    con_dec(arch_timer_ms() - t0);
+    con_puts("\n");
+
+out:
+    close_event(ev);
+    return result;
+}
+
+static void* read_file_http(const char* path, uint64_t max_size,
+        uint64_t* out_size) {
+    static EFI_GUID sb_guid = EFI_HTTP_SERVICE_BINDING_PROTOCOL_GUID;
+    static EFI_GUID http_guid = EFI_HTTP_PROTOCOL_GUID;
+    UINTN n = 0;
+    EFI_HANDLE* handles = 0;
+    if (EFI_ERROR(gBS->LocateHandleBuffer(2, &sb_guid, 0, &n, &handles)) ||
+            n == 0 || handles == 0)
+        return 0;
+    void* result = 0;
+    for (UINTN i = 0; i < n && result == 0; i++) {
+        EFI_SERVICE_BINDING_PROTOCOL* sb = 0;
+        if (EFI_ERROR(gBS->HandleProtocol(handles[i], &sb_guid, (void**)&sb))
+                || sb == 0)
+            continue;
+        EFI_HANDLE child = 0;
+        if (EFI_ERROR(sb->CreateChild(sb, &child)) || child == 0)
+            continue;
+        EFI_HTTP_PROTOCOL* http = 0;
+        if (EFI_ERROR(gBS->HandleProtocol(child, &http_guid, (void**)&http))
+                || http == 0) {
+            sb->DestroyChild(sb, child);
+            continue;
+        }
+        result = http_get(http, path, max_size, out_size);
+        sb->DestroyChild(sb, child);
+        if (g_http_dead)
+            break;
+    }
+    gBS->FreePool(handles);
+    return result;
 }
 
 /* Fetch a file via the firmware PXE base code (uses the DHCP-configured
@@ -935,6 +1191,131 @@ static void* read_file_pxe(const char* path, uint64_t max_size,
     return (void*)(uintptr_t)abuf;
 }
 
+/* ------------------------------------------------------------------ */
+/* LZ4 block decompression (packed ramfs, see mklz4.py)                */
+/* ------------------------------------------------------------------ */
+
+/* Raw LZ4 block decoder: token = literal-length<<4 | (match-length-4),
+ * 15 escapes extend the length byte-wise; matches copy byte-by-byte so
+ * overlapping (RLE-style) offsets are safe.  Returns bytes written, -1
+ * on any malformed input. */
+static int64_t lz4_decompress(const uint8_t* src, uint64_t slen,
+        uint8_t* dst, uint64_t dcap) {
+    const uint8_t* ip = src;
+    const uint8_t* iend = src + slen;
+    uint8_t* op = dst;
+    uint8_t* oend = dst + dcap;
+    while (ip < iend) {
+        uint32_t tok = *ip++;
+        uint64_t lit = tok >> 4;
+        if (lit == 15) {
+            uint32_t b;
+            do {
+                if (ip >= iend)
+                    return -1;
+                b = *ip++;
+                lit += b;
+            } while (b == 255);
+        }
+        if (lit > (uint64_t)(iend - ip) || lit > (uint64_t)(oend - op))
+            return -1;
+        while (lit--)
+            *op++ = *ip++;
+        if (ip == iend)
+            break;              /* last sequence is literals-only */
+        if (iend - ip < 2)
+            return -1;
+        uint32_t off = (uint32_t)ip[0] | ((uint32_t)ip[1] << 8);
+        ip += 2;
+        uint64_t ml = (tok & 15) + 4;
+        if ((tok & 15) == 15) {
+            uint32_t b;
+            do {
+                if (ip >= iend)
+                    return -1;
+                b = *ip++;
+                ml += b;
+            } while (b == 255);
+        }
+        if (off == 0 || off > (uint64_t)(op - dst) ||
+                ml > (uint64_t)(oend - op))
+            return -1;
+        const uint8_t* m = op - off;
+        while (ml--)
+            *op++ = *m++;
+    }
+    return (int64_t)(op - dst);
+}
+
+static int path_is_lz4(const char* p) {
+    uint64_t n = 0;
+    while (p[n])
+        n++;
+    if (n < 4 || p[n - 4] != '.')
+        return 0;
+    char a = p[n - 3], b = p[n - 2], c = p[n - 1];
+    if (a >= 'A' && a <= 'Z')
+        a = (char)(a + ('a' - 'A'));
+    if (b >= 'A' && b <= 'Z')
+        b = (char)(b + ('a' - 'A'));
+    return a == 'l' && b == 'z' && c == '4';
+}
+
+/* OLZ4 container: "OLZ4" + u32 LE usize + u32 LE csize + raw LZ4 block.
+ * Inflate into a fresh 16KB-aligned buffer; the kernel handoff then sees
+ * the plain image exactly as with an uncompressed download. */
+static void* lz4_unwrap(void* buf, uint64_t* size) {
+    uint8_t* b = (uint8_t*)buf;
+    if (*size < 12 || b[0] != 'O' || b[1] != 'L' || b[2] != 'Z' ||
+            b[3] != '4') {
+        con_puts("[uefi] lz4: bad magic\n");
+        return 0;
+    }
+    uint32_t usize = (uint32_t)b[4] | ((uint32_t)b[5] << 8) |
+        ((uint32_t)b[6] << 16) | ((uint32_t)b[7] << 24);
+    uint32_t csize = (uint32_t)b[8] | ((uint32_t)b[9] << 8) |
+        ((uint32_t)b[10] << 16) | ((uint32_t)b[11] << 24);
+    if (usize == 0 || usize > 64ULL * 1024 * 1024 ||
+            csize != *size - 12) {
+        con_puts("[uefi] lz4: bad sizes\n");
+        return 0;
+    }
+    UINTN pages = (UINTN)((usize + 0x3FFF + EFI_PAGE_SIZE - 1) /
+            EFI_PAGE_SIZE);
+    EFI_PHYSICAL_ADDRESS dst = alloc_pages(pages);
+    if (dst == 0)
+        return 0;
+    uint64_t adst = (dst + 0x3FFF) & ~0x3FFFULL;
+    uint64_t t0 = arch_timer_ms();
+    int64_t n = lz4_decompress(b + 12, csize, (uint8_t*)(uintptr_t)adst,
+            usize);
+    if (n != (int64_t)usize) {
+        con_puts("[uefi] lz4: decode failed n=");
+        con_hex((uint64_t)n);
+        con_puts("\n");
+        gBS->FreePages(dst, pages);
+        return 0;
+    }
+    *size = usize;
+    con_puts("[uefi] lz4 inflated ");
+    con_dec(usize);
+    con_puts(" bytes ms=");
+    con_dec(arch_timer_ms() - t0);
+    con_puts("\n");
+    return (void*)(uintptr_t)adst;
+}
+
+static void* net_try(const char* path, uint64_t max_size, uint64_t* size) {
+    void* p = 0;
+    if (!g_http_dead)
+        p = read_file_http(path, max_size, size);
+    if (!p)
+        p = read_file_mtftp4(path, max_size, size);
+    if (!p)
+        p = read_file_pxe(path, max_size, size);
+    return p;
+}
+
 static void* read_first(int which, uint64_t* size) {
     for (int i = 0; path_name(which, i); i++) {
         const char* path = path_name(which, i);
@@ -945,7 +1326,11 @@ static void* read_first(int which, uint64_t* size) {
         if (p)
             return p;
     }
-    /* No local filesystem (PXE boot): fetch over TFTP from the PXE server. */
+    /* No local filesystem (PXE boot): fetch from the PXE server.  HTTP
+     * first (TCP stream, much faster than TFTP block lockstep); MTFTP4
+     * and PXE base-code remain as fallbacks.  Compressed (.lz4) ramfs
+     * candidates come first; a bad/missing compressed image falls through
+     * to the plain one. */
     uint64_t max_size = (which == 0) ? (4ULL * 1024 * 1024)
                                      : (64ULL * 1024 * 1024);
     for (int i = 0; pxe_path_name(which, i); i++) {
@@ -953,12 +1338,14 @@ static void* read_first(int which, uint64_t* size) {
         con_puts("[uefi] try net ");
         con_puts(path);
         con_puts("\n");
-        void* p = read_file_mtftp4(path, max_size, size);
-        if (p)
+        void* p = net_try(path, max_size, size);
+        if (!p)
+            continue;
+        if (!path_is_lz4(path))
             return p;
-        p = read_file_pxe(path, max_size, size);
-        if (p)
-            return p;
+        void* u = lz4_unwrap(p, size);
+        if (u)
+            return u;
     }
     return 0;
 }
@@ -1286,6 +1673,31 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         }
     }
 
+    /* ---- firmware device tree: record it and extract /model ---- */
+    uint64_t dtb_addr = 0, dtb_size = 0;
+    char board_model[32] = {0};
+    if (SystemTable->ConfigurationTable) {
+        for (UINTN i = 0; i < SystemTable->NumberOfTableEntries; i++) {
+            EFI_CONFIGURATION_TABLE* ct = &SystemTable->ConfigurationTable[i];
+            if (guid_eq(&ct->VendorGuid, (EFI_GUID*)&dtb_guid)) {
+                dtb_addr = (uint64_t)(uintptr_t)ct->VendorTable;
+                if (dtb_addr) {
+                    uint32_t totalsize = fdt_be32((const void*)(uintptr_t)
+                            (dtb_addr + 4));
+                    if (totalsize > 0 && totalsize < 4 * 1024 * 1024)
+                        dtb_size = totalsize;
+                }
+                break;
+            }
+        }
+    }
+    if (dtb_addr) {
+        con_puts("[uefi] dtb @");
+        con_hex(dtb_addr);
+        con_puts(" size=");
+        con_dec(dtb_size);
+        con_puts("\n");
+    }
     fdt_model(dtb_addr, board_model, sizeof(board_model));
     if (!board_model[0])
         smbios_product_name(board_model, sizeof(board_model));

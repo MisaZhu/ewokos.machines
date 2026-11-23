@@ -158,6 +158,7 @@ $(INITRAMFS_IMAGE): FORCE
 	 mke2fs -t ext3 -b 4096 -I 128 -J size=4 "$@"; \
 	 cd "$(RAMFS_STAGING)" && find . -type f | e2cp -ap -G0 -O0 -d "$(abspath $@):$(empty)/"
 	@echo "==== $@ created (full xwin desktop rootfs) ===="
+	@python3 mklz4.py "$@" "$@.lz4"
 else
 $(INITRAMFS_IMAGE): FORCE
 	@missing=0; for f in $(SYSTEM_FILES); do \
@@ -237,6 +238,7 @@ $(INITRAMFS_IMAGE): FORCE
 	@mke2fs -t ext3 -b 4096 -I 128 -J size=4 "$@"
 	@cd "$(RAMFS_STAGING)" && find . -type f | e2cp -ap -G0 -O0 -d "$(abspath $@):$(empty)/"
 	@echo "==== $@ created from prebuilt kernel/system outputs ===="
+	@python3 mklz4.py "$@" "$@.lz4"
 endif
 
 $(LOADER_EFI): $(LOADER_ELF) mkpefi.py
@@ -253,7 +255,7 @@ $(LOADER_OBJ): main.c efi.h FORCE
 
 clean:
 	rm -f $(LOADER_OBJ) $(LOADER_ELF) $(LOADER_EFI) \
-		$(KERNEL_IMAGE) $(INITRAMFS_IMAGE)
+		$(KERNEL_IMAGE) $(INITRAMFS_IMAGE) $(INITRAMFS_IMAGE).lz4
 	rm -rf build/initramfs
 
 FORCE:
