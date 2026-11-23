@@ -54,6 +54,9 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag \
 	$(SYSTEM_ROOT)/drivers/orin.nano/dceprobe \
 	$(SYSTEM_ROOT)/drivers/orin.nano/fand \
+	$(SYSTEM_ROOT)/drivers/orin.nano/vicprobe \
+	$(SYSTEM_ROOT)/drivers/orin.nano/firmware/vic.bin \
+	$(SYSTEM_ROOT)/drivers/orin.nano/firmware/LICENCE.nvidia \
 	$(SYSTEM_ROOT)/drivers/netd \
 	$(SYSTEM_ROOT)/drivers/timerd \
 	$(SYSTEM_ROOT)/drivers/piped $(SYSTEM_ROOT)/drivers/ramfsd \
@@ -204,7 +207,12 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/dceprobe" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/fand" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/vicprobe" \
 		"$(RAMFS_STAGING)/drivers/orin.nano/"
+	@mkdir -p "$(RAMFS_STAGING)/drivers/orin.nano/firmware"
+	@cp -p "$(SYSTEM_ROOT)/drivers/orin.nano/firmware/vic.bin" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/firmware/LICENCE.nvidia" \
+		"$(RAMFS_STAGING)/drivers/orin.nano/firmware/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/netd" \
 		"$(SYSTEM_ROOT)/drivers/timerd" \
 		"$(SYSTEM_ROOT)/drivers/piped" "$(SYSTEM_ROOT)/drivers/ramfsd" \

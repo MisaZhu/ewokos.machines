@@ -6,10 +6,15 @@
 # already up from /etc/init.ramfs.rd, so this profile only brings up the
 # framebuffer display stack and a graphical console session.
 #
-# Display is CPU-rendered: Orin has no usable GPU (signed falcon fw blocker),
-# so no g2dd is started -- displayd falls back to its CPU blit/rotate kernels
-# and fbdisplayd flushes the linear scan-out FB with memcpy.  The FB phys is
-# the UEFI provider's engine-reported scan-out surface (read_provider_fb).
+# Display is CPU-rendered by default.  g2dd (shared 2D daemon, NEON
+# software back end on Orin) is staged but NOT started until the VIC
+# bring-up is verified: its hardware path stays closed unless
+# /tmp/vic2d.cfg sets VIC2D_ENABLE=1.  Without g2dd, displayd falls back
+# to its CPU blit/rotate kernels and fbdisplayd flushes the linear
+# scan-out FB with memcpy.  The FB phys is the UEFI provider's
+# engine-reported scan-out surface (read_provider_fb).
+# Enable once vicprobe M1 + the g2d selftest pass (before displaymand):
+# @/bin/ipcserv /drivers/orin.nano/g2dd /dev/g2d
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/orin.nano/fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/fontd

@@ -266,4 +266,41 @@
 #define ORIN_WDT_BOOT_TIMEOUT   60u
 #define ORIN_WDT_RUN_TIMEOUT    60u
 
+/* ================================================================== */
+/* VIC 2D engine + host1x (Tegra234).  Addresses from mainline         */
+/* tegra234.dtsi (vic@15340000, host1x@13e00000, smmu_niso1); BPMP     */
+/* IDs from tegra234-{clock,reset,powergate}.h.  Register offsets and  */
+/* programming sequences: mainline drivers/gpu/host1x (host1x08) +     */
+/* drivers/gpu/drm/tegra/{vic,falcon}.c and Orin TRM DP-10508-002      */
+/* §7.3 (VIC) / host1x chapter.                                        */
+/* ================================================================== */
+#define ORIN_VIC_PHY            0x15340000ULL
+#define ORIN_VIC_SIZE           0x00040000u
+#define ORIN_VIC_CLK            167u  /* CLK_VIC */
+#define ORIN_VIC_RESET          113u  /* RESET_VIC */
+#define ORIN_VIC_PG             29u   /* POWER_DOMAIN_VIC */
+#define ORIN_VIC_SID            0x34u /* smmu_niso1 stream ID */
+
+#define ORIN_HOST1X_COMMON_PHY  0x13e00000ULL
+#define ORIN_HOST1X_HV_PHY      0x13e10000ULL
+#define ORIN_HOST1X_VM_PHY      0x13e40000ULL
+#define ORIN_HOST1X_APERTURE    0x00010000u
+#define ORIN_HOST1X_CLK         46u   /* CLK_HOST1X */
+#define ORIN_HOST1X_SID         0x27u /* smmu_niso1 fetch stream ID */
+
+/* smmu_niso1: two interleaved MMU-500 instances, both must agree.
+ * SMMUv2 global register space 0: stream matching is by SMR index, not
+ * by stream ID, so S2CR(n) belongs to whichever SMR(n) matches the SID. */
+#define ORIN_SMMU_NISO1_A_PHY   0x08000000ULL
+#define ORIN_SMMU_NISO1_B_PHY   0x07000000ULL
+#define ORIN_SMMU_GRO_SIZE      0x00010000u
+#define ORIN_SMMU_SCR0          0x000u
+#define ORIN_SMMU_SCR0_CLIENTPD (1u << 0)   /* 1 = SMMU off, all bypass */
+#define ORIN_SMMU_SCR0_USFCFG   (1u << 10)  /* 1 = unmatched streams fault */
+#define ORIN_SMMU_IDR0          0x020u      /* NUMSMRG in [7:0] */
+#define ORIN_SMMU_SMR(n)        (0x800u + 4u * (n))
+#define ORIN_SMMU_SMR_VALID     (1u << 31)
+#define ORIN_SMMU_S2CR(n)       (0xc00u + 4u * (n))
+#define ORIN_SMMU_S2CR_TYPE(v)  (((v) >> 16) & 3u) /* 0 trans 1 bypass 2 fault */
+
 #endif

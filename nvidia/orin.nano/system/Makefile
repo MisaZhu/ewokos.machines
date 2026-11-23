@@ -43,6 +43,10 @@ basic_sys: kernel_heads ewok_heads platform_headers
 	$(MAKE) -C drivers basic
 	# netd: shared TCP/IP stack (DHCP) on top of the machine /dev/eth0.
 	$(MAKE) -C $(SYS_ROOT_DIR)/network/drivers/netd
+	# VIC falcon ucode (linux-firmware nvidia/tegra234/vic.bin, redistributable
+	# per LICENCE.nvidia) for the vicprobe M1 bring-up.
+	@mkdir -p $(TARGET_DIR)/drivers/$(HW)/firmware
+	@cp -p firmware/vic.bin firmware/LICENCE.nvidia $(TARGET_DIR)/drivers/$(HW)/firmware/
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/basic/. ${TARGET_DIR}/etc/
 
@@ -56,11 +60,14 @@ usb: basic_sys
 	for d in $(USB_DRIVERS); do $(MAKE) -C $(SYS_ROOT_DIR)/gui/drivers/$$d || exit 1; done
 
 # Minimal framebuffer GUI on the working linear scan-out FB: the shared
-# display server (displayd, CPU rendering -- no GPU/g2dd on Orin) driven by
-# the machine fbdisplayd, plus the display manager, font and console daemons
-# and a graphical console session.  USB HID input comes from the usb target.
+# display server (displayd) driven by the machine fbdisplayd, plus the
+# display manager, font and console daemons and a graphical console
+# session.  g2dd is the shared 2D offload daemon: its Orin back end is
+# software (NEON) by default and only touches the VIC engine when
+# /tmp/vic2d.cfg opts in (VIC2D_ENABLE=1) after staged vicprobe bring-up.
+# USB HID input comes from the usb target.
 # `make gui` stages the full rootfs; ../efi packs the GUI profile + assets.
-GUI_DRIVERS = displaymand consoled fontd
+GUI_DRIVERS = displaymand consoled fontd g2dd
 gui: gui_sys
 	@$(MAKE) final
 
@@ -74,10 +81,11 @@ gui_sys: usb
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/gui/. ${TARGET_DIR}/etc/
 
-# Full xwin desktop on the CPU-rendered framebuffer: the shared X server
-# (xserverd /dev/x), the misawm window manager session, statusbar/xlauncher,
-# and USB keyboard/mouse input (xim_none/xmouse).  No GPU/g2dd, touch, wlan,
-# btd or audio on Orin -- the desktop is pure CPU blit over fbdisplayd.
+# Full xwin desktop on the framebuffer: the shared X server (xserverd
+# /dev/x), the misawm window manager session, statusbar/xlauncher, and
+# USB keyboard/mouse input (xim_none/xmouse).  Rendering rides g2dd (NEON
+# software by default; gated VIC 2D offload, see the gui target).  No
+# touch, wlan, btd or audio on Orin.
 # `make x` stages the full rootfs; ../efi packs the X profile + assets.
 x: x_sys
 	@$(MAKE) final

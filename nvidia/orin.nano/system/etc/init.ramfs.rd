@@ -32,6 +32,11 @@
 # via BPMP before any MMIO).  Auto policy = NVIDIA tj-thermal trips;
 # /dev/fan accepts status/auto/manual/run/duty commands.
 @/bin/ipcserv /drivers/orin.nano/fand /dev/fan
+# VIC 2D engine M1 probe: DISABLED until staged manual testing is approved.
+# First VIC MMIO touch is unverified (unclocked/firewalled read would SError);
+# run stages by hand from the rescue console: vicprobe regs / host1x / syncpt
+# / channel / boot / method.  Enable the one-shot line once M1 is verified.
+# @/drivers/orin.nano/vicprobe all
 # XUSB host: shared usbhostd (enumeration/hub/HID/MSC) over the machine
 # bsp_usb contract; hid_keybd/hid_moused consume HID reports.  MSC sticks
 # auto-mount at /mnt/udisk0 via usbfat32fsd.

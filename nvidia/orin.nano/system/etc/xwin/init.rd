@@ -7,10 +7,14 @@
 # /etc/init.ramfs.rd, so this profile only brings up the display stack, the X
 # server and the misawm desktop session.
 #
-# Display is CPU-rendered: Orin has no usable GPU (signed falcon fw blocker),
-# so no g2dd is started -- displayd/xserverd fall back to their CPU blit/rotate
-# kernels and fbdisplayd flushes the linear scan-out FB with memcpy.  The FB
-# phys is the UEFI provider's engine-reported scan-out surface (read_provider_fb).
+# 2D offload is OFF by default: the two commented lines below start g2dd
+# (shared 2D daemon, NEON engine) with the VIC engine taking large 1:1 blits,
+# right-angle rotates and the scan-out push.  It works, but once /dev/g2d
+# exists displayd/xserverd allocate contiguous canvases, which the kernel
+# maps uncached, and the compositor's CPU alpha blends on them get several
+# times slower than on cached memory: a full recomposite of a maximized
+# glass window measured 135 ms with g2dd+VIC against 43 ms without.  To try
+# it, uncomment both lines; g2dd must start before displaymand.
 #
 # No touch (xtouch), wlan, btd, battery (powerd/adspas) or audio on Orin: the
 # desktop is driven purely by the USB keyboard/mouse through xim_none/xmouse.
@@ -22,6 +26,8 @@
 # fbdisplayd's init, scanning out the kernel-reserved 4K FB (pd.fb) it renders
 # into.  No separate dceprobe launch is needed; fbdisplayd's residency keeps the
 # DCE channels/instance memory alive.
+#@export VIC2D_ENABLE=1
+#@/bin/ipcserv /drivers/orin.nano/g2dd /dev/g2d
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/orin.nano/fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/fontd

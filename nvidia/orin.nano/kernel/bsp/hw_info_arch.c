@@ -438,6 +438,24 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
             phy_top <= ORIN_DCE_PHY + ORIN_DCE_SIZE)
         return 0;
 
+    /* VIC 2D engine: falcon/THI aperture, the three host1x apertures
+     * (common MLOCKs, hypervisor VM tables, vm channels/syncpts) and the
+     * smmu_niso1 global registers (read-only stream-policy check). */
+    if (phy_base >= ORIN_VIC_PHY && phy_top <= ORIN_VIC_PHY + ORIN_VIC_SIZE)
+        return 0;
+    if (phy_base >= ORIN_HOST1X_COMMON_PHY &&
+            phy_top <= ORIN_HOST1X_HV_PHY + ORIN_HOST1X_APERTURE)
+        return 0;
+    if (phy_base >= ORIN_HOST1X_VM_PHY &&
+            phy_top <= ORIN_HOST1X_VM_PHY + ORIN_HOST1X_APERTURE)
+        return 0;
+    if (phy_base >= ORIN_SMMU_NISO1_A_PHY &&
+            phy_top <= ORIN_SMMU_NISO1_A_PHY + ORIN_SMMU_GRO_SIZE)
+        return 0;
+    if (phy_base >= ORIN_SMMU_NISO1_B_PHY &&
+            phy_top <= ORIN_SMMU_NISO1_B_PHY + ORIN_SMMU_GRO_SIZE)
+        return 0;
+
     /* PCIe C1 (M.2 Key-E) RC windows + ECAM enumeration sub-range. */
     if (phy_base >= ORIN_PCIE_C1_APPL_PHY &&
             phy_top <= ORIN_PCIE_C1_APPL_PHY + 0x20000)
