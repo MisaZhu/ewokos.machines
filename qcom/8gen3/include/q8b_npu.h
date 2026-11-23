@@ -39,12 +39,15 @@
 #define Q8B_NPU_SYS_OFF    (Q8B_NPU_ABI_BASE + 0x7eu) /* PSCI SYSTEM_OFF */
 #define Q8B_NPU_SYS_RESET  (Q8B_NPU_ABI_BASE + 0x7fu) /* PSCI SYSTEM_RESET */
 /* Secondary-core PSCI CPU_SUSPEND gate: arg != 0 enables, 0 disables (WFI).
- * Core 0 never suspends.  Defaults off at boot; powerd toggles it. */
+ * Core 0 never suspends.  Defaults off at boot; powerd toggles it.  Returns
+ * 0, or Q8B_NPU_PAS_UNSUPPORTED when the kernel cannot resume a core. */
 #define Q8B_NPU_CPU_SLEEP  (Q8B_NPU_ABI_BASE + 0x7du)
-/* Read-only CPU_SUSPEND verification: returns the bitmask of cores that
- * completed at least one suspend/resume cycle (bit N = core N).  TW220 has
- * no wired kernel console, so powerd surfaces this in `status`. */
+/* Read-only CPU_SUSPEND verification: returns a core bitmask (bit N = core
+ * N) selected by arg; anything above 0xff is a Q8B_NPU_PAS_* error.  TW220
+ * has no wired kernel console, so powerd surfaces this in `status`. */
 #define Q8B_NPU_CPU_SLEEP_STATS (Q8B_NPU_ABI_BASE + 0x7cu)
+#define Q8B_CPU_SLEEP_STATS_RESUMED 0u /* completed a power-down/resume cycle */
+#define Q8B_CPU_SLEEP_STATS_PARKED  1u /* inside CPU_SUSPEND right now */
 
 /* Nonblocking calls retain owned DMA until POLL consumes the response or
  * PAS_STOP has successfully quiesced the DSP.  Required for reverse RPC. */
