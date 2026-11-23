@@ -52,6 +52,7 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/drivers/orin.nano/hid_moused \
 	$(SYSTEM_ROOT)/drivers/orin.nano/usbfat32fsd \
 	$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag \
+	$(SYSTEM_ROOT)/drivers/orin.nano/dceprobe \
 	$(SYSTEM_ROOT)/drivers/orin.nano/fand \
 	$(SYSTEM_ROOT)/drivers/netd \
 	$(SYSTEM_ROOT)/drivers/timerd \
@@ -188,6 +189,7 @@ $(INITRAMFS_IMAGE): FORCE
 	@for t in $(DEBUG_TOOLS); do \
 		cp -p "$(SYSTEM_ROOT)/bin/$$t" "$(RAMFS_STAGING)/bin/"; done
 	@cp -p "$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag" "$(RAMFS_STAGING)/bin/bp"
+	@cp -p "$(SYSTEM_ROOT)/drivers/orin.nano/dceprobe" "$(RAMFS_STAGING)/bin/dp"
 	@cp -p "$(SYSTEM_ROOT)/drivers/orin.nano/uartd" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/net" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/pcied" \
@@ -200,6 +202,7 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/drivers/orin.nano/hid_moused" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/usbfat32fsd" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/bpmpdiag" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/dceprobe" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/fand" \
 		"$(RAMFS_STAGING)/drivers/orin.nano/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/netd" \

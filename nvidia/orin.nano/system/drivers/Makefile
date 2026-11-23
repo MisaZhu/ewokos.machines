@@ -1,4 +1,4 @@
-BASIC_DIRS = uartd net pcied i2cd orinmon gpiod sdprobe bpmpdiag fand
+BASIC_DIRS = uartd net pcied i2cd orinmon gpiod sdprobe bpmpdiag fand dceprobe
 GUI_DIRS = fbdisplayd
 
 basic: $(BASIC_DIRS)

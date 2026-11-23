@@ -8,10 +8,69 @@
 #include <ewoksys/klog.h>
 #include <orin_net.h>
 
+/* One BPMP debugfs clock attribute as a trimmed string. */
+static void clk_attr(const char* name, const char* attr, char* out, uint32_t cap) {
+    char path[112];
+    uint32_t got = 0;
+    snprintf(path, sizeof(path), "/clk/%s/%s", name, attr);
+    out[0] = 0;
+    if (bsp_bpmp_debug_read(path, out, cap - 1, &got) != 0)
+        got = 0;
+    while (got && (out[got - 1] == '\n' || out[got - 1] == ' ' || out[got - 1] == 0))
+        got--;
+    out[got] = 0;
+}
+
+/* Global (all-masters) view of a clock subtree: BPMP refcount, per-master MRQ
+ * enable mask, hardware state.  MRQ_CLK IS_ENABLED only shows our own refs. */
+static void clk_tree(const char* name, int depth) {
+    char st[16], ref[16], mrq[24], rate[24], par[40], kids[400], pad[20];
+    int n = depth * 2 < (int)sizeof(pad) - 1 ? depth * 2 : (int)sizeof(pad) - 1;
+    memset(pad, ' ', (size_t)n);
+    pad[n] = 0;
+    clk_attr(name, "state", st, sizeof(st));
+    clk_attr(name, "refcount", ref, sizeof(ref));
+    clk_attr(name, "mrqcount", mrq, sizeof(mrq));
+    clk_attr(name, "rate", rate, sizeof(rate));
+    clk_attr(name, "parent", par, sizeof(par));
+    clk_attr(name, "children", kids, sizeof(kids));
+    klog("bpmpclk: %s%s state=%s ref=%s mrq=%s rate=%s parent=%s\n", pad, name, st, ref,
+            mrq, rate, par);
+    if (depth >= 8)
+        return;
+    for (char* k = kids; *k; ) {
+        char child[40];
+        int c = 0;
+        while (*k == ' ')
+            k++;
+        if (!*k)
+            break;
+        while (*k && *k != ' ') {
+            if (c < (int)sizeof(child) - 1)
+                child[c++] = *k;
+            k++;
+        }
+        child[c] = 0;
+        clk_tree(child, depth + 1);
+    }
+}
+
 /* BPMP IVC diagnostic.  Default: safe probe (map HSP + read dimensioning,
  * no doorbell write).  "init": full IVC establish (rings doorbell -- may RAS
- * if the HSP base/clock is wrong).  "clk <id>": enable a clock after init. */
+ * if the HSP base/clock is wrong).  "clk <id>": enable a clock after init.
+ * Read-only clock queries: "rate|parent|info <id>..." (MRQ_CLK, this
+ * master's view), "tree <name>..." and "dbg <path> [filter]" (BPMP debugfs,
+ * global view). */
 int main(int argc, char* argv[]) {
+    if (argc > 2 && strcmp(argv[1], "tree") == 0) {
+        if (bsp_bpmp_init() != 0) {
+            printf("bpmp_init failed\n");
+            return 1;
+        }
+        for (int i = 2; i < argc; i++)
+            clk_tree(argv[i], 0);
+        return 0;
+    }
     if (argc > 1 && strcmp(argv[1], "pcie") == 0) {
         int r = bsp_pcie_cold_own(ORIN_PCIE_CTL_C8);
         printf("cold_own(C8) = %d\n", r);
@@ -40,6 +99,93 @@ int main(int argc, char* argv[]) {
     if (argc > 1 && strcmp(argv[1], "init") == 0) {
         int r = bsp_bpmp_init();
         printf("bpmp_init = %d\n", r);
+        return r == 0 ? 0 : 1;
+    }
+    if (argc > 2 && strcmp(argv[1], "rate") == 0) {
+        if (bsp_bpmp_init() != 0) {
+            printf("bpmp_init failed\n");
+            return 1;
+        }
+        for (int i = 2; i < argc; i++) {
+            uint32_t id = (uint32_t)strtoul(argv[i], NULL, 0);
+            uint64_t rate = 0;
+            int32_t en = -1;
+            int r = bsp_bpmp_clk_get_rate(id, &rate);
+            int e = bsp_bpmp_clk_is_enabled(id, &en);
+            klog("bpmpdiag: clk %u rate=%llu (r=%d) enabled=%d (r=%d)\n", id,
+                    (unsigned long long)rate, r, en, e);
+        }
+        return 0;
+    }
+    if (argc > 2 && strcmp(argv[1], "parent") == 0) {
+        if (bsp_bpmp_init() != 0) {
+            printf("bpmp_init failed\n");
+            return 1;
+        }
+        for (int i = 2; i < argc; i++) {
+            uint32_t id = (uint32_t)strtoul(argv[i], NULL, 0);
+            uint32_t par = 0;
+            uint64_t rate = 0;
+            int32_t en = -1;
+            int r = bsp_bpmp_clk_get_parent(id, &par);
+            bsp_bpmp_clk_get_rate(id, &rate);
+            bsp_bpmp_clk_is_enabled(id, &en);
+            klog("bpmpdiag: clk %u parent=%u (r=%d) rate=%llu en=%d\n", id, par, r,
+                    (unsigned long long)rate, en);
+        }
+        return 0;
+    }
+    if (argc > 2 && strcmp(argv[1], "info") == 0) {
+        if (bsp_bpmp_init() != 0) {
+            printf("bpmp_init failed\n");
+            return 1;
+        }
+        for (int i = 2; i < argc; i++) {
+            uint32_t id = (uint32_t)strtoul(argv[i], NULL, 0);
+            bsp_bpmp_clk_info_t ci;
+            int r = bsp_bpmp_clk_get_all_info(id, &ci);
+            if (r != 0) {
+                klog("bpmpdiag: clk %u get_all_info r=%d\n", id, r);
+                continue;
+            }
+            char name[41];
+            memcpy(name, ci.name, 40);
+            name[40] = 0;
+            klog("bpmpdiag: clk %u name=%s flags=%x parent=%u np=%u\n", id, name,
+                    ci.flags, ci.parent, ci.num_parents);
+            char line[160];
+            int n = 0;
+            for (uint32_t p = 0; p < ci.num_parents && p < 16; p++)
+                n += snprintf(line + n, sizeof(line) - (size_t)n, " %u", ci.parents[p]);
+            klog("bpmpdiag: clk %u parents:%s\n", id, line);
+        }
+        return 0;
+    }
+    if (argc > 2 && strcmp(argv[1], "dbg") == 0) {
+        /* BPMP debugfs read: dbg <path> [filter].  Directory listings are
+         * NUL-separated, so NULs print as line breaks. */
+        static char buf[262144];
+        uint32_t got = 0;
+        if (bsp_bpmp_init() != 0) {
+            printf("bpmp_init failed\n");
+            return 1;
+        }
+        int r = bsp_bpmp_debug_read(argv[2], buf, sizeof(buf) - 1, &got);
+        klog("bpmpdiag: dbg %s r=%d len=%u\n", argv[2], r, got);
+        const char* flt = argc > 3 ? argv[3] : NULL;
+        char line[200];
+        uint32_t n = 0;
+        for (uint32_t i = 0; i <= got; i++) {
+            char c = i < got ? buf[i] : '\n';
+            if (c != '\n' && c != 0 && n < sizeof(line) - 1) {
+                line[n++] = (c >= 0x20 && c < 0x7f) ? c : '.';
+                continue;
+            }
+            line[n] = 0;
+            if (n && (!flt || strstr(line, flt)))
+                klog("bpmpdbg: %s\n", line);
+            n = 0;
+        }
         return r == 0 ? 0 : 1;
     }
     if (argc > 2 && strcmp(argv[1], "clk") == 0) {

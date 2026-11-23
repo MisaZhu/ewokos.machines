@@ -1186,30 +1186,18 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     uint64_t fb_addr = 0, fb_pitch = 0;
     uint32_t fb_w = 0, fb_h = 0, fb_bpp = 32, fb_format = 0;
     EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = 0;
-    EFI_GRAPHICS_OUTPUT_PROTOCOL* gop_list[4];
-    UINTN gop_count = 0;
     EFI_STATUS gop_st = gBS->LocateProtocol((EFI_GUID*)&gop_guid, 0,
             (void**)&gop);
-    con_puts("[uefi] gop LocateProtocol st=");
-    con_hex((uint64_t)gop_st);
-    con_puts(" gop=");
-    con_hex((uint64_t)(uintptr_t)gop);
-    con_puts("\n");
-    /* Enumerate ALL GOP handles.  edk2-nvidia can install a BltOnly proxy GOP
-     * (fmt=3, fbbase=0) on one handle and a real linear-FB display GOP on
-     * another; LocateProtocol returns only the first.  Switch to the first
-     * handle that exposes a linear framebuffer so the adopt path below uses
-     * it.  Read-only: HandleProtocol + Mode inspection, no SetMode. */
+    /* edk2-nvidia may install a BltOnly proxy GOP (fmt=3, fbbase=0) on one
+     * handle and a real linear-FB display GOP on another; LocateProtocol
+     * returns only the first.  Prefer a handle that exposes a linear FB so
+     * the adopt path below uses it.  Read-only: HandleProtocol + Mode
+     * inspection, no SetMode. */
     {
         UINTN nh = 0;
         EFI_HANDLE* hb = 0;
         EFI_STATUS hs = gBS->LocateHandleBuffer(2 /* ByProtocol */,
                 (EFI_GUID*)&gop_guid, 0, &nh, &hb);
-        con_puts("[uefi] gop handles st=");
-        con_hex((uint64_t)hs);
-        con_puts(" n=");
-        con_dec((uint32_t)nh);
-        con_puts("\n");
         if (!EFI_ERROR(hs) && hb) {
             for (UINTN i = 0; i < nh; i++) {
                 EFI_GRAPHICS_OUTPUT_PROTOCOL* g = 0;
@@ -1217,88 +1205,12 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
                         (EFI_GUID*)&gop_guid, (void**)&g)) || !g || !g->Mode)
                     continue;
                 EFI_GOP_MODE* gm = g->Mode;
-                if (gop_count < 4)
-                    gop_list[gop_count++] = g;
-                con_puts("[uefi] gop[");
-                con_dec((uint32_t)i);
-                con_puts("] max=");
-                con_dec(gm->MaxMode);
-                con_puts(" cur=");
-                con_dec(gm->Mode);
-                con_puts(" fbbase=");
-                con_hex((uint64_t)gm->FrameBufferBase);
-                con_puts(" fbsize=");
-                con_hex((uint64_t)gm->FrameBufferSize);
-                if (gm->Info) {
-                    con_puts(" ");
-                    con_dec(gm->Info->HorizontalResolution);
-                    con_puts("x");
-                    con_dec(gm->Info->VerticalResolution);
-                    con_puts(" fmt=");
-                    con_dec(gm->Info->PixelFormat);
-                    con_puts(" ppsl=");
-                    con_dec(gm->Info->PixelsPerScanLine);
-                }
-                con_puts("\n");
                 if (fb_addr == 0 && gm->Info &&
                         gm->FrameBufferBase != 0 && gm->FrameBufferSize != 0 &&
                         gm->Info->PixelFormat <= 2)
                     gop = g;
             }
             gBS->FreePool(hb);
-        }
-    }
-    if (!EFI_ERROR(gop_st) && gop && gop->Mode) {
-        EFI_GOP_MODE* gm = gop->Mode;
-        con_puts("[uefi] gop Mode max=");
-        con_dec(gm->MaxMode);
-        con_puts(" cur=");
-        con_dec(gm->Mode);
-        con_puts(" fbbase=");
-        con_hex((uint64_t)gm->FrameBufferBase);
-        con_puts(" fbsize=");
-        con_hex((uint64_t)gm->FrameBufferSize);
-        con_puts("\n");
-        if (gm->Info) {
-            con_puts("[uefi] gop info ");
-            con_dec(gm->Info->HorizontalResolution);
-            con_puts("x");
-            con_dec(gm->Info->VerticalResolution);
-            con_puts(" fmt=");
-            con_dec(gm->Info->PixelFormat);
-            con_puts(" ppsl=");
-            con_dec(gm->Info->PixelsPerScanLine);
-            con_puts("\n");
-        }
-    }
-    /* Enumerate every GOP mode (read-only QueryMode).  A headless firmware
-     * often exposes only a BltOnly proxy (fmt=3, fbbase=0) as mode 0 while a
-     * linear-FB mode (fmt<=2) may exist elsewhere; this reveals which. */
-    if (!EFI_ERROR(gop_st) && gop && gop->Mode && gop->QueryMode) {
-        uint32_t max = gop->Mode->MaxMode;
-        if (max > 16) max = 16;
-        for (uint32_t m = 0; m < max; m++) {
-            EFI_GOP_MODE_INFO* mi = 0;
-            UINTN misz = 0;
-            EFI_STATUS qs = gop->QueryMode(gop, m, &misz, &mi);
-            con_puts("[uefi] gop mode ");
-            con_dec(m);
-            if (EFI_ERROR(qs) || !mi) {
-                con_puts(" query st=");
-                con_hex((uint64_t)qs);
-                con_puts("\n");
-                continue;
-            }
-            con_puts(": ");
-            con_dec(mi->HorizontalResolution);
-            con_puts("x");
-            con_dec(mi->VerticalResolution);
-            con_puts(" fmt=");
-            con_dec(mi->PixelFormat);
-            con_puts(" ppsl=");
-            con_dec(mi->PixelsPerScanLine);
-            con_puts("\n");
-            gBS->FreePool(mi);
         }
     }
     if (!EFI_ERROR(gop_st) && gop && gop->Mode && gop->Mode->Info &&
@@ -1340,31 +1252,40 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
      * iface (pre-EBS); published to the kernel via the fb handoff below. */
     read_provider_fb(gop);
 
-    /* ---- firmware device tree: record it and extract /model ---- */
-    uint64_t dtb_addr = 0, dtb_size = 0;
-    char board_model[32] = {0};
-    if (SystemTable->ConfigurationTable) {
-        for (UINTN i = 0; i < SystemTable->NumberOfTableEntries; i++) {
-            EFI_CONFIGURATION_TABLE* ct = &SystemTable->ConfigurationTable[i];
-            if (guid_eq(&ct->VendorGuid, (EFI_GUID*)&dtb_guid)) {
-                dtb_addr = (uint64_t)(uintptr_t)ct->VendorTable;
-                if (dtb_addr) {
-                    uint32_t totalsize = fdt_be32((const void*)(uintptr_t)
-                            (dtb_addr + 4));
-                    if (totalsize > 0 && totalsize < 4 * 1024 * 1024)
-                        dtb_size = totalsize;
-                }
-                break;
-            }
+    /* Reserve a 3840x2160 32bpp scan-out FB (pitch 15360 = 3840*4, 64-aligned)
+     * for the DCE modeset path.  The kernel publishes this region as pd.fb;
+     * dceprobe programs the display window to scan it out and fbdisplayd
+     * renders the desktop into the same buffer, so both sides share one FB.
+     * EfiReservedMemoryType keeps it out of kernel RAM reclaim (the kernel
+     * also ADD_EXCLs the orin_fb range).  Allocated before the final
+     * GetMemoryMap so the reservation is present in the handed-over map.
+     * Headless boots (no GOP and no provider FB) skip this and keep fb_addr=0.
+     * On Orin the GOP is a BltOnly proxy (FrameBufferBase=0), so the real
+     * scan-out FB is the provider iface FB (g_prov_fb_phys) -- treat its
+     * presence as "display attached" too. */
+    if (fb_addr != 0 || g_prov_fb_phys != 0) {
+        UINTN pages4k = (UINTN)((15360ULL * 2160ULL + EFI_PAGE_SIZE - 1) /
+                EFI_PAGE_SIZE);
+        EFI_PHYSICAL_ADDRESS fb4k = 0;
+        EFI_STATUS as = gBS->AllocatePages(AllocateAnyPages,
+                EfiReservedMemoryType, pages4k, &fb4k);
+        if (!EFI_ERROR(as) && fb4k != 0) {
+            fb_addr = (uint64_t)fb4k;
+            fb_w = 3840;
+            fb_h = 2160;
+            fb_pitch = 15360;
+            fb_bpp = 32;
+            fb_format = 1;   /* B,G,R,X in memory: fbdisplayd does no R/B swap */
+            con_puts("[uefi] 4k scan-out fb reserved 3840x2160 @");
+            con_hex(fb_addr);
+            con_puts("\n");
+        } else {
+            con_puts("[uefi] 4k fb alloc failed st=");
+            con_hex((uint64_t)as);
+            con_puts(" (keep GOP fb)\n");
         }
     }
-    if (dtb_addr) {
-        con_puts("[uefi] dtb @");
-        con_hex(dtb_addr);
-        con_puts(" size=");
-        con_dec(dtb_size);
-        con_puts("\n");
-    }
+
     fdt_model(dtb_addr, board_model, sizeof(board_model));
     if (!board_model[0])
         smbios_product_name(board_model, sizeof(board_model));

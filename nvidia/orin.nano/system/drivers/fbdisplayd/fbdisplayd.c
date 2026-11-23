@@ -12,6 +12,16 @@
 #include <ewoksys/syscall.h>
 #include <ewoksys/klog.h>
 #include <q8b_platform.h>
+#include <pthread.h>
+
+/* Reuse the board-verified DCE bring-up (4K probe + ADMIN/DISPRM bootstrap +
+ * EVO channels + modeset) byte-for-byte from dceprobe.c.  The probe's main() is
+ * renamed out of the way; every protocol function compiles unchanged so the fw
+ * bootstrap/modeset sequence stays identical to the verified "admin query chan
+ * mode hold" path.  fbdisplayd's own residency replaces the probe hold loop. */
+#define main dceprobe_probe_main
+#include "../dceprobe/dceprobe.c"
+#undef main
 
 /* UEFI GOP PixelFormat 0 = RGB, 1 = BGR, 2 = BitMask.  EwokOS graph
  * buffers are native ARGB (little-endian bytes B,G,R,A), so an RGB GOP
@@ -118,7 +128,45 @@ static disp_info_t* get_info(void) {
     return bsp_get_fbinfo();
 }
 
+/* Replicates the probe hold loop's RM_NOTIFY drain so the 4-frame event ring
+ * never fills while the fw runs.  Runs on its own thread; the main IPC/flush
+ * path only memcpys into the scan-out FB and never touches DCE registers after
+ * bring-up, so the two threads share no mutable DCE state. */
+static void* dce_drain_thread(void* arg) {
+    (void)arg;
+    for (;;) { events_drain("hold"); sleep(1); }
+    return NULL;
+}
+
+/* Full verified bring-up: ADMIN IVC -> IPC_CREATE -> DISPRM/RM_NOTIFY establish
+ * -> SET_LOGGING -> RM_BOOTSTRAP/2 -> DCE_RM_INIT -> ALLOC chain -> queries/EDID
+ * -> internal controls + instance memory -> core/window EVO channels -> modeset.
+ * opt_hold stays 0: do_modeset returns after the flip instead of looping forever,
+ * and fbdisplayd's device_run residency keeps the DMA objects + FB alive. */
+static int dce_bringup(void) {
+    opt_ipc = opt_disprm = opt_boot = opt_boot2 = 1;
+    opt_rminit = opt_alloc = opt_query = opt_chan = opt_mode = 1;
+    opt_hold = 0;
+    volatile uint8_t* dce = map(DCE_VA, DCE_PHY, DCE_SIZE);
+    if (!dce) { klog("fbdisplayd: DCE map failed\n"); return -1; }
+    int r = admin(dce, 0, 0);
+    klog("fbdisplayd: DCE bring-up r=%d\n", r);
+    if (r == 0) {
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, dce_drain_thread, NULL) == 0)
+            pthread_detach(tid);
+    }
+    return r;
+}
+
 static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
+    /* Light up the panel end-to-end in-process (no separate dceprobe launch):
+     * the bring-up programs the window onto the shared scan-out FB and clears
+     * it, then bsp_fb_init maps the same buffer for desktop rendering. */
+    if (dce_bringup() != 0) {
+        klog("fbdisplayd: DCE bring-up failed\n");
+        return -1;
+    }
     int32_t r = bsp_fb_init(w, h, dep);
     if (r != 0)
         return r;

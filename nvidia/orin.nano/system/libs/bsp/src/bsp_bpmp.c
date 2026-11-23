@@ -1,5 +1,7 @@
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/shm.h>
 #include <bsp/bsp_bpmp.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/klog.h>
@@ -81,6 +83,40 @@ static int doorbell_enable(void) {
     *(volatile uint32_t*)(ccplex_db + ORIN_HSP_DB_ENABLE) = cen | (1u << 19);
     barrier();
     return (en >> 17) & 1u;
+}
+
+/* The CCPLEX channel is one 1-frame IVC ring shared by every process that
+ * links this library (fand polls it once a second).  Two interleaved
+ * transactions steal each other's response and double-ack the ring, which
+ * BPMP answers by dropping the channel.  Serialize whole transactions with a
+ * test-and-set word in a keyed shm page; a holder that died mid-transaction
+ * is overridden after BPMP_XLOCK_STEAL_MS. */
+#define BPMP_XLOCK_KEY      0x42504d50   /* 'BPMP' */
+#define BPMP_XLOCK_STEAL_MS 3000u
+static volatile uint8_t* _xlock;
+
+static void xlock_init(void) {
+    int id = shmget(BPMP_XLOCK_KEY, 4096, 0666 | IPC_CREAT);
+    if (id < 0)
+        return;
+    void* p = shmat(id, 0, 0);
+    if (p != NULL && p != (void*)-1)
+        _xlock = (volatile uint8_t*)p;
+}
+
+static void xlock_enter(void) {
+    if (!_xlock)
+        return;
+    for (uint32_t ms = 0; __atomic_test_and_set(_xlock, __ATOMIC_ACQUIRE); ms++) {
+        if (ms >= BPMP_XLOCK_STEAL_MS)
+            return;
+        usleep(1000);
+    }
+}
+
+static void xlock_leave(void) {
+    if (_xlock)
+        __atomic_clear(_xlock, __ATOMIC_RELEASE);
 }
 
 static int map_window(uint64_t va, uint64_t phy, uint32_t size) {
@@ -168,7 +204,11 @@ int bsp_bpmp_init(void) {
         return -1;
     }
 
-    if (ivc_establish() != 0)
+    xlock_init();
+    xlock_enter();
+    int est = ivc_establish();
+    xlock_leave();
+    if (est != 0)
         return -1;
     _ready = 1;
     klog("orin bpmp: IVC established\n");
@@ -242,12 +282,8 @@ int bsp_bpmp_dump(void) {
  * synchronous).  req/resp point to the payload AFTER the 8-byte mrq header
  * for the request, and the response err is returned.  Returns BPMP err
  * (0 = success) or a negative transport error. */
-static int bpmp_xfer(uint32_t mrq, const void* req_payload, uint32_t req_len,
+static int bpmp_xfer_locked(uint32_t mrq, const void* req_payload, uint32_t req_len,
         void* resp_payload, uint32_t resp_cap) {
-    if (!_ready)
-        return -1;
-    if (req_len > ORIN_IVC_FRAME_SIZE - 8u)
-        return -2;
 
     /* Wait for cpu_tx to have space (tx.count - rx.count < num_frames). */
     uint32_t spins = 0;
@@ -298,8 +334,25 @@ static int bpmp_xfer(uint32_t mrq, const void* req_payload, uint32_t req_len,
     return err;
 }
 
+static int bpmp_xfer(uint32_t mrq, const void* req_payload, uint32_t req_len,
+        void* resp_payload, uint32_t resp_cap) {
+    if (!_ready)
+        return -1;
+    if (req_len > ORIN_IVC_FRAME_SIZE - 8u)
+        return -2;
+    xlock_enter();
+    int r = bpmp_xfer_locked(mrq, req_payload, req_len, resp_payload, resp_cap);
+    xlock_leave();
+    return r;
+}
+
 int bsp_bpmp_clk_enable(uint32_t clk_id) {
     uint32_t req = (ORIN_CLK_ENABLE << 24) | (clk_id & 0xffffffu);
+    return bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), NULL, 0);
+}
+
+int bsp_bpmp_clk_disable(uint32_t clk_id) {
+    uint32_t req = (ORIN_CLK_DISABLE << 24) | (clk_id & 0xffffffu);
     return bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), NULL, 0);
 }
 
@@ -358,6 +411,74 @@ int bsp_bpmp_clk_set_parent(uint32_t clk_id, uint32_t parent_id) {
     req.parent_id = parent_id;
     uint32_t resp = 0;
     return bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), &resp, sizeof(resp));
+}
+
+int bsp_bpmp_clk_get_parent(uint32_t clk_id, uint32_t* parent_id) {
+    uint32_t req = (ORIN_CLK_GET_PARENT << 24) | (clk_id & 0xffffffu);
+    uint32_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && parent_id)
+        *parent_id = resp;
+    return r;
+}
+
+int bsp_bpmp_clk_get_all_info(uint32_t clk_id, bsp_bpmp_clk_info_t* info) {
+    uint32_t req = (ORIN_CLK_GET_ALL_INFO << 24) | (clk_id & 0xffffffu);
+    bsp_bpmp_clk_info_t resp;
+    memset(&resp, 0, sizeof(resp));
+    int r = bpmp_xfer(ORIN_MRQ_CLK, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && info)
+        *info = resp;
+    return r;
+}
+
+/* MRQ_DEBUG (75): in-band BPMP debugfs, read side.  request {u32 cmd;
+ * union{name[116] | fd}}; OPEN_RO=0 READ=2 CLOSE=4.  Unlike MRQ_CLK
+ * IS_ENABLED (this master's references only), /clk/<name>/{state,refcount,
+ * mrqcount} show the global clock state. */
+#define ORIN_MRQ_DEBUG 75u
+#define BPMP_DBG_DATA  (ORIN_IVC_FRAME_SIZE - 8u)   /* 120 */
+
+static int bpmp_debug_open(const char* name, uint32_t* fd, uint32_t* len) {
+    uint8_t req[BPMP_DBG_DATA];
+    uint32_t resp[2] = { 0, 0 };
+    memset(req, 0, sizeof(req));
+    strncpy((char*)req + 4, name, BPMP_DBG_DATA - 5u);
+    int r = bpmp_xfer(ORIN_MRQ_DEBUG, req, sizeof(req), resp, sizeof(resp));
+    if (r == 0) {
+        *fd = resp[0];
+        *len = resp[1];
+    }
+    return r;
+}
+
+static void bpmp_debug_close(uint32_t fd) {
+    uint32_t req[2] = { 4u, fd };
+    bpmp_xfer(ORIN_MRQ_DEBUG, req, sizeof(req), NULL, 0);
+}
+
+int bsp_bpmp_debug_read(const char* name, char* buf, uint32_t cap, uint32_t* got) {
+    uint32_t fd = 0, len = 0, n = 0;
+    int r = bpmp_debug_open(name, &fd, &len);
+    if (r != 0)
+        return r;
+    while (n < len && n < cap) {
+        uint32_t req[2] = { 2u, fd };
+        uint8_t resp[BPMP_DBG_DATA];
+        memset(resp, 0, sizeof(resp));
+        r = bpmp_xfer(ORIN_MRQ_DEBUG, req, sizeof(req), resp, sizeof(resp));
+        uint32_t rl = *(uint32_t*)resp;
+        if (r != 0 || rl == 0 || rl > BPMP_DBG_DATA - 4u)
+            break;
+        if (rl > cap - n)
+            rl = cap - n;
+        memcpy(buf + n, resp + 4, rl);
+        n += rl;
+    }
+    bpmp_debug_close(fd);
+    if (got)
+        *got = n;
+    return r;
 }
 
 static int bpmp_reset(uint32_t cmd, uint32_t reset_id) {

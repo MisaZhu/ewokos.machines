@@ -16,11 +16,25 @@ int bsp_bpmp_ring_test(void);
 int bsp_bpmp_dump(void);
 
 int bsp_bpmp_clk_enable(uint32_t clk_id);
+int bsp_bpmp_clk_disable(uint32_t clk_id);
 int bsp_bpmp_clk_set_rate(uint32_t clk_id, uint64_t rate);
 int bsp_bpmp_clk_set_parent(uint32_t clk_id, uint32_t parent_id);
 int bsp_bpmp_clk_get_rate(uint32_t clk_id, uint64_t* rate);
 int bsp_bpmp_clk_round_rate(uint32_t clk_id, uint64_t rate, uint64_t* got);
 int bsp_bpmp_clk_is_enabled(uint32_t clk_id, int32_t* state);
+int bsp_bpmp_clk_get_parent(uint32_t clk_id, uint32_t* parent_id);
+
+/* CMD_CLK_GET_ALL_INFO response (bpmp-abi.h cmd_clk_get_all_info_response). */
+typedef struct {
+    uint32_t flags;
+    uint32_t parent;
+    uint32_t parents[16];
+    uint8_t num_parents;
+    uint8_t name[40];
+} __attribute__((packed)) bsp_bpmp_clk_info_t;
+int bsp_bpmp_clk_get_all_info(uint32_t clk_id, bsp_bpmp_clk_info_t* info);
+/* BPMP in-band debugfs (MRQ_DEBUG): whole-file read. */
+int bsp_bpmp_debug_read(const char* name, char* buf, uint32_t cap, uint32_t* got);
 int bsp_bpmp_reset_assert(uint32_t reset_id);
 int bsp_bpmp_reset_deassert(uint32_t reset_id);
 int bsp_bpmp_pg_on(uint32_t pg_id);

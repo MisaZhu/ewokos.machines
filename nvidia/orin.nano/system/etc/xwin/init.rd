@@ -18,6 +18,10 @@
 
 @/bin/ipcserv /sbin/sessiond
 
+# Display bring-up (4K probe + DCE init + modeset) now runs in-process inside
+# fbdisplayd's init, scanning out the kernel-reserved 4K FB (pd.fb) it renders
+# into.  No separate dceprobe launch is needed; fbdisplayd's residency keeps the
+# DCE channels/instance memory alive.
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/orin.nano/fbdisplayd /dev/disp0
 @/bin/ipcserv /drivers/fontd

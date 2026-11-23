@@ -103,10 +103,12 @@
 #define ORIN_CLK_GET_RATE       1u
 #define ORIN_CLK_SET_RATE       2u
 #define ORIN_CLK_ROUND_RATE     3u
+#define ORIN_CLK_GET_PARENT     4u
 #define ORIN_CLK_SET_PARENT     5u
 #define ORIN_CLK_IS_ENABLED     6u
 #define ORIN_CLK_ENABLE         7u
 #define ORIN_CLK_DISABLE        8u
+#define ORIN_CLK_GET_ALL_INFO   14u
 /* THERMAL subcommands (mrq_thermal_host_to_bpmp_cmd) */
 #define ORIN_THERMAL_QUERY_ABI  0u
 #define ORIN_THERMAL_GET_TEMP   1u   /* req {u32 type, u32 zone}, resp i32 mC */
