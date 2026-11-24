@@ -512,6 +512,18 @@ int bsp_bpmp_pg_off(uint32_t pg_id) {
     return bpmp_pg(pg_id, ORIN_PG_STATE_OFF);
 }
 
+int bsp_bpmp_pg_get_state(uint32_t pg_id, uint32_t* state) {
+    struct {
+        uint32_t cmd;
+        uint32_t id;
+    } req = { 2u /* CMD_PG_GET_STATE */, pg_id };
+    uint32_t resp = 0;
+    int r = bpmp_xfer(ORIN_MRQ_PG, &req, sizeof(req), &resp, sizeof(resp));
+    if (r == 0 && state)
+        *state = resp;
+    return r;
+}
+
 int bsp_bpmp_uphy_pll_init(uint32_t controller) {
     /* mrq_uphy_request: {uint16 lane; uint16 cmd; union{...}} packed.  The
      * sub-command is the uint16 at offset 2 (NOT a uint32 at offset 0); lane

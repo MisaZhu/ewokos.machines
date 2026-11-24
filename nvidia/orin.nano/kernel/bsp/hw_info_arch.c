@@ -500,6 +500,9 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
     /* PWM3 (fan): fand enables the clock via BPMP before any access. */
     if (phy_base >= ORIN_PWM3_PHY && phy_top <= ORIN_PWM3_PHY + ORIN_PWM3_SIZE)
         return 0;
+    /* GA10B GPU BAR0: ga10bd powers the GPU via BPMP before any access. */
+    if (phy_base >= ORIN_GPU_PHY && phy_top <= ORIN_GPU_PHY + ORIN_GPU_SIZE)
+        return 0;
     if (phy_base >= ORIN_XUSB_FPCI_PHY && phy_top <= ORIN_XUSB_FPCI_PHY + 0x10000)
         return 0;
     if (phy_base >= ORIN_XUSB_HCD_PHY && phy_top <= ORIN_XUSB_HCD_PHY + ORIN_XUSB_HCD_SIZE)

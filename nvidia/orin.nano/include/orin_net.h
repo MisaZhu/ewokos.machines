@@ -209,6 +209,13 @@
 /* Card detect = main GPIO port G pin 7 (active low). */
 #define ORIN_SD_CD_GPIO         (6u * 8u + 7u)
 
+/* GA10B integrated GPU (gpu@17000000, nvidia,ga10b): BAR0 register
+ * aperture, 16 MB.  The DT node has no iommus (dma-coherent, physical
+ * addresses through the GPU's own GMMU).  The GPU power domain, clocks and
+ * reset must be BPMP-enabled BEFORE any register access. */
+#define ORIN_GPU_PHY            0x17000000ULL
+#define ORIN_GPU_SIZE           0x01000000u
+
 /* PWM3 (pwm@32a0000) -- devkit fan (pwm-fan, pwms=<&pwm3 0 45334>).
  * T234 uses the tegra186 PWM model: 1 channel, regs at base + hwpwm*16,
  * CSR: enable bit31, duty ticks [23:16] (depth 256), prescaler [12:0].

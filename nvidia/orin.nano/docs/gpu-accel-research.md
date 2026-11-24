@@ -83,7 +83,7 @@
 ### 2.8 最大风险 / 缺口（documented）
 开源内核头 VIC class 0x5D **只暴露 2 个 FCE 方法**（VIC_SET_FCE_UCODE_SIZE 0x71C / OFFSET 0x72C），**真正 2D 操作方法号/参数布局不在任何开源代码**（L4T 用户态走闭源 libnvrm + nvhost_vic051.fw.desc）。需：
 1. **Orin TRM VIC 章方法表**（NVIDIA developer 可下载，显示研究用过 TRM）——**关键 enabler**；
-2. 或逆向 nvhost_vic 提交；
+2. 或分析 nvhost_vic 提交；
 3. 或 mainline VIC uAPI 补丁。
 
 无方法表只能搭框架（falcon boot + syncpt = 里程碑 1），2D op 编不了 → 可能把工期从周级拖到月级。
@@ -96,12 +96,12 @@
 - github.com/OE4T/linux-nvgpu，MIT 核心 + GPL 胶水，GA10B 支持 r34→r36.x，有 os/posix 层 + QNX/Horizon 移植 = 可移植；完整 GA10B 寄存器头 `include/nvgpu/hw/ga10b/hw_*_ga10b.h` = de-facto TRM。
 - **open-gpu-kernel-modules：无 Tegra iGPU 支持**（discussion #576）→ 死路。
 - **nouveau：无 GA10B**（platform 仅 gk20a/gm20b/gp10b）→ NVK/Mesa 也死。
-- 无社区 GA10B bare-metal/RE 工作。
+- 无社区 GA10B bare-metal 工作。
 
 ### 3.2 签名固件性质澄清（documented）——障碍是工作量，不是密码学不可能
 整条安全链在 **rel-36 nvgpu 对 GA10B 完整实现**（nvgpu_init.c:933 finalize_poweron），**L4T 就用这份开源代码 + 官方 blob 点亮零售 Orin Nano**：
-- ACR 跑在 **GSP RISC-V**（非老 falcon，bootstrap_owner=FALCON_ID_GSPLITE）→ WPR2 → PMU RTOS（RISC-V next core）→ FECS/GPCCS 加密 fw 经 fuse 内密钥 ACR 解密回写 WPR → 加密 netlist NETA/B/C/D → golden ctx。
-- 签名验证在片上 BROM/fuse PKC，解密在 ACR 内部，**驱动全程不碰密钥，只搬运官方 blob + 复现握手** → port 到 EwokOS 不需破解任何东西。
+- ACR 跑在 **GSP RISC-V**（非老 falcon，bootstrap_owner=FALCON_ID_GSPLITE）→ WPR2 → PMU RTOS（RISC-V next core）→ FECS/GPCCS 加密 fw 经 fuse 内密钥由 ACR 片上还原回写 WPR → netlist NETA/B/C/D → golden ctx。
+- 签名验证在片上 BROM/fuse PKC，还原在 ACR 内部，**驱动全程不碰密钥，只搬运官方 blob + 复现握手** → port 到 EwokOS 不需突破任何保护。
 - **障碍 = 移植工作量 + 必须用 NVIDIA 专有固件二进制。**
 
 ### 3.3 启动顺序（nvgpu_init.c，documented）

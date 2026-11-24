@@ -37,6 +37,12 @@
 # run stages by hand from the rescue console: vicprobe regs / host1x / syncpt
 # / channel / boot / method.  Enable the one-shot line once M1 is verified.
 # @/drivers/orin.nano/vicprobe all
+# GA10B GPU 3D bring-up (ga10bd, alias /bin/ga): NEVER auto-started.  First
+# GPU MMIO touch is unverified; run stages by hand from the rescue console:
+#   ga fw          (blob validation, no MMIO)
+#   ga --hw probe  (BPMP pg35/clks/reset19 + boot_0 + priv_sec_en fuse)
+#   ga --hw init / acr / ce / gr   (escalating; acr = ACR-GSP HS boot)
+# Firmware blobs live at /fs/nvidia/ga10b (packed from GPU_FW_DIR, not in git).
 # XUSB host: shared usbhostd (enumeration/hub/HID/MSC) over the machine
 # bsp_usb contract; hid_keybd/hid_moused consume HID reports.  MSC sticks
 # auto-mount at /mnt/udisk0 via usbfat32fsd.

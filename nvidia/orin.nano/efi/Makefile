@@ -25,6 +25,13 @@ SELF_ROOT ?= 1
 
 KERNEL_IMAGE = kernel.bin
 
+# GA10B GPU firmware blobs (NVIDIA proprietary, extracted from the L4T
+# nvidia-l4t-firmware deb).  Kept OUTSIDE the repo; packed into the ramfs
+# at /fs/nvidia/ga10b (ga10bd --fw-dir default) only when the dir exists.
+GPU_FW_DIR ?= /Users/tony/work/gpu-fw/ga10b
+# nvcc sm_87 test kernels for `ga10bd compute` (/fs/cuda), when present.
+CUDA_CUBIN_DIR ?= ../../../../projects/cuda/cubin
+
 INIT_RAMFS_SOURCE = ../system/etc/init.ramfs.rd
 # No /etc/init.rd is packed: the boot RAMFS profile is bootstrap-only and
 # init starts the serial rescue console directly when the rootfs policy is
@@ -55,6 +62,9 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/drivers/orin.nano/dceprobe \
 	$(SYSTEM_ROOT)/drivers/orin.nano/fand \
 	$(SYSTEM_ROOT)/drivers/orin.nano/vicprobe \
+	$(SYSTEM_ROOT)/drivers/orin.nano/ga10bd \
+	$(SYSTEM_ROOT)/drivers/orin.nano/g2dd \
+	$(SYSTEM_ROOT)/drivers/orin.nano/g3dtest \
 	$(SYSTEM_ROOT)/drivers/orin.nano/firmware/vic.bin \
 	$(SYSTEM_ROOT)/drivers/orin.nano/firmware/LICENCE.nvidia \
 	$(SYSTEM_ROOT)/drivers/netd \
@@ -148,6 +158,13 @@ $(INITRAMFS_IMAGE): FORCE
 	# self-root UI profile -- without it the desktop has no timers, /tmp or
 	# keyboard/mouse.  Copy it explicitly, like the bring-up recipe does.
 	@cp -p "$(INIT_RAMFS_SOURCE)" "$(RAMFS_STAGING)/etc/init.ramfs.rd"
+	# GA10B firmware for g2dd's opt-in GPU bring-up (GA10B_ENABLE=1); the
+	# directory lives outside the repository and is packed only when present.
+	@if [ -d "$(GPU_FW_DIR)" ]; then \
+		mkdir -p "$(RAMFS_STAGING)/fs/nvidia/ga10b"; \
+		cp -p "$(GPU_FW_DIR)"/*.bin "$(GPU_FW_DIR)"/*.prod \
+			"$(RAMFS_STAGING)/fs/nvidia/ga10b/"; \
+	fi
 	@sed -i '' -E 's/^[[:space:]]*rootfs[[:space:]]*=[[:space:]]*[A-Za-z]+.*/rootfs = self/' \
 		"$(RAMFS_STAGING)/etc/kernel/kernel.conf"
 	@grep -q '^rootfs = self' "$(RAMFS_STAGING)/etc/kernel/kernel.conf" || { \
@@ -209,11 +226,29 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/drivers/orin.nano/dceprobe" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/fand" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/vicprobe" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/ga10bd" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/g2dd" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/g3dtest" \
 		"$(RAMFS_STAGING)/drivers/orin.nano/"
+	@cp -p "$(SYSTEM_ROOT)/drivers/orin.nano/ga10bd" "$(RAMFS_STAGING)/bin/ga"
 	@mkdir -p "$(RAMFS_STAGING)/drivers/orin.nano/firmware"
 	@cp -p "$(SYSTEM_ROOT)/drivers/orin.nano/firmware/vic.bin" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/firmware/LICENCE.nvidia" \
 		"$(RAMFS_STAGING)/drivers/orin.nano/firmware/"
+	@if [ -d "$(GPU_FW_DIR)" ]; then \
+		mkdir -p "$(RAMFS_STAGING)/fs/nvidia/ga10b"; \
+		cp -p "$(GPU_FW_DIR)"/*.bin "$(GPU_FW_DIR)"/*.prod \
+			"$(RAMFS_STAGING)/fs/nvidia/ga10b/"; \
+		echo "==== packed GA10B firmware from $(GPU_FW_DIR) ===="; \
+	else \
+		echo "NOTE: GPU_FW_DIR=$(GPU_FW_DIR) absent -- ga10bd runs dry-run only"; \
+	fi
+	@if [ -d "$(CUDA_CUBIN_DIR)" ]; then \
+		mkdir -p "$(RAMFS_STAGING)/fs/cuda"; \
+		cp -p "$(CUDA_CUBIN_DIR)"/*.cubin "$(RAMFS_STAGING)/fs/cuda/"; \
+	fi
+	@mkdir -p "$(RAMFS_STAGING)/fs/cuda"
+	@cp -p ../system/libs/ga10b/kernels/*.cubin "$(RAMFS_STAGING)/fs/cuda/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/netd" \
 		"$(SYSTEM_ROOT)/drivers/timerd" \
 		"$(SYSTEM_ROOT)/drivers/piped" "$(SYSTEM_ROOT)/drivers/ramfsd" \

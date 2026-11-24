@@ -131,8 +131,12 @@ uint32_t bsp_g2d_clock_hz(void) {
 	return 0;
 }
 
+/* compiler target for the portablegl GPU path: the GA10B geometry
+   rasterizer once bsp_g3d brought the GPU up, else none (2D only) */
+uint32_t bsp_g3d_version(void);
+
 uint32_t bsp_g2d_version(void) {
-	return 0;   /* fixed-function 2D only, no shader compiler target */
+	return bsp_g3d_version();
 }
 
 int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {

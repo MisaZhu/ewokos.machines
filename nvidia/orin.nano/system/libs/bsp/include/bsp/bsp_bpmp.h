@@ -39,6 +39,7 @@ int bsp_bpmp_reset_assert(uint32_t reset_id);
 int bsp_bpmp_reset_deassert(uint32_t reset_id);
 int bsp_bpmp_pg_on(uint32_t pg_id);
 int bsp_bpmp_pg_off(uint32_t pg_id);
+int bsp_bpmp_pg_get_state(uint32_t pg_id, uint32_t* state);
 int bsp_bpmp_uphy_pll_init(uint32_t controller);
 int bsp_bpmp_uphy_ctrl_state(uint32_t controller, uint32_t enable);
 
