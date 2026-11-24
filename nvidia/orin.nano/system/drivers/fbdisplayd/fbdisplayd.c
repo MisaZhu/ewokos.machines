@@ -171,6 +171,21 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
     if (r != 0)
         return r;
 
+    /* The reserved FB is sized for 4K, but the modeset adapts to what the
+     * sink and the display clock allow, and window 0 then scans out only
+     * the top-left mode-sized part (same pitch).  Report the size the
+     * hardware armed so the desktop renders exactly the visible area. */
+    disp_info_t* fbinfo = bsp_get_fbinfo();
+    uint32_t armed = drd(WIN_ARMED(0) + 0x224U);
+    uint32_t mw = armed & 0xffffU, mh = armed >> 16;
+    if (mw != 0 && mh != 0 && mw <= fbinfo->width && mh <= fbinfo->height &&
+            (mw != fbinfo->width || mh != fbinfo->height)) {
+        klog("fbdisplayd: scan-out window %ux%u inside %ux%u fb (pitch %u)\n",
+                mw, mh, fbinfo->width, fbinfo->height, fbinfo->pitch);
+        fbinfo->width = fbinfo->vwidth = mw;
+        fbinfo->height = fbinfo->vheight = mh;
+    }
+
     sys_info_t sysinfo;
     if (sys_get_sys_info(&sysinfo) != 0)
         return -1;

@@ -1058,41 +1058,129 @@ static int edid_mode(dmode_t* m) {
     return 0;
 }
 
-/* CTA-861 3840x2160 timings (297 MHz) for sinks whose preferred timing
- * exceeds the SoC's display clock limit. */
-static int cta_has_vic(uint32_t vic) {
-    if (g_edid_len < 256U || g_edid[128] != 0x02) return 0;
-    uint32_t end = 128U + g_edid[130];
-    for (uint32_t i = 132U; i < end && i < 255U; ) {
-        uint32_t tag = g_edid[i] >> 5, len = g_edid[i] & 0x1FU;
-        if (tag == 2U)
-            for (uint32_t k = 1; k <= len; k++) {
-                uint32_t b = g_edid[i + k];
-                if (b == vic || (b > 128U && b < 193U && (b & 0x7FU) == vic)) return 1;
-            }
-        i += 1U + len;
-    }
-    return 0;
-}
-
 static int opt_hz30 = 0;   /* "hz30": force CTA VIC 95 even if the EDID does not list it */
-static int pick_mode(dmode_t* m) {
-    uint32_t lim = g_clk_disppll_khz * 1000U;
-    if (edid_mode(m) != 0) return -1;
-    if (m->pclk <= lim) return 0;
-    klog("dceprobe: preferred %ux%u pclk=%u exceeds disp clk limit %u\n", m->hact, m->vact, m->pclk, lim);
-    if (m->hact != 3840U || m->vact != 2160U || lim < 297000000U) return -1;
-    static const struct { uint32_t vic, hfp; } t[3] = { {95, 176}, {94, 1056}, {93, 1276} };
-    for (int i = 0; i < 3; i++) {
-        if (!cta_has_vic(t[i].vic) && !(opt_hz30 && t[i].vic == 95U)) continue;
-        m->pclk = 297000000U;
-        m->hfp = t[i].hfp; m->hsw = 88; m->hbp = 296;
-        m->vfp = 8; m->vsw = 10; m->vbp = 72;
-        m->hneg = 0; m->vneg = 0;
-        klog("dceprobe: using CTA VIC %u\n", t[i].vic);
+
+/* CTA-861 VIC timings (clock kHz, porch/sync widths, sync polarity), from the
+ * Linux kernel edid_cea_modes[] table.  Used to adapt to whatever modes the
+ * sink advertises that fit the SoC display-clock limit, instead of forcing 4K. */
+typedef struct {
+    uint32_t vic, clk_khz;
+    uint32_t hact, hfp, hsw, hbp, vact, vfp, vsw, vbp;
+    int hneg, vneg;
+} cea_vic_t;
+static const cea_vic_t cea_vics[] = {
+    {  1,  25175,  640,  16, 96,  48,  480, 10, 2, 33, 1, 1 },
+    {  2,  27000,  720,  16, 62,  60,  480,  9, 6, 30, 1, 1 },
+    {  3,  27000,  720,  16, 62,  60,  480,  9, 6, 30, 1, 1 },
+    {  4,  74250, 1280, 110, 40, 220,  720,  5, 5, 20, 0, 0 },
+    { 16, 148500, 1920,  88, 44, 148, 1080,  4, 5, 36, 0, 0 },
+    { 17,  27000,  720,  12, 64,  68,  576,  5, 5, 39, 1, 1 },
+    { 18,  27000,  720,  12, 64,  68,  576,  5, 5, 39, 1, 1 },
+    { 19,  74250, 1280, 440, 40, 220,  720,  5, 5, 20, 0, 0 },
+    { 31, 148500, 1920, 528, 44, 148, 1080,  4, 5, 36, 0, 0 },
+    { 32,  74250, 1920, 638, 44, 148, 1080,  4, 5, 36, 0, 0 },
+    { 33,  74250, 1920, 528, 44, 148, 1080,  4, 5, 36, 0, 0 },
+    { 34,  74250, 1920,  88, 44, 148, 1080,  4, 5, 36, 0, 0 },
+    { 60,  59400, 1280,1760, 40, 220,  720,  5, 5, 20, 0, 0 },
+    { 61,  74250, 1280,2420, 40, 220,  720,  5, 5, 20, 0, 0 },
+    { 62,  74250, 1280,1760, 40, 220,  720,  5, 5, 20, 0, 0 },
+    { 63, 297000, 1920,  88, 44, 148, 1080,  4, 5, 36, 0, 0 },
+    { 64, 297000, 1920, 528, 44, 148, 1080,  4, 5, 36, 0, 0 },
+    { 93, 297000, 3840,1276, 88, 296, 2160,  8,10, 72, 0, 0 },
+    { 94, 297000, 3840,1056, 88, 296, 2160,  8,10, 72, 0, 0 },
+    { 95, 297000, 3840, 176, 88, 296, 2160,  8,10, 72, 0, 0 },
+};
+static int cea_mode_for_vic(uint32_t vic, dmode_t* m) {
+    for (uint32_t i = 0; i < sizeof(cea_vics)/sizeof(cea_vics[0]); i++) {
+        const cea_vic_t* c = &cea_vics[i];
+        if (c->vic != vic) continue;
+        m->pclk = c->clk_khz * 1000U;
+        m->hact = c->hact; m->hfp = c->hfp; m->hsw = c->hsw; m->hbp = c->hbp;
+        m->vact = c->vact; m->vfp = c->vfp; m->vsw = c->vsw; m->vbp = c->vbp;
+        m->hneg = c->hneg; m->vneg = c->vneg;
         return 0;
     }
     return -1;
+}
+/* Parse one 18-byte detailed timing descriptor; returns 0 for a real timing
+ * (pixel clock != 0), -1 for a monitor descriptor / empty slot. */
+static int parse_dtd(const uint8_t* d, dmode_t* m) {
+    uint32_t pc = d[0] | ((uint32_t)d[1] << 8);
+    if (pc == 0) return -1;
+    uint32_t hbl = d[3] | ((uint32_t)(d[4] & 0xF) << 8);
+    uint32_t vbl = d[6] | ((uint32_t)(d[7] & 0xF) << 8);
+    m->pclk = pc * 10000U;
+    m->hact = d[2] | ((uint32_t)(d[4] >> 4) << 8);
+    m->vact = d[5] | ((uint32_t)(d[7] >> 4) << 8);
+    m->hfp = d[8] | ((uint32_t)(d[11] >> 6) << 8);
+    m->hsw = d[9] | ((uint32_t)((d[11] >> 4) & 3) << 8);
+    m->vfp = (d[10] >> 4) | ((uint32_t)((d[11] >> 2) & 3) << 4);
+    m->vsw = (d[10] & 0xF) | ((uint32_t)(d[11] & 3) << 4);
+    m->hbp = hbl - m->hfp - m->hsw;
+    m->vbp = vbl - m->vfp - m->vsw;
+    m->hneg = !(d[17] & 0x02);
+    m->vneg = !(d[17] & 0x04);
+    return 0;
+}
+/* Prefer higher resolution, then higher refresh (cross-multiplied, no float). */
+static int mode_better(const dmode_t* a, const dmode_t* b) {
+    uint32_t ra = a->hact * a->vact, rb = b->hact * b->vact;
+    if (ra != rb) return ra > rb;
+    uint64_t ta = (uint64_t)(a->hact+a->hfp+a->hsw+a->hbp) * (a->vact+a->vfp+a->vsw+a->vbp);
+    uint64_t tb = (uint64_t)(b->hact+b->hfp+b->hsw+b->hbp) * (b->vact+b->vfp+b->vsw+b->vbp);
+    return (uint64_t)a->pclk * tb > (uint64_t)b->pclk * ta;
+}
+static int pick_mode(dmode_t* m) {
+    uint32_t lim = g_clk_disppll_khz * 1000U;
+    /* Preferred detailed timing fits the SoC clock: use it as-is. */
+    if (edid_mode(m) == 0 && m->pclk <= lim) return 0;
+    if (edid_mode(m) == 0)
+        klog("dceprobe: preferred %ux%u pclk=%u exceeds disp clk limit %u, adapting\n",
+                m->hact, m->vact, m->pclk, lim);
+    /* Explicit user override: force CTA VIC 95 (4K30). */
+    if (opt_hz30 && lim >= 297000000U) {
+        cea_mode_for_vic(95, m);
+        klog("dceprobe: using CTA VIC 95 (hz30 override)\n");
+        return 0;
+    }
+    dmode_t best; int have = 0;
+    /* Best CTA VIC mode the sink advertises within the clock limit. */
+    if (g_edid_len >= 256U && g_edid[128] == 0x02) {
+        uint32_t end = 128U + g_edid[130];
+        for (uint32_t i = 132U; i < end && i < 255U; ) {
+            uint32_t tag = g_edid[i] >> 5, len = g_edid[i] & 0x1FU;
+            if (tag == 2U)
+                for (uint32_t k = 1; k <= len; k++) {
+                    uint32_t vic = g_edid[i + k];
+                    if (vic > 128U && vic < 193U) vic &= 0x7FU;
+                    dmode_t c;
+                    if (cea_mode_for_vic(vic, &c) != 0 || c.pclk > lim) continue;
+                    if (!have || mode_better(&c, &best)) { best = c; have = 1; }
+                }
+            i += 1U + len;
+        }
+    }
+    /* Also consider the remaining base-block detailed timings. */
+    if (g_edid_len >= 128U) {
+        for (uint32_t off = 0x48; off + 18U <= 128U; off += 18U) {
+            dmode_t c;
+            if (parse_dtd(g_edid + off, &c) != 0 || c.pclk > lim) continue;
+            if (!have || mode_better(&c, &best)) { best = c; have = 1; }
+        }
+    }
+    if (have) {
+        *m = best;
+        klog("dceprobe: adaptive mode %ux%u pclk=%u (limit %u)\n",
+                m->hact, m->vact, m->pclk, lim);
+        return 0;
+    }
+    /* Last resort: a universally safe DMT mode so the panel still lights. */
+    m->pclk = 65000000U;
+    m->hact = 1024; m->hfp = 24; m->hsw = 136; m->hbp = 160;
+    m->vact = 768; m->vfp = 3; m->vsw = 6; m->vbp = 29;
+    m->hneg = 1; m->vneg = 1;
+    klog("dceprobe: no advertised mode fits limit %u, fallback 1024x768@60\n", lim);
+    return 0;
 }
 
 static void core_update(const char* tag) {

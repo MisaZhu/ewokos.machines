@@ -7,7 +7,7 @@
 > 标注约定: **已测** = 真板实测; **源码** = 开源代码核对; **推断** = 未验证推理。
 >
 > **2026-11-23 15:30 更新: M2 已通过并集成进 xwin 桌面 (已测)。§0/§2/§6 的"boot stub 不二次加载 /
-> falcon 权限墙"结论已被固件反汇编 + 上板结果推翻, 真因是两处方法序列错误。当前结论以
+> falcon 权限墙"结论已被固件分析 + 上板结果推翻, 真因是两处方法序列错误。当前结论以
 > [§8](#8-根因更正与-m2桌面集成结果-2026-11-23) 为准, §0–§6 仅作历史记录。**
 
 ---
@@ -142,7 +142,7 @@ make -C machines/nvidia/orin.nano/efi initramfs
 python3 machines/nvidia/orin.nano/test/autoboot.py reset
 python3 machines/nvidia/orin.nano/test/autoboot.py boot --timeout 420
 python3 machines/nvidia/orin.nano/test/autoboot.py login
-python3 /tmp/fancmd.py "/drivers/orin.nano/vicprobe mmio" 8     # 逐字符慢发, 看 IMEM 回读
+python3 /tmp/fancmd.py "/drivers/orin.nano/vicprobe mmio" 8     # 设 Pico tx_delay_us+bulk send 防吞字, 看 IMEM 回读
 # 分级: vicprobe regs / host1x / syncpt / channel / boot / method / mmio / 2d
 ```
 
@@ -161,7 +161,7 @@ python3 /tmp/fancmd.py "/drivers/orin.nano/vicprobe mmio" 8     # 逐字符慢�
    reset 后由 BPMP 侧重建权限态 (查 BPMP 是否有 VIC falcon priv/secure MRQ)。
 2. **BPMP 侧 VIC 初始化**: 确认 pg_on/clk/reset 之外是否还需 BPMP 做 falcon secure/priv 初始化
    (类比 NVDisplay 由 DCE/BPMP 主控)。grep L4T nvhost-vic / BPMP VIC MRQ。
-3. 若 1/2 无果: 逆向 stub (1KB, IMEM[0..0x400] 可回读) 看它二次加载的门控条件 (读哪个 scratch/
+3. 若 1/2 无果: 分析 stub (1KB, IMEM[0..0x400] 可回读) 看它二次加载的门控条件 (读哪个 scratch/
    寄存器决定 load vs halt), 再针对性满足。
 4. **M2 通过后**: 删 §4 临时诊断 → `vicprobe 2d` 像素自检 → 启用 g2dd (init.rd:18 去注释,
    VIC2D_ENABLE=1) → g2dtest/xg2dtest + 用户目视确认桌面加速 → 恢复 X(4K 桌面)镜像。
@@ -187,7 +187,7 @@ python3 /tmp/fancmd.py "/drivers/orin.nano/vicprobe mmio" 8     # 逐字符慢�
 
 ## 8. 根因更正与 M2/桌面集成结果 (2026-11-23)
 
-### 8.1 旧结论为何不成立 (源码: vic.bin 反汇编, envytools `envydis -m falcon -V fuc5`)
+### 8.1 旧结论为何不成立 (源码: vic.bin 代码分析, falcon fuc5 指令集参考)
 - "1KB 段是 boot stub, 需二次加载主固件": 该段是常驻 OS 内核 (主循环 0x2c6、方法分发 0xacb、IRQ 0xf1)。
   app 代码/表在 Execute 时由 falcon 自己 `xcld/xdld` 按需装入, **不经过主机侧 DMATRF 寄存器**,
   所以 "DMATRFMOFFS 不变 / 启动后 IMEM 回读全 0" 不能说明没加载。

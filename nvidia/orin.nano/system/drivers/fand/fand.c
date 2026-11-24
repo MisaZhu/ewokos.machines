@@ -340,11 +340,16 @@ int main(int argc, char** argv) {
         klog("orin fand: fixed full duty; thermal not queried\n");
     } else {
         int temp;
-        if (bsp_bpmp_thermal_get_temp(ORIN_THERM_ZONE_TJ_MAX, &temp) == 0)
+        if (bsp_bpmp_thermal_get_temp(ORIN_THERM_ZONE_TJ_MAX, &temp) == 0 &&
+                temp > -40000 && temp < 150000) {
             klog("orin fand: tj_max boot temp %d mC\n", temp);
-        else
+            _temperature_mc = temp;
+            _temperature_valid = true;
+            fan_set_duty_locked(thermal_to_duty(temp));
+        } else {
             klog("orin fand: tj_max boot read failed; failsafe until ok\n");
-        fan_set_duty_locked(FAN_DUTY_MAX);
+            fan_set_duty_locked(FAN_DUTY_MAX);
+        }
     }
     pwm_apply(_duty);
     if (pthread_create(&_worker, NULL, fan_worker, NULL) != 0) {

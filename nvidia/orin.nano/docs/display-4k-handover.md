@@ -206,7 +206,7 @@ dceprobe 本次改动 (未提交): 新增 `deinit` 参数 (bInit=1 前先发 bIn
   `NOREBOOT=1` 不复位)。例: `python3 dp_run.py "/bin/dp admin query chan kick" 40 "/bin/dp mmio core" 8`
   - 只读探针: `/bin/dp mmio [core] [win]` (通道状态/armed 状态), `/bin/dp peek <hexoff> [n]`
     (逐个打印偏移后再读, 用于定位致命寄存器)。`query` = NV0073 查询 + DPCD/EDID。
-- 板测(旧): `cd /tmp && python3 dp_test.py "/bin/dp admin chan"` (reset→boot→login→逐字符慢发→读日志)
+- 板测(旧): `cd /tmp && python3 dp_test.py "/bin/dp admin chan"` (reset→boot→login→设 Pico tx_delay_us+bulk send→读日志)
   - **正确调用必须带 `admin`**: `/bin/dp admin <flags>`。`/bin/dp chan` 会落默认
     NVDisplay dump 路径读 0x610630 → translation fault 进程被杀(非崩溃, 是旧诊断路径)。
   - 模式递进: `info|ipc|disprm|boot|boot2|rminit|alloc|chan` (chan = alloc 全链 + 通道)。
@@ -310,7 +310,7 @@ dceprobe 本次改动 (未提交): 新增 `deinit` 参数 (bInit=1 前先发 bIn
   DCE HSP mailbox 区(≥0x150000) CPU 安全(已测)。fw 崩溃 MB2 重载可恢复, 但避免 hard-hang 探针。
 - SD 卡只读(写需用户明确 OK); **不 commit 不 push 除非用户明确要求**;
   Orin 未提交改动与 qcom/rockchip 改动分开。
-- 长串口命令逐字符慢发(20ms/char, dp_test.py 已实现); Pico USB 掉线无软件恢复, 报告等物理重插, 勿轮询。
+- 长串口命令防吞字 = MCP `pico_gpio set tx_delay_us` 抬高 Pico 固件 TX 字符间延时(默认 1000µs, 防溢出调到 20000µs)再 bulk `serial_log send`(dp_test.py/fancmd.py 已封装, 主机不做软件 sleep); Pico USB 掉线无软件恢复, 报告等物理重插, 勿轮询。
 - klog 不是 slog。EwokOS dma_alloc(0,sz)/dma_phy_addr(0,va) = NC 物理连续池, VA↔phy 线性。
 - 未提交 Orin 文件: dceprobe.c (+Makefile 链 libbsp), orin_net.h, hw_info_arch.c, efi/main.c
   (新增 fdt_prop_u32 + disp clk 打印), drivers/Makefile, efi/Makefile, bpmpdiag.c (rate/setrate),
