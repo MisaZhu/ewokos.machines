@@ -1546,9 +1546,13 @@ void ga10b_gr_launch_postmortem(void) {
     klog("ga10b: trapped addr=%08x data=%08x.%08x mme=%08x class_error=%08x\n",
          ga10b_rd(0x00400704u), ga10b_rd(0x0040070cu), ga10b_rd(0x00400708u),
          ga10b_rd(0x00400710u), ga10b_rd(0x00400110u));
+    /* warp_esr[15:0] is an error code, not a bitmask (nvgpu hw_gr_ga10b.h):
+     * 0x9 illegal encoding, 0xd out-of-range register, 0xe out-of-range
+     * address, 0x10 invalid address space, 0x17 MMU fault ... */
     for (uint32_t t = 0; t < gr.tpc_total && t < GA10B_MAX_TPC_PER_GPC; t++)
-        klog("ga10b: tpc%u sm0 warp_esr=%08x global_esr=%08x tpc_exc=%08x\n",
+        klog("ga10b: tpc%u sm0 warp_esr=%08x pc=%08x global_esr=%08x tpc_exc=%08x\n",
              t, ga10b_rd(0x00504730u + t * GA10B_TPC_STRIDE),
+             ga10b_rd(0x00504738u + t * GA10B_TPC_STRIDE),
              ga10b_rd(0x00504734u + t * GA10B_TPC_STRIDE),
              ga10b_rd(0x00504508u + t * GA10B_TPC_STRIDE));
 }
@@ -1630,6 +1634,7 @@ int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words) {
         }
         ga10b_delay_us(1000);
     }
+    ga10b_gr_launch_postmortem();
     return ga10b_chan_wait_sem(ch, payload, 1);
 }
 

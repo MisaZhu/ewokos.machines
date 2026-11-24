@@ -43,6 +43,12 @@ static struct {
     struct {
         int used;
         ga10b_prog_blob_t b;
+        /* fullscreen compute program (geom_kind == 0) */
+        int is_compute;
+        ga10b_module_t* mod;
+        int kernel;
+        uint32_t local_size[3];
+        uint32_t unif_dwords;
     } prog[PGL_MAX_PROGS];
 } pgl;
 
@@ -168,6 +174,36 @@ static int pgl_do_program_load(const void* blob, uint32_t size) {
     memcpy(&b, blob, sizeof(b));
     if (b.magic != GA10B_PROG_MAGIC || b.version != GA10B_PROG_VERSION)
         return GA10B_PGL_E_UNSUPPORTED;
+    if (b.geom_kind == 0) {
+        /* fullscreen compute: a compiler-generated cubin */
+        if (size < sizeof(ga10b_compute_blob_t))
+            return GA10B_PGL_E_UNSUPPORTED;
+        ga10b_compute_blob_t cb;
+        memcpy(&cb, blob, sizeof(cb));
+        if (cb.cubin_size == 0 || size < sizeof(cb) + cb.cubin_size)
+            return GA10B_PGL_E_UNSUPPORTED;
+        ga10b_module_t* mod = ga10b_dev_module((const uint8_t*)blob + sizeof(cb),
+                                               cb.cubin_size);
+        if (mod == NULL)
+            return GA10B_PGL_E_UNSUPPORTED;
+        int kernel = ga10b_module_kernel(mod, "pgl_cs");
+        if (kernel < 0)
+            return GA10B_PGL_E_UNSUPPORTED;
+        for (uint32_t i = 0; i < PGL_MAX_PROGS; i++) {
+            if (pgl.prog[i].used)
+                continue;
+            memset(&pgl.prog[i], 0, sizeof(pgl.prog[i]));
+            pgl.prog[i].used = 1;
+            pgl.prog[i].is_compute = 1;
+            pgl.prog[i].mod = mod;
+            pgl.prog[i].kernel = kernel;
+            memcpy(pgl.prog[i].local_size, cb.local_size,
+                   sizeof(cb.local_size));
+            pgl.prog[i].unif_dwords = cb.unif_dwords;
+            return (int)i;
+        }
+        return GA10B_PGL_E_DECLINED;
+    }
     /* a kind fixes which kernel pair it may name and how much of the
      * uniform block each one reads */
     uint32_t xf_min = 0, rs_min = 0;
@@ -210,6 +246,7 @@ static int pgl_do_program_load(const void* blob, uint32_t size) {
     for (uint32_t i = 0; i < PGL_MAX_PROGS; i++) {
         if (pgl.prog[i].used)
             continue;
+        memset(&pgl.prog[i], 0, sizeof(pgl.prog[i]));
         pgl.prog[i].used = 1;
         pgl.prog[i].b = b;
         return (int)i;
@@ -232,6 +269,45 @@ static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
     if (handle < 0 || (uint32_t)handle >= PGL_MAX_PROGS ||
         !pgl.prog[handle].used)
         return GA10B_PGL_E_UNSUPPORTED;
+    if (pgl.prog[handle].is_compute) {
+        /* fullscreen compute: one thread per pixel, output to SSBO block 0 */
+        if (d->w == 0 || d->h == 0 || d->stride < d->w * 4u ||
+            (d->stride & 3u) != 0)
+            return GA10B_PGL_E_DECLINED;
+        uint64_t fb = ga10b_dev_map(d->fb_phy, d->stride * d->h);
+        if (fb == 0)
+            return GA10B_PGL_E_DECLINED;
+        uint32_t lx = pgl.prog[handle].local_size[0] ?
+                      pgl.prog[handle].local_size[0] : 32u;
+        uint32_t ly = pgl.prog[handle].local_size[1] ?
+                      pgl.prog[handle].local_size[1] : 8u;
+        const uint32_t grid[3] = { (d->w + lx - 1u) / lx,
+                                   (d->h + ly - 1u) / ly, 1 };
+        const uint32_t block[3] = { lx, ly, 1 };
+        uint32_t t0 = prof_now();
+        ga10b_dev_sync_to_gpu();
+        uint32_t t1 = prof_now();
+        int rc = ga10b_dev_launch_compute(pgl.prog[handle].mod,
+                                          pgl.prog[handle].kernel, grid, block,
+                                          unif, num_uniforms, &fb, 1);
+        uint32_t t2 = prof_now();
+        ga10b_dev_sync_to_cpu();
+        if (prof.on) {
+            prof.p[handle].prep_us += t1 - t0;
+            prof.p[handle].raster_us += t2 - t1;
+            prof.p[handle].flush_us += prof_now() - t2;
+            if (++prof.p[handle].draws == PROF_EVERY) {
+                klog("ga10b: pgl prof h%d compute %ux%u local %ux%u: "
+                     "sync=%u launch=%u flush=%u us\n",
+                     handle, d->w, d->h, lx, ly,
+                     prof.p[handle].prep_us / PROF_EVERY,
+                     prof.p[handle].raster_us / PROF_EVERY,
+                     prof.p[handle].flush_us / PROF_EVERY);
+                memset(&prof.p[handle], 0, sizeof(prof.p[handle]));
+            }
+        }
+        return rc == 0 ? GA10B_PGL_OK : GA10B_PGL_E_TIMEOUT;
+    }
     const ga10b_prog_blob_t* p = &pgl.prog[handle].b;
     uint32_t split = p->xform_unif_dwords;
     uint32_t ntris = d->nverts / 3u;

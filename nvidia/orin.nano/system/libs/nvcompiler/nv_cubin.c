@@ -5,6 +5,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "nv_cubin.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -13,6 +14,7 @@
 #define SHT_PROGBITS 1
 #define SHT_SYMTAB   2
 #define SHT_STRTAB   3
+#define SHT_NOTE     7
 #define SHT_NOBITS   8
 #define SHT_CUDA_INFO 0x70000000u
 #define SHF_EXECINSTR 0x4
@@ -50,7 +52,10 @@ static uint32_t ar_put(arena* a, const void* data, uint32_t len, uint32_t align)
     }
     if (!ar_reserve(a, len)) return 0;
     uint32_t off = a->len;
-    if (len) memcpy(a->p + a->len, data, len);
+    if (len) {
+        if (data) memcpy(a->p + a->len, data, len);
+        else memset(a->p + a->len, 0, len);
+    }
     a->len += len;
     return off;
 }
@@ -99,6 +104,23 @@ typedef struct {
 
 #define MAX_SH 16
 
+/* .note.nv.tkinfo for sm_87 (name "NVIDIA Corp", type 2000): nvdisasm reads
+ * the target from the trailing "-arch sm_87" command string.  Byte-for-byte
+ * from an nvcc 13.5 sm_87 cubin; the ga10b loader never reads it. */
+static const uint8_t tkinfo_sm87[164] = {
+    0x0c,0,0,0, 0x8c,0,0,0, 0xd0,0x07,0,0, 0x4e,0x56,0x49,0x44,
+    0x49,0x41,0x20,0x43,0x6f,0x72,0x70,0, 0x02,0,0,0, 0,0,0,0,
+    0x01,0,0,0, 0x07,0,0,0, 0x36,0,0,0, 0x60,0,0,0,
+    0,0x70,0x74,0x78,0x61,0x73,0,0x43,0x75,0x64,0x61,0x20,0x63,0x6f,0x6d,0x70,
+    0x69,0x6c,0x61,0x74,0x69,0x6f,0x6e,0x20,0x74,0x6f,0x6f,0x6c,0x73,0x2c,0x20,0x72,
+    0x65,0x6c,0x65,0x61,0x73,0x65,0x20,0x31,0x33,0x2e,0x35,0x2c,0x20,0x56,0x31,0x33,
+    0x2e,0x35,0x2e,0x33,0x37,0,0x42,0x75,0x69,0x6c,0x64,0x20,0x63,0x75,0x64,0x61,
+    0x5f,0x31,0x33,0x2e,0x35,0x2e,0x72,0x31,0x33,0x2e,0x35,0x2f,0x63,0x6f,0x6d,0x70,
+    0x69,0x6c,0x65,0x72,0x2e,0x33,0x39,0x31,0x32,0x35,0x37,0x33,0x33,0x5f,0x30,0,
+    0x2d,0x61,0x72,0x63,0x68,0x20,0x73,0x6d,0x5f,0x38,0x37,0x20,0x2d,0x6d,0x20,0x36,
+    0x34,0x20,0,0,
+};
+
 uint32_t nv_cubin_build(const uint32_t* sass, uint32_t sass_words,
                         const struct nv_kernel_meta* meta, const char* name,
                         const struct nv_cubin_param* params, uint32_t nparams,
@@ -121,6 +143,8 @@ uint32_t nv_cubin_build(const uint32_t* sass, uint32_t sass_words,
     uint32_t n_text = str_add(&shstr, textname);
     uint32_t n_info = str_add(&shstr, infoname);
     uint32_t n_ginfo = str_add(&shstr, ".nv.info");
+    uint32_t n_tkinfo = str_add(&shstr, ".note.nv.tkinfo");
+    uint32_t n_cuinfo = str_add(&shstr, ".note.nv.cuinfo");
     uint32_t n_const = str_add(&shstr, constname);
     uint32_t n_shared = meta->shared_bytes ? str_add(&shstr, sharedname) : 0;
 
@@ -218,6 +242,26 @@ uint32_t nv_cubin_build(const uint32_t* sass, uint32_t sass_words,
     sh[ns].offset = ar_put(&body, ginfo.p, ginfo.len, 4);
     sh[ns].size = ginfo.len; sh[ns].addralign = 4; ns++;
 
+    unsigned idx_tkinfo = ns;
+    sh[ns].name_off = n_tkinfo; sh[ns].type = SHT_NOTE;
+    sh[ns].offset = ar_put(&body, tkinfo_sm87, sizeof(tkinfo_sm87), 4);
+    sh[ns].size = sizeof(tkinfo_sm87); sh[ns].addralign = 4; ns++;
+    (void)idx_tkinfo;
+
+    /* .note.nv.cuinfo: nvdisasm/cuobjdump read the target arch from this note
+     * (name "NVIDIA Corp", type 1000, desc u16[4]={2, sm, 135, 0}); measured
+     * from nvcc 13.5 sm_87 cubins.  The ga10b loader ignores it. */
+    uint8_t cuinfo[32];
+    wr32(cuinfo + 0, 12); wr32(cuinfo + 4, 8); wr32(cuinfo + 8, 1000);
+    memcpy(cuinfo + 12, "NVIDIA Corp", 12);
+    wr16(cuinfo + 24, 2); wr16(cuinfo + 26, 87);
+    wr16(cuinfo + 28, 135); wr16(cuinfo + 30, 0);
+    unsigned idx_cuinfo = ns;
+    sh[ns].name_off = n_cuinfo; sh[ns].type = SHT_NOTE;
+    sh[ns].offset = ar_put(&body, cuinfo, sizeof(cuinfo), 4);
+    sh[ns].size = sizeof(cuinfo); sh[ns].addralign = 4; ns++;
+    (void)idx_cuinfo;
+
     unsigned idx_const = ns;
     sh[ns].name_off = n_const; sh[ns].type = SHT_PROGBITS;
     sh[ns].offset = ar_put(&body, cbank0, cbank0_size, 4);
@@ -240,7 +284,7 @@ uint32_t nv_cubin_build(const uint32_t* sass, uint32_t sass_words,
         wr32(h + 4, sh[i].type);
         wr64(h + 8, sh[i].flags);
         wr64(h + 16, 0);              /* sh_addr */
-        wr64(h + 24, sh[i].offset);
+        wr64(h + 24, 64 + sh[i].offset);
         wr64(h + 32, sh[i].size);
         wr32(h + 40, sh[i].link);
         wr32(h + 44, sh[i].info);
@@ -263,12 +307,14 @@ uint32_t nv_cubin_build(const uint32_t* sass, uint32_t sass_words,
     out[4] = 2;          /* ELFCLASS64 */
     out[5] = 1;          /* ELFDATA2LSB */
     out[6] = 1;          /* EV_CURRENT */
-    out[7] = 0;          /* ELFOSABI_NONE */
+    out[7] = 0x41;       /* EI_OSABI = ELFOSABI_CUDA (nvdisasm arch gate) */
     out[8] = 8;          /* EI_ABIVERSION (CUDA 13: sm in flags 15:8) */
     wr16(out + 16, 2);   /* ET_EXEC */
     wr16(out + 18, EM_CUDA);
     wr32(out + 20, 1);   /* e_version */
-    wr32(out + 48, 87u << 8);   /* e_flags: sm_87 */
+    /* e_flags: sm_87 in bits 15:8 (abiversion 8); 0x06000004 is the CUDA
+     * ELF scaffold nvdisasm requires (measured from nvcc 13.5 sm_87 cubins). */
+    wr32(out + 48, 0x06000004u | (87u << 8));
     wr64(out + 40, 64 + shtab_off);  /* e_shoff */
     wr16(out + 52, 64);  /* e_ehsize */
     wr16(out + 58, 64);  /* e_shentsize */

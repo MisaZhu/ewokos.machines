@@ -11,11 +11,12 @@ endif
 SYS_ROOT_DIR = ${ewokos}/system
 
 # portablegl's GPU path (PGL_G3D): the machine back end of <pglcompiler.h>
-# lives in libs/nvcompiler.  It maps the fixed geometry kernel texts onto
-# kernels precompiled with nvcc and compiles nothing on the device, so the
-# shared mesa GLSL frontend is left out (PGL_G3D_FRONTEND=no).
+# lives in libs/nvcompiler.  It compiles compute shaders on device through the
+# shared mesa GLSL->NIR frontend (PGL_G3D_FRONTEND=yes) plus a hand-written
+# NIR->sm_87 SASS compiler; the fixed geometry kernel texts still map onto
+# kernels precompiled with nvcc as a fast path.
 export PGL_G3D=yes
-export PGL_G3D_FRONTEND=no
+export PGL_G3D_FRONTEND=yes
 PGL_G3D_COMPILER_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))libs/nvcompiler
 export PGL_G3D_COMPILER_DIR
 

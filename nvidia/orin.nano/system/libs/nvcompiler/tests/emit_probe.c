@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
     EMIT(nv_imad_wide(w, 4, nv_gpr(6), nv_gpr(7), nv_cb(0, 0x168), 1, ctl(4)));
     EMIT(nv_imnmx(w, 9, nv_gpr(4), nv_gpr(3), nv_pt(), 1, ctl(4)));
     EMIT(nv_lop3(w, 9, nv_gpr(4), nv_gpr(3), nv_gpr(2), 0xca, nv_pt(), ctl(4)));
-    EMIT(nv_shf(w, 9, nv_gpr(4), nv_gpr(3), nv_imm(2), 1, 0, 0, 0, ctl(4)));
+    EMIT(nv_shf(w, 9, nv_gpr(4), nv_gpr(3), nv_imm(2), 1, 0, 0, 0, 0, ctl(4)));
     EMIT(nv_sel(w, 9, nv_gpr(4), nv_gpr(3), nv_p(0), ctl(4)));
 
     /* compares */

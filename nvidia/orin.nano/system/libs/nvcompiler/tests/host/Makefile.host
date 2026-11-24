@@ -1,0 +1,72 @@
+# Host (macOS/Linux) oracle: build the shared GLSL->NIR frontend + the GA10B
+# nvcompiler backend with native libc, then compile the real ocean shader.
+#   make -f tests/host/Makefile.host          (build + compile ocean)
+#   make -f tests/host/Makefile.host compiler (just the two archives)
+# Mirrors machines/qcom/8gen3/system/libs/adreno/shaders/Makefile.host.
+ROOT := $(abspath ../../../../../..)
+FE   := $(ROOT)/projects/opengl/libs/gles/pglcompiler
+BE   := $(abspath .)
+HERE := $(abspath tests/host)
+OCEAN := $(ROOT)/projects/opengl/apps/ocean
+OUT  ?= /tmp/nv-host
+HOST_CC  ?= clang
+HOST_CXX ?= clang++
+HOST_AR  ?= ar
+
+INC := -I$(FE)/include -I$(FE)/mesa/include -I$(FE)/mesa/src \
+ -I$(FE)/mesa/src/compiler -I$(FE)/mesa/src/compiler/glsl \
+ -I$(FE)/mesa/src/compiler/nir -I$(FE)/mesa/src/mesa \
+ -I$(FE)/mesa/src/mesa/main -I$(FE)/mesa/src/util \
+ -I$(BE) -I$(BE)/port -I$(BE)/../ga10b/include \
+ -I$(HERE)/host_inc \
+ -I$(ROOT)/system/gui/libs/g2dclient/include \
+ -I$(ROOT)/system/basic/libc/libewoksys/ewoksys/include
+FLAGS := $(INC) -include $(HERE)/host_config.h -O2 -g -DNDEBUG -D_GNU_SOURCE -w -MMD -MP
+
+.PHONY: all compiler ocean emu clean
+all: ocean
+
+compiler:
+	@mkdir -p $(OUT)
+	$(MAKE) -C $(FE) -f Makefile -f $(HERE)/host_deps.mk HOST_SHADER_DIR=$(HERE) \
+	 ARCH=aarch64 HW=orin.nano PGL_G3D=yes PGL_G3D_COMPILER_DIR=$(BE) \
+	 OBJDIR=$(OUT)/frontend BUILD_DIR=$(OUT) LIB=$(OUT)/libfrontend.a EWOKOS_GLUE_C= \
+	 CC=$(HOST_CC) CXX=$(HOST_CXX) AR=$(HOST_AR) \
+	 CFLAGS='$(FLAGS) -std=gnu11' CXXFLAGS='$(FLAGS) -std=gnu++17'
+	$(MAKE) -C $(BE) -f Makefile -f $(HERE)/host_deps.mk HOST_SHADER_DIR=$(HERE) \
+	 ARCH=aarch64 HW=orin.nano PGLC_FE_DIR=$(FE) \
+	 OBJDIR=$(OUT)/backend BUILD_DIR=$(OUT) LIB=$(OUT)/libbackend.a \
+	 CC=$(HOST_CC) CXX=$(HOST_CXX) AR=$(HOST_AR) \
+	 CFLAGS='$(FLAGS) -std=gnu11' CXXFLAGS='$(FLAGS) -std=gnu++17'
+
+ocean: compiler
+	$(HOST_CC) $(FLAGS) -std=gnu11 -c $(HERE)/host_support.c -o $(OUT)/host_support.o
+	$(HOST_CXX) $(FLAGS) -std=gnu++17 -I$(OCEAN) $(HERE)/compile_ocean.cpp \
+	 $(OUT)/host_support.o \
+	 $(OUT)/libbackend.a $(OUT)/libfrontend.a $(OUT)/libbackend.a \
+	 -pthread -lm -o $(OUT)/compile_ocean
+	$(OUT)/compile_ocean
+
+# Build any tests/host/<name>.cpp driver against the two archives:
+#   make -f tests/host/Makefile.host tool-dump_nir
+tool-%: compiler
+	$(HOST_CC) $(FLAGS) -std=gnu11 -c $(HERE)/host_support.c -o $(OUT)/host_support.o
+	$(HOST_CXX) $(FLAGS) -std=gnu++17 -I$(OCEAN) $(HERE)/$*.cpp \
+	 $(OUT)/host_support.o \
+	 $(OUT)/libbackend.a $(OUT)/libfrontend.a $(OUT)/libbackend.a \
+	 -pthread -lm -o $(OUT)/$*
+
+# Differential test: SASS warp emulator vs NIR reference interpreter over a
+# whole ocean frame.  EMU_ARGS="width height [time]".
+emu: compiler
+	$(HOST_CC) $(FLAGS) -std=gnu11 -c $(HERE)/host_support.c -o $(OUT)/host_support.o
+	$(HOST_CC) $(FLAGS) -std=gnu11 -ffp-contract=off -c $(HERE)/nv_emu.c -o $(OUT)/nv_emu.o
+	$(HOST_CC) $(FLAGS) -std=gnu11 -ffp-contract=off -c $(HERE)/nir_ref.c -o $(OUT)/nir_ref.o
+	$(HOST_CXX) $(FLAGS) -std=gnu++17 -I$(OCEAN) $(HERE)/emu_ocean.cpp \
+	 $(OUT)/nv_emu.o $(OUT)/nir_ref.o $(OUT)/host_support.o \
+	 $(OUT)/libbackend.a $(OUT)/libfrontend.a $(OUT)/libbackend.a \
+	 -pthread -lm -o $(OUT)/emu_ocean
+	$(OUT)/emu_ocean $(EMU_ARGS)
+
+clean:
+	rm -rf $(OUT)

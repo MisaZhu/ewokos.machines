@@ -173,8 +173,11 @@ void nv_isetp(uint32_t out[4], uint8_t pdst, nv_src a, nv_src b,
               int is_signed, int ex, nv_ctrl c);
 void nv_lop3(uint32_t out[4], uint8_t dst, nv_src a, nv_src b, nv_src cc,
              uint8_t lut, nv_pred pdst, nv_ctrl c);
+/* dst_high selects the upper half of the (hi:lo) funnel result: NIR 32-bit
+ * right shifts are SHF.R with lo=RZ, hi=x, dst_high=1 (NAK builder shr). */
 void nv_shf(uint32_t out[4], uint8_t dst, nv_src lo, nv_src hi, nv_src shift,
-            int right, int wrap, int is_64, int is_signed, nv_ctrl c);
+            int right, int wrap, int is_64, int is_signed, int dst_high,
+            nv_ctrl c);
 void nv_sel(uint32_t out[4], uint8_t dst, nv_src a, nv_src b, nv_pred sel,
             nv_ctrl c);
 void nv_mufu(uint32_t out[4], uint8_t dst, nv_src src, uint8_t op, nv_ctrl c);
@@ -194,6 +197,9 @@ void nv_f2i(uint32_t out[4], uint8_t dst, nv_src src, int is_signed,
             int dst_bits, int src_bits, enum nv_rnd rnd, int ftz, nv_ctrl c);
 void nv_i2f(uint32_t out[4], uint8_t dst, nv_src src, int is_signed,
             int dst_bits, int src_bits, enum nv_rnd rnd, nv_ctrl c);
+/* FRND: round a float to an integral float (floor/ceil/trunc/round-even) */
+void nv_frnd(uint32_t out[4], uint8_t dst, nv_src src, int bits,
+             enum nv_rnd rnd, int ftz, nv_ctrl c);
 
 /* memory: global load/store (LDG.E / STG.E).  addr is a 64-bit GPR pair when
  * addr64 != 0; uaddr is the uniform base register (URZ for none, treated as
@@ -223,6 +229,8 @@ void nv_bar(uint32_t out[4], nv_ctrl c);          /* BAR.SYNC */
 void nv_membar(uint32_t out[4], int scope, nv_ctrl c);
 void nv_bmov(uint32_t out[4], uint8_t bar, nv_src src, int to_bar, int clear,
              nv_ctrl c);
+/* BMOV.32.CLEAR RZ, Bn: zero a branch-sync barrier (NAK OpBClear) */
+void nv_bclear(uint32_t out[4], uint8_t bar, nv_ctrl c);
 void nv_bsync(uint32_t out[4], uint8_t bar, nv_pred cond, nv_ctrl c);
 void nv_break(uint32_t out[4], uint8_t bar, int32_t rel_dwords, nv_pred cond,
               nv_ctrl c);
@@ -239,18 +247,20 @@ void nv_r2ur(uint32_t out[4], uint8_t udst, nv_src src, nv_ctrl c);
  * A tiny label-resolving assembler: append instructions, mark labels, patch
  * branches.  Branch offsets are in dword (4-byte) units relative to the next
  * instruction (target - ip - 4 in NAK's dword-addressed ip). */
-#define NV_ASM_MAX_INSTR 4096
-#define NV_ASM_MAX_LABEL 256
+#define NV_ASM_MAX_INSTR 16384
+#define NV_ASM_MAX_PATCH 4096
+#define NV_ASM_MAX_LABEL 4096
 
 typedef struct {
     uint32_t w[NV_ASM_MAX_INSTR][4];
     unsigned n;
     /* branch patch records: instr index, field lo/hi, label id */
     struct { unsigned instr; unsigned lo; unsigned hi; int label; }
-        patch[NV_ASM_MAX_INSTR];
+        patch[NV_ASM_MAX_PATCH];
     unsigned npatch;
     int label_at[NV_ASM_MAX_LABEL];   /* dword address of each label, -1 unset */
     unsigned nlabel;
+    int overflow;                     /* a table filled up: finish() fails */
 } nv_asm;
 
 void nv_asm_init(nv_asm* a);

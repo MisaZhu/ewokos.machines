@@ -213,10 +213,8 @@ void nv_fadd(uint32_t out[4], uint8_t dst, nv_src a, nv_src b,
 void nv_fmul(uint32_t out[4], uint8_t dst, nv_src a, nv_src b,
              int sat, int ftz, enum nv_rnd rnd, nv_ctrl c) {
     memset(out, 0, 16);
-    if (b.kind == NV_SRC_ZERO || b.kind == NV_SRC_GPR)
-        encode_alu(out, 0x020, dst, a, b, nv_zero(), 1, 1);
-    else
-        encode_alu(out, 0x020, dst, a, nv_zero(), b, 1, 1);
+    /* src1 carries the immediate/cbuf form (form 4/5), src2 is always RZ */
+    encode_alu(out, 0x020, dst, a, b, nv_zero(), 1, 1);
     nv_set_field(out, 76, 77, 0);   /* dnz */
     nv_set_field(out, 77, 78, sat);
     nv_set_field(out, 78, 80, rnd);
@@ -329,7 +327,8 @@ void nv_lop3(uint32_t out[4], uint8_t dst, nv_src a, nv_src b, nv_src cc,
 }
 
 void nv_shf(uint32_t out[4], uint8_t dst, nv_src lo, nv_src hi, nv_src shift,
-            int right, int wrap, int is_64, int is_signed, nv_ctrl c) {
+            int right, int wrap, int is_64, int is_signed, int dst_high,
+            nv_ctrl c) {
     memset(out, 0, 16);
     /* SHF: src0=lo, src1=shift, src2=hi */
     encode_alu(out, 0x019, dst, lo, shift, hi, 1, 1);
@@ -338,7 +337,7 @@ void nv_shf(uint32_t out[4], uint8_t dst, nv_src lo, nv_src hi, nv_src shift,
     nv_set_field(out, 73, 75, dt);
     nv_set_field(out, 75, 76, wrap);
     nv_set_field(out, 76, 77, right);
-    nv_set_field(out, 80, 81, 0);   /* dst_high */
+    nv_set_field(out, 80, 81, dst_high);
     finish(out, c);
 }
 
@@ -403,6 +402,17 @@ void nv_i2f(uint32_t out[4], uint8_t dst, nv_src src, int is_signed,
     nv_set_field(out, 75, 77, size_log2(dst_bits));
     nv_set_field(out, 78, 80, rnd);
     nv_set_field(out, 84, 86, size_log2(src_bits));
+    finish(out, c);
+}
+
+void nv_frnd(uint32_t out[4], uint8_t dst, nv_src src, int bits,
+             enum nv_rnd rnd, int ftz, nv_ctrl c) {
+    memset(out, 0, 16);
+    encode_alu(out, 0x107, dst, nv_none(), src, nv_none(), 1, 0);
+    nv_set_field(out, 84, 86, size_log2(bits));
+    nv_set_field(out, 80, 81, ftz);
+    nv_set_field(out, 78, 80, rnd);
+    nv_set_field(out, 75, 77, size_log2(bits));
     finish(out, c);
 }
 
@@ -582,6 +592,10 @@ void nv_bmov(uint32_t out[4], uint8_t bar, nv_src src, int to_bar, int clear,
     finish(out, c);
 }
 
+void nv_bclear(uint32_t out[4], uint8_t bar, nv_ctrl c) {
+    nv_bmov(out, bar, nv_zero(), 0, 1, c);
+}
+
 void nv_bsync(uint32_t out[4], uint8_t bar, nv_pred cond, nv_ctrl c) {
     memset(out, 0, 16);
     nv_set_field(out, 0, 12, 0x941);
@@ -652,6 +666,10 @@ void nv_asm_init(nv_asm* a) {
 }
 
 unsigned nv_asm_emit(nv_asm* a, const uint32_t w[4]) {
+    if (a->n >= NV_ASM_MAX_INSTR) {
+        a->overflow = 1;
+        return NV_ASM_MAX_INSTR - 1;
+    }
     unsigned idx = a->n;
     memcpy(a->w[idx], w, 16);
     a->n++;
@@ -659,10 +677,18 @@ unsigned nv_asm_emit(nv_asm* a, const uint32_t w[4]) {
 }
 
 int nv_asm_label(nv_asm* a) {
+    if (a->nlabel >= NV_ASM_MAX_LABEL) {
+        a->overflow = 1;
+        return NV_ASM_MAX_LABEL - 1;
+    }
     return (int)a->nlabel++;
 }
 
 void nv_asm_bind(nv_asm* a, int label) {
+    if (label < 0 || label >= NV_ASM_MAX_LABEL) {
+        a->overflow = 1;
+        return;
+    }
     a->label_at[label] = (int)(a->n * 4);
 }
 
@@ -673,6 +699,10 @@ static void asm_branch(nv_asm* a, int label, nv_pred cond, nv_ctrl c,
     else if (kind == 1) nv_break(w, bar, 0, cond, c);
     else nv_bssy(w, bar, 0, cond, c);
     unsigned idx = nv_asm_emit(a, w);
+    if (a->npatch >= NV_ASM_MAX_PATCH) {
+        a->overflow = 1;
+        return;
+    }
     a->patch[a->npatch].instr = idx;
     a->patch[a->npatch].lo = 34;
     a->patch[a->npatch].hi = (kind == 0) ? 82 : 64;
@@ -691,6 +721,8 @@ void nv_asm_bssy(nv_asm* a, uint8_t bar, int label, nv_pred cond, nv_ctrl c) {
 }
 
 int nv_asm_finish(nv_asm* a) {
+    if (a->overflow)
+        return -1;
     for (unsigned i = 0; i < a->npatch; i++) {
         int label = a->patch[i].label;
         if (label < 0 || label >= (int)a->nlabel || a->label_at[label] < 0)

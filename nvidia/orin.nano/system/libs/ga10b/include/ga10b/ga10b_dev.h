@@ -29,5 +29,11 @@ ga10b_module_t* ga10b_dev_module(const void* cubin, uint32_t size);
 int ga10b_module_kernel(const ga10b_module_t* m, const char* name);
 int ga10b_dev_launch(ga10b_module_t* m, int kernel, const uint32_t grid[3],
                      const uint32_t block[3], void* const* args);
+/* compiler-generated compute kernel: uniform blob + SSBO base VAs filled into
+ * constant bank 0 (nv_meta.h layout); see ga10b_kernel_launch_compute */
+int ga10b_dev_launch_compute(ga10b_module_t* m, int kernel,
+                             const uint32_t grid[3], const uint32_t block[3],
+                             const uint32_t* unif, uint32_t unif_dwords,
+                             const uint64_t* ssbo_va, uint32_t nssbo);
 
 #endif

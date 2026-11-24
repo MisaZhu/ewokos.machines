@@ -22,23 +22,11 @@
 #include <stddef.h>
 
 #include "compiler/nir/nir.h"
+#include "nv_meta.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* Kernel metadata the QMD builder / blob serializer needs (mirrors the fields
- * cubin_kernel carries for nvcc kernels, so the ga10b launch path is shared). */
-struct nv_kernel_meta {
-    uint32_t num_gprs;        /* GPRs per thread (QMD REGISTER_COUNT_V, raw) */
-    uint32_t num_barriers;    /* scoreboards used (QMD barrier count) */
-    uint32_t shared_bytes;    /* static shared memory */
-    uint32_t local_bytes;     /* per-thread local memory (frame + stack) */
-    uint32_t local_size[3];   /* workgroup shape */
-    uint32_t param_base;      /* cbank0 byte offset of the param window */
-    uint32_t param_bytes;     /* total kernel param bytes */
-    uint32_t num_ubos;        /* constant banks bound (0 = uniforms in cb0) */
-};
 
 /* Result of one compute compile: the assembled sm_87 SASS (malloc()ed u32
  * words, 4 per instruction, owned by the result until nv_be_result_free() or
@@ -61,6 +49,13 @@ bool nv_be_compile_compute(nir_shader *cs, struct nv_be_result *res,
                            char *log, size_t logsz);
 
 void nv_be_result_free(struct nv_be_result *res);
+
+/* Test hook (host differential tests): called after a successful compile with
+ * the lowered NIR the code generator consumed plus the result, both still owned
+ * by the backend.  Unset on target. */
+typedef void (*nv_be_test_hook_fn)(nir_shader *lowered,
+                                   const struct nv_be_result *res, void *user);
+void nv_be_set_test_hook(nv_be_test_hook_fn fn, void *user);
 
 #ifdef __cplusplus
 }

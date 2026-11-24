@@ -574,7 +574,7 @@ static void* load_file_read(void* lf, EFI_DEVICE_PATH_PROTOCOL* dp,
     if (st != EFI_BUFFER_TOO_SMALL || size == 0) {
         /* Some implementations do not report the size on a NULL buffer;
          * fall back to a generous cap and let the protocol shrink it. */
-        size = (UINTN)(64ULL * 1024 * 1024);
+        size = (UINTN)(128ULL * 1024 * 1024);
         if (st == EFI_SUCCESS || st == EFI_INVALID_PARAMETER ||
                 st == EFI_BUFFER_TOO_SMALL)
             ;
@@ -1280,7 +1280,7 @@ static void* lz4_unwrap(void* buf, uint64_t* size) {
         ((uint32_t)b[6] << 16) | ((uint32_t)b[7] << 24);
     uint32_t csize = (uint32_t)b[8] | ((uint32_t)b[9] << 8) |
         ((uint32_t)b[10] << 16) | ((uint32_t)b[11] << 24);
-    if (usize == 0 || usize > 64ULL * 1024 * 1024 ||
+    if (usize == 0 || usize > 128ULL * 1024 * 1024 ||
             csize != *size - 12) {
         con_puts("[uefi] lz4: bad sizes\n");
         return 0;
@@ -1337,7 +1337,7 @@ static void* read_first(int which, uint64_t* size) {
      * candidates come first; a bad/missing compressed image falls through
      * to the plain one. */
     uint64_t max_size = (which == 0) ? (4ULL * 1024 * 1024)
-                                     : (64ULL * 1024 * 1024);
+                                     : (128ULL * 1024 * 1024);
     for (int i = 0; pxe_path_name(which, i); i++) {
         const char* path = pxe_path_name(which, i);
         con_puts("[uefi] try net ");

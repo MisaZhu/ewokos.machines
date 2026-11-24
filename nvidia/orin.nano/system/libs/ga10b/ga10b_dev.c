@@ -317,3 +317,13 @@ int ga10b_dev_launch(ga10b_module_t* m, int kernel, const uint32_t grid[3],
         return -1;
     return ga10b_kernel_launch(&dev.ch, m, kernel, grid, block, args);
 }
+
+int ga10b_dev_launch_compute(ga10b_module_t* m, int kernel,
+                             const uint32_t grid[3], const uint32_t block[3],
+                             const uint32_t* unif, uint32_t unif_dwords,
+                             const uint64_t* ssbo_va, uint32_t nssbo) {
+    if (dev.state != 1)
+        return -1;
+    return ga10b_kernel_launch_compute(&dev.ch, m, kernel, grid, block,
+                                       unif, unif_dwords, ssbo_va, nssbo);
+}

@@ -133,6 +133,19 @@ typedef struct {
     uint32_t xform_unif_dwords;
 } ga10b_prog_blob_t;
 
+/* Fullscreen compute program (geom_kind == 0): a compiler-generated cubin
+ * (nvcompiler) dispatched one thread per pixel.  Shares the magic/version/
+ * geom_kind head with ga10b_prog_blob_t so the daemon can branch on geom_kind;
+ * cubin_size bytes of cubin ELF follow this header. */
+typedef struct {
+    uint32_t magic;               /* GA10B_PROG_MAGIC */
+    uint32_t version;             /* GA10B_PROG_VERSION */
+    uint32_t geom_kind;           /* 0 = fullscreen compute */
+    uint32_t local_size[3];       /* compute workgroup shape */
+    uint32_t unif_dwords;         /* per-draw uniform blob span */
+    uint32_t cubin_size;          /* bytes of cubin ELF after this header */
+} ga10b_compute_blob_t;
+
 /* results: 0 ok; DECLINED = nothing was submitted (the client may replay on
  * the CPU); UNSUPPORTED = this back end cannot do it at all; TIMEOUT = a
  * submitted launch never retired (the surface state is unknown). */

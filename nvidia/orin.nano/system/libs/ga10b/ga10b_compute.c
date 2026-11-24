@@ -20,6 +20,7 @@
 #include "ga10b.h"
 #include "cubin.h"
 #include "qmd.h"
+#include "../nvcompiler/nv_meta.h"   /* compiled-kernel cb0 layout contract */
 
 #define CB0_BLOCK_DIM      0x00u
 #define CB0_GRID_DIM       0x0cu
@@ -27,6 +28,9 @@
 #define GA10B_WARPS_PER_SM 48u
 
 static const uint16_t smem_kb[] = { 0, 8, 16, 32, 64, 100, 132, 164 };
+
+static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                         const uint32_t grid[3], const uint32_t block[3]);
 
 typedef struct {
     uint64_t code_va;
@@ -105,8 +109,13 @@ ga10b_module_t* ga10b_module_load(ga10b_gmmu_t* mm, const void* image,
             if (src->size != 0 && src->data != NULL)
                 memcpy(mk->bank_va[b], src->data, src->size);
         }
-        klog("ga10b: kernel %s text=%u regs=%u frame=%u cb0=%u params=%u\n",
-             k->name, k->text_size, k->reg_count,
+        /* FNV-1a of the SASS: compare against the host build of the same
+         * shader to tell an on-device miscompile from a GPU-side fault */
+        uint32_t fnv = 2166136261u;
+        for (uint32_t j = 0; j < k->text_size; j++)
+            fnv = (fnv ^ k->text[j]) * 16777619u;
+        klog("ga10b: kernel %s text=%u fnv=%08x regs=%u frame=%u cb0=%u params=%u\n",
+             k->name, k->text_size, fnv, k->reg_count,
              k->frame_size > k->min_stack ? k->frame_size : k->min_stack,
              mk->bank_size[0], k->nparams);
     }
@@ -145,7 +154,15 @@ int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     if (cubin_pack_params(k, args, (uint8_t*)cb0 + k->param_base,
                           k->param_total) != CUBIN_OK)
         return -1;
+    return kernel_submit(ch, m, kernel, grid, block);
+}
 
+/* Build the QMD from the (already-filled) constant banks and submit.  Shared
+ * by the nvcc-param launch and the compiled-compute launch below. */
+static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                         const uint32_t grid[3], const uint32_t block[3]) {
+    const struct cubin_kernel* k = &m->img.kernels[kernel];
+    mod_kernel_t* mk = &m->k[kernel];
     struct cuda_qmd_launch l;
     memset(&l, 0, sizeof(l));
     l.program = mk->code_va;
@@ -167,6 +184,37 @@ int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     }
     __asm__ volatile("dsb sy" ::: "memory");
     return ga10b_compute_launch(ch, q.w);
+}
+
+/* Launch a compiler-generated compute kernel (nvcompiler cubin).  Unlike the
+ * nvcc param-window path, the kernel reads its uniform blob and SSBO base VAs
+ * straight from constant bank 0 at the nv_meta.h layout offsets; fill those
+ * here, then submit.  unif[] is the per-draw uniform blob (dword offsets from
+ * pglc uniform reflection); ssbo_va[i] is the GPU VA bound to SSBO block i. */
+int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                                const uint32_t grid[3], const uint32_t block[3],
+                                const uint32_t* unif, uint32_t unif_dwords,
+                                const uint64_t* ssbo_va, uint32_t nssbo) {
+    if (kernel < 0 || kernel >= m->img.nkernels)
+        return -1;
+    const struct cubin_kernel* k = &m->img.kernels[kernel];
+    mod_kernel_t* mk = &m->k[kernel];
+    if (mk->bank_size[0] < NV_CB0_SIZE || nssbo > NV_MAX_SSBO ||
+        unif_dwords * 4u > NV_SSBO_BASE_OFF - NV_UNIFORM_BASE_OFF)
+        return -1;
+    uint32_t local = k->frame_size > k->min_stack ? k->frame_size
+                                                  : k->min_stack;
+    uint32_t* cb0 = (uint32_t*)mk->bank_va[0];
+    for (uint32_t i = 0; i < 3; i++) {
+        cb0[CB0_BLOCK_DIM / 4u + i] = block[i];
+        cb0[CB0_GRID_DIM / 4u + i] = grid[i];
+    }
+    cb0[CB0_STACK_PTR / 4u] = (local + 0xfu) & ~0xfu;
+    if (unif != NULL && unif_dwords != 0)
+        memcpy((uint8_t*)cb0 + NV_UNIFORM_BASE_OFF, unif, unif_dwords * 4u);
+    for (uint32_t i = 0; i < nssbo; i++)
+        memcpy((uint8_t*)cb0 + NV_SSBO_BASE_OFF + i * 8u, &ssbo_va[i], 8u);
+    return kernel_submit(ch, m, kernel, grid, block);
 }
 
 /* ---- self-test: the projects/cuda vadd kernel ---- */

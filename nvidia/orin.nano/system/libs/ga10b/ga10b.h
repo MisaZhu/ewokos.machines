@@ -349,6 +349,12 @@ ga10b_module_t* ga10b_module_load(ga10b_gmmu_t* mm, const void* image,
 int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                         const uint32_t grid[3], const uint32_t block[3],
                         void* const* args);
+/* compiler-generated compute kernel (nvcompiler cubin): uniform blob + SSBO
+ * base VAs are filled into constant bank 0 at the nv_meta.h layout offsets */
+int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                                const uint32_t grid[3], const uint32_t block[3],
+                                const uint32_t* unif, uint32_t unif_dwords,
+                                const uint64_t* ssbo_va, uint32_t nssbo);
 /* self-tests: projects/cuda vadd, and the portablegl geometry kernels
  * (fill + xform + raster) against their CPU reference */
 int ga10b_compute_vadd(ga10b_chan_t* ch, const char* cubin_path);
