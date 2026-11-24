@@ -928,7 +928,10 @@ static int http_wait(EFI_HTTP_PROTOCOL* http, EFI_HTTP_TOKEN* tok,
         if (arch_timer_ms() - t0 > timeout_ms)
             return -1;
         http->Poll(http);
-        gBS->Stall(1000);
+        /* 10µs 轮询(实测拐点):1ms 卡 TCP 接收/ACK 时钟(~1.5MB/s),100µs~8MB/s,
+         * 10µs~15MB/s,1µs~17MB/s 仅再涨 11%(已触固件 TCP 栈天花板)。
+         * 取 10µs:近天花板且长等待时让出 CPU,避免忙轮询饿死完成 DPC */
+        gBS->Stall(10);
     }
     return EFI_ERROR(tok->Status) ? -1 : 0;
 }
@@ -1073,8 +1076,10 @@ static void* http_get(EFI_HTTP_PROTOCOL* http, const char* path,
     uint64_t got = 0;
     while (got < clen) {
         uint64_t chunk = clen - got;
-        if (chunk > 256 * 1024)
-            chunk = 256 * 1024;
+        /* 1MB/token:减少 token 往返数。注:吞吐瓶颈实为 http_wait 轮询粒度
+         * (见上),非块大小——256KB→1MB 单独改并未提速 */
+        if (chunk > 1024 * 1024)
+            chunk = 1024 * 1024;
         memset(&msg, 0, sizeof(msg));
         msg.Body = (void*)(uintptr_t)(abuf + got);
         msg.BodyLength = (UINTN)chunk;
