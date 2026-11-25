@@ -1,12 +1,12 @@
 /*
- * adreno_backend.c - the NIR -> a6xx half of the q8b pglcompiler backend:
+ * adreno_backend.c - the NIR -> a6xx half of the qcom8gen3 pglcompiler backend:
  * drives mesa's freedreno/ir3 compiler on the linked compute NIR the shared
  * frontend produced and snapshots the resulting ir3_shader_variant into the
  * fields adreno_prog_blob_t carries (see <adreno/adreno_prog.h> for the
  * field-by-field mapping and the UBO-0 / UAV contracts restated below).
  *
  * TARGET: Adreno 690 (SC8280XP, fd_dev_id {690, 0x060900ff}) - the single
- * GPU of the q8b machine, so the compiler is created once for that id and
+ * GPU of the qcom8gen3 machine, so the compiler is created once for that id and
  * never re-selected (pglc_set_version() is a no-op, like raspi5's V3D 7.1).
  *
  * WHAT THE DRIVER NORMALLY DOES THAT WE MUST DO HERE: ir3 is a backend; the

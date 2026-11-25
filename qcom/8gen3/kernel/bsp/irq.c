@@ -7,13 +7,13 @@
 #include "hw_arch.h"
 
 /*
- * Q8B interrupt controller glue: GICv3 (see bsp/gic_v3.c) + ARM generic
+ * QCOM8GEN3 interrupt controller glue: GICv3 (see bsp/gic_v3.c) + ARM generic
  * timer.  The platform layer still owns the exception vectors and the
  * generic IRQ dispatch.
  */
 
 
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
 /* QEMU virt: GICv2 (distributor 0x08000000, CPU interface 0x08010000). */
 extern void gic_init(void* gicd, void* gicc);
 extern void gic_irq_enable(int core_id, int irqno);
@@ -22,9 +22,9 @@ extern int  gic_get_irq(void);
 extern void gic_eoi(uint32_t intn);
 
 void irq_init_arch(void) {
-    gic_init((void*)(MMIO_BASE + Q8B_GIC_WIN_OFF),
-             (void*)(MMIO_BASE + Q8B_GIC_WIN_OFF +
-                 (Q8B_GICC_PHY - Q8B_GICD_PHY)));
+    gic_init((void*)(MMIO_BASE + QCOM8GEN3_GIC_WIN_OFF),
+             (void*)(MMIO_BASE + QCOM8GEN3_GIC_WIN_OFF +
+                 (QCOM8GEN3_GICC_PHY - QCOM8GEN3_GICD_PHY)));
     for (int i = 0; i < 1020; i++)
         gic_irq_disable(0, i);
     set_vector_table((ewokos_addr_t)&interrupt_table_start);
@@ -35,9 +35,9 @@ inline uint32_t irq_get_arch(void) {
 }
 
 inline uint32_t irq_get_unified_arch(uint32_t irqno) {
-    if (irqno == Q8B_GIC_TIMER_IRQ)
+    if (irqno == QCOM8GEN3_GIC_TIMER_IRQ)
         return IRQ_TIMER0;
-    if (irqno == Q8B_GIC_IPI_IRQ)
+    if (irqno == QCOM8GEN3_GIC_IPI_IRQ)
         return IRQ_IPI;
     return irqno;
 }
@@ -52,7 +52,7 @@ inline void irq_enable_arch(uint32_t irq) {
     if (irq == IRQ_TIMER0) {
         if (irq_enable_flag & IRQ_TIMER0)
             return;
-        gic_irq_enable(0, Q8B_GIC_TIMER_IRQ);
+        gic_irq_enable(0, QCOM8GEN3_GIC_TIMER_IRQ);
         irq_enable_flag |= IRQ_TIMER0;
     } else if (irq > 0 && irq < 1020) {
         gic_irq_enable(0, (int)irq);
@@ -61,7 +61,7 @@ inline void irq_enable_arch(uint32_t irq) {
 
 inline void irq_enable_core_arch(uint32_t core, uint32_t irq) {
     if (irq == IRQ_TIMER0)
-        gic_irq_enable((int)core, Q8B_GIC_TIMER_IRQ);
+        gic_irq_enable((int)core, QCOM8GEN3_GIC_TIMER_IRQ);
     else if (irq > 0 && irq < 1020)
         gic_irq_enable((int)core, (int)irq);
 }
@@ -97,9 +97,9 @@ inline uint32_t irq_get_arch(void) {
 }
 
 inline uint32_t irq_get_unified_arch(uint32_t irqno) {
-    if (irqno == Q8B_GIC_TIMER_IRQ)
+    if (irqno == QCOM8GEN3_GIC_TIMER_IRQ)
         return IRQ_TIMER0;
-    if (irqno == Q8B_GIC_IPI_IRQ)
+    if (irqno == QCOM8GEN3_GIC_IPI_IRQ)
         return IRQ_IPI;
     return irqno;
 }
@@ -114,7 +114,7 @@ inline void irq_enable_arch(uint32_t irq) {
     if (irq == IRQ_TIMER0) {
         if (irq_enable_flag & IRQ_TIMER0)
             return;
-        gic_v3_irq_enable(0, Q8B_GIC_TIMER_IRQ);
+        gic_v3_irq_enable(0, QCOM8GEN3_GIC_TIMER_IRQ);
         irq_enable_flag |= IRQ_TIMER0;
     } else if (irq > 0 && irq < 1020) {
         gic_v3_irq_enable(0, (int)irq);
@@ -123,7 +123,7 @@ inline void irq_enable_arch(uint32_t irq) {
 
 inline void irq_enable_core_arch(uint32_t core, uint32_t irq) {
     if (irq == IRQ_TIMER0) {
-        gic_v3_irq_enable((int)core, Q8B_GIC_TIMER_IRQ);
+        gic_v3_irq_enable((int)core, QCOM8GEN3_GIC_TIMER_IRQ);
         irq_enable_flag |= IRQ_TIMER0;
     } else if (irq > 0 && irq < 1020) {
         gic_v3_irq_enable((int)core, (int)irq);
@@ -144,4 +144,4 @@ void irq_disable_arch(uint32_t irq) {
         gic_v3_irq_disable(0, (int)irq);
 }
 
-#endif /* Q8B_QEMU_TEST */
+#endif /* QCOM8GEN3_QEMU_TEST */

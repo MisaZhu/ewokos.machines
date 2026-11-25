@@ -11,12 +11,12 @@
  * (system/platform/aarch64/src/g2d_arch.c) implements every op, and the
  * VIC hardware path accelerates the eligible subset (large 1:1 blit,
  * 90/180/270 rotation, raw-physical scan-out blit/rotate) when it is
- * opted in and has passed its bring-up pixel selftest.  Unlike the GPU-only Q8B/raspi5
+ * opted in and has passed its bring-up pixel selftest.  Unlike the GPU-only QCOM8GEN3/raspi5
  * back ends, a declined VIC op is rasterized by the NEON engine INSIDE
  * g2dd (the x86/virt model), so clients never need their own fallback.
  *
  * The VIC path is gated: it only probes when /tmp/vic2d.cfg (or the
- * VIC2D_ENABLE environment variable) opts in, mirroring the Q8B
+ * VIC2D_ENABLE environment variable) opts in, mirroring the QCOM8GEN3
  * ADRENO_ENABLE gate.  Default off = pure software, identical pixels to
  * the CPU-only desktop.
  *

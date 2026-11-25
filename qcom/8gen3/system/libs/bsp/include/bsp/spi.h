@@ -1,20 +1,20 @@
-#ifndef Q8B_BSP_SPI_H
-#define Q8B_BSP_SPI_H
+#ifndef QCOM8GEN3_BSP_SPI_H
+#define QCOM8GEN3_BSP_SPI_H
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#define Q8B_SPI_CPHA       1U
-#define Q8B_SPI_CPOL       2U
-#define Q8B_SPI_LSB_FIRST  4U
-#define Q8B_SPI_LOOPBACK   8U
-#define Q8B_SPI_MAX_XFER   6144U  /* Himax event-stack frame 5132B + header */
+#define QCOM8GEN3_SPI_CPHA       1U
+#define QCOM8GEN3_SPI_CPOL       2U
+#define QCOM8GEN3_SPI_LSB_FIRST  4U
+#define QCOM8GEN3_SPI_LOOPBACK   8U
+#define QCOM8GEN3_SPI_MAX_XFER   6144U  /* Himax event-stack frame 5132B + header */
 /* Assert chip select from software instead of letting the serial engine drive
  * the CS pad.  The pad is then left as a plain GPIO and the caller is
  * responsible for its level; GENI only owns MISO/MOSI/CLK.  Needed on boards
  * where the engine's CS demux cannot be routed to the touch IC. */
-#define Q8B_SPI_SW_CS      16U
+#define QCOM8GEN3_SPI_SW_CS      16U
 
 /* Polled, eight-bit GENI master. Currently supports TW220 SPI22, CS0.
  * One process must own the bus; callers serialize complete transactions.
@@ -37,19 +37,19 @@ typedef struct {
     const char* stage;
     bool ready;
     bool sw_cs;                      /* CS pad is owned by the caller */
-} q8b_spi_t;
+} qcom8gen3_spi_t;
 
 /* Prepare/check GCC clocks only; does not access GENI or change pinmux.
  * Shared QUP votes are preserved and never switched off. */
-int q8b_spi_prepare(q8b_spi_t* spi, unsigned bus, unsigned speed_hz);
-int q8b_spi_open(q8b_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode);
-int q8b_spi_transfer(q8b_spi_t* spi, const void* tx, void* rx, size_t len);
+int qcom8gen3_spi_prepare(qcom8gen3_spi_t* spi, unsigned bus, unsigned speed_hz);
+int qcom8gen3_spi_open(qcom8gen3_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode);
+int qcom8gen3_spi_transfer(qcom8gen3_spi_t* spi, const void* tx, void* rx, size_t len);
 
 /* Read-only transfer through the serial engine's own DMA, which needs no GSI
  * channel or SMMU route.  rx must live in physically contiguous memory and
  * rx_pa is its physical address.  Returns 0 on success; the engine is left
  * unusable (spi->ready false) on failure, like the polled path. */
-int q8b_spi_transfer_dma_read(q8b_spi_t* spi, void* rx, size_t len,
+int qcom8gen3_spi_transfer_dma_read(qcom8gen3_spi_t* spi, void* rx, size_t len,
         uint64_t rx_pa, uint32_t timeout_us);
 
 #endif

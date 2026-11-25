@@ -1,6 +1,6 @@
 /* End-to-end host test of the Himax read path through the FIFO transport:
  * himax_reg_read -> native bus (himax_native_bus) -> fifo backend
- * (himax_fifo) -> mock q8b-style transfer -> payload echo.  No hardware. */
+ * (himax_fifo) -> mock qcom8gen3-style transfer -> payload echo.  No hardware. */
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

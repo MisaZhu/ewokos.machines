@@ -35,7 +35,7 @@
 /* Fill the GPI DMA SPI config for Himax mode 3 (CPOL=1, CPHA=1), packed
  * 8-bit, CS0.  clk_div selects the nearest integer divider of the 19.2 MHz
  * source; 12/19.2 is not exact, so return the real speed in *out_hz. */
-int himax_native_spi_cfg(q8b_gpi_spi_cfg_t* cfg, uint32_t* out_hz);
+int himax_native_spi_cfg(qcom8gen3_gpi_spi_cfg_t* cfg, uint32_t* out_hz);
 
 /* Encode one Himax bus transfer (tx_len frame bytes in, rx_len=tx_len for a
  * full-duplex bus read; the payload is at frame offset HIMAX_BUS_R_HLEN)

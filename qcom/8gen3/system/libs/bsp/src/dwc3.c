@@ -1,4 +1,4 @@
-/* Q8B USB-C DWC3 host handoff. Register definitions follow the Synopsys
+/* QCOM8GEN3 USB-C DWC3 host handoff. Register definitions follow the Synopsys
  * DWC3 programming interface. GCC, PHY calibration, CC/VBUS negotiation and
  * SuperSpeed orientation are inherited from UEFI; do not reset the PHYs or
  * change the USB/DP lane mux during the host takeover. */

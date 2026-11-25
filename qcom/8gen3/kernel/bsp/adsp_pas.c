@@ -1,4 +1,4 @@
-/* Q8B ADSP bring-up: SC8280XP ADSP (PAS id 1).
+/* QCOM8GEN3 ADSP bring-up: SC8280XP ADSP (PAS id 1).
  *
  * One restricted op boots the signed ADSP image: userspace hands the kernel a
  * DMA buffer holding the board firmware (qcadsp8280.mbn), and the kernel does
@@ -22,26 +22,26 @@
 #include <mm/dma.h>
 #include <mm/mmu.h>
 #include <kprintf.h>
-#include <q8b_adsp_pas.h>
-#include <q8b_adsp_gpr.h>
-#include <q8b_smp2p_wire.h>
-#include <q8b_rpmh_tcs.h>
-#include <q8b_mdt_load.h>
+#include <qcom8gen3_adsp_pas.h>
+#include <qcom8gen3_adsp_gpr.h>
+#include <qcom8gen3_smp2p_wire.h>
+#include <qcom8gen3_rpmh_tcs.h>
+#include <qcom8gen3_mdt_load.h>
 #include "hw_arch.h"
 #include "scm-probe.h"
 
-#ifndef Q8B_ADSP_DEBUG
-#define Q8B_ADSP_DEBUG 0
+#ifndef QCOM8GEN3_ADSP_DEBUG
+#define QCOM8GEN3_ADSP_DEBUG 0
 #endif
-#define adsp_debug(...) do { if(Q8B_ADSP_DEBUG) printf(__VA_ARGS__); } while(0)
+#define adsp_debug(...) do { if(QCOM8GEN3_ADSP_DEBUG) printf(__VA_ARGS__); } while(0)
 
 #define ADSP_MAX_FW      (16u * 1024u * 1024u)
 #define ADSP_META_SIZE   0x4000u
 #define ADSP_MDT_TYPE_MASK  0x07000000u
 #define ADSP_MDT_TYPE_HASH  0x02000000u
 
-#ifndef Q8B_QEMU_TEST
-extern void q8b_scm_smc(uint64_t regs[8]);
+#ifndef QCOM8GEN3_QEMU_TEST
+extern void qcom8gen3_scm_smc(uint64_t regs[8]);
 
 static int scm_call(uint32_t fn, uint32_t info, uint64_t a, uint64_t b,
         uint64_t c, int fast, uint64_t *result) {
@@ -53,19 +53,19 @@ static int scm_call(uint32_t fn, uint32_t info, uint64_t a, uint64_t b,
     for(n = 0; n < 1024; n++) {
         for(unsigned i = 0; i < 8; i++) regs[i] = input[i];
         __asm__ volatile("dsb sy" ::: "memory");
-        q8b_scm_smc(regs);
+        qcom8gen3_scm_smc(regs);
         __asm__ volatile("dsb sy" ::: "memory");
         if(regs[0] != 1) break;
         input[0] = 1;
         input[6] = regs[6];
     }
-    printf("q8b ADSP SCM fn=%x arg=%llx a0=%llx a1=%llx a2=%llx\n", fn,
+    printf("qcom8gen3 ADSP SCM fn=%x arg=%llx a0=%llx a1=%llx a2=%llx\n", fn,
             (unsigned long long)a,
             (unsigned long long)regs[0], (unsigned long long)regs[1],
             (unsigned long long)regs[2]);
-    if((int64_t)regs[0] == -12) return Q8B_GPU_PAS_BUSY;
-    if(regs[0] == 2) return Q8B_GPU_PAS_WAITQ;
-    if(regs[0] != 0) return Q8B_GPU_PAS_FAILED;
+    if((int64_t)regs[0] == -12) return QCOM8GEN3_GPU_PAS_BUSY;
+    if(regs[0] == 2) return QCOM8GEN3_GPU_PAS_WAITQ;
+    if(regs[0] != 0) return QCOM8GEN3_GPU_PAS_FAILED;
     *result = regs[1];
     return 0;
 }
@@ -73,7 +73,7 @@ static int scm_call(uint32_t fn, uint32_t info, uint64_t a, uint64_t b,
 
 /* Kernel-only Normal-NC window. VERIFY: must not collide with the NPU staging
  * window (0x5000000000..0x501e00000) or SMEM (0x5020000000). */
-#define Q8B_ADSP_WIN 0x5010000000ull
+#define QCOM8GEN3_ADSP_WIN 0x5010000000ull
 
 static int probed;
 static int probe_rc;
@@ -99,7 +99,7 @@ typedef struct {
     uint16_t e_shstrndx;
 } adsp_elf32_hdr;
 
-typedef q8b_mdt_phdr adsp_elf32_phdr;
+typedef qcom8gen3_mdt_phdr adsp_elf32_phdr;
 
 /* =========================================================================
  * Phase 2/3: RPMh power vote + IPCC + SMEM + SMP2P + GLINK + GPR battmgr.
@@ -109,73 +109,73 @@ typedef q8b_mdt_phdr adsp_elf32_phdr;
  * must be confirmed against sc8280xp.dtsi / the production qcadsp8280.mbn
  * before this is trusted on real hardware.
  *
- * Q8B_ADSP_TRANSPORT gates the whole Phase 2/3 transport and defaults to 0
+ * QCOM8GEN3_ADSP_TRANSPORT gates the whole Phase 2/3 transport and defaults to 0
  * (off): running it on hardware with the placeholder VERIFY addresses above
  * wedges the board.  Until every constant is confirmed the ADSP boot stays at
  * Phase 1 (SCM PAS auth + reset only) and the battery-manager queries report
- * UNSUPPORTED.  Build with -DQ8B_ADSP_TRANSPORT=1 once the constants are real.
+ * UNSUPPORTED.  Build with -DQCOM8GEN3_ADSP_TRANSPORT=1 once the constants are real.
  * ========================================================================= */
-#ifndef Q8B_ADSP_TRANSPORT
-#define Q8B_ADSP_TRANSPORT 1
+#ifndef QCOM8GEN3_ADSP_TRANSPORT
+#define QCOM8GEN3_ADSP_TRANSPORT 1
 #endif
 
-#if !defined(Q8B_QEMU_TEST)
+#if !defined(QCOM8GEN3_QEMU_TEST)
 
 /* IPCC: LPASS client (IPCC_CLIENT_LPASS = 3) is the ADSP.  Signal 0 =
  * GLINK/QMP (IPCC_MPROC_SIGNAL_GLINK_QMP), signal 2 = SMP2P
  * (IPCC_MPROC_SIGNAL_SMP2P). */
-#define Q8B_ADSP_IPCC_BASE      (MMIO_BASE + 0x408000u) /* VERIFY: shared IPCC MMIO window, same as cDSP */
-#define Q8B_ADSP_IPCC_GLINK     0x00030000u             /* IPCC_CLIENT_LPASS(3), signal 0 (GLINK/QMP) */
-#define Q8B_ADSP_IPCC_SMP2P     0x00030002u             /* IPCC_CLIENT_LPASS(3), signal 2 (SMP2P) */
+#define QCOM8GEN3_ADSP_IPCC_BASE      (MMIO_BASE + 0x408000u) /* VERIFY: shared IPCC MMIO window, same as cDSP */
+#define QCOM8GEN3_ADSP_IPCC_GLINK     0x00030000u             /* IPCC_CLIENT_LPASS(3), signal 0 (GLINK/QMP) */
+#define QCOM8GEN3_ADSP_IPCC_SMP2P     0x00030002u             /* IPCC_CLIENT_LPASS(3), signal 2 (SMP2P) */
 
 /* SMEM: same physical region as cDSP, but a distinct private partition.  The
  * per-host private partition offset is read at runtime from the SMEM partition
  * table (ptable) 4 KiB before the end of the SMEM region (Linux smem.c). */
-#define Q8B_ADSP_SMEM_PHY       0x80900000ull  /* VERIFY: shared SMEM base */
-#define Q8B_ADSP_SMEM_SIZE      0x200000ull
-#define Q8B_ADSP_SMEM_WIN       0x5020000000ull
-#define Q8B_ADSP_SMEM_PTABLE_MAGIC 0x434f5424U  /* "$TOC" little-endian u32 */
-#define Q8B_ADSP_SMEM_HOST_ADSP    2U        /* SMEM_HOST_ADSP */
-#define Q8B_ADSP_SMEM_PRIV_OFF  0x1af000u      /* fallback if ptable unreadable */
+#define QCOM8GEN3_ADSP_SMEM_PHY       0x80900000ull  /* VERIFY: shared SMEM base */
+#define QCOM8GEN3_ADSP_SMEM_SIZE      0x200000ull
+#define QCOM8GEN3_ADSP_SMEM_WIN       0x5020000000ull
+#define QCOM8GEN3_ADSP_SMEM_PTABLE_MAGIC 0x434f5424U  /* "$TOC" little-endian u32 */
+#define QCOM8GEN3_ADSP_SMEM_HOST_ADSP    2U        /* SMEM_HOST_ADSP */
+#define QCOM8GEN3_ADSP_SMEM_PRIV_OFF  0x1af000u      /* fallback if ptable unreadable */
 
 /* cmd-db / apps RSC physical windows (shared with cDSP, mapped to ADSP-specific VA windows). */
-#define Q8B_ADSP_CMDB_PHY       0x80860000ull  /* VERIFY: shared cmd-db */
-#define Q8B_ADSP_CMDB_SIZE      0x20000u
-#define Q8B_ADSP_CMDB_WIN       0x5020400000ull
-#define Q8B_ADSP_RSC_PHY        0x18220000ull  /* VERIFY: apps RSC */
-#define Q8B_ADSP_RSC_SIZE       0x10000u
-#define Q8B_ADSP_RSC_WIN        0x5020500000ull
-#define Q8B_ADSP_TCS_OFF        Q8B_RSC_TCS_OFFSET
-#define Q8B_ADSP_TCS_STRIDE     672u
-#define Q8B_ADSP_IRQ_ENABLE     Q8B_RSC_IRQ_ENABLE
-#define Q8B_ADSP_IRQ_STATUS     Q8B_RSC_IRQ_STATUS
-#define Q8B_ADSP_IRQ_CLEAR      Q8B_RSC_IRQ_CLEAR
-#define Q8B_ADSP_AMC_ENABLE     (1u << 16)
-#define Q8B_ADSP_AMC_TRIGGER    (1u << 24)
-#define Q8B_ADSP_WRITE_RESP_MSGID 0x00010108u
+#define QCOM8GEN3_ADSP_CMDB_PHY       0x80860000ull  /* VERIFY: shared cmd-db */
+#define QCOM8GEN3_ADSP_CMDB_SIZE      0x20000u
+#define QCOM8GEN3_ADSP_CMDB_WIN       0x5020400000ull
+#define QCOM8GEN3_ADSP_RSC_PHY        0x18220000ull  /* VERIFY: apps RSC */
+#define QCOM8GEN3_ADSP_RSC_SIZE       0x10000u
+#define QCOM8GEN3_ADSP_RSC_WIN        0x5020500000ull
+#define QCOM8GEN3_ADSP_TCS_OFF        QCOM8GEN3_RSC_TCS_OFFSET
+#define QCOM8GEN3_ADSP_TCS_STRIDE     672u
+#define QCOM8GEN3_ADSP_IRQ_ENABLE     QCOM8GEN3_RSC_IRQ_ENABLE
+#define QCOM8GEN3_ADSP_IRQ_STATUS     QCOM8GEN3_RSC_IRQ_STATUS
+#define QCOM8GEN3_ADSP_IRQ_CLEAR      QCOM8GEN3_RSC_IRQ_CLEAR
+#define QCOM8GEN3_ADSP_AMC_ENABLE     (1u << 16)
+#define QCOM8GEN3_ADSP_AMC_TRIGGER    (1u << 24)
+#define QCOM8GEN3_ADSP_WRITE_RESP_MSGID 0x00010108u
 
 /* SMP2P SMEM item ids: sc8280xp.dtsi "smp2p-adsp" uses qcom,smem = <443>,
  * <429> and qcom,remote-pid = <2>.  IN (443) is where the ADSP writes its
  * slave-kernel entry; OUT (429) is where the AP writes master-kernel. */
-#define Q8B_ADSP_SMP2P_IN_ITEM  443u
-#define Q8B_ADSP_SMP2P_OUT_ITEM 429u
+#define QCOM8GEN3_ADSP_SMP2P_IN_ITEM  443u
+#define QCOM8GEN3_ADSP_SMP2P_OUT_ITEM 429u
 
 /* SMP2P entry/item sizes (mirror NPU). */
-#define Q8B_ADSP_SMP2P_DATA_SIZE 0x154u
-#define Q8B_ADSP_SMP2P_ITEM_SIZE 0x158u
+#define QCOM8GEN3_ADSP_SMP2P_DATA_SIZE 0x154u
+#define QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE 0x158u
 
 /* SMP2P remote state bits (local, internal only). */
-#define Q8B_ADSP_SMP2P_REMOTE   (1u << 0)
-#define Q8B_ADSP_SMP2P_READY    (1u << 1)  /* slave-kernel "ready" bit */
+#define QCOM8GEN3_ADSP_SMP2P_REMOTE   (1u << 0)
+#define QCOM8GEN3_ADSP_SMP2P_READY    (1u << 1)  /* slave-kernel "ready" bit */
 
 /* GLINK channel parameters. */
-#define Q8B_ADSP_GLINK_VERSION           1u
-#define Q8B_ADSP_GLINK_FEATURES          1u
-#define Q8B_ADSP_GLINK_FIFO_RESERVE      16u
-#define Q8B_ADSP_GLINK_FIFOMAX           16384u
-#define Q8B_ADSP_GLINK_LOCAL_INTENT_SIZE 1024u
-#define Q8B_ADSP_GLINK_LOCAL_INTENT_COUNT 5u
-#define Q8B_ADSP_GLINK_RX_MAX            4096u
+#define QCOM8GEN3_ADSP_GLINK_VERSION           1u
+#define QCOM8GEN3_ADSP_GLINK_FEATURES          1u
+#define QCOM8GEN3_ADSP_GLINK_FIFO_RESERVE      16u
+#define QCOM8GEN3_ADSP_GLINK_FIFOMAX           16384u
+#define QCOM8GEN3_ADSP_GLINK_LOCAL_INTENT_SIZE 1024u
+#define QCOM8GEN3_ADSP_GLINK_LOCAL_INTENT_COUNT 5u
+#define QCOM8GEN3_ADSP_GLINK_RX_MAX            4096u
 
 /* Busy/spin delay (copy of npu_delay_ms). */
 static void adsp_delay_ms(uint32_t ms) {
@@ -214,13 +214,13 @@ static struct {
 } adsp_rsc = { 0x14, 0x18, 0x1c, 0x30, 0x34, 0x38, 0x3c, 20, 0, 0, 0, 0 };
 
 static uint8_t adsp_cdb8(uint32_t off) {
-    return *(volatile uint8_t *)(Q8B_ADSP_CMDB_WIN + off);
+    return *(volatile uint8_t *)(QCOM8GEN3_ADSP_CMDB_WIN + off);
 }
 static uint16_t adsp_cdb16(uint32_t off) {
     return (uint16_t)(adsp_cdb8(off) | ((uint16_t)adsp_cdb8(off + 1) << 8));
 }
 static uint32_t adsp_cdb32(uint32_t off) {
-    return *(volatile uint32_t *)(Q8B_ADSP_CMDB_WIN + off);
+    return *(volatile uint32_t *)(QCOM8GEN3_ADSP_CMDB_WIN + off);
 }
 
 static int adsp_cdb_find(const char *id, uint32_t *addr, uint32_t *aux_off,
@@ -253,15 +253,15 @@ static int adsp_cdb_find(const char *id, uint32_t *addr, uint32_t *aux_off,
 }
 
 static uint32_t adsp_rsc_reg(uint32_t tcs, uint32_t reg) {
-    return *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-            tcs * Q8B_ADSP_TCS_STRIDE + reg);
+    return *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+            tcs * QCOM8GEN3_ADSP_TCS_STRIDE + reg);
 }
 static void adsp_rsc_wr(uint32_t tcs, uint32_t reg, uint32_t value) {
-    *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-            tcs * Q8B_ADSP_TCS_STRIDE + reg) = value;
+    *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+            tcs * QCOM8GEN3_ADSP_TCS_STRIDE + reg) = value;
 }
 static uint32_t adsp_rsc_cmd(uint32_t tcs, uint32_t cmd, uint32_t reg) {
-    return Q8B_ADSP_TCS_OFF + tcs * Q8B_ADSP_TCS_STRIDE +
+    return QCOM8GEN3_ADSP_TCS_OFF + tcs * QCOM8GEN3_ADSP_TCS_STRIDE +
             cmd * adsp_rsc.cmd_stride + reg;
 }
 static int adsp_rsc_wr_sync(uint32_t tcs, uint32_t reg, uint32_t val) {
@@ -280,7 +280,7 @@ static void adsp_rsc_relax(void *context) {
 
 static uint32_t adsp_rsc_read32(void *context, uint32_t off) {
     (void)context;
-    return *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + off);
+    return *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + off);
 }
 
 static int adsp_rpmh_write(uint32_t address, uint32_t data) {
@@ -288,63 +288,63 @@ static int adsp_rpmh_write(uint32_t address, uint32_t data) {
     uint32_t control;
     int i;
     if (!adsp_rsc.ready) return -2;
-    control = adsp_rsc_reg(tcs, adsp_rsc.control) & ~Q8B_ADSP_AMC_TRIGGER;
+    control = adsp_rsc_reg(tcs, adsp_rsc.control) & ~QCOM8GEN3_ADSP_AMC_TRIGGER;
     if (adsp_rsc_wr_sync(tcs, adsp_rsc.control, control) != 0) return -3;
-    control &= ~Q8B_ADSP_AMC_ENABLE;
+    control &= ~QCOM8GEN3_ADSP_AMC_ENABLE;
     if (adsp_rsc_wr_sync(tcs, adsp_rsc.control, control) != 0) return -4;
     if (adsp_rsc_wr_sync(tcs, adsp_rsc.cmd_enable, 0) != 0) return -5;
-    *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-            Q8B_ADSP_IRQ_CLEAR) = irq;
+    *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+            QCOM8GEN3_ADSP_IRQ_CLEAR) = irq;
     __asm__ volatile("dsb sy" ::: "memory");
     for (i = 0; i < 100000; i++)
-        if (!(*(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-                Q8B_ADSP_IRQ_STATUS) & irq))
+        if (!(*(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+                QCOM8GEN3_ADSP_IRQ_STATUS) & irq))
             break;
     if (i == 100000) return -9;
-    *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-            Q8B_ADSP_IRQ_ENABLE) =
-            *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-                Q8B_ADSP_IRQ_ENABLE) | irq;
-    *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + adsp_rsc_cmd(tcs, 0,
-                adsp_rsc.cmd_msgid)) = Q8B_ADSP_WRITE_RESP_MSGID;
-    *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + adsp_rsc_cmd(tcs, 0,
+    *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+            QCOM8GEN3_ADSP_IRQ_ENABLE) =
+            *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+                QCOM8GEN3_ADSP_IRQ_ENABLE) | irq;
+    *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + adsp_rsc_cmd(tcs, 0,
+                adsp_rsc.cmd_msgid)) = QCOM8GEN3_ADSP_WRITE_RESP_MSGID;
+    *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + adsp_rsc_cmd(tcs, 0,
                 adsp_rsc.cmd_addr)) = address;
-    *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + adsp_rsc_cmd(tcs, 0,
+    *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + adsp_rsc_cmd(tcs, 0,
                 adsp_rsc.cmd_data)) = data;
     if (adsp_rsc_wr_sync(tcs, adsp_rsc.cmd_enable, 1) != 0) return -6;
-    if (adsp_rsc_wr_sync(tcs, adsp_rsc.control, Q8B_ADSP_AMC_ENABLE) != 0)
+    if (adsp_rsc_wr_sync(tcs, adsp_rsc.control, QCOM8GEN3_ADSP_AMC_ENABLE) != 0)
         return -7;
-    if (*(volatile uint32_t *)(Q8B_ADSP_RSC_WIN +
+    if (*(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN +
                 adsp_rsc_cmd(tcs, 0, adsp_rsc.cmd_status)) & (1u << 16))
         adsp_rsc.previous_compl++;
-    adsp_rsc_wr(tcs, adsp_rsc.control, Q8B_ADSP_AMC_ENABLE |
-            Q8B_ADSP_AMC_TRIGGER);
-    const q8b_rpmh_io_t io = { 0, adsp_rsc_read32, adsp_rsc_relax };
-    if (q8b_rpmh_wait_irq(&io, adsp_rsc_cmd(tcs, 0, adsp_rsc.cmd_status),
+    adsp_rsc_wr(tcs, adsp_rsc.control, QCOM8GEN3_ADSP_AMC_ENABLE |
+            QCOM8GEN3_ADSP_AMC_TRIGGER);
+    const qcom8gen3_rpmh_io_t io = { 0, adsp_rsc_read32, adsp_rsc_relax };
+    if (qcom8gen3_rpmh_wait_irq(&io, adsp_rsc_cmd(tcs, 0, adsp_rsc.cmd_status),
                 irq, 1000000, &adsp_rsc.compl_without_irq) == 0) {
         adsp_rsc.completions++;
         uint32_t c = adsp_rsc_reg(tcs, adsp_rsc.control) &
-                ~Q8B_ADSP_AMC_TRIGGER;
+                ~QCOM8GEN3_ADSP_AMC_TRIGGER;
         if (adsp_rsc_wr_sync(tcs, adsp_rsc.control, c) != 0 ||
                 adsp_rsc_wr_sync(tcs, adsp_rsc.control, 0) != 0 ||
                 adsp_rsc_wr_sync(tcs, adsp_rsc.cmd_enable, 0) != 0)
             return -10;
-        *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-                Q8B_ADSP_IRQ_CLEAR) = irq;
+        *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+                QCOM8GEN3_ADSP_IRQ_CLEAR) = irq;
         return 0;
     }
-    printf("q8b adsp: RPMh fresh IRQ timeout addr=%x data=%x cmd=%x irq=%x\n",
-            address, data, *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN +
+    printf("qcom8gen3 adsp: RPMh fresh IRQ timeout addr=%x data=%x cmd=%x irq=%x\n",
+            address, data, *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN +
                 adsp_rsc_cmd(tcs, 0, adsp_rsc.cmd_status)),
-            *(volatile uint32_t *)(Q8B_ADSP_RSC_WIN + Q8B_ADSP_TCS_OFF +
-                Q8B_ADSP_IRQ_STATUS));
+            *(volatile uint32_t *)(QCOM8GEN3_ADSP_RSC_WIN + QCOM8GEN3_ADSP_TCS_OFF +
+                QCOM8GEN3_ADSP_IRQ_STATUS));
     return -8;
 }
 
 static int adsp_rpmh_vote(const char *name) {
     uint32_t addr = 0, aux = 0, len = 0, i, count, corner;
     if (adsp_cdb_find(name, &addr, &aux, &len) != 0 || addr == 0) {
-        printf("q8b adsp: rpmh %s not in cmd-db\n", name);
+        printf("qcom8gen3 adsp: rpmh %s not in cmd-db\n", name);
         return -1;
     }
     count = len / 2;
@@ -354,23 +354,23 @@ static int adsp_rpmh_vote(const char *name) {
     if (count == 0) count = 1;
     corner = count - 1;
     if (adsp_rpmh_write(addr, corner) != 0) {
-        printf("q8b adsp: rpmh %s vote failed addr=%x\n", name, addr);
+        printf("qcom8gen3 adsp: rpmh %s vote failed addr=%x\n", name, addr);
         return -1;
     }
-    adsp_debug("q8b adsp: rpmh %s addr=%x corner=%u ok\n", name, addr, corner);
+    adsp_debug("qcom8gen3 adsp: rpmh %s addr=%x corner=%u ok\n", name, addr, corner);
     return 0;
 }
 
 static int adsp_power_vote(void) {
     uint32_t id;
-    if (adsp_map_in_caller(Q8B_ADSP_CMDB_WIN, Q8B_ADSP_CMDB_PHY,
-            Q8B_ADSP_CMDB_SIZE) != 0 ||
-            adsp_map_in_caller_attr(Q8B_ADSP_RSC_WIN, Q8B_ADSP_RSC_PHY,
-                Q8B_ADSP_RSC_SIZE, PTE_ATTR_DEV) != 0) {
-        printf("q8b adsp: rpmh map failed\n");
+    if (adsp_map_in_caller(QCOM8GEN3_ADSP_CMDB_WIN, QCOM8GEN3_ADSP_CMDB_PHY,
+            QCOM8GEN3_ADSP_CMDB_SIZE) != 0 ||
+            adsp_map_in_caller_attr(QCOM8GEN3_ADSP_RSC_WIN, QCOM8GEN3_ADSP_RSC_PHY,
+                QCOM8GEN3_ADSP_RSC_SIZE, PTE_ATTR_DEV) != 0) {
+        printf("qcom8gen3 adsp: rpmh map failed\n");
         return -1;
     }
-    id = *(volatile uint32_t *)Q8B_ADSP_RSC_WIN;
+    id = *(volatile uint32_t *)QCOM8GEN3_ADSP_RSC_WIN;
     if (((id >> 16) & 0xff) >= 3) {
         adsp_rsc.control = 0x24;
         adsp_rsc.status = 0x28;
@@ -382,14 +382,14 @@ static int adsp_power_vote(void) {
         adsp_rsc.cmd_stride = 24;
     }
     adsp_rsc.ready = 1;
-    adsp_debug("q8b adsp: rpmh rsc id=%x\n", id);
+    adsp_debug("qcom8gen3 adsp: rpmh rsc id=%x\n", id);
     /* ADSP PAS resources from sc8280xp.dtsi clock-names="xo" and
      * power-domain-names="lcx","lmx": enable the XO clock and the LCX/LMX
      * power domains before PAS auth_and_reset. */
     if (adsp_rpmh_vote("xo.lvl") != 0 || adsp_rpmh_vote("lcx.lvl") != 0 ||
             adsp_rpmh_vote("lmx.lvl") != 0)
         return -1;
-    adsp_debug("q8b adsp: rpmh power vote done\n");
+    adsp_debug("qcom8gen3 adsp: rpmh power vote done\n");
     return 0;
 }
 
@@ -397,13 +397,13 @@ static int adsp_power_release(void) {
     uint32_t addr = 0;
     if (adsp_cdb_find("lmx.lvl", &addr, 0, 0) != 0 || !addr ||
             adsp_rpmh_write(addr, 0) != 0) {
-        printf("q8b adsp: rpmh lmx.lvl release failed\n");
+        printf("qcom8gen3 adsp: rpmh lmx.lvl release failed\n");
         return -1;
     }
     return 0;
 }
 
-#if Q8B_ADSP_TRANSPORT
+#if QCOM8GEN3_ADSP_TRANSPORT
 /* ---- IPCC (IPCC_CLIENT_LPASS = 3). ---- */
 static void adsp_ipcc_enable(uint32_t signal) {
     volatile uint32_t *ipcc = (volatile uint32_t *)(MMIO_BASE + 0x408000);
@@ -428,9 +428,9 @@ static uint32_t adsp_ipcc_poll(void) {
     uint32_t signals = 0;
     for (unsigned n = 0; n < 32; n++) {
         uint32_t id = adsp_ipcc_recv(0);
-        if (id != Q8B_ADSP_IPCC_GLINK && id != Q8B_ADSP_IPCC_SMP2P) break;
+        if (id != QCOM8GEN3_ADSP_IPCC_GLINK && id != QCOM8GEN3_ADSP_IPCC_SMP2P) break;
         adsp_ipcc_clear(0, id);
-        signals |= id == Q8B_ADSP_IPCC_SMP2P ? 4u : 1u;
+        signals |= id == QCOM8GEN3_ADSP_IPCC_SMP2P ? 4u : 1u;
     }
     if (signals & 4u) adsp_boot_smp2p_notified = 1;
     return signals;
@@ -439,7 +439,7 @@ static uint32_t adsp_ipcc_poll(void) {
 /* ---- SMEM private-item walk (copy of smem_find_private_item). ---- */
 static uint8_t *adsp_smem_find_private_item(uint8_t *ph, uint32_t free_off,
         uint16_t want) {
-    if (free_off < 32 || free_off > Q8B_ADSP_SMEM_SIZE ||
+    if (free_off < 32 || free_off > QCOM8GEN3_ADSP_SMEM_SIZE ||
             free_off > *(const uint32_t *)(ph + 8))
         return 0;
     for (uint32_t off = 32; off + 16 <= free_off; off += 4) {
@@ -505,27 +505,27 @@ static int adsp_smp2p_slave_bits(const uint8_t *data, size_t size,
     return -1;
 }
 
-static uint32_t adsp_smem_priv_off = Q8B_ADSP_SMEM_PRIV_OFF;
+static uint32_t adsp_smem_priv_off = QCOM8GEN3_ADSP_SMEM_PRIV_OFF;
 
 /* Resolve the ADSP (SMEM_HOST_ADSP) private-partition offset from the SMEM
  * partition table 4 KiB before the end of the SMEM region.  Requires
- * Q8B_ADSP_SMEM_WIN mapped.  Mirrors Linux qcom_smem_map_ptable():
+ * QCOM8GEN3_ADSP_SMEM_WIN mapped.  Mirrors Linux qcom_smem_map_ptable():
  *   ptable = smem_base + smem_size - 0x1000, magic "$TOC",
  *   entry stride 48 B, offset (bytes) at +0, host0/host1 (u16) at +12/+14. */
 static void adsp_smem_resolve_priv_off(void) {
-    const uint8_t *s = (const uint8_t *)Q8B_ADSP_SMEM_WIN;
-    const uint8_t *pt = s + Q8B_ADSP_SMEM_SIZE - 0x1000u;
+    const uint8_t *s = (const uint8_t *)QCOM8GEN3_ADSP_SMEM_WIN;
+    const uint8_t *pt = s + QCOM8GEN3_ADSP_SMEM_SIZE - 0x1000u;
     uint32_t magic = *(const volatile uint32_t *)(pt + 0);
     uint32_t num = *(const volatile uint32_t *)(pt + 8);
     uint32_t found = 0;
 
-    if (magic == Q8B_ADSP_SMEM_PTABLE_MAGIC && num <= 32u) {
+    if (magic == QCOM8GEN3_ADSP_SMEM_PTABLE_MAGIC && num <= 32u) {
         for (uint32_t i = 0; i < num; i++) {
             const uint8_t *e = pt + 0x20u + i * 48u;
             uint16_t host0 = *(const volatile uint16_t *)(e + 12);
             uint16_t host1 = *(const volatile uint16_t *)(e + 14);
-            if (host0 == Q8B_ADSP_SMEM_HOST_ADSP ||
-                    host1 == Q8B_ADSP_SMEM_HOST_ADSP) {
+            if (host0 == QCOM8GEN3_ADSP_SMEM_HOST_ADSP ||
+                    host1 == QCOM8GEN3_ADSP_SMEM_HOST_ADSP) {
                 found = *(const volatile uint32_t *)(e + 0);
                 break;
             }
@@ -533,19 +533,19 @@ static void adsp_smem_resolve_priv_off(void) {
     }
     if (found)
         adsp_smem_priv_off = found;
-    printf("q8b adsp: smem priv off=0x%x (magic=0x%x num=%u found=0x%x)\n",
+    printf("qcom8gen3 adsp: smem priv off=0x%x (magic=0x%x num=%u found=0x%x)\n",
             adsp_smem_priv_off, magic, num, found);
 }
 
 static void adsp_smp2p_prepare(void) {
-    uint8_t *s = (uint8_t *)Q8B_ADSP_SMEM_WIN;
+    uint8_t *s = (uint8_t *)QCOM8GEN3_ADSP_SMEM_WIN;
     uint8_t *ph;
     uint32_t fU, fC;
     uint8_t *w;
 
-    if (adsp_map_in_caller(Q8B_ADSP_SMEM_WIN, Q8B_ADSP_SMEM_PHY,
-            Q8B_ADSP_SMEM_SIZE) != 0) {
-        printf("q8b adsp: smem map failed\n");
+    if (adsp_map_in_caller(QCOM8GEN3_ADSP_SMEM_WIN, QCOM8GEN3_ADSP_SMEM_PHY,
+            QCOM8GEN3_ADSP_SMEM_SIZE) != 0) {
+        printf("qcom8gen3 adsp: smem map failed\n");
         return;
     }
     adsp_smem_resolve_priv_off();
@@ -559,54 +559,54 @@ static void adsp_smp2p_prepare(void) {
         uint16_t item = *(uint16_t *)(w + 2);
         uint32_t isz = *(uint32_t *)(w + 4);
         if (canary != 0xa5a5 || isz > 0x10000) break;
-        if (item == Q8B_ADSP_SMP2P_OUT_ITEM) {
+        if (item == QCOM8GEN3_ADSP_SMP2P_OUT_ITEM) {
             uint32_t old_size = isz;
             uint32_t next = (uint32_t)(w - ph) + 16 + ((old_size + 7u) & ~7u);
-            if (old_size < Q8B_ADSP_SMP2P_ITEM_SIZE) {
-                uint32_t grow = Q8B_ADSP_SMP2P_ITEM_SIZE - old_size;
+            if (old_size < QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE) {
+                uint32_t grow = QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE - old_size;
                 if (*(uint32_t *)(ph + 12) + grow > fC) {
-                    printf("q8b adsp: SMP2P item 429 cannot grow old=%x\n", old_size);
+                    printf("qcom8gen3 adsp: SMP2P item 429 cannot grow old=%x\n", old_size);
                     break;
                 }
                 for (uint32_t j = *(uint32_t *)(ph + 12); j > next; j--)
                     ph[j + grow - 1] = ph[j - 1];
                 *(uint32_t *)(ph + 12) += grow;
-                isz = Q8B_ADSP_SMP2P_ITEM_SIZE;
+                isz = QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE;
             }
-            *(uint32_t *)(w + 4) = Q8B_ADSP_SMP2P_ITEM_SIZE;
-            *(uint16_t *)(w + 8) = Q8B_ADSP_SMP2P_ITEM_SIZE - Q8B_ADSP_SMP2P_DATA_SIZE;
+            *(uint32_t *)(w + 4) = QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE;
+            *(uint16_t *)(w + 8) = QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE - QCOM8GEN3_ADSP_SMP2P_DATA_SIZE;
             *(uint16_t *)(w + 10) = 0;
             *(uint32_t *)(w + 12) = 0;
-            adsp_smp2p_init_master((uint8_t *)(w + 16), Q8B_ADSP_SMP2P_ITEM_SIZE);
+            adsp_smp2p_init_master((uint8_t *)(w + 16), QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE);
             __asm__ volatile("dsb sy" ::: "memory");
             ((uint8_t *)(w + 16))[4] = 2; /* publish version last */
             __asm__ volatile("dsb sy" ::: "memory");
-            adsp_debug("q8b adsp: patched SMP2P item 429 master-kernel\n");
+            adsp_debug("qcom8gen3 adsp: patched SMP2P item 429 master-kernel\n");
             return;
         }
         w += 16 + *(uint16_t *)(w + 10) + ((isz + 7u) & ~7u);
     }
 
     /* Create the outbound item if space remains. */
-    if (fU + 16 + Q8B_ADSP_SMP2P_ITEM_SIZE <= fC) {
+    if (fU + 16 + QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE <= fC) {
         uint8_t *e = ph + fU;
         *(uint16_t *)(e + 0) = 0xa5a5;
-        *(uint16_t *)(e + 2) = Q8B_ADSP_SMP2P_OUT_ITEM;
-        *(uint32_t *)(e + 4) = Q8B_ADSP_SMP2P_ITEM_SIZE;
-        *(uint16_t *)(e + 8) = Q8B_ADSP_SMP2P_ITEM_SIZE - Q8B_ADSP_SMP2P_DATA_SIZE;
+        *(uint16_t *)(e + 2) = QCOM8GEN3_ADSP_SMP2P_OUT_ITEM;
+        *(uint32_t *)(e + 4) = QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE;
+        *(uint16_t *)(e + 8) = QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE - QCOM8GEN3_ADSP_SMP2P_DATA_SIZE;
         *(uint16_t *)(e + 10) = 0;
         *(uint32_t *)(e + 12) = 0;
-        adsp_smp2p_init_master(e + 16, Q8B_ADSP_SMP2P_ITEM_SIZE);
+        adsp_smp2p_init_master(e + 16, QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE);
         __asm__ volatile("dsb sy" ::: "memory");
         (e + 16)[4] = 2;
         __asm__ volatile("dsb sy" ::: "memory");
-        *(uint32_t *)(ph + 12) = fU + 16 + Q8B_ADSP_SMP2P_ITEM_SIZE;
-        adsp_debug("q8b adsp: created SMP2P item 429\n");
+        *(uint32_t *)(ph + 12) = fU + 16 + QCOM8GEN3_ADSP_SMP2P_ITEM_SIZE;
+        adsp_debug("qcom8gen3 adsp: created SMP2P item 429\n");
     }
 }
 
 static int adsp_smp2p_read_remote(uint32_t values[4]) {
-    uint8_t *s = (uint8_t *)Q8B_ADSP_SMEM_WIN;
+    uint8_t *s = (uint8_t *)QCOM8GEN3_ADSP_SMEM_WIN;
     uint8_t *ph = s + adsp_smem_priv_off;
     uint32_t fU = *(volatile uint32_t *)(ph + 12);
     const uint8_t *it;
@@ -615,7 +615,7 @@ static int adsp_smp2p_read_remote(uint32_t values[4]) {
     uint16_t padding, padding_hdr;
 
     if (!booted) return -1;
-    it = adsp_smem_find_private_item(ph, fU, Q8B_ADSP_SMP2P_IN_ITEM);
+    it = adsp_smem_find_private_item(ph, fU, QCOM8GEN3_ADSP_SMP2P_IN_ITEM);
     if (!it) return -1;
     size = *(const uint32_t *)(it + 4);
     padding = *(const uint16_t *)(it + 8);
@@ -628,14 +628,14 @@ static int adsp_smp2p_read_remote(uint32_t values[4]) {
     /* Match qcom_smp2p_negotiate(): production ADSP advertises v1, while
      * AP initially offers v2. Downgrade and kick before waiting for entries. */
     const uint8_t *out_item = adsp_smem_find_private_item(ph, fU,
-            Q8B_ADSP_SMP2P_OUT_ITEM);
+            QCOM8GEN3_ADSP_SMP2P_OUT_ITEM);
     if (out_item) {
         uint8_t *out = (uint8_t *)out_item + 16 +
                 *(const uint16_t *)(out_item + 10);
         int notify = 0;
         if (out[4] > d[4]) {
             out[4] = d[4];
-            printf("q8b adsp: SMP2P negotiated version %u\n", d[4]);
+            printf("qcom8gen3 adsp: SMP2P negotiated version %u\n", d[4]);
             notify = 1;
         }
         if (out[4] == d[4]) {
@@ -649,7 +649,7 @@ static int adsp_smp2p_read_remote(uint32_t values[4]) {
         if (notify) {
             __asm__ volatile("dsb sy" ::: "memory");
             *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) =
-                    Q8B_ADSP_IPCC_SMP2P;
+                    QCOM8GEN3_ADSP_IPCC_SMP2P;
             __asm__ volatile("dsb sy" ::: "memory");
         }
     }
@@ -665,8 +665,8 @@ static uint32_t adsp_smp2p_refresh_state(void) {
     uint32_t v[4];
     (void)adsp_ipcc_poll();
     if (adsp_smp2p_read_remote(v) == 0) {
-        state |= Q8B_ADSP_SMP2P_REMOTE;
-        if (v[1]) state |= Q8B_ADSP_SMP2P_READY;
+        state |= QCOM8GEN3_ADSP_SMP2P_REMOTE;
+        if (v[1]) state |= QCOM8GEN3_ADSP_SMP2P_READY;
     }
     return state;
 }
@@ -674,15 +674,15 @@ static uint32_t adsp_smp2p_refresh_state(void) {
 static int adsp_wait_for_ready(void) {
     for (unsigned attempt = 0; attempt < 50; attempt++) {
         uint32_t state = adsp_smp2p_refresh_state();
-        if ((state & Q8B_ADSP_SMP2P_READY) && adsp_boot_smp2p_notified)
+        if ((state & QCOM8GEN3_ADSP_SMP2P_READY) && adsp_boot_smp2p_notified)
             return 0;
-        *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = Q8B_ADSP_IPCC_SMP2P;
+        *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = QCOM8GEN3_ADSP_IPCC_SMP2P;
         __asm__ volatile("dsb sy" ::: "memory");
         adsp_delay_ms(100);
     }
-    printf("q8b adsp: ADSP ready not observed notify=%d pending=%x\n",
+    printf("qcom8gen3 adsp: ADSP ready not observed notify=%d pending=%x\n",
             adsp_boot_smp2p_notified, adsp_ipcc_recv(0));
-    return Q8B_ADSP_PAS_FAILED;
+    return QCOM8GEN3_ADSP_PAS_FAILED;
 }
 
 /* ---- GLINK transport (single GPR channel, no FastRPC/QRTR state). ---- */
@@ -705,7 +705,7 @@ typedef struct {
     int ready;
     uint32_t rx_len;
     int rx_pending;
-    uint8_t rx_buf[Q8B_ADSP_GLINK_RX_MAX];
+    uint8_t rx_buf[QCOM8GEN3_ADSP_GLINK_RX_MAX];
 } adsp_glink_state_t;
 
 static adsp_glink_state_t adsp_glink;
@@ -739,14 +739,14 @@ static int adsp_glink_tx_frame(uint16_t cmd, uint16_t p1, uint32_t p2,
         const void *data, uint32_t data_len) {
     uint8_t hdr[8];
     uint32_t head, tail, total;
-    if (!adsp_glink.ready || data_len > Q8B_ADSP_GLINK_FIFOMAX)
+    if (!adsp_glink.ready || data_len > QCOM8GEN3_ADSP_GLINK_FIFOMAX)
         return -1;
     total = (8u + data_len + 7u) & ~7u;
     head = adsp_glink.desc[1];
     tail = adsp_glink.desc[0];
     __asm__ volatile("dmb sy" ::: "memory");
     if (adsp_glink.len - adsp_glink_ring_used(head, tail, adsp_glink.len) <
-            total + Q8B_ADSP_GLINK_FIFO_RESERVE)
+            total + QCOM8GEN3_ADSP_GLINK_FIFO_RESERVE)
         return -2;
     hdr[0] = (uint8_t)cmd; hdr[1] = (uint8_t)(cmd >> 8);
     hdr[2] = (uint8_t)p1; hdr[3] = (uint8_t)(p1 >> 8);
@@ -765,7 +765,7 @@ static int adsp_glink_tx_frame(uint16_t cmd, uint16_t p1, uint32_t p2,
     __asm__ volatile("dmb sy" ::: "memory");
     adsp_glink.desc[1] = head;
     __asm__ volatile("dsb sy" ::: "memory");
-    *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = Q8B_ADSP_IPCC_GLINK;
+    *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = QCOM8GEN3_ADSP_IPCC_GLINK;
     __asm__ volatile("dsb sy" ::: "memory");
     return 0;
 }
@@ -774,14 +774,14 @@ static int adsp_glink_tx_data_frame(uint16_t cmd, uint16_t cid, uint32_t iid,
         const void *data, uint32_t size, uint32_t left) {
     uint8_t hdr[16];
     uint32_t head, tail, total;
-    if (!adsp_glink.ready || size > Q8B_ADSP_GLINK_FIFOMAX)
+    if (!adsp_glink.ready || size > QCOM8GEN3_ADSP_GLINK_FIFOMAX)
         return -1;
     total = (16u + size + 7u) & ~7u;
     head = adsp_glink.desc[1];
     tail = adsp_glink.desc[0];
     __asm__ volatile("dmb sy" ::: "memory");
     if (adsp_glink.len - adsp_glink_ring_used(head, tail, adsp_glink.len) <
-            total + Q8B_ADSP_GLINK_FIFO_RESERVE)
+            total + QCOM8GEN3_ADSP_GLINK_FIFO_RESERVE)
         return -2;
     hdr[0] = (uint8_t)cmd; hdr[1] = (uint8_t)(cmd >> 8);
     hdr[2] = (uint8_t)cid; hdr[3] = (uint8_t)(cid >> 8);
@@ -802,26 +802,26 @@ static int adsp_glink_tx_data_frame(uint16_t cmd, uint16_t cid, uint32_t iid,
     __asm__ volatile("dmb sy" ::: "memory");
     adsp_glink.desc[1] = head;
     __asm__ volatile("dsb sy" ::: "memory");
-    *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = Q8B_ADSP_IPCC_GLINK;
+    *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = QCOM8GEN3_ADSP_IPCC_GLINK;
     __asm__ volatile("dsb sy" ::: "memory");
     return 0;
 }
 
 static void adsp_glink_advertise_intent(void) {
     uint8_t data[8];
-    uint32_t size = Q8B_ADSP_GLINK_LOCAL_INTENT_SIZE;
+    uint32_t size = QCOM8GEN3_ADSP_GLINK_LOCAL_INTENT_SIZE;
     data[0] = (uint8_t)size; data[1] = (uint8_t)(size >> 8);
     data[2] = (uint8_t)(size >> 16); data[3] = (uint8_t)(size >> 24);
-    for (uint32_t iid = 1; iid <= Q8B_ADSP_GLINK_LOCAL_INTENT_COUNT; iid++) {
+    for (uint32_t iid = 1; iid <= QCOM8GEN3_ADSP_GLINK_LOCAL_INTENT_COUNT; iid++) {
         data[4] = (uint8_t)iid; data[5] = (uint8_t)(iid >> 8);
         data[6] = (uint8_t)(iid >> 16); data[7] = (uint8_t)(iid >> 24);
         (void)adsp_glink_tx_frame(5, adsp_glink.cid, 1, data, sizeof(data));
     }
-    adsp_glink.local_iid_count = Q8B_ADSP_GLINK_LOCAL_INTENT_COUNT;
+    adsp_glink.local_iid_count = QCOM8GEN3_ADSP_GLINK_LOCAL_INTENT_COUNT;
 }
 
 static void adsp_glink_send_local_open(void) {
-    static const char name[] = Q8B_PMIC_GLINK_CHANNEL;
+    static const char name[] = QCOM8GEN3_PMIC_GLINK_CHANNEL;
     adsp_glink.cid = 1;
     adsp_glink.open_sent = 1;
     (void)adsp_glink_tx_frame(2, adsp_glink.cid, sizeof(name), name, sizeof(name));
@@ -846,7 +846,7 @@ static int adsp_glink_handle_rx_data(uint32_t tail, uint32_t avail,
     left = (uint32_t)h[4] | ((uint32_t)h[5] << 8) |
             ((uint32_t)h[6] << 16) | ((uint32_t)h[7] << 24);
     frame = 16u + chunk;
-    if (chunk > Q8B_ADSP_GLINK_RX_MAX - adsp_glink.rx_len || avail < frame)
+    if (chunk > QCOM8GEN3_ADSP_GLINK_RX_MAX - adsp_glink.rx_len || avail < frame)
         return -1;
     adsp_glink_ring_copy(adsp_glink.rx, adsp_glink_ring_add(tail, 16, adsp_glink.len),
             adsp_glink.rx_buf + adsp_glink.rx_len, chunk);
@@ -886,11 +886,11 @@ static int adsp_glink_poll(void) {
         }
         if (cmd == 0 || cmd == 1) {
             if (cmd == 0)
-                (void)adsp_glink_tx_frame(1, Q8B_ADSP_GLINK_VERSION,
-                        Q8B_ADSP_GLINK_FEATURES, 0, 0);
+                (void)adsp_glink_tx_frame(1, QCOM8GEN3_ADSP_GLINK_VERSION,
+                        QCOM8GEN3_ADSP_GLINK_FEATURES, 0, 0);
             adsp_glink.version_ack = 1;
             if (adsp_glink.open_ack && !adsp_glink.remote_valid)
-                adsp_glink_request_remote_intent(Q8B_ADSP_GLINK_LOCAL_INTENT_SIZE);
+                adsp_glink_request_remote_intent(QCOM8GEN3_ADSP_GLINK_LOCAL_INTENT_SIZE);
         } else if (cmd == 2) {
             uint32_t name_len = p2 & 0xffffu;
             char name[64];
@@ -901,7 +901,7 @@ static int adsp_glink_poll(void) {
             name[name_len] = 0;
             (void)adsp_glink_tx_frame(4, p1, 0, 0, 0);
             frame += (name_len + 7u) & ~7u;
-            if (strcmp(name, Q8B_PMIC_GLINK_CHANNEL) == 0) {
+            if (strcmp(name, QCOM8GEN3_PMIC_GLINK_CHANNEL) == 0) {
                 adsp_glink.remote_cid = p1;
                 adsp_glink.local_iid = 1;
                 adsp_glink.remote_iid = 0;
@@ -913,7 +913,7 @@ static int adsp_glink_poll(void) {
                 adsp_glink.open_ack = 1;
                 adsp_glink_advertise_intent();
                 if (adsp_glink.version_ack && !adsp_glink.remote_valid)
-                    adsp_glink_request_remote_intent(Q8B_ADSP_GLINK_LOCAL_INTENT_SIZE);
+                    adsp_glink_request_remote_intent(QCOM8GEN3_ADSP_GLINK_LOCAL_INTENT_SIZE);
             }
         } else if (cmd == 5) {
             uint32_t count = p2;
@@ -956,7 +956,7 @@ static int adsp_glink_poll(void) {
         } else if (cmd == 3) {
             (void)adsp_glink_tx_frame(11, p1, 0, 0, 0);
         } else {
-            adsp_debug("q8b adsp: glink rx unhandled cmd=%u p1=%u p2=%u\n",
+            adsp_debug("qcom8gen3 adsp: glink rx unhandled cmd=%u p1=%u p2=%u\n",
                     cmd, p1, p2);
         }
         adsp_glink_rx_advance(adsp_glink_ring_add(tail, (frame + 7u) & ~7u, adsp_glink.len));
@@ -971,7 +971,7 @@ static int adsp_glink_init(void) {
     const uint8_t *i478, *i479, *i480;
 
     if (adsp_glink.ready) return 0;
-    s = (uint8_t *)Q8B_ADSP_SMEM_WIN;
+    s = (uint8_t *)QCOM8GEN3_ADSP_SMEM_WIN;
     ph = s + adsp_smem_priv_off;
     i478 = i479 = i480 = 0;
     for (unsigned try = 0; try < 50; try++) {
@@ -980,31 +980,31 @@ static int adsp_glink_init(void) {
         i479 = adsp_smem_find_private_item(ph, fU, 479);
         i480 = adsp_smem_find_private_item(ph, fU, 480);
         if (i478 && i479 && i480) break;
-        *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = Q8B_ADSP_IPCC_SMP2P;
+        *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = QCOM8GEN3_ADSP_IPCC_SMP2P;
         __asm__ volatile("dsb sy" ::: "memory");
         adsp_delay_ms(100);
     }
     if (!i478 || !i479 || !i480) {
-        adsp_debug("q8b adsp: glink items %d %d %d\n", i478 != 0, i479 != 0, i480 != 0);
+        adsp_debug("qcom8gen3 adsp: glink items %d %d %d\n", i478 != 0, i479 != 0, i480 != 0);
         return -1;
     }
     memset(&adsp_glink, 0, sizeof(adsp_glink));
     adsp_glink.desc = (volatile uint32_t *)(i478 + 16);
     adsp_glink.tx = (uint8_t *)(i479 + 16);
     adsp_glink.rx = (uint8_t *)(i480 + 16);
-    adsp_glink.len = Q8B_ADSP_GLINK_FIFOMAX;
+    adsp_glink.len = QCOM8GEN3_ADSP_GLINK_FIFOMAX;
     adsp_glink.ready = 1;
     adsp_glink.desc[1] = 0;
     adsp_glink.desc[2] = 0;
     __asm__ volatile("dsb sy" ::: "memory");
-    (void)adsp_glink_tx_frame(0, Q8B_ADSP_GLINK_VERSION, Q8B_ADSP_GLINK_FEATURES, 0, 0);
+    (void)adsp_glink_tx_frame(0, QCOM8GEN3_ADSP_GLINK_VERSION, QCOM8GEN3_ADSP_GLINK_FEATURES, 0, 0);
     adsp_glink.version_sent = 1;
     return 0;
 }
 
 static int adsp_glink_send_data(const void *data, uint32_t size) {
     uint32_t off = 0, chunk;
-    if (!adsp_glink.cid || !size || size > Q8B_ADSP_GLINK_FIFOMAX)
+    if (!adsp_glink.cid || !size || size > QCOM8GEN3_ADSP_GLINK_FIFOMAX)
         return -1;
     if (!adsp_glink.remote_valid || adsp_glink.remote_isize < size) {
         adsp_glink_request_remote_intent(size);
@@ -1043,7 +1043,7 @@ static int adsp_glink_recv(uint8_t **buf, uint32_t *len) {
 /* ---- PMIC GLINK battmgr (bare PMIC GLINK messages over glink). ---- */
 /* Send a request and poll for the response whose opcode matches.  The glink
  * transport carries the bare PMIC GLINK message with no rpmsg_hdr; see
- * q8b_adsp_gpr.h.  Returns 0 with the resp pointer and length set to the
+ * qcom8gen3_adsp_gpr.h.  Returns 0 with the resp pointer and length set to the
  * reassembled payload (the static glink rx buffer, valid until the next
  * recv), -1 on timeout / transport failure. */
 static int adsp_battmgr_transact(const uint8_t *req, uint32_t req_len,
@@ -1058,8 +1058,8 @@ static int adsp_battmgr_transact(const uint8_t *req, uint32_t req_len,
         (void)adsp_glink_poll();
         if (adsp_glink_recv(&rx, &rx_len)) {
             if (rx_len >= 12 &&
-                    q8b_battmgr_get_le32(rx + 0) == Q8B_BATTMGR_OWNER &&
-                    q8b_battmgr_get_le32(rx + 8) == resp_opcode) {
+                    qcom8gen3_battmgr_get_le32(rx + 0) == QCOM8GEN3_BATTMGR_OWNER &&
+                    qcom8gen3_battmgr_get_le32(rx + 8) == resp_opcode) {
                 *resp = rx;
                 *resp_len = rx_len;
                 return 0;
@@ -1079,7 +1079,7 @@ static uint32_t adsp_battmgr_last_full;
  * Returns 0 on success, -1 on transport failure. */
 static int adsp_battmgr_query_battery(uint32_t *percent, int *charging,
         int *present) {
-    uint8_t req[Q8B_BATTMGR_UPDATE_REQ_SIZE];
+    uint8_t req[QCOM8GEN3_BATTMGR_UPDATE_REQ_SIZE];
     uint8_t *rx;
     uint32_t rx_len, cap_mwh, state, source, design;
     size_t req_len;
@@ -1088,12 +1088,12 @@ static int adsp_battmgr_query_battery(uint32_t *percent, int *charging,
         return -1;
 
     if (adsp_battmgr_last_full == 0) {
-        req_len = q8b_battmgr_build_update_req(req, Q8B_BATTMGR_BAT_INFO);
+        req_len = qcom8gen3_battmgr_build_update_req(req, QCOM8GEN3_BATTMGR_BAT_INFO);
         if (adsp_battmgr_transact(req, (uint32_t)req_len,
-                    Q8B_BATTMGR_BAT_INFO, &rx, &rx_len) != 0)
+                    QCOM8GEN3_BATTMGR_BAT_INFO, &rx, &rx_len) != 0)
             return -1;
         design = 0;
-        if (q8b_battmgr_parse_info(rx, rx_len, &adsp_battmgr_last_full,
+        if (qcom8gen3_battmgr_parse_info(rx, rx_len, &adsp_battmgr_last_full,
                     &design) != 0)
             return -1;
         if (adsp_battmgr_last_full == 0)
@@ -1102,12 +1102,12 @@ static int adsp_battmgr_query_battery(uint32_t *percent, int *charging,
             return -1;
     }
 
-    req_len = q8b_battmgr_build_update_req(req, Q8B_BATTMGR_BAT_STATUS);
+    req_len = qcom8gen3_battmgr_build_update_req(req, QCOM8GEN3_BATTMGR_BAT_STATUS);
     if (adsp_battmgr_transact(req, (uint32_t)req_len,
-                Q8B_BATTMGR_BAT_STATUS, &rx, &rx_len) != 0)
+                QCOM8GEN3_BATTMGR_BAT_STATUS, &rx, &rx_len) != 0)
         return -1;
     cap_mwh = state = source = 0;
-    if (q8b_battmgr_parse_status(rx, rx_len, &cap_mwh, &state, &source,
+    if (qcom8gen3_battmgr_parse_status(rx, rx_len, &cap_mwh, &state, &source,
                 NULL) != 0)
         return -1;
 
@@ -1116,22 +1116,22 @@ static int adsp_battmgr_query_battery(uint32_t *percent, int *charging,
         *percent = 100;
     /* qcom_battmgr_sc8280xp_callback() tests the discharging bit first:
      * it wins over the charging bit when the firmware sets both. */
-    *charging = !(state & Q8B_BATT_STATE_DISCHARGING) &&
-            (state & Q8B_BATT_STATE_CHARGING) != 0;
+    *charging = !(state & QCOM8GEN3_BATT_STATE_DISCHARGING) &&
+            (state & QCOM8GEN3_BATT_STATE_CHARGING) != 0;
     *present = 1;
     return 0;
 }
 
-#endif /* Q8B_ADSP_TRANSPORT */
-#endif /* !Q8B_QEMU_TEST */
+#endif /* QCOM8GEN3_ADSP_TRANSPORT */
+#endif /* !QCOM8GEN3_QEMU_TEST */
 
-#ifdef Q8B_QEMU_TEST
-static int adsp_probe(void) { return Q8B_ADSP_PAS_UNSUPPORTED; }
+#ifdef QCOM8GEN3_QEMU_TEST
+static int adsp_probe(void) { return QCOM8GEN3_ADSP_PAS_UNSUPPORTED; }
 #else
 static int adsp_probe(void) {
-    int ret = q8b_scm_probe(scm_call);
+    int ret = qcom8gen3_scm_probe(scm_call);
 
-    adsp_debug("q8b adsp: scm probe ret=%d\n", ret);
+    adsp_debug("qcom8gen3 adsp: scm probe ret=%d\n", ret);
     if(ret) return ret;
     return 0;
 }
@@ -1158,16 +1158,16 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
     if(fw_size < sizeof(*eh) || eh->e_ident[0] != 0x7f ||
             eh->e_ident[1] != 'E' || eh->e_ident[2] != 'L' ||
             eh->e_ident[3] != 'F' || eh->e_ident[4] != 1)
-        return Q8B_ADSP_PAS_INVALID;
+        return QCOM8GEN3_ADSP_PAS_INVALID;
     if(eh->e_phnum < 2 || eh->e_phnum > 32 ||
             eh->e_phentsize != sizeof(*ph) ||
             (uint64_t)eh->e_phoff + (uint32_t)eh->e_phnum * sizeof(*ph) > fw_size)
-        return Q8B_ADSP_PAS_INVALID;
+        return QCOM8GEN3_ADSP_PAS_INVALID;
     ph = (const adsp_elf32_phdr *)((const uint8_t *)fw + eh->e_phoff);
 
     for(i = 0; i < eh->e_phnum; i++) {
         uint64_t end;
-        if(!q8b_mdt_loadable(&ph[i])) {
+        if(!qcom8gen3_mdt_loadable(&ph[i])) {
             if(!hash && (ph[i].p_flags & ADSP_MDT_TYPE_MASK) ==
                     ADSP_MDT_TYPE_HASH)
                 hash = i;
@@ -1178,15 +1178,15 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
         if(end > max_addr) max_addr = end;
     }
     if(!hash || min_addr == ~0ull || max_addr <= min_addr)
-        return Q8B_ADSP_PAS_INVALID;
+        return QCOM8GEN3_ADSP_PAS_INVALID;
     max_addr = (max_addr + 0xfff) & ~0xfffull;
     /* The firmware only needs to *fit* in the carveout; its loadable span is
      * the actual image size, not the 32 MiB reservation. */
-    if(max_addr - min_addr > Q8B_ADSP_SPAN)
-        return Q8B_ADSP_PAS_INVALID;
-    if(q8b_mdt_validate_loads(fw_size, ph, eh->e_phnum, min_addr,
-                Q8B_ADSP_SPAN) != 0)
-        return Q8B_ADSP_PAS_INVALID;
+    if(max_addr - min_addr > QCOM8GEN3_ADSP_SPAN)
+        return QCOM8GEN3_ADSP_PAS_INVALID;
+    if(qcom8gen3_mdt_validate_loads(fw_size, ph, eh->e_phnum, min_addr,
+                QCOM8GEN3_ADSP_SPAN) != 0)
+        return QCOM8GEN3_ADSP_PAS_INVALID;
 
     /* metadata = ELF header + program headers + hash segment, the exact
      * qcom_mdt_read_metadata() layout Linux passes to PAS_INIT_IMAGE. */
@@ -1194,14 +1194,14 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
     meta_len = (uint64_t)hdr_len + ph[hash].p_filesz;
     if(meta_len > ADSP_META_SIZE || hdr_len > fw_size ||
             (uint64_t)ph[hash].p_offset + ph[hash].p_filesz > fw_size)
-        return Q8B_ADSP_PAS_INVALID;
+        return QCOM8GEN3_ADSP_PAS_INVALID;
     /* The metadata lives in the caller's DMA buffer, after the image, so it
      * is mapped in the syscall's address space (kernel-private dma_alloc
      * pages are not). */
     {
         uint32_t off = (fw_size + 0xfffu) & ~0xfffu;
         if((uint64_t)off + meta_len > capacity)
-            return Q8B_ADSP_PAS_INVALID;
+            return QCOM8GEN3_ADSP_PAS_INVALID;
         meta_va = (uint8_t *)fw + off;
         meta_pa = fw_pa + off;
     }
@@ -1216,38 +1216,38 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
      * qcom_q6v5_prepare() enables the ADSP proxy domains before
      * PAS_AUTH_AND_RESET; without it the SCM call hangs and wedges the board. */
     if(adsp_power_vote() != 0)
-        return Q8B_ADSP_PAS_POWER;
+        return QCOM8GEN3_ADSP_PAS_POWER;
 
     /* Phase 2/3 transport (IPCC/SMP2P/GLINK) is still gated. */
-#if Q8B_ADSP_TRANSPORT
+#if QCOM8GEN3_ADSP_TRANSPORT
     adsp_ipcc_enable(0); /* GLINK */
     adsp_ipcc_enable(2); /* SMP2P */
     adsp_smp2p_prepare();
     /* Kick the SMP2P signal so the ADSP sees the freshly written master item. */
-    *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = Q8B_ADSP_IPCC_SMP2P;
+    *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = QCOM8GEN3_ADSP_IPCC_SMP2P;
     __asm__ volatile("dsb sy" ::: "memory");
 #endif
 
-    printf("q8b adsp: fw min=%llx max=%llx span=%llx meta=%llu hash=%u\n",
+    printf("qcom8gen3 adsp: fw min=%llx max=%llx span=%llx meta=%llu hash=%u\n",
             (unsigned long long)min_addr, (unsigned long long)max_addr,
             (unsigned long long)(max_addr - min_addr),
             (unsigned long long)meta_len, hash);
 
-    ret = scm_call(0x201, 0x82, Q8B_ADSP_PAS_ID, meta_pa,
+    ret = scm_call(0x201, 0x82, QCOM8GEN3_ADSP_PAS_ID, meta_pa,
             (uint32_t)meta_len, 0, &result);
-    adsp_debug("q8b adsp: init ret=%d result=%llu\n", ret,
+    adsp_debug("qcom8gen3 adsp: init ret=%d result=%llu\n", ret,
             (unsigned long long)result);
-    if(ret) return ret == Q8B_GPU_PAS_BUSY ? Q8B_ADSP_PAS_BUSY :
-            Q8B_ADSP_PAS_INIT;
-    if(result) return Q8B_ADSP_PAS_INIT;
+    if(ret) return ret == QCOM8GEN3_GPU_PAS_BUSY ? QCOM8GEN3_ADSP_PAS_BUSY :
+            QCOM8GEN3_ADSP_PAS_INIT;
+    if(result) return QCOM8GEN3_ADSP_PAS_INIT;
 
-    ret = scm_call(0x202, 3, Q8B_ADSP_PAS_ID, Q8B_ADSP_CARVEOUT,
-            Q8B_ADSP_SPAN, 0, &result);
-    adsp_debug("q8b adsp: mem_setup ret=%d result=%llu\n", ret,
+    ret = scm_call(0x202, 3, QCOM8GEN3_ADSP_PAS_ID, QCOM8GEN3_ADSP_CARVEOUT,
+            QCOM8GEN3_ADSP_SPAN, 0, &result);
+    adsp_debug("qcom8gen3 adsp: mem_setup ret=%d result=%llu\n", ret,
             (unsigned long long)result);
-    if(ret) return ret == Q8B_GPU_PAS_BUSY ? Q8B_ADSP_PAS_BUSY :
-            Q8B_ADSP_PAS_MEM;
-    if(result) return Q8B_ADSP_PAS_MEM;
+    if(ret) return ret == QCOM8GEN3_GPU_PAS_BUSY ? QCOM8GEN3_ADSP_PAS_BUSY :
+            QCOM8GEN3_ADSP_PAS_MEM;
+    if(result) return QCOM8GEN3_ADSP_PAS_MEM;
 
     {
         /* A syscall runs on the caller's page tables, so the carveout must be
@@ -1256,37 +1256,37 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
         page_dir_entry_t *pvm = (p && p->space) ? p->space->vm : 0;
 
         if(p->info.pid != win_pid) {
-            if(map_pages_size(_kernel_info.kernel_vm, Q8B_ADSP_WIN,
-                        Q8B_ADSP_CARVEOUT, Q8B_ADSP_SPAN,
+            if(map_pages_size(_kernel_info.kernel_vm, QCOM8GEN3_ADSP_WIN,
+                        QCOM8GEN3_ADSP_CARVEOUT, QCOM8GEN3_ADSP_SPAN,
                         AP_RW_D, PTE_ATTR_SYS_DMA) != 0)
-                return Q8B_ADSP_PAS_FAILED;
+                return QCOM8GEN3_ADSP_PAS_FAILED;
             if(pvm != 0 && pvm != _kernel_info.kernel_vm &&
-                    map_pages_size(pvm, Q8B_ADSP_WIN,
-                        Q8B_ADSP_CARVEOUT, Q8B_ADSP_SPAN,
+                    map_pages_size(pvm, QCOM8GEN3_ADSP_WIN,
+                        QCOM8GEN3_ADSP_CARVEOUT, QCOM8GEN3_ADSP_SPAN,
                         AP_RW_D, PTE_ATTR_SYS_DMA) != 0)
-                return Q8B_ADSP_PAS_FAILED;
+                return QCOM8GEN3_ADSP_PAS_FAILED;
             win_pid = p->info.pid;
         }
         flush_tlb();
         __asm__ volatile("dsb sy" ::: "memory");
     }
-    dst = (uint8_t *)Q8B_ADSP_WIN;
-    if(q8b_mdt_stage(dst, Q8B_ADSP_SPAN, fw, fw_size, ph,
+    dst = (uint8_t *)QCOM8GEN3_ADSP_WIN;
+    if(qcom8gen3_mdt_stage(dst, QCOM8GEN3_ADSP_SPAN, fw, fw_size, ph,
                 eh->e_phnum, min_addr) != 0)
-        return Q8B_ADSP_PAS_INVALID;
+        return QCOM8GEN3_ADSP_PAS_INVALID;
     __asm__ volatile("dsb sy" ::: "memory");
-    adsp_debug("q8b adsp: image staged; PT_LOAD BSS zeroed, gaps preserved\n");
+    adsp_debug("qcom8gen3 adsp: image staged; PT_LOAD BSS zeroed, gaps preserved\n");
 
-    ret = scm_call(0x205, 1, Q8B_ADSP_PAS_ID, 0, 0, 0, &result);
-    adsp_debug("q8b adsp: auth_and_reset ret=%d result=%llu\n", ret,
+    ret = scm_call(0x205, 1, QCOM8GEN3_ADSP_PAS_ID, 0, 0, 0, &result);
+    adsp_debug("qcom8gen3 adsp: auth_and_reset ret=%d result=%llu\n", ret,
             (unsigned long long)result);
-    if(ret) return ret == Q8B_GPU_PAS_BUSY ? Q8B_ADSP_PAS_BUSY :
-            Q8B_ADSP_PAS_AUTH;
-    if(result) return Q8B_ADSP_PAS_AUTH;
+    if(ret) return ret == QCOM8GEN3_GPU_PAS_BUSY ? QCOM8GEN3_ADSP_PAS_BUSY :
+            QCOM8GEN3_ADSP_PAS_AUTH;
+    if(result) return QCOM8GEN3_ADSP_PAS_AUTH;
     booted = 1;
-    printf("q8b adsp: ADSP authenticated and out of reset\n");
+    printf("qcom8gen3 adsp: ADSP authenticated and out of reset\n");
 
-#if Q8B_ADSP_TRANSPORT
+#if QCOM8GEN3_ADSP_TRANSPORT
     (void)adsp_wait_for_ready();
 
     if(adsp_glink_init() == 0) {
@@ -1296,7 +1296,7 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
                 break;
             adsp_delay_ms(20);
         }
-        adsp_debug("q8b adsp: glink %s cid=%u\n",
+        adsp_debug("qcom8gen3 adsp: glink %s cid=%u\n",
                 (adsp_glink.version_ack && adsp_glink.open_ack) ?
                 "open" : "not open", adsp_glink.cid);
     }
@@ -1306,88 +1306,88 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
 #endif
 
 uint64_t platform_control_adsp(uint64_t op, uint64_t arg, uint64_t size) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     (void)op; (void)arg; (void)size;
-    return Q8B_ADSP_PAS_UNSUPPORTED;
+    return QCOM8GEN3_ADSP_PAS_UNSUPPORTED;
 #else
-    if(op == Q8B_ADSP_PAS_QUERY) {
-        if(arg || size) return Q8B_ADSP_PAS_INVALID;
+    if(op == QCOM8GEN3_ADSP_PAS_QUERY) {
+        if(arg || size) return QCOM8GEN3_ADSP_PAS_INVALID;
         if(!probed) {
             probe_rc = adsp_probe();
             probed = 1;
         }
-        if(probe_rc == Q8B_GPU_PAS_BUSY || probe_rc == Q8B_GPU_PAS_WAITQ)
+        if(probe_rc == QCOM8GEN3_GPU_PAS_BUSY || probe_rc == QCOM8GEN3_GPU_PAS_WAITQ)
             return probe_rc;
-        if(probe_rc) return Q8B_ADSP_PAS_UNSUPPORTED;
-        return Q8B_ADSP_ABI;
+        if(probe_rc) return QCOM8GEN3_ADSP_PAS_UNSUPPORTED;
+        return QCOM8GEN3_ADSP_ABI;
     }
 
-    if(op == Q8B_ADSP_PAS_STATUS) {
+    if(op == QCOM8GEN3_ADSP_PAS_STATUS) {
         uint64_t state = 0;
-        if(arg || size) return Q8B_ADSP_PAS_INVALID;
-        if(booted) state |= Q8B_ADSP_STATE_BOOTED;
+        if(arg || size) return QCOM8GEN3_ADSP_PAS_INVALID;
+        if(booted) state |= QCOM8GEN3_ADSP_STATE_BOOTED;
         return state;
     }
 
-    if(op == Q8B_ADSP_PAS_BOOT) {
+    if(op == QCOM8GEN3_ADSP_PAS_BOOT) {
         void *fw;
         uint32_t capacity = 0;
         if(booted) return 0;
         if(!owned_dma(arg, size, ADSP_MAX_FW, &capacity) ||
                 capacity < size + ADSP_META_SIZE)
-            return Q8B_ADSP_PAS_INVALID;
+            return QCOM8GEN3_ADSP_PAS_INVALID;
         fw = (void *)dma_v_addr(0, arg);
-        if(fw == 0) return Q8B_ADSP_PAS_INVALID;
+        if(fw == 0) return QCOM8GEN3_ADSP_PAS_INVALID;
         return stage_and_boot(fw, (uint32_t)size, arg, capacity);
     }
 
-    if(op == Q8B_ADSP_PAS_STOP) {
+    if(op == QCOM8GEN3_ADSP_PAS_STOP) {
         uint64_t result = 0;
         int ret;
 
-        if(arg || size) return Q8B_ADSP_PAS_INVALID;
+        if(arg || size) return QCOM8GEN3_ADSP_PAS_INVALID;
         if(!booted) return 0;
-        ret = scm_call(0x206, 1, Q8B_ADSP_PAS_ID, 0, 0, 0, &result);
+        ret = scm_call(0x206, 1, QCOM8GEN3_ADSP_PAS_ID, 0, 0, 0, &result);
         if(ret != 0 || result != 0) {
-            printf("q8b adsp: PAS_STOP failed ret=%d result=%llu\n",
+            printf("qcom8gen3 adsp: PAS_STOP failed ret=%d result=%llu\n",
                     ret, (unsigned long long)result);
-            return Q8B_ADSP_PAS_FAILED;
+            return QCOM8GEN3_ADSP_PAS_FAILED;
         }
-#if Q8B_ADSP_TRANSPORT
+#if QCOM8GEN3_ADSP_TRANSPORT
         memset(&adsp_glink, 0, sizeof(adsp_glink));
         (void)adsp_power_release();
 #endif
         booted = 0;
-        printf("q8b adsp: ADSP stopped\n");
+        printf("qcom8gen3 adsp: ADSP stopped\n");
         return 0;
     }
 
-    if(op == Q8B_ADSP_BATTMGR_QUERY) {
-        if(arg || size) return Q8B_ADSP_PAS_INVALID;
-        if(!booted) return Q8B_ADSP_PAS_UNSUPPORTED;
-#if Q8B_ADSP_TRANSPORT
-        return Q8B_ADSP_BATTMGR_ABI;
+    if(op == QCOM8GEN3_ADSP_BATTMGR_QUERY) {
+        if(arg || size) return QCOM8GEN3_ADSP_PAS_INVALID;
+        if(!booted) return QCOM8GEN3_ADSP_PAS_UNSUPPORTED;
+#if QCOM8GEN3_ADSP_TRANSPORT
+        return QCOM8GEN3_ADSP_BATTMGR_ABI;
 #else
-        return Q8B_ADSP_PAS_UNSUPPORTED;
+        return QCOM8GEN3_ADSP_PAS_UNSUPPORTED;
 #endif
     }
 
-    if(op == Q8B_ADSP_BATTMGR_CAPACITY) {
-        if(arg || size) return Q8B_ADSP_PAS_INVALID;
-#if Q8B_ADSP_TRANSPORT
+    if(op == QCOM8GEN3_ADSP_BATTMGR_CAPACITY) {
+        if(arg || size) return QCOM8GEN3_ADSP_PAS_INVALID;
+#if QCOM8GEN3_ADSP_TRANSPORT
         uint32_t percent = 0;
         int charging = 0, present = 0;
-        if(!booted) return Q8B_ADSP_PAS_UNSUPPORTED;
+        if(!booted) return QCOM8GEN3_ADSP_PAS_UNSUPPORTED;
         if(adsp_battmgr_query_battery(&percent, &charging, &present) != 0)
-            return Q8B_ADSP_PAS_FAILED;
-        return (percent & Q8B_ADSP_BATT_CAP_MASK) |
-                (charging ? Q8B_ADSP_BATT_CHARGING : 0) |
-                (present ? Q8B_ADSP_BATT_PRESENT : 0);
+            return QCOM8GEN3_ADSP_PAS_FAILED;
+        return (percent & QCOM8GEN3_ADSP_BATT_CAP_MASK) |
+                (charging ? QCOM8GEN3_ADSP_BATT_CHARGING : 0) |
+                (present ? QCOM8GEN3_ADSP_BATT_PRESENT : 0);
 #else
-        return Q8B_ADSP_PAS_UNSUPPORTED;
+        return QCOM8GEN3_ADSP_PAS_UNSUPPORTED;
 #endif
     }
 
-    return Q8B_ADSP_PAS_INVALID;
+    return QCOM8GEN3_ADSP_PAS_INVALID;
 #endif
 }

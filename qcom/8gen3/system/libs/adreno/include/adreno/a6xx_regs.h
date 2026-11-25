@@ -5,7 +5,7 @@
  * gitlab.freedesktop.org/mesa/mesa).  Only A6XX-compatible reg32/reg64 entries
  * are emitted; A7XX-only and A8XX-only registers are skipped.  Offsets are
  * word indices within the kgsl_3d0_reg_memory window (physical
- * Q8B_ADRENO_CORE_PHY = 0x03d00000, size 0x40000); byte address =
+ * QCOM8GEN3_ADRENO_CORE_PHY = 0x03d00000, size 0x40000); byte address =
  * (word_index * 4), matching Linux drivers/gpu/drm/msm/adreno/a6xx.xml.h
  * generated-header conventions.
  *

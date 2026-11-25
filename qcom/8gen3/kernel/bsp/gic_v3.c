@@ -8,7 +8,7 @@
  *
  * The platform's gic.c is a GICv2 (GICC MMIO) driver; SC8280XP has a
  * GICv3 with redistributors and the ICC_* system-register interface, so
- * the Q8B BSP carries its own driver.
+ * the QCOM8GEN3 BSP carries its own driver.
  *
  * Interrupt model used by EwokOS:
  *   - SGIs/PPIs (INTID < 32) live in each core's redistributor,
@@ -50,10 +50,10 @@
 #define GIC_SPURIOUS       1023
 #define GIC_PRIO           0xA0
 
-#define GICD  ((volatile uint32_t*)(MMIO_BASE + Q8B_GIC_WIN_OFF + \
-        (Q8B_GICD_PHY - Q8B_GIC_WIN_PHY)))
-#define GICR  ((volatile uint8_t*)(MMIO_BASE + Q8B_GIC_WIN_OFF + \
-        (Q8B_GICR_PHY - Q8B_GIC_WIN_PHY)))
+#define GICD  ((volatile uint32_t*)(MMIO_BASE + QCOM8GEN3_GIC_WIN_OFF + \
+        (QCOM8GEN3_GICD_PHY - QCOM8GEN3_GIC_WIN_PHY)))
+#define GICR  ((volatile uint8_t*)(MMIO_BASE + QCOM8GEN3_GIC_WIN_OFF + \
+        (QCOM8GEN3_GICR_PHY - QCOM8GEN3_GIC_WIN_PHY)))
 
 static inline uint32_t rd32(volatile void* base, uint32_t off) {
     return *(volatile uint32_t*)((volatile uint8_t*)base + off);
@@ -98,7 +98,7 @@ static inline void isb(void) {
 }
 
 static volatile uint8_t* gicr_rd(uint32_t core) {
-    return GICR + (uint64_t)core * Q8B_GICR_STRIDE;
+    return GICR + (uint64_t)core * QCOM8GEN3_GICR_STRIDE;
 }
 
 static void gicd_wait_rwp(void) {
@@ -213,13 +213,13 @@ void gic_v3_init(void) {
             GICD_CTLR_ENABLE_G1NS);
     gicd_wait_rwp();
 
-    for (uint32_t c = 0; c < Q8B_CORES; c++) {
+    for (uint32_t c = 0; c < QCOM8GEN3_CORES; c++) {
         redist_wake(c);
-        redist_irq_enable(c, Q8B_GIC_IPI_IRQ);
+        redist_irq_enable(c, QCOM8GEN3_GIC_IPI_IRQ);
         if (c == 0)
-            redist_irq_enable(c, Q8B_GIC_TIMER_IRQ);
+            redist_irq_enable(c, QCOM8GEN3_GIC_TIMER_IRQ);
         else
-            redist_irq_disable(c, Q8B_GIC_TIMER_IRQ);
+            redist_irq_disable(c, QCOM8GEN3_GIC_TIMER_IRQ);
     }
 }
 
@@ -239,11 +239,11 @@ void gic_v3_core_init(uint32_t core) {
     isb();
 
     redist_wake(core);
-    redist_irq_enable(core, Q8B_GIC_IPI_IRQ);
+    redist_irq_enable(core, QCOM8GEN3_GIC_IPI_IRQ);
     if (core == 0)
-        redist_irq_enable(core, Q8B_GIC_TIMER_IRQ);
+        redist_irq_enable(core, QCOM8GEN3_GIC_TIMER_IRQ);
     else
-        redist_irq_disable(core, Q8B_GIC_TIMER_IRQ);
+        redist_irq_disable(core, QCOM8GEN3_GIC_TIMER_IRQ);
 }
 
 void gic_v3_irq_enable(int core, int irq) {
@@ -277,7 +277,7 @@ void gic_v3_eoi(uint32_t irq) {
 }
 
 void gic_v3_send_sgi(int core, int irq) {
-    if (core < 0 || core >= Q8B_CORES)
+    if (core < 0 || core >= QCOM8GEN3_CORES)
         return;
     /*
      * ICC_SGI1R_EL1 carries Aff1 in bits 23:16; bits 39:32 are Aff2.

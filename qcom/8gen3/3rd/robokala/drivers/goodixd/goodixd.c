@@ -271,7 +271,7 @@ static uint8_t gpio_spi_byte(uint8_t tx, bool receive) {
         gpio_set_level(GPIO_SPI_MOSI, high);
         /* Keep GPIO SPI well below the 3 MHz limit and give the
          * panel a real data setup/hold interval.  Back-to-back TLMM writes
-         * are otherwise too fast on some Q8B revisions. */
+         * are otherwise too fast on some QCOM8GEN3 revisions. */
         delay_us(1);
         gpio_set_level(GPIO_SPI_CLK, true);
         delay_us(1);
@@ -357,7 +357,7 @@ static int goodix_probe_once(void) {
         rom_pid[6] = 0;
         memcpy(patch_pid, version + 10, 8);
         patch_pid[8] = 0;
-        slog("q8b goodixd: Berlin ready rom_pid=%s rom_vid=%02x%02x%02x "
+        slog("qcom8gen3 goodixd: Berlin ready rom_pid=%s rom_vid=%02x%02x%02x "
                 "patch_pid=%s patch_vid=%02x%02x%02x%02x sensor=%u touch_data=%08x\n",
                 rom_pid, version[6], version[7], version[8], patch_pid,
                 version[18], version[19], version[20], version[21], version[23], _touch_addr);
@@ -674,7 +674,7 @@ static char* goodix_cmd(vdevice_t* dev, int from_pid, int argc,
             goodix_power_off();
             _sleeping = true;
             _ready = false;
-            slog("q8b goodixd: sleep (IC powered off)\n");
+            slog("qcom8gen3 goodixd: sleep (IC powered off)\n");
         }
         return strdup("sleeping\n");
     }
@@ -684,7 +684,7 @@ static char* goodix_cmd(vdevice_t* dev, int from_pid, int argc,
             _sleeping = false;
             _probe_delay_us = 0;
             _probe_failures = 0;
-            slog("q8b goodixd: wake (re-probe)\n");
+            slog("qcom8gen3 goodixd: wake (re-probe)\n");
         }
         return strdup("awake\n");
     }
@@ -724,7 +724,7 @@ static int touch_loop(vdevice_t* dev, void* p) {
             /* Keep diagnostics useful without logging once per retry. */
             if (_probe_failures == 1 ||
                     (_probe_failures & (_probe_failures - 1U)) == 0)
-                slog("q8b goodixd: Berlin probe failed at %s (retry %u us)\n",
+                slog("qcom8gen3 goodixd: Berlin probe failed at %s (retry %u us)\n",
                         _probe_stage, next);
         }
         return 0;
@@ -763,12 +763,12 @@ int main(int argc, char** argv) {
     }
     if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)TLMM_VA,
             (ewokos_addr_t)TLMM_PHY, (ewokos_addr_t)TLMM_SIZE) != TLMM_VA) {
-        slog("q8b goodixd: TLMM mapping failed\n");
+        slog("qcom8gen3 goodixd: TLMM mapping failed\n");
         return -1;
     }
     _tlmm = (volatile uint8_t*)(uintptr_t)TLMM_VA;
     if (enable_vcc3b() != 0) {
-        slog("q8b goodixd: VCC3B preparation failed; touch initialization stopped\n");
+        slog("qcom8gen3 goodixd: VCC3B preparation failed; touch initialization stopped\n");
         return -1;
     }
 
@@ -791,7 +791,7 @@ int main(int argc, char** argv) {
     delay_us(4000);
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.desc, "q8b_goodix_berlin");
+    strcpy(dev.desc, "qcom8gen3_goodix_berlin");
     dev.read = touch_read;
     dev.check_poll_events = touch_poll;
     dev.loop_step = touch_loop;

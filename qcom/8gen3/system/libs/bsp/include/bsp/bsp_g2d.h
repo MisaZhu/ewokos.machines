@@ -5,7 +5,7 @@
 #include <ewoksys/ewokdef.h>
 
 /*
- * Q8B (Radxa Dragon Q8B / Qualcomm SC8280XP / Adreno 690) 2D backend.
+ * QCOM8GEN3 (Radxa Dragon QCOM8GEN3 / Qualcomm SC8280XP / Adreno 690) 2D backend.
  *
  * Present state: no Adreno driver.  Every op is dispatched to the shared
  * aarch64 NEON software engine (system/platform/aarch64/src/g2d_arch.c),
@@ -35,7 +35,7 @@ uint32_t bsp_g2d_clock_hz(void);
 
 /* V3D architecture version x10 (21/42/71), or 0 when the platform has no
    V3D engine.  Reported via the G2D_DEV_CNTL_GET_VERSION device control.
-   Q8B's Adreno 690 is not a V3D part; this stays 0 until an Adreno
+   QCOM8GEN3's Adreno 690 is not a V3D part; this stays 0 until an Adreno
    version encoding is added to the shared g2dd protocol. */
 uint32_t bsp_g2d_version(void);
 

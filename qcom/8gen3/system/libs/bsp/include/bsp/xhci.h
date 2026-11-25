@@ -1,5 +1,5 @@
-#ifndef __Q8B_XHCI_H
-#define __Q8B_XHCI_H
+#ifndef __QCOM8GEN3_XHCI_H
+#define __QCOM8GEN3_XHCI_H
 
 /*
  * IRQ-assisted xHCI host controller driver for the SC8280XP DWC3 host cores.
@@ -172,4 +172,4 @@ int  xhci_bulk_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps);
 int  xhci_bulk_xfer(xhci_dev_t* dev, uint8_t ep_addr, void* data,
 		uint32_t len, bool dir_in, uint32_t timeout_ms);
 
-#endif /* __Q8B_XHCI_H */
+#endif /* __QCOM8GEN3_XHCI_H */

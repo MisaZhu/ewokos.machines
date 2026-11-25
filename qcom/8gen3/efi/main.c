@@ -1,16 +1,16 @@
 /*
- * BOOTAA64.EFI — EwokOS Q8B UEFI bootloader.
+ * BOOTAA64.EFI — EwokOS QCOM8GEN3 UEFI bootloader.
  *
- * The Radxa Dragon Q8B has no U-Boot: its SPI NOR EDK2 firmware loads this
+ * The Radxa Dragon QCOM8GEN3 has no U-Boot: its SPI NOR EDK2 firmware loads this
  * PE32+ application (Boot From File / UEFI Shell / PXE).  We then:
  *
  *   1. locate the GOP framebuffer and record it for user space,
  *   2. load KERNEL.BIN and a small INITRAMFS.IMG bootstrap image either from a
  *      SimpleFileSystem volume (ESP/USB), EFI_LOAD_FILE (PXE TFTP), or a GRUB
  *      initrd exposed as EFI_LOAD_FILE2; init then selects SD or USB rootfs,
- *   3. reserve and fill the kernel at Q8B_KERNEL_PHYS,
+ *   3. reserve and fill the kernel at QCOM8GEN3_KERNEL_PHYS,
  *   4. collect the final UEFI memory map, ExitBootServices,
- *   5. publish the bootinfo page at Q8B_BOOTINFO_PHYS and jump to the kernel.
+ *   5. publish the bootinfo page at QCOM8GEN3_BOOTINFO_PHYS and jump to the kernel.
  *
  * Calling convention: AArch64 UEFI is AAPCS64, identical to the compiler's
  * normal convention, so no assembly shim is required.
@@ -19,42 +19,42 @@
 
 /* Must match machines/qcom/8gen3/kernel/config.mk, mkos.lds.S and bsp/hw_arch.h.
  *
- * Q8B_QEMU_TEST builds the same loader for a QEMU virt smoke test: only
+ * QCOM8GEN3_QEMU_TEST builds the same loader for a QEMU virt smoke test: only
  * the DRAM base and the fixed bootinfo/kernel physical addresses change,
  * so the SFS -> ExitBootServices -> jump path can be exercised without a
  * board.  The mock payload is loader/test/mock_kernel.S. */
-#ifdef Q8B_QEMU_TEST
-#define Q8B_RAM_BASE        0x40000000ULL
-#define Q8B_KERNEL_PHYS     0x80080000ULL
-#define Q8B_BOOTINFO_PHYS   0x80070000ULL
+#ifdef QCOM8GEN3_QEMU_TEST
+#define QCOM8GEN3_RAM_BASE        0x40000000ULL
+#define QCOM8GEN3_KERNEL_PHYS     0x80080000ULL
+#define QCOM8GEN3_BOOTINFO_PHYS   0x80070000ULL
 #else
-#define Q8B_RAM_BASE        0x80000000ULL
-#define Q8B_KERNEL_PHYS     0x90080000ULL
-#define Q8B_BOOTINFO_PHYS   0x90070000ULL
+#define QCOM8GEN3_RAM_BASE        0x80000000ULL
+#define QCOM8GEN3_KERNEL_PHYS     0x90080000ULL
+#define QCOM8GEN3_BOOTINFO_PHYS   0x90070000ULL
 #endif
-#define Q8B_KERNEL_RESERVE  (4ULL * 1024 * 1024)
-#define Q8B_KERNEL_MTFTP_MAX (4ULL * 1024 * 1024)
-#define Q8B_INITRAMFS_MTFTP_MAX (32ULL * 1024 * 1024)
-#define Q8B_ROOTFS_MTFTP_MAX (160ULL * 1024 * 1024)
-#define Q8B_BOOTINFO_SIZE   0x10000ULL
-#define Q8B_USABLE_LIMIT    (8ULL * 1024 * 1024 * 1024)
+#define QCOM8GEN3_KERNEL_RESERVE  (4ULL * 1024 * 1024)
+#define QCOM8GEN3_KERNEL_MTFTP_MAX (4ULL * 1024 * 1024)
+#define QCOM8GEN3_INITRAMFS_MTFTP_MAX (32ULL * 1024 * 1024)
+#define QCOM8GEN3_ROOTFS_MTFTP_MAX (160ULL * 1024 * 1024)
+#define QCOM8GEN3_BOOTINFO_SIZE   0x10000ULL
+#define QCOM8GEN3_USABLE_LIMIT    (8ULL * 1024 * 1024 * 1024)
 
-#define Q8B_BOOTINFO_MAGIC   0x42385145u
-#define Q8B_BOOTINFO_VERSION 1
-#define Q8B_RD_FLAG_BOOT_ONLY (1u << 0)
+#define QCOM8GEN3_BOOTINFO_MAGIC   0x42385145u
+#define QCOM8GEN3_BOOTINFO_VERSION 1
+#define QCOM8GEN3_RD_FLAG_BOOT_ONLY (1u << 0)
 
-#define Q8B_BOOT_SOURCE_UNKNOWN 0u
-#define Q8B_BOOT_SOURCE_SD      1u
-#define Q8B_BOOT_SOURCE_USB     2u
-#define Q8B_BOOT_SOURCE_NVME    3u
-#define Q8B_BOOT_SOURCE_NET     4u
+#define QCOM8GEN3_BOOT_SOURCE_UNKNOWN 0u
+#define QCOM8GEN3_BOOT_SOURCE_SD      1u
+#define QCOM8GEN3_BOOT_SOURCE_USB     2u
+#define QCOM8GEN3_BOOT_SOURCE_NVME    3u
+#define QCOM8GEN3_BOOT_SOURCE_NET     4u
 
-#define Q8B_MAX_RESV 32
+#define QCOM8GEN3_MAX_RESV 32
 
 typedef struct {
     uint64_t base;
     uint64_t size;
-} q8b_resv_t;
+} qcom8gen3_resv_t;
 
 typedef struct {
     uint32_t magic;
@@ -85,7 +85,7 @@ typedef struct {
 
     uint32_t resv_count;
     uint32_t serial_flags;   /* bit0: kernel may use UART17; bit1: loader used EFI Serial I/O */
-    q8b_resv_t resv[Q8B_MAX_RESV];
+    qcom8gen3_resv_t resv[QCOM8GEN3_MAX_RESV];
 
     uint64_t dtb_addr;
     uint64_t dtb_size;
@@ -93,7 +93,7 @@ typedef struct {
     /* Device model from the firmware DTB /model, handed to the kernel so it
      * can publish the real board name in sys_info.machine (MACHINE_MAX). */
     char model[32];
-} q8b_bootinfo_t;
+} qcom8gen3_bootinfo_t;
 
 static EFI_SYSTEM_TABLE* gST;
 static EFI_BOOT_SERVICES* gBS;
@@ -103,7 +103,7 @@ static int g_con_ok;
 static EFI_SERIAL_IO_PROTOCOL* g_serial;
 static int g_serial_mode;      /* 0=none, 1=EFI Serial I/O, 2=UART17 direct */
 static int g_uart17_ok;        /* raw UART17 TX probe completed a command */
-static uint32_t g_boot_source = Q8B_BOOT_SOURCE_UNKNOWN;
+static uint32_t g_boot_source = QCOM8GEN3_BOOT_SOURCE_UNKNOWN;
 /* A small, dependency-free GOP console used while the loader is alive.  The
  * kernel receives the same framebuffer through bootinfo, but it is useful to
  * see whether UEFI reached the file-loading stages before ExitBootServices. */
@@ -116,7 +116,7 @@ static uint32_t g_fb_format;
 static uint32_t g_fb_rmask, g_fb_gmask, g_fb_bmask;
 static int g_fb_debug;
 /* Keep the boot-only RAMFS outside the board's DMA32 window when possible.
- * Q8B reserves large contiguous DMA/SHM pools below 4 GiB; placing a
+ * QCOM8GEN3 reserves large contiguous DMA/SHM pools below 4 GiB; placing a
  * 16-MB initramfs in the middle of that range can fragment the only usable
  * 768-MB interval and make pool reservation fail before init runs. */
 static int g_alloc_high;
@@ -162,17 +162,17 @@ __attribute__((noreturn)) static void halt_forever(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* serial log (EFI Serial I/O, fallback to the Q8B GENI UART17)       */
+/* serial log (EFI Serial I/O, fallback to the QCOM8GEN3 GENI UART17)       */
 /* ------------------------------------------------------------------ */
-#ifndef Q8B_QEMU_TEST
-#define Q8B_UART17_PHYS 0x00884000ULL
+#ifndef QCOM8GEN3_QEMU_TEST
+#define QCOM8GEN3_UART17_PHYS 0x00884000ULL
 
 static inline void uart_wr(uint32_t off, uint32_t v) {
-    *(volatile uint32_t*)(Q8B_UART17_PHYS + (uint64_t)off) = v;
+    *(volatile uint32_t*)(QCOM8GEN3_UART17_PHYS + (uint64_t)off) = v;
 }
 
 static inline uint32_t uart_rd(uint32_t off) {
-    return *(volatile uint32_t*)(Q8B_UART17_PHYS + (uint64_t)off);
+    return *(volatile uint32_t*)(QCOM8GEN3_UART17_PHYS + (uint64_t)off);
 }
 
 static int uart_poll(uint32_t off, uint32_t mask, int set) {
@@ -214,7 +214,7 @@ static int uart17_putc(char c) {
     return 0;
 }
 
-/* One bounded TX probe.  0 = UART17 completes commands (Q8B wiring), -1 =
+/* One bounded TX probe.  0 = UART17 completes commands (QCOM8GEN3 wiring), -1 =
  * the SE never answered (tablet without a wired UART17 debug header). */
 static int uart17_tx_probe(void) {
     const char probe[] = "\r\n";
@@ -226,23 +226,23 @@ static int uart17_tx_probe(void) {
     }
     return n > 0 ? 0 : -1;
 }
-#endif /* !Q8B_QEMU_TEST */
+#endif /* !QCOM8GEN3_QEMU_TEST */
 
 static void serial_init(void) {
     g_serial = 0;
     g_serial_mode = 0;
     g_uart17_ok = 0;
-#ifdef Q8B_NO_SERIAL
+#ifdef QCOM8GEN3_NO_SERIAL
     /* TEMP (gaokun3 / TW220 bring-up): no serial console at all.  Skips the
      * EFI Serial I/O path, the UART17 TX probe and the post-EBS raw write,
      * so the loader never touches 0x884000 and the framebuffer console is
      * the only output.  Rebuild without NO_SERIAL to restore it. */
     return;
 #endif
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
     /* UEFI BIOS已经初始化好 UART17。loader 不再碰任何 UART 配置，
      * 只用 EFI Serial I/O 的 Write（或 UART17 的 TX 命令）输出字符串。 */
-#ifdef Q8B_SERIAL_FORCE_UART17
+#ifdef QCOM8GEN3_SERIAL_FORCE_UART17
     g_serial_mode = 2;       /* raw TX only, no init */
     g_uart17_ok = uart17_tx_probe() == 0;
     return;
@@ -251,14 +251,14 @@ static void serial_init(void) {
     if (!EFI_ERROR(gBS->LocateProtocol((EFI_GUID*)&serial_guid, 0,
                     (void**)&g_serial)) && g_serial) {
         g_serial_mode = 1;
-        /* On Q8B the firmware console IS the GENI debug UART (uart17); the
+        /* On QCOM8GEN3 the firmware console IS the GENI debug UART (uart17); the
          * kernel drives the same SE after ExitBootServices, so tell it the
          * UART17 path is usable.  No extra probe: avoid disturbing the SE
          * the firmware serial driver owns. */
         g_uart17_ok = 1;
         return;              /* no SetAttributes: BIOS already did it */
     }
-    /* No EFI Serial I/O: only trust the Q8B GENI UART17 when the SE really
+    /* No EFI Serial I/O: only trust the QCOM8GEN3 GENI UART17 when the SE really
      * completes a TX command.  Tablets (MateBook gaokun3, TW220) have no wired
      * UART17 debug header: their QUP2 SE is idle and never answers, so
      * report "no serial" instead of silently poking 0x884000 all boot. */
@@ -281,7 +281,7 @@ static void serial_raw(const char* b, uint64_t n) {
             n -= chunk;
         }
     }
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
     else if (g_serial_mode == 2) {
         for (uint64_t i = 0; i < n; i++)
             uart17_putc(b[i]);
@@ -330,7 +330,7 @@ static void con_puts(const char* ascii) {
         serial_write_ascii(ascii);
         return;
     }
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
     /* Headless-tablet case (gaokun3 / TW220 have no usable serial): once the
      * direct framebuffer console is live it owns the screen; keep ConOut
      * only until then (same policy as the gaokun3 loader). */
@@ -508,7 +508,7 @@ static void fb_text(uint32_t x, uint32_t y, const char* text, uint32_t rgb) {
 }
 
 /* width/height/scanpx come from the GOP mode (pixels per scanline in
- * memory).  rot is the verified scanout rotation: 0 = as-reported Q8B,
+ * memory).  rot is the verified scanout rotation: 0 = as-reported QCOM8GEN3,
  * 1/3 = portrait panels (gaokun3 / TW220).  Logical console coordinates are
  * upright and bounded by the derived g_fb_w/g_fb_h. */
 static void fb_debug_setup(uint64_t addr, uint32_t width, uint32_t height,
@@ -608,12 +608,12 @@ static void fb_body_puts(const char* s) {
 }
 
 /* ------------------------------------------------------------------ */
-/* robust GOP discovery (Q8B / MateBook gaokun3 / Ntmer TW220)           */
+/* robust GOP discovery (QCOM8GEN3 / MateBook gaokun3 / Ntmer TW220)           */
 /* ------------------------------------------------------------------ */
 /* Resolution description handed from the loader to the fb console and
  * bootinfo.  width/height are the GOP-reported mode; rot is the verified
  * scanout rotation; scanpx is pixels per physical scanline. */
-struct q8b_fb {
+struct qcom8gen3_fb {
     uint64_t base;
     uint32_t width, height;
     uint32_t scanpx;
@@ -634,13 +634,13 @@ static UINTN g_memmap_dsize;
 /* Documented tablet framebuffer: both the gaokun3 and the TW220 reserve
  * [0xc6200000,0xc8600000) (36 MiB) for scanout, and their first GOP
  * reports FrameBufferBase == 0 (firmware proxy hides the address). */
-#define Q8B_RESV_FB_BASE  0xc6200000ULL
-#define Q8B_RESV_FB_SIZE  0x02400000ULL   /* 36 MiB */
-#define Q8B_RESV_FB_TILE  8u
-#define Q8B_RESV_FB_TX    48u
-#define Q8B_RESV_FB_TY    64u
+#define QCOM8GEN3_RESV_FB_BASE  0xc6200000ULL
+#define QCOM8GEN3_RESV_FB_SIZE  0x02400000ULL   /* 36 MiB */
+#define QCOM8GEN3_RESV_FB_TILE  8u
+#define QCOM8GEN3_RESV_FB_TX    48u
+#define QCOM8GEN3_RESV_FB_TY    64u
 
-static int q8b_mapped_identity(uint64_t base, uint64_t size) {
+static int qcom8gen3_mapped_identity(uint64_t base, uint64_t size) {
     uint64_t el;
     __asm__ volatile("mrs %0, CurrentEL" : "=r"(el));
     for (uint64_t p = base; p < base + size; p += 4096) {
@@ -658,7 +658,7 @@ static int q8b_mapped_identity(uint64_t base, uint64_t size) {
 
 /* Tablets hide the framebuffer address: the first GOP is a 2560x1600 BGR
  * 0xFA0000-byte proxy with FrameBufferBase == 0 (see machines/gaokun3-probe). */
-static int q8b_gop_tablet_signature(const EFI_GOP_MODE* m) {
+static int qcom8gen3_gop_tablet_signature(const EFI_GOP_MODE* m) {
     return m && m->Info && m->FrameBufferBase == 0 &&
            m->Info->HorizontalResolution == 2560 &&
            m->Info->VerticalResolution == 1600 &&
@@ -667,8 +667,8 @@ static int q8b_gop_tablet_signature(const EFI_GOP_MODE* m) {
            m->FrameBufferSize == 0xfa0000;
 }
 
-static int q8b_same_pixels(const uint32_t* a, const uint32_t* b) {
-    for (unsigned i = 0; i < Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE; ++i)
+static int qcom8gen3_same_pixels(const uint32_t* a, const uint32_t* b) {
+    for (unsigned i = 0; i < QCOM8GEN3_RESV_FB_TILE * QCOM8GEN3_RESV_FB_TILE; ++i)
         if ((a[i] ^ b[i]) & 0xffffff)   /* ignore alpha */
             return 0;
     return 1;
@@ -676,7 +676,7 @@ static int q8b_same_pixels(const uint32_t* a, const uint32_t* b) {
 
 /* Physical pixel offset for an upright (logical) tile coordinate on a
  * layout of mem_w columns / mem_h rows / stride px per scanline. */
-static uint64_t q8b_fb_offset(uint32_t rot, uint32_t mem_w, uint32_t mem_h,
+static uint64_t qcom8gen3_fb_offset(uint32_t rot, uint32_t mem_w, uint32_t mem_h,
                               uint32_t stride, uint32_t x, uint32_t y) {
     uint32_t px, py;
     switch (rot) {
@@ -688,26 +688,26 @@ static uint64_t q8b_fb_offset(uint32_t rot, uint32_t mem_w, uint32_t mem_h,
     return (uint64_t)py * stride + px;
 }
 
-static int q8b_resv_fb_memory_matches(uint32_t rot, uint32_t mem_w,
+static int qcom8gen3_resv_fb_memory_matches(uint32_t rot, uint32_t mem_w,
                                       uint32_t mem_h, uint32_t stride,
                                       const uint32_t* pattern) {
-    for (unsigned y = 0; y < Q8B_RESV_FB_TILE; ++y)
-        for (unsigned x = 0; x < Q8B_RESV_FB_TILE; ++x) {
-            uint64_t off = q8b_fb_offset(rot, mem_w, mem_h, stride,
-                                         Q8B_RESV_FB_TX + x, Q8B_RESV_FB_TY + y);
-            uint64_t p = Q8B_RESV_FB_BASE + off * 4;
+    for (unsigned y = 0; y < QCOM8GEN3_RESV_FB_TILE; ++y)
+        for (unsigned x = 0; x < QCOM8GEN3_RESV_FB_TILE; ++x) {
+            uint64_t off = qcom8gen3_fb_offset(rot, mem_w, mem_h, stride,
+                                         QCOM8GEN3_RESV_FB_TX + x, QCOM8GEN3_RESV_FB_TY + y);
+            uint64_t p = QCOM8GEN3_RESV_FB_BASE + off * 4;
             /* The DPU wrote the tile: clean+invalidate the line so the CPU
              * observes the scanout memory instead of a stale cached copy. */
             __asm__ volatile("dc civac, %0; dsb sy" :: "r"(p) : "memory");
             uint32_t actual = *(volatile uint32_t*)(uintptr_t)p;
-            if ((actual ^ pattern[y * Q8B_RESV_FB_TILE + x]) & 0xffffff)
+            if ((actual ^ pattern[y * QCOM8GEN3_RESV_FB_TILE + x]) & 0xffffff)
                 return 0;
         }
     return 1;
 }
 
 
-static int q8b_gop_adopt(const EFI_GOP_MODE* m, struct q8b_fb* fb) {
+static int qcom8gen3_gop_adopt(const EFI_GOP_MODE* m, struct qcom8gen3_fb* fb) {
     if (!m || !m->Info || m->FrameBufferBase == 0)
         return 0;
     fb->base = m->FrameBufferBase;
@@ -727,16 +727,16 @@ static int q8b_gop_adopt(const EFI_GOP_MODE* m, struct q8b_fb* fb) {
 /* Two-pattern BLT verification of the documented tablet reserved
  * framebuffer, then rotation detection by physical read-back.  Never
  * writes unknown memory: every write/restore goes through GOP Blt. */
-static int q8b_resv_fb_verify(EFI_GRAPHICS_OUTPUT_PROTOCOL* g,
-                              EFI_GOP_MODE* m, struct q8b_fb* fb) {
+static int qcom8gen3_resv_fb_verify(EFI_GRAPHICS_OUTPUT_PROTOCOL* g,
+                              EFI_GOP_MODE* m, struct qcom8gen3_fb* fb) {
     if (get_memory_map() != 0)
         return 0;
     int reserved = 0;
     for (uint64_t off = 0; off < g_memmap_size; off += g_memmap_dsize) {
         const EFI_MEMORY_DESCRIPTOR* d = (const void*)((uint8_t*)g_memmap + off);
         if (d->Type == EfiReservedMemoryType &&
-            d->PhysicalStart == Q8B_RESV_FB_BASE &&
-            d->NumberOfPages * EFI_PAGE_SIZE == Q8B_RESV_FB_SIZE &&
+            d->PhysicalStart == QCOM8GEN3_RESV_FB_BASE &&
+            d->NumberOfPages * EFI_PAGE_SIZE == QCOM8GEN3_RESV_FB_SIZE &&
             !(d->Attribute & 0x2000))
             reserved = 1;
     }
@@ -745,39 +745,39 @@ static int q8b_resv_fb_verify(EFI_GRAPHICS_OUTPUT_PROTOCOL* g,
 
     uint64_t bytes = (uint64_t)m->Info->HorizontalResolution *
                      m->Info->VerticalResolution * 4;
-    if (Q8B_RESV_FB_BASE & 4095 || bytes == 0 || bytes > Q8B_RESV_FB_SIZE)
+    if (QCOM8GEN3_RESV_FB_BASE & 4095 || bytes == 0 || bytes > QCOM8GEN3_RESV_FB_SIZE)
         return 0;
-    if (!q8b_mapped_identity(Q8B_RESV_FB_BASE, bytes))
+    if (!qcom8gen3_mapped_identity(QCOM8GEN3_RESV_FB_BASE, bytes))
         return 0;
 
-    uint32_t original[Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE];
-    uint32_t pattern[Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE];
-    uint32_t readback[Q8B_RESV_FB_TILE * Q8B_RESV_FB_TILE];
+    uint32_t original[QCOM8GEN3_RESV_FB_TILE * QCOM8GEN3_RESV_FB_TILE];
+    uint32_t pattern[QCOM8GEN3_RESV_FB_TILE * QCOM8GEN3_RESV_FB_TILE];
+    uint32_t readback[QCOM8GEN3_RESV_FB_TILE * QCOM8GEN3_RESV_FB_TILE];
     EFI_STATUS status = g->Blt(g, original, EFI_GOP_BLT_VIDEO_TO_BLT_BUFFER,
-                               Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
-                               0, 0, Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
+                               QCOM8GEN3_RESV_FB_TX, QCOM8GEN3_RESV_FB_TY,
+                               0, 0, QCOM8GEN3_RESV_FB_TILE, QCOM8GEN3_RESV_FB_TILE, 0);
     if (EFI_ERROR(status))
         return 0;
     unsigned matches = 15;
     for (unsigned pass = 0; pass < 2 && matches; ++pass) {
-        for (unsigned y = 0; y < Q8B_RESV_FB_TILE; ++y)
-            for (unsigned x = 0; x < Q8B_RESV_FB_TILE; ++x)
-                pattern[y * Q8B_RESV_FB_TILE + x] =
+        for (unsigned y = 0; y < QCOM8GEN3_RESV_FB_TILE; ++y)
+            for (unsigned x = 0; x < QCOM8GEN3_RESV_FB_TILE; ++x)
+                pattern[y * QCOM8GEN3_RESV_FB_TILE + x] =
                     ((31 + x * 23 + pass * 41) << 16) |
                     ((47 + y * 19 + pass * 37) << 8) |
                     (13 + x * 7 + y * 11 + pass * 53);
         status = g->Blt(g, pattern, EFI_GOP_BLT_BUFFER_TO_VIDEO,
-                        0, 0, Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
-                        Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
+                        0, 0, QCOM8GEN3_RESV_FB_TX, QCOM8GEN3_RESV_FB_TY,
+                        QCOM8GEN3_RESV_FB_TILE, QCOM8GEN3_RESV_FB_TILE, 0);
         if (EFI_ERROR(status)) {
             matches = 0;
             break;
         }
         gBS->Stall(20000);
         status = g->Blt(g, readback, EFI_GOP_BLT_VIDEO_TO_BLT_BUFFER,
-                        Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
-                        0, 0, Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
-        if (EFI_ERROR(status) || !q8b_same_pixels(pattern, readback)) {
+                        QCOM8GEN3_RESV_FB_TX, QCOM8GEN3_RESV_FB_TY,
+                        0, 0, QCOM8GEN3_RESV_FB_TILE, QCOM8GEN3_RESV_FB_TILE, 0);
+        if (EFI_ERROR(status) || !qcom8gen3_same_pixels(pattern, readback)) {
             matches = 0;
             break;
         }
@@ -790,15 +790,15 @@ static int q8b_resv_fb_verify(EFI_GRAPHICS_OUTPUT_PROTOCOL* g,
                                      : m->Info->VerticalResolution;
             uint32_t stride = (r & 1) ? m->Info->VerticalResolution
                                       : m->Info->HorizontalResolution;
-            if (!q8b_resv_fb_memory_matches(r, mem_w, mem_h, stride, pattern))
+            if (!qcom8gen3_resv_fb_memory_matches(r, mem_w, mem_h, stride, pattern))
                 matches &= ~(1u << r);
         }
     }
     /* No console output between capture and restore: console scrolling can
      * change the challenge tile.  Restore even after a failed test. */
     status = g->Blt(g, original, EFI_GOP_BLT_BUFFER_TO_VIDEO,
-                    0, 0, Q8B_RESV_FB_TX, Q8B_RESV_FB_TY,
-                    Q8B_RESV_FB_TILE, Q8B_RESV_FB_TILE, 0);
+                    0, 0, QCOM8GEN3_RESV_FB_TX, QCOM8GEN3_RESV_FB_TY,
+                    QCOM8GEN3_RESV_FB_TILE, QCOM8GEN3_RESV_FB_TILE, 0);
     if (EFI_ERROR(status) || !matches || (matches & (matches - 1)))
         return 0;
 
@@ -810,7 +810,7 @@ static int q8b_resv_fb_verify(EFI_GRAPHICS_OUTPUT_PROTOCOL* g,
     for (unsigned r = 0; r < 4; ++r)
         if (matches == (1u << r))
             match_rot = r;
-    fb->base = Q8B_RESV_FB_BASE;
+    fb->base = QCOM8GEN3_RESV_FB_BASE;
     fb->scanpx = (match_rot & 1) ? m->Info->VerticalResolution
                                  : m->Info->HorizontalResolution;
     fb->width = fb->scanpx;                 /* physical columns  */
@@ -825,25 +825,25 @@ static int q8b_resv_fb_verify(EFI_GRAPHICS_OUTPUT_PROTOCOL* g,
     return 1;
 }
 
-/* Find a usable linear framebuffer on Q8B (base != 0 GOP) and on the
+/* Find a usable linear framebuffer on QCOM8GEN3 (base != 0 GOP) and on the
  * tablets (base-0 proxy, reserved FB verified via BLT).  Every GOP
  * instance is logged so a platform that matches none of these still
  * leaves a diagnostic trail. */
-static int q8b_gop_discover(struct q8b_fb* fb) {
+static int qcom8gen3_gop_discover(struct qcom8gen3_fb* fb) {
     static const EFI_GUID gop_guid = EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID;
-    struct q8b_fb best;
+    struct qcom8gen3_fb best;
     int have_best = 0;
     EFI_GRAPHICS_OUTPUT_PROTOCOL* tablet = 0;
     memset(&best, 0, sizeof(best));
 
-    /* 1) LocateProtocol: cheapest; on Q8B this is the real GOP. */
+    /* 1) LocateProtocol: cheapest; on QCOM8GEN3 this is the real GOP. */
     EFI_GRAPHICS_OUTPUT_PROTOCOL* gop = 0;
     EFI_STATUS status = gBS->LocateProtocol((EFI_GUID*)&gop_guid, 0,
                                             (void**)&gop);
     if (!EFI_ERROR(status) && gop) {
-        if (q8b_gop_tablet_signature(gop->Mode)) {
+        if (qcom8gen3_gop_tablet_signature(gop->Mode)) {
             tablet = gop;
-        } else if (q8b_gop_adopt(gop->Mode, &best)) {
+        } else if (qcom8gen3_gop_adopt(gop->Mode, &best)) {
             have_best = 1;
         }
     }
@@ -855,9 +855,9 @@ static int q8b_gop_discover(struct q8b_fb* fb) {
         status = gBS->HandleProtocol(gST->ConsoleOutHandle, (EFI_GUID*)&gop_guid,
                                      (void**)&gop);
         if (!EFI_ERROR(status) && gop) {
-            if (q8b_gop_tablet_signature(gop->Mode)) {
+            if (qcom8gen3_gop_tablet_signature(gop->Mode)) {
                 tablet = gop;
-            } else if (!have_best && q8b_gop_adopt(gop->Mode, &best)) {
+            } else if (!have_best && qcom8gen3_gop_adopt(gop->Mode, &best)) {
                 have_best = 1;
             }
         }
@@ -874,9 +874,9 @@ static int q8b_gop_discover(struct q8b_fb* fb) {
             if (EFI_ERROR(gBS->HandleProtocol(handles[i], (EFI_GUID*)&gop_guid,
                                               (void**)&gop)) || !gop)
                 continue;
-            if (q8b_gop_tablet_signature(gop->Mode)) {
+            if (qcom8gen3_gop_tablet_signature(gop->Mode)) {
                 tablet = gop;
-            } else if (!have_best && q8b_gop_adopt(gop->Mode, &best)) {
+            } else if (!have_best && qcom8gen3_gop_adopt(gop->Mode, &best)) {
                 have_best = 1;
             }
         }
@@ -887,7 +887,7 @@ static int q8b_gop_discover(struct q8b_fb* fb) {
         *fb = best;
         return 1;
     }
-    if (tablet && q8b_resv_fb_verify(tablet, tablet->Mode, fb))
+    if (tablet && qcom8gen3_resv_fb_verify(tablet, tablet->Mode, fb))
         return 1;
     return 0;
 }
@@ -1022,7 +1022,7 @@ static EFI_PHYSICAL_ADDRESS alloc_pages(UINTN pages) {
     int type = EfiLoaderData;
     int mode = AllocateAnyPages;
     if (g_alloc_high) {
-        /* AllocateAddress is deterministic on the Q8B firmware.  The
+        /* AllocateAddress is deterministic on the QCOM8GEN3 firmware.  The
          * 6-GiB slot is inside the second DRAM bank and outside DMA32; if a
          * future firmware reserves it, fall back to AllocateMaxAddress. */
         p = 0x180000000ULL;
@@ -1041,7 +1041,7 @@ static EFI_PHYSICAL_ADDRESS alloc_pages(UINTN pages) {
         high_st = gBS->AllocatePages(AllocateAddress, type, pages, &p);
         if (!EFI_ERROR(high_st))
             return p;
-        p = (Q8B_RAM_BASE + Q8B_USABLE_LIMIT - EFI_PAGE_SIZE) &
+        p = (QCOM8GEN3_RAM_BASE + QCOM8GEN3_USABLE_LIMIT - EFI_PAGE_SIZE) &
                 ~(EFI_PAGE_SIZE - 1);
         mode = AllocateMaxAddress;
     }
@@ -1106,7 +1106,7 @@ static void* load_file_read(void* lf, EFI_DEVICE_PATH_PROTOCOL* dp,
     return 0;
 }
 
-/* Build a one-node FilePath device path ("\q8b\KERNEL.BIN"). */
+/* Build a one-node FilePath device path ("\qcom8gen3\KERNEL.BIN"). */
 static FILEPATH_DEVICE_PATH* make_filepath(const char* path, CHAR16* storage,
                                            uint64_t cap) {
     FILEPATH_DEVICE_PATH* fp = (FILEPATH_DEVICE_PATH*)storage;
@@ -1128,7 +1128,7 @@ static FILEPATH_DEVICE_PATH* make_filepath(const char* path, CHAR16* storage,
 static uint32_t device_source(EFI_HANDLE handle) {
     static EFI_GUID dp_guid = EFI_DEVICE_PATH_PROTOCOL_GUID;
     EFI_DEVICE_PATH_PROTOCOL* dp = 0;
-    uint32_t source = Q8B_BOOT_SOURCE_UNKNOWN;
+    uint32_t source = QCOM8GEN3_BOOT_SOURCE_UNKNOWN;
     if (handle == 0 || EFI_ERROR(gBS->HandleProtocol(handle, &dp_guid,
                     (void**)&dp)) || dp == 0)
         return source;
@@ -1139,17 +1139,17 @@ static uint32_t device_source(EFI_HANDLE handle) {
         if (dp->Type == 3) { /* messaging device path */
             switch (dp->SubType) {
             case 0x05: /* USB */
-                source = Q8B_BOOT_SOURCE_USB;
+                source = QCOM8GEN3_BOOT_SOURCE_USB;
                 break;
             case 0x17: /* NVMe */
-                source = Q8B_BOOT_SOURCE_NVME;
+                source = QCOM8GEN3_BOOT_SOURCE_NVME;
                 break;
             case 0x1a: /* SD */
-                source = Q8B_BOOT_SOURCE_SD;
+                source = QCOM8GEN3_BOOT_SOURCE_SD;
                 break;
             case 0x0c: /* IPv4 */
             case 0x0d: /* IPv6 */
-                source = Q8B_BOOT_SOURCE_NET;
+                source = QCOM8GEN3_BOOT_SOURCE_NET;
                 break;
             default:
                 break;
@@ -1162,20 +1162,20 @@ static uint32_t device_source(EFI_HANDLE handle) {
 
 static const char* source_name(uint32_t source) {
     switch (source) {
-    case Q8B_BOOT_SOURCE_SD: return "sd";
-    case Q8B_BOOT_SOURCE_USB: return "usb";
-    case Q8B_BOOT_SOURCE_NVME: return "nvme";
-    case Q8B_BOOT_SOURCE_NET: return "net";
+    case QCOM8GEN3_BOOT_SOURCE_SD: return "sd";
+    case QCOM8GEN3_BOOT_SOURCE_USB: return "usb";
+    case QCOM8GEN3_BOOT_SOURCE_NVME: return "nvme";
+    case QCOM8GEN3_BOOT_SOURCE_NET: return "net";
     default: return "unknown";
     }
 }
 
 static int source_rank(uint32_t source) {
     switch (source) {
-    case Q8B_BOOT_SOURCE_SD: return 0;
-    case Q8B_BOOT_SOURCE_USB: return 1;
-    case Q8B_BOOT_SOURCE_NVME: return 2;
-    case Q8B_BOOT_SOURCE_UNKNOWN: return 3;
+    case QCOM8GEN3_BOOT_SOURCE_SD: return 0;
+    case QCOM8GEN3_BOOT_SOURCE_USB: return 1;
+    case QCOM8GEN3_BOOT_SOURCE_NVME: return 2;
+    case QCOM8GEN3_BOOT_SOURCE_UNKNOWN: return 3;
     default: return 4;
     }
 }
@@ -1205,7 +1205,7 @@ static void* read_file_sfs_handle(EFI_HANDLE handle, const char* path,
     }
     uint64_t fsize = ((EFI_FILE_INFO_HEAD*)info)->FileSize;
 
-    /* The Q8B kernel uses 16KB pages; every physical range it maps through
+    /* The QCOM8GEN3 kernel uses 16KB pages; every physical range it maps through
      * the page tables must be 16KB aligned, while UEFI only guarantees 4KB. */
     UINTN pages = (fsize + 0x3FFF + EFI_PAGE_SIZE - 1) / EFI_PAGE_SIZE;
     EFI_PHYSICAL_ADDRESS buf = alloc_pages(pages);
@@ -1399,6 +1399,12 @@ static void* read_initrd_loadfile2(uint64_t* out_size) {
  * static array of pointers: a non-PIE link would store those as absolute
  * addresses in .data, which the position-independent PE loader cannot
  * relocate (we emit an empty .reloc by design).
+ *
+ * The first candidate of each family keeps the legacy "q8b" directory
+ * name on purpose: it is the on-media layout contract of ESPs and TFTP
+ * roots provisioned before the qcom8gen3 rename.  Renaming these strings
+ * would stop those existing media from booting; the flat root-level
+ * candidates right after them cover freshly provisioned media.
  */
 static const char* path_name(int which, int i) {
     if (which == 0) {           /* kernel */
@@ -1592,8 +1598,8 @@ static void* read_file_pxe(const char* path, uint64_t* out_size) {
 /* directly with blksize=1468 and windowsize=16 (dnsmasq 2.93 supports  */
 /* both), so a window is ACKed once instead of every packet.            */
 /* ------------------------------------------------------------------ */
-#ifndef Q8B_TFTP_FAST
-#define Q8B_TFTP_FAST 0
+#ifndef QCOM8GEN3_TFTP_FAST
+#define QCOM8GEN3_TFTP_FAST 0
 #endif
 
 #define TFTP_RRQ   1
@@ -1677,7 +1683,7 @@ static int tftp_ack(EFI_PXE_BASE_CODE_PROTOCOL* pxe, EFI_IP_ADDRESS* server,
 
 static void* read_file_pxe_udp(const char* path, uint64_t max_size,
                                uint64_t* out_size) {
-#if Q8B_TFTP_FAST
+#if QCOM8GEN3_TFTP_FAST
     EFI_PXE_BASE_CODE_PROTOCOL* pxe = pxe_get();
     if (pxe == 0 || pxe->UdpWrite == 0 || pxe->UdpRead == 0)
         return 0;
@@ -1865,8 +1871,8 @@ static void* read_file_pxe_udp(const char* path, uint64_t max_size,
 }
 
 static void* read_network(int which, uint64_t* size) {
-    uint64_t max_size = which == 0 ? Q8B_KERNEL_MTFTP_MAX :
-            (which == 2 ? Q8B_INITRAMFS_MTFTP_MAX : Q8B_ROOTFS_MTFTP_MAX);
+    uint64_t max_size = which == 0 ? QCOM8GEN3_KERNEL_MTFTP_MAX :
+            (which == 2 ? QCOM8GEN3_INITRAMFS_MTFTP_MAX : QCOM8GEN3_ROOTFS_MTFTP_MAX);
 
     /* The optional fast UDP client is still the first network method, but
      * network itself is now the last source unless the loader was started by
@@ -1928,7 +1934,7 @@ static void* read_first(int which, uint64_t* size) {
     /* A PXE/HTTP boot has no local ESP of its own.  Preserve that source's
      * precedence, then fall through to local SFS volumes if the network
      * object is absent. */
-    if (g_boot_source == Q8B_BOOT_SOURCE_NET) {
+    if (g_boot_source == QCOM8GEN3_BOOT_SOURCE_NET) {
         void* p = read_network(which, size);
         if (p)
             return p;
@@ -1947,7 +1953,7 @@ static void* read_first(int which, uint64_t* size) {
     }
 
     /* The network backend is always the final fallback for local boots. */
-    if (g_boot_source != Q8B_BOOT_SOURCE_NET)
+    if (g_boot_source != QCOM8GEN3_BOOT_SOURCE_NET)
     {
         void* p = read_network(which, size);
         if (p)
@@ -2010,14 +2016,14 @@ static uint64_t memory_ram_size(void) {
             (EFI_MEMORY_DESCRIPTOR*)((uint8_t*)g_memmap + i * g_memmap_dsize);
         uint64_t start = d->PhysicalStart;
         uint64_t end = start + d->NumberOfPages * EFI_PAGE_SIZE;
-        if (start < Q8B_RAM_BASE || start >= (1ULL << 40))
+        if (start < QCOM8GEN3_RAM_BASE || start >= (1ULL << 40))
             continue;
         if (mem_usable(d->Type) && end > max_end)
             max_end = end;
     }
-    if (max_end <= Q8B_RAM_BASE)
+    if (max_end <= QCOM8GEN3_RAM_BASE)
         return 4ULL * 1024 * 1024 * 1024;
-    return max_end - Q8B_RAM_BASE;
+    return max_end - QCOM8GEN3_RAM_BASE;
 }
 
 
@@ -2163,7 +2169,7 @@ static void pci_dump_device(EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL* rb,
     con_puts("\n");
 }
 
-/* Per-device inventory through EFI_PCI_IO_PROTOCOL.  The Q8B firmware
+/* Per-device inventory through EFI_PCI_IO_PROTOCOL.  The QCOM8GEN3 firmware
  * publishes this on every controller it enumerated even when the root
  * bridge handles are not exposed. */
 static int pci_inventory_pciio(void) {
@@ -2346,8 +2352,8 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     gBS->SetWatchdogTimer(0, 0, 0, 0);
 
-#ifndef Q8B_QEMU_TEST
-    /* Q8B APSS watchdog (qcom,apss-wdt-sc8280xp @ 0x17c10000).
+#ifndef QCOM8GEN3_QEMU_TEST
+    /* QCOM8GEN3 APSS watchdog (qcom,apss-wdt-sc8280xp @ 0x17c10000).
      * This block uses the qcom,kpss-wdt layout: RST=0x4, EN=0x8,
      * STS=0xc, BARK=0x10 and BITE=0x14.  The SBL/UEFI can leave it
      * armed; the PMIC then records a PSHOLD warm reset after ~45 seconds.
@@ -2374,7 +2380,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 #endif
 
     con_puts("\n");
-    con_puts("=== EwokOS Q8B UEFI loader ===\n");
+    con_puts("=== EwokOS QCOM8GEN3 UEFI loader ===\n");
     con_puts("[uefi] firmware rev ");
     con_hex(SystemTable->Revision);
     con_puts("\n");
@@ -2383,8 +2389,8 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
                     (void**)&gImageInfo)))
         gImageInfo = 0;
     g_boot_source = gImageInfo ? device_source(gImageInfo->DeviceHandle) :
-            Q8B_BOOT_SOURCE_UNKNOWN;
-    if (g_boot_source == Q8B_BOOT_SOURCE_UNKNOWN && gImageInfo &&
+            QCOM8GEN3_BOOT_SOURCE_UNKNOWN;
+    if (g_boot_source == QCOM8GEN3_BOOT_SOURCE_UNKNOWN && gImageInfo &&
             gImageInfo->DeviceHandle) {
         /* Some PXE implementations omit a network node from the device path
          * but expose EFI_LOAD_FILE on the image device itself. */
@@ -2392,20 +2398,20 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         void* lf = 0;
         if (!EFI_ERROR(gBS->HandleProtocol(gImageInfo->DeviceHandle,
                         &lf_guid, &lf)) && lf != 0)
-            g_boot_source = Q8B_BOOT_SOURCE_NET;
+            g_boot_source = QCOM8GEN3_BOOT_SOURCE_NET;
     }
     con_puts("[uefi] boot source=");
     con_puts(source_name(g_boot_source));
     con_puts("\n");
 
     /* ---- framebuffer: robust multi-platform GOP discovery ----
-     * Q8B: LocateProtocol GOP has a real base.  gaokun3 / TW220: every GOP is
+     * QCOM8GEN3: LocateProtocol GOP has a real base.  gaokun3 / TW220: every GOP is
      * a base-0 proxy, the linear FB is verified in the reserved 36-MiB
      * region at 0xc6200000 by two BLT patterns + rotation read-back. */
     uint64_t fb_addr = 0, fb_pitch = 0;
     uint32_t fb_w = 0, fb_h = 0, fb_bpp = 32, fb_format = 0;
-    struct q8b_fb qfb;
-    if (q8b_gop_discover(&qfb)) {
+    struct qcom8gen3_fb qfb;
+    if (qcom8gen3_gop_discover(&qfb)) {
         fb_addr = qfb.base;
         fb_w = qfb.width;
         fb_h = qfb.height;
@@ -2479,11 +2485,11 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     /* The bootinfo page is written after EBS too.  It sits just below the
      * kernel window and is not covered by the kernel reservation, so claim
      * it explicitly; otherwise the firmware may leave it read-only. */
-    EFI_PHYSICAL_ADDRESS bdst = alloc_pages_at(Q8B_BOOTINFO_PHYS,
-            Q8B_BOOTINFO_SIZE / EFI_PAGE_SIZE);
-    if (bdst == Q8B_BOOTINFO_PHYS) {
+    EFI_PHYSICAL_ADDRESS bdst = alloc_pages_at(QCOM8GEN3_BOOTINFO_PHYS,
+            QCOM8GEN3_BOOTINFO_SIZE / EFI_PAGE_SIZE);
+    if (bdst == QCOM8GEN3_BOOTINFO_PHYS) {
         con_puts("[uefi] bootinfo window reserved at ");
-        con_hex(Q8B_BOOTINFO_PHYS);
+        con_hex(QCOM8GEN3_BOOTINFO_PHYS);
         con_puts("\n");
     } else {
         con_puts("[uefi] bootinfo window not reservable\n");
@@ -2493,16 +2499,16 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
      * 128MB rootfs buffer cannot be placed on top of it.  At 0x90080000
      * this normally succeeds; if it does not, the post-EBS overlap check
      * below still refuses to overwrite the stub or a live buffer. */
-    EFI_PHYSICAL_ADDRESS kdst = alloc_pages_at(Q8B_KERNEL_PHYS,
-            Q8B_KERNEL_RESERVE / EFI_PAGE_SIZE);
-    if (kdst == Q8B_KERNEL_PHYS) {
+    EFI_PHYSICAL_ADDRESS kdst = alloc_pages_at(QCOM8GEN3_KERNEL_PHYS,
+            QCOM8GEN3_KERNEL_RESERVE / EFI_PAGE_SIZE);
+    if (kdst == QCOM8GEN3_KERNEL_PHYS) {
         con_puts("[uefi] kernel window reserved at ");
-        con_hex(Q8B_KERNEL_PHYS);
+        con_hex(QCOM8GEN3_KERNEL_PHYS);
         con_puts("\n");
     } else {
         con_puts("[uefi] kernel window not reservable; will check overlap\n");
         if (get_memory_map() == 0)
-            dump_memmap_around(Q8B_KERNEL_PHYS);
+            dump_memmap_around(QCOM8GEN3_KERNEL_PHYS);
         /* print large descriptors above the kernel image so a free window
          * can be picked from the serial log */
         if (g_memmap) {
@@ -2535,12 +2541,12 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
         con_puts("[uefi] FATAL: KERNEL.BIN not found\n");
         halt_forever();
     }
-    if (ksize > Q8B_KERNEL_RESERVE) {
+    if (ksize > QCOM8GEN3_KERNEL_RESERVE) {
         con_puts("[uefi] FATAL: kernel too large\n");
         halt_forever();
     }
 
-#if defined(Q8B_MTFTP_FIRST) && defined(Q8B_SD_ROOTFS)
+#if defined(QCOM8GEN3_MTFTP_FIRST) && defined(QCOM8GEN3_SD_ROOTFS)
     /* PXE supplied the kernel, so explicitly let UEFI touch the local ESP
      * before EBS.  The returned PXE buffer remains the boot image. */
     con_puts("[uefi] connecting local BlockIo controllers\n");
@@ -2560,13 +2566,13 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     rbuf = read_first(2, &rsize);
     g_alloc_high = 0;
     if (rbuf != 0) {
-        rd_flags = Q8B_RD_FLAG_BOOT_ONLY;
+        rd_flags = QCOM8GEN3_RD_FLAG_BOOT_ONLY;
     }
-#if !defined(Q8B_SD_ROOTFS) && !defined(Q8B_KERNEL_ONLY)
+#if !defined(QCOM8GEN3_SD_ROOTFS) && !defined(QCOM8GEN3_KERNEL_ONLY)
     if (rbuf == 0) {
         /* Keep a complete PXE/ESP rootfs out of the low DMA32 area too.
          * Besides preserving the contiguous device pools, this avoids a
-         * firmware memory-map split at the allocation boundary on Q8B. */
+         * firmware memory-map split at the allocation boundary on QCOM8GEN3. */
         g_alloc_high = 1;
         rbuf = read_first(1, &rsize);
         g_alloc_high = 0;
@@ -2577,7 +2583,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     }
 #endif
     if (rbuf == 0) {
-#if defined(Q8B_SD_ROOTFS) || defined(Q8B_KERNEL_ONLY)
+#if defined(QCOM8GEN3_SD_ROOTFS) || defined(QCOM8GEN3_KERNEL_ONLY)
         con_puts("[uefi] no INITRAMFS.IMG; kernel-only SD fallback\n");
 #else
         con_puts("[uefi] FATAL: INITRAMFS.IMG/ROOTFS.IMG not found\n");
@@ -2595,8 +2601,8 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     /* Ensure the fixed kernel window does not overlap the stub or the
      * already-loaded file buffers. */
     {
-        uint64_t dst = Q8B_KERNEL_PHYS;
-        uint64_t dst_end = dst + Q8B_KERNEL_RESERVE;
+        uint64_t dst = QCOM8GEN3_KERNEL_PHYS;
+        uint64_t dst_end = dst + QCOM8GEN3_KERNEL_RESERVE;
         uint64_t ib = gImageInfo ?
             (uint64_t)(uintptr_t)gImageInfo->ImageBase : 0;
         uint64_t ie = ib + (gImageInfo ? gImageInfo->ImageSize : 0);
@@ -2618,7 +2624,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     /* All memory writes happen while Boot Services and the firmware's
      * exception handler are still alive. */
-    memcpy((void*)(uintptr_t)Q8B_KERNEL_PHYS, kbuf, ksize);
+    memcpy((void*)(uintptr_t)QCOM8GEN3_KERNEL_PHYS, kbuf, ksize);
 
     /* ---- final memory map (must be the last Boot Service call before EBS) ---- */
     if (get_memory_map() != 0) {
@@ -2629,9 +2635,9 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     uint64_t ram_size = memory_ram_size();
 
     /* Copy the final memory map into the bootinfo page (physical memory). */
-    q8b_bootinfo_t* bi = (q8b_bootinfo_t*)(uintptr_t)Q8B_BOOTINFO_PHYS;
-    uint8_t* map_dst = (uint8_t*)(uintptr_t)(Q8B_BOOTINFO_PHYS + 0x1000);
-    uint64_t map_cap = Q8B_BOOTINFO_SIZE - 0x1000;
+    qcom8gen3_bootinfo_t* bi = (qcom8gen3_bootinfo_t*)(uintptr_t)QCOM8GEN3_BOOTINFO_PHYS;
+    uint8_t* map_dst = (uint8_t*)(uintptr_t)(QCOM8GEN3_BOOTINFO_PHYS + 0x1000);
+    uint64_t map_cap = QCOM8GEN3_BOOTINFO_SIZE - 0x1000;
     uint64_t map_copy = g_memmap_size;
     if (map_copy > map_cap)
         map_copy = map_cap;
@@ -2639,9 +2645,9 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     memset(bi, 0, sizeof(*bi));
     memcpy(map_dst, g_memmap, map_copy);
 
-    bi->magic = Q8B_BOOTINFO_MAGIC;
-    bi->version = Q8B_BOOTINFO_VERSION;
-    bi->ram_base = Q8B_RAM_BASE;
+    bi->magic = QCOM8GEN3_BOOTINFO_MAGIC;
+    bi->version = QCOM8GEN3_BOOTINFO_VERSION;
+    bi->ram_base = QCOM8GEN3_RAM_BASE;
     bi->ram_size = ram_size;
     bi->fb_addr = fb_addr;
     /* Report the REAL scan-out geometry only: physical columns x rows, byte
@@ -2662,7 +2668,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     bi->rd_size = rsize;
     bi->rd_flags = rd_flags;
     bi->boot_source = g_boot_source;
-    bi->kernel_phys = Q8B_KERNEL_PHYS;
+    bi->kernel_phys = QCOM8GEN3_KERNEL_PHYS;
     bi->kernel_size = ksize;
     bi->memmap_addr = (uint64_t)(uintptr_t)map_dst;
     bi->memmap_count = (uint32_t)(map_copy / g_memmap_dsize);
@@ -2673,18 +2679,18 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
     /* Record firmware-reserved ranges that fall inside the usable window so
      * the kernel allocator can punch them out. */
     uint32_t count = (uint32_t)(g_memmap_size / g_memmap_dsize);
-    uint64_t limit = Q8B_RAM_BASE + Q8B_USABLE_LIMIT;
-    for (uint32_t i = 0; i < count && bi->resv_count < Q8B_MAX_RESV; i++) {
+    uint64_t limit = QCOM8GEN3_RAM_BASE + QCOM8GEN3_USABLE_LIMIT;
+    for (uint32_t i = 0; i < count && bi->resv_count < QCOM8GEN3_MAX_RESV; i++) {
         EFI_MEMORY_DESCRIPTOR* d =
             (EFI_MEMORY_DESCRIPTOR*)((uint8_t*)g_memmap + i * g_memmap_dsize);
         uint64_t start = d->PhysicalStart;
         uint64_t end = start + d->NumberOfPages * EFI_PAGE_SIZE;
         if (mem_usable(d->Type))
             continue;
-        if (end <= Q8B_RAM_BASE || start >= limit)
+        if (end <= QCOM8GEN3_RAM_BASE || start >= limit)
             continue;
-        if (start < Q8B_RAM_BASE)
-            start = Q8B_RAM_BASE;
+        if (start < QCOM8GEN3_RAM_BASE)
+            start = QCOM8GEN3_RAM_BASE;
         if (end > limit)
             end = limit;
         bi->resv[bi->resv_count].base = start;
@@ -2694,8 +2700,8 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     /* Make the copied kernel/rootfs/bootinfo visible to a boot CPU that
      * starts with MMU and caches off. */
-    cache_clean((void*)(uintptr_t)Q8B_KERNEL_PHYS, Q8B_KERNEL_RESERVE);
-    cache_clean((void*)(uintptr_t)Q8B_BOOTINFO_PHYS, Q8B_BOOTINFO_SIZE);
+    cache_clean((void*)(uintptr_t)QCOM8GEN3_KERNEL_PHYS, QCOM8GEN3_KERNEL_RESERVE);
+    cache_clean((void*)(uintptr_t)QCOM8GEN3_BOOTINFO_PHYS, QCOM8GEN3_BOOTINFO_SIZE);
     if (rbuf != 0 && rsize != 0)
         cache_clean((void*)(uintptr_t)rbuf, rsize);
     cache_sync_icache();
@@ -2718,7 +2724,7 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
 
     /* Jump to __entry at its physical link address with the MMU off.
      * x0 is unused: the bootinfo page has a fixed physical address. */
-#if !defined(Q8B_QEMU_TEST) && !defined(Q8B_NO_SERIAL)
+#if !defined(QCOM8GEN3_QEMU_TEST) && !defined(QCOM8GEN3_NO_SERIAL)
     /* Post-EBS probe: bypass EFI Serial I/O and write UART17 TX directly.
      * If this line appears, the UART is alive at the kernel handoff; if not,
      * ExitBootServices/the UEFI serial driver stopped UART17. */
@@ -2728,5 +2734,5 @@ uint64_t efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable) {
             uart17_putc(*probe++);
     }
 #endif
-    jump_no_mmu(Q8B_KERNEL_PHYS);
+    jump_no_mmu(QCOM8GEN3_KERNEL_PHYS);
 }

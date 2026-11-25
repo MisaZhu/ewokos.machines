@@ -1,6 +1,6 @@
 #include <bsp/bsp_gpio.h>
 
-/* Q8B user-space TLMM access is not implemented yet. */
+/* QCOM8GEN3 user-space TLMM access is not implemented yet. */
 void bsp_gpio_init(void) {
 }
 

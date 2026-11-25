@@ -9,7 +9,7 @@ all: basic_libs
 # videocore/arch_bcm2712).  adreno itself only needs the platform headers
 # (platform_headers phase) plus the ewoksys/elf source headers.
 # adrenonpu builds after adreno: it shares the machine PAS/FastRPC headers
-# (q8b_gpu_pas.h) and the ewoksys dma/vfs headers, and produces libadrenonpu.a
+# (qcom8gen3_gpu_pas.h) and the ewoksys dma/vfs headers, and produces libadrenonpu.a
 # (the QNN C API + HTP/cDSP dispatch + CPU reference executor).
 basic_libs: adreno bsp adrenonpu
 

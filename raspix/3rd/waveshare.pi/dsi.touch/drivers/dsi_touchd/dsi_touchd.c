@@ -21,7 +21,7 @@
  * finger is still down must not turn into a release+re-press pair (a
  * phantom tap downstream). A release goes out only after the contact
  * stayed absent for this whole window; one that returns inside it
- * remains pressed. Same policy as q8b goodixd. */
+ * remains pressed. Same policy as qcom8gen3 goodixd. */
 #define TP_RELEASE_GRACE_MS        40
 #define TP_INIT_RETRY_MS         1000
 #define TP_I2C_FAIL_MAX            20
@@ -60,7 +60,7 @@
 #define FT5X06_EVENT_UP           0x01
 #define FT5X06_EVENT_CONTACT      0x02
 
-/* Multi-touch frame records on the 6-byte stream (q8b goodixd protocol,
+/* Multi-touch frame records on the 6-byte stream (qcom8gen3 goodixd protocol,
  * consumed by xtouch's absolute mode):
  *   state TOUCH_MT_FRAME ........ header: x = record count, y = 0
  *   state TOUCH_MT_FRAME | (act << 8) | id ... contact edge, act is

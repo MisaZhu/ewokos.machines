@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-out=$(mktemp -d "${TMPDIR:-/tmp}/q8b-spi.XXXXXX")
+out=$(mktemp -d "${TMPDIR:-/tmp}/qcom8gen3-spi.XXXXXX")
 trap 'rm -rf "$out"' EXIT HUP INT TERM
 ${CC:-clang} -std=c99 -Wall -Wextra -Werror -g -O1 \
     -fsanitize=address,undefined -fno-omit-frame-pointer \

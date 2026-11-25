@@ -1,6 +1,6 @@
 #include <bsp/gpi.h>
 #include <string.h>
-#ifdef Q8B_GPI_TEST
+#ifdef QCOM8GEN3_GPI_TEST
 #include "../tests/gpi_test_io.h"
 #else
 #include <ewoksys/syscall.h>
@@ -21,11 +21,11 @@ static void gpi_wr(uintptr_t base, unsigned off, uint32_t value) {
 static void gpi_delay(unsigned us) { usleep(us); }
 #endif
 
-static unsigned state(q8b_gpi_t* gpi, unsigned context) {
+static unsigned state(qcom8gen3_gpi_t* gpi, unsigned context) {
     return (gpi_rd(gpi->regs, context) >> 20) & 15U;
 }
 
-static int command(q8b_gpi_t* gpi, unsigned context, unsigned opcode,
+static int command(qcom8gen3_gpi_t* gpi, unsigned context, unsigned opcode,
         unsigned expected) {
     unsigned event = context == 0x1000U;
     unsigned ch = event ? 0U : context / 0x80U;
@@ -57,7 +57,7 @@ static int command(q8b_gpi_t* gpi, unsigned context, unsigned opcode,
     return -1;
 }
 
-int q8b_gpi_acquire(q8b_gpi_t* gpi, unsigned instance) {
+int qcom8gen3_gpi_acquire(qcom8gen3_gpi_t* gpi, unsigned instance) {
     if (!gpi)
         return -1;
     /* Do not clear a live/uncertain handle, even when acquisition is retried. */
@@ -89,7 +89,7 @@ int q8b_gpi_acquire(q8b_gpi_t* gpi, unsigned instance) {
     return 0;
 }
 
-int q8b_gpi_release(q8b_gpi_t* gpi) {
+int qcom8gen3_gpi_release(qcom8gen3_gpi_t* gpi) {
     if (!gpi || !gpi->regs || gpi->poisoned)
         return -1;
     /* No START is issued by this API. Reject an externally started channel;

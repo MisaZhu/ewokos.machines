@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef Q8B_WCN_NET_H
-#define Q8B_WCN_NET_H
+#ifndef QCOM8GEN3_WCN_NET_H
+#define QCOM8GEN3_WCN_NET_H
 #include <stddef.h>
 #include <stdint.h>
 void wcn_net_receive(const uint8_t *frame,unsigned bytes);

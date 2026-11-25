@@ -1,9 +1,9 @@
 ---
-name: q8b-tw220-spi-bringup
-description: "排查 Q8B/TW220 Goodix 触摸失效、GPIO SPI 到原生 GENI/GPI SPI 迁移，以及无串口真机调试时使用；适用于 DTS、ACPI、Windows PEP 与 EwokOS 驱动需要交叉核对的场景。"
+name: qcom8gen3-tw220-spi-bringup
+description: "排查 QCOM8GEN3/TW220 Goodix 触摸失效、GPIO SPI 到原生 GENI/GPI SPI 迁移，以及无串口真机调试时使用；适用于 DTS、ACPI、Windows PEP 与 EwokOS 驱动需要交叉核对的场景。"
 ---
 
-# Q8B/TW220 触摸与 SPI bring-up
+# QCOM8GEN3/TW220 触摸与 SPI bring-up
 
 先保持已验证的 GPIO 触摸路径可回滚，再逐层验证原生 SPI。这个 Skill 记录的是决策依据和危险边界，不授权部署、重启或改写共享硬件资源；这些动作仍需当前任务的明确授权。
 

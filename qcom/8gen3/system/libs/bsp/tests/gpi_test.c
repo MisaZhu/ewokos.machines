@@ -1,7 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-#define Q8B_GPI_TEST
+#define QCOM8GEN3_GPI_TEST
 #include "../src/gpi.c"
 
 static uint32_t mmio[0x4000 / 4];
@@ -51,80 +51,80 @@ static void reset(void) {
 int main(void) {
     for (unsigned n = 0; n < 12; n++) {
         reset();
-        q8b_gpi_t g = {0};
-        assert(q8b_gpi_acquire(&g, n) == 0);
+        qcom8gen3_gpi_t g = {0};
+        assert(qcom8gen3_gpi_acquire(&g, n) == 0);
         assert(g.event == 1 && g.channels == 3 && cmd_count == 3);
         unsigned before = writes;
-        assert(q8b_gpi_acquire(&g, n) == -1 && writes == before);
-        assert(q8b_gpi_release(&g) == 0);
+        assert(qcom8gen3_gpi_acquire(&g, n) == -1 && writes == before);
+        assert(qcom8gen3_gpi_release(&g) == 0);
         assert(!g.event && !g.channels && !g.poisoned && g.retired && cmd_count == 6);
         assert(mmio[0] == 1U << 20 && mmio[0x80 / 4] == 1U << 20);
         before = writes;
-        assert(q8b_gpi_acquire(&g, n) == -1 && writes == before);
+        assert(qcom8gen3_gpi_acquire(&g, n) == -1 && writes == before);
     }
     for (unsigned ctx = 0; ctx < 3; ctx++) {
         reset();
         mmio[(ctx == 2 ? 0x1000 : ctx * 0x80) / 4] = 2U << 20;
-        q8b_gpi_t g = {0};
-        assert(q8b_gpi_acquire(&g, 0) == -1 && writes == 0);
+        qcom8gen3_gpi_t g = {0};
+        assert(qcom8gen3_gpi_acquire(&g, 0) == -1 && writes == 0);
     }
     for (unsigned failed = 1; failed <= 6; failed++) {
         reset(); fail_cmd = failed;
-        q8b_gpi_t g = {0};
+        qcom8gen3_gpi_t g = {0};
         if (failed <= 3)
-            assert(q8b_gpi_acquire(&g, 0) == -1);
+            assert(qcom8gen3_gpi_acquire(&g, 0) == -1);
         else {
-            assert(q8b_gpi_acquire(&g, 0) == 0);
-            assert(q8b_gpi_release(&g) == -1);
+            assert(qcom8gen3_gpi_acquire(&g, 0) == 0);
+            assert(qcom8gen3_gpi_release(&g) == -1);
         }
         assert(g.poisoned);
         unsigned before = writes;
-        assert(q8b_gpi_acquire(&g, 0) == -1);
-        assert(q8b_gpi_release(&g) == -1 && before == writes);
+        assert(qcom8gen3_gpi_acquire(&g, 0) == -1);
+        assert(qcom8gen3_gpi_release(&g) == -1 && before == writes);
     }
     /* A state transition without an IRQ is not an acknowledgement. Test
      * each command, including DEALLOC whose context stays allocated. */
     for (unsigned lost = 1; lost <= 6; lost++) {
         reset(); no_irq_cmd = lost;
-        q8b_gpi_t g = {0};
-        if (lost <= 3) assert(q8b_gpi_acquire(&g, 0) == -1);
+        qcom8gen3_gpi_t g = {0};
+        if (lost <= 3) assert(qcom8gen3_gpi_acquire(&g, 0) == -1);
         else {
-            assert(q8b_gpi_acquire(&g, 0) == 0);
-            assert(q8b_gpi_release(&g) == -1);
+            assert(qcom8gen3_gpi_acquire(&g, 0) == 0);
+            assert(qcom8gen3_gpi_release(&g) == -1);
         }
         assert(g.poisoned && cmd_count == lost);
     }
     for (unsigned stale = 0; stale < 3; stale++) {
         reset();
         mmio[(stale == 2 ? 0x3094 : 0x3090) / 4] = 1U << (stale & 1);
-        q8b_gpi_t g = {0};
-        assert(q8b_gpi_acquire(&g, 0) == -1 && writes == 0);
+        qcom8gen3_gpi_t g = {0};
+        assert(qcom8gen3_gpi_acquire(&g, 0) == -1 && writes == 0);
     }
     reset(); wrong_irq_cmd = 2;
-    q8b_gpi_t wrong = {0};
-    assert(q8b_gpi_acquire(&wrong, 0) == -1 && wrong.poisoned);
+    qcom8gen3_gpi_t wrong = {0};
+    assert(qcom8gen3_gpi_acquire(&wrong, 0) == -1 && wrong.poisoned);
     assert(mmio[0x3090 / 4] == 2); /* unrelated RX IRQ not consumed */
     reset(); bad_state_cmd = 1;
-    q8b_gpi_t bad = {0};
-    assert(q8b_gpi_acquire(&bad, 0) == -1 && bad.poisoned);
+    qcom8gen3_gpi_t bad = {0};
+    assert(qcom8gen3_gpi_acquire(&bad, 0) == -1 && bad.poisoned);
     reset(); stuck_clear = 1;
-    q8b_gpi_t sticky = {0};
-    assert(q8b_gpi_acquire(&sticky, 0) == -1 && sticky.poisoned);
+    qcom8gen3_gpi_t sticky = {0};
+    assert(qcom8gen3_gpi_acquire(&sticky, 0) == -1 && sticky.poisoned);
     reset();
-    q8b_gpi_t g = {0};
-    assert(q8b_gpi_acquire(&g, 0) == 0);
+    qcom8gen3_gpi_t g = {0};
+    assert(qcom8gen3_gpi_acquire(&g, 0) == 0);
     mmio[0] = 2U << 20;
     unsigned before = writes;
-    assert(q8b_gpi_release(&g) == -1 && g.poisoned && writes == before);
+    assert(qcom8gen3_gpi_release(&g) == -1 && g.poisoned && writes == before);
     reset(); memset(&g, 0, sizeof(g));
-    assert(q8b_gpi_acquire(&g, 0) == 0);
+    assert(qcom8gen3_gpi_acquire(&g, 0) == 0);
     mmio[0x3090 / 4] = 1; /* stale TX completion before DEALLOC */
     before = writes;
-    assert(q8b_gpi_release(&g) == -1 && g.poisoned && writes == before);
+    assert(qcom8gen3_gpi_release(&g) == -1 && g.poisoned && writes == before);
     reset(); memset(&g, 0, sizeof(g)); fail_map = 1;
-    assert(q8b_gpi_acquire(&g, 0) == -1 && writes == 0);
-    assert(q8b_gpi_acquire(&g, 12) == -1 && writes == 0);
-    assert(q8b_gpi_acquire(NULL, 0) == -1);
-    puts("q8b GPI control tests: ok");
+    assert(qcom8gen3_gpi_acquire(&g, 0) == -1 && writes == 0);
+    assert(qcom8gen3_gpi_acquire(&g, 12) == -1 && writes == 0);
+    assert(qcom8gen3_gpi_acquire(NULL, 0) == -1);
+    puts("qcom8gen3 GPI control tests: ok");
     return 0;
 }

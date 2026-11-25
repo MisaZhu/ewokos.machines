@@ -4,7 +4,7 @@
  * The Adreno bring-up can wedge the whole SoC at the moment GMU_CM3_SYSRESET
  * is deasserted: no serial, no network, and the EUD SRST path cannot recover
  * it (the board ends up in EDL).  The kernel deliberately disables the APSS
- * watchdog at boot (q8b_early_watchdog_disable), so a hung test needs a
+ * watchdog at boot (qcom8gen3_early_watchdog_disable), so a hung test needs a
  * manual power cycle.
  *
  * ADRENO_ARM_WDT=1 re-arms it just before the release and disables it again

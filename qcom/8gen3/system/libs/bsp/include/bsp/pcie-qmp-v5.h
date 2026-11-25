@@ -3,7 +3,7 @@
  * SC8280XP Gen3 x1 RC QMP v5 values from Linux phy-qcom-qmp-pcie.c.
  * Reference revision: 199e665b194d42315feabf1872bcc3b56db070cf.
  * Offsets below are relative to PHY 0x01c06000. */
-static const struct q8b_pcie_phy_value { uint16_t offset; uint8_t value; } q8b_pcie_phy_values[] = {
+static const struct qcom8gen3_pcie_phy_value { uint16_t offset; uint8_t value; } qcom8gen3_pcie_phy_values[] = {
     {0x0010, 0x00}, /* QSERDES_V5_COM_SSC_EN_CENTER */
     {0x001c, 0x31}, /* QSERDES_V5_COM_SSC_PER1 */
     {0x0020, 0x01}, /* QSERDES_V5_COM_SSC_PER2 */
@@ -82,7 +82,7 @@ static const struct q8b_pcie_phy_value { uint16_t offset; uint8_t value; } q8b_p
  * qcom,sc8280xp-qmp-gen3x4-pcie-phy table selected by the board's two-lane
  * configuration.  Values are kept as byte writes because the QMP register
  * interface is byte-granular. */
-static const struct q8b_pcie_phy_value q8b_pcie3a_serdes_values[] = {
+static const struct qcom8gen3_pcie_phy_value qcom8gen3_pcie3a_serdes_values[] = {
     {0x0010, 0x00}, {0x001c, 0x31}, {0x0020, 0x01},
     {0x0024, 0xde}, {0x0028, 0x07}, {0x0030, 0x4c},
     {0x0034, 0x06}, {0x0048, 0x90}, {0x0058, 0x0f},
@@ -101,19 +101,19 @@ static const struct q8b_pcie_phy_value q8b_pcie3a_serdes_values[] = {
     {0x0044, 0x14},
 };
 
-static const struct q8b_pcie_phy_value q8b_pcie3a_tx_values[] = {
+static const struct qcom8gen3_pcie_phy_value qcom8gen3_pcie3a_tx_values[] = {
     {0x0ee4, 0x02}, /* lane 1 PI_QEC_CTRL */
     {0x0e84, 0xd5}, {0x0e90, 0x3f},
     {0x0e3c, 0x11}, {0x0e40, 0x0c},
 };
 
-static const struct q8b_pcie_phy_value q8b_pcie3a_tx2_values[] = {
+static const struct qcom8gen3_pcie_phy_value qcom8gen3_pcie3a_tx2_values[] = {
     {0x0ee4, 0x04}, /* lane 2 PI_QEC_CTRL */
     {0x0e84, 0xd5}, {0x0e90, 0x3f},
     {0x0e3c, 0x11}, {0x0e40, 0x0c},
 };
 
-static const struct q8b_pcie_phy_value q8b_pcie3a_rx_values[] = {
+static const struct qcom8gen3_pcie_phy_value qcom8gen3_pcie3a_rx_values[] = {
     {0x115c, 0x7f}, {0x1160, 0xff}, {0x1164, 0x7f},
     {0x1168, 0x34}, {0x116c, 0xd8}, {0x1170, 0xdc},
     {0x1174, 0xdc}, {0x1178, 0x5c}, {0x117c, 0x34},
@@ -122,12 +122,12 @@ static const struct q8b_pcie_phy_value q8b_pcie3a_rx_values[] = {
     {0x1044, 0xf0}, {0x11a4, 0x38},
 };
 
-static const struct q8b_pcie_phy_value q8b_pcie3a_pcs_values[] = {
+static const struct qcom8gen3_pcie_phy_value qcom8gen3_pcie3a_pcs_values[] = {
     {0x02dc, 0x05}, {0x0388, 0x88}, {0x0398, 0x0b},
     {0x03e4, 0x0f}, /* QPHY_V5_PCS_EQ_CONFIG3 */
 };
 
-static const struct q8b_pcie_phy_value q8b_pcie3a_pcs_misc_values[] = {
+static const struct qcom8gen3_pcie_phy_value qcom8gen3_pcie3a_pcs_misc_values[] = {
     {0x060c, 0x1d}, /* QPHY_V5_PCS_PCIE_POWER_STATE_CONFIG2 */
     {0x0614, 0x07}, /* QPHY_V5_PCS_PCIE_POWER_STATE_CONFIG4 */
     {0x0620, 0xc1}, /* QPHY_V5_PCS_PCIE_ENDPOINT_REFCLK_DRIVE */

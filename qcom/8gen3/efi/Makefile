@@ -1,4 +1,4 @@
-# Q8B EFI boot bundle.
+# QCOM8GEN3 EFI boot bundle.
 #
 # Build kernel/ and system/ first.  This Makefile only validates those build
 # products and packages them with the EFI application; it does not invoke
@@ -56,24 +56,24 @@ LOADER_CFLAGS = -ffreestanding -fno-stack-protector -fno-stack-check \
 	-O2 -Wall -Wextra -I.
 
 ifeq ($(TEST_QEMU),1)
-LOADER_CFLAGS += -DQ8B_QEMU_TEST
+LOADER_CFLAGS += -DQCOM8GEN3_QEMU_TEST
 endif
 ifeq ($(KERNEL_ONLY),1)
-LOADER_CFLAGS += -DQ8B_KERNEL_ONLY
+LOADER_CFLAGS += -DQCOM8GEN3_KERNEL_ONLY
 endif
 ifeq ($(SD_ROOTFS),1)
-LOADER_CFLAGS += -DQ8B_SD_ROOTFS
+LOADER_CFLAGS += -DQCOM8GEN3_SD_ROOTFS
 endif
 ifeq ($(FORCE_UART17),1)
-LOADER_CFLAGS += -DQ8B_SERIAL_FORCE_UART17
+LOADER_CFLAGS += -DQCOM8GEN3_SERIAL_FORCE_UART17
 endif
 # TEMP: no serial console at all (E Go / TW220 bring-up).  The loader then
 # never touches UART17 and the GOP framebuffer console is the only output.
 ifeq ($(NO_SERIAL),1)
-LOADER_CFLAGS += -DQ8B_NO_SERIAL
+LOADER_CFLAGS += -DQCOM8GEN3_NO_SERIAL
 endif
 ifeq ($(MTFTP_FIRST),1)
-LOADER_CFLAGS += -DQ8B_MTFTP_FIRST
+LOADER_CFLAGS += -DQCOM8GEN3_MTFTP_FIRST
 endif
 
 LOADER_LDFLAGS = -T linker.ld -e efi_main

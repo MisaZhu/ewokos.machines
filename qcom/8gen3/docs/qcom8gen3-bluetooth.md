@@ -1,4 +1,4 @@
-# Q8B Bluetooth interface (raspi5-compatible)
+# QCOM8GEN3 Bluetooth interface (raspi5-compatible)
 
 The WCN6855 combo module on the TW220 carries Wi-Fi on PCIe (owned by
 `wlan`) and Bluetooth on a GENI UART, **not** USB: Linux binds the same
@@ -6,9 +6,9 @@ port as `serial@988000` (QUP0 SE2) with `hci_uart_qca` and
 `qcom,wcn6855-bt`, and no QCA USB device enumerates on this machine. The
 Bluetooth *daemon*, HID stack and desktop tools are the raspi5 ones and
 are shared unchanged; only the HCI transport in `libbsp`
-(`8gen3/system/libs/bsp/src/bsp_bt.c`) is Q8B code.
+(`8gen3/system/libs/bsp/src/bsp_bt.c`) is QCOM8GEN3 code.
 
-| Item | raspi5 | Q8B |
+| Item | raspi5 | QCOM8GEN3 |
 |---|---|---|
 | Device node | `/dev/bt0` (0666) | same |
 | Daemon | `system/gui/drivers/btd` | same source, `HW=8gen3` build |

@@ -9,7 +9,7 @@
 #include <string.h>
 
 /*
- * Q8B (Radxa Dragon Q8B / SC8280XP / Adreno 690) 2D dispatch layer.
+ * QCOM8GEN3 (Radxa Dragon QCOM8GEN3 / SC8280XP / Adreno 690) 2D dispatch layer.
  *
  * GPU-ONLY forwarder into the Adreno 690 A2D/compute paths (libadreno).
  * Every accelerated pixel op is routed to the GPU or
@@ -49,7 +49,7 @@
  * decline overlapping source/destination allocations before submission.
  * Fractional fill reads and writes only the invocation's destination pixel.
  *
- * SAFETY GATE: fill/copy/180 rotation and uniform scaling have passed Q8B
+ * SAFETY GATE: fill/copy/180 rotation and uniform scaling have passed QCOM8GEN3
  * pixel/guard readback. Further API coverage is tracked in test/HANDOVER.md.
  * The GPU path remains opt-in:
  * it only runs when the environment sets ADRENO_ENABLE=1 AND the Adreno
@@ -91,11 +91,11 @@ static int adreno_2d_available(void) {
 	if (g_g2d_avail == 0) {
 		g_g2d_avail = (adreno_opted_in() && adreno_2d_ready()) ? 1 : -1;
 		if (g_g2d_avail == 1)
-			slog("q8b g2d: Adreno A2D blitter available\n");
+			slog("qcom8gen3 g2d: Adreno A2D blitter available\n");
 	}
 	if (g_g2d_avail == 1 && adreno_wedged()) {
 		g_g2d_avail = -1;
-		slog("q8b g2d: Adreno wedged - 2D offload disabled for this session\n");
+		slog("qcom8gen3 g2d: Adreno wedged - 2D offload disabled for this session\n");
 	}
 	return g_g2d_avail == 1;
 }
@@ -137,7 +137,7 @@ uint32_t bsp_g2d_clock_hz(void) {
 }
 
 /* Backend-neutral GPU code the client feeds pglc_version_supported(): the
-   q8b adrenocompiler backend accepts exactly 690 (Adreno 690), the same way
+   qcom8gen3 adrenocompiler backend accepts exactly 690 (Adreno 690), the same way
    raspi5's v3dcompiler accepts V3D 71.  Nothing in the shared protocol
    interprets the number any more. */
 uint32_t bsp_g2d_version(void) {

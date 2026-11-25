@@ -1,10 +1,10 @@
 /*
- * adreno_3d.c - Adreno 690 (SC8280XP / Q8B) a6xx compute-shader (CS) 3D back end.
+ * adreno_3d.c - Adreno 690 (SC8280XP / QCOM8GEN3) a6xx compute-shader (CS) 3D back end.
  *
- * Implements the daemon side of the portablegl 3D offload for Q8B: it loads a
+ * Implements the daemon side of the portablegl 3D offload for QCOM8GEN3: it loads a
  * precompiled a6xx compute program (the adreno_prog.h VERSION 6 blob the APP
  * side produces with the machine GPU compiler backend,
- * machines/q8b/system/libs/adrenocompiler over the vendored Mesa ir3) and
+ * machines/qcom/8gen3/system/libs/adrenocompiler over the vendored Mesa ir3) and
  * dispatches it through CP_EXEC_CS.  Two program shapes exist:
  *
  *   is_geom == 0  fullscreen kernel: one invocation per pixel writes the
@@ -129,12 +129,12 @@
 
 /* Fail the build when the wire protocol changes without regenerating the
  * embedded programs. A2D bring-up alone cannot detect stale compute blobs. */
-_Static_assert(Q8B_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
-	Q8B_RASTER_BLOB_VERSION == ADRENO_PROG_VERSION &&
-	Q8B_BIN_BLOB_VERSION == ADRENO_PROG_VERSION &&
-	Q8B_2D_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t) &&
-	Q8B_RASTER_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t) &&
-	Q8B_BIN_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t),
+_Static_assert(QCOM8GEN3_2D_BLOB_VERSION == ADRENO_PROG_VERSION &&
+	QCOM8GEN3_RASTER_BLOB_VERSION == ADRENO_PROG_VERSION &&
+	QCOM8GEN3_BIN_BLOB_VERSION == ADRENO_PROG_VERSION &&
+	QCOM8GEN3_2D_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t) &&
+	QCOM8GEN3_RASTER_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t) &&
+	QCOM8GEN3_BIN_BLOB_HEADER_BYTES == sizeof(adreno_prog_blob_t),
 	"stale built-in compute programs: run make builtin-shaders in libadreno");
 
 /* ------------------------------------------------------------------ */
@@ -840,7 +840,7 @@ static int build_cs_dispatch(kern_slot_t *ks, const bind_t *binds,
 		if (i >= num_tex || tex[i].phy == 0)
 			return ADRENO_E_DECLINED;    /* FS samples an unbound unit -> CPU */
 		t = &tex[i];
-		if (t->tiling != 0)                  /* q8b only uploads linear */
+		if (t->tiling != 0)                  /* qcom8gen3 only uploads linear */
 			return ADRENO_E_DECLINED;
 		if (t->levels > 1)                   /* multi-level layout not validated */
 			return ADRENO_E_DECLINED;
@@ -1325,14 +1325,14 @@ static kern_slot_t *bin_kernel_locked(void) {
 	static kern_slot_t kernel;
 	static int loaded;
 	if (!loaded) {
-		const adreno_prog_blob_t *h = (const void *)q8b_bin_blob;
+		const adreno_prog_blob_t *h = (const void *)qcom8gen3_bin_blob;
 		if (h->magic != ADRENO_PROG_MAGIC || h->version != ADRENO_PROG_VERSION ||
-		    q8b_bin_blob_len != sizeof(*h) + h->payload_bytes ||
+		    qcom8gen3_bin_blob_len != sizeof(*h) + h->payload_bytes ||
 		    kern_validate(&h->kern[0]) || h->kern[0].uniform_blob_dwords != 12 ||
 		    h->kern[0].num_ssbo != 2 || h->kern[0].pvtmem_size != 0 ||
 		    h->kern[0].local_size[0] != 64 || h->kern[0].local_size[1] != 1 ||
 		    h->kern[0].local_size[2] != 1 ||
-		    kern_load(&kernel, &h->kern[0], q8b_bin_blob + sizeof(*h)))
+		    kern_load(&kernel, &h->kern[0], qcom8gen3_bin_blob + sizeof(*h)))
 			return NULL;
 		loaded = 1;
 	}
@@ -1385,14 +1385,14 @@ static int compute_blit(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	grid[0]=((uint32_t)dw+63u)/64u; grid[1]=((uint32_t)dh+1u)/2u; grid[2]=1;
 	pthread_mutex_lock(&lock);
 	if (!loaded) {
-		const adreno_prog_blob_t *h = (const void *)q8b_2d_blob;
+		const adreno_prog_blob_t *h = (const void *)qcom8gen3_2d_blob;
 		if (h->magic != ADRENO_PROG_MAGIC || h->version != ADRENO_PROG_VERSION ||
-		    q8b_2d_blob_len != sizeof(*h)+h->payload_bytes ||
+		    qcom8gen3_2d_blob_len != sizeof(*h)+h->payload_bytes ||
 		    kern_validate(&h->kern[0]) || h->kern[0].uniform_blob_dwords != 12 ||
 		    h->kern[0].num_ssbo != 2 || h->kern[0].pvtmem_size != 0 ||
 		    h->kern[0].local_size[0] != 64 || h->kern[0].local_size[1] != 2 ||
 		    h->kern[0].local_size[2] != 1 ||
-		    kern_load(&kernel,&h->kern[0],q8b_2d_blob+sizeof(*h))) {
+		    kern_load(&kernel,&h->kern[0],qcom8gen3_2d_blob+sizeof(*h))) {
 			pthread_mutex_unlock(&lock);
 			return ADRENO_E_DECLINED;
 		}
@@ -1480,14 +1480,14 @@ static int compute_raster(uint64_t src_phy, int32_t src_w, int32_t src_h,
 	grid[0]=((uint32_t)w+15u)/16u; grid[1]=((uint32_t)h+7u)/8u; grid[2]=1;
 	pthread_mutex_lock(&lock);
 	if (!loaded) {
-		const adreno_prog_blob_t *hdr=(const void *)q8b_raster_blob;
+		const adreno_prog_blob_t *hdr=(const void *)qcom8gen3_raster_blob;
 		if (hdr->magic != ADRENO_PROG_MAGIC || hdr->version != ADRENO_PROG_VERSION ||
-		    q8b_raster_blob_len != sizeof(*hdr)+hdr->payload_bytes ||
+		    qcom8gen3_raster_blob_len != sizeof(*hdr)+hdr->payload_bytes ||
 		    kern_validate(&hdr->kern[0]) || hdr->kern[0].uniform_blob_dwords != 12 ||
 		    hdr->kern[0].num_ssbo != 2 || hdr->kern[0].pvtmem_size != 0 ||
 		    hdr->kern[0].local_size[0] != 16 || hdr->kern[0].local_size[1] != 8 ||
 		    hdr->kern[0].local_size[2] != 1 ||
-		    kern_load(&kernel,&hdr->kern[0],q8b_raster_blob+sizeof(*hdr))) {
+		    kern_load(&kernel,&hdr->kern[0],qcom8gen3_raster_blob+sizeof(*hdr))) {
 			pthread_mutex_unlock(&lock);
 			return ADRENO_E_DECLINED;
 		}

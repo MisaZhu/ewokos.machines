@@ -1,15 +1,15 @@
-# 8gen3 (TW220 / Radxa Dragon Q8B, SC8280XP)
+# 8gen3 (TW220 / Radxa Dragon QCOM8GEN3, SC8280XP)
 
-高通 SC8280XP (8cx Gen3) 板卡移植:Radxa Dragon Q8B 主板 + TW220 面板
+高通 SC8280XP (8cx Gen3) 板卡移植:Radxa Dragon QCOM8GEN3 主板 + TW220 面板
 (无有线 UART17 调试口、无物理 SD 卡槽,M.2 M-key 在 pcie2a/pcie3b)。
 自举通道两条,互相独立:
 
 - **PXE 网络启动**:UEFI 里 `Network` 设备最前,从 TFTP 拉
-  `q8b/BOOTAA64.EFI` → KERNEL.BIN + INITRAMFS.IMG;rootfs 由 init 按策略
+  `qcom8gen3/BOOTAA64.EFI` → KERNEL.BIN + INITRAMFS.IMG;rootfs 由 init 按策略
   挂 NVMe(p3 ext3)。日常调试主通道,固件/内核迭代不碰磁盘。
 - **SSD grub 链**(盘上系统自带):UEFI NVMe → grub(ESP p1)→ 菜单
   "Ewokos" chainload **p2 BOOT 分区**的 `EFI/EWOKOS/BOOTAA64.EFI` →
-  `\q8b\KERNEL.BIN` + `\q8b\INITRAMFS.IMG`(loader 根路径探测约定)→
+  `\qcom8gen3\KERNEL.BIN` + `\qcom8gen3\INITRAMFS.IMG`(loader 根路径探测约定)→
   p3 ext3 rootfs。脱离网络做最终验证用。
 
 盘上分区(p3 为 EwokOS rootfs 目标):
@@ -32,9 +32,9 @@ efi/        UEFI loader(main.c)+ 载荷打包;
             build/initramfs/ 为 ext3 打包暂存;部署时 PXE 服务根目录即本目录
 firmware/   adreno(Qualcomm 签名 zap/GMU/SQE)、ath11k(nfa765 WLAN)、
             npu、qca(BT)
-include/    平台头文件(q8b_platform.h 启动握手布局、q8b_adreno.h GPU 物理地址图)
+include/    平台头文件(qcom8gen3_platform.h 启动握手布局、qcom8gen3_adreno.h GPU 物理地址图)
 kernel/     EwokOS 内核(bsp/aarch64/8gen3),产物 kernel/kernel.bin
-skills/     q8b-kernel-test(复位/PXE/串口标准测试流程,先读)、q8b-tw220-spi-bringup
+skills/     qcom8gen3-kernel-test(复位/PXE/串口标准测试流程,先读)、qcom8gen3-tw220-spi-bringup
 system/     make.inc(HW=8gen3,ARCH=aarch64)+ Makefile;
             drivers/8gen3(pcied/g2dd/wlan/usbhostd/net/uartd/powerd…)、
             libs/bsp(libbsp:nvme/pcie/dwc3/xhci/sdcc2/eth/spi…+ adreno)、
@@ -73,14 +73,14 @@ kernel.conf 的 rootfs=auto 改写成 self,维护模式)、`KERNEL_ONLY=1`
 
 ```bash
 # 向 PXE 服务查询当前投放目录($TFTP_ROOT,目录可配置,不要写死)
-cp efi/BOOTAA64.EFI  "$TFTP_ROOT/q8b/BOOTAA64.EFI"
-cp efi/kernel.bin    "$TFTP_ROOT/q8b/KERNEL.BIN"
-cp efi/initramfs.img "$TFTP_ROOT/q8b/INITRAMFS.IMG"
-# 远程复位板子,串口抓 boot log 判定(复位/串口工具见 skills/q8b-kernel-test)
+cp efi/BOOTAA64.EFI  "$TFTP_ROOT/qcom8gen3/BOOTAA64.EFI"
+cp efi/kernel.bin    "$TFTP_ROOT/qcom8gen3/KERNEL.BIN"
+cp efi/initramfs.img "$TFTP_ROOT/qcom8gen3/INITRAMFS.IMG"
+# 远程复位板子,串口抓 boot log 判定(复位/串口工具见 skills/qcom8gen3-kernel-test)
 ```
 
 halt-kernel 隔离、KERNEL_ENTRY.BIN 保存/恢复等手法见
-`skills/q8b-kernel-test/SKILL.md`。
+`skills/qcom8gen3-kernel-test/SKILL.md`。
 
 ### B. SSD(grub 链)更新
 
@@ -93,16 +93,16 @@ halt-kernel 隔离、KERNEL_ENTRY.BIN 保存/恢复等手法见
 mount /dev/nvme0n1p1 /mnt/esp          # ESP,只读检查用
 mount /dev/nvme0n1p2 /mnt/boot
 cp /tmp/BOOTAA64.EFI   /mnt/boot/EFI/EWOKOS/BOOTAA64.EFI
-cp /tmp/kernel.bin     /mnt/boot/q8b/KERNEL.BIN
-cp /tmp/initramfs.img  /mnt/boot/q8b/INITRAMFS.IMG
+cp /tmp/kernel.bin     /mnt/boot/qcom8gen3/KERNEL.BIN
+cp /tmp/initramfs.img  /mnt/boot/qcom8gen3/INITRAMFS.IMG
 cd /mnt/boot && sha256sum linux/Image linux/sc8280xp-ntmer-tw220.dtb \
-    linux/initrd.img q8b/KERNEL.BIN q8b/INITRAMFS.IMG \
+    linux/initrd.img qcom8gen3/KERNEL.BIN qcom8gen3/INITRAMFS.IMG \
     EFI/EWOKOS/BOOTAA64.EFI > sha256sums.txt && sha256sum -c sha256sums.txt
 sync; umount /mnt/boot; umount /mnt/esp
 ```
 
 之后重启,grub 菜单选 "Ewokos" 即全 SSD 链路(loader 探测
-`\q8b\KERNEL.BIN`/`\q8b\INITRAMFS.IMG`,均为 p2 根相对路径)。
+`\qcom8gen3\KERNEL.BIN`/`\qcom8gen3\INITRAMFS.IMG`,均为 p2 根相对路径)。
 
 **p3 rootfs 重建**(格式必须 `-I 128`,ext3 库不支持 256-byte inode,
 症状:野块号读循环、journal inode #8 写坏):
@@ -140,4 +140,4 @@ ssh root@<板子IP> /bin/md5 /drivers/8gen3/<name>            # 与本地比对
   (与 rootfs 通道无关;面板桌面不受影响)。
 - 串口救援台在 boot RAMFS profile(uartd/sessiond/session),穿越
   switchroot,登录 root/root;完整测试流程看
-  `skills/q8b-kernel-test/SKILL.md`。
+  `skills/qcom8gen3-kernel-test/SKILL.md`。

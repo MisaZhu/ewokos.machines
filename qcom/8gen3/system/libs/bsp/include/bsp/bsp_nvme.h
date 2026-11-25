@@ -9,7 +9,7 @@
  * Shared BSP NVMe block API (same contract as the raspi5/x86 headers, so
  * generic consumers like sdfsd compile unchanged against any machine).
  *
- * The Q8B implementation wraps the user-space NVMe driver (<bsp/nvme.h>):
+ * The QCOM8GEN3 implementation wraps the user-space NVMe driver (<bsp/nvme.h>):
  * it consumes the PCIe enumeration snapshot published by /dev/pcie0, so
  * the PCIe owner daemon must already be running when bsp_nvme_init() is
  * called.

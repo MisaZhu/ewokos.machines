@@ -67,7 +67,7 @@
 #include <ewoksys/klog.h>
 #include <ewoksys/syscall.h>
 
-#include <q8b_adsp_pas.h>
+#include <qcom8gen3_adsp_pas.h>
 
 #include "power_pmu.h"
 
@@ -533,7 +533,7 @@ int power_pmu_init(void) {
     if (map_at(SPMI_CORE_VA, SPMI_CORE_PHY, SPMI_CORE_SIZE) != 0 ||
             map_at(SPMI_CFG_VA, SPMI_CFG_PHY, SPMI_CFG_SIZE) != 0 ||
             map_at(SPMI_OBS_VA, SPMI_OBS_PHY, SPMI_OBS_SIZE) != 0) {
-        slog("q8b powerd: SPMI window mapping failed\n");
+        slog("qcom8gen3 powerd: SPMI window mapping failed\n");
         VPRINTF("powerd: SPMI window mapping failed\n");
         return -1;
     }
@@ -542,7 +542,7 @@ int power_pmu_init(void) {
     _obs = (volatile uint8_t*)(uintptr_t)SPMI_OBS_VA;
     VPRINTF("powerd: reading APID map\n");
     if (enumerate() != 0) {
-        slog("q8b powerd: SPMI arbiter version check failed\n");
+        slog("qcom8gen3 powerd: SPMI arbiter version check failed\n");
         VPRINTF("powerd: SPMI arbiter version check failed\n");
         return -1;
     }
@@ -554,7 +554,7 @@ int power_pmu_init(void) {
     VPRINTF("powerd: map done, %u channels in %u slots\n",
             _entry_count, _map_slots);
     _mapped = true;
-    slog("q8b powerd: SPMI discovery chgr=%s batif=%s adc=%u "
+    slog("qcom8gen3 powerd: SPMI discovery chgr=%s batif=%s adc=%u "
             "charger_sid=%d sids=%03x\n",
             _chgr_apid >= 0 ? "found" : "none",
             _batif_apid >= 0 ? "found" : "none",
@@ -616,11 +616,11 @@ int power_pmu_sample(power_sample_t* out) {
     uint8_t bm_cap = 0;
     bool bm_charging = false, bm_present = false;
     int64_t ret = (int64_t)syscall3(SYS_PLATFORM_CTL,
-            Q8B_ADSP_BATTMGR_CAPACITY, 0, 0);
+            QCOM8GEN3_ADSP_BATTMGR_CAPACITY, 0, 0);
     if (ret >= 0) {
-        bm_cap = (uint8_t)(ret & Q8B_ADSP_BATT_CAP_MASK);
-        bm_charging = (ret & Q8B_ADSP_BATT_CHARGING) != 0;
-        bm_present = (ret & Q8B_ADSP_BATT_PRESENT) != 0;
+        bm_cap = (uint8_t)(ret & QCOM8GEN3_ADSP_BATT_CAP_MASK);
+        bm_charging = (ret & QCOM8GEN3_ADSP_BATT_CHARGING) != 0;
+        bm_present = (ret & QCOM8GEN3_ADSP_BATT_PRESENT) != 0;
         bm_ok = true;
     }
     if (!_mapped) {

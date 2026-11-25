@@ -31,10 +31,10 @@ uint64_t wcn_board_cpu_id(void) {
     return ((uint64_t)oem << 32) | serial;
 }
 
-/* The PCI subsystem identity is shared by Q8B and TW220, while board-2.bin
+/* The PCI subsystem identity is shared by QCOM8GEN3 and TW220, while board-2.bin
  * carries chip-specific variants.  An explicit /etc/wlan.board remains an
  * override, but the QMI identity is the normal selector: chip 2/board 255 is
- * the TW220 HW_GK3 profile, whereas Q8B reports chip 18 and keeps its own
+ * the TW220 HW_GK3 profile, whereas QCOM8GEN3 reports chip 18 and keeps its own
  * generic/board entry. */
 static int board_variant(char *out, unsigned size) {
     FILE *fp = fopen("/etc/wlan.board", "r");

@@ -1,4 +1,4 @@
-/* Q8B Bluetooth HCI transport: GENI UART (QUP0 SE2, serial@988000) to the
+/* QCOM8GEN3 Bluetooth HCI transport: GENI UART (QUP0 SE2, serial@988000) to the
  * WCN6855 combo chip.  Linux drives the same port with hci_uart_qca; the
  * BT function is NOT on USB on this machine (lsusb shows no QCA device).
  *
@@ -16,7 +16,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#ifdef Q8B_BT_TEST
+#ifdef QCOM8GEN3_BT_TEST
 #include "../tests/btuart_test_io.h"
 #else
 #include <unistd.h>

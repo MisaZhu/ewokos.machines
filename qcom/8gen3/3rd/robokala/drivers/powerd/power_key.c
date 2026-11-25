@@ -248,7 +248,7 @@ int power_key_init(void) {
     if (map_at(SPMI_CORE_VA, SPMI_CORE_PHY, SPMI_CORE_SIZE) != 0 ||
             map_at(SPMI_CFG_VA, SPMI_CFG_PHY, SPMI_CFG_SIZE) != 0 ||
             map_at(SPMI_OBS_VA, SPMI_OBS_PHY, SPMI_OBS_SIZE) != 0) {
-        slog("q8b powerd: SPMI window mapping failed\n");
+        slog("qcom8gen3 powerd: SPMI window mapping failed\n");
         return -1;
     }
     _core = (volatile uint8_t*)(uintptr_t)SPMI_CORE_VA;
@@ -257,14 +257,14 @@ int power_key_init(void) {
     _mapped = true;
     VPRINTF("powerd: reading APID map\n");
     if (enumerate() != 0) {
-        slog("q8b powerd: SPMI arbiter version check failed\n");
+        slog("qcom8gen3 powerd: SPMI arbiter version check failed\n");
         return -1;
     }
     if (_pon_apid >= 0)
-        slog("q8b powerd: power key pon apid=%d sid=%d subtype=%u\n",
+        slog("qcom8gen3 powerd: power key pon apid=%d sid=%d subtype=%u\n",
                 _pon_apid, _pon_sid, (unsigned)_pon_subtype);
     else
-        slog("q8b powerd: no usable PON power key found\n");
+        slog("qcom8gen3 powerd: no usable PON power key found\n");
     return _pon_apid >= 0 ? 0 : -1;
 }
 

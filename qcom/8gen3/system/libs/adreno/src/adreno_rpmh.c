@@ -11,14 +11,14 @@
  *
  * EwokOS has no genpd/RPMh stack, so without this vote the GFX power
  * domain (and the GPU NoC ports behind it) stays in whatever state the
- * bootloader left.  On the Q8B that shows up as gcc_gpu_memnoc_gfx_clk /
+ * bootloader left.  On the QCOM8GEN3 that shows up as gcc_gpu_memnoc_gfx_clk /
  * snoc_dvm / tcu reporting CBCR_CLK_OFF even after the branches are
  * enabled, and the GMU CM3 faults the moment its reset is released
  * (its first instruction fetch needs the icache in DRAM through the GMU
  * SMMU + NoC).
  *
  * This file is a small, self-contained copy of the user-space command-DB
- * reader and RPMh TCS writer that the Q8B SDCC2 driver already uses
+ * reader and RPMh TCS writer that the QCOM8GEN3 SDCC2 driver already uses
  * (system/libs/bsp/src/sdcc2.c), plus the rpmpd corner selection:
  *
  *   - cmd-db lives at 0x80860000 (DT cmd-db-region, whitelisted for user
@@ -36,8 +36,8 @@
  */
 #include <adreno/adreno_drv.h>
 #include <adreno/adreno_reg.h>
-#include <q8b_adreno.h>
-#include <q8b_rpmh_tcs.h>
+#include <qcom8gen3_adreno.h>
+#include <qcom8gen3_rpmh_tcs.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
@@ -62,7 +62,7 @@
 #define RSC_PHY             0x18220000ULL
 #define RSC_SIZE            0x00010000u
 
-#define RPMH_TCS_OFF        Q8B_RSC_TCS_OFFSET
+#define RPMH_TCS_OFF        QCOM8GEN3_RSC_TCS_OFFSET
 #define RPMH_IRQ_VA         (RSC_VA + RPMH_TCS_OFF)
 #define RPMH_TCS_STRIDE     672u
 #define RPMH_IRQ_ENABLE     0x00u
@@ -317,7 +317,7 @@ static int rpmh_write(uint32_t address, uint32_t data)
 	const uint32_t irq_bit = 1u << tcs;
 	uint32_t control;
 	int i;
-	const q8b_rpmh_io_t io = {0, rpmh_read32, rpmh_relax};
+	const qcom8gen3_rpmh_io_t io = {0, rpmh_read32, rpmh_relax};
 
 	if (rpmh_failed)
 		return -1;
@@ -358,7 +358,7 @@ static int rpmh_write(uint32_t address, uint32_t data)
 	put32(RSC_VA + RPMH_TCS_OFF + tcs * RPMH_TCS_STRIDE + rsc.control,
 	      RPMH_AMC_ENABLE | RPMH_AMC_TRIGGER);
 
-	if (q8b_rpmh_wait_irq(&io, rpmh_cmd(tcs, 0, rsc.cmd_status),
+	if (qcom8gen3_rpmh_wait_irq(&io, rpmh_cmd(tcs, 0, rsc.cmd_status),
 			irq_bit, 1000000, &rpmh_compl_without_irq) == 0) {
 		if (rpmh_finish(tcs) != 0)
 			goto fail;

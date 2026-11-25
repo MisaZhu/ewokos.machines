@@ -347,7 +347,7 @@ static int submit_next(void) {
      * packed reply in separately owned DMA until next2 consumes it. */
     if (a[1].size > LISTENER_INLINE_MAX) {
         if (npu_buf_alloc(&listener.output_dma, a[1].size) != 0)
-            return Q8B_NPU_PAS_FAILED;
+            return QCOM8GEN3_NPU_PAS_FAILED;
         memcpy(listener.output_dma.va, listener.output, a[1].size);
         npu_dcache_flush(listener.output_dma.va, a[1].size);
         a[1].data = listener.output_dma.va;
@@ -364,7 +364,7 @@ static void pump(void) {
     listener.pumping = 1;
     int32_t rv = 0;
     int rc = frpc_request_poll(&listener.request, &rv);
-    if (rc == Q8B_NPU_PAS_BUSY) { listener.pumping = 0; return; }
+    if (rc == QCOM8GEN3_NPU_PAS_BUSY) { listener.pumping = 0; return; }
     if (rc || rv) {
         qnn_log(QNN_LOG_LVL_WARN, "listener: next2 failed rc=%d rv=%08x\n", rc, (uint32_t)rv);
         listener.failed = 1; listener.pumping = 0; return;
@@ -397,14 +397,14 @@ static void pump(void) {
 }
 
 int npu_listener_start(uint32_t session) {
-    if (listener.active || listener.request) return Q8B_NPU_PAS_BUSY;
+    if (listener.active || listener.request) return QCOM8GEN3_NPU_PAS_BUSY;
     int32_t rv = 0;
     int rc = frpc_invoke(session, LISTENER_HANDLE, frpc_scalar(3, 0, 0), NULL, 0, NULL, 0, &rv);
     if (rc) return rc;
     memset(&listener, 0, sizeof(listener));
     listener.session = session; listener.result = -1;
     listener.input = malloc(LISTENER_INPUT_MAX);
-    if (!listener.input) return Q8B_NPU_PAS_FAILED;
+    if (!listener.input) return QCOM8GEN3_NPU_PAS_FAILED;
     rc = submit_next();
     if (rc) { free(listener.input); listener.input = NULL; return rc; }
     listener.active = 1;

@@ -5,7 +5,7 @@
  * skel ABI, NOT the Qualcomm QAIRT ABI.  They require a matching DSP skel.
  * There is currently no SDK-generated adapter for libQnnHtpV68Skel.so.
  * Default builds decline before opening any skel; a development build may
- * explicitly supply Q8B_HTP_PRIVATE_SKEL_URI for its matching private skel.
+ * explicitly supply QCOM8GEN3_HTP_PRIVATE_SKEL_URI for its matching private skel.
  * Installing the official library alone must never enable this protocol.
  *
  * I/O tensors use a registered QnnMem DMA buffer directly when the tensor
@@ -47,7 +47,7 @@ const qnn_htp_infra_t *qnn_htp_get_infra(void)
 
 int qnn_htp_init(qnn_backend_obj_t *b)
 {
-#ifdef Q8B_HTP_PRIVATE_SKEL_URI
+#ifdef QCOM8GEN3_HTP_PRIVATE_SKEL_URI
 	uint32_t handle = 0;
 	int rc;
 #endif
@@ -55,17 +55,17 @@ int qnn_htp_init(qnn_backend_obj_t *b)
 	if (!b || !b->npu_available || !b->frpc_session)
 		return -1;
 	(void)qnn_htp_get_infra();
-#ifndef Q8B_HTP_PRIVATE_SKEL_URI
+#ifndef QCOM8GEN3_HTP_PRIVATE_SKEL_URI
 	qnn_log(QNN_LOG_LVL_WARN,
 	        "htp: QAIRT V68 ABI adapter unavailable; private graph "
 	        "protocol disabled\n");
 	return QNN_HTP_INIT_ABI_UNAVAILABLE;
 #else
-	rc = frpc_open(b->frpc_session, Q8B_HTP_PRIVATE_SKEL_URI, &handle);
+	rc = frpc_open(b->frpc_session, QCOM8GEN3_HTP_PRIVATE_SKEL_URI, &handle);
 	if (rc != 0 || !handle) {
 		qnn_log(QNN_LOG_LVL_WARN,
 		        "htp: private skel open '%s' failed (rc=%d)\n",
-		        Q8B_HTP_PRIVATE_SKEL_URI, rc);
+		        QCOM8GEN3_HTP_PRIVATE_SKEL_URI, rc);
 		return -1;
 	}
 	g_skel_handle = handle;
@@ -82,7 +82,7 @@ int qnn_htp_deinit(qnn_backend_obj_t *b)
 	if (!g_skel_handle) return 0;
 	/* A successful CLOSE/STOP retired the remote object already. */
 	if (g_skel_epoch == frpc_mapping_epoch()) {
-		if (!b || !b->frpc_session) return Q8B_NPU_PAS_INVALID;
+		if (!b || !b->frpc_session) return QCOM8GEN3_NPU_PAS_INVALID;
 		rc = frpc_close(b->frpc_session, g_skel_handle);
 		if (rc && g_skel_epoch == frpc_mapping_epoch()) return rc;
 	}

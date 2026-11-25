@@ -1,5 +1,5 @@
 /*
- * BSP NVMe glue for the Q8B (SC8280XP) M.2 slots.
+ * BSP NVMe glue for the QCOM8GEN3 (SC8280XP) M.2 slots.
  *
  * Forwards the shared <bsp/bsp_nvme.h> block API onto the machine's
  * user-space NVMe driver (<bsp/nvme.h>).  The driver polls its queues,
@@ -30,10 +30,10 @@ int bsp_nvme_init(void) {
 	 * config-space reads raise an external abort (same order nvprobe
 	 * uses on real hardware). */
 	pthread_mutex_lock(&_nvme_lock);
-	found = q8b_pcie_scan(NVME_SLOT_PCIE2A, &dev, 1);
+	found = qcom8gen3_pcie_scan(NVME_SLOT_PCIE2A, &dev, 1);
 	slog("bsp_nvme: pcie2a scan=%d\n", found);
 	if (found <= 0)
-		found = q8b_pcie_scan(NVME_SLOT_PCIE3B, &dev, 1);
+		found = qcom8gen3_pcie_scan(NVME_SLOT_PCIE3B, &dev, 1);
 	if (found > 0)
 		slog("bsp_nvme: selected slot=%d %02x:%02x.%x %04x:%04x "
 				"bar=%llx phys=%llx cmd=%04x\n", dev.slot, dev.bus,

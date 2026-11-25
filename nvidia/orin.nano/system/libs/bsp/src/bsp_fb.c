@@ -5,7 +5,7 @@
 #include <ewoksys/sys.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
-#include <q8b_platform.h>
+#include <qcom8gen3_platform.h>
 
 /*
  * Orin Nano framebuffer: the UEFI firmware (GOP) has already programmed the
@@ -32,8 +32,8 @@ int32_t bsp_fb_init(uint32_t w, uint32_t h, uint32_t dep) {
         return -1;
     }
 
-    const q8b_platform_data_t* pd =
-        (const q8b_platform_data_t*)sysinfo.platform_data;
+    const qcom8gen3_platform_data_t* pd =
+        (const qcom8gen3_platform_data_t*)sysinfo.platform_data;
 
     if (pd->fb.phy_base == 0 || pd->fb.width == 0 || pd->fb.height == 0 ||
             pd->fb.pitch == 0) {

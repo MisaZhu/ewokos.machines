@@ -2,7 +2,7 @@
  * adreno_texlayout.c - Adreno implementation of pglc_tex_layout_2d /
  * pglc_tex_store_2d / pglc_tex_sampler_reads_raster.
  *
- * The q8b 3D path is compute-only, so there is no tiling (no UBWC, no a6xx
+ * The qcom8gen3 3D path is compute-only, so there is no tiling (no UBWC, no a6xx
  * tile modes) to apply: level 0 is stored as linear raster rows with
  * stride == w * cpp and tiling is always PGLC_TEX_TILING_RASTER.  Two consumers
  * read that one linear image.  The geometry raster kernels (geom_raster_cs.h

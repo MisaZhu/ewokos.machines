@@ -1,4 +1,4 @@
-/* Q8B UEFI application layout.  Sections are page aligned because
+/* QCOM8GEN3 UEFI application layout.  Sections are page aligned because
  * mkpefi.py requires a page-aligned RVA for each PE section. */
 OUTPUT_FORMAT(elf64-littleaarch64)
 ENTRY(efi_main)

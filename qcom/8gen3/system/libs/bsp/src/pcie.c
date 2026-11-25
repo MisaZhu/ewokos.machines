@@ -1,20 +1,20 @@
 /*
- * Q8B user-space PCIe host bus.
+ * QCOM8GEN3 user-space PCIe host bus.
  *
  * The sequence follows the SC8280XP entries in the mainline Qualcomm DWC
- * host driver and the q8b board DTS.  Keeping it here, beside the endpoint
+ * host driver and the qcom8gen3 board DTS.  Keeping it here, beside the endpoint
  * drivers, matters on EwokOS: there is no in-kernel PCI core or regulator /
  * clock framework to perform the host-controller transition for us.
  *
  * PCIe2A (the TW220 NVMe slot), PCIe3A (the QPS615 Ethernet switch) and
  * PCIe4 (the E-key WLAN module) are started by this layer.  PCIe2A is kept
- * firmware-managed on Q8B, where the boot firmware already owns the M.2
+ * firmware-managed on QCOM8GEN3, where the boot firmware already owns the M.2
  * link; TW220 has the Linux-style host resources but requires us to perform
  * the host transition explicitly.
  */
 #include <bsp/pcie.h>
 #include <bsp/pcie-qmp-v5.h>
-#include <q8b_rpmh_tcs.h>
+#include <qcom8gen3_rpmh_tcs.h>
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -31,7 +31,7 @@
 
 #define BIT(n)                  (1u << (n))
 #define ARRAY_SIZE(a)           (sizeof(a) / sizeof((a)[0]))
-#define Q8B_PAGE_SIZE           0x4000u
+#define QCOM8GEN3_PAGE_SIZE           0x4000u
 
 /* Step-by-step power sequencing log: off by default so the GOP boot
  * console stays focused on results.  Flip to 1 while debugging a specific
@@ -58,7 +58,7 @@ static int pcie_seq_verbose;
 #define PCIE3A_ECAM             0x480000000ULL
 #define GCC_PHY                 0x00100000ULL
 
-/* Q8B's E-key WLAN power is described by the board DTS as a fixed 3.3 V
+/* QCOM8GEN3's E-key WLAN power is described by the board DTS as a fixed 3.3 V
  * PMR735a GPIO plus RPMh votes for the 1.8 V and PHY rails.  The PCIe host
  * owns those votes as part of link bring-up; endpoint drivers must not race
  * the shared TCS while they are probing. */
@@ -127,7 +127,7 @@ typedef struct {
 	uint64_t mem64_size;
 } pcie_window_t;
 
-static int controller_window(enum q8b_pcie_controller controller,
+static int controller_window(enum qcom8gen3_pcie_controller controller,
 		pcie_window_t *out);
 
 #define PCI_VENDOR_ID           0x00u
@@ -269,7 +269,7 @@ static int controller_window(enum q8b_pcie_controller controller,
 #define TC9563_POWER_CONTROL_OVREN   0x82b2c8u
 
 /* DesignWare Gen3 equalization registers.  Qualcomm's host driver programs
- * these before enabling LTSSM.  The Q8B WLAN port is capped at Gen2, so this
+ * these before enabling LTSSM.  The QCOM8GEN3 WLAN port is capped at Gen2, so this
  * is normally a no-op for PCIe4, but keeping the sequence here makes the
  * owner safe when a board configuration raises the cap to Gen3. */
 #define GEN3_RELATED_OFF                    0x890u
@@ -307,7 +307,7 @@ static int service_pid_wait(void) {
 	uint64_t deadline = kernel_tic_ms(0) + 15000u;
 	int pid;
 	for (;;) {
-		pid = dev_get_pid(Q8B_PCIE_SERVICE_NODE);
+		pid = dev_get_pid(QCOM8GEN3_PCIE_SERVICE_NODE);
 		if (pid >= 0 || kernel_tic_ms(0) >= deadline)
 			return pid;
 		usleep(1000);
@@ -342,14 +342,14 @@ static inline uintptr_t gpio_reg(unsigned global_gpio) {
 
 static int map_window(uintptr_t va, uint64_t pa, uint32_t size) {
 	ewokos_addr_t ret;
-	if (!size || (va & (Q8B_PAGE_SIZE - 1u)) ||
-			(pa & (Q8B_PAGE_SIZE - 1u)) ||
-			(size & (Q8B_PAGE_SIZE - 1u)))
+	if (!size || (va & (QCOM8GEN3_PAGE_SIZE - 1u)) ||
+			(pa & (QCOM8GEN3_PAGE_SIZE - 1u)) ||
+			(size & (QCOM8GEN3_PAGE_SIZE - 1u)))
 		return -1;
 	ret = syscall3(SYS_MEM_MAP, (ewokos_addr_t)va, (ewokos_addr_t)pa,
 			(ewokos_addr_t)size);
 	if (ret != (ewokos_addr_t)va) {
-		slog("q8b pcie: map failed va=0x%llx pa=0x%llx size=0x%x ret=0x%llx\n",
+		slog("qcom8gen3 pcie: map failed va=0x%llx pa=0x%llx size=0x%x ret=0x%llx\n",
 			(unsigned long long)va, (unsigned long long)pa, size,
 			(unsigned long long)ret);
 		return -1;
@@ -360,43 +360,43 @@ static int map_window(uintptr_t va, uint64_t pa, uint32_t size) {
 static int map_controller_registers(void) {
 	if (_maps_ready)
 		return 0;
-	PLOG("q8b pcie: mapping controller windows\n");
+	PLOG("qcom8gen3 pcie: mapping controller windows\n");
 	/* Map every block before the first write.  This prevents a partially
 	 * powered controller when a stale kernel lacks one of the windows. */
 	if (map_window(GCC_VA, GCC_PHY, 0x100000)) {
-		slog("q8b pcie: GCC map failed\n");
+		slog("qcom8gen3 pcie: GCC map failed\n");
 		return -1;
 	}
 	if (map_window(PARF_VA, PCIE4_PARF, 0x4000)) {
-		slog("q8b pcie: PARF map failed\n");
+		slog("qcom8gen3 pcie: PARF map failed\n");
 		return -1;
 	}
 	if (map_window(PHY_VA - 0x6000u, PCIE4_PHY - 0x6000u, 0xc000u)) {
-		slog("q8b pcie: PHY map failed\n");
+		slog("qcom8gen3 pcie: PHY map failed\n");
 		return -1;
 	}
 	/* TLMM GPIO<n> control/data registers are spaced 0x1000 apart.  The
 	 * PCIe4 pins are 133..141 and PCIe3A uses 148..151; mapping only the first
 	 * 16 KiB would make those otherwise valid accesses external aborts. */
 	if (map_window(GPIO_VA, PCIE4_GPIO, 0x100000)) {
-		slog("q8b pcie: GPIO map failed\n");
+		slog("qcom8gen3 pcie: GPIO map failed\n");
 		return -1;
 	}
 	/* GPIO108 (QPS615 reset) and GPIO81/82 (I2C21) are below the
 	 * GPIO128 window above.  Map the complete TLMM aperture once so these
 	 * accesses remain within an explicitly owned, page-aligned mapping. */
 	if (map_window(TLMM_VA, 0x0f100000ULL, 0x00300000u)) {
-		slog("q8b pcie: TLMM map failed\n");
+		slog("qcom8gen3 pcie: TLMM map failed\n");
 		return -1;
 	}
 	if (map_window(I2C21_VA, I2C21_BASE, I2C21_SIZE)) {
-		slog("q8b pcie: I2C21 map failed\n");
+		slog("qcom8gen3 pcie: I2C21 map failed\n");
 		return -1;
 	}
 	/* DWC outbound ATU starts at DBI + 0x1000; include it in the mapping or
 	 * the first ATU write raises an external abort. */
 	if (map_window(DBI_VA, PCIE4_DBI, 0x4000)) {
-		slog("q8b pcie: DBI map failed\n");
+		slog("qcom8gen3 pcie: DBI map failed\n");
 		return -1;
 	}
 	/* TW220 PCIe2A is a Linux-style non-ECAM DesignWare host.  Its DBI,
@@ -405,17 +405,17 @@ static int map_controller_registers(void) {
 	if (map_window(PARF2A_VA, PCIE2A_PARF, 0x4000) ||
 			map_window(DBI2A_VA, PCIE2A_DBI, 0x4000) ||
 			map_window(PHY2A_VA, PCIE2A_PHY, 0x4000)) {
-		slog("q8b pcie: PCIe2A register map failed\n");
+		slog("qcom8gen3 pcie: PCIe2A register map failed\n");
 		return -1;
 	}
 	if (map_window(PARF3A_VA, PCIE3A_PARF, 0x4000) ||
 			map_window(DBI3A_VA, PCIE3A_DBI, 0x4000) ||
 			map_window(PHY3A_VA, PCIE3A_PHY, 0x4000)) {
-		slog("q8b pcie: PCIe3A register map failed\n");
+		slog("qcom8gen3 pcie: PCIe3A register map failed\n");
 		return -1;
 	}
 	_maps_ready = true;
-	PLOG("q8b pcie: controller windows mapped\n");
+	PLOG("qcom8gen3 pcie: controller windows mapped\n");
 	return 0;
 }
 
@@ -581,7 +581,7 @@ static void i2c21_clock_enable(void) {
 static int i2c21_init(void) {
 	uint32_t v, hw;
 	i2c21_pins_init();
-	PLOG("q8b pcie: QPS615 I2C pins ctl81=%08x io81=%08x ctl82=%08x io82=%08x\n",
+	PLOG("qcom8gen3 pcie: QPS615 I2C pins ctl81=%08x io81=%08x ctl82=%08x io82=%08x\n",
 		rd(TLMM_VA + 81u * 0x1000u), rd(TLMM_VA + 81u * 0x1000u + 4u),
 		rd(TLMM_VA + 82u * 0x1000u), rd(TLMM_VA + 82u * 0x1000u + 4u));
 	i2c21_clock_enable();
@@ -628,7 +628,7 @@ static int i2c21_init(void) {
 		GENI_M_GP_PROTO | GENI_M_GP_ARB | GENI_M_RX_WM | GENI_M_RX_LAST |
 		GENI_M_TX_WM | GENI_M_RX_FIFO_RD_ERR | GENI_M_RX_FIFO_WR_ERR |
 		GENI_M_TX_FIFO_RD_ERR | GENI_M_TX_FIFO_WR_ERR);
-	PLOG("q8b pcie: QPS615 I2C21 ready depth=%u hw=%08x fw=%08x if=%08x\n",
+	PLOG("qcom8gen3 pcie: QPS615 I2C21 ready depth=%u hw=%08x fw=%08x if=%08x\n",
 		_i2c21_fifo_depth, hw, rd(I2C21_VA + 0x68u), rd(I2C21_VA + 0x64u));
 	return 0;
 }
@@ -681,14 +681,14 @@ static int i2c21_xfer(unsigned addr, bool read, bool stretch,
 	 * poller cannot reliably beat that edge. */
 	if (tx_len)
 		i2c21_fifo_push(tx, tx_len, &sent);
-	PLOG("q8b pcie: QPS615 I2C launch op=%u param=%08x txlen=%u pre_tx=%08x sent=%u wm=%08x\n",
+	PLOG("qcom8gen3 pcie: QPS615 I2C launch op=%u param=%08x txlen=%u pre_tx=%08x sent=%u wm=%08x\n",
 		op, param, (unsigned)tx_len, rd(I2C21_VA + GENI_TX_FIFO_STATUS),
 		(unsigned)sent, rd(I2C21_VA + GENI_TX_WATERMARK));
 	wr(I2C21_VA + GENI_M_CMD0, (op << 27) | param);
 	/* Arm the request after M_CMD0, matching the kernel FIFO path while the
 	 * preloaded words cover the first sequencer cycle. */
 	wr(I2C21_VA + GENI_TX_WATERMARK, tx_len ? 1u : 0u);
-	PLOG("q8b pcie: QPS615 I2C command status=%08x irq=%08x tx=%08x cmd=%08x\n",
+	PLOG("qcom8gen3 pcie: QPS615 I2C command status=%08x irq=%08x tx=%08x cmd=%08x\n",
 		rd(I2C21_VA + GENI_STATUS), rd(I2C21_VA + GENI_M_IRQ_STATUS),
 		rd(I2C21_VA + GENI_TX_FIFO_STATUS), rd(I2C21_VA + GENI_M_CMD0));
 	for (unsigned i = 0; i < 200000u; i++) {
@@ -701,7 +701,7 @@ static int i2c21_xfer(unsigned addr, bool read, bool stretch,
 				GENI_M_TX_FIFO_RD_ERR | GENI_M_TX_FIFO_WR_ERR)) {
 			wr(I2C21_VA + GENI_M_CMD_CTRL, BIT(1));
 			wr(I2C21_VA + GENI_M_IRQ_CLEAR, 0xffffffffu);
-			slog("q8b pcie: QPS615 I2C %s failed irq=%08x status=%08x tx=%08x rx=%08x cmd=%08x\n",
+			slog("qcom8gen3 pcie: QPS615 I2C %s failed irq=%08x status=%08x tx=%08x rx=%08x cmd=%08x\n",
 				read ? "read" : "write", irq, rd(I2C21_VA + GENI_STATUS),
 				rd(I2C21_VA + GENI_TX_FIFO_STATUS),
 				rd(I2C21_VA + GENI_RX_FIFO_STATUS), rd(I2C21_VA + GENI_M_CMD0));
@@ -728,7 +728,7 @@ static int i2c21_xfer(unsigned addr, bool read, bool stretch,
 	i2c21_fifo_pop(rx, rx_len, &got);
 	wr(I2C21_VA + GENI_M_IRQ_CLEAR, 0xffffffffu);
 	if (!done)
-		slog("q8b pcie: QPS615 I2C %s timeout irq=%08x status=%08x tx=%08x sent=%u got=%u\n",
+		slog("qcom8gen3 pcie: QPS615 I2C %s timeout irq=%08x status=%08x tx=%08x sent=%u got=%u\n",
 			read ? "read" : "write", rd(I2C21_VA + GENI_M_IRQ_STATUS),
 			rd(I2C21_VA + GENI_STATUS), rd(I2C21_VA + GENI_TX_FIFO_STATUS),
 			(unsigned)sent, (unsigned)got);
@@ -749,7 +749,7 @@ static int qps615_i2c_write(uint32_t reg, uint32_t val) {
 	return 0;
 fail:
 	qps615_i2c_stop();
-	slog("q8b pcie: QPS615 GPIO I2C write NACK reg=%06x val=%08x\n", reg, val);
+	slog("qcom8gen3 pcie: QPS615 GPIO I2C write NACK reg=%06x val=%08x\n", reg, val);
 	return -1;
 }
 
@@ -809,7 +809,7 @@ static int qps615_power_configure(void) {
 	if (qps615_i2c_write(TC9563_RESET_GPIO, 0xcu))
 		return -1;
 	qps615_reset_gpio(false);
-	PLOG("q8b pcie: QPS615 power/reset configuration complete\n");
+	PLOG("qcom8gen3 pcie: QPS615 power/reset configuration complete\n");
 	return 0;
 }
 
@@ -890,7 +890,7 @@ static int rpmh_init_layout(void) {
 		rpmh_layout.msg = 0x34;
 		return 0;
 	}
-	slog("q8b pcie: unsupported RPMh RSC id=%08x\n", id);
+	slog("qcom8gen3 pcie: unsupported RPMh RSC id=%08x\n", id);
 	return -1;
 }
 
@@ -912,11 +912,11 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 	uintptr_t tcs = rpmh_tcs_reg(0);
 	uintptr_t msg = tcs + rpmh_layout.msg;
 	uintptr_t irq_enable = (uintptr_t)RSC_VA + RSC_TCS_OFFSET +
-			Q8B_RSC_IRQ_ENABLE;
+			QCOM8GEN3_RSC_IRQ_ENABLE;
 	uintptr_t irq_status = (uintptr_t)RSC_VA + RSC_TCS_OFFSET +
-			Q8B_RSC_IRQ_STATUS;
+			QCOM8GEN3_RSC_IRQ_STATUS;
 	uintptr_t irq_clear = (uintptr_t)RSC_VA + RSC_TCS_OFFSET +
-			Q8B_RSC_IRQ_CLEAR;
+			QCOM8GEN3_RSC_IRQ_CLEAR;
 	uint32_t saved_msg[3] = {rd(msg), rd(msg + 4), rd(msg + 8)};
 	uint32_t saved_irq = rd(irq_enable);
 	uint32_t control = rd(tcs + rpmh_layout.control);
@@ -928,12 +928,12 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 	/* TCS0 is shared by the SD/NPU paths. Never overwrite a transaction that
 	 * another user-space service has in flight. */
 	if (control & (BIT(16) | BIT(24))) {
-		slog("q8b pcie: RPMh vote busy control=%08x addr=%08x\n",
+		slog("qcom8gen3 pcie: RPMh vote busy control=%08x addr=%08x\n",
 				control, address);
 		return -1;
 	}
 	if (!(status & 1u)) {
-		slog("q8b pcie: RPMh vote TCS not idle status=%08x addr=%08x\n",
+		slog("qcom8gen3 pcie: RPMh vote TCS not idle status=%08x addr=%08x\n",
 				status, address);
 		return -1;
 	}
@@ -945,7 +945,7 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 		for (unsigned i = 0; i < 1000 && (rd(irq_status) & 1u); i++)
 			usleep(1000);
 		if (rd(irq_status) & 1u) {
-			slog("q8b pcie: RPMh vote stale IRQ cannot clear status=%08x addr=%08x\n",
+			slog("qcom8gen3 pcie: RPMh vote stale IRQ cannot clear status=%08x addr=%08x\n",
 					rd(irq_status), address);
 			return -1;
 		}
@@ -955,10 +955,10 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 	 * control, TCS status and RSC IRQ checks above prove that no transaction is
 	 * active; an active command is rejected by the control check. */
 	if (cmd_enable) {
-		slog("q8b pcie: RPMh vote clearing idle command pending=%08x addr=%08x\n",
+		slog("qcom8gen3 pcie: RPMh vote clearing idle command pending=%08x addr=%08x\n",
 				cmd_enable, address);
 		if (rpmh_sync_reg(tcs + rpmh_layout.cmd_enable, 0)) {
-			slog("q8b pcie: RPMh vote stale command cannot clear addr=%08x\n",
+			slog("qcom8gen3 pcie: RPMh vote stale command cannot clear addr=%08x\n",
 					address);
 			return -1;
 		}
@@ -966,7 +966,7 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 	/* Preserve unrelated AMC control bits owned by the resource controller;
 	 * only normalize TCS0's enable/trigger bits before submitting our command. */
 	if (rpmh_sync_reg(tcs + rpmh_layout.control, idle_control)) {
-		slog("q8b pcie: RPMh vote cannot idle control=%08x addr=%08x\n",
+		slog("qcom8gen3 pcie: RPMh vote cannot idle control=%08x addr=%08x\n",
 				control, address);
 		return -1;
 	}
@@ -978,12 +978,12 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 	wr(msg + 4, address);
 	wr(msg + 8, value);
 	if (rpmh_sync_reg(tcs + rpmh_layout.cmd_enable, 1)) {
-		slog("q8b pcie: RPMh vote command enable sync failed addr=%08x\n",
+		slog("qcom8gen3 pcie: RPMh vote command enable sync failed addr=%08x\n",
 				address);
 		return -1;
 	}
 	if (rpmh_sync_reg(tcs + rpmh_layout.control, idle_control | BIT(16))) {
-		slog("q8b pcie: RPMh vote control sync failed addr=%08x\n",
+		slog("qcom8gen3 pcie: RPMh vote control sync failed addr=%08x\n",
 				address);
 		return -1;
 	}
@@ -991,7 +991,7 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 	for (unsigned i = 0; i < 2000 && !(rd(irq_status) & 1u); i++)
 		usleep(1000);
 	if (!(rd(irq_status) & 1u)) {
-		slog("q8b pcie: RPMh vote IRQ timeout addr=%08x value=%u "
+		slog("qcom8gen3 pcie: RPMh vote IRQ timeout addr=%08x value=%u "
 				"irq_status=%08x irq_enable=%08x cmd_status=%08x\n",
 				address, value, rd(irq_status), rd(irq_enable), rd(msg + 12));
 		/* Do not clear or rewrite a timed-out TCS.  The command may still be
@@ -1014,7 +1014,7 @@ static int rpmh_write(uint32_t address, uint32_t value) {
 static int rpmh_supply(const char *name, unsigned millivolts) {
 	uint32_t address = cmd_db_resource(name);
 	if (!address || (address & 15u) || (address >> 16) != 4u) {
-		slog("q8b pcie: RPMh resource %s unavailable (%08x)\n", name,
+		slog("qcom8gen3 pcie: RPMh resource %s unavailable (%08x)\n", name,
 				address);
 		return -1;
 	}
@@ -1022,7 +1022,7 @@ static int rpmh_supply(const char *name, unsigned millivolts) {
 	if (rpmh_write(address, millivolts) || rpmh_write(address + 8, 7) ||
 			rpmh_write(address + 4, 1))
 		return -1;
-	PLOG("q8b pcie: RPMh rail %s=%umV enabled\n", name, millivolts);
+	PLOG("qcom8gen3 pcie: RPMh rail %s=%umV enabled\n", name, millivolts);
 	return 0;
 }
 
@@ -1094,7 +1094,7 @@ static int ekey_3v3_set(bool on) {
 	if (on && spmi_byte((unsigned)apid, 0x46, enable | 0x80))
 		return -1;
 	usleep(on ? 3000 : 1000);
-	PLOG("q8b pcie: E-key 3V3 %s PMR735a APID=%d\n",
+	PLOG("qcom8gen3 pcie: E-key 3V3 %s PMR735a APID=%d\n",
 		on ? "enabled" : "disabled", apid);
 	return 0;
 }
@@ -1109,21 +1109,21 @@ static int prepare_ekey_power(void) {
 	 * reset while these operations run, so a failure must stop before any
 	 * PARF/PHY/DBI access.  Continuing with a presumed firmware state can
 	 * leave the endpoint partially powered and make the later ECAM read abort. */
-	slog("q8b pcie: PCIe4 Wi-Fi power preflight begin\n");
+	slog("qcom8gen3 pcie: PCIe4 Wi-Fi power preflight begin\n");
 	/* PERST# is already asserted by the caller. Force both active-low
 	 * W_DISABLE pins low and remove the E-key 3V3 rail before bringing the
 	 * endpoint back. This is required after a warm reset: PERST# alone does
 	 * not reset the WCN6855's internal PCIe state, and a stale endpoint can
 	 * remain in Detect even though the PHY reports signal. */
 	if (radio_disable() || ekey_3v3_set(false)) {
-		slog("q8b pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 off\n");
+		slog("qcom8gen3 pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 off\n");
 		return -1;
 	}
 	/* Hold the module fully unpowered long enough to cross its POR/off
 	 * threshold before restoring the connector rail. */
 	usleep(100000);
 	if (ekey_3v3_set(true)) {
-		slog("q8b pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 on\n");
+		slog("qcom8gen3 pcie: PCIe4 Wi-Fi power preflight failed: E-key 3V3 on\n");
 		return -1;
 	}
 	/* The fixed regulator has a 3 ms startup delay in the board DTS. Keep the
@@ -1134,49 +1134,49 @@ static int prepare_ekey_power(void) {
 	power_maps = map_power_registers();
 	layout = power_maps ? -1 : rpmh_init_layout();
 	if (layout) {
-		slog("q8b pcie: PCIe4 Wi-Fi power preflight failed: RPMh layout\n");
+		slog("qcom8gen3 pcie: PCIe4 Wi-Fi power preflight failed: RPMh layout\n");
 		return -1;
 	}
 	/* Parent rails must be voted before their PHY LDO children. */
 	if (rpmh_supply("smpb10", 1800) || rpmh_supply("smpb11", 1272) ||
 			rpmh_supply("smpb12", 984) || rpmh_supply("ldod4", 1200) ||
 			rpmh_supply("ldod6", 880)) {
-		slog("q8b pcie: PCIe4 Wi-Fi power preflight failed: PHY rails\n");
+		slog("qcom8gen3 pcie: PCIe4 Wi-Fi power preflight failed: PHY rails\n");
 		return -1;
 	}
-	PLOG("q8b pcie: PHY rails ready\n");
+	PLOG("qcom8gen3 pcie: PHY rails ready\n");
 	return 0;
 }
 
 /* GCC is in the always-on low MMIO block.  It is safe to inspect these
  * status bits while a PCIe controller itself is powered down; touching its
  * PARF/DBI/ECAM window in that state can raise an external abort. */
-static int controller_ecam_ready(enum q8b_pcie_controller controller) {
+static int controller_ecam_ready(enum qcom8gen3_pcie_controller controller) {
 	uintptr_t gdsc, cfg_halt, aux_halt, slv_halt, clkref_halt;
 
 	switch (controller) {
-	case Q8B_PCIE2A:
+	case QCOM8GEN3_PCIE2A:
 		gdsc = GCC_VA + 0x9d004;
 		cfg_halt = GCC_VA + 0x9d024;
 		aux_halt = GCC_VA + 0x9d028;
 		slv_halt = GCC_VA + 0x9d014;
 		clkref_halt = GCC_VA + 0x8c034;
 		break;
-	case Q8B_PCIE3A:
+	case QCOM8GEN3_PCIE3A:
 		gdsc = GCC_VA + 0xa0004;
 		cfg_halt = GCC_VA + 0xa0024;
 		aux_halt = GCC_VA + 0xa0028;
 		slv_halt = GCC_VA + 0xa0014;
 		clkref_halt = GCC_VA + 0x8c038;
 		break;
-	case Q8B_PCIE3B:
+	case QCOM8GEN3_PCIE3B:
 		gdsc = GCC_VA + 0xa2004;
 		cfg_halt = GCC_VA + 0xa2024;
 		aux_halt = GCC_VA + 0xa2028;
 		slv_halt = GCC_VA + 0xa2014;
 		clkref_halt = GCC_VA + 0x8c038;
 		break;
-	case Q8B_PCIE4:
+	case QCOM8GEN3_PCIE4:
 		return 1;
 	default:
 		return 0;
@@ -1190,7 +1190,7 @@ static int controller_ecam_ready(enum q8b_pcie_controller controller) {
 			!(aux_state & BIT(31)) && !(slv_state & BIT(31)) &&
 			!(clkref_state & BIT(31));
 	if (!ready)
-		slog("q8b pcie: controller %u gated gdsc=%08x cfg=%08x aux=%08x "
+		slog("qcom8gen3 pcie: controller %u gated gdsc=%08x cfg=%08x aux=%08x "
 				"slv=%08x clkref=%08x\n", (unsigned)controller,
 				gdsc_state, cfg_state, aux_state, slv_state, clkref_state);
 	return ready;
@@ -1216,7 +1216,7 @@ static int rcg(unsigned offset, uint32_t config) {
 }
 
 static void perst(bool deassert) {
-	/* GPIO141 is pcie4 PERST# in sc8280xp-radxa-dragon-q8b.dts. */
+	/* GPIO141 is pcie4 PERST# in sc8280xp-radxa-dragon-qcom8gen3.dts. */
 	uintptr_t gpio = gpio_reg(141);
 	update(gpio + 4, BIT(1), deassert ? BIT(1) : 0);
 	/* GPIO mode, no pull, 2 mA drive, output enabled. */
@@ -1267,7 +1267,7 @@ static void configure_link_pins(void) {
 
 static unsigned radio_bt_power_ready(void) {
 	uintptr_t gpio = gpio_reg(132);
-	/* GPIO132 is the BT module's active-high power-complete input on Q8B,
+	/* GPIO132 is the BT module's active-high power-complete input on QCOM8GEN3,
 	 * TW220 and Gaokun.  Configure GPIO function 0 with a pull-down and keep
 	 * output-enable clear.  In particular, do not touch the output latch: this
 	 * line is driven by the BT module and is never an RF switch control. */
@@ -1305,7 +1305,7 @@ static int radio_enable(void) {
 		if (!(rd(gpio + 4) & BIT(1)))
 			return -1;
 	}
-	PLOG("q8b pcie: radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
+	PLOG("qcom8gen3 pcie: radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
 		rd(gpio_reg(133) + 4), rd(gpio_reg(134) + 4),
 		radio_bt_power_ready(), rd(gpio_reg(132) + 4));
 	return 0;
@@ -1315,7 +1315,7 @@ static int configure_outbound_atu_at(uintptr_t dbi, unsigned index,
 		uint64_t cpu, uint64_t pci, uint64_t size, uint32_t type) {
 	uintptr_t atu = dbi + DBI_ATU_BASE + index * 0x200u;
 	uint64_t limit = cpu + size - 1;
-	/* Q8B uses the DWC unrolled iATU window at the separate ATU resource
+	/* QCOM8GEN3 uses the DWC unrolled iATU window at the separate ATU resource
 	 * (DBI + 0x1000).  Keep these offsets identical to the mainline DWC
 	 * definitions; 0x1c is reserved and must not be touched. */
 	wr(atu + 0x08, (uint32_t)cpu);
@@ -1470,15 +1470,15 @@ static int pcie4_clear_flush(void) {
 	 * immediate; a missing FLUSH_COMPLETED is not fatal, still try the clear. */
 	if (wait_bits(PARF_VA + PARF_STATUS, FLUSH_COMPLETED,
 			FLUSH_COMPLETED, 100))
-		slog("q8b pcie: PCIe4 flush drain not observed ltssm=%08x status=%08x\n",
+		slog("qcom8gen3 pcie: PCIe4 flush drain not observed ltssm=%08x status=%08x\n",
 			rd(PARF_VA + PARF_LTSSM), rd(PARF_VA + PARF_STATUS));
 	update(PARF_VA + PARF_LTSSM, 0, SW_CLEAR_FLUSH_MODE);
 	if (wait_bits(PARF_VA + PARF_LTSSM, FLUSH_MODE, 0, 100)) {
-		slog("q8b pcie: PCIe4 FLUSH_MODE clear timeout ltssm=%08x\n",
+		slog("qcom8gen3 pcie: PCIe4 FLUSH_MODE clear timeout ltssm=%08x\n",
 			rd(PARF_VA + PARF_LTSSM));
 		return -1;
 	}
-	PLOG("q8b pcie: PCIe4 stale FLUSH_MODE cleared\n");
+	PLOG("qcom8gen3 pcie: PCIe4 stale FLUSH_MODE cleared\n");
 	return 0;
 }
 
@@ -1489,13 +1489,13 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * let that stale level satisfy the endpoint-power precondition on a retry;
 	 * prepare_ekey_power() below performs a complete off/on cycle. */
 	_pcie4_wifi_powered = false;
-	PLOG("q8b pcie: PCIe4 maps ready, checking GCC power state\n");
+	PLOG("qcom8gen3 pcie: PCIe4 maps ready, checking GCC power state\n");
 
 	/* Do not touch PARF, DBI or PHY until the GDSC and the config/AUX clocks
 	 * prove that the controller can accept an MMIO transaction.  TLMM GPIO and
 	 * RPMh are always-on power controls and are intentionally handled first. */
 	gdsc = rd(GCC_VA + 0x6b004);
-	PLOG("q8b pcie: PCIe4 GCC gdsc=0x%08x cfg=0x%08x aux=0x%08x rchng=0x%08x\n",
+	PLOG("qcom8gen3 pcie: PCIe4 GCC gdsc=0x%08x cfg=0x%08x aux=0x%08x rchng=0x%08x\n",
 		gdsc, rd(GCC_VA + 0x6b024), rd(GCC_VA + 0x6b028),
 		rd(GCC_VA + 0x6b040));
 
@@ -1504,7 +1504,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * against a firmware handoff that left PERST# deasserted while LTSSM is
 	 * already down. */
 	configure_link_pins();
-	PLOG("q8b pcie: PCIe4 asserting PERST before Wi-Fi power\n");
+	PLOG("qcom8gen3 pcie: PCIe4 asserting PERST before Wi-Fi power\n");
 	perst(false);
 
 	/* The endpoint's board power sequence is deliberately independent of the
@@ -1515,7 +1515,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	if (prepare_ekey_power())
 		return -2;
 	if (radio_enable()) {
-		slog("q8b pcie: PCIe4 Wi-Fi power preflight failed: radio enable\n");
+		slog("qcom8gen3 pcie: PCIe4 Wi-Fi power preflight failed: radio enable\n");
 		return -2;
 	}
 	/* Match the board connector sequence used by the Wi-Fi diagnostic: after
@@ -1525,11 +1525,11 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * real probe gate rather than a GPIO observation. */
 	usleep(200000);
 	_pcie4_wifi_powered = true;
-	PLOG("q8b pcie: PCIe4 Wi-Fi power preflight complete, endpoint settled\n");
+	PLOG("qcom8gen3 pcie: PCIe4 Wi-Fi power preflight complete, endpoint settled\n");
 
 	/* GDSC and the clocks must be ready before any PARF/PHY access.  This is
 	 * the ordering used by qcom_pcie_host_init + qmp_pcie_power_on. */
-	PLOG("q8b pcie: PCIe4 enabling GDSC/clocks\n");
+	PLOG("qcom8gen3 pcie: PCIe4 enabling GDSC/clocks\n");
 	update(GCC_VA + 0x52128, BIT(6), 0);
 	if (wait_bits(GCC_VA + 0x6b004, BIT(31), BIT(31), 100))
 		return -3;
@@ -1546,7 +1546,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 			wait_bits(GCC_VA + 0x6b040, BIT(31), 0, 100) ||
 			wait_bits(GCC_VA + 0x8c030, BIT(31), 0, 100))
 		return -3;
-	PLOG("q8b pcie: PCIe4 GCC clocks ready\n");
+	PLOG("qcom8gen3 pcie: PCIe4 GCC clocks ready\n");
 
 	/* PERST# has already been asserted before the endpoint power sequence.  Do
 	 * not probe PARF_LTSSM here.  On SC8280XP a controller which has just
@@ -1555,13 +1555,13 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * abort (and firmware promotes that abort to EL2).  Only touch PARF after
 	 * the root-complex reset pulse has completed.
 	 */
-	PLOG("q8b pcie: PCIe4 PERST remains asserted before PARF access\n");
-	PLOG("q8b pcie: PCIe4 radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
+	PLOG("qcom8gen3 pcie: PCIe4 PERST remains asserted before PARF access\n");
+	PLOG("qcom8gen3 pcie: PCIe4 radios enabled GPIO133/134=%08x/%08x GPIO132 BT_POWER_READY=%u raw=%08x\n",
 		rd(gpio_reg(133) + 4),
 		rd(gpio_reg(134) + 4), radio_bt_power_ready(), rd(gpio_reg(132) + 4));
 	perst(false);
-	PLOG("q8b pcie: PCIe4 PERST asserted\n");
-	PLOG("q8b pcie: PCIe4 resetting root complex\n");
+	PLOG("qcom8gen3 pcie: PCIe4 PERST asserted\n");
+	PLOG("qcom8gen3 pcie: PCIe4 resetting root complex\n");
 	/* The mainline sc8280xp binding has two reset lines: the PCIe core and
 	 * link-down recovery.  Keep both in the same reset window so a stale
 	 * recovery transaction cannot reach PARF while it is being initialized. */
@@ -1571,7 +1571,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	update(GCC_VA + 0x6b300, 1, 0);
 	update(GCC_VA + 0x6b000, 1, 0);
 	usleep(1000);
-	PLOG("q8b pcie: PCIe4 root complex reset complete, configuring PARF\n");
+	PLOG("qcom8gen3 pcie: PCIe4 root complex reset complete, configuring PARF\n");
 	/* A warm reboot can inherit a latched link-down FLUSH_MODE from the
 	 * previous session because the controller power domain survives while the
 	 * GDSC stays on.  Clear it before any PARF/LTSSM work so training can
@@ -1583,22 +1583,22 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * In particular, do not make LTSSM the first transaction to a reset PARF
 	 * slave. */
 	wr(PARF_VA + 0x1000, 4);
-	PLOG("q8b pcie: PCIe4 PARF device type set\n");
+	PLOG("qcom8gen3 pcie: PCIe4 PARF device type set\n");
 	update(PARF_VA + PARF_PHY_CTRL, 1, 0);
-	PLOG("q8b pcie: PCIe4 PARF PHY control ready\n");
+	PLOG("qcom8gen3 pcie: PCIe4 PARF PHY control ready\n");
 	wr(PARF_VA + 0x350, (uint32_t)PCIE4_DBI);
 	wr(PARF_VA + 0x354, 0);
 	wr(PARF_VA + 0x634, (uint32_t)(PCIE4_DBI + DBI_ATU_BASE));
 	wr(PARF_VA + 0x638, 0);
 	wr(PARF_VA + 0x358, 0);
 	wr(PARF_VA + 0x35c, 0x80000000u);
-	PLOG("q8b pcie: PCIe4 PARF DBI/ATU bases set\n");
+	PLOG("qcom8gen3 pcie: PCIe4 PARF DBI/ATU bases set\n");
 	update(PARF_VA, BIT(29), 0);
 	update(PARF_VA + PARF_MHI_RESET_CTRL, 0, BIT(4));
 	update(PARF_VA + 0x20, BIT(5), 0);
 	update(PARF_VA + 0x1a8, 0, BIT(31));
 	wr(PARF_VA + 0x3d4, BIT(1) | BIT(3));
-	PLOG("q8b pcie: PCIe4 PARF configured, starting PHY reset\n");
+	PLOG("qcom8gen3 pcie: PCIe4 PARF configured, starting PHY reset\n");
 
 	/* QMP v5 Gen3x1 sequence from phy-qcom-qmp-pcie.c. */
 	update(GCC_VA + 0x6b308, 0, 1);
@@ -1606,9 +1606,9 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	usleep(1000);
 	update(GCC_VA + 0x6b308, 1, 0);
 	usleep(1000);
-	PLOG("q8b pcie: PCIe4 PHY reset released\n");
+	PLOG("qcom8gen3 pcie: PCIe4 PHY reset released\n");
 	/* qmp_pcie_offsets_v5: serdes=0, pcs=0x200, pcs_misc=0x600,
-	 * tx=0xe00, rx=0x1000.  q8b_pcie_phy_values are relative to the
+	 * tx=0xe00, rx=0x1000.  qcom8gen3_pcie_phy_values are relative to the
 	 * pcie4_phy resource base (0x01c06000). */
 	uintptr_t phy = PHY_VA;
 	uintptr_t pcs = PHY_VA + 0x200;
@@ -1617,9 +1617,9 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	 * Clearing these bits here leaves the PHY in an undefined half-powered
 	 * state and produces a Detect-only LTSSM with rx-sigdet=0. */
 	update(pcs + 0x40, BIT(0) | BIT(1), BIT(0) | BIT(1));
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie_phy_values); i++)
-		wr(phy + q8b_pcie_phy_values[i].offset,
-				q8b_pcie_phy_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie_phy_values); i++)
+		wr(phy + qcom8gen3_pcie_phy_values[i].offset,
+				qcom8gen3_pcie_phy_values[i].value);
 	update(GCC_VA + 0x6b05c, BIT(0) | BIT(1), 0);
 	update(GCC_VA + 0x52008, 0, BIT(4));
 	update(GCC_VA + 0x52018, 0, BIT(16));
@@ -1627,26 +1627,26 @@ static int pcie4_bringup_attempt(unsigned generation) {
 	update(pcs, 1, 0);
 	update(pcs + 0x44, 0, BIT(0) | BIT(1));
 	usleep(1000);
-	PLOG("q8b pcie: PCIe4 waiting for PHY ready\n");
+	PLOG("qcom8gen3 pcie: PCIe4 waiting for PHY ready\n");
 	if (wait_bits(pcs + 0x14, BIT(6), 0, 1000))
 		goto fail;
-	PLOG("q8b pcie: PCIe4 PHY ready, checking DBI\n");
+	PLOG("qcom8gen3 pcie: PCIe4 PHY ready, checking DBI\n");
 
 	if (!find_pcie_cap(DBI_VA))
 		goto fail;
-	PLOG("q8b pcie: PCIe4 DBI ready, programming root port\n");
-	PLOG("q8b pcie: configuring root registers\n");
+	PLOG("qcom8gen3 pcie: PCIe4 DBI ready, programming root port\n");
+	PLOG("qcom8gen3 pcie: configuring root registers\n");
 	configure_root(generation);
 	configure_equalization(DBI_VA, generation);
-	PLOG("q8b pcie: root registers configured\n");
-	PLOG("q8b pcie: configuring outbound ATU\n");
+	PLOG("qcom8gen3 pcie: root registers configured\n");
+	PLOG("qcom8gen3 pcie: configuring outbound ATU\n");
 	{
 		pcie_window_t p4w;
-		if (controller_window(Q8B_PCIE4, &p4w))
+		if (controller_window(QCOM8GEN3_PCIE4, &p4w))
 			goto fail;
 		/* Bus 1 is the immediate child of the root port and uses CFG0.
 		 * TW220 exposes only that one downstream bus in its 1 MiB IO
-		 * window; Q8B has a separate CFG1 aperture for subordinate buses. */
+		 * window; QCOM8GEN3 has a separate CFG1 aperture for subordinate buses. */
 		if (configure_outbound_atu(0, p4w.ecam + 0x100000ULL, 0,
 				0x100000, 4) ||
 			configure_outbound_atu(1, p4w.ecam + 0x200000ULL, 0,
@@ -1657,16 +1657,16 @@ static int pcie4_bringup_attempt(unsigned generation) {
 					(uint32_t)p4w.mem64_size, 0))
 			goto fail;
 	}
-	PLOG("q8b pcie: outbound ATU configured\n");
+	PLOG("qcom8gen3 pcie: outbound ATU configured\n");
 	/* PCIe PERST# must be low for at least 100 ms before release. */
 	usleep(100000);
-	PLOG("q8b pcie: releasing PERST\n");
+	PLOG("qcom8gen3 pcie: releasing PERST\n");
 	perst(true);
-	PLOG("q8b pcie: PERST released\n");
+	PLOG("qcom8gen3 pcie: PERST released\n");
 	usleep(100000);
-	PLOG("q8b pcie: enabling LTSSM\n");
+	PLOG("qcom8gen3 pcie: enabling LTSSM\n");
 	update(PARF_VA + PARF_LTSSM, 0, LTSSM_ENABLE);
-	PLOG("q8b pcie: LTSSM enabled, waiting for link\n");
+	PLOG("qcom8gen3 pcie: LTSSM enabled, waiting for link\n");
 	/* Link Status is a 16-bit field at capability+0x12.  The MMIO helper is
 	 * deliberately 32-bit only, so read the aligned Link Control/Status dword
 	 * at capability+0x10 and test DLL Active in its upper half. */
@@ -1675,14 +1675,14 @@ static int pcie4_bringup_attempt(unsigned generation) {
 		int link_wait = cap ? wait_bits(DBI_VA + cap + 0x10,
 				LINK_DLL_ACTIVE << 16, LINK_DLL_ACTIVE << 16,
 				PCIE_LINK_TIMEOUT_MS) : -1;
-		PLOG("q8b pcie: link wait complete cap=%02x result=%d\n",
+		PLOG("qcom8gen3 pcie: link wait complete cap=%02x result=%d\n",
 			cap, link_wait);
 		if (!cap || link_wait) {
 			/* These are root/PHY/TLMM status reads only.  Do not walk ECAM or
 			 * touch a subordinate endpoint after a failed training attempt:
 			 * those slaves may already be quiesced and can raise an external
 			 * abort on this platform. */
-			slog("q8b pcie: link diagnostics ltssm=%08x debug=%08x/%08x "
+			slog("qcom8gen3 pcie: link diagnostics ltssm=%08x debug=%08x/%08x "
 					"phy=%08x rx-sigdet=%08x clkreq=%08x wake=%08x "
 					"perst=%08x radios=%08x/%08x\n",
 				rd(PARF_VA + PARF_LTSSM), rd(DBI_VA + 0x728),
@@ -1696,7 +1696,7 @@ static int pcie4_bringup_attempt(unsigned generation) {
 		}
 	}
 	_pcie4_up = true;
-	slog("q8b pcie: PCIe4 link up\n");
+	slog("qcom8gen3 pcie: PCIe4 link up\n");
 	return 0;
 
 fail:
@@ -1712,7 +1712,7 @@ fail:
 	 * module electrically off instead of inheriting a half-powered endpoint. */
 	if (ekey_rc)
 		ekey_rc = ekey_3v3_set(false);
-	slog("q8b pcie: PCIe4 failure cleanup radio=%d ekey=%d\n",
+	slog("qcom8gen3 pcie: PCIe4 failure cleanup radio=%d ekey=%d\n",
 		radio_rc, ekey_rc);
 	/* A failed link may leave the subordinate DBI/PHY slave quiesced.  Do not
 	 * probe or reset those windows here: an error-status read can become an
@@ -1720,7 +1720,7 @@ fail:
 	 * explicit host retry owns recovery from this state. */
 	_pcie4_up = false;
 	_pcie4_wifi_powered = false;
-	slog("q8b pcie: PCIe4 link training failed\n");
+	slog("qcom8gen3 pcie: PCIe4 link training failed\n");
 	return -4;
 }
 
@@ -1740,13 +1740,13 @@ static int start_pcie4(unsigned generation) {
 		if (rc == 0)
 			return 0;
 		if (attempt < PCIE4_TRAIN_ATTEMPTS) {
-			slog("q8b pcie: PCIe4 attempt %u/%u failed (rc=%d), retrying\n",
+			slog("qcom8gen3 pcie: PCIe4 attempt %u/%u failed (rc=%d), retrying\n",
 				attempt, PCIE4_TRAIN_ATTEMPTS, rc);
 			/* Let the rails and the module settle before the next cycle. */
 			usleep(200000);
 		}
 	}
-	slog("q8b pcie: PCIe4 link training failed after %u attempts\n",
+	slog("qcom8gen3 pcie: PCIe4 link training failed after %u attempts\n",
 		PCIE4_TRAIN_ATTEMPTS);
 	return -4;
 }
@@ -1772,13 +1772,13 @@ static int start_pcie2a(unsigned generation) {
 	 * NVMe admin commands never complete.  Prefer the firmware handoff when
 	 * the root link and its existing CFG0 aperture are both usable. */
 	if (find_pcie_cap(DBI2A_VA) && root_link_up_at(DBI2A_VA)) {
-		if (!_ecam_va[Q8B_PCIE2A] &&
+		if (!_ecam_va[QCOM8GEN3_PCIE2A] &&
 				!map_window(ECAM_VA, 0x3c100000ULL, 0x00100000u))
-			_ecam_va[Q8B_PCIE2A] = ECAM_VA;
-		handoff_id = _ecam_va[Q8B_PCIE2A] ? rd(ECAM_VA) : 0xffffffffu;
+			_ecam_va[QCOM8GEN3_PCIE2A] = ECAM_VA;
+		handoff_id = _ecam_va[QCOM8GEN3_PCIE2A] ? rd(ECAM_VA) : 0xffffffffu;
 		if (handoff_id != 0xffffffffu && (uint16_t)handoff_id != 0) {
 			_pcie2a_up = true;
-			slog("q8b pcie: PCIe2A firmware handoff kept link up id=%08x\n",
+			slog("qcom8gen3 pcie: PCIe2A firmware handoff kept link up id=%08x\n",
 				handoff_id);
 			return 0;
 		}
@@ -1787,7 +1787,7 @@ static int start_pcie2a(unsigned generation) {
 		 * mapping if it was installed; the cold path reprograms the same iATU. */
 	}
 
-	slog("q8b pcie: PCIe2A NVMe power-on begin\n");
+	slog("qcom8gen3 pcie: PCIe2A NVMe power-on begin\n");
 	pcie2a_configure_pins();
 	pcie2a_perst(false);
 	/* The Linux fixed regulator is GPIO135, active high, boot-on.  Cycle it
@@ -1844,27 +1844,27 @@ static int start_pcie2a(unsigned generation) {
 	phy = PHY2A_VA;
 	pcs = PHY2A_VA + 0x200;
 	update(pcs + 0x40, 0, BIT(0) | BIT(1));
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_serdes_values); i++)
-		wr(phy + q8b_pcie3a_serdes_values[i].offset,
-				q8b_pcie3a_serdes_values[i].value);
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_tx_values); i++) {
-		wr(phy + q8b_pcie3a_tx_values[i].offset,
-				q8b_pcie3a_tx_values[i].value);
-		wr(phy + 0x800 + q8b_pcie3a_tx2_values[i].offset,
-				q8b_pcie3a_tx2_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_serdes_values); i++)
+		wr(phy + qcom8gen3_pcie3a_serdes_values[i].offset,
+				qcom8gen3_pcie3a_serdes_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_tx_values); i++) {
+		wr(phy + qcom8gen3_pcie3a_tx_values[i].offset,
+				qcom8gen3_pcie3a_tx_values[i].value);
+		wr(phy + 0x800 + qcom8gen3_pcie3a_tx2_values[i].offset,
+				qcom8gen3_pcie3a_tx2_values[i].value);
 	}
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_rx_values); i++) {
-		wr(phy + q8b_pcie3a_rx_values[i].offset,
-				q8b_pcie3a_rx_values[i].value);
-		wr(phy + 0x800 + q8b_pcie3a_rx_values[i].offset,
-				q8b_pcie3a_rx_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_rx_values); i++) {
+		wr(phy + qcom8gen3_pcie3a_rx_values[i].offset,
+				qcom8gen3_pcie3a_rx_values[i].value);
+		wr(phy + 0x800 + qcom8gen3_pcie3a_rx_values[i].offset,
+				qcom8gen3_pcie3a_rx_values[i].value);
 	}
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_pcs_values); i++)
-		wr(phy + q8b_pcie3a_pcs_values[i].offset,
-				q8b_pcie3a_pcs_values[i].value);
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_pcs_misc_values); i++)
-		wr(phy + q8b_pcie3a_pcs_misc_values[i].offset,
-				q8b_pcie3a_pcs_misc_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_pcs_values); i++)
+		wr(phy + qcom8gen3_pcie3a_pcs_values[i].offset,
+				qcom8gen3_pcie3a_pcs_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_pcs_misc_values); i++)
+		wr(phy + qcom8gen3_pcie3a_pcs_misc_values[i].offset,
+				qcom8gen3_pcie3a_pcs_misc_values[i].value);
 	update(GCC_VA + 0x9d05c, BIT(0) | BIT(1), 0);
 	update(GCC_VA + 0x52010, 0, BIT(14));
 	update(GCC_VA + 0x52018, 0, BIT(22));
@@ -1873,7 +1873,7 @@ static int start_pcie2a(unsigned generation) {
 	update(pcs + 0x44, 0, BIT(0) | BIT(1));
 	usleep(1000);
 	if (wait_bits(pcs + 0x14, BIT(6), 0, 10000)) {
-		slog("q8b pcie: PCIe2A PHY ready timeout status=%08x\n",
+		slog("qcom8gen3 pcie: PCIe2A PHY ready timeout status=%08x\n",
 			rd(pcs + 0x14));
 		goto fail;
 	}
@@ -1895,14 +1895,14 @@ static int start_pcie2a(unsigned generation) {
 	pcie2a_perst(true);
 	usleep(100000);
 	update(PARF2A_VA + PARF_LTSSM, 0, LTSSM_ENABLE);
-	slog("q8b pcie: PCIe2A LTSSM enabled, waiting for NVMe link\n");
+	slog("qcom8gen3 pcie: PCIe2A LTSSM enabled, waiting for NVMe link\n");
 	{
 		uint8_t cap = find_pcie_cap(DBI2A_VA);
 		int result = cap ? wait_bits(DBI2A_VA + cap + 0x10,
 				LINK_DLL_ACTIVE << 16, LINK_DLL_ACTIVE << 16,
 				PCIE_LINK_TIMEOUT_MS) : -1;
 		if (!cap || result) {
-			slog("q8b pcie: PCIe2A link diagnostics ltssm=%08x phy=%08x "
+			slog("qcom8gen3 pcie: PCIe2A link diagnostics ltssm=%08x phy=%08x "
 					"gpio135/142/143/145=%08x/%08x/%08x/%08x\n",
 				rd(PARF2A_VA + PARF_LTSSM), rd(pcs + 0x14),
 				rd(gpio_reg(135) + 4), rd(gpio_reg(142)),
@@ -1911,13 +1911,13 @@ static int start_pcie2a(unsigned generation) {
 		}
 	}
 	_pcie2a_up = true;
-	slog("q8b pcie: PCIe2A NVMe link up\n");
+	slog("qcom8gen3 pcie: PCIe2A NVMe link up\n");
 	return 0;
 
 fail:
 	_pcie2a_up = false;
 	pcie2a_perst(false);
-	slog("q8b pcie: PCIe2A NVMe link training failed\n");
+	slog("qcom8gen3 pcie: PCIe2A NVMe link training failed\n");
 	return -4;
 }
 
@@ -1946,7 +1946,7 @@ static int start_pcie3a(unsigned generation) {
 	if (_pcie3a_up)
 		return 0;
 
-	slog("q8b pcie: PCIe3A maps ready, preparing endpoint reset and rails\n");
+	slog("qcom8gen3 pcie: PCIe3A maps ready, preparing endpoint reset and rails\n");
 	pcie3a_configure_pins();
 	pcie3a_perst(false);
 	/* QPS615 resx-gpios is active low.  Assert/deassert it before PARF/PHY
@@ -1961,12 +1961,12 @@ static int start_pcie3a(unsigned generation) {
 	 * used by PCIe4 and RPMh voting is idempotent while the host owns TCS0. */
 	if (map_power_registers() || rpmh_init_layout() ||
 			rpmh_supply("ldod4", 1200) || rpmh_supply("ldod6", 880)) {
-		slog("q8b pcie: PCIe3A PHY rail enable failed\n");
+		slog("qcom8gen3 pcie: PCIe3A PHY rail enable failed\n");
 		return -2;
 	}
 
 	gdsc = rd(GCC_VA + 0xa0004);
-	slog("q8b pcie: PCIe3A GCC gdsc=%08x cfg=%08x aux=%08x slv=%08x\n",
+	slog("qcom8gen3 pcie: PCIe3A GCC gdsc=%08x cfg=%08x aux=%08x slv=%08x\n",
 		gdsc, rd(GCC_VA + 0xa0024), rd(GCC_VA + 0xa0028),
 		rd(GCC_VA + 0xa0014));
 	/* GDSC and all clocks must be live before any PARF/DBI/PHY access. */
@@ -1987,7 +1987,7 @@ static int start_pcie3a(unsigned generation) {
 			wait_bits(GCC_VA + 0xa0040, BIT(31), 0, 100) ||
 			wait_bits(GCC_VA + 0x8c038, BIT(31), 0, 100))
 		goto fail;
-	slog("q8b pcie: PCIe3A GCC clocks ready\n");
+	slog("qcom8gen3 pcie: PCIe3A GCC clocks ready\n");
 
 	/* Mainline selects the QPS615 two-lane mode through secure TCSR
 	 * (0x1fc0000 + 0xa044).  That register is not safely accessible from an
@@ -2017,7 +2017,7 @@ static int start_pcie3a(unsigned generation) {
 	update(PARF3A_VA + PARF_MHI_RESET_CTRL, 0, BIT(4));
 	update(PARF3A_VA + PARF_AXI_MSTR_WR_ADDR_HALT_V2, 0, BIT(31));
 	wr(PARF3A_VA + 0x1ac, 0);
-	slog("q8b pcie: PCIe3A PARF reset setup complete\n");
+	slog("qcom8gen3 pcie: PCIe3A PARF reset setup complete\n");
 
 	/* QMP v5 Gen3x2 RC initialization.  Keep the PCS in software power-down
 	 * while all SerDes/lane/PCS tables are written, then release no-CSR reset,
@@ -2029,29 +2029,29 @@ static int start_pcie3a(unsigned generation) {
 	 * SC8280XP resource and leave the PHY in reset with PCS_STATUS1 bit 6
 	 * asserted forever. */
 	update(pcs + 0x40, 0, BIT(0) | BIT(1));
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_serdes_values); i++)
-		wr(phy + q8b_pcie3a_serdes_values[i].offset,
-			q8b_pcie3a_serdes_values[i].value);
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_tx_values); i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_serdes_values); i++)
+		wr(phy + qcom8gen3_pcie3a_serdes_values[i].offset,
+			qcom8gen3_pcie3a_serdes_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_tx_values); i++) {
 		/* Table offsets are already relative to the PHY resource base
 		 * (lane1 TX starts at 0x0e00); lane2 is exactly +0x800. */
-		wr(phy + q8b_pcie3a_tx_values[i].offset,
-			q8b_pcie3a_tx_values[i].value);
-		wr(phy + 0x800 + q8b_pcie3a_tx2_values[i].offset,
-			q8b_pcie3a_tx2_values[i].value);
+		wr(phy + qcom8gen3_pcie3a_tx_values[i].offset,
+			qcom8gen3_pcie3a_tx_values[i].value);
+		wr(phy + 0x800 + qcom8gen3_pcie3a_tx2_values[i].offset,
+			qcom8gen3_pcie3a_tx2_values[i].value);
 	}
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_rx_values); i++) {
-		wr(phy + q8b_pcie3a_rx_values[i].offset,
-			q8b_pcie3a_rx_values[i].value);
-		wr(phy + 0x800 + q8b_pcie3a_rx_values[i].offset,
-			q8b_pcie3a_rx_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_rx_values); i++) {
+		wr(phy + qcom8gen3_pcie3a_rx_values[i].offset,
+			qcom8gen3_pcie3a_rx_values[i].value);
+		wr(phy + 0x800 + qcom8gen3_pcie3a_rx_values[i].offset,
+			qcom8gen3_pcie3a_rx_values[i].value);
 	}
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_pcs_values); i++)
-		wr(phy + q8b_pcie3a_pcs_values[i].offset,
-			q8b_pcie3a_pcs_values[i].value);
-	for (size_t i = 0; i < ARRAY_SIZE(q8b_pcie3a_pcs_misc_values); i++)
-		wr(phy + q8b_pcie3a_pcs_misc_values[i].offset,
-			q8b_pcie3a_pcs_misc_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_pcs_values); i++)
+		wr(phy + qcom8gen3_pcie3a_pcs_values[i].offset,
+			qcom8gen3_pcie3a_pcs_values[i].value);
+	for (size_t i = 0; i < ARRAY_SIZE(qcom8gen3_pcie3a_pcs_misc_values); i++)
+		wr(phy + qcom8gen3_pcie3a_pcs_misc_values[i].offset,
+			qcom8gen3_pcie3a_pcs_misc_values[i].value);
 	/* Select the PHY-generated PIPE clock and keep both PIPE branches enabled. */
 	update(GCC_VA + 0xa005c, BIT(0) | BIT(1), 0);
 	update(GCC_VA + 0x52010, 0, BIT(28));
@@ -2061,11 +2061,11 @@ static int start_pcie3a(unsigned generation) {
 	update(pcs + 0x44, 0, BIT(0) | BIT(1)); /* SERDES_START/PCS_START */
 	usleep(1000);
 	if (wait_bits(pcs + 0x14, BIT(6), 0, 10000)) {
-		slog("q8b pcie: PCIe3A PHY ready timeout status=%08x\n",
+		slog("qcom8gen3 pcie: PCIe3A PHY ready timeout status=%08x\n",
 			rd(pcs + 0x14));
 		goto fail;
 	}
-	slog("q8b pcie: PCIe3A PHY ready\n");
+	slog("qcom8gen3 pcie: PCIe3A PHY ready\n");
 
 	if (!find_pcie_cap(DBI3A_VA))
 		goto fail;
@@ -2090,14 +2090,14 @@ static int start_pcie3a(unsigned generation) {
 	pcie3a_perst(true);
 	usleep(100000);
 	update(PARF3A_VA + PARF_LTSSM, 0, LTSSM_ENABLE);
-	slog("q8b pcie: PCIe3A LTSSM enabled, waiting for link\n");
+	slog("qcom8gen3 pcie: PCIe3A LTSSM enabled, waiting for link\n");
 	{
 		uint8_t cap = find_pcie_cap(DBI3A_VA);
 		int result = cap ? wait_bits(DBI3A_VA + cap + 0x10,
 				LINK_DLL_ACTIVE << 16, LINK_DLL_ACTIVE << 16,
 				PCIE_LINK_TIMEOUT_MS) : -1;
 		if (!cap || result) {
-			slog("q8b pcie: PCIe3A link diagnostics ltssm=%08x debug=%08x/%08x "
+			slog("qcom8gen3 pcie: PCIe3A link diagnostics ltssm=%08x debug=%08x/%08x "
 				"phy=%08x gpio148/150/151=%08x/%08x/%08x\n",
 				rd(PARF3A_VA + PARF_LTSSM), rd(DBI3A_VA + 0x728),
 				rd(DBI3A_VA + 0x72c), rd(pcs + 0x14),
@@ -2112,7 +2112,7 @@ static int start_pcie3a(unsigned generation) {
 	 * publishing _pcie3a_up or walking ECAM; otherwise the integrated Ethernet
 	 * port remains in the switch's reset island and bus 3 is empty. */
 	if (qps615_power_configure()) {
-		slog("q8b pcie: QPS615 power/reset configuration failed\n");
+		slog("qcom8gen3 pcie: QPS615 power/reset configuration failed\n");
 		goto fail;
 	}
 	/* Allow the switch's downstream reset/clock state to settle before PCI
@@ -2120,7 +2120,7 @@ static int start_pcie3a(unsigned generation) {
 	 * immediately before the ECAM walk. */
 	usleep(500000);
 	_pcie3a_up = true;
-	slog("q8b pcie: PCIe3A link up\n");
+	slog("qcom8gen3 pcie: PCIe3A link up\n");
 	return 0;
 
 fail:
@@ -2129,40 +2129,40 @@ fail:
 	 * read ECAM or subordinate devices in this state; their slaves may be
 	 * quiesced and an access can be promoted to an EL2 external abort. */
 	pcie3a_perst(false);
-	slog("q8b pcie: PCIe3A link training failed\n");
+	slog("qcom8gen3 pcie: PCIe3A link training failed\n");
 	return -4;
 }
 
-static int controller_window(enum q8b_pcie_controller controller,
+static int controller_window(enum qcom8gen3_pcie_controller controller,
 		pcie_window_t *out) {
-	if (!out || controller > Q8B_PCIE4)
+	if (!out || controller > QCOM8GEN3_PCIE4)
 		return -1;
 	memset(out, 0, sizeof(*out));
-	if (controller == Q8B_PCIE2A) {
+	if (controller == QCOM8GEN3_PCIE2A) {
 		/* The TW220 DT has a separate 1 MiB config resource.  It is a
 		 * DesignWare CFG0 aperture, not an ECAM range: bus 0 is read from DBI
 		 * and the host iATU routes this window to bus 1.  0x3c200000 is the
 		 * unrelated IO range printed by Linux's host-bridge summary. */
 		static const pcie_window_t tw220[] = {
-			[Q8B_PCIE2A] = { 0x3c100000ULL, 0x00100000ULL,
+			[QCOM8GEN3_PCIE2A] = { 0x3c100000ULL, 0x00100000ULL,
 				0x3c300000ULL, 0x3c300000ULL, 0x01d00000ULL, 0, 0 },
-			[Q8B_PCIE3A] = { 0x34200000ULL, 0x00200000ULL,
+			[QCOM8GEN3_PCIE3A] = { 0x34200000ULL, 0x00200000ULL,
 				0x34300000ULL, 0x34300000ULL, 0x01d00000ULL, 0, 0 },
-			[Q8B_PCIE3B] = { 0x32200000ULL, 0x00200000ULL,
+			[QCOM8GEN3_PCIE3B] = { 0x32200000ULL, 0x00200000ULL,
 				0x32300000ULL, 0x32300000ULL, 0x01d00000ULL, 0, 0 },
-			[Q8B_PCIE4]  = { 0x30200000ULL, 0x00200000ULL,
+			[QCOM8GEN3_PCIE4]  = { 0x30200000ULL, 0x00200000ULL,
 				0x30300000ULL, 0x30300000ULL, 0x01d00000ULL, 0, 0 },
 		};
 		*out = tw220[controller];
 		return 0;
 	}
-	if (controller == Q8B_PCIE3A) {
+	if (controller == QCOM8GEN3_PCIE3A) {
 		*out = (pcie_window_t){ 0x480000000ULL, 0x10000000ULL,
 			0x40000000ULL, 0x490000000ULL, 0x10000000ULL,
 			0x4a0000000ULL, 0x20000000ULL };
 		return 0;
 	}
-	if (controller == Q8B_PCIE3B) {
+	if (controller == QCOM8GEN3_PCIE3B) {
 		*out = (pcie_window_t){ 0x440000000ULL, 0x10000000ULL,
 			0x40000000ULL, 0x450000000ULL, 0x10000000ULL,
 			0x460000000ULL, 0x20000000ULL };
@@ -2174,7 +2174,7 @@ static int controller_window(enum q8b_pcie_controller controller,
 	return 0;
 }
 
-static int ecam_map(enum q8b_pcie_controller controller) {
+static int ecam_map(enum qcom8gen3_pcie_controller controller) {
 	pcie_window_t w;
 	uintptr_t va = ECAM_VA + (uintptr_t)controller * 0x01000000ULL;
 	if (controller_window(controller, &w))
@@ -2187,9 +2187,9 @@ static int ecam_map(enum q8b_pcie_controller controller) {
 	return 0;
 }
 
-static inline ewokos_addr_t cfg_addr(enum q8b_pcie_controller controller,
+static inline ewokos_addr_t cfg_addr(enum qcom8gen3_pcie_controller controller,
 		unsigned bus, unsigned device, unsigned function, unsigned reg) {
-	if (controller == Q8B_PCIE2A) {
+	if (controller == QCOM8GEN3_PCIE2A) {
 		/* Root bus config is the DBI window.  The single downstream bus is
 		 * selected in the CFG0 iATU programmed by start_pcie2a(), so its CPU
 		 * address is the fixed 1 MiB config resource base. */
@@ -2202,18 +2202,18 @@ static inline ewokos_addr_t cfg_addr(enum q8b_pcie_controller controller,
 			(reg & ~3u);
 }
 
-static uint32_t cfg32(enum q8b_pcie_controller controller, unsigned bus,
+static uint32_t cfg32(enum qcom8gen3_pcie_controller controller, unsigned bus,
 		unsigned device, unsigned function, unsigned reg) {
 	return rd(cfg_addr(controller, bus, device, function, reg));
 }
 
-static uint16_t cfg16(enum q8b_pcie_controller controller, unsigned bus,
+static uint16_t cfg16(enum qcom8gen3_pcie_controller controller, unsigned bus,
 		unsigned device, unsigned function, unsigned reg) {
 	uint32_t value = cfg32(controller, bus, device, function, reg);
 	return (uint16_t)(value >> ((reg & 2u) * 8u));
 }
 
-static void cfg_write16(enum q8b_pcie_controller controller, unsigned bus,
+static void cfg_write16(enum qcom8gen3_pcie_controller controller, unsigned bus,
 		unsigned device, unsigned function, unsigned reg, uint16_t value) {
 	/* PCI_COMMAND and Link Control share a DWORD with W1C status bits.
 	 * Use PCI byte enables instead of writing back the adjacent status. */
@@ -2223,12 +2223,12 @@ static void cfg_write16(enum q8b_pcie_controller controller, unsigned bus,
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 
-static void cfg_write32(enum q8b_pcie_controller controller, unsigned bus,
+static void cfg_write32(enum qcom8gen3_pcie_controller controller, unsigned bus,
 		unsigned device, unsigned function, unsigned reg, uint32_t value) {
 	wr(cfg_addr(controller, bus, device, function, reg), value);
 }
 
-static uint64_t bar_to_phys(enum q8b_pcie_controller controller, uint64_t bar) {
+static uint64_t bar_to_phys(enum qcom8gen3_pcie_controller controller, uint64_t bar) {
 	pcie_window_t w;
 	if (controller_window(controller, &w))
 		return 0;
@@ -2240,8 +2240,8 @@ static uint64_t bar_to_phys(enum q8b_pcie_controller controller, uint64_t bar) {
 	return 0;
 }
 
-static void fill_device(enum q8b_pcie_controller controller, unsigned bus,
-		unsigned device, unsigned function, q8b_pcie_device_t *out,
+static void fill_device(enum qcom8gen3_pcie_controller controller, unsigned bus,
+		unsigned device, unsigned function, qcom8gen3_pcie_device_t *out,
 		unsigned flags) {
 	memset(out, 0, sizeof(*out));
 	out->controller = (uint8_t)controller;
@@ -2257,9 +2257,9 @@ static void fill_device(enum q8b_pcie_controller controller, unsigned bus,
 	out->subsystem_vendor = cfg16(controller, bus, device, function, 0x2c);
 	out->subsystem_device = cfg16(controller, bus, device, function, 0x2e);
 	out->command = cfg16(controller, bus, device, function, PCI_COMMAND);
-	if (flags & Q8B_PCIE_ENABLE_MEMORY)
+	if (flags & QCOM8GEN3_PCIE_ENABLE_MEMORY)
 		out->command |= PCI_COMMAND_MEMORY;
-	if (flags & Q8B_PCIE_ENABLE_MASTER)
+	if (flags & QCOM8GEN3_PCIE_ENABLE_MASTER)
 		out->command |= PCI_COMMAND_MASTER;
 	if (out->command != cfg16(controller, bus, device, function, PCI_COMMAND))
 		cfg_write16(controller, bus, device, function, PCI_COMMAND, out->command);
@@ -2287,8 +2287,8 @@ static void fill_device(enum q8b_pcie_controller controller, unsigned bus,
 	out->pcie_cap = cap;
 	out->vpd_cap = find_cap(cfg_addr(controller, bus, device, function, 0),
 		PCI_CAP_ID_VPD);
-	if (out->vendor_id == Q8B_PCIE_WLAN_VENDOR_ID &&
-			out->device_id == Q8B_PCIE_WLAN_DEVICE_ID) {
+	if (out->vendor_id == QCOM8GEN3_PCIE_WLAN_VENDOR_ID &&
+			out->device_id == QCOM8GEN3_PCIE_WLAN_DEVICE_ID) {
 		ewokos_addr_t cfg = cfg_addr(controller, bus, device, function, 0);
 		uint16_t serial_cap = find_ext_serial_cap(cfg);
 		if (serial_cap) {
@@ -2302,7 +2302,7 @@ static void fill_device(enum q8b_pcie_controller controller, unsigned bus,
 		}
 	}
 	if (cap) {
-		if (flags & Q8B_PCIE_DISABLE_ASPM)
+		if (flags & QCOM8GEN3_PCIE_DISABLE_ASPM)
 			cfg_write16(controller, bus, device, function, cap + 0x10,
 					(uint16_t)(cfg16(controller, bus, device, function,
 					cap + 0x10) & ~3u));
@@ -2317,7 +2317,7 @@ static void fill_device(enum q8b_pcie_controller controller, unsigned bus,
  * mailbox: software writes an aligned offset, then waits for the firmware or
  * endpoint to set bit 15 before reading the data register.  Keep the polling
  * bounded; a missing/disabled VPD implementation must never hang boot. */
-static int cfg_vpd_read(enum q8b_pcie_controller controller, unsigned bus,
+static int cfg_vpd_read(enum qcom8gen3_pcie_controller controller, unsigned bus,
 		unsigned device, unsigned function, unsigned cap, unsigned offset,
 		uint32_t *value) {
 	if (!cap || !value || (offset & 3u) || offset > PCI_VPD_ADDR_MASK)
@@ -2337,28 +2337,28 @@ static int cfg_vpd_read(enum q8b_pcie_controller controller, unsigned bus,
 	return 0;
 }
 
-int q8b_pcie_read_vpd(const q8b_pcie_device_t *device, unsigned offset,
+int qcom8gen3_pcie_read_vpd(const qcom8gen3_pcie_device_t *device, unsigned offset,
 		void *out, size_t bytes) {
 	if (!device || !out || !bytes || (offset & 3u) || (bytes & 3u) ||
-		device->controller > Q8B_PCIE4 ||
+		device->controller > QCOM8GEN3_PCIE4 ||
 		device->device > 31 || device->function > 7)
 		return -1;
-	if (device->controller == Q8B_PCIE4 && (!_pcie4_up ||
+	if (device->controller == QCOM8GEN3_PCIE4 && (!_pcie4_up ||
 			!_pcie4_wifi_powered))
 		return -1;
-	if (device->controller == Q8B_PCIE3A && !_pcie3a_up)
+	if (device->controller == QCOM8GEN3_PCIE3A && !_pcie3a_up)
 		return -1;
 	if (!_ecam_va[device->controller] && ecam_map(
-			(enum q8b_pcie_controller)device->controller))
+			(enum qcom8gen3_pcie_controller)device->controller))
 		return -1;
-	ewokos_addr_t cfg = cfg_addr((enum q8b_pcie_controller)device->controller,
+	ewokos_addr_t cfg = cfg_addr((enum qcom8gen3_pcie_controller)device->controller,
 			device->bus, device->device, device->function, 0);
 	uint8_t cap = find_cap(cfg, PCI_CAP_ID_VPD);
 	if (!cap)
 		return -2;
 	for (size_t pos = 0; pos < bytes; pos += 4) {
 		uint32_t value;
-		if (cfg_vpd_read((enum q8b_pcie_controller)device->controller,
+		if (cfg_vpd_read((enum qcom8gen3_pcie_controller)device->controller,
 				device->bus, device->device, device->function, cap,
 				offset + (unsigned)pos, &value))
 			return -1;
@@ -2378,8 +2378,8 @@ static uint64_t resource_align(uint64_t value, uint64_t alignment) {
 	return (value + alignment - 1) & ~(alignment - 1);
 }
 
-static int size_function_bars(q8b_pcie_device_t *d, uint32_t attr[6]) {
-	enum q8b_pcie_controller c = d->controller;
+static int size_function_bars(qcom8gen3_pcie_device_t *d, uint32_t attr[6]) {
+	enum qcom8gen3_pcie_controller c = d->controller;
 	pcie_window_t w;
 	unsigned bars = (d->header_type & 0x7f) == 1 ? 2 : 6;
 	if (controller_window(c, &w))
@@ -2406,7 +2406,7 @@ static int size_function_bars(q8b_pcie_device_t *d, uint32_t attr[6]) {
 		cfg_write32(c, d->bus, d->device, d->function, reg, low);
 		if (wide)
 			cfg_write32(c, d->bus, d->device, d->function, reg + 4, high);
-		if (low & 1) /* No I/O aperture on these Q8B hosts. */
+		if (low & 1) /* No I/O aperture on these QCOM8GEN3 hosts. */
 			continue;
 		uint64_t size;
 		if (wide) {
@@ -2423,7 +2423,7 @@ static int size_function_bars(q8b_pcie_device_t *d, uint32_t attr[6]) {
 				return -1;
 			d->bar_size[i] = (uint32_t)size;
 			attr[i] = low & 0xf;
-			slog("q8b pcie: pcie%u %02x:%02x.%u BAR%u size=%08x flags=%x\n",
+			slog("qcom8gen3 pcie: pcie%u %02x:%02x.%u BAR%u size=%08x flags=%x\n",
 					c, d->bus, d->device, d->function, i,
 					d->bar_size[i], attr[i]);
 		}
@@ -2433,17 +2433,17 @@ static int size_function_bars(q8b_pcie_device_t *d, uint32_t attr[6]) {
 	return 0;
 }
 
-static int plan_bus_resources(q8b_pcie_device_t *devices, int count,
+static int plan_bus_resources(qcom8gen3_pcie_device_t *devices, int count,
 		unsigned bus, unsigned depth, uint64_t *next,
 		uint32_t windows[HOST_MAX_FUNCTIONS]) {
 	pcie_window_t w;
 	if (depth >= 8)
 		return -1;
 	if (count > 0 && controller_window(
-			(enum q8b_pcie_controller)devices[0].controller, &w))
+			(enum qcom8gen3_pcie_controller)devices[0].controller, &w))
 		return -1;
 	for (int i = 0; i < count; i++) {
-		q8b_pcie_device_t *d = &devices[i];
+		qcom8gen3_pcie_device_t *d = &devices[i];
 		if (d->bus != bus)
 			continue;
 		for (unsigned bar = 0; bar < 6; bar++) {
@@ -2459,7 +2459,7 @@ static int plan_bus_resources(q8b_pcie_device_t *devices, int count,
 		}
 	}
 	for (int i = 0; i < count; i++) {
-		q8b_pcie_device_t *d = &devices[i];
+		qcom8gen3_pcie_device_t *d = &devices[i];
 		if (d->bus != bus || (d->header_type & 0x7f) != 1)
 			continue;
 		uint32_t buses = cfg32(d->controller, bus, d->device,
@@ -2481,8 +2481,8 @@ static int plan_bus_resources(q8b_pcie_device_t *devices, int count,
 	return count == 0 || *next <= w.mem32_bus + w.mem32_size ? 0 : -1;
 }
 
-static int program_bridge_window(q8b_pcie_device_t *d, uint32_t window) {
-	enum q8b_pcie_controller c = d->controller;
+static int program_bridge_window(qcom8gen3_pcie_device_t *d, uint32_t window) {
+	enum qcom8gen3_pcie_controller c = d->controller;
 	cfg_write16(c, d->bus, d->device, d->function, 0x1c, 0x00f0);
 	cfg_write32(c, d->bus, d->device, d->function, 0x30, 0);
 	cfg_write32(c, d->bus, d->device, d->function, 0x24, 0x0000fff0);
@@ -2492,8 +2492,8 @@ static int program_bridge_window(q8b_pcie_device_t *d, uint32_t window) {
 	return cfg32(c, d->bus, d->device, d->function, 0x20) == window ? 0 : -1;
 }
 
-static int assign_host_resources(enum q8b_pcie_controller c,
-		q8b_pcie_device_t *devices, int count, unsigned flags) {
+static int assign_host_resources(enum qcom8gen3_pcie_controller c,
+		qcom8gen3_pcie_device_t *devices, int count, unsigned flags) {
 	pcie_window_t w;
 	uint32_t attr[HOST_MAX_FUNCTIONS][6] = {{0}};
 	uint32_t windows[HOST_MAX_FUNCTIONS] = {0};
@@ -2505,7 +2505,7 @@ static int assign_host_resources(enum q8b_pcie_controller c,
 	next = w.mem32_bus;
 	/* All decode and DMA remain disabled until the whole plan is installed. */
 	for (int i = 0; i < count; i++) {
-		q8b_pcie_device_t *d = &devices[i];
+		qcom8gen3_pcie_device_t *d = &devices[i];
 		d->command &= ~7u;
 		cfg_write16(c, d->bus, d->device, d->function, PCI_COMMAND, d->command);
 	}
@@ -2515,7 +2515,7 @@ static int assign_host_resources(enum q8b_pcie_controller c,
 	if (plan_bus_resources(devices, count, 1, 0, &next, windows))
 		return -1;
 	for (int i = 0; i < count; i++) {
-		q8b_pcie_device_t *d = &devices[i];
+		qcom8gen3_pcie_device_t *d = &devices[i];
 		for (unsigned bar = 0; bar < 6; bar++) {
 			if (!d->bar_size[bar])
 				continue;
@@ -2531,15 +2531,15 @@ static int assign_host_resources(enum q8b_pcie_controller c,
 			}
 			if (cfg32(c, d->bus, d->device, d->function, reg) != value)
 				return -1;
-			slog("q8b pcie: pcie%u %02x:%02x.%u BAR%u=%08x cpu=%llx\n",
+			slog("qcom8gen3 pcie: pcie%u %02x:%02x.%u BAR%u=%08x cpu=%llx\n",
 					c, d->bus, d->device, d->function, bar, value,
 					(unsigned long long)d->bar_phys[bar]);
 		}
 		if ((d->header_type & 0x7f) == 1 && program_bridge_window(d, windows[i]))
 			return -1;
 	}
-	/* DBI is the real root port; ECAM bus 0 is not its alias on Q8B. */
-	uintptr_t dbi = c == Q8B_PCIE3A ? DBI3A_VA : DBI_VA;
+	/* DBI is the real root port; ECAM bus 0 is not its alias on QCOM8GEN3. */
+	uintptr_t dbi = c == QCOM8GEN3_PCIE3A ? DBI3A_VA : DBI_VA;
 	wr(dbi + 0x20, next > w.mem32_bus ?
 			0x4000u | ((uint32_t)(next - 1) & 0xfff00000u) : 0x0000fff0u);
 	wr(dbi + 0x24, 0x0000fff0u);
@@ -2549,15 +2549,15 @@ static int assign_host_resources(enum q8b_pcie_controller c,
 			(uint16_t)((rd(dbi + PCI_COMMAND) & ~7u) | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	for (int i = 0; i < count; i++) {
-		q8b_pcie_device_t *d = &devices[i];
-		if (flags & Q8B_PCIE_ENABLE_MEMORY)
+		qcom8gen3_pcie_device_t *d = &devices[i];
+		if (flags & QCOM8GEN3_PCIE_ENABLE_MEMORY)
 			d->command |= PCI_COMMAND_MEMORY;
-		if (flags & Q8B_PCIE_ENABLE_MASTER)
+		if (flags & QCOM8GEN3_PCIE_ENABLE_MASTER)
 			d->command |= PCI_COMMAND_MASTER;
 		cfg_write16(c, d->bus, d->device, d->function, PCI_COMMAND, d->command);
 		d->command = cfg16(c, d->bus, d->device, d->function, PCI_COMMAND);
 	}
-	slog("q8b pcie: controller %u resources ready bus=%llx..%llx\n",
+	slog("qcom8gen3 pcie: controller %u resources ready bus=%llx..%llx\n",
 			c, (unsigned long long)w.mem32_bus, (unsigned long long)next);
 	return 0;
 }
@@ -2570,15 +2570,15 @@ static int pci_id_present(uint32_t id) {
  * absent downstream bus can return a non-FF poison value on this platform;
  * blindly walking all eight mapped buses then fills the snapshot with phantom
  * functions until PCIE_MAX_DEVICES is reached. */
-static void probe_bus_range(enum q8b_pcie_controller controller,
+static void probe_bus_range(enum qcom8gen3_pcie_controller controller,
 		unsigned *first, unsigned *last) {
-	/* The Q8B PCIe4 port is a direct x1 E-key connection.  Its endpoint is
+	/* The QCOM8GEN3 PCIe4 port is a direct x1 E-key connection.  Its endpoint is
 	 * wired at bus 1/device 0; there is no switch or bridge below it.  Some
 	 * firmware revisions leave the ECAM aperture's unused device-select bits
 	 * returning the live endpoint, so walking all 32 device numbers publishes
 	 * thirty-two aliases of WCN6855.  Restrict this fixed topology before any
 	 * config reads. */
-	if (controller == Q8B_PCIE4) {
+	if (controller == QCOM8GEN3_PCIE4) {
 		*first = 1;
 		*last = 1;
 		return;
@@ -2616,7 +2616,7 @@ static void probe_bus_range(enum q8b_pcie_controller controller,
 	 * endpoint bus 1 only.  Do not turn a stale subordinate-bus value into
 	 * accesses past the 2 MiB mapping, where the next physical window is BAR
 	 * memory rather than configuration space. */
-	if (controller == Q8B_PCIE2A && *last > 1)
+	if (controller == QCOM8GEN3_PCIE2A && *last > 1)
 		*last = 1;
 }
 
@@ -2629,116 +2629,116 @@ static void probe_bus_range(enum q8b_pcie_controller controller,
 static int configure_qps615_hierarchy(void) {
 	uint32_t id;
 
-	id = cfg32(Q8B_PCIE3A, 1, 0, 0, PCI_VENDOR_ID);
+	id = cfg32(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_VENDOR_ID);
 	if (id != 0x06231179u ||
-			(cfg32(Q8B_PCIE3A, 1, 0, 0, PCI_CLASS_REVISION) >> 8) !=
+			(cfg32(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_CLASS_REVISION) >> 8) !=
 			0x060400u ||
-			((cfg32(Q8B_PCIE3A, 1, 0, 0, PCI_HEADER_TYPE) >> 16) &
+			((cfg32(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_HEADER_TYPE) >> 16) &
 			0x7fu) != 1) {
-		slog("q8b pcie: QPS615 upstream bridge unavailable id=%08x\n", id);
+		slog("qcom8gen3 pcie: QPS615 upstream bridge unavailable id=%08x\n", id);
 		return -1;
 	}
 	/* QPS615 upstream bridge: primary=1, secondary=2, subordinate=5. */
-	cfg_write32(Q8B_PCIE3A, 1, 0, 0, PCI_PRIMARY_BUS,
+	cfg_write32(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_PRIMARY_BUS,
 			(5u << 16) | (2u << 8) | 1u);
-	if ((cfg32(Q8B_PCIE3A, 1, 0, 0, PCI_PRIMARY_BUS) & 0x00ffffffu) !=
+	if ((cfg32(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_PRIMARY_BUS) & 0x00ffffffu) !=
 			0x00050201u)
 		return -1;
-	cfg_write16(Q8B_PCIE3A, 1, 0, 0, PCI_COMMAND,
-			cfg16(Q8B_PCIE3A, 1, 0, 0, PCI_COMMAND) |
+	cfg_write16(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_COMMAND,
+			cfg16(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_COMMAND) |
 			PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-	slog("q8b pcie: QPS615 upstream buscfg=%08x\n",
-			cfg32(Q8B_PCIE3A, 1, 0, 0, PCI_PRIMARY_BUS));
+	slog("qcom8gen3 pcie: QPS615 upstream buscfg=%08x\n",
+			cfg32(QCOM8GEN3_PCIE3A, 1, 0, 0, PCI_PRIMARY_BUS));
 
-	/* DSP1/DSP2 are disabled on Q8B; DSP3 carries the integrated Ethernet
+	/* DSP1/DSP2 are disabled on QCOM8GEN3; DSP3 carries the integrated Ethernet
 	 * endpoint on bus 5.  Read the switch's bus-2 port headers only after the
 	 * upstream window is assigned, then give DSP3 its child bus number. */
 	for (unsigned device = 1; device <= 3; device++) {
-		id = cfg32(Q8B_PCIE3A, 2, device, 0, PCI_VENDOR_ID);
-		slog("q8b pcie: QPS615 bus2 dev%u id=%08x\n", device, id);
+		id = cfg32(QCOM8GEN3_PCIE3A, 2, device, 0, PCI_VENDOR_ID);
+		slog("qcom8gen3 pcie: QPS615 bus2 dev%u id=%08x\n", device, id);
 		if (id != 0x06231179u)
 			continue;
-		uint32_t hdr = cfg32(Q8B_PCIE3A, 2, device, 0,
+		uint32_t hdr = cfg32(QCOM8GEN3_PCIE3A, 2, device, 0,
 				PCI_HEADER_TYPE);
 		if (((hdr >> 16) & 0x7fu) != 1)
 			continue;
 		unsigned secondary = device == 3 ? 5u : (device + 2u);
-		cfg_write32(Q8B_PCIE3A, 2, device, 0, PCI_PRIMARY_BUS,
+		cfg_write32(QCOM8GEN3_PCIE3A, 2, device, 0, PCI_PRIMARY_BUS,
 				(secondary << 16) | (secondary << 8) | 2u);
-		if ((cfg32(Q8B_PCIE3A, 2, device, 0, PCI_PRIMARY_BUS) &
+		if ((cfg32(QCOM8GEN3_PCIE3A, 2, device, 0, PCI_PRIMARY_BUS) &
 				0x00ffffffu) != ((secondary << 16) | (secondary << 8) | 2u))
 			return -1;
-		cfg_write16(Q8B_PCIE3A, 2, device, 0, PCI_COMMAND,
-				cfg16(Q8B_PCIE3A, 2, device, 0, PCI_COMMAND) |
+		cfg_write16(QCOM8GEN3_PCIE3A, 2, device, 0, PCI_COMMAND,
+				cfg16(QCOM8GEN3_PCIE3A, 2, device, 0, PCI_COMMAND) |
 				PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 	}
 	return 0;
 }
 
-int q8b_pcie_power_on(enum q8b_pcie_controller controller,
+int qcom8gen3_pcie_power_on(enum qcom8gen3_pcie_controller controller,
 		unsigned max_generation) {
-	if (controller == Q8B_PCIE2A)
+	if (controller == QCOM8GEN3_PCIE2A)
 		return start_pcie2a(max_generation);
-	if (controller == Q8B_PCIE3A)
+	if (controller == QCOM8GEN3_PCIE3A)
 		return start_pcie3a(max_generation);
-	if (controller == Q8B_PCIE4)
+	if (controller == QCOM8GEN3_PCIE4)
 		return start_pcie4(max_generation);
 	return 0; /* PCIe2A/3B remain firmware-managed on this board */
 }
 
-int q8b_pcie_probe(enum q8b_pcie_controller controller,
-		q8b_pcie_device_t *out, size_t max, unsigned flags) {
-	if (!out || !max || controller > Q8B_PCIE4 || map_controller_registers())
+int qcom8gen3_pcie_probe(enum qcom8gen3_pcie_controller controller,
+		qcom8gen3_pcie_device_t *out, size_t max, unsigned flags) {
+	if (!out || !max || controller > QCOM8GEN3_PCIE4 || map_controller_registers())
 		return -1;
-	if ((controller == Q8B_PCIE2A ||
-			controller == Q8B_PCIE3A || controller == Q8B_PCIE4) &&
-			(flags & Q8B_PCIE_POWER_ON) &&
-			q8b_pcie_power_on(controller, 2))
+	if ((controller == QCOM8GEN3_PCIE2A ||
+			controller == QCOM8GEN3_PCIE3A || controller == QCOM8GEN3_PCIE4) &&
+			(flags & QCOM8GEN3_PCIE_POWER_ON) &&
+			qcom8gen3_pcie_power_on(controller, 2))
 		return -1;
 	/* PCIe2A may arrive without the legacy POWER_ON flag.  It is the Linux
 	 * style host used by the NVMe endpoint, so bring it up before the first
 	 * config-space scan. */
-	if (controller == Q8B_PCIE2A && !_pcie2a_up &&
-			q8b_pcie_power_on(controller, 3))
+	if (controller == QCOM8GEN3_PCIE2A && !_pcie2a_up &&
+			qcom8gen3_pcie_power_on(controller, 3))
 		return -1;
-	if (controller == Q8B_PCIE3A && !_pcie3a_up) {
-		slog("q8b pcie: PCIe3A ECAM refused before link completion\n");
+	if (controller == QCOM8GEN3_PCIE3A && !_pcie3a_up) {
+		slog("qcom8gen3 pcie: PCIe3A ECAM refused before link completion\n");
 		return -1;
 	}
-	if (controller == Q8B_PCIE4 &&
+	if (controller == QCOM8GEN3_PCIE4 &&
 			(!_pcie4_wifi_powered || !_pcie4_up)) {
-		slog("q8b pcie: PCIe4 ECAM refused before Wi-Fi power/link completion\n");
+		slog("qcom8gen3 pcie: PCIe4 ECAM refused before Wi-Fi power/link completion\n");
 		return -1;
 	}
-	if (controller != Q8B_PCIE4 && !controller_ecam_ready(controller)) {
-		slog("q8b pcie: controller %u power/config clock unavailable; ECAM skipped\n",
+	if (controller != QCOM8GEN3_PCIE4 && !controller_ecam_ready(controller)) {
+		slog("qcom8gen3 pcie: controller %u power/config clock unavailable; ECAM skipped\n",
 			(unsigned)controller);
 		return -2;
 	}
 	if (ecam_map(controller))
 		return -1;
-	if (controller == Q8B_PCIE4 && !root_link_up())
+	if (controller == QCOM8GEN3_PCIE4 && !root_link_up())
 		return -2;
-	if (controller == Q8B_PCIE2A &&
+	if (controller == QCOM8GEN3_PCIE2A &&
 			!root_link_up_at(DBI2A_VA))
 		return -2;
-	if (controller == Q8B_PCIE3A && !root_link_up_at(DBI3A_VA))
+	if (controller == QCOM8GEN3_PCIE3A && !root_link_up_at(DBI3A_VA))
 		return -2;
-	if (controller == Q8B_PCIE3A && configure_qps615_hierarchy()) {
-		slog("q8b pcie: QPS615 bridge setup failed; downstream scan skipped\n");
+	if (controller == QCOM8GEN3_PCIE3A && configure_qps615_hierarchy()) {
+		slog("qcom8gen3 pcie: QPS615 bridge setup failed; downstream scan skipped\n");
 		return -2;
 	}
-	bool assign = (flags & Q8B_PCIE_ASSIGN_RESOURCES) &&
-			(controller == Q8B_PCIE3A || controller == Q8B_PCIE4);
+	bool assign = (flags & QCOM8GEN3_PCIE_ASSIGN_RESOURCES) &&
+			(controller == QCOM8GEN3_PCIE3A || controller == QCOM8GEN3_PCIE4);
 	int found = 0;
 	unsigned first_bus;
 	unsigned last_bus;
 	probe_bus_range(controller, &first_bus, &last_bus);
-	slog("q8b pcie: controller %u ECAM bus range %u..%u\n",
+	slog("qcom8gen3 pcie: controller %u ECAM bus range %u..%u\n",
 			(unsigned)controller, first_bus, last_bus);
 	for (unsigned bus = first_bus; bus <= last_bus && (size_t)found < max; bus++) {
-		unsigned device_limit = (controller == Q8B_PCIE4 ||
-				controller == Q8B_PCIE2A) ? 1 : 32;
+		unsigned device_limit = (controller == QCOM8GEN3_PCIE4 ||
+				controller == QCOM8GEN3_PCIE2A) ? 1 : 32;
 		for (unsigned device = 0; device < device_limit && (size_t)found < max; device++) {
 			for (unsigned function = 0; function < 8 && (size_t)found < max;
 					function++) {
@@ -2747,8 +2747,8 @@ int q8b_pcie_probe(enum q8b_pcie_controller controller,
 				if (!pci_id_present(id))
 					continue;
 				fill_device(controller, bus, device, function, &out[found++],
-						assign ? flags & ~(Q8B_PCIE_ENABLE_MEMORY |
-							Q8B_PCIE_ENABLE_MASTER) : flags);
+						assign ? flags & ~(QCOM8GEN3_PCIE_ENABLE_MEMORY |
+							QCOM8GEN3_PCIE_ENABLE_MASTER) : flags);
 				if (function == 0 &&
 						!(out[found - 1].header_type & 0x80u))
 					break;
@@ -2756,29 +2756,29 @@ int q8b_pcie_probe(enum q8b_pcie_controller controller,
 		}
 	}
 	if (assign && assign_host_resources(controller, out, found, flags)) {
-		slog("q8b pcie: controller %u resource assignment failed; decode disabled\n",
+		slog("qcom8gen3 pcie: controller %u resource assignment failed; decode disabled\n",
 				controller);
 		return -3;
 	}
 	return found;
 }
 
-int q8b_pcie4_start_and_probe(q8b_pcie_device_t *out, size_t max,
+int qcom8gen3_pcie4_start_and_probe(qcom8gen3_pcie_device_t *out, size_t max,
 		unsigned max_generation, unsigned flags) {
-	if (q8b_pcie_power_on(Q8B_PCIE4, max_generation))
+	if (qcom8gen3_pcie_power_on(QCOM8GEN3_PCIE4, max_generation))
 		return -1;
-	slog("q8b pcie: PCIe4 power-on complete, probing ECAM after endpoint power\n");
-	return q8b_pcie_probe(Q8B_PCIE4, out, max,
-			flags & ~Q8B_PCIE_POWER_ON);
+	slog("qcom8gen3 pcie: PCIe4 power-on complete, probing ECAM after endpoint power\n");
+	return qcom8gen3_pcie_probe(QCOM8GEN3_PCIE4, out, max,
+			flags & ~QCOM8GEN3_PCIE_POWER_ON);
 }
 
-int q8b_pcie_map_bar(const q8b_pcie_device_t *device, unsigned bar,
+int qcom8gen3_pcie_map_bar(const qcom8gen3_pcie_device_t *device, unsigned bar,
 		uintptr_t virtual_address, uint32_t size) {
 	pcie_window_t w;
 	uint64_t aperture;
 	if (!device || bar >= 6 || !size || !device->bar_phys[bar] ||
-			device->controller > Q8B_PCIE4 ||
-			controller_window((enum q8b_pcie_controller)device->controller, &w))
+			device->controller > QCOM8GEN3_PCIE4 ||
+			controller_window((enum qcom8gen3_pcie_controller)device->controller, &w))
 		return -1;
 	if (device->bar[bar] >= w.mem32_bus &&
 			device->bar[bar] < w.mem32_bus + w.mem32_size)
@@ -2795,20 +2795,20 @@ int q8b_pcie_map_bar(const q8b_pcie_device_t *device, unsigned bar,
 	return map_window(virtual_address, device->bar_phys[bar], size);
 }
 
-int q8b_pcie_service_get_count(void) {
+int qcom8gen3_pcie_service_get_count(void) {
 	int pid = service_pid_wait();
 	if (pid < 0)
 		return -1;
 	proto_t out;
 	PF->init(&out);
-	int ret = dev_cntl_by_pid(pid, Q8B_PCIE_CMD_GET_COUNT, NULL, &out);
+	int ret = dev_cntl_by_pid(pid, QCOM8GEN3_PCIE_CMD_GET_COUNT, NULL, &out);
 	if (ret == 0)
 		ret = proto_read_int(&out);
 	PF->clear(&out);
 	return ret;
 }
 
-int q8b_pcie_service_get_device(unsigned index, q8b_pcie_device_t *out_device) {
+int qcom8gen3_pcie_service_get_device(unsigned index, qcom8gen3_pcie_device_t *out_device) {
 	int pid;
 	proto_t in, out;
 	int ret;
@@ -2822,7 +2822,7 @@ int q8b_pcie_service_get_device(unsigned index, q8b_pcie_device_t *out_device) {
 		return -1;
 	PF->init(&in)->addi(&in, (int32_t)index);
 	PF->init(&out);
-	ret = dev_cntl_by_pid(pid, Q8B_PCIE_CMD_GET_DEVICE, &in, &out);
+	ret = dev_cntl_by_pid(pid, QCOM8GEN3_PCIE_CMD_GET_DEVICE, &in, &out);
 	if (ret == 0) {
 		data = proto_read(&out, &size);
 		if (!data || size != (int32_t)sizeof(*out_device))
@@ -2835,12 +2835,12 @@ int q8b_pcie_service_get_device(unsigned index, q8b_pcie_device_t *out_device) {
 	return ret;
 }
 
-int q8b_pcie_prepare_wlan_dma(const q8b_pcie_device_t *d, uint64_t sink) {
-	if (!d || !q8b_pcie_is_wlan(d) || d->bus != 1 || d->device ||
+int qcom8gen3_pcie_prepare_wlan_dma(const qcom8gen3_pcie_device_t *d, uint64_t sink) {
+	if (!d || !qcom8gen3_pcie_is_wlan(d) || d->bus != 1 || d->device ||
 			d->function ||
 			!sink || !_pcie4_up || !root_link_up())
 		return -1;
-	unsigned c = Q8B_PCIE4;
+	unsigned c = QCOM8GEN3_PCIE4;
 	if (cfg32(c, 1, 0, 0, 0) != 0x110317cb)
 		return -1;
 	unsigned cap = cfg32(c, 1, 0, 0, PCI_CAP_PTR) & 0xfc;
@@ -2860,7 +2860,7 @@ int q8b_pcie_prepare_wlan_dma(const q8b_pcie_device_t *d, uint64_t sink) {
 			uint16_t command = cfg16(c, 1, 0, 0, PCI_COMMAND);
 			cfg_write16(c, 1, 0, 0, PCI_COMMAND,
 					command | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-			slog("q8b pcied: WLAN DMA restored cmd=%04x msi=%04x sink=%llx\n",
+			slog("qcom8gen3 pcied: WLAN DMA restored cmd=%04x msi=%04x sink=%llx\n",
 					cfg16(c, 1, 0, 0, PCI_COMMAND),
 					cfg16(c, 1, 0, 0, cap + 2), (unsigned long long)sink);
 			return (cfg16(c, 1, 0, 0, PCI_COMMAND) & 6) == 6 &&
@@ -2871,8 +2871,8 @@ int q8b_pcie_prepare_wlan_dma(const q8b_pcie_device_t *d, uint64_t sink) {
 	return -1;
 }
 
-int q8b_pcie_service_prepare_wlan_dma(void) {
+int qcom8gen3_pcie_service_prepare_wlan_dma(void) {
 	int pid = service_pid_wait();
 	return pid < 0 ? -1 : dev_cntl_by_pid(pid,
-			Q8B_PCIE_CMD_PREPARE_WLAN_DMA, NULL, NULL);
+			QCOM8GEN3_PCIE_CMD_PREPARE_WLAN_DMA, NULL, NULL);
 }

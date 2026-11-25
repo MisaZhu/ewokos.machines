@@ -89,8 +89,8 @@
 
 /*
  * bootinfo hand-off (stub -> kernel), resident at ORIN_BOOTINFO_PHYS.
- * Layout mirrors the Q8B hand-off so the shared userland (init/sdfsd via
- * q8b_platform.h) consumes it unchanged.  Keep in sync with ../efi/main.c.
+ * Layout mirrors the QCOM8GEN3 hand-off so the shared userland (init/sdfsd via
+ * qcom8gen3_platform.h) consumes it unchanged.  Keep in sync with ../efi/main.c.
  */
 #define ORIN_BOOTINFO_MAGIC   0x4e524f45u   /* "EORN" little-endian */
 #define ORIN_BOOTINFO_VERSION 1
@@ -132,8 +132,8 @@ typedef struct {
 
     uint64_t rd_base;          /* INITRAMFS.IMG copied into RAM */
     uint64_t rd_size;
-    uint32_t rd_flags;         /* Q8B_RD_FLAG_* (shared hand-off layout) */
-    uint32_t boot_source;      /* Q8B_BOOT_SOURCE_* */
+    uint32_t rd_flags;         /* QCOM8GEN3_RD_FLAG_* (shared hand-off layout) */
+    uint32_t boot_source;      /* QCOM8GEN3_BOOT_SOURCE_* */
 
     uint64_t kernel_phys;
     uint64_t kernel_size;

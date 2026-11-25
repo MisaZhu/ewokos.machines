@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef Q8B_WCN_STA_H
-#define Q8B_WCN_STA_H
+#ifndef QCOM8GEN3_WCN_STA_H
+#define QCOM8GEN3_WCN_STA_H
 #include <stdint.h>
 #include <stddef.h>
 struct wcn_rx_security;

@@ -1,5 +1,5 @@
 /*
- * User-space NVMe driver for the Q8B (SC8280XP) M.2 slots.
+ * User-space NVMe driver for the QCOM8GEN3 (SC8280XP) M.2 slots.
  *
  * Firmware responsibilities (already done before ExitBootServices):
  *   - PCIe2a / PCIe3b controller clocks, resets, PHY, link training,
@@ -245,22 +245,22 @@ static void nvme_cq_doorbell(uint16_t cqid, uint16_t head) {
 
 /* PCI configuration space is owned by pcied.  These helpers only consume the
  * immutable snapshot and therefore cannot change link, command, or BAR state. */
-static enum q8b_pcie_controller controller_for_slot(int slot) {
-	return slot == NVME_SLOT_PCIE2A ? Q8B_PCIE2A : Q8B_PCIE3B;
+static enum qcom8gen3_pcie_controller controller_for_slot(int slot) {
+	return slot == NVME_SLOT_PCIE2A ? QCOM8GEN3_PCIE2A : QCOM8GEN3_PCIE3B;
 }
 
-static int snapshot_slot(int slot, q8b_pcie_device_t *out, int max) {
+static int snapshot_slot(int slot, qcom8gen3_pcie_device_t *out, int max) {
 	int count;
 	int found = 0;
 	if (!out || max <= 0 || (slot != NVME_SLOT_PCIE2A &&
 			slot != NVME_SLOT_PCIE3B))
 		return -1;
-	count = q8b_pcie_service_get_count();
+	count = qcom8gen3_pcie_service_get_count();
 	if (count < 0)
 		return count;
 	for (int i = 0; i < count && found < max; i++) {
-		q8b_pcie_device_t device;
-		if (q8b_pcie_service_get_device((unsigned)i, &device) != 0)
+		qcom8gen3_pcie_device_t device;
+		if (qcom8gen3_pcie_service_get_device((unsigned)i, &device) != 0)
 			return -1;
 		if (device.controller != controller_for_slot(slot))
 			continue;
@@ -269,9 +269,9 @@ static int snapshot_slot(int slot, q8b_pcie_device_t *out, int max) {
 	return found;
 }
 
-int q8b_pcie_link(int slot, int bus, int dev, int fn,
+int qcom8gen3_pcie_link(int slot, int bus, int dev, int fn,
 		uint32_t* speed, uint32_t* width) {
-	q8b_pcie_device_t devices[32];
+	qcom8gen3_pcie_device_t devices[32];
 	int count;
 	if (!speed || !width)
 		return -1;
@@ -290,14 +290,14 @@ int q8b_pcie_link(int slot, int bus, int dev, int fn,
 	return -1;
 }
 
-int q8b_pcie_scan(int slot, nvme_pci_dev_t* out, int max) {
-	q8b_pcie_device_t devices[32];
+int qcom8gen3_pcie_scan(int slot, nvme_pci_dev_t* out, int max) {
+	qcom8gen3_pcie_device_t devices[32];
 	int count = snapshot_slot(slot, devices, 32);
 	int found = 0;
 	if (!out || max <= 0 || count < 0)
 		return count < 0 ? count : -1;
 	for (int i = 0; i < count && found < max; i++) {
-		q8b_pcie_device_t *src = &devices[i];
+		qcom8gen3_pcie_device_t *src = &devices[i];
 		nvme_pci_dev_t *dst;
 		if (src->class_code != 0x010802u || !src->bar[0] ||
 				!src->bar_phys[0])
@@ -323,17 +323,17 @@ int q8b_pcie_scan(int slot, nvme_pci_dev_t* out, int max) {
 }
 
 static int service_device_for_nvme(const nvme_pci_dev_t *dev,
-		q8b_pcie_device_t *out) {
+		qcom8gen3_pcie_device_t *out) {
 	int count;
-	enum q8b_pcie_controller controller;
+	enum qcom8gen3_pcie_controller controller;
 	if (!dev || !out)
 		return -1;
 	controller = controller_for_slot(dev->slot);
-	count = q8b_pcie_service_get_count();
+	count = qcom8gen3_pcie_service_get_count();
 	if (count < 0)
 		return count;
 	for (int i = 0; i < count; i++) {
-		if (q8b_pcie_service_get_device((unsigned)i, out) != 0)
+		if (qcom8gen3_pcie_service_get_device((unsigned)i, out) != 0)
 			return -1;
 		if (out->controller == controller && out->bus == (uint8_t)dev->bus &&
 				out->device == (uint8_t)dev->dev &&
@@ -862,7 +862,7 @@ static int nvme_dma_setup(void) {
 
 int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 	uint8_t idbuf[4096];
-	q8b_pcie_device_t pcie_device;
+	qcom8gen3_pcie_device_t pcie_device;
 
 	if (_c.opened)
 		return 0;
@@ -881,7 +881,7 @@ int nvme_open(nvme_info_t* info, const nvme_pci_dev_t* dev) {
 	_c.opened = false;
 
 	if (service_device_for_nvme(dev, &pcie_device) != 0 ||
-			q8b_pcie_map_bar(&pcie_device, 0, _c.bar,
+			qcom8gen3_pcie_map_bar(&pcie_device, 0, _c.bar,
 					NVME_BAR_MAP_SIZE) != 0) {
 		slog("nvme: BAR map failed pa=0x%llx\n",
 				(unsigned long long)_c.bar_phys);

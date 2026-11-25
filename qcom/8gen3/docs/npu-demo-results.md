@@ -1,4 +1,4 @@
-# Q8B npudemo evaluation, 2026-10-25
+# QCOM8GEN3 npudemo evaluation, 2026-10-25
 
 The minimal public-API client and its metric definitions are documented in
 [nputest / npudemo](../../../apps/nputest/README.md). Tests use the production native HTP

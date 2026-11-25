@@ -7,9 +7,9 @@
 /*
  * FIFO transport backend for the native himax bus (host tests only; not
  * linked into himaxd).  Wires himax_bus_t.xfer to a full-duplex SPI
- * transfer function (normally q8b_spi_transfer on a bus-60 QUP0 SE6
+ * transfer function (normally qcom8gen3_spi_transfer on a bus-60 QUP0 SE6
  * handle), with bounds checks.  Full-duplex SPI frames larger than
- * Q8B_SPI_MAX_XFER cannot be split because CS must stay asserted for the
+ * QCOM8GEN3_SPI_MAX_XFER cannot be split because CS must stay asserted for the
  * whole Himax access; the backend refuses them and reports "too-large".
  */
 #define HIMAX_BUS_MAX_XFER 6144U
@@ -24,7 +24,7 @@ typedef struct {
 /* Build the himax bus view backed by himax_fifo_t. */
 himax_bus_t himax_fifo_attach(himax_fifo_t* fifo);
 
-/* Default transfer hook for a q8b_spi_t* spictx (raw pointer). */
-int himax_fifo_q8b_spi(void* spictx, const void* tx, void* rx, size_t len);
+/* Default transfer hook for a qcom8gen3_spi_t* spictx (raw pointer). */
+int himax_fifo_qcom8gen3_spi(void* spictx, const void* tx, void* rx, size_t len);
 
 #endif

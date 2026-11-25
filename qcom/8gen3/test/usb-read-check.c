@@ -1,4 +1,4 @@
-/* Read-only Q8B regression for concurrent executable/firmware reads.
+/* Read-only QCOM8GEN3 regression for concurrent executable/firmware reads.
  * Usage: usb-read-check path md5 path md5 [rounds]
  * Run while WLAN is starting to exercise USB storage alongside PCIe DMA.
  * Expected hashes must come from the host build, not a possibly bad read.

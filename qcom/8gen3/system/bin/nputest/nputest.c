@@ -662,7 +662,7 @@ int main(int argc, char **argv)
 		if (strcmp(argv[i], "-v") == 0)
 			g_verbose = 1;
 
-	printf("adrenonpu QNN C API test (q8b / SC8280XP / Hexagon V68)\n");
+	printf("adrenonpu QNN C API test (qcom8gen3 / SC8280XP / Hexagon V68)\n");
 	QnnLog_initialize(log_cb, NULL);
 
 	be = test_interface();

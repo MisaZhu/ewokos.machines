@@ -83,7 +83,7 @@ static int dsi_init(void) {
 
     if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)DSI_VA,
                 (ewokos_addr_t)DSI_PHY, (ewokos_addr_t)DSI_SIZE) != DSI_VA) {
-        slog("q8b dsi: SYS_MEM_MAP failed pa=0x%llx va=0x%llx\n",
+        slog("qcom8gen3 dsi: SYS_MEM_MAP failed pa=0x%llx va=0x%llx\n",
                 (unsigned long long)DSI_PHY, (unsigned long long)DSI_VA);
         _dsi_failed = true;
         return -1;
@@ -92,14 +92,14 @@ static int dsi_init(void) {
 
     ewokos_addr_t va = dma_alloc(0, DSI_TX_BUF_SIZE);
     if (va == 0) {
-        slog("q8b dsi: dma alloc failed\n");
+        slog("qcom8gen3 dsi: dma alloc failed\n");
         _dsi = NULL;
         _dsi_failed = true;
         return -1;
     }
     _tx_pa = (uint64_t)dma_phy_addr(0, va);
     if (_tx_pa == 0 || _tx_pa > 0xffffffffULL) {
-        slog("q8b dsi: dma phy addr out of 32-bit range (0x%llx)\n",
+        slog("qcom8gen3 dsi: dma phy addr out of 32-bit range (0x%llx)\n",
                 (unsigned long long)_tx_pa);
         dma_free(0, va);
         _dsi = NULL;
@@ -107,7 +107,7 @@ static int dsi_init(void) {
         return -1;
     }
     _tx = (uint8_t*)(uintptr_t)va;
-    slog("q8b dsi: mapped ctrl va=0x%llx tx pa=0x%llx\n",
+    slog("qcom8gen3 dsi: mapped ctrl va=0x%llx tx pa=0x%llx\n",
             (unsigned long long)DSI_VA, (unsigned long long)_tx_pa);
     return 0;
 }
@@ -151,7 +151,7 @@ static int dsi_dcs_short(uint8_t cmd) {
         }
         usleep(100);
     }
-    slog("q8b dsi: cmd 0x%02x dma timeout (intr=0x%08x)\n",
+    slog("qcom8gen3 dsi: cmd 0x%02x dma timeout (intr=0x%08x)\n",
             cmd, dsi_rd(DSI_REG_INTR_CTRL));
     return -1;
 }
@@ -168,7 +168,7 @@ static int panel_sleep(void) {
         return -1;
     usleep(120000);
     _panel_sleeping = true;
-    slog("q8b dsi: panel sleep-in\n");
+    slog("qcom8gen3 dsi: panel sleep-in\n");
     return 0;
 }
 
@@ -184,7 +184,7 @@ static int panel_wake(void) {
         return -1;
     usleep(20000);
     _panel_sleeping = false;
-    slog("q8b dsi: panel sleep-out\n");
+    slog("qcom8gen3 dsi: panel sleep-out\n");
     return 0;
 }
 

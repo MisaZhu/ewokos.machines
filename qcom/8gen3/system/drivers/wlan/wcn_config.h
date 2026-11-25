@@ -16,12 +16,12 @@
  * dropped), so the desktop wifi app learns networks the same way on both
  * platforms.
  *
- * The legacy Q8B profile (/etc/wlan.conf: ssid LF passphrase LF 64-hex seed)
+ * The legacy QCOM8GEN3 profile (/etc/wlan.conf: ssid LF passphrase LF 64-hex seed)
  * is still accepted when no JSON entry matches, so already-provisioned SD
  * cards keep auto-connecting after the update.
  */
-#ifndef Q8B_WCN_CONFIG_H
-#define Q8B_WCN_CONFIG_H
+#ifndef QCOM8GEN3_WCN_CONFIG_H
+#define QCOM8GEN3_WCN_CONFIG_H
 #include <stddef.h>
 
 /* The pi5 paths. Overridable only so the host-side parser test can point them

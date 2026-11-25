@@ -1,5 +1,5 @@
-#ifndef Q8B_GPI_DMA_RT_H
-#define Q8B_GPI_DMA_RT_H
+#ifndef QCOM8GEN3_GPI_DMA_RT_H
+#define QCOM8GEN3_GPI_DMA_RT_H
 #include <bsp/gpi_dma.h>
 
 /*
@@ -17,8 +17,8 @@
  * full reset, never a retry.  Host tests inject the io and shm backends.
  */
 typedef struct {
-    q8b_gpi_dma_t dma;
-    q8b_gpi_rings_t rings;
+    qcom8gen3_gpi_dma_t dma;
+    qcom8gen3_gpi_rings_t rings;
     int desc_shm, ev_shm;
     uint32_t* desc_v;           /* descriptor ring, TRE_SIZE*entries */
     uint8_t*  ev_v;             /* event ring, EVENT_SIZE*entries */
@@ -26,19 +26,19 @@ typedef struct {
     unsigned instance, entries, pinned;
     unsigned doorbells;
     const char* stage;
-} q8b_gpi_rt_t;
+} qcom8gen3_gpi_rt_t;
 
 /* Map the instance window and allocate the pinned contig rings. */
-int q8b_gpi_rt_open(q8b_gpi_rt_t* rt, unsigned instance, unsigned entries);
-int q8b_gpi_rt_start(q8b_gpi_rt_t* rt);
+int qcom8gen3_gpi_rt_open(qcom8gen3_gpi_rt_t* rt, unsigned instance, unsigned entries);
+int qcom8gen3_gpi_rt_start(qcom8gen3_gpi_rt_t* rt);
 /* Full-duplex xfer: tx_len bytes out, rx_len bytes in (rx_len holds echoes /
  * reads).  Buffers are caller-owned kernel-style pinned shm or plain RAM
  * for the frames; the ring TREs carry the phys addresses given here. */
-int q8b_gpi_rt_xfer(q8b_gpi_rt_t* rt, uint32_t tx_pa, uint32_t tx_hi,
+int qcom8gen3_gpi_rt_xfer(qcom8gen3_gpi_rt_t* rt, uint32_t tx_pa, uint32_t tx_hi,
                     uint32_t tx_len, uint32_t rx_pa, uint32_t rx_hi,
-                    uint32_t rx_len, const q8b_gpi_spi_cfg_t* cfg,
+                    uint32_t rx_len, const qcom8gen3_gpi_spi_cfg_t* cfg,
                     uint64_t budget_us);
 /* stop -> dealloc -> unpin -> detach shm. */
-int q8b_gpi_rt_close(q8b_gpi_rt_t* rt);
+int qcom8gen3_gpi_rt_close(qcom8gen3_gpi_rt_t* rt);
 
 #endif

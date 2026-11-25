@@ -1,4 +1,4 @@
-#define Q8B_SPI_TEST
+#define QCOM8GEN3_SPI_TEST
 #include "../src/spi.c"
 #include <assert.h>
 #include <stdio.h>
@@ -127,13 +127,13 @@ static void reset(void) {
     now = maps = se_accesses = vote_writes = 0;
 }
 int main(void) {
-    q8b_spi_t spi, m3;
+    qcom8gen3_spi_t spi, m3;
     reset();
-    assert(q8b_spi_prepare(&spi, 21, 2400000) != 0 && maps == 0);
-    assert(q8b_spi_open(&spi, 22, 0, 0) != 0 && maps == 0);
-    assert(q8b_spi_open(&spi, 22, 2400000, 32) != 0 && maps == 0);
+    assert(qcom8gen3_spi_prepare(&spi, 21, 2400000) != 0 && maps == 0);
+    assert(qcom8gen3_spi_open(&spi, 22, 0, 0) != 0 && maps == 0);
+    assert(qcom8gen3_spi_open(&spi, 22, 2400000, 32) != 0 && maps == 0);
     gcc[0x1e864 / 4] = CLOCK_OFF;
-    assert(q8b_spi_open(&spi, 22, 2400000, 0) != 0);
+    assert(qcom8gen3_spi_open(&spi, 22, 2400000, 0) != 0);
     assert(se_accesses == 0); /* Never touch an unclocked serial engine. */
 
     reset();
@@ -142,29 +142,29 @@ int main(void) {
     gcc[(ROOT + 0x14) / 4] = 1;
     for (unsigned i = 0; i < 8; i++) gcc[(ROOT + 0x1c) / 4 + i] = 0x100;
     gcc[(ROOT + 0x1c) / 4 + 3] = 1;
-    assert(q8b_spi_open(&spi, 22, 2400000, 0) == 0);
+    assert(qcom8gen3_spi_open(&spi, 22, 2400000, 0) == 0);
     assert(spi.clock_index == 3 && spi.speed_hz == 2400000);
     assert(gcc[QUP_VOTE / 4] == ((1U << 5) | 15U));
     assert(gcc[ROOT / 4] == 0); /* DFS root was not rewritten. */
     assert(vote_writes == 2);
-    q8b_spi_t prepared;
-    assert(q8b_spi_prepare(&prepared, 22, 2400000) == 0 && vote_writes == 2);
+    qcom8gen3_spi_t prepared;
+    assert(qcom8gen3_spi_prepare(&prepared, 22, 2400000) == 0 && vote_writes == 2);
     assert(se[TX_PACK0 / 4] == 0x7f8fe && se[TX_PACK1 / 4] == 0xffefe);
     uint8_t tx[1025], rx[1025];
     for (unsigned i = 0; i < sizeof(tx); i++) tx[i] = (uint8_t)(i * 37 + 19);
     const unsigned sizes[] = {1, 3, 4, 13, 64, 65, 257, 1025};
     for (unsigned i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
         memset(rx, 0, sizeof(rx));
-        assert(q8b_spi_transfer(&spi, tx, rx, sizes[i]) == 0);
+        assert(qcom8gen3_spi_transfer(&spi, tx, rx, sizes[i]) == 0);
         assert(opcode == 3 && memcmp(tx, rx, sizes[i]) == 0);
     }
-    assert(q8b_spi_transfer(&spi, tx, NULL, 13) == 0 && opcode == 1);
+    assert(qcom8gen3_spi_transfer(&spi, tx, NULL, 13) == 0 && opcode == 1);
     /* RX-only read: every byte must be clocked and the RX data returned.
      * The engine clocks TX_LEN bytes and only produces RX data for bytes it
      * actually shifted, so an RX-only command that leaves TX_LEN 0 completes
      * at once with nothing received. */
     memset(rx, 0, sizeof(rx));
-    assert(q8b_spi_transfer(&spi, NULL, rx, 1025) == 0);
+    assert(qcom8gen3_spi_transfer(&spi, NULL, rx, 1025) == 0);
     /* The mock is a loopback device: it returns what was clocked out, so an
      * RX-only transfer reads back the 0xff filler it drove.  What matters is
      * that all 1025 bytes came back (TX_LEN was len, not 0). */
@@ -176,56 +176,56 @@ int main(void) {
     static uint8_t frame_tx[3 + 5132], frame_rx[3 + 5132];
     for (unsigned i = 0; i < sizeof(frame_tx); i++) frame_tx[i] = (uint8_t)(i * 7 + 3);
     memset(frame_rx, 0, sizeof(frame_rx));
-    assert(q8b_spi_transfer(&spi, frame_tx, frame_rx, sizeof(frame_rx)) == 0);
+    assert(qcom8gen3_spi_transfer(&spi, frame_tx, frame_rx, sizeof(frame_rx)) == 0);
     assert(memcmp(frame_tx, frame_rx, sizeof(frame_rx)) == 0);
     /* Zero TX words outstanding: the polled loop never sees a stuck FIFO. */
     assert(tx_words_in == tx_words_out);
-    assert(q8b_spi_transfer(&spi, tx, rx, 0) != 0);
-    assert(q8b_spi_transfer(&spi, NULL, NULL, 13) != 0);
-    assert(q8b_spi_transfer(&spi, tx, rx, Q8B_SPI_MAX_XFER + 1) != 0);
+    assert(qcom8gen3_spi_transfer(&spi, tx, rx, 0) != 0);
+    assert(qcom8gen3_spi_transfer(&spi, NULL, NULL, 13) != 0);
+    assert(qcom8gen3_spi_transfer(&spi, tx, rx, QCOM8GEN3_SPI_MAX_XFER + 1) != 0);
     memcpy(rx, tx, sizeof(tx));
-    assert(q8b_spi_transfer(&spi, rx, rx, sizeof(rx)) == 0);
+    assert(qcom8gen3_spi_transfer(&spi, rx, rx, sizeof(rx)) == 0);
     assert(memcmp(tx, rx, sizeof(rx)) == 0);
 
     short_rx = true;
-    assert(q8b_spi_transfer(&spi, tx, rx, 13) != 0 && !spi.ready);
+    assert(qcom8gen3_spi_transfer(&spi, tx, rx, 13) != 0 && !spi.ready);
     /* The failed command must not leave RX words behind for the next one. */
     assert((hw_rd(SE_VA, RX_STATUS) & 0x1ffffffU) == 0);
     reset();
-    assert(q8b_spi_open(&spi, 22, 2400000, 0) == 0);
+    assert(qcom8gen3_spi_open(&spi, 22, 2400000, 0) == 0);
     illegal = true;
-    assert(q8b_spi_transfer(&spi, tx, rx, 13) != 0 && !spi.ready);
+    assert(qcom8gen3_spi_transfer(&spi, tx, rx, 13) != 0 && !spi.ready);
     reset();
-    assert(q8b_spi_open(&spi, 22, 2400000, 0) == 0);
+    assert(qcom8gen3_spi_open(&spi, 22, 2400000, 0) == 0);
     /* Start idle, then emulate a sequencer that never completes or aborts. */
     stall_command = bad_abort = true;
-    assert(q8b_spi_transfer(&spi, tx, rx, 13) != 0 && !spi.ready);
+    assert(qcom8gen3_spi_transfer(&spi, tx, rx, 13) != 0 && !spi.ready);
     assert(now < 50000); /* transfer and recovery are both bounded */
     reset();
     se[IF_DISABLE / 4] = 1;
-    assert(q8b_spi_open(&spi, 22, 2400000, 0) != 0 && !spi.ready);
+    assert(qcom8gen3_spi_open(&spi, 22, 2400000, 0) != 0 && !spi.ready);
     assert(strcmp(spi.stage, "fifo-disabled-requires-gpi") == 0);
     /* ---- gaokun3 QUP0 SE6 (bus 60) ---- */
     reset();
     gcc[0x17008 / 4] = CLOCK_OFF | 2U;    /* S AHB idle under HWCG is valid */
     gcc[0x52008 / 4] = 1u << 5;           /* retain an unrelated vote bit */
-    assert(q8b_spi_prepare(&prepared, 60, 19200000) != 0);  /* > 12 MHz */
-    assert(q8b_spi_prepare(&prepared, 60, 3000000) == 0);
+    assert(qcom8gen3_spi_prepare(&prepared, 60, 19200000) != 0);  /* > 12 MHz */
+    assert(qcom8gen3_spi_prepare(&prepared, 60, 3000000) == 0);
     /* vote register 0x52008 gains M(6)|S(7)|S6(16) without losing bit 5 */
     assert((gcc[0x52008 / 4] & 0x100c0u) == 0x100c0u);
     assert((gcc[0x52008 / 4] & (1u << 5)) != 0u);
-    assert(q8b_spi_open(&spi, 60, 3000000, 0) == 0);
+    assert(qcom8gen3_spi_open(&spi, 60, 3000000, 0) == 0);
     assert(spi.se_pa == 0x00998000U);
     assert(spi.speed_hz <= 12000000U);
     /* qup6 function 1 on gpio154-157 */
     for (unsigned pin = 154; pin <= 157; pin++)
         assert(((tlmm[pin * 0x1000u / 4u] >> 2) & 15u) == 1u);
     memset(rx, 0, sizeof(rx));
-    assert(q8b_spi_transfer(&spi, tx, rx, 13) == 0 && memcmp(tx, rx, 13) == 0);
+    assert(qcom8gen3_spi_transfer(&spi, tx, rx, 13) == 0 && memcmp(tx, rx, 13) == 0);
     /* SPI mode 3 on bus 60: CPHA=1, CPOL=1 (0x230 bit2). */
     reset();
     gcc[0x17008 / 4] = CLOCK_OFF | 2U;
-    assert(q8b_spi_open(&m3, 60, 3000000, 3) == 0);
+    assert(qcom8gen3_spi_open(&m3, 60, 3000000, 3) == 0);
     assert(se[CPHA / 4] == 1u && se[CPOL / 4] == 4u);
     /* Software CS: the CS pad (gpio157) must stay a plain GPIO while the
      * engine takes MISO/MOSI/CLK, and the engine's demux must not point at
@@ -233,9 +233,9 @@ int main(void) {
     reset();
     gcc[0x17008 / 4] = CLOCK_OFF | 2U;
     tlmm[157 * 0x1000u / 4u] = 0x6u;   /* pull-up, fn0, input: caller's pin */
-    q8b_spi_t swcs;
-    assert(q8b_spi_open(&swcs, 60, 3000000,
-                Q8B_SPI_CPHA | Q8B_SPI_CPOL | Q8B_SPI_SW_CS) == 0);
+    qcom8gen3_spi_t swcs;
+    assert(qcom8gen3_spi_open(&swcs, 60, 3000000,
+                QCOM8GEN3_SPI_CPHA | QCOM8GEN3_SPI_CPOL | QCOM8GEN3_SPI_SW_CS) == 0);
     assert(swcs.sw_cs);
     for (unsigned pin = 154; pin <= 156; pin++)
         assert(((tlmm[pin * 0x1000u / 4u] >> 2) & 15u) == 1u);
@@ -244,7 +244,7 @@ int main(void) {
     /* ... and without the flag CS is muxed to qup6 like the others. */
     reset();
     gcc[0x17008 / 4] = CLOCK_OFF | 2U;
-    assert(q8b_spi_open(&m3, 60, 3000000, 3) == 0);
+    assert(qcom8gen3_spi_open(&m3, 60, 3000000, 3) == 0);
     assert(!m3.sw_cs);
     assert(((tlmm[157 * 0x1000u / 4u] >> 2) & 15u) == 1u);
     assert(se[CS_SELECT / 4] == 0u);
@@ -252,8 +252,8 @@ int main(void) {
     /* FIFO-disabled engine is refused on both buses. */
     reset();
     se[IF_DISABLE / 4] = 1;
-    assert(q8b_spi_open(&spi, 60, 3000000, 0) != 0);
+    assert(qcom8gen3_spi_open(&spi, 60, 3000000, 0) != 0);
     assert(spi.stage != 0 && ~0);
-    puts("q8b SPI controller tests: ok");
+    puts("qcom8gen3 SPI controller tests: ok");
     return 0;
 }

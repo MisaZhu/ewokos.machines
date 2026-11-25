@@ -1,4 +1,4 @@
-# Q8B 全 USB 启动读取性能
+# QCOM8GEN3 全 USB 启动读取性能
 
 2026-11-06，SanDisk `0781:5591`，xHCI2/root port 10，USB 3。
 ESP 为 LBA 2048..526335，ext3 根分区从 LBA 526336 开始。
@@ -46,15 +46,15 @@ xHCI owner。FAT 回调限制在 ESP 范围，写入仍是单扇区，put 后重
 ```sh
 sh system/basic/sys/rootfs/tests/run_usb_read.sh
 sh system/basic/libs/ext3/tests/run_read_reentrancy.sh
-sh machines/q8b/test/run-usb-bt-setup.sh
-sh machines/q8b/test/run-wlan-boot-progress.sh
+sh machines/qcom/8gen3/test/run-usb-bt-setup.sh
+sh machines/qcom/8gen3/test/run-wlan-boot-progress.sh
 ```
 
 上述测试通过 ASan/UBSan。USB 测试覆盖 1K/2K/4K 块、请求数量预算、
 缓冲区边界、批量失败回退、真实读取错误和 LBA/数量溢出。
 打包后的 initramfs 通过 `e2fsck -fn`。
 
-只读实机工具源码为 `machines/q8b/test/usb-read-bench.c`：
+只读实机工具源码为 `machines/qcom/8gen3/test/usb-read-bench.c`：
 
 ```text
 usb-read-bench raw /dev/usb0 526336 2048
@@ -106,7 +106,7 @@ USB ESP 原镜像已完整提取到 `/home/root/initramfs.usb-before.img`，其 
 需等待 `verified initramfs.img` 后再重启。持久 sdfsd 的原副本在
 `/home/root/sdfsd.usb-before`。正常测试结束保留加速版本和全 USB 启动顺序。
 
-本地原始证据、镜像和测量记录保存在 `.tmp/q8b-usb-boot/`。
+本地原始证据、镜像和测量记录保存在 `.tmp/qcom8gen3-usb-boot/`。
 
 ## 锁竞争与嵌套诊断（2026-11-06）
 

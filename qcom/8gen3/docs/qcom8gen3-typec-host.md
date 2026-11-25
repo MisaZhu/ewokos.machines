@@ -1,6 +1,6 @@
-# Q8B USB-C host 启动
+# QCOM8GEN3 USB-C host 启动
 
-Q8B 的 USB-A 与两个数据 USB-C 接口连接到三个独立的 DWC3/xHCI 控制器，
+QCOM8GEN3 的 USB-A 与两个数据 USB-C 接口连接到三个独立的 DWC3/xHCI 控制器，
 不能通过扫描一个控制器的所有 root ports 覆盖整板 USB。
 
 | EwokOS 日志 | SoC 设备树节点 | 核心物理地址 | 接口 |
@@ -9,8 +9,8 @@ Q8B 的 USB-A 与两个数据 USB-C 接口连接到三个独立的 DWC3/xHCI 控
 | xhci1 / usb0-type-c | usb_0_dwc3 | 0x0a600000 | 数据 USB-C connector@0 |
 | xhci2 / usb1-type-c | usb_1_dwc3 | 0x0a800000 | 数据 USB-C connector@1 |
 
-依据是 `~/work/q8b/sc8280xp.dtsi` 的三个独立 DWC3 节点，以及
-`sc8280xp-radxa-dragon-q8b.dts` 中 connector@0/1 的 HS 和 SS endpoint
+依据是 `~/work/qcom8gen3/sc8280xp.dtsi` 的三个独立 DWC3 节点，以及
+`sc8280xp-radxa-dragon-qcom8gen3.dts` 中 connector@0/1 的 HS 和 SS endpoint
 连接；两个 Type-C DWC3 在板级设备树中均设置为 `dr_mode = "host"`。
 connector 编号表示设备树连接关系，不用于判断机壳左右或上下位置。
 单独的 Type-C 电源输入不属于这两个数据接口。
@@ -42,19 +42,19 @@ root-port 扁平编号在一次控制器集合初始化后保持固定；一个�
 ## 构建与验证
 
 ```sh
-sh machines/q8b/system/libs/bsp/tests/run-typec.sh
-make -C machines/q8b/kernel
-make -C machines/q8b/system
-make -C machines/q8b/efi
+sh machines/qcom/8gen3/system/libs/bsp/tests/run-typec.sh
+make -C machines/qcom/8gen3/kernel
+make -C machines/qcom/8gen3/system
+make -C machines/qcom/8gen3/efi
 ```
 
 寄存器/DMA 模拟测试执行真实的 DWC3、xHCI 和 BSP 代码，检查角色切换、
 设备停止超时、三个控制器的端口路由、控制器缺失、HCRST 超时、跨控制器
 DMA 隔离、scratchpad 对齐和运行期失败后的端口编号。测试通过不代表硬件验证。
 
-启动镜像是 `machines/q8b/efi/initramfs.img`（16 MB ext3），将其作为
+启动镜像是 `machines/qcom/8gen3/efi/initramfs.img`（16 MB ext3），将其作为
 `INITRAMFS.IMG` 同步到当前启动存储，并使用同步构建的 bootloader。kernel 无需因文件名变化修改。
-镜像中的 `/drivers/q8b/usbhostd` 包含三个控制器及 Type-C handoff 实现。
+镜像中的 `/drivers/8gen3/usbhostd` 包含三个控制器及 Type-C handoff 实现。
 
 新实机日志应先出现两个 Type-C 控制器各自的 `dwc3N: ... role=...`、
 `host ready`、`xhciN ... phy=a600000/a800000` 和 root ports 范围，然后才是

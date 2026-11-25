@@ -3,8 +3,8 @@
  * Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
  * Copyright (c) 2021-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
-#ifndef Q8B_WCN_WMI_PROTO_H
-#define Q8B_WCN_WMI_PROTO_H
+#ifndef QCOM8GEN3_WCN_WMI_PROTO_H
+#define QCOM8GEN3_WCN_WMI_PROTO_H
 #include <stdint.h>
 struct wmi_resource_config {
 	uint32_t tlv_header;

@@ -1,7 +1,7 @@
 /*
  * adreno_blob.c - Adreno implementation of pglc_program_serialize(): lays a
  * compiled pglc_program (+ optional xform program) out as the
- * adreno_prog_blob_t VERSION 6 wire format that the q8b g2dd daemon's
+ * adreno_prog_blob_t VERSION 6 wire format that the qcom8gen3 g2dd daemon's
  * bsp_g3d_program() -> adreno_3d.c parses.
  *
  * kern[0] is the main program's COMPUTE stage (fullscreen effect or the

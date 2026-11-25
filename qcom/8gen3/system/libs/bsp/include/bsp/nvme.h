@@ -1,8 +1,8 @@
-#ifndef __Q8B_NVME_H
-#define __Q8B_NVME_H
+#ifndef __QCOM8GEN3_NVME_H
+#define __QCOM8GEN3_NVME_H
 
 /*
- * User-space NVMe driver for the Q8B (SC8280XP) M.2 slots.
+ * User-space NVMe driver for the QCOM8GEN3 (SC8280XP) M.2 slots.
  *
  * The firmware performs PCIe controller bring-up and link training for
  * pcie2a (M-key Gen3 x4) and pcie3b (M-key Gen3 x2) before
@@ -65,10 +65,10 @@ typedef struct {
 
 /* Scan one root complex for NVMe functions.  Returns the number found
  * (0..max) or a negative errno. */
-int q8b_pcie_scan(int slot, nvme_pci_dev_t* out, int max);
+int qcom8gen3_pcie_scan(int slot, nvme_pci_dev_t* out, int max);
 
 /* PCIe link status (negotiated speed/width) of one function. */
-int q8b_pcie_link(int slot, int bus, int dev, int fn,
+int qcom8gen3_pcie_link(int slot, int bus, int dev, int fn,
 		uint32_t* speed, uint32_t* width);
 
 /* Initialize the controller on the given device (admin queues + identify

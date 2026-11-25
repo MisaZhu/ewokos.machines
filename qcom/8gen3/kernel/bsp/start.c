@@ -4,7 +4,7 @@
 #include "hw_arch.h"
 
 /*
- * Q8B early boot stage: build page tables that map
+ * QCOM8GEN3 early boot stage: build page tables that map
  *   - the physical load address identity (the pre-MMU .init code runs there
  *     and keeps executing with the MMU on),
  *   - the high-half kernel alias (KERNEL_BASE + (phys - RAM_BASE)),
@@ -57,31 +57,31 @@ static void set_boot_pgt(uint64_t virt, uint64_t phy, uint32_t len, int is_dev) 
 }
 
 extern void load_boot_pgt(uint64_t page_table);
-extern void q8b_install_vectors(void);
+extern void qcom8gen3_install_vectors(void);
 
 void _boot_start(void) {
     boot_pgt_init();
 
     /* identity window around the kernel: holds .init, bootinfo and stacks */
-    set_boot_pgt(Q8B_EARLY_WIN_BASE, Q8B_EARLY_WIN_BASE,
-            (uint32_t)Q8B_EARLY_WIN_SIZE, 0);
+    set_boot_pgt(QCOM8GEN3_EARLY_WIN_BASE, QCOM8GEN3_EARLY_WIN_BASE,
+            (uint32_t)QCOM8GEN3_EARLY_WIN_SIZE, 0);
 
     /* high-half alias for the same window (V2P/P2V convention) */
-    set_boot_pgt(KERNEL_BASE + Q8B_EARLY_WIN_VOFF, Q8B_EARLY_WIN_BASE,
-            (uint32_t)Q8B_EARLY_WIN_SIZE, 0);
+    set_boot_pgt(KERNEL_BASE + QCOM8GEN3_EARLY_WIN_VOFF, QCOM8GEN3_EARLY_WIN_BASE,
+            (uint32_t)QCOM8GEN3_EARLY_WIN_SIZE, 0);
 
     /* low MMIO window: UART17 at 0x884000, GCC, TLMM, ... */
-    set_boot_pgt(MMIO_BASE, Q8B_MMIO_PHY, (uint32_t)Q8B_MMIO_SIZE, 1);
+    set_boot_pgt(MMIO_BASE, QCOM8GEN3_MMIO_PHY, (uint32_t)QCOM8GEN3_MMIO_SIZE, 1);
 
     /* GICv3 window at its high-half slot */
-    set_boot_pgt(MMIO_BASE + Q8B_GIC_WIN_OFF, Q8B_GIC_WIN_PHY,
-            (uint32_t)Q8B_GIC_WIN_SIZE, 1);
+    set_boot_pgt(MMIO_BASE + QCOM8GEN3_GIC_WIN_OFF, QCOM8GEN3_GIC_WIN_PHY,
+            (uint32_t)QCOM8GEN3_GIC_WIN_SIZE, 1);
 
     load_boot_pgt((uint64_t)startup_page_dir);
 
     /* The MMU is on now: install the real vector table (absolute literal,
      * see early_vectors.S) before calling into high-half C code. */
-    q8b_install_vectors();
+    qcom8gen3_install_vectors();
 }
 
 /* PSCI secondaries arrive only after the boot core has completed kernel VM
@@ -89,5 +89,5 @@ void _boot_start(void) {
  * with another core executing through the same mappings. */
 void _boot_start_secondary(void) {
     load_boot_pgt((uint64_t)startup_page_dir);
-    q8b_install_vectors();
+    qcom8gen3_install_vectors();
 }

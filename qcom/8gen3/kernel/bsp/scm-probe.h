@@ -1,18 +1,18 @@
 /* Read-only capability diagnostics. Linux's Adreno path requires an SCM
  * transport, but does not gate image loading on PAS advertisement queries. */
-#ifndef Q8B_SCM_PROBE_H
-#define Q8B_SCM_PROBE_H
+#ifndef QCOM8GEN3_SCM_PROBE_H
+#define QCOM8GEN3_SCM_PROBE_H
 #include <stdint.h>
-#include <q8b_gpu_pas.h>
-typedef int (*q8b_scm_call_t)(uint32_t, uint32_t, uint64_t, uint64_t,
+#include <qcom8gen3_gpu_pas.h>
+typedef int (*qcom8gen3_scm_call_t)(uint32_t, uint32_t, uint64_t, uint64_t,
         uint64_t, int, uint64_t *);
-static inline int q8b_scm_probe(q8b_scm_call_t call) {
+static inline int qcom8gen3_scm_probe(qcom8gen3_scm_call_t call) {
     uint64_t result = 0;
     int ret;
     const uint32_t calls[] = {0x201, 0x202, 0x205};
     ret = call(0x601, 1, 0x02000601, 0, 0, 1, &result);
     if(ret) return ret;
-    if(result != 1) return Q8B_GPU_PAS_UNSUPPORTED;
+    if(result != 1) return QCOM8GEN3_GPU_PAS_UNSUPPORTED;
     ret = call(0x601, 1, 0x02000207, 0, 0, 0, &result);
     if(ret) return ret;
     if(result == 1) {

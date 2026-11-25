@@ -16,7 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define QNN_NPU_BUILD_ID "adrenonpu-1.0.0-q8b-sc8280xp"
+#define QNN_NPU_BUILD_ID "adrenonpu-1.0.0-qcom8gen3-sc8280xp"
 
 /* NPU session probe: cDSP PAS boot followed by the FastRPC session open.
    Records identity even on decline so getPlatformInfo/capabilities stay

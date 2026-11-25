@@ -1,5 +1,5 @@
 /*
- * qnndemo - MNIST handwritten-digit classification on the Q8B HTP NPU.
+ * qnndemo - MNIST handwritten-digit classification on the QCOM8GEN3 HTP NPU.
  *
  * This is a small, end-to-end application around libadrenonpu's public QNN C
  * API, not a synthetic operator test.  It loads the trained MNIST context
@@ -83,7 +83,7 @@ static uint32_t counter_frequency(void)
 #if defined(__aarch64__)
 	uint64_t hz;
 
-	/* Q8B firmware programs CNTFRQ to match CNTVCT (19.2 MHz).  Read the
+	/* QCOM8GEN3 firmware programs CNTFRQ to match CNTVCT (19.2 MHz).  Read the
 	 * architectural register directly, as npudemo does. */
 	__asm__ volatile("mrs %0, CNTFRQ_EL0" : "=r"(hz) :: "memory");
 	return hz <= UINT32_MAX ? (uint32_t)hz : 0;
@@ -95,8 +95,8 @@ static uint32_t counter_frequency(void)
 static void usage(const char *argv0)
 {
 	printf("usage: %s [options]\n"
-	       "  --context PATH     QNN context binary (default /apps/qnndemo/res/q8b_mnist.bin)\n"
-	       "  --graph NAME       graph name inside the context (default q8b_mnist_u8)\n"
+	       "  --context PATH     QNN context binary (default /apps/qnndemo/res/qcom8gen3_mnist.bin)\n"
+	       "  --graph NAME       graph name inside the context (default qcom8gen3_mnist_u8)\n"
 	       "  --input PATH       contiguous U8 NHWC images, 784 B each (default /apps/qnndemo/res/input.bin)\n"
 	       "  --labels PATH      one U8 class label per sample (default /apps/qnndemo/res/labels.bin)\n"
 	       "  --reference PATH   integer reference output, 10 B per sample (default /apps/qnndemo/res/reference.bin)\n"
@@ -455,8 +455,8 @@ static void json_summary(char *buf, size_t cap, const options_t *o,
 int main(int argc, char **argv)
 {
 	options_t o = {
-		.context = "/apps/qnndemo/res/q8b_mnist.bin",
-		.graph = "q8b_mnist_u8",
+		.context = "/apps/qnndemo/res/qcom8gen3_mnist.bin",
+		.graph = "qcom8gen3_mnist_u8",
 		.input = "/apps/qnndemo/res/input.bin",
 		.labels = "/apps/qnndemo/res/labels.bin",
 		.reference = "/apps/qnndemo/res/reference.bin",
@@ -596,7 +596,7 @@ int main(int argc, char **argv)
 		DIE("FAIL: output allocation\n");
 	}
 
-	printf("QNN MNIST demo on Q8B HTP\n");
+	printf("QNN MNIST demo on QCOM8GEN3 HTP\n");
 	printf("context: %s (%d B), graph %s\n", o.context, context_size,
 	       o.graph);
 	printf("backend: htp_native (%s); CPU fallback disabled; counter_hz=%u\n",

@@ -1,10 +1,10 @@
-# Q8B USB / WLAN 并发读取导致同步异常
+# QCOM8GEN3 USB / WLAN 并发读取导致同步异常
 
-调试日期：2026-11-05。按 `skills/q8b-kernel-test/SKILL.md` 使用 EUD 复位、PXE 和常驻串口缓存。
+调试日期：2026-11-05。按 `skills/qcom8gen3-kernel-test/SKILL.md` 使用 EUD 复位、PXE 和常驻串口缓存。
 
 ## 定位证据
 
-USB 根文件系统来自 SanDisk `0781:5591`，挂在 xHCI2/root10；WLAN 为 PCIe4 上的 WCN6855。实际 PXE 服务的 `tftp-root` 是 `/Users/tony/work/q8b/eud/pxe/tftp`，同时保留 `/Users/tony/work/q8b/boot/tftp/q8b` 镜像。
+USB 根文件系统来自 SanDisk `0781:5591`，挂在 xHCI2/root10；WLAN 为 PCIe4 上的 WCN6855。实际 PXE 服务的 `tftp-root` 是 `/Users/tony/work/qcom8gen3/eud/pxe/tftp`，同时保留 `/Users/tony/work/qcom8gen3/boot/tftp/qcom8gen3` 镜像。
 
 原内核把 EC=0 误判为异步 external abort，设置 PSTATE.A 后返回同一 PC，形成同步异常死循环。移除该分支后获得完整现场，故障进程会退出，系统仍可登录、执行 ps。
 
@@ -31,10 +31,10 @@ USB 根文件系统来自 SanDisk `0781:5591`，挂在 xHCI2/root10；WLAN 为 P
 ## 回归方法
 
 ```sh
-make -C machines/q8b/kernel
-make -C machines/q8b/system
-make -C machines/q8b/efi
-make -C machines/q8b/test
+make -C machines/qcom/8gen3/kernel
+make -C machines/qcom/8gen3/system
+make -C machines/qcom/8gen3/efi
+make -C machines/qcom/8gen3/test
 sh system/basic/libs/ext3/tests/run_read_reentrancy.sh
 ```
 
@@ -60,7 +60,7 @@ usb-read-check: FAIL workers=4 checks=16 failures=10
 usb-read-check: PASS workers=4 checks=16 failures=0
 ```
 
-两个 TFTP 目录已同步正常镜像：恢复原始 init.ramfs.rd，仅更新 sdfsd，不保留自动测试任务。PCIe/WLAN 和 USB 驱动二进制保持原样。原始镜像、测试镜像和串口缓存摘录保存在工作区 `.tmp/q8b-usb-pcie/`，其中 `concurrent-baseline.log` 与 `concurrent-private.log` 是最终对照。
+两个 TFTP 目录已同步正常镜像：恢复原始 init.ramfs.rd，仅更新 sdfsd，不保留自动测试任务。PCIe/WLAN 和 USB 驱动二进制保持原样。原始镜像、测试镜像和串口缓存摘录保存在工作区 `.tmp/qcom8gen3-usb-pcie/`，其中 `concurrent-baseline.log` 与 `concurrent-private.log` 是最终对照。
 
 去掉测试任务后再次 EUD/PXE 启动，23:00:06 出现登录界面，root 登录成功。23:03:04 的 ps 确认 xserverd、xlauncher、xwm_misa、statusbar 正常存活，USB host 约占单核 10%，无同步异常或异常循环。该轮缓存保存在 `normal-private.log`。
 

@@ -1,6 +1,6 @@
-# Q8B WLAN 复位与 USB 蓝牙固件加载
+# QCOM8GEN3 WLAN 复位与 USB 蓝牙固件加载
 
-调试日期：2026-11-05 至 2026-11-06。通过 `skills/q8b-kernel-test/SKILL.md` 的 EUD/PXE 与常驻串口缓存验证；本轮接续 `usb-pcie-sync-debug.md` 的 ext3 并发读修复。
+调试日期：2026-11-05 至 2026-11-06。通过 `skills/qcom8gen3-kernel-test/SKILL.md` 的 EUD/PXE 与常驻串口缓存验证；本轮接续 `usb-pcie-sync-debug.md` 的 ext3 并发读修复。
 
 ## WLAN 复位顺序
 
@@ -27,8 +27,8 @@ WLAN 获得 MAC 后，btd 才请求 `USBHCI_CMD_SETUP`。旧 USB host 在 IPC ha
 ## 主机回归
 
 ```sh
-sh machines/q8b/test/run-usb-bt-setup.sh
-sh machines/q8b/test/run-wlan-boot-progress.sh
+sh machines/qcom/8gen3/test/run-usb-bt-setup.sh
+sh machines/qcom/8gen3/test/run-wlan-boot-progress.sh
 ```
 
 测试包含真实 BSP 源码，模拟 USB 传输与 USB 根固件文件，断言 SETUP handler 不执行硬件/文件 IO；固件读取回调期间重新进入 USBHCI INFO，确认未就绪状态。覆盖请求合并、固件加载/HCI reset、文件打开失败后重试、reset 取消请求，以及已就绪时重复 SETUP。ASan/UBSan 通过；把 `USB_BT_SOURCE` 指向修复前源码时，在 `!in_handler` 断言确定性失败。
@@ -37,7 +37,7 @@ sh machines/q8b/test/run-wlan-boot-progress.sh
 
 ## 真机记录
 
-诊断启动中已完成 BHI → BHIE → AMSS/IPCR → QMI → WMI READY，DP `active=1 failed=0`。扫描返回真实热点；stop/start 后重新达到 WMI READY，23:53 的再次扫描也返回热点。23:47:39 出现 `q8b bt: firmware operational, USB HCI ready`，随后可 root 登录，ps 显示 GPU、SSH 与桌面进程存活。
+诊断启动中已完成 BHI → BHIE → AMSS/IPCR → QMI → WMI READY，DP `active=1 failed=0`。扫描返回真实热点；stop/start 后重新达到 WMI READY，23:53 的再次扫描也返回热点。23:47:39 出现 `qcom8gen3 bt: firmware operational, USB HCI ready`，随后可 root 登录，ps 显示 GPU、SSH 与桌面进程存活。
 
 当前固件未提供有效的独立 MAC，驱动沿用既有确定性硬件身份派生地址；本轮没有变更该策略。
 
@@ -47,10 +47,10 @@ sh machines/q8b/test/run-wlan-boot-progress.sh
 
 ## 部署与回退
 
-USB 根上的原驱动已保存为 `/drivers/q8b/wlan.before-20261105`。临时安装程序在 RAMFS 阶段将候选二进制读入内存，等待 USB 根出现、DP 就绪和真实扫描结果后，备份旧文件，再写入正式 WLAN，fsync 后逐字节回读比较。00:15:33 安装输出为：
+USB 根上的原驱动已保存为 `/drivers/8gen3/wlan.before-20261105`。临时安装程序在 RAMFS 阶段将候选二进制读入内存，等待 USB 根出现、DP 就绪和真实扫描结果后，备份旧文件，再写入正式 WLAN，fsync 后逐字节回读比较。00:15:33 安装输出为：
 
 ```text
-wifi-install: PASS bytes=362824 md5=cdf67c39e1d83b8089d1156fb79c4f24 backup=/drivers/q8b/wlan.before-20261105
+wifi-install: PASS bytes=362824 md5=cdf67c39e1d83b8089d1156fb79c4f24 backup=/drivers/8gen3/wlan.before-20261105
 ```
 
 两个 TFTP 目录恢复相同的正常 initramfs：原始 init.ramfs.rd，修复后的 sdfsd/usbhostd，以及从仓库源码重建的 pcied。不包含早期 WLAN、探针或安装程序；WLAN 从持久 USB 根按原正常顺序启动。标准系统构建目录里的 wlan/pcied/usbhostd 也已同步为本轮产物。
@@ -60,7 +60,7 @@ KERNEL.BIN     e23a07d47e9dbec378433b917647976c69ca2b4f317e6db40f66851147c09958
 INITRAMFS.IMG  6748a2a2bd8e307bb79f133bc9cf03ddf271a11d6382bec9e58f1715b8872a2e
 ```
 
-串口证据与测试前源码放在工作区 `.tmp/q8b-wifi/`，包括 `early-bt-deferred.log`、`normal-before-progress.log` 与 `install-progress.log`。保存的连接测试日志已将输入凭据替换为 `[redacted]`。
+串口证据与测试前源码放在工作区 `.tmp/qcom8gen3-wifi/`，包括 `early-bt-deferred.log`、`normal-before-progress.log` 与 `install-progress.log`。保存的连接测试日志已将输入凭据替换为 `[redacted]`。
 
 ## 最终正常冷启动复验
 
@@ -68,4 +68,4 @@ INITRAMFS.IMG  6748a2a2bd8e307bb79f133bc9cf03ddf271a11d6382bec9e58f1715b8872a2e
 
 00:20:42 的 `wl0 state` 为 connected、ok=true、init_failed=false；00:20:56 的 `net0 ip` 确认自动 DHCP 再次取得 192.168.5.74/24、网关 192.168.5.1；00:21:08 收到网关 ICMP 回复。00:20:13 蓝牙 firmware operational/USB HCI ready，00:21:02 的 ps 确认 xserverd、xlauncher、xwm_misa、statusbar、btd、netd、sshd 正常存活。
 
-本轮缓存未出现同步异常、core dump、SError 或 xHCI HSE/HCE。最终日志为 `.tmp/q8b-wifi/normal-progress.log`。没有运行长时间无线吞吐或 USB 写入压力测试。
+本轮缓存未出现同步异常、core dump、SError 或 xHCI HSE/HCE。最终日志为 `.tmp/qcom8gen3-wifi/normal-progress.log`。没有运行长时间无线吞吐或 USB 写入压力测试。

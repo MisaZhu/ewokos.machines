@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef Q8B_WCN_HTC_H
-#define Q8B_WCN_HTC_H
+#ifndef QCOM8GEN3_WCN_HTC_H
+#define QCOM8GEN3_WCN_HTC_H
 #include <stddef.h>
 void wcn_htc_receive(unsigned pipe, const void *data, unsigned bytes);
 void wcn_htc_poll(void);

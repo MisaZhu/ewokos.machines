@@ -1,7 +1,7 @@
 #include "himax_native_spi.h"
 #include <string.h>
 
-int himax_native_spi_cfg(q8b_gpi_spi_cfg_t* cfg, uint32_t* out_hz) {
+int himax_native_spi_cfg(qcom8gen3_gpi_spi_cfg_t* cfg, uint32_t* out_hz) {
     if (!cfg)
         return -1;
     memset(cfg, 0, sizeof(*cfg));
@@ -12,7 +12,7 @@ int himax_native_spi_cfg(q8b_gpi_spi_cfg_t* cfg, uint32_t* out_hz) {
     cfg->pack_en = 1;                       /* packed 8-bit transfers */
     cfg->cs = 0;
     cfg->fragmentation = 0;                 /* deassert CS after each access */
-    cfg->cmd = Q8B_GPI_SPI_CMD_DUPLEX;
+    cfg->cmd = QCOM8GEN3_GPI_SPI_CMD_DUPLEX;
     /* Nearest integer divider: 19.2/12 = 1.6 -> 2 => 9.6 MHz safe upper
      * bound?  Himax data sheet allows >= ~3 MHz; the Linux driver uses
      * 12 MHz via a non-integer ratio.  Use div 2 and report the real rate. */
@@ -38,12 +38,12 @@ int himax_native_build_xfer(uint32_t* ring, uint32_t entries, uint32_t wp,
 #else
     if (!frame || frame_len == 0 || !out_wp)
         return -1;
-    q8b_gpi_spi_cfg_t cfg;
+    qcom8gen3_gpi_spi_cfg_t cfg;
     uint32_t hz;
     if (himax_native_spi_cfg(&cfg, &hz) != 0)
         return -1;
     cfg.rx_len = frame_len;                 /* full-duplex: same length */
-    return q8b_gpi_dma_build_xfer(ring, entries, wp, &cfg,
+    return qcom8gen3_gpi_dma_build_xfer(ring, entries, wp, &cfg,
             tx_lo, tx_hi, frame_len, rx_lo, rx_hi, frame_len, out_wp);
 #endif
 }

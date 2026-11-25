@@ -53,7 +53,7 @@
 #include <ewoksys/syscall.h>
 #include <ewoksys/vdevice.h>
 
-#include <q8b_npu.h>
+#include <qcom8gen3_npu.h>
 
 #include "power_key.h"
 #include "power_lid.h"
@@ -124,7 +124,7 @@ static uint64_t _lid_pending_ms;
 static int power_send_cmd(const char* node, const char* cmd, const char* why) {
     char* ret = dev_cmd(node, cmd);
     if (ret == NULL) {
-        slog("q8b powerd: %s %s: no reply from %s\n", why, cmd, node);
+        slog("qcom8gen3 powerd: %s %s: no reply from %s\n", why, cmd, node);
         return 0;
     }
     free(ret);
@@ -134,11 +134,11 @@ static int power_send_cmd(const char* node, const char* cmd, const char* why) {
 /* A non-zero rc on enable means the kernel refused (it cannot resume a
  * core, or has no CPU_SUSPEND support): the gate is then still off. */
 static void power_cpu_sleep(bool sleep, const char* why) {
-    uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_CPU_SLEEP,
+    uint64_t ret = syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_NPU_CPU_SLEEP,
             sleep ? 1 : 0, 0);
     _cpu_sleep = sleep && ret == 0;
     if (ret != 0)
-        slog("q8b powerd: %s cpu_sleep=%d rc=%d\n", why, sleep ? 1 : 0,
+        slog("qcom8gen3 powerd: %s cpu_sleep=%d rc=%d\n", why, sleep ? 1 : 0,
                 (int)ret);
 }
 
@@ -146,14 +146,14 @@ static void power_cpu_sleep(bool sleep, const char* why) {
  * sends an IPI to every secondary core, which is the wake event for one
  * that is powered down and a no-op for the rest. */
 static void power_cpu_kick(void) {
-    (void)syscall3(SYS_PLATFORM_CTL, Q8B_NPU_CPU_SLEEP, 0, 0);
+    (void)syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_NPU_CPU_SLEEP, 0, 0);
 }
 
 /* Secondary cores currently inside the suspend call.  An error (kernel
  * without the mask, non-SMP) reads as none. */
 static unsigned power_cpu_parked_mask(void) {
-    uint64_t mask = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_CPU_SLEEP_STATS,
-            Q8B_CPU_SLEEP_STATS_PARKED, 0);
+    uint64_t mask = syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_NPU_CPU_SLEEP_STATS,
+            QCOM8GEN3_CPU_SLEEP_STATS_PARKED, 0);
     return mask <= 0xffu ? (unsigned)mask : 0;
 }
 
@@ -221,12 +221,12 @@ static void power_set_sleep(bool sleep, const char* why) {
     if (!sleep && parked) {
         unsigned stuck = power_cpu_parked_mask();
         if (stuck != 0) {
-            slog("q8b powerd: %s: cores 0x%02x still powered down, "
+            slog("qcom8gen3 powerd: %s: cores 0x%02x still powered down, "
                     "re-kick\n", why, stuck);
             power_cpu_kick();
         }
     }
-    slog("q8b powerd: %s -> %s\n", why, cmd);
+    slog("qcom8gen3 powerd: %s -> %s\n", why, cmd);
 }
 
 /* Short press: toggle display sleep. */
@@ -264,14 +264,14 @@ static void power_key_step(void) {
     }
     else if (down && _key_down && !_key_ignore &&
             now - _key_down_ms >= KEY_LONG_PRESS_MS) {
-        slog("q8b powerd: power key held %u ms -> shutdown\n",
+        slog("qcom8gen3 powerd: power key held %u ms -> shutdown\n",
                 (unsigned)(now - _key_down_ms));
         _key_ignore = true;
         /* The long-press path cuts power with no further warning: flush
          * the persistent state (and anything else dirty) before PSCI
          * off.  A functioning PSCI path never returns. */
         sync();
-        (void)syscall3(SYS_PLATFORM_CTL, Q8B_NPU_SYS_OFF, 0, 0);
+        (void)syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_NPU_SYS_OFF, 0, 0);
     }
 }
 
@@ -290,7 +290,7 @@ static void lid_step(void) {
         _lid_armed = true;
         _lid_closed = closed;
         _lid_pending = closed;
-        slog("q8b powerd: lid %s at start\n",
+        slog("qcom8gen3 powerd: lid %s at start\n",
                 closed ? "closed" : "open");
         if (closed)
             power_set_sleep(true, "lid closed");
@@ -439,7 +439,7 @@ static char* power_status(void) {
          * completed at least one real power-down/resume cycle.  >0xff means
          * the op is unsupported (non-SMP kernel) or the caller lacks root. */
         uint64_t resumed = syscall3(SYS_PLATFORM_CTL,
-                Q8B_NPU_CPU_SLEEP_STATS, Q8B_CPU_SLEEP_STATS_RESUMED, 0);
+                QCOM8GEN3_NPU_CPU_SLEEP_STATS, QCOM8GEN3_CPU_SLEEP_STATS_RESUMED, 0);
         char resumed_txt[16];
         if (resumed <= 0xffu)
             snprintf(resumed_txt, sizeof(resumed_txt), "0x%02x",
@@ -460,7 +460,7 @@ static char* power_status(void) {
 }
 
 static char* power_reboot(void) {
-    uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_SYS_RESET, 0, 0);
+    uint64_t ret = syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_NPU_SYS_RESET, 0, 0);
     /* A functioning PSCI path never returns. */
     char buf[64];
     snprintf(buf, sizeof(buf), "reboot returned %llu\n",
@@ -472,7 +472,7 @@ static char* power_shutdown(void) {
     /* Cut power with no further warning: flush the persistent state file
      * (and anything else dirty) before PSCI off. */
     sync();
-    uint64_t ret = syscall3(SYS_PLATFORM_CTL, Q8B_NPU_SYS_OFF, 0, 0);
+    uint64_t ret = syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_NPU_SYS_OFF, 0, 0);
     /* A functioning PSCI path never returns. */
     char buf[64];
     snprintf(buf, sizeof(buf), "shutdown returned %llu\n",
@@ -712,11 +712,11 @@ int main(int argc, char** argv) {
     key_ok = power_key_init() == 0;
     lid_ok = power_lid_init() == 0;
     if (!bat_ok && !key_ok && !lid_ok) {
-        slog("q8b powerd: no battery hardware, no power key and no lid "
+        slog("qcom8gen3 powerd: no battery hardware, no power key and no lid "
                 "sensor; not started\n");
         return -1;
     }
-    slog("q8b powerd: battery=%s key=%s lid=%s\n",
+    slog("qcom8gen3 powerd: battery=%s key=%s lid=%s\n",
             bat_ok ? "yes" : "no", key_ok ? "yes" : "no",
             lid_ok ? "yes" : "no");
 

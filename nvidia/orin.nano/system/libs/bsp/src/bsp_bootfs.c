@@ -3,38 +3,38 @@
 #include <bsp/bsp_bootfs.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
-#include <q8b_platform.h>
+#include <qcom8gen3_platform.h>
 
 /*
  * Orin Nano boot-initramfs backend for sdfsd -b.
  *
  * The firmware hands over a complete boot-only filesystem image
- * (Q8B_RD_FLAG_BOOT_ONLY ramdisk) that has no persistent block device
+ * (QCOM8GEN3_RD_FLAG_BOOT_ONLY ramdisk) that has no persistent block device
  * behind it.  bsp_bootfs_map() maps that image into this process and the
  * read callbacks serve it straight from memory, read-only; the ext3
  * block size starts at 1024 and is re-derived from the superblock once
  * block 1 has been read.
  */
 
-#define Q8B_BOOTFS_VA 0x60000000ULL
+#define QCOM8GEN3_BOOTFS_VA 0x60000000ULL
 static uint8_t* _bootfs_va;
 static uint32_t _bootfs_size;
 static uint32_t _bootfs_block_size = 1024;
 
 int bsp_bootfs_map(void) {
     sys_info_t info;
-    const q8b_platform_data_t* pd;
+    const qcom8gen3_platform_data_t* pd;
     if (sys_get_sys_info(&info) != 0)
         return -1;
-    pd = (const q8b_platform_data_t*)info.platform_data;
+    pd = (const qcom8gen3_platform_data_t*)info.platform_data;
     if (pd == NULL || pd->rd.phy_base == 0 || pd->rd.size == 0 ||
-            (pd->rd.flags & Q8B_RD_FLAG_BOOT_ONLY) == 0)
+            (pd->rd.flags & QCOM8GEN3_RD_FLAG_BOOT_ONLY) == 0)
         return -1;
-    ewokos_addr_t ret = syscall3(SYS_MEM_MAP, (ewokos_addr_t)Q8B_BOOTFS_VA,
+    ewokos_addr_t ret = syscall3(SYS_MEM_MAP, (ewokos_addr_t)QCOM8GEN3_BOOTFS_VA,
             (ewokos_addr_t)pd->rd.phy_base, (ewokos_addr_t)pd->rd.size);
-    if (ret != (ewokos_addr_t)Q8B_BOOTFS_VA)
+    if (ret != (ewokos_addr_t)QCOM8GEN3_BOOTFS_VA)
         return -1;
-    _bootfs_va = (uint8_t*)(uintptr_t)Q8B_BOOTFS_VA;
+    _bootfs_va = (uint8_t*)(uintptr_t)QCOM8GEN3_BOOTFS_VA;
     _bootfs_size = pd->rd.size;
     _bootfs_block_size = 1024;
     return 0;
@@ -42,7 +42,7 @@ int bsp_bootfs_map(void) {
 
 void bsp_bootfs_unmap(void) {
     if (_bootfs_va != NULL && _bootfs_size != 0)
-        (void)syscall3(SYS_MEM_UNMAP, (ewokos_addr_t)Q8B_BOOTFS_VA,
+        (void)syscall3(SYS_MEM_UNMAP, (ewokos_addr_t)QCOM8GEN3_BOOTFS_VA,
                 (ewokos_addr_t)_bootfs_size, 0);
     _bootfs_va = NULL;
     _bootfs_size = 0;

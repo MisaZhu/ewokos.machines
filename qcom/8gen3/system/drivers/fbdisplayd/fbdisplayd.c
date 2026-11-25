@@ -11,7 +11,7 @@
 #include <ewoksys/sys.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/klog.h>
-#include <q8b_platform.h>
+#include <qcom8gen3_platform.h>
 #include "dsi_panel.h"
 
 /* UEFI GOP PixelFormat 0 = RGB, 1 = BGR, 2 = BitMask.  EwokOS graph
@@ -127,8 +127,8 @@ static int32_t init(uint32_t w, uint32_t h, uint32_t dep) {
     sys_info_t sysinfo;
     if (sys_get_sys_info(&sysinfo) != 0)
         return -1;
-    const q8b_platform_data_t* pd =
-        (const q8b_platform_data_t*)sysinfo.platform_data;
+    const qcom8gen3_platform_data_t* pd =
+        (const qcom8gen3_platform_data_t*)sysinfo.platform_data;
     _swap_rb = (pd->fb.format == 0);   /* PixelRedGreenBlue... */
     return 0;
 }

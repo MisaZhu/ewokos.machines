@@ -1,5 +1,5 @@
-#ifndef Q8B_QAIRT_DSP_RPC_H
-#define Q8B_QAIRT_DSP_RPC_H
+#ifndef QCOM8GEN3_QAIRT_DSP_RPC_H
+#define QCOM8GEN3_QAIRT_DSP_RPC_H
 #include <stddef.h>
 #include <stdint.h>
 typedef union {
@@ -9,7 +9,7 @@ typedef union {
 #ifdef __hexagon__
 _Static_assert(sizeof(remote_arg) == 8, "Hexagon remote_arg ABI");
 #endif
-int q8b_model_open(uint64_t *handle);
-int q8b_model_close(uint64_t handle);
-int q8b_model_invoke(uint64_t handle, uint32_t sc, remote_arg *args);
+int qcom8gen3_model_open(uint64_t *handle);
+int qcom8gen3_model_close(uint64_t handle);
+int qcom8gen3_model_invoke(uint64_t handle, uint32_t sc, remote_arg *args);
 #endif

@@ -4,12 +4,12 @@
 #include <mm/mmu.h>
 #include "hw_arch.h"
 #include "cpu_sleep.h"
-#include <q8b_counter_usec.h>
+#include <qcom8gen3_counter_usec.h>
 
 /*
  * ARM generic virtual timer (CNTV) as the EwokOS system tick.
  * The counter frequency is the firmware-programmed CNTFRQ_EL0; the virtual
- * timer PPI is INTID 27 on the Q8B GICv3.
+ * timer PPI is INTID 27 on the QCOM8GEN3 GICv3.
  */
 
 static uint32_t _cntv_step;
@@ -66,7 +66,7 @@ void timer_clear_interrupt(uint32_t id) {
     write_cntv_tval(_cntv_step);
 #ifdef KERNEL_SMP
     /* Core-0 tick, kernel lock held. */
-    q8b_cpu_sleep_tick();
+    qcom8gen3_cpu_sleep_tick();
 #endif
 }
 
@@ -80,5 +80,5 @@ void timer_set_interval(uint32_t id, uint32_t times_per_sec) {
 uint64_t timer_read_sys_usec(void) {
     if (_cntv_hz == 0)
         _cntv_hz = read_cntfrq();
-    return q8b_counter_usec(read_cntvct(), _cntv_hz);
+    return qcom8gen3_counter_usec(read_cntvct(), _cntv_hz);
 }

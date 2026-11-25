@@ -11,7 +11,7 @@ CFLAGS = --target=hexagon -mcpu=hexagonv68 -fPIC -ffreestanding \
 	-I"$(QNN_INCLUDE)" -I../include
 OBJECTS = $(OUT)/runtime.o $(OUT)/model.o
 
-all: $(OUT)/libq8b_npu.so
+all: $(OUT)/libqcom8gen3_npu.so
 
 check_sdk:
 	@test -n "$(QAIRT_SDK_ROOT)" && test -f "$(QNN_INCLUDE)/QnnInterface.h" && \
@@ -22,10 +22,10 @@ $(OUT)/%.o: %.c rpc.h $(wildcard ../include/adrenonpu/npu_*.h) | check_sdk
 	@mkdir -p "$(OUT)"
 	$(HEXAGON_CLANG) $(CFLAGS) -MMD -MP -c $< -o "$@"
 
-$(OUT)/libq8b_npu.so: $(OBJECTS) linker.ld tag_abi.py \
+$(OUT)/libqcom8gen3_npu.so: $(OBJECTS) linker.ld tag_abi.py \
 		$(QNN_LIB)/libQnnHtpV68.so $(QNN_LIB)/libQnnSystem.so
 	$(HEXAGON_LD) -shared --hash-style=sysv -z norelro -z max-page-size=4096 \
-		-T linker.ld -init=q8b_dsp_init -fini=q8b_dsp_fini -soname libq8b_npu.so \
+		-T linker.ld -init=qcom8gen3_dsp_init -fini=qcom8gen3_dsp_fini -soname libqcom8gen3_npu.so \
 		$(OBJECTS) "$(QNN_LIB)/libQnnHtpV68.so" -L"$(QNN_LIB)" -l:libQnnSystem.so -o "$@.tmp"
 	$(PYTHON) tag_abi.py "$@.tmp"
 	mv "$@.tmp" "$@"

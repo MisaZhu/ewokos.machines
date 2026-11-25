@@ -1,10 +1,10 @@
-# Q8B Wi-Fi interface (raspi5-compatible)
+# QCOM8GEN3 Wi-Fi interface (raspi5-compatible)
 
-The Q8B `wlan` driver owns the WCN6855 (QCNFA765) PCIe endpoint. Since
+The QCOM8GEN3 `wlan` driver owns the WCN6855 (QCNFA765) PCIe endpoint. Since
 2026-11 its user interface matches the Raspberry Pi 5 `wland` driver, so the
 same desktop app, scripts and configuration work on both boards. The
 Bluetooth function of the same combo module is covered in
-[q8b-bluetooth.md](q8b-bluetooth.md).
+[qcom8gen3-bluetooth.md](qcom8gen3-bluetooth.md).
 
 Both QCNFA765 subsystem IDs (`17cb:0108` and `105b:e130`) use the
 device-specific WCN6855 `nfa765` image. The PCI hardware revision may report
@@ -42,12 +42,12 @@ the TW220 failure also reproduces with one isolated hotspot, so clearing the AP
 station table or changing the MAC does not explain that failure. PCI reads stay
 in `pcied`, so the WLAN driver never changes PCI configuration state.
 
-| Item | raspi5 `wland` | Q8B `wlan` |
+| Item | raspi5 `wland` | QCOM8GEN3 `wlan` |
 |---|---|---|
 | Device node | `/dev/wl0` | `/dev/wl0` |
-| Started by | `ipcserv /drivers/raspi5/wland /dev/wl0` | `ipcserv /drivers/q8b/wlan /dev/wl0 --start` |
+| Started by | `ipcserv /drivers/raspi5/wland /dev/wl0` | `ipcserv /drivers/8gen3/wlan /dev/wl0 --start` |
 | Config | `/etc/wlan/network.json` | `/etc/wlan/network.json` |
-| devcmd | `help log state scan list connect` | same, plus Q8B diagnostics |
+| devcmd | `help log state scan list connect` | same, plus QCOM8GEN3 diagnostics |
 | Network stack | `netd /dev/net0 /dev/wl0` | `netd /dev/net0 /dev/wl0` |
 
 `--start` boots MHI/firmware at init; a `connect` request boots the controller
@@ -95,11 +95,11 @@ devcmd /dev/wl0 connect <ssid> <passwd>
 `state` publishes `state` (`idle`/`scanning`/`connecting`/`connected`/
 `disconnected`), `ssid`, `mac`, `bssid`, `rssi`, `channel`, `type`, `auth`,
 `cipher`, `ip` (always empty: netd/dhcp owns it), `scan_ready`, `reason`,
-plus the q8b `link_state`/`connect_attempts` counters. `list` entries carry
+plus the qcom8gen3 `link_state`/`connect_attempts` counters. `list` entries carry
 `id`, `ssid`, `selected`, `bssid`, `rssi`, `channel`, `type`, `auth`,
 `cipher`.
 
-Q8B extensions: `start`, `stop`/`disconnect`, `reconnect`, `country <AA>`,
+QCOM8GEN3 extensions: `start`, `stop`/`disconnect`, `reconnect`, `country <AA>`,
 `scan-stop`, `scan-results` (text), `station` (station/WPA state), `associate
 <ssid>` (associate without a supplicant) and `rings` (data-path counters).
 
@@ -126,8 +126,8 @@ Q8B extensions: `start`, `stop`/`disconnect`, `reconnect`, `country <AA>`,
 ## Verification
 
 `aarch64-elf-gcc` + `aarch64-elf-ld` build and link the driver against
-`system/build_aarch64/q8b/lib` (including `libtinyjson.a`). Hardware bring-up
-on the Q8B has not been re-run for this change; the MHI/WMI/DP/WPA paths are
+`system/build_aarch64/8gen3/lib` (including `libtinyjson.a`). Hardware bring-up
+on the QCOM8GEN3 has not been re-run for this change; the MHI/WMI/DP/WPA paths are
 unchanged apart from the join API and diagnostics. The unsupported band-based
 TCL LMAC experiment described below has been withdrawn.
 
@@ -152,10 +152,10 @@ explain the original failure, which also occurred with LMAC0.
 Rebuild the driver with:
 
 ```text
-make -C machines/q8b/system/drivers/wlan -j4
+make -C machines/qcom/8gen3/system/drivers/wlan -j4
 ```
 
-After deploying the resulting `/drivers/q8b/wlan` and retrying the hotspot,
+After deploying the resulting `/drivers/8gen3/wlan` and retrying the hotspot,
 `devcmd /dev/wl0 station` should show `mhz=2447 ... lmac=0`. Collect the new
 `data TX complete` log together with `status` and `rings`: TX completion source,
 reason and raw words distinguish descriptor recycling from an acknowledged
@@ -180,7 +180,7 @@ seed. If the module has no OTP/VPD/serial identity, provision a unique
 
 The BDF variant is selected from QMI identity. For the current TW220 identity
 (`chip-id=2`, `board-id=255`), the driver automatically selects the
-`HW_GK3` entry; no `/etc/wlan.board` file is required. Q8B reports chip-id
+`HW_GK3` entry; no `/etc/wlan.board` file is required. QCOM8GEN3 reports chip-id
 `18` and therefore follows its own generic/board entry. An explicit
 `/etc/wlan.board` remains an optional override, and a variant is never reused
 across a different QMI chip.
@@ -204,8 +204,8 @@ so automatic recovery does not erase the diagnostic evidence. Responses from
 the target AP with an unexpected reported frequency are logged before the
 existing channel check. These additions preserve the connection behavior.
 
-Deploy the rebuilt `system/build_aarch64/drivers/q8b/wlan` from this machine's
-system tree to `/drivers/q8b/wlan` on the persistent rootfs. The EFI initramfs
+Deploy the rebuilt `system/build_aarch64/drivers/8gen3/wlan` from this machine's
+system tree to `/drivers/8gen3/wlan` on the persistent rootfs. The EFI initramfs
 contains `pcied` but does not contain `wlan`; updating only `initramfs.img`
 does not install a new WLAN driver. After one failed connection, collect
 `devcmd /dev/wl0 log`, `station`, and `rings` output.

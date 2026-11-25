@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* WCN6855 MHI firmware bootstrap for Q8B.
+/* WCN6855 MHI firmware bootstrap for QCOM8GEN3.
  * Protocol reference: Linux drivers/bus/mhi/{common.h,host/boot.c,host/pm.c}
  * and drivers/net/wireless/ath/ath11k/mhi.c. Uses EwokOS noncached DMA and
  * polls event rings; MSI writes target a reserved noncached DMA word.
@@ -57,7 +57,7 @@ typedef char context_wire_size[(sizeof(mhi_context_t) == 44) ? 1 : -1];
 typedef char tre_wire_size[(sizeof(mhi_tre_t) == 16) ? 1 : -1];
 
 static struct {
-    q8b_pcie_device_t pcie;
+    qcom8gen3_pcie_device_t pcie;
     uint64_t bar_phys, dma_phys;
     uint8_t *dma;
     uint8_t *rddm;
@@ -81,11 +81,11 @@ const char *wcn_firmware_path(const char *name) {
      * cards report; using the generic image makes firmware fall back to a
      * generated MAC instead of exposing the module's calibrated identity. */
     const uint32_t nfa765_qcom =
-            ((uint32_t)Q8B_PCIE_WLAN_SUBSYS_QCOM_DID << 16) |
-            Q8B_PCIE_WLAN_SUBSYS_QCOM_VID;
+            ((uint32_t)QCOM8GEN3_PCIE_WLAN_SUBSYS_QCOM_DID << 16) |
+            QCOM8GEN3_PCIE_WLAN_SUBSYS_QCOM_VID;
     const uint32_t nfa765_alt =
-            ((uint32_t)Q8B_PCIE_WLAN_SUBSYS_ALT_DID << 16) |
-            Q8B_PCIE_WLAN_SUBSYS_ALT_VID;
+            ((uint32_t)QCOM8GEN3_PCIE_WLAN_SUBSYS_ALT_DID << 16) |
+            QCOM8GEN3_PCIE_WLAN_SUBSYS_ALT_VID;
     const char *dir = (w.subsystem == nfa765_qcom ||
             w.subsystem == nfa765_alt) ? "nfa765/" : "";
     snprintf(path, sizeof(path),
@@ -159,19 +159,19 @@ int wcn_attach(void) {
     /* pcied owns power, LTSSM, ECAM and PCI configuration.  Consume only its
      * read-only snapshot; this driver never writes a PCI capability or the
      * command register. */
-    int count = q8b_pcie_service_get_count();
+    int count = qcom8gen3_pcie_service_get_count();
     int found = 0;
     if (count < 0)
         return -1;
     if (count > 32)
         count = 32;
     for (int i = 0; i < count; i++) {
-        q8b_pcie_device_t device;
-        if (q8b_pcie_service_get_device((unsigned)i, &device))
+        qcom8gen3_pcie_device_t device;
+        if (qcom8gen3_pcie_service_get_device((unsigned)i, &device))
             return -1;
-        if (device.vendor_id == Q8B_PCIE_WLAN_VENDOR_ID &&
-                device.device_id == Q8B_PCIE_WLAN_DEVICE_ID &&
-                q8b_pcie_wlan_subsystem_supported(device.subsystem_vendor,
+        if (device.vendor_id == QCOM8GEN3_PCIE_WLAN_VENDOR_ID &&
+                device.device_id == QCOM8GEN3_PCIE_WLAN_DEVICE_ID &&
+                qcom8gen3_pcie_wlan_subsystem_supported(device.subsystem_vendor,
                         device.subsystem_device)) {
             w.pcie = device;
             found = 1;
@@ -179,8 +179,8 @@ int wcn_attach(void) {
         }
     }
     if (!found ||
-            (w.pcie.command & (Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER)) !=
-            (Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER) ||
+            (w.pcie.command & (QCOM8GEN3_PCIE_ENABLE_MEMORY | QCOM8GEN3_PCIE_ENABLE_MASTER)) !=
+            (QCOM8GEN3_PCIE_ENABLE_MEMORY | QCOM8GEN3_PCIE_ENABLE_MASTER) ||
             !w.pcie.bar_phys[0])
         return -1;
     w.subsystem = ((uint32_t)w.pcie.subsystem_device << 16) |
@@ -224,18 +224,18 @@ int wcn_attach(void) {
     wcn_wmi_set_hardware_seed(seed);
     wcn_board_set_subsystem(w.pcie.subsystem_vendor, w.pcie.subsystem_device);
     wcn_log("wcn: firmware profile=%s\n",
-            (w.subsystem == (((uint32_t)Q8B_PCIE_WLAN_SUBSYS_QCOM_DID << 16) |
-                    Q8B_PCIE_WLAN_SUBSYS_QCOM_VID) ||
-             w.subsystem == (((uint32_t)Q8B_PCIE_WLAN_SUBSYS_ALT_DID << 16) |
-                    Q8B_PCIE_WLAN_SUBSYS_ALT_VID)) ? "nfa765" : "common");
+            (w.subsystem == (((uint32_t)QCOM8GEN3_PCIE_WLAN_SUBSYS_QCOM_DID << 16) |
+                    QCOM8GEN3_PCIE_WLAN_SUBSYS_QCOM_VID) ||
+             w.subsystem == (((uint32_t)QCOM8GEN3_PCIE_WLAN_SUBSYS_ALT_DID << 16) |
+                    QCOM8GEN3_PCIE_WLAN_SUBSYS_ALT_VID)) ? "nfa765" : "common");
     w.bar_phys = w.pcie.bar_phys[0];
-    if (q8b_pcie_map_bar(&w.pcie, 0, BAR_VA, BAR_SIZE)) {
+    if (qcom8gen3_pcie_map_bar(&w.pcie, 0, BAR_VA, BAR_SIZE)) {
         wcn_log("wcn: attach failed: BAR0 map phys=%llx size=%x\n",
                 (unsigned long long)w.pcie.bar_phys[0], BAR_SIZE);
         return -1;
     }
     w.hw = reg(0x224);
-    /* WCN6855 cards in the Q8B/TW220 population report both 2.0 (0x10)
+    /* WCN6855 cards in the QCOM8GEN3/TW220 population report both 2.0 (0x10)
      * and 2.1 (0x11) silicon revisions. The firmware profile is selected
      * from the PCI subsystem identity, so the low revision byte must not
      * reject the otherwise valid 2.0 endpoint. */
@@ -266,7 +266,7 @@ static int software_reset(void) {
     /* A previous owner/failed attempt may have disabled PCI memory decode.
      * Restore it through pcied before the first BAR access, not only after
      * SOC reset. Otherwise all of the reset writes can be discarded. */
-    if (q8b_pcie_service_prepare_wlan_dma()) return -1;
+    if (qcom8gen3_pcie_service_prepare_wlan_dma()) return -1;
     usleep(100000);
     soc_write(0x1e081b0, 0x111);
     soc_write(0x1e402bc, soc_read(0x1e402bc) | 0x10);
@@ -293,7 +293,7 @@ static int software_reset(void) {
     put(0x310c, 0x40000000);
     /* SOC reset can clear bus mastering. Restore it before asking MHI/PBL
      * to recover from SYSERR, as in the original working reset sequence. */
-    if (q8b_pcie_service_prepare_wlan_dma()) return -1;
+    if (qcom8gen3_pcie_service_prepare_wlan_dma()) return -1;
     put(0x38, 2);
     usleep(10000);
     w.bhi = reg(0x28);
@@ -667,7 +667,7 @@ int wcn_start(void) {
     usleep(200000);
     /* SOC reset clears function configuration. Ask the host owner to restore
      * DMA and its retained polling MSI sink; never map/write ECAM here. */
-    if (q8b_pcie_service_prepare_wlan_dma()) goto fail;
+    if (qcom8gen3_pcie_service_prepare_wlan_dma()) goto fail;
     if (prepare_rddm()) goto fail;
     wcn_log("wcn: RDDM prepared\n");
     w.stage = "BHI";

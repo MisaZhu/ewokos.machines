@@ -13,7 +13,7 @@
  * ringbuffer doorbells.
  */
 #include <adreno/adreno_reg.h>
-#include <q8b_adreno.h>
+#include <qcom8gen3_adreno.h>
 #include <ewoksys/syscall.h>
 #include <ewoksys/mmio.h>
 #include <ewoksys/proc.h>
@@ -39,16 +39,16 @@ int adreno_reg_map(void) {
 		return 0;
 	/* One 1 MB mapping covers GPU core + CX DBGC + GMU + GPUCC + CX MEM +
 	   SMMU + RSCC; every block sits at its natural byte offset inside it. */
-	if (adreno_map_window(ADRENO_CORE_VA, Q8B_ADRENO_CORE_PHY,
+	if (adreno_map_window(ADRENO_CORE_VA, QCOM8GEN3_ADRENO_CORE_PHY,
 			(uint32_t)ADRENO_CORE_MAP_SIZE) != 0)
 		return -1;
 	/* The GMU PDC/RSCC power sequencer lives in a separate 64 KB window. */
-	if (adreno_map_window(ADRENO_PDC_VA, Q8B_ADRENO_GMU_PDC_PHY,
+	if (adreno_map_window(ADRENO_PDC_VA, QCOM8GEN3_ADRENO_GMU_PDC_PHY,
 			(uint32_t)ADRENO_PDC_MAP_SIZE) != 0)
 		return -2;
 	/* GCC: the GPU branch clocks that parent the GPUCC RCGs (see
 	   gcc_gpu_clocks_enable in adreno_gpucc.c). */
-	if (adreno_map_window(ADRENO_GCC_VA, Q8B_GCC_PHY,
+	if (adreno_map_window(ADRENO_GCC_VA, QCOM8GEN3_GCC_PHY,
 			(uint32_t)ADRENO_GCC_MAP_SIZE) != 0)
 		return -3;
 	_mapped = 1;

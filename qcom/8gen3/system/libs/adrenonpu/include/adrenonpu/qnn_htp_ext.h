@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 /**
- * @brief QNN HTP backend private extension API (SC8280XP / Hexagon V68, Q8B)
+ * @brief QNN HTP backend private extension API (SC8280XP / Hexagon V68, QCOM8GEN3)
  * Supported only by libQnnHtp.so; not part of the standard QNN Core API.
  * Used solely for HTP NPU tuning.
  */

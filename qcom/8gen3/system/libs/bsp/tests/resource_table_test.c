@@ -58,6 +58,6 @@ int main(void) {
     assert(resource_find(read32, 0, sizeof(db), "CN2", &r) == 0);
     reset(); memcpy(db + 144, "12345678", 8);
     assert(resource_find(read32, 0, sizeof(db), "12345678", &r) == 0);
-    puts("q8b firmware resource-table tests: ok");
+    puts("qcom8gen3 firmware resource-table tests: ok");
     return 0;
 }

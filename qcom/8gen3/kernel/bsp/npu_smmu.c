@@ -1,4 +1,4 @@
-/* Q8B apps_smmu bring-up, following Linux arm-smmu.c/io-pgtable-arm.c. */
+/* QCOM8GEN3 apps_smmu bring-up, following Linux arm-smmu.c/io-pgtable-arm.c. */
 #include <stdint.h>
 #include <string.h>
 #include <kernel/proc.h>
@@ -6,25 +6,25 @@
 #include <mm/dma.h>
 #include <mm/mmu.h>
 #include <kprintf.h>
-#ifndef Q8B_NPU_DEBUG
-#define Q8B_NPU_DEBUG 0
+#ifndef QCOM8GEN3_NPU_DEBUG
+#define QCOM8GEN3_NPU_DEBUG 0
 #endif
-#define npu_debug(...) do { if(Q8B_NPU_DEBUG) printf(__VA_ARGS__); } while(0)
-#include <q8b_npu.h>
+#define npu_debug(...) do { if(QCOM8GEN3_NPU_DEBUG) printf(__VA_ARGS__); } while(0)
+#include <qcom8gen3_npu.h>
 #include "hw_arch.h"
 #include "npu_smmu.h"
 
-/* ID0/1/2 direct Device-memory reads verified on Q8B on 2026-10-24. */
-#if defined(Q8B_BOARD) && !defined(Q8B_QEMU_TEST)
-#define Q8B_NPU_SMMU_DIRECT_MMIO 1
+/* ID0/1/2 direct Device-memory reads verified on QCOM8GEN3 on 2026-10-24. */
+#if defined(QCOM8GEN3_BOARD) && !defined(QCOM8GEN3_QEMU_TEST)
+#define QCOM8GEN3_NPU_SMMU_DIRECT_MMIO 1
 #endif
 
-#ifndef Q8B_QEMU_TEST
-extern void q8b_scm_smc(uint64_t regs[8]);
+#ifndef QCOM8GEN3_QEMU_TEST
+extern void qcom8gen3_scm_smc(uint64_t regs[8]);
 #endif
 
-#define SMMU_SIZE Q8B_APPS_SMMU_SIZE
-#define SMMU_WIN  (MMIO_BASE + Q8B_APPS_SMMU_OFF)
+#define SMMU_SIZE QCOM8GEN3_APPS_SMMU_SIZE
+#define SMMU_WIN  (MMIO_BASE + QCOM8GEN3_APPS_SMMU_OFF)
 #define GR0_ID0 0x20u
 #define GR0_sCR0 0x0u
 #define GR0_ID1 0x24u
@@ -104,7 +104,7 @@ extern void q8b_scm_smc(uint64_t regs[8]);
 typedef struct { ewokos_addr_t pa, va; } npu_pt_t;
 static struct {
     int ready;
-    /* Device-memory ID reads are verified on Q8B; SCM remains a fallback
+    /* Device-memory ID reads are verified on QCOM8GEN3; SCM remains a fallback
      * for builds without the board-specific direct access path. */
     int scm_io;
     uint32_t saved_scr0;
@@ -115,17 +115,17 @@ static struct {
 } smmu;
 
 static int smmu_scm_read(uint32_t off, uint32_t *value) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     (void)off; (void)value;
     return -1;
 #else
     uint64_t regs[8] = {
-        0xc2000000u | 0x501u, 1, Q8B_APPS_SMMU_PHY + off,
+        0xc2000000u | 0x501u, 1, QCOM8GEN3_APPS_SMMU_PHY + off,
         0, 0, 0, 0, 0
     };
-    q8b_scm_smc(regs);
+    qcom8gen3_scm_smc(regs);
     if ((int64_t)regs[0] != 0) {
-        printf("q8b npu: scm io read off=%x a0=%lld a1=%llx\n", off,
+        printf("qcom8gen3 npu: scm io read off=%x a0=%lld a1=%llx\n", off,
                (long long)(int64_t)regs[0],
                (unsigned long long)regs[1]);
         return -1;
@@ -136,17 +136,17 @@ static int smmu_scm_read(uint32_t off, uint32_t *value) {
 }
 
 static int smmu_scm_write(uint32_t off, uint32_t value) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     (void)off; (void)value;
     return -1;
 #else
     uint64_t regs[8] = {
-        0xc2000000u | 0x502u, 2, Q8B_APPS_SMMU_PHY + off,
+        0xc2000000u | 0x502u, 2, QCOM8GEN3_APPS_SMMU_PHY + off,
         value, 0, 0, 0, 0
     };
-    q8b_scm_smc(regs);
+    qcom8gen3_scm_smc(regs);
     if ((int64_t)regs[0] != 0) {
-        printf("q8b npu: scm io write off=%x val=%x a0=%lld a1=%llx\n",
+        printf("qcom8gen3 npu: scm io write off=%x val=%x a0=%lld a1=%llx\n",
                off, value, (long long)(int64_t)regs[0],
                (unsigned long long)regs[1]);
         return -1;
@@ -161,7 +161,7 @@ static inline uint32_t smmu_read(uint32_t off) {
         if (smmu_scm_read(off, &value) == 0) return value;
         return UINT32_MAX;
     }
-#if defined(Q8B_NPU_SMMU_DIRECT_MMIO) && !defined(Q8B_QEMU_TEST)
+#if defined(QCOM8GEN3_NPU_SMMU_DIRECT_MMIO) && !defined(QCOM8GEN3_QEMU_TEST)
     return *(volatile uint32_t *)(uintptr_t)(SMMU_WIN + off);
 #else
     return UINT32_MAX;
@@ -169,7 +169,7 @@ static inline uint32_t smmu_read(uint32_t off) {
 }
 static inline int smmu_write(uint32_t off, uint32_t value) {
     if (smmu.scm_io) return smmu_scm_write(off, value);
-#if defined(Q8B_NPU_SMMU_DIRECT_MMIO) && !defined(Q8B_QEMU_TEST)
+#if defined(QCOM8GEN3_NPU_SMMU_DIRECT_MMIO) && !defined(QCOM8GEN3_QEMU_TEST)
     *(volatile uint32_t *)(uintptr_t)(SMMU_WIN + off) = value;
     return 0;
 #else
@@ -196,17 +196,17 @@ static inline uint64_t pt_addr(ewokos_addr_t pa) { return ((uint64_t)pa) & SMMU_
  * is entered.  Mirror the PAS driver's caller mapping before the first MMIO
  * read; otherwise the faulting SMMU access can strand the syscall without a
  * diagnostic. */
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
 static int map_smmu_in_caller(void) {
     proc_t *p = proc_get_proc(get_current_proc());
     page_dir_entry_t *pvm = (p && p->space) ? p->space->vm : 0;
 
     if (map_pages_size(_kernel_info.kernel_vm, SMMU_WIN,
-                Q8B_APPS_SMMU_PHY, (uint32_t)SMMU_SIZE,
+                QCOM8GEN3_APPS_SMMU_PHY, (uint32_t)SMMU_SIZE,
                 AP_RW_D, PTE_ATTR_DEV) != 0)
         return -1;
     if (pvm != 0 && pvm != _kernel_info.kernel_vm &&
-            map_pages_size(pvm, SMMU_WIN, Q8B_APPS_SMMU_PHY,
+            map_pages_size(pvm, SMMU_WIN, QCOM8GEN3_APPS_SMMU_PHY,
                 (uint32_t)SMMU_SIZE, AP_RW_D, PTE_ATTR_DEV) != 0)
         return -1;
     flush_tlb();
@@ -219,19 +219,19 @@ static int map_smmu_in_caller(void) {
  * context bank or mark the transport ready. Only architectural ID registers
  * are allowed. SCM rejecting an address does not establish MMIO ownership;
  * sc8280xp.dtsi reserves the PCIe SMMU, not apps_smmu, for QHEE. */
-int64_t q8b_npu_smmu_read_id(uint32_t offset) {
+int64_t qcom8gen3_npu_smmu_read_id(uint32_t offset) {
     if (offset != GR0_ID0 && offset != GR0_ID1 && offset != GR0_ID2)
-        return Q8B_NPU_PAS_INVALID;
-#ifdef Q8B_QEMU_TEST
-    return Q8B_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_PAS_INVALID;
+#ifdef QCOM8GEN3_QEMU_TEST
+    return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 #else
     if (map_smmu_in_caller() != 0)
-        return Q8B_NPU_PAS_FAILED;
-    npu_debug("q8b npu: explicit Device-memory ID read pa=%llx\n",
-            (unsigned long long)(Q8B_APPS_SMMU_PHY + offset));
+        return QCOM8GEN3_NPU_PAS_FAILED;
+    npu_debug("qcom8gen3 npu: explicit Device-memory ID read pa=%llx\n",
+            (unsigned long long)(QCOM8GEN3_APPS_SMMU_PHY + offset));
     uint32_t value = *(volatile uint32_t *)(uintptr_t)(SMMU_WIN + offset);
     __asm__ volatile("dsb sy" ::: "memory");
-    npu_debug("q8b npu: apps_smmu ID off=%x value=%x\n", offset, value);
+    npu_debug("qcom8gen3 npu: apps_smmu ID off=%x value=%x\n", offset, value);
     return (int64_t)value;
 #endif
 }
@@ -307,8 +307,8 @@ static int find_l3(uint32_t idx, int create, uint64_t **out) {
     return 0;
 }
 
-int q8b_npu_smmu_enable(void) {
-#ifdef Q8B_QEMU_TEST
+int qcom8gen3_npu_smmu_enable(void) {
+#ifdef QCOM8GEN3_QEMU_TEST
     return -1;
 #else
     uint32_t id0, id1, id2, i, cb_base, scr0;
@@ -317,14 +317,14 @@ int q8b_npu_smmu_enable(void) {
     uint8_t reserved_cb[256] = {0};
     if (smmu.ready) return 0;
     if (smmu.root.pa) return -1; /* failed teardown requires board recovery */
-    npu_debug("q8b npu: apps_smmu enable enter\n");
+    npu_debug("qcom8gen3 npu: apps_smmu enable enter\n");
     smmu.smr = UINT32_MAX;
     smmu.pgshift = 12;
     smmu.scm_io = 0;
     /* SC8280XP uses qcom_smmu_500_impl, not the SDM845 SAFE-toggle
-     * reset quirk. Direct Device-memory ID reads have been verified on Q8B.
+     * reset quirk. Direct Device-memory ID reads have been verified on QCOM8GEN3.
      * Do not call unrelated SCM reset/aperture services before probing. */
-#if defined(Q8B_NPU_SMMU_DIRECT_MMIO)
+#if defined(QCOM8GEN3_NPU_SMMU_DIRECT_MMIO)
     if (map_smmu_in_caller() != 0) goto fail;
     id0 = gr0r(GR0_ID0); id1 = gr0r(GR0_ID1); id2 = gr0r(GR0_ID2);
 #else
@@ -338,7 +338,7 @@ int q8b_npu_smmu_enable(void) {
     smmu.pgshift = (id1 & ID1_PAGESIZE) ? 16 : 12;
     smmu.numpage = ID1_NUMPAGES(id1); smmu.numcb = ID1_NUMCB(id1);
     smmu.nsmr = ID0_NUMSMRG(id0);
-    npu_debug("q8b npu: apps_smmu id0=%x id1=%x id2=%x pg=%u pages=%u cb=%u smr=%u\n",
+    npu_debug("qcom8gen3 npu: apps_smmu id0=%x id1=%x id2=%x pg=%u pages=%u cb=%u smr=%u\n",
            id0, id1, id2, smmu.pgshift, smmu.numpage, smmu.numcb, smmu.nsmr);
     /* Unlike Linux's full-device reset, preserve firmware's unmatched-stream
      * policy and existing context banks. Only take an unused CB and SMR. */
@@ -360,7 +360,7 @@ int q8b_npu_smmu_enable(void) {
             if (((s2cr >> 16) & 3u) == S2CR_TYPE_TRANS)
                 reserved_cb[s2cr & 0xffu] = 1;
             if (((smr ^ SID) & ~(mask | SID_MASK) & 0x7fffu) == 0) {
-                printf("q8b npu: SID overlaps SMR%u=%x S2CR=%x\n", i, smr, s2cr);
+                printf("qcom8gen3 npu: SID overlaps SMR%u=%x S2CR=%x\n", i, smr, s2cr);
                 goto fail; /* do not overlap firmware's route */
             }
         } else if (smmu.smr == UINT32_MAX) {
@@ -373,11 +373,11 @@ int q8b_npu_smmu_enable(void) {
     for (smmu.cb = (id1 >> 16) & 0xffu; smmu.cb < smmu.numcb; smmu.cb++)
         if (!reserved_cb[smmu.cb] && !(cbr(CB_SCTLR) & SCTLR_M)) break;
     if (smmu.cb == smmu.numcb) {
-        printf("q8b npu: no unused S1 context bank\n");
+        printf("qcom8gen3 npu: no unused S1 context bank\n");
         goto fail;
     }
     cb_base = (smmu.numpage + CB) << smmu.pgshift;
-    npu_debug("q8b npu: selected CB%u offset=%x SMR%u\n", CB, cb_base, smmu.smr);
+    npu_debug("qcom8gen3 npu: selected CB%u offset=%x SMR%u\n", CB, cb_base, smmu.smr);
     scr0 = gr0r(GR0_sCR0);
     if (scr0 == UINT32_MAX)
         goto fail;
@@ -406,7 +406,7 @@ int q8b_npu_smmu_enable(void) {
             cbw(CB_SCTLR, SCTLR_CFIE | SCTLR_CFRE | SCTLR_AFE |
                 SCTLR_TRE | SCTLR_ASIDPNE) != 0)
         goto fail;
-    npu_debug("q8b npu: CB%u readback cba2r=%x cbar=%x tcr=%x/%x ttbr=%llx mair=%x actlr=%x\n",
+    npu_debug("qcom8gen3 npu: CB%u readback cba2r=%x cbar=%x tcr=%x/%x ttbr=%llx mair=%x actlr=%x\n",
             CB, gr1r(GR1_CBA2R(CB)), gr1r(GR1_CBAR(CB)), cbr(CB_TCR), cbr(CB_TCR2),
             (unsigned long long)cbrq(CB_TTBR0), cbr(CB_MAIR0), cbr(CB_ACTLR));
     if (gr1r(GR1_CBA2R(CB)) != CBA2R_VA64 ||
@@ -426,18 +426,18 @@ int q8b_npu_smmu_enable(void) {
         goto fail;
     if (!(cbr(CB_SCTLR) & SCTLR_M)) goto fail;
     smmu.ready = 1;
-    npu_debug("q8b npu: apps_smmu CB%u ready smr=%u root=%llx\n", CB, smmu.smr, (unsigned long long)smmu.root.pa);
+    npu_debug("qcom8gen3 npu: apps_smmu CB%u ready smr=%u root=%llx\n", CB, smmu.smr, (unsigned long long)smmu.root.pa);
     return 0;
 fail:
-    printf("q8b npu: apps_smmu setup/readback failed\n");
-    q8b_npu_smmu_stop();
+    printf("qcom8gen3 npu: apps_smmu setup/readback failed\n");
+    qcom8gen3_npu_smmu_stop();
     return -1;
 #endif
 }
 
-int q8b_npu_smmu_ready(void) { return smmu.ready; }
+int qcom8gen3_npu_smmu_ready(void) { return smmu.ready; }
 
-int q8b_npu_smmu_map(uint64_t pa, uint64_t iova, uint32_t size) {
+int qcom8gen3_npu_smmu_map(uint64_t pa, uint64_t iova, uint32_t size) {
     uint64_t off, end, mapped_size, *l3;
     if (!smmu.ready || !size || (pa & 0xfff) || (iova & 0xfff)) return -1;
     mapped_size = ((uint64_t)size + 0xfffull) & ~0xfffull;
@@ -483,7 +483,7 @@ int q8b_npu_smmu_map(uint64_t pa, uint64_t iova, uint32_t size) {
         (void)tlb_sync();
     return -1;
 }
-int q8b_npu_smmu_unmap(uint64_t iova, uint32_t size) {
+int qcom8gen3_npu_smmu_unmap(uint64_t iova, uint32_t size) {
     uint64_t off, mapped_size, *l3;
     if (!smmu.ready || !size || (iova & 0xfff)) return -1;
     mapped_size = ((uint64_t)size + 0xfffull) & ~0xfffull;
@@ -513,19 +513,19 @@ int q8b_npu_smmu_unmap(uint64_t iova, uint32_t size) {
 }
 /* Snapshot before PAS reset/translation teardown destroys the fault state.
  * These registers are read-only here: do not clear a stalled transaction. */
-void q8b_npu_smmu_dump_fault(void) {
-#ifndef Q8B_QEMU_TEST
+void qcom8gen3_npu_smmu_dump_fault(void) {
+#ifndef QCOM8GEN3_QEMU_TEST
     if (!smmu.cb_owned) return;
     uint32_t fsr = cbr(CB_FSR);
     if (!(fsr & 0xc00001feu)) return;
-    printf("q8b npu: SMMU fault snapshot CB%u fault=%u fsr=%x far=%llx fsynr0=%x cbfrsynra=%x\n",
+    printf("qcom8gen3 npu: SMMU fault snapshot CB%u fault=%u fsr=%x far=%llx fsynr0=%x cbfrsynra=%x\n",
             CB, !!(fsr & 0xc00001feu), fsr, (unsigned long long)cbrq(CB_FAR), cbr(CB_FSYNR0),
             gr1r(0x400u + (CB << 2)));
 #endif
 }
 
-int q8b_npu_smmu_stop(void) {
-#ifndef Q8B_QEMU_TEST
+int qcom8gen3_npu_smmu_stop(void) {
+#ifndef QCOM8GEN3_QEMU_TEST
     smmu.ready = 0;
     if (smmu.cb_owned) {
         /* Match arm_smmu_device_reset(): stop translation first, invalidate
@@ -534,7 +534,7 @@ int q8b_npu_smmu_stop(void) {
                 gr0w(GR0_SMR(smmu.smr), 0) != 0 ||
                 cbw(CB_TLBIASID, ASID) != 0 || tlb_sync() != 0 ||
                 global_sync() != 0) {
-            printf("q8b npu: retaining page tables after failed SMMU teardown\n");
+            printf("qcom8gen3 npu: retaining page tables after failed SMMU teardown\n");
             return -1;
         }
     }

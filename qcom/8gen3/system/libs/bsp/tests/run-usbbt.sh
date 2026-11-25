@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/../../../../../../.."
-out=$(mktemp -d "${TMPDIR:-/tmp}/q8b-usbbt.XXXXXX")
+out=$(mktemp -d "${TMPDIR:-/tmp}/qcom8gen3-usbbt.XXXXXX")
 trap 'rm -rf "$out"' EXIT HUP INT TERM
 ${CC:-clang} -std=c11 -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
     -I machines/qcom/8gen3/system/libs/bsp/include \

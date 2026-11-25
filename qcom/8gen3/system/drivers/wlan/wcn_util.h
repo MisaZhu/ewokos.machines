@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Small shared helpers for the Q8B WLAN owner: the driver log ring that
+/* Small shared helpers for the QCOM8GEN3 WLAN owner: the driver log ring that
  * backs the pi5-compatible "log" devcmd, credential parsing and the few
  * frequency/entropy conversions every module needs. */
-#ifndef Q8B_WCN_UTIL_H
-#define Q8B_WCN_UTIL_H
+#ifndef QCOM8GEN3_WCN_UTIL_H
+#define QCOM8GEN3_WCN_UTIL_H
 #include <stddef.h>
 #include <stdint.h>
 

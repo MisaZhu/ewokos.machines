@@ -1,5 +1,5 @@
-#ifndef __Q8B_DWC3_H
-#define __Q8B_DWC3_H
+#ifndef __QCOM8GEN3_DWC3_H
+#define __QCOM8GEN3_DWC3_H
 
 #include <ewoksys/ewokdef.h>
 

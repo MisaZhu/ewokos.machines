@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef Q8B_WCN_CE_H
-#define Q8B_WCN_CE_H
+#ifndef QCOM8GEN3_WCN_CE_H
+#define QCOM8GEN3_WCN_CE_H
 #include <stddef.h>
 int wcn_ce_init(void);
 void wcn_ce_poll(void);

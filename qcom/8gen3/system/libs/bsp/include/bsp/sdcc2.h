@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 /*
- * User-space SDCC2 backend for the Q8B.
+ * User-space SDCC2 backend for the QCOM8GEN3.
  *
  * sdcc2_init() maps every window it needs (GCC, SDCC2, TLMM, RPMh, Command DB)
  * and runs the complete probe: clocks, pin mux, PMIC rails, card

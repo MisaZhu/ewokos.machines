@@ -2,7 +2,7 @@
 set -eu
 TEST_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(CDPATH= cd -- "$TEST_DIR/../../../.." && pwd)
-TEST_OUT=$(mktemp -d "${TMPDIR:-/tmp}/q8b-wlan-boot.XXXXXX")
+TEST_OUT=$(mktemp -d "${TMPDIR:-/tmp}/qcom8gen3-wlan-boot.XXXXXX")
 trap 'rm -rf "$TEST_OUT"' EXIT HUP INT TERM
 mkdir -p "$TEST_OUT/ewoksys"
 cat > "$TEST_OUT/ewoksys/vdevice.h" <<'HEADER'

@@ -6,18 +6,18 @@
  * drivers/soc/qcom/mdt_loader.c: read the board-selected cdsp.mbn, split it
  * into its metadata (ELF header + program headers + hash segment) and the
  * relocated image footprint, stage both in dma buffers, then drive the PAS
- * ops INIT -> MEM -> STAGE -> AUTH over the restricted Q8B kernel ABI.  The
+ * ops INIT -> MEM -> STAGE -> AUTH over the restricted QCOM8GEN3 kernel ABI.  The
  * SCM calls ride the same syscall3(SYS_PLATFORM_CTL, ...) door as the Adreno
  * zap flow.  The kernel accepts both the Linux-style five-step PAS sequence
  * and the compact npupas boot operation; no firmware bytes are patched.
  *
- * The PAS/GLINK handshake is validated on the Q8B board.  HTP execution still
+ * The PAS/GLINK handshake is validated on the QCOM8GEN3 board.  HTP execution still
  * depends on the board's signed skel image and apps_smmu mapping.
  */
 #include <adrenonpu/qnn_core_internal.h>
 #include <adrenonpu/npu_cdsp.h>
 #include <adrenonpu/npu_listener.h>
-#include <q8b_npu.h>
+#include <qcom8gen3_npu.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/vfs.h>
 #include <stdlib.h>
@@ -219,10 +219,10 @@ static int cdsp_boot_failed(int ret)
 {
 	/* PAS authentication may succeed before the kernel's readiness wait
 	 * fails. Track that running DSP even though probe cannot return OK. */
-	int state = pas_call(Q8B_NPU_PAS_STATUS, 0, 0);
-	if (state >= 0 && (state & Q8B_NPU_STATE_BOOTED)) {
+	int state = pas_call(QCOM8GEN3_NPU_PAS_STATUS, 0, 0);
+	if (state >= 0 && (state & QCOM8GEN3_NPU_STATE_BOOTED)) {
 		g_booted = true;
-		if (pas_call(Q8B_NPU_PAS_STOP, 0, 0) == 0)
+		if (pas_call(QCOM8GEN3_NPU_PAS_STOP, 0, 0) == 0)
 			g_booted = false;
 	}
 	qnn_log(QNN_LOG_LVL_WARN, "cdsp: PAS boot failed (ret=%d)\n", ret);
@@ -252,7 +252,7 @@ static int cdsp_boot(void)
 		free(mbn);
 		return NPU_PROBE_NO_FIRMWARE;
 	}
-	/* The Q8B kernel's compact PAS_BOOT operation performs the same MDT
+	/* The QCOM8GEN3 kernel's compact PAS_BOOT operation performs the same MDT
 	 * metadata extraction and relocation as qcom_q6v5_pas.c, but it only
 	 * needs the original MBN in a DMA buffer.  The old userspace sequence
 	 * below additionally allocates the complete 30 MiB NSP carveout as a DMA
@@ -267,7 +267,7 @@ static int cdsp_boot(void)
 		if (npu_buf_alloc(&image, capacity) == 0) {
 			memcpy(image.va, mbn, (size_t)mbn_size);
 			npu_dcache_flush(image.va, capacity);
-			ret = pas_call(Q8B_NPU_PAS_BOOT, image.pa,
+			ret = pas_call(QCOM8GEN3_NPU_PAS_BOOT, image.pa,
 			               (uint32_t)mbn_size);
 			npu_buf_free(&image);
 			if (ret == 0) {
@@ -281,7 +281,7 @@ static int cdsp_boot(void)
 			        "cdsp: compact PAS_BOOT failed (ret=%d)\n", ret);
 			/* A runtime failure is not an invitation to authenticate again.
 			 * Only an absent compact operation may use the legacy path. */
-			if (ret != Q8B_NPU_PAS_UNSUPPORTED) {
+			if (ret != QCOM8GEN3_NPU_PAS_UNSUPPORTED) {
 				free(mbn);
 				return cdsp_boot_failed(ret);
 			}
@@ -344,8 +344,8 @@ static int cdsp_boot(void)
 		free(mbn);
 		return NPU_PROBE_NO_FIRMWARE;
 	}
-	if (end_pa - base_pa > Q8B_NSP0_SPAN ||
-	    npu_buf_alloc(&payload, (uint32_t)Q8B_NSP0_SPAN) != 0) {
+	if (end_pa - base_pa > QCOM8GEN3_NSP0_SPAN ||
+	    npu_buf_alloc(&payload, (uint32_t)QCOM8GEN3_NSP0_SPAN) != 0) {
 		npu_buf_free(&meta);
 		free(mbn);
 		return NPU_PROBE_NO_FIRMWARE;
@@ -404,16 +404,16 @@ static int cdsp_boot(void)
 	npu_dcache_flush(meta.va, meta.size);
 	npu_dcache_flush(payload.va, payload.size);
 
-	ret = pas_call(Q8B_NPU_PAS_INIT, meta.pa, meta_size);
+	ret = pas_call(QCOM8GEN3_NPU_PAS_INIT, meta.pa, meta_size);
 	if (ret == 0)
-	ret = pas_call(Q8B_NPU_PAS_MEM, Q8B_NSP0_SPAN, 0);
+	ret = pas_call(QCOM8GEN3_NPU_PAS_MEM, QCOM8GEN3_NSP0_SPAN, 0);
 	if (ret == 0)
-		ret = pas_call(Q8B_NPU_PAS_STAGE, payload.pa,
-		               (uint32_t)Q8B_NSP0_SPAN);
+		ret = pas_call(QCOM8GEN3_NPU_PAS_STAGE, payload.pa,
+		               (uint32_t)QCOM8GEN3_NSP0_SPAN);
 	if (ret == 0)
-		ret = pas_call(Q8B_NPU_PAS_AUTH, 0, 0);
+		ret = pas_call(QCOM8GEN3_NPU_PAS_AUTH, 0, 0);
 	if (ret == 0)
-		ret = pas_call(Q8B_NPU_PAS_BOOT, 0, 0);
+		ret = pas_call(QCOM8GEN3_NPU_PAS_BOOT, 0, 0);
 
 	npu_buf_free(&payload);
 	npu_buf_free(&meta);
@@ -482,7 +482,7 @@ static int npu_cdsp_probe_attrs(uint32_t attrs, bool with_listener)
 		return g_probe_rc;
 	}
 	shell = cdsp_read_shell(attrs, &shell_size);
-	rc = shell_size < 0 ? Q8B_NPU_PAS_INVALID :
+	rc = shell_size < 0 ? QCOM8GEN3_NPU_PAS_INVALID :
 	        frpc_session_open_image(FRPC_DOMAIN_CDSP, attrs, shell,
 	                (uint32_t)shell_size, &g_session);
 	free(shell);
@@ -518,8 +518,8 @@ int npu_cdsp_boot_only(void)
 		int rc = cdsp_boot();
 		if (rc != NPU_PROBE_OK) return rc;
 	}
-	int state = pas_call(Q8B_NPU_PAS_STATUS, 0, 0);
-	return state >= 0 && q8b_npu_state_ready((uint32_t)state) ?
+	int state = pas_call(QCOM8GEN3_NPU_PAS_STATUS, 0, 0);
+	return state >= 0 && qcom8gen3_npu_state_ready((uint32_t)state) ?
 	        NPU_PROBE_OK : NPU_PROBE_RPC_FAILED;
 }
 
@@ -594,7 +594,7 @@ int npu_cdsp_shutdown(void)
 		g_session = 0;
 	}
 	if (g_booted) {
-		if ((rc = pas_call(Q8B_NPU_PAS_STOP, 0, 0)) != 0) return rc;
+		if ((rc = pas_call(QCOM8GEN3_NPU_PAS_STOP, 0, 0)) != 0) return rc;
 		g_booted = false;
 	}
 	/* A shutdown releases the state that npu_cdsp_probe() cached.  This is

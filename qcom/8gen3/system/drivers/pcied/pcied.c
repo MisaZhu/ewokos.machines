@@ -1,4 +1,4 @@
-/* Q8B PCIe host-bus owner.
+/* QCOM8GEN3 PCIe host-bus owner.
  *
  * This process is the only user-space component allowed to power, train or
  * enumerate PCIe4.  Endpoint drivers receive an immutable snapshot through
@@ -17,7 +17,7 @@
 
 #define PCIE_MAX_DEVICES 32
 
-static q8b_pcie_device_t devices[PCIE_MAX_DEVICES];
+static qcom8gen3_pcie_device_t devices[PCIE_MAX_DEVICES];
 static int device_count;
 static ewokos_addr_t wlan_msi_sink;
 
@@ -56,7 +56,7 @@ static int log_vpd_mac_keyword(const uint8_t *vpd, size_t bytes,
                 mac[4] | mac[5]))
             continue;
         memcpy(mac_out, mac, 6);
-        slog("q8b pcied: WLAN PCI VPD NA MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+        slog("qcom8gen3 pcied: WLAN PCI VPD NA MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         return 1;
     }
@@ -79,7 +79,7 @@ static int log_vpd_mac_strings(const uint8_t *vpd, size_t bytes,
         }
         if (valid && (mac[0] & 1u) == 0 && (mac[0] | mac[1] | mac[2] |
                 mac[3] | mac[4] | mac[5])) {
-            slog("q8b pcied: WLAN PCI VPD MAC text=%02x:%02x:%02x:%02x:%02x:%02x\n",
+            slog("qcom8gen3 pcied: WLAN PCI VPD MAC text=%02x:%02x:%02x:%02x:%02x:%02x\n",
                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
             memcpy(mac_out, mac, 6);
             return 1;
@@ -88,24 +88,24 @@ static int log_vpd_mac_strings(const uint8_t *vpd, size_t bytes,
     return 0;
 }
 
-static void log_wlan_vpd(q8b_pcie_device_t *d) {
+static void log_wlan_vpd(qcom8gen3_pcie_device_t *d) {
     uint8_t vpd[256];
-	if (!q8b_pcie_is_wlan(d))
+	if (!qcom8gen3_pcie_is_wlan(d))
 		return;
-	int ret = q8b_pcie_read_vpd(d, 0, vpd, sizeof(vpd));
+	int ret = qcom8gen3_pcie_read_vpd(d, 0, vpd, sizeof(vpd));
 	if (ret == -2) {
-		slog("q8b pcied: WLAN PCI VPD capability absent\n");
+		slog("qcom8gen3 pcied: WLAN PCI VPD capability absent\n");
 		return;
 	}
 	if (ret) {
-		slog("q8b pcied: WLAN PCI VPD read failed=%d\n", ret);
+		slog("qcom8gen3 pcied: WLAN PCI VPD read failed=%d\n", ret);
 		return;
 	}
     d->vpd_mac_valid = log_vpd_mac_keyword(vpd, sizeof(vpd), d->vpd_mac) ||
         log_vpd_mac_strings(vpd, sizeof(vpd), d->vpd_mac);
-    slog("q8b pcied: WLAN PCI VPD[0..255]:\n");
+    slog("qcom8gen3 pcied: WLAN PCI VPD[0..255]:\n");
     for (unsigned off = 0; off < sizeof(vpd); off += 16) {
-		slog("q8b pcied:   %03x:", off);
+		slog("qcom8gen3 pcied:   %03x:", off);
 		for (unsigned i = 0; i < 16; i++)
 			slog(" %02x", vpd[off + i]);
 		slog("\n");
@@ -119,10 +119,10 @@ static int pcie_dcntl(vdevice_t *dev, int from_pid, int cmd,
     (void)from_pid;
     (void)p;
 
-    if (cmd == Q8B_PCIE_CMD_PREPARE_WLAN_DMA) {
+    if (cmd == QCOM8GEN3_PCIE_CMD_PREPARE_WLAN_DMA) {
         for (int i = 0; i < device_count; i++) {
-            q8b_pcie_device_t *d = &devices[i];
-            if (!q8b_pcie_is_wlan(d))
+            qcom8gen3_pcie_device_t *d = &devices[i];
+            if (!qcom8gen3_pcie_is_wlan(d))
                 continue;
             /* Retain this page for the lifetime of the bus, including WLAN
              * process exit/retry. No endpoint can choose an arbitrary target. */
@@ -131,16 +131,16 @@ static int pcie_dcntl(vdevice_t *dev, int from_pid, int cmd,
             if (!wlan_msi_sink)
                 return -1;
             uint64_t pa = dma_phy_addr(0, wlan_msi_sink);
-            return pa ? q8b_pcie_prepare_wlan_dma(d, pa) : -1;
+            return pa ? qcom8gen3_pcie_prepare_wlan_dma(d, pa) : -1;
         }
         return -1;
     }
 
-    if (cmd == Q8B_PCIE_CMD_GET_COUNT) {
+    if (cmd == QCOM8GEN3_PCIE_CMD_GET_COUNT) {
         PF->addi(ret, device_count);
         return 0;
     }
-    if (cmd == Q8B_PCIE_CMD_GET_DEVICE) {
+    if (cmd == QCOM8GEN3_PCIE_CMD_GET_DEVICE) {
         if (!in || !ret)
             return -1;
         index = proto_read_int(in);
@@ -153,45 +153,45 @@ static int pcie_dcntl(vdevice_t *dev, int from_pid, int cmd,
 }
 
 int main(int argc, char **argv) {
-    const char *node = argc > 1 ? argv[1] : Q8B_PCIE_SERVICE_NODE;
+    const char *node = argc > 1 ? argv[1] : QCOM8GEN3_PCIE_SERVICE_NODE;
     vdevice_t dev;
     int ethernet_pf = 0;
     int wifi = 0;
 
-    /* Several Q8B init profiles are usable after switchroot.  The boot
+    /* Several QCOM8GEN3 init profiles are usable after switchroot.  The boot
      * initramfs normally owns /dev/pcie0 already, so a profile that lists
      * pcied again must not reset a live WCN6855 link or publish a second
      * snapshot. */
     if (dev_get_pid(node) >= 0) {
-        slog("q8b pcied: %s already owned, skipping duplicate power-on\n", node);
+        slog("qcom8gen3 pcied: %s already owned, skipping duplicate power-on\n", node);
         return 0;
     }
 
-    slog("q8b pcied: start, entering PCIe3A/PCIe4 power-on/probe\n");
+    slog("qcom8gen3 pcied: start, entering PCIe3A/PCIe4 power-on/probe\n");
 
     /* The WCN6855 is invisible until the E-key rail, radio enables, PHY rails,
      * root complex and link are brought up.  Do this before any ECAM walk so
      * the service cannot accidentally publish a cold PCIe4 endpoint.  The
-     * power call is deliberately kept separate from q8b_pcie_probe(): this
+     * power call is deliberately kept separate from qcom8gen3_pcie_probe(): this
      * makes the ownership boundary explicit and lets probe reject ECAM when
      * link training did not complete. */
-    int pcie4_ready = q8b_pcie_power_on(Q8B_PCIE4, 2) == 0;
+    int pcie4_ready = qcom8gen3_pcie_power_on(QCOM8GEN3_PCIE4, 2) == 0;
     if (pcie4_ready)
-        slog("q8b pcied: PCIe4 power-on complete, probing ECAM after endpoint power\n");
+        slog("qcom8gen3 pcied: PCIe4 power-on complete, probing ECAM after endpoint power\n");
     else
-        slog("q8b pcied: PCIe4 power-on failed; PCIe4 ECAM will remain blocked\n");
+        slog("qcom8gen3 pcied: PCIe4 power-on failed; PCIe4 ECAM will remain blocked\n");
 
     /* PCIe3A carries the optional QPS615/Ethernet hierarchy.  Do not power it
      * while this service is establishing the WLAN snapshot: its reset/I2C
      * sequence can block indefinitely when the switch is absent or held in
      * reset, leaving /dev/pcie0 unpublished and preventing Wi-Fi from using a
-     * successfully trained PCIe4 link.  Ethernet has no active Q8B client in
+     * successfully trained PCIe4 link.  Ethernet has no active QCOM8GEN3 client in
      * the current profile; a future Ethernet owner can request PCIe3A through
      * a separate, bounded bring-up path. */
-    slog("q8b pcied: PCIe3A optional path deferred; WLAN snapshot isolated\n");
+    slog("qcom8gen3 pcied: PCIe3A optional path deferred; WLAN snapshot isolated\n");
 
     /* PCIe4 is the boot-critical path: WLAN must be published before any
-     * optional switch hierarchy is touched.  On the current Q8B firmware the
+     * optional switch hierarchy is touched.  On the current QCOM8GEN3 firmware the
      * PCIe3A ECAM window can be advertised as powered while its user mapping
      * is still stale; walking it then raises an EL2 external abort and takes
      * this owner down before WLAN can attach.  Probe PCIe4 first and retain a
@@ -199,16 +199,16 @@ int main(int argc, char **argv) {
      * safe to walk. */
     device_count = 0;
     if (pcie4_ready && device_count < PCIE_MAX_DEVICES) {
-        int n = q8b_pcie_probe(Q8B_PCIE4, devices + device_count,
+        int n = qcom8gen3_pcie_probe(QCOM8GEN3_PCIE4, devices + device_count,
                     PCIE_MAX_DEVICES - (size_t)device_count,
-                    Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER |
-                    Q8B_PCIE_DISABLE_ASPM | Q8B_PCIE_ASSIGN_RESOURCES);
+                    QCOM8GEN3_PCIE_ENABLE_MEMORY | QCOM8GEN3_PCIE_ENABLE_MASTER |
+                    QCOM8GEN3_PCIE_DISABLE_ASPM | QCOM8GEN3_PCIE_ASSIGN_RESOURCES);
         if (n < 0)
-            slog("q8b pcied: PCIe4 probe failed; retaining %d firmware device(s)\n",
+            slog("qcom8gen3 pcied: PCIe4 probe failed; retaining %d firmware device(s)\n",
                     device_count);
         else {
             device_count += n;
-            slog("q8b pcied: PCIe4 probe complete, appended %d device(s)\n", n);
+            slog("qcom8gen3 pcied: PCIe4 probe complete, appended %d device(s)\n", n);
         }
     }
 
@@ -217,49 +217,49 @@ int main(int argc, char **argv) {
      * deliberately deferred until its ECAM mapping has a dedicated
      * validation path; a broken optional switch must never prevent the
      * independent WLAN service from coming up. */
-    for (enum q8b_pcie_controller controller = Q8B_PCIE2A;
-            controller < Q8B_PCIE3A && device_count < PCIE_MAX_DEVICES;
+    for (enum qcom8gen3_pcie_controller controller = QCOM8GEN3_PCIE2A;
+            controller < QCOM8GEN3_PCIE3A && device_count < PCIE_MAX_DEVICES;
             controller++) {
-        slog("q8b pcied: probing controller %u (NVMe slots)\n",
+        slog("qcom8gen3 pcied: probing controller %u (NVMe slots)\n",
                 (unsigned)controller);
-        int n = q8b_pcie_probe(controller, devices + device_count,
+        int n = qcom8gen3_pcie_probe(controller, devices + device_count,
                 PCIE_MAX_DEVICES - (size_t)device_count,
-                Q8B_PCIE_ENABLE_MEMORY | Q8B_PCIE_ENABLE_MASTER |
-                Q8B_PCIE_DISABLE_ASPM);
+                QCOM8GEN3_PCIE_ENABLE_MEMORY | QCOM8GEN3_PCIE_ENABLE_MASTER |
+                QCOM8GEN3_PCIE_DISABLE_ASPM);
         if (n > 0)
             device_count += n;
         else if (n == 0)
-            slog("q8b pcied: controller %u probe found no device\n",
+            slog("qcom8gen3 pcied: controller %u probe found no device\n",
                     (unsigned)controller);
         else if (n < 0)
-            slog("q8b pcied: controller %u ECAM unavailable\n", controller);
+            slog("qcom8gen3 pcied: controller %u ECAM unavailable\n", controller);
     }
     /* Keep the final immutable snapshot visible on the serial console while
      * validating the host service, including firmware-managed controllers
      * when PCIe4 link training is unavailable. */
     for (int i = 0; i < device_count; i++) {
-        q8b_pcie_device_t *d = &devices[i];
-        slog("q8b pcied: fn[%d] pcie%u %02x:%02x.%u %04x:%04x class=%06x sub=%04x:%04x\n",
+        qcom8gen3_pcie_device_t *d = &devices[i];
+        slog("qcom8gen3 pcied: fn[%d] pcie%u %02x:%02x.%u %04x:%04x class=%06x sub=%04x:%04x\n",
                 i, d->controller, d->bus, d->device, d->function,
                 d->vendor_id, d->device_id, d->class_code,
                 d->subsystem_vendor, d->subsystem_device);
-        if (d->controller == Q8B_PCIE3A && d->vendor_id == 0x1179 &&
+        if (d->controller == QCOM8GEN3_PCIE3A && d->vendor_id == 0x1179 &&
                 d->device_id == 0x0220)
             ethernet_pf++;
-        if (q8b_pcie_is_wlan(d)) {
+        if (qcom8gen3_pcie_is_wlan(d)) {
             wifi++;
             if (d->serial_valid)
-                slog("q8b pcied: WLAN PCIe serial=%016llx\n",
+                slog("qcom8gen3 pcied: WLAN PCIe serial=%016llx\n",
                         (unsigned long long)d->serial_number);
         }
         log_wlan_vpd(d);
     }
-    slog("q8b pcied: snapshot ethernet_pf=%d wifi=%d\n",
+    slog("qcom8gen3 pcied: snapshot ethernet_pf=%d wifi=%d\n",
             ethernet_pf, wifi);
-    slog("q8b pcied: host service ready, %d device(s)\n", device_count);
+    slog("qcom8gen3 pcied: host service ready, %d device(s)\n", device_count);
 
     memset(&dev, 0, sizeof(dev));
-    strcpy(dev.desc, "Q8B PCIe host bus");
+    strcpy(dev.desc, "QCOM8GEN3 PCIe host bus");
     dev.dev_cntl = pcie_dcntl;
     return device_run(&dev, node, FS_TYPE_CHAR, 0444, false);
 }

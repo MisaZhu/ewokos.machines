@@ -2,7 +2,7 @@
  * System API and retained until context teardown. No graph IDs are assumed. */
 #include "rpc.h"
 #include <adrenonpu/npu_model.h>
-#ifndef Q8B_DSP_LOADER_ONLY
+#ifndef QCOM8GEN3_DSP_LOADER_ONLY
 #include <stdbool.h>
 /* This SDK uses C's static_assert spelling without including assert.h.
  * The freestanding DSP adapter does not depend on a libc assert handler. */
@@ -21,9 +21,9 @@ extern void *memcpy(void *, const void *, size_t);
 extern void *memset(void *, int, size_t);
 extern int strcmp(const char *, const char *);
 extern uint64_t HAP_perf_get_time_us(void);
-#ifndef Q8B_DSP_LOADER_ONLY
+#ifndef QCOM8GEN3_DSP_LOADER_ONLY
 /* Minimal external HAP ABI: response selector at 0, 8-byte union at 8.
- * Confirmed by this SDK's V66 getter caller and Q8B .35 firmware getter.
+ * Confirmed by this SDK's V66 getter caller and QCOM8GEN3 .35 firmware getter.
  * Keep the optional import weak so older firmware can still load the adapter. */
 struct hap_clock_response { uint32_t type, padding; uint64_t value; };
 extern int HAP_power_get(void *, struct hap_clock_response *)
@@ -47,7 +47,7 @@ _Static_assert(sizeof(npu_model_profile_t) == 8248, "profile wire ABI");
 #define MODEL_SLOTS 4u
 struct model {
     uint64_t token;
-#ifndef Q8B_DSP_LOADER_ONLY
+#ifndef QCOM8GEN3_DSP_LOADER_ONLY
     const QNN_INTERFACE_VER_TYPE *api;
     const QNN_SYSTEM_INTERFACE_VER_TYPE *sys;
     Qnn_BackendHandle_t backend;
@@ -74,7 +74,7 @@ static struct model *find_model(uint64_t token) {
         if (models[i] && models[i]->token == token) return models[i];
     return NULL;
 }
-int q8b_model_open(uint64_t *handle) {
+int qcom8gen3_model_open(uint64_t *handle) {
     for (unsigned i=0;i<MODEL_SLOTS;++i) if (!models[i]) {
         struct model *m = malloc(sizeof(*m));
         if (!m) return 2;
@@ -88,7 +88,7 @@ int q8b_model_open(uint64_t *handle) {
     return 2;
 }
 
-#ifndef Q8B_DSP_LOADER_ONLY
+#ifndef QCOM8GEN3_DSP_LOADER_ONLY
 static void init_info(npu_sdk_dsp_info_t *info, uint32_t stage) {
     *info = (npu_sdk_dsp_info_t){.magic=NPU_SDK_DSP_INFO_MAGIC, .stage=stage,
         .backend_id=QNN_BACKEND_ID_HTP, .major=QNN_API_VERSION_MAJOR,
@@ -460,10 +460,10 @@ static void power_set(struct model *m, uint32_t mode, npu_sdk_dsp_info_t *out) {
 }
 #endif
 
-int q8b_model_close(uint64_t handle) {
+int qcom8gen3_model_close(uint64_t handle) {
     struct model *m=find_model(handle);
     if (!m) return 14;
-#ifndef Q8B_DSP_LOADER_ONLY
+#ifndef QCOM8GEN3_DSP_LOADER_ONLY
     npu_sdk_dsp_info_t info;
     unload(m,&info);
     if (info.status) return 1;
@@ -473,10 +473,10 @@ int q8b_model_close(uint64_t handle) {
     return 0;
 }
 
-int q8b_model_invoke(uint64_t handle, uint32_t sc, remote_arg *args) {
+int qcom8gen3_model_invoke(uint64_t handle, uint32_t sc, remote_arg *args) {
     struct model *m=find_model(handle);
     if (!m || !args) return 14;
-#ifdef Q8B_DSP_LOADER_ONLY
+#ifdef QCOM8GEN3_DSP_LOADER_ONLY
     (void)sc; return 20;
 #else
     if (sc==0x0e000100u) {

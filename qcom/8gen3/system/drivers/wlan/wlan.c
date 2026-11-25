@@ -1,8 +1,8 @@
-/* Q8B WCN6855 controller owner.
+/* QCOM8GEN3 WCN6855 controller owner.
  *
  * User interface is the Raspberry Pi 5 one: the device node is /dev/wl0, the
  * devcmd verbs are help/log/state/scan/list/connect, and the networks live in
- * /etc/wlan/network.json. The q8b-specific diagnostics (station, rings,
+ * /etc/wlan/network.json. The qcom8gen3-specific diagnostics (station, rings,
  * scan-results, country, associate, stop/reconnect) remain as extensions.
  *
  * MHI/firmware bring-up still happens on an explicit start command, but a
@@ -701,7 +701,7 @@ static char *wlan_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void 
         return format_reply("connect started: %s", argv[1]);
     }
 
-    /* q8b extensions */
+    /* qcom8gen3 extensions */
     if (!strcmp(argv[0], "start")) {
         start_pending = 1;
         return copy_reply("start_pending\n");

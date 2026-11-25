@@ -6,10 +6,10 @@
 #include <ewoksys/sys.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
-#include <q8b_platform.h>
+#include <qcom8gen3_platform.h>
 
 /*
- * Q8B user-space storage backend.
+ * QCOM8GEN3 user-space storage backend.
  *
  * The firmware RAM disk is preferred when present.  Otherwise the physical
  * card is driven directly by the user-space SDCC2 driver (sdcc2.c), which maps
@@ -18,7 +18,7 @@
  * card before user space starts.
  */
 
-#define Q8B_RD_VA 0x60000000ULL
+#define QCOM8GEN3_RD_VA 0x60000000ULL
 
 static uint8_t* _rd_va = NULL;
 static uint32_t _rd_size = 0;
@@ -28,14 +28,14 @@ static int32_t physical_init_probe(void);
 
 static int32_t physical_init_from_kernel(void) {
     sys_info_t sysinfo;
-    const q8b_platform_data_t* pd;
+    const qcom8gen3_platform_data_t* pd;
     uint32_t stage;
     uint32_t multi;
     uint64_t sectors;
 
     if (sys_get_sys_info(&sysinfo) != 0)
         return -1;
-    pd = (const q8b_platform_data_t*)sysinfo.platform_data;
+    pd = (const qcom8gen3_platform_data_t*)sysinfo.platform_data;
 
     /* The kernel's loadinit path already identified the card before user
      * space started.  Reuse that result; every runtime read/write is still
@@ -99,22 +99,22 @@ static int32_t physical_init_probe(void) {
  */
 static int32_t storage_init(void) {
     sys_info_t sysinfo;
-    const q8b_platform_data_t* pd;
+    const qcom8gen3_platform_data_t* pd;
 
     if (sys_get_sys_info(&sysinfo) != 0)
         return -1;
-    pd = (const q8b_platform_data_t*)sysinfo.platform_data;
+    pd = (const qcom8gen3_platform_data_t*)sysinfo.platform_data;
 
     if (pd->rd.phy_base == 0 || pd->rd.size == 0 ||
-            (pd->rd.flags & Q8B_RD_FLAG_BOOT_ONLY) != 0)
+            (pd->rd.flags & QCOM8GEN3_RD_FLAG_BOOT_ONLY) != 0)
         return physical_init_from_kernel();
 
-    ewokos_addr_t ret = syscall3(SYS_MEM_MAP, (ewokos_addr_t)Q8B_RD_VA,
+    ewokos_addr_t ret = syscall3(SYS_MEM_MAP, (ewokos_addr_t)QCOM8GEN3_RD_VA,
             (ewokos_addr_t)pd->rd.phy_base, (ewokos_addr_t)pd->rd.size);
-    if (ret != (ewokos_addr_t)Q8B_RD_VA)
+    if (ret != (ewokos_addr_t)QCOM8GEN3_RD_VA)
         return -1;
 
-    _rd_va = (uint8_t*)(uintptr_t)Q8B_RD_VA;
+    _rd_va = (uint8_t*)(uintptr_t)QCOM8GEN3_RD_VA;
     _rd_size = pd->rd.size;
     _physical_sd = 0;
     return 0;

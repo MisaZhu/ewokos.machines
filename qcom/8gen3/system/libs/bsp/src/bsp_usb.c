@@ -1,7 +1,7 @@
-/* SC8280XP USB host glue for the Dragon Q8B.
+/* SC8280XP USB host glue for the Dragon QCOM8GEN3.
  *
  * Qualcomm firmware powers and calibrates the DWC3 cores before
- * ExitBootServices. Q8B has one multi-port USB host block plus two USB-C
+ * ExitBootServices. QCOM8GEN3 has one multi-port USB host block plus two USB-C
  * host blocks; each exposes a standard xHCI register file. This layer takes
  * all of them over and reuses the shared EwokOS USB enumeration, HID, hub and
  * mass-storage policy.
@@ -32,10 +32,10 @@
  *   usb_0_dwc3: 0x0a600000 (USB-C connector 0)
  *   usb_1_dwc3: 0x0a800000 (USB-C connector 1)
  */
-static const ewokos_addr_t Q8B_XHCI_PHY_BASE[BSP_USB_NUM_XHC] = {
+static const ewokos_addr_t QCOM8GEN3_XHCI_PHY_BASE[BSP_USB_NUM_XHC] = {
     0x0a400000ULL, 0x0a600000ULL, 0x0a800000ULL
 };
-static const char* const Q8B_XHCI_NAME[BSP_USB_NUM_XHC] = {
+static const char* const QCOM8GEN3_XHCI_NAME[BSP_USB_NUM_XHC] = {
     "usb2-mp", "usb0-type-c", "usb1-type-c"
 };
 #define XHCI_BAR_VA_BASE  0x50000000ULL
@@ -43,7 +43,7 @@ static const char* const Q8B_XHCI_NAME[BSP_USB_NUM_XHC] = {
 
 /* The copied policy layer still contains dead UHCI branches. Keeping tiny
  * local stubs makes those branches explicit while the compiler eliminates
- * them; every actual Q8B device is xHCI-owned. */
+ * them; every actual QCOM8GEN3 device is xHCI-owned. */
 #define UHCI_MAX_CONTROLLERS 0
 #define UHCI_PORTS_PER_CTRL 0
 static int uhci_init(void) { return -1; }
@@ -130,16 +130,16 @@ static bool _xhc_mapped[BSP_USB_NUM_XHC];
 static uint32_t _xhc_ports[BSP_USB_NUM_XHC];
 
 /* SC8280XP DWC3 child interrupts from sc8280xp.dtsi. GIC_SPI is encoded as
- * an SPI offset from 32, so the values delivered by the Q8B GIC are 165, 835
+ * an SPI offset from 32, so the values delivered by the QCOM8GEN3 GIC are 165, 835
  * and 842 respectively. The handler is deliberately only a wakeup hint: it
  * never touches xHCI MMIO or event-ring state while the owner may be in a
  * transfer. */
-static const uint32_t Q8B_XHCI_IRQ[BSP_USB_NUM_XHC] = { 165u, 835u, 842u };
+static const uint32_t QCOM8GEN3_XHCI_IRQ[BSP_USB_NUM_XHC] = { 165u, 835u, 842u };
 static interrupt_handler_t _xhc_irq_handlers[BSP_USB_NUM_XHC];
 static bool _xhc_irq_registered[BSP_USB_NUM_XHC];
 static volatile uint32_t _xhc_irq_pending;
 
-static void q8b_xhci_irq_handler(uint32_t interrupt, ewokos_addr_t data) {
+static void qcom8gen3_xhci_irq_handler(uint32_t interrupt, ewokos_addr_t data) {
     unsigned index = (unsigned)data;
     (void)interrupt;
     if (index < BSP_USB_NUM_XHC) {
@@ -147,25 +147,25 @@ static void q8b_xhci_irq_handler(uint32_t interrupt, ewokos_addr_t data) {
     }
 }
 
-static unsigned q8b_xhci_irq_setup(void) {
+static unsigned qcom8gen3_xhci_irq_setup(void) {
     unsigned enabled = 0;
     for (unsigned i = 0; i < BSP_USB_NUM_XHC; ++i) {
         if (!_xhcs[i].present || _xhc_irq_registered[i]) {
             continue;
         }
         memset(&_xhc_irq_handlers[i], 0, sizeof(_xhc_irq_handlers[i]));
-        _xhc_irq_handlers[i].handler = q8b_xhci_irq_handler;
+        _xhc_irq_handlers[i].handler = qcom8gen3_xhci_irq_handler;
         _xhc_irq_handlers[i].data = (ewokos_addr_t)i;
-        if (sys_interrupt_setup(Q8B_XHCI_IRQ[i], &_xhc_irq_handlers[i]) == 0) {
+        if (sys_interrupt_setup(QCOM8GEN3_XHCI_IRQ[i], &_xhc_irq_handlers[i]) == 0) {
             _xhc_irq_registered[i] = true;
             xhci_irq_enable(&_xhcs[i]);
             enabled++;
             slog("bsp_usb: xhci%d irq=%u enabled (event-ring wakeup)\n",
-                    i, Q8B_XHCI_IRQ[i]);
+                    i, QCOM8GEN3_XHCI_IRQ[i]);
         }
         else {
             slog("bsp_usb: xhci%d irq=%u unavailable, polling fallback\n",
-                    i, Q8B_XHCI_IRQ[i]);
+                    i, QCOM8GEN3_XHCI_IRQ[i]);
         }
     }
     return enabled;
@@ -302,7 +302,7 @@ static int speed_from_xhci(int speed) {
  * A controller that is not exposed by the current firmware is skipped; the
  * other controllers remain available.
  */
-static int q8b_xhci_start(int i) {
+static int qcom8gen3_xhci_start(int i) {
     ewokos_addr_t va = XHCI_BAR_VA_BASE +
             (ewokos_addr_t)i * XHCI_BAR_MAP_SIZE;
     uint32_t cap;
@@ -312,21 +312,21 @@ static int q8b_xhci_start(int i) {
     if (i != 0 && dwc3_host_prepare(i, va) != 0)
         return -1;
     cap = get32(va);
-    slog("bsp_usb: q8b xhci%d %s cap=%08x phy=%llx\n", i,
-            Q8B_XHCI_NAME[i], cap, (unsigned long long)Q8B_XHCI_PHY_BASE[i]);
+    slog("bsp_usb: qcom8gen3 xhci%d %s cap=%08x phy=%llx\n", i,
+            QCOM8GEN3_XHCI_NAME[i], cap, (unsigned long long)QCOM8GEN3_XHCI_PHY_BASE[i]);
     if ((cap >> 16) < 0x0090u || (cap >> 16) == 0xffffu) {
-        slog("bsp_usb: q8b xhci%d unavailable\n", i);
+        slog("bsp_usb: qcom8gen3 xhci%d unavailable\n", i);
         return -1;
     }
     if (xhci_init(&_xhcs[i], i, va) != 0) {
-        slog("bsp_usb: q8b xhci%d init failed\n", i);
+        slog("bsp_usb: qcom8gen3 xhci%d init failed\n", i);
         return -1;
     }
     _xhc_dirty[i] = true;
     _xhc_ports[i] = _xhcs[i].num_ports;
     for (int j = 0; j < i; ++j)
         first_port += _xhc_ports[j];
-    slog("bsp_usb: xhci%d %s root ports=%u..%u\n", i, Q8B_XHCI_NAME[i],
+    slog("bsp_usb: xhci%d %s root ports=%u..%u\n", i, QCOM8GEN3_XHCI_NAME[i],
             first_port, first_port + _xhcs[i].num_ports - 1u);
     return 0;
 }
@@ -342,18 +342,18 @@ static int xhci_bring_up(void) {
         ewokos_addr_t va = XHCI_BAR_VA_BASE +
                 (ewokos_addr_t)i * XHCI_BAR_MAP_SIZE;
 
-        if (syscall3(SYS_MEM_MAP, va, Q8B_XHCI_PHY_BASE[i],
+        if (syscall3(SYS_MEM_MAP, va, QCOM8GEN3_XHCI_PHY_BASE[i],
                 XHCI_BAR_MAP_SIZE) != va) {
-            slog("bsp_usb: q8b xhci%d map failed phy=%llx\n", i,
-                    (unsigned long long)Q8B_XHCI_PHY_BASE[i]);
+            slog("bsp_usb: qcom8gen3 xhci%d map failed phy=%llx\n", i,
+                    (unsigned long long)QCOM8GEN3_XHCI_PHY_BASE[i]);
             continue;
         }
         _xhc_mapped[i] = true;
-        if (q8b_xhci_start(i) == 0) {
+        if (qcom8gen3_xhci_start(i) == 0) {
             ++found;
         }
         else {
-            slog("bsp_usb: xhci%d %s not ready\n", i, Q8B_XHCI_NAME[i]);
+            slog("bsp_usb: xhci%d %s not ready\n", i, QCOM8GEN3_XHCI_NAME[i]);
         }
     }
     slog("bsp_usb: host bring-up complete controllers=%d/%d flat_ports=%d\n",
@@ -377,7 +377,7 @@ int bsp_usb_init(void) {
 
     slog("bsp_usb: init begin controllers=%d\n", BSP_USB_NUM_XHC);
     xhci_bring_up(); /* degrades to zero controllers, never fails */
-    unsigned irq_enabled = q8b_xhci_irq_setup();
+    unsigned irq_enabled = qcom8gen3_xhci_irq_setup();
     if (uhci_port_count() == 0 && xhci_port_count() == 0) {
         slog("bsp_usb: no usb controller found, running without usb\n");
     }
@@ -416,7 +416,7 @@ int bsp_usb_reinit(void) {
         if (!_xhc_mapped[i])
             continue;
         memset(&_xhcs[i], 0, sizeof(_xhcs[i]));
-        if (q8b_xhci_start(i) == 0) {
+        if (qcom8gen3_xhci_start(i) == 0) {
             if (_xhc_irq_registered[i]) {
                 xhci_irq_enable(&_xhcs[i]);
             }
@@ -1323,7 +1323,7 @@ int bsp_usb_msc_cntl(vdevice_t* vdev, int from_pid, int cmd,
         if (!_msc.ready) {
             return 0;
         }
-        /* Some Q8B USB MSC bridges accept the CBW for SYNCHRONIZE CACHE(10)
+        /* Some QCOM8GEN3 USB MSC bridges accept the CBW for SYNCHRONIZE CACHE(10)
          * but never return a CSW.  The resulting BOT recovery leaves the
          * data endpoints unusable, so a later journal WRITE10/READ10 fails.
          * USB writes are synchronous through this driver; leave flush as a

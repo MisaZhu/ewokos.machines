@@ -1,7 +1,7 @@
 #include <bsp/gpi_dma_rt.h>
 #include <string.h>
 
-#ifdef Q8B_GPI_RT_TEST
+#ifdef QCOM8GEN3_GPI_RT_TEST
 /* host test injects io/shm */
 static uint32_t rt_io_rd(uintptr_t b, unsigned o);
 static void rt_io_wr(uintptr_t b, unsigned o, uint32_t v);
@@ -57,41 +57,41 @@ static int rt_shm_unpin(int id) { return shm_dma_unpin(id); }
 #endif
 
 /* One io backend shared by real (MMIO) and host-test builds. */
-static const q8b_gpi_io_t rt_io = { rt_io_rd, rt_io_wr, rt_io_delay };
+static const qcom8gen3_gpi_io_t rt_io = { rt_io_rd, rt_io_wr, rt_io_delay };
 
-int q8b_gpi_rt_open(q8b_gpi_rt_t* rt, unsigned instance, unsigned entries) {
+int qcom8gen3_gpi_rt_open(qcom8gen3_gpi_rt_t* rt, unsigned instance, unsigned entries) {
     if (!rt || instance >= 12 || entries < 2 || (entries & (entries - 1)))
         return -1;
     memset(rt, 0, sizeof(*rt));
     rt->instance = instance;
     rt->entries = entries;
 
-#ifdef Q8B_GPI_RT_TEST
+#ifdef QCOM8GEN3_GPI_RT_TEST
     rt->dma.base = 0x9000000u;   /* symbolic; host io ignores the value */
     rt->dma.io = &rt_io;
 #else
-    uintptr_t pa = 0x00900000u + instance * Q8B_GPI_REG_STRIDE; /* qup0 gpi */
+    uintptr_t pa = 0x00900000u + instance * QCOM8GEN3_GPI_REG_STRIDE; /* qup0 gpi */
     uintptr_t va = 0x5b108000u;
-    if (syscall3(SYS_MEM_MAP, va, pa, Q8B_GPI_REG_STRIDE) != va)
+    if (syscall3(SYS_MEM_MAP, va, pa, QCOM8GEN3_GPI_REG_STRIDE) != va)
         return -1;
     rt->dma.base = va;
     rt->dma.io = &rt_io;
 #endif
     rt->stage = "rings-alloc";
-    if (rt_shm_alloc_contig(entries * Q8B_GPI_TRE_SIZE, &rt->desc_shm,
+    if (rt_shm_alloc_contig(entries * QCOM8GEN3_GPI_TRE_SIZE, &rt->desc_shm,
                             &rt->desc_pa, (void**)&rt->desc_v) != 0 ||
-            rt_shm_alloc_contig(entries * Q8B_GPI_EVENT_SIZE, &rt->ev_shm,
+            rt_shm_alloc_contig(entries * QCOM8GEN3_GPI_EVENT_SIZE, &rt->ev_shm,
                                 &rt->ev_pa, (void**)&rt->ev_v) != 0)
         goto fail;
     if (rt_shm_pin(rt->desc_shm) != 0 || rt_shm_pin(rt->ev_shm) != 0)
         goto fail;
     rt->pinned = 1;
     rt->rings.entries = entries;
-    rt->rings.el_size = Q8B_GPI_TRE_SIZE;
-    rt->rings.er_size = Q8B_GPI_EVENT_SIZE;
+    rt->rings.el_size = QCOM8GEN3_GPI_TRE_SIZE;
+    rt->rings.er_size = QCOM8GEN3_GPI_EVENT_SIZE;
     rt->rings.desc_phys = rt->desc_pa;
     rt->rings.ev_phys = rt->ev_pa;
-    if (q8b_gpi_dma_init(&rt->dma, rt->dma.base, &rt->rings, &rt_io) != 0)
+    if (qcom8gen3_gpi_dma_init(&rt->dma, rt->dma.base, &rt->rings, &rt_io) != 0)
         goto fail;
     rt->stage = "opened";
     return 0;
@@ -108,49 +108,49 @@ fail:
     return -1;
 }
 
-int q8b_gpi_rt_start(q8b_gpi_rt_t* rt) {
+int qcom8gen3_gpi_rt_start(qcom8gen3_gpi_rt_t* rt) {
     if (!rt || rt->pinned == 0 || rt->dma.stage == NULL)
         return -1;
-    if (q8b_gpi_dma_program_rings(&rt->dma) != 0)
+    if (qcom8gen3_gpi_dma_program_rings(&rt->dma) != 0)
         return -1;
-    if (q8b_gpi_dma_start(&rt->dma) != 0)
+    if (qcom8gen3_gpi_dma_start(&rt->dma) != 0)
         return -1;
     rt->stage = "started";
     return 0;
 }
 
-int q8b_gpi_rt_xfer(q8b_gpi_rt_t* rt, uint32_t tx_pa, uint32_t tx_hi,
+int qcom8gen3_gpi_rt_xfer(qcom8gen3_gpi_rt_t* rt, uint32_t tx_pa, uint32_t tx_hi,
                     uint32_t tx_len, uint32_t rx_pa, uint32_t rx_hi,
-                    uint32_t rx_len, const q8b_gpi_spi_cfg_t* cfg,
+                    uint32_t rx_len, const qcom8gen3_gpi_spi_cfg_t* cfg,
                     uint64_t budget_us) {
     if (!rt || !rt->pinned || !rt->dma.started)
         return -1;
     rt->stage = "xfer-build";
     uint32_t wp = rt->dma.wp;
-    if (q8b_gpi_dma_build_xfer(rt->desc_v, rt->entries, wp, cfg,
+    if (qcom8gen3_gpi_dma_build_xfer(rt->desc_v, rt->entries, wp, cfg,
                                tx_pa, tx_hi, tx_len, rx_pa, rx_hi, rx_len,
                                &wp) != 0)
         return -1;
     rt->stage = "xfer-doorbell";
-    if (q8b_gpi_dma_commit(&rt->dma, wp) != 0)
+    if (qcom8gen3_gpi_dma_commit(&rt->dma, wp) != 0)
         return -1;
     rt->doorbells++;
     rt->stage = "xfer-wait";
     uint32_t code = 0, chid = 0, length = 0;
-    if (q8b_gpi_dma_wait_event(&rt->dma, rt->ev_v, budget_us, &code, &chid,
+    if (qcom8gen3_gpi_dma_wait_event(&rt->dma, rt->ev_v, budget_us, &code, &chid,
                                &length) != 0)
         return -1;
     rt->stage = "xfer-ok";
     return 0;
 }
 
-int q8b_gpi_rt_close(q8b_gpi_rt_t* rt) {
+int qcom8gen3_gpi_rt_close(qcom8gen3_gpi_rt_t* rt) {
     if (!rt)
         return -1;
     if (rt->dma.started) {
-        if (q8b_gpi_dma_stop(&rt->dma) != 0)
+        if (qcom8gen3_gpi_dma_stop(&rt->dma) != 0)
             return -1;             /* poisoned: caller must not reuse */
-        if (q8b_gpi_dma_dealloc(&rt->dma) != 0)
+        if (qcom8gen3_gpi_dma_dealloc(&rt->dma) != 0)
             return -1;
     }
     if (rt->pinned) {

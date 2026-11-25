@@ -1,12 +1,12 @@
 /*
- * Minimal UEFI definitions for the Q8B AArch64 bootloader.
+ * Minimal UEFI definitions for the QCOM8GEN3 AArch64 bootloader.
  *
  * AArch64 UEFI uses the standard AAPCS64 calling convention, so unlike the
  * x86_64 port no ABI shim is needed: all protocol functions can be called
  * directly through their prototypes.
  */
-#ifndef Q8B_EFI_H
-#define Q8B_EFI_H
+#ifndef QCOM8GEN3_EFI_H
+#define QCOM8GEN3_EFI_H
 
 typedef unsigned char      uint8_t;
 typedef unsigned short     uint16_t;

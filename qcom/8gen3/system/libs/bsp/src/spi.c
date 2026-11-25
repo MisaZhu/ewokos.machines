@@ -1,7 +1,7 @@
 #include <bsp/spi.h>
 #include <string.h>
 
-#ifdef Q8B_SPI_TEST
+#ifdef QCOM8GEN3_SPI_TEST
 #include "../tests/spi_test_io.h"
 #else
 #include <unistd.h>
@@ -140,7 +140,7 @@ typedef struct {
     const unsigned* pins;        /* MISO,MOSI,CLK,CS */
     const uint8_t* pin_fn;
     uint32_t max_hz;
-} q8b_spi_se_t;
+} qcom8gen3_spi_se_t;
 
 static const unsigned tw220_gates[] = { 0x1e004, 0x1e008, 0x1e00c, 0x1e014, 0x1e864 };
 static const unsigned tw220_pins[] = { 85, 86, 83, 84 };   /* MISO,MOSI,CLK,CS */
@@ -149,7 +149,7 @@ static const unsigned gk3_gates[] = { 0x17004, 0x17008, 0x17864 };
 static const unsigned gk3_pins[]  = { 154, 155, 156, 157 }; /* MISO,MOSI,CLK,CS */
 static const uint8_t gk3_fn[]     = { 1, 1, 1, 1 };
 
-static const q8b_spi_se_t SPIS[] = {
+static const qcom8gen3_spi_se_t SPIS[] = {
     { "tw220-spi22", 22, 0x00898000, 0x008c0000,
       0x52010, 0x52018, 0x0f, 1u << 29,
       tw220_gates, (unsigned int)(sizeof(tw220_gates) / sizeof(tw220_gates[0])),
@@ -159,19 +159,19 @@ static const q8b_spi_se_t SPIS[] = {
       gk3_gates, (unsigned int)(sizeof(gk3_gates) / sizeof(gk3_gates[0])),
       0, gk3_pins, gk3_fn, 12000000 },
 };
-static const q8b_spi_se_t* spi_se(unsigned bus) {
+static const qcom8gen3_spi_se_t* spi_se(unsigned bus) {
     for (unsigned i = 0; i < sizeof(SPIS) / sizeof(SPIS[0]); i++)
         if (SPIS[i].bus == bus)
             return &SPIS[i];
     return 0;
 }
 
-int q8b_spi_prepare(q8b_spi_t* spi, unsigned bus, unsigned speed_hz) {
+int qcom8gen3_spi_prepare(qcom8gen3_spi_t* spi, unsigned bus, unsigned speed_hz) {
     if (!spi)
         return -1;
     memset(spi, 0, sizeof(*spi));
     spi->stage = "arguments";
-    const q8b_spi_se_t* se = spi_se(bus);
+    const qcom8gen3_spi_se_t* se = spi_se(bus);
     if (!se || speed_hz == 0 || speed_hz > se->max_hz)
         return -1;
     spi->requested_hz = speed_hz;
@@ -239,7 +239,7 @@ int q8b_spi_prepare(q8b_spi_t* spi, unsigned bus, unsigned speed_hz) {
  * command's data by one byte pair (seen on gaokun3 as an IC ID of 83121a00
  * followed by 001a1283 on alternating reads), so every transfer ends with an
  * empty RX FIFO. */
-static void flush_rx(q8b_spi_t* spi) {
+static void flush_rx(qcom8gen3_spi_t* spi) {
     for (unsigned i = 0; i < spi->rx_depth; i++) {
         if (!(hw_rd(spi->se, RX_STATUS) & 0x1ffffffU))
             break;
@@ -247,7 +247,7 @@ static void flush_rx(q8b_spi_t* spi) {
     }
 }
 
-static int abort_command(q8b_spi_t* spi) {
+static int abort_command(qcom8gen3_spi_t* spi) {
     if (hw_rd(spi->se, STATUS) & ACTIVE) {
         hw_wr(spi->se, M_CTRL, 1U << 2); /* cancel, then bounded abort */
         if (wait_clear(spi->se, STATUS, ACTIVE) != 0) {
@@ -263,7 +263,7 @@ static int abort_command(q8b_spi_t* spi) {
     return 0;
 }
 
-static void pinmux(q8b_spi_t* spi, const q8b_spi_se_t* se, bool sw_cs) {
+static void pinmux(qcom8gen3_spi_t* spi, const qcom8gen3_spi_se_t* se, bool sw_cs) {
     for (unsigned i = 0; i < 4; i++) {
         unsigned pin = se->pins[i];
         /* Software CS: leave the CS pad to the caller (plain GPIO).  The
@@ -286,18 +286,18 @@ static void pinmux(q8b_spi_t* spi, const q8b_spi_se_t* se, bool sw_cs) {
     }
 }
 
-int q8b_spi_open(q8b_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode) {
+int qcom8gen3_spi_open(qcom8gen3_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode) {
     if (!spi)
         return -1;
-    const q8b_spi_se_t* se = spi_se(bus);
+    const qcom8gen3_spi_se_t* se = spi_se(bus);
     if (!se)
         return -1;
-    if (mode & ~(15U | Q8B_SPI_SW_CS)) {
+    if (mode & ~(15U | QCOM8GEN3_SPI_SW_CS)) {
         memset(spi, 0, sizeof(*spi));
         spi->stage = "mode";
         return -1;
     }
-    if (q8b_spi_prepare(spi, bus, speed_hz) != 0)
+    if (qcom8gen3_spi_prepare(spi, bus, speed_hz) != 0)
         return -1;
     spi->stage = "controller-map";
     spi->se = SE_VA;
@@ -308,7 +308,7 @@ int q8b_spi_open(q8b_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode)
             hw_map(spi->tlmm, 0x0f100000U, 0x300000U) != 0)
         return -1;
     spi->se_pa = se->se_pa;
-    spi->sw_cs = (mode & Q8B_SPI_SW_CS) != 0;
+    spi->sw_cs = (mode & QCOM8GEN3_SPI_SW_CS) != 0;
 
     /* First access to GENI comes only after all GCC gates have acknowledged.
      * Use firmware loaded by UEFI; never load a guessed protocol image. */
@@ -369,17 +369,17 @@ int q8b_spi_open(q8b_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode)
     hw_wr(spi->se, RX_WM, spi->rx_depth - 3U);
     hw_wr(spi->se, RX_RFR, spi->rx_depth - 2U);
     /* Four bytes per FIFO word, SPI MSB-first (unlike UART's LSB-first). */
-    uint32_t pack0 = (mode & Q8B_SPI_LSB_FIRST) ? 0x0004380eU : 0x0007f8feU;
-    uint32_t pack1 = (mode & Q8B_SPI_LSB_FIRST) ? 0x000c3e0eU : 0x000ffefeU;
+    uint32_t pack0 = (mode & QCOM8GEN3_SPI_LSB_FIRST) ? 0x0004380eU : 0x0007f8feU;
+    uint32_t pack1 = (mode & QCOM8GEN3_SPI_LSB_FIRST) ? 0x000c3e0eU : 0x000ffefeU;
     hw_wr(spi->se, TX_PACK0, pack0);
     hw_wr(spi->se, TX_PACK1, pack1);
     hw_wr(spi->se, RX_PACK0, pack0);
     hw_wr(spi->se, RX_PACK1, pack1);
     hw_wr(spi->se, BYTE_GRAN, 0);
     hw_wr(spi->se, WORD_LEN, 4); /* 8 minus the hardware minimum of 4 */
-    hw_wr(spi->se, CPHA, (mode & Q8B_SPI_CPHA) ? 1U : 0);
-    hw_wr(spi->se, CPOL, (mode & Q8B_SPI_CPOL) ? 4U : 0);
-    hw_wr(spi->se, LOOPBACK, (mode & Q8B_SPI_LOOPBACK) ? 1U : 0);
+    hw_wr(spi->se, CPHA, (mode & QCOM8GEN3_SPI_CPHA) ? 1U : 0);
+    hw_wr(spi->se, CPOL, (mode & QCOM8GEN3_SPI_CPOL) ? 4U : 0);
+    hw_wr(spi->se, LOOPBACK, (mode & QCOM8GEN3_SPI_LOOPBACK) ? 1U : 0);
     /* With software CS the engine must not drive the CS pad.  Point its
      * demux at an unused chip-select channel so the pad the caller owns stays
      * under GPIO control. */
@@ -392,7 +392,7 @@ int q8b_spi_open(q8b_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode)
     flush_rx(spi);
     if (hw_rd(spi->se, RX_STATUS) & 0x1ffffffU)
         return -1;
-    pinmux(spi, se, (mode & Q8B_SPI_SW_CS) != 0);
+    pinmux(spi, se, (mode & QCOM8GEN3_SPI_SW_CS) != 0);
     spi->ready = true;
     spi->stage = "ready";
     return 0;
@@ -404,7 +404,7 @@ int q8b_spi_open(q8b_spi_t* spi, unsigned bus, unsigned speed_hz, unsigned mode)
  * and a partial last word still occupies one FIFO read.  Returns 0 or -1
  * when the engine reports more words than it can hold.
  */
-static int drain_rx(q8b_spi_t* spi, uint8_t* rx, size_t len) {
+static int drain_rx(qcom8gen3_spi_t* spi, uint8_t* rx, size_t len) {
     uint32_t status = hw_rd(spi->se, RX_STATUS);
     unsigned words = status & 0x1ffffffU;
     unsigned tail = 4U;
@@ -441,9 +441,9 @@ static int drain_rx(q8b_spi_t* spi, uint8_t* rx, size_t len) {
  * Returns 0 on success.  The engine is left unusable on failure, like the
  * polled path.
  */
-int q8b_spi_transfer_dma_read(q8b_spi_t* spi, void* rx, size_t len,
+int qcom8gen3_spi_transfer_dma_read(qcom8gen3_spi_t* spi, void* rx, size_t len,
         uint64_t rx_pa, uint32_t timeout_us) {
-    if (!spi || !spi->ready || !rx || len == 0 || len > Q8B_SPI_MAX_XFER ||
+    if (!spi || !spi->ready || !rx || len == 0 || len > QCOM8GEN3_SPI_MAX_XFER ||
             rx_pa == 0 || (rx_pa >> 32) != 0)
         return -1;
     spi->sent = spi->received = 0;
@@ -502,10 +502,10 @@ int q8b_spi_transfer_dma_read(q8b_spi_t* spi, void* rx, size_t len,
     return -1;
 }
 
-int q8b_spi_transfer(q8b_spi_t* spi, const void* tx_data, void* rx_data, size_t len) {
+int qcom8gen3_spi_transfer(qcom8gen3_spi_t* spi, const void* tx_data, void* rx_data, size_t len) {
     const uint8_t* tx = tx_data;
     uint8_t* rx = rx_data;
-    if (!spi || !spi->ready || (!tx && !rx) || len == 0 || len > Q8B_SPI_MAX_XFER)
+    if (!spi || !spi->ready || (!tx && !rx) || len == 0 || len > QCOM8GEN3_SPI_MAX_XFER)
         return -1;
     spi->sent = spi->received = 0;
     spi->stage = "transfer-idle";
@@ -533,7 +533,7 @@ int q8b_spi_transfer(q8b_spi_t* spi, const void* tx_data, void* rx_data, size_t 
     for (unsigned poll = 0; poll < 40000; poll++) {
         uint32_t irq = hw_rd(spi->se, M_IRQ);
         spi->last_irq = irq;
-#ifdef Q8B_SPI_TRACE
+#ifdef QCOM8GEN3_SPI_TRACE
         if (poll < 24)
             printf("spi_trace[%u] irq=%08x txs=%08x rxs=%08x st=%08x sent=%u recv=%u\n",
                     poll, irq, hw_rd(spi->se, TX_STATUS), hw_rd(spi->se, RX_STATUS),

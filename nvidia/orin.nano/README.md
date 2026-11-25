@@ -352,7 +352,7 @@ system/    minimal userland: libs/bsp (ramdisk sd + bootfs, bsp_bpmp IVC,
            net (/dev/eth0), pcied (C1 owner), i2cd, gpiod, usbhostd,
            tools orinmon (power/EEPROM) + sdprobe (microSD),
            etc (kernel.conf rootfs=self, init.ramfs.rd)
-include/   q8b_platform.h (shared boot hand-off layout, reused verbatim),
+include/   qcom8gen3_platform.h (shared boot hand-off layout, reused verbatim),
            machine_conf.h (INIT_DRIVER_DIR), orin_net.h (PCIe/BPMP/I2C/GPIO/
            SDMMC/XUSB address + ID map)
 ```

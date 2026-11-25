@@ -110,7 +110,7 @@ int main(int argc, char **argv) {
     vdevice_t dev;
 
     if (bsp_eth_init() != 0) {
-        slog("q8b eth: probe failed, device not started\n");
+        slog("qcom8gen3 eth: probe failed, device not started\n");
         return -1;
     }
     memset(&dev, 0, sizeof(dev));

@@ -6,7 +6,7 @@
  * MMIO windows mapped by SYS_MEM_MAP.  The kernel keeps its own read-only copy
  * solely to load init from the physical SD before user space starts.
  *
- * Keep the register programming in sync with machines/q8b/kernel/bsp/sd.c.
+ * Keep the register programming in sync with machines/qcom/8gen3/kernel/bsp/sd.c.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -52,23 +52,23 @@
 /* MMIO layout, mirrored from kernel/bsp/hw_arch.h.  All windows are mapped at
  * the same offset inside one user-space base so the driver macros below stay
  * identical to the kernel version. */
-#define Q8B_SDCC_WIN_PHY    0x08800000ULL
-#define Q8B_SDCC_WIN_SIZE   0x00100000U
-#define Q8B_SDCC_WIN_OFF    0x05000000ULL
-#define Q8B_SDCC2_PHY       0x08804000ULL
-#define Q8B_SDCC2_OFF       (Q8B_SDCC_WIN_OFF + 0x4000ULL)
+#define QCOM8GEN3_SDCC_WIN_PHY    0x08800000ULL
+#define QCOM8GEN3_SDCC_WIN_SIZE   0x00100000U
+#define QCOM8GEN3_SDCC_WIN_OFF    0x05000000ULL
+#define QCOM8GEN3_SDCC2_PHY       0x08804000ULL
+#define QCOM8GEN3_SDCC2_OFF       (QCOM8GEN3_SDCC_WIN_OFF + 0x4000ULL)
 
-#define Q8B_TLMM_WIN_PHY    0x0f100000ULL
-#define Q8B_TLMM_WIN_SIZE   0x00300000U
-#define Q8B_TLMM_WIN_OFF    0x05100000ULL
+#define QCOM8GEN3_TLMM_WIN_PHY    0x0f100000ULL
+#define QCOM8GEN3_TLMM_WIN_SIZE   0x00300000U
+#define QCOM8GEN3_TLMM_WIN_OFF    0x05100000ULL
 
-#define Q8B_RSC_WIN_PHY     0x18220000ULL
-#define Q8B_RSC_WIN_SIZE    0x00010000U
-#define Q8B_RSC_WIN_OFF     0x05400000ULL
+#define QCOM8GEN3_RSC_WIN_PHY     0x18220000ULL
+#define QCOM8GEN3_RSC_WIN_SIZE    0x00010000U
+#define QCOM8GEN3_RSC_WIN_OFF     0x05400000ULL
 
-#define Q8B_CMD_DB_WIN_PHY  0x80860000ULL
-#define Q8B_CMD_DB_WIN_SIZE 0x00020000U
-#define Q8B_CMD_DB_WIN_OFF  0x05500000ULL
+#define QCOM8GEN3_CMD_DB_WIN_PHY  0x80860000ULL
+#define QCOM8GEN3_CMD_DB_WIN_SIZE 0x00020000U
+#define QCOM8GEN3_CMD_DB_WIN_OFF  0x05500000ULL
 
 #define CMD_DB_DATA_OFFSET  144U
 #define CMD_DB_RSC_OFFSET   8U
@@ -79,9 +79,9 @@
 
 /* Keep clear of bsp_fb's 0x50000000 GOP window (up to 64MB), bsp_sd's
  * 0x60000000 RAM-disk window and sdprobe's 0x58000000 register dump. */
-#define Q8B_SD_MMIO_BASE    0x70000000ULL
+#define QCOM8GEN3_SD_MMIO_BASE    0x70000000ULL
 
-static uint64_t sdcc2_mmio_base = Q8B_SD_MMIO_BASE;
+static uint64_t sdcc2_mmio_base = QCOM8GEN3_SD_MMIO_BASE;
 
 static int32_t _physical_sd_ready = 0;
 static int32_t _physical_sd_high_capacity = 0;
@@ -140,15 +140,15 @@ static void sdcc2_delay_us(uint32_t usec) {
 #define GCC_SDCC2_CFG_MASK       ((0x1fU << 0) | (0x7U << 8) | \
                                  (0x3U << 12) | (1U << 20))
 
-#define SDCC2_BASE              (sdcc2_mmio_base + Q8B_SDCC2_OFF)
-#define TLMM_BASE               (sdcc2_mmio_base + Q8B_TLMM_WIN_OFF)
+#define SDCC2_BASE              (sdcc2_mmio_base + QCOM8GEN3_SDCC2_OFF)
+#define TLMM_BASE               (sdcc2_mmio_base + QCOM8GEN3_TLMM_WIN_OFF)
 #define TLMM_SDC2_CTL           0x0e8000
 #define TLMM_GPIO131_CTL        (131 * 0x1000)
 #define TLMM_GPIO131_IO         (TLMM_GPIO131_CTL + 0x4)
 
-#define CMD_DB_BASE             (sdcc2_mmio_base + Q8B_CMD_DB_WIN_OFF)
+#define CMD_DB_BASE             (sdcc2_mmio_base + QCOM8GEN3_CMD_DB_WIN_OFF)
 
-#define RPMH_RSC_BASE           (sdcc2_mmio_base + Q8B_RSC_WIN_OFF)
+#define RPMH_RSC_BASE           (sdcc2_mmio_base + QCOM8GEN3_RSC_WIN_OFF)
 #define RPMH_TCS_BASE           (RPMH_RSC_BASE + 0x0d00U)
 #define RPMH_TCS_STRIDE         672U
 #define RPMH_CMD_STRIDE         20U
@@ -270,8 +270,8 @@ static uint32_t cmd_db_read_addr(const char* id) {
         header_off = mmio_read16(CMD_DB_BASE, rsc + 2U);
         count = mmio_read16(CMD_DB_BASE, rsc + 6U);
         entries = CMD_DB_DATA_OFFSET + header_off;
-        if (entries >= Q8B_CMD_DB_WIN_SIZE ||
-                count > (Q8B_CMD_DB_WIN_SIZE - entries) /
+        if (entries >= QCOM8GEN3_CMD_DB_WIN_SIZE ||
+                count > (QCOM8GEN3_CMD_DB_WIN_SIZE - entries) /
                         CMD_DB_ENTRY_SIZE)
             return 0;
 
@@ -1621,17 +1621,17 @@ static int32_t sdcc2_map_windows(void) {
     if(sdcc2_map_window(sdcc2_mmio_base + 0x00100000ULL,
                 0x00100000ULL, 0x00020000U) != 0)
         return -1;
-    if(sdcc2_map_window(sdcc2_mmio_base + Q8B_SDCC_WIN_OFF,
-                Q8B_SDCC_WIN_PHY, Q8B_SDCC_WIN_SIZE) != 0)
+    if(sdcc2_map_window(sdcc2_mmio_base + QCOM8GEN3_SDCC_WIN_OFF,
+                QCOM8GEN3_SDCC_WIN_PHY, QCOM8GEN3_SDCC_WIN_SIZE) != 0)
         return -1;
-    if(sdcc2_map_window(sdcc2_mmio_base + Q8B_TLMM_WIN_OFF,
-                Q8B_TLMM_WIN_PHY, Q8B_TLMM_WIN_SIZE) != 0)
+    if(sdcc2_map_window(sdcc2_mmio_base + QCOM8GEN3_TLMM_WIN_OFF,
+                QCOM8GEN3_TLMM_WIN_PHY, QCOM8GEN3_TLMM_WIN_SIZE) != 0)
         return -1;
-    if(sdcc2_map_window(sdcc2_mmio_base + Q8B_RSC_WIN_OFF,
-                Q8B_RSC_WIN_PHY, Q8B_RSC_WIN_SIZE) != 0)
+    if(sdcc2_map_window(sdcc2_mmio_base + QCOM8GEN3_RSC_WIN_OFF,
+                QCOM8GEN3_RSC_WIN_PHY, QCOM8GEN3_RSC_WIN_SIZE) != 0)
         return -1;
-    if(sdcc2_map_window(sdcc2_mmio_base + Q8B_CMD_DB_WIN_OFF,
-                Q8B_CMD_DB_WIN_PHY, Q8B_CMD_DB_WIN_SIZE) != 0)
+    if(sdcc2_map_window(sdcc2_mmio_base + QCOM8GEN3_CMD_DB_WIN_OFF,
+                QCOM8GEN3_CMD_DB_WIN_PHY, QCOM8GEN3_CMD_DB_WIN_SIZE) != 0)
         return -1;
     return 0;
 }

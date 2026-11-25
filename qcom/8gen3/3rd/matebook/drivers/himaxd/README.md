@@ -1,8 +1,8 @@
 # Huawei MateBook gaokun3 Himax HX83121A touchscreen
 
 `himaxd` serves the gaokun3's SPI touchscreen as `/dev/touch0`.  The
-driver lives under `machines/q8b/system/drivers/`, next to `goodixd`: the
-q8b machine tree serves both panels and `/etc/init.rd` selects the active
+driver lives under `machines/qcom/8gen3/system/drivers/`, next to `goodixd`: the
+qcom8gen3 machine tree serves both panels and `/etc/init.rd` selects the active
 one (TW220 default -> goodixd; gaokun -> uncomment the himaxd entry).  The
 TW220 Goodix driver is a different IC and is not changed; both daemons speak
 the same six-byte record contract, so `xtouch` and the X server work with
@@ -24,7 +24,7 @@ either.
 
 Sources: `sc8280xp-huawei-gaokun3.dts` from the working gaokun3 kernel tree
 (`himax,hx83121a-ts`, `spi6_default`, `ts0_default`), the gaokun3 touch patches
-in `../q8b/easy-for-gaokun/patches/`, and `../q8b/EGo-Q8B移植关键信息.md`.
+in `../qcom8gen3/easy-for-gaokun/patches/`, and `../qcom8gen3/EGo-QCOM8GEN3移植关键信息.md`.
 
 Two board facts matter:
 
@@ -50,7 +50,7 @@ The controller sits on the GENI QUP0 SE6 serial engine. On this platform the
 engine has FIFO mode disabled (`GENI_IF_DISABLE_RO`), so Linux forces GPI DMA;
 that path needs a GPI channel, an SMMU stream mapping and interconnect votes.
 On SC8280XP an unprepared GENI MMIO access already hung a machine during TW220
-bring-up (`machines/q8b/skills/q8b-tw220-spi-bringup`), and none of that is
+bring-up (`machines/qcom/8gen3/skills/qcom8gen3-tw220-spi-bringup`), and none of that is
 validated for QUP0 SE6 here.
 
 `himaxd` maps **only TLMM** and bit-bangs SPI mode 3: CS low per access, data
@@ -197,7 +197,7 @@ tracker glue in `himax_mt_tracks.h`; both are covered by
 Startup order in `/etc/init.rd`:
 
 ```
-@/bin/ipcserv /drivers/q8b/himaxd /dev/touch0
+@/bin/ipcserv /drivers/8gen3/himaxd /dev/touch0
 @/bin/bgrun /sbin/x/xtouch -c /etc/x/xtouch-himax.json /dev/touch0
 ```
 

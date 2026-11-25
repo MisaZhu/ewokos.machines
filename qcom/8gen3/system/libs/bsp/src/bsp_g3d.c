@@ -1,9 +1,9 @@
 /*
- * bsp_g3d.c - Q8B (Adreno 690) portablegl 3D offload backend forwarder.
+ * bsp_g3d.c - QCOM8GEN3 (Adreno 690) portablegl 3D offload backend forwarder.
  *
- * Q8B is the second EwokOS machine with real 3D GPU hardware (after
+ * QCOM8GEN3 is the second EwokOS machine with real 3D GPU hardware (after
  * raspi5's V3D 7.1), so per the bsp_g3d contract this file is a backend
- * forwarder into the Adreno 690 driver (machines/q8b/system/libs/adreno,
+ * forwarder into the Adreno 690 driver (machines/qcom/8gen3/system/libs/adreno,
  * libadreno.a) rather than a dead decline-only stub.
  *
  * WHAT IS IMPLEMENTED (source-faithful + compile-verified):
@@ -27,9 +27,9 @@
  *   bsp_g3d_program / program_free / draw forward into the a6xx COMPUTE
  *   back end (adreno_3d.c, libadreno): a program is a precompiled a6xx
  *   ir3 blob in the adreno_prog.h VERSION 6 format (ADRENO_PROG_MAGIC),
- *   produced app-side by machines/q8b/system/libs/adrenocompiler (the
+ *   produced app-side by machines/qcom/8gen3/system/libs/adrenocompiler (the
  *   shared pglcompiler.h contract over the vendored mesa freedreno/ir3
- *   tree, GLSL->NIR->ir3->a6xx; this is what q8b's `export PGL_G3D=yes`
+ *   tree, GLSL->NIR->ir3->a6xx; this is what qcom8gen3's `export PGL_G3D=yes`
  *   compiles portablegl's shaders with), uploaded to GPU buffers, and a
  *   draw dispatches it as compute - the sanctioned CSD/CS route for
  *   Adreno, not the binner / fixed-function 3D pipeline:
@@ -121,7 +121,7 @@ static int g3d_probe(void) {
 	if(g_g3d_ready == 1 && adreno_wedged()) {
 		/* a submitted job never retired: demote for the rest of the session */
 		g_g3d_ready = -1;
-		slog("q8b g3d: Adreno wedged - 3D offload disabled for this session\n");
+		slog("qcom8gen3 g3d: Adreno wedged - 3D offload disabled for this session\n");
 	}
 	if(g_g3d_ready != 0)
 		return g_g3d_ready;
@@ -131,9 +131,9 @@ static int g3d_probe(void) {
 	}
 	int rc = adreno_3d_init();
 	g_g3d_ready = (rc == 0) ? 1 : -1;
-	slog("q8b g3d: adreno bring-up %s (rc=%d)\n",
+	slog("qcom8gen3 g3d: adreno bring-up %s (rc=%d)\n",
 			(g_g3d_ready == 1) ? "OK" : "DECLINED", rc);
-	slog("q8b g3d: adreno bring-up %s (rc=%d)\n",
+	slog("qcom8gen3 g3d: adreno bring-up %s (rc=%d)\n",
 			(g_g3d_ready == 1) ? "OK" : "DECLINED", rc);
 	return g_g3d_ready;
 }
@@ -155,7 +155,7 @@ static int32_t a3d_result(int rc) {
 int32_t bsp_g3d_init(void) {
 	/* 3D is optional: g2dd ignores this return value.  Probe (gated) so
 	   an opted-in board reports bring-up status; never fail init. */
-	slog("q8b g3d: init optin=%d\n", adreno_opted_in());
+	slog("qcom8gen3 g3d: init optin=%d\n", adreno_opted_in());
 	(void)g3d_probe();
 	return 0;
 }
@@ -346,6 +346,6 @@ int32_t bsp_g3d_sleep(int32_t sleep) {
 		return G2D_ERR_NOT_SUPPORTED;
 	int rc = sleep ? adreno_gpu_pm_sleep(adreno_dev())
 	               : adreno_gpu_pm_wake(adreno_dev());
-	slog("q8b g3d: GPU %s (rc=%d)\n", sleep ? "sleep" : "wake", rc);
+	slog("qcom8gen3 g3d: GPU %s (rc=%d)\n", sleep ? "sleep" : "wake", rc);
 	return rc == 0 ? G2D_OK : G2D_ERR_FAILED;
 }
