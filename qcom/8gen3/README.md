@@ -9,7 +9,7 @@
   挂 NVMe(p3 ext3)。日常调试主通道,固件/内核迭代不碰磁盘。
 - **SSD grub 链**(盘上系统自带):UEFI NVMe → grub(ESP p1)→ 菜单
   "Ewokos" chainload **p2 BOOT 分区**的 `EFI/EWOKOS/BOOTAA64.EFI` →
-  `\qcom8gen3\KERNEL.BIN` + `\qcom8gen3\INITRAMFS.IMG`(loader 根路径探测约定)→
+  `\8gen3\KERNEL.BIN` + `\8gen3\INITRAMFS.IMG`(loader 只读 8gen3 目录,无回退)→
   p3 ext3 rootfs。脱离网络做最终验证用。
 
 盘上分区(p3 为 EwokOS rootfs 目标):
@@ -73,9 +73,10 @@ kernel.conf 的 rootfs=auto 改写成 self,维护模式)、`KERNEL_ONLY=1`
 
 ```bash
 # 向 PXE 服务查询当前投放目录($TFTP_ROOT,目录可配置,不要写死)
-cp efi/BOOTAA64.EFI  "$TFTP_ROOT/qcom8gen3/BOOTAA64.EFI"
-cp efi/kernel.bin    "$TFTP_ROOT/qcom8gen3/KERNEL.BIN"
-cp efi/initramfs.img "$TFTP_ROOT/qcom8gen3/INITRAMFS.IMG"
+cp efi/BOOTAA64.EFI  "$TFTP_ROOT/qcom8gen3/BOOTAA64.EFI"  # bootfile(dnsmasq 配置)
+mkdir -p "$TFTP_ROOT/8gen3"
+cp efi/kernel.bin    "$TFTP_ROOT/8gen3/KERNEL.BIN"        # loader 只读 8gen3/
+cp efi/initramfs.img "$TFTP_ROOT/8gen3/INITRAMFS.IMG"
 # 远程复位板子,串口抓 boot log 判定(复位/串口工具见 skills/qcom8gen3-kernel-test)
 ```
 
@@ -93,16 +94,16 @@ halt-kernel 隔离、KERNEL_ENTRY.BIN 保存/恢复等手法见
 mount /dev/nvme0n1p1 /mnt/esp          # ESP,只读检查用
 mount /dev/nvme0n1p2 /mnt/boot
 cp /tmp/BOOTAA64.EFI   /mnt/boot/EFI/EWOKOS/BOOTAA64.EFI
-cp /tmp/kernel.bin     /mnt/boot/qcom8gen3/KERNEL.BIN
-cp /tmp/initramfs.img  /mnt/boot/qcom8gen3/INITRAMFS.IMG
+cp /tmp/kernel.bin     /mnt/boot/8gen3/KERNEL.BIN
+cp /tmp/initramfs.img  /mnt/boot/8gen3/INITRAMFS.IMG
 cd /mnt/boot && sha256sum linux/Image linux/sc8280xp-ntmer-tw220.dtb \
-    linux/initrd.img qcom8gen3/KERNEL.BIN qcom8gen3/INITRAMFS.IMG \
+    linux/initrd.img 8gen3/KERNEL.BIN 8gen3/INITRAMFS.IMG \
     EFI/EWOKOS/BOOTAA64.EFI > sha256sums.txt && sha256sum -c sha256sums.txt
 sync; umount /mnt/boot; umount /mnt/esp
 ```
 
-之后重启,grub 菜单选 "Ewokos" 即全 SSD 链路(loader 探测
-`\qcom8gen3\KERNEL.BIN`/`\qcom8gen3\INITRAMFS.IMG`,均为 p2 根相对路径)。
+之后重启,grub 菜单选 "Ewokos" 即全 SSD 链路(loader 只读
+`\8gen3\KERNEL.BIN`/`\8gen3\INITRAMFS.IMG`,均为 p2 根相对路径,无 q8b/根目录回退)。
 
 **p3 rootfs 重建**(格式必须 `-I 128`,ext3 库不支持 256-byte inode,
 症状:野块号读循环、journal inode #8 写坏):

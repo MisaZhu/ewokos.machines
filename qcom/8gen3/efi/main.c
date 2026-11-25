@@ -1400,30 +1400,23 @@ static void* read_initrd_loadfile2(uint64_t* out_size) {
  * addresses in .data, which the position-independent PE loader cannot
  * relocate (we emit an empty .reloc by design).
  *
- * The first candidate of each family keeps the legacy "q8b" directory
- * name on purpose: it is the on-media layout contract of ESPs and TFTP
- * roots provisioned before the qcom8gen3 rename.  Renaming these strings
- * would stop those existing media from booting; the flat root-level
- * candidates right after them cover freshly provisioned media.
+ * Each family has exactly one candidate: the "8gen3" directory.  There
+ * is deliberately no fallback (legacy "q8b", flat root, EFI\BOOT): a
+ * missing 8gen3 payload must fail loudly instead of silently booting a
+ * stale image left over from another on-media layout.
  */
 static const char* path_name(int which, int i) {
     if (which == 0) {           /* kernel */
         switch (i) {
-        case 0: return "\\q8b\\KERNEL.BIN";
-        case 1: return "\\KERNEL.BIN";
-        case 2: return "\\EFI\\BOOT\\KERNEL.BIN";
+        case 0: return "\\8gen3\\KERNEL.BIN";
         }
     } else if (which == 1) {    /* legacy full rootfs */
         switch (i) {
-        case 0: return "\\q8b\\ROOTFS.IMG";
-        case 1: return "\\ROOTFS.IMG";
-        case 2: return "\\EFI\\BOOT\\ROOTFS.IMG";
+        case 0: return "\\8gen3\\ROOTFS.IMG";
         }
     } else {                    /* boot-only ramfs */
         switch (i) {
-        case 0: return "\\q8b\\INITRAMFS.IMG";
-        case 1: return "\\INITRAMFS.IMG";
-        case 2: return "\\EFI\\BOOT\\INITRAMFS.IMG";
+        case 0: return "\\8gen3\\INITRAMFS.IMG";
         }
     }
     return 0;
@@ -1513,21 +1506,15 @@ static void* read_file_mtftp4(const char* path, uint64_t max_size,
 static const char* pxe_path_name(int which, int i) {
     if (which == 0) {
         switch (i) {
-        case 0: return "q8b/KERNEL.BIN";
-        case 1: return "KERNEL.BIN";
-        case 2: return "EFI/BOOT/KERNEL.BIN";
+        case 0: return "8gen3/KERNEL.BIN";
         }
     } else if (which == 1) {
         switch (i) {
-        case 0: return "q8b/ROOTFS.IMG";
-        case 1: return "ROOTFS.IMG";
-        case 2: return "EFI/BOOT/ROOTFS.IMG";
+        case 0: return "8gen3/ROOTFS.IMG";
         }
     } else {
         switch (i) {
-        case 0: return "q8b/INITRAMFS.IMG";
-        case 1: return "INITRAMFS.IMG";
-        case 2: return "EFI/BOOT/INITRAMFS.IMG";
+        case 0: return "8gen3/INITRAMFS.IMG";
         }
     }
     return 0;
@@ -1889,7 +1876,7 @@ static void* read_network(int which, uint64_t* size) {
             }
         }
     }
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 1; i++) {
         const char* ppath = pxe_path_name(which, i);
         if (ppath == 0)
             break;
@@ -1901,7 +1888,7 @@ static void* read_network(int which, uint64_t* size) {
             return p;
         }
     }
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 1; i++) {
         const char* path = path_name(which, i);
         if (path == 0)
             break;
@@ -1940,7 +1927,7 @@ static void* read_first(int which, uint64_t* size) {
             return p;
     }
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 1; i++) {
         const char* path = path_name(which, i);
         if (path == 0)
             break;

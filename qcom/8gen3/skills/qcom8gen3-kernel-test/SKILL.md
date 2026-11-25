@@ -24,8 +24,8 @@ description: EwokOS QCOM8GEN3 内核标准测试流程：MCP 常驻串口缓存�
 `machines/qcom/8gen3/deploy.sh` 已移除；部署按本节手工执行。TFTP 投放目录不固定
 （可经 `eud/pxe/tftp-root.conf`/Web 改配），**不要写死路径**：每次部署前先
 MCP `pxe_status`（控制台 `pxe`），取输出 `PXE 服务目录:` 后的路径为
-`$TFTP_ROOT`，投放区即 `$TFTP_ROOT/qcom8gen3`（bootfile `qcom8gen3/BOOTAA64.EFI` 对应
-的子目录，下文统一记作 `$TFTP`）。输出若出现 `已配置新目录(重启 PXE 生效)`
+`$TFTP_ROOT`，投放区即 `$TFTP_ROOT/8gen3`（loader 无回退，只读 `8gen3/`；
+bootfile 仍是 `qcom8gen3/BOOTAA64.EFI`，下文统一记 `$TFTP` 为投放区）。输出若出现 `已配置新目录(重启 PXE 生效)`
 行，先重启 PXE 服务再取值。测试中需要新调的 kernel/EFI/initramfs 等调试
 产物，构建完成后按需拷进该投放区再 reboot 生效。
 
@@ -43,9 +43,9 @@ make -C machines/qcom/8gen3/efi         # 打包 -> efi/kernel.bin、efi/BOOTAA6
 ### 完整投放（PXE/TFTP）
 
 ```bash
-TFTP="$TFTP_ROOT/qcom8gen3"   # $TFTP_ROOT = pxe_status 的『PXE 服务目录』
+TFTP="$TFTP_ROOT/8gen3"   # $TFTP_ROOT = pxe_status 的『PXE 服务目录』
 mkdir -p "$TFTP"
-cp machines/qcom/8gen3/efi/BOOTAA64.EFI  "$TFTP/BOOTAA64.EFI"
+cp machines/qcom/8gen3/efi/BOOTAA64.EFI  "$TFTP_ROOT/qcom8gen3/BOOTAA64.EFI"
 cp machines/qcom/8gen3/efi/kernel.bin    "$TFTP/KERNEL.BIN"
 cp machines/qcom/8gen3/efi/initramfs.img "$TFTP/INITRAMFS.IMG"
 rm -f "$TFTP/ROOTFS.IMG"        # SD_ROOTFS=1（默认）: rootfs 留在 SD ext3 分区
@@ -98,7 +98,7 @@ MCP：
 
 ```bash
 # TFTP 投放区见上文『部署启动载荷』节（$TFTP_ROOT 来自 pxe status）
-TFTP="$TFTP_ROOT/qcom8gen3"
+TFTP="$TFTP_ROOT/8gen3"
 # 保存真 kernel
 cp "$TFTP/KERNEL.BIN" "$TFTP/KERNEL_ENTRY.BIN"
 # 部署 8 字节 halt: wfi; b __entry @0x90080000
@@ -139,7 +139,7 @@ eud> cap read since=2026-10-18T20:25:23
 ## 3. 恢复真 kernel
 
 ```bash
-TFTP="$TFTP_ROOT/qcom8gen3"   # $TFTP_ROOT 来自 pxe status，见『部署启动载荷』节
+TFTP="$TFTP_ROOT/8gen3"   # $TFTP_ROOT 来自 pxe status，见『部署启动载荷』节
 cp "$TFTP/KERNEL_ENTRY.BIN" "$TFTP/KERNEL.BIN"
 ```
 
@@ -169,7 +169,7 @@ cp "$TFTP/KERNEL_ENTRY.BIN" "$TFTP/KERNEL.BIN"
 ```bash
 cd machines/qcom/8gen3/kernel
 make -C ../efi efi KERNEL_ONLY=1 FORCE_UART17=1
-cp ../efi/BOOTAA64.EFI "$TFTP/"   # $TFTP 见『部署启动载荷』节
+cp ../efi/BOOTAA64.EFI "$TFTP_ROOT/qcom8gen3/"   # bootfile；$TFTP_ROOT 见『部署启动载荷』节
 ```
 
 - `KERNEL_ONLY` 下 kernel 会在 `qcom8gen3: bootinfo` 后停住；要跑完整 init 需

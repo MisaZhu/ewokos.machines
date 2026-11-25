@@ -60,6 +60,13 @@
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/8gen3/fbdisplayd    /dev/disp0
 @/bin/ipcserv /drivers/fontd
+# Preload the installed fonts (fonts.json, incl. the 10MB CJK face) HERE,
+# synchronously, before xserverd and any X client exist. fontd is single-task:
+# a whole-file font load monopolizes it, and if that overlaps X startup the
+# xserverd -> xwm -> fontd render chain queues behind the load and wedges on
+# the init logo. Loading in this quiet window is the same condition that makes
+# a manual load_font from xterm safe. Do NOT move this into x/xinit.rd.
+@/bin/load_font
 # User-mode GOP console disabled: the desktop owns the panel.
 # Uncomment these three lines (boards without a wired debug UART) to show the
 # boot log and a shell on screen through /dev/console0.
