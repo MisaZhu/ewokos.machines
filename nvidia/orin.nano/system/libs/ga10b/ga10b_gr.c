@@ -1322,16 +1322,6 @@ int ga10b_gr_enable_hw(const char* fw_dir) {
     return gr_prepare_hw(fw_dir);
 }
 
-/* ACR-reuse path: FECS/GPCCS are already bootstrapped, so the GR/GPC reset
- * in gr_enable_hw must NOT run (it would kill them).  The GR engine stays
- * enabled across the power cycle; just re-apply the non-destructive prepare
- * (NETC load + GPFIFO + non-ctx lists) and mark hw_enabled for gr_init. */
-int ga10b_gr_resume_hw(const char* fw_dir) {
-    if (gr.hw_enabled)
-        return 0;
-    return gr_prepare_hw(fw_dir);
-}
-
 /* post-mortem of a failed ctxsw start.  Only runs after the handshake
  * timed out: nothing pokes the falcons between start and INIT_DONE. */
 static void gr_start_postmortem(void) {

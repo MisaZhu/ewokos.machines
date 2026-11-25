@@ -33,7 +33,9 @@ static int alloc_table(ga10b_gmmu_t* mm, void** va, uint64_t* phy) {
         klog("ga10b: gmmu table pool exhausted (%u)\n", mm->ntab);
         return -1;
     }
-    if (ga10b_dma_alloc(GA10B_MM_PAGE, GA10B_MM_PAGE, va, phy) != 0)
+    if ((mm->persist ? ga10b_pmem_alloc(GA10B_MM_PAGE, GA10B_MM_PAGE, va, phy)
+                     : ga10b_dma_alloc(GA10B_MM_PAGE, GA10B_MM_PAGE, va, phy))
+        != 0)
         return -1;
     mm->tab[mm->ntab].va = *va;
     mm->tab[mm->ntab].phy = *phy;
@@ -82,17 +84,28 @@ static int tlb_invalidate(const ga10b_gmmu_t* mm) {
     return 0;
 }
 
-int ga10b_gmmu_init(ga10b_gmmu_t* mm) {
+static int gmmu_init(ga10b_gmmu_t* mm, int persist) {
     memset(mm, 0, sizeof(*mm));
-    if (ga10b_dma_alloc(GA10B_MM_PAGE, GA10B_MM_PAGE,
-                        &mm->pdb_va, &mm->pdb_phy) != 0)
+    mm->persist = persist;
+    if ((persist ? ga10b_pmem_alloc(GA10B_MM_PAGE, GA10B_MM_PAGE,
+                                    &mm->pdb_va, &mm->pdb_phy)
+                 : ga10b_dma_alloc(GA10B_MM_PAGE, GA10B_MM_PAGE,
+                                   &mm->pdb_va, &mm->pdb_phy)) != 0)
         return -1;
     mm->va_next = GA10B_MM_VA_BASE;
     mm->aperture = GA10B_GMMU_PDE_APERTURE_NCOH;
-    klog("ga10b: gmmu init pdb phy=%llx va_base=%llx (5-level ver2, ncoh)\n",
+    klog("ga10b: gmmu init pdb phy=%llx va_base=%llx (5-level ver2, ncoh%s)\n",
          (unsigned long long)mm->pdb_phy,
-         (unsigned long long)mm->va_next);
+         (unsigned long long)mm->va_next, persist ? ", persistent" : "");
     return 0;
+}
+
+int ga10b_gmmu_init(ga10b_gmmu_t* mm) {
+    return gmmu_init(mm, 0);
+}
+
+int ga10b_gmmu_init_persist(ga10b_gmmu_t* mm) {
+    return gmmu_init(mm, 1);
 }
 
 /* PTE table covering page_va's 2MB span; with `create` the missing
@@ -227,6 +240,8 @@ uint64_t ga10b_gmmu_map(ga10b_gmmu_t* mm, uint64_t phy, uint32_t size) {
 }
 
 void ga10b_gmmu_destroy(ga10b_gmmu_t* mm) {
+    if (mm->persist)
+        return;
     for (uint32_t i = 0; i < mm->ntab; i++)
         ga10b_dma_free(mm->tab[i].va);
     mm->ntab = 0;

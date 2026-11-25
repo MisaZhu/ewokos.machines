@@ -20,6 +20,8 @@
  *
  * Not implemented: TSG preempt before channel removal (callers only
  * destroy idle channels), runlist/pbdma interrupt handling (polled).
+ * ga10b_fifo_quiesce() is the whole-device teardown: it runs when a process
+ * lets go of the GPU and when the next one takes it over.
  *
  * Dry-run: page tables / instance blocks / runlist buffer are built for
  * real in DMA memory; only the MMIO handshake is logged, not executed.
@@ -40,6 +42,8 @@
 #define FIFO_MAX_RL      4u
 #define RL_BUF_SIZE      4096u        /* 16B entries: [TSG, CH] per channel */
 #define RL_SUBMIT_TRIES  1000u
+#define RL_PREEMPT_TRIES 2000u        /* x 100us */
+#define RL_MAX_CHANNELS  2048u
 /* nvgpu runqueue size = ((9+1+3)*num_pce + 2) * 27 * 5, page-aligned
  * (tsg_gv11b_fusa.c); 16KB covers ga10b's 3-PCE layout with margin. */
 #define RUNQUEUE_SIZE    16384u
@@ -146,22 +150,112 @@ static int rl_setup(ga10b_fifo_rl_t* rl, uint32_t rl_base, uint32_t rleng_id) {
     return 0;
 }
 
+/* One runlist per schedulable engine: gr0 (compute/graphics) and the async
+ * LCEs (inst >= 2).  LCE0/1 share gr0's runlist and are not directly
+ * schedulable; gr1 is unused. */
+static int rl_wanted(const ga10b_devinfo_t* d) {
+    if (!d->is_engine || d->runlist_base == 0)
+        return 0;
+    return (d->type == GA10B_DEVTYPE_GRAPHICS && d->inst_id == 0) ||
+           (d->type == GA10B_DEVTYPE_LCE && d->inst_id >= 2);
+}
+
+/* gv11b_fifo_recover order, driven by hardware state only so it also works
+ * for channels this process never created:
+ *   scheduler off -> CHRAM disable every channel in use -> [engine reset] ->
+ *   runlist preempt -> CHRAM clear -> scheduler on -> empty runlist.
+ * With reset_engines the preempt comes AFTER the reset, unlike nvgpu: the
+ * contexts belong to a process that is gone, and a preempt on a loaded
+ * engine would have FECS save them into memory that is no longer theirs. */
+void ga10b_fifo_quiesce(int reset_engines) {
+    static uint8_t used[FIFO_MAX_RL][RL_MAX_CHANNELS / 8u];
+    ga10b_devtable_t t;
+    if (!ga10b.hw || ga10b_device_table(&t) != 0)
+        return;
+    memset(used, 0, sizeof(used));
+    uint32_t base[FIFO_MAX_RL];
+    uint32_t nrl = 0;
+    for (uint32_t i = 0; i < t.count && nrl < FIFO_MAX_RL; i++) {
+        if (!rl_wanted(&t.dev[i]))
+            continue;
+        int dup = 0;
+        for (uint32_t j = 0; j < nrl; j++)
+            if (base[j] == t.dev[i].runlist_base)
+                dup = 1;
+        if (!dup)
+            base[nrl++] = t.dev[i].runlist_base;
+    }
+
+    uint32_t found = 0;
+    for (uint32_t r = 0; r < nrl; r++) {
+        ga10b_wr(base[r] + GA10B_RL_SCHED_DISABLE, 1u);
+        uint32_t cc = ga10b_rd(base[r] + GA10B_RL_CHANNEL_CONFIG);
+        uint32_t chram = ((cc >> 4) & 0xfffffffu) << 4;
+        uint32_t nch = 1u << (cc & 0xfu);
+        if (chram == 0)
+            continue;
+        if (nch > RL_MAX_CHANNELS)
+            nch = RL_MAX_CHANNELS;
+        for (uint32_t c = 0; c < nch; c++) {
+            uint32_t v = ga10b_rd(chram + GA10B_CHRAM_CHANNEL(c));
+            if ((v & (GA10B_CHRAM_IN_USE | GA10B_CHRAM_BUSY |
+                      GA10B_CHRAM_ON_PBDMA | GA10B_CHRAM_ON_ENG)) == 0u)
+                continue;
+            klog("ga10b: quiesce rl@%x chan%u chram=%08x\n", base[r], c, v);
+            ga10b_wr(chram + GA10B_CHRAM_CHANNEL(c), GA10B_CHRAM_DISABLE);
+            used[r][c / 8u] |= (uint8_t)(1u << (c % 8u));
+            found++;
+        }
+    }
+
+    if (reset_engines) {
+        for (uint32_t i = 0; i < t.count; i++) {
+            const ga10b_devinfo_t* d = &t.dev[i];
+            if ((d->type == GA10B_DEVTYPE_GRAPHICS && d->inst_id == 0) ||
+                d->type == GA10B_DEVTYPE_LCE)
+                ga10b_engine_reset(d->reset_id);
+        }
+    }
+
+    for (uint32_t r = 0; r < nrl; r++) {
+        ga10b_wr(base[r] + GA10B_RL_PREEMPT, 0u);       /* type = runlist */
+        uint32_t i;
+        for (i = 0; i < RL_PREEMPT_TRIES; i++) {
+            if ((ga10b_rd(base[r] + GA10B_RL_PREEMPT) &
+                 GA10B_RL_PREEMPT_RUNLIST_PENDING) == 0u)
+                break;
+            ga10b_delay_us(100);
+        }
+        if (i == RL_PREEMPT_TRIES)
+            klog("ga10b: quiesce rl@%x preempt still pending (%08x)\n",
+                 base[r], ga10b_rd(base[r] + GA10B_RL_PREEMPT));
+
+        uint32_t cc = ga10b_rd(base[r] + GA10B_RL_CHANNEL_CONFIG);
+        uint32_t chram = ((cc >> 4) & 0xfffffffu) << 4;
+        for (uint32_t c = 0; chram != 0 && c < RL_MAX_CHANNELS; c++)
+            if (used[r][c / 8u] & (1u << (c % 8u)))
+                ga10b_wr(chram + GA10B_CHRAM_CHANNEL(c), GA10B_CHRAM_CLEAR);
+
+        ga10b_wr(base[r] + GA10B_RL_SCHED_DISABLE, 0u);
+        ga10b_wr(base[r] + GA10B_RL_SUBMIT, 0u);        /* no entries */
+        if (ga10b_poll(base[r] + GA10B_RL_SUBMIT_INFO,
+                       GA10B_RL_SUBMIT_INFO_PENDING, 0, RL_SUBMIT_TRIES) != 0)
+            klog("ga10b: quiesce rl@%x empty runlist still pending\n",
+                 base[r]);
+    }
+    klog("ga10b: fifo quiesced (%u runlists, %u channels%s)\n", nrl, found,
+         reset_engines ? ", engines reset" : "");
+}
+
 int ga10b_fifo_init(void) {
     if (fifo.ready)
         return 0;
 
-    /* One runlist per schedulable engine: gr0 (compute/graphics) and the
-     * async LCEs (inst >= 2).  LCE0/1 share gr0's runlist and are not
-     * directly schedulable; gr1 is unused. */
     ga10b_devtable_t t;
     if (ga10b_device_table(&t) == 0) {
         for (uint32_t i = 0; i < t.count && fifo.nrl < FIFO_MAX_RL; i++) {
             const ga10b_devinfo_t* d = &t.dev[i];
-            if (!d->is_engine || d->runlist_base == 0)
-                continue;
-            int want = (d->type == GA10B_DEVTYPE_GRAPHICS && d->inst_id == 0) ||
-                       (d->type == GA10B_DEVTYPE_LCE && d->inst_id >= 2);
-            if (!want || rl_find(d->runlist_base) != NULL)
+            if (!rl_wanted(d) || rl_find(d->runlist_base) != NULL)
                 continue;
             if (rl_setup(&fifo.rl[fifo.nrl], d->runlist_base, d->rleng_id) != 0)
                 return -1;

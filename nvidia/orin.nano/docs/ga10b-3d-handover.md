@@ -157,7 +157,7 @@ INIT_DONE 之后 golden init 卡在 `sw_bundle_init[934/935] addr=0x1e100` (最�
 
 ## 4. 下一步 (推断, 按顺序)
 
-1. **ga10bd 常驻化 → `/dev/nvgpu`**: 现在是一次性 CLI, GPU 状态跨进程保留但驱动状态不保留 —— `gr`/`compute` 成功一次后同一次上电内再跑会在 `fecs ctxsw handshake timeout` 失败 (FECS 已在跑, 不会再报 INIT_DONE; 已测), 只能 `pico_reset`。常驻后 golden ctx 只做一次, 通道/VM/buffer 由 daemon 持有。接口面按 projects/cuda `struct cuda_backend` 反推: mem_alloc/free (DMA + GMMU map)、memcpy h2d/d2h (Tegra 统一内存, 直接映射)、module_load (code + cbank 上传)、launch (QMD + 提交 + semaphore 等待)。
+1. **ga10bd 常驻化 → `/dev/nvgpu`**: 现在 GPU 一次只归一个进程 (g2dd 或一个 CLI/cuda 应用)。同一次上电内前一个进程退出/被杀后, 下一个进程可以直接接管, 不再需要 `pico_reset` (2026-11-25 已测, 见 §6.3); 属主还活着时第二个进程在碰硬件前被拒 (`GPU is in use by pid N`)。要多个进程同时用 GPU 仍需常驻 daemon: golden ctx 只做一次, 通道/VM/buffer 由 daemon 持有。接口面按 projects/cuda `struct cuda_backend` 反推: mem_alloc/free (DMA + GMMU map)、memcpy h2d/d2h (Tegra 统一内存, 直接映射)、module_load (code + cbank 上传)、launch (QMD + 提交 + semaphore 等待)。
 2. **projects/cuda `backend_orin.c` 接线**: launch 路径补 cbank0 头 (§2.6#4); 然后板上 `deviceQuery → vectorAdd → 13 算子与 sim 对拍 → mini_model → mini_llm`。
 3. **扩大 SASS 覆盖**再谈性能: 带栈帧的核 (验证 c[0x0][0x28] 语义)、shared memory (QMD SMEM_CONFIG + `SET_SHADER_SHARED_MEMORY_WINDOW`)、bank2/3 字面量、WMMA。每类先单核上机。
 4. 清理项: 通道 TSG 拆除/preempt (审计 F7 遗留)、GR/PBDMA 中断仍是轮询、`--skip` 诊断位可在常驻化时收掉。
@@ -237,8 +237,8 @@ python3 /tmp/pxe_call.py serial_log '{"action":"read","lines":120}'
 - board-pxe MCP TCP 127.0.0.1:8899 (root 运行, 勿起第二实例); Pico 桥 cafe:4004, `pico_reset` 硬复位。
 - **klog 不是 slog** (bring-up 镜像无 /dev/log, slog 全丢)。
 - 发命令前确认串口在 Orin 上 (TW220 共用 rig, 适配器会移)。
-- 板上验收 (每条前 `pico_reset`, 见下): `ga --hw ce` → "CE blit PASS"; `ga --hw pmu` → `PMU RPC func=0 OK` / `func=3 OK`; `ga --hw gr` → `fecs ctxsw INIT_DONE` / `golden ctx saved` / `gr -> 0`; **`ga --hw compute` → `vadd PASS (1024 elements, 4 blocks x 256 threads)` / `compute -> 0`**。compute 之后同一次上电内 `ce` 仍 PASS (已测)。
-- **每次 fresh 验证先 `pico_reset`**: ACR/PMU 状态跨 EwokOS 进程保留 (BPMP 拒绝 CCPLEX 关 GPU 电), 一次失败的 pmu 会把 RTOS 留在卡死态, 后续 `pmu`/`gr` 都不可信。一键脚本: `/tmp/ga_run.sh "<ga 参数>" <等待秒> <输出文件>` (reset → 等 login → 登录 → 设 tx_delay_us+bulk 发命令 → 存串口日志; /tmp 易失, 丢了照 §6.3 三条命令重写)。
+- 板上验收: `ga --hw ce` → "CE blit PASS"; `ga --hw pmu` → `PMU RPC func=0 OK` / `func=3 OK`; `ga --hw gr` → `fecs ctxsw INIT_DONE` / `golden ctx saved` / `gr -> 0`; **`ga --hw compute` → `vadd PASS (1024 elements, 4 blocks x 256 threads)` / `compute -> 0`**。compute 之后同一次上电内 `ce` 仍 PASS (已测)。
+- **同一次上电内可以连续跑多个 GPU 进程 (2026-11-25 已测)**: GPU 断不了电 (BPMP 拒绝 CCPLEX 关 GPU 电), ACR 一次性、PMU RTOS 一直在跑。PMU 引用的内存 (启动参数/VM 页表/inst block/super surface) 放在一个 pin 住的连续 shm 段 (`ga10b_pmem.c`, key 'GA1B'), 后来的进程走接管路径: `take over` → FIFO 清理 + GR 引擎复位 → `PMU RTOS re-attached` → `PMU RPC func=3 OK` (不再发 func=0) → `fecs ctxsw INIT_DONE` → golden ctx。正常退出的进程自己摘通道 (`fifo quiesced`); `kill` 一个睡眠中的进程 (如空闲的 g2dd) 是内核直接回收, 不跑退出处理, 通道留到下一个进程接管时才清 (`ga --hw orphan` 专门造这种现场)。主机测试 `test/test_takeover.c`。**仍需 `pico_reset` 的情况**: 一次失败的 pmu 把 RTOS 留在卡死态; 或内核热重启后 RTOS 还在跑但 shm 段没了 (报 `hardware reset required`)。一键脚本: `/tmp/ga_run.sh "<ga 参数>" <等待秒> <输出文件>` (reset → 等 login → 登录 → 设 tx_delay_us+bulk 发命令 → 存串口日志; /tmp 易失, 丢了照 §6.3 三条命令重写)。
 - **串口防吞字 = MCP 固件字符间延时, 非逐字符慢发**: 多词命令 bulk `serial_log send` 在默认 1000µs TX 延时下可能丢字 (板端 HS-UART RX FIFO 32B 溢出)。解法 = `pico_gpio {"action":"set","tx_delay_us":<µs>}` 抬高 Pico 固件 TX 字符间延时 (固件控制, 主机不做软件 sleep; 持久化 pico/gpio-layout.conf, 设备在位自动应用; 默认 1000, 0=全速), 再 bulk send。`/tmp/fancmd.py "<cmd>" [wait] [tx_delay_us]` 已封装 (默认 20000µs=20ms); 仍吞字就调高, 板端 RX 跟得上就调低提速。
 
 ### 6.4 EwokOS ↔ L4T 切换 (全程序化, 2026-11-24 用户配置)

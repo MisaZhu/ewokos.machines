@@ -9,9 +9,10 @@
  * asserting the captured MMIO trace against the real NETC blob contents
  * and the DMA-memory structures (RAMFC/RAMIN/headers/GPFIFO/USERD).
  *
- * Build: cc -I. -Itest -Itest/host -Wall -Wextra -o /tmp/test_integration \
- *   test/test_integration.c test/host_shim.c ga10b_gr.c ga10b_fifo.c \
- *   ga10b_mm.c ga10b_ce.c ga10b_fw_parse.c
+ * Build: cc -I. -Iinclude -Itest -Itest/host -Wall -Wextra \
+ *   -o /tmp/test_integration test/test_integration.c test/host_shim.c \
+ *   ga10b_gr.c ga10b_fifo.c ga10b_mm.c ga10b_ce.c ga10b_fw_parse.c \
+ *   ga10b_pmem.c
  * Run:   /tmp/test_integration [fw_dir]   (default /Users/tony/work/gpu-fw/ga10b)
  */
 #include <stdint.h>

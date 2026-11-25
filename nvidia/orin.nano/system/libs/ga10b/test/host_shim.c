@@ -27,6 +27,11 @@ shim_wr_t shim_trace[SHIM_TRACE_CAP];
 uint32_t shim_nwr;
 int shim_quiet = 1;
 uint32_t shim_dma_live;
+void (*shim_wr_hook)(uint32_t off, uint32_t val, uint32_t old);
+void (*shim_engine_hook)(uint32_t reset_id, int enable);
+const ga10b_devtable_t* shim_devtable;
+void* shim_pmem;
+uint32_t shim_self_pid = 100, shim_self_uuid = 1000, shim_alive_uuid;
 
 int klog(const char* fmt, ...) {
     if (shim_quiet)
@@ -74,7 +79,10 @@ void ga10b_wr(uint32_t off, uint32_t val) {
         klog("ga10b: [dry] wr  %08x = %08x\n", off, val);
         return;
     }
+    uint32_t old = ga10b.bar0[off / 4];
     ga10b.bar0[off / 4] = val;
+    if (shim_wr_hook != NULL)
+        shim_wr_hook(off, val, old);
 }
 
 void ga10b_wr_mask(uint32_t off, uint32_t mask, uint32_t val) {
@@ -96,13 +104,46 @@ void ga10b_delay_us(uint32_t us) { (void)us; }
 
 /* ---- power-layer stubs (dry-run outcomes) ---- */
 int ga10b_device_table(ga10b_devtable_t* t) {
+    if (shim_devtable != NULL) {
+        *t = *shim_devtable;
+        return 0;
+    }
     memset(t, 0, sizeof(*t));   /* TOP cfg reads 0 -> n=0, same as dry-run */
     return 0;
 }
 
 int ga10b_engine_enable(uint32_t reset_id, int enable) {
     klog("ga10b: [shim] engine_enable %u = %d\n", reset_id, enable);
+    if (shim_engine_hook != NULL)
+        shim_engine_hook(reset_id, enable);
     return 0;
+}
+
+int ga10b_engine_reset(uint32_t reset_id) {
+    ga10b_engine_enable(reset_id, 0);
+    return ga10b_engine_enable(reset_id, 1);
+}
+
+/* ---- device-lifetime segment + process identity ---- */
+int ga10b_os_pmem_map(uint32_t size, void** va, uint64_t* phy) {
+    if (shim_pmem == NULL) {
+        if (posix_memalign(&shim_pmem, 4096, size) != 0)
+            return -1;
+        memset(shim_pmem, 0, size);
+    }
+    *va = shim_pmem;
+    *phy = SHIM_PMEM_PHY;
+    return 0;
+}
+
+void ga10b_os_self(uint32_t* pid, uint32_t* uuid) {
+    *pid = shim_self_pid;
+    *uuid = shim_self_uuid;
+}
+
+int ga10b_os_alive(uint32_t pid, uint32_t uuid) {
+    (void)pid;
+    return uuid != 0 && uuid == shim_alive_uuid;
 }
 
 int ga10b_acr_bootstrap_ls(uint32_t falcon_id) {

@@ -30,7 +30,6 @@
 
 #include <string.h>
 #include <ewoksys/klog.h>
-#include <ewoksys/syscall.h>
 
 #include "ga10b.h"
 #include "ga10b_regs.h"
@@ -126,9 +125,17 @@ _Static_assert(sizeof(pmu_boot_params_t) == 184u, "pmu boot params size");
 #define PMU_RPC_BOOTSTRAP_GR  0x03u
 #define PMU_FECS_SIG_REG      0x00409280u     /* falcon io 0x280: 0xaf88 when signed */
 #define PMU_FECS_SIG_VAL      0x0000af88u
+#define PMU_NEW_INSTBLK       0x0010a480u     /* inst block the RTOS bound itself to */
 
+/* The RTOS outlives the process that booted it (no GPU power cycle from
+ * here), so every object it references -- boot args, core dump, VM page
+ * tables, instance block, super surface, trace buffer -- is device-lifetime
+ * memory, and the IPC state is mirrored into its header: a later process
+ * re-attaches to the running RTOS instead of booting it. */
 static struct {
     int ready;
+    int attached;              /* RTOS was booted by an earlier process */
+    ga10b_pmem_hdr_t* ph;
     ga10b_fw_t desc, image, sig;
     ga10b_pmu_ucode_desc_t d;
     void*    args_va;  uint64_t args_phy;
@@ -144,8 +151,45 @@ static struct {
     uint32_t sw_off, sw_size;  /* sw_managed_area (RPC heap) */
     uint32_t heap_next;        /* 32-aligned bump cursor */
     uint8_t  seq_id;
+    int      wpr_done;         /* INIT_WPR_REGION accepted (once per RTOS boot) */
     int      gr_loaded;        /* FECS/GPCCS bootstrapped by PMU */
 } st;
+
+/* ACR completed and the RTOS left the BROM: same test as ga10b_acr_done */
+static int pmu_running(void) {
+    if (!ga10b.hw)
+        return 0;
+    return (ga10b_rd(GA10B_PMU_PRISCV_BASE + GA10B_PRISCV_BR_RETCODE) & 3u)
+               == 3u &&
+           (ga10b_rd(GA10B_PMU_FALCON_BASE + GA10B_FALCON_HWCFG2) &
+            (1u << 13)) == 0u;
+}
+
+static void pmu_heap_rewind(void) {
+    /* bitmap allocator bumps base 0 -> blk_size(32); heap_offset 0 is rejected
+     * by pmu_fbq_cmd_setup, so the first usable offset is 32 when sw_off=0. */
+    st.heap_next = (st.sw_off + 31u) & ~31u;
+    if (st.heap_next == 0)
+        st.heap_next = 32u;
+}
+
+static void pmu_ipc_persist(void) {
+    st.ph->pmu.ipc_ready = (uint32_t)st.ipc_ready;
+    st.ph->pmu.lpq_phy_idx = st.lpq_phy_idx;
+    st.ph->pmu.sw_off = st.sw_off;
+    st.ph->pmu.sw_size = st.sw_size;
+    st.ph->pmu.seq_id = st.seq_id;
+    st.ph->pmu.wpr_done = (uint32_t)st.wpr_done;
+}
+
+/* ga10b_pmu_enable_irq: re-enable the PMU MC subtree (stage_init masked
+ * every FUNC top vector).  PMU vector=0x98 -> subtree2 -> top bit2,
+ * leaf4 bit24 (subtree_mask=BIT(24)), leaf5=0. */
+static void pmu_intr_unmask(void) {
+    ga10b_wr(GA10B_FUNC_BASE + GA10B_FUNC_INTR_TOP_EN_SET(0), 0x4u);
+    ga10b_wr(GA10B_FUNC_BASE + GA10B_FUNC_INTR_LEAF_EN_SET(4), 0x01000000u);
+    ga10b_wr(GA10B_FUNC_BASE + GA10B_FUNC_INTR_LEAF_EN_SET(5), 0x0u);
+}
 
 /* ---- nvriscv dmesg ring + host ISR emulation ----
  * falcon_debug.c: the RTOS logs into a ring at the end of PMU DMEM, metadata
@@ -195,7 +239,10 @@ static void pmu_dmesg_drain(int commit) {
         }
         dbg.size = meta[2];
         dbg.dmem_off = dmem - PMU_DBG_META_SIZE - meta[2];
-        dbg.rd = 0;
+        /* the read offset last acked to the RTOS (0 after its boot) */
+        dbg.rd = ga10b_rd(PMU_CMD_TAIL(PMU_DBG_QUEUE));
+        if (dbg.rd >= dbg.size)
+            dbg.rd = 0;
         dbg.valid = 1;
         klog("ga10b: PMU dmesg ring dmem=%x off=%x size=%x meta rd=%x wr=%x "
              "wr_reg=%x\n", dmem, dbg.dmem_off, dbg.size, meta[0], meta[1], wr);
@@ -266,7 +313,7 @@ static void pmu_irq_service(void) {
  * pwr_pmu_new_instblk 0x10a480).  RAMIN pdb encoding matches the FIFO/GR
  * channels but with the sys_coh target (Orin IO-coherent): coh|vol|ver2|big64k. */
 static int pmu_vm_init(void) {
-    if (ga10b_gmmu_init(&st.mm) != 0)
+    if (ga10b_gmmu_init_persist(&st.mm) != 0)
         return -1;
     /* L4T same-board page-table walk (rdram.ko): PMU PDB target=ncoh(3),
      * PDE3/PDE2/PDE1 ap=ncoh(6), PTE ap=ncoh(6) even though Orin is
@@ -277,10 +324,9 @@ static int pmu_vm_init(void) {
      * top-down at va=0x1FE10000, trace at 0x1FFD4000.  Match that high VA
      * placement instead of the shared 0x10000000 bump base. */
     st.mm.va_next = 0x1FE10000ULL;
-    if (ga10b_dma_alloc(4096, 4096, &st.inst_va, &st.inst_phy) != 0)
+    if (ga10b_pmem_alloc(4096, 4096, &st.inst_va, &st.inst_phy) != 0)
         return -1;
     uint32_t* w = st.inst_va;
-    memset(w, 0, 4096);
     uint32_t pdb_lo = ga10b_ramin_pdb_lo_ap(st.mm.pdb_phy, 0x3u);  /* sys_ncoh */
     w[128] = pdb_lo;                          /* page_dir_base_lo */
     w[129] = (uint32_t)(st.mm.pdb_phy >> 32);
@@ -290,17 +336,15 @@ static int pmu_vm_init(void) {
     w[168] = pdb_lo;
     w[169] = (uint32_t)(st.mm.pdb_phy >> 32);
 
-    if (ga10b_dma_alloc(PMU_SS_SIZE, 4096, &st.ss_va, &st.ss_phy) != 0)
+    if (ga10b_pmem_alloc(PMU_SS_SIZE, 4096, &st.ss_va, &st.ss_phy) != 0)
         return -1;
-    memset(st.ss_va, 0, PMU_SS_SIZE);
     st.ss_gpu_va = ga10b_gmmu_map(&st.mm, st.ss_phy, PMU_SS_SIZE);
     if (st.ss_gpu_va == 0)
         return -1;
     /* RTOS trace buffer: nvgpu always provides one (cmdline trace_buf); the
      * RTOS writes debug traces here from early boot. */
-    if (ga10b_dma_alloc(PMU_TRACE_SIZE, 4096, &st.trace_va, &st.trace_phy) != 0)
+    if (ga10b_pmem_alloc(PMU_TRACE_SIZE, 4096, &st.trace_va, &st.trace_phy) != 0)
         return -1;
-    memset(st.trace_va, 0, PMU_TRACE_SIZE);
     st.trace_gpu_va = ga10b_gmmu_map(&st.mm, st.trace_phy, PMU_TRACE_SIZE);
     if (st.trace_gpu_va == 0)
         return -1;
@@ -317,9 +361,59 @@ static int pmu_vm_init(void) {
     return 0;
 }
 
+/* Adopt the RTOS an earlier process booted: its objects are found through
+ * the device-lifetime header, nothing is allocated or written. */
+static int pmu_attach(void) {
+    const ga10b_pmem_hdr_t* h = st.ph;
+    st.inst_va = ga10b_pmem_va(h->pmu.inst_off, 4096);
+    st.ss_va = ga10b_pmem_va(h->pmu.ss_off, PMU_SS_SIZE);
+    st.trace_va = ga10b_pmem_va(h->pmu.trace_off, PMU_TRACE_SIZE);
+    st.args_va = ga10b_pmem_va(h->pmu.args_off,
+                               (uint32_t)sizeof(pmu_boot_params_t));
+    st.dump_va = ga10b_pmem_va(h->pmu.dump_off, PMU_CORE_DUMP_SIZE);
+    if (!h->pmu.valid || st.inst_va == NULL || st.ss_va == NULL ||
+        st.trace_va == NULL || st.args_va == NULL || st.dump_va == NULL) {
+        klog("ga10b: PMU RTOS is running but its memory record is missing "
+             "(booted before this OS instance): hardware reset required\n");
+        return -1;
+    }
+    st.inst_phy = ga10b_pmem_phy(h->pmu.inst_off);
+    st.ss_phy = ga10b_pmem_phy(h->pmu.ss_off);
+    st.trace_phy = ga10b_pmem_phy(h->pmu.trace_off);
+    st.args_phy = ga10b_pmem_phy(h->pmu.args_off);
+    st.dump_phy = ga10b_pmem_phy(h->pmu.dump_off);
+    st.ss_gpu_va = h->pmu.ss_gpu_va;
+    st.trace_gpu_va = h->pmu.trace_gpu_va;
+    st.ipc_ready = (int)h->pmu.ipc_ready;
+    st.lpq_phy_idx = h->pmu.lpq_phy_idx;
+    st.sw_off = h->pmu.sw_off;
+    st.sw_size = h->pmu.sw_size;
+    st.seq_id = (uint8_t)h->pmu.seq_id;
+    st.wpr_done = (int)h->pmu.wpr_done;
+    pmu_heap_rewind();
+
+    uint32_t bind = ga10b_rd(PMU_NEW_INSTBLK);
+    uint32_t want = (uint32_t)((st.inst_phy >> 12) & 0x0fffffffu);
+    klog("ga10b: PMU RTOS re-attached: inst=%llx ss=%llx gpu_va=%llx "
+         "ipc=%d lpq=%u seq=%u wpr=%d new_instblk=%08x%s\n",
+         (unsigned long long)st.inst_phy, (unsigned long long)st.ss_phy,
+         (unsigned long long)st.ss_gpu_va, st.ipc_ready, st.lpq_phy_idx,
+         st.seq_id, st.wpr_done, bind,
+         (bind & 0x0fffffffu) == want ? "" : " (differs from record)");
+    pmu_intr_unmask();
+    st.attached = 1;
+    st.ready = 1;
+    return 0;
+}
+
 int ga10b_pmu_init(const char* fw_dir) {
     if (st.ready)
         return 0;
+    st.ph = ga10b_pmem_hdr();
+    if (st.ph == NULL)
+        return -1;
+    if (pmu_running())
+        return pmu_attach();
 
     if (ga10b_fw_load(fw_dir, GA10B_FW_PMU_DESC, &st.desc) != 0 ||
         ga10b_fw_load(fw_dir, GA10B_FW_PMU_IMAGE, &st.image) != 0 ||
@@ -340,13 +434,22 @@ int ga10b_pmu_init(const char* fw_dir) {
         goto fail;
     }
 
-    if (ga10b_dma_alloc((uint32_t)sizeof(pmu_boot_params_t), 256,
-                        &st.args_va, &st.args_phy) != 0 ||
-        ga10b_dma_alloc(PMU_CORE_DUMP_SIZE, 4096,
-                        &st.dump_va, &st.dump_phy) != 0)
+    /* no RTOS is running, so nothing references the old arena contents */
+    ga10b_pmem_reset();
+    if (ga10b_pmem_alloc((uint32_t)sizeof(pmu_boot_params_t), 256,
+                         &st.args_va, &st.args_phy) != 0 ||
+        ga10b_pmem_alloc(PMU_CORE_DUMP_SIZE, 4096,
+                         &st.dump_va, &st.dump_phy) != 0)
         goto fail;
     if (pmu_vm_init() != 0)
         goto fail;
+    st.ph->pmu.inst_off = ga10b_pmem_off(st.inst_va);
+    st.ph->pmu.ss_off = ga10b_pmem_off(st.ss_va);
+    st.ph->pmu.trace_off = ga10b_pmem_off(st.trace_va);
+    st.ph->pmu.args_off = ga10b_pmem_off(st.args_va);
+    st.ph->pmu.dump_off = ga10b_pmem_off(st.dump_va);
+    st.ph->pmu.ss_gpu_va = st.ss_gpu_va;
+    st.ph->pmu.trace_gpu_va = st.trace_gpu_va;
 
     klog("ga10b: PMU ready: image=%u@%llx monitor code=%u@%x data=%u@%x "
          "manifest=%u@%x\n",
@@ -361,8 +464,8 @@ fail:
     ga10b_fw_free(&st.desc);
     ga10b_fw_free(&st.image);
     ga10b_fw_free(&st.sig);
-    if (st.args_va) { ga10b_dma_free(st.args_va); st.args_va = NULL; }
-    if (st.dump_va) { ga10b_dma_free(st.dump_va); st.dump_va = NULL; }
+    st.args_va = NULL;
+    st.dump_va = NULL;
     return -1;
 }
 
@@ -375,11 +478,8 @@ int ga10b_pmu_boot(void) {
      * does NOT arm BROM itself.  It applies the PMU load-enable prods,
      * publishes the RTOS boot args via the mailboxes, starts the core and
      * waits for BROM pass + priv lockdown release. */
-    if (ga10b.hw &&
-        (ga10b_falcon_hwcfg2(&pmu_flcn) & PMU_PRIV_LOCKDOWN_BIT) == 0) {
-        klog("ga10b: PMU RTOS already running (priv lockdown released)\n");
+    if (st.attached)
         return 0;
-    }
 
     /* SLCG/BLCG PMU load-enable prods (ga10b_gating_reglist.c, prod=true) */
     ga10b_wr(0x0010a134u, 0x00040140u);
@@ -412,7 +512,6 @@ int ga10b_pmu_boot(void) {
     memcpy(st.args_va, &bp, sizeof(bp));
     /* drain the NOCACHE args writes to DRAM before the monitor fetches them
      * via the EXTMEM2 DMA aperture (mailbox points at args_phy). */
-    syscall3(SYS_DMA_SYNC, (ewokos_addr_t)st.args_va, sizeof(bp), 0);
     __asm__ volatile("dsb sy" ::: "memory");
 
     /* mailboxes carry the boot args through the next-core EXTMEM2 aperture */
@@ -421,6 +520,11 @@ int ga10b_pmu_boot(void) {
     ga10b_falcon_mbox_wr(&pmu_flcn, 1, (uint32_t)(mbox >> 32));
     klog("ga10b: PMU secure boot args=%llx (BROM armed by ACR into WPR1)\n",
          (unsigned long long)mbox);
+
+    /* from here on the RTOS may be running on these objects: record them
+     * before the core starts so a later process can always re-attach */
+    st.ph->pmu.valid = 1u;
+    __asm__ volatile("dsb sy" ::: "memory");
 
     /* startcpu + wait BROM pass (retcode==3); BROM fetches monitor from WPR */
     if (ga10b_priscv_boot(&pmu_flcn, 0, 2000) != 0)
@@ -434,12 +538,7 @@ int ga10b_pmu_boot(void) {
         return -1;
     }
     klog("ga10b: PMU RTOS boot OK (BROM pass, priv lockdown released)\n");
-    /* ga10b_pmu_enable_irq: re-enable the PMU MC subtree (stage_init masked
-     * every FUNC top vector).  PMU vector=0x98 -> subtree2 -> top bit2,
-     * leaf4 bit24 (subtree_mask=BIT(24)), leaf5=0. */
-    ga10b_wr(GA10B_FUNC_BASE + GA10B_FUNC_INTR_TOP_EN_SET(0), 0x4u);
-    ga10b_wr(GA10B_FUNC_BASE + GA10B_FUNC_INTR_LEAF_EN_SET(4), 0x01000000u);
-    ga10b_wr(GA10B_FUNC_BASE + GA10B_FUNC_INTR_LEAF_EN_SET(5), 0x0u);
+    pmu_intr_unmask();
     return 0;
 }
 
@@ -481,11 +580,7 @@ int ga10b_pmu_ipc_init(void) {
     st.lpq_phy_idx = e[22];                 /* queue_phy_id[1] = LPQ */
     st.sw_off  = (uint32_t)e[36] | ((uint32_t)e[37] << 8);
     st.sw_size = (uint32_t)e[38] | ((uint32_t)e[39] << 8);
-    /* bitmap allocator bumps base 0 -> blk_size(32); heap_offset 0 is rejected
-     * by pmu_fbq_cmd_setup, so the first usable offset is 32 when sw_off=0. */
-    st.heap_next = (st.sw_off + 31u) & ~31u;
-    if (st.heap_next == 0)
-        st.heap_next = 32u;
+    pmu_heap_rewind();
     klog("ga10b: INIT raw[0..15]=%02x %02x %02x %02x %02x %02x %02x %02x "
          "%02x %02x %02x %02x %02x %02x %02x %02x\n",
          e[0], e[1], e[2], e[3], e[4], e[5], e[6], e[7],
@@ -498,6 +593,7 @@ int ga10b_pmu_ipc_init(void) {
          e[32], e[33], e[34], e[35], e[36], e[37], e[38], e[39]);
     ga10b_wr(PMU_MSG_TAIL, (tail + 1u) % PMU_QUEUE_ELEMENTS);
     st.ipc_ready = 1;
+    pmu_ipc_persist();
     /* let RTOS process the INIT ack before first RPC */
     for (uint32_t i = 0; i < 5u; i++) {
         ga10b_delay_us(1000);
@@ -526,6 +622,7 @@ static int pmu_rpc(uint8_t function, const void* rpc, uint32_t size_rpc) {
     uint32_t heap_size = (size_rpc + 8u + 12u + 3u) & ~3u;
     uint32_t heap_off = st.heap_next;
     uint8_t seq = ++st.seq_id;
+    st.ph->pmu.seq_id = seq;
 
     uint8_t work[PMU_CMD_ELEM_SIZE];
     memset(work, 0, sizeof(work));
@@ -553,9 +650,7 @@ static int pmu_rpc(uint8_t function, const void* rpc, uint32_t size_rpc) {
     uint8_t* elem = (uint8_t*)st.ss_va + PMU_SS_CMD_Q_OFF +
                     PMU_LPQ_LOGICAL * 0x8000u + position * PMU_CMD_ELEM_SIZE;
     memcpy(elem, work, PMU_CMD_ELEM_SIZE);  /* push: fixed 2048B copy */
-    /* publish CPU-written element to PoC before notifying PMU: the FBQ DMA
-     * read is non-coherent, so clean+invalidate the kernel alias (op0). */
-    syscall3(SYS_DMA_SYNC, (ewokos_addr_t)elem, PMU_CMD_ELEM_SIZE, 0);
+    /* the element is in DRAM (NOCACHE mapping) before the PMU is notified */
     __asm__ volatile("dsb sy" ::: "memory");
     ga10b_wr(PMU_CMD_HEAD(st.lpq_phy_idx),
              (position + 1u) % PMU_QUEUE_ELEMENTS);
@@ -575,9 +670,7 @@ static int pmu_rpc(uint8_t function, const void* rpc, uint32_t size_rpc) {
          * me[8]=rpc_header.unit_id (NOT the 0x80 cmd_type). */
         if (rseq == seq) { got = 1; break; }
     }
-    st.heap_next = (st.sw_off + 31u) & ~31u;   /* reuse heap (single RPC) */
-    if (st.heap_next == 0)
-        st.heap_next = 32u;
+    pmu_heap_rewind();                         /* reuse heap (single RPC) */
     if (!got) {
         klog("ga10b: PMU RPC func=%u response timeout cmd_head=%u cmd_tail=%u "
              "msg_head=%u msg_tail=%u pos=%u heap_off=%u heap_sz=%u\n",
@@ -614,7 +707,7 @@ static int pmu_rpc(uint8_t function, const void* rpc, uint32_t size_rpc) {
              ga10b_rd(GA10B_PMU_PRISCV_BASE + GA10B_PRISCV_IRQSCLR),
              ga10b_rd(GA10B_PMU_FALCON_BASE + 0x000u),
              ga10b_rd(GA10B_PMU_FALCON_BASE + 0x048u),
-             ga10b_rd(0x0010a480u));
+             ga10b_rd(PMU_NEW_INSTBLK));
         klog("ga10b: PMU riscv irqblk 500=%08x 504=%08x 508=%08x 50c=%08x "
              "510=%08x 514=%08x 518=%08x 51c=%08x\n",
              ga10b_rd(0x0010b500u), ga10b_rd(0x0010b504u),
@@ -628,7 +721,6 @@ static int pmu_rpc(uint8_t function, const void* rpc, uint32_t size_rpc) {
                  cd[6], cd[7]);
         }
         if (st.trace_va) {
-            syscall3(SYS_DMA_SYNC, (ewokos_addr_t)st.trace_va, PMU_TRACE_SIZE, 1);
             const uint32_t* tr = (const uint32_t*)st.trace_va;
             klog("ga10b: PMU trace[0..15]=%08x %08x %08x %08x %08x %08x %08x "
                  "%08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
@@ -650,7 +742,6 @@ static int pmu_rpc(uint8_t function, const void* rpc, uint32_t size_rpc) {
         /* re-read super surface ssmd + hdr after the 10s wait: did the RTOS
          * ever fill the member descriptors (FBQ setup prerequisite)? */
         {
-            syscall3(SYS_DMA_SYNC, (ewokos_addr_t)st.ss_va, PMU_SS_SIZE, 1);
             const uint32_t* ssmd = (const uint32_t*)st.ss_va;
             klog("ga10b: ssmd late[0..3] id=%08x off=%x sz=%x | [1] id=%08x "
                  "off=%x sz=%x | [2] id=%08x off=%x sz=%x | [3] id=%08x off=%x "
@@ -682,7 +773,13 @@ int ga10b_pmu_gr_done(void) {
 }
 
 /* INIT_WPR_REGION then BOOTSTRAP_GR_FALCONS (lsfm_sw_gv100.c): the PMU
- * bootstraps FECS+GPCCS (mask 0xC) and writes their HS signatures. */
+ * bootstraps FECS+GPCCS (mask 0xC) and writes their HS signatures.
+ *
+ * Every bring-up resets the GR engine first (stage_acr), which stops the
+ * ctxsw falcons, so the bootstrap RPC is sent every time -- on a GPU that an
+ * earlier process already used this is nvgpu's gr_falcon_recovery_bootstrap
+ * (nvgpu_pmu_lsfm_bootstrap_ls_falcon again, RESET_YES).  Only the WPR
+ * region init is once per RTOS boot (is_wpr_init_done). */
 int ga10b_pmu_bootstrap_gr(void) {
     if (st.gr_loaded)
         return 0;
@@ -691,22 +788,21 @@ int ga10b_pmu_bootstrap_gr(void) {
         klog("ga10b: [dry] PMU bootstrap FECS/GPCCS skipped\n");
         return 0;
     }
-    if (ga10b_pmu_gr_done()) {
-        klog("ga10b: FECS/GPCCS already bootstrapped (HS signatures present)\n");
-        st.gr_loaded = 1;
-        return 0;
-    }
     if (ga10b_pmu_ipc_init() != 0)
         return -1;
 
-    uint8_t wpr[20];                        /* INIT_WPR_REGION, 20B sent */
-    memset(wpr, 0, sizeof(wpr));
-    wpr[0] = PMU_UNIT_ACR;
-    wpr[1] = PMU_RPC_INIT_WPR;
-    wpr[12] = 1u;                           /* wpr_regionId = WPR1 */
-    if (pmu_rpc(PMU_RPC_INIT_WPR, wpr, sizeof(wpr)) != 0)
-        return -1;
-    ga10b_delay_us(2000);                   /* LSPMU priv-lockdown window */
+    if (!st.wpr_done) {
+        uint8_t wpr[20];                    /* INIT_WPR_REGION, 20B sent */
+        memset(wpr, 0, sizeof(wpr));
+        wpr[0] = PMU_UNIT_ACR;
+        wpr[1] = PMU_RPC_INIT_WPR;
+        wpr[12] = 1u;                       /* wpr_regionId = WPR1 */
+        if (pmu_rpc(PMU_RPC_INIT_WPR, wpr, sizeof(wpr)) != 0)
+            return -1;
+        st.wpr_done = 1;
+        pmu_ipc_persist();
+        ga10b_delay_us(2000);               /* LSPMU priv-lockdown window */
+    }
 
     uint8_t bs[32];                         /* BOOTSTRAP_GR_FALCONS, 32B sent */
     memset(bs, 0, sizeof(bs));

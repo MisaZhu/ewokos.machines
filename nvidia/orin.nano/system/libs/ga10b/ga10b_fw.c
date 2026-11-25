@@ -14,9 +14,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
+#include <ewoksys/proc.h>
+#include <ewoksys/shm.h>
 
 #include "ga10b.h"
 
@@ -47,6 +51,52 @@ void ga10b_dma_free(void* va) {
      * the pool is a bump arena in practice, free is best-effort. */
     if (va != NULL)
         dma_free(GA10B_DMA_BLOCK, (ewokos_addr_t)va);
+}
+
+/* Device-lifetime segment: keyed so every GPU process finds the same one,
+ * contiguous so offsets translate to physical addresses, and DMA-pinned by
+ * its creator so it is never freed while the PMU RTOS may reference it. */
+#define GA10B_PMEM_KEY  0x47413142
+
+int ga10b_os_pmem_map(uint32_t size, void** va, uint64_t* phy) {
+    int id = shmget(GA10B_PMEM_KEY, (int)size,
+                    0600 | IPC_CREAT | IPC_EXCL | IPC_CONTIG);
+    if (id > 0) {
+        if (shm_dma_pin(id) != 0) {
+            klog("ga10b: pmem pin failed\n");
+            shmctl(id, IPC_RMID, NULL);
+            return -1;
+        }
+    } else {
+        id = shmget(GA10B_PMEM_KEY, (int)size, 0600);
+        if (id <= 0) {
+            klog("ga10b: pmem shmget(%u) failed\n", size);
+            return -1;
+        }
+    }
+    void* p = shmat(id, 0, 0);
+    if (p == (void*)-1) {
+        klog("ga10b: pmem shmat failed\n");
+        return -1;
+    }
+    ewokos_addr_t pa = shm_contig_phy_addr(id, (ewokos_addr_t)p);
+    if (pa == 0) {
+        klog("ga10b: pmem is not contiguous\n");
+        return -1;
+    }
+    *va = p;
+    *phy = (uint64_t)pa;
+    return 0;
+}
+
+void ga10b_os_self(uint32_t* pid, uint32_t* uuid) {
+    int32_t self = getpid();
+    *pid = (uint32_t)self;
+    *uuid = proc_get_uuid(self);
+}
+
+int ga10b_os_alive(uint32_t pid, uint32_t uuid) {
+    return uuid != 0 && proc_check_uuid((int32_t)pid, uuid) != 0;
 }
 
 int ga10b_fw_load(const char* dir, const char* name, ga10b_fw_t* out) {

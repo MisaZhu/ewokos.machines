@@ -238,6 +238,8 @@
 #define GA10B_RL_SUBMIT_INFO        0x008cu   /* pending=0x8000 */
 #define GA10B_RL_SUBMIT_INFO_PENDING 0x8000u
 #define GA10B_RL_SCHED_DISABLE      0x0094u   /* enabled=0 disabled=1 */
+#define GA10B_RL_PREEMPT            0x0098u   /* id 11:0 | type 25:24 (0=runlist) */
+#define GA10B_RL_PREEMPT_RUNLIST_PENDING 0x00200000u
 #define GA10B_RL_VIRT_CH_CFG(i)     (0x0300u + 4u * (i))
 #define GA10B_RL_VIRT_CH_HW_INIT    0x7ffu
 #define GA10B_RL_VIRT_CH_PENDING_EN 0x80000000u
@@ -250,6 +252,7 @@
 #define GA10B_CHRAM_ENABLE          0x2u   /* enable_in_use<<1 */
 #define GA10B_CHRAM_DISABLE         0x3u
 #define GA10B_CHRAM_CLEAR           0xffffffffu
+#define GA10B_CHRAM_IN_USE          (1u << 1)   /* status: channel enabled */
 #define GA10B_CHRAM_BUSY            (1u << 3)
 #define GA10B_CHRAM_ON_PBDMA        (1u << 6)
 #define GA10B_CHRAM_ON_ENG          (1u << 7)

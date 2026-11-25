@@ -41,32 +41,67 @@ int ga10b_stage_init(void) {
     return 0;
 }
 
+/* The GPU keeps its state when a process exits (it cannot be power-cycled
+ * from here) while every buffer that process gave it is freed.  So exactly
+ * one process drives the GPU at a time: it records itself in the
+ * device-lifetime header, takes its channels off the hardware when it exits,
+ * and a later process may only take over once it is gone. */
+static int dev_claimed;
+
+static void dev_release(void) {
+    if (ga10b.mapped)
+        ga10b_fifo_quiesce(0);
+    ga10b_pmem_hdr_t* h = ga10b_pmem_hdr();
+    if (h != NULL)
+        h->owner_uuid = 0;
+}
+
+static int dev_claim(void) {
+    if (dev_claimed || !ga10b.hw)
+        return 0;
+    ga10b_pmem_hdr_t* h = ga10b_pmem_hdr();
+    if (h == NULL)
+        return -1;
+    uint32_t pid, uuid;
+    ga10b_os_self(&pid, &uuid);
+    if (!(h->owner_pid == pid && h->owner_uuid == uuid) &&
+        ga10b_os_alive(h->owner_pid, h->owner_uuid)) {
+        klog("ga10b: GPU is in use by pid %u; one GPU process at a time\n",
+             h->owner_pid);
+        return -1;
+    }
+    h->owner_pid = pid;
+    h->owner_uuid = uuid;
+    dev_claimed = 1;
+    atexit(dev_release);
+    return 0;
+}
+
 /* nvgpu_finalize_poweron order: FB/LTC + MM hw setup, FIFO and
  * nvgpu_gr_enable_hw all precede acr_construct_execute ("For acr to boot,
- * nvgpu_init_fb_support and init_mm_support is required"), and the GR
- * engine reset must not happen after the ACR has set up FECS/GPCCS. */
+ * nvgpu_init_fb_support and init_mm_support is required").
+ *
+ * When an earlier process already ran the ACR this power cycle (one-shot),
+ * the GPU is taken over nvgpu_gr_reset style instead: whatever that process
+ * left on the hardware is quiesced, the GR engine is reset like on a first
+ * bring-up, and stage_pmu has the still-running PMU RTOS bootstrap
+ * FECS/GPCCS again.  The rest of the chain is then identical for a first
+ * and a later process. */
 int ga10b_stage_acr(const char* fw_dir) {
+    static int done;
+    if (done)
+        return 0;
+    if (dev_claim() != 0)
+        return -1;
     if (ga10b_power_on() != 0)
         return -1;
     if (ga10b_map() != 0)
         return -1;
-    if (ga10b_acr_done()) {
-        /* FECS/GPCCS are already bootstrapped this power cycle: do NOT reset
-         * GR or re-run ACR (one-shot).  But re-apply the host/FB/FIFO init so
-         * priv ring / bus / CG / runlist setup is fresh for this invocation. */
-        klog("ga10bd: ACR already completed this power cycle -- reuse "
-             "FECS/GPCCS (re-apply host/FB/FIFO, skip GR-reset + ACR)\n");
-        if (ga10b_stage_init() != 0)
-            return -1;
-        if (ga10b_fb_ltc_early_init() != 0)
-            return -1;
-        if (ga10b_fb_init_hw() != 0)
-            return -1;
-        if (ga10b_fifo_init() != 0)
-            return -1;
-        if (ga10b_gr_resume_hw(fw_dir) != 0)
-            return -1;
-        return 0;
+    int reuse = ga10b_acr_done();
+    if (reuse) {
+        klog("ga10bd: ACR already completed this power cycle -- take over "
+             "(quiesce FIFO, reset GR, PMU re-bootstraps FECS/GPCCS)\n");
+        ga10b_fifo_quiesce(1);
     }
     if (ga10b_stage_init() != 0)
         return -1;
@@ -78,10 +113,13 @@ int ga10b_stage_acr(const char* fw_dir) {
         return -1;
     if (ga10b_gr_enable_hw(fw_dir) != 0)
         return -1;
-    if (ga10b_acr_init(fw_dir) != 0)
-        return -1;
-    if (ga10b_acr_boot_gsp() != 0)
-        return -1;
+    if (!reuse) {
+        if (ga10b_acr_init(fw_dir) != 0)
+            return -1;
+        if (ga10b_acr_boot_gsp() != 0)
+            return -1;
+    }
+    done = 1;
     return 0;
 }
 

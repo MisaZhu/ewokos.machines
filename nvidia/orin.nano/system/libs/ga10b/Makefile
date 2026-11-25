@@ -19,6 +19,7 @@ OBJS = $(ARCH)/ga10b_dev.o \
        $(ARCH)/ga10b_power.o \
        $(ARCH)/ga10b_fw.o \
        $(ARCH)/ga10b_fw_parse.o \
+       $(ARCH)/ga10b_pmem.o \
        $(ARCH)/ga10b_falcon.o \
        $(ARCH)/ga10b_acr.o \
        $(ARCH)/ga10b_pmu.o \

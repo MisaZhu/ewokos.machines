@@ -196,6 +196,43 @@ int  ga10b_fw_inventory(const char* dir);
 int  ga10b_dma_alloc(uint32_t size, uint32_t align, void** va, uint64_t* phy);
 void ga10b_dma_free(void* va);
 
+/* ---- device-lifetime memory (ga10b_pmem.c) ----
+ * The GPU cannot be power-cycled from here (BPMP denies pg_off / reset), so
+ * the PMU RTOS booted by the first GPU process keeps running after that
+ * process is gone.  Everything the RTOS references must therefore outlive
+ * the process: it lives in one pinned contiguous segment that later
+ * processes re-attach.  The header page carries what they need to talk to
+ * the running RTOS; objects are recorded as offsets, never as addresses.
+ * Dry-run uses a private scratch block instead of the live segment. */
+#define GA10B_PMEM_SIZE     0x00200000u
+#define GA10B_PMEM_MAGIC    0x47413142u       /* 'GA1B' */
+#define GA10B_PMEM_VERSION  1u
+typedef struct {
+    uint32_t magic, version;
+    uint32_t size;                 /* segment bytes */
+    uint32_t cursor;               /* bump allocator offset */
+    uint64_t phy_base;
+    uint32_t owner_pid, owner_uuid; /* process driving the GPU; uuid 0 = none */
+    struct {
+        uint32_t valid;            /* the objects below belong to a booted RTOS */
+        uint32_t inst_off, ss_off, trace_off, args_off, dump_off;
+        uint64_t ss_gpu_va, trace_gpu_va;
+        uint32_t ipc_ready, lpq_phy_idx, sw_off, sw_size, seq_id, wpr_done;
+    } pmu;
+} ga10b_pmem_hdr_t;
+
+ga10b_pmem_hdr_t* ga10b_pmem_hdr(void);     /* attaches on first use */
+int      ga10b_pmem_alloc(uint32_t size, uint32_t align, void** va,
+                          uint64_t* phy);
+uint32_t ga10b_pmem_off(const void* va);
+void*    ga10b_pmem_va(uint32_t off, uint32_t size);   /* NULL if out of range */
+uint64_t ga10b_pmem_phy(uint32_t off);
+void     ga10b_pmem_reset(void);            /* drop every object, keep the owner */
+/* OS layer (ga10b_fw.c): the segment itself and process identity */
+int  ga10b_os_pmem_map(uint32_t size, void** va, uint64_t* phy);
+void ga10b_os_self(uint32_t* pid, uint32_t* uuid);
+int  ga10b_os_alive(uint32_t pid, uint32_t uuid);
+
 /* ---- falcon / riscv (ga10b_falcon.c) ---- */
 typedef struct {
     uint32_t base;               /* falcon reg base inside BAR0 */
@@ -254,9 +291,12 @@ typedef struct {
     struct { void* va; uint64_t phy; } tab[GA10B_MM_MAX_TABLES];
     uint32_t ntab;                           /* child tables allocated */
     uint32_t aperture;                       /* PDE/PTE sysmem aperture: 6 ncoh, 4 coh */
+    int      persist;                        /* tables in device-lifetime memory */
 } ga10b_gmmu_t;
 
 int      ga10b_gmmu_init(ga10b_gmmu_t* mm);
+/* VM whose page tables outlive the process (never destroyed) */
+int      ga10b_gmmu_init_persist(ga10b_gmmu_t* mm);
 uint64_t ga10b_gmmu_map(ga10b_gmmu_t* mm, uint64_t phy, uint32_t size);
 uint64_t ga10b_gmmu_map_attr(ga10b_gmmu_t* mm, uint64_t phy, uint32_t size,
                              int cacheable);
@@ -299,6 +339,11 @@ typedef struct {
 } ga10b_chan_t;
 
 int ga10b_fifo_init(void);                  /* runlist/doorbell setup */
+/* Take every channel off the hardware, from hardware state alone (no driver
+ * bookkeeping needed).  reset_engines=0: the caller still owns the channels'
+ * memory, contexts are preempted out.  reset_engines=1: the channels belong
+ * to a process that is gone, the engines are reset instead of saved. */
+void ga10b_fifo_quiesce(int reset_engines);
 /* retained bar2 host-VM page tables (runqueue translation; lives for the
  * driver lifetime like the runlist buffers, never freed per channel) */
 uint32_t ga10b_fifo_bar2_ntab(void);
@@ -329,9 +374,6 @@ int ga10b_ce_blit(ga10b_chan_t* ch,
 /* nvgpu_gr_enable_hw: GR engine + GPC reset, fifo access, non-ctx netlist
  * lists, falcon scrub wait.  MUST run before the ACR boots FECS/GPCCS. */
 int ga10b_gr_enable_hw(const char* fw_dir);
-/* ACR-reuse variant: re-apply GR prepare WITHOUT the GR/GPC reset (which
- * would kill the already-bootstrapped FECS/GPCCS). */
-int ga10b_gr_resume_hw(const char* fw_dir);
 int ga10b_gr_init(const char* fw_dir);      /* FECS/GPCCS start + golden ctx */
 /* load golden image into a channel ctx + header page + RAMIN GR pointers */
 int ga10b_gr_ctx_prepare(ga10b_chan_t* ch);

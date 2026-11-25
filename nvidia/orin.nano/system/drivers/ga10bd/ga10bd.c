@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include <ewoksys/klog.h>
+#include <ewoksys/syscall.h>
 
 #include "ga10b.h"
 #include "ga10b_regs.h"
@@ -137,7 +138,9 @@ static int cmd_ce(void) {
 }
 
 /* compute channel on the GRAPHICS runlist + one launch: the nvcc sm_87 vadd
- * kernel on hardware, the placeholder QMD trace in dry-run */
+ * kernel on hardware, the placeholder QMD trace in dry-run.  pgl < 0 is the
+ * takeover test: after the launch the process dies the way a crashed GPU
+ * owner does, with its channel still scheduled and no exit handler run. */
 static int cmd_compute(int pgl) {
     if (ga10b_stage_gr(_fw_dir) != 0)
         return -1;
@@ -156,7 +159,7 @@ static int cmd_compute(int pgl) {
         return -1;
 #ifdef GA10B_HAVE_CUDA
     int r;
-    if (pgl)
+    if (pgl > 0)
         r = ga10b_pgl_selftest(&ch, _cubin != NULL ? _cubin :
                                "/fs/cuda/pgl_geom.sm_87.cubin");
     else if (ga10b.hw)
@@ -171,6 +174,10 @@ static int cmd_compute(int pgl) {
 #endif
     if (r != 0 && ga10b.hw)
         ga10b_diag_dump();
+    if (pgl < 0 && ga10b.hw) {
+        klog("ga10bd: orphan -> %d, dying with chan%u scheduled\n", r, ch.chid);
+        syscall1(SYS_EXIT, (ewokos_addr_t)(r == 0 ? 0 : 1));
+    }
     ga10b_chan_destroy(&ch);
     ga10b_gmmu_destroy(&mm);
     return r;
@@ -206,6 +213,7 @@ static void usage(void) {
          "  gr         acr + pmu + FECS/GPCCS start + golden ctx\n"
          "  compute    gr + compute channel + nvcc sm_87 vadd launch (M1)\n"
          "  raster     gr + portablegl geometry kernels vs CPU reference\n"
+         "  orphan     compute, then die without teardown (takeover test)\n"
          "  diag       dump runlist/PBDMA/CE/GR/FECS state (read-only)\n"
          "  dump       hex-dump FECS/GPCCS IMEM+DMEM (after a failed gr)\n"
          "  power-off  BPMP powergate off\n"
@@ -260,6 +268,8 @@ int main(int argc, char** argv) {
         r = cmd_compute(0);
     else if (strcmp(cmd, "raster") == 0)
         r = cmd_compute(1);
+    else if (strcmp(cmd, "orphan") == 0)
+        r = cmd_compute(-1);
     else if (strcmp(cmd, "diag") == 0)
         r = cmd_diag();
     else if (strcmp(cmd, "dump") == 0)
