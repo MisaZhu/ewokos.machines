@@ -10,21 +10,13 @@ struct wcn_rx_security {
 };
 int wcn_dp_init(void);
 int wcn_dp_ready(void);
-/* A programmed ring is not a working ring: the firmware acknowledges the
- * RXDMA/REO configuration and then never writes a completion into it, which
- * leaves the control plane healthy (WMI management frames) with no data
- * frames at all. Only an observed completion proves RX is alive. */
-int wcn_dp_rx_alive(void);
 unsigned wcn_dp_rx_frames(void);
 unsigned wcn_dp_completions(void);
 unsigned wcn_dp_tx_errors(void);
+unsigned wcn_dp_tx_done(void);
 unsigned wcn_dp_tx_packets(void);
 /* "reo=.. rx_hp=.. refill=.." snapshot proving whether RXDMA advances. */
 void wcn_dp_hw_state(char *out, unsigned size);
-void wcn_dp_beat(char *out, size_t size);
-/* "rxfill=<buffers the firmware wrote> rings=[..hp..]" - separates "frames
- * arrived, completion path lost them" from "no frame was ever received". */
-void wcn_dp_rx_probe(char *out, unsigned size);
 void wcn_dp_mac2_filter_req(int on);
 int wcn_dp_can_transmit(void);
 void wcn_dp_tx_batch_begin(void);

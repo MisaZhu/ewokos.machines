@@ -165,8 +165,6 @@ void wcn_wpa_receive(const uint8_t *p,unsigned bytes) {
         a.bad++; wcn_log("wcn: WPA RX malformed state=%s bytes=%u\n",states[a.state],bytes);return;
     }
     unsigned info=be16(p+5);
-    wcn_log("wcn: WPA RX state=%s info=%04x replay=%02x%02x%02x%02x bytes=%u\n",
-            states[a.state],info,p[9],p[10],p[11],p[12],bytes);
     if ((info&7)!=2 || (info&0x0c00)) { a.bad++;wcn_log("wcn: WPA RX unsupported key-info=%04x\n",info);return; }
     a.messages++;
     if (info==0x1382 && a.established) {
@@ -211,7 +209,7 @@ void wcn_wpa_receive(const uint8_t *p,unsigned bytes) {
         response(a.response2,0x010a,a.replay1,sizeof(a.response2));
         memcpy(a.response2+17,a.snonce,32);putbe16(a.response2+97,22);memcpy(a.response2+99,a.rsn,22);
         if (add_mic(a.response2,sizeof(a.response2))) { failed("message2-MIC");return; }
-        a.state=SEND2;wcn_log("wcn: WPA M1 accepted; response2 queued\n");return;
+        a.state=SEND2;return;
     }
     if (info!=0x13ca || a.state<WAIT3 || be16(p+7)!=16 || !equal(p+17,a.anonce,32)) { a.bad++;return; }
     if (memcmp(p+9,a.replay1,8)<=0) { a.bad++;wcn_log("wcn: WPA M3 stale replay\n");return; }
@@ -226,7 +224,7 @@ void wcn_wpa_receive(const uint8_t *p,unsigned bytes) {
     memcpy(a.replay3,p+9,8);memcpy(a.rsc,p+65,8);
     response(a.response4,0x030a,a.replay3,sizeof(a.response4));
     if (add_mic(a.response4,sizeof(a.response4))) { failed("message4-MIC");return; }
-    a.state=PAIR_SEND;wcn_log("wcn: WPA M3 accepted; PTK install queued\n");
+    a.state=PAIR_SEND;
 }
 void wcn_wpa_poll(void) {
     if (a.state==OFF || a.state==ERROR) return;
@@ -238,7 +236,7 @@ void wcn_wpa_poll(void) {
     int ret;
     switch (a.state) {
     case SEND2:
-        if (wcn_sta_eapol_send(a.response2,sizeof(a.response2))>=0) { a.state=WAIT3;wcn_log("wcn: WPA response2 transmitted\n"); }
+        if (wcn_sta_eapol_send(a.response2,sizeof(a.response2))>=0) a.state=WAIT3;
         break;
     case PAIR_SEND:
         if (!wcn_sta_install_key(0,0,a.ptk+32,NULL)) a.state=PAIR_WAIT;
@@ -248,7 +246,7 @@ void wcn_wpa_poll(void) {
         break;
     case SEND4:
         ret=wcn_sta_eapol_send(a.response4,sizeof(a.response4));
-        if (ret>=0) { a.tx4=ret;a.state=TX4_WAIT;wcn_log("wcn: WPA response4 queued cookie=%u\n",a.tx4); }
+        if (ret>=0) { a.tx4=ret;a.state=TX4_WAIT; }
         break;
     case AUTHORIZE:
         if (!wcn_sta_authorize()) { a.state=CONNECTED;a.established=1;erase(a.gtk,sizeof(a.gtk));erase(a.seed,sizeof(a.seed));erase(a.pmk,sizeof(a.pmk));wcn_log("wcn: WPA2 connected\n"); }
@@ -271,7 +269,6 @@ void wcn_wpa_key_complete(unsigned index,unsigned group,unsigned status) {
             memset(a.rx_amsdu[slot],0,sizeof(a.rx_amsdu[slot]));
             a.rx_keys|=1u<<slot;
             a.state=a.state==PAIR_WAIT ? GROUP_SEND : SEND4;
-            wcn_log("wcn: WPA key installed group=%u index=%u next=%s\n",group,index,states[a.state]);
         }
     }
 }

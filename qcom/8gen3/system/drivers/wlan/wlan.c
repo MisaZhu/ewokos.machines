@@ -67,7 +67,7 @@ static unsigned joined_save;
 /* ---- link controller ---- */
 enum { LINK_IDLE, LINK_RESTART, LINK_BOOT, LINK_CONNECT };
 static struct {
-    unsigned state, attempts, recovered, backoff, scanning, probed;
+    unsigned state, attempts, recovered, backoff, scanning;
     uint64_t deadline, wait_until, scan_deadline, stable;
 } ctl;
 
@@ -259,18 +259,9 @@ static void link_poll(void) {
             return;
         ctl.scanning = 0;
         /* An empty RX ring before association is normal: until a vdev exists
-         * the firmware keeps beacons and everything else internal, so this
-         * check cannot condemn the attempt (it used to abort every attempt
-         * after the first and leave the boot with no join at all). Record it
-         * once and join; the post-association grace window in wcn_sta.c is
-         * what decides whether the data path is really dead. */
-        if (!wcn_dp_rx_alive() && !ctl.probed) {
-            char pr[400];
-            ctl.probed = 1;
-            wcn_dp_rx_probe(pr, sizeof(pr));
-            wcn_diag("rx-dead-phase=scan action=proceed\n");
-            wcn_diag("rx-probe | %s\n", pr);
-        }
+         * the firmware keeps beacons and everything else internal. The
+         * post-association grace window in wcn_sta.c is what decides whether
+         * the data path is really dead. */
         if (!link_join()) {
             ctl.state = LINK_CONNECT;
             ctl.deadline = now + 35000;
@@ -330,16 +321,6 @@ static void link_monitor(void) {
         if (ctl.stable && now - ctl.stable > 30000) {
             ctl.backoff = 0;
             ctl.stable = now;
-        }
-        /* Heartbeat while the link is up. A stall keeps the station associated
-         * and blocks the very ssh session that would report it, so the data
-         * path counters have to be recorded as the stall happens. */
-        static uint64_t beat_ms;
-        if (now - beat_ms >= 10000) {
-            beat_ms = now;
-            char beat[520];
-            wcn_dp_beat(beat, sizeof(beat));
-            wcn_diag("%s\n", beat);
         }
         return;
     }
@@ -845,14 +826,7 @@ static void startup_connect_poll(void) {
 static int wlan_loop(vdevice_t *dev, void *p) {
     static unsigned activity;
     static uint64_t active_until;
-    static unsigned first_loop;
     (void)dev; (void)p;
-
-    if (!first_loop) {
-        first_loop = 1;
-        wcn_log("wcn: loop entered start=%u running=%u\n",
-                start_pending, wcn_running());
-    }
 
     /* IPC callbacks only queue requests; all controller work has one owner. */
     ipc_disable();
@@ -872,12 +846,9 @@ static int wlan_loop(vdevice_t *dev, void *p) {
     } else {
         if (start_pending) {
             start_pending = 0;
-            wcn_log("wcn: start request begin\n");
             if (wcn_start()) {
                 wcn_log("wcn: start failed; scheduling retry\n");
                 link_backoff();
-            } else {
-                wcn_log("wcn: start request complete\n");
             }
         }
         if (reconnect_pending) {
@@ -936,11 +907,7 @@ static int path_is_json(const char *path) {
  * delays the device registration that netd/ipcserv wait for. */
 static int wlan_mounted(vdevice_t *dev, ewokos_addr_t node, void *p) {
     (void)dev; (void)node; (void)p;
-    wcn_log("wcn: mounted callback begin config=%s\n",
-            config_given ? config_path : WCN_CONFIG_DEFAULT);
     wcn_config_init(config_given ? config_path : NULL);
-    wcn_log("wcn: mounted callback config complete entries=%d\n",
-            wcn_config_count());
     /* Upgrade path: a rootfs provisioned before the pi5 config format has
      * no network.json entry but may still carry /etc/wlan.conf. Only used
      * when nothing else was configured on the command line. */
@@ -964,12 +931,10 @@ int main(int argc, char **argv) {
         wcn_log("wcn: node already owned\n");
         return -1;
     }
-    wcn_log("wcn: attach begin\n");
     if (wcn_attach()) {
         wcn_log("wcn: attach failed\n");
         return -1;
     }
-    wcn_log("wcn: attach complete\n");
 
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--start")) {
@@ -992,7 +957,6 @@ int main(int argc, char **argv) {
     dev.loop_step = wlan_loop;
     /* 0666 matches the pi5 wland: the desktop wifi app (xwifi) runs as the
      * session user and drives this node with devcmd. */
-    wcn_log("wcn: device_run begin start=%u\n", start_pending);
     device_run(&dev, node, FS_TYPE_CHAR, 0666, false);
     wcn_stop();
     return 0;

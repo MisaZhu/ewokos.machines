@@ -155,7 +155,6 @@ static int wait_reg(uint32_t off, uint32_t mask, uint32_t value, unsigned timeou
 
 int wcn_attach(void) {
     w.stage = "attach";
-    wcn_log("wcn: attach probing PCIe snapshot\n");
     /* pcied owns power, LTSSM, ECAM and PCI configuration.  Consume only its
      * read-only snapshot; this driver never writes a PCI capability or the
      * command register. */
@@ -202,8 +201,6 @@ int wcn_attach(void) {
         seed = seed * UINT64_C(0x100000001b3) ^
                 (((uint64_t)w.pcie.bus << 24) |
                  ((uint64_t)w.pcie.device << 8) | w.pcie.function);
-        wcn_log("wcn: fallback MAC seed source=SoC serial (QFPROM) %08x %08x\n",
-                (unsigned)(seed >> 32), (unsigned)seed);
     } else {
         seed = UINT64_C(0x9e3779b97f4a7c15);
         seed ^= ((uint64_t)w.pcie.vendor_id << 48) |
@@ -215,9 +212,6 @@ int wcn_attach(void) {
                  ((uint64_t)w.pcie.device << 8) | w.pcie.function);
         if (w.pcie.serial_valid) {
             seed ^= w.pcie.serial_number;
-            wcn_log("wcn: fallback MAC seed source=PCIe Device Serial Number\n");
-        } else {
-            wcn_log("wcn: fallback MAC seed source=stable PCI identity\n");
         }
     }
     if (!seed) seed = UINT64_C(1);
@@ -245,8 +239,6 @@ int wcn_attach(void) {
         wcn_log("wcn: attach failed: unexpected HW=%08x (want WCN6855 hw2.0/2.1)\n", w.hw);
         return -1;
     }
-    wcn_log("wcn: silicon revision=hw2.%u firmware tree=hw2.1/nfa765\n",
-            hw_rev - 0x10);
     w.bhi = reg(0x28);
     if (!offset_valid(w.bhi, 0xc8)) {
         wcn_log("wcn: attach failed: invalid BHI offset=%08x\n", w.bhi);
@@ -297,8 +289,6 @@ static int software_reset(void) {
     put(0x38, 2);
     usleep(10000);
     w.bhi = reg(0x28);
-    wcn_log("wcn: reset complete ctrl=%08x status=%08x ee=%u\n",
-            reg(0x38), reg(0x48), ee());
     return 0;
 }
 
@@ -655,13 +645,9 @@ void wcn_stop(void) {
 
 int wcn_start(void) {
     if (!w.attached || w.running) return -1;
-    wcn_log("wcn: start begin\n");
     w.stage = "load-firmware";
-    wcn_log("wcn: loading firmware\n");
     if (load_firmware()) { w.stage = "firmware-error"; return -1; }
-    wcn_log("wcn: firmware loaded bytes=%u\n", w.fw_size);
     w.running = 1;
-    wcn_log("wcn: software reset begin\n");
     if (software_reset()) goto fail;
     /* Allow PBL to finish clearing its boot interface after SYSERR reset. */
     usleep(200000);
@@ -669,7 +655,6 @@ int wcn_start(void) {
      * DMA and its retained polling MSI sink; never map/write ECAM here. */
     if (qcom8gen3_pcie_service_prepare_wlan_dma()) goto fail;
     if (prepare_rddm()) goto fail;
-    wcn_log("wcn: RDDM prepared\n");
     w.stage = "BHI";
     put(w.bhi + 0x20, 0); /* BHI interrupt vector; completion is polled. */
     put(w.bhi + 0x2c, 0);
@@ -682,22 +667,18 @@ int wcn_start(void) {
     if (!seq) seq = 1;
     put(w.bhi + 0x18, seq);
     if (wait_reg(w.bhi + 0x2c, 0xc0000000, 0x80000000, 20000)) goto fail;
-    wcn_log("wcn: BHI ready\n");
     w.stage = "READY";
     if (wait_reg(0x38, 2, 0, 10000) || wait_reg(0x48, 1, 1, 10000) || setup_contexts()) goto fail;
-    wcn_log("wcn: MHI contexts ready\n");
     uint64_t until = kernel_tic_ms(0) + 10000;
     while (ee() == 0 && kernel_tic_ms(0) < until) { wcn_poll(); usleep(1000); }
     if (ee() != 1) goto fail;
     w.stage = "BHIE";
-    wcn_log("wcn: downloading AMSS\n");
     if (download_amss()) goto fail;
     until = kernel_tic_ms(0) + 20000;
     while (ee() != 2 && kernel_tic_ms(0) < until) { wcn_poll(); usleep(1000); }
     if (ee() != 2) goto fail;
     w.stage = "AMSS";
     w.stage = "IPCR";
-    wcn_log("wcn: starting IPCR\n");
     if (start_ipcr()) goto fail;
     w.stage = "QMI-discovery";
     return 0;

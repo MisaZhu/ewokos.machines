@@ -34,6 +34,8 @@ static struct {
     unsigned ba_delete,ba_state,ba_tid,ba_token,ba_window,ba_ssn,ba_timeout,ba_cookie,ba_status,ba_requests,ba_accepted;
     uint64_t ba_deadline;
     unsigned rates_len,ht,vht,he,nss,width,center,phymode,ht_rates_len,max_width,he_len,he_allowed;
+    unsigned tx_done_base;
+    uint64_t probe_ms;
     uint8_t ht_rates[16], ht_ie[26], vht_ie[12];
     uint8_t he_ie[64];
     struct wcn_bss bss;
@@ -43,30 +45,22 @@ static unsigned le16(const uint8_t *p) { return p[0]|((unsigned)p[1]<<8); }
 static unsigned le32(const uint8_t *p) { return le16(p)|((uint32_t)le16(p+2)<<16); }
 static void put16(uint8_t *p,unsigned v) { p[0]=v; p[1]=v>>8; }
 static unsigned tlv(unsigned tag,unsigned bytes) { return tag<<16|bytes; }
+static int sta_ps_mode(int mode);
+static int sta_ps_param(unsigned param,unsigned value);
+static void sta_ps_configure(void);
 enum { WMI_VDEV_PARAM_RX_DECAP_TYPE=0x57, RX_DECAP_ETHERNET2=2 };
 static void state(unsigned value) {
     s.state=value; s.deadline=kernel_tic_ms(0)+8000;
 }
 static void fail(const char *why,unsigned status) {
-    /* Recovery frees the station and DP state. Preserve the failed stage and
-     * management/data counters in the log before that evidence disappears. */
-    /* Also keep it across reboots: a link that drops takes the ssh session with
-     * it, so the driver ring buffer - the only place the reason used to land -
-     * could never be read afterwards. */
-    wcn_diag("station-fail why=%s status=%u phase=%s\n",why,status,names[s.state]);
-    wcn_log("wcn: station context phase=%s mhz=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x aid=%u lmac=%u\n",
-            names[s.state],s.bss.mhz,s.bss.bssid[0],s.bss.bssid[1],s.bss.bssid[2],
-            s.bss.bssid[3],s.bss.bssid[4],s.bss.bssid[5],s.aid,s.lmac);
-    wcn_log("wcn: station counters mgmt_tx=%u done=%u errors=%u rx=%u data_tx=%u data_rx=%u eapol_rx=%u\n",
-            s.tx,s.tx_done,s.tx_errors,s.rx,s.data_tx,s.data_rx,s.eapol_rx);
-    char wpa_status[256];
-    wcn_wpa_status(wpa_status,sizeof(wpa_status));
-    wcn_log("wcn: station WPA %s\n",wpa_status);
-    char dp_status[512];
-    wcn_dp_status(dp_status,sizeof(dp_status));
-    wcn_log("wcn: station DP %s\n",dp_status);
+    /* Recovery frees the station and DP state; keep the reason and counters
+     * across reboots in the persistent diag - a link drop takes the ssh
+     * session with it, so the ring log alone could never be read afterwards. */
+    wcn_diag("station-fail why=%s status=%u phase=%s mhz=%u aid=%u mgmt=%u/%u err=%u data=%u/%u eapol=%u\n",
+             why,status,names[s.state],s.bss.mhz,s.aid,s.tx,s.tx_done,s.tx_errors,
+             s.data_tx,s.data_rx,s.eapol_rx);
+    wcn_log("wcn: station failure=%s status=%u phase=%s; recovery required\n",why,status,names[s.state]);
     s.error=why; s.status=status; state(FAILED);
-    wcn_log("wcn: station failure=%s status=%u; recovery required\n",why,status);
 }
 /* Negotiate WPA2-PSK/CCMP only. Reject mandatory PMF and unsupported group ciphers. */
 static int select_rsn(const uint8_t *ie,unsigned bytes) {
@@ -491,11 +485,33 @@ static int vdev_up(void) {
 void wcn_sta_poll(void) {
     if (s.state==ASSOCIATED) {
         if (!wcn_dp_ready() || !wcn_wmi_ready()) { fail("controller-unavailable",0);return; }
-        /* Declared dead only after the grace period and with no completion
-         * since the vdev came up: an empty ring 20 ms after association means
-         * nothing (the reference AP lands its first frame at +50 ms). */
-        if (wcn_dp_rx_frames()==s.rx_base && kernel_tic_ms(0)>=s.rx_grace) {
-            fail("rx-dead",0); return;
+        /* RX liveness. The short first-frame grace judges the bring-up (the
+         * reference AP lands its first frame at +50 ms). The old check stopped
+         * monitoring once any frame had arrived, so a link that died silently
+         * later stayed "connected" forever with no recovery. Now the window
+         * re-arms on every RX completion or ACKed uplink frame, and on a
+         * silent link a QoS-null probe keeps the AP's station entry warm (its
+         * ACK also proves the radio path), so a quiet network is never torn
+         * down while a truly dead one is recovered within the window. */
+        uint64_t now=kernel_tic_ms(0);
+        unsigned frames=wcn_dp_rx_frames();
+        if (frames!=s.rx_base) {
+            s.rx_base=frames;
+            s.rx_grace=now+(frames ? 60000:1200);
+        }
+        /* An ACKed uplink frame proves the radio path just as well as RX. */
+        unsigned done=wcn_dp_tx_done();
+        if (done!=s.tx_done_base) {
+            s.tx_done_base=done;
+            if (frames) s.rx_grace=now+60000;
+        }
+        if (now>=s.rx_grace) { fail("rx-dead",0); return; }
+        if (frames && wcn_wpa_established() && now>=s.rx_grace-30000 && now>=s.probe_ms) {
+            s.probe_ms=now+10000;
+            uint8_t f[26]={0xc8,0x41}; /* QoS-null (subtype 12), ToDS, protected */
+            memcpy(f+4,s.bss.bssid,6);memcpy(f+10,s.mac,6);memcpy(f+16,s.bss.bssid,6);
+            put16(f+22,(++s.seq&4095)<<4);
+            wcn_dp_transmit(f,sizeof(f),s.lmac);
         }
         ba_poll();
         if (s.state==FAILED) return;
@@ -517,7 +533,7 @@ void wcn_sta_poll(void) {
     case CONFIG:
         if (!configure() && ++s.config==(s.he ? 11u:10u)) {
             if (configure_rx_decap()) fail("rx-decap-config",0);
-            else state(PEER);
+            else { sta_ps_configure(); state(PEER); }
         }
         break;
     case PEER: if (!peer_create()) state(PEER_WAIT); break;
@@ -554,10 +570,9 @@ void wcn_sta_event(unsigned event,unsigned tag,const uint8_t *p,unsigned bytes) 
     if (event==0x7006 && tag==423 && bytes>=20) {
         unsigned id=le32(p);
         for (unsigned i=0;i<FRAME_SLOTS;i++) if (id && s.pending[i]==id) {
-            unsigned subtype=s.dma[i*FRAME_BYTES]>>4;
-            if (subtype==11 || subtype==0 || le32(p+4))
-                wcn_log("wcn: mgmt TX subtype=%u desc=%u status=%u pdev=%u ack_rssi=%d\n",
-                        subtype,id,le32(p+4),le32(p+8),(int32_t)le32(p+16));
+            if (le32(p+4))
+                wcn_log("wcn: mgmt TX failed subtype=%u desc=%u status=%u\n",
+                        s.dma[i*FRAME_BYTES]>>4,id,le32(p+4));
             s.pending[i]=0; s.tx_done++; if (le32(p+4)) s.tx_errors++;
         }
     }
@@ -568,10 +583,8 @@ void wcn_sta_event(unsigned event,unsigned tag,const uint8_t *p,unsigned bytes) 
          * The VDEV response union is a target pdev ID with use_pdev_id=1;
          * neither that value nor a band-to-radio mapping is a TCL selector. */
         s.lmac=0;
-        wcn_log("wcn: vdev-start status=%u target_mac_pdev=%u tx_streams=%u rx_streams=%u lmac=%u\n",
-                le32(p+12),le32(p+24),le32(p+28),le32(p+32),s.lmac);
-        wcn_diag("vdev-start target_mac_pdev=%u tx_streams=%u rx_streams=%u\n",
-                le32(p+24),le32(p+28),le32(p+32));
+        wcn_diag("vdev-start status=%u target_mac_pdev=%u tx_streams=%u rx_streams=%u\n",
+                le32(p+12),le32(p+24),le32(p+28),le32(p+32));
         if (le32(p+12)) fail("vdev-start-rejected",le32(p+12));
         else state(AUTH);
     }
@@ -587,14 +600,6 @@ void wcn_sta_management(const uint8_t *p,unsigned bytes,unsigned mhz) {
     /* Record relevant responses even if the firmware reports an unexpected
      * receive frequency, then retain the normal channel validation below. */
     unsigned subtype=p[0]>>4;
-    if ((subtype==11 && bytes>=30) || (subtype==1 && bytes>=30) ||
-        ((subtype==10 || subtype==12) && bytes>=26)) {
-        unsigned code=subtype==11 ? le16(p+28):subtype==1 ? le16(p+26):le16(p+24);
-        wcn_log("wcn: mgmt RX subtype=%u phase=%s mhz=%u expected=%u code=%u seq=%u protected=%u\n",
-                subtype,names[s.state],mhz,s.bss.mhz,code,le16(p+22)>>4,!!(p[1]&64));
-        if (subtype==11)
-            wcn_log("wcn: auth RX algorithm=%u transaction=%u status=%u\n",le16(p+24),le16(p+26),code);
-    }
     if (mhz!=s.bss.mhz) return;
     s.rx++;
     if ((subtype==12 || subtype==10) && bytes>=26) { fail("AP-disconnected",le16(p+24)); return; }
@@ -687,7 +692,8 @@ int wcn_sta_install_key(unsigned index,unsigned group,const uint8_t key[16],cons
  * proper (station wakes at DTIM, AP buffers + station polls), which is what
  * powerd's sleep path uses to stay connected while saving power; wake sends
  * mode=0 back to the always-awake config. Tags/command ids follow ath11k:
- * WMI_GRP_STA_PS first command 0x9001, TLV tag 108 (Linux 112, our table -4). */
+ * WMI_GRP_STA_PS commands 0x9001/0x9002, TLV tags 108/109 (matching the
+ * current Linux wmi_tlv_tag enum). */
 static int sta_ps_mode(int mode) {
     struct { uint32_t command; struct wmi_sta_powersave_mode_cmd cmd; } p;
     memset(&p,0,sizeof(p)); p.command=0x9001; p.cmd.tlv_header=tlv(108,sizeof(p.cmd)-4);
@@ -701,6 +707,20 @@ static int sta_ps_param(unsigned param,unsigned value) {
     memset(&p,0,sizeof(p)); p.command=0x9002; p.cmd.tlv_header=tlv(109,sizeof(p.cmd)-4);
     p.cmd.vdev_id=0; p.cmd.param=param; p.cmd.value=value;
     return wcn_htc_wmi_send(&p,sizeof(p));
+}
+/* ath11k configures the station wake policy at vdev-create time, before any
+ * association (mac.c, WMI_VDEV_TYPE_STA case): RX_WAKE_POLICY=WAKE, TX_WAKE_
+ * THRESHOLD=ALWAYS, PSPOLL_COUNT=NO_MAX, then PS mode disabled. Sending only
+ * mode=0 after WPA left the firmware wake policy at its defaults: downlink
+ * unicast died a few seconds after the last traffic (AP buffering for an
+ * apparently sleeping station) while DTIM multicast kept flowing. Best-effort:
+ * a rejected param must not block association. */
+static void sta_ps_configure(void) {
+    int ret=sta_ps_param(0,0); /* RX_WAKE_POLICY = WAKE */
+    if (!ret) ret=sta_ps_param(1,1); /* TX_WAKE_THRESHOLD = ALWAYS */
+    if (!ret) ret=sta_ps_param(2,0); /* PSPOLL_COUNT = NO_MAX */
+    if (!ret) ret=sta_ps_mode(0); /* PS_MODE_DISABLED */
+    wcn_diag("sta-ps configure ret=%d\n",ret);
 }
 /* powerd sleep/wake hook: enable PS on sleep, disable on wake. A no-op success
  * when not associated (nothing to save); the link-watch ladder re-authorizes

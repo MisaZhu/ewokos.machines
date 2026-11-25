@@ -185,7 +185,6 @@ uint8_t *wcn_board_data(unsigned chip, unsigned board, int regdb, unsigned *size
             size_t used = strlen(name);
             if (used + 10 + strlen(variant) < sizeof(name)) {
                 snprintf(name + used, sizeof(name) - used, ",variant=%s", variant);
-                wcn_log("wcn: BDF variant=%s\n", variant);
             }
         } else if (chip == 2 && board == 255) {
             /* TW220 HW2.0 reports QMI chip-id 2.  Its board-2.bin entry is
@@ -196,8 +195,6 @@ uint8_t *wcn_board_data(unsigned chip, unsigned board, int regdb, unsigned *size
             size_t used = strlen(name);
             if (used + 10 + sizeof(qmi_variant) - 1 < sizeof(name)) {
                 snprintf(name + used, sizeof(name) - used, ",variant=%s", qmi_variant);
-                wcn_log("wcn: BDF variant=%s (QMI chip=%u board=%u default)\n",
-                        qmi_variant, chip, board);
             }
         }
     }
