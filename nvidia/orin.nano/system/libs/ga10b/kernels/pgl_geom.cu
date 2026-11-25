@@ -461,6 +461,11 @@ PGL_KERNEL void pgl_raster(unsigned *fb, const float *vout, unsigned *depth,
 #define BP_SCISSOR      14      /* x, y, w, h; w or h <= 0 = off */
 #define BP_WORDS        18
 #define BP_FLAG_CLEAR   1u
+/* the tile lists are in arrival order (pgl_bin_sort was skipped).  Only set
+ * for depth-tested, depth-writing, unblended draws: there the surviving
+ * fragment is the nearest one whatever the order, and an equal-depth tie
+ * goes to the lower triangle index - what in-order compositing yields. */
+#define BP_FLAG_UNORDERED 2u
 #define BP_MODE_COLOR   0u
 #define BP_MODE_TEX     1u
 #define BP_MODE_TEXCOL  2u
@@ -628,6 +633,8 @@ PGL_KERNEL void pgl_raster_tile(unsigned *fb, unsigned *depth,
             col = fb[idx];
     }
 
+    int unordered = (bp[BP_FLAGS] & BP_FLAG_UNORDERED) != 0u;
+    unsigned owner = 0xffffffffu;   /* triangle that set d; none = the buffer */
     int overflow = n > cap;
     unsigned total = overflow ? u[RS_TRI_COUNT] : n;
     const unsigned *list = bin_list + tile * cap;
@@ -651,11 +658,15 @@ PGL_KERNEL void pgl_raster_tile(unsigned *fb, unsigned *depth,
             float z = (b0 * r[TR_ZW] + b1 * r[TR_ZW + 1] +
                        b2 * r[TR_ZW + 2]) * rw;
             unsigned dd = (unsigned)(pgl_clamp01(z) * 16777215.0f);
-            if (dd >= d)
+            if (dd > d)
+                continue;
+            if (dd == d &&
+                (!unordered || owner == 0xffffffffu || t >= owner))
                 continue;
             if (depth_write != 0u) {
                 d = dd;
                 zdirty = 1;
+                owner = t;
             }
         }
         if (mode == BP_MODE_COLOR) {

@@ -79,12 +79,19 @@
 
 /* tile-pass parameter block (BP_* in kernels/pgl_geom.cu) */
 #define GA10B_PGL_BP_WORDS        18u
+#define GA10B_PGL_BP_CAP          2u
+#define GA10B_PGL_BP_FLAGS        3u
+#define GA10B_PGL_BP_FLAG_UNORDERED 2u
 #define GA10B_PGL_TILE            16u
 
 /* Fill the tile-pass parameter block for one draw from the raster kernel
  * id and its uniform region.  Shared by the daemon and its tests so both
  * derive the kernel state the same way.  Returns 0, or -1 for an unknown
- * raster kernel. */
+ * raster kernel.
+ *
+ * A depth-tested, depth-writing, unblended draw gets BP_FLAG_UNORDERED: its
+ * result does not depend on the order of the tile lists, so the caller may
+ * skip pgl_bin_sort and use lists longer than the sort could afford. */
 static inline int ga10b_pgl_fill_bp(uint32_t* bp, uint32_t raster_kernel,
                                     const uint32_t* ru, uint32_t tiles_x,
                                     uint32_t tiles_y, uint32_t cap, int clear,
@@ -103,10 +110,13 @@ static inline int ga10b_pgl_fill_bp(uint32_t* bp, uint32_t raster_kernel,
         bp[9] = ru[GA10B_PGL_RS_CULL_SIGN];
         bp[10] = ru[GA10B_PGL_RS_BLEND_MODE];
         bp[11] = ru[GA10B_PGL_RS_DEPTH_WRITE];
+        if (bp[10] == 0u && bp[11] != 0u)
+            bp[3] |= GA10B_PGL_BP_FLAG_UNORDERED;
         return 0;
     case GA10B_PGL_K_RASTER_TEX:
         bp[6] = 1; bp[7] = 8; bp[8] = 2;
         bp[11] = 1;                           /* always test + write */
+        bp[3] |= GA10B_PGL_BP_FLAG_UNORDERED;
         bp[12] = ru[GA10B_PGL_RT_TEX_W];
         bp[13] = ru[GA10B_PGL_RT_TEX_H];
         return 0;

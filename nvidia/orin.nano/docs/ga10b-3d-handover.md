@@ -371,3 +371,96 @@ export GA10B_PROF=1                      # 可选: 每 16 次 draw 一行分阶�
 5. 需要真编译 GLSL 的程序 (全屏 fragment 特效、Vulkan 的 kind 5 用户着色器) 这条路线做不了, 归 NVIDIA 板上编译器那条线。vkteapot / vktest 在 Orin 上跑的是 CPU 软件设备 (vktest PASS, 90/90, 已测)。
 6. `bsp_cl` (OpenCL / 之后 CUDA 算子的入口) 还是 stub; compute 通道现在归 g2dd 进程所有, 接 libcuda 时走这里而不是另起驱动。
 
+### 9.7 顺序无关路径 + 帧时间去向 (2026-11-24 晚, 已测)
+
+**改动**: 深度测试 + 深度写入 + 无混合的 draw (`BP_FLAG_UNORDERED`, 由 `ga10b_pgl_fill_bp` 判定) 不再 launch `pgl_bin_sort`; `pgl_raster_tile` 在深度相等时让小序号三角形胜出, 结果与按序合成逐位一致。这类 draw 的 tile 链表容量不再受 255 限制 (取 `PGL_LIST_WORDS / tiles`, VGA 下 873)。混合 / 不写深度 / TEXCOL 的 draw 仍走排序 + 255 上限。`GA10B_PROF=1` 的输出多了 tile 占用 (`bins used/avg/max/cap/ovf`)。
+
+主机测试 `test/test_pgl_order.c`: 打乱每个 tile 的链表后与排序版 0 像素差异 (含部分/全部溢出的容量), 对照组 (旧规则 + 乱序) 约 3.5 万像素差异。板上 g3dtest 7/7 PASS, 各场景 colour_bad / depth_bad 计数与改动前相同。
+
+| teapot 640x480, 6400 三角形, 单开 | 改前 | 改后 |
+|---|---|---|
+| sort | ~1.8 ms | 1–2 µs (不 launch) |
+| raster | ~2.2 ms | ~0.42 ms |
+| g2dd 内全部阶段 | ~4.2 ms | ~0.58 ms |
+| 帧率 | 63 fps | 82 fps |
+
+raster 的 2.2 ms 确实来自溢出: 最满的 tile 有 300–683 个三角形 (avg 55–64), 旧上限 255 下这些 tile 每像素扫全部 6400 个。
+
+**GPU 已不是瓶颈, 帧时间去向 (`ps` 实测)**:
+
+- teapot 单开 82 fps: teapot 进程占 65% 核 → 约 7.9 ms/帧是客户端自己的 CPU (其中 swap 1.34 ms); g2dd 15% → 约 1.8 ms/帧; 应用循环 `usleep(1000)` 约 2 ms。GPU 阶段只有约 0.8 ms/帧。
+- 三应用同开: 核 0–2 只剩 31–36% 空闲, 核 3–5 是 96–99% 空闲。内核 `core_fetch` 只在创建时按任务数选核, 没有迁移; IPC worker 固定跑在客户端所在核。实测 cube 落在核 0 (与 xserverd、fbdisplayd 同核), 3ddemo 与 xwm_misa (34%) 同在核 2。teapot 稳定锁在 50 fps (单开 82), 原因未定位。
+- g3dtest 的客户端往返 (`frame=`) 比 g2dd 内阶段之和多出 0–0.45 ms/draw, 不同启动之间差别大, 原因未定位。
+
+**下一步候选 (都不在 GPU 核里)**: 给 GL 库加 `PGL_PROFILE` 门控的客户端分段计时, 拆开 teapot 那 7.9 ms (应用侧 CPU 光照、引擎逐顶点 staging、写 uncached shm、swap 拷贝); 内核按负载选核 / 迁移; demo 循环的 `usleep(1000)`。
+
+### 9.8 客户端分段计时 + uncached 读回修复 (2026-11-24 晚, 已测)
+
+**计时** (`projects/opengl`, 仅 `PGL_PROFILE=1` 时生效): 每 5 秒多一行
+`PGL_PROFILE cpu draw_calls= tess= bufdata= clear= gpu_draws= stage= ipc=` (窗口累计, 除以 `frames` 得每帧)。`tess` = glDraw* 内引擎自身的 CPU; `stage` = `pgl_g3d` 把顶点流写进 shm 画布; `ipc` = g2dd 往返 (含 GPU 执行); `stage`/`ipc` 已从触发提交的那个入口里扣掉。
+
+**根因**: `draw_mesh_compiled_slot` 为 `uDispatchOffset` 像素窗口算包围盒时, 逐顶点从 NOCACHE 的 `_pos` shm 读回坐标。Orin 的核没有这个 uniform, 算完即丢; teapot 每帧 19200 顶点, 这一段占 5.8 ms。
+**修复**: 程序没有 `uDispatchOffset` 时不跑这段循环 (有该 uniform 的后端行为不变, 它们仍在读 uncached 内存 —— 改成读缓存里的源数据是等价的, 但没有可验证的板子, 未动)。
+
+| teapot 单开, 每帧 ms | 修前 | 修后 |
+|---|---|---|
+| stage | 5.78 | 0.36 |
+| tess | 1.03 | 0.87 |
+| ipc | 1.00 | 0.90 |
+| swap (其中 blit) | 1.66 (1.40) | 1.37 (1.21) |
+| clear + bufdata | 0.23 | 0.20 |
+| 其余 (应用 CPU + 循环睡眠) | 3.0 | 2.9 |
+| 帧时间 / 帧率 | 12.7 / 78.6 fps | 6.6 / 150.7 fps |
+
+三应用同开 (这次启动各进程落在不同核, 各核空闲 57–90%): cube 150.8 fps, teapot 82.5 fps, 3ddemo 117.6 fps (9.7 时为 68–74 / 50 / 87–90)。teapot 在三应用下每帧仍有约 8 ms 不在任何已计时段里 (单开只有 2.9 ms), 进程 CPU 只有 27%, 即在等待; 原因未定位。
+
+**构建注意**: 这一轮的 GL 栈是在 `/tmp/ewk-prof` 的 CoW 克隆里编的 (索引里的 text-match `nv_pglc.c` + `PGL_G3D_FRONTEND=no`), 因为共享树里 `libs/nvcompiler` 有另一个会话在改。只把 cube / teapot / 3ddemo 三个二进制拷回 machine-local build 目录再打包。
+
+### 9.9 demo 循环睡眠 + 帧间空闲 (2026-11-24 晚, 已测)
+
+**计时再细分**: `PGL_PROFILE cpu` 行多了 `idle=` 和 `app=`。`idle` = 上一帧 `eglSwapBuffers` 返回到本帧第一次 `glClear` (应用事件循环: `x_run` 每帧一次 `X_DCNTL_GET_EVT` IPC + 循环里的睡眠/让出); `app` = 第一次 `glClear` 到 `eglSwapBuffers` 之间扣掉 GL 调用后的应用自身 CPU。
+
+**根因**: cube / teapot / 3ddemo 的循环每帧 `usleep(1000)`。libc 对 >200 µs 走 `SYS_USLEEP` park, 内核按 tick 递减, 实际约 2 个 tick; 实测 idle = 1.85–2.07 ms/帧, cube 近一半帧时间在睡。
+**修复**: 三个循环改成 `sched_yield()` (保留调度点, 不 park)。
+
+| 单开 | 改前 | 改后 |
+|---|---|---|
+| teapot | 146 fps, idle 1.85 ms | 204 fps, idle 0.27 ms |
+| cube | 234 fps, idle 2.07 ms | 401 fps, idle 0.13 ms |
+
+改后每帧 ms — teapot 4.90: swap 1.30 / app 1.06 / ipc 0.88 / tess 0.81 / stage 0.36 / idle 0.27 / clear+bufdata 0.21。cube 2.49: swap 1.48 / ipc 0.60 / clear 0.17 / idle 0.13 / app 0.05 / tess 0.04。代价: 应用占满所在核 (cube 单开时核 0 空闲 1%)。
+teapot 的 `app` 1.06 ms 基本是 `compute_colors()` (19200 顶点的 CPU Blinn-Phong); 引擎有 GPU 光照路线 (VS 声明 `uNormalMat` → lit 核), 但换过去会改变 teapot 的着色模型, 未动。
+
+**三应用同开, idle 仍是大头且随桌面活动剧烈波动** (GL 各段稳定不变):
+
+| 5 秒窗口 | cube | 3ddemo | teapot | idle (ms/帧) |
+|---|---|---|---|---|
+| 刚拉起 | 203–216 fps | 165–167 | 114–129 | 2.0–3.3 |
+| 桌面有操作 (期间启动了 xprocs) | 54–69 | 43–78 | 37–60 | 9–21 |
+| 之后 | 103 | 116 | 95 | 4.8–7.1 |
+
+单开时 idle 只有 0.13–0.27 ms, 所以多出来的是 `X_DCNTL_GET_EVT` 在等 xserverd。Orin 的 `etc/x/x.json` 是 `multi_task: 0`: IPC 和合成 (`loop_step`) 在同一个任务上串行。9.8 里"三应用下 teapot 每帧约 8 ms 不在已计时段里"就是这一项。`ps` 同时看到 xwm_misa 53%、xserverd 21%。未定位到 xserverd 内部哪一步在占时间。
+
+### 9.10 swap 拷贝: NC 读基准 + 多线程呈现 (2026-11-24 晚, 已测)
+
+**微基准** (`ncbench`, 只在 /tmp/ewk-prof 克隆里, 二进制进了镜像 /bin/ncbench; 只读写自己申请的缓冲区):
+
+| 方向 | 1 线程 | 2 | 3 | 4 |
+|---|---|---|---|---|
+| NC→缓存 (swap 的读方向) | 1.07 GB/s | 2.15 | 3.16 | 4.19 |
+| 缓存→缓存 | 12.3 GB/s | — | — | — |
+| 缓存→NC (写) | 10.0 GB/s | — | — | — |
+
+640x480 / 1080p / 4K 三档一致: 单核读 NC 恒 1.07 GB/s (memcpy 只有 0.53, NEON 与 8 字节整数读相同 → 限制在总线请求数); 多核近似线性。写方向不慢。4K 一帧单线程 30.9 ms, 4 线程 7.9 ms。
+
+**修复**: `egl_api.c` 的呈现拷贝对"源是 contig 缓冲的整帧 1:1 拷贝"按行分条带交给常驻线程池 (`present_blt`), 每条带仍走 `graph_blt`, 像素不变。`PGL_PRESENT_THREADS` 设总拷贝线程数 (默认 4, 1=单线程对照); `EGL_PROFILE` 多 `par=` 计数。缩放/信箱/小拷贝仍单线程。
+
+| 单开 | 9.9 态 | 多线程呈现 |
+|---|---|---|
+| teapot | 204 fps, blit 1.15 ms | 236 fps, blit 0.36 ms |
+| cube | 401 fps, blit 1.33 ms | 769 fps, blit 0.33 ms |
+
+同镜像 `PGL_PRESENT_THREADS=1` 对照: cube 470 fps, blit 1.16 ms, par=0。三应用同开: cube 219 / 3ddemo 175 / teapot 98 fps (9.9 态 103 / 116 / 95), blit 0.6–0.7 ms; idle 仍 2–4 ms (9.9 的 xserverd 等待, 未动)。
+
+**已知限制**: 工作线程在首帧创建, `core_fetch` 把它们都放到了应用所在核 (ps 显示 cube [3t] 单核 115%), 加速来自同核多线程的更多在途读 (3.6×), 不是跨核。基准里启动时创建的线程能落到空闲核 (4.19 GB/s)。要跨核需要内核提供选核手段或创建时错开负载统计 —— 未做。多应用时这些线程与 xserverd 抢同一个核的风险由此而来。
+

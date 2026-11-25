@@ -382,6 +382,15 @@ static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
     if (ga10b_pgl_fill_bp(pgl.bp_va, p->raster_kernel, ru, tiles_x, tiles_y,
                           cap, d->first_frame, px) != 0)
         return GA10B_PGL_E_DECLINED;
+    /* PGL_CAP_MAX bounds the quadratic tile sort; an order-free draw skips
+     * the sort and takes the whole list arena, which keeps dense tiles off
+     * the every-triangle overflow scan */
+    int unordered = (pgl.bp_va[GA10B_PGL_BP_FLAGS] &
+                     GA10B_PGL_BP_FLAG_UNORDERED) != 0u;
+    if (unordered) {
+        cap = PGL_LIST_WORDS / tiles;
+        pgl.bp_va[GA10B_PGL_BP_CAP] = cap;
+    }
     memcpy(pgl.xu_va, unif, split * 4u);
     memcpy(pgl.ru_va, ru, p->raster_unif_dwords * 4u);
     memset(pgl.cnt_va, 0, tiles * 4u);
@@ -409,7 +418,7 @@ static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
         goto out;
     uint32_t t2 = prof_now();
     void* oa[3] = { &pgl.cnt_gva, &pgl.list_gva, &pgl.bp_gva };
-    if ((rc = pgl_launch(pgl.k_sort, tiles, 256u, oa)) != 0)
+    if (!unordered && (rc = pgl_launch(pgl.k_sort, tiles, 256u, oa)) != 0)
         goto out;
     uint32_t t3 = prof_now();
     void* ra[8] = { &fb, &z, &pgl.trec_gva, &pgl.cnt_gva, &pgl.list_gva,
@@ -427,15 +436,29 @@ static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
         prof.p[handle].sort_us += t3 - t2;
         prof.p[handle].raster_us += t4 - t3;
         if (++prof.p[handle].draws == PROF_EVERY) {
+            /* tile list occupancy of this draw (flushed to the CPU above) */
+            uint32_t bmax = 0, bovf = 0, bused = 0;
+            uint64_t bsum = 0;
+            for (uint32_t i = 0; i < tiles; i++) {
+                uint32_t c = pgl.cnt_va[i];
+                bsum += c;
+                bused += c != 0u;
+                bovf += c > cap;
+                if (c > bmax)
+                    bmax = c;
+            }
             klog("ga10b: pgl prof h%d kind %u %ux%u %u tris clr %u: prep=%u "
-                 "xform=%u setup=%u sort=%u raster=%u flush=%u us\n",
+                 "xform=%u setup=%u sort=%u raster=%u flush=%u us; bins "
+                 "used=%u/%u avg=%u max=%u cap=%u ovf=%u\n",
                  handle, kind, d->w, d->h, ntris, d->first_frame,
                  prof.p[handle].prep_us / PROF_EVERY,
                  prof.p[handle].xform_us / PROF_EVERY,
                  prof.p[handle].setup_us / PROF_EVERY,
                  prof.p[handle].sort_us / PROF_EVERY,
                  prof.p[handle].raster_us / PROF_EVERY,
-                 prof.p[handle].flush_us / PROF_EVERY);
+                 prof.p[handle].flush_us / PROF_EVERY,
+                 bused, tiles, bused ? (uint32_t)(bsum / bused) : 0u, bmax,
+                 cap, bovf);
             memset(&prof.p[handle], 0, sizeof(prof.p[handle]));
         }
         return rc;
