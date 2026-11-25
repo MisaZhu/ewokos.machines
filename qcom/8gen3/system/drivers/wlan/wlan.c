@@ -37,6 +37,12 @@ static int path_is_json(const char *path);
 
 /* ---- IPC handlers only queue requests; the loop owns all controller work */
 static int start_pending, stop_pending, reconnect_pending;
+/* powerd sleep fan-out: while asleep the host poll cadence drops to
+ * WLAN_SLEEP_IDLE_US so this core can stay in PSCI power-down between polls
+ * (the kernel re-park sweep is 200 ms; a 1 ms poll never lets it park). Real
+ * traffic still takes the fast path via active_until. */
+static int wlan_sleeping;
+#define WLAN_SLEEP_IDLE_US 500000u
 static unsigned rx_ready, tx_ready;
 static char legacy_path[128];
 static unsigned legacy_pending;
@@ -715,6 +721,7 @@ static char *wlan_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void 
      * wake returns it to always-awake. No-op when not associated. */
     if (!strcmp(argv[0], "sleep") || !strcmp(argv[0], "wake")) {
         int on = !strcmp(argv[0], "sleep");
+        wlan_sleeping = on;
         int rc = wcn_sta_ps_set(on);
         if (rc)
             return format_reply("sta-ps %s failed: %d", on ? "on" : "off", rc);
@@ -897,8 +904,11 @@ static int wlan_loop(vdevice_t *dev, void *p) {
     ipc_enable();
     if (events) vfs_wakeup(dev->mnt_info.node,events);
     /* 1000us spans two 1024Hz timer ticks. Keep active traffic below one
-     * tick so completions and TCP ACKs do not wait an extra tick per burst. */
-    usleep(now<active_until ? 400:1000);
+     * tick so completions and TCP ACKs do not wait an extra tick per burst.
+     * While powerd has the board asleep, idle stretches drop to
+     * WLAN_SLEEP_IDLE_US so this core can stay PSCI-parked (a 1 ms poll would
+     * keep it powered in WFI); real traffic still takes the 400us fast path. */
+    usleep(now<active_until ? 400:(wlan_sleeping ? WLAN_SLEEP_IDLE_US:1000));
     return 0;
 }
 

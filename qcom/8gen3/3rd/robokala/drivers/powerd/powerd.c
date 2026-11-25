@@ -62,6 +62,11 @@
 /* 50 ms gives the 3 s long-press measurement ~1.7% resolution and a
  * short press is recognized within one tick of the release. */
 #define KEY_POLL_US        50000U
+/* Asleep, the key/hall poll drops to 200ms so this core can stay PSCI-parked
+ * between polls (the kernel re-park sweep is 200ms; a 50ms poll keeps it
+ * powered in WFI). The power key and lid are the wake sources, so they are
+ * still polled -- a press is just recognized up to 200ms later. */
+#define KEY_POLL_SLEEP_US  200000U
 #define KEY_LONG_PRESS_MS  3000U
 /* Releases shorter than this are glitches, not presses (the PON hardware
  * debounce is ~15 ms; this is the software guard on top of it). */
@@ -174,6 +179,14 @@ static void power_set_sleep(bool sleep, const char* why) {
         power_send_cmd("/dev/disp0", cmd, why);
         power_send_cmd("/dev/g2d", cmd, why);
         power_send_cmd("/dev/wl0", cmd, why);
+        /* Host-side poll throttles: wlan's sleep only parks the radio, so
+         * netd/btd/usbhostd must also drop their idle cadence (500ms) or
+         * their 1-8ms polls keep bouncing their cores out of PSCI park.
+         * Best-effort: an old initramfs usbhostd without the command just
+         * logs no-reply. */
+        power_send_cmd("/dev/net0", cmd, why);
+        power_send_cmd("/dev/bt0", cmd, why);
+        power_send_cmd("/dev/usb0", cmd, why);
         power_send_cmd("/dev/touch0", cmd, why);
         /* Open the CPU gate LAST, once the fan-out above has gone quiet,
          * so the cores are not bounced in and out of power-down by it.
@@ -197,6 +210,9 @@ static void power_set_sleep(bool sleep, const char* why) {
         power_send_cmd_wake("/dev/g2d", why);
         power_send_cmd_wake("/dev/touch0", why);
         power_send_cmd_wake("/dev/wl0", why);
+        power_send_cmd_wake("/dev/usb0", why);
+        power_send_cmd_wake("/dev/bt0", why);
+        power_send_cmd_wake("/dev/net0", why);
     }
     _sleeping = sleep;
     /* The gate has been off since the first step of the wake, so a core
@@ -303,11 +319,14 @@ static int power_step(vdevice_t* dev, void* p) {
     lid_step();
     /* Battery once a second; tick 0 samples immediately at start.
      * power_pmu_sample() is safe even when the SPMI init failed (it
-     * still tries the ADSP battmgr door and zero-fills the rest). */
+     * still tries the ADSP battmgr door and zero-fills the rest).
+     * _tick counts 50ms units so the 1s battery period holds at either
+     * poll cadence. */
+    uint32_t poll_us = _sleeping ? KEY_POLL_SLEEP_US : KEY_POLL_US;
     if (_tick == 0)
         (void)power_pmu_sample(&_sample);
-    _tick = (_tick + 1U) % BATTERY_TICKS;
-    usleep(KEY_POLL_US);
+    _tick = (_tick + poll_us / KEY_POLL_US) % BATTERY_TICKS;
+    usleep(poll_us);
     return 0;
 }
 
@@ -350,7 +369,8 @@ static char* power_help(void) {
         "  sleep|wake       manual full sleep/wake cycle (root only)\n"
         "  gpusleep|gpuwake GPU-only power hint to g2dd (root only)\n"
         "sleep/wake fans out to /dev/x, /dev/disp0, /dev/g2d, /dev/wl0,\n"
-        "  /dev/touch0 and the kernel CPU-sleep gate (best-effort)\n"
+        "  /dev/net0, /dev/bt0, /dev/usb0, /dev/touch0 and the kernel\n"
+        "  CPU-sleep gate (best-effort)\n"
         "power key: short press toggles display sleep/wake,\n"
         "           hold 3s requests PSCI SYSTEM_OFF\n"
         "keyboard lid: closed (hall sensor) sleeps the display,\n"
