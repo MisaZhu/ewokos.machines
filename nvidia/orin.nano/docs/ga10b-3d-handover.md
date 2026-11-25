@@ -114,14 +114,14 @@ INIT_DONE 之后 golden init 卡在 `sw_bundle_init[934/935] addr=0x1e100` (最�
 
 ### 2.6 首次 compute launch: 四个问题逐个定位 (已测, 2026-11-24 下午)
 
-`ga --hw compute` = `gr` + GRAPHICS runlist 上建通道 + 读 `/fs/cuda/vectorAdd.sm_87.cubin` (projects/cuda 的 nvcc 13.5.37 产物) + QMD launch + CPU 比对。cubin 解析与 QMD v3.0 编码直接编译 projects/cuda 的 `cubin.c`/`qmd.c` (host 单测过的那份), 没有另写一套。每个问题都是一次 fresh boot 一个现象:
+`ga --hw compute` = `gr` + GRAPHICS runlist 上建通道 + 读 `/fs/kuda/vectorAdd.sm_87.cubin` (projects/kuda 的 nvcc 13.5.37 产物) + QMD launch + CPU 比对。cubin 解析与 QMD v3.0 编码直接编译 projects/kuda 的 `cubin.c`/`qmd.c` (host 单测过的那份), 没有另写一套。每个问题都是一次 fresh boot 一个现象:
 
 | # | 现象 (寄存器证据) | 根因 | 修复 |
 |---|---|---|---|
 | 1 | sem 超时; `pbdma0 intr=0x01000000` (**eng_reset**), FECS cur_ctx=0, PB 一个字没取 | GR runlist 上还挂着 grcopy LCE0/1, RAMFC target 带 `ce_ctx_valid`; compute 路径没跑 `ga10b_ce_init`, LCE 还在 reset (mc_device_enable=0x1000) → PBDMA 报 eng_reset 并停住 | `cmd_compute` 在建通道前调 `ga10b_ce_init()` (nvgpu 的 ce_init_support 总在第一个通道之前) |
 | 2 | PB 全取完, FECS cur_ctx=通道 inst (**ctx restore 成功, 无 MMU fault**); `gr_exception=0x1`, `fe_hww_esr=0x80000002 info=0xc7c0`, trapped subch0 mthd0 | GR FE 的类是按**固定 subchannel** 绑的 (3D=0, compute=1, i2m=2, 2D=3); 在 subch 0 上 SET_OBJECT 0xC7C0 被拒, info 就是被拒的 class | 新增 `GA10B_SUBCH_COMPUTE=1`, compute 方法全走 subch 1 |
 | 3 | `gr_intr=0x00100000` (class_error), `class_error=4` (INVALID_VALUE), trapped 依次是 mthd 0x288 `SET_QMD_VERSION`(0x00300030) → 0x7b4 `SET_SHADER_LOCAL_MEMORY_WINDOW_B`(本地内存 GPU VA) → 0x298 `INVALIDATE_SKED_CACHES`(1) | 骨架里这几条方法的取值是猜的。WINDOW_A/B 是"本地内存在 shader 地址空间里的窗口基址", 不是 backing buffer 地址。**第一次 class error 后引擎进 faulted (engstat0 bit30), 后续方法全被丢弃**, 所以一次 boot 只能看到一个坏方法 | 发射序列收敛到 Mesa NVK 在 Ampere 上用的最小集: `SET_OBJECT` → `SET_SHADER_LOCAL_MEMORY_A/B` → `…NON_THROTTLED_A/B/C` → `SEND_PCAS_A(qmd>>8)` → `SEND_SIGNALING_PCAS2_B(3)`; cache 失效靠 QMD 里的 INVALIDATE 位 |
-| 4 | (写代码时由反汇编发现, 未上机踩) | nvcc 生成的 SASS 从 **cbank0 头部**读运行时状态, 这块 CUDA 驱动在 launch 时填, cubin 里是 0: `c[0x0][0x0]` blockDim.xyz, `c[0x0][0xc]` gridDim.xyz, `c[0x0][0x28]` R1 初值 (线程栈指针), `c[0x0][0x118]` 64 位全局地址基 (.E 寻址, 填 0); 参数从 param_base=0x160 起。**projects/cuda libcuda 目前不填这块** | `ga10b_compute.c` 在上传 cbank0 时填 blockDim/gridDim/栈顶; libcuda 的 orin 后端 launch 必须照做 (§4) |
+| 4 | (写代码时由反汇编发现, 未上机踩) | nvcc 生成的 SASS 从 **cbank0 头部**读运行时状态, 这块 KUDA 驱动在 launch 时填, cubin 里是 0: `c[0x0][0x0]` blockDim.xyz, `c[0x0][0xc]` gridDim.xyz, `c[0x0][0x28]` R1 初值 (线程栈指针), `c[0x0][0x118]` 64 位全局地址基 (.E 寻址, 填 0); 参数从 param_base=0x160 起。**projects/kuda libkuda 目前不填这块** | `ga10b_compute.c` 在上传 cbank0 时填 blockDim/gridDim/栈顶; libkuda 的 orin 后端 launch 必须照做 (§4) |
 
 实测通过的 QMD: grid=4 block=256, regs=12, cbuf0=376B→0x180, release0 semaphore。结果 c[i]=a[i]+b[i] 1024/1024 一致 (a=i, b=2i+0.5)。
 **推断/未验证**: c[0x0][0x28] 填的是 local 内存大小 (vadd frame=0, 没用到栈); 带栈帧的核、shared memory、多 cbank (bank2/3)、WMMA 都还没上机。SM 数据通路只验了 FADD/LDG/STG/IMAD。
@@ -157,8 +157,8 @@ INIT_DONE 之后 golden init 卡在 `sw_bundle_init[934/935] addr=0x1e100` (最�
 
 ## 4. 下一步 (推断, 按顺序)
 
-1. **ga10bd 常驻化 → `/dev/nvgpu`**: 现在 GPU 一次只归一个进程 (g2dd 或一个 CLI/cuda 应用)。同一次上电内前一个进程退出/被杀后, 下一个进程可以直接接管, 不再需要 `pico_reset` (2026-11-25 已测, 见 §6.3); 属主还活着时第二个进程在碰硬件前被拒 (`GPU is in use by pid N`)。要多个进程同时用 GPU 仍需常驻 daemon: golden ctx 只做一次, 通道/VM/buffer 由 daemon 持有。接口面按 projects/cuda `struct cuda_backend` 反推: mem_alloc/free (DMA + GMMU map)、memcpy h2d/d2h (Tegra 统一内存, 直接映射)、module_load (code + cbank 上传)、launch (QMD + 提交 + semaphore 等待)。
-2. **projects/cuda `backend_orin.c` 接线**: launch 路径补 cbank0 头 (§2.6#4); 然后板上 `deviceQuery → vectorAdd → 13 算子与 sim 对拍 → mini_model → mini_llm`。
+1. **ga10bd 常驻化 → `/dev/nvgpu`**: 现在 GPU 一次只归一个进程 (g2dd 或一个 CLI/kuda 应用)。同一次上电内前一个进程退出/被杀后, 下一个进程可以直接接管, 不再需要 `pico_reset` (2026-11-25 已测, 见 §6.3); 属主还活着时第二个进程在碰硬件前被拒 (`GPU is in use by pid N`)。要多个进程同时用 GPU 仍需常驻 daemon: golden ctx 只做一次, 通道/VM/buffer 由 daemon 持有。接口面按 projects/kuda `struct kuda_backend` 反推: mem_alloc/free (DMA + GMMU map)、memcpy h2d/d2h (Tegra 统一内存, 直接映射)、module_load (code + cbank 上传)、launch (QMD + 提交 + semaphore 等待)。
+2. **projects/kuda `backend_orin.c` 接线**: launch 路径补 cbank0 头 (§2.6#4); 然后板上 `deviceQuery → vectorAdd → 13 算子与 sim 对拍 → mini_model → mini_llm`。
 3. **扩大 SASS 覆盖**再谈性能: 带栈帧的核 (验证 c[0x0][0x28] 语义)、shared memory (QMD SMEM_CONFIG + `SET_SHADER_SHARED_MEMORY_WINDOW`)、bank2/3 字面量、WMMA。每类先单核上机。
 4. 清理项: 通道 TSG 拆除/preempt (审计 F7 遗留)、GR/PBDMA 中断仍是轮询、`--skip` 诊断位可在常驻化时收掉。
 
@@ -181,7 +181,7 @@ INIT_DONE 之后 golden init 卡在 `sw_bundle_init[934/935] addr=0x1e100` (最�
 
 **2026-11-24 下午追加 (未 commit)**: `ga10b_pmu.c` dmesg 环读取 + ISR 仿真 (§2.4); `ga10b_gr.c` 全局 ctx buffer / rop mapping / 通道 patch (§2.5), 删掉了旧的 SCTL sigcheck-skip 诊断; `ga10b_acr.c` `ga10b_acr_bootstrap_ls` 改为校验 FECS HS 签名 (旧实现在 ACR-reuse 路径下因 `acr.ready==0` 误返回 -1, 表现为 `gr -> -1` 无任何报错); `ga10b.h`/`ga10bd.c` 新 skip 位 0x80 (无 PMU ISR 仿真) / 0x100 (ISR 仿真但不 ack dmesg) / 0x200 (MIG 式 golden); `test/test_integration.c` 断言同步 (sw_ctx_load 全写, auto_go_idle 0x60000)。
 
-**compute 追加 (未 commit)**: 新文件 `ga10b_compute.c`; `Makefile` 在 `$(ewokos)/projects/cuda/libs/cuda/src/qmd.c` 存在时加 `-DGA10B_HAVE_CUDA` 并把 `cubin.c`/`qmd.c` 编进来 (没有 projects/cuda 时 `compute` 只走占位 QMD 的 dry-run); `efi/Makefile` 新增 `CUDA_CUBIN_DIR` (默认 `../../../../projects/cuda/cubin`) 打包 `*.cubin` 到 ramfs `/fs/cuda/`; `ga10b_gr.c` 拆出 `ga10b_compute_launch(ch, qmd[64])`, `ga10b_compute_dispatch` 只剩占位 QMD 包装; `ga10bd.c` `gr` 现在止于 golden ctx 并返回 0, 新命令 `compute` + `--cubin FILE`; `test/test_mm.c` 补上午加 aperture 参数后漏改的调用 (之前编不过)。6 个 host 单测全过。
+**compute 追加 (未 commit)**: 新文件 `ga10b_compute.c`; `Makefile` 在 `$(ewokos)/projects/kuda/libs/kuda/src/qmd.c` 存在时加 `-DGA10B_HAVE_KUDA` 并把 `cubin.c`/`qmd.c` 编进来 (没有 projects/kuda 时 `compute` 只走占位 QMD 的 dry-run); `efi/Makefile` 新增 `KUDA_CUBIN_DIR` (默认 `../../../../projects/kuda/cubin`) 打包 `*.cubin` 到 ramfs `/fs/kuda/`; `ga10b_gr.c` 拆出 `ga10b_compute_launch(ch, qmd[64])`, `ga10b_compute_dispatch` 只剩占位 QMD 包装; `ga10bd.c` `gr` 现在止于 golden ctx 并返回 0, 新命令 `compute` + `--cubin FILE`; `test/test_mm.c` 补上午加 aperture 参数后漏改的调用 (之前编不过)。6 个 host 单测全过。
 
 **并行会话文件勿扫进 commit**: dceprobe/fand/fbdisplayd/orin_net.h (display 会话), qcom/8gen3/* (WiFi/电池会话), rockchip/ (RK3399 WIP), rollback-4k-20261123/ (display 回滚快照)。
 **固件 blob 绝不入 git** (NVIDIA 专有, 只在 GPU_FW_DIR 存在时打包)。
@@ -262,7 +262,7 @@ L4T `CONFIG_STRICT_DEVMEM=y` 挡 devmem/dd 读 System RAM, `/proc/kcore` 缺失,
 ## 7. 里程碑
 
 1. ~~M0 CE blit~~ / ~~PMU FBQ~~ / ~~FECS INIT_DONE~~ / ~~golden ctx~~ / ~~M1 首次真实 compute (vadd)~~ — **已完成 (已测, 2026-11-24)**, 见 §2.4–§2.6。
-2. **M2**: ga10bd 常驻 `/dev/nvgpu` + projects/cuda orin 后端 (§4 第 1、2 条)。
+2. **M2**: ga10bd 常驻 `/dev/nvgpu` + projects/kuda orin 后端 (§4 第 1、2 条)。
 3. **M3+**: 板上 compute 套件 (deviceQuery → vectorAdd → 13 算子对拍 → mini_model/mini_llm), 之后才是量化 GEMV / WMMA 性能化。
 
 ---
@@ -289,7 +289,7 @@ L4T `CONFIG_STRICT_DEVMEM=y` 挡 devmem/dd 读 System RAM, `/proc/kcore` 缺失,
 | **PMU FBQ cmd head/tail** | 0x10a800+4i / 0x10a820+4i | i=phy queue idx (LPQ=1); 字段<<0 |
 | **PMU FBQ msg head/tail** | 0x10a4c8 / 0x10a4cc | head=PMU 写 host 读, tail=host 写 PMU 读 |
 | PMU boot args mailbox | 0x10a040 / 0x10a044 | = args_phy + EXTMEM2(0x8060000000000000) |
-| falcon debug (base 相对) | CURCTX 0x050, DEBUG1 0x090, DEBUGINFO 0x094, IMSTAT 0x144, TRACEIDX 0x148, TRACEPC 0x14c, EXTERRSTAT 0x16c | exterr 非 priv 读 = 0xbadf5040 poison |
+| falcon debug (base 相对) | KURCTX 0x050, DEBUG1 0x090, DEBUGINFO 0x094, IMSTAT 0x144, TRACEIDX 0x148, TRACEPC 0x14c, EXTERRSTAT 0x16c | exterr 非 priv 读 = 0xbadf5040 poison |
 
 ---
 
@@ -299,7 +299,7 @@ L4T `CONFIG_STRICT_DEVMEM=y` 挡 devmem/dd 读 System RAM, `/proc/kcore` 缺失,
 
 EwokOS 的 3D 加速 API = `portablegl → g2dclient(g2d_pgl_program/draw) → g2dd → bsp_g3d`。现役路径只有"编译程序"一条 (固定管线 fs_id 路径在客户端和两个真实后端都是关死的), 而网格程序**只编译 `geom_raster_cs.h` 里 9 个固定 GLSL 计算核**, 应用自己的 VS/FS 从不编译。所以 Orin 不需要板上着色器编译器:
 
-- 把固定核移植成 CUDA C, 用 nvcc 离线编成 sm_87 cubin, 嵌进驱动库;
+- 把固定核移植成 KUDA C, 用 nvcc 离线编成 sm_87 cubin, 嵌进驱动库;
 - Orin 的 pglcompiler 后端按**核文本精确匹配**返回预编译核的 id + uniform 布局表 (8gen3 Adreno 后端替换 raster 核用的同一手法);
 - 全屏 fragment 特效 (ocean/grass/shadertoy 类, 需要真 GLSL 编译) 一律 decline, 留在 CPU。
 - 9 个核 (5 个顶点变换变体 + 光照 gouraud + 3 个光栅变体) 已全部有对应的 sm_87 核。
@@ -369,7 +369,7 @@ export GA10B_PROF=1                      # 可选: 每 16 次 draw 一行分阶�
 3. **一次 launch 超时就把 3D 路径整个关掉** (返回 -3, 客户端退回 CPU), 没有通道/引擎恢复。
 4. tile 链表容量 255 (1080p 128, 4K 32), 溢出的 tile 退化为全量扫描 (正确但慢); teapot 的 sort/raster 耗时偏高疑与此有关 (推断, 未量化)。binning 只按包围盒; 每帧整屏的 tile 都会 launch, 没用客户端给的 dispatch 窗口。
 5. 需要真编译 GLSL 的程序 (全屏 fragment 特效、Vulkan 的 kind 5 用户着色器) 这条路线做不了, 归 NVIDIA 板上编译器那条线。vkteapot / vktest 在 Orin 上跑的是 CPU 软件设备 (vktest PASS, 90/90, 已测)。
-6. `bsp_cl` (OpenCL / 之后 CUDA 算子的入口) 还是 stub; compute 通道现在归 g2dd 进程所有, 接 libcuda 时走这里而不是另起驱动。
+6. `bsp_cl` (OpenCL / 之后 KUDA 算子的入口) 还是 stub; compute 通道现在归 g2dd 进程所有, 接 libkuda 时走这里而不是另起驱动。
 
 ### 9.7 顺序无关路径 + 帧时间去向 (2026-11-24 晚, 已测)
 

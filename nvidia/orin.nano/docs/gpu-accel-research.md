@@ -57,7 +57,7 @@
 | blit_alpha | ✅ | |
 | rotate 90/180/270 | ✅ | +flip，TRM 列任意角 |
 | scale | ✅ | nearest/bilinear/bicubic polyphase |
-| **gaussian_blur** | **❌** | VPI 明确 Gaussian Filter VIC=no（仅 CPU/CUDA/PVA）→ **必须 NEON 回退** |
+| **gaussian_blur** | **❌** | VPI 明确 Gaussian Filter VIC=no（仅 CPU/KUDA/PVA）→ **必须 NEON 回退** |
 | blit_to_phy / rotate_to_phy | ✅（推断） | SMMU bypass 直写线性 FB 物理地址 |
 
 格式：不支持 24bit packed RGB，用 **32bit xRGB/ARGB8888**（EwokOS FB 已 32bpp，无冲突）；输出 pitch-linear / block-linear 皆可。
@@ -130,7 +130,7 @@ pg35 → clks → reset19 → detect → priv-ring → bus → fifo reset → FB
 - 主要风险在无先例配置的硬件调试，非代码量。
 
 ### 3.8 3D API 阶梯（推断）
-NVIDIA GL/Vulkan/CUDA UMD 全专有，绑 nvgpu ioctl/nvmap + Linux，无法搬。
+NVIDIA GL/Vulkan/KUDA UMD 全专有，绑 nvgpu ioctl/nvmap + Linux，无法搬。
 1. **CE LAUNCH_DMA 2D blit**（M0 后，接 g2d offload，最现实近期收益）。
 2. **compute-shader 2D（Adreno 风格）**（GR 通后走 compute channel）：**关键——Mesa NAK（Rust MIT）NIR→SASS 编译器已覆盖 Turing/Ampere，GA10B=sm87 同族 ISA → 可复用开源 shader 编译器**，不必从零写；但 NAK 输出 pushbuffer/QMD 绑 nouveau ABI，需自写薄 UMD 塞 SASS+QMD 进 nvgpu channel，+2-4 人月，sm87 细节需验。
 3. **full GL/Vulkan 不现实**（自写整套 state tracking/UMD = NVK 数十万行等价，人年级，不建议）。

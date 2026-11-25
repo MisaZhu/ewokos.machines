@@ -7,13 +7,13 @@ TARGET_DIR = $(BUILD_DIR)
 
 # bsp_bpmp.h comes from the source tree: this lib builds in the libs phase
 # next to bsp.  cubin.c / qmd.c are the machine-independent cubin parser and
-# QMD builder shared with projects/cuda (libc only).
-CUDA_SRC = $(ewokos)/projects/cuda/libs/cuda/src
+# QMD builder shared with projects/kuda (libc only).
+KUDA_SRC = $(ewokos)/projects/kuda/libs/kuda/src
 CFLAGS += -I $(SYS_DIR)/basic/libc/libewoksys/ewoksys/include \
 	-I $(SYS_DIR)/platform/$(ARCH)/include/$(ARCH) \
 	-I $(MAKEINC_DIR)/../include \
 	-I ../bsp/include -I include -I . -I $(TARGET_DIR)/include \
-	-I $(CUDA_SRC)
+	-I $(KUDA_SRC)
 
 OBJS = $(ARCH)/ga10b_dev.o \
        $(ARCH)/ga10b_power.o \
@@ -30,8 +30,8 @@ OBJS = $(ARCH)/ga10b_dev.o \
        $(ARCH)/ga10b_compute.o \
        $(ARCH)/ga10b_pgl.o \
        $(ARCH)/ga10b_pgltest.o \
-       $(ARCH)/cuda_cubin.o \
-       $(ARCH)/cuda_qmd.o
+       $(ARCH)/kuda_cubin.o \
+       $(ARCH)/kuda_qmd.o
 
 LIB = $(TARGET_DIR)/lib/libga10b.a
 
@@ -40,11 +40,11 @@ $(LIB): $(OBJS)
 	mkdir -p $(TARGET_DIR)/include
 	cp -r include/* $(TARGET_DIR)/include
 
-$(ARCH)/cuda_cubin.o: $(CUDA_SRC)/cubin.c
+$(ARCH)/kuda_cubin.o: $(KUDA_SRC)/cubin.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(ARCH)/cuda_qmd.o: $(CUDA_SRC)/qmd.c
+$(ARCH)/kuda_qmd.o: $(KUDA_SRC)/qmd.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

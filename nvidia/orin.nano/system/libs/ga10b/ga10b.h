@@ -44,8 +44,11 @@
 #define GA10B_CLK_NAFLL_GPUSYS 428
 #define GA10B_CLK_FUSE      40
 
-/* DMA block 0 = the shared uncached sys_dma pool (same pool xhci uses). */
-#define GA10B_DMA_BLOCK     0
+/* DMA block 1 = the GPU-only high pool (gpu_dma_size in kernel.conf, above
+   the DMA32 reach).  GA10B addresses DRAM through its GMMU, so unlike xhci
+   (block 0) it has no 32-bit DMA constraint — multi-GB LLM weight arenas
+   only fit above 4GB on this board. */
+#define GA10B_DMA_BLOCK     1
 
 typedef struct {
     volatile uint32_t* bar0;     /* mapped BAR0, NULL until ga10b_map() */
@@ -284,7 +287,8 @@ int ga10b_pmu_gr_done(void);
  * All tables are 4KB DMA pages; child tables allocated on demand from a
  * fixed pool.  Mappings use 4KB small pages, sys_ncoh aperture (uncached
  * DMA pool), volatile, privileged, read-write. */
-#define GA10B_MM_MAX_TABLES  1024   /* x 2MB of mapped VA per PTE table */
+#define GA10B_MM_MAX_TABLES  4096   /* x 2MB of mapped VA per PTE table;
+                                       LLM arenas (3GB+) need ~1500+ tables */
 typedef struct {
     void*    pdb_va;   uint64_t pdb_phy;    /* PDE3 root (level 0) */
     uint64_t va_next;                        /* bump VA allocator cursor */
@@ -403,7 +407,7 @@ int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                                 const uint64_t* ssbo_va, uint32_t nssbo,
                                 const uint32_t* texdesc,
                                 uint32_t texdesc_dwords);
-/* self-tests: projects/cuda vadd, and the portablegl geometry kernels
+/* self-tests: projects/kuda vadd, and the portablegl geometry kernels
  * (fill + xform + raster) against their CPU reference */
 int ga10b_compute_vadd(ga10b_chan_t* ch, const char* cubin_path);
 int ga10b_pgl_selftest(ga10b_chan_t* ch, const char* cubin_path);

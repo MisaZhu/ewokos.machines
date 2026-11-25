@@ -1,6 +1,6 @@
 /*
- * nv_cubin.c - minimal cubin (CUDA ELF64) synthesizer.  See nv_cubin.h.
- * Layout/attribute encodings verified against projects/cuda cubin.c and real
+ * nv_cubin.c - minimal cubin (KUDA ELF64) synthesizer.  See nv_cubin.h.
+ * Layout/attribute encodings verified against projects/kuda cubin.c and real
  * nvcc sm_87 cubins.  Pure C99, host- and target-buildable.
  * SPDX-License-Identifier: MIT
  */
@@ -9,14 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define EM_CUDA   190
+#define EM_KUDA   190
 #define SHT_NULL     0
 #define SHT_PROGBITS 1
 #define SHT_SYMTAB   2
 #define SHT_STRTAB   3
 #define SHT_NOTE     7
 #define SHT_NOBITS   8
-#define SHT_CUDA_INFO 0x70000000u
+#define SHT_KUDA_INFO 0x70000000u
 #define SHF_EXECINSTR 0x4
 #define STT_FUNC  2
 #define STB_GLOBAL 1
@@ -233,12 +233,12 @@ uint32_t nv_cubin_build(const uint32_t* sass, uint32_t sass_words,
     memcpy(body.p + sh[idx_sym].offset, symtab, sizeof(symtab));
 
     unsigned idx_kinfo = ns;
-    sh[ns].name_off = n_info; sh[ns].type = SHT_CUDA_INFO;
+    sh[ns].name_off = n_info; sh[ns].type = SHT_KUDA_INFO;
     sh[ns].offset = ar_put(&body, kinfo.p, kinfo.len, 4);
     sh[ns].size = kinfo.len; sh[ns].addralign = 4; ns++;
 
     unsigned idx_ginfo = ns;
-    sh[ns].name_off = n_ginfo; sh[ns].type = SHT_CUDA_INFO;
+    sh[ns].name_off = n_ginfo; sh[ns].type = SHT_KUDA_INFO;
     sh[ns].offset = ar_put(&body, ginfo.p, ginfo.len, 4);
     sh[ns].size = ginfo.len; sh[ns].addralign = 4; ns++;
 
@@ -307,12 +307,12 @@ uint32_t nv_cubin_build(const uint32_t* sass, uint32_t sass_words,
     out[4] = 2;          /* ELFCLASS64 */
     out[5] = 1;          /* ELFDATA2LSB */
     out[6] = 1;          /* EV_CURRENT */
-    out[7] = 0x41;       /* EI_OSABI = ELFOSABI_CUDA (nvdisasm arch gate) */
-    out[8] = 8;          /* EI_ABIVERSION (CUDA 13: sm in flags 15:8) */
+    out[7] = 0x41;       /* EI_OSABI = ELFOSABI_KUDA (nvdisasm arch gate) */
+    out[8] = 8;          /* EI_ABIVERSION (KUDA 13: sm in flags 15:8) */
     wr16(out + 16, 2);   /* ET_EXEC */
-    wr16(out + 18, EM_CUDA);
+    wr16(out + 18, EM_KUDA);
     wr32(out + 20, 1);   /* e_version */
-    /* e_flags: sm_87 in bits 15:8 (abiversion 8); 0x06000004 is the CUDA
+    /* e_flags: sm_87 in bits 15:8 (abiversion 8); 0x06000004 is the KUDA
      * ELF scaffold nvdisasm requires (measured from nvcc 13.5 sm_87 cubins). */
     wr32(out + 48, 0x06000004u | (87u << 8));
     wr64(out + 40, 64 + shtab_off);  /* e_shoff */

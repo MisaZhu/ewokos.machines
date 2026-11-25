@@ -2,10 +2,10 @@
  * nvcc sm_87 cubin modules on GA10B: load, upload and launch.
  *
  * The cubin parser and the QMD v3.0 builder are the host-tested ones from
- * projects/cuda (libs/cuda/src/cubin.c, qmd.c), compiled into this driver.
+ * projects/kuda (libs/kuda/src/cubin.c, qmd.c), compiled into this driver.
  *
  * nvcc-generated SASS reads launch state from the head of constant bank 0,
- * which the CUDA driver fills at launch (seen in the vadd disassembly):
+ * which the KUDA driver fills at launch (seen in the vadd disassembly):
  *   c[0x0][0x00] blockDim.x/y/z      c[0x0][0x0c] gridDim.x/y/z
  *   c[0x0][0x28] initial R1 (per-thread stack pointer, top of local memory)
  *   c[0x0][0x118] 64-bit base added to every .E global address (0)
@@ -35,15 +35,15 @@ static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
 
 typedef struct {
     uint64_t code_va;
-    void*    bank_va[CUBIN_NUM_CBANKS];
-    uint64_t bank_gpu_va[CUBIN_NUM_CBANKS];
-    uint32_t bank_size[CUBIN_NUM_CBANKS];
+    void*    bank_va[KUBIN_NUM_CBANKS];
+    uint64_t bank_gpu_va[KUBIN_NUM_CBANKS];
+    uint32_t bank_size[KUBIN_NUM_CBANKS];
 } mod_kernel_t;
 
 struct ga10b_module {
     struct cubin_image img;
     void* image;                       /* private copy the parser points into */
-    mod_kernel_t k[CUBIN_MAX_KERNELS];
+    mod_kernel_t k[KUBIN_MAX_KERNELS];
 };
 
 int ga10b_buf_alloc(ga10b_gmmu_t* mm, uint32_t size, void** va,
@@ -81,7 +81,7 @@ ga10b_module_t* ga10b_module_load(ga10b_gmmu_t* mm, const void* image,
     if (m->image == NULL)
         goto fail;
     memcpy(m->image, image, size);
-    if (cubin_parse(&m->img, m->image, size) != CUBIN_OK ||
+    if (cubin_parse(&m->img, m->image, size) != KUBIN_OK ||
         cubin_needs_relocation(&m->img)) {
         klog("ga10b: cubin rejected (%u bytes)\n", size);
         goto fail;
@@ -94,7 +94,7 @@ ga10b_module_t* ga10b_module_load(ga10b_gmmu_t* mm, const void* image,
             goto fail;
         memcpy(code, k->text, k->text_size);
         /* constant banks: kernel-owned first, else the module-wide one */
-        for (uint32_t b = 0; b < CUBIN_NUM_CBANKS; b++) {
+        for (uint32_t b = 0; b < KUBIN_NUM_CBANKS; b++) {
             const struct cubin_cbank* src =
                 k->cbank[b].size != 0 ? &k->cbank[b] : &m->img.cbank[b];
             uint32_t sz = src->size;
@@ -135,7 +135,7 @@ int ga10b_module_kernel(const ga10b_module_t* m, const char* name) {
     return -1;
 }
 
-/* args[i] points at kernel parameter i (cuLaunchKernel convention).  The
+/* args[i] points at kernel parameter i (kuLaunchKernel convention).  The
  * launch is synchronous, so the kernel's bank 0 is rewritten in place. */
 int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                         const uint32_t grid[3], const uint32_t block[3],
@@ -161,7 +161,7 @@ int ga10b_kernel_launch_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     }
     cb0[CB0_STACK_PTR / 4u] = (local + 0xfu) & ~0xfu;
     if (cubin_pack_params(k, args, (uint8_t*)cb0 + k->param_base,
-                          k->param_total) != CUBIN_OK)
+                          k->param_total) != KUBIN_OK)
         return -1;
     return kernel_submit(ch, m, kernel, grid, block, dyn_smem);
 }
@@ -173,11 +173,11 @@ static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                          uint32_t dyn_smem) {
     const struct cubin_kernel* k = &m->img.kernels[kernel];
     mod_kernel_t* mk = &m->k[kernel];
-    struct cuda_qmd_launch l;
+    struct kuda_qmd_launch l;
     memset(&l, 0, sizeof(l));
     l.dyn_smem = dyn_smem;
     l.program = mk->code_va;
-    for (uint32_t b = 0; b < CUBIN_NUM_CBANKS; b++) {
+    for (uint32_t b = 0; b < KUBIN_NUM_CBANKS; b++) {
         l.cbuf[b] = mk->bank_gpu_va[b];
         l.cbuf_size[b] = mk->bank_size[b];
     }
@@ -187,8 +187,8 @@ static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
         l.grid[i] = grid[i];
         l.block[i] = block[i];
     }
-    struct cuda_qmd q;
-    if (cuda_qmd_from_kernel(&q, k, &l, GA10B_WARPS_PER_SM, smem_kb,
+    struct kuda_qmd q;
+    if (kuda_qmd_from_kernel(&q, k, &l, GA10B_WARPS_PER_SM, smem_kb,
                              (int)(sizeof(smem_kb) / sizeof(smem_kb[0]))) != 0) {
         klog("ga10b: QMD build failed for %s\n", k->name);
         return -1;
@@ -234,7 +234,7 @@ int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     return kernel_submit(ch, m, kernel, grid, block, 0);
 }
 
-/* ---- self-test: the projects/cuda vadd kernel ---- */
+/* ---- self-test: the projects/kuda vadd kernel ---- */
 
 #define VADD_BLOCK 256u
 #define VADD_GRID  4u

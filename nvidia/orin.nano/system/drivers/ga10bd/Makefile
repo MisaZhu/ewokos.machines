@@ -8,7 +8,7 @@ TARGET_DIR = $(BUILD_DIR)/rootfs
 LDFLAGS = -L $(BUILD_DIR)/lib
 # the CLI drives individual bring-up stages through the driver's internal
 # headers (libs/ga10b), not only the public <ga10b/ga10b_dev.h>
-CFLAGS += -I $(BUILD_DIR)/include -I ../../libs/ga10b -DGA10B_HAVE_CUDA
+CFLAGS += -I $(BUILD_DIR)/include -I ../../libs/ga10b -DGA10B_HAVE_KUDA
 
 OBJS = $(ARCH)/ga10bd.o
 

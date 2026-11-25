@@ -1,7 +1,7 @@
 /*
  * pgl_geom.cu - portablegl geometry kernels for GA10B (sm_87).
  *
- * CUDA ports of the fixed compute kernels in
+ * KUDA ports of the fixed compute kernels in
  * projects/opengl/libs/gles/pglcompiler/include/geom_raster_cs.h; statement
  * order follows the GLSL so results match the other back ends.  Single
  * source: nvcc -arch=sm_87 -cubin for the GPU, or plain C with PGL_SIM

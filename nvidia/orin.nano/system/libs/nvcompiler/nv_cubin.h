@@ -1,10 +1,10 @@
 /*
- * nv_cubin.h - synthesize a minimal NVIDIA cubin (CUDA ELF64) from compiled
- * sm_87 SASS + launch metadata, so the existing ga10b / projects-cuda cubin
+ * nv_cubin.h - synthesize a minimal NVIDIA cubin (KUDA ELF64) from compiled
+ * sm_87 SASS + launch metadata, so the existing ga10b / projects-kuda cubin
  * loader + QMD launch path consumes compiler output unchanged.
  *
- * The emitted ELF carries exactly the sections cubin_parse (projects/cuda/
- * libs/cuda/src/cubin.c) reads: .text.<name> (SASS), .nv.info[.<name>]
+ * The emitted ELF carries exactly the sections cubin_parse (projects/kuda/
+ * libs/kuda/src/cubin.c) reads: .text.<name> (SASS), .nv.info[.<name>]
  * (REGCOUNT / PARAM_CBANK / KPARAM_INFO / EXIT offsets), .nv.constant0.<name>,
  * .symtab/.strtab/.shstrtab, and .nv.shared.<name> when shared memory is used.
  * Verified on host against cubin_parse and nvdisasm.

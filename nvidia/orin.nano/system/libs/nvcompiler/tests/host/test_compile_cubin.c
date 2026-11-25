@@ -1,7 +1,7 @@
 /* Host test: the compiler-output -> cubin bridge exactly as nv_pglc.cpp's
  * compile_compute_source() does it.  Build a compute NIR, compile to sm_87
  * SASS with nv_be_compile_compute, wrap with nv_cubin_build (no launch-param
- * window; uniforms via cbank0), parse back with the real projects/cuda cubin
+ * window; uniforms via cbank0), parse back with the real projects/kuda cubin
  * parser, and emit a cubin for the nvdisasm round-trip. */
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
@@ -47,7 +47,7 @@ int main(void) {
     CK(got == need);
 
     struct cubin_image img;
-    CK(cubin_parse(&img, buf, got) == CUBIN_OK);
+    CK(cubin_parse(&img, buf, got) == KUBIN_OK);
     CK(img.sm == 87);
     CK(cubin_needs_relocation(&img) == 0);
     const struct cubin_kernel* k = cubin_find_kernel(&img, "pgl_cs");

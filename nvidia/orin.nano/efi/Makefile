@@ -29,8 +29,8 @@ KERNEL_IMAGE = kernel.bin
 # nvidia-l4t-firmware deb).  Kept OUTSIDE the repo; packed into the ramfs
 # at /fs/nvidia/ga10b (ga10bd --fw-dir default) only when the dir exists.
 GPU_FW_DIR ?= /Users/tony/work/gpu-fw/ga10b
-# nvcc sm_87 test kernels for `ga10bd compute` (/fs/cuda), when present.
-CUDA_CUBIN_DIR ?= ../../../../projects/cuda/cubin
+# nvcc sm_87 test kernels for `ga10bd compute` (/fs/kuda), when present.
+KUDA_CUBIN_DIR ?= ../../../../projects/kuda/cubin
 
 INIT_RAMFS_SOURCE = ../system/etc/init.ramfs.rd
 # No /etc/init.rd is packed: the boot RAMFS profile is bootstrap-only and
@@ -243,13 +243,14 @@ $(INITRAMFS_IMAGE): FORCE
 	else \
 		echo "NOTE: GPU_FW_DIR=$(GPU_FW_DIR) absent -- ga10bd runs dry-run only"; \
 	fi
-	@if [ -d "$(CUDA_CUBIN_DIR)" ]; then \
-		mkdir -p "$(RAMFS_STAGING)/fs/cuda"; \
-		cp -p "$(CUDA_CUBIN_DIR)"/*.cubin "$(RAMFS_STAGING)/fs/cuda/"; \
+	@if [ -d "$(KUDA_CUBIN_DIR)" ]; then \
+		mkdir -p "$(RAMFS_STAGING)/fs/kuda"; \
+		cp -p "$(KUDA_CUBIN_DIR)"/*.cubin "$(RAMFS_STAGING)/fs/kuda/"; \
 	fi
-	@mkdir -p "$(RAMFS_STAGING)/fs/cuda"
-	@cp -p ../system/libs/ga10b/kernels/*.cubin "$(RAMFS_STAGING)/fs/cuda/"
+	@mkdir -p "$(RAMFS_STAGING)/fs/kuda"
+	@cp -p ../system/libs/ga10b/kernels/*.cubin "$(RAMFS_STAGING)/fs/kuda/"
 	@cp -p "$(SYSTEM_ROOT)/drivers/netd" \
+		"$(SYSTEM_ROOT)/drivers/nfsfsd" \
 		"$(SYSTEM_ROOT)/drivers/timerd" \
 		"$(SYSTEM_ROOT)/drivers/piped" "$(SYSTEM_ROOT)/drivers/ramfsd" \
 		"$(SYSTEM_ROOT)/drivers/nulld" "$(RAMFS_STAGING)/drivers/"

@@ -224,6 +224,10 @@ static uint32_t memory_exclusions(orin_mem_range_t* ex) {
 
     ADD_EXCL(_sys_info.sys_dma.phy_base, _sys_info.sys_dma.size);
     ADD_EXCL(_sys_info.shm_contig.phy_base, _sys_info.shm_contig.size);
+    /* phy_base is 0 until reserved: excluding [0, size) would swallow the
+       low DMA32 pools during their own search. */
+    if (_sys_info.sys_dma_gpu.phy_base != 0)
+        ADD_EXCL(_sys_info.sys_dma_gpu.phy_base, _sys_info.sys_dma_gpu.size);
     if (orin_ramdisk_size)
         ADD_EXCL(orin_ramdisk_base, orin_ramdisk_size);
     if (orin_fb_size)
@@ -261,14 +265,12 @@ static int32_t usable_descriptor(uint32_t m, uint64_t* base, uint64_t* top) {
     return 1;
 }
 
-static uint64_t find_memory_pool(uint32_t size) {
+static uint64_t find_memory_pool(uint32_t size, uint64_t floor, uint64_t limit) {
     orin_mem_range_t ex[ORIN_MAX_RESV + 4];
     uint32_t n = memory_exclusions(ex);
     uint64_t best = 0;
-    uint64_t limit = _sys_info.allocable_phy_mem_top;
-    /* Keep both pools within the 32-bit physical reach of board devices. */
-    if (limit > (1ULL << 32))
-        limit = 1ULL << 32;
+    if (limit > _sys_info.allocable_phy_mem_top)
+        limit = _sys_info.allocable_phy_mem_top;
     for (uint32_t m = 0; m < _bi.memmap_count; m++) {
         uint64_t base, top;
         if (!usable_descriptor(m, &base, &top))
@@ -279,6 +281,8 @@ static uint64_t find_memory_pool(uint32_t size) {
         top = orin_pool_extend(top, _bi.memmap_count, usable_descriptor);
         if (base < _sys_info.allocable_phy_mem_base)
             base = _sys_info.allocable_phy_mem_base;
+        if (base < floor)
+            base = floor;
         if (top > limit)
             top = limit;
         uint64_t found = orin_pool_candidate(base, top, size, PAGE_SIZE, ex, n);
@@ -295,13 +299,27 @@ int32_t arch_reserve_memory_pools(void) {
     }
     _sys_info.sys_dma.phy_base = 0;
     _sys_info.shm_contig.phy_base = 0;
-    _sys_info.sys_dma.phy_base = find_memory_pool(_sys_info.sys_dma.size);
+    /* Board devices (xHCI, DCE) do 32-bit DMA: keep their pools below 4GB. */
+    _sys_info.sys_dma.phy_base = find_memory_pool(_sys_info.sys_dma.size,
+            0, 1ULL << 32);
     if (_sys_info.shm_contig.size)
-        _sys_info.shm_contig.phy_base = find_memory_pool(_sys_info.shm_contig.size);
+        _sys_info.shm_contig.phy_base = find_memory_pool(_sys_info.shm_contig.size,
+                0, 1ULL << 32);
     if (!_sys_info.sys_dma.phy_base ||
             (_sys_info.shm_contig.size && !_sys_info.shm_contig.phy_base)) {
         kout_str("orin: no firmware-safe DMA32 memory pools\n");
         halt();
+    }
+    /* GA10B reaches DRAM through its own GMMU (64-bit GPU VAs), so its pool
+       may live above the DMA32 reach — the only place a multi-GB LLM weight
+       arena fits on this 8GB board. */
+    if (_sys_info.sys_dma_gpu.size) {
+        _sys_info.sys_dma_gpu.phy_base = find_memory_pool(_sys_info.sys_dma_gpu.size,
+                1ULL << 32, _sys_info.allocable_phy_mem_top);
+        if (!_sys_info.sys_dma_gpu.phy_base) {
+            kout_str("orin: no high GPU DMA pool\n");
+            halt();
+        }
     }
     _sys_info.shm_contig.v_base = 0;
     kout_str("orin: DMA/SHM pools reserved from final UEFI memory map\n");

@@ -157,14 +157,14 @@ static int cmd_compute(int pgl) {
     ga10b_chan_t ch;
     if (ga10b_chan_create(&mm, &ch, GA10B_DEVTYPE_GRAPHICS, 0) != 0)
         return -1;
-#ifdef GA10B_HAVE_CUDA
+#ifdef GA10B_HAVE_KUDA
     int r;
     if (pgl > 0)
         r = ga10b_pgl_selftest(&ch, _cubin != NULL ? _cubin :
-                               "/fs/cuda/pgl_geom.sm_87.cubin");
+                               "/fs/kuda/pgl_geom.sm_87.cubin");
     else if (ga10b.hw)
         r = ga10b_compute_vadd(&ch, _cubin != NULL ? _cubin :
-                               "/fs/cuda/vectorAdd.sm_87.cubin");
+                               "/fs/kuda/vectorAdd.sm_87.cubin");
     else
         r = ga10b_compute_dispatch(&ch, 0);
 #else

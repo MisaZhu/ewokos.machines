@@ -1,5 +1,5 @@
 /* Host test: synthesize a cubin from SASS+meta, parse it back with the real
- * projects/cuda cubin parser, and check every reflected field. */
+ * projects/kuda cubin parser, and check every reflected field. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,7 +41,7 @@ int main(void) {
 
     struct cubin_image img;
     int rc = cubin_parse(&img, buf, got);
-    CK(rc == CUBIN_OK);
+    CK(rc == KUBIN_OK);
     CK(img.sm == 87);
     CK(img.nkernels == 1);
     CK(cubin_needs_relocation(&img) == 0);
@@ -64,7 +64,7 @@ int main(void) {
     uint32_t p0 = 0x11223344, p1 = 0x55667788;
     void* args[2] = { &p0, &p1 };
     uint8_t packed[8];
-    CK(cubin_pack_params(k, args, packed, sizeof(packed)) == CUBIN_OK);
+    CK(cubin_pack_params(k, args, packed, sizeof(packed)) == KUBIN_OK);
     CK(memcmp(packed, &p0, 4) == 0 && memcmp(packed + 4, &p1, 4) == 0);
 
     FILE* f = fopen("synth.cubin", "wb");

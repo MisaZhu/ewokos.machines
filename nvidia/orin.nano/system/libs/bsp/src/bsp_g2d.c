@@ -328,7 +328,7 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
-	/* VPI documents Gaussian Filter as CPU/CUDA/PVA only — VIC has no
+	/* VPI documents Gaussian Filter as CPU/KUDA/PVA only — VIC has no
 	   gaussian path.  The NEON engine blurs in place (tmp unused). */
 	(void)tmp; (void)tmp_phy; (void)tmp_contig;
 	return arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
