@@ -226,6 +226,7 @@ static inline void ga10b_rl_ch(uint32_t* e, uint32_t chid,
 #define GA10B_CP_LOAD_INLINE_QMD_DATA(i) (0x0320u + 4u * (i))
 #define GA10B_CP_SET_SHADER_LOCAL_MEMORY_A 0x0790u   /* upper 16:0, +B lower */
 #define GA10B_CP_SET_SHADER_LOCAL_MEMORY_WINDOW_A 0x07B0u  /* +B */
+#define GA10B_CP_SET_SHADER_SHARED_MEMORY_WINDOW_A 0x02A0u /* +B */
 /* QMDV03_00 version nibble: major 3 << 4 | release 0 (clc7c0qmd.h dw18) */
 #define GA10B_QMD_VERSION_V03_00      0x00300030u
 

@@ -13,8 +13,10 @@
 
 #include <stdint.h>
 
-/* value bsp_g2d_version() reports / pglc_version_supported() accepts */
-#define GA10B_PGL_VERSION      1087u
+/* value bsp_g2d_version() reports / pglc_version_supported() accepts.
+ * 1088: compute blob carries tex_mask (software texture sampling); also
+ * re-keys the client's on-disk shader cache. */
+#define GA10B_PGL_VERSION      1088u
 
 #define GA10B_PROG_MAGIC       0x3347564eu   /* 'N','V','G','3' */
 #define GA10B_PROG_VERSION     1u
@@ -153,6 +155,7 @@ typedef struct {
     uint32_t geom_kind;           /* 0 = fullscreen compute */
     uint32_t local_size[3];       /* compute workgroup shape */
     uint32_t unif_dwords;         /* per-draw uniform blob span */
+    uint32_t tex_mask;            /* bit i: kernel samples ctex unit i */
     uint32_t cubin_size;          /* bytes of cubin ELF after this header */
 } ga10b_compute_blob_t;
 
@@ -163,6 +166,20 @@ typedef struct {
 #define GA10B_PGL_E_DECLINED     (-1)
 #define GA10B_PGL_E_UNSUPPORTED  (-2)
 #define GA10B_PGL_E_TIMEOUT      (-3)
+
+/* one compiled-sampler binding of a fullscreen compute draw: the linear
+ * RGBA-word image the lowered kernel samples through SSBO block 1+i
+ * (nv_meta.h).  depth 6 = cubemap (+X,-X,+Y,-Y,+Z,-Z face order),
+ * face_stride = the 64B-aligned per-face pitch in bytes. */
+#define GA10B_PGL_MAX_TEX      4u   /* G2D_PGL_MAX_TEX_UNITS / NV_MAX_TEX */
+typedef struct {
+    uint64_t phy;
+    uint32_t w, h;                /* texels */
+    uint32_t stride;              /* row pitch, bytes (w*4) */
+    uint32_t face_stride;         /* cube layer pitch, bytes; 0 for 2D */
+    uint8_t  depth;               /* 1 = 2D, 6 = cube */
+    uint8_t  linear;              /* mag filter: 1 = LINEAR, 0 = NEAREST */
+} ga10b_pgl_tex_t;
 
 typedef struct {
     uint64_t fb_phy;
@@ -175,6 +192,9 @@ typedef struct {
        or the per-instance record stream (instanced kind) */
     uint64_t ctex_phy;
     uint32_t ctex_w, ctex_h, ctex_stride;
+    /* fullscreen compute: per-unit software-sampler images (phy 0 = unbound;
+       the daemon declines a draw whose program's tex_mask needs it) */
+    ga10b_pgl_tex_t tex[GA10B_PGL_MAX_TEX];
     int      first_frame;
     uint32_t clear_rgba;          /* portablegl 0xAABBGGRR */
 } ga10b_pgl_draw_t;

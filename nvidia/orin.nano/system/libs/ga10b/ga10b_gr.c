@@ -47,8 +47,8 @@
 #include "ga10b_gating.h"
 
 #define GR_CTX_IMAGE_FALLBACK  0x80000u   /* dry-run DISCOVER placeholder */
-#define GR_LOCAL_MEM_SIZE      0x10000u   /* 64KB shader local window */
-#define GR_DISPATCH_WORDS      13u
+#define GR_LOCAL_MEM_SIZE      0x80000u   /* 512KB shader local window */
+#define GR_DISPATCH_WORDS      19u
 #define GR_SEM_TRIES           200000u    /* ~2s at 10us */
 #define GR_QMD_REGS            32u
 #define GR_IDLE_TRIES          100000u
@@ -1573,11 +1573,36 @@ int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words) {
     pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_CP_SET_SHADER_LOCAL_MEMORY_A, 2);
     pb[n++] = (uint32_t)(gr.local_gpu_va >> 32) & 0x1ffffu;
     pb[n++] = (uint32_t)gr.local_gpu_va;
+    /* generic-address windows for shared/local accesses (NVK nvk_cmd_dispatch:
+     * shared 0xfe<<24, local 0xff<<24); without them SKED stalls CTAs that
+     * request shared or per-thread local memory */
+    pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE,
+                 GA10B_CP_SET_SHADER_SHARED_MEMORY_WINDOW_A, 2);
+    pb[n++] = 0xfeu;
+    pb[n++] = 0;
+    pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE,
+                 GA10B_CP_SET_SHADER_LOCAL_MEMORY_WINDOW_A, 2);
+    pb[n++] = 0xffu;
+    pb[n++] = 0;
     pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE,
                  GA10B_CP_SET_SHADER_LOCAL_MEMORY_NON_THROTTLED_A, 3);
-    pb[n++] = (uint32_t)((uint64_t)GR_LOCAL_MEM_SIZE >> 32) & 0xffu;
-    pb[n++] = GR_LOCAL_MEM_SIZE;
-    pb[n++] = gr.sm_total & 0x1ffu;      /* C.MAX_SM_COUNT */
+    /* NVK nvk_device_ensure_slm: the NON_THROTTLED size is PER TPC and must
+     * cover the worst-case local demand of a fully occupied TPC, else SKED
+     * never launches CTAs of kernels with per-thread local memory.
+     * per-warp = align(local_per_lane*32, 0x200); per-TPC = per-warp *
+     * warps/SM(48) * SMs/TPC(2), aligned to 0x8000.  The per-thread local
+     * size sits in QMD SHADER_LOCAL_MEMORY_LOW_SIZE (dword 23 [23:0]). */
+    uint32_t local_lane = qmd_words[23] & 0xffffffu;
+    uint32_t per_warp = (local_lane * 32u + 0x1ffu) & ~0x1ffu;
+    uint32_t per_tpc = (per_warp * 48u * 2u + 0x7fffu) & ~0x7fffu;
+    if (per_tpc * (gr.tpc_total ? gr.tpc_total : 1u) > GR_LOCAL_MEM_SIZE) {
+        klog("ga10b: shader local window too small (per_tpc=%u tpc=%u)\n",
+             per_tpc, gr.tpc_total);
+        return -1;
+    }
+    pb[n++] = (uint32_t)((uint64_t)per_tpc >> 32) & 0xffu;
+    pb[n++] = per_tpc;
+    pb[n++] = 0xffu;      /* C.MAX_SM_COUNT (NVK) */
     pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_CP_SEND_PCAS_A, 1);
     pb[n++] = (uint32_t)(qmd_gpu_va >> 8);
     pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_CP_SEND_SIGNALING_PCAS2_B, 1);

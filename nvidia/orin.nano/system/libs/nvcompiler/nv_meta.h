@@ -19,7 +19,19 @@
 #define NV_UNIFORM_BASE_OFF 0x40u
 #define NV_SSBO_BASE_OFF    0x200u
 #define NV_MAX_SSBO         8u
-#define NV_CB0_SIZE         (NV_SSBO_BASE_OFF + NV_MAX_SSBO * 8u)  /* 0x240 */
+
+/* Software texture sampling (nv_tex.c): a lowered sampler reads its image as
+ * a linear RGBA-word array through an SSBO.  SSBO block 0 is the framebuffer;
+ * block 1+i is compiled-sampler (TMU declaration-order) unit i.  Per-unit
+ * descriptors live at NV_TEXDESC_OFF, NV_TEXDESC_STRIDE bytes each, filled by
+ * the daemon at launch from the draw's ctex bindings. */
+#define NV_MAX_TEX          4u   /* G2D_PGL_MAX_TEX_UNITS */
+#define NV_TEXDESC_OFF      (NV_SSBO_BASE_OFF + NV_MAX_SSBO * 8u)  /* 0x240 */
+#define NV_TEXDESC_STRIDE   32u  /* 8 dwords per unit */
+/* descriptor dwords: [0]=w [1]=h (texels), [2]=row stride in words,
+ * [3]=cube face stride in words (0 for 2D), [4]=mag filter linear (0/1),
+ * [5..7] reserved (0). */
+#define NV_CB0_SIZE         (NV_TEXDESC_OFF + NV_MAX_TEX * NV_TEXDESC_STRIDE)
 
 /* Kernel metadata the QMD builder / blob serializer needs (mirrors the fields
  * cubin_kernel carries for nvcc kernels, so the ga10b launch path is shared). */

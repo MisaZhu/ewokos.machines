@@ -211,9 +211,17 @@ int ga10b_l2_invalidate(void) {
     return l2_op(GA10B_FLUSH_L2_SYSTEM_INVALIDATE, "l2 invalidate");
 }
 
-/* GPU -> CPU handoff: write the dirty L2 lines back to DRAM */
+/* GPU -> CPU handoff: write the dirty L2 lines back to DRAM.  GA10B uses
+ * the gv11b sequence (gv11b_mm_l2_flush): fb_flush commits pending GPU
+ * writes into L2, flush_dirty writes them back, and a SECOND fb_flush
+ * commits those writebacks to DRAM -- without it the writeback can land
+ * after a subsequent CPU write to the same pages (stale-data resurrection). */
 int ga10b_l2_flush(void) {
-    return l2_op(GA10B_FLUSH_L2_FLUSH_DIRTY, "l2 flush");
+    if (l2_op(GA10B_FLUSH_FB, "fb flush") != 0)
+        return -1;
+    if (l2_op(GA10B_FLUSH_L2_FLUSH_DIRTY, "l2 flush") != 0)
+        return -1;
+    return l2_op(GA10B_FLUSH_FB, "fb flush post");
 }
 
 uint64_t ga10b_gmmu_map_attr(ga10b_gmmu_t* mm, uint64_t phy, uint32_t size,

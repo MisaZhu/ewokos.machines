@@ -30,7 +30,8 @@
 static const uint16_t smem_kb[] = { 0, 8, 16, 32, 64, 100, 132, 164 };
 
 static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
-                         const uint32_t grid[3], const uint32_t block[3]);
+                         const uint32_t grid[3], const uint32_t block[3],
+                         uint32_t dyn_smem);
 
 typedef struct {
     uint64_t code_va;
@@ -139,6 +140,14 @@ int ga10b_module_kernel(const ga10b_module_t* m, const char* name) {
 int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                         const uint32_t grid[3], const uint32_t block[3],
                         void* const* args) {
+    return ga10b_kernel_launch_dyn(ch, m, kernel, grid, block, args, 0);
+}
+
+/* dynamic shared memory: the QMD sizes the carveout for static + dyn bytes
+ * (extern __shared__ in the kernel); bypasses the 48KB static-smem cap */
+int ga10b_kernel_launch_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                            const uint32_t grid[3], const uint32_t block[3],
+                            void* const* args, uint32_t dyn_smem) {
     if (kernel < 0 || kernel >= m->img.nkernels)
         return -1;
     const struct cubin_kernel* k = &m->img.kernels[kernel];
@@ -154,17 +163,19 @@ int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     if (cubin_pack_params(k, args, (uint8_t*)cb0 + k->param_base,
                           k->param_total) != CUBIN_OK)
         return -1;
-    return kernel_submit(ch, m, kernel, grid, block);
+    return kernel_submit(ch, m, kernel, grid, block, dyn_smem);
 }
 
 /* Build the QMD from the (already-filled) constant banks and submit.  Shared
  * by the nvcc-param launch and the compiled-compute launch below. */
 static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
-                         const uint32_t grid[3], const uint32_t block[3]) {
+                         const uint32_t grid[3], const uint32_t block[3],
+                         uint32_t dyn_smem) {
     const struct cubin_kernel* k = &m->img.kernels[kernel];
     mod_kernel_t* mk = &m->k[kernel];
     struct cuda_qmd_launch l;
     memset(&l, 0, sizeof(l));
+    l.dyn_smem = dyn_smem;
     l.program = mk->code_va;
     for (uint32_t b = 0; b < CUBIN_NUM_CBANKS; b++) {
         l.cbuf[b] = mk->bank_gpu_va[b];
@@ -194,13 +205,16 @@ static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
 int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                                 const uint32_t grid[3], const uint32_t block[3],
                                 const uint32_t* unif, uint32_t unif_dwords,
-                                const uint64_t* ssbo_va, uint32_t nssbo) {
+                                const uint64_t* ssbo_va, uint32_t nssbo,
+                                const uint32_t* texdesc,
+                                uint32_t texdesc_dwords) {
     if (kernel < 0 || kernel >= m->img.nkernels)
         return -1;
     const struct cubin_kernel* k = &m->img.kernels[kernel];
     mod_kernel_t* mk = &m->k[kernel];
     if (mk->bank_size[0] < NV_CB0_SIZE || nssbo > NV_MAX_SSBO ||
-        unif_dwords * 4u > NV_SSBO_BASE_OFF - NV_UNIFORM_BASE_OFF)
+        unif_dwords * 4u > NV_SSBO_BASE_OFF - NV_UNIFORM_BASE_OFF ||
+        texdesc_dwords * 4u > NV_MAX_TEX * NV_TEXDESC_STRIDE)
         return -1;
     uint32_t local = k->frame_size > k->min_stack ? k->frame_size
                                                   : k->min_stack;
@@ -214,7 +228,10 @@ int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
         memcpy((uint8_t*)cb0 + NV_UNIFORM_BASE_OFF, unif, unif_dwords * 4u);
     for (uint32_t i = 0; i < nssbo; i++)
         memcpy((uint8_t*)cb0 + NV_SSBO_BASE_OFF + i * 8u, &ssbo_va[i], 8u);
-    return kernel_submit(ch, m, kernel, grid, block);
+    memset((uint8_t*)cb0 + NV_TEXDESC_OFF, 0, NV_MAX_TEX * NV_TEXDESC_STRIDE);
+    if (texdesc != NULL && texdesc_dwords != 0)
+        memcpy((uint8_t*)cb0 + NV_TEXDESC_OFF, texdesc, texdesc_dwords * 4u);
+    return kernel_submit(ch, m, kernel, grid, block, 0);
 }
 
 /* ---- self-test: the projects/cuda vadd kernel ---- */

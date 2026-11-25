@@ -144,7 +144,7 @@ ifeq ($(X),1)
 # no books/games (data/), and the 10MB Chinese font system-cn.ttf (fontd loads
 # fonts lazily on request, so dropping it only affects clients that ask for
 # Chinese glyphs; the desktop uses the "system" font).  The ext3 image is sized
-# to the trimmed content + 8MB margin (journal + metadata).
+# to the trimmed content + 16MB margin (journal + metadata + growth).
 $(INITRAMFS_IMAGE): FORCE
 	@rm -rf "$(RAMFS_STAGING)"
 	@mkdir -p "$(RAMFS_STAGING)"
@@ -169,7 +169,7 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(RAMFS_STAGING)/etc/kernel/kernel.conf"
 	@grep -q '^rootfs = self' "$(RAMFS_STAGING)/etc/kernel/kernel.conf" || { \
 		echo "ERROR: failed to force rootfs=self in kernel.conf"; exit 1; }
-	@mb=$$(du -sm "$(RAMFS_STAGING)" | cut -f1); mb=$$((mb + 8)); \
+	@mb=$$(du -sm "$(RAMFS_STAGING)" | cut -f1); mb=$$((mb + 16)); \
 	 echo "==== staging full xwin rootfs ($${mb} MB) ===="; \
 	 dd if=/dev/zero of="$@" bs=1k count=$$((mb * 1024)); \
 	 mke2fs -t ext3 -b 4096 -I 128 -J size=4 "$@"; \

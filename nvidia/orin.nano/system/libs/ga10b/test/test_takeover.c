@@ -315,9 +315,12 @@ int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
 int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                                 const uint32_t grid[3], const uint32_t block[3],
                                 const uint32_t* unif, uint32_t unif_dwords,
-                                const uint64_t* ssbo_va, uint32_t nssbo) {
+                                const uint64_t* ssbo_va, uint32_t nssbo,
+                                const uint32_t* texdesc,
+                                uint32_t texdesc_dwords) {
     (void)ch; (void)m; (void)kernel; (void)grid; (void)block; (void)unif;
     (void)unif_dwords; (void)ssbo_va; (void)nssbo;
+    (void)texdesc; (void)texdesc_dwords;
     return -1;
 }
 

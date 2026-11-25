@@ -332,6 +332,37 @@ int ga10b_dev_alloc(uint32_t size, void** va, uint64_t* gpu_va) {
     return ga10b_buf_alloc(&dev.mm, size, va, gpu_va, 1);
 }
 
+void ga10b_dev_free(void* va, uint64_t gpu_va, uint32_t size) {
+    if (dev.state != 1 || va == NULL)
+        return;
+    if (gpu_va != 0)
+        ga10b_gmmu_unmap(&dev.mm, gpu_va, (size + 4095u) & ~4095u);
+    ga10b_dma_free(va);
+}
+
+static ga10b_chan_t ce_ch;
+static int ce_ready;
+
+int ga10b_dev_copy(uint64_t dst_va, uint64_t src_va, uint32_t bytes) {
+    if (dev.state != 1 || bytes == 0)
+        return -1;
+    if (!ce_ready) {
+        if (ga10b_chan_create(&dev.mm, &ce_ch, GA10B_DEVTYPE_LCE, 2) != 0)
+            return -1;
+        ce_ready = 1;
+    }
+    /* CE line length is 24-bit; chunk large copies */
+    while (bytes != 0) {
+        uint32_t chunk = bytes > 0x800000u ? 0x800000u : bytes;
+        if (ga10b_ce_blit(&ce_ch, src_va, chunk, dst_va, chunk, chunk, 1) != 0)
+            return -1;
+        src_va += chunk;
+        dst_va += chunk;
+        bytes -= chunk;
+    }
+    return 0;
+}
+
 /* The buffers of ga10b_dev_map / ga10b_dev_alloc are cached in the GPU L2:
  * bracket every span of launches with to_gpu (after the CPU finished
  * writing their inputs) and to_cpu (before it reads their outputs). */
@@ -356,12 +387,23 @@ int ga10b_dev_launch(ga10b_module_t* m, int kernel, const uint32_t grid[3],
     return ga10b_kernel_launch(&dev.ch, m, kernel, grid, block, args);
 }
 
+int ga10b_dev_launch_dyn(ga10b_module_t* m, int kernel, const uint32_t grid[3],
+                         const uint32_t block[3], void* const* args,
+                         uint32_t dyn_smem) {
+    if (dev.state != 1)
+        return -1;
+    return ga10b_kernel_launch_dyn(&dev.ch, m, kernel, grid, block, args,
+                                   dyn_smem);
+}
+
 int ga10b_dev_launch_compute(ga10b_module_t* m, int kernel,
                              const uint32_t grid[3], const uint32_t block[3],
                              const uint32_t* unif, uint32_t unif_dwords,
-                             const uint64_t* ssbo_va, uint32_t nssbo) {
+                             const uint64_t* ssbo_va, uint32_t nssbo,
+                             const uint32_t* texdesc, uint32_t texdesc_dwords) {
     if (dev.state != 1)
         return -1;
     return ga10b_kernel_launch_compute(&dev.ch, m, kernel, grid, block,
-                                       unif, unif_dwords, ssbo_va, nssbo);
+                                       unif, unif_dwords, ssbo_va, nssbo,
+                                       texdesc, texdesc_dwords);
 }

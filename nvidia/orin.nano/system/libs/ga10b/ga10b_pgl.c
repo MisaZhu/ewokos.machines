@@ -15,6 +15,7 @@
 #include <ga10b/ga10b_dev.h>
 #include <ga10b/ga10b_pgl.h>
 
+#include "../nvcompiler/nv_meta.h"   /* compute cb0 texture-descriptor layout */
 #include "kernels/pgl_geom_cubin.h"
 
 #define PGL_MAX_VERTS   32768u            /* G2D_PGL_MAX_VERTS */
@@ -49,6 +50,7 @@ static struct {
         int kernel;
         uint32_t local_size[3];
         uint32_t unif_dwords;
+        uint32_t tex_mask;
     } prog[PGL_MAX_PROGS];
 } pgl;
 
@@ -200,6 +202,7 @@ static int pgl_do_program_load(const void* blob, uint32_t size) {
             memcpy(pgl.prog[i].local_size, cb.local_size,
                    sizeof(cb.local_size));
             pgl.prog[i].unif_dwords = cb.unif_dwords;
+            pgl.prog[i].tex_mask = cb.tex_mask;
             return (int)i;
         }
         return GA10B_PGL_E_DECLINED;
@@ -270,13 +273,53 @@ static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
         !pgl.prog[handle].used)
         return GA10B_PGL_E_UNSUPPORTED;
     if (pgl.prog[handle].is_compute) {
-        /* fullscreen compute: one thread per pixel, output to SSBO block 0 */
+        /* fullscreen compute: one thread per pixel, output to SSBO block 0;
+         * sampled textures ride blocks 1+i as linear RGBA-word images */
         if (d->w == 0 || d->h == 0 || d->stride < d->w * 4u ||
             (d->stride & 3u) != 0)
             return GA10B_PGL_E_DECLINED;
         uint64_t fb = ga10b_dev_map(d->fb_phy, d->stride * d->h);
         if (fb == 0)
             return GA10B_PGL_E_DECLINED;
+        uint64_t ssbo[NV_MAX_SSBO];
+        uint32_t texdesc[NV_MAX_TEX * (NV_TEXDESC_STRIDE / 4u)];
+        memset(texdesc, 0, sizeof(texdesc));
+        ssbo[0] = fb;
+        uint32_t nssbo = 1;
+        uint32_t mask = pgl.prog[handle].tex_mask;
+        if (mask & ~((1u << GA10B_PGL_MAX_TEX) - 1u))
+            return GA10B_PGL_E_DECLINED;
+        for (uint32_t i = 0; i < GA10B_PGL_MAX_TEX; i++) {
+            if (!(mask & (1u << i)))
+                continue;
+            const ga10b_pgl_tex_t* t = &d->tex[i];
+            if (t->phy == 0 || t->w == 0 || t->h == 0 ||
+                t->stride != t->w * 4u ||
+                (t->depth != 1 && t->depth != 6) ||
+                (t->depth == 6 &&
+                 (t->w != t->h || t->face_stride < t->stride * t->h ||
+                  (t->face_stride & 63u) != 0)))
+                return GA10B_PGL_E_DECLINED;
+            uint32_t bytes = t->depth == 6 ? t->face_stride * 6u
+                                           : t->stride * t->h;
+            uint64_t va = ga10b_dev_map(t->phy, bytes);
+            if (va == 0)
+                return GA10B_PGL_E_DECLINED;
+            ssbo[1 + i] = va;
+            if (2 + i > nssbo)
+                nssbo = 2 + i;
+            uint32_t* td = texdesc + i * (NV_TEXDESC_STRIDE / 4u);
+            td[0] = t->w;
+            td[1] = t->h;
+            td[2] = t->stride / 4u;
+            td[3] = t->face_stride / 4u;
+            td[4] = t->linear != 0;
+        }
+        /* gaps in the SSBO base table (a program sampling units 0 and 2)
+         * must still hold a valid VA: point them at the fb */
+        for (uint32_t i = 1; i < nssbo; i++)
+            if (!(mask & (1u << (i - 1))))
+                ssbo[i] = fb;
         uint32_t lx = pgl.prog[handle].local_size[0] ?
                       pgl.prog[handle].local_size[0] : 32u;
         uint32_t ly = pgl.prog[handle].local_size[1] ?
@@ -289,7 +332,10 @@ static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
         uint32_t t1 = prof_now();
         int rc = ga10b_dev_launch_compute(pgl.prog[handle].mod,
                                           pgl.prog[handle].kernel, grid, block,
-                                          unif, num_uniforms, &fb, 1);
+                                          unif, num_uniforms, ssbo, nssbo,
+                                          texdesc,
+                                          mask ? NV_MAX_TEX *
+                                                 (NV_TEXDESC_STRIDE / 4u) : 0);
         uint32_t t2 = prof_now();
         ga10b_dev_sync_to_cpu();
         if (prof.on) {
