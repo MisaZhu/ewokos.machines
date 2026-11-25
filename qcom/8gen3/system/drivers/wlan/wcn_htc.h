@@ -8,4 +8,5 @@ void wcn_htc_reset(void);
 void wcn_htc_status(char *out, size_t size);
 int wcn_htc_wmi_send(const void *data, unsigned bytes);
 int wcn_htc_htt_send(const void *data, unsigned bytes);
+unsigned wcn_htc_wmi_credits(void);
 #endif

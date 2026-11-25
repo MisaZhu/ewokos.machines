@@ -118,6 +118,12 @@ int wcn_htc_htt_send(const void *data, unsigned bytes) {
     if (!h.setup || h.failed || !h.htt_ep || bytes > 248) return -1;
     return send_htc(h.htt_ep, 4, data, bytes);
 }
+/* Diagnostic: WMI credits left. A send burst with no RX in between drains
+ * them (trailers on received packets are the only refill), and send_htc
+ * then rejects further commands with -1 until the target answers. */
+unsigned wcn_htc_wmi_credits(void) {
+    return h.wmi_ep < 9 ? h.credits[h.wmi_ep] : 0;
+}
 void wcn_htc_reset(void) {
     memset(&h, 0, sizeof(h)); h.max_size[0] = 256;
     wcn_wmi_reset(); wcn_htt_reset();

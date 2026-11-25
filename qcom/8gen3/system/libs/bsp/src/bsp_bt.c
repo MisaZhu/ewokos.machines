@@ -1128,47 +1128,58 @@ static int qca_setup(void) {
         }
     }
 
-    set_stage("rampatch");
-    {
-        char n0[32], n1[32];
-        snprintf(n0, sizeof(n0), "wcnhpbtfw%02x.tlv", bt.rom_nibble);
-        snprintf(n1, sizeof(n1), "hpbtfw%02x.tlv", bt.rom_nibble);
-        const char* names[2] = { n0, n1 };
-        if (fw_download_any(names, 2, 0, OPER_BAUD_CODE) != 0)
-            return -1;
-    }
-    hw_delay(10000);
-
-    set_stage("board-id");
-    if (edl_cmd(EDL_GET_BID, NULL, 0, rsp, &rlen, 1000) == 0 && rlen >= 5)
-        bt.bid = ((unsigned)rsp[3] << 8) | rsp[4];
-    bt_log("bt: board id %04x\n", bt.bid);
-
-    set_stage("nvm");
-    {
-        const char* variant = (bt.soc_id & 0xff00U) == 0x1200U ? "g" : "";
-        char names[4][32];
-        const char* ptrs[4];
-        unsigned count = 0;
-        if (bt.bid != 0 && bt.bid != 0xffff) {
-            snprintf(names[count++], 32, "wcnhpnv%02x%s.b%02x",
-                    bt.rom_nibble, variant, bt.bid);
-            snprintf(names[count++], 32, "hpnv%02x%s.b%02x",
-                    bt.rom_nibble, variant, bt.bid);
+    /* A warm controller (probe_version found it alive at the operating
+     * baud and set bt.ibs) already runs the rampatch + NVM from the
+     * previous session: the ROM DFU window is gone, and re-sending the
+     * patch TLV fails mid-download and strands the chip in a half-patched
+     * state no later probe can recover (board reboot only). Skip straight
+     * to HCI_Reset + BD address; the NVM-programmed IBS/baud stay in
+     * effect. */
+    if (bt.ibs) {
+        bt_log("bt: warm controller already patched, skip rampatch/nvm\n");
+    } else {
+        set_stage("rampatch");
+        {
+            char n0[32], n1[32];
+            snprintf(n0, sizeof(n0), "wcnhpbtfw%02x.tlv", bt.rom_nibble);
+            snprintf(n1, sizeof(n1), "hpbtfw%02x.tlv", bt.rom_nibble);
+            const char* names[2] = { n0, n1 };
+            if (fw_download_any(names, 2, 0, OPER_BAUD_CODE) != 0)
+                return -1;
         }
-        snprintf(names[count++], 32, "wcnhpnv%02x%s.bin", bt.rom_nibble, variant);
-        snprintf(names[count++], 32, "hpnv%02x%s.bin", bt.rom_nibble, variant);
-        for (unsigned i = 0; i < count; i++)
-            ptrs[i] = names[i];
-        if (fw_download_any(ptrs, count, 1, OPER_BAUD_CODE) != 0)
-            return -1;
-    }
+        hw_delay(10000);
 
-    set_stage("logging-off");
-    {
-        const uint8_t param[2] = { 0x14, 0x00 };
-        if (hci_cmd(EDL_LOGGING_OFF, param, 2, rsp, &rlen, 1000) != 0)
-            return -1;
+        set_stage("board-id");
+        if (edl_cmd(EDL_GET_BID, NULL, 0, rsp, &rlen, 1000) == 0 && rlen >= 5)
+            bt.bid = ((unsigned)rsp[3] << 8) | rsp[4];
+        bt_log("bt: board id %04x\n", bt.bid);
+
+        set_stage("nvm");
+        {
+            const char* variant = (bt.soc_id & 0xff00U) == 0x1200U ? "g" : "";
+            char names[4][32];
+            const char* ptrs[4];
+            unsigned count = 0;
+            if (bt.bid != 0 && bt.bid != 0xffff) {
+                snprintf(names[count++], 32, "wcnhpnv%02x%s.b%02x",
+                        bt.rom_nibble, variant, bt.bid);
+                snprintf(names[count++], 32, "hpnv%02x%s.b%02x",
+                        bt.rom_nibble, variant, bt.bid);
+            }
+            snprintf(names[count++], 32, "wcnhpnv%02x%s.bin", bt.rom_nibble, variant);
+            snprintf(names[count++], 32, "hpnv%02x%s.bin", bt.rom_nibble, variant);
+            for (unsigned i = 0; i < count; i++)
+                ptrs[i] = names[i];
+            if (fw_download_any(ptrs, count, 1, OPER_BAUD_CODE) != 0)
+                return -1;
+        }
+
+        set_stage("logging-off");
+        {
+            const uint8_t param[2] = { 0x14, 0x00 };
+            if (hci_cmd(EDL_LOGGING_OFF, param, 2, rsp, &rlen, 1000) != 0)
+                return -1;
+        }
     }
 
     set_stage("hci-reset");
@@ -1261,12 +1272,13 @@ int bsp_bt_init(bool recovery) {
 }
 
 void bsp_bt_power_off(void) {
-    if (bt.up) {
-        uint8_t rsp[8];
-        unsigned rlen = 0;
-        (void)hci_cmd(EDL_PRE_SHUTDOWN, NULL, 0, rsp, &rlen, 300);
-        bt_log("bt: power off (pre-shutdown sent)\n");
-    }
+    /* No EDL_PRE_SHUTDOWN here: the combo module's power rail is shared
+     * with WLAN (PCIe4 owns it) and stays on, so the chip never actually
+     * loses power. Pre-shutdown without a power cycle leaves the firmware
+     * in a half-shutdown state that refuses the next session's DFU/HCI
+     * traffic. Leave the patched controller running; the next init probes
+     * it warm and re-enters with HCI_Reset. */
+    bt_log("bt: power off (rail shared, controller left running)\n");
     /* Shared QUP votes stay on; keep baud/ibs state so the next init can
      * probe the warm controller instead of assuming a cold ROM boot. */
     bt.up = 0;

@@ -36,6 +36,11 @@ static struct {
     unsigned rates_len,ht,vht,he,nss,width,center,phymode,ht_rates_len,max_width,he_len,he_allowed;
     unsigned tx_done_base;
     uint64_t probe_ms;
+    /* Wake-policy apply mask (bit0 RX_WAKE, bit1 TX_WAKE, bit2 PSPOLL,
+     * bit3 PS mode=0) and retry clock: the CONFIG burst can run the WMI
+     * endpoint out of credits, so a failed send is retried after WPA. */
+    unsigned ps_done;
+    uint64_t ps_retry;
     uint8_t ht_rates[16], ht_ie[26], vht_ie[12];
     uint8_t he_ie[64];
     struct wcn_bss bss;
@@ -506,6 +511,12 @@ void wcn_sta_poll(void) {
             if (frames) s.rx_grace=now+60000;
         }
         if (now>=s.rx_grace) { fail("rx-dead",0); return; }
+        /* A wake-policy command lost to credit exhaustion must still land:
+         * retry every 5 s until all four are applied. */
+        if (wcn_wpa_established() && s.ps_done!=15u && now>=s.ps_retry) {
+            s.ps_retry=now+5000;
+            sta_ps_configure();
+        }
         if (frames && wcn_wpa_established() && now>=s.rx_grace-30000 && now>=s.probe_ms) {
             s.probe_ms=now+10000;
             uint8_t f[26]={0xc8,0x41}; /* QoS-null (subtype 12), ToDS, protected */
@@ -714,13 +725,23 @@ static int sta_ps_param(unsigned param,unsigned value) {
  * mode=0 after WPA left the firmware wake policy at its defaults: downlink
  * unicast died a few seconds after the last traffic (AP buffering for an
  * apparently sleeping station) while DTIM multicast kept flowing. Best-effort:
- * a rejected param must not block association. */
+ * a rejected param must not block association. Each command is independent
+ * and remembered in s.ps_done: the CONFIG burst sends ~12 WMI commands with
+ * no RX in between, which exhausts the endpoint credits, so the first param
+ * send failed with -1 on every boot while the later authorize-time mode=0
+ * (credits replenished by EAPOL/events) succeeded. Whatever failed here is
+ * retried by wcn_sta_authorize() and the ASSOCIATED poll until applied. */
 static void sta_ps_configure(void) {
-    int ret=sta_ps_param(0,0); /* RX_WAKE_POLICY = WAKE */
-    if (!ret) ret=sta_ps_param(1,1); /* TX_WAKE_THRESHOLD = ALWAYS */
-    if (!ret) ret=sta_ps_param(2,0); /* PSPOLL_COUNT = NO_MAX */
-    if (!ret) ret=sta_ps_mode(0); /* PS_MODE_DISABLED */
-    wcn_diag("sta-ps configure ret=%d\n",ret);
+    int r0=(s.ps_done&1)?0:sta_ps_param(0,0); /* RX_WAKE_POLICY = WAKE */
+    if (!r0) s.ps_done|=1;
+    int r1=(s.ps_done&2)?0:sta_ps_param(1,1); /* TX_WAKE_THRESHOLD = ALWAYS */
+    if (!r1) s.ps_done|=2;
+    int r2=(s.ps_done&4)?0:sta_ps_param(2,0); /* PSPOLL_COUNT = NO_MAX */
+    if (!r2) s.ps_done|=4;
+    int r3=(s.ps_done&8)?0:sta_ps_mode(0); /* PS_MODE_DISABLED */
+    if (!r3) s.ps_done|=8;
+    wcn_diag("sta-ps configure done=%x ret=%d/%d/%d/%d credits=%u\n",
+             s.ps_done,r0,r1,r2,r3,wcn_htc_wmi_credits());
 }
 /* powerd sleep/wake hook: enable PS on sleep, disable on wake. A no-op success
  * when not associated (nothing to save); the link-watch ladder re-authorizes
@@ -737,9 +758,11 @@ int wcn_sta_authorize(void) {
     memcpy(p.cmd.peer_macaddr.addr,s.bss.bssid,6);p.cmd.param_id=3;p.cmd.param_value=1;
     int ret=wcn_htc_wmi_send(&p,sizeof(p));
     if (!ret) {
-        int ps=sta_ps_mode(0);
+        /* WPA/EAPOL traffic replenished the WMI credits: apply whatever the
+         * CONFIG-phase burst could not send, and re-assert the awake mode. */
+        s.ps_done&=~8u;
+        sta_ps_configure();
         sta_ps_param(4,0); /* WMI_STA_PS_PARAM_UAPSD: no wakeup scheduling */
-        wcn_diag("sta-ps mode=disabled ret=%d\n",ps);
     }
     return ret;
 }
