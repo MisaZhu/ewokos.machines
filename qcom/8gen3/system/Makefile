@@ -21,16 +21,16 @@ all: x
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
-basic: basic_sys apps
+basic: basic_sys
 	@$(MAKE) final
 
-network: network_sys apps
+network: network_sys
 	@$(MAKE) final
 
-gui: gui_sys apps
+gui: gui_sys
 	@$(MAKE) final
 
-x: x_sys apps
+x: x_sys
 	@$(MAKE) final
 
 # Platform headers consumed by user-space drivers (GOP framebuffer and
@@ -130,12 +130,6 @@ basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 network_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/network
 
-# Machine-local apps (qnndemo links libadrenonpu from the machine libs phase).
-# All its link inputs land in basic_sys, so it can build right after it; the
-# profile targets above run it before `final` stages rootfs into FINAL_DIR.
-apps: basic_sys
-	@$(MAKE) -C apps
-
 # QCOM8GEN3 uses the SC8280XP multi-port DWC3 core through the shared polled xHCI
 # stack.  g2dd is the shared 2D/3D offload daemon; on qcom8gen3 it links libbsp +
 # libadreno (BSP_LFLAGS) and forwards into the Adreno 690 A2D/CS back ends,
@@ -163,7 +157,7 @@ x_sys: gui_sys network_sys
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
 
-CLEAN_DIRS = libs drivers bin apps $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
+CLEAN_DIRS = libs drivers bin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
 	$(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/xwin
 clean:
 	@for dir in $(CLEAN_DIRS); do \
@@ -196,4 +190,4 @@ sd:
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 
-.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys apps platform_headers firmware_install qairt_native_build qairt_native_install clean sd
+.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers firmware_install qairt_native_build qairt_native_install clean sd
