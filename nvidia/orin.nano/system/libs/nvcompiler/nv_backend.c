@@ -768,7 +768,12 @@ static void emit_intrinsic(nv_ctx* c, nir_intrinsic_instr* intr) {
             return;
         }
         unsigned off = (unsigned)nir_intrinsic_base(intr) + ioff;
-        if (off + 4 * ncomp > NV_SSBO_BASE_OFF - NV_UNIFORM_BASE_OFF) {
+        /* the uniform window, or the texture descriptor table nv_tex.c reads
+         * (base NV_TEXDESC_OFF - NV_UNIFORM_BASE_OFF) */
+        bool in_unif = off + 4 * ncomp <= NV_SSBO_BASE_OFF - NV_UNIFORM_BASE_OFF;
+        bool in_desc = off >= NV_TEXDESC_OFF - NV_UNIFORM_BASE_OFF &&
+                       off + 4 * ncomp <= NV_CB0_SIZE - NV_UNIFORM_BASE_OFF;
+        if (!in_unif && !in_desc) {
             fail(c, "uniform offset %u outside the cb0 uniform window", off);
             return;
         }
@@ -808,6 +813,30 @@ static void emit_intrinsic(nv_ctx* c, nir_intrinsic_instr* intr) {
                    ct_store());
             emit(c, w);
         }
+        return;
+    }
+    case nir_intrinsic_ssbo_atomic: {
+        uint32_t subop;
+        switch (nir_intrinsic_atomic_op(intr)) {
+        case nir_atomic_op_iadd: subop = 0; break;
+        case nir_atomic_op_umin: subop = 1; break;
+        case nir_atomic_op_umax: subop = 2; break;
+        default:
+            fail(c, "unsupported ssbo atomic op %d",
+                 (int)nir_intrinsic_atomic_op(intr));
+            return;
+        }
+        int block = ssbo_block(c, intr->src[0]);
+        int ap = ssbo_addr_pair(c, block, get_opnd(c, intr->src[1].ssa, 0));
+        opnd v = get_opnd(c, intr->src[2].ssa, 0);
+        nv_src data = s_any(v);
+        if (data.kind == NV_SRC_IMM) {
+            e_mov(c, 2, data);
+            data = nv_gpr(2);
+        }
+        nv_atomg(w, (uint8_t)dr, nv_gpr((uint8_t)ap), 1, data, 0, subop,
+                 ct_alu());
+        emit(c, w);
         return;
     }
     case nir_intrinsic_load_shared: {
@@ -1367,6 +1396,8 @@ static bool scan_block_cb(nv_ctx* c, nir_block* block, bool* has_jump) {
                 c->ssbo_used[ssbo_block(c, intr->src[0])] = 1;
             else if (intr->intrinsic == nir_intrinsic_store_ssbo)
                 c->ssbo_used[ssbo_block(c, intr->src[1])] = 1;
+            else if (intr->intrinsic == nir_intrinsic_ssbo_atomic)
+                c->ssbo_used[ssbo_block(c, intr->src[0])] = 1;
         }
     }
     return !c->failed;
@@ -1595,11 +1626,15 @@ static void compile_impl(nv_ctx* c, nir_function_impl* impl) {
 }
 
 bool nv_be_compile_compute(nir_shader* cs, struct nv_be_result* res,
-                           char* log, size_t logsz) {
+                           uint32_t tex_ssbo_base, char* log, size_t logsz) {
     if (!cs || !res) return false;
     memset(res, 0, sizeof(*res));
 
     nir_shader* nir = nir_shader_clone(NULL, cs);
+    if (!nv_lower_tex(nir, &res->tex_mask, tex_ssbo_base, log, logsz)) {
+        ralloc_free(nir);
+        return false;
+    }
     lower(nir);
 
     nv_ctx* c = calloc(1, sizeof(*c));

@@ -34,8 +34,16 @@ extern "C" {
 struct nv_be_result {
     uint32_t *bin;            /* SASS instruction words */
     uint32_t  bin_words;      /* = 4 * num_instructions */
+    uint32_t  tex_mask;       /* bit i: kernel samples ctex unit i (nv_tex.c) */
     struct nv_kernel_meta meta;
 };
+
+/* Software texture sampling (nv_tex.c): expand nir_tex_instr into SSBO loads
+ * over the linear RGBA image + bilinear/cube ALU.  Runs before scalarization;
+ * sets bit texture_index in *tex_mask per sampled unit.  false + log on an
+ * unsupported sampler shape. */
+bool nv_lower_tex(nir_shader *nir, uint32_t *tex_mask, uint32_t tex_ssbo_base,
+                  char *log, size_t logsz);
 
 /* nir_shader_compiler_options for the sm_87 target: the frontend lowers
  * against these.  NULL if the compiler cannot be initialised. */
@@ -46,7 +54,7 @@ const struct nir_shader_compiler_options *nv_be_nir_options(void);
  * is NOT modified: the backend clones it.  On failure returns false with a
  * message in log. */
 bool nv_be_compile_compute(nir_shader *cs, struct nv_be_result *res,
-                           char *log, size_t logsz);
+                           uint32_t tex_ssbo_base, char *log, size_t logsz);
 
 void nv_be_result_free(struct nv_be_result *res);
 

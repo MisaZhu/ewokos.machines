@@ -273,6 +273,7 @@ int wcn_sta_associate(const char *ssid) {
 }
 int wcn_sta_busy(void) { return s.state!=IDLE; }
 int wcn_sta_failed(void) { return s.state==FAILED; }
+int wcn_sta_associated(void) { return s.state==ASSOCIATED; }
 int wcn_sta_resume(void) {
     if (wcn_sta_associate(wcn_wpa_profile_ssid())) return -1;
     if (wcn_wpa_restart(s.mac,s.bss.bssid,s.bss.rsn,s.bss.rsn_len,s.rsn)) {

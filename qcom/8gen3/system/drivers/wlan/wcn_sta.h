@@ -8,6 +8,7 @@ struct wcn_bss;
 int wcn_sta_associate(const char *ssid);
 int wcn_sta_busy(void);
 int wcn_sta_failed(void);
+int wcn_sta_associated(void);
 int wcn_sta_resume(void);
 /* Scan-then-associate-with-WPA using a passphrase or 64-hex PMK. */
 int wcn_sta_join(const char *ssid,const char *credential);

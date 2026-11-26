@@ -216,6 +216,19 @@ compile_compute_source(const char *cs_src, struct pglc_program *res)
    if (!cs_src)
       return nv_decline(res, "compute source is required");
 
+   /* SSBO base for software-sampled textures: the fullscreen compute shape
+    * outputs to block 0 (base 1); the Vulkan geom kernels mark their own
+    * base (xform 2: vout/attr; raster 3: fb/vout/depth).  A plain comment,
+    * ignored by every other backend. */
+   uint32_t tex_base = 1;
+   {
+      const char* m = strstr(cs_src, "pglc_tex_base:");
+      if (m) {
+         unsigned long v = strtoul(m + 14, NULL, 10);
+         if (v >= 1 && v < NV_MAX_SSBO)
+            tex_base = (uint32_t)v;
+      }
+   }
    nir_opts = nv_be_nir_options();
    if (!pglc_fe_compile_compute(cs_src, nir_opts, &sh, res->log, sizeof(res->log)))
       goto fail;
@@ -225,7 +238,7 @@ compile_compute_source(const char *cs_src, struct pglc_program *res)
                "ga10b: linked program lacks a CS NIR");
       goto fail;
    }
-   if (!nv_be_compile_compute(cs_nir, &be, res->log, sizeof(res->log)))
+   if (!nv_be_compile_compute(cs_nir, &be, tex_base, res->log, sizeof(res->log)))
       goto fail;
 
    st = &res->stage[PGLC_STAGE_COMPUTE];
@@ -235,6 +248,7 @@ compile_compute_source(const char *cs_src, struct pglc_program *res)
       goto fail;
    }
    ab->kernel_id = 0;
+   ab->tex_mask = be.tex_mask;
    ab->meta = be.meta;
    /* Wrap the SASS into a cubin so the ga10b_dev module loader consumes it
     * unchanged.  Uniforms reach the kernel through constant bank 0

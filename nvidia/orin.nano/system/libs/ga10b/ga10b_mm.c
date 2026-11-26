@@ -192,6 +192,15 @@ void ga10b_gmmu_unmap(ga10b_gmmu_t* mm, uint64_t va, uint32_t size) {
     (void)tlb_invalidate(mm);
 }
 
+/* unmap a range that ga10b_gmmu_map / ga10b_gmmu_map_attr handed out and
+ * give its VA (and with it its page tables) back for reuse */
+void ga10b_gmmu_unmap_free(ga10b_gmmu_t* mm, uint64_t va, uint32_t size) {
+    uint32_t npages = (size + GA10B_MM_PAGE - 1) / GA10B_MM_PAGE;
+    ga10b_gmmu_unmap(mm, va, size);
+    ga10b_va_give(&mm->va_next, mm->free_va, &mm->nfree, GA10B_MM_MAX_FREE,
+                  va, (uint64_t)npages * GA10B_MM_PAGE);
+}
+
 /* flush_gk20a: write pending, wait for pending and outstanding to drop */
 static int l2_op(uint32_t reg, const char* what) {
     ga10b_wr(reg, GA10B_FLUSH_PENDING_BUSY);
@@ -229,11 +238,14 @@ uint64_t ga10b_gmmu_map_attr(ga10b_gmmu_t* mm, uint64_t phy, uint32_t size,
     if (size == 0)
         return 0;
     uint32_t npages = (size + GA10B_MM_PAGE - 1) / GA10B_MM_PAGE;
-    uint64_t base = mm->va_next;
+    uint64_t span = (uint64_t)npages * GA10B_MM_PAGE;
+    uint64_t base = ga10b_va_take(&mm->va_next, mm->free_va, &mm->nfree, span);
 
-    if (ga10b_gmmu_map_at(mm, base, phy, size, cacheable) != 0)
+    if (ga10b_gmmu_map_at(mm, base, phy, size, cacheable) != 0) {
+        ga10b_va_give(&mm->va_next, mm->free_va, &mm->nfree,
+                      GA10B_MM_MAX_FREE, base, span);
         return 0;
-    mm->va_next = base + (uint64_t)npages * GA10B_MM_PAGE;
+    }
 
     if (!ga10b.quiet)
         klog("ga10b: gmmu map phy=%llx size=%u -> va=%llx (%u pages, %u "

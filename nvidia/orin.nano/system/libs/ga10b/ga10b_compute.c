@@ -18,6 +18,7 @@
 #include <ewoksys/klog.h>
 
 #include "ga10b.h"
+#include "ga10b_devd.h"
 #include "cubin.h"
 #include "qmd.h"
 #include "../nvcompiler/nv_meta.h"   /* compiled-kernel cb0 layout contract */
@@ -29,12 +30,17 @@
 
 static const uint16_t smem_kb[] = { 0, 8, 16, 32, 64, 100, 132, 164 };
 
+static int kernel_qmd(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                      const uint32_t grid[3], const uint32_t block[3],
+                      uint32_t dyn_smem, uint64_t cb0_gpu_va,
+                      struct kuda_qmd* q);
 static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                          const uint32_t grid[3], const uint32_t block[3],
                          uint32_t dyn_smem);
 
 typedef struct {
     uint64_t code_va;
+    void*    code_cpu_va;
     void*    bank_va[KUBIN_NUM_CBANKS];
     uint64_t bank_gpu_va[KUBIN_NUM_CBANKS];
     uint32_t bank_size[KUBIN_NUM_CBANKS];
@@ -43,6 +49,7 @@ typedef struct {
 struct ga10b_module {
     struct cubin_image img;
     void* image;                       /* private copy the parser points into */
+    ga10b_gmmu_t* mm;                  /* VM the code/banks were uploaded into */
     mod_kernel_t k[KUBIN_MAX_KERNELS];
 };
 
@@ -81,9 +88,11 @@ ga10b_module_t* ga10b_module_load(ga10b_gmmu_t* mm, const void* image,
     if (m->image == NULL)
         goto fail;
     memcpy(m->image, image, size);
-    if (cubin_parse(&m->img, m->image, size) != KUBIN_OK ||
-        cubin_needs_relocation(&m->img)) {
-        klog("ga10b: cubin rejected (%u bytes)\n", size);
+    m->mm = mm;
+    int parse_rc = cubin_parse(&m->img, m->image, size);
+    if (parse_rc != KUBIN_OK || cubin_needs_relocation(&m->img)) {
+        klog("ga10b: cubin rejected (%u bytes) parse=%d kernels=%d reloc=%d\n",
+             size, parse_rc, m->img.nkernels, cubin_needs_relocation(&m->img));
         goto fail;
     }
     for (int i = 0; i < m->img.nkernels; i++) {
@@ -92,6 +101,7 @@ ga10b_module_t* ga10b_module_load(ga10b_gmmu_t* mm, const void* image,
         void* code;
         if (ga10b_buf_alloc(mm, k->text_size, &code, &mk->code_va, 1) != 0)
             goto fail;
+        mk->code_cpu_va = code;
         memcpy(code, k->text, k->text_size);
         /* constant banks: kernel-owned first, else the module-wide one */
         for (uint32_t b = 0; b < KUBIN_NUM_CBANKS; b++) {
@@ -166,11 +176,11 @@ int ga10b_kernel_launch_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     return kernel_submit(ch, m, kernel, grid, block, dyn_smem);
 }
 
-/* Build the QMD from the (already-filled) constant banks and submit.  Shared
- * by the nvcc-param launch and the compiled-compute launch below. */
-static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
-                         const uint32_t grid[3], const uint32_t block[3],
-                         uint32_t dyn_smem) {
+/* QMD of one launch; constant bank 0 is read at cb0_gpu_va */
+static int kernel_qmd(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                      const uint32_t grid[3], const uint32_t block[3],
+                      uint32_t dyn_smem, uint64_t cb0_gpu_va,
+                      struct kuda_qmd* q) {
     const struct cubin_kernel* k = &m->img.kernels[kernel];
     mod_kernel_t* mk = &m->k[kernel];
     struct kuda_qmd_launch l;
@@ -181,20 +191,76 @@ static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
         l.cbuf[b] = mk->bank_gpu_va[b];
         l.cbuf_size[b] = mk->bank_size[b];
     }
+    l.cbuf[0] = cb0_gpu_va;
     l.semaphore = ch->sem_gpu_va;
     l.payload = ch->sem_val + 1u;
     for (uint32_t i = 0; i < 3; i++) {
         l.grid[i] = grid[i];
         l.block[i] = block[i];
     }
-    struct kuda_qmd q;
-    if (kuda_qmd_from_kernel(&q, k, &l, GA10B_WARPS_PER_SM, smem_kb,
+    if (kuda_qmd_from_kernel(q, k, &l, GA10B_WARPS_PER_SM, smem_kb,
                              (int)(sizeof(smem_kb) / sizeof(smem_kb[0]))) != 0) {
         klog("ga10b: QMD build failed for %s\n", k->name);
         return -1;
     }
+    return 0;
+}
+
+/* Build the QMD from the (already-filled) constant banks and submit.  Shared
+ * by the nvcc-param launch and the compiled-compute launch below. */
+static int kernel_submit(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                         const uint32_t grid[3], const uint32_t block[3],
+                         uint32_t dyn_smem) {
+    struct kuda_qmd q;
+    if (kernel_qmd(ch, m, kernel, grid, block, dyn_smem,
+                   m->k[kernel].bank_gpu_va[0], &q) != 0)
+        return -1;
     __asm__ volatile("dsb sy" ::: "memory");
     return ga10b_compute_launch(ch, q.w);
+}
+
+/* Queue a launch without waiting for it (ga10b_compute_drain collects).  The
+ * kernel's own bank 0 is still being read by earlier queued launches of the
+ * same kernel, so this one gets a private copy in the queue ring.
+ * 0 queued, 1 not queueable right now (drain, retry, else launch it
+ * synchronously), -1 error. */
+int ga10b_kernel_queue_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                           const uint32_t grid[3], const uint32_t block[3],
+                           void* const* args, uint32_t dyn_smem) {
+    if (kernel < 0 || kernel >= m->img.nkernels)
+        return -1;
+    const struct cubin_kernel* k = &m->img.kernels[kernel];
+    mod_kernel_t* mk = &m->k[kernel];
+    uint32_t size = mk->bank_size[0];
+    if (size < CB0_STACK_PTR + 4u)
+        return -1;
+    void* slot;
+    uint64_t slot_gpu_va;
+    int rc = ga10b_compute_queue_slot(ch, size, &slot, &slot_gpu_va);
+    if (rc != 0)
+        return rc;
+    /* assembled in cached memory, one pass over the uncached slot */
+    uint32_t cb0[GA10B_QUEUE_CB0 / 4u];
+    const struct cubin_cbank* src =
+        k->cbank[0].size != 0 ? &k->cbank[0] : &m->img.cbank[0];
+    memset(cb0, 0, size);
+    if (src->size != 0 && src->data != NULL)
+        memcpy(cb0, src->data, src->size);
+    uint32_t local = k->frame_size > k->min_stack ? k->frame_size
+                                                  : k->min_stack;
+    for (uint32_t i = 0; i < 3; i++) {
+        cb0[CB0_BLOCK_DIM / 4u + i] = block[i];
+        cb0[CB0_GRID_DIM / 4u + i] = grid[i];
+    }
+    cb0[CB0_STACK_PTR / 4u] = (local + 0xfu) & ~0xfu;
+    if (cubin_pack_params(k, args, (uint8_t*)cb0 + k->param_base,
+                          k->param_total) != KUBIN_OK)
+        return -1;
+    memcpy(slot, cb0, size);
+    struct kuda_qmd q;
+    if (kernel_qmd(ch, m, kernel, grid, block, dyn_smem, slot_gpu_va, &q) != 0)
+        return -1;
+    return ga10b_compute_queue(ch, q.w);
 }
 
 /* Launch a compiler-generated compute kernel (nvcompiler cubin).  Unlike the
@@ -232,6 +298,53 @@ int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     if (texdesc != NULL && texdesc_dwords != 0)
         memcpy((uint8_t*)cb0 + NV_TEXDESC_OFF, texdesc, texdesc_dwords * 4u);
     return kernel_submit(ch, m, kernel, grid, block, 0);
+}
+
+/* ---- daemon-side session teardown helpers (gpud only) ---- */
+
+int ga10b_devd_kernel_info(ga10b_module_t* m, int kid,
+                           ga10b_rpc_kinfo_rep_t* out) {
+    if (m == NULL || kid < 0 || kid >= m->img.nkernels ||
+        out == NULL || m->img.kernels[kid].nparams > GA10B_RPC_MAX_PARAMS)
+        return -1;
+    const struct cubin_kernel* k = &m->img.kernels[kid];
+    memset(out, 0, sizeof(*out));
+    out->nparams = k->nparams;
+    out->param_total = k->param_total;
+    for (uint32_t i = 0; i < k->nparams; i++) {
+        out->off[i] = k->params[i].offset;
+        out->sz[i] = k->params[i].size;
+    }
+    return 0;
+}
+
+const char* ga10b_devd_kernel_name(const ga10b_module_t* m, int kid) {
+    if (m == NULL || kid < 0 || kid >= m->img.nkernels)
+        return NULL;
+    return m->img.kernels[kid].name;
+}
+
+void ga10b_dev_module_free(ga10b_module_t* m) {
+    if (m == NULL)
+        return;
+    for (int i = 0; i < m->img.nkernels; i++) {
+        mod_kernel_t* mk = &m->k[i];
+        if (mk->code_va != 0) {
+            uint32_t sz = m->img.kernels[i].text_size;
+            ga10b_gmmu_unmap_free(m->mm, mk->code_va, (sz + 4095u) & ~4095u);
+            ga10b_dma_free(mk->code_cpu_va);
+        }
+        for (uint32_t b = 0; b < KUBIN_NUM_CBANKS; b++) {
+            if (mk->bank_va[b] == NULL)
+                continue;
+            if (mk->bank_gpu_va[b] != 0)
+                ga10b_gmmu_unmap_free(m->mm, mk->bank_gpu_va[b],
+                                      (mk->bank_size[b] + 4095u) & ~4095u);
+            ga10b_dma_free(mk->bank_va[b]);
+        }
+    }
+    free(m->image);
+    free(m);
 }
 
 /* ---- self-test: the projects/kuda vadd kernel ---- */

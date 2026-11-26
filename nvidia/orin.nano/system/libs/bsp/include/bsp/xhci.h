@@ -40,7 +40,8 @@
 
 typedef struct xhci_hc xhci_hc_t;
 
-/* per-endpoint transfer state (one in-flight TD at a time) */
+/* per-endpoint transfer state (one in-flight TD at a time, except
+   isochronous IN endpoints which keep ISOC_TDS TDs in flight) */
 typedef struct {
 	bool     open;
 	bool     in_flight;
@@ -60,6 +61,8 @@ typedef struct {
 	uint64_t data_phys;
 	uint8_t* data;
 	uint64_t armed_ms;
+	/* isochronous IN: multi-TD ring state (NULL unless isoc) */
+	struct xhci_isoc* isoc;
 } xhci_ep_t;
 
 typedef struct xhci_dev {
@@ -81,6 +84,7 @@ typedef struct xhci_dev {
 	uint64_t in_ctx_phys;
 	uint8_t* in_ctx;
 	xhci_ep_t eps[XHCI_MAX_EPS]; /* indexed by DCI, [1] = EP0 */
+	void*    video;         /* claimed video DMA region (isoc), or NULL */
 } xhci_dev_t;
 
 struct xhci_hc {
@@ -169,5 +173,16 @@ int  xhci_int_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size);
 int  xhci_bulk_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps);
 int  xhci_bulk_xfer(xhci_dev_t* dev, uint8_t ep_addr, void* data,
 		uint32_t len, bool dir_in, uint32_t timeout_ms);
+
+/* isochronous IN (UVC video). mps is the FULL wMaxPacketSize including
+   the HS additional-transactions bits; bInterval is the raw descriptor
+   value. Re-calling on an open endpoint reconfigures it (alt-setting
+   change). poll returns >0 bytes of one completed packet, 0 when none
+   is ready, <0 on error. close drops the endpoint and frees the video
+   DMA region. */
+int  xhci_isoc_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
+		uint8_t bInterval);
+int  xhci_isoc_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size);
+void xhci_isoc_in_close(xhci_dev_t* dev, uint8_t ep_addr);
 
 #endif /* __ORIN_XHCI_H */

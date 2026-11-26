@@ -100,8 +100,25 @@ plus the q8b `link_state`/`connect_attempts` counters. `list` entries carry
 `cipher`.
 
 Q8B extensions: `start`, `stop`/`disconnect`, `reconnect`, `country <AA>`,
-`scan-stop`, `scan-results` (text), `station` (station/WPA state), `associate
-<ssid>` (associate without a supplicant) and `rings` (data-path counters).
+`band [auto|2.4|5]`, `scan-stop`, `scan-results` (text), `station` (station/WPA
+state), `associate <ssid>` (associate without a supplicant) and `rings`
+(data-path counters).
+
+`band` reports the join filter (0=auto, 2=2.4 GHz, 5=5 GHz). Changing it
+restarts the controller and rejoins the saved SSID; both manual connections and
+automatic recovery obey the filter. It lasts until driver process exit, with
+`auto` as the default. `--band auto|2.4|5` selects the initial filter before
+the first automatic connection. The Wi-Fi RAMFS build exposes this as
+`make -C machines/qcom/8gen3/efi wifi WIFI_BAND=2.4` (or `5`/`auto`).
+Scans still show both bands. For a mixed SSID, run
+`devcmd /dev/wl0 band 2.4` or `devcmd /dev/wl0 band 5`, then verify the actual
+`channel`/`bssid` in `state` and `mhz` in `station`. The JSON `band` field is
+the requested filter, not a measurement of the current radio frequency.
+
+Software controller restarts can still require repeated WPA handshakes on Q8B.
+For separate mixed-SSID band tests, select `WIFI_BAND` before PXE boot and
+confirm `station=connected` before measuring. Changing `band` during a session
+does not guarantee an immediate successful reconnection.
 
 ## Behaviour
 
@@ -125,11 +142,16 @@ Q8B extensions: `start`, `stop`/`disconnect`, `reconnect`, `country <AA>`,
 
 ## Verification
 
-`aarch64-elf-gcc` + `aarch64-elf-ld` build and link the driver against
-`system/build_aarch64/q8b/lib` (including `libtinyjson.a`). Hardware bring-up
-on the Q8B has not been re-run for this change; the MHI/WMI/DP/WPA paths are
-unchanged apart from the join API and diagnostics. The unsupported band-based
+On 2026-11-19 the driver was built with `aarch64-none-elf-gcc` /
+`aarch64-none-elf-ld`, then tested on Q8B with the replacement QCNFA765 module.
+Both bands completed five-minute ICMP/TCP tests on one mixed SSID. See the
+[test report](q8b-wifi-test-20261119.md) for image identities, measured results
+and the remaining software reconnection limitation. The unsupported band-based
 TCL LMAC experiment described below has been withdrawn.
+
+The same driver was also deployed to the TW220 NVMe installation and tested
+for fifteen minutes per band. See the [TW220 report](tw220-wifi-test-20261119.md)
+for its firmware crashes, packet loss and remaining connection limitations.
 
 ## TW220 2.4 GHz WPA timeout
 
@@ -209,3 +231,56 @@ system tree to `/drivers/q8b/wlan` on the persistent rootfs. The EFI initramfs
 contains `pcied` but does not contain `wlan`; updating only `initramfs.img`
 does not install a new WLAN driver. After one failed connection, collect
 `devcmd /dev/wl0 log`, `station`, and `rings` output.
+
+## Minimal initramfs Wi-Fi test (rootfs=self)
+
+`make -C machines/qcom/8gen3/efi wifi` builds `efi/initramfs-wifi.img` and
+leaves the production `initramfs.img` untouched. It is a 24 MB ext3 boot RAMFS:
+the bootstrap payload plus `wlan`, `netd`, `devcmd`, the QCNFA765 `nfa765`
+AMSS/M3 payload, `board-2.bin`, `regdb.bin`, `/etc/wlan/network.json` and
+`/etc/wlan.country`. The staged `kernel.conf` is forced to `rootfs = self`, so
+`init` keeps the RAMFS, never calls `switchroot` and never opens p3/p4.
+
+The packed boot profile is `efi/wifi.ramfs.rd` (`/etc/init.ramfs.rd`):
+`pcied` is already started by `init` before it runs, so the profile only starts
+`timerd`, `ramfsd /tmp` (RDDM dumps), `piped`, `nulld`,
+`wlan /dev/wl0 --start` and `netd /dev/net0 /dev/wl0`. No console daemon is in
+that profile and no `/etc/init.rd` is packed: `init`'s self-root path starts the
+serial rescue console (`uartd`, `sessiond`, `session -r`) exactly once after the
+profile returns.
+
+Deploy as the normal PXE trio, renaming the image to `INITRAMFS.IMG`
+(`BOOTAA64.EFI`, `KERNEL.BIN` unchanged). Expected serial sequence (WLAN's own
+`wcn:` progress lines follow as the profile starts it):
+
+```text
+[init process started]
+init: /sbin/sdfsd -b /             [ok]
+init: /drivers/8gen3/pcied /dev/pcie0 [ok]
+init: Q8B PCIe owner ready before USB host
+init: rootfs policy=3 self=net order=self,sd,usb,nvme,net
+init: rootfs=self; keeping boot RAMFS, switchroot skipped
+init: starting rescue shell
+```
+
+Log in on the 40-pin UART as `root/root`, then:
+
+```text
+/bin/devcmd /dev/wl0 log          # MHI/QMI/WMI/DP/WPA progress
+/bin/devcmd /dev/wl0 state        # link state, MAC, BSSID, RSSI, channel
+/bin/devcmd /dev/wl0 scan
+/bin/devcmd /dev/wl0 list
+/bin/devcmd /dev/wl0 connect <ssid> <passwd>
+/bin/devcmd /dev/net0 ip          # DHCP result owned by netd
+```
+
+A manual `connect` cannot persist credentials into the read-only boot RAMFS;
+edit `/etc/wlan/network.json` in the staging tree and rebuild instead. The
+image is test-only: restore the production `initramfs.img` (and keep
+`rootfs = nvme`) before a normal disk boot. Static inspection without mounting:
+
+```text
+debugfs -R 'ls -l /etc'  initramfs-wifi.img
+debugfs -R 'cat /etc/kernel/kernel.conf' initramfs-wifi.img
+debugfs -R 'ls -l /drivers/8gen3' initramfs-wifi.img
+```

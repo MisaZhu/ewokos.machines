@@ -39,6 +39,7 @@
 #define GA10B_PGL_KIND_TEX        2u
 #define GA10B_PGL_KIND_INST       3u
 #define GA10B_PGL_KIND_TEXCOL     4u
+#define GA10B_PGL_KIND_VK         5u   /* Vulkan user-shader two-pass pair */
 
 /* uniform word offsets inside each kernel's region (kernels/pgl_geom.cu).
  * colour / textured / colour-modulated vertex transforms share the head. */
@@ -158,6 +159,34 @@ typedef struct {
     uint32_t tex_mask;            /* bit i: kernel samples ctex unit i */
     uint32_t cubin_size;          /* bytes of cubin ELF after this header */
 } ga10b_compute_blob_t;
+
+/* Vulkan user-shader program (geom_kind == 5): TWO compiler-generated cubins,
+ * the vertex-transform pass (one invocation per vertex, reads the client's
+ * interleaved attribute stream, writes a vout record) and the raster pass
+ * (one lane or one workgroup per triangle, reads vout, writes fb + depth).
+ * Unlike kinds 1-4 there is no tile binning: the raster kernel sweeps each
+ * triangle's bounding box directly.  Per-draw uniforms are the concatenation
+ * [xform region | raster region] split at xform_unif_dwords.  Strides are in
+ * FLOATS (VERSION-6 contract); the xform cubin ELF follows this header, then
+ * the raster cubin ELF.  SSBO bindings: xform 0=vout 1=attr, raster 0=fb
+ * 1=vout 2=depth; software-sampled textures ride base+unit (xform base 2,
+ * raster base 3, see the pglc_tex_base source marker). */
+typedef struct {
+    uint32_t magic;               /* GA10B_PROG_MAGIC */
+    uint32_t version;             /* GA10B_PROG_VERSION */
+    uint32_t geom_kind;           /* 5 = GA10B_PGL_KIND_VK */
+    uint32_t geom_tpw;            /* 0 = one workgroup/triangle, 256 = lanes */
+    uint32_t vout_stride;         /* pass-1 vout record stride, floats */
+    uint32_t attr_stride;         /* client attribute stream stride, floats */
+    uint32_t xform_unif_dwords;   /* per-draw blob split point */
+    uint32_t raster_unif_dwords;
+    uint32_t xform_local[3];
+    uint32_t raster_local[3];
+    uint32_t xform_tex_mask;
+    uint32_t raster_tex_mask;
+    uint32_t xform_cubin_size;
+    uint32_t raster_cubin_size;
+} ga10b_vk_blob_t;
 
 /* results: 0 ok; DECLINED = nothing was submitted (the client may replay on
  * the CPU); UNSUPPORTED = this back end cannot do it at all; TIMEOUT = a

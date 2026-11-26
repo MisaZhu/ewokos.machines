@@ -662,7 +662,8 @@ static char *wlan_help(void) {
         "station: station/WPA state as text\n"
         "associate <ssid>: associate without a supplicant\n"
         "sleep|wake: station power save on/off (powerd; stays associated)\n"
-        "rings: data-path ring counters\n");
+        "rings: data-path ring counters\n"
+        "spectral-cap: firmware spectral (FFT) capability evidence\n");
 }
 
 static char *wlan_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void *p) {
@@ -769,6 +770,13 @@ static char *wlan_cmd(vdevice_t *dev, int from_pid, int argc, char **argv, void 
         if (out == NULL)
             return NULL;
         wcn_dp_rings(out, 4096);
+        return out;
+    }
+    if (!strcmp(argv[0], "spectral-cap")) {
+        char *out = malloc(2048);
+        if (out == NULL)
+            return NULL;
+        wcn_wmi_spectral_cap(out, 2048);
         return out;
     }
 

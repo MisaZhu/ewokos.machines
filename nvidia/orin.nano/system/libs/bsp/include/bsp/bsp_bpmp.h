@@ -23,6 +23,10 @@ int bsp_bpmp_clk_get_rate(uint32_t clk_id, uint64_t* rate);
 int bsp_bpmp_clk_round_rate(uint32_t clk_id, uint64_t rate, uint64_t* got);
 int bsp_bpmp_clk_is_enabled(uint32_t clk_id, int32_t* state);
 int bsp_bpmp_clk_get_parent(uint32_t clk_id, uint32_t* parent_id);
+/* Hold (1) or drop (0) the top memory-clock rate as the GPU client's floor in
+ * the BPMP bandwidth manager.  Without a floor the BPMP follows bus activity
+ * and needs about half a second of load to leave the idle rate. */
+int bsp_bpmp_gpu_memclk_hold(int hold);
 
 /* CMD_CLK_GET_ALL_INFO response (bpmp-abi.h cmd_clk_get_all_info_response). */
 typedef struct {

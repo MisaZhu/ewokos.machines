@@ -29,6 +29,13 @@ static struct {
     uint64_t scan_deadline;
     unsigned extra_mac_count, extra_mac_valid;
     uint8_t extra_mac[6];
+    /* Firmware capability evidence for the spectral (FFT) data path: the
+     * service bitmap from SERVICE_READY and the direct-buffer ring caps from
+     * SERVICE_READY_EXT. Read-only; nothing here changes controller behavior. */
+    uint32_t svc[32];
+    unsigned svc_words, svc_logged;
+    struct { unsigned pdev,module,min_elem,min_buf_sz,min_buf_align; } dbring[4];
+    unsigned dbring_count, dbring_seen;
     struct wcn_bss ap[64];
     struct {
         unsigned count, valid, max_bw5;
@@ -304,6 +311,18 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             if (!f.chains || f.chains > 2 || f.memory_requests) { f.failed = 1; return; }
             f.service_ready = 1;
         }
+        if (event == 1 && tag == 16 && len >= 4 && len <= 128 && !(len % 4)) {
+            f.svc_words = len / 4;
+            for (unsigned i = 0; i < f.svc_words; i++) f.svc[i] = get32(v + i*4);
+            if (!f.svc_logged) {
+                f.svc_logged = 1;
+                char line[320]; unsigned used = 0;
+                used += snprintf(line+used, sizeof(line)-used, "wmi-svc words=%u", f.svc_words);
+                for (unsigned i = 0; i < f.svc_words && used+9 < sizeof(line); i++)
+                    used += snprintf(line+used, sizeof(line)-used, " %08x", f.svc[i]);
+                wcn_diag("%s\n", line);
+            }
+        }
         if (event==0x4009 && tag==18) {
             for (unsigned off=0;off<len;) {
                 unsigned length=get16(v+off),id=get16(v+off+2);const uint8_t *m=v+off+4;
@@ -335,6 +354,34 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
                     if (get32(m+56)==3 && nss && nss<=2 && (ratio&1)) {
                         if (((ratio>>1)&15)==2) f.nss160=nss;
                         else if (!((ratio>>1)&15)) f.nss160=nss/2;
+                    }
+                }
+                off+=4+length;
+            }
+        }
+        if (event==0x4009 && tag==18) {
+            /* WMI_TAG_DMA_RING_CAPABILITIES entries (24-byte structs). The tag
+             * number shifted by 4 between ath11k reference revisions; accept
+             * both and validate the shape. module 0 = spectral, 1 = CFR. */
+            for (unsigned off=0;off+4<=len;) {
+                unsigned length=get16(v+off),id=get16(v+off+2);const uint8_t *m=v+off+4;
+                if (length+4>len-off) break;
+                if (length==20 && f.dbring_seen<8) {
+                    f.dbring_seen++;
+                    wcn_diag("wmi-dbring-cand tag=%u pdev=%u module=%u elem=%u sz=%u align=%u\n",
+                             id,get32(m),get32(m+4),get32(m+8),get32(m+12),get32(m+16));
+                }
+                if ((id==703 || id==707) && length==20 && f.dbring_count<4) {
+                    unsigned pdev=get32(m),module=get32(m+4);
+                    if (pdev<=2 && module<=1) {
+                        f.dbring[f.dbring_count].pdev=pdev;
+                        f.dbring[f.dbring_count].module=module;
+                        f.dbring[f.dbring_count].min_elem=get32(m+8);
+                        f.dbring[f.dbring_count].min_buf_sz=get32(m+12);
+                        f.dbring[f.dbring_count].min_buf_align=get32(m+16);
+                        f.dbring_count++;
+                        wcn_diag("wmi-dbring pdev=%u module=%u min_elem=%u buf_sz=%u align=%u\n",
+                                 pdev,module,get32(m+8),get32(m+12),get32(m+16));
                     }
                 }
                 off+=4+length;
@@ -659,6 +706,36 @@ void wcn_wmi_status(char *out, size_t size) {
              f.ready,f.events,f.bad,f.failed,f.scan_active,f.ap_count,
              f.extra_mac_count,f.extra_mac_valid);
 }
+static unsigned svc_bit(unsigned bit) {
+    return bit/32 < f.svc_words ? (f.svc[bit/32] >> (bit%32)) & 1 : 0;
+}
+/* Spectral (hardware FFT) capability evidence, gathered passively from the
+ * firmware's own SERVICE_READY / SERVICE_READY_EXT announcements. The ath11k
+ * spectral path needs WMI_TLV_SERVICE_FREQINFO_IN_METADATA (219) plus a
+ * direct-buffer ring cap for module 0 (spectral); WMI_TLV_SERVICE_AUX_SPECTRAL_INTF
+ * (86) is reported as extra evidence. */
+void wcn_wmi_spectral_cap(char *out, size_t size) {
+    unsigned spectral_ring = 0;
+    for (unsigned i = 0; i < f.dbring_count; i++)
+        if (f.dbring[i].module == 0) spectral_ring = 1;
+    size_t pos = snprintf(out, size,
+        "svc_words=%u aux_spectral_intf(86)=%u freqinfo_in_metadata(219)=%u dbring_caps=%u spectral_ring=%u\n",
+        f.svc_words, svc_bit(86), svc_bit(219), f.dbring_count, spectral_ring);
+    if (pos >= size) return;
+    pos += snprintf(out+pos, size-pos, "svc:");
+    for (unsigned i = 0; i < f.svc_words && pos+9 < size; i++)
+        pos += snprintf(out+pos, size-pos, " %08x", f.svc[i]);
+    if (pos+1 >= size) return;
+    pos += snprintf(out+pos, size-pos, "\n");
+    for (unsigned i = 0; i < f.dbring_count && pos+64 < size; i++)
+        pos += snprintf(out+pos, size-pos,
+            "dbring[%u] pdev=%u module=%u min_elem=%u buf_sz=%u align=%u\n",
+            i, f.dbring[i].pdev, f.dbring[i].module, f.dbring[i].min_elem,
+            f.dbring[i].min_buf_sz, f.dbring[i].min_buf_align);
+    if (pos+32 >= size) return;
+    snprintf(out+pos, size-pos, "hw_spectral=%s\n",
+        (svc_bit(219) && spectral_ring) ? "possible" : "absent");
+}
 int wcn_wmi_ready(void) { return f.ready && f.hw_mode_sent && !f.failed; }
 unsigned wcn_wmi_events(void) { return f.events; }
 unsigned wcn_wmi_management(void) { return f.management_rx; }
@@ -911,7 +988,9 @@ int wcn_wmi_channel_width_power(unsigned mhz,unsigned center,unsigned width) {
     return power>30 ? 30 : power;
 }
 int wcn_wmi_scan(void) {
-    if (f.country_state || wcn_sta_busy() || !wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
+    /* ASSOCIATED is allowed: the firmware scans off-channel while the link
+     * stays up (Linux ath11k/NM does connected scans on this same chip). */
+    if (f.country_state || (wcn_sta_busy() && !wcn_sta_associated()) || !wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
     memset(f.ap,0,sizeof(f.ap)); f.ap_count=f.scan_done=f.scan_reason=f.scan_events=0;
     f.scan_id=(f.scan_id+1)&0xfff; if (!f.scan_id) f.scan_id=1;
     f.scan_pending=1; f.scan_timedout=0;

@@ -3,10 +3,13 @@
  * lowered NIR in the reference interpreter over a whole frame and compare every
  * pixel.
  *
- *   emu_ocean [-f shader.frag] [width height [time]]
+ *   emu_ocean [-f shader.frag] [-t unit w h depth raw.rgba]... [width height [time]]
  *
- * Writes /tmp/nv-host/<name>.emu.lst (emulator disassembly, checked against
- * nvdisasm by check_disasm.py), <name>.cubin and <name>_emu.ppm / _ref.ppm. */
+ * -t feeds a software-sampler texture (nv_tex.c): raw.rgba is tightly packed
+ * RGBA bytes, depth 1 (2D) or 6 (cube, faces concatenated +X,-X,+Y,-Y,+Z,-Z).
+ * The mag filter is LINEAR.  Writes /tmp/nv-host/<name>.emu.lst (emulator
+ * disassembly, checked against nvdisasm by check_disasm.py), <name>.cubin and
+ * <name>_emu.ppm / _ref.ppm. */
 #include "ocean_glsl.h"
 #include "pglcompiler.h"
 #include "nv_backend.h"
@@ -22,6 +25,32 @@
 static nir_shader *g_nir;
 static std::vector<uint32_t> g_code;
 static struct nv_kernel_meta g_meta;
+
+struct tex_input {
+    unsigned unit = 0, w = 0, h = 0, depth = 1;
+    std::vector<uint8_t> data;   /* staged: per-face 64B-aligned layers */
+    uint32_t face_stride = 0;    /* bytes */
+};
+
+static bool load_tex(tex_input &t, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { printf("cannot open texture %s\n", path); return false; }
+    std::vector<uint8_t> raw;
+    char buf[4096];
+    size_t got;
+    while ((got = fread(buf, 1, sizeof(buf), f)) > 0) raw.insert(raw.end(), buf, buf + got);
+    fclose(f);
+    size_t face = (size_t)t.w * t.h * 4;
+    if (raw.size() != face * t.depth) {
+        printf("texture %s: %zu bytes, expected %zu\n", path, raw.size(), face * t.depth);
+        return false;
+    }
+    t.face_stride = (uint32_t)((face + 63) & ~63ull);
+    t.data.resize((size_t)t.face_stride * t.depth, 0);
+    for (unsigned fce = 0; fce < t.depth; fce++)
+        memcpy(t.data.data() + (size_t)fce * t.face_stride, raw.data() + fce * face, face);
+    return true;
+}
 
 static void hook(nir_shader *nir, const struct nv_be_result *res, void *) {
     g_nir = nir_shader_clone(NULL, nir);
@@ -50,25 +79,48 @@ static std::string out_path(const std::string &name, const char *suffix) {
 int main(int argc, char **argv) {
     std::string fs = ocean_gen::build_ocean_fs(2, 3, 4);
     std::string name = "ocean";
-    if (argc > 2 && !strcmp(argv[1], "-f")) {
-        FILE *f = fopen(argv[2], "rb");
-        if (!f) {
-            printf("cannot open %s\n", argv[2]);
-            return 1;
+    std::vector<tex_input> texs(NV_MAX_TEX);
+    while (argc > 2 && (!strcmp(argv[1], "-f") || !strcmp(argv[1], "-t"))) {
+        if (!strcmp(argv[1], "-f")) {
+            FILE *f = fopen(argv[2], "rb");
+            if (!f) {
+                printf("cannot open %s\n", argv[2]);
+                return 1;
+            }
+            fs.clear();
+            char buf[4096];
+            size_t got;
+            while ((got = fread(buf, 1, sizeof(buf), f)) > 0)
+                fs.append(buf, got);
+            fclose(f);
+            name = argv[2];
+            size_t slash = name.find_last_of('/');
+            if (slash != std::string::npos) name = name.substr(slash + 1);
+            size_t dot = name.find_last_of('.');
+            if (dot != std::string::npos) name = name.substr(0, dot);
+            argc -= 2;
+            argv += 2;
+        } else {
+            if (argc < 7) {
+                printf("-t needs: unit w h depth raw.rgba\n");
+                return 1;
+            }
+            unsigned u = (unsigned)atoi(argv[2]);
+            if (u >= NV_MAX_TEX || texs[u].w) {
+                printf("bad/duplicate texture unit %u\n", u);
+                return 1;
+            }
+            texs[u].unit = u;
+            texs[u].w = (unsigned)atoi(argv[3]);
+            texs[u].h = (unsigned)atoi(argv[4]);
+            texs[u].depth = (unsigned)atoi(argv[5]);
+            if (!texs[u].w || !texs[u].h ||
+                (texs[u].depth != 1 && texs[u].depth != 6) ||
+                !load_tex(texs[u], argv[6]))
+                return 1;
+            argc -= 6;
+            argv += 6;
         }
-        fs.clear();
-        char buf[4096];
-        size_t got;
-        while ((got = fread(buf, 1, sizeof(buf), f)) > 0)
-            fs.append(buf, got);
-        fclose(f);
-        name = argv[2];
-        size_t slash = name.find_last_of('/');
-        if (slash != std::string::npos) name = name.substr(slash + 1);
-        size_t dot = name.find_last_of('.');
-        if (dot != std::string::npos) name = name.substr(0, dot);
-        argc -= 2;
-        argv += 2;
     }
     unsigned W = argc > 2 ? (unsigned)atoi(argv[1]) : 160;
     unsigned H = argc > 2 ? (unsigned)atoi(argv[2]) : 120;
@@ -141,6 +193,40 @@ int main(int argc, char **argv) {
     env.nmem = 1;
     memcpy(env.block, blk, 12);
 
+    /* the reference interpreter reads load_uniform without the cb0 bias:
+     * give it the whole cb0 image minus the NV_UNIFORM_BASE_OFF head */
+    std::vector<uint8_t> refcb0(NV_CB0_SIZE - NV_UNIFORM_BASE_OFF, 0);
+    memcpy(refcb0.data(), &cb0[NV_UNIFORM_BASE_OFF], refcb0.size());
+
+    struct nir_ref_env renv;
+    memset(&renv, 0, sizeof(renv));
+    renv.ssbo[0].p = (uint8_t *)fb_ref.data();
+    renv.ssbo[0].size = fb_ref.size() * 4;
+    memcpy(renv.num_workgroups, grid, 12);
+
+    for (unsigned u = 0; u < NV_MAX_TEX; u++) {
+        const tex_input &t = texs[u];
+        if (!t.w) continue;
+        uint64_t va = fb_va + 0x10000000ull * (u + 1);
+        memcpy(&cb0[NV_SSBO_BASE_OFF + (u + 1) * 8], &va, 8);
+        uint32_t *td = (uint32_t *)&cb0[NV_TEXDESC_OFF + u * NV_TEXDESC_STRIDE];
+        td[0] = t.w; td[1] = t.h; td[2] = t.w; /* stride in words */
+        td[3] = t.depth == 6 ? t.face_stride / 4 : 0;
+        td[4] = 1;   /* LINEAR */
+        env.mem[env.nmem].va = va;
+        env.mem[env.nmem].p = (uint8_t *)t.data.data();
+        env.mem[env.nmem].size = t.data.size();
+        env.nmem++;
+        renv.ssbo[u + 1].p = (uint8_t *)t.data.data();
+        renv.ssbo[u + 1].size = t.data.size();
+    }
+    memcpy(refcb0.data() + (NV_TEXDESC_OFF - NV_UNIFORM_BASE_OFF),
+           &cb0[NV_TEXDESC_OFF], NV_MAX_TEX * NV_TEXDESC_STRIDE);
+    renv.uniforms = refcb0.data();
+    renv.uniform_bytes = (uint32_t)refcb0.size();
+
+    struct nir_ref *ref = nir_ref_create(g_nir, &renv);
+
     char err[512] = "";
     struct nv_emu *emu = nv_emu_create(&env, err, sizeof(err));
     if (!emu) {
@@ -154,15 +240,6 @@ int main(int argc, char **argv) {
         fprintf(lst, "%04x %s\n", i * 16, line);
     }
     if (lst) fclose(lst);
-
-    struct nir_ref_env renv;
-    memset(&renv, 0, sizeof(renv));
-    renv.uniforms = (const uint8_t *)unif.data();
-    renv.uniform_bytes = st->uniform_blob_dwords * 4;
-    renv.ssbo[0].p = (uint8_t *)fb_ref.data();
-    renv.ssbo[0].size = fb_ref.size() * 4;
-    memcpy(renv.num_workgroups, grid, 12);
-    struct nir_ref *ref = nir_ref_create(g_nir, &renv);
 
     if (samples) {
         const unsigned C = 16, R = 9;

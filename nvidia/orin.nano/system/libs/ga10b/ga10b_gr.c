@@ -49,6 +49,13 @@
 #define GR_CTX_IMAGE_FALLBACK  0x80000u   /* dry-run DISCOVER placeholder */
 #define GR_LOCAL_MEM_SIZE      0x80000u   /* 512KB shader local window */
 #define GR_DISPATCH_WORDS      19u
+/* queued launches (ga10b_compute_queue): each owns a QMD and a private copy
+ * of constant bank 0 until the queue is drained */
+#define GR_QUEUE_SLOTS         GA10B_QUEUE_SLOTS
+#define GR_CB0_SLOT            GA10B_QUEUE_CB0
+#define GR_QUEUE_WORDS         (GR_DISPATCH_WORDS + 2u)
+#define GR_QUEUE_TS_OFF        (GR_QUEUE_SLOTS * (256u + GR_CB0_SLOT))
+#define GR_QUEUE_RING_BYTES    (GR_QUEUE_TS_OFF + GR_QUEUE_SLOTS * 16u)
 #define GR_SEM_TRIES           200000u    /* ~2s at 10us */
 #define GR_QMD_REGS            32u
 #define GR_IDLE_TRIES          100000u
@@ -92,6 +99,10 @@ static struct {
     /* dispatch buffers, allocated on first use (single-channel skeleton) */
     ga10b_gmmu_t* buf_mm;
     void*    qmd_va;   uint64_t qmd_phy;   uint64_t qmd_gpu_va;
+    void*    ring_va;  uint64_t ring_phy;  uint64_t ring_gpu_va;
+    uint32_t q_n;                            /* launches queued, not drained */
+    uint32_t q_ts_first;                     /* payload of drained slot 0 */
+    int      timestamps;
     void*    local_va; uint64_t local_phy; uint64_t local_gpu_va;
     ga10b_fw_t netc;
 } gr;
@@ -1521,6 +1532,19 @@ static int gr_dispatch_buffers(ga10b_chan_t* ch) {
     return 0;
 }
 
+/* QMD + constant-bank-0 ring of the queued launches, on first use.  The
+ * optional 16-byte release records follow both and are not on the hot path. */
+static int gr_queue_ring(ga10b_chan_t* ch) {
+    if (gr.ring_gpu_va != 0)
+        return 0;
+    if (gr.ring_va == NULL &&
+        ga10b_dma_alloc(GR_QUEUE_RING_BYTES, 4096, &gr.ring_va,
+                        &gr.ring_phy) != 0)
+        return -1;
+    gr.ring_gpu_va = ga10b_gmmu_map(ch->mm, gr.ring_phy, GR_QUEUE_RING_BYTES);
+    return gr.ring_gpu_va != 0 ? 0 : -1;
+}
+
 /* SM hardware-warning state after a launch that never released its
  * semaphore: warp/global ESR of every live TPC plus the GR exception tree */
 void ga10b_gr_launch_postmortem(void) {
@@ -1547,26 +1571,9 @@ void ga10b_gr_launch_postmortem(void) {
              ga10b_rd(0x00504508u + t * GA10B_TPC_STRIDE));
 }
 
-/* submit one 64-word QMD on the compute channel and wait for its release0
- * semaphore.  The QMD must release ch->sem_gpu_va with ch->sem_val + 1. */
-int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words) {
-    if (!gr.ready) {
-        klog("ga10b: compute_launch before gr_init\n");
-        return -1;
-    }
-    if (ga10b_gr_ctx_prepare(ch) != 0)
-        return -1;
-    if (gr_dispatch_buffers(ch) != 0)
-        return -1;
-    uint64_t qmd_gpu_va = gr.qmd_gpu_va;
-    uint32_t payload = ++ch->sem_val;
-    memcpy(gr.qmd_va, qmd_words, 64 * 4);
-    __asm__ volatile("dsb sy" ::: "memory");
-
-    uint32_t* pb = ga10b_pb_reserve(ch, GR_DISPATCH_WORDS);
-    if (pb == NULL)
-        return -1;
-    uint32_t start = ch->pb_put - GR_DISPATCH_WORDS;
+/* the dispatch methods of one QMD; 0 when its local memory cannot be served */
+static uint32_t gr_dispatch_methods(uint32_t* pb, const uint32_t* qmd_words,
+                                    uint64_t qmd_gpu_va) {
     uint32_t n = 0;
     pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_MTHD_SET_OBJECT, 1);
     pb[n++] = GA10B_CLASS_COMPUTE_B;
@@ -1598,7 +1605,7 @@ int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words) {
     if (per_tpc * (gr.tpc_total ? gr.tpc_total : 1u) > GR_LOCAL_MEM_SIZE) {
         klog("ga10b: shader local window too small (per_tpc=%u tpc=%u)\n",
              per_tpc, gr.tpc_total);
-        return -1;
+        return 0;
     }
     pb[n++] = (uint32_t)((uint64_t)per_tpc >> 32) & 0xffu;
     pb[n++] = per_tpc;
@@ -1607,12 +1614,11 @@ int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words) {
     pb[n++] = (uint32_t)(qmd_gpu_va >> 8);
     pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_CP_SEND_SIGNALING_PCAS2_B, 1);
     pb[n++] = GA10B_CP_PCAS2_INV_COPY_SCHED;
+    return n;
+}
 
-    ga10b_chan_push(ch, start, n);
-    if (!ga10b.quiet)
-        klog("ga10b: compute dispatch qmd=%llx sem=%u sm=%u\n",
-             (unsigned long long)qmd_gpu_va, payload, gr.sm_total);
-    ga10b_chan_submit(ch);
+/* wait for the channel semaphore to reach `payload` */
+static int gr_wait_sem(ga10b_chan_t* ch, uint32_t payload) {
     if (!ga10b.hw)
         return ga10b_chan_wait_sem(ch, payload, GR_SEM_TRIES);
     /* a launch normally retires in well under a scheduler tick, and
@@ -1651,6 +1657,146 @@ int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words) {
     }
     ga10b_gr_launch_postmortem();
     return ga10b_chan_wait_sem(ch, payload, 1);
+}
+
+/* submit one 64-word QMD on the compute channel and wait for its release0
+ * semaphore.  The QMD must release ch->sem_gpu_va with ch->sem_val + 1. */
+int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words) {
+    if (!gr.ready) {
+        klog("ga10b: compute_launch before gr_init\n");
+        return -1;
+    }
+    if (ga10b_gr_ctx_prepare(ch) != 0)
+        return -1;
+    if (gr_dispatch_buffers(ch) != 0)
+        return -1;
+    if (gr.q_n != 0) {
+        klog("ga10b: synchronous launch with %u queued\n", gr.q_n);
+        return -1;
+    }
+    uint64_t qmd_gpu_va = gr.qmd_gpu_va;
+    uint32_t payload = ++ch->sem_val;
+    memcpy(gr.qmd_va, qmd_words, 64 * 4);
+    __asm__ volatile("dsb sy" ::: "memory");
+
+    uint32_t* pb = ga10b_pb_reserve(ch, GR_DISPATCH_WORDS);
+    if (pb == NULL)
+        return -1;
+    uint32_t start = ch->pb_put - GR_DISPATCH_WORDS;
+    uint32_t n = gr_dispatch_methods(pb, qmd_words, qmd_gpu_va);
+    if (n == 0)
+        return -1;
+
+    ga10b_chan_push(ch, start, n);
+    if (!ga10b.quiet)
+        klog("ga10b: compute dispatch qmd=%llx sem=%u sm=%u\n",
+             (unsigned long long)qmd_gpu_va, payload, gr.sm_total);
+    ga10b_chan_submit(ch);
+    return gr_wait_sem(ch, payload);
+}
+
+/* ---- queued launches: submit without waiting, drain once ----
+ * A decode step is a long run of small kernels each feeding the next; with
+ * the synchronous path the host observes every one of them retire before it
+ * hands over the next.  Queued, every launch keeps its own QMD and constant
+ * bank 0 until the drain, the doorbell rings at once, and WAIT_FOR_IDLE
+ * after each dispatch keeps the kernels strictly in submission order on the
+ * GPU side.  The semaphore still advances by one per launch, so the drain
+ * can tell how many retired. */
+
+/* CPU/GPU address of the private constant bank 0 of the next queued launch;
+ * 1 when the queue is full or the bank does not fit a slot, -1 on error */
+int ga10b_compute_queue_slot(ga10b_chan_t* ch, uint32_t cb0_size,
+                             void** cb0_va, uint64_t* cb0_gpu_va) {
+    if (!gr.ready)
+        return -1;
+    if (ga10b_gr_ctx_prepare(ch) != 0 || gr_dispatch_buffers(ch) != 0 ||
+        gr_queue_ring(ch) != 0)
+        return -1;
+    if (cb0_size > GR_CB0_SLOT || gr.q_n == GR_QUEUE_SLOTS)
+        return 1;
+    uint32_t off = GR_QUEUE_SLOTS * 256u + gr.q_n * GR_CB0_SLOT;
+    *cb0_va = (uint8_t*)gr.ring_va + off;
+    *cb0_gpu_va = gr.ring_gpu_va + off;
+    return 0;
+}
+
+/* queue the QMD built for the slot handed out last; it must release
+ * ch->sem_gpu_va with ch->sem_val + 1 */
+int ga10b_compute_queue(ga10b_chan_t* ch, const uint32_t* qmd_words) {
+    if (!gr.ready || gr.ring_gpu_va == 0 || gr.q_n == GR_QUEUE_SLOTS)
+        return -1;
+    uint32_t* qmd = (uint32_t*)gr.ring_va + gr.q_n * 64u;
+    uint64_t qmd_gpu_va = gr.ring_gpu_va + gr.q_n * 256u;
+    uint32_t* pb = ga10b_pb_reserve(ch, GR_QUEUE_WORDS);
+    if (pb == NULL)
+        return -1;
+    uint32_t start = ch->pb_put - GR_QUEUE_WORDS;
+    uint32_t n = gr_dispatch_methods(pb, qmd_words, qmd_gpu_va);
+    if (n == 0) {
+        ch->pb_put = start;
+        return -1;
+    }
+    pb[n++] = ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_CP_WAIT_FOR_IDLE, 1);
+    pb[n++] = 0;
+    memcpy(qmd, qmd_words, 64 * 4);
+    if (gr.timestamps) {
+        uint32_t slot = gr.q_n;
+        uint32_t* rec = (uint32_t*)((uint8_t*)gr.ring_va + GR_QUEUE_TS_OFF +
+                                    slot * 16u);
+        uint64_t rec_gpu_va = gr.ring_gpu_va + GR_QUEUE_TS_OFF + slot * 16u;
+        memset(rec, 0, 16u);
+        ga10b_qmd_release0_timestamp(qmd, rec_gpu_va, ch->sem_val + 1u);
+        ga10b_qmd_release1(qmd, ch->sem_gpu_va, ch->sem_val + 1u);
+    }
+    __asm__ volatile("dsb sy" ::: "memory");
+    ch->sem_val++;
+    gr.q_n++;
+    ga10b_chan_push(ch, start, n);
+    ga10b_chan_submit(ch);
+    return 0;
+}
+
+uint32_t ga10b_compute_queued(void) {
+    return gr.q_n;
+}
+
+void ga10b_compute_timestamps(int enable) {
+    gr.timestamps = enable != 0;
+}
+
+/* Read a retired slot's four-word release: payload lo/hi, PTIMER lo/hi. */
+int ga10b_compute_timestamp(uint32_t slot, uint64_t* timestamp) {
+    if (!ga10b.hw || !gr.timestamps || gr.ring_va == NULL || timestamp == NULL ||
+        slot >= GR_QUEUE_SLOTS)
+        return -1;
+    volatile uint32_t* rec = (volatile uint32_t*)(
+        (uint8_t*)gr.ring_va + GR_QUEUE_TS_OFF + slot * 16u);
+    if (rec[0] != gr.q_ts_first + slot || rec[1] != 0)
+        return -1;
+    uint64_t ts = (uint64_t)rec[2] | ((uint64_t)rec[3] << 32);
+    if (ts == 0)
+        return -1;
+    *timestamp = ts;
+    return 0;
+}
+
+/* wait for every queued launch; *retired = how many of them completed */
+int ga10b_compute_drain(ga10b_chan_t* ch, uint32_t* retired) {
+    uint32_t n = gr.q_n;
+    if (retired != NULL)
+        *retired = 0;
+    if (n == 0)
+        return 0;
+    uint32_t last = ch->sem_val, first = last - n + 1u;
+    gr.q_ts_first = first;
+    int rc = gr_wait_sem(ch, last);
+    uint32_t cur = ga10b.hw ? *(volatile uint32_t*)ch->sem_va : last;
+    uint32_t done = cur >= last ? n : cur >= first ? cur - first + 1u : 0u;
+    if (retired != NULL)
+        *retired = done;
+    gr.q_n = 0;
+    return rc;
 }
 
 /* placeholder-QMD variant (dry-run trace + host tests) */

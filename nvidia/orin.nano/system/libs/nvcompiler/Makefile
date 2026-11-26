@@ -77,7 +77,7 @@ CXXFLAGS := $(NV_INC) $(NV_FORCEINC) $(CXXFLAGS) -w -DNDEBUG -std=gnu++17
 # === sources ================================================================
 # Backend glue: NIR->SASS compiler core, SASS encoder, cubin synthesizer, wire
 # blob serializer, texture layout (C); pglc_* contract compile half (C++).
-GLUE_C   = nv_backend.c nv_sass.c nv_cubin.c nv_blob.c nv_texlayout.c
+GLUE_C   = nv_backend.c nv_tex.c nv_sass.c nv_cubin.c nv_blob.c nv_texlayout.c
 GLUE_CXX = nv_pglc.cpp
 
 SRCS_C   = $(GLUE_C)

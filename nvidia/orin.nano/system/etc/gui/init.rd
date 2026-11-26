@@ -13,7 +13,9 @@
 # to its CPU blit/rotate kernels and fbdisplayd flushes the linear
 # scan-out FB with memcpy.  The FB phys is the UEFI provider's
 # engine-reported scan-out surface (read_provider_fb).
-# Enable once vicprobe M1 + the g2d selftest pass (before displaymand):
+# Enable once vicprobe M1 + the g2d selftest pass (before displaymand).
+# 3D offload (GA10B_ENABLE=1) additionally needs gpud (/dev/gpu), which
+# init.ramfs.rd already starts: g2dd is a GPU client, not the owner.
 # @/bin/ipcserv /drivers/orin.nano/g2dd /dev/g2d
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/orin.nano/fbdisplayd /dev/disp0

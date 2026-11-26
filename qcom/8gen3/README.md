@@ -63,9 +63,11 @@ system 目标递进:`basic ⊂ network ⊂ gui ⊂ x`(x 默认,含桌面与全�
 `session -r` 在无 sessiond 时无限重启)。
 
 efi/Makefile 常用开关:`INITRAMFS_MB`(镜像兆数)、`SELF_ROOT=1`(把
-kernel.conf 的 rootfs=auto 改写成 self,维护模式)、`KERNEL_ONLY=1`
-(只装内核,debug)、`FORCE_UART17/NO_SERIAL/MTFTP_FIRST/TEST_QEMU`。
-`efi build/initramfs/` 是打包暂存,可用 `e2cp`/`debugfs` 抽查内容。
+kernel.conf 的 rootfs 策略改写成 self,维护模式,不跳盘)、`WIFI_TEST=1`
+(最小 Wi-Fi 测试镜像,产物 `initramfs-wifi.img`,见 `docs/q8b-wifi.md`)、
+`KERNEL_ONLY=1`(只装内核,debug)、`FORCE_UART17/NO_SERIAL/MTFTP_FIRST/TEST_QEMU`。
+`efi build/initramfs/` 是打包暂存,可用 `e2cp`/`debugfs` 抽查内容;
+Wi-Fi 测试镜像的暂存树在 `build/initramfs-wifi/`。
 
 ## 更新步骤
 

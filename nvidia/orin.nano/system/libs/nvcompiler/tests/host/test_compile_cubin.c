@@ -35,7 +35,7 @@ int main(void) {
 
     struct nv_be_result be;
     char log[1024] = {0};
-    CK(nv_be_compile_compute(s, &be, log, sizeof(log)));
+    CK(nv_be_compile_compute(s, &be, 1, log, sizeof(log)));
 
     /* same call nv_pglc.cpp makes: name "pgl_cs", no params, no cbank0 image */
     uint32_t need = nv_cubin_build(be.bin, be.bin_words, &be.meta, "pgl_cs",

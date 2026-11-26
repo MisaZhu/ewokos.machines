@@ -43,6 +43,10 @@
 #   ga --hw probe  (BPMP pg35/clks/reset19 + boot_0 + priv_sec_en fuse)
 #   ga --hw init / acr / ce / gr   (escalating; acr = ACR-GSP HS boot)
 # Firmware blobs live at /fs/nvidia/ga10b (packed from GPU_FW_DIR, not in git).
+# Resident GPU service: idle at boot (no MMIO until the first client OPEN),
+# then the single GPU owner shared by kuda apps and g2dd's 3D offload.
+# While gpud holds the GPU the ga10bd CLI stages are refused (one owner).
+@/bin/ipcserv /drivers/orin.nano/gpud /dev/gpu
 # XUSB host: shared usbhostd (enumeration/hub/HID/MSC) over the machine
 # bsp_usb contract; hid_keybd/hid_moused consume HID reports.  MSC sticks
 # auto-mount at /mnt/udisk0 via usbfat32fsd.

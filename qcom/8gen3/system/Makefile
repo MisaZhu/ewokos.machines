@@ -195,5 +195,6 @@ sd:
 	cd $(FINAL_DIR); \
 	find . -type f | e2cp -ap -G0 -O0 -d ../${SD}:/
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
+	python3 ../efi/mklz4.py ${SD} ${SD}.lz4
 
 .PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys apps platform_headers firmware_install qairt_native_build qairt_native_install clean sd

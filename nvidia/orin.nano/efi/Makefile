@@ -63,6 +63,7 @@ SYSTEM_FILES = \
 	$(SYSTEM_ROOT)/drivers/orin.nano/fand \
 	$(SYSTEM_ROOT)/drivers/orin.nano/vicprobe \
 	$(SYSTEM_ROOT)/drivers/orin.nano/ga10bd \
+	$(SYSTEM_ROOT)/drivers/orin.nano/gpud \
 	$(SYSTEM_ROOT)/drivers/orin.nano/g2dd \
 	$(SYSTEM_ROOT)/drivers/orin.nano/g3dtest \
 	$(SYSTEM_ROOT)/drivers/orin.nano/firmware/vic.bin \
@@ -151,6 +152,21 @@ $(INITRAMFS_IMAGE): FORCE
 	@cp -Rp "$(SYSTEM_ROOT)/." "$(RAMFS_STAGING)/"
 	@rm -rf "$(RAMFS_STAGING)/data" "$(RAMFS_STAGING)/usr/system/sounds"
 	@rm -f "$(RAMFS_STAGING)/usr/system/fonts/system-cn.ttf"
+	@# The loader ramdisk budget is 128MB: heavy GL/media demos (apps/* dirs
+	@# >1.5MB, bin/x files >1MB -- shadertoy/cubemap/sphere/balls/grass etc.)
+	@# are test payloads, not boot/desktop essentials; they load via NFS.
+	@for d in "$(RAMFS_STAGING)"/apps/*; do \
+		kb=$$(du -sk "$$d" | cut -f1); \
+		if [ "$$kb" -gt 1500 ]; then \
+			echo "ramfs trim: $$d ($${kb}K)"; rm -rf "$$d"; \
+		fi; \
+	done
+	@for f in "$(RAMFS_STAGING)"/bin/x/*; do \
+		kb=$$(du -sk "$$f" | cut -f1); \
+		if [ "$$kb" -gt 1024 ]; then \
+			echo "ramfs trim: $$f ($${kb}K)"; rm -f "$$f"; \
+		fi; \
+	done
 	@mkdir -p "$(RAMFS_STAGING)/home/misa" "$(RAMFS_STAGING)/home/root"
 	# init.ramfs.rd is a machine etc SOURCE (not a build output), so the
 	# whole-rootfs cp above does not carry it.  It is the boot bootstrap
@@ -165,6 +181,13 @@ $(INITRAMFS_IMAGE): FORCE
 		cp -p "$(GPU_FW_DIR)"/*.bin "$(GPU_FW_DIR)"/*.prod \
 			"$(RAMFS_STAGING)/fs/nvidia/ga10b/"; \
 	fi
+	@# sm_87 test cubins (vectorAdd etc.), same as the bring-up recipe
+	@if [ -d "$(KUDA_CUBIN_DIR)" ]; then \
+		mkdir -p "$(RAMFS_STAGING)/fs/kuda"; \
+		cp -p "$(KUDA_CUBIN_DIR)"/*.cubin "$(RAMFS_STAGING)/fs/kuda/"; \
+	fi
+	@mkdir -p "$(RAMFS_STAGING)/fs/kuda"
+	@cp -p ../system/libs/ga10b/kernels/*.cubin "$(RAMFS_STAGING)/fs/kuda/"
 	@sed -i '' -E 's/^[[:space:]]*rootfs[[:space:]]*=[[:space:]]*[A-Za-z]+.*/rootfs = self/' \
 		"$(RAMFS_STAGING)/etc/kernel/kernel.conf"
 	@grep -q '^rootfs = self' "$(RAMFS_STAGING)/etc/kernel/kernel.conf" || { \
@@ -227,6 +250,7 @@ $(INITRAMFS_IMAGE): FORCE
 		"$(SYSTEM_ROOT)/drivers/orin.nano/fand" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/vicprobe" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/ga10bd" \
+		"$(SYSTEM_ROOT)/drivers/orin.nano/gpud" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/g2dd" \
 		"$(SYSTEM_ROOT)/drivers/orin.nano/g3dtest" \
 		"$(RAMFS_STAGING)/drivers/orin.nano/"

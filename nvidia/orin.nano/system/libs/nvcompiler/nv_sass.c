@@ -474,6 +474,27 @@ void nv_stg(uint32_t out[4], nv_src addr, int addr64, nv_src uaddr, nv_src data,
     finish(out, c);
 }
 
+void nv_atomg(uint32_t out[4], uint8_t dst, nv_src addr, int addr64,
+              nv_src data, int32_t offset, uint32_t subop, nv_ctrl c) {
+    memset(out, 0, 16);
+    nv_set_field(out, 0, 12, 0x9a8);
+    set_dst(out, dst);
+    uint8_t ar = (addr.kind == NV_SRC_ZERO) ? NV_RZ : addr.reg;
+    nv_set_field(out, 24, 32, ar);
+    uint8_t dr = (data.kind == NV_SRC_ZERO) ? NV_RZ : data.reg;
+    nv_set_field(out, 32, 40, dr);
+    nv_set_field(out, 40, 64, (uint32_t)offset);
+    nv_set_field(out, 64, 72, 0xc4);   /* no-uniform-base form (nvcc sample) */
+    nv_set_field(out, 72, 73, 1);
+    nv_set_field(out, 76, 77, 1);      /* .E */
+    nv_set_field(out, 77, 81, 7);      /* STRONG */
+    set_pred_dst(out, 81, NV_PT);
+    nv_set_field(out, 84, 87, 1);
+    nv_set_field(out, 87, 90, subop);
+    nv_set_field(out, 91, 92, addr64);
+    finish(out, c);
+}
+
 void nv_lds(uint32_t out[4], uint8_t dst, nv_src addr, int32_t offset,
             enum nvmt mt, nv_ctrl c) {
     memset(out, 0, 16);

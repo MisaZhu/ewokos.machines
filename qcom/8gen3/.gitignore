@@ -7,8 +7,11 @@
 /efi/*.o
 /efi/*.bin
 /efi/*.img
+/efi/*.lz4
+/efi/__pycache__/
 /efi/build/
 /efi/test/out*/
+/root_*.img.lz4
 /system/build_aarch64/
 
 # himaxd host-test outputs

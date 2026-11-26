@@ -125,6 +125,8 @@ int bsp_usb_reinit(void) {
     }
     if (_msc.child_pid > 0)
         dev_cntl_by_pid(_msc.child_pid, USBFS_CMD_QUIT, NULL, NULL);
+    extern void bsp_usb_uvc_reinit(void);
+    bsp_usb_uvc_reinit();
     memset(_devs, 0, sizeof(_devs));
     memset(&_msc, 0, sizeof(_msc));
     _msc_mount_pending = false;
@@ -230,6 +232,13 @@ int bsp_usb_device_configure_hub(bsp_usb_dev_t* dev, int num_ports) {
     return xhci_configure_hub(&dev->xdev, num_ports);
 }
 
+/* BSP_USB_SPEED_* of an attached device, -1 when gone */
+int bsp_usb_device_speed(bsp_usb_dev_t* dev) {
+    if (dev == NULL || !dev->used)
+        return -1;
+    return speed_from_xhci(dev->xdev.speed);
+}
+
 /* ---- transfers ---- */
 
 int bsp_usb_control_xfer(bsp_usb_dev_t* dev, const usb_setup_pkt_t* setup,
@@ -272,6 +281,28 @@ int bsp_usb_bulk_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
     if (dev == NULL || !dev->used)
         return -1;
     return xhci_int_in_poll(&dev->xdev, ep_addr, buf, size);
+}
+
+/* ---- isochronous IN (UVC video) ---- */
+
+int bsp_usb_isoc_in_open(bsp_usb_dev_t* dev, uint8_t ep_addr, uint16_t mps,
+        uint8_t interval) {
+    if (dev == NULL || !dev->used)
+        return -1;
+    return xhci_isoc_in_open(&dev->xdev, ep_addr, mps, interval);
+}
+
+int bsp_usb_isoc_in_poll(bsp_usb_dev_t* dev, uint8_t ep_addr, void* buf,
+        int size) {
+    if (dev == NULL || !dev->used)
+        return -1;
+    return xhci_isoc_in_poll(&dev->xdev, ep_addr, buf, size);
+}
+
+void bsp_usb_isoc_in_close(bsp_usb_dev_t* dev, uint8_t ep_addr) {
+    if (dev == NULL || !dev->used)
+        return;
+    xhci_isoc_in_close(&dev->xdev, ep_addr);
 }
 
 int bsp_usb_ep_clear_halt(bsp_usb_dev_t* dev, uint8_t ep_addr) {

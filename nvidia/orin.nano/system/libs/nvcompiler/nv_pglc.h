@@ -28,6 +28,7 @@ extern "C" {
 
 struct nv_pglc_stage {
     uint32_t kernel_id;        /* GA10B_PGL_K_* twin id, 0 for a real compile */
+    uint32_t tex_mask;         /* bit i: kernel samples ctex unit i (nv_tex.c) */
     struct nv_kernel_meta meta;
     uint8_t* cubin;            /* synthesized cubin ELF (malloc'd), or NULL */
     uint32_t cubin_size;

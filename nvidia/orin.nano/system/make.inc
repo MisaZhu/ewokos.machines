@@ -25,8 +25,9 @@ LDFLAGS += -L $(SDK_DIR)/lib
 CFLAGS += -I include -I $(SDK_DIR)/include -I $(MAKEINC_DIR)/../include
 CXXFLAGS += -I include -I $(SDK_DIR)/include -I $(MAKEINC_DIR)/../include
 
-# libga10b (GPU driver) and libbsp reference each other: bsp_g3d forwards
-# into the driver, the driver powers the GPU through bsp_bpmp.  Static
-# archives only contribute referenced objects, so only g2dd and the ga10bd
-# CLI actually link the driver in.
-export BSP_LFLAGS= --start-group -lbsp -lga10b --end-group
+# libbsp's bsp_g3d forwards into libga10br: the REMOTE libga10b client that
+# talks to the resident gpud daemon (/dev/gpu).  g2dd thus shares the GPU
+# with kuda apps instead of owning it exclusively.  The in-process driver
+# (libga10b.a) is linked only by gpud itself and the ga10bd bring-up CLI,
+# which spell out their own --start-group -lbsp -lga10b --end-group.
+export BSP_LFLAGS= --start-group -lbsp -lga10br --end-group

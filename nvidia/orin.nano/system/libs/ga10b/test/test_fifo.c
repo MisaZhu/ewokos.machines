@@ -158,6 +158,15 @@ int main(void) {
     CHECK(q[51], 0x87000000u);   /* SASS sm87 */
     CHECK(q[0] | q[1] | q[63], 0u);   /* untouched dwords stay zero */
 
+    ga10b_qmd_release0_timestamp(q, 0x1234567000ULL, 0x66u);
+    ga10b_qmd_release1(q, 0x1abcde000ULL, 0x77u);
+    CHECK(q[24], 0x34567000u);
+    CHECK(q[25], 0x00880012u);   /* upper 0x12 | membar19 | en23 | 4word=0 */
+    CHECK(q[26] | q[27], 0x66u);
+    CHECK(q[28], 0xabcde000u);
+    CHECK(q[29], 0x40880001u);   /* RELEASE1 upper 1 | membar | en | 1word */
+    CHECK(q[30] | q[31], 0x77u);
+
     /* REGISTER_COUNT_V is a 9-bit field (656:648): 511 fits, 512 wraps */
     ga10b_qmd_minimal(q, 0, 0, 0, 511u);
     CHECK(q[20], 0x0001ff00u);

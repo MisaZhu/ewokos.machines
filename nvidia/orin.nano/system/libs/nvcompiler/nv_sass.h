@@ -210,6 +210,11 @@ void nv_ldg(uint32_t out[4], uint8_t dst, nv_src addr, int addr64, nv_src uaddr,
 void nv_stg(uint32_t out[4], nv_src addr, int addr64, nv_src uaddr, nv_src data,
             int32_t offset, enum nvmt mt, enum nvorder order,
             enum nvevict ev, nv_ctrl c);
+/* global atomic (ATOMG.E.<subop>.STRONG.GPU): returns the OLD value in dst.
+ * addr is a 64-bit GPR pair holding the full address; subop 0=ADD 1=MIN
+ * 2=MAX (32-bit integer).  Encoding transcribed from nvcc sm_87 output. */
+void nv_atomg(uint32_t out[4], uint8_t dst, nv_src addr, int addr64,
+              nv_src data, int32_t offset, uint32_t subop, nv_ctrl c);
 /* shared / local load/store (LDS/STS, LDL/STL) */
 void nv_lds(uint32_t out[4], uint8_t dst, nv_src addr, int32_t offset,
             enum nvmt mt, nv_ctrl c);

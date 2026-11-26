@@ -49,6 +49,8 @@ void wcn_wmi_reset(void);
 void wcn_wmi_receive(const void *data, unsigned bytes);
 void wcn_wmi_poll(void);
 void wcn_wmi_status(char *out, size_t size);
+/* Passive spectral-capability evidence: service bitmap + DMA ring caps. */
+void wcn_wmi_spectral_cap(char *out, size_t size);
 int wcn_wmi_scan(void);
 int wcn_wmi_country(const char *alpha2);
 int wcn_wmi_scan_cancel(void);

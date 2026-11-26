@@ -14,6 +14,7 @@
  */
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <ewoksys/mmio.h>
@@ -84,6 +85,8 @@
 #define XHCI_IR0_ERSTBA  0x30
 #define XHCI_IR0_ERDP    0x38
 #define ERDP_EHB         (1u << 3)
+/* microframe index (low 14 bits), for isochronous scheduling */
+#define XHCI_MFINDEX     0x400
 
 /* TRB types */
 #define TRB_NORMAL       1
@@ -91,6 +94,7 @@
 #define TRB_DATA         3
 #define TRB_STATUS       4
 #define TRB_LINK         6
+#define TRB_ISOC         8
 #define TRB_ENABLE_SLOT  9
 #define TRB_DISABLE_SLOT 10
 #define TRB_ADDR_DEV     11
@@ -109,6 +113,7 @@
 /* generic TRB dword3 flags */
 #define TRB_TC           (1u << 1)  /* link: toggle cycle */
 #define TRB_ISP          (1u << 2)
+#define TRB_SIA          (1u << 3)  /* isoc: start isochronous ASAP */
 #define TRB_CH           (1u << 4)
 #define TRB_IOC          (1u << 5)
 #define TRB_IDT          (1u << 6)
@@ -123,6 +128,9 @@
 #define CC_TX_ERR        4
 #define CC_STALL         6
 #define CC_SHORT_PKT     13
+#define CC_MISSED_SRV    21  /* isoc: service interval missed (no data) */
+#define CC_RING_OVERRUN  22  /* isoc IN: device had more data than buffers */
+#define CC_RING_UNDERRUN 23  /* isoc OUT: no data ready in time */
 #define CC_CMD_RING_STOP 24
 #define CC_CMD_ABORTED   25
 
@@ -152,7 +160,7 @@
  * single 64KB window, which is why the ring allocations below ask for
  * align == size rather than 64.
  */
-#define XHCI_DMA_POOL_SIZE  (1024 * 1024)
+#define XHCI_DMA_POOL_SIZE  (4 * 1024 * 1024)
 #define XHCI_RING_BOUNDARY  0x10000u
 #define XHCI_ARENA_SIZE     0x8000
 #define XHCI_ARENA_COUNT    16
@@ -160,6 +168,18 @@
 
 #if XHCI_MAX_CONTROLLERS * XHCI_HC_DMA_SIZE > XHCI_DMA_POOL_SIZE - XHCI_ARENA_COUNT * XHCI_ARENA_SIZE
 #error "xHCI controller DMA regions overlap the device arenas"
+#endif
+
+/*
+ * Video (isochronous) DMA region: one 1MB block past the device arenas,
+ * claimed by a single device at a time (one camera). Holds the isoc
+ * transfer ring plus ISOC_TDS packet buffers; far larger than an arena
+ * because video packets are up to 3KB each and dozens stay in flight.
+ */
+#define XHCI_VIDEO_OFF      (XHCI_ARENA_COUNT * XHCI_ARENA_SIZE)
+#define XHCI_VIDEO_SIZE     0x100000u
+#if XHCI_VIDEO_OFF + XHCI_VIDEO_SIZE > XHCI_DMA_POOL_SIZE
+#error "xHCI video DMA region exceeds the pool"
 #endif
 
 /* fixed offsets inside a device arena */
@@ -319,12 +339,58 @@ static void* arena_alloc(xhci_arena_t* a, uint32_t size, uint32_t align,
 }
 
 /*
+ * Video DMA region: single global claim (one isochronous camera at a
+ * time). The region is zeroed on claim; freed on detach/close.
+ */
+static struct {
+    bool used;
+    xhci_dev_t* owner;
+    uint8_t* virt;
+    uint64_t bus;
+    uint32_t bump;
+} _video;
+
+static void* video_take(xhci_dev_t* dev) {
+    if (_video.used) {
+        return NULL;
+    }
+    _video.used = true;
+    _video.owner = dev;
+    _video.virt = _pool.virt + XHCI_VIDEO_OFF;
+    _video.bus = _pool.bus + XHCI_VIDEO_OFF;
+    _video.bump = 0;
+    memset(_video.virt, 0, XHCI_VIDEO_SIZE);
+    dev->video = &_video;
+    return _video.virt;
+}
+
+static void video_free(xhci_dev_t* dev) {
+    if (dev->video == &_video) {
+        _video.used = false;
+        _video.owner = NULL;
+        dev->video = NULL;
+    }
+}
+
+static void* video_alloc(uint32_t size, uint32_t align, uint64_t* bus) {
+    uint32_t off = (_video.bump + align - 1u) & ~(align - 1u);
+    if (off + size > XHCI_VIDEO_SIZE) {
+        return NULL;
+    }
+    _video.bump = off + size;
+    if (bus != NULL) {
+        *bus = _video.bus + off;
+    }
+    return _video.virt + off;
+}
+
+/*
  * Rings. The producer writes dwords 0-2 first and flips the cycle bit in
  * dword3 last; the link TRB in the final slot is (re)written on wrap with
  * the current cycle so the controller follows it back to the top.
  */
 static uint64_t ring_push(uint32_t* ring, uint64_t bus, uint32_t* enq,
-        uint32_t* cycle, bool chain_link,
+        uint32_t* cycle, uint32_t ring_trbs, bool chain_link,
         uint32_t d0, uint32_t d1, uint32_t d2, uint32_t d3) {
     uint32_t i = *enq;
     uint64_t trb_bus = bus + (uint64_t)i * 16u;
@@ -336,8 +402,8 @@ static uint64_t ring_push(uint32_t* ring, uint64_t bus, uint32_t* enq,
     ring[i * 4 + 3] = d3 | *cycle;
 
     (*enq)++;
-    if (*enq == RING_TRBS - 1) {
-        uint32_t* l = &ring[(RING_TRBS - 1) * 4];
+    if (*enq == ring_trbs - 1) {
+        uint32_t* l = &ring[(ring_trbs - 1) * 4];
         l[0] = (uint32_t)bus;
         l[1] = (uint32_t)(bus >> 32);
         l[2] = 0;
@@ -353,6 +419,71 @@ static uint64_t ring_push(uint32_t* ring, uint64_t bus, uint32_t* enq,
 static void ring_doorbell(xhci_hc_t* hc, uint32_t slot, uint32_t val) {
     xhci_dmb();
     put32(hc->db + slot * 4u, val);
+}
+
+/* ---------------- isochronous IN (video) ---------------- */
+
+/*
+ * Isochronous endpoints keep many TDs in flight (one per service
+ * interval) so the controller never runs dry between usbhostd loop
+ * passes. Each TD is a single ISOC TRB with its own packet buffer;
+ * completions are matched by TRB address back to the ring slot.
+ */
+#define ISOC_RING_TRBS   128
+#define ISOC_TDS         64
+#define ISOC_MAX_MPS     3072u  /* HS high-bandwidth: 3 x 1024 */
+
+typedef struct xhci_isoc {
+    uint32_t mps;         /* max bytes per service interval (ESIT payload) */
+    uint32_t interval_us; /* service interval in microseconds */
+    uint32_t interval_exp;/* xHCI interval field (FS/LS: 125us * 2^exp) */
+    uint32_t deq;         /* next ring slot to consume */
+    uint32_t in_flight;
+    uint32_t next_frame;  /* next frame id to schedule */
+    bool     started;
+    struct {
+        uint64_t trb_phys;
+        uint64_t buf_phys;
+        uint8_t* buf;
+        uint32_t len;
+        bool     done;
+        uint8_t  code;
+    } td[ISOC_RING_TRBS];
+} xhci_isoc_t;
+
+static uint32_t isoc_mfindex(xhci_hc_t* hc) {
+    return get32(hc->rt + XHCI_MFINDEX) & 0x3fffu;
+}
+
+static void handle_isoc_event(xhci_ep_t* ep, uint32_t d0, uint32_t d1,
+        uint32_t d2) {
+    xhci_isoc_t* s = ep->isoc;
+    uint64_t trb = (uint64_t)d0 | ((uint64_t)d1 << 32);
+    uint8_t code = (uint8_t)(d2 >> 24);
+    uint32_t residue = d2 & 0xffffffu;
+
+    if (trb < ep->ring_phys ||
+            trb >= ep->ring_phys + (uint64_t)ISOC_RING_TRBS * 16u) {
+        return;
+    }
+    uint32_t idx = (uint32_t)((trb - ep->ring_phys) / 16u);
+    if (idx >= ISOC_RING_TRBS || s->td[idx].trb_phys != trb) {
+        return; /* stale event from a previous ring generation */
+    }
+    s->td[idx].done = true;
+    s->td[idx].code = code;
+    if (code == CC_SUCCESS || code == CC_SHORT_PKT) {
+        uint32_t n = s->mps > residue ? s->mps - residue : 0;
+        s->td[idx].len = n;
+    }
+    else {
+        /* missed service / ring overrun / transaction errors: no usable
+           data this interval; the stream keeps going */
+        s->td[idx].len = 0;
+    }
+    if (s->in_flight > 0) {
+        s->in_flight--;
+    }
 }
 
 /* ---------------- event handling ---------------- */
@@ -373,6 +504,11 @@ static void handle_xfer_event(xhci_hc_t* hc, uint32_t d0, uint32_t d1,
         return;
     }
     xhci_ep_t* ep = &dev->eps[dci];
+
+    if (ep->isoc != NULL) {
+        handle_isoc_event(ep, d0, d1, d2);
+        return;
+    }
 
     if (trb != ep->td_last_phys) {
         /* mid-TD event: a short data stage inside a control TD */
@@ -562,7 +698,7 @@ static int xhci_cmd(xhci_hc_t* hc, uint32_t d0, uint32_t d1, uint32_t d2,
     }
     hc->cmd_done = false;
     hc->cmd_trb_phys = ring_push(hc->cmd, hc->cmd_phys,
-            &hc->cmd_enq, &hc->cmd_cycle, false, d0, d1, d2, d3);
+            &hc->cmd_enq, &hc->cmd_cycle, RING_TRBS, false, d0, d1, d2, d3);
     ring_doorbell(hc, 0, 0);
 
     uint64_t deadline = now_ms() + XHCI_CMD_TIMEOUT_MS;
@@ -929,11 +1065,18 @@ void xhci_device_detach(xhci_dev_t* dev) {
         return;
     }
     xhci_hc_t* hc = dev->hc;
+    /* drop any isochronous endpoint before the slot goes away */
+    for (uint32_t dci = 2; dci < XHCI_MAX_EPS; ++dci) {
+        if (dev->eps[dci].open && dev->eps[dci].isoc != NULL) {
+            xhci_isoc_in_close(dev, (uint8_t)((dci - 1u) / 2u) | 0x80u);
+        }
+    }
     xhci_cmd(hc, 0, 0, 0,
             TRB_TYPE(TRB_DISABLE_SLOT) | ((uint32_t)dev->slot_id << 24), NULL);
     hc->dcbaa[dev->slot_id] = 0;
     hc->slot_dev[dev->slot_id] = NULL;
     arena_free((xhci_arena_t*)dev->arena);
+    video_free(dev);
     memset(dev, 0, sizeof(*dev));
 }
 
@@ -1128,19 +1271,21 @@ int xhci_control_xfer(xhci_dev_t* dev, const usb_setup_pkt_t* setup,
     ep0->buf_len = len;
 
     /* setup stage (IDT: the packet rides in the TRB itself) */
-    ring_push(ep0->ring, ep0->ring_phys, &ep0->enq, &ep0->cycle, false,
+    ring_push(ep0->ring, ep0->ring_phys, &ep0->enq, &ep0->cycle,
+            RING_TRBS, false,
             setup_lo, setup_hi, 8,
             TRB_TYPE(TRB_SETUP) | TRB_IDT |
             (len > 0 ? (dir_in ? TRB_TRT_IN : TRB_TRT_OUT) : 0));
     /* data stage */
     if (len > 0) {
-        ring_push(ep0->ring, ep0->ring_phys, &ep0->enq, &ep0->cycle, false,
+        ring_push(ep0->ring, ep0->ring_phys, &ep0->enq, &ep0->cycle,
+                RING_TRBS, false,
                 (uint32_t)bounce_bus, (uint32_t)(bounce_bus >> 32), len,
                 TRB_TYPE(TRB_DATA) | TRB_ISP | (dir_in ? TRB_DIR_IN : 0));
     }
     /* status stage: opposite direction, IOC */
     ep0->td_last_phys = ring_push(ep0->ring, ep0->ring_phys,
-            &ep0->enq, &ep0->cycle, false,
+            &ep0->enq, &ep0->cycle, RING_TRBS, false,
             0, 0, 0,
             TRB_TYPE(TRB_STATUS) | TRB_IOC |
             ((len == 0 || !dir_in) ? TRB_DIR_IN : 0));
@@ -1278,7 +1423,7 @@ static void int_in_arm(xhci_dev_t* dev, xhci_ep_t* ep, uint32_t dci) {
     ep->buf_len = ep->mps;
     ep->short_left = 0;
     ep->td_last_phys = ring_push(ep->ring, ep->ring_phys,
-            &ep->enq, &ep->cycle, false,
+            &ep->enq, &ep->cycle, RING_TRBS, false,
             (uint32_t)ep->data_phys, (uint32_t)(ep->data_phys >> 32),
             ep->mps, TRB_TYPE(TRB_NORMAL) | TRB_ISP | TRB_IOC);
     ep->in_flight = true;
@@ -1428,7 +1573,7 @@ int xhci_bulk_xfer(xhci_dev_t* dev, uint8_t ep_addr, void* data,
         ep->comp_code = 0;
         ep->buf_len = chunk;
         ep->td_last_phys = ring_push(ep->ring, ep->ring_phys,
-                &ep->enq, &ep->cycle, false,
+                &ep->enq, &ep->cycle, RING_TRBS, false,
                 (uint32_t)ep->data_phys, (uint32_t)(ep->data_phys >> 32),
                 chunk, TRB_TYPE(TRB_NORMAL) | TRB_ISP | TRB_IOC);
         ep->in_flight = true;
@@ -1464,4 +1609,252 @@ int xhci_bulk_xfer(xhci_dev_t* dev, uint8_t ep_addr, void* data,
             break;
     }
     return (int)done;
+}
+
+/* ---------------- isochronous IN endpoints ---------------- */
+
+/* FS/LS isoc: bInterval is the period in ms, rounded down to a power of
+   two in 125us units (xHCI 1.2 table 6-12); minimum 1ms. HS/SS: period
+   is 2^(bInterval-1) microframes. */
+static uint32_t isoc_interval(int speed, uint8_t bInterval,
+        uint32_t* interval_us) {
+    uint32_t exp;
+    if (speed == XHCI_SPEED_HIGH || speed >= XHCI_SPEED_SUPER) {
+        uint32_t bi = bInterval == 0 ? 1u : (bInterval > 16u ? 16u : bInterval);
+        exp = bi - 1u;
+        *interval_us = 125u << exp;
+    }
+    else {
+        uint32_t ms = bInterval == 0 ? 1 : bInterval;
+        exp = 3;
+        while (exp < 10 && (1u << (exp + 1u)) <= ms * 8u) {
+            exp++;
+        }
+        *interval_us = 125u << exp;
+    }
+    return exp > 15 ? 15 : exp;
+}
+
+int xhci_isoc_in_open(xhci_dev_t* dev, uint8_t ep_addr, uint16_t mps,
+        uint8_t bInterval) {
+    uint32_t ep_num = ep_addr & 0x0fu;
+    uint32_t dci = ep_num * 2u + 1u;
+    if (ep_num == 0 || dci >= XHCI_MAX_EPS || (ep_addr & USB_ENDPOINT_IN) == 0) {
+        return -1;
+    }
+    uint32_t base = mps & 0x07ffu;
+    if (base == 0 || mps > ISOC_MAX_MPS) {
+        return -1;
+    }
+    xhci_ep_t* ep = &dev->eps[dci];
+    bool reconfig = ep->open && ep->isoc != NULL;
+    if (ep->open && !reconfig) {
+        return -1; /* DCI already used by another transfer type */
+    }
+
+    uint32_t interval_us = 0;
+    uint32_t exp = isoc_interval(dev->speed, bInterval, &interval_us);
+
+    if (!reconfig) {
+        if (video_take(dev) == NULL) {
+            slog("xhci%d: video dma region busy, isoc open refused\n",
+                    dev->hc->id);
+            return -1;
+        }
+        ep->ring = video_alloc(ISOC_RING_TRBS * 16, ISOC_RING_TRBS * 16,
+                &ep->ring_phys);
+        xhci_isoc_t* s = (xhci_isoc_t*)malloc(sizeof(xhci_isoc_t));
+        if (ep->ring == NULL || s == NULL) {
+            free(s);
+            video_free(dev);
+            ep->ring = NULL;
+            return -1;
+        }
+        memset(s, 0, sizeof(*s));
+        for (uint32_t i = 0; i < ISOC_TDS; ++i) {
+            s->td[i].buf = video_alloc(ISOC_MAX_MPS, 64, &s->td[i].buf_phys);
+            if (s->td[i].buf == NULL) {
+                free(s);
+                video_free(dev);
+                ep->ring = NULL;
+                return -1;
+            }
+        }
+        ep->isoc = s;
+    }
+
+    xhci_isoc_t* s = ep->isoc;
+    memset(ep->ring, 0, ISOC_RING_TRBS * 16);
+    ep->enq = 0;
+    ep->cycle = 1;
+    ep->mps = (uint16_t)mps;
+    s->mps = mps;
+    s->interval_us = interval_us;
+    s->interval_exp = exp;
+    s->deq = 0;
+    s->in_flight = 0;
+    s->started = false;
+    for (uint32_t i = 0; i < ISOC_RING_TRBS; ++i) {
+        s->td[i].trb_phys = 0;
+        s->td[i].done = false;
+        s->td[i].len = 0;
+    }
+
+    /* configure endpoint: keep already-configured EPs, add this one;
+       on an alt-setting change drop the old context first (same DCI) */
+    ictx_clear(dev);
+    ictx(dev, 0)[1] = 0x1u | (1u << dci);
+    if (reconfig) {
+        ictx(dev, 0)[0] = 1u << dci;
+    }
+    ictx_copy_slot(dev);
+    uint32_t* slot = ictx(dev, 1);
+    uint32_t entries = slot_ctx_entries(dev);
+    if (dci > entries) {
+        entries = dci;
+    }
+    slot[0] = (slot[0] & ~(0x1fu << 27)) | (entries << 27);
+
+    uint32_t* epc = ictx(dev, 1 + dci);
+    /* EP type 5 = isochronous IN; CErr=0 (no retries on isoc) */
+    epc[0] = exp << 16;
+    epc[1] = (5u << 3) | ((uint32_t)base << 16);
+    epc[2] = (uint32_t)(ep->ring_phys | 1u);
+    epc[3] = (uint32_t)(ep->ring_phys >> 32);
+    /* Average TRB Length = base packet size; Max ESIT Payload = full
+       wMaxPacketSize incl. the HS additional-transactions bits */
+    epc[4] = base | ((uint32_t)mps << 16);
+
+    int code = xhci_cmd(dev->hc, (uint32_t)dev->in_ctx_phys,
+            (uint32_t)(dev->in_ctx_phys >> 32), 0,
+            TRB_TYPE(TRB_CONFIG_EP) | ((uint32_t)dev->slot_id << 24), NULL);
+    if (code != CC_SUCCESS) {
+        slog("xhci%d: config isoc ep slot=%u dci=%u failed code=%d\n",
+                dev->hc->id, dev->slot_id, dci, code);
+        if (!reconfig) {
+            free(ep->isoc);
+            ep->isoc = NULL;
+            video_free(dev);
+            ep->ring = NULL;
+        }
+        return -1;
+    }
+    ep->open = true;
+    slog("xhci%d: isoc-in open slot=%u ep=%02x dci=%u mps=%u exp=%u period=%uus\n",
+            dev->hc->id, dev->slot_id, ep_addr, dci, mps, exp, interval_us);
+    return 0;
+}
+
+/* arm one isoc TD into the next free ring slot */
+static void isoc_arm(xhci_dev_t* dev, xhci_ep_t* ep) {
+    xhci_isoc_t* s = ep->isoc;
+    uint32_t idx = ep->enq;
+    uint32_t d3 = TRB_TYPE(TRB_ISOC) | TRB_IOC;
+    if (!s->started) {
+        /* first TD: let the controller pick the next service opportunity */
+        d3 |= TRB_SIA;
+        s->next_frame = (isoc_mfindex(dev->hc) + 2u) & 0x3fffu;
+        s->started = true;
+    }
+    else {
+        uint32_t now = isoc_mfindex(dev->hc);
+        /* if software fell behind, resync ahead of the hardware clock
+           instead of scheduling a burst of already-missed intervals */
+        if (((now - s->next_frame) & 0x3fffu) < 0x2000u) {
+            s->next_frame = (now + 16u) & 0x3fffu;
+        }
+        d3 |= (s->next_frame & 0x3fffu) << 16;
+    }
+    s->td[idx].trb_phys = ring_push(ep->ring, ep->ring_phys,
+            &ep->enq, &ep->cycle, ISOC_RING_TRBS, false,
+            (uint32_t)s->td[idx].buf_phys,
+            (uint32_t)(s->td[idx].buf_phys >> 32),
+            s->mps, d3);
+    s->td[idx].done = false;
+    s->td[idx].len = 0;
+    s->td[idx].code = 0;
+    s->in_flight++;
+    s->next_frame = (s->next_frame +
+            (s->interval_us / 125u)) & 0x3fffu;
+}
+
+int xhci_isoc_in_poll(xhci_dev_t* dev, uint8_t ep_addr, void* buf, int size) {
+    uint32_t ep_num = ep_addr & 0x0fu;
+    uint32_t dci = ep_num * 2u + 1u;
+    if (dci >= XHCI_MAX_EPS || !dev->eps[dci].open ||
+            dev->eps[dci].isoc == NULL) {
+        return -1;
+    }
+    xhci_ep_t* ep = &dev->eps[dci];
+    xhci_isoc_t* s = ep->isoc;
+    int ret = 0;
+    bool armed = false;
+
+    xhci_process_events(dev->hc);
+
+    if (s->td[s->deq].done) {
+        uint32_t idx = s->deq;
+        uint32_t n = s->td[idx].len;
+        uint8_t code = s->td[idx].code;
+        s->td[idx].done = false;
+        /* slot ISOC_RING_TRBS-1 is the link TRB, never a data slot */
+        s->deq = (s->deq + 1) % (ISOC_RING_TRBS - 1);
+        if (n > 0) {
+            if ((int)n > size) {
+                n = (uint32_t)size;
+            }
+            memcpy(buf, s->td[idx].buf, n);
+            ret = (int)n;
+        }
+        else if (code != CC_SUCCESS && code != CC_SHORT_PKT &&
+                code != CC_MISSED_SRV && code != CC_RING_OVERRUN &&
+                code != CC_RING_UNDERRUN) {
+            static uint32_t isoc_err_logs;
+            if (isoc_err_logs < 16) {
+                slog("xhci%d: isoc completion error slot=%u ep=%02x code=%u\n",
+                        dev->hc->id, dev->slot_id, ep_addr, code);
+                isoc_err_logs++;
+            }
+        }
+        /* refill the consumed slot right away */
+        if (s->in_flight < ISOC_TDS) {
+            isoc_arm(dev, ep);
+            armed = true;
+        }
+    }
+
+    /* top up after (re)open so the ring stays saturated */
+    while (s->in_flight < ISOC_TDS) {
+        isoc_arm(dev, ep);
+        armed = true;
+    }
+    if (armed) {
+        ring_doorbell(dev->hc, dev->slot_id, dci);
+    }
+    return ret;
+}
+
+void xhci_isoc_in_close(xhci_dev_t* dev, uint8_t ep_addr) {
+    uint32_t ep_num = ep_addr & 0x0fu;
+    uint32_t dci = ep_num * 2u + 1u;
+    if (dci >= XHCI_MAX_EPS || !dev->eps[dci].open ||
+            dev->eps[dci].isoc == NULL) {
+        return;
+    }
+    xhci_ep_t* ep = &dev->eps[dci];
+
+    if (dev->hc->present && !dev->hc->failed &&
+            xhci_port_connected(dev->hc, dev->root_port)) {
+        ictx_clear(dev);
+        ictx(dev, 0)[0] = 1u << dci; /* drop only */
+        ictx(dev, 0)[1] = 0x1u;
+        ictx_copy_slot(dev);
+        xhci_cmd(dev->hc, (uint32_t)dev->in_ctx_phys,
+                (uint32_t)(dev->in_ctx_phys >> 32), 0,
+                TRB_TYPE(TRB_CONFIG_EP) | ((uint32_t)dev->slot_id << 24),
+                NULL);
+    }
+    free(ep->isoc);
+    video_free(dev);
+    memset(ep, 0, sizeof(*ep));
 }

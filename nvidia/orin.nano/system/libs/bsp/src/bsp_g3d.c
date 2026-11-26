@@ -163,6 +163,25 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 			d.ctex_stride = c->ctex_stride[0] ? c->ctex_stride[0]
 			                                  : c->ctex_w[0] * 4u;
 		}
+		/* fullscreen compute software samplers: every bound linear unit
+		   (level 0 only; a mip chain stays unbound so the daemon declines
+		   the draw to the CPU rather than sampling the wrong level) */
+		for (uint32_t u = 0; u < G2D_PGL_MAX_TEX_UNITS &&
+		                     u < GA10B_PGL_MAX_TEX; u++) {
+			ga10b_pgl_tex_t* t = &d.tex[u];
+			if (!c->ctex_contig[u] || !c->ctex_phy[u] ||
+			    c->ctex_tiling[u] != 0 || c->ctex_levels[u] > 1)
+				continue;
+			t->phy    = (uint64_t)c->ctex_phy[u];
+			t->w      = c->ctex_w[u];
+			t->h      = c->ctex_h[u];
+			t->stride = c->ctex_stride[u] ? c->ctex_stride[u]
+			                              : c->ctex_w[u] * 4u;
+			t->depth  = c->ctex_depth[u] ? c->ctex_depth[u] : 1;
+			t->face_stride = c->ctex_arrstride64[u] * 64u;
+			t->linear = G2D_PGL_CTEX_FILTER_OF(c->ctex_ub_pad[u]) ==
+			            G2D_PGL_CTEX_FILTER_LINEAR;
+		}
 	}
 	return pgl_result(ga10b_pgl_draw(prog_handle, &d, (const uint32_t*)unif,
 			num_uniforms));

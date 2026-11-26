@@ -312,6 +312,31 @@ int ga10b_kernel_launch(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
     (void)ch; (void)m; (void)kernel; (void)grid; (void)block; (void)args;
     return -1;
 }
+int ga10b_kernel_launch_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                            const uint32_t grid[3], const uint32_t block[3],
+                            void* const* args, uint32_t dyn_smem) {
+    (void)ch; (void)m; (void)kernel; (void)grid; (void)block; (void)args;
+    (void)dyn_smem;
+    return -1;
+}
+int ga10b_kernel_queue_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                           const uint32_t grid[3], const uint32_t block[3],
+                           void* const* args, uint32_t dyn_smem) {
+    (void)ch; (void)m; (void)kernel; (void)grid; (void)block; (void)args;
+    (void)dyn_smem;
+    return -1;
+}
+int ga10b_compute_drain(ga10b_chan_t* ch, uint32_t* retired) {
+    (void)ch; (void)retired;
+    return -1;
+}
+void ga10b_compute_timestamps(int enable) {
+    (void)enable;
+}
+int ga10b_compute_timestamp(uint32_t slot, uint64_t* timestamp) {
+    (void)slot; (void)timestamp;
+    return -1;
+}
 int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                                 const uint32_t grid[3], const uint32_t block[3],
                                 const uint32_t* unif, uint32_t unif_dwords,

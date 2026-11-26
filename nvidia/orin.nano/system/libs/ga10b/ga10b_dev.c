@@ -14,6 +14,7 @@
 #include "ga10b.h"
 #include "ga10b_regs.h"
 #include "ga10b_fifo.h"
+#include "ga10b_devd.h"
 #include <ga10b/ga10b_dev.h>
 
 ga10b_dev_t ga10b;
@@ -336,7 +337,7 @@ void ga10b_dev_free(void* va, uint64_t gpu_va, uint32_t size) {
     if (dev.state != 1 || va == NULL)
         return;
     if (gpu_va != 0)
-        ga10b_gmmu_unmap(&dev.mm, gpu_va, (size + 4095u) & ~4095u);
+        ga10b_gmmu_unmap_free(&dev.mm, gpu_va, (size + 4095u) & ~4095u);
     ga10b_dma_free(va);
 }
 
@@ -396,6 +397,17 @@ int ga10b_dev_launch_dyn(ga10b_module_t* m, int kernel, const uint32_t grid[3],
                                    dyn_smem);
 }
 
+/* in-process launches are synchronous: nothing is ever left queued */
+int ga10b_dev_launch_async(ga10b_module_t* m, int kernel,
+                           const uint32_t grid[3], const uint32_t block[3],
+                           void* const* args, uint32_t dyn_smem) {
+    return ga10b_dev_launch_dyn(m, kernel, grid, block, args, dyn_smem);
+}
+
+int ga10b_dev_flush(void) {
+    return dev.state == 1 ? 0 : -1;
+}
+
 int ga10b_dev_launch_compute(ga10b_module_t* m, int kernel,
                              const uint32_t grid[3], const uint32_t block[3],
                              const uint32_t* unif, uint32_t unif_dwords,
@@ -406,4 +418,74 @@ int ga10b_dev_launch_compute(ga10b_module_t* m, int kernel,
     return ga10b_kernel_launch_compute(&dev.ch, m, kernel, grid, block,
                                        unif, unif_dwords, ssbo_va, nssbo,
                                        texdesc, texdesc_dwords);
+}
+
+/* ---- daemon-side queued launches (gpud only) ---- */
+
+int ga10b_dev_launch_queue(ga10b_module_t* m, int kernel,
+                           const uint32_t grid[3], const uint32_t block[3],
+                           void* const* args, uint32_t dyn_smem) {
+    if (dev.state != 1)
+        return -1;
+    return ga10b_kernel_queue_dyn(&dev.ch, m, kernel, grid, block, args,
+                                  dyn_smem);
+}
+
+int ga10b_dev_launch_drain(uint32_t* retired) {
+    if (retired != NULL)
+        *retired = 0;
+    if (dev.state != 1)
+        return -1;
+    return ga10b_compute_drain(&dev.ch, retired);
+}
+
+void ga10b_dev_queue_timestamps(int enable) {
+    ga10b_compute_timestamps(enable);
+}
+
+int ga10b_dev_queue_timestamp(uint32_t slot, uint64_t* timestamp) {
+    return dev.state == 1 ? ga10b_compute_timestamp(slot, timestamp) : -1;
+}
+
+void ga10b_devd_mm_stat(uint32_t* tables, uint32_t* free_ranges,
+                        uint64_t* va_next) {
+    int up = dev.state == 1;
+    *tables = up ? dev.mm.ntab : 0;
+    *free_ranges = up ? dev.mm.nfree : 0;
+    *va_next = up ? dev.mm.va_next : 0;
+}
+
+/* ---- daemon-side shared-VM primitives (gpud only) ---- */
+
+uint64_t ga10b_devd_map(uint64_t phy, uint32_t size) {
+    if (dev.state != 1 || phy == 0 || size == 0 || (phy & 0xfffu) != 0)
+        return 0;
+    size = (size + 4095u) & ~4095u;
+    if (dev.mm.va_next + size > GA10B_RPC_PERSIST_CAP) {
+        klog("ga10b: persistent VA exhausted (cap %llx)\n",
+             (unsigned long long)GA10B_RPC_PERSIST_CAP);
+        return 0;
+    }
+    return ga10b_gmmu_map_attr(&dev.mm, phy, size, 1);
+}
+
+/* persistent ranges came from the bump allocator and go back to it; a
+ * client's fixed window slots are only invalidated */
+void ga10b_devd_unmap(uint64_t va, uint32_t size) {
+    if (dev.state != 1 || va == 0 || size == 0)
+        return;
+    size = (size + 4095u) & ~4095u;
+    if (va < GA10B_RPC_PERSIST_CAP)
+        ga10b_gmmu_unmap_free(&dev.mm, va, size);
+    else
+        ga10b_gmmu_unmap(&dev.mm, va, size);
+}
+
+int ga10b_devd_map_at(uint64_t va, uint64_t phy, uint32_t size,
+                      uint32_t old_size) {
+    if (dev.state != 1)
+        return -1;
+    if (old_size != 0)
+        ga10b_gmmu_unmap(&dev.mm, va, old_size);
+    return ga10b_gmmu_map_at(&dev.mm, va, phy, size, 1);
 }

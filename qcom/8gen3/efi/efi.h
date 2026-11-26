@@ -151,6 +151,77 @@ typedef struct {
     uint8_t* ValueStr;
 } EFI_MTFTP4_OPTION;
 
+/* EFI HTTP (UEFI spec 29.4) — layouts match EDK2 MdePkg/Protocol/Http.h. */
+#define EFI_HTTP_SERVICE_BINDING_PROTOCOL_GUID \
+    EFI_GUID_(0xbdc8e6af,0xd9bc,0x4379,0xa7,0x2a,0xe0,0xc4,0xe7,0x5d,0xae,0x1c)
+#define EFI_HTTP_PROTOCOL_GUID \
+    EFI_GUID_(0x7a59b29b,0x910b,0x4171,0x82,0x42,0xa8,0x5a,0x0d,0xf2,0x5b,0x5b)
+
+typedef struct {
+    EFI_STATUS (*CreateChild)(void* This, EFI_HANDLE* ChildHandle);
+    EFI_STATUS (*DestroyChild)(void* This, EFI_HANDLE ChildHandle);
+} EFI_SERVICE_BINDING_PROTOCOL;
+
+typedef struct {
+    uint8_t UseDefaultAddress;
+    EFI_IPv4_ADDRESS LocalAddress;
+    EFI_IPv4_ADDRESS LocalSubnet;
+    uint16_t LocalPort;
+} EFI_HTTPv4_ACCESS_POINT;
+
+typedef struct {
+    uint32_t HttpVersion;       /* 0=HTTP/1.0, 1=HTTP/1.1 */
+    uint32_t TimeOutMillisec;
+    uint8_t LocalAddressIsIPv6;
+    union {
+        EFI_HTTPv4_ACCESS_POINT* IPv4Node;
+        void* IPv6Node;
+    } AccessPoint;
+} EFI_HTTP_CONFIG_DATA;
+
+typedef struct {
+    uint32_t Method;            /* 0=GET */
+    CHAR16* Url;
+} EFI_HTTP_REQUEST_DATA;
+
+typedef struct {
+    uint32_t StatusCode;        /* EFI_HTTP_STATUS_CODE: 3 = 200 OK */
+} EFI_HTTP_RESPONSE_DATA;
+
+typedef struct {
+    CHAR8* FieldName;
+    CHAR8* FieldValue;
+} EFI_HTTP_HEADER;
+
+typedef struct {
+    union {
+        EFI_HTTP_REQUEST_DATA* Request;
+        EFI_HTTP_RESPONSE_DATA* Response;
+    } Data;
+    UINTN HeaderCount;
+    EFI_HTTP_HEADER* Headers;
+    UINTN BodyLength;
+    void* Body;
+} EFI_HTTP_MESSAGE;
+
+typedef struct {
+    EFI_EVENT Event;
+    EFI_STATUS Status;
+    EFI_HTTP_MESSAGE* Message;
+} EFI_HTTP_TOKEN;
+
+typedef struct {
+    void* GetModeData;
+    EFI_STATUS (*Configure)(void* This, EFI_HTTP_CONFIG_DATA* ConfigData);
+    EFI_STATUS (*Request)(void* This, EFI_HTTP_TOKEN* Token);
+    EFI_STATUS (*Cancel)(void* This, EFI_HTTP_TOKEN* Token);
+    EFI_STATUS (*Response)(void* This, EFI_HTTP_TOKEN* Token);
+    EFI_STATUS (*Poll)(void* This);
+} EFI_HTTP_PROTOCOL;
+
+#define EVT_NOTIFY_SIGNAL 0x200u
+#define TPL_CALLBACK      8u
+
 #define EFI_NOT_READY 0x8000000000000006ULL
 #define EFI_TIMEOUT   (18ULL | EFI_ERROR_BIT)
 #define EVT_TIMER 0x80000000u

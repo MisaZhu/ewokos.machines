@@ -97,6 +97,7 @@
 #define ORIN_MRQ_CLK            22u
 #define ORIN_MRQ_THERMAL        27u
 #define ORIN_MRQ_UPHY           69u
+#define ORIN_MRQ_BWMGR_INT      83u
 #define ORIN_MRQ_FLAG_DO_ACK    0x01u
 #define ORIN_MRQ_FLAG_RING_DB   0x02u
 /* CLK subcommands */
@@ -109,6 +110,11 @@
 #define ORIN_CLK_ENABLE         7u
 #define ORIN_CLK_DISABLE        8u
 #define ORIN_CLK_GET_ALL_INFO   14u
+/* BWMGR_INT: subcommand, floor unit, client id (bpmp_bwmgr_ids) */
+#define ORIN_BWMGR_CALC_AND_SET 2u
+#define ORIN_BWMGR_UNIT_KHZ     1u
+#define ORIN_BWMGR_ID_GPU       5u
+#define ORIN_CLK_EMC            31u   /* TEGRA234_CLK_EMC */
 /* THERMAL subcommands (mrq_thermal_host_to_bpmp_cmd) */
 #define ORIN_THERMAL_QUERY_ABI  0u
 #define ORIN_THERMAL_GET_TEMP   1u   /* req {u32 type, u32 zone}, resp i32 mC */

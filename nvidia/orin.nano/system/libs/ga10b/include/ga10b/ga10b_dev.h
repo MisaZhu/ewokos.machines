@@ -39,6 +39,15 @@ int ga10b_dev_launch(ga10b_module_t* m, int kernel, const uint32_t grid[3],
 int ga10b_dev_launch_dyn(ga10b_module_t* m, int kernel, const uint32_t grid[3],
                          const uint32_t block[3], void* const* args,
                          uint32_t dyn_smem);
+/* Queued launch: runs in submission order no later than the next
+ * ga10b_dev_flush, and before any other device call that could observe or
+ * disturb it (sync, copy, free, map, a synchronous launch).  The args are
+ * captured here.  A launch that fails after queueing is reported by the
+ * flush and by every later queued launch. */
+int ga10b_dev_launch_async(ga10b_module_t* m, int kernel,
+                           const uint32_t grid[3], const uint32_t block[3],
+                           void* const* args, uint32_t dyn_smem);
+int ga10b_dev_flush(void);
 /* compiler-generated compute kernel: uniform blob + SSBO base VAs + texture
  * descriptors (nv_meta.h NV_TEXDESC_OFF) filled into constant bank 0; see
  * ga10b_kernel_launch_compute */

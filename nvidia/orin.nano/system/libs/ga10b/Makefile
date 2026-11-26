@@ -35,8 +35,22 @@ OBJS = $(ARCH)/ga10b_dev.o \
 
 LIB = $(TARGET_DIR)/lib/libga10b.a
 
+# Remote client archive: same ga10b_dev.h surface backed by /dev/gpu RPC
+# (gpud), plus the pgl daemon half.  g2dd (via BSP_LFLAGS) and kuda apps link
+# this instead of the in-process driver; gpud/ga10bd keep libga10b.a.
+REMOTE_OBJS = $(ARCH)/ga10b_dev_remote.o $(ARCH)/ga10b_pgl.o
+RLIB = $(TARGET_DIR)/lib/libga10br.a
+
+all: $(LIB) $(RLIB)
+
 $(LIB): $(OBJS)
+	rm -f $(LIB)
 	$(AR) rcs $(LIB) $(OBJS)
+	mkdir -p $(TARGET_DIR)/include
+	cp -r include/* $(TARGET_DIR)/include
+
+$(RLIB): $(REMOTE_OBJS)
+	$(AR) rcs $(RLIB) $(REMOTE_OBJS)
 	mkdir -p $(TARGET_DIR)/include
 	cp -r include/* $(TARGET_DIR)/include
 
@@ -52,4 +66,4 @@ $(ARCH)/ga10b_pgltest.o: kernels/pgl_geom.cu kernels/pgl_sim.h
 $(ARCH)/ga10b_pgl.o: kernels/pgl_geom_cubin.h
 
 clean:
-	rm -f $(OBJS) $(LIB)
+	rm -f $(OBJS) $(REMOTE_OBJS) $(LIB) $(RLIB)

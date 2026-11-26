@@ -25,6 +25,7 @@
  */
 
 #include <stdint.h>
+#include "ga10b_va.h"
 #include <ga10b/ga10b_dev.h>
 #include <stddef.h>
 
@@ -289,9 +290,12 @@ int ga10b_pmu_gr_done(void);
  * DMA pool), volatile, privileged, read-write. */
 #define GA10B_MM_MAX_TABLES  4096   /* x 2MB of mapped VA per PTE table;
                                        LLM arenas (3GB+) need ~1500+ tables */
+#define GA10B_MM_MAX_FREE    256    /* returned bump ranges kept for reuse */
 typedef struct {
     void*    pdb_va;   uint64_t pdb_phy;    /* PDE3 root (level 0) */
     uint64_t va_next;                        /* bump VA allocator cursor */
+    ga10b_va_range_t free_va[GA10B_MM_MAX_FREE];
+    uint32_t nfree;                          /* ranges in free_va */
     struct { void* va; uint64_t phy; } tab[GA10B_MM_MAX_TABLES];
     uint32_t ntab;                           /* child tables allocated */
     uint32_t aperture;                       /* PDE/PTE sysmem aperture: 6 ncoh, 4 coh */
@@ -311,6 +315,7 @@ int      ga10b_l2_flush(void);
 int      ga10b_gmmu_map_at(ga10b_gmmu_t* mm, uint64_t va, uint64_t phy,
                            uint32_t size, int cacheable);
 void     ga10b_gmmu_unmap(ga10b_gmmu_t* mm, uint64_t va, uint32_t size);
+void     ga10b_gmmu_unmap_free(ga10b_gmmu_t* mm, uint64_t va, uint32_t size);
 void     ga10b_gmmu_destroy(ga10b_gmmu_t* mm);
 void     ga10b_gmmu_dump(const ga10b_gmmu_t* mm, uint64_t va);
 
@@ -383,6 +388,16 @@ int ga10b_gr_init(const char* fw_dir);      /* FECS/GPCCS start + golden ctx */
 int ga10b_gr_ctx_prepare(ga10b_chan_t* ch);
 int ga10b_compute_dispatch(ga10b_chan_t* ch, uint64_t shader_gpu_va);
 int ga10b_compute_launch(ga10b_chan_t* ch, const uint32_t* qmd_words);
+/* queued launches: submit without waiting, drain once (ga10b_gr.c) */
+#define GA10B_QUEUE_SLOTS  64u      /* launches between two drains */
+#define GA10B_QUEUE_CB0    1024u    /* largest constant bank 0 a slot holds */
+int ga10b_compute_queue_slot(ga10b_chan_t* ch, uint32_t cb0_size,
+                             void** cb0_va, uint64_t* cb0_gpu_va);
+int ga10b_compute_queue(ga10b_chan_t* ch, const uint32_t* qmd_words);
+uint32_t ga10b_compute_queued(void);
+void ga10b_compute_timestamps(int enable);
+int ga10b_compute_timestamp(uint32_t slot, uint64_t* timestamp);
+int ga10b_compute_drain(ga10b_chan_t* ch, uint32_t* retired);
 void ga10b_gr_launch_postmortem(void);
 /* ga10b_compute.c: nvcc sm_87 cubin modules.  A module keeps one uploaded
  * code + constant-bank set per kernel in the given VM; launches are
@@ -401,6 +416,9 @@ int ga10b_kernel_launch_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
 /* compiler-generated compute kernel (nvcompiler cubin): uniform blob + SSBO
  * base VAs + texture descriptors are filled into constant bank 0 at the
  * nv_meta.h layout offsets */
+int ga10b_kernel_queue_dyn(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
+                           const uint32_t grid[3], const uint32_t block[3],
+                           void* const* args, uint32_t dyn_smem);
 int ga10b_kernel_launch_compute(ga10b_chan_t* ch, ga10b_module_t* m, int kernel,
                                 const uint32_t grid[3], const uint32_t block[3],
                                 const uint32_t* unif, uint32_t unif_dwords,

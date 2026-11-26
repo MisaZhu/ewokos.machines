@@ -214,6 +214,7 @@ static inline void ga10b_rl_ch(uint32_t* e, uint32_t chid,
 }
 
 /* ---- AMPERE_COMPUTE_B (0xC7C0) methods, verbatim clc7c0.h ---- */
+#define GA10B_CP_WAIT_FOR_IDLE        0x0110u   /* hold the method stream until idle */
 #define GA10B_CP_SET_QMD_VERSION      0x0288u   /* current 15:0 | oldest 31:16 */
 #define GA10B_CP_INVALIDATE_SKED_CACHES 0x0298u
 #define GA10B_CP_SET_CWD_SLOT_COUNT   0x02B0u
@@ -257,6 +258,30 @@ static inline void ga10b_qmd_minimal(uint32_t* q, uint64_t program_gpu_va,
     q[48] = (uint32_t)program_gpu_va;   /* PROGRAM_ADDRESS_LOWER */
     q[49] = (uint32_t)((program_gpu_va >> 32) & 0x1ffffu);
     q[51] = 0x87u << 24;                /* SASS_VERSION sm87 */
+}
+
+/* Profiling uses both releases: RELEASE0 writes {payload_lo, payload_hi,
+ * ptimer_lo, ptimer_hi}; RELEASE1 preserves the queue completion semaphore.
+ * QMDV03_00 STRUCTURE_SIZE: FOUR_WORDS=0, ONE_WORD=1, TWO_WORDS=2. */
+static inline void ga10b_qmd_release0_timestamp(uint32_t* q, uint64_t gpu_va,
+                                                uint32_t payload) {
+    q[24] = (uint32_t)gpu_va;
+    q[25] = (uint32_t)((gpu_va >> 32) & 0xffu) |
+            (1u << 19) |                /* FE_SYSMEMBAR */
+            (1u << 23);                 /* ENABLE; FOUR_WORDS=0 */
+    q[26] = payload;
+    q[27] = 0;
+}
+
+static inline void ga10b_qmd_release1(uint32_t* q, uint64_t sem_gpu_va,
+                                      uint32_t payload) {
+    q[28] = (uint32_t)sem_gpu_va;
+    q[29] = (uint32_t)((sem_gpu_va >> 32) & 0xffu) |
+            (1u << 19) |                /* FE_SYSMEMBAR */
+            (1u << 23) |                /* ENABLE */
+            (1u << 30);                 /* STRUCT_SIZE ONE_WORD */
+    q[30] = payload;
+    q[31] = 0;
 }
 
 #endif

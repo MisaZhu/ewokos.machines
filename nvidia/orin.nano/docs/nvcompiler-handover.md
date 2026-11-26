@@ -28,7 +28,7 @@ host 与真机均通过 (已测)。跑通过程中修掉的三个问题见 §4�
 |---|---|
 | `nv_sass.c/.h` | sm_87 128-bit SASS 指令编码器 (~30 指令: ALU/访存/控制流/转换/S2R) + 标签解析汇编器。逐位参考开源 Mesa NAK (MIT) `sm70_encode.rs` (ShaderModel70 覆盖 sm70–87), 对照 nvcc 13.5 sm_87 输出验证。 |
 | `nv_backend.c/.h` | NIR→SASS 编译核心: NIR 标量化 lowering、全局 liveness + linear scan 寄存器分配、结构化控制流 (BCLEAR/BSSY/BSYNC 作用域)、ALU/intrinsic 发射、串行调度。 |
-| `nv_cubin.c/.h` | 从 SASS + `nv_kernel_meta` 合成最小 cubin (CUDA ELF64), 复用 `projects/cuda` 的 `cubin.c` 解析器与 `ga10b_dev_module` 加载路径。 |
+| `nv_cubin.c/.h` | 从 SASS + `nv_kernel_meta` 合成最小 cubin (KUDA ELF64), 复用 `projects/kuda` 的 `cubin.c` 解析器与 `ga10b_dev_module` 加载路径。 |
 | `nv_pglc.cpp` | `pglcompiler.h` 契约编译半: 几何文本→预编译 twin 快路径; 其余→前端→`nv_be_compile_compute`→cubin。 |
 | `nv_blob.c` | wire blob 序列化: `geom_kind!=0` 几何 twin (`ga10b_prog_blob_t`); `geom_kind==0` 全屏 compute (`ga10b_compute_blob_t` + cubin)。 |
 | `nv_texlayout.c` | 纹理线性布局契约。 |
@@ -64,7 +64,7 @@ host 与真机均通过 (已测)。跑通过程中修掉的三个问题见 §4�
 
 运行: `make -f tests/host/Makefile.host emu EMU_ARGS="160 120"` (差分, 首选); `emu_ocean -f x.frag W H` 跑任意 shader, 产物在 `/tmp/nv-host/` (`*.emu.lst` 列表、`*_emu.ppm` 画面);
 `make -f tests/host/Makefile.host ocean` (只编译); `make -C tests/host all` (单测套件);
-`make -C tests` (金标准 + 汇编器)。nvdisasm 在 OrbStack debian VM (`~/cuda-nvcc-full/nvidia/cu13/bin/nvdisasm`,
+`make -C tests` (金标准 + 汇编器)。nvdisasm 在 OrbStack debian VM (`~/kuda-nvcc-full/nvidia/cu13/bin/nvdisasm`,
 `LD_LIBRARY_PATH=~/amd64-libs/usr/lib/x86_64-linux-gnu`)。
 
 ---
@@ -113,7 +113,7 @@ STG.E [R0.64+4i], Rdata
 ### 3.5 cubin 合成 (已测)
 `nv_cubin_build` 出最小 ELF64: `.text.<name>`(SASS, sh_info 高字节=regcount) / `.nv.info[.<name>]` /
 `.nv.constant0.<name>` / `.symtab/.strtab/.shstrtab` / `.note.nv.tkinfo`+`.note.nv.cuinfo`。
-**nvdisasm 门槛 (已测)**: `EI_OSABI=0x41` (ELFOSABI_CUDA, 非 0!); `e_flags=0x06000004|(sm<<8)` (abiversion 8);
+**nvdisasm 门槛 (已测)**: `EI_OSABI=0x41` (ELFOSABI_KUDA, 非 0!); `e_flags=0x06000004|(sm<<8)` (abiversion 8);
 section `sh_offset=64+body偏移`; 属性 fmt key=id<<8|fmt, fmt3=HVAL(u16)/fmt4=SVAL(u16 len+u32 elems)。
 
 ### 3.6 性能相关的代码生成 (2026-11-25)
@@ -236,12 +236,12 @@ uniform 须 < 0x1c0 字节 (112 dwords)。daemon `ga10b_kernel_launch_compute` �
 2. **性能**: 4K 18–23 fps (已测, 动画模式; 固定帧 launch 31.3 ms + swap 9.5 ms)。
    之后的方向按收益排: (a) GPU 渲染与 CPU present 重叠 (双缓冲异步 launch, 帧周期从两者之和变成较大者; 要动 GL 库的同步语义, HUD 这类 CPU 后绘制会强制同步); (b) present 改走 2D 引擎 / 直接呈现 (牵涉 X 与 g2dd 启动顺序, 平台决定); (c) 降分辨率渲染 + GPU 侧放大 (现有 `scaleN` 的放大在 CPU 上, 更慢); (d) 按依赖算 delay (§3.6); (e) sin/cos 311 条 MUFU 没有等价的便宜替代 (多项式约 12 条 ALU, 不省; 和角公式会破坏噪声格点一致性)。
 3. **compute 模块不回收**: 每次装载 compute 程序 (每启动一次 ocean) 都 `ga10b_dev_module` 一份代码 + 常量 bank, 程序释放时不归还 — libga10b 没有 module unload, 它的 DMA 池实际是 bump arena。g2dd 重启 (即复位) 才回收。反复启动 ocean 很多次后会耗尽, 未测上限。
-4. **覆盖面**: 不支持纹理采样、64-bit 值、间接 uniform、非常量 SSBO block; 遇到会编译失败并给出原因 (不会产出错误代码)。
+4. **覆盖面**: 2D/cube 纹理采样已支持 (**软件采样**, `nv_tex.c`, 2026-11-25, host 已测/板上未测): NIR tex 指令降为对线性 RGBA 图像的 SSBO 读取 + 双线性/REPEAT(2D)/面选择+clamp(cube)，纹理走 SSBO block 1+texture_index，w/h/stride/face_stride/filter 描述符在 cb0 `NV_TEXDESC_OFF` (daemon 每次 launch 填)。仅 level 0、仅 plain `texture()` (无 lod/offset/array/shadow)；多级绑定 daemon 拒。`GA10B_PGL_VERSION` 1087→1088 (compute blob 加 `tex_mask`，磁盘 shader 缓存自动换键) —— **所有 PGL_G3D 客户端须对新 libGLESv2 重链**，旧二进制版本门拒。仍不支持: 64-bit 值、间接 uniform、非常量 SSBO block；遇到会编译失败并给出原因 (不会产出错误代码)。host 验证: `make -f tests/host/Makefile.host tex` (语义, 独立 C 参考) + colorglass 差分 + nvdisasm 0 mismatch。
 5. **提交状态** (均未 push):
    - `machines` 仓 `main`: nvcompiler 全部源码与 host 测试、libga10b 的 compute 加载/launch 路径、`make.inc`、`kernel.conf`、loader 128MB、本文档。
    - `projects` 仓分支 `orin-ocean-gpu` (基于板测所用的 `2d4046e6`, 落后主仓钉住的 `origin/main` 21 个提交, 上游其间把应用输出目录改到了 `apps/opengl/`; 主仓的 projects 指针未动): ocean `check` 模式与去 glClear、`GPU_HWS` 加 `orin.nano`、EGL present 多线程拷贝。
    - **仍未提交, 属于其他会话**: libga10b 的不透明 draw 跳排序 (`ga10b_pgl.c/.h` 的部分 hunk、`pgl_geom.cu` 与 cubin、`test_pgl_order.c`、`ga10b-3d-handover.md`); `projects` 里 portablegl 的 profile 计时 / cull sign / uncached 读回修复、teapot/3ddemo、`gles/Makefile` 的 `PGL_G3D_FRONTEND=no` 分支、`GPU_HWS` 里的 `ego`。板测镜像是带着这些改动编出来的。
-   - **`projects/cuda` 整个目录未入库** (另一条工作线的 libcuda): libga10b 的 Makefile 和 `tests/host/Makefile` 都引用它的 `cubin.c` / QMD builder, 干净检出时编不过, 需要它的主人提交。
+   - **`projects/kuda` 整个目录未入库** (另一条工作线的 libkuda): libga10b 的 Makefile 和 `tests/host/Makefile` 都引用它的 `cubin.c` / QMD builder, 干净检出时编不过, 需要它的主人提交。
 
 ---
 

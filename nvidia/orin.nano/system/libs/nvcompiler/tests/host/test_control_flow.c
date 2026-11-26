@@ -50,7 +50,7 @@ static void check_cubin(struct nv_be_result* be, const char* name) {
 static void compile(nir_shader* s, const char* name) {
     struct nv_be_result be;
     char log[1024] = {0};
-    if (!nv_be_compile_compute(s, &be, log, sizeof(log))) {
+    if (!nv_be_compile_compute(s, &be, 1, log, sizeof(log))) {
         fprintf(stderr, "COMPILE FAIL %s: %s\n", name, log);
         exit(1);
     }

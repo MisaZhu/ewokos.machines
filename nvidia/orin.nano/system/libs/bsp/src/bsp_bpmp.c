@@ -381,6 +381,31 @@ int bsp_bpmp_clk_round_rate(uint32_t clk_id, uint64_t rate, uint64_t* got) {
     return r;
 }
 
+int bsp_bpmp_gpu_memclk_hold(int hold) {
+    static uint32_t top_khz;
+    if (hold && top_khz == 0) {
+        uint64_t top = 0;
+        int r = bsp_bpmp_clk_round_rate(ORIN_CLK_EMC, 0xffffffffffull, &top);
+        if (r != 0 || top < 1000u)
+            return r != 0 ? r : -1;
+        top_khz = (uint32_t)(top / 1000u);
+    }
+    /* cmd_bwmgr_int_calc_and_set_request behind the sub-command word */
+    struct {
+        uint32_t cmd;
+        uint32_t client_id;
+        uint32_t niso_bw;
+        uint32_t iso_bw;
+        uint32_t mc_floor;
+        uint8_t floor_unit;
+    } __attribute__((packed)) req = {
+        ORIN_BWMGR_CALC_AND_SET, ORIN_BWMGR_ID_GPU, 0, 0,
+        hold ? top_khz : 0, ORIN_BWMGR_UNIT_KHZ
+    };
+    uint64_t rate = 0;
+    return bpmp_xfer(ORIN_MRQ_BWMGR_INT, &req, sizeof(req), &rate, sizeof(rate));
+}
+
 int bsp_bpmp_clk_is_enabled(uint32_t clk_id, int32_t* state) {
     uint32_t req = (ORIN_CLK_IS_ENABLED << 24) | (clk_id & 0xffffffu);
     int32_t resp = 0;

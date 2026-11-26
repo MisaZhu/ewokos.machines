@@ -31,7 +31,7 @@ int main(void) {
 
     struct nv_be_result res;
     char log[1024] = {0};
-    if (!nv_be_compile_compute(s, &res, log, sizeof(log))) {
+    if (!nv_be_compile_compute(s, &res, 1, log, sizeof(log))) {
         printf("COMPILE FAIL: %s\n", log);
         return 1;
     }

@@ -1,9 +1,9 @@
 /*
  * nv_texlayout.c - GA10B texture memory layout for the pglcompiler.h contract.
- * Plain linear rows: no kernel samples textures through a sampler; the
- * textured geometry kernels index the image as a linear word array, which the
- * client binds on its own for those kinds.  The generic "sampler reads raster"
- * capability stays off.
+ * Plain linear rows: the geometry kernels index the image as a linear word
+ * array, and the compiled fullscreen samplers sample the same linear layout
+ * in software (nv_tex.c: SSBO loads + bilinear / cube face selection), so a
+ * raster slot backs a compiled sampler and a cube stages as 6 linear faces.
  * SPDX-License-Identifier: MIT
  */
 #include <string.h>
@@ -34,7 +34,7 @@ bool pglc_tex_layout_mip_chain(uint32_t w, uint32_t h, uint32_t cpp,
 
 bool pglc_tex_sampler_cube_supported(void)
 {
-   return false;
+   return true;
 }
 
 void pglc_tex_store_2d(void *dst, const void *src, uint32_t src_stride,
@@ -56,5 +56,5 @@ void pglc_tex_store_2d(void *dst, const void *src, uint32_t src_stride,
 
 bool pglc_tex_sampler_reads_raster(void)
 {
-   return false;
+   return true;
 }

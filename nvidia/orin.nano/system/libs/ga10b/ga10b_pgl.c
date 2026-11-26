@@ -19,7 +19,7 @@
 #include "kernels/pgl_geom_cubin.h"
 
 #define PGL_MAX_VERTS   32768u            /* G2D_PGL_MAX_VERTS */
-#define PGL_VOUT_BYTES  (PGL_MAX_VERTS * 48u)   /* widest record: 12 floats */
+#define PGL_VOUT_BYTES  (PGL_MAX_VERTS * 64u)   /* widest record: 16 floats */
 #define PGL_MAX_PROGS   64u               /* g2dd owner table size */
 #define PGL_UNIF_WORDS  1024u
 /* tile rasterizer state (kernels/pgl_geom.cu) */
@@ -51,6 +51,12 @@ static struct {
         uint32_t local_size[3];
         uint32_t unif_dwords;
         uint32_t tex_mask;
+        /* Vulkan user-shader pair (geom_kind == 5): mod/kernel above hold the
+         * RASTER pass; xmod/xkernel the vertex-transform pass */
+        int is_vk;
+        ga10b_vk_blob_t vk;
+        ga10b_module_t* xmod;
+        int xkernel;
     } prog[PGL_MAX_PROGS];
 } pgl;
 
@@ -207,6 +213,56 @@ static int pgl_do_program_load(const void* blob, uint32_t size) {
         }
         return GA10B_PGL_E_DECLINED;
     }
+    if (b.geom_kind == GA10B_PGL_KIND_VK) {
+        /* Vulkan user-shader pair: two compiled cubins, direct per-triangle
+         * raster (no tile binning).  VERSION-6 strides ride the blob. */
+        if (size < sizeof(ga10b_vk_blob_t))
+            return GA10B_PGL_E_UNSUPPORTED;
+        ga10b_vk_blob_t v;
+        memcpy(&v, blob, sizeof(v));
+        if (v.geom_tpw != 0u && v.geom_tpw != 256u)
+            return GA10B_PGL_E_UNSUPPORTED;
+        if (v.vout_stride < 8u || v.vout_stride > 16u ||
+            v.attr_stride < 1u || v.attr_stride > 64u)
+            return GA10B_PGL_E_UNSUPPORTED;
+        if (v.xform_unif_dwords > PGL_UNIF_WORDS ||
+            v.raster_unif_dwords > PGL_UNIF_WORDS)
+            return GA10B_PGL_E_UNSUPPORTED;
+        if (v.xform_cubin_size == 0 || v.raster_cubin_size == 0 ||
+            size < sizeof(v) + v.xform_cubin_size + v.raster_cubin_size)
+            return GA10B_PGL_E_UNSUPPORTED;
+        uint32_t xprod = v.xform_local[0] * v.xform_local[1];
+        uint32_t rprod = v.raster_local[0] * v.raster_local[1];
+        if (xprod == 0 || xprod > 256u || rprod == 0 || rprod > 256u ||
+            (v.geom_tpw != 0u && v.geom_tpw != rprod))
+            return GA10B_PGL_E_UNSUPPORTED;
+        const uint8_t* xc = (const uint8_t*)blob + sizeof(v);
+        ga10b_module_t* xmod = ga10b_dev_module(xc, v.xform_cubin_size);
+        if (xmod == NULL)
+            return GA10B_PGL_E_UNSUPPORTED;
+        int xk = ga10b_module_kernel(xmod, "pgl_cs");
+        ga10b_module_t* rmod = ga10b_dev_module(xc + v.xform_cubin_size,
+                                                v.raster_cubin_size);
+        if (xk < 0 || rmod == NULL)
+            return GA10B_PGL_E_UNSUPPORTED;
+        int rk = ga10b_module_kernel(rmod, "pgl_cs");
+        if (rk < 0)
+            return GA10B_PGL_E_UNSUPPORTED;
+        for (uint32_t i = 0; i < PGL_MAX_PROGS; i++) {
+            if (pgl.prog[i].used)
+                continue;
+            memset(&pgl.prog[i], 0, sizeof(pgl.prog[i]));
+            pgl.prog[i].used = 1;
+            pgl.prog[i].is_vk = 1;
+            pgl.prog[i].vk = v;
+            pgl.prog[i].xmod = xmod;
+            pgl.prog[i].xkernel = xk;
+            pgl.prog[i].mod = rmod;
+            pgl.prog[i].kernel = rk;
+            return (int)i;
+        }
+        return GA10B_PGL_E_DECLINED;
+    }
     /* a kind fixes which kernel pair it may name and how much of the
      * uniform block each one reads */
     uint32_t xf_min = 0, rs_min = 0;
@@ -263,6 +319,41 @@ static int pgl_do_program_free(int handle) {
         return GA10B_PGL_E_UNSUPPORTED;
     pgl.prog[handle].used = 0;
     return GA10B_PGL_OK;
+}
+
+/* kind-5 software samplers: map each bound linear ctex unit into the SSBO
+ * table at base+unit and fill its descriptor row; unused slots below nssbo
+ * point at gap_va so every base the kernel may read is valid. */
+static int pgl_vk_tex(const ga10b_pgl_draw_t* d, uint32_t mask, uint32_t base,
+                      uint64_t* ssbo, uint32_t* nssbo, uint32_t* texdesc,
+                      uint64_t gap_va) {
+    if (mask & ~((1u << GA10B_PGL_MAX_TEX) - 1u))
+        return -1;
+    for (uint32_t i = 0; i < GA10B_PGL_MAX_TEX; i++) {
+        if (!(mask & (1u << i)))
+            continue;
+        const ga10b_pgl_tex_t* t = &d->tex[i];
+        if (t->phy == 0 || t->w == 0 || t->h == 0 ||
+            t->stride != t->w * 4u || t->depth != 1 ||
+            base + i >= NV_MAX_SSBO)
+            return -1;
+        uint64_t va = ga10b_dev_map(t->phy, t->stride * t->h);
+        if (va == 0)
+            return -1;
+        ssbo[base + i] = va;
+        if (base + i + 1u > *nssbo)
+            *nssbo = base + i + 1u;
+        uint32_t* td = texdesc + i * (NV_TEXDESC_STRIDE / 4u);
+        td[0] = t->w;
+        td[1] = t->h;
+        td[2] = t->stride / 4u;
+        td[3] = 0;
+        td[4] = t->linear != 0;
+    }
+    for (uint32_t i = base; i < *nssbo; i++)
+        if (ssbo[i] == 0)
+            ssbo[i] = gap_va;
+    return 0;
 }
 
 static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
@@ -352,6 +443,89 @@ static int pgl_do_draw(int handle, const ga10b_pgl_draw_t* d,
                 memset(&prof.p[handle], 0, sizeof(prof.p[handle]));
             }
         }
+        return rc == 0 ? GA10B_PGL_OK : GA10B_PGL_E_TIMEOUT;
+    }
+    if (pgl.prog[handle].is_vk) {
+        /* Vulkan user-shader pair: pass 1 transforms the client's interleaved
+         * attribute stream into vout records, pass 2 rasterizes triangles
+         * directly (no tile binning).  Depth/blend/cull state lives in the
+         * kernel uniforms; the daemon only arbitrates surfaces. */
+        const ga10b_vk_blob_t* v = &pgl.prog[handle].vk;
+        uint32_t split = v->xform_unif_dwords;
+        uint32_t ntris = d->nverts / 3u;
+        if (d->nverts == 0 || d->nverts % 3u != 0 || d->nverts > PGL_MAX_VERTS)
+            return GA10B_PGL_E_DECLINED;
+        if (d->w == 0 || d->h == 0 || d->stride < d->w * 4u ||
+            (d->stride & 3u) != 0)
+            return GA10B_PGL_E_DECLINED;
+        if (d->z_phy == 0 || d->z_stride != d->stride || d->pos_phy == 0)
+            return GA10B_PGL_E_DECLINED;
+        if (unif == NULL || split > num_uniforms ||
+            num_uniforms - split < v->raster_unif_dwords)
+            return GA10B_PGL_E_DECLINED;
+        if ((uint64_t)d->nverts * v->vout_stride * 4u > PGL_VOUT_BYTES)
+            return GA10B_PGL_E_DECLINED;
+
+        uint64_t fb = ga10b_dev_map(d->fb_phy, d->stride * d->h);
+        uint64_t z = ga10b_dev_map(d->z_phy, d->z_stride * d->h);
+        uint64_t attr = ga10b_dev_map(d->pos_phy,
+                                      d->nverts * v->attr_stride * 4u);
+        if (fb == 0 || z == 0 || attr == 0)
+            return GA10B_PGL_E_DECLINED;
+
+        uint64_t ssbo_x[NV_MAX_SSBO];
+        uint64_t ssbo_r[NV_MAX_SSBO];
+        uint32_t texdesc_x[NV_MAX_TEX * (NV_TEXDESC_STRIDE / 4u)];
+        uint32_t texdesc_r[NV_MAX_TEX * (NV_TEXDESC_STRIDE / 4u)];
+        memset(ssbo_x, 0, sizeof(ssbo_x));
+        memset(ssbo_r, 0, sizeof(ssbo_r));
+        memset(texdesc_x, 0, sizeof(texdesc_x));
+        memset(texdesc_r, 0, sizeof(texdesc_r));
+        uint32_t nssbo_x = 2, nssbo_r = 3;
+        ssbo_x[0] = pgl.vout_gva;
+        ssbo_x[1] = attr;
+        ssbo_r[0] = fb;
+        ssbo_r[1] = pgl.vout_gva;
+        ssbo_r[2] = z;
+        if (pgl_vk_tex(d, v->xform_tex_mask, 2, ssbo_x, &nssbo_x,
+                       texdesc_x, fb) != 0 ||
+            pgl_vk_tex(d, v->raster_tex_mask, 3, ssbo_r, &nssbo_r,
+                       texdesc_r, fb) != 0)
+            return GA10B_PGL_E_DECLINED;
+
+        uint32_t words = (d->stride / 4u) * d->h;
+        uint32_t c = d->clear_rgba;
+        uint32_t px = (c & 0xff000000u) | ((c & 0x000000ffu) << 16) |
+                      (c & 0x0000ff00u) | ((c & 0x00ff0000u) >> 16);
+        ga10b_dev_sync_to_gpu();
+        if (d->first_frame &&
+            (pgl_fill(fb, words, px) != 0 ||
+             pgl_fill(z, words, 0x3f800000u) != 0)) {
+            ga10b_dev_sync_to_cpu();
+            return GA10B_PGL_E_TIMEOUT;
+        }
+        uint32_t xprod = v->xform_local[0] * v->xform_local[1];
+        const uint32_t xgrid[3] = { (d->nverts + xprod - 1u) / xprod, 1, 1 };
+        int rc = ga10b_dev_launch_compute(pgl.prog[handle].xmod,
+                                          pgl.prog[handle].xkernel,
+                                          xgrid, v->xform_local,
+                                          unif, split, ssbo_x, nssbo_x,
+                                          texdesc_x,
+                                          v->xform_tex_mask ? NV_MAX_TEX *
+                                              (NV_TEXDESC_STRIDE / 4u) : 0);
+        if (rc == 0) {
+            uint32_t ritems = v->geom_tpw ?
+                (ntris + v->geom_tpw - 1u) / v->geom_tpw : ntris;
+            const uint32_t rgrid[3] = { ritems, 1, 1 };
+            rc = ga10b_dev_launch_compute(pgl.prog[handle].mod,
+                                          pgl.prog[handle].kernel,
+                                          rgrid, v->raster_local,
+                                          unif + split, num_uniforms - split,
+                                          ssbo_r, nssbo_r, texdesc_r,
+                                          v->raster_tex_mask ? NV_MAX_TEX *
+                                              (NV_TEXDESC_STRIDE / 4u) : 0);
+        }
+        ga10b_dev_sync_to_cpu();
         return rc == 0 ? GA10B_PGL_OK : GA10B_PGL_E_TIMEOUT;
     }
     const ga10b_prog_blob_t* p = &pgl.prog[handle].b;

@@ -25,6 +25,7 @@ LIB_BSP_OBJS = $(ARCH)/src/bsp_sd.o $(ARCH)/src/bsp_bootfs.o \
 	$(ARCH)/src/bsp_gpio.o $(ARCH)/src/bsp_pcie.o $(ARCH)/src/bsp_eth.o \
 	$(ARCH)/src/bsp_bpmp.o $(ARCH)/src/bsp_i2c.o $(ARCH)/src/bsp_sdmmc.o \
 	$(ARCH)/src/bsp_xusb.o $(ARCH)/src/xhci.o $(ARCH)/src/bsp_usb.o \
+	$(ARCH)/src/bsp_uvc.o \
 	$(ARCH)/src/bsp_wdt.o $(ARCH)/src/bsp_fb.o $(ARCH)/src/bsp_vic.o \
 	$(ARCH)/src/bsp_g2d.o $(ARCH)/src/bsp_g3d.o $(ARCH)/src/bsp_cl.o
 

@@ -12,6 +12,7 @@
 #include "wcn_wpa.h"
 #include <ewoksys/dma.h>
 #include "wcn_util.h"
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdio.h>
@@ -31,6 +32,16 @@
 #define RX_BYTES 2048u
 #define MAX_RINGS 24u
 
+/* Why an RX buffer was not delivered. The first group is decided by the ring
+ * entry (the hardware already rejected the frame), the second by the host
+ * while reading the RX descriptor. */
+enum {
+    DROP_NONE,DROP_STALE,DROP_REO_ERROR,DROP_REO_PARTIAL,DROP_RXDMA_ERROR,DROP_WBM,
+    DROP_NOT_DONE,DROP_ATTENTION,DROP_LENGTH,DROP_DECAP,DROP_KINDS
+};
+/* rx_attention info1 error bits, per Linux rx_desc.h. */
+static const uint8_t attn_bits[]={12,13,16,17,26,27,28,29,30,31};
+#define ATTN_ERRS (sizeof(attn_bits))
 struct dp_ring {
     unsigned id, reg, ptr, entries, words, dest, offset, hw_offset, sw_offset;
     unsigned index, loop, consumed, htt_type, htt_id, pdev;
@@ -49,6 +60,16 @@ static struct {
     uint8_t rx_owner[RX_COUNT+1u];
     uint16_t rx_free[RX_COUNT];
     unsigned rx_free_count;
+    unsigned drop_why[DROP_KINDS],reo_err[32],rxdma_err[32],attn_err[ATTN_ERRS];
+    /* What the frames released through WBM are. seq[now][before] pairs a frame
+     * with the previous frame of the same TID and sequence number (0 delivered,
+     * 1 WBM); seq_once counts WBM frames whose sequence number was not seen. */
+    struct {
+        unsigned push[4],done,fc_valid,type[4],subtype[4][16],tid[17],retry,ampdu,encrypted,
+                 from_peer,queue_null,ast_miss,tcp_ack,small,decap[4],seq[2][2],seq_once,seq_unknown,samples;
+    } wbm;
+    uint8_t rx_peer[6];
+    uint32_t rx_seen[17][4096];
     struct dp_ring rings[MAX_RINGS];
 } d;
 /* Join-band request; survives wcn_dp_release. Default on: the MAC2 RXDMA
@@ -248,7 +269,7 @@ static int dp_rx_id(const uint32_t *p) {
     if (!id || id>RX_COUNT || dp_address(p)!=d.pa+d.rx_buffers+(id-1)*RX_BYTES)
         return dp_fault("RX address/cookie");
     if (d.rx_owner[id]!=1) {
-        d.rx_stale++; d.rx_dropped++;
+        d.rx_stale++; d.rx_dropped++; d.drop_why[DROP_STALE]++;
         if (d.rx_stale<=4)
             wcn_log("wcn: stale RX completion cookie=%u (buffer not posted); skipped\n",id);
         return 0;
@@ -270,22 +291,60 @@ static void dp_refill(void) {
     }
     if (posted) { dp_publish(r); d.refilled+=posted; }
 }
-static void dp_rx_buffer(unsigned id,unsigned deliver) {
+/* Diagnostic only: describes WBM-released frames and matches their sequence
+ * numbers against the frames delivered through REO. Field positions per Linux
+ * rx_desc.h (rx_mpdu_start_wcn6855 starts at word 36). */
+static void dp_rx_trace(const uint32_t *p,const uint8_t *b,unsigned wbm,unsigned len) {
+    unsigned info=p[47],fc=b[200]|((unsigned)b[201]<<8);
+    unsigned tid=(info&(1u<<7)) ? (p[43]>>15)&15 : 16,seq=info>>20;
+    unsigned peer=!memcmp(b+210,d.rx_peer,6);
+    if (!wbm) memcpy(d.rx_peer,b+210,6);
+    else {
+        d.wbm.done+=p[23]>>31; d.wbm.fc_valid+=info&1;
+        if (info&1) { d.wbm.type[(fc>>2)&3]++; d.wbm.subtype[(fc>>2)&3][(fc>>4)&15]++; }
+        d.wbm.tid[tid]++; d.wbm.retry+=(info>>19)&1; d.wbm.ampdu+=(p[48]>>28)&1;
+        d.wbm.encrypted+=(info>>18)&1; d.wbm.from_peer+=peer;
+        d.wbm.queue_null+=!p[37] && !(p[38]&255);
+        d.wbm.ast_miss+=!!(p[49]&(3u<<16)); d.wbm.tcp_ack+=(p[27]>>15)&1;
+        d.wbm.small+=len<128; d.wbm.decap[(p[27]>>8)&3]++;
+        if (d.wbm.samples<8) {
+            d.wbm.samples++;
+            wcn_diag("rx-wbm n=%u fc=%04x info1=%08x info2=%08x info3=%08x info5=%08x info6=%08x queue=%02x%08x ast=%08x attn=%08x/%08x len=%u msdu=%08x end=%08x tcp=%08x/%08x/%04x a1=%02x%02x%02x%02x%02x%02x a2=%02x%02x%02x%02x%02x%02x\n",
+                     d.wbm.samples,fc,info,p[43],p[36],p[48],p[49],p[38]&255,p[37],p[46],p[22],p[23],len,p[27],p[11],p[8],p[9],p[10]&0xffff,
+                     b[204],b[205],b[206],b[207],b[208],b[209],b[210],b[211],b[212],b[213],b[214],b[215]);
+        }
+    }
+    /* Frame control, transmitter and sequence control all valid. */
+    if ((info&0x49)!=0x49 || (wbm && !peer)) { d.wbm.seq_unknown+=wbm; return; }
+    uint32_t before=d.rx_seen[tid][seq];
+    if (before && d.rx_packets-(before&0x7fffffffu)<2048) d.wbm.seq[wbm][before>>31]++;
+    else d.wbm.seq_once+=wbm;
+    d.rx_seen[tid][seq]=(d.rx_packets&0x7fffffffu)|(wbm<<31);
+}
+static void dp_rx_buffer(unsigned id,unsigned why) {
     const uint32_t *p=dp_words(d.rx_buffers+(id-1)*RX_BYTES);
     const uint8_t *b=(const void *)p;
     d.rx_packets++;
     /* WCN6855 RX descriptor is 392 bytes, per Linux rx_desc.h. */
     unsigned len=p[26]&0x3fff,pad=(p[11]>>26)&3,decap=(p[27]>>8)&3;
-    unsigned err=p[22]&((1u<<12)|(1u<<13)|(1u<<16)|(1u<<17)|(1u<<26)|(1u<<27)|(15u<<28));
+    unsigned err=0;
+    for (unsigned i=0;i<ATTN_ERRS;i++) err|=p[22]&(1u<<attn_bits[i]);
+    if (!why) {
+        if (!(p[23]>>31)) why=DROP_NOT_DONE;
+        else if (err) why=DROP_ATTENTION;
+        else if (len<14 || len>RX_BYTES-392-pad) why=DROP_LENGTH;
+        else if (decap!=2) why=DROP_DECAP;
+    }
+    if (!why || why==DROP_WBM) dp_rx_trace(p,b,why==DROP_WBM,len);
     /* Frame-level trace of the first completions of a session: the differ-
      * ence between an AP that completes a handshake and one that never sends
      * M1 is visible here (a working AP writes descriptors, a silent one does
      * not reach this function at all). */
     if (d.rx_packets<=12)
-        wcn_diag("rx-frame n=%u len=%u pad=%u decap=%u deliver=%u err=%08x d23=%08x d11=%08x fc=%04x tid=%u rate=%08x\n",
-                 d.rx_packets,len,pad,decap,deliver,err,p[23],p[11],
+        wcn_diag("rx-frame n=%u len=%u pad=%u decap=%u drop=%u err=%08x d23=%08x d11=%08x fc=%04x tid=%u rate=%08x\n",
+                 d.rx_packets,len,pad,decap,why,err,p[23],p[11],
                  (unsigned)(b[200]|((unsigned)b[201]<<8)),(p[47]&(1u<<7))?(p[43]>>15)&15:16,p[30]);
-    if (deliver && (p[23]>>31) && !err && len>=14 && len<=RX_BYTES-392-pad && decap==2) {
+    if (!why) {
         struct wcn_rx_security sec;
         memset(&sec,0,sizeof(sec));
         sec.pn=p[39]|((uint64_t)p[40]<<32);
@@ -308,14 +367,16 @@ static void dp_rx_buffer(unsigned id,unsigned deliver) {
         if (phy==4) d.rx_he++;
         d.rx_delivered++; wcn_sta_data(b+392+pad,len,&sec);
     } else {
-        d.rx_dropped++;
+        d.rx_dropped++; d.drop_why[why]++;
+        if (why==DROP_ATTENTION)
+            for (unsigned i=0;i<ATTN_ERRS;i++) if (err&(1u<<attn_bits[i])) d.attn_err[i]++;
     }
     /* Cleared before reuse so a stale msdu_done can never pass for a new frame. */
     memset(d.dma+d.rx_buffers+(id-1)*RX_BYTES,0,RX_BYTES);
     d.rx_owner[id]=2; d.rx_free[d.rx_free_count++]=id;
 }
 /* Validate a complete bounded link chain before returning any child buffers. */
-static int dp_link_drop(const uint32_t *entry) {
+static int dp_link_drop(const uint32_t *entry,unsigned why) {
     uint32_t links[8][2],ids[48]; unsigned count=0,nids=0;
     uint32_t address[2]={entry[0],entry[1]};
     while (dp_address(address)) {
@@ -337,7 +398,7 @@ static int dp_link_drop(const uint32_t *entry) {
     }
     struct dp_ring *r=dp_find(105);
     if (dp_space(r)<count) return 1; /* Retain destination until release space exists. */
-    for (unsigned i=0;i<nids;i++) dp_rx_buffer(ids[i],0);
+    for (unsigned i=0;i<nids;i++) dp_rx_buffer(ids[i],why);
     for (unsigned i=0;i<count;i++) {
         uint32_t *p=dp_words(r->offset+r->index*32); memset(p,0,32);
         p[0]=links[i][0]; p[1]=(links[i][1]&255)|(1u<<8); p[2]=4|(1u<<6);
@@ -348,17 +409,33 @@ static int dp_link_drop(const uint32_t *entry) {
 }
 static int dp_complete(struct dp_ring *r,const uint32_t *p) {
     if (r->id<=4) {
-        if (p[7]&(1u<<8)) return dp_link_drop(p);
+        unsigned error=((p[7]>>9)&3)!=1;
+        if (p[7]&(1u<<8)) {
+            int rc=dp_link_drop(p,DROP_REO_ERROR);
+            if (!rc) d.reo_err[(p[7]>>11)&31]++;
+            return rc;
+        }
         int id=dp_rx_id(p); if (id<0) return -1;
         if (!id) return 0;
-        dp_rx_buffer(id,((p[7]>>9)&3)==1 && !(p[4]&((1u<<2)|(1u<<22))));
-    } else if (r->id==133 || r->id==148) return dp_link_drop(p);
-    else if (r->id==109) {
-        if (((p[2]>>6)&7)==1) return dp_link_drop(p);
-        if (((p[2]>>6)&7)!=0) return dp_fault("WBM RX descriptor type");
-        int id=dp_rx_id(p); if (id<0) return -1;
-        if (!id) return 0;
-        dp_rx_buffer(id,0);
+        if (error) d.reo_err[(p[7]>>11)&31]++;
+        /* MSDU continuation or MSDU drop: not a complete frame in this buffer. */
+        dp_rx_buffer(id,error ? DROP_REO_ERROR : (p[4]&((1u<<2)|(1u<<22))) ? DROP_REO_PARTIAL : DROP_NONE);
+    } else if (r->id==133 || r->id==148) {
+        int rc=dp_link_drop(p,DROP_RXDMA_ERROR);
+        if (!rc) d.rxdma_err[(p[6]>>2)&31]++;
+        return rc;
+    } else if (r->id==109) {
+        unsigned type=(p[2]>>6)&7,source=p[2]&7;
+        if (type>1) return dp_fault("WBM RX descriptor type");
+        if (type==1) {
+            int rc=dp_link_drop(p,DROP_WBM); if (rc) return rc;
+        } else {
+            int id=dp_rx_id(p); if (id<0) return -1;
+            if (!id) return 0;
+            dp_rx_buffer(id,DROP_WBM);
+        }
+        if (source==1) d.rxdma_err[(p[2]>>19)&31]++;
+        if (source==2) { d.reo_err[(p[2]>>26)&31]++; d.wbm.push[(p[2]>>24)&3]++; }
     } else if (r->id==106) {
         unsigned cookie=p[1]>>11,slot=cookie&255;
         if (!cookie || d.tx_cookie[slot]!=cookie || dp_address(p)!=d.pa+d.tx_buffers+slot*RX_BYTES)
@@ -639,12 +716,44 @@ void wcn_dp_status(char *out,size_t size) {
              d.rx_delivered,d.rx_packets,d.rx_dropped,d.rx_stale,d.refilled,d.rx_free_count,d.tx_done,d.tx_packets,d.tx_errors,
              d.tx_last_source,d.tx_last_reason,d.tx_last_count,d.tx_last_info,d.tx_last_rate);
 }
+/* Appends at pos; returns size once the text no longer fits. */
+static size_t dp_text(char *out,size_t size,size_t pos,const char *fmt,...) {
+    if (pos>=size) return size;
+    va_list ap; va_start(ap,fmt);
+    int n=vsnprintf(out+pos,size-pos,fmt,ap);
+    va_end(ap);
+    return n<0 || (size_t)n>=size-pos ? size : pos+(size_t)n;
+}
 void wcn_dp_rings(char *out,size_t size) {
     int n=snprintf(out,size,"DP active=%u failed=%u bytes=%u\nPHY tx_type=%u tx_bw=%u tx_mcs=%u tx_gi=%u HT=%u VHT=%u HE=%u rx_type=%u rx_bw=%u rx_mcs=%u rx_gi=%u HT=%u VHT=%u HE=%u\n",
                    d.active,d.failed,d.used,(d.tx_rate>>3)&15,20u<<((d.tx_rate>>1)&3),(d.tx_rate>>11)&15,(d.tx_rate>>9)&3,d.tx_ht,d.tx_vht,d.tx_he,
                    (d.rx_rate>>8)&15,20u<<((d.rx_rate>>19)&3),(d.rx_rate>>15)&15,(d.rx_rate>>13)&3,d.rx_ht,d.rx_vht,d.rx_he);
     if (n<0 || (size_t)n>=size) return;
     size_t pos=n;
+    pos=dp_text(out,size,pos,"RXDROP total=%u stale=%u reo_error=%u reo_partial=%u rxdma_error=%u wbm=%u not_done=%u attention=%u length=%u decap=%u\n",
+                d.rx_dropped,d.drop_why[DROP_STALE],d.drop_why[DROP_REO_ERROR],d.drop_why[DROP_REO_PARTIAL],d.drop_why[DROP_RXDMA_ERROR],d.drop_why[DROP_WBM],
+                d.drop_why[DROP_NOT_DONE],d.drop_why[DROP_ATTENTION],d.drop_why[DROP_LENGTH],d.drop_why[DROP_DECAP]);
+    /* code:count pairs, codes per Linux hal_desc.h; attention pairs are bit:count. */
+    pos=dp_text(out,size,pos,"RXDROP reo_code");
+    for (unsigned i=0;i<32;i++) if (d.reo_err[i]) pos=dp_text(out,size,pos," %u:%u",i,d.reo_err[i]);
+    pos=dp_text(out,size,pos,"\nRXDROP rxdma_code");
+    for (unsigned i=0;i<32;i++) if (d.rxdma_err[i]) pos=dp_text(out,size,pos," %u:%u",i,d.rxdma_err[i]);
+    pos=dp_text(out,size,pos,"\nRXDROP attention_bit");
+    for (unsigned i=0;i<ATTN_ERRS;i++) if (d.attn_err[i]) pos=dp_text(out,size,pos," %u:%u",attn_bits[i],d.attn_err[i]);
+    pos=dp_text(out,size,pos,"\n");
+    pos=dp_text(out,size,pos,"RXWBM push=%u/%u/%u/%u done=%u fc_valid=%u mgmt=%u ctrl=%u data=%u retry=%u ampdu=%u encrypted=%u from_peer=%u queue_null=%u ast_miss=%u tcp_ack=%u small=%u decap=%u/%u/%u/%u\n",
+                d.wbm.push[0],d.wbm.push[1],d.wbm.push[2],d.wbm.push[3],d.wbm.done,d.wbm.fc_valid,d.wbm.type[0],d.wbm.type[1],d.wbm.type[2],
+                d.wbm.retry,d.wbm.ampdu,d.wbm.encrypted,d.wbm.from_peer,d.wbm.queue_null,d.wbm.ast_miss,d.wbm.tcp_ack,d.wbm.small,
+                d.wbm.decap[0],d.wbm.decap[1],d.wbm.decap[2],d.wbm.decap[3]);
+    /* seq: wbm_after_delivered wbm_after_wbm delivered_after_wbm delivered_after_delivered. */
+    pos=dp_text(out,size,pos,"RXWBM seq once=%u unknown=%u wbm_dup=%u wbm_again=%u delivered_late=%u delivered_dup=%u\nRXWBM subtype",
+                d.wbm.seq_once,d.wbm.seq_unknown,d.wbm.seq[1][0],d.wbm.seq[1][1],d.wbm.seq[0][1],d.wbm.seq[0][0]);
+    for (unsigned i=0;i<3;i++) for (unsigned j=0;j<16;j++)
+        if (d.wbm.subtype[i][j]) pos=dp_text(out,size,pos," %u.%u:%u",i,j,d.wbm.subtype[i][j]);
+    pos=dp_text(out,size,pos,"\nRXWBM tid");
+    for (unsigned i=0;i<17;i++) if (d.wbm.tid[i]) pos=dp_text(out,size,pos," %u:%u",i,d.wbm.tid[i]);
+    pos=dp_text(out,size,pos,"\n");
+    if (pos>=size) return;
     for (unsigned i=0;i<d.count;i++) {
         struct dp_ring *r=&d.rings[i];
         n=snprintf(out+pos,size-pos,"ring=%u %s entries=%u words=%u sw=%u hw=%u remote_hp=%u remote_tp=%u htt=%u/%u pdev=%u\n",

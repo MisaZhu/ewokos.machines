@@ -23,7 +23,7 @@ INC := -I$(FE)/include -I$(FE)/mesa/include -I$(FE)/mesa/src \
  -I$(ROOT)/system/basic/libc/libewoksys/ewoksys/include
 FLAGS := $(INC) -include $(HERE)/host_config.h -O2 -g -DNDEBUG -D_GNU_SOURCE -w -MMD -MP
 
-.PHONY: all compiler ocean emu clean
+.PHONY: all compiler ocean emu tex clean
 all: ocean
 
 compiler:
@@ -67,6 +67,16 @@ emu: compiler
 	 $(OUT)/libbackend.a $(OUT)/libfrontend.a $(OUT)/libbackend.a \
 	 -pthread -lm -o $(OUT)/emu_ocean
 	$(OUT)/emu_ocean $(EMU_ARGS)
+
+# Software texture-sampling semantics: emu vs an independent C sampler.
+tex: compiler
+	$(HOST_CC) $(FLAGS) -std=gnu11 -c $(HERE)/host_support.c -o $(OUT)/host_support.o
+	$(HOST_CC) $(FLAGS) -std=gnu11 -ffp-contract=off -c $(HERE)/nv_emu.c -o $(OUT)/nv_emu.o
+	$(HOST_CXX) $(FLAGS) -std=gnu++17 $(HERE)/test_tex.cpp \
+	 $(OUT)/nv_emu.o $(OUT)/host_support.o \
+	 $(OUT)/libbackend.a $(OUT)/libfrontend.a $(OUT)/libbackend.a \
+	 -pthread -lm -o $(OUT)/test_tex
+	$(OUT)/test_tex
 
 clean:
 	rm -rf $(OUT)

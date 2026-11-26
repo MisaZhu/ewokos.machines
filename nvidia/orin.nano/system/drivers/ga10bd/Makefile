@@ -16,9 +16,12 @@ BIN = $(TARGET_DIR)/drivers/$(HW)/ga10bd
 
 # Standalone by design: not referenced by ../Makefile or init.rd.
 # Build explicitly with `make -C ga10bd` once the SDK is built.
+# Links the IN-PROCESS driver (not BSP_LFLAGS, which now carries the remote
+# client lib): the CLI drives bring-up stages directly.
 $(BIN): $(OBJS) $(SDK_DIR)/lib/libewoksys.a $(SDK_DIR)/lib/libbsp.a \
 		$(SDK_DIR)/lib/libga10b.a
-	$(LD) -Ttext=100 $(OBJS) -o $(BIN) $(LDFLAGS) $(BSP_LFLAGS) $(EWOK_LIBC)
+	$(LD) -Ttext=100 $(OBJS) -o $(BIN) $(LDFLAGS) \
+		--start-group -lbsp -lga10b --end-group $(EWOK_LIBC)
 
 clean:
 	rm -f $(OBJS) $(BIN)

@@ -420,10 +420,98 @@ static void check_channel(ga10b_chan_t* ch) {
     uint32_t* pb = (uint32_t*)ch->pb_va;
     EXPECT(pb[0] == ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_MTHD_SET_OBJECT, 1));
     EXPECT(pb[1] == GA10B_CLASS_COMPUTE_B);
-    /* GPFIFO entry length = 13 dwords, USERD gp_put advanced */
+    /* GPFIFO entry length = 19 dwords, USERD gp_put advanced */
     uint32_t* e = (uint32_t*)ch->gpfifo_va;
-    EXPECT((e[1] >> 10) == 13u);
+    EXPECT((e[1] >> 10) == 19u);
     EXPECT(((uint32_t*)ch->userd_va)[GA10B_USERD_GP_PUT] == ch->gpfifo_put);
+}
+
+/* queued launches: every one keeps its own QMD and bank-0 slot, is its own
+ * GPFIFO entry ending in WAIT_FOR_IDLE, and moves the semaphore by one */
+static void check_queue(ga10b_chan_t* ch) {
+    uint32_t qmd[64];
+    void* slot[3];
+    uint64_t slot_va[3];
+    uint32_t sem0 = ch->sem_val, gp0 = ch->gpfifo_put, pb0 = ch->pb_put;
+    uint32_t db0 = shim_count_off(GA10B_DOORBELL);
+    EXPECT(ga10b_compute_queued() == 0);
+    for (uint32_t i = 0; i < 3; i++) {
+        EXPECT(ga10b_compute_queue_slot(ch, 512, &slot[i], &slot_va[i]) == 0);
+        memset(slot[i], (int)(0x10 + i), 512);
+        memset(qmd, 0, sizeof(qmd));
+        ga10b_qmd_minimal(qmd, 0, ch->sem_gpu_va, ch->sem_val + 1u, 16);
+        qmd[63] = 0xabc00000u + i;
+        EXPECT(ga10b_compute_queue(ch, qmd) == 0);
+        EXPECT(ga10b_compute_queued() == i + 1 && ch->sem_val == sem0 + i + 1);
+    }
+    EXPECT(slot_va[1] - slot_va[0] == GA10B_QUEUE_CB0 &&
+           slot_va[2] - slot_va[1] == GA10B_QUEUE_CB0);
+    EXPECT((uint8_t*)slot[1] - (uint8_t*)slot[0] == (long)GA10B_QUEUE_CB0);
+    /* slot contents and QMDs do not overlap */
+    EXPECT(((uint8_t*)slot[0])[511] == 0x10 && ((uint8_t*)slot[2])[0] == 0x12);
+    uint32_t* ring = (uint32_t*)((uint8_t*)slot[0] - GA10B_QUEUE_SLOTS * 256u);
+    uint64_t ring_va = slot_va[0] - GA10B_QUEUE_SLOTS * 256u;
+    for (uint32_t i = 0; i < 3; i++)
+        EXPECT(ring[i * 64u + 63u] == 0xabc00000u + i);
+    EXPECT((ring[25] >> 30) == 1u && ring[28] == 0 && ring[29] == 0 &&
+           ring[30] == 0 && ring[31] == 0); /* timestamps default off */
+    /* three more GPFIFO entries of 21 words, one doorbell each */
+    EXPECT(((ch->gpfifo_put - gp0) & (ch->gpfifo_entries - 1)) == 3u);
+    EXPECT(shim_count_off(GA10B_DOORBELL) == db0 + 3);
+    uint32_t* pb = (uint32_t*)ch->pb_va + pb0;
+    for (uint32_t i = 0; i < 3; i++) {
+        uint32_t* e = (uint32_t*)ch->gpfifo_va + 2 * (gp0 + i);
+        uint32_t* p = pb + i * 21u;
+        EXPECT((e[1] >> 10) == 21u);
+        EXPECT(e[0] == (uint32_t)(ch->pb_gpu_va + (pb0 + i * 21u) * 4u));
+        EXPECT(p[0] == ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_MTHD_SET_OBJECT, 1));
+        EXPECT(p[15] == ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_CP_SEND_PCAS_A, 1));
+        EXPECT(p[16] == (uint32_t)((ring_va + i * 256u) >> 8));
+        EXPECT(p[19] == ga10b_pb_inc(GA10B_SUBCH_COMPUTE, GA10B_CP_WAIT_FOR_IDLE, 1));
+        EXPECT(p[20] == 0);
+    }
+    /* a synchronous launch must not overtake the queue */
+    EXPECT(ga10b_compute_dispatch(ch, 0) == -1);
+    EXPECT(ch->sem_val == sem0 + 3);
+    uint32_t retired = 0;
+    EXPECT(ga10b_compute_drain(ch, &retired) == 0 && retired == 3);
+    EXPECT(ga10b_compute_queued() == 0);
+    EXPECT(ga10b_compute_drain(ch, &retired) == 0 && retired == 0);
+
+    void* sv;
+    uint64_t sg;
+    ga10b_compute_timestamps(1);
+    EXPECT(ga10b_compute_queue_slot(ch, 512, &sv, &sg) == 0);
+    memset(qmd, 0, sizeof(qmd));
+    ga10b_qmd_minimal(qmd, 0, ch->sem_gpu_va, ch->sem_val + 1u, 16);
+    EXPECT(ga10b_compute_queue(ch, qmd) == 0);
+    EXPECT((ring[25] >> 30) == 0u && ring[26] == sem0 + 4u &&
+           ring[28] == (uint32_t)ch->sem_gpu_va && ring[30] == sem0 + 4u);
+    uint64_t rec_va = ring_va + GA10B_QUEUE_SLOTS * (256u + GA10B_QUEUE_CB0);
+    EXPECT(ring[24] == (uint32_t)rec_va &&
+           ring[25] >> 30 == 0u && ring[27] == 0);
+    uint64_t ts;
+    EXPECT(ga10b_compute_timestamp(0, &ts) == -1); /* no fake hw timestamp */
+    EXPECT(ga10b_compute_drain(ch, &retired) == 0 && retired == 1);
+    ga10b_compute_timestamps(0);
+
+    /* the queue fills at GA10B_QUEUE_SLOTS; an oversized bank never fits */
+    EXPECT(ga10b_compute_queue_slot(ch, GA10B_QUEUE_CB0 + 4, &sv, &sg) == 1);
+    for (uint32_t i = 0; i < GA10B_QUEUE_SLOTS; i++) {
+        EXPECT(ga10b_compute_queue_slot(ch, GA10B_QUEUE_CB0, &sv, &sg) == 0);
+        EXPECT(sg == slot_va[0] + (uint64_t)i * GA10B_QUEUE_CB0);
+        memset(qmd, 0, sizeof(qmd));
+        ga10b_qmd_minimal(qmd, 0, ch->sem_gpu_va, ch->sem_val + 1u, 16);
+        EXPECT(ga10b_compute_queue(ch, qmd) == 0);
+    }
+    EXPECT(ga10b_compute_queue_slot(ch, 512, &sv, &sg) == 1);
+    EXPECT(ga10b_compute_queue(ch, qmd) == -1);
+    EXPECT(ga10b_compute_drain(ch, &retired) == 0 &&
+           retired == GA10B_QUEUE_SLOTS);
+    /* the slots start over after a drain, the synchronous path works again */
+    EXPECT(ga10b_compute_queue_slot(ch, 512, &sv, &sg) == 0 && sg == slot_va[0]);
+    EXPECT(ga10b_compute_dispatch(ch, 0) == 0);
+    EXPECT(ch->sem_val == sem0 + 3 + 1 + GA10B_QUEUE_SLOTS + 1);
 }
 
 int main(int argc, char** argv) {
@@ -464,6 +552,8 @@ int main(int argc, char** argv) {
     EXPECT(ga10b_compute_dispatch(&ch, 0) == 0);
     EXPECT(ch.gr_ctx_va == ctx0);
     EXPECT(((uint32_t*)ch.userd_va)[GA10B_USERD_GP_PUT] == 2u);
+
+    check_queue(&ch);
 
     /* two channels live at once: the runlist carries both [TSG, CH]
      * pairs, in the buffer the last submit pointed at */
@@ -531,13 +621,13 @@ int main(int argc, char** argv) {
     ga10b_dma_free(dst);
     /* gr-global surfaces are retained by design (no gr teardown): the
      * golden set (baseline) + the qmd/local dispatch buffers allocated on
-     * first dispatch + the bar2 host-VM page-table chain (runqueue
+     * first dispatch and the queue ring allocated on first queued launch + the bar2 host-VM page-table chain (runqueue
      * translation, allocated on first channel, lives for driver lifetime).
      * Everything channel/CE/mm-side must be freed. */
     uint32_t bar2_tab = ga10b_fifo_bar2_ntab();
-    printf("  dma live after teardown: %u (baseline %u + 2 dispatch + %u bar2)\n",
+    printf("  dma live after teardown: %u (baseline %u + 3 dispatch + %u bar2)\n",
            shim_dma_live, live_after_init, bar2_tab);
-    EXPECT(shim_dma_live == live_after_init + 2 + bar2_tab);
+    EXPECT(shim_dma_live == live_after_init + 3 + bar2_tab);
 
     if (fails == 0)
         printf("test_integration: ALL PASS (%u MMIO writes traced)\n",
