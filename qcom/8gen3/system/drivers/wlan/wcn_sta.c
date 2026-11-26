@@ -541,12 +541,18 @@ void wcn_sta_poll(void) {
     if (!wcn_wmi_ready() || !wcn_dp_ready()) { fail("controller-unavailable",0); return; }
     if (kernel_tic_ms(0)>=s.deadline) { fail("timeout",s.state); return; }
     switch (s.state) {
-    case CONFIG:
-        if (!configure() && ++s.config==(s.he ? 11u:10u)) {
-            if (configure_rx_decap()) fail("rx-decap-config",0);
-            else { sta_ps_configure(); state(PEER); }
-        }
+    case CONFIG: {
+        unsigned want=s.he ? 11u:10u;
+        if (s.config<want && !configure()) s.config++;
+        /* A -1 here is almost always WMI credit exhaustion: the CONFIG
+         * burst plus the idle-ps config drains the endpoint faster than
+         * the firmware's trailers refill it. Retry in place like
+         * configure() does - failing outright restarts the controller,
+         * which replays the same burst and loops forever. The state
+         * deadline still condemns a truly stuck send. */
+        if (s.config==want && !configure_rx_decap()) { sta_ps_configure(); state(PEER); }
         break;
+    }
     case PEER: if (!peer_create()) state(PEER_WAIT); break;
     case PEER_WAIT: if (s.peer_mapped) state(ROUTE); break;
     case ROUTE: if (!route()) state(QUEUES); break;
