@@ -671,6 +671,25 @@ ir3_nir_analyze_ubo_ranges(nir_shader *nir, struct ir3_shader_variant *v)
    }
 
    uint32_t ubo_offset = align(const_state->allocs.max_const_offset_vec4, align_vec4) * 16;
+
+   /* The consts_ubo block (ir3's spill of large literal arrays) is served by
+    * its OWN UBO descriptor aimed at the binary BO's constant_data section
+    * (see adreno_backend.c / adreno_3d.c); the EwokOS dispatch never copies
+    * its bytes into the constant file.  A range "pushed" here would rewrite
+    * those loads to load_const_ir3 and they would read stale const-file
+    * slots - garbled glyphs while the CPU interpreter stays correct.  Drop
+    * the block from the analysis so every consts_ubo load stays a real UBO
+    * ldc, exactly like the ranges too large to push already do. */
+   if (const_state->consts_ubo.idx >= 0) {
+      uint32_t n = 0;
+      for (uint32_t i = 0; i < state->num_enabled; i++) {
+         if (state->range[i].ubo.block == (uint32_t)const_state->consts_ubo.idx)
+            continue;
+         state->range[n++] = state->range[i];
+      }
+      state->num_enabled = n;
+   }
+
    assign_offsets(state, ubo_offset, max_upload);
 
    uint32_t upload_vec4 = state->size / 16;
