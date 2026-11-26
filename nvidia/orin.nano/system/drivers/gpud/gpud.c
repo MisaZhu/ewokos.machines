@@ -233,10 +233,12 @@ static int _pipeline = 1;
  * release timestamps.  A queued delta includes the preceding WFI/dispatch
  * gap as well as the named kernel, not pure shader execution time. */
 #define GPUD_PROF_MAX 48u
+#define GPUD_PROF_HIST 12u
 typedef struct {
     char name[GA10B_RPC_NAME_MAX];
     uint32_t n, queued;
     uint64_t ns, min, max;
+    uint32_t hist[GPUD_PROF_HIST];
 } gpud_prof_t;
 static gpud_prof_t _prof[GPUD_PROF_MAX];
 static uint32_t _prof_n;
@@ -274,6 +276,12 @@ static gpud_prof_t* prof_add(const char* name, uint64_t ns, int timed) {
         e->min = ns;
     if (ns > e->max)
         e->max = ns;
+    static const uint32_t edge_us[GPUD_PROF_HIST - 1u] =
+        { 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096 };
+    uint32_t b = 0;
+    while (b < GPUD_PROF_HIST - 1u && ns >= (uint64_t)edge_us[b] * 1000u)
+        b++;
+    e->hist[b]++;
     return e;
 }
 
@@ -300,6 +308,11 @@ static void prof_dump(void) {
              "queued %u\n", e->name, e->n, (uint32_t)(e->ns / 1000u),
              e->n != 0 ? (uint32_t)(e->ns / e->n) : 0u,
              e->n != 0 ? (uint32_t)e->min : 0u, (uint32_t)e->max, e->queued);
+        klog("gpud prof: %s hist us <4:%u <8:%u <16:%u <32:%u <64:%u "
+             "<128:%u <256:%u <512:%u <1024:%u <2048:%u <4096:%u >=:%u\n",
+             e->name, e->hist[0], e->hist[1], e->hist[2], e->hist[3],
+             e->hist[4], e->hist[5], e->hist[6], e->hist[7], e->hist[8],
+             e->hist[9], e->hist[10], e->hist[11]);
     }
 }
 
