@@ -1,5 +1,5 @@
 /*
- * adreno_ring.c - Adreno 690 (SC8280XP / Q8B) CP ringbuffer + IB submission.
+ * adreno_ring.c - Adreno 690 (SC8280XP / QCOM8GEN3) CP ringbuffer + IB submission.
  *
  * Mirrors the Linux v6.6 msm/adreno ringbuffer plumbing for an a660-family
  * part:

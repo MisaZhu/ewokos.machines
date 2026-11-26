@@ -9,10 +9,10 @@
  *     (qcom/sc8280xp/LENOVO/21BX/cdsp.mbn on this board, same vendor path
  *     convention as the GPU zap blob).
  *   - drivers/remoteproc/qcom_q6v5.c: the Q6 handover / stop handshake.
- *   - The SCM calls themselves ride the restricted Q8B kernel ABI
- *     (Q8B_NPU_PAS_* in npu_fastrpc.h), mirroring how machines/q8b/
+ *   - The SCM calls themselves ride the restricted QCOM8GEN3 kernel ABI
+ *     (QCOM8GEN3_NPU_PAS_* in npu_fastrpc.h), mirroring how machines/qcom/8gen3/
  *     kernel/bsp/gpu_pas.c wraps qcom_scm_pas_* for the GPU zap today.
- *     The Q8B kernel implements the cDSP PAS door and returns a separate
+ *     The QCOM8GEN3 kernel implements the cDSP PAS door and returns a separate
  *     FastRPC verdict until the GLINK service is ready.  Unsupported boards
  *     still decline without touching firmware.
  *

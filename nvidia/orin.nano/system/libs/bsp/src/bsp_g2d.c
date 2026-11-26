@@ -27,7 +27,7 @@
  *
  * GATE: the hardware path stays closed until /tmp/vic2d.cfg or the
  * environment opts in with VIC2D_ENABLE=1.  Default off = pure software,
- * byte-identical to the CPU-only desktop.  Mirrors the Q8B ADRENO_ENABLE
+ * byte-identical to the CPU-only desktop.  Mirrors the QCOM8GEN3 ADRENO_ENABLE
  * gate.
  *
  * FAILURE MODEL: a VIC op declined before submission or rejected by the

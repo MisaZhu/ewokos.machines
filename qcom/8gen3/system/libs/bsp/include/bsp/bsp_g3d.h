@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <ewoksys/ewokdef.h>
 
-/* portablegl 3D hardware offload for Q8B (Adreno 690).
+/* portablegl 3D hardware offload for QCOM8GEN3 (Adreno 690).
  *
  * Present state: decline-only stub.  Every op returns the sticky
  * G2D_ERR_NOT_SUPPORTED (-2) so a portablegl client latches the 3D
@@ -82,7 +82,7 @@ int32_t bsp_g3d_program(const void* blob, uint32_t size);
    every machine without a 3D back end. */
 int32_t bsp_g3d_program_free(int32_t handle);
 
-/* Sleep/wake power hint (Q8B only): sleep=1 enables GMU inter-frame power
+/* Sleep/wake power hint (QCOM8GEN3 only): sleep=1 enables GMU inter-frame power
    collapse, sleep=0 restores the ACTIVE config.  Returns G2D_OK, or -2 when
    the Adreno datapath is not up.  g2dd calls this through a weak symbol, so
    the other machines' bsp_g3d need not provide it. */

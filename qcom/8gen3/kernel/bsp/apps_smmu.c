@@ -19,8 +19,8 @@
 #include <stdint.h>
 #include "hw_arch.h"
 
-#define SMMU_SIZE Q8B_APPS_SMMU_SIZE
-#define SMMU_WIN  (MMIO_BASE + Q8B_APPS_SMMU_OFF)
+#define SMMU_SIZE QCOM8GEN3_APPS_SMMU_SIZE
+#define SMMU_WIN  (MMIO_BASE + QCOM8GEN3_APPS_SMMU_OFF)
 
 #define GR0_ID0 0x20u
 #define GR0_sCR0 0x0u
@@ -86,7 +86,7 @@ typedef struct {
     uint32_t va_bits, sid, sid_mask;
     uint64_t root_pa;
     int poisoned;
-} q8b_smmu1_t;
+} qcom8gen3_smmu1_t;
 
 static inline uint32_t r32(uintptr_t off) {
     return *(volatile uint32_t*)(SMMU_WIN + off);
@@ -116,7 +116,7 @@ static int tlb_sync(void) {
 /* Step 1: read ID registers and choose an unused SMR and S1 context bank.
  * cb_hint is the first bank to scan (skip GPU/NPU banks as the caller
  * knows).  Mirrors npu_smmu selection. */
-int apps_smmu_prepare(q8b_smmu1_t* s, unsigned sid, unsigned sid_mask,
+int apps_smmu_prepare(qcom8gen3_smmu1_t* s, unsigned sid, unsigned sid_mask,
                       unsigned va_bits, unsigned cb_hint, unsigned pgshift) {
     if (!s || sid > 0x7fff || sid_mask > 0x7fff)
         return -1;
@@ -128,7 +128,7 @@ int apps_smmu_prepare(q8b_smmu1_t* s, unsigned sid, unsigned sid_mask,
     s->numpage = ID1_NUMPAGES(id1);
     s->numcb = ID1_NUMCB(id1);
     s->nsmr = ID0_NUMSMRG(id0);
-    s->pa_bits = 40;                 /* Q8B OAS=40; SLA2 not assumed */
+    s->pa_bits = 40;                 /* QCOM8GEN3 OAS=40; SLA2 not assumed */
     (void)id2;
     s->va_bits = va_bits;
     s->sid = sid;
@@ -161,7 +161,7 @@ int apps_smmu_prepare(q8b_smmu1_t* s, unsigned sid, unsigned sid_mask,
 }
 
 /* Step 2: program the CB and the SMR/S2CR route; verify every write. */
-int apps_smmu_program(q8b_smmu1_t* s, uint64_t root_pa) {
+int apps_smmu_program(qcom8gen3_smmu1_t* s, uint64_t root_pa) {
     if (!s || s->poisoned)
         return -1;
     uintptr_t cb_base = ((s->numpage + s->cb) << s->pgshift);
@@ -210,7 +210,7 @@ fail:
 }
 
 /* Step 3: invalidate the new ASID and enable translation, verifying SCTLR.M. */
-int apps_smmu_commit(q8b_smmu1_t* s) {
+int apps_smmu_commit(qcom8gen3_smmu1_t* s) {
     if (!s || !s->ready || s->poisoned)
         return -1;
     uintptr_t cb_base = ((s->numpage + s->cb) << s->pgshift);

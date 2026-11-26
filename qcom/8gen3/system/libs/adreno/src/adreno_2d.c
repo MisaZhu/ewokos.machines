@@ -1,5 +1,5 @@
 /*
- * adreno_2d.c - Adreno 690 (SC8280XP / Q8B) A2D 2D-blitter back end.
+ * adreno_2d.c - Adreno 690 (SC8280XP / QCOM8GEN3) A2D 2D-blitter back end.
  *
  * Implements the solid-fill and copy/scale/rotate 2D operations that bsp_g2d
  * and bsp_g3d route to the GPU, using the a6xx A2D blitter.  Every blit is a
@@ -98,7 +98,7 @@
  *      weighted gaussian.  The A2D has no convolution op (CP_BLIT is only
  *      FILL/COPY/SCALE) and no kernel-weight register, so an exact gaussian
  *      needs a compute/fragment shader. The public Gaussian API uses this
- *      approximation for throughput, per the Q8B rendering policy. It
+ *      approximation for throughput, per the QCOM8GEN3 rendering policy. It
  *      halves the rect into a scratch
  *      mip chain with the documented bilinear FILTER on BLIT_OP_SCALE ("used
  *      for mipmap generation") and bilinear-upsamples the chain back, which
@@ -510,7 +510,7 @@ int adreno_2d_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
 /* Gaussian-style blur via a bilinear scale cascade (mip blur) - gap #7. */
 /*                                                                     */
 /* The A2D blitter has no convolution op and no kernel-weight register, */
-/* so an exact per-tap gaussian needs a shader. Q8B prioritizes speed:  */
+/* so an exact per-tap gaussian needs a shader. QCOM8GEN3 prioritizes speed:  */
 /* this API uses the linear FILTER to build a downsample/upsample blur */
 /* similar to the raspi GPU's reduced-resolution path                 */
 /* (downsample -> upsample, vc_g2d half-res path): halve the rect L    */

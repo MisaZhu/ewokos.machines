@@ -10,7 +10,7 @@
  * add on demand.
  *
  * All offsets are word-addressed (multiply by 4 for byte offsets).  The
- * GMU register block itself lives at Q8B_ADRENO_GMU_PHY = 0x03d6a000, so
+ * GMU register block itself lives at QCOM8GEN3_ADRENO_GMU_PHY = 0x03d6a000, so
  * the physical address of a register is:
  *     gmu_base + REG_A6XX_GMU_xxx * 4
  *

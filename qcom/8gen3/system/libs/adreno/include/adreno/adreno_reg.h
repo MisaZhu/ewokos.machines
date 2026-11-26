@@ -1,11 +1,11 @@
 /*
- * adreno_reg.h - Adreno 690 (SC8280XP / Q8B) MMIO window + register access.
+ * adreno_reg.h - Adreno 690 (SC8280XP / QCOM8GEN3) MMIO window + register access.
  *
  * The GPU core, GMU, GPUCC, Adreno-SMMU and GMU-RSCC register blocks all live
  * inside one 1 MB physical span (0x03d0_0000 .. 0x03df_ffff), so a single
  * SYS_MEM_MAP of that span gives user space every block at its natural offset.
  * The GMU PDC/RSCC sequencer window lives far away at 0x0b29_0000 and gets its
- * own 64 KB mapping.  Physical addresses and sizes come from q8b_adreno.h
+ * own 64 KB mapping.  Physical addresses and sizes come from qcom8gen3_adreno.h
  * (upstream Linux sc8280xp.dtsi).
  *
  * Register offsets in a6xx_regs.h / a6xx_gmu_regs.h are WORD indices; the
@@ -43,7 +43,7 @@ extern "C" {
 #define ADRENO_GCC_MAP_SIZE   0x00100000ULL
 
 /* Byte offsets of each block inside the 1 MB core span, relative to
-   Q8B_ADRENO_CORE_PHY (0x03d0_0000).  Word-index regs add (word*4). */
+   QCOM8GEN3_ADRENO_CORE_PHY (0x03d0_0000).  Word-index regs add (word*4). */
 #define ADRENO_GPU_BYTE_BASE   0x00000000u  /* kgsl_3d0_reg_memory          */
 #define ADRENO_CX_DBGC_BYTE    0x00061000u  /* gpu cx debug                 */
 #define ADRENO_GMU_BYTE_BASE   0x0006a000u  /* gmu@3d6a000                  */

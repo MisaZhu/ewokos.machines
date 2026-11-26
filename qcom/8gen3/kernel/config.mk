@@ -1,4 +1,4 @@
-#----- Radxa Dragon Q8B (Qualcomm SC8280XP / Snapdragon 8cx Gen 3) -----
+#----- Radxa Dragon QCOM8GEN3 (Qualcomm SC8280XP / Snapdragon 8cx Gen 3) -----
 ARCH        = aarch64
 ARCH_VER    = v8
 
@@ -27,16 +27,16 @@ QEMU_MACHINE = 8gen3
 # objects can never be mixed by make's timestamp rules.
 ifeq ($(TEST_QEMU),1)
 SMP=no
-CFLAGS += -DQ8B_QEMU_TEST
+CFLAGS += -DQCOM8GEN3_QEMU_TEST
 MACHINE = 8gen3_qemu
 KERNEL_VARIANT = _qemu
 else
-CFLAGS += -DQ8B_BOARD
+CFLAGS += -DQCOM8GEN3_BOARD
 # TEMP: no serial console at all (E Go / TW220 bring-up).  Keeps the kernel
 # from touching UART17/GCC/TLMM and from spending the GENI TX poll timeouts.
 # Build with NO_SERIAL=1; a normal build restores the serial console.
 ifeq ($(NO_SERIAL),1)
-CFLAGS += -DQ8B_NO_SERIAL
+CFLAGS += -DQCOM8GEN3_NO_SERIAL
 endif
 ifeq ($(SMP),)
 SMP=yes

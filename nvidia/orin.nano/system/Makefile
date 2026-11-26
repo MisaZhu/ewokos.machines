@@ -27,11 +27,11 @@ basic: usb
 	@$(MAKE) final
 
 # Platform headers consumed by user-space: the shared boot hand-off layout
-# (q8b_platform.h, reused verbatim) and machine_conf.h, which points init's
+# (qcom8gen3_platform.h, reused verbatim) and machine_conf.h, which points init's
 # rescue console at /drivers/orin.nano/.
 platform_headers:
 	@mkdir -p $(BUILD_DIR)/include
-	@cp -p ../include/q8b_platform.h $(BUILD_DIR)/include/
+	@cp -p ../include/qcom8gen3_platform.h $(BUILD_DIR)/include/
 	@cp -p ../include/machine_conf.h $(BUILD_DIR)/include/
 	@cp -p ../include/orin_net.h $(BUILD_DIR)/include/
 

@@ -4,22 +4,22 @@
 #include <adrenonpu/npu_sdk.h>
 #include "rpc.h"
 
-void q8b_dsp_init(void) {}
-void q8b_dsp_fini(void) {}
+void qcom8gen3_dsp_init(void) {}
+void qcom8gen3_dsp_fini(void) {}
 
 __attribute__((visibility("default")))
-int q8b_npu_skel_handle_invoke(uint64_t handle, uint32_t sc, remote_arg *args) {
+int qcom8gen3_npu_skel_handle_invoke(uint64_t handle, uint32_t sc, remote_arg *args) {
     sc &= 0x1fffffffu;
     if (!args) return 14;
     if (sc == 0x00020001u) {
         if (!args[0].buf.data || args[0].buf.size < 4 ||
                 !args[1].buf.data || !args[1].buf.size) return 14;
-        return q8b_model_open(&args[2].handle);
+        return qcom8gen3_model_open(&args[2].handle);
     }
-    if (sc == 0x01000010u) return q8b_model_close(args[0].handle);
+    if (sc == 0x01000010u) return qcom8gen3_model_close(args[0].handle);
     unsigned method = (sc >> 24) & 31u;
     if (method >= 7 && method <= 14)
-        return q8b_model_invoke(handle, sc, args);
+        return qcom8gen3_model_invoke(handle, sc, args);
     if (sc != 0x02000100u || !args[0].buf.data ||
             args[0].buf.size != sizeof(npu_sdk_dsp_info_t)) return 14;
     npu_sdk_dsp_info_t *out = args[0].buf.data;

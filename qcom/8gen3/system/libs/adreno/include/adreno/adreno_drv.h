@@ -1,5 +1,5 @@
 /*
- * adreno_drv.h - internal shared device context for the Q8B Adreno 690 driver.
+ * adreno_drv.h - internal shared device context for the QCOM8GEN3 Adreno 690 driver.
  *
  * One adreno_dev_t instance per process (g2dd / displayd each own one).  It
  * holds the mapped MMIO state, the SMMU context, the GMU state, the CP
@@ -107,7 +107,7 @@ void adreno_wdt_disable(void);
 
 /* Allocate a GPU-visible uncached buffer from the dma pool.  Returns 0 on
    success (bo->va/pa/size filled), negative on failure.  block_id 0 is the
-   shared sys_dma pool the q8b BSP already uses (see xhci.c). */
+   shared sys_dma pool the qcom8gen3 BSP already uses (see xhci.c). */
 int  adreno_bo_alloc(adreno_bo_t *bo, uint32_t size);
 void adreno_bo_free(adreno_bo_t *bo);
 
@@ -309,7 +309,7 @@ typedef struct {
 	uint32_t stride;       /* row pitch, bytes                                  */
 	uint32_t w;            /* width, texels                                     */
 	uint32_t h;            /* height, texels                                    */
-	uint8_t  tiling;       /* 0 = linear raster (the only upload q8b produces)  */
+	uint8_t  tiling;       /* 0 = linear raster (the only upload qcom8gen3 produces)  */
 	uint8_t  ub_pad;       /* high nibble = G2D_PGL_CTEX_FILTER_*               */
 	uint8_t  depth;        /* cubemap layer count (6), else <=1                 */
 	uint8_t  levels;       /* complete mip count; 0 = legacy single level       */

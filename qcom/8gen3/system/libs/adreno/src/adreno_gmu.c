@@ -1,5 +1,5 @@
 /*
- * adreno_gmu.c - Adreno 690 (SC8280XP / Q8B) GMU cold-boot sequence.
+ * adreno_gmu.c - Adreno 690 (SC8280XP / QCOM8GEN3) GMU cold-boot sequence.
  *
  * Reproduces the Linux v6.6 a6xx GMU bring-up for an a660-family / a650-family
  * part (A690 is ADRENO_6XX_GEN4, so BOTH adreno_is_a660_family() and

@@ -1,5 +1,5 @@
 /*
- * npu_fastrpc.h - FastRPC client transport for the SC8280XP cDSP (Q8B).
+ * npu_fastrpc.h - FastRPC client transport for the SC8280XP cDSP (QCOM8GEN3).
  *
  * Reconstruction sources (the vendor libcdsprpc.so is closed; this is the
  * protocol as implemented by the open Linux side):
@@ -20,9 +20,9 @@
  * mapping:
  *
  *   syscall3(SYS_PLATFORM_CTL, op, arg, size), op in [0x51385100, +0x100):
- *     PAS_QUERY      arg=0, size=0            -> Q8B_NPU_PAS_ABI if present
+ *     PAS_QUERY      arg=0, size=0            -> QCOM8GEN3_NPU_PAS_ABI if present
  *     PAS_STATUS     arg=0, size=0            -> SMP2P/PAS state bits
- *     FRPC_QUERY     arg=0, size=0            -> Q8B_NPU_FRPC_ABI if present
+ *     FRPC_QUERY     arg=0, size=0            -> QCOM8GEN3_NPU_FRPC_ABI if present
  *     METADATA_QUERY arg=0, size=0            -> 4096 if page format supported
  *     POINTER_QUERY  arg=0, size=0            -> 1 if AP pointer format supported
  *     SESSION_OPEN   arg=domain(3=cdsp), 0    -> session id (>=0)
@@ -60,45 +60,45 @@ extern "C" {
 #endif
 
 /* --- kernel platform_control ABI (see file header) --- */
-#define Q8B_NPU_ABI_BASE      0x51385100u
-#define Q8B_NPU_PAS_QUERY     (Q8B_NPU_ABI_BASE + 0x00u)
-#define Q8B_NPU_PAS_INIT      (Q8B_NPU_ABI_BASE + 0x01u)
-#define Q8B_NPU_PAS_MEM       (Q8B_NPU_ABI_BASE + 0x02u)
-#define Q8B_NPU_PAS_STAGE     (Q8B_NPU_ABI_BASE + 0x03u)
-#define Q8B_NPU_PAS_AUTH      (Q8B_NPU_ABI_BASE + 0x04u)
-#define Q8B_NPU_PAS_BOOT      (Q8B_NPU_ABI_BASE + 0x05u)
-#define Q8B_NPU_PAS_STOP      (Q8B_NPU_ABI_BASE + 0x06u)
-#define Q8B_NPU_PAS_STATUS    (Q8B_NPU_ABI_BASE + 0x07u)
-#define Q8B_NPU_FRPC_QUERY    (Q8B_NPU_ABI_BASE + 0x0fu)
-#define Q8B_NPU_FRPC_SESSION  (Q8B_NPU_ABI_BASE + 0x10u)
-#define Q8B_NPU_FRPC_CLOSE    (Q8B_NPU_ABI_BASE + 0x11u)
-#define Q8B_NPU_FRPC_INVOKE   (Q8B_NPU_ABI_BASE + 0x12u)
-#define Q8B_NPU_FRPC_MMAP     (Q8B_NPU_ABI_BASE + 0x13u)
-#define Q8B_NPU_FRPC_MUNMAP   (Q8B_NPU_ABI_BASE + 0x14u)
-#define Q8B_NPU_FRPC_PWR      (Q8B_NPU_ABI_BASE + 0x15u)
+#define QCOM8GEN3_NPU_ABI_BASE      0x51385100u
+#define QCOM8GEN3_NPU_PAS_QUERY     (QCOM8GEN3_NPU_ABI_BASE + 0x00u)
+#define QCOM8GEN3_NPU_PAS_INIT      (QCOM8GEN3_NPU_ABI_BASE + 0x01u)
+#define QCOM8GEN3_NPU_PAS_MEM       (QCOM8GEN3_NPU_ABI_BASE + 0x02u)
+#define QCOM8GEN3_NPU_PAS_STAGE     (QCOM8GEN3_NPU_ABI_BASE + 0x03u)
+#define QCOM8GEN3_NPU_PAS_AUTH      (QCOM8GEN3_NPU_ABI_BASE + 0x04u)
+#define QCOM8GEN3_NPU_PAS_BOOT      (QCOM8GEN3_NPU_ABI_BASE + 0x05u)
+#define QCOM8GEN3_NPU_PAS_STOP      (QCOM8GEN3_NPU_ABI_BASE + 0x06u)
+#define QCOM8GEN3_NPU_PAS_STATUS    (QCOM8GEN3_NPU_ABI_BASE + 0x07u)
+#define QCOM8GEN3_NPU_FRPC_QUERY    (QCOM8GEN3_NPU_ABI_BASE + 0x0fu)
+#define QCOM8GEN3_NPU_FRPC_SESSION  (QCOM8GEN3_NPU_ABI_BASE + 0x10u)
+#define QCOM8GEN3_NPU_FRPC_CLOSE    (QCOM8GEN3_NPU_ABI_BASE + 0x11u)
+#define QCOM8GEN3_NPU_FRPC_INVOKE   (QCOM8GEN3_NPU_ABI_BASE + 0x12u)
+#define QCOM8GEN3_NPU_FRPC_MMAP     (QCOM8GEN3_NPU_ABI_BASE + 0x13u)
+#define QCOM8GEN3_NPU_FRPC_MUNMAP   (QCOM8GEN3_NPU_ABI_BASE + 0x14u)
+#define QCOM8GEN3_NPU_FRPC_PWR      (QCOM8GEN3_NPU_ABI_BASE + 0x15u)
 
 /* Nonblocking calls retain owned DMA until POLL consumes the response or
  * PAS_STOP has successfully quiesced the DSP.  Required for reverse RPC. */
-#define Q8B_NPU_FRPC_SUBMIT (Q8B_NPU_ABI_BASE + 0x18u) /* payload PA, size */
-#define Q8B_NPU_FRPC_POLL   (Q8B_NPU_ABI_BASE + 0x19u) /* same payload PA, size */
-#define Q8B_NPU_FRPC_SUBMIT_LISTENER (Q8B_NPU_ABI_BASE + 0x1au)
-#define Q8B_NPU_FRPC_METADATA_QUERY (Q8B_NPU_ABI_BASE + 0x1bu)
-#define Q8B_NPU_FRPC_METADATA_PAGE 4096u
-#define Q8B_NPU_FRPC_PACKET_PAGE (1u << 31)
-#define Q8B_NPU_FRPC_POINTER_QUERY (Q8B_NPU_ABI_BASE + 0x1cu)
+#define QCOM8GEN3_NPU_FRPC_SUBMIT (QCOM8GEN3_NPU_ABI_BASE + 0x18u) /* payload PA, size */
+#define QCOM8GEN3_NPU_FRPC_POLL   (QCOM8GEN3_NPU_ABI_BASE + 0x19u) /* same payload PA, size */
+#define QCOM8GEN3_NPU_FRPC_SUBMIT_LISTENER (QCOM8GEN3_NPU_ABI_BASE + 0x1au)
+#define QCOM8GEN3_NPU_FRPC_METADATA_QUERY (QCOM8GEN3_NPU_ABI_BASE + 0x1bu)
+#define QCOM8GEN3_NPU_FRPC_METADATA_PAGE 4096u
+#define QCOM8GEN3_NPU_FRPC_PACKET_PAGE (1u << 31)
+#define QCOM8GEN3_NPU_FRPC_POINTER_QUERY (QCOM8GEN3_NPU_ABI_BASE + 0x1cu)
 /* Root-only, read-only allocation snapshot: arg=exact PA, size=0;
  * return (pins<<32)|owner, negative if no pinned allocation. */
-#define Q8B_NPU_FRPC_DMA_QUERY (Q8B_NPU_ABI_BASE + 0x1du)
-#define Q8B_NPU_FRPC_POINTER_HOST 1u
-#define Q8B_NPU_FRPC_PACKET_HOST (1u << 30)
+#define QCOM8GEN3_NPU_FRPC_DMA_QUERY (QCOM8GEN3_NPU_ABI_BASE + 0x1du)
+#define QCOM8GEN3_NPU_FRPC_POINTER_HOST 1u
+#define QCOM8GEN3_NPU_FRPC_PACKET_HOST (1u << 30)
 
-/* Verdicts, matching the Q8B_GPU_PAS_* code style. */
-#define Q8B_NPU_PAS_ABI         0x51385101u
-#define Q8B_NPU_PAS_BUSY        (-1101)
-#define Q8B_NPU_PAS_UNSUPPORTED (-1102)
-#define Q8B_NPU_PAS_INVALID     (-1103)
-#define Q8B_NPU_PAS_FAILED      (-1104)
-#define Q8B_NPU_FRPC_ABI        (Q8B_NPU_ABI_BASE + 0x03u)
+/* Verdicts, matching the QCOM8GEN3_GPU_PAS_* code style. */
+#define QCOM8GEN3_NPU_PAS_ABI         0x51385101u
+#define QCOM8GEN3_NPU_PAS_BUSY        (-1101)
+#define QCOM8GEN3_NPU_PAS_UNSUPPORTED (-1102)
+#define QCOM8GEN3_NPU_PAS_INVALID     (-1103)
+#define QCOM8GEN3_NPU_PAS_FAILED      (-1104)
+#define QCOM8GEN3_NPU_FRPC_ABI        (QCOM8GEN3_NPU_ABI_BASE + 0x03u)
 
 /* FastRPC domains (fastrpc.c enum fastrpc_proc_attr / misc device minors). */
 #define FRPC_DOMAIN_ADSP  0
@@ -167,7 +167,7 @@ struct fastrpc_init_attrs {
 #define FRPC_MMAP_REMOTE_HEAP_ADDR 8u
 #define FRPC_MMAP_ADD_PAGES         0x1000u
 
-/* Root-object request payloads used by the upstream FastRPC service.  Q8B
+/* Root-object request payloads used by the upstream FastRPC service.  QCOM8GEN3
  * keeps the private FRPC_MMAP operation for AP SMMU ownership and layers the
  * standard INIT_MMAP/INIT_MUNMAP calls on top of these exact layouts. */
 struct frpc_mmap_req_msg {

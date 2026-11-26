@@ -20,17 +20,17 @@
 #include <ewoksys/dma.h>
 #include <ewoksys/syscall.h>
 #include <syscalls.h>
-#include <q8b_adsp_pas.h>
+#include <qcom8gen3_adsp_pas.h>
 
 #define DEFAULT_FW "/etc/firmware/qcadsp8280.mbn"
 
 static const char *verdict(int ret) {
     switch(ret) {
     case 0: return "ok";
-    case Q8B_ADSP_PAS_BUSY: return "busy";
-    case Q8B_ADSP_PAS_UNSUPPORTED: return "unsupported";
-    case Q8B_ADSP_PAS_INVALID: return "invalid";
-    case Q8B_ADSP_PAS_FAILED: return "failed";
+    case QCOM8GEN3_ADSP_PAS_BUSY: return "busy";
+    case QCOM8GEN3_ADSP_PAS_UNSUPPORTED: return "unsupported";
+    case QCOM8GEN3_ADSP_PAS_INVALID: return "invalid";
+    case QCOM8GEN3_ADSP_PAS_FAILED: return "failed";
     default: return "?";
     }
 }
@@ -43,17 +43,17 @@ int main(int argc, char **argv) {
     int ret;
 
     if(argc > 1 && strcmp(argv[1], "stop") == 0) {
-        ret = (int)syscall3(SYS_PLATFORM_CTL, Q8B_ADSP_PAS_STOP, 0, 0);
+        ret = (int)syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_ADSP_PAS_STOP, 0, 0);
         printf("adspas: PAS stop ret=%d %s\n", ret, verdict(ret));
         return ret == 0 ? 0 : 2;
     }
 
     if(argc > 1 && strcmp(argv[1], "status") == 0) {
-        int pas = (int)syscall3(SYS_PLATFORM_CTL, Q8B_ADSP_PAS_QUERY, 0, 0);
-        int state = (int)syscall3(SYS_PLATFORM_CTL, Q8B_ADSP_PAS_STATUS, 0, 0);
+        int pas = (int)syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_ADSP_PAS_QUERY, 0, 0);
+        int state = (int)syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_ADSP_PAS_STATUS, 0, 0);
 
         printf("adspas: PAS query  ret=%d (0x%08x) %s\n", pas,
-                (unsigned)pas, (unsigned)pas == Q8B_ADSP_ABI ?
+                (unsigned)pas, (unsigned)pas == QCOM8GEN3_ADSP_ABI ?
                 "available" : verdict(pas));
         if (state < 0) {
             printf("adspas: PAS state unavailable ret=%d %s\n", state,
@@ -62,16 +62,16 @@ int main(int argc, char **argv) {
         }
         printf("adspas: PAS state  ret=%d (0x%08x)%s\n", state,
                 (unsigned)state,
-                (state & Q8B_ADSP_STATE_BOOTED) ? " booted" : "");
-        return (unsigned)pas == Q8B_ADSP_ABI ? 0 : 2;
+                (state & QCOM8GEN3_ADSP_STATE_BOOTED) ? " booted" : "");
+        return (unsigned)pas == QCOM8GEN3_ADSP_ABI ? 0 : 2;
     }
 
-    printf("adspas: ADSP PAS bring-up (PAS id %u)\n", Q8B_ADSP_PAS_ID);
+    printf("adspas: ADSP PAS bring-up (PAS id %u)\n", QCOM8GEN3_ADSP_PAS_ID);
 
-    ret = (int)syscall3(SYS_PLATFORM_CTL, Q8B_ADSP_PAS_QUERY, 0, 0);
+    ret = (int)syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_ADSP_PAS_QUERY, 0, 0);
     printf("adspas: kernel query ret=%d (0x%08x) abi=0x%08x\n",
-            ret, (unsigned)ret, Q8B_ADSP_ABI);
-    if((unsigned)ret != Q8B_ADSP_ABI) {
+            ret, (unsigned)ret, QCOM8GEN3_ADSP_ABI);
+    if((unsigned)ret != QCOM8GEN3_ADSP_ABI) {
         printf("adspas: kernel has no ADSP boot ABI (did you boot the PXE kernel?)\n");
         return 1;
     }
@@ -100,7 +100,7 @@ int main(int argc, char **argv) {
     printf("adspas: staged at va=0x%llx pa=0x%llx\n",
             (unsigned long long)va, (unsigned long long)pa);
 
-    ret = (int)syscall3(SYS_PLATFORM_CTL, Q8B_ADSP_PAS_BOOT, pa,
+    ret = (int)syscall3(SYS_PLATFORM_CTL, QCOM8GEN3_ADSP_PAS_BOOT, pa,
             (ewokos_addr_t)size);
     printf("adspas: PAS boot ret=%d %s\n", ret, verdict(ret));
 

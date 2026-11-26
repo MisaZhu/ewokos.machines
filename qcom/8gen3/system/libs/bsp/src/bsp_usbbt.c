@@ -107,7 +107,7 @@ static uint8_t *load_fw(const char *name,uint32_t *len) {
     char path[160];
     snprintf(path,sizeof(path),"/etc/firmware/qca/%s",name);
     int fd=open(path,O_RDONLY);
-    if (fd<0) { slog("q8b bt: missing %s\n",path); return NULL; }
+    if (fd<0) { slog("qcom8gen3 bt: missing %s\n",path); return NULL; }
     off_t size=lseek(fd,0,SEEK_END);
     if (size<=0 || size>FW_LIMIT || lseek(fd,0,SEEK_SET)<0) { close(fd); return NULL; }
     uint8_t *data=malloc((size_t)size);
@@ -132,7 +132,7 @@ static int download(const uint8_t *data,uint32_t len,uint16_t hdr) {
         uint32_t n=len-pos;
         if (n>4096) n=4096;
         if (bsp_usb_bulk_xfer(bt.dev,bt.ep_out,(void *)(data+pos),(int)n,false)!=(int)n) {
-            slog("q8b bt: DFU short/failed at %u/%u\n",pos,len); return -1;
+            slog("qcom8gen3 bt: DFU short/failed at %u/%u\n",pos,len); return -1;
         }
         pos+=n;
     }
@@ -170,10 +170,10 @@ static int qca_setup(void) {
     bt.ready=false; rx_reset();
     if (vendor_in(9,ver,sizeof(ver))) return -1;
     bt.rom=le32(ver); bt.patch=le32(ver+4); bt.ram=le32(ver+8);
-    slog("q8b bt: %04x:%04x ROM=%08x patch=%08x RAM=%08x flags=%04x\n",
+    slog("qcom8gen3 bt: %04x:%04x ROM=%08x patch=%08x RAM=%08x flags=%04x\n",
          bt.vid,bt.pid,bt.rom,bt.patch,bt.ram,le16(ver+14));
     if (bt.rom!=0x00130100 && bt.rom!=0x00130200 && bt.rom!=0x00130201) {
-        slog("q8b bt: unsupported ROM; firmware not sent\n"); return -1;
+        slog("qcom8gen3 bt: unsupported ROM; firmware not sent\n"); return -1;
     }
     if (vendor_in(5,&status,1)) return -1;
     uint16_t board=(le16(ver+14)>>8)==0x80 ? ((uint16_t)ver[12]<<8)|ver[13] : 0;
@@ -187,7 +187,7 @@ static int qca_setup(void) {
         uint32_t rom=size>=22 ? ((uint32_t)le16(fw+16)<<16)|le16(fw+18) : 0;
         uint32_t tlv=size>=4 ? le32(fw)>>8 : 0;
         if (size<40 || fw[0]!=1 || tlv!=size-4 || rom!=bt.rom || le16(fw+20)<=bt.patch) {
-            slog("q8b bt: invalid rampatch ROM/version/size\n"); free(fw); return -1;
+            slog("qcom8gen3 bt: invalid rampatch ROM/version/size\n"); free(fw); return -1;
         }
         int rc=download(fw,size,40); free(fw);
         if (rc) return -1;
@@ -209,21 +209,21 @@ static int qca_setup(void) {
         uint8_t *fw=load_fw(bt.firmware,&size);
         if (!fw) return -1;
         if (size<4 || fw[0]!=2 || (le32(fw)>>8)!=size-4) {
-            slog("q8b bt: invalid NVM TLV size/type\n"); free(fw); return -1;
+            slog("qcom8gen3 bt: invalid NVM TLV size/type\n"); free(fw); return -1;
         }
         int rc=download(fw,size,4); free(fw);
         if (rc) return -1;
         if (bt.rom>=0x00130201) usleep(100000);
     }
-    if (hci_reset()) { slog("q8b bt: HCI reset failed\n"); return -1; }
+    if (hci_reset()) { slog("qcom8gen3 bt: HCI reset failed\n"); return -1; }
     rx_reset();
-    slog("q8b bt: firmware operational, USB HCI ready\n");
+    slog("qcom8gen3 bt: firmware operational, USB HCI ready\n");
     return 0;
 }
 
 int bsp_usb_bt_probe(bsp_usb_dev_t *dev,uint16_t vid,uint16_t pid,
                      const uint8_t *cfg,int len) {
-    slog("q8b usb: enumerated %04x:%04x config_len=%d\n",vid,pid,len);
+    slog("qcom8gen3 usb: enumerated %04x:%04x config_len=%d\n",vid,pid,len);
     if (bt.claimed || !dev || !cfg || !bsp_usb_xhci_owned(dev)) return -1;
     /* Foxconn/Lite-On/Qualcomm. Verify ROM over vendor USB before DFU. */
     if (vid!=0x0489 && vid!=0x0cf3 && vid!=0x04ca) return -1;
@@ -252,13 +252,13 @@ int bsp_usb_bt_probe(bsp_usb_dev_t *dev,uint16_t vid,uint16_t pid,
         bsp_usb_bulk_open(dev,in,imps) || bsp_usb_bulk_open(dev,out,omps)) {
         memset(&bt,0,sizeof(bt)); return -1;
     }
-    /* Do not run QCA DFU/HCI setup from usbhostd's enumeration path.  On Q8B
+    /* Do not run QCA DFU/HCI setup from usbhostd's enumeration path.  On QCOM8GEN3
      * the USB and PCIe functions share the E-key/radio power sequence, and
      * pcied deliberately cold-cycles that rail before WCN startup.  btd's
      * bsp_bt_init() gates USBHCI_CMD_SETUP on a valid WLAN MAC; that queues
      * setup for the host main loop after the PCIe/WLAN power sequence. */
     bt.claimed=true; bt.busy=false; bt.ready=false;
-    slog("q8b bt: claimed %04x:%04x setup deferred until WLAN ready\n",vid,pid);
+    slog("qcom8gen3 bt: claimed %04x:%04x setup deferred until WLAN ready\n",vid,pid);
     return 0;
 }
 

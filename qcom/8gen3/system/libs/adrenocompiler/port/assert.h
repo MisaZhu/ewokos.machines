@@ -1,5 +1,5 @@
 /* EwokOS userland port shim: expression-form assert() for the vendored mesa
- * compiler (q8b).
+ * compiler (qcom8gen3).
  *
  * The EwokOS libc <assert.h> defines assert() as a statement-form macro
  * (do { ... } while (0)). mesa uses assert() inside comma expressions, e.g.

@@ -32,7 +32,7 @@ himax_bus_t himax_native_bus_attach(himax_native_bus_t* back) {
 int himax_bus_fifo_callback(void* ctx, const uint8_t* tx, uint8_t* rx,
                             size_t len) {
     /* Placeholder adapter: the caller passes a struct holding a bsp SPI
-     * handle and this would call q8b_spi_transfer(handle, tx, rx, len).
+     * handle and this would call qcom8gen3_spi_transfer(handle, tx, rx, len).
      * Kept as a plain function per the full-duplex contract; the bridge
      * test wires its own fake transfer to prove the frame path. */
     (void)ctx;

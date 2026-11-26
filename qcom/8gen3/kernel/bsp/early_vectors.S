@@ -7,11 +7,11 @@
  */
     .section ".bootvec"
     .align 3
-    .global q8b_install_vectors
-    .type q8b_install_vectors, %function
-q8b_install_vectors:
+    .global qcom8gen3_install_vectors
+    .type qcom8gen3_install_vectors, %function
+qcom8gen3_install_vectors:
     ldr x0, =interrupt_table_start
     msr vbar_el1, x0
     isb
     ret
-    .size q8b_install_vectors, . - q8b_install_vectors
+    .size qcom8gen3_install_vectors, . - qcom8gen3_install_vectors

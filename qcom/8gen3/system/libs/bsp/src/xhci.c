@@ -1,5 +1,5 @@
 /*
- * Polled xHCI driver for the SC8280XP DWC3 host controllers (Dragon Q8B).
+ * Polled xHCI driver for the SC8280XP DWC3 host controllers (Dragon QCOM8GEN3).
  * See xhci.h for the big picture. Everything here follows the xHCI 1.1
  * spec register/TRB layout; the BSP prepares the USB-C DWC3 host role before
  * entering this controller layer.
@@ -692,7 +692,7 @@ int xhci_init(xhci_hc_t* hc, int id, ewokos_addr_t cap_base) {
     put32(hc->rt + XHCI_IR0_ERSTSZ, 1);
     w64(hc->rt + XHCI_IR0_ERDP, hc->evt_phys | ERDP_EHB);
     w64(hc->rt + XHCI_IR0_ERSTBA, hc->erst_phys);
-    /* IMAN.IE is enabled by the Q8B glue after its user IRQ handler is ready. */
+    /* IMAN.IE is enabled by the QCOM8GEN3 glue after its user IRQ handler is ready. */
 
     put32(hc->op + XHCI_USBCMD, USBCMD_RUN);
     deadline = now_ms() + XHCI_RESET_TIMEOUT_MS;

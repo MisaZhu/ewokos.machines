@@ -5,7 +5,7 @@
  * Produced by adreno_backend.c (the ir3 bridge) from one compiled
  * ir3_shader_variant, moved into pglc_stage by adreno_pglc.cpp, and consumed
  * only by adreno_blob.c (pglc_program_serialize), which lays the fields out
- * into the adreno_prog_blob_t header + payload the q8b g2dd daemon
+ * into the adreno_prog_blob_t header + payload the qcom8gen3 g2dd daemon
  * (bsp_g3d_program -> adreno_3d.c) parses.  portablegl never sees this type:
  * it reaches the stage through the neutral pglc_stage fields only.
  *

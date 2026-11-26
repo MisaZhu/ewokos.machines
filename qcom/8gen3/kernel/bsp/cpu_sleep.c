@@ -9,7 +9,7 @@
  * translation from the saved context (cpu_sleep_a.S).
  *
  * Concurrency.  The kernel has no atomics, so every per-core field has a
- * single writer: the controlling core (the Q8B_NPU_CPU_SLEEP caller, under
+ * single writer: the controlling core (the QCOM8GEN3_NPU_CPU_SLEEP caller, under
  * the kernel lock) owns on/epoch, the core itself owns everything else.
  */
 #include <kernel/core.h>
@@ -20,7 +20,7 @@
 #include <dev/timer.h>
 #include <mm/mmu.h>
 #include <stdint.h>
-#include <q8b_npu.h>
+#include <qcom8gen3_npu.h>
 
 #include "hw_arch.h"
 #include "cpu_sleep.h"
@@ -64,10 +64,10 @@ typedef struct {
     volatile uint32_t resumed;      /* powered down and came back, ever */
 } __attribute__((aligned(64))) cs_core_t;
 
-static cs_core_t _cs[Q8B_CORES];
+static cs_core_t _cs[QCOM8GEN3_CORES];
 
 /* One cache-line-aligned save block per core (CS_WORDS * 8 bytes). */
-static uint64_t _save[Q8B_CORES][CS_WORDS] __attribute__((aligned(64)));
+static uint64_t _save[QCOM8GEN3_CORES][CS_WORDS] __attribute__((aligned(64)));
 
 /* Set while any core may suspend; gates the tick sweep. */
 static volatile uint32_t _cs_active;
@@ -98,7 +98,7 @@ static int cs_prepare(void) {
     if (_prep != CS_PREP_NONE)
         return _prep == CS_PREP_OK ? 0 : -1;
 
-    ewokos_addr_t tramp_pa = V2P((ewokos_addr_t)q8b_cpu_resume_asm);
+    ewokos_addr_t tramp_pa = V2P((ewokos_addr_t)qcom8gen3_cpu_resume_asm);
     if (resolve_phy_address(_kernel_info.kernel_vm, tramp_pa) != tramp_pa) {
         _prep = CS_PREP_NO_IDMAP;
         return -1;
@@ -122,17 +122,17 @@ static int cs_core_pending(uint32_t core, uint32_t* epoch_out) {
     return on && c->giveup_epoch != epoch;
 }
 
-int q8b_cpu_sleep_ctl(uint32_t arg) {
+int qcom8gen3_cpu_sleep_ctl(uint32_t arg) {
     uint32_t self = get_core_id();
 
     if (arg == 0) {
         _cs_active = 0;
-        for (uint32_t c = 1; c < Q8B_CORES; c++)
+        for (uint32_t c = 1; c < QCOM8GEN3_CORES; c++)
             _cs[c].on = 0;
         /* Pull every parked core back now instead of letting the first wake
          * IPC to each one pay the resume latency.  Cores that are merely in
          * WFI take the SGI and re-idle. */
-        for (uint32_t c = 1; c < Q8B_CORES; c++) {
+        for (uint32_t c = 1; c < QCOM8GEN3_CORES; c++) {
             if (c != self && _cpu_cores[c].actived)
                 ipi_send(c);
         }
@@ -142,7 +142,7 @@ int q8b_cpu_sleep_ctl(uint32_t arg) {
     if (cs_prepare() != 0)
         return -1;
 
-    for (uint32_t c = 1; c < Q8B_CORES; c++) {
+    for (uint32_t c = 1; c < QCOM8GEN3_CORES; c++) {
         _cs[c].epoch++;
         _cs[c].on = 1;
     }
@@ -150,28 +150,28 @@ int q8b_cpu_sleep_ctl(uint32_t arg) {
     /* The idle hook only runs at the tail of an interrupt: a core already
      * sitting in WFI would otherwise stay there until something else woke
      * it.  Cores busy running a task ignore the kick. */
-    for (uint32_t c = 1; c < Q8B_CORES; c++) {
+    for (uint32_t c = 1; c < QCOM8GEN3_CORES; c++) {
         if (c != self && _cpu_cores[c].actived)
             ipi_send(c);
     }
     return 0;
 }
 
-uint64_t q8b_cpu_sleep_stat(uint32_t arg) {
+uint64_t qcom8gen3_cpu_sleep_stat(uint32_t arg) {
     uint32_t mask = 0;
 
-    if (arg != Q8B_CPU_SLEEP_STATS_RESUMED &&
-            arg != Q8B_CPU_SLEEP_STATS_PARKED)
-        return (uint64_t)Q8B_NPU_PAS_INVALID;
-    for (uint32_t c = 1; c < Q8B_CORES; c++) {
-        if (arg == Q8B_CPU_SLEEP_STATS_PARKED ?
+    if (arg != QCOM8GEN3_CPU_SLEEP_STATS_RESUMED &&
+            arg != QCOM8GEN3_CPU_SLEEP_STATS_PARKED)
+        return (uint64_t)QCOM8GEN3_NPU_PAS_INVALID;
+    for (uint32_t c = 1; c < QCOM8GEN3_CORES; c++) {
+        if (arg == QCOM8GEN3_CPU_SLEEP_STATS_PARKED ?
                 _cs[c].parked : _cs[c].resumed)
             mask |= 1u << c;
     }
     return mask;
 }
 
-void q8b_cpu_sleep_tick(void) {
+void qcom8gen3_cpu_sleep_tick(void) {
     static uint64_t last;
 
     if (!_cs_active)
@@ -180,7 +180,7 @@ void q8b_cpu_sleep_tick(void) {
     if (now - last < CS_SWEEP_USEC)
         return;
     last = now;
-    for (uint32_t c = 1; c < Q8B_CORES; c++) {
+    for (uint32_t c = 1; c < QCOM8GEN3_CORES; c++) {
         if (!cs_core_pending(c, NULL) || _cs[c].parked ||
                 !_cpu_cores[c].actived)
             continue;
@@ -193,10 +193,10 @@ void q8b_cpu_sleep_tick(void) {
 /* Asm helper (cpu_sleep_a.S): saves x19-x30/d8-d15/SP, flushes the save
  * block, issues CPU_SUSPEND64 with the MMU on.  Returns CS_RESUMED after a
  * power-down/resume cycle, else the PSCI result. */
-extern int64_t q8b_cpu_do_suspend(uint64_t save_va, uint64_t save_pa,
+extern int64_t qcom8gen3_cpu_do_suspend(uint64_t save_va, uint64_t save_pa,
         uint64_t resume_pa, uint64_t core);
 
-static int32_t q8b_cpu_suspend(uint32_t core) {
+static int32_t qcom8gen3_cpu_suspend(uint32_t core) {
     uint64_t* s = _save[core];
     uint64_t daif = RD_SYSREG(daif);
     /* The trampoline must come up on the kernel VM: that is the only VM
@@ -222,8 +222,8 @@ static int32_t q8b_cpu_suspend(uint32_t core) {
 
     uint64_t save_va = (uint64_t)s;
     uint64_t save_pa = (uint64_t)V2P((ewokos_addr_t)s);
-    uint64_t resume_pa = (uint64_t)V2P((ewokos_addr_t)q8b_cpu_resume_asm);
-    int32_t ret = (int32_t)q8b_cpu_do_suspend(save_va, save_pa, resume_pa, core);
+    uint64_t resume_pa = (uint64_t)V2P((ewokos_addr_t)qcom8gen3_cpu_resume_asm);
+    int32_t ret = (int32_t)qcom8gen3_cpu_do_suspend(save_va, save_pa, resume_pa, core);
 
     if (ret == CS_RESUMED) {
         /* Running on the kernel VM (ASID 0).  Go back to the VM this core
@@ -243,24 +243,24 @@ static int32_t q8b_cpu_suspend(uint32_t core) {
  * cpu_core_ready) and keep the local virtual timer stopped: EwokOS drives
  * the system tick on core 0 only.  Nothing here may block or print: the
  * core is still on the kernel VM with every exception masked. */
-void q8b_cpu_resume_core(uint32_t core) {
+void qcom8gen3_cpu_resume_core(uint32_t core) {
     timer_disable_local();
     gic_v3_core_init(core);
 }
 
-void q8b_arch_irq_idle(void) {
+void qcom8gen3_arch_irq_idle(void) {
     uint32_t core = get_core_id();
     uint32_t epoch = 0;
 
     /* Core 0 carries the tick and the polled wake sources: never suspend. */
-    if (core == 0 || core >= Q8B_CORES || !cs_core_pending(core, &epoch)) {
+    if (core == 0 || core >= QCOM8GEN3_CORES || !cs_core_pending(core, &epoch)) {
         wfi();
         return;
     }
 
     cs_core_t* c = &_cs[core];
     c->parked = 1;
-    int32_t ret = q8b_cpu_suspend(core);
+    int32_t ret = qcom8gen3_cpu_suspend(core);
     c->parked = 0;
 
     if (ret == CS_RESUMED) {

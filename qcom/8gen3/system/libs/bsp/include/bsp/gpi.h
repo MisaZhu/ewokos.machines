@@ -1,5 +1,5 @@
-#ifndef Q8B_BSP_GPI_H
-#define Q8B_BSP_GPI_H
+#ifndef QCOM8GEN3_BSP_GPI_H
+#define QCOM8GEN3_BSP_GPI_H
 #include <stdint.h>
 
 /* Experimental QUP2 control-plane candidate; host tests only. It is not linked
@@ -16,8 +16,8 @@ typedef struct {
     uintptr_t regs;
     unsigned channels, event, poisoned, retired;
     const char* stage;
-} q8b_gpi_t;
+} qcom8gen3_gpi_t;
 
-int q8b_gpi_acquire(q8b_gpi_t* gpi, unsigned instance);
-int q8b_gpi_release(q8b_gpi_t* gpi);
+int qcom8gen3_gpi_acquire(qcom8gen3_gpi_t* gpi, unsigned instance);
+int qcom8gen3_gpi_release(qcom8gen3_gpi_t* gpi);
 #endif

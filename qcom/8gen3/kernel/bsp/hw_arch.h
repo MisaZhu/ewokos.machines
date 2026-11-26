@@ -1,109 +1,109 @@
-#ifndef Q8B_HW_ARCH_H
-#define Q8B_HW_ARCH_H
+#ifndef QCOM8GEN3_HW_ARCH_H
+#define QCOM8GEN3_HW_ARCH_H
 
 #include <stdint.h>
 #include <mm/mmu.h>
 
 /*
- * Radxa Dragon Q8B / Qualcomm SC8280XP hardware map.
+ * Radxa Dragon QCOM8GEN3 / Qualcomm SC8280XP hardware map.
  *
  * Boot chain: on-board SPI NOR EDK2 UEFI -> BOOTAA64.EFI (our stub) ->
- * kernel.bin copied to Q8B_KERNEL_PHYS.  There is no U-Boot.
+ * kernel.bin copied to QCOM8GEN3_KERNEL_PHYS.  There is no U-Boot.
  */
 
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
 /* QEMU virt smoke test: PL011 at 0x09000000, GICv2 at 0x08000000. */
-#define Q8B_RAM_BASE        0x40000000ULL
-#define Q8B_KERNEL_PHYS     0x80080000ULL
-#define Q8B_BOOTINFO_PHYS   0x80070000ULL
-#define Q8B_BOOTINFO_SIZE   0x10000ULL
+#define QCOM8GEN3_RAM_BASE        0x40000000ULL
+#define QCOM8GEN3_KERNEL_PHYS     0x80080000ULL
+#define QCOM8GEN3_BOOTINFO_PHYS   0x80070000ULL
+#define QCOM8GEN3_BOOTINFO_SIZE   0x10000ULL
 
-#define Q8B_EARLY_WIN_BASE  0x80000000ULL
-#define Q8B_EARLY_WIN_SIZE  (64*MB)
-#define Q8B_EARLY_WIN_VOFF  (Q8B_EARLY_WIN_BASE - Q8B_RAM_BASE)
+#define QCOM8GEN3_EARLY_WIN_BASE  0x80000000ULL
+#define QCOM8GEN3_EARLY_WIN_SIZE  (64*MB)
+#define QCOM8GEN3_EARLY_WIN_VOFF  (QCOM8GEN3_EARLY_WIN_BASE - QCOM8GEN3_RAM_BASE)
 
-#define Q8B_MMIO_PHY        0x00000000ULL
-#define Q8B_MMIO_SIZE       (64*MB)
-#define Q8B_APPS_SMMU_PHY  0x15000000ULL
-#define Q8B_APPS_SMMU_SIZE  0x00100000ULL
-#define Q8B_APPS_SMMU_OFF   0x07000000ULL
+#define QCOM8GEN3_MMIO_PHY        0x00000000ULL
+#define QCOM8GEN3_MMIO_SIZE       (64*MB)
+#define QCOM8GEN3_APPS_SMMU_PHY  0x15000000ULL
+#define QCOM8GEN3_APPS_SMMU_SIZE  0x00100000ULL
+#define QCOM8GEN3_APPS_SMMU_OFF   0x07000000ULL
 /* QEMU virt puts the GIC at 0x08000000 and PL011 at 0x09000000, beyond the
  * 64MB QCOM low window; map a second 32MB window at +64MB. */
-#define Q8B_UART17_PHY      0x09000000ULL
-#define Q8B_UART17_OFF      (0x04000000 + 0x01000000)
-#define Q8B_UART17_IRQ      33
-#define Q8B_UART_BAUD       115200
+#define QCOM8GEN3_UART17_PHY      0x09000000ULL
+#define QCOM8GEN3_UART17_OFF      (0x04000000 + 0x01000000)
+#define QCOM8GEN3_UART17_IRQ      33
+#define QCOM8GEN3_UART_BAUD       115200
 
-#define Q8B_GIC_WIN_PHY     0x08000000ULL
-#define Q8B_GIC_WIN_SIZE    (32*MB)
-#define Q8B_GIC_WIN_OFF     0x04000000
-#define Q8B_GICD_PHY        0x08000000ULL
-#define Q8B_GICC_PHY        0x08010000ULL
-#define Q8B_GICR_PHY        0ULL
-#define Q8B_GICR_STRIDE     0ULL
-#define Q8B_GIC_ITS_PHY     0ULL
-#define Q8B_GIC_TIMER_IRQ   27
-#define Q8B_GIC_IPI_IRQ     0
-#define Q8B_CORES           1
+#define QCOM8GEN3_GIC_WIN_PHY     0x08000000ULL
+#define QCOM8GEN3_GIC_WIN_SIZE    (32*MB)
+#define QCOM8GEN3_GIC_WIN_OFF     0x04000000
+#define QCOM8GEN3_GICD_PHY        0x08000000ULL
+#define QCOM8GEN3_GICC_PHY        0x08010000ULL
+#define QCOM8GEN3_GICR_PHY        0ULL
+#define QCOM8GEN3_GICR_STRIDE     0ULL
+#define QCOM8GEN3_GIC_ITS_PHY     0ULL
+#define QCOM8GEN3_GIC_TIMER_IRQ   27
+#define QCOM8GEN3_GIC_IPI_IRQ     0
+#define QCOM8GEN3_CORES           1
 
-#define Q8B_USABLE_LIMIT    (1ULL*GB)
-#define Q8B_FB_MAX_SIZE     (64*MB)
+#define QCOM8GEN3_USABLE_LIMIT    (1ULL*GB)
+#define QCOM8GEN3_FB_MAX_SIZE     (64*MB)
 #else
-#define Q8B_RAM_BASE        0x80000000ULL
-#define Q8B_KERNEL_PHYS     0x90080000ULL   /* RAM base + 256MB */
-#define Q8B_BOOTINFO_PHYS   0x90070000ULL   /* 64KB reserved below kernel */
-#define Q8B_BOOTINFO_SIZE   0x10000ULL
+#define QCOM8GEN3_RAM_BASE        0x80000000ULL
+#define QCOM8GEN3_KERNEL_PHYS     0x90080000ULL   /* RAM base + 256MB */
+#define QCOM8GEN3_BOOTINFO_PHYS   0x90070000ULL   /* 64KB reserved below kernel */
+#define QCOM8GEN3_BOOTINFO_SIZE   0x10000ULL
 
 /* Early boot maps a 64MB window around the kernel.  The UEFI loader itself
  * is typically loaded near 0x80080000, so the kernel lives 128MB higher. */
-#define Q8B_EARLY_WIN_BASE  0x90000000ULL
-#define Q8B_EARLY_WIN_SIZE  (64*MB)
-#define Q8B_EARLY_WIN_VOFF  (Q8B_EARLY_WIN_BASE - Q8B_RAM_BASE)
+#define QCOM8GEN3_EARLY_WIN_BASE  0x90000000ULL
+#define QCOM8GEN3_EARLY_WIN_SIZE  (64*MB)
+#define QCOM8GEN3_EARLY_WIN_VOFF  (QCOM8GEN3_EARLY_WIN_BASE - QCOM8GEN3_RAM_BASE)
 
 /* Main low MMIO window (QUP/GENI, GCC, TLMM, TCSR, ...) */
-#define Q8B_MMIO_PHY        0x00000000ULL
-#define Q8B_MMIO_SIZE       (64*MB)
-#define Q8B_APPS_SMMU_PHY  0x15000000ULL
-#define Q8B_APPS_SMMU_SIZE  0x00100000ULL
-#define Q8B_APPS_SMMU_OFF   0x07000000ULL
+#define QCOM8GEN3_MMIO_PHY        0x00000000ULL
+#define QCOM8GEN3_MMIO_SIZE       (64*MB)
+#define QCOM8GEN3_APPS_SMMU_PHY  0x15000000ULL
+#define QCOM8GEN3_APPS_SMMU_SIZE  0x00100000ULL
+#define QCOM8GEN3_APPS_SMMU_OFF   0x07000000ULL
 
 /* GENI debug UART (uart17 in sc8280xp.dtsi, 40-pin header TX/RX) */
-#define Q8B_UART17_PHY      0x00884000ULL
-#define Q8B_UART17_OFF      0x00884000     /* offset in Q8B_MMIO_PHY window */
-#define Q8B_UART17_IRQ      615            /* GIC SPI 583 => INTID 32+583 */
-#define Q8B_UART_BAUD       115200
+#define QCOM8GEN3_UART17_PHY      0x00884000ULL
+#define QCOM8GEN3_UART17_OFF      0x00884000     /* offset in QCOM8GEN3_MMIO_PHY window */
+#define QCOM8GEN3_UART17_IRQ      615            /* GIC SPI 583 => INTID 32+583 */
+#define QCOM8GEN3_UART_BAUD       115200
 
 /* GICv3: distributor + one redistributor region (8 cores, 0x20000 stride) */
-#define Q8B_GIC_WIN_PHY     0x17000000ULL
-#define Q8B_GIC_WIN_SIZE    (16*MB)
-#define Q8B_GIC_WIN_OFF     0x04000000     /* virtual offset from MMIO_BASE */
-#define Q8B_GICD_PHY        0x17a00000ULL
-#define Q8B_GICR_PHY        0x17a60000ULL
-#define Q8B_GICR_STRIDE     0x20000ULL
-#define Q8B_GIC_ITS_PHY     0x17a40000ULL
+#define QCOM8GEN3_GIC_WIN_PHY     0x17000000ULL
+#define QCOM8GEN3_GIC_WIN_SIZE    (16*MB)
+#define QCOM8GEN3_GIC_WIN_OFF     0x04000000     /* virtual offset from MMIO_BASE */
+#define QCOM8GEN3_GICD_PHY        0x17a00000ULL
+#define QCOM8GEN3_GICR_PHY        0x17a60000ULL
+#define QCOM8GEN3_GICR_STRIDE     0x20000ULL
+#define QCOM8GEN3_GIC_ITS_PHY     0x17a40000ULL
 
 /* SDCC2 and TLMM sit above the 64MB low-MMIO window. Keep dedicated,
  * contiguous virtual windows below MMIO_MAX_SIZE rather than expanding the
  * physical low window across unrelated address holes. */
-#define Q8B_SDCC_WIN_PHY    0x08800000ULL
-#define Q8B_SDCC_WIN_SIZE   (1*MB)
-#define Q8B_SDCC_WIN_OFF    0x05000000ULL
-#define Q8B_SDCC2_PHY       0x08804000ULL
-#define Q8B_SDCC2_OFF       (Q8B_SDCC_WIN_OFF + 0x4000ULL)
+#define QCOM8GEN3_SDCC_WIN_PHY    0x08800000ULL
+#define QCOM8GEN3_SDCC_WIN_SIZE   (1*MB)
+#define QCOM8GEN3_SDCC_WIN_OFF    0x05000000ULL
+#define QCOM8GEN3_SDCC2_PHY       0x08804000ULL
+#define QCOM8GEN3_SDCC2_OFF       (QCOM8GEN3_SDCC_WIN_OFF + 0x4000ULL)
 
-#define Q8B_TLMM_WIN_PHY    0x0f100000ULL
-#define Q8B_TLMM_WIN_SIZE   (3*MB)
-#define Q8B_TLMM_WIN_OFF    0x05100000ULL
+#define QCOM8GEN3_TLMM_WIN_PHY    0x0f100000ULL
+#define QCOM8GEN3_TLMM_WIN_SIZE   (3*MB)
+#define QCOM8GEN3_TLMM_WIN_OFF    0x05100000ULL
 
 /* RPMh drv-2 controls the PM8350C SD-card rails.  Command DB is firmware
  * populated reserved RAM containing the RPMh resource addresses. */
-#define Q8B_RSC_WIN_PHY     0x18220000ULL
-#define Q8B_RSC_WIN_SIZE    0x00010000ULL
-#define Q8B_RSC_WIN_OFF     0x05400000ULL
+#define QCOM8GEN3_RSC_WIN_PHY     0x18220000ULL
+#define QCOM8GEN3_RSC_WIN_SIZE    0x00010000ULL
+#define QCOM8GEN3_RSC_WIN_OFF     0x05400000ULL
 
-#define Q8B_CMD_DB_WIN_PHY  0x80860000ULL
-#define Q8B_CMD_DB_WIN_SIZE 0x00020000ULL
-#define Q8B_CMD_DB_WIN_OFF  0x05500000ULL
+#define QCOM8GEN3_CMD_DB_WIN_PHY  0x80860000ULL
+#define QCOM8GEN3_CMD_DB_WIN_SIZE 0x00020000ULL
+#define QCOM8GEN3_CMD_DB_WIN_OFF  0x05500000ULL
 
 /*
  * Adreno 690 GPU complex (SC8280XP).
@@ -122,7 +122,7 @@
  *   0x03da0000 +0x20000  adreno_smmu               (GPU SMMU-500)
  *   0x03de0000 +0x10000  gmu rscc                  (RSCC for GMU AOP handshake)
  *
- * One 1MB virtual window at Q8B_GPU_WIN_OFF covers the whole span; the
+ * One 1MB virtual window at QCOM8GEN3_GPU_WIN_OFF covers the whole span; the
  * user-space Adreno driver sub-slices it by (phy - 0x03d00000).  The GMU
  * PDC block sits outside this range at 0x0b290000 and gets its own 64KB
  * window.
@@ -148,102 +148,102 @@
  * need a separate exclusion here; the constant is exposed for the
  * user-space driver.
  */
-#define Q8B_GPU_WIN_PHY     0x03d00000ULL
-#define Q8B_GPU_WIN_SIZE    (1*MB)
-#define Q8B_GPU_WIN_OFF     0x06000000ULL
+#define QCOM8GEN3_GPU_WIN_PHY     0x03d00000ULL
+#define QCOM8GEN3_GPU_WIN_SIZE    (1*MB)
+#define QCOM8GEN3_GPU_WIN_OFF     0x06000000ULL
 
-/* Sub-region physical bases (offsets from Q8B_GPU_WIN_PHY) */
-#define Q8B_GPU_CORE_PHY    0x03d00000ULL   /* kgsl_3d0_reg_memory */
-#define Q8B_GPU_CORE_SIZE   0x40000ULL
-#define Q8B_GPU_CX_DBGC_PHY 0x03d61000ULL
-#define Q8B_GPU_CX_MEM_PHY  0x03d9e000ULL
-#define Q8B_GMU_PHY         0x03d6a000ULL
-#define Q8B_GMU_SIZE        0x34000ULL
-#define Q8B_GPUCC_PHY       0x03d90000ULL
-#define Q8B_GPUCC_SIZE      0x9000ULL
-#define Q8B_GPU_SMMU_PHY    0x03da0000ULL
-#define Q8B_GPU_SMMU_SIZE   0x20000ULL
-#define Q8B_GMU_RSCC_PHY    0x03de0000ULL
-#define Q8B_GMU_RSCC_SIZE   0x10000ULL
+/* Sub-region physical bases (offsets from QCOM8GEN3_GPU_WIN_PHY) */
+#define QCOM8GEN3_GPU_CORE_PHY    0x03d00000ULL   /* kgsl_3d0_reg_memory */
+#define QCOM8GEN3_GPU_CORE_SIZE   0x40000ULL
+#define QCOM8GEN3_GPU_CX_DBGC_PHY 0x03d61000ULL
+#define QCOM8GEN3_GPU_CX_MEM_PHY  0x03d9e000ULL
+#define QCOM8GEN3_GMU_PHY         0x03d6a000ULL
+#define QCOM8GEN3_GMU_SIZE        0x34000ULL
+#define QCOM8GEN3_GPUCC_PHY       0x03d90000ULL
+#define QCOM8GEN3_GPUCC_SIZE      0x9000ULL
+#define QCOM8GEN3_GPU_SMMU_PHY    0x03da0000ULL
+#define QCOM8GEN3_GPU_SMMU_SIZE   0x20000ULL
+#define QCOM8GEN3_GMU_RSCC_PHY    0x03de0000ULL
+#define QCOM8GEN3_GMU_RSCC_SIZE   0x10000ULL
 
 /* GMU PDC (outside the main GPU window). */
-#define Q8B_GPU_PDC_WIN_PHY 0x0b290000ULL
-#define Q8B_GPU_PDC_WIN_SIZE (64*KB)
-#define Q8B_GPU_PDC_WIN_OFF 0x06100000ULL
+#define QCOM8GEN3_GPU_PDC_WIN_PHY 0x0b290000ULL
+#define QCOM8GEN3_GPU_PDC_WIN_SIZE (64*KB)
+#define QCOM8GEN3_GPU_PDC_WIN_OFF 0x06100000ULL
 
 /* Adreno IRQ lines (INTID = 32 + GIC SPI number) */
-#define Q8B_GPU_IRQ         332             /* SPI 300, level-high */
-#define Q8B_GMU_HFI_IRQ     336             /* SPI 304, level-high */
-#define Q8B_GMU_IRQ         337             /* SPI 305, level-high */
-#define Q8B_GPU_SMMU_GLBL0_IRQ 704          /* SPI 672 */
-#define Q8B_GPU_SMMU_GLBL1_IRQ 705          /* SPI 673 */
-#define Q8B_GPU_SMMU_CB0_IRQ 710            /* SPI 678 */
+#define QCOM8GEN3_GPU_IRQ         332             /* SPI 300, level-high */
+#define QCOM8GEN3_GMU_HFI_IRQ     336             /* SPI 304, level-high */
+#define QCOM8GEN3_GMU_IRQ         337             /* SPI 305, level-high */
+#define QCOM8GEN3_GPU_SMMU_GLBL0_IRQ 704          /* SPI 672 */
+#define QCOM8GEN3_GPU_SMMU_GLBL1_IRQ 705          /* SPI 673 */
+#define QCOM8GEN3_GPU_SMMU_CB0_IRQ 710            /* SPI 678 */
 
 /* Zap-shader reserved-memory window (see DT gpu_mem node). */
-#define Q8B_GPU_ZAP_PHY     0x8bf00000ULL
-#define Q8B_GPU_ZAP_SIZE    0x2000ULL
-#define Q8B_GPU_ZAP_WIN_OFF 0x06200000ULL /* kernel-only Normal-NC staging */
-#define Q8B_GPU_META_WIN_OFF 0x06300000ULL /* kernel-owned coherent metadata */
+#define QCOM8GEN3_GPU_ZAP_PHY     0x8bf00000ULL
+#define QCOM8GEN3_GPU_ZAP_SIZE    0x2000ULL
+#define QCOM8GEN3_GPU_ZAP_WIN_OFF 0x06200000ULL /* kernel-only Normal-NC staging */
+#define QCOM8GEN3_GPU_META_WIN_OFF 0x06300000ULL /* kernel-owned coherent metadata */
 
-#define Q8B_GIC_TIMER_IRQ   27             /* virtual timer PPI (CNTV) */
-#define Q8B_GIC_IPI_IRQ     0              /* SGI0 */
+#define QCOM8GEN3_GIC_TIMER_IRQ   27             /* virtual timer PPI (CNTV) */
+#define QCOM8GEN3_GIC_IPI_IRQ     0              /* SGI0 */
 
-#define Q8B_CORES           8
+#define QCOM8GEN3_CORES           8
 
 /* The 8GB physical span contains firmware-owned holes. kalloc_arch() filters
  * it through the final UEFI memory map before publishing pages. */
-#define Q8B_USABLE_LIMIT    (8ULL*GB)
+#define QCOM8GEN3_USABLE_LIMIT    (8ULL*GB)
 
 /* Firmware framebuffer is mapped by user space (SYS_MEM_MAP); allow a
  * generous window in check_mem_map_arch(). */
-#define Q8B_FB_MAX_SIZE     (64*MB)
+#define QCOM8GEN3_FB_MAX_SIZE     (64*MB)
 
 #endif
 
 /* PCIe4: M.2 E-key WLAN (SC8280XP domain 6), from the board DTS. */
-#define Q8B_PCIE4_DBI_PHY        0x30000000ULL
-#define Q8B_PCIE4_DBI_SIZE       0x00004000ULL
-#define Q8B_PCIE4_ECAM_PHY       0x400000000ULL
-#define Q8B_PCIE4_ECAM_SIZE      0x10000000ULL
-#define Q8B_PCIE4_MEM32_PHY      0x410000000ULL
-#define Q8B_PCIE4_MEM32_SIZE     0x10000000ULL
-#define Q8B_PCIE4_MEM64_PHY      0x420000000ULL
-#define Q8B_PCIE4_MEM64_SIZE     0x20000000ULL
+#define QCOM8GEN3_PCIE4_DBI_PHY        0x30000000ULL
+#define QCOM8GEN3_PCIE4_DBI_SIZE       0x00004000ULL
+#define QCOM8GEN3_PCIE4_ECAM_PHY       0x400000000ULL
+#define QCOM8GEN3_PCIE4_ECAM_SIZE      0x10000000ULL
+#define QCOM8GEN3_PCIE4_MEM32_PHY      0x410000000ULL
+#define QCOM8GEN3_PCIE4_MEM32_SIZE     0x10000000ULL
+#define QCOM8GEN3_PCIE4_MEM64_PHY      0x420000000ULL
+#define QCOM8GEN3_PCIE4_MEM64_SIZE     0x20000000ULL
 
 /* PCIe3A: the on-board TC9563/QPS615 switch root port DBI window.  It is
  * outside the legacy low-MMIO allowance, so expose only this exact page
  * range to the user-space host-bus owner. */
-#define Q8B_PCIE3A_DBI_PHY       0x34000000ULL
-#define Q8B_PCIE3A_DBI_SIZE      0x00004000ULL
+#define QCOM8GEN3_PCIE3A_DBI_PHY       0x34000000ULL
+#define QCOM8GEN3_PCIE3A_DBI_SIZE      0x00004000ULL
 
 /* PCIe3a outbound apertures used by the on-board TC9563/QPS615 switch. */
-#define Q8B_PCIE3A_ECAM_PHY      0x480000000ULL
-#define Q8B_PCIE3A_ECAM_SIZE     0x10000000ULL
-#define Q8B_PCIE3A_MEM32_PHY     0x490000000ULL
-#define Q8B_PCIE3A_MEM32_SIZE    0x10000000ULL
-#define Q8B_PCIE3A_MEM64_PHY     0x4a0000000ULL
-#define Q8B_PCIE3A_MEM64_SIZE    0x20000000ULL
+#define QCOM8GEN3_PCIE3A_ECAM_PHY      0x480000000ULL
+#define QCOM8GEN3_PCIE3A_ECAM_SIZE     0x10000000ULL
+#define QCOM8GEN3_PCIE3A_MEM32_PHY     0x490000000ULL
+#define QCOM8GEN3_PCIE3A_MEM32_SIZE    0x10000000ULL
+#define QCOM8GEN3_PCIE3A_MEM64_PHY     0x4a0000000ULL
+#define QCOM8GEN3_PCIE3A_MEM64_SIZE    0x20000000ULL
 
 /*
  * PCIe2a (M.2 M-key, Gen3 x4) and PCIe3b (M.2 M-key, Gen3 x2) are the two
  * NVMe slots.  The firmware brings both controllers and link training up
  * before ExitBootServices, so user space only needs the ECAM window (PCI
  * config space) plus the outbound apertures that decode the assigned BARs.
- * Ranges come from sc8280xp-radxa-dragon-q8b.dts (&pcie2a / &pcie3b).
+ * Ranges come from sc8280xp-radxa-dragon-qcom8gen3.dts (&pcie2a / &pcie3b).
  */
-#define Q8B_PCIE2A_ECAM_PHY      0x500000000ULL
-#define Q8B_PCIE2A_ECAM_SIZE     0x10000000ULL
-#define Q8B_PCIE2A_MEM32_PHY     0x510000000ULL
-#define Q8B_PCIE2A_MEM32_SIZE    0x10000000ULL
-#define Q8B_PCIE2A_MEM64_PHY     0x520000000ULL
-#define Q8B_PCIE2A_MEM64_SIZE    0x0e0000000ULL
+#define QCOM8GEN3_PCIE2A_ECAM_PHY      0x500000000ULL
+#define QCOM8GEN3_PCIE2A_ECAM_SIZE     0x10000000ULL
+#define QCOM8GEN3_PCIE2A_MEM32_PHY     0x510000000ULL
+#define QCOM8GEN3_PCIE2A_MEM32_SIZE    0x10000000ULL
+#define QCOM8GEN3_PCIE2A_MEM64_PHY     0x520000000ULL
+#define QCOM8GEN3_PCIE2A_MEM64_SIZE    0x0e0000000ULL
 
-#define Q8B_PCIE3B_ECAM_PHY      0x440000000ULL
-#define Q8B_PCIE3B_ECAM_SIZE     0x10000000ULL
-#define Q8B_PCIE3B_MEM32_PHY     0x450000000ULL
-#define Q8B_PCIE3B_MEM32_SIZE    0x10000000ULL
-#define Q8B_PCIE3B_MEM64_PHY     0x460000000ULL
-#define Q8B_PCIE3B_MEM64_SIZE    0x20000000ULL
+#define QCOM8GEN3_PCIE3B_ECAM_PHY      0x440000000ULL
+#define QCOM8GEN3_PCIE3B_ECAM_SIZE     0x10000000ULL
+#define QCOM8GEN3_PCIE3B_MEM32_PHY     0x450000000ULL
+#define QCOM8GEN3_PCIE3B_MEM32_SIZE    0x10000000ULL
+#define QCOM8GEN3_PCIE3B_MEM64_PHY     0x460000000ULL
+#define QCOM8GEN3_PCIE3B_MEM64_SIZE    0x20000000ULL
 
 /* TW220 keeps the SC8280XP DT PCIe windows below 1 GiB.  PCIe2A uses
  * DesignWare DBI at 0x3c000000, a separate 1 MiB CFG0 aperture at
@@ -264,11 +264,11 @@
 #define TW220_PCIE4_MEM32_PHY     0x30300000ULL
 
 /*
- * bootinfo hand-off (stub -> kernel), resident at Q8B_BOOTINFO_PHYS.
+ * bootinfo hand-off (stub -> kernel), resident at QCOM8GEN3_BOOTINFO_PHYS.
  * Keep the layout in sync with ../efi/main.c.
  */
-#define Q8B_BOOTINFO_MAGIC   0x42385145u   /* "EQ8B" little-endian */
-#define Q8B_BOOTINFO_VERSION 1
+#define QCOM8GEN3_BOOTINFO_MAGIC   0x42385145u   /* "EQCOM8GEN3" little-endian */
+#define QCOM8GEN3_BOOTINFO_VERSION 1
 
 typedef struct {
     uint32_t type;
@@ -277,18 +277,18 @@ typedef struct {
     uint64_t virt_start;
     uint64_t pages;
     uint64_t attr;
-} q8b_efi_memdesc_t;
+} qcom8gen3_efi_memdesc_t;
 
-#define Q8B_MEM_USABLE(t) \
+#define QCOM8GEN3_MEM_USABLE(t) \
     ((t) == 1 || (t) == 2 || (t) == 3 || (t) == 4 || \
      (t) == 7 || (t) == 13)
 
-#define Q8B_MAX_RESV 32
+#define QCOM8GEN3_MAX_RESV 32
 
 typedef struct {
     uint64_t base;
     uint64_t size;
-} q8b_resv_t;
+} qcom8gen3_resv_t;
 
 typedef struct {
     uint32_t magic;
@@ -307,8 +307,8 @@ typedef struct {
 
     uint64_t rd_base;          /* INITRAMFS.IMG/ROOTFS.IMG copied into RAM */
     uint64_t rd_size;
-    uint32_t rd_flags;         /* Q8B_RD_FLAG_* */
-    uint32_t boot_source;      /* Q8B_BOOT_SOURCE_* */
+    uint32_t rd_flags;         /* QCOM8GEN3_RD_FLAG_* */
+    uint32_t boot_source;      /* QCOM8GEN3_BOOT_SOURCE_* */
 
     uint64_t kernel_phys;
     uint64_t kernel_size;
@@ -319,20 +319,20 @@ typedef struct {
 
     uint32_t resv_count;
     uint32_t serial_flags;   /* bit0: UART17 usable; bit1: loader had EFI Serial I/O */
-    q8b_resv_t resv[Q8B_MAX_RESV];
+    qcom8gen3_resv_t resv[QCOM8GEN3_MAX_RESV];
 
     uint64_t dtb_addr;
     uint64_t dtb_size;
 
     /* Device model from the firmware DTB /model (MACHINE_MAX bytes). */
     char model[32];
-} q8b_bootinfo_t;
+} qcom8gen3_bootinfo_t;
 
 /* low-level debug console (bsp/dbg.c) */
-extern void q8b_dbg_putc(char c);
-extern void q8b_dbg_puts(const char* s);
-extern void q8b_dbg_hex(uint64_t v);
-extern void q8b_dbg_dec(uint64_t v);
+extern void qcom8gen3_dbg_putc(char c);
+extern void qcom8gen3_dbg_puts(const char* s);
+extern void qcom8gen3_dbg_hex(uint64_t v);
+extern void qcom8gen3_dbg_dec(uint64_t v);
 
 /* GICv3 (bsp/gic_v3.c) */
 extern void gic_v3_init(void);
@@ -343,13 +343,13 @@ extern uint32_t gic_v3_get_irq(void);
 extern void gic_v3_eoi(uint32_t irq);
 extern void gic_v3_send_sgi(int core, int irq);
 
-extern int q8b_serial_on;   /* bootinfo serial_flags bit0, set before any kout */
-extern q8b_bootinfo_t* q8b_bootinfo(void);
-extern uint64_t q8b_ramdisk_base;
-extern uint64_t q8b_ramdisk_size;
-extern uint32_t q8b_ramdisk_flags;
-extern uint64_t q8b_fb_base;
-extern uint64_t q8b_fb_size;
-extern int32_t q8b_release_ramdisk(void);
+extern int qcom8gen3_serial_on;   /* bootinfo serial_flags bit0, set before any kout */
+extern qcom8gen3_bootinfo_t* qcom8gen3_bootinfo(void);
+extern uint64_t qcom8gen3_ramdisk_base;
+extern uint64_t qcom8gen3_ramdisk_size;
+extern uint32_t qcom8gen3_ramdisk_flags;
+extern uint64_t qcom8gen3_fb_base;
+extern uint64_t qcom8gen3_fb_size;
+extern int32_t qcom8gen3_release_ramdisk(void);
 
 #endif

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")/../../../../../../.."
-out=$(mktemp -d "${TMPDIR:-/tmp}/q8b-typec.XXXXXX")
+out=$(mktemp -d "${TMPDIR:-/tmp}/qcom8gen3-typec.XXXXXX")
 trap 'rm -rf "$out"' EXIT HUP INT TERM
 case $(uname -s) in
     Darwin) gc_sections=-Wl,-dead_strip ;;

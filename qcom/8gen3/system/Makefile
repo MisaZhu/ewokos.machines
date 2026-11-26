@@ -13,7 +13,7 @@ INST_DIR = /usr/local/ewokos
 BUILD_DIR = $(SYS_ROOT_DIR)/build_$(ARCH)/$(HW)
 TARGET_DIR = $(BUILD_DIR)/rootfs
 
-# Q8B's normal rootfs is the complete graphical system, matching raspi5:
+# QCOM8GEN3's normal rootfs is the complete graphical system, matching raspi5:
 # build the framebuffer stack and the xwin/window-manager stack by default.
 # The explicit `gui` target remains available for a console-only image.
 all: x
@@ -21,24 +21,24 @@ all: x
 
 include $(SYS_ROOT_DIR)/platform/make.inc
 
-basic: basic_sys apps
+basic: basic_sys
 	@$(MAKE) final
 
-network: network_sys apps
+network: network_sys
 	@$(MAKE) final
 
-gui: gui_sys apps
+gui: gui_sys
 	@$(MAKE) final
 
-x: x_sys apps
+x: x_sys
 	@$(MAKE) final
 
 # Platform headers consumed by user-space drivers (GOP framebuffer and
 # RAM-disk hand-off layout, plus the Adreno 690 GPU physical-address map).
 platform_headers:
 	@mkdir -p $(BUILD_DIR)/include
-	@cp -p ../include/q8b_platform.h $(BUILD_DIR)/include/
-	@cp -p ../include/q8b_adreno.h $(BUILD_DIR)/include/
+	@cp -p ../include/qcom8gen3_platform.h $(BUILD_DIR)/include/
+	@cp -p ../include/qcom8gen3_adreno.h $(BUILD_DIR)/include/
 
 # Adreno 690 firmware (GMU / SQE / board-selected signed zap). Redistributable
 # Qualcomm blobs, see ../firmware/adreno/README.md.  Installed into the
@@ -56,7 +56,7 @@ qairt_native_build:
 
 qairt_native_install: qairt_native_build
 	@mkdir -p "$(TARGET_DIR)/usr/lib/dsp"
-	cp "$(QAIRT_NATIVE_BUILD_DIR)/libq8b_npu.so" "$(TARGET_DIR)/usr/lib/dsp/"
+	cp "$(QAIRT_NATIVE_BUILD_DIR)/libqcom8gen3_npu.so" "$(TARGET_DIR)/usr/lib/dsp/"
 
 firmware_install:
 	@if [ ! -f "$(ADRENO_FW_SRC)/a660_gmu.bin" ]; then \
@@ -130,14 +130,8 @@ basic_sys: kernel_heads ewok_heads platform_headers firmware_install
 network_sys: basic_sys
 	$(MAKE) -C $(SYS_ROOT_DIR)/network
 
-# Machine-local apps (qnndemo links libadrenonpu from the machine libs phase).
-# All its link inputs land in basic_sys, so it can build right after it; the
-# profile targets above run it before `final` stages rootfs into FINAL_DIR.
-apps: basic_sys
-	@$(MAKE) -C apps
-
-# Q8B uses the SC8280XP multi-port DWC3 core through the shared polled xHCI
-# stack.  g2dd is the shared 2D/3D offload daemon; on q8b it links libbsp +
+# QCOM8GEN3 uses the SC8280XP multi-port DWC3 core through the shared polled xHCI
+# stack.  g2dd is the shared 2D/3D offload daemon; on qcom8gen3 it links libbsp +
 # libadreno (BSP_LFLAGS) and forwards into the Adreno 690 A2D/CS back ends,
 # enabled directly in each init.rd before any display/desktop clients start.
 # The bluetooth stack is the raspi5 one: the shared btd daemon over the
@@ -163,7 +157,7 @@ x_sys: gui_sys network_sys
 	@mkdir -p ${TARGET_DIR}/etc
 	@cp -Rp etc/xwin/. ${TARGET_DIR}/etc/
 
-CLEAN_DIRS = libs drivers bin apps $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
+CLEAN_DIRS = libs drivers bin $(SYS_ROOT_DIR)/gui $(SYS_ROOT_DIR)/basic \
 	$(SYS_ROOT_DIR)/network $(SYS_ROOT_DIR)/xwin
 clean:
 	@for dir in $(CLEAN_DIRS); do \
@@ -197,4 +191,4 @@ sd:
 	@echo "==== ${FS} rootfs image created (${SD}) ===="
 	python3 ../efi/mklz4.py ${SD} ${SD}.lz4
 
-.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys apps platform_headers firmware_install qairt_native_build qairt_native_install clean sd
+.PHONY: all basic network gui x basic_sys network_sys gui_sys x_sys platform_headers firmware_install qairt_native_build qairt_native_install clean sd

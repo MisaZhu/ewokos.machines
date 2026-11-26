@@ -20,9 +20,9 @@
 #include "native/himax_fifo.h"
 
 /* Record read clock.  See himax_native_transport_open(). */
-#define Q8B_HIMAX_SPI_HZ 9600000u
+#define QCOM8GEN3_HIMAX_SPI_HZ 9600000u
 
-static q8b_spi_t _spi;
+static qcom8gen3_spi_t _spi;
 static himax_fifo_t _fifo;
 static bool _opened;
 
@@ -70,8 +70,8 @@ himax_dev_t* himax_native_transport_open(void) {
      * 5132 bytes took ~42.9 ms at 960 kHz and ~5.4 ms here, with the same
      * records accepted.
      */
-    if (q8b_spi_open(&_spi, 60, Q8B_HIMAX_SPI_HZ,
-                Q8B_SPI_CPHA | Q8B_SPI_CPOL) != 0) {
+    if (qcom8gen3_spi_open(&_spi, 60, QCOM8GEN3_HIMAX_SPI_HZ,
+                QCOM8GEN3_SPI_CPHA | QCOM8GEN3_SPI_CPOL) != 0) {
         tlog("spi-open-failed stage=%s\n", _spi.stage ? _spi.stage : "?");
         slog("gaokun3 himax: native QUP0 SE6 open failed: %s\n",
                 _spi.stage ? _spi.stage : "?");
@@ -79,7 +79,7 @@ himax_dev_t* himax_native_transport_open(void) {
     }
     tlog("spi-open-ok hz=%u se=%08x\n", _spi.speed_hz, (unsigned)_spi.se_pa);
     memset(&_fifo, 0, sizeof(_fifo));
-    _fifo.transfer = himax_fifo_q8b_spi;
+    _fifo.transfer = himax_fifo_qcom8gen3_spi;
     _fifo.spictx = &_spi;
     _fifo.ready = 1;
     himax_bus_t bus = himax_fifo_attach(&_fifo);

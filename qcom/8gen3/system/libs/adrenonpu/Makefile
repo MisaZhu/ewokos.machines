@@ -10,7 +10,7 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 # Include paths (make.rule re-assigns CFLAGS, discarding make.inc's -I list,
 # so every path this library needs is re-appended here):
 #   -I include                         : adrenonpu/*.h (this lib's public headers)
-#   -I $(MAKEINC_DIR)/../include       : q8b_adreno.h / q8b_gpu_pas.h (machine shared)
+#   -I $(MAKEINC_DIR)/../include       : qcom8gen3_adreno.h / qcom8gen3_gpu_pas.h (machine shared)
 #   -I $(TARGET_DIR)/include           : installed platform headers
 #   -I libewoksys/.../include          : ewoksys/vfs.h, ewoksys/dma.h, ...
 # The machine libs phase runs before system/basic, so ewoksys headers must also

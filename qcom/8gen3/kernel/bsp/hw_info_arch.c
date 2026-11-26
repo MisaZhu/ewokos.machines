@@ -9,26 +9,26 @@
 #include <kprintf.h>
 #include "hw_arch.h"
 #include "memory_pool.h"
-#include "q8b_platform.h"
+#include "qcom8gen3_platform.h"
 
 uint64_t _core_base_offset = 0;
 /* Kernel serial console decision, taken from the loader's serial probe
  * (bootinfo serial_flags bit0).  Set in bootinfo_load() before the first
- * kout; q8b_early_uart_init() reads the same bit straight from bootinfo. */
-int q8b_serial_on = 0;
+ * kout; qcom8gen3_early_uart_init() reads the same bit straight from bootinfo. */
+int qcom8gen3_serial_on = 0;
 
-uint64_t q8b_ramdisk_base = 0;
-uint64_t q8b_ramdisk_size = 0;
-uint32_t q8b_ramdisk_flags = 0;
-uint64_t q8b_fb_base = 0;
-uint64_t q8b_fb_size = 0;
+uint64_t qcom8gen3_ramdisk_base = 0;
+uint64_t qcom8gen3_ramdisk_size = 0;
+uint32_t qcom8gen3_ramdisk_flags = 0;
+uint64_t qcom8gen3_fb_base = 0;
+uint64_t qcom8gen3_fb_size = 0;
 
-int32_t q8b_release_ramdisk(void) {
-    uint64_t base = q8b_ramdisk_base;
-    uint64_t size = q8b_ramdisk_size;
+int32_t qcom8gen3_release_ramdisk(void) {
+    uint64_t base = qcom8gen3_ramdisk_base;
+    uint64_t size = qcom8gen3_ramdisk_size;
     uint64_t end;
-    q8b_platform_data_t* pd;
-    if (size == 0 || (q8b_ramdisk_flags & Q8B_RD_FLAG_BOOT_ONLY) == 0)
+    qcom8gen3_platform_data_t* pd;
+    if (size == 0 || (qcom8gen3_ramdisk_flags & QCOM8GEN3_RD_FLAG_BOOT_ONLY) == 0)
         return -1;
 
     end = base + size;
@@ -37,56 +37,56 @@ int32_t q8b_release_ramdisk(void) {
 
     /* All user processes drop their short-lived bootfs aliases in read_fs().
      * Keep the physical pages reserved after hand-off.  init calls this from
-     * a live SMP system, while the Q8B page allocator has no global lock;
+     * a live SMP system, while the QCOM8GEN3 page allocator has no global lock;
      * appending this range to the free list here races concurrent kalloc_page
      * users and can corrupt the allocator immediately after the release log.
      * The range remains excluded by the UEFI reservation/ramdisk metadata,
      * so retaining these 16 MiB is safe and deterministic. */
-    pd = (q8b_platform_data_t*)(void*)_sys_info.platform_data;
-    q8b_ramdisk_base = 0;
-    q8b_ramdisk_size = 0;
-    q8b_ramdisk_flags = 0;
+    pd = (qcom8gen3_platform_data_t*)(void*)_sys_info.platform_data;
+    qcom8gen3_ramdisk_base = 0;
+    qcom8gen3_ramdisk_size = 0;
+    qcom8gen3_ramdisk_flags = 0;
     pd->rd.phy_base = 0;
     pd->rd.size = 0;
     pd->rd.flags = 0;
-    q8b_dbg_puts("q8b: initramfs aliases released (pages reserved)\n");
+    qcom8gen3_dbg_puts("qcom8gen3: initramfs aliases released (pages reserved)\n");
     return 0;
 }
 
-static q8b_bootinfo_t _bi;
+static qcom8gen3_bootinfo_t _bi;
 static int32_t _bi_valid = 0;
 
 void arch_kernel_entry_early(void) {
 }
 
-q8b_bootinfo_t* q8b_bootinfo(void) {
-    return (q8b_bootinfo_t*)(KERNEL_BASE +
-            (Q8B_BOOTINFO_PHYS - Q8B_RAM_BASE));
+qcom8gen3_bootinfo_t* qcom8gen3_bootinfo(void) {
+    return (qcom8gen3_bootinfo_t*)(KERNEL_BASE +
+            (QCOM8GEN3_BOOTINFO_PHYS - QCOM8GEN3_RAM_BASE));
 }
 
 static void bootinfo_load(void) {
-    q8b_bootinfo_t* src = q8b_bootinfo();
+    qcom8gen3_bootinfo_t* src = qcom8gen3_bootinfo();
 
-    if (src->magic != Q8B_BOOTINFO_MAGIC ||
-            src->version != Q8B_BOOTINFO_VERSION) {
+    if (src->magic != QCOM8GEN3_BOOTINFO_MAGIC ||
+            src->version != QCOM8GEN3_BOOTINFO_VERSION) {
         _bi_valid = 0;
         return;
     }
     memcpy(&_bi, src, sizeof(_bi));
     _bi_valid = 1;
 
-    q8b_serial_on = (_bi.serial_flags & 1u) ? 1 : 0;
-    q8b_ramdisk_base = _bi.rd_base;
-    q8b_ramdisk_size = _bi.rd_size;
-    q8b_ramdisk_flags = _bi.rd_flags;
-    q8b_fb_base = _bi.fb_addr;
-    q8b_fb_size = (uint64_t)_bi.fb_pitch * _bi.fb_height;
+    qcom8gen3_serial_on = (_bi.serial_flags & 1u) ? 1 : 0;
+    qcom8gen3_ramdisk_base = _bi.rd_base;
+    qcom8gen3_ramdisk_size = _bi.rd_size;
+    qcom8gen3_ramdisk_flags = _bi.rd_flags;
+    qcom8gen3_fb_base = _bi.fb_addr;
+    qcom8gen3_fb_size = (uint64_t)_bi.fb_pitch * _bi.fb_height;
     /* SYS_MEM_MAP maps whole pages; round up so the final partial page is
      * inside the whitelisted range. */
-    q8b_fb_size = (q8b_fb_size + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    qcom8gen3_fb_size = (qcom8gen3_fb_size + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
 
-    if (q8b_fb_size > Q8B_FB_MAX_SIZE)
-        q8b_fb_size = Q8B_FB_MAX_SIZE;
+    if (qcom8gen3_fb_size > QCOM8GEN3_FB_MAX_SIZE)
+        qcom8gen3_fb_size = QCOM8GEN3_FB_MAX_SIZE;
 }
 
 void sys_info_init_arch(void) {
@@ -102,11 +102,11 @@ void sys_info_init_arch(void) {
             _sys_info.machine[i] = _bi.model[i];
         _sys_info.machine[i] = 0;
     } else {
-        strcpy(_sys_info.machine, "radxa-dragon-q8b");
+        strcpy(_sys_info.machine, "radxa-dragon-qcom8gen3");
     }
     strcpy(_sys_info.arch, "aarch64");
 
-    _sys_info.phy_offset = Q8B_RAM_BASE;
+    _sys_info.phy_offset = QCOM8GEN3_RAM_BASE;
 
     uint64_t ram = _bi_valid ? _bi.ram_size : (4ULL * GB);
     if (ram < 256ULL * MB)
@@ -114,13 +114,13 @@ void sys_info_init_arch(void) {
 
     _sys_info.total_phy_mem_size = ram;
     _sys_info.total_usable_mem_size = ram;
-    if (_sys_info.total_usable_mem_size > Q8B_USABLE_LIMIT)
-        _sys_info.total_usable_mem_size = Q8B_USABLE_LIMIT;
+    if (_sys_info.total_usable_mem_size > QCOM8GEN3_USABLE_LIMIT)
+        _sys_info.total_usable_mem_size = QCOM8GEN3_USABLE_LIMIT;
     if (_sys_info.total_usable_mem_size > MAX_USABLE_MEM_SIZE)
         _sys_info.total_usable_mem_size = MAX_USABLE_MEM_SIZE;
 
-    _sys_info.mmio.phy_base = Q8B_MMIO_PHY;
-    _sys_info.mmio.size = Q8B_MMIO_SIZE;
+    _sys_info.mmio.phy_base = QCOM8GEN3_MMIO_PHY;
+    _sys_info.mmio.size = QCOM8GEN3_MMIO_SIZE;
     if (_sys_info.mmio.size > MMIO_MAX_SIZE)
         _sys_info.mmio.size = MMIO_MAX_SIZE;
 
@@ -130,7 +130,7 @@ void sys_info_init_arch(void) {
     _sys_info.shm_contig.size = 0;
 
 #ifdef KERNEL_SMP
-    _sys_info.cores = Q8B_CORES;
+    _sys_info.cores = QCOM8GEN3_CORES;
 #else
     _sys_info.cores = 1;
 #endif
@@ -139,7 +139,7 @@ void sys_info_init_arch(void) {
 
     /* Publish the firmware hand-off to user space (GOP framebuffer and
      * RAM-disk rootfs). */
-    q8b_platform_data_t pd;
+    qcom8gen3_platform_data_t pd;
     memset(&pd, 0, sizeof(pd));
     pd.fb.phy_base = _bi.fb_addr;
     pd.fb.width = _bi.fb_width;
@@ -157,8 +157,8 @@ void sys_info_init_arch(void) {
     memcpy(_sys_info.platform_data, &pd,
             sizeof(pd) < PLATFORM_DATA_SIZE ? sizeof(pd) : PLATFORM_DATA_SIZE);
 
-    if (q8b_ramdisk_size == 0)
-        q8b_dbg_puts("q8b: no firmware rootfs, trying physical SD\n");
+    if (qcom8gen3_ramdisk_size == 0)
+        qcom8gen3_dbg_puts("qcom8gen3: no firmware rootfs, trying physical SD\n");
 }
 
 /*
@@ -167,59 +167,59 @@ void sys_info_init_arch(void) {
  * firmware put it outside the allocable direct map) is mapped at P2V().
  */
 void arch_vm(page_dir_entry_t* vm) {
-    map_pages_size(vm, MMIO_BASE + Q8B_GIC_WIN_OFF, Q8B_GIC_WIN_PHY,
-            (uint32_t)Q8B_GIC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_GIC_WIN_OFF, QCOM8GEN3_GIC_WIN_PHY,
+            (uint32_t)QCOM8GEN3_GIC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
 
-#if defined(KERNEL_SMP) && !defined(Q8B_QEMU_TEST)
+#if defined(KERNEL_SMP) && !defined(QCOM8GEN3_QEMU_TEST)
     /* Identity-map the PSCI CPU_SUSPEND resume trampoline page (PA == VA).
      * PSCI returns with the MMU off at the trampoline PA; it re-enables the
      * MMU while still fetching at that address, so the page must be valid as
      * both PA and VA.  The trampoline is 64K-aligned and fits one page. */
     {
-        extern char q8b_cpu_resume_asm[];
-        ewokos_addr_t tramp_pa = V2P((ewokos_addr_t)q8b_cpu_resume_asm);
+        extern char qcom8gen3_cpu_resume_asm[];
+        ewokos_addr_t tramp_pa = V2P((ewokos_addr_t)qcom8gen3_cpu_resume_asm);
         map_pages_size(vm, tramp_pa, tramp_pa, PAGE_SIZE,
                 AP_RW_D, PTE_ATTR_WRBACK);
     }
 #endif
 
-#ifndef Q8B_QEMU_TEST
-    map_pages_size(vm, MMIO_BASE + Q8B_SDCC_WIN_OFF, Q8B_SDCC_WIN_PHY,
-            (uint32_t)Q8B_SDCC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
-    map_pages_size(vm, MMIO_BASE + Q8B_TLMM_WIN_OFF, Q8B_TLMM_WIN_PHY,
-            (uint32_t)Q8B_TLMM_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
-    map_pages_size(vm, MMIO_BASE + Q8B_RSC_WIN_OFF, Q8B_RSC_WIN_PHY,
-            (uint32_t)Q8B_RSC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
-    map_pages_size(vm, MMIO_BASE + Q8B_CMD_DB_WIN_OFF, Q8B_CMD_DB_WIN_PHY,
-            (uint32_t)Q8B_CMD_DB_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
-    map_pages_size(vm, MMIO_BASE + Q8B_APPS_SMMU_OFF, Q8B_APPS_SMMU_PHY,
-            (uint32_t)Q8B_APPS_SMMU_SIZE, AP_RW_D, PTE_ATTR_DEV);
+#ifndef QCOM8GEN3_QEMU_TEST
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_SDCC_WIN_OFF, QCOM8GEN3_SDCC_WIN_PHY,
+            (uint32_t)QCOM8GEN3_SDCC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_TLMM_WIN_OFF, QCOM8GEN3_TLMM_WIN_PHY,
+            (uint32_t)QCOM8GEN3_TLMM_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_RSC_WIN_OFF, QCOM8GEN3_RSC_WIN_PHY,
+            (uint32_t)QCOM8GEN3_RSC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_CMD_DB_WIN_OFF, QCOM8GEN3_CMD_DB_WIN_PHY,
+            (uint32_t)QCOM8GEN3_CMD_DB_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_APPS_SMMU_OFF, QCOM8GEN3_APPS_SMMU_PHY,
+            (uint32_t)QCOM8GEN3_APPS_SMMU_SIZE, AP_RW_D, PTE_ATTR_DEV);
 
     /*
      * Adreno 690 GPU complex (see hw_arch.h for the full physical layout
      * and Linux DT provenance).  Mapped as device memory so user space can
      * SYS_MEM_MAP the same window and drive GMU / CP / SMMU registers
      * without going through the kernel for every poke.  The mapping is
-     * installed unconditionally: on a Q8B board the Adreno blocks are
+     * installed unconditionally: on a QCOM8GEN3 board the Adreno blocks are
      * always present at these addresses; the driver layer is what
      * decides whether to actually bring the GPU up.
      */
-    map_pages_size(vm, MMIO_BASE + Q8B_GPU_WIN_OFF, Q8B_GPU_WIN_PHY,
-            (uint32_t)Q8B_GPU_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
-    map_pages_size(vm, MMIO_BASE + Q8B_GPU_PDC_WIN_OFF, Q8B_GPU_PDC_WIN_PHY,
-            (uint32_t)Q8B_GPU_PDC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
-    map_pages_size(vm, MMIO_BASE + Q8B_GPU_ZAP_WIN_OFF, Q8B_GPU_ZAP_PHY,
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_GPU_WIN_OFF, QCOM8GEN3_GPU_WIN_PHY,
+            (uint32_t)QCOM8GEN3_GPU_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_GPU_PDC_WIN_OFF, QCOM8GEN3_GPU_PDC_WIN_PHY,
+            (uint32_t)QCOM8GEN3_GPU_PDC_WIN_SIZE, AP_RW_D, PTE_ATTR_DEV);
+    map_pages_size(vm, MMIO_BASE + QCOM8GEN3_GPU_ZAP_WIN_OFF, QCOM8GEN3_GPU_ZAP_PHY,
             PAGE_SIZE, AP_RW_D, PTE_ATTR_NOCACHE);
 #endif
 
-    if (q8b_ramdisk_size == 0)
+    if (qcom8gen3_ramdisk_size == 0)
         return;
 
     /* Must be mapped here: init_kernel_vm() installs this VM and the very
      * next step (load_kernel_config) reads /etc/kernel.conf from the
      * RAM-disk rootfs, long before init_allocable_mem() maps the heap. */
-    map_pages(vm, P2V(q8b_ramdisk_base), q8b_ramdisk_base,
-            q8b_ramdisk_base + q8b_ramdisk_size,
+    map_pages(vm, P2V(qcom8gen3_ramdisk_base), qcom8gen3_ramdisk_base,
+            qcom8gen3_ramdisk_base + qcom8gen3_ramdisk_size,
             AP_RW_D, PTE_ATTR_WRBACK);
 }
 
@@ -230,12 +230,12 @@ int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
 }
 
 /* Pools and the page allocator share every firmware/device exclusion. */
-static uint32_t memory_exclusions(q8b_mem_range_t* ex) {
+static uint32_t memory_exclusions(qcom8gen3_mem_range_t* ex) {
     uint32_t n = 0;
 #define ADD_EXCL(b, s) do { \
         ewokos_addr_t _b = (b); \
         ewokos_addr_t _s = (s); \
-        if (_s != 0 && n < (Q8B_MAX_RESV + 5)) { \
+        if (_s != 0 && n < (QCOM8GEN3_MAX_RESV + 5)) { \
             ex[n].base = _b; \
             ex[n].top = _s > UINT64_MAX - _b ? UINT64_MAX : _b + _s; \
             n++; \
@@ -244,17 +244,17 @@ static uint32_t memory_exclusions(q8b_mem_range_t* ex) {
 
     ADD_EXCL(_sys_info.sys_dma.phy_base, _sys_info.sys_dma.size);
     ADD_EXCL(_sys_info.shm_contig.phy_base, _sys_info.shm_contig.size);
-    if (q8b_ramdisk_size)
-        ADD_EXCL(q8b_ramdisk_base, q8b_ramdisk_size);
-    if (q8b_fb_size)
-        ADD_EXCL(q8b_fb_base, q8b_fb_size);
-#ifndef Q8B_QEMU_TEST
+    if (qcom8gen3_ramdisk_size)
+        ADD_EXCL(qcom8gen3_ramdisk_base, qcom8gen3_ramdisk_size);
+    if (qcom8gen3_fb_size)
+        ADD_EXCL(qcom8gen3_fb_base, qcom8gen3_fb_size);
+#ifndef QCOM8GEN3_QEMU_TEST
     /* Reserve the entire CPU page; never allocate its adjacent 8KB. */
-    ADD_EXCL(Q8B_GPU_ZAP_PHY, ALIGN_UP(Q8B_GPU_ZAP_SIZE, PAGE_SIZE));
+    ADD_EXCL(QCOM8GEN3_GPU_ZAP_PHY, ALIGN_UP(QCOM8GEN3_GPU_ZAP_SIZE, PAGE_SIZE));
 #endif
     if (_bi_valid) {
         for (uint32_t i = 0; i < _bi.resv_count &&
-                i < Q8B_MAX_RESV; i++)
+                i < QCOM8GEN3_MAX_RESV; i++)
             ADD_EXCL(_bi.resv[i].base, _bi.resv[i].size);
     }
 
@@ -264,20 +264,20 @@ static uint32_t memory_exclusions(q8b_mem_range_t* ex) {
 
 static int32_t memory_map_valid(void) {
     uint64_t bytes = (uint64_t)_bi.memmap_count * _bi.memmap_dsize;
-    return _bi_valid && _bi.resv_count <= Q8B_MAX_RESV &&
+    return _bi_valid && _bi.resv_count <= QCOM8GEN3_MAX_RESV &&
             _bi.memmap_count != 0 &&
-            _bi.memmap_dsize >= sizeof(q8b_efi_memdesc_t) &&
+            _bi.memmap_dsize >= sizeof(qcom8gen3_efi_memdesc_t) &&
             (_bi.memmap_dsize & 7) == 0 && (_bi.memmap_addr & 7) == 0 &&
-            _bi.memmap_addr >= Q8B_BOOTINFO_PHYS + 0x1000 &&
-            _bi.memmap_addr < Q8B_BOOTINFO_PHYS + Q8B_BOOTINFO_SIZE &&
-            bytes <= Q8B_BOOTINFO_SIZE - 0x1000 &&
-            bytes <= Q8B_BOOTINFO_PHYS + Q8B_BOOTINFO_SIZE - _bi.memmap_addr;
+            _bi.memmap_addr >= QCOM8GEN3_BOOTINFO_PHYS + 0x1000 &&
+            _bi.memmap_addr < QCOM8GEN3_BOOTINFO_PHYS + QCOM8GEN3_BOOTINFO_SIZE &&
+            bytes <= QCOM8GEN3_BOOTINFO_SIZE - 0x1000 &&
+            bytes <= QCOM8GEN3_BOOTINFO_PHYS + QCOM8GEN3_BOOTINFO_SIZE - _bi.memmap_addr;
 }
 
 static int32_t usable_descriptor(uint32_t m, uint64_t* base, uint64_t* top) {
-    const q8b_efi_memdesc_t* d = (const q8b_efi_memdesc_t*)P2V(
+    const qcom8gen3_efi_memdesc_t* d = (const qcom8gen3_efi_memdesc_t*)P2V(
             _bi.memmap_addr + (uint64_t)m * _bi.memmap_dsize);
-    if (!Q8B_MEM_USABLE(d->type) || !d->pages ||
+    if (!QCOM8GEN3_MEM_USABLE(d->type) || !d->pages ||
             d->pages > (UINT64_MAX - d->phys_start) / 4096ULL)
         return 0;
     *base = d->phys_start;
@@ -286,7 +286,7 @@ static int32_t usable_descriptor(uint32_t m, uint64_t* base, uint64_t* top) {
 }
 
 static uint64_t find_memory_pool(uint32_t size) {
-    q8b_mem_range_t ex[Q8B_MAX_RESV + 5];
+    qcom8gen3_mem_range_t ex[QCOM8GEN3_MAX_RESV + 5];
     uint32_t n = memory_exclusions(ex);
     uint64_t best = 0;
     uint64_t limit = _sys_info.allocable_phy_mem_top;
@@ -300,12 +300,12 @@ static uint64_t find_memory_pool(uint32_t size) {
         /* UEFI splits physically continuous RAM by allocation/type. Join
          * touching reclaimable descriptors before looking for a large pool;
          * descriptor order is not guaranteed. Never bridge a physical gap. */
-        top = q8b_pool_extend(top, _bi.memmap_count, usable_descriptor);
+        top = qcom8gen3_pool_extend(top, _bi.memmap_count, usable_descriptor);
         if (base < _sys_info.allocable_phy_mem_base)
             base = _sys_info.allocable_phy_mem_base;
         if (top > limit)
             top = limit;
-        uint64_t found = q8b_pool_candidate(base, top, size, PAGE_SIZE, ex, n);
+        uint64_t found = qcom8gen3_pool_candidate(base, top, size, PAGE_SIZE, ex, n);
         if (found && (!best || found < best))
             best = found;
     }
@@ -313,13 +313,13 @@ static uint64_t find_memory_pool(uint32_t size) {
 }
 
 int32_t arch_reserve_memory_pools(void) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     /* The QEMU direct-boot test has no UEFI handoff. */
     if (!_bi_valid)
         return 0;
 #endif
     if (!memory_map_valid()) {
-        kout_str("q8b: invalid UEFI memory map; refusing unsafe memory pools\n");
+        kout_str("qcom8gen3: invalid UEFI memory map; refusing unsafe memory pools\n");
         halt();
     }
     _sys_info.sys_dma.phy_base = 0;
@@ -329,17 +329,17 @@ int32_t arch_reserve_memory_pools(void) {
         _sys_info.shm_contig.phy_base = find_memory_pool(_sys_info.shm_contig.size);
     if (!_sys_info.sys_dma.phy_base ||
             (_sys_info.shm_contig.size && !_sys_info.shm_contig.phy_base)) {
-        kout_str("q8b: no firmware-safe DMA32 memory pools\n");
+        kout_str("qcom8gen3: no firmware-safe DMA32 memory pools\n");
         halt();
     }
     _sys_info.shm_contig.v_base = 0;
-    kout_str("q8b: DMA/SHM pools reserved from final UEFI memory map\n");
+    kout_str("qcom8gen3: DMA/SHM pools reserved from final UEFI memory map\n");
     return 1;
 }
 
 /* Only reclaim UEFI-approved RAM, excluding both reserved pools. */
 void kalloc_arch(void) {
-    q8b_mem_range_t ex[Q8B_MAX_RESV + 5];
+    qcom8gen3_mem_range_t ex[QCOM8GEN3_MAX_RESV + 5];
     uint32_t n = memory_exclusions(ex);
     ewokos_addr_t base = _sys_info.allocable_phy_mem_base;
     ewokos_addr_t top = _sys_info.allocable_phy_mem_top;
@@ -348,7 +348,7 @@ void kalloc_arch(void) {
 
     /* insertion sort by base */
     for (uint32_t i = 1; i < n; i++) {
-        q8b_mem_range_t key = ex[i];
+        qcom8gen3_mem_range_t key = ex[i];
         int32_t j = (int32_t)i - 1;
         while (j >= 0 && ex[j].base > key.base) {
             ex[j + 1] = ex[j];
@@ -365,9 +365,9 @@ void kalloc_arch(void) {
         ewokos_addr_t range_top = top;
 
         if (map_valid) {
-            q8b_efi_memdesc_t* d = (q8b_efi_memdesc_t*)P2V(
+            qcom8gen3_efi_memdesc_t* d = (qcom8gen3_efi_memdesc_t*)P2V(
                     _bi.memmap_addr + (uint64_t)m * _bi.memmap_dsize);
-            if (!Q8B_MEM_USABLE(d->type) || d->pages == 0)
+            if (!QCOM8GEN3_MEM_USABLE(d->type) || d->pages == 0)
                 continue;
             if (d->pages > UINT64_MAX / 4096ULL)
                 continue;
@@ -429,7 +429,7 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
         return 0;
 
     /* The BIOS model string is not a hardware selector.  Firmware on TW220
-     * revisions reports several unrelated Q8B/TW220 names, so accept the
+     * revisions reports several unrelated QCOM8GEN3/TW220 names, so accept the
      * fixed SC8280XP PCIe resource apertures by address and let the PCIe
      * topology/probe decide which controller is actually present. */
     if ((phy_base >= TW220_PCIE2A_ECAM_PHY &&
@@ -456,90 +456,90 @@ int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
         return 0;
 
     /* E-key Wi-Fi config space and assigned BAR apertures. */
-    if (phy_base >= Q8B_PCIE4_DBI_PHY &&
-            phy_top <= Q8B_PCIE4_DBI_PHY + Q8B_PCIE4_DBI_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE4_DBI_PHY &&
+            phy_top <= QCOM8GEN3_PCIE4_DBI_PHY + QCOM8GEN3_PCIE4_DBI_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE3A_DBI_PHY &&
-            phy_top <= Q8B_PCIE3A_DBI_PHY + Q8B_PCIE3A_DBI_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE3A_DBI_PHY &&
+            phy_top <= QCOM8GEN3_PCIE3A_DBI_PHY + QCOM8GEN3_PCIE3A_DBI_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE4_ECAM_PHY &&
-            phy_top <= Q8B_PCIE4_ECAM_PHY + Q8B_PCIE4_ECAM_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE4_ECAM_PHY &&
+            phy_top <= QCOM8GEN3_PCIE4_ECAM_PHY + QCOM8GEN3_PCIE4_ECAM_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE4_MEM32_PHY &&
-            phy_top <= Q8B_PCIE4_MEM32_PHY + Q8B_PCIE4_MEM32_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE4_MEM32_PHY &&
+            phy_top <= QCOM8GEN3_PCIE4_MEM32_PHY + QCOM8GEN3_PCIE4_MEM32_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE4_MEM64_PHY &&
-            phy_top <= Q8B_PCIE4_MEM64_PHY + Q8B_PCIE4_MEM64_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE4_MEM64_PHY &&
+            phy_top <= QCOM8GEN3_PCIE4_MEM64_PHY + QCOM8GEN3_PCIE4_MEM64_SIZE)
         return 0;
 
-    /* Q8B PCIe3a ECAM and the two outbound memory windows. Keep these
+    /* QCOM8GEN3 PCIe3a ECAM and the two outbound memory windows. Keep these
      * explicit: allowing every address above 4GB would expose arbitrary
      * DRAM and unrelated devices through SYS_MEM_MAP. */
-    if (phy_base >= Q8B_PCIE3A_ECAM_PHY &&
-            phy_top <= Q8B_PCIE3A_ECAM_PHY + Q8B_PCIE3A_ECAM_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE3A_ECAM_PHY &&
+            phy_top <= QCOM8GEN3_PCIE3A_ECAM_PHY + QCOM8GEN3_PCIE3A_ECAM_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE3A_MEM32_PHY &&
-            phy_top <= Q8B_PCIE3A_MEM32_PHY + Q8B_PCIE3A_MEM32_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE3A_MEM32_PHY &&
+            phy_top <= QCOM8GEN3_PCIE3A_MEM32_PHY + QCOM8GEN3_PCIE3A_MEM32_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE3A_MEM64_PHY &&
-            phy_top <= Q8B_PCIE3A_MEM64_PHY + Q8B_PCIE3A_MEM64_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE3A_MEM64_PHY &&
+            phy_top <= QCOM8GEN3_PCIE3A_MEM64_PHY + QCOM8GEN3_PCIE3A_MEM64_SIZE)
         return 0;
 
     /* PCIe2a / PCIe3b: the two M.2 NVMe slots (config space + BAR
      * apertures).  User-space nvmed discovers the controller through
      * ECAM and maps the assigned BAR through these windows. */
-    if (phy_base >= Q8B_PCIE2A_ECAM_PHY &&
-            phy_top <= Q8B_PCIE2A_ECAM_PHY + Q8B_PCIE2A_ECAM_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE2A_ECAM_PHY &&
+            phy_top <= QCOM8GEN3_PCIE2A_ECAM_PHY + QCOM8GEN3_PCIE2A_ECAM_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE2A_MEM32_PHY &&
-            phy_top <= Q8B_PCIE2A_MEM32_PHY + Q8B_PCIE2A_MEM32_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE2A_MEM32_PHY &&
+            phy_top <= QCOM8GEN3_PCIE2A_MEM32_PHY + QCOM8GEN3_PCIE2A_MEM32_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE2A_MEM64_PHY &&
-            phy_top <= Q8B_PCIE2A_MEM64_PHY + Q8B_PCIE2A_MEM64_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE2A_MEM64_PHY &&
+            phy_top <= QCOM8GEN3_PCIE2A_MEM64_PHY + QCOM8GEN3_PCIE2A_MEM64_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE3B_ECAM_PHY &&
-            phy_top <= Q8B_PCIE3B_ECAM_PHY + Q8B_PCIE3B_ECAM_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE3B_ECAM_PHY &&
+            phy_top <= QCOM8GEN3_PCIE3B_ECAM_PHY + QCOM8GEN3_PCIE3B_ECAM_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE3B_MEM32_PHY &&
-            phy_top <= Q8B_PCIE3B_MEM32_PHY + Q8B_PCIE3B_MEM32_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE3B_MEM32_PHY &&
+            phy_top <= QCOM8GEN3_PCIE3B_MEM32_PHY + QCOM8GEN3_PCIE3B_MEM32_SIZE)
         return 0;
-    if (phy_base >= Q8B_PCIE3B_MEM64_PHY &&
-            phy_top <= Q8B_PCIE3B_MEM64_PHY + Q8B_PCIE3B_MEM64_SIZE)
+    if (phy_base >= QCOM8GEN3_PCIE3B_MEM64_PHY &&
+            phy_top <= QCOM8GEN3_PCIE3B_MEM64_PHY + QCOM8GEN3_PCIE3B_MEM64_SIZE)
         return 0;
 
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
     /* Firmware Command DB: user-space SDCC2 resolves the PM8350C SD-card
      * rails (ldoc6/ldoc9) itself during its own card probe. */
-    if (phy_base >= Q8B_CMD_DB_WIN_PHY &&
-            phy_top <= Q8B_CMD_DB_WIN_PHY + Q8B_CMD_DB_WIN_SIZE)
+    if (phy_base >= QCOM8GEN3_CMD_DB_WIN_PHY &&
+            phy_top <= QCOM8GEN3_CMD_DB_WIN_PHY + QCOM8GEN3_CMD_DB_WIN_SIZE)
         return 0;
 
     /* zap staging is kernel-only through the restricted GPU PAS ABI. */
 #endif
 
     /* RAM-disk rootfs: user-space sdfsd maps it read/write. */
-    if (q8b_ramdisk_size != 0 &&
-            phy_base >= q8b_ramdisk_base &&
-            phy_top <= q8b_ramdisk_base + q8b_ramdisk_size)
+    if (qcom8gen3_ramdisk_size != 0 &&
+            phy_base >= qcom8gen3_ramdisk_base &&
+            phy_top <= qcom8gen3_ramdisk_base + qcom8gen3_ramdisk_size)
         return 0;
 
-    if (q8b_fb_size != 0 &&
-            phy_base >= q8b_fb_base &&
-            phy_top <= q8b_fb_base + q8b_fb_size)
+    if (qcom8gen3_fb_size != 0 &&
+            phy_base >= qcom8gen3_fb_base &&
+            phy_top <= qcom8gen3_fb_base + qcom8gen3_fb_size)
         return 0;
 
     return -1;
 }
 
 int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
-    if (q8b_ramdisk_size != 0 &&
-            phy_base >= q8b_ramdisk_base &&
-            phy_base + size <= q8b_ramdisk_base + q8b_ramdisk_size)
+    if (qcom8gen3_ramdisk_size != 0 &&
+            phy_base >= qcom8gen3_ramdisk_base &&
+            phy_base + size <= qcom8gen3_ramdisk_base + qcom8gen3_ramdisk_size)
         return 1;
 
-    if (q8b_fb_size != 0 &&
-            phy_base >= q8b_fb_base &&
-            phy_base + size <= q8b_fb_base + q8b_fb_size)
+    if (qcom8gen3_fb_size != 0 &&
+            phy_base >= qcom8gen3_fb_base &&
+            phy_base + size <= qcom8gen3_fb_base + qcom8gen3_fb_size)
         return 1;
     return 0;
 }

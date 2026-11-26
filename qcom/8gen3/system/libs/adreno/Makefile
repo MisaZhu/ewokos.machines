@@ -9,7 +9,7 @@ LDFLAGS = -L $(TARGET_DIR)/lib
 
 # Include paths:
 #   -I include                         : adreno/*.h (this lib's public headers)
-#   -I $(MAKEINC_DIR)/../include       : q8b_adreno.h (machine shared header)
+#   -I $(MAKEINC_DIR)/../include       : qcom8gen3_adreno.h (machine shared header)
 #   -I $(TARGET_DIR)/include           : installed platform headers
 #   -I libewoksys/.../include          : ewoksys/vfs.h
 # The machine libs phase runs before system/basic, so ewoksys headers

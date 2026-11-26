@@ -21,7 +21,7 @@ void cpu_core_ready(uint32_t core_id) {
 }
 
 inline uint32_t get_cpu_cores(void) {
-    return Q8B_CORES;
+    return QCOM8GEN3_CORES;
 }
 
 /* PSCI CPU_ON (SMCCC SMC, arm64 calling convention). */
@@ -41,7 +41,7 @@ extern void arm_smccc_smc(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3,
 extern char __entry[];
 
 void start_core(uint32_t core_id) {
-    if (core_id >= Q8B_CORES)
+    if (core_id >= QCOM8GEN3_CORES)
         return;
 
     /* SC8280XP cpu@0/100/.../700: MPIDR Aff1 == logical core, Aff0 == 0. */
@@ -52,11 +52,11 @@ void start_core(uint32_t core_id) {
     arm_smccc_smc(PSCI_CPU_ON_AARCH64, target_mpidr,
             (uint64_t)__entry, 0, 0, 0, 0, 0, &res);
     if (res.a0 != 0) {
-        q8b_dbg_puts("q8b: PSCI CPU_ON core ");
-        q8b_dbg_dec(core_id);
-        q8b_dbg_puts(" failed: ");
-        q8b_dbg_hex(res.a0);
-        q8b_dbg_puts("\n");
+        qcom8gen3_dbg_puts("qcom8gen3: PSCI CPU_ON core ");
+        qcom8gen3_dbg_dec(core_id);
+        qcom8gen3_dbg_puts(" failed: ");
+        qcom8gen3_dbg_hex(res.a0);
+        qcom8gen3_dbg_puts("\n");
     }
 }
 

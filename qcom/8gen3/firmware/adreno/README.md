@@ -1,7 +1,7 @@
-# Adreno 690 (SC8280XP / Q8B) firmware
+# Adreno 690 (SC8280XP / QCOM8GEN3) firmware
 
 These are the upstream linux-firmware blobs the Adreno 690 needs.  They are
-installed into the Q8B rootfs as `/etc/firmware/adreno/` by `make basic`
+installed into the QCOM8GEN3 rootfs as `/etc/firmware/adreno/` by `make basic`
 (`system/Makefile`, target `firmware_install`).
 
 | file | role | source |
@@ -61,7 +61,7 @@ record as a payload.
 
 ## Updating
 
-Q8B's board DT overrides the catalog's generic zap name with
+QCOM8GEN3's board DT overrides the catalog's generic zap name with
 `qcom/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn`. This is a monolithic signed
 ELF32 MBN, not `a690_zap.mdt` plus `.bNN` segments. The current loader accepts
 only that board-selected image (14392 bytes), with `/tmp/qcdxkmsuc8280.mbn`
@@ -79,7 +79,7 @@ under `/etc/firmware/adreno/sc8280xp/LENOVO/21BX/`; normal startup no longer
 depends on the ephemeral `/tmp` copy.
 
 On 2026-10-22 the unchanged board-selected MBN authenticated successfully
-through PAS INIT_IMAGE, MEM_SETUP and AUTH_AND_RESET on Q8B. CP then exited
+through PAS INIT_IMAGE, MEM_SETUP and AUTH_AND_RESET on QCOM8GEN3. CP then exited
 secure mode and passed its IB/fence memory-write selftest. The CCU-corrected
 userspace driver subsequently passed pixel readback for fill/copy/180-degree
 rotation and uniform downscale through 720x720 surfaces. See

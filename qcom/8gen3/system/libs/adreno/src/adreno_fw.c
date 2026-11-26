@@ -1,5 +1,5 @@
 /*
- * adreno_fw.c - Adreno 690 (SC8280XP / Q8B) firmware loaders.
+ * adreno_fw.c - Adreno 690 (SC8280XP / QCOM8GEN3) firmware loaders.
  *
  * Format provenance (Linux v6.6 drivers/gpu/drm/msm/adreno):
  *   - GMU block_header chain : a6xx_gmu.c:673-744  (a6xx_gmu_fw_load)
@@ -21,7 +21,7 @@
  * catalog name and pinned image size so a stale vendor alias cannot be used.
  */
 #include <adreno/adreno_fw.h>
-#include <q8b_adreno.h>
+#include <qcom8gen3_adreno.h>
 #include <ewoksys/vfs.h>
 #include <ewoksys/klog.h>
 #include <stdlib.h>
@@ -33,14 +33,14 @@
 /* ------------------------------------------------------------------ */
 
 /*
- * Firmware search order.  The Q8B rootfs installs the blobs under
+ * Firmware search order.  The QCOM8GEN3 rootfs installs the blobs under
  * /etc/firmware/adreno/ (see firmware/adreno/README.md); the remaining
  * entries keep the driver usable on a rootfs laid out like a Linux
  * distribution, e.g. when the blobs are copied straight out of
  * linux-firmware (/usr/lib/firmware/qcom/).
  */
 static const char *const fw_dirs[] = {
-	Q8B_ADRENO_FW_DIR,
+	QCOM8GEN3_ADRENO_FW_DIR,
 	"/etc/firmware/qcom/",
 	"/usr/lib/firmware/qcom/",
 	"/usr/lib/firmware/",
@@ -101,7 +101,7 @@ struct gmu_block_header {
 
 int adreno_fw_load_gmu(adreno_gmu_fw_t *out)
 {
-	static const char *const names[] = { Q8B_ADRENO_FW_GMU };
+	static const char *const names[] = { QCOM8GEN3_ADRENO_FW_GMU };
 	char path[160];
 	uint8_t *raw;
 	int raw_size = 0;
@@ -120,9 +120,9 @@ int adreno_fw_load_gmu(adreno_gmu_fw_t *out)
 	if (!raw) {
 		return -2;   /* missing/unreadable firmware */
 	}
-	if ((uint32_t)raw_size != Q8B_ADRENO_FW_GMU_SIZE) {
+	if ((uint32_t)raw_size != QCOM8GEN3_ADRENO_FW_GMU_SIZE) {
 		slog("adreno_fw: reject %s: size %d, expected %u\n", path,
-		     raw_size, Q8B_ADRENO_FW_GMU_SIZE);
+		     raw_size, QCOM8GEN3_ADRENO_FW_GMU_SIZE);
 		free(raw);
 		return -4;
 	}
@@ -196,7 +196,7 @@ void adreno_fw_free_gmu(adreno_gmu_fw_t *fw)
 
 int adreno_fw_load_sqe(adreno_sqe_fw_t *out)
 {
-	static const char *const names[] = { Q8B_ADRENO_FW_SQE };
+	static const char *const names[] = { QCOM8GEN3_ADRENO_FW_SQE };
 	char path[160];
 	uint8_t *raw;
 	int raw_size = 0;
@@ -208,9 +208,9 @@ int adreno_fw_load_sqe(adreno_sqe_fw_t *out)
 	raw = fw_read_first(names, 1, &raw_size, NULL, 0, path, sizeof(path));
 	if (!raw)
 		return -2;
-	if ((uint32_t)raw_size != Q8B_ADRENO_FW_SQE_SIZE) {
+	if ((uint32_t)raw_size != QCOM8GEN3_ADRENO_FW_SQE_SIZE) {
 		slog("adreno_fw: reject %s: size %d, expected %u\n", path,
-		     raw_size, Q8B_ADRENO_FW_SQE_SIZE);
+		     raw_size, QCOM8GEN3_ADRENO_FW_SQE_SIZE);
 		free(raw);
 		return -3;
 	}
@@ -259,7 +259,7 @@ int adreno_fw_load_zap(adreno_zap_fw_t *out)
 	ret = size == 14392 ? adreno_fw_parse_zap(raw, (uint32_t)size, out) : -4;
 	free(raw);
 	if (ret) {
-		slog("adreno_fw: reject Q8B zap %s (%d bytes)\n", path, size);
+		slog("adreno_fw: reject QCOM8GEN3 zap %s (%d bytes)\n", path, size);
 		return ret;
 	}
 	return 0;

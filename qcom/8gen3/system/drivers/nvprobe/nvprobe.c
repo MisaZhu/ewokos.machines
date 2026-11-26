@@ -1,5 +1,5 @@
 /*
- * nvprobe - Q8B user-space NVMe bring-up and read-throughput probe.
+ * nvprobe - QCOM8GEN3 user-space NVMe bring-up and read-throughput probe.
  *
  *   nvprobe                 scan both M.2 slots, open the first controller
  *   nvprobe bench [MB]      read benchmark (default 64 MB)
@@ -35,16 +35,16 @@ static void print_pci(const nvme_pci_dev_t* d) {
 			d->command);
 	{
 		uint32_t sp = 0, wd = 0;
-		if (q8b_pcie_link(d->slot, 0, 0, 0, &sp, &wd) == 0)
+		if (qcom8gen3_pcie_link(d->slot, 0, 0, 0, &sp, &wd) == 0)
 			printf("    root port link: speed=%u width=x%u\n", sp, wd);
-		if (q8b_pcie_link(d->slot, d->bus, d->dev, d->fn, &sp, &wd) == 0)
+		if (qcom8gen3_pcie_link(d->slot, d->bus, d->dev, d->fn, &sp, &wd) == 0)
 			printf("    endpoint link : speed=%u width=x%u\n", sp, wd);
 	}
 }
 
 static int scan_slot(int slot, nvme_pci_dev_t* first) {
 	nvme_pci_dev_t devs[8];
-	int n = q8b_pcie_scan(slot, devs, 8);
+	int n = qcom8gen3_pcie_scan(slot, devs, 8);
 
 	printf("%s: %d device(s)\n", slot_name(slot), n);
 	for (int i = 0; i < n; i++)
@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
 	setbuf(stdout, NULL);
 	memset(&dev, 0, sizeof(dev));
 
-	printf("nvprobe: scanning Q8B M.2 slots\n");
+	printf("nvprobe: scanning QCOM8GEN3 M.2 slots\n");
 	int n2a = scan_slot(NVME_SLOT_PCIE2A, &dev);
 	/* pcie3b is only touched on demand: if the slot is empty the
 	 * firmware powers the root complex down and config-space reads

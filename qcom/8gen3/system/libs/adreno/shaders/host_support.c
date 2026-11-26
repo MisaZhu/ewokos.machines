@@ -6,7 +6,7 @@
 #include <stdarg.h>
 
 const char *util_get_process_name(void) {
-    return "q8b-builtin-shaders";
+    return "qcom8gen3-builtin-shaders";
 }
 
 void slog(const char *format, ...) {

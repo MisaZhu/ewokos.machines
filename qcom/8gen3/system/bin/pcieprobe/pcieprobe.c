@@ -1,4 +1,4 @@
-/* Q8B PCIe enumeration client.  The pcied service owns power-on and ECAM. */
+/* QCOM8GEN3 PCIe enumeration client.  The pcied service owns power-on and ECAM. */
 #include <bsp/pcie.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,9 +12,9 @@ static const char *class_name(uint32_t class_code) {
 }
 
 int main(int argc, char **argv) {
-    q8b_pcie_device_t device;
-    int n = q8b_pcie_service_get_count();
-	int check_q8b = argc > 1 && !strcmp(argv[1], "--check-q8b");
+    qcom8gen3_pcie_device_t device;
+    int n = qcom8gen3_pcie_service_get_count();
+	int check_qcom8gen3 = argc > 1 && !strcmp(argv[1], "--check-qcom8gen3");
 	int ethernet_pf = 0;
 	int wifi = 0;
 	if (n < 0) {
@@ -23,8 +23,8 @@ int main(int argc, char **argv) {
 	}
     printf("pcieprobe: PCIe service, %d function(s)\n", n);
 	for (int i = 0; i < n; i++) {
-        const q8b_pcie_device_t *d;
-        if (q8b_pcie_service_get_device((unsigned)i, &device))
+        const qcom8gen3_pcie_device_t *d;
+        if (qcom8gen3_pcie_service_get_device((unsigned)i, &device))
             return 1;
         d = &device;
 		printf("  pcie%u %02x:%02x.%u %04x:%04x class=%06x (%s) "
@@ -34,14 +34,14 @@ int main(int argc, char **argv) {
 				d->subsystem_device, d->link_speed, d->link_width,
 				(unsigned long long)d->bar[0],
 				(unsigned long long)d->bar_phys[0], d->command);
-		if (d->controller == Q8B_PCIE3A && d->vendor_id == 0x1179 &&
+		if (d->controller == QCOM8GEN3_PCIE3A && d->vendor_id == 0x1179 &&
 				d->device_id == 0x0220)
 			ethernet_pf++;
-		if (q8b_pcie_is_wlan(d))
+		if (qcom8gen3_pcie_is_wlan(d))
 			wifi++;
 	}
-	if (check_q8b) {
-		printf("pcieprobe: q8b check ethernet_pf=%d wifi=%d\n",
+	if (check_qcom8gen3) {
+		printf("pcieprobe: qcom8gen3 check ethernet_pf=%d wifi=%d\n",
 				ethernet_pf, wifi);
 		return ethernet_pf >= 2 && wifi >= 1 ? 0 : 2;
 	}

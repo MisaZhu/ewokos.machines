@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef Q8B_WCN_QMI_H
-#define Q8B_WCN_QMI_H
+#ifndef QCOM8GEN3_WCN_QMI_H
+#define QCOM8GEN3_WCN_QMI_H
 #include <stddef.h>
 #include <stdint.h>
 void wcn_qmi_reset(void);

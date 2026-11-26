@@ -1,4 +1,4 @@
-/* Monolithic signed Q8B MBN container, following Linux mdt-loader.c.
+/* Monolithic signed QCOM8GEN3 MBN container, following Linux mdt-loader.c.
  * This only validates/copies the container. TrustZone verifies signatures. */
 #include <adreno/adreno_fw.h>
 #include <stdint.h>

@@ -80,11 +80,6 @@ int wcn_net_write(const void *buf,unsigned bytes) {
     wcn_dp_tx_batch_end();
     return pos ? (int)pos:malformed ? -1:VFS_ERR_RETRY;
 }
-void wcn_net_beat(char *out,size_t size) {
-    snprintf(out,size,"net seen=%u bcast=%u mcast=%u uni=%u arp_req=%u arp_rsp=%u icmp_req=%u ipv4=%u other=%u q=%u qdrop=%u qovf=%u tx=%u",
-             n.seen,n.bcast,n.mcast,n.unicast_us,n.arp_req,n.arp_rsp,n.icmp_req,n.ipv4,n.other,
-             n.count,n.dropped,n.overflow,n.transmitted);
-}
 void wcn_net_status(char *out,size_t size) {
     snprintf(out,size,"net_rx=%u net_tx=%u net_drop=%u net_pending=%u net_overflow=%u net_reads=%u net_batches=%u",n.received,n.transmitted,n.dropped,n.count,n.overflow,n.reads,n.batch_reads);
 }

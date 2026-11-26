@@ -22,7 +22,7 @@
  */
 #include <adreno/adreno_drv.h>
 #include <adreno/adreno_reg.h>
-#include <q8b_adreno.h>
+#include <qcom8gen3_adreno.h>
 #include <ewoksys/dma.h>
 #include <ewoksys/klog.h>
 #include <stdlib.h>
@@ -273,11 +273,11 @@ int adreno_smmu_init(adreno_dev_t *d) {
 
 	/* The DT resource must cover both global halves and CB0/CB1 in full.
 	   Refuse to touch a guessed or truncated context-bank window. */
-	if (d->num_cb < 2 || smmu_size != Q8B_ADRENO_SMMU_SIZE ||
-	    cb1_byte + page_size > Q8B_ADRENO_SMMU_SIZE) {
+	if (d->num_cb < 2 || smmu_size != QCOM8GEN3_ADRENO_SMMU_SIZE ||
+	    cb1_byte + page_size > QCOM8GEN3_ADRENO_SMMU_SIZE) {
 		slog("adreno_smmu: invalid geometry hw_size=%llx map_size=%llx\n",
 		     (unsigned long long)smmu_size,
-		     (unsigned long long)Q8B_ADRENO_SMMU_SIZE);
+		     (unsigned long long)QCOM8GEN3_ADRENO_SMMU_SIZE);
 		return -1;
 	}
 

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef Q8B_WCN_WPA_H
-#define Q8B_WCN_WPA_H
+#ifndef QCOM8GEN3_WCN_WPA_H
+#define QCOM8GEN3_WCN_WPA_H
 #include <stdint.h>
 #include <stddef.h>
 int wcn_wpa_init(const char *ssid,const char *password,const uint8_t seed[32],

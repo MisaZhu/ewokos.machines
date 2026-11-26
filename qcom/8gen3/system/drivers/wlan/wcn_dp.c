@@ -85,7 +85,6 @@ static unsigned dp_rbm(void) {
         unsigned v=0; cached=4;
         FILE *fp=fopen("/etc/wlan.rbm","r");
         if (fp) { if (fscanf(fp,"%u",&v)==1 && v>=1 && v<=7) cached=(int)v; fclose(fp); }
-        wcn_log("wcn: RX buffer manager id=%u\n",(unsigned)cached);
     }
     return (unsigned)cached;
 }
@@ -446,21 +445,13 @@ static int dp_complete(struct dp_ring *r,const uint32_t *p) {
         d.tx_last_source=src; d.tx_last_info=p[2]; d.tx_last_rate=p[5];
         d.tx_last_reason=src==0 ? (p[2]>>13)&15 : src==3 ? (p[2]>>9)&15 : 0;
         d.tx_last_count=(p[3]>>24)&127;
-        /* Keep the initial EAPOL completion and a bounded sample of failures
-         * in the log; a recycled descriptor alone is not proof of an ACK. */
-        if (d.tx_done<=4 || (!success && d.tx_errors<4))
-            wcn_log("wcn: data TX complete cookie=%u source=%u reason=%u success=%u tx_count=%u info=%08x rate=%08x\n",
-                    cookie,src,d.tx_last_reason,success,d.tx_last_count,p[2],p[5]);
         if (!success) d.tx_errors++;
-        /* Sample the completion stream: a link that stops being bridged still
-         * completes descriptors, and only tx_count/success say whether the AP
-         * actually answered the frame. Bounded, so the diag file stays readable. */
-        static unsigned sampled;
-        if (d.tx_done%64u==0 && sampled<48) {
-            sampled++;
-            wcn_diag("tx-sample n=%u success=%u source=%u reason=%u tx_count=%u info=%08x rate=%08x\n",
-                     d.tx_done,success,src,d.tx_last_reason,d.tx_last_count,p[2],p[5]);
-        }
+        /* Keep a bounded sample of failures: a recycled descriptor alone is
+         * not proof of an ACK, and tx_count/success say whether the AP
+         * actually answered the frame. */
+        if (!success && d.tx_errors<=4)
+            wcn_log("wcn: data TX failed cookie=%u source=%u reason=%u tx_count=%u info=%08x rate=%08x\n",
+                    cookie,src,d.tx_last_reason,d.tx_last_count,p[2],p[5]);
         if (src==0 && (p[5]&1)) {
             d.tx_rate=p[5];unsigned phy=(d.tx_rate>>3)&15;
             if (phy==2) d.tx_ht++;
@@ -544,7 +535,6 @@ static int dp_rx_filter(unsigned ring_id, unsigned pdev) {
     p[5]=0x01249249; /* ctrl 10-15 FP + mcast/ucast/null data FP */
     p[6]=0x000007BF; /* MPDU/MSDU start+end, packet, attention, PPDU TLVs */
     int rc=wcn_htc_htt_send(p,sizeof(p));
-    wcn_log("wcn: DP RX filter ring=%u pdev=%u\n",ring_id,pdev);
     /* rc != 0 keeps rx_filter_sent cleared and the message is retried; make
      * that visible, because without this filter MAC2 delivers no data frame
      * and every 4-way handshake ends in handshake-timeout. */
@@ -628,59 +618,13 @@ int wcn_dp_ready(void) { return d.active && !d.failed && d.configured==d.count; 
  * writes a completion into the RXDMA ring. Management frames still flow
  * (they arrive as WMI events), so the only visible symptom is a 4-way
  * handshake where M1 never reaches the host. */
-int wcn_dp_rx_alive(void) { return d.active && !d.failed && d.rx_packets>0; }
 unsigned wcn_dp_rx_frames(void) { return d.rx_packets; }
 unsigned wcn_dp_completions(void) { return d.completions; }
 unsigned wcn_dp_tx_errors(void) { return d.tx_errors; }
+/* ACKed uplink completions: the station liveness watchdog counts these as
+ * proof of a working radio path when the downlink is silent. */
+unsigned wcn_dp_tx_done(void) { return d.tx_done - d.tx_errors; }
 unsigned wcn_dp_tx_packets(void) { return d.tx_packets; }
-/* Proof of where RX actually stops: the RX buffer ring's firmware-written HP
- * stays put (and refilled stays at its initial value) when RXDMA never fetched
- * a descriptor, while a live receive path advances both. */
-static unsigned dp_raw_hw(const struct dp_ring *r) {
-    unsigned value = r->id == 104 ? wcn_soc_read(r->ptr + 4) :
-        *(volatile uint32_t *)(void *)(d.dma + r->hw_offset);
-    dp_barrier();
-    return value;
-}
-
-/* RXDMA can consume every posted descriptor and still return no completion.
- * Reading the buffers themselves is the only direct way to tell "frames did
- * arrive and the completion path lost them" from "the engine only prefetched
- * descriptors and no frame was ever written". Buffers are memset at alloc, so
- * any non-zero word means the firmware wrote something into it. */
-void wcn_dp_rx_probe(char *out, unsigned size) {
-    struct dp_ring *r = dp_find(128);
-    unsigned filled = 0, sample = 0, words[6] = {0};
-    char rings[16 * 26 + 4];
-    unsigned used = 0;
-
-    if (out == NULL || !size) return;
-    for (unsigned i = 1; i <= RX_COUNT; i++) {
-        const uint32_t *p = dp_words(d.rx_buffers + (i - 1) * RX_BYTES);
-        unsigned j, nz = 0;
-        /* 128 words = 512 bytes: covers the 392-byte RX descriptor and the
-         * first bytes of any payload the hardware decapsulated. */
-        for (j = 0; j < 128; j++) if (p[j]) { nz = 1; break; }
-        if (!nz) continue;
-        if (!filled && sample == 0) {
-            sample = i;
-            for (j = 0; j < 6; j++) words[j] = p[j];
-        }
-        filled++;
-    }
-    rings[0] = 0;
-    static const unsigned ids[] = {0, 1, 2, 3, 129, 132, 133, 144, 147, 148};
-    for (unsigned k = 0; k < sizeof(ids) / sizeof(ids[0]); k++) {
-        struct dp_ring *q = dp_find(ids[k]);
-        if (q == NULL || used >= sizeof(rings) - 30) continue;
-        used += (unsigned)snprintf(rings + used, sizeof(rings) - used, "%u:%u/%u ",
-                ids[k], dp_raw_hw(q), q->index * q->words);
-    }
-    snprintf(out, size,
-            "rxfill=%u rxsample=%u rxd=%08x/%08x/%08x/%08x rx_hp=%u rx_idx=%u rings=[%s]",
-            filled, sample, words[0], words[1], words[2], words[3],
-            r ? dp_raw_hw(r) : 0u, r ? r->index * r->words : 0u, rings);
-}
 
 void wcn_dp_hw_state(char *out, unsigned size) {
     struct dp_ring *r = dp_find(128);
@@ -694,21 +638,6 @@ void wcn_dp_hw_state(char *out, unsigned size) {
 void wcn_dp_release(void) {
     if (d.dma) dma_free(0,(ewokos_addr_t)d.dma);
     memset(&d,0,sizeof(d));
-}
-/* One compact line per call, written to the persistent diag by the link
- * thread. A Wi-Fi stall takes the ssh session down with it, so the counters
- * that would identify the stall can never be sampled while it is happening -
- * they have to be recorded as it goes. */
-void wcn_dp_beat(char *out,size_t size) {
-    struct dp_ring *tx=dp_find(16), *rx=dp_find(128);
-    snprintf(out,size,"beat rx=%u/%u drop=%u stale=%u tx=%u done=%u err=%u txfull=%u txslots=%u refill=%u pend=%u txspace=%u txhw=%u txidx=%u rxhw=%u rxidx=%u rxfree=%u",
-             d.rx_delivered,d.rx_packets,d.rx_dropped,d.rx_stale,
-             d.tx_packets,d.tx_done,d.tx_errors,d.tx_block_space,d.tx_block_slot,d.refilled,d.tx_pending,
-             tx?(unsigned)dp_space(tx):0,tx?dp_hw(tx):0,tx?tx->index:0,rx?dp_hw(rx):0,rx?rx->index:0,d.rx_free_count);
-    snprintf(out+strlen(out),size-strlen(out)," mgmt=%u wev=%u",
-             wcn_wmi_management(),wcn_wmi_events());
-    char net[220]; wcn_net_beat(net,sizeof(net));
-    size_t used=strlen(out); if (used<size) snprintf(out+used,size-used," %s",net);
 }
 void wcn_dp_status(char *out,size_t size) {
     snprintf(out,size,"dp=%u dp_cfg=%u/%u dp_failed=%u dp_bad=%u dp_completed=%u rx=%u/%u drop=%u stale=%u refill=%u rxfree=%u tx=%u/%u tx_errors=%u tx_last_source=%u tx_last_reason=%u tx_last_count=%u tx_last_info=%08x tx_last_rate=%08x",

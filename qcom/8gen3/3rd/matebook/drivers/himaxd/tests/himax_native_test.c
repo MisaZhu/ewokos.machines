@@ -9,17 +9,17 @@
 #include "../../../libs/bsp/include/bsp/gpi_dma.h"
 #include "../himax_protocol.h"
 #include "../native/himax_native_spi.h"
-#define Q8B_GPI_DMA_TEST
+#define QCOM8GEN3_GPI_DMA_TEST
 #include "../../../libs/bsp/src/gpi_dma.c"
 
 int main(void) {
     /* Mode 3 config: CPOL=1, CPHA=1, packed, CS deasserted, div ~ 2. */
-    q8b_gpi_spi_cfg_t cfg;
+    qcom8gen3_gpi_spi_cfg_t cfg;
     uint32_t hz = 0;
     assert(himax_native_spi_cfg(&cfg, &hz) == 0);
     assert(cfg.clock_pol_high == 1 && cfg.data_pol_high == 1);
     assert(cfg.clk_src == 0 && cfg.cs == 0 && cfg.fragmentation == 0);
-    assert(cfg.cmd == Q8B_GPI_SPI_CMD_DUPLEX);
+    assert(cfg.cmd == QCOM8GEN3_GPI_SPI_CMD_DUPLEX);
     assert(cfg.clk_div >= 1 && cfg.clk_div <= 4095);
     assert(hz > 0 && hz < HIMAX_SRC_HZ);
     assert(himax_native_spi_cfg(NULL, NULL) == -1);
@@ -42,19 +42,19 @@ int main(void) {
     uint32_t* go = ring + 1u * 8u;
     uint32_t* dtx = ring + 2u * 8u;
     uint32_t* drx = ring + 3u * 8u;
-    assert(((c0[3] & Q8B_GPI_TRE_FLAGS_TYPE) >> 16) == Q8B_GPI_TRE_TYPE_CONFIG0);
+    assert(((c0[3] & QCOM8GEN3_GPI_TRE_FLAGS_TYPE) >> 16) == QCOM8GEN3_GPI_TRE_TYPE_CONFIG0);
     /* mode 3 must be encoded in CONFIG0: CPOL=1, CPHA=1, packed */
-    assert(c0[0] & Q8B_GPI_SPI_C0_CPOL);
-    assert(c0[0] & Q8B_GPI_SPI_C0_CPHA);
-    assert(c0[0] & (Q8B_GPI_SPI_C0_TX_PACK | Q8B_GPI_SPI_C0_RX_PACK));
-    assert(((go[3] & Q8B_GPI_TRE_FLAGS_TYPE) >> 16) == Q8B_GPI_TRE_TYPE_GO);
-    assert((go[0] & Q8B_GPI_SPI_GO_CMD) == Q8B_GPI_SPI_CMD_DUPLEX);
-    assert((go[2] & Q8B_GPI_GO_RX_LEN) == fl);
-    assert(dtx[0] == 0x1000u && (dtx[2] & Q8B_GPI_DMA_LEN) == fl);
-    assert(!(dtx[3] & Q8B_GPI_TRE_FLAGS_BEI));
-    assert(drx[0] == 0x2000u && (drx[2] & Q8B_GPI_DMA_LEN) == fl);
-    assert(drx[3] & Q8B_GPI_TRE_FLAGS_BEI);
-    assert(drx[3] & Q8B_GPI_TRE_FLAGS_IEOT);
+    assert(c0[0] & QCOM8GEN3_GPI_SPI_C0_CPOL);
+    assert(c0[0] & QCOM8GEN3_GPI_SPI_C0_CPHA);
+    assert(c0[0] & (QCOM8GEN3_GPI_SPI_C0_TX_PACK | QCOM8GEN3_GPI_SPI_C0_RX_PACK));
+    assert(((go[3] & QCOM8GEN3_GPI_TRE_FLAGS_TYPE) >> 16) == QCOM8GEN3_GPI_TRE_TYPE_GO);
+    assert((go[0] & QCOM8GEN3_GPI_SPI_GO_CMD) == QCOM8GEN3_GPI_SPI_CMD_DUPLEX);
+    assert((go[2] & QCOM8GEN3_GPI_GO_RX_LEN) == fl);
+    assert(dtx[0] == 0x1000u && (dtx[2] & QCOM8GEN3_GPI_DMA_LEN) == fl);
+    assert(!(dtx[3] & QCOM8GEN3_GPI_TRE_FLAGS_BEI));
+    assert(drx[0] == 0x2000u && (drx[2] & QCOM8GEN3_GPI_DMA_LEN) == fl);
+    assert(drx[3] & QCOM8GEN3_GPI_TRE_FLAGS_BEI);
+    assert(drx[3] & QCOM8GEN3_GPI_TRE_FLAGS_IEOT);
 
     /* guards */
     assert(himax_native_build_xfer(ring, 4, 1, frame, fl,

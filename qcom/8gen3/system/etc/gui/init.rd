@@ -1,4 +1,4 @@
-# Q8B: serial console + GOP framebuffer console.
+# QCOM8GEN3: serial console + GOP framebuffer console.
 #
 # Bring up core services and serial logging, then GPU rendering and the
 # display stack. The xwin profile adds USB input and the desktop.

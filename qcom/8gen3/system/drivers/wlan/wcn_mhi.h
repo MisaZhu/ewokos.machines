@@ -1,5 +1,5 @@
-#ifndef Q8B_WCN_MHI_H
-#define Q8B_WCN_MHI_H
+#ifndef QCOM8GEN3_WCN_MHI_H
+#define QCOM8GEN3_WCN_MHI_H
 #include <stddef.h>
 #include <stdint.h>
 int wcn_attach(void);

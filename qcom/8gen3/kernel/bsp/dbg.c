@@ -2,46 +2,46 @@
 #include <stdint.h>
 #include "hw_arch.h"
 
-#ifdef Q8B_NO_SERIAL
+#ifdef QCOM8GEN3_NO_SERIAL
 /* TEMP: serial console disabled (E Go / TW220 bring-up).  Keep the debug API
  * so callers link unchanged, but never touch the dead QUP2/SE1 UART17. */
-void q8b_dbg_putc(char c) { (void)c; }
-void q8b_dbg_write(const char* s, uint32_t size) { (void)s; (void)size; }
-void q8b_dbg_puts(const char* s) { (void)s; }
-void q8b_dbg_hex(uint64_t v) { (void)v; }
-void q8b_dbg_dec(uint64_t v) { (void)v; }
+void qcom8gen3_dbg_putc(char c) { (void)c; }
+void qcom8gen3_dbg_write(const char* s, uint32_t size) { (void)s; (void)size; }
+void qcom8gen3_dbg_puts(const char* s) { (void)s; }
+void qcom8gen3_dbg_hex(uint64_t v) { (void)v; }
+void qcom8gen3_dbg_dec(uint64_t v) { (void)v; }
 #else
 
 /* Runtime decision from the loader's serial probe (bootinfo serial_flags
- * bit0, copied into q8b_serial_on before the first kout).  The QEMU test
+ * bit0, copied into qcom8gen3_serial_on before the first kout).  The QEMU test
  * build always keeps its PL011 console. */
 static int dbg_serial_on(void) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     return 1;
 #else
-    return q8b_serial_on;
+    return qcom8gen3_serial_on;
 #endif
 }
 
 /*
  * Raw Qualcomm GENI (QUP SE) UART debug output for uart17.
  *
- * The Q8B UEFI firmware sets the SE clock/pinmux and the baud rate; this
+ * The QCOM8GEN3 UEFI firmware sets the SE clock/pinmux and the baud rate; this
  * driver only drives the TX sequencer, exactly like Linux's qcom_geni
  * earlycon.  It must work both on the boot page tables and on the final
- * kernel VM, so it only uses MMIO_BASE + Q8B_UART17_OFF.
+ * kernel VM, so it only uses MMIO_BASE + QCOM8GEN3_UART17_OFF.
  *
  * Every wait is bounded: a dead/misconfigured UART must never hang the
  * kernel before the first line of the banner.
  */
 
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
 /* QEMU virt: PL011 at 0x09000000, already initialized by EDK2. */
-#define PL011_DR  (MMIO_BASE + Q8B_UART17_OFF + 0x00)
-#define PL011_FR  (MMIO_BASE + Q8B_UART17_OFF + 0x18)
+#define PL011_DR  (MMIO_BASE + QCOM8GEN3_UART17_OFF + 0x00)
+#define PL011_FR  (MMIO_BASE + QCOM8GEN3_UART17_OFF + 0x18)
 #define PL011_TXFF (1u << 5)
 
-void q8b_dbg_putc(char c) {
+void qcom8gen3_dbg_putc(char c) {
     if (!dbg_serial_on())
         return;
     for (volatile uint32_t i = 0; i < 1000000; i++) {
@@ -51,24 +51,24 @@ void q8b_dbg_putc(char c) {
     put32(PL011_DR, (uint32_t)(uint8_t)c);
 }
 
-void q8b_dbg_puts(const char* s) {
+void qcom8gen3_dbg_puts(const char* s) {
     if (!dbg_serial_on())
         return;
     while (*s) {
         if (*s == '\n')
-            q8b_dbg_putc('\r');
-        q8b_dbg_putc(*s++);
+            qcom8gen3_dbg_putc('\r');
+        qcom8gen3_dbg_putc(*s++);
     }
 }
 
-void q8b_dbg_hex(uint64_t v) {
+void qcom8gen3_dbg_hex(uint64_t v) {
     static const char h[] = "0123456789abcdef";
-    q8b_dbg_puts("0x");
+    qcom8gen3_dbg_puts("0x");
     for (int i = 60; i >= 0; i -= 4)
-        q8b_dbg_putc(h[(v >> i) & 0xF]);
+        qcom8gen3_dbg_putc(h[(v >> i) & 0xF]);
 }
 
-void q8b_dbg_dec(uint64_t v) {
+void qcom8gen3_dbg_dec(uint64_t v) {
     char buf[24];
     int i = (int)sizeof(buf) - 1;
     buf[i] = 0;
@@ -78,11 +78,11 @@ void q8b_dbg_dec(uint64_t v) {
         buf[--i] = (char)('0' + (v % 10));
         v /= 10;
     }
-    q8b_dbg_puts(&buf[i]);
+    qcom8gen3_dbg_puts(&buf[i]);
 }
 
 #else
-#define UART_BASE   (MMIO_BASE + Q8B_UART17_OFF)
+#define UART_BASE   (MMIO_BASE + QCOM8GEN3_UART17_OFF)
 
 #define SE_GENI_M_CMD0            0x600
 #define SE_GENI_M_CMD_CTRL_REG    0x604
@@ -153,13 +153,13 @@ static void geni_send(const char* data, uint32_t count) {
     reg_write(SE_GENI_M_IRQ_CLEAR, M_CMD_DONE_EN);
 }
 
-void q8b_dbg_putc(char c) {
+void qcom8gen3_dbg_putc(char c) {
     if (!dbg_serial_on())
         return;
     geni_send(&c, 1);
 }
 
-void q8b_dbg_write(const char* s, uint32_t size) {
+void qcom8gen3_dbg_write(const char* s, uint32_t size) {
     if (!dbg_serial_on())
         return;
     char word[4];
@@ -183,23 +183,23 @@ void q8b_dbg_write(const char* s, uint32_t size) {
         geni_send(word, count);
 }
 
-void q8b_dbg_puts(const char* s) {
+void qcom8gen3_dbg_puts(const char* s) {
     uint32_t size = 0;
     if (!dbg_serial_on())
         return;
     while (s[size])
         size++;
-    q8b_dbg_write(s, size);
+    qcom8gen3_dbg_write(s, size);
 }
 
-void q8b_dbg_hex(uint64_t v) {
+void qcom8gen3_dbg_hex(uint64_t v) {
     static const char h[] = "0123456789abcdef";
-    q8b_dbg_puts("0x");
+    qcom8gen3_dbg_puts("0x");
     for (int i = 60; i >= 0; i -= 4)
-        q8b_dbg_putc(h[(v >> i) & 0xF]);
+        qcom8gen3_dbg_putc(h[(v >> i) & 0xF]);
 }
 
-void q8b_dbg_dec(uint64_t v) {
+void qcom8gen3_dbg_dec(uint64_t v) {
     char buf[24];
     int i = (int)sizeof(buf) - 1;
     buf[i] = 0;
@@ -209,9 +209,9 @@ void q8b_dbg_dec(uint64_t v) {
         buf[--i] = (char)('0' + (v % 10));
         v /= 10;
     }
-    q8b_dbg_puts(&buf[i]);
+    qcom8gen3_dbg_puts(&buf[i]);
 }
 
-#endif /* Q8B_QEMU_TEST */
+#endif /* QCOM8GEN3_QEMU_TEST */
 
-#endif /* Q8B_NO_SERIAL */
+#endif /* QCOM8GEN3_NO_SERIAL */

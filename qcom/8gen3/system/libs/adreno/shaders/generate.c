@@ -64,8 +64,8 @@ int main(int argc, char **argv) {
     }
     FILE *out = fopen(argv[3], "w");
     if (!out) { perror(argv[3]); free(data); pglc_program_free(&program); return 1; }
-    const char *symbol = blit ? "q8b_2d_blob" : (bin ? "q8b_bin_blob" : "q8b_raster_blob");
-    const char *prefix = blit ? "Q8B_2D_BLOB" : (bin ? "Q8B_BIN_BLOB" : "Q8B_RASTER_BLOB");
+    const char *symbol = blit ? "qcom8gen3_2d_blob" : (bin ? "qcom8gen3_bin_blob" : "qcom8gen3_raster_blob");
+    const char *prefix = blit ? "QCOM8GEN3_2D_BLOB" : (bin ? "QCOM8GEN3_BIN_BLOB" : "QCOM8GEN3_RASTER_BLOB");
     fprintf(out, "/* Generated from %s.comp; make builtin-shaders in libadreno. */\n", argv[1]);
     fprintf(out, "#define %s_VERSION %uu\n#define %s_HEADER_BYTES %zuu\n", prefix, blob->version, prefix, sizeof(*blob));
     fprintf(out, "static const unsigned char %s[] __attribute__((aligned(8))) = {\n", symbol);

@@ -8,7 +8,7 @@
  *
  * The platform's gic.c is a GICv2 (GICC MMIO) driver; Tegra234 has a
  * GICv3 with redistributors and the ICC_* system-register interface, so
- * the Orin BSP carries its own driver (same model as the Q8B one).
+ * the Orin BSP carries its own driver (same model as the QCOM8GEN3 one).
  *
  * Tegra234 specifics:
  *   - one redistributor region (0x0f440000, 2MB, 0x20000 stride); frames

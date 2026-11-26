@@ -1,5 +1,5 @@
 /*
- * espwrite - update files on the Q8B SD/USB EFI System Partition (FAT32).
+ * espwrite - update files on the QCOM8GEN3 SD/USB EFI System Partition (FAT32).
  *
  * The board boots BOOTAA64.EFI / KERNEL.BIN from the FAT32 ESP; the ext3
  * rootfs updater (sdupdate) cannot touch it. This tool uses the user-space

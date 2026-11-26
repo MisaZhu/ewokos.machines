@@ -1,4 +1,4 @@
-# Q8B NPU port status
+# QCOM8GEN3 NPU port status
 
 As of 2026-10-25, the SC8280XP NSP0 path supports signed firmware loading
 through SCM PAS, SMP2P/IPCC readiness, GLINK and QRTR shutdown, FastRPC
@@ -42,14 +42,14 @@ graphical window runs three bundled cases using resources under `res/`. See the
 
 ## Build and runtime inputs
 
-Build the kernel with `make -C machines/q8b/kernel ewokos="$PWD"` and build
-the AP library with `make -C machines/q8b/system/libs/adrenonpu` after the
-normal Q8B system headers and libraries have been installed.
+Build the kernel with `make -C machines/qcom/8gen3/kernel ewokos="$PWD"` and build
+the AP library with `make -C machines/qcom/8gen3/system/libs/adrenonpu` after the
+normal QCOM8GEN3 system headers and libraries have been installed.
 
 The optional native DSP runtime uses external QAIRT headers and V68 libraries:
 
 ```sh
-make -C machines/q8b/system qairt_native_build \
+make -C machines/qcom/8gen3/system qairt_native_build \
   QAIRT_SDK_ROOT=/path/to/versioned/qairt \
   HEXAGON_CLANG=/path/to/hexagon-capable/clang \
   HEXAGON_LD=/path/to/ld.lld
@@ -63,7 +63,7 @@ matching runtime dependencies separately under `/usr/lib/dsp` or
 listener. The SDK and board runtime must be compatible; QAIRT 2.51 with a
 V68 runtime has been exercised on this board.
 
-Place the signed `qccdsp8280.mbn` in `machines/q8b/firmware/npu` before the
+Place the signed `qccdsp8280.mbn` in `machines/qcom/8gen3/firmware/npu` before the
 normal rootfs firmware-install phase. This file comes from
 `qcom/sc8280xp/qccdsp8280.mbn` in Radxa's firmware package; the exercised image
 has MD5 `aa794aee23732765ca1ab8a97c069adc`.
@@ -71,6 +71,6 @@ has MD5 `aa794aee23732765ca1ab8a97c069adc`.
 Vendor firmware, SDK binaries and extensive experimental evidence
 are not distributed with this port. The standalone `apps/nputest/res` directory
 bundles the three demo models, validation inputs and reference outputs. Kernel
-protocol tracing is disabled by default; define `Q8B_NPU_DEBUG=1` for a
+protocol tracing is disabled by default; define `QCOM8GEN3_NPU_DEBUG=1` for a
 diagnostic build. User-space DEBUG messages are delivered to an explicitly
 registered log callback and omitted from the default system log.

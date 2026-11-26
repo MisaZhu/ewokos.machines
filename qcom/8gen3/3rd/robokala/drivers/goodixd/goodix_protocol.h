@@ -1,5 +1,5 @@
-#ifndef Q8B_GOODIX_PROTOCOL_H
-#define Q8B_GOODIX_PROTOCOL_H
+#ifndef QCOM8GEN3_GOODIX_PROTOCOL_H
+#define QCOM8GEN3_GOODIX_PROTOCOL_H
 
 #include <stddef.h>
 #include <stdint.h>

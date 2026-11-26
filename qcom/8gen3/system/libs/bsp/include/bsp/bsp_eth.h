@@ -1,5 +1,5 @@
-#ifndef Q8B_BSP_ETH_H
-#define Q8B_BSP_ETH_H
+#ifndef QCOM8GEN3_BSP_ETH_H
+#define QCOM8GEN3_BSP_ETH_H
 
 #include <stdint.h>
 

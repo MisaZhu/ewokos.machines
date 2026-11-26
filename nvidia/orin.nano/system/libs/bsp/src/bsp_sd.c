@@ -5,7 +5,7 @@
 #include <sd/sd.h>
 #include <ewoksys/syscall.h>
 #include <sysinfo.h>
-#include <q8b_platform.h>
+#include <qcom8gen3_platform.h>
 
 /*
  * Orin Nano user-space storage backend: the firmware boot RAM disk only.
@@ -24,11 +24,11 @@ static uint32_t _rd_size = 0;
  * are not inherited across fork, so the mapping is rebuilt every time. */
 static int32_t storage_init(void) {
     sys_info_t sysinfo;
-    const q8b_platform_data_t* pd;
+    const qcom8gen3_platform_data_t* pd;
 
     if (sys_get_sys_info(&sysinfo) != 0)
         return -1;
-    pd = (const q8b_platform_data_t*)sysinfo.platform_data;
+    pd = (const qcom8gen3_platform_data_t*)sysinfo.platform_data;
     if (pd->rd.phy_base == 0 || pd->rd.size == 0)
         return -1;
 

@@ -13,7 +13,7 @@
  * Writes land in the same DRAM copy (volatile rootfs, lost on reset).
  *
  * The boot reader hook keeps the shared kernel's weak symbol name
- * (q8b_ramdisk_read_block in kernel/lib/src/readfs.c) so the common
+ * (qcom8gen3_ramdisk_read_block in kernel/lib/src/readfs.c) so the common
  * read_fs() path works without any shared-code change.
  */
 
@@ -31,7 +31,7 @@ static void* rd_ptr(int32_t sector, uint32_t count) {
 /* Kernel boot reader hook used by kernel/lib/src/readfs.c.  The loader
  * image is a standalone ext3 filesystem, so its first filesystem block is
  * also the first block of the image (no partition offset). */
-int32_t q8b_ramdisk_read_block(int32_t block, void* buf) {
+int32_t qcom8gen3_ramdisk_read_block(int32_t block, void* buf) {
     static uint32_t block_sectors = 2U;
     uint8_t* src;
     if (block < 0 || buf == NULL || orin_ramdisk_size == 0)

@@ -27,7 +27,7 @@ static const Qnn_ConfigParam_t g_platform_info[QNN_PLATFORM_INFO_MAX] = {
 	{ "dsp.nsp_cores",    g_nsp_cores_s },
 	{ "dsp.vtcm_kb",      g_vtcm_s      },
 	{ "backend.id",       "HTP"         },
-	{ "backend.build",    "adrenonpu-1.0.0-q8b-sc8280xp" },
+	{ "backend.build",    "adrenonpu-1.0.0-qcom8gen3-sc8280xp" },
 };
 #define PLATFORM_INFO_COUNT 7u
 

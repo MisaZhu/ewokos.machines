@@ -14,7 +14,7 @@
 #include <string.h>
 
 static struct {
-    unsigned service_ready, ext_ready, ext2_ready, init_sent, ready, failed, hw_mode_sent;
+    unsigned service_ready, ext_ready, ext2_ready, init_sent, ready, failed, hw_mode_sent, idle_ps_sent;
     unsigned chains, vht5, nss160, events, bad, memory_requests;
     struct wcn_he_caps he5;
     unsigned vdev_sent, channels_sent, scan_pending, scan_active, scan_done;
@@ -428,7 +428,6 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
         f.extra_mac_count=count;
         f.extra_mac_valid=0;
         memset(f.extra_mac,0,sizeof(f.extra_mac));
-        wcn_log("wcn: WMI READY extra_mac_count=%u\n",count);
         if (count > 16) count=16;
         if (count && (!ready_extra || ready_extra_len < count*8)) {
             wcn_log("wcn: WMI READY extra MAC array malformed len=%u need=%u\n",
@@ -437,8 +436,6 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
         }
         for (unsigned i=0;i<count;i++) {
             const uint8_t *mac=ready_extra+i*8;
-            wcn_log("wcn: WMI READY EXTRA MAC[%u]=%02x:%02x:%02x:%02x:%02x:%02x\n",
-                    i,mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
             /* A generated 00:03:7f address is not a module identity.  Keep
              * the first real address available as a WMI module fallback. */
             unsigned any=0;
@@ -479,20 +476,8 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
         f.radio_ms=kernel_tic_ms(0);
         if (country_load()) { f.failed=1;return; }
         if (country[0]) f.country_state=1;
-        wcn_log("wcn: WMI READY MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
-             f.mac[0],f.mac[1],f.mac[2],f.mac[3],f.mac[4],f.mac[5]);
-        if (mac_override == 2)
-            wcn_log("wcn: WLAN MAC source=PCI VPD module address\n");
-        else if (mac_override == 3)
-            wcn_log("wcn: WLAN MAC source=WMI extra module address\n");
-        else if (mac_override == 4)
-            wcn_log("wcn: WLAN MAC source=deterministic hardware identity seed\n");
-        else if (mac_override)
-            wcn_log("wcn: WLAN MAC source=/etc/wlan.mac override\n");
-        else if (generated_wmi_mac(f.mac))
-            wcn_log("wcn: WLAN MAC source=WMI generated fallback; provision /etc/wlan.mac\n");
-        else
-            wcn_log("wcn: WLAN MAC source=WMI firmware\n");
+        if (generated_wmi_mac(f.mac))
+            wcn_log("wcn: WLAN MAC is a generated fallback; provision /etc/wlan.mac\n");
         /* Persist which address the AP will see: a shared/derived MAC shows
          * up here as override=0/4 and is the first thing to rule out when the
          * 4-way never completes. */
@@ -650,6 +635,20 @@ void wcn_wmi_poll(void) {
         }
         return;
     }
+    if (!f.idle_ps_sent) {
+        /* WCN6855 is idle_ps=true in ath11k: the firmware's IMPS behaviour is
+         * configured with WMI_PDEV_PARAM_IDLE_PS_CONFIG=1 at pdev start
+         * (mac.c ath11k_mac_start, cmd 0x4003, TLV tag 82). Without it the
+         * firmware parks itself uncoordinated when idle and the AP holds
+         * unicast for a station it believes is asleep. pdev_id 0 is the
+         * soc-level id ath11k uses for single_pdev_only chips. */
+        const uint32_t ps[]={0x4003,(82u<<16)|12,0,44,1};
+        if (!wcn_htc_wmi_send(ps,sizeof(ps))) {
+            f.idle_ps_sent=1;
+            wcn_diag("idle-ps config sent\n");
+        }
+        return;
+    }
     if (f.country_state==1) {
         f.country_seen=f.country_sent=0;f.country_mask=(f.reg[0].valid ? 1:0)|(f.reg[1].valid ? 2:0);
         if (!f.country_mask) f.country_mask=3;
@@ -667,7 +666,6 @@ void wcn_wmi_poll(void) {
         if ((f.country_seen&f.country_mask)==f.country_mask) {
             f.country_state=0;
             f.radio_ms=kernel_tic_ms(0);
-            wcn_log("wcn: country applied=%s\n",country);
             wcn_diag("country applied=%s mask=%u\n",country,f.country_mask);
         }
         else { if (kernel_tic_ms(0)>=f.country_deadline) { f.failed=1;wcn_log("wcn: country update timeout\n"); } return; }

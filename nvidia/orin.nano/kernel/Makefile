@@ -2,7 +2,7 @@ include config.mk
 
 LDS = mkos.lds.S
 
-# shared machine headers (q8b_platform.h hand-off layout)
+# shared machine headers (qcom8gen3_platform.h hand-off layout)
 CFLAGS += -I../include
 
 OS_IMG = kernel$(KERNEL_VARIANT).bin

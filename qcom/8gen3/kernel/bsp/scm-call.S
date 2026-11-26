@@ -1,9 +1,9 @@
 /* Separate from PSCI: Qualcomm interrupted calls return a continuation in x6.
- * q8b_scm_smc(uint64_t regs[8]); SMCCC preserves x19..x30. */
+ * qcom8gen3_scm_smc(uint64_t regs[8]); SMCCC preserves x19..x30. */
     .text
-    .global q8b_scm_smc
-    .type q8b_scm_smc, %function
-q8b_scm_smc:
+    .global qcom8gen3_scm_smc
+    .type qcom8gen3_scm_smc, %function
+qcom8gen3_scm_smc:
     stp x19, x30, [sp, #-16]!
     mov x19, x0
     ldp x0, x1, [x19]

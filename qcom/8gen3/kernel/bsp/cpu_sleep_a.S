@@ -1,8 +1,8 @@
 /* SC8280XP secondary-core PSCI CPU_SUSPEND: assembly side.
  *
- * q8b_cpu_do_suspend  - save the caller's callee-saved frame, flush the save
+ * qcom8gen3_cpu_do_suspend  - save the caller's callee-saved frame, flush the save
  *                       block to DRAM, issue CPU_SUSPEND64 with the MMU on.
- * q8b_cpu_resume_asm  - PSCI resume entry (MMU off, x0 = save-area PA).
+ * qcom8gen3_cpu_resume_asm  - PSCI resume entry (MMU off, x0 = save-area PA).
  *                       Rebuild the translation from the saved context and
  *                       return through the untouched idle-proc frame.
  *
@@ -15,12 +15,12 @@
 
 .section .text
 
-/* int q8b_cpu_do_suspend(save_va=x0, save_pa=x1, resume_pa=x2, core=x3)
+/* int qcom8gen3_cpu_do_suspend(save_va=x0, save_pa=x1, resume_pa=x2, core=x3)
  * Returns CS_RESUMED after a power-down/resume cycle, otherwise the PSCI
  * result: 0 if the core woke without losing context, negative on error. */
-.global q8b_cpu_do_suspend
-.type q8b_cpu_do_suspend, %function
-q8b_cpu_do_suspend:
+.global qcom8gen3_cpu_do_suspend
+.type qcom8gen3_cpu_do_suspend, %function
+qcom8gen3_cpu_do_suspend:
     mov x9, x0                          /* x9 = save-area VA base */
     stp x19, x20, [x9, #CS_X19*8]
     stp x21, x22, [x9, #(CS_X19+2)*8]
@@ -70,9 +70,9 @@ q8b_cpu_do_suspend:
  * mapped in the kernel VM, which is what CS_TTBR0/CS_TTBR1 hold, so it
  * executes seamlessly at PA before and after the MMU comes on. */
 .align 16
-.global q8b_cpu_resume_asm
-.type q8b_cpu_resume_asm, %function
-q8b_cpu_resume_asm:
+.global qcom8gen3_cpu_resume_asm
+.type qcom8gen3_cpu_resume_asm, %function
+qcom8gen3_cpu_resume_asm:
     msr daifset, #0xf                   /* keep exceptions masked */
     msr spsel, #1
     mov x19, x0                         /* save-area PA base (MMU off) */
@@ -102,10 +102,10 @@ q8b_cpu_resume_asm:
     ldr x1, [x20, #CS_SP*8]
     mov sp, x1
     ldr x0, [x20, #CS_CORE*8]
-    ldr x1, =q8b_cpu_resume_core
+    ldr x1, =qcom8gen3_cpu_resume_core
     blr x1                              /* re-init GIC CPU IF + local timer */
     /* Restore the exact callee-saved frame the suspend call saved, then ret
-     * into q8b_cpu_suspend -> q8b_arch_irq_idle -> irq_handler tail (eret). */
+     * into qcom8gen3_cpu_suspend -> qcom8gen3_arch_irq_idle -> irq_handler tail (eret). */
     ldp d8,  d9,  [x20, #CS_D8*8]
     ldp d10, d11, [x20, #(CS_D8+2)*8]
     ldp d12, d13, [x20, #(CS_D8+4)*8]

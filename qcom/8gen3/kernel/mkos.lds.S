@@ -1,7 +1,7 @@
 /*
  * EwokOS AArch64 linker script for machines with DRAM not based at 0.
  *
- * Q8B DRAM starts at 0x80000000, therefore:
+ * QCOM8GEN3 DRAM starts at 0x80000000, therefore:
  *   - .init is linked at its physical load address (0x80080000) so the
  *     pre-MMU code (adr/literal stack references) works unchanged;
  *   - the rest of the kernel is linked in the high half at
@@ -34,8 +34,8 @@ SECTIONS
 		*/start*.o(.rodata .rodata.*)
 		*/start*.o(.data .data.*)
 		*/start*.o(.bss .bss.*)
-		/* Q8B UART bring-up runs before the MMU and must stay physical. */
-		*(.text.q8b_early .text.q8b_early.*)
+		/* QCOM8GEN3 UART bring-up runs before the MMU and must stay physical. */
+		*(.text.qcom8gen3_early .text.qcom8gen3_early.*)
 		/* late .init helpers that must not precede __entry */
 		*(.bootvec)
 	} : init

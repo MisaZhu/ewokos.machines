@@ -1,4 +1,4 @@
-/* Host test for the Q8B GENI UART BT transport: runs the real bsp_bt.c
+/* Host test for the QCOM8GEN3 GENI UART BT transport: runs the real bsp_bt.c
  * against a deterministic GENI SE2 register model and a WCN6855-style
  * controller (EDL-over-CC, TLV download, baud switch, IBS sleep/wake).
  * Mirrors the spi_test.c pattern: include the source, stub the hooks. */
@@ -15,7 +15,7 @@ static FILE* bt_fake_fopen(const char* p, const char* m) {
     return NULL; /* bring-up log is a no-op in the host test */
 }
 #define fopen bt_fake_fopen
-#define Q8B_BT_TEST
+#define QCOM8GEN3_BT_TEST
 #include "../src/bsp_bt.c"
 #undef fopen
 

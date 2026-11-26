@@ -5,7 +5,7 @@
  * rescue console and early driver paths live under /drivers/orin.nano/. */
 #define INIT_DRIVER_DIR "orin.nano"
 
-/* The shared init's early PCIe-owner-before-USB startup is a Q8B WCN6855
+/* The shared init's early PCIe-owner-before-USB startup is a QCOM8GEN3 WCN6855
  * workaround.  Orin's C1 (M.2 Key-E) cold-own is still disabled at boot (it
  * raises an EL3 RAS), so do not force pcied ahead of the boot profile. */
 #define INIT_EARLY_PCIE_OWNER 0

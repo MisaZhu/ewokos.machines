@@ -1,4 +1,4 @@
-# Machine-local user binaries for q8b.  Each subdir has its own Makefile that
+# Machine-local user binaries for qcom8gen3.  Each subdir has its own Makefile that
 # links against the SDK libs staged by the basic_sys phase.
 all: nputest pcieprobe reboot shutdown adspas
 	@echo "bin done."

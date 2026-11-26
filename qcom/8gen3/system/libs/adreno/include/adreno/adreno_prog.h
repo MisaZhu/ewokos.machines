@@ -1,17 +1,17 @@
 /*
- * adreno_prog.h - Q8B (Adreno 690) a6xx compute-shader program blob contract.
+ * adreno_prog.h - QCOM8GEN3 (Adreno 690) a6xx compute-shader program blob contract.
  *
  * WHY THIS EXISTS (and why it is NOT g2dclient.h's g2d_pgl_program_blob_t):
  *   The shared portablegl offload protocol ships a g2d_pgl_program_blob_t whose
  *   payload is VideoCore V3D 7.1 QPU instruction words - the ISA raspi5's V3D
  *   back end consumes.  Those words are meaningless to an Adreno 690, which
- *   runs a6xx ir3 ISA.  Q8B therefore needs its own program blob: a flat
+ *   runs a6xx ir3 ISA.  QCOM8GEN3 therefore needs its own program blob: a flat
  *   serialization of exactly the fields of Mesa's `struct ir3_shader_variant`
  *   (freedreno/ir3/ir3_shader.h) that the a6xx compute dispatch reads, produced
  *   APP-SIDE by the machine GPU compiler backend
- *   (machines/q8b/system/libs/adrenocompiler: the pglcompiler.h contract
+ *   (machines/qcom/8gen3/system/libs/adrenocompiler: the pglcompiler.h contract
  *   implemented over the vendored mesa freedreno/ir3 tree, GLSL->NIR->ir3->
- *   a6xx; Adreno-specific code lives under the q8b machine, not in the shared
+ *   a6xx; Adreno-specific code lives under the qcom8gen3 machine, not in the shared
  *   projects/opengl/libs/gles) and consumed DAEMON-SIDE by adreno_3d.c.
  *
  *   The per-kernel field names map 1:1 onto ir3_shader_variant so the app
@@ -83,7 +83,7 @@
  *   names the buffers (binding 0 = render target by convention, then the
  *   geometry rasterizer's pos/nrm/depth/tex/... buffers in request order).
  *
- * Q8B hardware tests on 2026-10-22 verified fullscreen compute SSBO writes,
+ * QCOM8GEN3 hardware tests on 2026-10-22 verified fullscreen compute SSBO writes,
  * pushed per-draw uniforms, strided bounds and A2D/CS transitions through
  * 720x720. This does not validate every field or shader feature (QEMU models
  * no Adreno). The contract follows the ir3_shader_variant fields consumed by

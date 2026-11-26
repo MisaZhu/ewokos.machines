@@ -1,5 +1,5 @@
 /*
- * Q8B on-board Ethernet discovery.
+ * QCOM8GEN3 on-board Ethernet discovery.
  *
  * The two 1179:0220 MACs sit behind the TC9563/QPS615 PCIe switch on
  * SC8280XP PCIe3a. The independent pcied host owns PCIe3A power, reset,
@@ -258,7 +258,7 @@ static int mdio_read_c22(ewokos_addr_t mac_base, uint8_t phy,
     return 0;
 }
 
-/* Q8B DTS: I2C12 GPIO0/1, BL24C16 at 0x50, MAC cells 0x9e/0xa4.
+/* QCOM8GEN3 DTS: I2C12 GPIO0/1, BL24C16 at 0x50, MAC cells 0x9e/0xa4.
  * Read only; preserve pin mux/direction/output state. No QUP clock accesses. */
 #define EEPROM_GPIO_VA 0x52300000ULL
 static ewokos_addr_t eeprom_pin(unsigned pin) { return EEPROM_GPIO_VA + pin * 0x1000u; }
@@ -350,7 +350,7 @@ static bool tc956x_mac_power_on(unsigned pf, ewokos_addr_t mac_base) {
     uint32_t clocks = (1u << 7) | (1u << 14) | (1u << 31);
     uint32_t resets = (1u << 7) | (1u << 30) | (1u << 31);
     uint32_t before_clk = get32(clk), before_rst = get32(rst);
-    slog("q8b eth: PF%u SFR clk=%08x rst=%08x emactl=%08x\n",
+    slog("qcom8gen3 eth: PF%u SFR clk=%08x rst=%08x emactl=%08x\n",
             pf, before_clk, before_rst, get32(ctl));
     if (before_clk == 0xffffffffu || before_rst == 0xffffffffu)
         return false;
@@ -374,16 +374,16 @@ static bool tc956x_mac_power_on(unsigned pf, ewokos_addr_t mac_base) {
     for (unsigned i = 0; i < 10000; i++) {
         if (get32(ctl) & (1u << 21)) {
             reg_write32(rst, get32(rst) & ~(1u << 31));
-            slog("q8b eth: PF%u MAC/PMA clocks ready\n", pf);
+            slog("qcom8gen3 eth: PF%u MAC/PMA clocks ready\n", pf);
             return true;
         }
         usleep(100);
     }
-    slog("q8b eth: PF%u PMA init timeout emactl=%08x\n", pf, get32(ctl));
+    slog("qcom8gen3 eth: PF%u PMA init timeout emactl=%08x\n", pf, get32(ctl));
     return false;
 }
 
-static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
+static bool probe_tc956x_pf(const qcom8gen3_pcie_device_t *device) {
 	uint64_t bar0, bar2, bar4;
     uint32_t rsc_id, pf, mac_lo, mac_hi, version;
     uint16_t phy_id1 = 0xffffu, phy_id2 = 0xffffu;
@@ -395,27 +395,27 @@ static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
 	bar2 = device->bar[2];
 	bar4 = device->bar[4];
     if (bar0 == 0 || bar2 == 0 || bar4 == 0) {
-        slog("q8b eth: %02x:%02x.%u missing TC956x BAR0/2/4\n",
+        slog("qcom8gen3 eth: %02x:%02x.%u missing TC956x BAR0/2/4\n",
 				device->bus, device->device, device->function);
         return false;
     }
-	if (q8b_pcie_map_bar(device, 0, TC956X_BAR0_VA, TC956X_BAR0_SIZE) ||
-			q8b_pcie_map_bar(device, 2, TC956X_BAR2_VA, TC956X_BAR2_SIZE) ||
-			q8b_pcie_map_bar(device, 4, TC956X_BAR4_VA, TC956X_BAR4_SIZE))
+	if (qcom8gen3_pcie_map_bar(device, 0, TC956X_BAR0_VA, TC956X_BAR0_SIZE) ||
+			qcom8gen3_pcie_map_bar(device, 2, TC956X_BAR2_VA, TC956X_BAR2_SIZE) ||
+			qcom8gen3_pcie_map_bar(device, 4, TC956X_BAR4_VA, TC956X_BAR4_SIZE))
         return false;
 
-    slog("q8b eth: BAR maps ready; reading resource manager\n");
+    slog("qcom8gen3 eth: BAR maps ready; reading resource manager\n");
     rsc_id = get32(TC956X_BAR0_VA + TC956X_RSCMNG_ID);
-    slog("q8b eth: resource manager=%08x\n", rsc_id);
+    slog("qcom8gen3 eth: resource manager=%08x\n", rsc_id);
     pf = rsc_id & TC956X_RSCMNG_PF_MASK;
     if ((rsc_id & (TC956X_RSCMNG_FN_TYPE | TC956X_RSCMNG_VF_MASK)) != 0 ||
             pf > 1u) {
-		slog("q8b eth: %02x:%02x.%u unsupported resource-manager function\n",
+		slog("qcom8gen3 eth: %02x:%02x.%u unsupported resource-manager function\n",
 				device->bus, device->device, device->function);
         return false;
     }
     if (pf != 0u) {
-		slog("q8b eth: %02x:%02x.%u PF%u left untouched; using PF0\n",
+		slog("qcom8gen3 eth: %02x:%02x.%u PF%u left untouched; using PF0\n",
 				device->bus, device->device, device->function, pf);
         return false;
     }
@@ -425,7 +425,7 @@ static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
     if (!tc956x_mac_power_on(pf, mac_base))
         return false;
     version = get32(mac_base + GMAC_VERSION);
-    slog("q8b eth: PF%u rsc=%08x chip=%08x clk=%08x rst=%08x macver=%08x\n",
+    slog("qcom8gen3 eth: PF%u rsc=%08x chip=%08x clk=%08x rst=%08x macver=%08x\n",
             pf, rsc_id, get32(TC956X_BAR4_VA),
             get32(TC956X_BAR4_VA + 0x1004),
             get32(TC956X_BAR4_VA + 0x1008), version);
@@ -439,16 +439,16 @@ static bool probe_tc956x_pf(const q8b_pcie_device_t *device) {
     _mac[5] = (uint8_t)(mac_hi >> 8);
 
     if (!valid_mac(_mac) && tc956x_eeprom_mac(pf, _mac)) {
-        slog("q8b eth: invalid MAC and EEPROM read failed\n");
+        slog("qcom8gen3 eth: invalid MAC and EEPROM read failed\n");
         return false;
     }
     if (mdio_read_c22(mac_base, TC956X_PHY_ADDR, 2, &phy_id1) != 0 ||
             mdio_read_c22(mac_base, TC956X_PHY_ADDR, 3, &phy_id2) != 0)
-        slog("q8b eth: PF%u mdio phy=%u timeout data=%08x\n",
+        slog("qcom8gen3 eth: PF%u mdio phy=%u timeout data=%08x\n",
                 pf, TC956X_PHY_ADDR,
                 get32(mac_base + GMAC_MDIO_DATA));
 
-    slog("q8b eth: PF%u PHY id=%04x:%04x\n", pf, phy_id1, phy_id2);
+    slog("qcom8gen3 eth: PF%u PHY id=%04x:%04x\n", pf, phy_id1, phy_id2);
     if (version == 0 || version == 0xffffffffu)
         return false;
     tc956x_config_host_tamap();
@@ -515,7 +515,7 @@ static void tc956x_pcs_write(unsigned reg, uint16_t value) {
 }
 static uint16_t _phy_mode = 0xffff;
 
-/* Q8B uses an external QCA8081 PHY. Follow the Linux fix_mac_speed and
+/* QCOM8GEN3 uses an external QCA8081 PHY. Follow the Linux fix_mac_speed and
  * C37 SGMII PCS setup after PHY negotiation; 2500-Mbps startup settings
  * cannot carry a subsequently negotiated 1000-Mbps link. */
 static int tc956x_fix_link(uint16_t phy) {
@@ -576,7 +576,7 @@ static int tc956x_fix_link(uint16_t phy) {
     reg_write32(_mac_base + GMAC_TX_CONFIG,
             (tx & ~GMAC_TX_SS_MASK) | phy_speed_bits(phy, tx));
     _phy_mode = mode;
-    slog("q8b eth: PHY speed=%u duplex=%u PCS ctrl=%04x status=%04x an=%04x emactl=%08x\n",
+    slog("qcom8gen3 eth: PHY speed=%u duplex=%u PCS ctrl=%04x status=%04x an=%04x emactl=%08x\n",
             speed == 4 ? 2500 : speed == 2 ? 1000 : speed == 1 ? 100 : 10,
             !!(phy & (1u << 13)), tc956x_pcs_read(0), tc956x_pcs_read(1),
             tc956x_pcs_read(0x8002), get32(ctl));
@@ -595,7 +595,7 @@ static int tc956x_dma_reset(void) {
         }
     }
 
-    slog("q8b eth: dma reset timeout mode=%08x->%08x\n", before, value);
+    slog("qcom8gen3 eth: dma reset timeout mode=%08x->%08x\n", before, value);
     return -1;
 }
 
@@ -604,7 +604,7 @@ static int tc956x_start(void) {
     uint16_t bmsr = 0xffffu, phy_status = 0xffffu;
 
     if (tc956x_dma_alloc() != 0) {
-        slog("q8b eth: DMA allocation failed\n");
+        slog("qcom8gen3 eth: DMA allocation failed\n");
         return -1;
     }
 
@@ -696,7 +696,7 @@ static int tc956x_start(void) {
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 1, &bmsr);
     (void)mdio_read_c22(_mac_base, TC956X_PHY_ADDR, 0x11, &phy_status);
     if (tc956x_fix_link(phy_status)) {
-        slog("q8b eth: PCS link configuration failed\n");
+        slog("qcom8gen3 eth: PCS link configuration failed\n");
         return -1;
     }
     value = get32(_mac_base + GMAC_TX_CONFIG);
@@ -725,16 +725,16 @@ int bsp_eth_init(void) {
     if (_probed)
         return _present ? 0 : -1;
     _probed = true;
-	count = q8b_pcie_service_get_count();
+	count = qcom8gen3_pcie_service_get_count();
 	if (count < 0) {
-		slog("q8b eth: PCIe service unavailable\n");
+		slog("qcom8gen3 eth: PCIe service unavailable\n");
 		return -1;
 	}
 	for (int i = 0; i < count && !found_mac; i++) {
-		q8b_pcie_device_t device;
-		if (q8b_pcie_service_get_device((unsigned)i, &device) != 0)
+		qcom8gen3_pcie_device_t device;
+		if (qcom8gen3_pcie_service_get_device((unsigned)i, &device) != 0)
 			continue;
-		if (device.controller != Q8B_PCIE3A ||
+		if (device.controller != QCOM8GEN3_PCIE3A ||
 				device.vendor_id != PCI_VENDOR_TOSHIBA ||
 				device.device_id != PCI_DEVICE_ETH)
 			continue;
@@ -743,14 +743,14 @@ int bsp_eth_init(void) {
 	}
 
     if (!found_mac)
-        slog("q8b eth: no 1179:0220 endpoint; firmware PCIe state absent\n");
+        slog("qcom8gen3 eth: no 1179:0220 endpoint; firmware PCIe state absent\n");
     else if (!_present)
-        slog("q8b eth: endpoint found but TC956x PF0 validation failed\n");
+        slog("qcom8gen3 eth: endpoint found but TC956x PF0 validation failed\n");
     else if (tc956x_start() != 0) {
-        slog("q8b eth: TC956x channel 0 start failed\n");
+        slog("qcom8gen3 eth: TC956x channel 0 start failed\n");
         _present = false;
     } else
-        slog("q8b eth: TC956x XGMAC3 ready base=%llx mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+        slog("qcom8gen3 eth: TC956x XGMAC3 ready base=%llx mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
                 (unsigned long long)_mac_base, _mac[0], _mac[1], _mac[2],
                 _mac[3], _mac[4], _mac[5]);
     return _present ? 0 : -1;
@@ -802,7 +802,7 @@ void bsp_eth_poll(void) {
             _rx_dropped++;
             _rx_errors++;
             if (_rx_dropped <= 4u)
-                slog("q8b eth: rx drop desc=%u st=%08x len=%u\n",
+                slog("qcom8gen3 eth: rx drop desc=%u st=%08x len=%u\n",
                         i, des3, len);
         }
 
@@ -822,7 +822,7 @@ void bsp_eth_poll(void) {
             _rx_unavailable++;
         if ((status & DMA_STATUS_FATAL) && status != _last_dma_error) {
             _last_dma_error = status;
-            slog("q8b eth: dma error status=%08x reb=%u txd=%08x:%08x rxd=%08x:%08x rxb=%08x:%08x\n",
+            slog("qcom8gen3 eth: dma error status=%08x reb=%u txd=%08x:%08x rxd=%08x:%08x rxb=%08x:%08x\n",
                     status, (status >> 19) & 7u,
                     get32(_mac_base + 0x3140u),
                     get32(_mac_base + 0x3144u),

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef Q8B_WCN_BOARD_H
-#define Q8B_WCN_BOARD_H
+#ifndef QCOM8GEN3_WCN_BOARD_H
+#define QCOM8GEN3_WCN_BOARD_H
 #include <stdint.h>
 /* Returned buffers belong to the caller and must be freed. */
 uint8_t *wcn_read_file(const char *path, unsigned limit, unsigned *size);

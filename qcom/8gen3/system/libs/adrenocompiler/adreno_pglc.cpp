@@ -1,5 +1,5 @@
 /*
- * adreno_pglc.cpp - the Adreno (q8b / A690) implementation of the
+ * adreno_pglc.cpp - the Adreno (qcom8gen3 / A690) implementation of the
  * backend-neutral pglcompiler.h contract (compile half).
  *
  * Drives the shared GLSL->NIR frontend (projects/opengl/libs/gles/pglcompiler,
@@ -20,7 +20,7 @@
  * build it with the same flags as the frontend; ir3 headers are not C++-clean
  * and stay behind the C bridge.  Everything exported is extern "C".
  *
- * Machine library: machines/q8b/system/libs/adrenocompiler, built by
+ * Machine library: machines/qcom8gen3/system/libs/adrenocompiler, built by
  * gles/Makefile through PGL_G3D_COMPILER_DIR into libpglcompiler_be.a.
  */
 #include <stdio.h>
@@ -37,7 +37,7 @@
  * Version gate
  * ------------------------------------------------------------------------- */
 
-/* This backend is built only for the q8b machine, whose single GPU is the
+/* This backend is built only for the qcom8gen3 machine, whose single GPU is the
  * SC8280XP's Adreno 690.  The compile target is fixed in adreno_backend.c, so
  * there is nothing to select at runtime: pglc_set_version() is a no-op kept
  * only to satisfy the backend-neutral pglcompiler.h contract. */
@@ -47,7 +47,7 @@ pglc_set_version(int ver)
    (void)ver;
 }
 
-/* g2d_get_version() on q8b (bsp_g2d_version) reports 690.  Everything else -
+/* g2d_get_version() on qcom8gen3 (bsp_g2d_version) reports 690.  Everything else -
  * V3D codes, 0 ("daemon not queried yet") - is declined so portablegl keeps
  * the CPU/NEON rasterizer instead of compiling for silicon this build cannot
  * target. */

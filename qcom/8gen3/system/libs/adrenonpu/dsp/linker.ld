@@ -1,6 +1,6 @@
-/* Q8B QuRT loader: two page-aligned LOADs, headers in the executable LOAD.
+/* QCOM8GEN3 QuRT loader: two page-aligned LOADs, headers in the executable LOAD.
  * The generic LLD layout's non-page-aligned data file offset is not accepted
- * by the Q8B firmware loader. No vendor linker script is included. */
+ * by the QCOM8GEN3 firmware loader. No vendor linker script is included. */
 PHDRS {
   text PT_LOAD FILEHDR PHDRS FLAGS(5);
   data PT_LOAD FLAGS(6);

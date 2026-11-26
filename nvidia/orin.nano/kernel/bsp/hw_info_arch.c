@@ -9,7 +9,7 @@
 #include <kprintf.h>
 #include "hw_arch.h"
 #include "memory_pool.h"
-#include "q8b_platform.h"
+#include "qcom8gen3_platform.h"
 
 uint64_t _core_base_offset = 0;
 /* Kernel serial console decision, taken from the loader's UARTC LSR probe
@@ -133,9 +133,9 @@ void sys_info_init_arch(void) {
     _sys_info.vector_base = (ewokos_addr_t)&interrupt_table_start;
 
     /* Publish the firmware hand-off to user space (GOP framebuffer and
-     * RAM-disk rootfs) using the shared q8b_platform_data_t layout so the
+     * RAM-disk rootfs) using the shared qcom8gen3_platform_data_t layout so the
      * common init/sdfsd/uartd consume it unchanged. */
-    q8b_platform_data_t pd;
+    qcom8gen3_platform_data_t pd;
     memset(&pd, 0, sizeof(pd));
     pd.fb.phy_base = _bi.fb_addr;
     pd.fb.width = _bi.fb_width;

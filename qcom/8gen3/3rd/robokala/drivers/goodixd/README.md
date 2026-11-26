@@ -43,10 +43,10 @@ transport/pin assignments are removed.
 
 ## Startup and event contract
 
-The Q8B graphical `init.rd` starts:
+The QCOM8GEN3 graphical `init.rd` starts:
 
 ```
-@/bin/ipcserv /drivers/q8b/goodixd /dev/touch0
+@/bin/ipcserv /drivers/8gen3/goodixd /dev/touch0
 @/bin/bgrun /sbin/x/xtouch -c /etc/x/xtouch-tw220.json /dev/touch0
 @/bin/bgrun /sbin/x/xtouch -m
 ```
@@ -83,8 +83,8 @@ not log touch coordinates or register dumps.
 ## Validation
 
 ```
-make -C machines/q8b/system/drivers goodixd -j4
-sh machines/q8b/system/drivers/goodixd/tests/run.sh
+make -C machines/qcom/8gen3/system/drivers goodixd -j4
+sh machines/qcom/8gen3/system/drivers/goodixd/tests/run.sh
 ```
 
 Host tests cover SPI framing, checksums, packed IC_INFO, contact decoding

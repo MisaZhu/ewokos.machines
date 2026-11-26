@@ -8,7 +8,7 @@
 #include <syscalls.h>
 #include <bsp/bsp_sd.h>
 #include <sd/sd.h>
-#include "q8b_platform.h"
+#include "qcom8gen3_platform.h"
 
 #define GCC_PHY        0x00100000ULL
 #define GCC_VA         0x58000000ULL
@@ -375,7 +375,7 @@ int main(int argc, char** argv) {
 
     uint64_t sd = SDCC_WIN_VA + SDCC2_OFF;
     sys_info_t sysinfo;
-    q8b_platform_data_t* pd;
+    qcom8gen3_platform_data_t* pd;
 
     setbuf(stdout, NULL);
     if (argc > 1 && argv[1][0] == 't') {
@@ -396,7 +396,7 @@ int main(int argc, char** argv) {
     }
     printf("sdprobe: bsp_sd_init_physical ok\n");
     sys_get_sys_info(&sysinfo);
-    pd = (q8b_platform_data_t*)(void*)sysinfo.platform_data;
+    pd = (qcom8gen3_platform_data_t*)(void*)sysinfo.platform_data;
     printf("sdprobe: kernel state=0x%08x detail=0x%08x\n",
             pd->sd.state, pd->sd.detail);
     if (pd->sd.state == 0x53440018U)

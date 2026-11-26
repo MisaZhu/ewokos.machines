@@ -6,7 +6,7 @@
 #include <kernel/system.h>
 #include <mm/mmu.h>
 #include "hw_arch.h"
-#include "q8b_platform.h"
+#include "qcom8gen3_platform.h"
 
 extern uint64_t timer_read_sys_usec(void);
 
@@ -27,7 +27,7 @@ static int32_t _physical_sd_multi_ready = 0;
 static uint64_t _physical_sd_sectors = 0;
 static uint32_t _physical_sd_rca = 0;
 
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
 #define GCC_BASE                (MMIO_BASE + 0x00100000ULL)
 #define GCC_SDCC2_APPS_CBCR     0x14004
 #define GCC_SDCC2_AHB_CBCR      0x14008
@@ -43,13 +43,13 @@ static uint32_t _physical_sd_rca = 0;
 #define GCC_SDCC2_CFG_MASK       ((0x1fU << 0) | (0x7U << 8) | \
                                  (0x3U << 12) | (1U << 20))
 
-#define SDCC2_BASE              (MMIO_BASE + Q8B_SDCC2_OFF)
-#define TLMM_BASE               (MMIO_BASE + Q8B_TLMM_WIN_OFF)
+#define SDCC2_BASE              (MMIO_BASE + QCOM8GEN3_SDCC2_OFF)
+#define TLMM_BASE               (MMIO_BASE + QCOM8GEN3_TLMM_WIN_OFF)
 #define TLMM_SDC2_CTL           0x0e8000
 #define TLMM_GPIO131_CTL        (131 * 0x1000)
 #define TLMM_GPIO131_IO         (TLMM_GPIO131_CTL + 0x4)
 
-#define CMD_DB_BASE             (MMIO_BASE + Q8B_CMD_DB_WIN_OFF)
+#define CMD_DB_BASE             (MMIO_BASE + QCOM8GEN3_CMD_DB_WIN_OFF)
 #define CMD_DB_DATA_OFFSET      144U
 #define CMD_DB_RSC_OFFSET       8U
 #define CMD_DB_RSC_SIZE         16U
@@ -57,7 +57,7 @@ static uint32_t _physical_sd_rca = 0;
 #define CMD_DB_MAX_SLAVES       8U
 #define CMD_DB_MAGIC            0x0c0330dbU
 
-#define RPMH_RSC_BASE           (MMIO_BASE + Q8B_RSC_WIN_OFF)
+#define RPMH_RSC_BASE           (MMIO_BASE + QCOM8GEN3_RSC_WIN_OFF)
 #define RPMH_TCS_BASE           (RPMH_RSC_BASE + 0x0d00U)
 #define RPMH_TCS_STRIDE         672U
 #define RPMH_CMD_STRIDE         20U
@@ -177,8 +177,8 @@ static uint32_t cmd_db_read_addr(const char* id) {
         header_off = mmio_read16(CMD_DB_BASE, rsc + 2U);
         count = mmio_read16(CMD_DB_BASE, rsc + 6U);
         entries = CMD_DB_DATA_OFFSET + header_off;
-        if (entries >= Q8B_CMD_DB_WIN_SIZE ||
-                count > (Q8B_CMD_DB_WIN_SIZE - entries) /
+        if (entries >= QCOM8GEN3_CMD_DB_WIN_SIZE ||
+                count > (QCOM8GEN3_CMD_DB_WIN_SIZE - entries) /
                         CMD_DB_ENTRY_SIZE)
             return 0;
 
@@ -329,8 +329,8 @@ static int32_t sdcc2_enable_rails(void) {
 }
 
 static void sd_set_diag(uint32_t state, uint32_t detail) {
-    q8b_platform_data_t* pd =
-        (q8b_platform_data_t*)(void*)_sys_info.platform_data;
+    qcom8gen3_platform_data_t* pd =
+        (qcom8gen3_platform_data_t*)(void*)_sys_info.platform_data;
     pd->sd.state = 0x53440000U | (state & 0xffffU);
     pd->sd.detail = detail;
 }
@@ -741,15 +741,15 @@ static int32_t sdcc2_read_blocks_pio(uint32_t address, uint8_t* buf,
             _delay_usec(1);
         }
         if ((status & 0x20U) == 0 || (status & 0xffff0000U) != 0) {
-            q8b_dbg_puts("sd: pio wait fail blk/cnt/st/present=");
-            q8b_dbg_hex(block);
-            q8b_dbg_puts("/");
-            q8b_dbg_hex(count);
-            q8b_dbg_puts("/");
-            q8b_dbg_hex(status);
-            q8b_dbg_puts("/");
-            q8b_dbg_hex(mmio_read32(SDCC2_BASE, SDHCI_PRESENT_STATE));
-            q8b_dbg_puts("\n");
+            qcom8gen3_dbg_puts("sd: pio wait fail blk/cnt/st/present=");
+            qcom8gen3_dbg_hex(block);
+            qcom8gen3_dbg_puts("/");
+            qcom8gen3_dbg_hex(count);
+            qcom8gen3_dbg_puts("/");
+            qcom8gen3_dbg_hex(status);
+            qcom8gen3_dbg_puts("/");
+            qcom8gen3_dbg_hex(mmio_read32(SDCC2_BASE, SDHCI_PRESENT_STATE));
+            qcom8gen3_dbg_puts("\n");
             goto failed;
         }
         for (uint32_t i = 0; i < 128U; i++) {
@@ -772,9 +772,9 @@ static int32_t sdcc2_read_blocks_pio(uint32_t address, uint8_t* buf,
         _delay_usec(1);
     }
     if ((status & 2U) == 0 || (status & 0xffff0000U) != 0) {
-        q8b_dbg_puts("sd: pio tc fail st=");
-        q8b_dbg_hex(status);
-        q8b_dbg_puts("\n");
+        qcom8gen3_dbg_puts("sd: pio tc fail st=");
+        qcom8gen3_dbg_hex(status);
+        qcom8gen3_dbg_puts("\n");
         goto failed;
     }
     mmio_write32(SDCC2_BASE, SDHCI_INT_STATUS, 2U);
@@ -833,9 +833,9 @@ static int32_t sdcc2_cmd6_switch(uint32_t arg, uint8_t* switch_status) {
     }
     if ((status & (1U | 0x20U)) == 0 ||
             (status & 0xffff0000U) != 0) {
-        q8b_dbg_puts("sd: cmd6 phase st=");
-        q8b_dbg_hex(status);
-        q8b_dbg_puts("\n");
+        qcom8gen3_dbg_puts("sd: cmd6 phase st=");
+        qcom8gen3_dbg_hex(status);
+        qcom8gen3_dbg_puts("\n");
         mmio_write32(SDCC2_BASE, SDHCI_INT_STATUS, status);
         sdcc2_reset_lines(0x06U);
         return -2;
@@ -871,9 +871,9 @@ static int32_t sdcc2_cmd6_switch(uint32_t arg, uint8_t* switch_status) {
 }
 
 static int32_t sdhs_fail(uint32_t stage) {
-    q8b_dbg_puts("sd: hs fail stage=");
-    q8b_dbg_hex(stage);
-    q8b_dbg_puts("\n");
+    qcom8gen3_dbg_puts("sd: hs fail stage=");
+    qcom8gen3_dbg_hex(stage);
+    qcom8gen3_dbg_puts("\n");
     return -1;
 }
 
@@ -903,7 +903,7 @@ static int32_t sdcc2_try_fast(uint32_t rca) {
     int32_t switched = 0;
     for (uint32_t attempt = 0; attempt < 3U; attempt++) {
         if (attempt != 0) {
-            q8b_dbg_puts("sd: cmd6 retry\n");
+            qcom8gen3_dbg_puts("sd: cmd6 retry\n");
             sdcc2_recover_transfer();
             (void)sdcc2_cmd_retry(12, 0, 0x1bU, &response, &status);
             if (sdcc2_wait_transfer_state(rca, &response) != 0)
@@ -984,20 +984,20 @@ static int32_t sdcc2_try_4bit(uint32_t rca) {
     uint32_t response = 0;
     uint32_t status = 0;
 
-    q8b_dbg_puts("sd: 4bit try\n");
+    qcom8gen3_dbg_puts("sd: 4bit try\n");
     if (sdcc2_cmd_retry(55, rca << 16, 0x1aU, &response, &status) != 0) {
-        q8b_dbg_puts("sd: 4bit acmd55 fail\n");
+        qcom8gen3_dbg_puts("sd: 4bit acmd55 fail\n");
         return -1;
     }
     if (sdcc2_cmd_retry(6, 2U, 0x1aU, &response, &status) != 0) {
-        q8b_dbg_puts("sd: 4bit acmd6 fail\n");
+        qcom8gen3_dbg_puts("sd: 4bit acmd6 fail\n");
         return -1;
     }
     mmio_write8(SDCC2_BASE, SDHCI_HOST_CONTROL,
             mmio_read8(SDCC2_BASE, SDHCI_HOST_CONTROL) | 2U);
     _delay_usec(10000);
     if (sdcc2_wait_transfer_state(rca, &response) != 0) {
-        q8b_dbg_puts("sd: 4bit cmd13 fail\n");
+        qcom8gen3_dbg_puts("sd: 4bit cmd13 fail\n");
         return -1;
     }
 
@@ -1007,24 +1007,24 @@ static int32_t sdcc2_try_4bit(uint32_t rca) {
     int32_t rc = sdcc2_read_blocks_pio(sdcc2_sector_address(1U),
             _sd_verify_buf, 4U, &status);
     if (rc != 0) {
-        q8b_dbg_puts("sd: 4bit read4 fail, retry single\n");
+        qcom8gen3_dbg_puts("sd: 4bit read4 fail, retry single\n");
         rc = sdcc2_read_blocks_pio(sdcc2_sector_address(1U),
                 _sd_verify_buf, 1U, &status);
     }
     if (rc != 0) {
-        q8b_dbg_puts("sd: 4bit read fail status=");
-        q8b_dbg_hex(status);
-        q8b_dbg_puts("\n");
+        qcom8gen3_dbg_puts("sd: 4bit read fail status=");
+        qcom8gen3_dbg_hex(status);
+        qcom8gen3_dbg_puts("\n");
         return -1;
     }
     if (((uint32_t)_sd_verify_buf[0] |
                 ((uint32_t)_sd_verify_buf[1] << 8) |
                 ((uint32_t)_sd_verify_buf[2] << 16) |
                 ((uint32_t)_sd_verify_buf[3] << 24)) != 0x20494645U) {
-        q8b_dbg_puts("sd: 4bit read32 bad signature\n");
+        qcom8gen3_dbg_puts("sd: 4bit read32 bad signature\n");
         return -1;
     }
-    q8b_dbg_puts("sd: 4bit ok\n");
+    qcom8gen3_dbg_puts("sd: 4bit ok\n");
     return 0;
 }
 
@@ -1064,7 +1064,7 @@ static int32_t sdcc2_identify(void) {
      * Do not make a stale detect level fatal; CMD0/ACMD41 below is the
      * authoritative presence test. */
     if (cd != 0)
-        q8b_dbg_puts("sd: card-detect high, probing anyway\n");
+        qcom8gen3_dbg_puts("sd: card-detect high, probing anyway\n");
 
     /* Linux restores this Qualcomm v5 register to its POR value at probe. */
     mmio_write32(SDCC2_BASE, SDHCI_CORE_VENDOR_SPEC,
@@ -1264,12 +1264,12 @@ first_block_ok:
     {
         uint32_t cfg = mmio_read32(GCC_BASE, GCC_SDCC2_APPS_CFG_RCGR);
         uint32_t hc = mmio_read8(SDCC2_BASE, SDHCI_HOST_CONTROL);
-        q8b_dbg_puts("sd: bus ");
+        qcom8gen3_dbg_puts("sd: bus ");
         if ((cfg & 0x1fU) == 5U && (hc & 6U) == 6U)
-            q8b_dbg_puts("50MHz 4-bit high speed");
+            qcom8gen3_dbg_puts("50MHz 4-bit high speed");
         else
-            q8b_dbg_puts("25MHz 1-bit fallback");
-        q8b_dbg_puts("\n");
+            qcom8gen3_dbg_puts("25MHz 1-bit fallback");
+        qcom8gen3_dbg_puts("\n");
     }
 
     if (sdcc2_read_block(sdcc2_sector_address(1U),
@@ -1284,7 +1284,7 @@ first_block_ok:
     int32_t multi_rc = sdcc2_read_blocks_pio(sdcc2_sector_address(1U),
             _sd_probe_multi_buf, 4U, &status);
     if (multi_rc != 0) {
-        q8b_dbg_puts("sd: CMD18 multi unavailable, single-block reads\n");
+        qcom8gen3_dbg_puts("sd: CMD18 multi unavailable, single-block reads\n");
         sd_set_diag(23, detail);
         _physical_sd_ready = 1;
         return 0;
@@ -1306,14 +1306,14 @@ first_block_ok:
     {
         uint32_t cfg = mmio_read32(GCC_BASE, GCC_SDCC2_APPS_CFG_RCGR);
         uint32_t hc = mmio_read8(SDCC2_BASE, SDHCI_HOST_CONTROL);
-        q8b_dbg_puts("sd: ");
+        qcom8gen3_dbg_puts("sd: ");
         if ((cfg & 0x1fU) == 5U && (hc & 6U) == 6U)
-            q8b_dbg_puts("high speed 50MHz 4-bit");
+            qcom8gen3_dbg_puts("high speed 50MHz 4-bit");
         else
-            q8b_dbg_puts("normal speed fallback");
-        q8b_dbg_puts(", single-block reads, ");
-        q8b_dbg_hex(_physical_sd_sectors);
-        q8b_dbg_puts(" sectors\n");
+            qcom8gen3_dbg_puts("normal speed fallback");
+        qcom8gen3_dbg_puts(", single-block reads, ");
+        qcom8gen3_dbg_hex(_physical_sd_sectors);
+        qcom8gen3_dbg_puts(" sectors\n");
     }
 
     /* Single-block CMD17 throughput: 512 blocks = 256KB.  Multi-block PIO
@@ -1331,14 +1331,14 @@ first_block_ok:
         }
         uint64_t us = timer_read_sys_usec() - t0;
         if (!ok) {
-            q8b_dbg_puts("sd: 256KB read benchmark failed\n");
+            qcom8gen3_dbg_puts("sd: 256KB read benchmark failed\n");
         }
         else {
-            q8b_dbg_puts("sd: read 256KB in ");
-            q8b_dbg_hex(us);
-            q8b_dbg_puts(" us (");
-            q8b_dbg_hex(us != 0 ? (256ULL * 1000000ULL) / us : 0);
-            q8b_dbg_puts(" KB/s)\n");
+            qcom8gen3_dbg_puts("sd: read 256KB in ");
+            qcom8gen3_dbg_hex(us);
+            qcom8gen3_dbg_puts(" us (");
+            qcom8gen3_dbg_hex(us != 0 ? (256ULL * 1000000ULL) / us : 0);
+            qcom8gen3_dbg_puts(" KB/s)\n");
         }
     }
     return 0;
@@ -1377,18 +1377,18 @@ static void sdcc2_probe(void) {
 static void* rd_ptr(int32_t sector, uint32_t count) {
     uint64_t off = (uint64_t)(uint32_t)sector * 512ULL;
     uint64_t end = off + (uint64_t)count * 512ULL;
-    if (q8b_ramdisk_size == 0 || end > q8b_ramdisk_size)
+    if (qcom8gen3_ramdisk_size == 0 || end > qcom8gen3_ramdisk_size)
         return NULL;
-    return (void*)P2V(q8b_ramdisk_base + off);
+    return (void*)P2V(qcom8gen3_ramdisk_base + off);
 }
 
 /* Kernel boot reader hook used by kernel/lib/src/readfs.c.  The firmware
  * image is a standalone ext3 filesystem, so its first filesystem block is
  * also the first block of the image (there is no SD partition offset). */
-int32_t q8b_ramdisk_read_block(int32_t block, void* buf) {
+int32_t qcom8gen3_ramdisk_read_block(int32_t block, void* buf) {
     static uint32_t block_sectors = 2U;
     uint8_t* src;
-    if (block < 0 || buf == NULL || q8b_ramdisk_size == 0)
+    if (block < 0 || buf == NULL || qcom8gen3_ramdisk_size == 0)
         return -1;
     if (block == 1 && block_sectors == 2U)
         src = (uint8_t*)rd_ptr(2, 8U);
@@ -1407,31 +1407,31 @@ int32_t q8b_ramdisk_read_block(int32_t block, void* buf) {
 }
 
 int32_t sd_init(void) {
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
     /* TW220 has no physical SD slot: with a boot-only initramfs the early
      * sdcc2_probe() here waited on a card that never appears and stalled
      * the boot right before load_kernel_config().  Nothing on this path
      * needs SD any more: kernel config and /sbin/init are read from the
-     * firmware ramdisk (q8b_ramdisk_read_block) and the rootfs switch is
+     * firmware ramdisk (qcom8gen3_ramdisk_read_block) and the rootfs switch is
      * USB.  Only the legacy flow with no firmware ramdisk (a complete
      * ROOTFS.IMG booted from the card) still probes the physical card. */
-    if (q8b_ramdisk_size == 0)
+    if (qcom8gen3_ramdisk_size == 0)
         sdcc2_probe();
 #endif
-    if ((q8b_ramdisk_size != 0 &&
-            (q8b_ramdisk_flags & Q8B_RD_FLAG_BOOT_ONLY) == 0) ||
+    if ((qcom8gen3_ramdisk_size != 0 &&
+            (qcom8gen3_ramdisk_flags & QCOM8GEN3_RD_FLAG_BOOT_ONLY) == 0) ||
             _physical_sd_ready)
         return 0;
 
     /* Keep the failure actionable on boards where the normal banner only
      * reports a generic [FAILED].  The stage is encoded by sd_fail(). */
-    q8b_platform_data_t* pd =
-        (q8b_platform_data_t*)(void*)_sys_info.platform_data;
-    q8b_dbg_puts("sd: probe failed stage=");
-    q8b_dbg_hex(pd->sd.state);
-    q8b_dbg_puts(" detail=");
-    q8b_dbg_hex(pd->sd.detail);
-    q8b_dbg_puts("\n");
+    qcom8gen3_platform_data_t* pd =
+        (qcom8gen3_platform_data_t*)(void*)_sys_info.platform_data;
+    qcom8gen3_dbg_puts("sd: probe failed stage=");
+    qcom8gen3_dbg_hex(pd->sd.state);
+    qcom8gen3_dbg_puts(" detail=");
+    qcom8gen3_dbg_hex(pd->sd.detail);
+    qcom8gen3_dbg_puts("\n");
     return -1;
 }
 
@@ -1452,7 +1452,7 @@ static int32_t sd_dev_read_physical_blocks(int32_t sector, void* buf,
         uint32_t count) {
     if (sector < 0 || buf == NULL || count == 0)
         return -1;
-#ifndef Q8B_QEMU_TEST
+#ifndef QCOM8GEN3_QEMU_TEST
     if (_physical_sd_ready) {
         uint8_t* out = (uint8_t*)buf;
         uint32_t block = (uint32_t)sector;
@@ -1524,7 +1524,7 @@ static int32_t sd_dev_read_physical_blocks(int32_t sector, void* buf,
 int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
     if (sector < 0 || buf == NULL || count == 0)
         return -1;
-    if (q8b_ramdisk_size != 0) {
+    if (qcom8gen3_ramdisk_size != 0) {
         void* src = rd_ptr(sector, count);
         if (src == NULL)
             return -1;
@@ -1535,7 +1535,7 @@ int32_t sd_dev_read_blocks(int32_t sector, void* buf, uint32_t count) {
 }
 
 int32_t sd_dev_write(int32_t sector, const void* buf) {
-    if (q8b_ramdisk_size == 0 || sector < 0 || buf == NULL)
+    if (qcom8gen3_ramdisk_size == 0 || sector < 0 || buf == NULL)
         return -1;
     _pending_sector = sector;
     memcpy(_write_buf, buf, sizeof(_write_buf));

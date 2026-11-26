@@ -1,5 +1,5 @@
-#ifndef Q8B_BTUART_TEST_IO_H
-#define Q8B_BTUART_TEST_IO_H
+#ifndef QCOM8GEN3_BTUART_TEST_IO_H
+#define QCOM8GEN3_BTUART_TEST_IO_H
 static uint32_t hw_rd(uintptr_t base, unsigned offset);
 static void hw_wr(uintptr_t base, unsigned offset, uint32_t value);
 static int hw_map(uintptr_t va, uintptr_t pa, unsigned size);

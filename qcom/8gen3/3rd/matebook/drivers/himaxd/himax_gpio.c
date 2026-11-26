@@ -229,7 +229,7 @@ bool himax_gpio_open_native_pins(void) {
     pin_config(GPIO_MODE, 0, 0, true, false);   /* gpio174 low = SPI */
     pin_config(GPIO_IRQ, 0, 3, false, false);   /* gpio175 input */
     pin_config(GPIO_RESET, 0, 0, true, true);   /* reset released */
-    /* All four pads are handed to the serial engine by q8b_spi_open(). */
+    /* All four pads are handed to the serial engine by qcom8gen3_spi_open(). */
     _dev.bus.xfer = NULL;                        /* native backend sets it */
     _dev.bus.ctx = NULL;
     _dev.reset = hw_reset;

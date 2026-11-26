@@ -95,8 +95,6 @@ void wcn_config_init(const char *path) {
     if (path == NULL)
         path = WCN_CONFIG_DEFAULT;
 
-    wcn_log("wcn: config init path=%s\n", path);
-
     /* Re-init (the --connect JSON path) must not keep a stale tree alive or
      * leave network_config dangling into freed memory. */
     if (network_root != NULL) {

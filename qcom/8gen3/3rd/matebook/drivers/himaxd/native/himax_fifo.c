@@ -37,13 +37,13 @@ himax_bus_t himax_fifo_attach(himax_fifo_t* fifo) {
 }
 
 #ifdef HIMAX_FIFO_HOST_TEST
-int himax_fifo_q8b_spi(void* spictx, const void* tx, void* rx, size_t len) {
+int himax_fifo_qcom8gen3_spi(void* spictx, const void* tx, void* rx, size_t len) {
     (void)spictx; (void)tx; (void)rx; (void)len;
     return -1;      /* host test supplies its own transport mock */
 }
 #else
-int himax_fifo_q8b_spi(void* spictx, const void* tx, void* rx, size_t len) {
-    q8b_spi_t* spi = (q8b_spi_t*)spictx;
-    return q8b_spi_transfer(spi, tx, rx, len);
+int himax_fifo_qcom8gen3_spi(void* spictx, const void* tx, void* rx, size_t len) {
+    qcom8gen3_spi_t* spi = (qcom8gen3_spi_t*)spictx;
+    return qcom8gen3_spi_transfer(spi, tx, rx, len);
 }
 #endif

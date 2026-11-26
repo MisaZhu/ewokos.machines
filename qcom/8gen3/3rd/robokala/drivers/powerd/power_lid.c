@@ -56,7 +56,7 @@ int power_lid_init(void) {
         return 0;
     if (syscall3(SYS_MEM_MAP, (ewokos_addr_t)TLMM_VA,
             (ewokos_addr_t)TLMM_PHY, (ewokos_addr_t)TLMM_SIZE) != TLMM_VA) {
-        slog("q8b powerd: lid TLMM mapping failed\n");
+        slog("qcom8gen3 powerd: lid TLMM mapping failed\n");
         return -1;
     }
     _tlmm = (volatile uint8_t*)(uintptr_t)TLMM_VA;

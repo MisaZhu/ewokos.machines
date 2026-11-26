@@ -1,5 +1,5 @@
 /*
- * Small bootstrap updater for the physical Q8B rootfs.
+ * Small bootstrap updater for the physical QCOM8GEN3 rootfs.
  *
  * It intentionally updates only the existing /sbin/sdfsd inode.  The normal
  * sdupdate utility handles arbitrary ext3 files; this helper is kept small so

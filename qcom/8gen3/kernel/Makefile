@@ -2,7 +2,7 @@ include config.mk
 
 LDS = mkos.lds.S
 
-# shared machine headers (q8b_platform.h)
+# shared machine headers (qcom8gen3_platform.h)
 CFLAGS += -I../include
 
 ifeq ($(TEST_QEMU),1)
@@ -51,5 +51,5 @@ asm:
 	$(OBJDUMP) -D $(OS_ELF) > kernel.asm
 
 run:
-	@echo "Q8B is a real board: put the kernel image and rootfs on the boot media."
+	@echo "QCOM8GEN3 is a real board: put the kernel image and rootfs on the boot media."
 	@echo "QEMU has no sc8280xp machine model."

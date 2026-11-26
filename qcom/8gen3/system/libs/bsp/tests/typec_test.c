@@ -1,4 +1,4 @@
-/* Exercise the real Q8B host handoff, xHCI allocator and BSP routing with
+/* Exercise the real QCOM8GEN3 host handoff, xHCI allocator and BSP routing with
  * register/DMA peers. No USB hardware or firmware is required. */
 #include <assert.h>
 #include <stdarg.h>
@@ -94,7 +94,7 @@ ewokos_addr_t syscall3_raw(int code, ewokos_addr_t va, ewokos_addr_t pa,
         ewokos_addr_t size) {
     assert(code == SYS_MEM_MAP && size == XHCI_BAR_MAP_SIZE);
     int id = (va - XHCI_BAR_VA_BASE) / XHCI_BAR_MAP_SIZE;
-    assert(id >= 0 && id < 3 && pa == Q8B_XHCI_PHY_BASE[id]);
+    assert(id >= 0 && id < 3 && pa == QCOM8GEN3_XHCI_PHY_BASE[id]);
     return id == fail_mapping ? 0 : va;
 }
 
@@ -176,7 +176,7 @@ static void test_controllers(void) {
         _xhcs[i].cmd[0] = 0xccdd0000u + i;
     }
     uint64_t cmd_addr = _xhcs[1].cmd_phys;
-    assert(q8b_xhci_start(1) == 0);
+    assert(qcom8gen3_xhci_start(1) == 0);
     assert(_xhcs[1].cmd_phys == cmd_addr); /* recycle, without leaking */
     for (int i = 0; i < 3; i += 2) {
         assert(_xhcs[i].cmd[0] == 0xccdd0000u + i);
@@ -222,6 +222,6 @@ int main(void) {
     test_roles();
     test_controllers();
     test_missing_controller();
-    puts("Q8B Type-C: roles, three controllers, DMA isolation and port routing passed");
+    puts("QCOM8GEN3 Type-C: roles, three controllers, DMA isolation and port routing passed");
     return 0;
 }

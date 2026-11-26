@@ -21,10 +21,10 @@ static int valid_tensors(const npu_model_tensor_t *t, uint32_t count, uint32_t b
 int npu_model_load(uint32_t session, uint32_t handle, const void *binary,
         uint32_t binary_size, const char *graph_name, npu_model_info_t *info) {
     if (!binary || !binary_size || binary_size>NPU_MODEL_MAX_BYTES || !graph_name || !info)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     size_t name_size=0;
     while (name_size<NPU_MODEL_NAME_BYTES && graph_name[name_size]) ++name_size;
-    if (name_size==NPU_MODEL_NAME_BYTES) return Q8B_NPU_PAS_INVALID;
+    if (name_size==NPU_MODEL_NAME_BYTES) return QCOM8GEN3_NPU_PAS_INVALID;
     npu_model_info_t reply={0};
     frpc_rbuf_t args[3]={
         {.data=(void *)binary,.size=binary_size,.fd=-1},
@@ -34,11 +34,11 @@ int npu_model_load(uint32_t session, uint32_t handle, const void *binary,
     int32_t rv=0;
     int rc=frpc_invoke(session,handle,frpc_scalar(7,2,1),args,3,NULL,0,&rv);
     if (rc || rv) return rc ? rc : rv;
-    if (!valid_info(&reply.info) || reply.abi!=NPU_MODEL_ABI) return Q8B_NPU_PAS_INVALID;
+    if (!valid_info(&reply.info) || reply.abi!=NPU_MODEL_ABI) return QCOM8GEN3_NPU_PAS_INVALID;
     if (!reply.info.status && (reply.info.stage!=29 ||
             !memchr(reply.graph_name,0,sizeof(reply.graph_name)) ||
             !valid_tensors(reply.inputs,reply.num_inputs,reply.input_bytes) ||
-            !valid_tensors(reply.outputs,reply.num_outputs,reply.output_bytes))) return Q8B_NPU_PAS_INVALID;
+            !valid_tensors(reply.outputs,reply.num_outputs,reply.output_bytes))) return QCOM8GEN3_NPU_PAS_INVALID;
     *info=reply;
     return 0;
 }
@@ -46,7 +46,7 @@ int npu_model_execute(uint32_t session, uint32_t handle,
         const void *input, uint32_t input_bytes, void *output, uint32_t output_bytes,
         npu_model_execution_t *execution) {
     if (!input || !input_bytes || input_bytes>NPU_MODEL_MAX_BYTES || !output ||
-            !output_bytes || output_bytes>NPU_MODEL_MAX_BYTES || !execution) return Q8B_NPU_PAS_INVALID;
+            !output_bytes || output_bytes>NPU_MODEL_MAX_BYTES || !execution) return QCOM8GEN3_NPU_PAS_INVALID;
     npu_model_execution_t reply={0};
     frpc_rbuf_t args[3]={
         {.data=(void *)input,.size=input_bytes,.fd=-1},
@@ -57,7 +57,7 @@ int npu_model_execute(uint32_t session, uint32_t handle,
     int rc=frpc_invoke(session,handle,frpc_scalar(8,1,2),args,3,NULL,0,&rv);
     if (rc || rv) return rc ? rc : rv;
     if (!valid_info(&reply.info) || (!reply.info.status &&
-            (reply.info.stage!=41 || reply.executions!=1))) return Q8B_NPU_PAS_INVALID;
+            (reply.info.stage!=41 || reply.executions!=1))) return QCOM8GEN3_NPU_PAS_INVALID;
     *execution=reply;
     return 0;
 }
@@ -67,7 +67,7 @@ int npu_model_execute_batch(uint32_t session, uint32_t handle, uint32_t count,
     if (!count || count>NPU_MODEL_MAX_BATCH || !input || !output || !execution ||
             !input_bytes || input_bytes>NPU_MODEL_MAX_BYTES || input_bytes%count ||
             !output_bytes || output_bytes>NPU_MODEL_MAX_BYTES || output_bytes%count)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     npu_model_batch_execution_t reply={0};
     frpc_rbuf_t args[4]={
         {.data=&count,.size=sizeof(count),.fd=-1},
@@ -80,38 +80,38 @@ int npu_model_execute_batch(uint32_t session, uint32_t handle, uint32_t count,
     if (rc || rv) return rc ? rc : rv;
     if (!valid_info(&reply.info) || reply.abi!=NPU_MODEL_BATCH_ABI ||
             reply.requested!=count || reply.reserved || reply.executions>count)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     if (!reply.info.status && (reply.info.stage!=72 || reply.executions!=count))
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     if (reply.info.status && (reply.info.stage!=71 || reply.executions==count))
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     if (reply.executions) {
         uint64_t average=reply.execute_total_us/reply.executions;
         uint64_t ceiling=average+(reply.execute_total_us%reply.executions!=0);
         if (reply.execute_min_us>reply.execute_max_us || reply.execute_min_us>average ||
                 reply.execute_max_us<ceiling || reply.execute_max_us>reply.execute_total_us)
-            return Q8B_NPU_PAS_INVALID;
+            return QCOM8GEN3_NPU_PAS_INVALID;
     } else if (reply.execute_total_us || reply.execute_min_us || reply.execute_max_us)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     *execution=reply;
     return 0;
 }
 
 int npu_model_unload(uint32_t session, uint32_t handle, npu_sdk_dsp_info_t *info) {
-    if (!info) return Q8B_NPU_PAS_INVALID;
+    if (!info) return QCOM8GEN3_NPU_PAS_INVALID;
     npu_sdk_dsp_info_t reply={0};
     frpc_rbuf_t arg={.data=&reply,.size=sizeof(reply),.fd=-1,.is_out=true};
     int32_t rv=0;
     int rc=frpc_invoke(session,handle,frpc_scalar(9,0,1),&arg,1,NULL,0,&rv);
     if (rc || rv) return rc ? rc : rv;
-    if (!valid_info(&reply) || (!reply.status && reply.stage!=35)) return Q8B_NPU_PAS_INVALID;
+    if (!valid_info(&reply) || (!reply.status && reply.stage!=35)) return QCOM8GEN3_NPU_PAS_INVALID;
     *info=reply;
     return 0;
 }
 
 int npu_model_profile_set(uint32_t session, uint32_t handle, uint32_t level,
         npu_sdk_dsp_info_t *info) {
-    if (!info || level>NPU_MODEL_PROFILE_DETAILED) return Q8B_NPU_PAS_INVALID;
+    if (!info || level>NPU_MODEL_PROFILE_DETAILED) return QCOM8GEN3_NPU_PAS_INVALID;
     npu_sdk_dsp_info_t reply={0};
     frpc_rbuf_t args[2]={
         {.data=&level,.size=sizeof(level),.fd=-1},
@@ -120,15 +120,15 @@ int npu_model_profile_set(uint32_t session, uint32_t handle, uint32_t level,
     int32_t rv=0;
     int rc=frpc_invoke(session,handle,frpc_scalar(10,1,1),args,2,NULL,0,&rv);
     if (rc || rv) return rc ? rc : rv;
-    if (!valid_info(&reply) || (!reply.status && reply.stage!=53)) return Q8B_NPU_PAS_INVALID;
+    if (!valid_info(&reply) || (!reply.status && reply.stage!=53)) return QCOM8GEN3_NPU_PAS_INVALID;
     *info=reply;
     return 0;
 }
 
 int npu_model_profile_get(uint32_t session, uint32_t handle, npu_model_profile_t *profile) {
-    if (!profile) return Q8B_NPU_PAS_INVALID;
+    if (!profile) return QCOM8GEN3_NPU_PAS_INVALID;
     npu_model_profile_t *reply=calloc(1,sizeof(*reply));
-    if (!reply) return Q8B_NPU_PAS_FAILED;
+    if (!reply) return QCOM8GEN3_NPU_PAS_FAILED;
     frpc_rbuf_t arg={.data=reply,.size=sizeof(*reply),.fd=-1,.is_out=true};
     int32_t rv=0;
     int rc=frpc_invoke(session,handle,frpc_scalar(11,0,1),&arg,1,NULL,0,&rv);
@@ -152,12 +152,12 @@ int npu_model_profile_get(uint32_t session, uint32_t handle, npu_model_profile_t
     return 0;
 invalid:
     free(reply);
-    return Q8B_NPU_PAS_INVALID;
+    return QCOM8GEN3_NPU_PAS_INVALID;
 }
 
 int npu_model_power_set(uint32_t session, uint32_t handle, uint32_t mode,
         npu_sdk_dsp_info_t *info) {
-    if (!info || mode>NPU_MODEL_POWER_TURBO) return Q8B_NPU_PAS_INVALID;
+    if (!info || mode>NPU_MODEL_POWER_TURBO) return QCOM8GEN3_NPU_PAS_INVALID;
     npu_sdk_dsp_info_t reply={0};
     frpc_rbuf_t args[2]={
         {.data=&mode,.size=sizeof(mode),.fd=-1},
@@ -166,14 +166,14 @@ int npu_model_power_set(uint32_t session, uint32_t handle, uint32_t mode,
     int32_t rv=0;
     int rc=frpc_invoke(session,handle,frpc_scalar(12,1,1),args,2,NULL,0,&rv);
     if (rc || rv) return rc ? rc : rv;
-    if (!valid_info(&reply) || (!reply.status && reply.stage!=63)) return Q8B_NPU_PAS_INVALID;
+    if (!valid_info(&reply) || (!reply.status && reply.stage!=63)) return QCOM8GEN3_NPU_PAS_INVALID;
     *info=reply;
     return 0;
 }
 
 int npu_model_core_clock_get(uint32_t session, uint32_t handle,
         npu_model_core_clock_t *clock) {
-    if (!clock) return Q8B_NPU_PAS_INVALID;
+    if (!clock) return QCOM8GEN3_NPU_PAS_INVALID;
     npu_model_core_clock_t reply={0};
     frpc_rbuf_t arg={.data=&reply,.size=sizeof(reply),.fd=-1,.is_out=true};
     int32_t rv=0;
@@ -182,7 +182,7 @@ int npu_model_core_clock_get(uint32_t session, uint32_t handle,
     if (!valid_info(&reply.info) || reply.abi!=NPU_MODEL_CORE_CLOCK_ABI ||
             (!reply.info.status && (reply.info.stage!=81 || !reply.core_hz)) ||
             (reply.info.status && (reply.info.stage!=80 || reply.core_hz || reply.sampled_us)))
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     *clock=reply;
     return 0;
 }

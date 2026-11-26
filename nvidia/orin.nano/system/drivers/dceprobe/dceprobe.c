@@ -8,7 +8,7 @@
 #include <bsp/bsp_bpmp.h>
 #include <ewoksys/dma.h>
 #include <sysinfo.h>
-#include <q8b_platform.h>
+#include <qcom8gen3_platform.h>
 
 /*
  * DCE reachability probe (READ-ONLY, no writes anywhere).  Route-A de-risk:
@@ -1529,7 +1529,7 @@ static int do_modeset(uint32_t hDisp) {
      * pitch-linear A8R8G8B8). */
     sys_info_t si;
     if (sys_get_sys_info(&si) != 0) { klog("dceprobe: sys_info failed\n"); return -1; }
-    const q8b_platform_data_t* pd = (const q8b_platform_data_t*)si.platform_data;
+    const qcom8gen3_platform_data_t* pd = (const qcom8gen3_platform_data_t*)si.platform_data;
     uint64_t fphy = pd->fb.phy_base;
     uint32_t pitch = pd->fb.pitch;
     uint32_t fbsz = pitch * pd->fb.height;

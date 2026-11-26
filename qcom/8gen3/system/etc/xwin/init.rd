@@ -1,20 +1,20 @@
 @export TZ=CST-8
 @/bin/ipcserv /drivers/logd              /dev/log
 
-# Q8B xwin profile.
+# QCOM8GEN3 xwin profile.
 #
 # gaokun3 / TW220 note: those panels have no wired UART17 debug port, so the
 # serial console is disabled and the desktop owns the panel.  The optional
 # user-mode GOP console (consoled + /dev/console0) is disabled by default;
 # uncomment the consoled block below to get a boot log/shell on screen.
-# To get the UART17 /dev/tty0 console back (Q8B), uncomment the uartd line
+# To get the UART17 /dev/tty0 console back (QCOM8GEN3), uncomment the uartd line
 # and the tty0 session below and make sure serial is enabled in the kernel.
 @/bin/ipcserv /drivers/piped             /dev/pipe0
 @/bin/ipcserv /drivers/nulld             /dev/null
 #@/bin/ipcserv /drivers/8gen3/uartd         /dev/tty0
 # Start the PCIe host owner from the persistent root before endpoint drivers.
 @/bin/ipcserv /drivers/8gen3/pcied         /dev/pcie0
-# Q8B full window system on the UEFI GOP framebuffer.
+# QCOM8GEN3 full window system on the UEFI GOP framebuffer.
 
 @/bin/bgrun /sbin/sudod
 
@@ -43,7 +43,7 @@
 @/bin/ipcserv /drivers/8gen3/hid_moused    /dev/mouse0 /dev/usb0
 @/bin/ipcserv /drivers/8gen3/hid_touchpadd /dev/touchpad0 /dev/usb0
 
-# btd may be launched concurrently by ipcserv, but the Q8B transport gates
+# btd may be launched concurrently by ipcserv, but the QCOM8GEN3 transport gates
 # UART Bluetooth setup until wlan has completed WCN startup and published MAC.
 # The device surface and the subscribers are the raspi5 ones: btd owns
 # /dev/bt0, xbt and devcmd use it, and the shared hid_* daemons register as
@@ -60,6 +60,13 @@
 @/bin/ipcserv /drivers/displaymand
 @/bin/ipcserv /drivers/8gen3/fbdisplayd    /dev/disp0
 @/bin/ipcserv /drivers/fontd
+# Preload the installed fonts (fonts.json, incl. the 10MB CJK face) HERE,
+# synchronously, before xserverd and any X client exist. fontd is single-task:
+# a whole-file font load monopolizes it, and if that overlaps X startup the
+# xserverd -> xwm -> fontd render chain queues behind the load and wedges on
+# the init logo. Loading in this quiet window is the same condition that makes
+# a manual load_font from xterm safe. Do NOT move this into x/xinit.rd.
+@/bin/load_font
 # User-mode GOP console disabled: the desktop owns the panel.
 # Uncomment these three lines (boards without a wired debug UART) to show the
 # boot log and a shell on screen through /dev/console0.

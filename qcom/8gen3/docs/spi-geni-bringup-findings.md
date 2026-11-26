@@ -7,7 +7,7 @@ that cost the most time.
 
 ## Transport fixes that are correct and covered by host tests
 
-`machines/q8b/system/libs/bsp/src/spi.c` (`q8b_spi_transfer`):
+`machines/qcom/8gen3/system/libs/bsp/src/spi.c` (`qcom8gen3_spi_transfer`):
 
 1. **RX-only transfers had no data at all.** The sequencer clocks `TX_LEN`
    bytes; an `RX_LEN`-only command completed immediately with an empty
@@ -24,7 +24,7 @@ that cost the most time.
 4. **`pinmux()` no longer clears the pad pull/drive fields.** Only the
    function field is rewritten; the boot firmware's pulls are preserved.
 
-`q8b_spi_open()` also no longer corrupts unrelated TLMM configuration.
+`qcom8gen3_spi_open()` also no longer corrupts unrelated TLMM configuration.
 
 Host regression: `system/libs/bsp/tests/spi_test.c` models a GENI engine
 (TX-driven clocking, per-word RX FIFO, `RX_STATUS` valid-byte field). The
@@ -61,7 +61,7 @@ Each of these was measured, not assumed:
 Two things had to change together; either one alone gives all-zero reads:
 
 1. **Every engine command gets its own CS window on a GPIO-owned CS pad.**
-   `Q8B_SPI_SW_CS`: `pinmux()` skips the CS pad, the engine demux is pointed
+   `QCOM8GEN3_SPI_SW_CS`: `pinmux()` skips the CS pad, the engine demux is pointed
    at an unused channel, and the caller drives gpio157.  Freeing the CS pad is
    not enough by itself - each `spi_transfer` must be bracketed by CS low/high,
    which `himax_native_transport` now does in `himax_native_cs_xfer()`.

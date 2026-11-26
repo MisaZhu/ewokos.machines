@@ -1,4 +1,4 @@
-/* Q8B NPU bring-up: SC8280XP NSP0 (PAS id 18).
+/* QCOM8GEN3 NPU bring-up: SC8280XP NSP0 (PAS id 18).
  *
  * One restricted op boots the signed cDSP image: userspace hands the kernel a
  * DMA buffer holding the board firmware (qccdsp8280.mbn), and the kernel does
@@ -18,25 +18,25 @@
 #include <mm/dma.h>
 #include <mm/mmu.h>
 #include <kprintf.h>
-#include <q8b_npu.h>
-#include <q8b_fastrpc_wire.h>
-#include <q8b_smp2p_wire.h>
-#include <q8b_npu_ipcc.h>
-#include <q8b_npu_watchdog.h>
-#include <q8b_rpmh_tcs.h>
-#include <q8b_qrtr_wire.h>
-#include <q8b_mdt_load.h>
-#include <q8b_npu_dump.h>
+#include <qcom8gen3_npu.h>
+#include <qcom8gen3_fastrpc_wire.h>
+#include <qcom8gen3_smp2p_wire.h>
+#include <qcom8gen3_npu_ipcc.h>
+#include <qcom8gen3_npu_watchdog.h>
+#include <qcom8gen3_rpmh_tcs.h>
+#include <qcom8gen3_qrtr_wire.h>
+#include <qcom8gen3_mdt_load.h>
+#include <qcom8gen3_npu_dump.h>
 #include "hw_arch.h"
 #include "scm-probe.h"
 #include "npu_smmu.h"
 
 /* Enable protocol traces explicitly for bring-up. Normal builds retain
  * errors and fault snapshots without logging every GLINK transaction. */
-#ifndef Q8B_NPU_DEBUG
-#define Q8B_NPU_DEBUG 0
+#ifndef QCOM8GEN3_NPU_DEBUG
+#define QCOM8GEN3_NPU_DEBUG 0
 #endif
-#define npu_debug(...) do { if(Q8B_NPU_DEBUG) printf(__VA_ARGS__); } while(0)
+#define npu_debug(...) do { if(QCOM8GEN3_NPU_DEBUG) printf(__VA_ARGS__); } while(0)
 
 #define NPU_MAX_FW      (8u * 1024u * 1024u)
 #define NPU_MAX_DMA     (32u * 1024u * 1024u) /* official V68 Skel PT_LOAD is > 8 MiB */
@@ -47,8 +47,8 @@
 #define NPU_MDT_TYPE_MASK  0x07000000u
 #define NPU_MDT_TYPE_HASH  0x02000000u
 
-#ifndef Q8B_QEMU_TEST
-extern void q8b_scm_smc(uint64_t regs[8]);
+#ifndef QCOM8GEN3_QEMU_TEST
+extern void qcom8gen3_scm_smc(uint64_t regs[8]);
 
 static int scm_call(uint32_t fn, uint32_t info, uint64_t a, uint64_t b,
         uint64_t c, int fast, uint64_t *result) {
@@ -60,28 +60,28 @@ static int scm_call(uint32_t fn, uint32_t info, uint64_t a, uint64_t b,
     for(n = 0; n < 1024; n++) {
         for(unsigned i = 0; i < 8; i++) regs[i] = input[i];
         __asm__ volatile("dsb sy" ::: "memory");
-        q8b_scm_smc(regs);
+        qcom8gen3_scm_smc(regs);
         __asm__ volatile("dsb sy" ::: "memory");
         if(regs[0] != 1) break;
         input[0] = 1;
         input[6] = regs[6];
     }
-    if(regs[0]) printf("q8b NPU SCM fn=%x a0=%llx a1=%llx a2=%llx\n", fn,
+    if(regs[0]) printf("qcom8gen3 NPU SCM fn=%x a0=%llx a1=%llx a2=%llx\n", fn,
             (unsigned long long)regs[0], (unsigned long long)regs[1],
             (unsigned long long)regs[2]);
-    if((int64_t)regs[0] == -12) return Q8B_GPU_PAS_BUSY;
-    if(regs[0] == 2) return Q8B_GPU_PAS_WAITQ;
-    if(regs[0] != 0) return Q8B_GPU_PAS_FAILED;
+    if((int64_t)regs[0] == -12) return QCOM8GEN3_GPU_PAS_BUSY;
+    if(regs[0] == 2) return QCOM8GEN3_GPU_PAS_WAITQ;
+    if(regs[0] != 0) return QCOM8GEN3_GPU_PAS_FAILED;
     *result = regs[1];
     return 0;
 }
 #endif
 
 /* Kernel-only Normal-NC windows. */
-#define Q8B_NSP_WIN 0x5000000000ull
-#define Q8B_SMEM_PHY 0x80900000ull
-#define Q8B_SMEM_SIZE 0x200000ull
-#define Q8B_SMEM_WIN 0x5020000000ull
+#define QCOM8GEN3_NSP_WIN 0x5000000000ull
+#define QCOM8GEN3_SMEM_PHY 0x80900000ull
+#define QCOM8GEN3_SMEM_SIZE 0x200000ull
+#define QCOM8GEN3_SMEM_WIN 0x5020000000ull
 
 
 static int probed;
@@ -138,15 +138,15 @@ typedef struct {
     uint16_t e_shstrndx;
 } npu_elf32_hdr;
 
-typedef q8b_mdt_phdr npu_elf32_phdr;
+typedef qcom8gen3_mdt_phdr npu_elf32_phdr;
 
-#ifdef Q8B_QEMU_TEST
-static int nsp_probe(void) { return Q8B_NPU_PAS_UNSUPPORTED; }
+#ifdef QCOM8GEN3_QEMU_TEST
+static int nsp_probe(void) { return QCOM8GEN3_NPU_PAS_UNSUPPORTED; }
 #else
 static int nsp_probe(void) {
-    int ret = q8b_scm_probe(scm_call);
+    int ret = qcom8gen3_scm_probe(scm_call);
 
-    npu_debug("q8b npu: scm probe ret=%d\n", ret);
+    npu_debug("qcom8gen3 npu: scm probe ret=%d\n", ret);
     if(ret) return ret;
     return 0;
 }
@@ -158,12 +158,12 @@ static int nsp_probe(void) {
 #define NPU_CMDB_SIZE 0x20000u
 #define NPU_RSC_PHY   0x18220000ull
 #define NPU_RSC_SIZE  0x10000u
-#define NPU_TCS_OFF   Q8B_RSC_TCS_OFFSET
+#define NPU_TCS_OFF   QCOM8GEN3_RSC_TCS_OFFSET
 #define NPU_RSC_IRQ_WIN (NPU_RSC_WIN + NPU_TCS_OFF)
 #define NPU_TCS_STRIDE 672u
-#define NPU_IRQ_ENABLE Q8B_RSC_IRQ_ENABLE
-#define NPU_IRQ_STATUS Q8B_RSC_IRQ_STATUS
-#define NPU_IRQ_CLEAR  Q8B_RSC_IRQ_CLEAR
+#define NPU_IRQ_ENABLE QCOM8GEN3_RSC_IRQ_ENABLE
+#define NPU_IRQ_STATUS QCOM8GEN3_RSC_IRQ_STATUS
+#define NPU_IRQ_CLEAR  QCOM8GEN3_RSC_IRQ_CLEAR
 #define NPU_AMC_ENABLE (1u << 16)
 #define NPU_AMC_TRIGGER (1u << 24)
 #define NPU_WRITE_RESP_MSGID 0x00010108u
@@ -271,8 +271,8 @@ static int rpmh_write(uint32_t address, uint32_t data) {
                 rsc_cmd(tcs, 0, npu_rsc.cmd_status)) & (1u << 16))
         npu_rsc.previous_compl++;
     rsc_wr(tcs, npu_rsc.control, NPU_AMC_ENABLE | NPU_AMC_TRIGGER);
-    const q8b_rpmh_io_t io = { 0, rsc_read32, rsc_relax };
-    if(q8b_rpmh_wait_irq(&io, rsc_cmd(tcs, 0, npu_rsc.cmd_status),
+    const qcom8gen3_rpmh_io_t io = { 0, rsc_read32, rsc_relax };
+    if(qcom8gen3_rpmh_wait_irq(&io, rsc_cmd(tcs, 0, npu_rsc.cmd_status),
                 irq, 1000000, &npu_rsc.compl_without_irq) == 0) {
         npu_rsc.completions++;
         uint32_t c = rsc_reg(tcs, npu_rsc.control) & ~NPU_AMC_TRIGGER;
@@ -283,7 +283,7 @@ static int rpmh_write(uint32_t address, uint32_t data) {
         *(volatile uint32_t *)(NPU_RSC_IRQ_WIN + NPU_IRQ_CLEAR) = irq;
         return 0;
     }
-    printf("q8b npu: RPMh fresh IRQ timeout addr=%x data=%x cmd=%x irq=%x\n",
+    printf("qcom8gen3 npu: RPMh fresh IRQ timeout addr=%x data=%x cmd=%x irq=%x\n",
             address, data, *(volatile uint32_t *)(NPU_RSC_WIN +
                 rsc_cmd(tcs, 0, npu_rsc.cmd_status)),
             *(volatile uint32_t *)(NPU_RSC_IRQ_WIN + NPU_IRQ_STATUS));
@@ -292,7 +292,7 @@ static int rpmh_write(uint32_t address, uint32_t data) {
 static int rpmh_vote(const char *name) {
     uint32_t addr = 0, aux = 0, len = 0, i, count, corner;
     if(cdb_find(name, &addr, &aux, &len) != 0 || addr == 0) {
-        printf("q8b npu: rpmh %s not in cmd-db\n", name);
+        printf("qcom8gen3 npu: rpmh %s not in cmd-db\n", name);
         return -1;
     }
     count = len / 2;
@@ -302,10 +302,10 @@ static int rpmh_vote(const char *name) {
     if(count == 0) count = 1;
     corner = count - 1;
     if(rpmh_write(addr, corner) != 0) {
-        printf("q8b npu: rpmh %s vote failed addr=%x\n", name, addr);
+        printf("qcom8gen3 npu: rpmh %s vote failed addr=%x\n", name, addr);
         return -1;
     }
-    npu_debug("q8b npu: rpmh %s addr=%x corner=%u ok\n", name, addr, corner);
+    npu_debug("qcom8gen3 npu: rpmh %s addr=%x corner=%u ok\n", name, addr, corner);
     return 0;
 }
 
@@ -316,14 +316,14 @@ static int rpmh_vote(const char *name) {
 static int rpmh_bcm_max(const char *name) {
     uint32_t addr = 0;
     if(cdb_find(name, &addr, 0, 0) != 0 || addr == 0) {
-        printf("q8b npu: rpmh BCM %s not in cmd-db\n", name);
+        printf("qcom8gen3 npu: rpmh BCM %s not in cmd-db\n", name);
         return -1;
     }
     if(rpmh_write(addr, NPU_BCM_MAX_VOTE) != 0) {
-        printf("q8b npu: rpmh BCM %s vote failed addr=%x\n", name, addr);
+        printf("qcom8gen3 npu: rpmh BCM %s vote failed addr=%x\n", name, addr);
         return -1;
     }
-    npu_debug("q8b npu: rpmh BCM %s addr=%x max ok\n", name, addr);
+    npu_debug("qcom8gen3 npu: rpmh BCM %s addr=%x max ok\n", name, addr);
     return 0;
 }
 static int nsp_power_vote(void) {
@@ -331,7 +331,7 @@ static int nsp_power_vote(void) {
     if(map_in_caller(NPU_CMDB_WIN, NPU_CMDB_PHY, NPU_CMDB_SIZE) != 0 ||
             map_in_caller_attr(NPU_RSC_WIN, NPU_RSC_PHY, NPU_RSC_SIZE,
                 PTE_ATTR_DEV) != 0) {
-        printf("q8b npu: rpmh map failed\n");
+        printf("qcom8gen3 npu: rpmh map failed\n");
         return -1;
     }
     id = *(volatile uint32_t *)NPU_RSC_WIN;
@@ -342,7 +342,7 @@ static int nsp_power_vote(void) {
         npu_rsc.cmd_status = 0x40; npu_rsc.cmd_stride = 24;
     }
     npu_rsc.ready = 1;
-    npu_debug("q8b npu: rpmh rsc id=%x\n", id);
+    npu_debug("qcom8gen3 npu: rpmh rsc id=%x\n", id);
     /* qcom_q6v5_prepare() enables the RPMh XO clock before PAS metadata is
      * submitted.  The cDSP can authenticate without it, but its early SMEM
      * and GLINK initialization may then stop before allocating item 480. */
@@ -355,7 +355,7 @@ static int nsp_power_vote(void) {
      * handover IRQ. Keep both BCMs active for this first port. These shared
      * interconnect votes require aggregation before they can be released. */
     if(rpmh_bcm_max("NSA0") != 0 || rpmh_bcm_max("NSA1") != 0) return -1;
-    npu_debug("q8b npu: RPMh fresh IRQs=%u previous_compl=%u compl_without_irq=%u\n",
+    npu_debug("qcom8gen3 npu: RPMh fresh IRQs=%u previous_compl=%u compl_without_irq=%u\n",
             npu_rsc.completions, npu_rsc.previous_compl, npu_rsc.compl_without_irq);
     return 0;
 }
@@ -369,10 +369,10 @@ static int nsp_power_release(void) {
      * other clients and cannot be cleared without vote aggregation. */
     if(cdb_find("nsp.lvl", &addr, 0, 0) != 0 || !addr ||
             rpmh_write(addr, 0) != 0) {
-        printf("q8b npu: rpmh nsp.lvl release failed\n");
+        printf("qcom8gen3 npu: rpmh nsp.lvl release failed\n");
         return -1;
     }
-    npu_debug("q8b npu: rpmh nsp.lvl addr=%x corner=0 released\n", addr);
+    npu_debug("qcom8gen3 npu: rpmh nsp.lvl addr=%x corner=0 released\n", addr);
     return 0;
 }
 
@@ -407,7 +407,7 @@ static void npu_ipcc_clear(void *data, uint32_t id) {
     __asm__ volatile("dsb sy" ::: "memory");
 }
 static uint32_t npu_ipcc_poll(void) {
-    uint32_t signals = q8b_npu_ipcc_take(npu_ipcc_recv, npu_ipcc_clear, 0);
+    uint32_t signals = qcom8gen3_npu_ipcc_take(npu_ipcc_recv, npu_ipcc_clear, 0);
     if (signals & 4u) npu_boot_smp2p_notified = 1;
     return signals;
 }
@@ -416,43 +416,43 @@ static uint32_t npu_ipcc_poll(void) {
  * SMP2P fatal is a different interrupt and need not change on a watchdog.
  * Read only: never acknowledge, enable, reroute or clear another handler's
  * interrupt. A zero may also reflect security filtering, not DSP health. */
-static q8b_npu_wdog_state_t npu_watchdog;
+static qcom8gen3_npu_wdog_state_t npu_watchdog;
 static void npu_dump_crash_reason(void);
 static uint32_t npu_watchdog_read32(void *context, uint32_t offset) {
     (void)context;
     volatile uint32_t *gicd = (volatile uint32_t *)(MMIO_BASE +
-            Q8B_GIC_WIN_OFF + Q8B_GICD_PHY - Q8B_GIC_WIN_PHY);
+            QCOM8GEN3_GIC_WIN_OFF + QCOM8GEN3_GICD_PHY - QCOM8GEN3_GIC_WIN_PHY);
     return gicd[offset / 4];
 }
 static void npu_watchdog_snapshot(const char *phase) {
-    q8b_npu_wdog_sample_t sample;
-    if (q8b_npu_wdog_read(npu_watchdog_read32, 0, &sample)) {
-        printf("q8b npu: watchdog %s GIC unavailable\n", phase);
+    qcom8gen3_npu_wdog_sample_t sample;
+    if (qcom8gen3_npu_wdog_read(npu_watchdog_read32, 0, &sample)) {
+        printf("qcom8gen3 npu: watchdog %s GIC unavailable\n", phase);
         return;
     }
-    printf("q8b npu: watchdog %s intid=%u group=%u enabled=%u pending=%u active=%u\n",
-            phase, Q8B_NPU_WDOG_INTID, sample.group, sample.enabled, sample.pending, sample.active);
+    printf("qcom8gen3 npu: watchdog %s intid=%u group=%u enabled=%u pending=%u active=%u\n",
+            phase, QCOM8GEN3_NPU_WDOG_INTID, sample.group, sample.enabled, sample.pending, sample.active);
 }
 static int npu_watchdog_prepare(void) {
-    q8b_npu_wdog_sample_t sample;
-    int rc = q8b_npu_wdog_read(npu_watchdog_read32, 0, &sample);
-    if (q8b_npu_wdog_arm(&npu_watchdog, rc ? 0 : &sample)) {
+    qcom8gen3_npu_wdog_sample_t sample;
+    int rc = qcom8gen3_npu_wdog_read(npu_watchdog_read32, 0, &sample);
+    if (qcom8gen3_npu_wdog_arm(&npu_watchdog, rc ? 0 : &sample)) {
         npu_recovery_required = 1;
-        printf("q8b npu: watchdog not clean before PAS_INIT; board reset required\n");
+        printf("qcom8gen3 npu: watchdog not clean before PAS_INIT; board reset required\n");
         npu_watchdog_snapshot("prepare-rejected");
-        return Q8B_NPU_PAS_FAILED;
+        return QCOM8GEN3_NPU_PAS_FAILED;
     }
     return 0;
 }
 static int npu_watchdog_refresh(void) {
-    q8b_npu_wdog_sample_t sample;
+    qcom8gen3_npu_wdog_sample_t sample;
     int before = npu_watchdog.tripped;
-    if (q8b_npu_wdog_read(npu_watchdog_read32, 0, &sample) == 0)
-        (void)q8b_npu_wdog_observe(&npu_watchdog, &sample);
+    if (qcom8gen3_npu_wdog_read(npu_watchdog_read32, 0, &sample) == 0)
+        (void)qcom8gen3_npu_wdog_observe(&npu_watchdog, &sample);
     if (npu_watchdog.tripped) {
         npu_recovery_required = 1;
         if (!before) {
-            printf("q8b npu: NSP0 watchdog asserted; transport quarantined\n");
+            printf("qcom8gen3 npu: NSP0 watchdog asserted; transport quarantined\n");
             npu_watchdog_snapshot("asserted");
             npu_dump_crash_reason();
         }
@@ -463,7 +463,7 @@ static int npu_watchdog_refresh(void) {
 static void npu_boot_notify_arm(void) {
     uint32_t stale = npu_ipcc_poll();
     npu_boot_smp2p_notified = 0;
-    npu_debug("q8b npu: boot notify armed drained=%x next=%x\n", stale, npu_ipcc_recv(0));
+    npu_debug("qcom8gen3 npu: boot notify armed drained=%x next=%x\n", stale, npu_ipcc_recv(0));
 
 }
 
@@ -473,7 +473,7 @@ static void npu_boot_notify_arm(void) {
  * linked list. */
 static uint8_t *smem_find_private_item(uint8_t *ph, uint32_t free_off,
         uint16_t want) {
-    if(free_off < 32 || free_off > Q8B_SMEM_SIZE ||
+    if(free_off < 32 || free_off > QCOM8GEN3_SMEM_SIZE ||
             free_off > *(const uint32_t *)(ph + 8))
         return 0;
     for(uint32_t off = 32; off + 16 <= free_off; off += 4) {
@@ -498,13 +498,13 @@ static uint8_t *smem_find_private_item(uint8_t *ph, uint32_t free_off,
  * messages. Firmware v12 keeps host-any items in the global partition,
  * rather than the legacy header TOC. Read it before PAS resets the DSP. */
 static void npu_dump_crash_reason(void) {
-    uint8_t *s = (uint8_t *)Q8B_SMEM_WIN;
+    uint8_t *s = (uint8_t *)QCOM8GEN3_SMEM_WIN;
     static const uint32_t offsets[] = {0x1000u, 0x1af000u};
     for(unsigned i = 0; i < sizeof(offsets)/sizeof(offsets[0]); i++) {
         uint8_t *ph = s + offsets[i];
         uint32_t size = *(const uint32_t *)(ph + 8);
         uint32_t free_off = *(const uint32_t *)(ph + 12);
-        if(size > Q8B_SMEM_SIZE - offsets[i] || free_off > size) continue;
+        if(size > QCOM8GEN3_SMEM_SIZE - offsets[i] || free_off > size) continue;
         const uint8_t *e = smem_find_private_item(ph, free_off, 601);
         if(!e) continue;
         uint32_t bytes = *(const uint32_t *)(e + 4);
@@ -520,7 +520,7 @@ static void npu_dump_crash_reason(void) {
             text[n++] = c >= 32 && c < 127 ? (char)c : ' ';
         }
         text[n] = 0;
-        printf("q8b npu: SMEM601 crash reason: %s\n", text);
+        printf("qcom8gen3 npu: SMEM601 crash reason: %s\n", text);
     }
 }
 
@@ -533,7 +533,7 @@ static uint32_t npu_smp2p_state;
 static uint8_t *npu_smp2p_master;
 
 static int npu_smp2p_read_remote(uint32_t values[4]) {
-    uint8_t *s = (uint8_t *)Q8B_SMEM_WIN;
+    uint8_t *s = (uint8_t *)QCOM8GEN3_SMEM_WIN;
     uint8_t *ph = s + 0x1af000;
     uint32_t fU = *(volatile uint32_t *)(ph + 12);
     const uint8_t *it;
@@ -543,7 +543,7 @@ static int npu_smp2p_read_remote(uint32_t values[4]) {
 
     if(!pas_prepared && !booted)
         return -1;
-    it = smem_find_private_item(ph, fU, Q8B_SMP2P_IN_ITEM);
+    it = smem_find_private_item(ph, fU, QCOM8GEN3_SMP2P_IN_ITEM);
     if(!it)
         return -1;
     size = *(const uint32_t *)(it + 4);
@@ -557,14 +557,14 @@ static int npu_smp2p_read_remote(uint32_t values[4]) {
         return -1;
     /* Match qcom_smp2p_negotiate(): production NSP0 advertises v1, while
      * AP initially offers v2. Downgrade and kick before waiting for entries. */
-    const uint8_t *out_item = smem_find_private_item(ph, fU, Q8B_SMP2P_OUT_ITEM);
+    const uint8_t *out_item = smem_find_private_item(ph, fU, QCOM8GEN3_SMP2P_OUT_ITEM);
     if(out_item) {
         uint8_t *out = (uint8_t *)out_item + 16 +
                 *(const uint16_t *)(out_item + 10);
         int notify = 0;
         if(out[4] > d[4]) {
             out[4] = d[4];
-            npu_debug("q8b npu: SMP2P negotiated version %u\n", d[4]);
+            npu_debug("qcom8gen3 npu: SMP2P negotiated version %u\n", d[4]);
             notify = 1;
         }
         if(out[4] == d[4]) {
@@ -581,7 +581,7 @@ static int npu_smp2p_read_remote(uint32_t values[4]) {
             __asm__ volatile("dsb sy" ::: "memory");
         }
     }
-    if(q8b_smp2p_slave_bits(d, size - padding, &bits) != 0)
+    if(qcom8gen3_smp2p_slave_bits(d, size - padding, &bits) != 0)
         return -1;
     /* All four IRQs are bits of ONE named slave-kernel value, not values
      * of four separate entries. */
@@ -596,28 +596,28 @@ static uint32_t npu_smp2p_refresh_state(void) {
 
     (void)npu_ipcc_poll();
 
-    npu_smp2p_state &= ~(Q8B_NPU_STATE_REMOTE | Q8B_NPU_STATE_READY |
-            Q8B_NPU_STATE_HANDOVER | Q8B_NPU_STATE_FATAL |
-            Q8B_NPU_STATE_STOP_ACK);
+    npu_smp2p_state &= ~(QCOM8GEN3_NPU_STATE_REMOTE | QCOM8GEN3_NPU_STATE_READY |
+            QCOM8GEN3_NPU_STATE_HANDOVER | QCOM8GEN3_NPU_STATE_FATAL |
+            QCOM8GEN3_NPU_STATE_STOP_ACK);
     if(npu_smp2p_read_remote(v) == 0) {
-        npu_smp2p_state |= Q8B_NPU_STATE_REMOTE;
-        if(v[0]) npu_smp2p_state |= Q8B_NPU_STATE_FATAL;
-        if(v[1]) npu_smp2p_state |= Q8B_NPU_STATE_READY;
-        if(v[2]) npu_smp2p_state |= Q8B_NPU_STATE_HANDOVER;
-        if(v[3]) npu_smp2p_state |= Q8B_NPU_STATE_STOP_ACK;
+        npu_smp2p_state |= QCOM8GEN3_NPU_STATE_REMOTE;
+        if(v[0]) npu_smp2p_state |= QCOM8GEN3_NPU_STATE_FATAL;
+        if(v[1]) npu_smp2p_state |= QCOM8GEN3_NPU_STATE_READY;
+        if(v[2]) npu_smp2p_state |= QCOM8GEN3_NPU_STATE_HANDOVER;
+        if(v[3]) npu_smp2p_state |= QCOM8GEN3_NPU_STATE_STOP_ACK;
     }
-    if(npu_watchdog_refresh()) npu_smp2p_state |= Q8B_NPU_STATE_FATAL;
+    if(npu_watchdog_refresh()) npu_smp2p_state |= QCOM8GEN3_NPU_STATE_FATAL;
     if(npu_smp2p_state != old)
-        npu_debug("q8b npu: NSP state %08x -> %08x\n", old,
+        npu_debug("qcom8gen3 npu: NSP state %08x -> %08x\n", old,
                 npu_smp2p_state);
     return npu_smp2p_state;
 }
 
 static int npu_smp2p_request_stop(void) {
-    uint8_t *s = (uint8_t *)Q8B_SMEM_WIN;
+    uint8_t *s = (uint8_t *)QCOM8GEN3_SMEM_WIN;
     uint8_t *ph = s + 0x1af000;
     uint32_t fU = *(volatile uint32_t *)(ph + 12);
-    const uint8_t *it = smem_find_private_item(ph, fU, Q8B_SMP2P_OUT_ITEM);
+    const uint8_t *it = smem_find_private_item(ph, fU, QCOM8GEN3_SMP2P_OUT_ITEM);
     uint8_t *d;
     uint32_t *stop_value = 0;
 
@@ -648,7 +648,7 @@ static int npu_smp2p_request_stop(void) {
     __asm__ volatile("dsb sy" ::: "memory");
     for(unsigned i = 0; i < 50; i++) {
         uint32_t state = npu_smp2p_refresh_state();
-        if(state & (Q8B_NPU_STATE_STOP_ACK | Q8B_NPU_STATE_FATAL))
+        if(state & (QCOM8GEN3_NPU_STATE_STOP_ACK | QCOM8GEN3_NPU_STATE_FATAL))
             break;
         npu_delay_ms(10);
     }
@@ -656,7 +656,7 @@ static int npu_smp2p_request_stop(void) {
     __asm__ volatile("dsb sy" ::: "memory");
     *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = 0x00060002u;
     __asm__ volatile("dsb sy" ::: "memory");
-    return (npu_smp2p_state & Q8B_NPU_STATE_STOP_ACK) ? 0 : -1;
+    return (npu_smp2p_state & QCOM8GEN3_NPU_STATE_STOP_ACK) ? 0 : -1;
 }
 
 static void smem_prepare(void) {
@@ -665,13 +665,13 @@ static void smem_prepare(void) {
     const uint8_t *gph;
     uint32_t gsize, gfree;
 
-    if(map_in_caller(Q8B_SMEM_WIN, Q8B_SMEM_PHY, Q8B_SMEM_SIZE) != 0) {
-        printf("q8b npu: smem_prepare map failed\n");
+    if(map_in_caller(QCOM8GEN3_SMEM_WIN, QCOM8GEN3_SMEM_PHY, QCOM8GEN3_SMEM_SIZE) != 0) {
+        printf("qcom8gen3 npu: smem_prepare map failed\n");
         return;
     }
-    s = (uint8_t *)Q8B_SMEM_WIN;
+    s = (uint8_t *)QCOM8GEN3_SMEM_WIN;
     init = *(uint32_t *)(s + 0xc0);
-    npu_debug("q8b npu: smem header init=%u free=%x avail=%x\n", init,
+    npu_debug("qcom8gen3 npu: smem header init=%u free=%x avail=%x\n", init,
             *(uint32_t *)(s + 0xc4), *(uint32_t *)(s + 0xc8));
     if(init != 1) {
         gph = s + 0x1000;
@@ -683,7 +683,7 @@ static void smem_prepare(void) {
         *(uint32_t *)(s + 0xc8) = gsize - gfree;
         *(uint32_t *)(s + 0xcc) = 0;
         __asm__ volatile("dsb sy" ::: "memory");
-        npu_debug("q8b npu: smem header restored free=%x avail=%x\n",
+        npu_debug("qcom8gen3 npu: smem header restored free=%x avail=%x\n",
                 0x1000 + gfree, gsize - gfree);
     }
     /* Prepare the AP-owned SMP2P edge in the 0/5 partition.  GLINK item 480
@@ -703,7 +703,7 @@ static void smem_prepare(void) {
                 uint16_t item = *(const uint16_t *)(w + 2);
                 uint32_t isz = *(const uint32_t *)(w + 4);
                 if(canary != 0xa5a5 || isz > 0x10000) break;
-                if(item == Q8B_SMP2P_OUT_ITEM) have_out = 1;
+                if(item == QCOM8GEN3_SMP2P_OUT_ITEM) have_out = 1;
                 w += 16 + *(const uint16_t *)(w + 10) +
                         ((isz + 7) & ~7u);
             }
@@ -714,10 +714,10 @@ static void smem_prepare(void) {
                     uint16_t item = *(const uint16_t *)(w2 + 2);
                     uint32_t isz = *(const uint32_t *)(w2 + 4);
                     if(canary != 0xa5a5 || isz > 0x10000) break;
-                    if(item == Q8B_SMP2P_OUT_ITEM) {
+                    if(item == QCOM8GEN3_SMP2P_OUT_ITEM) {
                         if(npu_smp2p_master == (uint8_t *)(w2 + 16) &&
                                 isz == NPU_SMP2P_ITEM_SIZE) {
-                            npu_debug("q8b npu: preserving AP SMP2P version=%u flags=%x\n",
+                            npu_debug("qcom8gen3 npu: preserving AP SMP2P version=%u flags=%x\n",
                                     npu_smp2p_master[4], npu_smp2p_master[16]);
                             break;
                         }
@@ -731,7 +731,7 @@ static void smem_prepare(void) {
                         if(old_size < NPU_SMP2P_ITEM_SIZE) {
                             uint32_t grow = NPU_SMP2P_ITEM_SIZE - old_size;
                             if(*(uint32_t *)(ph + 12) + grow > fC) {
-                                printf("q8b npu: SMP2P 432 cannot grow old=%x\n",
+                                printf("qcom8gen3 npu: SMP2P 432 cannot grow old=%x\n",
                                         old_size);
                                 break;
                             }
@@ -746,12 +746,12 @@ static void smem_prepare(void) {
                         *(uint16_t *)(w2 + 10) = 0;
                         *(uint32_t *)(w2 + 12) = 0;
                         d = (uint8_t *)(w2 + 16);
-                        q8b_smp2p_init_master(d, NPU_SMP2P_ITEM_SIZE);
+                        qcom8gen3_smp2p_init_master(d, NPU_SMP2P_ITEM_SIZE);
                         __asm__ volatile("dsb sy" ::: "memory");
                         d[4] = 2; /* publish version last, as Linux does */
                         __asm__ volatile("dsb sy" ::: "memory");
                         npu_smp2p_master = d;
-                        npu_debug("q8b npu: patched SMP2P item 432 master-kernel\n");
+                        npu_debug("qcom8gen3 npu: patched SMP2P item 432 master-kernel\n");
                         break;
                     }
                     w2 += 16 + *(const uint16_t *)(w2 + 10) +
@@ -762,12 +762,12 @@ static void smem_prepare(void) {
                 uint8_t *e = ph + fU;
                 uint8_t *d = e + 16;
                 *(uint16_t *)(e + 0) = 0xa5a5;
-                *(uint16_t *)(e + 2) = Q8B_SMP2P_OUT_ITEM;
+                *(uint16_t *)(e + 2) = QCOM8GEN3_SMP2P_OUT_ITEM;
                 *(uint32_t *)(e + 4) = NPU_SMP2P_ITEM_SIZE;
                 *(uint16_t *)(e + 8) = NPU_SMP2P_ITEM_SIZE - NPU_SMP2P_DATA_SIZE;
                 *(uint16_t *)(e + 10) = 0;
                 *(uint32_t *)(e + 12) = 0;
-                q8b_smp2p_init_master(d, NPU_SMP2P_ITEM_SIZE);
+                qcom8gen3_smp2p_init_master(d, NPU_SMP2P_ITEM_SIZE);
                 __asm__ volatile("dsb sy" ::: "memory");
                 d[4] = 2;
                 __asm__ volatile("dsb sy" ::: "memory");
@@ -775,7 +775,7 @@ static void smem_prepare(void) {
                 *(uint32_t *)(ph + 12) = fU + 16 + NPU_SMP2P_ITEM_SIZE;
                 fU += 16 + NPU_SMP2P_ITEM_SIZE;
                 __asm__ volatile("dsb sy" ::: "memory");
-                npu_debug("q8b npu: created SMP2P item 432\n");
+                npu_debug("qcom8gen3 npu: created SMP2P item 432\n");
             }
         }
         /* Item 480 is the remote-owned RX FIFO.  Linux allocates only 478
@@ -870,7 +870,7 @@ static void glink_dump_failure_fifo(void) {
     for(unsigned i = 0; i < NPU_FRPC_PENDING_MAX; i++) {
         const npu_frpc_pending_t *p = &npu_glink.pending[i];
         if(p->ctx && frequency)
-            printf("q8b npu: invoke age ctx=%llx us=%llu done=%d\n",
+            printf("qcom8gen3 npu: invoke age ctx=%llx us=%llu done=%d\n",
                     (unsigned long long)p->ctx,
                     (unsigned long long)((now - p->submitted) * 1000000u / frequency), p->done);
     }
@@ -878,7 +878,7 @@ static void glink_dump_failure_fifo(void) {
     uint32_t begin = count > 16u ? count - 16u : 0;
     for(uint32_t i = begin; i < count && frequency; i++) {
         unsigned slot = i % 16u;
-        printf("q8b npu: recent response ctx=%llx rv=%d age_us=%llu\n",
+        printf("qcom8gen3 npu: recent response ctx=%llx rv=%d age_us=%llu\n",
                 (unsigned long long)npu_glink.responses[slot].ctx,
                 npu_glink.responses[slot].rv,
                 (unsigned long long)((now - npu_glink.responses[slot].tick) * 1000000u / frequency));
@@ -887,17 +887,17 @@ static void glink_dump_failure_fifo(void) {
     uint32_t head = npu_glink.desc[3], tail = npu_glink.desc[2];
     __asm__ volatile("dmb sy" ::: "memory");
     if(head >= npu_glink.len || tail >= npu_glink.len) {
-        printf("q8b npu: RX snapshot invalid head=%u tail=%u len=%u\n", head, tail, npu_glink.len);
+        printf("qcom8gen3 npu: RX snapshot invalid head=%u tail=%u len=%u\n", head, tail, npu_glink.len);
         return;
     }
     uint32_t avail = head >= tail ? head - tail : npu_glink.len - tail + head;
     uint32_t words = (avail < 128u ? avail : 128u) / 4u;
-    printf("q8b npu: RX snapshot head=%u tail=%u available=%u captured=%u\n",
+    printf("qcom8gen3 npu: RX snapshot head=%u tail=%u available=%u captured=%u\n",
             head, tail, avail, words * 4u);
     for(uint32_t i = 0; i < words; i++) {
         uint8_t b[4];
         for(unsigned j = 0; j < 4; j++) b[j] = npu_glink.rx[(tail + i * 4u + j) % npu_glink.len];
-        printf("q8b npu: RX word offset=%u data=%08x\n", i * 4u,
+        printf("qcom8gen3 npu: RX word offset=%u data=%08x\n", i * 4u,
                 (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24);
     }
 }
@@ -929,7 +929,7 @@ static void glink_ring_write(uint8_t *ring, uint32_t pos, const void *src,
 }
 
 static void glink_rx_advance(uint32_t tail) {
-    /* SMEM is Normal-NC on Q8B. Complete FIFO reads before publishing space
+    /* SMEM is Normal-NC on QCOM8GEN3. Complete FIFO reads before publishing space
      * that the DSP may immediately overwrite; volatile alone is not a DMA
      * ordering primitive. */
     __asm__ volatile("dmb sy" ::: "memory");
@@ -968,7 +968,7 @@ static int glink_tx_frame(uint16_t cmd, uint16_t p1, uint32_t p2,
     npu_glink.desc[1] = head;
     __asm__ volatile("dsb sy" ::: "memory");
     if(cmd == 2 || cmd == 4 || cmd == 5 || cmd == 7 || cmd == 8 || cmd == 14)
-        npu_debug("q8b npu: glink tx cmd=%u p1=%u p2=%u head=%u tail=%u\n",
+        npu_debug("qcom8gen3 npu: glink tx cmd=%u p1=%u p2=%u head=%u tail=%u\n",
                 cmd, p1, p2, head, tail);
     *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = 0x00060000u;
     __asm__ volatile("dsb sy" ::: "memory");
@@ -1059,33 +1059,33 @@ static void glink_request_remote_intent(uint32_t size) {
 
 /* Limited QRTR endpoint for the NSP0 sysmon/SSCTL shutdown handshake. */
 static void glink_qrtr_observe(const uint8_t *data, uint32_t size) {
-    struct q8b_qrtr_packet p;
-    if(q8b_qrtr_decode(data, size, &p) != 0) {
-        printf("q8b npu: QRTR malformed bytes=%u\n", size);
+    struct qcom8gen3_qrtr_packet p;
+    if(qcom8gen3_qrtr_decode(data, size, &p) != 0) {
+        printf("qcom8gen3 npu: QRTR malformed bytes=%u\n", size);
         return;
     }
     npu_glink.qrtr.packets++;
     if(npu_glink.qrtr.packets <= 32)
-        npu_debug("q8b npu: QRTR type=%u src=%u/%x dst=%u/%x size=%u confirm=%u\n",
+        npu_debug("qcom8gen3 npu: QRTR type=%u src=%u/%x dst=%u/%x size=%u confirm=%u\n",
                 p.type, p.src_node, p.src_port, p.dst_node, p.dst_port,
                 p.size, p.confirm);
-    if(p.type == 4 && p.size >= 20 && q8b_qrtr_le32(p.data) == 4) {
-        npu_debug("q8b npu: QRTR service=%u instance=%x node=%u port=%x\n",
-                q8b_qrtr_le32(p.data + 4), q8b_qrtr_le32(p.data + 8),
-                q8b_qrtr_le32(p.data + 12), q8b_qrtr_le32(p.data + 16));
-        if(q8b_qrtr_le32(p.data + 4) == 43 &&
-                q8b_qrtr_le32(p.data + 8) == 0x1702 &&
-                q8b_qrtr_le32(p.data + 12) == p.src_node) {
+    if(p.type == 4 && p.size >= 20 && qcom8gen3_qrtr_le32(p.data) == 4) {
+        npu_debug("qcom8gen3 npu: QRTR service=%u instance=%x node=%u port=%x\n",
+                qcom8gen3_qrtr_le32(p.data + 4), qcom8gen3_qrtr_le32(p.data + 8),
+                qcom8gen3_qrtr_le32(p.data + 12), qcom8gen3_qrtr_le32(p.data + 16));
+        if(qcom8gen3_qrtr_le32(p.data + 4) == 43 &&
+                qcom8gen3_qrtr_le32(p.data + 8) == 0x1702 &&
+                qcom8gen3_qrtr_le32(p.data + 12) == p.src_node) {
             npu_glink.qrtr.ssctl_node = p.src_node;
-            npu_glink.qrtr.ssctl_port = q8b_qrtr_le32(p.data + 16);
+            npu_glink.qrtr.ssctl_port = qcom8gen3_qrtr_le32(p.data + 16);
         }
     }
     if(npu_glink.qrtr.shutdown_pending &&
-            q8b_ssctl_shutdown_result(&p, npu_glink.qrtr.ssctl_node,
+            qcom8gen3_ssctl_shutdown_result(&p, npu_glink.qrtr.ssctl_node,
                 npu_glink.qrtr.ssctl_port, npu_glink.qrtr.ssctl_txn,
                 &npu_glink.qrtr.shutdown_result)) {
         npu_glink.qrtr.shutdown_response = 1;
-        npu_debug("q8b npu: SSCTL shutdown response txn=%u result=%d\n",
+        npu_debug("qcom8gen3 npu: SSCTL shutdown response txn=%u result=%d\n",
                 npu_glink.qrtr.ssctl_txn, npu_glink.qrtr.shutdown_result);
     }
 }
@@ -1102,7 +1102,7 @@ static void glink_qrtr_hello(void) {
         npu_glink.qrtr.valid = 0;
         npu_glink.qrtr.wait_done = 1;
         npu_glink.qrtr.hello_sent = 1;
-        npu_debug("q8b npu: QRTR discovery HELLO sent\n");
+        npu_debug("qcom8gen3 npu: QRTR discovery HELLO sent\n");
     }
 }
 
@@ -1165,7 +1165,7 @@ static int glink_handle_rx_data(uint32_t tail, uint32_t avail,
                 }
             }
             if(!matched)
-                printf("q8b npu: unmatched FastRPC response ctx=%llx rv=%d bytes=%u\n",
+                printf("qcom8gen3 npu: unmatched FastRPC response ctx=%llx rv=%d bytes=%u\n",
                         (unsigned long long)ctx, rv, npu_glink.rx_len);
         }
         if(cid == npu_glink.remote_cid && iid >= 1 &&
@@ -1218,7 +1218,7 @@ static int glink_poll(void) {
             glink_ring_copy(npu_glink.rx, glink_ring_add(tail, 8,
                     npu_glink.len), name, name_len);
             name[name_len] = 0;
-            npu_debug("q8b npu: glink open name=%s cid=%u\n", name, p1);
+            npu_debug("qcom8gen3 npu: glink open name=%s cid=%u\n", name, p1);
             (void)glink_tx_frame(4, p1, 0, 0, 0);
             frame += (name_len + 7u) & ~7u;
             if(strcmp(name, NPU_FRPC_CHANNEL) == 0) {
@@ -1235,11 +1235,11 @@ static int glink_poll(void) {
             }
         } else if(cmd == 4) {
             /* OPEN_ACK addresses the AP local CID allocated above. */
-            npu_debug("q8b npu: glink rx open_ack cid=%u expected=%u\n",
+            npu_debug("qcom8gen3 npu: glink rx open_ack cid=%u expected=%u\n",
                     p1, npu_glink.cid);
             if(npu_glink.open_sent && p1 == npu_glink.cid) {
                 npu_glink.open_ack = 1;
-                npu_debug("q8b npu: glink open acknowledged cid=%u remote=%u\n",
+                npu_debug("qcom8gen3 npu: glink open acknowledged cid=%u remote=%u\n",
                         npu_glink.cid, npu_glink.remote_cid);
                 glink_advertise_intent();
                 if(npu_glink.version_ack && !npu_glink.remote_valid)
@@ -1257,7 +1257,7 @@ static int glink_poll(void) {
             uint32_t count = p2;
             uint32_t best_size = 0, best_iid = 0;
             if(count > 32) {
-                printf("q8b npu: glink intent count too large=%u\n", count);
+                printf("qcom8gen3 npu: glink intent count too large=%u\n", count);
                 break;
             }
             frame += count * 8u;
@@ -1289,14 +1289,14 @@ static int glink_poll(void) {
                         npu_glink.remote_iid = best_iid;
                         npu_glink.remote_valid = 1;
                         npu_glink.remote_wait_done = 0;
-                        npu_debug("q8b npu: glink intent cid=%u size=%u iid=%u\n",
+                        npu_debug("qcom8gen3 npu: glink intent cid=%u size=%u iid=%u\n",
                                 p1, npu_glink.remote_isize,
                                 npu_glink.remote_iid);
                     }
                 }
             }
         } else if(cmd == 8) {
-            npu_debug("q8b npu: glink rx_intent_ack cid=%u count=%u\n", p1, p2);
+            npu_debug("qcom8gen3 npu: glink rx_intent_ack cid=%u count=%u\n", p1, p2);
         } else if(cmd == 6 || cmd == 14) {
             /* The remote endpoint reports completion for an intent that AP
              * consumed with TX_DATA.  Mainline qcom_glink removes a normal
@@ -1320,7 +1320,7 @@ static int glink_poll(void) {
                 }
             }
         } else if(cmd == 7) {
-            npu_debug("q8b npu: glink rx_intent_req cid=%u size=%u\n", p1, p2);
+            npu_debug("qcom8gen3 npu: glink rx_intent_req cid=%u size=%u\n", p1, p2);
             /* The remote may request a receive intent instead of advertising
              * one proactively.  Linux qcom_glink answers the request and
              * then advertises its local buffer; without the second message
@@ -1339,7 +1339,7 @@ static int glink_poll(void) {
         } else if(cmd == 3) {
             (void)glink_tx_frame(11, p1, 0, 0, 0);
         } else {
-            printf("q8b npu: glink rx unhandled cmd=%u p1=%u p2=%u\n",
+            printf("qcom8gen3 npu: glink rx unhandled cmd=%u p1=%u p2=%u\n",
                     cmd, p1, p2);
         }
         glink_rx_advance(glink_ring_add(tail, (frame + 7u) & ~7u,
@@ -1375,27 +1375,27 @@ static int glink_ssctl_shutdown(void) {
     npu_glink.qrtr.ssctl_txn++;
     npu_glink.qrtr.shutdown_response = 0;
     npu_glink.qrtr.shutdown_result = -1;
-    q8b_ssctl_shutdown_request(packet, npu_glink.qrtr.ssctl_node,
+    qcom8gen3_ssctl_shutdown_request(packet, npu_glink.qrtr.ssctl_node,
             npu_glink.qrtr.ssctl_port, npu_glink.qrtr.ssctl_txn);
     if(glink_tx_data_frame(9, npu_glink.qrtr.cid, npu_glink.qrtr.iid,
                 packet, sizeof(packet), 0) != 0) return -1;
     npu_glink.qrtr.valid = 0;
     npu_glink.qrtr.wait_done = 1;
     npu_glink.qrtr.shutdown_pending = 1;
-    npu_debug("q8b npu: SSCTL shutdown requested node=%u port=%u txn=%u\n",
+    npu_debug("qcom8gen3 npu: SSCTL shutdown requested node=%u port=%u txn=%u\n",
             npu_glink.qrtr.ssctl_node, npu_glink.qrtr.ssctl_port, npu_glink.qrtr.ssctl_txn);
     for(unsigned i = 0; i < 5000; i++) {
         (void)glink_poll();
         if(npu_glink.qrtr.shutdown_response) break;
-        if(npu_smp2p_refresh_state() & Q8B_NPU_STATE_FATAL) break;
+        if(npu_smp2p_refresh_state() & QCOM8GEN3_NPU_STATE_FATAL) break;
         npu_delay_ms(1);
     }
     npu_glink.qrtr.shutdown_pending = 0;
     if(!npu_glink.qrtr.shutdown_response || npu_glink.qrtr.shutdown_result) {
-        printf("q8b npu: SSCTL shutdown failed; using SMP2P\n");
+        printf("qcom8gen3 npu: SSCTL shutdown failed; using SMP2P\n");
         return -1;
     }
-    npu_debug("q8b npu: SSCTL shutdown acknowledged\n");
+    npu_debug("qcom8gen3 npu: SSCTL shutdown acknowledged\n");
     return 0;
 }
 
@@ -1448,13 +1448,13 @@ static void glink_ping(void) {
         }
         return;
     }
-    uint8_t *s = (uint8_t *)Q8B_SMEM_WIN;
+    uint8_t *s = (uint8_t *)QCOM8GEN3_SMEM_WIN;
     uint8_t *ph = s + 0x1af000;
     uint32_t fU = *(uint32_t *)(ph + 12);
     const uint8_t *i478 = smem_find_private_item(ph, fU, 478);
     const uint8_t *i479 = smem_find_private_item(ph, fU, 479);
     const uint8_t *i480 = smem_find_private_item(ph, fU, 480);
-    npu_debug("q8b npu: glink items %d %d %d\n", i478 != 0, i479 != 0, i480 != 0);
+    npu_debug("qcom8gen3 npu: glink items %d %d %d\n", i478 != 0, i479 != 0, i480 != 0);
     if(!i478 || !i479 || !i480) return;
     memset(&npu_glink, 0, sizeof(npu_glink));
     npu_glink.desc = (volatile uint32_t *)(i478 + 16);
@@ -1462,7 +1462,7 @@ static void glink_ping(void) {
     npu_glink.rx = (uint8_t *)(i480 + 16);
     npu_glink.len = 16384;
     npu_glink.ready = 1;
-    npu_debug("q8b npu: glink desc %x %x %x %x\n", npu_glink.desc[0],
+    npu_debug("qcom8gen3 npu: glink desc %x %x %x %x\n", npu_glink.desc[0],
             npu_glink.desc[1], npu_glink.desc[2], npu_glink.desc[3]);
     /* qcom_glink_smem_register initializes only AP-owned TX head/RX tail.
      * The DSP may have published VERSION before AP registers this edge;
@@ -1471,7 +1471,7 @@ static void glink_ping(void) {
     npu_glink.desc[1] = 0;
     npu_glink.desc[2] = 0;
     __asm__ volatile("dsb sy" ::: "memory");
-    npu_debug("q8b npu: GLINK edge initialized once; DSP tail=%x head=%x preserved\n",
+    npu_debug("qcom8gen3 npu: GLINK edge initialized once; DSP tail=%x head=%x preserved\n",
             npu_glink.desc[0], npu_glink.desc[3]);
     (void)glink_tx_frame(0, NPU_GLINK_VERSION, NPU_GLINK_FEATURES, 0, 0);
     npu_glink.version_sent = 1;
@@ -1482,7 +1482,7 @@ static void glink_ping(void) {
             break;
         npu_delay_ms(20);
     }
-    npu_debug("q8b npu: glink %s cid=%u iid=%u\n",
+    npu_debug("qcom8gen3 npu: glink %s cid=%u iid=%u\n",
             npu_glink.version_ack ? "version acknowledged" : "no response",
             npu_glink.cid, npu_glink.remote_iid);
 }
@@ -1492,7 +1492,7 @@ static void glink_ping(void) {
  * otherwise PAS_AUTH can race the firmware's SMEM allocator and observe only
  * host items 478/479, causing the first FastRPC session to be declined. */
 static void glink_wait_for_remote_items(void) {
-    uint8_t *ph = (uint8_t *)Q8B_SMEM_WIN + 0x1af000;
+    uint8_t *ph = (uint8_t *)QCOM8GEN3_SMEM_WIN + 0x1af000;
     int seen = 0;
 
     for(int try = 0; try < 50 && !seen; try++) {
@@ -1506,7 +1506,7 @@ static void glink_wait_for_remote_items(void) {
         __asm__ volatile("dsb sy" ::: "memory");
         npu_delay_ms(100);
     }
-    npu_debug("q8b npu: glink remote item 480 seen=%d\n", seen);
+    npu_debug("qcom8gen3 npu: glink remote item 480 seen=%d\n", seen);
 }
 
 /* Re-arm before AUTH, as q6v5_prepare() reinitializes start_done. The
@@ -1515,9 +1515,9 @@ static void glink_wait_for_remote_items(void) {
 static int npu_wait_for_ready(void) {
     for (unsigned attempt = 0; attempt < 50; attempt++) {
         uint32_t state = npu_smp2p_refresh_state();
-        if (state & Q8B_NPU_STATE_FATAL) break;
-        if (q8b_npu_state_ready(state) && npu_boot_smp2p_notified) {
-            npu_debug("q8b npu: DSP ready after new SMP2P notification\n");
+        if (state & QCOM8GEN3_NPU_STATE_FATAL) break;
+        if (qcom8gen3_npu_state_ready(state) && npu_boot_smp2p_notified) {
+            npu_debug("qcom8gen3 npu: DSP ready after new SMP2P notification\n");
             npu_watchdog_snapshot("ready");
             return 0;
         }
@@ -1526,9 +1526,9 @@ static int npu_wait_for_ready(void) {
         npu_delay_ms(100);
     }
     npu_recovery_required = 1;
-    printf("q8b npu: new DSP readiness not observed notify=%d pending=%x; preserving GLINK, board reset required\n",
+    printf("qcom8gen3 npu: new DSP readiness not observed notify=%d pending=%x; preserving GLINK, board reset required\n",
             npu_boot_smp2p_notified, npu_ipcc_recv(0));
-    return Q8B_NPU_PAS_FAILED;
+    return QCOM8GEN3_NPU_PAS_FAILED;
 }
 
 static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
@@ -1544,16 +1544,16 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
     if(fw_size < sizeof(*eh) || eh->e_ident[0] != 0x7f ||
             eh->e_ident[1] != 'E' || eh->e_ident[2] != 'L' ||
             eh->e_ident[3] != 'F' || eh->e_ident[4] != 1)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     if(eh->e_phnum < 2 || eh->e_phnum > 32 ||
             eh->e_phentsize != sizeof(*ph) ||
             (uint64_t)eh->e_phoff + (uint32_t)eh->e_phnum * sizeof(*ph) > fw_size)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     ph = (const npu_elf32_phdr *)((const uint8_t *)fw + eh->e_phoff);
 
     for(i = 0; i < eh->e_phnum; i++) {
         uint64_t end;
-        if(!q8b_mdt_loadable(&ph[i])) {
+        if(!qcom8gen3_mdt_loadable(&ph[i])) {
             if(!hash && (ph[i].p_flags & NPU_MDT_TYPE_MASK) ==
                     NPU_MDT_TYPE_HASH)
                 hash = i;
@@ -1564,19 +1564,19 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
         if(end > max_addr) max_addr = end;
     }
     if(!hash || min_addr == ~0ull || max_addr <= min_addr)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     max_addr = (max_addr + 0xfff) & ~0xfffull;
-    if(max_addr - min_addr != Q8B_NSP0_SPAN)
-        return Q8B_NPU_PAS_INVALID;
-    if(q8b_mdt_validate_loads(fw_size, ph, eh->e_phnum, min_addr,
-                Q8B_NSP0_SPAN) != 0)
-        return Q8B_NPU_PAS_INVALID;
+    if(max_addr - min_addr != QCOM8GEN3_NSP0_SPAN)
+        return QCOM8GEN3_NPU_PAS_INVALID;
+    if(qcom8gen3_mdt_validate_loads(fw_size, ph, eh->e_phnum, min_addr,
+                QCOM8GEN3_NSP0_SPAN) != 0)
+        return QCOM8GEN3_NPU_PAS_INVALID;
 
     /* metadata = ELF header block + hash segment, no padding */
     meta_len = (uint64_t)ph[0].p_filesz + ph[hash].p_filesz;
     if(meta_len > NPU_META_SIZE || ph[0].p_filesz > fw_size ||
             (uint64_t)ph[hash].p_offset + ph[hash].p_filesz > fw_size)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     /* A new attempt invalidates the prior stopped-RAM snapshot, including
      * a subsequent authentication/prepare failure. */
     npu_dump_available = 0;
@@ -1586,7 +1586,7 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
     {
         uint32_t off = (fw_size + 15u) & ~15u;
         if((uint64_t)off + meta_len > capacity)
-            return Q8B_NPU_PAS_INVALID;
+            return QCOM8GEN3_NPU_PAS_INVALID;
         meta_va = (uint8_t *)fw + off;
         meta_pa = fw_pa + off;
     }
@@ -1597,10 +1597,10 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
                 ((const uint8_t *)fw)[ph[hash].p_offset + i];
     __asm__ volatile("dsb sy" ::: "memory");
 
-    if(npu_watchdog_prepare() != 0) return Q8B_NPU_PAS_FAILED;
+    if(npu_watchdog_prepare() != 0) return QCOM8GEN3_NPU_PAS_FAILED;
     if(nsp_power_vote() != 0) {
         npu_recovery_required = 1;
-        return Q8B_NPU_PAS_FAILED;
+        return QCOM8GEN3_NPU_PAS_FAILED;
     }
     npu_ipcc_enable(0); /* GLINK_QMP */
     npu_ipcc_enable(2); /* SMP2P */
@@ -1608,28 +1608,28 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
     /* Tell the DSP the host SMP2P item is ready before releasing reset. */
     *(volatile uint32_t *)(MMIO_BASE + 0x408000 + 0x0c) = 0x00060002u;
     __asm__ volatile("dsb sy" ::: "memory");
-    npu_debug("q8b npu: SMP2P pre-boot kick\n");
+    npu_debug("qcom8gen3 npu: SMP2P pre-boot kick\n");
 
-    npu_debug("q8b npu: fw min=%llx max=%llx span=%llx meta=%llu hash=%u\n",
+    npu_debug("qcom8gen3 npu: fw min=%llx max=%llx span=%llx meta=%llu hash=%u\n",
             (unsigned long long)min_addr, (unsigned long long)max_addr,
             (unsigned long long)(max_addr - min_addr),
             (unsigned long long)meta_len, hash);
 
-    ret = scm_call(0x201, 0x82, Q8B_NSP0_PAS_ID, meta_pa,
+    ret = scm_call(0x201, 0x82, QCOM8GEN3_NSP0_PAS_ID, meta_pa,
             (uint32_t)meta_len, 0, &result);
-    npu_debug("q8b npu: init ret=%d result=%llu\n", ret,
+    npu_debug("qcom8gen3 npu: init ret=%d result=%llu\n", ret,
             (unsigned long long)result);
-    if(ret) return ret == Q8B_GPU_PAS_BUSY ? Q8B_NPU_PAS_BUSY :
-            Q8B_NPU_PAS_FAILED;
-    if(result) return Q8B_NPU_PAS_FAILED;
+    if(ret) return ret == QCOM8GEN3_GPU_PAS_BUSY ? QCOM8GEN3_NPU_PAS_BUSY :
+            QCOM8GEN3_NPU_PAS_FAILED;
+    if(result) return QCOM8GEN3_NPU_PAS_FAILED;
 
-    ret = scm_call(0x202, 3, Q8B_NSP0_PAS_ID, Q8B_NSP0_CARVEOUT,
-            Q8B_NSP0_SPAN, 0, &result);
-    npu_debug("q8b npu: mem_setup ret=%d result=%llu\n", ret,
+    ret = scm_call(0x202, 3, QCOM8GEN3_NSP0_PAS_ID, QCOM8GEN3_NSP0_CARVEOUT,
+            QCOM8GEN3_NSP0_SPAN, 0, &result);
+    npu_debug("qcom8gen3 npu: mem_setup ret=%d result=%llu\n", ret,
             (unsigned long long)result);
-    if(ret) return ret == Q8B_GPU_PAS_BUSY ? Q8B_NPU_PAS_BUSY :
-            Q8B_NPU_PAS_FAILED;
-    if(result) return Q8B_NPU_PAS_FAILED;
+    if(ret) return ret == QCOM8GEN3_GPU_PAS_BUSY ? QCOM8GEN3_NPU_PAS_BUSY :
+            QCOM8GEN3_NPU_PAS_FAILED;
+    if(result) return QCOM8GEN3_NPU_PAS_FAILED;
 
     {
         /* A syscall runs on the caller's page tables, so the carveout must be
@@ -1638,38 +1638,38 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
         page_dir_entry_t *pvm = (p && p->space) ? p->space->vm : 0;
 
         if(p->info.pid != win_pid) {
-            if(map_pages_size(_kernel_info.kernel_vm, Q8B_NSP_WIN,
-                        Q8B_NSP0_CARVEOUT, Q8B_NSP0_SPAN,
+            if(map_pages_size(_kernel_info.kernel_vm, QCOM8GEN3_NSP_WIN,
+                        QCOM8GEN3_NSP0_CARVEOUT, QCOM8GEN3_NSP0_SPAN,
                         AP_RW_D, PTE_ATTR_SYS_DMA) != 0)
-                return Q8B_NPU_PAS_FAILED;
+                return QCOM8GEN3_NPU_PAS_FAILED;
             if(pvm != 0 && pvm != _kernel_info.kernel_vm &&
-                    map_pages_size(pvm, Q8B_NSP_WIN,
-                        Q8B_NSP0_CARVEOUT, Q8B_NSP0_SPAN,
+                    map_pages_size(pvm, QCOM8GEN3_NSP_WIN,
+                        QCOM8GEN3_NSP0_CARVEOUT, QCOM8GEN3_NSP0_SPAN,
                         AP_RW_D, PTE_ATTR_SYS_DMA) != 0)
-                return Q8B_NPU_PAS_FAILED;
+                return QCOM8GEN3_NPU_PAS_FAILED;
             win_pid = p->info.pid;
         }
         flush_tlb();
         __asm__ volatile("dsb sy" ::: "memory");
     }
-    dst = (uint8_t *)Q8B_NSP_WIN;
-    if(q8b_mdt_stage(dst, Q8B_NSP0_SPAN, fw, fw_size, ph,
+    dst = (uint8_t *)QCOM8GEN3_NSP_WIN;
+    if(qcom8gen3_mdt_stage(dst, QCOM8GEN3_NSP0_SPAN, fw, fw_size, ph,
                 eh->e_phnum, min_addr) != 0)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     __asm__ volatile("dsb sy" ::: "memory");
-    npu_debug("q8b npu: image staged; PT_LOAD BSS zeroed, gaps preserved\n");
+    npu_debug("qcom8gen3 npu: image staged; PT_LOAD BSS zeroed, gaps preserved\n");
 
     npu_boot_notify_arm();
-    ret = scm_call(0x205, 1, Q8B_NSP0_PAS_ID, 0, 0, 0, &result);
-    npu_debug("q8b npu: auth_and_reset ret=%d result=%llu\n", ret,
+    ret = scm_call(0x205, 1, QCOM8GEN3_NSP0_PAS_ID, 0, 0, 0, &result);
+    npu_debug("qcom8gen3 npu: auth_and_reset ret=%d result=%llu\n", ret,
             (unsigned long long)result);
-    if(ret) return ret == Q8B_GPU_PAS_BUSY ? Q8B_NPU_PAS_BUSY :
-            Q8B_NPU_PAS_FAILED;
-    if(result) return Q8B_NPU_PAS_FAILED;
+    if(ret) return ret == QCOM8GEN3_GPU_PAS_BUSY ? QCOM8GEN3_NPU_PAS_BUSY :
+            QCOM8GEN3_NPU_PAS_FAILED;
+    if(result) return QCOM8GEN3_NPU_PAS_FAILED;
     booted = 1;
-    npu_smp2p_state = Q8B_NPU_STATE_BOOTED;
-    printf("q8b npu: NSP0 authenticated and out of reset\n");
-    if(npu_wait_for_ready() != 0) return Q8B_NPU_PAS_FAILED;
+    npu_smp2p_state = QCOM8GEN3_NPU_STATE_BOOTED;
+    printf("qcom8gen3 npu: NSP0 authenticated and out of reset\n");
+    if(npu_wait_for_ready() != 0) return QCOM8GEN3_NPU_PAS_FAILED;
     glink_ping();
     return 0;
 }
@@ -1730,7 +1730,7 @@ static int npu_frpc_release_maps(void) {
         npu_frpc_map_t *m = &npu_frpc_maps[i];
         if (!m->used) continue;
         if (dma_unpin(0, m->pa) != 0) {
-            printf("q8b npu: DMA pin release failed pa=%llx; retaining record\n",
+            printf("qcom8gen3 npu: DMA pin release failed pa=%llx; retaining record\n",
                     (unsigned long long)m->pa);
             npu_recovery_required = 1;
             rc = -1;
@@ -1761,10 +1761,10 @@ static int npu_frpc_map(uint64_t arg, uint32_t size, uint64_t *devaddr) {
     uint64_t aligned_size;
     uint64_t iova;
 
-    if (npu_recovery_required || !q8b_npu_smmu_ready() ||
+    if (npu_recovery_required || !qcom8gen3_npu_smmu_ready() ||
             session != npu_frpc_session || !size ||
             (pa & 0xfffull))
-        return Q8B_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
     aligned_size = ((uint64_t)size + 0xfffull) & ~0xfffull;
     /* The SMMU always maps whole pages.  Check ownership against the same
      * rounded extent that will be published, otherwise a short DMA
@@ -1772,7 +1772,7 @@ static int npu_frpc_map(uint64_t arg, uint32_t size, uint64_t *devaddr) {
     if (aligned_size > UINT32_MAX ||
             !owned_dma((ewokos_addr_t)pa, (ewokos_addr_t)aligned_size,
                 NPU_MAX_DMA, 0))
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     *devaddr = npu_frpc_map_lookup(session, pa, size);
     if (*devaddr) {
         for (uint32_t i = 0; i < NPU_FRPC_MAP_MAX; i++) {
@@ -1780,7 +1780,7 @@ static int npu_frpc_map(uint64_t arg, uint32_t size, uint64_t *devaddr) {
             if (m->used && m->session == session && m->pa == pa &&
                     m->size >= size) {
                 if (m->refs == UINT32_MAX)
-                    return Q8B_NPU_PAS_BUSY;
+                    return QCOM8GEN3_NPU_PAS_BUSY;
                 m->refs++;
                 break;
             }
@@ -1790,13 +1790,13 @@ static int npu_frpc_map(uint64_t arg, uint32_t size, uint64_t *devaddr) {
     iova = (npu_frpc_next_iova + 0xfffull) & ~0xfffull;
     if (iova < NPU_FRPC_IOVA_BASE ||
             aligned_size > NPU_FRPC_IOVA_LIMIT - iova)
-        return Q8B_NPU_PAS_FAILED;
+        return QCOM8GEN3_NPU_PAS_FAILED;
     for (uint32_t i = 0; i < NPU_FRPC_MAP_MAX; i++) {
         npu_frpc_map_t *m = &npu_frpc_maps[i];
         if (!m->used) {
             proc_t *owner = proc_get_proc(get_current_proc());
             if (dma_pin(0, owner->info.pid, pa, (uint32_t)aligned_size) != 0)
-                return Q8B_NPU_PAS_UNSUPPORTED;
+                return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
             memset(m, 0, sizeof(*m));
             m->used = 1;
             m->pa = pa;
@@ -1804,28 +1804,28 @@ static int npu_frpc_map(uint64_t arg, uint32_t size, uint64_t *devaddr) {
             m->iova = iova;
             m->session = session;
             m->refs = 1;
-            if (q8b_npu_smmu_map(pa, iova, (uint32_t)aligned_size) != 0) {
+            if (qcom8gen3_npu_smmu_map(pa, iova, (uint32_t)aligned_size) != 0) {
                 /* A failed publish may include a failed TLB invalidation.
                  * Keep the pin/record until full teardown, even though no
                  * device address was returned to the caller. */
                 npu_recovery_required = 1;
-                printf("q8b npu: SMMU map failed; retaining DMA pin pa=%llx\n",
+                printf("qcom8gen3 npu: SMMU map failed; retaining DMA pin pa=%llx\n",
                         (unsigned long long)pa);
-                return Q8B_NPU_PAS_FAILED;
+                return QCOM8GEN3_NPU_PAS_FAILED;
             }
             npu_frpc_next_iova = iova + aligned_size;
             *devaddr = ((uint64_t)NPU_FRPC_SID << 32) | iova;
             return 0;
         }
     }
-    return Q8B_NPU_PAS_BUSY;
+    return QCOM8GEN3_NPU_PAS_BUSY;
 }
 
 /* Retain every page referenced by an accepted request until POLL consumes
  * it.  Completion may have reached AP while DSP shared writes are pending;
  * the consumer's ordering barrier precedes dropping these registrations. */
 static int npu_frpc_map_in_flight(const npu_frpc_map_t *m) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     (void)m;
     return 0;
 #else
@@ -1842,27 +1842,27 @@ static int npu_frpc_unmap(uint64_t devaddr, uint32_t size) {
     uint32_t sid = (uint32_t)(devaddr >> 32);
     uint64_t iova = devaddr & 0xffffffffull;
 
-    if (!q8b_npu_smmu_ready() || sid != NPU_FRPC_SID || !size ||
+    if (!qcom8gen3_npu_smmu_ready() || sid != NPU_FRPC_SID || !size ||
             !npu_frpc_session)
-        return Q8B_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
     for (uint32_t i = 0; i < NPU_FRPC_MAP_MAX; i++) {
         npu_frpc_map_t *m = &npu_frpc_maps[i];
         if (m->used && m->session == npu_frpc_session &&
                 m->iova == iova && m->size >= size) {
             if (m->refs == 0)
-                return Q8B_NPU_PAS_FAILED;
-            if (m->refs == 1 && npu_frpc_map_in_flight(m)) return Q8B_NPU_PAS_BUSY;
+                return QCOM8GEN3_NPU_PAS_FAILED;
+            if (m->refs == 1 && npu_frpc_map_in_flight(m)) return QCOM8GEN3_NPU_PAS_BUSY;
             m->refs--;
             if (m->refs != 0)
                 return 0;
-            if (q8b_npu_smmu_unmap(iova, (uint32_t)m->size) != 0) {
+            if (qcom8gen3_npu_smmu_unmap(iova, (uint32_t)m->size) != 0) {
                 m->refs = 1;
-                return Q8B_NPU_PAS_FAILED;
+                return QCOM8GEN3_NPU_PAS_FAILED;
             }
             if (dma_unpin(0, m->pa) != 0) {
                 m->refs = 1;
                 npu_recovery_required = 1;
-                return Q8B_NPU_PAS_FAILED;
+                return QCOM8GEN3_NPU_PAS_FAILED;
             }
             m->used = 0;
             /* Invoke packets are short-lived.  Rewind the monotonic IOVA
@@ -1882,7 +1882,7 @@ static int npu_frpc_unmap(uint64_t devaddr, uint32_t size) {
             return 0;
         }
     }
-    return Q8B_NPU_PAS_INVALID;
+    return QCOM8GEN3_NPU_PAS_INVALID;
 }
 
 static int npu_frpc_iova_owned(uint32_t session, uint64_t devaddr,
@@ -1915,9 +1915,9 @@ static int npu_frpc_iova_owned(uint32_t session, uint64_t devaddr,
 
 static void npu_frpc_record_dsp_mmap(uint32_t session, uint8_t *payload,
         uint64_t payload_iova, uint32_t payload_size) {
-    struct q8b_frpc_map_reply reply;
+    struct qcom8gen3_frpc_map_reply reply;
 
-    if (q8b_frpc_decode_map_reply(payload, payload_iova, payload_size,
+    if (qcom8gen3_frpc_decode_map_reply(payload, payload_iova, payload_size,
                 &reply) != 0 || (reply.ap_addr >> 32) != NPU_FRPC_SID)
         return;
     for (uint32_t i = 0; i < NPU_FRPC_MAP_MAX; i++) {
@@ -1955,7 +1955,7 @@ static void npu_frpc_release_dsp_mmap(uint32_t session, uint8_t *payload,
             inbufs != 1u || outbufs != 0u ||
             ((sc >> 4) & 0x0fu) || (sc & 0x0fu))
         return;
-    req = q8b_frpc_inline_arg(payload, payload_iova, payload_size, 0, 24u);
+    req = qcom8gen3_frpc_inline_arg(payload, payload_iova, payload_size, 0, 24u);
     if (!req)
         return;
     memcpy(&dsp_vaddr, req + 8u, sizeof(dsp_vaddr));
@@ -1973,11 +1973,11 @@ static void npu_frpc_release_dsp_mmap(uint32_t session, uint8_t *payload,
 }
 
 static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     (void)pa;
     (void)size;
     (void)listener;
-    return Q8B_NPU_PAS_UNSUPPORTED;
+    return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 #else
     uint8_t *payload;
     uint32_t cap = 0, handle, sc;
@@ -1989,27 +1989,27 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
     npu_frpc_pending_t *pending = 0;
 
     /* Observe fatal/watchdog before consuming a response or submitting DMA. */
-    if(npu_smp2p_refresh_state() & Q8B_NPU_STATE_FATAL)
-        return Q8B_NPU_PAS_FAILED;
+    if(npu_smp2p_refresh_state() & QCOM8GEN3_NPU_STATE_FATAL)
+        return QCOM8GEN3_NPU_PAS_FAILED;
     if (npu_glink.desc) (void)glink_poll();
     for (unsigned i = 0; i < NPU_FRPC_PENDING_MAX; i++) {
         if (npu_glink.pending[i].ctx && npu_glink.pending[i].pa == pa)
-            return Q8B_NPU_PAS_INVALID; /* never resubmit an accepted packet */
+            return QCOM8GEN3_NPU_PAS_INVALID; /* never resubmit an accepted packet */
         if (!npu_glink.pending[i].ctx) pending = &npu_glink.pending[i];
     }
-    if (!pending) return Q8B_NPU_PAS_BUSY;
-    if(!booted || !q8b_npu_smmu_ready() || !npu_glink.ready || !npu_glink.cid)
-        return Q8B_NPU_PAS_UNSUPPORTED;
-    if (!npu_glink.remote_valid) return Q8B_NPU_PAS_BUSY;
+    if (!pending) return QCOM8GEN3_NPU_PAS_BUSY;
+    if(!booted || !qcom8gen3_npu_smmu_ready() || !npu_glink.ready || !npu_glink.cid)
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
+    if (!npu_glink.remote_valid) return QCOM8GEN3_NPU_PAS_BUSY;
     if(size < 16 || size > NPU_MAX_FW || !owned_dma(pa, size, NPU_MAX_FW,
             &cap) || cap < size)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     payload = (uint8_t *)dma_v_addr(0, pa);
-    if(!payload) return Q8B_NPU_PAS_INVALID;
+    if(!payload) return QCOM8GEN3_NPU_PAS_INVALID;
     msg_iova = npu_frpc_map_lookup(npu_frpc_session, pa, size);
     if(!msg_iova) {
-        printf("q8b npu: frpc invoke rejected (payload is not mapped)\n");
-        return Q8B_NPU_PAS_UNSUPPORTED;
+        printf("qcom8gen3 npu: frpc invoke rejected (payload is not mapped)\n");
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
     }
     for (unsigned j = 0; j < NPU_FRPC_MAP_MAX; j++) {
         const npu_frpc_map_t *m = &npu_frpc_maps[j];
@@ -2019,9 +2019,9 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
     memcpy(&handle, payload + 8, sizeof(handle));
     memcpy(&sc, payload + 12, sizeof(sc));
     memcpy(&payload_session, payload, sizeof(payload_session));
-    meta = q8b_frpc_metadata_offset(payload, size);
-    if (!meta || (payload_session & ~(Q8B_NPU_FRPC_PACKET_PAGE | Q8B_NPU_FRPC_PACKET_HOST)) != npu_frpc_session)
-        return Q8B_NPU_PAS_INVALID;
+    meta = qcom8gen3_frpc_metadata_offset(payload, size);
+    if (!meta || (payload_session & ~(QCOM8GEN3_NPU_FRPC_PACKET_PAGE | QCOM8GEN3_NPU_FRPC_PACKET_HOST)) != npu_frpc_session)
+        return QCOM8GEN3_NPU_PAS_INVALID;
     /* Match REMOTE_SCALARS_* in Linux drivers/misc/fastrpc.c.  The high
      * byte carries the remote method; buffer counts are split between input
      * and output bytes, while the low nibbles describe handle arguments. */
@@ -2035,19 +2035,19 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
      * future handle-aware client can extend the metadata layout without
      * silently treating handles as buffer descriptors. */
     if (inhandles || outhandles || nscalars != nbufs)
-        return Q8B_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
     meta_size = (uint64_t)nscalars * (16u + 8u + 16u) +
             16u * sizeof(uint64_t) + 64u * sizeof(uint32_t);
     if (nbufs > NPU_FRPC_MAX_RBUFS || nscalars > NPU_FRPC_MAX_RBUFS ||
             meta + meta_size > size)
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     for (uint32_t i = 0; i < nbufs; i++) {
         uint64_t pv, len;
         memcpy(&pv, payload + meta + i * 16u, sizeof(pv));
         memcpy(&len, payload + meta + i * 16u + 8u, sizeof(len));
-        if (len && !q8b_frpc_host_pointers(payload) &&
+        if (len && !qcom8gen3_frpc_host_pointers(payload) &&
                 (!pv || !npu_frpc_iova_owned(npu_frpc_session, pv, len)))
-            return Q8B_NPU_PAS_INVALID;
+            return QCOM8GEN3_NPU_PAS_INVALID;
     }
     /* The page list is authoritative for the DMA backing of every remote
      * pointer.  Validate it separately from remote_buf.pv: with standard
@@ -2060,7 +2060,7 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
             uint64_t page_addr, page_size, buf_len;
             uint32_t list_off = meta + nbufs * 16u + i * 8u;
             if ((uint64_t)list_off + 8u > size)
-                return Q8B_NPU_PAS_INVALID;
+                return QCOM8GEN3_NPU_PAS_INVALID;
             memcpy(&list_num, payload + list_off, sizeof(list_num));
             memcpy(&list_pgidx, payload + list_off + 4u,
                     sizeof(list_pgidx));
@@ -2073,19 +2073,19 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
              * stale descriptor from escaping the AP SMMU ownership table. */
             if (list_pgidx != i || list_num > 1u ||
                     (!!buf_len != !!list_num))
-                return Q8B_NPU_PAS_INVALID;
+                return QCOM8GEN3_NPU_PAS_INVALID;
             if ((uint64_t)page_off + (uint64_t)(i + 1u) * 16u > size)
-                return Q8B_NPU_PAS_INVALID;
+                return QCOM8GEN3_NPU_PAS_INVALID;
             memcpy(&page_addr, payload + page_off + i * 16u,
                     sizeof(page_addr));
             memcpy(&page_size, payload + page_off + i * 16u + 8u,
                     sizeof(page_size));
             if (!!buf_len != !!page_size)
-                return Q8B_NPU_PAS_INVALID;
+                return QCOM8GEN3_NPU_PAS_INVALID;
             if (page_size && (!page_addr ||
                     !npu_frpc_iova_owned(npu_frpc_session, page_addr,
                         page_size)))
-                return Q8B_NPU_PAS_INVALID;
+                return QCOM8GEN3_NPU_PAS_INVALID;
             if (page_size) {
                 /* Save validated membership while the owner buffer is
                  * live. In-flight checks must not dereference it later. */
@@ -2098,14 +2098,14 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
                         map_mask |= 1ull << j;
                 }
             }
-            if (buf_len && q8b_frpc_host_pointers(payload)) {
+            if (buf_len && qcom8gen3_frpc_host_pointers(payload)) {
                 uint64_t pv;
                 int paired = 0;
                 memcpy(&pv, payload + meta + i * 16u, sizeof(pv));
                 for (uint32_t j = 0; j < NPU_FRPC_MAP_MAX; j++) {
                     npu_frpc_map_t *m = &npu_frpc_maps[j];
                     if (m->used && m->session == npu_frpc_session &&
-                            q8b_frpc_buffer_matches(pv, buf_len,
+                            qcom8gen3_frpc_buffer_matches(pv, buf_len,
                                 page_addr, page_size, dma_v_addr(0, m->pa),
                                 ((uint64_t)NPU_FRPC_SID << 32) | m->iova,
                                 m->dsp_vaddr, m->size)) {
@@ -2113,7 +2113,7 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
                         break;
                     }
                 }
-                if (!paired) return Q8B_NPU_PAS_INVALID;
+                if (!paired) return QCOM8GEN3_NPU_PAS_INVALID;
             }
         }
     }
@@ -2124,34 +2124,34 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
         if (handle == 1u && (method == 6u || method == 7u))
             npu_frpc_pd = 1u;
     }
-    if (q8b_frpc_next_context(&npu_frpc_sequence, npu_frpc_pd, &ctx) != 0)
-        return Q8B_NPU_PAS_FAILED;
+    if (qcom8gen3_frpc_next_context(&npu_frpc_sequence, npu_frpc_pd, &ctx) != 0)
+        return QCOM8GEN3_NPU_PAS_FAILED;
     /* Linux's kernel=true root calls route via message client_id=0.
      * Their input descriptor still names the user client (1); normal
      * user/skel invokes carry that user id in the message header too. */
-    msg.client_id = q8b_frpc_message_client_id(handle);
+    msg.client_id = qcom8gen3_frpc_message_client_id(handle);
     /* Linux sends current->pid, so its dedicated listener thread has a
      * different DSP worker from the application thread blocked in dlopen.
-     * Q8B pumps both from one AP thread: reserve stable virtual thread ids. */
-    msg.tid = q8b_frpc_message_tid(handle, listener);
+     * QCOM8GEN3 pumps both from one AP thread: reserve stable virtual thread ids. */
+    msg.tid = qcom8gen3_frpc_message_tid(handle, listener);
     msg.ctx = ctx;
     msg.handle = handle;
     msg.sc = sc;
     msg.addr = msg_iova + meta;
     msg.size = (size - meta + 0xfffu) & ~0xfffull;
     if (!npu_frpc_iova_owned(npu_frpc_session, msg.addr, msg.size))
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     *pending = (npu_frpc_pending_t){ .ctx = ctx, .pa = pa, .maps = map_mask,
         .size = size, .handle = handle, .sc = sc, .submitted = npu_frpc_ticks() };
     if(glink_send_data(&msg, sizeof(msg)) != 0) {
         memset(pending, 0, sizeof(*pending));
-        return Q8B_NPU_PAS_BUSY;
+        return QCOM8GEN3_NPU_PAS_BUSY;
     }
     if(!npu_glink.metadata_logged) {
-        npu_debug("q8b npu: FastRPC metadata offset=%u msg.addr=%llx size=%llu page_aligned=%d host_pv=%d\n",
+        npu_debug("qcom8gen3 npu: FastRPC metadata offset=%u msg.addr=%llx size=%llu page_aligned=%d host_pv=%d\n",
                 meta, (unsigned long long)msg.addr,
                 (unsigned long long)msg.size, !(msg.addr & 0xfffu),
-                q8b_frpc_host_pointers(payload));
+                qcom8gen3_frpc_host_pointers(payload));
         npu_glink.metadata_logged = 1;
     }
     if(listener && handle == 1u) npu_glink.listener_root_submits++;
@@ -2160,25 +2160,25 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
 }
 
 static int npu_frpc_poll(ewokos_addr_t pa, uint32_t size) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     (void)pa;
     (void)size;
-    return Q8B_NPU_PAS_UNSUPPORTED;
+    return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 #else
     if (!booted || !npu_frpc_session)
-        return Q8B_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
     if (!owned_dma(pa, size, NPU_MAX_FW, 0))
-        return Q8B_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_PAS_INVALID;
     /* Retain even a completed packet on fatal/watchdog until PAS_STOP has
      * quiesced the DSP. Never consume GLINK responses after a known crash. */
-    if(npu_smp2p_refresh_state() & Q8B_NPU_STATE_FATAL)
-        return Q8B_NPU_PAS_FAILED;
+    if(npu_smp2p_refresh_state() & QCOM8GEN3_NPU_STATE_FATAL)
+        return QCOM8GEN3_NPU_PAS_FAILED;
     if (npu_glink.desc) (void)glink_poll();
     for (unsigned i = 0; i < NPU_FRPC_PENDING_MAX; i++) {
         npu_frpc_pending_t *p = &npu_glink.pending[i];
         if (!p->ctx || p->pa != pa || p->size != size) continue;
         if (!p->done) {
-            return Q8B_NPU_PAS_BUSY;
+            return QCOM8GEN3_NPU_PAS_BUSY;
         }
         uint32_t handle = p->handle, sc = p->sc;
         int32_t rv = p->retval;
@@ -2194,16 +2194,16 @@ static int npu_frpc_poll(ewokos_addr_t pa, uint32_t size) {
         memset(p, 0, sizeof(*p));
         return 0;
     }
-    return Q8B_NPU_PAS_INVALID;
+    return QCOM8GEN3_NPU_PAS_INVALID;
 #endif
 }
 
 static int npu_pas_prepare(void) {
     if(pas_prepared) return 0;
-    if(npu_watchdog_prepare() != 0) return Q8B_NPU_PAS_FAILED;
+    if(npu_watchdog_prepare() != 0) return QCOM8GEN3_NPU_PAS_FAILED;
     if(nsp_power_vote() != 0) {
         npu_recovery_required = 1;
-        return Q8B_NPU_PAS_FAILED;
+        return QCOM8GEN3_NPU_PAS_FAILED;
     }
     npu_ipcc_enable(0);
     npu_ipcc_enable(2);
@@ -2220,195 +2220,195 @@ static int npu_pas_stage(ewokos_addr_t pa, uint32_t size) {
     uint8_t *src;
     uint8_t *dst;
 
-    if(size != Q8B_NSP0_SPAN || !owned_dma(pa, size, Q8B_NSP0_SPAN, 0))
-        return Q8B_NPU_PAS_INVALID;
+    if(size != QCOM8GEN3_NSP0_SPAN || !owned_dma(pa, size, QCOM8GEN3_NSP0_SPAN, 0))
+        return QCOM8GEN3_NPU_PAS_INVALID;
     src = (uint8_t *)dma_v_addr(0, pa);
-    if(!src) return Q8B_NPU_PAS_INVALID;
-    if(map_pages_size(_kernel_info.kernel_vm, Q8B_NSP_WIN,
-                Q8B_NSP0_CARVEOUT, Q8B_NSP0_SPAN, AP_RW_D,
+    if(!src) return QCOM8GEN3_NPU_PAS_INVALID;
+    if(map_pages_size(_kernel_info.kernel_vm, QCOM8GEN3_NSP_WIN,
+                QCOM8GEN3_NSP0_CARVEOUT, QCOM8GEN3_NSP0_SPAN, AP_RW_D,
                 PTE_ATTR_SYS_DMA) != 0)
-        return Q8B_NPU_PAS_FAILED;
+        return QCOM8GEN3_NPU_PAS_FAILED;
     if(pvm && pvm != _kernel_info.kernel_vm &&
-            map_pages_size(pvm, Q8B_NSP_WIN, Q8B_NSP0_CARVEOUT,
-                Q8B_NSP0_SPAN, AP_RW_D, PTE_ATTR_SYS_DMA) != 0)
-        return Q8B_NPU_PAS_FAILED;
+            map_pages_size(pvm, QCOM8GEN3_NSP_WIN, QCOM8GEN3_NSP0_CARVEOUT,
+                QCOM8GEN3_NSP0_SPAN, AP_RW_D, PTE_ATTR_SYS_DMA) != 0)
+        return QCOM8GEN3_NPU_PAS_FAILED;
     flush_tlb();
-    dst = (uint8_t *)Q8B_NSP_WIN;
+    dst = (uint8_t *)QCOM8GEN3_NSP_WIN;
     memcpy(dst, src, size);
     __asm__ volatile("dsb sy" ::: "memory");
     return 0;
 }
 
 uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
-#ifdef Q8B_QEMU_TEST
+#ifdef QCOM8GEN3_QEMU_TEST
     (void)op; (void)arg; (void)size;
-    return Q8B_NPU_PAS_UNSUPPORTED;
+    return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 #else
-    if(op == Q8B_NPU_SYS_OFF) {
+    if(op == QCOM8GEN3_NPU_SYS_OFF) {
         uint64_t regs[8] = { 0x84000008ull, 0, 0, 0, 0, 0, 0, 0 };
-        printf("q8b npu: PSCI SYSTEM_OFF\n");
+        printf("qcom8gen3 npu: PSCI SYSTEM_OFF\n");
         __asm__ volatile("dsb sy" ::: "memory");
-        q8b_scm_smc(regs);
-        printf("q8b npu: PSCI poweroff returned a0=%llx\n",
+        qcom8gen3_scm_smc(regs);
+        printf("qcom8gen3 npu: PSCI poweroff returned a0=%llx\n",
                 (unsigned long long)regs[0]);
-        return Q8B_NPU_PAS_FAILED;
+        return QCOM8GEN3_NPU_PAS_FAILED;
     }
 
-    if(op == Q8B_NPU_SYS_RESET) {
+    if(op == QCOM8GEN3_NPU_SYS_RESET) {
         uint64_t regs[8] = { 0x84000009ull, 0, 0, 0, 0, 0, 0, 0 };
-        printf("q8b npu: PSCI SYSTEM_RESET\n");
+        printf("qcom8gen3 npu: PSCI SYSTEM_RESET\n");
         __asm__ volatile("dsb sy" ::: "memory");
-        q8b_scm_smc(regs);
-        printf("q8b npu: PSCI reset returned a0=%llx\n",
+        qcom8gen3_scm_smc(regs);
+        printf("qcom8gen3 npu: PSCI reset returned a0=%llx\n",
                 (unsigned long long)regs[0]);
-        return Q8B_NPU_PAS_FAILED;
+        return QCOM8GEN3_NPU_PAS_FAILED;
     }
 
-    if(op == Q8B_NPU_CPU_SLEEP) {
+    if(op == QCOM8GEN3_NPU_CPU_SLEEP) {
 #ifdef KERNEL_SMP
-        extern int q8b_cpu_sleep_ctl(uint32_t arg);
-        if(q8b_cpu_sleep_ctl((uint32_t)arg) != 0)
-            return Q8B_NPU_PAS_UNSUPPORTED;
+        extern int qcom8gen3_cpu_sleep_ctl(uint32_t arg);
+        if(qcom8gen3_cpu_sleep_ctl((uint32_t)arg) != 0)
+            return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         return 0;
 #else
         (void)arg;
-        return Q8B_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 #endif
     }
 
-    if(op == Q8B_NPU_CPU_SLEEP_STATS) {
+    if(op == QCOM8GEN3_NPU_CPU_SLEEP_STATS) {
 #ifdef KERNEL_SMP
-        extern uint64_t q8b_cpu_sleep_stat(uint32_t arg);
-        return q8b_cpu_sleep_stat((uint32_t)arg);
+        extern uint64_t qcom8gen3_cpu_sleep_stat(uint32_t arg);
+        return qcom8gen3_cpu_sleep_stat((uint32_t)arg);
 #else
         (void)arg;
-        return Q8B_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 #endif
     }
 
-    if(op == Q8B_NPU_PAS_QUERY) {
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
+    if(op == QCOM8GEN3_NPU_PAS_QUERY) {
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
         if(!probed) {
             probe_rc = nsp_probe();
             probed = 1;
         }
-        if(probe_rc == Q8B_GPU_PAS_BUSY || probe_rc == Q8B_GPU_PAS_WAITQ)
+        if(probe_rc == QCOM8GEN3_GPU_PAS_BUSY || probe_rc == QCOM8GEN3_GPU_PAS_WAITQ)
             return probe_rc;
-        if(probe_rc) return Q8B_NPU_PAS_UNSUPPORTED;
-        return Q8B_NPU_ABI;
+        if(probe_rc) return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
+        return QCOM8GEN3_NPU_ABI;
     }
 
     /* Keep the transport probe separate from PAS.  A positive result means
      * the synchronous GLINK/FastRPC service is compiled in; SESSION still
      * requires an authenticated DSP, remote intent and a ready context bank. */
-    if(op == Q8B_NPU_FRPC_QUERY) {
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
+    if(op == QCOM8GEN3_NPU_FRPC_QUERY) {
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
         /* The service is available once the kernel transport is present.  A
          * later SESSION request still requires PAS_BOOT to have completed, so
          * probing the QNN backend cannot accidentally touch an unbooted DSP. */
-        return Q8B_NPU_FRPC_ABI;
+        return QCOM8GEN3_NPU_FRPC_ABI;
     }
 
-    if(op == Q8B_NPU_FRPC_POINTER_QUERY) {
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
-        return Q8B_NPU_FRPC_POINTER_HOST;
+    if(op == QCOM8GEN3_NPU_FRPC_POINTER_QUERY) {
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_FRPC_POINTER_HOST;
     }
 
-    if(op == Q8B_NPU_FRPC_METADATA_QUERY) {
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
-        return Q8B_NPU_FRPC_METADATA_PAGE;
+    if(op == QCOM8GEN3_NPU_FRPC_METADATA_QUERY) {
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_FRPC_METADATA_PAGE;
     }
 
-    if(q8b_npu_dump_is_query(op, arg, size)) {
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
-        return Q8B_NPU_DUMP_ABI;
+    if(qcom8gen3_npu_dump_is_query(op, arg, size)) {
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
+        return QCOM8GEN3_NPU_DUMP_ABI;
     }
 
-    if(op == Q8B_NPU_FRPC_DMA_QUERY) {
+    if(op == QCOM8GEN3_NPU_FRPC_DMA_QUERY) {
         int32_t owner;
         uint32_t pins;
-        if(size || !arg || (arg & 0xfffull)) return Q8B_NPU_PAS_INVALID;
+        if(size || !arg || (arg & 0xfffull)) return QCOM8GEN3_NPU_PAS_INVALID;
         if(dma_pin_query(0, (ewokos_addr_t)arg, &owner, &pins) != 0)
-            return Q8B_NPU_PAS_UNSUPPORTED;
+            return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         return ((uint64_t)pins << 32) | (uint32_t)owner;
     }
 
-    if(op == Q8B_NPU_PAS_STATUS) {
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
+    if(op == QCOM8GEN3_NPU_PAS_STATUS) {
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
         uint32_t state = booted ? npu_smp2p_refresh_state() : 0;
         return state | (npu_recovery_required ?
-                Q8B_NPU_STATE_RECOVERY_REQUIRED : 0);
+                QCOM8GEN3_NPU_STATE_RECOVERY_REQUIRED : 0);
     }
 
-    if(op == Q8B_NPU_DUMP_READ) {
-        if(!q8b_npu_dump_allowed(npu_dump_available, booted,
+    if(op == QCOM8GEN3_NPU_DUMP_READ) {
+        if(!qcom8gen3_npu_dump_allowed(npu_dump_available, booted,
                     pas_prepared || pas_init_done || pas_mem_done || pas_auth_done))
-            return Q8B_NPU_PAS_UNSUPPORTED;
-        if(!q8b_npu_dump_range(size)) return Q8B_NPU_PAS_INVALID;
+            return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
+        if(!qcom8gen3_npu_dump_range(size)) return QCOM8GEN3_NPU_PAS_INVALID;
         uint32_t length = (uint32_t)size, offset = (uint32_t)(size >> 32);
-        if(!owned_dma(arg, length, Q8B_NPU_DUMP_CHUNK, 0))
-            return Q8B_NPU_PAS_INVALID;
+        if(!owned_dma(arg, length, QCOM8GEN3_NPU_DUMP_CHUNK, 0))
+            return QCOM8GEN3_NPU_PAS_INVALID;
         uint8_t *out = (uint8_t *)dma_v_addr(0, arg);
-        if(!out || map_in_caller(Q8B_NSP_WIN, Q8B_NSP0_CARVEOUT,
-                    (uint32_t)Q8B_NSP0_SPAN) != 0)
-            return Q8B_NPU_PAS_FAILED;
+        if(!out || map_in_caller(QCOM8GEN3_NSP_WIN, QCOM8GEN3_NSP0_CARVEOUT,
+                    (uint32_t)QCOM8GEN3_NSP0_SPAN) != 0)
+            return QCOM8GEN3_NPU_PAS_FAILED;
         /* Like qcom_pas_da_to_va/segment_dump, but only the fixed NSP0
          * carveout after secure shutdown, into this caller's owned DMA. */
         const volatile uint8_t *source =
-                (const volatile uint8_t *)(Q8B_NSP_WIN + offset);
+                (const volatile uint8_t *)(QCOM8GEN3_NSP_WIN + offset);
         for(uint32_t i = 0; i < length; i++) out[i] = source[i];
         __asm__ volatile("dsb sy" ::: "memory");
         return 0;
     }
 
-    if(npu_recovery_required && (op == Q8B_NPU_PAS_INIT ||
-                op == Q8B_NPU_PAS_MEM || op == Q8B_NPU_PAS_STAGE ||
-                op == Q8B_NPU_PAS_BOOT || op == Q8B_NPU_PAS_AUTH ||
-                op == Q8B_NPU_FRPC_SESSION || op == Q8B_NPU_FRPC_SUBMIT ||
-                op == Q8B_NPU_FRPC_SUBMIT_LISTENER)) {
-        printf("q8b npu: restart blocked after DSP failure; board reset required\n");
-        return Q8B_NPU_PAS_FAILED;
+    if(npu_recovery_required && (op == QCOM8GEN3_NPU_PAS_INIT ||
+                op == QCOM8GEN3_NPU_PAS_MEM || op == QCOM8GEN3_NPU_PAS_STAGE ||
+                op == QCOM8GEN3_NPU_PAS_BOOT || op == QCOM8GEN3_NPU_PAS_AUTH ||
+                op == QCOM8GEN3_NPU_FRPC_SESSION || op == QCOM8GEN3_NPU_FRPC_SUBMIT ||
+                op == QCOM8GEN3_NPU_FRPC_SUBMIT_LISTENER)) {
+        printf("qcom8gen3 npu: restart blocked after DSP failure; board reset required\n");
+        return QCOM8GEN3_NPU_PAS_FAILED;
     }
 
-    if(op == Q8B_NPU_SMMU_READ_ID) {
+    if(op == QCOM8GEN3_NPU_SMMU_READ_ID) {
         if(size || (arg != 0x20u && arg != 0x24u && arg != 0x28u))
-            return Q8B_NPU_PAS_INVALID;
-        return (uint64_t)q8b_npu_smmu_read_id((uint32_t)arg);
+            return QCOM8GEN3_NPU_PAS_INVALID;
+        return (uint64_t)qcom8gen3_npu_smmu_read_id((uint32_t)arg);
     }
 
-    if(op == Q8B_NPU_SMMU_CHECK) {
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
-        if(booted || npu_frpc_session) return Q8B_NPU_PAS_BUSY;
-        int rc = q8b_npu_smmu_enable();
-        int stop_rc = q8b_npu_smmu_stop();
-        return rc == 0 && stop_rc == 0 ? 0 : Q8B_NPU_PAS_FAILED;
+    if(op == QCOM8GEN3_NPU_SMMU_CHECK) {
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
+        if(booted || npu_frpc_session) return QCOM8GEN3_NPU_PAS_BUSY;
+        int rc = qcom8gen3_npu_smmu_enable();
+        int stop_rc = qcom8gen3_npu_smmu_stop();
+        return rc == 0 && stop_rc == 0 ? 0 : QCOM8GEN3_NPU_PAS_FAILED;
     }
 
-    if(op == Q8B_NPU_FRPC_SESSION) {
-        if (npu_frpc_session) return Q8B_NPU_PAS_BUSY;
+    if(op == QCOM8GEN3_NPU_FRPC_SESSION) {
+        if (npu_frpc_session) return QCOM8GEN3_NPU_PAS_BUSY;
         if(size || arg != 3 || !booted)
-            return Q8B_NPU_PAS_UNSUPPORTED;
+            return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         /* Check before ping can reinitialize the shared queues, then
          * recheck below in case state changes during the handshake. */
-        if(!q8b_npu_state_ready(npu_smp2p_refresh_state()))
-            return Q8B_NPU_PAS_UNSUPPORTED;
+        if(!qcom8gen3_npu_state_ready(npu_smp2p_refresh_state()))
+            return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         if(!npu_glink.ready || !npu_glink.cid) {
             glink_ping();
-            if(!npu_glink.cid) return Q8B_NPU_PAS_UNSUPPORTED;
+            if(!npu_glink.cid) return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         }
         {
             uint32_t state = npu_smp2p_refresh_state();
-            if(!q8b_npu_state_ready(state))
-                return Q8B_NPU_PAS_UNSUPPORTED;
+            if(!qcom8gen3_npu_state_ready(state))
+                return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         }
         /* A remote intent is required before any FastRPC TX_DATA can be
          * accepted.  Do one bounded poll during the initial ping; report a
          * clean decline when the firmware does not advertise an intent
          * rather than making every userspace retry block for seconds. */
         if(!npu_glink.remote_valid)
-            return Q8B_NPU_PAS_UNSUPPORTED;
-        if (q8b_npu_smmu_enable() != 0)
-            return Q8B_NPU_PAS_UNSUPPORTED;
+            return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
+        if (qcom8gen3_npu_smmu_enable() != 0)
+            return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         /* DT compute-cb@3 is the CDSP session.  This is the SID inserted in
          * every DSP-visible address by upstream fastrpc.c. */
         npu_frpc_pd = 0;
@@ -2416,38 +2416,38 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
         return npu_frpc_session;
     }
 
-    if(op == Q8B_NPU_FRPC_CLOSE) {
-        if(size || arg != npu_frpc_session) return Q8B_NPU_PAS_INVALID;
+    if(op == QCOM8GEN3_NPU_FRPC_CLOSE) {
+        if(size || arg != npu_frpc_session) return QCOM8GEN3_NPU_PAS_INVALID;
         for (unsigned i = 0; i < NPU_FRPC_PENDING_MAX; i++)
-            if (npu_glink.pending[i].ctx) return Q8B_NPU_PAS_BUSY;
-        if (q8b_npu_smmu_stop() != 0) return Q8B_NPU_PAS_FAILED;
-        if (npu_frpc_release_maps() != 0) return Q8B_NPU_PAS_FAILED;
+            if (npu_glink.pending[i].ctx) return QCOM8GEN3_NPU_PAS_BUSY;
+        if (qcom8gen3_npu_smmu_stop() != 0) return QCOM8GEN3_NPU_PAS_FAILED;
+        if (npu_frpc_release_maps() != 0) return QCOM8GEN3_NPU_PAS_FAILED;
         npu_frpc_pd = 0;
         npu_frpc_session = 0;
         return 0;
     }
 
-    if(op == Q8B_NPU_FRPC_PWR) {
+    if(op == QCOM8GEN3_NPU_FRPC_PWR) {
         if(size || !npu_frpc_session || (arg >> 32) != npu_frpc_session ||
                 (arg & 0xffffffffu) > 3)
-            return Q8B_NPU_PAS_INVALID;
+            return QCOM8GEN3_NPU_PAS_INVALID;
         /* RPMh votes are held for the lifetime of PAS.  The DCVS level is
          * advisory on this first port; accepting it keeps the public FastRPC
          * ABI compatible while avoiding an unsafe second TCS transaction. */
         return 0;
     }
 
-    if(op == Q8B_NPU_FRPC_SUBMIT || op == Q8B_NPU_FRPC_SUBMIT_LISTENER ||
-            op == Q8B_NPU_FRPC_POLL) {
+    if(op == QCOM8GEN3_NPU_FRPC_SUBMIT || op == QCOM8GEN3_NPU_FRPC_SUBMIT_LISTENER ||
+            op == QCOM8GEN3_NPU_FRPC_POLL) {
         if(!npu_frpc_session || !size || size > NPU_MAX_FW || (arg & 0xfffu))
-            return Q8B_NPU_PAS_INVALID;
-        return op == Q8B_NPU_FRPC_POLL ?
+            return QCOM8GEN3_NPU_PAS_INVALID;
+        return op == QCOM8GEN3_NPU_FRPC_POLL ?
                 npu_frpc_poll((ewokos_addr_t)arg, (uint32_t)size) :
                 npu_frpc_submit((ewokos_addr_t)arg, (uint32_t)size,
-                    op == Q8B_NPU_FRPC_SUBMIT_LISTENER);
+                    op == QCOM8GEN3_NPU_FRPC_SUBMIT_LISTENER);
     }
 
-    if(op == Q8B_NPU_FRPC_MMAP) {
+    if(op == QCOM8GEN3_NPU_FRPC_MMAP) {
         uint64_t devaddr = 0;
         int ret;
         ret = npu_frpc_map(arg, (uint32_t)size, &devaddr);
@@ -2456,85 +2456,85 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
         return devaddr;
     }
 
-    if(op == Q8B_NPU_FRPC_MUNMAP) {
+    if(op == QCOM8GEN3_NPU_FRPC_MUNMAP) {
         return npu_frpc_unmap(arg, (uint32_t)size);
     }
 
     /* Expose the same five-step PAS ABI used by npu_cdsp.c.  npupas uses the
      * compact PAS_BOOT operation below, while the library keeps the Linux
      * qcom_q6v5_pas ordering so a future remoteproc client can reuse it. */
-    if(op == Q8B_NPU_PAS_INIT) {
+    if(op == QCOM8GEN3_NPU_PAS_INIT) {
         uint32_t cap = 0;
         uint64_t result = 0;
         int ret;
         if(!size || !owned_dma((ewokos_addr_t)arg, size, NPU_META_SIZE,
                 &cap) || cap < size)
-            return Q8B_NPU_PAS_INVALID;
+            return QCOM8GEN3_NPU_PAS_INVALID;
         npu_dump_available = 0;
-        if(npu_pas_prepare() != 0) return Q8B_NPU_PAS_FAILED;
-        ret = scm_call(0x201, 0x82, Q8B_NSP0_PAS_ID, arg,
+        if(npu_pas_prepare() != 0) return QCOM8GEN3_NPU_PAS_FAILED;
+        ret = scm_call(0x201, 0x82, QCOM8GEN3_NSP0_PAS_ID, arg,
                 (uint32_t)size, 0, &result);
-        if(ret || result) return ret ? Q8B_NPU_PAS_FAILED : Q8B_NPU_PAS_FAILED;
+        if(ret || result) return ret ? QCOM8GEN3_NPU_PAS_FAILED : QCOM8GEN3_NPU_PAS_FAILED;
         pas_init_done = 1;
         return 0;
     }
 
-    if(op == Q8B_NPU_PAS_MEM) {
+    if(op == QCOM8GEN3_NPU_PAS_MEM) {
         uint64_t result = 0;
         int ret;
-        if(!pas_init_done || size || arg != Q8B_NSP0_SPAN)
-            return Q8B_NPU_PAS_INVALID;
-        ret = scm_call(0x202, 3, Q8B_NSP0_PAS_ID, Q8B_NSP0_CARVEOUT,
-                Q8B_NSP0_SPAN, 0, &result);
-        if(ret || result) return Q8B_NPU_PAS_FAILED;
+        if(!pas_init_done || size || arg != QCOM8GEN3_NSP0_SPAN)
+            return QCOM8GEN3_NPU_PAS_INVALID;
+        ret = scm_call(0x202, 3, QCOM8GEN3_NSP0_PAS_ID, QCOM8GEN3_NSP0_CARVEOUT,
+                QCOM8GEN3_NSP0_SPAN, 0, &result);
+        if(ret || result) return QCOM8GEN3_NPU_PAS_FAILED;
         pas_mem_done = 1;
         return 0;
     }
 
-    if(op == Q8B_NPU_PAS_STAGE) {
-        if(!pas_mem_done || size != Q8B_NSP0_SPAN)
-            return Q8B_NPU_PAS_INVALID;
+    if(op == QCOM8GEN3_NPU_PAS_STAGE) {
+        if(!pas_mem_done || size != QCOM8GEN3_NSP0_SPAN)
+            return QCOM8GEN3_NPU_PAS_INVALID;
         return npu_pas_stage((ewokos_addr_t)arg, (uint32_t)size);
     }
 
-    if(op == Q8B_NPU_PAS_AUTH) {
+    if(op == QCOM8GEN3_NPU_PAS_AUTH) {
         uint64_t result = 0;
         int ret;
-        if(!pas_mem_done || arg || size) return Q8B_NPU_PAS_INVALID;
+        if(!pas_mem_done || arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
         npu_boot_notify_arm();
-        ret = scm_call(0x205, 1, Q8B_NSP0_PAS_ID, 0, 0, 0, &result);
-        if(ret || result) return Q8B_NPU_PAS_FAILED;
+        ret = scm_call(0x205, 1, QCOM8GEN3_NSP0_PAS_ID, 0, 0, 0, &result);
+        if(ret || result) return QCOM8GEN3_NPU_PAS_FAILED;
         booted = 1;
-        npu_smp2p_state = Q8B_NPU_STATE_BOOTED;
+        npu_smp2p_state = QCOM8GEN3_NPU_STATE_BOOTED;
         pas_auth_done = 1;
-        if(npu_wait_for_ready() != 0) return Q8B_NPU_PAS_FAILED;
+        if(npu_wait_for_ready() != 0) return QCOM8GEN3_NPU_PAS_FAILED;
         glink_wait_for_remote_items();
         glink_ping();
         return 0;
     }
 
-    if(op == Q8B_NPU_PAS_BOOT) {
+    if(op == QCOM8GEN3_NPU_PAS_BOOT) {
         void *fw;
         uint32_t capacity = 0;
         if(booted) return 0;
         if(!owned_dma(arg, size, NPU_MAX_FW, &capacity) ||
                 capacity < size + NPU_META_SIZE)
-            return Q8B_NPU_PAS_INVALID;
+            return QCOM8GEN3_NPU_PAS_INVALID;
         fw = (void *)dma_v_addr(0, arg);
-        if(fw == 0) return Q8B_NPU_PAS_INVALID;
+        if(fw == 0) return QCOM8GEN3_NPU_PAS_INVALID;
         return stage_and_boot(fw, (uint32_t)size, arg, capacity);
     }
 
-    if(op == Q8B_NPU_PAS_STOP) {
+    if(op == QCOM8GEN3_NPU_PAS_STOP) {
         uint64_t result = 0;
         int ret, smmu_ret;
 
-        if(arg || size) return Q8B_NPU_PAS_INVALID;
+        if(arg || size) return QCOM8GEN3_NPU_PAS_INVALID;
         if(!booted) {
             /* A previous secure stop may have succeeded while SMMU
              * teardown failed. Do not turn its retry into false success. */
-            if(q8b_npu_smmu_stop() != 0 || npu_frpc_release_maps() != 0)
-                return Q8B_NPU_PAS_FAILED;
+            if(qcom8gen3_npu_smmu_stop() != 0 || npu_frpc_release_maps() != 0)
+                return QCOM8GEN3_NPU_PAS_FAILED;
             return 0;
         }
         if(npu_recovery_required) npu_watchdog_snapshot("before-stop");
@@ -2547,32 +2547,32 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
             /* next2 is intentionally a blocking listener; a pending
              * application/root invoke is evidence of incomplete work. */
             if(!p->done && handle != 3u) npu_recovery_required = 1;
-            npu_debug("q8b npu: pending ctx=%llx handle=%u sc=%08x done=%d\n",
+            npu_debug("qcom8gen3 npu: pending ctx=%llx handle=%u sc=%08x done=%d\n",
                     (unsigned long long)p->ctx, handle, sc, p->done);
         }
         if(npu_glink.desc)
-            npu_debug("q8b npu: stop GLINK tx=%u/%u rx=%u/%u remote=%u iid=%u valid=%d wait=%d rx_len=%u listener_root=%u\n",
+            npu_debug("qcom8gen3 npu: stop GLINK tx=%u/%u rx=%u/%u remote=%u iid=%u valid=%d wait=%d rx_len=%u listener_root=%u\n",
                     npu_glink.desc[1], npu_glink.desc[0],
                     npu_glink.desc[3], npu_glink.desc[2],
                     npu_glink.remote_cid, npu_glink.remote_iid,
                     npu_glink.remote_valid, npu_glink.remote_wait_done,
                     npu_glink.rx_len, npu_glink.listener_root_submits);
         if(npu_recovery_required) glink_dump_failure_fifo();
-        q8b_npu_smmu_dump_fault();
-        if(npu_smp2p_refresh_state() & Q8B_NPU_STATE_FATAL) {
+        qcom8gen3_npu_smmu_dump_fault();
+        if(npu_smp2p_refresh_state() & QCOM8GEN3_NPU_STATE_FATAL) {
             npu_recovery_required = 1;
             npu_dump_crash_reason();
         }
         int sysmon_ack = !npu_recovery_required && glink_ssctl_shutdown() == 0;
         if(!sysmon_ack && npu_smp2p_request_stop() != 0) {
             npu_recovery_required = 1;
-            printf("q8b npu: SMP2P stop-ack not observed; continuing PAS_STOP\n");
+            printf("qcom8gen3 npu: SMP2P stop-ack not observed; continuing PAS_STOP\n");
         }
-        ret = scm_call(0x206, 1, Q8B_NSP0_PAS_ID, 0, 0, 0, &result);
+        ret = scm_call(0x206, 1, QCOM8GEN3_NSP0_PAS_ID, 0, 0, 0, &result);
         if(ret != 0 || result != 0) {
-            printf("q8b npu: PAS_STOP failed ret=%d result=%llu; preserving DMA\n",
+            printf("qcom8gen3 npu: PAS_STOP failed ret=%d result=%llu; preserving DMA\n",
                     ret, (unsigned long long)result);
-            return Q8B_NPU_PAS_FAILED;
+            return QCOM8GEN3_NPU_PAS_FAILED;
         }
         booted = 0;
         npu_dump_available = 1;
@@ -2589,20 +2589,20 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
          * ownership table and allocator cursor. */
         npu_frpc_pd = 0;
         memset(&npu_glink, 0, sizeof(npu_glink));
-        smmu_ret = q8b_npu_smmu_stop();
+        smmu_ret = qcom8gen3_npu_smmu_stop();
         if(smmu_ret != 0) {
             npu_recovery_required = 1;
-            printf("q8b npu: SMMU teardown failed; board reset required\n");
+            printf("qcom8gen3 npu: SMMU teardown failed; board reset required\n");
         }
         if(smmu_ret == 0 && npu_frpc_release_maps() != 0)
             smmu_ret = -1;
         if(nsp_power_release() != 0)
-            return Q8B_NPU_PAS_FAILED;
-        if(smmu_ret != 0) return Q8B_NPU_PAS_FAILED;
-        printf("q8b npu: NSP0 stopped\n");
-        return (ret != 0 || result != 0) ? Q8B_NPU_PAS_FAILED : 0;
+            return QCOM8GEN3_NPU_PAS_FAILED;
+        if(smmu_ret != 0) return QCOM8GEN3_NPU_PAS_FAILED;
+        printf("qcom8gen3 npu: NSP0 stopped\n");
+        return (ret != 0 || result != 0) ? QCOM8GEN3_NPU_PAS_FAILED : 0;
     }
 
-    return Q8B_NPU_PAS_UNSUPPORTED;
+    return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 #endif
 }

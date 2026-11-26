@@ -7,11 +7,11 @@ They accelerate alpha blending, scaling, transparent fills and rotation.
 Regenerate from the repository root with native Clang and Make installed:
 
 ```sh
-make -C machines/q8b/system/libs/adreno -f shaders/Makefile.host -j8
+make -C machines/qcom/8gen3/system/libs/adreno -f shaders/Makefile.host -j8
 ```
 
-Alternatively, run `make builtin-shaders` in `libadreno` with the usual Q8B
-build environment. Native compiler objects stay in `/tmp/q8b-builtin-shaders`;
+Alternatively, run `make builtin-shaders` in `libadreno` with the usual QCOM8GEN3
+build environment. Native compiler objects stay in `/tmp/qcom8gen3-builtin-shaders`;
 override `OUT` to select another directory. Ordinary target builds use the
 checked-in headers and do not require a native shader compiler build.
 

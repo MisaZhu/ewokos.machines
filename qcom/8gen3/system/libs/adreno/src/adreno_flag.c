@@ -1,7 +1,7 @@
 /*
  * adreno_flag.c - runtime bring-up switches without a POSIX shell.
  *
- * The Q8B sshd executes commands directly: there is no /bin/sh, so a test
+ * The QCOM8GEN3 sshd executes commands directly: there is no /bin/sh, so a test
  * harness cannot do `export ADRENO_SKIP_PDC=1` over ssh.  Flags therefore
  * come from either the process environment (init.rd's @export, the normal
  * production path) or a small file written by the harness:

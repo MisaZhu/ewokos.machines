@@ -141,7 +141,6 @@ static int begin_eeprom_upload(void) {
     upload.type = 3; /* ATH11K_QMI_FILE_TYPE_EEPROM */
     upload.active = 1;
     q.eeprom_requested = 1;
-    wcn_log("wcn: QMI EEPROM calibration request sent\n");
     return upload_segment();
 }
 
@@ -290,10 +289,6 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
     if (id == 0x36 && q.memory_ready) (void)request(0x24, "", 0);
     if (id == 0x24) {
         q.target_cap = 1;
-        wcn_log("wcn: QMI cap chip=%x board=%x num_macs=%s%u otp=%s%08x eeprom_timeout=%s%u\n",
-                q.chip, q.board, q.num_macs_valid ? "" : "absent/", q.num_macs,
-                q.otp_valid ? "" : "absent/", q.otp_version,
-                q.eeprom_valid ? "" : "absent/", q.eeprom_timeout);
         /* PCI devices already have their BAR; DEVICE_INFO is hybrid-bus only. */
         if (begin_board_upload(1) && begin_board_upload(0))
             wcn_log("wcn: board upload could not start\n");
@@ -309,7 +304,6 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
                 if (begin_board_upload(0)) wcn_log("wcn: BDF upload could not start\n");
             } else if (type == 3) {
                 q.eeprom_ready = 1;
-                wcn_log("wcn: QMI EEPROM calibration response result=success\n");
                 if (send_m3()) wcn_log("wcn: M3 setup failed after EEPROM calibration\n");
             } else {
                 q.bdf_ready = 1;
@@ -326,7 +320,6 @@ static void receive_qmi(const uint8_t *p, unsigned bytes) {
                         if (send_m3()) wcn_log("wcn: M3 setup failed after EEPROM request setup\n");
                     }
                 } else {
-                    wcn_log("wcn: QMI EEPROM calibration not advertised; using WMI MAC\n");
                     if (send_m3()) wcn_log("wcn: M3 setup failed\n");
                 }
             }

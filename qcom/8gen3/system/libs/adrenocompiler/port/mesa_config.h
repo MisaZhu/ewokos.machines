@@ -1,6 +1,6 @@
 /* EwokOS platform build config for the vendored mesa GLSL->ir3 (Adreno) compiler.
  *
- * Lives in the owning platform's GPU compiler backend dir (machines/q8b/system/
+ * Lives in the owning platform's GPU compiler backend dir (machines/qcom/8gen3/system/
  * libs/adrenocompiler/port), which that machine's system/make.inc exports to the
  * build as PGL_G3D_COMPILER_DIR. Force-included (-include port/mesa_config.h) into
  * every translation unit by the pglcompiler/adrenocompiler Makefiles, replacing mesa's
@@ -238,7 +238,7 @@ typedef enum { GL_VERTEX_PROCESSING_MODE_STUB = 0 } gl_vertex_processing_mode;
  * __APPLE__, __sun, the BSDs, _WIN32/__ANDROID__, __OPENCL_VERSION__). None of
  * them is defined for aarch64-none-elf/EwokOS, so it would #error out. Pre-
  * defining both macros short-circuits that check (the detection #if/#elif chain
- * matches nothing, so there is no redefinition). q8b (SC8280XP, Cortex-X1C/A78C) is little-
+ * matches nothing, so there is no redefinition). qcom8gen3 (SC8280XP, Cortex-X1C/A78C) is little-
  * endian. This also enables the endianness-guarded PIPE_FORMAT_RG88/GR88 compat
  * aliases in util/format/u_format_gen.h. */
 #define UTIL_ARCH_LITTLE_ENDIAN 1

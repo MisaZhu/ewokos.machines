@@ -14,7 +14,7 @@
 #include <ewoksys/klog.h>
 
 /*
- * Q8B serial console: GENI (QUP serial engine) UART17 at 0x00884000.
+ * QCOM8GEN3 serial console: GENI (QUP serial engine) UART17 at 0x00884000.
  *
  * The firmware (UEFI) has already enabled the QUP clock and pinmux and set
  * 115200 8N1; this driver only drives the TX/RX sequencers.  TX uses the
@@ -211,7 +211,7 @@ static void geni_rx_start(void) {
     wr(SE_UART_RX_STALE_CNT, 40);
     wr(SE_GENI_S_IRQ_EN, 0x03003e3fu);
     /* ExitBootServices may leave the serializer gates disabled.  Re-enable
-     * both sequencer clocks just as q8b_early_uart_init() does. */
+     * both sequencer clocks just as qcom8gen3_early_uart_init() does. */
     wr(SE_GENI_SER_M_CLK, rd(SE_GENI_SER_M_CLK) | 1u);
     wr(SE_GENI_SER_S_CLK, rd(SE_GENI_SER_S_CLK) | 1u);
     wr(SE_GENI_S_CMD0, UART_START_READ << M_OPCODE_SHIFT);
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
             (ewokos_addr_t)sysinfo.mmio.phy_base,
             (ewokos_addr_t)sysinfo.mmio.size);
     if (mapped != (ewokos_addr_t)sysinfo.mmio.v_base) {
-        slog("q8b uartd: MMIO map failed\n");
+        slog("qcom8gen3 uartd: MMIO map failed\n");
         return -1;
     }
 
@@ -360,7 +360,7 @@ int main(int argc, char** argv) {
 
     vdevice_t dev;
     memset(&dev, 0, sizeof(vdevice_t));
-    strcpy(dev.desc, "q8b_geni_uart");
+    strcpy(dev.desc, "qcom8gen3_geni_uart");
 
     _RxBuf = charbuf_new(0);
     if (_RxBuf == NULL)

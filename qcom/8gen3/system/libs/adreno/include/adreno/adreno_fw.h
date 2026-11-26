@@ -1,5 +1,5 @@
 /*
- * adreno_fw.h - Adreno 690 (SC8280XP / Q8B) firmware loaders.
+ * adreno_fw.h - Adreno 690 (SC8280XP / QCOM8GEN3) firmware loaders.
  *
  * Three firmware images are consumed by the A690 bring-up path.  Their
  * on-disk formats and load semantics are taken verbatim from Linux v6.6
@@ -22,7 +22,7 @@
  *      fetches it through REG_A6XX_CP_SQE_INSTR_BASE.  adreno_fw_load_sqe()
  *      simply returns the owned raw buffer + size.
  *
- *   3. Zap shader (Q8B DT: qcom/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn)
+ *   3. Zap shader (QCOM8GEN3 DT: qcom/sc8280xp/LENOVO/21BX/qcdxkmsuc8280.mbn)
  *      Monolithic ELF32 MBN with header, signed hash metadata and payload.
  *      The loader returns packed metadata and validated relocatable payload
  *      segments. The caller follows Linux qcom_mdt_load()/SCM PAS ordering.
@@ -110,7 +110,7 @@ typedef struct {
 } adreno_zap_fw_t;
 
 /* Pure ELF32 monolithic-MBN parser; owns copies on success, zero output on
- * failure. Only relocatable images fitting Q8B's reserved region accepted. */
+ * failure. Only relocatable images fitting QCOM8GEN3's reserved region accepted. */
 int adreno_fw_parse_zap(const void *data, uint32_t size, adreno_zap_fw_t *out);
 int  adreno_fw_load_zap(adreno_zap_fw_t *out);
 void adreno_fw_free_zap(adreno_zap_fw_t *fw);

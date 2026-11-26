@@ -1,5 +1,5 @@
 /*
- * adreno_a6xx.c - Adreno 690 (SC8280XP / Q8B) GPU core bring-up + selftest.
+ * adreno_a6xx.c - Adreno 690 (SC8280XP / QCOM8GEN3) GPU core bring-up + selftest.
  *
  * Top-level orchestrator for the M1c bring-up chain.  adreno_a6xx_init() runs,
  * in Linux a6xx_start()/hw_init() order (drivers/gpu/drm/msm/adreno/a6xx_gpu.c
@@ -25,9 +25,9 @@
  *   - CP_LPAC_PROG_FIFO_SIZE uses offset 0xb34.  The XML labels the register
  *     A7XX, but documents that the LPAC fields appeared on A660 and current
  *     Linux writes this offset for every A660-family GPU, including A690.
- *   - Q8B's DT enables a GPU zap shader. Secure-mode exit therefore requires
+ *   - QCOM8GEN3's DT enables a GPU zap shader. Secure-mode exit therefore requires
  *     its official signed image authenticated through TrustZone SCM PAS
- *     (qcom_scm_pas_auth_and_reset), via the restricted Q8B kernel service.
+ *     (qcom_scm_pas_auth_and_reset), via the restricted QCOM8GEN3 kernel service.
  *     Missing SCM support is an error, not Linux's no-zap-device -ENODEV
  *     fallback. Do not write SECVID_TRUST_CNTL on that assumption.
  *   - The GMU OOB "GPU_SET" keep-alive surrounds hw_init and CP startup, as
@@ -43,13 +43,13 @@
 #include <ewoksys/klog.h>
 #include <ewoksys/proc.h>
 #include <ewoksys/syscall.h>
-#include <q8b_gpu_pas.h>
+#include <qcom8gen3_gpu_pas.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
 
 /* Temporary bring-up visibility: route this file's stage diagnostics through
- * the log daemon so they can be collected over SSH on Q8B. */
+ * the log daemon so they can be collected over SSH on QCOM8GEN3. */
 #define klog slog
 
 /* --- array-base registers not emitted into a6xx_regs.h (Mesa a6xx.xml) --- */
@@ -391,7 +391,7 @@ static int a6xx_sqe_load(adreno_dev_t *d) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Q8B declares a zap shader, so Linux authenticates it before asking the
+/* QCOM8GEN3 declares a zap shader, so Linux authenticates it before asking the
    CP to leave secure mode. Missing SCM support must not be mistaken for a
    device with no zap node: the direct TRUST_CNTL fallback can fault. */
 /* ------------------------------------------------------------------ */
@@ -399,7 +399,7 @@ static int gpu_pas_call(uint32_t op, uint64_t arg, uint32_t size) {
 	int ret, retry = 0;
 	do {
 		ret = (int)syscall3(SYS_PLATFORM_CTL, op, arg, size);
-		if (ret != Q8B_GPU_PAS_BUSY)
+		if (ret != QCOM8GEN3_GPU_PAS_BUSY)
 			break;
 		usleep(30000); /* Linux: 30 ms, at most 20 retries; outside kernel lock */
 	} while (++retry <= 20);
@@ -410,9 +410,9 @@ static int a6xx_exit_secure(adreno_dev_t *d) {
 	adreno_zap_fw_t fw;
 	adreno_bo_t metadata = {0}, payload = {0};
 	int ret, i;
-	ret = gpu_pas_call(Q8B_GPU_PAS_QUERY, 0, 0);
-	if ((uint32_t)ret != Q8B_GPU_PAS_ABI) {
-		slog("adreno_a6xx: compatible Q8B SCM PAS service unavailable\n");
+	ret = gpu_pas_call(QCOM8GEN3_GPU_PAS_QUERY, 0, 0);
+	if ((uint32_t)ret != QCOM8GEN3_GPU_PAS_ABI) {
+		slog("adreno_a6xx: compatible QCOM8GEN3 SCM PAS service unavailable\n");
 		return -ENOSYS;
 	}
 	ret = adreno_fw_load_zap(&fw);
@@ -433,13 +433,13 @@ static int a6xx_exit_secure(adreno_dev_t *d) {
 		slog("adreno_a6xx: SCM interconnect vote failed\n");
 		goto out;
 	}
-	ret = gpu_pas_call(Q8B_GPU_PAS_INIT, metadata.pa, fw.metadata_size);
+	ret = gpu_pas_call(QCOM8GEN3_GPU_PAS_INIT, metadata.pa, fw.metadata_size);
 	if (ret) goto out;
-	ret = gpu_pas_call(Q8B_GPU_PAS_MEM, fw.total_size, 0);
+	ret = gpu_pas_call(QCOM8GEN3_GPU_PAS_MEM, fw.total_size, 0);
 	if (ret) goto out;
-	ret = gpu_pas_call(Q8B_GPU_PAS_STAGE, payload.pa, fw.total_size);
+	ret = gpu_pas_call(QCOM8GEN3_GPU_PAS_STAGE, payload.pa, fw.total_size);
 	if (ret) goto out;
-	ret = gpu_pas_call(Q8B_GPU_PAS_AUTH, 0, 0);
+	ret = gpu_pas_call(QCOM8GEN3_GPU_PAS_AUTH, 0, 0);
 	if (ret) goto out;
 	d->zap_done = 1;
 	ret = adreno_ring_exit_secure(d);

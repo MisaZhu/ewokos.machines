@@ -2,11 +2,11 @@
  * npu_fastrpc.c - FastRPC client transport for the SC8280XP cDSP.
  *
  * This is the client half of the reconstruction described in npu_fastrpc.h:
- * the invoke payload follows drivers/misc/fastrpc.c (private Q8B prefix,
+ * the invoke payload follows drivers/misc/fastrpc.c (private QCOM8GEN3 prefix,
  * remote arguments, invoke/page lists, fd/crc lists and 128-byte-aligned
  * inline data), and the scalar descriptor is packed
  * with the FASTRPC_SCALAR macro semantics.  Everything rides the restricted
- * Q8B kernel ABI on syscall3(SYS_PLATFORM_CTL, op, arg, size), the same door
+ * QCOM8GEN3 kernel ABI on syscall3(SYS_PLATFORM_CTL, op, arg, size), the same door
  * libadreno uses for the GPU PAS.
  *
  * The kernel exposes a serialized GLINK request/response service.  It keeps
@@ -80,7 +80,7 @@ void frpc_set_progress(void (*progress)(void)) { g_progress = progress; }
 
 int frpc_transport_abort(void)
 {
-	int rc = frpc_call(Q8B_NPU_PAS_STOP, 0, 0);
+	int rc = frpc_call(QCOM8GEN3_NPU_PAS_STOP, 0, 0);
 	if (rc == 0) {
 		g_transport_epoch++;
 		g_transport_stopped = 1;
@@ -122,12 +122,12 @@ static int frpc_init_create(uint32_t session, uint32_t attrs,
 	if (heap_size < FRPC_INIT_MEM_SIZE) heap_size = FRPC_INIT_MEM_SIZE;
 	heap_size = (heap_size + 0xfffffu) & ~0xfffffu;
 	if (npu_buf_alloc(&g_init_mem, heap_size) != 0)
-		return Q8B_NPU_PAS_FAILED;
+		return QCOM8GEN3_NPU_PAS_FAILED;
 	g_init_devaddr = frpc_mmap(session, g_init_mem.pa, g_init_mem.size);
 	if (!g_init_devaddr) {
 		npu_buf_free(&g_init_mem);
 		memset(&g_init_mem, 0, sizeof(g_init_mem));
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	}
 
 	memset(&in, 0, sizeof(in));
@@ -162,7 +162,7 @@ static int frpc_init_create(uint32_t session, uint32_t attrs,
 		        session, rc, rv);
 		/* The caller performs RELEASE (or a successful PAS_STOP) before
 		 * reclaiming the heap, including a partially created USER_PD. */
-		return rc != 0 ? rc : Q8B_NPU_PAS_FAILED;
+		return rc != 0 ? rc : QCOM8GEN3_NPU_PAS_FAILED;
 	}
 	qnn_log(QNN_LOG_LVL_INFO, "fastrpc: USER_PD created attrs=%u shell=%u heap=%u\n",
 	        attrs, image_size, g_init_mem.size);
@@ -177,7 +177,7 @@ int frpc_call(uint32_t op, uint64_t arg, uint32_t size)
 	do {
 		ret = (int)syscall3(SYS_PLATFORM_CTL, (ewokos_addr_t)op,
 		                    (ewokos_addr_t)arg, (ewokos_addr_t)size);
-		if (ret != Q8B_NPU_PAS_BUSY)
+		if (ret != QCOM8GEN3_NPU_PAS_BUSY)
 			break;
 		frpc_pause(FRPC_RETRY_NS);
 	} while (++retry <= FRPC_RETRY_MAX);
@@ -197,7 +197,7 @@ static uint64_t frpc_call64(uint32_t op, uint64_t arg, uint32_t size)
 		ret = (uint64_t)syscall3(SYS_PLATFORM_CTL, (ewokos_addr_t)op,
 		                         (ewokos_addr_t)arg,
 		                         (ewokos_addr_t)size);
-		if ((int64_t)ret != Q8B_NPU_PAS_BUSY)
+		if ((int64_t)ret != QCOM8GEN3_NPU_PAS_BUSY)
 			break;
 		frpc_pause(FRPC_RETRY_NS);
 	} while (++retry <= FRPC_RETRY_MAX);
@@ -213,13 +213,13 @@ bool frpc_available(void)
 	/* PAS support does not imply that the GLINK/FastRPC service exists.  The
 	 * kernel exposes a separate probe so a successful PAS bring-up never makes
 	 * the QNN backend attempt an unimplemented transport. */
-	ret = frpc_call(Q8B_NPU_FRPC_QUERY, 0, 0);
-	g_frpc_avail = ((uint32_t)ret == Q8B_NPU_FRPC_ABI) ? 1 : 0;
-	if (g_frpc_avail && frpc_call(Q8B_NPU_FRPC_METADATA_QUERY, 0, 0) ==
-	        (int)Q8B_NPU_FRPC_METADATA_PAGE)
-		g_meta_offset = Q8B_NPU_FRPC_METADATA_PAGE;
-	if (g_frpc_avail && frpc_call(Q8B_NPU_FRPC_POINTER_QUERY, 0, 0) ==
-	        (int)Q8B_NPU_FRPC_POINTER_HOST)
+	ret = frpc_call(QCOM8GEN3_NPU_FRPC_QUERY, 0, 0);
+	g_frpc_avail = ((uint32_t)ret == QCOM8GEN3_NPU_FRPC_ABI) ? 1 : 0;
+	if (g_frpc_avail && frpc_call(QCOM8GEN3_NPU_FRPC_METADATA_QUERY, 0, 0) ==
+	        (int)QCOM8GEN3_NPU_FRPC_METADATA_PAGE)
+		g_meta_offset = QCOM8GEN3_NPU_FRPC_METADATA_PAGE;
+	if (g_frpc_avail && frpc_call(QCOM8GEN3_NPU_FRPC_POINTER_QUERY, 0, 0) ==
+	        (int)QCOM8GEN3_NPU_FRPC_POINTER_HOST)
 		g_host_pointers = 1;
 	if (g_frpc_avail == 0)
 		qnn_log(QNN_LOG_LVL_INFO,
@@ -246,13 +246,13 @@ int frpc_session_open_image(uint32_t domain, uint32_t attrs,
 
 	if (!session || (attrs != 0 && attrs != FRPC_MODE_UNSIGNED_MODULE) ||
 	    (!!image != !!image_size) || image_size > FRPC_INIT_MEM_SIZE)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	*session = 0;
 	if (g_init_session || g_transport_unsafe)
-		return Q8B_NPU_PAS_BUSY;
+		return QCOM8GEN3_NPU_PAS_BUSY;
 	if (!frpc_available())
-		return Q8B_NPU_PAS_UNSUPPORTED;
-	ret = frpc_call(Q8B_NPU_FRPC_SESSION, (uint64_t)domain, 0);
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
+	ret = frpc_call(QCOM8GEN3_NPU_FRPC_SESSION, (uint64_t)domain, 0);
 	if (ret < 0)
 		return ret;
 	sid = (uint32_t)ret;
@@ -282,9 +282,9 @@ int frpc_session_release(uint32_t session)
 	int32_t rv = 0;
 	uint32_t sc;
 	int rc;
-	if (!session) return Q8B_NPU_PAS_INVALID;
+	if (!session) return QCOM8GEN3_NPU_PAS_INVALID;
 	if (g_transport_stopped || g_init_released) return 0;
-	if (g_transport_unsafe || !frpc_available()) return Q8B_NPU_PAS_UNSUPPORTED;
+	if (g_transport_unsafe || !frpc_available()) return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	memset(&rbuf, 0, sizeof(rbuf));
 	rbuf.data = &client_id;
 	rbuf.size = sizeof(client_id);
@@ -304,7 +304,7 @@ int frpc_session_close(uint32_t session)
 	int rc;
 
 	if (!session || !g_init_session) return 0;
-	if (session != g_init_session) return Q8B_NPU_PAS_INVALID;
+	if (session != g_init_session) return QCOM8GEN3_NPU_PAS_INVALID;
 	if (g_transport_unsafe && (rc = frpc_transport_abort()) != 0) return rc;
 	/* Match Linux fastrpc_device_release(): release the framework process
 	 * before tearing down the transport session.  This lets the DSP reclaim
@@ -326,7 +326,7 @@ int frpc_session_close(uint32_t session)
 		npu_buf_free(&g_init_mem);
 	memset(&g_init_mem, 0, sizeof(g_init_mem));
 	if (transport) {
-		if (frpc_call(Q8B_NPU_FRPC_CLOSE, (uint64_t)session, 0) != 0) {
+		if (frpc_call(QCOM8GEN3_NPU_FRPC_CLOSE, (uint64_t)session, 0) != 0) {
 			if ((rc = frpc_transport_abort()) != 0) return rc;
 		} else {
 			/* CLOSE disables the SMMU and retires its mapping table. */
@@ -347,9 +347,9 @@ uint32_t frpc_session_get(void)
 int frpc_power_vote(uint32_t session, uint32_t level)
 {
 	if (!frpc_available())
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	/* HAP_power DCVS v3 vote: level 0 = power saver .. 3 = turbo. */
-	return frpc_call(Q8B_NPU_FRPC_PWR,
+	return frpc_call(QCOM8GEN3_NPU_FRPC_PWR,
 	                 ((uint64_t)session << 32) | (uint64_t)level, 0);
 }
 
@@ -357,7 +357,7 @@ uint64_t frpc_mmap(uint32_t session, uint64_t pa, uint32_t size)
 {
 	uint64_t ret;
 
-	/* The compact Q8B ABI carries a PFN in the low 32 bits.  The current DMA
+	/* The compact QCOM8GEN3 ABI carries a PFN in the low 32 bits.  The current DMA
 	 * pool is below 4 GiB and all exported buffers are page aligned; reject a
 	 * caller that would otherwise silently lose address bits or an intra-page
 	 * offset. */
@@ -368,7 +368,7 @@ uint64_t frpc_mmap(uint32_t session, uint64_t pa, uint32_t size)
 	/* arg packs the session and the 4 KB page-frame number of the staged
 	   dma buffer (the kernel rebuilds pa = pfn << 12); size is the byte
 	   length.  Returns the cDSP-visible device address, 0 on failure. */
-	ret = frpc_call64(Q8B_NPU_FRPC_MMAP,
+	ret = frpc_call64(QCOM8GEN3_NPU_FRPC_MMAP,
 	                  ((uint64_t)session << 32) | ((pa >> 12) & 0xffffffffull),
 	                  size);
 	if ((int64_t)ret < 0)
@@ -380,11 +380,11 @@ int frpc_munmap(uint32_t session, uint64_t devaddr, uint32_t size)
 {
 	(void)session;
 	if (!frpc_available())
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	/* MUNMAP identifies the mapping by its consolidated DSP address.  The
 	 * session is encoded in that address (SID << 32), so packing it again in
 	 * the syscall argument would destroy the IOVA on 64-bit callers. */
-	return frpc_call(Q8B_NPU_FRPC_MUNMAP, devaddr, size);
+	return frpc_call(QCOM8GEN3_NPU_FRPC_MUNMAP, devaddr, size);
 }
 
 /* Retire only the AP reference after a confirmed root rejection/unmap.
@@ -431,7 +431,7 @@ static int frpc_remote_map_result(uint32_t session, frpc_remote_map_t *mapping,
 		mapping->uncertain = 0;
 		(void)frpc_remote_ap_unmap(session, mapping);
 	}
-	return rc ? rc : (rv ? rv : Q8B_NPU_PAS_FAILED);
+	return rc ? rc : (rv ? rv : QCOM8GEN3_NPU_PAS_FAILED);
 }
 
 int frpc_remote_mmap(uint32_t session, uint64_t pa, uint32_t size,
@@ -455,17 +455,17 @@ int frpc_remote_mmap_flags(uint32_t session, uint64_t pa, uint32_t size,
 
 	if (!mapping || !session || !pa || !size ||
 	    (flags != 0 && flags != FRPC_MMAP_ADD_PAGES))
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	extent = size;
 	if (extent > UINT32_MAX - 0xfffull)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	ap_size = (uint32_t)((extent + 0xfffull) & ~0xfffull);
 	if (!ap_size)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	memset(mapping, 0, sizeof(*mapping));
 	ap_devaddr = frpc_mmap(session, pa, ap_size);
 	if (!ap_devaddr)
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	*mapping = (frpc_remote_map_t){ .ap_devaddr = ap_devaddr,
 		.size = size, .ap_size = ap_size, .epoch = g_transport_epoch,
 		.uncertain = 1 };
@@ -510,7 +510,7 @@ int frpc_remote_munmap(uint32_t session, frpc_remote_map_t *mapping)
 	int rc;
 
 	if (!mapping || !session || !mapping->ap_devaddr || !mapping->size)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	if (mapping->epoch != g_transport_epoch || mapping->uncertain ||
 	    g_transport_unsafe)
 		return frpc_remote_stop(mapping);
@@ -552,15 +552,15 @@ int frpc_remote_mem_map(uint32_t session, int32_t fd, uint64_t pa,
 
 	if (!mapping || !session || fd < 0 || !pa || !size || (pa & 0xfffull) ||
 		offset > INT32_MAX)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	extent = (uint64_t)offset + size;
 	if (extent > UINT32_MAX || ((extent + 0xfffull) & ~0xfffull) > UINT32_MAX)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	ap_size = (uint32_t)((extent + 0xfffull) & ~0xfffull);
 	memset(mapping, 0, sizeof(*mapping));
 	ap_devaddr = frpc_mmap(session, pa, ap_size);
 	if (!ap_devaddr)
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	*mapping = (frpc_remote_map_t){ .ap_devaddr = ap_devaddr,
 		.size = size, .ap_size = ap_size, .epoch = g_transport_epoch,
 		.uncertain = 1 };
@@ -610,7 +610,7 @@ int frpc_remote_mem_unmap(uint32_t session, int32_t fd,
 	int rc;
 
 	if (!mapping || !session || fd < 0 || !mapping->ap_devaddr || !mapping->size)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	if (mapping->epoch != g_transport_epoch || mapping->uncertain ||
 	    g_transport_unsafe)
 		return frpc_remote_stop(mapping);
@@ -659,7 +659,7 @@ static uint64_t frpc_meta_size(uint32_t nscalars)
 
 static uint64_t frpc_data_offset(uint32_t nscalars, uint32_t prefix)
 {
-	/* The restricted Q8B prefix is consumed by the AP kernel.  Linux's
+	/* The restricted QCOM8GEN3 prefix is consumed by the AP kernel.  Linux's
 	 * FASTRPC_ALIGN is applied from struct fastrpc_msg.addr, which points at
 	 * the first remote argument (payload + prefix), so align the upstream
 	 * metadata length first and add the private prefix back afterwards. */
@@ -682,17 +682,17 @@ static int frpc_inline_end(const frpc_rbuf_t *rbufs, uint32_t nrbufs,
 	uint64_t cursor;
 
 	if (!end || (nrbufs && !rbufs))
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	cursor = frpc_data_offset(nrbufs, prefix);
 	for (uint32_t i = 0; i < nrbufs; i++) {
 		if (!rbufs[i].size || rbufs[i].pa != 0 || !rbufs[i].data)
 			continue;
 		if (cursor < prefix || cursor - prefix >
 		    UINT64_MAX - (FRPC_ALIGN - 1u))
-			return Q8B_NPU_PAS_INVALID;
+			return QCOM8GEN3_NPU_PAS_INVALID;
 		cursor = frpc_inline_align(cursor, prefix);
 		if (rbufs[i].size > UINT64_MAX - cursor)
-			return Q8B_NPU_PAS_INVALID;
+			return QCOM8GEN3_NPU_PAS_INVALID;
 		cursor += rbufs[i].size;
 	}
 	*end = cursor;
@@ -724,7 +724,7 @@ static int frpc_request_unmap(frpc_request_t *req)
 }
 
 /* Build the payload consumed by drivers/misc/fastrpc.c. The first 16 bytes,
-   padded to a page when negotiated, are private to the restricted Q8B
+   padded to a page when negotiated, are private to the restricted QCOM8GEN3
    syscall (session, retval, handle, sc).
    The DSP sees the standard metadata immediately after that prefix: remote
    buffer descriptors, invoke buffer descriptors, page descriptors, fd/crc
@@ -746,22 +746,22 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 	int rc;
 	frpc_request_t *req;
 
-	if (!request) return Q8B_NPU_PAS_INVALID;
+	if (!request) return QCOM8GEN3_NPU_PAS_INVALID;
 	*request = NULL;
 
 	if (g_transport_unsafe)
-		return Q8B_NPU_PAS_BUSY;
+		return QCOM8GEN3_NPU_PAS_BUSY;
 	if (!frpc_available())
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	if (nrbufs > FRPC_MAX_RBUFS || nfds > FRPC_MAX_FDS)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	/* The kernel ownership table currently tracks physical DMA buffers, not
 	 * Linux dma-buf file descriptors.  Do not serialize an fd list that the
 	 * compact kernel ABI cannot resolve. */
 	if (nfds)
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	if (nrbufs && !rbufs)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	/* Keep the userspace descriptor and the metadata count in lockstep.  A
 	 * mismatched scalar word would otherwise make the kernel parse a prefix of
 	 * this packet and leave the DSP looking at unrelated bytes. */
@@ -770,7 +770,7 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 	inhandles = (sc >> 4) & 0x0fu;
 	outhandles = sc & 0x0fu;
 	if (inhandles || outhandles || inbufs + outbufs != nrbufs)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	for (i = 0; i < nrbufs; i++) {
 		/* This compact transport supports registered DMA buffers and staged
 		 * copies.  A nonzero length without either backing store would become
@@ -779,34 +779,34 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 		if (rbufs[i].fd >= 0 ||
 		    (rbufs[i].offset && !rbufs[i].pa) ||
 		    (rbufs[i].size && !rbufs[i].pa && !rbufs[i].data))
-			return Q8B_NPU_PAS_INVALID;
+			return QCOM8GEN3_NPU_PAS_INVALID;
 		if (rbufs[i].pa && rbufs[i].size) {
 			uint64_t extent = (uint64_t)rbufs[i].offset +
 			                  rbufs[i].size;
 			uint64_t rounded = (extent + 0xfffull) & ~0xfffull;
 			if (!extent || rounded > UINT32_MAX)
-				return Q8B_NPU_PAS_INVALID;
+				return QCOM8GEN3_NPU_PAS_INVALID;
 		}
 	}
 
 	/* Linux aligns the inline argument area to FASTRPC_ALIGN (128) from the
-	 * metadata address in struct fastrpc_msg.  The private Q8B prefix is kept
+	 * metadata address in struct fastrpc_msg.  The private QCOM8GEN3 prefix is kept
 	 * outside that view and is added back by frpc_data_offset(). */
 	data_off = frpc_data_offset(nrbufs, g_meta_offset);
 	/* Use the same metadata-relative cursor for allocation and serialization.
 	 * Include all the bytes advertised by msg.size: rounding that extent to
 	 * a page from msg.addr must fit even with the legacy 16-byte prefix. */
 	if (frpc_inline_end(rbufs, nrbufs, &inline_end, g_meta_offset) != 0)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	wire_size = (inline_end - g_meta_offset + 0xfffu) & ~0xfffull;
 	if (wire_size > UINT32_MAX - g_meta_offset)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	/* Allocate an ownership record before exposing any DMA to the SMMU. */
 	req = calloc(1, sizeof(*req));
-	if (!req) return Q8B_NPU_PAS_FAILED;
+	if (!req) return QCOM8GEN3_NPU_PAS_FAILED;
 	if (npu_buf_alloc(&pay, (uint32_t)(g_meta_offset + wire_size)) != 0) {
 		free(req);
-		return Q8B_NPU_PAS_FAILED;
+		return QCOM8GEN3_NPU_PAS_FAILED;
 	}
 	req->pay = pay;
 	req->session = session;
@@ -822,15 +822,15 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 	if (!payload_iova) {
 		npu_buf_free(&pay);
 		free(req);
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	}
 	base = (uint8_t *)pay.va;
 	memset(base, 0, pay.size);
 
 	/* Private syscall prefix; the kernel turns it into struct fastrpc_msg. */
-	uint32_t packet_session = session | (g_meta_offset == Q8B_NPU_FRPC_METADATA_PAGE ?
-	        Q8B_NPU_FRPC_PACKET_PAGE : 0) |
-	        (g_host_pointers ? Q8B_NPU_FRPC_PACKET_HOST : 0);
+	uint32_t packet_session = session | (g_meta_offset == QCOM8GEN3_NPU_FRPC_METADATA_PAGE ?
+	        QCOM8GEN3_NPU_FRPC_PACKET_PAGE : 0) |
+	        (g_host_pointers ? QCOM8GEN3_NPU_FRPC_PACKET_HOST : 0);
 	memcpy(base + 0, &packet_session, 4);
 	memset(base + 4, 0, 4);
 	memcpy(base + 8, &handle, 4);
@@ -849,7 +849,7 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 			 * back on a later invoke.  Retain one AP-side reference for the
 			 * page list and use the DSP address only in remote_buf.pv. */
 			if (!rbufs[i].pa) {
-				rc = Q8B_NPU_PAS_INVALID;
+				rc = QCOM8GEN3_NPU_PAS_INVALID;
 				goto unmap_buffers;
 			}
 			mapped_size[i] = (uint32_t)(((uint64_t)rbufs[i].offset +
@@ -857,11 +857,11 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 			mapped_iova[i] = frpc_mmap(session, rbufs[i].pa,
 			                           mapped_size[i]);
 			if (!mapped_iova[i]) {
-				rc = Q8B_NPU_PAS_UNSUPPORTED;
+				rc = QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 				goto unmap_buffers;
 			}
 			if (rbufs[i].offset > UINT64_MAX - rbufs[i].dspaddr) {
-				rc = Q8B_NPU_PAS_INVALID;
+				rc = QCOM8GEN3_NPU_PAS_INVALID;
 				goto unmap_buffers;
 			}
 			a = rbufs[i].dspaddr + rbufs[i].offset;
@@ -872,7 +872,7 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 			mapped_iova[i] = frpc_mmap(session, rbufs[i].pa,
 			                           mapped_size[i]);
 			if (!mapped_iova[i]) {
-				rc = Q8B_NPU_PAS_UNSUPPORTED;
+				rc = QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 				goto unmap_buffers;
 			}
 			a = (g_host_pointers && rbufs[i].data ?
@@ -921,8 +921,8 @@ int frpc_request_start(uint32_t session, uint32_t handle, uint32_t sc,
 	npu_dcache_flush(base, pay.size);
 	/* BUSY from SUBMIT means not accepted, so bounded retry is safe here.
 	 * An accepted request is polled; it is never resent after a timeout. */
-	rc = frpc_call(g_in_progress ? Q8B_NPU_FRPC_SUBMIT_LISTENER :
-	        Q8B_NPU_FRPC_SUBMIT, pay.pa, pay.size);
+	rc = frpc_call(g_in_progress ? QCOM8GEN3_NPU_FRPC_SUBMIT_LISTENER :
+	        QCOM8GEN3_NPU_FRPC_SUBMIT, pay.pa, pay.size);
 	if (rc != 0) goto unmap_buffers;
 	req->pay = pay;
 	req->payload_iova = payload_iova;
@@ -958,15 +958,15 @@ unmap_buffers:
  * A retained request still owns its payload and remaining mapping records. */
 int frpc_request_poll(frpc_request_t **request, int32_t *retval)
 {
-	if (!request || !*request) return Q8B_NPU_PAS_INVALID;
+	if (!request || !*request) return QCOM8GEN3_NPU_PAS_INVALID;
 	frpc_request_t *req = *request;
 	int stopped = req->epoch != g_transport_epoch;
 	uint8_t *base = req->pay.va;
-	int32_t rv = Q8B_NPU_PAS_UNSUPPORTED;
+	int32_t rv = QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	if (!stopped) {
 		if (!req->completed) {
 			int rc = (int)syscall3(SYS_PLATFORM_CTL,
-			        Q8B_NPU_FRPC_POLL, req->pay.pa, req->pay.size);
+			        QCOM8GEN3_NPU_FRPC_POLL, req->pay.pa, req->pay.size);
 			if (rc != 0) return rc;
 			npu_dcache_inval(base, req->pay.size);
 			memcpy(&req->retval, base + 4, 4);
@@ -1013,7 +1013,7 @@ int frpc_invoke(uint32_t session, uint32_t handle, uint32_t sc,
 	int clock_backstep_logged = 0;
 	for (unsigned i = 0; i < 30000; i++) {
 		rc = frpc_request_poll(&req, &rv);
-		if (rc != Q8B_NPU_PAS_BUSY) break;
+		if (rc != QCOM8GEN3_NPU_PAS_BUSY) break;
 		if (timed && kernel_tic_nsec(&now_ns) == 0) {
 			/* An interpolated read can fall back to an older coarse tick.
 			 * Unsigned subtraction would turn that backstep into a false
@@ -1061,13 +1061,13 @@ int frpc_open(uint32_t session, const char *uri, uint32_t *handle)
 	int rc;
 
 	if (!handle || !uri)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	*handle = 0;
 	uri_len = strlen(uri);
 	if (!uri_len || uri_len >= UINT32_MAX)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	if (!frpc_available())
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	/* quic/fastrpc idl/remotectl.idl and src/remotectl_stub.c:
 	 * handle 0, method 0; primitive {nameLen, dlerrorLen}, name,
 	 * primitive {remoteHandle, loaderError}, dlerror.  remote_handle64_open
@@ -1099,7 +1099,7 @@ int frpc_open(uint32_t session, const char *uri, uint32_t *handle)
 		return (int32_t)out[1];
 	}
 	if (out[0] <= FRPC_INIT_HANDLE || out[0] == UINT32_MAX)
-		return Q8B_NPU_PAS_FAILED;
+		return QCOM8GEN3_NPU_PAS_FAILED;
 	*handle = out[0];
 	return 0;
 }
@@ -1113,9 +1113,9 @@ int frpc_close(uint32_t session, uint32_t handle)
 	int rc;
 
 	if (!handle || handle == FRPC_INIT_HANDLE || handle == UINT32_MAX)
-		return Q8B_NPU_PAS_INVALID;
+		return QCOM8GEN3_NPU_PAS_INVALID;
 	if (!frpc_available())
-		return Q8B_NPU_PAS_UNSUPPORTED;
+		return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
 	/* Closing a module calls remotectl.close; invoking method 0 on the
 	 * module itself could instead execute one of its application methods. */
 	in[0] = handle;

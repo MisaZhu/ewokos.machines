@@ -1,4 +1,4 @@
-# Build outputs for the Q8B machine (the machines submodule already ignores
+# Build outputs for the QCOM8GEN3 machine (the machines submodule already ignores
 # *.o, *.d, kernel*.elf, root*.img and build*).
 /kernel/*.bin
 /initramfs_*.img
