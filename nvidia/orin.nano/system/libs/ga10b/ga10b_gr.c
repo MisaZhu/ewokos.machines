@@ -59,7 +59,9 @@
 #define GR_SEM_TRIES           200000u    /* ~2s at 10us */
 #define GR_QMD_REGS            32u
 #define GR_IDLE_TRIES          100000u
-#define GR_SEM_SPIN_NS         4000000ull /* busy-wait before sleeping */
+/* busy-wait before sleeping: a full queue of launches takes several ms, and
+ * falling off the spin costs a 1ms poll tick per drain */
+#define GR_SEM_SPIN_NS         20000000ull
 #define FECS_METHOD_TRIES      300000u    /* ~3s at 10us (nvgpu poll timeout) */
 #define GR_GPCS_RESET_DELAY_US 20u        /* NVGPU_GR_GPCS_RESET_DELAY_US */
 #define GR_MAX_TPC             (GA10B_MAX_GPC * GA10B_MAX_TPC_PER_GPC)
@@ -1622,8 +1624,8 @@ static int gr_wait_sem(ga10b_chan_t* ch, uint32_t payload) {
     if (!ga10b.hw)
         return ga10b_chan_wait_sem(ch, payload, GR_SEM_TRIES);
     /* a launch normally retires in well under a scheduler tick, and
-     * sleeping costs at least one: spin on the semaphore for a few
-     * milliseconds before falling back to the sleeping poll */
+     * sleeping costs at least one: spin on the semaphore for
+     * GR_SEM_SPIN_NS before falling back to the sleeping poll */
     volatile uint32_t* sem = (volatile uint32_t*)ch->sem_va;
     uint64_t t0 = 0, now = 0;
     kernel_tic_nsec(&t0);
