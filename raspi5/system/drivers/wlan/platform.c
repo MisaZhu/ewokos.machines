@@ -109,7 +109,7 @@ void pi5_platform_reg_on(bool on)
 /*
  * Map the SDHCI window (both hosts) into this process at the same virtual
  * offset the kernel uses, mirroring the proven i2c/uartd RP1 mapping
- * pattern. check_mem_map_arch() allows exactly this range.
+ * pattern.
  */
 int pi5_platform_map(void)
 {

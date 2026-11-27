@@ -45,7 +45,7 @@
 #include "v3d_g2d.h"
 #include "g2d_qpu_kernels.h"
 
-/* ---- physical bases (whitelisted by check_mem_map_arch) ---- */
+/* ---- physical bases (mapped via SYS_MEM_MAP) ---- */
 #define V3D_PHY_BASE   0x1002000000ULL
 #define V3D_MAP_SIZE   0x40000u      /* hub + core0 + SMS */
 #define PM_PHY_BASE    0x107D200000ULL
@@ -1128,7 +1128,7 @@ int v3d_g2d_init(void)
     _inited = 1;
 
     /* map the V3D block and the PM domain into this process (root
-     * daemon; check_mem_map_arch whitelists both windows) */
+     * daemon, so the SYS_MEM_MAP capability check passes) */
     sys_get_sys_info(&si);
     /* Capture the only physical ranges the GPU may touch: sys_dma for
      * code/uniform staging and IPC_CONTIG shm for canvases.  Their low

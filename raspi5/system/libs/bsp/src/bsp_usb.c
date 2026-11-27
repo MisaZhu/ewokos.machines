@@ -188,10 +188,10 @@ static int speed_from_xhci(int speed) {
  * are enabled; bcm2712_rp1_init() is idempotent and skips training when the
  * link is already up.
  *
- * sys_mem_map() returns 0 and installs *nothing* when the request misses
- * check_mem_map_arch()'s whitelist, so an unchecked failure here would turn
- * the first CAPLENGTH read into a data abort that kills the daemon — and a
- * dead child leaves ipcserv spinning in ipc_ping() forever.
+ * sys_mem_map() returns 0 and installs *nothing* when the request fails the
+ * capability check or overlaps the kernel core, so an unchecked failure here
+ * would turn the first CAPLENGTH read into a data abort that kills the
+ * daemon — and a dead child leaves ipcserv spinning in ipc_ping() forever.
  */
 static int xhci_bring_up(void) {
     int found = 0;

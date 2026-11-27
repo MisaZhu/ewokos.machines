@@ -259,7 +259,7 @@ buffers **in place** (zero copy). Three VideoCore generations are supported:
 
 | SoC | Machine | VideoCore | V3D | QPUs | Launch path | Bring-up specifics |
 |-----|---------|-----------|-----|------|-------------|--------------------|
-| BCM2712 | `raspi5` (Pi 5) | **VII** | 7.1 | 12 (fixed) | CSD | `hub "VHUB"` + `core0` + SMS power-up; registers mapped via `SYS_MEM_MAP` (V3D sits outside the main MMIO window and is whitelisted by the kernel `check_mem_map_arch`) |
+| BCM2712 | `raspi5` (Pi 5) | **VII** | 7.1 | 12 (fixed) | CSD | `hub "VHUB"` + `core0` + SMS power-up; registers mapped via `SYS_MEM_MAP` (V3D sits outside the main MMIO window; the root daemon's CAP_FRAME capability covers it) |
 | BCM2711 | `raspix` (Pi 4 / CM4) | **VI** | 4.2 | probed | CSD | identity-mapped peripheral window; V3D sits behind a stopped AXI async bridge that only the PM/ASB register sequence opens |
 | BCM2837 | `raspix` (Pi 3) | **IV** | 2.1 | ≤ 16 (1 thread/QPU) | SRQ | no usable CSD — kernels run through the SRQ user-program launcher (GPU_FFT protocol); powered via the firmware GRAFX domain call |
 

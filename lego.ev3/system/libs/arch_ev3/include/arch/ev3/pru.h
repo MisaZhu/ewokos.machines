@@ -16,8 +16,8 @@
  * Everything below PRUSS_BASE lives inside the kernel's 32 MB MMIO window
  * (mmio.phy_base=0, size=32 MB), so it is reachable as _mmio_base + phys with
  * no extra mapping. The ARM<->PRU shared RAM at 0x8000_0000 is OUTSIDE that
- * window and is mapped separately by ev3_pru_init() (the kernel whitelists it
- * in check_mem_map_arch(); it is mapped Device/uncached for PRU coherency).
+ * window and is mapped separately by ev3_pru_init() (SYS_MEM_MAP maps it
+ * Device/uncached for PRU coherency).
  */
 
 /* ---- Physical register bases ---- */

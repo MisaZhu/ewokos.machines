@@ -11,8 +11,8 @@
  * three platform changes:
  *
  *   - the register file is a separate 64 KB window at 0x10_00480000, mapped
- *     by dwc2_init() itself through SYS_MEM_MAP (check_mem_map_arch() has to
- *     whitelist it), not an offset inside the main peripheral window;
+ *     by dwc2_init() itself through SYS_MEM_MAP, not an offset inside the
+ *     main peripheral window;
  *   - HCDMA takes the plain CPU physical address. The dtsi node hangs off the
  *     root, which carries no dma-ranges, so there is no 0xC0000000 VC alias
  *     here and DMA is identity;

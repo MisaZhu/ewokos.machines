@@ -732,52 +732,6 @@ void kalloc_arch(void) {
     kalloc_append(P2V(base), P2V(top));
 }
 
-int32_t check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-    ewokos_addr_t mmio_end;
-    ewokos_addr_t map_end;
-    if (size == 0) {
-        return -1;
-    }
-    map_end = phy_base + size;
-    if (map_end < phy_base) {
-        return -1;
-    }
-
-    /* 内存盘 rootfs: 允许用户态 (sdfsd) 映射读写 */
-    if (x86_rd_size != 0 &&
-            phy_base >= x86_rd_base && map_end <= x86_rd_base + x86_rd_size) {
-        return 0;
-    }
-
-    /* GOP 帧缓冲: QEMU 落在 0x80000000, 真机固件可能给 <0x80000000
-     * (如 0x60000000) 或 4GB 以上 —— 4GB 以上由下方 PCI 洞规则放行,
-     * 这里按 bootinfo 上报的 fb 区间精确放行 (大小 = pitch*height) */
-    if (x86_platform_data.fb.phy_base != 0 && x86_platform_data.fb.pitch > 0 &&
-            x86_platform_data.fb.height > 0) {
-        uint64_t fb_size = (uint64_t)x86_platform_data.fb.pitch * x86_platform_data.fb.height;
-        if ((uint64_t)phy_base >= x86_platform_data.fb.phy_base &&
-                (uint64_t)map_end <= x86_platform_data.fb.phy_base + fb_size) {
-            return 0;
-        }
-    }
-
-    /* PCI MMIO 洞: QEMU pc 机型设备 BAR 从 0x80000000 起分配(64 位 BAR
-     * 可能落在 4GB 以上, 如 0xC000000000), 真实平台固件亦普遍落在该范围
-     * — 允许用户态驱动映射设备 BAR(上限 1TB)。 */
-    if (phy_base >= 0x80000000ULL && map_end <= 0x10000000000ULL) {
-        return 0;
-    }
-
-    if (_sys_info.mmio.size == 0) {
-        return -1;
-    }
-    mmio_end = _sys_info.mmio.phy_base + _sys_info.mmio.size;
-    if (phy_base >= _sys_info.mmio.phy_base && map_end <= mmio_end) {
-        return 0;
-    }
-    return -1;
-}
-
 int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
     ewokos_addr_t map_end = phy_base + size;
 

@@ -59,9 +59,8 @@ int ev3_pru_init(void) {
 
     /* The ARM<->PRU shared SRAM at 0x8000_0000 is OUTSIDE the 32 MB MMIO window,
      * so map it just past the window end (still inside the kernel's 128 MB MMIO
-     * reservation, above the kmalloc arena). The kernel whitelists this exact
-     * physical range in check_mem_map_arch() and maps it Device/uncached, which
-     * is what ARM<->PRU0 coherency needs. */
+     * reservation, above the kmalloc arena). SYS_MEM_MAP maps this physical
+     * range Device/uncached, which is what ARM<->PRU0 coherency needs. */
     sys_get_sys_info(&sysinfo);
     target = _mmio_base + sysinfo.mmio.size;
     if (syscall3(SYS_MEM_MAP, target,

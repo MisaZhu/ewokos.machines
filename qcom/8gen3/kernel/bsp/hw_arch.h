@@ -194,8 +194,8 @@
  * it through the final UEFI memory map before publishing pages. */
 #define QCOM8GEN3_USABLE_LIMIT    (8ULL*GB)
 
-/* Firmware framebuffer is mapped by user space (SYS_MEM_MAP); allow a
- * generous window in check_mem_map_arch(). */
+/* Firmware framebuffer is mapped by user space (SYS_MEM_MAP); cap the
+ * size the boot code accepts from the firmware. */
 #define QCOM8GEN3_FB_MAX_SIZE     (64*MB)
 
 #endif

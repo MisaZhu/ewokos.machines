@@ -95,8 +95,8 @@ make run-iso-uefi     # UEFI (OVMF): 内核 + 内存盘 rootfs, 完整启动到�
     预算不足) 仍为 512MB 假设。SeaBIOS 不推进 E820 的 DI, 捕获代码自带
     24B 步长转存。
   - UEFI: ROOTFS.IMG 分配强制 2MB 对齐 (内核 2MB 大页窗口要求,
-    `_rd_ptr` 另有非对齐兜底); `check_mem_map_arch` 放行 bootinfo 上报的
-    GOP fb 区间 (真机固件可能给 <0x80000000 的帧缓冲)。
+    `_rd_ptr` 另有非对齐兜底); bootinfo 上报的 GOP fb 区间 (真机固件可能给
+    <0x80000000 的帧缓冲) 由 `mem_map` 按 CAP_FRAME 权限放行。
   - 内核内存布局按 E820 总量取整: `ALLOCABLE_PAGE_DIR_SIZE` 页对齐
     (非规整内存容量如 255MB 曾导致 kmalloc 基址跨页 Panic)。
 - 真机差异已处理: x2APIC 交接 (每核 x86_lapic_mode_fixup 按 SDM 降回
@@ -123,7 +123,7 @@ make run-iso-uefi     # UEFI (OVMF): 内核 + 内存盘 rootfs, 完整启动到�
     '8'=E820 完成, 'R'=INT13h 回退装载中, '.'=每 32KB 块进度; 内核启动
     后清屏转入内核日志 (kout->vgacon 镜像全程可见)。
 - 回归: ISO 路径的 ramdisk 保留通过 `kalloc_arch` 在空闲页表挖洞实现,
-  `mem_map` 门禁(`check_mem_map_arch`)放行 ramdisk 区间供 sdfsd 映射;
+  `mem_map` 按 CAP_FRAME 权限放行 ramdisk 区间供 sdfsd 映射;
   两条引导路径已固化为 `scripts/iso_test.exp`(UEFI 登录+shell 回环,
   BIOS 内核日志到 sd init 失败/loading init 失败停机), 见"回归测试"矩阵 #9。
   改动 rootfs 后重建顺序: `make basic && make sd-iso`, 然后

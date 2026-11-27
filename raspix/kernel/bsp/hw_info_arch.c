@@ -238,18 +238,6 @@ void kalloc_arch(void) {
         kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
-int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-    if(phy_base >= PHY_LOW_RESV_BASE && size <= PHY_LOW_RESV_SIZE)
-        return 0;
-    if(phy_base >= PHY_HIGH_RESV_BASE && size <= PHY_HIGH_RESV_SIZE)
-        return 0;
-
-    if(_sys_info.total_phy_mem_size < 1*GB && 
-            phy_base >= _sys_info.total_phy_mem_size - PHY_LOW_RESV_SIZE)
-        return 0;
-    return -1;
-}
-
 static inline int32_t range_in_ram_window(ewokos_addr_t phy_base,
         ewokos_addr_t map_end,
         ewokos_addr_t ram_base,

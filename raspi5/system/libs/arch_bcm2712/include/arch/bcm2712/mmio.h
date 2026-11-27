@@ -47,7 +47,7 @@
  * The size is what rp1.dtsi declares for the whole register file,
  *   ranges = <0xc0 0x40000000  0x02000000 0x00 0x00000000  0x00 0x00410000>;
  * rounded up to the 2MB granularity the kernel boot page tables use. It also
- * has to stay <= PI5_RP1_SIZE, or check_mem_map_arch() refuses the mapping.
+ * has to stay <= PI5_RP1_SIZE so it fits the window the kernel maps.
  */
 #define PI5_RP1_PHY         0x1F00000000ULL
 
@@ -64,7 +64,7 @@
  *   <0x02000000 0x00 0x80000000  0x1b 0x80000000  0x00 0x80000000>
  * i.e. CPU physical 0x1b_80000000 .. 0x1b_ffffffff maps to PCIe addr 0x0.
  * An NVMe BAR0 lands somewhere in this 2 GB window; nvme.c maps it via
- * SYS_MEM_MAP, so check_mem_map_arch() must whitelist the whole window.
+ * SYS_MEM_MAP.
  *
  * Virtual offset 0x04600000 is chosen inside MMIO_MAX_SIZE and clear of the
  * EMMC window (0x04000000), pcie2 host window (0x04400000), the RP1 ctrl
@@ -113,9 +113,8 @@
  * xHCI pair.
  *
  * Must match PI5_USB_DWC2_WIN_OFF/PI5_USB_DWC2_PHY/PI5_USB_DWC2_SIZE in
- * machines/raspi5/kernel/bsp/hw_arch.h: the kernel maps nothing here, it only
- * whitelists the physical range in check_mem_map_arch() so the SYS_MEM_MAP
- * below is accepted.
+ * machines/raspi5/kernel/bsp/hw_arch.h: the kernel maps nothing here, the
+ * driver maps the physical range itself with the SYS_MEM_MAP below.
  */
 #define PI5_USB_DWC2_PHY      0x1000480000ULL
 #define PI5_USB_DWC2_WIN_OFF  0x04700000
@@ -129,9 +128,8 @@
  * runs a polled cyclic mem-to-peripheral ring on DREQ 10.
  *
  * Must match PI5_DMA32_WIN_OFF/PI5_DMA32_PHY/PI5_DMA32_SIZE in
- * machines/raspi5/kernel/bsp/hw_arch.h: the kernel maps nothing here, it only
- * whitelists the physical range in check_mem_map_arch() so the SYS_MEM_MAP
- * below is accepted.
+ * machines/raspi5/kernel/bsp/hw_arch.h: the kernel maps nothing here, the
+ * driver maps the physical range itself with the SYS_MEM_MAP below.
  */
 #define PI5_DMA32_PHY       0x1000010000ULL
 #define PI5_DMA32_WIN_OFF   0x04800000

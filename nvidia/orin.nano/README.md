@@ -97,10 +97,9 @@ so the rescue shell is useful on hardware without a persistent disk:
 - `ps` / `top` / `dump` / `elfinfo` — process and memory inspection.
 - `cat ls echo grep find head more wc df mount vi ...` — file/fs editing.
 
-`SYS_MEM_MAP` is whitelisted by `check_mem_map_arch` to the AON window, the
-GIC window, the ramdisk and the framebuffer only; arbitrary SoC registers
-(pinmux `0x2430000`, GPIO `0x2200000`) are intentionally not mapable from
-user space.
+`SYS_MEM_MAP` is gated only by the caller's `CAP_FRAME` capability (plus a
+guard against mapping over the kernel core); root drivers use it for the AON
+window, the GIC window, the ramdisk and the framebuffer.
 
 ## Build
 

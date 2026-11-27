@@ -1142,7 +1142,7 @@ int nvme_probe_and_init(nvme_ctrl_t *ctrl)
 
     /* --- 2.  Map pcie1 host DBI window (64 KB at 0x1000110000).
      *         This is the register block with PCIE_MISC_*, EXT_CFG,
-     *         MDIO, etc.  check_mem_map_arch() whitelists it. --- */
+     *         MDIO, etc. --- */
     ewokos_addr_t host_va = _mmio_base + PI5_PCIE1_WIN_OFF;
     mapped = syscall3(SYS_MEM_MAP, host_va, PI5_PCIE1_PHY,
               PI5_PCIE1_WIN_SIZE);

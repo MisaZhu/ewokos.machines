@@ -62,8 +62,8 @@
  *
  * Scan-out targets a fixed reserved DRAM window — the uconsole
  * fbdisplayd model (UCONSOLE_FB_PHYS_BASE) with a per-board base:
- *   >1GB boards : 0x3c100000, the Pi4 reserved FB window accepted by
- *                 check_mem_map_arch() via PHY_LOW_RESV_BASE;
+ *   >1GB boards : 0x3c100000, the Pi4 reserved FB window at
+ *                 PHY_LOW_RESV_BASE;
  *   <=1GB boards: top of ARM RAM minus 32MB, inside the kernel's
  *                 64MB low-resv window (allocable_phy_mem_top is
  *                 shrunk by PHY_LOW_RESV_SIZE, so the kernel never

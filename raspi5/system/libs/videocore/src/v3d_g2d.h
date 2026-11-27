@@ -3,9 +3,8 @@
  * raspberry-pi5 bsp_g2d layer.
  *
  * Bring-up maps the V3D register block (0x1002000000, outside the main
- * MMIO window, whitelisted by the raspi5 kernel check_mem_map_arch) and
- * the PM power domain into the caller's address space through
- * SYS_MEM_MAP, then power-cycles the GRAFX_V3D domain and enables the
+ * MMIO window) and the PM power domain into the caller's address space
+ * through SYS_MEM_MAP, then power-cycles the GRAFX_V3D domain and enables the
  * L2 cache.  CSD code/uniform staging lives in physically-contiguous
  * sys_dma buffers (dma_alloc).  A V3D-local page table limits QPU access
  * to the DMA and contiguous-shm windows, including their >4GB locations.

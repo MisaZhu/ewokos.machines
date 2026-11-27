@@ -120,21 +120,6 @@ void kalloc_arch(void) {
     kalloc_append(P2V(_sys_info.allocable_phy_mem_base), P2V(_sys_info.allocable_phy_mem_top));
 }
 
-int32_t  check_mem_map_arch(ewokos_addr_t phy_base, uint32_t size) {
-    ewokos_addr_t end = phy_base + size;
-    ewokos_addr_t fb_base = 0x27c00000;
-    ewokos_addr_t fb_end = fb_base + FB_SIZE;
-    ewokos_addr_t mmio_end = _sys_info.mmio.phy_base + _sys_info.mmio.size;
-
-    if(size == 0)
-        return -1;
-    if(phy_base >= fb_base && end > phy_base && end <= fb_end)
-        return 0;
-    if(phy_base >= _sys_info.mmio.phy_base && end > phy_base && end <= mmio_end)
-        return 0;
-    return -1;
-}
-
 int32_t mem_map_is_normal_ram_arch(ewokos_addr_t phy_base, uint32_t size) {
     ewokos_addr_t map_end = phy_base + size;
 

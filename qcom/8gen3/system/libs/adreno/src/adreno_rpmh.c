@@ -21,8 +21,8 @@
  * reader and RPMh TCS writer that the QCOM8GEN3 SDCC2 driver already uses
  * (system/libs/bsp/src/sdcc2.c), plus the rpmpd corner selection:
  *
- *   - cmd-db lives at 0x80860000 (DT cmd-db-region, whitelisted for user
- *     space by check_mem_map_arch -> "user-space SDCC2 resolves the rails").
+ *   - cmd-db lives at 0x80860000 (DT cmd-db-region, mapped by user space
+ *     via SYS_MEM_MAP -> "user-space SDCC2 resolves the rails").
  *   - RPMh commands go through the apps RSC drv-2 TCS at 0x18220000
  *     (low MMIO, already used by the kernel's SD rail code).
  *   - rpmpd writes the *corner index* (not the ARC level value) as the

@@ -60,8 +60,8 @@
  * Outbound memory window (dtsi ranges):
  *   <0x02000000 0x00 0x80000000  0x1b 0x80000000  0x00 0x80000000>
  * CPU physical 0x1b_80000000 .. 0x1b_ffffffff maps to PCIe addr 0x0.
- * An NVMe BAR0 lands here; check_mem_map_arch() must whitelist the 2 GB
- * window or the driver's SYS_MEM_MAP of BAR0 is refused and reads abort.
+ * An NVMe BAR0 lands here; the driver maps the 2 GB window with
+ * SYS_MEM_MAP (capability-checked, no physical whitelist).
  *
  * Virtual offset 0x04600000 is inside MMIO_MAX_SIZE and clear of EMMC
  * (0x04000000), pcie2 host window (0x04400000) and RP1 (0x06000000).
@@ -114,10 +114,10 @@
  * so hdmi_soundd drives channel 0 as a polled cyclic mem-to-peripheral ring on
  * DREQ 10 (see drivers/dma/bcm2835-dma.c and sound/soc/bcm/... vc4_hdmi.c).
  *
- * Like PI5_USB_DWC2 above, the kernel maps nothing here: it only whitelists
- * the physical range in check_mem_map_arch() so the driver's SYS_MEM_MAP is
- * accepted. Virtual offset 0x04800000 sits inside MMIO_MAX_SIZE and clear of
- * the SoC USB2 window (0x04700000) and RP1 (0x06000000).
+ * Like PI5_USB_DWC2 above, the kernel maps nothing here: the driver maps the
+ * physical range itself with SYS_MEM_MAP. Virtual offset 0x04800000 sits
+ * inside MMIO_MAX_SIZE and clear of the SoC USB2 window (0x04700000) and
+ * RP1 (0x06000000).
  */
 #define PI5_DMA32_WIN_OFF  0x04800000
 #define PI5_DMA32_PHY      0x1000010000UL
@@ -159,10 +159,9 @@
  *
  * Where exactly inside that 1GB the firmware puts the scan-out buffer depends
  * on the config.txt memory split. The tail of the window is kept out of the
- * kernel heap and check_mem_map_arch() only lets a scan-out be mapped from
- * there: accepting the whole 1GB instead means a firmware buffer that landed
- * elsewhere gets mapped on top of live heap pages, and the display then shows
- * whatever the allocator is doing.
+ * kernel heap so a scan-out mapped from there can never land on top of live
+ * heap pages (which would make the display show whatever the allocator is
+ * doing).
  *
  * The driver does not depend on this reserve for the normal case; it hands the
  * firmware a buffer out of the sys_dma pool (which is carved out before the

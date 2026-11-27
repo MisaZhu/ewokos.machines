@@ -4,8 +4,8 @@
  * Maps the 1 MB core span (GPU/GMU/GPUCC/SMMU/RSCC at phy 0x03d0_0000) and the
  * 64 KB PDC window (phy 0x0b29_0000) into user space with SYS_MEM_MAP, then
  * exposes word-indexed accessors that mirror Linux gpu_read/gpu_write and
- * gmu_read/gmu_write.  check_mem_map_arch() whitelists the whole low MMIO span
- * (phy_top <= 0x2000_0000), so both windows map without a kernel change.
+ * gmu_read/gmu_write.  SYS_MEM_MAP only checks the caller's CAP_FRAME
+ * capability, so both windows map without a kernel change.
  *
  * Barriers use aarch64 dmb; the volatile get32/put32 accessors (ewoksys/mmio.h)
  * already force the individual load/store, the dmb orders them against the

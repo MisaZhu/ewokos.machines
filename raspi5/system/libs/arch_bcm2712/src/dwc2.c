@@ -270,10 +270,10 @@ static inline void dwc_dma_barrier(void) {
 /*
  * Maps the main peripheral window (the VPU mailbox lives there) plus the SoC
  * USB2 window of its own. sys_mem_map() returns 0 and installs *nothing*
- * when the request misses check_mem_map_arch()'s whitelist, so both results
- * have to be checked: an unchecked failure would turn the first GSNPSID read
- * into a data abort that kills the daemon, and a dead child leaves ipcserv
- * spinning in ipc_ping() forever.
+ * when the request fails the capability check or overlaps the kernel core,
+ * so both results have to be checked: an unchecked failure would turn the
+ * first GSNPSID read into a data abort that kills the daemon, and a dead
+ * child leaves ipcserv spinning in ipc_ping() forever.
  */
 static int dwc2_map_windows(void) {
     ewokos_addr_t base;

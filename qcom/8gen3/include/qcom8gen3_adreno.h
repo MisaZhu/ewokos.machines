@@ -22,9 +22,8 @@
  * The kernel installs a device-memory mapping of QCOM8GEN3_GPU_WIN_* and
  * QCOM8GEN3_GPU_PDC_WIN_* in arch_vm() (see machines/qcom/8gen3/kernel/bsp/hw_arch.h
  * and hw_info_arch.c).  User space uses SYS_MEM_MAP with the physical
- * addresses below to get its own mapping; check_mem_map_arch() whitelists
- * the entire low MMIO span (phy_top <= 0x20000000) plus the zap-shader
- * reserved region.
+ * addresses below to get its own mapping (the syscall only checks the
+ * caller's CAP_FRAME capability and that the target misses the kernel core).
  */
 #ifndef QCOM8GEN3_ADRENO_H
 #define QCOM8GEN3_ADRENO_H
