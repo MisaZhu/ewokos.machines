@@ -31,7 +31,9 @@ else
 # plus a serial rescue console.
 RAMFS_STAGING = build/initramfs
 INITRAMFS_IMAGE = initramfs.img
-INITRAMFS_MB ?= 8
+# 16MB: the ext3 journal (-J size=4) needs room; mke2fs rejects a 4MB
+# journal inside an 8MB filesystem (128-byte inodes).
+INITRAMFS_MB ?= 16
 # SELF_ROOT=1 rewrites the staged kernel.conf rootfs policy to self, so init
 # keeps the boot RAMFS and never switchroots (maintenance mode; the packed
 # profile is the serial rescue console).  Default 0: normal boot selects the
