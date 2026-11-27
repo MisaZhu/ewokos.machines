@@ -78,7 +78,7 @@ struct msg_get_clock_rate {
 
 static uint32_t mailbox_data_from_dma_buf(void* buf)
 {
-    uint32_t phy = dma_phy_addr(0, (ewokos_addr_t)buf);
+    uint32_t phy = dma_phy_addr((ewokos_addr_t)buf);
     if (phy == 0) {
         brcm_log("wlan mailbox: dma_phy_addr failed for %p\n", buf);
         return 0;
@@ -97,7 +97,7 @@ static uint32_t mailbox_data_from_dma_buf(void* buf)
 static uint32_t pi5_get_emmc2_clock(void)
 {
     mail_message_t msg;
-    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(0, sizeof(struct msg_get_clock_rate)));
+    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(sizeof(struct msg_get_clock_rate)));
     uint32_t mailbox_data;
     uint32_t rate = 0;
 
@@ -117,7 +117,7 @@ static uint32_t pi5_get_emmc2_clock(void)
             (msg_clk->get_clock_rate.tag_hdr.val_len & 0x80000000u))
             rate = msg_clk->get_clock_rate.body.resp.rate_hz;
     }
-    dma_free(0, (ewokos_addr_t)msg_clk);
+    dma_free((ewokos_addr_t)msg_clk);
 
     return rate;
 }

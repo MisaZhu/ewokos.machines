@@ -2,7 +2,7 @@
  * bsp_cl.c - raspberry-pi5 OpenCL compute public API: the V3D 7.1 CSD compute
  * offload, the sibling of bsp_g3d.c.  Every operation is delegated to the
  * VideoCore compute back end in libvideocore (<videocore/vc_cl.h>), which owns
- * the CSD submission and works zero-copy on the caller's contig-shm / dma
+ * the CSD submission and works zero-copy on the caller's shm / dma
  * buffers through their resolved physical bases.
  *
  * The compute path is brought up lazily on the first op (idempotent, on top of
@@ -80,8 +80,8 @@ int32_t bsp_cl_program(const void* blob, uint32_t size)
 }
 
 /* Run one NDRange launch.  g2dd has already resolved every __global buffer
- * argument canvas to a contig physical base (rejecting a non-contig arg with the
- * transient G2D_ERR_FAILED before it reaches here) and attached the packed
+ * argument canvas to a physical base (rejecting an arg with no physical base
+ * using the transient G2D_ERR_FAILED before it reaches here) and attached the packed
  * scalar-arg uniform canvas for CPU read, so this only forwards the resolved
  * bsp_cl_dispatch_t to vc_cl_dispatch and maps the tri-state back. */
 int32_t bsp_cl_dispatch(int32_t handle, const bsp_cl_dispatch_t* d)

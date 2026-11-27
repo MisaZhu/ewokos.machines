@@ -3,9 +3,8 @@
 
 /* thin dispatch layer: every operation is implemented by the platform's
    arch_g2d_* back end (NEON software engine on virt, a hardware 2D engine
-   on platforms that provide one). the *_contig flags tell the back end
-   when a buffer is physically contiguous, and *_phy carries the resolved
-   physical base so a hardware engine can work on physical addresses. */
+   on platforms that provide one). *_phy carries the resolved physical
+   base so a hardware engine can work on physical addresses. */
 
 int32_t bsp_g2d_init(void) {
 	return arch_g2d_init();
@@ -27,12 +26,12 @@ int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {
 }
 
 /* blit into a raw physical destination (scan-out push): the hardware engine could write the physical range directly, but that fast path is not wired up on this platform yet, so decline and let the caller (displayd flush_g2d) fall back to its cpu flush path */
-int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 				int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 				ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 				uint32_t dst_pitch,
 				int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
-	(void)argb_src; (void)src_phy; (void)src_contig; (void)src_w; (void)src_h;
+	(void)argb_src; (void)src_phy;(void)src_w; (void)src_h;
 	(void)sx; (void)sy; (void)sw; (void)sh;
 	(void)dst_phy; (void)dst_size; (void)dst_w; (void)dst_h;
 	(void)dst_pitch;
@@ -43,12 +42,12 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
 /* rotate straight into a raw physical destination: no engine path on
    this platform, decline as a missing capability (sticky) so displayd
    stops asking and keeps its own rotate + flush path */
-int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 		int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 		ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 		uint32_t dst_pitch,
 		int32_t dx, int32_t dy, int32_t degree) {
-	(void)argb_src; (void)src_phy; (void)src_contig; (void)src_w; (void)src_h;
+	(void)argb_src; (void)src_phy;(void)src_w; (void)src_h;
 	(void)sx; (void)sy; (void)sw; (void)sh;
 	(void)dst_phy; (void)dst_size; (void)dst_w; (void)dst_h;
 	(void)dst_pitch;
@@ -57,15 +56,14 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
 }
 
 
-int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 		int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
-	return arch_g2d_fill(argb, argb_phy, contig, argb_w, argb_h, x, y, w, h, color);
+	return arch_g2d_fill(argb, argb_phy, argb_w, argb_h, x, y, w, h, color);
 }
 
-int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 		int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
 		(void)argb_phy;
-		(void)contig;
 	return arch_g2d_fill_alpha(argb, argb_w, argb_h, x, y, w, h, color);
 }
 
@@ -73,31 +71,28 @@ int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t conti
    engine's software scanline rasterizer (NEON span fills), which clips
    each span to the whole canvas (clip_w/clip_h == 0). consistent with
    every other op in this thin dispatch layer. */
-int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 		int32_t x1, int32_t y1, int32_t x2, int32_t y2, int32_t x3, int32_t y3, uint32_t color) {
-	return arch_g2d_fill_triangle(argb, argb_phy, contig, argb_w, argb_h,
-			x1, y1, x2, y2, x3, y3, 0, 0, 0, 0, color);
+	return arch_g2d_fill_triangle(argb, argb_phy, argb_w, argb_h, x1, y1, x2, y2, x3, y3, 0, 0, 0, 0, color);
 }
 
-int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 		int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-		uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+		uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 		int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
-	return arch_g2d_blt(argb_src, src_phy, src_contig, src_w, src_h, sx, sy, sw, sh,
-		argb_dst, dst_phy, dst_contig, dst_w, dst_h, dx, dy, dw, dh);
+	return arch_g2d_blt(argb_src, src_phy, src_w, src_h, sx, sy, sw, sh, argb_dst, dst_phy, dst_w, dst_h, dx, dy, dw, dh);
 }
 
-int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 		int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-		uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+		uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 		int32_t dx, int32_t dy, int32_t dw, int32_t dh, uint8_t alpha) {
-	return arch_g2d_blt_alpha(argb_src, src_phy, src_contig, src_w, src_h, sx, sy, sw, sh,
-		argb_dst, dst_phy, dst_contig, dst_w, dst_h, dx, dy, dw, dh, alpha);
+	return arch_g2d_blt_alpha(argb_src, src_phy, src_w, src_h, sx, sy, sw, sh, argb_dst, dst_phy, dst_w, dst_h, dx, dy, dw, dh, alpha);
 }
 
 /* cpu path for sub-alignment tails and narrow copies: handed to the back
    end's 1:1 blit, which works purely on the virtual pointers and ignores
-   phy/contig (passed 0 here). its simd blocks plus scalar/padded tail
+   phy (passed 0 here). its simd blocks plus scalar/padded tail
    handle any width, and it clips the rect against both buffer bounds.
    use_alpha == 0 is a plain copy; otherwise the same blend math as
    bsp_g2d_blt_alpha, and alpha == 0 is a no-op. */
@@ -112,10 +107,9 @@ int32_t bsp_g2d_blt_cpu(uint32_t* argb_src, int32_t src_w, int32_t src_h,
 		argb_dst, 0, 0, dst_w, dst_h, dx, dy, sw, sh);
 }
 
-int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-		uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h) {
-	return arch_g2d_scale_to(argb_src, src_phy, src_contig, src_w, src_h,
-		argb_dst, dst_phy, dst_contig, dst_w, dst_h);
+int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+		uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h) {
+	return arch_g2d_scale_to(argb_src, src_phy, src_w, src_h, argb_dst, dst_phy, dst_w, dst_h);
 }
 
 int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
@@ -123,25 +117,20 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 	return arch_g2d_rotated_size(src_w, src_h, degree, dst_w, dst_h);
 }
 
-int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-		uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree) {
-	return arch_g2d_rotate(argb_src, src_phy, src_contig, src_w, src_h,
-		argb_dst, dst_phy, dst_contig, dst_w, dst_h, degree);
+int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+		uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h, int32_t degree) {
+	return arch_g2d_rotate(argb_src, src_phy, src_w, src_h, argb_dst, dst_phy, dst_w, dst_h, degree);
 }
 /* whole-surface separable gaussian blur: delegated to the platform's
    arch_g2d_* back end (the NEON software engine), which blurs in place
-   and allocates its own scratch, so tmp/tmp_phy/tmp_contig are unused.
+   and allocates its own scratch, so tmp/tmp_phy are unused.
    g2dd pre-validates radius (2/4) and width (%16) before dispatch; the
    back end accepts any radius and clips the rect to the buffer bounds. */
-int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
-			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint32_t* tmp, ewokos_addr_t tmp_phy, int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
-	(void)tmp; (void)tmp_phy; (void)tmp_contig;
-	return arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
-			rect_x, rect_y, rect_w, rect_h, radius);
+	(void)tmp; (void)tmp_phy;	return arch_g2d_gaussian(argb, argb_phy, argb_w, argb_h, rect_x, rect_y, rect_w, rect_h, radius);
 }
 
 /* portablegl 3D offload moved to bsp_g3d.c (<bsp/bsp_g3d.h>): this

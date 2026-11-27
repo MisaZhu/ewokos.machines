@@ -5,7 +5,7 @@
  * impl (arm-smmu-qcom.c: qcom_adreno_smmu_alloc_context_bank forces cbndx 0 for
  * the GPU device).  We build a single-table ARM LPAE stage-1 pagetable that
  * IDENTITY-maps [0, 64 GB) with unprivileged 1 GB block descriptors, so every resolved
- * contig physical base g2dd/displayd hands down (framebuffers, dma pool, zap
+ * physical base g2dd/displayd hands down (framebuffers, dma pool, zap
  * region) is directly usable as a GPU virtual address (GPUVA == PA).  This
  * matches the coherent_walk LPAE config Linux programs (arm_64_lpae_alloc_
  * pgtable_s1): inner-shareable, write-back write-allocate, 4 KB granule.
@@ -224,12 +224,12 @@ int adreno_bo_alloc(adreno_bo_t *bo, uint32_t size) {
 	ewokos_addr_t pa;
 	if (size == 0)
 		return -1;
-	va = dma_alloc(0, size);
+	va = dma_alloc(size);
 	if (va == 0)
 		return -2;
-	pa = dma_phy_addr(0, va);
+	pa = dma_phy_addr(va);
 	if (pa == 0) {
-		dma_free(0, va);
+		dma_free(va);
 		return -3;
 	}
 	bo->va = (void*)va;
@@ -241,7 +241,7 @@ int adreno_bo_alloc(adreno_bo_t *bo, uint32_t size) {
 
 void adreno_bo_free(adreno_bo_t *bo) {
 	if (bo && bo->va) {
-		dma_free(0, (ewokos_addr_t)bo->va);
+		dma_free((ewokos_addr_t)bo->va);
 		bo->va = 0;
 		bo->pa = 0;
 		bo->size = 0;
@@ -530,7 +530,7 @@ void adreno_smmu_dump_fault(adreno_dev_t *d) {
 /* Generic 4 KB-granule LPAE stage-1 mapper (used for CB1 / GMU).       */
 /*                                                                      */
 /* CB0 uses a single L1 table of 1 GB block descriptors because the GPU */
-/* only ever touches contig physical bases (identity map).  The GMU, on */
+/* only ever touches physical bases (identity map).  The GMU, on */
 /* the other hand, addresses a handful of firmware-fixed iovas scattered */
 /* across [0x4000 .. 0x60400000], so CB1 needs real 4 KB page mappings.  */
 /* We walk the tree on demand, allocating L2/L3 tables from a bump pool. */

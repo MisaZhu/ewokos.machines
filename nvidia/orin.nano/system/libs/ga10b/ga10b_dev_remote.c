@@ -3,7 +3,7 @@
  * Exports the exact ga10b_dev.h surface of the in-process driver, so kuda's
  * backend_ga10b.c and ga10b_pgl.c link against this file (libga10br.a)
  * unchanged.  Everything that touches the GPU goes through /dev/gpu RPC;
- * device memory stays client-owned DMA (block 1), so the CPU memcpy paths
+ * device memory stays client-owned DMA, so the CPU memcpy paths
  * (uncached writes, cacheable-mirror reads) keep their measured throughput
  * without a single extra copy.
  *
@@ -123,14 +123,14 @@ static int queue_flush(uint32_t flags) {
     return r.q_err;
 }
 
-/* keyed contig shm, fresh key per allocation (the g2dclient idiom) */
+/* keyed shm, fresh key per allocation (the g2dclient idiom) */
 static int shm_new(uint32_t size, int* id, void** va) {
     static uint32_t seq;
     uint32_t pid = (uint32_t)getpid();
     for (int tries = 0; tries < 256; tries++) {
         uint32_t key = 0x47505500u ^ ((pid & 0xffffu) << 8) ^ (seq++ & 0xffu);
         int sid = shmget((key_t)key, (int)size,
-                         0666 | IPC_CREAT | IPC_EXCL | IPC_CONTIG);
+                         0666 | IPC_CREAT | IPC_EXCL);
         if (sid <= 0)
             continue;
         void* p = shmat(sid, 0, 0);
@@ -280,19 +280,19 @@ int ga10b_dev_alloc(uint32_t size, void** va, uint64_t* gpu_va) {
     if (r.state != 1 || size == 0)
         goto out;
     size = (size + 4095u) & ~4095u;
-    ewokos_addr_t v = dma_alloc(GA10B_RPC_DMA_BLOCK, size);
+    ewokos_addr_t v = dma_alloc(size);
     if (v == 0)
         goto out;
-    ewokos_addr_t phy = dma_phy_addr(GA10B_RPC_DMA_BLOCK, v);
+    ewokos_addr_t phy = dma_phy_addr(v);
     if (phy == 0) {
-        dma_free(GA10B_RPC_DMA_BLOCK, v);
+        dma_free(v);
         goto out;
     }
     memset((void*)v, 0, size);
     ga10b_rpc_alloc_t req = { .phy = (uint64_t)phy, .size = size };
     ga10b_rpc_alloc_rep_t rep;
     if (rpc(GA10B_RPC_ALLOC, &req, sizeof(req), &rep, sizeof(rep)) != 0) {
-        dma_free(GA10B_RPC_DMA_BLOCK, v);
+        dma_free(v);
         goto out;
     }
     *va = (void*)v;
@@ -311,7 +311,7 @@ void ga10b_dev_free(void* va, uint64_t gpu_va, uint32_t size) {
             ga10b_rpc_free_t req = { .gpu_va = gpu_va, .size = size };
             rpc(GA10B_RPC_FREE, &req, sizeof(req), NULL, 0);
         }
-        dma_free(GA10B_RPC_DMA_BLOCK, (ewokos_addr_t)va);
+        dma_free((ewokos_addr_t)va);
     }
     pthread_mutex_unlock(&r.lock);
 }

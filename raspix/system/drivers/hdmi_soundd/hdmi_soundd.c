@@ -1548,12 +1548,12 @@ static void hdmi_mai_program(const struct pcm_config* cfg) {
 
 static void audio_deinit(void) {
     if (_snd.dma_cbs_addr != 0) {
-        dma_free(0, _snd.dma_cbs_addr);
+        dma_free(_snd.dma_cbs_addr);
         _snd.dma_cbs_addr = 0;
         _snd.dma_cbs = NULL;
     }
     if (_snd.dma_data_base_addr != 0) {
-        dma_free(0, _snd.dma_data_base_addr);
+        dma_free(_snd.dma_data_base_addr);
         _snd.dma_data_base_addr = 0;
     }
     if (_snd.pcm_ring != NULL) {
@@ -1588,14 +1588,14 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
     _snd.pixel_clock_hz = audio_measure_pixel_clock();
     hdmi_mai_program(cfg);
 
-    _snd.dma_cbs_addr = dma_alloc(0, sizeof(dma_cb_t) * DMA_BUFFER_SLOTS);
+    _snd.dma_cbs_addr = dma_alloc(sizeof(dma_cb_t) * DMA_BUFFER_SLOTS);
     _snd.dma_cbs = (dma_cb_t*)(uintptr_t)_snd.dma_cbs_addr;
-    _snd.dma_data_base_addr = (ewokos_addr_t)dma_alloc(0, DMA_TOTAL_BUF_SIZE);
+    _snd.dma_data_base_addr = (ewokos_addr_t)dma_alloc(DMA_TOTAL_BUF_SIZE);
     if (_snd.dma_cbs_addr == 0 || _snd.dma_cbs == NULL || _snd.dma_data_base_addr == 0) {
         audio_deinit();
         return -1;
     }
-    _snd.dma_data_base_phy = dma_phy_addr(0, _snd.dma_data_base_addr);
+    _snd.dma_data_base_phy = dma_phy_addr(_snd.dma_data_base_addr);
     dma_base = (uint8_t*)(uintptr_t)_snd.dma_data_base_addr;
     for (i = 0; i < DMA_BUFFER_SLOTS; i++) {
         _snd.dma_slots[i] = (uint32_t*)(void*)(dma_base + (i * DMA_BUF_SIZE));
@@ -1611,7 +1611,7 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
     audio_pcm_ring_reset();
     audio_queue_reset();
 
-    _snd.dma_cbs_phy = dma_phy_addr(0, _snd.dma_cbs_addr);
+    _snd.dma_cbs_phy = dma_phy_addr(_snd.dma_cbs_addr);
     for (i = 0; i < DMA_BUFFER_SLOTS; i++) {
         _snd.dma_cbs[i].ti = DMA_DEST_DREQ + _board->dma_permap + DMA_SRC_INC;
         _snd.dma_cbs[i].source_ad = (uint32_t)_snd.dma_slot_phys[i] | DMA_VC_ALIAS_UNCACHED;

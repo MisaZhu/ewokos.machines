@@ -364,7 +364,7 @@ static int run(const scenario_t* sc, uint32_t* r_fb, uint32_t* r_z) {
 	}
 	g2d_pgl_program_req_t preq;
 	g2d_pgl_program_req_init(&preq,
-			g2d_canvas(blob_shm, total, total / 4u, 1u, 1));
+			g2d_canvas(blob_shm, total, total / 4u, 1u));
 	handle = g2d_pgl_program(&preq);
 	g2d_shm_free(blob);
 	if (handle < 0) {
@@ -380,24 +380,24 @@ static int run(const scenario_t* sc, uint32_t* r_fb, uint32_t* r_z) {
 	memset(z, 0x55, T_NPIX * 4u);
 
 	g2d_pgl_req_t req;
-	g2d_canvas_t col = sc->attr1 == ATTR1_NONE ? g2d_canvas(0, 0, 0, 0, 0)
-		: g2d_canvas(col_shm, T_COL_BYTES, T_VERTS, 4u, 1);
+	g2d_canvas_t col = sc->attr1 == ATTR1_NONE ? g2d_canvas(0, 0, 0, 0)
+		: g2d_canvas(col_shm, T_COL_BYTES, T_VERTS, 4u);
 	g2d_pgl_draw_req_init(&req,
-			g2d_canvas(fb_shm, T_NPIX * 4u, T_W, T_H, 1),
-			g2d_canvas(pos_shm, T_POS_BYTES, T_VERTS, 10u, 1), col,
+			g2d_canvas(fb_shm, T_NPIX * 4u, T_W, T_H),
+			g2d_canvas(pos_shm, T_POS_BYTES, T_VERTS, 10u), col,
 			G2D_PGL_MODE_TRIANGLES, T_VERTS, G2D_PGL_FMT_RGBA8, T_W * 4u,
 			G2D_PGL_FS_SOLID, 0u, 0, G2D_PGL_DEPTH_LESS, 1, 0,
-			g2d_canvas(z_shm, T_NPIX * 4u, T_W, T_H, 1), T_W * 4u, 1,
+			g2d_canvas(z_shm, T_NPIX * 4u, T_W, T_H), T_W * 4u, 1,
 			T_CLEAR_GL, 1.0f);
-	g2d_pgl_draw_req_set_shader(&req, handle, un_shm, nunif, 1);
+	g2d_pgl_draw_req_set_shader(&req, handle, un_shm, nunif);
 	if (sc->ctex == CTEX_TEX) {
-		req.ctex[0] = g2d_canvas(ct_shm, T_CT_BYTES, T_TEX, T_TEX, 1);
+		req.ctex[0] = g2d_canvas(ct_shm, T_CT_BYTES, T_TEX, T_TEX);
 		req.ctex_w[0] = T_TEX;
 		req.ctex_h[0] = T_TEX;
 		req.ctex_stride[0] = T_TEX * 4u;
 	} else if (sc->ctex != CTEX_NONE) {
 		uint32_t floats = T_NINST * (sc->ctex == CTEX_INST36 ? 36u : 40u);
-		req.ctex[0] = g2d_canvas(ct_shm, T_CT_BYTES, floats, 1u, 1);
+		req.ctex[0] = g2d_canvas(ct_shm, T_CT_BYTES, floats, 1u);
 		req.ctex_w[0] = floats;
 		req.ctex_h[0] = 1u;
 		req.ctex_stride[0] = floats * 4u;
@@ -477,7 +477,7 @@ static int map_stress(void) {
 			g2d_pgl_req_t req;
 			memset(px[i], 0, w * 64u * 4u);
 			g2d_pgl_clear_req_init(&req,
-					g2d_canvas(shm[i], w * 64u * 4u, w, 64u, 1),
+					g2d_canvas(shm[i], w * 64u * 4u, w, 64u),
 					G2D_PGL_FMT_RGBA8, w * 4u, gl, 0);
 			int rc = g2d_pgl_clear(&req);
 			if (rc != G2D_OK) {

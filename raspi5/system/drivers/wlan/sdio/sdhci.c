@@ -382,7 +382,7 @@ static int sdhci_sdma_init(void)
     if (_sdma_unavailable)
         return -1;
 
-    vaddr = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
+    vaddr = dma_alloc(SDHCI_SDMA_BOUNCE_SIZE);
     if (vaddr == 0) {
         _sdma_unavailable = true;
         brcm_log("sdhci: dma_alloc failed for %u-byte SDMA bounce buffer\n",
@@ -390,9 +390,9 @@ static int sdhci_sdma_init(void)
         return -1;
     }
 
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     if (phys == 0 || phys > 0xffffffffUL) {
-        dma_free(0, vaddr);
+        dma_free(vaddr);
         _sdma_unavailable = true;
         brcm_log("sdhci: invalid SDMA phys addr v=%p phys=0x%lx\n",
                 (void *)(uintptr_t)vaddr, (unsigned long)phys);

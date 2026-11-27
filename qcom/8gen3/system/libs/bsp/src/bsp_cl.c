@@ -5,7 +5,7 @@
  * adrenocompiler serialized (adreno_prog_blob_t, pure compute kern[0]) loads
  * through adreno_3d_program_load - the SAME table the pgl programs use - and
  * a launch dispatches through adreno_3d_cl_dispatch, which binds the
- * __global buffer arguments as UAV descriptors at their resolved contig
+ * __global buffer arguments as UAV descriptors at their resolved
  * physical bases (CB0 is identity-mapped, so pa == iova: zero copy) and
  * submits one CP_EXEC_CS on the shared ring.
  *
@@ -102,8 +102,8 @@ int32_t bsp_cl_program(const void* blob, uint32_t size) {
 }
 
 /* Run one NDRange launch.  g2dd has already resolved every __global buffer
- * argument canvas to a contig physical base (rejecting a non-contig arg with
- * the transient G2D_ERR_FAILED before it reaches here) and attached the
+ * argument canvas to a physical base (rejecting an arg with no physical
+ * base using the transient G2D_ERR_FAILED before it reaches here) and attached the
  * packed scalar-arg uniform canvas for CPU read, so this only forwards the
  * resolved bsp_cl_dispatch_t to adreno_3d_cl_dispatch and maps the result
  * back.  arg_phy[] is ewokos_addr_t (u64 on this aarch64 platform); copy it

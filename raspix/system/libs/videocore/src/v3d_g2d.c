@@ -823,10 +823,10 @@ static uint8_t *g2d_dma_alloc_phys_aligned(uint32_t bytes, uint32_t align,
 
     if (!phys_out || !align || (align & (align - 1u)))
         return NULL;
-    raw_v = dma_alloc(0, bytes + align - 1u);
+    raw_v = dma_alloc(bytes + align - 1u);
     if (!raw_v)
         return NULL;
-    raw_p = dma_phy_addr(0, raw_v);
+    raw_p = dma_phy_addr(raw_v);
     if (!raw_p || (sizeof(raw_p) > 4 && (raw_p >> 32) != 0))
         return NULL;
     delta = (uint32_t)(-(uint32_t)raw_p) & (align - 1u);
@@ -946,17 +946,16 @@ static inline volatile uint32_t *v3d_ctl(void)
  * scribble over arbitrary memory */
 static ewokos_addr_t _ram_alloc_base = 0, _ram_alloc_top = 0;
 static ewokos_addr_t _ram_dma_base = 0, _ram_dma_top = 0;
-static ewokos_addr_t _ram_contig_base = 0, _ram_contig_top = 0;
 static ewokos_addr_t _ram_total = 0;
 
 /* CACHE-MAINTENANCE CONTRACT (arm + aarch64 portable):
  *
  * Every buffer handed to this driver that the QPU may read or write
- * must be mapped Non-Cacheable in each process.  The contig shm slab is
+ * must be mapped Non-Cacheable in each process.  shm segments are
  * mapped NOCACHE by the kernel for exactly this reason, and gpu_phys()
- * only accepts canvases flagged contig - so both directions of
- * CPU<->GPU visibility go straight through DRAM and NO maintenance by
- * virtual address is needed; a dsb orders the writes.
+ * only accepts canvases with a resolved physical base - so both
+ * directions of CPU<->GPU visibility go straight through DRAM and NO
+ * maintenance by virtual address is needed; a dsb orders the writes.
  *
  * The GPU-side caches do NOT snoop CPU writes, so every job still
  * invalidates the V3D L2 + slice caches before dispatch and flushes
@@ -1002,12 +1001,12 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
 
     if (rate_hz == NULL)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_get_req_t *)(uintptr_t)vaddr;
 
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     /* ewokos_addr_t is 32 bits on the arm build: always sub-4 GB */
     if (phys != 0 && (sizeof(phys) <= 4 || (phys >> 32) == 0)) {
         for (attempt = 0; attempt < 2 && result != 0; attempt++) {
@@ -1029,7 +1028,7 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
             }
         }
     }
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return result;
 }
 
@@ -1043,12 +1042,12 @@ static int g2d_clock_set(uint32_t rate_hz)
 
     if (rate_hz == 0)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_set_req_t *)(uintptr_t)vaddr;
 
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     if (phys != 0 && (sizeof(phys) <= 4 || (phys >> 32) == 0)) {
         for (attempt = 0; attempt < 2 && result != 0; attempt++) {
             memset(req, 0, sizeof(*req));
@@ -1067,7 +1066,7 @@ static int g2d_clock_set(uint32_t rate_hz)
                 result = 0;
         }
     }
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return result;
 }
 
@@ -1112,12 +1111,12 @@ static int g2d_qpu_enable(void)
 
     if (bcm283x_mailbox_init() == 0)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0)
         return -1;
     req = (g2d_qpu_enable_req_t *)(uintptr_t)vaddr;
 
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     if (phys != 0 && (sizeof(phys) <= 4 || (phys >> 32) == 0)) {
         for (attempt = 0; attempt < 2 && result != 0; attempt++) {
             memset(req, 0, sizeof(*req));
@@ -1132,7 +1131,7 @@ static int g2d_qpu_enable(void)
                 result = 0;
         }
     }
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     if (result != 0)
         slog("g2d: firmware QPU enable failed\r\n");
     return result;
@@ -1155,12 +1154,12 @@ static int g2d_power_domain_call(uint32_t tag, uint32_t domain_id)
     int result = -1;
     uint32_t attempt;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0)
         return -1;
     req = (g2d_domain_req_t *)(uintptr_t)vaddr;
 
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     if (phys != 0 && (sizeof(phys) <= 4 || (phys >> 32) == 0)) {
         for (attempt = 0; attempt < 2 && result != 0; attempt++) {
             memset(req, 0, sizeof(*req));
@@ -1176,7 +1175,7 @@ static int g2d_power_domain_call(uint32_t tag, uint32_t domain_id)
                 result = 0;
         }
     }
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return result;
 }
 
@@ -1899,18 +1898,18 @@ static int g2d_mmu_identity_enable(void)
     if (_ver < 33)
         return 0;
 
-    raw = (uintptr_t)dma_alloc(0, V3D_MMU_PT_BYTES + 4095u);
+    raw = (uintptr_t)dma_alloc(V3D_MMU_PT_BYTES + 4095u);
     if (raw == 0)
         return -1;
     raw = (raw + 4095u) & ~(uintptr_t)4095u;
     _mmu_pt = (uint32_t *)raw;
-    _mmu_pt_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)raw);
+    _mmu_pt_p = (uint32_t)dma_phy_addr((ewokos_addr_t)raw);
 
-    raw = (uintptr_t)dma_alloc(0, 4096u + 4095u);
+    raw = (uintptr_t)dma_alloc(4096u + 4095u);
     if (raw == 0 || _mmu_pt_p == 0)
         return -1;
     raw = (raw + 4095u) & ~(uintptr_t)4095u;
-    _mmu_illegal_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)raw);
+    _mmu_illegal_p = (uint32_t)dma_phy_addr((ewokos_addr_t)raw);
     if (_mmu_illegal_p == 0)
         return -1;
 
@@ -2073,8 +2072,9 @@ int v3d_g2d_init(void)
     _inited = 1;
 
     /* capture the physical RAM ranges the GPU may legally touch: the
-     * allocable region, the sys_dma window and the IPC_CONTIG shm slab
-     * (only the sub-4 GB part is usable by the 32-bit QPU addresses) */
+     * allocable region (shm segments draw contiguous runs from it) and
+     * the sys_dma window (only the sub-4 GB part is usable by the 32-bit
+     * QPU addresses) */
     sys_get_sys_info(&si);
     _is_bcm2711 = strstr(si.machine, "pi4") != NULL ||
                   strstr(si.machine, "cm4") != NULL;
@@ -2088,8 +2088,6 @@ int v3d_g2d_init(void)
     _ram_alloc_top = si.allocable_phy_mem_top;
     _ram_dma_base = si.sys_dma.phy_base;
     _ram_dma_top = si.sys_dma.phy_base + si.sys_dma.size;
-    _ram_contig_base = si.shm_contig.phy_base;
-    _ram_contig_top = si.shm_contig.phy_base + si.shm_contig.size;
     _ram_total = si.total_phy_mem_size;
 
     /* the V3D and PM blocks sit INSIDE the 32 MB MMIO window that the
@@ -2218,30 +2216,29 @@ int v3d_g2d_init(void)
     }
     for (i = 0; i < KERN_TOTAL; i++) {
         uint32_t k;
-        _kcode[i] = (uint64_t *)(uintptr_t)dma_alloc(0, CSD_CODE_WORDS * 8);
+        _kcode[i] = (uint64_t *)(uintptr_t)dma_alloc(CSD_CODE_WORDS * 8);
         if (_kcode[i] == 0)
             return -1;
         for (k = 0; k < _ksrc_n[i]; k++)
             _kcode[i][k] = _ksrc[i][k];
-        _kcode_p[i] = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_kcode[i]);
+        _kcode_p[i] = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_kcode[i]);
         if (_kcode_p[i] == 0)
             return -1;
         kn_total += _ksrc_n[i];
     }
-    _unif = (uint32_t *)(uintptr_t)dma_alloc(0, CSD_UNIF_WORDS * 4);
-    _scratch = (uint32_t *)(uintptr_t)dma_alloc(0, 4096u * 4u);
+    _unif = (uint32_t *)(uintptr_t)dma_alloc(CSD_UNIF_WORDS * 4);
+    _scratch = (uint32_t *)(uintptr_t)dma_alloc(4096u * 4u);
     if (_unif == 0 || _scratch == 0)
         return -1;
-    _unif_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_unif);
-    _scratch_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_scratch);
+    _unif_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_unif);
+    _scratch_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_scratch);
     if (_unif_p == 0 || _scratch_p == 0)
         return -1;
     /* nop kernel staging (VC4 bring-up diagnostics) */
-    _nop_code = (uint64_t *)(uintptr_t)dma_alloc(0, 64u);
+    _nop_code = (uint64_t *)(uintptr_t)dma_alloc(64u);
     if (_nop_code != 0) {
         memcpy(_nop_code, g2d_nop_vc4, sizeof(g2d_nop_vc4));
-        _nop_code_p = (uint32_t)dma_phy_addr(0,
-                        (ewokos_addr_t)(uintptr_t)_nop_code);
+        _nop_code_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_nop_code);
     }
     /* Pi3 bring-up fix: fixed-slot VC4 kernel staging in the proven
      * fetch region (see the _run_code declaration).  An 8 KiB pad
@@ -2249,12 +2246,10 @@ int v3d_g2d_init(void)
      * line ([0x2134800,0x2134900)) - staging there fetched stale data
      * and wedged the SRQ; the address reached after the pad
      * (0x21368d0) fetched the full fill kernel cleanly on silicon. */
-    (void)dma_alloc(0, CSD_CODE_WORDS * 8u * 4u);   /* pad */
-    _run_code = (uint64_t *)(uintptr_t)dma_alloc(
-                    0, VC4_RUN_SLOTS * CSD_CODE_WORDS * 8u);
+    (void)dma_alloc(CSD_CODE_WORDS * 8u * 4u);   /* pad */
+    _run_code = (uint64_t *)(uintptr_t)dma_alloc(VC4_RUN_SLOTS * CSD_CODE_WORDS * 8u);
     if (_run_code != 0)
-        _run_code_p = (uint32_t)dma_phy_addr(0,
-                        (ewokos_addr_t)(uintptr_t)_run_code);
+        _run_code_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_run_code);
     if (_ver == 21 && _run_code != 0 && _num_qpus > 0 && _num_qpus <= 16) {
         uint32_t q, w;
         uint32_t run_slot = (uint32_t)(KERN_CACHE_SCRUB_VC4 -
@@ -2262,26 +2257,20 @@ int v3d_g2d_init(void)
                             VC4_ALPHA_SPANS - 1u;
         uint64_t *scrub_code = _run_code + run_slot * CSD_CODE_WORDS;
 
-        _vc4_scrub_unif = (uint32_t *)(uintptr_t)dma_alloc(
-                              0, (uint32_t)_num_qpus * VC4_UNIF_QWORDS * 4u);
-        _vc4_scrub_mem = (uint32_t *)(uintptr_t)dma_alloc(
-                             0, (uint32_t)_num_qpus *
+        _vc4_scrub_unif = (uint32_t *)(uintptr_t)dma_alloc((uint32_t)_num_qpus * VC4_UNIF_QWORDS * 4u);
+        _vc4_scrub_mem = (uint32_t *)(uintptr_t)dma_alloc((uint32_t)_num_qpus *
                                 VC4_SCRUB_BYTES_PER_QPU);
         if (!_vc4_scrub_unif || !_vc4_scrub_mem)
             return -1;
-        _vc4_scrub_unif_p = (uint32_t)dma_phy_addr(
-                                0, (ewokos_addr_t)(uintptr_t)_vc4_scrub_unif);
-        _vc4_scrub_mem_p = (uint32_t)dma_phy_addr(
-                                0, (ewokos_addr_t)(uintptr_t)_vc4_scrub_mem);
+        _vc4_scrub_unif_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_vc4_scrub_unif);
+        _vc4_scrub_mem_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_vc4_scrub_mem);
         if (!_vc4_scrub_unif_p || !_vc4_scrub_mem_p)
             return -1;
 
-        _vc4_staging = (uint8_t *)(uintptr_t)dma_alloc(0,
-                                                           VC4_STAGING_BYTES);
+        _vc4_staging = (uint8_t *)(uintptr_t)dma_alloc(VC4_STAGING_BYTES);
         if (!_vc4_staging)
             return -1;
-        _vc4_staging_p = (uint32_t)dma_phy_addr(
-                              0, (ewokos_addr_t)(uintptr_t)_vc4_staging);
+        _vc4_staging_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_vc4_staging);
         if (!_vc4_staging_p)
             return -1;
         _vc4_staging_next = 0;
@@ -2331,19 +2320,16 @@ int v3d_g2d_init(void)
          * their state, but do not issue CTRSTA on an idle queue: CTRSTA is a
          * resume operation and leaves a fresh QBA/QEA submission blocked. */
         slog("g2d: V3D CLE initial ct0=0x%x ct1=0x%x\r\n", ct0cs, ct1cs);
-        _render_cl = (uint8_t *)(uintptr_t)dma_alloc(0, RENDER_CL_BYTES);
-        _render_generic = (uint8_t *)(uintptr_t)dma_alloc(0,
-                                                      RENDER_GENERIC_BYTES);
+        _render_cl = (uint8_t *)(uintptr_t)dma_alloc(RENDER_CL_BYTES);
+        _render_generic = (uint8_t *)(uintptr_t)dma_alloc(RENDER_GENERIC_BYTES);
         _render_tile = g2d_dma_alloc_phys_aligned(RENDER_TILE_BYTES, 4096u,
                                                   &_render_tile_p);
         _render_state = g2d_dma_alloc_phys_aligned(RENDER_STATE_BYTES, 4096u,
                                                    &_render_state_p);
         if (!_render_cl || !_render_generic || !_render_tile || !_render_state)
             return -1;
-        _render_cl_p = (uint32_t)dma_phy_addr(
-                           0, (ewokos_addr_t)(uintptr_t)_render_cl);
-        _render_generic_p = (uint32_t)dma_phy_addr(
-                                0, (ewokos_addr_t)(uintptr_t)_render_generic);
+        _render_cl_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_render_cl);
+        _render_generic_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_render_generic);
         if (!_render_cl_p || !_render_generic_p || !_render_tile_p ||
             !_render_state_p || (_render_tile_p & 4095u) ||
             (_render_state_p & 4095u))
@@ -2921,8 +2907,8 @@ int v3d_g2d_init(void)
          * 4.2 THREAD_ID -> qid mapping or the workgroup/batch config
          * does not enumerate the QPUs the way the kernel assumes. */
         uint32_t u[16];
-        ewokos_addr_t tv = dma_alloc(0, 1024);
-        uint32_t tp = (tv != 0) ? dma_phy_addr(0, tv) : 0;
+        ewokos_addr_t tv = dma_alloc(1024);
+        uint32_t tp = (tv != 0) ? dma_phy_addr(tv) : 0;
 
         if (tv != 0 && tp != 0) {
             volatile uint32_t *buf = (volatile uint32_t *)(uintptr_t)tv;
@@ -3048,9 +3034,6 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes)
     if (_ram_dma_top > _ram_dma_base &&
         phy >= _ram_dma_base && end <= _ram_dma_top)
         return 1;
-    if (_ram_contig_top > _ram_contig_base &&
-        phy >= _ram_contig_base && end <= _ram_contig_top)
-        return 1;
     /* fallback: below the total physical memory size */
     if (_ram_total != 0 && end <= _ram_total)
         return 1;
@@ -3131,7 +3114,7 @@ static int v3d_g2d_run_impl(const uint64_t *code, int nwords,
         return -1;
 
     /* make the caller's ARM-side writes visible to the GPU, and drop the
-     * ARM's stale copies of the destination.  NOCACHE dma/contig
+     * ARM's stale copies of the destination.  NOCACHE dma/shm
      * canvases need no maintenance beyond the dsb inside the helpers. */
     if (src && src_len)
         g2d_dsb();

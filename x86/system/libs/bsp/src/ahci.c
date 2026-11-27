@@ -381,11 +381,11 @@ static int32_t bsp_ahci_controller_init(void) {
 
     /* DMA 一致性池: 按 4KB 向上对齐 — AHCI 要求 CLB 1024B 对齐、
      * CTBA 128B 对齐, 统一页对齐最稳(dma 池起始物理不保证对齐) */
-    uint8_t *raw = (uint8_t *)dma_alloc(0, DMA_POOL_SIZE + 4096);
+    uint8_t *raw = (uint8_t *)dma_alloc(DMA_POOL_SIZE + 4096);
     if (raw == NULL) {
         return -1;
     }
-    ewokos_addr_t raw_phys = dma_phy_addr(0, (ewokos_addr_t)raw);
+    ewokos_addr_t raw_phys = dma_phy_addr((ewokos_addr_t)raw);
     uint32_t bump = (uint32_t)((0 - (uint32_t)(raw_phys & 0xFFF)) & 0xFFF);
     _dma_pool = raw + bump;
     _dma_pool_phys = raw_phys + bump;

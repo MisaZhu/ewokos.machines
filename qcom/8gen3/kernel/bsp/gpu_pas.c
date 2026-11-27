@@ -51,7 +51,7 @@ static int scm_call(uint32_t fn, uint32_t info, uint64_t a, uint64_t b,
 
 static int owned_dma(ewokos_addr_t pa, ewokos_addr_t len) {
     proc_t *p = proc_get_proc(get_current_proc());
-    uint32_t capacity = dma_size(0, p->info.pid, pa);
+    uint32_t capacity = dma_size(p->info.pid, pa);
     return len && len <= 0x4000 && !(pa & 0xfff) && capacity >= len &&
         capacity <= 0x4000;
 }
@@ -89,18 +89,18 @@ ewokos_addr_t platform_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         if(!phase) {
             /* PAS can protect the metadata. Own a separate allocation so
              * caller exit/reuse cannot release it underneath TrustZone. */
-            metadata_pa = dma_alloc(0, -1, 0x4000);
+            metadata_pa = dma_alloc(-1, 0x4000);
             if(!metadata_pa) return QCOM8GEN3_GPU_PAS_FAILED;
             if(map_pages_size(_kernel_info.kernel_vm,
                     MMIO_BASE + QCOM8GEN3_GPU_META_WIN_OFF, metadata_pa, 0x4000,
                     AP_RW_D, PTE_ATTR_SYS_DMA) != 0) {
-                dma_free(0, -1, metadata_pa);
+                dma_free(-1, metadata_pa);
                 metadata_pa = 0;
                 return QCOM8GEN3_GPU_PAS_FAILED;
             }
             flush_tlb();
             volatile uint8_t *dst = (void *)(MMIO_BASE + QCOM8GEN3_GPU_META_WIN_OFF);
-            const volatile uint8_t *src = (void *)dma_v_addr(0, arg);
+            const volatile uint8_t *src = (void *)dma_v_addr(arg);
             for(unsigned i = 0; i < 0x4000; i++)
                 dst[i] = i < size ? src[i] : 0;
             owner_uuid = p->info.uuid;
@@ -128,7 +128,7 @@ ewokos_addr_t platform_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         /* Kernel-only Normal-NC alias. Do not access the WB direct alias or
          * the adjacent half of a 16KB CPU page (the DT region is 8KB). */
         volatile uint8_t *dst = (void *)(MMIO_BASE + QCOM8GEN3_GPU_ZAP_WIN_OFF);
-        const volatile uint8_t *src = (void *)dma_v_addr(0, arg);
+        const volatile uint8_t *src = (void *)dma_v_addr(arg);
         for(uint32_t i = 0; i < footprint; i++) dst[i] = src[i];
         __asm__ volatile("dsb sy" ::: "memory");
         phase = 3;
@@ -140,7 +140,7 @@ ewokos_addr_t platform_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         if(ret == QCOM8GEN3_GPU_PAS_BUSY) return ret;
         phase = (ret || result) ? 5 : 4;
         if(phase == 4) {
-            dma_free(0, -1, metadata_pa);
+            dma_free(-1, metadata_pa);
             metadata_pa = 0;
         }
         return ret ? ret : (result ? QCOM8GEN3_GPU_PAS_FAILED : 0);

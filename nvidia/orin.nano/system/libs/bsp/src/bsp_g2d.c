@@ -20,7 +20,7 @@
  *   - bsp_g2d_blt_phy     -> VIC copy into the raw physical scan-out FB
  *   - bsp_g2d_rotate_phy  -> VIC rotate into the raw physical scan-out FB
  * Everything else (fill, alpha blend, scale, blur, triangle, arbitrary-
- * angle rotate, non-contig buffers) stays on the NEON engine: the VIC
+ * angle rotate, buffers without a physical base) stays on the NEON engine: the VIC
  * blend and polyphase scaler do not reproduce the arch engine's exact
  * integer pixel math, and a VIC fill is slower than the CPU at every size
  * (the engine is memory-bandwidth bound like the CPU, plus job setup).
@@ -95,8 +95,8 @@ static int32_t vic_wedge(void) {
  * rect parities the engine reproduces exactly is settled by the bsp_vic
  * selftest; bsp_vic declines (-1) what it has not proven. */
 #define VIC_ALIGN 256u
-static int vic_buf_ok(ewokos_addr_t phy, uint8_t contig, int32_t w) {
-	return contig != 0 && phy != 0 && (phy & (VIC_ALIGN - 1)) == 0 &&
+static int vic_buf_ok(ewokos_addr_t phy, int32_t w) {
+	return phy != 0 && (phy & (VIC_ALIGN - 1)) == 0 &&
 			((uint32_t)w * 4u & (VIC_ALIGN - 1)) == 0;
 }
 
@@ -151,38 +151,37 @@ int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {
 	return -1;
 }
 
-int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
-	return arch_g2d_fill(argb, argb_phy, contig, argb_w, argb_h, x, y, w, h, color);
+	return arch_g2d_fill(argb, argb_phy, argb_w, argb_h, x, y, w, h, color);
 }
 
-int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
 	uint32_t a = (color >> 24) & 0xffu;
 	if (a == 0)
 		return G2D_OK;
 	if (a == 0xffu)
-		return bsp_g2d_fill(argb, argb_phy, contig, argb_w, argb_h, x, y, w, h, color);
+		return bsp_g2d_fill(argb, argb_phy, argb_w, argb_h, x, y, w, h, color);
 	/* fractional source-over: exact arch blend math, CPU only for now */
 	return arch_g2d_fill_alpha(argb, argb_w, argb_h, x, y, w, h, color);
 }
 
-int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x1, int32_t y1, int32_t x2, int32_t y2, int32_t x3, int32_t y3, uint32_t color) {
 	if (((color >> 24) & 0xffu) == 0)
 		return G2D_OK;
-	return arch_g2d_fill_triangle(argb, argb_phy, contig, argb_w, argb_h,
-			x1, y1, x2, y2, x3, y3, 0, 0, 0, 0, color);
+	return arch_g2d_fill_triangle(argb, argb_phy, argb_w, argb_h, x1, y1, x2, y2, x3, y3, 0, 0, 0, 0, color);
 }
 
-int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
 	if (sw == dw && sh == dh && vic_worth(sw, sh, VIC_MIN_COPY_PX) &&
 			vic_available() &&
-			vic_buf_ok(src_phy, src_contig, src_w) &&
-			vic_buf_ok(dst_phy, dst_contig, dst_w) &&
+			vic_buf_ok(src_phy, src_w) &&
+			vic_buf_ok(dst_phy, dst_w) &&
 			vic_rect_ok(sx, sy, sw, sh) && vic_rect_ok(dx, dy, dw, dh)) {
 		int rc = bsp_vic_blit(src_phy, (uint32_t)src_w * 4u, src_w, src_h,
 				sx, sy, sw, sh,
@@ -195,29 +194,26 @@ int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_conti
 			return vic_wedge();
 	}
 	/* scaled blits and declines: the NEON engine handles any geometry */
-	return arch_g2d_blt(argb_src, src_phy, src_contig, src_w, src_h, sx, sy, sw, sh,
-			argb_dst, dst_phy, dst_contig, dst_w, dst_h, dx, dy, dw, dh);
+	return arch_g2d_blt(argb_src, src_phy, src_w, src_h, sx, sy, sw, sh, argb_dst, dst_phy, dst_w, dst_h, dx, dy, dw, dh);
 }
 
-int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh, uint8_t alpha) {
 	if (alpha == 0)
 		return G2D_OK;
 	/* straight-alpha source-over with (src_a*global)>>8 and /255 rounding:
 	   the VIC blender's 10-bit pipeline is not validated against the arch
 	   integer math, so every global alpha stays on the exact CPU path. */
-	return arch_g2d_blt_alpha(argb_src, src_phy, src_contig, src_w, src_h, sx, sy, sw, sh,
-			argb_dst, dst_phy, dst_contig, dst_w, dst_h, dx, dy, dw, dh, alpha);
+	return arch_g2d_blt_alpha(argb_src, src_phy, src_w, src_h, sx, sy, sw, sh, argb_dst, dst_phy, dst_w, dst_h, dx, dy, dw, dh, alpha);
 }
 
-int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h) {
+int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h) {
 	/* the contract is corner-preserving Q15 nearest; the VIC polyphase
 	   scaler samples differently.  Exact CPU mapping until validated. */
-	return arch_g2d_scale_to(argb_src, src_phy, src_contig, src_w, src_h,
-			argb_dst, dst_phy, dst_contig, dst_w, dst_h);
+	return arch_g2d_scale_to(argb_src, src_phy, src_w, src_h, argb_dst, dst_phy, dst_w, dst_h);
 }
 
 int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
@@ -225,14 +221,14 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 	return arch_g2d_rotated_size(src_w, src_h, degree, dst_w, dst_h);
 }
 
-int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree) {
+int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h, int32_t degree) {
 	degree = ((degree % 360) + 360) % 360;
 	if ((degree == 0 || degree == 90 || degree == 180 || degree == 270) &&
 			vic_worth(src_w, src_h, VIC_MIN_COPY_PX) &&
 			vic_available() && (degree == 0 || bsp_vic_2d_can_rotate()) &&
-			vic_buf_ok(src_phy, src_contig, src_w) &&
-			vic_buf_ok(dst_phy, dst_contig, dst_w)) {
+			vic_buf_ok(src_phy, src_w) &&
+			vic_buf_ok(dst_phy, dst_w)) {
 		/* whole-surface right-angle rotate: flip/transpose in the output
 		   buffer, no scaling.  dst geometry must match the rotated size
 		   exactly: the CPU engine owns the transparent padding of a
@@ -252,11 +248,10 @@ int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_co
 		}
 	}
 	/* arbitrary angles, in-place, packed pitches: exact CPU mapping */
-	return arch_g2d_rotate(argb_src, src_phy, src_contig, src_w, src_h,
-			argb_dst, dst_phy, dst_contig, dst_w, dst_h, degree);
+	return arch_g2d_rotate(argb_src, src_phy, src_w, src_h, argb_dst, dst_phy, dst_w, dst_h, degree);
 }
 
-int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 			uint32_t dst_pitch,
@@ -266,7 +261,7 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
 		return G2D_ERR_NOT_SUPPORTED;
 	if (sw != dw || sh != dh)
 		return G2D_ERR_FAILED;   /* no scaled scan-out push yet */
-	if (!vic_buf_ok(src_phy, src_contig, src_w) || dst_phy == 0 ||
+	if (!vic_buf_ok(src_phy, src_w) || dst_phy == 0 ||
 			(dst_phy & (VIC_ALIGN - 1)) != 0 || (dst_pitch & (VIC_ALIGN - 1)) != 0 ||
 			!vic_rect_ok(sx, sy, sw, sh) || !vic_rect_ok(dx, dy, dw, dh))
 		return G2D_ERR_FAILED;
@@ -286,7 +281,7 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
 	return G2D_ERR_FAILED;   /* declined: displayd runs its memcpy flush */
 }
 
-int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 		int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 		ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 		uint32_t dst_pitch,
@@ -301,7 +296,7 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
 	   which stays accelerated when only rotation failed its selftest */
 	if (degree != 0 && !bsp_vic_2d_can_rotate())
 		return G2D_ERR_FAILED;
-	if (!vic_buf_ok(src_phy, src_contig, src_w) || dst_phy == 0 ||
+	if (!vic_buf_ok(src_phy, src_w) || dst_phy == 0 ||
 			(dst_phy & (VIC_ALIGN - 1)) != 0 || (dst_pitch & (VIC_ALIGN - 1)) != 0 ||
 			!vic_rect_ok(sx, sy, sw, sh) || !vic_rect_ok(dx, dy, sw, sh))
 		return G2D_ERR_FAILED;
@@ -322,15 +317,11 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
 	return G2D_ERR_FAILED;
 }
 
-int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
-			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint32_t* tmp, ewokos_addr_t tmp_phy, int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
 	/* VPI documents Gaussian Filter as CPU/KUDA/PVA only — VIC has no
 	   gaussian path.  The NEON engine blurs in place (tmp unused). */
-	(void)tmp; (void)tmp_phy; (void)tmp_contig;
-	return arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
-			rect_x, rect_y, rect_w, rect_h, radius);
+	(void)tmp; (void)tmp_phy;	return arch_g2d_gaussian(argb, argb_phy, argb_w, argb_h, rect_x, rect_y, rect_w, rect_h, radius);
 }

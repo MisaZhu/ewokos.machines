@@ -18,7 +18,7 @@
  * as SSBOs and launches the grid through v3d_g2d_run_csd.
  *
  * ZERO COPY: like every other V3D route here, the GPU operates directly on the
- * caller's contig-shm / dma buffers through their resolved physical bases
+ * caller's shm / dma buffers through their resolved physical bases
  * (IOVA = low 32 bits of phys); nothing is copied but the small uniform block.
  *
  * Every entry point returns a DONE/FAILED/UNSUPPORTED tri-state (plus the
@@ -89,7 +89,7 @@ int32_t vc_cl_program(const void *blob, uint32_t size);
 /* Run one NDRange launch of the program `handle`.  wg_count[3] is the grid in
  * workgroups and wg_size the local_size product (1..256); both come from the
  * client's clEnqueueNDRangeKernel.  arg_phy[i] / arg_size[i] (i < num_args)
- * are the resolved contig physical bases and byte lengths of the __global
+ * are the resolved physical bases and byte lengths of the __global
  * buffer arguments, in SSBO binding order (a 0 phy marks an unused trailing
  * slot); each is re-validated into a GPU IOVA here.  `unif` points to
  * num_uniforms u32 packed scalar / __constant argument values the kernel's

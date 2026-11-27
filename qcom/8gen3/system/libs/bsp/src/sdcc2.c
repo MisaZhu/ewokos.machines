@@ -774,12 +774,12 @@ static __attribute__((unused)) int32_t sdcc2_dma_setup(void) {
         return _dma_ok ? 0 : -1;
     _dma_tried = 1;
 
-    va = dma_alloc(0, SDCC2_DMA_BLOCKS * 512U);
+    va = dma_alloc(SDCC2_DMA_BLOCKS * 512U);
     if(va == 0)
         return -1;
-    pa = dma_phy_addr(0, va);
+    pa = dma_phy_addr(va);
     if(pa == 0 || pa > 0xffffffffULL) {
-        dma_free(0, va);
+        dma_free(va);
         return -1;
     }
     _dma_va = (uint8_t*)(uintptr_t)va;
@@ -888,23 +888,23 @@ static __attribute__((unused)) int32_t sdcc2_adma_setup(void) {
         return _adma_ok ? 0 : -1;
     _adma_tried = 1;
 
-    va = dma_alloc(0, SDCC2_ADMA_BLOCKS * 512U);
+    va = dma_alloc(SDCC2_ADMA_BLOCKS * 512U);
     if (va == 0)
         return -1;
-    pa = dma_phy_addr(0, va);
+    pa = dma_phy_addr(va);
     if (pa == 0 || pa > 0xffffffffULL) {
-        dma_free(0, va);
+        dma_free(va);
         return -1;
     }
-    dva = dma_alloc(0, 4096U);
+    dva = dma_alloc(4096U);
     if (dva == 0) {
-        dma_free(0, va);
+        dma_free(va);
         return -1;
     }
-    dpa = dma_phy_addr(0, dva);
+    dpa = dma_phy_addr(dva);
     if (dpa == 0 || dpa > 0xffffffffULL) {
-        dma_free(0, dva);
-        dma_free(0, va);
+        dma_free(dva);
+        dma_free(va);
         return -1;
     }
     _adma_data_va = (uint8_t*)(uintptr_t)va;

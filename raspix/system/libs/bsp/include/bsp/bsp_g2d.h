@@ -27,38 +27,37 @@ uint32_t bsp_g2d_version(void);
    does not (g2dd then answers nothing). this backend has no diagnostics of its own and always returns -1. */
 int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len);
 
-/* contig/src_contig/dst_contig: != 0 when the buffer backing is
-   physically contiguous (contig shm slab or dma memory), required by
-   hardware 2d paths that work on physical addresses. *_phy carries the
-   resolved physical base of the buffer when contig, 0 otherwise. */
-int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+/* *_phy carries the resolved physical base of the buffer (shm / dma
+   memory, always physically contiguous), required by hardware 2d paths
+   that work on physical addresses; 0 when no base could be resolved. */
+int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
 
 /* translucent colour fill of a sub-rect, clipped to the buffer bounds:
    source-over blend of color (its alpha byte is the blend alpha) onto
    the rect, same blend math as bsp_g2d_blt_alpha. alpha == 0 is a no-op.
-   argb_phy/contig as for bsp_g2d_fill: on this platform the fill runs on
+   argb_phy as for bsp_g2d_fill: on this platform the fill runs on
    the GPU (alpha pipeline over a constant source) and is subject to the
    same eligibility gate as bsp_g2d_blt_alpha - no CPU fallback; a decline
-   (non-contig canvas, or on VC4 a width that is not a 16-pixel multiple)
+   (canvas without a physical base, or on VC4 a width that is not a 16-pixel multiple)
    reports -1 before anything is written. */
-int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
 
 /* solid/alpha filled triangle (x1,y1)-(x2,y2)-(x3,y3) rasterized into the
    buffer with the same scanline fill as the software reference (sort-by-Y,
    two-slope edge walk), each span clipped to the buffer bounds. color
    carries the blend alpha in its high byte (0xff = opaque, 0 = no-op).
-   argb_phy/contig as for bsp_g2d_fill. returns the g2d result codes:
+   argb_phy as for bsp_g2d_fill. returns the g2d result codes:
    G2D_OK (0) when rasterized, G2D_ERR_NOT_SUPPORTED (-2, sticky) when the
    back end has no triangle path - the caller then falls back to its own
    in-process rasterizer. */
-int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x1, int32_t y1, int32_t x2, int32_t y2, int32_t x3, int32_t y3, uint32_t color);
 
-int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh);
 
 /* 1:1 blit of a clipped rect into a RAW PHYSICAL destination (e.g. the
@@ -68,7 +67,7 @@ int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_conti
    must be physically contiguous ram. returns -1 when the back end
    cannot write the physical range: the caller falls back to its cpu
    flush path. */
-int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 			uint32_t dst_pitch,
@@ -79,7 +78,7 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
    surface; its size is the rotated (sw,sh). dst_pitch/dst_size as in
    bsp_g2d_blt_phy. returns -1 when the geometry is not eligible for the
    engine (nothing written) or the dispatch failed. */
-int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 uint32_t dst_pitch,
@@ -87,9 +86,9 @@ int32_t dx, int32_t dy, int32_t degree);
 
 
 
-int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh, uint8_t alpha);
 
 /* scalar cpu 1:1 copy or blend of a sub-rect, clipped against both
@@ -101,8 +100,8 @@ int32_t bsp_g2d_blt_cpu(uint32_t* argb_src, int32_t src_w, int32_t src_h,
 			uint32_t* argb_dst, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, uint8_t use_alpha, uint8_t alpha);
 
-int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h);
+int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h);
 
 /* smallest size able to hold src_w x src_h rotated clockwise by degree
    (any angle). exact swap/keep for multiples of 90, rotated bounding
@@ -115,17 +114,15 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
    angles other than 0/90/180/270 pixels outside the rotated content
    become transparent.
    in-place (argb_src == argb_dst) is not supported and fails with -1. */
-int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree);
+int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h, int32_t degree);
 
 /* in-place separable gaussian blur of a sub-rect: delegated to the
    platform's arch_g2d_* back end (the NEON software engine), which
    blurs in place, clips the rect to the buffer bounds and allocates
-   its own scratch, so tmp/tmp_phy/tmp_contig are unused.
+   its own scratch, so tmp/tmp_phy are unused.
    radius is any positive value; returns 0 (G2D_OK). */
-int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
-			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint32_t* tmp, ewokos_addr_t tmp_phy, int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius);

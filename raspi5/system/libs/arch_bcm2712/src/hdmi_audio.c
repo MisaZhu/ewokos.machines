@@ -519,7 +519,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
     mail_message_t msg;
     uint32_t rate = 0;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0)
         return 0;
 
@@ -532,7 +532,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
     req->tag.clock_id = clock_id;
 
     memset(&msg, 0, sizeof(msg));
-    msg.data = (((uint32_t)dma_phy_addr(0, vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (((uint32_t)dma_phy_addr(vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = PROPERTY_CHANNEL;
 
     if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
@@ -541,7 +541,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
         rate = req->tag.rate_hz;
     }
 
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return rate;
 }
 
@@ -939,15 +939,15 @@ int hdmi_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     uint32_t total = cb_bytes + buf_bytes;
 
     /* over-allocate one alignment unit; dma_alloc() only guarantees a page */
-    ewokos_addr_t raw = dma_alloc(0, total + DMA40_CB_ALIGN);
+    ewokos_addr_t raw = dma_alloc(total + DMA40_CB_ALIGN);
     if (raw == 0) {
         slog("hdmi-audio: ring dma_alloc(%u) failed\n", total + DMA40_CB_ALIGN);
         return HDMI_AUDIO_ERR_DMA_MEM;
     }
-    ewokos_addr_t phy = dma_phy_addr(0, raw);
+    ewokos_addr_t phy = dma_phy_addr(raw);
     if (phy == 0) {
         slog("hdmi-audio: ring dma_phy_addr failed\n");
-        dma_free(0, raw);
+        dma_free(raw);
         return HDMI_AUDIO_ERR_DMA_MEM;
     }
 
@@ -1005,7 +1005,7 @@ void hdmi_audio_teardown_ring(void) {
     _slot_count = 0;
     _slot_frames = 0;
     if (_ring_raw != 0) {
-        dma_free(0, _ring_raw);
+        dma_free(_ring_raw);
         _ring_raw = 0;
     }
 }

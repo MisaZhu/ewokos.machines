@@ -1678,7 +1678,7 @@ static uint64_t stage_and_boot(void *fw, uint32_t fw_size, uint64_t fw_pa,
 static int owned_dma(ewokos_addr_t pa, ewokos_addr_t len, uint32_t max,
         uint32_t *capacity) {
     proc_t *p = proc_get_proc(get_current_proc());
-    uint32_t cap = dma_size(0, p->info.pid, pa);
+    uint32_t cap = dma_size(p->info.pid, pa);
 
     if(capacity) *capacity = cap;
     return len && len <= max && !(pa & 0xfff) && cap >= len;
@@ -1729,7 +1729,7 @@ static int npu_frpc_release_maps(void) {
     for (unsigned i = 0; i < NPU_FRPC_MAP_MAX; i++) {
         npu_frpc_map_t *m = &npu_frpc_maps[i];
         if (!m->used) continue;
-        if (dma_unpin(0, m->pa) != 0) {
+        if (dma_unpin(m->pa) != 0) {
             printf("qcom8gen3 npu: DMA pin release failed pa=%llx; retaining record\n",
                     (unsigned long long)m->pa);
             npu_recovery_required = 1;
@@ -1795,7 +1795,7 @@ static int npu_frpc_map(uint64_t arg, uint32_t size, uint64_t *devaddr) {
         npu_frpc_map_t *m = &npu_frpc_maps[i];
         if (!m->used) {
             proc_t *owner = proc_get_proc(get_current_proc());
-            if (dma_pin(0, owner->info.pid, pa, (uint32_t)aligned_size) != 0)
+            if (dma_pin(owner->info.pid, pa, (uint32_t)aligned_size) != 0)
                 return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
             memset(m, 0, sizeof(*m));
             m->used = 1;
@@ -1859,7 +1859,7 @@ static int npu_frpc_unmap(uint64_t devaddr, uint32_t size) {
                 m->refs = 1;
                 return QCOM8GEN3_NPU_PAS_FAILED;
             }
-            if (dma_unpin(0, m->pa) != 0) {
+            if (dma_unpin(m->pa) != 0) {
                 m->refs = 1;
                 npu_recovery_required = 1;
                 return QCOM8GEN3_NPU_PAS_FAILED;
@@ -2004,7 +2004,7 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
     if(size < 16 || size > NPU_MAX_FW || !owned_dma(pa, size, NPU_MAX_FW,
             &cap) || cap < size)
         return QCOM8GEN3_NPU_PAS_INVALID;
-    payload = (uint8_t *)dma_v_addr(0, pa);
+    payload = (uint8_t *)dma_v_addr(pa);
     if(!payload) return QCOM8GEN3_NPU_PAS_INVALID;
     msg_iova = npu_frpc_map_lookup(npu_frpc_session, pa, size);
     if(!msg_iova) {
@@ -2106,7 +2106,7 @@ static int npu_frpc_submit(ewokos_addr_t pa, uint32_t size, int listener) {
                     npu_frpc_map_t *m = &npu_frpc_maps[j];
                     if (m->used && m->session == npu_frpc_session &&
                             qcom8gen3_frpc_buffer_matches(pv, buf_len,
-                                page_addr, page_size, dma_v_addr(0, m->pa),
+                                page_addr, page_size, dma_v_addr(m->pa),
                                 ((uint64_t)NPU_FRPC_SID << 32) | m->iova,
                                 m->dsp_vaddr, m->size)) {
                         paired = 1;
@@ -2182,7 +2182,7 @@ static int npu_frpc_poll(ewokos_addr_t pa, uint32_t size) {
         }
         uint32_t handle = p->handle, sc = p->sc;
         int32_t rv = p->retval;
-        uint8_t *payload = (uint8_t *)dma_v_addr(0, pa);
+        uint8_t *payload = (uint8_t *)dma_v_addr(pa);
         uint64_t iova = npu_frpc_map_lookup(npu_frpc_session, pa, size);
         __asm__ volatile("dmb sy" ::: "memory");
         memcpy(payload + 4, &rv, 4);
@@ -2222,7 +2222,7 @@ static int npu_pas_stage(ewokos_addr_t pa, uint32_t size) {
 
     if(size != QCOM8GEN3_NSP0_SPAN || !owned_dma(pa, size, QCOM8GEN3_NSP0_SPAN, 0))
         return QCOM8GEN3_NPU_PAS_INVALID;
-    src = (uint8_t *)dma_v_addr(0, pa);
+    src = (uint8_t *)dma_v_addr(pa);
     if(!src) return QCOM8GEN3_NPU_PAS_INVALID;
     if(map_pages_size(_kernel_info.kernel_vm, QCOM8GEN3_NSP_WIN,
                 QCOM8GEN3_NSP0_CARVEOUT, QCOM8GEN3_NSP0_SPAN, AP_RW_D,
@@ -2328,7 +2328,7 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
         int32_t owner;
         uint32_t pins;
         if(size || !arg || (arg & 0xfffull)) return QCOM8GEN3_NPU_PAS_INVALID;
-        if(dma_pin_query(0, (ewokos_addr_t)arg, &owner, &pins) != 0)
+        if(dma_pin_query((ewokos_addr_t)arg, &owner, &pins) != 0)
             return QCOM8GEN3_NPU_PAS_UNSUPPORTED;
         return ((uint64_t)pins << 32) | (uint32_t)owner;
     }
@@ -2348,7 +2348,7 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
         uint32_t length = (uint32_t)size, offset = (uint32_t)(size >> 32);
         if(!owned_dma(arg, length, QCOM8GEN3_NPU_DUMP_CHUNK, 0))
             return QCOM8GEN3_NPU_PAS_INVALID;
-        uint8_t *out = (uint8_t *)dma_v_addr(0, arg);
+        uint8_t *out = (uint8_t *)dma_v_addr(arg);
         if(!out || map_in_caller(QCOM8GEN3_NSP_WIN, QCOM8GEN3_NSP0_CARVEOUT,
                     (uint32_t)QCOM8GEN3_NSP0_SPAN) != 0)
             return QCOM8GEN3_NPU_PAS_FAILED;
@@ -2520,7 +2520,7 @@ uint64_t platform_control_npu(uint64_t op, uint64_t arg, uint64_t size) {
         if(!owned_dma(arg, size, NPU_MAX_FW, &capacity) ||
                 capacity < size + NPU_META_SIZE)
             return QCOM8GEN3_NPU_PAS_INVALID;
-        fw = (void *)dma_v_addr(0, arg);
+        fw = (void *)dma_v_addr(arg);
         if(fw == 0) return QCOM8GEN3_NPU_PAS_INVALID;
         return stage_and_boot(fw, (uint32_t)size, arg, capacity);
     }

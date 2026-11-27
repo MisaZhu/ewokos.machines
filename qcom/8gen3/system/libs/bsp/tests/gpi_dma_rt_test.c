@@ -12,13 +12,13 @@
 
 /* ---- host shm backend ---- */
 #define MOCK_SHM 4
-static uint32_t mock_slab[1 << 16];   /* pretend contig backing */
+static uint32_t mock_slab[1 << 16];   /* pretend contiguous backing */
 typedef struct { int used, pinned; uintptr_t pa; void* va; unsigned bytes; } mshm_t;
 static mshm_t mshm[MOCK_SHM];
 static int m_pin_calls, m_unpin_calls;
 static void m_reset(void) { memset(mshm, 0, sizeof(mshm)); m_pin_calls=m_unpin_calls=0; }
 
-int rt_shm_alloc_contig(unsigned size, int* id, uintptr_t* pa, void** va) {
+int rt_shm_alloc(unsigned size, int* id, uintptr_t* pa, void** va) {
     for (int i = 0; i < MOCK_SHM; i++)
         if (!mshm[i].used) {
             mshm[i].used = 1; mshm[i].pinned = 0;

@@ -131,7 +131,7 @@ struct msg_get_clock_rate {
 
 static uint32_t mailbox_data_from_dma_buf(void* buf)
 {
-    uint32_t phy = dma_phy_addr(0, (ewokos_addr_t)buf);
+    uint32_t phy = dma_phy_addr((ewokos_addr_t)buf);
     if (phy == 0) {
         brcm_log("wlan mailbox: dma_phy_addr failed for %p\n", buf);
         return 0;
@@ -142,7 +142,7 @@ static uint32_t mailbox_data_from_dma_buf(void* buf)
 static int bcm2835_power_on_module(uint32_t module)
 {
     mail_message_t msg;
-    struct msg_set_power_state* msg_pwr = (struct msg_set_power_state*)(dma_alloc(0, sizeof(struct msg_set_power_state)));
+    struct msg_set_power_state* msg_pwr = (struct msg_set_power_state*)(dma_alloc(sizeof(struct msg_set_power_state)));
     uint32_t mailbox_data;
 
     if (msg_pwr == NULL)
@@ -158,13 +158,13 @@ static int bcm2835_power_on_module(uint32_t module)
 
     mailbox_data = mailbox_data_from_dma_buf(msg_pwr);
     if (mailbox_data == 0) {
-        dma_free(0, (ewokos_addr_t)msg_pwr);
+        dma_free((ewokos_addr_t)msg_pwr);
         return -1;
     }
     msg.data = mailbox_data;
     msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)msg_pwr);
+    dma_free((ewokos_addr_t)msg_pwr);
 
     return 0;
 }
@@ -179,7 +179,7 @@ static int bcm2835_power_on_module(uint32_t module)
 static uint32_t bcm2835_get_emmc_clock(void)
 {
     mail_message_t msg;
-    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(0, sizeof(struct msg_get_clock_rate)));
+    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(sizeof(struct msg_get_clock_rate)));
     uint32_t mailbox_data;
     uint32_t rate = 0;
 
@@ -197,7 +197,7 @@ static uint32_t bcm2835_get_emmc_clock(void)
         bcm283x_mailbox_call(&msg);
         rate = msg_clk->get_clock_rate.body.resp.rate_hz;
     }
-    dma_free(0, (ewokos_addr_t)msg_clk);
+    dma_free((ewokos_addr_t)msg_clk);
 
     return rate;
 }

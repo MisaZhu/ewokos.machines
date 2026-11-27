@@ -1139,7 +1139,7 @@ static int adsp_probe(void) {
 static int owned_dma(ewokos_addr_t pa, ewokos_addr_t len, uint32_t max,
         uint32_t *capacity) {
     proc_t *p = proc_get_proc(get_current_proc());
-    uint32_t cap = dma_size(0, p->info.pid, pa);
+    uint32_t cap = dma_size(p->info.pid, pa);
 
     if(capacity) *capacity = cap;
     return len && len <= max && !(pa & 0xfff) && cap >= len;
@@ -1336,7 +1336,7 @@ uint64_t platform_control_adsp(uint64_t op, uint64_t arg, uint64_t size) {
         if(!owned_dma(arg, size, ADSP_MAX_FW, &capacity) ||
                 capacity < size + ADSP_META_SIZE)
             return QCOM8GEN3_ADSP_PAS_INVALID;
-        fw = (void *)dma_v_addr(0, arg);
+        fw = (void *)dma_v_addr(arg);
         if(fw == 0) return QCOM8GEN3_ADSP_PAS_INVALID;
         return stage_and_boot(fw, (uint32_t)size, arg, capacity);
     }

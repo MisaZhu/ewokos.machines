@@ -90,18 +90,18 @@ static int dsi_init(void) {
     }
     _dsi = (volatile uint32_t*)(uintptr_t)DSI_VA;
 
-    ewokos_addr_t va = dma_alloc(0, DSI_TX_BUF_SIZE);
+    ewokos_addr_t va = dma_alloc(DSI_TX_BUF_SIZE);
     if (va == 0) {
         slog("qcom8gen3 dsi: dma alloc failed\n");
         _dsi = NULL;
         _dsi_failed = true;
         return -1;
     }
-    _tx_pa = (uint64_t)dma_phy_addr(0, va);
+    _tx_pa = (uint64_t)dma_phy_addr(va);
     if (_tx_pa == 0 || _tx_pa > 0xffffffffULL) {
         slog("qcom8gen3 dsi: dma phy addr out of 32-bit range (0x%llx)\n",
                 (unsigned long long)_tx_pa);
-        dma_free(0, va);
+        dma_free(va);
         _dsi = NULL;
         _dsi_failed = true;
         return -1;

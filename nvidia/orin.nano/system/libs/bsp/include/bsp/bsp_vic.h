@@ -53,7 +53,7 @@ int bsp_vic_method_test(void);
  * multiple of 4 lines and even rect coordinates are always accepted;
  * other heights and odd rects only when the selftest proved them (never
  * for rotation), else the op declines with -1.  The kernel maps
- * contig shm canvases, the DMA pool and the scan-out FB uncached, so no
+ * shm canvases, the DMA pool and the scan-out FB uncached, so no
  * cache maintenance is needed.  Ops are serialized internally and may be
  * called from several threads.
  *

@@ -150,10 +150,10 @@ static int mac_map(uint64_t phys, uint32_t size) {
 static int dma_alloc_rings(void) {
     uint32_t ring_bytes = ETH_RING_SIZE * ETH_DESC_SIZE;
     uint32_t total = ring_bytes * 2u + ETH_RING_SIZE * ETH_BUF_SIZE * 2u;
-    ewokos_addr_t virt = dma_alloc(0, total);
+    ewokos_addr_t virt = dma_alloc(total);
     if (virt == 0)
         return -1;
-    uint64_t phy = (uint64_t)dma_phy_addr(0, virt);
+    uint64_t phy = (uint64_t)dma_phy_addr(virt);
     if (phy == 0)
         return -1;
     memset((void*)(uintptr_t)virt, 0, total);

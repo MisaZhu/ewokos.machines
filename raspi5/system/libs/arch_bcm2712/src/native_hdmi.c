@@ -597,7 +597,7 @@ static int firmware_set_clock(uint32_t clock_id, uint32_t rate_hz) {
     ewokos_addr_t vaddr;
     mail_message_t msg;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0) {
         return -1;
     }
@@ -613,16 +613,16 @@ static int firmware_set_clock(uint32_t clock_id, uint32_t rate_hz) {
     req->tag.skip_turbo = 0;
 
     memset(&msg, 0, sizeof(msg));
-    msg.data = (((uint32_t)dma_phy_addr(0, vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (((uint32_t)dma_phy_addr(vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = PROPERTY_CHANNEL;
 
     if (bcm2712_mailbox_call_timeout(&msg, 0) != 0 ||
             (req->code & 0x80000000u) == 0) {
-        dma_free(0, vaddr);
+        dma_free(vaddr);
         return -1;
     }
 
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return 0;
 }
 
@@ -631,7 +631,7 @@ static int firmware_set_clock_state(uint32_t clock_id, uint32_t state) {
     ewokos_addr_t vaddr;
     mail_message_t msg;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0) {
         return -1;
     }
@@ -646,16 +646,16 @@ static int firmware_set_clock_state(uint32_t clock_id, uint32_t state) {
     req->tag.state = state;
 
     memset(&msg, 0, sizeof(msg));
-    msg.data = (((uint32_t)dma_phy_addr(0, vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (((uint32_t)dma_phy_addr(vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = PROPERTY_CHANNEL;
 
     if (bcm2712_mailbox_call_timeout(&msg, 0) != 0 ||
             (req->code & 0x80000000u) == 0) {
-        dma_free(0, vaddr);
+        dma_free(vaddr);
         return -1;
     }
 
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return 0;
 }
 
@@ -664,7 +664,7 @@ static int firmware_set_display_power(uint32_t display, uint32_t state) {
     ewokos_addr_t vaddr;
     mail_message_t msg;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0) {
         return -1;
     }
@@ -679,16 +679,16 @@ static int firmware_set_display_power(uint32_t display, uint32_t state) {
     req->tag.state = state;
 
     memset(&msg, 0, sizeof(msg));
-    msg.data = (((uint32_t)dma_phy_addr(0, vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (((uint32_t)dma_phy_addr(vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = PROPERTY_CHANNEL;
 
     if (bcm2712_mailbox_call_timeout(&msg, 0) != 0 ||
             (req->code & 0x80000000u) == 0) {
-        dma_free(0, vaddr);
+        dma_free(vaddr);
         return -1;
     }
 
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return 0;
 }
 
@@ -698,7 +698,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
     mail_message_t msg;
     uint32_t rate = 0;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0) {
         return 0;
     }
@@ -712,7 +712,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
     req->tag.clock_id = clock_id;
 
     memset(&msg, 0, sizeof(msg));
-    msg.data = (((uint32_t)dma_phy_addr(0, vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (((uint32_t)dma_phy_addr(vaddr)) | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = PROPERTY_CHANNEL;
 
     if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
@@ -721,7 +721,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
         rate = req->tag.rate_hz;
     }
 
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return rate;
 }
 
@@ -1066,15 +1066,15 @@ int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
     size = pitch * mode->height;
     alloc_size = align_up(size, sysinfo->page_size == 0 ? 4096U : sysinfo->page_size);
 
-    fb_vaddr = dma_alloc(0, alloc_size);
+    fb_vaddr = dma_alloc(alloc_size);
     if (fb_vaddr == 0) {
         slog("native_hdmi: dma alloc failed size=%u\n", alloc_size);
         return -1;
     }
-    fb_phy = dma_phy_addr(0, fb_vaddr);
+    fb_phy = dma_phy_addr(fb_vaddr);
     if (fb_phy == 0 || fb_phy >= 0x40000000ULL) {
         slog("native_hdmi: bad dma phy=%llx\n", (unsigned long long)fb_phy);
-        dma_free(0, fb_vaddr);
+        dma_free(fb_vaddr);
         return -1;
     }
 

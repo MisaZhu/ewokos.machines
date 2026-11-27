@@ -237,16 +237,16 @@ int64_t qcom8gen3_npu_smmu_read_id(uint32_t offset) {
 }
 
 static int dma_pt_alloc(npu_pt_t *p) {
-    p->pa = dma_alloc(0, -1, 0x1000);
+    p->pa = dma_alloc(-1, 0x1000);
     if (!p->pa) return -1;
     if (smmu.pa_bits && (uint64_t)p->pa + 0x1000 > (1ull << smmu.pa_bits)) {
-        dma_free(0, -1, p->pa);
+        dma_free(-1, p->pa);
         p->pa = 0;
         return -1;
     }
-    p->va = dma_v_addr(0, p->pa);
+    p->va = dma_v_addr(p->pa);
     if (!p->va) {
-        dma_free(0, -1, p->pa);
+        dma_free(-1, p->pa);
         p->pa = 0;
         return -1;
     }
@@ -259,7 +259,7 @@ static int dma_pt_alloc(npu_pt_t *p) {
             (vm && vm != _kernel_info.kernel_vm &&
              map_pages_size(vm, p->va, p->pa, PAGE_SIZE,
                  AP_RW_D, PTE_ATTR_SYS_DMA) != 0)) {
-        dma_free(0, -1, p->pa);
+        dma_free(-1, p->pa);
         p->pa = p->va = 0;
         return -1;
     }
@@ -541,11 +541,11 @@ int qcom8gen3_npu_smmu_stop(void) {
     if (smmu.saved_scr0_valid)
         (void)gr0w(GR0_sCR0, smmu.saved_scr0);
 #endif
-    if (smmu.root.pa) dma_free(0, -1, smmu.root.pa);
+    if (smmu.root.pa) dma_free(-1, smmu.root.pa);
     for (uint32_t r = 0; r < 4; r++) {
         for (uint32_t i = 0; i < PT_MAX; i++)
-            if (smmu.l3[r][i].pa) dma_free(0, -1, smmu.l3[r][i].pa);
-        if (smmu.l2[r].pa) dma_free(0, -1, smmu.l2[r].pa);
+            if (smmu.l3[r][i].pa) dma_free(-1, smmu.l3[r][i].pa);
+        if (smmu.l2[r].pa) dma_free(-1, smmu.l2[r].pa);
     }
     memset(&smmu, 0, sizeof(smmu)); smmu.smr = UINT32_MAX;
     return 0;

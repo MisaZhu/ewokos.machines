@@ -20,7 +20,7 @@
  * keeps its own CPU/NEON rasterizer.
  *
  * ZERO COPY: like the CSD 2D path, the GPU operates directly on the caller's
- * contig-shm / dma buffers through their resolved physical bases; nothing is
+ * shm / dma buffers through their resolved physical bases; nothing is
  * copied.  raspix has no V3D MMU page table, so a "resolved base" is the
  * physical address itself (the low 32 bits the CSD fetches by); the *_phy ->
  * gpu_phys() gate is the same one the 2D path uses.
@@ -118,18 +118,15 @@ enum {
 #define VC_PGL3D_MAX_TEX_UNITS 4u
 
 /* One draw request, filled by bsp_g2d from the g2dclient shm command buffer.
- * The *_phy fields carry the resolved physical base of a contig buffer and
- * the matching *_contig flag is non-zero when that base is valid (mirrors the
- * bsp_g2d fill/blit contract); this layer re-validates each with gpu_phys(). */
+ * The *_phy fields carry the resolved physical base of a buffer; a non-zero
+ * base is valid (mirrors the bsp_g2d fill/blit contract); this layer
+ * re-validates each with gpu_phys(). */
 typedef struct {
     uint32_t      mode;         /* VC_PGL3D_MODE_* */
     uint32_t      nverts;
     ewokos_addr_t pos_phy;      /* float3 clip-space positions, stride 12 */
-    uint8_t       pos_contig;
     ewokos_addr_t col_phy;      /* byte4 RGBA8 per vertex, stride 4 */
-    uint8_t       col_contig;
     ewokos_addr_t fb_phy;       /* render target (RGBA8 / BGR565) */
-    uint8_t       fb_contig;
     uint32_t      stride;       /* render-target row pitch, bytes */
     uint32_t      w, h;         /* render-target size, pixels */
     uint32_t      fmt;          /* VC_PGL3D_FMT_* */
@@ -149,7 +146,6 @@ typedef struct {
      * frame's first dispatch (clears colour to clear_rgba + Z to clear_z);
      * later dispatches LOAD the persisted colour+Z. */
     ewokos_addr_t z_phy;        /* Z32F depth surface (linear, stride z_stride) */
-    uint8_t       z_contig;
     uint32_t      z_stride;     /* Z row pitch, bytes (w * 4) */
     uint8_t       first_frame;  /* non-zero: first dispatch of the frame */
     uint32_t      clear_rgba;   /* colour the first dispatch clears to */
@@ -173,11 +169,9 @@ typedef struct {
      * defaults to zero through the request memset, which makes tex_phy == 0
      * decline the tex path back to UNSUPPORTED for a misconfigured caller. */
     ewokos_addr_t tex_phy;      /* linear RGBA8 texture image (row pitch tex_stride) */
-    uint8_t       tex_contig;
     uint32_t      tex_stride;   /* texture row pitch, bytes (tex_w * 4) */
     uint32_t      tex_w, tex_h; /* texture size, texels */
     ewokos_addr_t uv_phy;       /* per-vertex uv float3 (stride 12) */
-    uint8_t       uv_contig;
     /* WS4 compiled-shader draw reference.  prog_handle >= 0 selects an
      * on-device-compiled program (uploaded via vc_pgl3d_program and cached by
      * the private v3d_3d layer); the back end then builds the V3D shader-state
@@ -200,14 +194,13 @@ typedef struct {
      * returns whatever the driver leaves in the TMU config (safe black for
      * shaders that never sample it).  Images are RGBA8 in the V3D texture
      * memory layout named by ctex_tiling[i] (0 raster, 1 LT, 2/3 UBLINEAR,
-     * 4/5 UIF no-xor/xor; ctex_ub_pad[i] is the UIF level_0_ub_pad), contig
+     * 4/5 UIF no-xor/xor; ctex_ub_pad[i] is the UIF level_0_ub_pad), shm
      * or dma so the GPU can address them by physical base; ctex_stride[i] is
      * the allocated (padded) row pitch, 0 lets the driver derive
      * ctex_w[i] * 4.  Only meaningful when prog_handle >= 0.
      * Every field defaults to zero through the request memset, so existing
      * callers that never bind a texture are unaffected. */
     ewokos_addr_t ctex_phy[VC_PGL3D_MAX_TEX_UNITS];
-    uint8_t       ctex_contig[VC_PGL3D_MAX_TEX_UNITS];
     uint32_t      ctex_stride[VC_PGL3D_MAX_TEX_UNITS];
     uint32_t      ctex_w[VC_PGL3D_MAX_TEX_UNITS];
     uint32_t      ctex_h[VC_PGL3D_MAX_TEX_UNITS];
@@ -224,9 +217,9 @@ int vc_pgl3d_init(void);
 /* Non-zero once vc_pgl3d_init() succeeded and the 3D path is usable. */
 int vc_pgl3d_probe(void);
 
-/* Full-frame clear of the w x h render target backed by fb_phy/contig to the
+/* Full-frame clear of the w x h render target backed by fb_phy to the
  * packed rgba8 colour, resolving every tile to DRAM.  Returns a tri-state. */
-int vc_pgl3d_clear(ewokos_addr_t fb_phy, uint8_t contig, uint32_t stride,
+int vc_pgl3d_clear(ewokos_addr_t fb_phy, uint32_t stride,
                    uint32_t w, uint32_t h, uint32_t fmt, uint32_t rgba8,
                    int rb_swap);
 

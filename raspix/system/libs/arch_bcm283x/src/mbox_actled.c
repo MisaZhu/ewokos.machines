@@ -4,7 +4,7 @@
 #define MAILBOX_VC_ALIAS_NONCACHED 0x40000000u
 
 static uint32_t mailbox_data_from_dma_buf(void* buf) {
-    uint32_t phy = dma_phy_addr(0, (ewokos_addr_t)buf);
+    uint32_t phy = dma_phy_addr((ewokos_addr_t)buf);
     if (phy == 0)
         return 0;
     return (phy + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
@@ -14,7 +14,7 @@ void bcm283x_mbox_actled(bool on) {
     mail_message_t msg;
     /*message head + tag head + property*/
     uint32_t size = 12 + 12 + 8;
-    uint32_t* buf = (uint32_t*)(dma_alloc(0, size));
+    uint32_t* buf = (uint32_t*)(dma_alloc(size));
     uint32_t mailbox_data;
 
     if (buf == NULL)
@@ -35,11 +35,11 @@ void bcm283x_mbox_actled(bool on) {
     
     mailbox_data = mailbox_data_from_dma_buf(buf);
     if (mailbox_data == 0) {
-        dma_free(0, (ewokos_addr_t)buf);
+        dma_free((ewokos_addr_t)buf);
         return;
     }
     msg.data = mailbox_data;
     msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
 }

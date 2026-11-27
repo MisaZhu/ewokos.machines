@@ -11,10 +11,9 @@
  * streams in g2d_qpu_kernels.h / g2d_qpu_kernels_v42.h.
  *
  * GPU eligibility (on top of the width/size checks):
- *   - the *_contig flag is set and the matching *_phy carries a valid
- *     physical base (the caller resolves it: contig shm slab / sys_dma
- *     memory); the physical address must fit the kernels' 32-bit TMU
- *     addresses.
+ *   - the *_phy field carries a valid physical base (the caller resolves
+ *     it: shm / sys_dma memory); the physical address must fit the
+ *     kernels' 32-bit TMU addresses.
  *
  * The GPU operates on caller buffers through caller-supplied physical
  * bases.  Alpha's intermediate staging is also GPU-produced; the ARM only
@@ -104,10 +103,9 @@ int gpu_ok(int32_t w, int32_t h);
 
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
  * addresses.  Returns the physical address usable by the kernels, or 0
- * when the canvas cannot run on the GPU (not physically contiguous, no phy
- * supplied, > 4 GB physical, or the address fails the RAM-range validation
- * gate). */
-uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes, uint8_t contig);
+ * when the canvas cannot run on the GPU (no phy supplied, > 4 GB physical,
+ * or the address fails the RAM-range validation gate). */
+uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes);
 
 /* Clip the rect (x, y, w, h) against the surf_w x surf_h bounds; returns 0
  * when the clipped rect is empty. */

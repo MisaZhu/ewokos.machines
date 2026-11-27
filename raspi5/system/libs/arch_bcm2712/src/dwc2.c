@@ -328,12 +328,12 @@ static int dma_pool_init(void) {
 
     _dma_pool.size = USB_DMA_POOL_SIZE;
     _dma_pool.used = 0;
-    _dma_pool.virt = dma_alloc(0, _dma_pool.size);
+    _dma_pool.virt = dma_alloc(_dma_pool.size);
     if (_dma_pool.virt == 0) {
         slog("dwc2: dma alloc_failed size=%u\n", _dma_pool.size);
         return -1;
     }
-    phy = dma_phy_addr(0, _dma_pool.virt);
+    phy = dma_phy_addr(_dma_pool.virt);
     if (phy == 0 || phy > 0xFFFFFFFFull) {
         slog("dwc2: dma pool outside 32bit window\n");
         return -1;
@@ -382,7 +382,7 @@ static int bcm2712_set_power_state(uint32_t device_id) {
     ewokos_addr_t phy;
     uint32_t resp_state;
 
-    req = (bcm2712_mbox_power_msg_t*)(uintptr_t)dma_alloc(0, sizeof(*req));
+    req = (bcm2712_mbox_power_msg_t*)(uintptr_t)dma_alloc(sizeof(*req));
     if (req == NULL) {
         return -1;
     }
@@ -402,7 +402,7 @@ static int bcm2712_set_power_state(uint32_t device_id) {
     /* the mailbox buffer address is a 28-bit VC bus address: the sys_dma pool
        sits in low RAM, but truncating an out-of-range one would silently hand
        the firmware somebody else's memory */
-    phy = dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)req);
+    phy = dma_phy_addr((ewokos_addr_t)(uintptr_t)req);
     if (phy == 0 || phy > 0xFFFFFFFFull) {
         return -1;
     }

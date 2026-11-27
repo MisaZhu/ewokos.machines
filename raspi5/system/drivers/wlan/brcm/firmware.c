@@ -119,7 +119,7 @@ static int brcmf_fw_mailbox_property_xfer(void *tags, uint32_t tags_size)
     bcm2712_mailbox_init();
     buf_size = (uint32_t)(((sizeof(brcmf_prop_msg_hdr_t) + tags_size +
                 sizeof(uint32_t)) + 15u) & ~15u);
-    buf = (uint8_t *)dma_alloc(0, buf_size);
+    buf = (uint8_t *)dma_alloc(buf_size);
     if (buf == NULL)
         return -1;
 
@@ -135,7 +135,7 @@ static int brcmf_fw_mailbox_property_xfer(void *tags, uint32_t tags_size)
         memcpy(buf + sizeof(brcmf_prop_msg_hdr_t), tags, tags_size);
         *((uint32_t *)(buf + sizeof(brcmf_prop_msg_hdr_t) + tags_size)) = PROP_TAG_END;
 
-        phy = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf);
+        phy = (uint32_t)dma_phy_addr((ewokos_addr_t)buf);
         if (phy == 0)
             continue;
 
@@ -145,12 +145,12 @@ static int brcmf_fw_mailbox_property_xfer(void *tags, uint32_t tags_size)
         if (bcm2712_mailbox_call_timeout(&msg, 0) == 0 &&
                 (hdr->code & PROP_CODE_RESPONSE_SUCCESS) != 0) {
             memcpy(tags, buf + sizeof(brcmf_prop_msg_hdr_t), tags_size);
-            dma_free(0, (ewokos_addr_t)buf);
+            dma_free((ewokos_addr_t)buf);
             return 0;
         }
     }
 
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return -1;
 }
 

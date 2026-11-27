@@ -47,8 +47,7 @@ int32_t bsp_g2d_cmd(int argc, char **argv, char *buf, uint32_t len)
     return vc_g2d_cmd(argc, argv, buf, len);
 }
 
-int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
-                   int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
                    int32_t x, int32_t y, int32_t w, int32_t h,
                    uint32_t color)
 {
@@ -58,7 +57,7 @@ int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
     if (argb &&
         gpu_clip_rect(&rx, &ry, &rw, &rh, argb_w, argb_h) &&
         gpu_ok(argb_w, argb_h)) {
-        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4);
     }
     if (!phys)
         return -1;
@@ -68,11 +67,9 @@ int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
                             rx + rw, ry + rh, color) ? 0 : -1;
 }
 
-int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                  int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
                   int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-                  uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                  int32_t dst_w, int32_t dst_h,
+                  uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
                   int32_t dx, int32_t dy, int32_t dw, int32_t dh)
 {
     g2d_map_t m;
@@ -83,8 +80,8 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
         sw > 0 && sh > 0 && dw > 0 && dh > 0 &&
         gpu_clip_rect(&rx, &ry, &rw, &rh, dst_w, dst_h) &&
         gpu_ok(dst_w, dst_h)) {
-        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
+        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4);
+        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4);
     }
     if (src_phys && dst_phys) {
         /* identity 1:1 rect: the vec4 copy kernel moves 4x the bytes per
@@ -108,8 +105,7 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
     return -1;
 }
 
-int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                      int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
                       int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                       ewokos_addr_t dst_phy, uint32_t dst_size,
                       int32_t dst_w, int32_t dst_h, uint32_t dst_pitch,
@@ -136,8 +132,8 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
         sw > 0 && sh > 0 && dw > 0 && dh > 0 &&
         gpu_clip_rect(&rx, &ry, &rw, &rh, dst_w, dst_h) &&
         gpu_ok(dst_w, dst_h)) {
-        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-        dst_phys = gpu_phys(dst_phy, dst_bytes, 1);
+        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4);
+        dst_phys = gpu_phys(dst_phy, dst_bytes);
     }
     if (src_phys && dst_phys) {
         /* identity 1:1 rect straight to scanout: the vec4 copy kernel
@@ -197,8 +193,7 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
  * source - so those need the rect to span full canvas rows (sx == 0,
  * sw == src_w).  Anything else is declined before any write (-1), the
  * caller keeps its own path.  Never replay a submitted dispatch. */
-int32_t bsp_g2d_rotate_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                         int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_rotate_phy(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
                          int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                          ewokos_addr_t dst_phy, uint32_t dst_size,
                          int32_t dst_w, int32_t dst_h, uint32_t dst_pitch,
@@ -230,8 +225,8 @@ int32_t bsp_g2d_rotate_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t sr
         return -1;
     src_off = ((size_t)sy * (size_t)src_w + (size_t)sx) * 4u;
 
-    src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-    dst_phys = gpu_phys(dst_phy, dst_off + dst_bytes, 1);
+    src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4);
+    dst_phys = gpu_phys(dst_phy, dst_off + dst_bytes);
     if (!src_phys || !dst_phys)
         return -1;
     src_phys += (uint32_t)src_off;
@@ -259,11 +254,9 @@ int32_t bsp_g2d_rotate_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t sr
                        0, 0, rw, rh, dst_bytes) ? 0 : -1;
 }
 
-int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                        int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-                        uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                        int32_t dst_w, int32_t dst_h,
+                        uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
                         int32_t dx, int32_t dy, int32_t dw, int32_t dh,
                         uint8_t alpha)
 {
@@ -278,8 +271,8 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
         sw > 0 && sh > 0 && dw > 0 && dh > 0 &&
         gpu_clip_rect(&rx, &ry, &rw, &rh, dst_w, dst_h) &&
         gpu_ok(dst_w, dst_h)) {
-        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
+        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4);
+        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4);
         if (src_phys && dst_phys) {
             g2d_map_params(sx, sy, sw, sh, dx, dy, dw, dh,
                                G2D_MAP_ROT_0, &m);
@@ -298,8 +291,7 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
  * gpu_fill_alpha_op), same eligibility gate as bsp_g2d_fill.  alpha == 0
  * is a no-op.  Blends are not idempotent, so a failed dispatch is never
  * replayed. */
-int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
-                         int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
                          int32_t x, int32_t y, int32_t w, int32_t h,
                          uint32_t color)
 {
@@ -311,7 +303,7 @@ int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t conti
     if (argb &&
         gpu_clip_rect(&rx, &ry, &rw, &rh, argb_w, argb_h) &&
         gpu_ok(argb_w, argb_h)) {
-        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4);
     }
     if (!phys)
         return -1;
@@ -326,8 +318,7 @@ int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t conti
  * vertices may lie off-surface (the bbox is clipped and the kernel clamps
  * every write inside).  Blends are not idempotent, so a failed dispatch is
  * reported, never replayed on the CPU. */
-int32_t bsp_g2d_fill_triangle(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
-                         int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_triangle(uint32_t *argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
                          int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                          int32_t x3, int32_t y3, uint32_t color)
 {
@@ -336,17 +327,15 @@ int32_t bsp_g2d_fill_triangle(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t co
     if (((color >> 24) & 0xff) == 0)
         return 0;
     if (argb && gpu_ok(argb_w, argb_h))
-        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4);
     if (!phys)
         return -1;
     return gpu_fill_triangle_op(phys, argb, argb_w, argb_h,
                                 x1, y1, x2, y2, x3, y3, color) ? 0 : -1;
 }
 
-int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                       int32_t src_w, int32_t src_h,
-                       uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                       int32_t dst_w, int32_t dst_h)
+int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+                       uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h)
 {
     g2d_map_t m;
     uint32_t src_phys = 0, dst_phys = 0;
@@ -354,8 +343,8 @@ int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_
     if (argb_src && argb_dst && argb_src != argb_dst &&
         src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0 &&
         gpu_ok(dst_w, dst_h)) {
-        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
+        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4);
+        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4);
     }
     if (src_phys && dst_phys) {
         /* Corner-preserving nearest map (scale_to semantics, see the
@@ -397,10 +386,8 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
     return 0;
 }
 
-int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                     int32_t src_w, int32_t src_h,
-                     uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                     int32_t dst_w, int32_t dst_h, int32_t degree)
+int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+                     uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h, int32_t degree)
 {
     g2d_map_t m;
     int32_t rot = g2d_norm_degree(degree);
@@ -420,8 +407,8 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
     if (argb_src && argb_dst && argb_src != argb_dst &&
         src_w > 0 && src_h > 0 && dst_w > 0 && dst_h > 0 &&
         gpu_ok(dst_w, dst_h)) {
-        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
+        src_phys = gpu_phys(src_phy, (size_t)src_w * src_h * 4);
+        dst_phys = gpu_phys(dst_phy, (size_t)dst_w * dst_h * 4);
     }
     if (src_phys && dst_phys) {
         /* Dedicated 90/270 fast path: contiguous reads, strided writes.
@@ -445,9 +432,7 @@ int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_co
     return -1;
 }
 
-int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
-			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint32_t* tmp, ewokos_addr_t tmp_phy, int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius)
@@ -474,13 +459,13 @@ int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
         radius >= 1 && radius <= 64 &&
         rect_x >= 0 && rect_y >= 0 && rect_w > 0 && rect_h > 0 &&
         rect_x <= argb_w - rect_w && rect_y <= argb_h - rect_h) {
-        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
-        scratch_phys = gpu_phys(tmp_phy, tmp_need, tmp_contig);
+        phys = gpu_phys(argb_phy, (size_t)argb_w * argb_h * 4);
+        scratch_phys = gpu_phys(tmp_phy, tmp_need);
     }
     if (!phys || !scratch_phys) {
         slog("g2d blur: surface not GPU-visible (phys=%08x scratch=%08x "
-             "contig=%u/%u w=%d h=%d r=%d)\n",
-             phys, scratch_phys, contig, tmp_contig, argb_w, argb_h,
+             "w=%d h=%d r=%d)\n",
+             phys, scratch_phys, argb_w, argb_h,
              radius);
         return -1;
     }

@@ -212,10 +212,10 @@ static void edma_init(void) {
     _edma_base = (volatile uint32_t*)(_mmio_base + EDMA_TPCC_BASE);
 
     /* Allocate DMA bounce buffer (non-cacheable, known physical addr) */
-    _edma_buf = (uint8_t*)dma_alloc(0, EDMA_DMA_BUF_SIZE);
+    _edma_buf = (uint8_t*)dma_alloc(EDMA_DMA_BUF_SIZE);
     if(_edma_buf == 0)
         return;
-    _edma_buf_phy = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)_edma_buf);
+    _edma_buf_phy = (uint32_t)dma_phy_addr((ewokos_addr_t)_edma_buf);
     if(_edma_buf_phy == 0)
         return;
 

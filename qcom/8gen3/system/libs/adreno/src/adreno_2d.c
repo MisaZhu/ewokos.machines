@@ -519,7 +519,7 @@ int adreno_2d_blend(uint64_t src_phy, int32_t src_w, int32_t src_h,
 /* a gaussian (CLT), giving a real GPU blur - an approximation of the  */
 /* reference kernel, not a bit-exact match.  L ~ log2(radius).         */
 /*                                                                     */
-/* scratch: `tmp_limit` bytes at tmp_phy (64-aligned, contig).  The     */
+/* scratch: `tmp_limit` bytes at tmp_phy (64-aligned, contiguous).  The     */
 /* chain needs sum(align64(wi*4)*hi); the caller passes the g2dd-       */
 /* guaranteed tmp size ((h-1)*W*4 + w*4) so we can prove the layout     */
 /* fits without knowing tmp's real allocation. The complete chain is  */

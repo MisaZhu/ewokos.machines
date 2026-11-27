@@ -28,9 +28,9 @@
  * MIU-visible bus view: the ARM physical address minus the 0x20000000
  * DRAM window base.
  *
- * GE-eligible canvases are physically contiguous shm slabs or dma
- * memory, both mapped NOCACHE in every process (kernel shm.c maps
- * IPC_CONTIG segments PTE_ATTR_NOCACHE), so no ARM cache maintenance is
+ * GE-eligible canvases are shm or dma memory, both physically
+ * contiguous and mapped NOCACHE in every process (kernel shm.c maps
+ * shm segments PTE_ATTR_NOCACHE), so no ARM cache maintenance is
  * needed around a dispatch.
  *
  * Synchronous dispatch: wait idle, program, kick CMD, wait idle again.

@@ -122,7 +122,6 @@ void sys_info_init_arch(void) {
     _sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
             _sys_info.total_usable_mem_size;
     _sys_info.sys_dma.size = 0;      /* generic sizing in sys_info_config() */
-    _sys_info.shm_contig.size = 0;
 
 #ifdef KERNEL_SMP
     _sys_info.cores = ORIN_CORES;
@@ -209,8 +208,10 @@ int32_t arch_clone_proc_vm(page_dir_entry_t* vm, page_dir_entry_t* kernel_vm) {
     return 0;
 }
 
-/* Pools and the page allocator share every firmware/device exclusion. */
-static uint32_t memory_exclusions(orin_mem_range_t* ex) {
+/* Pools and the page allocator share every firmware/device exclusion.
+   for_pool_search additionally keeps already-reserved pools occupied so a
+   new pool search never lands inside one. */
+static uint32_t memory_exclusions(orin_mem_range_t* ex, int32_t for_pool_search) {
     uint32_t n = 0;
 #define ADD_EXCL(b, s) do { \
         ewokos_addr_t _b = (b); \
@@ -223,10 +224,9 @@ static uint32_t memory_exclusions(orin_mem_range_t* ex) {
     } while (0)
 
     /* sys_dma is a DMA-reachable range over general RAM, not a carve-out:
-       its pages stay in the heap (see arch_dma_range), so it is NOT excluded
-       here. Only the reserved shm_contig / GPU pools and firmware regions
-       are punched out of the allocator. */
-    ADD_EXCL(_sys_info.shm_contig.phy_base, _sys_info.shm_contig.size);
+       its pages stay in the heap (see arch_dma_range), so they are NOT
+       excluded from the allocator. Only the reserved GPU pool and
+       firmware regions are punched out. */
     /* phy_base is 0 until reserved: excluding [0, size) would swallow the
        low DMA32 pools during their own search. */
     if (_sys_info.sys_dma_gpu.phy_base != 0)
@@ -270,7 +270,7 @@ static int32_t usable_descriptor(uint32_t m, uint64_t* base, uint64_t* top) {
 
 static uint64_t find_memory_pool(uint32_t size, uint64_t floor, uint64_t limit) {
     orin_mem_range_t ex[ORIN_MAX_RESV + 4];
-    uint32_t n = memory_exclusions(ex);
+    uint32_t n = memory_exclusions(ex, 1);
     uint64_t best = 0;
     if (limit > _sys_info.allocable_phy_mem_top)
         limit = _sys_info.allocable_phy_mem_top;
@@ -299,8 +299,8 @@ static uint64_t find_memory_pool(uint32_t size, uint64_t floor, uint64_t limit) 
  * DMA-reachable physical range. Board devices (xHCI, DCE) do 32-bit DMA, so
  * dynamic DMA buffers must land below 4GB. The floor stays at
  * allocable_phy_mem_base (a constraint over the general heap, never the
- * kernel core); the reserved shm_contig / firmware regions inside that
- * window are already kept out of the heap by kalloc_arch(). The GA10B GPU
+ * kernel core); firmware regions inside that window are already kept out of
+ * the heap by kalloc_arch(). The GA10B GPU
  * reaches DRAM through its own 64-bit GMMU and uses the separate high
  * sys_dma_gpu pool, unaffected by this range.
  */
@@ -316,19 +316,12 @@ int32_t arch_reserve_memory_pools(void) {
         kout_str("orin: invalid UEFI memory map; refusing unsafe memory pools\n");
         halt();
     }
-    _sys_info.shm_contig.phy_base = 0;
-    /* sys_dma is no longer carved here: it is a DMA-reachable range over
-       general RAM (arch_dma_range) that dma_alloc draws from dynamically.
-       Only the reserved shm_contig slab and the high GPU pool are carved
-       out. Board devices (xHCI, DCE) do 32-bit DMA, so the shm slab stays
-       below 4GB. */
-    if (_sys_info.shm_contig.size)
-        _sys_info.shm_contig.phy_base = find_memory_pool(_sys_info.shm_contig.size,
-                0, 1ULL << 32);
-    if (_sys_info.shm_contig.size && !_sys_info.shm_contig.phy_base) {
-        kout_str("orin: no firmware-safe DMA32 memory pools\n");
-        halt();
-    }
+    /* sys_dma and shm are DMA-reachable ranges over general RAM that
+       dma_alloc / shm draw from dynamically - their pages stay in the
+       heap (firmware regions are already excluded by kalloc_arch, so
+       dynamic runs are firmware-safe). Only the high GPU pool is a
+       reserved carve-out. Board devices do 32-bit DMA, so arch_dma_range
+       keeps both below 4GB. */
     /* GA10B reaches DRAM through its own GMMU (64-bit GPU VAs), so its pool
        may live above the DMA32 reach — the only place a multi-GB LLM weight
        arena fits on this 8GB board. */
@@ -340,15 +333,15 @@ int32_t arch_reserve_memory_pools(void) {
             halt();
         }
     }
-    _sys_info.shm_contig.v_base = 0;
-    kout_str("orin: DMA/SHM pools reserved from final UEFI memory map\n");
+    kout_str("orin: GPU pool reserved; shm runs drawn from general RAM\n");
     return 1;
 }
 
-/* Only reclaim UEFI-approved RAM, excluding both reserved pools. */
+/* Only reclaim UEFI-approved RAM, excluding the reserved GPU pool and
+   firmware regions (sys_dma/shm pages stay in the heap). */
 void kalloc_arch(void) {
     orin_mem_range_t ex[ORIN_MAX_RESV + 4];
-    uint32_t n = memory_exclusions(ex);
+    uint32_t n = memory_exclusions(ex, 0);
     ewokos_addr_t base = _sys_info.allocable_phy_mem_base;
     ewokos_addr_t top = _sys_info.allocable_phy_mem_top;
     if (top <= base)

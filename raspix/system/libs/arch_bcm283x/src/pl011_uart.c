@@ -93,7 +93,7 @@ static uint32_t bcm283x_pl011_uart_get_clock_rate(void) {
     uint32_t clock_rate = PL011_DEFAULT_CLOCK_HZ;
     uint32_t mailbox_data;
 
-    req_vaddr = dma_alloc(0, sizeof(msg_get_clock_rate_t));
+    req_vaddr = dma_alloc(sizeof(msg_get_clock_rate_t));
     if (req_vaddr == 0) {
         return clock_rate;
     }
@@ -106,7 +106,7 @@ static uint32_t bcm283x_pl011_uart_get_clock_rate(void) {
     req->get_clock_rate.tag_hdr.val_len = sizeof(req->get_clock_rate.body.req);
     req->get_clock_rate.body.req.clock_id = RPI_FIRMWARE_UART_CLK_ID;
 
-    mailbox_data = ((uint32_t)dma_phy_addr(0, req_vaddr) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    mailbox_data = ((uint32_t)dma_phy_addr(req_vaddr) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     if (mailbox_data != 0) {
         msg.data = mailbox_data;
         msg.channel = PROPERTY_CHANNEL;
@@ -116,7 +116,7 @@ static uint32_t bcm283x_pl011_uart_get_clock_rate(void) {
         }
     }
 
-    dma_free(0, req_vaddr);
+    dma_free(req_vaddr);
     return clock_rate;
 }
 

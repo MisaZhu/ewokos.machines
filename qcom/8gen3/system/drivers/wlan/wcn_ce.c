@@ -80,9 +80,9 @@ static void post_rx(struct pipe *p, unsigned buffer) {
 int wcn_ce_init(void) {
     if (c.active) return 0;
     if (c.dma) return -1;
-    c.dma = (uint8_t *)dma_alloc(0, ARENA_SIZE);
+    c.dma = (uint8_t *)dma_alloc(ARENA_SIZE);
     if (!c.dma) return -1;
-    c.pa = dma_phy_addr(0, (ewokos_addr_t)c.dma);
+    c.pa = dma_phy_addr((ewokos_addr_t)c.dma);
     if (!c.pa || c.pa + ARENA_SIZE > 0x100000000ULL) return -1;
     memset(c.dma, 0, ARENA_SIZE); c.used = 64;
     const unsigned tx_entries[9] = {16,0,0,32,2048,0,0,32,0};
@@ -160,7 +160,7 @@ void wcn_ce_poll(void) {
 }
 
 void wcn_ce_release(void) {
-    if (c.dma) dma_free(0, (ewokos_addr_t)c.dma);
+    if (c.dma) dma_free((ewokos_addr_t)c.dma);
     memset(&c, 0, sizeof(c));
     wcn_htc_reset();
 }

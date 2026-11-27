@@ -397,7 +397,7 @@ static uint64_t adsp_boot(void* fw, uint32_t fw_size, uint64_t fw_pa,
 static int owned_dma_check(ewokos_addr_t pa, ewokos_addr_t len, uint32_t max,
         uint32_t* capacity) {
     proc_t* p = proc_get_proc(get_current_proc());
-    uint32_t cap = p ? dma_size(0, p->info.pid, pa) : 0;
+    uint32_t cap = p ? dma_size(p->info.pid, pa) : 0;
     if (capacity) *capacity = cap;
     return len && len <= max && !(pa & 0xfff) && cap >= len;
 }
@@ -424,7 +424,7 @@ ewokos_addr_t batt_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         if (!owned_dma_check(arg, size, ADSP_MAX_FW, &capacity) ||
                 capacity < size + ADSP_META_MAX)
             return (ewokos_addr_t)Q8B_BATT_INVALID;
-        fw = (void*)dma_v_addr(0, arg);
+        fw = (void*)dma_v_addr(arg);
         if (fw == 0) return (ewokos_addr_t)Q8B_BATT_INVALID;
         if (adsp_power_on() != 0) return (ewokos_addr_t)Q8B_BATT_FAILED;
         return (ewokos_addr_t)adsp_boot(fw, (uint32_t)size, arg, capacity);

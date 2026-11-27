@@ -11,7 +11,7 @@
  *   gpi_rt_xfer()  : build CONFIG0/GO/DMA TREs, doorbell, wait event
  *   gpi_rt_close() : stop (if started), dealloc, unpin, release buffers
  *
- * The pins keep the contig physical runs alive when every process detaches
+ * The pins keep the contiguous physical runs alive when every process detaches
  * before the hardware acknowledges; gpi_rt_close only unpins after stop/
  * dealloc.  One owner per instance; a poisoned dma handle must route to a
  * full reset, never a retry.  Host tests inject the io and shm backends.
@@ -28,7 +28,7 @@ typedef struct {
     const char* stage;
 } qcom8gen3_gpi_rt_t;
 
-/* Map the instance window and allocate the pinned contig rings. */
+/* Map the instance window and allocate the pinned contiguous rings. */
 int qcom8gen3_gpi_rt_open(qcom8gen3_gpi_rt_t* rt, unsigned instance, unsigned entries);
 int qcom8gen3_gpi_rt_start(qcom8gen3_gpi_rt_t* rt);
 /* Full-duplex xfer: tx_len bytes out, rx_len bytes in (rx_len holds echoes /

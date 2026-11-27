@@ -29,7 +29,7 @@ int qnn_shared_free_storage(qnn_shared_buf_t *sb)
 	sb->map_session = 0;
 	sb->map_epoch = 0;
 	if (sb->alloc_host) {
-		dma_free(0, (ewokos_addr_t)(uintptr_t)sb->alloc_host);
+		dma_free((ewokos_addr_t)(uintptr_t)sb->alloc_host);
 		sb->alloc_host = NULL;
 	}
 	sb->host = NULL;
@@ -62,14 +62,14 @@ qnn_shared_buf_t *qnn_shared_buf_alloc(qnn_backend_obj_t *b, int fd,
 	sb = (qnn_shared_buf_t *)calloc(1, sizeof(*sb));
 	if (!sb)
 		return NULL;
-	va = dma_alloc(0, map_size);
+	va = dma_alloc(map_size);
 	if (va == 0) {
 		free(sb);
 		return NULL;
 	}
-	pa = dma_phy_addr(0, va);
+	pa = dma_phy_addr(va);
 	if (pa == 0) {
-		dma_free(0, va);
+		dma_free(va);
 		free(sb);
 		return NULL;
 	}

@@ -171,16 +171,16 @@ static v3d_3d_prog_t _progs[V3D_3D_MAX_PROGS];
 static int alloc_stage_raw(uint32_t size, void **va, uint32_t *iova,
                            ewokos_addr_t *raw)
 {
-    ewokos_addr_t r = dma_alloc(0, size + 4095u);
+    ewokos_addr_t r = dma_alloc(size + 4095u);
     ewokos_addr_t v, p;
 
     if (r == 0)
         return -1;
     v = (r + 4095u) & ~(ewokos_addr_t)4095u;
-    p = dma_phy_addr(0, v);
+    p = dma_phy_addr(v);
     /* the buffer must be inside a RAM range the GPU may address */
     if (p == 0 || (p >> 32) != 0 || !v3d_g2d_phy_valid(p, size)) {
-        dma_free(0, r);
+        dma_free(r);
         return -1;
     }
     *va = (void *)(uintptr_t)v;
@@ -199,12 +199,12 @@ static int alloc_stage(uint32_t size, void **va, uint32_t *iova)
 /* hand a program's QPU code blocks back to dma and clear the slot */
 static void release_prog(v3d_3d_prog_t *pr)
 {
-    if (pr->vs_qpu_raw)    dma_free(0, pr->vs_qpu_raw);
-    if (pr->fs_qpu_raw)    dma_free(0, pr->fs_qpu_raw);
-    if (pr->coord_qpu_raw) dma_free(0, pr->coord_qpu_raw);
-    if (pr->cs_qpu_raw)    dma_free(0, pr->cs_qpu_raw);
-    if (pr->cs_spill_raw)  dma_free(0, pr->cs_spill_raw);
-    if (pr->cs2_qpu_raw)   dma_free(0, pr->cs2_qpu_raw);
+    if (pr->vs_qpu_raw)    dma_free(pr->vs_qpu_raw);
+    if (pr->fs_qpu_raw)    dma_free(pr->fs_qpu_raw);
+    if (pr->coord_qpu_raw) dma_free(pr->coord_qpu_raw);
+    if (pr->cs_qpu_raw)    dma_free(pr->cs_qpu_raw);
+    if (pr->cs_spill_raw)  dma_free(pr->cs_spill_raw);
+    if (pr->cs2_qpu_raw)   dma_free(pr->cs2_qpu_raw);
     memset(pr, 0, sizeof(*pr));
 }
 

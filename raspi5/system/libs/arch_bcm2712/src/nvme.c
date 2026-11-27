@@ -346,11 +346,11 @@ static int nvme_alloc_queues(nvme_ctrl_t *ctrl) {
     uint32_t sz = (DMA_TOTAL_SIZE + NVME_QUEUE_PAGE_SIZE - 1U)
               & ~(NVME_QUEUE_PAGE_SIZE - 1U);
 
-    ctrl->dma_buf = (void *)dma_alloc(0, sz);
+    ctrl->dma_buf = (void *)dma_alloc(sz);
     if (ctrl->dma_buf == NULL)
         return -NVME_EIO;
 
-    ctrl->dma_phy = (uint64_t)dma_phy_addr(0, (ewokos_addr_t)ctrl->dma_buf)
+    ctrl->dma_phy = (uint64_t)dma_phy_addr((ewokos_addr_t)ctrl->dma_buf)
                + 0x1000000000ULL; /* RC_BAR2 PCIe→CPU offset */
     ctrl->dma_size = sz;
 
@@ -404,7 +404,7 @@ static int nvme_map_prps(uint64_t dma_phy, uint32_t size,
     if (pages > NVME_PRP_LIST_ENTRIES)
         return -NVME_EINVAL;
 
-    map->list = (void *)dma_alloc(0, NVME_QUEUE_PAGE_SIZE);
+    map->list = (void *)dma_alloc(NVME_QUEUE_PAGE_SIZE);
     if (map->list == NULL)
         return -NVME_EIO;
 
@@ -414,7 +414,7 @@ static int nvme_map_prps(uint64_t dma_phy, uint32_t size,
     for (uint32_t i = pages; i < NVME_PRP_LIST_ENTRIES; i++)
         entries[i] = 0;
 
-    map->prp2 = (uint64_t)dma_phy_addr(0, (ewokos_addr_t)map->list)
+    map->prp2 = (uint64_t)dma_phy_addr((ewokos_addr_t)map->list)
           + 0x1000000000ULL;
     return 0;
 }
@@ -422,7 +422,7 @@ static int nvme_map_prps(uint64_t dma_phy, uint32_t size,
 static void nvme_unmap_prps(nvme_prp_map_t *map)
 {
     if (map->list != NULL) {
-        dma_free(0, (ewokos_addr_t)map->list);
+        dma_free((ewokos_addr_t)map->list);
         map->list = NULL;
     }
 }
@@ -598,12 +598,12 @@ static int nvme_controller_init(nvme_ctrl_t *ctrl)
 
 static int nvme_identify_ctrl(nvme_ctrl_t *ctrl, nvme_identify_ctrl_t *id)
 {
-    void *buf = dma_alloc(0, 4096);
+    void *buf = dma_alloc(4096);
     if (buf == NULL)
         return -NVME_EIO;
 
     memset(buf, 0, 4096);
-    uint64_t phy = (uint64_t)dma_phy_addr(0, (ewokos_addr_t)buf)
+    uint64_t phy = (uint64_t)dma_phy_addr((ewokos_addr_t)buf)
              + 0x1000000000ULL;
 
     nvme_sqe_t sqe;
@@ -617,19 +617,19 @@ static int nvme_identify_ctrl(nvme_ctrl_t *ctrl, nvme_identify_ctrl_t *id)
     if (ret == 0)
         memcpy(id, buf, sizeof(*id));
 
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return ret;
 }
 
 static int nvme_identify_ns(nvme_ctrl_t *ctrl, uint32_t nsid,
                 nvme_identify_ns_t *id)
 {
-    void *buf = dma_alloc(0, 4096);
+    void *buf = dma_alloc(4096);
     if (buf == NULL)
         return -NVME_EIO;
 
     memset(buf, 0, 4096);
-    uint64_t phy = (uint64_t)dma_phy_addr(0, (ewokos_addr_t)buf)
+    uint64_t phy = (uint64_t)dma_phy_addr((ewokos_addr_t)buf)
              + 0x1000000000ULL;
 
     nvme_sqe_t sqe;
@@ -643,7 +643,7 @@ static int nvme_identify_ns(nvme_ctrl_t *ctrl, uint32_t nsid,
     if (ret == 0)
         memcpy(id, buf, sizeof(*id));
 
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return ret;
 }
 
@@ -762,7 +762,7 @@ err_disable:
     slog("nvme: init failed at step %d, shutting down\n", ret);
     nvme_shutdown(ctrl);
 err_free:
-    dma_free(0, (ewokos_addr_t)ctrl->dma_buf);
+    dma_free((ewokos_addr_t)ctrl->dma_buf);
     ctrl->dma_buf = NULL;
     return ret;
 }
@@ -797,7 +797,7 @@ void nvme_shutdown(nvme_ctrl_t *ctrl)
     __asm__ volatile("dmb sy" ::: "memory");
 
     if (ctrl->dma_buf != NULL) {
-        dma_free(0, (ewokos_addr_t)ctrl->dma_buf);
+        dma_free((ewokos_addr_t)ctrl->dma_buf);
         ctrl->dma_buf = NULL;
     }
 
@@ -820,15 +820,15 @@ int nvme_read_blocks(nvme_ctrl_t *ctrl, void *dst,
     uint32_t block_size = 1U << ctrl->lba_shift;
     uint32_t total_bytes = block_count * block_size;
 
-    void *dma_buf = dma_alloc(0, total_bytes);
+    void *dma_buf = dma_alloc(total_bytes);
     if (dma_buf == NULL)
         return -NVME_EIO;
-    uint64_t dma_phy = (uint64_t)dma_phy_addr(0, (ewokos_addr_t)dma_buf)
+    uint64_t dma_phy = (uint64_t)dma_phy_addr((ewokos_addr_t)dma_buf)
              + 0x1000000000ULL;
     nvme_prp_map_t prps;
     int ret = nvme_map_prps(dma_phy, total_bytes, &prps);
     if (ret != 0) {
-        dma_free(0, (ewokos_addr_t)dma_buf);
+        dma_free((ewokos_addr_t)dma_buf);
         return ret;
     }
 
@@ -853,7 +853,7 @@ int nvme_read_blocks(nvme_ctrl_t *ctrl, void *dst,
         memcpy(dst, dma_buf, total_bytes);
 
     nvme_unmap_prps(&prps);
-    dma_free(0, (ewokos_addr_t)dma_buf);
+    dma_free((ewokos_addr_t)dma_buf);
     return ret == 0 ? (int)block_count : ret;
 }
 
@@ -869,16 +869,16 @@ int nvme_write_blocks(nvme_ctrl_t *ctrl, uint64_t start_lba,
     uint32_t block_size = 1U << ctrl->lba_shift;
     uint32_t total_bytes = block_count * block_size;
 
-    void *dma_buf = dma_alloc(0, total_bytes);
+    void *dma_buf = dma_alloc(total_bytes);
     if (dma_buf == NULL)
         return -NVME_EIO;
     memcpy(dma_buf, src, total_bytes);
-    uint64_t dma_phy = (uint64_t)dma_phy_addr(0, (ewokos_addr_t)dma_buf)
+    uint64_t dma_phy = (uint64_t)dma_phy_addr((ewokos_addr_t)dma_buf)
              + 0x1000000000ULL;
     nvme_prp_map_t prps;
     int ret = nvme_map_prps(dma_phy, total_bytes, &prps);
     if (ret != 0) {
-        dma_free(0, (ewokos_addr_t)dma_buf);
+        dma_free((ewokos_addr_t)dma_buf);
         return ret;
     }
 
@@ -900,7 +900,7 @@ int nvme_write_blocks(nvme_ctrl_t *ctrl, uint64_t start_lba,
                    NVME_IO_SQID, NVME_IO_QSIZE, 30000);
 
     nvme_unmap_prps(&prps);
-    dma_free(0, (ewokos_addr_t)dma_buf);
+    dma_free((ewokos_addr_t)dma_buf);
     return ret == 0 ? (int)block_count : ret;
 }
 

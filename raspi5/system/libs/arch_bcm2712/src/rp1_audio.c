@@ -678,15 +678,15 @@ int rp1_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     uint32_t total = lli_bytes + buf_bytes;
 
     /* over-allocate one alignment unit, dma_alloc() only guarantees a page */
-    ewokos_addr_t raw = dma_alloc(0, total + RP1_LLI_ALIGN);
+    ewokos_addr_t raw = dma_alloc(total + RP1_LLI_ALIGN);
     if (raw == 0) {
         slog("rp1-audio: ring dma_alloc(%u) failed\n", total + RP1_LLI_ALIGN);
         return RP1_AUDIO_ERR_DMA_MEM;
     }
-    ewokos_addr_t phy = dma_phy_addr(0, raw);
+    ewokos_addr_t phy = dma_phy_addr(raw);
     if (phy == 0) {
         slog("rp1-audio: ring dma_phy_addr failed\n");
-        dma_free(0, raw);
+        dma_free(raw);
         return RP1_AUDIO_ERR_DMA_MEM;
     }
 
@@ -724,7 +724,7 @@ void rp1_audio_teardown_ring(void) {
     _slot_count = 0;
     _slot_frames = 0;
     if (_ring_raw != 0) {
-        dma_free(0, _ring_raw);
+        dma_free(_ring_raw);
         _ring_raw = 0;
     }
 }

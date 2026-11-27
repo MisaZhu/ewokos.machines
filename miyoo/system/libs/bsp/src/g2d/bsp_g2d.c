@@ -26,9 +26,9 @@
  * uses for every operation.
  *
  * GE eligibility (on top of the size checks):
- *   - the *_contig flag is set and the matching *_phy carries a valid
- *     physical base inside the DRAM window (the caller resolves it:
- *     contig shm slab / sys_dma memory).  Such canvases are mapped
+ *   - the matching *_phy carries a valid physical base inside the
+ *     DRAM window (the caller resolves it: shm / sys_dma memory, both
+ *     physically contiguous).  Such canvases are mapped
  *     NOCACHE in every process, so the engine's accesses need no ARM
  *     cache maintenance.
  *
@@ -54,11 +54,10 @@ static int ge_ok(int32_t w, int32_t h) {
 }
 
 /* Validate a caller-provided physical base and return the GE-visible
- * MIU bus address, or 0 when the canvas cannot run on the GE (not
- * physically contiguous, no phy supplied, or the address fails the
- * RAM-range validation gate). */
-static uint32_t ge_phys(ewokos_addr_t phys, size_t bytes, uint8_t contig) {
-	if (!contig || phys == 0)
+ * MIU bus address, or 0 when the canvas cannot run on the GE (no phy
+ * supplied, or the address fails the RAM-range validation gate). */
+static uint32_t ge_phys(ewokos_addr_t phys, size_t bytes) {
+	if (phys == 0)
 		return 0;
 	if (!ge_g2d_phy_valid(phys, bytes))
 		return 0;
@@ -114,15 +113,14 @@ int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {
 	return -1;
 }
 
-int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
-                   int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill(uint32_t *argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
                    int32_t x, int32_t y, int32_t w, int32_t h,
                    uint32_t color) {
 	int32_t rx = x, ry = y, rw = w, rh = h;
 
 	if (argb != NULL && ge_ok(argb_w, argb_h) &&
 	    ge_clip_rect(&rx, &ry, &rw, &rh, argb_w, argb_h)) {
-		uint32_t miu = ge_phys(argb_phy, (size_t)argb_w * argb_h * 4, contig);
+		uint32_t miu = ge_phys(argb_phy, (size_t)argb_w * argb_h * 4);
 		if (miu != 0)
 			return ge_g2d_fill(miu, argb_w, argb_h, rx, ry,
 			                   rx + rw, ry + rh, color);
@@ -148,11 +146,9 @@ static int ge_clip_blit(int32_t *csx, int32_t *csy,
 	       *csx + *cw <= src_w && *csy + *ch <= src_h;
 }
 
-int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                  int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
                   int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-                  uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                  int32_t dst_w, int32_t dst_h,
+                  uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
                   int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
 	/* GE does 1:1 copies only: the vendor library exposes no stretch
 	 * on this chip, so scaled blits fail */
@@ -165,8 +161,8 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
 
 		if (ge_clip_blit(&csx, &csy, &cdx, &cdy, &cw, &ch,
 		                 src_w, src_h, dst_w, dst_h)) {
-			uint32_t src_miu = ge_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-			uint32_t dst_miu = ge_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
+			uint32_t src_miu = ge_phys(src_phy, (size_t)src_w * src_h * 4);
+			uint32_t dst_miu = ge_phys(dst_phy, (size_t)dst_w * dst_h * 4);
 			if (src_miu != 0 && dst_miu != 0)
 				return ge_g2d_blit(src_miu, src_w, src_h, csx, csy,
 				                   dst_miu, dst_w, dst_h, cdx, cdy,
@@ -180,11 +176,9 @@ int32_t bsp_g2d_blt(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_conti
  * (CTRL ABL|DFB, ABL_COEF = 1, ABL_CONST = alpha): same 1:1-only
  * constraint as bsp_g2d_blt.  alpha == 0xff degrades to the plain
  * copy path, alpha == 0 is a no-op. */
-int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                        int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
                         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-                        uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                        int32_t dst_w, int32_t dst_h,
+                        uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
                         int32_t dx, int32_t dy, int32_t dw, int32_t dh,
                         uint8_t alpha) {
 	if (alpha == 0)
@@ -199,8 +193,8 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
 
 		if (ge_clip_blit(&csx, &csy, &cdx, &cdy, &cw, &ch,
 		                 src_w, src_h, dst_w, dst_h)) {
-			uint32_t src_miu = ge_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-			uint32_t dst_miu = ge_phys(dst_phy, (size_t)dst_w * dst_h * 4, dst_contig);
+			uint32_t src_miu = ge_phys(src_phy, (size_t)src_w * src_h * 4);
+			uint32_t dst_miu = ge_phys(dst_phy, (size_t)dst_w * dst_h * 4);
 			if (src_miu != 0 && dst_miu != 0) {
 				if (alpha == 0xff)
 					return ge_g2d_blit(src_miu, src_w, src_h, csx, csy,
@@ -220,8 +214,7 @@ int32_t bsp_g2d_blt_alpha(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src
  * the physical range directly through its MIU bus address.  The surface
  * is modelled pitch/4 pixels wide so each row strides by dst_pitch, and
  * the clip keeps every write inside the visible dst_w x dst_h window. */
-int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                      int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
                       int32_t sx, int32_t sy, int32_t sw, int32_t sh,
                       ewokos_addr_t dst_phy, uint32_t dst_size,
                       int32_t dst_w, int32_t dst_h, uint32_t dst_pitch,
@@ -250,8 +243,8 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
 
 		if (ge_clip_blit(&csx, &csy, &cdx, &cdy, &cw, &ch,
 		                 src_w, src_h, dst_w, dst_h)) {
-			uint32_t src_miu = ge_phys(src_phy, (size_t)src_w * src_h * 4, src_contig);
-			uint32_t dst_miu = ge_phys(dst_phy, dst_bytes, 1);
+			uint32_t src_miu = ge_phys(src_phy, (size_t)src_w * src_h * 4);
+			uint32_t dst_miu = ge_phys(dst_phy, dst_bytes);
 			if (src_miu != 0 && dst_miu != 0)
 				return ge_g2d_blit(src_miu, src_w, src_h, csx, csy,
 				                   dst_miu, surf_w, dst_h, cdx, cdy,
@@ -264,12 +257,12 @@ int32_t bsp_g2d_blt_phy(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_c
 /* rotate straight into a raw physical destination: no engine path on
    this platform, decline as a missing capability (sticky) so displayd
    stops asking and keeps its own rotate + flush path */
-int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
         int32_t sx, int32_t sy, int32_t sw, int32_t sh,
         ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
         uint32_t dst_pitch,
         int32_t dx, int32_t dy, int32_t degree) {
-    (void)argb_src; (void)src_phy; (void)src_contig; (void)src_w; (void)src_h;
+    (void)argb_src; (void)src_phy;(void)src_w; (void)src_h;
     (void)sx; (void)sy; (void)sw; (void)sh;
     (void)dst_phy; (void)dst_size; (void)dst_w; (void)dst_h;
     (void)dst_pitch;
@@ -281,12 +274,10 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
  * platform arch_g2d_* NEON engine like scale/rotate/blur (it works on the
  * virtual pointer, clips internally and ignores the physical base).
  * alpha == 0 is a no-op. */
-int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
-                         int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
                          int32_t x, int32_t y, int32_t w, int32_t h,
                          uint32_t color) {
         (void)argb_phy;
-        (void)contig;
         return arch_g2d_fill_alpha(argb, argb_w, argb_h, x, y, w, h, color);
 }
 
@@ -295,23 +286,18 @@ int32_t bsp_g2d_fill_alpha(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t conti
  * software scanline rasterizer, which works on the virtual pointer, clips
  * each span to the whole canvas internally and ignores the physical base.
  * alpha == 0 is a no-op. */
-int32_t bsp_g2d_fill_triangle(uint32_t *argb, ewokos_addr_t argb_phy, uint8_t contig,
-                         int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_triangle(uint32_t *argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
                          int32_t x1, int32_t y1, int32_t x2, int32_t y2,
                          int32_t x3, int32_t y3, uint32_t color) {
-        return arch_g2d_fill_triangle(argb, argb_phy, contig, argb_w, argb_h,
-                         x1, y1, x2, y2, x3, y3, 0, 0, 0, 0, color);
+        return arch_g2d_fill_triangle(argb, argb_phy, argb_w, argb_h, x1, y1, x2, y2, x3, y3, 0, 0, 0, 0, color);
 }
 
 /* GE stretch is not implementable: the vendor library exposes no
  * StretchBlit on this chip and the recovered register set programs a
  * single block size for both surfaces - delegate to the arch engine */
-int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                       int32_t src_w, int32_t src_h,
-                       uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                       int32_t dst_w, int32_t dst_h) {
-	return arch_g2d_scale_to(argb_src, src_phy, src_contig, src_w, src_h,
-	                         argb_dst, dst_phy, dst_contig, dst_w, dst_h);
+int32_t bsp_g2d_scale_to(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+                       uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h) {
+	return arch_g2d_scale_to(argb_src, src_phy, src_w, src_h, argb_dst, dst_phy, dst_w, dst_h);
 }
 
 /* GE rotation is not implementable: the vendor MI_GFX_Rotate_e knows
@@ -321,27 +307,20 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 	return arch_g2d_rotated_size(src_w, src_h, degree, dst_w, dst_h);
 }
 
-int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, uint8_t src_contig,
-                     int32_t src_w, int32_t src_h,
-                     uint32_t *argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig,
-                     int32_t dst_w, int32_t dst_h, int32_t degree) {
-	return arch_g2d_rotate(argb_src, src_phy, src_contig, src_w, src_h,
-	                       argb_dst, dst_phy, dst_contig, dst_w, dst_h, degree);
+int32_t bsp_g2d_rotate(uint32_t *argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+                     uint32_t *argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h, int32_t degree) {
+	return arch_g2d_rotate(argb_src, src_phy, src_w, src_h, argb_dst, dst_phy, dst_w, dst_h, degree);
 }
 /* whole-surface separable gaussian blur: delegated to the platform's
    arch_g2d_* back end (the NEON software engine), which blurs in place
-   and allocates its own scratch, so tmp/tmp_phy/tmp_contig are unused.
+   and allocates its own scratch, so tmp/tmp_phy are unused.
    g2dd pre-validates radius (2/4) and width (%16) before dispatch; the
    back end accepts any radius and clips the rect to the buffer bounds. */
-int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
-			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint32_t* tmp, ewokos_addr_t tmp_phy, int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
-	(void)tmp; (void)tmp_phy; (void)tmp_contig;
-	return arch_g2d_gaussian(argb, argb_phy, contig, argb_w, argb_h,
-			rect_x, rect_y, rect_w, rect_h, radius);
+	(void)tmp; (void)tmp_phy;	return arch_g2d_gaussian(argb, argb_phy, argb_w, argb_h, rect_x, rect_y, rect_w, rect_h, radius);
 }
 
 /* portablegl 3D offload moved to bsp_g3d.c (<bsp/bsp_g3d.h>): this

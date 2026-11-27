@@ -61,7 +61,7 @@ uint32_t v3d_g2d_scratch_phys(void);
 
 /* Address validation gate: returns non-zero when [phy, phy+bytes) lies
  * inside a legitimate physical RAM region (the allocable memory range,
- * the sys_dma window, the IPC_CONTIG shm slab, or below the total
+ * the sys_dma window, the shm slab, or below the total
  * physical memory size).  The GPU kernels write through 32-bit physical
  * addresses with no MMU, so a bad address would corrupt arbitrary
  * memory; every caller-supplied *_phy must pass this check before a

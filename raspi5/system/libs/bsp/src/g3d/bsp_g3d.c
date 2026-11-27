@@ -3,7 +3,7 @@
  * 3D-pipeline offload split out of bsp_g2d.  Every operation is delegated
  * to the VideoCore back end in libvideocore (<videocore/vc_pgl3d.h>),
  * which owns the CLE binning + render submission and works zero-copy on
- * the caller's contig-shm / dma buffers through their resolved physical
+ * the caller's shm / dma buffers through their resolved physical
  * bases.
  *
  * The 3D pipeline is brought up lazily on the first op (idempotent, on top
@@ -64,8 +64,7 @@ int32_t bsp_g3d_init(void)
     return pgl3d_ensure() ? 0 : -1;
 }
 
-int32_t bsp_g3d_clear(uint32_t *fb, ewokos_addr_t fb_phy, uint8_t contig,
-                      int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+int32_t bsp_g3d_clear(uint32_t *fb, ewokos_addr_t fb_phy, int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
                       uint32_t color, int32_t rb_swap)
 {
     /* the GPU clears through the physical base only; fb (the render-target
@@ -73,21 +72,15 @@ int32_t bsp_g3d_clear(uint32_t *fb, ewokos_addr_t fb_phy, uint8_t contig,
     (void)fb;
     if (!pgl3d_ensure())
         return G2D_ERR_NOT_SUPPORTED;
-    return pgl3d_rc(vc_pgl3d_clear(fb_phy, contig, stride,
-                                   (uint32_t)w, (uint32_t)h, fmt, color,
-                                   rb_swap));
+    return pgl3d_rc(vc_pgl3d_clear(fb_phy, stride, (uint32_t)w, (uint32_t)h, fmt, color, rb_swap));
 }
 
-int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
-                     int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
                      uint32_t mode, uint32_t nverts,
-                     ewokos_addr_t pos_phy, uint8_t pos_contig,
-                     ewokos_addr_t col_phy, uint8_t col_contig,
-                     uint32_t fs_id, uint32_t color, int32_t rb_swap,
+                     ewokos_addr_t pos_phy, ewokos_addr_t col_phy, uint32_t fs_id, uint32_t color, int32_t rb_swap,
                      uint32_t depth_func, int32_t depth_mask,
                      int32_t blend_en, int32_t cull_en,
-                     ewokos_addr_t z_phy, uint8_t z_contig,
-                     uint32_t z_stride, uint8_t first_frame,
+                     ewokos_addr_t z_phy, uint32_t z_stride, uint8_t first_frame,
                      uint32_t clear_rgba, float clear_z,
                      const void* ext, const void* tex,
                      int32_t prog_handle, const void* unif,
@@ -102,11 +95,8 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
     req.mode       = mode;
     req.nverts     = nverts;
     req.pos_phy    = pos_phy;
-    req.pos_contig = pos_contig;
     req.col_phy    = col_phy;
-    req.col_contig = col_contig;
     req.fb_phy     = fb_phy;
-    req.fb_contig  = fb_contig;
     req.stride     = stride;
     req.w          = (uint32_t)w;
     req.h          = (uint32_t)h;
@@ -123,7 +113,6 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
      * dispatch (clears colour to clear_rgba + Z to clear_z), later dispatches
      * LOAD the persisted colour+Z so a multi-draw frame accumulates. */
     req.z_phy       = z_phy;
-    req.z_contig    = z_contig;
     req.z_stride    = z_stride;
     req.first_frame = first_frame;
     req.clear_rgba  = clear_rgba;
@@ -151,12 +140,10 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
     if (tex) {
         const g2d_pgl_tex_t* t = (const g2d_pgl_tex_t*)tex;
         req.tex_phy    = t->tex_phy;
-        req.tex_contig = t->tex_contig;
         req.tex_stride = t->tex_stride;
         req.tex_w      = t->tex_w;
         req.tex_h      = t->tex_h;
         req.uv_phy     = t->uv_phy;
-        req.uv_contig  = t->uv_contig;
     }
     /* WS4 compiled-shader draw reference.  prog_handle >= 0 selects an
      * on-device-compiled program (uploaded via bsp_g3d_program); `unif` is the
@@ -177,7 +164,6 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
     if (ctex) {
         const g2d_pgl_ctex_t* c = (const g2d_pgl_ctex_t*)ctex;
         memcpy(req.ctex_phy,    c->ctex_phy,    sizeof(req.ctex_phy));
-        memcpy(req.ctex_contig, c->ctex_contig, sizeof(req.ctex_contig));
         memcpy(req.ctex_stride, c->ctex_stride, sizeof(req.ctex_stride));
         memcpy(req.ctex_w,      c->ctex_w,      sizeof(req.ctex_w));
         memcpy(req.ctex_h,      c->ctex_h,      sizeof(req.ctex_h));

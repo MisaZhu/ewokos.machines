@@ -87,12 +87,12 @@ int npu_buf_alloc(npu_buf_t *b, uint32_t size)
 	if (!b || size == 0)
 		return -1;
 	memset(b, 0, sizeof(*b));
-	va = dma_alloc(0, size);
+	va = dma_alloc(size);
 	if (va == 0)
 		return -2;
-	pa = dma_phy_addr(0, va);
+	pa = dma_phy_addr(va);
 	if (pa == 0) {
-		dma_free(0, va);
+		dma_free(va);
 		return -3;
 	}
 	memset((void *)(uintptr_t)va, 0, size);
@@ -105,7 +105,7 @@ int npu_buf_alloc(npu_buf_t *b, uint32_t size)
 void npu_buf_free(npu_buf_t *b)
 {
 	if (b && b->va) {
-		dma_free(0, (ewokos_addr_t)(uintptr_t)b->va);
+		dma_free((ewokos_addr_t)(uintptr_t)b->va);
 		b->va = NULL;
 		b->pa = 0;
 		b->size = 0;

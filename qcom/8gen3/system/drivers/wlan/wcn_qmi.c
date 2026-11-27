@@ -87,9 +87,9 @@ static int send_m3(void) {
     uint8_t *file = wcn_read_file(wcn_firmware_path("m3.bin"), 1024 * 1024, &m3_size);
     if (!file || m3_va) { free(file); return -1; }
     unsigned allocation = (m3_size + 0x3fff) & ~0x3fffu;
-    m3_va = (void *)dma_alloc(0, allocation);
+    m3_va = (void *)dma_alloc(allocation);
     if (!m3_va) { free(file); return -1; }
-    m3_pa = dma_phy_addr(0, (ewokos_addr_t)m3_va);
+    m3_pa = dma_phy_addr((ewokos_addr_t)m3_va);
     if (!m3_pa || m3_pa + allocation > 0x100000000ULL) { free(file); return -1; }
     memcpy(m3_va, file, m3_size); free(file);
     __asm__ volatile("dsb sy" ::: "memory");
@@ -198,10 +198,10 @@ static int respond_memory(const uint8_t *p, unsigned bytes) {
          * Keep the original allocation pointer for dma_free(). */
         unsigned alignment = 0x4000;
         while (alignment < allocation) alignment <<= 1;
-        memory[i].va = dma_alloc(0, allocation + alignment - 0x4000);
+        memory[i].va = dma_alloc(allocation + alignment - 0x4000);
         memory_count = i + 1;
         if (!memory[i].va) return -1;
-        memory[i].pa = dma_phy_addr(0, (ewokos_addr_t)memory[i].va);
+        memory[i].pa = dma_phy_addr((ewokos_addr_t)memory[i].va);
         uint64_t aligned = (memory[i].pa + alignment - 1) & ~((uint64_t)alignment - 1);
         unsigned padding = (unsigned)(aligned - memory[i].pa);
         memory[i].pa = aligned;
@@ -370,10 +370,10 @@ void wcn_qmi_reset(void) { memset(&q, 0, sizeof(q)); }
 uint64_t wcn_qmi_progress_ms(void) { return q.progress_ms; }
 void wcn_qmi_release(void) {
     for (unsigned i = 0; i < memory_count; i++)
-        if (memory[i].va) dma_free(0, (ewokos_addr_t)memory[i].va);
+        if (memory[i].va) dma_free((ewokos_addr_t)memory[i].va);
     memset(memory, 0, sizeof(memory)); memory_count = 0;
     free(upload.data); memset(&upload, 0, sizeof(upload));
-    if (m3_va) dma_free(0, (ewokos_addr_t)m3_va);
+    if (m3_va) dma_free((ewokos_addr_t)m3_va);
     m3_va = NULL; m3_pa = m3_size = 0;
 }
 void wcn_qmi_begin(void) {

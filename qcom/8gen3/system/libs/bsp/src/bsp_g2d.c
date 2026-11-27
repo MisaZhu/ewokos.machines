@@ -40,8 +40,8 @@
  *     Canvas rotation uses an exact integer compute mapping instead.
  *
  * ELIGIBILITY: the A2D works on GPU-visible physical memory (CB0 is
- * identity-mapped, so pa == iova).  A buffer must be physically
- * contiguous (contig != 0, *_phy != 0), its base 64-byte aligned, and its
+ * identity-mapped, so pa == iova).  A buffer must have a resolved
+ * physical base (*_phy != 0), 64-byte aligned, and its
  * pitch a multiple of 64 (the A2D pitch fields are shr6) - for a tightly
  * packed ARGB surface pitch = w*4, so w must be a multiple of 16.  Anything
  * else returns G2D_ERR_FAILED (-1) and the client falls back. Compute copy
@@ -118,10 +118,10 @@ static int32_t a2d_result(int rc) {
 	return G2D_ERR_TIMEOUT;
 }
 
-/* A GPU blit needs a physically contiguous, GPU-visible buffer.  contig == 0
-   means *_phy is 0 (see bsp_g2d.h), which the A2D cannot DMA to. */
-static int gpu_buf_ok(ewokos_addr_t phy, uint8_t contig) {
-	return (contig != 0 && phy != 0);
+/* A GPU blit needs a GPU-visible buffer: *_phy == 0 (see bsp_g2d.h)
+   means no resolved physical base, which the A2D cannot DMA to. */
+static int gpu_buf_ok(ewokos_addr_t phy) {
+	return (phy != 0);
 }
 
 int32_t bsp_g2d_init(void) {
@@ -162,35 +162,35 @@ int32_t bsp_g2d_cmd(int argc, char** argv, char* buf, uint32_t len) {
 	return -1;   /* no backend diagnostics of our own */
 }
 
-int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
 	(void)argb;
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!gpu_buf_ok(argb_phy, contig))
+	if (!gpu_buf_ok(argb_phy))
 		return G2D_ERR_FAILED;
 	return a2d_result(adreno_2d_fill(argb_phy, argb_w, argb_h, (uint32_t)argb_w * 4u,
 			x, y, w, h, color, 0));
 }
 
-int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_alpha(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color) {
 	uint32_t a = (color >> 24) & 0xffu;
 	if (a == 0)
 		return G2D_OK;                    /* fully transparent: no-op */
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;     /* gate off / GPU down: sticky */
-	if (!gpu_buf_ok(argb_phy, contig))
+	if (!gpu_buf_ok(argb_phy))
 		return G2D_ERR_FAILED;
 	if (a != 0xffu)
 		return a2d_result(adreno_compute_fill_alpha(argb_phy,argb_w,argb_h,x,y,w,h,color));
 	/* alpha == 0xff is an opaque fill: same as bsp_g2d_fill. */
-	return bsp_g2d_fill(argb, argb_phy, contig, argb_w, argb_h, x, y, w, h, color);
+	return bsp_g2d_fill(argb, argb_phy, argb_w, argb_h, x, y, w, h, color);
 }
 
-int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig, int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, int32_t argb_w, int32_t argb_h,
 			int32_t x1, int32_t y1, int32_t x2, int32_t y2, int32_t x3, int32_t y3, uint32_t color) {
-	(void)argb; (void)argb_phy; (void)contig; (void)argb_w; (void)argb_h;
+	(void)argb; (void)argb_phy;(void)argb_w; (void)argb_h;
 	(void)x1; (void)y1; (void)x2; (void)y2; (void)x3; (void)y3;
 	if (((color >> 24) & 0xffu) == 0)
 		return G2D_OK;                    /* fully transparent: no-op */
@@ -198,14 +198,14 @@ int32_t bsp_g2d_fill_triangle(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t co
 	return G2D_ERR_NOT_SUPPORTED;
 }
 
-int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh) {
 	(void)argb_src; (void)argb_dst;
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!gpu_buf_ok(src_phy, src_contig) || !gpu_buf_ok(dst_phy, dst_contig))
+	if (!gpu_buf_ok(src_phy) || !gpu_buf_ok(dst_phy))
 		return G2D_ERR_FAILED;
 	if (sw != dw || sh != dh)
 		return a2d_result(adreno_compute_scale(src_phy, src_w, src_h,
@@ -222,7 +222,7 @@ int32_t bsp_g2d_blt(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_conti
    scale kernel is used: bilinear smoothing for upscales (the displayd zoom
    path), nearest-neighbor otherwise.  dst_pitch is the explicit row
    stride (need not be w*4). */
-int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 			ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 			uint32_t dst_pitch,
@@ -230,7 +230,7 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
 	(void)argb_src; (void)dst_size;
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!gpu_buf_ok(src_phy, src_contig) || dst_phy == 0)
+	if (!gpu_buf_ok(src_phy) || dst_phy == 0)
 		return G2D_ERR_FAILED;
 	if (sw != dw || sh != dh) {
 		if (dw >= sw && dh >= sh)
@@ -248,7 +248,7 @@ int32_t bsp_g2d_blt_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_c
 /* rotate a src rect clockwise by degree into a RAW PHYSICAL scan-out dst.
    The A2D path supports 0/180 (rotated size == src size); 90/270 decline so
    displayd keeps its own CPU rotate + flush path. */
-int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 		int32_t sx, int32_t sy, int32_t sw, int32_t sh,
 		ewokos_addr_t dst_phy, uint32_t dst_size, int32_t dst_w, int32_t dst_h,
 		uint32_t dst_pitch,
@@ -258,7 +258,7 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
 		return G2D_ERR_NOT_SUPPORTED;
 	if (degree != 0 && degree != 180)
 		return G2D_ERR_FAILED;            /* A2D rotate: 0/180 only */
-	if (!gpu_buf_ok(src_phy, src_contig) || dst_phy == 0)
+	if (!gpu_buf_ok(src_phy) || dst_phy == 0)
 		return G2D_ERR_FAILED;
 	return a2d_result(adreno_2d_copy(src_phy, src_w, src_h, (uint32_t)src_w * 4u,
 			sx, sy, sw, sh,
@@ -269,16 +269,16 @@ int32_t bsp_g2d_rotate_phy(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t sr
 /* Match arch_g2d_blt_alpha, including (src_a*global)>>8, opaque copy,
    transparent destination RGB and integer /255 rounding. The A2D blend
    failed transparent-destination readback; use the regular compute kernel. */
-int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
+int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
 			int32_t sx, int32_t sy, int32_t sw, int32_t sh,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h,
 			int32_t dx, int32_t dy, int32_t dw, int32_t dh, uint8_t alpha) {
 	(void)argb_src; (void)argb_dst;
 	if (alpha == 0)
 		return G2D_OK;                    /* fully transparent: no-op */
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;     /* gate off / GPU down: sticky */
-	if (!gpu_buf_ok(src_phy, src_contig) || !gpu_buf_ok(dst_phy, dst_contig))
+	if (!gpu_buf_ok(src_phy) || !gpu_buf_ok(dst_phy))
 		return G2D_ERR_FAILED;
 	/* A2D fails straight-alpha semantics on an empty destination. Use the
 	   integer kernel for every global alpha and destination alpha instead. */
@@ -286,12 +286,12 @@ int32_t bsp_g2d_blt_alpha(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src
 			sx, sy, sw, sh, dst_phy, dst_w, dst_h, dx, dy, dw, dh, alpha));
 }
 
-int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h) {
+int32_t bsp_g2d_scale_to(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h) {
 	(void)argb_src; (void)argb_dst;
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!gpu_buf_ok(src_phy, src_contig) || !gpu_buf_ok(dst_phy, dst_contig))
+	if (!gpu_buf_ok(src_phy) || !gpu_buf_ok(dst_phy))
 		return G2D_ERR_FAILED;
 	/* A2D samples pixel centres and fails the corner-preserving Q15 oracle.
 	   The integer CS kernel implements that mapping without interpolation. */
@@ -306,12 +306,12 @@ int32_t bsp_g2d_rotated_size(int32_t src_w, int32_t src_h, int32_t degree,
 	return arch_g2d_rotated_size(src_w, src_h, degree, dst_w, dst_h);
 }
 
-int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_contig, int32_t src_w, int32_t src_h,
-			uint32_t* argb_dst, ewokos_addr_t dst_phy, uint8_t dst_contig, int32_t dst_w, int32_t dst_h, int32_t degree) {
+int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, int32_t src_w, int32_t src_h,
+			uint32_t* argb_dst, ewokos_addr_t dst_phy, int32_t dst_w, int32_t dst_h, int32_t degree) {
 	(void)argb_src; (void)argb_dst;
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!gpu_buf_ok(src_phy, src_contig) || !gpu_buf_ok(dst_phy, dst_contig))
+	if (!gpu_buf_ok(src_phy) || !gpu_buf_ok(dst_phy))
 		return G2D_ERR_FAILED;
 	degree=((degree%360)+360)%360;
 	if ((degree != 0 && degree != 180) || (src_w & 15) || (dst_w & 15)) {
@@ -332,16 +332,14 @@ int32_t bsp_g2d_rotate(uint32_t* argb_src, ewokos_addr_t src_phy, uint8_t src_co
 
 /* Fast Gaussian-style blur. Only the final upsample writes the canvas;
    earlier safe declines permit the client to run its software blur. */
-int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint8_t contig,
-			uint32_t* tmp, ewokos_addr_t tmp_phy, uint8_t tmp_contig,
-			int32_t argb_w, int32_t argb_h,
+int32_t bsp_g2d_gaussian_blur(uint32_t* argb, ewokos_addr_t argb_phy, uint32_t* tmp, ewokos_addr_t tmp_phy, int32_t argb_w, int32_t argb_h,
 			int32_t rect_x, int32_t rect_y,
 			int32_t rect_w, int32_t rect_h,
 			int32_t radius) {
 	(void)argb; (void)tmp;
 	if (!adreno_2d_available())
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!gpu_buf_ok(argb_phy, contig) || !gpu_buf_ok(tmp_phy, tmp_contig) ||
+	if (!gpu_buf_ok(argb_phy) || !gpu_buf_ok(tmp_phy) ||
 	    argb_w <= 0 || argb_h <= 0 || rect_w <= 0 || rect_h <= 0)
 		return G2D_ERR_FAILED;
 	return a2d_result(adreno_2d_blur(argb_phy, argb_w, argb_h,

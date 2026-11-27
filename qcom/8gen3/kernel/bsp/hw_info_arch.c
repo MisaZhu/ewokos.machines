@@ -127,7 +127,6 @@ void sys_info_init_arch(void) {
     _sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
             _sys_info.total_usable_mem_size;
     _sys_info.sys_dma.size = 0;      /* generic sizing in sys_info_config() */
-    _sys_info.shm_contig.size = 0;
 
 #ifdef KERNEL_SMP
     _sys_info.cores = QCOM8GEN3_CORES;
@@ -243,10 +242,9 @@ static uint32_t memory_exclusions(qcom8gen3_mem_range_t* ex) {
     } while (0)
 
     /* sys_dma is a DMA-reachable range over general RAM, not a carve-out:
-       its pages stay in the heap (see arch_dma_range), so it is NOT excluded
-       here. Only the reserved shm_contig slab and firmware regions are
-       punched out of the allocator. */
-    ADD_EXCL(_sys_info.shm_contig.phy_base, _sys_info.shm_contig.size);
+       its pages stay in the heap (see arch_dma_range), so they are NOT
+       excluded here. Only firmware regions are punched out of the
+       allocator. */
     if (qcom8gen3_ramdisk_size)
         ADD_EXCL(qcom8gen3_ramdisk_base, qcom8gen3_ramdisk_size);
     if (qcom8gen3_fb_size)
@@ -293,7 +291,7 @@ static uint64_t find_memory_pool(uint32_t size) {
     uint32_t n = memory_exclusions(ex);
     uint64_t best = 0;
     uint64_t limit = _sys_info.allocable_phy_mem_top;
-    /* Keep both pools within the 32-bit physical reach of board devices. */
+    /* Keep the pool within the 32-bit physical reach of board devices. */
     if (limit > (1ULL << 32))
         limit = 1ULL << 32;
     for (uint32_t m = 0; m < _bi.memmap_count; m++) {
@@ -319,9 +317,8 @@ static uint64_t find_memory_pool(uint32_t size) {
  * DMA-reachable physical range. Board DMA masters (SDCC, USB, Adreno SMMU
  * identity iova=pa) are kept within the 32-bit physical reach, matching the
  * find_memory_pool 4GB clamp. The floor stays at allocable_phy_mem_base (a
- * constraint over the general heap, never the kernel core); reserved
- * shm_contig / firmware regions inside the window are already kept out of
- * the heap by kalloc_arch().
+ * constraint over the general heap, never the kernel core); firmware regions
+ * inside the window are already kept out of the heap by kalloc_arch().
  */
 void arch_dma_range(ewokos_addr_t* base, ewokos_addr_t* top) {
     *base = _sys_info.allocable_phy_mem_base;
@@ -340,23 +337,13 @@ int32_t arch_reserve_memory_pools(void) {
         kout_str("qcom8gen3: invalid UEFI memory map; refusing unsafe memory pools\n");
         halt();
     }
-    _sys_info.shm_contig.phy_base = 0;
-    /* sys_dma is no longer carved here: it is a DMA-reachable range over
-       general RAM (arch_dma_range) that dma_alloc draws from dynamically.
-       Only the reserved shm_contig slab is carved out, kept below 4GB by
-       find_memory_pool for the 32-bit DMA masters. */
-    if (_sys_info.shm_contig.size)
-        _sys_info.shm_contig.phy_base = find_memory_pool(_sys_info.shm_contig.size);
-    if (_sys_info.shm_contig.size && !_sys_info.shm_contig.phy_base) {
-        kout_str("qcom8gen3: no firmware-safe DMA32 memory pools\n");
-        halt();
-    }
-    _sys_info.shm_contig.v_base = 0;
-    kout_str("qcom8gen3: DMA/SHM pools reserved from final UEFI memory map\n");
+    /* sys_dma is a DMA-reachable range over general RAM that dma_alloc draws
+       from dynamically - its pages stay in the heap. The BSP-managed layout
+       (allocable_phy_mem_top) was published in sys_info_init_arch. */
     return 1;
 }
 
-/* Only reclaim UEFI-approved RAM, excluding both reserved pools. */
+/* Only reclaim UEFI-approved RAM, excluding firmware regions. */
 void kalloc_arch(void) {
     qcom8gen3_mem_range_t ex[QCOM8GEN3_MAX_RESV + 5];
     uint32_t n = memory_exclusions(ex);

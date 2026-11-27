@@ -824,17 +824,17 @@ static int nvme_create_io_queues(void) {
 }
 
 static int nvme_dma_setup(void) {
-	_c.ctrl = (uint8_t*)dma_alloc(0, NVME_CTRL_SIZE);
-	_c.prp = (uint8_t*)dma_alloc(0, NVME_PRP_SIZE);
-	_c.data = (uint8_t*)dma_alloc(0, NVME_DATA_SIZE);
+	_c.ctrl = (uint8_t*)dma_alloc(NVME_CTRL_SIZE);
+	_c.prp = (uint8_t*)dma_alloc(NVME_PRP_SIZE);
+	_c.data = (uint8_t*)dma_alloc(NVME_DATA_SIZE);
 	if (_c.ctrl == NULL || _c.prp == NULL || _c.data == NULL) {
 		slog("nvme: dma alloc failed (ctrl=%p prp=%p data=%p)\n",
 				_c.ctrl, _c.prp, _c.data);
 		return -1;
 	}
-	_c.ctrl_phys = dma_phy_addr(0, (ewokos_addr_t)_c.ctrl);
-	_c.prp_phys = dma_phy_addr(0, (ewokos_addr_t)_c.prp);
-	_c.data_phys = dma_phy_addr(0, (ewokos_addr_t)_c.data);
+	_c.ctrl_phys = dma_phy_addr((ewokos_addr_t)_c.ctrl);
+	_c.prp_phys = dma_phy_addr((ewokos_addr_t)_c.prp);
+	_c.data_phys = dma_phy_addr((ewokos_addr_t)_c.data);
 	slog("nvme: dma ctrl=0x%llx prp=0x%llx data=0x%llx\n",
 			(unsigned long long)_c.ctrl_phys,
 			(unsigned long long)_c.prp_phys,

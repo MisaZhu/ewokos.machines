@@ -350,20 +350,20 @@ static int sdhci_sdma_init(void)
     if (_sdma_unavailable)
         return -1;
 
-    ewokos_addr_t v = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
+    ewokos_addr_t v = dma_alloc(SDHCI_SDMA_BOUNCE_SIZE);
     if (v == 0) {
         _sdma_unavailable = true;
         slog("sdhci: dma_alloc(%u) failed, staying on PIO\n",
                 (unsigned)SDHCI_SDMA_BOUNCE_SIZE);
         return -1;
     }
-    uint32_t phys = dma_phy_addr(0, v);
+    uint32_t phys = dma_phy_addr(v);
     /* The 0xC0000000 legacy alias only covers the first 1GB of RAM: a
      * pool above that would be silently truncated by SDHCI_BUS_ADDR_MASK
      * and point the controller at the wrong memory, so refuse SDMA and
      * stay on PIO instead of corrupting the rootfs. */
     if (phys == 0 || phys > SDHCI_BUS_ADDR_MASK) {
-        dma_free(0, v);
+        dma_free(v);
         _sdma_unavailable = true;
         slog("sdhci: SDMA bounce phys 0x%x outside 1GB legacy window, staying on PIO\n",
                 phys);

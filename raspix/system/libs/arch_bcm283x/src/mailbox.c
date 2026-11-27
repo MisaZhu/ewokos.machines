@@ -128,7 +128,7 @@ int bcm283x_mailbox_gpio_config(uint32_t idx, bool output, bool on) {
     uint32_t mailbox_data;
     mail_message_t msg;
 
-    buf_vaddr = dma_alloc(0, 12u * sizeof(uint32_t));
+    buf_vaddr = dma_alloc(12u * sizeof(uint32_t));
     if (buf_vaddr == 0) {
         return -1;
     }
@@ -148,15 +148,15 @@ int bcm283x_mailbox_gpio_config(uint32_t idx, bool output, bool on) {
     buf[10] = on ? 1u : 0u;
     buf[11] = 0;
 
-    mailbox_data = ((uint32_t)dma_phy_addr(0, buf_vaddr) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    mailbox_data = ((uint32_t)dma_phy_addr(buf_vaddr) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     if (mailbox_data == 0) {
-        dma_free(0, buf_vaddr);
+        dma_free(buf_vaddr);
         return -1;
     }
 
     msg.data = mailbox_data;
     msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, buf_vaddr);
+    dma_free(buf_vaddr);
     return 0;
 }

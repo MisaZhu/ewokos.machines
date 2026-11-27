@@ -45,12 +45,6 @@
 #define GA10B_CLK_NAFLL_GPUSYS 428
 #define GA10B_CLK_FUSE      40
 
-/* DMA block 1 = the GPU-only high pool (gpu_dma_size in kernel.conf, above
-   the DMA32 reach).  GA10B addresses DRAM through its GMMU, so unlike xhci
-   (block 0) it has no 32-bit DMA constraint — multi-GB LLM weight arenas
-   only fit above 4GB on this board. */
-#define GA10B_DMA_BLOCK     1
-
 typedef struct {
     volatile uint32_t* bar0;     /* mapped BAR0, NULL until ga10b_map() */
     int mapped;

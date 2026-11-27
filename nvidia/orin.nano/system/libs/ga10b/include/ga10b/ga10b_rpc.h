@@ -52,13 +52,12 @@
 /* persistent bump mappings must stay below the first client window */
 #define GA10B_RPC_PERSIST_CAP   GA10B_RPC_WINDOW_BASE
 #define GA10B_RPC_REQ_SHM_SIZE  (1u << 20)      /* per-client payload shm */
-#define GA10B_RPC_DMA_BLOCK     1               /* GPU high pool (shared) */
 #define GA10B_RPC_NAME_MAX      128             /* KUBIN_NAME_MAX */
 #define GA10B_RPC_MAX_PARAMS    32              /* KUBIN_MAX_PARAMS */
 
 typedef struct {
     uint32_t uuid;                  /* client proc uuid (pid-reuse guard) */
-    int32_t  shm_id;                /* client-created contig payload shm */
+    int32_t  shm_id;                /* client-created contiguous payload shm */
     uint32_t shm_size;
     char     fw_dir[128];           /* "" = driver default */
 } ga10b_rpc_open_t;
@@ -102,7 +101,7 @@ typedef struct {
 } ga10b_rpc_sync_t;
 
 typedef struct {
-    int32_t  shm_id;                /* one-shot contig shm holding the cubin */
+    int32_t  shm_id;                /* one-shot contiguous shm holding the cubin */
     uint32_t size;
 } ga10b_rpc_module_t;
 

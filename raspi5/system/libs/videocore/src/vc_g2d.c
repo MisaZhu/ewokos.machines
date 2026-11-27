@@ -45,10 +45,9 @@
  * the source buffer.
  *
  * GPU eligibility (on top of the width/size checks):
- *   - the *_contig flag is set and the matching *_phy carries a valid
- *     physical base (the caller resolves it: contig shm slab / sys_dma
- *     memory); the physical address must fit the kernels' 32-bit TMU
- *     addresses.
+ *   - the *_phy field carries a valid physical base (the caller resolves
+ *     it: shm / sys_dma memory); the physical address must fit the
+ *     kernels' 32-bit TMU addresses.
  *
  * LARGE-SURFACE BATCHING (gpu_copy_op / gpu_blit_op / gpu_alpha_op /
  * gpu_scale_op): a forward-walk dispatch stalls ~3-4x once its read+write
@@ -623,17 +622,15 @@ static uint32_t gpu_pow2_scale_factor(int32_t src, int32_t dst)
 
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
  * addresses.  Returns the physical address usable by the kernels, or 0
- * when the canvas cannot run on the GPU (not physically contiguous, no
- * phy supplied, or the address fails the RAM-range validation gate).
+ * when the canvas cannot run on the GPU (no phy supplied, or the address
+ * fails the RAM-range validation gate).
  * The V3D page table uses the physical address's low 32 bits as its IOVA,
  * allowing the high DMA carve-outs on 8GB boards as long as the buffer
  * does not cross an IOVA wrap. */
-uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes, uint8_t contig)
+uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes)
 {
     uint64_t iova;
 
-    if (!contig)
-        return 0;
     if (phys == 0)
         return 0;
     iova = (uint32_t)phys;
@@ -1409,11 +1406,11 @@ static int gpu_fill_src_ready(void)
 
     if (_fill_src_phys != 0)
         return 1;
-    v = dma_alloc(0, (uint32_t)bytes);
+    v = dma_alloc((uint32_t)bytes);
     if (v == 0)
         return 0;
-    p = dma_phy_addr(0, v);
-    if (gpu_phys(p, bytes, 1) == 0) {
+    p = dma_phy_addr(v);
+    if (gpu_phys(p, bytes) == 0) {
         slog("g2d fill_alpha: source block not GPU-visible (phy=%llx)\n",
              (unsigned long long)p);
         return 0;

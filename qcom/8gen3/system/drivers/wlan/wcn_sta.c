@@ -271,11 +271,11 @@ int wcn_sta_associate(const char *ssid) {
     /* Use the validated regulatory limit for the entire channel width.
      * Firmware retains the calibrated board/hardware transmit limits. */
     s.power=power;
-    s.dma=(uint8_t *)dma_alloc(0,STA_DMA_BYTES);
+    s.dma=(uint8_t *)dma_alloc(STA_DMA_BYTES);
     if (!s.dma) return -1;
-    s.pa=dma_phy_addr(0,(ewokos_addr_t)s.dma);
+    s.pa=dma_phy_addr((ewokos_addr_t)s.dma);
     if (!s.pa || s.pa+STA_DMA_BYTES>0x100000000ULL) {
-        dma_free(0,(ewokos_addr_t)s.dma); s.dma=NULL; return -1;
+        dma_free((ewokos_addr_t)s.dma); s.dma=NULL; return -1;
     }
     memset(s.dma,0,STA_DMA_BYTES); wcn_wmi_mac(s.mac);
     wcn_log("wcn: join bssid=%02x:%02x:%02x:%02x:%02x:%02x mhz=%u rssi=%d phy=%s width=%u nss=%u\n",
@@ -748,7 +748,7 @@ void wcn_sta_data(const uint8_t *frame,unsigned bytes,const struct wcn_rx_securi
         wcn_net_receive(frame,bytes);
 }
 void wcn_sta_release(void) {
-    if (s.dma) dma_free(0,(ewokos_addr_t)s.dma);
+    if (s.dma) dma_free((ewokos_addr_t)s.dma);
     wcn_wpa_reset();
     wcn_net_reset();
     memset(&s,0,sizeof(s));

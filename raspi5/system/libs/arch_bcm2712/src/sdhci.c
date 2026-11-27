@@ -342,7 +342,7 @@ static int sdhci_sdma_init(void)
     if (_sdma_unavailable)
         return -1;
 
-    vaddr = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
+    vaddr = dma_alloc(SDHCI_SDMA_BOUNCE_SIZE);
     if (vaddr == 0) {
         _sdma_unavailable = true;
         slog("sdhci: dma_alloc(%u) failed, staying on PIO\n",
@@ -352,9 +352,9 @@ static int sdhci_sdma_init(void)
 
     /* The system-address register is 32-bit: an out-of-window pool must
      * never be truncated and handed to the controller. */
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     if (phys == 0 || phys > 0xffffffffUL) {
-        dma_free(0, vaddr);
+        dma_free(vaddr);
         _sdma_unavailable = true;
         slog("sdhci: SDMA bounce phys 0x%lx outside 32-bit window, staying on PIO\n",
                 (unsigned long)phys);

@@ -69,7 +69,7 @@ static int fb_probe(void) {
     if (r != 0 || bad != 0)
         return -1;
 
-    ewokos_addr_t src_va = dma_alloc(0, FB_T_PITCH * FB_T_H);
+    ewokos_addr_t src_va = dma_alloc(FB_T_PITCH * FB_T_H);
     if (src_va == 0)
         return -1;
     uint32_t* src = (uint32_t*)src_va;
@@ -78,7 +78,7 @@ static int fb_probe(void) {
             src[y * (FB_T_PITCH / 4) + x] = 0xff000000u |
                     ((uint32_t)(x * 4) << 16) | ((uint32_t)(y * 4) << 8) |
                     (uint32_t)((x ^ y) & 0xff);
-    r = bsp_vic_blit_xrgb(dma_phy_addr(0, src_va), FB_T_PITCH, FB_T_W, FB_T_H,
+    r = bsp_vic_blit_xrgb(dma_phy_addr(src_va), FB_T_PITCH, FB_T_W, FB_T_H,
             0, 0, FB_T_W, FB_T_H,
             fb->phy_base, fb->pitch, (int32_t)fb->width, (int32_t)fb->height,
             0, 0, 0);
@@ -90,7 +90,7 @@ static int fb_probe(void) {
                 bad++;
     printf("vicprobe: fb copy = %d bad=%u px(1,1)=%08x want=%08x\n", r, bad,
             px[stride + 1], src[FB_T_PITCH / 4 + 1]);
-    dma_free(0, src_va);
+    dma_free(src_va);
     if (r != 0 || bad != 0)
         return -1;
 
@@ -98,7 +98,7 @@ static int fb_probe(void) {
      * uncached contiguous canvas, CPU from the same canvas, CPU from an
      * ordinary cached one. */
     uint32_t frame = fb->pitch * fb->height;
-    ewokos_addr_t nc_va = dma_alloc(0, frame);
+    ewokos_addr_t nc_va = dma_alloc(frame);
     uint8_t* cached = (uint8_t*)malloc(frame);
     if (nc_va == 0 || cached == NULL) {
         printf("vicprobe: fb frame bench skipped (no memory)\n");
@@ -108,7 +108,7 @@ static int fb_probe(void) {
     memset(cached, 0x30, frame);
     uint32_t t0 = now_usec();
     for (int i = 0; i < 4 && r == 0; i++)
-        r = bsp_vic_blit_xrgb(dma_phy_addr(0, nc_va), fb->pitch,
+        r = bsp_vic_blit_xrgb(dma_phy_addr(nc_va), fb->pitch,
                 (int32_t)fb->width, (int32_t)fb->height,
                 0, 0, (int32_t)fb->width, (int32_t)fb->height,
                 fb->phy_base, fb->pitch, (int32_t)fb->width,
@@ -123,7 +123,7 @@ static int fb_probe(void) {
     uint32_t t_cached = (now_usec() - t0) / 4u;
     printf("vicprobe: fb frame %ux%u push: vic=%u usec (r=%d) cpu-from-uncached=%u usec cpu-from-cached=%u usec\n",
             fb->width, fb->height, t_vic, r, t_nc, t_cached);
-    dma_free(0, nc_va);
+    dma_free(nc_va);
     free(cached);
     return r == 0 ? 0 : -1;
 }
@@ -136,11 +136,11 @@ static int fb_probe(void) {
 static int bench(void) {
     if (bsp_vic_2d_enable() != 0)
         return -1;
-    ewokos_addr_t a = dma_alloc(0, BN_PITCH * BN_MAX);
-    ewokos_addr_t b = dma_alloc(0, BN_PITCH * BN_MAX);
+    ewokos_addr_t a = dma_alloc(BN_PITCH * BN_MAX);
+    ewokos_addr_t b = dma_alloc(BN_PITCH * BN_MAX);
     if (a == 0 || b == 0)
         return -1;
-    uint64_t pa = dma_phy_addr(0, a), pb = dma_phy_addr(0, b);
+    uint64_t pa = dma_phy_addr(a), pb = dma_phy_addr(b);
     uint32_t* va = (uint32_t*)a;
     uint32_t* vb = (uint32_t*)b;
     memset(va, 0x40, BN_PITCH * BN_MAX);
@@ -178,8 +178,8 @@ static int bench(void) {
         if (r != 0)
             break;
     }
-    dma_free(0, a);
-    dma_free(0, b);
+    dma_free(a);
+    dma_free(b);
     return 0;
 }
 

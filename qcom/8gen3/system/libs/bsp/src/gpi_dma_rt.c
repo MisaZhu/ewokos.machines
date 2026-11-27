@@ -6,7 +6,7 @@
 static uint32_t rt_io_rd(uintptr_t b, unsigned o);
 static void rt_io_wr(uintptr_t b, unsigned o, uint32_t v);
 static void rt_io_delay(unsigned us);
-extern int rt_shm_alloc_contig(unsigned size, int* id, uintptr_t* pa,
+extern int rt_shm_alloc(unsigned size, int* id, uintptr_t* pa,
                                void** va);
 extern void rt_shm_detach(int id, void* va);
 extern int rt_shm_pin(int id);
@@ -26,11 +26,11 @@ static void rt_io_wr(uintptr_t b, unsigned o, uint32_t v) {
     __asm__ volatile("dsb sy" ::: "memory");
 }
 static void rt_io_delay(unsigned us) { usleep(us); }
-static int rt_shm_alloc_contig(unsigned size, int* id, uintptr_t* pa,
+static int rt_shm_alloc(unsigned size, int* id, uintptr_t* pa,
                                void** va) {
-    /* key: small per-process unique tag; IPC_CONTIG requires the slab. */
+    /* key: small per-process unique tag; every shm run is contiguous. */
     static key_t key = 0x51525430u;   /* "0TRQ" */
-    int sid = shmget(key++, ((size + 4095u) & ~4095u), 0666 | IPC_CREAT | IPC_EXCL | IPC_CONTIG);
+    int sid = shmget(key++, ((size + 4095u) & ~4095u), 0666 | IPC_CREAT | IPC_EXCL);
     if (sid <= 0)
         return -1;
     void* v = shmat(sid, 0, 0);
@@ -40,7 +40,7 @@ static int rt_shm_alloc_contig(unsigned size, int* id, uintptr_t* pa,
     }
     *id = sid;
     *va = v;
-    *pa = shm_contig_phy_addr(sid, (ewokos_addr_t)v);
+    *pa = shm_phy_addr(sid, (ewokos_addr_t)v);
     if (*pa == 0) {
         shmdt(v);
         shmctl(sid, IPC_RMID, NULL);
@@ -78,9 +78,9 @@ int qcom8gen3_gpi_rt_open(qcom8gen3_gpi_rt_t* rt, unsigned instance, unsigned en
     rt->dma.io = &rt_io;
 #endif
     rt->stage = "rings-alloc";
-    if (rt_shm_alloc_contig(entries * QCOM8GEN3_GPI_TRE_SIZE, &rt->desc_shm,
+    if (rt_shm_alloc(entries * QCOM8GEN3_GPI_TRE_SIZE, &rt->desc_shm,
                             &rt->desc_pa, (void**)&rt->desc_v) != 0 ||
-            rt_shm_alloc_contig(entries * QCOM8GEN3_GPI_EVENT_SIZE, &rt->ev_shm,
+            rt_shm_alloc(entries * QCOM8GEN3_GPI_EVENT_SIZE, &rt->ev_shm,
                                 &rt->ev_pa, (void**)&rt->ev_v) != 0)
         goto fail;
     if (rt_shm_pin(rt->desc_shm) != 0 || rt_shm_pin(rt->ev_shm) != 0)

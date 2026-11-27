@@ -257,7 +257,7 @@ static int prop_tag_ok(const prop_tag_hdr_t* tag, uint32_t min_len) {
 
 static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
     uint32_t buf_size = align_up(sizeof(prop_msg_hdr_t) + tags_size + sizeof(uint32_t), 16u);
-    uint8_t* buf = (uint8_t*)dma_alloc(0, buf_size);
+    uint8_t* buf = (uint8_t*)dma_alloc(buf_size);
     static const uint32_t aliases[] = {
         MAILBOX_VC_ALIAS_NONCACHED,
         MAILBOX_VC_ALIAS_COHERENT
@@ -278,7 +278,7 @@ static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
         memcpy(buf + sizeof(prop_msg_hdr_t), tags, tags_size);
         *((uint32_t*)(buf + sizeof(prop_msg_hdr_t) + tags_size)) = PROP_TAG_END;
 
-        phy = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf);
+        phy = (uint32_t)dma_phy_addr((ewokos_addr_t)buf);
         if(phy == 0)
             continue;
 
@@ -288,12 +288,12 @@ static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
         if(bcm283x_mailbox_call_timeout(&msg, 0) == 0 &&
                 (hdr->code & PROP_CODE_RESPONSE_SUCCESS) != 0) {
             memcpy(tags, buf + sizeof(prop_msg_hdr_t), tags_size);
-            dma_free(0, (ewokos_addr_t)buf);
+            dma_free((ewokos_addr_t)buf);
             return 0;
         }
     }
 
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return -1;
 }
 

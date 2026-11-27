@@ -5,7 +5,7 @@
  * the user extracts /lib/firmware/nvidia/ga10b/ from the L4T
  * nvidia-l4t-firmware deb and drops it at GA10B_FW_DIR_DEFAULT.
  *
- * All GPU-visible buffers come from the uncached sys_dma pool (block 0),
+ * All GPU-visible buffers come from the uncached sys_dma pool,
  * the same pool the xhci driver uses.  dma_alloc only guarantees page
  * alignment, so larger alignments are carved manually.
  */
@@ -28,15 +28,15 @@ int ga10b_dma_alloc(uint32_t size, uint32_t align, void** va, uint64_t* phy) {
     if (align < 4096)
         align = 4096;
     uint32_t total = size + align;
-    ewokos_addr_t raw = dma_alloc(GA10B_DMA_BLOCK, total);
+    ewokos_addr_t raw = dma_alloc(total);
     if (raw == 0) {
         klog("ga10b: dma_alloc(%u) failed\n", total);
         return -1;
     }
     ewokos_addr_t aligned = (raw + align - 1) & ~((ewokos_addr_t)align - 1);
-    ewokos_addr_t p = dma_phy_addr(GA10B_DMA_BLOCK, aligned);
+    ewokos_addr_t p = dma_phy_addr(aligned);
     if (p == 0) {
-        dma_free(GA10B_DMA_BLOCK, raw);
+        dma_free(raw);
         klog("ga10b: dma_phy_addr failed\n");
         return -1;
     }
@@ -50,7 +50,7 @@ void ga10b_dma_free(void* va) {
     /* pool carve-outs keep the raw base inside the first align bytes;
      * the pool is a bump arena in practice, free is best-effort. */
     if (va != NULL)
-        dma_free(GA10B_DMA_BLOCK, (ewokos_addr_t)va);
+        dma_free((ewokos_addr_t)va);
 }
 
 /* Device-lifetime segment: keyed so every GPU process finds the same one,
@@ -60,7 +60,7 @@ void ga10b_dma_free(void* va) {
 
 int ga10b_os_pmem_map(uint32_t size, void** va, uint64_t* phy) {
     int id = shmget(GA10B_PMEM_KEY, (int)size,
-                    0600 | IPC_CREAT | IPC_EXCL | IPC_CONTIG);
+                    0600 | IPC_CREAT | IPC_EXCL);
     if (id > 0) {
         if (shm_dma_pin(id) != 0) {
             klog("ga10b: pmem pin failed\n");
@@ -79,9 +79,9 @@ int ga10b_os_pmem_map(uint32_t size, void** va, uint64_t* phy) {
         klog("ga10b: pmem shmat failed\n");
         return -1;
     }
-    ewokos_addr_t pa = shm_contig_phy_addr(id, (ewokos_addr_t)p);
+    ewokos_addr_t pa = shm_phy_addr(id, (ewokos_addr_t)p);
     if (pa == 0) {
-        klog("ga10b: pmem is not contiguous\n");
+        klog("ga10b: pmem has no physical base\n");
         return -1;
     }
     *va = p;

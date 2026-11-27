@@ -328,7 +328,7 @@ int adreno_3d_draw(uint64_t fb_phy, int32_t fb_w, int32_t fb_h,
    through adreno_3d_program_load (is_geom == 0: the CL / Vulkan-compute blob
    the app-side adrenocompiler serialized) over a wg_count[0] x [1] x [2]
    work-group grid.  The __global buffer / SSBO arguments arrive as already-
-   resolved contig physical bases in binding order (arg i -> the GLSL
+   resolved physical bases in binding order (arg i -> the GLSL
    binding i the transpiler emitted; CB0 is identity-mapped so pa == iova,
    zero copy), arg_size[i] giving each buffer's byte length (a 0 phy/size
    marks an unused trailing slot); `unif` carries num_uniforms u32 of the

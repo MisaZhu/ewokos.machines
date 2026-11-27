@@ -416,13 +416,10 @@ int gpu_ok(int32_t w, int32_t h)
 
 /* Validate a caller-provided physical base for the QPU's 32-bit TMU
  * addresses.  Returns the physical address usable by the kernels, or 0
- * when the canvas cannot run on the GPU (not physically contiguous, no
- * phy supplied, > 4 GB physical, or the address fails the RAM-range
- * validation gate). */
-uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes, uint8_t contig)
+ * when the canvas cannot run on the GPU (no phy supplied, > 4 GB physical,
+ * or the address fails the RAM-range validation gate). */
+uint32_t gpu_phys(ewokos_addr_t phys, size_t bytes)
 {
-    if (!contig)
-        return 0;
     if (phys == 0)
         return 0;
     /* ewokos_addr_t is 32 bits on the arm build: always sub-4 GB */
@@ -1721,13 +1718,13 @@ static int gpu_fill_src_ready(void)
     }
 #else
     {
-        ewokos_addr_t v = dma_alloc(0, (uint32_t)bytes);
+        ewokos_addr_t v = dma_alloc((uint32_t)bytes);
         ewokos_addr_t p;
 
         if (v == 0)
             return 0;
-        p = dma_phy_addr(0, v);
-        if (gpu_phys(p, bytes, 1) == 0)
+        p = dma_phy_addr(v);
+        if (gpu_phys(p, bytes) == 0)
             return 0;                    /* outside the GPU-visible RAM ranges */
         _fill_src = (uint32_t *)(uintptr_t)v;
         _fill_src_phys = (uint32_t)p;

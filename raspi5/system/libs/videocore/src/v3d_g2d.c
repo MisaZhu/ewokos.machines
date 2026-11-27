@@ -318,18 +318,21 @@ static uint32_t _mmu_va_width = 32;
 static uint32_t _v3d_clock_hz = 0;
 
 /* Physical RAM ranges captured at init.  These are both the validation
- * contract for callers and the only ranges installed in the V3D MMU. */
+ * contract for callers and the only ranges installed in the V3D MMU.
+ * The allocable range covers every shm segment (the kernel draws their
+ * contiguous runs from general RAM inside the DMA-reachable window),
+ * clamped to the 32-bit IOVA limit; sys_dma is the staging subset. */
 static ewokos_addr_t _ram_dma_base = 0, _ram_dma_top = 0;
-static ewokos_addr_t _ram_contig_base = 0, _ram_contig_top = 0;
+static ewokos_addr_t _ram_alloc_base = 0, _ram_alloc_top = 0;
 
 /* CACHE-MAINTENANCE CONTRACT (EL0-portable):
  *
  * Every buffer handed to this driver that the QPU may read or write
- * must be mapped Non-Cacheable in each process.  The contig shm slab is
+ * must be mapped Non-Cacheable in each process.  shm segments are
  * mapped PTE_ATTR_NOCACHE by the kernel for exactly this reason, and
- * gpu_phys() only accepts canvases flagged contig - so both directions
- * of CPU<->GPU visibility go straight through DRAM and NO maintenance
- * by virtual address is needed.
+ * gpu_phys() only accepts canvases with a resolved physical base - so
+ * both directions of CPU<->GPU visibility go straight through DRAM and
+ * NO maintenance by virtual address is needed.
  *
  * DC CVAC/CIVAC executed from EL0 TRAP unless SCTLR_EL1.UCI is set, so
  * the emit-the-instruction implementations are compiled out.  Flip to 1
@@ -419,7 +422,7 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
 
     if (rate_hz == NULL)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_get_req_t *)(uintptr_t)vaddr;
@@ -430,7 +433,7 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
     req->tag.value_len = 4;
     req->tag.clock_id = FW_CLOCK_V3D;
 
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     if (phys != 0 && (phys >> 32) == 0) {
         memset(&msg, 0, sizeof(msg));
         msg.data = (((uint32_t)phys | MAILBOX_VC_ALIAS_NONCACHED) >> 4);
@@ -444,7 +447,7 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
             result = 0;
         }
     }
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return result;
 }
 
@@ -458,7 +461,7 @@ static int g2d_clock_set(uint32_t rate_hz)
 
     if (rate_hz == 0)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(sizeof(*req));
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_set_req_t *)(uintptr_t)vaddr;
@@ -471,7 +474,7 @@ static int g2d_clock_set(uint32_t rate_hz)
     req->tag.rate_hz = rate_hz;
     req->tag.skip_turbo = 0;
 
-    phys = dma_phy_addr(0, vaddr);
+    phys = dma_phy_addr(vaddr);
     if (phys != 0 && (phys >> 32) == 0) {
         memset(&msg, 0, sizeof(msg));
         msg.data = (((uint32_t)phys | MAILBOX_VC_ALIAS_NONCACHED) >> 4);
@@ -483,7 +486,7 @@ static int g2d_clock_set(uint32_t rate_hz)
             req->tag.clock_id == FW_CLOCK_V3D)
             result = 0;
     }
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return result;
 }
 
@@ -711,21 +714,21 @@ static int g2d_mmu_enable(void)
 {
     ewokos_addr_t raw_v, raw_p;
 
-    raw_v = dma_alloc(0, V3D_MMU_PT_BYTES + 4095u);
+    raw_v = dma_alloc(V3D_MMU_PT_BYTES + 4095u);
     if (raw_v == 0)
         return -1;
     raw_v = (raw_v + 4095u) & ~(ewokos_addr_t)4095u;
-    raw_p = dma_phy_addr(0, raw_v);
+    raw_p = dma_phy_addr(raw_v);
     if (raw_p == 0 || (raw_p >> 12) >= (1ull << 32))
         return -1;
     _mmu_pt = (uint32_t *)(uintptr_t)raw_v;
     _mmu_pt_p = raw_p;
 
-    raw_v = dma_alloc(0, 4096u + 4095u);
+    raw_v = dma_alloc(4096u + 4095u);
     if (raw_v == 0)
         return -1;
     raw_v = (raw_v + 4095u) & ~(ewokos_addr_t)4095u;
-    raw_p = dma_phy_addr(0, raw_v);
+    raw_p = dma_phy_addr(raw_v);
     if (raw_p == 0 || (raw_p >> 12) >= (1ull << 31))
         return -1;
     _mmu_illegal_p = raw_p;
@@ -733,7 +736,7 @@ static int g2d_mmu_enable(void)
 
     memset(_mmu_pt, 0, V3D_MMU_PT_BYTES);
     if (g2d_mmu_map_range(_ram_dma_base, _ram_dma_top) != 0 ||
-        g2d_mmu_map_range(_ram_contig_base, _ram_contig_top) != 0)
+        g2d_mmu_map_range(_ram_alloc_base, _ram_alloc_top) != 0)
         return -1;
     _mmu_pt[0] = 0; /* address zero is special throughout V3D */
     __asm__ __volatile__("dsb sy");
@@ -794,11 +797,11 @@ static int g2d_mmu_program(void)
          (uint32_t)hub[V3D_MMUC_CONTROL / 4], _mmu_debug_info,
          _mmu_va_width, 30u + ((_mmu_debug_info >> 8) & 0xfu));
     slog("g2d: V3D IOVA map dma=0x%x%08x-0x%x%08x "
-         "contig=0x%x%08x-0x%x%08x\r\n",
+         "ram=0x%x%08x-0x%x%08x\r\n",
          (uint32_t)(_ram_dma_base >> 32), (uint32_t)_ram_dma_base,
          (uint32_t)(_ram_dma_top >> 32), (uint32_t)_ram_dma_top,
-         (uint32_t)(_ram_contig_base >> 32), (uint32_t)_ram_contig_base,
-         (uint32_t)(_ram_contig_top >> 32), (uint32_t)_ram_contig_top);
+         (uint32_t)(_ram_alloc_base >> 32), (uint32_t)_ram_alloc_base,
+         (uint32_t)(_ram_alloc_top >> 32), (uint32_t)_ram_alloc_top);
     return 0;
 }
 
@@ -1131,12 +1134,16 @@ int v3d_g2d_init(void)
      * daemon, so the SYS_MEM_MAP capability check passes) */
     sys_get_sys_info(&si);
     /* Capture the only physical ranges the GPU may touch: sys_dma for
-     * code/uniform staging and IPC_CONTIG shm for canvases.  Their low
-     * 32 bits become V3D IOVAs; PTEs retain the full physical page number. */
+     * code/uniform staging and the whole allocable RAM for shm canvases
+     * (their contiguous runs land anywhere inside the DMA-reachable
+     * window).  Their low 32 bits become V3D IOVAs; PTEs retain the full
+     * physical page number. */
     _ram_dma_base = si.sys_dma.phy_base;
     _ram_dma_top = si.sys_dma.phy_base + si.sys_dma.size;
-    _ram_contig_base = si.shm_contig.phy_base;
-    _ram_contig_top = si.shm_contig.phy_base + si.shm_contig.size;
+    _ram_alloc_base = si.allocable_phy_mem_base;
+    _ram_alloc_top = si.allocable_phy_mem_top;
+    if (_ram_alloc_top > V3D_MMU_ADDR_LIMIT)
+        _ram_alloc_top = V3D_MMU_ADDR_LIMIT;
     _dma_v_base = si.sys_dma.v_base;
     _dma_v_size = si.sys_dma.size;
     /* Dedicated device-window VAs: framebuffer.c fb_adopt() places the
@@ -1185,21 +1192,21 @@ int v3d_g2d_init(void)
     _ksrc[KERN_SCALE_BILINEAR] = g2d_qpu_argb_scale_bilinear; _ksrc_n[KERN_SCALE_BILINEAR] = g2d_qpu_argb_scale_bilinear_n;
     for (i = 0; i < KERN_N; i++) {
         uint32_t k;
-        _kcode[i] = (uint64_t *)dma_alloc(0, CSD_CODE_WORDS * 8);
+        _kcode[i] = (uint64_t *)dma_alloc(CSD_CODE_WORDS * 8);
         if (_kcode[i] == 0)
             return -1;
         for (k = 0; k < _ksrc_n[i]; k++)
             _kcode[i][k] = _ksrc[i][k];
-        _kcode_p[i] = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_kcode[i]);
+        _kcode_p[i] = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_kcode[i]);
         if (_kcode_p[i] == 0)
             return -1;
     }
-    _unif = (uint32_t *)dma_alloc(0, CSD_UNIF_WORDS * 4);
-    _scratch = (uint32_t *)dma_alloc(0, 4096u * 4u);
+    _unif = (uint32_t *)dma_alloc(CSD_UNIF_WORDS * 4);
+    _scratch = (uint32_t *)dma_alloc(4096u * 4u);
     if (_unif == 0 || _scratch == 0)
         return -1;
-    _unif_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_unif);
-    _scratch_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_scratch);
+    _unif_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_unif);
+    _scratch_p = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_scratch);
     if (_unif_p == 0 || _scratch_p == 0)
         return -1;
 #if G2D_HW_PROBE_ONLY
@@ -1299,8 +1306,8 @@ int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes)
     if (_ram_dma_top > _ram_dma_base &&
         phy >= _ram_dma_base && end <= _ram_dma_top)
         return 1;
-    if (_ram_contig_top > _ram_contig_base &&
-        phy >= _ram_contig_base && end <= _ram_contig_top)
+    if (_ram_alloc_top > _ram_alloc_base &&
+        phy >= _ram_alloc_base && end <= _ram_alloc_top)
         return 1;
     return 0;
 }

@@ -59,14 +59,13 @@ int klog(const char* fmt, ...) {
     return n;
 }
 
-/* dma: malloc-backed, fake phys well above 4GB (block 1 semantics) */
+/* dma: malloc-backed, fake phys well above 4GB */
 #define DMA_MAX 256
 static struct { void* va; uint64_t phy; uint32_t size; } g_dma[DMA_MAX];
 static int g_dma_live;
 static uint64_t g_dma_phy_next = 0x200000000ULL;
 
-ewokos_addr_t dma_alloc(int32_t block, uint32_t size) {
-    (void)block;
+ewokos_addr_t dma_alloc(uint32_t size) {
     for (int i = 0; i < DMA_MAX; i++) {
         if (g_dma[i].va != NULL) continue;
         void* p = malloc(size);
@@ -80,8 +79,7 @@ ewokos_addr_t dma_alloc(int32_t block, uint32_t size) {
     }
     return 0;
 }
-void dma_free(int32_t block, ewokos_addr_t va) {
-    (void)block;
+void dma_free(ewokos_addr_t va) {
     for (int i = 0; i < DMA_MAX; i++) {
         if (g_dma[i].va == (void*)va) {
             free(g_dma[i].va);
@@ -92,8 +90,7 @@ void dma_free(int32_t block, ewokos_addr_t va) {
     }
     EXPECT(!"dma_free of unknown va");
 }
-ewokos_addr_t dma_phy_addr(int32_t block, ewokos_addr_t va) {
-    (void)block;
+ewokos_addr_t dma_phy_addr(ewokos_addr_t va) {
     for (int i = 0; i < DMA_MAX; i++)
         if (g_dma[i].va == (void*)va) return g_dma[i].phy;
     return 0;
@@ -1232,7 +1229,7 @@ static void test_death_sweep(void) {
     EXPECT(g_persist_live == 0);
     EXPECT(_sess[0].used == 0);
     /* the dead process's client-side DMA buffer is reclaimed by its exit */
-    dma_free(GA10B_RPC_DMA_BLOCK, (ewokos_addr_t)av);
+    dma_free((ewokos_addr_t)av);
     /* loop_step sweep is idempotent on the empty table */
     EXPECT(gpud_loop_step(NULL, NULL) == 0);
 

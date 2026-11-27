@@ -9,7 +9,7 @@
  * CSD compute path and deliberately REUSES that path's bring-up:
  *
  *   - the V3D register window, the V3D MMU (identity over sys_dma +
- *     shm_contig), the SMS power-up, the L2C enable and the clock are all
+ *     shm), the SMS power-up, the L2C enable and the clock are all
  *     established once by v3d_g2d_init(); this module never remaps the block
  *     and never issues a runtime power-domain write (PM GRAFX_V3D / SMS),
  *     which is proven to wedge the g2dd daemon;
@@ -205,7 +205,7 @@ int v3d_3d_clear(uint32_t fb_iova, uint32_t stride_bytes, uint32_t fmt,
 /* Draw `nverts` primitives of `mode` into the w x h render target at fb_iova.
  * Vertex positions (NDC -1..1, float3, stride 12) live at pos_iova and the
  * per-vertex RGBA8 colour (stride 4) at col_iova; both are GPU IOVAs of
- * dma/contig-shm memory.  The current shaders emit a solid `rgba` colour
+ * dma/shm memory.  The current shaders emit a solid `rgba` colour
  * (0xAABBGGRR); the coordinate+vertex shaders perform the viewport transform.
  * depth_func (V3D_3D_DEPTH_*), depth_mask (Z-write enable) and cull_en
  * (back-face cull) configure the depth test and facing; depth_func ==

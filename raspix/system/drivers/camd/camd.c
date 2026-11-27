@@ -108,7 +108,7 @@ static bool _snap_ready = false;
 static int mbox_call(uint32_t* buf) {
     mail_message_t msg;
     memset(&msg, 0, sizeof(msg));
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buf) + MBOX_VC_ALIAS_NC) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buf) + MBOX_VC_ALIAS_NC) >> 4;
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
     return (buf[1] & 0x80000000u) ? 0 : -1;
@@ -119,7 +119,7 @@ static int cam_power_set(int on) {
     uint32_t* buf;
     int res;
 
-    buf = (uint32_t*)dma_alloc(0, 8 * 4);
+    buf = (uint32_t*)dma_alloc(8 * 4);
     if (buf == NULL) return -1;
     buf[0] = 8 * 4;
     buf[1] = 0;
@@ -130,7 +130,7 @@ static int cam_power_set(int on) {
     buf[6] = on ? 1 : 0;
     buf[7] = 0;
     res = mbox_call(buf);
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return res;
 }
 
@@ -141,7 +141,7 @@ static int pd_power_on(uint32_t domain) {
     uint32_t* buf;
     int res, state = -1;
 
-    buf = (uint32_t*)dma_alloc(0, 8 * 4);
+    buf = (uint32_t*)dma_alloc(8 * 4);
     if (buf == NULL) return -1;
     buf[0] = 8 * 4;
     buf[1] = 0;
@@ -152,12 +152,12 @@ static int pd_power_on(uint32_t domain) {
     buf[6] = 1; /* on */
     buf[7] = 0;
     res = mbox_call(buf);
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     if (res != 0)
         return -1;
 
     /* read back: old firmware silently ignores unknown tags */
-    buf = (uint32_t*)dma_alloc(0, 8 * 4);
+    buf = (uint32_t*)dma_alloc(8 * 4);
     if (buf == NULL) return -1;
     buf[0] = 8 * 4;
     buf[1] = 0;
@@ -169,7 +169,7 @@ static int pd_power_on(uint32_t domain) {
     buf[7] = 0;
     if (mbox_call(buf) == 0)
         state = (int)buf[6];
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return state;
 }
 
@@ -182,15 +182,15 @@ static int cam_dma_alloc(uint32_t size) {
      * 0x3C000000 of RAM; firmware MEM_ALLOC hands out top-of-RAM
      * buffers (>0x3C000000) that alias into peripheral space and wedge
      * the output engine. */
-    vaddr = dma_alloc(0, size);
+    vaddr = dma_alloc(size);
     if (vaddr == 0)
         return -1;
     _dma_virt = (void*)vaddr;
-    _dma_phys = dma_phy_addr(0, vaddr);
+    _dma_phys = dma_phy_addr(vaddr);
     if (_dma_phys == 0 || (_dma_phys + size) > 0x3C000000u) {
         printf("camd: dma buf out of UNICAM bus window (phys=%llx)\n",
                 (unsigned long long)_dma_phys);
-        dma_free(0, vaddr);
+        dma_free(vaddr);
         _dma_virt = NULL;
         _dma_phys = 0;
         return -1;
@@ -201,7 +201,7 @@ static int cam_dma_alloc(uint32_t size) {
 
 static void cam_dma_free(void) {
     if (_dma_virt != NULL)
-        dma_free(0, (ewokos_addr_t)_dma_virt);
+        dma_free((ewokos_addr_t)_dma_virt);
     _dma_phys = 0;
     _dma_virt = NULL;
     _dma_size = 0;

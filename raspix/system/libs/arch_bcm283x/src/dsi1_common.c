@@ -123,12 +123,11 @@ static void dsi1_dsi_write_dma(uint32_t off, uint32_t val) {
 	uint32_t spin;
 
 	if (_wa_buf == 0) {
-		_wa_buf = (volatile uint32_t*)(uintptr_t)dma_alloc(0, 64);
+		_wa_buf = (volatile uint32_t*)(uintptr_t)dma_alloc(64);
 		if (_wa_buf == 0) {
 			return;
 		}
-		_wa_phy = (uint32_t)dma_phy_addr(0,
-				(ewokos_addr_t)(uintptr_t)_wa_buf);
+		_wa_phy = (uint32_t)dma_phy_addr((ewokos_addr_t)(uintptr_t)_wa_buf);
 	}
 
 	dma = _block(DSI1_WA_DMA_BASE_OFF + DSI1_WA_DMA_CHAN * 0x100U);
@@ -328,7 +327,7 @@ static uint32_t _mb_calls, _mb_ok, _mb_to, _mb_foreign;
 static uint32_t _mb_lastphy, _mb_lastb1;
 
 static int _mbox_call(uint32_t* buf, uint32_t alias) {
-	uint32_t phy = dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)buf);
+	uint32_t phy = dma_phy_addr((ewokos_addr_t)(uintptr_t)buf);
 	mail_message_t msg;
 	uint32_t loop;
 	int done = 0;
@@ -401,7 +400,7 @@ void bcm283x_dsi1_mbox_stats(void) {
 static int _property_call(uint32_t tag, uint32_t in_len,
 		uint32_t* val0, uint32_t* val1) {
 	uint32_t size = 8 * 4;
-	uint32_t* buf = (uint32_t*)(uintptr_t)dma_alloc(0, size);
+	uint32_t* buf = (uint32_t*)(uintptr_t)dma_alloc(size);
 	int ret = -1;
 	int attempt;
 
@@ -427,7 +426,7 @@ static int _property_call(uint32_t tag, uint32_t in_len,
 		*val0 = buf[5];
 		*val1 = buf[6];
 	}
-	dma_free(0, (ewokos_addr_t)(uintptr_t)buf);
+	dma_free((ewokos_addr_t)(uintptr_t)buf);
 	return ret;
 }
 

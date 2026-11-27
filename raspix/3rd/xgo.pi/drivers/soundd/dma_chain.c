@@ -112,7 +112,7 @@ static void dma_chain_hw_start(void) {
 }
 
 void dma_chain_init(void) {
-    uint8_t* buf = (uint8_t*)(uintptr_t)dma_alloc(0, DMA_BUF_SIZE * DMA_BUF_CNT);
+    uint8_t* buf = (uint8_t*)(uintptr_t)dma_alloc(DMA_BUF_SIZE * DMA_BUF_CNT);
 
     _chain = NULL;
     _tail = NULL;
@@ -129,7 +129,7 @@ void dma_chain_init(void) {
         dma_buf[i] = (dma_buf_t*)(buf + i * DMA_BUF_SIZE);
         memset(dma_buf[i], 0, sizeof(dma_cb_t));
         dma_buf[i]->cb.ti = DMA_CB_TI;
-        dma_buf[i]->cb.cb_ad = dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)dma_buf[i]) | 0xC0000000;
+        dma_buf[i]->cb.cb_ad = dma_phy_addr((ewokos_addr_t)(uintptr_t)dma_buf[i]) | 0xC0000000;
         dma_buf[i]->cb.source_ad = dma_buf[i]->cb.cb_ad + sizeof(dma_cb_t);
         dma_buf[i]->cb.dest_ad = 0x7E203004; /* PCM FIFO_A bus address */
         dma_buf[i]->cb.txfr_len = 0;

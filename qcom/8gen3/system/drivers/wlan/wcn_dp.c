@@ -172,9 +172,9 @@ static void dp_arm_hw(void) {
 int wcn_dp_init(void) {
     if (d.active) return d.failed ? -1 : 0;
     if (d.dma) return -1;
-    d.dma=(uint8_t *)dma_alloc(0,DP_BYTES);
+    d.dma=(uint8_t *)dma_alloc(DP_BYTES);
     if (!d.dma) return -1;
-    d.pa=dma_phy_addr(0,(ewokos_addr_t)d.dma);
+    d.pa=dma_phy_addr((ewokos_addr_t)d.dma);
     if (!d.pa || d.pa+DP_BYTES>0x100000000ULL) return -1;
     memset(d.dma,0,DP_BYTES); d.used=64;
     if (dp_local(104,WBM,0x870,0x30b0,LINK_COUNT,2,0) ||
@@ -639,7 +639,7 @@ void wcn_dp_hw_state(char *out, unsigned size) {
             d.refilled, d.configured, d.count);
 }
 void wcn_dp_release(void) {
-    if (d.dma) dma_free(0,(ewokos_addr_t)d.dma);
+    if (d.dma) dma_free((ewokos_addr_t)d.dma);
     memset(&d,0,sizeof(d));
 }
 void wcn_dp_status(char *out,size_t size) {

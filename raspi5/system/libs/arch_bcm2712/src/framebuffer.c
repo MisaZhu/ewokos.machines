@@ -150,7 +150,7 @@ static int mailbox_get_tags(void *tags, uint32_t tags_size) {
     uint32_t *shadow = NULL;
     int result = -1;
 
-    struct prop_buffer *buf = (struct prop_buffer *)dma_alloc(0, buf_size);
+    struct prop_buffer *buf = (struct prop_buffer *)dma_alloc(buf_size);
     if (buf == NULL) {
         return -1;
     }
@@ -162,14 +162,14 @@ static int mailbox_get_tags(void *tags, uint32_t tags_size) {
     *(uint32_t *)((uint8_t *)buf + sizeof(struct prop_buffer) + tags_size) = PROPTAG_END;
 
     /* Prepare shadow for alias fallback from the fully built request. */
-    shadow = (uint32_t *)dma_alloc(0, buf_size);
+    shadow = (uint32_t *)dma_alloc(buf_size);
     if (shadow != NULL) {
         memcpy(shadow, buf, buf_size);
     }
 
     mail_message_t msg;
     memset(&msg, 0, sizeof(msg));
-    msg.data = ((uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf)
+    msg.data = ((uint32_t)dma_phy_addr((ewokos_addr_t)buf)
             | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = PROPERTY_CHANNEL;
 
@@ -187,7 +187,7 @@ static int mailbox_get_tags(void *tags, uint32_t tags_size) {
     }
 
     memset(&msg, 0, sizeof(msg));
-    msg.data = ((uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf)
+    msg.data = ((uint32_t)dma_phy_addr((ewokos_addr_t)buf)
             | MAILBOX_VC_ALIAS_COHERENT) >> 4;
     msg.channel = PROPERTY_CHANNEL;
 
@@ -203,9 +203,9 @@ copy_and_out:
     }
 out:
     if (shadow) {
-        dma_free(0, (ewokos_addr_t)shadow);
+        dma_free((ewokos_addr_t)shadow);
     }
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return result;
 }
 
@@ -722,7 +722,7 @@ typedef struct {
 
 static int fb_channel1_init(const sys_info_t *sysinfo,
         const fb_mode_t *mode, disp_info_t *info) {
-    fb_ch1_msg_t *msg = (fb_ch1_msg_t *)dma_alloc(0, sizeof(fb_ch1_msg_t));
+    fb_ch1_msg_t *msg = (fb_ch1_msg_t *)dma_alloc(sizeof(fb_ch1_msg_t));
     mail_message_t mailbox_msg;
     uint32_t w, h, vw, vh, dep, phy, size, pitch;
 
@@ -738,14 +738,14 @@ static int fb_channel1_init(const sys_info_t *sysinfo,
     msg->depth = mode->depth;
 
     memset(&mailbox_msg, 0, sizeof(mailbox_msg));
-    mailbox_msg.data = ((uint32_t)dma_phy_addr(0, (ewokos_addr_t)msg)
+    mailbox_msg.data = ((uint32_t)dma_phy_addr((ewokos_addr_t)msg)
             | MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     mailbox_msg.channel = FRAMEBUFFER_CHANNEL;
 
     if (bcm2712_mailbox_call_timeout(&mailbox_msg, 0) != 0) {
         slog("fb: ch1 timeout %ux%ux%u\n",
                 mode->width, mode->height, mode->depth);
-        dma_free(0, (ewokos_addr_t)msg);
+        dma_free((ewokos_addr_t)msg);
         return -1;
     }
 
@@ -769,7 +769,7 @@ static int fb_channel1_init(const sys_info_t *sysinfo,
         dep = actual_bpp;
     }
 
-    dma_free(0, (ewokos_addr_t)msg);
+    dma_free((ewokos_addr_t)msg);
 
     if (fb_adopt(sysinfo, w, h, vw, vh, dep, 0, 0, phy, size, pitch, info) != 0) {
         slog("fb: ch1 rejected %ux%ux%u w=%u h=%u dep=%u phy=%x size=%u pitch=%u\n",

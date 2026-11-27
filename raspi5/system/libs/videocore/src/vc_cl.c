@@ -166,7 +166,7 @@ int vc_cl_dispatch(int32_t handle,
     if (num_args > VC_CL_MAX_ARGS)
         return VC_CL_UNSUPPORTED;
 
-    /* Resolve each __global buffer argument's contig physical base into a GPU
+    /* Resolve each __global buffer argument's physical base into a GPU
      * IOVA (the same gate the 2D and 3D paths use) and track the address hull
      * so the dispatch's POST L2 writeback covers every buffer the kernel may
      * write.  A base that will not resolve is a per-launch staging problem, not
@@ -182,7 +182,7 @@ int vc_cl_dispatch(int32_t handle,
             continue;
         }
         span = (arg_size != NULL) ? arg_size[i] : 0u;
-        iova = gpu_phys(arg_phy[i], (size_t)span, 1u);
+        iova = gpu_phys(arg_phy[i], (size_t)span);
         if (iova == 0) {
             slog("vc_cl: arg %u phys %llx span %u not GPU-addressable\r\n",
                  i, (unsigned long long)arg_phy[i], span);

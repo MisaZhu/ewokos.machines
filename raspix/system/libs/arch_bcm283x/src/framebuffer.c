@@ -25,7 +25,7 @@ static uint32_t align_up(uint32_t value, uint32_t align) {
 static int mailbox_call_with_alias(uint32_t* buffer, uint32_t alias, uint8_t channel) {
     mail_message_t msg;
     memset(&msg, 0, sizeof(mail_message_t));
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + alias) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buffer) + alias) >> 4;
     msg.channel = channel;
     if (bcm283x_mailbox_call_timeout(&msg, 0) != 0) {
         return -1;
@@ -35,7 +35,7 @@ static int mailbox_call_with_alias(uint32_t* buffer, uint32_t alias, uint8_t cha
 
 static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias_used) {
     uint32_t size = buffer[0];
-    uint32_t* shadow = (uint32_t*)dma_alloc(0, size);
+    uint32_t* shadow = (uint32_t*)dma_alloc(size);
 
     if (shadow != NULL) {
         memcpy(shadow, buffer, size);
@@ -46,14 +46,14 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias
             *alias_used = MAILBOX_VC_ALIAS_NONCACHED;
         }
         if (shadow != NULL) {
-            dma_free(0, (ewokos_addr_t)shadow);
+            dma_free((ewokos_addr_t)shadow);
         }
         return 0;
     }
 
     if (shadow != NULL) {
         memcpy(buffer, shadow, size);
-        dma_free(0, (ewokos_addr_t)shadow);
+        dma_free((ewokos_addr_t)shadow);
     }
 
     if (mailbox_call_with_alias(buffer, MAILBOX_VC_ALIAS_COHERENT, PROPERTY_CHANNEL) == 0) {
@@ -82,7 +82,7 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias
 
 // Allocate GPU memory
 uint32_t allocate_gpu_memory(uint32_t size, uint32_t alignment, uint32_t flags) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 10*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(10*4));
     
     buffer[0] = 10 * 4;
     buffer[1] = 0;
@@ -97,18 +97,18 @@ uint32_t allocate_gpu_memory(uint32_t size, uint32_t alignment, uint32_t flags) 
     buffer[8] = 0;
     
     mail_message_t msg;
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
     
     uint32_t ret = buffer[5]; // return the memory handle
-    dma_free(0, (ewokos_addr_t)buffer);
+    dma_free((ewokos_addr_t)buffer);
     return ret;
 }
 
 // Lock GPU memory to obtain the physical address
 uint32_t lock_gpu_memory(uint32_t handle) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(8*4));
     
     buffer[0] = 8 * 4;
     buffer[1] = 0;
@@ -121,18 +121,18 @@ uint32_t lock_gpu_memory(uint32_t handle) {
     buffer[6] = 0;
 
     mail_message_t msg;
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
     
     uint32_t ret = buffer[5]; // return the physical address
-    dma_free(0, (ewokos_addr_t)buffer);
+    dma_free((ewokos_addr_t)buffer);
     return ret;
 }
 
 // Unlock GPU memory
 void unlock_gpu_memory(uint32_t handle) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(8*4));
     
     buffer[0] = 8 * 4;
     buffer[1] = 0;
@@ -145,15 +145,15 @@ void unlock_gpu_memory(uint32_t handle) {
     buffer[6] = 0;
     
     mail_message_t msg;
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)buffer);
+    dma_free((ewokos_addr_t)buffer);
 }
 
 // Free GPU memory
 void free_gpu_memory(uint32_t handle) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 7*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(7*4));
     
     buffer[0] = 7 * 4;
     buffer[1] = 0;
@@ -166,10 +166,10 @@ void free_gpu_memory(uint32_t handle) {
     buffer[6] = 0;
     
     mail_message_t msg;
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)buffer);
+    dma_free((ewokos_addr_t)buffer);
 }
 
 // Perform a BLT with an alpha channel
@@ -179,7 +179,7 @@ void gpu_blt_with_alpha(
     int src_x, int src_y, int dst_x, int dst_y,
     int width, int height, uint32_t flags) {
     
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 24*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(24*4));
     
     buffer[0] = 24 * 4;
     buffer[1] = 0;
@@ -218,15 +218,15 @@ void gpu_blt_with_alpha(
     buffer[22] = 0; // end marker
     
     mail_message_t msg;
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)buffer);
+    dma_free((ewokos_addr_t)buffer);
 }
 
 // Fill the screen with a single color
 void fill_screen(uint32_t color) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 24*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(24*4));
     
     buffer[0] = 23 * 4;
     buffer[1] = 0;
@@ -265,10 +265,10 @@ void fill_screen(uint32_t color) {
     buffer[22] = 0; // end marker
 
     mail_message_t msg;
-    msg.data = (dma_phy_addr(0, (ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    msg.data = (dma_phy_addr((ewokos_addr_t)buffer) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = 8;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)buffer);
+    dma_free((ewokos_addr_t)buffer);
 }
 
 // Example main function
@@ -387,7 +387,7 @@ static void fb_build_request(uint32_t* req, uint32_t w, uint32_t h, uint32_t dep
 }
 
 static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_info_t* info) {
-    uint32_t* req = (uint32_t*)dma_alloc(0, 35 * sizeof(uint32_t));
+    uint32_t* req = (uint32_t*)dma_alloc(35 * sizeof(uint32_t));
     uint32_t alias_used = 0;
     uint32_t page_size;
     uint32_t resp_w;
@@ -411,7 +411,7 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_in
     if (mailbox_property_call_with_fallback(req, &alias_used) != 0) {
         slog("fb_init: mailbox timeout/failed %ux%ux%u\n",
                 mode->width, mode->height, mode->depth);
-        dma_free(0, (ewokos_addr_t)req);
+        dma_free((ewokos_addr_t)req);
         return -1;
     }
 
@@ -425,7 +425,7 @@ static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_in
     resp_phy = req[28] & 0x3fffffff; // GPU addr to ARM addr
     resp_size = req[29];
     resp_pitch = req[33];
-    dma_free(0, (ewokos_addr_t)req);
+    dma_free((ewokos_addr_t)req);
 
     if ((resp_w == 0) || (resp_h == 0) || (resp_phy == 0) || (resp_size == 0)) {
         slog("fb_init: bad reply %ux%ux%u alias=%x => w=%u h=%u phy=%x size=%u pitch=%u\n",

@@ -200,7 +200,7 @@ static inline void delay(int32_t count)
 
 static inline unsigned int msc313_bach_dma_miu_addr(ewokos_addr_t vaddr)
 {
-    ewokos_addr_t phy = dma_phy_addr(0, vaddr);
+    ewokos_addr_t phy = dma_phy_addr(vaddr);
     if (phy < MIYOO_MIU_PHY_BASE) {
         
         return (unsigned int)phy;
@@ -1436,7 +1436,7 @@ static int enable_clk(ewokos_addr_t clk_base)
 
 static int pre_allocate_dma_buffer(struct msc313_bach *bach)
 {
-    ewokos_addr_t vaddr = dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE);
+    ewokos_addr_t vaddr = dma_alloc(PRE_ALLOCATED_PCM_BUF_MAX_SIZE);
     if (vaddr == 0) {
         
         bach->dma_areas = 0;

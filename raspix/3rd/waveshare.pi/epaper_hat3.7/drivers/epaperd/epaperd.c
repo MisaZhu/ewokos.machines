@@ -658,7 +658,7 @@ static uint32_t core_clock_hz(void) {
     uint32_t hz = CORE_CLOCK_FALLBACK_HZ;
     /* message head(2) + tag head(3) + value buffer(2) + end tag(1) */
     uint32_t size = 8 * 4;
-    uint32_t* buf = (uint32_t*)dma_alloc(0, size);
+    uint32_t* buf = (uint32_t*)dma_alloc(size);
     if(buf == NULL)
         return hz;
 
@@ -672,7 +672,7 @@ static uint32_t core_clock_hz(void) {
     buf[6] = 0;                        /* <- rate_hz on response  */
     buf[7] = 0;                        /* end tag                 */
 
-    uint32_t phy = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)buf);
+    uint32_t phy = (uint32_t)dma_phy_addr((ewokos_addr_t)buf);
     if(phy != 0) {
         mail_message_t msg;
         memset(&msg, 0, sizeof(msg));
@@ -682,7 +682,7 @@ static uint32_t core_clock_hz(void) {
         if(buf[5] == MBOX_CLOCK_ID_CORE && buf[6] != 0)
             hz = buf[6];
     }
-    dma_free(0, (ewokos_addr_t)buf);
+    dma_free((ewokos_addr_t)buf);
     return hz;
 }
 

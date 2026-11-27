@@ -80,7 +80,7 @@ int ga10b_falcon_wait_halted(const ga10b_falcon_t* f, uint32_t tries) {
  * source offsets can be recovered via dma_phy_addr. */
 static int dma_seg(const ga10b_falcon_t* f, uint64_t phy, const void* va,
                    uint32_t dst_off, uint32_t size, int imem) {
-    uint64_t src_pa = dma_phy_addr(GA10B_DMA_BLOCK, (void*)va);
+    uint64_t src_pa = dma_phy_addr((void*)va);
     uint32_t src_off = (uint32_t)(src_pa - phy);
     for (uint32_t i = 0; i < size; i += 256) {
         fwr(f, GA10B_FALCON_DMATRFMOFFS, dst_off + i);

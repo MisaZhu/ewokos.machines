@@ -102,7 +102,7 @@ static int32_t bcm283x_i2c_power_on(uint32_t device_id) {
     struct msg_set_power_state* req;
     uint32_t mailbox_data;
 
-    req = (struct msg_set_power_state*)dma_alloc(0, sizeof(struct msg_set_power_state));
+    req = (struct msg_set_power_state*)dma_alloc(sizeof(struct msg_set_power_state));
     if (req == NULL)
         return -1;
 
@@ -116,16 +116,16 @@ static int32_t bcm283x_i2c_power_on(uint32_t device_id) {
         BCM2835_MBOX_SET_POWER_STATE_REQ_ON |
         BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT;
 
-    mailbox_data = ((uint32_t)dma_phy_addr(0, (ewokos_addr_t)req) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
+    mailbox_data = ((uint32_t)dma_phy_addr((ewokos_addr_t)req) + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     if (mailbox_data == 0) {
-        dma_free(0, (ewokos_addr_t)req);
+        dma_free((ewokos_addr_t)req);
         return -1;
     }
 
     msg.data = mailbox_data;
     msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);
-    dma_free(0, (ewokos_addr_t)req);
+    dma_free((ewokos_addr_t)req);
     return 0;
 }
 

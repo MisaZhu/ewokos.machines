@@ -232,12 +232,12 @@ static inline uint32_t dwc_dma_bus_addr(uint32_t phys) {
 static int dma_pool_init(void) {
     _dma_pool.size = USB_DMA_POOL_SIZE;
     _dma_pool.used = 0;
-    _dma_pool.virt = dma_alloc(0, _dma_pool.size);
+    _dma_pool.virt = dma_alloc(_dma_pool.size);
     if (_dma_pool.virt == 0) {
         slog("dwc2: dma alloc_failed size=%u\n", _dma_pool.size);
         return -1;
     }
-    _dma_pool.phys = dma_phy_addr(0, _dma_pool.virt);
+    _dma_pool.phys = dma_phy_addr(_dma_pool.virt);
     memset((void*)(uintptr_t)_dma_pool.virt, 0, _dma_pool.size);
     return 0;
 }
@@ -279,7 +279,7 @@ static int bcm2835_power_on_usb(void) {
     bcm2835_mbox_power_msg_t* req;
     uint32_t phy;
 
-    req = (bcm2835_mbox_power_msg_t*)(uintptr_t)dma_alloc(0, sizeof(*req));
+    req = (bcm2835_mbox_power_msg_t*)(uintptr_t)dma_alloc(sizeof(*req));
     if (req == NULL) {
         return -1;
     }
@@ -294,7 +294,7 @@ static int bcm2835_power_on_usb(void) {
             BCM2835_MBOX_SET_POWER_STATE_REQ_ON |
             BCM2835_MBOX_SET_POWER_STATE_REQ_WAIT;
 
-    phy = dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)req);
+    phy = dma_phy_addr((ewokos_addr_t)(uintptr_t)req);
     msg.data = (phy + MAILBOX_VC_ALIAS_NONCACHED) >> 4;
     msg.channel = PROPERTY_CHANNEL;
     bcm283x_mailbox_call(&msg);

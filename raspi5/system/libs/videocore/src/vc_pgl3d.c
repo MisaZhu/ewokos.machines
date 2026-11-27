@@ -56,7 +56,7 @@ int vc_pgl3d_probe(void)
     return _pgl_ok && v3d_3d_ready();
 }
 
-int vc_pgl3d_clear(ewokos_addr_t fb_phy, uint8_t contig, uint32_t stride,
+int vc_pgl3d_clear(ewokos_addr_t fb_phy, uint32_t stride,
                    uint32_t w, uint32_t h, uint32_t fmt, uint32_t rgba8,
                    int rb_swap)
 {
@@ -69,7 +69,7 @@ int vc_pgl3d_clear(ewokos_addr_t fb_phy, uint8_t contig, uint32_t stride,
     if (fmt != VC_PGL3D_FMT_RGBA8 && fmt != VC_PGL3D_FMT_BGR565)
         return VC_PGL3D_UNSUPPORTED;
 
-    fb_iova = gpu_phys(fb_phy, (size_t)stride * h, contig);
+    fb_iova = gpu_phys(fb_phy, (size_t)stride * h);
     if (fb_iova == 0)
         return VC_PGL3D_UNSUPPORTED;
 
@@ -124,8 +124,8 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
     if (req->blend_en)
         return decline(compiled, "blend_en");
 
-    fb_iova  = gpu_phys(req->fb_phy,  (size_t)req->stride * req->h, req->fb_contig);
-    pos_iova = gpu_phys(req->pos_phy, (size_t)req->nverts * 12u,    req->pos_contig);
+    fb_iova  = gpu_phys(req->fb_phy, (size_t)req->stride * req->h);
+    pos_iova = gpu_phys(req->pos_phy, (size_t)req->nverts * 12u);
     if (fb_iova == 0 || pos_iova == 0)
         return decline(compiled, "fb/pos gpu_phys");
 
@@ -140,9 +140,8 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
         tex_stride = req->tex_stride ? req->tex_stride : req->tex_w * 4u;
         if (tex_stride < req->tex_w * 4u)
             return VC_PGL3D_UNSUPPORTED;
-        uv_iova  = gpu_phys(req->uv_phy,  (size_t)req->nverts * 12u, req->uv_contig);
-        tex_iova = gpu_phys(req->tex_phy, (size_t)tex_stride * req->tex_h,
-                            req->tex_contig);
+        uv_iova  = gpu_phys(req->uv_phy, (size_t)req->nverts * 12u);
+        tex_iova = gpu_phys(req->tex_phy, (size_t)tex_stride * req->tex_h);
         if (uv_iova == 0 || tex_iova == 0)
             return VC_PGL3D_UNSUPPORTED;
         tex.tex_iova   = tex_iova;
@@ -155,7 +154,7 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
          * fine.  When non-zero, still resolve it so the driver's own validity
          * check does not reject the draw. */
         col_iova = req->col_phy
-            ? gpu_phys(req->col_phy, (size_t)req->nverts * 4u, req->col_contig)
+            ? gpu_phys(req->col_phy, (size_t)req->nverts * 4u)
             : 0;
         if (req->col_phy != 0 && col_iova == 0)
             return VC_PGL3D_UNSUPPORTED;
@@ -167,13 +166,13 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
          * here, so resolve it over nverts*12 bytes (not the fixed path's byte4
          * nverts*4); the back end then builds two float3 attribute records. */
         col_iova = req->col_phy
-            ? gpu_phys(req->col_phy, (size_t)req->nverts * 12u, req->col_contig)
+            ? gpu_phys(req->col_phy, (size_t)req->nverts * 12u)
             : 0;
         if (req->col_phy != 0 && col_iova == 0)
             return decline(1, "col/normal gpu_phys");
         memset(&tex, 0, sizeof(tex));
     } else {
-        col_iova = gpu_phys(req->col_phy, (size_t)req->nverts * 4u, req->col_contig);
+        col_iova = gpu_phys(req->col_phy, (size_t)req->nverts * 4u);
         if (col_iova == 0)
             return VC_PGL3D_UNSUPPORTED;
         memset(&tex, 0, sizeof(tex));
@@ -185,7 +184,7 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
     z_iova = 0;
     if (req->z_phy != 0) {
         uint32_t z_stride = req->z_stride ? req->z_stride : req->w * 4u;
-        z_iova = gpu_phys(req->z_phy, (size_t)z_stride * req->h, req->z_contig);
+        z_iova = gpu_phys(req->z_phy, (size_t)z_stride * req->h);
         if (z_iova == 0)
             return decline(compiled, "z gpu_phys");
     }
@@ -260,7 +259,7 @@ int vc_pgl3d_draw(const vc_pgl3d_draw_req_t *req)
                     return decline(1, "ctex missing layer stride");
                 map_bytes = (size_t)stride_i * req->ctex_h[i];
             }
-            iova_i = gpu_phys(req->ctex_phy[i], map_bytes, req->ctex_contig[i]);
+            iova_i = gpu_phys(req->ctex_phy[i], map_bytes);
             if (iova_i == 0)
                 return decline(1, "ctex gpu_phys");
             ctex.ctex_iova[i]   = iova_i;

@@ -86,13 +86,13 @@ int main(int argc, char **argv) {
 
     /* extra 16KB: the kernel builds the PAS metadata blob right after the
      * image, inside this same DMA buffer (so it is mapped for the syscall). */
-    va = dma_alloc(0, (uint32_t)size + 0x4000);
+    va = dma_alloc((uint32_t)size + 0x4000);
     if(va == 0) {
         printf("adspas: dma_alloc(%d) failed\n", size + 0x4000);
         free(buf);
         return 1;
     }
-    pa = dma_phy_addr(0, va);
+    pa = dma_phy_addr(va);
     memcpy((void *)va, buf, size);
     free(buf);
     __asm__ volatile("dsb sy" ::: "memory");
@@ -104,6 +104,6 @@ int main(int argc, char **argv) {
             (ewokos_addr_t)size);
     printf("adspas: PAS boot ret=%d %s\n", ret, verdict(ret));
 
-    dma_free(0, va);
+    dma_free(va);
     return ret == 0 ? 0 : 2;
 }

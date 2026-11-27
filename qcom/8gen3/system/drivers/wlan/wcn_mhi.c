@@ -301,11 +301,11 @@ static int load_firmware(void) {
         close(fd); return -1;
     }
     if (!w.dma) {
-        w.dma = (uint8_t *)dma_alloc(0, DMA_BYTES);
+        w.dma = (uint8_t *)dma_alloc(DMA_BYTES);
         if (!w.dma) { close(fd); return -1; }
-        w.dma_phys = dma_phy_addr(0, (ewokos_addr_t)w.dma);
+        w.dma_phys = dma_phy_addr((ewokos_addr_t)w.dma);
         if (!w.dma_phys || w.dma_phys + DMA_BYTES > 0x100000000ULL) {
-            dma_free(0, (ewokos_addr_t)w.dma); w.dma = NULL;
+            dma_free((ewokos_addr_t)w.dma); w.dma = NULL;
             close(fd); return -1;
         }
     }
@@ -326,9 +326,9 @@ static int prepare_rddm(void) {
     w.bhie = reg(0x2c);
     if (!offset_valid(w.bhie, 0x80)) return -1;
     if (!w.rddm) {
-        w.rddm = (uint8_t *)dma_alloc(0, RDDM_BYTES);
+        w.rddm = (uint8_t *)dma_alloc(RDDM_BYTES);
         if (!w.rddm) return -1;
-        w.rddm_phys = dma_phy_addr(0, (ewokos_addr_t)w.rddm);
+        w.rddm_phys = dma_phy_addr((ewokos_addr_t)w.rddm);
         if (!w.rddm_phys || w.rddm_phys + RDDM_BYTES > 0x100000000ULL) return -1;
     }
     memset(w.rddm, 0, RDDM_BYTES);

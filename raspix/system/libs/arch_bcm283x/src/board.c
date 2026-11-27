@@ -47,7 +47,7 @@ uint32_t bcm283x_board_revision(void) {
         return 0;
     }
 
-    vaddr = dma_alloc(0, sizeof(msg_get_board_revision_t));
+    vaddr = dma_alloc(sizeof(msg_get_board_revision_t));
     if (vaddr == 0) {
         return 0;
     }
@@ -60,9 +60,9 @@ uint32_t bcm283x_board_revision(void) {
     req->tag_hdr.val_buf_size = sizeof(req->revision);
     req->tag_hdr.val_len = sizeof(req->revision);
 
-    phy = dma_phy_addr(0, vaddr);
+    phy = dma_phy_addr(vaddr);
     if (phy == 0) {
-        dma_free(0, vaddr);
+        dma_free(vaddr);
         return 0;
     }
 
@@ -73,7 +73,7 @@ uint32_t bcm283x_board_revision(void) {
     bcm283x_mailbox_call(&msg);
 
     revision = req->revision;
-    dma_free(0, vaddr);
+    dma_free(vaddr);
     return revision;
 }
 

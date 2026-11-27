@@ -160,8 +160,7 @@ int32_t bsp_g3d_init(void) {
 	return 0;
 }
 
-int32_t bsp_g3d_clear(uint32_t* fb, ewokos_addr_t fb_phy, uint8_t contig,
-		int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+int32_t bsp_g3d_clear(uint32_t* fb, ewokos_addr_t fb_phy, int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
 		uint32_t color, int32_t rb_swap) {
 	(void)fb;
 	if (adreno_wedged())
@@ -177,25 +176,21 @@ int32_t bsp_g3d_clear(uint32_t* fb, ewokos_addr_t fb_phy, uint8_t contig,
 	if (g3d_probe() != 1)
 		return -2 /* G2D_ERR_NOT_SUPPORTED */;
 	/* The A2D DMAs to GPU-visible physical memory (CB0 identity map, so
-	   pa == iova): the target must be physically contiguous with a
-	   resolved base.  stride is the byte row pitch (passed straight to
-	   the A2D dst pitch, which requires %64). */
-	if (!contig || fb_phy == 0)
+	   pa == iova): the target must have a resolved physical base.
+	   stride is the byte row pitch (passed straight to the A2D dst
+	   pitch, which requires %64). */
+	if (fb_phy == 0)
 		return G2D_ERR_FAILED;
 	return a3d_result(adreno_2d_fill(fb_phy, w, h, stride, 0, 0, w, h, color,
 			rb_swap));
 }
 
-int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
-		int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
 		uint32_t mode, uint32_t nverts,
-		ewokos_addr_t pos_phy, uint8_t pos_contig,
-		ewokos_addr_t col_phy, uint8_t col_contig,
-		uint32_t fs_id, uint32_t color, int32_t rb_swap,
+		ewokos_addr_t pos_phy, ewokos_addr_t col_phy, uint32_t fs_id, uint32_t color, int32_t rb_swap,
 		uint32_t depth_func, int32_t depth_mask,
 		int32_t blend_en, int32_t cull_en,
-		ewokos_addr_t z_phy, uint8_t z_contig,
-		uint32_t z_stride, uint8_t first_frame,
+		ewokos_addr_t z_phy, uint32_t z_stride, uint8_t first_frame,
 		uint32_t clear_rgba, float clear_z, const void* ext, const void* tex,
 		int32_t prog_handle, const void* unif, uint32_t num_uniforms,
 		const void* ctex) {
@@ -225,20 +220,20 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	if (prog_handle < 0)
 		return G2D_ERR_NOT_SUPPORTED;
 	/* The CS DMAs to GPU-visible physical memory (CB0 identity map, pa ==
-	   iova): the target must be physically contiguous with a resolved base. */
-	if (!fb_contig || fb_phy == 0)
+	   iova): the target must have a resolved physical base. */
+	if (fb_phy == 0)
 		return G2D_ERR_FAILED;
 
 	/* Geometry inputs for an is_geom program (adreno_3d.c ignores them for
-	   a plain fullscreen program).  Every buffer the CS reads must be
-	   physically contiguous (CB0 identity map): a non-contiguous one is
+	   a plain fullscreen program).  Every buffer the CS reads needs a
+	   resolved physical base (CB0 identity map): one without it is
 	   passed as 0 so the daemon declines (-1, replayable) rather than
-	   DMAing a scattered allocation. */
+	   DMAing an unresolved allocation. */
 	g.mode        = mode;
 	g.nverts      = nverts;
-	g.pos_phy     = (pos_contig && pos_phy) ? (uint64_t)pos_phy : 0;
-	g.col_phy     = (col_contig && col_phy) ? (uint64_t)col_phy : 0;
-	g.z_phy       = (z_contig && z_phy) ? (uint64_t)z_phy : 0;
+	g.pos_phy     = (uint64_t)pos_phy;
+	g.col_phy     = (uint64_t)col_phy;
+	g.z_phy       = (uint64_t)z_phy;
 	g.z_stride    = z_stride;
 	g.ctex_phy    = 0;
 	g.ctex_stride = 0;
@@ -250,16 +245,14 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	   (g.ctex_*, raspi5 parity); a plain fullscreen kernel samples every
 	   bound unit through real a6xx texture+sampler descriptors, so all
 	   G2D_PGL_MAX_TEX_UNITS entries are forwarded (unit i -> texture_index
-	   i).  A unit that is unbound or non-contiguous is passed with phy == 0
-	   so the daemon samples a zeroed dummy rather than DMAing a scattered
-	   allocation. */
+	   i).  A unit that is unbound (phy == 0) makes the daemon sample a
+	   zeroed dummy rather than DMAing an unresolved allocation. */
 	memset(atex, 0, sizeof(atex));
 	if (ctex) {
 		const g2d_pgl_ctex_t* c = (const g2d_pgl_ctex_t*)ctex;
 		uint32_t u;
 		for (u = 0; u < G2D_PGL_MAX_TEX_UNITS; u++) {
-			atex[u].phy        = (c->ctex_contig[u] && c->ctex_phy[u])
-			                        ? (uint64_t)c->ctex_phy[u] : 0;
+			atex[u].phy        = (uint64_t)c->ctex_phy[u];
 			atex[u].stride     = c->ctex_stride[u];
 			atex[u].w          = c->ctex_w[u];
 			atex[u].h          = c->ctex_h[u];
@@ -273,7 +266,7 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 		num_tex = G2D_PGL_MAX_TEX_UNITS;
 		/* These compute kernels read linear words, not V3D tiled images or
 		   layered textures. Leave incompatible unit-0 bindings unresolved. */
-		if (c->ctex_contig[0] && c->ctex_phy[0] &&
+		if (c->ctex_phy[0] &&
 		    c->ctex_tiling[0] == 0 && c->ctex_depth[0] <= 1 &&
 		    c->ctex_w[0] <= 0xffffffffu / 4u) {
 			g.ctex_phy    = (uint64_t)c->ctex_phy[0];

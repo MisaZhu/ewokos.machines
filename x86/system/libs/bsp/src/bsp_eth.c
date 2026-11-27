@@ -230,11 +230,11 @@ int bsp_eth_init(void) {
     _mac[4] = (uint8_t)(m1 & 0xFF);
     _mac[5] = (uint8_t)((m1 >> 8) & 0xFF);
 
-    dma_virt = dma_alloc(0, DMA_TOTAL);
+    dma_virt = dma_alloc(DMA_TOTAL);
     if (dma_virt == 0) {
         return -1;
     }
-    dma_phys = (uint32_t)dma_phy_addr(0, dma_virt);
+    dma_phys = (uint32_t)dma_phy_addr(dma_virt);
     memset((void *)dma_virt, 0, DMA_TOTAL);
 
     _dma_virt      = dma_virt;

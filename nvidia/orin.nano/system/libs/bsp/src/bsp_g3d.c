@@ -95,13 +95,12 @@ int32_t bsp_g3d_init(void) {
 	return 0;
 }
 
-int32_t bsp_g3d_clear(uint32_t* fb, ewokos_addr_t fb_phy, uint8_t contig,
-		int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+int32_t bsp_g3d_clear(uint32_t* fb, ewokos_addr_t fb_phy, int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
 		uint32_t color, int32_t rb_swap) {
 	(void)fb;
 	if (g3d_probe() != 1 || fmt != G2D_PGL_FMT_RGBA8)
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!contig || fb_phy == 0 || w <= 0 || h <= 0)
+	if (fb_phy == 0 || w <= 0 || h <= 0)
 		return G2D_ERR_FAILED;
 	/* color is 0xAABBGGRR; the target word is 0xAARRGGBB */
 	uint32_t px = color;
@@ -112,16 +111,12 @@ int32_t bsp_g3d_clear(uint32_t* fb, ewokos_addr_t fb_phy, uint8_t contig,
 			(uint32_t)h, stride, px));
 }
 
-int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
-		int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
+int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, int32_t w, int32_t h, uint32_t stride, uint32_t fmt,
 		uint32_t mode, uint32_t nverts,
-		ewokos_addr_t pos_phy, uint8_t pos_contig,
-		ewokos_addr_t col_phy, uint8_t col_contig,
-		uint32_t fs_id, uint32_t color, int32_t rb_swap,
+		ewokos_addr_t pos_phy, ewokos_addr_t col_phy, uint32_t fs_id, uint32_t color, int32_t rb_swap,
 		uint32_t depth_func, int32_t depth_mask,
 		int32_t blend_en, int32_t cull_en,
-		ewokos_addr_t z_phy, uint8_t z_contig,
-		uint32_t z_stride, uint8_t first_frame,
+		ewokos_addr_t z_phy, uint32_t z_stride, uint8_t first_frame,
 		uint32_t clear_rgba, float clear_z, const void* ext, const void* tex,
 		int32_t prog_handle, const void* unif, uint32_t num_uniforms,
 		const void* ctex) {
@@ -136,7 +131,7 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 		return G2D_ERR_NOT_SUPPORTED;
 	if (mode != G2D_PGL_MODE_TRIANGLES)
 		return G2D_ERR_NOT_SUPPORTED;
-	if (!fb_contig || fb_phy == 0 || w <= 0 || h <= 0)
+	if (fb_phy == 0 || w <= 0 || h <= 0)
 		return G2D_ERR_FAILED;
 
 	memset(&d, 0, sizeof(d));
@@ -145,9 +140,9 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	d.h           = (uint32_t)h;
 	d.stride      = stride;
 	d.nverts      = nverts;
-	d.pos_phy     = (pos_contig && pos_phy) ? (uint64_t)pos_phy : 0;
-	d.col_phy     = (col_contig && col_phy) ? (uint64_t)col_phy : 0;
-	d.z_phy       = (z_contig && z_phy) ? (uint64_t)z_phy : 0;
+	d.pos_phy     = (uint64_t)pos_phy;
+	d.col_phy     = (uint64_t)col_phy;
+	d.z_phy       = (uint64_t)z_phy;
 	d.z_stride    = z_stride;
 	d.first_frame = first_frame;
 	d.clear_rgba  = clear_rgba;
@@ -155,7 +150,7 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 	   a sampled texture) or the instanced kind's record stream */
 	if (ctex) {
 		const g2d_pgl_ctex_t* c = (const g2d_pgl_ctex_t*)ctex;
-		if (c->ctex_contig[0] && c->ctex_phy[0] && c->ctex_tiling[0] == 0 &&
+		if (c->ctex_phy[0] && c->ctex_tiling[0] == 0 &&
 		    c->ctex_depth[0] <= 1) {
 			d.ctex_phy    = (uint64_t)c->ctex_phy[0];
 			d.ctex_w      = c->ctex_w[0];
@@ -169,7 +164,7 @@ int32_t bsp_g3d_draw(ewokos_addr_t fb_phy, uint8_t fb_contig,
 		for (uint32_t u = 0; u < G2D_PGL_MAX_TEX_UNITS &&
 		                     u < GA10B_PGL_MAX_TEX; u++) {
 			ga10b_pgl_tex_t* t = &d.tex[u];
-			if (!c->ctex_contig[u] || !c->ctex_phy[u] ||
+			if (!c->ctex_phy[u] ||
 			    c->ctex_tiling[u] != 0 || c->ctex_levels[u] > 1)
 				continue;
 			t->phy    = (uint64_t)c->ctex_phy[u];

@@ -7,7 +7,8 @@
  * through SYS_MEM_MAP, then power-cycles the GRAFX_V3D domain and enables the
  * L2 cache.  CSD code/uniform staging lives in physically-contiguous
  * sys_dma buffers (dma_alloc).  A V3D-local page table limits QPU access
- * to the DMA and contiguous-shm windows, including their >4GB locations.
+ * to the DMA window and allocable RAM (where shm runs live), including
+ * their >4GB locations.
  *
  * Canvases arrive as virtual addresses (shmat() / dma window addresses)
  * with their resolved physical base supplied by the caller (the bsp_g2d
@@ -55,7 +56,7 @@ uint32_t v3d_g2d_scratch_phys(void);
 
 /* Address validation gate: returns non-zero when [phy, phy+bytes) lies
  * inside a region installed in the V3D-local page table (the sys_dma
- * window or IPC_CONTIG shm slab).  Every
+ * window or shm slab).  Every
  * caller-supplied *_phy must pass this check before dispatch. */
 int v3d_g2d_phy_valid(ewokos_addr_t phy, size_t bytes);
 
@@ -318,11 +319,11 @@ extern const unsigned g2d_qpu_gauss_v7_n;
 
 /* ---- internal 3D-mode support (v3d_3d.c) ---------------------------------
  * The CLE/PTB 3D pipeline reuses the CSD path's mapped register window, the
- * V3D MMU (identity over sys_dma + shm_contig), the SMS power-up and the
+ * V3D MMU (identity over sys_dma + shm), the SMS power-up and the
  * clock, instead of remapping or re-powering the block.  A runtime
  * power-domain write (PM GRAFX_V3D / SMS) wedges g2dd, so v3d_3d.c must never
  * touch those - only the accessors below, and only after v3d_g2d_init()
- * reports ready.  All 3D buffers must live in dma_alloc / contig-shm memory so
+ * reports ready.  All 3D buffers must live in dma_alloc / shm memory so
  * they are already inside the V3D page table (IOVA = low 32 bits of phys). */
 volatile uint32_t *v3d_g2d_hub_regs(void);   /* hub window (MMU/INT at +0) */
 volatile uint32_t *v3d_g2d_core_regs(void);  /* core0 window (CLE/PTB/CSD) */

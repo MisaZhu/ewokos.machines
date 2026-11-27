@@ -37,9 +37,9 @@ static int dump_crash(const char *path) {
         printf("npupas: crash dump ABI unavailable ret=%lld expected=%x\n",
                 (long long)query, QCOM8GEN3_NPU_DUMP_ABI); return 2;
     }
-    va = dma_alloc(0, QCOM8GEN3_NPU_DUMP_CHUNK);
+    va = dma_alloc(QCOM8GEN3_NPU_DUMP_CHUNK);
     if (!va) { printf("npupas: crash DMA allocation failed\n"); return 2; }
-    pa = dma_phy_addr(0, va);
+    pa = dma_phy_addr(va);
     for (uint32_t offset = 0; offset < QCOM8GEN3_NSP0_SPAN;
             offset += QCOM8GEN3_NPU_DUMP_CHUNK) {
         uint64_t range = ((uint64_t)offset << 32) | QCOM8GEN3_NPU_DUMP_CHUNK;
@@ -69,7 +69,7 @@ static int dump_crash(const char *path) {
     failed = 0;
 done:
     if (file && fclose(file)) failed = 1;
-    dma_free(0, va);
+    dma_free(va);
     printf("npupas: crash dump %s pages=%u/%u file=%s; PAS state unchanged\n",
             failed ? "FAILED (file may be partial)" : "complete", pages,
             (unsigned)(QCOM8GEN3_NSP0_SPAN / QCOM8GEN3_NPU_DUMP_PAGE), path);
@@ -187,13 +187,13 @@ int main(int argc, char **argv) {
 
     /* extra 16KB: the kernel builds the PAS metadata blob right after the
      * image, inside this same DMA buffer (so it is mapped for the syscall). */
-    va = dma_alloc(0, (uint32_t)size + 0x4000);
+    va = dma_alloc((uint32_t)size + 0x4000);
     if(va == 0) {
         printf("npupas: dma_alloc(%d) failed\n", size + 0x4000);
         free(buf);
         return 1;
     }
-    pa = dma_phy_addr(0, va);
+    pa = dma_phy_addr(va);
     memcpy((void *)va, buf, size);
     free(buf);
     __asm__ volatile("dsb sy" ::: "memory");
@@ -205,6 +205,6 @@ int main(int argc, char **argv) {
             (ewokos_addr_t)size);
     printf("npupas: PAS boot ret=%d %s\n", ret, verdict(ret));
 
-    dma_free(0, va);
+    dma_free(va);
     return ret == 0 ? 0 : 2;
 }

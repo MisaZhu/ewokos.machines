@@ -489,12 +489,12 @@ static uint32_t* pb_method(uint32_t* p, uint32_t method, uint32_t data) {
 int bsp_vic_channel_test(void) {
     if (bsp_vic_syncpt_test() != 0)
         return -1;
-    ewokos_addr_t va = dma_alloc(0, 4096);
+    ewokos_addr_t va = dma_alloc(4096);
     if (va == 0) {
         klog("vic: dma_alloc pushbuffer failed\n");
         return -1;
     }
-    uint64_t phy = dma_phy_addr(0, va);
+    uint64_t phy = dma_phy_addr(va);
     uint32_t* pb = (uint32_t*)va;
     memset(pb, 0, 4096);
 
@@ -514,7 +514,7 @@ int bsp_vic_channel_test(void) {
     uint32_t after = rd(_vm, SYNC_SYNCPT(PROBE_SYNCPT));
     klog("vic: channel host1x-class syncpt%u %u -> %u (want +1)\n",
             PROBE_SYNCPT, before, after);
-    dma_free(0, va);
+    dma_free(va);
     return r == 0 ? 0 : -1;
 }
 
@@ -584,7 +584,7 @@ int bsp_vic_falcon_boot(const char* fw_path) {
         return -1;
     }
     if (_fw_va == 0)
-        _fw_va = dma_alloc(0, FW_BUF_BYTES);
+        _fw_va = dma_alloc(FW_BUF_BYTES);
     if (_fw_va == 0) {
         fclose(f);
         klog("vic: dma_alloc firmware failed\n");
@@ -594,7 +594,7 @@ int bsp_vic_falcon_boot(const char* fw_path) {
     memset(fw, 0, FW_BUF_BYTES);
     uint32_t fw_size = (uint32_t)fread(fw, 1, FW_BUF_BYTES, f);
     fclose(f);
-    uint64_t fw_phy = dma_phy_addr(0, _fw_va);
+    uint64_t fw_phy = dma_phy_addr(_fw_va);
     klog("vic: firmware %s size=%u phy=%llx\n", fw_path,
             fw_size, (unsigned long long)fw_phy);
 
@@ -715,12 +715,12 @@ int bsp_vic_falcon_boot(const char* fw_path) {
 int bsp_vic_method_test(void) {
     if (bsp_vic_falcon_boot("/drivers/orin.nano/firmware/vic.bin") != 0)
         return -1;
-    ewokos_addr_t va = dma_alloc(0, 4096);
+    ewokos_addr_t va = dma_alloc(4096);
     if (va == 0) {
         klog("vic: dma_alloc pushbuffer failed\n");
         return -1;
     }
-    uint64_t phy = dma_phy_addr(0, va);
+    uint64_t phy = dma_phy_addr(va);
     uint32_t* pb = (uint32_t*)va;
     memset(pb, 0, 4096);
 
@@ -737,7 +737,7 @@ int bsp_vic_method_test(void) {
     uint32_t mlock = rd(_common, COMMON_VIC_MLOCK);
     klog("vic: VIC-class method syncpt%u %u -> %u (want %u) VIC_MLOCK=%08x\n",
             PROBE_SYNCPT, before, after, final, mlock);
-    dma_free(0, va);
+    dma_free(va);
     if (r != 0) {
         klog("vic: VIC method routing FAILED\n");
         return -1;
@@ -1443,9 +1443,9 @@ int bsp_vic_2d_enable(void) {
     if (_2d_state == 0) {
         _2d_state = -1;
         if (bsp_vic_method_test() == 0)
-            _arena = dma_alloc(0, ARENA_BYTES);
+            _arena = dma_alloc(ARENA_BYTES);
         if (_arena != 0) {
-            _arena_phy = dma_phy_addr(0, _arena);
+            _arena_phy = dma_phy_addr(_arena);
             memset((void*)_arena, 0, ARENA_BYTES);
             uint64_t rate = 0;
             if (bsp_bpmp_clk_get_rate(ORIN_VIC_CLK, &rate) == 0)
@@ -1463,7 +1463,7 @@ int bsp_vic_2d_enable(void) {
                 /* A job that never retired may still be reading or
                  * writing the arena: only release it when idle. */
                 klog("vic: M2 FAILED -- 2D offload stays off\n");
-                dma_free(0, _arena);
+                dma_free(_arena);
                 _arena = 0;
             }
         }

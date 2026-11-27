@@ -75,13 +75,11 @@ static int fake_usleep(useconds_t us) {
 }
 uint64_t kernel_tic_ms(int zone) { (void)zone; return elapsed_ms; }
 void slog(const char* fmt, ...) { (void)fmt; }
-ewokos_addr_t dma_alloc(int32_t block, uint32_t size) {
-    (void)block;
+ewokos_addr_t dma_alloc(uint32_t size) {
     assert(size == sizeof(dma_memory));
     return (ewokos_addr_t)dma_memory;
 }
-ewokos_addr_t dma_phy_addr(int32_t block, ewokos_addr_t addr) {
-    (void)block;
+ewokos_addr_t dma_phy_addr(ewokos_addr_t addr) {
     assert(addr == (ewokos_addr_t)dma_memory);
     return 0xc8600000;
 }

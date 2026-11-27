@@ -198,7 +198,7 @@ static int adsp_try_boot(void) {
         return -1;
     }
     size = (uint32_t)len;
-    va = dma_alloc(0, size + BM_ADSP_META);
+    va = dma_alloc(size + BM_ADSP_META);
     if (va == 0) {
         fclose(f);
         return -1;
@@ -212,14 +212,14 @@ static int adsp_try_boot(void) {
         got += (uint32_t)n;
     }
     fclose(f);
-    pa = dma_phy_addr(0, va);
+    pa = dma_phy_addr(va);
     if (got != size || pa == 0) {
-        dma_free(0, va);
+        dma_free(va);
         return -1;
     }
     {
         int rc = batt_call(Q8B_BATT_BOOT, pa, size);
-        dma_free(0, va);
+        dma_free(va);
         return rc == 0 ? 0 : -1;
     }
 }
@@ -255,16 +255,16 @@ int battmgr_init(void) {
     _snap.channel_open = (caps & Q8B_BATT_CAP_CHANNEL_OPEN) != 0;
     _snap.pdr_ready = (caps & Q8B_BATT_CAP_PDR_READY) != 0;
 
-    _buf_va = dma_alloc(0, BM_BUF_SIZE);
+    _buf_va = dma_alloc(BM_BUF_SIZE);
     if (_buf_va == 0) {
         _probed = 1;
         return -1;
     }
     size = (uint32_t)BM_BUF_SIZE;
     (void)size;
-    _buf_pa = dma_phy_addr(0, _buf_va);
+    _buf_pa = dma_phy_addr(_buf_va);
     if (_buf_pa == 0) {
-        dma_free(0, _buf_va);
+        dma_free(_buf_va);
         _probed = 1;
         return -1;
     }
