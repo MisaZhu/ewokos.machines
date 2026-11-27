@@ -298,6 +298,17 @@ snapshot_variant(struct ir3_shader_variant *v, struct adreno_be_result *res,
    st->num_ubo_ranges = 0;
    for (uint32_t i = 0; i < cs->ubo_state.num_enabled; i++) {
       const struct ir3_ubo_range *r = &cs->ubo_state.range[i];
+      /* The consts_ubo holds immutable constant data that ir3 spilled out of
+       * load_constant (large literal arrays the const file cannot carry).  It
+       * is served by its OWN UBO descriptor pointing at the binary BO's
+       * constant_data section (consts_ubo_idx / constant_data_off above), NOT
+       * pushed from the per-draw uniform blob.  ir3_nir_analyze_ubo_ranges
+       * analyses its loads into ubo_state alongside UBO 0, so skip that block
+       * here rather than rejecting it: a kernel with spilled constants (e.g.
+       * the vkfonts text raster kernel) legitimately has a block-1 range. */
+      if (cs->consts_ubo.idx >= 0 &&
+          r->ubo.block == (uint32_t)cs->consts_ubo.idx)
+         continue;
       if (r->ubo.bindless || r->ubo.global || r->ubo.block != 0) {
          snprintf(log, logsz, "adreno: pushed UBO range %u is not UBO 0 "
                   "(block %u bindless %d global %d)", i, r->ubo.block,
