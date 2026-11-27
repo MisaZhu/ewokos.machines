@@ -2230,14 +2230,15 @@ static int draw_compute_geom(const v3d_3d_prog_t *pr, uint32_t fb_iova,
         if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                             pr->cs_num_uniforms, unif + split, num_uniforms - split,
                             0u, vk_ctex, 0.0f, 0.0f, 0.0f, 0.0f,
-                            ssbo, 3u, 0u, 0u) != 0) {
+                            ssbo, 3u, pr->cs_spill_iova, pr->cs_spill_size) != 0) {
             v3d_g2d_op_end();
             return decline("geom: raster uniforms (vk)");
         }
     } else if (expand_uniforms(_ccu_unif_va, pr->cs_unif_contents, pr->cs_unif_data,
                         pr->cs_num_uniforms, unif + split, num_uniforms - split,
                         0u, NULL, 0.0f, 0.0f, 0.0f, 0.0f,
-                        ssbo, tex_iova != 0u ? 4u : 3u, 0u, 0u) != 0) {
+                        ssbo, tex_iova != 0u ? 4u : 3u,
+                        pr->cs_spill_iova, pr->cs_spill_size) != 0) {
         v3d_g2d_op_end();
         return decline("geom: raster uniforms");
     }
