@@ -15,6 +15,7 @@ unsigned wcn_dp_completions(void);
 unsigned wcn_dp_tx_errors(void);
 unsigned wcn_dp_tx_done(void);
 unsigned wcn_dp_tx_packets(void);
+unsigned wcn_dp_tx_completions(void);
 /* "reo=.. rx_hp=.. refill=.." snapshot proving whether RXDMA advances. */
 void wcn_dp_hw_state(char *out, unsigned size);
 void wcn_dp_mac2_filter_req(int on);

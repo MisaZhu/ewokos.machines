@@ -865,6 +865,7 @@ static int wlan_loop(vdevice_t *dev, void *p) {
     link_monitor();
     health_poll();
     auto_connect_poll();
+    wcn_diag_tick();
 
     unsigned rd=wcn_net_pending()>0,wr=wcn_net_writable();
     unsigned events=(rd && !rx_ready ? VFS_EVT_RD:0)|(wr && !tx_ready ? VFS_EVT_WR:0);

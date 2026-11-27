@@ -30,6 +30,14 @@ void wcn_diag(const char *format, ...) __attribute__((format(printf, 1, 2)));
 void wcn_diag(const char *format, ...);
 #endif
 
+/* wcn_diag() only appends to the in-memory mirror; the SD-backed file is
+ * written by wcn_diag_tick() from the owner loop (at most once per second)
+ * so a slow ext3 journal commit cannot stall RX/TX per record. Call
+ * wcn_diag_sync() before an imminent restart/power loss to force the newest
+ * records (e.g. a station failure) onto persistent storage. */
+void wcn_diag_tick(void);
+void wcn_diag_sync(void);
+
 /* Start an isolated diag session: continues the existing file, fences the
  * previous (uncleanly stopped) session and prefixes every later line with the
  * session id, so records from different boots never blend together. Call once
