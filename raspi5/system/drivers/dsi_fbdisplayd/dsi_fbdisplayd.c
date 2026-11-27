@@ -979,7 +979,7 @@ static int32_t map_scanout_buffer(uint32_t w, uint32_t h, uint32_t dep) {
 	page_size = sysinfo.page_size == 0 ? 4096U : sysinfo.page_size;
 	alloc_size = (size + page_size - 1U) & ~(page_size - 1U);
 
-	fb_vaddr = dma_alloc(0, alloc_size);
+	fb_vaddr = dma_alloc(0, alloc_size, false);
 	if (fb_vaddr == 0) {
 		slog("dsi_fbdisplayd: dma alloc failed size=%u\n", alloc_size);
 		return -1;

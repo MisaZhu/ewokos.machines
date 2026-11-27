@@ -658,7 +658,7 @@ static uint32_t core_clock_hz(void) {
     uint32_t hz = CORE_CLOCK_FALLBACK_HZ;
     /* message head(2) + tag head(3) + value buffer(2) + end tag(1) */
     uint32_t size = 8 * 4;
-    uint32_t* buf = (uint32_t*)dma_alloc(0, size);
+    uint32_t* buf = (uint32_t*)dma_alloc(0, size, false);
     if(buf == NULL)
         return hz;
 

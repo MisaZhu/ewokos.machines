@@ -342,7 +342,7 @@ static int sdhci_sdma_init(void)
     if (_sdma_unavailable)
         return -1;
 
-    vaddr = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE);
+    vaddr = dma_alloc(0, SDHCI_SDMA_BOUNCE_SIZE, false);
     if (vaddr == 0) {
         _sdma_unavailable = true;
         slog("sdhci: dma_alloc(%u) failed, staying on PIO\n",

@@ -280,7 +280,7 @@ int ga10b_dev_alloc(uint32_t size, void** va, uint64_t* gpu_va) {
     if (r.state != 1 || size == 0)
         goto out;
     size = (size + 4095u) & ~4095u;
-    ewokos_addr_t v = dma_alloc(GA10B_RPC_DMA_BLOCK, size);
+    ewokos_addr_t v = dma_alloc(GA10B_RPC_DMA_BLOCK, size, false);
     if (v == 0)
         goto out;
     ewokos_addr_t phy = dma_phy_addr(GA10B_RPC_DMA_BLOCK, v);

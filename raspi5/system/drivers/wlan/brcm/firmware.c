@@ -119,7 +119,7 @@ static int brcmf_fw_mailbox_property_xfer(void *tags, uint32_t tags_size)
     bcm2712_mailbox_init();
     buf_size = (uint32_t)(((sizeof(brcmf_prop_msg_hdr_t) + tags_size +
                 sizeof(uint32_t)) + 15u) & ~15u);
-    buf = (uint8_t *)dma_alloc(0, buf_size);
+    buf = (uint8_t *)dma_alloc(0, buf_size, false);
     if (buf == NULL)
         return -1;
 

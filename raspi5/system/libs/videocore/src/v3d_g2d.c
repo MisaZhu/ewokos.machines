@@ -419,7 +419,7 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
 
     if (rate_hz == NULL)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(0, sizeof(*req), false);
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_get_req_t *)(uintptr_t)vaddr;
@@ -458,7 +458,7 @@ static int g2d_clock_set(uint32_t rate_hz)
 
     if (rate_hz == 0)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(0, sizeof(*req), false);
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_set_req_t *)(uintptr_t)vaddr;
@@ -711,7 +711,7 @@ static int g2d_mmu_enable(void)
 {
     ewokos_addr_t raw_v, raw_p;
 
-    raw_v = dma_alloc(0, V3D_MMU_PT_BYTES + 4095u);
+    raw_v = dma_alloc(0, V3D_MMU_PT_BYTES + 4095u, false);
     if (raw_v == 0)
         return -1;
     raw_v = (raw_v + 4095u) & ~(ewokos_addr_t)4095u;
@@ -721,7 +721,7 @@ static int g2d_mmu_enable(void)
     _mmu_pt = (uint32_t *)(uintptr_t)raw_v;
     _mmu_pt_p = raw_p;
 
-    raw_v = dma_alloc(0, 4096u + 4095u);
+    raw_v = dma_alloc(0, 4096u + 4095u, false);
     if (raw_v == 0)
         return -1;
     raw_v = (raw_v + 4095u) & ~(ewokos_addr_t)4095u;
@@ -1185,7 +1185,7 @@ int v3d_g2d_init(void)
     _ksrc[KERN_SCALE_BILINEAR] = g2d_qpu_argb_scale_bilinear; _ksrc_n[KERN_SCALE_BILINEAR] = g2d_qpu_argb_scale_bilinear_n;
     for (i = 0; i < KERN_N; i++) {
         uint32_t k;
-        _kcode[i] = (uint64_t *)dma_alloc(0, CSD_CODE_WORDS * 8);
+        _kcode[i] = (uint64_t *)dma_alloc(0, CSD_CODE_WORDS * 8, false);
         if (_kcode[i] == 0)
             return -1;
         for (k = 0; k < _ksrc_n[i]; k++)
@@ -1194,8 +1194,8 @@ int v3d_g2d_init(void)
         if (_kcode_p[i] == 0)
             return -1;
     }
-    _unif = (uint32_t *)dma_alloc(0, CSD_UNIF_WORDS * 4);
-    _scratch = (uint32_t *)dma_alloc(0, 4096u * 4u);
+    _unif = (uint32_t *)dma_alloc(0, CSD_UNIF_WORDS * 4, false);
+    _scratch = (uint32_t *)dma_alloc(0, 4096u * 4u, false);
     if (_unif == 0 || _scratch == 0)
         return -1;
     _unif_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_unif);

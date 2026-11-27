@@ -519,7 +519,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
     mail_message_t msg;
     uint32_t rate = 0;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(0, sizeof(*req), false);
     if (vaddr == 0)
         return 0;
 
@@ -939,7 +939,7 @@ int hdmi_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     uint32_t total = cb_bytes + buf_bytes;
 
     /* over-allocate one alignment unit; dma_alloc() only guarantees a page */
-    ewokos_addr_t raw = dma_alloc(0, total + DMA40_CB_ALIGN);
+    ewokos_addr_t raw = dma_alloc(0, total + DMA40_CB_ALIGN, false);
     if (raw == 0) {
         slog("hdmi-audio: ring dma_alloc(%u) failed\n", total + DMA40_CB_ALIGN);
         return HDMI_AUDIO_ERR_DMA_MEM;

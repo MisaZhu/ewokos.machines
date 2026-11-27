@@ -37,7 +37,7 @@ static int dump_crash(const char *path) {
         printf("npupas: crash dump ABI unavailable ret=%lld expected=%x\n",
                 (long long)query, QCOM8GEN3_NPU_DUMP_ABI); return 2;
     }
-    va = dma_alloc(0, QCOM8GEN3_NPU_DUMP_CHUNK);
+    va = dma_alloc(0, QCOM8GEN3_NPU_DUMP_CHUNK, false);
     if (!va) { printf("npupas: crash DMA allocation failed\n"); return 2; }
     pa = dma_phy_addr(0, va);
     for (uint32_t offset = 0; offset < QCOM8GEN3_NSP0_SPAN;
@@ -187,7 +187,7 @@ int main(int argc, char **argv) {
 
     /* extra 16KB: the kernel builds the PAS metadata blob right after the
      * image, inside this same DMA buffer (so it is mapped for the syscall). */
-    va = dma_alloc(0, (uint32_t)size + 0x4000);
+    va = dma_alloc(0, (uint32_t)size + 0x4000, false);
     if(va == 0) {
         printf("npupas: dma_alloc(%d) failed\n", size + 0x4000);
         free(buf);

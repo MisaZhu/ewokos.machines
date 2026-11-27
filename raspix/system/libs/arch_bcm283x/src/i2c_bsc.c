@@ -102,7 +102,7 @@ static int32_t bcm283x_i2c_power_on(uint32_t device_id) {
     struct msg_set_power_state* req;
     uint32_t mailbox_data;
 
-    req = (struct msg_set_power_state*)dma_alloc(0, sizeof(struct msg_set_power_state));
+    req = (struct msg_set_power_state*)dma_alloc(0, sizeof(struct msg_set_power_state), false);
     if (req == NULL)
         return -1;
 

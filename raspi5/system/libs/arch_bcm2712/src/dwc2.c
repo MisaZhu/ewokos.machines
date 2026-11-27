@@ -328,7 +328,7 @@ static int dma_pool_init(void) {
 
     _dma_pool.size = USB_DMA_POOL_SIZE;
     _dma_pool.used = 0;
-    _dma_pool.virt = dma_alloc(0, _dma_pool.size);
+    _dma_pool.virt = dma_alloc(0, _dma_pool.size, false);
     if (_dma_pool.virt == 0) {
         slog("dwc2: dma alloc_failed size=%u\n", _dma_pool.size);
         return -1;
@@ -382,7 +382,7 @@ static int bcm2712_set_power_state(uint32_t device_id) {
     ewokos_addr_t phy;
     uint32_t resp_state;
 
-    req = (bcm2712_mbox_power_msg_t*)(uintptr_t)dma_alloc(0, sizeof(*req));
+    req = (bcm2712_mbox_power_msg_t*)(uintptr_t)dma_alloc(0, sizeof(*req), false);
     if (req == NULL) {
         return -1;
     }

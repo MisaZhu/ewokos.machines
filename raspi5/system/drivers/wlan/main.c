@@ -97,7 +97,7 @@ static uint32_t mailbox_data_from_dma_buf(void* buf)
 static uint32_t pi5_get_emmc2_clock(void)
 {
     mail_message_t msg;
-    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(0, sizeof(struct msg_get_clock_rate)));
+    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(0, sizeof(struct msg_get_clock_rate), false));
     uint32_t mailbox_data;
     uint32_t rate = 0;
 

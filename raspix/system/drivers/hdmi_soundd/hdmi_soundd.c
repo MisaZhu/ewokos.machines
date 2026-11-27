@@ -1588,9 +1588,9 @@ static int audio_init_pcm(const struct pcm_config *cfg) {
     _snd.pixel_clock_hz = audio_measure_pixel_clock();
     hdmi_mai_program(cfg);
 
-    _snd.dma_cbs_addr = dma_alloc(0, sizeof(dma_cb_t) * DMA_BUFFER_SLOTS);
+    _snd.dma_cbs_addr = dma_alloc(0, sizeof(dma_cb_t) * DMA_BUFFER_SLOTS, false);
     _snd.dma_cbs = (dma_cb_t*)(uintptr_t)_snd.dma_cbs_addr;
-    _snd.dma_data_base_addr = (ewokos_addr_t)dma_alloc(0, DMA_TOTAL_BUF_SIZE);
+    _snd.dma_data_base_addr = (ewokos_addr_t)dma_alloc(0, DMA_TOTAL_BUF_SIZE, false);
     if (_snd.dma_cbs_addr == 0 || _snd.dma_cbs == NULL || _snd.dma_data_base_addr == 0) {
         audio_deinit();
         return -1;

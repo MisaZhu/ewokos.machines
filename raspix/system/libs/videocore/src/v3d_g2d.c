@@ -823,7 +823,7 @@ static uint8_t *g2d_dma_alloc_phys_aligned(uint32_t bytes, uint32_t align,
 
     if (!phys_out || !align || (align & (align - 1u)))
         return NULL;
-    raw_v = dma_alloc(0, bytes + align - 1u);
+    raw_v = dma_alloc(0, bytes + align - 1u, false);
     if (!raw_v)
         return NULL;
     raw_p = dma_phy_addr(0, raw_v);
@@ -1002,7 +1002,7 @@ static int g2d_clock_get(uint32_t property_tag, uint32_t *rate_hz)
 
     if (rate_hz == NULL)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(0, sizeof(*req), false);
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_get_req_t *)(uintptr_t)vaddr;
@@ -1043,7 +1043,7 @@ static int g2d_clock_set(uint32_t rate_hz)
 
     if (rate_hz == 0)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(0, sizeof(*req), false);
     if (vaddr == 0)
         return -1;
     req = (g2d_clock_set_req_t *)(uintptr_t)vaddr;
@@ -1112,7 +1112,7 @@ static int g2d_qpu_enable(void)
 
     if (bcm283x_mailbox_init() == 0)
         return -1;
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(0, sizeof(*req), false);
     if (vaddr == 0)
         return -1;
     req = (g2d_qpu_enable_req_t *)(uintptr_t)vaddr;
@@ -1155,7 +1155,7 @@ static int g2d_power_domain_call(uint32_t tag, uint32_t domain_id)
     int result = -1;
     uint32_t attempt;
 
-    vaddr = dma_alloc(0, sizeof(*req));
+    vaddr = dma_alloc(0, sizeof(*req), false);
     if (vaddr == 0)
         return -1;
     req = (g2d_domain_req_t *)(uintptr_t)vaddr;
@@ -1899,14 +1899,14 @@ static int g2d_mmu_identity_enable(void)
     if (_ver < 33)
         return 0;
 
-    raw = (uintptr_t)dma_alloc(0, V3D_MMU_PT_BYTES + 4095u);
+    raw = (uintptr_t)dma_alloc(0, V3D_MMU_PT_BYTES + 4095u, false);
     if (raw == 0)
         return -1;
     raw = (raw + 4095u) & ~(uintptr_t)4095u;
     _mmu_pt = (uint32_t *)raw;
     _mmu_pt_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)raw);
 
-    raw = (uintptr_t)dma_alloc(0, 4096u + 4095u);
+    raw = (uintptr_t)dma_alloc(0, 4096u + 4095u, false);
     if (raw == 0 || _mmu_pt_p == 0)
         return -1;
     raw = (raw + 4095u) & ~(uintptr_t)4095u;
@@ -2218,7 +2218,7 @@ int v3d_g2d_init(void)
     }
     for (i = 0; i < KERN_TOTAL; i++) {
         uint32_t k;
-        _kcode[i] = (uint64_t *)(uintptr_t)dma_alloc(0, CSD_CODE_WORDS * 8);
+        _kcode[i] = (uint64_t *)(uintptr_t)dma_alloc(0, CSD_CODE_WORDS * 8, false);
         if (_kcode[i] == 0)
             return -1;
         for (k = 0; k < _ksrc_n[i]; k++)
@@ -2228,8 +2228,8 @@ int v3d_g2d_init(void)
             return -1;
         kn_total += _ksrc_n[i];
     }
-    _unif = (uint32_t *)(uintptr_t)dma_alloc(0, CSD_UNIF_WORDS * 4);
-    _scratch = (uint32_t *)(uintptr_t)dma_alloc(0, 4096u * 4u);
+    _unif = (uint32_t *)(uintptr_t)dma_alloc(0, CSD_UNIF_WORDS * 4, false);
+    _scratch = (uint32_t *)(uintptr_t)dma_alloc(0, 4096u * 4u, false);
     if (_unif == 0 || _scratch == 0)
         return -1;
     _unif_p = (uint32_t)dma_phy_addr(0, (ewokos_addr_t)(uintptr_t)_unif);
@@ -2237,7 +2237,7 @@ int v3d_g2d_init(void)
     if (_unif_p == 0 || _scratch_p == 0)
         return -1;
     /* nop kernel staging (VC4 bring-up diagnostics) */
-    _nop_code = (uint64_t *)(uintptr_t)dma_alloc(0, 64u);
+    _nop_code = (uint64_t *)(uintptr_t)dma_alloc(0, 64u, false);
     if (_nop_code != 0) {
         memcpy(_nop_code, g2d_nop_vc4, sizeof(g2d_nop_vc4));
         _nop_code_p = (uint32_t)dma_phy_addr(0,
@@ -2249,9 +2249,9 @@ int v3d_g2d_init(void)
      * line ([0x2134800,0x2134900)) - staging there fetched stale data
      * and wedged the SRQ; the address reached after the pad
      * (0x21368d0) fetched the full fill kernel cleanly on silicon. */
-    (void)dma_alloc(0, CSD_CODE_WORDS * 8u * 4u);   /* pad */
+    (void)dma_alloc(0, CSD_CODE_WORDS * 8u * 4u, false);   /* pad */
     _run_code = (uint64_t *)(uintptr_t)dma_alloc(
-                    0, VC4_RUN_SLOTS * CSD_CODE_WORDS * 8u);
+                    0, VC4_RUN_SLOTS * CSD_CODE_WORDS * 8u, false);
     if (_run_code != 0)
         _run_code_p = (uint32_t)dma_phy_addr(0,
                         (ewokos_addr_t)(uintptr_t)_run_code);
@@ -2263,10 +2263,10 @@ int v3d_g2d_init(void)
         uint64_t *scrub_code = _run_code + run_slot * CSD_CODE_WORDS;
 
         _vc4_scrub_unif = (uint32_t *)(uintptr_t)dma_alloc(
-                              0, (uint32_t)_num_qpus * VC4_UNIF_QWORDS * 4u);
+                              0, (uint32_t)_num_qpus * VC4_UNIF_QWORDS * 4u, false);
         _vc4_scrub_mem = (uint32_t *)(uintptr_t)dma_alloc(
                              0, (uint32_t)_num_qpus *
-                                VC4_SCRUB_BYTES_PER_QPU);
+                                VC4_SCRUB_BYTES_PER_QPU, false);
         if (!_vc4_scrub_unif || !_vc4_scrub_mem)
             return -1;
         _vc4_scrub_unif_p = (uint32_t)dma_phy_addr(
@@ -2277,7 +2277,7 @@ int v3d_g2d_init(void)
             return -1;
 
         _vc4_staging = (uint8_t *)(uintptr_t)dma_alloc(0,
-                                                           VC4_STAGING_BYTES);
+                                                           VC4_STAGING_BYTES, false);
         if (!_vc4_staging)
             return -1;
         _vc4_staging_p = (uint32_t)dma_phy_addr(
@@ -2331,9 +2331,9 @@ int v3d_g2d_init(void)
          * their state, but do not issue CTRSTA on an idle queue: CTRSTA is a
          * resume operation and leaves a fresh QBA/QEA submission blocked. */
         slog("g2d: V3D CLE initial ct0=0x%x ct1=0x%x\r\n", ct0cs, ct1cs);
-        _render_cl = (uint8_t *)(uintptr_t)dma_alloc(0, RENDER_CL_BYTES);
+        _render_cl = (uint8_t *)(uintptr_t)dma_alloc(0, RENDER_CL_BYTES, false);
         _render_generic = (uint8_t *)(uintptr_t)dma_alloc(0,
-                                                      RENDER_GENERIC_BYTES);
+                                                      RENDER_GENERIC_BYTES, false);
         _render_tile = g2d_dma_alloc_phys_aligned(RENDER_TILE_BYTES, 4096u,
                                                   &_render_tile_p);
         _render_state = g2d_dma_alloc_phys_aligned(RENDER_STATE_BYTES, 4096u,
@@ -2921,7 +2921,7 @@ int v3d_g2d_init(void)
          * 4.2 THREAD_ID -> qid mapping or the workgroup/batch config
          * does not enumerate the QPUs the way the kernel assumes. */
         uint32_t u[16];
-        ewokos_addr_t tv = dma_alloc(0, 1024);
+        ewokos_addr_t tv = dma_alloc(0, 1024, false);
         uint32_t tp = (tv != 0) ? dma_phy_addr(0, tv) : 0;
 
         if (tv != 0 && tp != 0) {

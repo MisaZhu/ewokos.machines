@@ -87,7 +87,7 @@ int npu_buf_alloc(npu_buf_t *b, uint32_t size)
 	if (!b || size == 0)
 		return -1;
 	memset(b, 0, sizeof(*b));
-	va = dma_alloc(0, size);
+	va = dma_alloc(0, size, false);
 	if (va == 0)
 		return -2;
 	pa = dma_phy_addr(0, va);

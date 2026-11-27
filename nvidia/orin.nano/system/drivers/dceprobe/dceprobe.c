@@ -929,7 +929,7 @@ static uint32_t g_hIntC, g_hIntSub;   /* client/subdevice that accept internal c
 static int chan_open(evo_chan_t* c, uint32_t hDisp, uint32_t hclass, uint32_t inst,
         uint32_t handle, uint32_t user) {
     uint8_t p[64];
-    ewokos_addr_t pva = dma_alloc(0, CORE_PB_SZ);
+    ewokos_addr_t pva = dma_alloc(0, CORE_PB_SZ, false);
     if (pva == 0) { klog("dceprobe: pb dma_alloc failed\n"); return -1; }
     memset(c, 0, sizeof(*c));
     c->hclass = hclass; c->inst = inst; c->handle = handle; c->user = user;
@@ -1642,7 +1642,7 @@ static int do_chan(uint32_t hRoot, uint32_t hSub, uint32_t hDisp) {
     /* Instance memory: DISP_INST_MEM_ALIGN (64K) aligned phys, zeroed (empty hash
      * table).  INTERNAL_DISPLAY_WRITE_INST_MEM (24B): physAddr@0 size@8
      * addrSpace@16 cpuCacheAttr@20 (NV_MEMORY_CACHED=0). */
-    ewokos_addr_t iva0 = dma_alloc(0, INST_MEM_SZ * 2U);
+    ewokos_addr_t iva0 = dma_alloc(0, INST_MEM_SZ * 2U, false);
     if (iva0 == 0) { klog("dceprobe: inst mem dma_alloc failed\n"); return -1; }
     uint64_t iphy0 = dma_phy_addr(0, iva0);
     g_inst_phy = (iphy0 + (INST_MEM_SZ - 1U)) & ~(uint64_t)(INST_MEM_SZ - 1U);
@@ -1866,7 +1866,7 @@ static int admin(volatile uint8_t* dce, uint32_t cmd, int norpc) {
     /* Over-allocate by AST_LEN slack so we can align the base up to AST_LEN
      * (AST hardware region mask requires a size-aligned base IOVA).  NC pool is
      * a physically-contiguous carveout, so phy delta == va delta. */
-    ewokos_addr_t va0 = dma_alloc(0, REGION_SZ + AST_LEN);
+    ewokos_addr_t va0 = dma_alloc(0, REGION_SZ + AST_LEN, false);
     if (va0 == 0) {
         klog("dceprobe: admin dma_alloc failed\n");
         return -1;
@@ -1888,7 +1888,7 @@ static int admin(volatile uint8_t* dce, uint32_t cmd, int norpc) {
 
     /* Separate fw trace buffer for SET_LOGGING; fw programs an AST region for
      * it (mask=size-1) so the base IOVA must be LOG_BUF_SZ-aligned. */
-    ewokos_addr_t lva0 = dma_alloc(0, LOG_BUF_SZ * 2);
+    ewokos_addr_t lva0 = dma_alloc(0, LOG_BUF_SZ * 2, false);
     if (lva0 != 0) {
         uint64_t lphy0 = dma_phy_addr(0, lva0);
         g_log_phy = (lphy0 + (LOG_BUF_SZ - 1)) & ~(uint64_t)(LOG_BUF_SZ - 1);

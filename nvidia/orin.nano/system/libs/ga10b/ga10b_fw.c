@@ -28,7 +28,7 @@ int ga10b_dma_alloc(uint32_t size, uint32_t align, void** va, uint64_t* phy) {
     if (align < 4096)
         align = 4096;
     uint32_t total = size + align;
-    ewokos_addr_t raw = dma_alloc(GA10B_DMA_BLOCK, total);
+    ewokos_addr_t raw = dma_alloc(GA10B_DMA_BLOCK, total, false);
     if (raw == 0) {
         klog("ga10b: dma_alloc(%u) failed\n", total);
         return -1;

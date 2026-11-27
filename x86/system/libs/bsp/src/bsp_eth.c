@@ -230,7 +230,7 @@ int bsp_eth_init(void) {
     _mac[4] = (uint8_t)(m1 & 0xFF);
     _mac[5] = (uint8_t)((m1 >> 8) & 0xFF);
 
-    dma_virt = dma_alloc(0, DMA_TOTAL);
+    dma_virt = dma_alloc(0, DMA_TOTAL, false);
     if (dma_virt == 0) {
         return -1;
     }

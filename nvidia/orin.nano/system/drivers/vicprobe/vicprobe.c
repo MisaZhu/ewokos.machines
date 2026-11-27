@@ -69,7 +69,7 @@ static int fb_probe(void) {
     if (r != 0 || bad != 0)
         return -1;
 
-    ewokos_addr_t src_va = dma_alloc(0, FB_T_PITCH * FB_T_H);
+    ewokos_addr_t src_va = dma_alloc(0, FB_T_PITCH * FB_T_H, false);
     if (src_va == 0)
         return -1;
     uint32_t* src = (uint32_t*)src_va;
@@ -98,7 +98,7 @@ static int fb_probe(void) {
      * uncached contiguous canvas, CPU from the same canvas, CPU from an
      * ordinary cached one. */
     uint32_t frame = fb->pitch * fb->height;
-    ewokos_addr_t nc_va = dma_alloc(0, frame);
+    ewokos_addr_t nc_va = dma_alloc(0, frame, false);
     uint8_t* cached = (uint8_t*)malloc(frame);
     if (nc_va == 0 || cached == NULL) {
         printf("vicprobe: fb frame bench skipped (no memory)\n");
@@ -136,8 +136,8 @@ static int fb_probe(void) {
 static int bench(void) {
     if (bsp_vic_2d_enable() != 0)
         return -1;
-    ewokos_addr_t a = dma_alloc(0, BN_PITCH * BN_MAX);
-    ewokos_addr_t b = dma_alloc(0, BN_PITCH * BN_MAX);
+    ewokos_addr_t a = dma_alloc(0, BN_PITCH * BN_MAX, false);
+    ewokos_addr_t b = dma_alloc(0, BN_PITCH * BN_MAX, false);
     if (a == 0 || b == 0)
         return -1;
     uint64_t pa = dma_phy_addr(0, a), pb = dma_phy_addr(0, b);

@@ -154,7 +154,7 @@ static inline uint32_t align_up(uint32_t value, uint32_t align) {
 static int dma_pool_init(void) {
     _dma_pool.size = UHCI_DMA_POOL_SIZE;
     _dma_pool.used = 0;
-    _dma_pool.virt = dma_alloc(0, _dma_pool.size);
+    _dma_pool.virt = dma_alloc(0, _dma_pool.size, false);
     if (_dma_pool.virt == 0) {
         return -1;
     }

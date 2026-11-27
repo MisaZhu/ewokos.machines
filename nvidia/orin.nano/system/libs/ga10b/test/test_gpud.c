@@ -65,8 +65,9 @@ static struct { void* va; uint64_t phy; uint32_t size; } g_dma[DMA_MAX];
 static int g_dma_live;
 static uint64_t g_dma_phy_next = 0x200000000ULL;
 
-ewokos_addr_t dma_alloc(int32_t block, uint32_t size) {
+ewokos_addr_t dma_alloc(int32_t block, uint32_t size, bool cache) {
     (void)block;
+    (void)cache;
     for (int i = 0; i < DMA_MAX; i++) {
         if (g_dma[i].va != NULL) continue;
         void* p = malloc(size);

@@ -171,7 +171,7 @@ static v3d_3d_prog_t _progs[V3D_3D_MAX_PROGS];
 static int alloc_stage_raw(uint32_t size, void **va, uint32_t *iova,
                            ewokos_addr_t *raw)
 {
-    ewokos_addr_t r = dma_alloc(0, size + 4095u);
+    ewokos_addr_t r = dma_alloc(0, size + 4095u, false);
     ewokos_addr_t v, p;
 
     if (r == 0)

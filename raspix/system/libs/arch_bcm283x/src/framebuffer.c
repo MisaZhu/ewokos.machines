@@ -35,7 +35,7 @@ static int mailbox_call_with_alias(uint32_t* buffer, uint32_t alias, uint8_t cha
 
 static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias_used) {
     uint32_t size = buffer[0];
-    uint32_t* shadow = (uint32_t*)dma_alloc(0, size);
+    uint32_t* shadow = (uint32_t*)dma_alloc(0, size, false);
 
     if (shadow != NULL) {
         memcpy(shadow, buffer, size);
@@ -82,7 +82,7 @@ static int mailbox_property_call_with_fallback(uint32_t* buffer, uint32_t* alias
 
 // Allocate GPU memory
 uint32_t allocate_gpu_memory(uint32_t size, uint32_t alignment, uint32_t flags) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 10*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 10*4, false));
     
     buffer[0] = 10 * 4;
     buffer[1] = 0;
@@ -108,7 +108,7 @@ uint32_t allocate_gpu_memory(uint32_t size, uint32_t alignment, uint32_t flags) 
 
 // Lock GPU memory to obtain the physical address
 uint32_t lock_gpu_memory(uint32_t handle) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4, false));
     
     buffer[0] = 8 * 4;
     buffer[1] = 0;
@@ -132,7 +132,7 @@ uint32_t lock_gpu_memory(uint32_t handle) {
 
 // Unlock GPU memory
 void unlock_gpu_memory(uint32_t handle) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 8*4, false));
     
     buffer[0] = 8 * 4;
     buffer[1] = 0;
@@ -153,7 +153,7 @@ void unlock_gpu_memory(uint32_t handle) {
 
 // Free GPU memory
 void free_gpu_memory(uint32_t handle) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 7*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 7*4, false));
     
     buffer[0] = 7 * 4;
     buffer[1] = 0;
@@ -179,7 +179,7 @@ void gpu_blt_with_alpha(
     int src_x, int src_y, int dst_x, int dst_y,
     int width, int height, uint32_t flags) {
     
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 24*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 24*4, false));
     
     buffer[0] = 24 * 4;
     buffer[1] = 0;
@@ -226,7 +226,7 @@ void gpu_blt_with_alpha(
 
 // Fill the screen with a single color
 void fill_screen(uint32_t color) {
-    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 24*4));
+    uint32_t* buffer = (uint32_t*)(dma_alloc(0, 24*4, false));
     
     buffer[0] = 23 * 4;
     buffer[1] = 0;
@@ -387,7 +387,7 @@ static void fb_build_request(uint32_t* req, uint32_t w, uint32_t h, uint32_t dep
 }
 
 static int fb_try_mode(const sys_info_t* sysinfo, const fb_mode_t* mode, disp_info_t* info) {
-    uint32_t* req = (uint32_t*)dma_alloc(0, 35 * sizeof(uint32_t));
+    uint32_t* req = (uint32_t*)dma_alloc(0, 35 * sizeof(uint32_t), false);
     uint32_t alias_used = 0;
     uint32_t page_size;
     uint32_t resp_w;

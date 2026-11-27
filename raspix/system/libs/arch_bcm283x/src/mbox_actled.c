@@ -14,7 +14,7 @@ void bcm283x_mbox_actled(bool on) {
     mail_message_t msg;
     /*message head + tag head + property*/
     uint32_t size = 12 + 12 + 8;
-    uint32_t* buf = (uint32_t*)(dma_alloc(0, size));
+    uint32_t* buf = (uint32_t*)(dma_alloc(0, size, false));
     uint32_t mailbox_data;
 
     if (buf == NULL)

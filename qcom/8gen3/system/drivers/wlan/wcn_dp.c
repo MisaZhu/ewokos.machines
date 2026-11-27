@@ -172,7 +172,7 @@ static void dp_arm_hw(void) {
 int wcn_dp_init(void) {
     if (d.active) return d.failed ? -1 : 0;
     if (d.dma) return -1;
-    d.dma=(uint8_t *)dma_alloc(0,DP_BYTES);
+    d.dma=(uint8_t *)dma_alloc(0,DP_BYTES, false);
     if (!d.dma) return -1;
     d.pa=dma_phy_addr(0,(ewokos_addr_t)d.dma);
     if (!d.pa || d.pa+DP_BYTES>0x100000000ULL) return -1;

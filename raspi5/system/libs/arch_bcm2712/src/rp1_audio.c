@@ -678,7 +678,7 @@ int rp1_audio_setup_ring(uint32_t slots, uint32_t slot_frames) {
     uint32_t total = lli_bytes + buf_bytes;
 
     /* over-allocate one alignment unit, dma_alloc() only guarantees a page */
-    ewokos_addr_t raw = dma_alloc(0, total + RP1_LLI_ALIGN);
+    ewokos_addr_t raw = dma_alloc(0, total + RP1_LLI_ALIGN, false);
     if (raw == 0) {
         slog("rp1-audio: ring dma_alloc(%u) failed\n", total + RP1_LLI_ALIGN);
         return RP1_AUDIO_ERR_DMA_MEM;

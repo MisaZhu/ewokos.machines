@@ -249,7 +249,7 @@ void ili9488_init(void){
     rk_gpio_write(LCD_RST, 1);
     usleep(10000);
 
-    _fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t));
+    _fb = dma_alloc(0, LCD_WIDTH * LCD_HEIGHT * sizeof(uint16_t), false);
     _shadow_argb = malloc(LCD_WIDTH * LCD_HEIGHT * sizeof(uint32_t));
     _shadow_ready = 0;
     if (_shadow_argb != NULL) {
