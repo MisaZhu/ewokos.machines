@@ -36,6 +36,7 @@ static struct {
     unsigned svc_words, svc_logged;
     struct { unsigned pdev,module,min_elem,min_buf_sz,min_buf_align; } dbring[4];
     unsigned dbring_count, dbring_seen;
+    unsigned probe_on, scan_assoc;
     struct wcn_bss ap[64];
     struct {
         unsigned count, valid, max_bw5;
@@ -311,7 +312,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
             if (!f.chains || f.chains > 2 || f.memory_requests) { f.failed = 1; return; }
             f.service_ready = 1;
         }
-        if (event == 1 && tag == 16 && len >= 4 && len <= 128 && !(len % 4)) {
+        if (f.probe_on && event == 1 && tag == 16 && len >= 4 && len <= 128 && !(len % 4)) {
             f.svc_words = len / 4;
             for (unsigned i = 0; i < f.svc_words; i++) f.svc[i] = get32(v + i*4);
             if (!f.svc_logged) {
@@ -359,7 +360,7 @@ void wcn_wmi_receive(const void *packet, unsigned bytes) {
                 off+=4+length;
             }
         }
-        if (event==0x4009 && tag==18) {
+        if (f.probe_on && event==0x4009 && tag==18) {
             /* WMI_TAG_DMA_RING_CAPABILITIES entries (24-byte structs). The tag
              * number shifted by 4 between ath11k reference revisions; accept
              * both and validate the shape. module 0 = spectral, 1 = CFR. */
@@ -695,7 +696,11 @@ void wcn_wmi_poll(void) {
         }
     }
 }
-void wcn_wmi_reset(void) { memset(&f,0,sizeof(f)); }
+void wcn_wmi_reset(void) {
+    memset(&f,0,sizeof(f));
+    FILE *fp=fopen("/etc/wlan.spectral-probe","r"); if(fp){fclose(fp);f.probe_on=1;}
+    fp=fopen("/etc/wlan.scan-assoc","r"); if(fp){fclose(fp);f.scan_assoc=1;}
+}
 int wcn_wmi_station_available(void) {
     return wcn_wmi_ready() && !f.country_state && f.vdev_sent && !f.scan_pending && !f.scan_active && !f.scan_cancelling;
 }
@@ -986,9 +991,10 @@ int wcn_wmi_channel_width_power(unsigned mhz,unsigned center,unsigned width) {
     return power>30 ? 30 : power;
 }
 int wcn_wmi_scan(void) {
-    /* ASSOCIATED is allowed: the firmware scans off-channel while the link
+    /* ASSOCIATED scans are opt-in via /etc/wlan.scan-assoc (default off =
+     * upstream behavior). The firmware scans off-channel while the link
      * stays up (Linux ath11k/NM does connected scans on this same chip). */
-    if (f.country_state || (wcn_sta_busy() && !wcn_sta_associated()) || !wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
+    if (f.country_state || (wcn_sta_busy() && !(f.scan_assoc && wcn_sta_associated())) || !wcn_wmi_ready() || f.scan_pending || f.scan_active || f.scan_cancelling) return -1;
     memset(f.ap,0,sizeof(f.ap)); f.ap_count=f.scan_done=f.scan_reason=f.scan_events=0;
     f.scan_id=(f.scan_id+1)&0xfff; if (!f.scan_id) f.scan_id=1;
     f.scan_pending=1; f.scan_timedout=0;
