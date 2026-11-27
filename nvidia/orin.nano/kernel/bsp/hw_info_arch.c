@@ -222,7 +222,10 @@ static uint32_t memory_exclusions(orin_mem_range_t* ex) {
         } \
     } while (0)
 
-    ADD_EXCL(_sys_info.sys_dma.phy_base, _sys_info.sys_dma.size);
+    /* sys_dma is a DMA-reachable range over general RAM, not a carve-out:
+       its pages stay in the heap (see arch_dma_range), so it is NOT excluded
+       here. Only the reserved shm_contig / GPU pools and firmware regions
+       are punched out of the allocator. */
     ADD_EXCL(_sys_info.shm_contig.phy_base, _sys_info.shm_contig.size);
     /* phy_base is 0 until reserved: excluding [0, size) would swallow the
        low DMA32 pools during their own search. */
@@ -292,21 +295,37 @@ static uint64_t find_memory_pool(uint32_t size, uint64_t floor, uint64_t limit) 
     return best;
 }
 
+/*
+ * DMA-reachable physical range. Board devices (xHCI, DCE) do 32-bit DMA, so
+ * dynamic DMA buffers must land below 4GB. The floor stays at
+ * allocable_phy_mem_base (a constraint over the general heap, never the
+ * kernel core); the reserved shm_contig / firmware regions inside that
+ * window are already kept out of the heap by kalloc_arch(). The GA10B GPU
+ * reaches DRAM through its own 64-bit GMMU and uses the separate high
+ * sys_dma_gpu pool, unaffected by this range.
+ */
+void arch_dma_range(ewokos_addr_t* base, ewokos_addr_t* top) {
+    *base = _sys_info.allocable_phy_mem_base;
+    *top = _sys_info.allocable_phy_mem_top;
+    if(*top > (1ULL << 32))
+        *top = (1ULL << 32);
+}
+
 int32_t arch_reserve_memory_pools(void) {
     if (!memory_map_valid()) {
         kout_str("orin: invalid UEFI memory map; refusing unsafe memory pools\n");
         halt();
     }
-    _sys_info.sys_dma.phy_base = 0;
     _sys_info.shm_contig.phy_base = 0;
-    /* Board devices (xHCI, DCE) do 32-bit DMA: keep their pools below 4GB. */
-    _sys_info.sys_dma.phy_base = find_memory_pool(_sys_info.sys_dma.size,
-            0, 1ULL << 32);
+    /* sys_dma is no longer carved here: it is a DMA-reachable range over
+       general RAM (arch_dma_range) that dma_alloc draws from dynamically.
+       Only the reserved shm_contig slab and the high GPU pool are carved
+       out. Board devices (xHCI, DCE) do 32-bit DMA, so the shm slab stays
+       below 4GB. */
     if (_sys_info.shm_contig.size)
         _sys_info.shm_contig.phy_base = find_memory_pool(_sys_info.shm_contig.size,
                 0, 1ULL << 32);
-    if (!_sys_info.sys_dma.phy_base ||
-            (_sys_info.shm_contig.size && !_sys_info.shm_contig.phy_base)) {
+    if (_sys_info.shm_contig.size && !_sys_info.shm_contig.phy_base) {
         kout_str("orin: no firmware-safe DMA32 memory pools\n");
         halt();
     }

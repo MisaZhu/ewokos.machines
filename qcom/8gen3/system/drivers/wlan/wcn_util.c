@@ -4,6 +4,7 @@
 #include <ewoksys/kernel_tic.h>
 #include <ewoksys/basic_math.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -78,6 +79,68 @@ static unsigned diag_len, diag_seq;
 static unsigned diag_dirty;
 static uint64_t diag_flush_ms;
 
+/* The SD write must never run on the owner loop: even one flush per second
+ * lets a multi-minute ext3/SD stall freeze RX/TX and every watchdog with it.
+ * A dedicated writer thread owns the file; the loop only snapshots the
+ * mirror under a mutex. If the SD wedges, only the writer blocks and the
+ * link keeps living. */
+static char diag_snapshot[WCN_DIAG_BYTES];
+static unsigned diag_snap_len;
+static unsigned diag_pending;
+static unsigned diag_writes;
+static int diag_writer_up;
+static pthread_mutex_t diag_lock;
+static pthread_t diag_writer_tid;
+static char diag_io[WCN_DIAG_BYTES];
+
+static void *diag_writer(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&diag_lock);
+        while (!diag_pending) {
+            pthread_mutex_unlock(&diag_lock);
+            usleep(50000);
+            pthread_mutex_lock(&diag_lock);
+        }
+        memcpy(diag_io, diag_snapshot, diag_snap_len);
+        unsigned len = diag_snap_len;
+        diag_pending = 0;
+        pthread_mutex_unlock(&diag_lock);
+        int fd = open(WCN_DIAG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            int wr = write(fd, diag_io, (int)len);
+            close(fd);
+            (void)wr;
+        }
+        pthread_mutex_lock(&diag_lock);
+        diag_writes++;
+        pthread_mutex_unlock(&diag_lock);
+    }
+    return NULL;
+}
+
+/* Hand the mirror to the writer thread. Falls back to a synchronous write
+ * only if the thread could not be created at all. */
+static void diag_flush(void) {
+    if (!diag_writer_up) {
+        if (pthread_create(&diag_writer_tid, NULL, diag_writer, NULL) == 0) {
+            diag_writer_up = 1;
+        } else {
+            int fd = open(WCN_DIAG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) return;
+            int wr = write(fd, diag_ring, (int)diag_len);
+            close(fd);
+            (void)wr;
+            return;
+        }
+    }
+    pthread_mutex_lock(&diag_lock);
+    memcpy(diag_snapshot, diag_ring, diag_len);
+    diag_snap_len = diag_len;
+    diag_pending = 1;
+    pthread_mutex_unlock(&diag_lock);
+}
+
 /* Append to the in-memory mirror, trimming the oldest whole lines when full.
  * Every session header therefore starts on a clean line. */
 static void diag_push(const char *s, unsigned bytes) {
@@ -93,14 +156,6 @@ static void diag_push(const char *s, unsigned bytes) {
     memcpy(diag_ring + diag_len, s, bytes);
     diag_len += bytes;
     diag_ring[diag_len] = 0;
-}
-
-static void diag_flush(void) {
-    int fd = open(WCN_DIAG_PATH, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) return;
-    int wr = write(fd, diag_ring, (int)diag_len);
-    close(fd);
-    (void)wr;
 }
 
 /* Load the history of earlier boots into the mirror without touching the file
@@ -218,12 +273,28 @@ void wcn_diag_tick(void) {
 }
 
 /* Force persistence for records that must survive an imminent controller
- * restart or power loss (station failures). Rare by construction. */
+ * restart or power loss (station failures). Rare by construction. The wait
+ * is bounded: a wedged SD must not hold the owner loop hostage here either -
+ * after the grace window the restart proceeds and the writer catches up if
+ * the card ever answers again. */
 void wcn_diag_sync(void) {
     if (!diag_dirty) return;
     diag_flush_ms = kernel_tic_ms(0);
     diag_dirty = 0;
     diag_flush();
+    /* Baseline after the snapshot is queued: any write counted from here on
+     * necessarily carried this snapshot (or a newer one). */
+    pthread_mutex_lock(&diag_lock);
+    unsigned want = diag_writes + 1;
+    pthread_mutex_unlock(&diag_lock);
+    uint64_t until = kernel_tic_ms(0) + 1500;
+    for (;;) {
+        pthread_mutex_lock(&diag_lock);
+        unsigned done = diag_writes;
+        pthread_mutex_unlock(&diag_lock);
+        if (done >= want || kernel_tic_ms(0) >= until) return;
+        usleep(10000);
+    }
 }
 
 char *wcn_log_get(void) {

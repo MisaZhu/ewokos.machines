@@ -98,16 +98,6 @@ void sys_info_init_arch(void) {
     if(_sys_info.total_usable_mem_size > MAX_USABLE_MEM_SIZE)
         _sys_info.total_usable_mem_size = MAX_USABLE_MEM_SIZE;
 
-#ifdef PAGE_SIZE_64K
-    /*
-     * Pi 5 native HDMI allocates the scanout buffer from sys_dma. With 64KB
-     * granules the allocation is rounded up more aggressively, and large
-     * displays can leave too little headroom in the generic 32MB pool on 2GB
-     * boards. Reserve a larger DMA window up front for display bring-up.
-     */
-    _sys_info.sys_dma.size = 64*MB;
-#endif
-
     strcpy(_sys_info.arch, "aarch64");
 
     _sys_info.allocable_phy_mem_top = _sys_info.phy_offset +
@@ -197,6 +187,21 @@ void start_core(uint32_t core_id) {
     /* res.a0 == 0 on success; the caller polls _cpu_cores[].actived */
 }
 #endif
+
+/*
+ * DMA-reachable physical range. The VideoCore legacy DMA masters (scan-out,
+ * g2d, mailbox, audio) only reach ARM physical 0..1GB (bcm2712.dtsi
+ * dma-ranges), so dynamic DMA buffers must land below PI5_VC_RAM_TOP. The
+ * floor stays at allocable_phy_mem_base: the range is a constraint over the
+ * general heap, never over the kernel core. The firmware framebuffer hole
+ * inside that window is already kept out of the heap by kalloc_arch().
+ */
+void arch_dma_range(ewokos_addr_t* base, ewokos_addr_t* top) {
+    *base = _sys_info.allocable_phy_mem_base;
+    *top = _sys_info.phy_offset + PI5_VC_RAM_TOP;
+    if(*top > _sys_info.allocable_phy_mem_top)
+        *top = _sys_info.allocable_phy_mem_top;
+}
 
 void kalloc_arch(void) {
     ewokos_addr_t base = _sys_info.allocable_phy_mem_base;

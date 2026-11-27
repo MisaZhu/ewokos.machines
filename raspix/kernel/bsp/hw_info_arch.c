@@ -204,6 +204,21 @@ void start_core(uint32_t core_id) {
 }
 #endif
 
+/*
+ * DMA-reachable physical range. BCM283x legacy VideoCore DMA masters reach
+ * only the first 1GB of ARM physical RAM (the (phys & 0x3FFFFFFF)|0xC0000000
+ * bus alias silently truncates anything above it), so dynamic DMA buffers
+ * must land below 1GB. The floor stays at allocable_phy_mem_base so the
+ * range constrains the general heap, never the kernel core; the reserved
+ * low/high holes inside RAM are already kept out of the heap by kalloc_arch().
+ */
+void arch_dma_range(ewokos_addr_t* base, ewokos_addr_t* top) {
+    *base = _sys_info.allocable_phy_mem_base;
+    *top = _sys_info.phy_offset + (ewokos_addr_t)1*GB;
+    if(*top > _sys_info.allocable_phy_mem_top)
+        *top = _sys_info.allocable_phy_mem_top;
+}
+
 void kalloc_arch(void) {
     /*
      * Add allocatable RAM to kalloc while skipping mmio reserved

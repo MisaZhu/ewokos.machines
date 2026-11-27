@@ -936,13 +936,26 @@ int main(int argc, char **argv) {
      * previous one: /etc/wlan-diag.log is the only trace that survives without
      * a serial console, and the failing boot is usually read after a reboot. */
     wcn_diag_session(node, argc);
-    if (dev_get_pid(node) >= 0) {
-        wcn_log("wcn: node already owned\n");
-        return -1;
+    /* Warm restart races: the previous owner may still be releasing the node
+     * (killall is asynchronous) and pcied's snapshot may lag the endpoint
+     * reset. Exiting silently here produced zero-record sessions and a dead
+     * radio until the next manual start, so wait both out instead. */
+    uint64_t give_up = kernel_tic_ms(0) + 15000;
+    while (dev_get_pid(node) >= 0) {
+        if (kernel_tic_ms(0) >= give_up) {
+            wcn_diag("bring-up abort: node %s still owned\n", node);
+            wcn_log("wcn: node already owned\n");
+            return -1;
+        }
+        usleep(500000);
     }
-    if (wcn_attach()) {
-        wcn_log("wcn: attach failed\n");
-        return -1;
+    while (wcn_attach()) {
+        if (kernel_tic_ms(0) >= give_up) {
+            wcn_diag("bring-up abort: attach failed\n");
+            wcn_log("wcn: attach failed\n");
+            return -1;
+        }
+        usleep(500000);
     }
 
     for (int i = 2; i < argc; i++) {

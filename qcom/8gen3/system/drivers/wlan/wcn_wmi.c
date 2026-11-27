@@ -637,17 +637,13 @@ void wcn_wmi_poll(void) {
         return;
     }
     if (!f.idle_ps_sent) {
-        /* WCN6855 is idle_ps=true in ath11k: the firmware's IMPS behaviour is
-         * configured with WMI_PDEV_PARAM_IDLE_PS_CONFIG=1 at pdev start
-         * (mac.c ath11k_mac_start, cmd 0x4003, TLV tag 82). Without it the
-         * firmware parks itself uncoordinated when idle and the AP holds
-         * unicast for a station it believes is asleep. pdev_id 0 is the
-         * soc-level id ath11k uses for single_pdev_only chips. */
-        const uint32_t ps[]={0x4003,(82u<<16)|12,0,44,1};
-        if (!wcn_htc_wmi_send(ps,sizeof(ps))) {
-            f.idle_ps_sent=1;
-            wcn_diag("idle-ps config sent\n");
-        }
+        /* Do not send WMI_PDEV_PARAM_IDLE_PS_CONFIG=1 (cmd 0x4003, TLV tag
+         * 82, ath11k's idle_ps=true path): on this firmware it drives a deep
+         * coordinated park that strands in-flight TX completions for 30-58s
+         * and forces link restarts even with the wake policy set. Without it
+         * the idle keepalive in wcn_sta_poll keeps the radio out of the deep
+         * park and downlink after idle gaps stays alive. */
+        f.idle_ps_sent=1;
         return;
     }
     if (f.country_state==1) {

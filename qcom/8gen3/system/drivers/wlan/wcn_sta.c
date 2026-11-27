@@ -589,8 +589,15 @@ void wcn_sta_poll(void) {
             s.ps_retry=now+5000;
             sta_ps_configure();
         }
-        if (frames && wcn_wpa_established() && now>=s.rx_grace-30000 && now>=s.probe_ms) {
-            s.probe_ms=now+10000;
+        /* Idle keepalive: the firmware parks the radio after a few idle
+         * seconds and the first downlink frames after a long park are lost
+         * while it wakes. The trigger must NOT depend on RX silence: ambient
+         * multicast keeps the RX watchdog re-armed forever while the
+         * firmware still parks. An unconditional QoS-null every 3s keeps
+         * real uplink activity on the air; its ACK also keeps the AP's
+         * station entry warm. */
+        if (wcn_wpa_established() && now>=s.probe_ms) {
+            s.probe_ms=now+3000;
             uint8_t f[26]={0xc8,0x41}; /* QoS-null (subtype 12), ToDS, protected */
             memcpy(f+4,s.bss.bssid,6);memcpy(f+10,s.mac,6);memcpy(f+16,s.bss.bssid,6);
             put16(f+22,(++s.seq&4095)<<4);
