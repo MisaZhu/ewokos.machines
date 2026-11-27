@@ -625,6 +625,9 @@ unsigned wcn_dp_tx_errors(void) { return d.tx_errors; }
  * proof of a working radio path when the downlink is silent. */
 unsigned wcn_dp_tx_done(void) { return d.tx_done - d.tx_errors; }
 unsigned wcn_dp_tx_packets(void) { return d.tx_packets; }
+/* All TX completions, ACKed or failed: a stalled completion stream (firmware
+ * stopped recycling descriptors) is detectable even when every frame fails. */
+unsigned wcn_dp_tx_completions(void) { return d.tx_done; }
 
 void wcn_dp_hw_state(char *out, unsigned size) {
     struct dp_ring *r = dp_find(128);

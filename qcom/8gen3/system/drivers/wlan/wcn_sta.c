@@ -36,6 +36,20 @@ static struct {
     unsigned rates_len,ht,vht,he,nss,width,center,phymode,ht_rates_len,max_width,he_len,he_allowed;
     unsigned tx_done_base;
     uint64_t probe_ms;
+    /* TX completion-stream watchdog: last completion count and the clock it
+     * advanced. In-flight frames with a frozen completion stream mean the
+     * firmware stopped recycling TX descriptors - the RX watchdog cannot
+     * see this while downlink traffic keeps arriving. */
+    unsigned tx_comp_base;
+    uint64_t tx_stall_ms;
+    /* Staged tx-stall self-rescue: cookie of the liveness probe sent once the
+     * completion stream freezes, and how far the escalation has progressed. */
+    unsigned tx_probe_cookie;
+    unsigned tx_stall_stage;
+    /* Clock since the in-flight backlog first reached the leak threshold:
+     * lost completions leak cookies even while the stream keeps advancing,
+     * and a backlog that never drains must be reclaimed by a restart. */
+    uint64_t tx_backlog_ms;
     /* Wake-policy apply mask (bit0 RX_WAKE, bit1 TX_WAKE, bit2 PSPOLL,
      * bit3 PS mode=0) and retry clock: the CONFIG burst can run the WMI
      * endpoint out of credits, so a failed send is retried after WPA. */
@@ -64,6 +78,7 @@ static void fail(const char *why,unsigned status) {
     wcn_diag("station-fail why=%s status=%u phase=%s mhz=%u aid=%u mgmt=%u/%u err=%u data=%u/%u eapol=%u\n",
              why,status,names[s.state],s.bss.mhz,s.aid,s.tx,s.tx_done,s.tx_errors,
              s.data_tx,s.data_rx,s.eapol_rx);
+    wcn_diag_sync();
     wcn_log("wcn: station failure=%s status=%u phase=%s; recovery required\n",why,status,names[s.state]);
     s.error=why; s.status=status; state(FAILED);
 }
@@ -512,6 +527,62 @@ void wcn_sta_poll(void) {
             if (frames) s.rx_grace=now+60000;
         }
         if (now>=s.rx_grace) { fail("rx-dead",0); return; }
+        /* TX completion-stream liveness. Air congestion alone keeps the
+         * stream flowing - failed frames complete too - so a frozen stream
+         * with frames still in flight is a stuck TX engine, not a busy air:
+         * the cookies never free, every uplink send is rejected, and the RX
+         * watchdog stays re-armed by downlink traffic while the link looks
+         * "connected". A lone in-flight frame is not proof: a completion can
+         * be lost while the engine is fine, so escalate in stages instead of
+         * tearing down a healthy link - probe the engine, re-assert the awake
+         * policy, and only restart when both fail. A real backlog (cookies
+         * piling up) skips straight to the restart. */
+        unsigned comp=wcn_dp_tx_completions();
+        if (comp!=s.tx_comp_base) {
+            s.tx_comp_base=comp; s.tx_stall_ms=now;
+            s.tx_probe_cookie=0; s.tx_stall_stage=0;
+        }
+        unsigned flight=wcn_dp_tx_packets()-comp;
+        uint64_t frozen=now-s.tx_stall_ms;
+        if (flight>=4) {
+            if (!s.tx_backlog_ms) s.tx_backlog_ms=now;
+            /* A healthy engine drains any backlog in milliseconds; one that
+             * persists for half a minute is leaked cookies (completions lost
+             * while the stream still advances) - reclaim via restart before
+             * all 256 slots are gone and the uplink dies for good. */
+            if (now-s.tx_backlog_ms>=30000) {
+                wcn_diag("tx-leak flight=%u comp=%u ms=%llu\n",flight,comp,
+                         (unsigned long long)(now-s.tx_backlog_ms));
+                fail("tx-leak",0); return;
+            }
+        } else s.tx_backlog_ms=0;
+        if (flight>=4 && frozen>=10000) {
+            wcn_diag("tx-stall flight=%u comp=%u ms=%llu\n",flight,comp,
+                     (unsigned long long)frozen);
+            fail("tx-stall",0); return;
+        }
+        if (flight && !s.tx_probe_cookie && frozen>=8000) {
+            /* Stage 1: a fresh QoS-null frame. If it completes, the engine is
+             * alive and the stuck frame only lost its completion - the stream
+             * re-arms above and no restart happens. */
+            uint8_t f[26]={0xc8,0x41};
+            memcpy(f+4,s.bss.bssid,6);memcpy(f+10,s.mac,6);memcpy(f+16,s.bss.bssid,6);
+            put16(f+22,(++s.seq&4095)<<4);
+            int c=wcn_dp_transmit(f,sizeof(f),s.lmac);
+            if (c>0) { s.tx_probe_cookie=(unsigned)c; s.tx_stall_stage=1; }
+        }
+        if (s.tx_probe_cookie && frozen>=16000) {
+            if (s.tx_stall_stage==1) {
+                /* Stage 2: the probe froze too - the engine really stopped.
+                 * Re-assert the awake policy once before condemning it. */
+                sta_ps_mode(0);
+                s.tx_stall_stage=2;
+            } else if (frozen>=24000) {
+                wcn_diag("tx-stall flight=%u comp=%u ms=%llu stage=2\n",flight,comp,
+                         (unsigned long long)frozen);
+                fail("tx-stall",0); return;
+            }
+        }
         /* A wake-policy command lost to credit exhaustion must still land:
          * retry every 5 s until all four are applied. */
         if (wcn_wpa_established() && s.ps_done!=15u && now>=s.ps_retry) {
@@ -572,6 +643,9 @@ void wcn_sta_poll(void) {
              * period with no new completion at all. */
             s.rx_base = wcn_dp_rx_frames();
             s.rx_grace = kernel_tic_ms(0) + 1200;
+            s.tx_comp_base = wcn_dp_tx_completions();
+            s.tx_stall_ms = kernel_tic_ms(0);
+            s.tx_probe_cookie = 0; s.tx_stall_stage = 0; s.tx_backlog_ms = 0;
             state(ASSOCIATED);
         }
         break;

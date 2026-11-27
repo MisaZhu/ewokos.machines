@@ -75,6 +75,8 @@ void wcn_log(const char *format, ...) {
 
 static char diag_ring[WCN_DIAG_BYTES];
 static unsigned diag_len, diag_seq;
+static unsigned diag_dirty;
+static uint64_t diag_flush_ms;
 
 /* Append to the in-memory mirror, trimming the oldest whole lines when full.
  * Every session header therefore starts on a clean line. */
@@ -197,6 +199,30 @@ void wcn_diag(const char *format, ...) {
     unsigned bytes = (unsigned)used;
     if (bytes > sizeof(line) - 1) bytes = (unsigned)(sizeof(line) - 1);
     diag_push(line, bytes);
+    /* Mark dirty only. This runs on the driver's single owner loop (every
+     * WMI event lands here), and the rootfs lives on SD: a synchronous
+     * full-file rewrite per record let one slow ext3 journal commit stall
+     * RX/TX for seconds. wcn_diag_tick() persists at a bounded cadence. */
+    diag_dirty = 1;
+}
+
+/* Persist the mirror from the owner loop at a bounded cadence. One SD write
+ * per second worst case instead of one per WMI event; a journal commit that
+ * takes seconds can then only delay the loop once per flush, not per record. */
+void wcn_diag_tick(void) {
+    uint64_t now = kernel_tic_ms(0);
+    if (!diag_dirty || now - diag_flush_ms < 1000) return;
+    diag_flush_ms = now;
+    diag_dirty = 0;
+    diag_flush();
+}
+
+/* Force persistence for records that must survive an imminent controller
+ * restart or power loss (station failures). Rare by construction. */
+void wcn_diag_sync(void) {
+    if (!diag_dirty) return;
+    diag_flush_ms = kernel_tic_ms(0);
+    diag_dirty = 0;
     diag_flush();
 }
 
