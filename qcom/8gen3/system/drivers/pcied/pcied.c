@@ -127,7 +127,7 @@ static int pcie_dcntl(vdevice_t *dev, int from_pid, int cmd,
             /* Retain this page for the lifetime of the bus, including WLAN
              * process exit/retry. No endpoint can choose an arbitrary target. */
             if (!wlan_msi_sink)
-                wlan_msi_sink = dma_alloc(0, 0x4000, false);
+                wlan_msi_sink = dma_alloc(0, 0x4000);
             if (!wlan_msi_sink)
                 return -1;
             uint64_t pa = dma_phy_addr(0, wlan_msi_sink);

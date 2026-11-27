@@ -119,7 +119,7 @@ static int cam_power_set(int on) {
     uint32_t* buf;
     int res;
 
-    buf = (uint32_t*)dma_alloc(0, 8 * 4, false);
+    buf = (uint32_t*)dma_alloc(0, 8 * 4);
     if (buf == NULL) return -1;
     buf[0] = 8 * 4;
     buf[1] = 0;
@@ -141,7 +141,7 @@ static int pd_power_on(uint32_t domain) {
     uint32_t* buf;
     int res, state = -1;
 
-    buf = (uint32_t*)dma_alloc(0, 8 * 4, false);
+    buf = (uint32_t*)dma_alloc(0, 8 * 4);
     if (buf == NULL) return -1;
     buf[0] = 8 * 4;
     buf[1] = 0;
@@ -157,7 +157,7 @@ static int pd_power_on(uint32_t domain) {
         return -1;
 
     /* read back: old firmware silently ignores unknown tags */
-    buf = (uint32_t*)dma_alloc(0, 8 * 4, false);
+    buf = (uint32_t*)dma_alloc(0, 8 * 4);
     if (buf == NULL) return -1;
     buf[0] = 8 * 4;
     buf[1] = 0;
@@ -182,7 +182,7 @@ static int cam_dma_alloc(uint32_t size) {
      * 0x3C000000 of RAM; firmware MEM_ALLOC hands out top-of-RAM
      * buffers (>0x3C000000) that alias into peripheral space and wedge
      * the output engine. */
-    vaddr = dma_alloc(0, size, false);
+    vaddr = dma_alloc(0, size);
     if (vaddr == 0)
         return -1;
     _dma_virt = (void*)vaddr;

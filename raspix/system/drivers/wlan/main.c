@@ -142,7 +142,7 @@ static uint32_t mailbox_data_from_dma_buf(void* buf)
 static int bcm2835_power_on_module(uint32_t module)
 {
     mail_message_t msg;
-    struct msg_set_power_state* msg_pwr = (struct msg_set_power_state*)(dma_alloc(0, sizeof(struct msg_set_power_state), false));
+    struct msg_set_power_state* msg_pwr = (struct msg_set_power_state*)(dma_alloc(0, sizeof(struct msg_set_power_state)));
     uint32_t mailbox_data;
 
     if (msg_pwr == NULL)
@@ -179,7 +179,7 @@ static int bcm2835_power_on_module(uint32_t module)
 static uint32_t bcm2835_get_emmc_clock(void)
 {
     mail_message_t msg;
-    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(0, sizeof(struct msg_get_clock_rate), false));
+    struct msg_get_clock_rate* msg_clk = (struct msg_get_clock_rate*)(dma_alloc(0, sizeof(struct msg_get_clock_rate)));
     uint32_t mailbox_data;
     uint32_t rate = 0;
 

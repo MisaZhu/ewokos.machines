@@ -1436,7 +1436,7 @@ static int enable_clk(ewokos_addr_t clk_base)
 
 static int pre_allocate_dma_buffer(struct msc313_bach *bach)
 {
-    ewokos_addr_t vaddr = dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE, false);
+    ewokos_addr_t vaddr = dma_alloc(0, PRE_ALLOCATED_PCM_BUF_MAX_SIZE);
     if (vaddr == 0) {
         
         bach->dma_areas = 0;

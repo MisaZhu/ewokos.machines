@@ -123,7 +123,7 @@ static void dsi1_dsi_write_dma(uint32_t off, uint32_t val) {
 	uint32_t spin;
 
 	if (_wa_buf == 0) {
-		_wa_buf = (volatile uint32_t*)(uintptr_t)dma_alloc(0, 64, false);
+		_wa_buf = (volatile uint32_t*)(uintptr_t)dma_alloc(0, 64);
 		if (_wa_buf == 0) {
 			return;
 		}
@@ -401,7 +401,7 @@ void bcm283x_dsi1_mbox_stats(void) {
 static int _property_call(uint32_t tag, uint32_t in_len,
 		uint32_t* val0, uint32_t* val1) {
 	uint32_t size = 8 * 4;
-	uint32_t* buf = (uint32_t*)(uintptr_t)dma_alloc(0, size, false);
+	uint32_t* buf = (uint32_t*)(uintptr_t)dma_alloc(0, size);
 	int ret = -1;
 	int attempt;
 

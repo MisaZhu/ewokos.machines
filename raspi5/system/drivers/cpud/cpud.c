@@ -241,7 +241,7 @@ static int prop_tag_ok(const prop_tag_hdr_t* tag, uint32_t min_len) {
 
 static int mailbox_property_xfer(void* tags, uint32_t tags_size) {
     uint32_t buf_size = align_up(sizeof(prop_msg_hdr_t) + tags_size + sizeof(uint32_t), 16u);
-    uint8_t* buf = (uint8_t*)dma_alloc(0, buf_size, false);
+    uint8_t* buf = (uint8_t*)dma_alloc(0, buf_size);
     static const uint32_t aliases[] = {
         MAILBOX_VC_ALIAS_NONCACHED,
         MAILBOX_VC_ALIAS_COHERENT

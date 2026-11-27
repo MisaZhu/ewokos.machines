@@ -271,7 +271,7 @@ int wcn_sta_associate(const char *ssid) {
     /* Use the validated regulatory limit for the entire channel width.
      * Firmware retains the calibrated board/hardware transmit limits. */
     s.power=power;
-    s.dma=(uint8_t *)dma_alloc(0,STA_DMA_BYTES, false);
+    s.dma=(uint8_t *)dma_alloc(0,STA_DMA_BYTES);
     if (!s.dma) return -1;
     s.pa=dma_phy_addr(0,(ewokos_addr_t)s.dma);
     if (!s.pa || s.pa+STA_DMA_BYTES>0x100000000ULL) {

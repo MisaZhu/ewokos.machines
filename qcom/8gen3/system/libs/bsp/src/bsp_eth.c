@@ -463,7 +463,7 @@ static int tc956x_dma_alloc(void) {
     uint32_t total = ring_bytes * 2u + ETH_RING_SIZE * ETH_BUF_SIZE * 2u;
     uint32_t offset = 0;
 
-    virt = dma_alloc(0, total, false);
+    virt = dma_alloc(0, total);
     if (virt == 0)
         return -1;
     phy = (uint64_t)dma_phy_addr(0, virt);

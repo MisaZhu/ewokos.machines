@@ -538,7 +538,7 @@ int bcm2712_rp1_dpi_init(const sys_info_t *sysinfo,
     page_size = sysinfo->page_size == 0 ? 4096U : sysinfo->page_size;
     alloc_size = (size + page_size - 1U) & ~(page_size - 1U);
 
-    fb_vaddr = dma_alloc(0, alloc_size, false);
+    fb_vaddr = dma_alloc(0, alloc_size);
     if (fb_vaddr == 0) {
         slog("rp1-dpi: dma alloc failed size=%u\n", alloc_size);
         return -1;

@@ -86,7 +86,7 @@ int main(int argc, char **argv) {
 
     /* extra 16KB: the kernel builds the PAS metadata blob right after the
      * image, inside this same DMA buffer (so it is mapped for the syscall). */
-    va = dma_alloc(0, (uint32_t)size + 0x4000, false);
+    va = dma_alloc(0, (uint32_t)size + 0x4000);
     if(va == 0) {
         printf("adspas: dma_alloc(%d) failed\n", size + 0x4000);
         free(buf);

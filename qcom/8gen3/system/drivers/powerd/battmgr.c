@@ -198,7 +198,7 @@ static int adsp_try_boot(void) {
         return -1;
     }
     size = (uint32_t)len;
-    va = dma_alloc(0, size + BM_ADSP_META, false);
+    va = dma_alloc(0, size + BM_ADSP_META);
     if (va == 0) {
         fclose(f);
         return -1;
@@ -255,7 +255,7 @@ int battmgr_init(void) {
     _snap.channel_open = (caps & Q8B_BATT_CAP_CHANNEL_OPEN) != 0;
     _snap.pdr_ready = (caps & Q8B_BATT_CAP_PDR_READY) != 0;
 
-    _buf_va = dma_alloc(0, BM_BUF_SIZE, false);
+    _buf_va = dma_alloc(0, BM_BUF_SIZE);
     if (_buf_va == 0) {
         _probed = 1;
         return -1;

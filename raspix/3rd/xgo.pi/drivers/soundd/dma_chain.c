@@ -112,7 +112,7 @@ static void dma_chain_hw_start(void) {
 }
 
 void dma_chain_init(void) {
-    uint8_t* buf = (uint8_t*)(uintptr_t)dma_alloc(0, DMA_BUF_SIZE * DMA_BUF_CNT, false);
+    uint8_t* buf = (uint8_t*)(uintptr_t)dma_alloc(0, DMA_BUF_SIZE * DMA_BUF_CNT);
 
     _chain = NULL;
     _tail = NULL;

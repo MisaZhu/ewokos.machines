@@ -99,7 +99,7 @@ static int bt_power_on_uart0(void) {
     msg_set_power_state_t* req;
     uint32_t mailbox_data;
 
-    req = (msg_set_power_state_t*)dma_alloc(0, sizeof(msg_set_power_state_t), false);
+    req = (msg_set_power_state_t*)dma_alloc(0, sizeof(msg_set_power_state_t));
     if (req == NULL) {
         return -1;
     }

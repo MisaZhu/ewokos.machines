@@ -489,7 +489,7 @@ static uint32_t* pb_method(uint32_t* p, uint32_t method, uint32_t data) {
 int bsp_vic_channel_test(void) {
     if (bsp_vic_syncpt_test() != 0)
         return -1;
-    ewokos_addr_t va = dma_alloc(0, 4096, false);
+    ewokos_addr_t va = dma_alloc(0, 4096);
     if (va == 0) {
         klog("vic: dma_alloc pushbuffer failed\n");
         return -1;
@@ -584,7 +584,7 @@ int bsp_vic_falcon_boot(const char* fw_path) {
         return -1;
     }
     if (_fw_va == 0)
-        _fw_va = dma_alloc(0, FW_BUF_BYTES, false);
+        _fw_va = dma_alloc(0, FW_BUF_BYTES);
     if (_fw_va == 0) {
         fclose(f);
         klog("vic: dma_alloc firmware failed\n");
@@ -715,7 +715,7 @@ int bsp_vic_falcon_boot(const char* fw_path) {
 int bsp_vic_method_test(void) {
     if (bsp_vic_falcon_boot("/drivers/orin.nano/firmware/vic.bin") != 0)
         return -1;
-    ewokos_addr_t va = dma_alloc(0, 4096, false);
+    ewokos_addr_t va = dma_alloc(0, 4096);
     if (va == 0) {
         klog("vic: dma_alloc pushbuffer failed\n");
         return -1;
@@ -1443,7 +1443,7 @@ int bsp_vic_2d_enable(void) {
     if (_2d_state == 0) {
         _2d_state = -1;
         if (bsp_vic_method_test() == 0)
-            _arena = dma_alloc(0, ARENA_BYTES, false);
+            _arena = dma_alloc(0, ARENA_BYTES);
         if (_arena != 0) {
             _arena_phy = dma_phy_addr(0, _arena);
             memset((void*)_arena, 0, ARENA_BYTES);

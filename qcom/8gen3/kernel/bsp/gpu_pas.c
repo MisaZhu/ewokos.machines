@@ -89,7 +89,7 @@ ewokos_addr_t platform_control_arch(ewokos_addr_t op, ewokos_addr_t arg,
         if(!phase) {
             /* PAS can protect the metadata. Own a separate allocation so
              * caller exit/reuse cannot release it underneath TrustZone. */
-            metadata_pa = dma_alloc(0, -1, 0x4000, false);
+            metadata_pa = dma_alloc(0, -1, 0x4000);
             if(!metadata_pa) return QCOM8GEN3_GPU_PAS_FAILED;
             if(map_pages_size(_kernel_info.kernel_vm,
                     MMIO_BASE + QCOM8GEN3_GPU_META_WIN_OFF, metadata_pa, 0x4000,

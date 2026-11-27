@@ -87,7 +87,7 @@ static int send_m3(void) {
     uint8_t *file = wcn_read_file(wcn_firmware_path("m3.bin"), 1024 * 1024, &m3_size);
     if (!file || m3_va) { free(file); return -1; }
     unsigned allocation = (m3_size + 0x3fff) & ~0x3fffu;
-    m3_va = (void *)dma_alloc(0, allocation, false);
+    m3_va = (void *)dma_alloc(0, allocation);
     if (!m3_va) { free(file); return -1; }
     m3_pa = dma_phy_addr(0, (ewokos_addr_t)m3_va);
     if (!m3_pa || m3_pa + allocation > 0x100000000ULL) { free(file); return -1; }
@@ -198,7 +198,7 @@ static int respond_memory(const uint8_t *p, unsigned bytes) {
          * Keep the original allocation pointer for dma_free(). */
         unsigned alignment = 0x4000;
         while (alignment < allocation) alignment <<= 1;
-        memory[i].va = dma_alloc(0, allocation + alignment - 0x4000, false);
+        memory[i].va = dma_alloc(0, allocation + alignment - 0x4000);
         memory_count = i + 1;
         if (!memory[i].va) return -1;
         memory[i].pa = dma_phy_addr(0, (ewokos_addr_t)memory[i].va);

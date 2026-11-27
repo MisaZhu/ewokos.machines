@@ -128,7 +128,7 @@ int bcm283x_mailbox_gpio_config(uint32_t idx, bool output, bool on) {
     uint32_t mailbox_data;
     mail_message_t msg;
 
-    buf_vaddr = dma_alloc(0, 12u * sizeof(uint32_t), false);
+    buf_vaddr = dma_alloc(0, 12u * sizeof(uint32_t));
     if (buf_vaddr == 0) {
         return -1;
     }

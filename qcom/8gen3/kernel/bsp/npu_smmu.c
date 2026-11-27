@@ -237,7 +237,7 @@ int64_t qcom8gen3_npu_smmu_read_id(uint32_t offset) {
 }
 
 static int dma_pt_alloc(npu_pt_t *p) {
-    p->pa = dma_alloc(0, -1, 0x1000, false);
+    p->pa = dma_alloc(0, -1, 0x1000);
     if (!p->pa) return -1;
     if (smmu.pa_bits && (uint64_t)p->pa + 0x1000 > (1ull << smmu.pa_bits)) {
         dma_free(0, -1, p->pa);

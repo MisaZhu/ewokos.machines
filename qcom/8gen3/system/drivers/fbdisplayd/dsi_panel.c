@@ -90,7 +90,7 @@ static int dsi_init(void) {
     }
     _dsi = (volatile uint32_t*)(uintptr_t)DSI_VA;
 
-    ewokos_addr_t va = dma_alloc(0, DSI_TX_BUF_SIZE, false);
+    ewokos_addr_t va = dma_alloc(0, DSI_TX_BUF_SIZE);
     if (va == 0) {
         slog("qcom8gen3 dsi: dma alloc failed\n");
         _dsi = NULL;

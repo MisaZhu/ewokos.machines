@@ -381,7 +381,7 @@ static int32_t bsp_ahci_controller_init(void) {
 
     /* DMA 一致性池: 按 4KB 向上对齐 — AHCI 要求 CLB 1024B 对齐、
      * CTBA 128B 对齐, 统一页对齐最稳(dma 池起始物理不保证对齐) */
-    uint8_t *raw = (uint8_t *)dma_alloc(0, DMA_POOL_SIZE + 4096, false);
+    uint8_t *raw = (uint8_t *)dma_alloc(0, DMA_POOL_SIZE + 4096);
     if (raw == NULL) {
         return -1;
     }

@@ -47,7 +47,7 @@ uint32_t bcm283x_board_revision(void) {
         return 0;
     }
 
-    vaddr = dma_alloc(0, sizeof(msg_get_board_revision_t), false);
+    vaddr = dma_alloc(0, sizeof(msg_get_board_revision_t));
     if (vaddr == 0) {
         return 0;
     }

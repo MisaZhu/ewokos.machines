@@ -93,7 +93,7 @@ static uint32_t bcm283x_pl011_uart_get_clock_rate(void) {
     uint32_t clock_rate = PL011_DEFAULT_CLOCK_HZ;
     uint32_t mailbox_data;
 
-    req_vaddr = dma_alloc(0, sizeof(msg_get_clock_rate_t), false);
+    req_vaddr = dma_alloc(0, sizeof(msg_get_clock_rate_t));
     if (req_vaddr == 0) {
         return clock_rate;
     }

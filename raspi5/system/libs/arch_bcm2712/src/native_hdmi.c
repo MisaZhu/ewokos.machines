@@ -597,7 +597,7 @@ static int firmware_set_clock(uint32_t clock_id, uint32_t rate_hz) {
     ewokos_addr_t vaddr;
     mail_message_t msg;
 
-    vaddr = dma_alloc(0, sizeof(*req), false);
+    vaddr = dma_alloc(0, sizeof(*req));
     if (vaddr == 0) {
         return -1;
     }
@@ -631,7 +631,7 @@ static int firmware_set_clock_state(uint32_t clock_id, uint32_t state) {
     ewokos_addr_t vaddr;
     mail_message_t msg;
 
-    vaddr = dma_alloc(0, sizeof(*req), false);
+    vaddr = dma_alloc(0, sizeof(*req));
     if (vaddr == 0) {
         return -1;
     }
@@ -664,7 +664,7 @@ static int firmware_set_display_power(uint32_t display, uint32_t state) {
     ewokos_addr_t vaddr;
     mail_message_t msg;
 
-    vaddr = dma_alloc(0, sizeof(*req), false);
+    vaddr = dma_alloc(0, sizeof(*req));
     if (vaddr == 0) {
         return -1;
     }
@@ -698,7 +698,7 @@ static uint32_t firmware_get_clock(uint32_t clock_id) {
     mail_message_t msg;
     uint32_t rate = 0;
 
-    vaddr = dma_alloc(0, sizeof(*req), false);
+    vaddr = dma_alloc(0, sizeof(*req));
     if (vaddr == 0) {
         return 0;
     }
@@ -1066,7 +1066,7 @@ int bcm2712_native_hdmi_init_mode(const sys_info_t *sysinfo,
     size = pitch * mode->height;
     alloc_size = align_up(size, sysinfo->page_size == 0 ? 4096U : sysinfo->page_size);
 
-    fb_vaddr = dma_alloc(0, alloc_size, false);
+    fb_vaddr = dma_alloc(0, alloc_size);
     if (fb_vaddr == 0) {
         slog("native_hdmi: dma alloc failed size=%u\n", alloc_size);
         return -1;

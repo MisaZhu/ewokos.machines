@@ -1721,7 +1721,7 @@ static int gpu_fill_src_ready(void)
     }
 #else
     {
-        ewokos_addr_t v = dma_alloc(0, (uint32_t)bytes, false);
+        ewokos_addr_t v = dma_alloc(0, (uint32_t)bytes);
         ewokos_addr_t p;
 
         if (v == 0)

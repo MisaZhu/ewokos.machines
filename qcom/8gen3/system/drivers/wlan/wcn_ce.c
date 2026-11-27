@@ -80,7 +80,7 @@ static void post_rx(struct pipe *p, unsigned buffer) {
 int wcn_ce_init(void) {
     if (c.active) return 0;
     if (c.dma) return -1;
-    c.dma = (uint8_t *)dma_alloc(0, ARENA_SIZE, false);
+    c.dma = (uint8_t *)dma_alloc(0, ARENA_SIZE);
     if (!c.dma) return -1;
     c.pa = dma_phy_addr(0, (ewokos_addr_t)c.dma);
     if (!c.pa || c.pa + ARENA_SIZE > 0x100000000ULL) return -1;

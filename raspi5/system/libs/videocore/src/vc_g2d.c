@@ -1409,7 +1409,7 @@ static int gpu_fill_src_ready(void)
 
     if (_fill_src_phys != 0)
         return 1;
-    v = dma_alloc(0, (uint32_t)bytes, false);
+    v = dma_alloc(0, (uint32_t)bytes);
     if (v == 0)
         return 0;
     p = dma_phy_addr(0, v);

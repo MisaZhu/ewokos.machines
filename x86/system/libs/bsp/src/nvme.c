@@ -386,7 +386,7 @@ static int32_t bsp_nvme_controller_init(void) {
     /* dma 池起始物理不保证页对齐(如 0x6c1640), 而 NVMe 要求队列按
      * MPS 页对齐 — 在分配内部向上对齐, VA/PHY 线性偏移保持一致 */
     uint32_t qmem_size = qmem_page * 4 + 16384 + 4096;
-    uint8_t *raw = (uint8_t *)dma_alloc(0, qmem_size, false);
+    uint8_t *raw = (uint8_t *)dma_alloc(0, qmem_size);
     if (raw == NULL) {
         slog("nvmefsd: dma alloc failed\n");
         return -1;

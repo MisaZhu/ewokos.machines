@@ -224,7 +224,7 @@ int adreno_bo_alloc(adreno_bo_t *bo, uint32_t size) {
 	ewokos_addr_t pa;
 	if (size == 0)
 		return -1;
-	va = dma_alloc(0, size, false);
+	va = dma_alloc(0, size);
 	if (va == 0)
 		return -2;
 	pa = dma_phy_addr(0, va);

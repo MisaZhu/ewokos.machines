@@ -346,7 +346,7 @@ static int nvme_alloc_queues(nvme_ctrl_t *ctrl) {
     uint32_t sz = (DMA_TOTAL_SIZE + NVME_QUEUE_PAGE_SIZE - 1U)
               & ~(NVME_QUEUE_PAGE_SIZE - 1U);
 
-    ctrl->dma_buf = (void *)dma_alloc(0, sz, false);
+    ctrl->dma_buf = (void *)dma_alloc(0, sz);
     if (ctrl->dma_buf == NULL)
         return -NVME_EIO;
 
@@ -404,7 +404,7 @@ static int nvme_map_prps(uint64_t dma_phy, uint32_t size,
     if (pages > NVME_PRP_LIST_ENTRIES)
         return -NVME_EINVAL;
 
-    map->list = (void *)dma_alloc(0, NVME_QUEUE_PAGE_SIZE, false);
+    map->list = (void *)dma_alloc(0, NVME_QUEUE_PAGE_SIZE);
     if (map->list == NULL)
         return -NVME_EIO;
 
@@ -598,7 +598,7 @@ static int nvme_controller_init(nvme_ctrl_t *ctrl)
 
 static int nvme_identify_ctrl(nvme_ctrl_t *ctrl, nvme_identify_ctrl_t *id)
 {
-    void *buf = dma_alloc(0, 4096, false);
+    void *buf = dma_alloc(0, 4096);
     if (buf == NULL)
         return -NVME_EIO;
 
@@ -624,7 +624,7 @@ static int nvme_identify_ctrl(nvme_ctrl_t *ctrl, nvme_identify_ctrl_t *id)
 static int nvme_identify_ns(nvme_ctrl_t *ctrl, uint32_t nsid,
                 nvme_identify_ns_t *id)
 {
-    void *buf = dma_alloc(0, 4096, false);
+    void *buf = dma_alloc(0, 4096);
     if (buf == NULL)
         return -NVME_EIO;
 
@@ -820,7 +820,7 @@ int nvme_read_blocks(nvme_ctrl_t *ctrl, void *dst,
     uint32_t block_size = 1U << ctrl->lba_shift;
     uint32_t total_bytes = block_count * block_size;
 
-    void *dma_buf = dma_alloc(0, total_bytes, false);
+    void *dma_buf = dma_alloc(0, total_bytes);
     if (dma_buf == NULL)
         return -NVME_EIO;
     uint64_t dma_phy = (uint64_t)dma_phy_addr(0, (ewokos_addr_t)dma_buf)
@@ -869,7 +869,7 @@ int nvme_write_blocks(nvme_ctrl_t *ctrl, uint64_t start_lba,
     uint32_t block_size = 1U << ctrl->lba_shift;
     uint32_t total_bytes = block_count * block_size;
 
-    void *dma_buf = dma_alloc(0, total_bytes, false);
+    void *dma_buf = dma_alloc(0, total_bytes);
     if (dma_buf == NULL)
         return -NVME_EIO;
     memcpy(dma_buf, src, total_bytes);

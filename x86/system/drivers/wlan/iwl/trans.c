@@ -37,7 +37,7 @@ struct iwl_rx_transfer_desc {
 static int dma_get(struct iwlm_dma *m, u32 size)
 {
     m->size = (size + PAGE_4K - 1) & ~(PAGE_4K - 1);
-    m->va = dma_alloc(0, m->size, false);
+    m->va = dma_alloc(0, m->size);
     if (!m->va)
         return -1;
     m->pa = dma_phy_addr(0, m->va);

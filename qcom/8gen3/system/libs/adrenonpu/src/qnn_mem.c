@@ -62,7 +62,7 @@ qnn_shared_buf_t *qnn_shared_buf_alloc(qnn_backend_obj_t *b, int fd,
 	sb = (qnn_shared_buf_t *)calloc(1, sizeof(*sb));
 	if (!sb)
 		return NULL;
-	va = dma_alloc(0, map_size, false);
+	va = dma_alloc(0, map_size);
 	if (va == 0) {
 		free(sb);
 		return NULL;

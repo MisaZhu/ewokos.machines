@@ -150,7 +150,7 @@ static int mailbox_get_tags(void *tags, uint32_t tags_size) {
     uint32_t *shadow = NULL;
     int result = -1;
 
-    struct prop_buffer *buf = (struct prop_buffer *)dma_alloc(0, buf_size, false);
+    struct prop_buffer *buf = (struct prop_buffer *)dma_alloc(0, buf_size);
     if (buf == NULL) {
         return -1;
     }
@@ -162,7 +162,7 @@ static int mailbox_get_tags(void *tags, uint32_t tags_size) {
     *(uint32_t *)((uint8_t *)buf + sizeof(struct prop_buffer) + tags_size) = PROPTAG_END;
 
     /* Prepare shadow for alias fallback from the fully built request. */
-    shadow = (uint32_t *)dma_alloc(0, buf_size, false);
+    shadow = (uint32_t *)dma_alloc(0, buf_size);
     if (shadow != NULL) {
         memcpy(shadow, buf, buf_size);
     }
@@ -722,7 +722,7 @@ typedef struct {
 
 static int fb_channel1_init(const sys_info_t *sysinfo,
         const fb_mode_t *mode, disp_info_t *info) {
-    fb_ch1_msg_t *msg = (fb_ch1_msg_t *)dma_alloc(0, sizeof(fb_ch1_msg_t), false);
+    fb_ch1_msg_t *msg = (fb_ch1_msg_t *)dma_alloc(0, sizeof(fb_ch1_msg_t));
     mail_message_t mailbox_msg;
     uint32_t w, h, vw, vh, dep, phy, size, pitch;
 
