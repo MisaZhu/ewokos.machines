@@ -371,7 +371,7 @@ static bool uvc_shm_create(uint32_t cap) {
     int id = -1;
     for (int i = 0; i < 8 && id <= 0; ++i) {
         key_t key = (key_t)(0x55564300u + ((uint32_t)getpid() & 0xffffu) + i);
-        id = shmget(key, (int)total, 0666 | IPC_CREAT | IPC_EXCL);
+        id = shmget(key, (int)total, 0666 | IPC_CREAT | IPC_EXCL | SHM_NOCACHE);
     }
     if (id <= 0) {
         klog("bsp_uvc: shm create failed\n");

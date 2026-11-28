@@ -1176,7 +1176,7 @@ static void test_thread_client(void) {
 static void test_second_client_isolation(void) {
     uint32_t pid2 = 888;
     alive_set(pid2, 0xbbbb2222u, 1);
-    int sid = shmget(0x1234, 4096, 0666 | IPC_CREAT | IPC_EXCL);
+    int sid = shmget(0x1234, 4096, 0666 | IPC_CREAT | IPC_EXCL | SHM_NOCACHE);
     EXPECT(sid > 0);
     ga10b_rpc_open_t o;
     memset(&o, 0, sizeof(o));

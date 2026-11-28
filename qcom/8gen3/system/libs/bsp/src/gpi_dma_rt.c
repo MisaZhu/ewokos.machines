@@ -30,7 +30,7 @@ static int rt_shm_alloc(unsigned size, int* id, uintptr_t* pa,
                                void** va) {
     /* key: small per-process unique tag; every shm run is contiguous. */
     static key_t key = 0x51525430u;   /* "0TRQ" */
-    int sid = shmget(key++, ((size + 4095u) & ~4095u), 0666 | IPC_CREAT | IPC_EXCL);
+    int sid = shmget(key++, ((size + 4095u) & ~4095u), 0666 | IPC_CREAT | IPC_EXCL | SHM_NOCACHE);
     if (sid <= 0)
         return -1;
     void* v = shmat(sid, 0, 0);
